@@ -1,0 +1,154 @@
+<!-- title: Get Started — ui.monoid -->
+<!-- title-zh: 快速上手 — ui.monoid -->
+<!-- description: Install MoonBit, scaffold an mbui app with mbui init, check it, run its first frame and pack it for six platforms, WebGL 2 included. -->
+<!-- page: get-started -->
+
+<section class="hero">
+  <div class="wrap">
+    <div class="eyebrow" data-en="Quickstart" data-zh="快速上手">Quickstart</div>
+    <h1 data-en="From zero to six native GPUs in minutes." data-zh="几分钟内从零跑通六端原生 GPU。">From zero to six native GPUs in minutes.</h1>
+    <p class="lede" data-en="Install the MoonBit toolchain, scaffold an app with one command, draw its first frame and pack it for the web on WebGL 2." data-zh="装好 MoonBit 工具链，一条命令生成应用骨架，画出第一帧，再打包成运行在 WebGL 2 上的网页。">Install the MoonBit toolchain, scaffold an app with one command, draw its first frame and pack it for the web on WebGL 2.</p>
+    <div class="ctas">
+      <a class="btn btn-dark" href="#steps" data-en="Start the three steps" data-zh="开始三步上手">Start the three steps</a>
+      <a class="btn btn-line" href="/docs/" data-en="Read the docs" data-zh="阅读文档">Read the docs</a>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="steps">
+  <div class="wrap">
+    <div class="section-head left">
+      <div class="eyebrow" data-en="Three steps" data-zh="三步">Three steps</div>
+      <h2 data-en="Install, scaffold, run." data-zh="安装、生成、运行。">Install, scaffold, run.</h2>
+    </div>
+    <div class="steps gs-steps">
+      <div class="step">
+        <small>Step 01</small>
+        <h3 data-en="Prerequisites" data-zh="准备环境">Prerequisites</h3>
+        <p data-en="The MoonBit toolchain, Git, and Node.js for the web target (it compresses assets and runs esbuild). Native packing also needs that platform's toolchain unless you use the prebuilt wasm runtime." data-zh="MoonBit 工具链、Git，以及 Web 目标所需的 Node.js（用于压缩资源和运行 esbuild）。原生打包还需要对应平台的工具链，除非使用预编译的 wasm 运行时。">The MoonBit toolchain, Git, and Node.js for the web target (it compresses assets and runs esbuild). Native packing also needs that platform's toolchain unless you use the prebuilt wasm runtime.</p>
+        <div class="term"><button class="copy" data-copy="# macOS / Linux&#10;curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash&#10;moon version&#10;git clone https://github.com/AFK-surf/monoid.git&#10;cd monoid" data-en="Copy" data-zh="复制">Copy</button><span class="dim"># macOS / Linux</span>
+<span class="p">$ </span>curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash
+<span class="p">$ </span>moon version
+<span class="p">$ </span>git clone https://github.com/AFK-surf/monoid.git
+<span class="p">$ </span>cd monoid</div>
+      </div>
+      <div class="step">
+        <small>Step 02</small>
+        <h3 data-en="Scaffold &amp; check" data-zh="生成并校验">Scaffold &amp; check</h3>
+        <p data-en="mbui init writes mbui.json, a moon.mod importing mbui, a moon.work naming your mbui checkout, and src/app with a first window. mbui check loads the manifest with every variant and override applied and prints what it resolved to." data-zh="mbui init 会生成 mbui.json、依赖 mbui 的 moon.mod、指向本地 mbui 的 moon.work，以及带第一个窗口的 src/app。mbui check 按所有 variant 与覆盖参数解析清单，并打印解析结果。">mbui init writes mbui.json, a moon.mod importing mbui, a moon.work naming your mbui checkout, and src/app with a first window. mbui check loads the manifest with every variant and override applied and prints what it resolved to.</p>
+        <div class="term"><button class="copy" data-copy="libs/mbui/scripts/mbui init ../my-app \&#10;    --name &quot;My App&quot; --id dev.example.myapp \&#10;    --mbui &quot;$PWD/libs/mbui&quot;&#10;libs/mbui/scripts/mbui check ../my-app/mbui.json \&#10;    --runtime wasm" data-en="Copy" data-zh="复制">Copy</button><span class="p">$ </span>libs/mbui/scripts/mbui init ../my-app \
+    --name "My App" --id dev.example.myapp \
+    --mbui "$PWD/libs/mbui"
+<span class="p">$ </span>libs/mbui/scripts/mbui check ../my-app/mbui.json \
+    --runtime wasm</div>
+      </div>
+      <div class="step">
+        <small>Step 03</small>
+        <h3 data-en="Run &amp; pack" data-zh="运行与打包">Run &amp; pack</h3>
+        <p data-en="Open the app in a macOS window, then pack it for the web: a static index.html, host.js and pre-compressed assets that draw on WebGL 2. Add more targets with a comma." data-zh="先在 macOS 窗口中打开应用，再打包成网页：静态 index.html、host.js 与预压缩资源，在 WebGL 2 上绘制。用逗号追加更多目标。">Open the app in a macOS window, then pack it for the web: a static index.html, host.js and pre-compressed assets that draw on WebGL 2. Add more targets with a comma.</p>
+        <div class="term"><button class="copy" data-copy="APP=app MBUI_APP_MOD=../my-app \&#10;    libs/mbui/scripts/mac.sh run&#10;libs/mbui/scripts/mbui pack ../my-app/mbui.json \&#10;    --target web --out ../my-app/dist" data-en="Copy" data-zh="复制">Copy</button><span class="p">$ </span>APP=app MBUI_APP_MOD=../my-app \
+    libs/mbui/scripts/mac.sh run
+<span class="p">$ </span>libs/mbui/scripts/mbui pack ../my-app/mbui.json \
+    --target web --out ../my-app/dist</div>
+      </div>
+    </div>
+    <div class="gs-first">
+      <div>
+        <h3 data-en="What mbui init writes in src/app" data-zh="mbui init 在 src/app 里写下的内容">What mbui init writes in src/app</h3>
+        <p data-en="One window, made once as a tree. Change the words, rebuild, and read the docs on views and signals to make it react." data-zh="一个窗口，作为一棵树只建一次。改改文字、重新构建，再读读文档里的视图与信号，让它动起来。">One window, made once as a tree. Change the words, rebuild, and read the docs on views and signals to make it react.</p>
+        <a class="link-arrow" href="/docs/#views-signals" data-en="Views &amp; signals" data-zh="视图与信号">Views &amp; signals</a>
+      </div>
+      <div class="term"><button class="copy" data-copy="///|&#10;fn main {&#10;  @ui.run_tree(&quot;My App&quot;, fn(root) {&#10;    root&#10;    .grow(@view.Is(1.0))&#10;    .ground(@view.Is(0xF5F3EFFFL))&#10;    .pad(@view.Is(24.0))&#10;    .box(fn(card) {&#10;      card.words(@view.Is(&quot;Hello, My App!&quot;), ink=0x24272BFFL) |&gt; ignore&#10;    })&#10;    |&gt; ignore&#10;  })&#10;}" data-en="Copy" data-zh="复制">Copy</button><span class="dim">///|</span>
+fn main {
+  @ui.run_tree("My App", fn(root) {
+    root
+    .grow(@view.Is(1.0))
+    .ground(@view.Is(0xF5F3EFFFL))
+    .pad(@view.Is(24.0))
+    .box(fn(card) {
+      card.words(@view.Is("Hello, My App!"), ink=0x24272BFFL) |&gt; ignore
+    })
+    |&gt; ignore
+  })
+}</div>
+    </div>
+  </div>
+</section>
+
+<section class="section band" id="targets">
+  <div class="wrap">
+    <div class="section-head left">
+      <div class="eyebrow" data-en="Six targets" data-zh="六个目标">Six targets</div>
+      <h2 data-en="One core, six thin hosts." data-zh="一个内核，六层薄宿主。">One core, six thin hosts.</h2>
+      <p data-en="The same MoonBit core draws every pixel. Each host only puts frames on screen and feeds input, on the platform's own GPU API." data-zh="同一个 MoonBit 内核绘制每一个像素。各宿主只负责上屏与输入，并使用平台自己的 GPU 接口。">The same MoonBit core draws every pixel. Each host only puts frames on screen and feeds input, on the platform's own GPU API.</p>
+    </div>
+    <div class="gs-matrix" role="region" aria-label="Targets" tabindex="0">
+      <table>
+        <thead>
+          <tr>
+            <th data-en="Platform" data-zh="平台">Platform</th>
+            <th data-en="GPU" data-zh="GPU 接口">GPU</th>
+            <th data-en="Host" data-zh="宿主">Host</th>
+            <th>--target</th>
+            <th data-en="Output" data-zh="产物">Output</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>{{i:apple}}<span>macOS</span></td><td>Metal</td><td>Objective-C · AppKit</td><td><code>mac</code></td><td>.app · .zip · .dmg</td></tr>
+          <tr><td>{{i:phone}}<span>iOS</span></td><td>Metal</td><td>Objective-C · UIKit</td><td><code>ios</code></td><td>.app · .ipa</td></tr>
+          <tr><td>{{i:android}}<span>Android</span></td><td>OpenGL ES</td><td>C · Java</td><td><code>android</code></td><td data-en="Signed APK" data-zh="签名 APK">Signed APK</td></tr>
+          <tr><td>{{i:laptop}}<span>Windows</span></td><td>Direct3D 11</td><td>C/C++ · Win32</td><td><code>win</code></td><td data-en="Portable · .zip · setup" data-zh="便携版 · .zip · 安装包">Portable · .zip · setup</td></tr>
+          <tr><td>{{i:terminal}}<span>Linux</span></td><td>OpenGL ES</td><td>C · GTK 4</td><td><code>linux</code></td><td>.tar.gz · .deb · AppImage</td></tr>
+          <tr><td>{{i:globe}}<span>Web</span></td><td>WebGL 2</td><td>JavaScript · host.js</td><td><code>web</code></td><td data-en="Static site · PWA · .gz/.br" data-zh="静态站点 · PWA · .gz/.br">Static site · PWA · .gz/.br</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="gs-matrix-note" data-en="With --runtime wasm, the five native targets need no C, Xcode or MSVC per app: the app's .wasm goes into a prebuilt mbui-runtime shell." data-zh="使用 --runtime wasm 时，五个原生目标都无需为每个应用编译 C、Xcode 或 MSVC：应用的 .wasm 直接放进预编译的 mbui-runtime 壳。">With --runtime wasm, the five native targets need no C, Xcode or MSVC per app: the app's .wasm goes into a prebuilt mbui-runtime shell.</p>
+  </div>
+</section>
+
+<section class="section" id="faq">
+  <div class="wrap faq">
+    <div>
+      <h2 data-en="Questions" data-zh="常见问题">Questions</h2>
+      <p data-en="What developers ask first. The docs go deeper on each." data-zh="开发者最先问的几个问题，每个在文档里都有更详细的说明。">What developers ask first. The docs go deeper on each.</p>
+    </div>
+    <div>
+      <details>
+        <summary data-en="Why MoonBit?" data-zh="为什么用 MoonBit？">Why MoonBit?</summary>
+        <p data-en="One language compiles to native C for every desktop and mobile host, to wasm for the prebuilt runtime shell and to JavaScript for the browser. The framework, its tools and its build checks are all written in it, so there is one toolchain from the first frame to the release." data-zh="同一门语言既能编成 C 供各桌面与移动宿主使用，也能编成 wasm 放进预编译运行时壳，还能编成 JavaScript 跑在浏览器里。框架本身、它的工具和构建检查都用 MoonBit 写成，从第一帧到发布只有一套工具链。">One language compiles to native C for every desktop and mobile host, to wasm for the prebuilt runtime shell and to JavaScript for the browser. The framework, its tools and its build checks are all written in it, so there is one toolchain from the first frame to the release.</p>
+      </details>
+      <details>
+        <summary data-en="Why draw on the GPU instead of the DOM or a WebView?" data-zh="为什么在 GPU 上自绘，而不是用 DOM 或 WebView？">Why draw on the GPU instead of the DOM or a WebView?</summary>
+        <p data-en="Because the same core draws the same pixels on every platform, a test can read exactly what will be drawn from the Tester's draw list, and motion can be computed for any moment. Layout, text and drawing are mbui's own: its flexbox passes Yoga's tests and its text segmentation passes Unicode's." data-zh="因为同一个内核在每个平台上画出同样的像素：测试可以从 Tester 的绘制列表准确读到将要画出的内容，动效也能在任意时刻精确求值。布局、文字与绘制都由 mbui 自己完成：flexbox 通过 Yoga 测试集，文本分段通过 Unicode 官方测试。">Because the same core draws the same pixels on every platform, a test can read exactly what will be drawn from the Tester's draw list, and motion can be computed for any moment. Layout, text and drawing are mbui's own: its flexbox passes Yoga's tests and its text segmentation passes Unicode's.</p>
+      </details>
+      <details>
+        <summary data-en="How big is the WebGL 2 bundle?" data-zh="WebGL 2 的包有多大？">How big is the WebGL 2 bundle?</summary>
+        <p data-en="It depends on what your app includes, so measure it: libs/mbui/scripts/size.sh web reports app.js and host.js raw, gzip -9 and brotli -q 11, which is what a browser downloads. mbui pack minifies with esbuild and writes .gz and .br files next to each asset." data-zh="取决于应用包含了什么，所以请直接测：libs/mbui/scripts/size.sh web 会给出 app.js 与 host.js 的原始大小、gzip -9 与 brotli -q 11 后的大小，也就是浏览器实际下载的体积。mbui pack 会用 esbuild 压缩，并在每个资源旁写出 .gz 与 .br。">It depends on what your app includes, so measure it: libs/mbui/scripts/size.sh web reports app.js and host.js raw, gzip -9 and brotli -q 11, which is what a browser downloads. mbui pack minifies with esbuild and writes .gz and .br files next to each asset.</p>
+      </details>
+      <details>
+        <summary data-en="Can I bring my own design system on top of @headless?" data-zh="能在 @headless 之上做自己的设计系统吗？">Can I bring my own design system on top of @headless?</summary>
+        <p data-en="Yes, that is what it is for. Each headless control takes a look function from its caller; a look library such as sf-ui or liquid-glass is just a set of those looks over the same behaviour. Write yours as a module beside mbui that imports only mbui." data-zh="可以，这正是它的用途。每个无头控件都从调用方接收一个外观函数；sf-ui、liquid-glass 这样的外观库，就是在同一套行为之上的一组外观。把你的设计系统写成与 mbui 并列、只依赖 mbui 的模块即可。">Yes, that is what it is for. Each headless control takes a look function from its caller; a look library such as sf-ui or liquid-glass is just a set of those looks over the same behaviour. Write yours as a module beside mbui that imports only mbui.</p>
+      </details>
+      <details>
+        <summary data-en="How does deterministic UI testing work?" data-zh="确定性 UI 测试是怎么做到的？">How does deterministic UI testing work?</summary>
+        <p data-en="A Tester runs the tree against a fake host. Tests press, type and declare moments with run_for, then assert on the screen-reader tree or the draw list. Every test also runs at 60, 120, 24 and 7 fps and must give identical results, so there is nothing to wait for and nothing flaky to retry." data-zh="Tester 让这棵树跑在一个假宿主上。测试按下、输入，并用 run_for 声明时刻，然后对读屏树或绘制列表做断言。每个测试还会在 60、120、24、7 fps 下各跑一遍且结果必须一致，所以无需等待，也没有需要重试的偶发失败。">A Tester runs the tree against a fake host. Tests press, type and declare moments with run_for, then assert on the screen-reader tree or the draw list. Every test also runs at 60, 120, 24 and 7 fps and must give identical results, so there is nothing to wait for and nothing flaky to retry.</p>
+      </details>
+      <details>
+        <summary data-en="What are the licenses?" data-zh="采用什么许可证？">What are the licenses?</summary>
+        <p data-en="mbui and sf-ui are MIT. liquid-glass is a port of Kyant0/AndroidLiquidGlass and keeps its Apache-2.0 license. Third-party data, tests and code carried by mbui keep their own licenses, listed in THIRD_PARTY_NOTICES.md." data-zh="mbui 与 sf-ui 采用 MIT。liquid-glass 移植自 Kyant0/AndroidLiquidGlass，沿用其 Apache-2.0 许可。mbui 附带的第三方数据、测试与代码保留各自的许可，列在 THIRD_PARTY_NOTICES.md 中。">mbui and sf-ui are MIT. liquid-glass is a port of Kyant0/AndroidLiquidGlass and keeps its Apache-2.0 license. Third-party data, tests and code carried by mbui keep their own licenses, listed in THIRD_PARTY_NOTICES.md.</p>
+      </details>
+    </div>
+  </div>
+</section>
+
+<section class="closing dark">
+  <div class="wrap">
+    <h2 data-en="Your first frame is drawn. Keep going." data-zh="第一帧已经画出来了，继续吧。">Your first frame is drawn. Keep going.</h2>
+    <p data-en="Learn how views, signals, motion and tests fit together, or browse the components you can build on." data-zh="了解视图、信号、动效与测试如何协同，或者浏览可以直接拿来用的组件。">Learn how views, signals, motion and tests fit together, or browse the components you can build on.</p>
+    <div class="ctas">
+      <a class="btn btn-dark" href="/docs/" data-en="Read the docs" data-zh="阅读文档">Read the docs</a>
+      <a class="btn btn-line" href="/components/" data-en="Browse components" data-zh="浏览组件">Browse components</a>
+    </div>
+  </div>
+</section>

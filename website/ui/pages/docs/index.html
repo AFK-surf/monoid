@@ -1,0 +1,243 @@
+<!-- title: Documentation — ui.monoid -->
+<!-- title-zh: 文档 — ui.monoid -->
+<!-- description: Engineering documentation for mbui: packages, retained views and signals, styling and layout, headless controls, closed-form motion, deterministic testing, and six-platform packaging. -->
+<!-- page: docs -->
+
+<header class="docs-head">
+  <div class="wrap">
+    <div class="eyebrow" data-en="Documentation" data-zh="技术文档">Documentation</div>
+    <h1 data-en="Build with mbui" data-zh="用 mbui 构建应用">Build with mbui</h1>
+    <p class="docs-lede" data-en="How the framework is put together, how to write views that are made once and updated by signals, and how to test, film and ship them to six platforms. Every name on this page is taken from the source in libs/mbui." data-zh="框架如何分层、如何写只建一次并由信号更新的视图，以及如何测试、离屏出片并发布到六个平台。本页所有名称都取自 libs/mbui 源码。">How the framework is put together, how to write views that are made once and updated by signals, and how to test, film and ship them to six platforms. Every name on this page is taken from the source in libs/mbui.</p>
+    <div class="docs-meta">
+      <a class="link-arrow" href="/get-started/" data-en="New here? Start with the quickstart" data-zh="第一次来？先看快速上手">New here? Start with the quickstart</a>
+      <span class="docs-tag" data-en="Experimental: APIs change without notice" data-zh="实验阶段：API 可能随时变动">Experimental: APIs change without notice</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap docs">
+  <aside class="docs-toc" aria-label="On this page">
+    <h6 data-en="On this page" data-zh="本页目录">On this page</h6>
+    <nav>
+      <a href="#overview"><span class="n">01</span><span data-en="Architecture &amp; packages" data-zh="架构与包">Architecture &amp; packages</span></a>
+      <a href="#views-signals"><span class="n">02</span><span data-en="Views &amp; signals" data-zh="视图与信号">Views &amp; signals</span></a>
+      <a href="#styling-layout"><span class="n">03</span><span data-en="Styling &amp; layout" data-zh="样式与布局">Styling &amp; layout</span></a>
+      <a href="#headless-libraries"><span class="n">04</span><span data-en="Headless &amp; looks" data-zh="无头组件与外观库">Headless &amp; looks</span></a>
+      <a href="#motion"><span class="n">05</span><span data-en="Closed-form motion" data-zh="闭式动效">Closed-form motion</span></a>
+      <a href="#testing-film"><span class="n">06</span><span data-en="Testing &amp; film" data-zh="测试与离屏出片">Testing &amp; film</span></a>
+      <a href="#packaging"><span class="n">07</span><span data-en="Packaging" data-zh="打包与分发">Packaging</span></a>
+    </nav>
+  </aside>
+
+  <article class="docs-body">
+
+    <!-- 01 ─────────────────────────────────────────── -->
+    <section class="doc" id="overview">
+      <div class="doc-k">01</div>
+      <h2 data-en="Architecture &amp; packages" data-zh="架构与包">Architecture &amp; packages</h2>
+      <p data-en="mbui is one MoonBit core that builds, lays out and paints a tree and draws everything itself on the GPU, plus thin platform hosts that put it on screen and feed it input. The core is split into packages with one job each, and it knows no application: nothing under libs/mbui may name an app (the detlint rule app-word)." data-zh="mbui 是一个 MoonBit 内核：它构建、布局并绘制一棵树，所有像素都在 GPU 上自绘；各平台只有一层很薄的宿主，负责上屏和输入。内核按职责拆成多个包，并且不认识任何应用：libs/mbui 下不允许出现任何应用名（detlint 规则 app-word）。">mbui is one MoonBit core that builds, lays out and paints a tree and draws everything itself on the GPU, plus thin platform hosts that put it on screen and feed it input. The core is split into packages with one job each, and it knows no application: nothing under libs/mbui may name an app (the detlint rule app-word).</p>
+
+      <div class="doc-table" role="region" aria-label="Packages" tabindex="0">
+        <table>
+          <thead><tr><th data-en="Package" data-zh="包">Package</th><th data-en="What it owns" data-zh="负责什么">What it owns</th></tr></thead>
+          <tbody>
+            <tr><td><code>@view</code></td><td data-en="The retained window tree: nodes made once, structures (show, pick, each), one-way layout, virtual lists, focus." data-zh="保留式窗口树：节点只建一次，结构（show、pick、each）、单向布局、虚拟列表与焦点。">The retained window tree: nodes made once, structures (show, pick, each), one-way layout, virtual lists, focus.</td></tr>
+            <tr><td><code>@signals</code></td><td data-en="A port of alien-signals: signal, computed, derived_signal, effects and batching." data-zh="alien-signals 的移植：signal、computed、derived_signal、effect 与批处理。">A port of alien-signals: signal, computed, derived_signal, effects and batching.</td></tr>
+            <tr><td><code>@motion</code></td><td data-en="Motion as data: springs, easings and NodeWay, computed from a cause moment." data-zh="动效即数据：弹簧、缓动与 NodeWay，全部由起因时刻推算。">Motion as data: springs, easings and NodeWay, computed from a cause moment.</td></tr>
+            <tr><td><code>@headless</code></td><td data-en="Pointer, keyboard and screen-reader behaviour per control kind. Draws nothing, lays out nothing." data-zh="每类控件的指针、键盘与读屏行为。不绘制、不布局。">Pointer, keyboard and screen-reader behaviour per control kind. Draws nothing, lays out nothing.</td></tr>
+            <tr><td><code>@ui</code></td><td data-en="The shared runtime: run_tree, styles (@ui.css), theme, text fields, Tester and FakeHost." data-zh="共享运行时：run_tree、样式（@ui.css）、主题、文本输入、Tester 与 FakeHost。">The shared runtime: run_tree, styles (@ui.css), theme, text fields, Tester and FakeHost.</td></tr>
+            <tr><td><code>@film</code></td><td data-en="Offscreen pictures and films of a tree: picture, film and bench." data-zh="把一棵树离屏渲染成图片或影片：picture、film 与 bench。">Offscreen pictures and films of a tree: picture, film and bench.</td></tr>
+            <tr><td><code>@hostapi</code></td><td data-en="The Host trait. Every host call goes through it, so tests link no platform." data-zh="Host trait。所有宿主调用都经过它，因此测试不链接任何平台。">The Host trait. Every host call goes through it, so tests link no platform.</td></tr>
+            <tr><td><code>@updater</code></td><td data-en="Signed auto-updates: check_and_fetch a latest.json feed, status, apply." data-zh="签名自动更新：check_and_fetch 拉取 latest.json、status 查看进度、apply 应用。">Signed auto-updates: check_and_fetch a latest.json feed, status, apply.</td></tr>
+            <tr><td><code>flex · text · paint</code></td><td data-en="Layout and drawing. The flexbox passes Yoga's tests; text segmentation passes Unicode's own." data-zh="布局与绘制。flexbox 通过 Yoga 的测试集，文本分段通过 Unicode 官方测试。">Layout and drawing. The flexbox passes Yoga's tests; text segmentation passes Unicode's own.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3 data-en="Three layers, kept apart" data-zh="三层，彼此分离">Three layers, kept apart</h3>
+      <ol class="doc-layers">
+        <li><b data-en="Framework" data-zh="框架">Framework</b><span data-en="@view: what every node needs (tree, layout, motion, virtual lists). Libraries never reimplement it." data-zh="@view：每个节点都需要的能力（树、布局、动效、虚拟列表）。组件库从不重新实现。">@view: what every node needs (tree, layout, motion, virtual lists). Libraries never reimplement it.</span></li>
+        <li><b data-en="Headless" data-zh="无头组件">Headless</b><span data-en="@headless: how a control behaves to the hand, the keys and a screen reader. Knows no theme." data-zh="@headless：控件对手指、键盘和读屏器的行为。不认识任何主题。">@headless: how a control behaves to the hand, the keys and a screen reader. Knows no theme.</span></li>
+        <li><b data-en="Looks" data-zh="外观库">Looks</b><span data-en="sf-ui, liquid-glass: styling over headless controls, and nothing else." data-zh="sf-ui、liquid-glass：在无头组件之上只做外观，别的什么都不做。">sf-ui, liquid-glass: styling over headless controls, and nothing else.</span></li>
+      </ol>
+    </section>
+
+    <!-- 02 ─────────────────────────────────────────── -->
+    <section class="doc" id="views-signals">
+      <div class="doc-k">02</div>
+      <h2 data-en="Retained views &amp; fine-grained signals" data-zh="保留式视图与细粒度信号">Retained views &amp; fine-grained signals</h2>
+      <p data-en="A node is made once, when it first shows, and kept until it leaves. Properties that change are bound to signals with By(fn); constant ones are given with Is(v). When a signal changes, only the bindings that read it run again: nothing is rebuilt and nothing is diffed." data-zh="节点在首次出现时创建一次，直到离开前一直保留。会变的属性用 By(fn) 绑定到信号，不变的用 Is(v) 直接给值。信号变化时只重跑读到它的绑定：没有重建，也没有 diff。">A node is made once, when it first shows, and kept until it leaves. Properties that change are bound to signals with By(fn); constant ones are given with Is(v). When a signal changes, only the bindings that read it run again: nothing is rebuilt and nothing is diffed.</p>
+      <div class="term" data-lang="moonbit"><button class="copy" data-copy="///|&#10;fn main {&#10;  let count = @signals.signal(0)&#10;  @ui.run_tree(&quot;Counter&quot;, fn(root) {&#10;    root&#10;    .grow(@view.Is(1.0))&#10;    .pad(@view.Is(24.0))&#10;    .box(fn(col) {&#10;      // bound: re-runs only when count changes&#10;      col.words(@view.By(fn() { &quot;Pressed \{count.get()} times&quot; })) |&gt; ignore&#10;      @headless.button(&#10;        col,&#10;        fn() { &quot;Increment&quot; },&#10;        fn(_) { count.set(count.get() + 1) },&#10;        fn(v, _) { v.pad(@view.Is(12.0)).ground(@view.Is(0xEF6334FFL)) |&gt; ignore },&#10;      ) |&gt; ignore&#10;    })&#10;    |&gt; ignore&#10;  })&#10;}" data-en="Copy" data-zh="复制">Copy</button><span class="dim">///|</span>
+fn main {
+  let count = @signals.signal(0)
+  @ui.run_tree("Counter", fn(root) {
+    root
+    .grow(@view.Is(1.0))
+    .pad(@view.Is(24.0))
+    .box(fn(col) {
+      <span class="dim">// bound: re-runs only when count changes</span>
+      col.words(@view.By(fn() { "Pressed \{count.get()} times" })) |&gt; ignore
+      @headless.button(
+        col,
+        fn() { "Increment" },
+        fn(_) { count.set(count.get() + 1) },
+        fn(v, _) { v.pad(@view.Is(12.0)).ground(@view.Is(0xEF6334FFL)) |&gt; ignore },
+      ) |&gt; ignore
+    })
+    |&gt; ignore
+  })
+}</div>
+      <dl class="api">
+        <div><dt><code>View::show · pick · each</code></dt><dd data-en="Structures for dynamic children. each takes items, a key and a maker; keeps parks off-screen keys at rest instead of dropping them." data-zh="动态子节点的结构。each 接收列表、键与构造函数；keeps 让离屏的键停靠休眠而不是销毁。">Structures for dynamic children. each takes items, a key and a maker; keeps parks off-screen keys at rest instead of dropping them.</dd></div>
+        <div><dt><code>View::by_room</code></dt><dd data-en="Structure that depends on the room given. Layout flows strictly one way: compute inside by_room, never read layout back from outside the tree." data-zh="依赖可用空间的结构。布局严格单向：在 by_room 里计算，绝不在树外回读布局。">Structure that depends on the room given. Layout flows strictly one way: compute inside by_room, never read layout back from outside the tree.</dd></div>
+        <div><dt><code>View::scrolls_window</code></dt><dd data-en="The virtual list. It owns slots, reading anchors, head and foot, multi-block bands and reused blocks; frame cost stays flat from 30 to 15,000 keys." data-zh="虚拟列表。它负责槽位、阅读锚点、head 与 foot、跨块高亮 bands 与块复用；从 30 到 15,000 个键，单帧开销保持不变。">The virtual list. It owns slots, reading anchors, head and foot, multi-block bands and reused blocks; frame cost stays flat from 30 to 15,000 keys.</dd></div>
+        <div><dt><code>@signals.signal · computed</code></dt><dd data-en="Values require T : Eq, so a recomputation that yields an equal value stops propagating. Use derived_signal for a writable derivation." data-zh="值类型要求 T : Eq，算出相等的值时传播就此停止。可写的派生值用 derived_signal。">Values require T : Eq, so a recomputation that yields an equal value stops propagating. Use derived_signal for a writable derivation.</dd></div>
+      </dl>
+    </section>
+
+    <!-- 03 ─────────────────────────────────────────── -->
+    <section class="doc" id="styling-layout">
+      <div class="doc-k">03</div>
+      <h2 data-en="Styling, layout &amp; tokens" data-zh="样式、布局与设计令牌">Styling, layout &amp; tokens</h2>
+      <p data-en="Styles are flexbox boxes described by tokens. Write constant, top-level styles as @ui.css strings; keep @ui.style(...) for values computed at run time or inside functions, because a top-level @ui.style call generates a large amount of startup C (the detlint rule style-text)." data-zh="样式就是用令牌描述的 flexbox 盒子。常量的顶层样式写成 @ui.css 字符串；@ui.style(...) 只用于运行时计算的值或函数内部，因为顶层的 @ui.style 调用会生成大量启动期 C 代码（detlint 规则 style-text）。">Styles are flexbox boxes described by tokens. Write constant, top-level styles as @ui.css strings; keep @ui.style(...) for values computed at run time or inside functions, because a top-level @ui.style call generates a large amount of startup C (the detlint rule style-text).</p>
+      <div class="term" data-lang="moonbit"><button class="copy" data-copy="// constant: parsed once, from sf-ui's accordion&#10;let card : @ui.Style = @ui.css(&quot;w=Full bg=Surface border=B0_5 border_color=Line&quot;)&#10;let head_row : @ui.Style = @ui.css(&quot;row w=Full px=S3_5 py=S3 gap=S3 align=AStart&quot;)&#10;&#10;// computed: only where a value is known at run time&#10;fn gap_for(dense : Bool) -&gt; @ui.Style {&#10;  @ui.style(row=true, gap=if dense { S2 } else { S3 })&#10;}" data-en="Copy" data-zh="复制">Copy</button><span class="dim">// constant: parsed once, from sf-ui's accordion</span>
+let card : @ui.Style = @ui.css("w=Full bg=Surface border=B0_5 border_color=Line")
+let head_row : @ui.Style = @ui.css("row w=Full px=S3_5 py=S3 gap=S3 align=AStart")
+
+<span class="dim">// computed: only where a value is known at run time</span>
+fn gap_for(dense : Bool) -&gt; @ui.Style {
+  @ui.style(row=true, gap=if dense { S2 } else { S3 })
+}</div>
+      <dl class="api">
+        <div><dt><code>Flexbox</code></dt><dd data-en="row, w, h, p/px/py, gap, align, justify, radius, border and shadow, with dark, hovered, pressed, focused and narrow patches on the same style." data-zh="row、w、h、p/px/py、gap、align、justify、radius、border 与 shadow，并可在同一样式上叠加 dark、hovered、pressed、focused、narrow 补丁。">row, w, h, p/px/py, gap, align, justify, radius, border and shadow, with dark, hovered, pressed, focused and narrow patches on the same style.</dd></div>
+        <div><dt><code>View::concentric_radius</code></dt><dd data-en="A nested corner is derived from the container lent to it (corner_scope, corner_inset, concentric_end_pad), so it follows when the outer corner changes." data-zh="内层圆角由外层容器推导（corner_scope、corner_inset、concentric_end_pad），外层圆角一变内层自动跟随。">A nested corner is derived from the container lent to it (corner_scope, corner_inset, concentric_end_pad), so it follows when the outer corner changes.</dd></div>
+        <div><dt><code>@ui.font_scale</code></dt><dd data-en="The system text size, read live. Tests sweep it with Tester::set_font_scale so layouts hold at large text." data-zh="实时读取系统字号缩放。测试用 Tester::set_font_scale 扫描，确保大字号下布局不崩。">The system text size, read live. Tests sweep it with Tester::set_font_scale so layouts hold at large text.</dd></div>
+        <div><dt><code>View::fits</code></dt><dd data-en="Rows that run out of room hide optional children first, then shorten cut text down to 4 em, and only then shrink further." data-zh="空间不够的行先隐藏可选子项，再把可截断文字缩到 4 em，最后才继续压缩。">Rows that run out of room hide optional children first, then shorten cut text down to 4 em, and only then shrink further.</dd></div>
+      </dl>
+    </section>
+
+    <!-- 04 ─────────────────────────────────────────── -->
+    <section class="doc" id="headless-libraries">
+      <div class="doc-k">04</div>
+      <h2 data-en="Headless controls &amp; look libraries" data-zh="无头组件与外观库">Headless controls &amp; look libraries</h2>
+      <p data-en="A headless control owns behaviour: focus, keys, pointer, presses and what a screen reader hears. Its caller hands it a look, a function that styles the node from the control's state. Bring your own design system by writing looks; never reimplement behaviour." data-zh="无头组件负责行为：焦点、按键、指针、按压以及读屏器听到的内容。调用方传入一个外观函数，根据控件状态给节点上样式。要做自己的设计系统，就写外观，不要重写行为。">A headless control owns behaviour: focus, keys, pointer, presses and what a screen reader hears. Its caller hands it a look, a function that styles the node from the control's state. Bring your own design system by writing looks; never reimplement behaviour.</p>
+      <ul class="pills" aria-label="@headless controls">
+        <li>button</li><li>toggle</li><li>toggle_group</li><li>choice</li><li>radio_group</li><li>tabs</li><li>slider</li><li>disclosure</li><li>accordion</li><li>split</li><li>table</li><li>listbox</li><li>combobox</li><li>cmdk</li><li>menu</li><li>context_menu</li><li>submenu</li><li>dialog</li><li>popover</li><li>tooltip</li><li>hover_reveal</li><li>overlay</li><li>anchor</li><li>toaster</li><li>text_field</li><li>progress</li><li>shortcut</li>
+      </ul>
+      <div class="term" data-lang="moonbit"><button class="copy" data-copy="// a look library wraps the headless button and adds only styling&#10;#callsite(autofill(loc))&#10;pub fn primary(parent : @view.View, label : String, act : () -&gt; Unit, loc~ : SourceLoc) -&gt; @view.View {&#10;  @headless.button(parent, fn() { label }, fn(_) { act() }, fn(v, _) {&#10;    v.height(@view.Is(Some(40.0))).ground(@view.Is(0x171717FFL)) |&gt; ignore&#10;  }, made_for=loc)&#10;}" data-en="Copy" data-zh="复制">Copy</button><span class="dim">// a look library wraps the headless button and adds only styling</span>
+#callsite(autofill(loc))
+pub fn primary(parent : @view.View, label : String, act : () -&gt; Unit, loc~ : SourceLoc) -&gt; @view.View {
+  @headless.button(parent, fn() { label }, fn(_) { act() }, fn(v, _) {
+    v.height(@view.Is(Some(40.0))).ground(@view.Is(0x171717FFL)) |&gt; ignore
+  }, made_for=loc)
+}</div>
+      <div class="libs">
+        <div class="lib">
+          <h3>sf-ui <span class="lic">MIT</span></h3>
+          <p data-en="A production design system shipped as its own module (stillfail/sf). It imports only mbui and MoonBit's core, holds only general parts and design atoms, and a public part takes at most 8 arguments; larger ones become compound parts with slots." data-zh="经过生产验证的默认设计系统，独立成模块（stillfail/sf）。只依赖 mbui 与 MoonBit core，只收通用部件与设计原子；公开部件最多 8 个参数，再多就拆成带插槽的复合部件。">A production design system shipped as its own module (stillfail/sf). It imports only mbui and MoonBit's core, holds only general parts and design atoms, and a public part takes at most 8 arguments; larger ones become compound parts with slots.</p>
+        </div>
+        <div class="lib">
+          <h3>liquid-glass <span class="lic">Apache-2.0</span></h3>
+          <p data-en="A 1:1 port of Kyant0/AndroidLiquidGlass's catalog to mbui's tree. Every number comes from the catalog's source; behaviour is the headless button, toggle, slider, radio_group and dialog underneath." data-zh="把 Kyant0/AndroidLiquidGlass 的组件目录 1:1 移植到 mbui 的树上。每个数值都来自原目录源码；行为由底层的 headless button、toggle、slider、radio_group 与 dialog 提供。">A 1:1 port of Kyant0/AndroidLiquidGlass's catalog to mbui's tree. Every number comes from the catalog's source; behaviour is the headless button, toggle, slider, radio_group and dialog underneath.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 05 ─────────────────────────────────────────── -->
+    <section class="doc" id="motion">
+      <div class="doc-k">05</div>
+      <h2 data-en="Closed-form motion" data-zh="闭式动效">Closed-form motion</h2>
+      <p data-en="Motion is data: a start, an end, a curve and the moment of its cause. Whatever is drawn at a given moment is computed from that data, so a run looks identical at 60, 120, 24 or 7 fps, or in one jump. There are no per-frame loops and no comparisons with the previous frame's geometry." data-zh="动效就是数据：起点、终点、曲线和起因时刻。任一时刻画出的内容都由这些数据算出，因此在 60、120、24、7 fps 甚至一次跳到底，结果都完全一致。没有逐帧循环，也不拿上一帧的几何做比较。">Motion is data: a start, an end, a curve and the moment of its cause. Whatever is drawn at a given moment is computed from that data, so a run looks identical at 60, 120, 24 or 7 fps, or in one jump. There are no per-frame loops and no comparisons with the previous frame's geometry.</p>
+      <div class="term" data-lang="moonbit"><button class="copy" data-copy="let press = @motion.NodeWay::new(0.0)&#10;let spec = @motion.spring(ratio=0.8, stiffness=400.0)&#10;&#10;// set off from the cause (a press), never from a frame loop&#10;fn on_down(n : @view.View) -&gt; Unit { press.go(n, 1.0, spec) }&#10;fn on_up(n : @view.View) -&gt; Unit { press.go(n, 0.0, spec) }&#10;&#10;// read at draw time: the value at this moment&#10;fn pressed(n : @view.View) -&gt; Double { press.shown(n) }" data-en="Copy" data-zh="复制">Copy</button>let press = @motion.NodeWay::new(0.0)
+let spec = @motion.spring(ratio=0.8, stiffness=400.0)
+
+<span class="dim">// set off from the cause (a press), never from a frame loop</span>
+fn on_down(n : @view.View) -&gt; Unit { press.go(n, 1.0, spec) }
+fn on_up(n : @view.View) -&gt; Unit { press.go(n, 0.0, spec) }
+
+<span class="dim">// read at draw time: the value at this moment</span>
+fn pressed(n : @view.View) -&gt; Double { press.shown(n) }</div>
+      <dl class="api">
+        <div><dt><code>@motion.spring</code></dt><dd data-en="A spring Spec from ratio and stiffness; motion_spring(duration, bounce=) describes the same by its duration and bounce." data-zh="用 ratio 与 stiffness 定义弹簧 Spec；motion_spring(duration, bounce=) 用时长和回弹描述同一条曲线。">A spring Spec from ratio and stiffness; motion_spring(duration, bounce=) describes the same by its duration and bounce.</dd></div>
+        <div><dt><code>@motion.NodeWay</code></dt><dd data-en="One animated value on a node: go, go_from, go_ms and put set it off; shown reads it at the current moment." data-zh="节点上的一个动画值：go、go_from、go_ms、put 发起运动，shown 读取当前时刻的值。">One animated value on a node: go, go_from, go_ms and put set it off; shown reads it at the current moment.</dd></div>
+        <div><dt><code>View::at_moment</code></dt><dd data-en="Runs a step at a declared moment. One scheduled in the past fires at the moment it was asked for, not late." data-zh="在声明的时刻执行一步。若安排的时刻已过，按请求时刻触发，而不是延后。">Runs a step at a declared moment. One scheduled in the past fires at the moment it was asked for, not late.</dd></div>
+        <div><dt><code>View::comes</code></dt><dd data-en="The framework's one entry, exit and resize motion along a column. Children added by each or show join one group that starts and lands together; first answers settle at once." data-zh="框架统一的列内进入、离开与尺寸变化动效。each 或 show 新增的子项加入同一组，同时起步、同时落定；初次数据直接到位不播动画。">The framework's one entry, exit and resize motion along a column. Children added by each or show join one group that starts and lands together; first answers settle at once.</dd></div>
+      </dl>
+    </section>
+
+    <!-- 06 ─────────────────────────────────────────── -->
+    <section class="doc" id="testing-film">
+      <div class="doc-k">06</div>
+      <h2 data-en="Deterministic testing &amp; offscreen film" data-zh="确定性测试与离屏出片">Deterministic testing &amp; offscreen film</h2>
+      <p data-en="A test drives the tree step by step, declares the exact moment it reads, and asserts. Time is declared, never waited for: no sleeps, no retries, no waiting for things to settle. The Tester installs FakeHost, so tests link no platform and run on Linux CI." data-zh="测试逐步驱动这棵树，声明要读取的确切时刻，然后断言。时间是声明出来的，而不是等出来的：不 sleep、不重试、不等“稳定”。Tester 装的是 FakeHost，测试不链接任何平台，可在 Linux CI 上运行。">A test drives the tree step by step, declares the exact moment it reads, and asserts. Time is declared, never waited for: no sleeps, no retries, no waiting for things to settle. The Tester installs FakeHost, so tests link no platform and run on Linux CI.</p>
+      <div class="term" data-lang="moonbit"><button class="copy" data-copy="test &quot;pressing increments the count&quot; {&#10;  let count = @signals.signal(0)&#10;  let t = @ui.Tester::tree(fn(root) { counter(root, count) }, w=390.0, h=844.0)&#10;  t.click(Button, label=&quot;Increment&quot;)&#10;  t.run_for(300.0)                // the moment, declared&#10;  assert_eq(count.get(), 1)&#10;  assert_eq(t.audit(), [])        // layout rules hold&#10;}" data-en="Copy" data-zh="复制">Copy</button>test "pressing increments the count" {
+  let count = @signals.signal(0)
+  let t = @ui.Tester::tree(fn(root) { counter(root, count) }, w=390.0, h=844.0)
+  t.click(Button, label="Increment")
+  t.run_for(300.0)                <span class="dim">// the moment, declared</span>
+  assert_eq(count.get(), 1)
+  assert_eq(t.audit(), [])        <span class="dim">// layout rules hold</span>
+}</div>
+      <dl class="api">
+        <div><dt><code>Tester::run_for</code></dt><dd data-en="Advances to a declared moment, skipping idle time. Every test also runs at 60, 120, 24 and 7 fps (MBUI_TEST_FPS) and must match exactly." data-zh="推进到声明的时刻并跳过空闲。每个测试还会在 60、120、24、7 fps（MBUI_TEST_FPS）下各跑一遍，结果必须完全一致。">Advances to a declared moment, skipping idle time. Every test also runs at 60, 120, 24 and 7 fps (MBUI_TEST_FPS) and must match exactly.</dd></div>
+        <div><dt><code>Tester::audit</code></dt><dd data-en="Checks layout rules on the current screen and names each fault's callsite." data-zh="检查当前画面的布局规则，并指出每个问题的调用位置。">Checks layout rules on the current screen and names each fault's callsite.</dd></div>
+        <div><dt><code>sources_at · sources_of</code></dt><dd data-en="Under a Tester, nodes record where they were made. Ask which lines drew a point or a phrase to trace a fault to its caller." data-zh="在 Tester 下节点会记录创建位置。查询某个坐标或某段文字由哪几行代码画出，把问题追到调用方。">Under a Tester, nodes record where they were made. Ask which lines drew a point or a phrase to trace a fault to its caller.</dd></div>
+        <div><dt><code>@film.picture · @film.film</code></dt><dd data-en="Draw a tree offscreen to an image at a declared moment, or to a film from a script at a fixed fps. Apple and Linux film natively; other hosts link a stub." data-zh="在声明的时刻把树离屏画成图片，或按脚本以固定帧率录成影片。Apple 与 Linux 原生出片，其他宿主链接空实现。">Draw a tree offscreen to an image at a declared moment, or to a film from a script at a fixed fps. Apple and Linux film natively; other hosts link a stub.</dd></div>
+      </dl>
+      <p class="doc-note" data-en="Pictures are compared from the Tester's draw list and per-host offscreen renders, never from screenshots of devices, simulators or desktop windows." data-zh="画面比对基于 Tester 的绘制列表与各宿主的离屏渲染，从不截取真机、模拟器或桌面窗口的屏幕。">Pictures are compared from the Tester's draw list and per-host offscreen renders, never from screenshots of devices, simulators or desktop windows.</p>
+    </section>
+
+    <!-- 07 ─────────────────────────────────────────── -->
+    <section class="doc" id="packaging">
+      <div class="doc-k">07</div>
+      <h2 data-en="Six-platform packaging &amp; distribution" data-zh="六端打包与分发">Six-platform packaging &amp; distribution</h2>
+      <p data-en="One CLI, libs/mbui/scripts/mbui (written in MoonBit under tools/pack), scaffolds, validates, packs, signs and publishes. mbui.json at your repository's root is the single source of truth; variants deep-merge on top of it and CLI flags win over both." data-zh="一个 CLI——libs/mbui/scripts/mbui（用 MoonBit 写在 tools/pack 下）——负责脚手架、校验、打包、签名与发布。仓库根目录的 mbui.json 是唯一事实来源；variants 在其上深度合并，命令行参数优先级最高。">One CLI, libs/mbui/scripts/mbui (written in MoonBit under tools/pack), scaffolds, validates, packs, signs and publishes. mbui.json at your repository's root is the single source of truth; variants deep-merge on top of it and CLI flags win over both.</p>
+      <div class="term" data-lang="sh"><button class="copy" data-copy="libs/mbui/scripts/mbui init ./my-app --name &quot;Acme Client&quot; --id dev.example.acme --mbui &quot;$PWD/libs/mbui&quot;&#10;libs/mbui/scripts/mbui check ./my-app/mbui.json --runtime wasm&#10;libs/mbui/scripts/mbui pack ./my-app/mbui.json --target web,mac --runtime wasm \&#10;    --runtime-dir ./runtime --format app,zip --out ./my-app/dist" data-en="Copy" data-zh="复制">Copy</button><span class="p">$ </span>libs/mbui/scripts/mbui init ./my-app --name "Acme Client" --id dev.example.acme --mbui "$PWD/libs/mbui"
+<span class="p">$ </span>libs/mbui/scripts/mbui check ./my-app/mbui.json --runtime wasm
+<span class="p">$ </span>libs/mbui/scripts/mbui pack ./my-app/mbui.json --target web,mac --runtime wasm \
+    --runtime-dir ./runtime --format app,zip --out ./my-app/dist</div>
+
+      <h3 data-en="Two runtimes" data-zh="两种运行时">Two runtimes</h3>
+      <div class="doc-table" role="region" aria-label="Runtimes" tabindex="0">
+        <table>
+          <thead><tr><th></th><th><code>--runtime wasm</code></th><th><code>--runtime native</code></th></tr></thead>
+          <tbody>
+            <tr><td data-en="Build" data-zh="构建方式">Build</td><td data-en="MoonBit to .wasm (or .cwasm with --wasm-aot), injected into a prebuilt mbui-runtime shell" data-zh="MoonBit 编成 .wasm（--wasm-aot 时为 .cwasm），注入预编译的 mbui-runtime 壳">MoonBit to .wasm (or .cwasm with --wasm-aot), injected into a prebuilt mbui-runtime shell</td><td data-en="MoonBit to C, linked with the platform host sources" data-zh="MoonBit 编成 C，与平台宿主源码链接">MoonBit to C, linked with the platform host sources</td></tr>
+            <tr><td data-en="Native toolchain per app" data-zh="每个应用需要的原生工具链">Native toolchain per app</td><td data-en="None, once the shells are built (--runtime-dir)" data-zh="无需，壳构建好后即可（--runtime-dir）">None, once the shells are built (--runtime-dir)</td><td data-en="Xcode, MSVC, GCC + GTK or the Android NDK" data-zh="Xcode、MSVC、GCC + GTK 或 Android NDK">Xcode, MSVC, GCC + GTK or the Android NDK</td></tr>
+            <tr><td data-en="Native extensions" data-zh="原生扩展">Native extensions</td><td data-en="Standard mbui/hostapi only" data-zh="仅标准 mbui/hostapi">Standard mbui/hostapi only</td><td data-en="Custom C, Objective-C or Java FFI" data-zh="可自定义 C、Objective-C 或 Java FFI">Custom C, Objective-C or Java FFI</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="term" data-lang="sh"><button class="copy" data-copy="# build the prebuilt runtime shell once per platform&#10;MBUI_OUT=./mbui-out libs/mbui/scripts/runtime.sh build mac&#10;libs/mbui/scripts/runtime.sh check   # wasm host ABI matches host_native.mbt" data-en="Copy" data-zh="复制">Copy</button><span class="dim"># build the prebuilt runtime shell once per platform</span>
+<span class="p">$ </span>MBUI_OUT=./mbui-out libs/mbui/scripts/runtime.sh build mac
+<span class="p">$ </span>libs/mbui/scripts/runtime.sh check   <span class="dim"># wasm host ABI matches host_native.mbt</span></div>
+
+      <h3 data-en="Targets and formats" data-zh="目标与产物格式">Targets and formats</h3>
+      <div class="doc-table" role="region" aria-label="Targets" tabindex="0">
+        <table>
+          <thead><tr><th>--target</th><th data-en="Formats" data-zh="格式">Formats</th><th data-en="Signing" data-zh="签名">Signing</th></tr></thead>
+          <tbody>
+            <tr><td><code>mac</code></td><td><code>app</code> <code>zip</code> <code>dmg</code></td><td><code>--sign-identity --keychain --notarize-profile</code></td></tr>
+            <tr><td><code>ios</code></td><td><code>.app</code> <code>.ipa</code></td><td><code>--ios-sdk --sign-identity --ios-profile</code></td></tr>
+            <tr><td><code>android</code></td><td><code>apk</code></td><td><code>--keystore --key-alias --v3-signing</code></td></tr>
+            <tr><td><code>win</code></td><td><code>portable</code> <code>zip</code> <code>setup</code></td><td><code>--win-cert --win-timestamp</code></td></tr>
+            <tr><td><code>linux</code></td><td><code>tar.gz</code> <code>deb</code> <code>appimage</code></td><td>—</td></tr>
+            <tr><td><code>web</code></td><td><code>index.html</code> <code>host.js</code> <code>.gz/.br</code> <code>PWA</code></td><td>—</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3 data-en="Updates and releases" data-zh="更新与发布">Updates and releases</h3>
+      <p data-en="mbui publish signs a latest.json feed with an Ed25519 key, can make binary deltas from earlier releases, verifies the feed and uploads artifacts before the feed (providers: dir, github, s3). In the app, @updater.check_and_fetch reads the feed and @updater.apply installs once the status is Ready. mbui repack rebrands an existing APK for a variant without recompiling." data-zh="mbui publish 用 Ed25519 密钥签出 latest.json，可基于旧版本生成二进制增量包，校验 feed，并先上传产物再上传 feed（提供方：dir、github、s3）。应用内用 @updater.check_and_fetch 读取 feed，状态为 Ready 时调用 @updater.apply 安装。mbui repack 无需重新编译即可为某个 variant 重新打包现有 APK。">mbui publish signs a latest.json feed with an Ed25519 key, can make binary deltas from earlier releases, verifies the feed and uploads artifacts before the feed (providers: dir, github, s3). In the app, @updater.check_and_fetch reads the feed and @updater.apply installs once the status is Ready. mbui repack rebrands an existing APK for a variant without recompiling.</p>
+      <div class="term" data-lang="sh"><button class="copy" data-copy="libs/mbui/scripts/mbui publish mbui.json keygen --out ./release-key.pem&#10;libs/mbui/scripts/mbui publish mbui.json feed --file &quot;./dist/mac/Acme Client-mac.zip&quot; --key ./release-key.pem --out-dir ./rel&#10;libs/mbui/scripts/mbui publish mbui.json --dir ./rel --provider github --target acme/client --tag v1.0.0" data-en="Copy" data-zh="复制">Copy</button><span class="p">$ </span>libs/mbui/scripts/mbui publish mbui.json keygen --out ./release-key.pem
+<span class="p">$ </span>libs/mbui/scripts/mbui publish mbui.json feed --file "./dist/mac/Acme Client-mac.zip" --key ./release-key.pem --out-dir ./rel
+<span class="p">$ </span>libs/mbui/scripts/mbui publish mbui.json --dir ./rel --provider github --target acme/client --tag v1.0.0</div>
+      <p class="doc-note"><a class="link-arrow" href="{{repo}}/blob/main/libs/mbui/docs/PACKAGING.md" target="_blank" rel="noopener noreferrer" data-en="Full reference: libs/mbui/docs/PACKAGING.md" data-zh="完整参考：libs/mbui/docs/PACKAGING.md">Full reference: libs/mbui/docs/PACKAGING.md</a></p>
+    </section>
+
+    <nav class="docs-next" aria-label="Next steps">
+      <a href="/get-started/"><small data-en="Next" data-zh="下一步">Next</small><b data-en="Quickstart" data-zh="快速上手">Quickstart</b></a>
+      <a href="/components/"><small data-en="Explore" data-zh="浏览">Explore</small><b data-en="Components" data-zh="组件库">Components</b></a>
+    </nav>
+  </article>
+</div>

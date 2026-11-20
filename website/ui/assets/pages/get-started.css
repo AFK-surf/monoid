@@ -1,0 +1,58 @@
+/* /get-started/ — quickstart: three ruled steps with copyable commands, the six-target matrix,
+   FAQ and a dark closing band. */
+
+/* Steps: one ruled row per step, text left and its commands right (wide enough not to clip) */
+.gs-steps { grid-template-columns: 1fr; }
+.gs-steps .step {
+  display: grid; grid-template-columns: 5fr 7fr; grid-template-rows: auto auto 1fr; column-gap: 48px;
+  align-items: start; min-width: 0; padding: 32px 0; border-left: 0;
+}
+.gs-steps .step + .step { border-top: 1px dashed var(--line-strong); }
+.gs-steps .step > :not(.term) { grid-column: 1; }
+.gs-steps .step p { max-width: 46ch; }
+.gs-steps .term { grid-column: 2; grid-row: 1 / span 3; min-width: 0; font-size: 12.5px; line-height: 1.7; }
+
+.gs-first {
+  margin-top: 64px; display: grid; grid-template-columns: 5fr 7fr; gap: 48px; align-items: center;
+  padding-top: 40px; border-top: 1px solid var(--line);
+}
+.gs-first > div:first-child { display: flex; flex-direction: column; align-items: flex-start; }
+.gs-first h3 { font: 400 26px/1.25 var(--display); letter-spacing: -0.016em; }
+.gs-first p { margin-top: 12px; color: var(--sub); font-size: 15px; line-height: 1.55; letter-spacing: -0.009em; max-width: 42ch; }
+.gs-first .link-arrow { margin-top: 20px; font-size: 14px; }
+.gs-first .term { min-width: 0; }
+
+/* Target matrix: a bordered table that scrolls inside itself on narrow screens */
+.gs-matrix {
+  overflow-x: auto; background: var(--ground);
+  border: 1px solid var(--line); border-radius: var(--r-l);
+}
+.gs-matrix table { width: 100%; min-width: 720px; border-collapse: collapse; font-size: 14px; line-height: 1.45; letter-spacing: -0.006em; }
+.gs-matrix th {
+  text-align: left; padding: 12px 18px; border-bottom: 1px solid var(--line);
+  font: 500 12px/1.4 var(--text); color: var(--faint); letter-spacing: 0; white-space: nowrap;
+}
+.gs-matrix td { padding: 14px 18px; border-top: 1px solid var(--line); color: var(--sub); white-space: nowrap; }
+.gs-matrix tbody tr:first-child td { border-top: 0; }
+.gs-matrix td:first-child { color: var(--ink); font-weight: 500; }
+.gs-matrix td:first-child .ico { margin-right: 10px; color: var(--ink); }
+.gs-matrix td:nth-child(2) { color: var(--ink); }
+.gs-matrix code {
+  padding: 2px 7px; border-radius: var(--r-xs); background: var(--card);
+  font-size: 12px; color: var(--brand-ink);
+}
+.gs-matrix-note { margin-top: 16px; color: var(--faint); font-size: 14px; line-height: 1.55; max-width: 72ch; }
+
+@media (max-width: 860px) {
+  .gs-steps .step { grid-template-columns: 1fr; grid-template-rows: none; padding: 24px 0; }
+  .gs-steps .step:first-child { border-top: 1px dashed var(--line-strong); }
+  .gs-steps .term { grid-column: 1; grid-row: auto; margin-top: 18px; }
+  .gs-first { grid-template-columns: 1fr; gap: 24px; margin-top: 40px; padding-top: 32px; }
+  .gs-first h3 { font-size: 22px; }
+}
+
+@media (max-width: 600px) {
+  /* Commands keep their lines and scroll sideways inside the block */
+  .gs-steps .term, .gs-first .term { white-space: pre; overflow-wrap: normal; padding: 44px 16px 14px; }
+  .gs-steps .term .copy, .gs-first .term .copy { top: 10px; }
+}

@@ -1,0 +1,140 @@
+<header class="bar" data-here="{{here}}">
+  <div class="wrap bar-in">
+    <a class="logo" href="/" aria-label="ui.monoid home">
+      <svg aria-hidden="true" viewBox="0 0 24 24"><use href="/assets/icons.svg#i-mark"/></svg>
+      <span>ui<span class="dot">.</span>monoid</span>
+    </a>
+    <nav class="nav" id="nav" aria-label="Primary">
+      <button type="button" aria-expanded="false" aria-controls="mega-framework" data-mega="mega-framework">
+        <span data-en="Framework" data-zh="框架">Framework</span>{{i:chevron}}
+      </button>
+      <div class="mega" id="mega-framework">
+        <div class="mega-in">
+          <div>
+            <h6 data-en="Core Engine" data-zh="核心引擎">Core Engine</h6>
+            <a class="mi" href="/framework/">
+              {{i:layers}}
+              <b data-en="Architecture" data-zh="架构总览">Architecture</b>
+              <span data-en="One retained tree, six native GPU backends" data-zh="一套保留树，直绘六大原生 GPU 后端">One retained tree, six native GPU backends</span>
+            </a>
+            <a class="mi" href="/framework/#signals">
+              {{i:bolt}}
+              <b data-en="Signals & Layout" data-zh="信号与布局">Signals &amp; Layout</b>
+              <span data-en="Fine-grained reactivity without virtual DOM diffing" data-zh="细粒度信号驱动，零虚拟 DOM 对比开销">Fine-grained reactivity without virtual DOM diffing</span>
+            </a>
+            <a class="mi" href="/framework/#motion">
+              {{i:motion}}
+              <b data-en="Closed-Form Motion" data-zh="闭式物理动效">Closed-Form Motion</b>
+              <span data-en="Interruptible springs and causal choreography" data-zh="可打断弹簧与统一因果律编排">Interruptible springs and causal choreography</span>
+            </a>
+          </div>
+          <div>
+            <h6 data-en="Capabilities" data-zh="工程能力">Capabilities</h6>
+            <div class="mega-cols">
+              <a class="mi" href="/framework/#backends">
+                {{i:cpu}}
+                <b data-en="6 GPU Backends" data-zh="六大 GPU 后端">6 GPU Backends</b>
+                <span data-en="Metal, D3D11, GLES, and WebGL 2" data-zh="Metal、D3D11、GLES 与 WebGL 2">Metal, D3D11, GLES, and WebGL 2</span>
+              </a>
+              <a class="mi" href="/framework/#tester">
+                {{i:shield}}
+                <b data-en="Deterministic Tester" data-zh="确定性测试器">Deterministic Tester</b>
+                <span data-en="Headless offscreen audits and frame diffs" data-zh="离屏渲染自审与逐帧回归检测">Headless offscreen audits and frame diffs</span>
+              </a>
+              <a class="mi" href="/liquid-glass/">
+                {{i:glass}}
+                <b data-en="Liquid Glass" data-zh="Liquid Glass">Liquid Glass</b>
+                <span data-en="Refractive SDF shaders and smooth-min lenses" data-zh="实时折射 SDF 着色器与融合透镜">Refractive SDF shaders and smooth-min lenses</span>
+              </a>
+              <a class="mi" href="/get-started/">
+                {{i:terminal}}
+                <b data-en="Quickstart CLI" data-zh="快速上手">Quickstart CLI</b>
+                <span data-en="Build to native or Wasm in seconds" data-zh="数秒编译至原生与 Wasm 目标">Build to native or Wasm in seconds</span>
+              </a>
+            </div>
+          </div>
+          <div class="mega-aside">
+            <a class="mega-card warm" href="/liquid-glass/">
+              {{i:glass}}
+              <h5 data-en="Interactive Liquid Glass" data-zh="交互式 Liquid Glass">Interactive Liquid Glass</h5>
+              <p data-en="Inspect real-time refraction, specular rims, and optical fusion running in WebGL 2." data-zh="在浏览器 WebGL 2 中直接体验实时折射、高光边缘与光学融合。">Inspect real-time refraction, specular rims, and optical fusion running in WebGL 2.</p>
+              <span class="link-arrow" data-en="Open gallery" data-zh="打开画廊">Open gallery</span>
+            </a>
+          </div>
+        </div>
+      </div>
+
+      <button type="button" aria-expanded="false" aria-controls="mega-libraries" data-mega="mega-libraries">
+        <span data-en="Libraries" data-zh="组件体系">Libraries</span>{{i:chevron}}
+      </button>
+      <div class="mega" id="mega-libraries">
+        <div class="mega-in">
+          <div>
+            <h6 data-en="Four-Layer System" data-zh="四层组件体系">Four-Layer System</h6>
+            <a class="mi" href="/components/#headless">
+              {{i:sliders}}
+              <b data-en="Headless Primitives" data-zh="无头行为层">Headless Primitives</b>
+              <span data-en="Keyboard, focus, combobox, menu, and toast state machines" data-zh="键盘导航、焦点环、组合框与弹层状态机">Keyboard, focus, combobox, menu, and toast state machines</span>
+            </a>
+            <a class="mi" href="/components/#sf-ui">
+              {{i:grid}}
+              <b data-en="sf-ui Components" data-zh="sf-ui 组件库">sf-ui Components</b>
+              <span data-en="Production controls built on OKLCH tokens" data-zh="基于 OKLCH 语义色阶的生产级控件">Production controls built on OKLCH tokens</span>
+            </a>
+            <a class="mi" href="/components/#tokens">
+              {{i:palette}}
+              <b data-en="Design Tokens" data-zh="设计 Token">Design Tokens</b>
+              <span data-en="Concentric radii, fitted shadows, and type scales" data-zh="同心圆角阶梯、拟合微阴影与跨端字阶">Concentric radii, fitted shadows, and type scales</span>
+            </a>
+          </div>
+          <div>
+            <h6 data-en="Interactive & Reference" data-zh="交互与文档">Interactive &amp; Reference</h6>
+            <div class="mega-cols">
+              <a class="mi" href="/components/">
+                {{i:play}}
+                <b data-en="Live Storybook" data-zh="实时 Storybook">Live Storybook</b>
+                <span data-en="Real mbui components running on WebGL 2" data-zh="真实编译的 mbui 组件库在线交互">Real mbui components running on WebGL 2</span>
+              </a>
+              <a class="mi" href="/liquid-glass/">
+                {{i:sparkles}}
+                <b data-en="Material Shaders" data-zh="材质着色器">Material Shaders</b>
+                <span data-en="Glass surfaces, blur fields, and rim highlights" data-zh="玻璃表面、模糊场与光学边缘">Glass surfaces, blur fields, and rim highlights</span>
+              </a>
+              <a class="mi" href="/docs/">
+                {{i:docs}}
+                <b data-en="API Reference" data-zh="API 文档">API Reference</b>
+                <span data-en="Packages, signals, layout, and host traits" data-zh="包结构、信号、布局与宿主接口">Packages, signals, layout, and host traits</span>
+              </a>
+              <a class="mi" href="/get-started/">
+                {{i:code}}
+                <b data-en="Starter Templates" data-zh="项目模板">Starter Templates</b>
+                <span data-en="Minimal MoonBit app wired for 6 targets" data-zh="开箱即用的六端 MoonBit 应用模板">Minimal MoonBit app wired for 6 targets</span>
+              </a>
+            </div>
+          </div>
+          <div class="mega-aside">
+            <a class="mega-card" href="/components/">
+              {{i:box}}
+              <h5 data-en="Run Storybook in Browser" data-zh="在浏览器运行 Storybook">Run Storybook in Browser</h5>
+              <p data-en="Every component rendered by the exact same MoonBit GPU engine shipped on macOS, iOS, and Android." data-zh="每个组件均由与 macOS、iOS、Android 相同的 MoonBit GPU 引擎直接渲染。">Every component rendered by the exact same MoonBit GPU engine shipped on macOS, iOS, and Android.</p>
+              <span class="link-arrow" data-en="Launch Storybook" data-zh="打开组件库">Launch Storybook</span>
+            </a>
+          </div>
+        </div>
+      </div>
+
+      <a href="/components/" data-en="Components" data-zh="组件库">Components</a>
+      <a href="/liquid-glass/" data-en="Liquid Glass" data-zh="Liquid Glass">Liquid Glass</a>
+      <a href="/docs/" data-en="Docs" data-zh="文档">Docs</a>
+    </nav>
+
+    <div class="bar-end">
+      <a class="icon-btn hide-s" href="{{repo}}" target="_blank" rel="noopener noreferrer" aria-label="GitHub repository">
+        {{i:github}}
+      </a>
+      <button type="button" class="icon-btn" id="lang-toggle" aria-label="切换到中文">中文</button>
+      <a class="btn btn-dark btn-s hide-s" href="/get-started/" data-en="Get Started" data-zh="开始使用">Get Started</a>
+      <button class="menu-toggle" type="button" aria-label="Open menu" aria-expanded="false" aria-controls="nav">{{i:menu}}</button>
+    </div>
+  </div>
+</header>

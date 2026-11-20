@@ -1,0 +1,382 @@
+<!-- title: Components — ui.monoid -->
+<!-- title-zh: 组件库 — ui.monoid -->
+<!-- description: Headless interaction primitives, production-tested sf-ui controls, and OKLCH design tokens running live in WebGL 2. -->
+<!-- page: components -->
+
+<section class="hero comp-hero">
+  <div class="wrap">
+    <div class="eyebrow" data-en="Component System" data-zh="组件体系">Component System</div>
+    <h1 data-en="Headless primitives. Production looks." data-zh="无头原语，生产级视觉。">Headless primitives. Production looks.</h1>
+    <p class="lede" data-en="Zero-coupling interaction state machines and live WebGL 2 controls." data-zh="零耦合交互状态机与实时 WebGL 2 组件。">Zero-coupling interaction state machines and live WebGL 2 controls.</p>
+
+    <div class="stage" id="comp-stage">
+      <div class="live-stage" data-live-src="/components/app/?STORY=palette" data-live-title="ui.monoid Storybook">
+        {{shot:comp-gallery-light:ui.monoid sf-ui palette and semantic tokens}}
+        <div class="live-bar">
+          <button type="button" class="live-launch" data-live-launch>
+            {{i:play}}<span data-en="Launch Live Storybook (WebGL 2)" data-zh="启动实时 Storybook (WebGL 2)">Launch Live Storybook (WebGL 2)</span>
+          </button>
+        </div>
+        <div class="live-frame-wrap"></div>
+        <button type="button" class="live-close" data-live-close>
+          {{i:close}}<span data-en="Return to Preview" data-zh="回到静态图">Return to Preview</span>
+        </button>
+        <div class="live-fallback" hidden>
+          <p data-en="WebGL 2 is unavailable in this browser." data-zh="当前浏览器不支持 WebGL 2。">WebGL 2 is unavailable in this browser.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="story-dock" role="toolbar" aria-label="Storybook scenes" data-en-aria="Storybook scenes" data-zh-aria="Storybook 场景切换">
+      <div class="story-pills">
+        <button type="button" class="story-pill" data-story-src="/components/app/?STORY=palette" aria-pressed="false">
+          {{i:palette}}<span data-en="Palette" data-zh="色阶">Palette</span>
+        </button>
+        <button type="button" class="story-pill" data-story-src="/components/app/?STORY=button" aria-pressed="false">
+          {{i:sliders}}<span data-en="Buttons" data-zh="按钮">Buttons</span>
+        </button>
+        <button type="button" class="story-pill" data-story-src="/components/app/?STORY=motion-controls" aria-pressed="false">
+          {{i:motion}}<span data-en="Controls" data-zh="控件">Controls</span>
+        </button>
+        <button type="button" class="story-pill" data-story-src="/components/app/?STORY=popover" aria-pressed="false">
+          {{i:layers}}<span data-en="Overlays" data-zh="浮层">Overlays</span>
+        </button>
+        <button type="button" class="story-pill" data-story-src="/components/app/?MBUI_DARK=1" aria-pressed="false">
+          {{i:sparkles}}<span data-en="Dark Mode" data-zh="深色模式">Dark Mode</span>
+        </button>
+      </div>
+      <a class="story-pill story-full" href="/components/app/" target="_blank" rel="noopener noreferrer">
+        <span data-en="Fullscreen" data-zh="全屏">Fullscreen</span>{{i:arrow-ne}}
+      </a>
+    </div>
+  </div>
+</section>
+
+<section class="section band" id="headless">
+  <div class="wrap">
+    <div class="row">
+      <div class="row-text reveal">
+        <div class="eyebrow" data-en="Headless Behavior" data-zh="无头行为层">Headless Behavior</div>
+        <h3 data-en="Focus, keys & a11y, built in." data-zh="焦点、键盘与无障碍，原生内置。">Focus, keys &amp; a11y, built in.</h3>
+        <p data-en="Zero drawing, zero theme — every look library binds onto shared state machines." data-zh="不绘不排不绑主题，所有视觉库共用同一套交互状态机。">Zero drawing, zero theme — every look library binds onto shared state machines.</p>
+
+        <div class="prim-grid" aria-label="Headless state machines">
+          <code>@headless.button</code>
+          <code>toggle</code>
+          <code>disclosure</code>
+          <code>choice</code>
+          <code>combobox</code>
+          <code>menu</code>
+          <code>toaster</code>
+          <code>radio_group</code>
+          <code>slider</code>
+          <code>split</code>
+          <code>table</code>
+        </div>
+      </div>
+
+      <div class="demo cool headless-demo" id="headless-demo">
+        <div class="win">
+          <div class="win-bar">
+            <span>libs/mbui/src/headless/rove.mbt</span>
+            <span data-en="interactive · try keys" data-zh="可交互 · 点击按键">interactive · try keys</span>
+          </div>
+          <div class="win-body">
+            <div class="win-side">
+              <div class="hl-meta-head">STATE MACHINE</div>
+              <div class="hl-meta-row"><span>role</span><code>menu</code></div>
+              <div class="hl-meta-row"><span>rove</span><code>vertical</code></div>
+              <div class="hl-meta-row"><span>focus</span><code class="hl-accent" data-hl-focus>#2</code></div>
+              <div class="hl-meta-row"><span>disabled</span><code>skip</code></div>
+              <div class="hl-meta-foot">
+                <span class="tag" data-hl-state style="--c: #2f9e5b">ready</span>
+              </div>
+            </div>
+            <div class="win-main">
+              <div class="hl-keys" role="toolbar" aria-label="Roving focus controls">
+                <button type="button" class="hl-key-btn" data-hl-key="tab">
+                  <kbd class="kbd">Tab</kbd>
+                  <span class="hl-key-lbl">enter</span>
+                </button>
+                <button type="button" class="hl-key-btn" data-hl-key="up">
+                  <kbd class="kbd">↑</kbd>
+                  <span class="hl-key-lbl">prev</span>
+                </button>
+                <button type="button" class="hl-key-btn" data-hl-key="down">
+                  <kbd class="kbd">↓</kbd>
+                  <span class="hl-key-lbl">next</span>
+                </button>
+                <button type="button" class="hl-key-btn is-primary" data-hl-key="enter">
+                  <kbd class="kbd">↵</kbd>
+                  <span class="hl-key-lbl">activate</span>
+                </button>
+              </div>
+
+              <div class="hl-list" role="menu">
+                <div class="hl-ring" data-hl-ring style="transform: translateY(42px)"></div>
+
+                <button type="button" class="hl-item" role="menuitem" data-hl-index="0" data-hl-name="button">
+                  <span class="hl-item-name">@headless.button</span>
+                  <span class="hl-item-role">role="button"</span>
+                </button>
+                <button type="button" class="hl-item is-focused" role="menuitem" data-hl-index="1" data-hl-name="combobox">
+                  <span class="hl-item-name">@headless.combobox</span>
+                  <span class="hl-item-role">aria-expanded="true"</span>
+                </button>
+                <button type="button" class="hl-item is-disabled" role="menuitem" data-hl-index="2" data-hl-name="disclosure" aria-disabled="true" tabindex="-1">
+                  <span class="hl-item-name">@headless.disclosure</span>
+                  <span class="hl-item-role">disabled</span>
+                </button>
+                <button type="button" class="hl-item" role="menuitem" data-hl-index="3" data-hl-name="radio_group">
+                  <span class="hl-item-name">@headless.radio_group</span>
+                  <span class="hl-item-role">role="radiogroup"</span>
+                </button>
+              </div>
+
+              <div class="hl-trace">
+                <span class="hl-trace-dot"></span>
+                <code data-hl-trace>Tree::takes_keys -> Focus("combobox")</code>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="sf-ui">
+  <div class="wrap">
+    <div class="section-head left reveal">
+      <div class="eyebrow" data-en="sf-ui Library" data-zh="sf-ui 组件库">sf-ui Library</div>
+      <h2 data-en="Production controls, zero app coupling." data-zh="零业务耦合的生产级控件。">Production controls, zero app coupling.</h2>
+    </div>
+
+    <div class="grid two sf-gallery-grid">
+      <div class="card">
+        {{shot:comp-buttons-light:sf-ui button variants, icon buttons, and focus states}}
+        <h3 data-en="Action Buttons & Focus" data-zh="动作按钮与焦点环">Action Buttons &amp; Focus</h3>
+        <p data-en="Uniform heights, press springs, and B2 keyboard focus rings." data-zh="统一高度、按压弹簧与高对比 B2 键盘焦点环。">Uniform heights, press springs, and B2 keyboard focus rings.</p>
+      </div>
+      <div class="card">
+        {{shot:comp-controls-light:sf-ui liquid-lens switches, segmented controls, tabs, and discrete stops}}
+        <h3 data-en="Switches, Segments & Tabs" data-zh="开关、分段与标签页">Switches, Segments &amp; Tabs</h3>
+        <p data-en="Liquid-lens switches, segmented bars, and discrete sliders." data-zh="液态透镜开关、分段控件与离散档位滑块。">Liquid-lens switches, segmented bars, and discrete sliders.</p>
+      </div>
+    </div>
+
+    <div class="row sf-phone-row">
+      <div class="row-text reveal">
+        <div class="eyebrow" data-en="Adaptive Viewports" data-zh="三屏自适应">Adaptive Viewports</div>
+        <h3 data-en="Compact, medium & wide from one tree." data-zh="一套保留树，适配窄中宽三屏。">Compact, medium &amp; wide from one tree.</h3>
+        <p data-en="View::by_room switches rails, splits, and sheets in one pass with 44×44 touch targets." data-zh="通过 View::by_room 单遍完成导航栏与抽屉切换，原生保障 44×44 触控热区。">View::by_room switches rails, splits, and sheets in one pass with 44×44 touch targets.</p>
+      </div>
+
+      <div class="stage sf-phone-stage">
+        {{shot:phone-ui-light:sf-ui mobile interface rendered natively in mbui}}
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section dark" id="tokens">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <div class="eyebrow" data-en="Design Tokens" data-zh="设计 Token">Design Tokens</div>
+      <h2 data-en="Visual precision in tokens." data-zh="用数学 Token 锁定视觉质感。">Visual precision in tokens.</h2>
+    </div>
+
+    <div class="bento">
+      <div class="tile pad w4">
+        <div class="tok-vis tok-ramps" aria-hidden="true">
+          <span style="background: #f6f5f1"></span>
+          <span style="background: #ebe7e1"></span>
+          <span style="background: #dc5929"></span>
+          <span style="background: #026039"></span>
+          <span style="background: #0047ae"></span>
+          <span style="background: #9a2830"></span>
+        </div>
+        <h3 data-en="OKLCH Color Ramps" data-zh="OKLCH 感知色阶">OKLCH Color Ramps</h3>
+        <p data-en="Perceptually uniform light and dark ramps with locked contrast." data-zh="双主题感知亮度一致，正文与状态色对比度恒定。">Perceptually uniform light and dark ramps with locked contrast.</p>
+      </div>
+
+      <div class="tile pad w4">
+        <div class="tok-vis tok-radii" aria-hidden="true">
+          <div class="rad-outer">
+            <div class="rad-inner">
+              <code>R_in = max(R_out − P, s)</code>
+            </div>
+          </div>
+        </div>
+        <h3 data-en="Concentric Corner Ladder" data-zh="同心圆角阶梯">Concentric Corner Ladder</h3>
+        <p data-en="Nested radii follow R_in = max(R_out − P, s) automatically." data-zh="嵌套圆角严守同心公式，消除视觉错位。">Nested radii follow R_in = max(R_out − P, s) automatically.</p>
+      </div>
+
+      <div class="tile pad w4">
+        <div class="tok-vis tok-hairline" aria-hidden="true">
+          <div class="hl-ctrl"><span>Line · 0.5px</span></div>
+          <div class="hl-ctrl is-hot"><span>Border · hot</span></div>
+        </div>
+        <h3 data-en="0.5px Control Hairline" data-zh="0.5px 发丝线描边">0.5px Control Hairline</h3>
+        <p data-en="Quiet Line at rest, crisp Border on hover, B2 for keyboard focus." data-zh="静息 Line、悬停 Border，2px 强描边专留键盘焦点。">Quiet Line at rest, crisp Border on hover, B2 for keyboard focus.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="closing">
+  <div class="wrap reveal">
+    <h2 data-en="See Liquid Glass live, or read the docs." data-zh="体验实时液态玻璃，或查阅文档。">See Liquid Glass live, or read the docs.</h2>
+    <div class="ctas">
+      <a class="btn btn-dark" href="/liquid-glass/" data-en="Explore Liquid Glass" data-zh="探索 Liquid Glass">Explore Liquid Glass</a>
+      <a class="btn btn-line" href="/docs/" data-en="Read the Docs" data-zh="阅读文档">Read the Docs</a>
+    </div>
+  </div>
+</section>
+
+<script>
+(() => {
+  const hasWebGL2 = () => {
+    try {
+      const gl = document.createElement("canvas").getContext("webgl2");
+      if (!gl) return false;
+      gl.getExtension("WEBGL_lose_context")?.loseContext();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  // 1. In-place Storybook WebGL 2 scene switcher
+  const stage = document.querySelector("#comp-stage .live-stage");
+  const pills = [...document.querySelectorAll("[data-story-src]")];
+  if (stage && pills.length) {
+    const wrap = stage.querySelector(".live-frame-wrap");
+    const fallback = stage.querySelector(".live-fallback");
+    const closeBtn = stage.querySelector("[data-live-close]");
+
+    const setActive = (btn) => {
+      for (const p of pills) {
+        const on = p === btn;
+        p.classList.toggle("is-active", on);
+        p.setAttribute("aria-pressed", String(on));
+      }
+    };
+
+    const loadStory = (btn) => {
+      const url = btn.dataset.storySrc;
+      if (!url || !wrap) return;
+      setActive(btn);
+      stage.dataset.liveSrc = url;
+      if (!hasWebGL2()) {
+        if (fallback) fallback.hidden = false;
+        return;
+      }
+      if (fallback) fallback.hidden = true;
+      let frame = wrap.querySelector("iframe");
+      if (!frame) {
+        frame = document.createElement("iframe");
+        frame.title = stage.dataset.liveTitle || "ui.monoid Storybook";
+        frame.allow = "clipboard-read; clipboard-write";
+        wrap.appendChild(frame);
+      }
+      frame.src = url;
+      stage.classList.add("is-live");
+    };
+
+    for (const p of pills) {
+      p.addEventListener("click", () => loadStory(p));
+    }
+    closeBtn?.addEventListener("click", () => setActive(null));
+  }
+
+  // 2. Interactive @headless keyboard roving demo
+  const demo = document.getElementById("headless-demo");
+  if (demo) {
+    const items = [...demo.querySelectorAll(".hl-item")];
+    const enabled = items.map((el, i) => (el.classList.contains("is-disabled") ? -1 : i)).filter((i) => i >= 0);
+    const ring = demo.querySelector("[data-hl-ring]");
+    const focusEl = demo.querySelector("[data-hl-focus]");
+    const stateEl = demo.querySelector("[data-hl-state]");
+    const traceEl = demo.querySelector("[data-hl-trace]");
+    const keyBtns = [...demo.querySelectorAll("[data-hl-key]")];
+    let current = 1;
+    let flashTimer = 0;
+
+    const pulseBtn = (key) => {
+      const btn = keyBtns.find((b) => b.dataset.hlKey === key);
+      if (!btn) return;
+      btn.classList.remove("is-hit");
+      void btn.offsetWidth;
+      btn.classList.add("is-hit");
+    };
+
+    const renderFocus = (idx, action) => {
+      current = idx;
+      const item = items[idx];
+      const name = item?.dataset.hlName || "button";
+      const stride = (items[0]?.offsetHeight || 36) + 6;
+      if (ring) ring.style.transform = `translateY(${idx * stride}px)`;
+      for (let i = 0; i < items.length; i++) {
+        items[i].classList.toggle("is-focused", i === idx);
+      }
+      if (focusEl) focusEl.textContent = `#${idx + 1}`;
+      if (action === "activate") {
+        if (traceEl) traceEl.textContent = `Tree::takes_keys -> Activate("${name}")`;
+        if (stateEl) {
+          stateEl.textContent = "activated";
+          stateEl.style.setProperty("--c", "#2f9e5b");
+        }
+        item?.classList.remove("is-activated");
+        void item?.offsetWidth;
+        item?.classList.add("is-activated");
+        clearTimeout(flashTimer);
+        flashTimer = setTimeout(() => item?.classList.remove("is-activated"), 420);
+      } else {
+        if (traceEl) traceEl.textContent = `Tree::takes_keys -> Focus("${name}")`;
+        if (stateEl) {
+          stateEl.textContent = "roving";
+          stateEl.style.setProperty("--c", "#ef6334");
+        }
+      }
+    };
+
+    const step = (dir) => {
+      const pos = enabled.indexOf(current);
+      const nextPos = (pos + dir + enabled.length) % enabled.length;
+      renderFocus(enabled[nextPos], "focus");
+    };
+
+    const handleKey = (key) => {
+      pulseBtn(key);
+      if (key === "down" || key === "tab") step(1);
+      else if (key === "up") step(-1);
+      else if (key === "enter") renderFocus(current, "activate");
+    };
+
+    for (const btn of keyBtns) {
+      btn.addEventListener("click", () => handleKey(btn.dataset.hlKey));
+    }
+    for (const item of items) {
+      if (item.classList.contains("is-disabled")) continue;
+      item.addEventListener("click", () => {
+        const idx = Number.parseInt(item.dataset.hlIndex || "0", 10);
+        if (idx === current) renderFocus(idx, "activate");
+        else renderFocus(idx, "focus");
+      });
+    }
+    demo.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        handleKey("down");
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        handleKey("up");
+      } else if (e.key === "Enter" && e.target?.closest(".hl-list")) {
+        e.preventDefault();
+        handleKey("enter");
+      }
+    });
+  }
+})();
+</script>

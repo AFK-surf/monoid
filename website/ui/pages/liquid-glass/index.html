@@ -1,0 +1,294 @@
+<!-- title: Liquid Glass — ui.monoid -->
+<!-- title-zh: Liquid Glass — ui.monoid -->
+<!-- description: Real-time GPU refraction shaders, closed-form spring physics, and interactive optical controls ported 1:1 from Kyant0/AndroidLiquidGlass to mbui. -->
+<!-- page: liquid-glass -->
+
+<section class="hero dark lg-hero">
+  <div class="wrap">
+    <div class="eyebrow" data-en="Apache-2.0 · Real-Time GPU Shaders" data-zh="Apache-2.0 · 实时 GPU 着色器">Apache-2.0 · Real-Time GPU Shaders</div>
+    <h1 data-en="Liquid Glass, refracted live." data-zh="实时折射的液态玻璃。">Liquid Glass, refracted live.</h1>
+    <p class="lede" data-en="1:1 port of AndroidLiquidGlass with closed-form springs on WebGL 2." data-zh="AndroidLiquidGlass 1:1 移植，闭式弹簧与实时 GPU 折射。">1:1 port of AndroidLiquidGlass with closed-form springs on WebGL 2.</p>
+
+    <div class="stage obsidian" id="lg-stage">
+      <div class="live-stage" id="lg-live" data-live-src="/liquid-glass/app/?MBUI_LG_PAGE=overview&amp;MBUI_DARK=1" data-live-title="ui.monoid Liquid Glass">
+        <div class="lg-preview on" data-lg-preview="dark">
+          {{shot:lg-hero-dark:Liquid Glass component gallery on dark surface}}
+        </div>
+        <div class="lg-preview" data-lg-preview="light">
+          {{shot:lg-hero-light:Liquid Glass component gallery on light surface}}
+        </div>
+        <div class="live-bar">
+          <button type="button" class="live-launch" data-live-launch>
+            {{i:play}}<span data-en="Launch Live WebGL 2" data-zh="启动实时 WebGL 2">Launch Live WebGL 2</span>
+          </button>
+        </div>
+        <div class="live-frame-wrap"></div>
+        <button type="button" class="live-close" data-live-close>
+          {{i:close}}<span data-en="Return to Preview" data-zh="回到静态图">Return to Preview</span>
+        </button>
+        <div class="live-fallback" hidden>
+          <p data-en="WebGL 2 is unavailable in this browser." data-zh="当前浏览器不支持 WebGL 2。">WebGL 2 is unavailable in this browser.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="lg-dock" role="toolbar" aria-label="Liquid Glass scenes" data-en-aria="Liquid Glass scenes" data-zh-aria="Liquid Glass 场景切换">
+      <div class="lg-surface-seg" role="tablist" aria-label="Surface theme">
+        <button type="button" role="tab" class="lg-seg-btn" data-lg-theme="dark" aria-selected="true">
+          {{i:sparkles}}<span data-en="Dark" data-zh="深色">Dark</span>
+        </button>
+        <button type="button" role="tab" class="lg-seg-btn" data-lg-theme="light" aria-selected="false">
+          {{i:glass}}<span data-en="Light" data-zh="浅色">Light</span>
+        </button>
+      </div>
+
+      <div class="lg-scene-pills">
+        <button type="button" class="lg-pill" data-lg-page="overview" aria-pressed="false">
+          {{i:grid}}<span data-en="Overview" data-zh="总览">Overview</span>
+        </button>
+        <button type="button" class="lg-pill" data-lg-page="interactive" aria-pressed="false">
+          {{i:motion}}<span data-en="Interactive" data-zh="交互态">Interactive</span>
+        </button>
+        <button type="button" class="lg-pill" data-lg-page="dialog" aria-pressed="false">
+          {{i:layers}}<span data-en="Dialog" data-zh="对话框">Dialog</span>
+        </button>
+        <a class="lg-pill lg-full" href="/liquid-glass/app/?MBUI_DARK=1" target="_blank" rel="noopener noreferrer">
+          <span data-en="Fullscreen" data-zh="全屏">Fullscreen</span>{{i:arrow-ne}}
+        </a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section dark lg-gallery-band" id="optical-features">
+  <div class="wrap">
+    <div class="bento lg-gallery">
+      <article class="tile lg-tile w6">
+        <div class="lg-shot-frame lg-shot-light">
+          {{shot:lg-crop-interactive-light:Close-up of Liquid Glass interactive drag lens, jelly squeeze, and specular press highlights}}
+        </div>
+        <div class="lg-tile-meta">
+          <h3 data-en="Drag Lens & Specular Press" data-zh="拖拽透镜与触点高光">Drag Lens &amp; Specular Press</h3>
+          <p data-en="Closed-form springs drive jelly squeeze and live contact illumination." data-zh="闭式弹簧驱动果冻形变与触点实时高光。">Closed-form springs drive jelly squeeze and live contact illumination.</p>
+        </div>
+      </article>
+
+      <article class="tile lg-tile w6">
+        <div class="lg-shot-frame">
+          {{shot:lg-crop-controls-dark:Close-up of Liquid Glass buttons, toggles, sliders, and bottom tabs on dark surface}}
+        </div>
+        <div class="lg-tile-meta">
+          <h3 data-en="Buttons, Toggles & Sliders" data-zh="按钮、开关与滑块">Buttons, Toggles &amp; Sliders</h3>
+          <p data-en="Tinted, transparent, and surface finishes over @headless primitives." data-zh="基于 @headless 原语的透明、表层与染色三态控件。">Tinted, transparent, and surface finishes over @headless primitives.</p>
+        </div>
+      </article>
+
+      <article class="tile lg-tile w5">
+        <div class="lg-shot-frame">
+          {{shot:lg-crop-center-dark:Close-up of Liquid Glass control center tiles, adaptive luminance cards, and progressive blur}}
+        </div>
+        <div class="lg-tile-meta">
+          <h3 data-en="Control Center & Adaptive Blur" data-zh="控制中心与自适应模糊">Control Center &amp; Adaptive Blur</h3>
+          <p data-en="Luminance-aware glass tiles with smoothstep progressive blur." data-zh="随背景亮度调节的磁贴与渐进式模糊遮罩。">Luminance-aware glass tiles with smoothstep progressive blur.</p>
+        </div>
+      </article>
+
+      <article class="tile lg-tile w7">
+        <div class="lg-shot-frame">
+          {{shot:lg-crop-dialog-dark:Close-up of Liquid Glass refractive modal dialog over dark wallpaper}}
+        </div>
+        <div class="lg-tile-meta">
+          <h3 data-en="Refractive Modal Dialogs" data-zh="实时折射模态对话框">Refractive Modal Dialogs</h3>
+          <p data-en="Live backdrop refraction with @headless.dialog focus trap." data-zh="实时背景折射，完整继承 @headless.dialog 焦点陷阱。">Live backdrop refraction with @headless.dialog focus trap.</p>
+        </div>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section class="section band" id="code">
+  <div class="wrap">
+    <div class="section-head left reveal">
+      <div class="eyebrow" data-en="MoonBit API & License" data-zh="MoonBit 代码与协议">MoonBit API &amp; License</div>
+      <h2 data-en="Compose glass in plain MoonBit." data-zh="用简洁 MoonBit 编排光学控件。">Compose glass in plain MoonBit.</h2>
+    </div>
+
+    <div class="lg-code-grid">
+      <pre class="term"><button type="button" class="copy" data-copy="let wifi = @signals.signal(true)
+let brightness = @signals.signal(40.0)
+let tab = @signals.signal(0)
+
+@lg.liquid_button_node(
+  row,
+  fn() { &quot;Tinted Liquid Button&quot; },
+  fn() { /* action */ },
+  tint=0x0088FFFFL,
+) |&gt; ignore
+
+@lg.liquid_toggle_node(
+  row,
+  fn() { wifi.get() },
+  fn(v) { wifi.set(v) },
+  fn() { &quot;Wi-Fi&quot; },
+) |&gt; ignore
+
+@lg.liquid_slider_node(
+  col,
+  fn() { brightness.get() },
+  fn(v) { brightness.set(v) },
+  fn() { &quot;Brightness&quot; },
+) |&gt; ignore
+
+@lg.liquid_bottom_tabs_node(
+  col,
+  [&quot;Tab 1&quot;, &quot;Tab 2&quot;, &quot;Tab 3&quot;],
+  fn() { tab.get() },
+  fn(i) { tab.set(i) },
+  label=&quot;Tabs&quot;,
+) |&gt; ignore" data-en="Copy" data-zh="复制">Copy</button><span class="dim">// libs/liquid-glass/src/pages/pages.mbt</span>
+<span class="kw">let</span> wifi = @signals.signal(<span class="ok">true</span>)
+<span class="kw">let</span> brightness = @signals.signal(<span class="num">40.0</span>)
+<span class="kw">let</span> tab = @signals.signal(<span class="num">0</span>)
+
+@lg.<span class="fn">liquid_button_node</span>(
+  row,
+  <span class="kw">fn</span>() { <span class="str">"Tinted Liquid Button"</span> },
+  <span class="kw">fn</span>() { <span class="dim">/* action */</span> },
+  tint=<span class="num">0x0088FFFFL</span>,
+) |&gt; ignore
+
+@lg.<span class="fn">liquid_toggle_node</span>(
+  row,
+  <span class="kw">fn</span>() { wifi.get() },
+  <span class="kw">fn</span>(v) { wifi.set(v) },
+  <span class="kw">fn</span>() { <span class="str">"Wi-Fi"</span> },
+) |&gt; ignore
+
+@lg.<span class="fn">liquid_slider_node</span>(
+  col,
+  <span class="kw">fn</span>() { brightness.get() },
+  <span class="kw">fn</span>(v) { brightness.set(v) },
+  <span class="kw">fn</span>() { <span class="str">"Brightness"</span> },
+) |&gt; ignore
+
+@lg.<span class="fn">liquid_bottom_tabs_node</span>(
+  col,
+  [<span class="str">"Tab 1"</span>, <span class="str">"Tab 2"</span>, <span class="str">"Tab 3"</span>],
+  <span class="kw">fn</span>() { tab.get() },
+  <span class="kw">fn</span>(i) { tab.set(i) },
+  label=<span class="str">"Tabs"</span>,
+) |&gt; ignore</pre>
+
+      <div class="card lg-attr-card">
+        <div class="ic">{{i:shield}}</div>
+        <h3 data-en="Apache-2.0 Attribution" data-zh="Apache-2.0 开源致谢">Apache-2.0 Attribution</h3>
+        <p data-en="1:1 port of Kyant0/AndroidLiquidGlass onto mbui's retained tree — every lens, spring, and highlight parameter traced to upstream." data-zh="Kyant0/AndroidLiquidGlass 在 mbui 保留树上的 1:1 移植，所有透镜、弹簧与高光参数均溯源上游。">1:1 port of Kyant0/AndroidLiquidGlass onto mbui's retained tree — every lens, spring, and highlight parameter traced to upstream.</p>
+        <div class="acts">
+          <a class="btn btn-line btn-s" href="https://github.com/Kyant0/AndroidLiquidGlass" target="_blank" rel="noopener noreferrer">
+            {{i:github}}<span data-en="Kyant0/AndroidLiquidGlass" data-zh="Kyant0/AndroidLiquidGlass">Kyant0/AndroidLiquidGlass</span>
+          </a>
+          <a class="btn btn-ghost btn-s" href="{{repo}}" target="_blank" rel="noopener noreferrer">
+            <span data-en="libs/liquid-glass Source" data-zh="libs/liquid-glass 源码">libs/liquid-glass Source</span>{{i:arrow-ne}}
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="closing dark">
+  <div class="wrap reveal">
+    <h2 data-en="Ship Liquid Glass across six GPU targets." data-zh="在六大 GPU 平台上交付 Liquid Glass。">Ship Liquid Glass across six GPU targets.</h2>
+    <div class="ctas">
+      <a class="btn btn-dark" href="/get-started/" data-en="Get Started" data-zh="开始使用">Get Started</a>
+      <a class="btn btn-line" href="/components/" data-en="Explore Components" data-zh="浏览组件库">Explore Components</a>
+    </div>
+  </div>
+</section>
+
+<script>
+(() => {
+  const hasWebGL2 = () => {
+    try {
+      const gl = document.createElement("canvas").getContext("webgl2");
+      if (!gl) return false;
+      gl.getExtension("WEBGL_lose_context")?.loseContext();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const stage = document.getElementById("lg-live");
+  if (!stage) return;
+
+  const wrap = stage.querySelector(".live-frame-wrap");
+  const fallback = stage.querySelector(".live-fallback");
+  const closeBtn = stage.querySelector("[data-live-close]");
+  const previews = [...stage.querySelectorAll("[data-lg-preview]")];
+  const themeBtns = [...document.querySelectorAll("[data-lg-theme]")];
+  const pageBtns = [...document.querySelectorAll("[data-lg-page]")];
+
+  let theme = "dark";
+  let page = "overview";
+
+  const buildUrl = () => {
+    const darkParam = theme === "dark" ? "&MBUI_DARK=1" : "";
+    return `/liquid-glass/app/?MBUI_LG_PAGE=${encodeURIComponent(page)}${darkParam}`;
+  };
+
+  const syncPreview = () => {
+    for (const p of previews) p.classList.toggle("on", p.dataset.lgPreview === theme);
+    for (const b of themeBtns) b.setAttribute("aria-selected", String(b.dataset.lgTheme === theme));
+    stage.dataset.liveSrc = buildUrl();
+  };
+
+  const setActivePage = (active) => {
+    for (const b of pageBtns) {
+      const on = active && b.dataset.lgPage === page;
+      b.classList.toggle("is-active", on);
+      b.setAttribute("aria-pressed", String(on));
+    }
+  };
+
+  const launchLive = () => {
+    const url = buildUrl();
+    stage.dataset.liveSrc = url;
+    if (!hasWebGL2()) {
+      if (fallback) fallback.hidden = false;
+      return;
+    }
+    if (fallback) fallback.hidden = true;
+    if (!wrap) return;
+    let frame = wrap.querySelector("iframe");
+    if (!frame) {
+      frame = document.createElement("iframe");
+      frame.title = stage.dataset.liveTitle || "ui.monoid Liquid Glass";
+      frame.allow = "clipboard-read; clipboard-write";
+      wrap.appendChild(frame);
+    }
+    frame.src = url;
+    stage.classList.add("is-live");
+    setActivePage(true);
+  };
+
+  for (const b of themeBtns) {
+    b.addEventListener("click", () => {
+      theme = b.dataset.lgTheme === "light" ? "light" : "dark";
+      syncPreview();
+      if (stage.classList.contains("is-live")) launchLive();
+    });
+  }
+
+  for (const b of pageBtns) {
+    b.addEventListener("click", () => {
+      page = b.dataset.lgPage || "overview";
+      syncPreview();
+      launchLive();
+    });
+  }
+
+  closeBtn?.addEventListener("click", () => setActivePage(false));
+  syncPreview();
+})();
+</script>

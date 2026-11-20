@@ -84,6 +84,7 @@ jobs:
       windows_natives: ${{ steps.plan.outputs.windows_natives }}
       launcher_windows: ${{ steps.plan.outputs.launcher_windows }}
       kit: ${{ steps.plan.outputs.kit }}
+      ui: ${{ steps.plan.outputs.ui }}
       mbui: ${{ steps.plan.outputs.mbui }}
       comma_ui: ${{ steps.plan.outputs.comma_ui }}
       liquid_glass: ${{ steps.plan.outputs.liquid_glass }}
@@ -1445,6 +1446,19 @@ jobs:
         uses: actions/upload-artifact@v4
         with: { name: "mbui-kit-${{ github.sha }}", path: dist/kit, retention-days: 7 }
 
+  mbui-ui:
+    needs: [plan]
+    if: ${{ !cancelled() && !failure() && vars.MONOID_CI == 'on' && github.ref == 'refs/heads/main' && needs.plan.outputs.ui == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup
+      - uses: ./.github/actions/mbui-moonbit
+      - run: node website/ui/build.mjs --out dist/ui
+      - uses: actions/upload-artifact@v4
+        with: { name: "mbui-ui-${{ github.sha }}", path: dist/ui, retention-days: 7 }
+
   static:
     needs: [plan, natives, check, check-mac, check-linux, check-station, check-core, api, mbui-web]
     # After the API (a page may need what it adds), or without it when it did not change.
@@ -1575,6 +1589,25 @@ jobs:
           STILLFAIL_CLOUD: monoid
           CLOUDFLARE_API_TOKEN: ${{ secrets.MONOID_CLOUDFLARE_API_TOKEN }}
         run: sh .github/deploy.sh kit
+
+  # The ui.monoid.build site & live embeds (website/ui/build.mjs, as mbui-ui built it): monoid's alone, in monoid's
+  # Cloudflare account (cloud/wrangler.ui.jsonc). Needs no check: it reads nothing of anyone's and holds no secret.
+  monoid-ui:
+    needs: [plan, mbui-ui]
+    if: ${{ !cancelled() && vars.MONOID_CI == 'on' && github.ref == 'refs/heads/main' && needs.plan.outputs.ui == 'true' && needs.mbui-ui.result == 'success' }}
+    runs-on: ubuntu-24.04
+    environment: production
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup
+      - uses: actions/download-artifact@v4
+        with: { name: "mbui-ui-${{ github.sha }}", path: dist/ui }
+      - name: Deploy ui to monoid
+        env:
+          STILLFAIL_CLOUD: monoid
+          CLOUDFLARE_API_TOKEN: ${{ secrets.MONOID_CLOUDFLARE_API_TOKEN }}
+        run: sh .github/deploy.sh --skip-build ui
 
   # The test channel's releases are built beside the check (the builds are most of a release: before 2026-10-04 they
   # waited for the check and the API). The apps' files, named by their version, go in the bucket at once (nothing points
@@ -2752,8 +2785,8 @@ jobs:
 
   # main, once all of it is out: the tag the next run's range starts from, and what is left to do by hand.
   done:
-    needs: [plan, natives, natives-win-reader, natives-win-reader-main, natives-harness, natives-mac, natives-mac-reader, check, check-mac, check-linux, check-station, check-core, api, static, monoid-api, monoid-static, monoid-kit, station, android, desktop-build, desktop, desktop-win, put]
-    if: always() && github.ref == 'refs/heads/main' && contains(fromJSON('["success","skipped"]'), needs.natives.result) && contains(fromJSON('["success","skipped"]'), needs.natives-win-reader.result) && contains(fromJSON('["success","skipped"]'), needs.natives-win-reader-main.result) && contains(fromJSON('["success","skipped"]'), needs.natives-harness.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac-reader.result) && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || vars.CI_1 == 'off' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') && contains(fromJSON('["success","skipped"]'), needs.api.result) && contains(fromJSON('["success","skipped"]'), needs.static.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-api.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-static.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-kit.result) && contains(fromJSON('["success","skipped"]'), needs.station.result) && contains(fromJSON('["success","skipped"]'), needs.android.result) && contains(fromJSON('["success","skipped"]'), needs.put.result) && contains(fromJSON('["success","skipped"]'), needs.desktop-build.result) && contains(fromJSON('["success","skipped"]'), needs.desktop.result) && contains(fromJSON('["success","skipped"]'), needs.desktop-win.result)
+    needs: [plan, natives, natives-win-reader, natives-win-reader-main, natives-harness, natives-mac, natives-mac-reader, check, check-mac, check-linux, check-station, check-core, api, static, monoid-api, monoid-static, monoid-kit, monoid-ui, station, android, desktop-build, desktop, desktop-win, put]
+    if: always() && github.ref == 'refs/heads/main' && contains(fromJSON('["success","skipped"]'), needs.natives.result) && contains(fromJSON('["success","skipped"]'), needs.natives-win-reader.result) && contains(fromJSON('["success","skipped"]'), needs.natives-win-reader-main.result) && contains(fromJSON('["success","skipped"]'), needs.natives-harness.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac-reader.result) && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || vars.CI_1 == 'off' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') && contains(fromJSON('["success","skipped"]'), needs.api.result) && contains(fromJSON('["success","skipped"]'), needs.static.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-api.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-static.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-kit.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-ui.result) && contains(fromJSON('["success","skipped"]'), needs.station.result) && contains(fromJSON('["success","skipped"]'), needs.android.result) && contains(fromJSON('["success","skipped"]'), needs.put.result) && contains(fromJSON('["success","skipped"]'), needs.desktop-build.result) && contains(fromJSON('["success","skipped"]'), needs.desktop.result) && contains(fromJSON('["success","skipped"]'), needs.desktop-win.result)
     runs-on: [self-hosted, quick]
     timeout-minutes: 5
     permissions:

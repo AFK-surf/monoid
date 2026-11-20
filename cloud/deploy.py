@@ -9,6 +9,7 @@ rename to still.fail, as do their Durable Objects, bucket and secrets: renaming 
   preview   stillfail-preview   the preview host, static (wrangler.preview.jsonc)
   status    still-fail-status   still.fail/status, static (wrangler.status.jsonc)
   kit       stillfail-kit       the component library's page, static (wrangler.kit.jsonc): monoid's alone, kit.monoid.zone
+  ui        monoid-ui-site      the ui.monoid.build site & docs, static (wrangler.ui.jsonc): monoid's alone, ui.monoid.build
 Each is deployed on its own: deploying the API drops no relay connection and serves no page. (And the official
 site, `site`, still-fail-site; and the test channel's, `site-beta`, youdid-wtf-site on youdid.wtf, only when named.)
 The test channel lives on its own domain, youdid.wtf: until that zone is active on Cloudflare (or with STILLFAIL_BETA=off)
@@ -126,10 +127,10 @@ def write_private(path: Path, value) -> None:
     os.replace(tmp, path)
 
 
-PARTS = {"relay": "wrangler.relay.jsonc", "api": "wrangler.jsonc", "web": "wrangler.web.jsonc", "web-beta": "wrangler.web-beta.jsonc", "admin": "wrangler.admin.jsonc", "preview": "wrangler.preview.jsonc", "status": "wrangler.status.jsonc", "site": "wrangler.site.jsonc", "site-beta": "wrangler.site-beta.jsonc", "kit": "wrangler.kit.jsonc"}
+PARTS = {"relay": "wrangler.relay.jsonc", "api": "wrangler.jsonc", "web": "wrangler.web.jsonc", "web-beta": "wrangler.web-beta.jsonc", "admin": "wrangler.admin.jsonc", "preview": "wrangler.preview.jsonc", "status": "wrangler.status.jsonc", "site": "wrangler.site.jsonc", "site-beta": "wrangler.site-beta.jsonc", "kit": "wrangler.kit.jsonc", "ui": "wrangler.ui.jsonc"}
 # What a deploy without parts deploys: the web app only to the test channel (promote-web takes it on); not youdid.wtf's
-# site, nor the component library's page (monoid's alone, named by CI: wrangler.kit.jsonc).
-DEFAULT_PARTS = [p for p in PARTS if p not in ("web", "site-beta", "kit")]
+# site, nor the component library's page or ui.monoid.build (monoid's alone, named explicitly: wrangler.kit.jsonc, wrangler.ui.jsonc).
+DEFAULT_PARTS = [p for p in PARTS if p not in ("web", "site-beta", "kit", "ui")]
 # The test channel's parts, on its own domain (youdid.wtf): deployed only once that zone is on Cloudflare (beta_zone()).
 BETA_PARTS = ("web-beta", "site-beta", "kit")
 # The web app's builds deployed to the test channel, by commit, for promote-web.
@@ -500,6 +501,8 @@ def main() -> None:
     if unknown:
         sys.exit(f"no such part: {', '.join(sorted(unknown))}")
     parts = [p for p in PARTS if p in args.parts] or list(DEFAULT_PARTS)
+    if "ui" in parts and CLOUD != "monoid" and not args.dry_run:
+        sys.exit("ui deploys only with STILLFAIL_CLOUD=monoid (ui.monoid.build)")
     admin_account = admin_email(args.dry_run) if "api" in parts and not args.check else None
 
     template = read_template()
@@ -564,6 +567,9 @@ def main() -> None:
         if not shutil.which("moon"):
             sys.exit("no moon and no dist/kit/app.js: the component library's page is built by apps/mbui/scripts/kit-web.sh")
         subprocess.run(["bash", "apps/mbui/scripts/kit-web.sh", "dist/kit"], cwd=REPO, check=True)
+    # The ui.monoid.build documentation and live component site (website/ui/build.mjs into dist/ui).
+    if not args.skip_build and "ui" in parts and not (REPO / "dist" / "ui" / "index.html").exists():
+        subprocess.run(["node", "website/ui/build.mjs", "--out", "dist/ui"], cwd=REPO, check=True)
     # The official sites (website/build.mjs SITES): this cloud's (still.fail, monoid.build) into dist/site, its test
     # channel's (youdid.wtf, monoid.zone) into dist/site-beta.
     for part, site in (("site", rehost("still.fail")), ("site-beta", beta_zone())):
@@ -631,6 +637,7 @@ def main() -> None:
         "site": ["https://still.fail/"],
         "site-beta": [f"https://{beta_zone()}/"],
         "kit": [f"https://kit.{beta_zone()}/"],
+        "ui": ["https://ui.monoid.build/"],
     }
     for part in [] if args.dry_run else parts:
         for url in dict.fromkeys(rehost(u) for u in checks[part] if not dropped(u)):

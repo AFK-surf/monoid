@@ -1,0 +1,539 @@
+<!-- title: ui.monoid — One UI Tree, Drawn on Every GPU -->
+<!-- title-zh: ui.monoid — 一套界面树，直绘六大原生 GPU -->
+<!-- description: Build native macOS, iOS, Android, Windows, Linux, and Web interfaces in MoonBit with fine-grained signals, closed-form spring motion, headless primitives, and real-time Liquid Glass. -->
+<!-- page: home -->
+
+<section class="hero">
+  <div class="wrap">
+    <div class="eyebrow" data-en="MoonBit · 6 Platforms" data-zh="MoonBit · 六大平台">MoonBit · 6 Platforms</div>
+    <h1 data-en="One UI tree, drawn on every GPU." data-zh="一套界面树，直绘六大原生 GPU。">One UI tree, drawn on every GPU.</h1>
+    <p class="lede" data-en="Native speed on six platforms. Zero DOM, zero WebView." data-zh="一套 MoonBit 代码直绘六端原生 GPU，零 DOM、零 WebView。">Native speed on six platforms. Zero DOM, zero WebView.</p>
+    <div class="ctas">
+      <a class="btn btn-dark" href="/get-started/" data-en="Get Started" data-zh="开始使用">Get Started</a>
+      <a class="btn btn-line" href="/components/" data-en="Explore Components" data-zh="浏览组件库">Explore Components</a>
+    </div>
+
+    <div class="stage obsidian" id="hero-stage">
+      <div class="hero-stage-shell">
+        <div class="pane on" id="pane-glass-dark" role="tabpanel" data-scene-key="glass-dark">
+          <div class="hero-shot-wrap">
+            {{shot:lg-hero-dark:mbui Liquid Glass dark gallery rendered offscreen on Metal}}
+            <div class="live-bar">
+              <button type="button" class="live-launch" data-hero-launch="glass-dark">
+                {{i:play}}<span data-en="Try Live WebGL 2" data-zh="体验实时 WebGL 2">Try Live WebGL 2</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="pane" id="pane-tokens" role="tabpanel" data-scene-key="palette">
+          <div class="hero-shot-wrap">
+            {{shot:comp-gallery-light:ui.monoid sf-ui semantic color tokens and live accent palette}}
+            <div class="live-bar">
+              <button type="button" class="live-launch" data-hero-launch="palette">
+                {{i:play}}<span data-en="Try Live WebGL 2" data-zh="体验实时 WebGL 2">Try Live WebGL 2</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="pane" id="pane-glass-light" role="tabpanel" data-scene-key="glass-light">
+          <div class="hero-shot-wrap">
+            {{shot:lg-hero-light:mbui Liquid Glass light gallery rendered offscreen on Metal}}
+            <div class="live-bar">
+              <button type="button" class="live-launch" data-hero-launch="glass-light">
+                {{i:play}}<span data-en="Try Live WebGL 2" data-zh="体验实时 WebGL 2">Try Live WebGL 2</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="hero-live-layer" id="hero-live-layer" hidden>
+          <div class="hero-live-bar" role="toolbar" aria-label="Live WebGL 2 scene switcher">
+            <div class="hero-live-scenes">
+              <button type="button" class="hero-scene-btn" data-hero-scene="glass-dark" data-src="/liquid-glass/app/?MBUI_DARK=1" aria-pressed="true">
+                <span data-en="Liquid Glass Dark" data-zh="深色 Liquid Glass">Liquid Glass Dark</span>
+              </button>
+              <button type="button" class="hero-scene-btn" data-hero-scene="glass-light" data-src="/liquid-glass/app/" aria-pressed="false">
+                <span data-en="Liquid Glass Light" data-zh="浅色 Liquid Glass">Liquid Glass Light</span>
+              </button>
+              <button type="button" class="hero-scene-btn" data-hero-scene="palette" data-src="/components/app/?STORY=palette" aria-pressed="false">
+                <span data-en="Storybook Palette" data-zh="Storybook 色阶">Storybook Palette</span>
+              </button>
+              <button type="button" class="hero-scene-btn" data-hero-scene="buttons" data-src="/components/app/?STORY=button" aria-pressed="false">
+                <span data-en="Storybook Buttons" data-zh="Storybook 按钮">Storybook Buttons</span>
+              </button>
+            </div>
+            <button type="button" class="hero-live-exit" data-hero-exit>
+              {{i:close}}<span data-en="Exit Live" data-zh="退出实时预览">Exit Live</span>
+            </button>
+          </div>
+          <div class="hero-live-frame-wrap" id="hero-live-frame-wrap"></div>
+          <div class="live-fallback" id="hero-live-fallback" hidden>
+            <p data-en="WebGL 2 is unavailable in this browser. Inspect the offscreen Metal capture instead." data-zh="当前浏览器不支持 WebGL 2，请直接查看离屏 Metal 渲染图。">WebGL 2 is unavailable in this browser. Inspect the offscreen Metal capture instead.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tabs hero-tabs" role="tablist" data-tabs="hero-stage">
+      <button type="button" role="tab" aria-selected="true" aria-controls="pane-glass-dark">
+        {{i:glass}}
+        <b data-en="Liquid Glass" data-zh="Liquid Glass">Liquid Glass</b>
+        <span data-en="Dark Metal & WebGL 2" data-zh="深色 Metal 与 WebGL 2">Dark Metal &amp; WebGL 2</span>
+      </button>
+      <button type="button" role="tab" aria-selected="false" aria-controls="pane-tokens">
+        {{i:palette}}
+        <b data-en="Design System" data-zh="设计体系">Design System</b>
+        <span data-en="OKLCH tokens & sf-ui" data-zh="OKLCH 色阶与 sf-ui">OKLCH tokens &amp; sf-ui</span>
+      </button>
+      <button type="button" role="tab" aria-selected="false" aria-controls="pane-glass-light">
+        {{i:sparkles}}
+        <b data-en="Light Glass" data-zh="浅色光学玻璃">Light Glass</b>
+        <span data-en="Adaptive backdrop luminance" data-zh="自适应背景亮度">Adaptive backdrop luminance</span>
+      </button>
+    </div>
+  </div>
+</section>
+
+<section class="trust" aria-label="Supported platforms">
+  <div class="wrap">
+    <p data-en="One retained tree. Six native targets." data-zh="一套保留树，直出六大原生目标。">One retained tree. Six native targets.</p>
+    <div class="logos">
+      <span>{{i:apple}}macOS · Metal</span>
+      <span>{{i:phone}}iOS · Metal</span>
+      <span>{{i:android}}Android · GLES</span>
+      <span>{{i:laptop}}Windows · D3D11</span>
+      <span>{{i:cpu}}Linux · OpenGL</span>
+      <span>{{i:globe}}Web · WebGL 2</span>
+    </div>
+  </div>
+</section>
+
+<section class="section band home-demos">
+  <div class="wrap">
+    <div class="rows">
+      <!-- Playable Demo 1: Retained Tree & Signals -->
+      <div class="row">
+        <div class="row-text reveal">
+          <div class="eyebrow" data-en="Retained Tree" data-zh="保留树架构">Retained Tree</div>
+          <h3 data-en="Update only what changed." data-zh="只更新真正变化之处。">Update only what changed.</h3>
+          <p data-en="Fine-grained signals write directly to subscribed GPU slots—zero virtual DOM diffing." data-zh="细粒度信号直写订阅的 GPU 槽位，零虚拟 DOM 树对比。">Fine-grained signals write directly to subscribed GPU slots—zero virtual DOM diffing.</p>
+          <p><a class="link-arrow" href="/framework/#signals" data-en="Explore architecture" data-zh="查看架构设计">Explore architecture</a></p>
+        </div>
+
+        <div class="demo" id="demo-signals" aria-label="Interactive retained tree signal playground">
+          <div class="win sig-win">
+            <div class="win-bar">
+              <span>signals.mbt</span>
+              <span data-en="retained tree · 148 nodes" data-zh="保留树 · 148 节点">retained tree · 148 nodes</span>
+            </div>
+            <div class="win-main sig-main">
+              <div class="sig-grid">
+                <div class="sig-left">
+                  <div class="sig-source">
+                    <div class="sig-label" data-en="Click to write signal" data-zh="点击写入信号">Click to write signal</div>
+                    <div class="sig-code" aria-live="polite">
+                      <code id="sig-code-line">accent.set("vermilion")</code>
+                    </div>
+                    <div class="sig-controls" role="group" aria-label="Signal controls">
+                      <button type="button" class="sig-btn is-active" data-sig-color="vermilion" data-hex="#ef6334" data-soft="rgba(239, 99, 52, 0.14)" aria-pressed="true">
+                        <i class="sig-chip" style="background:#ef6334"></i>
+                        <span data-en="Vermilion" data-zh="朱红">Vermilion</span>
+                      </button>
+                      <button type="button" class="sig-btn" data-sig-color="blue" data-hex="#2563eb" data-soft="rgba(37, 99, 235, 0.14)" aria-pressed="false">
+                        <i class="sig-chip" style="background:#2563eb"></i>
+                        <span data-en="Blue" data-zh="海蓝">Blue</span>
+                      </button>
+                      <button type="button" class="sig-btn" data-sig-color="teal" data-hex="#0d9488" data-soft="rgba(13, 148, 136, 0.14)" aria-pressed="false">
+                        <i class="sig-chip" style="background:#0d9488"></i>
+                        <span data-en="Teal" data-zh="青碧">Teal</span>
+                      </button>
+                      <button type="button" class="sig-btn" data-sig-color="purple" data-hex="#7c3aed" data-soft="rgba(124, 58, 237, 0.14)" aria-pressed="false">
+                        <i class="sig-chip" style="background:#7c3aed"></i>
+                        <span data-en="Purple" data-zh="绛紫">Purple</span>
+                      </button>
+                      <button type="button" class="sig-btn sig-btn-unread" id="sig-unread-btn">
+                        <span data-en="+1 Unread" data-zh="+1 未读">+1 Unread</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div class="sig-preview" id="sig-preview" style="--sig-accent:#ef6334; --sig-soft:rgba(239, 99, 52, 0.14);">
+                    <div class="sig-preview-head">
+                      <span class="sig-ring" aria-hidden="true"><span>M</span></span>
+                      <div class="sig-preview-meta">
+                        <strong data-en="Inbox" data-zh="收件箱">Inbox</strong>
+                        <span class="sig-unread-pill tabular" id="sig-unread-pill">3</span>
+                      </div>
+                    </div>
+                    <div class="sig-preview-cta" id="sig-preview-btn" data-en="Deploy Build" data-zh="发布构建">Deploy Build</div>
+                  </div>
+                </div>
+
+                <div class="sig-tree" id="sig-tree">
+                  <div class="sig-label" data-en="Retained Window Tree" data-zh="保留窗口树">Retained Window Tree</div>
+                  <div class="row-i sig-node" data-node="root">
+                    <span class="k">01</span>
+                    <span class="w">RootWindow</span>
+                    <span class="e"><span class="tag plain sig-state" data-en="skipped" data-zh="跳过">skipped</span></span>
+                  </div>
+                  <div class="row-i sig-node" data-node="toolbar">
+                    <span class="k">02</span>
+                    <span class="w">TopToolbar</span>
+                    <span class="e"><span class="tag plain sig-state" data-en="skipped" data-zh="跳过">skipped</span></span>
+                  </div>
+                  <div class="row-i sig-node sig-hit is-dirty" data-node="button">
+                    <span class="k">03</span>
+                    <span class="w">PrimaryButton.fill</span>
+                    <span class="e">
+                      <span class="sig-dot"><i></i></span>
+                      <span class="tag sig-state sig-tag-dirty" data-en="painted" data-zh="已重绘">painted</span>
+                    </span>
+                  </div>
+                  <div class="row-i sig-node" data-node="sidebar">
+                    <span class="k">04</span>
+                    <span class="w">SidebarNav</span>
+                    <span class="e"><span class="tag plain sig-state" data-en="skipped" data-zh="跳过">skipped</span></span>
+                  </div>
+                  <div class="row-i sig-node sig-hit is-dirty" data-node="ring">
+                    <span class="k">05</span>
+                    <span class="w">AccentRing.stroke</span>
+                    <span class="e">
+                      <span class="sig-dot"><i></i></span>
+                      <span class="tag sig-state sig-tag-dirty" data-en="painted" data-zh="已重绘">painted</span>
+                    </span>
+                  </div>
+                  <div class="row-i sig-node sig-hit" data-node="badge">
+                    <span class="k">06</span>
+                    <span class="w">UnreadBadge.text</span>
+                    <span class="e">
+                      <span class="sig-dot"><i></i></span>
+                      <span class="tag plain sig-state" data-en="skipped" data-zh="跳过">skipped</span>
+                    </span>
+                  </div>
+                  <div class="row-i sig-node" data-node="footer">
+                    <span class="k">07</span>
+                    <span class="w">StatusFooter</span>
+                    <span class="e"><span class="tag plain sig-state" data-en="skipped" data-zh="跳过">skipped</span></span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="sig-status">
+                <div class="sig-stat-row">
+                  <span class="sig-stat-num tabular" id="sig-stat-text" data-en="2 / 148 nodes touched · 0.14 ms · 0 tree diffs" data-zh="2 / 148 节点更新 · 0.14 ms · 0 次树对比">2 / 148 nodes touched · 0.14 ms · 0 tree diffs</span>
+                </div>
+                <div class="bar-i">
+                  <i id="sig-bar-fill" style="--w: 14%;"></i>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Playable Demo 2: Closed-Form Spring Lab -->
+      <div class="row">
+        <div class="row-text reveal">
+          <div class="eyebrow" data-en="Closed-Form Motion" data-zh="闭式物理动效">Closed-Form Motion</div>
+          <h3 data-en="Identical at any frame rate." data-zh="任意帧率，落点完全一致。">Identical at any frame rate.</h3>
+          <p data-en="Analytic springs evaluate by timestamp. Mid-flight interrupts preserve momentum at 7–120 fps." data-zh="按时间戳解析求解弹簧，7–120 fps 同步落点且随时可打断。">Analytic springs evaluate by timestamp. Mid-flight interrupts preserve momentum at 7–120 fps.</p>
+          <p><a class="link-arrow" href="/framework/#motion" data-en="See motion engine" data-zh="了解动效引擎">See motion engine</a></p>
+        </div>
+
+        <div class="demo cool" id="demo-motion" aria-label="Interactive closed-form spring physics playground">
+          <div class="win mot-win">
+            <div class="win-bar">
+              <span id="mot-params">spring(k: 320, d: 28)</span>
+              <span class="tabular" id="mot-clock">t = 480 ms</span>
+            </div>
+            <div class="mot-toolbar">
+              <div class="mot-actions">
+                <button type="button" class="pg-btn pg-btn-primary" id="mot-replay">
+                  {{i:play}}<span data-en="Replay" data-zh="重播">Replay</span>
+                </button>
+                <button type="button" class="pg-btn" id="mot-interrupt">
+                  {{i:bolt}}<span data-en="Interrupt Mid-Flight" data-zh="140ms 中途折返">Interrupt Mid-Flight</span>
+                </button>
+              </div>
+              <div class="mot-presets" role="group" aria-label="Spring presets">
+                <button type="button" class="pg-pill is-active" data-spring-preset="snappy" aria-pressed="true">
+                  <span data-en="Snappy" data-zh="利落">Snappy</span>
+                </button>
+                <button type="button" class="pg-pill" data-spring-preset="bouncy" aria-pressed="false">
+                  <span data-en="Bouncy" data-zh="弹跳">Bouncy</span>
+                </button>
+                <button type="button" class="pg-pill" data-spring-preset="gentle" aria-pressed="false">
+                  <span data-en="Gentle" data-zh="柔和">Gentle</span>
+                </button>
+              </div>
+            </div>
+            <div class="win-main mot-main">
+              <div class="mot-stage" id="mot-stage">
+                <div class="mot-ref" id="mot-ref" aria-hidden="true">
+                  <span class="tabular" id="mot-ref-label">x(t)</span>
+                </div>
+
+                <div class="mot-lane" data-fps="120">
+                  <span class="mot-fps tabular">120 fps</span>
+                  <div class="mot-rail">
+                    <div class="mot-ticks mot-ticks-120" aria-hidden="true"></div>
+                    <div class="mot-fill"></div>
+                    <span class="mot-ball"></span>
+                  </div>
+                </div>
+
+                <div class="mot-lane" data-fps="60">
+                  <span class="mot-fps tabular">60 fps</span>
+                  <div class="mot-rail">
+                    <div class="mot-ticks mot-ticks-60" aria-hidden="true"></div>
+                    <div class="mot-fill"></div>
+                    <span class="mot-ball"></span>
+                  </div>
+                </div>
+
+                <div class="mot-lane" data-fps="24">
+                  <span class="mot-fps tabular">24 fps</span>
+                  <div class="mot-rail">
+                    <div class="mot-ticks mot-ticks-24" aria-hidden="true"></div>
+                    <div class="mot-fill"></div>
+                    <span class="mot-ball"></span>
+                  </div>
+                </div>
+
+                <div class="mot-lane" data-fps="7">
+                  <span class="mot-fps tabular">7 fps</span>
+                  <div class="mot-rail">
+                    <div class="mot-ticks mot-ticks-7" aria-hidden="true"></div>
+                    <div class="mot-fill"></div>
+                    <span class="mot-ball"></span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="mot-foot">
+                <span class="mot-badge tabular" id="mot-delta">Δ = 0.00 px</span>
+                <span id="mot-status" data-en="All 4 frame rates land on the exact same pixel" data-zh="四种帧率精确抵达同一像素">All 4 frame rates land on the exact same pixel</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Playable Demo 3: Interactive Tester & Visual Audit -->
+      <div class="row">
+        <div class="row-text reveal">
+          <div class="eyebrow" data-en="Deterministic Tester" data-zh="确定性测试器">Deterministic Tester</div>
+          <h3 data-en="Audit every pixel before ship." data-zh="发版前审过每一像素。">Audit every pixel before ship.</h3>
+          <p data-en="FakeHost steps a deterministic clock, catches layout faults, and pinpoints MoonBit source lines." data-zh="FakeHost 推进确定性时钟，自动捕获布局缺陷并定位源码行号。">FakeHost steps a deterministic clock, catches layout faults, and pinpoints MoonBit source lines.</p>
+          <p><a class="link-arrow" href="/framework/#tester" data-en="Read testing guide" data-zh="阅读测试指南">Read testing guide</a></p>
+        </div>
+
+        <div class="demo obsidian" id="demo-tester" aria-label="Interactive deterministic tester and fault audit playground">
+          <div class="win dark-win tst-win">
+            <div class="win-bar">
+              <span>mbui tester</span>
+              <span>FakeHost · headless</span>
+            </div>
+            <div class="tst-toolbar">
+              <button type="button" class="tst-btn tst-btn-pass" id="tst-run-btn">
+                {{i:play}}<span data-en="Run 4-FPS Audit" data-zh="运行 4 帧率审计">Run 4-FPS Audit</span>
+              </button>
+              <button type="button" class="tst-btn tst-btn-fault" id="tst-fault-btn" data-mode="inject">
+                {{i:shield}}<span id="tst-fault-label" data-en="Inject Clipping Fault" data-zh="注入截断故障">Inject Clipping Fault</span>
+              </button>
+            </div>
+            <div class="win-main tst-main">
+              <div class="tst-split">
+                <div class="tst-preview" id="tst-preview">
+                  <div class="tst-preview-bar">
+                    <span data-en="FakeHost Frame" data-zh="FakeHost 离屏帧">FakeHost Frame</span>
+                    <span class="tabular" id="tst-preview-badge">0 faults</span>
+                  </div>
+                  <div class="tst-canvas">
+                    <div class="tst-mock-card">
+                      <div class="tst-mock-title" data-en="Release Pipeline" data-zh="发布管线">Release Pipeline</div>
+                      <div class="tst-mock-sub" data-en="macOS · iOS · WebGL 2" data-zh="macOS · iOS · WebGL 2">macOS · iOS · WebGL 2</div>
+                      <div class="tst-mock-actions">
+                        <div class="tst-mock-btn" id="tst-mock-btn">
+                          <span class="tst-mock-btn-text" data-en="Deploy to 6 Targets" data-zh="部署到全部 6 端">Deploy to 6 Targets</span>
+                          <span class="tst-clip-callout" id="tst-clip-callout" hidden>clip +18px</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="tst-console">
+                  <div class="tst-cmd">
+                    <span class="tst-prompt">$</span>
+                    <span class="tst-typed" id="tst-cmd-text">mbui test --fps 60,120,24,7 --audit</span>
+                  </div>
+
+                  <div class="tst-list" id="tst-list">
+                    <div class="tst-row" data-check="first_line">
+                      <span class="tst-key">first_line_faults</span>
+                      <span class="tst-val tabular">0</span>
+                      <span class="tst-pass">PASS</span>
+                    </div>
+                    <div class="tst-row" data-check="clip_bounds">
+                      <span class="tst-key">clip_bounds</span>
+                      <span class="tst-val tabular" id="tst-clip-val">0</span>
+                      <span class="tst-pass" id="tst-clip-badge">PASS</span>
+                    </div>
+                    <div class="tst-row" data-check="concentric">
+                      <span class="tst-key">concentric_radii</span>
+                      <span class="tst-val">pass</span>
+                      <span class="tst-pass">PASS</span>
+                    </div>
+                    <div class="tst-row" data-check="fps">
+                      <span class="tst-key">fps_invariance</span>
+                      <span class="tst-val tabular">4/4</span>
+                      <span class="tst-pass">PASS</span>
+                    </div>
+                    <div class="tst-row" data-check="diff">
+                      <span class="tst-key">offscreen_diff</span>
+                      <span class="tst-val tabular">0.00%</span>
+                      <span class="tst-pass">PASS</span>
+                    </div>
+                  </div>
+
+                  <div class="tst-fault-log" id="tst-fault-log" hidden>
+                    <code>FAULT clip: button_node.mbt:142 (sources_at)</code>
+                  </div>
+                </div>
+              </div>
+
+              <div class="tst-foot" id="tst-foot">
+                <span class="tst-ok" id="tst-summary" data-en="5/5 audits passed · 0 faults" data-zh="5/5 审计全部通过 · 0 缺陷">5/5 audits passed · 0 faults</span>
+                <span class="tabular" id="tst-time">38 ms</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section dark">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <div class="eyebrow" data-en="Optical Material" data-zh="实时光学材质">Optical Material</div>
+      <h2 data-en="Refractive glass, live on GPU." data-zh="实时 GPU 折射玻璃材质。">Refractive glass, live on GPU.</h2>
+      <p data-en="Real-time SDF refraction and specular rims on Metal, D3D11, GLES, WebGL 2." data-zh="实时 SDF 折射与边缘高光，原生运行于 Metal、D3D11、GLES 与 WebGL 2。">Real-time SDF refraction and specular rims on Metal, D3D11, GLES, WebGL 2.</p>
+      <div class="ctas">
+        <a class="btn btn-dark" href="/liquid-glass/" data-en="Open Liquid Glass Gallery" data-zh="打开 Liquid Glass 画廊">Open Liquid Glass Gallery</a>
+      </div>
+    </div>
+
+    <div class="bento lg-bento">
+      <div class="tile w7">
+        <h3 data-en="Interactive Lenses" data-zh="交互式透镜">Interactive Lenses</h3>
+        <p data-en="Drag-responsive capsules with live edge dispersion." data-zh="随指针形变的折射胶囊与实时边缘色散。">Drag-responsive capsules with live edge dispersion.</p>
+        <div class="tile-shot">
+          {{shot:lg-crop-interactive-light:Interactive Liquid Glass lenses and specular rims rendered offscreen on Metal}}
+        </div>
+      </div>
+
+      <div class="tile w5">
+        <h3 data-en="Adaptive Luminance" data-zh="自适应亮度">Adaptive Luminance</h3>
+        <p data-en="Samples backdrop contrast for crisp legibility." data-zh="实时采样背景对比度，字形始终清晰。">Samples backdrop contrast for crisp legibility.</p>
+        <div class="tile-shot">
+          {{shot:lg-crop-center-dark:Liquid Glass control center dark mode rendered offscreen on Metal}}
+        </div>
+      </div>
+
+      <div class="tile w5">
+        <h3 data-en="Refractive Dialogs" data-zh="折射模态弹窗">Refractive Dialogs</h3>
+        <p data-en="Layered depth blur with crisp rim separation." data-zh="多层景深模糊与锐利边缘分离。">Layered depth blur with crisp rim separation.</p>
+        <div class="tile-shot tile-shot-center">
+          {{shot:lg-crop-dialog-dark:Liquid Glass dark modal dialog rendered offscreen on Metal}}
+        </div>
+      </div>
+
+      <div class="tile w7">
+        <h3 data-en="Dark Glass Controls" data-zh="深色玻璃控件">Dark Glass Controls</h3>
+        <p data-en="Toggles, sliders, and pills on one shader pipeline." data-zh="开关、滑块与胶囊共享同一着色器管线。">Toggles, sliders, and pills on one shader pipeline.</p>
+        <div class="tile-shot">
+          {{shot:lg-crop-controls-dark:Liquid Glass dark mode controls rendered offscreen on Metal}}
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap">
+    <div class="section-head comp-head reveal">
+      <div>
+        <div class="eyebrow" data-en="Headless + sf-ui" data-zh="无头原语 + sf-ui">Headless + sf-ui</div>
+        <h2 data-en="Headless behavior. Production looks." data-zh="无头行为解耦，生产级视觉开箱即用。">Headless behavior. Production looks.</h2>
+      </div>
+      <a class="link-arrow" href="/components/" data-en="Browse Live Storybook" data-zh="浏览实时 Storybook">Browse Live Storybook</a>
+    </div>
+
+    <div class="grid two comp-grid">
+      <div class="card comp-card">
+        {{shot:comp-buttons-light:ui.monoid sf-ui tonal buttons and stateful action controls}}
+        <h3 data-en="Tonal & Stateful Buttons" data-zh="色调与多态操作按钮">Tonal &amp; Stateful Buttons</h3>
+      </div>
+      <div class="card comp-card">
+        {{shot:comp-controls-light:ui.monoid sf-ui liquid-lens switches, tabs, and segmented stops}}
+        <h3 data-en="Switches, Tabs & Stops" data-zh="开关、标签与分段控件">Switches, Tabs &amp; Stops</h3>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section band">
+  <div class="wrap">
+    <div class="rows">
+      <div class="row phone-row">
+        <div class="row-text reveal">
+          <div class="eyebrow" data-en="Mobile & Desktop" data-zh="移动与桌面同源">Mobile &amp; Desktop</div>
+          <h3 data-en="Same code on phone and desktop." data-zh="手机与桌面，同一套代码。">Same code on phone and desktop.</h3>
+          <p data-en="Compiles to native ARM64, x86_64, and Wasm—zero WebView wrappers." data-zh="原生编译为 ARM64、x86_64 与 Wasm，零 WebView 套壳。">Compiles to native ARM64, x86_64, and Wasm—zero WebView wrappers.</p>
+          <p><a class="link-arrow" href="/framework/#backends" data-en="See all 6 backends" data-zh="查看全部 6 大后端">See all 6 backends</a></p>
+        </div>
+
+        <div class="stage cool phone-stage">
+          {{shot:phone-ui-light:mbui sf-ui controls running natively at 390x763 on iPhone 15}}
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="wrap">
+    <div class="section-head left qs-head reveal">
+      <div class="eyebrow" data-en="Quickstart" data-zh="快速开始">Quickstart</div>
+      <h2 data-en="Start in 30 seconds." data-zh="30 秒跑起原生 GPU 窗口。">Start in 30 seconds.</h2>
+    </div>
+
+    <div class="qs-term-wrap">
+      <div class="term"><span class="p">$ </span>libs/mbui/scripts/mbui init my-app --name "My App" --id build.monoid.myapp --mbui "$PWD/libs/mbui"
+<span class="p">$ </span>cd my-app &amp;&amp; moon check
+<span class="p">$ </span>../libs/mbui/scripts/mbui pack mbui.json --target mac,web --out dist<button type="button" class="copy" data-copy="libs/mbui/scripts/mbui init my-app --name &quot;My App&quot; --id build.monoid.myapp --mbui &quot;$PWD/libs/mbui&quot;
+cd my-app && moon check
+../libs/mbui/scripts/mbui pack mbui.json --target mac,web --out dist" data-en="Copy" data-zh="复制">Copy</button></div>
+      <div class="qs-foot">
+        <a class="link-arrow" href="/get-started/" data-en="Get Started" data-zh="开始使用">Get Started</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="closing dark">
+  <div class="wrap reveal">
+    <h2 data-en="Build at GPU speed everywhere." data-zh="构建全平台 GPU 级流畅界面。">Build at GPU speed everywhere.</h2>
+    <div class="ctas">
+      <a class="btn btn-dark" href="/get-started/" data-en="Get Started" data-zh="开始使用">Get Started</a>
+      <a class="btn btn-line" href="/components/" data-en="Open Live Storybook" data-zh="打开实时 Storybook">Open Live Storybook</a>
+    </div>
+  </div>
+</section>
+
+<script src="/assets/playgrounds.js" defer></script>

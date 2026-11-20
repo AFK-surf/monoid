@@ -1,0 +1,185 @@
+/* ui.monoid Motion & Demonstration Kit (linked after site.css).
+   Each .demo and .reveal waits paused on its first frame until site.js adds .in once
+   (IntersectionObserver threshold: 0.33, then immediately unobserved -> plays once).
+   Animates compositor-friendly transform & opacity (plus clip-path for m-type and
+   @property --n for m-count). prefers-reduced-motion: reduce and html:not(.js) render
+   the final state directly without motion.
+
+   Timeline authoring:
+     <div class="m-rise" style="--at: 400ms; --i: 2; --step: 70ms; --dur: 520ms">
+   Available motion classes:
+     m-rise, m-fade, m-pop, m-left, m-right, m-grow, m-growy,
+     m-move, m-type, m-press, m-flash, m-out, m-count, m-cursor. */
+
+/* ── Demonstration stage & surface frames ── */
+.demo {
+  position: relative; overflow: hidden; isolation: isolate; contain: layout paint;
+  border-radius: var(--r-l); background: var(--card-2);
+  aspect-ratio: var(--ar, 16 / 11); padding: var(--pad, clamp(16px, 4.2%, 44px));
+  display: grid; place-items: center;
+  font: 400 12px/1.45 var(--text); letter-spacing: 0; color: var(--ink);
+}
+.demo::before { content: ""; position: absolute; inset: 0; z-index: -1; background: var(--paint); }
+.demo.plain { --paint: none; background: var(--card); }
+.demo.bleed { padding-bottom: 0; align-items: end; }
+.demo.bleed > .win { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+
+.win {
+  position: relative; width: 100%; max-width: var(--win-w, 760px);
+  background: var(--paper); border-radius: var(--r-m);
+  box-shadow: var(--shadow-win); overflow: hidden;
+  display: flex; flex-direction: column;
+}
+.win.dark-win {
+  background: #141418; color: var(--d-ink);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 20px 48px rgba(0, 0, 0, 0.48);
+}
+.win-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  height: 30px; padding: 0 12px;
+  background: #f3f3f1; border-bottom: 1px solid var(--line);
+  color: var(--faint); font: 500 11px/1 var(--mono); flex: none;
+}
+.win.dark-win .win-bar {
+  background: #1a1a20; border-bottom-color: var(--d-line); color: var(--d-faint);
+}
+.win-body { display: flex; min-height: 0; flex: 1; }
+.win-side {
+  width: 152px; flex: none; padding: 10px 8px;
+  border-right: 1px solid var(--line); background: #f8f8f6;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.win.dark-win .win-side { background: #18181d; border-right-color: var(--d-line); }
+.win-main { flex: 1; min-width: 0; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
+.win-title { font: 500 13px/1.3 var(--text); letter-spacing: -0.004em; }
+
+/* Lightweight UI primitives inside .demo blocks */
+.row-i {
+  display: flex; align-items: center; gap: 8px; min-height: 28px;
+  padding: 0 8px; border-radius: 6px; white-space: nowrap;
+}
+.row-i + .row-i { box-shadow: 0 -1px 0 var(--line); }
+.row-i .k { color: var(--faint); font: 400 11px/1 var(--mono); flex: none; }
+.row-i .w { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.row-i .e { margin-left: auto; display: flex; align-items: center; gap: 6px; flex: none; color: var(--faint); }
+.row-i.hl { background: var(--brand-soft); box-shadow: none; }
+
+.tag {
+  display: inline-flex; align-items: center; gap: 4px; height: 18px; padding: 0 7px;
+  border-radius: 999px; box-shadow: inset 0 0 0 1px var(--line-strong);
+  font: 500 10.5px/1 var(--text); color: var(--sub); white-space: nowrap;
+}
+.tag::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--c, var(--brand)); }
+.tag.plain::before { display: none; }
+
+.kbd {
+  display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px;
+  border-radius: 4px; background: #ffffff;
+  box-shadow: inset 0 -1px 0 var(--line-strong), 0 0 0 1px var(--line);
+  font: 500 10.5px/1 var(--mono); color: var(--sub);
+}
+.btn-x {
+  display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 10px;
+  border-radius: 6px; background: var(--card-2); font: 500 11px/1 var(--text); white-space: nowrap;
+}
+.btn-x.dark { background: var(--ink); color: #ffffff; }
+.btn-x.brand { background: var(--brand); color: #ffffff; }
+.bar-i { height: 6px; border-radius: 999px; background: var(--card-2); overflow: hidden; }
+.bar-i > i { display: block; height: 100%; width: var(--w, 60%); border-radius: inherit; background: var(--c, var(--brand)); transform-origin: left; }
+
+/* ── Motion Kit: paused until .in is added by IntersectionObserver ── */
+.m-rise, .m-fade, .m-pop, .m-left, .m-right, .m-grow, .m-growy,
+.m-type, .m-move, .m-out, .m-flash, .m-press, .m-count, .m-cursor {
+  animation-duration: var(--dur, 520ms);
+  animation-timing-function: var(--ease, var(--ease-out));
+  animation-fill-mode: both;
+  animation-delay: calc(var(--at, 0ms) + var(--i, 0) * var(--step, 70ms));
+  animation-play-state: paused;
+}
+.in .m-rise, .in .m-fade, .in .m-pop, .in .m-left, .in .m-right, .in .m-grow, .in .m-growy,
+.in .m-type, .in .m-move, .in .m-out, .in .m-flash, .in .m-press, .in .m-count, .in .m-cursor,
+.in.m-rise, .in.m-fade, .in.m-pop {
+  animation-play-state: running;
+}
+
+.m-rise  { animation-name: m-rise; }
+.m-fade  { animation-name: m-fade; --dur: 420ms; }
+.m-pop   { animation-name: m-pop; --ease: var(--ease-spring); --dur: 460ms; }
+.m-left  { animation-name: m-left; }
+.m-right { animation-name: m-right; }
+.m-grow  { animation-name: m-grow; transform-origin: left center; --dur: 860ms; --ease: var(--ease-in-out); }
+.m-growy { animation-name: m-growy; transform-origin: center bottom; --dur: 680ms; }
+.m-type  { animation-name: m-type; animation-timing-function: steps(var(--chars, 24), end); --dur: calc(var(--chars, 24) * 32ms); }
+.m-move  { animation-name: m-move; --dur: 680ms; --ease: var(--ease-in-out); }
+.m-out   { animation-name: m-out; --dur: 380ms; --ease: ease-in; }
+.m-press { animation-name: m-press; --dur: 260ms; }
+.m-flash { position: relative; --dur: 1050ms; }
+.m-flash::after {
+  content: ""; position: absolute; inset: 0; border-radius: inherit;
+  background: var(--flash, rgba(239, 99, 52, 0.16)); opacity: 0;
+  animation: inherit; animation-name: m-flash; pointer-events: none;
+}
+
+@property --n { syntax: "<integer>"; inherits: false; initial-value: 0; }
+.m-count {
+  animation-name: m-count; --dur: 1100ms; --ease: var(--ease-out);
+  --n: var(--to, 0); counter-reset: n var(--n); font-variant-numeric: tabular-nums;
+}
+.m-count::after { content: counter(n); }
+
+.m-cursor {
+  position: absolute; left: 0; top: 0; z-index: 5; width: 16px; height: 20px; pointer-events: none;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 20'%3E%3Cpath d='M1.5 1.2v15.4l4.1-3.9 2.6 6 2.6-1.1-2.6-5.9h5.6z' fill='%23171717' stroke='%23fff' stroke-width='1.3' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat;
+  animation-name: m-cursor; --dur: 2400ms; --ease: var(--ease-in-out);
+  transform: translate(var(--x3, 0), var(--y3, 0));
+}
+
+@keyframes m-rise  { from { opacity: 0; transform: translateY(10px); } }
+@keyframes m-fade  { from { opacity: 0; } }
+@keyframes m-pop   { from { opacity: 0; transform: scale(0.94); } }
+@keyframes m-left  { from { opacity: 0; transform: translateX(-14px); } }
+@keyframes m-right { from { opacity: 0; transform: translateX(14px); } }
+@keyframes m-grow  { from { transform: scaleX(0); } }
+@keyframes m-growy { from { transform: scaleY(0); } }
+@keyframes m-type  { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
+@keyframes m-move  { from { transform: translate(var(--fx, 0), var(--fy, 0)); } }
+@keyframes m-out   { to { opacity: 0; transform: translateX(var(--ox, 16px)); } }
+@keyframes m-flash { 0% { opacity: 0; } 25% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes m-press { 50% { transform: scale(0.94); } }
+@keyframes m-count { from { --n: 0; } to { --n: var(--to, 0); } }
+@keyframes m-cursor {
+  0%   { opacity: 0; transform: translate(var(--x0, 0), var(--y0, 0)); }
+  8%   { opacity: 1; transform: translate(var(--x0, 0), var(--y0, 0)); }
+  38%  { transform: translate(var(--x1, var(--x0, 0)), var(--y1, var(--y0, 0))); }
+  70%  { transform: translate(var(--x2, var(--x1, 0)), var(--y2, var(--y1, 0))); }
+  100% { opacity: 1; transform: translate(var(--x3, 0), var(--y3, 0)); }
+}
+
+/* Section text reveal: rises once when scrolled into view */
+.reveal > * {
+  animation: m-rise 580ms var(--ease-out) both paused;
+  animation-delay: calc(var(--i, 0) * 70ms);
+}
+.reveal > :nth-child(2) { --i: 1; }
+.reveal > :nth-child(3) { --i: 2; }
+.reveal > :nth-child(4) { --i: 3; }
+.reveal > :nth-child(n+5) { --i: 4; }
+.reveal.in > * { animation-play-state: running; }
+
+/* Reduced motion & no-JS fallback: render final state immediately */
+@media (prefers-reduced-motion: reduce) {
+  .demo *, .demo *::after, .reveal > * { animation: none !important; }
+  .m-out { opacity: 0; }
+}
+html:not(.js) .demo *, html:not(.js) .demo *::after, html:not(.js) .reveal > * {
+  animation: none !important;
+}
+html:not(.js) .m-out { opacity: 0; }
+
+@media (max-width: 860px) {
+  .demo { --pad: 12px; font-size: 11px; }
+  .win-side { display: none; }
+}
+
+.row > .demo { aspect-ratio: auto; min-height: 440px; }
+@media (max-width: 860px) { .row > .demo { min-height: 0; } }
