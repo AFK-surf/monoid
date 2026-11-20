@@ -840,8 +840,8 @@ async fn P53Upkeep::prune_orphan_rooms(self : P53Upkeep, now : Double) -> Array[
       if jtext(room_st, "kind") != Some("dir") {
         continue
       }
-      let room_mtime = jnum_of(room_st, "mtime").unwrap_or(now)
-      let ws_mtime = jnum_of(p53_lstat(host, @nodepath.join(sep(), [room_path, "workspace"])), "mtime").unwrap_or(0.0)
+      let room_mtime = jnum_of(room_st, "mtimeMs").unwrap_or(now)
+      let ws_mtime = jnum_of(p53_lstat(host, @nodepath.join(sep(), [room_path, "workspace"])), "mtimeMs").unwrap_or(0.0)
       let mtime = if ws_mtime > room_mtime { ws_mtime } else { room_mtime }
       if now - mtime < p53_orphan_room_ms {
         continue
@@ -938,7 +938,7 @@ async fn p53_bounded_dir_age_bytes(host : @host.Host, dir : String, deadline : D
   if jtext(root_st, "kind") != Some("dir") {
     return None
   }
-  let mut newest = jnum_of(root_st, "mtime").unwrap_or(0.0)
+  let mut newest = jnum_of(root_st, "mtimeMs").unwrap_or(0.0)
   let mut bytes = 0.0
   let queue : Array[(String, Int)] = [(dir, 0)]
   let mut qi = 0
@@ -964,7 +964,7 @@ async fn p53_bounded_dir_age_bytes(host : @host.Host, dir : String, deadline : D
       if kind is None {
         return None
       }
-      let m = jnum_of(st, "mtime").unwrap_or(0.0)
+      let m = jnum_of(st, "mtimeMs").unwrap_or(0.0)
       if m > newest {
         newest = m
       }
@@ -1103,7 +1103,7 @@ async fn P53Upkeep::relieve_orphan_transcripts(
             match p53_claude_uuid_id(entry) {
               Some(cid) => {
                 main_present.add(cid)
-                let mtime = jnum_of(st, "mtime").unwrap_or(now)
+                let mtime = jnum_of(st, "mtimeMs").unwrap_or(now)
                 let bytes = match jnum_of(st, "blocks") {
                   Some(b) if b >= 0.0 => b * 512.0
                   _ => jnum_of(st, "size").unwrap_or(0.0)
@@ -1194,7 +1194,7 @@ async fn P53Upkeep::relieve_orphan_transcripts(
         match jtext(st, "kind") {
           Some("dir") if depth < 6 && !entry.has_prefix(".") => queue.push((p, depth + 1))
           Some("file") => {
-            let mtime = jnum_of(st, "mtime").unwrap_or(now)
+            let mtime = jnum_of(st, "mtimeMs").unwrap_or(now)
             if now - mtime < p53_orphan_transcript_ms {
               continue
             }
