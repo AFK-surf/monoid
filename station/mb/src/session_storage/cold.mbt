@@ -147,7 +147,7 @@ fn places_of(s : Json) -> Array[String] {
 ///|
 async fn Storage::follow_in_use(self : Storage) -> Unit {
   let paths = []
-  for s in items(Some(self.ask("store.sessionsInUse", []))) {
+  for s in self.st.store.sessions_in_use() {
     for p in places_of(s) {
       if !paths.contains(p) {
         paths.push(p)
@@ -155,7 +155,7 @@ async fn Storage::follow_in_use(self : Storage) -> Unit {
     }
   }
   let jobs = try {
-    items(Some(self.ask("store.jobsUp", [])))
+    self.st.store.jobs_up()
   } catch {
     _ => []
   }
@@ -175,10 +175,10 @@ async fn Storage::follow_in_use(self : Storage) -> Unit {
 pub async fn Storage::archive_room(self : Storage, key : String) -> String? {
   guard self.session(key) is Some(row) else { return None }
   guard self.rooms.get(str(row, "workspace").unwrap_or("")) is Some(Some(dir)) else { return None }
-  if nullish(get(row, "archivedAt")) || get(row, "running") is Some(True) || self.ask("hub.processState", [js(key)]) == js("running") {
+  if nullish(get(row, "archivedAt")) || get(row, "running") is Some(True) || self.st.hub.process_state(key) == "running" {
     return None
   }
-  for s in items(Some(self.ask("store.sessionsInUse", []))) {
+  for s in self.st.store.sessions_in_use() {
     if str(s, "key") == Some(key) {
       continue
     }
@@ -197,7 +197,7 @@ pub async fn Storage::archive_room(self : Storage, key : String) -> String? {
 ///|
 async fn Storage::has_jobs(self : Storage, key : String, dir : String) -> Bool {
   let jobs = try {
-    items(Some(self.ask("store.jobsUp", [])))
+    self.st.store.jobs_up()
   } catch {
     _ => return true
   }
@@ -381,32 +381,22 @@ pub async fn Storage::clean_rebuildable(self : Storage, key : String) -> Double 
 }
 
 ///|
-/// Where a session's transcripts are, as the live view finds them, else as its history finds them.
-async fn Storage::located(self : Storage, key : String, row : Json, sources : Array[Json]) -> Json {
-  if self.ask("hub.has", [js("locateAsync")]) is True {
-    self.ask("live.locate", [js(key)])
-  } else {
-    self.ask("fn.historyFound", [row, ja(sources)])
-  }
-}
-
-///|
 /// The files of an archived session's transcripts that cold storage puts away (cold.ts `historyFilesSoon`).
 pub async fn Storage::history_files(self : Storage, key : String, packing : Bool) -> Array[String] {
   let fs = self.fs
-  guard self.session(key) is Some(row) else { raise failed("unknown session \{key}") }
-  let sources = items(Some(self.ask("store.runtimeSessionSources", [js(key)])))
+  guard self.session(key) is Some(_) else { raise failed("unknown session \{key}") }
+  let sources = self.st.store.runtime_session_sources(key, None)
   if sources.length() == 0 {
     return []
   }
   if packing {
     for s in sources {
-      if self.ask("store.transcriptInUse", [get(s, "runtime").unwrap_or(Json::null()), get(s, "id").unwrap_or(Json::null()), js(key)]) is True {
+      if self.st.store.transcript_in_use(get(s, "runtime").unwrap_or(Json::null()), get(s, "id").unwrap_or(Json::null()), js(key)) {
         return []
       }
     }
   }
-  let located = self.located(key, row, sources)
+  let located = self.ask("live.locate", [js(key)])
   if nullish(Some(located)) {
     return []
   }
@@ -448,15 +438,11 @@ pub async fn Storage::is_cold(self : Storage, key : String) -> Bool {
     None => ()
   }
   let paths = try {
-    if self.ask("hub.has", [js("locateAsync")]) is True {
-      let l = self.ask("live.locate", [js(key)])
-      items(get(l, "paths")).map(p => match p {
-        String(s) => s
-        e => str(e, "path").unwrap_or("")
-      })
-    } else {
-      self.history_files(key, false)
-    }
+    let l = self.ask("live.locate", [js(key)])
+    items(get(l, "paths")).map(p => match p {
+      String(s) => s
+      e => str(e, "path").unwrap_or("")
+    })
   } catch {
     _ => return false
   }
@@ -563,17 +549,9 @@ async fn Storage::stop_strays(self : Storage, key : String, workspace : String) 
   guard fs.run_out("id", ["-u"]) is Some(uid) else { return }
   guard fs.run_out("ps", ["-U", js_trim(uid), "-o", "pid="]) is Some(out) else { return }
   let me = @host.pid()
-  let station = try self.ask("hub.pid", []) catch {
-    _ => -1
-  } noraise {
-    v => match as_num(Some(v)) {
-      Some(p) => p.to_int()
-      None => -1
-    }
-  }
   let pids = out.split("\n").filter_map(l => {
     let n = digits_of(js_trim(l.to_string()))
-    if n > 1 && n != me && n != station { Some(n) } else { None }
+    if n > 1 && n != me { Some(n) } else { None }
   }).to_array()
   let real = fs.realpath(workspace).unwrap_or(workspace)
   let cwds : Array[(Int, String)] = []
@@ -625,10 +603,10 @@ fn Files::legacy_copy(self : Files, archive_dir : String, key : String) -> Strin
 async fn Storage::pack_history(self : Storage, key : String, ready : async () -> Bool) -> Double {
   let fs = self.fs
   let files = self.history_files(key, true)
-  let sources = items(Some(self.ask("store.runtimeSessionSources", [js(key)])))
+  let sources = self.st.store.runtime_session_sources(key, None)
   let unused = async fn() {
     for s in sources {
-      if self.ask("store.transcriptInUse", [get(s, "runtime").unwrap_or(Json::null()), get(s, "id").unwrap_or(Json::null()), js(key)]) is True {
+      if self.st.store.transcript_in_use(get(s, "runtime").unwrap_or(Json::null()), get(s, "id").unwrap_or(Json::null()), js(key)) {
         return false
       }
     }
@@ -645,7 +623,7 @@ async fn Storage::pack_history(self : Storage, key : String, ready : async () ->
       return 0.0
     }
   }
-  let copy = fs.legacy_copy(as_str(Some(self.ask("store.archiveDir", []))).unwrap_or(""), key)
+  let copy = fs.legacy_copy(self.st.archive_dir, key)
   guard fs.stat(copy) is Some(s) else { return 0.0 }
   fs.unlink(copy)
   s.size
@@ -656,7 +634,7 @@ async fn Storage::pack_history(self : Storage, key : String, ready : async () ->
 /// packed now as archiving packs them, and the copy let go.
 pub async fn Storage::finish_legacy_copies(self : Storage) -> Unit {
   let fs = self.fs
-  let dir = fs.join([as_str(Some(self.ask("store.archiveDir", []))).unwrap_or(""), "transcripts"])
+  let dir = fs.join([self.st.archive_dir, "transcripts"])
   guard fs.readdir(dir) is Some(names) else { return }
   let mut freed = 0.0
   let mut done = 0
@@ -696,10 +674,10 @@ pub async fn Storage::segment_histories(self : Storage) -> Unit {
   }
   let mut done = 0
   let mut failed_any = false
-  let through = self.ask("store.lastArchivedSession", [])
+  let through = self.st.store.last_archived_session()
   let mut after = Json::null()
   while !nullish(Some(through)) {
-    let page = items(Some(self.ask("store.archivedSessions", [after, through])))
+    let page = items(Some(self.st.store.archived_sessions(after, through)))
     if page.length() == 0 {
       break
     }

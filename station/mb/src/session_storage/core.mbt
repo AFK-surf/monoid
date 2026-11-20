@@ -41,9 +41,19 @@ async fn Storage::ask(self : Storage, name : String, args : Array[Json]) -> Json
 }
 
 ///|
+/// Runs an operation on the threads store with `now` synced and `sent`/`requested` flushed afterwards.
+fn[T] Storage::with_threads(self : Storage, f : (@store_threads.Store) -> T raise) -> T raise {
+  self.st.threads.set_now(self.st.hub.now())
+  errdefer (self.st.flush_threads)()
+  let r = f(self.st.threads)
+  (self.st.flush_threads)()
+  r
+}
+
+///|
 /// The station's clock (`hub.now()`, `wall.now()`).
-async fn Storage::now(self : Storage) -> Double {
-  as_num(Some(self.ask("hub.now", []))).unwrap_or(0.0)
+fn Storage::now(self : Storage) -> Double {
+  self.st.hub.now()
 }
 
 ///|
@@ -54,11 +64,11 @@ async fn Storage::log(self : Storage, level : String, part : String, message : S
 
 ///|
 /// `hub.store.getSession(key)`: None where there is none.
-async fn Storage::session(self : Storage, key : String) -> Json? {
-  some_of(self.ask("store.getSession", [js(key)]))
+fn Storage::session(self : Storage, key : String) -> Json? raise {
+  some_of(self.st.store.get_session(key))
 }
 
 ///|
-async fn Storage::data_dir(self : Storage) -> String {
-  str(self.ask("hub.config", []), "dataDir").unwrap_or("")
+fn Storage::data_dir(self : Storage) -> String {
+  str(self.st.hub.config(), "dataDir").unwrap_or("")
 }

@@ -238,19 +238,13 @@ async fn P52::storage_world(self : P52, name : String, args : Array[Json], viewe
   let s = (i : Int) => as_text(a(i)).unwrap_or("")
   let opt = (i : Int) => as_text(a(i))
   let reader = self.bus.reader_ask.val
-  let hub = self.the_hub()
   let answered = match name {
-    "hub.config" => self.config
-    "hub.has" => Json::boolean(["locateAsync", "recentChatList", "searchChatList", "threadList"].contains(s(0)))
+    "hub.has" => Json::boolean(["recentChatList", "searchChatList", "threadList"].contains(s(0)))
     "hub.hasPeers" => Json::boolean(self.bound())
-    "hub.hasChat" => Json::boolean(s(0) == @session_hub.internal_connect || (hub.world.chat)(s(0)) is Some(_))
     "hub.chatPost" =>
       Json::string(
         self.chat_post(s(0), jtext(a(1), "channel").unwrap_or(""), jtext(a(1), "threadTs").unwrap_or(""), s(2), jitems(a(3))),
       )
-    "hub.link" => jopt(self.page_of(s(0)))
-    "hub.now" => Json::number(hub.now())
-    "hub.pid" => Json::number(@drive.pid().to_double())
     "hub.outsideChats" => (self.bus.jobs_ask.val)("xshare.borrowed", Json::array([a(0)]))
     "hub.recentChatList" => reader("recentChatList", { "ws": a(0), "home": a(1), "limit": a(2) }, "zh")
     "hub.searchChatList" => {
@@ -262,11 +256,6 @@ async fn P52::storage_world(self : P52, name : String, args : Array[Json], viewe
       reader("searchChatList", Json::object(req), "zh")
     }
     "hub.threadList" => reader("threadList", Json::object({}), "zh")
-    "hub.workspaces" => Json::array(self.workspaces().map(Json::string))
-    "hub.wsOf" => jopt(hub.ws_of_arg(a(0)))
-    "hub.surface" => Json::string(hub.surface(s(0)))
-    "hub.processState" => Json::string(hub.process_state(s(0)))
-    "hub.inWorkspace" => @session_hub.hub_call(hub, "inWorkspace", args)
     "live.locate" => self.locator().locate(s(0))
     "live.page" => self.live_ask("live.page", Json::array([a(0), a(1), a(2), Json::boolean(false)]))
     "peers.call" => {
@@ -306,10 +295,6 @@ async fn P52::storage_world(self : P52, name : String, args : Array[Json], viewe
       Json::string(self.words.tr(s(1), args=vars, lang=s(0)))
     }
     "fn.titleOf" => Json::string(self.title_of(a(0), opt(1), opt(2)))
-    "fn.threadsToldOf" => {
-      let recent = (jitems(jfield(a(1), "threads")), jfield(a(1), "more") is True)
-      Json::array(hub.threads_told_of(s(0), recent~).map(Json::string))
-    }
     "fn.threadHistory" => {
       let seen : Array[@jsjson.JValue]? = if a(5) is True { Some([]) } else { None }
       let text = @session_chats.thread_history(self.chats_world(), s(0), to_jv(a(1)), s(2), s(3), to_jv(a(4)), seen)
@@ -336,10 +321,6 @@ async fn P52::storage_world(self : P52, name : String, args : Array[Json], viewe
     "clones.run" => self.clone_run(s(0), jitems(a(1)).filter_map(x => match x { String(t) => Some(t); _ => None }), a(2))
     "clones.kill" => {
       if clones_running.get(s(0)) is Some(pid) { ignore(kill(pid, "SIGKILL")) }
-      Json::null()
-    }
-    "clones.changed" => {
-      self.bus.notify_store({ "type": jstr("clones") })
       Json::null()
     }
     _ =>

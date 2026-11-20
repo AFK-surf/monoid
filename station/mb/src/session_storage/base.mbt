@@ -67,14 +67,26 @@ pub fn is_kind(e : Error, kind : String) -> Bool {
 }
 
 ///|
-/// The station's parts, as this package asks them.
+/// The station's parts, as this package asks them: direct handles to the stores and hub, plus `call` for cross-slice hooks.
 pub struct Station {
+  store : @store_sessions.Store
+  threads : @store_threads.Store
+  hub : @session_hub.Hub
+  archive_dir : String
+  flush_threads : () -> Unit
   call : async (String, Array[Json]) -> Json
 }
 
 ///|
-pub fn Station::new(call : async (String, Array[Json]) -> Json) -> Station {
-  { call, }
+pub fn Station::new(
+  store : @store_sessions.Store,
+  threads : @store_threads.Store,
+  hub : @session_hub.Hub,
+  archive_dir : String,
+  flush_threads : () -> Unit,
+  call : async (String, Array[Json]) -> Json,
+) -> Station {
+  { store, threads, hub, archive_dir, flush_threads, call }
 }
 
 ///|

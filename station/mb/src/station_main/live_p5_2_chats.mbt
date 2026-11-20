@@ -137,11 +137,16 @@ fn P52::peers_callback(self : P52) -> J {
 
 ///|
 /// The conversations' storage parts (session_storage `Storage`), their station's calls answered here.
-fn P52::storage(self : P52) -> @session_storage.Storage {
+fn P52::storage(self : P52) -> @session_storage.Storage raise LiveError {
   @session_storage.Storage::new(
-    @session_storage.Station::new(async fn(name, args) {
-      self.storage_call(name, args)
-    }),
+    @session_storage.Station::new(
+      self.bus.store,
+      self.threads,
+      self.the_hub(),
+      path([self.data, "archive"]),
+      () => told_threads(self.bus, self.threads),
+      async fn(name, args) { self.storage_call(name, args) },
+    ),
     self.files,
   )
 }
@@ -153,71 +158,9 @@ async fn P52::storage_call(
   args : Array[Json],
 ) -> Json {
   let a = (i : Int32) => args.get(i).unwrap_or(Json::null())
-  if name.has_prefix("store.") {
-    return self.store(name[6:].to_owned(), args)
-  }
   match name {
-    "hub.notify" => self.the_hub().command(as_text(a(0)).unwrap_or(""), "notify", [a(1)])
     "hub.setOpening" => {
       chat_state.openings[a(0).stringify()] = to_jv(a(1))
-      Json::null()
-    }
-    "fn.archiveChat" => {
-      self.the_hub().archive_chat(a(0), a(1) is True)
-      Json::null()
-    }
-    "fn.configure" => {
-      let target = match a(0) { String(k) => k; _ => "" }
-      self.the_hub().configure(target, a(1), lang="en")
-      Json::null()
-    }
-    "fn.contextAsked" =>
-      match @session_hub.context_asked(self.words, match a(0) { Null => None; x => Some(x) }, "en") {
-        Some(Some(n)) => Json::number(n)
-        _ => Json::null()
-      }
-    "fn.inferRuntime" => {
-      let ws = match a(0) { String(w) => Some(w); _ => None }
-      let cur = match a(1) { String(r) => r; _ => "" }
-      let model = match a(2) { String(m) => m; _ => "" }
-      let available = self.the_hub().profiles_in(ws)
-      let rts_of = (p : Json) =>
-        match jfield(p, "runtimes") {
-          Array(xs) => xs.filter_map(x => match x { String(s) => Some(s); _ => None })
-          _ => []
-        }
-      let fits_cur = available.iter().any(p => rts_of(p).contains(cur) && @session_hub.runs(p, model))
-      if fits_cur {
-        Json::null()
-      } else {
-        let matched : Array[String] = []
-        for p in available {
-          if @session_hub.runs(p, model) {
-            for r in rts_of(p) {
-              if !matched.contains(r) {
-                matched.push(r)
-              }
-            }
-          }
-        }
-        if matched.length() == 1 {
-          Json::string(matched[0])
-        } else if matched.length() > 1 {
-          raise @session_storage.failed("model \{model} runs on multiple runtimes (\{matched.join(", ")}): pass runtime")
-        } else {
-          Json::null()
-        }
-      }
-    }
-    "clones.changed" => {
-      self.bus.notify_store({ "type": jstr("clones") })
-      Json::null()
-    }
-    "clones.kill" => {
-      match a(0) {
-        Number(pid, ..) => ignore(kill(pid.to_int(), "SIGKILL", group=true))
-        _ => ()
-      }
       Json::null()
     }
     _ =>

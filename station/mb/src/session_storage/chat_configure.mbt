@@ -40,9 +40,9 @@ fn cfg_speed(v : Json) -> String? {
 }
 
 ///|
-async fn Storage::describe_session(self : Storage, row : Json) -> Json {
+fn Storage::describe_session(self : Storage, row : Json) -> Json {
   let key = str(row, "key").unwrap_or("")
-  let link = match as_str(Some(self.ask("hub.link", [js(key)]))) {
+  let link = match (self.st.hub.world.link)(key) {
     Some(l) if l != "" => js(l)
     _ => Json::null()
   }
@@ -88,7 +88,7 @@ async fn Storage::resolve_configure_here(
   }
   match self.named(reference, ws) {
     Session(k, _) => {
-      if ws is Some(w) && !(self.ask("hub.inWorkspace", [js(k), js(w)]) is True) {
+      if ws is Some(w) && !self.in_workspace(k, w) {
         raise failed("that chat is in another workspace: only this workspace's chats can be configured")
       }
       k
@@ -100,7 +100,7 @@ async fn Storage::resolve_configure_here(
       if str(t, "home") is Some(h) {
         return h
       }
-      let agents = sessions_of(self.ask("store.threadSessions", [get(t, "id").unwrap_or(Json::null())]))
+      let agents = sessions_of(self.st.threads.thread_sessions(get(t, "id").unwrap_or(Json::null())))
       if agents.length() == 0 {
         raise failed("\{reference} has no agent session to configure")
       }
@@ -129,11 +129,7 @@ async fn Storage::parse_configure_change(self : Storage, ws : String?, args : Js
     }
     let scope = match ws {
       Some(w) => Some(w)
-      None =>
-        match items(Some(self.ask("hub.workspaces", []))).get(0) {
-          Some(String(w)) => Some(w)
-          _ => None
-        }
+      None => self.st.hub.workspaces().get(0)
     }
     let all = items(Some(self.ask("presets.list", [jopt(scope)])))
     let lower = preset_name.to_lower()
@@ -217,7 +213,11 @@ async fn Storage::parse_configure_change(self : Storage, ws : String?, args : Js
     out["context"] = match v {
       Null => Json::null()
       Number(0.0, ..) => Json::null()
-      _ => self.ask("fn.contextAsked", [v])
+      _ =>
+        match @session_hub.context_asked(self.st.hub.words, Some(v), "en") {
+          Some(Some(n)) => jn(n)
+          _ => Json::null()
+        }
     }
   }
   if obj.get("repick") is Some(v) {
@@ -228,6 +228,38 @@ async fn Storage::parse_configure_change(self : Storage, ws : String?, args : Js
     }
   }
   Some(Json::object(out))
+}
+
+///|
+fn Storage::infer_runtime(self : Storage, ws : String?, cur : String, model : String) -> String? raise Thrown {
+  let available = self.st.hub.profiles_in(ws)
+  let rts_of = (p : Json) =>
+    match get(p, "runtimes") {
+      Some(Array(xs)) => xs.filter_map(x => match x { String(s) => Some(s); _ => None })
+      _ => []
+    }
+  let fits_cur = available.iter().any(p => rts_of(p).contains(cur) && @session_hub.runs(p, model))
+  if fits_cur {
+    None
+  } else {
+    let matched : Array[String] = []
+    for p in available {
+      if @session_hub.runs(p, model) {
+        for r in rts_of(p) {
+          if !matched.contains(r) {
+            matched.push(r)
+          }
+        }
+      }
+    }
+    if matched.length() == 1 {
+      Some(matched[0])
+    } else if matched.length() > 1 {
+      raise failed("model \{model} runs on multiple runtimes (\{matched.join(", ")}): pass runtime")
+    } else {
+      None
+    }
+  }
 }
 
 ///|
@@ -243,12 +275,8 @@ async fn Storage::apply_configure_here(self : Storage, target_key : String, chan
       let copy = m.copy()
       if !copy.contains("runtime") {
         if copy.get("model") is Some(String(model)) && model != "" {
-          let inferred = self.ask("fn.inferRuntime", [
-            get(row, "ws").unwrap_or(Json::null()),
-            get(row, "runtime").unwrap_or(js("")),
-            js(model),
-          ])
-          if inferred is String(rt) && rt != "" {
+          let inferred = self.infer_runtime(str(row, "ws"), str(row, "runtime").unwrap_or(""), model)
+          if inferred is Some(rt) && rt != "" {
             copy["runtime"] = js(rt)
           }
         }
@@ -258,7 +286,7 @@ async fn Storage::apply_configure_here(self : Storage, target_key : String, chan
     other => other
   }
   let before = self.describe_session(row)
-  self.st.tell("fn.configure", [js(target_key), next])
+  self.st.hub.configure(target_key, next, lang="en")
   let after_row = self.session(target_key).unwrap_or(row)
   let after = self.describe_session(after_row)
   jo([("updated", jb(true)), ("before", before), ("after", after)]).stringify(indent=2)
@@ -280,7 +308,7 @@ pub async fn Storage::chat_configure(self : Storage, key : String, args : Json) 
       Some((k, _)) => k
       None => chat
     }
-    let moved = self.ask("store.handedTo", [js(ref_key)])
+    let moved = self.st.store.handed_to(ref_key)
     if str(moved, "station") is Some(st) && st != "" {
       station = Some(st)
       target_chat = ref_key

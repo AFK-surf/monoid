@@ -238,7 +238,7 @@ pub fn policy_from(saved : Json?) -> ArchivePolicy {
 ///|
 /// The policy in force in a workspace (store `archivePolicy`).
 pub async fn Storage::current_policy(self : Storage, ws : String?) -> ArchivePolicy {
-  policy_from(Some(self.ask("store.archivePolicy", [jopt(ws)])))
+  policy_from(Some(self.st.threads.archive_policy(jopt(ws))))
 }
 
 ///|
@@ -250,7 +250,7 @@ pub async fn Storage::save_policy(self : Storage, input : Json?, by : Json, ws :
   if summary == "" {
     return None
   }
-  self.st.tell("store.setArchivePolicy", [after.to_json(), by, js(summary), jopt(ws)])
+  ignore(self.with_threads(t => t.set_archive_policy(@jsjson.JValue::of_json(after.to_json()), @jsjson.JValue::of_json(by), js(summary), jopt(ws))))
   Some(summary)
 }
 
@@ -321,7 +321,7 @@ pub fn policy_checks(rows : Array[Json], mine : (String) -> Bool) -> Json {
 /// A workspace's archive policy as the pages show it (archive-policy.ts `policyView`). `mine` and `title` are the
 /// station's (`policy.mine`, `policy.title`), `checks` a reader's count where it gave one.
 pub async fn Storage::policy_view(self : Storage, ws : String?, viewer : Json, checks : Json?) -> Json {
-  let saved = some_of(self.ask("store.archivePolicy", [jopt(ws)]))
+  let saved = some_of(self.st.threads.archive_policy(jopt(ws)))
   let policy = policy_from(saved)
   let mine_known : Map[String, Bool] = {}
   let mine = async fn(s : String) {
@@ -337,7 +337,7 @@ pub async fn Storage::policy_view(self : Storage, ws : String?, viewer : Json, c
   let counted = match checks {
     Some(c) if !nullish(Some(c)) => c
     _ => {
-      let rows = items(Some(self.ask("store.latestDecisionsSince", [jn(policy_since(as_num(Some(self.ask("store.now", []))).unwrap_or(0.0))), viewer])))
+      let rows = items(Some(self.st.threads.latest_decisions_since(jn(policy_since(self.st.store.now().to_double())), viewer)))
       for row in rows {
         match get(row, "session") {
           Some(String(s)) => ignore(mine(s))

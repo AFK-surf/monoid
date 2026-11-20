@@ -160,7 +160,7 @@ pub async fn Storage::file_for_peer(self : Storage, request : Json, ws : String?
   }
   let sessions = match self.named(chat, ws) {
     Session(k, _) => [k]
-    Thread(t) => sessions_of(self.ask("store.threadSessions", [get(t, "id").unwrap_or(Json::null())]))
+    Thread(t) => sessions_of(self.st.threads.thread_sessions(get(t, "id").unwrap_or(Json::null())))
   }
   let path = fs.join([given])
   let base = fs.basename(path)

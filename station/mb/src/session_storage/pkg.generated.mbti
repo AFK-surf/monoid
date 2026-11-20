@@ -7,6 +7,9 @@ import {
   "moonbitlang/core/ref",
   "moonbitlang/core/set",
   "station/host",
+  "station/session_hub",
+  "station/store_sessions",
+  "station/store_threads",
 }
 
 // Values
@@ -237,10 +240,15 @@ pub struct Stat {
 }
 
 pub struct Station {
+  store : @store_sessions.Store
+  threads : @store_threads.Store
+  hub : @session_hub.Hub
+  archive_dir : String
+  flush_threads : () -> Unit
   call : async (String, Array[@json.Json]) -> @json.Json
 }
 pub async fn Station::ask(Self, String, Array[@json.Json]) -> @json.Json
-pub fn Station::new(async (String, Array[@json.Json]) -> @json.Json) -> Self
+pub fn Station::new(@store_sessions.Store, @store_threads.Store, @session_hub.Hub, String, () -> Unit, async (String, Array[@json.Json]) -> @json.Json) -> Self
 pub async fn Station::tell(Self, String, Array[@json.Json]) -> Unit
 
 pub struct Storage {

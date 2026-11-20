@@ -727,19 +727,26 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
           _ => None
         }
         let seen = @session_storage.Storage::new(
-          @session_storage.Station::new(async fn(name, a) {
-            match name {
-              "policy.mine" => {
-                let session = opt_str(a.get(0)).unwrap_or("")
-                Json::boolean(@api_routes.sees(viewer_jv, to_jv(jopt(self.ws_of(session)))))
-              }
-              _ =>
-                match self.storage_world(name, a, viewer~) {
-                  Some(v) if name.has_prefix("policy.") => v
-                  _ => self.storage_call(name, a)
+          @session_storage.Station::new(
+            self.bus.store,
+            self.threads,
+            hub,
+            path([self.data, "archive"]),
+            () => told_threads(self.bus, self.threads),
+            async fn(name, a) {
+              match name {
+                "policy.mine" => {
+                  let session = opt_str(a.get(0)).unwrap_or("")
+                  Json::boolean(@api_routes.sees(viewer_jv, to_jv(jopt(self.ws_of(session)))))
                 }
-            }
-          }),
+                _ =>
+                  match self.storage_world(name, a, viewer~) {
+                    Some(v) if name.has_prefix("policy.") => v
+                    _ => self.storage_call(name, a)
+                  }
+              }
+            },
+          ),
           self.files,
         )
         seen.policy_view(arg_opt_text(args, 0), viewer, checks)

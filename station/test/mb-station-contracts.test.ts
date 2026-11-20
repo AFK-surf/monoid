@@ -25,13 +25,7 @@ const mb = join(station, "mb", "src");
 const repo = join(station, "..");
 
 /// Calls a package makes that the program never reaches: each with a check that it is so.
-const NOT_REACHED: { name: string; why: string; holds: () => boolean }[] = [
-  {
-    name: "rpc session_storage fn.historyFound",
-    why: "asked only where the storage's world says `hub.has(\"locateAsync\")` is false, and P5-2's says it is true",
-    holds: () => /"hub\.has" => Json::boolean\(\["locateAsync",/.test(read(join(mb, "station_main", "live_p5_2_world.mbt"))),
-  },
-];
+const NOT_REACHED: { name: string; why: string; holds: () => boolean }[] = [];
 
 /// The parts a dispatcher answers whole, whatever the method (the conversations' world, live_p5_2_chats.mbt
 /// `chats_answer`: `match part { "files" => …, "path" => … }`): a package's call of one is answered there.
@@ -135,7 +129,7 @@ test("every call a package makes of the station's parts by name is answered in t
     assert.ok(n.holds(), `${n.name} is reached now (${n.why}): take it out of NOT_REACHED`);
   }
   for (const w of ANSWERED_WHOLE) assert.match(read(join(mb, "station_main", w.file)), w.arm, `${w.file} answers ${w.part} whole no more: take it out of ANSWERED_WHOLE`);
-  assert.ok(counted > 600, `the calls read: ${counted} (fewer than ever: the scan has stopped finding them)`);
+  assert.ok(counted > 300, `the calls read: ${counted} (fewer than ever: the scan has stopped finding them)`);
   const wrong = judge(results);
   assert.deepEqual(wrong, [], wrong.join("\n"));
 });
