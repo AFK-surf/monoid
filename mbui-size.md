@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [1507e2253](https://github.com/AFK-surf/monoid/commit/1507e22534ea785ab4ba261843940966c217c28b) feat(screen): add 2K gaming quality, adaptive data | 2.66 | 3.58 | 14.61 | 36.88 | 56.23 | 32.36 | 65.6 | 97.67 | 130.35 |
 | [74954dc1d](https://github.com/AFK-surf/monoid/commit/74954dc1dfc9658626efda959b8e24fc333b692a) fix(ci): retry network breaks in natives store-syn | 2.66 | 3.57 | 14.59 | 36.85 | 56.18 | 32.31 | 65.48 | 97.39 | 118.67 |
 | [13f8de006](https://github.com/AFK-surf/monoid/commit/13f8de0063c785ef1dba3cfb02a5a7417f414213) feat(mbui): link film on every host, film_none.c f | 2.66 | 3.57 | 14.59 | 36.85 | 56.18 | 32.31 | 65.48 | 97.39 | 118.67 |
 | [0a7668159](https://github.com/AFK-surf/monoid/commit/0a7668159a92f3431cf94e6c566f306af3a1a7de) refactor(station/mb): retire batch 1 TS parity har | 2.66 | 3.57 | 14.59 | 36.85 | 56.18 | 32.31 | 65.48 | 97.39 | 118.67 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e4cd89e1e](https://github.com/AFK-surf/monoid/commit/e4cd89e1efd309fa2bba1cda05cd717f6d84d243) fix(mbui): check node generation in inner FLIP and | 2.65 | 3.56 | 14.53 | 36.75 | 55.94 | 32.24 | 65.3 | 97.62 | 144.33 |
 | [a7ea726f1](https://github.com/AFK-surf/monoid/commit/a7ea726f1a91b42aa61c1d879a3d930a9fab15b0) perf(mbui): use keyframe seeks during video scrub  | 2.65 | 3.56 | 14.53 | 36.75 | 55.94 | 32.24 | 65.3 | 97.62 | 144.33 |
 | [5ce3832ae](https://github.com/AFK-surf/monoid/commit/5ce3832ae387a615ddc87ea9a22ba02efae31c82) refactor(station/mb): extract shared host_world an | 2.65 | 3.56 | 14.53 | 36.74 | 55.93 | 32.24 | 65.3 | 97.65 | 130.24 |
-| [d58e89c56](https://github.com/AFK-surf/monoid/commit/d58e89c56ff720ca9fb83f8570c429794f5218ff) docs: notes for stable 0.1.10157 (#7553) | 2.65 | 3.56 | 14.53 | 36.74 | 55.93 | 32.24 | 65.3 | 97.65 | 130.24 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [1507e2253](https://github.com/AFK-surf/monoid/commit/1507e22534ea785ab4ba261843940966c217c28b) feat(screen): add 2K gaming quality, adaptive data | 0.45 | 0.59 | 2.28 | 3.36 | 5.48 | 1.67 | 4.52 | 54.12 |
 | [74954dc1d](https://github.com/AFK-surf/monoid/commit/74954dc1dfc9658626efda959b8e24fc333b692a) fix(ci): retry network breaks in natives store-syn | 0.45 | 0.59 | 2.28 | 3.36 | 5.48 | 1.67 | 4.52 | 54.12 |
 | [13f8de006](https://github.com/AFK-surf/monoid/commit/13f8de0063c785ef1dba3cfb02a5a7417f414213) feat(mbui): link film on every host, film_none.c f | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.2 |
 | [0a7668159](https://github.com/AFK-surf/monoid/commit/0a7668159a92f3431cf94e6c566f306af3a1a7de) refactor(station/mb): retire batch 1 TS parity har | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 53.84 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e4cd89e1e](https://github.com/AFK-surf/monoid/commit/e4cd89e1efd309fa2bba1cda05cd717f6d84d243) fix(mbui): check node generation in inner FLIP and | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.05 |
 | [a7ea726f1](https://github.com/AFK-surf/monoid/commit/a7ea726f1a91b42aa61c1d879a3d930a9fab15b0) perf(mbui): use keyframe seeks during video scrub  | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.13 |
 | [5ce3832ae](https://github.com/AFK-surf/monoid/commit/5ce3832ae387a615ddc87ea9a22ba02efae31c82) refactor(station/mb): extract shared host_world an | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.13 |
-| [d58e89c56](https://github.com/AFK-surf/monoid/commit/d58e89c56ff720ca9fb83f8570c429794f5218ff) docs: notes for stable 0.1.10157 (#7553) | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.1 |
