@@ -550,6 +550,7 @@ async fn P53Accounts::ask(self : P53Accounts, m : String, arg : Json) -> Json {
         sessions().recheck(text(0, "profile"))
         done
       }
+      "canAuthRetry" => jb(sessions().can_auth_retry(text(0, "key"), text(1, "failedProfile")))
       // (agents.ts: someone follows the events again, after nobody did: the allowances read again)
       "followed" => {
         self.made().followed()

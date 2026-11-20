@@ -12,6 +12,7 @@ priv struct LineProgram {
   argv0 : String
   args : Array[String]
   name : String
+  background : Bool
   mut proc : Proc?
   waiting : Array[@effect.Deferred[Result[Json, String]]]
   mut idle : @effect.Fiber[Unit]?
@@ -19,8 +20,8 @@ priv struct LineProgram {
 }
 
 ///|
-fn LineProgram::new(host : @host.Host, argv0 : String, args : Array[String], name : String, idle_ms? : Int) -> LineProgram {
-  { host, argv0, args, name, proc: None, waiting: [], idle: None, idle_ms }
+fn LineProgram::new(host : @host.Host, argv0 : String, args : Array[String], name : String, idle_ms? : Int, background? : Bool = false) -> LineProgram {
+  { host, argv0, args, name, background, proc: None, waiting: [], idle: None, idle_ms }
 }
 
 ///|
@@ -33,10 +34,15 @@ fn LineProgram::started(self : LineProgram) -> Proc raise {
     None => ()
   }
   if self.proc is Some(p) { return p }
+  let (program, args) = if self.background {
+    backgrounded(self.argv0, self.args)
+  } else {
+    (self.argv0, self.args)
+  }
   let p = spawn_lines(
     self.host,
-    self.argv0,
-    self.args,
+    program,
+    args,
     self.name + "'s lines",
     (_, line) => {
       if line == "" { return }
@@ -305,6 +311,7 @@ async fn P52::usage_ask(self : P52, what : String, args : Json) -> Json {
             ["--builder", "usage-counter", "--db", db_path, "--sep", sep()],
             "the usage counter's program",
             idle_ms=60000,
+            background=true,
           )
           usage_counter_program.val = Some(p)
           p
@@ -341,7 +348,7 @@ async fn P52::usage_ask(self : P52, what : String, args : Json) -> Json {
       let program = match usage_retire_program.val {
         Some(p) => p
         None => {
-          let p = LineProgram::new(self.host, self.bus.argv0, ["--builder", "usage-retire", "--db", db_path], "usage retirement")
+          let p = LineProgram::new(self.host, self.bus.argv0, ["--builder", "usage-retire", "--db", db_path], "usage retirement", background=true)
           usage_retire_program.val = Some(p)
           p
         }

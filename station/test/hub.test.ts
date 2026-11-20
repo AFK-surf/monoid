@@ -156,8 +156,9 @@ test("an agent hears the current time again when a message or job wakes it after
   await time.adjust(30 * 60_000);
   waiting.hub.notify(key, "a job ended");
   await settle();
-  assert.ok(agent.prompts.at(-1)!.includes(`[Delivered at ${new Date(first + 31 * 60_000).toISOString()} (UTC)]`), agent.prompts.at(-1));
-  assert.ok(agent.prompts.at(-1)!.includes("a job ended"));
+  const resumed = waiting.claude.last();
+  assert.ok(resumed.prompts.at(-1)!.includes(`[Delivered at ${new Date(first + 31 * 60_000).toISOString()} (UTC)]`), resumed.prompts.at(-1));
+  assert.ok(resumed.prompts.at(-1)!.includes("a job ended"));
   await waiting.close();
 });
 
@@ -1141,14 +1142,22 @@ test("a 401 on the trailing request after the turn said it waits keeps the wait,
     assert.equal(driver.count(), 2, `${runtime}: its wait brings it back in a new process`);
     assert.equal(second.options.resume, first.sessionId);
     assert.ok(second.prompts[0]!.includes("waiting on work you started (600 seconds)"), second.prompts[0]);
-    // A sign-in that is really bad fails the next turn too, which declared nothing: retried once, then said.
+    // A passive waitOver turn's 401 stops and says the auth failure without auto-retrying (FB-39);
+    // an active turn's own 401 is still retried once, then said.
     second.end({ kind: "failed", reason: "auth", message: UNAUTHENTICATED });
     await settle();
-    assert.equal(driver.count(), 3, runtime);
+    assert.equal(driver.count(), 2, `${runtime}: passive waitOver 401 stops without auto-retrying`);
+    assert.ok(r.chat.lastText()!.startsWith("⚠️ 账号认证失败"), r.chat.lastText());
+    await r.accept(reply(m, "9999.2", "<@UBOT> check again", { addressed: true }));
+    await settle();
+    const beforeRetry = driver.count();
+    driver.last().end({ kind: "failed", reason: "auth", message: UNAUTHENTICATED });
+    await settle();
+    assert.equal(driver.count(), beforeRetry + 1, runtime);
     assert.deepEqual(driver.last().prompts.map(untimed), [GO_ON_AFTER_AUTH]);
     driver.last().end({ kind: "failed", reason: "auth", message: UNAUTHENTICATED });
     await settle();
-    assert.equal(driver.count(), 3, `${runtime}: a persistent auth failure stops`);
+    assert.equal(driver.count(), beforeRetry + 1, `${runtime}: a persistent auth failure stops`);
     assert.ok(r.chat.lastText()!.startsWith("⚠️ 账号认证失败"), r.chat.lastText());
     await r.close();
     t.mock.timers.reset();
@@ -1937,9 +1946,9 @@ test("idle claude processes beyond the warm limit are evicted, oldest first, as 
   await r.close();
 });
 
-test("an idle process beyond the limit is evicted at its own deadline", async () => {
+test("an idle process within the limit is evicted at its own deadline", async () => {
   const time = testClock();
-  const r = new Rig({ maxWarmClaude: 0, warmMinutes: 0.002, clock: time.clock }); // 120 ms
+  const r = new Rig({ maxWarmClaude: 1, warmMinutes: 0.002, clock: time.clock }); // 120 ms
   await r.accept(message());
   await settle();
   r.claude.last().end({ kind: "aborted" });
@@ -3251,36 +3260,37 @@ test("an account spent with none to move to is said once; what wakes it waits fo
   await settle();
   assert.equal(agent.prompts.length, 1, "no turn while its account is spent");
   assert.equal(said().length, 1);
-  // At the refill: it goes on by itself; the notices follow that turn.
+  const allPrompts = () => r.claude.sessions.flatMap((s) => s.prompts);
+  // At the refill: it goes on by itself (a fresh process if warmMs evicted the idle one); the notices follow that turn.
   await time.adjust(2 * HOUR);
   await settle();
-  assert.equal(agent.prompts.length, 2);
-  assert.equal(untimed(agent.prompts[1]!), GO_ON_AFTER_REFILL);
+  assert.equal(allPrompts().length, 2);
+  assert.equal(untimed(allPrompts()[1]!), GO_ON_AFTER_REFILL);
   // Spent again (the refill read wrong): still said only once, and it waits again (an hour, none known now).
   r.hub.accounts.setHealth(() => ({}));
-  agent.end(spent);
+  r.claude.last().end(spent);
   await settle();
   assert.equal(said().length, 1, "the thread ends with it already");
   const thread = r.thread("C1", m.threadTs);
   const notice = r.store.entriesBefore(thread.id, null, 1).at(-1)!;
   assert.deepEqual(r.store.lastTurn(key)!.about, { thread: thread.id, seq: notice.n, ts: notice.ts });
-  assert.equal(agent.prompts.length, 2);
+  assert.equal(allPrompts().length, 2);
   // A person's message is tried at once, and its failure told them.
   await r.accept(reply(m, "9999.3", "<@UBOT> 还在吗", { addressed: true }));
   await settle();
-  assert.equal(agent.prompts.length, 3);
-  assert.ok(agent.prompts[2]!.includes("还在吗"));
-  agent.end(spent);
+  assert.equal(allPrompts().length, 3);
+  assert.ok(allPrompts()[2]!.includes("还在吗"));
+  r.claude.last().end(spent);
   await settle();
   assert.equal(said().length, 2, "told the person who asked");
   await time.adjust(HOUR);
   await settle();
-  assert.equal(untimed(agent.prompts[3]!), GO_ON_AFTER_REFILL);
+  assert.equal(untimed(allPrompts()[3]!), GO_ON_AFTER_REFILL);
   // A turn that ends well: what waited is given.
   await r.call(key, "chat_post", { to: `C1/${m.threadTs}`, text: "done", kind: "final" });
-  agent.complete();
+  r.claude.last().complete();
   await settle();
-  assert.ok(matches(agent.prompts[4]!, ["a job ended", "another job ended"]), agent.prompts[4]);
+  assert.ok(matches(allPrompts()[4]!, ["a job ended", "another job ended"]), allPrompts()[4]);
   await r.close();
 });
 
@@ -3377,7 +3387,8 @@ test("a manual allowance reset wakes only waiting sessions on that account, incl
   await r.hub.allowanceReset("cc");
   await time.adjust(7200_000);
   await settle();
-  assert.deepEqual(agents.map((a) => a.prompts.length), [2, 2, 2, 1], "old timers do not start the resumed or stopped sessions again");
+  const promptCountFor = (route: string) => r.claude.sessions.filter((s) => s.options.route === route).reduce((n, s) => n + s.prompts.length, 0);
+  assert.deepEqual(agents.map((a) => promptCountFor(a.options.route)), [2, 2, 2, 1], "old timers do not start the resumed or stopped sessions again");
   await r.close();
 });
 

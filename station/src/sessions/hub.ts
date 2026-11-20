@@ -1209,9 +1209,9 @@ export class Hub {
 
   // ── warm processes ─────────────────────────────────────────────────────────────────────────────────────────────
 
-  /// Ends idle claude and dsh processes (one per session) beyond the warm limit, oldest first, once they have idled
-  /// past warmMs. Codex threads share a process and stay. Runs when a process goes idle (the count grew) and at each
-  /// idle process's deadline.
+  /// Ends idle claude and dsh processes (one per session) beyond the warm limit (immediately, oldest first), and any
+  /// remaining idle processes once they have idled past warmMs (when warmMs > 0). Codex threads share a process and
+  /// stay. Runs when a process goes idle (the count grew) and at each idle process's deadline.
   private evictIdle() {
     const config = this.config();
     const now = this.now();
@@ -1222,11 +1222,17 @@ export class Hub {
         return ms === null ? [] : [[a, ms] as const];
       })
       .sort((a, b) => b[1] - a[1]);
-    let excess = idle.length - config.maxWarmClaude;
+    const cap = Math.max(0, Math.trunc(config.maxWarmClaude));
+    let excess = idle.length - cap;
     for (const [actor, ms] of idle) {
-      if (excess <= 0 || ms < config.warmMs) break;
-      void actor.evict();
-      excess--;
+      if (excess > 0) {
+        void actor.evict();
+        excess--;
+      } else if (config.warmMs > 0 && ms >= config.warmMs) {
+        void actor.evict();
+      } else {
+        break;
+      }
     }
   }
 
@@ -1824,6 +1830,7 @@ export class Hub {
       spend: (key, ranOn, model) => this.accounts.spend(key, ranOn, model),
       refillsAt: (key) => this.accounts.refillsAt(key),
       recheck: (profile) => this.accounts.recheck(profile),
+      canAuthRetry: (key, failedProfile) => this.accounts.canAuthRetry(key, failedProfile),
       limitAfter: (profile, model) => this.accounts.limitAfter(profile, model),
       mcpUrl: () => (typeof this.options.mcpUrl === "string" ? this.options.mcpUrl : this.options.mcpUrl()),
       ...(this.options.toolsHeard ? { toolsHeard: this.options.toolsHeard } : {}),

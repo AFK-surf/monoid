@@ -880,7 +880,17 @@ async fn p53_pressure_read(host : @host.Host) -> String? {
   if platform() == "darwin" {
     guard shell_proc_run(host, "/usr/sbin/sysctl", ["-n", "kern.memorystatus_vm_pressure_level"]) is Some(level) else { return None }
     match level.trim_space().to_string() {
-      "1" => Some("normal")
+      "1" => {
+        let m = machine()
+        match (jnum_of(m, "freemem"), jnum_of(m, "totalmem")) {
+          (Some(f), Some(t)) =>
+            match of_available(f, t) {
+              Some(p) => Some(p)
+              None => Some("normal")
+            }
+          _ => Some("normal")
+        }
+      }
       "4" => Some("critical")
       "2" => {
         // (warn is high only while what is left says so too: macOS warns while its free pages are low)

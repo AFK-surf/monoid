@@ -29,7 +29,7 @@ export function pressureOfAvailable(available: number | null, total: number | nu
 export function pressureOfLevel(level: string, available: number | null = null, total: number | null = null): "normal" | "high" | "critical" | null {
   switch (trim(level)) {
     case "1":
-      return "normal";
+      return pressureOfAvailable(available, total) ?? "normal";
     case "2":
       return pressureOfAvailable(available, total) ?? "high";
     case "4":
