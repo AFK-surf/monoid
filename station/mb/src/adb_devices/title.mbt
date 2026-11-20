@@ -64,7 +64,10 @@ pub async fn grant_chat_title(w : World, r : J) -> String? {
       surface == Some("stillfail") {
       return Some(without_text)
     }
-    let first = str_of(Some(w.store("firstText", [get(own, "id")])))
+    let first = match w.threads.first_text(@jsjson.jval_to_json(get(own, "id"))) {
+      String(s) => Some(s)
+      _ => None
+    }
     let with_text = w.title_of(own, first)
     if with_text == without_text {
       return Some(without_text)

@@ -38,7 +38,6 @@ priv struct P54DevWorld {
   listeners : Map[Int, Json]
   procs : Map[Int, P54Proc]
   fns : Map[Int, async (Array[@jsjson.JValue]) -> @jsjson.JValue]
-  timers : Map[Int, () -> Unit]
   mut next : Int
 }
 
@@ -139,15 +138,6 @@ fn p54_peer_port(peer : String?) -> Int? {
   match (try { Some(@string.parse_int(digits)) } catch { _ => None }) {
     Some(n) if n > 0 && n < 65536 => Some(n)
     _ => None
-  }
-}
-
-///|
-/// A member's connection as the devices are given it (P5-1's `member_stream`: its remote id), or the id it has.
-fn p54_conn_remote(v : Json?) -> String {
-  match v {
-    Some(String(s)) => s
-    _ => opt_text(v, "remoteId").unwrap_or("")
   }
 }
 
@@ -271,21 +261,12 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
     None => None
   }
   let answer : Json = match name {
-    // the clock
-    "clock.sleep" => {
-      @effect.sleep(opt_num(a(0)).unwrap_or(0.0).to_int())
-      Json::null()
-    }
-    "clock.cancel" => {
-      if self.timers.get(p54_int(a(0))) is Some(stop) { stop() }
-      Json::null()
-    }
     "log.info" | "log.warn" | "log.error" => {
       err_write("\{name[4:]} \{s(0)}: \{s(1)} \{a(2).unwrap_or(Json::null()).stringify()}\n")
       Json::null()
     }
     // the machine
-    "process.pid" | "platform.sep" | "platform.os" | "remote.ask" | "cloud.station" | "cloud.home" | "cloud.removed" | "events.tell" =>
+    "remote.ask" | "cloud.station" | "cloud.home" | "cloud.removed" | "events.tell" =>
       dispatch_infra(bus, name, args).unwrap_or(Json::null())
     "platform.startTimeOf" => p54_start_time(host, p54_int(a(0)))
     "platform.tcpPortPids" => p54_port_pids(host, p54_int(a(0)))
@@ -321,24 +302,10 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
       Json::array(out)
     }
     "adb.path" => jopt(p54_adb_path())
-    "random.hex" => Json::string(@drive.hex(@drive.random_bytes(8)))
-    "random.int" => {
-      let lo = p54_int(a(0))
-      let hi = p54_int(a(1))
-      let r = @drive.random_bytes(4)
-      let n = (r[0].to_int() << 16) | (r[1].to_int() << 8) | r[2].to_int()
-      Json::number((lo + n % (if hi > lo { hi - lo } else { 1 })).to_double())
-    }
     "previous.gone" => {
       (bus.previous_gone)()
       Json::null()
     }
-    // the files
-    "fs.read" | "fs.write" | "fs.rename" | "fs.rm" | "fs.mkdir" | "fs.copy" | "fs.realpath" | "fs.size" | "fs.stat" | "fs.mkdtemp" | "fs.sha256" =>
-      host_fs_op(host, name[3:].to_owned(), args) catch {
-        DispatchFsError(c, m) => raise @drive.fs_error(c, m)
-        e => raise e
-      }
     // the processes
     "proc.signal" => {
       ignore(kill(p54_int(a(0)), s(1)))
@@ -408,11 +375,6 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
         None => Json::null()
       }
     // the sockets: this machine's own (127.0.0.1, a Unix socket's path)
-    "net.freePort" => {
-      let l = host.tcp_listen_local(0)
-      host.listen_close(l.id)
-      Json::number(l.port.to_double())
-    }
     "net.listen" => {
       let o = a(0)
       let l = host.tcp_listen_local(opt_num(opt_field(o, "port")).unwrap_or(0.0).to_int())
@@ -567,65 +529,6 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
       fork_bg(host, "join", async fn() { carry(two, one) })
       Json::null()
     }
-    // a member's connection on the mesh and its streams (the shell's)
-    "conn.openBi" => {
-      let cid = match a(0) {
-        Some({ "id": id, .. }) => id
-        Some(other) => other
-        None => Json::null()
-      }
-      let (got, _) = host.shell("conn.openBi", { "id": cid })
-      opt_field(Some(got), "id").unwrap_or(Json::null())
-    }
-    "conn.closed" => {
-      let cid = match a(0) {
-        Some({ "id": id, .. }) => id
-        Some(other) => other
-        None => Json::null()
-      }
-      ignore(host.shell("conn.closed", { "id": cid })) catch {
-        _ => ()
-      }
-      Json::null()
-    }
-    "conn.isClosed" => Json::boolean(false)
-    "conn.hasAnswers" => Json::boolean(true)
-    "conn.answers" => {
-      let cid = match a(0) {
-        Some({ "id": id, .. }) => id
-        Some(other) => other
-        None => Json::null()
-      }
-      let (got, _) = host.shell("conn.answers", { "id": cid, "within": a(1).unwrap_or(Json::null()) })
-      got
-    }
-    "conn.remoteId" => Json::string(p54_conn_remote(a(0)))
-    // (link.ts `about`, for the log: the device by its id's first 12; how it is reached P5-1 keeps, not told here)
-    "conn.about" => {
-      let remote = p54_conn_remote(a(0))
-      {
-        "device": Json::string(if remote.length() > 12 { remote[:12].to_owned() } else { remote }),
-        "via": Json::string("none"),
-        "ways": Json::string(""),
-      }
-    }
-    "stream.read" => {
-      let (said, bytes) = p54_stream_call(host, a(0).unwrap_or(Json::null()), "read") catch { _ => return @jsjson.JValue::Null }
-      match (opt_field(Some(said), "end"), bytes) {
-        (Some(True), _) | (_, None) => Json::null()
-        (_, Some(b)) => Json::string(@drive.base64(b))
-      }
-    }
-    "stream.write" => {
-      ignore(p54_stream_call(host, a(0).unwrap_or(Json::null()), "write", bytes=@drive.from_base64(s(1))))
-      Json::null()
-    }
-    "stream.finish" | "stream.reset" | "stream.stopped" => {
-      ignore(p54_stream_call(host, a(0).unwrap_or(Json::null()), name[7:].to_owned(), code?=a(1))) catch {
-        _ => ()
-      }
-      Json::null()
-    }
     "serial.open" => {
       // (stty set its speed already: opened raw here at that speed, unless a baud is given)
       let baud = match opt_num(a(1)) {
@@ -634,10 +537,8 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
       }
       self.sock(p54_wire_of_net(p54_net_serial(host, s(0), baud)))
     }
-    // the store's chats and cards
-    "store.has" => Json::boolean(["latestThreadIfReady", "pendingCardHeaderIfReady"].contains(s(0)))
-    "store.getSession" => bus_session_row(bus, s(0))
-    "store.starter" | "store.firstText" | "store.latestThread" | "store.latestThreadIfReady" | "store.sessionThreadById" | "store.pendingCardHeader" | "store.pendingCardHeaderIfReady" | "store.insertMessage" | "store.withdrawCard" | "store.restateCard" | "cardOutcomes.save" =>
+    // the store's chats and cards (writes/requests needing bus notifications)
+    "store.latestThread" | "store.latestThreadIfReady" | "store.insertMessage" | "store.withdrawCard" | "store.restateCard" | "cardOutcomes.save" =>
       dispatch_threads_card(bus, self.threads, name, args, async fn(cb, cb_args) {
         match fn_of(Some(cb)) {
           Some(f) => Some(of_jv(f(cb_args.map(to_jv))))
@@ -646,9 +547,7 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
       }).unwrap_or(Json::null())
     "store.sessionChat" | "store.sessionThread" => (bus.hub_ask.val)(name, jarr)
     // the hub and the agents' side (P5-2's)
-    "hub.has" => Json::boolean(["prepareCardPosts", "prepareLatestThreads"].contains(s(0)))
-    "hub.identity" => (bus.hub_ask.val)(name, jarr)
-    "hub.notify" | "hub.shared" | "hub.prepareCardPosts" | "hub.prepareLatestThreads" | "chat.post" | "agents.runners" =>
+    "hub.identity" | "hub.notify" | "hub.shared" | "hub.prepareCardPosts" | "hub.prepareLatestThreads" | "chat.post" | "agents.runners" =>
       (bus.hub_ask.val)(name, jarr)
     "jobs.watched" => (bus.jobs_ask.val)(name, jarr)
     // (the forwards and the rigs are P5-1's: asked of this station's own handlers on the bus, the jobs' where none is)
@@ -690,9 +589,7 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
       ignore(bus.stopped.wait())
       Json::null()
     }
-    "cloud.unlisten" => Json::null()
     "grants.home" => jopt(bus_home(bus))
-    "grants.id" => Json::null()
     "sources.changed" => {
       (bus.overview_changed.val)()
       Json::null()
@@ -737,11 +634,13 @@ async fn p54_devices_start(bus : LiveBus, threads : @store_threads.Store, cloud 
     listeners: Map([]),
     procs: Map([]),
     fns: Map([]),
-    timers: Map([]),
     next: 0,
   }
   let (zh, en) = catalogs_json()
   let world = @adb_devices.World::new(
+    host,
+    bus.store,
+    threads,
     async fn(name, args) { w0.call(name, args) },
     f => {
       let id = w0.id()

@@ -74,8 +74,9 @@ pub async fn GrantServers::reap(
     None => ()
   }
   let w = self.w
-  let left = @session_chats.parse_js(js_text(w.ask("fs.read", [js(record)]))) catch {
-    _ => ja([])
+  let left = match (w.host.read_text(record) catch { _ => None }) {
+    Some(text) => @session_chats.parse_js(text) catch { _ => ja([]) }
+    None => ja([])
   }
   let mut stopped = 0
   for k in list_of(Some(left)) {
@@ -87,7 +88,10 @@ pub async fn GrantServers::reap(
       continue
     }
     match at(Some(k), "dir") {
-      Some(Str(_) as d) => ignore(w.ask("fs.rm", [d]))
+      Some(Str(_) as d) =>
+        @host_world.fs_remove(w.host, js_text(d), recursive=true) catch {
+          _ => ()
+        }
       _ => ()
     }
     let started = w.ask("platform.startTimeOf", [ji(pid)])
@@ -142,22 +146,21 @@ fn GrantServers::write_soon(self : GrantServers) -> @effect.Deferred[Unit] {
       _ => ()
     }
     try {
-      let pid = w.ask("process.pid", [])
+      let pid = @host.pid()
       // (a name of its own, let go of where the write fails: never one another write of this process takes, L13)
       record_seq.val += 1L
-      let temp = "\{record}.\{js_text(pid)}.\{record_seq.val}.tmp"
+      let temp = "\{record}.\{pid}.\{record_seq.val}.tmp"
       errdefer @effect.uninterruptible(async fn() {
-        ignore(w.ask("fs.rm", [js(temp)])) catch {
+        @host_world.fs_remove(w.host, temp, recursive=true) catch {
           _ => ()
         }
       })
-      ignore(
-        w.ask("fs.write", [
-          js(temp),
-          js(stringify(ja(self.kept.values().map(k => k.to_j()).collect()))),
-        ]),
+      w.host.write_private(
+        temp,
+        @utf8.encode(stringify(ja(self.kept.values().map(k => k.to_j()).collect()))),
+        sep=@drive.sep(),
       )
-      ignore(w.ask("fs.rename", [js(temp), js(record)]))
+      @host_world.fs_rename(w.host, temp, record)
     } catch {
       e =>
         w.log(
@@ -207,7 +210,7 @@ async fn GrantServers::start(self : GrantServers, id : String) -> Server? {
     // else on the port itself.
     let dir = match self.admit {
       None => None
-      Some(_) => Some(js_text(w.ask("fs.mkdtemp", [js("sf-adb-")])))
+      Some(_) => Some(w.fs_mkdtemp("sf-adb-"))
     }
     let path = dir.map(d => d + "/s")
     let door = match (path, self.admit) {
@@ -229,7 +232,11 @@ async fn GrantServers::start(self : GrantServers, id : String) -> Server? {
     }
     let port = match door {
       Some(d) => d.port
-      None => num_of(Some(w.ask("net.freePort", []))).unwrap_or(0.0).to_int()
+      None => {
+        let l = w.host.tcp_listen_local(0)
+        w.host.listen_close(l.id)
+        l.port
+      }
     }
     let args = match path {
       None => ["-P", port.to_string(), "server", "nodaemon"]
@@ -250,7 +257,7 @@ async fn GrantServers::start(self : GrantServers, id : String) -> Server? {
       match dir {
         Some(d) =>
           (w.spawn)(async fn() {
-            ignore(w.ask("fs.rm", [js(d)])) catch {
+            @host_world.fs_remove(w.host, d, recursive=true) catch {
               _ => ()
             }
           })

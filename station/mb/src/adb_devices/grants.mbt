@@ -247,15 +247,15 @@ fn PhoneGrants::secs(self : PhoneGrants) -> Double {
 }
 
 ///|
-async fn PhoneGrants::ended(self : PhoneGrants, session : String) -> Bool {
-  let row = self.w.store("getSession", [js(session)])
+fn PhoneGrants::ended(self : PhoneGrants, session : String) -> Bool {
+  let row = self.w.get_session(session)
   row is Null || !nullish(at(Some(row), "archivedAt"))
 }
 
 ///|
 /// A grant belongs to its chat's workspace, not to the chat's directory on disk.
 async fn PhoneGrants::workspace(self : PhoneGrants, r : Req) -> J {
-  let row = self.w.store("getSession", [js(r.session())])
+  let row = self.w.get_session(r.session())
   match at(Some(row), "ws") {
     Some(Null) | None => self.w.ask("grants.home", [])
     Some(ws) => ws
@@ -592,11 +592,11 @@ pub async fn PhoneGrants::live_all(self : PhoneGrants) -> Array[Req] {
 
 ///|
 /// The person a session works for: whoever started its chat.
-pub async fn PhoneGrants::starter(
+pub fn PhoneGrants::starter(
   self : PhoneGrants,
   session : String,
-) -> String? {
-  str_of(Some(self.w.store("starter", [js(session)])))
+) -> String? raise {
+  self.w.starter(session)
 }
 
 ///|
@@ -636,7 +636,12 @@ pub async fn PhoneGrants::ask(
   // latest one: a reasked card goes back to its original place. Older requests may not record that place.
   let original = match pending {
     Some(p) if !nullish(p.get("thread")) =>
-      self.w.store("sessionThreadById", [js(session), p.get("thread").unwrap()])
+      @jsjson.jval_of_json(
+        self.w.threads.session_thread_by_id(
+          Json::string(session),
+          @jsjson.jval_to_json(p.get("thread").unwrap()),
+        ),
+      )
     _ => Null
   }
   let mut thread = original
@@ -663,10 +668,7 @@ pub async fn PhoneGrants::ask(
   let r = match pending {
     Some(p) => p
     None => {
-      let id = match self.w.ask("grants.id", []) {
-        Str(_) as s => s
-        _ => js(fresh_id((self.w.now)()))
-      }
+      let id = js(fresh_id((self.w.now)()))
       let row = get(thread, "thread")
       Req::new(
         jo([
@@ -836,11 +838,7 @@ async fn PhoneGrants::post(
     stillfail_surface &&
     at(Some(get(thread, "thread")), "surface") is Some(Str(_))
   // (asked of someone the chat's agent does not work for: they are named, so the chat sees whose phone it asks)
-  let starter = self.w.store("starter", [js(session)])
-  let starter = match starter {
-    Str(u) => Some(@jsjson.sanitize_str(u).to_lower())
-    _ => None
-  }
+  let starter = self.w.starter(session).map(u => u.to_lower())
   let whose = if starter == Some(r.owner()) {
     "你的手机"
   } else {

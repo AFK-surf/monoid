@@ -452,10 +452,11 @@ async fn Shares::granted_of(self : Shares, email : String) -> Array[String] {
 
 ///|
 /// Which phone of whose an offer or ask is about: the phone's device key as it says (`phone`), else the connection's.
-pub async fn key(w : World, viewer : J, conn : J, ask : J) -> String {
+pub fn key(w : World, viewer : J, conn : J, ask : J) -> String {
+  ignore(w)
   let phone = match at(Some(ask), "phone") {
     Some(Str(_) as p) if hex64(js_text(p)) => js_text(p)
-    _ => js_text(w.ask("conn.remoteId", [conn]))
+    _ => conn_remote_id(conn)
   }
   "\{text_of(at(Some(viewer), "sub"))}/\{phone}"
 }
@@ -521,7 +522,7 @@ pub async fn answer_adb(
       Some(c) => jo([("message", js(message)), ("code", js(c))])
     }
     stream_write(w, stream, @utf8.encode(stringify(body)))
-    ignore(w.ask("stream.finish", [stream]))
+    w.stream_finish(stream)
   }
   let op = at(Some(ask), "op")
   if op is Some(Str(_)) && text_of(op) == "share" {
@@ -588,11 +589,8 @@ fn silent(
 ) -> Unit {
   let w = shares.w
   (w.spawn)(async fn() {
-    if !(w.ask("conn.hasAnswers", [conn]) is Bool(true)) {
-      return
-    }
     let mut missed = 0
-    while !stopped.val && !(w.ask("conn.isClosed", [conn]) is Bool(true)) {
+    while !stopped.val {
       // timer: a heartbeat of the phone's connection
       shares.wait(silent_ms / 3.0) catch {
         _ => stopped.val = true
@@ -600,10 +598,8 @@ fn silent(
       if stopped.val {
         return
       }
-      let answered = w.ask("conn.answers", [conn, jn(silent_ms / 6.0)]) catch {
-        _ => Bool(true)
-      }
-      missed = if answered is Bool(true) { 0 } else { missed + 1 }
+      let answered = w.conn_answers(conn, silent_ms / 6.0) catch { _ => true }
+      missed = if answered { 0 } else { missed + 1 }
       if missed >= 3 {
         ignore(said.succeed("silent"))
         return
@@ -720,9 +716,7 @@ async fn offer(
           }
         })
         if shares.stopping {
-          ignore(w.ask("stream.reset", [stream, ji(0)])) catch {
-            _ => ()
-          }
+          w.stream_reset(stream, 0)
           return
         }
         let r = raced.unwrap()
@@ -753,13 +747,13 @@ async fn offer(
       ("headers", jo([("content-type", js("application/x-ndjson"))])),
     ]),
   )
-  let remote = w.ask("conn.remoteId", [conn])
+  let remote = js(conn_remote_id(conn))
   w.log(
     "info",
     "adb",
     "adb offer",
     spread(
-      spread(jo([("offer", ji(number))]), about(w, conn)),
+      spread(jo([("offer", ji(number))]), conn_about(conn)),
       jo([
         ("main", jb(jeq(remote, at(Some(ask), "phone").unwrap_or(Null)))),
         ("adbd", get(info, "adbd")),
@@ -791,15 +785,11 @@ async fn offer(
   share.streams += 1
   let ends : @effect.Deferred[String] = @effect.Deferred::new()
   (w.spawn)(async fn() {
-    ignore(w.ask("stream.stopped", [stream])) catch {
-      _ => ()
-    }
+    w.stream_stopped(stream)
     ignore(ends.succeed("stopped"))
   })
   (w.spawn)(async fn() {
-    ignore(w.ask("conn.closed", [conn])) catch {
-      _ => ()
-    }
+    w.conn_closed(conn)
     ignore(ends.succeed("closed"))
   })
   let silence = Ref(false)
@@ -850,11 +840,6 @@ async fn offer(
     if next != "changed" {
       ended = next
       break
-    }
-  }
-  if shares.cloud {
-    ignore(w.ask("cloud.unlisten", [])) catch {
-      _ => ()
     }
   }
   silence.val = true
@@ -911,9 +896,7 @@ async fn offer(
       None => ()
     }
   }
-  ignore(w.ask("stream.finish", [stream])) catch {
-    _ => ()
-  }
+  w.stream_finish(stream)
 }
 
 ///|
@@ -947,7 +930,7 @@ async fn take_socket(shares : Shares, share : Share, socket : J) -> Unit {
       "adb tunnel ended",
       spread(
         jo([("error", js(message_of(error))), ("offer", ji(share.offer))]),
-        about(w, conn),
+        conn_about(conn),
       ),
     )
     share.refuse(refusal(error), unpaired=kind_of(error) == "Unpaired")
@@ -987,19 +970,6 @@ async fn take_socket(shares : Shares, share : Share, socket : J) -> Unit {
       tunnel(w, conn, "connect", socket, signal=Some(signal)) catch {
         e => ended(e)
       }
-  }
-}
-
-///|
-/// Which of the phone's connections it is and the ways it has, for the log; never fails.
-async fn about(w : World, conn : J) -> J {
-  try {
-    match w.ask("conn.about", [conn]) {
-      Obj(_) as o => o
-      _ => jo([])
-    }
-  } catch {
-    _ => jo([])
   }
 }
 
@@ -1081,9 +1051,7 @@ async fn tunnel(
         _ => ()
       }
       if !(stream.val is Null) {
-        ignore(w.ask("stream.reset", [stream.val, ji(0)])) catch {
-          _ => ()
-        }
+        w.stream_reset(stream.val, 0)
       }
     })
   }
@@ -1104,18 +1072,10 @@ async fn tunnel(
     })
     if !(stream.val is Null) {
       let st = stream.val
-      (w.spawn)(async fn() {
-        ignore(w.ask("stream.reset", [st, ji(0)])) catch {
-          _ => ()
-        }
-      })
+      (w.spawn)(async fn() { w.stream_reset(st, 0) })
     }
   }
-  stream.val = w.ask("conn.openBi", [
-    conn,
-    jn(tunnel_open),
-    js("the phone did not take the tunnel"),
-  ])
+  stream.val = w.conn_open_bi(conn)
   if signal is Some(s) && s.aborted {
     return abort()
   }
@@ -1140,11 +1100,7 @@ async fn tunnel(
   }
   let s = stream.val
   let up = async fn() -> Unit {
-    defer (w.spawn)(async fn() {
-      ignore(w.ask("stream.finish", [s])) catch {
-        _ => ()
-      }
-    })
+    defer (w.spawn)(async fn() { w.stream_finish(s) })
     while true {
       guard w.ask("net.read", [socket]) is Str(chunk) else { break }
       let bytes = unb64(@jsjson.sanitize_str(chunk))
@@ -1465,7 +1421,7 @@ async fn pair(
           "info",
           "adb",
           "adb pairing tunnel ended",
-          spread(jo([("error", js(message_of(e)))]), about(w, conn)),
+          spread(jo([("error", js(message_of(e)))]), conn_about(conn)),
         )
     }
     ignore(t.succeed(()))
@@ -1549,7 +1505,7 @@ fn keep_lending_up(
               ("ask", js(ask[2:4].to_array().join(" "))),
               ("said", js(js_slice(first, 0, b=160))),
             ]),
-            about(w, share.conn),
+            conn_about(share.conn),
           ),
         )
       }
@@ -1611,7 +1567,7 @@ pub async fn keep_tcp(
     "info",
     "adb",
     "adb asked for adbd's plain port",
-    spread(jo([("said", js(js_slice(first, 0, b=160)))]), about(w, share.conn)),
+    spread(jo([("said", js(js_slice(first, 0, b=160)))]), conn_about(share.conn)),
   )
 }
 

@@ -9,14 +9,16 @@ pub fn undefined(v : J) -> Bool {
 
 ///|
 /// Whether the store has `name` (a method a store from before lacks).
-pub async fn World::store_has(self : World, name : String) -> Bool {
-  self.ask("store.has", [js(name)]) is Bool(true)
+pub fn World::store_has(self : World, name : String) -> Bool {
+  ignore(self)
+  ["latestThreadIfReady", "pendingCardHeaderIfReady"].contains(name)
 }
 
 ///|
 /// Whether the hub has `name` (`hub.<name> != null`).
-pub async fn World::hub_has(self : World, name : String) -> Bool {
-  self.ask("hub.has", [js(name)]) is Bool(true)
+pub fn World::hub_has(self : World, name : String) -> Bool {
+  ignore(self)
+  ["prepareCardPosts", "prepareLatestThreads"].contains(name)
 }
 
 ///|
@@ -24,12 +26,24 @@ fn as_chats(w : World) -> @session_chats.World {
   {
     call: async fn(name, args) {
       match name {
-        "hub.storeHas" => w.ask("store.has", args)
+        "hub.storeHas" => jb(w.store_has(text_of(args.get(0))))
         "actor.messageIdentity" => w.ask("hub.identity", args)
         "wall.sleep" => {
           w.sleep(num_of(args.get(0)).unwrap_or(0.0))
           Null
         }
+        "store.pendingCardHeader" =>
+          @jsjson.jval_of_json(
+            w.threads.pending_card_header(
+              @jsjson.jval_to_json(args.get(0).unwrap_or(Null)),
+            ),
+          )
+        "store.pendingCardHeaderIfReady" =>
+          @jsjson.jval_of_json(
+            w.threads.pending_card_header_if_ready(
+              @jsjson.jval_to_json(args.get(0).unwrap_or(Null)),
+            ),
+          )
         "store.insertMessage" if args.length() == 2 && undefined(args[1]) =>
           w.ask(name, [args[0]])
         "hub.prepareCardPosts" if args.length() == 2 && undefined(args[1]) =>

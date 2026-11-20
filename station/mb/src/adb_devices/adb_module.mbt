@@ -35,16 +35,10 @@ pub async fn Adb::new(
   let gate_admit : Admit? = if admit {
     Some(async fn(grant, holders) {
       let deps : GateDeps = {
-        session: async fn(id) {
+        session: fn(id) raise {
           match session_of(id) {
             None => Null
-            Some(key) =>
-              jo([
-                (
-                  "workspace",
-                  get(w.store("getSession", [js(key)]), "workspace"),
-                ),
-              ])
+            Some(key) => jo([("workspace", get(w.get_session(key), "workspace"))])
           }
         },
         table: async fn() { w.ask("platform.processTable", []) },
@@ -71,9 +65,7 @@ pub async fn Adb::new(
         cwds: async fn(pids) {
           cwds_of(w.ask("platform.cwds", [ja(pids.map(ji))]))
         },
-        self_pid: num_of(Some(w.ask("process.pid", [])))
-        .unwrap_or(-1.0)
-        .to_int(),
+        self_pid: @host.pid(),
         elsewhere: None,
       }
       gate(deps, w, grant, holders)
@@ -248,7 +240,7 @@ pub async fn Adb::stream(
         ),
       ),
     )
-    ignore(w.ask("stream.finish", [stream]))
+    w.stream_finish(stream)
     return
   }
   // A grant decided, taken back, or the owner's grants listed (from their app).
@@ -271,7 +263,7 @@ pub async fn Adb::stream(
         ]),
       )
       stream_write(w, stream, @utf8.encode(stringify(body)))
-      ignore(w.ask("stream.finish", [stream]))
+      w.stream_finish(stream)
     }
     let email = text_of(at(Some(viewer), "email")).to_lower()
     let ws = text_of(at(Some(viewer), "workspace"))
@@ -654,7 +646,7 @@ pub async fn Adb::phone_send(self : Adb, session : String, args : J) -> String {
     is Some(share) else {
     return "Granted, but the phone is not lent to this station right now: call phone_use to see why."
   }
-  let row = w.store("getSession", [js(session)])
+  let row = w.get_session(session)
   guard at(Some(row), "workspace") is Some(workspace) else {
     raise fail_("unknown session \{session}")
   }

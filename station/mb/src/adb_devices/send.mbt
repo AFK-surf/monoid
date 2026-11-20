@@ -4,10 +4,6 @@
 // of its content, so a fetch cut short goes on from what the phone has of it when asked again.
 
 ///|
-/// How long the phone has to take the fetch's stream.
-let fetch_open : Double = 10000.0
-
-///|
 /// Bytes in base64, as they go between the program and its world.
 pub fn b64(b : BytesView) -> String {
   @codec.base64_encode(b)
@@ -20,15 +16,6 @@ pub fn unb64(s : String) -> Bytes {
 }
 
 ///|
-/// The machine's separator of paths.
-async fn sep(w : World) -> String {
-  match w.ask("platform.sep", []) {
-    Str(_) as s => js_text(s)
-    _ => "/"
-  }
-}
-
-///|
 /// `given` (absolute, or in the session's `workspace`) in its uploads as `<sha256 prefix>-<name>`: its name there and
 /// its size.
 pub async fn staged(
@@ -36,21 +23,22 @@ pub async fn staged(
   workspace : String,
   given : String,
 ) -> (String, Double) {
-  let sep = sep(w)
+  let sep = @drive.sep()
   let path = if @nodepath.is_absolute(sep, given) {
     given
   } else {
     @nodepath.join(sep, [workspace, given])
   }
-  let meta = w.ask("fs.stat", [js(path)]) catch { _ => Null }
-  if meta is Null {
-    raise fail_("no such file: \{given}")
-  }
-  if !(at(Some(meta), "isFile") is Some(Bool(true))) {
+  let meta = w.fs_stat(path)
+  guard meta is Some(meta) else { raise fail_("no such file: \{given}") }
+  if meta.kind != "file" {
     raise fail_("not a file: \{given}")
   }
-  let size = num_of(at(Some(meta), "size")).unwrap_or(0.0)
-  let hash = js_text(w.ask("fs.sha256", [js(path)]))
+  let size = meta.size
+  let hash = match w.host.file_sha256(path) {
+    Some(h) => h
+    None => raise fail_("no such file: \{given}")
+  }
   let safe = StringBuilder::new()
   for c in @nodepath.basename(sep, path) {
     safe.write_string(
@@ -64,11 +52,11 @@ pub async fn staged(
   let name = "\{js_slice(hash, 0, b=16)}-\{safe.to_string()}"
   let dir = @nodepath.join(sep, [workspace, "uploads"])
   let at_ = @nodepath.join(sep, [dir, name])
-  let there = w.ask("fs.stat", [js(at_)]) catch { _ => Null }
-  if !(num_of(at(Some(there), "size")) == Some(size)) {
-    ignore(w.ask("fs.mkdir", [js(dir)]))
-    ignore(w.ask("fs.copy", [js(path), js("\{at_}.part")]))
-    ignore(w.ask("fs.rename", [js("\{at_}.part"), js(at_)]))
+  let there = w.fs_stat(at_)
+  if !(there.map(t => t.size) == Some(size)) {
+    w.fs_mkdir(dir)
+    w.fs_copy(path, "\{at_}.part")
+    @host_world.fs_rename(w.host, "\{at_}.part", at_)
   }
   (name, size)
 }
@@ -86,11 +74,7 @@ pub async fn fetch_on_phone(
 ) -> J {
   let mut got = 0.0
   try {
-    let stream = w.ask("conn.openBi", [
-      conn,
-      jn(fetch_open),
-      js("the phone did not take the file"),
-    ])
+    let stream = w.conn_open_bi(conn)
     write_line(
       w,
       stream,
@@ -101,7 +85,7 @@ pub async fn fetch_on_phone(
         ),
       ]),
     )
-    ignore(w.ask("stream.finish", [stream]))
+    w.stream_finish(stream)
     let reader = Reader::new(w, stream)
     while true {
       guard reader.line() is Some(said) else {

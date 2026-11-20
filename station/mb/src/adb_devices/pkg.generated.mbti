@@ -4,9 +4,13 @@ package "station/adb_devices"
 import {
   "mbui/effect",
   "moonbitlang/core/set",
+  "station/host",
+  "station/host_world",
   "station/jsjson",
   "station/session_chats",
   "station/sql",
+  "station/store_sessions",
+  "station/store_threads",
 }
 
 // Values
@@ -31,6 +35,10 @@ pub let card_occupied : String
 pub async fn card_place(World, String, @jsjson.JValue, @jsjson.JValue) -> @jsjson.JValue?
 
 pub fn chat_title(@jsjson.JValue, String?, String?, String, String) -> String
+
+pub fn conn_about(@jsjson.JValue) -> @jsjson.JValue
+
+pub fn conn_remote_id(@jsjson.JValue) -> String
 
 pub fn density_of(String) -> Double
 
@@ -102,7 +110,7 @@ pub async fn keep_tcp(Shares, Share, String, Array[String]) -> Unit
 
 pub let keep_tcp_command : String
 
-pub async fn key(World, @jsjson.JValue, @jsjson.JValue, @jsjson.JValue) -> String
+pub fn key(World, @jsjson.JValue, @jsjson.JValue, @jsjson.JValue) -> String
 
 pub fn kind_of(Error) -> String
 
@@ -262,7 +270,7 @@ pub struct DeviceRegistry {
   w : World
   db : @sql.Db
 }
-pub async fn DeviceRegistry::add(Self, String, @jsjson.JValue, @jsjson.JValue, Double) -> Result[@jsjson.JValue, String]
+pub fn DeviceRegistry::add(Self, String, @jsjson.JValue, @jsjson.JValue, Double) -> Result[@jsjson.JValue, String] raise
 pub fn DeviceRegistry::get(Self, String, String) -> @jsjson.JValue? raise
 pub fn DeviceRegistry::new(World, @sql.Db) -> Self raise
 pub fn DeviceRegistry::of(Self, String) -> Array[@jsjson.JValue] raise
@@ -293,7 +301,7 @@ pub struct Door {
 }
 
 pub struct GateDeps {
-  session : async (String) -> @jsjson.JValue
+  session : (String) -> @jsjson.JValue raise
   table : async () -> @jsjson.JValue
   runners : async (String) -> Array[Int32]
   jobs : async () -> Array[(Int32, async (String) -> Bool)]
@@ -375,7 +383,7 @@ pub async fn PhoneGrants::revoke(Self, String, String, String, signed? : @jsjson
 pub fn PhoneGrants::revokes_of_owner(Self, String) -> Array[@jsjson.JValue] raise
 pub async fn PhoneGrants::shown(Self, Req) -> @jsjson.JValue
 pub async fn PhoneGrants::sign(Self, String, String, @jsjson.JValue?, String) -> String?
-pub async fn PhoneGrants::starter(Self, String) -> String?
+pub fn PhoneGrants::starter(Self, String) -> String? raise
 pub async fn PhoneGrants::used(Self, String, Bool) -> Unit
 
 pub struct Reader {
@@ -460,23 +468,37 @@ pub fn Shares::screens(Self, String, Array[String]) -> Unit
 type Stop
 
 pub struct World {
+  host : @host.Host
+  sessions : @store_sessions.Store
+  threads : @store_threads.Store
   call : async (String, Array[@jsjson.JValue]) -> @jsjson.JValue
   callback : (async (Array[@jsjson.JValue]) -> @jsjson.JValue) -> @jsjson.JValue
   now : () -> Double
   spawn : (async () -> Unit) -> Unit
   words : @session_chats.Words
   mut lang : String
-  mut timers : Int32
 }
 pub fn World::after(Self, Double, async () -> Unit) -> () -> Unit
 pub async fn World::ask(Self, String, Array[@jsjson.JValue]) -> @jsjson.JValue
-pub async fn World::hub_has(Self, String) -> Bool
+pub async fn World::conn_answers(Self, @jsjson.JValue, Double) -> Bool
+pub async fn World::conn_closed(Self, @jsjson.JValue) -> Unit
+pub async fn World::conn_open_bi(Self, @jsjson.JValue) -> @jsjson.JValue
+pub async fn World::fs_copy(Self, String, String) -> Unit
+pub async fn World::fs_mkdir(Self, String) -> Unit
+pub async fn World::fs_mkdtemp(Self, String) -> String
+pub async fn World::fs_stat(Self, String) -> @host_world.LstatInfo?
+pub fn World::get_session(Self, String) -> @jsjson.JValue
+pub fn World::hub_has(Self, String) -> Bool
 pub async fn World::log(Self, String, String, String, @jsjson.JValue) -> Unit
-pub fn World::new(async (String, Array[@jsjson.JValue]) -> @jsjson.JValue, (async (Array[@jsjson.JValue]) -> @jsjson.JValue) -> @jsjson.JValue, () -> Double, (async () -> Unit) -> Unit, @session_chats.Words) -> Self
+pub fn World::new(@host.Host, @store_sessions.Store, @store_threads.Store, async (String, Array[@jsjson.JValue]) -> @jsjson.JValue, (async (Array[@jsjson.JValue]) -> @jsjson.JValue) -> @jsjson.JValue, () -> Double, (async () -> Unit) -> Unit, @session_chats.Words) -> Self
 pub fn World::set_lang(Self, String) -> Unit
 pub async fn World::sleep(Self, Double) -> Unit
+pub fn World::starter(Self, String) -> String? raise
 pub async fn World::store(Self, String, Array[@jsjson.JValue]) -> @jsjson.JValue
-pub async fn World::store_has(Self, String) -> Bool
+pub fn World::store_has(Self, String) -> Bool
+pub async fn World::stream_finish(Self, @jsjson.JValue) -> Unit
+pub async fn World::stream_reset(Self, @jsjson.JValue, Int32) -> Unit
+pub async fn World::stream_stopped(Self, @jsjson.JValue) -> Unit
 pub fn World::title_of(Self, @jsjson.JValue, String?) -> String
 pub fn World::tr(Self, String, String, args? : Array[(String, String)]) -> String
 pub async fn World::try_ask(Self, String, Array[@jsjson.JValue]) -> @jsjson.JValue

@@ -60,7 +60,7 @@ pub async fn reach_tcp(w : World, host : String, port : Double) -> J {
 /// The serial port at `path` set raw at `baud`, both ways, as one stream (stty: its flag for the device is -F on Linux,
 /// -f on a Mac).
 async fn reach_serial(w : World, path : String, baud : Double) -> J {
-  let os = text_of(Some(w.ask("platform.os", [])))
+  let os = platform_os()
   if os == "windows" {
     raise fail_("serial ports are not reached on Windows stations yet")
   }
@@ -276,14 +276,14 @@ pub fn DeviceRegistry::get(
 
 ///|
 /// A device added by `by` (`{sub, email, name}`): why not (Err), or what was kept.
-pub async fn DeviceRegistry::add(
+pub fn DeviceRegistry::add(
   self : DeviceRegistry,
   ws : String,
   by : J,
   given : J,
   at_ : Double,
-) -> Result[J, String] {
-  let id = js_text(self.w.ask("random.hex", [ji(8)]))
+) -> Result[J, String] raise {
+  let id = @drive.hex(@drive.random_bytes(8))
   let fields = [
     ("id", js(id)),
     (
@@ -591,7 +591,7 @@ pub fn Devices::bus_list(self : Devices, workspace : J) -> J raise {
 
 ///|
 async fn Devices::workspace_of(self : Devices, session : String) -> String {
-  let row = self.w.store("getSession", [js(session)])
+  let row = self.w.get_session(session)
   if row is Null {
     raise fail_("unknown session")
   }
@@ -788,7 +788,7 @@ async fn Devices::use_(
         .any(d => text_of(at(Some(d), "name")).to_lower() == given.to_lower())
       ) {
       let email = (if given == "" {
-        text_of(Some(w.store("starter", [js(session)])))
+        w.starter(session).unwrap_or("")
       } else {
         given
       }).to_lower()
