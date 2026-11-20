@@ -331,7 +331,8 @@ test("MoonBit station backfills unfinished archives, cleans idle unarchived rebu
     assert.ok(!existsSync(oldCodexTx), "8d orphan Codex rollout deleted");
     assert.ok(existsSync(memFile), "projects/<proj>/memory/ preserved");
     assert.ok(existsSync(nonUuidFile), "non-UUID agent-1234.jsonl preserved");
-    assert.ok(existsSync(archTx), "archived-session-referenced UUID preserved");
+    assert.ok(existsSync(archTx) || existsSync(`${archTx}.zst`), "archived-session-referenced UUID preserved (plain or compressed by pack)");
+    assert.ok(!(otFull.body as string[]).some((p) => p.includes(uArch)), "archived-session-referenced UUID not reclaimed");
     assert.ok(existsSync(newTx), "6d orphan UUID preserved");
     assert.ok(existsSync(freshChild), "standalone <uuid>/ with 1d child preserved");
   } finally {

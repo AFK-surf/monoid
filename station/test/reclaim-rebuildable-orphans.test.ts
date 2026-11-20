@@ -698,6 +698,7 @@ describe("Item 4: low-disk orphan UUID transcripts & full low-disk pass with 30m
       git: async (_dir, args) => {
         if (args[0] === "remote" && args.length === 1) return { ok: true, stdout: "origin\n" };
         if (args[0] === "remote" && args[1] === "get-url") return { ok: true, stdout: "https://github.com/org/repo.git\n" };
+        if (args[0] === "rev-list") return { ok: true, stdout: "0\n" };
         return { ok: true, stdout: "" };
       },
     });
