@@ -674,3 +674,55 @@ test "flips: a block laid out narrower as its column sets off on a way to it, it
     }
   }
 }
+
+///|
+/// Where the block of ground `g` is drawn now, its top and its foot; none where it is not.
+fn fp_block(t : @view.Tree, g : Int64) -> (Double, Double)? {
+  match t.drawn().filter(fn(d) { d.ground == g }) {
+    [d, ..] => Some((d.y, d.y + d.h))
+    _ => None
+  }
+}
+
+///|
+test "flips: a key come revealing what it holds at its own size, a key come under it in the same change: the one under it goes under it all the way, never over it" {
+  let keys = @signals.signal(rc_ten_and([]), same=fn(a, b) { a == b })
+  let shown = 0x810000FFL
+  let under = 0x820000FFL
+  let tree = @view.Tree::new(fn(root) {
+    root.box(fn(o) {
+      o.width(Is(Some(300.0))).height(Is(Some(400.0))) |> ignore
+      o.scrolls_window(@view.Scroll::list(), fn() { keys.get() }, est=40.0, follows=fn() { true }, flips=true, fn(b, k) {
+        match k {
+          81 =>
+            b.height(Is(Some(80.0)))
+            .ground(Is(shown))
+            .box(fn(w) { w.words(Is("行81")).spatial_reveal(Is(rc_at)) |> ignore })
+            |> ignore
+          82 => b.height(Is(Some(40.0))).ground(Is(under)).words(Is("行82")) |> ignore
+          _ => b.height(Is(Some(40.0))).words(Is("行\{k}")) |> ignore
+        }
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  tree.frame(390.0, 844.0) |> ignore
+  tree.advance(rc_at)
+  keys.set(rc_ten_and([81, 82]))
+  tree.frame(390.0, 844.0, now=rc_at) |> ignore
+  let mut ms = 0.0
+  let mut seen = 0
+  while ms < 600.0 {
+    ms = ms + 1000.0 / 60.0
+    tree.frame(390.0, 844.0, now=rc_at + ms) |> ignore
+    match (fp_block(tree, shown), fp_block(tree, under)) {
+      (Some((_, foot)), Some((top, _))) => {
+        seen = seen + 1
+        assert_true(top >= foot - 0.5, msg="at \{ms}: 行82 from \{top}, over 行81 down to \{foot}")
+      }
+      _ => ()
+    }
+  }
+  assert_true(seen > 0, msg="the two never drawn")
+}

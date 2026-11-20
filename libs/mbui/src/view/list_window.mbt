@@ -4835,6 +4835,57 @@ fn View::scrolls_window_ids(
               None => ()
             }
           }
+          // (keys come in one run between two that were drawn: each from where the ones before it in that run start
+          // out, so one at its own size from the first frame (a reveal) puts those after it under it, not over it;
+          // under the one before the run, down from there, else over the one after it, up from there)
+          let reveals = fn(k : Int) -> Bool {
+            fresh.contains(k) &&
+            !carried_in(k) &&
+            slot_views.get(k) is Some(sv) &&
+            sv.alive() &&
+            self.tree.reveal_in(sv.id(), self.tree.clock.untracked())
+          }
+          let set_out_at = fn(k : Int, y : Double) {
+            let (_, ay, _, ah) = after[k]
+            items[k] = { off: (0.0, y - ay, 0.0, if reveals(k) { 0.0 } else { ah }), v: (0.0, 0.0, 0.0, 0.0) }
+          }
+          let mut run_s = 0
+          while run_s < order.length() {
+            guard before.get(order[run_s]) is None else {
+              run_s = run_s + 1
+              continue
+            }
+            let mut run_e = run_s
+            while run_e < order.length() && before.get(order[run_e]) is None {
+              run_e = run_e + 1
+            }
+            match (if run_s > 0 { before.get(order[run_s - 1]) } else { None }) {
+              Some((_, by, _, bh)) => {
+                let mut y = by + bh
+                for idx in run_s..<run_e {
+                  let k = order[idx]
+                  guard fresh.contains(k) && !carried_in(k) else { continue }
+                  set_out_at(k, y)
+                  if reveals(k) {
+                    y = y + after[k].3
+                  }
+                }
+              }
+              None =>
+                if run_e < order.length() && before.get(order[run_e]) is Some((_, by, _, _)) {
+                  let mut y = by
+                  for idx = run_e - 1; idx >= run_s; idx = idx - 1 {
+                    let k = order[idx]
+                    guard fresh.contains(k) && !carried_in(k) else { continue }
+                    if reveals(k) {
+                      y = y - after[k].3
+                    }
+                    set_out_at(k, y)
+                  }
+                }
+            }
+            run_s = run_e
+          }
           // (one never drawn before, come into sight by the change: going with the one before it, else after it)
           for i, k in order {
             guard !items.contains(k) else { continue }
