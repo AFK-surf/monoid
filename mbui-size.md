@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [080bbe333](https://github.com/AFK-surf/monoid/commit/080bbe333df0f92f3d7e6bdf93fd21f1342c757d) fix(mbui): register native views, streams and fiel | 2.66 | 3.58 | 14.61 | 36.88 | 56.23 | 32.36 | 65.6 | 97.67 | 130.35 |
 | [3ac54494d](https://github.com/AFK-surf/monoid/commit/3ac54494d41a80c7b69cf0bcd9bc6a4fe2ffd7e1) feat(mbui): continuous drag scrim, tape handoff, a | 2.66 | 3.58 | 14.61 | 36.88 | 56.23 | 32.36 | 65.6 | 97.67 | 130.35 |
 | [1507e2253](https://github.com/AFK-surf/monoid/commit/1507e22534ea785ab4ba261843940966c217c28b) feat(screen): add 2K gaming quality, adaptive data | 2.66 | 3.58 | 14.61 | 36.88 | 56.23 | 32.36 | 65.6 | 97.67 | 130.35 |
 | [74954dc1d](https://github.com/AFK-surf/monoid/commit/74954dc1dfc9658626efda959b8e24fc333b692a) fix(ci): retry network breaks in natives store-syn | 2.66 | 3.57 | 14.59 | 36.85 | 56.18 | 32.31 | 65.48 | 97.39 | 118.67 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3560e4f21](https://github.com/AFK-surf/monoid/commit/3560e4f21eb763d39258ce8e3d79637fb1b95206) feat(mbui): make the working mark a turning ring ( | 2.65 | 3.56 | 14.53 | 36.75 | 55.95 | 32.24 | 65.3 | 97.6 | 121.49 |
 | [60c853356](https://github.com/AFK-surf/monoid/commit/60c85335667d39e05bf996020dc28e6fc6806ba7) feat(mbui): turn a station's CPU dial between idle | 2.65 | 3.56 | 14.53 | 36.75 | 55.95 | 32.24 | 65.3 | 97.6 | 121.49 |
 | [e4cd89e1e](https://github.com/AFK-surf/monoid/commit/e4cd89e1efd309fa2bba1cda05cd717f6d84d243) fix(mbui): check node generation in inner FLIP and | 2.65 | 3.56 | 14.53 | 36.75 | 55.94 | 32.24 | 65.3 | 97.62 | 144.33 |
-| [a7ea726f1](https://github.com/AFK-surf/monoid/commit/a7ea726f1a91b42aa61c1d879a3d930a9fab15b0) perf(mbui): use keyframe seeks during video scrub  | 2.65 | 3.56 | 14.53 | 36.75 | 55.94 | 32.24 | 65.3 | 97.62 | 144.33 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [080bbe333](https://github.com/AFK-surf/monoid/commit/080bbe333df0f92f3d7e6bdf93fd21f1342c757d) fix(mbui): register native views, streams and fiel | 0.45 | 0.59 | 2.28 | 3.36 | 5.48 | 1.68 | 4.52 | 54.25 |
 | [3ac54494d](https://github.com/AFK-surf/monoid/commit/3ac54494d41a80c7b69cf0bcd9bc6a4fe2ffd7e1) feat(mbui): continuous drag scrim, tape handoff, a | 0.45 | 0.59 | 2.28 | 3.36 | 5.48 | 1.67 | 4.52 | 54.18 |
 | [1507e2253](https://github.com/AFK-surf/monoid/commit/1507e22534ea785ab4ba261843940966c217c28b) feat(screen): add 2K gaming quality, adaptive data | 0.45 | 0.59 | 2.28 | 3.36 | 5.48 | 1.67 | 4.52 | 54.12 |
 | [74954dc1d](https://github.com/AFK-surf/monoid/commit/74954dc1dfc9658626efda959b8e24fc333b692a) fix(ci): retry network breaks in natives store-syn | 0.45 | 0.59 | 2.28 | 3.36 | 5.48 | 1.67 | 4.52 | 54.12 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3560e4f21](https://github.com/AFK-surf/monoid/commit/3560e4f21eb763d39258ce8e3d79637fb1b95206) feat(mbui): make the working mark a turning ring ( | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.12 |
 | [60c853356](https://github.com/AFK-surf/monoid/commit/60c85335667d39e05bf996020dc28e6fc6806ba7) feat(mbui): turn a station's CPU dial between idle | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.05 |
 | [e4cd89e1e](https://github.com/AFK-surf/monoid/commit/e4cd89e1efd309fa2bba1cda05cd717f6d84d243) fix(mbui): check node generation in inner FLIP and | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.05 |
-| [a7ea726f1](https://github.com/AFK-surf/monoid/commit/a7ea726f1a91b42aa61c1d879a3d930a9fab15b0) perf(mbui): use keyframe seeks during video scrub  | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.13 |
