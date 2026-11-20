@@ -868,11 +868,27 @@ pub async fn notice_for_peer(w : World, peer : String, request : J, ws : J) -> J
     raise fail_("state must be all_done, need_human, failed or stopped")
   }
   let records = w.with_store(s => s.opened_by(Json::string(parent))).map(of_json_j)
-  guard records.search_by(o => str_of(at(Some(o), "childStation")) == Some(peer) && str_of(at(Some(o), "child")) == Some(child)) is Some(i) else {
+  // (or one opened here and handed to that station since: its row here still names it this station's own, "")
+  let handed_there = fn() raise {
+    str_of(at(Some(w.with_store_j(s => s.handed_to(child))), "station")) == Some(peer)
+  }
+  let mut found = None
+  for i, o in records {
+    if str_of(at(Some(o), "child")) != Some(child) {
+      continue
+    }
+    let station = str_of(at(Some(o), "childStation"))
+    if station == Some(peer) || (station == Some("") && handed_there()) {
+      found = Some(i)
+      break
+    }
+  }
+  guard found is Some(i) else {
     raise fail_("\{parent} opened no chat \{child} on that station")
   }
   let record = records[i]
-  w.with_store(s => s.set_opened_state(Json::string(peer), Json::string(child), Json::string(state)))
+  let child_station = str_of(at(Some(record), "childStation")).unwrap_or(peer)
+  w.with_store(s => s.set_opened_state(Json::string(child_station), Json::string(child), Json::string(state)))
   let title = match given_arg(request, "title") {
     Some(t) => t
     None =>

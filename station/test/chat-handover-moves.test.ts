@@ -241,6 +241,42 @@ test("arriveStopped, by a person's POST /move and by station_move: a chat whose 
   assert.ok(b.moves.scheduler.stopped().some((s) => s.item.id === two), "by the tool too");
 });
 
+test("a chat's station_move that is not answered soon says it is under way, and its answer is told in the chat once it ends; one answered soon is answered as before", async () => {
+  // (real run, 2026-11-20: a move toward a busy station and a plan toward a far one outlasted the agent's tool call)
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const one = await stillfailChat(a);
+  const two = await stillfailChat(a);
+  const told: [string, string][] = [];
+  let late = true;
+  const asks = new MoveAsks({
+    data: a.rig.dir, scheduler: a.moves.scheduler, here: () => A, wsOf: () => WS, roster: () => [{ id: A, name: "A" }, { id: B, name: "B" }], cards: { post: async () => null },
+    notify: (session, text) => void told.push([session, text]), refusal: (ws, s) => a.moves.refusal(ws, s),
+    soon: async (what) => (late ? null : { value: await what }),
+  });
+  const said = await asks.toolIn(WS, "chat:lead", { action: "move", to: "B", module: "chats", item: one.key, withNeeds: true });
+  assert.equal(said.underWay, true, JSON.stringify(said));
+  assert.match(said.say, /under way.*told in this chat/);
+  await asks.settle();
+  await w.quiet();
+  assert.equal(told.length, 1, JSON.stringify(told));
+  assert.equal(told[0]![0], "chat:lead");
+  assert.match(told[0]![1], new RegExp(`ended: Moved to B \\(\\d+\\): .*${one.key}`));
+  assert.equal(b.rig.store.getSession(one.key)?.ws, null, "there");
+  // A refusal that comes late is told too.
+  const refused = await asks.toolIn(WS, "chat:lead", { action: "move", to: "B", module: "chats", item: "chat:c-none" });
+  assert.equal(refused.underWay, true);
+  await asks.settle();
+  assert.match(told[1]![1], /did not go: .*c-none/);
+  // Answered soon: as before, and nothing told after.
+  late = false;
+  const plan = await asks.toolIn(WS, "chat:lead", { action: "plan", to: "B", module: "chats", item: two.key });
+  assert.equal(plan.item.state, "here", JSON.stringify(plan));
+  await asks.settle();
+  assert.equal(told.length, 2);
+});
+
 test("what moves nothing is asked first, and what moved for an item that then did not go comes back: a chat in a turn (wait false) is refused before its login moves; a chat refused there has its login, moved for it, brought back in the same turn, said so", async () => {
   const w = world();
   const a = w.get(A);

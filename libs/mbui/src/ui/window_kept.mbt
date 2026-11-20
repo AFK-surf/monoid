@@ -325,6 +325,8 @@ fn window_kept_ui_3() -> Array[WindowKept] {
     kept_struct(fn() { let held = { ..glass_paint }; fn() { glass_paint.window_put(held) } }, fn() { glass_paint.window_put({
   run: 0,
   frost_run: 0,
+  liquid_run: 0,
+  liquid_blur: 0.0,
   run_start: -1,
   run_len: 0,
   solid: false,
@@ -398,6 +400,7 @@ fn window_kept_ui_4() -> Array[WindowKept] {
   built_read: 0,
   kept_at: [],
   built_at: [],
+  built_asked: false,
   on: true,
 }) }),
     kept_ref(aside_why, fn() { "" }),
@@ -416,6 +419,8 @@ fn window_kept_ui_4() -> Array[WindowKept] {
     kept_map(made_roots),
     kept_array(made_placed, fn() { [] }),
     kept_map(made_presses),
+    kept_map(island_presses),
+    kept_map(island_lists),
   ]
 }
 
@@ -826,6 +831,8 @@ fn GapsSteady::window_put(self : GapsSteady, o : GapsSteady) -> Unit {
 fn GlassPaint::window_put(self : GlassPaint, o : GlassPaint) -> Unit {
   self.run = o.run
   self.frost_run = o.frost_run
+  self.liquid_run = o.liquid_run
+  self.liquid_blur = o.liquid_blur
   self.run_start = o.run_start
   self.run_len = o.run_len
   self.solid = o.solid
@@ -888,6 +895,7 @@ fn NodesRun::window_put(self : NodesRun, o : NodesRun) -> Unit {
   self.built_read = o.built_read
   self.kept_at = o.kept_at
   self.built_at = o.built_at
+  self.built_asked = o.built_asked
   self.on = o.on
 }
 

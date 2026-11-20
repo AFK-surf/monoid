@@ -65,8 +65,12 @@ fn viz_over() -> Bool {
 }
 
 ///|
-/// Whether the picture is over the whole window, its tab's (sfbase's tab_full.mbt).
+/// Whether the picture is over the whole window: in the whole window's viewer (pressed: sfbase's opens_in_viewer), or
+/// its tab's (sfbase's tab_full.mbt).
 fn picture_over() -> Bool {
+  if viewer.get() is Some(v) && v.file.name == viz_chat_picture {
+    return true
+  }
   match @sfbase.tab_full.get() {
     Some(f) =>
       match @sfbase.view_tab_file(f.tab) {
@@ -117,9 +121,13 @@ test "a wide window, a picture and a visualization's 全屏 both on the screen, 
   t.frame()
   t.frame()
   assert_true(!viz_over(), msg="under the picture: no visualization opened")
-  assert_true(picture_over(), msg="the picture still over the whole window")
-  back_closes(t)
-  assert_true(!picture_over() && !viz_over(), msg="back: the picture closed, nothing else opened")
+  // (the press the viewer's: on its ground, it closes the picture, as the whole window's viewer does; else back does)
+  if picture_over() {
+    back_closes(t)
+  } else {
+    t.run_for(@ui.move_most_ms)
+  }
+  assert_true(!picture_over() && !viz_over(), msg="the picture closed, nothing else opened")
   assert_true(page_now() == page, msg="the page as it was")
 }
 

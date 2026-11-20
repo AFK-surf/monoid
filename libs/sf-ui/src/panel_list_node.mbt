@@ -38,8 +38,10 @@ pub fn[K : Hash + Eq] panel_list_node(
   let at = panel_in_of(parent)
   let look = look_node(parent)
   let out = at.rows_out
+  let bleed = at.sides
+  let inner = dmax(0.0, bleed - out)
   parent.box(made_for=loc, fn(room) {
-    room.margin(Is((-out, 0.0, -out, 0.0))) |> ignore
+    room.margin(Is((-bleed, 0.0, -bleed, 0.0))) |> ignore
     if fills {
       room.grow(Is(1.0)).basis(Is(Some(0.0))) |> ignore
     }
@@ -57,6 +59,9 @@ pub fn[K : Hash + Eq] panel_list_node(
       scroll,
       read,
       fn(b, k) {
+        if inner > 0.0 {
+          b.padding(Is((inner, 0.0, inner, 0.0))) |> ignore
+        }
         // (its rows laid out as the panel's are, their words further in by as far as it reaches out)
         panel_in_lend(b, look, at.words + out, sides=at.sides - out, small=at.small, clear=at.clear, listed=true)
         row(b, k)
@@ -93,9 +98,14 @@ pub fn capped_node(
   parent : @view.View,
   most : () -> Double,
   body : (@view.View) -> Unit,
+  bleed? : Bool = true,
   loc~ : SourceLoc,
 ) -> @view.View {
+  let sides = if bleed { panel_in_of(parent).sides } else { 0.0 }
   parent.box(made_for=loc, fn(b) {
+    if sides > 0.0 {
+      b.margin(Is((-sides, 0.0, -sides, 0.0))).padding(Is((sides, 0.0, sides, 0.0))) |> ignore
+    }
     b.max_height(By(fn() { Some(most()) })) |> ignore
     b.scrolls(@view.Scroll::new(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), body) |> ignore
   })

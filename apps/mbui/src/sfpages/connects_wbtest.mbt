@@ -228,6 +228,109 @@ fn edge_shown(t : @ui.Tester, x : Double, y : Double, c : Int64) -> Int64 {
 }
 
 ///|
+test "a connect's startsOn dialog: explicit manual checklist (no auto-all), disables save when empty or unchanged, saves stations array and shows multi-station summary" {
+  for case in [(390.0, 2), (1280.0, 0)] {
+    let (w, platform) = case
+    let at = "\{w} platform \{platform}"
+    let puts : Array[Json] = []
+    let t = setting_tester(Connect("ws1/st1", "k1"), w, platform~, over=fn(s) {
+      {
+        ..s,
+        call: fn(name, params, done) {
+          if name == "connect.put" {
+            puts.push(params)
+          }
+          (s.call)(name, params, done)
+        },
+      }
+    })
+    t.draw()
+    assert_true(t.find("新对话开在") is Some(_), msg=at)
+    let (sx, sy) = t.find("新对话开在").unwrap()
+    t.tap(sx, sy)
+    t.draw()
+    t.run_for(@ui.move_most_ms)
+    assert_true(@sf.presenting(), msg=at)
+    assert_eq(t.corner_faults(), [], msg=at)
+    assert_eq(t.gap_faults(), [], msg=at)
+    // Must not offer any automatic all-stations option.
+    assert_true(t.find("自动选择") is None, msg=at)
+    assert_true(t.find("所有 station") is None, msg=at)
+    // Initially unchanged -> Save disabled.
+    assert_true(t.query(Button, label="保存").unwrap().disabled, msg="\{at}: save initially disabled")
+    // Unchecking the only checked station (Willow) leaves 0 selected -> Save stays disabled.
+    let (wx, wy) = middle_of(t, Button, "Willow（connect 所在的这台）")
+    t.tap(wx, wy)
+    t.draw()
+    assert_true(t.query(Button, label="保存").unwrap().disabled, msg="\{at}: save disabled when empty")
+    // Re-check Willow and also check Maple -> Save enabled.
+    t.tap(wx, wy)
+    t.draw()
+    let (mx, my) = middle_of(t, Button, "Maple")
+    t.tap(mx, my)
+    t.draw()
+    assert_false(t.query(Button, label="保存").unwrap().disabled, msg="\{at}: save enabled with 2 stations")
+    let (bx, by) = middle_of(t, Button, "保存")
+    t.tap(bx, by)
+    t.draw()
+    t.run_for(@ui.move_most_ms)
+    assert_eq(puts.length(), 1, msg=at)
+    assert_eq(strings(field(Some(puts[0]), "input"), "stations"), ["st1", "st2"], msg=at)
+    assert_true(t.find("Willow、Maple") is Some(_), msg="\{at}: multi-station label shown from bare station ids")
+    // Re-opening dialog with bare startsOnStations ["st1", "st2"] restores both checkboxes as checked.
+    let (sx2, sy2) = t.find("新对话开在").unwrap()
+    t.tap(sx2, sy2)
+    t.draw()
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.query(Button, label="保存").unwrap().disabled, msg="\{at}: reopened dialog matches saved bare ids")
+    let (mx2, my2) = middle_of(t, Button, "Maple")
+    t.tap(mx2, my2)
+    t.draw()
+    assert_false(t.query(Button, label="保存").unwrap().disabled, msg="\{at}: unchecking Maple enables save")
+    // Toggle "跟随工作区白名单（自动分配）" ON -> manual checklist hides, save sends { autoStation: true }, detail shows "跟随工作区白名单".
+    assert_true(t.find("跟随工作区白名单（自动分配）") is Some(_), msg="\{at}: auto allowlist switch shown")
+    assert_true(t.find("1 台") is Some(_), msg="\{at}: allowlist count shown")
+    let (ax, ay) = middle_of(t, Switch, "跟随工作区白名单（自动分配）")
+    t.tap(ax, ay)
+    t.draw()
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("Willow（connect 所在的这台）") is None, msg="\{at}: manual checklist collapses when auto is on")
+    assert_false(t.query(Button, label="保存").unwrap().disabled, msg="\{at}: save enabled when switching to auto")
+    let (bx2, by2) = middle_of(t, Button, "保存")
+    t.tap(bx2, by2)
+    t.draw()
+    t.run_for(@ui.move_most_ms)
+    assert_eq(puts.length(), 2, msg=at)
+    assert_true(flag(field(Some(puts[1]), "input"), "autoStation"), msg="\{at}: submits autoStation: true")
+    assert_true(t.find("跟随工作区白名单") is Some(_), msg="\{at}: detail displays auto allowlist summary")
+  }
+}
+
+///|
+test "a connect's startsOn row: non-admin member sees read-only row and cannot open routing dialog" {
+  let t = setting_tester(Connect("ws1/st1", "k1"), 1280.0, platform=0, over=fn(s) {
+    let base_read = s.topic_read
+    {
+      ..s,
+      topic_read: fn(topic, params) {
+        if topic == "workspace" {
+          { value: Some({ "role": "member", "name": "星火", "members": [] }), error: None, version: 1 }
+        } else {
+          base_read(topic, params)
+        }
+      },
+    }
+  })
+  t.draw()
+  assert_true(t.find("新对话开在") is Some(_))
+  let (sx, sy) = t.find("新对话开在").unwrap()
+  t.tap(sx, sy)
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  assert_false(@sf.presenting(), msg="non-admin tapping startsOn must not open dialog")
+}
+
+///|
 /// Every rect drawn round (x, y), with its edge: what a failure says.
 fn edges_at(t : @ui.Tester, x : Double, y : Double) -> String {
   t.drawn_instances().filter(fn(a) { a[5] == 0.0 && x >= a[0] && x <= a[0] + a[2] && y >= a[1] && y <= a[1] + a[3] }).map(fn(a) {

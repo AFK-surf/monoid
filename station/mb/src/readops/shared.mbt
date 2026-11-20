@@ -261,10 +261,22 @@ fn shared_rows(db : @sql.Db, known : Known, scope : Scope?, archived? : Bool = f
         db.all(shown_sessions_sql, [])
       }
     Some(sc) => {
+      let seen_k : Set[String] = Set::new()
       let found : Array[Map[String, Json]] = []
+      let load_one = (k : String) => {
+        if !seen_k.contains(k) {
+          seen_k.add(k)
+          if one(db, "SELECT * FROM sessions WHERE key = ?", [Json::string(k)]) is Some(s) {
+            found.push(s)
+          }
+        }
+      }
       for k in sc.sessions {
-        if one(db, "SELECT * FROM sessions WHERE key = ?", [Json::string(k)]) is Some(s) {
-          found.push(s)
+        load_one(k)
+        let anchor = @sql.conversation_of(db, k)
+        load_one(anchor)
+        for m in @sql.members_of(db, anchor) {
+          load_one(m)
         }
       }
       stable_sort(found, (a, b) => {
@@ -282,12 +294,24 @@ fn shared_rows(db : @sql.Db, known : Known, scope : Scope?, archived? : Bool = f
       in_rows.add(k)
     }
   }
+  let conv_of = (x : Map[String, Json]) => match field(x, "conv") {
+    String(c) if c != "" => c
+    _ => js_text(field(x, "key"))
+  }
+  let grouped_anchors : Set[String] = Set::new()
   for x in sessions {
     let key = js_text(field(x, "key"))
+    let anchor = conv_of(x)
+    if anchor != key {
+      grouped_anchors.add(anchor)
+    }
     all[key] = x
+    if scope is Some(_) && in_rows.contains(key) {
+      in_rows.add(anchor)
+    }
     if !(field(x, "archived_at") is Null) == archived {
       shown[key] = x
-      if scope is None || in_rows.contains(key) {
+      if scope is None || in_rows.contains(key) || in_rows.contains(anchor) {
         order.push(key)
       }
     }
@@ -348,9 +372,15 @@ fn shared_rows(db : @sql.Db, known : Known, scope : Scope?, archived? : Bool = f
   // in its Slack threads.
   let origins : Map[String, Listed] = Map([])
   let chatted : Set[String] = Set::new()
+  let chatted_convs : Set[String] = Set::new()
   let spoke : Map[String, Array[Json]] = Map([])
   for t in threads {
     let own = field(t.thread, "surface") == Json::string("chat")
+    if own && listed(t) {
+      if home_of(t) is Some(h) {
+        chatted_convs.add(h)
+      }
+    }
     let writers = if own { [] } else { known.people(t.people) }
     for m in t.sessions {
       let s = js_text(field(m, "session"))
@@ -408,10 +438,12 @@ fn shared_rows(db : @sql.Db, known : Known, scope : Scope?, archived? : Bool = f
   }
   let rows : Array[Json] = []
   let ids : Array[String] = []
+  let row_members : Array[Array[String]] = []
   for t in item_threads {
     let id = field(t.thread, "id")
     let from = t.sessions.iter().filter_map(m => origins.get(js_text(field(m, "session")))).head()
-    let agents = in_chat(t).map(agent)
+    let chat_keys = in_chat(t)
+    let agents = chat_keys.map(agent)
     let origin = match from { Some(f) => known.origin(f.thread, f.sessions); None => Json::null() }
     let creator = known.creator(field(t.thread, "created_by"))
     let people = known.people(t.people)
@@ -420,7 +452,10 @@ fn shared_rows(db : @sql.Db, known : Known, scope : Scope?, archived? : Bool = f
     let starters = agents.map(a => known.creator(match all.get(js_text(a.value("key").unwrap())) { Some(x) => field(x, "created_by"); None => Json::null() })) catch {
       e => raise e
     }
-    let key = js_text(agents[0].value("key").unwrap())
+    let key = match home_of(t) {
+      Some(h) if all.contains(h) && grouped_anchors.contains(h) => h
+      _ => js_text(agents[0].value("key").unwrap())
+    }
     let named : Json = match from {
       Some(f) if !(origin is Null) && !given_title(t.thread) =>
         { "thread": thread_json(f.thread), "firstText": f.first_text, "channelName": origin.value("channelName").unwrap_or(Json::null()) }
@@ -474,7 +509,10 @@ fn shared_rows(db : @sql.Db, known : Known, scope : Scope?, archived? : Bool = f
       "creator": creator,
       "people": Json::array(people),
     }
-    row["ws"] = match all.get(key) { Some(x) => field(x, "ws"); None => Json::null() }
+    row["ws"] = match all.get(key) {
+      Some(x) => field(x, "ws")
+      None => match all.get(js_text(agents[0].value("key").unwrap())) { Some(x) => field(x, "ws"); None => Json::null() }
+    }
     row["named"] = named
     let mine_of : Array[Json] = [creator] + people + starters
     for a in agents {
@@ -536,15 +574,55 @@ fn shared_rows(db : @sql.Db, known : Known, scope : Scope?, archived? : Bool = f
     }
     rows.push(Json::object(row))
     ids.push(key)
+    let mkeys : Array[String] = [key]
+    for mk in chat_keys {
+      if !mkeys.contains(mk) {
+        mkeys.push(mk)
+      }
+    }
+    row_members.push(mkeys)
   }
+  let conv_order : Array[String] = []
+  let conv_members : Map[String, Array[String]] = Map([])
   for key in order {
-    if chatted.contains(key) {
+    let x = shown.get(key).unwrap()
+    let anchor = conv_of(x)
+    if chatted.contains(key) || chatted_convs.contains(anchor) {
       continue
     }
-    let x = shown.get(key).unwrap()
-    let from = origins.get(key)
+    match conv_members.get(anchor) {
+      Some(ms) =>
+        if !ms.contains(key) {
+          ms.push(key)
+        }
+      None => {
+        conv_order.push(anchor)
+        conv_members[anchor] = [key]
+      }
+    }
+  }
+  for anchor in conv_order {
+    let raw_ms = conv_members.get(anchor).unwrap()
+    let ms = raw_ms.copy()
+    ms.sort_by((a, b) => {
+      let ca = match all.get(a) { Some(x) => num(field(x, "created_at")); None => 0.0 }
+      let cb = match all.get(b) { Some(x) => num(field(x, "created_at")); None => 0.0 }
+      if ca != cb {
+        if ca < cb { -1 } else { 1 }
+      } else {
+        a.compare(b)
+      }
+    })
+    let ax = match shown.get(anchor) {
+      Some(x) => x
+      None => match all.get(anchor) { Some(x) => x; None => shown.get(ms[0]).unwrap() }
+    }
+    let from = match origins.get(anchor) {
+      Some(f) => Some(f)
+      None => ms.iter().filter_map(mk => origins.get(mk)).head()
+    }
     let origin = match from { Some(f) => known.origin(f.thread, f.sessions); None => Json::null() }
-    let own = match field(x, "title") { String(s) => @jscase.trim_white(s); _ => "" }
+    let own = match field(ax, "title") { String(s) => @jscase.trim_white(s); _ => "" }
     let named : Json = if own != "" {
       { "thread": { "surface": "chat", "title": Json::string(own) } }
     } else {
@@ -554,34 +632,80 @@ fn shared_rows(db : @sql.Db, known : Known, scope : Scope?, archived? : Bool = f
         _ => { "thread": { "surface": "chat" } }
       }
     }
-    let starter = known.creator(field(x, "created_by"))
+    let starter = known.creator(field(ax, "created_by"))
+    let mut max_active = num(field(ax, "last_active_at"))
+    let mut last_active_json = field(ax, "last_active_at")
+    let mine_of : Array[Json] = []
+    for mk in ms {
+      let mx = shown.get(mk).unwrap()
+      let la = num(field(mx, "last_active_at"))
+      if la > max_active {
+        max_active = la
+        last_active_json = field(mx, "last_active_at")
+      }
+      let st = known.creator(field(mx, "created_by"))
+      if !(st is Null) {
+        mine_of.push(st)
+      }
+      mine_of.append(spoke.get(mk).unwrap_or([]))
+    }
+    let people_arr : Array[Json] = if ms.length() == 1 {
+      if starter is Null { [] } else { [starter] }
+    } else {
+      match from {
+        Some(f) => {
+          let ps = known.people(f.people)
+          if ps.length() > 0 { ps } else if starter is Null { [] } else { [starter] }
+        }
+        None => if starter is Null { [] } else { [starter] }
+      }
+    }
     let row : Map[String, Json] = {
-      "id": Json::string(key),
-      "session": Json::string(key),
+      "id": Json::string(anchor),
+      "session": Json::string(anchor),
       "thread": Json::null(),
       "title": "",
-      "agents": Json::array([agent(key)]),
+      "agents": Json::array(ms.map(agent)),
       "last": Json::null(),
       "unread": false,
       "mine": false,
-      "lastActiveAt": field(x, "last_active_at"),
-      "connect": if field(x, "connect") == Json::string("chat") { Json::null() } else { field(x, "connect") },
+      "lastActiveAt": last_active_json,
+      "connect": if field(ax, "connect") == Json::string("chat") { Json::null() } else { field(ax, "connect") },
       "origin": origin,
-      "people": Json::array(if starter is Null { [] } else { [starter] }),
+      "people": Json::array(people_arr),
       "creator": starter,
     }
-    row["ws"] = field(x, "ws")
+    row["ws"] = field(ax, "ws")
     row["named"] = named
-    row["mineOf"] = Json::array(([starter] + spoke.get(key).unwrap_or([])).filter(p => !(p is Null)))
+    row["mineOf"] = Json::array(mine_of.filter(p => !(p is Null)))
     if archived {
-      row["archived"] = archived_of(x)
+      row["archived"] = archived_of(ax)
     }
     rows.push(Json::object(row))
-    ids.push(key)
+    ids.push(anchor)
+    let mkeys : Array[String] = [anchor]
+    for mk in ms {
+      if !mkeys.contains(mk) {
+        mkeys.push(mk)
+      }
+    }
+    row_members.push(mkeys)
   }
   let wanted = match scope {
     None => None
-    Some(_) => Some(ids.filter(k => in_rows.contains(k)))
+    Some(_) => {
+      let ws : Array[String] = []
+      for i, k in ids {
+        if in_rows.contains(k) {
+          for mk in row_members[i] {
+            if !ws.contains(mk) {
+              ws.push(mk)
+            }
+          }
+        }
+      }
+      Some(ws)
+    }
   }
   let (openers, opened) = openers_opened(db, wanted)
   let shares = chat_shares(db, wanted, known.now)
@@ -594,14 +718,31 @@ fn shared_rows(db : @sql.Db, known : Known, scope : Scope?, archived? : Bool = f
     guard r is Object(o) else { continue }
     let row = Map::from_array(o.to_array())
     row["pinned"] = Json::null()
-    if openers.get(key) is Some(op) {
-      row["opener"] = op
+    let mkeys = row_members[i]
+    for mk in mkeys {
+      if openers.get(mk) is Some(op) {
+        row["opener"] = op
+        break
+      }
     }
-    if opened.get(key) is Some(children) {
-      row["opened"] = Json::array(children)
+    let merged_opened : Array[Json] = []
+    for mk in mkeys {
+      if opened.get(mk) is Some(children) {
+        for c in children {
+          if !merged_opened.contains(c) {
+            merged_opened.push(c)
+          }
+        }
+      }
     }
-    if shares.get(key) is Some(s) {
-      row["xshare"] = s
+    if merged_opened.length() > 0 {
+      row["opened"] = Json::array(merged_opened)
+    }
+    for mk in mkeys {
+      if shares.get(mk) is Some(s) {
+        row["xshare"] = s
+        break
+      }
     }
     out.push(Json::object(row))
   }

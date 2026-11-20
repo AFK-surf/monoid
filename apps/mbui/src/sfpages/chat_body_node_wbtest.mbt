@@ -1833,3 +1833,103 @@ test "a long list a few items a piece: each piece a block of the list, numbered 
     y = r.1
   }
 }
+
+///|
+test "chat_body_node scrollbar clears top cover and bottom composer by scroll_bar_clear" {
+  @sfbase.reset()
+  reset()
+  let src = @sffixture.fixture("chat-long")
+  let seen : Ref[(ChatView, Array[Entry])?] = Ref(None)
+  body_old(src, 900.0, 760.0, 0, seen~) |> ignore
+  let (v0, read0) = seen.val.unwrap()
+  @sfbase.reset()
+  reset()
+  let src = @sffixture.fixture("chat-long")
+  let view = @signals.signal(v0)
+  let entries = @signals.signal(read0)
+  let scroll = @view.Scroll::list()
+  let place : @view.ListPlace[String] = @view.ListPlace::new()
+  let cover_h = 48.0
+  let composer_h = 80.0
+  @sf.set_words(@sfbase.fill)
+  absolute_times.set(false)
+  let t = @ui.Tester::new(
+    fn(c) {
+      @sf.begin(c) |> ignore
+      c.with_theme(@sf.ui_theme(), fn() { @ui.old_views_here(c) })
+    },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      let here : MessageNodeHere = {
+        station: body_ref.station,
+        session: body_ref.session,
+        view: fn() { view.get() },
+        width: fn() { 900.0 },
+        tips,
+        stint: fn() { 0 },
+        jump: None,
+        picture: None,
+      }
+      root.box(fn(f) {
+        f.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        chat_body_node(
+          f,
+          src,
+          here,
+          fn() { entries.get() },
+          sending=fn() { [] },
+          core=Some(@sfbase.settings_core(src, body_ws)),
+          cover=fn() { cover_h },
+          foot=fn() { 24.0 },
+          composer=fn(cv) { cv.box(fn(c) { c.height(Is(Some(composer_h))) |> ignore }) |> ignore },
+          scroll~,
+          place~,
+        )
+        |> ignore
+      })
+      |> ignore
+      @sf.presented_nodes(root)
+    },
+    w=900.0,
+    h=760.0,
+    platform=0,
+  )
+  t.set_rows_on_pixels(true)
+  t.run_for(@ui.move_most_ms)
+  let find_thumb = fn() {
+    t
+      .drawn_order()
+      .filter(fn(d) { d.0 == 0 && d.3 == @ui.scroll_bar_size && d.1 > 880.0 && d.5 > 0.0 })
+  }
+  // Scroll all the way to the top and check top clearance
+  scroll.put(0.0)
+  t.run_for(@ui.move_most_ms)
+  t.move_to(900.0 - @ui.scroll_bar_near + 1.0, 300.0)
+  t.run_for(@ui.move_most_ms)
+  let top_thumbs = find_thumb()
+  assert_eq(top_thumbs.length(), 1, msg="top scrollbar thumb count")
+  let tt = top_thumbs[0]
+  let expected_top = cover_h + @ui.scroll_bar_clear + @ui.scroll_bar_inset
+  assert_true(
+    (tt.2 - expected_top).abs() <= 0.5,
+    msg="top thumb y=\{tt.2} expected=\{expected_top}",
+  )
+  assert_true(
+    (tt.1 + tt.3 - (900.0 - @ui.scroll_bar_inset)).abs() <= 0.5,
+    msg="top thumb right=\{tt.1 + tt.3} expected=\{900.0 - @ui.scroll_bar_inset}",
+  )
+  // Scroll all the way to the bottom and check bottom clearance above composer
+  place.to_end(glide=false)
+  t.run_for(@ui.move_most_ms)
+  t.move_to(900.0 - @ui.scroll_bar_near + 1.0, 300.0)
+  t.run_for(@ui.move_most_ms)
+  let bot_thumbs = find_thumb()
+  assert_eq(bot_thumbs.length(), 1, msg="bottom scrollbar thumb count")
+  let bt = bot_thumbs[0]
+  let expected_bottom = 760.0 - composer_h - @ui.scroll_bar_clear - @ui.scroll_bar_inset
+  assert_true(
+    (bt.2 + bt.4 - expected_bottom).abs() <= 0.5,
+    msg="bottom thumb foot=\{bt.2 + bt.4} expected=\{expected_bottom}",
+  )
+}

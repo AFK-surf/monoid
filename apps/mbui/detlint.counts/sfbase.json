@@ -24,7 +24,7 @@
     },
     "ui-current": {
       "src/sfbase/fresh.mbt": 1,
-      "src/sfbase/viewer_tree.mbt": 14
+      "src/sfbase/viewer_tree.mbt": 13
     },
     "build-motion": {
       "src/sfbase/chat_list.mbt": 4,

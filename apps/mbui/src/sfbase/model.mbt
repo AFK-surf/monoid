@@ -202,6 +202,24 @@ pub(all) struct ListNote {
 
 ///|
 /// A workspace's chats as Home lists them (ChatsView).
+///|
+#derive(Eq)
+pub(all) struct InterruptedChat {
+  key : String
+  thread : Int?
+  title : String
+}
+
+///|
+#derive(Eq)
+pub(all) struct InterruptedStation {
+  station : String
+  station_name : String
+  count : Int
+  chats : Array[InterruptedChat]
+}
+
+///|
 pub(all) struct ChatsView {
   stations : Int
   days : Array[ChatDay]
@@ -211,6 +229,8 @@ pub(all) struct ChatsView {
   /// while what changed since the app was last with the stations is still coming: what the mark at the list's top
   /// says (正在同步, 正在同步 · 还剩 12 个对话)
   syncing : String?
+  /// stations with turns cut off by a non-update restart awaiting manual resume or dismissal
+  interrupted : Array[InterruptedStation]
 }
 
 ///|
@@ -397,6 +417,27 @@ fn chats_view_by(v : Json, item : (Json) -> ChatItem) -> ChatsView {
     },
     note,
     syncing: opt_text(s, "syncing"),
+    interrupted: items(s, "interrupted").filter_map(fn(x) {
+      let v = Some(x)
+      let station = text(v, "station")
+      let count = number(v, "count").to_int()
+      if station == "" || count <= 0 {
+        return None
+      }
+      let chats : Array[InterruptedChat] = items(v, "chats").filter_map(fn(c) {
+        let cv = Some(c)
+        let key = text(cv, "key")
+        if key == "" {
+          return None
+        }
+        let thread = match field(cv, "thread") {
+          Some(Number(n, ..)) => Some(n.to_int())
+          _ => None
+        }
+        Some({ key, thread, title: text(cv, "title") })
+      })
+      Some({ station, station_name: text(v, "stationName"), count, chats })
+    }),
   }
 }
 

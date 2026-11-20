@@ -542,7 +542,7 @@ async fn P53::ask(self : P53, op : String, arg : Json) -> Json {
     "workspaceWatch.limit" => jn(self.watch.limit(text(0, "session"), text(1, "station")))
     // ── Search, skills ──
     "search" | "search.query" | "searchDeps.search.query" =>
-      self.search.query(text(0, "query"), at(1, "options"))
+      self.search.query(text(0, "query"), p53_search_options(arg))
     "searchDeps.readSkill" => jstr(self.search.read_skill(str(0, "workspace"), text(1, "name"), match str(2, "file") { Some(f) => f; None => "SKILL.md" }))
     "searchDeps.workspaceOf" => p53_place_of(self.bus, text(0, "session"))
     "searchDeps.stations" => Json::array(p53_stations_of(self.bus, text(0, "workspace")))

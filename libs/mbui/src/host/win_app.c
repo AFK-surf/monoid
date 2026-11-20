@@ -996,7 +996,12 @@ static LRESULT wndproc_here(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         SendMessageW(h, WM_NCLBUTTONDOWN, HTCAPTION, MAKELPARAM(at.x, at.y));
       }
       return 0;
+    // minimized or hidden: what drawing holds beyond its frames given back (glass's levels), made again as it draws
+    case WM_SHOWWINDOW:
+      if (!wp) mb_render_trim();
+      break;
     case WM_SIZE:
+      if (wp == SIZE_MINIMIZED) mb_render_trim();
       ws->want_frame = 1;
       if (sizing) {
         draw_frame();

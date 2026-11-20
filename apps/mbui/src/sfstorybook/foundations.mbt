@@ -19,7 +19,13 @@ fn foundations() -> Array[Story] {
       file: "tokens.mbt",
       api: [],
       play: None,
-      about: "still.fail 的暖纸底色、文字和语义色，随浅色、深色和顶栏选的主题色实时变化。点一块颜色复制它的名字和色值。",
+      about: if @ui.env("MBUI_BRAND") == "" {
+        "still.fail 的暖纸底色、文字和语义色，随浅色、深色和顶栏选的主题色实时变化。点一块颜色复制它的名字和色值。"
+      } else if @sf.language() == "en" {
+        "Warm paper surfaces, ink, and semantic tokens that adapt live to light/dark themes and accent picks. Click any swatch to copy."
+      } else {
+        "暖纸底色、文字与语义色阶，随浅/深主题与主题色实时联动。点击色块即可复制名称与色值。"
+      },
       cases: [
         ("一眼 At a glance", fn(card) { glance_node(card) }),
         ("纸面与文字 Grounds & Ink", fn(card) { swatches_node(card, grounds_ink) }),

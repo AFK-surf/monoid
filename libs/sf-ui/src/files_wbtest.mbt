@@ -4,7 +4,7 @@ test "a file's card (FileCard): its name and size, how far it has gone up while 
   let pending = Ref(true)
   let failed = Ref("")
   let sent = Ref(9216.0)
-  let t = @ui.Tester::new(
+  let tt = @ui.Tester::new(
     fn(c) {
       let _ = begin(c)
       c.box(style=@ui.css("w=Full h=Full p=S4"), fn() {
@@ -26,31 +26,33 @@ test "a file's card (FileCard): its name and size, how far it has gone up while 
     w=400.0,
     h=200.0,
   )
-  t.draw()
-  assert_true(t.find("build") is Some(_))
-  assert_true(t.find(".log") is Some(_))
-  // going up: how far, in its size's place (its words' key while the catalog has none)
-  assert_true(t.words().iter().any(fn(w) { w.0.contains("web-main.file.uploadingPart") }), msg=t.words().map(fn(w) { w.0 }).join("|"))
+  tt.draw()
+  assert_true(tt.find("build") is Some(_))
+  assert_true(tt.find(".log") is Some(_))
+  // going up: how far, in its size's place
+  let uploading = t("web-main.file.uploadingPart", args=[("percent", "50"), ("size", file_size(18432.0))])
+  assert_true(tt.words().iter().any(fn(w) { w.0.contains(uploading) }), msg=tt.words().map(fn(w) { w.0 }).join("|"))
   // all of it gone, the station not yet saying it has it: waiting for it, not 100%
   sent.val = 18432.0
-  t.draw()
-  assert_true(t.words().iter().any(fn(w) { w.0.contains("common.uploadConfirming") }), msg=t.words().map(fn(w) { w.0 }).join("|"))
+  tt.draw()
+  let confirming = t("common.uploadConfirming")
+  assert_true(tt.words().iter().any(fn(w) { w.0.contains(confirming) }), msg=tt.words().map(fn(w) { w.0 }).join("|"))
   pending.val = false
   failed.val = "上传失败"
-  t.draw()
-  assert_true(t.find("上传失败") is Some(_))
-  let (x, y, w, h) = t.query(Button, label="web-main.composer.retryUpload").unwrap().rect
-  t.tap(x + w / 2.0, y + h / 2.0)
+  tt.draw()
+  assert_true(tt.find("上传失败") is Some(_))
+  let (x, y, w, h) = tt.query(Button, label=t("web-main.composer.retryUpload")).unwrap().rect
+  tt.tap(x + w / 2.0, y + h / 2.0)
   assert_eq(done, [Retry])
-  let (x, y, w, h) = t.query(Button, label="web-main.file.remove").unwrap().rect
-  t.tap(x + w / 2.0, y + h / 2.0)
+  let (x, y, w, h) = tt.query(Button, label=t("web-main.file.remove", args=[("name", "build.log")])).unwrap().rect
+  tt.tap(x + w / 2.0, y + h / 2.0)
   assert_eq(done, [Retry, Remove])
 }
 
 ///|
 test "pasted words' card (PendingFile's pasted card): what they begin with and how many in place of name and size; ✎ puts them back" {
   let restored = Ref(false)
-  let t = @ui.Tester::new(
+  let tt = @ui.Tester::new(
     fn(c) {
       let _ = begin(c)
       c.box(style=@ui.css("w=Full h=Full p=S4"), fn() {
@@ -72,13 +74,13 @@ test "pasted words' card (PendingFile's pasted card): what they begin with and h
     w=400.0,
     h=200.0,
   )
-  t.draw()
-  assert_true(t.find("发布前要核对的条目") is Some(_))
-  assert_true(t.find("6,000 字符") is Some(_))
-  assert_true(t.find("pasted-text") is None)
-  assert_true(t.query(Button, label="删除粘贴片段") is Some(_))
-  let (x, y, w, h) = t.query(Button, label="web-main.composer.expandPaste").unwrap().rect
-  t.tap(x + w / 2.0, y + h / 2.0)
+  tt.draw()
+  assert_true(tt.find("发布前要核对的条目") is Some(_))
+  assert_true(tt.find("6,000 字符") is Some(_))
+  assert_true(tt.find("pasted-text") is None)
+  assert_true(tt.query(Button, label="删除粘贴片段") is Some(_))
+  let (x, y, w, h) = tt.query(Button, label=t("web-main.composer.expandPaste")).unwrap().rect
+  tt.tap(x + w / 2.0, y + h / 2.0)
   assert_true(restored.val)
 }
 
@@ -86,7 +88,7 @@ test "pasted words' card (PendingFile's pasted card): what they begin with and h
 test "a quote's card (QuoteCard): whose and the passage, what is said under it; its source pressed to jump, its ✕ to let it go" {
   let jumped = Ref(false)
   let removed = Ref(false)
-  let t = @ui.Tester::new(
+  let tt = @ui.Tester::new(
     fn(c) {
       let _ = begin(c)
       c.box(style=@ui.css("w=Full h=Full p=S4"), fn() {
@@ -100,15 +102,15 @@ test "a quote's card (QuoteCard): whose and the passage, what is said under it; 
     w=400.0,
     h=200.0,
   )
-  t.draw()
-  assert_true(t.find("量过再记") is Some(_))
-  assert_true(t.shape_boxes().iter().any(fn(s) { s.0.has_prefix("sf/icon/quote-open/") }), msg="the quote starts with an opening mark")
-  let (x, y) = t.find("其余的行按估计的高度占位").unwrap()
-  t.tap(x, y)
+  tt.draw()
+  assert_true(tt.find("量过再记") is Some(_))
+  assert_true(tt.shape_boxes().iter().any(fn(s) { s.0.has_prefix("sf/icon/quote-open/") }), msg="the quote starts with an opening mark")
+  let (x, y) = tt.find("其余的行按估计的高度占位").unwrap()
+  tt.tap(x, y)
   assert_true(jumped.val)
   assert_false(removed.val)
-  let (x, y, w, h) = t.query(Button, label="web-main.quote.remove").unwrap().rect
-  t.tap(x + w / 2.0, y + h / 2.0)
+  let (x, y, w, h) = tt.query(Button, label=t("web-main.quote.remove")).unwrap().rect
+  tt.tap(x + w / 2.0, y + h / 2.0)
   assert_true(removed.val)
 }
 
@@ -139,7 +141,7 @@ test "a quote's picture with nothing said under it: as far over its card's foot 
 ///|
 test "a quote waiting in the composer has its ✕ hung on its corner, as everything waiting there: its centre on the curve, the quote its room across, the ✕ past its side as far as past its top" {
   let removed = Ref(false)
-  let t = @ui.Tester::new(
+  let tt = @ui.Tester::new(
     fn(c) {
       let _ = begin(c)
       c.box(style=@ui.css("w=Full h=Full p=S4"), fn() {
@@ -150,14 +152,14 @@ test "a quote waiting in the composer has its ✕ hung on its corner, as everyth
     w=400.0,
     h=200.0,
   )
-  t.draw()
-  assert_true(t.shape_boxes().iter().any(fn(s) { s.0.has_prefix("sf/icon/quote-open/") }), msg="the composer's quote starts with an opening mark")
-  let (x, y, w, h) = t.query(Button, label="web-main.quote.remove").unwrap().rect
+  tt.draw()
+  assert_true(tt.shape_boxes().iter().any(fn(s) { s.0.has_prefix("sf/icon/quote-open/") }), msg="the composer's quote starts with an opening mark")
+  let (x, y, w, h) = tt.query(Button, label=t("web-main.quote.remove")).unwrap().rect
   // (the one ✕ of what waits to go: 20 round, solid)
   assert_eq((w, h), (20.0, 20.0))
   // the quote's ground: the widest rounded box drawn
   let mut q = (0.0, 0.0, 0.0, 0.0, 0.0)
-  for r in t.drawn_rect_corners() {
+  for r in tt.drawn_rect_corners() {
     if r.2 > q.2 && (r.5).1 > 0.0 {
       q = (r.0, r.1, r.2, r.3, (r.5).1)
     }
@@ -170,7 +172,7 @@ test "a quote waiting in the composer has its ✕ hung on its corner, as everyth
   // ✕ past that as far as past its top (the user, 2026-10-26: 上边距和右边距不一致)
   assert_true(near(q.0 + q.2, 400.0 - 16.0), msg="its end at \{q.0 + q.2}")
   assert_true(near(x + w - (q.0 + q.2), q.1 - y), msg="past its side \{x + w - (q.0 + q.2)}, past its top \{q.1 - y}")
-  t.tap(x + w / 2.0, y + h / 2.0)
+  tt.tap(x + w / 2.0, y + h / 2.0)
   assert_true(removed.val)
 }
 

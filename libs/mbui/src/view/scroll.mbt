@@ -75,9 +75,12 @@ pub struct Scroll {
   priv peers_scrolled : Map[Int, (Double) -> Unit]
   /// which column it is, of all made (what hosts the tree tells its glides by: Tree::on_glides)
   priv serial : Int
-  /// it moves as a page's list does on the platform it is on (Scroll::list): what shows past its ends, pulled there or
-  /// going back (none: nothing)
+  /// it moves as a page's list does on the platform it is on (Scroll::new / Scroll::list): what shows past its ends,
+  /// pulled there or going back (none: nothing)
   priv as_list : Bool
+  /// whether it is a page's main rows list (Scroll::list): registers `Tree::rows_list` host pixel grid and enforces
+  /// `Tree::rows_list_nested_said`; `Scroll::new()` sets this false so nested scrolls work safely
+  priv rows_list : Bool
   priv past : @signals.Signal[Past?]
   /// a page's list's wheel's notches easing in (none: none)
   priv notch : @signals.Signal[Notch?]
@@ -223,21 +226,30 @@ pub fn Scroll::serial(self : Scroll) -> Int {
 }
 
 ///|
-/// A column's scroll, at its top: as an old view's box kept to a height scrolls (ui's Ctx::capped).
+/// A column's scroll, at its top: as a page's list on the platform it is on (scroll_list.mbt), with platform inertia,
+/// overscroll/rubber-band feel, and `grew_above` support, without registering a top-level `rows_list` pixel grid so
+/// nested scrolls work safely.
 pub fn Scroll::new() -> Scroll {
-  Scroll::made(false)
+  Scroll::made(true, rows_list=false)
+}
+
+///|
+/// A column's scroll, at its top: as an old view's box kept to a height scrolls (ui's Ctx::capped), without platform
+/// list fling/rubber-band physics.
+pub fn Scroll::plain() -> Scroll {
+  Scroll::made(false, rows_list=false)
 }
 
 ///|
 /// A row's scroll, at its start: across, as an old view's box scrolled sideways does (ui's Ctx::sideways).
 pub fn Scroll::across() -> Scroll {
-  Scroll::made(false, across=true)
+  Scroll::made(false, across=true, rows_list=false)
 }
 
 ///|
 /// A column's scroll, at its top: as a page's list on the platform it is on (scroll_list.mbt).
 pub fn Scroll::list() -> Scroll {
-  Scroll::made(true)
+  Scroll::made(true, rows_list=true)
 }
 
 ///|
@@ -249,7 +261,7 @@ pub fn Scroll::list() -> Scroll {
 pub fn Scroll::beside(self : Scroll) -> Scroll {
   self.shared = true
   {
-    ..Scroll::made(self.as_list, across=self.across),
+    ..Scroll::made(self.as_list, across=self.across, rows_list=self.rows_list),
     shared: true,
     x: self.x,
     fling: self.fling,
@@ -264,7 +276,7 @@ pub fn Scroll::beside(self : Scroll) -> Scroll {
 }
 
 ///|
-fn Scroll::made(as_list : Bool, across? : Bool = false) -> Scroll {
+fn Scroll::made(as_list : Bool, across? : Bool = false, rows_list? : Bool = false) -> Scroll {
   {
     across,
     x: @signals.signal(0.0, same=fn(a, b) { a == b }),
@@ -287,6 +299,7 @@ fn Scroll::made(as_list : Bool, across? : Bool = false) -> Scroll {
       scrolls_made.val
     },
     as_list,
+    rows_list,
     past: @signals.signal_by(None, same=fn(a, b) { same_ref(a, b) }),
     notch: @signals.signal_by(None, same=fn(a, b) { same_ref(a, b) }),
     tall: fn() { 0.0 },
@@ -1010,6 +1023,29 @@ pub fn View::scroll_holding(self : View, across? : Bool = false) -> Scroll? {
 }
 
 ///|
+/// Convenience scrollable column without declaring a `Scroll` state up front: creates `Scroll::new()` when `scroll` is
+/// omitted, and fills its parent (`fill=true`) by default without overflowing flex containers.
+#callsite(autofill(loc))
+pub fn View::scroll_column(
+  self : View,
+  body : (View) -> Unit,
+  scroll? : Scroll,
+  fill? : Bool = true,
+  bar? : ScrollBar,
+  loc~ : SourceLoc,
+) -> View {
+  let s = match scroll {
+    Some(s) => s
+    None => Scroll::new()
+  }
+  self.scrolls(s, body, bar?, fill=false) |> ignore
+  if fill {
+    self.fill(loc~) |> ignore
+  }
+  self
+}
+
+///|
 /// A column that scrolls up and down in it (see the file's head), `s` saying how far it is scrolled, `build` making
 /// what it holds in the node that holds it all (laid out as tall as it is, drawn off by how far it is scrolled). It
 /// gives way to nothing where what holds it is short of room (View::shrink, View::min_height). A hold that began on
@@ -1335,7 +1371,9 @@ pub fn View::scrolls(
     // (Node's scroll_off): nothing of it placed again as it scrolls, what it holds drawn as it was, moved by what hosts
     // the tree; on iOS moved past its end as far as its rubber band shows it)
     if s.as_list && !across {
-      self.tree.rows_list(held.at)
+      if s.rows_list {
+        self.tree.rows_list(held.at)
+      }
       let lists = self.tree.lists_scrolled
       let at = self.at
       lists[at] = s

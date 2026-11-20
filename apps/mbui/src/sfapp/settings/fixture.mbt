@@ -20,6 +20,8 @@ priv struct SettingsFixture {
   mut afresh_above : Double
   /// the station sending its log to still.fail
   mut logs : Bool
+  /// whether this station accepts automatically assigned new chats and presets
+  mut accept_auto_chats : Bool
   /// a Windows station's running as administrator, as the core shows it (its overview's `elevation`), as a test sets
   /// it; none: not a Windows station
   mut elevation : Json?
@@ -48,8 +50,8 @@ priv struct SettingsFixture {
   /// a new profile's draft at a key's form with a region and a protocol to choose (settings-new-profile-key)
   mut new_key : Bool
   /// Claude 主账号's trouble: "" none, "quota" its allowance unreadable (settings-profile-quota-failed), "verify" its
-  /// provider asking the account to be verified at a link first (settings-profile-verify), "blocked"
-  /// its allowance used up (settings-profile-blocked), "login" to be signed in to again (settings-profile-signin)
+  /// provider refusing the account until it is verified at a link (settings-profile-verify), "blocked"
+  /// its provider refusing it for its allowance used up (settings-profile-blocked), "login" to be signed in to again (settings-profile-signin)
   mut trouble : String
   /// the vault not set up on this device (settings-vault-off: on nowhere, no vault of theirs; settings-vault-elsewhere:
   /// on another device of theirs, their vault there with no key here yet)
@@ -144,7 +146,7 @@ priv struct SettingsFixture {
   mut willow_away : Bool
   // (settings-stations-incompatible: Willow up, saying what this core cannot read)
   mut willow_incompatible : Bool
-  // (settings-stations-tasks-theirs: Willow added by another member, its mode not the viewer's to change)
+  // (settings-stations-tasks-theirs: Willow added by another member, seen by a plain member: its mode not theirs to change)
   mut willow_theirs : Bool
   /// the subscriptions' allowances a month's window too, three in all (settings-profiles-monthly: OpenCode Go's)
   mut monthly : Bool
@@ -199,6 +201,7 @@ let fx : SettingsFixture = {
   afresh: false,
   afresh_above: 1.0,
   logs: true,
+  accept_auto_chats: false,
   elevation: None,
   screen_service: None,
   copies: None,
@@ -513,9 +516,17 @@ let fx_station_back : Ref[String] = Ref("")
 let fx_unprotected : Ref[Bool] = Ref(false)
 
 ///|
+let fx_connect_stations : Map[String, Array[String]] = Map([])
+
+///|
+let fx_connect_auto : Map[String, Bool] = Map([])
+
+///|
 /// The made-up settings as a run starts (reset): none changed, no sheet or scroll to put up.
 fn fixture_reset() -> Unit {
   fx.names.clear()
+  fx_connect_stations.clear()
+  fx_connect_auto.clear()
   rigs_fixture_reset()
   move_fixture_reset()
   devices_fixture_reset()
@@ -545,6 +556,7 @@ fn fixture_reset() -> Unit {
   fx.afresh = false
   fx.afresh_above = 1.0
   fx.logs = true
+  fx.accept_auto_chats = false
   fx.elevation = None
   fx.screen_service = None
   fx.copies = None
@@ -948,6 +960,7 @@ pub fn fixture_page(mode : String) -> String {
     // its 设置 while it is away: only what can be changed then
     "settings-stations-incompatible" => fx.willow_incompatible = true
     "settings-stations-tasks-theirs" => fx.willow_theirs = true
+    "settings-stations-tasks-doing" => fx_rigs.mode_doing = true
     "settings-station-away" => {
       fx.willow_away = true
       station_parts["ws1/st1"] = "settings"
@@ -1303,7 +1316,7 @@ pub fn fixture_page(mode : String) -> String {
     "settings-security-join" | "settings-security-off" | "settings-security-protecting" | "settings-security-pending"
     | "settings-security-confirm" | "settings-security-root" | "settings-security-root-off" | "settings-security-again" => "security"
     m if m.has_prefix("settings-security-upgrade-") => "security"
-    "settings-stations-tasks" | "settings-stations-tasks-outside" | "settings-stations-tasks-theirs" | "settings-stations-devices" => "stations"
+    "settings-stations-tasks" | "settings-stations-tasks-outside" | "settings-stations-tasks-theirs" | "settings-stations-tasks-doing" | "settings-stations-devices" => "stations"
     "settings-station-devices" => "station:ws1/st1"
     "settings-station-tasks" | "settings-station-tasks-locked" => "station:ws1/aa11"
     "settings-station-tasks-other" => "station:ws1/bb22"
@@ -1909,15 +1922,15 @@ fn fx_profile_places() -> Array[Json] {
 /// Claude 主账号's dot as its trouble has it (fx.trouble).
 fn fx_cc_tone() -> String {
   match fx.trouble {
-    "login" | "blocked" => "red"
+    "login" | "blocked" | "verify" => "red"
     _ => "green"
   }
 }
 
 ///|
-/// What Antigravity CLI says where Google asks the account to be verified first, its link whole (agy-quota.ts
-/// clipKeepingLinks).
-let fx_verify_said : String = "Eligibility check failed: Your current account is not eligible for Antigravity. Verify your account to continue.\n\nAlternatively, try signing in with another personal Google account.\n\nPlease verify your account in your browser to continue:\nhttps://accounts.google.com/v3/signin/continue?plt=AKgnsbvgpMGWUxHL-LdY6TaKwyqigcx13EZGzlKmZcGrDxrNDt57SPhlkbXKa1uIKydtd8wIqmUCw2x25ooo2v5G_JN2S8spn6C0rCAJWTFB47we5La_Ckx-UMLZpie3MBHPZkmLQIIq&continue=https://developers.google.com/gemini-code-assist/auth/auth_success_gemini&sarp=1&scc=1&flowName=GlifWebSignIn&authuser"
+/// What the station says where Google asks an Antigravity CLI account to be verified first (agy-quota.ts `agyVerify`,
+/// station.quota.agyVerifyAt): the account refused, the link whole on its own line last.
+let fx_verify_detail : String = "Google 要求先验证这个账号才能用 Antigravity。用登录了这个 Google 账号的浏览器打开下面的链接完成验证，然后重新查询额度\nhttps://accounts.google.com/v3/signin/continue?plt=AKgnsbvgpMGWUxHL-LdY6TaKwyqigcx13EZGzlKmZcGrDxrNDt57SPhlkbXKa1uIKydtd8wIqmUCw2x25ooo2v5G_JN2S8spn6C0rCAJWTFB47we5La_Ckx-UMLZpie3MBHPZkmLQIIq&continue=https://developers.google.com/gemini-code-assist/auth/auth_success_gemini&sarp=1&scc=1&flowName=GlifWebSignIn&authuser"
 
 ///|
 /// Claude 主账号's own (`more`) and its trouble (fx.trouble) as the core says it (present.ts profileTrouble), with what
@@ -1934,8 +1947,9 @@ fn fx_cc_with(more : Array[(String, Json)]) -> Array[(String, Json)] {
       ]
     "verify" =>
       [
-        issue("额度查询失败", fx_verify_said, "查不到额度不代表账号不能用。先重新查询；还是失败，再按返回的原因检查登录或网络。", "quota", "重新查询额度"),
-        ("quota", obj([("state", str("unavailable")), ("detail", str(fx_verify_said)), ("windows", []), ("checkedAt", Json::number(0.0))])),
+        issue("服务商拒绝了这个账号", fx_verify_detail, "按上面的原因到服务商处理（解除停用、完成验证等），处理后重新查询额度", "quota", "重新查询额度"),
+        ("quota", obj([("state", str("blocked")), ("detail", str(fx_verify_detail)), ("windows", []), ("checkedAt", Json::number(0.0))])),
+        ("checkText", str("账号被拒")),
       ]
     "blocked" =>
       [
@@ -2104,7 +2118,29 @@ fn fx_connect(id : String, name : String, presence : String, status : String, mo
     ("createdBy", obj([("id", str("lin@example.com")), ("name", str("林")), ("shown", obj([("name", str("林")), ("display", str("你")), ("mine", Json::boolean(true))]))])),
     ("sessions", Json::number(4.0)),
     // (a station that runs its new conversations elsewhere and moves it: connects/workspace.ts)
-    ("startsOn", Json::null()),
+    (
+      "startsOn",
+      if fx_connect_auto.get(id) == Some(true) {
+        Json::null()
+      } else {
+        match fx_connect_stations.get(id) {
+          Some([first, ..]) => str(first)
+          _ => Json::null()
+        }
+      },
+    ),
+    (
+      "startsOnStations",
+      if fx_connect_auto.get(id) == Some(true) {
+        Json::null()
+      } else {
+        match fx_connect_stations.get(id) {
+          Some(list) if list.length() > 0 => Json::array(list.map(str))
+          _ => Json::null()
+        }
+      },
+    ),
+    ("startsOnAuto", Json::boolean(fx_connect_auto.get(id) == Some(true))),
     ("moves", Json::boolean(true)),
     ("statusText", str(status)),
     ("presence", str(presence)),
@@ -2393,7 +2429,7 @@ fn fx_station(address : String) -> Json {
       ("face", str("working")),
       ("line", str(if fx.willow_incompatible { "版本不兼容，需要更新" } else if fx.gpus { "AMD EPYC · 32 GB · Linux" } else { "Apple M1 Pro · 32 GB · macOS 26" })),
       ("online", Json::boolean(!fx.willow_away)),
-      // the viewer added it: its mode theirs to change (the core's `mine`)
+      // its mode the viewer's to change (the core's `mine`: they added it, or they own or administer the workspace)
       ("mine", Json::boolean(!fx.willow_theirs)),
       ("profileGroups", Json::array(fx_station_profile_groups(profiles))),
       ("profileStates", fx_station_profile_states(profiles)),
@@ -2406,6 +2442,7 @@ fn fx_station(address : String) -> Json {
         },
       ])),
       ("stateText", str(if fx.willow_away { "5 分钟前在线" } else { "" })),
+      ("acceptAutoChats", Json::boolean(fx.accept_auto_chats)),
       (
         "problems",
         if fx.willow_incompatible {
@@ -2649,6 +2686,7 @@ fn fx_station(address : String) -> Json {
           ("search", obj([("files", str("spotlight")), ("personal", Json::boolean(false))])),
           ("context", obj([("afreshWhenCold", Json::boolean(fx.afresh)), ("afreshAbove", Json::number(fx.afresh_above))])),
           ("diagnostics", obj([("logs", Json::boolean(fx.logs))])),
+          ("autoChats", obj([("enabled", Json::boolean(fx.accept_auto_chats)), ("canEdit", Json::boolean(true))])),
           ("network", obj([("congestion", str(fx.congestion))])),
           ("elevation", fx.elevation.unwrap_or(Json::null())),
           ("screenService", fx.screen_service.unwrap_or(Json::null())),
@@ -2739,6 +2777,7 @@ fn fx_station(address : String) -> Json {
       ("summary", str(if up { "Apple M3 · 空闲" } else { "离线 · 2 天前" })),
       ("face", str(if up { "idle" } else { "offline" })),
       ("online", Json::boolean(up)),
+      ("acceptAutoChats", Json::boolean(true)),
       ("link", obj([("state", str(if up { "online" } else { "offline" }))])),
       // (away, as Willow away says it)
       ("stateText", str(if up { "" } else { "2 天前在线" })),
@@ -3257,7 +3296,14 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
             "members",
             fx_members(me),
           ),
-          ("stations", [obj([("id", str("st1")), ("name", str("Willow"))]), obj([("id", str("st2")), ("name", str("Maple"))])]),
+          (
+            "stations",
+            if rigs_fixture_made() {
+              [obj([("id", str("st2")), ("name", str("Maple"))])]
+            } else {
+              [obj([("id", str("st1")), ("name", str("Willow"))]), obj([("id", str("st2")), ("name", str("Maple"))])]
+            },
+          ),
           ("rigs", rigs_fixture_listed(mode)),
           ("invitations", [obj([("id", str("i1")), ("role", str("member")), ("email", str("qin@example.com")), ("time", obj([("expires_at", stamp_of("", until="6 天后"))]))])]),
           ("added", [obj([("email", str("he@example.com")), ("role", str("member"))])]),
@@ -3307,7 +3353,7 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
         Some([])
       } else {
         // (settings-stations-motion: 3 comes, then Maple goes)
-        let all = [fx_station("ws1/st1"), fx_station("ws1/st2")]
+        let all = if rigs_fixture_made() { [fx_station("ws1/st2")] } else { [fx_station("ws1/st1"), fx_station("ws1/st2")] }
         if fx.motion >= 1 || fx.retire_others >= 2 {
           all.push(fx_station("ws1/st3"))
         }
@@ -4081,6 +4127,7 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
           ),
         ]),
       )
+    "doing" if rigs_fixture_doing(mode) is Some(d) => Some(d)
     "doing" => Some(obj([("doing", if fx.protecting {
       [obj([("call", str("lock.joinStation")), ("stage", str("running")), ("params", obj([("workspace", str("ws1")), ("station", str("st2"))]))])]
     } else if fx.key_giving {
@@ -4385,6 +4432,11 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
       fx_changed()
       Some(Ok(obj([])))
     }
+    "autoChats.save" => {
+      fx.accept_auto_chats = flag(p, "enabled")
+      fx_changed()
+      Some(Ok(obj([])))
+    }
     "software.check" | "software.update" | "software.channel" | "search.setPersonal" | "permissions.request" =>
       Some(Ok(obj([])))
     "agentEnv.form.open" | "agentEnv.form.edit" | "agentEnv.form.drop" | "agentEnv.form.save" => Some(Ok(obj([])))
@@ -4536,6 +4588,36 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
       fx_connect_step.val = "groupDone"
       fx_changed()
       Some(Ok(obj([("id", str("k1"))])))
+    }
+    "connect.put" if has(field(p, "input"), "autoStation") || has(field(p, "input"), "stations") => {
+      let id = text(p, "id")
+      let inp = field(p, "input")
+      if flag(inp, "autoStation") {
+        fx_connect_auto[id] = true
+        fx_connect_stations.remove(id)
+      } else if has(inp, "stations") {
+        fx_connect_auto.remove(id)
+        let next : Array[String] = []
+        for s in strings(inp, "stations") {
+          let trimmed = s.trim(chars=" \t\n").to_owned()
+          let bare = match trimmed.rev_find("/") {
+            Some(i) => trimmed.clamped_view(start=i + 1, end=trimmed.length()).to_owned()
+            None => trimmed
+          }
+          if bare != "" && !next.contains(bare) {
+            next.push(bare)
+          }
+        }
+        if next.length() > 0 {
+          fx_connect_stations[id] = next
+        } else {
+          fx_connect_stations.remove(id)
+        }
+      } else {
+        fx_connect_auto.remove(id)
+      }
+      fx_changed()
+      Some(Ok(obj([])))
     }
     "profile.flow.open" | "profile.flow.edit" | "profile.flow.drop" | "connect.flow.open" | "connect.flow.edit"
     | "connect.flow.drop" | "automaticDecisions.form.open" | "automaticDecisions.form.edit"

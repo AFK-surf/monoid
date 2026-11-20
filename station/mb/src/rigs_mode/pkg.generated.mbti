@@ -505,7 +505,7 @@ pub(all) struct Viewer {
 
 pub(all) struct World {
   call : async (String, Array[@json.Json]) -> @json.Json
-  callback : (async (Array[@json.Json]) -> @json.Json) -> @json.Json
+  callback : ((Array[@json.Json]) -> @json.Json raise) -> @json.Json
 }
 pub async fn World::ask(Self, String, Array[@json.Json]) -> @json.Json?
 

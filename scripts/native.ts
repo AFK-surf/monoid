@@ -1868,11 +1868,16 @@ async function main(argv: string[]) {
       // 2026-11-12). What two of them share (shell-apple, a reader's moon build) one takes and the other waits for
       // (`get`'s lock, moon's).
       const todo = wanted.filter(([p, t]) => !complete(cached(p, t, key(p, t)), p, t));
+      // The readers sharing the cores are those built here, not those asked for: a caller counts what the store and the
+      // release lack, one of which may be in this machine's cache (stable's reader:linux-x64 on ci-1, its linux-arm64
+      // left alone at -j 8 of 16, 130 s, the job cut at its 5 minutes, 44770813931).
+      const readersToBuild = Math.max(1, Math.min(3, todo.filter(([p]) => p === "reader").length));
+      if (todo.length <= 1 && !process.env.STILLFAIL_NATIVE_ONE) process.env.STILLFAIL_NATIVE_READERS = "1";
       if (todo.length > 1 && !process.env.STILLFAIL_NATIVE_ONE) {
         const flags = [...(publish ? ["--publish"] : []), ...(outbox ? ["--outbox", outbox] : []), ...(windows ? ["--windows"] : []), ...(mac ? ["--mac"] : []), ...(linux ? ["--linux"] : [])];
         const one = (p: string, t: Target) => new Promise<number>((done) => {
           const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "ensure", ...flags, `${p}:${t}`],
-            { stdio: ["ignore", "inherit", "inherit"], env: { ...process.env, STILLFAIL_NATIVE_ONE: "1" } });
+            { stdio: ["ignore", "inherit", "inherit"], env: { ...process.env, STILLFAIL_NATIVE_ONE: "1", STILLFAIL_NATIVE_READERS: String(readersToBuild) } });
           child.on("exit", (code) => done(code ?? 1));
         });
         const queue = [...wanted];

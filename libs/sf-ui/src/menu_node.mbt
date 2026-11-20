@@ -410,8 +410,10 @@ fn menu_node_by(
             p.box(fn(body) {
               // (all it holds as far in as its look says, past the panel's own ground, edge and shadow: its rows, their
               // grounds, checks, marks and words, its headings and lines, the same, Look's `words` as a surface's are)
-              body.alpha(By(words_in)) |> ignore
+              let side = panel_pad - reach
+              body.margin(Is((-side, 0.0, -side, 0.0))).alpha(By(words_in)) |> ignore
               body.scrolls(@view.Scroll::new(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(b) {
+                b.padding(Is((side, 0.0, side, 0.0))) |> ignore
                 if title != "" {
                   menu_heading_node(b, fn() { title }, past, reach)
                 }

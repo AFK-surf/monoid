@@ -471,6 +471,8 @@ pub let said_paths : Map[String, Array[String]] = {
     "note.failing.*.text",
     "note.failing.*.message",
     "syncing",
+    "interrupted.*.stationName",
+    "interrupted.*.chats.*.title",
   ],
   "connect": [
     "stationName",

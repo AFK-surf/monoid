@@ -137,13 +137,13 @@ export class DirectoryStations {
   }
 
   /**
-   * What a station is here: a whole one (`full`), or one that only runs tasks (`tasks`: a rig). It stays whose it is,
-   * the member who added it (`enrolled_by`), and only they change its mode, either way (the user, 2026-11-10); whole
-   * again only where they manage the workspace, as a member adds no whole station. One no member added (its adder
-   * left, or the operator enrolled it) a workspace owner may make one that runs tasks, and it is theirs then. The
-   * machine itself becomes it only by what that person's device asked of it (tasks) or they signed (full), which the
-   * app brings it first: this lists it so. A station in several workspaces stays whole (a rig is in one), and a
-   * workspace keeps one whole station at least.
+   * What a station is here: a whole one (`full`), or one that only runs tasks (`tasks`: a rig). A whole station the
+   * member who added it (`enrolled_by`) or any workspace owner or admin may make one that runs tasks, and it is the
+   * one who did it's then (`enrolled_by` becomes them). A rig is whose it is: an existing one is never taken over, and
+   * only that person makes it whole again, and only where they manage the workspace, as a member adds no whole
+   * station. The machine itself becomes it only by what that person's device asked of it (tasks) or they signed
+   * (full), which the app brings it first: this lists it so. A station in several workspaces stays whole (a rig is in
+   * one), and a workspace keeps one whole station at least.
    */
   async setStationMode(sub: string, workspace: string, station: string, mode: unknown): Promise<WorkspaceView> {
     const role = this.#db.role(sub, workspace);
@@ -152,11 +152,10 @@ export class DirectoryStations {
     if ((row.rig === 1) !== (mode === "tasks")) {
       const mine = row.enrolled_by === sub;
       if (mode === "tasks") {
-        const nobodys = !mine && !this.#db.one("SELECT 1 AS x FROM members WHERE workspace = ? AND sub = ?", workspace, row.enrolled_by ?? "");
-        if (!mine && !(nobodys && role === "owner")) fail(403, "forbidden");
+        if (!mine && !MANAGERS.includes(role)) fail(403, "forbidden");
         if (this.#db.memberships(station).length !== 1) fail(409, "station_in_others");
         if (!this.#db.one("SELECT 1 AS x FROM station_members WHERE workspace = ? AND rig IS NULL AND station != ?", workspace, station)) fail(409, "last_station");
-        // Theirs already, or (no member's) theirs now.
+        // Theirs already, or (an owner's or admin's doing) theirs now: the rig's owner is who made it one.
         this.#db.run("UPDATE station_members SET rig = 1, enrolled_by = ? WHERE station = ? AND workspace = ?", sub, station, workspace);
       } else {
         if (!mine || !MANAGERS.includes(role)) fail(403, "forbidden");

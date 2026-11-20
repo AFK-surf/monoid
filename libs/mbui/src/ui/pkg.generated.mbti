@@ -3565,8 +3565,6 @@ pub using @view {type Action}
 
 pub using @view {type Along}
 
-pub using @paint {type BackdropHighlight}
-
 pub using @view {type BackStep}
 
 pub using @view {type Check}

@@ -179,10 +179,9 @@ fn picture_under_bar_faults(top : Double, platform : Int, w : Double, film? : Bo
 
 ///|
 test "a picture under a chat's bar, the old page's and one made as nodes: the bar over it every frame till it is out from under it" {
-  // a phone's (a wide window, the tape's, open it in a tab beside the chat: view_beside_wbtest.mbt); its top a little
-  // under the bar's, and half of it over the window's top
+  // a wide window, the tape's, and a phone's; its top a little under the bar's, and half of it over the window's top
   for nodes in [false, true] {
-    for screen in [(2, 390.0)] {
+    for screen in [(0, 1280.0), (0, 820.0), (2, 390.0)] {
       for top in [10.0, -100.0] {
         let faults = picture_under_bar_faults(top, screen.0, screen.1, nodes~)
         assert_true(faults.is_empty(), msg="\{if nodes { "nodes" } else { "old" }}, \{screen.1} wide, its top at \{top}: \{Repr(faults)}")
@@ -194,7 +193,7 @@ test "a picture under a chat's bar, the old page's and one made as nodes: the ba
 ///|
 test "a film under a chat's bar, the old page's and one made as nodes: the bar over it every frame till it is out from under it" {
   for nodes in [false, true] {
-    for screen in [(2, 390.0)] {
+    for screen in [(0, 1280.0), (0, 820.0), (2, 390.0)] {
       for top in [10.0, -100.0] {
         let faults = picture_under_bar_faults(top, screen.0, screen.1, film=true, nodes~)
         assert_true(faults.is_empty(), msg="\{if nodes { "nodes" } else { "old" }}, \{screen.1} wide, its top at \{top}: \{Repr(faults)}")
@@ -334,9 +333,8 @@ fn tree_flight_faults(film : Bool, platform : Int, w : Double) -> Array[String] 
 }
 
 ///|
-test "a chat's page made as nodes: a film and a picture fly from their thumbnails as they open and back into them as they close, one picture in every frame, on 小屏" {
-  // (on 中屏 and 大屏 they open in a tab beside the chat: view_beside_wbtest.mbt)
-  for screen in [(2, 390.0)] {
+test "a chat's page made as nodes: a film and a picture fly from their thumbnails as they open and back into them as they close, one picture in every frame, on 小屏 and 大屏" {
+  for screen in [(2, 390.0), (0, 1280.0)] {
     for film in [true, false] {
       let faults = tree_flight_faults(film, screen.0, screen.1)
       assert_true(faults.is_empty(), msg="\{if film { "film" } else { "picture" }}, \{screen.1} wide: \{Repr(faults)}")
@@ -456,9 +454,8 @@ fn picture_under_composer_faults(platform : Int, w : Double, film? : Bool = fals
 }
 
 ///|
-test "a picture and a film half under the composer of a chat's page made as nodes: none of it over the composer at its own size, going out from under it and back in, on 小屏" {
-  // (on 中屏 and 大屏 they open in a tab beside the chat: view_beside_wbtest.mbt)
-  for screen in [(2, 390.0)] {
+test "a picture and a film half under the composer of a chat's page made as nodes: none of it over the composer at its own size, going out from under it and back in, on 小屏 and 大屏" {
+  for screen in [(2, 390.0), (0, 1280.0)] {
     for film in [false, true] {
       let faults = picture_under_composer_faults(screen.0, screen.1, film~)
       assert_true(

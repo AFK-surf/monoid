@@ -322,3 +322,102 @@ test "View::float_beside floats over parent and positions beside anchor when pre
   let nd = t.drawn_of(ids["n"]).unwrap()
   assert_eq((nd.x, nd.y, nd.w, nd.h), (0.0, 0.0, 50.0, 20.0))
 }
+
+///|
+test "View::fixed, View::rigid, View::as_row, View::clip, and View::cut prevent squashing and compose cleanly" {
+  let ids : Map[String, @view.NodeId] = Map([])
+  let long_label = "an extraordinarily long title that definitely overflows a narrow row unless it gives way via cut"
+  let t = @view.Tree::new(
+    fn(root) {
+      // Narrow 160px row: fixed(36, 36) avatar + cut() single-line title + rigid() 44px badge.
+      root.box(fn(row) {
+        ids["row"] = row.id()
+        row.as_row().clip().width(Is(Some(160.0))).height(Is(Some(48.0))) |> ignore
+        row.box(fn(avatar) {
+          ids["avatar"] = avatar.id()
+          avatar.fixed(36.0, 36.0) |> ignore
+        })
+        |> ignore
+        row.box(fn(title) {
+          ids["title"] = title.id()
+          title.cut().words(Is(long_label), one_line=true) |> ignore
+        })
+        |> ignore
+        row.box(fn(badge) {
+          ids["badge"] = badge.id()
+          badge.width(Is(Some(44.0))).height(Is(Some(24.0))).rigid() |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    },
+    time=fn() { 0.0 },
+  )
+  t.frame(300.0, 200.0) |> ignore
+  let row_d = t.drawn_of(ids["row"]).unwrap()
+  let avatar_d = t.drawn_of(ids["avatar"]).unwrap()
+  let title_d = t.drawn_of(ids["title"]).unwrap()
+  let badge_d = t.drawn_of(ids["badge"]).unwrap()
+  assert_true(row_d.clips, msg="View::clip enables clipping")
+  assert_eq((avatar_d.w, avatar_d.h), (36.0, 36.0), msg="View::fixed keeps exact size under pressure")
+  assert_eq((badge_d.w, badge_d.h), (44.0, 24.0), msg="View::rigid prevents flex shrink")
+  // Row lays out horizontally: avatar on left, title in middle, badge on right.
+  assert_eq(avatar_d.x, 0.0)
+  assert_eq(title_d.x, 36.0)
+  assert_eq(title_d.w, 80.0, msg="View::cut shrinks title to remaining row width")
+  assert_eq(badge_d.x, 116.0)
+  assert_true(t.allows_ellipsis(ids["title"]), msg="View::cut marks node as allowing ellipsis")
+}
+
+///|
+test "WordsLook::of and chainable helpers derive looks, and View::words supports one_line and optical" {
+  let base = @view.WordsLook::of(14.0)
+  assert_eq(base.size, 14.0)
+  assert_eq(base.weight, 400)
+  assert_eq(base.line, 0.0)
+  assert_true(base.wrap)
+  assert_eq(base.tracking, @view.letters_own)
+  assert_false(base.balance)
+  assert_eq(base.max_lines, 0)
+
+  let derived = base.with_weight(600).with_line(-1.4).one_line()
+  assert_eq(derived.size, 14.0)
+  assert_eq(derived.weight, 600)
+  assert_eq(derived.line, -1.4)
+  assert_false(derived.wrap)
+
+  let resized_keep = derived.with_size(18.0)
+  assert_eq((resized_keep.size, resized_keep.line, resized_keep.weight), (18.0, -1.4, 600))
+  let resized_new = derived.with_size(20.0, line=26.0)
+  assert_eq((resized_new.size, resized_new.line), (20.0, 26.0))
+
+  let clamped = derived.with_max_lines(2)
+  assert_true(clamped.wrap)
+  assert_eq(clamped.max_lines, 2)
+
+  let ids : Map[String, @view.NodeId] = Map([])
+  let t = @view.Tree::new(
+    fn(root) {
+      root.box(fn(pill) {
+        ids["pill"] = pill.id()
+        pill.words(Is("Action"), look=@view.WordsLook::of(13.0, weight=500), one_line=true, optical=true) |> ignore
+      })
+      |> ignore
+      root.box(fn(plain) {
+        ids["plain"] = plain.id()
+        plain.words(Is("Plain")) |> ignore
+      })
+      |> ignore
+    },
+    time=fn() { 0.0 },
+  )
+  t.frame(300.0, 200.0) |> ignore
+  let pill_d = t.drawn_of(ids["pill"]).unwrap()
+  assert_false(pill_d.words_look.wrap, msg="one_line=true overrides wrap to false")
+  assert_eq(pill_d.words_look.size, 13.0)
+  assert_eq(pill_d.words_look.weight, 500)
+  assert_true(pill_d.words_optical, msg="optical=true enables words_optical")
+  let plain_d = t.drawn_of(ids["plain"]).unwrap()
+  assert_true(plain_d.words_look.wrap)
+  assert_false(plain_d.words_optical)
+}

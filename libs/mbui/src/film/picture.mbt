@@ -1,6 +1,7 @@
 // A still image through the same offscreen renderer and live text as film, without a movie encoder.
 
 ///|
+/// LEGACY immediate-mode entry; new apps use `@film.picture`.
 /// Render a scene to a PNG at `w` × `h` logical points and `scale` pixels per point. `tree` is the same window tree
 /// used by a film; `prepare` and `script` perform drive steps before capture and `at` is milliseconds after them. With
 /// `frame`, capture that frame of `script` instead (frame 0 is before its first step); `at` must then be zero. The frame
@@ -10,7 +11,7 @@
 /// alpha. The theme's corner rule and word overlap are checked unless the view opts out; every rule's faults
 /// (Tester::audit) are said after the PNG is written. A view that deliberately
 /// depicts an exception can accept precisely its expected corner faults with `corner_faults_ok`.
-pub fn picture(
+pub fn picture_legacy_ctx(
   view : (@ui.Ctx) -> Unit,
   tree? : (@view.View) -> Unit,
   path~ : String,
@@ -59,8 +60,8 @@ pub fn picture(
 }
 
 ///|
-/// Pure-tree counterpart of `picture`: renders `tree` made once without any legacy `Ctx` view, using `@ui.Tester::tree`.
-pub fn picture_tree(
+/// Renders `tree` made once without any legacy `Ctx` view, using `@ui.Tester::tree`.
+pub fn picture(
   tree : (@view.View) -> Unit,
   path~ : String,
   w~ : Double,
@@ -86,6 +87,56 @@ pub fn picture_tree(
   picture_impl(
     None,
     Some(tree),
+    path~,
+    w~,
+    h~,
+    scale~,
+    platform~,
+    dark~,
+    inset~,
+    window_corner~,
+    prepare~,
+    script~,
+    at~,
+    frame?,
+    fps~,
+    max~,
+    transparent~,
+    corners_held~,
+    corner_faults_ok~,
+    words_over_held~,
+    theme?,
+    transitions_only~,
+  )
+}
+
+///|
+/// Compatibility alias for `picture`.
+pub fn picture_tree(
+  tree : (@view.View) -> Unit,
+  path~ : String,
+  w~ : Double,
+  h~ : Double,
+  scale? : Double = 2.0,
+  platform? : Int = 0,
+  dark? : Bool = false,
+  inset? : Bool = false,
+  window_corner? : Double = 0.0,
+  prepare? : String = "",
+  script? : String = "",
+  at? : Double = 0.0,
+  frame? : Int,
+  fps? : Int = film_fps,
+  max? : Int = 3000,
+  transparent? : Bool = false,
+  corners_held? : Bool = true,
+  corner_faults_ok? : (Array[String]) -> Bool = fn(faults) { faults.is_empty() },
+  words_over_held? : Bool = true,
+  theme? : () -> @ui.Theme,
+  transitions_only? : Bool = true,
+) -> Bool {
+  picture(
+    tree,
     path~,
     w~,
     h~,

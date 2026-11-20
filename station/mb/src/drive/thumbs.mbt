@@ -57,10 +57,11 @@ pub fn kept(thumbs : String, id : String, since? : Double) -> Thumbnail? raise {
 }
 
 ///|
-/// The addon's codecs (thumbs.ts `Codecs`): an image's thumbnail made in a folder, and its ThumbHash (base64) with its
-/// size as seen.
+/// The addon's codecs (thumbs.ts `Codecs`): an image's thumbnail and preview made in a folder, and its ThumbHash
+/// (base64) with its size as seen.
 pub(all) struct Codecs {
   thumbnail : (String, String) -> Thumbnail? raise
+  preview : (String, String) -> Thumbnail? raise
   thumbhash : (String, String?) -> (String, Double, Double)? raise
 }
 
@@ -78,6 +79,20 @@ pub fn thumbnail(
     kept(thumbs, id_of(image), since=s) |> ignore
   }
   (c.thumbnail)(image, thumbs) catch {
+    _ => None
+  }
+}
+
+///|
+/// thumbs.ts `preview`: the image's preview for the whole-window viewer (at most 2048 across), made if it is not there
+/// yet; None when the image is shown itself.
+pub fn preview(
+  image : String,
+  thumbs : String,
+  codecs : Codecs?,
+) -> Thumbnail? {
+  guard codecs is Some(c) else { return None }
+  (c.preview)(image, thumbs) catch {
     _ => None
   }
 }

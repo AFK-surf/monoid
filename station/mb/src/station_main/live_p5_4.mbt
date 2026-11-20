@@ -41,6 +41,28 @@ pub async fn start_live_p5_4(bus : LiveBus, rig? : Bool = false) -> Unit {
     p54_screen_view_stream(screens, stream, carry, head, viewer)
     true
   })
+  bus.ui_helper_search.val = match screens.files {
+    Some(files) =>
+      Some(async fn(tops, query, most, protect) {
+        let granted = tops.filter(top => files.known(top) is Some((_, "granted")))
+        if granted.is_empty() {
+          return []
+        }
+        let lists = @effect.all(
+          granted.map(top => async fn() {
+            files.search(top, query, most, protect) catch { _ => [] }
+          }),
+        )
+        let out : Array[String] = []
+        for xs in lists {
+          for p in xs {
+            out.push(p)
+          }
+        }
+        out
+      })
+    None => None
+  }
   p54_screen_tools(bus, screens) catch {
     e => err_write("station: the screen tools are not made (\{e})\n")
   }

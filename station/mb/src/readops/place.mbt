@@ -167,27 +167,66 @@ fn mounts(env : Env) -> Array[String] {
 }
 
 ///|
+/// The folders macOS protects (drive/fs.ts `protectedPlace`'s), each as it is said, lower-cased, and lower-cased with
+/// the separator after it: made once for a path's every part followed, not for each.
+priv struct Protected {
+  homes : Array[(String, String, String)]
+  mounts : Array[(String, String, String)]
+}
+
+///|
+let protected_names : Array[String] = ["Documents", "Desktop", "Downloads", "Library/Mobile Documents", "Library/CloudStorage"]
+
+///|
+fn Protected::new(sep : String, homedir : String, mounts : Array[String]) -> Protected {
+  let lowered = (top : String) => {
+    let t = @jscase.lower(top)
+    (top, t, t + "/")
+  }
+  {
+    homes: protected_names.map(name => lowered(@nodepath.join(sep, [homedir, name]))),
+    mounts: mounts.map(lowered),
+  }
+}
+
+///|
+fn protected_of(env : Env) -> Protected {
+  Protected::new(env.sep, env.homedir, mounts(env))
+}
+
+///|
 /// drive/fs.ts `protectedPlace`: the folder macOS protects that `path` is (or is under), if any.
 fn protected_place(env : Env, path : String) -> String? {
-  let lower = @jscase.lower(path)
-  let under = (top : String) => {
-    let t = @jscase.lower(top)
-    lower == t || lower.has_prefix(t + "/")
-  }
-  for name in ["Documents", "Desktop", "Downloads", "Library/Mobile Documents", "Library/CloudStorage"] {
-    let top = @nodepath.join(env.sep, [env.homedir, name])
-    if under(top) {
-      return Some(top)
+  protected_place_with(env, protected_of(env), path)
+}
+
+///|
+/// `protected_place` of the folders `prot` for a path lower-cased (`lower`): a folder in the home or a mount; None
+/// where it is neither (a volume is not looked at here).
+fn protected_known(prot : Protected, lower : String) -> String? {
+  let under = (t : (String, String, String)) => lower == t.1 || lower.has_prefix(t.2)
+  for h in prot.homes {
+    if under(h) {
+      return Some(h.0)
     }
   }
   let mut mount : String? = None
-  for m in mounts(env) {
-    if !lower.has_prefix("/volumes/") && under(m) && m.length() > mount.map(x => x.length()).unwrap_or(0) {
-      mount = Some(m)
+  if !lower.has_prefix("/volumes/") {
+    for m in prot.mounts {
+      if under(m) && m.0.length() > mount.map(x => x.length()).unwrap_or(0) {
+        mount = Some(m.0)
+      }
     }
   }
-  if mount is Some(_) {
-    return mount
+  mount
+}
+
+///|
+/// `protected_place` of the folders `prot`, made once for many paths.
+fn protected_place_with(env : Env, prot : Protected, path : String) -> String? {
+  let lower = @jscase.lower(path)
+  if protected_known(prot, lower) is Some(top) {
+    return Some(top)
   }
   guard lower.has_prefix("/volumes/") && lower.length() > 9 && lower.unsafe_charcode_at(9) != '/' else { return None }
   let parts = path.split("/").collect()
@@ -207,6 +246,7 @@ fn follow(env : Env, path : String) -> Result[String, String?] {
   let mut pending : Array[String] = split(clean_path(env, path))
   let mut done : Array[String] = []
   let mut hops = 0
+  let prot = protected_of(env)
   while pending.length() > 0 {
     let name = pending.remove(0)
     if name == ".." {
@@ -215,7 +255,7 @@ fn follow(env : Env, path : String) -> Result[String, String?] {
     }
     let next = done + [name]
     let at = "/" + next.join("/")
-    if protected_place(env, at) is Some(_) {
+    if protected_place_with(env, prot, at) is Some(_) {
       return Err(Some("/" + (next + pending).join("/")))
     }
     let link = match (try { Ok(env.host.shell_sync("fs.stat", { "path": Json::string(at), "lstat": true })) } catch { e => Err(e) }) {

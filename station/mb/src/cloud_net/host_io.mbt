@@ -144,7 +144,7 @@ pub fn host_kept(host : @host.Host, path : String) -> Kept {
     host.rt.fork_daemon("cloud file writes", on_error=e => @host.note("\{path} no longer written: \{error_words(e)}"), async fn() {
       while true {
         let t = writing.take()
-        @host_world.fs_put(host, path, @utf8.encode(t), truncate=true, mode=384) catch {
+        @host_world.fs_put_whole(host, path, @utf8.encode(t), mode=384) catch {
           e => @host.note("\{path} not written: \{error_words(e)}")
         }
       }

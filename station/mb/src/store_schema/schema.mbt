@@ -91,7 +91,8 @@ pub let schema : String =
   $|  archived_by TEXT,
   $|  shown_at INTEGER,
   $|  cwd TEXT,
-  $|  original_runtime TEXT
+  $|  original_runtime TEXT,
+  $|  conv TEXT
   $|);
   $|-- The sessions shown (store.ts LIVE_SESSIONS): what the station's own periodic work goes over; the archived ones only grow.
   $|CREATE INDEX IF NOT EXISTS sessions_live ON sessions (last_active_at) WHERE archived_at IS NULL;
@@ -1688,4 +1689,13 @@ fn add_workspace_columns(db : @sql.Db) -> Unit raise {
   db.exec("CREATE INDEX IF NOT EXISTS sessions_ws ON sessions (key, ws)")
   db.exec("DROP INDEX IF EXISTS sessions_by_ws")
   db.exec("CREATE INDEX IF NOT EXISTS sessions_of_ws ON sessions (COALESCE(ws, ''), key)")
+}
+
+///|
+/// Conversation anchor column (`sessions.conv`) and its lookup indexes.
+fn add_conv_column(db : @sql.Db) -> Unit raise {
+  add_column(db, "sessions", "conv", "TEXT")
+  db.exec("CREATE INDEX IF NOT EXISTS sessions_conv ON sessions (conv, key)")
+  db.exec("CREATE INDEX IF NOT EXISTS sessions_conv_todo ON sessions (key) WHERE scope = 'thread' AND conv IS NULL")
+  db.exec("CREATE INDEX IF NOT EXISTS sessions_conv_grouped ON sessions (conv, key) WHERE conv IS NOT NULL AND conv != key")
 }

@@ -348,7 +348,7 @@ fn job_output_node(v : @view.View, src : Source, station : String, id : String) 
         }
       },
       fn(p, what) {
-        p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        p.grow(Is(1.0)).min_height(Is(Some(0.0))).padding(Is((0.0, 0.0, @ui.Space::px(S2), 0.0))) |> ignore
         match what {
           0 => @sf.wait_line_node(p, fn() { "" }) |> ignore
           1 => @sf.words_node(p, fn() { @sf.t("web-main.jobs.noOutput") }, fn() { job_output_none }) |> ignore

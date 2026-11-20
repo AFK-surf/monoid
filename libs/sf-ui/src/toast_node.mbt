@@ -145,8 +145,10 @@ fn toast_look(
   s.moves(fn(now) { (shown.rest)(now) })
   row.owns(fn() {
     (shown.due)()
-    // (said to move no more: nothing of it is drawn, whatever its way would have done)
+    // (said to move no more: nothing of it is drawn, whatever its way would have done; its rest, which names it, let
+    // go of so: a ring native's counting never frees)
     shown.alive = false
+    shown.rest = fn(_) { -1.0 }
   })
   |> ignore
   // (how far in, 0 … 1, as it is drawn)

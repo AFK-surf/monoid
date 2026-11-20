@@ -998,7 +998,7 @@ async fn Readers::legacy_lookups(self : Readers, bus : LiveBus) -> Unit {
   (bus.previous_gone)()
   let kinds = [
     "legacy-said", "legacy-agent", "legacy-login", "legacy-edits", "legacy-policy", "legacy-decision-time", "legacy-decision-session",
-    "legacy-decision-session-repair", "page-letter-gc",
+    "legacy-decision-session-repair", "conversation-backfill", "page-letter-gc",
   ]
   let wake : @effect.Queue[Unit] = @effect.Queue::unbounded()
   self.stops.push(

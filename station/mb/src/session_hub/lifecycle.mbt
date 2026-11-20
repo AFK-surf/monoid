@@ -83,6 +83,51 @@ pub async fn Hub::bind_single(self : Hub, connect_id : String, target : String?,
 }
 
 ///|
+/// `ensureConversationChat`: idempotently ensures the conversation's home chat exists (§3.3).
+pub fn Hub::ensure_conversation_chat(self : Hub, session : String, created_by : String, title : String?) -> Json raise {
+  if (self.world.chat)(internal_connect) is None {
+    raise Refused("still.fail chat is not available")
+  }
+  let row = match self.get_session(session) {
+    Some(r) => r
+    None => raise Refused("unknown session \{session}")
+  }
+  let existing = self.store.home_chat(Json::string(session))
+  if existing != Json::null() {
+    return existing
+  }
+  let anchor = self.store.conversation_of(session)
+  let anchor_row = self.get_session(anchor).unwrap_or(row)
+  let name = match title {
+    Some(t) => Some(t)
+    None => str_of(anchor_row, "title")
+  }
+  let thread = self.tw(() => self.threads.open_thread_of(
+    Json::string(stillfail_surface),
+    Json::string(internal_channel),
+    Json::string(self.next_ts()),
+    opt_str(name),
+    Json::string(created_by),
+    Json::string(anchor),
+  ))
+  let tid = field(thread, "id").unwrap_or(Json::null())
+  let active = self.store.active_conversation_members(anchor, session)
+  let ordered : Array[String] = []
+  if active.contains(anchor) {
+    ordered.push(anchor)
+  }
+  for m in active {
+    if !ordered.contains(m) {
+      ordered.push(m)
+    }
+  }
+  for member in ordered {
+    ignore(self.tw(() => self.threads.join_thread(tid, Json::string(member), Json::string(internal_connect))))
+  }
+  thread
+}
+
+///|
 /// `openChat`: opens a chat on the station's pages with a session in it; the first made with a session is its own.
 pub fn Hub::open_chat(self : Hub, session : String, created_by : String, title : String?) -> Json raise {
   if (self.world.chat)(internal_connect) is None {
@@ -463,19 +508,34 @@ pub async fn Hub::archive_by(self : Hub, key : String, archived : Bool, by : Str
         None => raise Refused("unknown session \{key}")
       }
   }
+  let anchor = self.store.conversation_of(key)
+  let found = self.store.members_of(anchor)
+  let members = if found.is_empty() { [key] } else { found }
   if !archived {
-    ignore((self.world.ask)("cold.restore", Json::string(key)))
+    for m in members {
+      ignore((self.world.ask)("cold.restore", Json::string(m)))
+    }
     self.store.set_archived(key, false, by)
-    ignore((self.world.ask)("fs.rm", { "path": Json::string(self.transcript_copy(key)) }))
+    for m in members {
+      ignore((self.world.ask)("fs.rm", { "path": Json::string(self.transcript_copy(m)) }))
+    }
     return
   }
   self.store.set_archived(key, archived, by)
-  self.idle_measured.remove(key)
-  (self.world.tell)("closed", Json::string(key))
-  let actor = self.actor(row)
-  self.act(actor, "putAway")
-  self.act(actor, "evict", args=[Json::boolean(true)])
-  self.act(actor, "cleanArchive")
+  for m in members {
+    self.idle_measured.remove(m)
+    (self.world.tell)("closed", Json::string(m))
+    let m_row = if m == key { Some(row) } else { self.get_session(m) }
+    match m_row {
+      Some(r) => {
+        let actor = self.actor(r)
+        self.act(actor, "putAway")
+        self.act(actor, "evict", args=[Json::boolean(true)])
+        self.act(actor, "cleanArchive")
+      }
+      None => ()
+    }
+  }
 }
 
 ///|
@@ -940,7 +1000,8 @@ pub async fn Hub::auto_archive(self : Hub, now : Double, look? : Json, missing? 
   let recommended = (thread : Json) => !reviewed ||
     (completion && self.tw(() => self.threads.archive_suggested(thread)) == Json::boolean(true))
   match look {
-    Some(l) =>
+    Some(l) => {
+      let look_passed : Map[String, Json] = Map([])
       for x in items(field(l, "sessions")) {
         let s = field(x, "row").unwrap_or(Json::null())
         let key = row_key(s)
@@ -993,10 +1054,27 @@ pub async fn Hub::auto_archive(self : Hub, now : Double, look? : Json, missing? 
         if threads.iter().any(t => kept_list.contains(thread_id(t)) || unread(field(t, "thread").unwrap_or(Json::null()))) {
           continue
         }
-        self.archive_by(key, true, auto, known=s)
+        look_passed[key] = s
       }
+      let archived_look : Array[String] = []
+      for k, _ in look_passed {
+        let anchor = self.store.conversation_of(k)
+        if archived_look.contains(anchor) {
+          continue
+        }
+        archived_look.push(anchor)
+        let members = self.store.members_of(anchor)
+        if members.length() > 0 && members.iter().all(m => look_passed.contains(m)) {
+          match look_passed.get(anchor) {
+            Some(row) => self.archive_by(anchor, true, auto, known=row)
+            None => self.archive_by(anchor, true, auto)
+          }
+        }
+      }
+    }
     None => ()
   }
+  let live_passed : Map[String, Json] = Map([])
   for s in live {
     let key = row_key(s)
     if waiting_bindings || self.store.prepared_session_bound(Json::string(key)) || pinned(key) {
@@ -1023,7 +1101,22 @@ pub async fn Hub::auto_archive(self : Hub, now : Double, look? : Json, missing? 
     if threads.iter().any(t => kept(thread_id(t)) || unread(field(t, "thread").unwrap_or(Json::null()))) {
       continue
     }
-    self.archive_by(key, true, auto, known=s)
+    live_passed[key] = s
+  }
+  let archived_live : Array[String] = []
+  for k, _ in live_passed {
+    let anchor = self.store.conversation_of(k)
+    if archived_live.contains(anchor) {
+      continue
+    }
+    archived_live.push(anchor)
+    let members = self.store.members_of(anchor)
+    if members.length() > 0 && members.iter().all(m => live_passed.contains(m)) {
+      match live_passed.get(anchor) {
+        Some(row) => self.archive_by(anchor, true, auto, known=row)
+        None => self.archive_by(anchor, true, auto)
+      }
+    }
   }
   for t in own {
     let id = field(t, "id").unwrap_or(Json::null())

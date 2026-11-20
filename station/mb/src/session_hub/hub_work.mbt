@@ -480,6 +480,7 @@ pub async fn Hub::take_up(self : Hub) -> Unit {
   let file = join_path([str_of(self.config(), "dataDir").unwrap_or(""), "run", "handover.json"])
   let mut handed : Json = { "sessions": [] }
   let text = (self.world.ask)("fs.read", { "path": Json::string(file) })
+  self.non_update_restart = text is Null
   match text {
     Null => ()
     _ => {

@@ -153,8 +153,13 @@ fn lists_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () ->
         @sf.theme().p.sidebar
       }
     },
-    before: fn(_, _) {
-      let parts : Array[@sfpages.NodePart] = []
+    before: fn(filter, view) {
+      let parts : Array[@sfpages.NodePart] = @sfpages.restart_interrupted_parts(src, view, fn() {
+        match workspace() {
+          Some(w) => @sfbase.chats_of(src, w.id, filter).0
+          None => None
+        }
+      })
       if @sfpages.stale_build_card_shown() {
         parts.push({ key: "stale-build-card", make: fn(p) { @sfpages.stale_build_card_node(p, src) } })
       }

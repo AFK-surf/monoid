@@ -400,24 +400,51 @@ pub fn chat_list(
 }
 
 ///|
-/// How many times what chat list `key` shows has changed: its view or its entries given otherwise.
+/// Which time what chat list `key` shows was given (its view or its entries given otherwise): a count of all the
+/// lists' givings, so that a list let go of (rows_given_max) and given again is never said as one said before.
 fn rows_said(key : String, v : ChatView, read : Array[Entry]) -> Int {
+  rows_given_tick.val += 1
+  rows_given_used[key] = rows_given_tick.val
   match rows_given.get(key) {
     Some((was_v, was_read, n)) if physical_equal(was_v, v) && physical_equal(was_read, read) => n
-    Some((_, _, n)) => {
-      rows_given[key] = (v, read, n + 1)
-      n + 1
-    }
-    None => {
-      rows_given[key] = (v, read, 0)
-      0
+    _ => {
+      let n = rows_given_tick.val
+      rows_given[key] = (v, read, n)
+      // (beyond rows_given_max, the least lately drawn let go of: what it held of its chat with it)
+      while rows_given.length() > rows_given_max {
+        let mut oldest = ""
+        let mut when = 0
+        for k, t in rows_given_used {
+          if k != key && (oldest == "" || t < when) {
+            oldest = k
+            when = t
+          }
+        }
+        guard oldest != "" else { break }
+        rows_given.remove(oldest)
+        rows_given_used.remove(oldest)
+      }
+      n
     }
   }
 }
 
 ///|
-// kept across runs: only compared with what is given next, by each list's key
+// kept across runs: only compared with what is given next, by each list's key (emptied by list_reset)
 let rows_given : Map[String, (ChatView, Array[Entry], Int)] = Map([])
+
+///|
+/// How many chat lists' last givings are kept (rows_given): each holds its chat's whole view.
+let rows_given_max : Int = 16
+
+///|
+/// When each list was last drawn (rows_given_tick's count), by its key.
+// kept across runs: emptied by list_reset
+let rows_given_used : Map[String, Int] = Map([])
+
+///|
+// kept across runs: put back by list_reset
+let rows_given_tick : Ref[Int] = { val: 0 }
 
 ///|
 /// A chat's messages to come while it is read the first time (the library's Waiting, in its bones): made-up messages
@@ -804,6 +831,9 @@ fn list_reset() -> Unit {
   outline_presets.clear()
   find_goes.clear()
   outline_hover_reset()
+  rows_given.clear()
+  rows_given_used.clear()
+  rows_given_tick.val = 0
 }
 
 ///|

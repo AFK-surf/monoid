@@ -170,15 +170,12 @@ fn vf_native(v : Viewer, c : @ui.Ctx, src : Source) -> Unit {
     })
   }
   match v.bytes.get() {
-    Some(b) => {
+    Some(_) => {
       // (marked where its picture is shown, the window's tree's: one too big to show, told of, none)
       if v.markable() {
         @sf.native_over_act("mark", @sf.t("web-main.annotate.image"), "edit", fn() { marks_start() })
       }
-      @sf.native_over_act("copy", @sf.t("common.copy"), "copy", fn() {
-        c.copy_image(b)
-        v.copied += 1
-      })
+      @sf.native_over_act("copy", @sf.t("common.copy"), "copy", fn() { v.ask_copy() |> ignore })
     }
     None => ()
   }

@@ -16,6 +16,7 @@ typedef CONDITION_VARIABLE cond_t;
 static void lock(lock_t *l) { AcquireSRWLockExclusive(l); }
 static void unlock(lock_t *l) { ReleaseSRWLockExclusive(l); }
 static void signal_one(cond_t *c) { WakeConditionVariable(c); }
+static void broadcast(cond_t *c) { WakeAllConditionVariable(c); }
 static void wait_cond(cond_t *c, lock_t *l) { SleepConditionVariableSRW(c, l, INFINITE, 0); }
 #else
 #include <pthread.h>
@@ -35,6 +36,7 @@ typedef pthread_cond_t cond_t;
 static void lock(lock_t *l) { pthread_mutex_lock(l); }
 static void unlock(lock_t *l) { pthread_mutex_unlock(l); }
 static void signal_one(cond_t *c) { pthread_cond_signal(c); }
+static void broadcast(cond_t *c) { pthread_cond_broadcast(c); }
 static void wait_cond(cond_t *c, lock_t *l) { pthread_cond_wait(c, l); }
 #endif
 
@@ -49,6 +51,7 @@ void sf_free(uint8_t *ptr, size_t len);
 typedef struct event {
   struct event *next;
   uint8_t kind;
+  uint8_t bounded;
   uint64_t id;
   uint8_t *data;
   size_t len;
@@ -82,10 +85,18 @@ int64_t sfh_now(void);
 static size_t stdin_queued = 0;
 static cond_t stdin_cond = COND_INIT;
 
+/// The most of bounded sys events (child stdout/stderr chunks) the queue holds before pipe readers pause: the child
+/// blocks on its pipe meanwhile, keeping RSS bounded. Control sys events use `sfh_push_sys` and never wait.
+#define SYS_DATA_MOST (2u * 1024u * 1024u)
+static size_t sys_data_queued = 0;
+static size_t sys_data_waiters = 0;
+static cond_t sys_data_cond = COND_INIT;
+
 static event_t *event_of(uint8_t kind, uint64_t id, size_t len) {
   event_t *e = malloc(sizeof *e);
   e->next = NULL;
   e->kind = kind;
+  e->bounded = 0;
   e->id = id;
   e->len = len;
   e->data = malloc(len ? len : 1);
@@ -111,6 +122,22 @@ static void push(uint8_t kind, uint64_t id, const uint8_t *a, size_t al) {
 /// What a system call of the program's own C (station_main's sys.c: a child's output and end, a lock taken, a line of
 /// the launcher's, a signal) tells it as event `id` (kind 4), from whatever thread it is on.
 void sfh_push_sys(uint64_t id, const uint8_t *a, size_t al) { push(4, id, a, al); }
+
+/// Bounded variant of `sfh_push_sys` for child pipe output: waits while `sys_data_queued >= SYS_DATA_MOST`.
+void sfh_push_sys_bounded(uint64_t id, const uint8_t *a, size_t al) {
+  event_t *e = event_of(4, id, al);
+  e->bounded = 1;
+  if (al) memcpy(e->data, a, al);
+  lock(&queue_lock);
+  while (sys_data_queued >= SYS_DATA_MOST) {
+    sys_data_waiters++;
+    wait_cond(&sys_data_cond, &queue_lock);
+    sys_data_waiters--;
+  }
+  sys_data_queued += al;
+  enqueue(e);
+  unlock(&queue_lock);
+}
 
 /// A piece of stdin, once the queue has room for it (read_input's thread alone).
 static void push_stdin(const uint8_t *a, size_t al) {
@@ -262,6 +289,10 @@ moonbit_bytes_t sfh_wait(int64_t ms) {
     if (e->kind == 1) {
       stdin_queued -= e->len;
       if (stdin_queued < STDIN_MOST) signal_one(&stdin_cond);
+    }
+    if (e->bounded) {
+      sys_data_queued -= e->len;
+      if (sys_data_waiters > 0 && sys_data_queued < SYS_DATA_MOST) broadcast(&sys_data_cond);
     }
   }
   unlock(&queue_lock);

@@ -1,6 +1,7 @@
 #!/bin/sh
 # Unified mbui app packager and scaffolding CLI (tools/pack, in MoonBit):
-#   mbui init <dir> [--name NAME] [--id APP_ID] [--mbui PATH]
+#   mbui version
+#   mbui init <dir> [--name NAME] [--id APP_ID] [--mbui PATH] [--ui PATH]
 #   mbui check [mbui.json] [--variant V] [--version VER] [--build N] [--app-id ID] [--runtime native|wasm] [--env K=V ...]
 #   mbui meta [mbui.json] [--variant V] [--version VER] [--build N] [--app-id ID] [--runtime native|wasm] [--env K=V ...] [--format sh|json]
 #   mbui icons [mbui.json] --out DIR [--platform all|mac|win|linux|android|ios|web] [--variant V]

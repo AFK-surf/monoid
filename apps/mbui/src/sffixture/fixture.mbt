@@ -1540,6 +1540,29 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
     // (待处理 open, Maple offline: decide_fixture.mbt)
     "chats" if f.mode.has_prefix("home-attention") || f.mode.has_prefix("home-foot") => fixture_chats(f, params).map(fn(v) { listed_chats(fix_with_trouble(v, params)) })
     "chats" if f.mode == "home-syncing" => fixture_chats(f, params).map(fn(v) { listed_chats(fix_with_syncing(v)) })
+    "chats" if f.mode == "home-restart-interrupted" && f.step == 0 =>
+      fixture_chats(f, params).map(fn(v) {
+        let base = listed_chats(v)
+        match base {
+          Object(m) => {
+            let m = m.copy()
+            m["interrupted"] = Json::array([
+              {
+                "station": "ws1/st1",
+                "stationName": "AFK-东京服务器",
+                "count": 12,
+                "chats": [
+                  { "key": "s-c1", "thread": 1, "title": "修复登录态失效续跑问题" },
+                  { "key": "s-c2", "thread": 2, "title": "检查 macOS 内存压力检测逻辑" },
+                  { "key": "s-c3", "thread": 3, "title": "排查飞书长连接断连原因" },
+                ],
+              },
+            ])
+            Json::object(m)
+          }
+          _ => base
+        }
+      })
     "chats" => fixture_chats(f, params).map(listed_chats)
     // (one chat's whole row, of the same made-up chats: what the list's rows are cut from)
     "chatRow" => fixture_chat_row(f, params)
@@ -2550,6 +2573,13 @@ pub fn fixture(mode : String) -> Source {
         }
         "session.cancelRetry" => {
           if f.mode == "chat-overload-after" {
+            f.step += 1
+            f.changed()
+          }
+          done(Ok(Json::object({})))
+        }
+        "station.resumeInterrupted" | "station.dismissInterrupted" => {
+          if f.mode == "home-restart-interrupted" {
             f.step += 1
             f.changed()
           }

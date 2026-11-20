@@ -42,7 +42,7 @@ test "the bar: holding a place keeps 令 or ＋ beside the capsule, moving too, 
       assert_true(@sfbase.go_place(place))
       t.run_for(@ui.move_most_ms)
     }
-    assert_eq(m_face.val, action)
+    assert_eq(m_face.val, bar_action_icon(action))
     let (xs, y) = bar_places_at()
     let told = bar.told.unwrap()
     let j = told.sets[told.cur].search(place).unwrap()
@@ -364,27 +364,28 @@ test "the bar is liquid glass: its capsule and 令's circle beside it, each a sh
 }
 
 ///|
-test "the notch's icon swaps with a short scale and fade while it stays open; closed, at once" {
+test "the notch's icon: 令 giving way to ＋ draws the same ＋ and stays still; closed, back at once" {
   let plus = bar_place_with("plus")
   let none = bar_place_with("")
   let (t, _) = bar_at_rest()
-  assert_eq(m_face.val, "ling")
-  // to a place whose action is another, the notch open throughout: the icon swaps
+  assert_eq(m_face.val, "plus")
+  // to a place whose action is ＋ from 令's, the notch open throughout: the one icon both draw, not swapped
   ignore(@sfbase.go_place(plus))
   t.frame()
   t.frame()
   t.frame()
-  assert_eq((m_face.val, bar.icon_was), ("plus", "ling"))
-  let p = bar.icon_swap.at(t.time()).0
-  assert_true(p > 0.0 && p < 1.0, msg="\{p}")
-  t.run_for(icon_swap_ms)
-  assert_true(bar.icon_swap.at(t.time()).0 == 1.0)
-  // the notch closed (a place with no action), then another action: nothing to see, at once
-  ignore(@sfbase.go_place(none))
-  t.run_for(bar_rest() - t.time())
+  assert_eq(bar.told.unwrap().action, "plus")
+  assert_eq((m_face.val, bar.icon_was, bar.icon_swap.at(t.time()).0), ("plus", "", 1.0))
   ignore(@sfbase.go_place("chats"))
   t.frame()
-  assert_eq((m_face.val, bar.icon_swap.at(t.time()).0), ("ling", 1.0))
+  assert_eq(bar.told.unwrap().action, "ling")
+  assert_eq((m_face.val, bar.icon_was, bar.icon_swap.at(t.time()).0), ("plus", "", 1.0))
+  // the notch closed (a place with no action), then an action again: at once
+  ignore(@sfbase.go_place(none))
+  t.run_for(bar_rest() - t.time())
+  ignore(@sfbase.go_place(plus))
+  t.frame()
+  assert_eq((m_face.val, bar.icon_swap.at(t.time()).0), ("plus", 1.0))
   t.run_for(bar_rest() - t.time())
   t.assert_idle()
 }

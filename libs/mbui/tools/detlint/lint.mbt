@@ -741,9 +741,9 @@ fn lint_mbt(
     if c.name == "set_theme" && c.kind == "method" && app && !in_t {
       add("old-set-theme", c.at, f.line_text(c.at))
     }
-    // a tree's window run through the old view's entry with an empty frame round it (`@ui.run(t, fn(_) {  }, tree=w)`):
-    // run_tree runs it alone, what is left only goes (one passing its frame on, `tree?`, or a frame that builds, not)
-    if c.name == "run" &&
+    // a tree's window run through the old view's entry with an empty frame round it (`@ui.run_legacy_ctx(t, fn(_) {  }, tree=w)`):
+    // @ui.run runs it alone, what is left only goes (one passing its frame on, `tree?`, or a frame that builds, not)
+    if (c.name == "run_legacy_ctx" || c.name == "run") &&
       ((c.kind == "pkg" && c.qual == "@ui") || c.kind == "bare") &&
       app &&
       !in_t &&

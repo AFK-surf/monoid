@@ -147,3 +147,49 @@ test "a picture's answer told to all that read it: one that could not be had the
     stop()
   }
 }
+
+///|
+test "a picture put up on another page while it is asked, then not had: not asked again there, only on a page put up after" {
+  let asked : Array[(Bytes?) -> Unit] = []
+  let picture = core_pictures(fn(_, done) { asked.push(done) })
+  let url = "https://pictures.example/mo.jpg"
+  assert_eq(picture(url, 1), "")
+  // (on a sheet over it meanwhile, while it comes)
+  assert_eq(picture(url, 2), "")
+  assert_eq(asked.length(), 1)
+  (asked[0])(None)
+  assert_eq(picture(url, 2), "")
+  assert_eq(picture(url, 1), "")
+  assert_eq(asked.length(), 1, msg="both were up as it was asked")
+  assert_eq(picture(url, 3), "")
+  assert_eq(asked.length(), 2)
+}
+
+///|
+test "pictures by their address beyond 256: the least lately shown let go of, image and all, unless a node shows it; shown again, asked again" {
+  fresh_app()
+  let asked : Map[String, Int] = Map([])
+  let picture = core_pictures(fn(url, done) {
+    asked[url] = asked.get(url).unwrap_or(0) + 1
+    done(Some(@utf8.encode(url)))
+  })
+  let url = fn(i : Int) { "https://pictures.example/\{i}.jpg" }
+  // (one shown by a node all along: never let go of)
+  let held = @signals.computed(fn(_) { picture(url(1000), 1) })
+  let stop = @signals.effect(fn() { held.get() |> ignore })
+  let first = picture(url(0), 1)
+  assert_true(first.has_prefix("mem:picture/"))
+  for i in 1..<257 {
+    picture(url(i), 1) |> ignore
+  }
+  assert_false(@ui.has_image(first), msg="the least lately shown let go of")
+  assert_true(@ui.has_image(picture(url(256), 1)))
+  assert_true(@ui.has_image(held.get()), msg="shown by a node: kept")
+  assert_eq(asked[url(1000)], 1)
+  // shown again: asked again, here again
+  let again = picture(url(0), 1)
+  assert_eq(again, first)
+  assert_eq(asked[url(0)], 2)
+  assert_true(@ui.has_image(first))
+  stop()
+}

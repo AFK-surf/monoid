@@ -17,21 +17,21 @@ test "a sheet from the foot, the old frame's (a confirm) and the window's tree's
   for bars in [(0.0, 84.0), (40.0, 40.0)] {
     let (left, right) = bars
     for nodes in [false, true] {
-      let t = presenting_tester(phone, fn(from) {
+      let tt = presenting_tester(phone, fn(from) {
         if nodes {
           panel_nodes("归档这个对话？", from~, fn(v, _) { words_node(v, fn() { long }, fn() { paragraph }) |> ignore })
         } else {
           confirm("归档这个对话？", long, "确认归档", fn() {  }, danger=true, from~)
         }
       })
-      t.post(@hostapi.system_channel, "{\"bars\":{\"top\":0,\"bottom\":21,\"left\":\{left},\"right\":\{right}}}")
-      t.run_for(@ui.move_most_ms)
-      open_it(t)
+      tt.post(@hostapi.system_channel, "{\"bars\":{\"top\":0,\"bottom\":21,\"left\":\{left},\"right\":\{right}}}")
+      tt.run_for(@ui.move_most_ms)
+      open_it(tt)
       assert_eq(presented_how, [AsSheet])
       let msg = "bars \{Repr(bars)}, of nodes \{nodes}"
-      let seen = if nodes { [long] } else { [long, "确认归档", "common.cancel"] }
+      let seen = if nodes { [long] } else { [long, "确认归档", t("common.cancel")] }
       for words in seen {
-        let (l, r) = sides_of(t, words)
+        let (l, r) = sides_of(tt, words)
         assert_true(l >= left - 0.5 && r <= w - right + 0.5, msg="\{msg}: \{words} at \{Repr((l, r))}")
       }
     }

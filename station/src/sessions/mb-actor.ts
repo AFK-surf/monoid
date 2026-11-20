@@ -460,6 +460,7 @@ export class MbActor {
   goOn() { return this.#call("goOn").then(() => undefined); }
   allowanceReset() { return this.#call("allowanceReset").then(() => undefined); }
   recover() { return this.#call("recover").then(() => undefined); }
+  cutOffByRestart(): Promise<boolean> { return this.#call("cutOffByRestart").then((v) => v === true); }
   takeWait() { return this.#call("takeWait").then(() => undefined); }
   takeRefill() { return this.#call("takeRefill").then(() => undefined); }
   release() { return this.#call("release").then(() => undefined); }

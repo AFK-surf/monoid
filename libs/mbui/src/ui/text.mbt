@@ -162,7 +162,15 @@ fn text_arrive() -> Unit {
     // (and the frame drawn whole: its glyphs drawn again where they were, the same numbers, other pixels: hostcall.mbt
     // `presented`)
     presented.forget()
-    if !first {
+    // (and on the first frame too where something was shaped or measured before it, as a run's tree is brought before
+    // its first frame (set_view_app: a column's width measured as it is made): shaped while the generation was not yet
+    // read, its glyphs' keys those of a host that may since have forgotten them (a web page's scale or a face changed
+    // before its first frame, textSweep), each key drawn as another glyph; with nothing shaped before, nothing measured
+    // again)
+    if !first ||
+      text_cache.shaped > 0 ||
+      !text_cache.fonts.is_empty() ||
+      !text_cache.metrics.is_empty() {
       clear_shapes()
       text_cache.fonts.clear()
       text_cache.metrics.clear()

@@ -239,6 +239,20 @@ fn View::scroll_bar(
   // its least twice, what scrolls and what it holds as wide less that)
   // (what it runs along as its thumb was last placed and sized by it, as what those read changed: how far it is
   // scrolled at each moment it is drawn (its scroll_off) read along that, not worked out again each time)
+  let box_size = fn() -> (Double, Double)? {
+    match s.seen.get() {
+      Some((cw, ch)) => {
+        let st = self.tree.nodes[self.at].flex.style
+        let pt = fn(k : Int, x : Double) { if k == @flex.LEN_PT { x } else { 0.0 } }
+        let pl = pt(st.padding_left_kind(), st.padding_left_value())
+        let pr = pt(st.padding_right_kind(), st.padding_right_value())
+        let pt_v = pt(st.padding_top_kind(), st.padding_top_value())
+        let pb = pt(st.padding_bottom_kind(), st.padding_bottom_value())
+        Some((cw + pl + pr, ch + pt_v + pb))
+      }
+      None => None
+    }
+  }
   let along = Ref((0.0, 0.0, 0.0, 0.0, 0.0))
   let track_along = fn(x : Double) {
     let (vh, ends, content, start, end) = along.val
@@ -251,12 +265,12 @@ fn View::scroll_bar(
       Some(_) => self.corner_clear(across)
       None => (0.0, 0.0)
     }
-    let (vh, ends) = match s.seen.get() {
-      Some((w, h)) =>
+    let (vh, ends) = match box_size() {
+      Some((bw, bh)) =>
         if across {
-          (w, dclamp(dmax(bar_in, dmax(c0, c1)), 0.0, dmax(0.0, w / 2.0 - b.least)))
+          (bw, dclamp(dmax(bar_in, dmax(c0, c1)), 0.0, dmax(0.0, bw / 2.0 - b.least)))
         } else {
-          (h, 0.0)
+          (bh, 0.0)
         }
       None => (0.0, 0.0)
     }
@@ -338,11 +352,11 @@ fn View::scroll_bar(
       // (along its right; across, along its foot)
       (if across { thumb.height(thick).width(By(long)) } else { thumb.width(thick).height(By(long)) })
       .offset(By(fn() {
-        let (w, h) = s.seen.get().unwrap_or((0.0, 0.0))
+        let (bw, bh) = box_size().unwrap_or((0.0, 0.0))
         if across {
-          (track(0.0).0 - b.grab, h - b.inset - b.size - b.grab)
+          (track(0.0).0 - b.grab, bh - b.inset - b.size - b.grab)
         } else {
-          (w - b.inset - b.size - b.grab, track(0.0).0 - b.grab)
+          (bw - b.inset - b.size - b.grab, track(0.0).0 - b.grab)
         }
       }))
       // (a target while it shows: coming, out or going, or out at rest along its edge or held; said by its state,

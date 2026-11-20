@@ -48,7 +48,7 @@ fn figure(name : String, path : String, font : String) -> Bool {
       _ => @sfgraphic.alignment_card_figure(c, true)
     }
   }
-  @film.picture(view, path~, w=if single { 480.0 } else { 960.0 }, h=if single { 270.0 } else { 540.0 }, scale=if single { 5.0 } else { 2.5 }, corner_faults_ok=fn(faults) {
+  @film.picture_legacy_ctx(view, path~, w=if single { 480.0 } else { 960.0 }, h=if single { 270.0 } else { 540.0 }, scale=if single { 5.0 } else { 2.5 }, corner_faults_ok=fn(faults) {
     if name == "align" || name == "align-edge" { @sfgraphic.alignment_corner_faults_ok(faults) } else { faults.is_empty() }
   })
 }
@@ -56,7 +56,7 @@ fn figure(name : String, path : String, font : String) -> Bool {
 ///|
 fn figure_scene(scene : @sfgraphic.GraphicScene, path : String, font : String) -> Bool {
   let initialized = Ref(false)
-  @film.picture(fn(c) {
+  @film.picture_legacy_ctx(fn(c) {
     if !initialized.val {
       figure_initialize(font)
       initialized.val = true

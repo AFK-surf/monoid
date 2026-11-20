@@ -41,8 +41,14 @@ fn Files::file_name(self : Files, path : String) -> String? {
 ///|
 /// footprint.ts `roomOfSoon`: the room of a session's workspace under the station's sessions directory.
 pub async fn Storage::room_of(self : Storage, workspace : String) -> String? {
+  // (no workspace: nothing to follow, `realpath("")` would be the process's own directory)
+  if workspace == "" {
+    return None
+  }
   let fs = self.fs
-  guard fs.realpath(fs.join([self.data_dir(), "sessions"])) is Some(sessions) else { return None }
+  guard kept_real(self.sessions_real, () => fs.realpath(fs.join([self.data_dir(), "sessions"]))) is Some(sessions) else {
+    return None
+  }
   let path = match fs.realpath(workspace) {
     Some(p) => Some(p)
     None =>
@@ -67,37 +73,123 @@ pub async fn Storage::room_of(self : Storage, workspace : String) -> String? {
 }
 
 ///|
-/// Links followed off the station's thread, kept for 15 minutes (cold.ts `canonical`).
-async fn Storage::canonical_followed(self : Storage, path : String) -> String? {
-  let now = self.now()
-  match self.followed.get(path) {
-    Some((at, real)) if now - at < followed_ms => return real
-    _ => ()
+/// What `find` answers, kept in `cell` once it is found (None, a directory not made yet, is asked again).
+async fn kept_real(cell : Ref[String?], find : async () -> String?) -> String? {
+  if cell.val is Some(real) {
+    return Some(real)
   }
-  let real = try {
-    as_str(Some(self.ask("fn.realOutside", [js(path)])))
-  } catch {
-    _ => return None
+  let real = find()
+  if real is Some(_) {
+    cell.val = real
   }
-  self.followed.remove(path)
-  self.followed[path] = (self.now(), real)
-  if self.followed.length() > 1024 {
-    match self.followed.keys().head() {
-      Some(k) => self.followed.remove(k)
+  real
+}
+
+///|
+/// How many rooms found and links followed are kept: above two paths for every session of a large station (thousands,
+/// archived ones too), so that an upkeep round does not let go of what it asks again in the same round.
+let cache_cap : Int = 8192
+
+///|
+/// Kept at most `cache_cap`, the least recently found let go first.
+fn[V] keep_bounded(kept : Map[String, V], key : String, value : V, also? : Map[String, Double]) -> Unit {
+  kept.remove(key)
+  kept[key] = value
+  if kept.length() > cache_cap {
+    match kept.keys().head() {
+      Some(k) => {
+        kept.remove(k)
+        if also is Some(a) {
+          a.remove(k)
+        }
+      }
       None => ()
     }
   }
+}
+
+///|
+/// Whether `path` is to be followed (again) at `now`: neither followed nor failed to be within `followed_ms`.
+fn follow_due(followed : Map[String, (Double, String?)], failed : Map[String, Double], path : String, now : Double) -> Bool {
+  match followed.get(path) {
+    Some((at, _)) if now - at < followed_ms => return false
+    _ => ()
+  }
+  match failed.get(path) {
+    Some(at) => now - at >= followed_ms
+    None => true
+  }
+}
+
+///|
+/// `path` followed by `follow` (`fn.realOutside`), kept in `followed` for 15 minutes (cold.ts `canonical`); a
+/// failure (a link changed as it was followed) answers None, is not kept as followed (so the path is still taken to
+/// be in use) and is not followed again within those 15 minutes either: each session of an upkeep round asks again
+/// for every path in use, and a path that does not follow would otherwise be followed again for each.
+async fn follow_kept(
+  followed : Map[String, (Double, String?)],
+  failed : Map[String, Double],
+  path : String,
+  now : () -> Double,
+  follow : async (String) -> String?,
+) -> String? {
+  if !follow_due(followed, failed, path, now()) {
+    return match followed.get(path) {
+      Some((_, real)) if failed.get(path) is None => real
+      _ => None
+    }
+  }
+  let real = follow(path) catch {
+    _ => {
+      keep_bounded(failed, path, now())
+      return None
+    }
+  }
+  failed.remove(path)
+  keep_bounded(followed, path, (now(), real))
   real
+}
+
+///|
+/// Links followed off the station's thread, kept for 15 minutes (cold.ts `canonical`).
+async fn Storage::canonical_followed(self : Storage, path : String) -> String? {
+  follow_kept(self.followed, self.follow_failed, path, () => self.now(), async fn(p) {
+    as_str(Some(self.ask("fn.realOutside", [js(p)])))
+  })
+}
+
+///|
+/// `follow` started by `fork` unless `path` is being followed already (`following`): an upkeep round asks each path
+/// of every session's, and one being followed is not followed again alongside. None where it is.
+fn follow_once(
+  following : Set[String],
+  path : String,
+  fork : (async () -> Unit) -> @effect.Fiber[Unit],
+  follow : async () -> Unit,
+) -> @effect.Fiber[Unit]? {
+  if following.contains(path) {
+    return None
+  }
+  following.add(path)
+  Some(
+    fork(async fn() {
+      defer following.remove(path)
+      follow()
+    }),
+  )
 }
 
 ///|
 /// `path` as last followed, whatever its age; None (`undefined`) when it never was, and it is followed in the background.
 async fn Storage::followed_now(self : Storage, path : String) -> String?? {
   let kept = self.followed.get(path)
-  let now = self.now()
-  match kept {
-    Some((at, _)) if now - at < followed_ms => ()
-    _ => self.going.push(self.fs.host.rt.fork(name="follow", async fn() { ignore(self.canonical_followed(path)) }))
+  if follow_due(self.followed, self.follow_failed, path, self.now()) {
+    let started = follow_once(self.following, path, f => self.fs.host.rt.fork(name="follow", f), async fn() {
+      ignore(self.canonical_followed(path))
+    })
+    if started is Some(f) {
+      self.track_going(f)
+    }
   }
   match kept {
     Some((_, real)) => Some(real)
@@ -116,16 +208,27 @@ async fn Storage::in_room(self : Storage, path : String, dir : String) -> Bool {
 }
 
 ///|
-async fn Storage::find_room_of(self : Storage, workspace : String) -> Unit {
-  let room = self.room_of(workspace)
-  self.rooms.remove(workspace)
-  self.rooms[workspace] = room
-  if self.rooms.length() > 1024 {
-    match self.rooms.keys().head() {
-      Some(k) => self.rooms.remove(k)
-      None => ()
-    }
+/// A workspace's room as `find` finds it, kept in `rooms`: one found is not found again within `followed_ms` (an upkeep
+/// round asks it of each session, and each step of packing one again); none found is asked again each time, so a
+/// workspace made since is found.
+async fn find_kept(
+  rooms : Map[String, String?],
+  found_at : Map[String, Double],
+  workspace : String,
+  now : () -> Double,
+  find : async (String) -> String?,
+) -> Unit {
+  if rooms.get(workspace) is Some(Some(_)) && found_at.get(workspace) is Some(at) && now() - at < followed_ms {
+    return
   }
+  let room = find(workspace)
+  found_at[workspace] = now()
+  keep_bounded(rooms, workspace, room, also=found_at)
+}
+
+///|
+async fn Storage::find_room_of(self : Storage, workspace : String) -> Unit {
+  find_kept(self.rooms, self.rooms_at, workspace, () => self.now(), async fn(w) { self.room_of(w) })
 }
 
 ///|
@@ -139,33 +242,31 @@ async fn Storage::find_room(self : Storage, key : String) -> Unit {
 }
 
 ///|
-fn places_of(s : Json) -> Array[String] {
-  let w = str(s, "workspace").unwrap_or("")
-  [w, str(s, "cwd").unwrap_or(w)]
-}
-
-///|
+/// Every directory in use (the sessions' workspaces and cwds, the jobs' cwds) followed, each once, those followed
+/// within `followed_ms` not asked again: an upkeep round asks this of each of its sessions, and once all are followed
+/// it costs one read of the paths and nothing more.
 async fn Storage::follow_in_use(self : Storage) -> Unit {
-  let paths = []
-  for s in self.st.store.sessions_in_use() {
-    for p in places_of(s) {
-      if !paths.contains(p) {
-        paths.push(p)
-      }
+  let now = self.now()
+  let due : Set[String] = Set([])
+  let take = fn(p : String) {
+    if !due.contains(p) && follow_due(self.followed, self.follow_failed, p, now) {
+      due.add(p)
     }
   }
+  for place in self.st.store.in_use_places() {
+    let (_, ws, cwd) = place
+    take(ws)
+    take(cwd)
+  }
   let jobs = try {
-    self.st.store.jobs_up()
+    self.st.store.jobs_up_places()
   } catch {
     _ => []
   }
   for j in jobs {
-    let c = str(j, "cwd").unwrap_or("")
-    if !paths.contains(c) {
-      paths.push(c)
-    }
+    take(j.1)
   }
-  for p in paths {
+  for p in due {
     ignore(self.canonical_followed(p))
   }
 }
@@ -180,14 +281,13 @@ async fn Storage::cleanable_room(self : Storage, key : String, require_archived~
   if !archived_ok || get(row, "running") is Some(True) || self.st.hub.process_state(key) == "running" {
     return None
   }
-  for s in self.st.store.sessions_in_use() {
-    if str(s, "key") == Some(key) {
+  for place in self.st.store.in_use_places() {
+    let (k, ws, cwd) = place
+    if k == key {
       continue
     }
-    for p in places_of(s) {
-      if self.in_room(p, dir) {
-        return None
-      }
+    if self.in_room(ws, dir) || (cwd != ws && self.in_room(cwd, dir)) {
+      return None
     }
   }
   if self.has_jobs(key, dir) {
@@ -215,12 +315,13 @@ pub async fn Storage::needs_pack(self : Storage, key : String) -> Bool {
 ///|
 async fn Storage::has_jobs(self : Storage, key : String, dir : String) -> Bool {
   let jobs = try {
-    self.st.store.jobs_up()
+    self.st.store.jobs_up_places()
   } catch {
     _ => return true
   }
   for job in jobs {
-    if str(job, "sessionKey") == Some(key) || self.in_room(str(job, "cwd").unwrap_or(""), dir) {
+    let (k, cwd) = job
+    if k == key || self.in_room(cwd, dir) {
       return true
     }
   }

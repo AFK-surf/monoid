@@ -10,6 +10,11 @@ let any_running : String =
   #|SELECT 1 AS r FROM sessions WHERE running = 1 LIMIT 1
 
 ///|
+/// The sessions in use (`live_sessions` and `running_sessions` both), only their keys and directories.
+let in_use_places : String =
+  #|SELECT key, workspace, cwd FROM sessions WHERE archived_at IS NULL UNION SELECT key, workspace, cwd FROM sessions WHERE running = 1
+
+///|
 let running_sessions : String =
   #|SELECT * FROM sessions WHERE running = 1
 
@@ -163,6 +168,11 @@ let jobs_running : String =
 ///|
 let jobs_up : String =
   #|SELECT * FROM (SELECT * FROM jobs WHERE state = 'running' UNION ALL SELECT * FROM jobs WHERE state = 'exited' AND port IS NOT NULL) ORDER BY started_at DESC
+
+///|
+/// `jobs_up`'s jobs, only whose session and directory: what cold storage asks of each of them.
+let jobs_up_places : String =
+  #|SELECT session_key, cwd FROM jobs WHERE state = 'running' UNION ALL SELECT session_key, cwd FROM jobs WHERE state = 'exited' AND port IS NOT NULL
 
 ///|
 let live_on_profile : String =

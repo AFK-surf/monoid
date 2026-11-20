@@ -152,6 +152,8 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
     @Override
     public void onPause() {
         paused = true;
+        // queued before the GL thread pauses (it takes its queue first): its context still current there
+        trim();
         if (!ONE && logic != null) {
             logic.post(this::closeHints);
         } else {
@@ -171,6 +173,17 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
             queueEvent(this::wakeHints);
         }
         wantFrame();
+    }
+
+    /**
+     * What drawing holds beyond its frames given back on the GL thread (android_host.c's mb_render_trim: glass's
+     * textures, the read back's framebuffer), made again as a frame needs them. Only with the context current there:
+     * paused, the GL thread lets its surface go and nothing is current (the context, kept, keeps them till then).
+     */
+    void trim() {
+        queueEvent(() -> {
+            if (android.opengl.EGL14.eglGetCurrentContext() != android.opengl.EGL14.EGL_NO_CONTEXT) Native.trim();
+        });
     }
 
     // ---- the app's thread ----
@@ -208,7 +221,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         @Override public String frameName() { return MBText.takeFrameName(); }
 
         @Override public void dropped(java.util.List<MBText.Placed> glyphs) {
-            for (MBText.Placed g : glyphs) g.bmp.recycle();
+            for (MBText.Placed g : glyphs) g.release();
         }
 
         @Override public void failed(RuntimeException e) {
@@ -502,7 +515,8 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         if (Host.view != this || paused) return;
         Latency.frameBegins();
         boolean app = pacer.appWanted.getAndSet(false), pictured = pacer.picturesOnly.getAndSet(false);
-        float w = getWidth() / density, h = Math.max(1, getHeight() - Host.imeBottom) / density;
+        final int imeUsed = Host.imeBottom;
+        float w = getWidth() / density, h = Math.max(1, getHeight() - imeUsed) / density;
         long[] at = pacer.vsyncAt();
         if (pictured && !app) {
             if (mail.redrawAsked(at[1])) requestRender();
@@ -522,6 +536,10 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         pacer.ended(more, later, b.following, pacedRate);
         NativeViews.framed(more || later);
         frameWorked(System.nanoTime() - began, glWorked);
+        if (Host.imeBottom != imeUsed && Host.view == this && !paused) {
+            pacer.appWanted.set(true);
+            makeFrame();
+        }
     }
 
     /**
@@ -536,6 +554,22 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
     /** The GL thread's time drawing the last frame (ns), told to the system with the app's (frameWorked). */
     private volatile long glWorked;
 
+    // Pending post-eglSwapBuffers timing (GL thread only): GLSurfaceView.GLThread drains mEventQueue right after
+    // mEglHelper.swap() without triggering another render, so afterSwap captures GPU backpressure in eglSwapBuffers.
+    private boolean swapPending;
+    private long swapT0, swapD0, swapEnd;
+    private int swapDropped, swapCtx;
+    private final Runnable afterSwap = this::finishSwap;
+
+    private void finishSwap() {
+        if (!swapPending) return;
+        swapPending = false;
+        if (paused || mine != swapCtx || !glCurrent()) return;
+        long s1 = System.nanoTime();
+        glWorked = s1 - swapT0;
+        glDrawn((s1 - swapD0) / 1e6, swapDropped);
+    }
+
     /**
      * A frame drawn on the GL thread in {@code ms}, {@code dropped} frames handed over since the last never drawn
      * (android_host.c: what the app reads of it, @hostapi.gpu_ms and frames_dropped).
@@ -549,6 +583,13 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
      * surface's first frame, or one at a new size, waits a while for the app's.
      */
     private void drawOnGl() {
+        if (swapPending) {
+            swapPending = false;
+            if (!paused && mine == swapCtx) {
+                glWorked = swapEnd - swapT0;
+                glDrawn((swapEnd - swapD0) / 1e6, swapDropped);
+            }
+        }
         if (mine != setUp) {
             // another view set the drawing up in its own context since this one did (an OverActivity came and went):
             // set up again here, at this view's size, and the app's frame made for it
@@ -578,13 +619,17 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         showAt(t.shows);
         if (t.ref != null) MBText.frameDrawn(t.ref);
         Latency.frameEnds(t.lat);
-        long d1 = System.nanoTime();
-        glWorked = d1 - t0;
-        // (the GL thread's time drawing it, its waiting for the app's frame left out, and the frames handed over never
-        // drawn since the last: @hostapi.gpu_ms, @hostapi.frames_dropped)
-        glDrawn((d1 - d0) / 1e6, mail.takeDropped());
         // what the app asked of it after: done now, but for what follows a frame handed over meanwhile
         mail.runTasks(mail.pendingSeqNow());
+        // (the GL thread's time drawing and swapping it, its waiting for the app's frame left out, and the frames
+        // handed over never drawn since the last: @hostapi.gpu_ms, @hostapi.frames_dropped)
+        swapT0 = t0;
+        swapD0 = d0;
+        swapEnd = System.nanoTime();
+        swapDropped = mail.takeDropped();
+        swapCtx = mine;
+        swapPending = true;
+        queueEvent(afterSwap);
     }
 
     /**
@@ -675,8 +720,15 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
             int gl = lastGlTid;
             hintsFor(gl > 0 && glAlive ? new int[] {logicTid, gl} : new int[] {logicTid});
         }
-        if (android.os.Build.VERSION.SDK_INT >= 31 && hints != null && hintTarget > 0) {
-            hints.reportActualWorkDuration(hintTarget);
+        if (android.os.Build.VERSION.SDK_INT >= 31 && hints != null) {
+            long target = pacer.framePeriod * 7 / 10;
+            if (target > 0 && target != hintTarget) {
+                hintTarget = target;
+                hints.updateTargetWorkDuration(target);
+            }
+            if (hintTarget > 0) {
+                hints.reportActualWorkDuration(hintTarget);
+            }
         }
     }
 
@@ -759,6 +811,26 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
     /** The field's typing begun or ended (MainActivity, as the keyboard shows or goes): the rate said or let go from now. */
     void typingChanged() {
         onApp(pacer::typingChanged);
+    }
+
+    /**
+     * The soft keyboard asked to show or beginning to move (main thread): ADPF session woken with a full target budget
+     * and the display's highest rate asked before its first inset step arrives, so the logic and GL threads are not
+     * preempted while the input method starts up.
+     */
+    void imeMovingStarted() {
+        if (paused) return;
+        if (!ONE && logic != null) {
+            logic.post(() -> {
+                wakeHints();
+                pacer.sayRate(true);
+            });
+        } else {
+            queueEvent(() -> {
+                wakeHints();
+                pacer.sayRate(true);
+            });
+        }
     }
 
     @Override

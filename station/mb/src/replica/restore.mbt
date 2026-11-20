@@ -272,6 +272,15 @@ fn build(host : @host.Host, files : Files, db_path : String, dir : String, from_
           }
           folded.close()
           files.remove(work)
+          if merging {
+            let settled : Array[Double] = []
+            for _, tid in ids {
+              if !settled.contains(tid) {
+                settled.push(tid)
+                ignore(@sql.settle_conversation_in_tx(d, Json::number(tid), Json::number(now)))
+              }
+            }
+          }
           let counted : Array[(String, JValue)] = []
           for table in restore_order {
             if has(table) {

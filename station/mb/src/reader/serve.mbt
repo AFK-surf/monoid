@@ -1160,10 +1160,11 @@ fn Serving::mark(
     guard db.all("SELECT 1 AS x FROM sessions WHERE key = ?", [Json::string(id)]) is [_, ..] else {
       return Text(404, error("unknown session \{id}"))
     }
+    let anchor = @sql.conversation_of(db, id)
     let name = title_of(input)
     let home = self.writing(db, () => {
-      ignore(db.run("UPDATE sessions SET title = ?1 WHERE key = ?2", [name, Json::string(id)]))
-      match db.all("SELECT id FROM threads WHERE home = ? ORDER BY id LIMIT 1", [Json::string(id)]) {
+      ignore(db.run("UPDATE sessions SET title = ?1 WHERE key = ?2", [name, Json::string(anchor)]))
+      match db.all("SELECT id FROM threads WHERE home = ? ORDER BY id LIMIT 1", [Json::string(anchor)]) {
         [r, ..] => {
           let home = r.get("id").unwrap_or(Json::null())
           ignore(db.run("UPDATE threads SET title = ?1 WHERE id = ?2", [name, home]))
@@ -1172,7 +1173,7 @@ fn Serving::mark(
         _ => Json::null()
       }
     })
-    let changes : Array[Json] = [{ "type": "session", "key": Json::string(id) }]
+    let changes : Array[Json] = [{ "type": "session", "key": Json::string(anchor) }]
     if home is Null {
       self.changed(changes)
     } else {
@@ -1186,7 +1187,8 @@ fn Serving::mark(
       return Text(404, error("unknown session \{id}"))
     }
     let pinned = method == "PUT"
-    let key = Json::string(id)
+    let anchor = @sql.conversation_of(db, id)
+    let key = Json::string(anchor)
     let at = self.writing(db, () => {
       if pinned {
         ignore(db.run("INSERT OR IGNORE INTO pins (viewer, session, at) VALUES (?, ?, ?)", [Json::string(email), key, now]))
@@ -1195,7 +1197,18 @@ fn Serving::mark(
           _ => Json::null()
         }
       } else {
-        ignore(db.run("DELETE FROM pins WHERE viewer = ? AND session = ?", [Json::string(email), key]))
+        let targets : Array[String] = [anchor]
+        if !targets.contains(id) {
+          targets.push(id)
+        }
+        for m in @sql.members_of(db, anchor) {
+          if !targets.contains(m) {
+            targets.push(m)
+          }
+        }
+        for m in targets {
+          ignore(db.run("DELETE FROM pins WHERE viewer = ? AND session = ?", [Json::string(email), Json::string(m)]))
+        }
         Json::null()
       }
     })

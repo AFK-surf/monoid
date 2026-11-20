@@ -2097,6 +2097,14 @@ web-pages.connect.startsOn
 web-pages.connect.startsOnLead
 web-pages.connect.startsHere
 web-pages.connect.startsOnSaved
+web-pages.connect.startsOnPoolSaved
+web-pages.connect.startsOnSep
+web-pages.connect.startsOnMany
+web-pages.connect.startsOnAuto
+web-pages.connect.startsOnAutoShort
+web-pages.connect.startsOnAutoCount
+web-pages.connect.startsOnAutoEmpty
+web-pages.connect.startsOnAutoSaved
 web-pages.connect.station
 web-pages.connect.move
 web-pages.connect.moveLead
@@ -2730,6 +2738,7 @@ web-pages.stations.page.part.processes
 web-pages.stations.page.resources
 web-pages.stations.page.cpuBusy
 web-pages.stations.page.cpuBusyShort
+web-pages.stations.page.cpuBusyChip
 web-pages.stations.page.runningShort
 web-pages.stations.permissions.granted
 web-pages.stations.permissions.missing
@@ -2886,6 +2895,14 @@ web-main.preset.noMatch
 web-main.preset.empty
 web-main.preset.emptyHint
 web-main.preset.autoStation
+web-main.preset.autoStationAllowlistHint
+web-main.preset.autoStationEmptyHint
+web-main.newChat.autoStation
+web-main.newChat.autoStationShort
+web-main.newChat.autoStationHint
+web-main.newChat.autoEmptyTitle
+web-main.newChat.pickStation
+web-main.newChat.goStations
 web-main.preset.stationsCount
 web-main.preset.hasInstructions
 web-main.preset.editItem
@@ -3059,3 +3076,7 @@ web-pages.vault.devicesDialog.authorize
 web-pages.vault.devicesDialog.current
 web-pages.vault.devicesDialog.codePrefix
 web-pages.vault.devicesDialog.legacyPendingNote
+web-main.restartInterrupted.title
+web-main.restartInterrupted.resumeAll
+web-main.restartInterrupted.dismiss
+web-main.restartInterrupted.more

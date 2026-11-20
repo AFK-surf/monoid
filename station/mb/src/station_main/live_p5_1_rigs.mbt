@@ -52,7 +52,7 @@ fn rigs_arg(v : Json) -> Json {
 /// card made again from the one it was) is called here, where it was given: the other parts have none of its numbers.
 fn P51::rigs_world(self : P51) -> @rigs_mode.World {
   let bus = self.bus
-  let callbacks : Map[Int, async (Array[Json]) -> Json] = {}
+  let callbacks : Map[Int, (Array[Json]) -> Json raise] = {}
   let next = Ref(0)
   let fn_of = (v : Json) => match v {
     { "$fn": Number(n, ..), .. } => callbacks.get(n.to_int())
@@ -74,17 +74,31 @@ fn P51::rigs_world(self : P51) -> @rigs_mode.World {
   {
     call: async fn(name, args) {
       let arg = (i : Int) => arg_at(args, i)
-      let run_cb = (cb : Json, cb_args : Array[Json]) => match fn_of(cb) {
-        Some(f) => Some(f(cb_args))
-        None => None
+      let run_cb = async fn(cb : Json, cb_args : Array[Json]) -> Json? {
+        match fn_of(cb) {
+          Some(f) => Some(f(cb_args))
+          None => None
+        }
+      }
+      // (a request's write, run inside the threads' store's transaction: called once, let go after)
+      let run_write = (cb : Json) => match cb {
+        { "$fn": Number(n, ..), .. } =>
+          match callbacks.get(n.to_int()) {
+            Some(f) => {
+              callbacks.remove(n.to_int())
+              ignore(f([]))
+            }
+            None => raise LiveError("no write \{n}")
+          }
+        _ => raise LiveError("no write given")
       }
       match name {
         "cardOutcomes.save" => {
-          ignore(dispatch_threads_card(bus, threads_of(), name, args, run_cb))
+          ignore(dispatch_threads_card(bus, threads_of(), name, args, run_cb, run_write))
           @rigs_mode.undefined_json()
         }
         "store.withdrawCard" | "store.restateCard" =>
-          rigs_answer(dispatch_threads_card(bus, threads_of(), name, args, run_cb).unwrap_or(Json::null()))
+          rigs_answer(dispatch_threads_card(bus, threads_of(), name, args, run_cb, run_write).unwrap_or(Json::null()))
         "remote.ask" =>
           bus_remote_ask(bus, arg_str(args, 0), arg(1)) catch {
             @gate.PeerRefused(m) => raise @rigs_mode.Refused(m)

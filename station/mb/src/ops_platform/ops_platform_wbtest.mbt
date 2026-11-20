@@ -130,3 +130,29 @@ test "startEnv never gives the launcher's front to what the station starts" {
   assert_true(env.iter().all(p => p.0 != "STILLFAIL_MESH_FRONT"))
   assert_true(env.iter().any(p => p == ("PATH", "/bin")))
 }
+
+///|
+test "file search Turns aborts same-typist prior searches, drops waiting, and bounds concurrency" {
+  let turns = Turns::new()
+  // First two go immediately (search_at_once = 2).
+  let r1 = turns.ask(1, Some("dev1"), "foo")
+  assert_eq(r1, { "stopped": [], "dropped": [], "goes": true })
+  let r2 = turns.ask(2, Some("dev2"), "bar")
+  assert_eq(r2, { "stopped": [], "dropped": [], "goes": true })
+  // Third queues (waiting).
+  let r3 = turns.ask(3, Some("dev1"), "foob")
+  assert_eq(r3, { "stopped": [1], "dropped": [], "goes": false })
+  // Fourth by same typist ("dev1") typing further drops waiting #3 and still flags going #1.
+  let r4 = turns.ask(4, Some("dev1"), "fooba")
+  assert_eq(r4, { "stopped": [1], "dropped": [3], "goes": false })
+  // Completing #1 promotes #4 from waiting to going.
+  assert_eq(turns.done(1), Some(4))
+  assert_eq(turns.done(2), None)
+  assert_eq(turns.done(4), None)
+  // Reuse policy: KEPT_MS=5s, again=60s, guessed=20s.
+  assert_true(file_search_reuse(Some(4000.0), false, false))
+  assert_true(!file_search_reuse(Some(6000.0), false, false))
+  assert_true(file_search_reuse(Some(50000.0), true, false))
+  assert_true(file_search_reuse(Some(15000.0), false, true))
+  assert_true(!file_search_reuse(Some(25000.0), false, true))
+}

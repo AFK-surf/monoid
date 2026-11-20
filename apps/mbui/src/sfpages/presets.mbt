@@ -2462,13 +2462,20 @@ fn preset_station_open(
           close()
         },
       )
+      let allowlisted_count = stations.filter(fn(s) { flag(Some(s), "acceptAutoChats") }).length()
       @sf.choice_row_node(
         n,
         fn() { @sf.t("web-main.preset.autoStation") },
         fn() { false },
         compact=true,
         lead=fn(l) { @sf.check_mark_node(l, all_checked, mixed=some_checked) },
-        note=fn() { @sf.t("web-main.preset.autoStationHint") },
+        note=fn() {
+          if allowlisted_count > 0 {
+            @sf.t("web-main.preset.autoStationAllowlistHint", args=[("n", allowlisted_count.to_string())])
+          } else {
+            @sf.t("web-main.preset.autoStationEmptyHint")
+          }
+        },
         press=fn() {
           if all_checked() {
             apply_selected([])

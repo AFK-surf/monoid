@@ -69,6 +69,13 @@ pub async fn harness(host : @host.Host) -> Unit {
             None => Json::null()
           },
         )
+      "preview" =>
+        Ok(
+          match preview(s("image"), s("dir")) {
+            Some(t) => { "path": Json::string(t.path), "type": Json::string(t.type_) }
+            None => Json::null()
+          },
+        )
       "thumbhash" =>
         Ok(
           match thumbhash(s("image"), match v("dir") { Some(String(d)) => Some(d); _ => None }) {
@@ -141,6 +148,7 @@ pub async fn harness(host : @host.Host) -> Unit {
           )
         } catch {
           SysError(why) => Err(why)
+          e => Err("\{e}")
         }
         match spawned {
           Ok(p) => {
@@ -163,6 +171,200 @@ pub async fn harness(host : @host.Host) -> Unit {
           }
           Err(why) => Err(why)
         }
+      }
+      "stdinBackpressure" => {
+        // 1) multi-chunk write to cat drains cleanly and closes with EOF
+        let cat_res = try {
+          let cat_p = spawn(
+            host,
+            "cat",
+            [],
+            env=[("PATH", "/bin:/usr/bin")],
+            stdin_piped=true,
+            stdout=Piped,
+            stderr=Piped,
+          )
+          let expected = @buffer.Buffer()
+          let mut cat_writes_ok = true
+          for i = 0; i < 8; i = i + 1 {
+            let fill = (b'a'.to_int() + i).to_byte()
+            let chunk = Bytes::make(32 * 1024, fill)
+            expected.write_bytes(chunk)
+            if !cat_p.write(chunk) {
+              cat_writes_ok = false
+            }
+          }
+          cat_p.end_input()
+          let after_eof = cat_p.write(b"after-eof")
+          let (cat_code, cat_sig, cat_out, cat_err) = cat_p.finished()
+          Ok(
+            cat_writes_ok &&
+            !after_eof &&
+            cat_code == Some(0) &&
+            cat_sig == None &&
+            cat_err == b"" &&
+            cat_out == expected.to_bytes(),
+          )
+        } catch {
+          SysError(why) => Err(why)
+          e => Err("\{e}")
+        }
+
+        // 2) stalled child past STILLFAIL_STDIN_MOST does not block and is SIGKILLed
+        let prev_most = env_get("STILLFAIL_STDIN_MOST")
+        env_set("STILLFAIL_STDIN_MOST", "131072")
+        let stalled_res = try {
+          let sp = spawn(
+            host,
+            "sleep",
+            ["30"],
+            env=[("PATH", "/bin:/usr/bin")],
+            stdin_piped=true,
+            stdout=Piped,
+            stderr=Piped,
+          )
+          let start = @host.now()
+          let chunk = Bytes::make(32 * 1024, b'x')
+          let mut rejected = false
+          for _i = 0; _i < 64; _i = _i + 1 {
+            if !sp.write(chunk) {
+              rejected = true
+              break
+            }
+          }
+          let write_ms = @host.now() - start
+          let (sc, ss, _so, _se) = sp.finished()
+          let total_ms = @host.now() - start
+          let alive = pid_alive(sp.pid)
+          Ok((rejected, write_ms, total_ms, sc, ss, alive))
+        } catch {
+          SysError(why) => Err(why)
+          e => Err("\{e}")
+        }
+        match prev_most {
+          Some(pv) => env_set("STILLFAIL_STDIN_MOST", pv)
+          None => env_unset("STILLFAIL_STDIN_MOST")
+        }
+
+        // 3) child exiting without end_input cleans up stdin handle
+        let quick_res = try {
+          let qp = spawn(
+            host,
+            "true",
+            [],
+            env=[("PATH", "/bin:/usr/bin")],
+            stdin_piped=true,
+            stdout=Piped,
+            stderr=Piped,
+          )
+          let (qc, qs, _qo, _qe) = qp.finished()
+          let late = qp.write(b"late")
+          Ok((qc, qs, late))
+        } catch {
+          SysError(why) => Err(why)
+          e => Err("\{e}")
+        }
+
+        match (cat_res, stalled_res, quick_res) {
+          (Ok(cat_ok), Ok((rejected, write_ms, total_ms, sc, ss, alive)), Ok((qc, qs, late))) =>
+            Ok({
+              "catOk": Json::boolean(cat_ok),
+              "rejected": Json::boolean(rejected),
+              "writeMs": Json::number(write_ms.to_double()),
+              "totalMs": Json::number(total_ms.to_double()),
+              "stalledCode": match sc { Some(c) => Json::number(c.to_double()); None => Json::null() },
+              "stalledSignal": match ss { Some(g) => Json::string(g); None => Json::null() },
+              "stalledAlive": Json::boolean(alive),
+              "quickCode": match qc { Some(c) => Json::number(c.to_double()); None => Json::null() },
+              "quickSignal": match qs { Some(g) => Json::string(g); None => Json::null() },
+              "lateWrite": Json::boolean(late),
+            })
+          (Err(why), _, _) | (_, Err(why), _) | (_, _, Err(why)) => Err(why)
+        }
+      }
+      "stdoutBackpressure" => {
+        let res = try {
+          let rss_before = self_rss_bytes().unwrap_or(0.0)
+          let mut rss_peak = rss_before
+          let p = spawn(
+            host,
+            "/bin/sh",
+            ["-c", "exec yes flood"],
+            env=[("PATH", "/bin:/usr/bin")],
+            stdout=Piped,
+            stderr=Piped,
+            group=true,
+          )
+          let cap = 1048576
+          let kept = @buffer.Buffer()
+          let mut truncated = false
+          let mut chunks = 0
+          let start = @host.now()
+          let ended = @effect.timeout(1500, async fn() {
+            while true {
+              match p.events.take() {
+                Out(b) | Err(b) => {
+                  chunks += 1
+                  let room = cap - kept.length()
+                  if room <= 0 {
+                    truncated = true
+                  } else if b.length() > room {
+                    kept.write_bytesview(b[:room])
+                    truncated = true
+                  } else {
+                    kept.write_bytes(b)
+                  }
+                  if chunks % 64 == 0 {
+                    match self_rss_bytes() {
+                      Some(r) if r > rss_peak => rss_peak = r
+                      _ => ()
+                    }
+                  }
+                }
+                Exit(code, _) => return code
+              }
+            }
+            None
+          })
+          let elapsed_ms = @host.now() - start
+          match self_rss_bytes() {
+            Some(r) if r > rss_peak => rss_peak = r
+            _ => ()
+          }
+          let timed_out = ended is None
+          if timed_out {
+            ignore(kill(p.pid, "SIGKILL", group=true))
+            ignore(
+              @effect.timeout(2000, async fn() {
+                while true {
+                  match p.events.take() {
+                    Exit(_, _) => return ()
+                    _ => ()
+                  }
+                }
+              }),
+            )
+          }
+          let rss_after = self_rss_bytes().unwrap_or(0.0)
+          let alive = pid_alive(p.pid)
+          Ok(
+            Json::object({
+              "timedOut": Json::boolean(timed_out),
+              "elapsedMs": Json::number(elapsed_ms.to_double()),
+              "chunks": Json::number(chunks.to_double()),
+              "keptBytes": Json::number(kept.length().to_double()),
+              "truncated": Json::boolean(truncated),
+              "rssBefore": Json::number(rss_before),
+              "rssPeak": Json::number(rss_peak),
+              "rssAfter": Json::number(rss_after),
+              "alive": Json::boolean(alive),
+            }),
+          )
+        } catch {
+          SysError(why) => Err(why)
+          e => Err("\{e}")
+        }
+        res
       }
       "kill" =>
         Ok(

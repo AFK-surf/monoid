@@ -191,19 +191,76 @@ async function cutOff(declare?: (r: Rig, key: string) => Promise<unknown>) {
   return { r, m, key, cut };
 }
 
-test("after a restart, the turn it cut off is ended as aborted and a new one resumes", async () => {
+test("after a non-update restart, the turn it cut off is ended as aborted and awaits manual resume", async () => {
   const { r, key, cut } = await cutOff();
   const claude = new FakeDriver("claude");
   r.hub = r.newHub({ chats: (id) => (id === "cl" ? r.chat : undefined), drivers: [claude, new FakeDriver("codex")], internal: false });
   await r.hub.takeUp();
   r.hub.recover();
   await settle();
-  assert.ok(claude.last().prompts[0]!.includes("restarted while you were in the middle of a turn"));
+  // Non-update restart does not auto-spawn the runtime process
+  assert.equal(claude.count(), 0);
   const turns = r.store.listTurns(key);
   const ended = turns.find((t) => t.id === cut.id)!.summary;
   assert.deepEqual([ended.outcome, ended.detail, ended.declared], ["aborted", "other: cut off by restart", null]);
   assert.notEqual(ended.endedAt, null);
-  assert.equal(turns.filter((t) => t.summary.endedAt === null).length, 1, "only the turn resuming it runs");
+  assert.equal(turns.filter((t) => t.summary.endedAt === null).length, 0, "no turn left running");
+  const interrupted = r.hub.interruptedIn({ workspace: "", home: true });
+  assert.equal(interrupted.count, 1);
+  assert.equal(interrupted.items[0]!.key, key);
+  assert.ok(r.chat.posts.some((p) => p[1].includes("station 重启导致本轮中断")));
+  // Batch resume starts the session with RESUME_AFTER_RESTART and clears interruptedIn
+  assert.equal(r.hub.resumeInterrupted({ workspace: "", home: true }), 1);
+  await settle();
+  assert.equal(r.hub.interruptedIn({ workspace: "", home: true }).count, 0);
+  assert.ok(claude.last().prompts[0]!.includes("restarted while you were in the middle of a turn"));
+  await r.close();
+});
+
+test("after a non-update restart, single-chat retryFailed resumes with RESUME_AFTER_RESTART and clears interrupted list", async () => {
+  const { r, key } = await cutOff();
+  const claude = new FakeDriver("claude");
+  r.hub = r.newHub({ chats: (id) => (id === "cl" ? r.chat : undefined), drivers: [claude, new FakeDriver("codex")], internal: false });
+  await r.hub.takeUp();
+  r.hub.recover();
+  await settle();
+  assert.equal(claude.count(), 0);
+  assert.equal(r.hub.interruptedIn({ workspace: "", home: true }).count, 1);
+  const last = r.store.lastTurn(key)!;
+  assert.ok(last.about !== null, "cut-off turn about points to the restart notice");
+  await r.hub.retryFailed(key, last.about!.thread, last.about!.seq);
+  await settle();
+  assert.ok(claude.last().prompts[0]!.includes("restarted while you were in the middle of a turn"));
+  assert.equal(r.hub.interruptedIn({ workspace: "", home: true }).count, 0);
+  await r.close();
+});
+
+test("after a non-update restart, dismissInterrupted clears the interrupted list without starting agents", async () => {
+  const { r } = await cutOff();
+  const claude = new FakeDriver("claude");
+  r.hub = r.newHub({ chats: (id) => (id === "cl" ? r.chat : undefined), drivers: [claude, new FakeDriver("codex")], internal: false });
+  await r.hub.takeUp();
+  r.hub.recover();
+  await settle();
+  assert.equal(r.hub.interruptedIn({ workspace: "", home: true }).count, 1);
+  assert.equal(r.hub.dismissInterrupted({ workspace: "", home: true }), 1);
+  assert.equal(r.hub.interruptedIn({ workspace: "", home: true }).count, 0);
+  assert.equal(claude.count(), 0);
+  await r.close();
+});
+
+test("after a non-update restart, pending user messages deliver directly without an interrupted notice", async () => {
+  const { r, m } = await cutOff();
+  const claude = new FakeDriver("claude");
+  r.hub = r.newHub({ chats: (id) => (id === "cl" ? r.chat : undefined), drivers: [claude, new FakeDriver("codex")], internal: false });
+  await r.hub.takeUp();
+  // User sends a new message while station was down / before recover
+  await r.hub.accept("cl", { ...m, ts: "1700000009.000100", text: "继续吧" });
+  r.hub.recover();
+  await settle();
+  assert.equal(r.hub.interruptedIn({ workspace: "", home: true }).count, 0);
+  assert.ok(!r.chat.posts.some((p) => p[1].includes("station 重启导致本轮中断")));
+  assert.ok(claude.last().prompts[0]!.includes("继续吧"));
   await r.close();
 });
 
@@ -233,6 +290,8 @@ test("a turn a restart cut off keeps the state it said it ends in, but not a wai
   await settle();
   const ended = done.r.store.listTurns(done.key).find((t) => t.id === done.cut.id)!.summary;
   assert.deepEqual([ended.outcome, ended.ending], ["aborted", "all_done"]);
+  assert.equal(done.r.hub.interruptedIn({ workspace: "", home: true }).count, 0, "declared all_done turn is not listed as interrupted");
+  assert.ok(!done.r.chat.posts.some((p) => p[1].includes("station 重启导致本轮中断")));
   await done.r.close();
 
   // The store's own (a store in memory, as Node's is asked): a wait said is no wait once cut off.

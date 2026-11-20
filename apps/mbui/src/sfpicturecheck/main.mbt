@@ -74,7 +74,7 @@ fn main {
     "frame-failed" => Some(1)
     _ => None
   }
-  let ok = @film.picture(
+  let ok = @film.picture_legacy_ctx(
     view,
     tree?=if use_tree { Some(tree) } else { None },
     path=out,

@@ -126,7 +126,19 @@ export const CHAT_SHAPES: Record<string, Shape> = {
     ["glyph", opt("StationsGlyph"), { doc: "The stations at a glance, and what the list says with no rows; absent from a core before them." }],
     ["note", opt("ListNote")],
     ["syncing", opt("String"), { said: true, doc: "While what changed since the device was last with the stations is still being brought (station/sync.ts\n`#catching`), what the mark at the list's top beside its filter says (its tip, and to a screen reader): 正在同步 while a\nstation has yet to say what changed, then how many chats are left (正在同步 · 还剩 12 个对话). Stations not reached are\nleft out (the list says so where it says what is wrong with them). Absent once all is here, and from a core before it." }],
+    ["interrupted", opt(vec("InterruptedStation")), { doc: "Stations in this workspace with turns cut off by a non-update restart awaiting manual resume or dismissal. Absent when none." }],
   ], { keepNone: true }),
+  InterruptedChat: struct([
+    ["key", "String"],
+    ["thread", opt("i64"), { client: opt("I54") }],
+    ["title", "String", { said: true }],
+  ], { doc: "A chat whose turn was cut off by a non-update station restart." }),
+  InterruptedStation: struct([
+    ["station", "String"],
+    ["stationName", "String", { said: true }],
+    ["count", "i64", { client: "I54" }],
+    ["chats", vec("InterruptedChat")],
+  ], { doc: "A station's chats cut off by a non-update restart awaiting manual resume or dismissal." }),
   Lead: words(["agents","people"], { doc: "Whose pictures lead the rows of a list (`ChatsView::leading`)." }),
   Attachment: struct([
     ["name", "String", { said: true }],

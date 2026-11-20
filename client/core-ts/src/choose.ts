@@ -38,6 +38,8 @@ function offersUltrafast(overview: unknown, modelId: unknown, accounts: J[], all
 }
 
 const TABLE = "choice";
+/// Sentinel kept in `ws:<scope>:last` when new chats are automatically load-balanced across allowlisted stations.
+const AUTO_STATION = "__auto__";
 /// How many of the combinations used most a model control's panel keeps nearest what opened it.
 const NEAR = 4;
 const FIELDS = ["runtime", "model", "effort", "profile", "profiles", "fast", "speed", "tui", "context"];
@@ -503,6 +505,8 @@ export class Choose implements Owner {
   readonly #saving = new Map<string, number>();
   /// The pending chat in each workspace. Its key and any explicit mode last until that chat is accepted.
   readonly #next = new Map<string, { key: string; tui?: boolean }>();
+  /// Most recently used station id per workspace in automatic assignment mode, used to break ties so consecutive chats spread.
+  readonly #autoRecent = new Map<string, string>();
 
   /// The preference on this device. A chat or preset with a model keeps its own choice.
   setDefaultTui(on: boolean): void {
@@ -614,13 +618,49 @@ export class Choose implements Owner {
     return typeof v === "string" ? v : "";
   }
 
-  /// The station the scope's new chats last started on (its id; "" for none).
+  /// The station the scope's new chats last started on (its id; "" for none or automatic assignment).
   keptStation(scope: string): string {
-    return this.#kept(scope);
+    const v = this.#kept(scope);
+    return v === AUTO_STATION ? "" : v;
   }
 
   #keepStation(scope: string, id: string): void {
     this.#env.data.put(TABLE, `ws:${scope}:last`, id, false);
+  }
+
+  /// Online stations in `online` explicitly opted into automatic assignment (never tasks-only rigs).
+  #allowlisted(online: J[]): J[] {
+    return online.filter((s) => s.acceptAutoChats === true && s.mode !== "tasks");
+  }
+
+  /// The least busy station in `pool` that runs `pm` (or any station in `pool` when `pm` is null, without reading other stations' overviews).
+  #pickBest(pool: J[], scope: string, pm: J | null = null): J | undefined {
+    const runs = (s: J) => pm === null || (typeof s.station === "string" && this.#runsBound(s.station, pm));
+    const list = pool.filter(runs);
+    if (list.length === 0) return undefined;
+    const recent = this.#autoRecent.get(scope);
+    const sorted = [...list].sort((a, b) => {
+      const ra = typeof get(get(get(a, "overview"), "counts"), "running") === "number" ? a.overview.counts.running : 0;
+      const rb = typeof get(get(get(b, "overview"), "counts"), "running") === "number" ? b.overview.counts.running : 0;
+      if (ra !== rb) return ra - rb;
+      if (recent !== undefined) {
+        const aRecent = a.id === recent ? 1 : 0;
+        const bRecent = b.id === recent ? 1 : 0;
+        if (aRecent !== bRecent) return aRecent - bRecent;
+      }
+      return 0;
+    });
+    return sorted[0];
+  }
+
+  /// Whether `scope`'s new chats are currently load-balanced across the workspace's allowlisted stations.
+  #isAutoMode(scope: string, online: J[], picked = this.#pickedOne(scope)): boolean {
+    const binds = picked === undefined ? null : presetBinds(picked.p);
+    if (binds !== null && binds.stations !== null) return false;
+    const kept = this.#kept(scope);
+    if (kept === AUTO_STATION) return true;
+    const presetAuto = picked !== undefined && get(picked.p, "autoStation") === true;
+    return kept === "" && (this.#allowlisted(online).length > 0 || presetAuto);
   }
 
   /// The scope's stations up now, each its row (StationRow); an error (null: not known yet; a string: why it failed).
@@ -635,13 +675,15 @@ export class Choose implements Owner {
   /// The station the scope's new chats last started on, as listed, up or not.
   #held(scope: string): J {
     const kept = this.#kept(scope);
+    if (kept === "" || kept === AUTO_STATION) return undefined;
     const v = this.#env.store.value({ topic: "stations", scope });
-    return kept !== "" && v !== undefined && "ok" in v ? arr(v.ok).find((s) => s.id === kept) : undefined;
+    return v !== undefined && "ok" in v ? arr(v.ok).find((s) => s.id === kept) : undefined;
   }
 
   #newChat(scope: string): J {
-    const kept = this.#kept(scope);
-    const view: J = { kept, next: this.#pending(scope).key, any: false, efforts: [], accounts: [], pickAccount: false, waiting: false, frequent: [] };
+    const rawKept = this.#kept(scope);
+    const kept = rawKept === AUTO_STATION ? "" : rawKept;
+    const view: J = { kept, next: this.#pending(scope).key, any: false, autoStation: rawKept === AUTO_STATION, autoPoolCount: 0, efforts: [], accounts: [], pickAccount: false, waiting: false, frequent: [] };
     const found = this.#online(scope);
     if (!Array.isArray(found)) {
       view.error = found.error;
@@ -649,15 +691,40 @@ export class Choose implements Owner {
     }
     const [online, any] = found;
     view.any = any;
-    // The station a person picked stays picked while it is down, others up or not: it is said to be down (`down`), what
-    // was written in it and what it runs as they were; what is sent waits for it (views/calls.ts `stationBack`). Moving
-    // to another station up would start the chat where they did not choose. Only one never picked, or no longer the
-    // workspace's, gives way to the first up.
-    const held = this.#held(scope);
-    const station = held ?? online[0];
-    view.down = held !== undefined && held.online !== true;
-    view.stations = view.down ? [...online, station] : online;
-    if (station === undefined) return view;
+    const allowlisted = this.#allowlisted(online);
+    view.autoPoolCount = allowlisted.length;
+    const picked = this.#pickedOne(scope);
+    const binds = picked === undefined ? null : presetBinds(picked.p);
+    const autoMode = this.#isAutoMode(scope, online, picked);
+    view.autoStation = autoMode;
+    let station: J;
+    if (autoMode) {
+      station = this.#pickBest(allowlisted, scope, binds?.model ?? null);
+      view.down = false;
+      view.stations = online;
+    } else {
+      // The station a person picked stays picked while it is down, others up or not: it is said to be down (`down`), what
+      // was written in it and what it runs as they were; what is sent waits for it (views/calls.ts `stationBack`). Moving
+      // to another station up would start the chat where they did not choose. Only one never picked, or no longer the
+      // workspace's, gives way to the first up.
+      const held = this.#held(scope);
+      station = held ?? online[0];
+      view.down = held !== undefined && held.online !== true;
+      view.stations = view.down ? [...online, station] : online;
+    }
+    if (station === undefined) {
+      if (autoMode && online.length > 0) {
+        view.blocked = "auto_empty";
+        view.problem = t("core-logic.choose.problem.auto_empty");
+      }
+      view.preset = picked === undefined ? "" : (text(get(picked.p, "id")) ?? "");
+      view.presetStation = picked?.station ?? "";
+      view.presetName = picked === undefined ? "" : (text(get(picked.p, "name")) ?? "");
+      view.presetMarks = picked === undefined ? [] : this.#marks(picked.p, picked.station);
+      view.presetModel = binds !== null && binds.model !== null;
+      view.presetStations = binds !== null && binds.stations !== null;
+      return view;
+    }
     const id = typeof station.id === "string" ? station.id : "";
     const name = typeof station.name === "string" ? station.name : "";
     const addr = typeof station.station === "string" ? station.station : "";
@@ -747,13 +814,11 @@ export class Choose implements Owner {
         ...(used ? { used: true } : {}),
       };
     });
-    const picked = this.#pickedOne(scope);
     view.preset = picked === undefined ? "" : (text(get(picked.p, "id")) ?? "");
     view.presetStation = picked?.station ?? "";
     view.presetName = picked === undefined ? "" : (text(get(picked.p, "name")) ?? "");
     view.presetMarks = picked === undefined ? [] : this.#marks(picked.p, picked.station);
     // What it binds the page to: its model control shows the preset's and does not open; its stations are those it names.
-    const binds = picked === undefined ? null : presetBinds(picked.p);
     view.presetModel = binds !== null && binds.model !== null;
     view.presetStations = binds !== null && binds.stations !== null;
     if (binds !== null && binds.stations !== null) {
@@ -976,27 +1041,33 @@ export class Choose implements Owner {
   #shown(scope: string): string {
     const found = this.#online(scope);
     if (!Array.isArray(found)) throw CoreError.invalid(t("core-logic.choose.error.no_stations_yet"));
-    const current = this.#held(scope) ?? found[0][0];
-    if (current === undefined) throw CoreError.invalid(t("core-logic.choose.error.none_online"));
+    const online = found[0];
+    const picked = this.#pickedOne(scope);
+    const current = this.#isAutoMode(scope, online, picked)
+      ? this.#pickBest(this.#allowlisted(online), scope, picked === undefined ? null : presetBinds(picked.p).model)
+      : (this.#held(scope) ?? online[0]);
+    if (current === undefined) throw CoreError.invalid(t(this.#isAutoMode(scope, online, picked) ? "core-logic.choose.error.auto_empty" : "core-logic.choose.error.none_online"));
     return typeof current.id === "string" ? current.id : "";
   }
 
   /// `newChat.pick`: the station a scope's new chat starts on, and what it runs there.
   pickNew(scope: string, params: J): void {
     const station = text(get(params, "station"));
+    const autoStation = get(params, "autoStation") === true;
     // (what the preset picked binds is not changed here: the page offers no other, and one asked for is refused saying
     // how to have it)
     const bound = typeof get(params, "preset") === "string" ? undefined : this.#bound(scope);
     if (bound !== undefined && bound.model !== null && FIELDS.some((f) => get(params, f) !== undefined)) {
       throw CoreError.invalid(t("core-logic.choose.error.preset_model", { name: bound.name }));
     }
-    if (bound !== undefined && bound.stations !== null && station !== null && !bound.stations.includes(station)) {
+    if (bound !== undefined && bound.stations !== null && (autoStation || (station !== null && !bound.stations.includes(station)))) {
       throw CoreError.invalid(t("core-logic.choose.error.preset_station", { name: bound.name }));
     }
     if (bound !== undefined && bound.model !== null && station !== null && !this.#runsBound(address(scope, station), bound.model)) {
       throw CoreError.invalid(t("core-logic.choose.error.preset_model_station", { name: bound.name, model: model.name(String(bound.model.model)) }));
     }
-    if (station !== null) this.#keepStation(scope, station);
+    if (autoStation) this.#keepStation(scope, AUTO_STATION);
+    else if (station !== null) this.#keepStation(scope, station);
     // the preset, whichever station it is of (`presetStation`, its address; "" for none)
     const preset = get(params, "preset");
     if (typeof preset === "string") {
@@ -1009,7 +1080,7 @@ export class Choose implements Owner {
       if (preset !== "" && preset !== prevPreset) {
         this.#recordPresetUsage(scope, preset, 1);
       }
-      if (preset !== "" && station === null && !FIELDS.some((f) => get(params, f) !== undefined)) {
+      if (preset !== "" && station === null && !autoStation && !FIELDS.some((f) => get(params, f) !== undefined)) {
         const found = this.#online(scope);
         const online = Array.isArray(found) ? found[0] : [];
         const picked = this.#pickedOne(scope);
@@ -1017,18 +1088,6 @@ export class Choose implements Owner {
           const p = picked.p;
           const pm = presetBinds(p).model;
           const runs = (s: J) => pm === null || (typeof s.station === "string" && this.#runsBound(s.station, pm));
-          // the least busy of `pool` that runs the model it binds (none: the page says the one it is on does not)
-          const pickBest = (pool: J[]): string | null => {
-            const list = pool.filter(runs);
-            if (list.length === 0) return null;
-            const sorted = [...list].sort((a, b) => {
-              const ra = typeof get(get(get(a, "overview"), "counts"), "running") === "number" ? a.overview.counts.running : 0;
-              const rb = typeof get(get(get(b, "overview"), "counts"), "running") === "number" ? b.overview.counts.running : 0;
-              return ra - rb;
-            });
-            const best = sorted[0];
-            return best !== undefined && typeof best.id === "string" ? best.id : null;
-          };
           let targetStationId: string | null = null;
           const singleStation = text(get(p, "station"));
           const subsetStations = Array.isArray(get(p, "stations"))
@@ -1039,13 +1098,26 @@ export class Choose implements Owner {
             targetStationId = match !== undefined && typeof match.id === "string" ? match.id : stationId(singleStation);
           } else if (subsetStations.length > 0) {
             const pool = online.filter((s) => subsetStations.includes(s.id) || subsetStations.includes(s.station));
-            targetStationId = pickBest(pool);
+            const best = this.#pickBest(pool, scope, pm);
+            targetStationId = best !== undefined && typeof best.id === "string" ? best.id : null;
           } else if (get(p, "autoStation") === true) {
-            targetStationId = pickBest(online);
+            // Strictly use the workspace allowlist via automatic assignment mode; never fall back to non-allowlisted stations.
+            targetStationId = AUTO_STATION;
           } else if (pm !== null) {
-            // any station: the one it is on where that runs its model, else the least busy that does
-            const on = this.#held(scope) ?? online[0];
-            if (on !== undefined && !runs(on)) targetStationId = pickBest(online);
+            if (this.#isAutoMode(scope, online, picked)) {
+              // Keep automatic assignment mode; #newChat selects the least busy allowlisted station running pm.
+              targetStationId = null;
+            } else {
+              // any station: the one it is on where that runs its model, else the least busy that does
+              const held = this.#held(scope);
+              const allowlisted = this.#allowlisted(online);
+              const on = held ?? (allowlisted.length > 0 ? allowlisted[0] : online[0]);
+              if (on !== undefined && !runs(on)) {
+                const pool = held === undefined && allowlisted.length > 0 ? allowlisted : online;
+                const best = this.#pickBest(pool, scope, pm);
+                targetStationId = best !== undefined && typeof best.id === "string" ? best.id : null;
+              }
+            }
           }
           if (targetStationId !== null && targetStationId !== "") {
             this.#keepStation(scope, targetStationId);
@@ -1098,6 +1170,24 @@ export class Choose implements Owner {
       this.#keepChoice(scope, id, next);
     }
     this.#changed();
+  }
+
+  /// Guard `newChat.create` in automatic assignment mode: never silently swap `station` (the UI sends attachments,
+  /// optimistic chat.send, and chat open to the displayed station in parallel), but refuse if `station` is no longer
+  /// in the workspace's online allowlist.
+  assertCreateStation(station: string, oName = "new"): void {
+    if (oName !== "new") return;
+    const scope = ofAddress(station);
+    const found = this.#online(scope);
+    if (!Array.isArray(found)) return;
+    const online = found[0];
+    const picked = this.#pickedOne(scope);
+    if (!this.#isAutoMode(scope, online, picked)) return;
+    const sid = stationId(station);
+    const ok = this.#allowlisted(online).some((s) => s.station === station || s.id === sid);
+    if (!ok) {
+      throw CoreError.invalid(t("core-logic.choose.error.auto_empty"));
+    }
   }
 
   /// `newChat.create`: what a new chat on `station` is asked to be made with, as picked there: in the new chat's own
@@ -1188,7 +1278,10 @@ export class Choose implements Owner {
         };
       }
     }
-    this.#keepStation(ofAddress(station), stationId(station));
+    const foundForKeep = this.#online(scope);
+    const keepAuto = Array.isArray(foundForKeep) && this.#isAutoMode(scope, foundForKeep[0], picked);
+    if (keepAuto) this.#autoRecent.set(scope, sid);
+    else this.#keepStation(scope, sid);
     this.#changed();
     return ask;
   }
@@ -1208,6 +1301,10 @@ export class Choose implements Owner {
   used(station: string, choice: J, acceptedKey?: string): void {
     const scope = ofAddress(station);
     if (acceptedKey !== undefined && (acceptedKey === "" || this.#next.get(scope)?.key === acceptedKey)) this.#next.delete(scope);
+    const found = this.#online(scope);
+    if (Array.isArray(found) && this.#isAutoMode(scope, found[0])) {
+      this.#autoRecent.set(scope, stationId(station));
+    }
     const key = `ws:${scope}:frequent`;
     this.#env.data.put(TABLE, key, recordCombo(arr(this.#record(key)), choice, this.#env.now()), false);
     const activePreset = text(get(this.#pickedOne(scope)?.p, "id"));
@@ -1900,9 +1997,12 @@ export class Choose implements Owner {
     if (o.kind === "new" || o.kind === "board" || o.kind === "session" || (o.kind === "connectNew" && o.form === "preset")) this.#keepUsual(ofAddress(station), next);
     let saved: Saved;
     switch (o.kind) {
-      case "new":
-        this.pickNew(ofAddress(station), {
-          station: stationId(station),
+      case "new": {
+        const scope = ofAddress(station);
+        const found = this.#online(scope);
+        const keepAuto = Array.isArray(found) && this.#isAutoMode(scope, found[0]);
+        this.pickNew(scope, {
+          ...(keepAuto ? {} : { station: stationId(station) }),
           model: next.model,
           runtime: next.runtime,
           effort: textOf("effort"),
@@ -1915,6 +2015,7 @@ export class Choose implements Owner {
         });
         saved = { done: { saved: true } };
         break;
+      }
       case "connectNew":
         this.#adding.set(`${station}\u0001${o.form}`, next);
         saved = { done: { saved: true } };

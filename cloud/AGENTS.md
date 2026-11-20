@@ -14,7 +14,8 @@
   request on to a station (the root AGENTS.md, No way into a station from outside).
 - Workers, each deployed on its own (`deploy.py` lists them, `wrangler*.jsonc` route them): the API
   (`src/index.ts`), the relay (`src/relay-worker.ts`: deploying it drops every relay connection, so it is deployed
-  only when it changed), the static web, admin, preview, status, site and the component library's page (kit). Their
+  only when it changed), the static web, admin, preview, status, site, the component library's page (kit), and the
+  ui.monoid.build site (ui). Their
   names, Durable Objects, bucket and secrets keep their names from before the rename: a renamed one would be new and
   empty.
 - `src/directory.ts` (one SQLite Durable Object, `primary`) is who belongs where, every change one transaction: the

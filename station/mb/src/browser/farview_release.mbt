@@ -22,22 +22,22 @@ pub fn farview_releases() -> Array[(String, FarviewRelease)] {
     (
       "darwin-arm64",
       {
-        rev: "2fa4b2ad57c0c6832103c759d31d70c9b4816f68",
-        sha256: "eb1401a4d100793bfb86fee4d13395a0e97a334b09506748ab98f25ea0b958dd",
+        rev: "d7ff9077684f60dc6d3fffbb16441ef26e5b968d",
+        sha256: "112a960a85cc412d3441af198cf431a76e1de15c12295d9afa7542bc9c8cd9b5",
       },
     ),
     (
       "linux-x64",
       {
-        rev: "2fa4b2ad57c0c6832103c759d31d70c9b4816f68",
-        sha256: "ad810ed3cfb3d224ce335898d37d2a9b520612efc494fafb703753c5dc5b6837",
+        rev: "d7ff9077684f60dc6d3fffbb16441ef26e5b968d",
+        sha256: "237a5da618a3343d59a95ad195edf24db4609887d2fd0dc1196e103c4ef784d5",
       },
     ),
     (
       "linux-arm64",
       {
-        rev: "2fa4b2ad57c0c6832103c759d31d70c9b4816f68",
-        sha256: "3416cfd76a4697352ea21caa5544a96d9be2069085ae2e7dc198cd33fb4be6fc",
+        rev: "d7ff9077684f60dc6d3fffbb16441ef26e5b968d",
+        sha256: "4f27edc04b6ee4182a36944d51da9112ee5aa7eb9c745dfc27eec9437e2c9784",
       },
     ),
   ]

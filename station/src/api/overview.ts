@@ -134,6 +134,12 @@ export async function overview(d: OverviewDeps, viewer: Viewer, lang: Lang): Pro
       ? [...new Set<string>(c.bind.profiles.filter((x: unknown): x is string => typeof x === "string" && x.trim() !== "").map((x: string) => x.trim()))]
       : [];
     const singleProfile = nonEmpty(c.bind?.profile) ?? (bindProfiles.length === 1 ? bindProfiles[0]! : null);
+    const startsOnAuto = c.autoStation === true;
+    const startsOn = startsOnAuto ? null : nonEmpty(c.station);
+    const rawStartsOnStations: string[] = !startsOnAuto && Array.isArray(c.stations)
+      ? [...new Set<string>(c.stations.filter((x: unknown): x is string => typeof x === "string" && x.trim() !== "").map((x: string) => x.trim()))]
+      : [];
+    const startsOnStations = startsOnAuto ? null : rawStartsOnStations.length > 0 ? rawStartsOnStations : startsOn !== null ? [startsOn] : null;
     const shown = {
       id: c.id,
       // What it is known by (its bot's name on its platform, and its workspace there), as its kind says: its id till then.
@@ -157,9 +163,11 @@ export async function overview(d: OverviewDeps, viewer: Viewer, lang: Lang): Pro
       createdBy: c.createdBy?.id ? c.createdBy : null,
       sessions: sessionsOf(c.id),
       session: mode === "single-session" ? d.store.binding(c.id) : null,
-      // The station of its workspace its new conversations run on (null: this one), and that it can be moved to
+      // The station(s) of its workspace its new conversations run on (null: this one), and that it can be moved to
       // another (connects/workspace.ts; a station from before says neither).
-      startsOn: nonEmpty(c.station),
+      startsOn,
+      startsOnStations,
+      ...(startsOnAuto ? { startsOnAuto: true } : {}),
       moves: true,
     };
     const own = d.connectKinds?.get(kind);
@@ -169,10 +177,13 @@ export async function overview(d: OverviewDeps, viewer: Viewer, lang: Lang): Pro
   await d.accounts?.homesReadSoon?.();
   const profiles = d.accounts?.profilesView(viewer) ?? [];
   const built = d.builtAt?.();
+  const interrupted = d.hub.interruptedIn?.(viewer);
   return {
     ...(typeof built === "number" && Number.isSafeInteger(built) && built > 0 ? { builtAt: built } : {}),
+    ...(interrupted && interrupted.count > 0 ? { interrupted } : {}),
     automaticDecisions: d.accounts ? await decisionsView(d, viewer) : null,
     archiving: archivingView(raw, viewer),
+    autoChats: autoChatsView(raw, viewer),
     viewer: { via: "mesh", ...viewer },
     mesh: meshStatus(d.cloud, viewer),
     connects,
@@ -249,6 +260,12 @@ export function modelWindows(profiles: { models?: unknown }[]): Record<string, n
 function archivingView(raw: any, viewer: Viewer) {
   const days = (v: unknown, fallback: number) => (typeof v === "number" && Number.isFinite(v) ? Math.max(0, v) : fallback);
   return { days: days(raw?.autoArchiveDays, 1), slackDays: days(raw?.slackArchiveDays, 3), reviewed: raw?.autoArchiveReviewed === true, canEdit: managesStation(viewer) };
+}
+
+/// Whether this station is opted into automatic assignment for new chats and presets (`acceptAutoChats`, default false).
+/// Everyone sees it; its managers change it (PUT /auto-chats).
+function autoChatsView(raw: any, viewer: Viewer) {
+  return { enabled: raw?.acceptAutoChats === true, canEdit: managesStation(viewer) };
 }
 
 function withPermissions(d: OverviewDeps, viewer: Viewer): { permissions?: unknown } {

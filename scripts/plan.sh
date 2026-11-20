@@ -30,7 +30,7 @@ decide() {
   if has '^(web/|client/|rules/js/|package\.json$|pnpm-lock\.yaml$|cloud/(deploy\.py|build-static\.ts|wrangler\.admin\.jsonc)$)'; then static+=(admin); fi
   if has '^cloud/(src/preview\.ts|build-static\.ts|wrangler\.preview\.jsonc)$'; then static+=(preview); fi
   # (the official site, website/, with the legal pages it serves from web/public)
-  if has '^(website/|web/public/((en/)?(terms|privacy|trademark)\.html|legal\.css|favicon-beta\.svg|favicon-beta-32\.png|apple-touch-icon-beta\.png)$|cloud/wrangler\.site-beta\.jsonc$)'; then static+=(site-beta); fi
+  if has_but '^website/' '^website/ui/' || has '^(web/public/((en/)?(terms|privacy|trademark)\.html|legal\.css|favicon-beta\.svg|favicon-beta-32\.png|apple-touch-icon-beta\.png)$|cloud/wrangler\.site-beta\.jsonc$)'; then static+=(site-beta); fi
   if has '^cloud/(status/|wrangler\.status\.jsonc$)'; then static+=(status); fi
   api=false
   if has_but '^cloud/(src/|wrangler\.jsonc$|package\.json$|deploy\.py$)' '^cloud/src/(relay|relay-worker|preview)\.ts$'; then api=true; fi
@@ -79,6 +79,10 @@ decide() {
   # or to how it is built and served.
   kit=false
   if has '^(apps/mbui/(src|assets)/|libs/mbui/(src|web)/|libs/sf-ui/src/|((apps|libs)/mbui|libs/sf-ui)/moon\.(mod|work)$|apps/mbui/scripts/(kit-web\.sh|kit\.html|web\.sh|env\.sh|mbui\.sh|assets)$|libs/mbui/scripts/(web|env)\.sh$|apps/mbui/tools/assets/|cloud/(deploy\.py|wrangler\.kit\.jsonc)$)'; then kit=true; fi
+  # The ui.monoid.build site & docs (website/ui/build.mjs, monoid's alone: cloud/wrangler.ui.jsonc), built by
+  # mbui-ui and deployed by monoid-ui, for a change to its pages/assets, the embeds it builds, or how it is served.
+  ui=false
+  if has '^(website/ui/|apps/mbui/(src|assets)/|libs/mbui/(src|web)/|libs/sf-ui/src/|libs/liquid-glass/src/|((apps|libs)/mbui|libs/sf-ui|libs/liquid-glass)/moon\.(mod|work)$|apps/mbui/scripts/(kit-web\.sh|kit\.html|web\.sh|env\.sh|mbui\.sh|assets)$|libs/mbui/scripts/(web|env)\.sh$|apps/mbui/tools/assets/|cloud/(deploy\.py|wrangler\.ui\.jsonc)$)'; then ui=true; fi
   # The mbui app's own tests (check-mbui, mbui-check.yml; main's run there on their own): for a change to it, to mbui
   # (libs/mbui), or to its component library (libs/sf-ui).
   mbui=false
@@ -139,6 +143,7 @@ print() {
     echo "windows_natives=$windows_natives"
     echo "launcher_windows=$launcher_windows"
     echo "kit=$kit"
+    echo "ui=$ui"
     echo "mbui=$mbui"
     echo "comma_ui=$comma_ui"
     echo "liquid_glass=$liquid_glass"

@@ -30,7 +30,7 @@ test "a provider's link to verify the account is said whole, copied by its key a
   for (width, platform) in [(390.0, 2), (1280.0, 0)] {
     let at = "width \{width}, platform \{platform}"
     let t = setting_tester(Profile("ws1/st1", "cc"), width, platform~, mode="settings-profile-verify")
-    assert_true(t.find("Please verify your account in your browser to continue:") is Some(_), msg=at)
+    assert_true(t.find("用登录了这个 Google 账号的浏览器打开下面的链接完成验证，然后重新查询额度") is Some(_), msg=at)
     assert_true(t.find(link) is Some(_), msg=at)
     let (x, y) = t.find_last("打开链接").unwrap()
     t.tap(x, y)

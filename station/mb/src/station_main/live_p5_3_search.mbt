@@ -14,6 +14,15 @@ let p53_search_query_ms : Int = 20000
 let p53_search_kinds : Array[String] = ["chat", "message", "history", "job", "skill", "memory", "profile", "file"]
 
 ///|
+let p53_search_people_kinds : Array[String] = ["chat", "message", "job", "file"]
+
+///|
+let p53_file_wait_ms : Int = 3000
+
+///|
+let p53_file_turn_ms : Int = 2000
+
+///|
 priv struct P53Search {
   bus : LiveBus
   mut proc : Proc?
@@ -22,11 +31,96 @@ priv struct P53Search {
   mut asked_at : Double
   mut closed : Bool
   preparing : Map[String, Bool]
+  file_found : Map[String, (Double, @effect.Deferred[Json])]
+  file_asked : Map[String, Double]
+  file_turns : @ops_platform.Turns
+  mut file_next : Int
+  file_going : Map[Int, (Ref[Bool], Array[() -> Unit])]
+  file_waiting : Map[Int, @effect.Deferred[Bool]]
 }
 
 ///|
 fn P53Search::new(bus : LiveBus) -> P53Search {
-  { bus, proc: None, waiting: Map([]), next: 0, asked_at: 0.0, closed: false, preparing: Map([]) }
+  {
+    bus,
+    proc: None,
+    waiting: Map([]),
+    next: 0,
+    asked_at: 0.0,
+    closed: false,
+    preparing: Map([]),
+    file_found: Map([]),
+    file_asked: Map([]),
+    file_turns: @ops_platform.Turns::new(),
+    file_next: 0,
+    file_going: Map([]),
+    file_waiting: Map([]),
+  }
+}
+
+///|
+/// Unpack `search.query` arguments from either:
+/// - 3 positional args `[query, asker, options]` (api_routes/settings.mbt, mcp_tools/search.mbt)
+/// - 2 positional args `[query, asker]` (when arg1 has `scopes`/`workspace`) or `[query, options]`
+/// - named object `{ query, asker?, options? }`
+fn p53_search_options(arg : Json) -> Json {
+  fn merge(asker : Json, opts : Json) -> Json {
+    let m : Map[String, Json] = match opts {
+      Object(o) => o.copy()
+      _ => Map([])
+    }
+    if !(asker is Null) {
+      m["asker"] = asker
+    }
+    Json::object(m)
+  }
+  match arg {
+    Array(xs) =>
+      if xs.length() >= 3 {
+        merge(xs[1], xs[2])
+      } else if xs.length() == 2 {
+        match xs[1] {
+          Object(m) if m.contains("scopes") || m.contains("workspace") =>
+            merge(xs[1], Json::null())
+          other => other
+        }
+      } else {
+        Json::object({})
+      }
+    Object(_) => {
+      let opts = jfield(arg, "options")
+      let asker = jfield(arg, "asker")
+      if !(opts is Null) || !(asker is Null) {
+        merge(asker, opts)
+      } else {
+        arg
+      }
+    }
+    _ => Json::object({})
+  }
+}
+
+///|
+/// Split a query into lowercased, deduplicated whitespace-separated terms (up to 8, matching search/match.mbt `terms`).
+fn p53_search_terms(query : String) -> Array[String] {
+  let out : Array[String] = []
+  let cur = StringBuilder::new()
+  let flush = () => {
+    let w = cur.to_string().to_lower()
+    cur.reset()
+    if w != "" && !out.contains(w) && out.length() < 8 {
+      out.push(w)
+    }
+  }
+  for c in query {
+    if c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\u{000b}' || c == '\u{000c}' || c == '\u{00a0}' {
+      flush()
+    } else {
+      cur.write_char(c)
+    }
+  }
+  flush()
+  out
 }
 
 ///|
@@ -38,20 +132,60 @@ fn P53Search::attach(self : P53Search) -> Unit {
       path: "/search",
       answer: async fn(r) {
         let q = jfield(r, "query")
-        let kinds = match jtext(q, "kinds") {
-          Some(k) if k != "" => Json::array(k.split(",").map(x => jstr(x.to_string())).to_array())
-          _ => Json::null()
+        let query_text = jtext_or_empty(q, "q")
+        if query_text.length() > 200 {
+          raise P53Error("a search is at most 200 characters")
+        }
+        let asked : Array[String] = match jtext(q, "kinds") {
+          Some(k) if k != "" => k.split(",").map(x => x.to_string()).filter(x => x != "").collect()
+          _ => []
+        }
+        let kinds = if asked.length() > 0 {
+          asked.filter(k => p53_search_people_kinds.contains(k))
+        } else {
+          p53_search_people_kinds
+        }
+        if kinds.length() == 0 {
+          return jobj_of([("groups", Json::array([])), ("building", jb(false))])
         }
         let viewer = jfield(r, "viewer")
         let ws = either(jtext(viewer, "workspace"), bus_home(bus)).unwrap_or("")
-        self.query(
-          jtext_or_empty(q, "q"),
-          jobj_of([
-            ("kinds", kinds),
-            ("limit", match jtext(q, "limit") { Some(l) => jn(attempt(() => @string.parse_double(l)).unwrap_or(8.0)); None => Json::null() }),
-            ("asker", jobj_of([("workspace", jstr(ws)), ("home", jb(Some(ws) == bus_home(bus) || ws == "")), ("scopes", Json::array([jstr("write")]))])),
-          ]),
-        )
+        let is_home = match jfield(viewer, "home") {
+          False => false
+          True => true
+          _ => Some(ws) == bus_home(bus) || ws == ""
+        }
+        let scopes = match jfield(viewer, "scopes") {
+          Array(_) as s => s
+          _ =>
+            if jtext(viewer, "role") == Some("viewer") {
+              Json::array([])
+            } else {
+              Json::array([jstr("write")])
+            }
+        }
+        let asker_fields : Array[(String, Json)] = [
+          ("workspace", jstr(ws)),
+          ("home", jb(is_home)),
+          ("scopes", scopes),
+        ]
+        match jtext(viewer, "device") {
+          Some(d) if d != "" => asker_fields.push(("typist", jstr(d)))
+          _ => ()
+        }
+        if jtext(q, "again") == Some("1") {
+          asker_fields.push(("again", jb(true)))
+        }
+        let opts : Array[(String, Json)] = [
+          ("kinds", Json::array(kinds.map(jstr))),
+          ("limit", jn(match jtext(q, "limit") { Some(l) => attempt(() => @string.parse_double(l)).unwrap_or(8.0); None => 8.0 })),
+          ("offset", jn(match jtext(q, "offset") { Some(o) => attempt(() => @string.parse_double(o)).unwrap_or(0.0); None => 0.0 })),
+          ("asker", jobj_of(asker_fields)),
+        ]
+        if jtext(q, "archived") == Some("1") {
+          opts.push(("archived", jb(true)))
+        }
+        self.query(query_text, jobj_of(opts))
       },
     },
   ])
@@ -192,8 +326,9 @@ fn P53Search::prepare(self : P53Search, builder : String) -> Unit {
     ) catch {
       _ => return
     }
+    let scope = if builder == "search-scope" { "all" } else { "search" }
     let ask = (m : Json) => ignore(proc.write(@utf8.encode(m.stringify() + "\n")))
-    ask(jobj_of([("scope", jstr("search"))]))
+    ask(jobj_of([("scope", jstr(scope))]))
     let line = @buffer.Buffer()
     let mut going = true
     while going {
@@ -212,7 +347,7 @@ fn P53Search::prepare(self : P53Search, builder : String) -> Unit {
               going = false
             } else {
               @effect.sleep(50) // timer: a pause between a builder's steps (REQUEST_BACKFILL_PAUSE_MS), yielding to writes
-              ask(jobj_of([("scope", jstr("search"))]))
+              ask(jobj_of([("scope", jstr(scope))]))
             }
           }
         Err(_) => ()
@@ -227,20 +362,38 @@ fn P53Search::prepare(self : P53Search, builder : String) -> Unit {
 ///|
 /// What `query` finds for its asker (`options.asker`: `{workspace, home, scopes}`): by kind, at most `limit` of each.
 async fn P53Search::query(self : P53Search, query : String, options : Json) -> Json {
-  let proc = self.looker()
-  self.next += 1
-  let id = self.next
-  self.asked_at = p53_clock()
-  let w : @effect.Deferred[Json] = @effect.Deferred::new()
-  self.waiting[id] = w
-  let m : Map[String, Json] = { "type": jstr("query"), "id": ji(id), "query": jstr(query) }
-  m["asker"] = match jfield(options, "asker") {
+  let asker = match jfield(options, "asker") {
     Null => {
       let home = bus_home(self.bus).unwrap_or("")
       jobj_of([("workspace", jstr(home)), ("home", jb(true)), ("scopes", Json::array([jstr("write")]))])
     }
     a => a
   }
+  let kinds = match jfield(options, "kinds") {
+    Array(xs) => xs.filter_map(x => if x is String(k) { Some(k) } else { None })
+    _ => []
+  }
+  let only_files = kinds.length() > 0 && kinds.iter().all(k => k == "file")
+  let wants_files = (kinds.length() == 0 || kinds.contains("file")) && jnum_of(options, "offset").unwrap_or(0.0) == 0.0
+  let limit = jnum_of(options, "limit").unwrap_or(8.0)
+  let files_limit = (if limit < 1.0 { 1.0 } else if limit > 200.0 { 200.0 } else { limit }).to_int()
+  if only_files {
+    let files = if wants_files {
+      self.files(p53_search_terms(query), asker, files_limit) catch {
+        _ => Json::null()
+      }
+    } else {
+      Json::null()
+    }
+    return jobj_of([("groups", Json::array(if files is Null { [] } else { [files] })), ("building", jb(false))])
+  }
+  let proc = self.looker()
+  self.next += 1
+  let id = self.next
+  self.asked_at = p53_clock()
+  let w : @effect.Deferred[Json] = @effect.Deferred::new()
+  self.waiting[id] = w
+  let m : Map[String, Json] = { "type": jstr("query"), "id": ji(id), "query": jstr(query), "asker": asker }
   for k in ["kinds", "limit", "offset", "archived"] {
     match jfield(options, k) {
       Null => ()
@@ -252,24 +405,12 @@ async fn P53Search::query(self : P53Search, query : String, options : Json) -> J
     raise P53Error("the search stopped")
   }
   // (the machine's files beside the rest, where they are asked for: search.ts `query`)
-  let kinds = match jfield(options, "kinds") {
-    Array(xs) => xs.filter_map(x => if x is String(k) { Some(k) } else { None })
-    _ => []
-  }
-  let wants_files = (kinds.length() == 0 || kinds.contains("file")) && jnum_of(options, "offset").unwrap_or(0.0) == 0.0
-  let limit = jnum_of(options, "limit").unwrap_or(8.0)
   let files = if wants_files {
-    let words = query.to_lower().split(" ").filter(w => w != "").map(w => w.to_string()).to_array()
-    self.files(words, m["asker"], (if limit < 1.0 { 1.0 } else if limit > 200.0 { 200.0 } else { limit }).to_int()) catch {
+    self.files(p53_search_terms(query), asker, files_limit) catch {
       _ => Json::null()
     }
   } else {
     Json::null()
-  }
-  let only_files = kinds.length() > 0 && kinds.iter().all(k => k == "file")
-  if only_files {
-    self.waiting.remove(id)
-    return jobj_of([("groups", Json::array(if files is Null { [] } else { [files] })), ("building", jb(false))])
   }
   match @effect.timeout(p53_search_query_ms, async fn() { w.wait() }) {
     Some(answer) => {
@@ -293,6 +434,16 @@ async fn P53Search::query(self : P53Search, query : String, options : Json) -> J
 ///|
 async fn P53Search::close(self : P53Search) -> Unit {
   self.closed = true
+  for _, entry in self.file_going {
+    entry.0.val = true
+    for cancel in entry.1 {
+      cancel()
+    }
+  }
+  for _, wd in self.file_waiting {
+    ignore(wd.succeed(false))
+  }
+  self.file_waiting.clear()
   match self.proc {
     Some(p) => {
       p.end_input()
@@ -534,7 +685,13 @@ async fn p53_scan(host : @host.Host, paths : Array[String]) -> Array[Json] {
 /// The machine's files whose name, or whose text, has every word (files.ts `walk`), walked as `walkBounded` walks:
 /// from `tops`, on each top's own file system, no link followed, hidden names and SKIPPED left out, bounded in depth,
 /// entries and time; nothing under `skip` (the station's own). The paths found, and whether some was left.
-async fn p53_walk(host : @host.Host, tops : Array[String], words : Array[String], skip : Array[String]) -> (Array[String], Bool) {
+async fn p53_walk(
+  host : @host.Host,
+  tops : Array[String],
+  words : Array[String],
+  skip : Array[String],
+  aborted : Ref[Bool],
+) -> (Array[String], Bool) {
   let started = p53_clock()
   let found = []
   let has = (text : String) => {
@@ -544,13 +701,16 @@ async fn p53_walk(host : @host.Host, tops : Array[String], words : Array[String]
   let mut entries = 0
   let mut left = false
   for top in tops {
+    if aborted.val {
+      break
+    }
     let root = p53_scan(host, [top])
     guard root.length() == 1 && jtext(root[0], "kind") == Some("dir") else { continue }
     let dev = jfield(root[0], "dev")
     let queue = [(top, 0)]
     while queue.length() > 0 {
       let (dir, depth) = queue.remove(0)
-      if found.length() >= p53_walk_most || p53_clock() - started > p53_walk_ms || entries > p53_walk_entries {
+      if aborted.val || found.length() >= p53_walk_most || p53_clock() - started > p53_walk_ms || entries > p53_walk_entries {
         left = true
         break
       }
@@ -606,6 +766,10 @@ async fn p53_walk(host : @host.Host, tops : Array[String], words : Array[String]
       }
       let sizes = p53_scan(host, files.map(f => f.0))
       for i, f in files {
+        if aborted.val || found.length() >= p53_walk_most || p53_clock() - started > p53_walk_ms {
+          left = true
+          break
+        }
         if i < sizes.length() && jnum_of(sizes[i], "size").unwrap_or(p53_text_max + 1.0) <= p53_text_max {
           match shell_read_text(host, f.0) {
             Some(text) if has("\{f.1}\n\{text}") => found.push(f.0)
@@ -616,6 +780,82 @@ async fn p53_walk(host : @host.Host, tops : Array[String], words : Array[String]
     }
   }
   (found, left || found.length() >= p53_walk_most)
+}
+
+///|
+/// Run `/usr/bin/mdfind` streaming NUL-separated paths, stopping at `most`, `p53_file_wait_ms`, or `aborted`.
+async fn p53_mdfind(
+  host : @host.Host,
+  query : String,
+  within : Array[String],
+  most : Int,
+  aborted : Ref[Bool],
+  cancels : Array[() -> Unit],
+) -> Array[String] {
+  if aborted.val {
+    return []
+  }
+  let args = @ops_platform.mdfind_args(query, within)
+  let proc = spawn(host, "/usr/bin/mdfind", args, stdout=Piped, stderr=Ignored) catch {
+    _ => return []
+  }
+  let pid = proc.pid
+  let done = Ref(false)
+  let stop_proc = () => {
+    if !done.val {
+      done.val = true
+      ignore(kill(pid, "SIGTERM"))
+    }
+  }
+  cancels.push(stop_proc)
+  if aborted.val {
+    stop_proc()
+    return []
+  }
+  let paths : Array[String] = []
+  let carry = @buffer.new()
+  ignore(
+    @effect.timeout(p53_file_wait_ms, async fn() {
+      while !aborted.val && paths.length() < most {
+        match proc.events.take() {
+          Out(b) => {
+            for i in 0..<b.length() {
+              if b[i] == b'\x00' {
+                let p = @utf8.decode_lossy(carry.to_bytes())
+                carry.reset()
+                if p != "" && paths.length() < most {
+                  paths.push(p)
+                  if paths.length() >= most {
+                    stop_proc()
+                    break
+                  }
+                }
+              } else {
+                carry.write_byte(b[i])
+              }
+            }
+          }
+          Err(_) => ()
+          Exit(_, _) => {
+            done.val = true
+            break
+          }
+        }
+      }
+    }),
+  )
+  stop_proc()
+  paths
+}
+
+///|
+/// What `fs.meta` says of a path: `(dir, size, mtimeMs)`, None where missing.
+async fn p53_meta(host : @host.Host, path : String) -> (Bool, Double, Double)? {
+  match (try { Ok(host.shell("fs.meta", { "path": Json::string(path) })) } catch { e => Err(e) }) {
+    Ok((Object(_) as m, _)) =>
+      Some((jtrue(m, "dir"), jnum_of(m, "size").unwrap_or(0.0), jnum_of(m, "mtimeMs").unwrap_or(0.0)))
+    _ => None
+  }
 }
 
 ///|
@@ -633,78 +873,276 @@ fn p53_roots_of(raw : Json, workspace : String?) -> Array[String] {
 }
 
 ///|
-/// What the machine's files found for `words` as the asker may see them (files.ts `#search`): a member who writes, from
-/// the home directory; one who only reads, within the drive's roots of the workspace; never what is the station's own,
-/// nor what is a person's own (mail, messages, photos…) unless config.json's `search.personal` says so.
+/// What the machine's files found for `words` as the asker may see them (files.ts `FileSearch::query`):
+/// cached per `@ops_platform.file_search_key`/`file_search_reuse`, concurrency bounded by `@ops_platform.Turns`
+/// (`AT_ONCE = 2`, `TURN_MS = 2000`), and same-typist typing-on aborts prior in-flight/queued searches.
 async fn P53Search::files(self : P53Search, words : Array[String], asker : Json, limit : Int) -> Json {
   if words.length() == 0 {
     return Json::null()
   }
   let bus = self.bus
+  let now = p53_clock()
   let raw = (bus.config_raw.val)()
   let writer = match jfield(asker, "scopes") {
     Array(xs) => xs.contains(jstr("write"))
     _ => false
   }
-  let pinned = p53_roots_of(raw, if jtrue(asker, "home") { None } else { jtext(asker, "workspace") })
+  let is_home = jtrue(asker, "home")
+  let ws = jtext_or_empty(asker, "workspace")
+  let pinned = p53_roots_of(raw, if is_home { None } else { jtext(asker, "workspace") })
+  let personal = jtrue(jfield(raw, "search"), "personal")
+  let key = @ops_platform.file_search_key(words, ws, is_home, writer, limit, personal, pinned)
+  let expired_found : Array[String] = []
+  for k, v in self.file_found {
+    if now - v.0 > @ops_platform.search_asked_again_ms {
+      expired_found.push(k)
+    }
+  }
+  for k in expired_found {
+    self.file_found.remove(k)
+  }
+  let expired_asked : Array[String] = []
+  for k, at in self.file_asked {
+    if now - at > @ops_platform.search_asked_again_ms {
+      expired_asked.push(k)
+    }
+  }
+  for k in expired_asked {
+    self.file_asked.remove(k)
+  }
+  let typist = jtext(asker, "typist")
+  let mine = typist.map(t => Json::array([jstr(t), jstr(key)]).stringify())
+  let kept = self.file_found.get(key)
+  let age = kept.map(v => now - v.0)
+  let guessed = match mine {
+    Some(m) => self.file_asked.contains(m) && kept is Some(_)
+    None => false
+  }
+  if mine is Some(m) {
+    self.file_asked[m] = now
+  }
+  let again = jtrue(asker, "again")
+  if kept is Some((_, deferred)) && @ops_platform.file_search_reuse(age, again, guessed) {
+    return deferred.wait()
+  }
+  let result_def : @effect.Deferred[Json] = @effect.Deferred::new()
+  self.file_found[key] = (now, result_def)
+  let turn_typist = if again || guessed { None } else { typist }
+  let typed = words.join(" ")
+  self.file_next += 1
+  let turn_id = self.file_next
+  let aborted = Ref(false)
+  let abort_def : @effect.Deferred[Unit] = @effect.Deferred::new()
+  let cancels : Array[() -> Unit] = [() => ignore(abort_def.succeed(()))]
+  fn release_turn(id : Int) -> Unit {
+    self.file_going.remove(id)
+    match self.file_turns.done(id) {
+      Some(next_id) =>
+        if self.file_waiting.get(next_id) is Some(wd) {
+          self.file_waiting.remove(next_id)
+          ignore(wd.succeed(true))
+        }
+      None => ()
+    }
+  }
+  let ask_res = self.file_turns.ask(turn_id, turn_typist, typed)
+  // Register before awaiting a queued turn so a same-typist `ask` arriving right after `done()` promotes
+  // `turn_id` into `file_turns.going` (before this fiber resumes from `wd.wait()`) still finds and aborts it.
+  self.file_going[turn_id] = (aborted, cancels)
+  match jfield(ask_res, "stopped") {
+    Array(xs) =>
+      for x in xs {
+        if x is Number(n, ..) {
+          let sid = n.to_int()
+          if self.file_going.get(sid) is Some((ab, cs)) {
+            ab.val = true
+            for c in cs {
+              c()
+            }
+          }
+        }
+      }
+    _ => ()
+  }
+  match jfield(ask_res, "dropped") {
+    Array(xs) =>
+      for x in xs {
+        if x is Number(n, ..) {
+          let did = n.to_int()
+          if self.file_waiting.get(did) is Some(wd) {
+            self.file_waiting.remove(did)
+            ignore(wd.succeed(false))
+          }
+        }
+      }
+    _ => ()
+  }
+  let goes = jtrue(ask_res, "goes")
+  let got_turn = if goes {
+    true
+  } else {
+    let wd : @effect.Deferred[Bool] = @effect.Deferred::new()
+    self.file_waiting[turn_id] = wd
+    match @effect.timeout(p53_file_turn_ms, async fn() { wd.wait() }) {
+      Some(ok) => ok
+      None => {
+        if !self.file_waiting.contains(turn_id) {
+          // Promoted to `going` by `done()` on the same tick: release the slot so AT_ONCE never leaks.
+          release_turn(turn_id)
+        } else {
+          self.file_turns.expire(turn_id)
+          self.file_waiting.remove(turn_id)
+          self.file_going.remove(turn_id)
+        }
+        false
+      }
+    }
+  }
+  if !got_turn {
+    self.file_going.remove(turn_id)
+    if self.file_found.get(key) is Some((_, d)) && physical_equal(d, result_def) {
+      self.file_found.remove(key)
+    }
+    ignore(result_def.succeed(Json::null()))
+    return Json::null()
+  }
+  let found = if aborted.val {
+    Json::null()
+  } else {
+    self.files_run(words, writer, pinned, personal, limit, aborted, cancels, abort_def) catch {
+      _ => Json::null()
+    }
+  }
+  release_turn(turn_id)
+  let final_res = if aborted.val { Json::null() } else { found }
+  if final_res is Null {
+    if self.file_found.get(key) is Some((_, d)) && physical_equal(d, result_def) {
+      self.file_found.remove(key)
+    }
+  }
+  ignore(result_def.succeed(final_res))
+  final_res
+}
+
+///|
+/// Execute one file search turn: Spotlight (`mdfind`) + `still.fail Helper` on macOS, or bounded `p53_walk` elsewhere,
+/// then filter, stat, rank and format via `@ops_platform.file_hits`.
+async fn P53Search::files_run(
+  self : P53Search,
+  words : Array[String],
+  writer : Bool,
+  pinned : Array[String],
+  personal : Bool,
+  limit : Int,
+  aborted : Ref[Bool],
+  cancels : Array[() -> Unit],
+  abort_def : @effect.Deferred[Unit],
+) -> Json {
   if !writer && pinned.length() == 0 {
     return Json::null()
   }
+  let bus = self.bus
   let home = homedir()
-  let own = ["Library/Mail", "Library/Messages", "Library/Calendars", "Library/Application Support/AddressBook", "Library/Group Containers/group.com.apple.notes", "Library/Containers/com.apple.Notes", "Library/Metadata/CoreSpotlight", "Pictures/Photos Library.photoslibrary"].map(d => @nodepath.join(sep(), [home, d]))
-  let personal = jtrue(jfield(raw, "search"), "personal")
-  let skip = (bus.own_paths.val)() + (if personal { [] } else { own })
-  let (paths, left) = p53_walk(bus.host, if writer { [home] } else { pinned }, words, skip)
-  let listed = paths.filter(p => writer || pinned.iter().any(r => p53_under(p, r)))
-  let first = words[0]
-  let known = []
-  let scanned = p53_scan(bus.host, listed)
-  for i, p in listed {
-    if i >= scanned.length() || scanned[i] is Null {
-      continue
+  let protect = (bus.own_paths.val)()
+  let own = @ops_platform.search_personal.map(d => @nodepath.join(sep(), [home, d]))
+  let use_spotlight = platform() == "darwin" && env_get("STILLFAIL_SEARCH_WALK") != Some("1")
+  let found : Array[String] = []
+  let mut left = false
+  if use_spotlight {
+    let kept_pinned = pinned.filter(d => @drive.protected_top(d, home, []) is Some(_))
+    let open_pinned = pinned.filter(d => @drive.protected_top(d, home, []) is None)
+    let asks_spec = @ops_platform.spotlight_asks(words, writer, home, open_pinned)
+    let guarded = @ops_platform.guarded_tops(writer, home, kept_pinned)
+    let tasks : Array[async () -> Array[String]] = []
+    for spec in asks_spec {
+      let q = jtext_or_empty(spec, "query")
+      let within = match jfield(spec, "within") {
+        Array(xs) => xs.filter_map(x => if x is String(s) { Some(s) } else { None })
+        _ => []
+      }
+      let most = jnum_of(spec, "most").unwrap_or(1000.0).to_int()
+      tasks.push(async fn() { p53_mdfind(bus.host, q, within, most, aborted, cancels) })
     }
-    let st = p53_lstat(bus.host, p)
-    known.push((p, jtext(scanned[i], "kind") == Some("dir"), jnum_of(scanned[i], "size").unwrap_or(0.0), jnum_of(st, "mtimeMs").unwrap_or(0.0)))
-  }
-  let rank = (p : String) => if @nodepath.basename(sep(), p).to_lower().contains(first) { 0 } else { 4 }
-  let depth = (p : String) => p.split(sep()).count()
-  known.sort_by((a, b) => {
-    let r = rank(a.0).compare(rank(b.0))
-    if r != 0 {
-      return r
-    }
-    let d = depth(a.0).compare(depth(b.0))
-    if d != 0 { d } else { b.3.compare(a.3) }
-  })
-  let shown = (dir : String) => if p53_under(dir, home) { "~" + dir[home.length():].to_owned() } else { dir }
-  let hits = known[:if known.length() > limit { limit } else { known.length() }].to_array().map(f => {
-    let fields : Array[(String, Json)] = [
-      ("kind", jstr("file")),
-      ("key", jstr("f:\{f.0}")),
-      ("title", jstr(@nodepath.basename(sep(), f.0))),
-      ("text", jstr(shown(@nodepath.dirname(sep(), f.0)))),
-      ("at", jn(f.3.round())),
-      ("path", jstr(f.0)),
-      ("dir", jb(f.1)),
-      ("size", jn(f.2)),
-    ]
-    if !writer {
-      match pinned.search_by(r => p53_under(f.0, r)) {
-        Some(i) => {
-          fields.push(("root", jstr(pinned[i])))
-          let rel = f.0[pinned[i].length():].to_owned()
-          fields.push(("rel", jstr(if rel.has_prefix(sep()) { rel[1:].to_owned() } else { rel })))
-        }
-        None => ()
+    if guarded.length() > 0 {
+      if bus.ui_helper_search.val is Some(helper_search) {
+        let said = @ops_platform.spotlight_query(words, true)
+        let names = @ops_platform.spotlight_query(words, false).unwrap()
+        let helper_q = said.unwrap_or(names)
+        tasks.push(async fn() {
+          if aborted.val {
+            return []
+          }
+          match
+            @effect.timeout(p53_file_wait_ms, async fn() {
+              @effect.race(
+                async fn() { helper_search(guarded, helper_q, @ops_platform.search_most_said.to_double(), protect) },
+                async fn() {
+                  abort_def.wait()
+                  []
+                },
+              )
+            }) {
+            Some(ps) => ps
+            None => []
+          }
+        })
       }
     }
-    jobj_of(fields)
-  })
-  if hits.length() == 0 {
-    Json::null()
+    let lists = @effect.all(tasks)
+    for xs in lists {
+      for p in xs {
+        found.push(p)
+      }
+    }
   } else {
-    jobj_of([("kind", jstr("file")), ("hits", Json::array(hits)), ("more", jb(known.length() > limit || left))])
+    let skip = protect + (if personal { [] } else { own })
+    let (walked, walked_left) = p53_walk(bus.host, if writer { [home] } else { pinned }, words, skip, aborted)
+    for p in walked {
+      found.push(p)
+    }
+    left = walked_left
   }
+  if aborted.val {
+    return Json::null()
+  }
+  // Pre-filter and deduplicate before statting so we never stat noisy, protected, personal or out-of-scope paths.
+  let seen : Map[String, Bool] = Map([])
+  let personal_skip = if personal { [] } else { own }
+  let listed : Array[String] = []
+  for p in found {
+    if seen.contains(p) {
+      continue
+    }
+    seen[p] = true
+    let keep = (personal && own.iter().any(d => p53_under(p, d))) || !@ops_platform.noisy(p, home)
+    if !keep {
+      continue
+    }
+    if protect.iter().any(d => p53_under(p, d)) || personal_skip.iter().any(d => p53_under(p, d)) {
+      continue
+    }
+    if !writer && !pinned.iter().any(r => p53_under(p, r)) {
+      continue
+    }
+    listed.push(p)
+  }
+  let stats : Map[String, (Bool, Double, Double)] = Map([])
+  let mut idx = 0
+  while idx < listed.length() && !aborted.val {
+    let end = if idx + 32 < listed.length() { idx + 32 } else { listed.length() }
+    let chunk = listed[idx:end].to_array()
+    let metas = @effect.all(chunk.map(p => async fn() { (p, p53_meta(bus.host, p)) }))
+    for item in metas {
+      if item.1 is Some(st) {
+        stats[item.0] = st
+      }
+    }
+    idx = end
+  }
+  if aborted.val {
+    return Json::null()
+  }
+  @ops_platform.file_hits(listed, words, home, writer, pinned, protect, personal, limit, left, p => stats.get(p))
 }
 
 // ── skills read by their name (search/skills.ts) ──

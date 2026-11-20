@@ -82,7 +82,12 @@ pub(all) struct WorkspaceDeps {
   log : Log
   speech : Speech
   uuid : () -> String
+  /// This station's own `describe` payload (load, mode, sessions) without sending a peer RPC to itself.
+  self_load : (async () -> J)?
 }
+
+///|
+let describe_timeout_ms : Int = 1500
 
 ///|
 pub struct WorkspaceConnects {
@@ -115,6 +120,10 @@ pub struct WorkspaceConnects {
   priv awaiting_turn : Turns
   /// The bots of this station's connects as last told to the workspace's other stations, by workspace.
   priv bots_told : Map[String, String]
+  /// In-flight fresh conversation dispatches per (connect, station), so simultaneous arrivals spread immediately.
+  priv inflight : Map[String, Int]
+  /// Per-connect round-robin cursor across its allowlist, breaking idle ties deterministically.
+  priv rr_cursor : Map[String, Int]
 }
 
 ///|
@@ -168,6 +177,8 @@ pub async fn WorkspaceConnects::new(d : WorkspaceDeps) -> WorkspaceConnects {
     awaiting,
     awaiting_turn: Turns::new(),
     bots_told: {},
+    inflight: {},
+    rr_cursor: {},
   }
   // (the moves under way as this station stopped: settled as it starts and as the station each went to is heard from)
   let names = (fs.readdir)(w.moving_dir()) catch { _ => [] }
@@ -354,6 +365,100 @@ fn WorkspaceConnects::workspace_of(self : WorkspaceConnects, entry : J?) -> Stri
 ///|
 fn WorkspaceConnects::in_workspace(self : WorkspaceConnects, ws : String, station : String) -> Bool {
   (self.d.stations)(ws).iter().any(p => str_of(at(Some(p), "id")) == Some(station))
+}
+
+///|
+fn WorkspaceConnects::is_tasks_only(self : WorkspaceConnects, ws : String, station : String) -> Bool {
+  match (self.d.stations)(ws).iter().find_first(p => str_of(at(Some(p), "id")) == Some(station)) {
+    Some(p) =>
+      str_of(at(Some(p), "mode")) == Some("tasks") ||
+      (match at(Some(p), "rig") {
+        Some(Null) | None => false
+        _ => true
+      })
+    None => false
+  }
+}
+
+///|
+fn WorkspaceConnects::inflight_count(self : WorkspaceConnects, connect_id : String, station_id : String) -> Int {
+  self.inflight.get("\{connect_id}\u{0}\{station_id}").unwrap_or(0)
+}
+
+///|
+fn WorkspaceConnects::add_inflight(self : WorkspaceConnects, connect_id : String, station_id : String, delta : Int) -> Unit {
+  let key = "\{connect_id}\u{0}\{station_id}"
+  let next = self.inflight.get(key).unwrap_or(0) + delta
+  if next <= 0 {
+    self.inflight.remove(key)
+  } else {
+    self.inflight[key] = next
+  }
+}
+
+///|
+/// Bare station id from either a bare id ("st2") or a `<workspace>/<station_id>` address ("ws1/st2").
+fn bare_station_id(s : String) -> String {
+  let t = @jscase.trim(s)
+  match t.rev_find("/") {
+    Some(i) => @jscase.trim(t.unsafe_substring(start=i + 1, end=t.length()))
+    None => t
+  }
+}
+
+///|
+/// The manual allowlist for a connect's new conversations: explicit `stations` (deduped) > `station` > `[here]`.
+fn WorkspaceConnects::allowlist_of(self : WorkspaceConnects, entry : J?) -> Array[String] {
+  if arr_of(at(entry, "stations")) is Some(items) {
+    let out : Array[String] = []
+    for x in items {
+      if str_of(Some(x)) is Some(s) {
+        let t = bare_station_id(s)
+        if t != "" && !out.contains(t) {
+          out.push(t)
+        }
+      }
+    }
+    if out.length() > 0 {
+      return out
+    }
+  }
+  match str_of(at(entry, "station")) {
+    Some(s) if bare_station_id(s) != "" => [bare_station_id(s)]
+    _ => [self.here()]
+  }
+}
+
+///|
+async fn WorkspaceConnects::query_station_load(self : WorkspaceConnects, ws : String, station : String) -> J? {
+  if station == self.here() {
+    match self.d.self_load {
+      None =>
+        return Some(
+          jo([
+            ("sessions", jb(true)),
+            ("load", jo([("running", jo([("turns", jn(0.0))])), ("memory", jo([("totalBytes", Null), ("availableBytes", Null)]))])),
+          ]),
+        )
+      Some(f) => {
+        let got = @effect.timeout(describe_timeout_ms, async fn() { Some(f()) catch { _ => None } }) catch { _ => None }
+        return match got {
+          Some(Some(j)) if !(j is Null) => Some(j)
+          _ => None
+        }
+      }
+    }
+  }
+  let got = @effect.timeout(describe_timeout_ms, async fn() {
+    let ans = (self.d.bus.ask)(station, jo([("method", js("describe")), ("workspace", js(ws))]), NoBody) catch { _ => return None }
+    Some(ans.json)
+  }) catch {
+    _ => None
+  }
+  match got {
+    Some(Some(j)) if !(j is Null) => Some(j)
+    _ => None
+  }
 }
 
 ///|
@@ -794,22 +899,171 @@ pub async fn WorkspaceConnects::receive(self : WorkspaceConnects, id : String, e
     if (self.d.hub.quiet_in)(ws) {
       return self.hold(id, ws, event)
     }
-    // A new conversation starts on the station the connect names (absent, or not of its workspace: this one).
-    let want = str_of(at(entry, "station"))
+    // A new conversation starts on the station(s) the connect explicitly allowlists (absent: this one).
     let message = at(Some(event), "message")
     let fresh = str_of(at(Some(event), "type")) == Some("message") &&
       truthy(at(message, "addressed")) &&
       (self.d.store.thread_at)((self.d.hub.surface)(id), channel, thread_ts) is Null
-    guard fresh && want is Some(want) && want != self.here() && self.in_workspace(ws, want) else { return (self.d.hub.receive)(id, event) }
-    try {
-      self.forward(want, id, ws, event)
-      (self.d.store.set_connect_thread_station)(id, channel, thread_ts, want)
-      self.d.log.info("connects", "a new conversation runs on another station", jo([("connect", js(id)), ("station", js(want))]))
-    } catch {
-      e => {
-        self.d.log.warn("connects", "the connect's station for new conversations did not take one; it runs here", jo([("connect", js(id)), ("station", js(want)), ("error", js(thrown_message(e)))]))
-        (self.d.hub.receive)(id, event)
+    if !fresh {
+      return (self.d.hub.receive)(id, event)
+    }
+    let here = self.here()
+    let auto_mode = at(entry, "autoStation") is Some(Bool(true))
+    let raw_pool : Array[String] = []
+    let pool : Array[String] = []
+    if auto_mode {
+      for p in (self.d.stations)(ws) {
+        match str_of(at(Some(p), "id")) {
+          Some(raw_id) => {
+            let s = bare_station_id(raw_id)
+            if s != "" && !raw_pool.contains(s) {
+              raw_pool.push(s)
+            }
+          }
+          None => ()
+        }
       }
+      if here != "" && !raw_pool.contains(here) {
+        raw_pool.push(here)
+      }
+      for s in raw_pool {
+        if !self.is_tasks_only(ws, s) {
+          pool.push(s)
+        }
+      }
+    } else {
+      for s in self.allowlist_of(entry) {
+        raw_pool.push(s)
+      }
+      for s in raw_pool {
+        if (s == here || self.in_workspace(ws, s)) && !self.is_tasks_only(ws, s) {
+          pool.push(s)
+        }
+      }
+      if raw_pool.length() == 1 {
+        let want = pool.get(0)
+        guard want is Some(want) && want != here else { return (self.d.hub.receive)(id, event) }
+        try {
+          self.forward(want, id, ws, event)
+          (self.d.store.set_connect_thread_station)(id, channel, thread_ts, want)
+          self.d.log.info("connects", "a new conversation runs on another station", jo([("connect", js(id)), ("station", js(want))]))
+        } catch {
+          e => {
+            self.d.log.warn("connects", "the connect's station for new conversations did not take one; it runs here", jo([("connect", js(id)), ("station", js(want)), ("error", js(thrown_message(e)))]))
+            (self.d.hub.receive)(id, event)
+          }
+        }
+        return
+      }
+    }
+    // Multi-station manual allowlist or workspace auto-assign allowlist: query live load in parallel via peer `describe`
+    // and pick least busy. In `auto_mode`, strictly require `acceptAutoChats === true`.
+    let n = pool.length()
+    let probed : Array[(String, Int, Double, Double)?] = Array::make(n, None)
+    if n > 0 {
+      let dones : Array[@effect.Deferred[Unit]] = []
+      for i = 0; i < n; i = i + 1 {
+        let idx = i
+        let st = pool[idx]
+        let done_d : @effect.Deferred[Unit] = @effect.Deferred::new()
+        dones.push(done_d)
+        spawn(async fn() {
+          defer ignore(done_d.succeed(()))
+          match self.query_station_load(ws, st) {
+            Some(described) => {
+              if str_of(at(Some(described), "mode")) == Some("tasks") || at(Some(described), "sessions") is Some(Bool(false)) {
+                return
+              }
+              if auto_mode && !(at(Some(described), "acceptAutoChats") is Some(Bool(true))) {
+                return
+              }
+              let load = at(Some(described), "load")
+              let base_turns = match at(at(load, "running"), "turns") {
+                Some(Num(v)) if !v.is_nan() && !v.is_inf() => v
+                _ => 0.0
+              }
+              let mem = at(load, "memory")
+              let mem_ratio = match (at(mem, "totalBytes"), at(mem, "availableBytes")) {
+                (Some(Num(tot)), Some(Num(avail))) if !tot.is_nan() && !tot.is_inf() && tot > 0.0 && !avail.is_nan() && !avail.is_inf() && avail >= 0.0 =>
+                  avail / tot
+                _ => -1.0
+              }
+              probed[idx] = Some((st, idx, base_turns, mem_ratio))
+            }
+            None => ()
+          }
+        })
+      }
+      for d in dones {
+        d.wait()
+      }
+    }
+    let cursor = if n > 0 { self.rr_cursor.get(id).unwrap_or(0) % n } else { 0 }
+    let ranked : Array[(String, Int, Double, Double)] = []
+    for p in probed {
+      match p {
+        Some((st, idx, base_turns, mem_ratio)) =>
+          ranked.push((st, idx, base_turns + self.inflight_count(id, st).to_double(), mem_ratio))
+        None => ()
+      }
+    }
+    ranked.sort_by((a, b) => {
+      if a.2 != b.2 {
+        if a.2 < b.2 { -1 } else { 1 }
+      } else if a.3 != b.3 {
+        if a.3 > b.3 { -1 } else { 1 }
+      } else {
+        let da = (a.1 - cursor + n) % n
+        let db = (b.1 - cursor + n) % n
+        if da < db { -1 } else if da > db { 1 } else { 0 }
+      }
+    })
+    for cand in ranked {
+      let (target, target_idx, _, _) = cand
+      self.add_inflight(id, target, 1)
+      let ok = try {
+        if target == here {
+          (self.d.hub.receive)(id, event)
+        } else {
+          self.forward(target, id, ws, event)
+          (self.d.store.set_connect_thread_station)(id, channel, thread_ts, target)
+          self.d.log.info("connects", "a new conversation runs on another station", jo([("connect", js(id)), ("station", js(target))]))
+        }
+        self.rr_cursor[id] = (target_idx + 1) % n
+        true
+      } catch {
+        e => {
+          self.d.log.warn("connects", "an allowlisted station for new conversations did not take one; trying next", jo([("connect", js(id)), ("station", js(target)), ("error", js(thrown_message(e)))]))
+          false
+        }
+      }
+      self.add_inflight(id, target, -1)
+      if ok {
+        return
+      }
+    }
+    // Hard allowlist safety invariant:
+    // - In `auto_mode`, NEVER fall back to `here` or any non-allowlisted station when 0 allowlisted stations are reachable.
+    // - In manual allowlist mode, only fall back to `here` if `here` is explicitly in the allowlist.
+    if !auto_mode && pool.contains(here) {
+      (self.d.hub.receive)(id, event)
+      return
+    }
+    let lang = self.d.speech.station_lang()
+    let sep = self.d.speech.tr(lang, "station.list.separator")
+    let names = raw_pool.map(s => self.name_of(ws, s)).join(sep)
+    let msg = if auto_mode {
+      "no workspace-allowlisted station reachable for autoStation connect; refusing local fallback"
+    } else {
+      "no allowlisted station reachable for new conversation; refusing local fallback"
+    }
+    self.d.log.warn("connects", msg, jo([("connect", js(id)), ("autoStation", jb(auto_mode)), ("stations", jsa(raw_pool))]))
+    match self.own(id) {
+      Some(s) => {
+        let words = self.d.speech.tr(lang, "station.connect.stationAway", args=[("station", names)])
+        ignore((s.call)("post", [thread, js(@session_chats.mark_notice("⚠️ \{words}")), ja([])])) catch { _ => () }
+      }
+      None => ()
     }
   })
 }
@@ -1088,6 +1342,7 @@ pub async fn WorkspaceConnects::move_to(
   locals_to? : String? = None,
   awaiting? : Array[String] = [],
 ) -> Unit {
+  let to = bare_station_id(to)
   let lang = lang.unwrap_or(self.d.speech.station_lang())
   let locals_to = locals_to.unwrap_or(self.here())
   let entry = self.entry_of(id)

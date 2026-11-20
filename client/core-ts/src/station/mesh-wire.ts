@@ -13,7 +13,7 @@ import { CoreError } from "../error.ts";
 import { t } from "../i18n.ts";
 import type { Iroh } from "../iroh.ts";
 import { claimBy } from "../lock.ts";
-import { type CredentialSource, type Link, Mesh, type MeshEnv, type Presented, type Reply, relayHost } from "../mesh.ts";
+import { BULK_SLOW_BPS, type CredentialSource, type Link, Mesh, type MeshEnv, type Presented, type Reply, relayHost, SPEED_MIN_BYTES } from "../mesh.ts";
 import { PAIR_ALPN } from "../pair.ts";
 import { RELAY, type Place, type Status } from "../status.ts";
 import { route } from "../route.ts";
@@ -127,15 +127,35 @@ export class MeshWire implements StationWire {
       // Asked on more than one way (or again), the body is told of as far as the furthest has gone.
       let furthest = 0;
       const told = wrote && ((n: number) => { if (n > furthest) wrote((furthest = n)); });
-      const ask = (l: Link) => Effect.map(l.request(sent, body, told), (reply) => [l, reply] as [Link, Reply]);
-      let answered: [Link, Reply];
+      // A body of SPEED_MIN_BYTES or more times the way it goes on as it goes (`Mesh.timed` times only what comes back,
+      // and a part uploaded is answered in a few bytes): a way found slow while a part is still on it is told at once
+      // (`Mesh.noteSpeed`, once each time it is asked), so the next part goes on a faster way rather than minutes on it.
+      const timesBody = body.length >= SPEED_MIN_BYTES && typeof mesh.noteSpeed === "function";
+      const ask = (l: Link) => {
+        const askedAt = mesh.now();
+        const wayKey = timesBody ? (typeof l.speedKey === "function" ? l.speedKey() : l.path() === "relay" ? l.via() : null) : null;
+        let early = false;
+        const onSent = wayKey === null
+          ? told
+          : (n: number) => {
+            told?.(n);
+            if (early || n < SPEED_MIN_BYTES) return;
+            const elapsed = mesh.now() - askedAt;
+            if (elapsed >= 1_000 && (n / elapsed) * 1000 < BULK_SLOW_BPS) {
+              early = true;
+              mesh.noteSpeed(key, wayKey, n, elapsed);
+            }
+          };
+        return Effect.map(l.request(sent, body, onSent), (reply) => [l, reply, askedAt] as [Link, Reply, number]);
+      };
+      let answered: [Link, Reply, number];
       if (repeats) {
         // Asked on its link; on another way as well if not answered within what its way is expected to take
         // (`hedgeAfter`), or on the link put in its place if its link is replaced meanwhile: the first answer taken.
         const started = mesh.now();
         const asked = yield* Effect.forkChild(Effect.result(ask(link)));
         // An answer come too late to be taken: its stream let go (the station stops sending what no one reads).
-        const late = ([, reply]: [Link, Reply]) => reply.cancel();
+        const late = ([, reply]: [Link, Reply, number]) => reply.cancel();
         // The other way, as there is one by then (the ways dialled with the link may come through after it).
         const slow = Effect.gen(function* () {
           yield* Effect.sleep(mesh.hedgeAfter(key, link));
@@ -194,7 +214,7 @@ export class MeshWire implements StationWire {
         if (r._tag === "Failure") return yield* Effect.fail(write && r.failure.code === "mesh" ? unconfirmed(r.failure) : r.failure);
         answered = r.success;
       }
-      const [l, reply] = answered;
+      const [l, reply, askedAt] = answered;
       // Its stream goes with the scope it was asked in.
       yield* Effect.addFinalizer(() => Effect.sync(() => reply.cancel()));
       if (reply.headers.some(([k]) => k.toLowerCase() === IDEMPOTENT)) idempotent.add(key);
@@ -203,6 +223,8 @@ export class MeshWire implements StationWire {
       // How fast it comes tells how fast that way is; not an event stream's, which comes as things happen, nor a batch
       // streamed (NDJSON), which comes as the station reads each of it.
       const streams = head.headers.some(([k, v]) => k.toLowerCase() === "accept" && (v.includes("text/event-stream") || v.includes(NDJSON)));
+      // The whole body gone and answered: how fast its way took it.
+      if (timesBody && speedVia !== null) mesh.noteSpeed(key, speedVia, body.length, Math.max(1, mesh.now() - askedAt));
       const timed = speedVia !== null && !streams ? mesh.timed(key, speedVia, reply.body) : reply.body;
       // Why the station ended the connection it came on, as its close said (shell, iroh-wasm and node-iroh give it).
       const ended = () => {

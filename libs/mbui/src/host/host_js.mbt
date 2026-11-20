@@ -1429,6 +1429,7 @@ fn set_site_name(name : String) -> Unit {
 fn app_said(name : String) -> String {
   match name {
     "mbui.page.location" => js_history_location()
+    "mbui.page.loaded_title" => js_loaded_title()
     _ => js_app_said(name)
   }
 }
@@ -1493,6 +1494,10 @@ extern "js" fn js_set_theme_color(color : String) -> Unit =
 /// `{"face", "step", "families"}` (@webpage.set_cjk_face) handed to the page's host: the face's CJK companion.
 extern "js" fn js_set_cjk_face(said : String) -> Unit =
   #|(s) => { const H = globalThis.__mbhost; if (!H || !H.setCjkFace) return; const o = JSON.parse(s); H.setCjkFace(o.face, o.step, o.families) }
+
+///|
+extern "js" fn js_loaded_title() -> String =
+  #|() => { const H = globalThis.__mbhost; return H && H.loadedTitle ? H.loadedTitle() : '' }
 
 ///|
 extern "js" fn js_history_location() -> String =

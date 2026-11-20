@@ -397,6 +397,7 @@ function connectsOf(station: number): J[] {
     connection: { state: "connected", botUserId: `U0BOT${n}${station}`, workspace: { team: "Acme", teamId: "T04ACME0001", url: "https://acme-dev.slack.com/", botUserId: `U0BOT${n}${station}`, botName: n === 1 ? "still.fail" : `${s.name.toLowerCase()}-bot-${n}`, botImage: `https://avatars.slack-edge.com/2026-02-0${n}/bot${n}_192.png` } },
     // (the first of each station's made by the viewer, the workspace's owner, who set up its Slack: `connects mine`)
     createdBy: n === 1 ? { id: PEOPLE[0].email, name: PEOPLE[0].name } : { id: pick(PEOPLE, station + n).email, name: pick(PEOPLE, station + n).name }, sessions: 30 + station * 7 + n * 3, session: n === 2 ? `k-${s.id}-3` : null,
+    ...(station === 0 && n === 1 ? { startsOnStations: [STATIONS[0]!.id, STATIONS[1]!.id] } : {}),
   });
   const feishu: J = {
     id: "c-feishu-1", name: "飞书助手", team: null, enabled: true, kind: "feishu", mode: "multi-session", requireMention: true, bind: { runtime: "claude", model: null, effort: null, profile: null },
@@ -521,6 +522,7 @@ export function overviewOf(now: number, station: number): J {
     // What a chat can be kept to less context on (station/src/api/overview.ts, sessions/context-cap.ts): each model's window.
     contextCaps: { runtimes: ["claude", "codex"], least: 100_000, windows: Object.fromEntries([...new Set(profiles.flatMap((p: J) => p.models as string[]))].map((m) => [m, /haiku|4-5|mini|flash|v3/.test(m) ? 200_000 : /gpt|codex|grok/.test(m) ? 400_000 : 1_000_000])) },
     archiving: { days: 7, slackDays: 14, reviewed: true, canEdit: true },
+    ...(station === 0 ? { autoChats: { enabled: true, canEdit: true } } : {}),
     automaticDecisions: decisionsOf(now, station, profiles),
     // The `beta` features it runs (station/src/features.ts): a station on the test channel's (its terminals, moving).
     move: { offered: true },
@@ -580,24 +582,34 @@ const threadIdOf = (station: number, i: number) => (i === 0 && station === 0 ? C
 /// A chat row as a station lists it (its `GET /chats`).
 function rowOf(now: number, station: number, i: number, archived = false): J {
   const key = archived ? `a-${STATIONS[station]!.id}-${i}` : keyOf(station, i);
-  const th = threadIdOf(station, i) + (archived ? 500 : 0);
+  const unchattedMulti = !archived && station === 0 && i === 17;
+  const th = unchattedMulti ? null : threadIdOf(station, i) + (archived ? 500 : 0);
   const slack = i % 4 === 1;
   const at = now - (i * 41 + station * 13 + 1) * MIN - (archived ? 9 * DAY : 0);
   const starter = slack ? slackPerson(i) : person(i + station);
   const people = [starter, person(i + 2), ...(i % 3 === 0 ? [person(i + 5)] : [])];
-  const agents = [agentOf(now, key, i), ...(i === 0 && station === 0 ? [agentOf(now, CHAT.keys[1], 1)] : [])];
+  const agents = [
+    agentOf(now, key, i),
+    ...(i === 0 && station === 0 ? [agentOf(now, CHAT.keys[1], 1)] : []),
+    ...(unchattedMulti ? [agentOf(now, `${key}-b`, i + 1)] : []),
+  ];
   const titled = i % 10 !== 7;
+  const channelName = pick(["eng", "android", "infra", "design"], i);
+  const threadTs = `1794${i}0${station}.00${i}`;
+  const origin = slack ? { teamName: "Acme", channel: "C05ENG0001", channelName, threadTs, surface: "slack:T04ACME0001" } : null;
   const row: J = {
     id: key, session: key, thread: th, title: "", agents,
-    last: { seq: 40 + i, authorKind: i % 3 === 2 ? "person" : "agent", author: i % 3 === 2 ? pick(PEOPLE, i).email : key, authorName: i % 3 === 2 ? pick(PEOPLE, i).name : null, text: pick(LINES, i + station).slice(0, 200), createdAt: at },
-    unread: i % 6 === 0, mine: i % 3 === 0, lastActiveAt: at,
+    last: unchattedMulti ? null : { seq: 40 + i, authorKind: i % 3 === 2 ? "person" : "agent", author: i % 3 === 2 ? pick(PEOPLE, i).email : key, authorName: i % 3 === 2 ? pick(PEOPLE, i).name : null, text: pick(LINES, i + station).slice(0, 200), createdAt: at },
+    unread: !unchattedMulti && i % 6 === 0, mine: i % 3 === 0, lastActiveAt: at,
     connect: slack ? "c-slack-1" : null,
-    origin: slack ? { teamName: "Acme", channel: "C05ENG0001", channelName: pick(["eng", "android", "infra", "design"], i), threadTs: `1794${i}0${station}.00${i}`, surface: "slack:T04ACME0001" } : null,
-    creator: starter, people, ws: "ws",
-    named: titled
-      ? { thread: { id: th, surface: slack ? "slack:T04ACME0001" : "ember", channel: slack ? "C05ENG0001" : "EMBER", threadTs: `${th}.0`, title: pick(TITLES, i + station * 3), createdAt: at - HOUR }, firstText: null, channelName: null }
-      : { thread: { id: th, surface: "ember", channel: "EMBER", threadTs: `${th}.0`, title: null, createdAt: at - HOUR }, firstText: pick(MEDIUM, i), channelName: null },
-    mineOf: people.slice(0, 2), said: null, archiveReminderDismissed: false, archiveRecommended: i % 11 === 5, archiveReviewed: true, pinned: i % 37 === 3 ? now - i * HOUR : null,
+    origin,
+    creator: starter, people: unchattedMulti ? [starter] : people, ws: "ws",
+    named: unchattedMulti
+      ? { thread: { id: threadIdOf(station, i), surface: "slack:T04ACME0001", channel: "C05ENG0001", threadTs, title: pick(TITLES, i + station * 3), createdAt: at - HOUR }, firstText: null, channelName }
+      : titled
+        ? { thread: { id: th, surface: slack ? "slack:T04ACME0001" : "ember", channel: slack ? "C05ENG0001" : "EMBER", threadTs: `${th}.0`, title: pick(TITLES, i + station * 3), createdAt: at - HOUR }, firstText: null, channelName: null }
+        : { thread: { id: th, surface: "ember", channel: "EMBER", threadTs: `${th}.0`, title: null, createdAt: at - HOUR }, firstText: pick(MEDIUM, i), channelName: null },
+    mineOf: unchattedMulti ? [starter] : people.slice(0, 2), said: null, archiveReminderDismissed: false, archiveRecommended: i % 11 === 5, archiveReviewed: true, pinned: i % 37 === 3 ? now - i * HOUR : null,
   };
   if (archived) row.archived = { at: at + DAY, by: "auto", alone: true };
   // (those whose agent asks a person wait on its card, every other one a vault item's request; the chat's its last)
@@ -1053,7 +1065,7 @@ export function messageAdded(base: number, at: number, chat = CHAT_MESSAGES, sai
   const thread = { ...t0, last: n, read: n, lastMessage: { ...t0.lastMessage, seq: n, ts: entry.ts, authorKind: "agent", author: CHAT.keys[0], authorName: null, text: entry.text, createdAt: at } };
   return [
     [{ topic: "thread", station: CHAT.station, thread: CHAT.thread }, { ...page, last: n, entries: [...page.entries, entry] }],
-    [threads(CHAT.station), [thread, ...Array.from({ length: ROWS_UP - 1 }, (_, i) => threadOf(base, 0, i + 1))]],
+    [threads(CHAT.station), [thread, ...threadsAt(base, 0).slice(1)]],
     [rows(CHAT.station), [{ ...r0, last, lastActiveAt: at }, ...Array.from({ length: ROWS_UP - 1 }, (_, i) => rowOf(base, 0, i + 1))]],
   ];
 }
@@ -1077,10 +1089,12 @@ function rowsWith(base: number, st: number, f: (row: J, i: number) => J | null):
 function sessionsAt(now: number, st: number): J[] {
   const keys = Array.from({ length: rowsCount(st) }, (_, i) => keyOf(st, i));
   if (st === 0) keys.push(CHAT.keys[1]);
-  return keys.map((k, i) => sessionOf(now, st, k, i));
+  const out = keys.map((k, i) => sessionOf(now, st, k, i));
+  if (st === 0 && rowsCount(st) > 17) out.push({ ...sessionOf(now, st, `${keyOf(0, 17)}-b`, 18), conv: keyOf(0, 17) });
+  return out;
 }
 function threadsAt(now: number, st: number): J[] {
-  return Array.from({ length: rowsCount(st) }, (_, i) => threadOf(now, st, i));
+  return Array.from({ length: rowsCount(st) }, (_, i) => (st === 0 && i === 17 ? null : threadOf(now, st, i))).filter((t) => t !== null);
 }
 
 /// What the station at `station` lists as the workspace was made at `base` (the fixture's): its chat rows, threads and
@@ -1197,11 +1211,10 @@ export function memberJoined(base: number): J {
 
 /// Maple at `at` with a session more, a Slack thread's of its first connect: its sessions, and its overview counting it.
 export function sessionMade(base: number, at: number): [Topic, unknown][] {
-  const keys = [...Array.from({ length: ROWS_UP }, (_, i) => keyOf(0, i)), CHAT.keys[1]];
   const made = { ...sessionOf(base, 0, keyOf(0, ROWS_UP + 1), ROWS_UP + 1), createdAt: at, lastActiveAt: at };
   const o = overviewOf(base, 0);
   return [
-    [sessions(address(0)), [...keys.map((k, i) => sessionOf(base, 0, k, i)), made]],
+    [sessions(address(0)), [...sessionsAt(base, 0), made]],
     [overview(address(0)), { ...o, connects: o.connects.map((c: J) => (c.id === "c-slack-1" ? { ...c, sessions: c.sessions + 1 } : c)) }],
   ];
 }

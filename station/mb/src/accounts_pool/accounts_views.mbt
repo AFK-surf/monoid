@@ -153,6 +153,23 @@ pub async fn Accounts::put_archiving(
 }
 
 ///|
+/// `putAutoChats`: PUT /auto-chats (a workspace manager's).
+pub async fn Accounts::put_auto_chats(
+  self : Accounts,
+  input : JV,
+  viewer : JV,
+  lang : String,
+) -> Unit {
+  if !manages_station(viewer) {
+    raise refusal(403, self.tr(lang, "station.autoChats.managersOnly"))
+  }
+  guard input.get("enabled") is Some(Bool(enabled)) else {
+    raise refusal(400, self.tr(lang, "station.autoChats.badSettings"))
+  }
+  self.save(viewer, "auto chats", raw => jset(raw, "acceptAutoChats", jbool(enabled)))
+}
+
+///|
 /// `reviewUndecided`: POST /automatic-decisions/review: the done chats no decision has answered, reviewed now; how many.
 pub async fn Accounts::review_undecided(
   self : Accounts,

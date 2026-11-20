@@ -333,6 +333,184 @@ int main(void) {
       mb_render_set_size(400, 300, 2);
     }
 
+    // What drawing holds beyond its frames given back: the trim lets go of the read back's texture and glass's (made
+    // again by the next read and the next glass, the canvas then the same to the byte as the frame drawn whole); and
+    // glass's textures go once MB_GLASS_IDLE frames in a row drew none, the glass after them blurred anew, as the frame
+    // drawn whole.
+    {
+      double g1[2 * MB_INST];
+      rect_at(g1, 30, 30, 160, 80, 0, 0.9, 0.1, 0.1, 0);
+      rect_at(g1 + MB_INST, 20, 20, 200, 100, 6, 1, 1, 1, -5);
+      g1[MB_INST + 4] = 24;
+      g1[MB_INST + 7] = 8;
+      g1[MB_INST + 11] = 0.3;
+      g1[MB_INST + 21] = 8;
+      g1[MB_INST + 23] = 4;
+      glass_forget();
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(g1, 2, 0.1, 0.2, 0.3);
+      present_drain();
+      CHECK(lv[0] != nil && lv_w > 0);
+      CHECK(slot_bt[0] != nil);
+      // the same capture frosted (kind 5), kept in the same slot
+      g1[MB_INST + 5] = 5;
+      g1[0] = 32;
+      glass_forget();
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(g1, 2, 0.1, 0.2, 0.3);
+      present_drain();
+      CHECK(slot_bt[0] != nil);
+      CHECK(canvas_as_whole());
+
+      int fw, fh;
+      free(read_last(&fw, &fh));
+      CHECK(read_tex != nil);
+      mb_render_trim();
+      CHECK(read_tex == nil);
+      CHECK(lv[0] == nil && ltmp == nil && lv_w == 0 && lv_h == 0);
+      CHECK(slot_bt[0] == nil);
+      mb_render_set_size(400, 300, 2);
+      g1[0] = 34;
+      mb_render_present(g1, 2, 0.1, 0.2, 0.3);
+      present_drain();
+      CHECK(lv[0] != nil);
+      CHECK(canvas_as_whole());
+
+      // frames with no glass: the glass's textures kept till the MB_GLASS_IDLE-th, then let go
+      double plain[MB_INST];
+      rect_at(plain, 30, 30, 160, 80, 0, 0.9, 0.1, 0.1, 0);
+      for (int i = 1; i <= MB_GLASS_IDLE; i++) {
+        plain[0] = 30 + i % 50;  // (each a frame of its own: the same numbers would be the one shown)
+        mb_host_render_dirty(0, 0, 400, 300);
+        mb_render_present(plain, 1, 0.1, 0.2, 0.3);
+        present_drain();
+        if (i == MB_GLASS_IDLE - 1) CHECK(lv[0] != nil && slot_bt[0] != nil);
+      }
+      CHECK(lv[0] == nil && ltmp == nil && lv_w == 0);
+      for (int i = 0; i < MB_GLASS_SLOTS; i++) CHECK(slot_bt[i] == nil);
+      // a frame with glass after: its blur made anew, as the frame drawn whole
+      int made = blurs_made;
+      g1[0] = 36;
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(g1, 2, 0.1, 0.2, 0.3);
+      present_drain();
+      CHECK(blurs_made == made + 1);
+      CHECK(lv[0] != nil);
+      CHECK(canvas_as_whole());
+      // a frame with glass among those without keeps them: the count starts again
+      for (int i = 1; i < MB_GLASS_IDLE; i++) {
+        plain[0] = 30 + i % 50;
+        mb_host_render_dirty(0, 0, 400, 300);
+        mb_render_present(plain, 1, 0.1, 0.2, 0.3);
+        present_drain();
+      }
+      g1[0] = 38;
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(g1, 2, 0.1, 0.2, 0.3);
+      present_drain();
+      for (int i = 1; i < MB_GLASS_IDLE; i++) {
+        plain[0] = 30 + i % 50;
+        mb_host_render_dirty(0, 0, 400, 300);
+        mb_render_present(plain, 1, 0.1, 0.2, 0.3);
+        present_drain();
+      }
+      CHECK(lv[0] != nil);
+    }
+
+    // Unmerged liquid glass (kind 6, a[23] <= 0):
+    // (1) single shape with merge=0 (tight quad + direct sd_rr) matches merge=1e-7 (merged_liquid + sd_group, same float32 quad bounds) byte-for-byte;
+    // (2) two unmerged liquid shapes separated by a shadow (kind 2) sharing one capture make only 1 blur and preserve
+    //     each instance's own spot, matching separate captures byte-for-byte at k == 0.
+    {
+      double eq[2 * MB_INST];
+      rect_at(eq, 0, 0, 400, 300, 0, 0.85, 0.30, 0.20, 0);
+      rect_at(eq + MB_INST, 70, 90, 220, 96, 6, 1, 1, 1, -9);
+      eq[MB_INST + 4] = 48;
+      eq[MB_INST + 6] = 1;
+      eq[MB_INST + 7] = 2;
+      eq[MB_INST + 11] = 0.25;
+      eq[MB_INST + 12] = 0.8;
+      eq[MB_INST + 13] = 10;
+      eq[MB_INST + 14] = 0;
+      eq[MB_INST + 15] = 1;
+      eq[MB_INST + 21] = 8;
+      eq[MB_INST + 22] = 0.2;
+      eq[MB_INST + 23] = 0;
+      glass_forget();
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(eq, 2, 0.1, 0.2, 0.3);
+      present_drain();
+      int sw, sh;
+      uint8_t *px_single = read_texture(canvas, &sw, &sh);
+
+      eq[MB_INST + 23] = 1e-7;
+      glass_forget();
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(eq, 2, 0.1, 0.2, 0.3);
+      present_drain();
+      int mw, mh;
+      uint8_t *px_merged = read_texture(canvas, &mw, &mh);
+      CHECK(sw == mw && sh == mh && memcmp(px_single, px_merged, (size_t)sw * sh * 4) == 0);
+      free(px_single);
+      free(px_merged);
+
+      double lq[5 * MB_INST];
+      rect_at(lq, 0, 0, 400, 300, 0, 0.92, 0.90, 0.85, 0);
+      rect_at(lq + 1 * MB_INST, 20, 180, 340, 72, 0, 0.85, 0.25, 0.20, 0);
+      // left capsule (no spot, merge=0)
+      rect_at(lq + 2 * MB_INST, 24, 192, 160, 56, 6, 1, 1, 1, -9);
+      lq[2 * MB_INST + 4] = 28;
+      lq[2 * MB_INST + 6] = 1;
+      lq[2 * MB_INST + 7] = 1.5;  // sp = 3.0 -> k == 0
+      lq[2 * MB_INST + 11] = 0.25;
+      lq[2 * MB_INST + 12] = 0.8;
+      lq[2 * MB_INST + 13] = 10;
+      lq[2 * MB_INST + 14] = 0;
+      lq[2 * MB_INST + 15] = 1;
+      lq[2 * MB_INST + 21] = 4;
+      lq[2 * MB_INST + 22] = 0;
+      lq[2 * MB_INST + 23] = 0;
+      // shadow between the two shapes (outside the right disc's capture box)
+      rect_at(lq + 3 * MB_INST, 24, 192, 40, 20, 2, 0, 0, 0, 0);
+      lq[3 * MB_INST + 7] = 2;
+      lq[3 * MB_INST + 11] = 0.2;
+      // right disc (with its own spot, merge=0, sharing capture -9)
+      rect_at(lq + 4 * MB_INST, 280, 192, 56, 56, 6, 1, 1, 1, -9);
+      lq[4 * MB_INST + 4] = 28;
+      lq[4 * MB_INST + 6] = 1;
+      lq[4 * MB_INST + 7] = 1.5;
+      lq[4 * MB_INST + 11] = 0.25;
+      lq[4 * MB_INST + 12] = 0.8;
+      lq[4 * MB_INST + 13] = 10;
+      lq[4 * MB_INST + 14] = 537.0 * 4096.0 + 528.0 + 1.0;
+      lq[4 * MB_INST + 15] = 1;
+      lq[4 * MB_INST + 21] = 4;
+      lq[4 * MB_INST + 22] = 0;
+      lq[4 * MB_INST + 23] = 0;
+
+      glass_forget();
+      int made = blurs_made;
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(lq, 5, 0.1, 0.2, 0.3);
+      present_drain();
+      CHECK(blurs_made == made + 1);
+      uint8_t *px_lq_shared = read_texture(canvas, &sw, &sh);
+
+      lq[2 * MB_INST + 20] = -10;
+      lq[4 * MB_INST + 20] = -11;
+      glass_forget();
+      made = blurs_made;
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(lq, 5, 0.1, 0.2, 0.3);
+      present_drain();
+      CHECK(blurs_made == made + 2);
+      int sep_w, sep_h;
+      uint8_t *px_lq_sep = read_texture(canvas, &sep_w, &sep_h);
+      CHECK(sw == sep_w && sh == sep_h && memcmp(px_lq_shared, px_lq_sep, (size_t)sw * sh * 4) == 0);
+      free(px_lq_shared);
+      free(px_lq_sep);
+    }
+
     // A group kept by the host (groups.h) drawn out by a header, straight into the floats: each instance moved in
     // doubles, then made a float, as the app's own instance moved there would be.
     double kept[MB_INST];

@@ -72,12 +72,17 @@ export async function verifyFeishuApp(appId: string, appSecret: string, domain: 
 function fileType(name: string): string {
   const ext = extname(name).toLowerCase();
   if (ext === ".opus") return "opus";
-  if ([".mp4", ".mov", ".m4v"].includes(ext)) return "mp4";
+  // Only MP4 itself: Feishu checks the container, so a QuickTime .mov goes as a plain file.
+  if (ext === ".mp4") return "mp4";
   if (ext === ".pdf") return "pdf";
   if ([".doc", ".docx"].includes(ext)) return "doc";
   if ([".xls", ".xlsx", ".csv"].includes(ext)) return "xls";
   if ([".ppt", ".pptx"].includes(ext)) return "ppt";
   return "stream";
+}
+/// The message type a file of that type is sent as: Feishu refuses any other (230055).
+function fileMsgType(kind: string): string {
+  return kind === "mp4" ? "media" : kind === "opus" ? "audio" : "file";
 }
 const IMAGE = /\.(png|jpe?g|gif|webp|bmp|ico|tiff?)$/i;
 /// Images Feishu takes as images (larger ones go as files).
@@ -335,13 +340,27 @@ export class FeishuSurface extends ConnectedSurface {
   }
 
   /// The agent's words as rich text (a question's as a card, its buttons or field with them), then each file as a message
-  /// of its own. The first message's id stands for the whole.
+  /// of its own. Every file is uploaded before anything is sent, so a file that fails leaves no words posted alone. The
+  /// first message's id stands for the whole.
   async post(thread: ThreadRef, message: string, files: Attachment[], card?: Json | null): Promise<string> {
-    (this.lines.get(`${thread.channel}/${thread.threadTs}`) as FeishuStatus | undefined)?.spoke();
-    let first: string | null = null;
     const lang = stationLang();
     const question = card && (card.type === "options" || card.type === "text") ? card : null;
     const sends: [string, string][] = question ? [["interactive", inline(questionCard(message, question, thread.threadTs, lang))]] : textPosts(message).map((p) => ["post", p]);
+    if (sends.length === 0 && files.length === 0) throw new Error("nothing to post");
+    const uploaded: [string, string][] = [];
+    for (const file of files) {
+      const bytes = await readFile(file.path);
+      if (IMAGE.test(file.name) && bytes.length <= MAX_IMAGE) {
+        const up = await this.client.api("POST", "/open-apis/im/v1/images", { image_type: "message" }, undefined, [{ field: "image", bytes, name: file.name, mime: "application/octet-stream" }]);
+        uploaded.push(["image", JSON.stringify({ image_key: up?.data?.image_key })]);
+      } else {
+        const kind = fileType(file.name);
+        const up = await this.client.api("POST", "/open-apis/im/v1/files", { file_type: kind, file_name: file.name }, undefined, [{ field: "file", bytes, name: file.name, mime: "application/octet-stream" }]);
+        uploaded.push([fileMsgType(kind), JSON.stringify({ file_key: up?.data?.file_key })]);
+      }
+    }
+    (this.lines.get(`${thread.channel}/${thread.threadTs}`) as FeishuStatus | undefined)?.spoke();
+    let first: string | null = null;
     for (const [msgType, content] of sends) {
       const id = await this.send(thread, msgType, content);
       first ??= id;
@@ -351,16 +370,8 @@ export class FeishuSurface extends ConnectedSurface {
         if (this.asked.size > 500) this.asked.delete(this.asked.keys().next().value!);
       }
     }
-    for (const file of files) {
-      const bytes = await readFile(file.path);
-      let id: string;
-      if (IMAGE.test(file.name) && bytes.length <= MAX_IMAGE) {
-        const up = await this.client.api("POST", "/open-apis/im/v1/images", { image_type: "message" }, undefined, [{ field: "image", bytes, name: file.name, mime: "application/octet-stream" }]);
-        id = await this.send(thread, "image", JSON.stringify({ image_key: up?.data?.image_key }));
-      } else {
-        const up = await this.client.api("POST", "/open-apis/im/v1/files", { file_type: fileType(file.name), file_name: file.name }, undefined, [{ field: "file", bytes, name: file.name, mime: "application/octet-stream" }]);
-        id = await this.send(thread, "file", JSON.stringify({ file_key: up?.data?.file_key }));
-      }
+    for (const [msgType, content] of uploaded) {
+      const id = await this.send(thread, msgType, content);
       first ??= id;
     }
     if (first === null) throw new Error("nothing to post");

@@ -123,6 +123,10 @@ pub struct Hub {
   holds_now : Array[String]
   /// Sessions taken up from the previous station: their turns run on.
   adopted : Set[String]
+  /// Whether `take_up` found no handover.json (crash / OOM / reboot, not an update handover).
+  mut non_update_restart : Bool
+  /// Sessions whose turns were cut off by a non-update restart and still await manual resume or dismissal.
+  interrupted_by_restart : Array[String]
   mut holds_runners : Bool
   /// The workspaces whose chats this station hands to another.
   quieted : Set[String]
@@ -177,6 +181,8 @@ pub fn Hub::new(world : World, store : @store_sessions.Store, threads : @store_t
     actors: {},
     holds_now: [],
     adopted: Set([]),
+    non_update_restart: false,
+    interrupted_by_restart: [],
     holds_runners: false,
     quieted: Set([]),
     held_chats: {},
@@ -225,14 +231,38 @@ pub fn Hub::told(self : Hub, change : Json) -> Unit {
       if self.lengths.contains(key) {
         self.write_lengths(only=[key])
       }
-      let running = match self.get_session(key) {
-        Some(row) => is_true(row, "running")
+      let row = self.get_session(key)
+      let running = match row {
+        Some(r) => is_true(r, "running")
         None => false
       }
       (self.world.tell)("live.running", { "key": Json::string(key), "running": Json::boolean(running) })
+      if self.interrupted_by_restart.contains(key) {
+        let drop = match row {
+          None => true
+          Some(r) => running || !(field(r, "archivedAt") is (None | Some(Null)))
+        }
+        if drop {
+          match self.interrupted_by_restart.search(key) {
+            Some(i) => {
+              ignore(self.interrupted_by_restart.remove(i))
+              (self.world.tell)("overview.changed", Json::null())
+            }
+            None => ()
+          }
+        }
+      }
     }
-    (Some("sessionRemoved"), Some(key)) =>
+    (Some("sessionRemoved"), Some(key)) => {
       (self.world.tell)("live.running", { "key": Json::string(key), "running": Json::boolean(false) })
+      match self.interrupted_by_restart.search(key) {
+        Some(i) => {
+          ignore(self.interrupted_by_restart.remove(i))
+          (self.world.tell)("overview.changed", Json::null())
+        }
+        None => ()
+      }
+    }
     _ => ()
   }
   // (then what follows the store after the hub, in the order the station has them: the counter, then the usage kept)

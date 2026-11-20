@@ -135,23 +135,6 @@ fn P52::outcomes_start(self : P52) -> Unit {
 }
 
 ///|
-/// card-outbox-worker.ts `save`: a card's outcome queued (`{thread, ts, agent, field, close, outcome}`), the card
-/// closed in the same write where asked and the close told; the worker restates it. Its id in the queue.
-fn P52::outcome_save(self : P52, item : Json) -> Json raise {
-  guard self.card_outcomes is Some(worker) else { raise LiveError("the cards' outcomes are not kept yet") }
-  self.threads.set_now(wall_ms().to_double())
-  let id = worker.save(@store_threads.CardOutcome::from_json(to_jv(item)), () => ()) catch {
-    e => {
-      told_threads(self.bus, self.threads)
-      raise e
-    }
-  }
-  told_threads(self.bus, self.threads)
-  self.outcomes_follow()
-  Json::string(id)
-}
-
-///|
 /// What the worker writes as it goes (a card restated, one let go) told on the bus as the store's own writes are:
 /// after each of its turns while it goes through the queue, again after a busy write's retry while one waits. A long
 /// scan's own pages tell what came before them (`card_page`); its end wakes the worker, which the next save follows.
@@ -782,14 +765,50 @@ async fn P52::format_delivery(self : P52, key : String, said : Array[Json], canc
 
 ///|
 /// What another agent goes by in a thread (actor.ts `agentName`).
-fn P52::agent_name(self : P52, key : String, thread : Json) -> String {
+async fn P52::agent_name(self : P52, key : String, thread : Json) -> String {
+  let via = jitems(self.with_threads(t => t.thread_sessions(thread)))
+    .iter()
+    .find_first(m => jtext(m, "session") == Some(key))
+    .bind(m => jtext(m, "connect"))
   let row = self.bus.store.get_session(key) catch { _ => Json::null() }
+  let birth = if row == Json::null() { None } else { jtext(row, "connect") }
+  let external_via = match via {
+    Some(c) if c != "" && c != @session_hub.internal_connect => Some(c)
+    _ => None
+  }
+  let connect = match external_via {
+    Some(c) => Some(c)
+    None =>
+      match birth {
+        Some(c) if c != "" && c != @session_hub.internal_connect => Some(c)
+        _ => None
+      }
+  }
+  match connect {
+    Some(c) =>
+      match self.bus.coord_chat_bot(c) {
+        Object(_) as bot =>
+          match jtext(bot, "name") {
+            Some(name) if name != "" =>
+              if external_via is Some(_) {
+                match jtext(bot, "user") {
+                  Some(user) if user != "" => return "\{name} (<@\{user}>)"
+                  _ => return name
+                }
+              } else {
+                return name
+              }
+            _ => ()
+          }
+        _ => ()
+      }
+    None => ()
+  }
   if row == Json::null() {
     return "another agent"
   }
   let runtime = @session_hub.runtime_named(jtext(row, "runtime").unwrap_or("")).unwrap_or("claude")
   let label = @session_hub.runtime_label(runtime)
-  ignore(thread)
   match jtext(row, "model") {
     Some(m) => "\{label} \{m}"
     None => label

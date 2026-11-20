@@ -169,7 +169,10 @@ public class MainActivity extends Activity {
                 WindowInsetsAnimation.Callback.DISPATCH_MODE_CONTINUE_ON_SUBTREE) {
             @Override
             public void onPrepare(WindowInsetsAnimation a) {
-                if ((a.getTypeMask() & WindowInsets.Type.ime()) != 0) imeMoving = true;
+                if ((a.getTypeMask() & WindowInsets.Type.ime()) != 0) {
+                    imeMoving = true;
+                    if (mbView != null) mbView.imeMovingStarted();
+                }
             }
 
             @Override
@@ -310,6 +313,16 @@ public class MainActivity extends Activity {
         // a newer build ready put in place once the app stays out of sight a while (Updates.stopped)
         Updates.stopped();
         super.onStop();
+    }
+
+    /**
+     * The system short of memory: what drawing holds beyond its frames given back (MBView.trim). Off the screen it was
+     * as the view paused (onStop); on it, a frame with glass makes its textures again as it is drawn.
+     */
+    @Override
+    public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        if (level >= TRIM_MEMORY_RUNNING_LOW && mbView != null) mbView.trim();
     }
 
     @Override

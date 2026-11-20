@@ -552,6 +552,32 @@ test("the images' thumbnails and ThumbHashes, as the mesh addon (thumbs.rs) make
     // kept: asked again, the same
     assert.deepEqual(await ok("thumbnail", { image, dir: join(dir, "mb") }), mb);
   }
+  // preview: <= 300 KiB returns null; large PNG makes <id>.p.jpg and hits cache; pre-existing <id>.p.webp hits cache
+  const smallPreview = join(dir, "small-preview.png");
+  writeFileSync(smallPreview, png(200, 200));
+  assert.ok(readFileSync(smallPreview).length <= 300 * 1024);
+  assert.equal(await ok("preview", { image: smallPreview, dir: join(dir, "mb-preview") }), null);
+
+  const bigPreview = join(dir, "big-preview.png");
+  writeFileSync(bigPreview, png(2400, 1400));
+  assert.ok(readFileSync(bigPreview).length > 300 * 1024);
+  const previewDir = join(dir, "mb-preview");
+  const bigId = createHash("sha256").update(bigPreview).digest("hex").slice(0, 32);
+  const prev1 = await ok("preview", { image: bigPreview, dir: previewDir });
+  assert.ok(prev1 !== null);
+  assert.equal(prev1.type, "image/jpeg");
+  assert.equal(prev1.path, join(previewDir, `${bigId}.p.jpg`));
+  assert.ok(readFileSync(prev1.path).length * 2 < readFileSync(bigPreview).length);
+  const [pw, ph] = size(readFileSync(prev1.path));
+  assert.ok(pw <= 2048 && ph <= 2048);
+  assert.deepEqual(await ok("preview", { image: bigPreview, dir: previewDir }), prev1);
+
+  const webpCached = join(dir, "webp-cached.png");
+  writeFileSync(webpCached, png(2400, 1400));
+  const webpId = createHash("sha256").update(webpCached).digest("hex").slice(0, 32);
+  const webpPath = join(previewDir, `${webpId}.p.webp`);
+  writeFileSync(webpPath, Buffer.from("RIFF0000WEBP"));
+  assert.deepEqual(await ok("preview", { image: webpCached, dir: previewDir }), { path: webpPath, type: "image/webp" });
   for (const [name] of files) {
     const image = join(dir, name);
     const ts = await loadMesh().thumbhash(image, null);
@@ -665,6 +691,31 @@ test("children started, followed to their end, given input and signals; a lock o
   other.stdin!.end();
   if (other.exitCode === null && other.signalCode === null) await new Promise<void>((r) => other.once("exit", () => r()));
   assert.equal((readFileSync(lock).length), 0, "never written");
+});
+
+test("stdin writes are non-blocking, drain multi-chunk input, and kill stalled children past STILLFAIL_STDIN_MOST", { skip }, async () => {
+  const r = await ok("stdinBackpressure");
+  assert.equal(r.catOk, true, "multi-chunk write to cat drains cleanly and closes with EOF");
+  assert.equal(r.rejected, true, "writing past STILLFAIL_STDIN_MOST returns false");
+  assert.ok(r.writeMs < 2_000, `writes must not block the event loop (took ${r.writeMs}ms)`);
+  assert.ok(r.totalMs < 5_000, `stalled child must be killed promptly (took ${r.totalMs}ms)`);
+  assert.equal(r.stalledCode, null);
+  assert.equal(r.stalledSignal, "SIGKILL");
+  assert.equal(r.stalledAlive, false, "no orphan process left alive");
+  assert.equal(r.quickCode, 0);
+  assert.equal(r.quickSignal, null);
+  assert.equal(r.lateWrite, false, "exited child without end_input cleans up stdin handle");
+});
+
+test("flooding child stdout stays backpressured and respects @effect.timeout", { skip }, async () => {
+  const r = await ok("stdoutBackpressure");
+  assert.equal(r.timedOut, true, `expected timeout, got ${JSON.stringify(r)}`);
+  assert.equal(r.truncated, true, `expected truncated output, got ${JSON.stringify(r)}`);
+  assert.equal(r.keptBytes, 1048576, `expected 1 MiB kept, got ${JSON.stringify(r)}`);
+  assert.ok(r.elapsedMs >= 1200 && r.elapsedMs < 5000, `expected timeout near 1500ms, took ${r.elapsedMs}ms`);
+  assert.ok(r.rssBefore > 0, `expected rssBefore > 0, got ${r.rssBefore}`);
+  assert.ok(r.rssPeak - r.rssBefore < 128 * 1024 * 1024, `RSS grew too much: before=${r.rssBefore} peak=${r.rssPeak} after=${r.rssAfter}`);
+  assert.equal(r.alive, false, "child process group must be killed and reaped");
 });
 
 // ── run, under a launcher of the test's ──

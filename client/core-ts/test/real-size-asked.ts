@@ -256,7 +256,7 @@ function pageOwners(inner: Inner, notices: Notices, screens: () => J): Owner[] {
 /// (a card come where it waits on one): what a device has heard of them by then, the latest `KEEP`.
 function noticesHeard(notices: Notices, rows: [string, J[]][]): void {
   for (const [station, list] of rows) {
-    notices.changed(station, list.map((r) => ({ id: r.id, before: { ...r, last: { ...r.last, seq: r.last.seq - 1 }, card: undefined, decision: undefined }, after: r })), false);
+    notices.changed(station, list.map((r) => ({ id: r.id, before: { ...r, last: r.last ? { ...r.last, seq: r.last.seq - 1 } : null, card: undefined, decision: undefined }, after: r })), false);
   }
 }
 

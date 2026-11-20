@@ -151,6 +151,7 @@ pub async fn hub_call(hub : Hub, name : String, x : Array[Json]) -> Json {
     }
     // lifecycle.ts
     "bindSingle" => Json::string(hub.bind_single(a_str(x, 0), opt_arg_str(x, 1), opt_arg_str(x, 2), opt_arg_str(x, 3)))
+    "ensureConversationChat" => hub.ensure_conversation_chat(a_str(x, 0), a_str(x, 1), opt_arg_str(x, 2))
     "openChat" => hub.open_chat(a_str(x, 0), a_str(x, 1), opt_arg_str(x, 2))
     "addToThread" => {
       hub.add_to_thread(arg(x, 0).unwrap_or(Json::null()), a_str(x, 1))

@@ -19,8 +19,9 @@
 // addon (tests), the lock files are made where the Rust makes them but the lock itself is held within
 // this process (one station at a time works on a data directory; only an overlap at a handover would see both).
 import { loadMesh } from "../mesh/native.ts";
-import { chmod, copyFile, lstat, mkdir, open, readFile, readdir, readlink, realpath, rename, rm, stat, unlink } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, open, readFile, readdir, readlink, realpath, rm, stat, unlink } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { renameRetrying, type RenameRetry } from "../ops/files.ts";
 import { log } from "../ops/log.ts";
 import { clean, inside, segments } from "../ops/paths.ts";
 import { walkBounded } from "../ops/walk.ts";
@@ -191,7 +192,7 @@ export async function packFileIf(path: string, ready: () => boolean): Promise<vo
       // In segments into `temp`, read back and found to be the transcript still, byte for byte.
       await packedProgram().ask("pack", { path, temp });
       if (!ready()) return;
-      await rename(temp, dest);
+      await renameRetrying(temp, dest);
       await syncDir(dirname(dest));
       await unlink(path);
     } finally {
@@ -214,7 +215,7 @@ export async function segmentFile(path: string): Promise<boolean> {
       // (what it holds and what the copy holds the same, by their SHA-256)
       const { segmented } = await packedProgram().ask<{ segmented: boolean }>("segment", { path, source, temp });
       if (!segmented) return false;
-      await rename(temp, source);
+      await renameRetrying(temp, source);
       await syncDir(dirname(source));
       return true;
     } finally {
@@ -235,7 +236,7 @@ export async function restoreFile(path: string): Promise<void> {
     try {
       // Written whole into `temp` (0600, on disk), every frame whole and checksummed.
       await packedProgram().ask("restore", { source, temp });
-      await rename(temp, path);
+      await renameRetrying(temp, path);
       await syncDir(dirname(path));
       await unlink(source);
     } finally {
@@ -378,7 +379,12 @@ export async function removeWorktreeRegistrations(adminDirs: readonly string[], 
 
 export const packWorkspace = (room: string) => packWorkspaceIf(room, () => true);
 
-export async function packWorkspaceIf(room: string, ready: () => boolean): Promise<void> {
+/// How long moving a whole workspace directory aside waits for a lock to clear (1.55 s in all): on Windows an agent's
+/// process just stopped (`evict`), a scanner or the indexer keeps a handle in it a moment after (0.1.10630: EPERM 90 ms
+/// after the eviction).
+export const WORKSPACE_RENAME_BACKOFF = [50, 100, 200, 400, 800] as const;
+
+export async function packWorkspaceIf(room: string, ready: () => boolean, opts?: Omit<RenameRetry, "backoff">): Promise<void> {
   const archive = workspaceArchive(room);
   if (await exists(archive)) return;
   const workspace = join(room, "workspace");
@@ -405,11 +411,19 @@ export async function packWorkspaceIf(room: string, ready: () => boolean): Promi
       await unlockWorktrees(room);
       return;
     }
-    await rename(temp, archive);
+    await renameRetrying(temp, archive, opts);
     await syncDir(room);
     const retiring = join(room, "workspace.retiring");
     if (await exists(retiring)) throw new Error("an earlier workspace retirement needs restoration");
-    await rename(workspace, retiring);
+    try {
+      await renameRetrying(workspace, retiring, { ...opts, backoff: WORKSPACE_RENAME_BACKOFF });
+    } catch (error) {
+      // The workspace is still whole where it was: the archive goes again, or the next round would find it, take the
+      // workspace for packed (the first line here) and never retire it.
+      await rm(archive, { force: true }).catch(() => {});
+      await unlockWorktrees(room).catch(() => {});
+      throw error;
+    }
     await mkdir(workspace);
     await chmod(workspace, (await stat(retiring)).mode & 0o7777);
     await removeTree(retiring);
@@ -483,8 +497,8 @@ export async function restoreWorkspace(room: string): Promise<void> {
     if (await isDir(live)) await overlay(live, stage, refused);
   }
   if (await exists(old)) await removeTree(old);
-  if (await exists(workspace)) await rename(workspace, old);
-  await rename(stage, workspace);
+  if (await exists(workspace)) await renameRetrying(workspace, old, { backoff: WORKSPACE_RENAME_BACKOFF });
+  await renameRetrying(stage, workspace, { backoff: WORKSPACE_RENAME_BACKOFF });
   // The links refused on the way, at their final path now: a junction or a copy stands in (a target that is not
   // there, a dangling link, leaves nothing to stand in for: the link is not restored).
   for (const [path, target] of refused) {
@@ -543,7 +557,7 @@ async function takeUploads(from: string, workspace: string): Promise<void> {
   const into = join(workspace, "uploads");
   await mkdir(into, { recursive: true });
   for (const entry of await readdir(join(from, "uploads"))) {
-    if (!(await lstatOrNull(join(into, entry)))) await rename(join(from, "uploads", entry), join(into, entry));
+    if (!(await lstatOrNull(join(into, entry)))) await renameRetrying(join(from, "uploads", entry), join(into, entry));
   }
   await syncDir(into);
 }

@@ -1086,4 +1086,8 @@ pub fn viz_pages_reset() -> Unit {
   viz_mbui_states_clear()
   viz_full.set(None)
   mermaid_charts.clear()
+  mermaid_used.clear()
+  mermaid_shown.clear()
+  mermaid_tick.val = 0
+  mermaid_bytes.val = 0
 }

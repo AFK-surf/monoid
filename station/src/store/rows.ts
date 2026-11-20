@@ -73,6 +73,8 @@ export const seesMissing = (viewer: InWorkspace, key: string): boolean => {
 export type SessionRow = {
   /// The station it was handed here from (replica/handover.ts; absent: it began here, or came back to where it began).
   from?: string;
+  /// The conversation anchor session key when grouped (`sessions.conv`; absent when NULL).
+  conv?: string;
   key: string; connect: string; scope: SessionScope; title: string | null; createdBy: string | null; runtime: string;
   profile: string; profilePinned: boolean; profiles?: string[] | null; model: string | null; effort: string | null; fast: boolean | null; speed?: ModelSpeed | null; tui?: boolean;
   /// Whether it goes on afresh once its prompt cache is over, as chosen in its chat (null: as its station is set,
@@ -465,6 +467,7 @@ export function toSession(r: Json): SessionRow {
     workspace: r.workspace, cwd: r.cwd ?? null, ws: r.ws ?? null, token: r.token, running: r.running === 1, createdAt: r.created_at,
     lastActiveAt: r.last_active_at, archivedAt: r.archived_at, archivedBy: r.archived_by, shownAt: r.shown_at,
     ...(typeof r.came_from === "string" && r.came_from !== "" ? { from: r.came_from } : {}),
+    ...(typeof r.conv === "string" && r.conv !== "" ? { conv: r.conv } : {}),
   };
 }
 

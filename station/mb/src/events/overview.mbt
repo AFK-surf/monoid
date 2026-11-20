@@ -195,6 +195,15 @@ fn archiving_view(raw : J, viewer : Viewer) -> J {
 }
 
 ///|
+/// overview.ts `autoChatsView`.
+fn auto_chats_view(raw : J, viewer : Viewer) -> J {
+  jo([
+    ("enabled", Bool(raw.get("acceptAutoChats") is Some(Bool(true)))),
+    ("canEdit", Bool(manages_station(viewer.role))),
+  ])
+}
+
+///|
 /// ops/agent-env.ts ENV_NAME.
 fn env_name(key : String) -> Bool {
   key.length() > 0 &&
@@ -525,6 +534,29 @@ fn connect_shown(d : OverviewDeps, c : J, sessions_of : (J?) -> Double) -> J {
     Some(by) if truthy(by.get("id")) => by
     _ => Null
   }
+  let starts_on_auto = c.get("autoStation") is Some(Bool(true))
+  let starts_on = if starts_on_auto { None } else { non_empty(c.get("station")) }
+  let starts_on_stations_list : Array[String] = []
+  if !starts_on_auto && c.get("stations") is Some(Arr(items)) {
+    for x in items {
+      if text_of(Some(x)) is Some(s) {
+        let t = @jscase.trim(s)
+        if t != "" && !starts_on_stations_list.contains(t) {
+          starts_on_stations_list.push(t)
+        }
+      }
+    }
+  }
+  let starts_on_stations : J = if starts_on_auto {
+    Null
+  } else if starts_on_stations_list.length() > 0 {
+    ja(starts_on_stations_list.map(js))
+  } else {
+    match starts_on {
+      Some(s) => ja([s])
+      None => Null
+    }
+  }
   // (its properties as the object has them, one undefined holding its place: what a kind's own sets goes there)
   let shown : Array[(String, J?)] = [
     ("id", c.get("id")),
@@ -577,7 +609,9 @@ fn connect_shown(d : OverviewDeps, c : J, sessions_of : (J?) -> Double) -> J {
         },
       ),
     ),
-    ("startsOn", Some(non_empty(c.get("station")).unwrap_or(Null))),
+    ("startsOn", Some(starts_on.unwrap_or(Null))),
+    ("startsOnStations", Some(starts_on_stations)),
+    ("startsOnAuto", if starts_on_auto { Some(Bool(true)) } else { None }),
     ("moves", Some(Bool(true))),
   ]
   let put = (name : String, value : J?) => {
@@ -731,6 +765,7 @@ pub fn overview(
                     ("builtAt", built_at),
                     ("automaticDecisions", Some(decisions)),
                     ("archiving", Some(archiving_view(raw, viewer))),
+                    ("autoChats", Some(auto_chats_view(raw, viewer))),
                     ("viewer", Some(viewer_shown)),
                     ("mesh", Some(mesh_status(d, Some(viewer)))),
                     ("connects", Some(ja(shown_connects))),

@@ -283,9 +283,17 @@ async fn Reading::thread(self : Reading, id : Json) -> Unit {
   } else {
     ""
   }
-  let chat = match sessions.get(0) {
-    Some(s) => field(s, "key")
-    None => Json::null()
+  let chat = match text_of(field(row, "home")) {
+    Some(h) if h != "" => Json::string(h)
+    _ =>
+      match sessions.get(0) {
+        Some(s) =>
+          match text_of(field(s, "key")) {
+            Some(k) => Json::string(@sql.conversation_of(self.db, k))
+            None => field(s, "key")
+          }
+        None => Json::null()
+      }
   }
   let refs : Array[(String, Json)] = [
     ("thread", id),
@@ -566,10 +574,14 @@ fn job_doc(r : Map[String, Json], key : Json, session : Map[String, Json], threa
   body.push(match field(r, "command") { Null => None; v => Some(js_string(v)) })
   body.push(Some(match field(r, "cwd") { Null => ""; v => js_string(v) }))
   body.push(Some(if port is Null { "" } else { ":" + js_string(port) }))
+  let chat_key = match text_of(field(session, "conv")) {
+    Some(c) if c != "" => Json::string(c)
+    _ => key
+  }
   let refs : Array[(String, Json)] = [
     ("job", field(r, "id")),
     ("session", key),
-    ("chat", key),
+    ("chat", chat_key),
     ("state", field(r, "state")),
   ]
   if !(port is Null) {

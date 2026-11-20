@@ -528,3 +528,31 @@ test "a private write: beside its file under a name of its own each time, nothin
   assert_eq(left, ["full", "state.json"])
   rm_force(dir)
 }
+
+///|
+test "preview delegates to codecs.preview and returns None on missing codecs or error" {
+  let asked : Array[(String, String)] = []
+  let ok_codecs : Codecs = {
+    thumbnail: (_, _) => None,
+    preview: (image, thumbs) => {
+      asked.push((image, thumbs))
+      Some({ path: join([thumbs, "\{id_of(image)}.p.jpg"]), type_: "image/jpeg" })
+    },
+    thumbhash: (_, _) => None,
+  }
+  let bad_codecs : Codecs = {
+    thumbnail: (_, _) => None,
+    preview: (_, _) => raise fs_error("EIO", "boom"),
+    thumbhash: (_, _) => None,
+  }
+  assert_true(preview("/a/pic.png", "/data/thumbs", None) is None)
+  match preview("/a/pic.png", "/data/thumbs", Some(ok_codecs)) {
+    Some(t) => {
+      assert_eq(t.path, "/data/thumbs/\{id_of("/a/pic.png")}.p.jpg")
+      assert_eq(t.type_, "image/jpeg")
+    }
+    None => abort("expected preview thumbnail")
+  }
+  assert_eq(asked, [("/a/pic.png", "/data/thumbs")])
+  assert_true(preview("/a/pic.png", "/data/thumbs", Some(bad_codecs)) is None)
+}

@@ -100,6 +100,27 @@ async function bindSingleInTurn(hub: Hub, connectId: string, target: string | nu
   return target;
 }
 
+/// Ensures the conversation's home chat exists (idempotent, §3.3): returns the existing home chat if present,
+/// otherwise creates it with `home = conversationOf(session)`, title from the anchor's session title, and all
+/// conversation members that have not left their birth thread (or `[session]` if all have left).
+export function ensureConversationChat(hub: Hub, session: string, createdBy: string, title: string | null): ThreadRow {
+  if (!hub.internal) throw new Error("still.fail chat is not available");
+  const row = hub.store.getSession(session);
+  if (!row) throw new Error(`unknown session ${session}`);
+  const existing = hub.store.homeChat(session);
+  if (existing !== null) return existing;
+  const anchor = hub.store.conversationOf(session);
+  const anchorRow = hub.store.getSession(anchor) ?? row;
+  const name = title ?? anchorRow.title;
+  const thread = hub.store.openThreadOf(STILLFAIL_SURFACE, INTERNAL_CHANNEL, hub.nextTs(), name, createdBy, anchor);
+  const active = hub.store.activeConversationMembers(anchor, session);
+  const ordered = active.includes(anchor) ? [anchor, ...active.filter((m) => m !== anchor)] : active;
+  for (const member of ordered) {
+    hub.store.joinThread(thread.id, member, INTERNAL_CONNECT);
+  }
+  return thread;
+}
+
 /// Opens a chat on the station's pages with a session in it. More sessions can join it later (addToThread).
 export function openChat(hub: Hub, session: string, createdBy: string, title: string | null): ThreadRow {
   if (!hub.internal) throw new Error("still.fail chat is not available");
@@ -360,27 +381,42 @@ const transcriptCopy = (hub: Hub, key: string) => join(hub.store.archiveDir(), "
 /// Hides a session from lists, or shows it again; `by` is MANUAL or AUTO. Archiving also ends its idle process and
 /// hands its files to cold storage once it is idle; they are restored before the next runtime starts, and before it is
 /// shown again (a promise then, when cold storage takes its time: the session is shown once they are back).
-export function archiveBy(hub: Hub, key: string, archived: boolean, by: string, known?: SessionRow): void | Promise<void> {
+export function archiveBy(hub: Hub, key: string, archived: boolean, by: string, known?: SessionRow, knownMembers?: string[]): void | Promise<void> {
   const row = known ?? hub.store.getSession(key);
   if (!row) throw new Error(`unknown session ${key}`);
+  const members = knownMembers !== undefined && knownMembers.length > 0
+    ? knownMembers
+    : (() => {
+        const anchor = hub.store.conversationOf(key);
+        const found = hub.store.membersOf(anchor);
+        return found.length > 0 ? found : [key];
+      })();
   if (!archived) {
     const shown = async () => {
       hub.store.setArchived(key, false, by);
-      await rm(transcriptCopy(hub, key), { force: true });
+      for (const m of members) await rm(transcriptCopy(hub, m), { force: true });
     };
-    const restoring = hub.cold.restore(key);
-    return restoring ? restoring.then(shown) : shown();
+    const restoring: Promise<void>[] = [];
+    for (const m of members) {
+      const r = hub.cold.restore(m);
+      if (r) restoring.push(r);
+    }
+    return restoring.length > 0 ? Promise.all(restoring).then(shown) : shown();
   }
   hub.store.setArchived(key, archived, by);
-  hub.forgetIdleMeasured(key);
-  hub.closed(key);
-  const actor = hub.actor(row);
-  void actor
-    .putAway()
-    // (what it left in the background ends with it: an archived session keeps nothing running; a turn under way runs
-    // to its end, which ends it then: hub.ts `idleNow`)
-    .then(() => actor.evict(true))
-    .then(() => actor.cleanArchive());
+  for (const m of members) {
+    hub.forgetIdleMeasured(m);
+    hub.closed(m);
+    const mRow = m === key ? row : hub.store.getSession(m);
+    if (!mRow) continue;
+    const actor = hub.actor(mRow);
+    void actor
+      .putAway()
+      // (what it left in the background ends with it: an archived session keeps nothing running; a turn under way runs
+      // to its end, which ends it then: hub.ts `idleNow`)
+      .then(() => actor.evict(true))
+      .then(() => actor.cleanArchive());
+  }
 }
 
 /// Hides a session from lists, or shows it again, by hand.
@@ -977,6 +1013,7 @@ export function autoArchive(hub: Hub, now: number, prepareUnread?: (thread: numb
   // Where only what the archive review recommended goes (`autoArchiveReviewed`): none while the review is off.
   const recommended = (thread: number) => !autoArchiveReviewed || (automaticDecisions.completion.enabled && store.archiveSuggested(thread));
   // Those the look found idle long enough, with what the reader read of each (null: its index not built yet).
+  const lookPassed = new Map<string, { row: SessionRow; convMembers?: string[] }>();
   for (const { row: s, quiet, quietLong, facts: f } of look?.sessions ?? []) {
     if (f.work === null) continue;
     if (f.bound === null) { prepareBindings?.(); continue; }
@@ -993,9 +1030,20 @@ export function autoArchive(hub: Hub, now: number, prepareUnread?: (thread: numb
     if (!done && !lingering) continue;
     if (!lingering && !threads.every((t) => recommended(t.thread.id))) continue;
     if (threads.some((t) => f.kept!.includes(t.thread.id) || unread(t.thread))) continue;
-    log.info("hub", "archiving an idle session", { session: s.key });
-    archiveBy(hub, s.key, true, AUTO, s);
+    lookPassed.set(s.key, { row: s, convMembers: f.convMembers });
   }
+  const archivedLook = new Set<string>();
+  for (const [k, item] of lookPassed) {
+    const anchor = item.row.conv ?? k;
+    if (archivedLook.has(anchor)) continue;
+    archivedLook.add(anchor);
+    const members = item.convMembers ?? store.membersOf(anchor);
+    if (members.length > 0 && members.every((m) => lookPassed.has(m))) {
+      log.info("hub", "archiving an idle session", { session: anchor });
+      archiveBy(hub, anchor, true, AUTO, lookPassed.get(anchor)?.row, members);
+    }
+  }
+  const livePassed = new Map<string, SessionRow>();
   for (const s of live) {
     if (waitingForBindings || (bindingsReady ? store.preparedSessionBound(s.key) : oldBindings!.has(s.key)) || pinned(s.key)) continue;
     // Idle long enough by its times alone, before anything else of it is read.
@@ -1009,8 +1057,18 @@ export function autoArchive(hub: Hub, now: number, prepareUnread?: (thread: numb
     if (!done && !lingering) continue;
     if (!lingering && !threads.every((t) => recommended(t.thread.id))) continue;
     if (threads.some((t) => kept(t.thread.id) || unread(t.thread))) continue;
-    log.info("hub", "archiving an idle session", { session: s.key });
-    archiveBy(hub, s.key, true, AUTO, s);
+    livePassed.set(s.key, s);
+  }
+  const archivedLive = new Set<string>();
+  for (const k of livePassed.keys()) {
+    const anchor = store.conversationOf(k);
+    if (archivedLive.has(anchor)) continue;
+    archivedLive.add(anchor);
+    const members = store.membersOf(anchor);
+    if (members.length > 0 && members.every((m) => livePassed.has(m))) {
+      log.info("hub", "archiving an idle session", { session: anchor });
+      archiveBy(hub, anchor, true, AUTO, livePassed.get(anchor));
+    }
   }
   for (const t of own) {
     // (A reader's look gives those idle long enough and not kept alone.)

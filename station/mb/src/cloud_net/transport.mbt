@@ -274,7 +274,7 @@ pub(all) struct WsIO {
 /// The cloud's transport: the pending dials, and whether it is closed. What it is given: the current entry (config.json
 /// read anew at each use) and the dial's IO.
 pub struct CloudTransport {
-  entry : () -> CloudEntry?
+  entry : () -> CloudEntry? raise NetError
   io : DialIO
   pending : Map[Int, () -> Unit]
   mut next : Int
@@ -282,7 +282,10 @@ pub struct CloudTransport {
 }
 
 ///|
-pub fn CloudTransport::new(entry : () -> CloudEntry?, io : DialIO) -> CloudTransport {
+pub fn CloudTransport::new(
+  entry : () -> CloudEntry? raise NetError,
+  io : DialIO,
+) -> CloudTransport {
   { entry, io, pending: {}, next: 0, closed: false }
 }
 
@@ -297,12 +300,19 @@ pub fn CloudTransport::dial(
     done(Err({ message: "cloud transport closed", errors: [] }))
     return fn() {  }
   }
+  // An entry config.json names wrongly fails the dial: never a direct socket in its place.
+  let entry = (self.entry)() catch {
+    e => {
+      done(Err({ message: error_words(e), errors: [] }))
+      return fn() {  }
+    }
+  }
   self.next += 1
   let id = self.next
   let cancel : Ref[() -> Unit] = Ref(fn() {  })
   let held = fn() { (cancel.val)() }
   self.pending[id] = held
-  cancel.val = dial_cloud(self.io, cloud_origin, (self.entry)(), budget, r => {
+  cancel.val = dial_cloud(self.io, cloud_origin, entry, budget, r => {
     self.pending.remove(id)
     done(r)
   })
@@ -310,7 +320,8 @@ pub fn CloudTransport::dial(
 }
 
 ///|
-/// Whether `url` goes by the entry: still.fail's canonical origin with an entry named. Raised where `url` is none.
+/// Whether `url` goes by the entry: still.fail's canonical origin with an entry named. Raised where `url` is none, and
+/// where config.json names an entry wrongly (never a direct socket in its place).
 pub fn CloudTransport::eligible(
   self : CloudTransport,
   url : String,

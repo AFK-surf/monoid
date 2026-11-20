@@ -472,3 +472,47 @@ test("fill.want loads concurrently across bulk lanes while background fill stays
   tiles(asked(t.host, "bg.mp4", bgFilm.length), bgFilm.length);
   t.core.close();
 });
+
+test("background fill preempted by scheduler backs off IDLE_MS and wakes immediately on fill.want", async () => {
+  const film = bytesOf(10 * MB, 23);
+  const urgent = bytesOf(6 * MB, 29);
+  const t = await started();
+  files(t.host, new Map([["film.mp4", film], ["urgent.mp4", urgent]]));
+  const r = await rig(t);
+  await r.ask("station.file.part", { station: ST, key: "k1", name: "film.mp4", offset: 0, length: MB, keep: true, size: film.length });
+  // Hold the first background part so we can preempt it via scheduler without touching inner.waited.
+  const held1 = t.host.hold(`name=film.mp4&offset=${MB}&length=${4 * MB}`);
+  await t.host.time.pass(IDLE_MS + 100);
+  assert.equal(r.parts("film.mp4"), 2);
+  // Preempt background fill via scheduler (waited.count remains 0, endedAt is already > IDLE_MS ago).
+  const endFg = t.core.inner.scheduler.foregroundBegin(ST);
+  await t.host.settle();
+  endFg();
+  held1();
+  await t.host.settle();
+  // Must NOT tight-loop resend at 0ms or before IDLE_MS elapses.
+  assert.equal(r.parts("film.mp4"), 2, "must not immediately resend after scheduler preemption");
+  await t.host.time.pass(IDLE_MS / 2);
+  assert.equal(r.parts("film.mp4"), 2, "must stay backed off for IDLE_MS");
+  // After IDLE_MS elapses, background fill resumes and finishes.
+  await t.host.time.pass(IDLE_MS);
+  assert.equal(await r.whole(chatKeptId(ST, "k1", "film.mp4"), film.length), true);
+
+  // Now verify fill.want wakes immediately during preemption backoff.
+  const film2 = bytesOf(10 * MB, 31);
+  files(t.host, new Map([["film.mp4", film], ["film2.mp4", film2], ["urgent.mp4", urgent]]));
+  await r.ask("station.file.part", { station: ST, key: "k1", name: "film2.mp4", offset: 0, length: MB, keep: true, size: film2.length });
+  const held2 = t.host.hold(`name=film2.mp4&offset=${MB}&length=${4 * MB}`);
+  await t.host.time.pass(IDLE_MS + 100);
+  assert.equal(r.parts("film2.mp4"), 2);
+  const endFg2 = t.core.inner.scheduler.foregroundBegin(ST);
+  await t.host.settle();
+  endFg2();
+  held2();
+  await t.host.settle();
+  assert.equal(r.parts("film2.mp4"), 2);
+  // Request fill.want during backoff: must wake immediately without waiting IDLE_MS.
+  await r.ask("fill.want", { station: ST, key: "k1", name: "urgent.mp4", size: urgent.length });
+  assert.equal(await r.whole(chatKeptId(ST, "k1", "urgent.mp4"), urgent.length), true, "fill.want must wake immediately during preemption backoff");
+  t.core.close();
+});

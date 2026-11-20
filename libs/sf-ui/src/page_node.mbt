@@ -1900,7 +1900,7 @@ pub fn switch_node(
         .radius(By(fn() { size().1 / 2.0 }))
         .ground(By(fn() {
           let p = theme().p
-          @ui.blend(backdrop_track_ink(), p.accent, dclamp(knob.shown(track), 0.0, 1.0))
+          @ui.blend(track_glass_ink(), p.accent, dclamp(knob.shown(track), 0.0, 1.0))
         }))
         |> ignore
         let d = fn() { size().1 - 2.0 * switch_in }
@@ -1927,7 +1927,7 @@ pub fn switch_node(
               let calm = 1.0 - dmin(1.0, dmax(lens(), 0.0))
               @motion.velocity_capsule(thumb_w(), d(), speed * travel() * calm, 0.0)
             }))
-            .alpha(By(fn() { if lens() > 0.0 { 0.0 } else { 1.0 } }))
+            .alpha(By(fn() { 1.0 - dclamp(lens(), 0.0, 1.0) }))
             |> ignore
           })
           |> ignore
@@ -1940,7 +1940,8 @@ pub fn switch_node(
             .width(By(fn() { Some(thumb_w()) }))
             .height(By(fn() { Some(d()) }))
             .radius(By(fn() { d() / 2.0 }))
-            .glass(By(fn() { Some(backdrop_toggle(lens())) }))
+            .glass(By(fn() { Some(glass_toggle_lens(lens())) }))
+            .alpha(By(fn() { dclamp(lens(), 0.0, 1.0) }))
             .shadow(Is((4.0, 4.0 / 6.0, 0x0000000DL)))
             .offset(By(fn() { (switch_in + travel() * k(), switch_in) }))
             .ground_drawn(By(fn() {

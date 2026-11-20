@@ -18,6 +18,85 @@ priv enum MermaidChart {
 let mermaid_charts : Map[String, MermaidChart] = Map([])
 
 ///|
+/// How many charts are kept (mermaid_charts), and of how many bytes of SVG at most: those least lately drawn let go of
+/// beyond either (their pictures too), asked of the core again as they are drawn again.
+let mermaid_most : Int = 64
+
+///|
+let mermaid_most_bytes : Int = 16 * 1024 * 1024
+
+///|
+/// When each chart was last drawn, by what was asked (mermaid_tick's count).
+// kept across runs: let go with mermaid_charts (viz_pages_reset)
+let mermaid_used : Map[String, Int] = Map([])
+
+///|
+// kept across runs: put back by viz_pages_reset
+let mermaid_tick : Ref[Int] = { val: 0 }
+
+///|
+/// The bytes of the charts' SVGs kept (ChartMade's).
+// kept across runs: put back by viz_pages_reset
+let mermaid_bytes : Ref[Int] = { val: 0 }
+
+///|
+/// How many nodes of the window's tree show each chart (viz_mermaid_node's, while it is made: they read it once, as
+/// mermaid_made says it changed, and would not ask for it again), by what was asked: never let go of while any does.
+// kept across runs: emptied by viz_pages_reset
+let mermaid_shown : Map[String, Int] = Map([])
+
+///|
+/// A node shows chart `key` now ("" none) in place of `was` ("" none): counted (mermaid_shown), drawn now.
+fn mermaid_shown_by(was : String, key : String) -> Unit {
+  if was != "" {
+    let n = mermaid_shown.get(was).unwrap_or(0) - 1
+    if n > 0 {
+      mermaid_shown[was] = n
+    } else {
+      mermaid_shown.remove(was)
+    }
+  }
+  if key != "" {
+    mermaid_shown[key] = mermaid_shown.get(key).unwrap_or(0) + 1
+    mermaid_touch(key)
+  }
+}
+
+///|
+/// Chart `key` drawn now (mermaid_used).
+fn mermaid_touch(key : String) -> Unit {
+  mermaid_tick.val += 1
+  mermaid_used[key] = mermaid_tick.val
+}
+
+///|
+/// The charts beyond mermaid_most or mermaid_most_bytes let go of, the least lately drawn first (none on its way from
+/// the core, never `kept`): a chart made, its picture with it.
+fn mermaid_trim(kept : String) -> Unit {
+  while mermaid_charts.length() > mermaid_most || mermaid_bytes.val > mermaid_most_bytes {
+    let mut oldest = ""
+    let mut when = 0
+    for k, t in mermaid_used {
+      guard k != kept && !(mermaid_charts.get(k) is Some(ChartComing)) && !mermaid_shown.contains(k) else { continue }
+      if oldest == "" || t < when {
+        oldest = k
+        when = t
+      }
+    }
+    guard oldest != "" else { break }
+    match mermaid_charts.get(oldest) {
+      Some(ChartMade(svg, picture, _, _)) => {
+        @ui.forget_image(picture)
+        mermaid_bytes.val -= svg.length()
+      }
+      _ => ()
+    }
+    mermaid_charts.remove(oldest)
+    mermaid_used.remove(oldest)
+  }
+}
+
+///|
 // kept across runs: how many answers came (a signal: a frame drawing a chart reads it, and comes again as one does)
 let mermaid_made : @signals.Signal[Int] = @signals.signal(0)
 
@@ -93,6 +172,7 @@ pub fn viz_mermaid_block(c : @ui.Ctx, src : Source, station : String, place : St
   ignore(mermaid_made.get())
   let ask = mermaid_ask(code, mermaid_filling)
   let key = ask.stringify()
+  mermaid_touch(key)
   match mermaid_charts.get(key) {
     Some(ChartRefused) => @sf.code_block(c, code, "mermaid")
     Some(ChartMade(svg, picture, w, h)) =>
@@ -138,10 +218,7 @@ fn mermaid_asked(src : Source, key : String, ask : Json) -> Unit {
   (src.call)("mermaid.chart", ask, fn(r) {
     match r {
       Ok({ "svg": String(svg), "width": Number(w, ..), "height": Number(h, ..), .. }) if w > 0.0 && h > 0.0 => {
-        let picture = "mem:mermaid/" + key
-        let bytes = @utf8.encode(svg)
-        @ui.add_image(picture, bytes)
-        mermaid_charts[key] = ChartMade(bytes, picture, w, h)
+        mermaid_chart_made(key, @utf8.encode(svg), w, h)
       }
       // a core that has not mermaid (started anew since it was given it): given it again, asked again
       Err({ "code": String("mermaid_absent"), .. }) if mermaid_given.val => {
@@ -150,8 +227,23 @@ fn mermaid_asked(src : Source, key : String, ask : Json) -> Unit {
       }
       _ => mermaid_charts[key] = ChartRefused
     }
+    mermaid_touch(key)
+    mermaid_trim(key)
     mermaid_made.set(mermaid_made.get() + 1)
   })
+}
+
+///|
+/// Chart `key` made by the core: its SVG `bytes` put up as its picture, `w` × `h`.
+fn mermaid_chart_made(key : String, bytes : Bytes, w : Double, h : Double) -> Unit {
+  let picture = "mem:mermaid/" + key
+  @ui.add_image(picture, bytes)
+  match mermaid_charts.get(key) {
+    Some(ChartMade(was, _, _, _)) => mermaid_bytes.val -= was.length()
+    _ => ()
+  }
+  mermaid_charts[key] = ChartMade(bytes, picture, w, h)
+  mermaid_bytes.val += bytes.length()
 }
 
 ///|

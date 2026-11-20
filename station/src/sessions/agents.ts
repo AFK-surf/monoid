@@ -86,6 +86,7 @@ import { Hub } from "./hub.ts";
 import { LiveLocator } from "./live-locator.ts";
 import { peekPackedProgram } from "./packed-mb.ts";
 import { buildWorkspaceActivity } from "./workspace-activity-builder.ts";
+import { buildConversationBackfill } from "./conversation-backfill.ts";
 import { buildSessionCounts } from "./session-count-builder.ts";
 import { PostBlockBuilder } from "./post-block-builder.ts";
 import { roomOfSoon } from "./footprint.ts";
@@ -339,6 +340,10 @@ export const AgentsLive = (control: Control) =>
         (builder) => Effect.promise(() => builder.close()),
       );
       hub.waitForWorkspaceActivity = () => workspaceActivity.ready;
+      yield* Effect.acquireRelease(
+        Effect.sync(() => buildConversationBackfill(store, previous)),
+        (builder) => Effect.promise(() => builder.close()),
+      );
       const sessionCounts = yield* Effect.acquireRelease(
         Effect.sync(() => buildSessionCounts(store, previous)),
         (builder) => Effect.promise(() => builder.close()),
@@ -371,7 +376,7 @@ export const AgentsLive = (control: Control) =>
         },
       });
       const meshBus = yield* Peers;
-      const remote = new Remote({ data, store, jobs, notify: (session, text) => hub.notify(session, text), places: hub.places, bus: meshBus });
+      const remote = new Remote({ data, store, jobs, notify: (session, text) => hub.notify(session, text), places: hub.places, bus: meshBus, acceptAutoChats: () => config.raw()?.acceptAutoChats === true });
       // Its sandboxes (config.json's `sandboxes`): targets of station_task whose tasks run there as this station's jobs.
       remote.setSandboxes(() => sandboxesOf(config.raw()));
       jobs.setSandboxes((name) => sandboxesOf(config.raw()).find((s) => s.name === name) ?? null);
@@ -679,6 +684,7 @@ export const AgentsLive = (control: Control) =>
       const view = async (viewer: Viewer, lang: Lang) => ({ ...((await platformView(viewer, lang)) as object), ...(await parts.overviewOf(viewer, lang)) });
 
       hub.live.heldTold = (key, message) => events.heldTold(key, message);
+      hub.onInterruptedChanged(() => events.overviewChanged());
       // A transcript's past is read by the readers, which keep where its reading stands (read/transcripts.ts): the live
       // view goes on from there, and gives a listener what it lacks from them, none of it read on the main thread.
       hub.live.history = {

@@ -75,6 +75,7 @@ pub fn Store::open(
       store.moved_untold[s] = ()
     }
   }
+  @sql.repair_conversations(db)
   store
 }
 

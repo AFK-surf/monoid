@@ -1,6 +1,6 @@
 // The library's parts that show data (quota_node.mbt, quota_lines_node.mbt, meter_line_node.mbt,
 // meter_chips_brief_node.mbt, grid_table_node.mbt, link_cards_node.mbt, countdown_node.mbt, item_row_node.mbt,
-// list_row_node.mbt), each beside its states, from data said here as the core says it, never from the time of day.
+// list_row_node.mbt, code_display_node.mbt), each beside its states, from data said here as the core says it, never from the time of day.
 
 ///|
 /// Their stories, after the controls': `tips` the layer a chip's and a link's card are shown in.
@@ -273,6 +273,29 @@ fn stories_display(tips : @sf.TipLayer) -> Array[Story] {
             |> ignore
           },
         ),
+      ],
+    },
+    {
+      key: "code-display",
+      group: "数据",
+      name: "验证码展示 CodeDisplay",
+      file: "code_display_node.mbt",
+      api: [("code_display_node.mbt", "code_display_node"), ("code_display_node.mbt", "code_segments")],
+      play: None,
+      about: "给人照着读、到另一台设备上输入的码（受信任设备的安全码、登录验证码）：等宽大字，按输入框的分组（默认 3+3，组间 24）分段，居中；一行放不下时每组各占一行，仍居中。长度对不上分组的码原样整段显示。",
+      cases: [
+        ("6 位安全码（默认 3+3 分段）", fn(card) { @sf.code_display_node(card, fn() { "482915" }) |> ignore }),
+        (
+          "窄容器自动折行（160px）",
+          fn(card) {
+            card.box(fn(b) {
+              b.width(Is(Some(160.0))) |> ignore
+              @sf.code_display_node(b, fn() { "482915" }) |> ignore
+            })
+            |> ignore
+          },
+        ),
+        ("自定义分组（4+4）", fn(card) { @sf.code_display_node(card, fn() { "48291573" }, groups=[4, 4]) |> ignore }),
       ],
     },
   ]

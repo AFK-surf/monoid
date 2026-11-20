@@ -7,6 +7,7 @@ import type { Inner } from "../core.ts";
 import { CoreError, HostError, asCoreError, failedIn } from "../error.ts";
 import { FileRanges } from "./file-ranges.ts";
 import { FileSource } from "../file-source.ts";
+import { SPEED_MIN_BYTES } from "../mesh.ts";
 import type { Host, Pull, Unzstd } from "../host.ts";
 import { current, t } from "../i18n.ts";
 import { encode } from "../ops.ts";
@@ -440,9 +441,11 @@ export class Requests {
     });
   }
 
-  /// POST /uploads?name= with the raw bytes: the file waits on the station, in no chat, until a message sends it.
+  /// POST /uploads?name= with the raw bytes: the file waits on the station, in no chat, until a message sends it. One
+  /// large enough to be timed goes as a bulk transfer, as its parts would (`uploadPart`).
   upload(station: StationAddr, name: string, bytes: Uint8Array, ctx: SpanContext | null): Effect.Effect<unknown, CoreError> {
-    return Effect.flatMap(this.exchange(station, "POST", `/uploads?name=${encode(name)}`, [["content-type", "application/octet-stream"]], bytes, false, ctx), (r) => {
+    const headers: [string, string][] = bytes.length >= SPEED_MIN_BYTES ? [["content-type", "application/octet-stream"], [BULK, "1"]] : [["content-type", "application/octet-stream"]];
+    return Effect.flatMap(this.exchange(station, "POST", `/uploads?name=${encode(name)}`, headers, bytes, false, ctx), (r) => {
       const parsed = parseJson(r.body);
       const data = parsed === undefined ? {} : parsed;
       return r.status >= 200 && r.status < 300 ? Effect.succeed(data as unknown) : Effect.fail(httpError(r.status, data));
@@ -523,7 +526,7 @@ export class Requests {
         const path = `/sessions/${encode(key)}/files?name=${encode(name)}${thumb === "preview" ? "&thumb=2" : thumb ? "&thumb=1" : ""}`;
         const status = this.#status(station);
         const waiting = status.begin({ station: station.toString() }, stationWhat("GET", path), false);
-        const [span, head] = this.#head(station, "GET", path, thumb === false ? [[BULK, "1"]] : [], 0, ctx);
+        const [span, head] = this.#head(station, "GET", path, thumb === false || thumb === "preview" ? [[BULK, "1"]] : [], 0, ctx);
         const result = yield* Effect.result(
           Effect.gen({ self: this }, function* () {
             const reply = yield* this.wire.request(station, head, empty);

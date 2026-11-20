@@ -192,7 +192,7 @@ test("profile_recovery_follows_states_and_clears_after_success", () => {
   assert.equal(q.trouble, null);
   q.quota.state = "blocked";
   q = p.profile(q);
-  assert.equal(q.trouble.title, "账号被停用");
+  assert.equal(q.trouble.title, "服务商拒绝了这个账号");
   assert.equal(q.checkTone, "red");
 });
 
@@ -326,7 +326,7 @@ test("a_sessions_context_is_compacted_or_cleared_by_hand_between_turns_once_it_h
 test("an_account_its_provider_refuses_says_so_whatever_its_check_found", () => {
   let q: J = { check: { state: "ok" }, quota: { state: "blocked", windows: [] } };
   q = p.profile(q);
-  assert.deepEqual([q.checkText, q.checkTone], ["已停用", "red"]);
+  assert.deepEqual([q.checkText, q.checkTone], ["账号被拒", "red"]);
   let ok: J = { check: { state: "ok" }, quota: { state: "unavailable", windows: [] } };
   ok = p.profile(ok);
   assert.equal(ok.checkText, "可用");

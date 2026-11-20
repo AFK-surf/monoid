@@ -1227,3 +1227,82 @@ fn update_tip_now() -> String {
   let stands = @sfbase.update_stands()
   stands.label + (if stands.note == "" { "" } else { " · " + stands.note })
 }
+
+///|
+/// What the stations' sidebar says of Willow's machine: its words left of the page, as they are drawn now.
+fn side_meters_said(t : @ui.Tester) -> Array[String] {
+  t.words().filter(fn(w) { w.1 < 300.0 && w.0.has_suffix("%") }).map(fn(w) { w.0 })
+}
+
+///|
+test "wide: the CPU's dial turned on a station's page turns its CPU in the stations' sidebar too, and back; each sample said the way chosen" {
+  new_run()
+  let base = fixture("home")
+  // (Willow's CPU as its machine is sampled: what is left of it, 72 at first)
+  let cpu_left = @signals.signal(72)
+  let src : Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      let t = base.topic(name, params).get().snapshot()
+      guard name == "stations" && t.value is Some(Array(list)) else { return t }
+      let left = cpu_left.get()
+      let sampled = list.map(fn(st) {
+        guard st is Object(s) && text(Some(st), "station") == "ws1/st1" else { return st }
+        let host = match s.get("host") {
+          Some(Object(h)) => Map::from_iter(h.iter())
+          _ => return st
+        }
+        host["meters"] = Json::array(
+          items(Some(Json::object(host)), "meters").map(fn(m) {
+            guard m is Object(o) && text(Some(m), "short") == "CPU" else { return m }
+            let m2 = Map::from_iter(o.iter())
+            m2["left"] = Json::number(left.to_double())
+            m2["big"] = Json::string(left.to_string())
+            m2["remaining"] = Json::string("空闲 \{left}%")
+            Json::object(m2)
+          }),
+        )
+        let s2 = Map::from_iter(s.iter())
+        s2["host"] = Json::object(host)
+        Json::object(s2)
+      })
+      { ..t, value: Some(Json::array(sampled)) }
+    },
+  }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0)
+  @sfbase.go_place("stations") |> ignore
+  t.run_for(@ui.move_most_ms)
+  t.tap_text("Willow")
+  t.run_for(@ui.move_most_ms)
+  // (none kept: idle, in the sidebar as on the page)
+  assert_true(side_meters_said(t).contains("72%"), msg=side_meters_said(t).join("|"))
+  assert_true(!side_meters_said(t).contains("28%"), msg=side_meters_said(t).join("|"))
+  // (the dial in its full words or its short ones, as the page's width has it)
+  let dial = fn() {
+    let mut at = None
+    for words in ["CPU 空闲率", "CPU 空闲", "CPU 占用率", "CPU 占用"] {
+      if at is None {
+        at = t.find(words)
+      }
+    }
+    at
+  }
+  guard dial() is Some((x, y)) else { fail("no CPU dial: " + t.words().map(fn(w) { w.0 }).join("|")) }
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("CPU 占用率") is Some(_) || t.find("CPU 占用") is Some(_), msg="the page's dial turned")
+  assert_true(side_meters_said(t).contains("28%"), msg="busy in the sidebar: " + side_meters_said(t).join("|"))
+  assert_true(!side_meters_said(t).contains("72%"), msg="idle no longer: " + side_meters_said(t).join("|"))
+  // (sampled anew while busy: what is used now, 92%)
+  cpu_left.set(8)
+  t.run_for(@ui.move_most_ms)
+  assert_true(side_meters_said(t).contains("92%"), msg="sampled anew, busy: " + side_meters_said(t).join("|"))
+  assert_true(!side_meters_said(t).contains("8%"), msg="sampled anew, not idle: " + side_meters_said(t).join("|"))
+  cpu_left.set(72)
+  t.run_for(@ui.move_most_ms)
+  guard dial() is Some((x, y)) else { fail("no CPU dial") }
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  assert_true(side_meters_said(t).contains("72%"), msg="back to idle: " + side_meters_said(t).join("|"))
+  assert_eq(t.squeeze_faults(), [])
+}

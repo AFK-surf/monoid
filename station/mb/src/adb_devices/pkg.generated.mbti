@@ -473,6 +473,7 @@ pub struct World {
   threads : @store_threads.Store
   call : async (String, Array[@jsjson.JValue]) -> @jsjson.JValue
   callback : (async (Array[@jsjson.JValue]) -> @jsjson.JValue) -> @jsjson.JValue
+  write : ((Array[@jsjson.JValue]) -> @jsjson.JValue raise) -> @jsjson.JValue
   now : () -> Double
   spawn : (async () -> Unit) -> Unit
   words : @session_chats.Words
@@ -490,7 +491,7 @@ pub async fn World::fs_stat(Self, String) -> @host_world.LstatInfo?
 pub fn World::get_session(Self, String) -> @jsjson.JValue
 pub fn World::hub_has(Self, String) -> Bool
 pub async fn World::log(Self, String, String, String, @jsjson.JValue) -> Unit
-pub fn World::new(@host.Host, @store_sessions.Store, @store_threads.Store, async (String, Array[@jsjson.JValue]) -> @jsjson.JValue, (async (Array[@jsjson.JValue]) -> @jsjson.JValue) -> @jsjson.JValue, () -> Double, (async () -> Unit) -> Unit, @session_chats.Words) -> Self
+pub fn World::new(@host.Host, @store_sessions.Store, @store_threads.Store, async (String, Array[@jsjson.JValue]) -> @jsjson.JValue, (async (Array[@jsjson.JValue]) -> @jsjson.JValue) -> @jsjson.JValue, ((Array[@jsjson.JValue]) -> @jsjson.JValue raise) -> @jsjson.JValue, () -> Double, (async () -> Unit) -> Unit, @session_chats.Words) -> Self
 pub fn World::set_lang(Self, String) -> Unit
 pub async fn World::sleep(Self, Double) -> Unit
 pub fn World::starter(Self, String) -> String? raise

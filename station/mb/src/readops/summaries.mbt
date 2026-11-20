@@ -83,6 +83,9 @@ fn summary_session_json(r : Map[String, Json]) -> Map[String, Json] {
   if field(r, "came_from") is String(from) && from != "" {
     v["from"] = Json::string(from)
   }
+  if field(r, "conv") is String(conv) && conv != "" && Json::string(conv) != field(r, "key") {
+    v["conv"] = Json::string(conv)
+  }
   v
 }
 

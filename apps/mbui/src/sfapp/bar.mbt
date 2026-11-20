@@ -8,8 +8,8 @@
 // motion is a number on a spring (or a timed glide) stepped a frame at a time. Shown on a place's top page with
 // nothing over it; gone down out of the way (300 ms) under a page pushed, back up (380 ms) as it comes back.
 //
-// The capsule and the circle are Backdrop lenses over the pages (@sf.glass_tab_bar, LiquidBottomTabs': the page
-// made vivid, blurred and bent along their rims, the container's colour over it); where glass is drawn solid, their ground. What moves is only drawn so (src/motion's rule): the
+// The capsule and the circle are neutral optical liquid glass over the pages (@sf.glass_tab_bar: uniform 2.1pt blur,
+// quarter-circle bevel refraction, adaptive iOS 27 color transfer and glint, optional touch spot); where glass is drawn solid, their ground. What moves is only drawn so (src/motion's rule): the
 // bar going down and coming back, the capsule giving the action room and the action growing and shrinking, its icon
 // swapping, a bar chosen in the panel sliding down into the bar's place are looks over where they are laid out, and
 // what leaves is drawn only. (The action shown or not is still called the notch here, `k`, as it stood in one cut into
@@ -795,8 +795,19 @@ fn BarModel::jump(self : BarModel) -> Unit {
 // ── what the bar is told ───────────────────────────────────────────────
 
 ///|
-/// The notch's action's icon, as last shown (kept as it closes).
+/// The notch's action's icon, as last shown (kept as it closes): bar_action_icon's.
 let m_face : Ref[String] = { val: "" }
+
+///|
+/// The icon the notch draws for `action` (bar_action's; "" none): 令's action, a new chat, drawn as a ＋ as the others'
+/// are (令's own glyph read as no shape anyone knew).
+fn bar_action_icon(action : String) -> String {
+  if action == "ling" {
+    "plus"
+  } else {
+    action
+  }
+}
 
 ///|
 /// A place's name (the bar's words for what a screen reader says, the place's page's title).
@@ -966,16 +977,18 @@ fn bar_tell(told : BarTold, at : Double) -> Unit {
     m.drag_y = -1.0
     m.holds = false
   }
-  // the notch's icon: another swaps in as the notch stays open (a short scale and fade); closed or none shown, at once
-  if told.action != "" && told.action != m_face.val {
+  // the notch's icon: another swaps in as the notch stays open (a short scale and fade); closed or none shown, at once.
+  // By the icon drawn, not the action: 令 and ＋ draw the same ＋, which stays still as one gives way to the other.
+  let face = bar_action_icon(told.action)
+  if face != "" && face != m_face.val {
     let k_then = m.k_at(at)
     if m_face.val == "" || k_then <= 0.001 {
-      m_face.val = told.action
+      m_face.val = face
       m.icon_was = ""
       m.icon_swap.snap(1.0)
     } else {
       m.icon_was = m_face.val
-      m_face.val = told.action
+      m_face.val = face
       m.icon_swap.snap(0.0)
       m.icon_swap.go(1.0, icon_swap_ms, Linear, at~)
     }

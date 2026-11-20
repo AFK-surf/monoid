@@ -195,5 +195,5 @@ fn main {
   if env("MBUI_SECURE_TEST") == "1" && secure_test() == 0 {
     @hostapi.log("SECURE_TEST: not on this host")
   }
-  @ui.run("still.fail · mbui", view)
+  @ui.run_legacy_ctx("still.fail · mbui", view)
 }

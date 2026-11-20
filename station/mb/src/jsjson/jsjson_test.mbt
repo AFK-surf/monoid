@@ -439,3 +439,80 @@ test "locale_compare, without_mentions, is_well_formed" {
     _ => fail("expected string")
   }
 }
+
+///|
+/// What `put` one key at a time gives: what `jobj` and the parser must give for an object of any size.
+fn put_each(fields : Array[(String, JValue)]) -> JValue {
+  let o = JValue::Obj([])
+  for f in fields {
+    o.put(f.0, f.1)
+  }
+  o
+}
+
+///|
+/// An object's fields in the order it holds them (stringify orders them again: this does not).
+fn held(v : JValue) -> String {
+  match v {
+    Obj(entries) => entries.map(e => e.0 + "=" + stringify(e.1)).join(",")
+    _ => "not an object"
+  }
+}
+
+///|
+test "a big object's repeated keys: each in its first place with its last value, integer-like keys first" {
+  let fields : Array[(String, JValue)] = []
+  for i in 0..<20 {
+    fields.push(("k\{i}", Num(i.to_double())))
+  }
+  // (repeats of a key before the map and after it, integer-like keys among them, repeated too)
+  fields.push(("k3", Str("late")))
+  fields.push(("7", Bool(true)))
+  fields.push(("k19", Str("last")))
+  fields.push(("2", Null))
+  fields.push(("07", Num(7.0)))
+  fields.push(("7", Bool(false)))
+  fields.push(("k0", Str("again")))
+  let want = stringify(put_each(fields))
+  inspect(
+    want,
+    content="{\"2\":null,\"7\":false,\"k0\":\"again\",\"k1\":1,\"k2\":2,\"k3\":\"late\",\"k4\":4,\"k5\":5,\"k6\":6,\"k7\":7,\"k8\":8,\"k9\":9,\"k10\":10,\"k11\":11,\"k12\":12,\"k13\":13,\"k14\":14,\"k15\":15,\"k16\":16,\"k17\":17,\"k18\":18,\"k19\":\"last\",\"07\":7}",
+  )
+  assert_eq(stringify(@jsjson.jobj(fields)), want)
+  assert_eq(held(@jsjson.jobj(fields)), held(put_each(fields)))
+  let text = "{" + fields.map(f => "\"\{f.0}\":\{stringify(f.1)}").join(",") + "}"
+  assert_eq(stringify(parse(text)), want)
+  // (as read, the object keeps the order the text gave its keys; the map's places are those of the scan's)
+  match parse(text) {
+    Obj(entries) => {
+      assert_eq(entries.length(), 23)
+      assert_eq(entries[3].0 + "=" + stringify(entries[3].1), "k3=\"late\"")
+      assert_eq(entries[20].0 + "=" + stringify(entries[20].1), "7=false")
+      assert_eq(entries[22].0 + "=" + stringify(entries[22].1), "07=7")
+    }
+    _ => fail("not an object")
+  }
+  // (under the map's size, the same)
+  let small = fields[0:5].to_array() + [("k1", Str("x")), ("3", Null)]
+  assert_eq(held(@jsjson.jobj(small)), held(put_each(small)))
+}
+
+///|
+test "an object of 5,000 keys read and put together whole" {
+  let fields : Array[(String, JValue)] = []
+  for i in 0..<5000 {
+    let key = if i % 7 == 0 { "\{(5000 - i) * 3}" } else { "h\{i}" }
+    fields.push((key, Num(i.to_double())))
+  }
+  // (repeats of keys already there)
+  for i in 0..<100 {
+    fields.push(("h\{i * 7 + 1}", Str("again")))
+  }
+  let want = stringify(put_each(fields))
+  assert_eq(stringify(@jsjson.jobj(fields)), want)
+  assert_eq(held(@jsjson.jobj(fields)), held(put_each(fields)))
+  let text = "{" + fields.map(f => "\"\{f.0}\":\{stringify(f.1)}").join(",") + "}"
+  let v = parse(text)
+  assert_eq(stringify(v), want)
+  inspect(v.keys().length(), content="5000")
+}

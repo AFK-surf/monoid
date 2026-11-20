@@ -1478,6 +1478,8 @@ pub fn Store::show_chat(
   ws : Json,
 ) -> Unit raise {
   self.with_changes(changes => {
+    let settled_sessions : Array[String] = []
+    let settled_threads : Array[Json] = []
     self.tx(() => {
       for key in keys {
         ignore(
@@ -1495,6 +1497,28 @@ pub fn Store::show_chat(
           })
         }
       }
+      let birth_ids : Array[Json] = []
+      for key in keys {
+        for tid in @sql.birth_threads_of(self.db, key) {
+          if !birth_ids.contains(tid) {
+            birth_ids.push(tid)
+          }
+        }
+      }
+      let now = self.now_json()
+      for tid in birth_ids {
+        let (ss, ts) = @sql.settle_conversation_in_tx(self.db, tid, now)
+        for s in ss {
+          if !settled_sessions.contains(s) {
+            settled_sessions.push(s)
+          }
+        }
+        for id in ts {
+          if !settled_threads.contains(id) {
+            settled_threads.push(id)
+          }
+        }
+      }
     })
     for key in keys {
       self.ws_of.remove(key)
@@ -1503,6 +1527,14 @@ pub fn Store::show_chat(
       for t in self.session_threads(jstr(key)) {
         changes.push(thread_change(thread_id_of(t)))
       }
+    }
+    for s in settled_sessions {
+      if !keys.contains(s) {
+        changes.push(session_change(jstr(s)))
+      }
+    }
+    for id in settled_threads {
+      changes.push(thread_change(id))
     }
     self.session_workspace_changed()
   })
@@ -1789,18 +1821,41 @@ pub fn Store::stillfail_homes(
     return out
   }
   let first : Map[String, Json] = Map([])
+  let sql =
+    "SELECT kind, id, k, surface, member FROM (\n" +
+    "  SELECT 0 AS kind, t.id AS id, j.value AS k, t.surface AS surface, m.session AS member, m.joined_at AS j, m.rowid AS r\n" +
+    "    FROM json_each(?1) j\n" +
+    "    JOIN sessions s ON s.key = j.value\n" +
+    "    JOIN threads t INDEXED BY threads_home ON t.home = COALESCE(NULLIF(s.conv, ''), s.key)\n" +
+    "    LEFT JOIN thread_sessions m ON m.thread = t.id\n" +
+    "  UNION ALL\n" +
+    "  SELECT 1 AS kind, 0 AS id, j.value AS k, ?3 AS surface, p.key AS member, 0 AS j, 0 AS r\n" +
+    "    FROM json_each(?1) j\n" +
+    "    JOIN sessions s ON s.key = j.value\n" +
+    "    JOIN sessions p INDEXED BY sessions_conv_grouped\n" +
+    "      ON p.conv IS NOT NULL AND p.conv != p.key\n" +
+    "     AND p.conv = COALESCE(NULLIF(s.conv, ''), s.key)\n" +
+    "     AND (p.ws IS NULL OR (p.ws NOT LIKE 'handed:%' AND p.ws NOT LIKE 'coming:%'))\n" +
+    "  UNION ALL\n" +
+    "  SELECT 1 AS kind, 0 AS id, s.key AS k, ?3 AS surface, s.conv AS member, 0 AS j, 0 AS r\n" +
+    "    FROM sessions s\n" +
+    "    WHERE s.key IN (SELECT value FROM json_each(?1))\n" +
+    "      AND s.conv IS NOT NULL AND s.conv != '' AND s.conv != s.key\n" +
+    ") ORDER BY kind, id, j, r LIMIT ?2"
   for
     r in self.all(
-      "SELECT t.id, t.home, t.surface, m.session FROM threads t LEFT JOIN thread_sessions m ON m.thread = t.id WHERE t.home IN (SELECT value FROM json_each(?)) ORDER BY t.id, m.joined_at, m.rowid LIMIT ?",
-      [jstr(js(strings(keys))), ints(keys.length() * 64)],
+      sql,
+      [jstr(js(strings(keys))), ints(keys.length() * 64), jstr(stillfail_surface)],
     ) {
-    let home = js_string(col(r, "home"))
-    if !first.contains(home) {
-      first[home] = col(r, "id")
-    }
-    if first.get(home) != Some(col(r, "id")) ||
-      col(r, "surface") != jstr(stillfail_surface) {
-      continue
+    let home = js_string(col(r, "k"))
+    if col(r, "kind") == Json::number(0.0) {
+      if !first.contains(home) {
+        first[home] = col(r, "id")
+      }
+      if first.get(home) != Some(col(r, "id")) ||
+        col(r, "surface") != jstr(stillfail_surface) {
+        continue
+      }
     }
     let mut at = -1
     for i, e in out {
@@ -1812,7 +1867,7 @@ pub fn Store::stillfail_homes(
       out.push((home, []))
       at = out.length() - 1
     }
-    if col(r, "session") is String(s) {
+    if col(r, "member") is String(s) && !out[at].1.contains(s) {
       out[at].1.push(s)
     }
   }

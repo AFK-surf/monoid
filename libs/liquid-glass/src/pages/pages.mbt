@@ -17,29 +17,36 @@ priv struct Held {
 
 ///|
 /// The page named `name` in the window's `root`: "overview", "dialog" (the overview, its dialog open) or
-/// "interactive" (the overview, its parts held), "film" (the film's parts).
-pub fn page(root : @view.View, name : String) -> Unit {
+/// "interactive" (the overview, its parts held), "film" (the film's parts). `top`: room left over the parts, for what
+/// lies over the page's top (the gallery's bar); `closed`: told as the dialog closes.
+pub fn page(root : @view.View, name : String, top? : Double = 0.0, closed? : () -> Unit = fn() {  }) -> Unit {
   @ui.set_tree_theme(@lg.ui_theme)
   root.box(fn(w) {
     w.grow(Is(1.0)).clips(Is(true)) |> ignore
     wallpaper(w)
     match name {
-      "film" => film_page(w)
+      "film" => film_page(w, top)
       "dialog" => {
-        overview(w, None)
+        overview(w, None, top)
         let open = @signals.signal(true)
         @lg.liquid_dialog_node(
           w,
           fn() { open.get() },
-          fn() { open.set(false) },
+          fn() {
+            open.set(false)
+            closed()
+          },
           fn() { "Dialog Title" },
           fn() { lorem },
-          on_action=fn() { open.set(false) },
+          on_action=fn() {
+            open.set(false)
+            closed()
+          },
         )
         |> ignore
       }
-      "interactive" => overview(w, Some(held_now()))
-      _ => overview(w, None)
+      "interactive" => overview(w, Some(held_now()), top)
+      _ => overview(w, None, top)
     }
   })
   |> ignore
@@ -156,8 +163,9 @@ fn row(parent : @view.View, body : (@view.View) -> Unit) -> Unit {
 }
 
 ///|
-/// Every part, in two columns over the wallpaper; with `held`, each held as that says (pressed as the page is made).
-fn overview(root : @view.View, held : Held?) -> Unit {
+/// Every part, in two columns over the wallpaper, `top` more room over them; with `held`, each held as that says
+/// (pressed as the page is made).
+fn overview(root : @view.View, held : Held?, top : Double) -> Unit {
   let on = @signals.signal(true)
   let off = @signals.signal(false)
   let level = @signals.signal(40.0)
@@ -167,7 +175,7 @@ fn overview(root : @view.View, held : Held?) -> Unit {
   let wifi = @signals.signal(true)
   let cell = @signals.signal(true)
   root.box(fn(page) {
-    page.grow(Is(1.0)).row(Is(true)).gap(Is(48.0)).padding(Is((48.0, 40.0, 48.0, 40.0))) |> ignore
+    page.grow(Is(1.0)).row(Is(true)).gap(Is(48.0)).padding(Is((48.0, 40.0 + top, 48.0, 40.0))) |> ignore
     page.box(fn(left) {
       left.width(Is(Some(520.0))).shrink(Is(0.0)).gap(Is(28.0)) |> ignore
       section(left, "LiquidButton", fn(s) {
@@ -345,13 +353,13 @@ fn overview(root : @view.View, held : Held?) -> Unit {
 
 ///|
 /// The film's page: the parts its script drags, each where the script finds it (src/shots, film_script): 40 in from
-/// the window's top left, 40 apart down it, 520 wide.
-fn film_page(root : @view.View) -> Unit {
+/// the window's top left (`top` more down), 40 apart down it, 520 wide.
+fn film_page(root : @view.View, top : Double) -> Unit {
   let on = @signals.signal(false)
   let level = @signals.signal(30.0)
   let tab = @signals.signal(0)
   root.box(fn(page) {
-    page.grow(Is(1.0)).gap(Is(40.0)).padding(Is((40.0, 40.0, 40.0, 40.0))).lines_up(Is(Some(Start))) |> ignore
+    page.grow(Is(1.0)).gap(Is(40.0)).padding(Is((40.0, 40.0 + top, 40.0, 40.0))).lines_up(Is(Some(Start))) |> ignore
     @lg.liquid_button_node(page, fn() { "Liquid Button" }, fn() {  }) |> ignore
     @lg.liquid_toggle_node(page, fn() { on.get() }, fn(v) { on.set(v) }, fn() { "Toggle" }) |> ignore
     page.box(fn(b) {

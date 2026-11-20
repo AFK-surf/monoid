@@ -48,12 +48,28 @@ case "${1:-build}" in
     else
       DST=$(mkdir -p "$OUT" && cd "$OUT" && pwd)
     fi
-    # minified (MoonBit's names are long) by esbuild, the version pinned here: the workspace's own where its packages
-    # have it, else fetched
+    # minified (MoonBit's names are long) by esbuild, the version pinned here: prefer MBUI_ESBUILD, PATH,
+    # current module node_modules, and only fall back to parent monorepo node_modules before npx.
     ESBUILD=0.28.2
-    es=$(ls -d "$PWD"/node_modules/.pnpm/esbuild@$ESBUILD/node_modules/esbuild/bin/esbuild \
-      "$ROOT"/../../node_modules/.pnpm/esbuild@$ESBUILD/node_modules/esbuild/bin/esbuild \
-      "$ROOT"/../../station/node_modules/.pnpm/esbuild@*/node_modules/esbuild/bin/esbuild 2>/dev/null | tail -1 || true)
+    es=""
+    if [ -n "${MBUI_ESBUILD:-}" ] && [ -x "$MBUI_ESBUILD" ]; then
+      es="$MBUI_ESBUILD"
+    elif command -v esbuild >/dev/null 2>&1; then
+      es=$(command -v esbuild)
+    else
+      for cand in \
+        "$PWD"/node_modules/.bin/esbuild \
+        "$PWD"/node_modules/.pnpm/esbuild@$ESBUILD/node_modules/esbuild/bin/esbuild \
+        "$ROOT"/node_modules/.bin/esbuild \
+        "$ROOT"/node_modules/.pnpm/esbuild@$ESBUILD/node_modules/esbuild/bin/esbuild \
+        "$ROOT"/../../node_modules/.pnpm/esbuild@$ESBUILD/node_modules/esbuild/bin/esbuild \
+        "$ROOT"/../../station/node_modules/.pnpm/esbuild@*/node_modules/esbuild/bin/esbuild; do
+        if [ -x "$cand" ]; then
+          es="$cand"
+          break
+        fi
+      done
+    fi
     if [ -n "$es" ]; then
       "$es" --minify "$OUT/demo.js" --outfile="$DST/app.js" --log-level=error
     else

@@ -414,6 +414,54 @@ public final class FramePacerTest {
                 during == 30f && frames >= 28 && frames <= 30, "rate " + during + ", " + frames + " frames in 0.95 s");
     }
 
+    /** A keyboard step (frameNow) right after a picture-only frame still lays out the app rather than redrawing. */
+    static void frameNowAfterPictureCase() {
+        Phone ph = new Phone(120, 3, true, 200_000);
+        ph.app = steady(1.0, 1.0, -1);
+        final boolean[] wantedAfterFrameNow = {false};
+        ph.main(Math.round(50e6), () -> {
+            ph.pacer.pictureFrame();
+            ph.pacer.frameNow();
+            wantedAfterFrameNow[0] = ph.pacer.appWanted.get();
+        });
+        ph.runUntil(Math.round(120e6));
+        check("frameNow after pictureFrame sets appWanted and draws an app frame",
+                wantedAfterFrameNow[0] && ph.drawn.size() == 1,
+                "appWanted=" + wantedAfterFrameNow[0] + ", frames drawn=" + ph.drawn.size());
+    }
+
+    /** Keyboard animation pre-warmed with sayRate(true) runs at topRate from before frame 1 and drops after it ends. */
+    static void imeWarmupRateCase() {
+        Phone ph = new Phone(120, 3, true, 200_000);
+        ph.app = steady(1.0, 1.0, -1);
+        final float[] rateBeforeFirstFrame = {0f};
+        // Pre-warm on drawing thread (MBView.imeMovingStarted) before the first WindowInsetsAnimation.onProgress step
+        ph.at(Math.round(50e6), () -> {
+            ph.drawingQueue.add(() -> ph.pacer.sayRate(true));
+            ph.kickDrawing();
+        });
+        ph.main(Math.round(60e6), () -> rateBeforeFirstFrame[0] = ph.rate);
+        long firstStep = Math.round(60e6);
+        for (int k = 0; k < 10; k++) {
+            ph.main(firstStep + k * ph.period, ph.pacer::frameNow);
+        }
+        long afterSteps = firstStep + 10 * ph.period;
+        ph.runUntil(afterSteps);
+        float rateDuring = ph.rate;
+        int framesDuring = ph.drawn.size();
+        // Animation ends and keyboard is not shown (typingChanged lets the rate go after a second)
+        ph.at(afterSteps + ph.period, () -> {
+            ph.typing = false;
+            ph.drawingQueue.add(ph.pacer::typingChanged);
+            ph.kickDrawing();
+        });
+        ph.runUntil(afterSteps + Math.round(1300e6));
+        check("IME warmup: topRate before frame 1, held across frameNow sequence, released after end",
+                rateBeforeFirstFrame[0] == 120f && rateDuring == 120f && framesDuring == 10 && ph.rate == 0f,
+                "before=" + rateBeforeFirstFrame[0] + ", during=" + rateDuring
+                        + ", frames=" + framesDuring + ", after=" + ph.rate);
+    }
+
     public static void main(String[] args) throws IOException {
         motionCase("a motion of 1 ms CPU and 1 ms GPU a frame shows a new frame at every refresh", 1, 1, true);
         motionCase("a motion of 0.5 ms CPU and 7 ms GPU a frame (the GPU under a refresh) shows a new frame at every refresh", 0.5, 7, true);
@@ -422,6 +470,8 @@ public final class FramePacerTest {
         typingCase();
         rateAfterMotion();
         pacedCase();
+        frameNowAfterPictureCase();
+        imeWarmupRateCase();
         if (args.length > 0) {
             replay(args[0], 1);
             replay(args[0], 7);

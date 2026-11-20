@@ -73,12 +73,23 @@ export type MoveAsksDeps = {
     asked: (to: string, key: string, make: () => Json) => Promise<Json>;
     run: (origin: string, key: string, work: () => Promise<Json>) => Json;
   };
+  /// What a chat's station_move waits for its answer: `what`'s value once settled, or null if it is not within
+  /// ANSWER_SOON_MS (it goes on, and the chat is told its answer once it ends). None: waited for to its end.
+  soon?: <A>(what: Promise<A>) => Promise<{ value: A } | null>;
 };
+
+/// How long a chat's station_move waits on its answer before saying that it is under way and telling the chat its
+/// answer once it ends: an agent's tool call has a deadline of its runtime's own (Claude Code's, Codex's), and a plan of
+/// thousands of chats toward a far station, or a move toward a busy one, outlasts it (real run, 2026-11-20: a plan toward
+/// gt1 and a move toward tokyo-mac-studio-0 answered the agent only "The operation timed out"; the move went on, unseen).
+export const ANSWER_SOON_MS = 20_000;
 
 export class MoveAsks {
   readonly #d: MoveAsksDeps;
   #asks: Ask[];
   #running: Promise<unknown> | null = null;
+  /// A chat's station_move answers still to be told it (`#soon`).
+  readonly #later = new Set<Promise<unknown>>();
 
   constructor(d: MoveAsksDeps) {
     this.#d = d;
@@ -91,6 +102,22 @@ export class MoveAsks {
 
   async settle(): Promise<void> {
     await this.#running?.catch(() => {});
+    await Promise.all([...this.#later]);
+  }
+
+  /// `work`'s answer for chat `session` (null: another station asked) if it comes soon (`soon`), else that it is under
+  /// way, its answer told to the chat once it ends, whatever it is (a refusal too).
+  async #soon(session: string | null, what: string, work: () => Promise<Json>): Promise<Json> {
+    const run = work();
+    if (session === null || this.#d.soon === undefined) return await run;
+    const first = await this.#d.soon(run);
+    if (first !== null) return first.value;
+    const told = run.then(
+      (v) => this.#d.notify(session, `station_move ${what} ended: ${typeof v?.say === "string" ? v.say : JSON.stringify(v)}`),
+      (e) => this.#d.notify(session, `station_move ${what} did not go: ${(e as Error).message}`),
+    ).finally(() => this.#later.delete(told));
+    this.#later.add(told);
+    return { underWay: true, say: `station_move ${what} is still under way: its answer is told in this chat once it ends. Do not ask again; end your turn waiting (status shows where each item stands meanwhile).` };
   }
 
   #station(ws: string, v: unknown): { id: string; name: string } {
@@ -121,9 +148,10 @@ export class MoveAsks {
         const told = this.#d.told;
         if (told !== undefined && (args.action === "move" || args.action === "back")) {
           const key = `tool:${args.action}:${randomBytes(6).toString("hex")}`;
-          return await told.asked(at.id, key, () => ({ method: "move.tool", workspace: ws, args: rest, told: key }));
+          return await this.#soon(session, `${args.action} on ${at.name}`, () => told.asked(at.id, key, () => ({ method: "move.tool", workspace: ws, args: rest, told: key })));
         }
-        return await this.#d.ask(at.id, { method: "move.tool", workspace: ws, args: rest });
+        const ask = this.#d.ask;
+        return await this.#soon(session, `${String(args.action)} on ${at.name}`, () => ask(at.id, { method: "move.tool", workspace: ws, args: rest }));
       }
     }
     return await this.toolIn(ws, session, args);
@@ -146,19 +174,7 @@ export class MoveAsks {
       case "plan":
       case "status": {
         const to = args.to === undefined && args.action === "status" ? null : this.#station(ws, args.to);
-        const plan = await this.#d.scheduler.planShown(ws, to?.id ?? "");
-        const status = args.action === "status";
-        // (one item, a module's a page at a time, or the summary: never every item, whatever the station's size)
-        if (sel.item !== undefined) {
-          const x = plan.items.find((i) => i.id === sel.item && (sel.module === undefined || i.module === sel.module));
-          if (x === undefined) throw new Refused(`no item ${sel.item}${sel.module ? ` of ${sel.module}` : ""} in the plan: plan with module lists them`);
-          return { item: brief(x) };
-        }
-        if (sel.module !== undefined) return pageOf(plan, sel.module, typeof args.after === "string" ? args.after : null, typeof args.limit === "number" ? args.limit : PAGE);
-        // (the bytes of the chats that would go, as far as they are measured, and the free bytes there)
-        const going = plan.items.filter((x) => x.module === "chats" && x.state !== "there").map((x) => x.id);
-        const room = (await this.#d.room?.(ws, to?.id ?? "", going).catch(() => null)) ?? null;
-        return { summary: { ...summaryOf(plan, this.#d.scheduler.stopped()), ...(room !== null ? { room } : {}) }, say: `${planWords(plan, to?.name ?? "", status)}${room !== null ? ` ${roomWords(room)}` : ""}` };
+        return await this.#soon(session, `${args.action}${to !== null ? ` toward ${to.name}` : ""}`, () => this.#planned(ws, to, sel, args));
       }
       case "move": {
         const to = this.#station(ws, args.to);
@@ -169,16 +185,20 @@ export class MoveAsks {
           return await this.#askAll(session, ws, to);
         }
         if (sel.module === undefined || sel.item === undefined) throw new Refused("move: name the module and the item (station_move plan lists them), or all");
-        const out = await this.#d.scheduler.move(ws, to.id, { ...sel, follow: sel.module === "chats" ? ["jobs"] : undefined }, session);
-        return { outcome: outcomeOf(out), say: outcomeWords(out, "moved to", to.name) };
+        return await this.#soon(session, `move of ${sel.module} ${sel.item} to ${to.name}`, async () => {
+          const out = await this.#d.scheduler.move(ws, to.id, { ...sel, follow: sel.module === "chats" ? ["jobs"] : undefined }, session);
+          return { outcome: outcomeOf(out), say: outcomeWords(out, "moved to", to.name) };
+        });
       }
       case "back": {
         const from = this.#station(ws, args.to);
         if (sel.module === undefined || (sel.item === undefined && sel.all !== true)) throw new Refused("back: name the module and the item (station_move status lists them), and to: the station it is on");
         const why = await this.#d.refusal?.(ws, from.id);
         if (why) throw new Refused(why);
-        const out = await this.#d.scheduler.back(ws, from.id, { ...sel, follow: sel.module === "chats" ? ["jobs"] : undefined }, session);
-        return { outcome: outcomeOf(out), say: outcomeWords(out, "back here from", from.name) };
+        return await this.#soon(session, `back of ${sel.module} ${sel.item ?? "all"} from ${from.name}`, async () => {
+          const out = await this.#d.scheduler.back(ws, from.id, { ...sel, follow: sel.module === "chats" ? ["jobs"] : undefined }, session);
+          return { outcome: outcomeOf(out), say: outcomeWords(out, "back here from", from.name) };
+        });
       }
       case "stop": {
         if (!this.#d.scheduler.stopTurn(session)) throw new Refused(tr(stationLang(), "station.move.notRunning"));
@@ -186,6 +206,23 @@ export class MoveAsks {
       }
     }
     throw new Refused("action is one of plan, move, back, status, stop");
+  }
+
+  /// station_move plan or status (`args.action`) toward `to` (null: status of every station).
+  async #planned(ws: string, to: { id: string; name: string } | null, sel: Selection, args: Json): Promise<Json> {
+    const plan = await this.#d.scheduler.planShown(ws, to?.id ?? "");
+    const status = args.action === "status";
+    // (one item, a module's a page at a time, or the summary: never every item, whatever the station's size)
+    if (sel.item !== undefined) {
+      const x = plan.items.find((i) => i.id === sel.item && (sel.module === undefined || i.module === sel.module));
+      if (x === undefined) throw new Refused(`no item ${sel.item}${sel.module ? ` of ${sel.module}` : ""} in the plan: plan with module lists them`);
+      return { item: brief(x) };
+    }
+    if (sel.module !== undefined) return pageOf(plan, sel.module, typeof args.after === "string" ? args.after : null, typeof args.limit === "number" ? args.limit : PAGE);
+    // (the bytes of the chats that would go, as far as they are measured, and the free bytes there)
+    const going = plan.items.filter((x) => x.module === "chats" && x.state !== "there").map((x) => x.id);
+    const room = (await this.#d.room?.(ws, to?.id ?? "", going).catch(() => null)) ?? null;
+    return { summary: { ...summaryOf(plan, this.#d.scheduler.stopped()), ...(room !== null ? { room } : {}) }, say: `${planWords(plan, to?.name ?? "", status)}${room !== null ? ` ${roomWords(room)}` : ""}` };
   }
 
   async #askAll(session: string, ws: string, to: { id: string; name: string }): Promise<Json> {

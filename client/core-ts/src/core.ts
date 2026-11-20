@@ -13,7 +13,7 @@ import { toolCall, toolResult, type ToolPart } from "./tool-step.ts";
 import * as fonts from "./fonts.ts";
 import { MermaidAbsent, mermaidChart, provideMermaid } from "./mermaid.ts";
 import { parseCall, cancellable, callStation, counts, type Call } from "./core/calls.ts";
-import { execute, handlers, hooks } from "./core/execute.ts";
+import { execute, handlers, hooks, rereadAfterWrite } from "./core/execute.ts";
 import { Router } from "./core/routing.ts";
 import { importFormer } from "./db/import.ts";
 import { Data, holds } from "./data.ts";
@@ -393,7 +393,11 @@ export class Core {
         subOf: (workspace) => inner.workspaces.owner(workspace),
         view: (workspace) => inner.data.shared({ topic: "workspace", workspace }),
         call: (station, method, path, body) => inner.stations.requests.call(station, method, path, body, { quiet: true }),
-        cloud: (sub, method, path, body) => inner.provider.request(sub, method, path, body),
+        // (a station's mode changed: the workspace's view it answers with is held at once, as a write through `op` is,
+        // so its page follows with no event of the cloud's; core/execute.ts)
+        cloud: (sub, method, path, body) =>
+          Effect.tap(inner.provider.request(sub, method, path, body), (answer) =>
+            method === "PATCH" ? rereadAfterWrite(inner, inner.cloudSync.afterWrite(sub, method, path, answer), null) : Effect.void),
         first: (asks, at) => answersOf(inner, asks, tookOrRefused, at),
         lock: {
           locked: (workspace) => signsAs(inner, workspace).locked,

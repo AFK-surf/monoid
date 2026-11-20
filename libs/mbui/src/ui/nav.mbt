@@ -1812,6 +1812,10 @@ fn Ctx::forget(self : Ctx, serial : Int) -> Unit {
     Some(ids) => {
       for id in ids {
         self.lists.remove(id)
+        match self.editors.get(id) {
+          Some(st) => editor_gone(st, id)
+          None => ()
+        }
         self.editors.remove(id)
         self.springs.remove(id)
         drags.remove(id)

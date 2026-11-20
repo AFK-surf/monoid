@@ -48,33 +48,34 @@ fn ground_kinds() -> Array[(String, (Int, Double, Double), (Anchor) -> Unit, Str
 ///|
 test "a mouse's pointer over a panel's ground is the arrow, over what in it is pressed the hand: a menu, a panel beside what opened it, one in the middle, a confirm, a sheet, a question, a long pick" {
   for k in ground_kinds() {
-    let (name, at, open, label) = k
-    let t = presenting_tester(at, open)
-    t.tap_text("打开")
-    t.run_for(@ui.move_most_ms)
-    let shown = t.semantics().filter(fn(s) { (s.role == Menu || s.role == Dialog || s.role == AlertDialog) && !s.hidden })
+    let (name, at, open, raw_label) = k
+    let tt = presenting_tester(at, open)
+    tt.tap_text("打开")
+    tt.run_for(@ui.move_most_ms)
+    let label = if name == "ask_node" { t(raw_label) } else { raw_label }
+    let shown = tt.semantics().filter(fn(s) { (s.role == Menu || s.role == Dialog || s.role == AlertDialog) && !s.hidden })
     guard shown is [panel, ..] else { fail("\{name}: none shown") }
     let (x, y, w, h) = panel.rect
     // (where its ground is: four points 3 in from its edges; a menu's rows reach out over its padding to its edges, so
     // the line between its parts, midway between the rows over and under it)
     let points = if name == "menu_node" {
-      let one = t.get(MenuItem, label="一项").rect
-      let two = t.get(MenuItem, label="二项").rect
+      let one = tt.get(MenuItem, label="一项").rect
+      let two = tt.get(MenuItem, label="二项").rect
       [(x + w / 2.0, (one.1 + one.3 + two.1) / 2.0)]
     } else {
       [(x + 3.0, y + h / 2.0), (x + w / 2.0, y + 3.0), (x + w / 2.0, y + h - 3.0), (x + w - 3.0, y + h / 2.0)]
     }
-    let grounds = points.map(fn(p) { shape_at(t, p.0, p.1) })
+    let grounds = points.map(fn(p) { shape_at(tt, p.0, p.1) })
     assert_eq(grounds, points.map(fn(_) { Arrow }), msg="\{name}: its ground at \{Repr(points)}: \{Repr(grounds)}, it \{Repr(panel.rect)}")
-    let key = match t.semantics().filter(fn(s) { s.label == label && !s.hidden }) {
+    let key = match tt.semantics().filter(fn(s) { s.label == label && !s.hidden }) {
       [s, ..] => s.rect
       [] => fail("\{name}: no \{label}")
     }
-    let over = shape_at(t, key.0 + key.2 / 2.0, key.1 + key.3 / 2.0)
+    let over = shape_at(tt, key.0 + key.2 / 2.0, key.1 + key.3 / 2.0)
     assert_eq(over, Hand, msg="\{name}: \{label} at \{Repr(key)}: \{over}")
     // (a centred one's close button drawn over the top of what it holds by a point (`apart`): so on main before this,
     // none of its own; told, left to its own change. Every other fault none)
-    let faults = t
+    let faults = tt
       .audit()
       .filter(fn(f) {
         !(name == "panel_centred_node" && f.has_prefix("apart: ") && f.contains("icon_button_node.mbt") && f.contains("drawn over each other by 58×1")) &&

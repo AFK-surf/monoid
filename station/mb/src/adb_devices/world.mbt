@@ -48,6 +48,9 @@ pub struct World {
   call : async (String, Array[J]) -> J
   /// A function given as an argument (a card restated, a check run inside a write): what stands for it.
   callback : (async (Array[J]) -> J) -> J
+  /// A write given as an argument that the station runs inside its own transaction (a request saved with its card's
+  /// outcome): called there at once, so it never waits on anything.
+  write : ((Array[J]) -> J raise) -> J
   /// The clock, in ms (`wall.now()`, a part's `now()`).
   now : () -> Double
   /// Work set going, not waited for (`void promise`).
@@ -65,11 +68,12 @@ pub fn World::new(
   threads : @store_threads.Store,
   call : async (String, Array[J]) -> J,
   callback : (async (Array[J]) -> J) -> J,
+  write : ((Array[J]) -> J raise) -> J,
   now : () -> Double,
   spawn : (async () -> Unit) -> Unit,
   words : Words,
 ) -> World {
-  { host, sessions, threads, call, callback, now, spawn, words, lang: "zh" }
+  { host, sessions, threads, call, callback, write, now, spawn, words, lang: "zh" }
 }
 
 ///|

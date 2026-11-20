@@ -25,6 +25,7 @@ import type { Connect, ConnectKind, ConnectMode } from "../sessions/config.ts";
 import type { Attachment } from "../store/rows.ts";
 import type { CardEnd } from "./card-ends.ts";
 import type { BotIdentity } from "./connections.ts";
+import { FeishuFile } from "./feishu-file.ts";
 import { REMOTE_FILE, channelKey, personKey } from "./keys.ts";
 import type { NameBook } from "./names.ts";
 
@@ -249,8 +250,19 @@ export class RemoteSurface implements ChatSurface {
     return answer !== null && typeof answer === "object" ? (this.files.get(answer) ?? []) : [];
   }
 
+  /// A non-JSON answer (a Feishu message's image or file) comes as bytes beside its content type and disposition.
   async api(method: string, params: Record<string, Json>): Promise<Json> {
-    const got = await this.call("api", [method, params]);
+    const raw = await this.ask(this.station, { method: CALL, workspace: this.d.workspace, connect: this.known, op: "api", args: [method, params], whole: true });
+    const got = raw?.result ?? null;
+    const bytes = bytesOf(raw);
+    const file = got?.feishuFile;
+    if (bytes !== null && file !== null && typeof file === "object") {
+      return new FeishuFile(
+        await bytesIn(bytes, FILE_MAX),
+        typeof file.contentType === "string" ? file.contentType : "application/octet-stream",
+        typeof file.disposition === "string" ? file.disposition : "",
+      );
+    }
     const answer = got?.answer ?? null;
     if (answer !== null && typeof answer === "object" && Array.isArray(got?.files)) this.files.set(answer, got.files);
     return answer;
@@ -350,6 +362,9 @@ export function answerCall(surface: (connect: Known, workspace: string | undefin
     }
     if (op === "api") {
       const answer = await chat.api!(String(args[0]), args[1] ?? {});
+      if (answer instanceof FeishuFile) {
+        return withBytes({ result: { feishuFile: { contentType: answer.contentType, disposition: answer.disposition } } }, oneBytes(Buffer.from(answer.bytes)));
+      }
       return { result: { answer, files: chat.answerFiles?.(answer) ?? [] } };
     }
     if (op === "person") {

@@ -412,6 +412,9 @@ test("connects (Slack & Feishu): overview state, inbound routing -> fake claude 
   assert.equal(typeof ov.archiving.slackDays, "number");
   assert.equal(typeof ov.archiving.reviewed, "boolean");
   assert.equal(typeof ov.archiving.canEdit, "boolean");
+  assert.equal(typeof ov.autoChats, "object");
+  assert.equal(ov.autoChats.enabled, false);
+  assert.equal(typeof ov.autoChats.canEdit, "boolean");
   assert.equal(typeof ov.automaticDecisions, "object");
   assert.ok(ov.automaticDecisions !== null, "automaticDecisions should be populated when accounts exist");
   assert.equal(typeof ov.automaticDecisions.canEditPolicy, "boolean");
@@ -438,6 +441,31 @@ test("connects (Slack & Feishu): overview state, inbound routing -> fake claude 
   // No untranslated station.* i18n key leaks in overview
   const ovRaw = JSON.stringify(ov);
   assert.doesNotMatch(ovRaw, /"station\.[a-z][a-zA-Z0-9._-]*"/, `untranslated i18n key leaked in overview: ${ovRaw}`);
+
+  // ── 2b. PUT /admin-api/connects/:id stations allowlist & overview startsOnStations parity ──
+  const putPool = await ask(door, "/admin-api/connects/c1", { method: "PUT", body: { stations: [" w1/s1 ", "w1/s2", "s1", ""] } });
+  assert.equal(putPool.status, 200, putPool.body);
+  const c1Pool = JSON.parse(putPool.body).connects.find((x: any) => x.id === "c1");
+  assert.equal(c1Pool.startsOn, "s1");
+  assert.deepEqual(c1Pool.startsOnStations, ["s1", "s2"]);
+
+  const putKeep = await ask(door, "/admin-api/connects/c1", { method: "PUT", body: { enabled: true } });
+  assert.equal(putKeep.status, 200, putKeep.body);
+  const c1Kept = JSON.parse(putKeep.body).connects.find((x: any) => x.id === "c1");
+  assert.equal(c1Kept.startsOn, "s1");
+  assert.deepEqual(c1Kept.startsOnStations, ["s1", "s2"]);
+
+  const putOne = await ask(door, "/admin-api/connects/c1", { method: "PUT", body: { stations: ["s2"] } });
+  assert.equal(putOne.status, 200, putOne.body);
+  const c1One = JSON.parse(putOne.body).connects.find((x: any) => x.id === "c1");
+  assert.equal(c1One.startsOn, "s2");
+  assert.deepEqual(c1One.startsOnStations, ["s2"]);
+
+  const putClear = await ask(door, "/admin-api/connects/c1", { method: "PUT", body: { stations: [] } });
+  assert.equal(putClear.status, 200, putClear.body);
+  const c1Clear = JSON.parse(putClear.body).connects.find((x: any) => x.id === "c1");
+  assert.equal(c1Clear.startsOn, null);
+  assert.equal(c1Clear.startsOnStations, null);
 
   // ── 1b. Slack inbound -> auto-route -> fake claude -> chat_post -> mock Slack + entries ──
   slack.pushEvent("env-slack-1", {
@@ -532,6 +560,20 @@ test("connects (Slack & Feishu): overview state, inbound routing -> fake claude 
       a.err,
     );
     assert.equal(store.listTurns(feishuSession.s.key).length, 1, "manually archived thread must not receive follow-up turns");
+
+    // ── 1f. Live MoonBit PUT /admin-api/connects/:id autoStation + stations parity ──
+    const putAuto = await ask(door, "/admin-api/connects/f1", { method: "PUT", body: { autoStation: true } });
+    assert.equal(putAuto.status, 200, putAuto.body);
+    const f1Auto = (JSON.parse(putAuto.body).connects as any[]).find((c) => c.id === "f1");
+    assert.equal(f1Auto.startsOnAuto, true);
+    assert.equal(f1Auto.startsOn, null);
+    assert.equal(f1Auto.startsOnStations, null);
+    const putManual = await ask(door, "/admin-api/connects/f1", { method: "PUT", body: { stations: ["ws1/st1", "ws1/st2"] } });
+    assert.equal(putManual.status, 200, putManual.body);
+    const f1Manual = (JSON.parse(putManual.body).connects as any[]).find((c) => c.id === "f1");
+    assert.equal(f1Manual.startsOnAuto, undefined);
+    assert.equal(f1Manual.startsOn, "st1");
+    assert.deepEqual(f1Manual.startsOnStations, ["st1", "st2"]);
   } finally {
     store.close();
   }

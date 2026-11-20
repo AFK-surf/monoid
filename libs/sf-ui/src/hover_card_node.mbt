@@ -210,8 +210,9 @@ pub fn hover_card_node(
       t.lends(submenu_layer_lent, holder) |> ignore
       gate.val.collect(fn() {
       t.box(fn(b) {
-        b.alpha(By(fn() { look().words })) |> ignore
+        b.margin(Is((-panel_pad, 0.0, -panel_pad, 0.0))).alpha(By(fn() { look().words })) |> ignore
         b.scrolls(@view.Scroll::new(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(s) {
+          s.padding(Is((panel_pad, 0.0, panel_pad, 0.0))) |> ignore
           s.box(fn(inner) {
             inner.fills_across(Is(true)) |> ignore
             if padded {
@@ -397,10 +398,12 @@ pub fn hover_card_node(
       |> ignore
     }
   }
-  // (let go: nothing of it left pending)
+  // (let go: nothing of it left pending; set_open let go of last, as it names itself through make, a ring native's
+  // counting never frees)
   owner.owns(fn() {
     stop_due()
     way.put(0.0)
+    set_open.val = fn(_) {  }
   })
   |> ignore
   { hold, close: fn() { (set_open.val)(false) }, open: fn() { open.get() }, card: fn() { card.get() } }
@@ -778,9 +781,12 @@ pub fn hover_panel_node(
   if pointed is None {
     anchor.points(Is(true)).gesture(@ui.touch_slop(), hold=(@ui.long_press_ms, on_held)) |> ignore
   }
+  // (set_open and close_explicit let go of last: each names itself through make, a ring native's counting never frees)
   owner.owns(fn() {
     stop_due()
     way.put(0.0)
+    set_open.val = fn(_) {  }
+    close_explicit.val = fn() {  }
   })
   |> ignore
   { hold, close: fn() { (close_explicit.val)() }, open: fn() { open.get() }, card: fn() { card.get() } }

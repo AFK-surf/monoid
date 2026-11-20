@@ -235,6 +235,10 @@ fn Made::let_go(self : Made) -> Unit {
     Some(n) if n.id != 0 && self.on_press is Some(_) => made_presses.remove(n.id)
     _ => ()
   }
+  match self.node {
+    Some(n) => n.unlinked()
+    None => ()
+  }
   self.node = None
   match self.kids {
     Kept(ks) =>
@@ -289,6 +293,8 @@ fn made_forget() -> Unit {
   made_presses.clear()
   made_double_presses.clear()
   made_beside_presses.clear()
+  island_presses.clear()
+  island_lists.clear()
   keys_taken.clear()
 }
 
@@ -352,6 +358,12 @@ fn Ctx::made_put(self : Ctx, m : Made) -> Unit {
       m.watch.read(fn() { (m.fill)(self) })
       if self.count != slot + 1 {
         @halt.saying("a made node's fill makes one node, nothing in it: \{self.count - slot} made")
+      }
+      // (the node it was last made in, taken out of the frame's as this build began (made_detach) and made in another
+      // now: let go of, and so of what it holds, Node::unlinked)
+      match m.node {
+        Some(o) if !physical_equal(o, self.nodes[slot]) => o.unlinked()
+        _ => ()
       }
       m.node = Some(self.nodes[slot])
     }
@@ -441,7 +453,9 @@ pub fn Ctx::on_press(self : Ctx, id : Int, f : () -> Unit) -> Unit {
   // draws what the press changed of what it holds)
   hand.clicked.has(id) |> ignore
   hand.asked.has(id) |> ignore
-  made_presses[id] = self.in_said_scope(f)
+  let g = self.in_said_scope(f)
+  made_presses[id] = g
+  island_said_press(0, id, g)
 }
 
 ///|
@@ -480,7 +494,9 @@ pub fn Ctx::on_double_press(self : Ctx, id : Int, f : () -> Unit) -> Unit {
   self.takes_presses(id)
   // (read so: what said it is built again as it is pressed twice, hand.mbt)
   hand.double.has(id) |> ignore
-  made_double_presses[id] = self.in_said_scope(f)
+  let g = self.in_said_scope(f)
+  made_double_presses[id] = g
+  island_said_press(1, id, g)
 }
 
 ///|
@@ -495,7 +511,117 @@ pub fn Ctx::on_press_beside(self : Ctx, id : Int, f : () -> Unit) -> Unit {
   self.takes_presses(id)
   // (read so: what said it is built again as the target is pressed, hand.mbt)
   hand.clicked.has(id) |> ignore
-  made_beside_presses[id] = self.in_said_scope(f)
+  let g = self.in_said_scope(f)
+  made_beside_presses[id] = g
+  island_said_press(2, id, g)
+}
+
+///|
+/// What each old view said its presses do as it was built (Ctx::on_press, on_double_press, on_press_beside: which of
+/// the three, the target's id, the handler said last), by its island's node, for it to take back as it is let go
+/// (old_presses_gone): kept for its targets' ids alone, the three would hold every handler of every old view ever
+/// built, and all their handlers hold (a chat page's, opened again and again, each time with ids of its own).
+// kept across runs: written as an old view says a press, let go with it; a run's start clears it
+let island_presses : Map[(Int, Int), Map[(Int, Int), () -> Unit]] = Map([])
+
+///|
+fn island_said_press(which : Int, id : Int, f : () -> Unit) -> Unit {
+  match island_building.val {
+    Some(i) => {
+      let k = (i.at, i.gen)
+      let m = match island_presses.get(k) {
+        Some(m) => m
+        None => {
+          let m = Map([])
+          island_presses[k] = m
+          m
+        }
+      }
+      m[(which, id)] = f
+    }
+    None => ()
+  }
+}
+
+///|
+/// What each old view keeps by an id of its own (its lists, Ctx::list_grew and the keys each had; what it tells after
+/// its build again as its lists move, Ctx::after_build_or_scroll; how the hand has its bars, Ctx::bar_hand), by its
+/// island's node, let go with it (old_presses_gone): by their ids alone, list_counts, list_keys_seen,
+/// tells_follow_lists and bars_hand would keep those of every old view ever built, each a chat's whole list of keys.
+// kept across runs: written as an old view builds, let go with it; a run's start clears it
+let island_lists : Map[(Int, Int), Map[(Int, Int), Bool]] = Map([])
+
+///|
+fn island_said_list(id : Int) -> Unit {
+  island_said_id(0, id)
+}
+
+///|
+/// Kept by id `id` of kind `kind` (0 a list's, 1 a tell that follows lists, 2 a bar's, 3 an editor's) for the old view
+/// being built.
+fn island_said_id(kind : Int, id : Int) -> Unit {
+  match island_building.val {
+    Some(i) => {
+      let k = (i.at, i.gen)
+      match island_lists.get(k) {
+        Some(m) => m[(kind, id)] = true
+        None => island_lists[k] = Map([((kind, id), true)])
+      }
+    }
+    None => ()
+  }
+}
+
+///|
+/// The old view of island `i` let go: the presses it said taken back, where what it said is what is said for them
+/// still (another said for the same target since keeps its own).
+fn old_presses_gone(i : @view.NodeId) -> Unit {
+  match island_lists.get((i.at, i.gen)) {
+    Some(ls) => {
+      island_lists.remove((i.at, i.gen))
+      for k, _ in ls {
+        // (unless another old view built it too: one made again in its place, as it went)
+        if !island_lists.values().any(fn(o) { o.contains(k) }) {
+          let (kind, id) = k
+          if kind == 0 {
+            list_counts.remove(id)
+            list_keys_seen.remove(id)
+          } else if kind == 1 {
+            tells_follow_lists.remove(id)
+          } else if kind == 2 {
+            bars_hand.remove(id)
+          } else {
+            // (an editor of it: what it was told let go, and its state where the window's Ctx keeps it by its id)
+            let c = g()
+            match c.editors.get(id) {
+              Some(st) => {
+                editor_gone(st, id)
+                c.editors.remove(id)
+              }
+              None => ()
+            }
+          }
+        }
+      }
+    }
+    None => ()
+  }
+  guard island_presses.get((i.at, i.gen)) is Some(m) else { return }
+  island_presses.remove((i.at, i.gen))
+  for k, f in m {
+    let (which, id) = k
+    let presses = if which == 0 {
+      made_presses
+    } else if which == 1 {
+      made_double_presses
+    } else {
+      made_beside_presses
+    }
+    match presses.get(id) {
+      Some(g) if physical_equal(g, f) => presses.remove(id)
+      _ => ()
+    }
+  }
 }
 
 ///|

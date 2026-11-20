@@ -257,6 +257,10 @@ export class StationTopics implements Owner {
     if (topic.topic === "messagePeek") this.#sync.messagePeekShown(station, topic.thread as number, topic.seq as number);
   }
 
+  idle(topic: Topic): void {
+    if (topic.topic === "stationSearch") this.#sync.searchPaused(topic);
+  }
+
   stop(topic: Topic): void {
     const station = this.#stationOf(topic);
     if (station === null) return;

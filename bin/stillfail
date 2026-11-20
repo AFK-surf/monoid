@@ -61,8 +61,9 @@ data=${STILLFAIL_DATA:-$own}
 station=${STILLFAIL_STATION_BIN:-$here/mesh/target/release/stillfail-station}
 
 # The station here taken away (the app's 卸载本机 Station does the same: apps/mbui/src/host/*_station.*). Its service as
-# the installer named it (cloud/src/install.ts): for a data directory of its own ($STILLFAIL_DATA, a test's), only a
-# service that runs that directory, never the person's own station beside it.
+# the installer named it (cloud/src/install.ts): for a data directory of its own ($STILLFAIL_DATA, a test's, Monoid
+# Machine's), only a service that runs that directory, never the person's own station beside it, whichever product's
+# it is (the installer keeps the service such a directory had when it moves to another product's cloud).
 uninstall() {
   purge=$1
   case "$data" in ""|/|"$HOME"|"$HOME/") echo "stillfail uninstall: refusing to remove $data" >&2; exit 2 ;; esac
@@ -70,9 +71,12 @@ uninstall() {
   case "$(basename "$0") $data" in monoid\ *|*" $HOME/.monoid") product=monoid reverse=build.monoid ;; esac
   apart=""
   [ "$data" = "$HOME/.$product" ] || apart=yes
+  pairs="$product:$reverse"
+  [ -z "$apart" ] || pairs="stillfail:fail.still monoid:build.monoid"
   case "$(uname -s)" in
     Darwin)
-      labels="$reverse.station"
+      labels=""
+      for pair in $pairs; do labels="$labels ${pair#*:}.station"; done
       [ "$product" != stillfail ] || labels="$labels org.3720.ember.station"
       for l in $labels; do
         plist="$HOME/Library/LaunchAgents/$l.plist"
@@ -86,13 +90,15 @@ uninstall() {
         rm -f "$plist"
       done ;;
     *)
-      unit="$product-station.service"
-      unit_file="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$unit"
-      if [ -f "$unit_file" ] && { [ -z "$apart" ] || grep -qxF "Environment=STILLFAIL_DATA=$data" "$unit_file"; }; then
-        systemctl --user disable --now "$unit" 2>/dev/null || true
-        rm -f "$unit_file"
-        systemctl --user daemon-reload 2>/dev/null || true
-      fi
+      for pair in $pairs; do
+        unit="${pair%%:*}-station.service"
+        unit_file="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$unit"
+        if [ -f "$unit_file" ] && { [ -z "$apart" ] || grep -qxF "Environment=STILLFAIL_DATA=$data" "$unit_file"; }; then
+          systemctl --user disable --now "$unit" 2>/dev/null || true
+          rm -f "$unit_file"
+          systemctl --user daemon-reload 2>/dev/null || true
+        fi
+      done
       # WSL's keeper (install.sh keep_wsl): what Windows starts at its sign-in to keep this Linux up
       if [ -z "$apart" ] && [ -n "${WSL_DISTRO_NAME:-}" ] && command -v wslpath >/dev/null 2>&1 && command -v cmd.exe >/dev/null 2>&1; then
         appdata=$(cd / && cmd.exe /c "echo %APPDATA%" 2>/dev/null | tr -d '\r')
@@ -137,8 +143,10 @@ local $SIG{ALRM} = sub { exit 0 }; alarm 3; my $b; sysread($s, $b, 1);' "$sock" 
         s.on("data", end);' "$sock" "$quit" 2>/dev/null || true
     fi
   fi
-  link="$HOME/.local/bin/$product"
-  if [ -L "$link" ]; then case "$(readlink "$link")" in "$data/app/"*) rm -f "$link" ;; esac; fi
+  for pair in $pairs; do
+    link="$HOME/.local/bin/${pair%%:*}"
+    if [ -L "$link" ]; then case "$(readlink "$link")" in "$data/app/"*) rm -f "$link" ;; esac; fi
+  done
   if [ -n "$purge" ]; then
     # moved elsewhere (stillfail move): its data there, then the link to it
     if [ -L "$data" ]; then there=$(readlink "$data"); case "$there" in /?*) rm -rf "$there" ;; esac; fi

@@ -1049,6 +1049,10 @@ fn View::scrolls_window_ids(
   // measured height forgotten and it was taken out of it, held by no node (View::park): so many at most of each, the
   // rest let go; all let go with the list)
   let spare : Map[Int, Array[(View, @signals.Signal[Int], () -> Unit, View?)]] = Map([])
+  // (what a slot past the end of one holds once a block is taken out of it: none of them. An array cut shorter keeps
+  // what its slots held, counted as held (native's counting, moonbitlang/core's Array::remove and pop): the block, and
+  // what wakes it, holding all it binds)
+  let spare_gone : (View, @signals.Signal[Int], () -> Unit, View?) = (self, @signals.signal(-1), run_gone, None)
   // (what the parts of those blocks keep of each key, kept by it as a block leaves it and given back as a block is
   // taken for it or made anew for it: reused_state.mbt)
   let kept : ReusedKept[Int] = ReusedKept::new()
@@ -1089,6 +1093,7 @@ fn View::scrolls_window_ids(
         b.0.let_go()
       }
       all.clear()
+      all.release_unused(placeholder=spare_gone)
     }
   }
   // (how wide what it holds is given to be, as it is laid out: View::scrolls' fill)
@@ -4887,47 +4892,59 @@ fn View::scrolls_window_ids(
             sv.alive() &&
             self.tree.reveal_in(sv.id(), self.tree.clock.untracked())
           }
+          let ever_whole : Map[Int, Bool] = Map([])
           let set_out_at = fn(k : Int, y : Double) {
             let (_, ay, _, ah) = after[k]
             items[k] = { off: (0.0, y - ay, 0.0, if reveals(k) { 0.0 } else { ah }), v: (0.0, 0.0, 0.0, 0.0) }
           }
-          let mut run_s = 0
-          while run_s < order.length() {
-            guard before.get(order[run_s]) is None else {
-              run_s = run_s + 1
-              continue
-            }
-            let mut run_e = run_s
-            while run_e < order.length() && before.get(order[run_e]) is None {
-              run_e = run_e + 1
-            }
-            match (if run_s > 0 { before.get(order[run_s - 1]) } else { None }) {
-              Some((_, by, _, bh)) => {
-                let mut y = by + bh
-                for idx in run_s..<run_e {
-                  let k = order[idx]
-                  guard fresh.contains(k) && !carried_in(k) else { continue }
-                  set_out_at(k, y)
-                  if reveals(k) {
-                    y = y + after[k].3
-                  }
-                }
+          let place_fresh_runs = fn() {
+            let mut run_s = 0
+            while run_s < order.length() {
+              guard before.get(order[run_s]) is None else {
+                run_s = run_s + 1
+                continue
               }
-              None =>
-                if run_e < order.length() && before.get(order[run_e]) is Some((_, by, _, _)) {
-                  let mut y = by
-                  for idx = run_e - 1; idx >= run_s; idx = idx - 1 {
+              let mut run_e = run_s
+              while run_e < order.length() && before.get(order[run_e]) is None {
+                run_e = run_e + 1
+              }
+              match (if run_s > 0 { before.get(order[run_s - 1]) } else { None }) {
+                Some((_, by, _, bh)) => {
+                  let mut y = by + bh
+                  for idx in run_s..<run_e {
                     let k = order[idx]
-                    guard fresh.contains(k) && !carried_in(k) else { continue }
-                    if reveals(k) {
-                      y = y - after[k].3
+                    guard fresh.contains(k) else { continue }
+                    if carried_in(k) || ever_whole.contains(k) {
+                      y = dmax(y, after[k].1 + after[k].3)
+                      continue
                     }
                     set_out_at(k, y)
+                    if reveals(k) {
+                      y = y + after[k].3
+                    }
                   }
                 }
+                None =>
+                  if run_e < order.length() && before.get(order[run_e]) is Some((_, by, _, _)) {
+                    let mut y = by
+                    for idx = run_e - 1; idx >= run_s; idx = idx - 1 {
+                      let k = order[idx]
+                      guard fresh.contains(k) else { continue }
+                      if carried_in(k) || ever_whole.contains(k) {
+                        y = dmin(y, after[k].1)
+                        continue
+                      }
+                      if reveals(k) {
+                        y = y - after[k].3
+                      }
+                      set_out_at(k, y)
+                    }
+                  }
+              }
+              run_s = run_e
             }
-            run_s = run_e
           }
+          place_fresh_runs()
           // (one never drawn before, come into sight by the change: going with the one before it, else after it)
           for i, k in order {
             guard !items.contains(k) else { continue }
@@ -5161,13 +5178,24 @@ fn View::scrolls_window_ids(
                 // (the key this flight carries drawn whole on its way alone, as where it is told with the change: one an
                 // earlier flight carried, still going on that one's way as the change came, is on this way now, whole
                 // with it no more, what of it does not fly not held unseen till this one lands)
+                let was_whole = flip_whole.copy()
                 flip_whole.clear()
                 flip_whole[k] = true
+                for prev, _ in was_whole {
+                  if prev != k {
+                    ever_whole[prev] = true
+                    flip_new.remove(prev)
+                    if fresh.contains(prev) && items.get(prev) is Some(it) {
+                      items[prev] = { ..it, off: (it.off.0, it.off.1, it.off.2, 0.0) }
+                    }
+                  }
+                }
                 flip_raise()
                 match after.get(k) {
                   Some(a) => items[k] = { off: (0.0, 0.0, 0.0, a.3), v: (0.0, 0.0, 0.0, 0.0) }
                   None => ()
                 }
+                place_fresh_runs()
                 let list : Array[@flex.FlipItem] = []
                 flip_items.clear()
                 for key, i in items {
@@ -5175,7 +5203,9 @@ fn View::scrolls_window_ids(
                   list.push(i)
                 }
                 for key, _ in fresh {
-                  flip_new[key] = true
+                  if !flip_whole.contains(key) && !was_whole.contains(key) && !ever_whole.contains(key) {
+                    flip_new[key] = true
+                  }
                 }
                 for a, amt in amts_now {
                   flip_in_amts[a] = amt
@@ -5207,7 +5237,9 @@ fn View::scrolls_window_ids(
                 list.push(it)
               }
               for key, _ in fresh {
-                flip_new[key] = true
+                if !flip_whole.contains(key) {
+                  flip_new[key] = true
+                }
               }
               for a in inner_now {
                 match flip_in_amts.get(a) {
@@ -5228,6 +5260,16 @@ fn View::scrolls_window_ids(
               return
             }
             _ => ()
+          }
+          let next_whole : Int? = match flip_said.val {
+            Some((t, k, _)) if t >= at && t - at < 100.0 && fresh.contains(k) => Some(k)
+            _ => None
+          }
+          let was_whole = flip_whole.copy()
+          for prev, _ in was_whole {
+            if Some(prev) != next_whole && fresh.contains(prev) && items.get(prev) is Some(it) {
+              items[prev] = { ..it, off: (it.off.0, it.off.1, it.off.2, 0.0) }
+            }
           }
           let list : Array[@flex.FlipItem] = []
           for _, i in items {
@@ -5255,14 +5297,14 @@ fn View::scrolls_window_ids(
             None => @flex.FlipWay::new(at, list)
           }
           flip_whole.clear()
-          match flip_said.val {
-            Some((t, k, _)) if t >= at && t - at < 100.0 && fresh.contains(k) => flip_whole[k] = true
-            _ => ()
+          match next_whole {
+            Some(k) => flip_whole[k] = true
+            None => ()
           }
           flip_raise()
           let kept_new : Array[Int] = []
           for k, _ in flip_new {
-            if !flip_whole.contains(k) && items.get(k) is Some(i) && i.off.3 > 0.5 {
+            if !flip_whole.contains(k) && !was_whole.contains(k) && items.get(k) is Some(i) && i.off.3 > 0.5 {
               kept_new.push(k)
             }
           }
@@ -5275,7 +5317,9 @@ fn View::scrolls_window_ids(
             flip_new[k] = true
           }
           for k, _ in fresh {
-            flip_new[k] = true
+            if !flip_whole.contains(k) && !was_whole.contains(k) {
+              flip_new[k] = true
+            }
           }
           // (where it rests set before the way is told: the first way set out binds what each block made at rest
           // (flip_unbound), and that commit pairs a flight in the change's block (View::flies_in, Tree::carried) at
@@ -5990,9 +6034,13 @@ fn View::scrolls_window_ids(
                 // was; else the last put by)
                 let taken = match spare.get(kind) {
                   Some(all) if all.length() > 0 =>
-                    match all.search_by(fn(b) { b.1.untracked() == k }) {
-                      Some(i) => Some(all.remove(i))
-                      None => all.pop()
+                    {
+                      let t = match all.search_by(fn(b) { b.1.untracked() == k }) {
+                        Some(i) => Some(all.remove(i))
+                        None => all.pop()
+                      }
+                      all.release_unused(placeholder=spare_gone)
+                      t
                     }
                   _ => None
                 }
@@ -6083,7 +6131,10 @@ fn View::scrolls_window_ids(
             match spare.get(kind) {
               Some(all) =>
                 match all.search_by(fn(b) { b.3 is Some(w) && physical_equal(w, slot) }) {
-                  Some(i) => all.remove(i) |> ignore
+                  Some(i) => {
+                    all.remove(i) |> ignore
+                    all.release_unused(placeholder=spare_gone)
+                  }
                   None => ()
                 }
               None => ()
@@ -6174,6 +6225,29 @@ fn View::scrolls_window_ids(
   }
   // (those put by let go with the list: held by nothing, let go by nothing else)
   self.owns(spare_let_go) |> ignore
+  // (what each cell of a later-said step holds let go of last, once all the above ran: each holds a step that names
+  // its own cell, or one that names it back (ways_due's moment calls it again), a ring native's counting never frees,
+  // which would keep the whole list (its blocks' cells, its column, its tree) after it went)
+  self.owns(fn() {
+    floor_arm.val = fn(_, _) {  }
+    floor_end.val = fn() {  }
+    fade_go.val = fn(_) {  }
+    fade_undo.val = fn(_) {  }
+    anchor_again.val = fn(_) {  }
+    seen_before.val = fn(_) { [] }
+    anchor_moved.val = fn(_) {  }
+    ways_off.val = fn() {  }
+    unpin.val = fn() {  }
+    floor_off.val = fn() {  }
+    way_steady_fn.val = fn() { (-1.0, false, []) }
+    rest_flip.val = fn() {  }
+    ways_due.val = fn() {  }
+    flip_end_off.val = fn() {  }
+    flip_rebuild.val = fn() {  }
+    flip_inner_tell.val = fn(_) {  }
+    fade_off.val = fn() {  }
+  })
+  |> ignore
   out
 }
 

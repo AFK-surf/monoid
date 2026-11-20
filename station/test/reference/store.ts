@@ -186,7 +186,7 @@ export function shownSessions(s: Store): SessionRow[] {
 /// The archive a page at a time: archived sessions and chats archived alone, the latest archived first, before `(?1, ?2)`
 /// (when, and its key or chat id as text), `?3` of them; each by the index of those archived.
 export const ARCHIVED_PAGE = `SELECT kind, id, at FROM (
-    SELECT 's' AS kind, key AS id, archived_at AS at FROM sessions INDEXED BY sessions_put_away WHERE archived_at IS NOT NULL AND (archived_at < ?1 OR (archived_at = ?1 AND key < ?2))
+    SELECT 's' AS kind, key AS id, archived_at AS at FROM sessions INDEXED BY sessions_put_away WHERE archived_at IS NOT NULL AND (conv IS NULL OR conv = key) AND (archived_at < ?1 OR (archived_at = ?1 AND key < ?2))
     UNION ALL
     SELECT 't' AS kind, CAST(id AS TEXT) AS id, hidden_at AS at FROM threads INDEXED BY threads_put_away WHERE hidden_at IS NOT NULL AND (hidden_at < ?1 OR (hidden_at = ?1 AND CAST(id AS TEXT) < ?2))
   ) ORDER BY at DESC, id DESC LIMIT ?3`;

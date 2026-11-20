@@ -149,7 +149,7 @@ pub fn hover_card(
   // (a finger's tap on a `tap` trigger opens it or shuts it as it is let go, beside what the trigger's own press does:
   // Ctx::on_press_beside)
   if tap && @ui.pointing() is Finger {
-    c.on_press_beside(trigger, fn() { kit.val.opens[id] = !kit.val.opens.get(id).unwrap_or(false) })
+    c.on_press_beside(trigger, fn() { opens_set(id, !kit.val.opens.get(id).unwrap_or(false)) })
   }
   let was = kit.val.opens.get(id).unwrap_or(false)
   let mut open = match @ui.pointing() {
@@ -200,7 +200,7 @@ pub fn hover_card(
     ignore(after(c, key + "/in", false, open_delay))
     ignore(after(c, key + "/out", false, close_delay))
   }
-  kit.val.opens[id] = open
+  opens_set(id, open)
   open
 }
 
@@ -335,7 +335,7 @@ pub fn tooltip(
   if was && !open {
     c.mark(tip_closed)
   }
-  kit.val.opens[id] = open
+  opens_set(id, open)
   open
 }
 

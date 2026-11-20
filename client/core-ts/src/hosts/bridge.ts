@@ -553,7 +553,23 @@ export function bridgeIroh(bridge: Bridge): Iroh {
     close: () => Effect.ignore(bridge.call("iroh.close", { id }), { log: "Unhandled", message: "endpoint closed" }),
   });
   return {
-    bind: (o) => Effect.map(bridge.call("iroh.bind", { relayUrls: o.relayUrls, ...(o.relayEntries ? { relayEntries: o.relayEntries } : {}), lookup: o.lookup, relayOnly: o.relayOnly, alpns: (o.alpns ?? []).map(hex) }, o.secretKey), (a) => endpoint(handle(a))),
+    bind: (o) =>
+      Effect.map(
+        bridge.call(
+          "iroh.bind",
+          {
+            relayUrls: o.relayUrls,
+            ...(o.relayEntries ? { relayEntries: o.relayEntries } : {}),
+            ...(o.relayAllowlist !== undefined ? { relayAllowlist: o.relayAllowlist } : {}),
+            ...(o.allowPublicRelays === true ? { allowPublicRelays: true } : {}),
+            lookup: o.lookup,
+            relayOnly: o.relayOnly,
+            alpns: (o.alpns ?? []).map(hex),
+          },
+          o.secretKey,
+        ),
+        (a) => endpoint(handle(a)),
+      ),
   };
 }
 

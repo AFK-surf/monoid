@@ -117,6 +117,9 @@ export const TALLY_EVERY_MS = 60_000;
 export const SPEED_KEY = "relay-speed";
 /// A reply this long or longer tells how fast a way is; a shorter one is mostly its round trip.
 export const SPEED_MIN_BYTES = 512 * 1024;
+/// Minimum bytes and elapsed time for recording a slow bulk way early (below BULK_SLOW_BPS) before SPEED_MIN_BYTES arrives.
+export const SPEED_SLOW_MIN_BYTES = 64 * 1024;
+export const SPEED_SLOW_MIN_MS = 5_000;
 /// What a way's speed is weighed with its round trip by: the time a larger reply (a page of history, an image) takes.
 export const TYPICAL_BYTES = 256 * 1024;
 /// How long the speed seen on a way counts; then it is found out again, from the replies that come through it.
@@ -962,7 +965,9 @@ export class Mesh {
       const speeds: Record<string, Record<string, Speed>> = speedsRaw !== null && typeof speedsRaw === "object" && !Array.isArray(speedsRaw) ? speedsRaw : {};
       const said = saidOf(parseJson(yield* Effect.orElseSucceed(host.storageGet(env.addressesKey ?? ADDRESSES_KEY), () => null)));
       const fresh = entries.filter((e) => !relays.some((r) => sameRelay(r, e)));
-      const endpoint = yield* Mesh.#bindMain(env, secret, relays, entryRoutes(relays, fresh, targets));
+      const routes = entryRoutes(relays, fresh, targets);
+      const allowlist = Mesh.#allowlist(relays, routes);
+      const endpoint = yield* Mesh.#bindMain(env, secret, relays, routes, allowlist);
       const mesh = new Mesh(env, relays, fresh, targets, endpoint, secret, days, speeds, said);
       env.runner.fork(mesh.#accepting(endpoint));
       env.runner.fork(mesh.#watch());
@@ -971,15 +976,63 @@ export class Mesh {
     });
   }
 
+  /// Deduplicated relay and entry URLs permitted on an endpoint, by normalized URL key.
+  static #allowlist(relays: string[], entries: { entry: string; relay: string }[], extra: Iterable<string> = []): string[] {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const url of [...relays, ...entries.map((e) => e.entry), ...extra]) {
+      const key = relayKey(url);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(url);
+    }
+    return out;
+  }
+
+  /// Deduplicated allowlist for the main endpoint: its relays, forwarding entries, and any known workspace relays.
+  #mainAllowlist(relays: string[], entries: { entry: string; relay: string }[]): string[] {
+    const theirs: string[] = [];
+    for (const list of this.#theirs.values()) theirs.push(...list);
+    return Mesh.#allowlist(relays, entries, theirs);
+  }
+
   /// The main endpoint, bound as its user says (`MeshEnv`: what it takes, `relayOnly`, `lookup`).
-  static #bindMain(env: MeshEnv, secret: Uint8Array, relays: string[], relayEntries: { entry: string; relay: string }[]): Effect.Effect<IrohEndpoint, CoreError> {
-    return Mesh.#bind(env.iroh, secret, relays, env.relayOnly === true, env.lookup === true, env.takes, relayEntries);
+  static #bindMain(
+    env: MeshEnv,
+    secret: Uint8Array,
+    relays: string[],
+    relayEntries: { entry: string; relay: string }[],
+    relayAllowlist: string[],
+  ): Effect.Effect<IrohEndpoint, CoreError> {
+    const lookupActive = env.lookup === true && env.relayOnly !== true && relays.length > 0;
+    return Mesh.#bind(env.iroh, secret, relays, env.relayOnly === true, env.lookup === true, env.takes, relayEntries, lookupActive ? relayAllowlist : undefined, lookupActive);
   }
 
   /// An endpoint: one at an address or on one relay alone looks nothing up (`lookup` only with a relay, and IP
   /// transports to go where what it found is).
-  static #bind(iroh: Iroh, secret: Uint8Array, relays: string[], relayOnly = false, lookup = false, alpns: Uint8Array[] = [], relayEntries: { entry: string; relay: string }[] = []): Effect.Effect<IrohEndpoint, CoreError> {
-    return Effect.mapError(iroh.bind({ secretKey: secret, relayUrls: relays, lookup: lookup && !relayOnly && relays.length > 0, relayOnly, ...(alpns.length > 0 ? { alpns } : {}), ...(relayEntries.length > 0 ? { relayEntries } : {}) }), (e) => CoreError.plainly("mesh", e, t("core-logic.mesh.bind_failed")));
+  static #bind(
+    iroh: Iroh,
+    secret: Uint8Array,
+    relays: string[],
+    relayOnly = false,
+    lookup = false,
+    alpns: Uint8Array[] = [],
+    relayEntries: { entry: string; relay: string }[] = [],
+    relayAllowlist?: string[],
+    allowPublicRelays = false,
+  ): Effect.Effect<IrohEndpoint, CoreError> {
+    return Effect.mapError(
+      iroh.bind({
+        secretKey: secret,
+        relayUrls: relays,
+        lookup: lookup && !relayOnly && relays.length > 0,
+        relayOnly,
+        ...(alpns.length > 0 ? { alpns } : {}),
+        ...(relayEntries.length > 0 ? { relayEntries } : {}),
+        ...(relayAllowlist !== undefined ? { relayAllowlist, allowPublicRelays } : {}),
+      }),
+      (e) => CoreError.plainly("mesh", e, t("core-logic.mesh.bind_failed")),
+    );
   }
 
   /// The connections the main endpoint takes (`MeshEnv.takes`), each handed on, until it is closed (bound anew).
@@ -1074,8 +1127,10 @@ export class Mesh {
   /// the way brings replies now. The way the requests go on found slower than it was taken to be: they are moved at once
   /// if another is clearly better now (`#choose`), not after minutes more on it.
   noteSpeed(addr: string, relay: string, bytes: number, ms: number): void {
-    if (bytes < SPEED_MIN_BYTES || ms <= 0) return;
+    if (ms <= 0 || bytes <= 0) return;
     const bps = (bytes / ms) * 1000;
+    const slowEarly = bytes >= SPEED_SLOW_MIN_BYTES && ms >= SPEED_SLOW_MIN_MS && bps < BULK_SLOW_BPS;
+    if (bytes < SPEED_MIN_BYTES && !slowEarly) return;
     const now = this.#env.host.nowMs();
     this.#saySpeed(addr, relay, bytes, ms, now);
     const id = endpointId(addr);
@@ -1169,21 +1224,34 @@ export class Mesh {
             return chunk;
           }
           own += chunk?.length ?? 0;
-          if (own >= SPEED_MIN_BYTES && !told) {
-            told = true;
-            lastOwn = own;
-            lastCame = came;
-            lastAt = now;
-            this.noteSpeed(addr, way, came - from, now - first);
-          } else if (chunk === null && own >= SPEED_MIN_BYTES) {
-            this.noteSpeed(addr, way, came - from, now - first);
-          } else if (told && chunk !== null && own - lastOwn >= SPEED_MIN_BYTES && now - lastAt >= 5_000) {
+          const elapsed = now - first;
+          const slowTotal =
+            own >= SPEED_SLOW_MIN_BYTES &&
+            elapsed >= SPEED_SLOW_MIN_MS &&
+            ((came - from) / Math.max(1, elapsed)) * 1000 < BULK_SLOW_BPS;
+          if (chunk === null) {
+            if (own >= SPEED_MIN_BYTES || (!told && slowTotal)) {
+              this.noteSpeed(addr, way, came - from, elapsed);
+            }
+          } else if (!told) {
+            if (own >= SPEED_MIN_BYTES || slowTotal) {
+              told = true;
+              lastOwn = own;
+              lastCame = came;
+              lastAt = now;
+              this.noteSpeed(addr, way, came - from, elapsed);
+            }
+          } else if (now - lastAt >= 5_000) {
+            const ownDelta = own - lastOwn;
             const bytes = came - lastCame;
             const ms = now - lastAt;
-            lastOwn = own;
-            lastCame = came;
-            lastAt = now;
-            this.noteSpeed(addr, way, bytes, ms);
+            const slowSlice = ownDelta >= SPEED_SLOW_MIN_BYTES && (bytes / Math.max(1, ms)) * 1000 < BULK_SLOW_BPS;
+            if (ownDelta >= SPEED_MIN_BYTES || slowSlice) {
+              lastOwn = own;
+              lastCame = came;
+              lastAt = now;
+              this.noteSpeed(addr, way, bytes, ms);
+            }
           }
           return chunk;
         }),
@@ -1359,7 +1427,9 @@ export class Mesh {
         return this.#endpoint;
       }
       this.#reboundAt = now;
-      const bound = yield* Effect.result(Mesh.#bindMain(this.#env, this.#secret, this.relays, entryRoutes(this.relays, this.entries, this.entryTargets)));
+      const routes = entryRoutes(this.relays, this.entries, this.entryTargets);
+      const allowlist = this.#mainAllowlist(this.relays, routes);
+      const bound = yield* Effect.result(Mesh.#bindMain(this.#env, this.#secret, this.relays, routes, allowlist));
       record(this.#env.host, "conn rebind", () => `${always ? "relays retold" : "a dial unanswered, nothing open"} -> ${bound._tag === "Failure" ? `failed: ${said(bound.failure.message)}` : "bound"}`);
       if (bound._tag === "Failure") return this.#endpoint;
       const endpoint = bound.success;
@@ -1737,7 +1807,9 @@ export class Mesh {
       if (secret.length !== 32) return yield* Effect.fail(CoreError.invalid(t("core-logic.mesh.bad_device_key")));
       const stored = yield* Effect.mapError(this.#env.host.storageGet(DEVICE_KEY), asCoreError);
       if (stored !== null && hex(stored) === hex(secret)) return;
-      const endpoint = yield* Mesh.#bindMain(this.#env, secret, this.relays, entryRoutes(this.relays, this.entries, this.entryTargets));
+      const routes = entryRoutes(this.relays, this.entries, this.entryTargets);
+      const allowlist = this.#mainAllowlist(this.relays, routes);
+      const endpoint = yield* Mesh.#bindMain(this.#env, secret, this.relays, routes, allowlist);
       this.#env.runner.fork(this.#accepting(endpoint));
       yield* Effect.mapError(this.#env.host.storageSet(DEVICE_KEY, secret), asCoreError);
       this.#secret = secret;
@@ -2560,10 +2632,10 @@ export class Mesh {
       const fence = this.#fences.get(relay);
       const bound = yield* Effect.result(
         relay === LAN || relay === TAILNET
-          ? Mesh.#bind(this.#env.iroh, pinnedKey(this.#secret, relay), [])
+          ? Mesh.#bind(this.#env.iroh, pinnedKey(this.#secret, relay), [], false, false, [], [], [], false)
           : fence !== undefined
-            ? Mesh.#bind(this.#env.iroh, pinnedKey(this.#secret, relay), fence)
-            : Mesh.#bind(this.#env.iroh, pinnedKey(this.#secret, relay), [relay], true),
+            ? Mesh.#bind(this.#env.iroh, pinnedKey(this.#secret, relay), fence, false, false, [], [], fence, false)
+            : Mesh.#bind(this.#env.iroh, pinnedKey(this.#secret, relay), [relay], true, false, [], [], [relay], false),
       );
       const endpoint = bound._tag === "Success" ? bound.success : null;
       Deferred.doneUnsafe(d, Effect.succeed(endpoint));

@@ -287,7 +287,8 @@ pub fn file_type(name : String) -> String {
   let ext = @jscase.lower(extname(name))
   if ext == ".opus" {
     "opus"
-  } else if ext is (".mp4" | ".mov" | ".m4v") {
+  } else if ext == ".mp4" {
+    // Only MP4 itself: Feishu checks the container, so a QuickTime .mov goes as a plain file.
     "mp4"
   } else if ext == ".pdf" {
     "pdf"
@@ -299,6 +300,18 @@ pub fn file_type(name : String) -> String {
     "ppt"
   } else {
     "stream"
+  }
+}
+
+///|
+/// The message type a file of that type is sent as: Feishu refuses any other (230055).
+fn file_msg_type(kind : String) -> String {
+  if kind == "mp4" {
+    "media"
+  } else if kind == "opus" {
+    "audio"
+  } else {
+    "file"
   }
 }
 
@@ -1045,7 +1058,8 @@ fn line_key(thread : ThreadRef) -> String {
 
 ///|
 /// The agent's words as rich text (a question's as a card, its buttons or field with them), then each file as a message
-/// of its own. The first message's id stands for the whole.
+/// of its own. Every file is uploaded before anything is sent, so a file that fails leaves no words posted alone. The
+/// first message's id stands for the whole.
 pub async fn FeishuSurface::post(
   self : FeishuSurface,
   thread : ThreadRef,
@@ -1053,11 +1067,6 @@ pub async fn FeishuSurface::post(
   files : Array[Attachment],
   card? : JV? = None,
 ) -> String {
-  match self.lines.get(line_key(thread)) {
-    Some(line) => line.spoke()
-    None => ()
-  }
-  let mut first : String? = None
   let lang = (self.words.station_lang)()
   let question = match card {
     Some(Obj(_) as c) if jget(Some(c), "type") is Some(Str("options" | "text")) =>
@@ -1074,6 +1083,65 @@ pub async fn FeishuSurface::post(
       ]
     None => text_posts(message).map(p => ("post", p))
   }
+  if sends.length() == 0 && files.length() == 0 {
+    raise FeishuError("nothing to post")
+  }
+  let uploaded : Array[(String, String)] = []
+  for file in files {
+    let bytes = match (self.options.disk.read)(file.path) {
+      Some(b) => b
+      None =>
+        raise FeishuError(
+          "ENOENT: no such file or directory, open '\{file.path}'",
+        )
+    }
+    if is_image_name(file.name) && bytes.length() <= max_image {
+      let up = self.client.call(
+        "POST",
+        "/open-apis/im/v1/images",
+        body=Some(jobj([("image_type", Some(js("message")))])),
+        files=[
+          { field: "image", bytes, name: file.name, mime: "application/octet-stream" },
+        ],
+      )
+      uploaded.push(
+        (
+          "image",
+          stringify(
+            jobj([("image_key", jget(jget(Some(up), "data"), "image_key"))]),
+          ),
+        ),
+      )
+    } else {
+      let kind = file_type(file.name)
+      let up = self.client.call(
+        "POST",
+        "/open-apis/im/v1/files",
+        body=Some(
+          jobj([
+            ("file_type", Some(js(kind))),
+            ("file_name", Some(js(file.name))),
+          ]),
+        ),
+        files=[
+          { field: "file", bytes, name: file.name, mime: "application/octet-stream" },
+        ],
+      )
+      uploaded.push(
+        (
+          file_msg_type(kind),
+          stringify(
+            jobj([("file_key", jget(jget(Some(up), "data"), "file_key"))]),
+          ),
+        ),
+      )
+    }
+  }
+  match self.lines.get(line_key(thread)) {
+    Some(line) => line.spoke()
+    None => ()
+  }
+  let mut first : String? = None
   for s in sends {
     let id = self.send(thread, s.0, s.1)
     if first is None {
@@ -1098,50 +1166,8 @@ pub async fn FeishuSurface::post(
       None => ()
     }
   }
-  for file in files {
-    let bytes = match (self.options.disk.read)(file.path) {
-      Some(b) => b
-      None =>
-        raise FeishuError(
-          "ENOENT: no such file or directory, open '\{file.path}'",
-        )
-    }
-    let id = if is_image_name(file.name) && bytes.length() <= max_image {
-      let up = self.client.call(
-        "POST",
-        "/open-apis/im/v1/images",
-        body=Some(jobj([("image_type", Some(js("message")))])),
-        files=[
-          { field: "image", bytes, name: file.name, mime: "application/octet-stream" },
-        ],
-      )
-      self.send(
-        thread,
-        "image",
-        stringify(
-          jobj([("image_key", jget(jget(Some(up), "data"), "image_key"))]),
-        ),
-      )
-    } else {
-      let up = self.client.call(
-        "POST",
-        "/open-apis/im/v1/files",
-        body=Some(
-          jobj([
-            ("file_type", Some(js(file_type(file.name)))),
-            ("file_name", Some(js(file.name))),
-          ]),
-        ),
-        files=[
-          { field: "file", bytes, name: file.name, mime: "application/octet-stream" },
-        ],
-      )
-      self.send(
-        thread,
-        "file",
-        stringify(jobj([("file_key", jget(jget(Some(up), "data"), "file_key"))])),
-      )
-    }
+  for u in uploaded {
+    let id = self.send(thread, u.0, u.1)
     if first is None {
       first = Some(id)
     }

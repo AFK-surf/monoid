@@ -118,7 +118,7 @@ export const chatDerive: Derive = {
 };
 
 /// A station's overview and host reading as its row and its page show them (Views `#stationShownOf`).
-type StationShown = { full: Derived<J>; profile: Derived<J>; settings: Derived<J>; host: Derived<J>; row: Derived<J>; hostRow: Derived<J>; unreadable: Derived<boolean>; offered: Derived<J[]>; judge: (o: J) => boolean };
+type StationShown = { full: Derived<J>; profile: Derived<J>; settings: Derived<J>; host: Derived<J>; row: Derived<J>; acceptAutoChats: Derived<boolean>; hostRow: Derived<J>; unreadable: Derived<boolean>; offered: Derived<J[]>; judge: (o: J) => boolean };
 
 /// A station of a scope, as the workspace lists it.
 /// `joined`: the station's home is another workspace, this one it joined.
@@ -897,6 +897,8 @@ export type ViewsEnv = {
   heard?: (workspace: string) => boolean;
   /// A topic a view watches shown again (its owner asked to bring it up to date, store.ts `resume`).
   resume?: (topic: Topic) => void;
+  /// A topic a view watches became idle (its owner may cancel in-flight work without discarding cached state).
+  idle?: (topic: Topic) => void;
   /// How much of a chat is on the device (station/topics.ts `held`); none where not given.
   held?: (station: string, thread: number) => { held: number; of: number; whole: boolean };
   /// A login of a station's as its station last told it (station/machine-logins.ts): the program it is to (gh, gcloud)
@@ -966,6 +968,7 @@ export function envOf(core: Inner): ViewsEnv {
     subOf: owner,
     places: () => xshare.places(core),
     resume: (topic) => core.router.resume(topic),
+    idle: (topic) => core.router.idle(topic),
     xshareAsked: (station, session) => xshare.asked(core, station, session),
     homeName: (workspace, id) => memberships.homeName(core, workspace, id),
     guard: (workspace) => stationsGuard(core, workspace),
@@ -1199,6 +1202,15 @@ export class Views implements Owner {
     for (const key of live?.watches.keys() ?? []) {
       const topic = JSON.parse(key) as Topic;
       if (topic.topic === "stationSearch") this.#core.resume?.(topic);
+    }
+  }
+
+  idle(view: Topic): void {
+    if (view.topic !== "search" && view.topic !== "archive") return;
+    const live = this.#views.get(topicKey(view));
+    for (const key of live?.watches.keys() ?? []) {
+      const topic = JSON.parse(key) as Topic;
+      if (topic.topic === "stationSearch" && !this.searchShownNow(topic)) this.#core.idle?.(topic);
     }
   }
 
@@ -1518,7 +1530,19 @@ export class Views implements Owner {
           // said there, is read from its history, `#sentElsewhere`; so its history is held as one shown is, its latest
           // page first: left to the sync's sweep of every agent's, on a station of many it came long after the page
           // opened, the page empty meanwhile)
-          if (session !== null) topics.push({ topic: "session", station, key: session }, { topic: "live", station, key: session });
+          if (session !== null) {
+            const data = this.#core.data;
+            const anchor = data.conversationOf(station, session);
+            const row = data.chatForSession(station, session) ?? (anchor !== session ? data.chatNamed(station, anchor)?.row : undefined);
+            const keys: string[] = [];
+            const add = (k: unknown) => {
+              if (typeof k === "string" && k !== "" && !keys.includes(k)) keys.push(k);
+            };
+            for (const a of arr(get(row, "agents"))) add(get(a, "key"));
+            add(anchor);
+            add(session);
+            for (const key of keys) topics.push({ topic: "session", station, key }, { topic: "live", station, key });
+          }
           topics.push(
             { topic: "threads", station },
             { topic: "chatRows", station },
@@ -1782,9 +1806,20 @@ export class Views implements Owner {
 
   /// The chat an agent's item has: the still.fail chat bound to it, as the station's items say, or its threads do.
   boundThread(station: string, key: string): number | null {
-    const fromRows = u64(get(this.#core.data.chatOfSession(station, key), "thread"));
+    const data = this.#core.data;
+    const fromRows = u64(get(data.chatForSession(station, key), "thread"));
     if (fromRows !== null) return fromRows;
-    return this.#core.data.threadOf(station, key);
+    const anchor = data.conversationOf(station, key);
+    if (anchor !== key) {
+      const fromNamed = u64(get(data.chatNamed(station, anchor)?.row, "thread"));
+      if (fromNamed !== null) return fromNamed;
+      const anchorThread = data.threadOf(station, anchor);
+      if (anchorThread !== null) return anchorThread;
+      const own = arr(get(this.ok({ topic: "session", station, key: anchor }), "threads")).find((t) => isOwnSurface(str(get(t, "surface")) ?? ""));
+      const fromDetail = u64(get(own, "id"));
+      if (fromDetail !== null) return fromDetail;
+    }
+    return data.threadOf(station, key);
   }
 
   /// A thread among the station's (null when it lists none such, or its threads were never read).
@@ -1830,7 +1865,7 @@ export class Views implements Owner {
     const data = this.#core.data;
     if (!data.listed(station, "chats")) return undefined;
     this.local.settle(station, data.rowsRev(station));
-    const raw = "thread" in by ? data.chatOfThread(station, by.thread) : data.chat(station, by.session);
+    const raw = "thread" in by ? data.chatOfThread(station, by.thread) : data.chatForSession(station, by.session);
     return raw === undefined ? null : this.local.asChanging(station, raw);
   }
 
@@ -2427,7 +2462,22 @@ export class Views implements Owner {
     const count = Array.isArray(get(ws, "members")) ? ws.members.length : null;
     // (one station still to say: how many are left is not known yet)
     const syncing = checking ? t("core-views.station.syncing") : behind > 0 ? t("core-views.station.syncing_left", { n: behind }) : null;
-    return { value: { ok: { me, stations: states, loading, days, trouble, members: count, leading: "agents", glyph, note, ...(syncing !== null ? { syncing } : {}), ...(more > 0 ? { more } : {}) } }, running: runningRows };
+    const interrupted: J[] = [];
+    for (const s of stations) {
+      if (!s.online) continue;
+      const raw = get(this.#core.data.overviewPart(s.address), "interrupted");
+      const count = u64(get(raw, "count")) ?? 0;
+      if (count <= 0) continue;
+      const chats = arr(get(raw, "items")).flatMap((item) => {
+        const key = str(get(item, "key"));
+        if (!key) return [];
+        const thread = u64(get(item, "thread"));
+        const title = str(get(item, "title")) ?? "";
+        return [{ key, ...(thread !== null ? { thread } : {}), title }];
+      });
+      interrupted.push({ station: s.address, stationName: s.name, count, chats });
+    }
+    return { value: { ok: { me, stations: states, loading, days, trouble, members: count, leading: "agents", glyph, note, ...(syncing !== null ? { syncing } : {}), ...(more > 0 ? { more } : {}), ...(interrupted.length > 0 ? { interrupted } : {}) } }, running: runningRows };
   }
 
   /// What #chatsOf makes of a list that no station's link says: its stations, its days (its first `first` rows where
@@ -2508,7 +2558,7 @@ export class Views implements Owner {
         const asked = [...this.local.pendingRows(s.address), ...this.local.restoringRows(s.address).filter((row) => {
           const thread = get(row, "thread");
           const session = get(row, "session");
-          return (typeof thread === "number" ? data.chatOfThread(s.address, thread) : data.chatOfSession(s.address, String(session ?? ""))) === undefined;
+          return (typeof thread === "number" ? data.chatOfThread(s.address, thread) : data.chatForSession(s.address, String(session ?? ""))) === undefined;
         })];
         // What failed to go in the station's chats, once for the list (looked up for each row, 1400 of them, on every
         // change of one: 2026-11-08).
@@ -3113,7 +3163,7 @@ export class Views implements Owner {
     const data = this.#core.data;
     if (!data.listed(station, "chats")) return undefined;
     this.local.settle(station, data.rowsRev(station));
-    const raw: J = data.chatOfSession(station, session) ?? data.chat(station, session)
+    const raw: J = data.chatForSession(station, session)
       ?? this.local.pendingRows(station).find((r) => get(r, "session") === session || get(r, "clientKey") === session);
     if (raw === undefined || this.local.beingArchived(station, raw)) return { ok: null };
     const row = this.#wholeOf(s, stations.length > 1, this.local.asChanging(station, raw));
@@ -3514,20 +3564,16 @@ export class Views implements Owner {
     return { ok: found ?? null };
   }
 
-  /// Which of a workspace's stations the viewer may change the mode of, as the cloud has it (cloud/src/directory.ts
-  /// `setStationMode`; the user, 2026-11-10): those they added, and those no member of the workspace added (its adder
-  /// left, or the operator enrolled it) where they own the workspace.
+  /// Which of a workspace's stations the viewer may change the mode of, as the cloud has it (cloud/src/directory/stations.ts
+  /// `setStationMode`): workspace owners and admins may convert any whole station, and a member may convert one they added.
   #mayChangeMode(scope: string): (id: string) => boolean {
     const ws = this.ok({ topic: "workspace", workspace: scope });
     const sub = this.#core.subOf?.(scope) ?? null;
     if (sub === null || !isObject(ws)) return () => false;
-    const owner = get(ws, "role") === "owner";
-    const members = new Set(arr(get(ws, "members")).map((m) => str(get(m, "sub"))));
+    const role = get(ws, "role");
+    if (role === "owner" || role === "admin") return () => true;
     const by = new Map(arr(get(ws, "stations")).map((s) => [str(get(s, "id")), str(get(s, "enrolled_by"))] as const));
-    return (id) => {
-      const adder = by.get(id) ?? null;
-      return adder === sub || (owner && (adder === null || !members.has(adder)));
-    };
+    return (id) => by.get(id) === sub;
   }
 
   /// A scope's stations, made in one place for the three ways they are asked: `row`, each as a list shows it
@@ -3612,6 +3658,7 @@ export class Views implements Owner {
         way: way === undefined ? null : present.way(way, (h) => this.relayName(h)),
         ...(s.joined ? { joined: true, home: this.#core.homeName?.(scope, s.id) ?? null } : {}),
         mine: mine(s.id),
+        ...((row ? !parts.unreadable.get() && parts.acceptAutoChats.get() : get(get(overview, "autoChats"), "enabled") === true) ? { acceptAutoChats: true } : {}),
       };
       if (row) return item;
       const serving = overview !== undefined ? servingIn(overview, scope, s.joined === true) : overview;
@@ -3713,6 +3760,7 @@ export class Views implements Owner {
         const o = this.#core.data.overviewRow(station);
         return isObject(o) ? asShaped("OverviewRow", rowOf(o)) : undefined;
       }),
+      acceptAutoChats: computed(() => get(get(this.#core.data.overviewRow(station), "autoChats"), "enabled") === true),
       hostRow: computed(() => {
         const h = kept!.host.get();
         return h === null ? null : asShaped("HostRow", { identity: h.identity, os: h.os, meters: h.meters });
@@ -3882,16 +3930,17 @@ export class Views implements Owner {
       const key = str(get(session, "key"));
       const detail = str(get(turn, "detail")) ?? "";
       const outcome = get(turn, "outcome");
-      if (key === undefined || (outcome !== "failed" && outcome !== "completed") || get(about, "thread") !== id) continue;
+      if (key === undefined || (outcome !== "failed" && outcome !== "completed" && outcome !== "aborted") || get(about, "thread") !== id) continue;
       // Waiting to retry at capacity: 取消; else one that failed for the provider or the connection, or one the station
-      // stopped asking for a state (回复即可继续), and is still where the session stands (nothing ran or was sent
-      // since): 重试, as a reply would (station actor.ts `retryable`).
+      // stopped asking for a state (回复即可继续), or one cut off by a non-update station restart, and is still where the
+      // session stands (nothing ran or was sent since): 重试, as a reply would (station actor.ts `retryable`).
       const status = present.sessionStatus(session);
       const mark = outcome === "failed" && detail.startsWith("overloaded:") && present.waiting(session) !== null ? "retrySession"
         : outcome === "failed" && status === "failed" && AGAIN.some((reason) => detail.startsWith(`${reason}:`)) ? "againSession"
         // Its allowance asked again showed a limit its words did not name: 重新分配账号 (actor.ts `LIMIT_SHOWN`).
         : outcome === "failed" && status === "failed" && detail.startsWith("limit:") ? "reassignSession"
-        : outcome === "completed" && status === "unexpected" ? "againSession" : null;
+        : outcome === "completed" && status === "unexpected" ? "againSession"
+        : outcome === "aborted" && status === "aborted" && detail === "other: cut off by restart" ? "againSession" : null;
       if (mark === null) continue;
       const at = messages.findIndex((m) => m.system === true && m.seq === get(about, "seq") && m.ts === get(about, "ts"));
       const notice = messages[at];
@@ -4725,7 +4774,7 @@ export class Views implements Owner {
 
   /// An agent as its sidebar row lists it, with the connect its row came from.
   #rowAgent(station: string, key: string): J {
-    const row: J = this.#core.data.chatOfSession(station, key);
+    const row: J = this.#core.data.chatForSession(station, key);
     const agent = arr(get(row, "agents")).find((a) => get(a, "key") === key);
     if (agent === undefined) return null;
     const out = structuredClone(agent);
@@ -4766,8 +4815,9 @@ export class Views implements Owner {
 
   /// The page of an item whose agent has no chat yet.
   #unchatted(station: string, key: string): Value | undefined {
-    const agent = this.agent(station, key);
-    if (agent === null) {
+    const data = this.#core.data;
+    const anchor = data.conversationOf(station, key);
+    if (anchor === key && this.agent(station, key) === null) {
       const detail = this.value({ topic: "session", station, key });
       if (detail === undefined) return undefined;
       // (the station has no such session: the chat is not there, said so, whatever the station's words for it)
@@ -4776,25 +4826,54 @@ export class Views implements Owner {
     }
     const found = this.#row(station, { session: key });
     if (found === undefined && this.listKnown(station, "chats") === undefined) return undefined;
-    const row = found ?? undefined;
+    const archivedFound = found === null ? data.chatNamed(station, anchor) : undefined;
+    const row = found ?? archivedFound?.row;
+    const agentKeys: string[] = [];
+    const addKey = (k: unknown) => {
+      if (typeof k === "string" && k !== "" && !agentKeys.includes(k)) agentKeys.push(k);
+    };
+    for (const a of arr(get(row, "agents"))) addKey(get(a, "key"));
+    addKey(anchor);
+    addKey(key);
+    if (anchor !== key && this.agent(station, anchor) === null) {
+      const anchorDetail = this.value({ topic: "session", station, key: anchor });
+      if (anchorDetail === undefined) return undefined;
+    }
+    const agents: J[] = [];
+    for (const k of agentKeys) {
+      const a = this.agent(station, k);
+      if (a !== null) agents.push(a);
+    }
+    if (agents.length === 0) {
+      const detail = this.value({ topic: "session", station, key });
+      if (detail === undefined) return undefined;
+      const none = new CoreError("http_404", t("core-views.error.no_chat"), 404);
+      return { err: "err" in detail && detail.err.status !== 404 ? detail.err : none };
+    }
     if (row === undefined) {
       const threads = this.value({ topic: "threads", station });
       if (threads === undefined) return undefined;
       if ("err" in threads) return threads;
     }
-    const archived = this.local.archivedChanging(station, null, key) ?? (get(agent.session, "archivedAt") !== undefined && get(agent.session, "archivedAt") !== null);
-    // An agent that has only been in Slack: what was said there is all it has to show.
+    const archived = this.local.archivedChanging(station, null, anchor)
+      ?? (anchor !== key ? this.local.archivedChanging(station, null, key) : null)
+      ?? (archivedFound?.archived === true || agents.some((a) => get(a.session, "archivedAt") !== undefined && get(a.session, "archivedAt") !== null));
+    // An agent (or merged conversation) that has only been in Slack: what was said there is all it has to show.
     const members_ = arr(get(this.ok({ topic: "workspace", workspace: ofAddress(station) }), "members"));
-    const bot = agent.connect !== undefined ? present.botOf(agent.connect) : null;
-    const elsewhere = this.#sentElsewhere(station, null, [agent], [], false, false, { members: members_, bots: (bot === null ? [] : [bot]).concat(this.#core.data.slackNames(station)) });
-    // No chat at all, as its detail says: none here, none in Slack (a Slack thread has no chat here either), not archived.
-    const detail = this.value({ topic: "session", station, key });
-    const noChat = !archived && detail !== undefined && "ok" in detail && arr(get(detail.ok, "threads")).length === 0;
+    const bots = agents.flatMap((a) => {
+      const bot = a.connect !== undefined ? present.botOf(a.connect) : null;
+      return bot === null ? [] : [bot];
+    }).concat(this.#core.data.slackNames(station));
+    const elsewhere = this.#sentElsewhere(station, null, agents, [], false, false, { members: members_, bots });
+    // No chat at all, as their details say: none here, none in Slack (a Slack thread has no chat here either), not archived.
+    const details = agentKeys.map((k) => this.value({ topic: "session", station, key: k }));
+    const noChat = !archived && details.length > 0 && details.every((d) => d !== undefined && "ok" in d && arr(get(d.ok, "threads")).length === 0);
     // Where the Slack or Feishu thread it came from is (the row's origin), as a chat's page says its own.
     const origin = get(row, "origin");
     const strOf = (v: J, k: string) => str(get(v, k)) ?? "";
-    const surface = isObject(origin) && isObject(agent.connect) ? `${strOf(agent.connect, "kind")}:${strOf(agent.connect, "id")}` : "";
-    const where = isObject(origin) ? this.#whereIn(station, [agent], surface, strOf(origin, "channel"), strOf(origin, "channelName"), strOf(origin, "threadTs")) : null;
+    const primaryConnect = agents.find((a) => isObject(a.connect))?.connect;
+    const surface = isObject(origin) && isObject(primaryConnect) ? `${strOf(primaryConnect, "kind")}:${strOf(primaryConnect, "id")}` : "";
+    const where = isObject(origin) ? this.#whereIn(station, agents, surface, strOf(origin, "channel"), strOf(origin, "channelName"), strOf(origin, "threadTs")) : null;
     return {
       ok: {
         me: this.me(ofAddress(station)),
@@ -4805,7 +4884,7 @@ export class Views implements Owner {
         title: row !== undefined && row.title !== undefined ? row.title : t("core-views.new_chat"),
         people: [],
         archived,
-        agents: [agent],
+        agents,
         messages: [],
         elsewhere,
         more: false,

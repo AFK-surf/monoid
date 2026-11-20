@@ -174,7 +174,7 @@ async fn Admin::session_file(
   r : Request,
   key : String,
   name : String,
-  thumb : Bool,
+  thumb : String?,
 ) -> Answer {
   match self.uploaded(key, name) {
     Answered(a) => a
@@ -192,9 +192,14 @@ async fn Admin::session_file(
       }
     }
     OnDisk(content_type, file) => {
-      let small = match self.setup.data {
-        Some(data) if thumb => {
-          let made = self.backend.ask("drive/thumbs.thumbnail", [
+      let op = match thumb {
+        Some("1") => Some("drive/thumbs.thumbnail")
+        Some("2") => Some("drive/thumbs.preview")
+        _ => None
+      }
+      let small = match (self.setup.data, op) {
+        (Some(data), Some(op)) => {
+          let made = self.backend.ask(op, [
             js(file),
             js(self.thumbs_dir(data)),
           ])
@@ -725,7 +730,7 @@ fn Admin::sessions_routes(self : Admin) -> Array[Route] {
             r,
             key,
             r.param("name").unwrap_or(""),
-            r.param("thumb") == Some("1"),
+            r.param("thumb"),
           )
         Some("parts") => self.session_part(r, key)
         Some("poster") => self.poster_of(r, key)

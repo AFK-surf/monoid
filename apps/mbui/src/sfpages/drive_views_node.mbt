@@ -262,6 +262,7 @@ pub fn rows_view_node(
   head? : (@view.View) -> Unit,
   empty? : (@view.View) -> Unit,
   foot? : () -> Double = fn() { 0.0 },
+  pad? : (Double, Double, Double, Double),
 ) -> Unit {
   let src = s.src
   let lines = fn() -> Array[LineAt] {
@@ -297,6 +298,10 @@ pub fn rows_view_node(
   }
   parent.box(fn(l) {
     l.transitions_only().grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+    match pad {
+      Some(p) => l.padding(Is(p)) |> ignore
+      None => ()
+    }
     let folder_loaded = fn() {
       let (value, _) = s.b.folder(src, at)
       value is Some(_) && s.b.arranged(src, at.path) is Some(_)

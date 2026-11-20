@@ -152,9 +152,20 @@ final class Images {
         return b;
     }
 
+    /**
+     * The long side a decode is asked for held to the largest texture the GL context takes (GL_MAX_TEXTURE_SIZE, read as
+     * drawing is set up: an older GPU's 4096 refuses a picture of 8192): 4096 while that is not known yet.
+     */
+    static int cappedMaxPx(int maxPx) {
+        int most = NativeViews.textureMost;
+        if (most <= 0) most = 4096;
+        return maxPx > 0 ? Math.min(maxPx, most) : most;
+    }
+
     static void decode(int id, Req r) {
         if (live.get(id) != r) return;
         long t0 = System.nanoTime();
+        int maxPx = cappedMaxPx(r.maxPx);
         int[] orig = new int[2];
         Bitmap b = null;
         try {
@@ -165,13 +176,13 @@ final class Images {
                 // a photo or video of the gallery (Gallery.java), or a file held by its address (Picks.java):
                 // its thumbnail first (a video's still, a photo's cached preview), else the image itself
                 try {
-                    Bitmap t = cr.loadThumbnail(uri, new android.util.Size(r.maxPx, r.maxPx), null);
+                    Bitmap t = cr.loadThumbnail(uri, new android.util.Size(maxPx, maxPx), null);
                     orig[0] = t.getWidth();
                     orig[1] = t.getHeight();
                     b = t.getConfig() == Bitmap.Config.ARGB_8888 ? t : t.copy(Bitmap.Config.ARGB_8888, false);
                     if (b != t) t.recycle();
                 } catch (Exception thumbErr) {
-                    b = decodeSource(ImageDecoder.createSource(cr, uri), r.maxPx, orig);
+                    b = decodeSource(ImageDecoder.createSource(cr, uri), maxPx, orig);
                 }
             } else {
                 if (data == null && (r.src.startsWith("http://") || r.src.startsWith("https://"))) {
@@ -184,9 +195,9 @@ final class Images {
                     // is the second try for what it can't read
                     b = decodeSource(data != null
                             ? ImageDecoder.createSource(ByteBuffer.wrap(data))
-                            : ImageDecoder.createSource(new File(path)), r.maxPx, orig);
+                            : ImageDecoder.createSource(new File(path)), maxPx, orig);
                 } catch (IOException e) {
-                    b = withFactory(data, path, r.maxPx, orig);
+                    b = withFactory(data, path, maxPx, orig);
                     if (b == null) throw e;
                     if (b.getConfig() != Bitmap.Config.ARGB_8888) {
                         Bitmap c = b.copy(Bitmap.Config.ARGB_8888, false);
@@ -265,6 +276,17 @@ final class Images {
         if (!live.containsKey(id)) {  // freed meanwhile
             if (b != null) b.recycle();
             return;
+        }
+        // (no larger than the GL context takes: a thumbnail larger than asked, or decoded before that was known)
+        NativeViews.textureMostRead();
+        int most = NativeViews.textureMost;
+        if (b != null && most > 0 && (b.getWidth() > most || b.getHeight() > most)) {
+            double k = most / (double) Math.max(b.getWidth(), b.getHeight());
+            int nw = Math.max(1, Math.min(most, (int) Math.round(b.getWidth() * k)));
+            int nh = Math.max(1, Math.min(most, (int) Math.round(b.getHeight() * k)));
+            Bitmap s = Bitmap.createScaledBitmap(b, nw, nh, true);
+            if (s != b) b.recycle();
+            b = s;
         }
         int[] t = {0};
         if (b != null) {

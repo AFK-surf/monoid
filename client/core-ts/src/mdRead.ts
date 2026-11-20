@@ -164,22 +164,29 @@ function mathBracket(state: J, startLine: number, endLine: number, silent: boole
 }
 
 /// `\(` to `\)` in a line's words, across its line breaks; a backslash takes the character after it with it. Open, it
-/// is an escaped parenthesis.
+/// is an escaped parenthesis. `\[` to `\]` in a line's words too (`目标：\[J=\sum_t r_t\]`, as agents write it mid-line,
+/// where mathBracket finds none), read so only where it holds TeX (a command, `^` or `_`): `a\[0\]` and `\[1\]` are
+/// Markdown's escaped brackets.
 function mathParen(state: J, silent: boolean): boolean {
   const src: string = state.src;
   const start = state.pos;
-  if (src.charCodeAt(start) !== 0x5c || src.charCodeAt(start + 1) !== 0x28) return false;
+  if (src.charCodeAt(start) !== 0x5c) return false;
+  const opener = src.charCodeAt(start + 1);
+  if (opener !== 0x28 && opener !== 0x5b) return false;
+  const closer = opener === 0x28 ? 0x29 : 0x5d;
   for (let at = start + 2; at < state.posMax; ) {
     if (src.charCodeAt(at) !== 0x5c) {
       at++;
       continue;
     }
-    if (src.charCodeAt(at + 1) === 0x29) {
+    if (src.charCodeAt(at + 1) === closer) {
+      // (a line's leading spaces are not the formula's, as they are no paragraph's words)
+      const content = src.slice(start + 2, at).replace(/\n[ \t]+/g, "\n");
+      if (closer === 0x5d && !/\\[A-Za-z]|[\^_]/.test(content)) return false;
       if (!silent) {
         const token = state.push("math_inline", "math", 0);
-        // (a line's leading spaces are not the formula's, as they are no paragraph's words)
-        token.content = src.slice(start + 2, at).replace(/\n[ \t]+/g, "\n");
-        token.markup = "\\(";
+        token.content = content;
+        token.markup = opener === 0x28 ? "\\(" : "\\[";
       }
       state.pos = at + 2;
       return true;
@@ -529,7 +536,7 @@ function inlinesOf(w: Walk, tokens: J[], [from, to]: [number, number]): Node[] {
         return { type: "inlineCode", value: t.content, ...(start !== undefined ? { position: at(start, cursor.to) } : {}) };
       }
       case "math_inline": {
-        const k = w.source.indexOf("\\(", cursor.at);
+        const k = w.source.indexOf(t.markup, cursor.at);
         const start = k >= 0 && k < cursor.to ? k : undefined;
         if (start !== undefined) cursor.at = start + 2;
         const inside = found(t.content);

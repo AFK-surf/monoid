@@ -626,6 +626,10 @@ async fn P53Accounts::ask(self : P53Accounts, m : String, arg : Json) -> Json {
         self.made().put_archiving(given(0, "body"), given(1, "viewer"), lang(2))
         done
       }
+      "putAutoChats" => {
+        self.made().put_auto_chats(given(0, "body"), given(1, "viewer"), lang(2))
+        done
+      }
       "putArchivePolicy" => {
         self.made().put_archive_policy(given(0, "body"), given(1, "viewer"), lang(2))
         done

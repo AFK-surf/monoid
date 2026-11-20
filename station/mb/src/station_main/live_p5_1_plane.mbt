@@ -150,12 +150,7 @@ fn P51::plane_live(self : P51) -> Plane {
     },
     log=m => p51_log("INFO", "presence", m),
   )
-  let entry = () => @cloud_net.cloud_entry((bus.config_raw.val)()) catch {
-    e => {
-      p51_log("WARN", "cloud", "cloudEntry not taken", fields={ "error": Json::string("\{e}") })
-      None
-    }
-  }
+  let entry = () => @cloud_net.cloud_entry((bus.config_raw.val)())
   let transport = @cloud_net.CloudTransport::new(entry, @cloud_net.host_dial_io(host))
   let http = @cloud_net.host_http(host)
   let sign = (m : String) => bus.key.sign(m) catch { _ => "" }

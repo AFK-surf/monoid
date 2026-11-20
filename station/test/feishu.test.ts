@@ -472,6 +472,43 @@ test("surface: posts as rich text in the chat, files after them; a question's bu
   }
 });
 
+test("surface: each file goes as the message type its upload's file_type takes: .mp4 as media, .opus as audio, .mov as a plain file (FB-41)", async () => {
+  const r = await surfaceRig();
+  const dir = mkdtempSync(join(tmpdir(), "fsf-"));
+  try {
+    const names = ["clip.mp4", "voice.opus", "movie.mov", "report.pdf", "shot.png"];
+    for (const name of names) writeFileSync(join(dir, name), name);
+    await r.surface.post({ channel: "oc_g", threadTs: "om_a" }, "说明文字", names.map((name) => ({ name, path: join(dir, name), size: name.length })));
+    assert.deepEqual(r.fake.calls("POST", "/open-apis/im/v1/files").map((s) => [s.body.file_name, s.body.file_type]), [
+      ["clip.mp4", "mp4"],
+      ["voice.opus", "opus"],
+      ["movie.mov", "stream"],
+      ["report.pdf", "pdf"],
+    ]);
+    const sent = r.fake.calls("POST", "/open-apis/im/v1/messages");
+    assert.deepEqual(sent.map((s) => s.body.msg_type), ["post", "media", "audio", "file", "file", "image"]);
+    assert.deepEqual(Object.keys(JSON.parse(sent[1]!.body.content)), ["file_key"], "a video goes with its file_key alone");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    await r.close();
+  }
+});
+
+test("surface: a file that cannot be uploaded or read fails the post before anything is sent, so no words are left alone (FB-41)", async () => {
+  const r = await surfaceRig();
+  const dir = mkdtempSync(join(tmpdir(), "fsf-"));
+  try {
+    writeFileSync(join(dir, "clip.mp4"), "mp4");
+    r.fake.answer("POST /open-apis/im/v1/files", { code: 234001, msg: "Invalid request param." });
+    await assert.rejects(r.surface.post({ channel: "oc_g", threadTs: "om_a" }, "说明文字", [{ name: "clip.mp4", path: join(dir, "clip.mp4"), size: 3 }]));
+    await assert.rejects(r.surface.post({ channel: "oc_g", threadTs: "om_a" }, "说明文字", [{ name: "gone.pdf", path: join(dir, "gone.pdf"), size: 3 }]));
+    assert.equal(r.fake.calls("POST", /^\/open-apis\/im\/v1\/messages(\/[^/]+\/reply)?$/).length, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    await r.close();
+  }
+});
+
 test("surface: a question that stops waiting otherwise says why, nothing left to press; one its own button answered is left as it shows", async () => {
   const r = await surfaceRig();
   try {

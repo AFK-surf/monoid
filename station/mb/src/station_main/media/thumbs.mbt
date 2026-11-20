@@ -798,11 +798,17 @@ fn png_compressed(img : Image) -> Bytes {
 }
 
 ///|
-/// What a thumbnail is made of an image as it is seen: its type ("image/png" or "image/jpeg"), extension and bytes;
-/// None where it would be no smaller than the image's `len`.
-pub fn made_small(img : Image, len : Double) -> (String, String, Bytes)? {
-  let small = if img.w > thumb_max_w || img.h > thumb_max_h {
-    let (nw, nh) = fit_within(img.w, img.h, thumb_max_w, thumb_max_h)
+/// What a smaller copy is made of an image as it is seen: fitted within `max_w`×`max_h` (never enlarged), PNG where
+/// any pixel has alpha < 255 and JPEG quality 88 otherwise; None where `bytes.length() * ratio >= len`.
+fn made_sized(
+  img : Image,
+  len : Double,
+  max_w : Int,
+  max_h : Int,
+  ratio : Double,
+) -> (String, String, Bytes)? {
+  let small = if img.w > max_w || img.h > max_h {
+    let (nw, nh) = fit_within(img.w, img.h, max_w, max_h)
     resize(img, nw, nh)
   } else {
     img
@@ -819,10 +825,24 @@ pub fn made_small(img : Image, len : Double) -> (String, String, Bytes)? {
   } else {
     ("jpg", "image/jpeg", @pixels.jpeg(small.w, small.h, small.px, quality=88))
   }
-  if bytes.length().to_double() >= len {
+  if bytes.length().to_double() * ratio >= len {
     return None
   }
   Some((ext, kind, bytes))
+}
+
+///|
+/// What a thumbnail is made of an image as it is seen: its type ("image/png" or "image/jpeg"), extension and bytes;
+/// None where it would be no smaller than the image's `len`.
+pub fn made_small(img : Image, len : Double) -> (String, String, Bytes)? {
+  made_sized(img, len, thumb_max_w, thumb_max_h, 1.0)
+}
+
+///|
+/// What the whole-window viewer shows before the image itself (thumbs.rs `PREVIEW`): at most 2048 across either way,
+/// kept only when strictly smaller than half the image's `len`.
+pub fn made_preview(img : Image, len : Double) -> (String, String, Bytes)? {
+  made_sized(img, len, preview_max, preview_max, 2.0)
 }
 
 ///|
@@ -835,3 +855,11 @@ pub fn hash_of(img : Image) -> String {
 ///|
 /// An image this small (or smaller) is shown itself.
 pub let small_len : Double = 24576.0
+
+///|
+/// The largest a whole-window preview is made across either way (thumbs.rs `PREVIEW_MAX`).
+pub let preview_max : Int = 2048
+
+///|
+/// An image this small (300 KiB or smaller) is shown itself in the whole-window viewer (thumbs.rs `PREVIEW_SMALL`).
+pub let preview_small_len : Double = 307200.0

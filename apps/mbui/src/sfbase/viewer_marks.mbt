@@ -302,6 +302,10 @@ pub let marking : Marking = {
 pub fn marks_start() -> Unit {
   marks_leave()
   marking.on = true
+  match viewer.untracked() {
+    Some(v) => v.request_whole()
+    None => ()
+  }
   marks_changed()
 }
 
@@ -318,6 +322,7 @@ pub fn Viewer::marks_start_here(self : Viewer) -> Unit {
   marks_leave()
   marking.on = true
   marks_tab.val = Some(self)
+  self.request_whole()
   marks_changed()
 }
 
@@ -352,6 +357,14 @@ pub fn marks_said() -> Unit {
 
 ///|
 pub fn marks_leave() -> Unit {
+  match viewer.untracked() {
+    Some(v) => v.marks_after = None
+    None => ()
+  }
+  match marks_tab.val {
+    Some(v) => v.marks_after = None
+    None => ()
+  }
   marking.on = false
   marks_tab.val = None
   marking.tool = Rect

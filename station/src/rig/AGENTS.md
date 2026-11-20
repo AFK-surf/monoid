@@ -7,8 +7,7 @@
 
 ## Ownership and mode switching
 
-- A station belongs to the member who added it, regardless of mode. Only that owner changes its mode either way. Being a workspace owner or admin is neither needed nor enough.
-- Switching back to whole requires workspace management permission (regular members cannot add a whole station). If the adder left or an operator enrolled the station, a workspace owner may convert it to a rig and become its owner. `cloud/src/directory.ts` `setStationMode` enforces this because the machine does not know who added it.
+- A whole station may be converted to a rig by the member who added it or by any workspace owner or admin; whoever converts it becomes the rig's owner. An existing rig is never taken over: only its owner changes its grants, settings, devices, or converts it back to whole, and converting back also requires workspace owner or admin permission (regular members cannot add a whole station). `cloud/src/directory/stations.ts` `setStationMode` enforces this because the machine does not know who added it.
 - Changing mode requires two matching signals, never one alone:
   1. An out-of-band machine request (kept for 1 hour): whole to rig via `POST /mode` from a member's device carrying their lock hash to pin, or rig to whole via the owner's signed `rig.full`.
   2. The control plane listing the new mode under that same owner (`station/src/cloud/presence.ts`).

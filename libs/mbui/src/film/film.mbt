@@ -50,6 +50,7 @@ let inst_size = 60
 pub let film_fps : Int = 60
 
 ///|
+/// LEGACY immediate-mode entry; new apps use `@film.film`.
 /// `script` (drive.mbt's steps) run over `view` in a Tester of this host's text and pictures, `w` × `h` points at
 /// `scale` device pixels a point, playing `platform` (@hostapi.platform's: 0 macOS, 1 iOS, 2 Android), the system
 /// `dark` or not, and filmed: every frame it draws drawn by this host's renderer offscreen and written into `out` (an
@@ -58,7 +59,7 @@ pub let film_fps : Int = 60
 /// script passed, what went wrong said. `prepare` runs against the same view before the first filmed frame; a failed
 /// preparation leaves the previous film untouched. A failed image or a native view cannot be drawn offscreen, so the
 /// film fails rather than omitting it; `allow_incomplete` deliberately films just the parts mbui can draw.
-pub fn film(
+pub fn film_legacy_ctx(
   view : (@ui.Ctx) -> Unit,
   tree? : (@view.View) -> Unit,
   script~ : String,
@@ -103,8 +104,8 @@ pub fn film(
 }
 
 ///|
-/// Pure-tree counterpart of `film`: films `tree` made once without any legacy `Ctx` view, using `@ui.Tester::tree`.
-pub fn film_tree(
+/// Films `tree` made once without any legacy `Ctx` view, using `@ui.Tester::tree`.
+pub fn film(
   tree : (@view.View) -> Unit,
   script~ : String,
   out~ : String,
@@ -128,6 +129,52 @@ pub fn film_tree(
   film_impl(
     None,
     Some(tree),
+    script~,
+    out~,
+    w~,
+    h~,
+    scale~,
+    platform~,
+    dark~,
+    inset~,
+    window_corner~,
+    fps~,
+    prepare~,
+    max~,
+    last~,
+    copied~,
+    allow_incomplete~,
+    corners_held~,
+    theme?,
+    transitions_only~,
+  )
+}
+
+///|
+/// Compatibility alias for `film`.
+pub fn film_tree(
+  tree : (@view.View) -> Unit,
+  script~ : String,
+  out~ : String,
+  w? : Double = 390.0,
+  h? : Double = 844.0,
+  scale? : Double = 2.0,
+  platform? : Int = 0,
+  dark? : Bool = false,
+  inset? : Bool = false,
+  window_corner? : Double = 0.0,
+  fps? : Int = film_fps,
+  prepare? : String = "",
+  max? : Int = 3000,
+  last? : String = "",
+  copied? : String = "",
+  allow_incomplete? : Bool = false,
+  corners_held? : Bool = true,
+  theme? : () -> @ui.Theme,
+  transitions_only? : Bool = true,
+) -> Bool {
+  film(
+    tree,
     script~,
     out~,
     w~,
@@ -357,20 +404,31 @@ fn window_frame(t : @ui.Tester, buf : Ref[FixedArray[Double]]) -> (Int, (Double,
 }
 
 ///|
+/// LEGACY immediate-mode entry; new apps use `@film.run`.
 /// A film made of the process's arguments (the head of this file says which), `view` the app's: the process ends
 /// with 0 when it was made and the script passed, 1 when not, 2 when it was not asked for rightly.
-pub fn run(view : (@ui.Ctx) -> Unit, tree? : (@view.View) -> Unit, theme? : () -> @ui.Theme) -> Unit {
+pub fn run_legacy_ctx(view : (@ui.Ctx) -> Unit, tree? : (@view.View) -> Unit, theme? : () -> @ui.Theme) -> Unit {
   run_impl(Some(view), tree, theme?)
 }
 
 ///|
-/// Pure-tree counterpart of `run`: previews, pictures, or films `tree` made once without a legacy `Ctx` view.
-pub fn run_tree(
+/// Previews, pictures, or films `tree` made once without a legacy `Ctx` view.
+pub fn run(
   tree : (@view.View) -> Unit,
   theme? : () -> @ui.Theme,
   transitions_only? : Bool = true,
 ) -> Unit {
   run_impl(None, Some(tree), theme?, transitions_only~)
+}
+
+///|
+/// Compatibility alias for `run`.
+pub fn run_tree(
+  tree : (@view.View) -> Unit,
+  theme? : () -> @ui.Theme,
+  transitions_only? : Bool = true,
+) -> Unit {
+  run(tree, theme?, transitions_only~)
 }
 
 ///|
@@ -393,9 +451,9 @@ fn run_impl(
       _ => ()
     }
     match (view, tree) {
-      (None, Some(make)) => @ui.run_tree("mbui scene", make, theme?, transitions_only=transitions_only.unwrap_or(true))
-      (Some(v), _) => @ui.run("mbui scene", v, tree?, theme?, transitions_only?)
-      (None, None) => @ui.run_tree("mbui scene", fn(_) { () }, theme?, transitions_only=transitions_only.unwrap_or(true))
+      (None, Some(make)) => @ui.run("mbui scene", make, theme?, transitions_only=transitions_only.unwrap_or(true))
+      (Some(v), _) => @ui.run_legacy_ctx("mbui scene", v, tree?, theme?, transitions_only?)
+      (None, None) => @ui.run("mbui scene", fn(_) { () }, theme?, transitions_only=transitions_only.unwrap_or(true))
     }
     return
   }

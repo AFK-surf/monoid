@@ -9,8 +9,8 @@ let waiting_tapped_ms : Double = 500.0
 test "a file waiting in the composer: its ✎ and ↻ pressed whether it opens or not, the card itself only where it opens" {
   let opens = @signals.signal(false)
   let pressed : Array[String] = []
-  let t = @ui.Tester::new(fn(_c) {  }, w=480.0, h=200.0, platform=0)
-  t.check_looks(false)
+  let tt = @ui.Tester::new(fn(_c) {  }, w=480.0, h=200.0, platform=0)
+  tt.check_looks(false)
   @ui.set_view_app(fn(root) {
     @ui.set_tree_theme(ui_theme_now)
     root.lines_up(Is(Some(Start))) |> ignore
@@ -37,21 +37,21 @@ test "a file waiting in the composer: its ✎ and ↻ pressed whether it opens o
     )
     |> ignore
   })
-  t.draw()
+  tt.draw()
   let press_all = fn() raise {
     pressed.clear()
-    let (x, y) = t.find("12 KB").unwrap()
-    t.tap(x, y)
-    t.run_for(waiting_tapped_ms)
-    t.click(Button, label="web-main.composer.expandPaste")
-    t.run_for(waiting_tapped_ms)
-    t.click(Button, label="web-main.composer.retryUpload")
-    t.run_for(waiting_tapped_ms)
+    let (x, y) = tt.find("12 KB").unwrap()
+    tt.tap(x, y)
+    tt.run_for(waiting_tapped_ms)
+    tt.click(Button, label=t("web-main.composer.expandPaste"))
+    tt.run_for(waiting_tapped_ms)
+    tt.click(Button, label=t("web-main.composer.retryUpload"))
+    tt.run_for(waiting_tapped_ms)
     pressed.join(",")
   }
   assert_eq(press_all(), "back,again")
   opens.set(true)
-  t.draw()
+  tt.draw()
   assert_eq(press_all(), "opened,back,again")
-  assert_eq(t.audit(), [])
+  assert_eq(tt.audit(), [])
 }

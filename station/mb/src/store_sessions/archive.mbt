@@ -43,22 +43,39 @@ fn Store::set_archived_in(
   changes : Array[Json],
 ) -> Unit raise {
   let now = self.now_json()
+  let settled_sessions : Array[String] = []
+  let settled_threads : Array[Json] = []
+  let mut targets : Array[String] = [key]
   let leaders = self.tx(() => {
-    let row = if archived {
-      self.one(
-        "UPDATE sessions SET archived_at = ?, archived_by = ? WHERE key = ? \{leaders_returning}",
-        [now, jstr(by), jstr(key)],
-      )
-    } else {
-      self.one(
-        "UPDATE sessions SET archived_at = NULL, archived_by = NULL, shown_at = COALESCE(?, shown_at) WHERE key = ? \{leaders_returning}",
-        [if by == manual { now } else { Json::null() }, jstr(key)],
-      )
+    let anchor = @sql.conversation_of(self.db, key)
+    let members = @sql.members_of(self.db, anchor)
+    targets = if members.is_empty() { [key] } else { members }
+    if !targets.contains(key) {
+      targets.push(key)
     }
-    let leaders = match row {
-      None => []
-      Some(r) =>
-        arr(js_parse(js_string(or_else(col(r, "leaders"), jstr("[]")))))
+    let all_leaders : Array[Json] = []
+    for m in targets {
+      let row = if archived {
+        self.one(
+          "UPDATE sessions SET archived_at = ?, archived_by = ? WHERE key = ? \{leaders_returning}",
+          [now, jstr(by), jstr(m)],
+        )
+      } else {
+        self.one(
+          "UPDATE sessions SET archived_at = NULL, archived_by = NULL, shown_at = COALESCE(?, shown_at) WHERE key = ? \{leaders_returning}",
+          [if by == manual { now } else { Json::null() }, jstr(m)],
+        )
+      }
+      let ls = match row {
+        None => []
+        Some(r) =>
+          arr(js_parse(js_string(or_else(col(r, "leaders"), jstr("[]")))))
+      }
+      for p in ls {
+        if !all_leaders.contains(p) {
+          all_leaders.push(p)
+        }
+      }
     }
     ignore(
       self.run(
@@ -74,16 +91,56 @@ fn Store::set_archived_in(
           } else {
             Json::null()
           },
-          jstr(key),
+          jstr(anchor),
         ],
       ),
     )
-    leaders
+    if !archived && by == manual {
+      let birth_ids : Array[Json] = []
+      for m in targets {
+        for tid in @sql.birth_threads_of(self.db, m) {
+          if !birth_ids.contains(tid) {
+            birth_ids.push(tid)
+          }
+        }
+      }
+      for tid in birth_ids {
+        let (ss, ts) = @sql.settle_conversation_in_tx(self.db, tid, now)
+        for s in ss {
+          if !settled_sessions.contains(s) {
+            settled_sessions.push(s)
+          }
+        }
+        for t in ts {
+          if !settled_threads.contains(t) {
+            settled_threads.push(t)
+          }
+        }
+      }
+    }
+    all_leaders
   })
-  for t in self.session_threads(jstr(key)) {
-    changes.push(thread_change(thread_id_of(t)))
+  let touched_threads : Array[Json] = settled_threads.copy()
+  for m in targets {
+    for t in self.session_threads(jstr(m)) {
+      let id = thread_id_of(t)
+      if !touched_threads.contains(id) {
+        touched_threads.push(id)
+      }
+    }
   }
-  changes.push(session_change(jstr(key)))
+  for id in touched_threads {
+    changes.push(thread_change(id))
+  }
+  let touched_sessions : Array[String] = targets.copy()
+  for s in settled_sessions {
+    if !touched_sessions.contains(s) {
+      touched_sessions.push(s)
+    }
+  }
+  for s in touched_sessions {
+    changes.push(session_change(jstr(s)))
+  }
   for parent in leaders {
     changes.push(session_change(parent))
   }
@@ -425,10 +482,43 @@ pub fn Store::last_read_at(self : Store, thread : Json) -> Json raise {
 }
 
 ///|
+pub fn Store::conversation_of(self : Store, key : String) -> String raise {
+  @sql.conversation_of(self.db, key)
+}
+
+///|
+pub fn Store::members_of(self : Store, anchor : String, limit? : Int) -> Array[String] raise {
+  @sql.members_of(self.db, anchor, limit?)
+}
+
+///|
+pub fn Store::settle_conversation(self : Store, thread : Json, born? : String? = None) -> Bool raise {
+  self.with_changes(changes => {
+    let (sessions, threads) = self.tx(() => @sql.settle_conversation_in_tx(self.db, thread, self.now_json(), born~))
+    for s in sessions {
+      changes.push(session_change(jstr(s)))
+    }
+    for id in threads {
+      changes.push(thread_change(id))
+    }
+    sessions.length() > 0 || threads.length() > 0
+  })
+}
+
+///|
+pub fn Store::active_conversation_members(self : Store, anchor : String, fallback_session : String) -> Array[String] raise {
+  @sql.active_conversation_members(self.db, anchor, fallback_session)
+}
+
+///|
 pub fn Store::home_chat(self : Store, session : Json) -> Json raise {
+  let anchor = match str_of(session) {
+    Some(k) => jstr(@sql.conversation_of(self.db, k))
+    None => session
+  }
   match
     self.one("SELECT * FROM threads WHERE home = ? ORDER BY id LIMIT 1", [
-      session,
+      anchor,
     ]) {
     Some(r) => to_thread(r)
     None => Json::null()
@@ -519,8 +609,13 @@ pub fn Store::delete_session(self : Store, key : String) -> Unit raise {
     }
     let kept = []
     let removed = []
+    let mut reanchored_sessions : Array[String] = []
+    let mut reanchored_threads : Array[Json] = []
     let k = jstr(key)
     self.tx(() => {
+      let (rs, rt) = @sql.reanchor_on_delete_in_tx(self.db, key)
+      reanchored_sessions = rs
+      reanchored_threads = rt
       let threads = self
         .all("SELECT thread FROM thread_sessions WHERE session = ?", [k])
         .map(r => col(r, "thread"))
@@ -596,6 +691,12 @@ pub fn Store::delete_session(self : Store, key : String) -> Unit raise {
       changes.push({ "type": "threadRemoved", "id": id, "ws": ws })
     }
     for id in kept {
+      changes.push(thread_change(id))
+    }
+    for s in reanchored_sessions {
+      changes.push(session_change(jstr(s)))
+    }
+    for id in reanchored_threads {
       changes.push(thread_change(id))
     }
   })

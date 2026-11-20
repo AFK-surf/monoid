@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { checkConfig } from "../src/accounts/check.ts";
 import { needsKey, runtimesOf } from "../src/accounts/profiles.ts";
 import { accessEnv, codexOverrides, OPENCODE } from "../src/agents/profiles.ts";
-import { defaultMaxConcurrentTurns, hubConfig } from "../src/sessions/config.ts";
+import { hubConfig } from "../src/sessions/config.ts";
 import { profileEnv } from "../src/agents/profiles.ts";
 import { ConfigFile } from "../src/ops/config.ts";
 import { temp } from "./accounts-fakes.ts";
@@ -42,20 +42,11 @@ test("a config is filled in from what it says", () => {
   assert.equal(config.warmMs, 300_000);
 });
 
-test("maxConcurrentTurns defaults adaptively by host RAM and honors explicit 0 or positive override", () => {
-  const GiB = 1024 ** 3;
-  assert.equal(defaultMaxConcurrentTurns(0), 0);
-  assert.equal(defaultMaxConcurrentTurns(-1), 0);
-  assert.equal(defaultMaxConcurrentTurns(Number.NaN), 0);
-  assert.equal(defaultMaxConcurrentTurns(4 * GiB), 4);
-  assert.equal(defaultMaxConcurrentTurns(8 * GiB), 5);
-  assert.equal(defaultMaxConcurrentTurns(14 * GiB), 9);
-  assert.equal(defaultMaxConcurrentTurns(16 * GiB), 10);
-  assert.equal(defaultMaxConcurrentTurns(32 * GiB), 21);
-  assert.equal(defaultMaxConcurrentTurns(64 * GiB), 32);
-  assert.equal(hubConfig({}, "/data", undefined, 14 * GiB).maxConcurrentTurns, 9);
-  assert.equal(hubConfig({ maxConcurrentTurns: 0 }, "/data", undefined, 14 * GiB).maxConcurrentTurns, 0);
-  assert.equal(hubConfig({ maxConcurrentTurns: 7.9 }, "/data", undefined, 14 * GiB).maxConcurrentTurns, 7);
+test("maxConcurrentTurns defaults to 0 (unlimited) and honors explicit positive override", () => {
+  assert.equal(hubConfig({}, "/data").maxConcurrentTurns, 0);
+  assert.equal(hubConfig({ maxConcurrentTurns: 0 }, "/data").maxConcurrentTurns, 0);
+  assert.equal(hubConfig({ maxConcurrentTurns: -3 }, "/data").maxConcurrentTurns, 0);
+  assert.equal(hubConfig({ maxConcurrentTurns: 7.9 }, "/data").maxConcurrentTurns, 7);
 });
 
 test("what cannot run is refused in words", () => {

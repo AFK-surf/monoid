@@ -24,13 +24,17 @@ priv struct World {
   up : Up
   refuse : Ref[Bool]
   parts : PresenceParts
+  tls : Array[TlsEvents]
 }
 
 ///|
 let station_id : String = "aa".repeat(32)
 
 ///|
-fn world(provider? : Provider = Stillfail) -> World {
+fn world(
+  provider? : Provider = Stillfail,
+  entry? : () -> CloudEntry? raise NetError = () => None,
+) -> World {
   let rt = @effect.Runtime::new()
   let state : Json = {
     "origin": "https://app.still.fail",
@@ -81,9 +85,13 @@ fn world(provider? : Provider = Stillfail) -> World {
     })
     fn() { fiber.interrupt() }
   }
-  let transport = CloudTransport::new(() => None, {
+  let tls : Array[TlsEvents] = []
+  let transport = CloudTransport::new(entry, {
     after: timers.after,
-    tls: (_, _, _, _) => raise NetError("no TLS in this test"),
+    tls: (host, port, _, events) => {
+      tls.push(events)
+      { id: tls.length() - 1, host, port, destroy: () => () }
+    },
   })
   let parts = {
     plane,
@@ -111,6 +119,7 @@ fn world(provider? : Provider = Stillfail) -> World {
     up,
     refuse,
     parts,
+    tls,
   }
   ignore(rt.fork(async fn() { presence(parts) }))
   w
@@ -477,4 +486,32 @@ test "apply_frame persists workspace_emoji and workspace_icon for home and joine
   assert_eq(joined_after.length(), 1)
   assert_eq(field(joined_after[0], "workspace_emoji"), None)
   assert_eq(field(joined_after[0], "workspace_icon"), None)
+}
+
+///|
+test "a cloudEntry config.json names wrongly is said offline with no socket of any kind; corrected, it connects" {
+  let raw : Ref[Json] = Ref({
+    "cloudEntry": { "origin": "https://app.still.fail", "host": "entry.test", "port": 0 },
+  })
+  let w = world(entry=() => cloud_entry(raw.val))
+  w.rt.advance(10)
+  assert_eq(w.presence.length(), 1)
+  assert_true(
+    w.presence[0].has_prefix(
+      "false cloudEntry needs origin https://app.still.fail, a host and a TCP port (1–65535); correct config.json",
+    ),
+  )
+  // (never a direct socket in its place: no WebSocket opened, no dial started)
+  assert_eq(w.opens.length(), 0)
+  assert_eq(w.tls.length(), 0)
+  raw.val = {
+    "cloudEntry": { "origin": "https://app.still.fail", "host": "entry.test", "port": 24443 },
+  }
+  w.rt.advance(1000)
+  assert_eq(w.tls.length(), 1)
+  (w.tls[0].secure)()
+  w.rt.advance(0)
+  assert_eq(w.opens.length(), 1)
+  (w.last().events.open)()
+  assert_eq(w.presence[w.presence.length() - 1], "true - false")
 }

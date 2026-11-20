@@ -26,32 +26,32 @@ fn table_tester(platform : Int, w : Double, h : Double, text? : String = copy_ta
 }
 
 ///|
-/// The table's key, as a screen reader finds it (its words the catalog's keys here: no words told).
-fn table_key_of(t : @ui.Tester, copied? : Bool = false) -> (Double, Double, Double, Double) raise {
-  t.get(Button, label=if copied { "common.copied" } else { "web-main.prose.copyTable" }).rect
+/// The table's key, as a screen reader finds it.
+fn table_key_of(tt : @ui.Tester, copied? : Bool = false) -> (Double, Double, Double, Double) raise {
+  tt.get(Button, label=if copied { t("common.copied") } else { t("web-main.prose.copyTable") }).rect
 }
 
 ///|
 test "a table's copy key hangs past its right edge, in line with its head; its menu copies it as CSV, as Markdown" {
-  let t = table_tester(2, 390.0, 844.0)
-  t.draw()
-  t.draw()
-  let (kx, ky, kw, kh) = table_key_of(t)
-  let (lx, hy, lw, hh) = t.rect_of("缓存读").unwrap()
+  let tt = table_tester(2, 390.0, 844.0)
+  tt.draw()
+  tt.draw()
+  let (kx, ky, kw, kh) = table_key_of(tt)
+  let (lx, hy, lw, hh) = tt.rect_of("缓存读").unwrap()
   // its gap past the head's last words (nothing after them), within the message's column; its middle on theirs
   assert_true(kx >= lx + lw + table_key_gap && kx + kw <= 390.0 - 16.0, msg="\{Repr((kx, kw, lx, lw))}")
   assert_true((ky + kh / 2.0 - (hy + hh / 2.0)).abs() <= 1.0, msg="\{Repr((ky, kh, hy, hh))}")
-  t.click(Button, label="web-main.prose.copyTable")
-  t.run_for(presented_rest() - t.time())
-  t.tap_text("web-main.prose.copyCsv")
-  assert_eq(t.clipboard(), "模型,输入,输出,缓存读\nOpus 5.5,$5,$25,$0.5\nSonnet 5,$3,$15,$0.3")
-  t.frame()
+  tt.click(Button, label=t("web-main.prose.copyTable"))
+  tt.run_for(presented_rest() - tt.time())
+  tt.tap_text(t("web-main.prose.copyCsv"))
+  assert_eq(tt.clipboard(), "模型,输入,输出,缓存读\nOpus 5.5,$5,$25,$0.5\nSonnet 5,$3,$15,$0.3")
+  tt.frame()
   // a check a moment
-  let _ = table_key_of(t, copied=true)
-  t.click(Button, label="common.copied")
-  t.run_for(presented_rest() - t.time())
-  t.tap_text("web-main.prose.copyMarkdown")
-  assert_eq(t.clipboard(), copy_table)
+  let _ = table_key_of(tt, copied=true)
+  tt.click(Button, label=t("common.copied"))
+  tt.run_for(presented_rest() - tt.time())
+  tt.tap_text(t("web-main.prose.copyMarkdown"))
+  assert_eq(tt.clipboard(), copy_table)
 }
 
 ///|
@@ -130,54 +130,55 @@ test "a table in the message, no card round it: its words in line with the messa
 
 ///|
 test "a table's copy key with a mouse: shown as the table is pointed at, its menu open, gone as the pointer leaves" {
-  let t = table_tester(0, 1280.0, 800.0)
-  t.draw()
-  t.draw()
+  let tt = table_tester(0, 1280.0, 800.0)
+  tt.draw()
+  tt.draw()
   // (built, under its menu too: hidden from a reader there)
+  let copy_table_label = t("web-main.prose.copyTable")
   let keys = fn() {
-    t.semantics().filter(fn(s) { s.role == Button && s.label == "web-main.prose.copyTable" }).length()
+    tt.semantics().filter(fn(s) { s.role == Button && s.label == copy_table_label }).length()
   }
   // at rest: none
   assert_eq(keys(), 0)
   // pointed at the table's last row: there, faded in
-  let (lx, ly, _, lh) = t.rect_of("Sonnet 5").unwrap()
-  t.move_to(lx, ly + lh / 2.0)
-  t.run_for(dur_ms)
+  let (lx, ly, _, lh) = tt.rect_of("Sonnet 5").unwrap()
+  tt.move_to(lx, ly + lh / 2.0)
+  tt.run_for(dur_ms)
   assert_eq(keys(), 1)
   // its menu open, the pointer gone into it: still there
-  t.click(Button, label="web-main.prose.copyTable")
-  t.run_for(@motion.presence_in_ms)
-  t.move_to(lx, 780.0)
-  t.run_for(dur_ms)
+  tt.click(Button, label=copy_table_label)
+  tt.run_for(@motion.presence_in_ms)
+  tt.move_to(lx, 780.0)
+  tt.run_for(dur_ms)
   assert_eq(keys(), 1)
   // the menu closed by a press outside it, the pointer off the table: gone
-  t.tap(lx, 780.0)
-  t.run_for(@motion.presence_in_ms + dur_ms)
+  tt.tap(lx, 780.0)
+  tt.run_for(@motion.presence_in_ms + dur_ms)
   assert_eq(keys(), 0)
 }
 
 ///|
 test "a table's copy key with a mouse: its picture copied whole, the key not in it" {
-  let t = table_tester(0, 1280.0, 800.0)
-  t.draw()
-  t.draw()
-  let (lx, ly, _, _) = t.rect_of("缓存读").unwrap()
-  t.move_to(lx, ly)
-  t.run_for(dur_ms)
-  t.click(Button, label="web-main.prose.copyTable")
-  t.run_for(@motion.presence_in_ms)
-  t.tap_text("desktop.contextMenu.copyImage")
-  t.frame()
-  t.frame()
+  let tt = table_tester(0, 1280.0, 800.0)
+  tt.draw()
+  tt.draw()
+  let (lx, ly, _, _) = tt.rect_of("缓存读").unwrap()
+  tt.move_to(lx, ly)
+  tt.run_for(dur_ms)
+  tt.click(Button, label=t("web-main.prose.copyTable"))
+  tt.run_for(@motion.presence_in_ms)
+  tt.tap_text(t("desktop.contextMenu.copyImage"))
+  tt.frame()
+  tt.frame()
   // the table whole, on its own, on the clipboard; its key a check a moment
-  let shots = t.shots()
+  let shots = tt.shots()
   assert_eq(shots.length(), 1)
   assert_true(shots[0].iter().any(fn(w) { w.contains("缓存读") }) && shots[0].iter().any(fn(w) { w.contains("Sonnet 5") }))
-  assert_true(t.clipboard_png() is Some(_))
-  let _ = table_key_of(t, copied=true)
-  t.move_to(lx, ly)
-  t.run_for(copied_ms)
-  let _ = table_key_of(t)
+  assert_true(tt.clipboard_png() is Some(_))
+  let _ = table_key_of(tt, copied=true)
+  tt.move_to(lx, ly)
+  tt.run_for(copied_ms)
+  let _ = table_key_of(tt)
 }
 
 ///|
@@ -186,7 +187,7 @@ test "two messages' tables: the picture copied is of the table whose key was pre
   let long = "a long cell of words that would wrap to a word or two if squeezed into the message"
   let other = "| 一 | 二 | 三 |\n|---|---|---|\n| one \{long} | two \{long} | three \{long} |\n"
   presenters_reset()
-  let t = @ui.Tester::new(
+  let tt = @ui.Tester::new(
     @ui.old_views_here,
     tree=presented_tree(fn(c) {
       begin(c) |> ignore
@@ -203,17 +204,17 @@ test "two messages' tables: the picture copied is of the table whose key was pre
     h=800.0,
     platform=0,
   )
-  t.draw()
-  t.draw()
-  let (lx, ly, _, _) = t.rect_of("缓存读").unwrap()
-  t.move_to(lx, ly)
-  t.run_for(dur_ms)
-  t.click(Button, label="web-main.prose.copyTable")
-  t.run_for(@motion.presence_in_ms)
-  t.tap_text("desktop.contextMenu.copyImage")
-  t.frame()
-  t.frame()
-  let shots = t.shots()
+  tt.draw()
+  tt.draw()
+  let (lx, ly, _, _) = tt.rect_of("缓存读").unwrap()
+  tt.move_to(lx, ly)
+  tt.run_for(dur_ms)
+  tt.click(Button, label=t("web-main.prose.copyTable"))
+  tt.run_for(@motion.presence_in_ms)
+  tt.tap_text(t("desktop.contextMenu.copyImage"))
+  tt.frame()
+  tt.frame()
+  let shots = tt.shots()
   assert_eq(shots.length(), 1)
   assert_true(shots[0].iter().any(fn(w) { w.contains("缓存读") }), msg="\{Repr(shots[0])}")
   assert_false(shots[0].iter().any(fn(w) { w.contains("three a long") }), msg="\{Repr(shots[0])}")

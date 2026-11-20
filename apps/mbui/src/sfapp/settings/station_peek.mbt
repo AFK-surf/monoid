@@ -507,7 +507,7 @@ fn peek_figures(c : @ui.Ctx, core : Core, s : Json?) -> Unit {
       match host {
         Some(Object(_)) =>
           c.box(style=peek_meters, fn() {
-            @sf.meter_line(c, items(host, "meters"), key="station-peek/" + text(s, "station"))
+            @sf.meter_line(c, meters_said(items(host, "meters"), cpu_busy(core)), key="station-peek/" + text(s, "station"))
           })
           |> ignore
         _ => if !unreadable(s) { sample_meters(c, "station-peek/" + text(s, "station")) }
@@ -569,7 +569,7 @@ fn station_peek_node(v : @view.View, core : Core, address : String, close : () -
       // (what its agents' processes are is on its page, a tap away)
       w.pick(fn() { flag(s(), "online") }, fn(x, online) {
         if online {
-          peek_figures_node(x, s, fn() { station_net_of(net.get().value) })
+          peek_figures_node(x, core, s, fn() { station_net_of(net.get().value) })
         } else {
           @sf.words_node(x, fn() { peek_down(s()) }, fn() { peek_said }) |> ignore
         }
@@ -633,7 +633,10 @@ fn station_net_of(v : Json?) -> Json? {
 /// The machine in brief (peek_figures', as nodes) in `p`, station `s` and its network `net` as they are now: what is
 /// left of it in the allowance's boxes (in their bones until it is read, none where it said what this core cannot
 /// read), its network under them (in its bones until it is read); faded while it is reconnecting.
-fn peek_figures_node(p : @view.View, s : () -> Json?, net : () -> Json?) -> Unit {
+fn peek_figures_node(p : @view.View, core : Core, s : () -> Json?, net : () -> Json?) -> Unit {
+  // (its chips as this device says a CPU: idle or busy, meters_said; told again only as what they say changes)
+  let busy = @signals.computed(fn(_) { cpu_busy(core) })
+  let meters = @signals.computed(fn(_) { meters_said(items(field(s(), "host"), "meters"), busy.get()) })
   p.box(fn(f) {
     @sf.style_node(f, fn() { peek_figures_box })
     f.alpha(By(fn() { if flag(s(), "reconnecting") { peek_faded } else { 1.0 } })) |> ignore
@@ -652,7 +655,7 @@ fn peek_figures_node(p : @view.View, s : () -> Json?, net : () -> Json?) -> Unit
           1 =>
             x.box(fn(r) {
               @sf.style_node(r, fn() { peek_meters })
-              @sf.meter_line_node(r, fn() { items(field(s(), "host"), "meters") }, in_row=true)
+              @sf.meter_line_node(r, fn() { meters.get() }, in_row=true)
             })
             |> ignore
           2 => sample_meters_node(x)

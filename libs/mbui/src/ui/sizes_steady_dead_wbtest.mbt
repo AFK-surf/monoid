@@ -152,3 +152,59 @@ test "stopped dead: a sub-half-frame sliver under one device pixel is not a dead
   let (stood_said, _) = sizes_steady_fault(stood_n3, p120, turned=-1.0, px=0.5)
   assert_true(stood_said is Some(s) && s.contains("stepped"), msg="\{Repr(stood_said)}")
 }
+
+///|
+test "stopped dead: scale=1 sub-half-frame pixel quantization band clears real traces and still catches true stops and spikes" {
+  let p60 = 1000.0 / 60.0
+  // mark_read: smooth acceleration where dt2 = 4.758 ms rounds -4 px to -3 px
+  let mark_read = [
+    (3302.8746744791665, 3302.9908854166665, 0.0),
+    (3324.7828776041665, 3325.6647135416665, -9.0),
+    (3357.8326822916665, 3363.8326822916665, -41.0),
+    (3368.5909830729165, 3368.5909830729165, -44.0),
+  ]
+  assert_eq(sizes_steady_fault(mark_read, p60, turned=-1.0, px=1.0).0, None)
+  // pick_words: smooth ease-out tail over dt2 = 4.77 ms rounded to 0 px
+  let pick_words = [
+    (8968.560709635416, 8968.560709635416, 189.00389105058366),
+    (8987.590983072916, 8987.590983072916, 196.00389105058366),
+    (9000.642740885416, 9004.170572916666, 201.00389105058366),
+    (9017.662760416666, 9025.634928385416, 206.00389105058366),
+    (9030.408854166666, 9030.408854166666, 206.00389105058366),
+  ]
+  assert_eq(sizes_steady_fault(pick_words, p60, turned=-1.0, px=1.0).0, None)
+  // share: smooth ease-out tail over dt2 = 5.35 ms rounded to 0 px
+  let share = [
+    (1571.892618815104, 1571.892618815104, 284.48045355058366),
+    (1587.892618815104, 1595.117716471354, 271.48045355058366),
+    (1603.486612955729, 1603.486612955729, 268.48045355058366),
+    (1613.5082194010415, 1617.568155924479, 263.48045355058366),
+    (1622.921183268229, 1622.921183268229, 263.48045355058366),
+  ]
+  assert_eq(sizes_steady_fault(share, p60, turned=-1.0, px=1.0).0, None)
+  // fast motion truly stopping dead over a 7.5 ms (< 0.5 * p60) sliver still fires
+  let fast_stop = [
+    (1000.0, 1000.0, 0.0),
+    (1016.67, 1016.67, 45.0),
+    (1033.33, 1033.33, 90.0),
+    (1040.83, 1040.83, 90.0),
+  ]
+  let (fast_stop_said, _) = sizes_steady_fault(fast_stop, p60, turned=-1.0, px=1.0)
+  assert_true(fast_stop_said is Some(s) && s.contains("stopped dead"), msg="\{Repr(fast_stop_said)}")
+  // mark_read timeline with a +20 px reverse tail jump still fires a velocity spike
+  let mark_read_rev = mark_read.copy()
+  mark_read_rev[3] = (3368.5909830729165, 3368.5909830729165, -21.0)
+  let (rev_said, _) = sizes_steady_fault(mark_read_rev, p60, turned=-1.0, px=1.0)
+  assert_true(rev_said is Some(s) && s.contains("went "), msg="\{Repr(rev_said)}")
+  // mark_read timeline with a real -80 px mid-span jump still fires a velocity spike
+  let mark_read_mid = mark_read.copy()
+  mark_read_mid[2] = (3357.8326822916665, 3363.8326822916665, -89.0)
+  mark_read_mid[3] = (3368.5909830729165, 3368.5909830729165, -92.0)
+  let (mid_said, _) = sizes_steady_fault(mark_read_mid, p60, turned=-1.0, px=1.0)
+  assert_true(mid_said is Some(s) && s.contains("went "), msg="\{Repr(mid_said)}")
+  // pick_words still stopped after a full display frame still fires stopped dead
+  let pick_words_stop = pick_words.copy()
+  pick_words_stop[4] = (9042.31, 9042.31, 206.00389105058366)
+  let (pick_stop_said, _) = sizes_steady_fault(pick_words_stop, p60, turned=-1.0, px=1.0)
+  assert_true(pick_stop_said is Some(s) && s.contains("stopped dead"), msg="\{Repr(pick_stop_said)}")
+}

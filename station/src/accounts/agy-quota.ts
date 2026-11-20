@@ -142,6 +142,15 @@ function authFailure(text: string): boolean {
   );
 }
 
+/// Google holding an account until a person verifies it (`agy` says "Eligibility check failed: Your current account is
+/// not eligible for Antigravity. Verify your account to continue." and the page to do it on; its backend
+/// `VALIDATION_REQUIRED`): that page, "" when it gives none, null when it is not that.
+export function agyVerify(text: string): string | null {
+  const lower = text.toLowerCase();
+  if (!["verify your account", "not eligible for antigravity", "validation_required"].some((w) => lower.includes(w))) return null;
+  return /https:\/\/accounts\.google\.com\/\S+/.exec(text)?.[0] ?? "";
+}
+
 async function runAgyUsage(command: string, env: Env, cwd: string): Promise<{ code: number | null; stdout: string; stderr: string; authPrompted: boolean }> {
   const r = await platform.runnableSoon(command, ["--log-file", devNull, "-p", "/usage", "--output-format", "json"], env as NodeJS.ProcessEnv);
   return new Promise((resolve, reject) => {
@@ -255,7 +264,15 @@ export async function agyQuota(home: string, sourceEnv: Env, urls: Urls, lang: L
     if (q.state === "ok" && windows.length > 0 && scoped.length > 0) q.scoped = scoped;
     return q;
   }
-  const detail = clipKeepingLinks(typeof parsed?.error === "string" && parsed.error.trim() !== "" ? parsed.error.trim() : stderr.trim() || stdout.trim(), 300);
+  const said = typeof parsed?.error === "string" && parsed.error.trim() !== "" ? parsed.error.trim() : stderr.trim() || stdout.trim();
+  // Google refusing the account until a person verifies it: blocked, saying where to verify it. Its page comes after
+  // the first 300 characters.
+  const verify = agyVerify(said);
+  if (verify !== null) {
+    const detail = verify !== "" ? tr(lang, "station.quota.agyVerifyAt", { url: verify }) : tr(lang, "station.quota.agyVerify");
+    return { state: "blocked", windows: [], detail, checkedAt: 0 };
+  }
+  const detail = clipKeepingLinks(said, 300);
   if (authFailure(detail)) {
     throw new RenewRefused(401, tr(lang, "station.quota.signInExpired"));
   }

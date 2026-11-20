@@ -1591,8 +1591,8 @@ test("stations_that_find_this_core_too_old_say_so_once_and_one_among_others_amis
   }
 });
 
-test("a station's mode is the viewer's to change where they added it, or no member did and they own the workspace", async () => {
-  // Its owner is who added it, whatever the viewer's role (the user, 2026-11-10; cloud/src/directory.ts setStationMode).
+test("a station's mode is the viewer's to change where they own or administer the workspace, or added it", async () => {
+  // As the cloud has it (cloud/src/directory/stations.ts setStationMode): an owner or admin any whole station, a member theirs.
   const t = setup();
   const list = ui();
   t.subscribe(1, { topic: "stations", scope: "ws" });
@@ -1609,13 +1609,13 @@ test("a station's mode is the viewer's to change where they added it, or no memb
   const mine = () => (list.value as J[]).map((s) => [s.id, s.mine]);
   t.set(workspace(), of("admin"));
   await t.read(list, 1);
-  assert.deepEqual(mine(), [["a", true], ["b", false], ["c", false]], "an admin: only what they added");
+  assert.deepEqual(mine(), [["a", true], ["b", true], ["c", true]], "an admin: any");
   t.set(workspace(), of("member"));
   await t.read(list, 1);
-  assert.deepEqual(mine(), [["a", true], ["b", false], ["c", false]], "a member: what they added too");
+  assert.deepEqual(mine(), [["a", true], ["b", false], ["c", false]], "a member: only what they added");
   t.set(workspace(), of("owner"));
   await t.read(list, 1);
-  assert.deepEqual(mine(), [["a", true], ["b", false], ["c", true]], "the owner: one no member added as well, never another member's");
+  assert.deepEqual(mine(), [["a", true], ["b", true], ["c", true]], "the owner: any");
 });
 
 /// A station's overview with what changes most and no row shows: each profile's quota by the minute, its decisions.
@@ -1650,8 +1650,8 @@ test("a_list_of_stations_is_rows_one_station_its_page_and_the_models_are_the_cor
   await allUp(t);
   await t.readAll([[list, 1], [page, 2], [whole, 3]]);
   const a = (list.value as J[]).find((s) => s.station === "ws/a");
-  assert.deepEqual(Object.keys(a).sort(), ["face", "host", "id", "joined", "lastSeen", "line", "mine", "name", "online", "overview", "problems", "reconnecting", "stateBusy", "stateText", "station", "summary", "version"]);
-  const allowed = new Set(["station", "id", "name", "emoji", "icon", "summary", "face", "line", "online", "reconnecting", "blocked", "stateText", "stateBusy", "problems", "lastSeen", "version", "way", "joined", "home", "mine", "host", "overview"]);
+  assert.deepEqual(Object.keys(a).sort(), ["acceptAutoChats", "face", "host", "id", "joined", "lastSeen", "line", "mine", "name", "online", "overview", "problems", "reconnecting", "stateBusy", "stateText", "station", "summary", "version"]);
+  const allowed = new Set(["station", "id", "name", "emoji", "icon", "summary", "face", "line", "online", "reconnecting", "blocked", "stateText", "stateBusy", "problems", "lastSeen", "version", "way", "joined", "home", "mine", "acceptAutoChats", "host", "overview"]);
   for (const row of list.value as J[]) assert.deepEqual(Object.keys(row).filter((k) => !allowed.has(k)), [], row.station);
   assert.deepEqual(Object.keys(a.overview).sort(), ["counts", "disk", "drive", "viewer"]);
   assert.deepEqual(Object.keys(a.host).sort(), ["identity", "meters", "os"]);
@@ -2870,6 +2870,52 @@ test("only the notice of a failed turn still where its agent stands offers 重�
   t.set(sessionOf("ws/a", "k"), { session: fullSession("k", { pending: 1, lastTurn: givenUp }), threads: [chat], turns: [] });
   await t.read(u, 1);
   assert.equal(u.value.messages[2].notice.againSession, undefined);
+  // A turn cut off by a non-update station restart offers 重试 too; a manual stop does not.
+  const cutOffRestart = { kind: "input", outcome: "aborted", declared: null, detail: "other: cut off by restart", about: failed.about, startedAt: 10, endedAt: 11 };
+  t.set(sessionOf("ws/a", "k"), { session: fullSession("k", { lastTurn: cutOffRestart }), threads: [chat], turns: [] });
+  await t.read(u, 1);
+  assert.equal(u.value.messages[2].notice.againSession, "k");
+  const manualStop = { ...cutOffRestart, detail: "other: stopped by user" };
+  t.set(sessionOf("ws/a", "k"), { session: fullSession("k", { lastTurn: manualStop }), threads: [chat], turns: [] });
+  await t.read(u, 1);
+  assert.equal(u.value.messages[2].notice.againSession, undefined);
+});
+
+test("chats view aggregates online stations' restart-interrupted summaries and omits the field when empty", async () => {
+  const t = setup();
+  const u = ui();
+  t.subscribe(1, { topic: "chats", scope: "ws" });
+  t.set({ topic: "workspaces" }, [{ workspaces: [{ id: "ws" }] }]);
+  t.set(workspace(), oneStation());
+  t.set(prefs(), {});
+  t.set(link("ws/st"), { state: "online" });
+  t.set(rows("ws/st"), []);
+  await t.read(u, 1);
+  assert.equal(u.value.interrupted, null);
+  t.set(overview("ws/st"), {
+    interrupted: {
+      count: 3,
+      items: [
+        { key: "k1", thread: 11, title: "修复登录态" },
+        { key: "k2", thread: 12, title: "检查内存压力" },
+      ],
+    },
+  });
+  await t.read(u, 1);
+  assert.deepEqual(u.value.interrupted, [
+    {
+      station: "ws/st",
+      stationName: "studio",
+      count: 3,
+      chats: [
+        { key: "k1", thread: 11, title: "修复登录态" },
+        { key: "k2", thread: 12, title: "检查内存压力" },
+      ],
+    },
+  ]);
+  t.set(overview("ws/st"), {});
+  await t.read(u, 1);
+  assert.equal(u.value.interrupted, null);
 });
 
 test("the notice of a failure where the allowance showed a limit offers 重新分配账号, not 重试, while its agent stands there", async () => {

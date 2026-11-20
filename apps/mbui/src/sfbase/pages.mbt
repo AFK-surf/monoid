@@ -1684,9 +1684,14 @@ pub(all) struct DriveAt {
 }
 
 ///|
+/// Stations whose restart-interrupted banner was optimistically acted on (resumed or dismissed) on this device.
+pub let restart_interrupted_gone : @sf.LiveMap[String, Bool] = @sf.LiveMap::new()
+
+///|
 /// As at the start: Home alone on the stack, nothing chosen here yet, nothing said, no page left (the app's reset; a
 /// toast's count goes on, as before it was here).
 pub fn reset() -> Unit {
+  restart_interrupted_gone.clear()
   app.nav = new_nav()
   chat_remote_caps_reset()
   // (the core given no mermaid: a run's core is a new one)

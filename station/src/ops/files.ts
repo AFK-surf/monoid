@@ -86,10 +86,40 @@ export function writePrivate(path: string, data: string | Uint8Array) {
   renameSync(tmp, path);
 }
 
+/// How long a rename waits, attempt by attempt, for a lock that clears by itself (`renameRetrying`).
+export const RENAME_BACKOFF = [20, 40, 80, 160] as const;
+
+/// What a rename that retries is given in tests: the rename itself, the wait, and the waits between attempts.
+export type RenameRetry = {
+  rename?: (from: string, to: string) => Promise<void>;
+  wait?: (ms: number) => Promise<void>;
+  backoff?: readonly number[];
+};
+
+/// Renames `from` to `to`, waiting briefly on Windows transient file or directory locks (`EPERM`, `EBUSY`, `EACCES`):
+/// a virus scanner, the indexer, or a process that has just exited still holding a handle. Any other error, or one
+/// still there once the backoff is spent, is thrown as it came.
+export async function renameRetrying(from: string, to: string, opts?: RenameRetry): Promise<void> {
+  const move = opts?.rename ?? rename;
+  const wait = opts?.wait ?? wall.sleep;
+  const backoff = opts?.backoff ?? RENAME_BACKOFF;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await move(from, to);
+      return;
+    } catch (error) {
+      const delay = backoff[attempt];
+      const code = (error as NodeJS.ErrnoException)?.code;
+      if (delay === undefined || (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES")) throw error;
+      await wait(delay);
+    }
+  }
+}
+
 /// `writePrivate` off the station's thread: its sync waits on the disk, a fraction of a second on one kept busy. Two
 /// writes of the same file at once (two sessions opening one profile) each have a name of their own beside it: through
 /// one, the second's rename found none (ENOENT). What is left beside where one fails goes.
-export async function writePrivateSoon(path: string, data: string | Uint8Array): Promise<void> {
+export async function writePrivateSoon(path: string, data: string | Uint8Array, opts?: RenameRetry): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const tmp = `${path}.${process.pid}.${++privateWriteSeq}.tmp`;
   try {
@@ -100,7 +130,7 @@ export async function writePrivateSoon(path: string, data: string | Uint8Array):
     } finally {
       await file.close();
     }
-    await rename(tmp, path);
+    await renameRetrying(tmp, path, opts);
   } catch (error) {
     await rm(tmp, { force: true }).catch(() => {});
     throw error;

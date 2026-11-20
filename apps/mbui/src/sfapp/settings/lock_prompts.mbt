@@ -177,18 +177,8 @@ fn pair_sheet(core : Core, r : Json) -> Unit {
           |> ignore
         })
       })
-      // the code, large, in the code face, in the middle
-      col.box(fn(mid) {
-        @sf.style_node(mid, fn() { centre_column })
-        mid.box(fn(m) {
-          m
-          .words_runs(By(fn() { [@ui.span(spaced(text(shown(), "code")), mono=true)] }), look=pair_code_look)
-          .ink(By(fn() { @sf.theme().p.text }))
-          |> ignore
-        })
-        |> ignore
-      })
-      |> ignore
+      // the code, large, in the code face, in the middle, grouped [3, 3] like @ui.code_field_node
+      @sf.code_display_node(col, fn() { text(shown(), "code") }) |> ignore
       // until when it holds (gone from here then)
       col.show(fn() { text(shown(), "untilText") != "" }, fn(u) {
         @sf.words_node(u, fn() { text(shown(), "untilText") }, fn() { pair_until }) |> ignore
@@ -246,34 +236,6 @@ let pair_place_line : @ui.Style = @ui.css("row gap=S2 align=ACenter")
 let pair_place_mark : Double = 20.0
 
 ///|
-/// The code: 34 semibold in the code face, 44 a line, on one line (mono's, as it was said: size=34, weight=600, line=44).
-// kept across runs: a value (no field of it changes)
-let pair_code_look : @view.WordsLook = {
-  size: 34.0,
-  weight: 600,
-  line: 44.0,
-  wrap: false,
-  tracking: @view.letters_own,
-  balance: false,
-  max_lines: 0,
-}
-
-///|
 /// Until when the code holds, under it (13 muted, centred).
 // kept across runs: a value (no field of it changes)
 let pair_until : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, center=true, w=Full)
-
-///|
-/// A code's letters a little apart (letterSpacing 5): a thin space between each two.
-fn spaced(code : String) -> String {
-  let b = StringBuilder()
-  let mut first = true
-  for ch in code {
-    if !first {
-      b.write_char('\u{2009}')
-    }
-    b.write_char(ch)
-    first = false
-  }
-  b.to_string()
-}

@@ -84,6 +84,7 @@ jobs:
       windows_natives: ${{ steps.plan.outputs.windows_natives }}
       launcher_windows: ${{ steps.plan.outputs.launcher_windows }}
       kit: ${{ steps.plan.outputs.kit }}
+      ui: ${{ steps.plan.outputs.ui }}
       mbui: ${{ steps.plan.outputs.mbui }}
       comma_ui: ${{ steps.plan.outputs.comma_ui }}
       liquid_glass: ${{ steps.plan.outputs.liquid_glass }}
@@ -1445,6 +1446,19 @@ jobs:
         uses: actions/upload-artifact@v4
         with: { name: "mbui-kit-${{ github.sha }}", path: dist/kit, retention-days: 7 }
 
+  mbui-ui:
+    needs: [plan]
+    if: ${{ !cancelled() && !failure() && vars.MONOID_CI == 'on' && github.ref == 'refs/heads/main' && needs.plan.outputs.ui == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup
+      - uses: ./.github/actions/mbui-moonbit
+      - run: node website/ui/build.mjs --out dist/ui
+      - uses: actions/upload-artifact@v4
+        with: { name: "mbui-ui-${{ github.sha }}", path: dist/ui, retention-days: 7 }
+
   static:
     needs: [plan, natives, check, check-mac, check-linux, check-station, check-core, api, mbui-web]
     # After the API (a page may need what it adds), or without it when it did not change.
@@ -1576,6 +1590,25 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.MONOID_CLOUDFLARE_API_TOKEN }}
         run: sh .github/deploy.sh kit
 
+  # The ui.monoid.build site & live embeds (website/ui/build.mjs, as mbui-ui built it): monoid's alone, in monoid's
+  # Cloudflare account (cloud/wrangler.ui.jsonc). Needs no check: it reads nothing of anyone's and holds no secret.
+  monoid-ui:
+    needs: [plan, mbui-ui]
+    if: ${{ !cancelled() && vars.MONOID_CI == 'on' && github.ref == 'refs/heads/main' && needs.plan.outputs.ui == 'true' && needs.mbui-ui.result == 'success' }}
+    runs-on: ubuntu-24.04
+    environment: production
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup
+      - uses: actions/download-artifact@v4
+        with: { name: "mbui-ui-${{ github.sha }}", path: dist/ui }
+      - name: Deploy ui to monoid
+        env:
+          STILLFAIL_CLOUD: monoid
+          CLOUDFLARE_API_TOKEN: ${{ secrets.MONOID_CLOUDFLARE_API_TOKEN }}
+        run: sh .github/deploy.sh --skip-build ui
+
   # The test channel's releases are built beside the check (the builds are most of a release: before 2026-10-04 they
   # waited for the check and the API). The apps' files, named by their version, go in the bucket at once (nothing points
   # at them yet); the station's (named the same each time: what installs get) go in at once under staged/, and with
@@ -1686,7 +1719,8 @@ jobs:
             if [ "$used" -gt 200 ]; then
               echo "::warning::monoid's beta Android app left for the next release: this job has used ${used} s of its 300"
             else
-              (unset CLOUDFLARE_API_TOKEN; RELEASE_DIR="$RUNNER_TEMP/monoid" sh .github/release.sh --product monoid android) \
+              (unset CLOUDFLARE_API_TOKEN; RELEASE_DIR="$RUNNER_TEMP/monoid" \
+                bash scripts/with-timeout.sh "@$(( JOB_BEGAN + 275 ))" sh .github/release.sh --product monoid android) \
                 > "$RUNNER_TEMP/monoid.log" 2>&1 &
               monoid=$!
             fi
@@ -1699,10 +1733,17 @@ jobs:
           else
             echo "::error::still.fail's beta Android app was not put"; failed=1
           fi
+          # (monoid's ended before the job is, 25 s left for the rest: run beside stable's android on the same Mac it ran
+          # on to the job's 5 minutes, and the job cut after still.fail's beta was put, 44770976468; out of time it is
+          # left for the next release, not this one's failure)
           if [ -n "$monoid" ]; then
-            if wait "$monoid"; then
+            ms=0; wait "$monoid" || ms=$?
+            if [ "$ms" = 0 ]; then
               echo "::group::monoid's beta Android app"; cat "$RUNNER_TEMP/monoid.log"; echo "::endgroup::"
               echo "packed=1" >> "$GITHUB_OUTPUT"
+            elif [ "$ms" = 124 ]; then
+              cat "$RUNNER_TEMP/monoid.log"
+              echo "::warning::monoid's beta Android app did not finish before the job's end and is left for the next release"
             else
               cat "$RUNNER_TEMP/monoid.log"; echo "::error::monoid's beta Android app was not built"; failed=1
             fi
@@ -2052,6 +2093,10 @@ jobs:
           [ ! -d "$HBC_CACHE" ] || mv "$HBC_CACHE" .ci/hbc
           if [ "${{ steps.finish.outcome }}" = success ] && [ "${{ steps.bundle.outcome }}" = success ]; then
             sh apps/mbui/scripts/used.sh "$RUNNER_TEMP/start" .ci/mbc-store
+            # (the app built, bundled and handed over: its store not saved where too little is left for it, rather
+            # than the save carrying the job past its five minutes, its release skipped; a cut build's is always saved)
+            left=$(( JOB_END - $(date +%s) ))
+            [ "$left" -ge 10 ] || { echo "the store not saved: ${left} s left"; exit 0; }
           else
             # (where the build was as it was cut: its worker's log is said only as it ends, so a cut said nothing of what
             # it had come to, main 6a896dd6, 202a54dc and 0ff80373 on 2026-11-16)
@@ -2076,6 +2121,10 @@ jobs:
         run: |
           c=apps/mbui/_build/native/release/build/stillfail/stillfail/stillfail.c
           [ -s "$c" ] || { echo "moonc had not made the app's C: moon's build not kept"; exit 0; }
+          # (its save takes ~16 s, 4 to make ready, 8 to upload, the post steps 2-4, as preview.yml's ios moon-room: main
+          # 136452385742 began it with 8 s left, its app already handed over, and was cut at 300 s, desktop skipped)
+          left=$(( JOB_END - $(date +%s) ))
+          [ "$left" -ge 16 ] || { echo "moon's build not kept: ${left} s left"; exit 0; }
           find apps/mbui/_build -type d -name '*.mbc' -prune -exec rm -rf {} +
           echo "MOON_KEY=mbui-mac-moon-$(shasum -a 256 "$c" | cut -c1-16)" >> "$GITHUB_ENV"
       - if: always() && github.ref == 'refs/heads/main' && env.MOON_KEY != '' && env.MOON_KEY != steps.moon.outputs.cache-matched-key
@@ -2286,10 +2335,9 @@ jobs:
           B=$RUNNER_TEMP/build; mkdir -p "$B"
           printf '%s' "$build" > "$B/build"
           T=$(cygpath -u "$RUNNER_TEMP")
-          rm -rf "$T/win-live" "$T/win-store-pending.failed"
-          mkdir -p "$T/win-live"
+          rm -f "$T/win-store-pending.failed"
           : > "$T/win-store-pending"
-          export MBC_STORE="$(cygpath -m "$T/win-live")/mbc-store" MBC_STORE_WAIT="$(cygpath -m "$T/win-store-pending")"
+          export MBC_STORE_WAIT="$(cygpath -m "$T/win-store-pending")"
           nohup bash -c 'MBUI_WIN_CORE=0 MBUI_VARIANT=beta MBUI_BUILD="$1" bash apps/mbui/scripts/win.sh build > "$0/log" 2>&1; echo $? > "$0/status"' "$B" "$build" > /dev/null 2>&1 &
           # (its Windows process, for taskkill to stop all it runs (moon, mbc, clang-cl) where it is cut: below)
           cat "/proc/$!/winpid" > "$B/winpid" 2>/dev/null || true
@@ -2299,15 +2347,15 @@ jobs:
           path: .ci/mbc-store
           key: mbui-win-store-m-${{ github.sha }}
           restore-keys: mbui-win-store-m-
-      # (moved where the build reads it, its wait taken away; taken back to .ci/mbc-store once the build ended, where
-      # the cache's version, which is of its path, finds it)
+      # (restored in place at .ci/mbc-store, the job's MBC_STORE, where the build reads it and the cache's version,
+      # which is of its path, finds it: only its wait taken away. Never moved: on Windows NTFS a directory's mv while
+      # a handle is still open on it fails with Permission denied, main 136395187089)
       - name: The units, handed to the build
         if: always() && steps.started.outcome == 'success'
         run: |
           T=$(cygpath -u "$RUNNER_TEMP")
           mkdir -p .ci/mbc-store
           echo "units: $(find .ci/mbc-store -mindepth 2 -maxdepth 2 -type d | wc -l)"
-          if [ -d "$T/win-live/mbc-store" ]; then cp -a -n .ci/mbc-store/. "$T/win-live/mbc-store/" && rm -rf .ci/mbc-store; else mv .ci/mbc-store "$T/win-live/mbc-store"; fi
           rm -f "$T/win-store-pending"
       # core.hbc by its inputs (HBC_CACHE), PostHog's project in its key: this job's own, saved below, apart from
       # preview.yml's (mbui-win-hbc-, none of PostHog's), which it falls back to (monoid's beta, below, has none either)
@@ -2373,11 +2421,6 @@ jobs:
           done
           echo "(waited $((SECONDS - t0)) s for it)"
           cat "$B/log"
-          # (the units back in .ci/mbc-store, the build done with them)
-          T=$(cygpath -u "$RUNNER_TEMP")
-          if [ -d "$T/win-live/mbc-store" ]; then
-            if [ -d .ci/mbc-store ]; then cp -a -n "$T/win-live/mbc-store/." .ci/mbc-store/ && rm -rf "$T/win-live/mbc-store"; else mkdir -p .ci && mv "$T/win-live/mbc-store" .ci/mbc-store; fi
-          fi
           [ "$(cat "$B/status")" = 0 ] || exit 1
           bash apps/mbui/scripts/win.sh put
           # the build cache's key: the app's C by its content (one as the restored one was is not saved again)
@@ -2448,9 +2491,6 @@ jobs:
             sleep 1
             T=$(cygpath -u "$RUNNER_TEMP")
             [ ! -f "$T/win-store-pending" ] || touch "$T/win-store-pending.failed"
-            if [ -d "$T/win-live/mbc-store" ]; then
-              if [ -d .ci/mbc-store ]; then cp -a -n "$T/win-live/mbc-store/." .ci/mbc-store/ && rm -rf "$T/win-live/mbc-store"; else mkdir -p .ci && mv "$T/win-live/mbc-store" .ci/mbc-store; fi
-            fi
             find .ci/mbc-store -name '*.lock' -delete 2>/dev/null || true
             d=$(sh apps/mbui/scripts/mbui.sh)
             c=$d/out/win/app/_build/native/release/build/stillfail/stillfail/stillfail.c
@@ -2761,8 +2801,8 @@ jobs:
 
   # main, once all of it is out: the tag the next run's range starts from, and what is left to do by hand.
   done:
-    needs: [plan, natives, natives-win-reader, natives-win-reader-main, natives-harness, natives-mac, natives-mac-reader, check, check-mac, check-linux, check-station, check-core, api, static, monoid-api, monoid-static, monoid-kit, station, android, desktop-build, desktop, desktop-win, put]
-    if: always() && github.ref == 'refs/heads/main' && contains(fromJSON('["success","skipped"]'), needs.natives.result) && contains(fromJSON('["success","skipped"]'), needs.natives-win-reader.result) && contains(fromJSON('["success","skipped"]'), needs.natives-win-reader-main.result) && contains(fromJSON('["success","skipped"]'), needs.natives-harness.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac-reader.result) && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || vars.CI_1 == 'off' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') && contains(fromJSON('["success","skipped"]'), needs.api.result) && contains(fromJSON('["success","skipped"]'), needs.static.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-api.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-static.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-kit.result) && contains(fromJSON('["success","skipped"]'), needs.station.result) && contains(fromJSON('["success","skipped"]'), needs.android.result) && contains(fromJSON('["success","skipped"]'), needs.put.result) && contains(fromJSON('["success","skipped"]'), needs.desktop-build.result) && contains(fromJSON('["success","skipped"]'), needs.desktop.result) && contains(fromJSON('["success","skipped"]'), needs.desktop-win.result)
+    needs: [plan, natives, natives-win-reader, natives-win-reader-main, natives-harness, natives-mac, natives-mac-reader, check, check-mac, check-linux, check-station, check-core, api, static, monoid-api, monoid-static, monoid-kit, monoid-ui, station, android, desktop-build, desktop, desktop-win, put]
+    if: always() && github.ref == 'refs/heads/main' && contains(fromJSON('["success","skipped"]'), needs.natives.result) && contains(fromJSON('["success","skipped"]'), needs.natives-win-reader.result) && contains(fromJSON('["success","skipped"]'), needs.natives-win-reader-main.result) && contains(fromJSON('["success","skipped"]'), needs.natives-harness.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac-reader.result) && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || vars.CI_1 == 'off' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') && contains(fromJSON('["success","skipped"]'), needs.api.result) && contains(fromJSON('["success","skipped"]'), needs.static.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-api.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-static.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-kit.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-ui.result) && contains(fromJSON('["success","skipped"]'), needs.station.result) && contains(fromJSON('["success","skipped"]'), needs.android.result) && contains(fromJSON('["success","skipped"]'), needs.put.result) && contains(fromJSON('["success","skipped"]'), needs.desktop-build.result) && contains(fromJSON('["success","skipped"]'), needs.desktop.result) && contains(fromJSON('["success","skipped"]'), needs.desktop-win.result)
     runs-on: [self-hosted, quick]
     timeout-minutes: 5
     permissions:

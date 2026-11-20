@@ -151,8 +151,6 @@ pub fn avatars_base() -> String
 
 pub let back : @ui.TextStyle
 
-pub fn backdrop_tab(Double) -> @paint.Glass
-
 pub let bad : @ui.TextStyle
 
 pub fn band_pad_in(ListAt) -> Double
@@ -218,7 +216,7 @@ pub fn button_opens_node(@view.View, () -> String, (@view.View) -> Unit, tone? :
 
 pub fn button_start_reach() -> @ui.Style
 
-pub fn capped_node(@view.View, () -> Double, (@view.View) -> Unit) -> @view.View
+pub fn capped_node(@view.View, () -> Double, (@view.View) -> Unit, bleed? : Bool) -> @view.View
 
 pub fn capsule_chooser_node(@view.View, () -> String, () -> Array[(String, String)], () -> String, (String) -> Unit, disabled? : () -> Bool, side? : @ui.Side, on_open? : (Bool) -> Unit, loc~ : SourceLoc) -> @view.View
 
@@ -326,6 +324,9 @@ pub fn code_block(@ui.Ctx, String, String, colours? : String?, face? : Int32?) -
 
 pub fn code_block_node(@view.View, () -> String, () -> String, () -> String?, face? : () -> Int?, command? : Bool) -> Unit
 
+#callsite(autofill(loc))
+pub fn code_display_node(@view.View, () -> String, groups? : Array[Int32], loc~ : SourceLoc) -> @view.View
+
 pub let code_edge : @ui.Color
 
 pub fn code_face() -> Bytes
@@ -337,6 +338,8 @@ pub fn code_ink_ask(String, String) -> Unit
 pub fn code_ink_node(@view.View, () -> String, () -> String) -> () -> String??
 
 pub fn code_ink_told(String, String) -> String??
+
+pub fn code_segments(String, groups? : Array[Int32]) -> Array[String]
 
 pub let columns : Columns
 
@@ -538,6 +541,8 @@ pub let diff_line_in : @ui.Space
 pub let diff_mark_in : @ui.Space
 
 pub fn dclamp(Double, Double, Double) -> Double
+
+pub fn default_words(String, Array[(String, String)]) -> String
 
 pub fn disc_key_node(@view.View, () -> String, () -> Unit, side~ : Double, ground~ : () -> Int64, (@view.View) -> Unit) -> Unit
 
@@ -771,6 +776,8 @@ pub fn glass_foot() -> @paint.Glass
 pub fn glass_knob() -> @paint.Glass
 
 pub fn glass_sheet() -> @paint.Glass
+
+pub fn glass_tab_lens(Double) -> @paint.Glass
 
 pub fn glyph_color(String, Bool) -> Int64?
 
@@ -1559,6 +1566,7 @@ pub fn panel_said_row_node(@view.View, () -> Array[@text.Run], () -> Unit, () ->
 
 pub fn panel_search_at_hand_node(@view.View) -> Unit
 
+pub fn panel_sides_at_node(@view.View) -> Double
 
 pub fn panel_switch_row_node(@view.View, () -> String, () -> Bool, (Bool) -> Unit, note? : () -> String, disabled? : () -> Bool, busy? : () -> Bool) -> Unit
 

@@ -453,20 +453,23 @@ fn shift_inst(a : FixedArray[Double], b : Int, dx : Double, dy : Double) -> Unit
 /// The words node `i` and what it holds show, in the order they are painted (a test's: Tester::shots).
 fn Ctx::shot_words(self : Ctx, i : Int) -> Array[String] {
   let out = []
-  let walk : Ref[(Int) -> Unit] = Ref(fn(_) {  })
-  walk.val = fn(k) {
-    let n = self.nodes[k]
-    if (n.kind == kind_text || n.kind == kind_rich) && n.text != "" {
-      out.push(n.text)
-    }
-    let mut c = n.first
-    while c >= 0 {
-      (walk.val)(c)
-      c = self.nodes[c].next
-    }
-  }
-  (walk.val)(i)
+  self.shot_words_into(i, out)
   out
+}
+
+///|
+/// (Ctx::shot_words' walk, a function of its own: a closure in a cell calling itself is a ring native's counting never
+/// frees)
+fn Ctx::shot_words_into(self : Ctx, k : Int, out : Array[String]) -> Unit {
+  let n = self.nodes[k]
+  if (n.kind == kind_text || n.kind == kind_rich) && n.text != "" {
+    out.push(n.text)
+  }
+  let mut c = n.first
+  while c >= 0 {
+    self.shot_words_into(c, out)
+    c = self.nodes[c].next
+  }
 }
 
 ///|

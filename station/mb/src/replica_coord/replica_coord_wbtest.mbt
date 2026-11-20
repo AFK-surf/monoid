@@ -272,3 +272,113 @@ test "the export closed with no ask on it waits for its end itself" {
   assert_true(closed.val)
   assert_eq(started.val, 1)
 }
+
+///|
+/// A head of this station's generation `lz5x0-0123abcd` up to `to`, of `batches`.
+fn head_at(to : Int, batches : Array[String]) -> J raise {
+  parse(
+    "{\"v\":1,\"origin\":\"s1\",\"workspace\":\"W1\",\"gen\":\"lz5x0-0123abcd\",\"to\":\{to},\"made\":\{to * 10},\"batches\":[" +
+    batches.map(b => "\"\{b}\"").join(",") +
+    "],\"files\":{},\"runs\":[{\"run\":\"r1\",\"from\":1}]}",
+  )
+}
+
+///|
+/// Brings a place of the test's own (it holds nothing; what it is put, `put`) level by `level_newest`, its batches read
+/// as `batch` says, the newest head `newest`'s: the head it went with, how far, how many times it went, or the error.
+fn level_by_newest(
+  head : J,
+  newest : () -> J?,
+  batch : (String) -> Bytes raise,
+  put : Array[String],
+) -> (String, Int) {
+  let rt = @effect.Runtime::new()
+  let place : Place = {
+    held: fn(_, _) { Held::nothing() },
+    put: fn(_, _, _, kind, name, _) { put.push("\{kind}:\{name}") },
+    put_file: fn(_, _, _, _) { () },
+    drop: fn(_, _, _, _, _) { () },
+  }
+  let went = Ref(0)
+  let got = Ref("")
+  ignore(
+    rt.fork(async fn() {
+      try {
+        let (h, done) = level_newest(head, newest, async fn(h) {
+          went.val += 1
+          level(place, "W1", { head: h, batch: b => batch(b), sources: _ => [] })
+        })
+        got.val = match done {
+          Level(to, _, _) => "\{head_said(h)} level to \{num_text(to)}"
+          Behind => "behind"
+        }
+      } catch {
+        e => got.val = "failed: \{code_of(e)} \{message_of(e)}"
+      }
+    }),
+  )
+  rt.advance(1)
+  (got.val, went.val)
+}
+
+///|
+/// A batch read from the folder of `gone`'s batches: ENOENT for those, bytes for the rest.
+fn batches_but(gone : Array[String]) -> (String) -> Bytes raise {
+  name => {
+    if gone.contains(name) {
+      raise Thrown("Error", jo([("message", js("ENOENT: no such file or directory, open '\{name}'")), ("code", js("ENOENT"))]))
+    }
+    @utf8.encode(name)
+  }
+}
+
+///|
+test "a batch compacted away while a place is brought level: level with the newer head at once, no failure" {
+  let old_batch = "0000000001-0000000004-00000000.ndjson.zst"
+  let merged = "0000000001-0000000009-00000000.ndjson.zst"
+  let old = head_at(4, [old_batch])
+  let next = head_at(9, [merged])
+  let put = []
+  // (the export merged the old batch into a new one and took it away; `passed` says the new head)
+  let (got, went) = level_by_newest(old, () => Some(next), batches_but([old_batch]), put)
+  assert_eq(got, "lz5x0-0123abcd:9:90 level to 9")
+  assert_eq(went, 2)
+  assert_eq(put, ["batch:" + merged, "head:head.json"])
+}
+
+///|
+test "a batch gone with no newer head, another error, or gone again and again: the place's failure as before" {
+  let b1 = "0000000001-0000000004-00000000.ndjson.zst"
+  let b2 = "0000000001-0000000006-00000000.ndjson.zst"
+  let b3 = "0000000001-0000000008-00000000.ndjson.zst"
+  let b4 = "0000000001-0000000009-00000000.ndjson.zst"
+  let old = head_at(4, [b1])
+  // (no head newer than the one it went with)
+  let (got, went) = level_by_newest(old, () => Some(old), batches_but([b1]), [])
+  assert_eq(got, "failed: ENOENT ENOENT: no such file or directory, open '\{b1}'")
+  assert_eq(went, 1)
+  let (got, went) = level_by_newest(old, () => None, batches_but([b1]), [])
+  assert_true(got.has_prefix("failed: ENOENT"))
+  assert_eq(went, 1)
+  // (a newer head of no batches is no copy to bring a place level with)
+  let empty = head_at(5, [])
+  let (got, went) = level_by_newest(old, () => Some(empty), batches_but([b1]), [])
+  assert_true(got.has_prefix("failed: ENOENT"))
+  assert_eq(went, 1)
+  // (not a file gone: not tried again)
+  let newer = head_at(9, [b4])
+  let (got, went) = level_by_newest(old, () => Some(newer), _ => raise failed("the place said no"), [])
+  assert_eq(got, "failed:  the place said no")
+  assert_eq(went, 1)
+  // (each newer head's batch gone too: tried with `stale_heads_most` newer ones, then the failure)
+  let heads = [head_at(6, [b2]), head_at(8, [b3]), head_at(9, [b4])]
+  let at = Ref(0)
+  let newest = () => {
+    let h = heads[at.val]
+    at.val = (at.val + 1).min(heads.length() - 1)
+    Some(h)
+  }
+  let (got, went) = level_by_newest(old, newest, batches_but([b1, b2, b3, b4]), [])
+  assert_eq(got, "failed: ENOENT ENOENT: no such file or directory, open '\{b3}'")
+  assert_eq(went, 1 + stale_heads_most)
+}

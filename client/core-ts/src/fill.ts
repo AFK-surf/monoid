@@ -93,6 +93,8 @@ export class Fill {
   /// The one coming now, and how much of it is here; given way to what is waited on (`yielding`).
   #going: { id: string; loaded: number } | null = null;
   #yielding = false;
+  /// Last background part was preempted before finishing: back off IDLE_MS before retrying so scheduler preemption does not tight-loop.
+  #preempted = false;
   /// Stopped as it came (`stop`): let go once its part has stopped.
   readonly #stopping = new Set<string>();
   #stop: (() => void) | null = null;
@@ -231,12 +233,16 @@ export class Fill {
     return Effect.gen(function* () {
       // (one a person asked to load and can be had now: at once, not after what is waited on)
       const urgent = (yield* self.#look()).some((f) => f.wanted && self.#ready(f));
+      const preempted = self.#preempted;
+      self.#preempted = false;
       if (!urgent) {
-        if (inner.waited.count > 0 && self.#list.length > 0) self.#yield(true);
-        yield* Effect.raceFirst(inner.waited.idle(IDLE_MS), Effect.callback<void>((resume) => {
+        if ((inner.waited.count > 0 || preempted) && self.#list.length > 0) self.#yield(true);
+        const wait = preempted ? Effect.andThen(Effect.sleep(IDLE_MS), inner.waited.idle(IDLE_MS)) : inner.waited.idle(IDLE_MS);
+        yield* Effect.raceFirst(wait, Effect.callback<void>((resume) => {
           self.#wake = () => resume(Effect.void);
-        }));
-        self.#wake = null;
+        })).pipe(Effect.ensuring(Effect.sync(() => {
+          self.#wake = null;
+        })));
         self.#yield(false);
       }
       self.#dirty = false;
@@ -330,6 +336,10 @@ export class Fill {
       self.#stop = null;
       if (self.#stopping.delete(id)) return;
       if (done._tag === "Success") {
+        if (!f.wanted && !ended) {
+          self.#preempted = true;
+          return;
+        }
         // read through and still not kept (the station says it is another size than its message did): not again
         const said = (answer instanceof Beside ? answer.value : answer) as { total?: unknown } | null;
         if (ended && call.kind === "stationFilePart" && said?.total !== f.size) {

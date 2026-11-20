@@ -84,6 +84,8 @@ export const COMPOSER_SHAPES: Record<string, Shape> = {
     ["presetMarks", vec("PresetMark"), { default: true, doc: "The picked preset's first folders' marks, its control's look." }],
     ["presetModel", "bool", { default: true, doc: "The picked preset names the model its chats run (choose.ts `presetBinds`): `pick` is the preset's, and the\nmodel control shows it and does not open (to run another is to edit the preset or pick none)." }],
     ["presetStations", "bool", { default: true, doc: "The picked preset names the stations its chats start on: `stations` are those alone." }],
+    ["autoStation", "bool", { default: true, doc: "Whether new chats in this workspace are automatically load-balanced across allowlisted stations." }],
+    ["autoPoolCount", "i64", { default: true, client: "I54", doc: "How many online non-tasks stations in this workspace are opted into the automatic assignment allowlist." }],
   ], { doc: "A new chat's page (the `newChat` topic): the stations it can start on, the one it starts on, and what it runs\nthere, as last picked on this device (`newChat.pick`); what the station no longer has gives way to the first it has.\nHow hard it thinks, how fast, the account kept to and who could run it are its control's (`pick`, as it draws them\nclosed): the core's own value (choose.ts `newChat`) has them too (`effort`, `fast`, `profile`, `efforts`, `accounts`,\n`pickAccount`), and the combinations used most here (`frequent`)." }),
   NewChatPick: struct([
     ["value", "Picked", { doc: "What a new chat runs on there now, as `pick`'s `value`." }],
@@ -110,6 +112,7 @@ export const COMPOSER_SHAPES: Record<string, Shape> = {
     ["icon", opt("String"), { doc: "As StationView's." }],
     ["summary", "String", { said: true, doc: "As StationRow's: said after its dot while it is away." }],
     ["online", "bool"],
+    ["acceptAutoChats", "bool", { default: true, doc: "Whether this station is opted into automatic assignment for new chats and presets." }],
     ["host", opt("HostRow"), { doc: "Its machine's meters, under its name while it is up." }],
     ["overview", opt("NewChatOverview"), { doc: "Once its overview is read: the page waits for it before it offers the machine's own sessions." }],
   ], { doc: "A station a new chat can start on, as its page, its presets and its choice of a station (station_facts.mbt, as\nthe stations' sidebar) read it: its mark and name, up or away, its agents at work, its machine's meters. The\n`stations` topic's rows (StationRow) have what a list's row draws besides (its state in words, its problems, how it is\nreached, its version, the rest of its overview)." }),

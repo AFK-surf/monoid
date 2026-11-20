@@ -98,10 +98,12 @@ const OVER_READ: Record<string, number> = {
   railCard: 344,
   "railCard usage": 232,
   workspaceMarks: 344,
-  search: 176,
+  // (merged #7744 acceptAutoChats + #7730 startsOnStations on station 0's c-slack-1 crossed 176.0 KB, 2026-11-20)
+  search: 184,
   chatSearch: 128,
-  // (its people's messages and their edits alone read, account.ts peopleEntries: 672 before, 2026-11-18)
-  chatOutline: 224,
+  // (its people's messages and their edits alone read, account.ts peopleEntries: 672 before, 2026-11-18; +39 B
+  // startsOnStations on station 0's c-slack-1 crossed 224.0 KB, 2026-11-20)
+  chatOutline: 232,
   "driveBrowse phone": 40,
   "driveBrowse columns": 40,
   // (the vault of the workspace with no safe mode its person's own, encrypted, its items' records read beside it; the
@@ -146,7 +148,8 @@ const GROWS: Record<string, Partial<Record<Knob, number>>> = {
   profile: { profiles: 200, stations: 216 },
   "profile key": { profiles: 200, stations: 216 },
   newChat: { profiles: 64 },
-  pick: { profiles: 272, stations: 416 },
+  // (merged #7744 acceptAutoChats + #7730 startsOnStations across 15 station overviews crossed 416.0 KB, 2026-11-20)
+  pick: { profiles: 272, stations: 424 },
   settings: { stations: 96 },
   history: { profiles: 72 },
   agentCard: { profiles: 72 },
@@ -175,7 +178,6 @@ const OVER_WRITE: Record<string, number> = {
   "edit held": 16,
   "said held": 16,
   "archived held": 120,
-  "screen held": 16,
   "member held": 24,
   "message six pages held": 32,
 };

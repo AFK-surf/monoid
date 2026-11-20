@@ -319,7 +319,12 @@ fn bar_holder_node(holder : @view.View, src : Source, ws : () -> Workspace?) -> 
   let disc = bar_at(holder, disc_x, disc_y, fn() { act_size }, fn() { act_size }, fn(d) {
     d
     .radius(Is(act_size / 2.0))
-    .glass(By(fn() { Some(@sf.glass_tab_bar()) }))
+    .glass(
+      By(fn() {
+        let spot = if d.pressed() { Some((act_size / 2.0, act_size / 2.0)) } else { None }
+        Some(@sf.glass_tab_bar(spot~).sharing())
+      }),
+    )
     .shadow(By(bar_shadow))
     .shadow_outside(Is(true))
     .presses(By(fn() {
@@ -349,12 +354,12 @@ fn bar_holder_node(holder : @view.View, src : Source, ws : () -> Workspace?) -> 
 }
 
 ///|
-/// The actions the notch has an icon for (bar_action's: 令, ＋).
+/// The icons the notch draws for its actions (bar_action_icon's: 令's and ＋'s alike a ＋).
 // kept across runs: a table, never written
-let bar_faces : Array[String] = ["ling", "plus"]
+let bar_faces : Array[String] = ["plus"]
 
 ///|
-/// The action's icons in `d` (action_icon's: 令 drawn as a ＋ too, each 30, in the bar's lit ink, in its middle), one of each action's, made once
+/// The action's icons in `d` (bar_action_icon's, each 30, in the bar's lit ink, in its middle), one of each action's, made once
 /// and drawn (and found on screen by what it draws) only while the action is it (m_face) or another swaps in for it
 /// (icon_was; bar_tell: a short scale and fade, 300 ms on the bar's clock, linear; the one going out by 120 ms, the one
 /// coming in from 60 ms): none made or let go as the action is another.
@@ -382,11 +387,9 @@ fn bar_action_icons(d : @view.View) -> Unit {
     d.box(fn(c) {
       c.over(Is(true)).lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
       let shown = fn() { look(c, face) }
-      // (令's action, a new chat, drawn as a ＋ as the others' are: 令's own glyph read as no shape anyone knew)
-      let icon = if face == "ling" { "plus" } else { face }
-      let i = @sf.icon_node(c, icon, 30.0, By(bar_action_ink), name_now=fn() {
+      let i = @sf.icon_node(c, face, 30.0, By(bar_action_ink), name_now=fn() {
         if shown() is Some(_) {
-          icon
+          face
         } else {
           ""
         }
@@ -418,10 +421,11 @@ fn bar_disc_look(d : @view.View) -> Unit {
 }
 
 ///|
-/// The shadow round the bar's glass on the page (@sf.tab_bar_raised: LiquidBottomTabs'), outside its outline only:
+/// The shadow round the bar's glass on the page (@sf.tab_bar_shadow: light/dark separated), outside its outline only:
 /// the glass bends nothing of it.
 fn bar_shadow() -> (Double, Double, Int64) {
-  (@sf.tab_bar_raised.sigma, @sf.tab_bar_raised.dy, @sf.tab_bar_raised.color)
+  let s = @sf.tab_bar_shadow()
+  (s.sigma, s.dy, s.color)
 }
 
 ///|
@@ -448,7 +452,15 @@ fn bar_glass_capsule(
   bar_at(holder, fn() { 0.0 }, top, w, h, fn(g) {
     g
     .radius(By(fn() { dmin(rad, h() / 2.0) }))
-    .glass(By(fn() { Some(@sf.glass_tab_bar()) }))
+    .glass(
+      By(fn() {
+        let until = if bar.held.to > 0.01 { bar_ball_until() } else { bar.held.end() }
+        let t = bar_moment(g, Ball, until)
+        let a = bar_ball_at(t)
+        let spot = if a.held > 0.01 { Some((a.cx, a.cy - top())) } else { None }
+        Some(@sf.glass_tab_bar(spot~))
+      }),
+    )
     .shadow(By(bar_shadow))
     .shadow_outside(Is(true))
     // (its top where the panel has it as each frame is drawn, its foot where it is; its right end in by the action's
@@ -623,7 +635,7 @@ fn bar_lens_node(holder : @view.View) -> Unit {
         },
         fn(g) {
           g
-          .glass(By(fn() { Some(@sf.backdrop_tab(held(g))) }))
+          .glass(By(fn() { Some(@sf.glass_tab_lens(held(g))) }))
           .shadow(Is((@sf.tab_lens_raised.sigma, @sf.tab_lens_raised.dy, @sf.tab_lens_raised.color)))
           |> ignore
         },

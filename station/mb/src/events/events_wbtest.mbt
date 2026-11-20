@@ -218,3 +218,68 @@ test "overview constructs payload and caches decisions/memory via OverviewKept" 
   assert_eq(got.length(), 2)
   assert_eq(mem_calls.val, 1)
 }
+
+///|
+test "connect_shown emits startsOn and startsOnStations consistently for none, single, and multi-station allowlists" {
+  let deps : OverviewDeps = {
+    config: () => jo([]),
+    session_counts: (_, _) => Some((0.0, Map([]))),
+    wait_for_session_counts: None,
+    hub_processes: () => [],
+    session_ws: _ => None,
+    list_processes: () => [],
+    data_dir: "/tmp/test-data",
+    group_memory: (_, cb) => cb(Map([])),
+    disk_room: (_, cb) => cb(Null),
+    store_now: () => 0.0,
+    binding: _ => Null,
+    connect_kind: _ => None,
+    accounts: None,
+    updates: None,
+    slack_identities: _ => jo([]),
+    root_view: (_, cb) => cb(jo([])),
+    homedir: "/Users/test",
+    has_spotlight: false,
+    permissions: None,
+    cloud_state: () => None,
+    membership: _ => None,
+    reached: () => false,
+    catalog: () => jo([]),
+    decisions_version: () => jn(1.0),
+    policy_checks: None,
+    policy_view: (_, _, _, _, _) => jo([("items", ja([]))]),
+    prepare_decision_sessions: cb => cb(),
+    prepare_session_chat_names: None,
+    session_there: _ => false,
+    chat_readable: _ => false,
+    chat_title: _ => "",
+    rooted: p => p.has_prefix("/"),
+    clean: p => p,
+    built_at: None,
+  }
+  let none_c = connect_shown(deps, jo([("id", js("c0")), ("bind", jo([("runtime", js("claude"))]))]), _ => 0.0)
+  assert_eq(none_c.get("startsOn").map(stringify), Some("null"))
+  assert_eq(none_c.get("startsOnStations").map(stringify), Some("null"))
+
+  let one_c = connect_shown(deps, jo([("id", js("c1")), ("station", js("s1")), ("bind", jo([("runtime", js("claude"))]))]), _ => 0.0)
+  assert_eq(one_c.get("startsOn").map(stringify), Some("\"s1\""))
+  assert_eq(one_c.get("startsOnStations").map(stringify), Some("[\"s1\"]"))
+
+  let multi_c = connect_shown(
+    deps,
+    jo([("id", js("c2")), ("station", js("s1")), ("stations", ja([js(" s1 "), js("s2"), js("s1"), js("")])), ("bind", jo([("runtime", js("claude"))]))]),
+    _ => 0.0,
+  )
+  assert_eq(multi_c.get("startsOn").map(stringify), Some("\"s1\""))
+  assert_eq(multi_c.get("startsOnStations").map(stringify), Some("[\"s1\",\"s2\"]"))
+  assert_eq(multi_c.get("startsOnAuto").map(stringify), None)
+
+  let auto_c = connect_shown(
+    deps,
+    jo([("id", js("c3")), ("autoStation", Bool(true)), ("station", js("s1")), ("bind", jo([("runtime", js("claude"))]))]),
+    _ => 0.0,
+  )
+  assert_eq(auto_c.get("startsOnAuto").map(stringify), Some("true"))
+  assert_eq(auto_c.get("startsOn").map(stringify), Some("null"))
+  assert_eq(auto_c.get("startsOnStations").map(stringify), Some("null"))
+}

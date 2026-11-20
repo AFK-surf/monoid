@@ -47,6 +47,8 @@ struct Options {
     relay_urls: Vec<String>,
     #[serde(default)]
     relay_entries: Vec<RelayEntry>,
+    #[serde(default)]
+    relay_allowlist: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -85,16 +87,19 @@ pub fn bind(options: JsValue) -> Promise {
             iroh::RelayConfig::from(relay.clone()).with_entries(entries.iter().filter(|(_, target)| target == relay).map(|(entry, _)| entry.clone()))
         }));
         let mesh = Arc::new(mesh::Scopes::default());
-        let endpoint = IrohEndpoint::builder(Minimal)
+        let mut builder = IrohEndpoint::builder(Minimal)
             .add_custom_transport(mesh.hub.clone())
             .path_selector(Arc::new(mesh_transport::selection::Selector::new(mesh.hub.clone())))
             .secret_key(SecretKey::from_bytes(&bytes))
             .relay_mode(if relays.is_empty() { RelayMode::Disabled } else { RelayMode::Custom(relay_map) })
             .home_on_every_relay()
-            .transport_config(transport())
-            .bind()
-            .await
-            .map_err(failed)?;
+            .transport_config(transport());
+        if let Some(urls) = options.relay_allowlist {
+            let mut allowlist: Vec<RelayUrl> = urls.iter().map(|u| relay_url(u)).collect::<Result<_, _>>()?;
+            allowlist.extend(entries.iter().flat_map(|(entry, relay)| [entry.clone(), relay.clone()]));
+            builder = builder.relay_allowlist(allowlist);
+        }
+        let endpoint = builder.bind().await.map_err(failed)?;
         Ok(Endpoint { inner: endpoint, mesh }.into())
     })
 }

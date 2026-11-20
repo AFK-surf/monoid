@@ -381,7 +381,7 @@
   "android-settings.profiles.empty": "No profiles here yet",
   "android-settings.profiles.note": "Accounts agents use to run models. Ones that need attention come first; open one to see why and how to fix it.",
   "android-settings.profiles.stationOffline": "Station offline; profiles unavailable",
-  "android-settings.quota.blocked": "Suspended",
+  "android-settings.quota.blocked": "Refused",
   "android-settings.quota.check": "Check",
   "android-settings.quota.checkWhat": "check allowance",
   "android-settings.quota.checkedAt": "Checked {ago}",

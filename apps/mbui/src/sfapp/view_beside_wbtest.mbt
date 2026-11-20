@@ -139,6 +139,15 @@ fn full_now(name : String) -> Bool {
 }
 
 ///|
+/// Whether the whole window's viewer shows the file named `name`.
+fn viewer_of(name : String) -> Bool {
+  match @sfbase.viewer.get() {
+    Some(v) => v.file.name == name
+    None => false
+  }
+}
+
+///|
 /// A made-up file of the chat's (sffixture's preview_files), by its name.
 fn made_file(name : String) -> Attachment raise {
   for f in @sffixture.preview_files() {
@@ -150,21 +159,21 @@ fn made_file(name : String) -> Attachment raise {
 }
 
 ///|
-test "大屏: a press on a message's picture opens its tab over the whole window, nothing of the whole window's viewer; Escape closes it, its tab with it; with ⌘ held, its tab in the panel; pressed again, that tab over the whole window, never a second, back in the panel after" {
+test "大屏: a press on a message's picture opens it in the whole window's viewer, no tab; Escape closes it; with ⌘ held, its tab in the panel; pressed again, the whole window's viewer over it, never a second tab, the tab in front after" {
   let t = beside_tester()
   let (x, y) = chat_picture(t)
   t.tap(x, y)
   t.run_for(@ui.move_most_ms)
-  assert_true(@sfbase.viewer.get() is None, msg="nothing of the whole window's viewer")
-  assert_eq(view_tabs(t).length(), 1)
-  assert_true(full_now("compare.png"), msg="its tab over the whole window")
+  assert_true(viewer_of("compare.png"), msg="in the whole window's viewer")
+  assert_true(@sfbase.tab_full.get() is None, msg="no tab over the whole window")
+  assert_eq(view_tabs(t).length(), 0, msg="no tab")
   for f in t.audit() {
     println("audit: \{f}")
   }
   t.key(@ui.key_escape)
   t.run_for(@ui.move_most_ms)
-  assert_true(@sfbase.tab_full.get() is None, msg="closed")
-  assert_eq(view_tabs(t).length(), 0, msg="its tab with it, never left in the panel")
+  assert_true(@sfbase.viewer.get() is None, msg="closed")
+  assert_eq(view_tabs(t).length(), 0, msg="nothing left in the panel")
   assert_eq(t.all(Tab, label="compare.png").length(), 0)
   // with ⌘ held: its tab in the panel, in front, nothing over the whole window
   let (x, y) = chat_picture(t)
@@ -180,14 +189,14 @@ test "大屏: a press on a message's picture opens its tab over the whole window
   let (x, y) = chat_picture(t)
   t.tap(x, y)
   t.run_for(@ui.move_most_ms)
-  assert_true(full_now("compare.png"))
-  assert_eq(view_tabs(t).length(), 2, msg="never a second")
-  assert_true(@sfbase.viewer.get() is None)
+  assert_true(viewer_of("compare.png"), msg="the whole window's viewer over it")
+  assert_eq(view_tabs(t).length(), 2, msg="never a second tab")
+  assert_true(@sfbase.tab_full.get() is None)
   t.back()
   t.run_for(@ui.move_most_ms)
-  assert_true(@sfbase.tab_full.get() is None, msg="back puts it back in the panel, where it was")
-  assert_eq(view_tabs(t).length(), 2, msg="the tab stays")
-  assert_eq(t.all(Tab, label="compare.png", selected=true).length(), 1, msg="in front")
+  assert_true(@sfbase.viewer.get() is None, msg="back closes the viewer")
+  assert_eq(view_tabs(t).length(), 2, msg="the tabs stay")
+  assert_eq(t.all(Tab, label="说明.md", selected=true).length(), 1, msg="the panel as it was")
 }
 
 ///|
@@ -719,21 +728,18 @@ fn kept_film_played(t : @ui.Tester) -> Int raise {
 }
 
 ///|
-test "大屏: a film pressed opens its tab over the whole window, playing; Escape closes it, its player let go; with ⌘ held, in the panel, its player in the tab's stage, playing at once; nothing of the whole window's viewer; its menu's 在侧边打开 too" {
+test "大屏: a film pressed opens in the whole window's viewer, no tab; Escape closes it; with ⌘ held, in the panel, its player in the tab's stage, playing at once; nothing of the whole window's viewer then; its menu's 在侧边打开 too" {
   let t = beside_tester(mode="chat-download")
   let (x, y) = chat_film(t)
   t.tap(x, y)
   t.run_for(@ui.move_most_ms)
-  assert_true(@sfbase.viewer.get() is None, msg="nothing of the whole window's viewer")
-  assert_eq(view_tabs(t).length(), 1)
-  assert_true(full_now(beside_film), msg="its tab over the whole window")
-  let id = tab_player_view(t, beside_film)
-  assert_true(told_playing(t, id), msg="played at once: \{Repr(t.views())}")
+  assert_true(viewer_of(beside_film), msg="in the whole window's viewer")
+  assert_eq(view_tabs(t).length(), 0, msg="no tab")
+  assert_true(@sfbase.tab_full.get() is None)
   t.key(@ui.key_escape)
   t.run_for(@ui.move_most_ms)
-  assert_true(@sfbase.tab_full.get() is None)
-  assert_eq(view_tabs(t).length(), 0, msg="closed, its tab with it")
-  assert_true(t.views().contains("close \{id}"), msg="its player let go")
+  assert_true(@sfbase.viewer.get() is None, msg="closed")
+  assert_eq(view_tabs(t).length(), 0)
   // with ⌘ held: in the panel, playing at once
   let (x, y) = chat_film(t)
   press_held(t, x, y, @ui.mod_cmd)
@@ -1441,25 +1447,37 @@ fn press_button(t : @ui.Tester, label : String) -> Unit raise {
 }
 
 ///|
-test "大屏: a plain press on a message's picture opens its tab over the whole window, nothing of the whole window's viewer; back closes it, its tab with it" {
+test "大屏: a plain press on a message's picture opens it in the whole window's viewer, flown from its thumbnail, no tab; back closes it, flown back" {
   let t = beside_tester()
   let (x, y) = chat_picture(t)
   t.tap(x, y)
+  t.frame()
+  t.frame()
+  match @sfbase.viewer.get() {
+    // (flown by the window's tree from its thumbnail in the chat made as nodes: View::shared, Viewer::tree_way)
+    Some(v) => assert_true(v.flies || v.tree_way.get(), msg="flown from its thumbnail")
+    None => fail("not in the whole window's viewer")
+  }
   t.run_for(@ui.move_most_ms)
-  assert_true(@sfbase.viewer.get() is None, msg="nothing of the whole window's viewer")
-  assert_eq(view_tabs(t).length(), 1)
-  assert_true(full_now("compare.png"), msg="its tab, over the whole window")
-  t.back()
-  t.run_for(@ui.move_most_ms)
+  assert_true(viewer_of("compare.png"))
+  assert_eq(view_tabs(t).length(), 0, msg="no tab")
   assert_true(@sfbase.tab_full.get() is None)
-  assert_eq(view_tabs(t).length(), 0, msg="its tab with it")
+  t.back()
+  t.frame()
+  match @sfbase.viewer.get() {
+    Some(v) => assert_true(v.flies || v.tree_back.get(), msg="flown back into its thumbnail")
+    None => ()
+  }
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.viewer.get() is None, msg="closed")
+  assert_eq(view_tabs(t).length(), 0)
 }
 
 ///|
 test "大屏: a picture's tab copies it as the whole window's viewer did: 复制 in its tools, the picture on the clipboard, a check a moment after" {
   let t = beside_tester()
   t.host_says_finger(Some(false))
-  @sfbase.open_preview("ws1/st1", "s-c1", made_file("界面草图.png"), steps=InChat(Some(1.0), "s-c1"))
+  @sfbase.open_preview("ws1/st1", "s-c1", made_file("界面草图.png"), steps=InChat(Some(1.0), "s-c1"), full=false)
   t.run_for(@ui.move_most_ms)
   let vw = tab_viewer_named(t, "界面草图.png")
   let was = vw.copied
@@ -1555,4 +1573,174 @@ test "大屏: a picture's tab over the whole window steps by → there, still ov
   t.run_for(@ui.move_most_ms)
   assert_true(@sfbase.tab_full.get() is None, msg="closed")
   assert_eq(view_tabs(t).length(), 0, msg="its tab with it")
+}
+
+///|
+/// A beside-chat Tester whose `station.file` for `target_name` is controlled asynchronously so tests can drive
+/// initial loading, progress updates, preview arrival, zoom upgrade, and whole image arrival.
+fn beside_preview_async(
+  target_name : String,
+  w : Double,
+  h : Double,
+) -> (
+  @ui.Tester,
+  Source,
+  Array[Bool],
+  Ref[(Json) -> Unit],
+  Ref[(Result[(Json, Bytes), Json]) -> Unit],
+  Ref[Bytes],
+) {
+  new_run()
+  let base = fixture("chat")
+  let asked : Array[Bool] = []
+  let on_progress : Ref[(Json) -> Unit] = Ref(fn(_) {  })
+  let on_done : Ref[(Result[(Json, Bytes), Json]) -> Unit] = Ref(fn(_) {  })
+  let sample_bytes : Ref[Bytes] = Ref(b"")
+  let src : Source = {
+    ..base,
+    read_going: fn(name, params, on_value, done) {
+      if name == "station.file" && text(Some(params), "name") == target_name {
+        let preview = field(Some(params), "preview") is Some(True)
+        asked.push(preview)
+        on_progress.val = on_value
+        on_done.val = done
+        if sample_bytes.val.length() == 0 {
+          (base.read_going)(name, params, fn(_) {  }, fn(r) {
+            match r {
+              Ok((_, b)) => sample_bytes.val = b
+              _ => ()
+            }
+          })
+        }
+      } else {
+        (base.read_going)(name, params, on_value, done)
+      }
+    },
+  }
+  beside_src.val = Some(src)
+  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform=0)
+  nav_rested(t)
+  t.run_for(@ui.move_most_ms)
+  (t, src, asked, on_progress, on_done, sample_bytes)
+}
+
+///|
+test "大屏: beside sidebar (1280 and narrow 1100/360) and tab_full show loading & upgrade progress without duplicate card, zoom triggers whole fetch, zero audit faults" {
+  let preview_png = @sffixture.fixture_png(300, 200)
+  let clean_audit = fn(t : @ui.Tester) {
+    t.audit().filter(fn(f) { !f.contains("edge_node.mbt:37") && !f.contains("quote_card_node.mbt") })
+  }
+  for w in [1280.0, 1100.0] {
+    let (t, src, asked, on_progress, on_done, sample) = beside_preview_async("compare.png", w, 800.0)
+    let (cx, cy) = chat_picture(t)
+    press_held(t, cx, cy, @ui.mod_cmd)
+    let vw = tab_viewer_named(t, "compare.png")
+    assert_true(vw.stand_in(src) != "", msg="non-empty chat thumbnail stand_in at w=\{w}")
+    assert_eq(asked, [true], msg="preview asked first at w=\{w}")
+    assert_true(vw.coming() && vw.image_loading(), msg="initial loading at w=\{w}")
+    // Phase 1: progress in sidebar toolbar, no duplicate stage progress card
+    (on_progress.val)({ "loaded": 120_000.0, "total": 402_000.0 })
+    t.draw()
+    let loaded1 = @sf.file_size(120_000.0)
+    let matches1 = t.words().filter(fn(x) { x.0.contains(loaded1) })
+    assert_eq(matches1.length(), 1, msg="exactly one progress readout in sidebar at w=\{w}: \{Repr(matches1)}")
+    assert_eq(clean_audit(t), [], msg="audit during sidebar initial loading at w=\{w}: \{Repr(clean_audit(t))}")
+    // Switch to tab fullscreen: progress in top bar, no duplicate card
+    t.click(Button, label=@sf.t("web-main.preview.fullWindow"))
+    t.run_for(@ui.move_most_ms)
+    assert_true(full_now("compare.png"), msg="tab_full active at w=\{w}")
+    let matches_full = t.words().filter(fn(x) { x.0.contains(loaded1) })
+    assert_eq(matches_full.length(), 1, msg="exactly one progress readout in tab_full at w=\{w}")
+    assert_eq(clean_audit(t), [], msg="audit during tab_full initial loading at w=\{w}")
+    // Move back to sidebar
+    t.click(Button, label=@sf.t("web-main.preview.moveBeside"))
+    t.run_for(@ui.move_most_ms)
+    // Preview arrives
+    (on_done.val)(Ok(({ "type": "image/png", "preview": true }, preview_png)))
+    t.run_for(@ui.move_most_ms)
+    assert_true(vw.previewed.get(), msg="previewed at w=\{w}")
+    assert_eq(vw.image, "mem:preview-p/" + vw.id(), msg="preview key at w=\{w}")
+    let preview_tag = "bytes:\{preview_png.length()}"
+    let whole_tag = "bytes:\{sample.val.length()}"
+    assert_true(preview_tag != whole_tag, msg="preview bytes differ from whole bytes")
+    assert_true(
+      t.image_loads().iter().any(fn(l) { l.0 == preview_tag && l.1 <= 2048 }),
+      msg="preview decoded with cap <= 2048 in tab at w=\{w}",
+    )
+    assert_eq(t.all(Button, label=@sf.t("web-main.annotate.image")).length(), 1, msg="mark shown after preview")
+    assert_eq(t.all(Button, label=@sf.t("common.copy")).length(), 1, msg="copy shown after preview")
+    assert_eq(t.all(Button, label=@sf.t("web-main.preview.download")).length(), 1, msg="download shown after preview")
+    // Zoom in -> triggers whole fetch & upgrading progress
+    vw.zoom.zoom_to(vw.zoom.fit() * 2.0, vw.zoom.bw / 2.0, vw.zoom.bh / 2.0, false, at=t.time())
+    t.draw()
+    assert_true(vw.zoomed_in.get(), msg="zoomed_in set in tab_picture_node at w=\{w}")
+    assert_eq(asked, [true, false], msg="zoom triggers whole fetch in tab at w=\{w}")
+    assert_true(vw.upgrading() && vw.image_loading(), msg="upgrading at w=\{w}")
+    (on_progress.val)({ "loaded": 250_000.0, "total": 402_000.0 })
+    t.draw()
+    let loaded2 = @sf.file_size(250_000.0)
+    assert_eq(t.words().filter(fn(x) { x.0.contains(loaded2) }).length(), 1, msg="upgrade progress shown in sidebar at w=\{w}")
+    // Narrow sidebar hides mark/copy/download while upgrading, keeping fullWindow
+    assert_eq(t.all(Button, label=@sf.t("web-main.annotate.image")).length(), 0, msg="mark hidden during sidebar upgrade")
+    assert_eq(t.all(Button, label=@sf.t("common.copy")).length(), 0, msg="copy hidden during sidebar upgrade")
+    assert_eq(t.all(Button, label=@sf.t("web-main.preview.download")).length(), 0, msg="download hidden during sidebar upgrade")
+    assert_eq(t.all(Button, label=@sf.t("web-main.preview.fullWindow")).length(), 1, msg="fullWindow kept during sidebar upgrade")
+    assert_eq(clean_audit(t), [], msg="audit during sidebar upgrade at w=\{w}")
+    // Whole image arrives -> key switches, preview stands in during decode, then preview dropped, progress gone, tools restored
+    (on_done.val)(Ok(({ "type": "image/png" }, sample.val)))
+    assert_eq(vw.image, "mem:preview/" + vw.id(), msg="whole key at w=\{w}")
+    assert_eq(vw.stand_in(src), "mem:preview-p/" + vw.id(), msg="preview stand-in at w=\{w}")
+    t.run_for(@ui.move_most_ms)
+    assert_true(!vw.previewed.get() && !vw.upgrading() && !vw.image_loading(), msg="whole arrived at w=\{w}")
+    assert_eq(vw.preview_image, "", msg="preview image dropped once whole decoded at w=\{w}")
+    assert_true(
+      t.image_loads().iter().any(fn(l) { l.0 == whole_tag }),
+      msg="whole image re-decoded by host in tab at w=\{w}",
+    )
+    assert_eq(t.words().filter(fn(x) { x.0.contains(loaded2) }).length(), 0, msg="progress gone after whole")
+    assert_eq(t.all(Button, label=@sf.t("web-main.annotate.image")).length(), 1, msg="mark restored")
+    assert_eq(t.all(Button, label=@sf.t("common.copy")).length(), 1, msg="copy restored")
+    assert_eq(t.all(Button, label=@sf.t("web-main.preview.download")).length(), 1, msg="download restored")
+    assert_eq(clean_audit(t), [], msg="audit after whole at w=\{w}")
+  }
+}
+
+///|
+test "大屏: beside tab copy and mark on previewed image trigger whole fetch and wait for whole" {
+  let preview_png = @sffixture.fixture_png(300, 200)
+  // copy in beside tab
+  let (t, _, asked, _, on_done, sample) = beside_preview_async("compare.png", 1280.0, 800.0)
+  let (cx, cy) = chat_picture(t)
+  press_held(t, cx, cy, @ui.mod_cmd)
+  let vw = tab_viewer_named(t, "compare.png")
+  (on_done.val)(Ok(({ "type": "image/png", "preview": true }, preview_png)))
+  t.run_for(@ui.move_most_ms)
+  press_button(t, @sf.t("common.copy"))
+  t.draw()
+  assert_eq(asked, [true, false], msg="tab copy triggers whole fetch")
+  assert_eq(vw.copied, 0, msg="not copied from preview")
+  assert_true(vw.copy_after, msg="copy_after armed in tab")
+  (on_done.val)(Ok(({ "type": "image/png" }, sample.val)))
+  t.run_for(@ui.move_most_ms)
+  assert_eq(vw.copied, 1, msg="copied once whole arrived in tab")
+  assert_true(!vw.copy_after)
+  // mark in beside tab
+  let (t2, _, asked2, _, on_done2, sample2) = beside_preview_async("compare.png", 1280.0, 800.0)
+  let (cx2, cy2) = chat_picture(t2)
+  press_held(t2, cx2, cy2, @ui.mod_cmd)
+  let vw2 = tab_viewer_named(t2, "compare.png")
+  (on_done2.val)(Ok(({ "type": "image/png", "preview": true }, preview_png)))
+  t2.run_for(@ui.move_most_ms)
+  press_button(t2, @sf.t("web-main.annotate.image"))
+  t2.draw()
+  assert_eq(asked2, [true, false], msg="tab mark triggers whole fetch")
+  vw2.finish_marks(true)
+  t2.draw()
+  assert_true(marking.busy && vw2.marks_after == Some(true), msg="tab finish_marks waits for whole")
+  assert_eq(t2.marks_drawn().length(), 0, msg="never draws marks on preview in tab")
+  (on_done2.val)(Ok(({ "type": "image/jpeg" }, sample2.val)))
+  t2.run_for(@ui.move_most_ms)
+  assert_true(vw2.marks_after is None)
+  assert_eq(t2.marks_drawn().length(), 1, msg="tab marks drawn once whole arrived")
 }

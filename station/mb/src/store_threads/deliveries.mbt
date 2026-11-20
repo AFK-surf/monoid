@@ -522,7 +522,16 @@ pub fn Store::archive_marks(self : Store, sessions : Json, threads : Json) -> Js
   let ready = archive_marks_ready(self.db)
   let pinned : Map[String, Json] = Map([])
   for s in strings(sessions) {
-    pinned[js_text(s)] = jbool(!ready || self.one(archive_pin_exists_sql, [s]) is Some(_))
+    let k = js_text(s)
+    let is_pinned = if !ready {
+      true
+    } else {
+      let anchor = @sql.conversation_of(self.db, k)
+      let members = @sql.members_of(self.db, anchor)
+      let list = if members.is_empty() { [k] } else { members }
+      list.iter().any(m => self.one(archive_pin_exists_sql, [jstr(m)]) is Some(_))
+    }
+    pinned[k] = jbool(is_pinned)
   }
   let kept : Map[String, Json] = Map([])
   for t in strings(threads) {
@@ -534,20 +543,34 @@ pub fn Store::archive_marks(self : Store, sessions : Json, threads : Json) -> Js
 ///|
 pub fn Store::set_pin(self : Store, viewer : Json, session : Json, pinned : Json) -> Json raise {
   self.with_(changes => {
+    let key = js_text(session)
+    let anchor = @sql.conversation_of(self.db, key)
+    let anchor_j = jstr(anchor)
     if pinned is True {
-      ignore(self.run("INSERT OR IGNORE INTO pins (viewer, session, at) VALUES (?, ?, ?)", [viewer, session, self.now_json()]))
+      ignore(self.run("INSERT OR IGNORE INTO pins (viewer, session, at) VALUES (?, ?, ?)", [viewer, anchor_j, self.now_json()]))
     } else {
-      ignore(self.run("DELETE FROM pins WHERE viewer = ? AND session = ?", [viewer, session]))
+      let targets : Array[String] = [anchor]
+      if !targets.contains(key) {
+        targets.push(key)
+      }
+      for m in @sql.members_of(self.db, anchor) {
+        if !targets.contains(m) {
+          targets.push(m)
+        }
+      }
+      for m in targets {
+        ignore(self.run("DELETE FROM pins WHERE viewer = ? AND session = ?", [viewer, jstr(m)]))
+      }
     }
     let at = if pinned is True {
-      match self.one("SELECT at FROM pins WHERE viewer = ? AND session = ?", [viewer, session]) {
+      match self.one("SELECT at FROM pins WHERE viewer = ? AND session = ?", [viewer, anchor_j]) {
         Some(r) => col(r, "at")
         None => Json::null()
       }
     } else {
       Json::null()
     }
-    changes.push({ "type": "pins", "viewer": viewer, "session": session, "at": at })
+    changes.push({ "type": "pins", "viewer": viewer, "session": anchor_j, "at": at })
     undefined
   })
 }
