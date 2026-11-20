@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e253c7ef7](https://github.com/AFK-surf/monoid/commit/e253c7ef7307cbcf4767ee53385ab6bdbef9f105) fix(mbui): title the web app's tab with the page's | 2.75 | 3.71 | 15.09 | 37.17 | 57.27 | 32.58 | 66.33 | 98.44 | 121.64 |
 | [e5bdea018](https://github.com/AFK-surf/monoid/commit/e5bdea01886282646562dd77f3ddd9541a173f57) fix(station): keep connect files whole and route o | 2.75 | 3.71 | 15.09 | 37.17 | 57.27 | 32.58 | 66.33 | 98.44 | 121.64 |
 | [1b662c64f](https://github.com/AFK-surf/monoid/commit/1b662c64f2cddd9f80850033cc8e95980d1f6a19) fix(station/mb): send a hand-over's requests throu | 2.74 | 3.71 | 15.07 | 37.14 | 57.19 | 32.56 | 66.28 | 98.39 | 137.8 |
 | [fca46308b](https://github.com/AFK-surf/monoid/commit/fca46308bfbad979e59e669a04acf61a7d55ccce) fix(mbui): free what native reference counting kep | 2.74 | 3.71 | 15.07 | 37.14 | 57.19 | 32.56 | 66.28 | 98.39 | 137.8 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [923377ccc](https://github.com/AFK-surf/monoid/commit/923377ccc4e457a8803a3c5a139d47295cc1a3c4) feat(motion,sf-ui): add universal motion primitive | 2.73 | 3.68 | 14.98 | 37.08 | 56.87 | 32.51 | 66.08 | 97.78 | 124.33 |
 | [e0865e126](https://github.com/AFK-surf/monoid/commit/e0865e1261a17c9c095f26fe45e38e61dc3168fc) fix(sf-ui): keep pill button words inside the pill | 2.73 | 3.68 | 14.98 | 37.08 | 56.87 | 32.51 | 66.08 | 97.78 | 124.33 |
 | [ca6d4f62c](https://github.com/AFK-surf/monoid/commit/ca6d4f62ce14b2fa80e85f87fe7df78cda108a2e) fix(station/mb): use monotonic waits and non-block | 2.73 | 3.68 | 14.98 | 37.07 | 56.85 | 32.51 | 66.08 | 97.78 | 127.22 |
-| [9bffa471f](https://github.com/AFK-surf/monoid/commit/9bffa471f13206335e726b774f8d0bb5b7504e10) fix(station/mb): restore Slack Socket Mode WebSock | 2.73 | 3.68 | 14.98 | 37.07 | 56.85 | 32.5 | 66.06 | 97.73 | 121.51 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e253c7ef7](https://github.com/AFK-surf/monoid/commit/e253c7ef7307cbcf4767ee53385ab6bdbef9f105) fix(mbui): title the web app's tab with the page's | 0.46 | 0.61 | 2.35 | 3.4 | 5.59 | 1.7 | 4.6 | 53.92 |
 | [e5bdea018](https://github.com/AFK-surf/monoid/commit/e5bdea01886282646562dd77f3ddd9541a173f57) fix(station): keep connect files whole and route o | 0.46 | 0.61 | 2.35 | 3.4 | 5.59 | 1.7 | 4.6 | 54.2 |
 | [1b662c64f](https://github.com/AFK-surf/monoid/commit/1b662c64f2cddd9f80850033cc8e95980d1f6a19) fix(station/mb): send a hand-over's requests throu | 0.46 | 0.61 | 2.35 | 3.4 | 5.59 | 1.7 | 4.6 | 54.2 |
 | [fca46308b](https://github.com/AFK-surf/monoid/commit/fca46308bfbad979e59e669a04acf61a7d55ccce) fix(mbui): free what native reference counting kep | 0.46 | 0.61 | 2.35 | 3.4 | 5.59 | 1.7 | 4.6 | 54.18 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [923377ccc](https://github.com/AFK-surf/monoid/commit/923377ccc4e457a8803a3c5a139d47295cc1a3c4) feat(motion,sf-ui): add universal motion primitive | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 54.07 |
 | [e0865e126](https://github.com/AFK-surf/monoid/commit/e0865e1261a17c9c095f26fe45e38e61dc3168fc) fix(sf-ui): keep pill button words inside the pill | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 53.94 |
 | [ca6d4f62c](https://github.com/AFK-surf/monoid/commit/ca6d4f62ce14b2fa80e85f87fe7df78cda108a2e) fix(station/mb): use monotonic waits and non-block | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 53.94 |
-| [9bffa471f](https://github.com/AFK-surf/monoid/commit/9bffa471f13206335e726b774f8d0bb5b7504e10) fix(station/mb): restore Slack Socket Mode WebSock | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 53.94 |
