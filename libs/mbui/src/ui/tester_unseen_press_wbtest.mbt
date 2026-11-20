@@ -137,6 +137,7 @@ test "engine-level alpha=0 click passes through to underlying button, while take
     w=200.0,
     h=200.0,
     platform=0,
+    unseen_press_held=false,
   )
   t.draw()
   // Without takes_unseen, pointer click passes through the alpha=0 button to the underlying button.

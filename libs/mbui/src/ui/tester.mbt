@@ -277,6 +277,8 @@ fn reset_globals() -> Unit {
   @view.hold_reset()
   @view.untracked_read_reset()
   tester_fanout_reset()
+  fanout_hold.val = false
+  unseen_press_hold.val = false
   if left.length() > 0 {
     @halt.saying("state kept from an earlier test: " + left.join(", "))
   }
@@ -407,10 +409,21 @@ pub fn Tester::new(
   keeps_sources? : Bool = true,
   windows_beside? : Bool = false,
   theme? : () -> Theme,
+  transitions_only? : Bool = false,
   loc~ : SourceLoc,
 ) -> Tester {
   let (around, made) : (((Ctx) -> Unit)?, (@view.View) -> Unit) = match tree {
-    Some(make) => (Some(view), make)
+    Some(make) => {
+      let wrapped = if transitions_only {
+        fn(root : @view.View) {
+          root.transitions_only() |> ignore
+          make(root)
+        }
+      } else {
+        make
+      }
+      (Some(view), wrapped)
+    }
     None => (None, fn(root) { old(root, view).grow(Is(1.0)) |> ignore })
   }
   tester_make(
@@ -449,6 +462,8 @@ pub fn Tester::new(
     begun?,
     keeps_sources~,
     windows_beside~,
+    fanout_limit=0,
+    unseen_press_held=false,
     loc~,
   )
 }
@@ -493,6 +508,8 @@ pub fn Tester::tree(
   windows_beside? : Bool = false,
   theme? : () -> Theme,
   transitions_only? : Bool = true,
+  fanout_limit? : Int = 64,
+  unseen_press_held? : Bool = true,
   loc~ : SourceLoc,
 ) -> Tester {
   let made = if transitions_only {
@@ -539,6 +556,8 @@ pub fn Tester::tree(
     begun?,
     keeps_sources~,
     windows_beside~,
+    fanout_limit~,
+    unseen_press_held~,
     loc~,
   )
 }
@@ -582,6 +601,8 @@ fn tester_make(
   begun? : () -> Unit,
   keeps_sources~ : Bool,
   windows_beside~ : Bool,
+  fanout_limit~ : Int,
+  unseen_press_held~ : Bool,
   loc~ : SourceLoc,
 ) -> Tester {
   host_settings_given.val = ""
@@ -886,6 +907,11 @@ fn tester_make(
   tester_ways_rested.val = -1.0
   frames_at_one.val = (-1.0, 0)
   let t = { fake: f, w, h, frames: 0, seed, origin: time, period: frame_period_default, times: [], between, on_way: false, shown: false, motion: test_motion_judged(loc.to_string()), host_frames: false, inputs_next: @double.infinity, each: None, before }
+  if fanout_limit > 0 {
+    t.set_fanout_limit(fanout_limit)
+    fanout_hold.val = true
+  }
+  unseen_press_hold.val = unseen_press_held
   // a host's run replayed: its first frame where the host drew it (its first DRAWHASH), the display's frames from
   // there; else the display's first frame after `time`
   match run.bind(run_first_frame) {
@@ -1503,6 +1529,8 @@ fn Tester::frame_shown_first(self : Tester, now : Double, shown : Double) -> Uni
   }
   self.hold_seen_whole_now()
   self.hold_corners()
+  self.hold_fanout()
+  self.hold_unseen_press()
   // (where the focus a key moved along comes to rest, once what moved as it did is at rest: tester_focus_off.mbt)
   self.focus_off_at_rest()
   // (what it drew was placed by the layout it drew by: tester_placed.mbt)
