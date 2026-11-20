@@ -979,6 +979,8 @@ async fn P53Jobs::preview(self : P53Jobs, r : Request, conn : Json) -> Reply? {
     }
   }
   head.write_string("connection: close\r\n\r\n")
+  // (the service's connection let go however this ends: its client gone mid-way, the service's end, a failure)
+  defer (answer.close)()
   if !write_on(self.bus.host, conn, @utf8.encode(head.to_string())) {
     return None
   }
@@ -1011,6 +1013,7 @@ async fn P53Jobs::preview_json(self : P53Jobs, arg : Json) -> Json {
     _ => None
   }
   let answer = @jobs_host.proxy_preview(self.bus.host, jtext(arg, "method").unwrap_or("GET"), headers, body, port, target, (self.bus.lang.val)())
+  defer (answer.close)()
   let out = @buffer.Buffer()
   while true {
     match (answer.next)() {

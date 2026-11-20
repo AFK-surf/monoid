@@ -183,7 +183,7 @@ fn P51::here_local(self : P51) -> @gate.HereLocal {
         None => None
       }
       let got = @jobs_host.proxy_preview(host, verb, headers, sent, port, target, (bus.lang.val)(), asker=Peer)
-      (got.status, got.headers, { next: got.next, stop: async fn() {  }, check: None })
+      (got.status, got.headers, { next: got.next, stop: got.close, check: None })
     },
     socket: async fn(headers, port, target, stream, carry) raise @gate.HttpRefusal {
       let service = @jobs_host.open_socket(host, headers, port, target, (bus.lang.val)(), asker=Peer) catch {

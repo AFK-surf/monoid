@@ -95,6 +95,7 @@ fn said_of(e : Error) -> String {
     @agent_drivers.Failed(m) => m
     @agent_drivers.Said(m) => if m.has_prefix("station.") { tr((p52_lang_fn.val)(), m) } else { m }
     @agent_drivers.RenewRefused(m) => m
+    CommandMissing(c) => "the runner did not start: \{c} is not on PATH"
     @accounts_oauth.Said(m)
     | @accounts_oauth.RenewRefused(_, m)
     | @accounts_oauth.Failed(m)
@@ -229,6 +230,8 @@ fn[T] Pump::later(self : Pump, name : String, f : async () -> T) -> @agent_drive
 fn driver_error_of(e : Error) -> Error {
   match e {
     @agent_drivers.Failed(_) | @agent_drivers.Said(_) | @agent_drivers.RenewRefused(_) => e
+    // (a runtime not installed, kept as it is: the actors tell it apart, mb-actor.ts `errorOf`'s `missing`)
+    CommandMissing(_) => e
     @api_routes.Thrown("RenewRefused", _)
     | @accounts_pool.Thrown("RenewRefused", _)
     | @accounts_oauth.RenewRefused(_, _) => @agent_drivers.RenewRefused(said_of(e))
