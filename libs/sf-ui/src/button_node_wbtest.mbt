@@ -309,3 +309,138 @@ test "a button with an icon at work: the spinner in the icon's place, never the 
   t.run_for(past_button_ms)
   assert_eq(words_at(), rest)
 }
+
+///|
+/// A phone's window with a button saying `label` in a column `w` wide (as wide as its words and their ends where
+/// None), as wide as that column where `across`, the system's size of words `fs`. The Tester, drawn.
+fn narrow_button_case(label : String, fs : Double, across : Bool, w : Double?) -> @ui.Tester {
+  let t = @ui.Tester::new(fn(_c) {  }, w=360.0, h=200.0, platform=1)
+  t.check_looks(false)
+  set_dark(Some(false))
+  @ui.set_tree_theme(ui_theme_now)
+  if fs != 1.0 {
+    t.set_font_scale(fs)
+  }
+  @ui.set_view_app(fn(root) {
+    root.box(fn(col) {
+      col.width(Is(w)).lines_up(Is(Some(Start))) |> ignore
+      button_node(col, fn() { label }, fn() {  }, tone=Primary, across~) |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t
+}
+
+///|
+test "a button across a column narrower than its words and their ends: its ends come down alike, its words whole in its middle" {
+  for fs in [1.0, 1.3] {
+    let label = "Save to Photos"
+    // (as wide as its words and their ends, not across)
+    let t = narrow_button_case(label, fs, false, None)
+    let ((_, _, bw, _), (_, _, ww, _)) = pill_and_words(t, label)
+    assert_eq(bw, ww + 2.0 * button_padx, msg="not across, words at \{fs}")
+    // (across a column a half of its ends narrower than that, as 保存到相册 in a foot's half at 1.3)
+    let w = ww + button_padx
+    let t = narrow_button_case(label, fs, true, Some(w))
+    let ((bx, _, bw, _), (wx, _, ww2, _)) = pill_and_words(t, label)
+    let at = "across \{w}, words at \{fs}: pill \{bx} \{bw}, words \{wx} \{ww2}"
+    assert_eq(bw, w, msg=at)
+    assert_eq(ww2, ww, msg=at)
+    assert_true(wx >= bx - 0.01 && wx + ww2 <= bx + bw + 0.01, msg=at)
+    assert_true(((wx - bx) - (bx + bw - wx - ww2)).abs() < 0.5, msg=at)
+    // (across one wider: as before, its words in its middle)
+    let t = narrow_button_case(label, fs, true, Some(300.0))
+    let ((bx, _, bw, _), (wx, _, ww3, _)) = pill_and_words(t, label)
+    assert_eq(bw, 300.0, msg="across 300, words at \{fs}")
+    assert_true(((wx - bx) - (bx + bw - wx - ww3)).abs() < 0.5, msg="across 300, words at \{fs}")
+  }
+}
+
+///|
+/// A phone's window 360 wide with a viewer's foot (viewer_frame_act_node) of 取消 (Cancel) and the doing (Save to
+/// Photos), 复制 (Copy) between them where `copy`, the system's size of words `fs`. The Tester, drawn.
+fn viewer_foot_case(fs : Double, copy : Bool) -> @ui.Tester {
+  set_viewer_host(viewer_host_default())
+  set_words(fn(key, _) { if key == "common.cancel" { "Cancel" } else { key } })
+  let t = @ui.Tester::new(fn(_c) {  }, w=360.0, h=800.0, platform=1)
+  t.check_looks(false)
+  set_dark(Some(false))
+  @ui.set_tree_theme(ui_theme_now)
+  if fs != 1.0 {
+    t.set_font_scale(fs)
+  }
+  let tips = TipLayer::new(fn() { None })
+  @ui.set_view_app(fn(root) {
+    root.box(fn(page) {
+      page.width(Is(Some(360.0))).height(Is(Some(800.0))) |> ignore
+      viewer_frame_act_node(
+        page,
+        fn() { "Back" },
+        fn() { "picture.png" },
+        fn() { "" },
+        fn() { page_viewer_ink() },
+        fn() { "Save to Photos" },
+        fn() { 360.0 },
+        tips,
+        copy?=if copy { Some(fn() { "Copy" }) } else { None },
+        on_close=fn() {  },
+        on_act=fn() {  },
+      )
+    })
+    |> ignore
+  })
+  t.draw()
+  t
+}
+
+///|
+test "a viewer's foot in a small window without 复制, 取消 and the doing: each half while both fit; at 1.3 the doing's words whole with their ends, 取消 giving way" {
+  for fs in [1.0, 1.3] {
+    let t = viewer_foot_case(fs, false)
+    let ((cx, _, cw, _), (cwx, _, cww, _)) = pill_and_words(t, "Cancel")
+    let ((sx, _, sw, _), (swx, _, sww, _)) = pill_and_words(t, "Save to Photos")
+    let at = "words at \{fs}: Cancel \{cx} \{cw} (words \{cwx} \{cww}), Save to Photos \{sx} \{sw} (words \{swx} \{sww})"
+    // (both in the window, side by side)
+    assert_true(cx >= 0.0 && cx + cw <= sx && sx + sw <= 360.0, msg=at)
+    // (each one's words whole with their ends in it, in its middle)
+    assert_true(cw >= cww + 2.0 * button_padx - 0.01, msg=at)
+    assert_true(sw >= sww + 2.0 * button_padx - 0.01, msg=at)
+    assert_true(((cwx - cx) - (cx + cw - cwx - cww)).abs() < 0.5, msg=at)
+    assert_true(((swx - sx) - (sx + sw - swx - sww)).abs() < 0.5, msg=at)
+    // (each half while both fit)
+    if fs == 1.0 {
+      assert_true((cw - sw).abs() < 0.5, msg=at)
+    }
+    assert_eq(t.audit(), [], msg=at)
+  }
+  set_words(fn(key, _) { key })
+}
+
+///|
+test "a viewer's foot on a phone with 复制: at 1.3 the doing keeps its words and ends, 取消 and 复制 giving their ends alike, nothing past the window" {
+  for fs in [1.0, 1.3] {
+    let t = viewer_foot_case(fs, true)
+    let placed : Array[(Double, Double, Double, Double)] = []
+    let mut at = "words at \{fs}:"
+    for label in ["Cancel", "Copy", "Save to Photos"] {
+      let ((bx, _, bw, _), (wx, _, ww, _)) = pill_and_words(t, label)
+      at = at + " \{label} \{bx} \{bw} (words \{wx} \{ww})"
+      placed.push((bx, bw, wx, ww))
+    }
+    // (side by side in the window)
+    assert_true(placed[0].0 >= 0.0, msg=at)
+    assert_true(placed[0].0 + placed[0].1 <= placed[1].0, msg=at)
+    assert_true(placed[1].0 + placed[1].1 <= placed[2].0, msg=at)
+    assert_true(placed[2].0 + placed[2].1 <= 360.0, msg=at)
+    // (each one's words whole in it, in its middle; the doing's with their ends)
+    for p in placed {
+      let (bx, bw, wx, ww) = p
+      assert_true(wx >= bx - 0.01 && wx + ww <= bx + bw + 0.01, msg=at)
+      assert_true(((wx - bx) - (bx + bw - wx - ww)).abs() < 0.5, msg=at)
+    }
+    assert_true(placed[2].1 >= placed[2].3 + 2.0 * button_padx - 0.01, msg=at)
+    assert_eq(t.audit(), [], msg=at)
+  }
+  set_words(fn(key, _) { key })
+}

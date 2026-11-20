@@ -185,23 +185,40 @@ fn button_by(
     v
     .row(Is(true))
     .height(Is(Some(height)))
-    .padding(Is((padx, 0.0, padx, 0.0)))
     .lines_up(Is(Some(Middle)))
     .radius(Is(height / 2.0))
     .ground(By(fn() { looks().0 }))
     .alpha(By(fn() { seen.shown(v) }))
     |> ignore
+    // (its ends giving way alike where what holds it is narrower than its words and their ends: across, or in a row
+    // that lends it ends_give_lent)
+    let ends_give = across || v.lent(ends_give_lent).unwrap_or(false)
     if across {
       // (as wide as what holds it, whichever way that lays out: its own height kept)
       v.width_share(Is(1.0)) |> ignore
-    } else if v.lent(foot_fills_lent).unwrap_or(false) {
-      // (at a sheet's foot, in a thumb's reach: its share of the foot's width, as the old button's there, foot_fills;
-      // never narrower than its words and its ends need, what is beside it giving way first, as the old one's `keep`)
-      v.grow(Is(1.0)).basis(Is(Some(0.0))).keeps_held(Is(true)) |> ignore
+    } else if ends_give {
+      // (as wide as its words and their ends, narrower as what is beside it needs: its ends coming down first)
+      v.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+    } else {
+      v.padding(Is((padx, 0.0, padx, 0.0))) |> ignore
+      if v.lent(foot_fills_lent).unwrap_or(false) {
+        // (at a sheet's foot, in a thumb's reach: its share of the foot's width, as the old button's there, foot_fills;
+        // never narrower than its words and its ends need, what is beside it giving way first, as the old one's `keep`)
+        v.grow(Is(1.0)).basis(Is(Some(0.0))).keeps_held(Is(true)) |> ignore
+      }
     }
     // (what it holds in its middle, however wide it is laid out (as wide as a column, stretched by what holds it): as
-    // the old one's justify=JCenter)
-    v.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
+    // the old one's justify=JCenter. Where its ends give way, their room is these two's: as wide as its words and their
+    // ends as it is, each end coming down alike where it is laid out narrower than that (a foot's half, or beside a
+    // button that keeps its own, at a large size of words), its words in its middle still, never pushed past its far
+    // end as its own padding would)
+    let side = fn(s : @view.View) {
+      s.grow(Is(1.0)) |> ignore
+      if ends_give {
+        s.shrink(Is(1.0)).basis(Is(Some(padx))).min_width(Is(Some(0.0))) |> ignore
+      }
+    }
+    v.box(side) |> ignore
     // (the spinner's ink and its ring, and the tick's: the words' where it is solid, the accent's where not)
     let mark_ink = fn() {
       let (_, _, ink) = looks()
@@ -276,7 +293,7 @@ fn button_by(
       .ink(By(fn() { looks().2 }))
       |> ignore
     })
-    v.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
+    v.box(side) |> ignore
     // (its words changed: its ground from the shape it had, its words from where they were, together: reshape and
     // layout by its words)
     let m = @motion.moves_for(v, label, spec=button_reshape)
@@ -284,6 +301,13 @@ fn button_by(
     m.moves_with(words)
   })
 }
+
+///|
+/// Whether what a node is in is a row whose buttons (button_node) give their ends' room alike where it is too narrow for
+/// their words and ends, before any words are cut or pushed past a button's end: lent by viewer_frame_act_node to its
+/// foot's row on a small screen, where 保存到相册 keeps its own beside 取消 and 复制 at a large size of words.
+// kept across runs: what each row lends its buttons, let go with it
+let ends_give_lent : @view.Lent[Bool] = @view.Lent::new()
 
 ///|
 /// A spinner's room before a button's words (button_node's, way_in_button_node's): as wide as the spinner and `gap`
