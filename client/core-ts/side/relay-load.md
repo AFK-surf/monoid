@@ -47,3 +47,9 @@ After the window, the runner waits ten seconds to classify its last short connec
 It then stops the relay selected by the first station link and sends an application request.
 Recovery time includes the local browser RPC. The report also records connection identity and event-stream reopen counts.
 Use the same script hashes, browser, fixture sizes, visibility, and stream interval when comparing changes.
+
+Set `RELAY_LOAD_CONTROLS=1` to check the optional browser relay APIs after the measurement window.
+This writes `relay-controls.json` before the relay failure experiment.
+It times path recovery after clearing disabled relays, clearing them with `addAddr`, and removing then inserting the relay with `addAddr`.
+A null recovery time means no path appeared within the 30-second observation window.
+Every observation checks that the original station connections and event streams remain open.

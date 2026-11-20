@@ -43,6 +43,7 @@ async function acceptsOver(iroh: Iroh, bound: (i: number) => J) {
   const a = await run(iroh.bind({ secretKey: randomBytes(32), relayUrls: [], lookup: false, relayOnly: false }));
   const b = await run(iroh.bind({ secretKey: randomBytes(32), relayUrls: [], lookup: false, relayOnly: false, alpns: [utf8("test/1")] }));
   assert.equal(typeof b.accept, "function");
+  for (const method of ["setDisabledRelays", "insertRelay", "removeRelay"] as const) assert.equal(b[method], undefined);
   a.addAddr({ id: b.id(), ips: loopback(bound(1)) });
   const coming = run(b.accept!());
   const out = await run(a.connect({ id: b.id() }, utf8("test/1"), []));
@@ -99,4 +100,25 @@ test("a binding without accept gives an endpoint without it", async () => {
   const endpoint = await run(wrapIroh(none, (b) => b).bind({ secretKey: new Uint8Array(32), relayUrls: [], lookup: false, relayOnly: false }));
   assert.equal(endpoint.accept, undefined);
   assert.equal("accept" in endpoint, false);
+  for (const method of ["setDisabledRelays", "insertRelay", "removeRelay"] as const) assert.equal(method in endpoint, false);
+});
+
+test("browser relay controls preserve arguments, completion and failures through the Effect wrapper", async () => {
+  const calls: unknown[] = [];
+  let release!: () => void;
+  const ready = new Promise<void>(resolve => { release = resolve; });
+  const bound = {
+    id: () => "00",
+    setDisabledRelays: async (id: string, relays: string[]) => { calls.push([id, relays]); await ready; },
+    insertRelay: async (url: string) => { calls.push(url); },
+    removeRelay: async () => { throw Error("relay removal failed"); },
+  } as unknown as BoundEndpoint;
+  const endpoint = await run(wrapIroh(async () => bound, b => b, { relayControls: true }).bind({ secretKey: new Uint8Array(32), relayUrls: [], lookup: false, relayOnly: true }));
+  let completed = false;
+  const pending = run(endpoint.setDisabledRelays!("01".repeat(32), ["https://relay.invalid/"])).then(() => { completed = true; });
+  assert.equal(completed, false);
+  release();await pending;
+  await run(endpoint.insertRelay!("https://relay.invalid/"));
+  await assert.rejects(run(endpoint.removeRelay!("https://relay.invalid/")), /relay removal failed/);
+  assert.deepEqual(calls, [["01".repeat(32), ["https://relay.invalid/"]], "https://relay.invalid/"]);
 });

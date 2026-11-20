@@ -21,6 +21,7 @@ import { writeLine } from "../../../station/src/mesh/wire.ts";
 import { LeafAttachments } from "../../../station/src/mesh/leaf.ts";
 import { workspaceScope } from "../../../station/src/mesh/enrollment-door.ts";
 import { RelayCapture } from "./relay-load-cdp.ts";
+import { relayControls } from "./relay-load-controls.ts";
 
 const root = resolve(import.meta.dirname, "../../..");
 const { chromium } = createRequire(new URL("../../../package.json", import.meta.url))("playwright-core");
@@ -56,7 +57,7 @@ async function port(): Promise<number> {
 
 test("relay load in a real core worker", { timeout: options.durationMs + 180_000 }, async t => {
   await mkdir(output, { recursive: true });
-  const scriptHashes = Object.fromEntries(await Promise.all(["relay-load-browser.ts", "relay-load-worker.ts", "relay-load-cdp.ts"].map(async name => [name, createHash("sha256").update(await readFile(join(import.meta.dirname, name))).digest("hex")])));
+  const scriptHashes = Object.fromEntries(await Promise.all(["relay-load-browser.ts", "relay-load-worker.ts", "relay-load-cdp.ts", "relay-load-controls.ts"].map(async name => [name, createHash("sha256").update(await readFile(join(import.meta.dirname, name))).digest("hex")])));
   const cleanups: (() => unknown | Promise<unknown>)[] = [];
   t.after(async () => { for (const cleanup of cleanups.reverse()) await cleanup(); });
   const temp = await mkdtemp(join(tmpdir(), "relay-load-"));
@@ -233,7 +234,8 @@ test("relay load in a real core worker", { timeout: options.durationMs + 180_000
   // Finish observing short sockets created in the last ten seconds of the window.
   await pause(10_000);
   const measured = capture.summarize(start, end, after.identities);
-  const selected = after.links[0].paths.find((path: any) => path.selected && path.relay);
+  const controls = process.env.RELAY_LOAD_CONTROLS === "1" ? await relayControls(rpc, capture, device.id, urls, entries, targets, output) : undefined;
+  const selected = (await rpc("snapshot")).links[0].paths.find((path: any) => path.selected && path.relay);
   assert.ok(selected, "the first station has a selected relay path");
   const cut = relays.find(relay => [relay.url, relay.entry].some(url => url && new URL(url).host === new URL(selected.relay).host));
   assert.ok(cut, `selected relay is a local fixture: ${JSON.stringify(selected)}`);
@@ -247,7 +249,7 @@ test("relay load in a real core worker", { timeout: options.durationMs + 180_000
   await until(async () => (await rpc("snapshot")).counts.eventChunks > chunksBefore, "existing stream delivers after relay removal");
   const final = await rpc("snapshot");
   const result = { transport: "ws/local-loopback", sourceRevision: process.env.RELAY_LOAD_REVISION ?? "unspecified", options,
-    browser: browser.version(), visibilityControl: "native-window/no-focus-emulation", actualVisibility, scriptHashes, urls, entries, targets, before, after,
+    browser: browser.version(), visibilityControl: "native-window/no-focus-emulation", actualVisibility, scriptHashes, urls, entries, targets, before, after, controls,
     measurement: measured, recovery: { relay: cut.url, milliseconds: recoveryMs, ...recovered,
       eventStreamsReopened: serverCounts.eventOpens - opensBefore, allOriginalConnectionsOpen: final.links.every((link: any) => link.originalClosed === null && link.sameConnection) }, serverCounts };
   await writeFile(join(output, "result.json"), JSON.stringify(result, null, 2) + "\n");

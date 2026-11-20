@@ -56,7 +56,7 @@ async function invoke(method: string, args: any): Promise<unknown> {
       const attach = endpoint.meshUseLeaf!.bind(endpoint);
       endpoint.meshUseLeaf = async value => { await attach(value); counts.attached++; };
       return endpoint;
-    }, bytes => bytes);
+    }, bytes => bytes, { relayControls: true });
     const leaf = new LeafLinks();
     mesh = await runner.run(Mesh.make({ host, runner, tracer: new Tracer(host, runner, 0), iroh,
       wakes: new Wakes(), alpn, says: { protocol: 2 }, relayOnly: true, lookup: false,
