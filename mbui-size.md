@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [2051eb306](https://github.com/AFK-surf/monoid/commit/2051eb306ffd45d7741ff9c52dafc1720240213c) fix(mbui): keep near seeks within a second of the  | 2.78 | 3.75 | 15.28 | 37.35 | 57.86 | 32.73 | 66.74 | 98.24 | 124.79 |
 | [f00bc6da4](https://github.com/AFK-surf/monoid/commit/f00bc6da4a5d39ce05f875db5181d95e2b9b6a38) chore(mbui): delete dead sfbase and sfpages Ctx vi | 2.78 | 3.75 | 15.28 | 37.34 | 57.86 | 32.73 | 66.74 | 98.16 | 133.91 |
 | [4c3ca1b67](https://github.com/AFK-surf/monoid/commit/4c3ca1b673569c07ac58c1ee7c1e8b6f05dd43f7) perf(mbui): split View::window_w/h signals and mak | 2.78 | 3.75 | 15.28 | 37.34 | 57.86 | 32.73 | 66.74 | 98.26 | 121.96 |
 | [7e5d6b10e](https://github.com/AFK-surf/monoid/commit/7e5d6b10e2e97b0971b447e16432f83ab975a3bb) chore(mbui): delete dead settings Ctx views and cl | 2.78 | 3.75 | 15.28 | 37.35 | 57.85 | 32.73 | 66.74 | 98.27 | 131.13 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [b254297ee](https://github.com/AFK-surf/monoid/commit/b254297eec986c271ce504c0b024baea014545f2) feat(station): Farview Stage 11A release, farview. | 2.75 | 3.71 | 15.09 | 37.17 | 57.27 | 32.58 | 66.33 | 98.44 | 121.64 |
 | [e253c7ef7](https://github.com/AFK-surf/monoid/commit/e253c7ef7307cbcf4767ee53385ab6bdbef9f105) fix(mbui): title the web app's tab with the page's | 2.75 | 3.71 | 15.09 | 37.17 | 57.27 | 32.58 | 66.33 | 98.44 | 121.64 |
 | [e5bdea018](https://github.com/AFK-surf/monoid/commit/e5bdea01886282646562dd77f3ddd9541a173f57) fix(station): keep connect files whole and route o | 2.75 | 3.71 | 15.09 | 37.17 | 57.27 | 32.58 | 66.33 | 98.44 | 121.64 |
-| [1b662c64f](https://github.com/AFK-surf/monoid/commit/1b662c64f2cddd9f80850033cc8e95980d1f6a19) fix(station/mb): send a hand-over's requests throu | 2.74 | 3.71 | 15.07 | 37.14 | 57.19 | 32.56 | 66.28 | 98.39 | 137.8 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [2051eb306](https://github.com/AFK-surf/monoid/commit/2051eb306ffd45d7741ff9c52dafc1720240213c) fix(mbui): keep near seeks within a second of the  | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.6 | 54.07 |
 | [f00bc6da4](https://github.com/AFK-surf/monoid/commit/f00bc6da4a5d39ce05f875db5181d95e2b9b6a38) chore(mbui): delete dead sfbase and sfpages Ctx vi | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.6 | 54.02 |
 | [4c3ca1b67](https://github.com/AFK-surf/monoid/commit/4c3ca1b673569c07ac58c1ee7c1e8b6f05dd43f7) perf(mbui): split View::window_w/h signals and mak | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.6 | 54.02 |
 | [7e5d6b10e](https://github.com/AFK-surf/monoid/commit/7e5d6b10e2e97b0971b447e16432f83ab975a3bb) chore(mbui): delete dead settings Ctx views and cl | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.6 | 54.02 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [b254297ee](https://github.com/AFK-surf/monoid/commit/b254297eec986c271ce504c0b024baea014545f2) feat(station): Farview Stage 11A release, farview. | 0.46 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 53.81 |
 | [e253c7ef7](https://github.com/AFK-surf/monoid/commit/e253c7ef7307cbcf4767ee53385ab6bdbef9f105) fix(mbui): title the web app's tab with the page's | 0.46 | 0.61 | 2.35 | 3.4 | 5.59 | 1.7 | 4.6 | 53.92 |
 | [e5bdea018](https://github.com/AFK-surf/monoid/commit/e5bdea01886282646562dd77f3ddd9541a173f57) fix(station): keep connect files whole and route o | 0.46 | 0.61 | 2.35 | 3.4 | 5.59 | 1.7 | 4.6 | 54.2 |
-| [1b662c64f](https://github.com/AFK-surf/monoid/commit/1b662c64f2cddd9f80850033cc8e95980d1f6a19) fix(station/mb): send a hand-over's requests throu | 0.46 | 0.61 | 2.35 | 3.4 | 5.59 | 1.7 | 4.6 | 54.2 |
