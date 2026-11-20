@@ -276,6 +276,17 @@ export function fold(entries: Entry[], now: number | null): LockState {
 /// The device a connection is, by the base key's proof for its endpoint or (an older client) the endpoint itself, and
 /// that device's member's role in the lock. Throws why it may not connect.
 export function admit(s: LockState, who: { sub: string; endpoint: string; base?: string; proof?: string }, now: number): { device: Device; role: Role } {
+  // A vault's lock made of its members' own locks (cloud/vault-lock.ts: no chain, no rules' state): only a person's own
+  // app device, proving its key for this workspace.
+  if (s.genesis === "") {
+    let d: Device | undefined;
+    if (who.base !== undefined) {
+      if (who.proof === undefined || !endpointProof(s.ws, who.base, who.endpoint, who.proof)) throw new LockRefusal("invalid lock device proof");
+      d = s.devices.get(who.base);
+    } else d = s.devices.get(who.endpoint);
+    if (d === undefined || d.kind !== "app" || d.sub !== who.sub) throw new LockRefusal("this device is not on your personal lock");
+    return { device: d, role: s.members.get(who.sub)?.role ?? "member" };
+  }
   const out = rules.admit_one_js(rulesOf(s), who, now, crypto);
   if ("refusal" in out) throw new LockRefusal(out.refusal);
   return { device: s.devices.get(out.device)!, role: out.role };

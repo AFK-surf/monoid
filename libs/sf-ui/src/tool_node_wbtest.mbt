@@ -633,7 +633,7 @@ fn tip_drawn_turns(which : String) -> Array[String] raise {
   t.run_for(tip_delay_ms + 400.0)
   out.push(look("whole"))
   t.move_to(380.0, 190.0)
-  t.run_for(@kit.pop_out_ms / 2.0)
+  t.run_for(@motion.pop_out_ms / 2.0)
   out.push(look("half way gone"))
   t.move_to(cx, cy)
   t.run_for(a_moment_ms)
@@ -641,18 +641,22 @@ fn tip_drawn_turns(which : String) -> Array[String] raise {
   t.run_for(tip_settled_ms)
   out.push(look("whole again"))
   t.move_to(380.0, 190.0)
-  t.run_for(@kit.pop_out_ms * 0.75)
+  t.run_for(@motion.pop_out_ms * 0.75)
   out.push(look("most of the way gone"))
   out
 }
 
 ///|
-test "a tip going as kit's goes, drawn smaller as it fades about its edge toward its tool (pop_out), whole as it comes back from wherever it was turned: where and how big it is drawn at each turn, as the old one's" {
+test "a tip going fades out symmetrically without shrinking, matching its resting box across turns" {
   let old = tip_drawn_turns("old")
   let new = tip_drawn_turns("new")
-  assert_eq(new, old, msg="new \{Repr(new)} old \{Repr(old)}")
-  // (going, smaller than whole: the scale itself, not only the fade)
-  assert_true(new[1] != new[0], msg="half way gone as big as whole: \{Repr(new)}")
+  assert_eq(new[0], old[0], msg="whole resting box matches: new \{Repr(new)} old \{Repr(old)}")
+  // (pure fade exit: position and size stay identical throughout fade-out and turn-back)
+  for i in 1..<new.length() {
+    let want = new[0].split(":").collect()[1]
+    let got = new[i].split(":").collect()[1]
+    assert_eq(got, want, msg="turn \{i} changed size/position: \{Repr(new)}")
+  }
 }
 
 ///|
@@ -684,11 +688,11 @@ fn finger_held_tip(wait : Double, then_press : Bool) -> (Bool, Bool, Bool, Int) 
 
 ///|
 test "a tool as a node's tip held open by a finger, as kit's tooltip: shown once held long_press_ms, the press then no tap; on a while after it is let go, gone tooltip_lifted_ms after, or at the next press wherever it lands" {
-  let (held, lifted, later, pressed) = finger_held_tip(@kit.tooltip_lifted_ms / 2.0, false)
+  let (held, lifted, later, pressed) = finger_held_tip(@headless.tooltip_lifted_ms / 2.0, false)
   assert_eq((held, lifted, later, pressed), (true, true, true, 0), msg="held, let go, half its while after: still: \{Repr((held, lifted, later, pressed))}")
-  let (_, _, gone, _) = finger_held_tip(@kit.tooltip_lifted_ms + @kit.pop_out_ms * 2.0, false)
+  let (_, _, gone, _) = finger_held_tip(@headless.tooltip_lifted_ms + @motion.pop_out_ms * 2.0, false)
   assert_true(!gone, msg="its while over: gone")
-  let (_, _, pressed_off, _) = finger_held_tip(@kit.pop_out_ms * 2.0, true)
+  let (_, _, pressed_off, _) = finger_held_tip(@motion.pop_out_ms * 2.0, true)
   assert_true(!pressed_off, msg="the next press, elsewhere: gone")
 }
 
@@ -743,10 +747,10 @@ fn held_then(then : (@ui.Tester, @signals.Signal[ToolSaid], Double, Double) -> U
   t.run_for(@ui.long_press_ms + 50.0)
   let held = shown()
   then(t, said, cx, cy)
-  t.run_for(@kit.pop_out_ms * 2.0)
+  t.run_for(@motion.pop_out_ms * 2.0)
   let gone = !shown()
   after(t, said)
-  t.run_for(@kit.pop_out_ms * 2.0)
+  t.run_for(@motion.pop_out_ms * 2.0)
   (held, gone, !shown())
 }
 

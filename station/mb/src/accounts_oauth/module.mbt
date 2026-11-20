@@ -106,33 +106,6 @@ fn ModelCatalog::start(self : ModelCatalog, etag : String?) -> @effect.Deferred[
 }
 
 ///|
-/// `encodeURIComponent`.
-fn uri_component(s : String) -> String {
-  let out = StringBuilder()
-  for b in utf8_of(s) {
-    let c = b.to_int()
-    if is_ascii_alpha(c) ||
-      is_ascii_digit(c) ||
-      c == '-' ||
-      c == '_' ||
-      c == '.' ||
-      c == '!' ||
-      c == '~' ||
-      c == '*' ||
-      c == '\'' ||
-      c == '(' ||
-      c == ')' {
-      out.write_char(c.unsafe_to_char())
-    } else {
-      out.write_char('%')
-      out.write_char(hex_digit(c >> 4))
-      out.write_char(hex_digit(c & 15))
-    }
-  }
-  out.to_string()
-}
-
-///|
 async fn ModelCatalog::ask(self : ModelCatalog, etag : String?) -> Unit {
   guard (self.origin)() is Some(origin) else { return }
   let headers = [("user-agent", "stillfail-station")]
@@ -140,7 +113,7 @@ async fn ModelCatalog::ask(self : ModelCatalog, etag : String?) -> Unit {
     headers.push(("if-none-match", e))
   }
   let v = match etag {
-    Some(e) => "?v=\{uri_component(e)}"
+    Some(e) => "?v=\{@url.encode_uri_component(e)}"
     None => ""
   }
   let response = (self.get)({

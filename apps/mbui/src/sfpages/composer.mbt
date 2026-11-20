@@ -407,7 +407,7 @@ pub fn composer(
     composing.had_focus[spec.draft] = true
   }
   let ours = composing.let_go.get(spec.draft).unwrap_or(false)
-  let lost_long = @kit.after(c, "composer/let-go/" + spec.draft, !active_focus && !w.field.parked() && !choosing_cache, let_go_ms)
+  let lost_long = c.held("composer/let-go/" + spec.draft, !active_focus && !w.field.parked() && !choosing_cache && !(c.page_owner() != 0 && !@sfbase.app.nav.takes(c.page_owner())), let_go_ms)
   let held = ours && !active_focus && !lost_long
   // (the box it stayed a moment after the cursor left, let go of now: a change of its own, at this moment, whatever
   // words sent from it are doing meanwhile)
@@ -464,6 +464,10 @@ pub fn composer(
   if !spec.locked {
     // (its words' field given the focus: the field itself, as a press finds no editor built then)
     c.on_press(cap, fn() { c.focus_field(w.field) })
+    match c.right_clicked_own(cap) {
+      Some((mx, my)) => w.field.open_menu(mx, my)
+      None => ()
+    }
   }
   // words dragged in from another app and let go on it beside its field (its ＋, send, its edge: on the field they go
   // where they were let go): into its field at its caret, as a paste's
@@ -947,22 +951,22 @@ fn composer_text(
     composing.hint_shown.set(wanted)
   }
   // (told as what it is to say changes, and once more as the one it says has faded out; where it is on its way is
-  // read only as it is painted, Ctx::placeholder_by: the chat's old view is not built again at each frame of the fade)
+  // read only as it is painted, Ctx::placeholder_by: the chat's old view is not built again at each frame of the fade; set off untracked as @motion.told)
   let said_fade = @motion.tween(@sf.hint_back_ms, ease=Out)
   let shows_wanted = wanted == composing.hint_shown.get()
-  let said_in = @motion.anim(c, "composer/said/" + spec.draft, if shows_wanted { 1.0 } else { 0.0 })
+  let said_in = @signals.untracked(fn() { @motion.anim(c, "composer/said/" + spec.draft, if shows_wanted { 1.0 } else { 0.0 }) })
   if shows_wanted {
     if said_in.target() != 1.0 {
-      said_in.animate(c, 1.0, said_fade)
+      @signals.untracked(fn() { said_in.animate(c, 1.0, said_fade) })
     }
   } else {
     if said_in.target() != 0.0 {
-      said_in.animate(c, 0.0, @motion.tween(@sf.hint_back_ms, ease=Leave))
+      @signals.untracked(fn() { said_in.animate(c, 0.0, @motion.tween(@sf.hint_back_ms, ease=Leave)) })
     }
     // (faded out: the other said in its place, coming in from there)
     if said_in.over(c) {
       composing.hint_shown.set(wanted)
-      said_in.animate(c, 1.0, said_fade)
+      @signals.untracked(fn() { said_in.animate(c, 1.0, said_fade) })
     }
   }
   let said = composing.hint_shown.get()
@@ -1115,7 +1119,7 @@ fn warm(c : @ui.Ctx, src : Source, spec : ComposerSpec) -> Unit {
     return
   }
   let n = composing.warmed.get(spec.session).unwrap_or(0)
-  if n > 0 && !@kit.after(c, "composer/warm/" + spec.session + "/\{n}", true, warm_every_ms, later=true) {
+  if n > 0 && !c.held("composer/warm/" + spec.session + "/\{n}", true, warm_every_ms, later=true) {
     return
   }
   composing.warmed[spec.session] = n + 1
@@ -1971,7 +1975,8 @@ fn composer_place_at(pane : Double, line : Double) -> ComposerPlace {
   let (l, r, b) = @sf.foot_capsule(h, d, d)
   {
     capsule_in: (l - d, r - d, b - d),
-    capsule_pad: (h - @sf.theme().round.side) / 2.0 - capsule_extra_at(line),
+    // (never under nothing: a padding below 0 stops the app, @ui.Space's Exact)
+    capsule_pad: dmax(0.0, (h - @sf.theme().round.side) / 2.0 - capsule_extra_at(line)),
     corner: @sf.pane_composer_corner(),
   }
 }
@@ -2447,10 +2452,9 @@ fn flying_quotes(c : @ui.Ctx, src : Source, w : Writing, station : String) -> Ar
 ///|
 /// Where what composer `w` holds stands as it is sent (SentFrom: sent_local's `from`), for its row on a chat's page made
 /// as nodes to fly from, None with motion reduced: its words where they stand in the field now (the field an old
-/// view's, so where they stand is told its row), each quote's card where it is laid out in the composer
-/// (message_quotes_node's: where it stands at rest, over the field's words, even while it still comes in, as it does a
-/// moment after it is quoted), each file from its tile and each quote's own picture from its square in its card, as
-/// the old flight takes them (flying_files, flying_quotes' quote_picture_key).
+/// view's, so where they stand is told its row) and the room of the field they are seen within, each file from its
+/// tile and each quote's own picture from its square in its card, as the old flight takes them (flying_files,
+/// flying_quotes' quote_picture_key).
 fn sent_from_composer(c : @ui.Ctx, src : Source, w : Writing, station : String) -> @sfbase.SentFrom? {
   if @ui.reduced_motion() {
     return None
@@ -2463,7 +2467,8 @@ fn sent_from_composer(c : @ui.Ctx, src : Source, w : Writing, station : String) 
   }
   Some({
     words: w.field.words_at().map(fn(at) { at.0 }),
-    quotes: w.quotes.get().map(fn(q) { @motion.measured_rect(c, quote_card_key(text(Some(q), "id"))) }),
+    words_room: w.field.words_at().map(fn(at) { at.1 }),
+    quote_ids: [],
     parts,
     delay: 0.0,
   })
@@ -2553,7 +2558,8 @@ fn sent_into_chat(src : Source, r : ChatRef, v : ChatView, w : Writing, rk : Str
     }
     send_taken(src, r.station, to, taken.unwrap(), fn(said) {
       match said {
-        SentTaken => ()
+        // (gone for good: what it took of the draft, its files' bytes, let go of)
+        SentTaken => @sfbase.writing_committed(w)
         SentRefused(e) | SentKept(e) => {
           sent_local_gone(rk, row)
           @ui.haptic(Reject)
@@ -2561,6 +2567,8 @@ fn sent_into_chat(src : Source, r : ChatRef, v : ChatView, w : Writing, rk : Str
           if said is SentRefused(_) {
             writing_restore(src, w, why, unless_written=true)
           } else {
+            // (in the outbox, which sends it: never put back, its files' bytes let go of as one taken)
+            @sfbase.writing_committed(w)
             toast_later(why)
           }
         }
@@ -3066,6 +3074,37 @@ fn chat_notices(c : @ui.Ctx, src : Source, r : ChatRef, v : ChatView, width : Do
 }
 
 ///|
+/// Which notices over draft `draft`'s composer are active or still leaving in its foot (chat_notices / notices_gone):
+/// included in the legacy list's Foot version so a notice arriving or leaving while the chat is open eases the list's
+/// foot smoothly instead of snapping the messages in one frame.
+fn composer_notices_sign(c : @ui.Ctx, src : Source, r : ChatRef, v : ChatView, draft : String) -> String {
+  let prefix = "composer/notice/" + draft + "/"
+  let parts : Array[String] = []
+  let showing = fn(mark : String, active : Bool) -> Bool {
+    if active {
+      return true
+    }
+    let key = prefix + mark
+    composing.notices_said.contains(key) &&
+    @motion.presence(c, key, false, initial=composing.notices_new, enter=@sf.waiting_in, exit=@sf.leave) is Some(_)
+  }
+  if showing("archive", v.archived) {
+    parts.push("archive")
+  }
+  if showing("wait", v.cache_cold is Some(_) && !v.archived) {
+    parts.push("wait")
+  }
+  if showing("unplug", v.offline) {
+    parts.push("unplug")
+  }
+  let replied = feedback_reports(src, r).iter().any(fn(f) { !report_dismissed(f) })
+  if showing("feedback", replied) {
+    parts.push("feedback")
+  }
+  if parts.is_empty() { "" } else { "+n:" + parts.join(",") }
+}
+
+///|
 /// The notices over chat `chat`'s composer no longer said (`now`: whether each of archive, wait, unplug, feedback is),
 /// drawn as they were while they leave (composer_notice).
 fn notices_gone(c : @ui.Ctx, width : Double, chat : String, now : Array[Bool]) -> Unit {
@@ -3415,7 +3454,7 @@ pub fn composer_foot_in(c : @ui.Ctx, pane : Double) -> Double {
     None if way.id == "" => to
     None => {
       let a = @motion.Anim::new(composer_foot_at(pane))
-      a.follow(c, to, @sf.move_spring)
+      a.follow(c, to, @motion.move_damped)
       composer_foot_way.val = Some((a, way.id, way.ends))
       a.get(c)
     }
@@ -3426,13 +3465,13 @@ pub fn composer_foot_in(c : @ui.Ctx, pane : Double) -> Double {
     // (the way there: on from the moment it is, whichever frame sees it)
     Some((a, last, ends)) if way.id == "" && last != "" => {
       if to != a.target() {
-        a.animate(c, to, @sf.move_spring, start_at=dmin(ends, c.moment()))
+        a.animate(c, to, @motion.move_damped, start_at=dmin(ends, c.moment()))
       }
       composer_foot_way.val = Some((a, "", 0.0))
       a.get(c)
     }
     Some((a, _, _)) => {
-      a.follow(c, to, @sf.move_spring)
+      a.follow(c, to, @motion.move_damped)
       composer_foot_way.val = Some((a, way.id, way.ends))
       a.get(c)
     }

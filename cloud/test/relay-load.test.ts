@@ -47,7 +47,7 @@ test("rates come from what the counters grew by, a restart counting from zero an
   assert.equal(view.open, 2);
   // 6000 + 6000 + 6000 bytes sent over 180 s.
   assert.deepEqual(view.now, { sent: 100, recv: 100, dropped: 30 / 300, rx: null, tx: null });
-  assert.deepEqual(view.today, { bytes: 12_000 + 60_000 + 12_000 + 12_000 + 12_000, frames: 10 + 10 + 10 + 5 + 5 });
+  assert.deepEqual(view.today, { bytes: 6_000 + 60_000 + 6_000 + 6_000 + 6_000, frames: 10 + 10 + 10 + 5 + 5 });
   // The last three steps fall in the five minutes before the hour.
   const last = view.day.sent.length - 1;
   assert.equal(view.day.step, 300);

@@ -77,7 +77,8 @@ fn slider_clamp(x : Double, lo : Double, hi : Double) -> Double {
 }
 
 ///|
-fn slider_snap(x : Double, min : Double, max : Double, step : Double) -> Double {
+/// `x` held between `min` and `max`, on the nearest step from `min` (`step > 0`; else only held).
+pub fn slider_snap(x : Double, min : Double, max : Double, step : Double) -> Double {
   let clamped = slider_clamp(x, min, max)
   if step > 0.0 {
     let k = ((clamped - min) / step).round()

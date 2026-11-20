@@ -32,6 +32,7 @@ fn Admin::all_routes(self : Admin) -> Array[Route] {
     (if self.setup.has("agents.config") { self.agent_env_routes() } else { [] }) +
     self.presets_routes() +
     self.stars_routes() +
+    self.board_routes() +
     (if self.setup.has("agents.config") {
       self.context_routes() + self.diagnostics_routes()
     } else {

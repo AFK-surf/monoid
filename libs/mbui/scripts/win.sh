@@ -39,7 +39,7 @@ sync() {
   cp -p moon.mod $SM/
   # exactly src/: a file gone from it goes from the copy too (then the copy's own files, after)
   cp -rp src/. $SM/src/
-  sed -e 's/"native-stub": *\[[^]]*\]/"native-stub": [ "win_app.c", "win_render.cpp", "win_text.cpp", "win_image.cpp", "win_listen.c", "win_browser_login.c", "win_passwords.c", "win_passkeys.c", "win_views.cpp", "win_stream.cpp", "win_notify.cpp", "win_a11y.cpp" ]/' \
+  sed -e 's/"native-stub": *\[[^]]*\]/"native-stub": [ "win_app.c", "win_render.cpp", "win_text.cpp", "win_image.cpp", "win_listen.c", "win_browser_login.c", "win_passwords.c", "win_passkeys.c", "win_views.cpp", "win_stream.cpp", "win_notify.cpp", "win_a11y.cpp", "film_none.c" ]/' \
       -e 's/-fobjc-arc *//' src/host/moon.pkg > $SM/src/host/moon.pkg
   # every app (demo, photos…) links no Apple frameworks
   for p in src/*/moon.pkg; do
@@ -119,6 +119,7 @@ case "${1:-build}" in
     # moon's build, with the C that moonc generates split and compiled by cl in parallel, moonbit_init at /O1
     # (scripts/mbc: a cl.exe first on PATH, every other command passed to the real one; MBC_SPLIT=0 compiles it
     # whole)
+    win_compiler
     SHIM=$(cygpath -u "$("$D/mbc" shim "$(cygpath -w "$PWD/out/mbc/win")" | tr -d '\r')")
     # cl's and link's outputs reproducible (-Brepro: no time stamps in them; lib's is mbc shim's), so that the same C
     # makes the same objects and mbc's link, finding its inputs as they were, is not run again (an LTCG link is run

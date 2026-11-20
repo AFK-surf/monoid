@@ -17,10 +17,10 @@
 pub let later_ms : Double = 400.0
 
 ///|
-/// Whether `key` has been waited on for later_ms, since the first frame that asked (@kit.after's clock: a frame comes
+/// Whether `key` has been waited on for later_ms, since the first frame that asked (Ctx::held's clock: a frame comes
 /// when it has).
 fn waited_long(c : @ui.Ctx, key : String) -> Bool {
-  @kit.after(c, "sf-wait/" + key, true, later_ms)
+  c.held("sf-wait/" + key, true, later_ms)
 }
 
 ///|
@@ -245,7 +245,7 @@ fn spin_part(k : Double) -> Double {
 /// turning in 0.8s; 14, or 12 in a line of small text. `sweep` (of a turn) and `period` for other rings that turn (a
 /// chat's mark at work: three quarters, 1.2s). Its lines drawn once (mbui's Ctx::lines), turned by the clock as each
 /// frame is drawn (Ctx::cycle_look): nothing built anew for it, nothing to make, nothing to wait for. `stroke` its
-/// line's width (an icon's, where it is drawn as one: @sf.coming_mark).
+/// line's width (an icon's, where it is drawn as one: @sf.coming_mark_node).
 pub fn spinner(
   c : @ui.Ctx,
   size? : Double = 14.0,
@@ -515,7 +515,7 @@ pub fn wait_line_node(parent : @view.View, words : () -> String, loc~ : SourceLo
       .lies_along(Is(Middle))
       |> ignore
       // (the spinner's room while it is not yet there: one in the other's place, at once)
-      g.pick(fn() { long.get() }, fn(s, on) {
+      g.pick(fn() { long.get() }, at_once=true, fn(s, on) {
         if on {
           spinner_node(s, size=12.0) |> ignore
         } else {
@@ -554,8 +554,10 @@ fn wait_words_line() -> Double {
 /// drawn as its bones, View::bones), breathing as waiting's do (breathe's: whole to 0.5 and back in breath_ms, from
 /// moment 0 on); still and whole as what it waits on failed. Over them in red what could not be read (`error`, `note`'s
 /// failing), each in a pill, at once; what it waits on (`note`'s words, where it says any) said only to a screen reader,
-/// while it is read. `fill`: it takes the room left (a page's body). Made inside what is in its bones already: only its
-/// sample, breathing as that does (one breath).
+/// while it is read. `fill`: it takes the room left (a page's body). `fits`: in a row that fits what it holds to its
+/// room (View::fits), its sample laid out as narrow as that leaves it, what it drops to fit dropped (a chooser's model
+/// read in a narrow row), a column again while what failed is said over it. Made inside what is in its bones already:
+/// only its sample, breathing as that does (one breath).
 #callsite(autofill(loc))
 pub fn waiting_node(
   parent : @view.View,
@@ -563,6 +565,7 @@ pub fn waiting_node(
   error? : () -> String = fn() { "" },
   note? : () -> WaitNote = fn() { { reading: true, text: "", failing: [] } },
   fill? : Bool = false,
+  fits? : Bool = false,
   loc~ : SourceLoc,
 ) -> Unit {
   if parent.in_bones() {
@@ -577,6 +580,11 @@ pub fn waiting_node(
   let reading = fn() { error() == "" && note().reading }
   parent.box(made_for=loc, fn(w) {
     w.min_width(Is(Some(0.0))) |> ignore
+    // (`fits`: in a row that fits what it holds to its room (View::fits), its sample as narrow as that leaves it, what
+    // it drops to fit dropped; what failed said over it, a column again, its pills on a line of their own)
+    if fits {
+      w.row(By(fn() { failing().is_empty() })).shrink(Is(1.0)).fits(Is(true)) |> ignore
+    }
     if fill {
       w.grow(Is(1.0)) |> ignore
     }
@@ -597,6 +605,11 @@ pub fn waiting_node(
       p.each(failing, fn(f) { f }, fn(pill, f) { wait_pill_node(pill, fn() { f.get() }) })
     })
     w.box(fn(b) {
+      // (as narrow as `w` comes to, what it holds laid out in that)
+      b.min_width(Is(Some(0.0))) |> ignore
+      if fits {
+        b.row(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))).fits(Is(true)) |> ignore
+      }
       if fill {
         b.grow(Is(1.0)) |> ignore
       }

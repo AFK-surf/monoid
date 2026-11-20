@@ -25,6 +25,7 @@ import { wall } from "../../ops/fibers.ts";
 import type { Deny, Grant } from "../../vault/crypto.ts";
 import { type PlainItem, type PlainStore, plainOk, shown } from "../../vault/plain.ts";
 import type { Secrets } from "../../vault/secrets.ts";
+import type { Viewer } from "../../mesh/credential.ts";
 import type { Route } from "../admin.ts";
 import type { Events } from "../events.ts";
 import { type Answer, type Request, json, param } from "../request.ts";
@@ -32,8 +33,8 @@ import { type Answer, type Request, json, param } from "../request.ts";
 export type VaultRequestsDeps = {
   secrets: Secrets;
   plain: PlainStore;
-  /// The lock pinned in a workspace this station is in; null when none is.
-  lock(workspace: string): LockState | null;
+  /// The lock a workspace's vault goes by (Cloud `vaultLock`); null when there is none. `viewer`: who asks.
+  lock(workspace: string, viewer?: Viewer): LockState | null;
   events?: Events;
 };
 
@@ -62,7 +63,7 @@ function body(r: Request): unknown {
 }
 
 export const routes = ({ secrets, plain, lock, events }: VaultRequestsDeps): Route[] => {
-  const locked = (r: Request) => lock(r.viewer.workspace);
+  const locked = (r: Request) => lock(r.viewer.workspace, r.viewer);
   const NEEDS_LOCK = () => refuse(409, "vault_needs_lock", "the vault needs the workspace's security mode (its lock) pinned on this station");
   /// A decision: taken, or why not.
   const decide = (r: Request, f: (o: any) => string | null): Answer => {
@@ -85,6 +86,8 @@ export const routes = ({ secrets, plain, lock, events }: VaultRequestsDeps): Rou
           current = locked(r);
           if (current === before) break;
           if (current === null) return refuse(409, "lock_changed", "the workspace's security mode changed while the requests were prepared; try again");
+          // (its members' own locks, no security mode: nothing of this device's to admit again, whose vault may not be on)
+          if (current.genesis === "") continue;
           const v = r.viewer;
           try {
             admit(current, { sub: v.sub, endpoint: v.device, base: v.lockDevice?.base, proof: v.lockDevice?.proof }, Math.floor(wall.now() / 1000));
@@ -108,7 +111,7 @@ export const routes = ({ secrets, plain, lock, events }: VaultRequestsDeps): Rou
       pattern: /^\/vault\/denials$/,
       handle: async (r) => {
         const l = locked(r);
-        return l === null ? NEEDS_LOCK() : decide(r, (o) => secrets.deny(l, r.viewer.sub, o as Deny));
+        return l === null ? NEEDS_LOCK() : decide(r, (o) => secrets.deny(l, r.viewer.sub, o as Deny, r.viewer.email));
       },
     },
     {

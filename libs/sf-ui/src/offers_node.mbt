@@ -259,9 +259,14 @@ pub fn offers_node(
     None => around.tree.root()
   }
   layer.box(made_for=loc, fn(o) {
-    // (let go as what holds the field is, out of sight as that leaves)
+    // (let go as what holds the field is, out of sight as that leaves; open/close and live candidate filtering stay
+    // scoped within this overlay node alone, @view.transition)
     o.lives_with(around).over(Is(true)) |> ignore
-    o.show(open, leave=@kit.pop_out_ms, fn(shown) {
+    let shown_open = @signals.signal(@signals.untracked(open), same=fn(a, b) { a == b })
+    let shown_keys = @signals.signal(@signals.untracked(keys), same=fn(a, b) { a == b })
+    o.reacts(open, fn(on) { @view.transition(within=o, fn() { shown_open.set(on) }) }, at_start=false)
+    o.reacts(keys, fn(ks) { @view.transition(within=o, fn() { shown_keys.set(ks) }) }, at_start=false)
+    o.show(fn() { shown_open.get() }, leave=@motion.pop_out_ms, fn(shown) {
       shown.over(Is(true)) |> ignore
       live.val = true
       shown.owns(fn() { live.val = false }) |> ignore
@@ -270,18 +275,18 @@ pub fn offers_node(
       shown.reacts(fn() { shown.leaving() }, fn(going) {
         if going {
           live.val = false
-          way.go_ms(shown, 0.0, @kit.pop_out_ms, ease=Leave)
+          way.go_ms(shown, 0.0, @motion.pop_out_ms, ease=Leave)
         } else {
           live.val = true
-          way.go_ms(shown, 1.0, @kit.pop_ms)
+          way.go_ms(shown, 1.0, @motion.pop_ms)
         }
       })
       let look = fn() {
         let p = way.shown(shown)
         if shown.leaving() {
-          @kit.pop_out.at(p, p)
+          @motion.pop_out.at(p, p)
         } else {
-          @kit.pop_in.at(p, p)
+          @motion.pop_in.at(p, p)
         }
       }
       let panel : Ref[@view.View?] = Ref(None)
@@ -315,7 +320,7 @@ pub fn offers_node(
         .shadow(By(fn() { (2.0, 1.0, @ui.tree_theme().shadow) }))
         .clips(Is(true))
         .alpha(By(fn() { look().alpha }))
-        .scale(By(fn() { look().sx }), about=FromBeside)
+        .scale(By(fn() { look().sx }), about=FromBeside, max_shift=pop_max_shift)
         .carries_until(fn() { way.ends_at() })
         .says(Is(Some(@view.said(Dialog, label~))))
         // (a press on it its own, not outside it: on what of it takes none, nothing)
@@ -324,8 +329,14 @@ pub fn offers_node(
         style_node(p, fn() { offers_box })
         p.box(fn(body) {
           // (all it holds as far in as its look says, past the panel's own glass and shadow: Look's `words`)
-          body.alpha(By(fn() { look().words })).max_height(Is(Some(offers_most - 2.0 * panel_pad))) |> ignore
-          body.scrolls(@view.Scroll::new(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(b) {
+          body
+          .margin(Is((-panel_pad, 0.0, -panel_pad, 0.0)))
+          .alpha(By(fn() { look().words }))
+          .max_height(Is(Some(offers_most - 2.0 * panel_pad)))
+          |> ignore
+          // (a finger scrolling them keeps the keyboard of the field `around` holds: View::scrolls' `for_in`)
+          body.scrolls(@view.Scroll::new(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), for_in=around.id(), fn(b) {
+            b.padding(Is((panel_pad, 0.0, panel_pad, 0.0))) |> ignore
             b.show(fn() { head().0 != "" }, at_once=true, fn(h) {
               style_node(h, fn() { offers_head })
               words_node(h, fn() { head().0 }, fn() { offers_head_words }) |> ignore
@@ -371,7 +382,7 @@ pub fn offers_node(
                 cb.listbox(cv, fn(l) {
                   // (the one chosen, by member: a change tells the two rows it concerns)
                   let on_is = l.selected(now)
-                  l.each(fn() { keys() }, fn(k) { k }, fn(cell, k) {
+                  l.each(fn() { shown_keys.get() }, fn(k) { k }, fn(cell, k) {
                     let key = k.untracked()
                     let on = fn() { on_is(key) }
                     cb.option(cell, fn() { key }, fn() { name(key) }, fn(r, _) {

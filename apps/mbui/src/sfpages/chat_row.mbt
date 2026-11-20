@@ -195,7 +195,7 @@ pub fn chat_row(
     _ => ()
   }
   // held by a finger a while: its time shows
-  let held = finger && !found && @kit.after(c, "row-hold/" + key, pressed && row_held.val.0 == id, hold_ms)
+  let held = finger && !found && c.held("row-hold/" + key, pressed && row_held.val.0 == id, hold_ms)
   let menu_on = row_menu_open(item)
   // pressed and let go: its chat opened then, before the next frame is built (Ctx::on_press: a frame that built the
   // page it left and then the chat, all of it twice, 2026-10-30)
@@ -1287,7 +1287,7 @@ fn swipe_to_archive(
   let id = c.id(key)
   let width = dmax(c.width, 1.0)
   let off = @motion.anim(c, key, 0.0, global=true)
-  let back = fn(v : Double) { off.animate(c, 0.0, @motion.move_spring, velocity=v) }
+  let back = fn(v : Double) { off.animate(c, 0.0, @motion.move_damped, velocity=v) }
   let going = rows.swiped_off.contains(key)
   match c.drag_of(id) {
     // (gone off already: nothing more to swipe)

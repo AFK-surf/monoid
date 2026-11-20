@@ -21,15 +21,16 @@ pub fn Reader::new(w : World, stream : J) -> Reader {
 ///|
 /// More of a stream's bytes, None at its end.
 pub async fn stream_read(w : World, stream : J) -> Bytes? {
-  match w.ask("stream.read", [stream]) {
-    Str(_) as s => Some(unb64(js_text(s)))
-    _ => None
+  let (said, bytes) = w.stream_call(stream, "read") catch { _ => return None }
+  match (said, bytes) {
+    (Object({ "end": True, .. }), _) | (_, None) => None
+    (_, Some(b)) => Some(b)
   }
 }
 
 ///|
 pub async fn stream_write(w : World, stream : J, bytes : BytesView) -> Unit {
-  ignore(w.ask("stream.write", [stream, js(b64(bytes))]))
+  ignore(w.stream_call(stream, "write", bytes=bytes.to_owned()))
 }
 
 ///|

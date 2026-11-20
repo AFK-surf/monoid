@@ -8,7 +8,7 @@ test "a thumbnail gives up on a stalled decoder only after all bytes arrive" {
   )
   let n = pv_first.get("first-frame-test").unwrap().view.unwrap()
   let id = n.id()
-  let wait = @kit.media_decode_wait_ms
+  let wait = @player.media_decode_wait_ms
   let margin = wait / 200.0
   t.draw()
   t.run_for(wait * 1.5)

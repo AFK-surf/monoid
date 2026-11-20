@@ -214,15 +214,7 @@ fn Limits::set(self : Limits, key : String, l : Limit) -> Unit {
 ///|
 /// An array index's canonical text (JavaScript orders those keys first, as numbers).
 fn index_key(k : String) -> Double? {
-  if !all_digits(k) || (k.length() > 1 && k.unsafe_charcode_at(0) == '0') {
-    return None
-  }
-  let d = digits_number(k)
-  if d < 4294967295.0 {
-    Some(d)
-  } else {
-    None
-  }
+  @jsjson.index_key(k)
 }
 
 ///|
@@ -240,12 +232,12 @@ fn Limits::stringify(self : Limits) -> String {
   for k in js_key_order(self.keys) {
     let l = self.values[k]
     pairs.push((
-      @jsjson.units(k),
+      k,
       @jsjson.JValue::Obj([
-        (@jsjson.units("bytes"), Num(l.bytes)),
-        (@jsjson.units("over"), Bool(l.over)),
+        ("bytes", Num(l.bytes)),
+        ("over", Bool(l.over)),
         (
-          @jsjson.units("told"),
+          "told",
           match l.told {
             Some(t) => Num(t)
             None => Null
@@ -342,7 +334,7 @@ fn WorkspaceWatch::of(self : WorkspaceWatch, session : String) -> Limits {
           let last : Map[String, @jsjson.JValue] = Map([])
           for p in pairs {
             let (ku, v) = p
-            let k = @jsjson.text(ku)
+            let k = @jsjson.sanitize_str(ku)
             if !last.contains(k) {
               order.push(k)
             }
@@ -353,7 +345,7 @@ fn WorkspaceWatch::of(self : WorkspaceWatch, session : String) -> Limits {
             let get = (name : String) => {
               let mut found : @jsjson.JValue? = None
               for f in fields {
-                if @jsjson.text(f.0) == name {
+                if @jsjson.sanitize_str(f.0) == name {
                   found = Some(f.1)
                 }
               }

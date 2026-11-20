@@ -152,14 +152,7 @@ pub fn mark_icon(raw : Json?) -> String? {
   if s.length() > 300 {
     return None
   }
-  guard parse_url(s) is Some(u) else { return None }
-  if u.scheme != "https" ||
-    u.username != "" ||
-    u.password != "" ||
-    u.search() != "" ||
-    u.hash() != "" {
-    return None
-  }
+  guard clean_http_url(s, false) is Some(u) else { return None }
   if icon_path(u.path) {
     Some(u.href())
   } else {
@@ -215,21 +208,13 @@ pub fn StationMarks::new(
   store : Kept,
   now : () -> Int64,
 ) -> StationMarks {
-  let s : StationMarks = { cloud, store, now, kept: Map([]), told: Told::new() }
-  match (store.read)() {
-    Some(text) =>
-      match (try Some(@json.parse(text)) catch { _ => None }) {
-        Some(Object(m)) =>
-          for station, raw in m {
-            if mark_of(Some(raw)) is Some(r) && hex64(station) {
-              s.kept[station] = r
-            }
-          }
-        _ => ()
-      }
-    None => ()
+  {
+    cloud,
+    store,
+    now,
+    kept: load_kept(store, (station, raw) => if hex64(station) { mark_of(Some(raw)) } else { None }),
+    told: Told::new(),
   }
-  s
 }
 
 ///|
@@ -340,8 +325,7 @@ pub fn StationMarks::change(
       "icon: glyph:<name>[:<colour>], a picture's address in still.fail cloud (/v1/icons/…), or empty for none",
     )
   }
-  let now = (self.now)()
-  let at = if now > base.at + 1L { now } else { base.at + 1L }
+  let at = next_at(self.now, base.at)
   let record = { name, emoji, icon, at }
   self.keep(me, record)
   record
@@ -350,11 +334,7 @@ pub fn StationMarks::change(
 ///|
 fn StationMarks::keep(self : StationMarks, station : String, record : MarkRecord) -> Unit {
   self.kept[station] = record
-  let m : Map[String, Json] = Map([])
-  for k, r in self.kept {
-    m[k] = r.to_json()
-  }
-  (self.store.write)(Json::object(m).stringify(indent=2))
+  save_kept(self.store, self.kept, r => r.to_json())
   self.told.tell(station)
 }
 
@@ -466,88 +446,17 @@ pub fn follow_marks(
   timers : After,
   log? : (String) -> Unit = _ => (),
 ) -> () -> Unit {
-  let cloud = marks.cloud
-  let level_at : Map[String, String] = Map([])
-  let going : Map[String, Bool] = Map([])
-  let retries : Map[String, Retry] = Map([])
-  let stopped = Ref(false)
-  letrec bring = fn(peer : String, ws : String, home : Bool) -> Unit {
-    let key = "\{ws}|\{peer}"
-    let at = word_of(marks, ws)
-    let retry = retries.get(key)
-    if level_at.get(key) == Some(at) ||
-      going.contains(key) ||
-      (retry is Some(r) && !r.due) {
-      return
-    }
-    going[key] = true
-    level_marks(marks, call, peer, ws, home, r => {
-      match r {
-        Ok(_) => {
-          level_at[key] = word_of(marks, ws)
-          retries.remove(key)
-        }
-        Err(e) =>
-          if from_before(e, "marks") {
-            level_at[key] = at
-            retries.remove(key)
-          } else {
-            log(
-              "a station's marks were not brought level: peer=\{js_slice(peer, 12)} workspace=\{ws} error=\{e}",
-            )
-            if !stopped.val {
-              let wait = match retry {
-                None => retry_ms
-                Some(r) =>
-                  if r.wait * 2 < retry_most_ms {
-                    r.wait * 2
-                  } else {
-                    retry_most_ms
-                  }
-              }
-              let next = { wait, due: false, cancel: fn() {  } }
-              // timer: a retry after a failure, with a backoff
-              next.cancel = (timers.after)(wait, fn() {
-                next.due = true
-                look()
-              })
-              retries[key] = next
-            }
-          }
-      }
-      going.remove(key)
-      if !stopped.val {
-        look()
-      }
-    })
-  }
-  and look = fn() -> Unit {
-    guard (cloud.station)() is Some(me) else { return }
-    // (a station that only runs tasks asks nothing of the others: it keeps none)
-    if stopped.val || !(cloud.peers_current)() || (cloud.is_rig)() {
-      return
-    }
-    for m in (cloud.memberships)() {
-      for p in m.peers {
-        match peer_id(p) {
-          Some(id) if id != me => bring(id, m.workspace, m.home)
-          _ => ()
-        }
-      }
-    }
-  }
-  look()
-  let unlisten_cloud = (cloud.listen)(look)
-  let unlisten_marks = marks.listen(_ => look())
-  fn() {
-    stopped.val = true
-    unlisten_cloud()
-    unlisten_marks()
-    for _, r in retries {
-      (r.cancel)()
-    }
-    retries.clear()
-  }
+  follow_peers(
+    marks.cloud,
+    timers,
+    "marks",
+    true,
+    false,
+    ws => word_of(marks, ws),
+    (peer, ws, home, done) => level_marks(marks, call, peer, ws, home, done),
+    f => marks.listen(_ => f()),
+    log,
+  )
 }
 
 ///|

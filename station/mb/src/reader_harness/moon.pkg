@@ -1,0 +1,22 @@
+import {
+  "moonbitlang/core/buffer",
+  "moonbitlang/core/json",
+  "moonbitlang/core/string",
+  "mbui/effect",
+  "base/codec",
+  "base/flate",
+  "base/hash",
+  "base/net",
+  "base/time",
+  "base/url",
+  "base/wire" @base_wire,
+  "station/host",
+  "station/sql",
+  "station/wire",
+  "station/jsjson",
+  "station/nodepath",
+  "station/cloud_net",
+  "station/station_main",
+}
+
+pkgtype(kind: "executable")

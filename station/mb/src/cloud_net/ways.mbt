@@ -68,15 +68,10 @@ fn WaysRecord::word(self : WaysRecord) -> String {
 ///|
 /// A relay's URL as compared: its normal form without a trailing slash.
 pub fn same_url(url : String) -> String {
-  let h = match parse_url(url) {
+  strip_slashes(match parse_url(url) {
     Some(u) => u.href()
     None => url
-  }
-  let mut end = h.length()
-  while end > 0 && h.code_unit_at(end - 1) == '/'.to_int().to_uint16() {
-    end -= 1
-  }
-  h.unsafe_substring(start=0, end~)
+  })
 }
 
 ///|
@@ -91,12 +86,8 @@ fn among(urls : Array[String], url : String) -> Bool {
 }
 
 ///|
-/// A relay's URL as one is kept: https (http too where `insecure`, a local setup), no account, query or fragment, no
-/// trailing slash; None when it is none.
-pub fn relay_url(raw : Json, insecure? : Bool = false) -> String? {
-  guard raw is String(s) else { return None }
-  let t = js_trim(s)
-  guard parse_url(t) is Some(u) else { return None }
+fn clean_http_url(s : String, insecure : Bool) -> Url? {
+  guard parse_url(s) is Some(u) else { return None }
   if !(u.scheme == "https" || (insecure && u.scheme == "http")) ||
     u.username != "" ||
     u.password != "" ||
@@ -104,7 +95,15 @@ pub fn relay_url(raw : Json, insecure? : Bool = false) -> String? {
     u.hash() != "" {
     return None
   }
-  Some(strip_slashes(u.href()))
+  Some(u)
+}
+
+///|
+/// A relay's URL as one is kept: https (http too where `insecure`, a local setup), no account, query or fragment, no
+/// trailing slash; None when it is none.
+pub fn relay_url(raw : Json, insecure? : Bool = false) -> String? {
+  guard raw is String(s) else { return None }
+  clean_http_url(js_trim(s), insecure).map(u => strip_slashes(u.href()))
 }
 
 ///|
@@ -183,23 +182,43 @@ pub struct Ways {
 }
 
 ///|
-/// The ways this station keeps, read from `store`; `now` is the wall's clock (ms) a change is made at.
-pub fn Ways::new(cloud : CloudView, store : Kept, now : () -> Int64) -> Ways {
-  let w : Ways = { cloud, store, now, kept: Map([]), told: Told::new() }
+fn[T] load_kept(store : Kept, decode : (String, Json) -> T?) -> Map[String, T] {
+  let kept : Map[String, T] = Map([])
   match (store.read)() {
     Some(text) =>
       match (try Some(@json.parse(text)) catch { _ => None }) {
         Some(Object(m)) =>
-          for ws, raw in m {
-            if record_of(Some(raw)) is Some(r) {
-              w.kept[ws] = r
+          for k, raw in m {
+            if decode(k, raw) is Some(r) {
+              kept[k] = r
             }
           }
         _ => ()
       }
     None => ()
   }
-  w
+  kept
+}
+
+///|
+fn[T] save_kept(store : Kept, kept : Map[String, T], encode : (T) -> Json) -> Unit {
+  let m : Map[String, Json] = Map([])
+  for k, r in kept {
+    m[k] = encode(r)
+  }
+  (store.write)(Json::object(m).stringify(indent=2))
+}
+
+///|
+fn next_at(now : () -> Int64, prev : Int64) -> Int64 {
+  let n = now()
+  if n > prev + 1L { n } else { prev + 1L }
+}
+
+///|
+/// The ways this station keeps, read from `store`; `now` is the wall's clock (ms) a change is made at.
+pub fn Ways::new(cloud : CloudView, store : Kept, now : () -> Int64) -> Ways {
+  { cloud, store, now, kept: load_kept(store, (_, raw) => record_of(Some(raw))), told: Told::new() }
 }
 
 ///|
@@ -272,8 +291,7 @@ pub fn Ways::change(
   let was = self.view(ws)
   let (relays, off) = change(was.relays, was.off)
   let station = (self.cloud.station)().unwrap_or("")
-  let now = (self.now)()
-  let at = if now > was.at + 1L { now } else { was.at + 1L }
+  let at = next_at(self.now, was.at)
   let record = { relays, off, at, station }
   self.keep(ws, record)
   record
@@ -282,11 +300,7 @@ pub fn Ways::change(
 ///|
 fn Ways::keep(self : Ways, ws : String, record : WaysRecord) -> Unit {
   self.kept[ws] = record
-  let m : Map[String, Json] = Map([])
-  for k, r in self.kept {
-    m[k] = r.to_json()
-  }
-  (self.store.write)(Json::object(m).stringify(indent=2))
+  save_kept(self.store, self.kept, r => r.to_json())
   self.told.tell(ws)
 }
 
@@ -654,23 +668,21 @@ priv struct Retry {
 }
 
 ///|
-/// Whenever a workspace's ways change here, or a roster comes, each of its stations is brought level with this one; one
-/// that could not be is tried again, sooner at first, until it is. What it returns stops it.
-pub fn follow_ways(
-  ways : Ways,
-  call : PeerCall,
+fn follow_peers(
+  cloud : CloudView,
   timers : After,
-  log? : (String) -> Unit = _ => (),
+  kind : String,
+  skip_rig : Bool,
+  include_rigs : Bool,
+  word : (String) -> String,
+  level : (String, String, Bool, (Result[Unit, String]) -> Unit) -> Unit,
+  listen : (() -> Unit) -> () -> Unit,
+  log : (String) -> Unit,
 ) -> () -> Unit {
-  let cloud = ways.cloud
   let level_at : Map[String, String] = Map([])
   let going : Map[String, Bool] = Map([])
   let retries : Map[String, Retry] = Map([])
   let stopped = Ref(false)
-  let word = (ws : String) => match ways.record(ws) {
-    Some(r) => r.word()
-    None => ""
-  }
   letrec bring = fn(peer : String, ws : String, home : Bool) -> Unit {
     let key = "\{ws}|\{peer}"
     let at = word(ws)
@@ -681,19 +693,19 @@ pub fn follow_ways(
       return
     }
     going[key] = true
-    level_ways(ways, call, peer, ws, home, r => {
+    level(peer, ws, home, r => {
       match r {
         Ok(_) => {
           level_at[key] = word(ws)
           retries.remove(key)
         }
         Err(e) =>
-          if from_before(e, "ways") {
+          if from_before(e, kind) {
             level_at[key] = at
             retries.remove(key)
           } else {
             log(
-              "a station's ways were not brought level: peer=\{js_slice(peer, 12)} workspace=\{ws} error=\{e}",
+              "a station's \{kind} were not brought level: peer=\{js_slice(peer, 12)} workspace=\{ws} error=\{e}",
             )
             if !stopped.val {
               let wait = match retry {
@@ -723,7 +735,7 @@ pub fn follow_ways(
   }
   and look = fn() -> Unit {
     guard (cloud.station)() is Some(me) else { return }
-    if stopped.val || !(cloud.peers_current)() {
+    if stopped.val || !(cloud.peers_current)() || (skip_rig && (cloud.is_rig)()) {
       return
     }
     for m in (cloud.memberships)() {
@@ -733,26 +745,53 @@ pub fn follow_ways(
           _ => ()
         }
       }
-      // Its rigs too: kept on the relays the workspace keeps on, they answer `ways.*` as a station does.
-      for r in (cloud.rigs)(m.workspace) {
-        if r != me && !m.peers.iter().any(p => peer_id(p) == Some(r)) {
-          bring(r, m.workspace, m.home)
+      if include_rigs {
+        // Its rigs too: kept on the relays the workspace keeps on, they answer `ways.*` as a station does.
+        for r in (cloud.rigs)(m.workspace) {
+          if r != me && !m.peers.iter().any(p => peer_id(p) == Some(r)) {
+            bring(r, m.workspace, m.home)
+          }
         }
       }
     }
   }
   look()
   let unlisten_cloud = (cloud.listen)(look)
-  let unlisten_ways = ways.listen(_ => look())
+  let unlisten_store = listen(look)
   fn() {
     stopped.val = true
     unlisten_cloud()
-    unlisten_ways()
+    unlisten_store()
     for _, r in retries {
       (r.cancel)()
     }
     retries.clear()
   }
+}
+
+///|
+/// Whenever a workspace's ways change here, or a roster comes, each of its stations is brought level with this one; one
+/// that could not be is tried again, sooner at first, until it is. What it returns stops it.
+pub fn follow_ways(
+  ways : Ways,
+  call : PeerCall,
+  timers : After,
+  log? : (String) -> Unit = _ => (),
+) -> () -> Unit {
+  follow_peers(
+    ways.cloud,
+    timers,
+    "ways",
+    false,
+    true,
+    ws => match ways.record(ws) {
+      Some(r) => r.word()
+      None => ""
+    },
+    (peer, ws, home, done) => level_ways(ways, call, peer, ws, home, done),
+    f => ways.listen(_ => f()),
+    log,
+  )
 }
 
 // ── to the members' devices ──

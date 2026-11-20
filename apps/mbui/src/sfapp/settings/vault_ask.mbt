@@ -27,6 +27,9 @@ pub(all) struct Asked {
   command : String
   how_text : String
   save_kind : String
+  save_vault_name : String
+  save_shared : Bool
+  save_targets : Array[(String, String, Bool)]
   username : String
   filename : String
   typed : Bool
@@ -203,10 +206,39 @@ let vault_typed : @sf.LiveMap[String, @ui.Field] = @sf.LiveMap::new()
 let vault_files : @sf.LiveMap[String, (String, String)] = @sf.LiveMap::new()
 
 ///|
+/// The target vault manually picked for each save request: (vault_id, vault_name, is_workspace); put back by `reset`.
+let vault_target_picked : @sf.LiveMap[String, (String, String, Bool)] = @sf.LiveMap::new()
+
+///|
+/// Keyed vaults this device can save a secret into, personal vaults first and workspace vaults after
+/// (empty when plain mode is on, since plain mode has no vaults).
+fn vault_save_targets(core : Core, ws : String) -> Array[(String, String, Bool)] {
+  let v = vaults_of(core, ws)
+  if flag(v, "plain") {
+    return []
+  }
+  let personal : Array[(String, String, Bool)] = []
+  let workspace : Array[(String, String, Bool)] = []
+  for row in items(v, "vaults") {
+    if flag(Some(row), "keyed") {
+      let is_ws = text(Some(row), "scope") == "workspace"
+      let entry = (text(Some(row), "id"), text(Some(row), "name"), is_ws)
+      if is_ws {
+        workspace.push(entry)
+      } else {
+        personal.push(entry)
+      }
+    }
+  }
+  personal + workspace
+}
+
+///|
 fn vault_ask_reset() -> Unit {
   vault_menu.val = ""
   vault_timeout_minutes.clear()
   vault_picked.clear()
+  vault_target_picked.clear()
   vault_pending.clear()
   vault_typed.clear()
   vault_files.clear()
@@ -239,6 +271,8 @@ pub(all) enum Answer {
   /// a secret to keep its station sealed to the person's devices set up then, this one not among them: approved on
   /// one of those (or here once the station has this device's certificate and seals it again)
   NotHere
+  /// this device does not hold a key to this encrypted vault yet: approve on an authorized device or get access in Vault
+  NoKey
   /// decided already, its card not saying so yet
   Decided
   /// another's to answer: whose (the card's 由…决定)
@@ -259,6 +293,7 @@ pub fn card_answer(answer : String, lasts : String, mine : Bool, who? : String? 
     "setUp" => SetUp
     "elsewhere" => Elsewhere
     "notHere" => NotHere
+    "noKey" => NoKey
     _ => Approve(lasts)
   }
 }
@@ -292,10 +327,15 @@ fn topic_answer(core : Core, ws : String, request : String, mine : Bool, who : S
   // (one to rename the item is answered as one to keep: written into the vault, by a device set up)
   let save = field(row, "save") is Some(_) || field(row, "describe") is Some(_) || flag(row, "remove")
   let typed = typed_of(field(row, "save"))
-  if save && !flag(view, "plain") && !flag(view, "setUp") {
+  let is_save = field(row, "save") is Some(_)
+  if !is_save && flag(row, "noKey") {
+    Some((NoKey, save, typed))
+  } else if save && !flag(view, "plain") && !flag(view, "setUp") {
     Some((SetUp, save, typed))
   } else if save && flag(row, "notHere") {
     Some((NotHere, save, typed))
+  } else if flag(row, "noKey") {
+    Some((NoKey, save, typed))
   } else {
     Some((Approve(text(row, "lasts")), save, typed))
   }
@@ -316,9 +356,9 @@ pub fn vault_card(
   ended? : (String, String)? = None,
 ) -> Unit {
   @sf.card(c, fill=ask.picks_file(), fn() {
-    vault_asked(c, ask)
+    vault_asked(c, ask, request~)
     answered_in_place(c, "vault/" + request, ended.map(fn(e) { (e.0 == "granted", vault_outcome_words(ask, e.0, e.1)) }), fn() {
-      vault_foot(c, core, ws, request, answer, ask.writes(), typed=ask.typed_in(), timeout_kind=ask.timeout_kind, timeout_seconds=ask.timeout_seconds, foot=answer is (Approve(_) | SetUp), describe=ask.describe, remove=ask.remove)
+      vault_foot(c, core, ws, request, answer, ask.writes(), typed=ask.typed_in(), timeout_kind=ask.timeout_kind, timeout_seconds=ask.timeout_seconds, foot=answer is (Approve(_) | SetUp | NoKey), describe=ask.describe, remove=ask.remove, targets=ask.save_targets)
     })
   })
   |> ignore
@@ -378,10 +418,28 @@ pub fn vault_ask_words(c : @ui.Ctx, ask : Asked) -> Unit {
 }
 
 ///|
+/// What is said when the person manually chose a shared workspace vault on a save card, or "" otherwise.
+fn vault_save_shared_text(ask : Asked, request : String) -> String {
+  if ask.save_kind != "" && request != "" {
+    match vault_target_picked.get(request) {
+      Some((_, name, true)) =>
+        if name != "" {
+          fill("android-settings.vault.ask.saveSharedNamed", [("name", name)])
+        } else {
+          tr("android-settings.vault.ask.saveShared")
+        }
+      _ => ""
+    }
+  } else {
+    ""
+  }
+}
+
+///|
 /// What is asked (AskCard's what): its title (使用 …, 存入密码 … and the account; the item's name in it heavier than the
 /// words around it, not in quotes), the command, and only what is
 /// out of the ordinary: a command that reads the secret itself, one run on another station.
-fn vault_asked(c : @ui.Ctx, ask : Asked, full_command? : Bool = false) -> Unit {
+fn vault_asked(c : @ui.Ctx, ask : Asked, full_command? : Bool = false, request? : String = "") -> Unit {
   let t = @sf.theme()
   let save = ask.save_kind != ""
   c.box(style=@sf.ask_what, fn() {
@@ -462,14 +520,17 @@ fn vault_asked(c : @ui.Ctx, ask : Asked, full_command? : Bool = false) -> Unit {
     if ask.how_text != "" && !ask.describe && !ask.remove && ask.oauth == "" {
       c.text(ask.how_text, style=@sf.ask_note) |> ignore
     }
+    let shared = vault_save_shared_text(ask, request)
     let risky = !ask.writes() && (ask.mode == "env" || ask.mode == "file")
     let elsewhere = ask.station != ""
-    if risky || elsewhere {
+    if shared != "" || risky || elsewhere {
       let runs : Array[@ui.Run] = []
-      if risky {
+      if shared != "" {
+        runs.push(@ui.span(shared, color=t.p.warn_ink))
+      } else if risky {
         runs.push(@ui.span(tr("android-settings.vault.ask.plain"), color=t.p.warn_ink))
       }
-      if risky && elsewhere {
+      if (shared != "" || risky) && elsewhere {
         runs.push(@ui.span(" · "))
       }
       if elsewhere {
@@ -566,7 +627,7 @@ fn ended_name(name : String) -> @ui.Run {
 pub fn vault_actions(c : @ui.Ctx, core : Core, ws : String, request : String, mine : Bool, who? : String? = None) -> Unit {
   let row = items(vaults_of(core, ws), "requests").iter().find_first(fn(r) { text(Some(r), "id") == request })
   match topic_answer(core, ws, request, mine, who) {
-    Some((a, save, typed)) => vault_foot(c, core, ws, request, a, save, typed~, timeout_kind=text(row, "timeoutKind"), timeout_seconds=count(row, "timeoutSeconds"), describe=field(row, "describe") is Some(_), remove=flag(row, "remove"))
+    Some((a, save, typed)) => vault_foot(c, core, ws, request, a, save, typed~, timeout_kind=text(row, "timeoutKind"), timeout_seconds=count(row, "timeoutSeconds"), describe=field(row, "describe") is Some(_), remove=flag(row, "remove"), targets=vault_save_targets(core, ws))
     None => ()
   }
 }
@@ -590,6 +651,7 @@ pub fn vault_foot(
   foot? : Bool = false,
   describe? : Bool = false,
   remove? : Bool = false,
+  targets? : Array[(String, String, Bool)] = [],
 ) -> Unit {
   let note = fn(words : String) { c.text(words, style=@sf.ask_note) |> ignore }
   let lasts = match answer {
@@ -600,6 +662,13 @@ pub fn vault_foot(
     NotHere => {
       note(tr("web-pages.vault.approve.notHere"))
       return
+    }
+    NoKey => {
+      note(tr("web-pages.vault.approve.noKey"))
+      if !foot {
+        return
+      }
+      ""
     }
     Decided => {
       note(tr("android-settings.vault.approve.decided"))
@@ -613,7 +682,7 @@ pub fn vault_foot(
     Approve(l) => l
   }
   let pending = vault_pending.get(request)
-  let timed = !save && timeout_seconds > 0
+  let timed = !save && answer is Approve(_) && timeout_seconds > 0
   let scopes = if save { ["once"] } else if timed { if lasts == "once" { ["once"] } else { ["once", "idle", "fixed"] } } else { vault_scopes_up_to(lasts) }
   let scope = match vault_picked.get(request) {
     Some(s) if scopes.contains(s) => s
@@ -652,6 +721,7 @@ pub fn vault_foot(
           vault_typed.remove(request + "/secret")
           vault_typed.remove(request + "/username")
           vault_files.remove(request)
+          vault_target_picked.remove(request)
         }
       }
     })
@@ -727,9 +797,40 @@ pub fn vault_foot(
   // its buttons, last in the card's foot corners; how long beside them where the line has the room for it, else on a
   // line of its own over them (never under: the buttons keep the foot), its ends where theirs are: the foot's flow,
   // its later line over its first (flow_reverse), laid out in the pass that lays out the card, nothing read back.
-  let picks = !save && scopes.length() > 1
+  let save_targets = if save && !remove && !describe && signs_in == "" && answer is Approve(_) {
+    targets
+  } else {
+    []
+  }
+  let can_pick_save_vault = save_targets.length() > 1
+  let chosen_save_target : (String, String, Bool) = if save_targets.is_empty() {
+    ("", "", false)
+  } else {
+    match vault_target_picked.get(request) {
+      Some((id, _, _)) =>
+        match save_targets.iter().find_first(fn(t) { t.0 == id }) {
+          Some(t) => t
+          None => save_targets[0]
+        }
+      None => save_targets[0]
+    }
+  }
+  let picks = (!save && answer is Approve(_) && scopes.length() > 1) || can_pick_save_vault
   let pick = fn() {
-    if picks && timed {
+    if can_pick_save_vault {
+      let entries = save_targets.map(fn(t) { @kit.menu_radio(t.0, t.0 == chosen_save_target.0, label=t.1) })
+      let m = @sf.chooser(c, "vault/" + request + "/vault", chosen_save_target.1, entries, fn() { vault_menu.val == request }, fn(on) { vault_menu_set(request, on) }, disabled=under)
+      match m.chosen {
+        Some(id) => {
+          match save_targets.iter().find_first(fn(t) { t.0 == id }) {
+            Some(t) => vault_target_picked[request] = t
+            None => ()
+          }
+          vault_menu.val = ""
+        }
+        None => ()
+      }
+    } else if picks && timed {
       let words = if scope == "once" { tr("android-settings.vault.scope.once") } else {
         let days = minutes % 1440 == 0
         let hours = minutes % 60 == 0
@@ -754,6 +855,11 @@ pub fn vault_foot(
       if answer is SetUp {
         // kept only in a vault that is on here: the way to turn it on first
         @sf.button(c, tr("android-settings.vault.turnOn"), key="vault/" + request + "/on", tone=Primary, on_press=fn() {
+          (core.push)(Route::Vault)
+        })
+      } else if answer is NoKey {
+        // this device does not hold a key to this vault yet: open Vault to request access or recover
+        @sf.button(c, tr("web-pages.vault.approve.authorize"), key="vault/" + request + "/auth", tone=Primary, on_press=fn() {
           (core.push)(Route::Vault)
         })
       } else {
@@ -786,6 +892,9 @@ pub fn vault_foot(
           }
           if given is Some(g) {
             params.push(("typed", g))
+          }
+          if can_pick_save_vault {
+            params.push(("vault", str(chosen_save_target.0)))
           }
           act(true, "vault.approve", what, obj(params))
         }

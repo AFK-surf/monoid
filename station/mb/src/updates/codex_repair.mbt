@@ -199,15 +199,14 @@ pub async fn can_switch_codex(w : World, found : Found, env : Env) -> Bool {
   }
   guard home_of(env) is Some(home) && home != "" else { return false }
   (try {
-    let dir = text(Some(w.call("fs.realpathSync", [js(pdirname(found.on_path))]))).unwrap_or("")
-    let home_real = text(Some(w.call("fs.realpathSync", [js(home)]))).unwrap_or("")
+    let dir = w.realpath(pdirname(found.on_path), sync=true)
+    let home_real = w.realpath(home, sync=true)
     if !within(dir, home_real) {
       return false
     }
-    ignore(w.call("fs.accessSync", [js(dir), ji(2)]))
-    let entry = stat_of(w.call("fs.lstatSync", [js(found.on_path)]))
-    (entry.file || entry.symlink) &&
-    text(Some(w.call("fs.realpathSync", [js(found.on_path)]))) == Some(found.real)
+    w.access(dir, mode=2, sync=true)
+    let entry = w.lstat(found.on_path, sync=true)
+    (entry.file || entry.symlink) && w.realpath(found.on_path, sync=true) == found.real
   } catch {
     _ => false
   })
@@ -277,28 +276,8 @@ pub async fn capture_codex_soon(w : World, found : Found, env : Env) -> CodexEnt
 }
 
 ///|
-async fn lstat_sync(w : World, path : String) -> Stat {
-  stat_of(w.call("fs.lstatSync", [js(path)]))
-}
-
-///|
-async fn stat_sync(w : World, path : String) -> Stat {
-  stat_of(w.call("fs.statSync", [js(path)]))
-}
-
-///|
-async fn realpath_sync(w : World, path : String) -> String {
-  text(Some(w.call("fs.realpathSync", [js(path)]))).unwrap_or("")
-}
-
-///|
-async fn readlink_sync(w : World, path : String) -> String {
-  text(Some(w.call("fs.readlinkSync", [js(path)]))).unwrap_or("")
-}
-
-///|
 async fn random_hex(w : World, n : Int) -> String {
-  hex(bytes_of(Some(w.call("crypto.randomBytes", [ji(n)]))))
+  hex(w.random_bytes(n))
 }
 
 ///|
@@ -310,23 +289,23 @@ pub async fn switch_codex(w : World, captured : CodexEntry, launcher : String, e
   }
   let suffix = random_hex(w, 8)
   let backup = "\{found.on_path}.stillfail-backup-\{suffix}"
-  let changed = !same_identity(identity(lstat_sync(w, found.on_path)), captured.entry) ||
-    !same_identity(identity(stat_sync(w, found.on_path)), captured.target) ||
-    realpath_sync(w, found.on_path) != found.real
+  let changed = !same_identity(identity(w.lstat(found.on_path, sync=true)), captured.entry) ||
+    !same_identity(identity(w.stat(found.on_path, sync=true)), captured.target) ||
+    w.realpath(found.on_path, sync=true) != found.real
   if changed {
     raise fail("Codex command changed while repairing it")
   }
-  ignore(w.call("fs.renameSync", [js(found.on_path), js(backup)]))
+  w.rename(found.on_path, backup, sync=true)
   let switched : Result[String, Error] = try {
-    let saved = lstat_sync(w, backup)
+    let saved = w.lstat(backup, sync=true)
     let moved = !same_identity(identity(saved), captured.entry) ||
-      !same_identity(identity(stat_sync(w, backup)), captured.target) ||
-      (saved.symlink && realpath_sync(w, backup) != found.real)
+      !same_identity(identity(w.stat(backup, sync=true)), captured.target) ||
+      (saved.symlink && w.realpath(backup, sync=true) != found.real)
     if moved {
       raise fail("Codex command changed while repairing it")
     }
     // symlink() fails if someone created an entry while the old one was being moved; it never replaces theirs.
-    ignore(w.call("fs.symlinkSync", [js(launcher), js(found.on_path)]))
+    w.symlink(launcher, found.on_path, sync=true)
     Ok(backup)
   } catch {
     e => Err(e)
@@ -345,25 +324,25 @@ pub async fn switch_codex(w : World, captured : CodexEntry, launcher : String, e
 ///|
 /// Link the saved entry back without replacing any command someone created in the meantime.
 async fn restore_entry(w : World, backup : String, path : String) -> Unit {
-  if lstat_sync(w, backup).symlink {
-    ignore(w.call("fs.symlinkSync", [js(readlink_sync(w, backup)), js(path)]))
+  if w.lstat(backup, sync=true).symlink {
+    w.symlink(w.readlink(backup, sync=true), path, sync=true)
   } else {
-    ignore(w.call("fs.linkSync", [js(backup), js(path)]))
+    w.link(backup, path, sync=true)
   }
-  ignore(w.call("fs.unlinkSync", [js(backup)]))
+  w.rm(backup, sync=true)
 }
 
 ///|
 /// `restoreCodex`: do not overwrite a command someone changed after the switch, even when a later validation fails.
 pub async fn restore_codex(w : World, path : String, launcher : String, backup : String) -> Unit {
-  let entry = lstat_sync(w, path)
-  if !entry.symlink || readlink_sync(w, path) != launcher {
+  let entry = w.lstat(path, sync=true)
+  if !entry.symlink || w.readlink(path, sync=true) != launcher {
     raise fail("Codex command changed; its backup is \{backup}")
   }
   let moved = "\{path}.stillfail-failed-\{random_hex(w, 8)}"
-  ignore(w.call("fs.renameSync", [js(path), js(moved)]))
+  w.rename(path, moved, sync=true)
   let restored : Result[Unit, Error] = try {
-    if !same_identity(identity(lstat_sync(w, moved)), identity(entry)) || readlink_sync(w, moved) != launcher {
+    if !same_identity(identity(w.lstat(moved, sync=true)), identity(entry)) || w.readlink(moved, sync=true) != launcher {
       raise fail("Codex command changed while restoring it")
     }
     restore_entry(w, backup, path)
@@ -380,7 +359,7 @@ pub async fn restore_codex(w : World, path : String, launcher : String, backup :
       raise fail("Codex command could not be restored; its backup is \{backup}: \{message_of(error)}")
     }
   }
-  ignore(w.call("fs.unlinkSync", [js(moved)])) catch {
+  w.rm(moved, sync=true) catch {
     _ => ()
   }
 }

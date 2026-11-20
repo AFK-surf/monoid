@@ -98,6 +98,8 @@ pub async fn Host::shell(
     Some(b) => shell_call_ffi(id, cstr(op), @utf8.encode(args.stringify()), b, 1)
     None => shell_call_ffi(id, cstr(op), @utf8.encode(args.stringify()), b"", 0)
   }
+  // (given up before its answer, interrupted: its answer, should one still come, finds no one waiting and is let go)
+  errdefer self.waiting.remove(id)
   done.wait()
 }
 
@@ -247,13 +249,15 @@ pub fn run(shell_dir? : String, main : async (Host) -> Unit) -> Int {
     let first = wait_ffi(wait)
     if first.length() > 0 {
       host.dispatch(first)
-      // what else came meanwhile, before the runtime's next turn
-      while true {
+      // what else came meanwhile, before the runtime's next turn (bounded so a flooding C thread cannot starve timers or fibers)
+      let mut drained = 1
+      while drained < 64 {
         let more = wait_ffi(0L)
         if more.length() == 0 {
           break
         }
         host.dispatch(more)
+        drained += 1
       }
     }
   }

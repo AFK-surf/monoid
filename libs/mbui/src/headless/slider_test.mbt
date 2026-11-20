@@ -73,3 +73,12 @@ test "a vertical slider runs up its height: a press near its foot is near min, n
   t.release(x + 15.0, y + 30.0)
   assert_eq(told, [10.0, 90.0])
 }
+
+///|
+test "slider_snap holds a value between its ends, on the nearest step from min" {
+  assert_eq(@headless.slider_snap(-5.0, 0.0, 100.0, 10.0), 0.0)
+  assert_eq(@headless.slider_snap(104.0, 0.0, 100.0, 10.0), 100.0)
+  assert_eq(@headless.slider_snap(14.0, 0.0, 100.0, 10.0), 10.0)
+  assert_eq(@headless.slider_snap(98.0, 3.0, 100.0, 10.0), 100.0)
+  assert_eq(@headless.slider_snap(12.5, 0.0, 100.0, 0.0), 12.5)
+}

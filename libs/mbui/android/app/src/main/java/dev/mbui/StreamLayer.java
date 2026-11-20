@@ -455,13 +455,16 @@ final class StreamLayer {
             PixelCopy.request(s, b, result -> {
                 if (result != PixelCopy.SUCCESS) {
                     Host.log("stream " + sid + ": its layer's picture not copied (" + result + ")");
+                    b.recycle();
                     return;
                 }
                 MBView v = Host.view;
                 if (v != null) MBView.toRender(() -> Streams.grabbed(sid, b));
+                else b.recycle();
             }, Host.main);
         } catch (RuntimeException e) {
             Host.log("stream " + sid + ": its layer's picture not copied: " + e);
+            b.recycle();
         }
     }
 

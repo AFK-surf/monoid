@@ -9,6 +9,7 @@ import {
   "mbui/hostapi",
   "mbui/zip",
   "mbui/kit",
+  "mbui/player",
   "mbui/codec",
   "mbui/motion",
   "mbui/pixels",

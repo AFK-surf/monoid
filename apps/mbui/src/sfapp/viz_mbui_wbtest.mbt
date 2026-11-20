@@ -280,7 +280,7 @@ test "sharing a chat with a placed .mbui widget draws it synchronously in the ex
   assert_true(!viz_frames.keys().any(fn(k) { k.has_prefix("publish/") }), msg="no publish WebView opened for .mbui")
   assert_true(t.find("0.25.0 发布与性能看板") is Some(_), msg="mbui widget drawn on publish preview")
   t.click(Button, label="保存到相册")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_eq(t.shots().length(), 1, msg="picture taken immediately without waiting for WebView still")
   let words = t.shots()[0].join("|")
   assert_true(words.contains("0.25.0 发布与性能看板"), msg=words)

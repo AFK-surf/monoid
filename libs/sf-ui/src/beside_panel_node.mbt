@@ -28,8 +28,7 @@ pub fn beside_panel_node(
   parent.show(
     open,
     fn(layer) {
-      let look = @motion.presence_look(layer, @kit.pop_in, exit=@kit.pop_out)
-      let live = fn() { !layer.leaving() }
+      let (look, live) = @motion.overlay_presence(layer, enter=@motion.pop_in, exit=@motion.pop_out)
       let panel : Ref[@view.View?] = Ref(None)
       layer
       .over(Is(true))
@@ -78,7 +77,7 @@ pub fn beside_panel_node(
         |> ignore
         p
         .alpha(By(fn() { look().alpha }))
-        .scale(By(fn() { look().sx }), about=FromBeside)
+        .scale(By(fn() { look().sx }), about=FromBeside, max_shift=pop_max_shift)
         .says(By(fn() { Some(@view.said(Dialog, label=label())) }))
         // (a press on it its own: not outside it)
         |> ground_node
@@ -111,6 +110,6 @@ pub fn beside_panel_node(
       })
       |> ignore
     },
-    leave=@kit.pop_out_ms,
+    leave=@motion.pop_out_ms,
   )
 }

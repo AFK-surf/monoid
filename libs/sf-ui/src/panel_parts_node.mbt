@@ -192,6 +192,7 @@ pub fn panel_opens_in_node(field : @view.View) -> Unit {
 /// | sfpages outline.mbt, 对话目录 from its round button | what it finds | a sheet on 小屏, beside the button |
 /// | sfdesk drive_dialogs.mbt, the folder picker | its filter | a sheet on 小屏, a dialog in the middle |
 /// | sfpages presets.mbt, 添加目录 | its search | a sheet on 小屏, a dialog in the middle |
+/// | sfpages model_triple.mbt, 模型 | its search (搜索模型) | a sheet on 小屏, beside its control |
 /// | (the old frame's panels that say `field`, as they move over) | | |
 pub fn panel_search_at_hand_node(field : @view.View) -> Unit {
   match field.lent(panel_field_lent) {

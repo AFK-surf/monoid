@@ -24,6 +24,12 @@ fn default_bars() -> (Array[Array[String]], Int) {
 }
 
 ///|
+/// An iPhone Duo's one bar before any is kept for the workspace (the system's tab bar: one, never swiped between): the
+/// tabs it showed before its bar could be set.
+// kept across runs: a table, never written
+let native_default_bar : Array[String] = ["chats", "files", "stations"]
+
+///|
 /// The bars whole, as the core keeps them (prefs.ts barsOf): each one to four known places, none twice; empty ones
 /// dropped; none left, the default ones; the one in view one of them.
 fn bars_of(v : Json?) -> (Array[Array[String]], Int) {
@@ -54,10 +60,11 @@ fn bars_of(v : Json?) -> (Array[Array[String]], Int) {
 
 ///|
 /// Whether this window has a bottom bar: the frame of one page at a time has (Small's: sfapp's app.mbt draws it there),
-/// the panes side by side of a wider screen have none, their rail holding the places. What the settings' row of the
-/// bars asks (sfpages' settings_list.mbt): nothing of a bar to set where none is shown.
+/// and an iPhone Duo's, the system's tab bar holding the places (sfdesk's rail_native.mbt); the panes side by side of a
+/// wider screen have none, their rail holding the places. What the settings' row of the bars asks (sfpages'
+/// settings_list.mbt): nothing of a bar to set where none is shown.
 pub fn bars_shown(c : @ui.Ctx) -> Bool {
-  @sf.layout(c.window_size().0) is Small
+  @sf.layout(c.window_size().0) is Small || @sf.native_on()
 }
 
 ///|
@@ -65,7 +72,9 @@ pub fn bars_shown(c : @ui.Ctx) -> Bool {
 pub let bars_picked : @signals.Signal[(Array[Array[String]], Int)?] = @signals.signal(None)
 
 ///|
-/// The bars of workspace `ws`: switched here, else its own as the prefs keep them (`barsBy`), else everyone's (`bars`).
+/// The bars of workspace `ws`: switched here, else its own as the prefs keep them (`barsBy`), else an iPhone Duo's one
+/// (native_default_bar: the core's `bars` is always the phone's two, BARS_DEFAULT, till one is set), else everyone's
+/// (`bars`).
 pub fn bars_in(src : Source, ws : String) -> (Array[Array[String]], Int) {
   match bars_picked.get() {
     Some(b) => b
@@ -73,6 +82,7 @@ pub fn bars_in(src : Source, ws : String) -> (Array[Array[String]], Int) {
       let prefs = src.topic("prefs", {}).get().value
       match field(field(prefs, "barsBy"), ws) {
         Some(Object(_)) as b => bars_of(b)
+        _ if @sf.native_on() => ([native_default_bar.copy()], 0)
         _ =>
           match field(prefs, "bars") {
             Some(Object(_)) as b => bars_of(b)

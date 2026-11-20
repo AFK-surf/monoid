@@ -67,7 +67,7 @@ export class Station {
       if (i % 23 === 5) marks.clientKeys[r.id] = `ck-${i}`;
       if (i % 10 === 1) marks.reads[id] = r.last.seq - 1;
       // (as a station makes it for everyone: what its last message was, and what was said after the viewer's own)
-      this.shared.set(r.id, { ...r, said: { n: r.last.seq, other: r.last.seq - (i % 3) } });
+      this.shared.set(r.id, { ...r, said: r.last ? { n: r.last.seq, other: r.last.seq - (i % 3) } : null });
     });
     this.marks = marks;
   }

@@ -71,6 +71,7 @@ fn tape_page_pane(v : @view.View, src : Source) -> Unit {
       page_key=fn(_) { tape_island_key() },
       // (a chat's page made as nodes left kept, taken back as it is opened again: sfbase's chat_page_left_key)
       keeps_left=@sfbase.chat_page_left_key,
+      transition=@ui.NavTransition::layered(),
     )
     |> ignore
   })
@@ -336,13 +337,15 @@ fn tape_made(
           v.switch_by(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, _id) {
             // (what the page made in `p` does in the bar, its own while `p` is: given as it is made, let go with `p`
             // where none since gave the bar another's)
-            let gen = next_tape_actions_gen()
+            let last_gen = Ref(0)
             let acts = fn(make : (@view.View) -> Unit, side : (@sf.Look) -> Double) {
+              let gen = next_tape_actions_gen()
+              last_gen.val = gen
               tape_bar_of(k).page_actions.set(Some((make, side, gen)))
             }
             p.owns(fn() {
               let tb = tape_bar_of(k)
-              if tb.page_actions.untracked() is Some((_, _, g)) && g == gen {
+              if last_gen.val > 0 && tb.page_actions.untracked() is Some((_, _, g)) && g == last_gen.val {
                 tb.page_actions.set(None)
               }
             })
@@ -694,21 +697,33 @@ fn tape_made(
               tape_page_one,
               key=tape_island_key,
               drawn=fn(serial) { tape_page_wait.draws(serial) },
-              over=fn(o, src, page, stint) { chat_bar_wide_node(o, src, page, tape_chat_bar_ends(), tips, stint) },
+              over=fn(o, src, page, stint) { chat_bar_wide_node(o, src, page, tape_chat_bar_ends(o), tips, stint) },
               // (with chat_page_nodes on: its messages nodes, its composer made as nodes in their list's foot)
               // (built in the page's panel, as tape_page_one builds the page: what stands in its corners concentric with them)
-              body=fn(col, s, r, composer, shows) {
+              body=fn(col, s, r, composer, shows, on_stack) {
                 // (on the panel's ground, a step darker while it is behind the one in use, going with the tape's move:
                 // tape_page_ground, as the island's own was, in the place of the page's ground chat_page_made gives it)
                 col.ground(By(fn() { tape_page_ground(col) })) |> ignore
-                chat_body_nodes(col, s, r, tips, stint, composer, shows, in_pane=true)
+                // (behind the sidebar on the tape, nothing of it read out: tape_behind's)
+                col.hides(By(fn() { wide.tape_at.get() != Page })) |> ignore
+                context_node(col)
+                chat_body_nodes(col, s, r, tips, stint, composer, shows, in_pane=true, on_stack~)
               },
               // (its composer made as nodes in the list's foot, in the page's panel: what stands in its corners concentric
               // with them, sfpages' chat_composer_node)
               foot_node=fn(n, s, r, shows, laid) {
-                @sfpages.chat_composer_node(n, s, r, shows~, laid~, tips~, apart=fn() { wide.tape.get() }, pane=fn() {
-                  Some(tape_page_round())
-                })
+                // (shown as the page is in front on the tape: behind its sidebar, its composer takes no cursor yet,
+                // brought up it does, as a page come into sight does)
+                @sfpages.chat_composer_node(
+                  n,
+                  s,
+                  r,
+                  shows=fn() { shows() && (!wide.tape.get() || wide.tape_at.get() == Page) },
+                  laid~,
+                  tips~,
+                  apart=fn() { wide.tape.get() },
+                  pane=fn() { Some(tape_page_round()) },
+                )
               },
               leaving=fn(c, s, r) {
                 match @sfbase.workspace_in_view(s).0 {
@@ -721,8 +736,11 @@ fn tape_made(
               // (the new chat it is till it becomes one, made as nodes in the page's panel: sfpages' new_chat_node, on the
               // panel's ground as the chat's column is)
               new_node=fn(n, s) {
+                n.hides(By(fn() { wide.tape_at.get() != Page })) |> ignore
                 match @signals.untracked(fn() { @sfbase.workspace_in_view(s).0 }) {
-                  Some(w) => @sfpages.new_chat_node(n, s, w, new_frame_node(s, w, width, ground=tape_page_ground), tips)
+                  Some(w) => @sfpages.new_chat_node(n, s, w, new_frame_node(s, w, width, ground=tape_page_ground, apart=fn() {
+                      wide.tape.get()
+                    }, pane=fn() { Some(tape_page_round()) }), tips)
                   None => ()
                 }
               },
@@ -757,7 +775,7 @@ fn tape_made(
 /// on the panel's words' line; what ends it, ⌘F's field where that is open, concentric with the panel's top right
 /// corner; its buttons round on that line, no corner of the window's; its ground the panel's (tape_page_ground), as a
 /// page's bar there has it.
-fn tape_chat_bar_ends() -> ChatBarEnds {
+fn tape_chat_bar_ends(n : @view.View) -> ChatBarEnds {
   let corners = fn() {
     let side = tape_shown_side()
     let under = if side is None { tape_room_now().under } else { 0.0 }
@@ -766,13 +784,28 @@ fn tape_chat_bar_ends() -> ChatBarEnds {
   {
     over: fn() { @sf.tape_bar_over() },
     margins: fn() { (0.0, 0.0) },
-    start: fn() { tape_bar_start_room(corners(), false) },
-    end: fn(_, finding) {
-      if finding {
-        tape_bar_end_room(corners(), side=@sfpages.find_field_h)
+    // (words first as ever; a chat with no title starts with its marks, each round: past the panel's top left arc, the
+    // first of them never in it (@sf.tape_bar_start_of's corner))
+    start: fn(titled) {
+      let words = tape_bar_start_room(corners(), false)
+      if titled {
+        words
       } else {
-        tape_bar_end_room(corners())
+        dmax(words, corners()[0].radius(@ui.tree_corner_roots_now()) - chat_bar_title_in)
       }
+    },
+    end: fn(_, finding) {
+      let side = if finding { @sfpages.find_field_h } else { @sf.bar_key_side }
+      let base_end = tape_bar_end_room(corners(), side~)
+      if !@ui.window_keys_own() {
+        return base_end
+      }
+      let r = tape_room_now()
+      let t = tape_drawn_at(n)
+      let page_right = tape_x_at(r, t) + tape_col_at(t) + tape_page_at(t)
+      let past_right = dmax(@sf.window_in, r.tw - page_right)
+      let keys_clear = @sf.window_keys_room_tape(roots=@ui.tree_corner_roots_now()) + bar_in - past_right
+      dmax(base_end, keys_clear)
     },
     linked: fn() { None },
     ground: tape_page_ground,

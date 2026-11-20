@@ -7,7 +7,7 @@
 /// each frame presented from the send to 2.1 s on, its moment after the send and what it draws; how many rows were
 /// kept over them all.
 fn kept_drawing_sent(mode : String, again : Bool, w : Double, h : Double) -> (Array[(Double, Array[String])], Int) {
-  let t = kept_rows_open(mode, w, h)
+  let t = kept_rows_open(mode, w, h, old=true)
   t.check_looks(false)
   t.set_rows_on_pixels(true)
   t.drawn_again(again)

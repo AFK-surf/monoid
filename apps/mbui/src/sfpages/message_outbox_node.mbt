@@ -4,9 +4,8 @@
 // station has it, or, not sent, 未发送 with 重试 (or 编辑) and 删除, each turning while the core does it and marked red
 // a moment where that failed (the core's doing). Each read through what it is given, as that changes. It is the
 // viewer's own message's row (message_words_node.mbt mine_said_node), on its way: one row as the core's message takes
-// it over. Its files still going up but its images (`uploads`) each a card (outbox_uploads_node: how far, or why it
-// did not go). Not here yet: those cards' sheet filling as they go (the library's file_card_node draws none), its words
-// flying in from the composer (the list's flight).
+// it over. Its files still going up but its images (`uploads`) each a card (outbox_uploads_node: how far, its ring
+// filling as they go, or why it did not go). Not here yet: its words flying in from the composer (the list's flight).
 
 ///|
 /// What is under `o` now, where anything is (outbox_row's order; nothing while it is followed and went, which its row
@@ -118,6 +117,17 @@ fn outbox_uploads_node(v : @view.View, here : MessageNodeHere, out : () -> Outgo
         fn() { "" },
         fn() { "" },
         fn(_) {  },
+        // (going up: its ring in place of its mark, how far as its bytes say; nothing to open till it is sent)
+        pending=fn() { !failed() },
+        progress=fn() {
+          let (_, size, sent) = up()
+          if size > 0 {
+            Some(sent.to_double() / size.to_double())
+          } else {
+            None
+          }
+        },
+        open=fn() { false },
       )
       |> ignore
     })

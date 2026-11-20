@@ -1,8 +1,9 @@
 // The station's traces (station/src/mesh/traces.ts): the mesh's own spans (a request stream from accepted to fully
 // answered; an event stream's to its head), under the caller's trace when it records one. Batched, sent at most every
 // EXPORT_MS to where the station is told (the control plane's `/v1/telemetry/traces`); a batch that cannot be sent is
-// dropped. Off unless the config turns traces on. A span's id and the clocks it is timed by are given: the machine's
-// randomness and its monotonic clock are its caller's.
+// tried once more at the next flush (unless the plane refused it with a 4xx), then dropped, said at most every 10 min.
+// Where `tail_only` (the config's `telemetry.traces` unset), only a failed or slow span is kept. A span's id and the
+// clocks it is timed by are given: the machine's randomness and its monotonic clock are its caller's.
 
 ///|
 pub let export_ms : Int = 3_000
@@ -12,6 +13,10 @@ pub let max_buffer : Int = 2_000
 
 ///|
 pub let max_batch : Int = 500
+
+///|
+/// The least time between two `traces dropped` lines (monotonic ns).
+pub let drop_warn_ns : Int64 = 600_000_000_000L
 
 ///|
 /// A W3C trace context: the trace, the caller's span, whether it is recorded.
@@ -143,18 +148,41 @@ pub struct Traces {
   /// The monotonic clock in ns (`process.hrtime.bigint()`).
   hr_now : () -> Int64
   said : (String, String, Json) -> Unit
+  /// Only failed or slow spans are kept (`slow_ms` or longer).
+  tail_only : Bool
+  slow_ms : Int
+  /// The batch at the head was put back after a failure: a second failure drops it.
+  mut retrying : Bool
+  /// When `traces dropped` was said last (monotonic ns).
+  mut dropped_at : Int64?
 }
 
 ///|
 /// `rt`: the clock the batching wait runs on; `hr_now`: the monotonic clock spans are timed by; `said`: a line of the
-/// log (level, words, what with them).
+/// log (level, words, what with them); `tail_only`: keep only a failed span or one that took `slow_ms` or longer.
 pub fn Traces::new(
   enabled : Bool,
   rt : @effect.Runtime,
   hr_now : () -> Int64,
   said : (String, String, Json) -> Unit,
+  tail_only? : Bool = false,
+  slow_ms? : Int = 1_000,
 ) -> Traces {
-  { enabled, spans: [], rt, armed: false, sink: None, closed: false, waiting: None, hr_now, said }
+  {
+    enabled,
+    spans: [],
+    rt,
+    armed: false,
+    sink: None,
+    closed: false,
+    waiting: None,
+    hr_now,
+    said,
+    tail_only,
+    slow_ms,
+    retrying: false,
+    dropped_at: None,
+  }
 }
 
 ///|
@@ -182,9 +210,13 @@ pub fn traceparent(span : Span) -> String {
 }
 
 ///|
-/// Ends `span` as an OTLP server span with these attributes.
+/// Ends `span` as an OTLP server span with these attributes (where `tail_only`, a quick one that did not fail is not
+/// kept).
 pub fn Traces::end(self : Traces, span : Span, name : String, attributes : Array[(String, Json)], failed : Bool) -> Unit {
   let end = span.wall_ns + ((self.hr_now)() - span.started)
+  if self.tail_only && !failed && end - span.wall_ns < self.slow_ms.to_int64() * 1_000_000L {
+    return
+  }
   self.record(
     jobj([
       ("traceId", jstr(span.parent.trace)),
@@ -208,6 +240,12 @@ fn Traces::record(self : Traces, span : Json) -> Unit {
   if self.spans.length() < max_buffer {
     self.spans.push(span)
   }
+  self.arm()
+}
+
+///|
+/// The next flush, `export_ms` from now, unless one is due already.
+fn Traces::arm(self : Traces) -> Unit {
   if self.armed || self.closed {
     return
   }
@@ -230,13 +268,40 @@ async fn Traces::flush(self : Traces) -> Unit {
     self.spans.clear()
     self.spans.append(rest)
     guard self.sink is Some(sink) else { continue }
-    sink(batch) catch {
-      e => {
-        (self.said)("warn", "traces dropped", jobj([("error", jstr(message_of(e)))]))
-        continue
+    let sent : Result[Unit, Error] = try Ok(sink(batch)) catch { e => Err(e) }
+    match sent {
+      Ok(_) => self.retrying = false
+      Err(e) => {
+        let message = message_of(e)
+        // (a 4xx is the plane's refusal: sending it again is refused again)
+        if !self.retrying && !message.contains("answered 4") {
+          let kept = batch.copy()
+          kept.append(self.spans)
+          self.spans.clear()
+          self.spans.append(if kept.length() > max_buffer { kept[0:max_buffer].to_owned() } else { kept })
+          self.retrying = true
+          break
+        }
+        self.retrying = false
+        let now = (self.hr_now)()
+        let due = match self.dropped_at {
+          None => true
+          Some(at) => now - at >= drop_warn_ns
+        }
+        if due {
+          self.dropped_at = Some(now)
+          (self.said)(
+            "warn",
+            "traces dropped",
+            jobj([("error", jstr(message)), ("count", jnum(batch.length().to_double()))]),
+          )
+        }
+        break
       }
     }
-    (self.said)("info", "traces sent", Json::null())
+  }
+  if self.spans.length() > 0 {
+    self.arm()
   }
 }
 
@@ -247,8 +312,15 @@ pub fn Traces::export_to(self : Traces, sink : async (Array[Json]) -> Unit) -> U
 }
 
 ///|
-/// A batch of the mesh's spans as OTLP JSON, of `station` (`otlpBody`).
-pub fn otlp_body(station : String, spans : Array[Json]) -> String {
+/// A batch of the mesh's spans as OTLP JSON, of `station` (`otlpBody`); `resource`: what else describes it, an empty key
+/// or value left out.
+pub fn otlp_body(station : String, spans : Array[Json], resource? : Array[(String, String)] = []) -> String {
+  let attributes = [attribute("service.name", jstr("stillfail-mesh")), attribute("stillfail.station", jstr(station))]
+  for kv in resource {
+    if kv.0 != "" && kv.1 != "" {
+      attributes.push(attribute(kv.0, jstr(kv.1)))
+    }
+  }
   let body = jobj([
     (
       "resourceSpans",
@@ -259,7 +331,7 @@ pub fn otlp_body(station : String, spans : Array[Json]) -> String {
             jobj([
               (
                 "attributes",
-                Json::array([attribute("service.name", jstr("stillfail-mesh")), attribute("stillfail.station", jstr(station))]),
+                Json::array(attributes),
               ),
             ]),
           ),

@@ -348,3 +348,381 @@ test "flips: a block's words come to more lines as the room over it is declared 
     lf_whole(got, from, lf_words_tall(tree, "一段"), looks, "at \{rate} a second")
   }
 }
+
+///|
+test "flips: keys changing twice before slot_views are placed does not inflate foot_room into a blank screen" {
+  let keys = @signals.signal(([] : Array[Int]), same=fn(a, b) { a == b })
+  let scroll = @view.Scroll::list()
+  let tree = @view.Tree::new(fn(root) {
+    root.box(fn(o) {
+      o.width(Is(Some(300.0))).height(Is(Some(400.0))) |> ignore
+      o.scrolls_window(scroll, fn() { keys.get() }, est=40.0, follows=fn() { true }, from_end=true, flips=true, fn(b, k) {
+        b.height(Is(Some(40.0))).words(Is("行\{k}")) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  // First frame establishes viewport (300 x 400) while empty and at foot.
+  tree.frame(390.0, 844.0, now=0.0) |> ignore
+  // First keys arrive between frames (slots created, laid_now runs, but Tree::place has not run yet).
+  let t1 = rc_at
+  let t2 = rc_at + 10.0
+  let settled = t2 + @flex.move_most_ms
+  tree.advance(t1)
+  keys.set(Array::makei(10, fn(i) { 10 + i }))
+  // Second keys change (e.g. prepending older messages) arrives before the first paint places those slots.
+  tree.advance(t2)
+  keys.set(Array::makei(20, fn(i) { i }))
+  tree.frame(390.0, 844.0, now=t2) |> ignore
+  tree.frame(390.0, 844.0, now=settled) |> ignore
+  let y19 = rc_y(tree, "行19")
+  assert_true(
+    y19 > 350.0 && y19 < 370.0,
+    msg="last row 行19 should sit at viewport foot (~360.0), got y=\{y19}",
+  )
+}
+
+///|
+test "flips: rest while at foot preserves at_foot so waking still follows new keys at foot" {
+  let keys = @signals.signal(Array::makei(30, fn(i) { i }), same=fn(a, b) { a == b })
+  let scroll = @view.Scroll::list()
+  let place : @view.ListPlace[Int] = @view.ListPlace::new()
+  let tree = @view.Tree::new(fn(root) {
+    root.box(fn(o) {
+      o.transitions_only().width(Is(Some(300.0))).height(Is(Some(400.0))) |> ignore
+      o.scrolls_window(
+        scroll,
+        fn() { keys.get() },
+        est=40.0,
+        follows=fn() { true },
+        from_end=true,
+        flips=true,
+        place~,
+        fn(b, k) { b.height(Is(Some(40.0))).words(Is("行\{k}")) |> ignore },
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  tree.frame(390.0, 844.0, now=0.0) |> ignore
+  assert_true(scroll.at_foot_now(), msg="expected at_foot initially")
+  place.rest()
+  place.wake()
+  let t1 = rc_at
+  let settled = t1 + @flex.move_most_ms
+  tree.advance(t1)
+  keys.set(Array::makei(31, fn(i) { i }))
+  tree.frame(390.0, 844.0, now=t1) |> ignore
+  tree.frame(390.0, 844.0, now=settled) |> ignore
+  let y30 = rc_y(tree, "行30")
+  assert_true(
+    y30 > 350.0 && y30 < 370.0,
+    msg="after rest/wake while at foot, new row 行30 should sit at foot (~360.0), got y=\{y30}",
+  )
+}
+
+///|
+test "flips: transitions_only quiet reopen with shorter keys and to_end lands at foot with no blank room" {
+  let keys = @signals.signal(Array::makei(30, fn(i) { i }), same=fn(a, b) { a == b })
+  let scroll = @view.Scroll::list()
+  let place : @view.ListPlace[Int] = @view.ListPlace::new()
+  let tree = @view.Tree::new(fn(root) {
+    root.box(fn(o) {
+      o.transitions_only().width(Is(Some(300.0))).height(Is(Some(400.0))) |> ignore
+      o.scrolls_window(
+        scroll,
+        fn() { keys.get() },
+        est=40.0,
+        follows=fn() { true },
+        from_end=true,
+        flips=true,
+        place~,
+        fn(b, k) { b.height(Is(Some(40.0))).words(Is("行\{k}")) |> ignore },
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  tree.frame(390.0, 844.0, now=0.0) |> ignore
+  // Scroll up off foot (keeping overlap with the shorter reopened window 15..29).
+  let t_scroll = rc_at
+  let t_reopen = rc_at + 100.0
+  let settled = t_reopen + @flex.move_most_ms
+  scroll.put(400.0)
+  tree.frame(390.0, 844.0, now=t_scroll) |> ignore
+  assert_true(!scroll.at_foot_now(), msg="expected off foot after scrolling up")
+  place.rest()
+  tree.advance(t_reopen)
+  place.wake()
+  keys.set(Array::makei(15, fn(i) { 15 + i }))
+  place.to_end(glide=false)
+  tree.frame(390.0, 844.0, now=t_reopen) |> ignore
+  tree.frame(390.0, 844.0, now=settled) |> ignore
+  let y29 = rc_y(tree, "行29")
+  assert_true(
+    y29 > 350.0 && y29 < 370.0,
+    msg="after quiet reopen + shorter keys + to_end, 行29 should sit at foot (~360.0), got y=\{y29}",
+  )
+}
+
+///|
+test "flips: transitions_only leaves_room row disappearing quietly leaves no foot_room, while inside transition keeps it" {
+  let line_key = 50
+  let keys = @signals.signal(rc_ten_and([line_key]), same=fn(a, b) { a == b })
+  let scroll = @view.Scroll::list()
+  let tree = @view.Tree::new(fn(root) {
+    root.box(fn(o) {
+      o.transitions_only().width(Is(Some(300.0))).height(Is(Some(400.0))) |> ignore
+      o.scrolls_window(
+        scroll,
+        fn() { keys.get() },
+        est=40.0,
+        follows=fn() { true },
+        flips=true,
+        leaves_room=fn(k) { k == line_key },
+        fn(b, k) {
+          b.height(Is(Some(if k == line_key { 80.0 } else { 40.0 }))).words(Is("行\{k}")) |> ignore
+        },
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  tree.frame(390.0, 844.0, now=0.0) |> ignore
+  let y9_with_line = rc_y(tree, "行9")
+  assert_true(
+    (y9_with_line - 280.0).abs() < 1.0,
+    msg="with 80px line at foot, 行9 should be at 280.0, got \{y9_with_line}",
+  )
+  // Quiet removal (outside transition): must NOT leave 80px foot_room.
+  let t_quiet = rc_at
+  let t_quiet_end = t_quiet + @flex.move_most_ms
+  tree.advance(t_quiet)
+  keys.set(rc_ten_and([]))
+  tree.frame(390.0, 844.0, now=t_quiet) |> ignore
+  tree.frame(390.0, 844.0, now=t_quiet_end) |> ignore
+  let y9_quiet = rc_y(tree, "行9")
+  assert_true(
+    (y9_quiet - 360.0).abs() < 1.0,
+    msg="after quiet leaves_room removal, 行9 should sit at foot (~360.0), got \{y9_quiet}",
+  )
+  // Explicit transition removal: MUST still keep 80px foot_room.
+  let t_readd = t_quiet_end + 100.0
+  let t_trans = t_readd + 100.0
+  let t_trans_end = t_trans + @flex.move_most_ms
+  tree.advance(t_readd)
+  keys.set(rc_ten_and([line_key]))
+  tree.frame(390.0, 844.0, now=t_readd) |> ignore
+  tree.advance(t_trans)
+  @view.transition(fn() { keys.set(rc_ten_and([])) })
+  tree.frame(390.0, 844.0, now=t_trans) |> ignore
+  tree.frame(390.0, 844.0, now=t_trans_end) |> ignore
+  let y9_trans = rc_y(tree, "行9")
+  assert_true(
+    (y9_trans - 280.0).abs() < 1.0,
+    msg="after transition leaves_room removal, 行9 should stay at ~280.0 (foot_room kept), got \{y9_trans}",
+  )
+}
+
+///|
+test "scrolls_window: non-foot scroll past new short keys still renders the new rows instead of getting stuck empty" {
+  let keys = @signals.signal(Array::makei(50, fn(i) { i }), same=fn(a, b) { a == b })
+  let scroll = @view.Scroll::list()
+  let tree = @view.Tree::new(fn(root) {
+    root.box(fn(o) {
+      o.width(Is(Some(300.0))).height(Is(Some(400.0))) |> ignore
+      o.scrolls_window(
+        scroll,
+        fn() { keys.get() },
+        est=40.0,
+        follows=fn() { true },
+        from_end=true,
+        flips=false,
+        fn(b, k) { b.height(Is(Some(40.0))).words(Is("行\{k}")) |> ignore },
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  tree.frame(390.0, 844.0, now=0.0) |> ignore
+  // Scroll to 1200 (off foot, total height 2000).
+  let t_scroll = rc_at / 2.0
+  let t_shrink = rc_at
+  let t_after = rc_at + 100.0
+  scroll.put(1200.0)
+  tree.frame(390.0, 844.0, now=t_scroll) |> ignore
+  assert_true(!scroll.at_foot_now(), msg="expected off foot at 1200")
+  // Suddenly replace keys with a short disjoint list (3 rows = 120px tall < 1200).
+  tree.advance(t_shrink)
+  keys.set([100, 101, 102])
+  tree.frame(390.0, 844.0, now=t_shrink) |> ignore
+  tree.frame(390.0, 844.0, now=t_after) |> ignore
+  let y102 = rc_y(tree, "行102")
+  assert_true(
+    y102 >= 0.0 && y102 < 400.0,
+    msg="short replacement row 行102 must be visible in viewport [0, 400), got y=\{y102}",
+  )
+}
+
+///|
+test "flips: trimming an off-screen row under a top placeholder inside transition does not accumulate foot_room" {
+  let trimmed : Array[Int] = [0]
+  for i in 2..<20 {
+    trimmed.push(i)
+  }
+  let looks = [rc_at, rc_at + @flex.move_most_ms / 2.0, rc_at + @flex.move_most_ms]
+  for rate in rc_rates {
+    let keys = @signals.signal(Array::makei(20, fn(i) { i }), same=fn(a, b) { a == b })
+    let scroll = @view.Scroll::list()
+    let tree = @view.Tree::new(fn(root) {
+      root.box(fn(o) {
+        o.transitions_only().width(Is(Some(300.0))).height(Is(Some(200.0))) |> ignore
+        o.scrolls_window(
+          scroll,
+          fn() { keys.get() },
+          est=40.0,
+          follows=fn() { true },
+          from_end=true,
+          flips=true,
+          fn(b, k) { b.height(Is(Some(40.0))).words(Is("行\{k}")) |> ignore },
+        )
+        |> ignore
+      })
+      |> ignore
+    })
+    tree.frame(390.0, 844.0, now=0.0) |> ignore
+    let y0 = rc_y(tree, "行19")
+    assert_true((y0 - 160.0).abs() < 1.0, msg="at \{rate}: initial 行19 should be at ~160.0, got \{y0}")
+    let ys = rc_walk(
+      tree,
+      [(rc_at, fn() { @view.transition(fn() { keys.set(trimmed) }) })],
+      looks,
+      rate,
+      fn() { rc_y(tree, "行19") },
+    )
+    for j, y in ys {
+      assert_true(
+        (y - 160.0).abs() < 1.0,
+        msg="at \{rate}, look \{j}: 行19 drifted from foot (~160.0) to \{y}",
+      )
+    }
+  }
+}
+
+///|
+/// The drawn top and seen height of the words that start as `start` and their scale, the drawn top of the words `under`
+/// (a line laid under them in their block), in `tree`.
+fn lf_over_under(tree : @view.Tree, start : String, under : String) -> (Double, Double, Double, Double) {
+  let scales : Array[Double] = []
+  let held = tree.drawn_held(scales~)
+  let mut p = (rc_none, rc_none, rc_none)
+  let mut d = rc_none
+  for i, e in held {
+    if e.0.words.has_prefix(start) {
+      p = (e.0.y, e.0.h, scales[i])
+    } else if e.0.words == under {
+      d = e.0.y
+    }
+  }
+  (p.0, p.1, p.2, d)
+}
+
+///|
+test "flips: a block laid out narrower as its column sets off on a way to it, its words broken to more lines over a line under them: drawn at their size, opened from their top, never over the line under them" {
+  let looks = rc_looks(rc_at + 600.0)
+  for rate in rc_rates {
+    let w = @signals.signal(300.0, same=fn(a, b) { a == b })
+    let words = @signals.signal(lf_anew_words + lf_anew_words, same=fn(a, b) { a == b })
+    let gap : Ref[@view.View?] = Ref(None)
+    let scroll = @view.Scroll::list()
+    let keys = @signals.signal(rc_ten_and([]), same=fn(a, b) { a == b })
+    let tree = @view.Tree::new(fn(root) {
+      root.box(fn(o) {
+        o.width(By(fn() { Some(w.get()) })).height(Is(Some(400.0))) |> ignore
+        o.scrolls_window(scroll, fn() { keys.get() }, est=40.0, follows=fn() { true }, flips=true, fn(b, k) {
+          if k == 9 {
+            b.box(fn(g) {
+              gap.val = Some(g)
+              g.height(By(fn() { Some(if w.get() > 200.0 { 12.0 } else { 8.0 }) })).shrink(Is(0.0)) |> ignore
+            })
+            |> ignore
+            b.box(fn(t) { t.words(By(fn() { words.get() })) |> ignore }) |> ignore
+            b.box(fn(t) { t.words(Is("下面一行")) |> ignore }) |> ignore
+          } else {
+            b.height(Is(Some(40.0))).words(Is("行\{k}")) |> ignore
+          }
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    tree.frame(390.0, 844.0) |> ignore
+    let from = lf_words_tall(tree, "一段")
+    let got = rc_walk(tree, [(rc_at, fn() {
+      gap.val.unwrap().resizes() |> ignore
+      w.set(160.0)
+    })], looks, rate, fn() { lf_over_under(tree, "一段", "下面一行") })
+    let to = lf_words_tall(tree, "一段")
+    assert_true(to - from > 20.0, msg="at \{rate} a second: no more lines: \{from} to \{to} tall")
+    for i, g in got {
+      let (py, ph, sc, dy) = g
+      assert_true(
+        py != rc_none && dy != rc_none && py + ph <= dy + 0.5 && (sc - 1.0).abs() < 0.0001,
+        msg="at \{rate} a second, at \{looks[i]}: the words drawn from \{py}, \{ph} of them seen, at \{sc}; the line under them at \{dy}\n\{Repr(got)}",
+      )
+    }
+  }
+}
+
+///|
+/// Where the block of ground `g` is drawn now, its top and its foot; none where it is not.
+fn fp_block(t : @view.Tree, g : Int64) -> (Double, Double)? {
+  match t.drawn().filter(fn(d) { d.ground == g }) {
+    [d, ..] => Some((d.y, d.y + d.h))
+    _ => None
+  }
+}
+
+///|
+test "flips: a key come revealing what it holds at its own size, a key come under it in the same change: the one under it goes under it all the way, never over it" {
+  let keys = @signals.signal(rc_ten_and([]), same=fn(a, b) { a == b })
+  let shown = 0x810000FFL
+  let under = 0x820000FFL
+  let tree = @view.Tree::new(fn(root) {
+    root.box(fn(o) {
+      o.width(Is(Some(300.0))).height(Is(Some(400.0))) |> ignore
+      o.scrolls_window(@view.Scroll::list(), fn() { keys.get() }, est=40.0, follows=fn() { true }, flips=true, fn(b, k) {
+        match k {
+          81 =>
+            b.height(Is(Some(80.0)))
+            .ground(Is(shown))
+            .box(fn(w) { w.words(Is("行81")).spatial_reveal(Is(rc_at)) |> ignore })
+            |> ignore
+          82 => b.height(Is(Some(40.0))).ground(Is(under)).words(Is("行82")) |> ignore
+          _ => b.height(Is(Some(40.0))).words(Is("行\{k}")) |> ignore
+        }
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  tree.frame(390.0, 844.0) |> ignore
+  tree.advance(rc_at)
+  keys.set(rc_ten_and([81, 82]))
+  tree.frame(390.0, 844.0, now=rc_at) |> ignore
+  let mut ms = 0.0
+  let mut seen = 0
+  while ms < 600.0 {
+    ms = ms + 1000.0 / 60.0
+    tree.frame(390.0, 844.0, now=rc_at + ms) |> ignore
+    match (fp_block(tree, shown), fp_block(tree, under)) {
+      (Some((_, foot)), Some((top, _))) => {
+        seen = seen + 1
+        assert_true(top >= foot - 0.5, msg="at \{ms}: 行82 from \{top}, over 行81 down to \{foot}")
+      }
+      _ => ()
+    }
+  }
+  assert_true(seen > 0, msg="the two never drawn")
+}

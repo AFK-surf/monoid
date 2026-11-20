@@ -79,7 +79,7 @@ fn held_core(
 /// emptied under them).
 fn new_chat_sent(t : @ui.Tester, words : String) -> (Double, Double) raise {
   let (_, y) = bar_places_at()
-  t.tap(195.0, y - 28.0 - 4.0)
+  t.tap(bar_action_x, y)
   t.run_for(@ui.move_most_ms)
   t.tap_text("做任何事")
   t.type_text(words)
@@ -207,7 +207,7 @@ test "a new chat's first words sent with the keyboard up: no words over others o
     let unread = @signals.signal(true)
     let t = held_core(held, unread)
     let (_, y) = bar_places_at()
-    t.tap(195.0, y - 28.0 - 4.0)
+    t.tap(bar_action_x, y)
     t.run_for(@ui.move_most_ms)
     t.tap_text("做任何事")
     keyboard_up(t, 336.0)
@@ -339,12 +339,18 @@ test "a new chat's first words sent: its scene fades where it is from then, as t
     let title = "想让 agent 做什么？"
     new_chat_sent(t, "把发布说明写一下") |> ignore
     let at = seen_once(t, title)
-    // halfway, the chat not made yet (the core's answers kept), the page it already: where it was, half faded
+    // halfway, the chat not made yet (the core's answers kept), the page it already: where it was (or drifting gently
+    // upward on the node choreography), half faded
     t.run_for(new_leave_ms / 2.0)
     assert_true(app.nav.top() is Chat(_))
     match t.words().filter(fn(w) { w.0 == title }) {
       [w] => {
-        assert_at(at, (w.1, w.2))
+        if @sfbase.chat_page_nodes.get() {
+          assert_true((w.1 - at.0).abs() <= 0.5, msg="x drifted from \{at.0} to \{w.1}")
+          assert_true(w.2 <= at.1 + 0.5 && w.2 >= at.1 - 10.5, msg="y drift out of range: \{at.1} -> \{w.2}")
+        } else {
+          assert_at(at, (w.1, w.2))
+        }
         assert_true(w.5 > 0.05 && w.5 < 0.95, msg="fading: \{w.5}")
       }
       ws => fail("「\{title}」 seen \{ws.length()} times")
@@ -376,7 +382,7 @@ test "a new chat's first words hold its composer as tall as it was while they ar
     let unread = @signals.signal(true)
     let t = held_core(held, unread)
     let (_, y) = bar_places_at()
-    t.tap(195.0, y - 28.0 - 4.0)
+    t.tap(bar_action_x, y)
     t.run_for(@ui.move_most_ms)
     t.tap_text("做任何事")
     t.type_text("第一行\n第二行\n第三行")
@@ -605,7 +611,7 @@ test "a new chat while its stations are read: its page as it will be, its first 
     let made = Ref(0)
     let t = reading_core(reading, made)
     let (_, y) = bar_places_at()
-    t.tap(195.0, y - 28.0 - 4.0)
+    t.tap(bar_action_x, y)
     t.run_for(@ui.move_most_ms)
     // the page's own words and its composer, nothing said of a station not known yet
     assert_true(t.find("想让 agent 做什么？") is Some(_))
@@ -756,7 +762,7 @@ test "a new chat's first words sent with the keyboard up: the chat it becomes wr
     // (the screen's keyboard: a finger the native input)
     let t = held_core(held, unread, finger=true)
     let (_, y) = bar_places_at()
-    t.tap(195.0, y - 28.0 - 4.0)
+    t.tap(bar_action_x, y)
     t.run_for(@ui.move_most_ms)
     t.tap_text("做任何事")
     keyboard_up(t, 336.0)
@@ -796,7 +802,7 @@ fn new_scene_frames(
   script : String,
 ) -> Array[(Double, Bool)] raise {
   new_run()
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   let src = fixture_app(mode, chat_nodes=true)
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, words_over_held=false)
   t.check_looks(false)

@@ -109,6 +109,8 @@ fn rig_mode_node(b : @view.View, core : Core, here : () -> Here, rig : () -> Jso
           })
         },
         chevron=false,
+        // (under way: a spinner at its end, pressed none, as the cloud and a station are asked)
+        busy=fn() { is_doing(core, ["rig.setMode"], [("station", id)]) },
       )
     })
     g.show(fn() { mine() != manager() }, fn(o) {

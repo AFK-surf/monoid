@@ -14,6 +14,8 @@ priv struct Agent {
   mcp_url : () -> String?
   can_compact : Bool
   outlived : () -> Bool
+  sign_in_expired : () -> Bool
+  lent_expired : () -> Bool
   /// Its events given its actor in the program (`route`): told each batch taken there, with its process's number.
   route : (((Int32, Int32) -> Bool)?) -> Unit
   prompt : async (String) -> Unit
@@ -112,7 +114,17 @@ fn ActorsProgram::new(ctx : P52) -> ActorsProgram {
   })
   // (where the station's database is, for what of the store an actor reads and writes itself: said first)
   ignore(p.post(jobj_of([("db", jstr(path([ctx.data, "stillfail.db"])))])))
+  match jfield(ctx.config, "maxConcurrentTurns") {
+    Number(n, ..) if n > 0.0 => p.set_max_concurrent_turns(n.to_int())
+    _ => ()
+  }
   p
+}
+
+///|
+fn ActorsProgram::set_max_concurrent_turns(self : ActorsProgram, n : Int) -> Unit {
+  let limit = if n > 0 { n } else { 0 }
+  ignore(self.post(jobj_of([("maxConcurrentTurns", jn(limit.to_double()))])))
 }
 
 ///|
@@ -129,7 +141,7 @@ fn ActorsProgram::lost(self : ActorsProgram, code : Int32) -> Unit {
   if !lost {
     return
   }
-  live_log(
+  slice_log(
     "error",
     "session",
     "the program running the sessions ended; the station ends with it, as in a crash",
@@ -219,14 +231,8 @@ fn ActorsProgram::ended(self : ActorsProgram) -> Unit {
 
 ///|
 fn ActorsProgram::said(self : ActorsProgram, said : Json) -> Unit {
-  match jnum_of(said, "seen") {
-    Some(n) => self.seen = n.to_int()
-    None => ()
-  }
-  match jnum_of(said, "active") {
-    Some(n) => self.active = n.to_int()
-    None => ()
-  }
+  if jnum_of(said, "seen") is Some(n) { self.seen = n.to_int() }
+  if jnum_of(said, "active") is Some(n) { self.active = n.to_int() }
   self.hear(said)
 }
 
@@ -247,16 +253,14 @@ fn ActorsProgram::hear(self : ActorsProgram, said : Json) -> Unit {
       self.timer_seq += 1
       let seq = self.timer_seq
       self.timers[id.to_int()] = seq
-      ignore(
-        self.ctx.host.rt.fork_daemon("actor's wait", on_error=e => @host.note("actor's wait failed: \{e}"), async fn() {
-          // timer: a wait of an actor's (its wait, a refill), on the hub's clock
-          @effect.sleep(if ms < 1.0 { 0 } else { ms.ceil().to_int() })
-          if self.timers.get(id.to_int()) == Some(seq) {
-            self.timers.remove(id.to_int())
-            ignore(self.post({ "due": jn(id) }))
-          }
-        }),
-      )
+      fork_bg(self.ctx.host, "actor's wait", async fn() {
+        // timer: a wait of an actor's (its wait, a refill), on the hub's clock
+        @effect.sleep(if ms < 1.0 { 0 } else { ms.ceil().to_int() })
+        if self.timers.get(id.to_int()) == Some(seq) {
+          self.timers.remove(id.to_int())
+          ignore(self.post({ "due": jn(id) }))
+        }
+      })
       return
     }
     None => ()
@@ -309,27 +313,22 @@ fn ActorsProgram::hear(self : ActorsProgram, said : Json) -> Unit {
           self.answering += counted
           let f = jtext(said, "fn").unwrap_or("")
           let args = jitems(jfield(said, "args"))
-          ignore(
-            self.ctx.host.rt.fork_daemon("shell's rpc", on_error=e => @host.note("shell's rpc failed: \{e}"), async fn() {
-              let answer = Ok(asked(f, args)) catch { e => Err(e) }
-              self.answering -= counted
-              match answer {
-                Ok({ "$programError": err, .. }) =>
-                  ignore(self.post({ "answer": jn(id), "error": err }))
-                Ok(v) => ignore(self.post({ "answer": jn(id), "value": v }))
-                Err(e) =>
-                  ignore(
-                    self.post({ "answer": jn(id), "error": error_of(e, "") }),
-                  )
-              }
-            }),
-          )
+          fork_bg(self.ctx.host, "shell's rpc", async fn() {
+            let answer = Ok(asked(f, args)) catch { e => Err(e) }
+            self.answering -= counted
+            match answer {
+              Ok({ "$programError": err, .. }) =>
+                ignore(self.post({ "answer": jn(id), "error": err }))
+              Ok(v) => ignore(self.post({ "answer": jn(id), "value": v }))
+              Err(e) =>
+                ignore(
+                  self.post({ "answer": jn(id), "error": error_of(e, "") }),
+                )
+            }
+          })
         }
         None =>
-          match jtext(said, "tell") {
-            Some(t) => told(t, jitems(jfield(said, "args")))
-            None => ()
-          }
+          if jtext(said, "tell") is Some(t) { told(t, jitems(jfield(said, "args"))) }
       }
       return
     }
@@ -342,27 +341,17 @@ fn ActorsProgram::hear(self : ActorsProgram, said : Json) -> Unit {
     self.answering += 1
     let f = jtext(said, "fn").unwrap_or("")
     let args = jitems(jfield(said, "args"))
-    ignore(
-      self.ctx.host.rt.fork_daemon("actor's rpc", on_error=e => @host.note("actor's rpc failed: \{e}"), async fn() {
-        let answer = Ok(actor.asked(f, args)) catch { e => Err(e) }
-        self.answering -= 1
-        match answer {
-          Ok(v) => ignore(self.post({ "answer": jn(id), "value": v }))
-          Err(e) =>
-            ignore(
-              self.post({
-                "answer": jn(id),
-                "error": error_of(e, actor.runtime),
-              }),
-            )
-        }
-      }),
-    )
+    fork_bg(self.ctx.host, "actor's rpc", async fn() {
+      let answer = Ok(actor.asked(f, args)) catch { e => Err(e) }
+      self.answering -= 1
+      match answer {
+        Ok(v) => ignore(self.post({ "answer": jn(id), "value": v }))
+        Err(e) =>
+          ignore(self.post({ "answer": jn(id), "error": error_of(e, actor.runtime) }))
+      }
+    })
   } else {
-    match jtext(said, "tell") {
-      Some(t) => actor.told_(t, jitems(jfield(said, "args")))
-      None => ()
-    }
+    if jtext(said, "tell") is Some(t) { actor.told_(t, jitems(jfield(said, "args"))) }
   }
 }
 
@@ -382,10 +371,7 @@ fn error_of(e : Error, runtime : String) -> Json {
   let id = actor_errors_next.val
   actor_errors[id] = e
   if actor_errors.length() > 256 {
-    match actor_errors.keys().next() {
-      Some(k) => actor_errors.remove(k)
-      None => ()
-    }
+    if actor_errors.keys().next() is Some(k) { actor_errors.remove(k) }
   }
   let said_own = e is @agent_drivers.Said(_)
   let missing = match e {
@@ -524,10 +510,7 @@ fn MbActor::mirrored(self : MbActor, state : Json) -> Unit {
     jitems(jfield(state, "unread"))
   }
   m.identity = jfield(state, "identity")
-  match jtext(state, "runtime") {
-    Some(r) => self.runtime = r
-    None => ()
-  }
+  if jtext(state, "runtime") is Some(r) { self.runtime = r }
 }
 
 ///|
@@ -599,9 +582,8 @@ fn MbActor::event(self : MbActor, generation : Int32, event : Json) -> Unit {
   if jfield(event, "routed") is True {
     if kind == "live" {
       let e = jfield(event, "event")
-      if jtext(e, "kind") == Some("phase") &&
-        jtext(e, "phase") == Some("requesting") &&
-        self.mirror.unread.length() > 0 {
+      // (cleared whether or not the program's mirror saying it unread has come yet: one coming later is from before)
+      if jtext(e, "kind") == Some("phase") && jtext(e, "phase") == Some("requesting") {
         self.mirror.unread = []
         self.routing_cleared = true
       }
@@ -622,9 +604,7 @@ fn MbActor::event(self : MbActor, generation : Int32, event : Json) -> Unit {
     if ek == "start" && jtext(e, "step") == Some("thinking") {
       return
     }
-    if ek == "phase" &&
-      jtext(e, "phase") == Some("requesting") &&
-      self.mirror.unread.length() > 0 {
+    if ek == "phase" && jtext(e, "phase") == Some("requesting") {
       self.mirror.unread = []
       self.read_at = self.sent + 1
     }
@@ -651,12 +631,10 @@ fn MbActor::event(self : MbActor, generation : Int32, event : Json) -> Unit {
     self.reads[read] = d
     let ctx = self.program.ctx
     let key = self.key
-    ignore(
-      ctx.host.rt.fork_daemon("turn's last read", on_error=e => @host.note("turn's last read failed: \{e}"), async fn() {
-        ctx.live_turn_ended(key)
-        ignore(d.succeed(()))
-      }),
-    )
+    fork_bg(ctx.host, "turn's last read", async fn() {
+      ctx.live_turn_ended(key)
+      ignore(d.succeed(()))
+    })
     self.post({ "event": event, "generation": ji(generation), "read": ji(read) })
     return
   }
@@ -706,10 +684,7 @@ fn MbActor::took(
   m["routed"] = ji(n)
   m["batch"] = ji(batch)
   m["generation"] = ji(generation)
-  match outcome {
-    Some(o) => m["outcome"] = o
-    None => ()
-  }
+  if outcome is Some(o) { m["outcome"] = o }
   self.post(Json::object(m))
   true
 }
@@ -719,7 +694,7 @@ fn MbActor::listener(
   self : MbActor,
   generation : Int32,
 ) -> (@jsjson.JValue) -> Unit {
-  e => self.event(generation, p52_json_of_jv(e))
+  e => self.event(generation, of_jv(e))
 }
 
 ///|
@@ -759,7 +734,7 @@ async fn MbActor::hub_asked(
     "idleMs" =>
       match
         self.idle_ms(
-          jnum_of(Json::object({ "n": a(0) }), "n").unwrap_or(
+          as_num(a(0)).unwrap_or(
             self.program.now(),
           ),
         ) {
@@ -776,7 +751,7 @@ async fn MbActor::hub_asked(
       }
     "unreadIn" => {
       let thread = a(0)
-      let before = jnum_of(Json::object({ "n": a(1) }), "n").unwrap_or(0.0)
+      let before = as_num(a(1)).unwrap_or(0.0)
       Json::array(
         self.mirror.unread.filter_map(u => {
           match u {
@@ -789,7 +764,7 @@ async fn MbActor::hub_asked(
     }
     // (said to the program)
     "notify" => {
-      let row = self.program.ctx.store("getSession", [jstr(self.key)])
+      let row = self.program.ctx.bus.store.get_session(self.key)
       match jfield(row, "archivedAt") {
         Null => ignore(self.call("notify", args))
         _ => ()
@@ -817,19 +792,16 @@ async fn MbActor::hub_asked(
       let token = self.next
       // (and how the conversations record it: a callback of theirs, `record`, that rereads what it is about and
       // writes in one transaction of theirs: conversations.mbt `state_write`; mb-actor.ts `stateForTurn`)
-      let record = jnum_of(Json::object({ "f": jfield(a(5), "$fn") }), "f").map(n => n.to_int())
+      let record = jnum_of(a(5), "$fn").map(n => n.to_int())
       self.records[token] = (
-        jtext(Json::object({ "w": a(2) }), "w"),
+        as_text(a(2)),
         a(3),
         a(4) is True,
         record,
       )
       let done = () => {
         self.records.remove(token)
-        match record {
-          Some(id) => chat_state.callbacks.remove(id)
-          None => ()
-        }
+        if record is Some(id) { chat_state.callbacks.remove(id) }
       }
       let r = self.call("stateForTurn", [a(0), a(1), ji(token)]) catch {
         e => {
@@ -865,11 +837,9 @@ async fn MbActor::hub_asked(
       }
     }
     "close" => {
-      ignore(
-        self.program.ctx.host.rt.fork_daemon("actor closed", on_error=e => @host.note("actor closed failed: \{e}"), async fn() {
-          ignore(self.call("close", []))
-        }),
-      )
+      fork_bg(self.program.ctx.host, "actor closed", async fn() {
+        ignore(self.call("close", []))
+      })
       self.closing()
       Json::null()
     }
@@ -912,10 +882,7 @@ async fn MbActor::adopt(
       self.mirror.turn = jtext(jfield(snap, "turn"), "id")
       self.mirror.idle_since = self.program.now() -
         jnum_of(snap, "idleMs").unwrap_or(0.0)
-      match jtext(snap, "runtime") {
-        Some(r) => self.runtime = r
-        None => ()
-      }
+      if jtext(snap, "runtime") is Some(r) { self.runtime = r }
     }
     None => ()
   }
@@ -932,7 +899,7 @@ async fn MbActor::adopt(
     None => []
   }
   self.adopting = None
-  let row = self.program.ctx.store("getSession", [jstr(self.key)])
+  let row = self.program.ctx.bus.store.get_session(self.key)
   // (its adopt said to the program before what came meanwhile: mb-actor.ts `adopt`)
   let answer = if self.closed { None } else { self.sent += 1; self.program.call_posted(self.key, "adopt", [bare, taken, jstr(profile), row]) }
   match agent {
@@ -944,10 +911,7 @@ async fn MbActor::adopt(
     }
     None => ()
   }
-  match answer {
-    Some(d) => ignore(d.wait())
-    None => ()
-  }
+  if answer is Some(d) { ignore(d.wait()) }
 }
 
 // ── what the program asks of the station ──
@@ -963,15 +927,15 @@ fn MbActor::told_(self : MbActor, f : String, args : Array[Json]) -> Unit {
         Object(m) => Json::object(m)
         _ => Json::object({})
       }
-      live_log(
-        jtext(Json::object({ "l": a(0) }), "l").unwrap_or("info"),
+      slice_log(
+        as_text(a(0)).unwrap_or("info"),
         "session",
-        jtext(Json::object({ "m": a(1) }), "m").unwrap_or(""),
+        as_text(a(1)).unwrap_or(""),
         fields,
       )
     }
     "node.tasks" => {
-      let tasks = match jnum_of(Json::object({ "h": a(0) }), "h") {
+      let tasks = match as_num(a(0)) {
         Some(h) =>
           match self.agents.get(h.to_int()) {
             Some((_, s)) => (s.background)()
@@ -984,7 +948,7 @@ fn MbActor::told_(self : MbActor, f : String, args : Array[Json]) -> Unit {
     "node.working" => ctx.working(self.key, jitems(a(0)), a(1))
     "chat.standsAt" => ctx.stands_at(a(0), a(1), a(2), a(3))
     _ =>
-      live_log(
+      slice_log(
         "warn",
         "session",
         "a session told the station what it does not know",
@@ -1012,7 +976,7 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
     return ctx.deps(self.key, name, args)
   }
   if part == "agent" {
-    let handle = jnum_of(Json::object({ "h": a(0) }), "h")
+    let handle = as_num(a(0))
       .unwrap_or(-1.0)
       .to_int()
     guard self.agents.get(handle) is Some((_, s)) else {
@@ -1033,11 +997,11 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
         Json::null()
       }
       "prompt" => {
-        (s.prompt)(jtext(Json::object({ "t": r(0) }), "t").unwrap_or(""))
+        (s.prompt)(as_text(r(0)).unwrap_or(""))
         Json::null()
       }
       "steer" =>
-        jb((s.steer)(jtext(Json::object({ "t": r(0) }), "t").unwrap_or("")))
+        jb((s.steer)(as_text(r(0)).unwrap_or("")))
       "abort" => {
         (s.abort)()
         Json::null()
@@ -1048,6 +1012,8 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
       }
       "id" => jstr((s.id)())
       "outlived" => jb((s.outlived)())
+      "signInExpired" => jb((s.sign_in_expired)())
+      "lentExpired" => jb((s.lent_expired)())
       _ => Json::null()
     }
   }
@@ -1058,7 +1024,7 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
     }
     return jstr(
       ctx.words.tr(
-        jtext(Json::object({ "k": a(0) }), "k").unwrap_or(""),
+        as_text(a(0)).unwrap_or(""),
         args=args_t,
         lang=ctx.lang(),
       ),
@@ -1066,7 +1032,7 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
   }
   match name {
     "words" => {
-      let named = jtext(Json::object({ "n": a(0) }), "n").unwrap_or("")
+      let named = as_text(a(0)).unwrap_or("")
       let rest = args[1:].to_owned()
       // (instructions.ts's, the agent's own words; the rest actor.ts's in the station's words)
       match named {
@@ -1108,26 +1074,26 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
     "cardAsks" =>
       ctx.card_asks(
         self.key,
-        jtext(Json::object({ "i": a(0) }), "i").unwrap_or(""),
-        jnum_of(Json::object({ "s": a(1) }), "s"),
+        as_text(a(0)).unwrap_or(""),
+        as_num(a(1)),
       )
     "keepAsk" =>
       ctx.keep_ask(
         self.key,
-        jtext(Json::object({ "i": a(0) }), "i").unwrap_or(""),
+        as_text(a(0)).unwrap_or(""),
         a(1),
       )
     "timed" =>
       jstr(
         @session_hub.timed(
-          jtext(Json::object({ "t": a(0) }), "t").unwrap_or(""),
+          as_text(a(0)).unwrap_or(""),
           self.program.now(),
         ),
       )
     "withChoices" => {
       let (text, told) = ctx.handed_with_choices(
         self.key,
-        jtext(Json::object({ "t": a(0) }), "t").unwrap_or(""),
+        as_text(a(0)).unwrap_or(""),
       )
       self.next += 1
       let id = self.next
@@ -1135,7 +1101,7 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
       { "text": jstr(text), "told": ji(id) }
     }
     "told" => {
-      let id = jnum_of(Json::object({ "i": a(0) }), "i")
+      let id = as_num(a(0))
         .unwrap_or(-1.0)
         .to_int()
       match self.told.get(id) {
@@ -1172,7 +1138,7 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
         self.key,
         jitems(a(0)),
         a(1) is True,
-        jtext(Json::object({ "p": a(2) }), "p"),
+        as_text(a(2)),
         r => self.runtime = r,
         () => {
           gen.val = self.next_generation()
@@ -1195,7 +1161,7 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
       }
     }
     "retune" => {
-      let handle = jnum_of(Json::object({ "h": a(0) }), "h")
+      let handle = as_num(a(0))
         .unwrap_or(-1.0)
         .to_int()
       match self.agents.get(handle) {
@@ -1204,7 +1170,7 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
             self.key,
             s,
             self.runtime,
-            jtext(Json::object({ "p": a(1) }), "p"),
+            as_text(a(1)),
             a(2) is True,
             a(3) is True,
           )
@@ -1215,34 +1181,28 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
     "outlived" =>
       match
         self.agents.get(
-          jnum_of(Json::object({ "h": a(0) }), "h").unwrap_or(-1.0).to_int(),
+          as_num(a(0)).unwrap_or(-1.0).to_int(),
         ) {
         Some((_, s)) => jb((s.outlived)())
         None => jb(false)
       }
     "notice" => {
-      let about = jtext(Json::object({ "a": a(4) }), "a")
+      let about = as_text(a(4))
       let quiet = a(5) is True
       ctx.post_notice(
         self.key,
-        jtext(Json::object({ "t": a(0) }), "t").unwrap_or(""),
+        as_text(a(0)).unwrap_or(""),
         a(1),
         a(2),
         a(3),
         where_=where_ => {
           match about {
             Some(turn) => {
-              ignore(
-                ctx.store("setAbout", [jstr(turn), where_]) catch {
-                  _ => Json::null()
-                },
-              )
+              ctx.bus.store.set_about(jstr(turn), where_) catch {
+                _ => ()
+              }
               if !quiet {
-                ignore(
-                  ctx.store("notify", [jstr(self.key)]) catch {
-                    _ => Json::null()
-                  },
-                )
+                ctx.bus.store.notify(self.key)
               }
             }
             None => ()
@@ -1253,7 +1213,7 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
     }
     "saidLast" => ctx.last_station_said(self.key)
     "read" => {
-      let id = jnum_of(Json::object({ "i": a(0) }), "i")
+      let id = as_num(a(0))
         .unwrap_or(-1.0)
         .to_int()
       match self.reads.get(id) {
@@ -1268,7 +1228,7 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
     "stateWrite" => {
       let id = a(0)
       let state = a(1)
-      let token = jnum_of(Json::object({ "t": a(2) }), "t")
+      let token = as_num(a(2))
         .unwrap_or(-1.0)
         .to_int()
       guard self.records.get(token) is Some((words, about, watch, record)) else {
@@ -1278,23 +1238,21 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
         match words {
           Some(w) =>
             if jtext(state, "kind") == Some("waiting") {
-              ignore(ctx.store("setWaitFor", [id, jstr(w), jb(watch)]))
+              ctx.bus.store.set_wait_for(id, jstr(w), watch)
             } else {
-              ignore(ctx.store("setNeed", [id, jstr(w)]))
+              ctx.bus.store.set_need(id, jstr(w))
             }
           None => ()
         }
-        ignore(ctx.store("setAbout", [id, current]))
-        ignore(
-          ctx.store("declareTurn", [
-            id,
-            jfield(state, "kind"),
-            if jtext(state, "kind") == Some("waiting") {
-              jfield(state, "seconds")
-            } else {
-              Json::null()
-            },
-          ]),
+        ctx.bus.store.set_about(id, current)
+        ctx.bus.store.declare_turn(
+          id,
+          jfield(state, "kind"),
+          if jtext(state, "kind") == Some("waiting") {
+            jfield(state, "seconds")
+          } else {
+            Json::null()
+          },
         )
       }
       // (the conversations' record, where they gave one: it rereads what the state is about and calls `write` with it
@@ -1304,10 +1262,10 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
           chat_state.next_cb += 1
           let write_id = chat_state.next_cb
           chat_state.callbacks[write_id] = async fn(given) {
-            write(p52_json_of_jv(given.get(0).unwrap_or(Null)))
+            write(of_jv(given.get(0).unwrap_or(Null)))
             Null
           }
-          ignore(record_fn([Obj([(@jsjson.units("$fn"), Num(write_id.to_double()))])])) catch {
+          ignore(record_fn([Obj([("$fn", Num(write_id.to_double()))])])) catch {
             e => {
               chat_state.callbacks.remove(write_id)
               raise e
@@ -1322,8 +1280,8 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
     "limitAfter" => ctx.limit_after(self.key, a(0))
     "canUpdateCodex" => jb(ctx.can_update_codex())
     "codexBefore" => {
-      let id = jnum_of(Json::object({ "i": a(1) }), "i").unwrap_or(0.0).to_int()
-      let version = match jnum_of(Json::object({ "h": a(0) }), "h") {
+      let id = as_num(a(1)).unwrap_or(0.0).to_int()
+      let version = match as_num(a(0)) {
         Some(h) =>
           match self.agents.get(h.to_int()) {
             Some((_, s)) => (s.runtime_version)()
@@ -1335,25 +1293,23 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
       Json::null()
     }
     "updateCodex" => {
-      let id = jnum_of(Json::object({ "i": a(0) }), "i").unwrap_or(0.0).to_int()
+      let id = as_num(a(0)).unwrap_or(0.0).to_int()
       let before = self.codex.get(id).unwrap_or(None)
       self.codex.remove(id)
-      ignore(
-        ctx.host.rt.fork_daemon("codex updated", on_error=e => @host.note("codex updated failed: \{e}"), async fn() {
-          let why = try {
-            ctx.update_codex(before)
-            None
-          } catch {
-            e => Some(said_of(e))
+      fork_bg(ctx.host, "codex updated", async fn() {
+        let why = try {
+          ctx.update_codex(before)
+          None
+        } catch {
+          e => Some(said_of(e))
+        }
+        if !self.closed {
+          match why {
+            Some(w) => self.post({ "codexUpdated": ji(id), "why": jstr(w) })
+            None => self.post({ "codexUpdated": ji(id) })
           }
-          if !self.closed {
-            match why {
-              Some(w) => self.post({ "codexUpdated": ji(id), "why": jstr(w) })
-              None => self.post({ "codexUpdated": ji(id) })
-            }
-          }
-        }),
-      )
+        }
+      })
       Json::null()
     }
     _ =>

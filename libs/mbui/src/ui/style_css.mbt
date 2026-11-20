@@ -412,6 +412,8 @@ fn Css::align(self : Css) -> Align raise CssError {
     "ACenter" => ACenter
     "AEnd" => AEnd
     "AStretch" => AStretch
+    "AFirstLine" => AFirstLine
+    "ABaseline" => ABaseline
     _ => self.fail("no Align \{n}")
   }
 }

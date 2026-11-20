@@ -754,9 +754,9 @@ fn notice_after(m : Message) -> (String, String, String)? {
 /// What still.fail itself says (SystemNotice): a pill across the chat in one line, a failure in red (the core's
 /// `notice`); pressed, all its words, what failed said of it (`detail`, as it said it), and its time under it. One that
 /// a chat's run changed: what changed, else (no room on the line) what it runs on now; pressed, how it ran and runs,
-/// whole (`short`, `lines`). One about a profile: what went wrong links to that
-/// profile's page; one saying the station lacks the chat's runtime ends in installing it; a failure the station takes
-/// reports of, in reporting it.
+/// whole (`short`, `lines`). One about a profile: what to do of it at its end (· 重新登录, · 设置代理), else what went
+/// wrong, links to that profile's page; one saying the station lacks the chat's runtime ends in installing it; a
+/// failure the station takes reports of, in reporting it.
 fn system_notice(c : @ui.Ctx, src : Source, here : MessageHere, m : Message) -> Unit {
   let station = here.station
   let id = c.id("notice/" + m.ts)
@@ -932,7 +932,11 @@ fn system_notice(c : @ui.Ctx, src : Source, here : MessageHere, m : Message) -> 
               }
             })
           (None, None) =>
-            if m.reportable {
+            if m.profile != "" && m.notice_profile_action != "" {
+              notice_action(c, "notice-profile-action/" + m.ts, m.notice_profile_action, ink, false, strut~, fn() {
+                open_page(Setting(@settings.Route::Profile(station, m.profile)))
+              })
+            } else if m.reportable {
               report_action(c, src, station, m, ink, strut~)
             }
         }

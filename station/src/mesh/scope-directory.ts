@@ -58,6 +58,10 @@ export class ScopeDirectory {
   ready(scope: string, node: string): boolean {
     return !this.#closed && this.#applied.has(scope) && this.#wanted.get(scope)?.nodes.has(node) === true;
   }
+  // Whether `node` is on the scope's roster here: an exchange asks a peer for only these (scope-exchange.ts).
+  admits(scope: string, node: string): boolean {
+    return this.#wanted.get(scope)?.nodes.has(node) === true;
+  }
   records(scope: string): Announcement[] {
     const r = this.#wanted.get(scope);
     return r ? this.kept.list(scope, r.nodes).filter((record) => {

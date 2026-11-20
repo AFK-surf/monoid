@@ -250,3 +250,80 @@ test "a trackpad starts where the station's pointer is: at its first press and a
   r.t.run_for(screen_double_tap_ms)
   screen_done(r.t)
 }
+
+///|
+/// A pointer the station drew itself, 28x24 points, its hot spot 6,4 in: its word and its PNG.
+let custom_shape : String = "custom:0123456789abcdef"
+
+///|
+fn ScreenRig::custom_cursor_said(self : ScreenRig) -> Unit {
+  let png = @pixels.png(28, 24, FixedArray::make(28 * 24 * 4, b'\xff'))
+  self.say(
+    { "cursorImage": { "shape": Json::string(custom_shape), "w": 28.0, "h": 24.0, "hx": 6.0, "hy": 4.0 } },
+    bytes=png,
+  )
+}
+
+///|
+test "a pointer the station drew itself is drawn in its own picture, its size, its hot spot where the station's pointer is; said before its picture or after" {
+  for picture_first in [true, false] {
+    let r = screen_rig()
+    r.state("live", others=[], more={ "kind": "desktop" })
+    r.config()
+    r.frame(1000.0)
+    if picture_first {
+      r.custom_cursor_said()
+      r.cursor_at(0.5, 0.5, custom_shape)
+    } else {
+      // its word first: the arrow till its picture comes
+      r.cursor_at(0.5, 0.5, custom_shape)
+      assert_false(drawn_pointer(r).unwrap().0.contains(custom_shape))
+      r.custom_cursor_said()
+    }
+    let (src, x, y, w) = drawn_pointer(r).unwrap()
+    // (the draw list's source, quoted)
+    assert_eq(src, "\"\{custom_cursor_key(custom_shape)}\"", msg="\{picture_first}")
+    assert_eq(w, 28.0)
+    let (px, py) = r.at(0.5, 0.5)
+    assert_true(close_to(x + 6.0, px) && close_to(y + 4.0, py), msg="\{picture_first}: at \{x}, \{y}")
+    screen_done(r.t)
+  }
+}
+
+///|
+test "a picture of a pointer not sound is not taken: past 128 points, its hot spot outside, no PNG" {
+  let r = screen_rig()
+  r.state("live", others=[], more={ "kind": "desktop" })
+  let png = @pixels.png(28, 24, FixedArray::make(28 * 24 * 4, b'\xff'))
+  r.say({ "cursorImage": { "shape": Json::string(custom_shape), "w": 200.0, "h": 24.0, "hx": 6.0, "hy": 4.0 } }, bytes=png)
+  r.say({ "cursorImage": { "shape": Json::string(custom_shape), "w": 28.0, "h": 24.0, "hx": 30.0, "hy": 4.0 } }, bytes=png)
+  r.say({ "cursorImage": { "shape": Json::string(custom_shape), "w": 28.0, "h": 24.0, "hx": 6.0, "hy": 4.0 } }, bytes=b"not a png")
+  r.say({ "cursorImage": { "shape": "default", "w": 28.0, "h": 24.0, "hx": 6.0, "hy": 4.0 } }, bytes=png)
+  assert_eq(r.sess().custom_cursors.length(), 0)
+  screen_done(r.t)
+}
+
+///|
+test "on a layered host, a pointer the station drew itself is told the host in its picture; its moves build nothing" {
+  let r = screen_rig(h264=true)
+  let st = r.layered()
+  r.custom_cursor_said()
+  r.say(r.cursor_moved(0.5, 0.5, shape=custom_shape))
+  let key = custom_cursor_key(custom_shape)
+  assert_true(pointer_told(r, st).contains("pointer \{key} 28x24 hot=6,4"), msg=pointer_told(r, st).join("\n"))
+  assert_true(drawn_pointer(r) is None)
+  // moved, its shape the same: taken as it comes, the host told where, nothing built
+  r.t.frame_at(r.t.next_frame_time())
+  let moved = r.cursor_moved(0.25, 0.75, shape=custom_shape)
+  assert_true(screen_value_quiet(moved))
+  let (on_value, _) = r.views[r.views.length() - 1]
+  on_value(moved, None)
+  assert_eq(pointer_told(r, st).last(), Some("pointer at 0.25 0.75"))
+  r.t.frame_at(r.t.next_frame_time())
+  assert_eq(r.t.built_why(), "")
+  // a pointer word alone, its shape the same: quiet too
+  assert_true(screen_value_quiet({ "cursor": { "x": 0.3, "y": 0.3, "shape": Json::string(custom_shape) } }))
+  // its picture said again (the same shape): not quiet, taken
+  assert_false(screen_value_quiet({ "cursorImage": { "shape": Json::string(custom_shape) } }))
+  screen_done(r.t)
+}

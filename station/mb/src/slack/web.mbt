@@ -72,7 +72,7 @@ pub impl Show for SlackWords with output(self, logger) {
 /// A value as a form field: strings as they are, anything else as JSON (blocks, arrays), as Slack takes them.
 pub fn field(v : J) -> String {
   match v {
-    Str(u) => @jsjson.text(u)
+    Str(u) => @jsjson.sanitize_str(u)
     other => stringify(other)
   }
 }
@@ -146,28 +146,7 @@ fn form_part(s : String) -> String {
 ///|
 /// A string with its lone surrogates made U+FFFD (what a USVString is).
 fn well_formed(s : String) -> String {
-  let out = StringBuilder::new()
-  let n = s.length()
-  let mut i = 0
-  while i < n {
-    let c = s.unsafe_charcode_at(i)
-    if c >= 0xd800 && c <= 0xdbff && i + 1 < n {
-      let d = s.unsafe_charcode_at(i + 1)
-      if d >= 0xdc00 && d <= 0xdfff {
-        out.write_char(c.unsafe_to_char())
-        out.write_char(d.unsafe_to_char())
-        i += 2
-        continue
-      }
-    }
-    if c >= 0xd800 && c <= 0xdfff {
-      out.write_char('\u{fffd}')
-    } else {
-      out.write_char(c.unsafe_to_char())
-    }
-    i += 1
-  }
-  out.to_string()
+  @jsjson.sanitize_str(s)
 }
 
 ///|
@@ -313,7 +292,7 @@ pub async fn SlackClient::api(self : SlackClient, meth : String, params : Params
   if !is_true(at(Some(body), "ok")) {
     let code = match at(Some(body), "error") {
       None => "undefined"
-      Some(Str(u)) => @jsjson.text(u)
+      Some(Str(u)) => @jsjson.sanitize_str(u)
       Some(e) => stringify(e)
     }
     raise fail_("slack \{meth}: \{code}")
@@ -337,7 +316,7 @@ pub async fn SlackClient::app(
   }
   if !is_true(at(Some(data), "ok")) {
     let code = match at(Some(data), "error") {
-      Some(Str(u)) => @jsjson.text(u)
+      Some(Str(u)) => @jsjson.sanitize_str(u)
       None | Some(Null) => "HTTP \{status}"
       Some(e) => stringify(e)
     }
@@ -398,133 +377,12 @@ pub async fn SlackClient::upload(self : SlackClient, url : String, bytes : Bytes
 /// The reason phrase an HTTP status goes with (Node's STATUS_CODES, what a server says by default: the shell's `fetch`
 /// gives none of its own).
 fn reason_phrase(status : Int) -> String {
-  match status {
-    100 => "Continue"
-    101 => "Switching Protocols"
-    102 => "Processing"
-    103 => "Early Hints"
-    200 => "OK"
-    201 => "Created"
-    202 => "Accepted"
-    203 => "Non-Authoritative Information"
-    204 => "No Content"
-    205 => "Reset Content"
-    206 => "Partial Content"
-    207 => "Multi-Status"
-    208 => "Already Reported"
-    226 => "IM Used"
-    300 => "Multiple Choices"
-    301 => "Moved Permanently"
-    302 => "Found"
-    303 => "See Other"
-    304 => "Not Modified"
-    305 => "Use Proxy"
-    307 => "Temporary Redirect"
-    308 => "Permanent Redirect"
-    400 => "Bad Request"
-    401 => "Unauthorized"
-    402 => "Payment Required"
-    403 => "Forbidden"
-    404 => "Not Found"
-    405 => "Method Not Allowed"
-    406 => "Not Acceptable"
-    407 => "Proxy Authentication Required"
-    408 => "Request Timeout"
-    409 => "Conflict"
-    410 => "Gone"
-    411 => "Length Required"
-    412 => "Precondition Failed"
-    413 => "Payload Too Large"
-    414 => "URI Too Long"
-    415 => "Unsupported Media Type"
-    416 => "Range Not Satisfiable"
-    417 => "Expectation Failed"
-    418 => "I'm a Teapot"
-    421 => "Misdirected Request"
-    422 => "Unprocessable Entity"
-    423 => "Locked"
-    424 => "Failed Dependency"
-    425 => "Too Early"
-    426 => "Upgrade Required"
-    428 => "Precondition Required"
-    429 => "Too Many Requests"
-    431 => "Request Header Fields Too Large"
-    451 => "Unavailable For Legal Reasons"
-    500 => "Internal Server Error"
-    501 => "Not Implemented"
-    502 => "Bad Gateway"
-    503 => "Service Unavailable"
-    504 => "Gateway Timeout"
-    505 => "HTTP Version Not Supported"
-    506 => "Variant Also Negotiates"
-    507 => "Insufficient Storage"
-    508 => "Loop Detected"
-    509 => "Bandwidth Limit Exceeded"
-    510 => "Not Extended"
-    511 => "Network Authentication Required"
-    _ => ""
-  }
+  @cloud_net.http_status_text(status)
 }
 
 ///|
 /// `Date.parse` of an HTTP date (IMF-fixdate, `Tue, 17 Nov 2026 04:22:23 GMT`): its milliseconds, None where it is
 /// not one.
 pub fn http_date(s : String) -> Double? {
-  let parts = trim(s).split(" ").filter(p => p != "").map(p => p.to_string()).to_array()
-  // (the weekday is optional, and read for nothing)
-  let p = if parts.length() > 0 && parts[0].has_suffix(",") { parts[1:].to_array() } else { parts }
-  if p.length() < 4 {
-    return None
-  }
-  let months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
-  let day = small_int(p[0])
-  let month = match months.search(lower(p[1])) {
-    Some(m) => m
-    None => return None
-  }
-  let year = small_int(p[2])
-  let hms = p[3].split(":").map(x => x.to_string()).to_array()
-  if hms.length() < 2 || hms.length() > 3 {
-    return None
-  }
-  let (h, mi, se) = (small_int(hms[0]), small_int(hms[1]), if hms.length() == 3 { small_int(hms[2]) } else { Some(0) })
-  let zone = if p.length() > 4 { p[4] } else { "GMT" }
-  let offset = match zone {
-    "GMT" | "UTC" | "UT" | "Z" => 0
-    _ => return None
-  }
-  match (day, year, h, mi, se) {
-    (Some(d), Some(y), Some(hh), Some(mm), Some(ss)) if d >= 1 && d <= 31 && hh < 24 && mm < 60 && ss < 60 => {
-      let days = days_from_civil(y, month + 1, d)
-      Some(
-        ((days.to_double() * 86400.0 + (hh * 3600 + mm * 60 + ss).to_double()) * 1000.0) -
-        offset.to_double(),
-      )
-    }
-    _ => None
-  }
-}
-
-///|
-fn small_int(s : String) -> Int? {
-  if s == "" || s.length() > 6 || !s.iter().all(c => c >= '0' && c <= '9') {
-    return None
-  }
-  let mut n = 0
-  for c in s {
-    n = n * 10 + (c.to_int() - '0'.to_int())
-  }
-  Some(n)
-}
-
-///|
-/// Days since 1970-01-01 of a date of the proleptic Gregorian calendar.
-fn days_from_civil(y0 : Int, m : Int, d : Int) -> Int {
-  let y = if m <= 2 { y0 - 1 } else { y0 }
-  let era = (if y >= 0 { y } else { y - 399 }) / 400
-  let yoe = y - era * 400
-  let mp = (m + 9) % 12
-  let doy = (153 * mp + 2) / 5 + d - 1
-  let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
-  era * 146097 + doe - 719468
+  @jsjson.js_parse_http_date(s)
 }

@@ -160,6 +160,7 @@ fn gate_heading_node(h : @view.View, src : Source, w : Workspace) -> Unit {
     b.reacts(fn() { native_workspace_item(src, w) }, fn(item) {
       native_sidebar_items[id] = item
       native_workspace_anchor.val = Node(b)
+      native_floating_schedule()
     })
     b.owns(fn() {
       native_sidebar_items.remove(id)
@@ -167,6 +168,7 @@ fn gate_heading_node(h : @view.View, src : Source, w : Workspace) -> Unit {
         Node(n) if n.id() == b.id() => native_workspace_anchor.val = Unanchored
         _ => ()
       }
+      native_floating_schedule()
     })
     |> ignore
   })
@@ -332,7 +334,7 @@ fn pane_made(
                 src,
                 fn() { @sfbase.workspace_in_view(src).0.map_or(wid, fn(w) { w.id }) },
                 tips,
-                start_pad=fn() { dmax(12.0, (ends.start)()) },
+                start_pad=fn() { dmax(12.0, (ends.start)(true)) },
                 end_pad=fn() { (ends.end)(false, false) },
                 width~,
                 shown=pane_shows(k),
@@ -569,9 +571,10 @@ fn pane_made(
                   chat_bar_wide_node(o, src, page, pane_chat_bar_ends(src, o, page~), tips, stint)
                 },
                 // (with chat_page_nodes on: its messages nodes, its composer made as nodes in their list's foot)
-                body=fn(col, s, r, composer, shows) {
+                body=fn(col, s, r, composer, shows, on_stack) {
                   pane_made_chat(col, k)
-                  chat_body_nodes(col, s, r, tips, stint, composer, shows)
+                  context_node(col)
+                  chat_body_nodes(col, s, r, tips, stint, composer, shows, on_stack~)
                 },
                 // (its composer made as nodes in the list's foot: sfpages' chat_composer_node)
                 foot_node=fn(n, s, r, shows, laid) {
@@ -606,6 +609,18 @@ fn pane_made(
                           new_files_open(s, w.id) &&
                           new_drive_station(s, w) is Some(_)
                         pane - (if beside { side_whole(s, n) } else { 0.0 })
+                      }, apart=fn() { wide.tape.get() },
+                      // (the window's top row it drags by, as pane_made_host puts over a page of its own: a new chat is
+                      // made under none, hidden with its bar as it becomes its chat)
+                      bar=fn(b) {
+                        b.show(fn() { @ui.window_inset() }, fn(t) {
+                          t
+                          .over(Is(true))
+                          .height(Is(Some(@sf.wide_bar_h)))
+                          .presses(Is(true))
+                          .moves_window(Is(true))
+                          |> ignore
+                        })
                       }), tips)
                     None => ()
                   }
@@ -651,42 +666,53 @@ fn pane_chat_bar_ends(
         None => (0.0, 0.0)
       }
     },
-    start: fn() {
+    start: fn(_) {
       match look() {
         Some(f) => f.bar_pl
         None => 0.0
       }
     },
     end: fn(beside, finding) {
-      let col_w = match page() {
-        Some(Chat(r)) if pane_w_at(src, n) >= side_both_least => {
-          let key = chat_key(r)
-          let _ = side_way(key)
-          if panel_own.asked.get() == key {
-            0.0
-          } else {
-            side_col(src, n, key, beside)
-          }
-        }
-        _ => 0.0
+      let side_key = match page() {
+        Some(Chat(r)) => Some(chat_key(r))
+        Some(NewChat) => @sfbase.workspace_in_view(src).0.map(fn(w) { "new:" + w.id })
+        _ => None
       }
-      if col_w > 0.5 {
+      let roots = @ui.tree_corner_roots_now()
+      let closed_end = if finding {
         if @ui.window_keys_own() {
-          bar_in
+          @sf.window_keys_room(roots~) + bar_in
         } else {
-          dmax(bar_in, @sf.window_corner_past(4.0, roots=@ui.tree_corner_roots_now()) - col_w)
-        }
-      } else if beside {
-        // (beside what the pane shows next to it, not a chat's side column: a history's, as before)
-        bar_in
-      } else if finding {
-        if @ui.window_keys_own() {
-          @sf.window_keys_room(roots=@ui.tree_corner_roots_now()) + bar_in
-        } else {
-          @sf.window_corner_past(bar_in, roots=@ui.tree_corner_roots_now())
+          @sf.window_corner_past(bar_in, roots~)
         }
       } else {
-        @sf.window_end_in(bar_in, roots=@ui.tree_corner_roots_now())
+        @sf.window_end_in(bar_in, roots~)
+      }
+      match side_key {
+        Some(key) => {
+          let side_by_side = pane_w_at(src, n) >= side_both_least
+          let col_w = if side_by_side {
+            let _ = side_way(key)
+            side_col(src, n, key, beside)
+          } else {
+            0.0
+          }
+          if @ui.window_keys_own() {
+            if !side_by_side || col_w <= 0.0 {
+              closed_end
+            } else {
+              let whole = side_whole(src, n)
+              let frac = if whole > 0.5 { dmax(0.0, dmin(1.0, col_w / whole)) } else { 1.0 }
+              let smooth = bar_in + (closed_end - bar_in) * (1.0 - frac)
+              dmax(bar_in, dmax(closed_end - col_w, smooth))
+            }
+          } else if col_w > 0.5 {
+            dmax(bar_in, @sf.window_corner_past(4.0, roots~) - col_w)
+          } else {
+            closed_end
+          }
+        }
+        None => if beside { bar_in } else { closed_end }
       }
     },
     linked: fn() { if @ui.window_keys_own() { None } else { Some(@sf.window_corner_key()) } },

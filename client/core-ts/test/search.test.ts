@@ -1,10 +1,11 @@
 // The search (views/search.ts): what the device holds and what each station finds, one list.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { HostError } from "../src/error.ts";
 import { SEARCH_SETTLE_MS, SEARCH_STALE_MS } from "../src/station/sync.ts";
 import { openOf } from "../src/views/search.ts";
 import { apply, subscribe, v } from "./helpers.ts";
-import { base, chatsOf, started } from "./station-fixture.ts";
+import { base, chatsOf, started, stationReplies } from "./station-fixture.ts";
 
 // deno-lint-ignore no-explicit-any
 type J = any;
@@ -203,5 +204,88 @@ test("a_search_typed_on_asks_its_stations_for_the_last_words_alone_and_again_onl
   await host.time.pass(SEARCH_STALE_MS + SEARCH_SETTLE_MS + 10);
   await host.settle();
   assert.deepEqual(asked(before), ["upd&limit=6&again=1"]);
+  core.close();
+});
+
+test("stale_in_flight_searches_are_cancelled_when_query_changes_so_the_latest_query_is_not_blocked", async () => {
+  const replies: Record<string, unknown> = {
+    ...base(),
+    ...chatsOf([row("a", 7, "部署页")]),
+    "GET /search?q=a&limit=6": { building: false, groups: [] },
+    "GET /search?q=admin&limit=6": { building: false, groups: [] },
+    "GET /search?q=admin%20cli&limit=6": {
+      building: false,
+      groups: [{ kind: "chat", more: false, hits: [{ kind: "chat", key: "c:21", title: "Admin CLI", text: "", at: 99, thread: 21, chat: "adm", archived: true }] }],
+    },
+  };
+  const { host, core } = await started(replies);
+  const ui = core.connect();
+  // Hold the first two search requests so both slots of the station lane (width 2) are occupied.
+  const releaseA = host.hold("/search?q=a&limit=6");
+  const releaseAdmin = host.hold("/search?q=admin&limit=6");
+  subscribe(core, ui, 1, { topic: "search", scope: "ws", query: "a" });
+  await host.settle();
+  await host.time.pass(SEARCH_SETTLE_MS + 10);
+  await host.settle();
+  core.receive(ui, { kind: "unsubscribe", id: 1, unsubscribe: true });
+  subscribe(core, ui, 2, { topic: "search", scope: "ws", query: "admin" });
+  await host.settle();
+  await host.time.pass(SEARCH_SETTLE_MS + 10);
+  await host.settle();
+  // Now switch to the latest query while the previous two requests are still held in flight.
+  core.receive(ui, { kind: "unsubscribe", id: 2, unsubscribe: true });
+  subscribe(core, ui, 3, { topic: "search", scope: "ws", query: "admin cli" });
+  await host.settle();
+  await host.time.pass(SEARCH_SETTLE_MS + 10);
+  await host.settle();
+  const values = new Map();
+  apply(host, values);
+  const view = v(values, 3);
+  assert.equal(view.wait.reading, false, "latest search should not be blocked behind cancelled in-flight searches");
+  assert.deepEqual(view.items.map((i: J) => i.id), ["adm"]);
+  releaseA();
+  releaseAdmin();
+  core.close();
+});
+
+test("a_non_http_search_failure_ends_waiting_surfaces_the_error_and_retries_when_shown_again", async () => {
+  const replies: Record<string, unknown> = {
+    ...base(),
+    ...chatsOf([row("a", 7, "部署页")]),
+    "GET /search?q=timeout&limit=6": {
+      building: false,
+      groups: [{ kind: "chat", more: false, hits: [{ kind: "chat", key: "c:30", title: "Timeout 排查", text: "", at: 88, thread: 30, chat: "to1", archived: true }] }],
+    },
+  };
+  let fail = true;
+  const { host, core } = await started(replies);
+  stationReplies(host, (req) => {
+    if (req.url.includes("/search?q=timeout&limit=6") && fail) throw new HostError("connection reset");
+    return undefined;
+  });
+  const ui = core.connect();
+  subscribe(core, ui, 1, { topic: "search", scope: "ws", query: "timeout" });
+  await host.settle();
+  await host.time.pass(SEARCH_SETTLE_MS + 10);
+  await host.settle();
+  const values = new Map();
+  apply(host, values);
+  const failed = v(values, 1);
+  assert.equal(failed.wait.reading, false, "non-HTTP failure must stop the waiting indicator");
+  assert.equal(failed.wait.failing.length, 1);
+  assert.equal(failed.wait.failing[0].station, "ws/st");
+  // Re-opening the search retries after a transient non-HTTP failure.
+  core.receive(ui, { kind: "unsubscribe", id: 1, unsubscribe: true });
+  await host.settle();
+  fail = false;
+  subscribe(core, ui, 2, { topic: "search", scope: "ws", query: "timeout" });
+  await host.settle();
+  await host.time.pass(SEARCH_SETTLE_MS + 10);
+  await host.settle();
+  apply(host, values);
+  const retried = v(values, 2);
+  assert.equal(retried.wait.reading, false);
+  assert.deepEqual(retried.wait.failing, []);
+  assert.deepEqual(retried.items.map((i: J) => i.id), ["to1"]);
   core.close();
 });

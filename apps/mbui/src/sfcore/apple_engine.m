@@ -35,9 +35,9 @@ static const char *core_data_dir(void) {
 }
 
 #if TARGET_OS_IPHONE
-static const mbc_engine hermes_engine = {mb_core_start, mb_core_send, mb_core_stop, core_data_dir, mb_web_auth, mb_post, mb_post_drop, mb_core_screen_ack};
+static const mbc_engine hermes_engine = {mb_core_start, mb_core_send, mb_core_stop, core_data_dir, mb_web_auth, mb_post, mb_post_drop, mb_core_screen_ack, NULL, mb_core_screen_input};
 #else
-static const mbc_engine hermes_engine = {mb_core_start, mb_core_send, mb_core_stop, core_data_dir, NULL, mb_post, mb_post_drop, mb_core_screen_ack};
+static const mbc_engine hermes_engine = {mb_core_start, mb_core_send, mb_core_stop, core_data_dir, NULL, mb_post, mb_post_drop, mb_core_screen_ack, NULL, mb_core_screen_input};
 #endif
 
 __attribute__((constructor)) static void use_hermes_engine(void) {

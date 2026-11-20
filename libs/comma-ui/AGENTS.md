@@ -1,7 +1,7 @@
 # Comma's parts in mbui (for agents)
 
-A component library of its own beside mbui (`libs/mbui`), which it alone imports: Comma's design system (AFK-surf/Cue
-`clients/packages/ui`, Figma `VnkgBb2xCr5bRp4KHrLrqs`) drawn by mbui. mbui is the framework and holds no look; a
+A component library of its own beside mbui (`libs/mbui`), which it alone imports: Comma's design system (`clients/packages/ui` of the
+AFK-surf/Cue repository, not a path of this one; Figma `VnkgBb2xCr5bRp4KHrLrqs`) drawn by mbui. mbui is the framework and holds no look; a
 library like this one holds the looks; an app uses a library (the user, 2026-11-13: mbui 和组件库应该分开). It started as
 a sample of what mbui needs to carry a second design (the user, 2026-11-13: 先在 monoid 做样板).
 

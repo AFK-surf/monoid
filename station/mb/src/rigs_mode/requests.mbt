@@ -33,6 +33,39 @@ pub let card_occupied : String = "Another card is pending in that conversation. 
 pub let stillfail_surface : String = "chat"
 
 ///|
+/// A number in base 36, as `n.toString(36)` writes a whole one.
+pub fn base36(n : Double) -> String {
+  let digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+  let mut v = n.floor().to_int64()
+  if v == 0L {
+    return "0"
+  }
+  let neg = v < 0L
+  if neg {
+    v = -v
+  }
+  let out = []
+  while v > 0L {
+    out.push(digits.unsafe_charcode_at((v % 36L).to_int()))
+    v = v / 36L
+  }
+  let b = StringBuilder()
+  if neg {
+    b.write_char('-')
+  }
+  for i = out.length() - 1; i >= 0; i = i - 1 {
+    b.write_char(out[i].unsafe_to_char())
+  }
+  b.to_string()
+}
+
+///|
+/// A request's id as the station makes one (rigs/requests.ts): `r_`, the time in base 36, then six random letters.
+pub fn request_id_of(now : Double, random : String) -> String {
+  "r_\{base36(now)}\{random}"
+}
+
+///|
 /// A request as kept (rigs/requests.ts `RigRequest`): its fields in the order they were set.
 pub type RigRequest = Map[String, Json]
 
@@ -427,7 +460,8 @@ async fn RigRequests::save_and_restate(self : RigRequests, r : RigRequest, close
   let thread = r.get("thread")
   let ts = r.get("cardTs")
   if thread is Some(t) && ts is Some(s) && self.d.card_outcomes {
-    let saved = (self.d.world.callback)(async fn(_ : Array[Json]) {
+    // (written in the same transaction as the card's close and its queued outcome: neither without the other)
+    let saved = (self.d.world.callback)(fn(_ : Array[Json]) raise {
       self.save(r)
       undefined_json()
     })
@@ -452,7 +486,7 @@ async fn RigRequests::save_and_restate(self : RigRequests, r : RigRequest, close
       self.d.world.ask("store.withdrawCard", [session, t, s]) |> ignore
     }
     let outcome = outcome_of(r)
-    let made = (self.d.world.callback)(async fn(args : Array[Json]) {
+    let made = (self.d.world.callback)(fn(args : Array[Json]) {
       let was = args.get(0)
       spread(was, Some(jobj([("rig", spread(get(was, "rig"), Some(jobj([("outcome", outcome)]))))])))
     })

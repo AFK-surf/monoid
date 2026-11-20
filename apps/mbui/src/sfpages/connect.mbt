@@ -434,19 +434,29 @@ fn cd_run_node(b : @view.View, src : Source, core : Core, here : () -> Here, sta
           busy=fn() { is_doing(core, ["connect.put"], [("station", station), ("id", id)]) },
         )
       })
-      // the station its new conversations run on (a connect is its workspace's: its chats may run on any station of
-      // it), picked in a dialog; a single-session connect's one session, and a station from before, say none
+      // the station(s) its new conversations run on (workspace allowlist auto-assign or explicit manual allowlist),
+      // editable by workspace owners/admins only; non-admins see a read-only row.
       g.show(fn() { text(cv(), "mode") != "single-session" && flag(cv(), "moves") && text(cv(), "kind") != "comma" && text(cv(), "kind") != "group" }, fn(s) {
-        @sf.link_row_node(
-          s,
-          fn() { @sf.t("web-pages.connect.startsOn") },
-          fn() { cd_station_dialog(core, @signals.untracked(here), station, @signals.untracked(cv), false) },
-          // (a line of its own: a station's name may be long)
-          note=fn() {
-            let starts = text(cv(), "startsOn")
-            cd_station_name(core, here(), if starts == "" { station } else { starts })
-          },
-        )
+        s.pick(fn() { @settings.manages(core, here()) == Some(true) }, fn(p, can_edit) {
+          if can_edit {
+            @sf.link_row_node(
+              p,
+              fn() { @sf.t("web-pages.connect.startsOn") },
+              fn() { cd_station_dialog(core, @signals.untracked(here), station, @signals.untracked(cv), false) },
+              // (a line of its own: station names may be long)
+              note=fn() { cd_starts_on_label(core, here(), cv(), station) },
+            )
+          } else {
+            @sf.link_row_node(
+              p,
+              fn() { @sf.t("web-pages.connect.startsOn") },
+              fn() {  },
+              note=fn() { cd_starts_on_label(core, here(), cv(), station) },
+              goes=false,
+              chevron=false,
+            )
+          }
+        })
       })
       // the one they all go into: its chat, another chosen
       g.show(fn() { text(cv(), "mode") == "single-session" }, fn(s) {
@@ -725,74 +735,129 @@ fn cd_put(core : Core, station : String, id : String, input : Json, done? : Stri
 }
 
 ///|
-/// A station of the workspace by its name (its address till its view is read).
-fn cd_station_name(core : Core, here : Here, address : String) -> String {
-  match @settings.stations_of(core, here).value {
-    Some(Array(a)) =>
-      match a.iter().find_first(fn(s) { text(Some(s), "station") == address }) {
-        Some(s) if text(Some(s), "name") != "" => text(Some(s), "name")
-        _ => address
-      }
-    _ => address
+/// Bare station id from either a bare id ("st2") or a `<workspace>/<station_id>` address ("ws1/st2").
+fn cd_station_id(s : String) -> String {
+  let trimmed = s.trim(chars=" \t\n").to_owned()
+  match trimmed.rev_find("/") {
+    Some(i) => trimmed.clamped_view(start=i + 1, end=trimmed.length()).to_owned()
+    None => trimmed
   }
 }
 
 ///|
-/// A station of its workspace picked for the connect: where its new conversations run (`moving` false: its own
-/// station first, said as such), or where it moves to (`moving`: the others online, the connect itself and its tokens
-/// going there, its chats staying where they run).
+/// A station of the workspace by its name (its id till its view is read), matching either bare id or `<ws>/<id>`.
+fn cd_station_name(core : Core, here : Here, id_or_addr : String) -> String {
+  let want = cd_station_id(id_or_addr)
+  match @settings.stations_of(core, here).value {
+    Some(Array(a)) =>
+      match a.iter().find_first(fn(s) {
+        let by_id = cd_station_id(text(Some(s), "id"))
+        let by_addr = cd_station_id(text(Some(s), "station"))
+        (by_id != "" && by_id == want) || (by_addr != "" && by_addr == want)
+      }) {
+        Some(s) if text(Some(s), "name") != "" => text(Some(s), "name")
+        _ => id_or_addr
+      }
+    _ => id_or_addr
+  }
+}
+
+///|
+/// The allowlisted bare station ids a connect starts new conversations on: `startsOnStations` when non-empty, else
+/// `startsOn`, else its own `station`.
+fn cd_starts_on_stations(cv : Json?, station : String) -> Array[String] {
+  let out : Array[String] = []
+  for s in strings(cv, "startsOnStations") {
+    let id = cd_station_id(s)
+    if id != "" && !out.contains(id) {
+      out.push(id)
+    }
+  }
+  if out.length() > 0 {
+    return out
+  }
+  let starts = cd_station_id(text(cv, "startsOn"))
+  if starts != "" {
+    [starts]
+  } else {
+    [cd_station_id(station)]
+  }
+}
+
+///|
+/// Human-readable summary of a connect's allowlisted start stations (auto allowlist, single name, two joined, or "A、B 等 N 台").
+fn cd_starts_on_label(core : Core, here : Here, cv : Json?, station : String) -> String {
+  if flag(cv, "startsOnAuto") {
+    return @sf.t("web-pages.connect.startsOnAutoShort")
+  }
+  let ids = cd_starts_on_stations(cv, station)
+  let names = ids.map(fn(s) { cd_station_name(core, here, s) })
+  if names.length() == 0 {
+    cd_station_name(core, here, station)
+  } else if names.length() == 1 {
+    names[0]
+  } else if names.length() == 2 {
+    names[0] + @sf.t("web-pages.connect.startsOnSep") + names[1]
+  } else {
+    @sf.t("web-pages.connect.startsOnMany", args=[("first", names[0]), ("second", names[1]), ("n", names.length().to_string())])
+  }
+}
+
+///|
+/// Whether two station allowlists contain the exact same set of station ids.
+fn cd_same_stations(a : Array[String], b : Array[String]) -> Bool {
+  a.length() == b.length() && a.iter().all(fn(x) { b.contains(x) })
+}
+
+///|
+/// A station (or manual allowlist of stations) of its workspace picked for the connect: where its new conversations
+/// run (`moving` false: explicit checklist of full stations, never auto-selecting all stations), or where it moves to
+/// (`moving` true: single select among other online stations, the connect itself and its tokens going there).
 fn cd_station_dialog(core : Core, here : Here, station : String, cv : Json?, moving : Bool) -> Unit {
   let id = text(cv, "id")
-  let starts = text(cv, "startsOn")
-  let choices = fn() -> Array[(String, String)] {
-    let all = match @settings.stations_of(core, here).value {
-      Some(Array(a)) => a
-      _ => []
-    }
-    let out : Array[(String, String)] = []
-    if !moving {
-      out.push(("", @sf.t("web-pages.connect.startsHere", args=[("station", cd_station_name(core, here, station))])))
-    }
-    for s in all {
-      let address = text(Some(s), "station")
-      if address != station && (!moving || flag(Some(s), "online")) {
-        out.push((address, cd_station_name(core, here, address)))
+  let here_id = cd_station_id(station)
+  if moving {
+    let choices = fn() -> Array[(String, String)] {
+      let all = match @settings.stations_of(core, here).value {
+        Some(Array(a)) => a
+        _ => []
       }
+      let out : Array[(String, String)] = []
+      for s in all {
+        let sid = cd_station_id(text(Some(s), "station"))
+        if sid != "" && sid != here_id && flag(Some(s), "online") && text(Some(s), "mode") != "tasks" {
+          out.push((sid, cd_station_name(core, here, sid)))
+        }
+      }
+      out
     }
-    out
-  }
-  let picked : @signals.Signal[String] = @signals.signal(
-    if moving {
+    let picked : @signals.Signal[String] = @signals.signal(
       match choices().get(0) {
         Some(o) => o.0
         None => ""
-      }
-    } else {
-      starts
-    },
-  )
-  open_dialog_nodes(
-    @sf.t(if moving { "web-pages.connect.move" } else { "web-pages.connect.startsOn" }),
-    description=@sf.t(if moving { "web-pages.connect.moveLead" } else { "web-pages.connect.startsOnLead" }),
-    fn(v, _) {
-      v.pick(fn() { choices().length() == 0 }, fn(p, none) {
-        if none {
-          @sf.words_node(p, fn() { @sf.t("web-pages.connect.moveNone") }, fn() { cn_note }) |> ignore
-        } else {
-          @sf.field_node(p, fn() { @sf.t("web-pages.connect.station") }, fn(f) {
-            @sf.select_node(f, fn() { picked.get() }, choices, fn(s) { picked.set(s) }, label=fn() { @sf.t("web-pages.connect.station") })
-          })
-        }
-      })
-    },
-    fn(v, shut) {
-      @sf.button_node(v, fn() { @sf.t("common.cancel") }, shut, tone=Ghost) |> ignore
-      if moving {
+      },
+    )
+    open_dialog_nodes(
+      @sf.t("web-pages.connect.move"),
+      description=@sf.t("web-pages.connect.moveLead"),
+      fn(v, _) {
+        v.pick(fn() { choices().length() == 0 }, fn(p, none) {
+          if none {
+            @sf.words_node(p, fn() { @sf.t("web-pages.connect.moveNone") }, fn() { cn_note }) |> ignore
+          } else {
+            @sf.field_node(p, fn() { @sf.t("web-pages.connect.station") }, fn(f) {
+              @sf.select_node(f, fn() { picked.get() }, choices, fn(s) { picked.set(s) }, label=fn() { @sf.t("web-pages.connect.station") })
+            })
+          }
+        })
+      },
+      fn(v, shut) {
+        @sf.button_node(v, fn() { @sf.t("common.cancel") }, shut, tone=Ghost) |> ignore
         @sf.button_node(
           v,
           fn() { @sf.t("web-pages.connect.moveDo") },
           fn() {
-            let to = picked.get()
+            let to = cd_station_id(picked.get())
             // back to the list: the connect is the other station's from now on
             (core.pop)()
             cd_act(core, station, id, @sf.t("web-pages.connect.move"), "connect.move", [("to", str(to))], done=@sf.t("web-pages.connect.moved"))
@@ -802,19 +867,128 @@ fn cd_station_dialog(core : Core, here : Here, station : String, cv : Json?, mov
           disabled=fn() { picked.get() == "" },
         )
         |> ignore
-      } else {
-        @sf.button_node(
-          v,
-          fn() { @sf.t("common.save") },
-          fn() {
-            cd_put(core, station, id, obj([("station", str(picked.get()))]), done=@sf.t("web-pages.connect.startsOnSaved"))
-            shut()
-          },
-          tone=Primary,
-          disabled=fn() { picked.get() == starts },
-        )
-        |> ignore
+      },
+    )
+    return
+  }
+  let initial_auto = flag(cv, "startsOnAuto")
+  let initial = cd_starts_on_stations(cv, station)
+  let auto_mode : @signals.Signal[Bool] = @signals.signal(initial_auto)
+  let picked : @signals.Signal[Array[String]] = @signals.signal(initial)
+  let auto_count = fn() -> Int {
+    let all = match @settings.stations_of(core, here).value {
+      Some(Array(a)) => a
+      _ => []
+    }
+    let mut n = 0
+    for s in all {
+      if flag(Some(s), "acceptAutoChats") && text(Some(s), "mode") != "tasks" {
+        n += 1
       }
+    }
+    n
+  }
+  let stations_list = fn() -> Array[(String, String)] {
+    let all = match @settings.stations_of(core, here).value {
+      Some(Array(a)) => a
+      _ => []
+    }
+    let seen : Array[String] = [here_id]
+    let out : Array[(String, String)] = [
+      (here_id, @sf.t("web-pages.connect.startsHere", args=[("station", cd_station_name(core, here, here_id))])),
+    ]
+    for s in all {
+      let sid = cd_station_id(text(Some(s), "station"))
+      if sid != "" && !seen.contains(sid) && text(Some(s), "mode") != "tasks" {
+        seen.push(sid)
+        out.push((sid, cd_station_name(core, here, sid)))
+      }
+    }
+    out
+  }
+  open_dialog_nodes(
+    @sf.t("web-pages.connect.startsOn"),
+    description=@sf.t("web-pages.connect.startsOnLead"),
+    fn(v, _) {
+      @sf.group_node(v, fn(g) {
+        @sf.switch_row_node(
+          g,
+          fn() { @sf.t("web-pages.connect.startsOnAuto") },
+          fn() { auto_mode.get() },
+          fn(on) { auto_mode.set(on) },
+          note=fn() {
+            let n = auto_count()
+            if n > 0 {
+              @sf.t("web-pages.connect.startsOnAutoCount", args=[("n", n.to_string())])
+            } else {
+              @sf.t("web-pages.connect.startsOnAutoEmpty")
+            }
+          },
+        )
+      })
+      v.show(fn() { !auto_mode.get() }, fn(m) {
+        @sf.group_node(m, fn(g) {
+          g.each(stations_list, fn(it) { it.0 }, at_once=true, fn(r, item) {
+            let pair = item.untracked()
+            let addr = pair.0
+            let label = pair.1
+            let checked = fn() { picked.get().contains(addr) }
+            @sf.choice_row_node(
+              r,
+              fn() { label },
+              fn() { false },
+              compact=true,
+              lead=fn(l) { @sf.check_mark_node(l, checked) },
+              press=fn() {
+                let cur = @signals.untracked(fn() { picked.get() })
+                if cur.contains(addr) {
+                  picked.set(cur.filter(fn(x) { x != addr }))
+                } else {
+                  picked.set([..cur, addr])
+                }
+              },
+            )
+          })
+        })
+      })
+    },
+    fn(v, shut) {
+      @sf.button_node(v, fn() { @sf.t("common.cancel") }, shut, tone=Ghost) |> ignore
+      @sf.button_node(
+        v,
+        fn() { @sf.t("common.save") },
+        fn() {
+          if @signals.untracked(fn() { auto_mode.get() }) {
+            cd_put(
+              core,
+              station,
+              id,
+              obj([("autoStation", Json::boolean(true))]),
+              done=@sf.t("web-pages.connect.startsOnAutoSaved"),
+            )
+          } else {
+            let cur = @signals.untracked(fn() { picked.get() })
+            cd_put(
+              core,
+              station,
+              id,
+              obj([("stations", Json::array(cur.map(str)))]),
+              done=@sf.t(if cur.length() > 1 { "web-pages.connect.startsOnPoolSaved" } else { "web-pages.connect.startsOnSaved" }),
+            )
+          }
+          shut()
+        },
+        tone=Primary,
+        disabled=fn() {
+          if auto_mode.get() {
+            initial_auto
+          } else {
+            let cur = picked.get()
+            cur.length() == 0 || (!initial_auto && cd_same_stations(cur, initial))
+          }
+        },
+      )
+      |> ignore
     },
   )
 }

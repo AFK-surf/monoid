@@ -118,7 +118,7 @@ export function presetRefusal(
 }
 
 const FILE = "presets.json";
-const COPY = ".stillfail-preset.json";
+export const COPY = ".stillfail-preset.json";
 // (the deleted presets it keeps: preset-records.ts `goneKept`, so many of each owner's, the rule a device keeps too)
 /// The live presets a workspace's file keeps at most: one more a device brings is refused.
 export const LIVE_MOST = 1000;

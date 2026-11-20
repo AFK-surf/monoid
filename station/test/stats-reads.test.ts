@@ -304,7 +304,7 @@ test("what a chat asks of whom now: a need for its card's assignee over its crea
     try { got = outflowChats(reader, 0, undefined, null, pages); }
     finally { Object.defineProperty(reader, "db", { value: db, configurable: true }); }
     const by = new Map<number, any>(got.chats.map((c: any) => [c.thread, c]));
-    assert.deepEqual(by.get(carded).attention, { kind: "need", waitsFor: ["bob@x"], note: "Should 1389 ship?" }, "who decides its card, over who started it");
+    assert.deepEqual(by.get(carded).attention, { kind: "need", waitsFor: ["bob@x"], note: "Should 1389 ship?", card: "options" }, "who decides its card, over who started it");
     assert.deepEqual(by.get(asks).attention, { kind: "need", waitsFor: ["ann@x"], note: "Which branch?" });
     assert.deepEqual(by.get(done).attention, { kind: "done", waitsFor: ["ann@x"], note: "Merged into main as 82f108a5" });
     assert.equal(by.get(seen).attention, undefined, "read to its latest message: nothing waits");

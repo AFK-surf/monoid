@@ -548,9 +548,9 @@ pub fn pick_layer(
             }
           },
         )
-        // coming as a small panel does (@kit.pop_in), each passage picked anew; a handle moved, or the list let go of,
+        // coming as a small panel does (@motion.pop_in), each passage picked anew; a handle moved, or the list let go of,
         // it is where it is
-        match @motion.presence(c, "pick/bar/\{pk.ts}/\{pk.taken_at}", true, enter=@kit.pop_in, initial=true, start_at?=if picked_at.val >= 0.0 { Some(picked_at.val) } else { None }) {
+        match @motion.presence(c, "pick/bar/\{pk.ts}/\{pk.taken_at}", true, enter=@motion.pop_in, initial=true, start_at?=if picked_at.val >= 0.0 { Some(picked_at.val) } else { None }) {
           Some(l) => c.look(b, l)
           None => ()
         }
@@ -730,5 +730,5 @@ let pick_pop_hot : @ui.Style = pick_pop_box.then(@ui.css("bg=Over(Primary, A(Bg,
 let pick_pop_words : @ui.TextStyle = @ui.text_style(size=Caption, weight=Medium, color=OnPrimary, wrap=false)
 
 ///|
-/// How long the pick's bar takes to come (@kit.pop_in's).
-pub let pick_bar_in_ms : Double = @kit.pop_ms
+/// How long the pick's bar takes to come (@motion.pop_in's).
+pub let pick_bar_in_ms : Double = @motion.pop_ms

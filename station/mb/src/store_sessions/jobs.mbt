@@ -115,32 +115,42 @@ pub fn Store::set_profile_quota(
   } else {
     []
   }
-  ignore(
-    self.run(
-      (
-        #|INSERT INTO profile_status (profile, quota_json, quota_at) VALUES (?, ?, ?)
-        #|       ON CONFLICT (profile) DO UPDATE SET quota_json = excluded.quota_json, quota_at = excluded.quota_at
+  fn status() raise {
+    ignore(
+      self.run(
+        (
+          #|INSERT INTO profile_status (profile, quota_json, quota_at) VALUES (?, ?, ?)
+          #|       ON CONFLICT (profile) DO UPDATE SET quota_json = excluded.quota_json, quota_at = excluded.quota_at
+        ),
+        [profile, jstr(js(quota)), at],
       ),
-      [profile, jstr(js(quota)), at],
-    ),
-  )
-  guard windows.length() > 0 && at is Number(a, ..) else { return }
+    )
+  }
+
+  guard windows.length() > 0 && at is Number(a, ..) else {
+    status()
+    return
+  }
+  // One commit, not three: each autocommit is an fsync.
   let hour = (a / hour_ms).floor()
-  ignore(
-    self.run(
-      (
-        #|INSERT INTO profile_quota_hours (profile, hour, windows_json, at) VALUES (?, ?, ?, ?)
-        #|       ON CONFLICT (profile, hour) DO UPDATE SET windows_json = excluded.windows_json, at = excluded.at
+  self.tx(() => {
+    status()
+    ignore(
+      self.run(
+        (
+          #|INSERT INTO profile_quota_hours (profile, hour, windows_json, at) VALUES (?, ?, ?, ?)
+          #|       ON CONFLICT (profile, hour) DO UPDATE SET windows_json = excluded.windows_json, at = excluded.at
+        ),
+        [profile, jnum(hour), jstr(js(Json::array(windows))), at],
       ),
-      [profile, jnum(hour), jstr(js(Json::array(windows))), at],
-    ),
-  )
-  ignore(
-    self.run("DELETE FROM profile_quota_hours WHERE profile = ? AND hour < ?", [
-      profile,
-      jnum(hour - pace_hours),
-    ]),
-  )
+    )
+    ignore(
+      self.run("DELETE FROM profile_quota_hours WHERE profile = ? AND hour < ?", [
+        profile,
+        jnum(hour - pace_hours),
+      ]),
+    )
+  })
 }
 
 ///|
@@ -405,6 +415,18 @@ pub fn Store::job_by_token(self : Store, token : Json) -> Json raise {
 ///|
 pub fn Store::jobs_up(self : Store) -> Array[Json] raise {
   self.all(jobs_up, []).map(to_job)
+}
+
+///|
+/// What `jobs_up` gives of a job for its directory: its session's key and cwd (`""` for none).
+fn place_of_job(r : Map[String, Json]) -> (String, String) {
+  (str_of(col(r, "session_key")).unwrap_or(""), str_of(col(r, "cwd")).unwrap_or(""))
+}
+
+///|
+/// The jobs of `jobs_up`, each its session's key and cwd only.
+pub fn Store::jobs_up_places(self : Store) -> Array[(String, String)] raise {
+  self.all(jobs_up_places, []).map(place_of_job)
 }
 
 ///|
@@ -813,14 +835,7 @@ fn widget_sources_unavailable(threads : Array[Json]) -> StoreError {
 ///|
 /// The last part of a path, split at either slash.
 fn base_name(path : String) -> String {
-  let mut cut = -1
-  for i in 0..<path.length() {
-    let c = path.unsafe_charcode_at(i)
-    if c == 0x2f || c == 0x5c {
-      cut = i
-    }
-  }
-  path.substring(start=cut + 1)
+  @nodepath.basename("\\", path)
 }
 
 ///|

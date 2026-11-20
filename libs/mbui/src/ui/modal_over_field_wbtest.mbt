@@ -93,3 +93,70 @@ test "a modal layer of the tree's over a field with the focus and a menu of the 
   t.draw()
   assert_eq((m.layer_escapes.val, m.menu.get()), (1, false), msg="the layer gone: the menu's")
 }
+
+///|
+test "a modal layer of the tree's over a tree field with the focus that leaves it what is typed: typing goes to the field, Enter does not submit it, Escape is the layer's" {
+  let open = @signals.signal(false)
+  let f = Field::new()
+  let submitted : Array[String] = []
+  let holder_escapes = Ref(0)
+  let layer_escapes = Ref(0)
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=0)
+  t.check_looks(false)
+  set_view_app(fn(root) {
+    root.box(fn(h) {
+      h
+      .grow(Is(1.0))
+      .on_key(fn(k) {
+        if k.code == key_escape {
+          holder_escapes.val = holder_escapes.val + 1
+          true
+        } else {
+          false
+        }
+      })
+      |> ignore
+      field(h, f, placeholder="树字段", label="树字段", enter_sends=true, submitted=fn(s) { submitted.push(s) }) |> ignore
+    })
+    |> ignore
+    root.show(fn() { open.get() }, fn(l) {
+      l
+      .over(Is(true))
+      .stacked(Is(5))
+      .modal(Is(true))
+      .presses(Is(true))
+      .leaves_typing()
+      .on_key(fn(k) {
+        if k.code == key_escape {
+          layer_escapes.val = layer_escapes.val + 1
+          true
+        } else {
+          false
+        }
+      })
+      |> ignore
+      l.box(fn(x) { x.width(Is(Some(80.0))).height(Is(Some(40.0))) |> ignore }) |> ignore
+    })
+  })
+  t.draw()
+  f.focus()
+  t.draw()
+  open.set(true)
+  t.draw()
+  assert_true(f.focused() && t.ime().0, msg="focused and ime kept under leaves_typing")
+  t.type_text("ab")
+  t.draw()
+  t.enter()
+  t.draw()
+  let under_layer = (f.text(), submitted.copy())
+  t.key_told(key_escape, 0, t.time())
+  t.draw()
+  assert_eq(under_layer, ("ab", []), msg="typing goes to tree field and Enter does not submit while layer is open")
+  assert_eq((layer_escapes.val, holder_escapes.val), (1, 0), msg="Escape consumed by top modal layer")
+  open.set(false)
+  t.draw()
+  assert_true(f.focused() && t.ime().0, msg="focus and ime kept after layer closes")
+  t.enter()
+  t.draw()
+  assert_eq(submitted, ["ab"], msg="Enter submits tree field once layer is gone")
+}

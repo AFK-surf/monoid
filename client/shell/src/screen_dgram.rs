@@ -23,6 +23,13 @@
 //! - 13, 14: the block's data shards (k, 1..=MAX_K) and parity shards (m, 0..=MAX_M)
 //! - 15: which shard: below k the block's bytes (their length first, u16 big-endian), from k on its parity
 //!
+//! The receiving end says back, about every `REPORT_EVERY`, the share of the frames' shards that did not come (a
+//! datagram of `REPORT_LEN` bytes: `MAGIC`, `KIND_REPORT`, the view's token, the loss in millionths and the shards it
+//! counts, each u32 big-endian, then two 0 bytes), which the sending end makes its parity for: QUIC does not count a
+//! datagram lost as it does a packet of a stream, so the connection's own counters barely see the frames' loss. An end
+//! from before passes the report over (no head of a frame is that short), and one that says none is sent for by the
+//! connection's counters alone.
+//!
 //! The receiving end gives a frame on only in an order the decoder can take: a frame of the configs the stream has
 //! carried (one of a config still coming waits for it), a key frame as soon as it is whole (whatever came before it no
 //! longer matters), a frame after it only once the one before it was given. One that cannot be had (more shards lost
@@ -62,8 +69,9 @@ const FLAG_RED: u8 = 0x10;
 
 /// Frames of a kind kept while not yet given (the newest; the oldest goes first).
 const WINDOW: usize = 8;
-/// How long a frame's successor waits, whole, for the frame before it before that one is given up.
-const GAP_WAIT: Duration = Duration::from_millis(6);
+/// How long a frame's successor waits, whole, for the frame before it before that one is given up (datagrams of one
+/// connection come out of order by well under 1.5 ms; a shard lost the parity makes again).
+const GAP_WAIT: Duration = Duration::from_millis(3);
 /// How long a frame not yet whole is waited for at most when nothing after it came (its shards come within ~4 ms).
 const STALE: Duration = Duration::from_millis(40);
 /// Key frames asked for no more often than this.
@@ -71,14 +79,29 @@ const KEYFRAME_EVERY: Duration = Duration::from_millis(200);
 /// A key frame asked for and not come whole this long after (lost itself, and the screen still: no frame after it to
 /// ask again on) is asked for again.
 const KEYFRAME_RETRY: Duration = Duration::from_millis(500);
-/// A frame's datagrams go 8 at a time, 250 µs apart, no longer than 4 ms in all (a burst of a key frame's 80 at once
-/// fills a shallow router's queue and loses its tail). tokio's timer counts whole milliseconds, so a pause is at least
-/// one: the 4 ms bound holds a frame to four pauses.
-const PACE_EVERY: usize = 8;
-const PACE_GAP: Duration = Duration::from_micros(250);
+/// A frame's datagrams go without sleeping: every `PACE_EVERY` the task only yields (tokio's timer counts whole
+/// milliseconds, 15.6 on Windows, so a pause of 250 µs every 8 cost a 40-shard frame 8 to 15 ms). Only a frame of more
+/// than `PACE_BURST` (a key frame's 120 at once fills a shallow router's queue and loses its tail) pauses `PACE_GAP`
+/// every `PACE_BURST`, no longer than `PACE_MOST` in all.
+const PACE_EVERY: usize = 32;
+const PACE_BURST: usize = 64;
+const PACE_GAP: Duration = Duration::from_micros(500);
 const PACE_MOST: Duration = Duration::from_millis(4);
 /// How often the link's loss is read again for the parity a frame gets.
 const LOSS_EVERY: Duration = Duration::from_millis(200);
+/// The receiving end's report of the loss its frames' shards had (the module's head).
+const KIND_REPORT: u8 = 7;
+pub(crate) const REPORT_LEN: usize = 16;
+/// How often the receiving end says the loss, while frames come (sooner with fewer than `REPORT_LEAST` shards counted
+/// only once `REPORT_LONGEST` has gone).
+const REPORT_EVERY: Duration = Duration::from_millis(250);
+const REPORT_LEAST: u64 = 32;
+const REPORT_LONGEST: Duration = Duration::from_secs(1);
+/// A report heard is taken this long (the receiving end stopped saying: frames stopped, or it went).
+const REPORT_FRESH: Duration = Duration::from_secs(2);
+/// A block not whole when its frame is let go, first seen this long before: its shards still to come are lost too (a
+/// frame's go out within `PACE_MOST`); one younger counts only what is missing below the last that came.
+const SETTLED: Duration = Duration::from_millis(10);
 
 // ---- GF(2^8), the polynomial 0x11d ----
 
@@ -271,9 +294,40 @@ impl Head {
     }
 }
 
-/// The parity a block of `k` data shards gets on a link that loses `loss` of its packets lately: one at least
-/// (a single loss on Wi-Fi made good at once), up to a third of `k` as the loss grows; a key frame two at least.
+/// The parity a block of `k` data shards gets on a link that loses `loss` of its packets lately. However clean the
+/// link, a tenth of `k` (one at least) and a key frame's 15% (two at least): Wi-Fi loses two to four packets in a row
+/// now and then, and a frame of 40 shards with one parity shard lost so is given up with every frame after it until a
+/// key frame, itself the likeliest to lose some. As the loss grows, up to 42% of `k`, steeper than the loss alone asks
+/// (Wi-Fi loses in bursts of two and more), and from 2% lost four at least (six from 4% in a block of 12 or more: a
+/// frame of 120 a second, small, lost three bursts of two). A block of one shard (a sound packet, a tiny frame) gets
+/// one only where it is a key frame or anything is lost.
 pub(crate) fn parity_for(k: usize, key: bool, loss: f64) -> usize {
+    let least = if k <= 1 {
+        usize::from(key || loss > 0.0)
+    } else if key {
+        ((k as f64 * 0.15).ceil() as usize).max(2)
+    } else {
+        k.div_ceil(10)
+    };
+    let m = if loss > 0.005 {
+        let m = ((k as f64) * (loss * 3.0 + 0.14).clamp(0.16, 0.42)).ceil() as usize;
+        let bursts = if loss >= 0.04 && k >= 12 {
+            6
+        } else if loss >= 0.02 && k >= 4 {
+            4.min(k)
+        } else {
+            0
+        };
+        m.max(least).max(bursts).max(if key { 2 } else { 1 })
+    } else {
+        least
+    };
+    m.min(MAX_M)
+}
+
+/// The parity before the receiving end's reports (a test's, to compare with): one on a clean link.
+#[cfg(test)]
+pub(crate) fn parity_before(k: usize, key: bool, loss: f64) -> usize {
     let m = if loss > 0.005 {
         let m = ((k as f64) * (loss * 2.0 + 0.12).clamp(0.15, 0.35)).ceil() as usize;
         if key { m.max(2) } else { m.max(1) }
@@ -283,6 +337,127 @@ pub(crate) fn parity_for(k: usize, key: bool, loss: f64) -> usize {
         1
     };
     m.min(MAX_M)
+}
+
+/// The receiving end's report: the loss its frames' shards had (millionths) of `shards` counted.
+pub(crate) fn report_bytes(token: u32, ppm: u32, shards: u32) -> [u8; REPORT_LEN] {
+    let mut d = [0u8; REPORT_LEN];
+    d[0] = MAGIC;
+    d[1] = KIND_REPORT;
+    d[2..6].copy_from_slice(&token.to_be_bytes());
+    d[6..10].copy_from_slice(&ppm.to_be_bytes());
+    d[10..14].copy_from_slice(&shards.to_be_bytes());
+    d
+}
+
+/// A report's token and loss (millionths), None where `d` is no report.
+pub(crate) fn report_of(d: &[u8]) -> Option<(u32, u32)> {
+    if d.len() != REPORT_LEN || d[0] != MAGIC || d[1] != KIND_REPORT {
+        return None;
+    }
+    let token = u32::from_be_bytes([d[2], d[3], d[4], d[5]]);
+    let ppm = u32::from_be_bytes([d[6], d[7], d[8], d[9]]);
+    (token != 0 && ppm <= 1_000_000).then_some((token, ppm))
+}
+
+/// The loss a view's receiving end said last, and when it was heard.
+#[derive(Default)]
+pub(crate) struct PeerLoss(StdMutex<Option<(f64, Instant)>>);
+
+impl PeerLoss {
+    fn heard(&self, ppm: u32, now: Instant) {
+        *self.0.lock().unwrap() = Some((ppm as f64 / 1_000_000.0, now));
+    }
+
+    /// The loss said within `REPORT_FRESH` of `now` (0 where none).
+    pub(crate) fn at(&self, now: Instant) -> f64 {
+        match *self.0.lock().unwrap() {
+            Some((loss, at)) if now.duration_since(at) < REPORT_FRESH => loss,
+            _ => 0.0,
+        }
+    }
+}
+
+/// The reports of a view's receiving end heard on its connection, till this is dropped.
+pub(crate) struct Heard {
+    demux: Arc<Demux>,
+    token: u32,
+    pub(crate) loss: Arc<PeerLoss>,
+}
+
+impl Drop for Heard {
+    fn drop(&mut self) {
+        let mut reports = self.demux.reports.lock().unwrap();
+        if reports.get(&self.token).is_some_and(|l| Arc::ptr_eq(l, &self.loss)) {
+            reports.remove(&self.token);
+        }
+    }
+}
+
+/// The reports for `token` on `conn` from now on (its connection's reader started where none is). None outside a tokio
+/// runtime.
+pub(crate) fn hear(conn: &Connection, token: u32) -> Option<Heard> {
+    tokio::runtime::Handle::try_current().ok()?;
+    let demux = demux_of(None, conn);
+    let loss = Arc::new(PeerLoss::default());
+    demux.reports.lock().unwrap().insert(token, loss.clone());
+    Some(Heard { demux, token, loss })
+}
+
+/// The share of the frames' shards a receiving end found missing, counted as frames are had or let go (`report`).
+#[derive(Default, Debug, Clone, Copy, PartialEq)]
+pub(crate) struct LossCount {
+    pub(crate) missing: u64,
+    pub(crate) shards: u64,
+    since: Option<Instant>,
+}
+
+impl LossCount {
+    /// A block had: the shards below the last that came, those that did not (those after it, its parity not needed,
+    /// may well come yet: never counted).
+    fn had(&mut self, got: usize, top: usize) {
+        self.shards += top as u64;
+        self.missing += top.saturating_sub(got) as u64;
+    }
+
+    /// A frame let go: its blocks not had, all their shards not come where it is `SETTLED`, else those below the last
+    /// that came.
+    fn let_go(&mut self, p: &Pending, now: Instant) {
+        let settled = now.saturating_duration_since(p.first) >= SETTLED;
+        for b in p.blocks.iter().flatten().filter(|b| b.data.is_none()) {
+            let all = if settled { b.k + b.m } else { b.top };
+            self.shards += all as u64;
+            self.missing += all.saturating_sub(b.got) as u64;
+        }
+    }
+
+    /// The loss to say now (millionths, and of how many shards), once `REPORT_EVERY` has gone since the last said with
+    /// shards counted; counting again from there.
+    fn report(&mut self, now: Instant) -> Option<(u32, u32)> {
+        let since = *self.since.get_or_insert(now);
+        if self.shards == 0 {
+            self.since = Some(now);
+            return None;
+        }
+        let gone = now.saturating_duration_since(since);
+        if gone < REPORT_EVERY || (self.shards < REPORT_LEAST && gone < REPORT_LONGEST) {
+            return None;
+        }
+        let said = ((self.missing.min(self.shards) * 1_000_000 / self.shards) as u32, self.shards.min(u32::MAX as u64) as u32);
+        *self = LossCount { since: Some(now), ..LossCount::default() };
+        Some(said)
+    }
+}
+
+/// `pending` but those `keep` says not to, each let go counted.
+fn retain_counted(pending: &mut BTreeMap<u32, Pending>, count: &mut LossCount, now: Instant, mut keep: impl FnMut(u32, &Pending) -> bool) {
+    pending.retain(|&s, p| {
+        let kept = keep(s, p);
+        if !kept {
+            count.let_go(p, now);
+        }
+        kept
+    });
 }
 
 /// The datagrams frame `body` of `kind` goes as (`seq` its number, `epoch` the configs before it), shards no longer
@@ -401,6 +576,8 @@ pub(crate) struct MediaOut {
     audio_off: bool,
     prev_audio: Option<Vec<u8>>,
     loss: LossMeter,
+    /// What the receiving end says of the loss its frames have (None: not heard; an end from before says nothing).
+    heard: Option<Heard>,
     /// A test's: datagrams dropped before they go (each one with this chance, by a seeded draw), the loss the parity is
     /// made for, and no parity at all (to compare with).
     #[cfg(test)]
@@ -409,6 +586,17 @@ pub(crate) struct MediaOut {
     pub(crate) assumed_loss: Option<f64>,
     #[cfg(test)]
     pub(crate) no_parity: bool,
+    /// A test's: as it was before the receiving end's reports (one parity shard on a clean link, the connection's
+    /// counters alone, 250 µs asleep every 8 shards), to compare with; lost datagrams `burst` in a row; and how long
+    /// each video frame took to send.
+    #[cfg(test)]
+    pub(crate) before: bool,
+    #[cfg(test)]
+    pub(crate) burst: usize,
+    #[cfg(test)]
+    pub(crate) took: Vec<Duration>,
+    #[cfg(test)]
+    pub(crate) shards: (u64, u64),
 }
 
 impl MediaOut {
@@ -417,7 +605,8 @@ impl MediaOut {
         if token == 0 || conn.max_datagram_size().is_none_or(|n| n < DATAGRAM_LEAST) {
             return None;
         }
-        Some(MediaOut { token, conn, line_done: false, buf: Vec::new(), raw: false, video_epoch: 0, audio_epoch: 0, video_seq: 0, audio_seq: 0, video_off: false, audio_off: false, prev_audio: None, loss: LossMeter::default(), #[cfg(test)] lose: None, #[cfg(test)] assumed_loss: None, #[cfg(test)] no_parity: false })
+        let heard = hear(&conn, token);
+        Some(MediaOut { token, conn, line_done: false, buf: Vec::new(), raw: false, video_epoch: 0, audio_epoch: 0, video_seq: 0, audio_seq: 0, video_off: false, audio_off: false, prev_audio: None, loss: LossMeter::default(), heard, #[cfg(test)] lose: None, #[cfg(test)] assumed_loss: None, #[cfg(test)] no_parity: false, #[cfg(test)] before: false, #[cfg(test)] burst: 1, #[cfg(test)] took: Vec::new(), #[cfg(test)] shards: (0, 0) })
     }
 
     /// `bytes` written: on the stream, or as datagrams where they are a frame of a picture or of sound.
@@ -507,7 +696,10 @@ impl MediaOut {
             Ok(false)
         };
         let Some(max) = self.conn.max_datagram_size().filter(|&n| n >= DATAGRAM_LEAST) else { return off(self) };
-        let loss = self.loss.of(&self.conn);
+        // (the larger of the connection's counters, which miss a datagram lost, and what the receiving end says)
+        let loss = self.loss.of(&self.conn).max(self.heard.as_ref().map_or(0.0, |h| h.loss.at(Instant::now())));
+        #[cfg(test)]
+        let loss = if self.before { self.loss.of(&self.conn) } else { loss };
         #[cfg(test)]
         let loss = self.assumed_loss.unwrap_or(loss);
         let (seq, epoch) = if video {
@@ -521,32 +713,71 @@ impl MediaOut {
         let prev = if video { None } else { self.prev_audio.as_deref() };
         let Some(datagrams) = datagrams_of(self.token, kind, key, epoch, seq, body, prev, max, loss) else { return off(self) };
         #[cfg(test)]
-        let datagrams: Vec<Vec<u8>> = datagrams
-            .into_iter()
-            .filter(|d| !self.no_parity || Head::of(d).is_some_and(|h| h.shard < h.k))
-            .filter(|_| match &mut self.lose {
-                Some((chance, state)) => {
-                    *state ^= *state << 13;
-                    *state ^= *state >> 7;
-                    *state ^= *state << 17;
-                    (*state % 1_000_000) as f64 / 1_000_000.0 >= *chance
-                }
-                None => true,
-            })
-            .collect();
+        let datagrams: Vec<Vec<u8>> = {
+            let (before, mut left) = (self.before, 0usize);
+            let datagrams: Vec<Vec<u8>> = datagrams
+                .into_iter()
+                .filter(|d| !self.no_parity || Head::of(d).is_some_and(|h| h.shard < h.k))
+                // (the parity rows do not depend on how many there are: the first of them are what fewer would be)
+                .filter(|d| !before || !video || Head::of(d).is_some_and(|h| (h.shard as usize) < h.k as usize + parity_before(h.k as usize, h.key, loss)))
+                .collect();
+            if video {
+                let data = datagrams.iter().filter(|d| Head::of(d).is_some_and(|h| h.shard < h.k)).count() as u64;
+                self.shards.0 += data;
+                self.shards.1 += datagrams.len() as u64 - data;
+            }
+            let burst = self.burst.max(1);
+            datagrams
+                .into_iter()
+                .filter(|_| match &mut self.lose {
+                    _ if left > 0 => {
+                        left -= 1;
+                        false
+                    }
+                    Some((chance, state)) => {
+                        *state ^= *state << 13;
+                        *state ^= *state >> 7;
+                        *state ^= *state << 17;
+                        let kept = (*state % 1_000_000) as f64 / 1_000_000.0 >= *chance;
+                        if !kept {
+                            left = burst - 1;
+                        }
+                        kept
+                    }
+                    None => true,
+                })
+                .collect()
+        };
         if !video {
             self.prev_audio = Some(body.to_vec());
         }
         let (start, total) = (Instant::now(), datagrams.len());
         for (i, d) in datagrams.into_iter().enumerate() {
-            if i > 0 && i % PACE_EVERY == 0 && total > PACE_EVERY && start.elapsed() < PACE_MOST {
+            #[cfg(test)]
+            if self.before {
+                if i > 0 && i % 8 == 0 && total > 8 && start.elapsed() < PACE_MOST {
+                    tokio::time::sleep(Duration::from_micros(250)).await;
+                }
+            } else if i > 0 && total > PACE_BURST && i % PACE_BURST == 0 && start.elapsed() < PACE_MOST {
                 tokio::time::sleep(PACE_GAP).await;
+            } else if i > 0 && i % PACE_EVERY == 0 {
+                tokio::task::yield_now().await;
+            }
+            #[cfg(not(test))]
+            if i > 0 && total > PACE_BURST && i % PACE_BURST == 0 && start.elapsed() < PACE_MOST {
+                tokio::time::sleep(PACE_GAP).await;
+            } else if i > 0 && i % PACE_EVERY == 0 {
+                tokio::task::yield_now().await;
             }
             match self.conn.send_datagram_wait(Bytes::from(d)).await {
                 Ok(()) => {}
                 Err(SendDatagramError::ConnectionLost(e)) => return Err(e.to_string()),
                 Err(_) => return off(self),
             }
+        }
+        #[cfg(test)]
+        if video {
+            self.took.push(start.elapsed());
         }
         crate::tally(if video { "dgram.video" } else { "dgram.audio" });
         Ok(true)
@@ -565,6 +796,9 @@ struct Block {
     len: usize,
     /// Its bytes, once had.
     data: Option<Vec<u8>>,
+    /// The shards that came (till it was had), and one past the last of them (the loss: `LossCount`).
+    got: usize,
+    top: usize,
 }
 
 /// A frame as its blocks come.
@@ -584,17 +818,19 @@ impl Pending {
         Pending { key: h.key, epoch: h.epoch, blocks: (0..h.blocks).map(|_| None).collect(), done: 0, first: now, whole: None, prev: None }
     }
 
-    /// A shard taken in; whether the frame is whole now.
-    fn take(&mut self, h: &Head, shard: &[u8], now: Instant) -> bool {
+    /// A shard taken in; whether the frame is whole now (a block had counted in `count`).
+    fn take(&mut self, h: &Head, shard: &[u8], now: Instant, count: &mut LossCount) -> bool {
         if self.whole.is_some() || h.blocks as usize != self.blocks.len() || h.key != self.key || h.epoch != self.epoch {
             return false;
         }
         let (k, m) = (h.k as usize, h.m as usize);
-        let block = self.blocks[h.block as usize].get_or_insert_with(|| Block { k, m, shards: vec![None; k + m], have: 0, len: 0, data: None });
+        let block = self.blocks[h.block as usize].get_or_insert_with(|| Block { k, m, shards: vec![None; k + m], have: 0, len: 0, data: None, got: 0, top: 0 });
         if block.k != k || block.m != m || block.data.is_some() || block.shards[h.shard as usize].is_some() || shard.len() < 2 {
             return false;
         }
         let i = h.shard as usize;
+        block.got += 1;
+        block.top = block.top.max(i + 1);
         if i >= k {
             if block.len != 0 && block.len != shard.len() {
                 return false;
@@ -611,14 +847,14 @@ impl Pending {
             }
             block.shards[i] = Some(shard[..2 + n].to_vec());
             block.have += 1;
-            return self.block_whole(h.block as usize, now);
+            return self.block_whole(h.block as usize, now, count);
         }
         block.shards[i] = Some(shard.to_vec());
         block.have += 1;
-        self.block_whole(h.block as usize, now)
+        self.block_whole(h.block as usize, now, count)
     }
 
-    fn block_whole(&mut self, b: usize, now: Instant) -> bool {
+    fn block_whole(&mut self, b: usize, now: Instant, count: &mut LossCount) -> bool {
         let block = self.blocks[b].as_mut().unwrap();
         if block.have < block.k {
             return false;
@@ -663,6 +899,7 @@ impl Pending {
         }
         block.data = Some(data);
         block.shards = Vec::new();
+        count.had(block.got, block.top);
         self.done += 1;
         if self.done < self.blocks.len() {
             return false;
@@ -721,6 +958,10 @@ pub(crate) struct MediaIn {
     asked_keyframe: Option<Instant>,
     wait_from: Option<Instant>,
     pub(crate) counts: Counts,
+    /// The shards missing of the frames had or let go since the loss was last said (`take_report`).
+    pub(crate) loss: LossCount,
+    /// The time last told (a datagram's, a tick's): when what is let go between is counted.
+    clock: Option<Instant>,
 }
 
 /// `[kind, length (u32, big-endian), body]`.
@@ -753,6 +994,8 @@ impl MediaIn {
             asked_keyframe: None,
             wait_from: None,
             counts: Counts::default(),
+            loss: LossCount::default(),
+            clock: None,
         }
     }
 
@@ -809,12 +1052,12 @@ impl MediaIn {
         match self.kind {
             FRAME_CONFIG => {
                 self.video_epoch = self.video_epoch.wrapping_add(1);
-                Self::config_came(&mut self.video, self.video_epoch, &mut self.ready, FRAME_VIDEO);
+                Self::config_came(&mut self.video, self.video_epoch, &mut self.ready, FRAME_VIDEO, &mut self.loss, self.clock);
                 self.wait_from = None;
             }
             FRAME_AUDIO_CONFIG => {
                 self.audio_epoch = self.audio_epoch.wrapping_add(1);
-                Self::config_came(&mut self.audio, self.audio_epoch, &mut self.ready, FRAME_AUDIO);
+                Self::config_came(&mut self.audio, self.audio_epoch, &mut self.ready, FRAME_AUDIO, &mut self.loss, self.clock);
             }
             // (the station sends this kind on the stream now: what came of it as datagrams is no longer to be given)
             FRAME_VIDEO => Self::close(&mut self.video),
@@ -831,8 +1074,11 @@ impl MediaIn {
 
     /// A config of `kind` came on the stream (its `epoch` now): what was held for it given, what was of the one before
     /// dropped.
-    fn config_came(kind: &mut Kind, epoch: u8, ready: &mut VecDeque<(u8, Vec<u8>)>, which: u8) {
-        kind.pending.retain(|_, p| (p.epoch.wrapping_sub(epoch) as i8) >= 0);
+    fn config_came(kind: &mut Kind, epoch: u8, ready: &mut VecDeque<(u8, Vec<u8>)>, which: u8, count: &mut LossCount, now: Option<Instant>) {
+        match now {
+            Some(now) => retain_counted(&mut kind.pending, count, now, |_, p| (p.epoch.wrapping_sub(epoch) as i8) >= 0),
+            None => kind.pending.retain(|_, p| (p.epoch.wrapping_sub(epoch) as i8) >= 0),
+        }
         while let Some((e, _)) = kind.held.front() {
             match e.wrapping_sub(epoch) as i8 {
                 0 => ready.push_back((which, kind.held.pop_front().unwrap().1)),
@@ -850,18 +1096,19 @@ impl MediaIn {
         if h.token != self.token {
             return;
         }
+        self.clock = Some(now);
         let shard = &d[HEADER_LEN..];
         let video = h.kind == FRAME_VIDEO;
         let kind = if video { &mut self.video } else { &mut self.audio };
         if kind.closed || h.seq <= kind.last {
             return;
         }
-        let whole = kind.pending.entry(h.seq).or_insert_with(|| Pending::new(&h, now)).take(&h, shard, now);
+        let whole = kind.pending.entry(h.seq).or_insert_with(|| Pending::new(&h, now)).take(&h, shard, now, &mut self.loss);
         // the oldest let go past the window
         let mut lost_next = false;
         while kind.pending.len() > WINDOW {
-            let (&oldest, _) = kind.pending.iter().next().unwrap();
-            kind.pending.remove(&oldest);
+            let (oldest, p) = kind.pending.pop_first().unwrap();
+            self.loss.let_go(&p, now);
             lost_next |= video && oldest == kind.last.wrapping_add(1) && !kind.broken;
         }
         if lost_next {
@@ -890,7 +1137,8 @@ impl MediaIn {
             }
         }
         self.audio.last = seq;
-        self.audio.pending.retain(|&s, _| s > seq);
+        let now = self.clock.unwrap_or(p.first);
+        retain_counted(&mut self.audio.pending, &mut self.loss, now, |s, _| s > seq);
         self.counts.audio += 1;
         self.gate(false, p.epoch, frame);
     }
@@ -908,7 +1156,7 @@ impl MediaIn {
             match key {
                 Some(s) => {
                     let p = self.video.pending.remove(&s).unwrap();
-                    self.video.pending.retain(|&q, _| q > s);
+                    retain_counted(&mut self.video.pending, &mut self.loss, now, |q, _| q > s);
                     self.video.broken = false;
                     self.give_video(s, p);
                 }
@@ -948,7 +1196,8 @@ impl MediaIn {
     /// The frame waited on cannot be had: none given until a key frame, which the station is asked for.
     fn give_up(&mut self) {
         self.video.broken = true;
-        self.video.pending.retain(|_, p| p.key);
+        let now = self.clock.unwrap_or_else(Instant::now);
+        retain_counted(&mut self.video.pending, &mut self.loss, now, |_, p| p.key);
         self.wait_from = None;
         self.want_keyframe = true;
         self.counts.given_up += 1;
@@ -995,6 +1244,7 @@ impl MediaIn {
     }
 
     pub(crate) fn tick(&mut self, now: Instant) {
+        self.clock = Some(now);
         if self.video.closed {
             return;
         }
@@ -1022,6 +1272,12 @@ impl MediaIn {
         true
     }
 
+    /// The loss to say to the sending end now (`report_bytes`), if it is time to.
+    pub(crate) fn take_report(&mut self, now: Instant) -> Option<[u8; REPORT_LEN]> {
+        let (ppm, shards) = self.loss.report(now)?;
+        Some(report_bytes(self.token, ppm, shards))
+    }
+
     /// The frames ready, whole, appended to `out`.
     pub(crate) fn drain_into(&mut self, out: &mut Vec<u8>) {
         while let Some((kind, body)) = self.ready.pop_front() {
@@ -1037,10 +1293,15 @@ impl MediaIn {
 /// The datagrams a view's token is given at most while not taken (a reader that stopped): the newest are dropped.
 const ROUTE_QUEUE: usize = 4096;
 
-/// A connection's datagrams read once views ask for them (`route`), each given to the view its token names; others
-/// (`conn.answers`' one byte, a view's gone) passed over. Read until the last view lets go.
+/// A connection's datagrams read once views ask for them (`route`, `hear`), each frame's given to the view its token
+/// names and each report to the view sending under it; others (`conn.answers`' one byte, a view's gone) passed over.
+/// Read until the last view lets go. One a connection, whoever asks (the shell's or the addon's slot, or a view sent).
 pub(crate) struct Demux {
+    /// The connection's `stable_id` (its entry in `demuxes`).
+    id: usize,
+    conn: Connection,
     routes: StdMutex<HashMap<u32, mpsc::Sender<Bytes>>>,
+    reports: StdMutex<HashMap<u32, Arc<PeerLoss>>>,
     task: StdMutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
@@ -1049,7 +1310,59 @@ impl Drop for Demux {
         if let Some(task) = self.task.lock().unwrap().take() {
             task.abort();
         }
+        let mut all = demuxes().lock().unwrap();
+        if all.get(&self.id).is_some_and(|w| w.strong_count() == 0) {
+            all.remove(&self.id);
+        }
     }
+}
+
+/// Every connection's reader, by its `stable_id`: a connection is read by one only.
+fn demuxes() -> &'static StdMutex<HashMap<usize, Weak<Demux>>> {
+    static ALL: OnceLock<StdMutex<HashMap<usize, Weak<Demux>>>> = OnceLock::new();
+    ALL.get_or_init(StdMutex::default)
+}
+
+/// `conn`'s reader (`slot`'s, or the one started for it elsewhere, or a new one).
+fn demux_of(slot: Option<&StdMutex<Weak<Demux>>>, conn: &Connection) -> Arc<Demux> {
+    let mut slot = slot.map(|s| s.lock().unwrap());
+    if let Some(d) = slot.as_ref().and_then(|s| s.upgrade()) {
+        return d;
+    }
+    let id = conn.stable_id();
+    let mut all = demuxes().lock().unwrap();
+    let d = match all.get(&id).and_then(Weak::upgrade) {
+        Some(d) => d,
+        None => {
+            let d = Arc::new(Demux { id, conn: conn.clone(), routes: StdMutex::default(), reports: StdMutex::default(), task: StdMutex::default() });
+            let (weak, conn) = (Arc::downgrade(&d), conn.clone());
+            let task = tokio::spawn(async move {
+                while let Ok(datagram) = conn.read_datagram().await {
+                    let Some(demux) = weak.upgrade() else { break };
+                    if let Some((token, ppm)) = report_of(&datagram) {
+                        let to = demux.reports.lock().unwrap().get(&token).cloned();
+                        if let Some(to) = to {
+                            to.heard(ppm, Instant::now());
+                            crate::tally("dgram.loss.heard");
+                        }
+                        continue;
+                    }
+                    let Some(h) = Head::of(&datagram) else { continue };
+                    let to = demux.routes.lock().unwrap().get(&h.token).cloned();
+                    if let Some(to) = to {
+                        let _ = to.try_send(datagram);
+                    }
+                }
+            });
+            *d.task.lock().unwrap() = Some(task);
+            all.insert(id, Arc::downgrade(&d));
+            d
+        }
+    };
+    if let Some(slot) = slot.as_mut() {
+        **slot = Arc::downgrade(&d);
+    }
+    d
 }
 
 /// A view's datagrams, given to it till this is dropped.
@@ -1070,29 +1383,7 @@ pub(crate) fn route(slot: &StdMutex<Weak<Demux>>, conn: &Connection, token: u32)
     if token == 0 {
         return None;
     }
-    let demux = {
-        let mut slot = slot.lock().unwrap();
-        match slot.upgrade() {
-            Some(d) => d,
-            None => {
-                let d = Arc::new(Demux { routes: StdMutex::default(), task: StdMutex::default() });
-                let (weak, conn) = (Arc::downgrade(&d), conn.clone());
-                let task = tokio::spawn(async move {
-                    while let Ok(datagram) = conn.read_datagram().await {
-                        let Some(demux) = weak.upgrade() else { break };
-                        let Some(h) = Head::of(&datagram) else { continue };
-                        let to = demux.routes.lock().unwrap().get(&h.token).cloned();
-                        if let Some(to) = to {
-                            let _ = to.try_send(datagram);
-                        }
-                    }
-                });
-                *d.task.lock().unwrap() = Some(task);
-                *slot = Arc::downgrade(&d);
-                d
-            }
-        }
-    };
+    let demux = demux_of(Some(slot), conn);
     let (to, rx) = mpsc::channel(ROUTE_QUEUE);
     {
         let mut routes = demux.routes.lock().unwrap();
@@ -1122,6 +1413,12 @@ impl MediaRx {
         }
         while let Ok(d) = self.rx.try_recv() {
             self.media.datagram(&d, now);
+        }
+        // (the loss its frames had said back to the sending end, which makes its parity for it)
+        if let Some(report) = self.media.take_report(now) {
+            if self._route.demux.conn.send_datagram(Bytes::copy_from_slice(&report)).is_ok() {
+                crate::tally("dgram.loss.told");
+            }
         }
     }
 
@@ -1214,11 +1511,32 @@ mod tests {
         assert_eq!(parity_for(1, false, 0.0), 0);
         assert_eq!(parity_for(1, true, 0.0), 1);
         assert_eq!(parity_for(1, false, 0.001), 1);
-        assert_eq!(parity_for(20, false, 0.0), 1);
-        assert_eq!(parity_for(20, false, 0.02), 4); // 20 * 0.16
-        assert_eq!(parity_for(20, false, 0.05), 5); // 20 * 0.22
+        // a clean link: a tenth (a key frame 15%, two at least), however few lost lately
+        assert_eq!(parity_for(2, false, 0.0), 1);
+        assert_eq!(parity_for(10, false, 0.0), 1);
+        assert_eq!(parity_for(11, false, 0.0), 2);
+        assert_eq!(parity_for(20, false, 0.0), 2);
+        assert_eq!(parity_for(30, false, 0.0), 3);
+        assert_eq!(parity_for(40, false, 0.0), 4);
+        assert_eq!(parity_for(48, false, 0.004), 5);
+        assert_eq!(parity_for(2, true, 0.0), 2);
+        assert_eq!(parity_for(42, true, 0.0), 7);
+        assert_eq!(parity_for(48, true, 0.0), 8);
+        assert_eq!(parity_for(20, false, 0.01), 4); // 20 * 0.17
+        assert_eq!(parity_for(20, false, 0.02), 4); // 20 * 0.20
+        assert_eq!(parity_for(20, false, 0.05), 6); // 20 * 0.29
+        assert_eq!(parity_for(17, false, 0.063), 6); // 17 * 0.329: three bursts of two
+        // bursts: four at least from 2%, six from 4% in a block of 12 or more
+        assert_eq!(parity_for(5, false, 0.02), 4);
+        assert_eq!(parity_for(3, false, 0.02), 1);
+        assert_eq!(parity_for(10, false, 0.019), 2);
+        assert_eq!(parity_for(12, false, 0.04), 6);
+        assert_eq!(parity_for(11, false, 0.04), 4);
         assert_eq!(parity_for(2, true, 0.01), 2);
-        assert_eq!(parity_for(48, false, 0.5), 17); // 48 * 0.35
+        assert_eq!(parity_for(48, false, 0.5), 21); // 48 * 0.42
+        assert_eq!(parity_for(48, true, 0.006), 8); // never below the clean link's
+        assert_eq!(parity_for(48, true, 0.01), 9); // 48 * 0.17
+        assert_eq!(parity_for(48, true, 0.5), 21);
         let mut meter = LossMeter::default();
         let t0 = Instant::now();
         assert_eq!(meter.update(t0, 0, 0), 0.0);
@@ -1366,13 +1684,13 @@ mod tests {
         for d in sent[2].iter().skip(2) {
             media.datagram(d, t);
         }
-        // 4 comes whole: waited 6 ms for 3
+        // 4 comes whole: waited 3 ms for 3
         take(&mut media, 3, t + Duration::from_millis(1));
         assert_eq!(given(&mut media).len(), 2);
-        assert_eq!(media.deadline(), Some(t + Duration::from_millis(7)));
-        media.tick(t + Duration::from_millis(7));
+        assert_eq!(media.deadline(), Some(t + Duration::from_millis(4)));
+        media.tick(t + Duration::from_millis(4));
         assert_eq!(media.counts.given_up, 1);
-        assert!(media.take_keyframe(t + Duration::from_millis(7)));
+        assert!(media.take_keyframe(t + Duration::from_millis(4)));
         // (asked once in KEYFRAME_EVERY)
         take(&mut media, 4, t + Duration::from_millis(8));
         assert!(!media.take_keyframe(t + Duration::from_millis(8)));
@@ -1392,14 +1710,14 @@ mod tests {
         let frames: Vec<(u8, bool, Vec<u8>)> = (0..5).map(|i| (FRAME_VIDEO, i == 0 || i >= 3, video_body(i == 0 || i >= 3, i, 3000, i as u8))).collect();
         let sent = send(5, &frames, 1, 0.0);
         sent[0].iter().for_each(|d| media.datagram(d, t));
-        // 2 loses two shards with one parity, 3 comes whole: 2 given up 6 ms on, a key frame asked for
+        // 2 loses two shards with one parity, 3 comes whole: 2 given up 3 ms on, a key frame asked for
         sent[1].iter().skip(2).for_each(|d| media.datagram(d, t));
         sent[2].iter().for_each(|d| media.datagram(d, t));
         media.tick(ms(7));
         assert_eq!(media.counts.given_up, 1);
         assert!(media.take_keyframe(ms(7)));
-        // the key frame sent for it loses past its parity too, and then the screen is still: nothing more comes
-        for d in sent[3].iter().skip(2) {
+        // the key frame sent for it loses past its two parity shards too, and then the screen is still: nothing more comes
+        for d in sent[3].iter().skip(3) {
             media.datagram(d, ms(20));
         }
         assert!(!media.take_keyframe(ms(20)));
@@ -1477,6 +1795,70 @@ mod tests {
             media.datagram(x, t);
         }
         assert_eq!(given(&mut media), vec![(FRAME_AUDIO, pcm)]);
+    }
+
+    #[test]
+    fn the_receiving_end_says_the_shards_lost_never_the_parity_it_did_not_need() {
+        let t = Instant::now();
+        let ms = |n: u64| t + Duration::from_millis(n);
+        let mut media = MediaIn::new(6, false);
+        stream_of(&mut media, &config(1));
+        // 40 frames of 10 shards, one parity shard each
+        let frames: Vec<(u8, bool, Vec<u8>)> = (0..40).map(|i| (FRAME_VIDEO, i == 0, video_body(i == 0, i, 11_000, i as u8))).collect();
+        let sent = send(6, &frames, 1, 0.0);
+        assert!(sent[1..].iter().all(|d| d.len() == 11 && Head::of(&d[0]).unwrap().k == 10));
+        // the first 20 whole: had at their 10th data shard, the parity after it not counted lost
+        for (i, d) in sent[..20].iter().enumerate() {
+            d.iter().for_each(|x| media.datagram(x, ms(i as u64 * 16)));
+        }
+        assert_eq!(media.take_report(ms(320)), None, "counting from the first asked");
+        assert_eq!((media.loss.missing, media.loss.shards), (0, 20 * 10));
+        assert_eq!(media.take_report(ms(400)), None, "not yet REPORT_EVERY");
+        let report = media.take_report(ms(570)).unwrap();
+        assert_eq!(report_of(&report), Some((6, 0)));
+        // the next 20 lose their 4th shard each, made again from the parity: one lost of each 11
+        for (i, d) in sent[20..].iter().enumerate() {
+            d.iter().enumerate().filter(|(j, _)| *j != 3).for_each(|(_, x)| media.datagram(x, ms(600 + i as u64 * 16)));
+        }
+        assert_eq!(given(&mut media).len(), 40);
+        assert_eq!(media.take_report(ms(800)), None);
+        let report = media.take_report(ms(1000)).unwrap();
+        assert_eq!(report_of(&report), Some((6, 20 * 1_000_000 / 220)));
+        assert_eq!(u32::from_be_bytes(report[10..14].try_into().unwrap()), 220);
+        // a frame let go, lost past its parity long enough: all its shards that did not come
+        let more = send(6, &[(FRAME_VIDEO, false, video_body(false, 41, 11_000, 0))], 1, 0.0);
+        let mut seq41 = more[0].clone();
+        for d in &mut seq41 {
+            d[7..11].copy_from_slice(&41u32.to_be_bytes());
+        }
+        seq41[..5].iter().for_each(|x| media.datagram(x, ms(1100)));
+        media.tick(ms(1100 + STALE.as_millis() as u64));
+        assert_eq!(media.counts.given_up, 1);
+        assert_eq!((media.loss.missing, media.loss.shards), (6, 11));
+    }
+
+    #[test]
+    fn a_report_is_passed_over_by_an_end_from_before_and_heard_by_its_view() {
+        let r = report_bytes(9, 31_250, 640);
+        assert_eq!(r.len(), REPORT_LEN);
+        assert_eq!(report_of(&r), Some((9, 31_250)));
+        // no head of a frame: an end from before (Head::of) passes it over, and so does the view's receiving end
+        assert!(Head::of(&r).is_none());
+        let t = Instant::now();
+        let mut media = MediaIn::new(9, false);
+        stream_of(&mut media, &config(1));
+        media.datagram(&r, t);
+        assert!(media.ready.is_empty() && media.video.pending.is_empty());
+        assert_eq!(report_of(&report_bytes(0, 1, 1)), None);
+        assert_eq!(report_of(&report_bytes(9, 1_000_001, 1)), None);
+        assert_eq!(report_of(&r[..15]), None);
+        let heard = PeerLoss::default();
+        assert_eq!(heard.at(t), 0.0);
+        heard.heard(31_250, t);
+        assert_eq!(heard.at(t + Duration::from_millis(1999)), 0.03125);
+        assert_eq!(heard.at(t + REPORT_FRESH), 0.0, "stale once the receiving end stopped saying");
+        // what the sending end makes of it: the parity for 3%, not the clean link's
+        assert_eq!(parity_for(40, false, heard.at(t)), 10);
     }
 
     #[test]

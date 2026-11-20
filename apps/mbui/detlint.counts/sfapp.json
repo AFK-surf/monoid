@@ -1,8 +1,5 @@
 {
   "counts": {
-    "at-rest-wait": {
-      "src/sfapp/service_link_wbtest.mbt": 1
-    },
     "style-literal": {
       "src/sfapp/app.mbt": 2,
       "src/sfapp/chat.mbt": 46,
@@ -36,11 +33,6 @@
     "build-motion": {
       "src/sfapp/chat.mbt": 1
     },
-    "old-island": {
-      "src/sfapp/app.mbt": 1,
-      "src/sfapp/narrow_shell.mbt": 1,
-      "src/sfapp/tape_shell.mbt": 4
-    },
     "submitted-read": {
       "src/sfapp/settings/vault_ask.mbt": 1
     },
@@ -55,13 +47,11 @@
       "src/sfapp/desk_composer_wbtest.mbt": 1,
       "src/sfapp/emit_way_wbtest.mbt": 1,
       "src/sfapp/emit_wbtest.mbt": 2,
-      "src/sfapp/files_favorite_motion_wbtest.mbt": 1,
       "src/sfapp/floor_wbtest.mbt": 1,
       "src/sfapp/home_wbtest.mbt": 1,
       "src/sfapp/image_corners_chat_wbtest.mbt": 1,
       "src/sfapp/linger_wbtest.mbt": 1,
       "src/sfapp/makes_way_wbtest.mbt": 1,
-      "src/sfapp/model_pop_wbtest.mbt": 1,
       "src/sfapp/motion_wbtest.mbt": 2,
       "src/sfapp/new_workspace_wbtest.mbt": 1,
       "src/sfapp/newchat_send_wbtest.mbt": 4,
@@ -82,8 +72,17 @@
     "page-at-moment": {
       "src/sfapp/app.mbt": 3,
       "src/sfapp/bar_timing.mbt": 1,
-      "src/sfapp/narrow_shell.mbt": 1,
       "src/sfapp/settings/station_parts.mbt": 1
+    },
+    "structure-box": {
+      "src/sfapp/app.mbt": 1,
+      "src/sfapp/chat_bar_node.mbt": 1,
+      "src/sfapp/history.mbt": 1,
+      "src/sfapp/settings/devices.mbt": 1,
+      "src/sfapp/settings/run_more.mbt": 5,
+      "src/sfapp/settings/station_add.mbt": 3,
+      "src/sfapp/settings/vault_ask_node.mbt": 2,
+      "src/sfapp/sheets.mbt": 2
     }
   }
 }

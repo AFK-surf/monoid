@@ -8,7 +8,8 @@ import { appendFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
-import { groupAlive, signalGroup } from "../src/ops/group.ts";
+import { groupAlive } from "../src/ops/group.ts";
+import { killGroups } from "./kill-groups.ts";
 import { COLLECT_YIELD_EVERY, JOB_FILES_ORPHAN_MS, JOB_LOGS_KEPT_MS, Jobs, WRAPPER, tail } from "../src/jobs/jobs.ts";
 import { JOB_LOG_CAP } from "../src/ops/storage.ts";
 import { Store } from "../src/store/store.ts";
@@ -19,8 +20,8 @@ const all: Jobs[] = [];
 const stores: Store[] = [];
 after(async () => {
   for (const j of all) {
-    for (const job of j.store.listJobs(null)) if (job.pgid !== null) signalGroup(job.pgid, "SIGKILL");
     await j.shutdown().catch(() => undefined);
+    await killGroups(j.store.listJobs(null).map((job) => job.pgid));
   }
   for (const s of stores) {
     try {
@@ -203,7 +204,7 @@ exec /bin/mv "$@"
     const job = await r.jobs.start("s1", "leaves", `sh -c "trap '' TERM; echo up; while :; do sleep 1; done" & sleep 0.2; echo left`, r.work, null, false);
     const pgid = job.pgid!;
     // Whatever becomes of it, nothing of it outlives the test.
-    t.after(() => signalGroup(pgid, "SIGKILL"));
+    t.after(() => killGroups([pgid]));
     await until(() => r.store.getJob(job.id)!.state === "exited");
     // Asked to end, then killed once its stop's grace is over (5 s): given that and as long again, or the test fails.
     const by = Date.now() + 10_000;

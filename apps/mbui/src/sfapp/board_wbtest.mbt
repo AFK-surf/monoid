@@ -18,7 +18,14 @@ fn board_at(mode : String, w : Double, h : Double, platform? : Int = 0, corners_
 /// The audit's faults made in the board's own files. (Not what is under the phone's bottom bar where its glass takes
 /// presses, as it does once the bar has been told again: Home's list's rows are so too, the bar's.)
 fn board_faults(t : @ui.Tester) -> Array[String] {
-  t.audit().filter(fn(f) { (f.contains("board_node") || f.contains("sfdesk/board")) && !f.contains("sfapp/bar.mbt") })
+  t
+  .audit()
+  .filter(fn(f) {
+    (f.contains("board_node") || f.contains("sfdesk/board")) &&
+    !f.contains("sfapp/bar.mbt") &&
+    // (the edge of the chat beside the board, half over each side as a side panel's is: board_beside_faults')
+    !f.contains("stillfail/sf/src/edge_node.mbt:37, in what was asked for at stillfail/src/sfpages/board_node.mbt:")
+  })
 }
 
 ///|
@@ -366,8 +373,9 @@ test "大屏: opening and closing a 待收口 chat keeps the board's column widt
   let (open_x, _, open_w, _) = t.get(Button, label=title).rect
   assert_true((open_w - before_w).abs() < 1.0, msg="column width changed from \{before_w} to \{open_w}")
   assert_true(open_x >= 0.0 && open_x + open_w <= 1280.0 - 460.0, msg="selected card outside the board")
-  // (the board's room: short of the chat by its edge's reach over the board, 7 / 2 - 0.5, then the board's margin)
-  let nearest_x = before_x.min(1280.0 - 460.0 - 3.0 - 16.0 - before_w)
+  assert_eq(edge_divider_faults(t), [], msg="a line between the chat and the board at rest")
+  // (the board's room: short of the chat by its edge's reach over the board, handle_out (4), then the board's margin)
+  let nearest_x = before_x.min(1280.0 - 460.0 - @sf.handle_out - 16.0 - before_w)
   assert_true((open_x - nearest_x).abs() < 1.0, msg="board scrolled farther than needed: \{open_x}, expected \{nearest_x}")
   t.click(TextField, label="发消息")
   t.run_for(@ui.move_most_ms)
@@ -478,7 +486,7 @@ test "中屏 760: on the tape the rail's 看板 brings the board's panel over, �
 }
 
 ///|
-/// The drafts of ws1 as the made-up core keeps them (the prefs' `boardDrafts`): each one's words.
+/// The drafts of ws1 as the made-up core keeps them (its `boardDrafts` topic): each one's words.
 fn board_kept_drafts() -> Array[String] {
   match @sffixture.board_prefs["boardDrafts"].get("ws1") {
     Some(Array(a)) => a.map(fn(d) { text(Some(d), "title") })
@@ -988,15 +996,18 @@ test "大屏: the chat beside the board as wide as its edge is dragged, the colu
   assert_true(@sfbase.board_pick.get() is Some(_))
   let edge = fn() { t.query(Separator, label="调整侧栏宽度").map(fn(n) { n.rect }).unwrap_or((0.0, 0.0, 0.0, 0.0)) }
   let mid = fn(r : (Double, Double, Double, Double)) { (r.0 + r.2 / 2.0, r.1 + r.3 / 2.0) }
+  // (how wide the chat is: from where it starts, handle_out into its edge, to the window's end)
+  let wide = fn() { (1440.0 - edge().0 - @sf.handle_out).round().to_int() }
   let (x0, y0) = mid(edge())
-  // (its own width: 460 from the window's end)
-  assert_eq((1440.0 - x0).round().to_int(), 460)
+  // (no line between it and the board at rest: edge_divider_wbtest.mbt; its own width, 460 from the window's end)
+  assert_eq(edge_divider_faults(t), [])
+  assert_eq(wide(), 460)
   assert_eq(board_faults(t), [])
   // dragged 160 further in: 620 wide, kept so
   board_edge_drag(t, x0, y0, x0 - 160.0)
   t.run_for(@ui.move_most_ms)
   let (x1, _) = mid(edge())
-  assert_eq((1440.0 - x1).round().to_int(), 620)
+  assert_eq(wide(), 620)
   assert_eq(board_sidebars_said(src, "\nboardChat"), "620")
   assert_true(board_words_at(t, "整理发布清单") is Some((cx, _, cw, _)) && cx + cw <= x1, msg="its card left of it")
   assert_eq(board_faults(t), [])
@@ -1004,15 +1015,14 @@ test "大屏: the chat beside the board as wide as its edge is dragged, the colu
   board_edge_drag(t, x1, y0, 1400.0)
   t.run_for(@ui.move_most_ms)
   let (x2, _) = mid(edge())
-  assert_eq((1440.0 - x2).round().to_int(), 360)
+  assert_eq(wide(), 360)
   assert_eq(board_sidebars_said(src, "\nboardChat"), "360")
   assert_eq(board_faults(t), [])
   // pressed twice: its own width again, nothing kept
   t.tap(x2, y0)
   t.tap(x2, y0)
   t.run_for(@ui.move_most_ms)
-  let (x3, _) = mid(edge())
-  assert_eq((1440.0 - x3).round().to_int(), 460)
+  assert_eq(wide(), 460)
   assert_eq(board_sidebars_said(src, "\nboardChat"), "")
   assert_true(@sfbase.board_pick.get() is Some(_), msg="still open")
   assert_eq(board_faults(t), [])
@@ -1655,7 +1665,7 @@ test "小屏: a card held by a finger lifts over its menu's scrim, clear of its 
   board_lifted_over(t, "分享") |> ignore
   @sf.close_presented_of(@sf.last_presented())
   // (back down on its spring from the moment the menu went)
-  t.run_for(@ui.move_most_ms + @motion.lift_spring.duration(1.0, 0.0, 0.0))
+  t.run_for(@ui.move_most_ms + @motion.tactile_bounce.duration(1.0, 0.0, 0.0))
   assert_true(!@sf.presented_drawn())
   assert_true(board_lifted_card(t) is None, msg="still lifted")
   assert_eq(board_rect_of(t, Button, name), Some(laid))
@@ -2023,7 +2033,7 @@ test "大屏, 试用新对话页 on: the chat beside the board made as nodes, it
     },
   }
   open_fixture_over("board", src)
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1440.0, h=900.0, platform=0)
   t.run_for(@ui.move_most_ms)
   t.click(Button, label="给设置页加一个深色模式开关")
@@ -2052,10 +2062,10 @@ test "大屏, 试用新对话页 on: the chat beside the board made as nodes, it
   assert_false(t.sources_of(c4_last).contains("sfpages/chat_body_node.mbt"), msg="the chat before let go")
   assert_eq(board_beside_faults(t), [])
   // 试用新对话页 turned off while it shows: its old page at once; on again, nodes
-  @sfbase.chat_page_nodes.set(false)
+  @sfbase.hold_chat_page_nodes(Some(false))
   t.run_for(@ui.move_most_ms)
   assert_false(board_beside_made_nodes(t, c7_last, "turned off"), msg="turned off: the old page")
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   t.run_for(@ui.move_most_ms)
   assert_true(board_beside_made_nodes(t, c7_last, "turned on"), msg="turned on: the page made as nodes")
   assert_eq(board_beside_faults(t), [])

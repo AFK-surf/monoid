@@ -24,6 +24,23 @@ fn work_now() -> Double {
 }
 
 ///|
+/// Optional test override for per-thread CPU time (ms); when unset and `work_clock` is active, returns -1.0.
+// kept across runs: reset by tests that set it
+let thread_cpu_clock : Ref[(() -> Double)?] = Ref(None)
+
+///|
+fn work_thread_cpu() -> Double {
+  match thread_cpu_clock.val {
+    Some(f) => f()
+    None =>
+      match work_clock.val {
+        Some(_) => -1.0
+        None => @hostapi.thread_cpu_ms()
+      }
+  }
+}
+
+///|
 /// The first finger lifted since the last frame (ms on the work clock), for the time until a frame is submitted.
 // kept across runs: reset as the hand is reset, or the first frame after the touch is submitted
 let perf_touch_at : Ref[Double] = Ref(-1.0)

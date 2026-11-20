@@ -266,14 +266,13 @@ fn rail_key_node(
   // focus ring round it)
   @sf.action_box_node(parent, label, fn(_) { press() }, fn(item) {
     @sf.style_node(item, fn() { if square { rail_sq } else { rail_item } })
-    let hover = @motion.NodeWay::new(0.0)
-    let chosen = @motion.NodeWay::new(if lit && @signals.untracked(on) { 1.0 } else { 0.0 })
-    let ink = @motion.NodeWay::new(if @signals.untracked(on) { 1.0 } else { 0.0 })
-    item.reacts(fn() { @sf.lit_node(item) }, fn(h) { hover.go_ms(item, if h { 1.0 } else { 0.0 }, @sf.dur_ms) })
-    if lit {
-      item.reacts(on, fn(o) { chosen.go_ms(item, if o { 1.0 } else { 0.0 }, @sf.dur_ms) })
+    let hover = @motion.hover_fade(item, fn() { @sf.lit_node(item) }, duration_ms=@sf.dur_ms)
+    let chosen = if lit {
+      @motion.hover_fade(item, on, duration_ms=@sf.dur_ms)
+    } else {
+      fn() { 0.0 }
     }
-    item.reacts(fn() { on() || @sf.lit_node(item) }, fn(k) { ink.go_ms(item, if k { 1.0 } else { 0.0 }, @sf.dur_ms) })
+    let ink = @motion.hover_fade(item, fn() { on() || @sf.lit_node(item) }, duration_ms=@sf.dur_ms)
     if tipped {
       @sf.tip_node(tips, item, label, side=Right) |> ignore
     }
@@ -284,8 +283,8 @@ fn rail_key_node(
       sq.ground(By(fn() {
         let t = @sf.theme()
         let lit = if wide.closed.get() { @sf.alpha(t.p.text, lit_in_bar) } else { t.p.selected }
-        let h = dmax(hover.shown(item), if rest() { 1.0 } else { 0.0 })
-        let o = chosen.shown(item)
+        let h = dmax(hover(), if rest() { 1.0 } else { 0.0 })
+        let o = chosen()
         if h <= 0.0 && o <= 0.0 {
           0L
         } else {
@@ -297,7 +296,7 @@ fn rail_key_node(
         sq,
         ink: fn() {
           let t = @sf.theme()
-          @sf.mix(t.p.text, ink.shown(item), t.p.muted)
+          @sf.mix(t.p.text, ink(), t.p.muted)
         },
       })
     }

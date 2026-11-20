@@ -2,7 +2,8 @@
 // mesh in memory, or the addon's on 127.0.0.1), its connections taken by the mesh's own loop and door
 // (src/mesh/accept.ts, door.ts, wire.ts), as the IM's anchor is made of the same framing. What it answers is the
 // anchor's routes as core/src/im/anchor.mbt says them (the members, `POST /sync`, `POST /events`, the stream, a space's
-// events and files), with what wave 3 adds (`live`, `stop`, a space's devices, `secrets`); what it takes is checked as
+// events and files, a file put a piece at a time as wave 4 has it), with what wave 3 adds (`live`, `stop`, a space's
+// devices, `secrets`); what it takes is checked as
 // the anchor checks it (the device's signature and its member's, the space the author's, the count after the last,
 // what its kind asks) and stamped in its place. Who is let in is by the device's key, a code good once to join by.
 //
@@ -103,6 +104,11 @@ export class ImServer {
   passed: string[] = [];
   /// An anchor from before decisions: `decision.ask` and `decision.resolve` refused as kinds it does not know.
   noDecisions = false;
+  /// What came of files put a piece at a time, by `<sha256>.part.<member>` (anchor.mbt `part_path`); the largest body a
+  /// file's ask carried; an anchor from before pieces (`GET …/uploads/…` no request of its, a piece's query not read).
+  parts = new Map<string, Buffer>();
+  largestPut = 0;
+  noPieces = false;
   #feeds = new Set<Feed>();
   #conns = new Set<Connection>();
   #scope = Effect.runSync(Scope.make());
@@ -464,6 +470,11 @@ export class ImServer {
       const after = Number(url.searchParams.get("after") ?? 0);
       return json(200, { events: s.events.filter((x) => x.aseq > after).slice(0, 500) });
     }
+    if (s !== undefined && asks("GET", "spaces", null, "uploads", null) && !this.noPieces) {
+      return json(200, { have: this.parts.get(`${path[3]}.part.${member}`)?.length ?? 0 });
+    }
+    if (s !== undefined && asks("POST", "spaces", null, "files")) this.largestPut = Math.max(this.largestPut, body.length);
+    if (s !== undefined && asks("POST", "spaces", null, "files") && url.searchParams.has("sha256") && !this.noPieces) return this.#piece(s, member, url, body);
     if (s !== undefined && asks("POST", "spaces", null, "files")) {
       const file = this.upload(s.id, member, url.searchParams.get("name") ?? "", url.searchParams.get("mime") ?? "application/octet-stream", body);
       const side = (k: string) => (/^[1-9]\d{0,5}$/.test(url.searchParams.get(k) ?? "") ? Number(url.searchParams.get(k)) : undefined);
@@ -489,6 +500,40 @@ export class ImServer {
       return json(200, { devices: [...this.devices.entries()].filter(([, m]) => m === of).map(([d]) => d) });
     }
     return json(404, { error: "no such request" });
+  }
+
+  /// A piece of a file put a piece at a time (anchor.mbt `upload_piece`): appended where `from` is what came of it, kept
+  /// as the file once all of it came and it is what its sha256 says.
+  #piece(s: Space, member: string, url: URL, body: Buffer): Answer {
+    const q = (k: string) => url.searchParams.get(k) ?? "";
+    const sha = q("sha256");
+    const size = Number(q("size"));
+    const from = Number(q("from"));
+    if (!/^[0-9a-f]{64}$/.test(sha)) return json(400, { error: "a file's sha256 is 64 hex" });
+    if (!Number.isSafeInteger(size) || size < 1 || size > 512 * 1024 * 1024) return json(413, { error: "a file is 1 byte to 512 MiB" });
+    const put = () => {
+      const whole = [...this.spaces.values()].flatMap((x) => [...x.files.values()]).find((f) => f.sha256 === sha)!;
+      const file = this.upload(s.id, member, q("name"), q("mime") || "application/octet-stream", whole.bytes);
+      const side = (k: string) => (/^[1-9]\d{0,5}$/.test(q(k)) ? Number(q(k)) : undefined);
+      if (side("width") !== undefined && side("height") !== undefined) Object.assign(file, { width: side("width"), height: side("height") });
+      const { bytes: _, by: _b, held: _h, ...shown } = file;
+      return json(201, { file: shown });
+    };
+    if ([...this.spaces.values()].some((x) => x.files.get(sha)?.size === size)) return put();
+    const key = `${sha}.part.${member}`;
+    const have = this.parts.get(key) ?? Buffer.alloc(0);
+    if (from !== have.length) return json(409, { error: "the file's next piece is another", have: have.length });
+    const now = Buffer.concat([have, body]);
+    if (now.length > size) {
+      this.parts.delete(key);
+      return json(400, { error: "more of the file came than its size" });
+    }
+    this.parts.set(key, now);
+    if (now.length < size) return json(202, { have: now.length });
+    this.parts.delete(key);
+    if (sha256Hex(now) !== sha) return json(422, { error: "the file that came is not the one its sha256 names: it is put again from its start" });
+    this.upload(s.id, member, q("name"), q("mime"), now);
+    return put();
   }
 
   async close() {

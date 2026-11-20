@@ -23,12 +23,14 @@ test "a number said to be tabular is shaped with digits all one width, words not
   let on = Ref(true)
   let t = Tester::new(
     fn(c) {
-      c.column(fn() {
-        c.text("45%", tabular=on.val) |> ignore
-        c.text("12 MB", style=text_style(size=Sm, tabular=true)) |> ignore
-        c.text("v1.2") |> ignore
+      c.with_theme({ ..Theme::light(), tabular: false }, fn() {
+        c.column(fn() {
+          c.text("45%", tabular=on.val) |> ignore
+          c.text("12 MB", style=text_style(size=Sm, tabular=true)) |> ignore
+          c.text("v1.2") |> ignore
+        })
+        |> ignore
       })
-      |> ignore
     },
     w=300.0,
     h=200.0,
@@ -43,22 +45,24 @@ test "a number said to be tabular is shaped with digits all one width, words not
 }
 
 ///|
-test "a theme's tabular: the app's own words with digits all one width, what people wrote with the font's own" {
+test "default Theme::light and Theme::dark enable tabular digits while explicit opt-out and user words keep font figures" {
+  assert_true(Theme::light().tabular)
+  assert_true(Theme::dark().tabular)
+  assert_true(Theme::narrow_light().tabular)
+  assert_true(Theme::narrow_dark().tabular)
   let _ = Tester::new(
     fn(c) {
-      c.with_theme({ ..Theme::light(), tabular: true }, fn() {
-        c.column(fn() {
-          c.text("3 of 12") |> ignore
-          c.rich([span("Uploading "), span("42%", bold=true)]) |> ignore
-          c.rich([span("I wrote 7 lines")], words=true) |> ignore
-          c.text("v2.0", tabular=false) |> ignore
-          // (no digit: shaped as it is either way, in the font the rest of the words without one are; the code face's
-          // digits are all one width as they are)
-          c.text("Done") |> ignore
-          c.rich([span("1:03", mono=true)]) |> ignore
-        })
-        |> ignore
+      c.column(fn() {
+        c.text("3 of 12") |> ignore
+        c.rich([span("Uploading "), span("42%", bold=true)]) |> ignore
+        c.rich([span("I wrote 7 lines")], words=true) |> ignore
+        c.text("v2.0", tabular=false) |> ignore
+        // (no digit: shaped as it is either way, in the font the rest of the words without one are; the code face's
+        // digits are all one width as they are)
+        c.text("Done") |> ignore
+        c.rich([span("1:03", mono=true)]) |> ignore
       })
+      |> ignore
     },
     w=300.0,
     h=200.0,

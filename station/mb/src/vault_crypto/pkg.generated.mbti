@@ -38,8 +38,6 @@ pub fn file_ok(@json.Json) -> String?
 
 pub fn grant_context(String, String) -> String
 
-pub async fn harness(@host.Host) -> Unit
-
 pub fn hex(BytesView) -> String
 
 pub fn hex_of_length(String, Int32) -> Bool
@@ -99,6 +97,8 @@ pub fn signed_bytes(Crypto, @json.Json, String) -> Bytes raise
 pub fn signed_ok(Crypto, @json.Json, String) -> Bool
 
 pub fn signer_of(@vault.LockView, String) -> (String, String)?
+
+pub fn snapshot_json((@json.Json, String)?) -> @json.Json
 
 pub fn stringify(@json.Json) -> String
 

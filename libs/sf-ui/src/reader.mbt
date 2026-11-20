@@ -111,6 +111,17 @@ fn paper_viewer_ink(p : ReaderPaper) -> ViewerInk {
 }
 
 ///|
+/// Where a reader is: a page of its own (the whole window's, a drive's), a tab beside a chat over the whole window or
+/// in a window of its own, or a tab in the chat's panel (its column wider there: panel_column_ems, the panel bounding
+/// it already).
+#derive(Eq)
+pub(all) enum ReaderHost {
+  OwnPage
+  Tab
+  PanelTab
+}
+
+///|
 /// A reader's panel: the contents, the search, the layout.
 #derive(Eq)
 pub(all) enum ReaderPanel {
@@ -166,6 +177,12 @@ pub(all) struct Reading {
   draft : @signals.Signal[Double]
   /// a desktop's bar, gone as the text is read on down (where the list stood when it was last seen: `seen`)
   bar_hidden : @signals.Signal[Bool]
+  /// taller than two screens (what shows could scroll further than its own height): told with what is in sight
+  long : @signals.Signal[Bool]
+  /// further than reader_end_away from its end, told with what is in sight
+  away : @signals.Signal[Bool]
+  /// the moment the column's list was first in sight (none yet: +inf): what floats over it stands as found till then
+  mut sight_from : Double
   mut seen : (Int, Double)
 }
 
@@ -205,6 +222,9 @@ pub fn reading_for(key : String) -> Reading {
         jumped: (-1, 0.0, -1, 0.0),
         draft: @signals.signal(-1.0),
         bar_hidden: @signals.signal(false),
+        long: @signals.signal(false),
+        away: @signals.signal(false),
+        sight_from: @double.infinity,
         seen: (0, 0.0),
       }
       readings[key] = r
@@ -247,6 +267,13 @@ pub fn reader_panel_of(key : String) -> ReaderPanel {
     Some(r) => r.panel.get()
     None => NoPanel
   }
+}
+
+///|
+/// Reading `r` scrolled to its end, at a cause: clears any held jump so `on_sight` records the end.
+fn reader_to_end(r : Reading) -> Unit {
+  r.jumped = (-1, 0.0, -1, 0.0)
+  r.list.to_end()
 }
 
 ///|
@@ -867,6 +894,29 @@ let desk_reader_foot : Double = 72.0
 ///|
 /// The column's width: 34 of the text's size (34em), its margins either side.
 let desk_column_ems : Double = 34.0
+
+///|
+/// The column's width in a tab in the panel beside a chat: 48 of the text's size, the panel bounding it already.
+let panel_column_ems : Double = 48.0
+
+///|
+/// How far from its end a reader's list is before its scroll-to-bottom float shows (matches a chat's to_newest_away:
+/// a corner of the screen).
+let reader_end_away : Double = 120.0
+
+///|
+/// How far in from a tab's right edge its floating buttons' drawn circles sit (a chat's float_in = 6 sits inside the
+/// composer column; a tab has no composer).
+let beside_float_in : Double = 16.0
+
+///|
+/// How far up from a tab's bottom edge the scroll-to-bottom floating button's drawn circle sits (a chat's float_lift =
+/// 12 sits over the composer).
+let beside_float_lift : Double = 16.0
+
+///|
+/// How long a tab's scroll-to-bottom floating button fades in and out (matches a chat's float_ms).
+let beside_float_ms : Double = 160.0
 
 ///|
 /// The panel's width (PANEL).

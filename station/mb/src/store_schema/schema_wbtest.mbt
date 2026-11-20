@@ -1,6 +1,6 @@
 // What the store's opening works out besides its statements, held to what the TypeScript gives for the same input
 // (station/src/store/schema.ts `headedFrom`, archive.ts `archivedEntry` and rows.ts `entryColumns`, usage-totals-source.ts's
-// renaming); the statements themselves are held to the TypeScript's in station/test/mb-store-schema.test.ts.
+// renaming).
 
 ///|
 test "a letter's heading names its chat as headedFrom reads it" {

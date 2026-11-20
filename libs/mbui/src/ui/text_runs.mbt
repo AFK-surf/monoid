@@ -191,11 +191,23 @@ fn tree_text_runs() -> Array[TextRun] {
       None => (x, y, sc)
     }
     let (_, by0, _, by1) = tree.seen_bounds(c.id)
+    let nav_cut = nav_clip_for_node(tree, c.id)
     for r in mine {
       let top = y + r.top * sc
       let bottom = y + r.bottom * sc
       if top < by1 && bottom > by0 {
-        out.push({ text: r.text, x0: x + r.x0 * sc, x1: x + r.x1 * sc, base: y + r.base * sc, top, bottom })
+        let mut rx0 = x + r.x0 * sc
+        let mut rx1 = x + r.x1 * sc
+        match nav_cut {
+          Some((cut_l, cut_r)) => {
+            rx0 = dmax(rx0, cut_l)
+            rx1 = dmin(rx1, cut_r)
+          }
+          None => ()
+        }
+        if rx1 > rx0 {
+          out.push({ text: r.text, x0: rx0, x1: rx1, base: y + r.base * sc, top, bottom })
+        }
       }
     }
   })

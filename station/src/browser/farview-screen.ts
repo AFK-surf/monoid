@@ -10,7 +10,11 @@
 //   from the host: {"changed":seq}  the picture changed (asked for then: nothing is polled)
 //                  {"page":{url,title}} {"size":{…}} {"taken":"agent"|"person"}
 //                  {"copied":text}  what a person's copy or cut on that view took (its clipboard's text)
-//                  {"openTab":url}  the page asked for a new tab (to every connection: heard on the watch's alone)
+//                  {"openTab":url}  the page asked for a new tab (to every connection: heard on the watch's alone);
+//                                   a window with a handle (window.open, an OAuth popup) says its own id as `window`,
+//                                   this tab's as `opener` and the opener's origin as `origin` (the new tab's
+//                                   FV_TAB_ID, FV_OPENER_ID and FV_OPENER_ORIGIN: the two tabs talk through the profile)
+//                  {"closeTab":true}  the page closed its tab (window.close() in a window a page opened)
 // A person's paste is text sent as typed ({"text":…}, where the focus is).
 import { connect, type Socket } from "node:net";
 import { log } from "../ops/log.ts";
@@ -18,6 +22,17 @@ import { type Clip, type ClipType, type Frame, type FrameConfig, type ScreenInpu
 import { chatDir } from "./farview.ts";
 
 export type FramePage = { url: string; title: string };
+/// What a page's new tab is to the tab that asked for it: the new window's id, the asking tab's, and its origin (none:
+/// a tab of its own, no handle to it).
+export type OpenTabMeta = { window?: string; opener?: string; origin?: string };
+
+/// The new tab an `openTab` line asks for: its address and what links it to the tab that asked (null: no such line).
+export function openTabOf(m: any): { url: string; meta: OpenTabMeta } | null {
+  if (typeof m?.openTab !== "string" || m.openTab === "") return null;
+  const meta: OpenTabMeta = {};
+  for (const k of ["window", "opener", "origin"] as const) if (typeof m[k] === "string" && m[k] !== "") meta[k] = m[k];
+  return { url: m.openTab, meta };
+}
 type Size = { width: number; height: number; scale: number };
 
 /// The viewport a tab is laid out at with no view saying one (a desktop's window).
@@ -146,8 +161,10 @@ export class FarviewScreen implements ScreenSource {
   readonly #views = new Set<FarviewView>();
   #closed = false;
   changed: () => void = () => {};
-  /// Hears each new tab the page asks for, by its address.
-  opened: (url: string) => void = () => {};
+  /// Hears each new tab the page asks for, by its address and what links it to this tab.
+  opened: (url: string, meta: OpenTabMeta) => void = () => {};
+  /// Hears the page close its tab (window.close() in a window a page opened).
+  closedByPage: () => void = () => {};
 
   /// `n`: which of its chat's tabs (0 its first, whose id is the chat's alone).
   constructor(o: { session: string; port: number; n?: number }) {
@@ -162,7 +179,9 @@ export class FarviewScreen implements ScreenSource {
     const link = new FrameLink(this.#port);
     link.heard = (m) => {
       this.heard(m);
-      if (typeof m?.openTab === "string" && m.openTab !== "") this.opened(m.openTab);
+      const open = openTabOf(m);
+      if (open !== null) this.opened(open.url, open.meta);
+      if (m?.closeTab === true) this.closedByPage();
     };
     link.ended = () => {
       if (this.#watch === link) this.#watch = null;

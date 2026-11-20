@@ -21,7 +21,8 @@ import * as own from "./connect.css.ts";
 
 addWords({ zh: zhPages as Words, en: enPages as Words });
 
-type Workspace = { id: string; name: string; email: string };
+/** A workspace, with the account (`sub`) that manages it: a call to the cloud goes as that account. */
+type Workspace = { id: string; name: string; email: string; account: string };
 /** What the core said of the workspaces: null until every account answered. */
 type Listed = { managed: Workspace[] } | null;
 
@@ -33,10 +34,12 @@ function managedOf(value: unknown): Listed {
   const managed: Workspace[] = [];
   for (const entry of value as Record<string, unknown>[]) {
     if (entry.loaded !== true && entry.error === undefined) return null;
-    const email = typeof (entry.account as { email?: unknown } | undefined)?.email === "string" ? (entry.account as { email: string }).email : "";
+    const of = (entry.account ?? {}) as { sub?: unknown; email?: unknown };
+    if (typeof of.sub !== "string") continue;
+    const email = typeof of.email === "string" ? of.email : "";
     for (const w of Array.isArray(entry.workspaces) ? (entry.workspaces as Record<string, unknown>[]) : []) {
       if (typeof w.id !== "string" || !MANAGERS.includes(String(w.role)) || managed.some((m) => m.id === w.id)) continue;
-      managed.push({ id: w.id, name: typeof w.name === "string" && w.name !== "" ? w.name : w.id, email });
+      managed.push({ id: w.id, name: typeof w.name === "string" && w.name !== "" ? w.name : w.id, email, account: of.sub });
     }
   }
   return { managed };
@@ -104,11 +107,12 @@ function Connect() {
   const several = new Set(listed.managed.map((w) => w.email)).size > 1;
   const join = async (e: Event) => {
     e.preventDefault();
-    if (!workspace || !name.trim() || busy) return;
+    const chosen = listed.managed.find((w) => w.id === workspace);
+    if (!chosen || !name.trim() || busy) return;
     setBusy("adding");
     setError(null);
     try {
-      const made = (await core().call("workspace.enroll", { workspace, name: name.trim() })) as { command?: unknown };
+      const made = (await core().call("workspace.enroll", { workspace, name: name.trim(), account: chosen.account })) as { command?: unknown };
       if (typeof made?.command !== "string") throw new Error(t("web-pages.cloud.connect.noCommand"));
       setBusy("handing");
       postBack(back, { state, command: made.command });

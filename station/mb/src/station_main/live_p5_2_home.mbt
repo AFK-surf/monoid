@@ -46,17 +46,17 @@ async fn P52::keep_agent_home(self : P52) -> Unit {
       let homes = self.files.agent_homes(home) catch { _ => [home] }
       for h in homes {
         storage.write_builtin_skills(h, feedback, source, site, move=move_on) catch {
-          e => live_log("warn", "agent_home", "the agents' home not kept", { "error": jstr(said_of(e)) })
+          e => slice_log("warn", "agent_home", "the agents' home not kept", { "error": jstr(said_of(e)) })
         }
       }
     }
-    None => live_log("warn", "agent_home", "the station's own skills are not there to write", Json::object({}))
+    None => slice_log("warn", "agent_home", "the station's own skills are not there to write", Json::object({}))
   }
   self.files.unlink_agent_home(home, profiles) catch {
-    e => live_log("warn", "agent_home", "the agents' home not kept", { "error": jstr(said_of(e)) })
+    e => slice_log("warn", "agent_home", "the agents' home not kept", { "error": jstr(said_of(e)) })
   }
   storage.link_transcripts(self.data, profiles) catch {
-    e => live_log("warn", "agent_home", "the shared transcripts not linked", { "error": jstr(said_of(e)) })
+    e => slice_log("warn", "agent_home", "the shared transcripts not linked", { "error": jstr(said_of(e)) })
   }
 }
 
@@ -81,6 +81,6 @@ fn P52::agent_home_live(self : P52) -> Unit {
     }
     running.val = false
   }
-  ignore(self.host.rt.fork_daemon("agents' home", on_error=e => @host.note("agents' home failed: \{e}"), round))
-  ignore((self.bus.config_listen.val)(_ => ignore(self.host.rt.fork_daemon("agents' home", on_error=e => @host.note("agents' home failed: \{e}"), round))))
+  fork_bg(self.host, "agents' home", round)
+  ignore((self.bus.config_listen.val)(_ => fork_bg(self.host, "agents' home", round)))
 }

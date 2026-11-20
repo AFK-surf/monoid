@@ -12,7 +12,7 @@ test "each notification's events and live steps, as the TypeScript station said 
   let live = Live::new()
   for i, n in notices_said {
     let (method, params, said, state) = n
-    let got = events(live, @jsjson.units(method), @jsjson.parse(params))
+    let got = events(live, method, @jsjson.parse(params))
     assert_eq(@jsjson.stringify(Arr(got)), same(said), msg="notice \{i} (\{method}): its events")
     assert_eq(@jsjson.stringify(live.state()), same(state), msg="notice \{i} (\{method}): the live steps after it")
     // (what a station taking it up goes on from is the same)
@@ -28,7 +28,7 @@ test "each failure's reason, as the TypeScript station said it" {
       Str(m) => m
       _ => abort("a message is a string")
     }
-    assert_eq(classify_error(Some(@jsjson.parse(info)), message), reason, msg="error \{i}: \{info} \{@jsjson.raw_text(message)}")
+    assert_eq(classify_error(Some(@jsjson.parse(info)), message), reason, msg="error \{i}: \{info} \{message}")
   }
 }
 

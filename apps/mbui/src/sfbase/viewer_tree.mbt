@@ -154,9 +154,14 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
   // for before it was here saved as its whole comes; each once (Viewer::ask_save)
   n.reacts(fn() { (vw.asked_told.get(), vw.bytes.get() is Some(_), vw.previewed.get()) }, fn(_) {
     download_told(src, vw)
-    if vw.save_after && vw.whole_here() is Some(_) {
-      vw.save_after = false
-      vw.save_tree()
+    if vw.whole_here() is Some(_) {
+      if vw.save_after {
+        vw.save_after = false
+        vw.save_tree()
+      }
+      vw.share_came()
+      vw.copy_came()
+      vw.marks_finish_came()
     }
   })
   // what it reads asked of the core as what it needs comes (its kind sniffed, its bytes, a read failed)
@@ -173,6 +178,21 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
       )
     },
     fn(_) { vw.fetch(src) },
+  )
+  // release the preview image once the whole image is decoded so host memory stays bounded
+  n.reacts(
+    fn() {
+      vw.bytes.get() |> ignore
+      vw.preview_image != "" &&
+      vw.image != "" &&
+      vw.image != vw.preview_image &&
+      @ui.image_any_ready(vw.image)
+    },
+    fn(ready) {
+      if ready {
+        vw.drop_preview_image()
+      }
+    },
   )
   // zoomed in past fitted (or gliding there): the image itself asked for in place of its preview (Viewer::whole_due);
   // once asked, wanted till it comes, zoomed out again or not
@@ -254,7 +274,7 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
     },
     fn(to) {
       if to != vw.lift.target() {
-        vw.lift.go(to, @motion.animate_spring, at=n.cause_at())
+        vw.lift.go(to, @motion.move_damped, at=n.cause_at())
       }
     },
   )
@@ -325,10 +345,10 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
       .on_drag(fn(d) { vw.finger_on(canvas, src, d) }, fingers=2)
       // (the pointer's secondary button on the picture: its menu, as a finger held still on it opens it)
       .on_menu(fn(m) { vw.menu_on(m) })
-      // (a wheel over it, at its moment, where it is on the stage then: a trackpad's two fingers taking it down, else
-      // what the wheel does to the picture)
+      // (a wheel over it, at its moment, where it is on the stage then: a trackpad's two fingers taking it down or
+      // paging sideways, else what the wheel does to the picture)
       .on_wheel(fn(w) {
-        if !vw.wheel_pull(canvas, w) {
+        if !vw.wheel_pull(canvas, w) && !vw.wheel_page(canvas, src, w) {
           vw.wheeled(vw.zoom, w.x, w.y, w.dx, w.dy, w.mods, w.at)
         }
       })
@@ -406,7 +426,7 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
         }))
         .width(By(fn() { going().map(fn(g) { g.0.w }) }))
         .height(By(fn() { going().map(fn(g) { g.0.h }) }))
-        .image(By(fn() { going().map(fn(g) { (g.0.picture, "", stage_px) }) }))
+        .image(By(fn() { going().map(fn(g) { (g.0.picture, "", stage_max_px()) }) }))
         |> ignore
       })
       |> ignore
@@ -461,7 +481,7 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
         .image(By(fn() {
           vw.bytes.get() |> ignore
           if !vw.picture_failed() && vw.size_unknown(src) {
-            Some((vw.picture(src), "", stage_px))
+            Some((vw.picture(src), "", stage_max_px()))
           } else {
             None
           }
@@ -619,7 +639,17 @@ fn image_ends(n : @view.View, vw : Viewer, src : Source) -> Unit {
       vw.fly.said()
       vw.fade.said()
       match pv_leaving.get() {
-        Some(l) if physical_equal(l, vw) && !vw.leaving_grab => Some(if vw.flies { vw.fly.end() } else { vw.fade.end() })
+        // (back by the tree's shared flight once that is told: its own end to the moment, not the fade's rounded up)
+        Some(l) if physical_equal(l, vw) && !vw.leaving_grab =>
+          Some(
+            if vw.flies {
+              vw.fly.end()
+            } else if vw.tree_back.untracked() && vw.tree_way_end > 0.0 {
+              vw.tree_way_end
+            } else {
+              vw.fade.end()
+            },
+          )
         _ => None
       }
     },
@@ -802,7 +832,7 @@ fn Viewer::finger_on(self : Viewer, canvas : @view.View, src : Source, d : @view
           let due = at + @ui.long_press_ms
           v.hold_off = canvas.at_moment(due, fn() {
             match (z.rect_at(due), v.bytes.get()) {
-              (Some((rx, ry, rw, rh)), Some(b)) if v.held && v.moved <= tap_slop && !v.pinched &&
+              (Some((rx, ry, rw, rh)), Some(_)) if v.held && v.moved <= tap_slop && !v.pinched &&
                 v.fingers.length() == 1 &&
                 v.down_lx >= rx &&
                 v.down_lx < rx + rw &&
@@ -810,7 +840,7 @@ fn Viewer::finger_on(self : Viewer, canvas : @view.View, src : Source, d : @view
                 v.down_ly < ry + rh => {
                 v.caught = true
                 @ui.haptic(LongPress)
-                v.picture_menu_at(@ui.current(), v.down_x, v.down_y, b)
+                v.picture_menu_at(v.down_x, v.down_y)
               }
               _ => ()
             }
@@ -828,7 +858,7 @@ fn Viewer::finger_on(self : Viewer, canvas : @view.View, src : Source, d : @view
         v.pinched = true
         if v.swiping {
           v.swiping = false
-          strip.go(0.0, @motion.sheet_spring, at~)
+          strip.go(0.0, @motion.carousel_spring, at~)
         }
         // (a pull going on: the pinch takes the picture from where it has it, back to fitted if let go smaller)
         v.pulling = false
@@ -870,7 +900,7 @@ fn Viewer::finger_on(self : Viewer, canvas : @view.View, src : Source, d : @view
           v.zoom.reset(at~)
         }
         if v.swiping {
-          strip.go(0.0, @motion.sheet_spring, at~)
+          strip.go(0.0, @motion.carousel_spring, at~)
         }
         v.swiping = false
         v.held = false
@@ -981,8 +1011,8 @@ fn Viewer::menu_on(self : Viewer, m : @view.Menu) -> Unit {
     return
   }
   match (self.zoom.rect_at(m.at), self.bytes.get()) {
-    (Some((rx, ry, rw, rh)), Some(b)) if m.x >= rx && m.x < rx + rw && m.y >= ry && m.y < ry + rh =>
-      self.picture_menu_at(@ui.current(), m.wx, m.wy, b)
+    (Some((rx, ry, rw, rh)), Some(_)) if m.x >= rx && m.x < rx + rw && m.y >= ry && m.y < ry + rh =>
+      self.picture_menu_at(m.wx, m.wy)
     _ => ()
   }
 }
@@ -999,10 +1029,11 @@ pub fn Viewer::marks_rect(self : Viewer, at : Double) -> (Double, Double, Double
 /// till that is decoded for the size it is drawn at, as Viewer::shown_picture has them (which of them decided as it is
 /// drawn, at its pixels then); None: nothing of it yet.
 fn Viewer::picture_shown(self : Viewer, src : Source) -> (String, String, Int)? {
+  let cap = self.decode_max_px()
   match self.picture(src) {
     "" => None
-    picture if picture != self.image => Some((picture, "", stage_px))
-    picture => Some((picture, self.stand_in(src), stage_px))
+    picture if picture != self.image => Some((picture, "", cap))
+    picture => Some((picture, self.stand_in(src), cap))
   }
 }
 
@@ -1072,7 +1103,7 @@ fn Viewer::image_let_go(
     } else if to > 0 {
       v.go(c, src, 1, vx * 1000.0)
     } else {
-      strip.go(0.0, @motion.sheet_spring, at~, velocity=vx * 1000.0)
+      strip.go(0.0, @motion.carousel_spring, at~, velocity=vx * 1000.0)
     }
   } else if v.held && zoomed && (v.moved > tap_slop || pinched) {
     // zoomed in, let go moving: on at the finger's speed, slowing, to a stop or its edge
@@ -1131,6 +1162,47 @@ fn Viewer::pull_let_go(self : Viewer, c : @ui.Ctx, d : @view.Drag, vy : Double) 
 }
 
 ///|
+/// Arm (or re-arm) the stillness timer shared by trackpad pull-to-close and trackpad horizontal paging.
+fn Viewer::wheel_arm(self : Viewer, canvas : @view.View, due : Double, on_rest : () -> Unit) -> Unit {
+  (self.wheel_off)()
+  self.wheel_off = canvas.at_moment(due, fn() {
+    self.wheel_off = fn() {  }
+    on_rest()
+  })
+}
+
+///|
+/// Phase-0 (web) rebound thresholds for recognizing a new horizontal swipe while the previous swipe's momentum is
+/// still decaying in `Spent`: browser momentum decays monotonically with at most ±1–2 pt quantization jitter at low
+/// speeds, so requiring |dx| >= 6 pt, >= 1.8x the decay floor, and an absolute jump >= 4 pt rejects jitter while
+/// catching a fresh two-finger swipe immediately.
+let wheel_page_rebound_min : Double = 6.0
+
+///|
+let wheel_page_rebound_ratio : Double = 1.8
+
+///|
+let wheel_page_rebound_jump : Double = 4.0
+
+///|
+/// Whether a wheel arriving while `pv_strip.wheel` is `Spent` starts a new gesture (native momentum -> finger
+/// transition, direction reversal, or phase-0 |dx| rebound after decay).
+fn strip_wheel_starts_new(sw : StripWheel, dx : Double, is_mom : Bool) -> Bool {
+  if sw.last_momentum && !is_mom {
+    return true
+  }
+  let abs_dx = dx.abs()
+  if dx != 0.0 && (dx > 0.0) != (sw.spent_dir > 0.0) && abs_dx >= wheel_page_rebound_min {
+    return true
+  }
+  !is_mom &&
+  sw.spent_min_dx > 0.0 &&
+  abs_dx >= wheel_page_rebound_min &&
+  abs_dx >= sw.spent_min_dx * wheel_page_rebound_ratio &&
+  abs_dx - sw.spent_min_dx >= wheel_page_rebound_jump
+}
+
+///|
 /// A wheel over the canvas of viewer `vw` (node `canvas`) as a pull (a trackpad's two fingers going down a fitted
 /// picture, as a finger takes it down, the picture going with them): closed once they have it pull_shut down, back to
 /// fitted where they stop short (wheel_rest_ms with none come). Whether it was one: a mouse's wheel, one with a key held,
@@ -1141,12 +1213,26 @@ fn Viewer::wheel_pull(self : Viewer, canvas : @view.View, w : @view.Wheel) -> Bo
     // (closed by it: what of its way is left goes nowhere, not to the page under it)
     return self.wheel_pulling
   }
-  if !@sf.pointer_rests() || marking.on || z.nw <= 0.0 || w.mods != 0 || self.held {
+  if !@sf.pointer_rests() ||
+    marking.on ||
+    z.nw <= 0.0 ||
+    (w.mods & @view.wheel_momentum.lnot()) != 0 ||
+    self.held {
     return false
   }
   // (as the fingers go: a wheel's dy is the way the page goes under them, the other way)
   let (dx, dy) = (-w.dx, -w.dy)
+  let sw = pv_strip.wheel
   if !self.wheel_pulling {
+    // Mutual exclusion with an in-flight horizontal paging gesture or its spent momentum tail.
+    if sw.state != Idle {
+      let is_mom = (w.mods & @view.wheel_momentum) != 0
+      let rested = sw.last_at >= 0.0 && w.at - sw.last_at >= wheel_rest_ms
+      if !rested && (sw.state == Paging || !strip_wheel_starts_new(sw, dx, is_mom)) {
+        return false
+      }
+      sw.reset()
+    }
     if z.zoomed_at(w.at) || dy <= dx.abs() || notched(w.dx, w.dy) {
       return false
     }
@@ -1164,11 +1250,96 @@ fn Viewer::wheel_pull(self : Viewer, canvas : @view.View, w : @view.Wheel) -> Bo
   }
   z.pull(self.pull_x, self.pull_y, at=w.at)
   let due = w.at + wheel_rest_ms
-  self.wheel_off = canvas.at_moment(due, fn() {
-    self.wheel_off = fn() {  }
+  self.wheel_arm(canvas, due, fn() {
     self.wheel_pulling = false
     if !self.closing {
       z.reset(at=due)
+    }
+  })
+  true
+}
+
+///|
+/// A trackpad's two fingers sweeping horizontally over a fitted picture: follows `pv_strip.way` (1/3 resistance past
+/// the first/last image or on a single image), flips immediately upon crossing `strip_step`'s threshold without waiting
+/// for momentum to end, eats the remaining momentum tail, and snaps back to 0 after `wheel_rest_ms` if released short.
+fn Viewer::wheel_page(self : Viewer, canvas : @view.View, src : Source, w : @view.Wheel) -> Bool {
+  let z = self.zoom
+  let sw = pv_strip.wheel
+  if self.closing {
+    return sw.state != Idle
+  }
+  if !@sf.pointer_rests() ||
+    marking.on ||
+    z.nw <= 0.0 ||
+    (w.mods & @view.wheel_momentum.lnot()) != 0 ||
+    self.held ||
+    z.zoomed_at(w.at) {
+    return false
+  }
+  let (dx, dy) = (-w.dx, -w.dy)
+  let is_mom = (w.mods & @view.wheel_momentum) != 0
+  if sw.state != Idle && sw.last_at >= 0.0 && w.at - sw.last_at >= wheel_rest_ms {
+    sw.reset()
+  }
+  if sw.state == Spent {
+    if strip_wheel_starts_new(sw, dx, is_mom) {
+      sw.reset()
+      if dx.abs() <= dy.abs() {
+        return false
+      }
+    } else {
+      sw.last_at = w.at
+      sw.last_momentum = is_mom
+      let abs_dx = dx.abs()
+      if abs_dx > 0.0 {
+        sw.spent_min_dx = if sw.spent_min_dx <= 0.0 { abs_dx } else { dmin(sw.spent_min_dx, abs_dx) }
+      }
+      return true
+    }
+  }
+  if sw.state == Idle {
+    if dx.abs() <= dy.abs() || notched(w.dx, w.dy) || notched(w.dy, w.dx) || is_mom {
+      return false
+    }
+    sw.state = Paging
+    sw.strip_down = pv_strip.way.value_at(w.at)
+    sw.speed.reset()
+    sw.speed.add(w.at, 0.0, 0.0)
+    pv_strip.leaving = None
+  }
+  sw.last_at = w.at
+  sw.last_momentum = is_mom
+  let (before, after) = self.near(src)
+  let has_before = before is Some(_)
+  let has_after = after is Some(_)
+  let strip = pv_strip.way
+  let s = strip.value_at(w.at)
+  let delta_next = (s - sw.strip_down) + dx
+  let none = if delta_next > 0.0 { !has_before } else { !has_after }
+  let shown_next = if none { s + dx / 3.0 } else { s + dx }
+  strip.put(shown_next)
+  let delta = shown_next - sw.strip_down
+  sw.speed.add(w.at, delta, 0.0)
+  let (vx, _) = sw.speed.get_at(w.at)
+  let step = strip_step(delta, vx, z.bw, true)
+  let can_step = (step < 0 && has_before) || (step > 0 && has_after)
+  if can_step {
+    (self.wheel_off)()
+    self.wheel_off = fn() {  }
+    sw.state = Spent
+    sw.spent_dir = if delta > 0.0 { 1.0 } else { -1.0 }
+    sw.spent_min_dx = dx.abs()
+    self.go_tree(src, step, vx * 1000.0)
+    return true
+  }
+  let due = w.at + wheel_rest_ms
+  self.wheel_arm(canvas, due, fn() {
+    if pv_strip.wheel.state == Paging {
+      pv_strip.wheel.reset()
+      if !self.closing {
+        pv_strip.way.go(0.0, @motion.carousel_spring, at=due)
+      }
     }
   })
   true
@@ -1303,22 +1474,22 @@ fn image_head(h : @view.View, src : Source, vw : Viewer, stage : () -> (Double, 
     fn() { vf_title(vw) },
     // (its kind and size after its name where the bar has room: wider than a phone, viewer_head_node)
     fn() { vf_meta(vw, src) },
-    // (as it rests, a tap hides it, while it comes it stays)
-    fn() { vw.bars_shown() || vw.coming() },
+    // (as it rests, a tap hides it, while it comes or upgrades it stays)
+    fn() { vw.bars_shown() || vw.image_loading() },
     fn(node) { vw.shown_on(node) },
     fn() { (@sf.viewer_host().room)().0 },
     fn() { stage().0 },
     ink,
     fn() { @sf.viewer_page_glass() },
     fn(row) {
-      // while it comes, how much of it has, once the core has said: a line of the bar's own as the wide bar's is
+      // while it comes or upgrades, how much of it has, once the core has said: a line of the bar's own as the wide bar's is
       // (viewer_coming_node), never the stage's card (file_progress_node), taller than the bar and crowding its name out
-      row.show(fn() { vw.coming() && vw.got.get() is Some(_) }, fn(r) {
+      row.show(fn() { !marked() && vw.image_loading() && vw.got.get() is Some(_) }, fn(r) {
         @sf.viewer_coming_node(r, fn() { vw.got.get() }, fn() { vw.file.size }, ink, lead=false, track=@sf.vfr_head_coming_track)
         |> ignore
       })
-      // (its tools; marking, marking's actions in their place)
-      row.show(fn() { !marked() }, fn(r) {
+      // (its tools; marking, marking's actions in their place; hidden while upgrading with progress shown on narrow head bar)
+      row.show(fn() { !marked() && !(vw.upgrading() && vw.got.get() is Some(_)) }, fn(r) {
         r.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(@sf.keys_apart())) |> ignore
         image_tools(r, src, vw, ink, Is(@sf.tool_side / 2.0), tips)
       })
@@ -1327,7 +1498,7 @@ fn image_head(h : @view.View, src : Source, vw : Viewer, stage : () -> (Double, 
     fn() {
       // (marking, which of its actions: marks_actions_node's)
       let m = if marked() { "\{marking.busy} \{marking.error} \{marks_any()} \{vw.draft_key() != ""}" } else { "" }
-      "\{whole()} \{downloading(dl())} \{vw.coming()} \{vw.got.get() is Some(_)} \{m}"
+      "\{whole()} \{downloading(dl())} \{vw.coming()} \{vw.upgrading()} \{vw.got.get() is Some(_)} \{m}"
     },
     fn() {
       vw.shut_tree()
@@ -1365,15 +1536,15 @@ fn image_bar(h : @view.View, src : Source, vw : Viewer, stage : () -> (Double, D
     fn() { stage().0 },
     ink,
     fn(row, corner) {
-      // (while it comes, from the start)
-      row.show(fn() { vw.coming() }, fn(r) {
-        @sf.viewer_coming_node(r, fn() { vw.got.get() }, fn() { vw.file.size }, ink) |> ignore
-      })
-      // (its tools; marking, marking's actions in their place)
       let marked = fn() {
         marks_said()
         marking.on
       }
+      // (while it comes or upgrades, from the start)
+      row.show(fn() { !marked() && vw.image_loading() }, fn(r) {
+        @sf.viewer_coming_node(r, fn() { vw.got.get() }, fn() { vw.file.size }, ink) |> ignore
+      })
+      // (its tools; marking, marking's actions in their place)
       row.show(fn() { !marked() }, fn(r) {
         r.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(@sf.keys_apart())) |> ignore
         image_tools(r, src, vw, ink, corner, tips)
@@ -1405,11 +1576,7 @@ fn image_steps(h : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
     fn() { vw.bars_shown() },
     fn(node) { vw.shown_on(node) },
     fn() { stage().0 <= @sf.viewer_small_w },
-    fn(dir) {
-      if !vw.closing {
-        vw.go(@ui.current(), src, dir, 0.0)
-      }
-    },
+    fn(dir) { vw.go_tree(src, dir, 0.0) },
     tips,
   )
   |> ignore
@@ -1431,9 +1598,6 @@ fn image_tools(
 ) -> Unit {
   let whole = fn() { vw.bytes.get() is Some(_) }
   let dl = fn() { vw.download(src) }
-  // (copied: a check from the press, its end its own, another press another end)
-  let copied : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
-  let copied_end : Ref[() -> Unit] = Ref(fn() {  })
   // 预览 / 源码: a table's, a page's, an mbui widget's once read (Markdown read in the reader, its own bar): the library's
   // segmented choice, its nodes (@sf.seg_node), what it chooses told (Viewer::set_source)
   row.show(fn() { whole() && vf_has_source(vw) }, fn(r) {
@@ -1470,33 +1634,7 @@ fn image_tools(
   // 复制: the whole picture on the clipboard, a check a moment after; one too big to show
   // too, once read
   row.show(fn() { whole() && vw.shown_kind() == Some(KImage) }, fn(r) {
-    let t = @sf.tool_node(
-      r,
-      fn() {
-        if copied.get() {
-          { icon: "check", label: @sf.t("common.copied"), on: false, disabled: false }
-        } else {
-          { icon: "copy", label: @sf.t("common.copy"), on: false, disabled: false }
-        }
-      },
-      ink,
-      corner,
-      fn() {
-        match vw.bytes.untracked() {
-          Some(b) => {
-            @ui.current().copy_image(b)
-            vw.copied += 1
-            (copied_end.val)()
-            copied.set(true)
-            copied_end.val = r.at_moment(r.cause_at() + @sf.copied_ms, fn() { copied.set(false) })
-          }
-          None => ()
-        }
-      },
-      tip=tips,
-    )
-    ignore(t)
-    r.owns(fn() { (copied_end.val)() }) |> ignore
+    @sf.copy_tool_node(r, ink, corner, fn() { vw.ask_copy() }, tip=tips) |> ignore
   })
   // 移到侧边: where the shell has a side panel for the page under it, a file that opens there (beside_offered): the
   // whole window closed for its tab
@@ -1891,7 +2029,7 @@ fn film_flight(
         .over(Is(true))
         .image(By(fn() {
           match flight(f) {
-            Some(_) if picture() != "" => Some((picture(), "", stage_px))
+            Some(_) if picture() != "" => Some((picture(), "", stage_max_px()))
             _ => None
           }
         }))
@@ -2034,7 +2172,7 @@ fn film_shared(n : @view.View, src : Source, vw : Viewer) -> () -> Bool {
     .image(By(fn() {
       match vw.still(src) {
         "" | "!" => None
-        k => Some((k, "", stage_px))
+        k => Some((k, "", stage_max_px()))
       }
     }))
     // (as its thumbnail draws it, so it flies as one: covering its box, a letterboxed one contained)
@@ -2089,7 +2227,7 @@ fn film_shared(n : @view.View, src : Source, vw : Viewer) -> () -> Bool {
       .image(By(fn() {
         vw.grab_told.get() |> ignore
         if vw.leaving_pic != "" {
-          Some((vw.leaving_pic, "", stage_px))
+          Some((vw.leaving_pic, "", stage_max_px()))
         } else {
           None
         }
@@ -2241,6 +2379,15 @@ fn Viewer::player_file(self : Viewer) -> @sf.ViewerFile {
     keep_place: fn(_, _) {  },
     save: fn() { v.save_tree() },
     facts: { width: v.file.width, height: v.file.height, duration: v.file.duration, frames: v.file.frames },
+  }
+}
+
+///|
+/// Viewer `vw` stepped from a node of the window's tree (its ‹ / › buttons or trackpad horizontal swipe), at that
+/// moment; closing, nothing.
+fn Viewer::go_tree(self : Viewer, src : Source, dir : Int, velocity : Double) -> Unit {
+  if !self.closing {
+    self.go(@ui.current(), src, dir, velocity)
   }
 }
 

@@ -286,11 +286,11 @@ TS
 # paths): a change to one alone typechecks the core and runs its tests. #6720 made station/src/sessions/presets.ts'
 # Presets answer promises; test/presets-carried.test.ts, which calls them, ran neither, and main was red at the next
 # change to the core (43894522015). scripts/core-station.ts (part ts) holds every such import to these three lists.
-core_station='^station/test/fake-control-plane\.ts$|^station/src/(api/(admin|moved-from|oldest|routes/(presets|stars))|cloud/(lock|state)|mesh/(credential|device-builds|serve|leaf|enrollment-door)|ops/fibers|rig/grants|sessions/presets|updates/keys)\.ts$|^station/test/lock-(chains|fork-choice-model|fork-pool|moved-world|oracle|roster-model|roster4-model|world-sim)\.ts$'
+core_station='^station/test/fake-control-plane\.ts$|^station/src/(api/(admin|moved-from|oldest|routes/(presets|stars|board))|cloud/(lock|state)|mesh/(credential|device-builds|serve|leaf|enrollment-door)|ops/fibers|rig/grants|sessions/(presets|board-drafts)|updates/keys)\.ts$|^station/test/lock-(chains|fork-choice-model|fork-pool|moved-world|oracle|roster-model|roster4-model|world-sim)\.ts$'
 # The core's tests read these (core_test_paths: scripts/plan.sh reads it from this line for CI's check-core; one line,
 # in single quotes) and are remembered by these (core_test_inputs).
-core_test_paths='^station/test/fake-control-plane\.ts$|^client/core-ts/|^client/i18n/|^web/src/core/|^web/public/avatars/|^station/native/mesh/|^vendor/|^rules/js/|^station/src/(api/(admin|moved-from|oldest|routes/(presets|stars))|cloud/(lock|state)|mesh/(credential|device-builds|serve|leaf|enrollment-door)|ops/fibers|rig/grants|sessions/presets|updates/keys)\.ts$|^station/test/lock-(chains|fork-choice-model|fork-pool|moved-world|oracle|roster-model|roster4-model|world-sim)\.ts$|^scripts/native\.ts$'
-core_test_inputs="client/core-ts client/i18n web/src/core web/public/avatars station/native/mesh vendor rules/js station/src/api/admin.ts station/src/api/moved-from.ts station/src/api/oldest.ts station/src/api/routes/presets.ts station/src/api/routes/stars.ts station/src/cloud/lock.ts station/src/cloud/state.ts station/src/mesh/credential.ts station/src/mesh/device-builds.ts station/src/mesh/serve.ts station/src/mesh/leaf.ts station/src/mesh/enrollment-door.ts station/test/fake-control-plane.ts station/src/ops/fibers.ts station/src/rig/grants.ts station/src/sessions/presets.ts station/src/updates/keys.ts station/test/lock-chains.ts station/test/lock-fork-choice-model.ts station/test/lock-fork-pool.ts station/test/lock-moved-world.ts station/test/lock-oracle.ts station/test/lock-roster-model.ts station/test/lock-roster4-model.ts station/test/lock-world-sim.ts scripts/native.ts"
+core_test_paths='^station/test/fake-control-plane\.ts$|^client/core-ts/|^client/i18n/|^web/src/core/|^web/public/avatars/|^station/native/mesh/|^vendor/|^rules/js/|^station/src/(api/(admin|moved-from|oldest|routes/(presets|stars|board))|cloud/(lock|state)|mesh/(credential|device-builds|serve|leaf|enrollment-door)|ops/fibers|rig/grants|sessions/(presets|board-drafts)|updates/keys)\.ts$|^station/test/lock-(chains|fork-choice-model|fork-pool|moved-world|oracle|roster-model|roster4-model|world-sim)\.ts$|^scripts/native\.ts$'
+core_test_inputs="client/core-ts client/i18n web/src/core web/public/avatars station/native/mesh vendor rules/js station/src/api/admin.ts station/src/api/moved-from.ts station/src/api/oldest.ts station/src/api/routes/presets.ts station/src/api/routes/stars.ts station/src/api/routes/board.ts station/src/cloud/lock.ts station/src/cloud/state.ts station/src/mesh/credential.ts station/src/mesh/device-builds.ts station/src/mesh/serve.ts station/src/mesh/leaf.ts station/src/mesh/enrollment-door.ts station/test/fake-control-plane.ts station/src/ops/fibers.ts station/src/rig/grants.ts station/src/sessions/presets.ts station/src/sessions/board-drafts.ts station/src/updates/keys.ts station/test/lock-chains.ts station/test/lock-fork-choice-model.ts station/test/lock-fork-pool.ts station/test/lock-moved-world.ts station/test/lock-oracle.ts station/test/lock-roster-model.ts station/test/lock-roster4-model.ts station/test/lock-world-sim.ts scripts/native.ts"
 
 if part ts; then
   ts_root='^(scripts|test|spike)/.*\.ts$|^(tsconfig\.json|package\.json|pnpm-lock\.yaml)$'
@@ -309,9 +309,11 @@ if part ts; then
     step "clients' types" after core node client/core-ts/scripts/shapes.ts --check
     step "operation bindings" after core node client/core-ts/scripts/operations.ts --check
   fi
-  # still.fail's colours are web/ui/src/palette.ts's (the app's palette made from it); the web's curves are the app's.
-  if touches '^web/ui/src/(palette|curves-data)\.ts$|^scripts/(palette|curves)\.ts$|^libs/sf-ui/src/(palette_data|tokens)\.mbt$|^libs/mbui/src/ui/motion\.mbt$'; then
-    step "palette and curves" sh -c 'node scripts/palette.ts --check && node scripts/curves.ts --check'
+  # still.fail's colours are web/ui/src/palette.ts's (the app's palette made from it) and its type scale, lines and
+  # corners web/ui/src/tokens.ts's (the app's tokens made from it), every ink on its grounds held to its contrast
+  # floor (scripts/tokens.ts); the web's curves are the app's.
+  if touches '^web/ui/src/(palette|tokens|curves-data)\.ts$|^scripts/(palette|tokens|curves)\.ts$|^libs/sf-ui/src/(palette_data|tokens_data|tokens)\.mbt$|^libs/mbui/src/ui/motion\.mbt$'; then
+    step "palette, tokens and curves" sh -c 'node scripts/palette.ts --check && node scripts/tokens.ts --check && node scripts/curves.ts --check'
   fi
   # The app's UI fault categories are the core's (client/core-ts/src/ui-faults.ts).
   if touches '^client/core-ts/(src/ui-faults\.ts|scripts/ui-faults\.ts)$|^apps/mbui/src/stillfail/ui_faults\.mbt$'; then
@@ -494,9 +496,11 @@ if part ts; then
   # `ignore(….fork(…))`); makes no `wall` clock of the monotonic one (`@host.now`, `rt.now`); writes no file beside
   # under a name another write of it takes too (`<path>.<pid>.tmp`, `<path>.tmp`: L13); waits on the disk on the
   # program's thread in a whole station's slice (`station_main/live_*.mbt`) no more than MAIN_THREAD_SYNC_FS lets it,
-  # which only falls; and makes no JavaScript value JSON by writing it out and reading it again.
+  # which only falls; makes no JavaScript value JSON by writing it out and reading it again; asks its shell for a fetch
+  # by name only in host/http.mbt (`@host.Host::fetch`); and makes no SHA-256 or SHA-1 (base/hash), CRC-32 or base64
+  # (base/codec), civil calendar (base/time) or deflate/Adler-32 (base/flate) of its own.
   if touches '^station/mb/|^scripts/mb-station\.ts$'; then
-    step "the station in MoonBit: errors shown, raw shell sockets and main-thread disk waits only fall, no bare fork, no monotonic wall, no shared .tmp, no reparsed JSON" node scripts/mb-station.ts
+    step "the station in MoonBit: errors shown, raw shell sockets and main-thread disk waits only fall, no bare fork, no monotonic wall, no shared .tmp, no reparsed JSON, no raw shell fetch, no SHA-256, SHA-1, CRC-32, base64, civil calendar or flate/adler of its own" node scripts/mb-station.ts
   fi
   # Core tests also run for Rust-only client changes. A fresh CI checkout needs both
   # their JS dependencies and the real wasm package even when no TS file changed.
@@ -595,14 +599,15 @@ if [ $full = 1 ]; then
   # scripts/plan.sh reads it from this line for CI's check-station).
   station_paths='^station/|^vendor/|^client/i18n/|^client/core-ts/src/features\.ts$|^client/shell/|^libs/mesh-transport/|^libs/mbui/src/effect/|^libs/base/(src/|moon\.mod$)|^rules/(js|src)/|^rules/moon\.mod$|^scripts/native\.ts$|^scripts/station-slice\.sh$'
   # Its tests' native parts, prebuilt (mesh addon, runner, the reader in MoonBit, and for darwin-arm64 and linux-x64
-  # the Rust station's archive command and the launcher, which runs the whole station in mb-live-station.test.ts).
+  # the Rust station's archive command, the launcher, which runs the whole station in mb-live-station.test.ts, and the
+  # tests' MoonBit program with every package's harness, reader-harness: the mb-*.test.ts files').
   station_natives="mesh runner reader"
-  case "$(uname -s)-$(uname -m)" in Darwin-*|Linux-x86_64) station_natives="mesh runner archive-rs launcher reader" ;; esac
+  case "$(uname -s)-$(uname -m)" in Darwin-*|Linux-x86_64) station_natives="mesh runner archive-rs launcher reader reader-harness" ;; esac
   if part station && touches "$station_paths"; then
     prep station deps station
-    # Its programs in MoonBit (station/mb): what of them runs without a host (src/wire, src/claude and the rest below),
+    # Its programs in MoonBit (station/mb): all 59 packages with native unit tests,
     # in one moon test (a call a package checked their shared dependencies again each time).
-    remembered "tests: station's MoonBit" "station/mb libs/base/src libs/base/moon.mod libs/mbui/src/effect libs/mbui/moon.mod rules/src rules/moon.mod" sh -c 'cd station/mb && moon test --target native src/wire src/jsjson src/nodepath src/jscase src/claude src/codex src/dsh src/cursor src/acp src/pi src/history src/usagecount src/pieces src/admit src/memory src/packed src/store_schema src/store_sessions src/store_threads src/cloud_lock src/cloud_net src/mesh_scopes src/mesh_door/door src/mesh_door/gate src/accounts_oauth src/events src/api_routes src/vault_crypto src/jobs_host'
+    remembered "tests: station's MoonBit" "station/mb libs/base/src libs/base/moon.mod libs/mbui/src/effect libs/mbui/moon.mod rules/src rules/moon.mod" sh -c 'cd station/mb && moon test --target native src/accounts_oauth src/accounts_pool src/acp src/adb_devices src/admit src/agent_drivers src/agent_runtimes src/api_routes src/browser src/claude src/cloud_lock src/cloud_net src/codex src/comma src/connects_hub src/cprep src/cursor src/drive src/dsh src/events src/feishu src/front src/history src/host src/i18n src/jobs_host src/jscase src/jsjson src/live_wire src/mcp_tools src/memory src/mesh_door/door src/mesh_door/gate src/mesh_runtime src/mesh_scopes src/move_coord src/nodepath src/ops_platform src/packed src/pi src/pieces src/replica_coord src/rigs_mode src/screens src/session_chats src/session_hub src/session_storage src/share_sync src/slack src/station_main/media src/store_schema src/store_sessions src/store_threads src/terminals_logins src/updates src/usagecount src/vault_crypto src/vault_service src/wire'
     step "typecheck: station" after station sh -c 'cd station && pnpm exec tsgo --noEmit'
     # The station's time is its Clock's (写法): the machine's only through ops/fibers.ts' wall. The Claude TUI,
     # Cursor and sandbox bridges run in processes of their own.
@@ -630,7 +635,7 @@ if [ $full = 1 ]; then
   fi
   # The native parts' own tests, where their Rust changed (the mesh addon's: the vendored crates it patches in, too;
   # STILLFAIL_SKIP_RUST_TESTS leaves these and the core's Rust below out).
-  for crate in launcher runner mesh screen; do
+  for crate in launcher runner mesh screen screen-linux; do
     also='^$'; [ $crate = mesh ] && also='^vendor/'
     if part station && rust_tests && { touches "^station/native/$crate/" || touches "$also"; }; then
       inputs="station/native/$crate"; [ $crate = mesh ] && inputs="$inputs vendor"; [ $crate = launcher ] && inputs="$inputs .node-version"

@@ -35,7 +35,7 @@ still.fail runs coding-agent sessions in team chats (Slack, Feishu, Comma, and s
 
 ### Commit and pull request messages
 
-- Follow `.agents/skills/ste-writing/SKILL.md` for commits and PR text. Use `{type}({scope}): {description}` for commit subjects (for example `feat(server): add mesh routes`).
+- Follow `.agents/skills/ste-writing/SKILL.md` for commits and PR text. Write PR titles and descriptions in English. Use `{type}({scope}): {description}` for commit subjects (for example `feat(server): add mesh routes`).
 - Add trailers only for user-visible changes (`scripts/changelog.ts`): `Changelog:` in Chinese (`修复：…`, `新增：…`, `改进：…`), `Changelog-parts:` (`station`, `web`, `android`, `desktop`, `cloud`), and `Fixes: FB-<n>`.
 - For gated features (`client/core-ts/src/features.ts`), add `Changelog-channel: beta` for `beta` or `betaOnly` experimental features. For experimental features, name where to enable them (`新增：实验性功能「对话列表看板视图」中，…`). Write a stable line when opening to stable. Override prior lines in `docs/changelog-notes.json`.
 

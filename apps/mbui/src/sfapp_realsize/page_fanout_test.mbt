@@ -52,12 +52,12 @@ test "账号's 概览: a quota leaving its pools as they were runs none of its b
 test "全部密钥: a secret used runs the bindings of its own row alone, a vault's own row changed none, a secret added what it brings" {
   for at in [("settings-vault-items", real_size_windows[0]), ("settings-vault-items", real_size_windows[1]), ("settings-vault-editor", real_size_windows[1])] {
     let (mode, win) = at
-    let items = page_fanout_of(mode, win, "vaultItems vault=plain")
+    let items = page_fanout_of(mode, win, "vaultItems vault=v_01JAAAAAAAAAAAAAAAAAAAAAAA")
     // (its last use changed: that row's line, none of the other secrets' rows)
-    let used = items.get("vaultItems vault=plain/used").unwrap_or(0)
+    let used = items.get("vaultItems vault=v_01JAAAAAAAAAAAAAAAAAAAAAAA/used").unwrap_or(0)
     assert_true(used <= 6, msg="\{win.0} \{mode} vaultItems/used: ran \{used} bindings, over its own row's (6)")
     // (a secret more: its row made, the pieces of the card it moves, the list's keys)
-    let item = items.get("vaultItems vault=plain/item").unwrap_or(0)
+    let item = items.get("vaultItems vault=v_01JAAAAAAAAAAAAAAAAAAAAAAA/item").unwrap_or(0)
     assert_true(item <= 8, msg="\{win.0} \{mode} vaultItems/item: ran \{item} bindings, over what a row more brings (8)")
     // (the vault's own row in the library (how many it holds): no secret's row shows it)
     let vault = page_fanout_of(mode, win, "vaults").get("vaults/item").unwrap_or(0)

@@ -112,6 +112,7 @@ fn Ctx::tree_facts(
     Some((c, _)) => {
       if c.image is Some(_) ||
         c.picture is Some(_) ||
+        !c.rects.is_empty() ||
         !c.shapes.is_empty() ||
         !c.lines.is_empty() ||
         c.glass is Some(_) ||
@@ -119,7 +120,11 @@ fn Ctx::tree_facts(
         c.hosted {
         tree_draws_at.add(i)
       }
-      if c.image is Some(_) || c.picture is Some(_) || !c.shapes.is_empty() || !c.lines.is_empty() {
+      if c.image is Some(_) ||
+        c.picture is Some(_) ||
+        !c.rects.is_empty() ||
+        !c.shapes.is_empty() ||
+        !c.lines.is_empty() {
         tree_marks_at.add(i)
       }
     }

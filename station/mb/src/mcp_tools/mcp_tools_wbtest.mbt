@@ -1,5 +1,4 @@
-// What the tools work out alone, as station/test/mb-mcp-tools.test.ts holds them to the TypeScript (the cases here a
-// few of its, so `moon test` says where one breaks without the program built).
+// What the tools work out alone.
 
 ///|
 test "a bearer's arguments typed by the tool's schema" {
@@ -51,15 +50,6 @@ test "who may reach another station through the door" {
     )
     is Some(_),
   )
-}
-
-///|
-test "a request's path as new URL reads it" {
-  assert_eq(url_pathname("/mcp?x=1#y"), "/mcp")
-  assert_eq(url_pathname("/a/../health"), "/health")
-  assert_eq(url_pathname("//host/mcp"), "/mcp")
-  assert_eq(url_pathname("/a b/<c>"), "/a%20b/%3Cc%3E")
-  assert_eq(url_pathname("/é"), "/%C3%A9")
 }
 
 ///|

@@ -168,11 +168,12 @@ test("another chat with a session, and a session brought into a chat", async () 
     assert.deepEqual(await r.ask("POST", "/threads", { session: "nope" }), [404, { error: "unknown session nope" }]);
     const [status, chat] = await r.ask("POST", "/threads", { session: a.key, title: "  side  " });
     assert.equal(status, 200);
-    assert.equal(chat.title, "side");
-    assert.equal(chat.home, undefined, "a chat of its own");
-    assert.deepEqual(await r.ask("POST", `/threads/${chat.id}/sessions`, { session: "nope" }), [404, { error: "unknown session nope" }]);
+    assert.equal(chat.id, a.thread.id, "POST /threads is idempotent and returns existing home chat");
+    const extra = r.store.openThreadOf("chat", "CHAT", "side-1", "side", "ada@example.com", null);
+    r.store.joinThread(extra.id, a.key, "chat");
+    assert.deepEqual(await r.ask("POST", `/threads/${extra.id}/sessions`, { session: "nope" }), [404, { error: "unknown session nope" }]);
     assert.deepEqual(await r.ask("POST", "/threads/999/sessions", { session: b.key }), [404, { error: "unknown thread 999" }]);
-    const [joined, view] = await r.ask("POST", `/threads/${chat.id}/sessions`, { session: b.key });
+    const [joined, view] = await r.ask("POST", `/threads/${extra.id}/sessions`, { session: b.key });
     assert.equal(joined, 200);
     assert.deepEqual(view.sessions.map((m: any) => m.session), [a.key, b.key]);
     const slack = r.store.openThread("slack:T1", "C1", "1.1", null, null);
@@ -182,7 +183,7 @@ test("another chat with a session, and a session brought into a chat", async () 
     assert.deepEqual(JSON.parse(await r.readers.read("recentChatList", { ws: null, home: null, limit: 2 }, "en")), JSON.parse(JSON.stringify(r.store.recentChatList(null, null, 2))));
     assert.deepEqual(JSON.parse(await r.readers.read("searchChatList", { ws: null, home: null, limit: 2, query: "side" }, "en")), JSON.parse(JSON.stringify(r.store.searchChatList(null, null, 2, "side"))));
     // The archive review's messages, as the readers read them: what the store has.
-    assert.deepEqual(JSON.parse(await r.readers.read("latestMessages", { thread: chat.id, limit: 2 }, "en")), JSON.parse(JSON.stringify(r.store.messagesBefore(chat.id, null, 2))));
+    assert.deepEqual(JSON.parse(await r.readers.read("latestMessages", { thread: extra.id, limit: 2 }, "en")), JSON.parse(JSON.stringify(r.store.messagesBefore(extra.id, null, 2))));
   } finally {
     await r.close();
   }
@@ -480,7 +481,8 @@ test("archiving a session and a chat, and deleting a session", async () => {
     assert.equal((await r.ask("DELETE", `/sessions/${made.key}/archive`))[1].archivedAt, null);
     assert.deepEqual(await r.ask("POST", "/sessions/nope/archive"), [404, { error: "unknown session nope" }]);
 
-    const [, own] = await r.ask("POST", "/threads", { session: made.key });
+    const own = r.store.openThreadOf("chat", "CHAT", "own-1", null, "ada@example.com", null);
+    r.store.joinThread(own.id, made.key, "chat");
     const [hidden, view] = await r.ask("POST", `/threads/${own.id}/archive`);
     assert.equal(hidden, 200);
     assert.equal(typeof view.hiddenAt, "number");

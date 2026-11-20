@@ -25,12 +25,32 @@ fn page_switch_reset() -> Unit {
 /// chat come to from another page begins with nothing made for it yet. Once for each page come on top, none for the
 /// one it was already.
 fn page_switch_to(top : Page) -> Unit {
-  if top == NewChat && page_switch.was != Some(NewChat) {
+  let was = page_switch.was
+  // (wide sidebar NewChat <-> Chat switch: record the departing composer's box for bidirectional container morph)
+  if !@ui.reduced_motion() {
+    match (was, top) {
+      (Some(NewChat), Chat(r)) =>
+        if @signals.untracked(fn() { fresh.became.get() }) != Some(r) {
+          if @sfpages.composer_node_shown(0.0) is Some(rect) {
+            @sfbase.composer_handoff_at.set(Some(rect))
+          }
+        }
+      (Some(Chat(_)), NewChat) =>
+        if @sfpages.composer_node_shown(0.0) is Some(rect) {
+          @sfbase.composer_handoff_at.set(Some(rect))
+        }
+      _ => ()
+    }
+  }
+  if top == NewChat && was != Some(NewChat) {
     fresh_reset()
   }
   // (a page that draws no composer: the composer built after it is laid out where it is, not flown from the page
   // before it, a new chat's left for 设置 and then a chat)
   if !(top is (Chat(_) | NewChat)) {
+    @sfbase.composer_handoff_at.set(None)
+    @sfbase.fresh_composer_at.set(None)
+    @sfpages.composer_node_left()
     @sfpages.composer_page_left()
   }
   page_switch.was = Some(top)

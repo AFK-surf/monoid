@@ -204,7 +204,7 @@ fn open_decide_panels(mode : String, src : Source) -> Unit {
       open_letters(src, r, 7.0)
       @sfdesk.letters_open_at(r, @sffixture.fix_letters_link)
     }
-    "chat-agent" | "chat-agent-unsaid" | "chat-agent-screens" => open_agent(src, r, "s-c1")
+    "chat-agent" | "chat-agent-unsaid" | "chat-agent-context" | "chat-agent-compacted" | "chat-agent-screens" => open_agent(src, r, "s-c1")
     "chat-jobs" => open_chat_jobs(src, r)
     "chat-job" => {
       dui.job_tab = 0
@@ -414,6 +414,11 @@ pub fn open_fixture_mode(mode : String) -> Unit {
   if mode == "lock-security" || mode == "lock-upgrade" || mode == "lock-needs-app-security" || mode == "lock-out-security" || mode == "lock-restart-security" || mode == "lock-rebound-security" || mode == "lock-replaced-security" {
     open_setting(@settings.fixture_page("settings-security"))
   }
+  // the board with its first card's chat (整理发布清单) open beside it, at rest, its edge untouched (board-side:
+  // 大屏's and 中屏's where there is the room, the chat's page over the board where there is none)
+  if mode == "board-side" {
+    @sfbase.board_pick.set(Some(rich))
+  }
   // ⌘/'s shortcuts at a glance
   if mode == "keys-dialog" {
     @sfdesk.wide.keys_open.set(true)
@@ -433,10 +438,10 @@ pub fn open_fixture_mode(mode : String) -> Unit {
 /// tree was let go (switches_still_wbtest's keys-dialog, on 中屏 and 大屏 after 小屏; run_begins_wbtest).
 pub fn fixture_app(mode : String, chat_nodes? : Bool = false) -> Source {
   new_run()
-  // (the chat's page made as nodes, as one who turned 实验性功能's 试用新对话页 on has it: said before the mode opens a chat,
-  // which is made as the choice stands then)
+  // (the chat's page made as nodes, as the test channel has it, whatever the mode's channel: held before the mode
+  // opens a chat, which is made as it stands then)
   if chat_nodes {
-    @sfbase.chat_page_nodes.set(true)
+    @sfbase.hold_chat_page_nodes(Some(true))
   }
   let src = @sffixture.fixture(mode)
   open_fixture_over(mode, src)
@@ -623,6 +628,11 @@ pub fn open_mode(mode : String) -> Unit {
   if mode == "newchat-preset-theirs" || mode == "newchat-preset-theirs-long" {
     @sffixture.new_fix.preset = "p-ops"
   }
+  if mode == "newchat-preset-many" {
+    @sffixture.new_fix.presets.clear()
+    @sffixture.new_fix.presets.push_iter(@sffixture.fix_preset_many().iter())
+    @sffixture.new_fix.preset = "p-arch"
+  }
   // (as long a name as a person gives one: its 复制「X」为我的预设 cut as 编辑「X」 is)
   if mode == "newchat-preset-theirs-long" {
     @sffixture.fix_other_rename("p-ops", "线上排障：告警、回滚与值班交接的完整手册")
@@ -676,7 +686,7 @@ pub fn open_mode(mode : String) -> Unit {
     }
     match mode {
       "newchat-station" => @sfpages.new_chat_ask("station")
-      "newchat-preset" => @sfpages.new_chat_ask("preset")
+      "newchat-preset" | "newchat-preset-many" => @sfpages.new_chat_ask("preset")
       "newchat-preset-new" => @sfpages.new_chat_ask("preset-new")
       "newchat-preset-edit" => @sfpages.new_chat_ask("preset-edit")
       "newchat-preset-add" => @sfpages.new_chat_ask("preset-add")
@@ -985,8 +995,8 @@ pub fn fixture_corner_modes() -> Array[String] {
     // repositories, 从 Git 克隆, a clone under way and one failed among its folders)
     "newchat-preset-new", "newchat-preset-new-add", "newchat-preset-new-browse", "newchat-preset-new-browse-repos",
     "newchat-preset-new-clone", "newchat-preset-new-clones",
-    // (the presets' menu: one's own; the other members', a level further in, and none of them; someone else's picked)
-    "newchat-preset", "newchat-preset-others", "newchat-preset-others-none", "newchat-preset-theirs",
+    // (the presets' menu: one's own; many with search; the other members', a level further in, and none of them; someone else's picked)
+    "newchat-preset", "newchat-preset-many", "newchat-preset-others", "newchat-preset-others-none", "newchat-preset-theirs",
     "newchat-preset-theirs-long", "player-audio", "player-audio-failed", "player-ended",
     "player-failed", "player-opening", "player-video", "service", "service-restart", "service-sized", "service-stopped", "share-in",
     "share-in-files", "share-in-stations", "lock-checking", "lock-confirming", "lock-code", "lock-failed", "lock-finding", "lock-nocode",
@@ -1022,7 +1032,7 @@ pub fn fixture_corner_modes() -> Array[String] {
     "settings-profiles", "settings-profiles-monthly", "settings-profiles-fable", "settings-profiles-own3", "settings-profiles-week-fable", "settings-profiles-several",
     "settings-profile-account", "settings-profiles-station",
     "settings-profile", "settings-profile-fable", "settings-profile-own3", "settings-profile-week-fable", "settings-profile-quota", "settings-profile-quota-kinds",
-    "settings-profile-lower", "settings-profile-unshareable", "settings-profile-login", "settings-profile-login-failed", "settings-profile-quota-failed", "settings-profile-copy",
+    "settings-profile-lower", "settings-profile-unshareable", "settings-profile-login", "settings-profile-login-failed", "settings-profile-quota-failed", "settings-profile-verify", "settings-profile-copy",
     "settings-profile-blocked", "settings-profile-signin", "settings-profile-key", "settings-new-profile",
     // (添加账号 with three stations up to choose from, #6030; a key's form with a region and a protocol to choose)
     "settings-new-profile-stations", "settings-new-profile-key",
@@ -1044,6 +1054,9 @@ pub fn fixture_corner_modes() -> Array[String] {
     "home-station-updates", "station-updates", "home-station-updates-app", "station-updates-app",
     // (a terminal's page, typed into here and by someone else: terminal_wbtest.mbt; its station's list is settings-station-terminals, beside settings-station)
     "terminal", "terminal-taken",
+    // (the board with a card's chat open beside it, its edge at rest: last, so the real size's sweep gives the shell's
+    // ways a chat reads (chatRow) to chat's screen first, as before it came: sfapp_realsize real_size_test.mbt real_size_given_here)
+    "board-side",
   ]
   // (and the card to share in each of its other looks: share_looks.mbt)
   for k in @sfpages.share_look_keys()[1:] {

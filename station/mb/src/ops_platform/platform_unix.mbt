@@ -12,16 +12,6 @@ pub(all) enum Background {
 }
 
 ///|
-fn background_of(j : Json) -> Background {
-  match str_or(j, "kind", "none") {
-    "taskpolicy" => Taskpolicy
-    "ionice" => Ionice(str_or(j, "ionice", ""), str_or(j, "nice", ""))
-    "nice" => Nice(str_or(j, "nice", ""))
-    _ => NoWrapper
-  }
-}
-
-///|
 /// unix.ts `backgroundedOn`.
 pub fn backgrounded_on(how : Background, program : String, args : Array[String]) -> (String, Array[String]) {
   match how {
@@ -323,25 +313,6 @@ pub fn descendants_of(text : String, pid : Double) -> Array[Double] {
     }
   }
   out
-}
-
-///|
-fn hex_val(s : String) -> Int {
-  let mut v = 0
-  for i in 0..<s.length() {
-    let c = cu(s, i)
-    let d = if is_digit(c) {
-      c - 48
-    } else if c >= 97 && c <= 102 {
-      c - 87
-    } else if c >= 65 && c <= 70 {
-      c - 55
-    } else {
-      return -1
-    }
-    v = v * 16 + d
-  }
-  v
 }
 
 ///|

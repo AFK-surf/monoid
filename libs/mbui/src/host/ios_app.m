@@ -1530,6 +1530,9 @@ moonbit_string_t mb_host_perf_where(void) { return mb_string_from_ns(@"Documents
 // Its folder shown (@hostapi.perf_open): shared through the share sheet here instead.
 int32_t mb_host_perf_open(int32_t go) { (void)go; return 0; }
 
+// A file shown in its folder (@hostapi.reveal_file): no file manager the app can point into here.
+int32_t mb_host_reveal_file(moonbit_string_t s, int32_t go) { (void)s; (void)go; return 0; }
+
 // The record's files' bytes (@hostapi.perf_size): counted once, then as lines are written.
 double mb_host_perf_size(void) {
   if (perf_total < 0) dispatch_sync(perf_queue(), ^{
@@ -1894,6 +1897,14 @@ double mb_host_cpu_ms(void) {
   struct rusage u;
   if (getrusage(RUSAGE_SELF, &u) != 0) return -1;
   return (u.ru_utime.tv_sec + u.ru_stime.tv_sec) * 1000.0 + (u.ru_utime.tv_usec + u.ru_stime.tv_usec) / 1000.0;
+}
+
+// The CPU time of the calling thread (@hostapi.thread_cpu_ms), in ms (-1: unsupported).
+double mb_host_thread_cpu_ms(void) {
+  struct timespec ts;
+  if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) == 0)
+    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
+  return -1.0;
 }
 
 double mb_host_mem_bytes(void) {
@@ -2951,8 +2962,17 @@ void mb_host_set_badge(int32_t n) {
 }
 // The menu bar (@hostapi.menu_setup): none here.
 void mb_host_menu_setup(moonbit_string_t json) { (void)json; }
+int32_t mb_host_auto_launch(void) { return 0; }
+int32_t mb_host_set_auto_launch(int32_t enabled) { (void)enabled; return 0; }
+int32_t mb_host_hotkey_set(moonbit_string_t id, moonbit_string_t accel) { (void)id; (void)accel; return 0; }
+void mb_host_hotkey_clear(moonbit_string_t id) { (void)id; }
 // The keys held now (@hostapi.mods_held): none read here.
 int32_t mb_host_mods_held(void) { return 0; }
+// The pointer held by the window and game controllers (@hostapi.set_pointer_lock, gamepads): none here.
+void mb_host_pointer_lock(int32_t on) { (void)on; }
+int32_t mb_host_pointer_locked(void) { return 0; }
+void mb_host_pointer_delta(double *out) { out[0] = 0; out[1] = 0; }
+int32_t mb_host_gamepads(double *out) { (void)out; return 0; }
 
 // ---- files picked (pick.mbt) ----
 // Pictures (kind 1) from the system's photo picker (PHPickerViewController: no leave to ask for), any file (kind 2) from

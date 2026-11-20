@@ -198,7 +198,7 @@ case "${1:-build}" in
     # build of an app without the core after one with it would still pack them: built anew when that changes.
     if [ "$(cat $OUT/apk-kind 2>/dev/null)" != "$APP_KIND" ]; then rm -rf "${PROJ:?}/app/build"; fi
     echo $APP_KIND > $OUT/apk-kind
-    EXTRA="--extra=$ROOT/src/host/android_host.c $APP_EXTRA"
+    EXTRA="--extra=$ROOT/src/host/android_host.c --extra=$ROOT/src/host/film_none.c $APP_EXTRA"
     if [ -n "${MBUI_WASM_THUNKS:-}" ]; then
       # The app's Wasm shell (MBUI_WASM_THUNKS: the shell's side of the app's calls, tools/wasmhost's): the host, the
       # app's C and wasmtime, with no C of moonc's; the app, a .wasm of its own, put beside it as it runs

@@ -158,7 +158,7 @@ pub let new_chat_command : String = "/sf"
 fn app_text(v : J?) -> String {
   match v {
     None | Some(Null) => ""
-    Some(Str(u)) => @jsjson.text(u)
+    Some(Str(u)) => @jsjson.sanitize_str(u)
     Some(x) => stringify(x)
   }
 }
@@ -521,7 +521,7 @@ pub async fn exchange_install_code(
     ("redirect_uri", redirect_uri),
   ])
   let team = match at_path(Some(data), ["team", "name"]) {
-    Some(Str(u)) if u.length() > 0 => Some(@jsjson.text(u))
+    Some(Str(u)) if u.length() > 0 => Some(@jsjson.sanitize_str(u))
     _ => None
   }
   (app_text(at(Some(data), "access_token")), team)
@@ -594,7 +594,7 @@ pub async fn owner_of_config_token(client : SlackClient, access_token : String) 
   let user = Some(asked[0])
   let team = Some(asked[1])
   let some = (v : J?) => match v {
-    Some(Str(u)) if u.length() > 0 => Some(@jsjson.text(u))
+    Some(Str(u)) if u.length() > 0 => Some(@jsjson.sanitize_str(u))
     _ => None
   }
   let user_name = match some(at_path(user, ["profile", "display_name"])) {
@@ -668,7 +668,7 @@ pub fn shape_of(v : J) -> J {
     Null => js("object")
     Obj(fs) => Obj(fs.map(f => (f.0, shape_of(f.1))))
     Str(u) => {
-      let s = @jsjson.text(u)
+      let s = @jsjson.sanitize_str(u)
       let token = s.length() >= 5 &&
         s.unsafe_charcode_at(0) == 'x'.to_int() &&
         s.unsafe_charcode_at(4) == '-'.to_int() &&

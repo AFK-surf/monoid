@@ -55,8 +55,13 @@ const failedAgain = (turn: { outcome: string | null; declared: string | null; de
 /// offers 重试 too, as every notice that says a reply goes on does (the user, 2026-11-14).
 const givenUp = (turn: { outcome: string | null; declared: string | null }) => turn.outcome === "completed" && turn.declared === null;
 
+/// A turn cut off by a non-update station restart without a declared final state: its notice offers 重试 to resume.
+export const cutOffByRestart = (turn: { outcome: string | null; declared: string | null; detail: string | null }) =>
+  turn.outcome === "aborted" && turn.declared === null && turn.detail === "other: cut off by restart";
+
 /// A turn its notice's 重试 takes up again.
-export const retryable = (turn: { outcome: string | null; declared: string | null; detail: string | null }) => failedAgain(turn) || givenUp(turn);
+export const retryable = (turn: { outcome: string | null; declared: string | null; detail: string | null }) =>
+  failedAgain(turn) || givenUp(turn) || cutOffByRestart(turn);
 
 
 export type TurnFor = { profile: string | null; person: string | null; thread: number | null };
@@ -100,6 +105,8 @@ export type SessionStore = {
   setRunning(key: string, running: boolean): void;
   setSessionContextBefore(key: string, before: number | null): void;
   setRuntimeSessionId(key: string, id: string | null): void;
+  /// Its runtime session compacted its context once more (optional: a store from before counts none).
+  noteCompacted?(key: string): void;
   /// The runtime sessions it ran in, the first first (optional: none known without it).
   runtimeSessions?(key: string): string[];
   runtimeSessionSources?(key: string): { id: string; runtime: string; profile: string | null }[];
@@ -108,6 +115,7 @@ export type SessionStore = {
   setNeed(turn: string, what: string): void;
   setAbout(turn: string, about: [number, number, string] | null): void;
   lastTurn(key: string): any | null;
+  latestTurn?(key: string): { id: string; summary: any } | null;
   slackStop(session: string, connect: string, channel: string, threadTs: string): { ts: string; turn: string | null } | null;
   rememberSlackStop(session: string, connect: string, channel: string, threadTs: string, ts: string, turn: string | null): void;
   stopWait(key: string, refill?: boolean): void;
@@ -156,6 +164,8 @@ export type SessionDeps = {
   refillsAt?(key: string): number;
   /// A runtime failed to sign in on `profile`: it is checked again (the pool passes over one whose login is over).
   recheck?(profile: string): Promise<void>;
+  /// Read-only check whether a turn that failed with `auth` on `failedProfile` should automatically reopen and retry.
+  canAuthRetry?(key: string, failedProfile: string): boolean;
   /// A turn on `profile` failed with words that name no limit: what its allowance, asked again, says it ran into
   /// (accounts.ts `limitAfter`: a model's own limit by its name, null the account's, undefined none).
   limitAfter?(profile: string, model: string | null): Promise<string | null | undefined>;
@@ -555,16 +565,21 @@ async function choicesWith(deps: SessionDeps, key: string, now: number, text: st
 }
 
 /// What another agent goes by in a thread: the bot of the connect it posts there through, with its mention; in the
-/// station's own chats, its runtime and model.
+/// station's own chats, its birth connect's bot name when born on an external connect, else its runtime and model.
 function agentName(deps: SessionDeps, key: string, thread: number): string {
   const via = deps.store.threadSessions(thread).find((m) => m.session === key)?.connect;
-  const chat = via && via !== INTERNAL_CONNECT ? deps.chat(via) : undefined;
+  const row = deps.store.getSession(key);
+  const externalVia = via && via !== INTERNAL_CONNECT ? via : undefined;
+  const connect = externalVia ?? (row && row.connect !== INTERNAL_CONNECT ? row.connect : undefined);
+  const chat = connect ? deps.chat(connect) : undefined;
   const name = chat?.botName?.() ?? "";
   if (name !== "") {
-    const user = chat?.botUserId?.() ?? "";
-    return user === "" ? name : `${name} (<@${user}>)`;
+    if (externalVia !== undefined) {
+      const user = chat?.botUserId?.() ?? "";
+      return user === "" ? name : `${name} (<@${user}>)`;
+    }
+    return name;
   }
-  const row = deps.store.getSession(key);
   return row ? `${runtimeLabel(runtimeKind(row.runtime) ?? "claude")}${row.model ? ` ${row.model}` : ""}` : "another agent";
 }
 

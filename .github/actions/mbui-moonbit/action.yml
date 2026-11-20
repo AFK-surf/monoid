@@ -89,7 +89,7 @@ runs:
       run: |
         [ ! -f libs/mbui/scripts/env.sh ] || . libs/mbui/scripts/env.sh
         moon version --all
-    # mbui's tools (scripts/mbc, chk, detlint, apk: each built when there is none built from its own sources, by content)
+    # mbui's tools (scripts/mbc, chk, detlint, apk, and pack, the packager scripts/mbui runs: each built when there is none built from its own sources, by content)
     # kept here each by its own key, what its script says it is built from (`scripts/<tool> key`), the tool's program
     # alone: a job saves only the tools it ran, each built from the sources its key names, so a key restored is a tool
     # up to date. (Kept together by a hash of all tools/, a key was saved by the job that ended first, with the tools
@@ -127,6 +127,9 @@ runs:
             case " ${{ inputs.tools }} " in *" $t "*) ;; *) continue ;; esac
             keep_tool "$t" "libs/mbui/scripts/$t" "libs/mbui/tools/_build/native/release/build/$t/$t.exe"
           done
+          if [[ " ${{ inputs.tools }} " == *" pack "* ]]; then
+            keep_tool pack "libs/mbui/scripts/mbui" "libs/mbui/tools/_build/native/release/build/pack/pack.exe"
+          fi
           if [[ " ${{ inputs.tools }} " == *" testexe "* ]] && [ -f apps/mbui/scripts/testexe ]; then
             keep_tool testexe "apps/mbui/scripts/testexe" "apps/mbui/tools/_build/native/release/build/sftools/testexe/testexe.exe"
           fi
@@ -136,6 +139,7 @@ runs:
         for t in mbc chk detlint apk; do
           case " ${{ inputs.tools }} " in *" $t "*) echo "$t=$(sh libs/mbui/scripts/$t key)" >> "$GITHUB_OUTPUT" ;; esac
         done
+        [[ " ${{ inputs.tools }} " != *" pack "* ]] || echo "pack=$(sh libs/mbui/scripts/mbui key)" >> "$GITHUB_OUTPUT"
         # (the app's: scripts/testexe, a test program's runs for scripts/test.sh)
         [[ " ${{ inputs.tools }} " != *" testexe "* ]] || [ ! -f apps/mbui/scripts/testexe ] || echo "testexe=$(bash apps/mbui/scripts/testexe key)" >> "$GITHUB_OUTPUT"
     - if: steps.tools.outputs.mbc != ''
@@ -173,6 +177,13 @@ runs:
           libs/mbui/tools/_build/native/release/build/apk/apk.exe
           libs/mbui/tools/_build/native/release/build/apk/apk.exe.src
         key: mbui-tool-apk-${{ runner.os }}-${{ runner.arch }}-${{ steps.tools.outputs.apk }}
+    - if: steps.tools.outputs.pack != ''
+      uses: actions/cache@v4
+      with:
+        path: |
+          libs/mbui/tools/_build/native/release/build/pack/pack.exe
+          libs/mbui/tools/_build/native/release/build/pack/pack.exe.src
+        key: mbui-tool-pack-${{ runner.os }}-${{ runner.arch }}-${{ steps.tools.outputs.pack }}
     # Put these in the cache's path before an app sets MBUI_TOOLS_OUT. A cold key is built once;
     # a restored key already has the matching .src and is returned without a build.
     - shell: bash
@@ -183,6 +194,7 @@ runs:
         for t in mbc chk; do
           case " ${{ inputs.tools }} " in *" $t "*) sh "libs/mbui/scripts/$t" path >/dev/null ;; esac
         done
+        [[ " ${{ inputs.tools }} " != *" pack "* ]] || sh libs/mbui/scripts/mbui path >/dev/null
     # Farview's client at the commit apps/mbui/farview.pin names (apps/mbui/scripts/farview.sh), where this checkout has
     # the app: the job's FARVIEW_DEPLOY_KEY (its workflow's env, from the repository's secret); none (a fork's run), the
     # app does not build, and what does not build it goes on. Not for a job that builds no app (`farview: 'false'`)

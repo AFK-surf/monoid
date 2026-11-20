@@ -514,3 +514,40 @@ test "what the drawing side did is said with the summary where its host said any
   assert_eq(said[2].gpu.timed, 0)
   assert_eq(said[2].gpu.dropped, 0)
 }
+
+///|
+test "per-piece thread cpu time is kept in notes and ui_hang JSON even below 1ms when wall >= 4ms, and omitted when unavailable" {
+  let (_, clock) = journal_start()
+  defer set_work_clock(None)
+  let cpu = Ref(10.0)
+  thread_cpu_clock.val = Some(fn() { cpu.val })
+  defer { thread_cpu_clock.val = None }
+  let told : Array[Hang] = []
+  hangs_told(Some(fn(h) { told.push(h) }))
+  // wall = 20ms, cpu = 0.3ms (< journal_floor_ms 1.0ms): preemption case must still record "cpu": 0.3
+  view_event_said(fn() {  }, fn() {
+    clock.val += 20.0
+    cpu.val += 0.3
+    h_request_frame()
+  }, what="touch-move")
+  journal_work(
+    Frame({ tree: 0.0, messages: 0.0, build: 10.0, layout: 0.0, paint: 0.0, nodes: 1, insts: 1, made: 0, let_go: 0, laid: 0, measured: 0, passes: 0, again: "", bindings: 0, why: "" }),
+    1020.0,
+    1030.0,
+    cpu_ms=9.4,
+  )
+  journal_seal(Presented, 1030.0)
+  journal_dirty_at.val = -1.0
+  assert_eq(told.length(), 1)
+  let w0 = told[0].contributors[0]
+  assert_eq(w0.notes, [("cpu", 0.3)])
+  let j = told[0].json().stringify()
+  assert_true(j.contains("\"cpu\":0.3"), msg=j)
+  assert_true(j.contains("\"cpu\":9.4"), msg=j)
+  // default fake-clock mode (thread_cpu_clock = None -> -1.0): no "cpu" field emitted
+  thread_cpu_clock.val = None
+  view_event_said(fn() {  }, fn() { clock.val += 60.0 }, what="touch-up")
+  assert_eq(told.length(), 2)
+  assert_eq(told[1].contributors[0].notes, [])
+  assert_false(told[1].json().stringify().contains("\"cpu\""), msg=told[1].json().stringify())
+}

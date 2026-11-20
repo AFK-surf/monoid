@@ -10,7 +10,7 @@
 /// at rest: a phone's window, or a desk's (`wide`: 1280 by 800, a mouse).
 fn nodes_new_chat(mode : String, wide? : Bool = false) -> @ui.Tester {
   new_run()
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   let src = fixture(mode)
   let t = if wide {
     @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
@@ -84,7 +84,8 @@ test "a new chat made as nodes: its preset's control opens the presets to pick" 
   let t = nodes_new_chat("newchat")
   press(t, "预设")
   t.run_for(@ui.move_most_ms)
-  assert_true(shows(t, "不用预设") && shows(t, "新预设"), msg=runs(t))
+  assert_false(shows(t, "不用预设"), msg=runs(t))
+  assert_true(shows(t, "still.fail 开发") && shows(t, "新预设"), msg=runs(t))
 }
 
 ///|
@@ -151,4 +152,51 @@ test "a new chat made as nodes laid out narrow and wide again as its window chan
   }
   assert_true(narrow_seen.val, msg="the page not laid out narrow at 900")
   assert_true(node_words_at(t, "Opus 5.5") is Some(_), msg=runs(t))
+}
+
+///|
+/// A new chat made as nodes on an Android phone drawn edge to edge (its bars said: 36 over, 24 under), three lines typed
+/// in its field and the soft keyboard up, a Chinese input method's with its row of guesses (320 over the screen's
+/// foot: the window 509 high, its foot the navigation bar's 24 over the keyboard): where its send button and its field
+/// are, and where the window's foot over the keyboard is.
+fn nodes_new_chat_keyboard_up() -> (@ui.Tester, (Double, Double, Double, Double), (Double, Double, Double, Double), Double) raise {
+  new_run()
+  @sfbase.chat_page_nodes.set(true)
+  let src = fixture("newchat")
+  let (w, h, kb, bottom) = (351.0, 805.0, 320.0, 24.0)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform=2)
+  t.post(@hostapi.system_channel, "{\"bars\":{\"top\":36,\"bottom\":24,\"left\":0,\"right\":0}}")
+  open_mode("newchat")
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  t.tap_text("做任何事")
+  t.type_text("从上面发的这几句话要长一些，长到在输入框里折成好几行，发出去以后这一条消息也比列表先估计的高，输入框随后变矮。")
+  t.set_ime_inset(kb)
+  t.resize_next(w, h - (kb - bottom))
+  t.run_for(@ui.move_most_ms)
+  let send = match t.query(Button, label=@sf.t("web-main.composer.send")) {
+    Some(b) => b.rect
+    None => fail("no send button: \{t.semantics_dump()}")
+  }
+  let field = match t.query(TextField) {
+    Some(f) => f.rect
+    None => fail("no field: \{t.semantics_dump()}")
+  }
+  (t, send, field, h - (kb - bottom) - bottom)
+}
+
+///|
+test "a new chat made as nodes on an Android phone edge to edge, the keyboard up under three lines typed: its composer and send button over the keyboard, the scene over the band" {
+  let (t, send, field, foot) = nodes_new_chat_keyboard_up()
+  let send_bottom = send.1 + send.3
+  let field_bottom = field.1 + field.3
+  assert_true(send.3 > 0.0 && send_bottom <= foot - 4.0, msg="send \{@ui.rect_text(send)} under \{foot - 4.0}")
+  assert_true(field.3 > 0.0 && field_bottom <= foot, msg="field \{@ui.rect_text(field)} under \{foot}")
+  let (_, model_y) = node_words_at(t, "Opus 5.5").unwrap()
+  assert_true(model_y < field.1 && model_y > 36.0, msg="model at \{model_y}, field from \{field.1}")
+  // (the scene's words over the band's top, or kept out of the window where there is no room for them)
+  match node_words_at(t, "想让 agent 做什么？") {
+    Some((_, y)) => assert_true(y < model_y, msg="title at \{y}, the choices from \{model_y}")
+    None => ()
+  }
 }

@@ -176,35 +176,7 @@ pub fn urls_in(text : String) -> Array[String] {
 ///|
 /// Percent-decoding as URLSearchParams does it (`+` a space), UTF-8 with what does not decode replaced.
 fn form_decode(s : String) -> String {
-  let bytes : Array[Byte] = []
-  let n = s.length()
-  let mut i = 0
-  while i < n {
-    let c = cu(s, i)
-    if c == 43 {
-      bytes.push(b' ')
-      i += 1
-    } else if c == 37 && i + 2 < n + 0 && i + 2 <= n - 1 && hex_val(sub(s, i + 1, i + 3)) >= 0 {
-      bytes.push(hex_val(sub(s, i + 1, i + 3)).to_byte())
-      i += 3
-    } else {
-      // The code point as UTF-8.
-      let cp = if c >= 0xd800 && c <= 0xdbff && i + 1 < n && cu(s, i + 1) >= 0xdc00 && cu(s, i + 1) <= 0xdfff {
-        let d = cu(s, i + 1)
-        i += 1
-        0x10000 + ((c - 0xd800) << 10) + (d - 0xdc00)
-      } else if c >= 0xd800 && c <= 0xdfff {
-        0xfffd
-      } else {
-        c
-      }
-      i += 1
-      for bb in @utf8.encode(Int::unsafe_to_char(cp).to_string()) {
-        bytes.push(bb)
-      }
-    }
-  }
-  @utf8.decode_lossy(Bytes::from_array(bytes))
+  @url.percent_decode_lossy(s, plus_space=true)
 }
 
 ///|

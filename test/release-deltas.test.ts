@@ -9,8 +9,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { crc32, deflateRawSync, gunzipSync, zstdCompressSync } from "node:zlib";
-import { applyFile, storedZip } from "../scripts/delta.ts";
-import { earlierOf, moveInto } from "../scripts/release-deltas.ts";
+import { applyFile, storedZip, treeFiles } from "../scripts/delta.ts";
+import { earlierOf, layInstalled, layInstalledEntries, moveInto } from "../scripts/release-deltas.ts";
 
 // scripts/release-deltas.ts on a release directory of every kind of feed, the releases "published" before it a
 // directory too (--releases): the deltas made, each giving the package's raw form from what an installed build has
@@ -561,4 +561,102 @@ test("--releases a URL that cuts a base off halfway, HEAD refused: that base lef
   assert.equal(json(w.rel, "station-beta.json").deltas["linux-x64"].length, 1);
   assert.ok(s.served.some((x) => x.method === "HEAD" && x.status === 405), "HEAD refused");
   assert.ok(s.served.some((x) => x.method === "GET" && x.status === 404 && x.path.includes("station/archive/beta/101-")), "has by a GET of its first byte");
+});
+
+test("--platform, one run a platform, then --merge: the feed as one run of every platform amends it, the fragments gone", (t) => {
+  const w = world(t);
+  const whole = join(w.tmp, "whole");
+  cpSync(w.rel, whole, { recursive: true });
+  run(whole, w.pub);
+  const platforms = ["darwin-arm64", "linux-x64", "linux-arm64", "win32-x64"];
+  const merged = (dir: string, only: string[]) => {
+    cpSync(w.rel, dir, { recursive: true });
+    for (const p of platforms) {
+      const into = join(w.tmp, `${p}-${only.length}`);
+      run(w.rel, w.pub, "--platform", p, "--into", into);
+      // (the apps' feeds are not this run's)
+      assert.ok(!existsSync(join(into, "mac/beta/latest.json")) && !existsSync(join(into, "station-beta.json")));
+      if (only.includes(p)) cpSync(into, dir, { recursive: true });
+    }
+    const r = spawnSync(process.execPath, [script, "--merge", dir], { encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(readdirSync(dir).filter((f) => f.includes(".deltas.")), [], "no fragment left to be put as a feed");
+    return json(dir, "station-beta.json");
+  };
+  const all = merged(join(w.tmp, "all"), platforms);
+  assert.equal(readFileSync(join(w.tmp, "all", "station-beta.json"), "utf8"), readFileSync(join(whole, "station-beta.json"), "utf8"));
+  assert.deepEqual(Object.keys(all.deltas), ["linux-x64", "win32-x64"]);
+  for (const ds of Object.values(all.deltas) as { file: string; sha256: string }[][]) {
+    for (const d of ds) assert.equal(sha(readFileSync(join(w.tmp, "all", d.file))), d.sha256);
+  }
+  // one platform's job failed: the others' deltas and earlier all the same
+  const part = merged(join(w.tmp, "part"), ["linux-x64"]);
+  assert.deepEqual(part.earlier, all.earlier);
+  assert.deepEqual(part.deltas, { "linux-x64": all.deltas["linux-x64"] });
+  // nothing to merge: the feed as it was
+  const before = readFileSync(join(w.rel, "station-beta.json"), "utf8");
+  assert.equal(spawnSync(process.execPath, [script, "--merge", w.rel], { encoding: "utf8" }).status, 0);
+  assert.equal(readFileSync(join(w.rel, "station-beta.json"), "utf8"), before);
+});
+
+test("layInstalledEntries matches layInstalled + treeFiles byte for byte across all four non-android kinds", (t) => {
+  const w = world(t);
+  const check = (kind: "mac" | "linux" | "win" | "station", pkgPath: string, label: string) => {
+    const dir = mkdtempSync(join(w.tmp, `lay-${label}-`));
+    layInstalled(kind, pkgPath, dir);
+    const diskFiles = treeFiles(dir);
+    const diskData = diskFiles.map((f) => readFileSync(join(dir, f)));
+    const diskRanges: { at: number; len: number }[] = [];
+    for (let at = 0, i = 0; i < diskData.length; at += diskData[i]!.length, i++) diskRanges.push({ at, len: diskData[i]!.length });
+    const diskOld = Buffer.concat(diskData);
+    const mem = layInstalledEntries(kind, pkgPath);
+    assert.deepEqual(mem.files, diskFiles, `${label}: files`);
+    assert.deepEqual(mem.ranges, diskRanges, `${label}: ranges`);
+    assert.ok(mem.old.equals(diskOld), `${label}: old buffer`);
+  };
+  check("mac", join(w.pub, MAC(100)), "mac");
+  check("linux", join(w.pub, LINUX(100)), "linux");
+  check("win", join(w.pub, `${WIN(100)}.raw.zst`), "win");
+  check("station", join(w.pub, STATION.linux), "station-tgz");
+  const stWin = `station/archive/beta/100-${w.prevStationWords.builds["win32-x64"].sha256}-win32-x64.zip`;
+  check("station", join(w.pub, stWin), "station-zip");
+  // Duplicate entry in zip: later write overwrites earlier, matching filesystem behavior
+  const dupZip = join(w.tmp, "dup.zip");
+  writeFileSync(dupZip, zip([
+    { name: "Test.app/Contents/Info.plist", data: Buffer.from("first"), deflate: true },
+    { name: "Test.app/Contents/Info.plist", data: Buffer.from("second-overwrite"), deflate: true },
+    { name: "Test.app/Contents/._ignored", data: Buffer.from("appledouble"), deflate: true },
+  ]));
+  check("mac", dupZip, "mac-dup-overwrite");
+});
+
+test("persistent --worker and Android DeltaBatch JVM verify multiple bases and recover cleanly from a bad base", { skip: noJava }, (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "release-deltas-android-batch-"));
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+  const pub = join(tmp, "pub"), rel = join(tmp, "rel");
+  for (const n of [98, 99, 100]) {
+    put(tmp, `${n}.apk`, apkZip(n));
+    java(["repack", join(tmp, `${n}.apk`), join(tmp, `${n}.re.apk`)]);
+    put(pub, APK(n), readFileSync(join(tmp, `${n}.re.apk`)));
+  }
+  // Base 97 is corrupt (not a valid zip): worker + DeltaBatch must reject it cleanly and still succeed on 100, 99, 98.
+  put(pub, APK(97), Buffer.from("corrupt-apk-payload"));
+  put(pub, "android/beta/latest.json", {
+    versionCode: 100, versionName: "0.1.100", ...file(APK(100), readFileSync(join(pub, APK(100)))),
+    deltas: [99, 98, 97].map((from) => ({ from, file: `${APK(100)}.from-${from}.delta`, sha256: "c".repeat(64), size: 10 })),
+  });
+  put(tmp, "101.apk", apkZip(101));
+  java(["repack", join(tmp, "101.apk"), join(tmp, "101.re.apk")]);
+  put(rel, APK(101), readFileSync(join(tmp, "101.re.apk")));
+  put(rel, "android/beta/latest.json", { versionCode: 101, versionName: "0.1.101", ...file(APK(101), readFileSync(join(rel, APK(101)))) });
+  // --jobs 1 forces a single persistent worker + single DeltaBatch JVM to process all 4 bases sequentially
+  const { out } = run(rel, pub, "--jobs", "1");
+  const feed = json(rel, "android/beta/latest.json");
+  assert.deepEqual(feed.deltas.map((d: { from: number }) => d.from), [100, 99, 98]);
+  assert.match(out, /from 97 failed/);
+  for (const d of feed.deltas) {
+    const madeOut = join(tmp, `applied-${d.from}.apk`);
+    java(["apply", join(pub, APK(d.from)), join(rel, d.file), madeOut]);
+    assert.ok(readFileSync(madeOut).equals(readFileSync(join(rel, APK(101)))), `android from ${d.from}`);
+  }
 });

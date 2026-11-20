@@ -168,12 +168,18 @@ pub fn joined_of(raw : Json?) -> Array[Json] {
       "workspace_name": Json::string(
         text_of(field(j, "workspace_name")).unwrap_or(ws),
       ),
-      "name": Json::string(text_of(field(j, "name")).unwrap_or("")),
-      "peers": Json::array(array_of(field(j, "peers")).unwrap_or([])),
-      "revocations": Json::array(
-        array_of(field(j, "revocations")).unwrap_or([]).filter(is_revocation),
-      ),
     }
+    if text_of(field(j, "workspace_emoji")) is Some(e) && e != "" {
+      m["workspace_emoji"] = Json::string(e)
+    }
+    if text_of(field(j, "workspace_icon")) is Some(ic) && ic != "" {
+      m["workspace_icon"] = Json::string(ic)
+    }
+    m["name"] = Json::string(text_of(field(j, "name")).unwrap_or(""))
+    m["peers"] = Json::array(array_of(field(j, "peers")).unwrap_or([]))
+    m["revocations"] = Json::array(
+      array_of(field(j, "revocations")).unwrap_or([]).filter(is_revocation),
+    )
     if field(j, "locked") is Some(True) {
       m["locked"] = Json::boolean(true)
     }
@@ -464,6 +470,14 @@ fn apply_state_frame(p : PlaneCloud, body : Json, send : (Json) -> Unit) -> Unit
     }
   }
   let locked = (lock.pinned)(None)
+  let wrong_home = match s.state {
+    Some(st) =>
+      locked &&
+      named_ws is Some(w) &&
+      Some(w) != text_of(st.get("workspace")) &&
+      !took
+    None => false
+  }
   if locked && s.state is Some(st) {
     let moved_ws = named_ws is Some(w) &&
       Some(w) != text_of(st.get("workspace")) &&
@@ -495,6 +509,16 @@ fn apply_state_frame(p : PlaneCloud, body : Json, send : (Json) -> Unit) -> Unit
       match field(body, k) {
         Some(String(_)) as v => st[k] = v.unwrap()
         _ => ()
+      }
+    }
+    if !wrong_home {
+      match text_of(field(body, "workspace_emoji")) {
+        Some(e) if e != "" => st["workspace_emoji"] = Json::string(e)
+        _ => st.remove("workspace_emoji")
+      }
+      match text_of(field(body, "workspace_icon")) {
+        Some(ic) if ic != "" => st["workspace_icon"] = Json::string(ic)
+        _ => st.remove("workspace_icon")
       }
     }
     match field(body, "relay_urls") {

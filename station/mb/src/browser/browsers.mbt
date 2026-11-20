@@ -303,7 +303,7 @@ pub async fn Browsers::context(self : Browsers, session : String) -> String {
       guard at(Some(got), "browserContextId") is Some(Str(u)) && u.length() > 0 else {
         raise fail_("Chrome made no browser context.")
       }
-      let ctx = @jsjson.text(u)
+      let ctx = @jsjson.sanitize_str(u)
       self.contexts[session] = ctx
       self.write()
       (self.log.info)("browser", "a chat's own context made", fields([("session", js(session))]))
@@ -615,14 +615,14 @@ fn Browsers::read_kept(self : Browsers, t : String) -> (String, Array[(String, S
   let ordered = (o : J?) => match o {
     Some(Obj(_) as x) =>
       match js_object(entries_of(x)) {
-        Obj(fs) => fs.map(f => (@jsjson.text(f.0), f.1))
+        Obj(fs) => fs.map(f => (@jsjson.sanitize_str(f.0), f.1))
         _ => []
       }
     _ => []
   }
   let contexts = ordered(at(vv, "contexts")).map(e => (e.0, js_str(Some(e.1))))
   let signed_in = ordered(at(vv, "signedIn")).map(e => (e.0, arr(Some(e.1)).map(SignedIn::of_j)))
-  Some((@jsjson.text(wu), contexts, signed_in))
+  Some((@jsjson.sanitize_str(wu), contexts, signed_in))
 }
 
 ///|

@@ -94,25 +94,13 @@ pub fn slack_entry(given : JV, had : JV) -> JV {
 ///|
 /// admin/slack.rs `url_encode`: everything but A-Z a-z 0-9 - _ . ~ as %XX.
 fn url_encode(s : String) -> String {
-  let out = StringBuilder::new()
-  let hex = "0123456789ABCDEF"
-  for b in utf8(s) {
-    let c = b.to_int()
-    if (c >= 'A' && c <= 'Z') ||
-      (c >= 'a' && c <= 'z') ||
-      (c >= '0' && c <= '9') ||
-      c == '-' ||
-      c == '_' ||
-      c == '.' ||
-      c == '~' {
-      out.write_char(c.unsafe_to_char())
-    } else {
-      out.write_char('%')
-      out.write_char(hex.unsafe_charcode_at(c >> 4).unsafe_to_char())
-      out.write_char(hex.unsafe_charcode_at(c & 15).unsafe_to_char())
-    }
-  }
-  out.to_string()
+  @url.percent_encode(s, c => (c >= 'A' && c <= 'Z') ||
+    (c >= 'a' && c <= 'z') ||
+    (c >= '0' && c <= '9') ||
+    c == '-' ||
+    c == '_' ||
+    c == '.' ||
+    c == '~')
 }
 
 ///|

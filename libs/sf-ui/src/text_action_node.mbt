@@ -39,7 +39,9 @@ pub fn text_action_node(
 /// read out expanded). `on`: a toggle button, on while it says so (read out pressed: 全屏, 控制, the keyboard up).
 /// None of them: a button, `label_is` its name where it never changes (`label` is it: said once, no binding made for
 /// it, @headless.button's), `in_node` the button `parent` itself (a row a list made: no box of its own). While
-/// `disabled()`, taking no press nor the focus. The node.
+/// `disabled()`, taking no press nor the focus. `on_hold`: what a finger held on it long_press_ms does (a card of it
+/// opened by the hand: HoverHand's `hold`), its letting go then no press; a mouse's long press still a click (a
+/// button's or a toggle's: @headless.Hold's). The node.
 #callsite(autofill(loc))
 pub fn action_box_node(
   parent : @view.View,
@@ -52,8 +54,12 @@ pub fn action_box_node(
   disabled? : () -> Bool,
   label_is? : String,
   in_node? : Bool = false,
+  on_hold? : () -> Unit,
   loc~ : SourceLoc,
 ) -> @view.View {
+  let hold = on_hold.map(fn(f) {
+    @headless.Hold::new(@ui.touch_slop(), @ui.long_press_ms, fn() { @ui.pointing() is Finger }, on_hold=f)
+  })
   let drawn = fn(v : @view.View) {
     focus_ring_node(v)
     look(v)
@@ -64,11 +70,11 @@ pub fn action_box_node(
     (Some(chosen), _, _) => @headless.choice(made_for=loc, parent, Button, label, chosen, press, disabled?, fn(v, _) { drawn(v) })
     (None, Some(open), _) => @headless.disclosure(made_for=loc, parent, label, open, press, disabled?, fn(v, _) { drawn(v) })
     (None, None, Some(now)) =>
-      @headless.toggle(made_for=loc, parent, Button, label, now, fn(_) { if me.val is Some(v) { press(v) } }, disabled?, fn(v, _) {
+      @headless.toggle(made_for=loc, parent, Button, label, now, fn(_) { if me.val is Some(v) { press(v) } }, disabled?, hold?, fn(v, _) {
         me.val = Some(v)
         drawn(v)
       })
-    (None, None, None) => @headless.button(made_for=loc, parent, label, press, disabled?, label_is?, in_node~, fn(v, _) { drawn(v) })
+    (None, None, None) => @headless.button(made_for=loc, parent, label, press, disabled?, hold?, label_is?, in_node~, fn(v, _) { drawn(v) })
   }
 }
 

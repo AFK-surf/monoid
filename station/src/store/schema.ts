@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   afresh INTEGER,
   context INTEGER,
   context_before INTEGER,
+  compactions INTEGER,
   runtime_session_id TEXT,
   workspace TEXT NOT NULL,
   token TEXT NOT NULL UNIQUE,
@@ -73,7 +74,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   archived_by TEXT,
   shown_at INTEGER,
   cwd TEXT,
-  original_runtime TEXT
+  original_runtime TEXT,
+  conv TEXT
 );
 -- The sessions shown (store.ts LIVE_SESSIONS): what the station's own periodic work goes over; the archived ones only grow.
 CREATE INDEX IF NOT EXISTS sessions_live ON sessions (last_active_at) WHERE archived_at IS NULL;
@@ -472,6 +474,14 @@ CREATE TABLE IF NOT EXISTS model_stars (
   stars TEXT NOT NULL,
   PRIMARY KEY (ws, sub)
 );
+-- A person's drafts of 待派发 in a workspace, as their devices carry them (sessions/board-drafts.ts; the drafts as JSON
+-- by id, the KeptDraft of the core's board-drafts.ts): one row a person (their sub) a workspace, read by its key.
+CREATE TABLE IF NOT EXISTS board_drafts (
+  ws TEXT NOT NULL,
+  sub TEXT NOT NULL,
+  drafts TEXT NOT NULL,
+  PRIMARY KEY (ws, sub)
+);
 -- The chats handed from here to another station while both are up (replica/handover.ts): where each went, the
 -- workspace it was of here (null: the home one), its chat's thread here and there. Its rows here stay (a hand-back
 -- goes on from them); a device, a link or a letter naming it is told where it is.
@@ -575,7 +585,7 @@ export function hasRuntimeOrderIndex(db: DatabaseSync): boolean {
 /// add_archive_columns: columns archiving came with, added to a database made before them. When they come, each
 /// session's first chat on the page is taken as its own, and chats of sessions archived then as archived with them.
 export function addArchiveColumns(db: DatabaseSync): void {
-  for (const [column, kind] of [["archived_by", "TEXT"], ["shown_at", "INTEGER"], ["cwd", "TEXT"], ["fast", "INTEGER"], ["speed", "TEXT"], ["tui", "INTEGER"], ["afresh", "INTEGER"], ["context", "INTEGER"], ["context_before", "INTEGER"], ["profiles", "TEXT"]]) {
+  for (const [column, kind] of [["archived_by", "TEXT"], ["shown_at", "INTEGER"], ["cwd", "TEXT"], ["fast", "INTEGER"], ["speed", "TEXT"], ["tui", "INTEGER"], ["afresh", "INTEGER"], ["context", "INTEGER"], ["context_before", "INTEGER"], ["profiles", "TEXT"], ["compactions", "INTEGER"]]) {
     if (!has(db, "sessions", column!)) db.exec(`ALTER TABLE sessions ADD COLUMN ${column} ${kind}`);
   }
   // Came with waiting's limit, after the turns table.
@@ -1466,6 +1476,14 @@ export function addWorkspaceColumns(db: DatabaseSync): void {
   // took the join of legacy-decision-session-store.test.ts's sessions by key from its index).
   db.exec("DROP INDEX IF EXISTS sessions_by_ws");
   db.exec("CREATE INDEX IF NOT EXISTS sessions_of_ws ON sessions (COALESCE(ws, ''), key)");
+}
+
+/// Conversation anchor column (`sessions.conv`) and its lookup indexes.
+export function addConvColumn(db: DatabaseSync): void {
+  if (!has(db, "sessions", "conv")) db.exec("ALTER TABLE sessions ADD COLUMN conv TEXT");
+  db.exec(`CREATE INDEX IF NOT EXISTS sessions_conv ON sessions (conv, key);
+    CREATE INDEX IF NOT EXISTS sessions_conv_todo ON sessions (key) WHERE scope = 'thread' AND conv IS NULL;
+    CREATE INDEX IF NOT EXISTS sessions_conv_grouped ON sessions (conv, key) WHERE conv IS NOT NULL AND conv != key;`);
 }
 
 /// The station's own chats as their names are now (rows.ts STILLFAIL_SURFACE, STILLFAIL_CONNECT): what stations wrote

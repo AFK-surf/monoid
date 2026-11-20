@@ -6,6 +6,16 @@
 using @jsjson {type JValue as J}
 
 ///|
+pub using @jsjson {
+  jval_str as js, jval_num as jn, jval_int as ji, jval_bool as jb, jval_obj as jo, jval_array as ja,
+  jval_strs as jsa, jval_opt_str as jopt, jval_at as at, jval_at_i as at_i, jval_str_of as str_of,
+  jval_num_of as num_of, jval_bool_of as bool_of, jval_arr_of as arr_of, jval_nullish as nullish,
+  jval_is_record as is_obj, jval_set as set_field, jval_spread as spread, stringify, jval_quote as quoted,
+  points as chars, code_points as char_count, chars as first_chars, jval_stringify_num as num_text,
+  jval_try_parse as parse_opt, jval_truthy as truthy,
+}
+
+///|
 /// What the TypeScript threw: its message as it says it (`new Error(message)`), and of what kind where a caller tells
 /// kinds apart (`instanceof Refused`, `PlaceRefused` with its code, `MessageWriteBusy`...); "" for a plain Error.
 pub(all) suberror Thrown {
@@ -43,94 +53,8 @@ pub fn thrown_kind(e : Error) -> String {
 }
 
 ///|
-pub fn js(s : String) -> J {
-  @jsjson.JValue::of_string(s)
-}
-
-///|
-pub fn jn(d : Double) -> J {
-  @jsjson.JValue::of_double(d)
-}
-
-///|
-pub fn ji(i : Int) -> J {
-  @jsjson.JValue::of_int(i)
-}
-
-///|
-pub fn jb(b : Bool) -> J {
-  @jsjson.JValue::of_bool(b)
-}
-
-///|
-pub fn jo(fields : Array[(String, J)]) -> J {
-  @jsjson.JValue::of_object(fields)
-}
-
-///|
-pub fn ja(items : Array[J]) -> J {
-  @jsjson.JValue::of_array(items)
-}
-
-///|
-pub fn jsa(items : Array[String]) -> J {
-  @jsjson.JValue::of_strings(items)
-}
-
-///|
-pub fn jopt(s : String?) -> J {
-  @jsjson.JValue::of_opt_string(s)
-}
-
-///|
-/// `v[name]`, undefined (None) where `v` is no object or has none.
-pub fn at(v : J?, name : String) -> J? {
-  @jsjson.jval_at(v, name)
-}
-
-///|
-pub fn at_i(v : J?, i : Int) -> J? {
-  @jsjson.jval_at_i(v, i)
-}
-
-///|
-/// The value when it is a string.
-pub fn str_of(v : J?) -> String? {
-  @jsjson.jval_str_of(v)
-}
-
-///|
-pub fn num_of(v : J?) -> Double? {
-  @jsjson.jval_num_of(v)
-}
-
-///|
-pub fn bool_of(v : J?) -> Bool? {
-  @jsjson.jval_bool_of(v)
-}
-
-///|
-pub fn arr_of(v : J?) -> Array[J]? {
-  match v {
-    Some(Arr(xs)) => Some(xs)
-    _ => None
-  }
-}
-
-///|
 pub fn is_null(v : J?) -> Bool {
   v is Some(Null)
-}
-
-///|
-/// `v == null` (undefined or null).
-pub fn nullish(v : J?) -> Bool {
-  @jsjson.jval_nullish(v)
-}
-
-///|
-pub fn is_obj(v : J?) -> Bool {
-  v is Some(Obj(_))
 }
 
 ///|
@@ -143,38 +67,12 @@ pub fn keys_of(v : J?) -> Array[String] {
 }
 
 ///|
-/// An object's field set (or added at its end), as `o[k] = v` does.
-pub fn set_field(o : J, k : String, v : J) -> J {
-  @jsjson.jval_set(o, k, v)
-}
-
-///|
 /// An object without field `k` (`delete o[k]`, or a destructuring leaving it out).
 pub fn without(o : J, ks : Array[String]) -> J {
   match o {
-    Obj(fs) => {
-      let us = ks.map(@jsjson.units)
-      Obj(fs.filter(f => !us.contains(f.0)))
-    }
+    Obj(fs) => Obj(fs.filter(f => !ks.contains(f.0)))
     other => other
   }
-}
-
-///|
-/// `{ ...a, ...b }`.
-pub fn spread(a : J, b : J) -> J {
-  @jsjson.jval_spread(a, b)
-}
-
-///|
-pub fn stringify(v : J) -> String {
-  @jsjson.stringify(v)
-}
-
-///|
-/// `JSON.stringify(s)` of a string.
-pub fn quoted(s : String) -> String {
-  @jsjson.stringify(js(s))
 }
 
 ///|
@@ -186,82 +84,49 @@ pub fn parse_js(text : String) -> J raise Thrown {
 }
 
 ///|
-/// A string's code points (`Array.from(s)`).
-pub fn chars(s : String) -> Array[String] {
-  let out = []
-  for c in s {
-    out.push(c.to_string())
-  }
-  out
-}
-
-///|
-pub fn char_count(s : String) -> Int {
-  let mut n = 0
-  for _ in s {
-    n += 1
-  }
-  n
-}
-
-///|
-/// `Array.from(s).slice(0, n).join("")`.
-pub fn first_chars(s : String, n : Int) -> String {
-  let out = StringBuilder::new()
-  let mut i = 0
-  for c in s {
-    if i >= n {
-      break
-    }
-    out.write_char(c)
-    i += 1
-  }
-  out.to_string()
-}
-
-///|
-/// What `String(n)` says of a number that is a safe integer or any double (JavaScript's).
-pub fn num_text(d : Double) -> String {
-  @jsjson.stringify(Num(d))
-}
-
-///|
 /// `a === b` for what JSON gives (an object or a list: the same where they hold the same, as the copies here are).
 pub fn jeq(a : J, b : J) -> Bool {
-  match (a, b) {
-    (Null, Null) => true
-    (Bool(x), Bool(y)) => x == y
-    (Num(x), Num(y)) => x == y
-    (Str(x), Str(y)) => x == y
-    (Arr(xs), Arr(ys)) => xs.length() == ys.length() && xs.iter().zip(ys.iter()).all(p => jeq(p.0, p.1))
-    (Obj(xs), Obj(ys)) =>
-      xs.length() == ys.length() && xs.iter().zip(ys.iter()).all(p => p.0.0 == p.1.0 && jeq(p.0.1, p.1.1))
-    _ => false
-  }
+  a == b
 }
 
 ///|
 /// `xs.includes(v)`.
 pub fn jincludes(xs : Array[J], v : J) -> Bool {
-  xs.iter().any(x => jeq(x, v))
-}
-
-///|
-/// The value parsed, None where it does not parse.
-pub fn parse_opt(text : String) -> J? {
-  try Some(@jsjson.parse(text)) catch {
-    _ => None
-  }
-}
-
-///|
-/// Whether JavaScript takes a value for true (`!!v`).
-pub fn truthy(v : J?) -> Bool {
-  @jsjson.jval_truthy(v)
+  xs.contains(v)
 }
 
 ///|
 /// What stands for `undefined` in what is said to the station.
 pub fn undefined_j() -> J {
   jo([("$u", ji(1))])
+}
+
+///|
+fn[T] hub_ok(f : () -> T raise @session_hub.Refused) -> T raise Thrown {
+  f() catch {
+    @session_hub.Refused(m) => raise fail_(m)
+  }
+}
+
+///|
+fn opt_json(v : J?) -> Json? {
+  match v {
+    None | Some(Null) => None
+    Some(x) if is_undefined(x) => None
+    Some(x) => Some(x.to_json())
+  }
+}
+
+///|
+fn json_items(v : J) -> Array[Json] {
+  arr_of(Some(v)).unwrap_or([]).map(x => x.to_json())
+}
+
+///|
+fn need_arg_of(args : J, kind : Json, said : String) -> J raise Thrown {
+  let m = match args.to_json() {
+    Object(m) => m
+    _ => return Null
+  }
+  jopt(hub_ok(() => @session_hub.need_arg(m, kind, said)))
 }

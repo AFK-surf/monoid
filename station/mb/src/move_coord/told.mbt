@@ -213,7 +213,7 @@ pub fn Told::heard(self : Told, peer : String, request : J) -> J {
   w.heard = (self.d.clock.now)()
   if is_true(get(Some(request), "ended")) {
     match get(Some(request), "error") {
-      Some(Str(u)) => self.reject(w, Refused(@jsjson.text(u)))
+      Some(Str(u)) => self.reject(w, Refused(@jsjson.sanitize_str(u)))
       _ =>
         self.resolve(w, match get(Some(request), "result") {
           Some(r) => r

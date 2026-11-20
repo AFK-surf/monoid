@@ -6,8 +6,8 @@
 /// A phone as narrow as most get (`w` across), newchat-crowded's page (`mode`) risen over it.
 fn crowded(mode : String, w? : Double = crowded_w, h? : Double = crowded_h) -> @ui.Tester {
   new_run()
-  // (the chat's page made as both_pages runs it now, its new chat too: none outside one)
-  if both_nodes.val {
+  // (the chat's page made as both_pages runs it now, its new chat too; outside one, as the fixture's channel has it)
+  if both_running.val {
     both_way()
   }
   let src = fixture(mode)
@@ -252,7 +252,7 @@ test "narrow: a frequent model is applied without rearranging the sheet as it le
     t.click(Button, label="GPT-6 Astra · 中")
     assert_eq(new_fix.model, "gpt-6-astra")
     assert_eq(t.find("常用搭配"), Some(used), msg="the rows stay where they were as the sheet starts to close")
-    t.run_for(@kit.pop_out_ms / 2.0)
+    t.run_for(@motion.pop_out_ms / 2.0)
     let used_out = t.find("常用搭配").unwrap()
     let runtime_out = t.find_last("DeepSeek Harness").unwrap()
     assert_eq(used_out.1 - runtime_out.1, used.1 - runtime.1, msg="the runtime and the rows leave together")

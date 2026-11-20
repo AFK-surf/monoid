@@ -11,6 +11,7 @@ fn capped_tree(
   width : @signals.Signal[Double?],
   most : @signals.Signal[Double?],
   wrap : @signals.Signal[Bool],
+  box_w? : @signals.Signal[Double?] = @signals.signal(Some(100.0)),
   shown? : Bool = false,
 ) -> () -> Double {
   let id : Ref[@view.NodeId?] = Ref(None)
@@ -27,7 +28,7 @@ fn capped_tree(
     fn(root) {
       root.lines_up(Is(Some(Start))) |> ignore
       root.box(fn(c) {
-        c.width(Is(Some(100.0))).lines_up(Is(Some(Start))).row(By(fn() { row.get() })) |> ignore
+        c.width(By(fn() { box_w.get() })).lines_up(Is(Some(Start))).row(By(fn() { row.get() })) |> ignore
         if shown {
           c.show(fn() { true }, words)
         } else {
@@ -56,7 +57,8 @@ test "one line of words in a column: as wide as the column; a most said, that wh
     let width : @signals.Signal[Double?] = @signals.signal(None)
     let most : @signals.Signal[Double?] = @signals.signal(None)
     let wrap = @signals.signal(false)
-    let w = capped_tree(row, width, most, wrap, shown~)
+    let box_w : @signals.Signal[Double?] = @signals.signal(Some(100.0))
+    let w = capped_tree(row, width, most, wrap, box_w~, shown~)
     let seen = []
     seen.push(w())
     most.set(Some(150.0))
@@ -67,6 +69,12 @@ test "one line of words in a column: as wide as the column; a most said, that wh
     seen.push(w())
     row.set(true)
     seen.push(w())
+    box_w.set(Some(300.0))
+    seen.push(w())
+    most.set(Some(150.0))
+    seen.push(w())
+    most.set(None)
+    box_w.set(Some(100.0))
     row.set(false)
     seen.push(w())
     width.set(Some(180.0))
@@ -76,9 +84,14 @@ test "one line of words in a column: as wide as the column; a most said, that wh
     seen.push(w())
     wrap.set(false)
     seen.push(w())
-    // (column 100: 100; most 150: 100; most 80: 80; none again: 100; a row: 210; a column again: 100; 180 said: 180;
-    // wrapped: within the column; one line again: 100)
-    assert_eq(seen, [100.0, 100.0, 80.0, 100.0, 210.0, 100.0, 180.0, 100.0, 100.0], msg="shown \{shown}: \{Repr(seen)}")
+    // (column 100: 100; most 150: 100; most 80: 80; none again: 100; row 100: 100 via last_resort; row 300: 210
+    // uncapped; row 300 + most 150: 150; column 100 again: 100; 180 said: 180; wrapped: within the column; one line
+    // again: 100)
+    assert_eq(
+      seen,
+      [100.0, 100.0, 80.0, 100.0, 100.0, 210.0, 150.0, 100.0, 180.0, 100.0, 100.0],
+      msg="shown \{shown}: \{Repr(seen)}",
+    )
   }
 }
 

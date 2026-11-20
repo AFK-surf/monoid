@@ -23,9 +23,10 @@ fn needs_lock() -> Answer {
 }
 
 ///|
-/// The lock pinned in the asker's workspace (None: none is).
+/// The lock the asker's workspace's vault goes by (None: none): its lock in force in security mode, else its members'
+/// own (vault/module.ts `lock`, given who asks: known by it from then on).
 async fn Admin::vault_lock(self : Admin, r : Request) -> JV? {
-  let l = self.backend.ask("vault.lock", [r.who("workspace").unwrap_or(jundef)])
+  let l = self.backend.ask("vault.lock", [r.who("workspace").unwrap_or(jundef), r.viewer])
   if nullish(l) {
     None
   } else {
@@ -93,13 +94,61 @@ fn int_of(v : JV?) -> Double? {
 }
 
 ///|
-/// The lock's devices (a Map, `{"$map": [[id, device]...]}`), by id.
+/// The lock's devices by id: a Map as the TypeScript's lock gives it (`{"$map": [[id, device]...]}`), or the plain
+/// object `{id: device}` of the MoonBit station's (cloud_lock vault_lock.mbt `personal_vault_lock`).
 fn lock_devices(l : JV) -> Array[JV] {
   match l.get("devices") {
-    Some(Obj(_) as m) =>
-      jitems(m.get("$map")).map(p => jitems(Some(p)).get(0).unwrap_or(jundef))
+    Some(Obj(entries) as m) =>
+      match m.get("$map") {
+        Some(Arr(_)) =>
+          jitems(m.get("$map")).map(p => jitems(Some(p)).get(0).unwrap_or(jundef))
+        _ => entries.map(p => js(p.0))
+      }
     _ => []
   }
+}
+
+///|
+/// The lock's members' roles as `(sub, role)` pairs, supporting both plain object `{sub: {role}}` and Map `$map`.
+fn lock_member_roles(l : JV) -> Array[(String, String)] {
+  let role_of = (v : JV) => match v {
+    Str(r) if r != "" => r
+    Obj(_) =>
+      match v.get("role") {
+        Some(Str(r)) if r != "" => r
+        _ => "member"
+      }
+    _ => "member"
+  }
+  let out = []
+  match l.get("members") {
+    Some(Obj(entries) as m) =>
+      match m.get("$map") {
+        Some(Arr(pairs)) =>
+          for p in pairs {
+            let ps = jitems(Some(p))
+            if ps.get(0) is Some(Str(sub)) {
+              out.push((sub, role_of(ps.get(1).unwrap_or(jundef))))
+            }
+          }
+        _ =>
+          for e in entries {
+            out.push((e.0, role_of(e.1)))
+          }
+      }
+    _ => ()
+  }
+  out
+}
+
+///|
+fn lock_member_role(l : JV, sub : String) -> String? {
+  for p in lock_member_roles(l) {
+    if p.0 == sub {
+      return Some(p.1)
+    }
+  }
+  None
 }
 
 ///|
@@ -167,8 +216,21 @@ fn Admin::vault_routes(self : Admin) -> Array[Route] {
           l,
           field_of(h.get("sig"), "key").unwrap_or(jundef),
         ])
-        if field_of(Some(signer), "sub").unwrap_or(jundef) !=
-          h.get("owner").unwrap_or(jundef) {
+        let signer_sub = field_of(Some(signer), "sub").unwrap_or(jundef)
+        if nullish(signer_sub) {
+          continue
+        }
+        let is_ws = h.get("scope") == Some(Str("workspace"))
+        let signer_admin = match signer_sub {
+          Str(sub) =>
+            match lock_member_role(l, sub) {
+              Some("owner") | Some("admin") => true
+              _ => false
+            }
+          _ => false
+        }
+        if signer_sub != h.get("owner").unwrap_or(jundef) &&
+          !(is_ws && signer_admin) {
           continue
         }
         let found = v("vault", [
@@ -176,8 +238,9 @@ fn Admin::vault_routes(self : Admin) -> Array[Route] {
           h.get("id").unwrap(),
         ])
         if !(found is Null) &&
-          found.get("owner").unwrap_or(jundef) ==
-          h.get("owner").unwrap_or(jundef) {
+          (found.get("owner").unwrap_or(jundef) ==
+            h.get("owner").unwrap_or(jundef) ||
+            (is_ws && found.get("scope") == Some(Str("workspace")))) {
           latest.push(found)
         }
       }
@@ -245,9 +308,25 @@ fn Admin::vault_routes(self : Admin) -> Array[Route] {
         let why = if sibling {
           let w = crypto("vaultOk", [l, Null, next, jbool(true)])
           if nullish(w) {
-            if next.get("owner").unwrap_or(jundef) !=
+            let next_scope = next.get("scope").unwrap_or(Null)
+            let prev_scope = prev.get("scope").unwrap_or(Null)
+            if next_scope != prev_scope {
+              js("a vault's scope does not change")
+            } else if next.get("owner").unwrap_or(jundef) !=
               prev.get("owner").unwrap_or(jundef) {
-              js("a vault's owner does not change")
+              let signer = crypto("signerOf", [
+                l,
+                field_of(next.get("sig"), "key").unwrap_or(jundef),
+              ])
+              let takeover = next_scope == Str("workspace") &&
+                prev_scope == Str("workspace") &&
+                field_of(Some(signer), "sub").unwrap_or(jundef) ==
+                next.get("owner").unwrap_or(jundef)
+              if takeover {
+                Null
+              } else {
+                js("a vault's owner does not change")
+              }
             } else {
               Null
             }
@@ -482,6 +561,30 @@ fn Admin::vault_routes(self : Admin) -> Array[Route] {
           kept.push(c)
         }
       }
+      if l.get("genesis") == Some(Str("")) {
+        let member_roles = lock_member_roles(l)
+        let roles_fields = member_roles.map(p => (p.0, js(p.1)))
+        let member_subs : Map[String, Unit] = Map([])
+        for p in member_roles {
+          member_subs[p.0] = ()
+        }
+        let chains_fields = []
+        let raw_chains = self.backend.ask("vault.personalChains", [ws])
+        if raw_chains is Obj(entries) {
+          for e in entries {
+            if member_subs.contains(e.0) {
+              chains_fields.push((e.0, e.1))
+            }
+          }
+        }
+        return ok(
+          jobj([
+            ("boxes", jarr(kept)),
+            ("chains", jobj(chains_fields)),
+            ("roles", jobj(roles_fields)),
+          ]),
+        )
+      }
       ok(jobj([("boxes", jarr(kept))]))
     }),
     route("PUT", "^\\/vault\\/boxes$", async fn(r, _) {
@@ -616,7 +719,11 @@ fn Admin::vault_requests_routes(self : Admin) -> Array[Route] {
   let locked_decision = (call : String) => {
     async fn(r : Request, _m : Array[String?]) -> Answer {
       guard self.vault_lock(r) is Some(l) else { return needs_lock() }
-      decide(r, async fn(o) { s(call, [l, r.who("sub").unwrap_or(jundef), o]) })
+      decide(r, async fn(o) {
+        // (a refusal: who turns it down, by their credential's email, where no own lock of theirs is heard yet)
+        let more = if call == "deny" { [r.who("email").unwrap_or(jundef)] } else { [] }
+        s(call, [l, r.who("sub").unwrap_or(jundef), o] + more)
+      })
     }
   }
   let plain_told = async fn(kept : JV) -> JV {
@@ -663,6 +770,10 @@ fn Admin::vault_requests_routes(self : Admin) -> Array[Route] {
           return refuse(
             409, "lock_changed", "the workspace's security mode changed while the requests were prepared; try again",
           )
+        }
+        // (its members' own locks, no security mode: nothing of this device's to admit again)
+        if current.get("genesis") is Some(Str("")) {
+          continue
         }
         let now = (self.wall_now() / 1000.0).floor()
         let admitted = try {

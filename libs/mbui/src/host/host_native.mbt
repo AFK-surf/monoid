@@ -180,6 +180,8 @@ extern "C" fn ffi_frames_dropped() -> Int = "mb_host_frames_dropped"
 
 extern "C" fn ffi_cpu_ms() -> Double = "mb_host_cpu_ms"
 
+extern "C" fn ffi_thread_cpu_ms() -> Double = "mb_host_thread_cpu_ms"
+
 extern "C" fn ffi_perf_state() -> Int = "mb_host_perf_state"
 
 extern "C" fn ffi_set_perf(on : Int) -> Unit = "mb_host_set_perf"
@@ -191,6 +193,10 @@ extern "C" fn ffi_perf_where() -> String = "mb_host_perf_where"
 
 ///|
 extern "C" fn ffi_perf_open(go : Int) -> Int = "mb_host_perf_open"
+
+///|
+#borrow(path)
+extern "C" fn ffi_reveal_file(path : String, go : Int) -> Int = "mb_host_reveal_file"
 
 extern "C" fn ffi_perf_size() -> Double = "mb_host_perf_size"
 
@@ -522,6 +528,43 @@ extern "C" fn ffi_mods_held() -> Int = "mb_host_mods_held"
 ///|
 fn mods_held() -> Int {
   ffi_mods_held()
+}
+
+///|
+extern "C" fn ffi_pointer_lock(on : Int) -> Unit = "mb_host_pointer_lock"
+
+///|
+/// The pointer held by the window or let go of (@hostapi.set_pointer_lock).
+fn pointer_lock(on : Bool) -> Unit {
+  ffi_pointer_lock(if on { 1 } else { 0 })
+}
+
+///|
+extern "C" fn ffi_pointer_locked() -> Int = "mb_host_pointer_locked"
+
+///|
+fn pointer_locked() -> Bool {
+  ffi_pointer_locked() != 0
+}
+
+///|
+#borrow(out)
+extern "C" fn ffi_pointer_delta(out : FixedArray[Double]) -> Unit = "mb_host_pointer_delta"
+
+///|
+/// How far the mouse moved while the pointer is held, since last asked (two numbers in `out`), taken.
+fn pointer_delta(out : FixedArray[Double]) -> Unit {
+  ffi_pointer_delta(out)
+}
+
+///|
+#borrow(out)
+extern "C" fn ffi_gamepads(out : FixedArray[Double]) -> Int = "mb_host_gamepads"
+
+///|
+/// The game controllers connected now (@hostapi.gamepads' numbers in `out`): how many slots it wrote.
+fn gamepads(out : FixedArray[Double]) -> Int {
+  ffi_gamepads(out)
 }
 
 ///|
@@ -902,6 +945,11 @@ fn cpu_ms() -> Double {
 }
 
 ///|
+fn thread_cpu_ms() -> Double {
+  ffi_thread_cpu_ms()
+}
+
+///|
 /// The performance record (@hostapi.perf_state): iOS keeps one (ios_app.m), the other hosts none (-1).
 fn perf_state() -> Int {
   ffi_perf_state()
@@ -925,6 +973,12 @@ fn perf_where() -> String {
 ///|
 fn perf_open(go : Bool) -> Bool {
   ffi_perf_open(if go { 1 } else { 0 }) != 0
+}
+
+///|
+/// The file at `path` shown in its folder in the system's file manager (`go`), or whether that can be done here.
+fn reveal_file(path : String, go : Bool) -> Bool {
+  ffi_reveal_file(path, if go { 1 } else { 0 }) != 0
 }
 
 ///|
@@ -1742,4 +1796,38 @@ fn post_next() -> (String, String, Bytes)? {
   } else {
     Some((channel, ffi_post_json(), ffi_post_bytes()))
   }
+}
+
+///|
+extern "C" fn ffi_auto_launch() -> Int = "mb_host_auto_launch"
+
+///|
+extern "C" fn ffi_set_auto_launch(enabled : Int) -> Int = "mb_host_set_auto_launch"
+
+///|
+#borrow(id, accel)
+extern "C" fn ffi_hotkey_set(id : String, accel : String) -> Int = "mb_host_hotkey_set"
+
+///|
+#borrow(id)
+extern "C" fn ffi_hotkey_clear(id : String) -> Unit = "mb_host_hotkey_clear"
+
+///|
+fn auto_launch() -> Bool {
+  ffi_auto_launch() != 0
+}
+
+///|
+fn set_auto_launch(enabled : Bool) -> Bool {
+  ffi_set_auto_launch(if enabled { 1 } else { 0 }) != 0
+}
+
+///|
+fn hotkey_set(id : String, accel : String) -> Bool {
+  ffi_hotkey_set(id, accel) != 0
+}
+
+///|
+fn hotkey_clear(id : String) -> Unit {
+  ffi_hotkey_clear(id)
 }

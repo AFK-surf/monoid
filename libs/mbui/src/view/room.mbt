@@ -66,6 +66,7 @@ pub fn View::by_room(self : View, make : (View, Room) -> Unit, loc~ : SourceLoc)
       })
       (if changed { 1.0 } else { 0.0 }, 0.0)
     })
+    tree.soft_min_applied(x.at)
   })
 }
 

@@ -124,14 +124,6 @@ pub fn RetireAsks::get(self : RetireAsks, id : String) -> J? {
 }
 
 ///|
-fn RetireAsks::put(self : RetireAsks, a : J) -> Unit {
-  match self.index_of(text_at(a, "id")) {
-    Some(i) => self.asks[i] = a
-    None => ()
-  }
-}
-
-///|
 pub fn RetireAsks::confirm_label(self : RetireAsks, kind : String) -> String {
   self.w.tr("\{option_key(kind)}.confirm")
 }
@@ -140,7 +132,7 @@ pub fn RetireAsks::confirm_label(self : RetireAsks, kind : String) -> String {
 /// station_retire: what the agent of `session` asked, answered as data with what it says in words (`say`).
 pub async fn RetireAsks::tool(self : RetireAsks, session : String, args : J) -> J {
   let action = match at(args, "action") {
-    Some(Str(u)) => @jsjson.text(u)
+    Some(Str(u)) => @jsjson.sanitize_str(u)
     None | Some(Null) => ""
     Some(v) => stringify(v)
   }
@@ -153,7 +145,7 @@ pub async fn RetireAsks::tool(self : RetireAsks, session : String, args : J) -> 
   let roster = (self.d.roster)(ws).unwrap_or([])
   let named = fn(v : J?, what : String) -> Member raise {
     let want = match v {
-      Some(Str(u)) if js_trim(@jsjson.text(u)) != "" => js_trim(@jsjson.text(u))
+      Some(Str(u)) if js_trim(@jsjson.sanitize_str(u)) != "" => js_trim(@jsjson.sanitize_str(u))
       _ => raise refused("\{what} is needed: a station of this workspace, by its name or id (station_list)")
     }
     let found = roster.filter(r => r.id == want || r.name.to_lower() == want.to_lower() || (want.length() >= 8 && r.id.has_prefix(want)))
@@ -272,7 +264,7 @@ fn show_value(v : J?) -> String {
   match v {
     None => "undefined"
     Some(Null) => "null"
-    Some(Str(u)) => @jsjson.text(u)
+    Some(Str(u)) => @jsjson.sanitize_str(u)
     Some(Num(n)) => num_text(n)
     Some(Bool(b)) => if b { "true" } else { "false" }
     Some(Arr(_) as a) => items(Some(a)).map(x => show_value(Some(x))).join(",")
@@ -768,7 +760,7 @@ fn RetireAsks::status_words(_self : RetireAsks, r : J) -> String {
   for t in items(at(status, "taken")) {
     let who = if text_at(t, "name") != "" { text_at(t, "name") } else { show_value(at(t, "origin")) }
     let but = match at(t, "error") {
-      Some(Str(u)) if u.length() > 0 => " but \{@jsjson.text(u)};"
+      Some(Str(u)) if u.length() > 0 => " but \{@jsjson.sanitize_str(u)};"
       _ => ""
     }
     let jobs = items(at(t, "jobs"))

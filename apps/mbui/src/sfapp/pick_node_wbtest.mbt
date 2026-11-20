@@ -43,7 +43,7 @@ test "pick, short, 大屏 keyboard and mouse: its title, its choices, c2 checked
   t.tap_text("第3项")
   t.frame()
   let read = t.query(Menu) is None
-  t.run_for(@kit.pop_out_ms)
+  t.run_for(@motion.pop_out_ms)
   assert_eq(
     (rows, panel, seen, chosen.val, @sf.presenting(), read, t.find("第1项") is None),
     ([("第1项", Some(Off)), ("第2项", Some(On)), ("第3项", Some(Off))], Some(true), (true, true, true), "c3", false, true, true),

@@ -287,8 +287,8 @@ fn body_src(mode : String) -> Source {
 /// The nodes' key of each of chat view `v`'s entries `read` (chat_body_rows'; its Foot "foot", the list's room under
 /// its rows and no row of the nodes').
 fn body_keys(v : ChatView, read : Array[Entry]) -> Array[String] {
-  // (a long message's pieces one row, as the old list draws it: its first piece's key)
-  let keys = chat_body_rows({ sent: {}, sent_as: {}, here: {} }, v, read, []).keys.filter(fn(k) { chat_piece_of(k) == k })
+  // (a long message's slices one row, as the old list draws it: its key)
+  let keys = chat_body_rows({ sent: {}, sent_as: {}, here: {} }, v, read, []).keys
   let out : Array[String] = []
   let mut j = 0
   for e in read {
@@ -338,6 +338,16 @@ fn body_view_holds(views : Map[String, @view.View], k : String, p : @view.View) 
 }
 
 ///|
+/// The key of the row a block told as made (chat_body_node's `made`) is of: a slice after a long message's first told as
+/// `k#b`, its message's `k`.
+fn body_slice_of(k : String) -> String {
+  match k.rev_find("#") {
+    Some(i) if k.has_prefix("m:") => k.unsafe_substring(start=0, end=i)
+    _ => k
+  }
+}
+
+///|
 /// The nodes' rows, each the node its row was made in (`views`, chat_body_node's `made`) while it is: its key, its top,
 /// its height on whole pixels `g` a point (row_slot's, as the list lays its blocks on the pixels).
 fn body_new_rows(views : Map[String, @view.View], g : Double, h : Double) -> Array[(String, Double, Double)] {
@@ -350,7 +360,7 @@ fn body_new_rows(views : Map[String, @view.View], g : Double, h : Double) -> Arr
     // (one put by out of sight for the next of its make (chat_body_shape) is no row that shows)
     let r = kv.1.placed_window_now()
     if kv.1.alive() && !kv.1.shown_nowhere() && r.1 < h && r.1 + r.3 > 0.0 {
-      let k = chat_piece_of(kv.0)
+      let k = body_slice_of(kv.0)
       body_piece_counts[k] = body_piece_counts.get(k).unwrap_or(0) + 1
       let foot = r.1 + (r.3 * g - 0.000001).ceil() / g
       match spans.get(k) {
@@ -899,7 +909,9 @@ fn body_held(which : BodyHeld) -> String {
     // rows taller, four more of the places swept have a row's picture across the list's top; no other kind came)
     // (45 till a login's card said how long is left of it: chat-login's card a line taller, one more place swept has a
     // row's picture across the list's top; no other kind came)
-    "its picture held under the list's top (c.stick): 46",
+    // (46 till the nodes' list held a message's picture under its top too, View::sticky: those left where a long
+    // message's first slice is out of what is kept)
+    "its picture held under the list's top (c.stick): 17",
     // (chat-screens' m:ts12 drawn a block a piece since 2026-11-15, 2 of those held pictures among them)
     "a long message a block a piece, each on the list's whole pixels (meant): 6",
   ]
@@ -911,7 +923,8 @@ fn body_held(which : BodyHeld) -> String {
   ]
     // (its turn over no more compared with the old list, which came down there (the changes' sweep, turned on
     // purpose): one of the 7 counted before was of that step)
-    HeldChanges => ["its picture held under the list's top (c.stick): 6"]
+    // (6 till the nodes' list held a message's picture under its top too, View::sticky)
+    HeldChanges => []
   }
   lines.sort()
   lines.join("\n")
@@ -1819,4 +1832,104 @@ test "a long list a few items a piece: each piece a block of the list, numbered 
     assert_true(r.1 > y, msg="item \{i + 1} under the one before")
     y = r.1
   }
+}
+
+///|
+test "chat_body_node scrollbar clears top cover and bottom composer by scroll_bar_clear" {
+  @sfbase.reset()
+  reset()
+  let src = @sffixture.fixture("chat-long")
+  let seen : Ref[(ChatView, Array[Entry])?] = Ref(None)
+  body_old(src, 900.0, 760.0, 0, seen~) |> ignore
+  let (v0, read0) = seen.val.unwrap()
+  @sfbase.reset()
+  reset()
+  let src = @sffixture.fixture("chat-long")
+  let view = @signals.signal(v0)
+  let entries = @signals.signal(read0)
+  let scroll = @view.Scroll::list()
+  let place : @view.ListPlace[String] = @view.ListPlace::new()
+  let cover_h = 48.0
+  let composer_h = 80.0
+  @sf.set_words(@sfbase.fill)
+  absolute_times.set(false)
+  let t = @ui.Tester::new(
+    fn(c) {
+      @sf.begin(c) |> ignore
+      c.with_theme(@sf.ui_theme(), fn() { @ui.old_views_here(c) })
+    },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      let here : MessageNodeHere = {
+        station: body_ref.station,
+        session: body_ref.session,
+        view: fn() { view.get() },
+        width: fn() { 900.0 },
+        tips,
+        stint: fn() { 0 },
+        jump: None,
+        picture: None,
+      }
+      root.box(fn(f) {
+        f.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        chat_body_node(
+          f,
+          src,
+          here,
+          fn() { entries.get() },
+          sending=fn() { [] },
+          core=Some(@sfbase.settings_core(src, body_ws)),
+          cover=fn() { cover_h },
+          foot=fn() { 24.0 },
+          composer=fn(cv) { cv.box(fn(c) { c.height(Is(Some(composer_h))) |> ignore }) |> ignore },
+          scroll~,
+          place~,
+        )
+        |> ignore
+      })
+      |> ignore
+      @sf.presented_nodes(root)
+    },
+    w=900.0,
+    h=760.0,
+    platform=0,
+  )
+  t.set_rows_on_pixels(true)
+  t.run_for(@ui.move_most_ms)
+  let find_thumb = fn() {
+    t
+      .drawn_order()
+      .filter(fn(d) { d.0 == 0 && d.3 == @ui.scroll_bar_size && d.1 > 880.0 && d.5 > 0.0 })
+  }
+  // Scroll all the way to the top and check top clearance
+  scroll.put(0.0)
+  t.run_for(@ui.move_most_ms)
+  t.move_to(900.0 - @ui.scroll_bar_near + 1.0, 300.0)
+  t.run_for(@ui.move_most_ms)
+  let top_thumbs = find_thumb()
+  assert_eq(top_thumbs.length(), 1, msg="top scrollbar thumb count")
+  let tt = top_thumbs[0]
+  let expected_top = cover_h + @ui.scroll_bar_clear + @ui.scroll_bar_inset
+  assert_true(
+    (tt.2 - expected_top).abs() <= 0.5,
+    msg="top thumb y=\{tt.2} expected=\{expected_top}",
+  )
+  assert_true(
+    (tt.1 + tt.3 - (900.0 - @ui.scroll_bar_inset)).abs() <= 0.5,
+    msg="top thumb right=\{tt.1 + tt.3} expected=\{900.0 - @ui.scroll_bar_inset}",
+  )
+  // Scroll all the way to the bottom and check bottom clearance above composer
+  place.to_end(glide=false)
+  t.run_for(@ui.move_most_ms)
+  t.move_to(900.0 - @ui.scroll_bar_near + 1.0, 300.0)
+  t.run_for(@ui.move_most_ms)
+  let bot_thumbs = find_thumb()
+  assert_eq(bot_thumbs.length(), 1, msg="bottom scrollbar thumb count")
+  let bt = bot_thumbs[0]
+  let expected_bottom = 760.0 - composer_h - @ui.scroll_bar_clear - @ui.scroll_bar_inset
+  assert_true(
+    (bt.2 + bt.4 - expected_bottom).abs() <= 0.5,
+    msg="bottom thumb foot=\{bt.2 + bt.4} expected=\{expected_bottom}",
+  )
 }

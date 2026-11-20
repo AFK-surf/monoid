@@ -25,6 +25,6 @@ test "a tip on what takes no press shows as the pointer rests on it, and goes as
   t.run_for(tip_delay_ms + tip_settled_ms)
   let shown = tips()
   t.move_to(300.0, 250.0)
-  t.run_for(@kit.pop_out_ms * 2.0)
+  t.run_for(@motion.pop_out_ms * 2.0)
   assert_eq((shown, tips()), (1, 0))
 }

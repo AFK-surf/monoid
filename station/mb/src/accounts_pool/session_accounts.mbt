@@ -230,6 +230,31 @@ pub async fn SessionAccounts::recheck(self : SessionAccounts, id : String) -> Un
 }
 
 ///|
+/// `canAuthRetry`: read-only check whether a turn that failed with `auth` on `failed_profile` should auto-retry.
+pub async fn SessionAccounts::can_auth_retry(
+  self : SessionAccounts,
+  key : String,
+  failed_profile : String,
+) -> Bool {
+  let cfg = (self.config)()
+  let state = jget(self.health_of(cfg, failed_profile).check, "state")
+  if state != Some(Str("login")) && state != Some(Str("failed")) {
+    return true
+  }
+  guard self.row(key) is Some(row) else { return false }
+  if row.profile != failed_profile && self.can(cfg, row.profile, row.model) {
+    return true
+  }
+  if row.pinned {
+    return false
+  }
+  let allows = self.allowed(key, cfg)
+  let fallbacks = self.others(cfg, row, allows)
+  fallbacks.push_iter(self.across_others(cfg, row, allows).iter())
+  fallbacks.iter().any(p => p.id != failed_profile && self.can(cfg, p.id, row.model))
+}
+
+///|
 /// `accountKey`: several profiles can spend the same account's allowance.
 fn SessionAccounts::account_key(
   self : SessionAccounts,
@@ -465,7 +490,7 @@ pub fn Row::of_jv(v : JV) -> Row {
 
 ///|
 async fn SessionAccounts::row(self : SessionAccounts, key : String) -> Row? {
-  match self.b.ask("store.getSession", [js(key)]) {
+  match json_to_jv(self.b.with_store(s => s.get_session(key))) {
     Obj(_) as r => Some(Row::of_jv(r))
     _ => None
   }
@@ -723,17 +748,13 @@ async fn SessionAccounts::set_profile(
   id : String,
   kept : Array[String]?,
 ) -> Unit {
-  ignore(
-    self.b.ask("store.setSessionProfile", [
-      js(key),
-      js(id),
-      jbool(false),
-      match kept {
-        Some(k) => jstrs(k)
-        None => Null
-      },
-    ]),
+  let profiles : Json? = Some(
+    match kept {
+      Some(k) => Json::array(k.map(Json::string))
+      None => Json::null()
+    },
   )
+  self.b.with_store(s => s.set_session_profile(key, Json::string(id), false, profiles))
 }
 
 ///|
@@ -791,60 +812,23 @@ pub async fn SessionAccounts::run_on(
   if row.ultrafast() && (candidates.is_empty() || (row.pinned && !candidates.iter().any(p => p.id == row.profile))) {
     raise plain_error(self.tr(self.station_lang, "station.speed.ultrafast_unavailable"))
   }
-  let current = candidates.iter().find_first(p => p.id == row.profile)
   let now = (self.now)()
-  let crowded = (p : Profile) => urgency(self.health_for(cfg, p.id, row.model).quota, now).crowded
-  let strict = candidates.iter().any(p => serves(p, row.model))
-  let fits = (p : Profile) => !strict || serves(p, row.model)
-  let keeps = match current {
-    Some(c) => row.pinned || (self.can(cfg, c.id, row.model) && fits(c))
-    None => false
+  let next = match
+    choose_run_on_profile(
+      key,
+      row,
+      candidates,
+      holding,
+      crowded=p => urgency(self.health_for(cfg, p.id, row.model).quota, now).crowded,
+      can=id => self.can(cfg, id, row.model),
+      health_of=id => self.health_of(cfg, id),
+      cheap_to_leave=async fn() { self.cheap_to_leave(key) },
+      elsewhere=async fn() { elsewhere(kept_profiles) },
+      pick=async fn(among) { self.pick(cfg, among, row.model, false) },
+    ) {
+    Stay(p) => return p
+    Move(p) => p
   }
-  let mut among = candidates
-  match current {
-    Some(c) if keeps => {
-      if row.pinned {
-        return c
-      }
-      let paid = (p : Profile) => !billed_per_use(p.raw)
-      let better = (p : Profile) => p.id != c.id &&
-        fits(p) &&
-        self.can(cfg, p.id, row.model) &&
-        (if paid(p) == paid(c) { crowded(c) && !crowded(p) } else { paid(p) })
-      among = candidates.filter(better)
-      if among.length() == 0 || holding || !self.cheap_to_leave(key) {
-        return c
-      }
-    }
-    _ => {
-      let standing = (p : Profile) => if self.can(cfg, p.id, row.model) {
-        2
-      } else if signs_in(self.health_of(cfg, p.id)) {
-        1
-      } else {
-        0
-      }
-      let fit = candidates.filter(fits)
-      let best = js_max_of(fit.map(p => standing(p).to_double()))
-      if best < 2.0 {
-        match elsewhere(kept_profiles) {
-          Some(p) => return p
-          None => ()
-        }
-      }
-      match current {
-        Some(c) if fits(c) && standing(c).to_double() >= best => return c
-        _ => ()
-      }
-      if fit.length() > 0 {
-        among = fit.filter(p => standing(p).to_double() == best)
-      }
-    }
-  }
-  if candidates.length() == 0 {
-    raise plain_error("session \{key}: no profile runs \{row.runtime}")
-  }
-  let next = self.pick(cfg, among, row.model, false)
   if next.id != row.profile || kept_profiles != row.profiles {
     self.set_profile(key, next.id, kept_profiles)
     if next.id != row.profile {
@@ -858,6 +842,95 @@ pub async fn SessionAccounts::run_on(
     }
   }
   next
+}
+
+///|
+/// What `run_on` settles on: `Stay` keeps the session as it is, `Move` is a profile picked again (it may be the one it
+/// was on).
+priv enum RunOnChoice {
+  Stay(Profile)
+  Move(Profile)
+}
+
+///|
+/// The choice `SessionAccounts::run_on` makes among `candidates`, apart from the store and the host: `crowded`, `can`
+/// and `health_of` tell how each profile is doing for the session's model, `cheap_to_leave` whether the session loses
+/// little by going on afresh, `elsewhere` a profile of another runtime it may be taken on by, `pick` the pool's pick.
+async fn choose_run_on_profile(
+  key : String,
+  row : Row,
+  candidates : Array[Profile],
+  holding : Bool,
+  crowded~ : (Profile) -> Bool,
+  can~ : (String) -> Bool,
+  health_of~ : (String) -> Health,
+  cheap_to_leave~ : async () -> Bool,
+  elsewhere~ : async () -> Profile?,
+  pick~ : async (Array[Profile]) -> Profile,
+) -> RunOnChoice {
+  let current = candidates.iter().find_first(p => p.id == row.profile)
+  let strict = candidates.iter().any(p => serves(p, row.model))
+  let fits = (p : Profile) => !strict || serves(p, row.model)
+  let keeps = match current {
+    Some(c) => row.pinned || (can(c.id) && fits(c))
+    None => false
+  }
+  let mut among = candidates
+  match current {
+    Some(c) if keeps => {
+      if row.pinned {
+        return Stay(c)
+      }
+      let paid = (p : Profile) => !billed_per_use(p.raw)
+      let unavailable = (p : Profile) => quota_unavailable(health_of(p.id))
+      let better = (p : Profile) => p.id != c.id &&
+        fits(p) &&
+        can(p.id) &&
+        (if paid(p) == paid(c) {
+          (unavailable(c) && !unavailable(p)) ||
+          (!unavailable(p) && crowded(c) && !crowded(p))
+        } else {
+          paid(p)
+        })
+      among = candidates.filter(better)
+      // Leaving a billed-per-use profile for a paid subscription or leaving a quota-unavailable profile for a healthy
+      // one happens on the next turn without waiting for `cheap_to_leave`; moving off a crowded profile to an uncrowded
+      // one of the same tier still waits for `cheap_to_leave`.
+      let upgrading = (!paid(c) && among.iter().any(paid)) ||
+        (unavailable(c) && among.iter().any(p => !unavailable(p)))
+      if among.length() == 0 || holding || (!upgrading && !cheap_to_leave()) {
+        return Stay(c)
+      }
+    }
+    _ => {
+      let standing = (p : Profile) => if can(p.id) {
+        2
+      } else if signs_in(health_of(p.id)) {
+        1
+      } else {
+        0
+      }
+      let fit = candidates.filter(fits)
+      let best = js_max_of(fit.map(p => standing(p).to_double()))
+      if best < 2.0 {
+        match elsewhere() {
+          Some(p) => return Stay(p)
+          None => ()
+        }
+      }
+      match current {
+        Some(c) if fits(c) && standing(c).to_double() >= best => return Stay(c)
+        _ => ()
+      }
+      if fit.length() > 0 {
+        among = fit.filter(p => standing(p).to_double() == best)
+      }
+    }
+  }
+  if candidates.length() == 0 {
+    raise plain_error("session \{key}: no profile runs \{row.runtime}")
+  }
+  Move(pick(among))
 }
 
 ///|
@@ -895,11 +968,11 @@ pub async fn SessionAccounts::repick(self : SessionAccounts, key : String) -> Un
 /// `cheapToLeave`: whether session `key` loses little by going on afresh on another account.
 async fn SessionAccounts::cheap_to_leave(self : SessionAccounts, key : String) -> Bool {
   let now = (self.now)()
-  if self.b.ask("store.recentlyCompacted", [js(key)]) == Bool(true) {
+  if self.b.with_store(s => s.recently_compacted(key)) {
     return true
   }
   let contexts = () => jitems(
-      Some(self.b.ask("store.lastContexts", [js(key), jint(calls_looked_at)])),
+      Some(json_to_jv(Json::array(self.b.with_store(s => s.last_contexts(key, calls_looked_at))))),
     ).map(c => {
       turn: c.get("turn").unwrap_or(Null),
       profile: match c.get("profile") {
@@ -915,7 +988,7 @@ async fn SessionAccounts::cheap_to_leave(self : SessionAccounts, key : String) -
         _ => None
       },
     })
-  if self.b.ask("store.compactionsReady", []) != Bool(true) {
+  if !self.b.with_store(s => s.compactions_ready()) {
     return cheap_to_leave(contexts(), Map::new())
   }
   let stale = match self.compactions {
@@ -924,7 +997,7 @@ async fn SessionAccounts::cheap_to_leave(self : SessionAccounts, key : String) -
   }
   if stale {
     let points : Map[String, Double] = Map::new()
-    let got = self.b.ask("store.compactionPoints", [jnum(now - compactions_over_ms)])
+    let got = json_to_jv(self.b.with_store(s => s.compaction_points(Json::number(now - compactions_over_ms))))
     match got {
       Arr(pairs) =>
         for p in pairs {
@@ -1107,24 +1180,26 @@ async fn SessionAccounts::take_across(
     Null
   }
   match row.runtime_session {
-    Some(rs) =>
-      ignore(self.b.ask("store.ranIn", [js(key), js(rs), js(row.profile)]))
+    Some(rs) => self.b.with_store(s => s.ran_in(key, Json::string(rs), Json::string(row.profile)))
     None => ()
   }
-  ignore(
-    self.b.ask("store.setSessionRuntime", [
-      js(key),
-      js(target),
-      js(next.id),
-      jbool(false),
-      js(model),
-      jopt(effort),
-      fast,
-      context,
-      Null,
-    ]),
-  )
-  ignore(self.b.ask("store.setSessionContextBefore", [js(key), Null]))
+  self.b.with_store(s => {
+    s.set_session_runtime(
+      key,
+      Json::string(target),
+      Json::string(next.id),
+      false,
+      Json::string(model),
+      match effort {
+        Some(e) => Json::string(e)
+        None => Json::null()
+      },
+      Some(jv_to_json(fast)),
+      jv_to_json(context),
+      Some(Json::null()),
+    )
+  })
+  self.b.with_store(s => s.set_session_context_before(key, Json::null()))
   self.log(
     said,
     jobj([
@@ -1166,7 +1241,7 @@ pub async fn SessionAccounts::refills_at(self : SessionAccounts, key : String) -
   let now = (self.now)()
   guard self.row(key) is Some(row) else { return now + spent_for_ms }
   let cfg = (self.config)()
-  let last = self.b.ask("store.lastTurn", [js(key)])
+  let last = json_to_jv(self.b.with_store(s => s.last_turn(Json::string(key))))
   let ended = match jget(Some(last), "endedAt") {
     None | Some(Null) => now
     x => to_number(x)

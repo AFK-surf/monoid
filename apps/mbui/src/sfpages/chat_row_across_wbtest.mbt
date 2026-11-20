@@ -56,19 +56,26 @@ fn row_across_steps(xs : Array[Double], most : Double) -> Array[String] {
 }
 
 ///|
-test "a chat row's title makes way along its line as its lead mark comes and goes, never a step of 8 in a frame; told as an answer, at once" {
+test "a chat row's title settles at once outside a transition (and as an answer), and makes way along its line inside a transition, never a step of 8 in a frame" {
   for platform in [0, 2] {
     let tone = @signals.signal("")
     let t = row_across_at(platform, tone)
     let x0 = row_across_title_x(t, "A chat").unwrap_or(-1000.0)
-    // its news come: the blue dot before its title, the title moved aside with it
-    let came = row_across_frames(t, "A chat", fn() { tone.set("done") }, @ui.move_most_ms)
-    let x1 = came[came.length() - 1]
+    // background tone change outside a transition: settles at once, never sliding unprompted
+    let plain_in = row_across_frames(t, "A chat", fn() { tone.set("done") }, @ui.move_most_ms)
+    let x1 = plain_in[plain_in.length() - 1]
     assert_true(x1 - x0 >= 8.0, msg="the mark made room before the title, platform \{platform}: \{x0} → \{x1}")
+    assert_true(plain_in.length() >= 2, msg="drawn, platform \{platform}")
+    assert_eq(plain_in[1], x1, msg="outside a transition, mark settles at once, platform \{platform}: \{Repr(plain_in)}")
+    let plain_out = row_across_frames(t, "A chat", fn() { tone.set("") }, @ui.move_most_ms)
+    assert_true(plain_out.length() >= 2, msg="drawn, platform \{platform}")
+    assert_eq(plain_out[1], x0, msg="outside a transition, cleared mark settles at once, platform \{platform}: \{Repr(plain_out)}")
+    // inside an explicit transition: the title moves aside along its line
+    let came = row_across_frames(t, "A chat", fn() { @view.transition(fn() { tone.set("done") }) }, @ui.move_most_ms)
+    assert_eq(came[came.length() - 1], x1, msg="reached mark place, platform \{platform}")
     assert_true(came.length() > 3, msg="drawn on its way, platform \{platform}: \{Repr(came)}")
     assert_eq(row_across_steps(came, 8.0), [], msg="its way in, platform \{platform}: \{Repr(came)}")
-    // read: the dot gone again, the title back the same way
-    let went = row_across_frames(t, "A chat", fn() { tone.set("") }, @ui.move_most_ms)
+    let went = row_across_frames(t, "A chat", fn() { @view.transition(fn() { tone.set("") }) }, @ui.move_most_ms)
     assert_eq(went[went.length() - 1], x0, msg="back where it was, platform \{platform}")
     assert_eq(row_across_steps(went, 8.0), [], msg="its way out, platform \{platform}: \{Repr(went)}")
     // told as an answer (a subscription's first value, a block of the list taken for another chat): at once, no way

@@ -217,6 +217,12 @@ int mb_core_screen_ack(double call, double ts) {
   return sf_engine_screen_ack(e, (uint64_t)call, ts);
 }
 
+int mb_core_screen_input(double call, const uint8_t *json, size_t len) {
+  sf_engine *e = A.engine;
+  if (!e || call < 1 || !json || len == 0) return 0;
+  return sf_engine_screen_input(e, (uint64_t)call, json, len);
+}
+
 // A call only the app does, to its CoreHost (onApp), which answers through complete; one it does not take, failed.
 static void engine_app_call(void *ctx, uint64_t id, const char *op, const char *json, size_t len, const uint8_t *bytes,
                             size_t blen) {
@@ -544,7 +550,7 @@ static long long stat_count(const char *json, const char *key) {
 static void *probe_loop(void *unused) {
   (void)unused;
   static const char *keys[] = {"tap.views", "tap.video", "tap.direct.video", "tap.audio", "tap.direct.audio",
-                               "tap.audio.undecoded", "tap.audio.resumed", "tap.acks", "istream.read", "istream.write"};
+                               "tap.audio.undecoded", "tap.audio.resumed", "tap.acks", "tap.inputs", "istream.read", "istream.write"};
   enum { N = sizeof keys / sizeof keys[0] };
   long long was[N] = {0};
   for (;;) {

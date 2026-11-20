@@ -14,22 +14,12 @@ extern "C" fn live_append_ffi(path : Bytes, data : Bytes) -> Int = "sflive_appen
 extern "C" fn live_write_ffi(path : Bytes, data : Bytes, mode : Int) -> Int = "sflive_write"
 
 ///|
-/// A file written whole as `sflive_write`, or only where none is (`excl`: O_EXCL, Win32's CREATE_NEW): 0, else the
-/// system's error number (EEXIST where it is there).
-#borrow(path, data)
-extern "C" fn live_write_flags_ffi(path : Bytes, data : Bytes, mode : Int, excl : Int) -> Int = "sflive_write_flags"
-
-///|
 #borrow(target, path)
 extern "C" fn live_symlink_ffi(target : Bytes, path : Bytes) -> Int = "sflive_symlink"
 
 ///|
 #borrow(from, to)
 extern "C" fn live_link_ffi(from : Bytes, to : Bytes) -> Int = "sflive_link"
-
-///|
-#borrow(path)
-extern "C" fn live_rm_tree_ffi(path : Bytes) -> Int = "sflive_rm_tree"
 
 ///|
 extern "C" fn live_start_time_ffi(pid : Int) -> Double = "sflive_start_time"
@@ -44,13 +34,6 @@ extern "C" fn live_cloexec_all_ffi() -> Int = "sflive_cloexec_all"
 /// What this process holds kept from what it starts (the launcher's descriptors are given it inheritable): how many.
 pub fn keep_descriptors() -> Int {
   live_cloexec_all_ffi()
-}
-
-///|
-fn live_c(s : String) -> Bytes {
-  let b = @utf8.encode(s)
-  let out = Bytes::makei(b.length() + 1, i => if i < b.length() { b[i] } else { b'\x00' })
-  out
 }
 
 ///|
@@ -73,64 +56,22 @@ pub fn start_time_of(pid : Int) -> Double? {
 ///|
 /// Text appended to a file (made where it is not).
 pub fn append_text(path : String, text : String) -> Bool {
-  live_append_ffi(live_c(path), @utf8.encode(text)) == 0
+  live_append_ffi(cstr(path), @utf8.encode(text)) == 0
 }
 
 ///|
 /// A file written whole (its mode on Unix; 0: 0644).
 pub fn write_text_mode(path : String, text : String, mode : Int) -> Bool {
-  live_write_ffi(live_c(path), @utf8.encode(text), mode) == 0
+  live_write_ffi(cstr(path), @utf8.encode(text), mode) == 0
 }
 
-///|
-/// A tree removed, what is not there taken as gone.
-pub fn remove_tree(path : String) -> Bool {
-  live_rm_tree_ffi(live_c(path)) == 0
-}
+// ── the shell's files, off the program's thread ──
+// A folder walked or a tree removed on the program's thread held every fiber while it ran (a repository index's pass
+// over a home of many folders, 28–40 s, 2026-11-19): each is the shell's `fs.*` instead, answered on its own threads
+// (see `live_dispatch.mbt` `host_readdir_types`, `host_readdir_names`, `host_lstat`, `host_stat_follow`,
+// `host_remove_tree`, `host_copy_over`, `shell_fs_code`, `fs_code_said`).
 
 // ── converting between the three JSONs the packages speak ──
-
-///|
-fn jv_of(j : Json) -> @jsjson.JValue {
-  @jsjson.JValue::of_json(j)
-}
-
-///|
-fn p52_json_of_jv(v : @jsjson.JValue) -> Json {
-  v.to_json()
-}
-
-///|
-fn jfield(v : Json, k : String) -> Json {
-  match v {
-    Object(m) => m.get(k).unwrap_or(Json::null())
-    _ => Json::null()
-  }
-}
-
-///|
-fn jtext(v : Json, k : String) -> String? {
-  match jfield(v, k) {
-    String(s) => Some(s)
-    _ => None
-  }
-}
-
-///|
-fn jnum_of(v : Json, k : String) -> Double? {
-  match jfield(v, k) {
-    Number(n, ..) => Some(n)
-    _ => None
-  }
-}
-
-///|
-fn jitems(v : Json) -> Array[Json] {
-  match v {
-    Array(a) => a
-    _ => []
-  }
-}
 
 ///|
 /// At most `n` of `s`'s characters (what a log line shows of a long one).
@@ -139,43 +80,6 @@ fn clip(s : String, n : Int) -> String {
     s
   } else {
     s[:n].to_owned()
-  }
-}
-
-///|
-fn jobj_of(pairs : Array[(String, Json)]) -> Json {
-  let m : Map[String, Json] = Map([])
-  for p in pairs {
-    m[p.0] = p.1
-  }
-  Json::object(m)
-}
-
-///|
-fn jstr(s : String) -> Json {
-  Json::string(s)
-}
-
-///|
-fn jn(n : Double) -> Json {
-  Json::number(n)
-}
-
-///|
-fn ji(n : Int) -> Json {
-  Json::number(n.to_double())
-}
-
-///|
-fn jb(b : Bool) -> Json {
-  Json::boolean(b)
-}
-
-///|
-fn jopt(s : String?) -> Json {
-  match s {
-    Some(t) => Json::string(t)
-    None => Json::null()
   }
 }
 
@@ -191,6 +95,7 @@ fn said_of(e : Error) -> String {
     @agent_drivers.Failed(m) => m
     @agent_drivers.Said(m) => if m.has_prefix("station.") { tr((p52_lang_fn.val)(), m) } else { m }
     @agent_drivers.RenewRefused(m) => m
+    CommandMissing(c) => "the runner did not start: \{c} is not on PATH"
     @accounts_oauth.Said(m)
     | @accounts_oauth.RenewRefused(_, m)
     | @accounts_oauth.Failed(m)
@@ -243,17 +148,17 @@ priv struct Pump {
 
 ///|
 fn Pump::new(host : @host.Host) -> Pump {
-  { host, lp: @agent_drivers.Loop::new(now=wall_ms().to_double()), armed: None, armed_seq: 0, kicking: false }
+  { host, lp: @agent_drivers.Loop::new(now=@host.now().to_double()), armed: None, armed_seq: 0, kicking: false }
 }
 
 ///|
-/// The loop run to now: its queue, and each timer due by the wall's clock, then its next timer slept for.
+/// The loop run to now: its queue, and each timer due by the monotonic clock, then its next timer slept for.
 fn Pump::kick(self : Pump) -> Unit {
   if self.kicking {
     return
   }
   self.kicking = true
-  self.lp.advance(wall_ms().to_double())
+  self.lp.advance(@host.now().to_double())
   self.kicking = false
   let mut first : Double? = None
   for t in self.lp.timers {
@@ -271,17 +176,15 @@ fn Pump::kick(self : Pump) -> Unit {
           self.armed = Some(at)
           self.armed_seq += 1
           let seq = self.armed_seq
-          let wait = at - wall_ms().to_double()
-          ignore(
-            self.host.rt.fork_daemon("drivers' timer", on_error=e => @host.note("drivers' timer failed: \{e}"), async fn() {
-              // timer: a wait of the drivers' own (their timeouts, their retries' backoff, a grace), at its time
-              @effect.sleep(if wait < 1.0 { 1 } else { wait.ceil().to_int() })
-              if self.armed_seq == seq {
-                self.armed = None
-                self.kick()
-              }
-            }),
-          )
+          let wait = at - @host.now().to_double()
+          fork_bg(self.host, "drivers' timer", async fn() {
+            // timer: a wait of the drivers' own (their timeouts, their retries' backoff, a grace), at its time
+            @effect.sleep(if wait < 1.0 { 1 } else { wait.ceil().to_int() })
+            if self.armed_seq == seq {
+              self.armed = None
+              self.kick()
+            }
+          })
         }
       }
   }
@@ -327,6 +230,8 @@ fn[T] Pump::later(self : Pump, name : String, f : async () -> T) -> @agent_drive
 fn driver_error_of(e : Error) -> Error {
   match e {
     @agent_drivers.Failed(_) | @agent_drivers.Said(_) | @agent_drivers.RenewRefused(_) => e
+    // (a runtime not installed, kept as it is: the actors tell it apart, mb-actor.ts `errorOf`'s `missing`)
+    CommandMissing(_) => e
     @api_routes.Thrown("RenewRefused", _)
     | @accounts_pool.Thrown("RenewRefused", _)
     | @accounts_oauth.RenewRefused(_, _) => @agent_drivers.RenewRefused(said_of(e))
@@ -400,7 +305,7 @@ fn Pump::machine(self : Pump) -> @agent_drivers.Machine {
       Err(e) => lfail(lp, e)
     },
     link: (to_what, p) => {
-      let e = live_symlink_ffi(live_c(to_what), live_c(p))
+      let e = live_symlink_ffi(cstr(to_what), cstr(p))
       if e == 0 {
         lok(lp, ())
       } else {
@@ -428,10 +333,7 @@ fn Pump::machine(self : Pump) -> @agent_drivers.Machine {
     } else {
       @agent_drivers.Later::fail(lp, @agent_drivers.Failed("EIO"))
     },
-    remove_tree: p => {
-      ignore(remove_tree(p))
-      lok(lp, ())
-    },
+    remove_tree: p => self.later("remove tree", async fn() { host_remove_tree(self.host, p) }),
     rename: (from, to) => match attempt(() => @drive.rename(from, to)) {
       Ok(_) => lok(lp, ())
       Err(e) => lfail(lp, e)
@@ -445,7 +347,7 @@ fn Pump::machine(self : Pump) -> @agent_drivers.Machine {
       Err(e) => lfail(lp, e)
     },
     hard_link: (from, to) => {
-      let e = live_link_ffi(live_c(from), live_c(to))
+      let e = live_link_ffi(cstr(from), cstr(to))
       if e == 0 {
         lok(lp, ())
       } else {
@@ -453,7 +355,7 @@ fn Pump::machine(self : Pump) -> @agent_drivers.Machine {
       }
     },
     link_path: (to_what, p) => {
-      let e = live_symlink_ffi(live_c(to_what), live_c(p))
+      let e = live_symlink_ffi(cstr(to_what), cstr(p))
       if e == 0 {
         lok(lp, ())
       } else {
@@ -471,88 +373,114 @@ fn Pump::machine(self : Pump) -> @agent_drivers.Machine {
       l
     },
     now: () => wall_ms().to_double(),
-    log: (level, area, message, fields) => live_log(level, area, message, p52_json_of_jv(fields)),
+    log: (level, area, message, fields) => slice_log(level, area, message, of_jv(fields)),
   }
 }
 
 ///|
-/// A line of the station's log (ops/log.ts): stderr, which the launcher keeps as stillfail.log.
-fn live_log(level : String, area : String, message : String, fields : Json) -> Unit {
-  slice_log(level, area, message, fields)
+/// Maps a Unix socket open error to the error code/message expected by `agent_drivers`.
+fn pump_open_error_code(e : Error) -> String {
+  let msg = said_of(e)
+  if msg.contains("No such file") || msg.contains("ENOENT") {
+    "ENOENT"
+  } else if msg.contains("Connection refused") || msg.contains("ECONNREFUSED") {
+    "ECONNREFUSED"
+  } else {
+    msg
+  }
 }
 
 ///|
 /// A connection to a runner's socket (its path: a Unix socket, a Windows named pipe), its events told on the loop.
 fn Pump::connect(self : Pump, path : String, events : @agent_drivers.SocketEvents) -> @agent_drivers.Socket {
-  let conn : Ref[@host.Conn?] = Ref(None)
+  let host = self.host
+  self.connect_with(
+    async fn() {
+      let c = host.unix_open(path)
+      (c.id, async fn() { c.socket.destroy() })
+    },
+    async fn(id, b) { host.tcp_write(id, b) },
+    async fn(id) { host.tcp_read(id) },
+    async fn(id) { host.tcp_end(id) },
+    events,
+  )
+}
+
+///|
+fn Pump::connect_with(
+  self : Pump,
+  open : async () -> (Json, async () -> Unit),
+  write : async (Json, Bytes) -> Unit,
+  read : async (Json) -> Bytes?,
+  end : async (Json) -> Unit,
+  events : @agent_drivers.SocketEvents,
+) -> @agent_drivers.Socket {
+  let destroy_fn : Ref[(async () -> Unit)?] = Ref(None)
   let gone = Ref(false)
   let ended = Ref(false)
   let writes : @effect.Queue[Bytes?] = @effect.Queue::unbounded()
   let host = self.host
   let close_once = () => if !gone.val {
     gone.val = true
-    match conn.val {
-      Some(c) => ignore(host.rt.fork_quiet(name="runner close", async fn() { c.socket.destroy() }))
+    match destroy_fn.val {
+      Some(d) => ignore(host.rt.fork_quiet(name="runner close", async fn() { d() }))
       None => ()
     }
     (events.closed)()
     self.kick()
   }
-  ignore(
-    host.rt.fork_daemon("runner socket", on_error=e => @host.note("runner socket failed: \{e}"), async fn() {
-      match (try { Ok(host.unix_open(path)) } catch { e => Err(e) }) {
-        Ok(c) => {
-          let id = c.id
-          conn.val = Some(c)
-          if gone.val {
-            c.socket.destroy()
-            return
-          }
-          (events.connected)()
-          self.kick()
-          // what is written goes in order
-          ignore(
-            host.rt.fork_quiet(name="runner socket out", async fn() {
-              while !gone.val {
-                match writes.take() {
-                  Some(b) =>
-                    host.tcp_write(id, b) catch {
-                      _ => break
+  fork_bg(host, "runner socket", async fn() {
+    match (try { Ok(open()) } catch { e => Err(e) }) {
+      Ok((id, do_destroy)) => {
+        destroy_fn.val = Some(do_destroy)
+        if gone.val {
+          do_destroy()
+          return
+        }
+        (events.connected)()
+        self.kick()
+        // what is written goes in order
+        ignore(
+          host.rt.fork_quiet(name="runner socket out", async fn() {
+            while !gone.val {
+              match writes.take() {
+                Some(b) =>
+                  write(id, b) catch {
+                    e => {
+                      if !gone.val { (events.error)(said_of(e)) }
+                      close_once()
+                      break
                     }
-                  None => {
-                    host.tcp_end(id) catch { _ => () }
-                    break
                   }
+                None => {
+                  end(id) catch { _ => () }
+                  break
                 }
-              }
-            }),
-          )
-          while !gone.val {
-            let bytes = host.tcp_read(id) catch {
-              e => {
-                if !gone.val {
-                  (events.error)(said_of(e))
-                }
-                break
               }
             }
-            guard bytes is Some(bytes) else { break }
-            if !gone.val {
-              (events.data)(@utf8.decode_lossy(bytes))
-              self.kick()
+          }),
+        )
+        while !gone.val {
+          let bytes = read(id) catch {
+            e => {
+              if !gone.val { (events.error)(said_of(e)) }
+              break
             }
           }
-          close_once()
-        }
-        _ => {
+          guard bytes is Some(bytes) else { break }
           if !gone.val {
-            (events.error)("ENOENT")
+            (events.data)(@utf8.decode_lossy(bytes))
+            self.kick()
           }
-          close_once()
         }
+        close_once()
       }
-    }),
-  )
+      Err(e) => {
+        if !gone.val { (events.error)(pump_open_error_code(e)) }
+        close_once()
+      }
+    }
+  })
   {
     write: text => if !gone.val && !ended.val { ignore(writes.try_offer(Some(@utf8.encode(text)))) },
     end: () => if !gone.val && !ended.val {

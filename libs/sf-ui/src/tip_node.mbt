@@ -8,6 +8,12 @@
 // set as the window's theme says as that changes.
 
 ///|
+fn init {
+  // (the window's tooltip slot, headless's, which knows no ui: forgotten as the app begins anew)
+  @ui.on_reset(@headless.tip_slot_reset)
+}
+
+///|
 /// Where a window's tips are drawn (a node over all of it, as it is given when a tip is first shown) and when the last
 /// of them went (another shown within tooltip_skip_ms of it at once: kit's tip_closed): one for the window's tree, made
 /// and let go with what holds it. `hands`: its tips handing their ground on, the next shown at once going from where
@@ -21,7 +27,7 @@ pub struct TipLayer {
 ///|
 /// The tips' layer of a window, drawn in what `layer` gives (the node it is first shown in).
 pub fn TipLayer::new(layer : () -> @view.View?) -> TipLayer {
-  { layer, went_at: -1.0e18, hands: @motion.Handoff::new(within=@kit.tooltip_skip_ms) }
+  { layer, went_at: -1.0e18, hands: @motion.Handoff::new(within=@headless.tooltip_skip_ms) }
 }
 
 ///|
@@ -40,12 +46,8 @@ fn tip_hand_tag(side : @view.Side, at_pointer : Bool) -> Int {
 }
 
 ///|
-/// How a tip comes in (kit's tip_in: faded in, eased out, 120 ms); it goes as pop_out does (faded, eased to leave).
+/// How a tip comes in (kit's tip_in: faded in, eased out, 120 ms); it goes symmetrically as pure fade (eased to leave).
 let tip_in_ms : Double = 120.0
-
-///|
-/// How big a tip is drawn as it has gone (pop_out's scale).
-let tip_out_scale : Double = 0.97
 
 ///|
 /// A tip saying `label` (as it changes; none said: no tip) of the control `anchor`, on its `side`, in `tips` (its
@@ -90,11 +92,11 @@ pub fn tip_node(
   // had gone), whether it is in whole yet, and the moment that says so: this showing's own, let go as it goes)
   let fade = TipFade::new()
   let anchor_id = anchor.id()
-  let owner = @kit.tip_node_owner()
+  let owner = @headless.tip_node_owner()
   // (its ground handed on among its layer's tips: seen while its slot is its own and some of it is in)
   let glide = tips.hands.part(
     fn(t) {
-      if @signals.untracked(fn() { @kit.tip_owns(owner) }) {
+      if @signals.untracked(fn() { @headless.tip_owns(owner) }) {
         fade.at(t)
       } else {
         0.0
@@ -105,13 +107,15 @@ pub fn tip_node(
   // (made in its layer as it is first shown where there is one then (none yet: shown the next time it is, as there is
   // one), held there for its control, let go with it)
   let made = Ref(false)
+  let holder_v : Ref[@view.View?] = Ref(None)
   // (Escape while it shows: its, before what is under it (a viewer it is over) is asked; gone, shut as a press shuts it)
   let escaped : Ref[() -> Unit] = Ref(fn() {  })
   let make = fn() -> Bool {
     guard (tips.layer)() is Some(l) else { return false }
-    let holder = l.box(fn(h) { h.over(Is(true)) |> ignore }).lives_with(anchor)
+    let holder = l.box(fn(h) { h.transitions_only().over(Is(true)) |> ignore }).lives_with(anchor)
+    holder_v.val = Some(holder)
     holder.on_key(fn(k) {
-      if k.code == @ui.key_escape && @signals.untracked(fn() { open.get() && @kit.tip_owns(owner) }) {
+      if k.code == @ui.key_escape && @signals.untracked(fn() { open.get() && @headless.tip_owns(owner) }) {
         (escaped.val)()
         true
       } else {
@@ -119,7 +123,7 @@ pub fn tip_node(
       }
     })
     |> ignore
-    holder.show(fn() { open.get() }, leave=@kit.pop_out_ms, fn(t) {
+    holder.show(fn() { open.get() }, leave=@motion.pop_out_ms, fn(t) {
       tip_look_node(t, anchor_id, side, label, shortcut, fade, glide, gap, at_pointer, owner)
     })
     true
@@ -149,7 +153,7 @@ pub fn tip_node(
         made.val = make()
       }
       if made.val {
-        @kit.tip_claim(owner)
+        @headless.tip_claim(owner)
       }
       match taken {
         // (in whole at once, its ground going from where the other's was to its own place, its words with it)
@@ -159,11 +163,14 @@ pub fn tip_node(
       }
     } else {
       // (out, as pop_out: from where it is at this moment, eased to leave, over as long as it is kept going)
-      fade.go(anchor, 0.0, at, @kit.pop_out_ms, Leave)
+      fade.go(anchor, 0.0, at, @motion.pop_out_ms, Leave)
       tips.went_at = at
       glide.left(at)
     }
-    open.set(on)
+    match holder_v.val {
+      Some(h) if h.alive() => @view.transition(within=h, fn() { open.set(on) })
+      _ => open.set(on)
+    }
   }
   // (opened on its control (TipHand::open): the window's taps then, shut by the one after it)
   let opened_at = Ref(0)
@@ -213,7 +220,7 @@ pub fn tip_node(
     if made.val && open.untracked() && takes && says &&
       (held != Free || (!pressed && !shut.val)) &&
       ((over && !was_over) || (focused && !was_focused) || (held != Free && was_held == Free)) {
-      @kit.tip_claim(owner)
+      @headless.tip_claim(owner)
     }
     let at = anchor.cause_at()
     stop_rest()
@@ -239,7 +246,7 @@ pub fn tip_node(
       set_open(false)
     } else if focused || open.untracked() {
       set_open(true)
-    } else if skip && (at < tips.went_at + @kit.tooltip_skip_ms || glide.other_near(at)) {
+    } else if skip && (at < tips.went_at + @headless.tooltip_skip_ms || glide.other_near(at)) {
       // (another of the layer's went a moment ago, or shows still (the hand come from it to this one, that one told it
       // left after this one is told it came): at once)
       set_open(true)
@@ -261,12 +268,14 @@ pub fn tip_node(
     hand.set(Free)
     set_open(false)
   }
-  // (its control let go: nothing of it left pending)
+  // (its control let go: nothing of it left pending; escaped let go of last, as it names itself through set_open's
+  // make, a ring native's counting never frees)
   anchor.owns(fn() {
     stop_rest()
     fade.stop()
     glide.gone()
     (lifted_end.val)()
+    escaped.val = fn() {  }
   })
   |> ignore
   {
@@ -290,7 +299,7 @@ pub fn tip_node(
     lift: fn() {
       if hand.untracked() == Held {
         hand.set(Lifted)
-        lifted_end.val = anchor.at_moment(anchor.cause_at() + @kit.tooltip_lifted_ms, fn() { hand.set(Free) })
+        lifted_end.val = anchor.at_moment(anchor.cause_at() + @headless.tooltip_lifted_ms, fn() { hand.set(Free) })
       }
     },
   }
@@ -417,7 +426,7 @@ fn tip_look_node(
   glide : @motion.HandPart,
   gap : Double,
   at_pointer : Bool,
-  owner : @kit.TipOwner,
+  owner : @headless.TipOwner,
   loc~ : SourceLoc,
 ) -> Unit {
   let theme = fn() { @ui.tree_theme() }
@@ -451,28 +460,15 @@ fn tip_look_node(
   // (its ground in first, its words after, as kit's tip_in and pop_out have them (ground_first): the ground the first
   // half of the way in, the words the second; going, the other way round)
   .alpha(By(fn() {
-    let a = if @kit.tip_owns(owner) { fade.shown(t) } else { 0.0 }
+    let a = if @headless.tip_owns(owner) { fade.shown(t) } else { 0.0 }
     if a * 2.0 < 1.0 {
       a * 2.0
     } else {
       1.0
     }
   }))
-  // (going, drawn smaller as it fades, to 0.97 of itself, about its edge toward its control (kit's pop_out, grown_from):
-  // coming, whole, as tip_in has it, from wherever it was turned back)
-  .scale(
-    By(fn() {
-      let a = fade.shown(t)
-      if fade.to > 0.5 {
-        1.0
-      } else {
-        tip_out_scale + (1.0 - tip_out_scale) * a
-      }
-    }),
-    about=@view.FromBeside,
-  )
   .says(By(fn() { Some(@view.said(Tooltip, label=label())) }))
-  .hides(By(fn() { !@kit.tip_owns(owner) }))
+  .hides(By(fn() { !@headless.tip_owns(owner) }))
   |> ignore
   let words_look = fn(wrap : Bool) -> @view.WordsLook {
     let (size, line) = theme().text_size(Meta)

@@ -322,20 +322,14 @@ fn archive_row_side_node(
     // (its keys while pointed at in it, or one under way; none drawn for a finger, too small for one: its menu)
     let over = fn() { busy() || (!@sf.more_held() && @sf.lit_in_node(holder)) }
     // its ground as nav_ground_by has it: the pointer's eased in and out, the selected one's while its chat is in view
-    let hover = @motion.NodeWay::new(0.0)
-    let chosen = @motion.NodeWay::new(if @signals.untracked(on) { 1.0 } else { 0.0 })
-    row.reacts(fn() { @sf.lit_node(row) }, fn(h) { hover.go_ms(row, if h { 1.0 } else { 0.0 }, @sf.dur_ms) })
-    row.reacts(on, fn(o) { chosen.go_ms(row, if o { 1.0 } else { 0.0 }, @sf.dur_ms) })
     // (taken for another chat as it comes to show (archive_pane_node's reused): its ground as were it made for that one,
     // at once, not easing from the one it was)
-    row.reacts(key, at_start=false, fn(_) {
-      chosen.put(if @signals.untracked(on) { 1.0 } else { 0.0 })
-      hover.put(if @signals.untracked(fn() { @sf.lit_node(row) }) { 1.0 } else { 0.0 })
-    })
+    let hover = @motion.hover_fade_keyed(row, key, fn() { @sf.lit_node(row) }, duration_ms=@sf.dur_ms)
+    let chosen = @motion.hover_fade_keyed(row, key, on, duration_ms=@sf.dur_ms)
     let ground = fn() {
       let p = t().p
-      let h = hover.shown(row)
-      let o = chosen.shown(row)
+      let h = hover()
+      let o = chosen()
       if h <= 0.0 && o <= 0.0 {
         0L
       } else {

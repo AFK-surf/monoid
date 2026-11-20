@@ -75,6 +75,55 @@ test("interrupting_a_fetch_cancels_that_native_request", async () => {
   }
 });
 
+test("secureGetMany_unpacks_sizes_and_bytes_and_falls_back_on_unsupported", async () => {
+  const { dir, native, bridge, host } = shell();
+  const a = new Uint8Array(32).fill(0x11);
+  const c = new Uint8Array(32).fill(0x33);
+  const combined = new Uint8Array(64);
+  combined.set(a, 0);
+  combined.set(c, 32);
+  const seen: { op: string; json: J }[] = [];
+  native.call = (id, op, json) => {
+    const parsed = JSON.parse(json);
+    seen.push({ op, json: parsed });
+    if (op === "secure.getMany") {
+      bridge.complete(id, JSON.stringify({ sizes: [32, -1, 32] }), null, combined);
+    } else {
+      bridge.complete(id, null, "unexpected", null);
+    }
+  };
+  try {
+    const got = await run(host.secureGetMany(["k1", "k2", "k3"], { user: true, reason: "pair" }));
+    assert.equal(got.length, 3);
+    assert.deepEqual(got[0], a);
+    assert.equal(got[1], null);
+    assert.deepEqual(got[2], c);
+    assert.deepEqual(seen, [{ op: "secure.getMany", json: { keys: ["k1", "k2", "k3"], user: true, reason: "pair" } }]);
+
+    // Legacy host returning "unsupported" falls back to sequential secure.get calls.
+    seen.length = 0;
+    native.call = (id, op, json) => {
+      const parsed = JSON.parse(json);
+      seen.push({ op, json: parsed });
+      if (op === "secure.getMany") {
+        bridge.complete(id, null, "unsupported", null);
+      } else if (op === "secure.get") {
+        if (parsed.key === "k1") bridge.complete(id, "{}", null, a);
+        else if (parsed.key === "k3") bridge.complete(id, "{}", null, c);
+        else bridge.complete(id, '{"none":true}', null, null);
+      } else {
+        bridge.complete(id, null, "unexpected", null);
+      }
+    };
+    const fallback = await run(host.secureGetMany(["k1", "k2", "k3"], { user: true, reason: "pair" }));
+    assert.deepEqual(fallback, [a, null, c]);
+    assert.deepEqual(seen.map((s) => s.op), ["secure.getMany", "secure.get", "secure.get", "secure.get"]);
+  } finally {
+    native.host.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("storage_and_the_database_go_through_the_bridge", async () => {
   const { dir, host, native } = shell();
   assert.equal(await run(host.storageGet("accounts")), null);

@@ -144,3 +144,103 @@ test("the MoonBit vault rules answer random certificates, vaults and items as th
   // (both answers tried often, of each: a generator whose records all fail one check would test little)
   for (const [what, [ok, refused]] of Object.entries(counts)) assert.ok(ok! > SEEDS && refused! > SEEDS, `${what}: ${ok} taken, ${refused} refused`);
 });
+
+test("workspace vault rules: scope, admin creation/updates, owner takeover, member item writes, and scope immutability", () => {
+  // Build a deterministic lock with alice (owner), bob (admin), and carol (member), each with an own app device.
+  const alice = { sub: "alice", base: bases[0]!, signer: signers[0]! };
+  const bob = { sub: "bob", base: bases[1]!, signer: signers[1]! };
+  const carol = { sub: "carol", base: bases[2]!, signer: signers[2]! };
+  const lock: any = {
+    ws: WS,
+    members: new Map([
+      [alice.sub, { sub: alice.sub, email: "alice@x.test", role: "owner" }],
+      [bob.sub, { sub: bob.sub, email: "bob@x.test", role: "admin" }],
+      [carol.sub, { sub: carol.sub, email: "carol@x.test", role: "member" }],
+    ]),
+    devices: new Map([
+      [alice.base.hex, { id: alice.base.hex, sub: alice.sub, kind: "app", label: "A", sign_key: alice.signer.id, own: true }],
+      [bob.base.hex, { id: bob.base.hex, sub: bob.sub, kind: "app", label: "B", sign_key: bob.signer.id, own: true }],
+      [carol.base.hex, { id: carol.base.hex, sub: carol.sub, kind: "app", label: "C", sign_key: carol.signer.id, own: true }],
+    ]),
+    signKeys: new Map([
+      [alice.base.hex, [alice.signer.id]],
+      [bob.base.hex, [bob.signer.id]],
+      [carol.base.hex, [carol.signer.id]],
+    ]),
+  };
+  const signRec = <T extends Record<string, unknown>>(o: T, tag: string, k: typeof alice.signer) => ({
+    ...o,
+    sig: { key: k.id, alg: "Ed25519" as const, sig: k.sign(Buffer.from(signedBytes(o, tag))) },
+  });
+  const certFor = (u: typeof alice, i: number) => signRec({ v: 1 as const, ws: WS, device: u.base.hex, box: boxes[i]!, at: 1000 }, TAG.box, u.signer);
+  const kAlice = { cert: certFor(alice, 0), wrapped: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" };
+  const kBob = { cert: certFor(bob, 1), wrapped: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB" };
+  const kCarol = { cert: certFor(carol, 2), wrapped: "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC" };
+  const vid = "v_01HZZZZZZZZZZZZZZZZZZZZZZZ";
+
+  // 1. Invalid scope rejected.
+  const badScope = signRec({ v: 1 as const, ws: WS, id: vid, seq: 0, owner: alice.sub, name: "Team", scope: "team", members: [alice.sub], epoch: 0, keys: [kAlice], at: 1000 }, TAG.vault, alice.signer);
+  assert.equal(vaultOk(lock, null, badScope as any), "scope is workspace");
+
+  // 2. Ordinary member cannot create a workspace vault; owner/admin can.
+  const byMember = signRec({ v: 1 as const, ws: WS, id: vid, seq: 0, owner: carol.sub, name: "Team", scope: "workspace" as const, members: [carol.sub], epoch: 0, keys: [kCarol], at: 1000 }, TAG.vault, carol.signer);
+  assert.notEqual(vaultOk(lock, null, byMember as any), null);
+
+  const v0 = signRec({ v: 1 as const, ws: WS, id: vid, seq: 0, owner: alice.sub, name: "Team", scope: "workspace" as const, members: [alice.sub, bob.sub], epoch: 0, keys: [kAlice, kBob], at: 1000 }, TAG.vault, alice.signer);
+  assert.equal(vaultOk(lock, null, v0 as any), null);
+
+  // Admin can also create a workspace vault (as its initial owner).
+  const v0Admin = signRec({ v: 1 as const, ws: WS, id: "v_01HZZZZZZZZZZZZZZZZZZZZZZY", seq: 0, owner: bob.sub, name: "Ops", scope: "workspace" as const, members: [bob.sub], epoch: 0, keys: [kBob], at: 1000 }, TAG.vault, bob.signer);
+  assert.equal(vaultOk(lock, null, v0Admin as any), null);
+
+  // 3. Another workspace admin (bob, not creator alice) can update seq+1, add carol, and remove carol with epoch+1.
+  const v1 = signRec({ v: 1 as const, ws: WS, id: vid, seq: 1, owner: alice.sub, name: "Team", scope: "workspace" as const, members: [alice.sub, bob.sub, carol.sub], epoch: 0, keys: [kAlice, kBob, kCarol], at: 1001 }, TAG.vault, bob.signer);
+  assert.equal(vaultOk(lock, v0 as any, v1 as any), null);
+
+  // Ordinary member carol cannot update vault metadata, but CAN write an item via itemOk.
+  const v2ByMember = signRec({ v: 1 as const, ws: WS, id: vid, seq: 2, owner: alice.sub, name: "Hacked", scope: "workspace" as const, members: [alice.sub, bob.sub, carol.sub], epoch: 0, keys: [kAlice, kBob, kCarol], at: 1002 }, TAG.vault, carol.signer);
+  assert.notEqual(vaultOk(lock, v1 as any, v2ByMember as any), null);
+
+  const itemByMember = signRec({ v: 1 as const, ws: WS, vault: vid, id: "i_01HZZZZZZZZZZZZZZZZZZZZZZZ", version: 0, epoch: 0, ct: "A".repeat(48), at: 1002 }, TAG.item, carol.signer);
+  assert.equal(itemOk(lock, v1 as any, null, itemByMember as any), null);
+
+  // Admin bob removes carol with epoch+1.
+  const v2 = signRec({ v: 1 as const, ws: WS, id: vid, seq: 2, owner: alice.sub, name: "Team", scope: "workspace" as const, members: [alice.sub, bob.sub], epoch: 1, keys: [kAlice, kBob], at: 1003 }, TAG.vault, bob.signer);
+  assert.equal(vaultOk(lock, v1 as any, v2 as any), null);
+
+  // 4. After creator alice leaves, admin bob takes over owner and removes alice (epoch+1).
+  const v3Takeover = signRec({ v: 1 as const, ws: WS, id: vid, seq: 3, owner: bob.sub, name: "Team", scope: "workspace" as const, members: [bob.sub], epoch: 2, keys: [kBob], at: 1004 }, TAG.vault, bob.signer);
+  assert.equal(vaultOk(lock, v2 as any, v3Takeover as any), null);
+
+  // Admin bob cannot set owner to someone else (e.g. carol) when changing owner.
+  const v3BadOwner = signRec({ v: 1 as const, ws: WS, id: vid, seq: 3, owner: carol.sub, name: "Team", scope: "workspace" as const, members: [bob.sub, carol.sub], epoch: 2, keys: [kBob, kCarol], at: 1004 }, TAG.vault, bob.signer);
+  assert.equal(vaultOk(lock, v2 as any, v3BadOwner as any), "a vault's owner does not change");
+
+  // 5. Scope cannot change: workspace -> personal or personal -> workspace both refused.
+  const wsToPersonal = signRec({ v: 1 as const, ws: WS, id: vid, seq: 1, owner: alice.sub, name: "Team", members: [alice.sub, bob.sub], epoch: 0, keys: [kAlice, kBob], at: 1001 }, TAG.vault, alice.signer);
+  assert.equal(vaultOk(lock, v0 as any, wsToPersonal as any), "a vault's scope does not change");
+
+  const p0 = signRec({ v: 1 as const, ws: WS, id: "v_01HZZZZZZZZZZZZZZZZZZZZZZX", seq: 0, owner: alice.sub, name: "Personal", members: [alice.sub], epoch: 0, keys: [kAlice], at: 1000 }, TAG.vault, alice.signer);
+  assert.equal(vaultOk(lock, null, p0 as any), null);
+  const personalToWs = signRec({ v: 1 as const, ws: WS, id: "v_01HZZZZZZZZZZZZZZZZZZZZZZX", seq: 1, owner: alice.sub, name: "Personal", scope: "workspace" as const, members: [alice.sub], epoch: 0, keys: [kAlice], at: 1001 }, TAG.vault, alice.signer);
+  assert.equal(vaultOk(lock, p0 as any, personalToWs as any), "a vault's scope does not change");
+
+  // 6. Ordinary member cannot forge a workspace vault via ?copy=1 with seq: 1 (prev = null, copy = true).
+  const forgedCopy = signRec({ v: 1 as const, ws: WS, id: "v_01HZZZZZZZZZZZZZZZZZZZZZZW", seq: 1, owner: carol.sub, name: "Forged", scope: "workspace" as const, members: [carol.sub], epoch: 0, keys: [kCarol], at: 1000 }, TAG.vault, carol.signer);
+  assert.equal(vaultOk(lock, null, forgedCopy as any, true), "a workspace vault is signed by a workspace owner or admin in the lock");
+
+  // 7. Demoted creator (alice -> member) can no longer update the workspace vault, but can still write items and active admin bob can still update/take over.
+  const demotedLock: any = {
+    ...lock,
+    members: new Map([
+      [alice.sub, { sub: alice.sub, email: "alice@x.test", role: "member" }],
+      [bob.sub, { sub: bob.sub, email: "bob@x.test", role: "admin" }],
+      [carol.sub, { sub: carol.sub, email: "carol@x.test", role: "member" }],
+    ]),
+  };
+  const v2ByDemotedAlice = signRec({ v: 1 as const, ws: WS, id: vid, seq: 2, owner: alice.sub, name: "Still Mine", scope: "workspace" as const, members: [alice.sub, bob.sub, carol.sub], epoch: 0, keys: [kAlice, kBob, kCarol], at: 1002 }, TAG.vault, alice.signer);
+  assert.equal(vaultOk(demotedLock, v1 as any, v2ByDemotedAlice as any), "a workspace vault is signed by a workspace owner or admin in the lock");
+  const itemByDemotedAlice = signRec({ v: 1 as const, ws: WS, vault: vid, id: "i_01HZZZZZZZZZZZZZZZZZZZZZZY", version: 0, epoch: 0, ct: "A".repeat(48), at: 1002 }, TAG.item, alice.signer);
+  assert.equal(itemOk(demotedLock, v1 as any, null, itemByDemotedAlice as any), null);
+  assert.equal(vaultOk(demotedLock, v2 as any, v3Takeover as any), null);
+});

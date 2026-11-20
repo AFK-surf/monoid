@@ -167,7 +167,17 @@ export class NodeShell implements Native {
       case "iroh.bind": {
         const addon = loadAddon() as J;
         const alpns = ((a.alpns ?? []) as string[]).map((x) => Buffer.from(x, "hex"));
-        const e = await addon.bind({ secretKey: Buffer.from(bytes!), alpns, relayUrls: a.relayUrls, discovery: false, lookup: a.lookup, relayOnly: a.relayOnly });
+        const e = await addon.bind({
+          secretKey: Buffer.from(bytes!),
+          alpns,
+          relayUrls: a.relayUrls,
+          ...(a.relayEntries ? { relayEntries: a.relayEntries } : {}),
+          ...(a.relayAllowlist !== undefined ? { relayAllowlist: a.relayAllowlist } : {}),
+          ...(a.allowPublicRelays === true ? { allowPublicRelays: true } : {}),
+          discovery: false,
+          lookup: a.lookup,
+          relayOnly: a.relayOnly,
+        });
         this.bound.push(e);
         return done({ id: this.#keep(e) });
       }

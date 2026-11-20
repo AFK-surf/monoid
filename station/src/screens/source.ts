@@ -29,8 +29,11 @@ export type Region = { x: number; y: number; w: number; h: number };
 export type Frame = { config?: FrameConfig; key: boolean; ts: number; data: Uint8Array };
 
 /// A person's input; coordinates are 0..1 of the screen (the whole of it, whatever part the frames show). `mods`: bit 0 alt, 1 ctrl, 2 meta, 3 shift (CDP's order).
+/// A move may carry how far the person's pointer moved (`dx`, `dy`: the screen's pixels, -10000..10000), and with
+/// `relative` it is only that: the screen's app holds the pointer (`ScreenView.watchPointerLock`), which goes nowhere
+/// while the move is posted as one of its own; a down or up with `relative` presses where the pointer is, never at x, y.
 export type ScreenInput =
-  | { t: "pointer"; kind: "down" | "up" | "move"; x: number; y: number; buttons: number }
+  | { t: "pointer"; kind: "down" | "up" | "move"; x: number; y: number; buttons: number; dx?: number; dy?: number; relative?: boolean }
   | { t: "wheel"; x: number; y: number; dx: number; dy: number }
   | { t: "key"; kind: "down" | "up"; key: string; code: string; mods: number }
   | { t: "text"; text: string }
@@ -39,7 +42,20 @@ export type ScreenInput =
   // What Device Hub does of a device besides its keys and a finger
   | { t: "device"; name: "volume_up" | "volume_down" | "memory_warning" | "rotate" }
   /// A button of a simulator's device, held as long as it is here (`ScreenSource.chrome`: its HID usage).
-  | { t: "button"; page: number; usage: number; down: boolean };
+  | { t: "button"; page: number; usage: number; down: boolean }
+  /// A game controller's state as the W3C Standard Gamepad has it, whole each time: `index` its slot (0..3), `buttons`
+  /// a bit for each of its 17 buttons (0..16), the sticks -1..1, the triggers 0..1; `connected: false` lets go of it
+  /// (every button up, sticks centred) and frees its slot.
+  | Gamepad;
+
+export type Gamepad = { t: "gamepad"; index: number; connected: boolean; buttons: number; lx: number; ly: number; rx: number; ry: number; lt: number; rt: number };
+/// How many controllers a view drives at once, and the bits of their buttons.
+export const GAMEPADS_MOST = 4;
+export const GAMEPAD_BUTTONS = 0x1ffff;
+/// A controller let go of: what a view sends for each slot it drove as it ends or is made to only look.
+export function gamepadReleased(index: number): Gamepad {
+  return { t: "gamepad", index, connected: false, buttons: 0, lx: 0, ly: 0, rx: 0, ry: 0, lt: 0, rt: 0 };
+}
 
 /// `peek`: a preview (a link's card in a chat): it brings nothing forward, wakes nothing and is not among those on it.
 /// `bitrate`: what to encode at first (bits a second; none: the source's own), until `ScreenView.rate` says otherwise.
@@ -52,7 +68,10 @@ export type ScreenInput =
 /// where PCM is 1.5 Mbit/s), the others PCM.
 /// `gamut: "p3"`: the viewer shows a video tagged Display P3 as such: a source that has wider colours (this Mac's
 /// desktop) may send them; the others' stay sRGB, as they are without it.
-export type ViewOptions = { maxWidth: number; maxHeight: number; codecs: Codec[]; peek?: boolean; bitrate?: number; fps?: number; fit?: ViewFit; audio?: boolean; opus?: boolean; gamut?: "p3"; passkeys?: boolean };
+/// `chroma: "444"`: the viewer asked its pictures sharp to the pixel (画质 原画 with text sharp): a source that encodes
+/// full-chroma video (this Mac's desktop, HEVC Main 4:4:4 where the encoder has it) does; the others as without it.
+/// `agent`: opened for an agent's computer-use tool (never uses Windows' privileged screen service).
+export type ViewOptions = { maxWidth: number; maxHeight: number; codecs: Codec[]; peek?: boolean; agent?: boolean; bitrate?: number; fps?: number; fit?: ViewFit; audio?: boolean; opus?: boolean; gamut?: "p3"; passkeys?: boolean; chroma?: "444" };
 export type ViewFit = { width: number; height: number; scale: number };
 
 /// The codec a source that makes `own` (best first) sends a view: the first of them the view takes; for a preview
@@ -79,9 +98,18 @@ export function regionOf(v: any): Region | null {
   return { x: r4(x), y: r4(y), w: r4(w), h: r4(h) };
 }
 
-/// What a screen's clipboard holds, as a view carries it: text, or a PNG picture.
+/// What a screen's clipboard holds, as a view carries it: text, or a PNG picture; `privacy`: what the app that copied it
+/// marked it (nspasteboard.org's types on macOS, the registered formats on Windows): `concealed` a password manager's,
+/// `transient` not to be kept, `auto` made by a program. Carried both ways so the other side's clipboard history and
+/// managers leave it out as the copying side's do.
 export type ClipType = "text" | "png";
-export type Clip = { type: "text"; text: string } | { type: "png"; data: Uint8Array };
+export type ClipPrivacy = "concealed" | "transient" | "auto";
+export type Clip = ({ type: "text"; text: string } | { type: "png"; data: Uint8Array }) & { privacy?: ClipPrivacy };
+/// A clip's privacy as its code on the wires (the view's, the helpers'): 0 none, 1 concealed, 2 transient, 3 auto.
+export const PRIVACY_CODE: Record<ClipPrivacy, number> = { concealed: 1, transient: 2, auto: 3 };
+export function privacyOf(code: number): ClipPrivacy | undefined {
+  return code === 1 ? "concealed" : code === 2 ? "transient" : code === 3 ? "auto" : undefined;
+}
 /// The most a clipboard carries each way: text (its UTF-8 bytes), a picture.
 export const CLIP_TEXT_MAX = 1024 * 1024;
 export const CLIP_PNG_MAX = 8 * 1024 * 1024;
@@ -120,10 +148,17 @@ export interface ScreenView {
   /// Hears the source's clipboard each time it changes (a copy made on it; not what it holds as this starts), until
   /// the returned function. Only a view a person drives is asked, for as long as it is open.
   watchClipboard?(heard: (clip: Clip) => void): () => void;
+  /// Hears whether an app on the source holds the pointer (a game, a 3D view, a page's Pointer Lock: hidden and kept
+  /// in place, checked so that a pointer hidden while typing or watching a video is not), as it changes, until the
+  /// returned function: the client then sends moves as `relative`. Only a view a person drives is asked.
+  watchPointerLock?(heard: (locked: boolean) => void): () => void;
   /// Hears where the pointer is on the source (0..1 of the screen) and its shape (a CSS cursor's name) as it moves or
   /// changes, until the returned function: a source whose pictures leave the pointer out (a video of the desktop) says
   /// it so; one without it draws it in its pictures, or has none.
   watchCursor?(heard: (cursor: ScreenCursor) => void): () => void;
+  /// The picture of a pointer of an app's own its `watchCursor` said as "custom:<id>" (`cursorImageShape`'s payload),
+  /// had before the shape is said; none where it has none of that id.
+  cursorImage?(shape: string): Uint8Array | undefined;
   /// Hears how far a device's picture is turned clockwise, in quarter turns, as it changes and at once, until the returned
   /// function: a simulator's, whose case is drawn turned with it.
   watchTurn?(heard: (turn: number) => void): () => void;
@@ -151,7 +186,21 @@ export interface ScreenView {
   passkey?(a: PasskeyAnswer): Promise<void>;
   /// Hears a child screen (`browser:<id>`) this tab opened while driven (a link to a new window or an OAuth popup).
   watchChild?(heard: (screenId: string) => void): () => void;
+  /// Hears the source's virtual microphone (`ScreenMic`) once it is ready and on each change, until the returned
+  /// function, which stops it and what feeds it. Only a view a person drives is asked.
+  watchMic?(heard: (mic: ScreenMic) => void): () => void;
+  /// One packet of 48 kHz mono `pcm_s16le` (even, at most `MIC_PCM_MAX` bytes) for the virtual microphone, dropped
+  /// unless something records it now in the recording `epoch` said.
+  feedMic?(pcm16le: Uint8Array, epoch: number): void;
 }
+
+/// A source's virtual microphone: `available` where one can be fed (a browser tab's always; a desktop's virtual input
+/// device found and opened), `active` only while an app there records it, `epoch` (u32) raised for each recording so
+/// the tail of the one before never reaches the next.
+export type ScreenMic = { available: boolean; active: boolean; epoch: number };
+
+/// The most bytes of one microphone packet (40 ms of 48 kHz mono s16le).
+export const MIC_PCM_MAX = 3840;
 
 /// A login field in focus: the site's host (as the browser has its address, not as the page says it), which field, and
 /// whether it already holds a value.
@@ -177,8 +226,33 @@ export type ScreenKind = "desktop" | "browser" | "simulator";
 /// (none: a JPEG a picture, nothing to say).
 export type ScreenVideo = { capture: string; encoder?: string; hardware?: boolean };
 
-/// Where a screen's pointer is, 0..1 of the screen, and its shape as CSS names it.
+/// Where a screen's pointer is, 0..1 of the screen, and its shape as CSS names it, or "custom:<id>" (one of an app's
+/// own: its picture `ScreenView.cursorImage`).
 export type ScreenCursor = { x: number; y: number; shape: string };
+
+/// A pointer's shape as a helper says one: a CSS cursor's name, or one of an app's own by its id.
+export const CURSOR_SHAPE = /^(?:[a-z-]{1,24}|custom:[0-9a-f]{16})$/;
+/// The most of a pointer's picture (its PNG), and how many pictures a view keeps.
+export const CURSOR_PNG_MAX = 65536;
+export const CURSOR_IMAGES_MOST = 64;
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+/// The shape ("custom:<id>") a pointer's picture is of, as still.fail Helper and stillfail-screen say one (their message
+/// 11) and a view's `cursorImage` frame carries it: its width and height (1 byte each, points, 1..128), its hot spot
+/// (1 byte each, 0..width, 0..height), its id (16 lowercase hex digits), then a PNG of at most 64 KiB; null for any other.
+export function cursorImageShape(payload: Uint8Array): string | null {
+  if (payload.length < 20 + PNG_SIGNATURE.length || payload.length > 20 + CURSOR_PNG_MAX) return null;
+  const [w, h, hx, hy] = [payload[0]!, payload[1]!, payload[2]!, payload[3]!];
+  if (w < 1 || w > 128 || h < 1 || h > 128 || hx > w || hy > h) return null;
+  let id = "";
+  for (let i = 4; i < 20; i++) {
+    const c = payload[i]!;
+    if (!((c >= 0x30 && c <= 0x39) || (c >= 0x61 && c <= 0x66))) return null;
+    id += String.fromCharCode(c);
+  }
+  if (PNG_SIGNATURE.some((b, i) => payload[20 + i] !== b)) return null;
+  return `custom:${id}`;
+}
 
 /// The key an app makes for a person's tab of the station's browser it opens (`browser:<key>`), as the browser's
 /// user-tabs.ts `#freshKey` makes them.
@@ -211,9 +285,17 @@ export function windowsOf(v: unknown): ScreenWindow[] {
 /// steps it takes, in percent.
 export type ScreenScale = { percent: number; recommended: number; steps: number[] };
 
-/// A display's resolution as its system has it (Windows' Settings › Display › Display resolution): now, and the modes
-/// it takes (landscape, the largest first), in pixels.
+/// A display's resolution as its system has it (Windows' Settings › Display › Display resolution, in pixels; macOS's
+/// Displays, in points): now, and the modes it takes (landscape, the largest first).
 export type ScreenResolution = { width: number; height: number; modes: { width: number; height: number }[] };
+
+/// A resolution as a helper says it (stillfail-screen, still.fail Helper), checked: null when it is not one.
+export function resolutionOf(told: any): ScreenResolution | null {
+  const n = (v: unknown) => typeof v === "number" && Number.isInteger(v) && v > 0 && v <= 16384;
+  const size = (v: any) => v !== null && typeof v === "object" && n(v.width) && n(v.height);
+  if (!size(told) || !Array.isArray(told.modes) || !told.modes.every(size)) return null;
+  return { width: told.width, height: told.height, modes: told.modes.map((m: any) => ({ width: m.width, height: m.height })) };
+}
 
 /// Whether a source can be seen and driven now, for one that may not be (the desktop: macOS's grants, a machine it is
 /// not supported on). `app` and `path`: what a person turns on in System Settings for it; `asking`: a window on the

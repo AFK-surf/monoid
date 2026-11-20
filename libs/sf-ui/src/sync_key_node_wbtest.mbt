@@ -28,7 +28,7 @@ test "sync key node: a moment's catching up shows nothing; once it has gone on, 
   let words = "正在同步 · 还剩 3 个对话"
   // (not yet: nothing laid out or read out)
   let at_first = sync_key_said(t, words)
-  t.run_for(later_ms + @kit.presence_in_ms)
+  t.run_for(later_ms + @motion.presence_in_ms)
   let after_wait = sync_key_said(t, words)
   // (turning by the clock: drawn otherwise a quarter turn on)
   let turning_a = t.drawn_instances_keyed()
@@ -58,7 +58,7 @@ test "sync key node: catching up ended before it showed, nothing; begun again, i
   t.draw()
   t.run_for(later_ms / 2.0)
   let half = sync_key_said(t, "正在同步")
-  t.run_for(later_ms / 2.0 + @kit.presence_in_ms)
+  t.run_for(later_ms / 2.0 + @motion.presence_in_ms)
   assert_eq((never, half, sync_key_said(t, "正在同步")), (false, false, true))
 }
 
@@ -81,7 +81,7 @@ fn sync_angle_step(from : Double, to : Double) -> Double {
 test "sync key node: the drawn mark turns evenly through the join, its frames never slowing there" {
   let syncing = @signals.signal(Some("正在同步"))
   let t = sync_key_tester(syncing)
-  t.run_for(later_ms + @kit.presence_in_ms)
+  t.run_for(later_ms + @motion.presence_in_ms)
   assert_eq(t.audit(), [])
   // Start on a turn's join, then inspect each eighth through two whole turns, including both joins.
   let start = (t.time() / sync_turn_ms).ceil() * sync_turn_ms
@@ -111,7 +111,7 @@ test "sync key node: finishing at any point goes on from the drawn angle and spe
   for phase in [0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 0.999] {
     let syncing = @signals.signal(Some("正在同步"))
     let t = sync_key_tester(syncing)
-    t.run_for(later_ms + @kit.presence_in_ms)
+    t.run_for(later_ms + @motion.presence_in_ms)
     let at = (3.0 + phase) * sync_turn_ms
     t.frame_at(at)
     let before = sync_drawn_angle(t)
@@ -132,7 +132,7 @@ test "sync key node: the pointer resting on it shows its tip, what it is catchin
   let syncing = @signals.signal(Some(words))
   let t = sync_key_tester(syncing)
   t.check_looks(false)
-  t.run_for(later_ms + @kit.presence_in_ms)
+  t.run_for(later_ms + @motion.presence_in_ms)
   let tips = fn() { t.semantics().filter(fn(s) { s.role == Tooltip && s.label == words }).length() }
   let k = t.get(Status, label=words)
   t.move_to(k.rect.0 + 17.0, k.rect.1 + 17.0)

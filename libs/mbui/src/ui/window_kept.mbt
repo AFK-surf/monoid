@@ -120,6 +120,7 @@ fn window_kept_ui_0() -> Array[WindowKept] {
     kept_ref(modifiers_said, fn() { @signals.signal(0) }),
     kept_ref(g_view, fn() { fn(_c) { () } }),
     kept_ref(frame_afters, fn() { [] }),
+    kept_ref(drawn_frame_afters, fn() { [] }),
     kept_ref(window_title_said, fn() { "" }),
     kept_ref(building, fn() { false }),
     kept_ref(wheel_went, fn() { 0 }),
@@ -324,6 +325,8 @@ fn window_kept_ui_3() -> Array[WindowKept] {
     kept_struct(fn() { let held = { ..glass_paint }; fn() { glass_paint.window_put(held) } }, fn() { glass_paint.window_put({
   run: 0,
   frost_run: 0,
+  liquid_run: 0,
+  liquid_blur: 0.0,
   run_start: -1,
   run_len: 0,
   solid: false,
@@ -397,6 +400,7 @@ fn window_kept_ui_4() -> Array[WindowKept] {
   built_read: 0,
   kept_at: [],
   built_at: [],
+  built_asked: false,
   on: true,
 }) }),
     kept_ref(aside_why, fn() { "" }),
@@ -415,6 +419,8 @@ fn window_kept_ui_4() -> Array[WindowKept] {
     kept_map(made_roots),
     kept_array(made_placed, fn() { [] }),
     kept_map(made_presses),
+    kept_map(island_presses),
+    kept_map(island_lists),
   ]
 }
 
@@ -434,6 +440,9 @@ fn window_kept_ui_5() -> Array[WindowKept] {
     kept_ref(stacks_said, fn() { @signals.signal(0) }),
     kept_array(nav_views, fn() { [] }),
     kept_ref(nav_views_made, fn() { 0 }),
+    kept_map(nav_veils),
+    kept_map(nav_clips),
+    kept_array(nav_clips_now, fn() { [] }),
     kept_ref(layer_opened, fn() { 0 }),
     kept_map(layer_back_spent),
     kept_set(layer_retired_ids),
@@ -527,7 +536,11 @@ fn window_kept_ui_6() -> Array[WindowKept] {
     kept_ref(last_touch_x, fn() { 0.0 }),
     kept_ref(last_touch_y, fn() { 0.0 }),
     kept_map(tree_fields),
+    kept_array(tree_fields_asked, fn() { [] }),
     kept_map(tree_field_focus_told),
+    kept_map(tree_field_menu_areas),
+    kept_array(field_menu_asked, fn() { [] }),
+    kept_ref(field_menu_seq, fn() { 0 }),
     kept_map(@view.dashed_edges_kept()),
     kept_map(@view.notches_kept()),
     kept_map(@view.shadows_out_kept()),
@@ -621,6 +634,8 @@ fn window_kept_ui_9() -> Array[WindowKept] {
     kept_ref(tree_said_next, fn() { -2_000_000_000 }),
     kept_ref(old_show_due, fn() { None }),
     kept_ref(old_focus_shown, fn() { 0 }),
+    kept_ref(old_focus_parked, fn() { None }),
+    kept_ref(nav_focus_due, fn() { None }),
     kept_array(layer_focus_open, fn() { [] }),
     kept_map(leaving_ime_nodes),
     kept_ref(view_shape_of, fn() { OfOld }),
@@ -678,6 +693,7 @@ fn window_kept_ui_11() -> Array[WindowKept] {
     kept_array(words_over_closing_pairs, fn() { [] }),
     kept_map(tree_terminals),
     kept_ref(tree_terminals_rev, fn() { 0 }),
+    kept_ref(drive_acting, fn() { false }),
   ]
 }
 
@@ -815,6 +831,8 @@ fn GapsSteady::window_put(self : GapsSteady, o : GapsSteady) -> Unit {
 fn GlassPaint::window_put(self : GlassPaint, o : GlassPaint) -> Unit {
   self.run = o.run
   self.frost_run = o.frost_run
+  self.liquid_run = o.liquid_run
+  self.liquid_blur = o.liquid_blur
   self.run_start = o.run_start
   self.run_len = o.run_len
   self.solid = o.solid
@@ -877,6 +895,7 @@ fn NodesRun::window_put(self : NodesRun, o : NodesRun) -> Unit {
   self.built_read = o.built_read
   self.kept_at = o.kept_at
   self.built_at = o.built_at
+  self.built_asked = o.built_asked
   self.on = o.on
 }
 

@@ -47,10 +47,32 @@ fn part_of(v : Json?) -> Part? {
 }
 
 ///|
-/// A copy made on the screen, for the device's clipboard: its text, or its PNG.
+/// A copy made on the screen, for the device's clipboard: its text and the mark the app that copied it gave it (a
+/// password manager's `concealed`, `transient`, `auto`; None: none), or its PNG.
 priv enum Copied {
-  CopiedText(String)
+  CopiedText(String, String?)
   CopiedPng(Bytes)
+}
+
+///|
+/// A pointer of the station's own picture (a drawing tool's, a brush's, a crosshair of an app's): its PNG, its size in
+/// points and its hot spot in from its top left (`cursorImage`, ScreenSess::take).
+priv struct CustomCursor {
+  png : Bytes
+  w : Double
+  h : Double
+  hx : Double
+  hy : Double
+}
+
+///|
+/// How many of the station's own pointers a view keeps (the oldest let go of past it).
+let custom_cursors_most : Int = 64
+
+///|
+/// The image key a pointer the station drew itself (`custom:<hex>`) is drawn by.
+fn custom_cursor_key(shape : String) -> String {
+  "mem:sf/pointer/" + shape
 }
 
 ///|
@@ -82,6 +104,9 @@ priv struct ScreenSess {
   /// what the page draws of the pointer follows the station's word of it (not this device's mouse over the picture, nor
   /// the trackpad's own pointer): told by the stage as either changes (screen_stage_gestures); drawn while no stage is
   mut cursor_drawn : Bool
+  /// the pointers of the station's own pictures it said (`cursorImage`), by the shape it names them (`custom:<hex>`),
+  /// the latest few kept (custom_cursors_most)
+  custom_cursors : Map[String, CustomCursor]
   /// each copy made on the screen taken (`copied`), and each file picked or let go of (`drops`): what puts the copies on
   /// the device's clipboard and what lists the files read them as they are told
   copied_told : @signals.Signal[Int]
@@ -102,6 +127,9 @@ priv struct ScreenSess {
   /// the view's sound coming as this device plays it, and muted here (told as they change: 控制中心's row reads them)
   audio_ready : @signals.Signal[Bool]
   audio_muted : @signals.Signal[Bool]
+  /// this device's microphone shared into the screen's virtual one (麦克风, `screen.micOn`), as the person switched it:
+  /// it goes only while the screen's state says something there records it (ScreenSess::mic_info)
+  mic_on : @signals.Signal[Bool]
   mut codec : String?
   mut size : (Int, Int)?
   /// something was shown since it opened: a frame kept on screen through a reconnect or an end
@@ -218,6 +246,7 @@ fn screen_sess(src : Source, station : String, screen : String) -> ScreenSess {
         cursor_shape_now: "default",
         cursor_apart: false,
         cursor_drawn: true,
+        custom_cursors: Map([]),
         copied_told: @signals.signal(0),
         drops_told: @signals.signal(0),
         streams_told: @signals.signal(0),
@@ -228,6 +257,7 @@ fn screen_sess(src : Source, station : String, screen : String) -> ScreenSess {
         finished: @signals.signal(false),
         audio_ready: @signals.signal(false, same=fn(a, b) { a == b }),
         audio_muted: @signals.signal(false, same=fn(a, b) { a == b }),
+        mic_on: @signals.signal(false, same=fn(a, b) { a == b }),
         codec: None,
         size: None,
         shown_any: false,
@@ -283,7 +313,8 @@ fn ScreenSess::part_stream(self : ScreenSess) -> @ui.Stream {
     None => {
       let st = @ui.Stream::new(
         shown=fn(ts) {
-          screen_ack(self.src, self, ts)
+          let wait_us = self.part.map(fn(s) { s.wait_us() }).unwrap_or(0.0)
+          screen_ack(self.src, self, ts, wait_us~)
           self.shown_told()
         },
         broken=fn() { screen_tell(self.src, "screen.keyframe", { "view": Json::string(self.view) }) },
@@ -391,7 +422,8 @@ fn ScreenSess::own_stream(self : ScreenSess) -> Unit {
       shown=fn(ts) {
         let first = !self.shown_any
         self.shown_any = true
-        screen_ack(self.src, self, ts)
+        let wait_us = self.stream.map(fn(s) { s.wait_us() }).unwrap_or(0.0)
+        screen_ack(self.src, self, ts, wait_us~)
         if first {
           self.part_told.set(self.part_told.untracked() + 1)
         }
@@ -416,17 +448,21 @@ fn screen_tell(src : Source, name : String, params : Map[String, Json]) -> Unit 
 }
 
 ///|
-fn screen_ack(src : Source, s : ScreenSess, ts : Double) -> Unit {
+fn screen_ack(src : Source, s : ScreenSess, ts : Double, wait_us? : Double = 0.0) -> Unit {
   if ts <= s.acked {
     return
   }
   s.acked = ts
   // (its call: where the engine's shell reads the view itself, the ack goes from there: src/stillfail's call)
-  screen_tell(src, "screen.ack", {
+  let params : Map[String, Json] = {
     "view": Json::string(s.view),
     "ts": Json::number(ts),
     "call": Json::number(s.call.to_double()),
-  })
+  }
+  if wait_us > 0.0 {
+    params["waitUs"] = Json::number(wait_us)
+  }
+  screen_tell(src, "screen.ack", params)
 }
 
 ///|
@@ -737,11 +773,11 @@ fn ScreenSess::pad(self : ScreenSess, src : Source) -> Bool {
 }
 
 ///|
-/// How large a picture this device asks for (prefs `screenQuality`, 控制中心's 画质): `smooth`, `hd`, `original`, or
+/// How large a picture this device asks for (prefs `screenQuality`, 控制中心's 画质): `smooth`, `hd`, `qhd`, `original`, or
 /// "" (自动: as large as the stage it is shown on, in device pixels: ScreenSess::bounds).
 fn screen_quality(src : Source) -> String {
   match text(src.topic("prefs", {}).get().value, "screenQuality") {
-    "smooth" | "hd" | "original" as q => q
+    "smooth" | "hd" | "qhd" | "original" as q => q
     _ => ""
   }
 }
@@ -782,6 +818,7 @@ fn ScreenSess::bounds(self : ScreenSess, quality : String) -> (Int, Int) {
   match quality {
     "smooth" => (1280, 720)
     "hd" => (1920, 1080)
+    "qhd" => (2560, 1440)
     "original" => (7680, 4320)
     _ =>
       match self.stage_px {
@@ -834,6 +871,9 @@ fn ScreenSess::open(self : ScreenSess, src : Source) -> Unit {
   if @ui.h265_here() {
     codecs.insert(0, Json::string("h265"))
   }
+  // (its 4:4:4 too where VideoToolbox decodes it, Apple's: 原画's text sharp to the pixel, the core asking it with 原画
+  // alone; Android's and Windows' decoders take Main and Main 10 only)
+  let decodes444 = @ui.h265_here() && (@ui.platform() == 0 || @ui.platform() == 1)
   let params : Map[String, Json] = {
     "station": Json::string(self.station),
     "screen": Json::string(self.screen),
@@ -846,6 +886,9 @@ fn ScreenSess::open(self : ScreenSess, src : Source) -> Unit {
     "cursorUpdates": Json::boolean(true),
   }
   asks_into(params, quality, fps)
+  if decodes444 {
+    params["chroma444"] = Json::boolean(true)
+  }
   if @ui.stream_audio_here() {
     params["audio"] = Json::string("pcm_s16le")
     // (muted here: the station sends none from the start, `screen.sound`)
@@ -950,7 +993,12 @@ fn ScreenSess::input(self : ScreenSess, src : Source, input : Json) -> Unit {
   if !(self.input_goes() || (window && self.call != 0 && self.heard)) {
     return
   }
-  screen_tell(src, "screen.input", { "view": Json::string(self.view), "input": input })
+  // (its call: where the engine's shell drives the view itself, the input goes from there, as screen_ack's)
+  screen_tell(src, "screen.input", {
+    "view": Json::string(self.view),
+    "input": input,
+    "call": Json::number(self.call.to_double()),
+  })
 }
 
 ///|
@@ -1046,6 +1094,44 @@ fn ScreenSess::cursor_quiet(self : ScreenSess, c : Json) -> Bool {
 }
 
 ///|
+/// A pointer the station drew itself (`cursorImage` `ci`: its shape `custom:<hex>`, its size and hot spot in points; its
+/// PNG `bytes`), kept where it is sound (1..128 points, its hot spot inside, a PNG of at most 64 KiB); what draws a
+/// pointer of its shape said already, told.
+fn ScreenSess::custom_cursor_taken(self : ScreenSess, ci : Json, bytes : Bytes?) -> Unit {
+  let shape = text(Some(ci), "shape")
+  let w = number(Some(ci), "w")
+  let h = number(Some(ci), "h")
+  let hx = number(Some(ci), "hx")
+  let hy = number(Some(ci), "hy")
+  guard shape.has_prefix("custom:") &&
+    shape.length() <= 64 &&
+    w >= 1.0 &&
+    w <= 128.0 &&
+    h >= 1.0 &&
+    h <= 128.0 &&
+    hx >= 0.0 &&
+    hx <= w &&
+    hy >= 0.0 &&
+    hy <= h else {
+    return
+  }
+  guard bytes is Some(png) && png.length() > 0 && png.length() <= 65536 && @pixels.is_png(png) else { return }
+  if !self.custom_cursors.contains(shape) {
+    if self.custom_cursors.length() >= custom_cursors_most {
+      match self.custom_cursors.keys().next() {
+        Some(old) => self.custom_cursors.remove(old)
+        None => ()
+      }
+    }
+    @ui.add_image(custom_cursor_key(shape), png)
+  }
+  self.custom_cursors[shape] = { png, w, h, hx, hy }
+  if self.cursor_shape_now == shape {
+    self.cursor_said.set(self.cursor_said.untracked() + 1)
+  }
+}
+
+///|
 /// Where the pointer is on a picture's system video layer, as the page has it drawn (screen_stage's
 /// screen_pointer_layer_node): the stream it is drawn over, the part of the screen that one shows (None: the whole), and
 /// whether it follows the station's pointer (not the trackpad's, nor hidden while this device's mouse drives it).
@@ -1094,10 +1180,10 @@ fn ScreenSess::pointer_moved(self : ScreenSess) -> Unit {
 }
 
 ///|
-/// The calls of a screen whose answers nobody reads (screen_tell's `screen.ack`): taken as they come, they build nothing
+/// The calls of a screen whose answers nobody reads (screen_tell's `screen.ack` and `screen.input`): taken as they come, they build nothing
 /// (@core.unread, said as the app starts).
 pub fn screen_unread_calls() -> Array[String] {
-  ["screen.ack"]
+  ["screen.ack", "screen.input"]
 }
 
 ///|
@@ -1120,6 +1206,12 @@ fn ScreenSess::take(self : ScreenSess, value : Json, bytes : Bytes?) -> Unit {
       }
     }
     None => ()
+  }
+  // a pointer the station drew itself, its PNG in `bytes`: kept by the shape it is named (a pointer of that shape said
+  // before it came, drawn again with it)
+  match o.get("cursorImage") {
+    Some(Object(_) as ci) => self.custom_cursor_taken(ci, bytes)
+    _ => ()
   }
   match o.get("state") {
     Some(Object(_) as s) => {
@@ -1153,7 +1245,15 @@ fn ScreenSess::take(self : ScreenSess, value : Json, bytes : Bytes?) -> Unit {
           self.child_screen = Some(next)
         }
       }
+      // (live and heard before: the screen's virtual microphone taken or let go of now, a live cause of its own)
+      let was_live = self.heard && text(self.state, "phase") == "live"
+      let was_mic = self.mic_active()
       self.state = Some(s)
+      // (shared before the view was let go of, out of sight: said again to the view opened again, once it says it is
+      // there, the core's view of it made by then)
+      if !self.heard && self.mic_on.untracked() && self.call != 0 {
+        screen_tell(self.src, "screen.micOn", { "view": Json::string(self.view), "on": Json::boolean(true) })
+      }
       self.heard = true
       // (where it says its pointer, or none; one said on its own kept where a state says nothing of it)
       match field(self.state, "cursor") {
@@ -1176,6 +1276,13 @@ fn ScreenSess::take(self : ScreenSess, value : Json, bytes : Bytes?) -> Unit {
         self.pointer_moved()
       } else if alone {
         self.cursor_said.set(self.cursor_said.untracked() + 1)
+      } else if was_live &&
+        text(self.state, "phase") == "live" &&
+        self.mic_active() != was_mic &&
+        !@view.answering_now() {
+        // (something there began or stopped recording it as it was watched: the bar's 麦克风 comes or goes along its
+        // row; what this view comes to know of it as it is first told or told again after a break is there at once)
+        @view.transition(fn() { self.said.set(self.said.untracked() + 1) })
       } else {
         self.said.set(self.said.untracked() + 1)
       }
@@ -1236,8 +1343,13 @@ fn ScreenSess::take(self : ScreenSess, value : Json, bytes : Bytes?) -> Unit {
       match text(Some(c), "type") {
         "text" => {
           let t = text(Some(c), "text")
+          // (a password manager's mark: the device's copy marked so too, screen_copies)
+          let privacy = match text(Some(c), "privacy") {
+            "concealed" | "transient" | "auto" as p => Some(p)
+            _ => None
+          }
           if t != "" {
-            self.copied.push(CopiedText(t))
+            self.copied.push(CopiedText(t, privacy))
             self.copied_told.set(self.copied_told.untracked() + 1)
           }
         }
@@ -1359,5 +1471,96 @@ fn ScreenSess::toggle_audio(self : ScreenSess) -> Unit {
   // Muted, the station sends the view no sound till it is on again.
   if self.call != 0 {
     screen_tell(self.src, "screen.sound", { "view": Json::string(self.view), "on": Json::boolean(!muted) })
+  }
+}
+
+///|
+/// The screen's virtual microphone while this viewer drives it (the state's `mic`): whether the screen has one, and
+/// whether something on it records it now; neither while only looking, nor from a station (or a screen) without one,
+/// nor where this device's microphone is not taken (mic_capture_here).
+fn ScreenSess::mic_info(self : ScreenSess) -> (Bool, Bool) {
+  if !self.driving() || !mic_capture_here() {
+    return (false, false)
+  }
+  match field(self.state, "mic") {
+    Some(Object(_)) as m => (flag(m, "available"), flag(m, "available") && flag(m, "active"))
+    _ => (false, false)
+  }
+}
+
+///|
+/// Whether this device's microphone is taken where a view shares it: on a Mac (the core's engine,
+/// src/host/apple_core.mm) and in a browser (web/src/mbui/screen-peripherals.ts); elsewhere nothing would go, so
+/// nothing offers it.
+fn mic_capture_here() -> Bool {
+  let p = @ui.platform()
+  p == 0 || p == 4
+}
+
+///|
+/// The screen has a virtual microphone this viewer may share into (麦克风's tile, ScreenSess::mic_info).
+fn ScreenSess::mic_available(self : ScreenSess) -> Bool {
+  self.mic_info().0
+}
+
+///|
+/// Something on the screen records its virtual microphone now (ScreenSess::mic_info).
+fn ScreenSess::mic_active(self : ScreenSess) -> Bool {
+  self.mic_info().1
+}
+
+///|
+/// Whether the screen has a virtual microphone, followed (read again as the state is told).
+fn ScreenSess::mic_available_now(self : ScreenSess) -> Bool {
+  self.said.get() |> ignore
+  self.mic_available()
+}
+
+///|
+/// Whether something on the screen records its virtual microphone now, followed.
+fn ScreenSess::mic_active_now(self : ScreenSess) -> Bool {
+  self.said.get() |> ignore
+  self.mic_active()
+}
+
+///|
+/// The bars' 麦克风 there: driving a screen with a virtual microphone, while something there records it or this device's
+/// is shared (else nothing on the bars: 控制中心's tile switches it), followed.
+fn ScreenSess::mic_bar_shown(self : ScreenSess) -> Bool {
+  self.driving_now() && self.mic_available_now() && (self.mic_active_now() || self.mic_on.get())
+}
+
+///|
+/// What 麦克风 says it does as it is pressed, followed: shared, 关闭麦克风; something there records it, that it does
+/// and that pressing shares it; else 开启麦克风.
+fn ScreenSess::mic_label(self : ScreenSess) -> String {
+  if self.mic_on.get() {
+    @sf.t("web-pages.screen.micMute")
+  } else if self.mic_active_now() {
+    @sf.t("web-pages.screen.micAsked")
+  } else {
+    @sf.t("web-pages.screen.micUnmute")
+  }
+}
+
+///|
+/// 麦克风's icon as it is now, followed: a microphone while shared, struck through while not.
+fn ScreenSess::mic_icon(self : ScreenSess) -> String {
+  if self.mic_on.get() {
+    "mic"
+  } else {
+    "mic-off"
+  }
+}
+
+///|
+/// This device's microphone shared into the screen's virtual one, or no more (`screen.micOn`): the core sends it only
+/// while driving, shared and recorded there, in the recording the state says; the host's capture follows the same.
+fn ScreenSess::toggle_mic(self : ScreenSess) -> Unit {
+  let on = !self.mic_on.untracked()
+  // (shared no more while nothing records it: the bar's 麦克风 goes along its row, not at once)
+  @view.transition(fn() { self.mic_on.set(on) })
+  if self.call != 0 {
+    screen_tell(self.src, "screen.micOn", { "view": Json::string(self.view), "on": Json::boolean(on) })
   }
 }

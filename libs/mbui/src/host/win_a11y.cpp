@@ -32,6 +32,7 @@
 #include <unordered_map>
 #include <vector>
 #include <algorithm>
+#ifndef MB_WIN_A11Y_TEST
 #include "win.h"
 
 #pragma comment(lib, "uiautomationcore.lib")
@@ -39,6 +40,20 @@
 #pragma comment(lib, "runtimeobject.lib")
 
 extern "C" void mb_post(const char *channel, const char *json, size_t len, const uint8_t *bytes, size_t blen);
+#endif
+
+#ifndef MB_A11Y_CLIENTS_LISTENING
+#define MB_A11Y_CLIENTS_LISTENING() UiaClientsAreListening()
+#endif
+#ifndef MB_A11Y_RAISE_PROP
+#define MB_A11Y_RAISE_PROP(prov, prop, was, now) UiaRaiseAutomationPropertyChangedEvent((prov), (prop), (was), (now))
+#endif
+#ifndef MB_A11Y_RAISE_STRUCT
+#define MB_A11Y_RAISE_STRUCT(prov, kind, rid, len) UiaRaiseStructureChangedEvent((prov), (kind), (rid), (len))
+#endif
+#ifndef MB_A11Y_RAISE_EVENT
+#define MB_A11Y_RAISE_EVENT(prov, ev) UiaRaiseAutomationEvent((prov), (ev))
+#endif
 
 namespace {
 
@@ -71,15 +86,16 @@ const Node *node_of(int id) {
 
 // what node `id` holds as providers: those of no use of their own (flags v: what a column scrolls is held in) left out,
 // what they hold in their place
-std::vector<int> shown_kids(int id) {
+std::vector<int> shown_kids(int id, size_t depth = 0) {
   std::vector<int> out;
+  if (depth >= nodes.size()) return out;
   const Node *n = node_of(id);
   if (!n) return out;
   for (int k : n->kids) {
     const Node *c = node_of(k);
     if (!c) continue;
     if (c->has(L'v')) {
-      std::vector<int> in = shown_kids(k);
+      std::vector<int> in = shown_kids(k, depth + 1);
       out.insert(out.end(), in.begin(), in.end());
     } else {
       out.push_back(k);
@@ -91,14 +107,20 @@ std::vector<int> shown_kids(int id) {
 // the provider that holds node `n`: its nearest holder of use of its own (0: the window's)
 int shown_holder(const Node *n) {
   const Node *p = node_of(n->parent);
-  while (p && p->id && p->has(L'v')) p = node_of(p->parent);
-  return p ? p->id : 0;
+  size_t hops = 0;
+  while (p && p->id && p->has(L'v') && hops < nodes.size()) {
+    p = node_of(p->parent);
+    hops++;
+  }
+  return p && !p->has(L'v') ? p->id : 0;
 }
 
 // where node `n` is in the window (points): its holders' places and its own
 void place_of(const Node *n, double *x, double *y) {
   *x = n->x, *y = n->y;
-  for (const Node *p = node_of(n->parent); p && p->id; p = node_of(p->parent)) *x += p->x, *y += p->y;
+  size_t hops = 0;
+  for (const Node *p = node_of(n->parent); p && p->id && hops < nodes.size(); p = node_of(p->parent), hops++)
+    *x += p->x, *y += p->y;
 }
 
 // what is asked of the node's widget, posted to the app (its next frame does it)
@@ -598,10 +620,111 @@ std::vector<std::wstring> fields_of(const wchar_t *s, size_t n) {
 
 double number(const std::wstring &s) { return s.empty() ? 0 : _wtof(s.c_str()); }
 
-// a property of an item told its readers changed (a name, a check, an expansion, a selection, a value)
-void said_changed(int id, PROPERTYID p, VARIANT was, VARIANT now) {
-  auto it = items.find(id);
-  if (it != items.end()) UiaRaiseAutomationPropertyChangedEvent(it->second, p, was, now);
+// Pending UIA notifications gathered during mb_host_a11y_tree and raised between frames (mb_app_call): raising UIA
+// events synchronously on the STA UI thread enters COM's modal loop, where a reader calling Navigate or
+// ElementProviderFromPoint mutates and rehashes `items`, or another frame runs and erases entries mid-iteration.
+struct PropNote {
+  enum Kind { Str, I4, Bool, R8 };
+  int id = 0;
+  PROPERTYID prop = 0;
+  Kind kind = Str;
+  std::wstring was_s, now_s;
+  long was_i = 0, now_i = 0;
+  bool was_b = false, now_b = false;
+  double was_d = 0, now_d = 0;
+  bool same() const {
+    switch (kind) {
+      case Str: return was_s == now_s;
+      case I4: return was_i == now_i;
+      case Bool: return was_b == now_b;
+      case R8: return was_d == now_d;
+    }
+    return true;
+  }
+};
+
+std::vector<PropNote> pending_props;
+bool pending_shape;
+bool pending_focus;
+bool flush_posted;
+bool flushing;
+
+void queue_prop(PropNote note) {
+  for (auto it = pending_props.begin(); it != pending_props.end(); ++it) {
+    if (it->id == note.id && it->prop == note.prop && it->kind == note.kind) {
+      it->now_s = std::move(note.now_s);
+      it->now_i = note.now_i;
+      it->now_b = note.now_b;
+      it->now_d = note.now_d;
+      if (it->same()) pending_props.erase(it);
+      return;
+    }
+  }
+  if (pending_props.size() < 4096) pending_props.push_back(std::move(note));
+}
+
+void a11y_flush(void *unused) {
+  (void)unused;
+  flush_posted = false;
+  if (flushing) return;
+  if (!MB_A11Y_CLIENTS_LISTENING() || !root) {
+    pending_props.clear();
+    pending_shape = false;
+    pending_focus = false;
+    return;
+  }
+  std::vector<PropNote> batch = std::move(pending_props);
+  pending_props.clear();
+  bool do_shape = pending_shape;
+  pending_shape = false;
+  bool do_focus = pending_focus;
+  pending_focus = false;
+
+  flushing = true;
+  for (const PropNote &note : batch) {
+    auto it = items.find(note.id);
+    if (it == items.end()) continue;
+    Item *item = it->second;
+    item->AddRef();
+    VARIANT a, b;
+    VariantInit(&a), VariantInit(&b);
+    switch (note.kind) {
+      case PropNote::Str: put_bstr(&a, note.was_s), put_bstr(&b, note.now_s); break;
+      case PropNote::I4: put_i4(&a, note.was_i), put_i4(&b, note.now_i); break;
+      case PropNote::Bool: put_bool(&a, note.was_b), put_bool(&b, note.now_b); break;
+      case PropNote::R8:
+        a.vt = b.vt = VT_R8;
+        a.dblVal = note.was_d;
+        b.dblVal = note.now_d;
+        break;
+    }
+    MB_A11Y_RAISE_PROP(item, note.prop, a, b);
+    VariantClear(&a), VariantClear(&b);
+    item->Release();
+  }
+  if (do_shape && root) {
+    Root *r = root;
+    r->AddRef();
+    MB_A11Y_RAISE_STRUCT(r, StructureChangeType_ChildrenInvalidated, NULL, 0);
+    r->Release();
+  }
+  if (do_focus) {
+    int f_id = focused;
+    IRawElementProviderFragment *f = f_id ? fragment_of(f_id) : NULL;
+    if (f) {
+      IRawElementProviderSimple *simple = NULL;
+      f->QueryInterface(IID_PPV_ARGS(&simple));
+      if (simple) MB_A11Y_RAISE_EVENT(simple, UIA_AutomationFocusChangedEventId), simple->Release();
+      f->Release();
+    }
+  }
+  flushing = false;
+
+  if ((!pending_props.empty() || pending_shape || pending_focus) && !flush_posted && MB_A11Y_CLIENTS_LISTENING() &&
+      root) {
+    flush_posted = true;
+    mb_app_call(a11y_flush, NULL);
+  }
 }
 
 }  // namespace
@@ -611,7 +734,7 @@ extern "C" {
 // Whether something reads the widgets out through UI Automation (@hostapi.a11y_on): a reader that asked for this
 // window, while one listens (not merely one listening somewhere: the app makes its tree each frame only then)
 // (the run's first window's: a window beside it makes no tree for them, its widgets not read out yet, as on the Mac)
-int32_t mb_host_a11y_on(void) { return asked && mb_app_wid() == 0 && UiaClientsAreListening() ? 1 : 0; }
+int32_t mb_host_a11y_on(void) { return asked && mb_app_wid() == 0 && MB_A11Y_CLIENTS_LISTENING() ? 1 : 0; }
 
 // What the widgets are now (@hostapi.a11y_tree: an update of them, a11y.mbt's head: the nodes that changed, each whole,
 // and the focus): kept, one in nothing that holds it gone with what it holds, the readers told what changed
@@ -686,64 +809,79 @@ void mb_host_a11y_tree(moonbit_string_t s) {
     nodes.erase(w);
   }
   // providers of nodes gone let go (a reader holding one is told it is no more)
+  bool erased = false;
   for (auto it = items.begin(); it != items.end();) {
     if (!nodes.count(it->first)) {
       it->second->Release();
       it = items.erase(it);
+      erased = true;
     } else {
       ++it;
     }
   }
-  if (!UiaClientsAreListening() || !root) {
+  if (erased && !pending_props.empty()) {
+    pending_props.erase(
+        std::remove_if(pending_props.begin(), pending_props.end(),
+                       [](const PropNote &p) { return !items.count(p.id); }),
+        pending_props.end());
+  }
+  if (!MB_A11Y_CLIENTS_LISTENING() || !root) {
     focused = focus;
+    pending_props.clear();
+    pending_shape = false;
+    pending_focus = false;
     return;
   }
   for (auto &kv : items) {
     auto w = old.find(kv.first);
-    const Node &d = nodes[kv.first];
     if (w == old.end()) continue;
+    const Node &d = nodes[kv.first];
     const Node &o = w->second;
-    VARIANT a, b;
-    VariantInit(&a), VariantInit(&b);
     if (o.label != d.label) {
-      put_bstr(&a, o.label), put_bstr(&b, d.label);
-      said_changed(d.id, UIA_NamePropertyId, a, b);
-      VariantClear(&a), VariantClear(&b);
+      PropNote p;
+      p.id = d.id, p.prop = UIA_NamePropertyId, p.kind = PropNote::Str, p.was_s = o.label, p.now_s = d.label;
+      queue_prop(std::move(p));
     }
     if (o.value != d.value) {
-      put_bstr(&a, o.value), put_bstr(&b, d.value);
-      said_changed(d.id, UIA_ValueValuePropertyId, a, b);
-      VariantClear(&a), VariantClear(&b);
+      PropNote p;
+      p.id = d.id, p.prop = UIA_ValueValuePropertyId, p.kind = PropNote::Str, p.was_s = o.value, p.now_s = d.value;
+      queue_prop(std::move(p));
     }
     auto toggle = [](const Node &x) { return x.has(L'C') ? ToggleState_On : x.has(L'M') ? ToggleState_Indeterminate : ToggleState_Off; };
     if (d.has(L'c') && toggle(o) != toggle(d)) {
-      put_i4(&a, toggle(o)), put_i4(&b, toggle(d));
-      said_changed(d.id, UIA_ToggleToggleStatePropertyId, a, b);
+      PropNote p;
+      p.id = d.id, p.prop = UIA_ToggleToggleStatePropertyId, p.kind = PropNote::I4;
+      p.was_i = toggle(o), p.now_i = toggle(d);
+      queue_prop(std::move(p));
     }
     if (d.has(L'e') && o.has(L'E') != d.has(L'E')) {
-      put_i4(&a, o.has(L'E') ? ExpandCollapseState_Expanded : ExpandCollapseState_Collapsed);
-      put_i4(&b, d.has(L'E') ? ExpandCollapseState_Expanded : ExpandCollapseState_Collapsed);
-      said_changed(d.id, UIA_ExpandCollapseExpandCollapseStatePropertyId, a, b);
+      PropNote p;
+      p.id = d.id, p.prop = UIA_ExpandCollapseExpandCollapseStatePropertyId, p.kind = PropNote::I4;
+      p.was_i = o.has(L'E') ? ExpandCollapseState_Expanded : ExpandCollapseState_Collapsed;
+      p.now_i = d.has(L'E') ? ExpandCollapseState_Expanded : ExpandCollapseState_Collapsed;
+      queue_prop(std::move(p));
     }
     if (o.has(L's') != d.has(L's')) {
-      put_bool(&a, o.has(L's')), put_bool(&b, d.has(L's'));
-      said_changed(d.id, UIA_SelectionItemIsSelectedPropertyId, a, b);
+      PropNote p;
+      p.id = d.id, p.prop = UIA_SelectionItemIsSelectedPropertyId, p.kind = PropNote::Bool;
+      p.was_b = o.has(L's'), p.now_b = d.has(L's');
+      queue_prop(std::move(p));
     }
     if (d.range && o.at != d.at) {
-      a.vt = b.vt = VT_R8, a.dblVal = o.at, b.dblVal = d.at;
-      said_changed(d.id, UIA_RangeValueValuePropertyId, a, b);
+      PropNote p;
+      p.id = d.id, p.prop = UIA_RangeValueValuePropertyId, p.kind = PropNote::R8;
+      p.was_d = o.at, p.now_d = d.at;
+      queue_prop(std::move(p));
     }
   }
-  if (shape) UiaRaiseStructureChangedEvent(root, StructureChangeType_ChildrenInvalidated, NULL, 0);
+  if (shape) pending_shape = true;
   if (focus != focused) {
     focused = focus;
-    IRawElementProviderFragment *f = focus ? fragment_of(focus) : NULL;
-    if (f) {
-      IRawElementProviderSimple *simple = NULL;
-      f->QueryInterface(IID_PPV_ARGS(&simple));
-      if (simple) UiaRaiseAutomationEvent(simple, UIA_AutomationFocusChangedEventId), simple->Release();
-      f->Release();
-    }
+    pending_focus = true;
+  }
+  if ((!pending_props.empty() || pending_shape || pending_focus) && !flush_posted && !flushing) {
+    flush_posted = true;
+    mb_app_call(a11y_flush, NULL);
   }
 }
 

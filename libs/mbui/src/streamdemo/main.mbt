@@ -135,5 +135,5 @@ fn view(c : @ui.Ctx) -> Unit {
 ///|
 fn main {
   @hostapi.window_setup(480.0, 320.0, 720.0, 480.0)
-  @ui.run("mbui streams", view)
+  @ui.run_legacy_ctx("mbui streams", view)
 }

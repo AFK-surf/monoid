@@ -318,7 +318,7 @@ test "bar: the panel closed, a tap above the bar's glass (in its panel's room, n
 }
 
 ///|
-test "bar: the panel drawn up and open, a tap where the notch's key is closed is the row's there: that bar chosen" {
+test "bar: the panel drawn up and open, a tap on its row over the middle of the bar is the row's there: that bar chosen" {
   let (t, _) = bar_at_rest()
   let (xs, y) = bar_places_at()
   t.drag(xs[0], y, xs[0], y - 64.0, steps=20)
@@ -326,7 +326,7 @@ test "bar: the panel drawn up and open, a tap where the notch's key is closed is
   assert_true(bar.mode.get() && bar.k_at(t.time()) <= 0.9)
   let (top, row_top) = bar_panel_at()
   let before = bars_picked.get().map(fn(b) { b.1 })
-  t.tap_once(195.0, top + row_top - lift - 10.0)
+  t.tap_once(195.0, top + row_top - 14.0)
   t.run_for(bar.o.end() + 50.0 - t.time())
   assert_true(bars_picked.get().map(fn(b) { b.1 }) != before)
 }
@@ -525,8 +525,14 @@ fn bar_tapped_landing(after : Double, frames : Array[Double]) -> (Double, String
 }
 
 ///|
+/// Where the bar's first place is in the window as the bar now goes (its notch where it is sent), across.
+fn bar_first_now() -> Double {
+  let told = bar.told.unwrap()
+  22.0 + bar_centres(told.width, bar.k_end(), told.sets[told.cur].length())[0]
+}
+
+///|
 test "bar: a bar chosen landing, another of its places tapped before it has landed: the ball sent to that place then, there after it has landed, whichever frames came between" {
-  let (xs, _) = bar_places_at()
   let src = fixture("home")
   let (sets, cur) = bars_in(src, workspace_in_view(src).0.unwrap().id)
   let first = sets[if cur == 0 { 1 } else { 0 }][0]
@@ -539,8 +545,10 @@ test "bar: a bar chosen landing, another of its places tapped before it has land
     assert_true(left > 0.0 && end < 3000.0, msg="after \{after}: \{Repr(one)}")
     assert_eq(active, Some(first))
     assert_eq(key, Some(Some(first)))
-    assert_true((sent - xs[0]).abs() < 0.5, msg="after \{after}: sent to \{sent}")
-    assert_true((x - xs[0]).abs() < 0.5 && (to - xs[0]).abs() < 0.5, msg="after \{after}: ball at \{x}, going to \{to}")
+    // (that bar's first place where it is as the bar has landed, its action's room as that place has it)
+    let x0 = bar_first_now()
+    assert_true((sent - x0).abs() < 0.5, msg="after \{after}: sent to \{sent}")
+    assert_true((x - x0).abs() < 0.5 && (to - x0).abs() < 0.5, msg="after \{after}: ball at \{x}, going to \{to}")
   }
 }
 
@@ -566,12 +574,12 @@ fn bar_chosen_bare(frames : Array[Double]) -> (Double, String??, Double, String?
     @halt.saying("the panel not open")
   }
   let (top, _) = bar_panel_at()
-  bar_tap_landing(t, t.time() + between_frames_ms, 195.0, top + over + bar_row / 2.0, frames)
+  // (in from the bar's left end, past its places: the capsule's edge, no place's)
+  bar_tap_landing(t, t.time() + between_frames_ms, 22.0 + tab_edge / 2.0, top + over + bar_row / 2.0, frames)
 }
 
 ///|
 test "bar: a bar chosen without a place, the place shown in it elsewhere: the ball sent to where that bar has it as it is chosen, there after it has landed, whichever frames came between" {
-  let (xs, _) = bar_places_at()
   let one = bar_chosen_bare(landing_frames[0])
   for frames in landing_frames {
     assert_eq(bar_chosen_bare(frames), one)
@@ -582,6 +590,82 @@ test "bar: a bar chosen without a place, the place shown in it elsewhere: the ba
   assert_eq(key, Some(None))
   assert_eq((active, bars_picked.get().map(fn(b) { b.1 })), (Some("stations"), Some(1)))
   // (Station first in that bar)
-  assert_true((sent - xs[0]).abs() < 0.5, msg="sent to \{sent}")
-  assert_true((x - xs[0]).abs() < 0.5 && (to - xs[0]).abs() < 0.5, msg="ball at \{x}, going to \{to}")
+  let x0 = bar_first_now()
+  assert_true((sent - x0).abs() < 0.5, msg="sent to \{sent}")
+  assert_true((x - x0).abs() < 0.5 && (to - x0).abs() < 0.5, msg="ball at \{x}, going to \{to}")
+}
+
+///|
+/// First line where two drawlists differ, for diagnostics; empty when identical.
+fn drawlist_first_diff(got : String, want : String) -> String {
+  if got == want {
+    return ""
+  }
+  let a = got.split("\n").map(fn(s) { s.to_owned() }).to_array()
+  let b = want.split("\n").map(fn(s) { s.to_owned() }).to_array()
+  let n = if a.length() < b.length() { a.length() } else { b.length() }
+  let diffs : Array[String] = []
+  for i in 0..<n {
+    if a[i] != b[i] {
+      diffs.push("line \{i + 1}:\n  got : \{a[i]}\n  want: \{b[i]}")
+      if diffs.length() >= 8 {
+        break
+      }
+    }
+  }
+  if a.length() != b.length() {
+    diffs.push("lengths: got=\{a.length()} want=\{b.length()}")
+  }
+  diffs.join("\n")
+}
+
+///|
+/// Render Home at rest starting in `start_dark` from frame 0, then when `switch_theme` is true switch system dark to
+/// `end_dark` while the bottom bar stays mounted; return its full drawlist.
+fn bar_theme_switch_drawlist(start_dark : Bool, end_dark : Bool, switch_theme : Bool) -> String {
+  new_run()
+  let src = fixture(if start_dark { "home-dark" } else { "home" })
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2, dark=start_dark)
+  (src.call)("prefs.set", { "appearance": Json::string("system") }, @sfbase.answer_unread)
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  if switch_theme {
+    t.set_dark(end_dark)
+  }
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  t.drawlist()
+}
+
+///|
+test "bar: switching system theme light <-> dark or accent while mounted updates the bottom bar glass, ball and action to match a fresh run" {
+  for case in [(false, true), (true, false)] {
+    let (from_dark, to_dark) = case
+    let switched = bar_theme_switch_drawlist(from_dark, to_dark, true)
+    let fresh = bar_theme_switch_drawlist(to_dark, to_dark, false)
+    let diff = drawlist_first_diff(switched, fresh)
+    assert_eq(diff, "", msg="home \{from_dark}->\{to_dark}:\n\{diff}")
+  }
+  // switching accent while the bottom bar is mounted updates the bar's tinted glass and action disc too
+  new_run()
+  let src = fixture("home")
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  @sfbase.accent_preview(Some("blue"))
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  let switched_accent = t.drawlist()
+  new_run()
+  @sfbase.accent_preview(Some("blue"))
+  let src2 = fixture("home")
+  let t2 = @ui.Tester::new(fn(c) { view(c, src2) }, tree=app_tree(src2), w=390.0, h=844.0, platform=2)
+  t2.draw()
+  t2.run_for(@ui.move_most_ms)
+  t2.draw()
+  t2.run_for(@ui.move_most_ms)
+  let fresh_accent = t2.drawlist()
+  @sfbase.accent_preview(None)
+  let diff = drawlist_first_diff(switched_accent, fresh_accent)
+  assert_eq(diff, "", msg="home accent orange->blue:\n\{diff}")
 }

@@ -11,6 +11,21 @@ test "spokes as nodes: turning step by step, each step woken for; held at the fi
 }
 
 ///|
+test "at work's ink as nodes: the amber #e08a00 by day, #f2b01e at night, following the theme as it changes" {
+  set_dark(Some(false))
+  let t = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=200.0, h=200.0, platform=2)
+  @ui.set_view_app(fn(root) { spokes_node(root, 10.0, mark_yellow) |> ignore })
+  t.draw()
+  let inks = fn() { t.drawn_lines().map(fn(l) { l.5 }) }
+  assert_true(inks().contains(0xE08A00FFL), msg="by day: \{Repr(inks())}")
+  assert_true(!inks().contains(0xF2B01EFFL))
+  set_dark(Some(true))
+  t.draw()
+  assert_true(inks().contains(0xF2B01EFFL), msg="at night: \{Repr(inks())}")
+  assert_true(!inks().contains(0xE08A00FFL))
+}
+
+///|
 test "OpenCode's mark as a node: its frame, half as wide as its size and two thirds as high, edged 1.5 in the words' colour" {
   let t = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=100.0, h=100.0, platform=0)
   @ui.set_view_app(fn(root) {

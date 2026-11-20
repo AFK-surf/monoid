@@ -75,8 +75,9 @@ static const char kPlayerPage[] = R"(<!doctype html><meta charset=utf-8><style>
 html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000}
 video{width:100%;height:100%;object-fit:fill;display:block;background:#000}
 </style><video id=v preload=auto playsinline disablepictureinpicture disableremoteplayback></video><script>
-const v=document.getElementById('v');let want=false;
+const v=document.getElementById('v');let want=false,scrubbing=false,pending=null;
 const post=o=>window.chrome.webview.postMessage(JSON.stringify(o));
+const doSeek=(ms,near)=>{if(near&&v.fastSeek)v.fastSeek(ms/1000);else v.currentTime=ms/1000};
 const say=at=>{const b=v.buffered,t=typeof at==='number'?at:v.currentTime;let ahead=0;
 for(let i=0;i<b.length;i++)if(b.start(i)<=t+0.05&&b.end(i)>ahead)ahead=b.end(i);
 post({t:'s',d:isFinite(v.duration)?v.duration*1000:-1,p:t*1000,r:v.playbackRate,
@@ -84,15 +85,17 @@ playing:!v.paused&&!v.ended?1:0,w:v.videoWidth,h:v.videoHeight,drawn:v.readyStat
 buf:want&&!v.paused&&!v.ended&&v.readyState<3?1:0,ahead:ahead*1000,ended:v.ended?1:0,
 ready:v.readyState>=1?1:0,err:v.error?v.error.code:0});};
 for(const e of['loadedmetadata','loadeddata','durationchange','timeupdate','play','playing','pause','waiting',
-'canplay','canplaythrough','seeking','seeked','progress','ended','error','ratechange','stalled','suspend'])
+'canplay','canplaythrough','seeking','progress','ended','error','ratechange','stalled','suspend'])
 v.addEventListener(e,say);
+v.addEventListener('seeked',()=>{if(pending!==null){const p=pending;pending=null;doSeek(p.ms,p.near)}say()});
 let going=false;const frame=(now,m)=>{say(m?m.mediaTime:undefined);if(!v.paused&&!v.ended)go();else going=false};
 const go=()=>{if(v.videoWidth&&v.requestVideoFrameCallback)v.requestVideoFrameCallback(frame);else requestAnimationFrame(frame)};
 v.addEventListener('playing',()=>{if(!going){going=true;go()}});
 window.mbuiPlayer={
-play(){want=true;v.play().catch(()=>{});say()},
-pause(){want=false;v.pause();say()},
-seek(ms,near){if(near&&v.fastSeek)v.fastSeek(ms/1000);else v.currentTime=ms/1000;say()},
+play(){want=true;pending=null;v.play().catch(()=>{});say()},
+pause(){want=false;pending=null;v.pause();say()},
+scrub(on){scrubbing=!!on;if(!scrubbing&&pending!==null&&!v.seeking){const p=pending;pending=null;doSeek(p.ms,p.near)}say()},
+seek(ms,near){if(scrubbing&&near&&v.seeking){pending={ms,near:true};say();return}pending=null;doSeek(ms,!!near);say()},
 rate(r){if(r>0)v.playbackRate=r;say()},
 volume(n){v.volume=Math.max(0,Math.min(1,n))},
 grab(ms){const g=document.createElement('video');g.muted=true;g.preload='auto';
@@ -1253,6 +1256,7 @@ extern "C" void mb_host_view_control(int32_t vid, int32_t op, double value) {
       case 2: page_script(v, L"mbuiPlayer.pause()"); break;
       case 3: swprintf(js, 128, L"mbuiPlayer.seek(%.3f,false)", value); page_script(v, js); break;
       case 11: swprintf(js, 128, L"mbuiPlayer.seek(%.3f,true)", value); page_script(v, js); break;
+      case 9: page_script(v, value > 0 ? L"mbuiPlayer.scrub(true)" : L"mbuiPlayer.scrub(false)"); break;
       case 4: swprintf(js, 128, L"mbuiPlayer.rate(%.4f)", value); page_script(v, js); break;
       // how loud, 0 to 1 (NativeView::volume)
       case 10: swprintf(js, 128, L"mbuiPlayer.volume(%.4f)", value); page_script(v, js); break;

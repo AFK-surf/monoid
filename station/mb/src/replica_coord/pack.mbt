@@ -53,9 +53,7 @@ let stage_bytes = 262144
 
 ///|
 fn hex_bytes(hex : String) -> Bytes {
-  @hex.decode(hex) catch {
-    _ => b""
-  }
+  @codec.hex_decode(hex).unwrap_or(b"")
 }
 
 ///|
@@ -274,14 +272,7 @@ async fn Unpacking::take(self : Unpacking, b : Bytes) -> Unit {
       }
       self.had = 0
       self.at = unpack_tag
-      let hex = StringBuilder::new()
-      let digits = "0123456789abcdef"
-      for i in 0..<32 {
-        let x = self.head[i].to_int()
-        hex.write_char(digits.unsafe_charcode_at(x >> 4).unsafe_to_char())
-        hex.write_char(digits.unsafe_charcode_at(x & 15).unsafe_to_char())
-      }
-      self.begin(hex.to_string())
+      self.begin(@codec.hex_encode(Bytes::makei(32, i => self.head[i])))
     } else if self.at == unpack_length {
       at = self.fill(b, at, 4)
       if self.had < 4 {

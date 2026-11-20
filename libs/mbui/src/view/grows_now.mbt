@@ -35,19 +35,7 @@ pub fn View::grows_now(self : View) -> (Double, Double) {
   // (what comes or goes in it, as it was drawn: its way's moment set to each, and back; what is not in it laid out as
   // it stands)
   let coming : Array[(Int, Double)] = []
-  let walk : Ref[(Int) -> Unit] = Ref(fn(_) {  })
-  walk.val = fn(k : Int) {
-    let m = tree.nodes[k]
-    guard m.live else { return }
-    let st = m.flex.style
-    if m.coming && st.come_now == st.come_now {
-      coming.push((k, st.come_now))
-    }
-    for c in m.kids {
-      (walk.val)(c)
-    }
-  }
-  (walk.val)(self.at)
+  tree.coming_under(self.at, coming)
   let laid_at = fn(t : Double, back : Bool) {
     tree.bound_at(t)
     for c in coming {
@@ -97,4 +85,20 @@ fn Tree::grows_read_in_binding(self : Tree) -> Unit {
   }
   let said = "GROWSNOW grows_now read in a binding: \{made}"
   @halt.saying(said)
+}
+
+///|
+/// What comes in node `k` and what it holds, each with its way's moment as it was drawn, put in `coming` in their turn.
+/// (a function of its own, not a closure in a cell calling itself: that cell would hold it and it the cell, a ring
+/// native's counting never frees, kept with the tree it names on every call)
+fn Tree::coming_under(self : Tree, k : Int, coming : Array[(Int, Double)]) -> Unit {
+  let m = self.nodes[k]
+  guard m.live else { return }
+  let st = m.flex.style
+  if m.coming && st.come_now == st.come_now {
+    coming.push((k, st.come_now))
+  }
+  for c in m.kids {
+    self.coming_under(c, coming)
+  }
 }

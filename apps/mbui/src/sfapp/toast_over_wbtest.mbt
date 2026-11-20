@@ -16,7 +16,7 @@ fn over_sheet(runs : Ref[Int]) -> @ui.Tester {
   sheet_rested(t, "sf-present")
   @sfbase.toast_later(over_words, action="撤销", run=fn() { runs.val = runs.val + 1 })
   t.frame()
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   t
 }
 
@@ -87,7 +87,7 @@ test "a toast with its action said while the old frame's modal sheet is up: draw
   let acted = match button {
     Some((bx, by, bw, bh)) => {
       t.tap(bx + bw / 2.0, by + bh / 2.0)
-      t.run_for(@kit.presence_out_ms)
+      t.run_for(@motion.presence_out_ms)
       let once = (runs.val, t.find(over_words) is None)
       t.run_for(@sf.toast_action_ms)
       (once, runs.val)

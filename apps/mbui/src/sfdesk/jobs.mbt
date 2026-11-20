@@ -41,7 +41,7 @@ pub fn open_job_pop(id : String) -> Unit {
 }
 
 ///|
-/// A job's status (JobDot): a small dot, on its name's line: up or alive green (alive breathing slowly round it),
+/// A job's status (JobDot): a small dot, on its name's line: up or alive green,
 /// restarting amber (breathing), failed red, else the strong line's grey.
 fn job_dot(c : @ui.Ctx, tone : String) -> Unit {
   let dot = match tone {
@@ -50,24 +50,7 @@ fn job_dot(c : @ui.Ctx, tone : String) -> Unit {
     "fail" => job_dot_fail
     _ => job_dot_off
   }
-  let n = c.box(style=dot, fn() {
-    // alive: its breath out round it, from .6 to 1.15 and back, fading (jobLive); resident: up as long as it runs
-    if tone == "live" {
-      c.layer(fn() {
-        let halo = c.box(style=job_halo, tx=-@sf.state_halo_out, ty=-@sf.state_halo_out, fn() {  })
-        c.cycle_look(
-          halo,
-          @sf.state_live_ms,
-          fn(f) {
-            let p = if f < 0.5 { f * 2.0 } else { 2.0 - f * 2.0 }
-            @ui.look(scale=0.6 + 0.55 * p, alpha=0.35 * (1.0 - p))
-          },
-          resident=true,
-        )
-      })
-      |> ignore
-    }
-  })
+  let n = c.box(style=dot, fn() {  })
   // restarting: breathing to .35 and back (jobBreathe)
   if tone == "restart" {
     @sf.breathe(c, n, low=0.35, resident=true)
@@ -416,11 +399,6 @@ let job_dot_restart : @ui.Style = @ui.css("w=S2 h=S2 radius=Full bg=Warn")
 let job_dot_fail : @ui.Style = @ui.css("w=S2 h=S2 radius=Full bg=Danger")
 
 ///|
-/// An alive job's breath round its dot: 16 across (inset -4), the online green.
-// kept across runs: a value (no field of it changes)
-let job_halo : @ui.Style = @ui.css("w=S4 h=S4 radius=Full bg=Positive")
-
-///|
 /// The dot on the name's line (20 high): 6 down.
 // kept across runs: a value (no field of it changes)
 let job_dot_room : @ui.Style = @ui.css("pt=S1_5")
@@ -734,7 +712,7 @@ let job_detail_last : @ui.Style = @ui.css("w=Full pb=S3")
 ///|
 /// Its output (jobOutput): the rest of it, 4 over, 8 under and at its end; 11.5 mono on 1.6, the words' ink.
 // kept across runs: a value (no field of it changes)
-let job_output_box : @ui.Style = @ui.style(w=Full, h=@sf.grow, mt=S1, mb=S2, pr=S2)
+let job_output_box : @ui.Style = @ui.style(w=Full, h=@sf.grow, mt=S1, mb=S2)
 
 ///|
 // kept across runs: a value (no field of it changes)

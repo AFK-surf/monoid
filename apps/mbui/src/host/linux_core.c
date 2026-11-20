@@ -306,37 +306,151 @@ typedef struct {
   int has_bytes;
 } secure_call;
 
+static void free_strs(char **items, size_t count) {
+  if (!items) return;
+  for (size_t i = 0; i < count; i++) free(items[i]);
+  free(items);
+}
+
+// A JSON array of strings at `p`, as malloc'd UTF-8 strings: 1 on success, 0 when not one.
+static int jstrs(const char *p, char ***out, size_t *count) {
+  *out = NULL;
+  *count = 0;
+  if (!p) return 0;
+  p = ws(p);
+  if (*p != '[') return 0;
+  p = ws(p + 1);
+  if (*p == ']') return 1;
+  size_t cap = 4, n = 0;
+  char **items = malloc(cap * sizeof(char *));
+  if (!items) return 0;
+  for (;;) {
+    if (*p != '"') {
+      free_strs(items, n);
+      return 0;
+    }
+    char *s = jstr(p);
+    const char *next = skip_string(p);
+    if (!s || !next) {
+      free(s);
+      free_strs(items, n);
+      return 0;
+    }
+    if (n == cap) {
+      cap *= 2;
+      char **grown = realloc(items, cap * sizeof(char *));
+      if (!grown) {
+        free(s);
+        free_strs(items, n);
+        return 0;
+      }
+      items = grown;
+    }
+    items[n++] = s;
+    p = ws(next);
+    if (*p == ',') p = ws(p + 1);
+    else if (*p == ']') {
+      *out = items;
+      *count = n;
+      return 1;
+    } else {
+      free_strs(items, n);
+      return 0;
+    }
+  }
+}
+
 static gpointer secure_run(gpointer arg) {
   secure_call *c = arg;
   const char *op = c->op, *json = c->json;
   uint64_t id = c->id;
-  char *key = jstr(jget(json, "key"));
   int user = jtrue(jget(json, "user"));
   char why[300] = "";
+  char *key = NULL;
   if (strcmp(op, "secure.ask") == 0) {
     answer(id, "{}", NULL, NULL, 0);
-  } else if (!key || !*key) {
-    snprintf(why, sizeof why, "%s: no key", op);
-    answer(id, NULL, why, NULL, 0);
-  } else if (strcmp(op, "secure.get") == 0) {
-    uint8_t *out = NULL;
-    size_t len = 0;
-    int got = secure_get(key, user, &out, &len, why, sizeof why);
-    static const uint8_t none = 0;
-    if (got > 0) answer(id, "{}", NULL, len ? out : &none, len);
-    else if (got == 0) answer(id, "{\"none\":true}", NULL, NULL, 0);
-    else answer(id, NULL, why, NULL, 0);
-    if (out) memset(out, 0, len), free(out);
-  } else if (strcmp(op, "secure.set") == 0) {
-    static const uint8_t none = 0;
-    if (secure_set(key, user, c->has_bytes ? c->bytes : &none, c->has_bytes ? c->blen : 0, why, sizeof why))
-      answer(id, "{}", NULL, NULL, 0);
-    else answer(id, NULL, why, NULL, 0);
-  } else if (strcmp(op, "secure.delete") == 0) {
-    secure_delete(key);
-    answer(id, "{}", NULL, NULL, 0);
+  } else if (strcmp(op, "secure.getMany") == 0) {
+    char **keys = NULL;
+    size_t n = 0;
+    if (!jstrs(jget(json, "keys"), &keys, &n)) {
+      answer(id, NULL, "secure.getMany: no keys", NULL, 0);
+    } else {
+      uint8_t **vals = n ? calloc(n, sizeof(uint8_t *)) : NULL;
+      size_t *lens = n ? calloc(n, sizeof(size_t)) : NULL;
+      int *gots = n ? calloc(n, sizeof(int)) : NULL;
+      int failed = 0;
+      size_t total = 0;
+      for (size_t i = 0; i < n; i++) {
+        if (!keys[i] || !*keys[i]) {
+          snprintf(why, sizeof why, "secure.getMany: bad key");
+          failed = 1;
+          break;
+        }
+        int got = secure_get(keys[i], user, &vals[i], &lens[i], why, sizeof why);
+        if (got < 0) {
+          failed = 1;
+          break;
+        }
+        gots[i] = got;
+        if (got > 0) total += lens[i];
+      }
+      if (failed) {
+        answer(id, NULL, why, NULL, 0);
+      } else {
+        GString *j = g_string_new("{\"sizes\":[");
+        uint8_t *all = total ? malloc(total) : NULL;
+        size_t at = 0;
+        for (size_t i = 0; i < n; i++) {
+          if (i > 0) g_string_append_c(j, ',');
+          if (gots[i] > 0) {
+            g_string_append_printf(j, "%zu", lens[i]);
+            if (lens[i]) {
+              memcpy(all + at, vals[i], lens[i]);
+              at += lens[i];
+            }
+          } else {
+            g_string_append(j, "-1");
+          }
+        }
+        g_string_append(j, "]}");
+        static const uint8_t none = 0;
+        answer(id, j->str, NULL, total ? all : &none, total);
+        g_string_free(j, TRUE);
+        if (all) memset(all, 0, total), free(all);
+      }
+      for (size_t i = 0; i < n; i++) {
+        if (vals && vals[i]) memset(vals[i], 0, lens[i]), free(vals[i]);
+      }
+      free(vals);
+      free(lens);
+      free(gots);
+      free_strs(keys, n);
+    }
   } else {
-    answer(id, NULL, "unsupported", NULL, 0);
+    key = jstr(jget(json, "key"));
+    if (!key || !*key) {
+      snprintf(why, sizeof why, "%s: no key", op);
+      answer(id, NULL, why, NULL, 0);
+    } else if (strcmp(op, "secure.get") == 0) {
+      uint8_t *out = NULL;
+      size_t len = 0;
+      int got = secure_get(key, user, &out, &len, why, sizeof why);
+      static const uint8_t none = 0;
+      if (got > 0) answer(id, "{}", NULL, len ? out : &none, len);
+      else if (got == 0) answer(id, "{\"none\":true}", NULL, NULL, 0);
+      else answer(id, NULL, why, NULL, 0);
+      if (out) memset(out, 0, len), free(out);
+    } else if (strcmp(op, "secure.set") == 0) {
+      static const uint8_t none = 0;
+      if (secure_set(key, user, c->has_bytes ? c->bytes : &none, c->has_bytes ? c->blen : 0, why, sizeof why))
+        answer(id, "{}", NULL, NULL, 0);
+      else answer(id, NULL, why, NULL, 0);
+    } else if (strcmp(op, "secure.delete") == 0) {
+      secure_delete(key);
+      answer(id, "{}", NULL, NULL, 0);
+    } else {
+      answer(id, NULL, "unsupported", NULL, 0);
+    }
   }
   free(key);
   if (c->bytes) memset(c->bytes, 0, c->blen);

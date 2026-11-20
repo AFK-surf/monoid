@@ -150,13 +150,39 @@ export class FakeSlack {
       if (body && typeof body === "object" && "__status" in body) return { status: body.__status, headers: body.__headers ?? {}, body: body.__body ?? {} };
       return { status: 200, headers: {}, body };
     }
-    // (Slack's own limit: chat.update refuses a `text` over 4,000 UTF-8 bytes, though chat.postMessage takes it)
-    if (method === "chat.update" && Buffer.byteLength(params.text ?? "", "utf8") > 4_000)
+    // (Slack's own limit: chat.update refuses a `text` over 4,000 UTF-8 bytes as Slack has changed it, though
+    // chat.postMessage takes it)
+    if (method === "chat.update" && updateTooLong(params.text ?? ""))
       return { status: 200, headers: {}, body: { ok: false, error: "msg_too_long" } };
     if (method === "apps.connections.open") return { status: 200, headers: {}, body: { ok: true, url: this.socketUrl() } };
     if (method === "chat.postMessage") return { status: 200, headers: {}, body: { ok: true, ts: `${8_000_000 + this.ts++}.000100` } };
     return { status: 200, headers: {}, body: { ok: true } };
   }
+}
+
+/// A `text` as Slack changes it before it measures it: `&`, `<` and `>` escaped outside its own `<…>` (a mention, a
+/// channel, a link, `<!here>`), and bare links and emails made links, `<url|url>` and `<mailto:e|e>`.
+export function slackExpanded(text: string): string {
+  const own = /<(?:[@#!][^<>\s]*|(?:https?:\/\/|mailto:)[^<>\s]*)>/g;
+  const bare = (part: string) =>
+    part
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/https?:\/\/[^\s<>|]+/g, (url) => `<${url}|${url}>`)
+      .replace(/(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, (email) => `<mailto:${email}|${email}>`);
+  let out = "";
+  let from = 0;
+  for (const m of text.matchAll(own)) {
+    out += bare(text.slice(from, m.index)) + m[0];
+    from = m.index + m[0].length;
+  }
+  return out + bare(text.slice(from));
+}
+
+/// Whether Slack refuses a chat.update's `text` (msg_too_long): over 4,000 UTF-8 bytes as it changed it.
+export function updateTooLong(text: string): boolean {
+  return Buffer.byteLength(slackExpanded(text), "utf8") > 4_000;
 }
 
 /// What a fake Slack says a bot is (auth.test and users.info), for a team.

@@ -88,8 +88,8 @@ test("presets_are_read_as_shown_again_once_one_is_made_and_the_one_picked_goes_w
   assert.equal(v(values, 2).presetName, "Lib", "named as the station says, the page asking nothing more");
   assert.equal(v(values, 2).presetStation, S);
   assert.deepEqual(v(values, 2).presets, [
-    { id: "app", name: "App", station: S, stationName: "studio" },
-    { id: "lib", name: "Lib", station: S, stationName: "studio" },
+    { id: "app", name: "App", station: S, stationName: "studio", summary: "app", dirName: "app", dirRepo: "github.com/acme/app" },
+    { id: "lib", name: "Lib", station: S, stationName: "studio", summary: "lib", dirName: "lib", dirRepo: "github.com/acme/lib", used: true },
   ]);
   assert.deepEqual(v(values, 2).presetMarks, [{ name: "lib", repo: "github.com/acme/lib" }], "the one picked's marks, its control's look");
   call(core, ui, 5, "newChat.create", { station: S, key: v(values, 2).next });
@@ -205,7 +205,7 @@ test("a_preset_applies_its_optional_station_and_model_when_picked_or_leaves_them
   };
   const said: Record<string, unknown> = {
     ...base(),
-    "GET /overview": { ...overview, claudeTui: true, profiles: [p2] },
+    "GET /overview": { ...overview, claudeTui: true, autoChats: { enabled: true, canEdit: true }, profiles: [p2] },
     "GET /presets": { presets: [presetBound, presetFree], candidates: [candidate] },
   };
   const { host, core } = await started(said as never);

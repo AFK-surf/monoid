@@ -1,97 +1,54 @@
-// Values as JavaScript has them (JValue: JSON.parse and JSON.stringify exactly) with their strings as MoonBit's, and
-// what JavaScript asks of them: a field, its type, `String(v)`, a whole number, an object put together in JavaScript's
-// order of keys. One type for every package that reads JavaScript's values (the admin API's routes, the accounts,
-// Feishu): each re-exports what it uses (`pub using @jsjson { type JV, ... }`). Where a name is JValue's too here
-// (`parse`, `stringify`, `js_string`) it is `jv_`'s, re-exported under its own name.
-
-
-///|
-/// A JavaScript value as JSON has it.
-#derive(Eq)
-pub(all) enum JV {
-  Null
-  Bool(Bool)
-  Num(Double)
-  Str(String)
-  Arr(Array[JV])
-  /// keys and values, in JavaScript's order
-  Obj(Array[(String, JV)])
-}
+// Values as JavaScript has them (`JV` is an alias of `JValue`) and what JavaScript asks of them: a field, its type,
+// `String(v)`, a whole number, an object put together in JavaScript's order of keys. One type for every package that
+// reads JavaScript's values (the admin API's routes, the accounts, Feishu): each re-exports what it uses
+// (`pub using @jsjson { type JV, ... }`). Where a name is JValue's too here (`parse`, `stringify`, `js_string`) it is
+// `jv_`'s, re-exported under its own name.
 
 ///|
-pub fn JV::of_js(v : JValue) -> JV {
+/// Sanitize lone surrogates in strings and object keys to U+FFFD (zero-allocation fast path when clean).
+pub fn JValue::of_js(v : JValue) -> JValue {
   match v {
-    Null => Null
-    Bool(b) => Bool(b)
-    Num(n) => Num(n)
-    Str(u) => Str(text(u))
-    Arr(a) => Arr(a.map(JV::of_js))
-    Obj(f) => Obj(f.map(p => (text(p.0), JV::of_js(p.1))))
+    Null | Bool(_) | Num(_) => v
+    Str(s) => Str(sanitize_str(s))
+    Arr(a) => Arr(a.map(JValue::of_js))
+    Obj(f) => Obj(f.map(p => (sanitize_str(p.0), JValue::of_js(p.1))))
   }
 }
 
 ///|
-pub fn JV::to_js(v : JV) -> JValue {
-  match v {
-    Null => Null
-    Bool(b) => Bool(b)
-    Num(n) => Num(n)
-    Str(s) => Str(units(s))
-    Arr(a) => Arr(a.map(JV::to_js))
-    Obj(f) => Obj(f.map(p => (units(p.0), JV::to_js(p.1))))
-  }
+/// Zero-cost identity (retained for callers that keep lone surrogates).
+pub fn JValue::of_js_raw(v : JValue) -> JValue {
+  v
 }
 
 ///|
-/// `v[k]` of an object.
-pub fn JV::get(self : JV, k : String) -> JV? {
-  match self {
-    Obj(fields) => {
-      for f in fields {
-        if f.0 == k {
-          return Some(f.1)
-        }
-      }
-      None
-    }
-    _ => None
-  }
+/// Zero-cost identity (`JV` and `JValue` are the same type).
+pub fn JValue::to_js(v : JValue) -> JValue {
+  v
 }
 
 ///|
-pub fn js(s : String) -> JV {
-  Str(s)
-}
+pub fn js(s : String) -> JV { Str(s) }
 
 ///|
-pub fn jnum(n : Double) -> JV {
-  Num(n)
-}
+pub fn jnum(n : Double) -> JV { Num(n) }
 
 ///|
-pub fn jint(n : Int32) -> JV {
-  Num(n.to_double())
-}
+pub fn jint(n : Int32) -> JV { Num(n.to_double()) }
 
 ///|
-pub fn jbool(b : Bool) -> JV {
-  Bool(b)
-}
+pub fn jbool(b : Bool) -> JV { Bool(b) }
 
 ///|
-pub fn jarr(items : Array[JV]) -> JV {
-  Arr(items)
-}
+pub fn jarr(items : Array[JV]) -> JV { Arr(items) }
 
 ///|
-pub fn jstrs(items : Array[String]) -> JV {
-  Arr(items.map(js))
-}
+pub fn jstrs(items : Array[String]) -> JV { Arr(items.map(js)) }
 
 ///|
 pub fn jopt(s : String?) -> JV {
   match s {
-    Some(v) => js(v)
+    Some(v) => Str(v)
     None => Null
   }
 }
@@ -99,52 +56,40 @@ pub fn jopt(s : String?) -> JV {
 ///|
 /// An object of these fields in this order (as a literal writes them: integer-like keys first, as JavaScript does).
 pub fn jobj(fields : Array[(String, JV)]) -> JV {
-  let mut o = JV::Obj([])
+  if fields.length() < seen_from {
+    let o = JValue::Obj(Array::new(capacity=fields.length()))
+    for f in fields {
+      o.put(f.0, f.1)
+    }
+    return o
+  }
+  // (what `put` one by one gives, without its scans: a repeat keeps its first place and takes the last value,
+  // integer-like keys first ascending, the rest in the order they came)
+  let at : Map[String, Int] = Map::new(capacity=fields.length() * 2)
+  let unique : Array[(String, JV)] = Array::new(capacity=fields.length())
   for f in fields {
-    o = jset(o, f.0, f.1)
-  }
-  o
-}
-
-///|
-/// A canonical array index (`0`, `12`, not `012`): what JavaScript puts first in an object, ascending.
-fn index_key(k : String) -> Double? {
-  if k.length() == 0 || k.length() > 10 {
-    return None
-  }
-  if k.length() > 1 && k.unsafe_charcode_at(0) == '0' {
-    return None
-  }
-  let mut n = 0.0
-  for i in 0..<k.length() {
-    let c = k.unsafe_charcode_at(i)
-    if c < '0' || c > '9' {
-      return None
+    match at.get(f.0) {
+      Some(i) => unique[i] = f
+      None => {
+        at.set(f.0, unique.length())
+        unique.push(f)
+      }
     }
-    n = n * 10.0 + (c - '0').to_double()
   }
-  if n > 4294967294.0 {
-    None
-  } else {
-    Some(n)
-  }
+  Obj(ordered(unique))
 }
 
 ///|
-/// `o[k] = v` (or `{...o, [k]: v}`): in place where it was, else where JavaScript puts a new key.
-pub fn jset(o : JV, k : String, v : JV) -> JV {
-  let key = k
-  let fields = match o {
-    Obj(f) => f.copy()
-    _ => []
-  }
+/// `o[k] = v` in place (an object's own array): where it was, else where JavaScript puts a new key.
+pub fn JValue::put(self : JValue, k : String, v : JValue) -> Unit {
+  guard self is Obj(fields) else { return }
   for i in 0..<fields.length() {
-    if fields[i].0 == key {
-      fields[i] = (key, v)
-      return Obj(fields)
+    if fields[i].0 == k {
+      fields[i] = (k, v)
+      return
     }
   }
-  match index_key(key) {
+  match index_key(k) {
     Some(n) => {
       let mut at = 0
       while at < fields.length() {
@@ -153,52 +98,94 @@ pub fn jset(o : JV, k : String, v : JV) -> JV {
           _ => break
         }
       }
-      fields.insert(at, (key, v))
+      fields.insert(at, (k, v))
     }
-    None => fields.push((key, v))
+    None => fields.push((k, v))
   }
-  Obj(fields)
+}
+
+///|
+/// `delete o[k]` in place.
+pub fn JValue::delete(self : JValue, k : String) -> Unit {
+  guard self is Obj(fields) else { return }
+  for i in 0..<fields.length() {
+    if fields[i].0 == k {
+      fields.remove(i) |> ignore
+      return
+    }
+  }
+}
+
+///|
+/// `o[k] = v` in place.
+pub fn jput(o : JV, k : String, v : JV) -> Unit { o.put(k, v) }
+
+///|
+/// `delete o[k]` in place.
+pub fn jdelete(o : JV, k : String) -> Unit { o.delete(k) }
+
+///|
+/// `v?.[i]` of an array.
+pub fn jat(v : JV?, i : Int) -> JV? { jval_at_i(v, i) }
+
+///|
+/// An object's keys as `Object.keys` gives them: integer-like ones first, ascending.
+pub fn jkeys(v : JV) -> Array[String] { v.keys() }
+
+///|
+/// `Object.values(v)` (of an object, an array, a string; nothing of anything else).
+pub fn jvalues(v : JV) -> Array[JV] {
+  match v {
+    Obj(f) => ordered(f).map(e => e.1)
+    Arr(a) => a
+    Str(s) => {
+      let out = Array::new(capacity=s.length())
+      for i in 0..<s.length() {
+        out.push(JValue::Str(s.unsafe_substring(start=i, end=i + 1)))
+      }
+      out
+    }
+    _ => []
+  }
+}
+
+///|
+/// `o[k] = v` (or `{...o, [k]: v}`): in place where it was, else where JavaScript puts a new key.
+pub fn jset(o : JV, k : String, v : JV) -> JV {
+  let out = JValue::Obj(match o {
+    Obj(f) => f.copy()
+    _ => []
+  })
+  out.put(k, v)
+  out
 }
 
 ///|
 /// `delete o[k]`.
-pub fn jdel(o : JV, k : String) -> JV {
-  let key = k
-  match o {
-    Obj(f) => Obj(f.filter(p => p.0 != key))
-    _ => o
-  }
-}
+pub fn jdel(o : JV, k : String) -> JV { jval_del(o, k) }
 
 ///|
 /// `{...a, ...b}`: b's fields over a's.
 pub fn jspread(a : JV, b : JV) -> JV {
-  let mut o = match a {
-    Obj(_) => a
-    _ => Obj([])
-  }
+  let out = JValue::Obj(match a {
+    Obj(f) => f.copy()
+    _ => []
+  })
   if b is Obj(fields) {
     for f in fields {
-      o = jset(o, f.0, f.1)
+      out.put(f.0, f.1)
     }
   }
-  o
+  out
 }
 
 ///|
 /// `v[k]`: None where it is not an object or has no such field (JavaScript's undefined).
-pub fn jget(v : JV?, k : String) -> JV? {
-  match v {
-    Some(Obj(_) as o) => o.get(k)
-    _ => None
-  }
-}
+pub fn jget(v : JV?, k : String) -> JV? { jval_at(v, k) }
 
 ///|
 /// `k in v` for an object.
-pub fn jhas(v : JV, k : String) -> Bool {
-  v is Obj(_) && v.get(k) is Some(_)
-}
+pub fn jhas(v : JV, k : String) -> Bool { v is Obj(_) && v.get(k) is Some(_) }
 
 ///|
 /// The string it is, if it is one.
@@ -211,36 +198,20 @@ pub fn jstr(v : JV?) -> String? {
 
 ///|
 /// The number it is, if it is one.
-pub fn jnumber(v : JV?) -> Double? {
-  match v {
-    Some(Num(n)) => Some(n)
-    _ => None
-  }
-}
+pub fn jnumber(v : JV?) -> Double? { jval_num_of(v) }
 
 ///|
-pub fn is_object(v : JV?) -> Bool {
-  v is Some(Obj(_))
-}
+pub fn is_object(v : JV?) -> Bool { v is Some(Obj(_)) }
 
 ///|
-pub fn is_array(v : JV?) -> Bool {
-  v is Some(Arr(_))
-}
+pub fn is_array(v : JV?) -> Bool { v is Some(Arr(_)) }
 
 ///|
 /// `v !== null && typeof v === "object"` (an array too).
-pub fn is_objectish(v : JV?) -> Bool {
-  v is Some(Obj(_) | Arr(_))
-}
+pub fn is_objectish(v : JV?) -> Bool { v is Some(Obj(_) | Arr(_)) }
 
 ///|
-pub fn jitems(v : JV?) -> Array[JV] {
-  match v {
-    Some(Arr(a)) => a
-    _ => []
-  }
-}
+pub fn jitems(v : JV?) -> Array[JV] { jval_arr(v) }
 
 ///|
 pub fn jfields(v : JV?) -> Array[(String, JV)] {
@@ -252,23 +223,50 @@ pub fn jfields(v : JV?) -> Array[(String, JV)] {
 
 ///|
 /// JSON.stringify(v).
-pub fn jv_stringify(v : JV) -> String {
-  stringify(JV::to_js(v))
-}
+pub fn jv_stringify(v : JV) -> String { stringify(v) }
 
 ///|
 /// JSON.stringify(v) where v may be undefined (None: undefined, which JSON.stringify gives back as undefined).
 pub fn stringify_opt(v : JV?) -> String? {
   match v {
-    Some(x) => Some(jv_stringify(x))
+    Some(x) => Some(stringify(x))
     None => None
   }
 }
 
 ///|
 /// JSON.parse(text).
-pub fn jv_parse(text : String) -> JV raise SyntaxError {
-  JV::of_js(parse(text))
+pub fn jv_parse(text : String) -> JV raise SyntaxError { JValue::of_js(parse(text)) }
+
+///|
+/// JSON.parse(text), keeping lone surrogates in strings and keys.
+pub fn jv_parse_raw(text : String) -> JV raise SyntaxError { parse(text) }
+
+///|
+/// JSON.parse(text) keeping lone surrogates, None where it throws.
+pub fn try_parse_raw(text : String) -> JV? { jval_try_parse(text) }
+
+///|
+/// Number.isFinite.
+pub fn is_finite(d : Double) -> Bool {
+  !d.is_nan() && !d.is_inf()
+}
+
+///|
+/// Math.round: half way up toward +∞, `-0.5 <= d < 0` to `-0.0`, NaN and infinities unchanged.
+pub fn js_round(d : Double) -> Double {
+  if !is_finite(d) {
+    return d
+  }
+  if d >= -0.5 && d < 0.0 {
+    return -0.0
+  }
+  let f = d.floor()
+  if d - f >= 0.5 {
+    f + 1.0
+  } else {
+    f
+  }
 }
 
 ///|
@@ -432,6 +430,15 @@ pub fn js_number(s : String) -> Double {
   if body.has_suffix(".") {
     body = body + "0"
   }
+  // (leading zeros JSON refuses: "007" is 7)
+  let mut z = 0
+  while z + 1 < body.length() &&
+        body.unsafe_charcode_at(z) == '0' &&
+        body.unsafe_charcode_at(z + 1) >= '0' &&
+        body.unsafe_charcode_at(z + 1) <= '9' {
+    z += 1
+  }
+  body = body.unsafe_substring(start=z, end=body.length())
   let v = match try_parse(body) {
     Some(Num(n)) => n
     _ => @double.not_a_number
@@ -444,31 +451,34 @@ pub fn js_number(s : String) -> Double {
 }
 
 ///|
+/// Whether a UTF-16 code unit is JavaScript whitespace or a line terminator.
+pub fn is_js_space(c : Int) -> Bool {
+  c == 0x09 ||
+  c == 0x0a ||
+  c == 0x0b ||
+  c == 0x0c ||
+  c == 0x0d ||
+  c == 0x20 ||
+  c == 0xa0 ||
+  c == 0x1680 ||
+  (c >= 0x2000 && c <= 0x200a) ||
+  c == 0x2028 ||
+  c == 0x2029 ||
+  c == 0x202f ||
+  c == 0x205f ||
+  c == 0x3000 ||
+  c == 0xfeff
+}
+
+///|
 /// String.prototype.trim: JavaScript's white space and line terminators off both ends.
 pub fn trim_js(s : String) -> String {
-  let space = c => {
-    c == 0x09 ||
-    c == 0x0a ||
-    c == 0x0b ||
-    c == 0x0c ||
-    c == 0x0d ||
-    c == 0x20 ||
-    c == 0xa0 ||
-    c == 0x1680 ||
-    (c >= 0x2000 && c <= 0x200a) ||
-    c == 0x2028 ||
-    c == 0x2029 ||
-    c == 0x202f ||
-    c == 0x205f ||
-    c == 0x3000 ||
-    c == 0xfeff
-  }
   let mut a = 0
   let mut b = s.length()
-  while a < b && space(s.unsafe_charcode_at(a)) {
+  while a < b && is_js_space(s.unsafe_charcode_at(a)) {
     a += 1
   }
-  while b > a && space(s.unsafe_charcode_at(b - 1)) {
+  while b > a && is_js_space(s.unsafe_charcode_at(b - 1)) {
     b -= 1
   }
   s.unsafe_substring(start=a, end=b)
@@ -542,7 +552,7 @@ pub fn points(s : String) -> Array[String] {
 ///|
 /// Its UTF-8 bytes (a lone surrogate as U+FFFD, as Buffer.from does).
 pub fn utf8(s : String) -> Bytes {
-  @utf8.encode(s)
+  @utf8.encode(sanitize_str(s))
 }
 
 ///|
@@ -596,7 +606,7 @@ pub fn defined(v : JV) -> JV? {
 
 ///|
 /// The object without the fields that are undefined (as JSON leaves them out).
-pub fn JV::filter_undef(self : JV) -> JV {
+pub fn JValue::filter_undef(self : JValue) -> JValue {
   match self {
     Obj(f) => Obj(f.filter(p => !is_undef(p.1)))
     _ => self
@@ -604,48 +614,93 @@ pub fn JV::filter_undef(self : JV) -> JV {
 }
 
 ///|
-/// `@json.Json` as a JavaScript value: an object's fields in its order, integer-like keys first (as JavaScript puts
-/// them).
-pub fn JV::of_json(j : Json) -> JV {
-  match j {
-    Null => Null
-    True => Bool(true)
-    False => Bool(false)
-    Number(n, ..) => Num(n)
-    String(s) => Str(s)
-    Array(a) => Arr(a.map(JV::of_json))
-    Object(m) => {
-      let mut o = JV::Obj([])
-      for k, v in m {
-        o = jset(o, k, JV::of_json(v))
-      }
-      o
-    }
-  }
-}
-
-///|
-/// What JSON is to the rest of the program (`@json.Json`), as JSON.stringify writes it: a number that is not finite
-/// is null.
-pub fn JV::to_json(self : JV) -> Json {
-  match self {
-    Null => Json::null()
-    Bool(b) => Json::boolean(b)
-    Num(n) => if n.is_nan() || n.is_inf() { Json::null() } else { Json::number(n) }
-    Str(s) => Json::string(s)
-    Arr(a) => Json::array(a.map(JV::to_json))
-    Obj(fields) => {
-      let m : Map[String, Json] = {}
-      for f in fields {
-        m[f.0] = f.1.to_json()
-      }
-      Json::object(m)
-    }
-  }
-}
-
-///|
 /// JSON.stringify(v, null, 2).
-pub fn jv_stringify_pretty(v : JV) -> String {
-  stringify_pretty(JV::to_js(v))
+pub fn jv_stringify_pretty(v : JV) -> String { stringify_pretty(v) }
+
+///|
+/// `s.slice(start, end)` by UTF-16 code units, negative indices from the end, clamped as JavaScript clamps them.
+pub fn js_slice(s : String, start : Int, end? : Int) -> String {
+  let n = s.length()
+  let norm = (i : Int) => if i < 0 {
+    if n + i < 0 { 0 } else { n + i }
+  } else if i > n {
+    n
+  } else {
+    i
+  }
+  let a = norm(start)
+  let b = norm(end.unwrap_or(n))
+  if b <= a {
+    ""
+  } else {
+    s.unsafe_substring(start=a, end=b)
+  }
+}
+
+///|
+/// `s.indexOf(needle, from)` by UTF-16 code units, -1 where it is not found.
+pub fn js_index_of(s : String, needle : String, from? : Int = 0) -> Int {
+  let n = s.length()
+  let m = needle.length()
+  let start = if from < 0 { 0 } else { from }
+  if m == 0 {
+    return if start > n { n } else { start }
+  }
+  let mut i = start
+  while i + m <= n {
+    let mut k = 0
+    while k < m && s.unsafe_charcode_at(i + k) == needle.unsafe_charcode_at(k) {
+      k += 1
+    }
+    if k == m {
+      return i
+    }
+    i += 1
+  }
+  -1
+}
+
+///|
+/// `s.lastIndexOf(needle)` by UTF-16 code units, -1 where it is not found.
+pub fn js_last_index_of(s : String, needle : String) -> Int {
+  let n = s.length()
+  let m = needle.length()
+  if m > n {
+    return -1
+  }
+  let mut i = n - m
+  while i >= 0 {
+    let mut k = 0
+    while k < m && s.unsafe_charcode_at(i + k) == needle.unsafe_charcode_at(k) {
+      k += 1
+    }
+    if k == m {
+      return i
+    }
+    i -= 1
+  }
+  -1
+}
+
+///|
+/// `s.split(sep)` with a plain string separator: empty parts kept, empty separator splits each UTF-16 code unit.
+pub fn js_split(s : String, sep : String) -> Array[String] {
+  let out = []
+  if sep == "" {
+    for i in 0..<s.length() {
+      out.push(s.unsafe_substring(start=i, end=i + 1))
+    }
+    return out
+  }
+  let mut at = 0
+  while true {
+    let i = js_index_of(s, sep, from=at)
+    if i < 0 {
+      out.push(s.unsafe_substring(start=at, end=s.length()))
+      break
+    }
+    out.push(s.unsafe_substring(start=at, end=i))
+    at = i + sep.length()
+  }
+  out
 }

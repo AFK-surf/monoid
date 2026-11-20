@@ -142,6 +142,49 @@ pub unsafe extern "C" fn sf_shell_screen_ack(shell: *const Shell, call: u64, ts:
     1
 }
 
+/// The app's input to a remote screen (`json`, `len` bytes: what `screen.input` says in `input`) sent straight to its
+/// station, on the stream its view `call` is tapped on (`istream.tap`), not through the core (an input frame:
+/// screen-frames.ts inputFrame), in order after what was sent so before (istream.rs `InputLine`). Only a pointer's, the
+/// wheel's, a key's or a controller's, checked as the core checks them; 0 for any other, one not sound, or where no
+/// tapped stream is that view's (the app asks the core then).
+///
+/// # Safety
+/// `shell` from `sf_shell_start`; `json` valid for `len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sf_shell_screen_input(shell: *const Shell, call: u64, json: *const u8, len: usize) -> u8 {
+    if shell.is_null() || json.is_null() || len == 0 || len > 65536 {
+        return 0;
+    }
+    // SAFETY: as documented.
+    let (shell, json) = unsafe { (&*shell, std::slice::from_raw_parts(json, len)) };
+    screen_input(shell, call, json)
+}
+
+pub(crate) fn screen_input(shell: &Shell, call: u64, json: &[u8]) -> u8 {
+    let Some(input) = serde_json::from_slice(json).ok().as_ref().and_then(crate::istream::checked_input) else { return 0 };
+    let halves = shell.inner.handles.lock().unwrap().values().find_map(|h| match h {
+        Handle::IStream(halves) if halves.tap.lock().unwrap().as_ref().is_some_and(|t| t.call == call) => Some(halves.clone()),
+        _ => None,
+    });
+    let Some(halves) = halves else { return 0 };
+    let line = {
+        let mut lines = shell.inner.inputs.lock().unwrap();
+        // (those of views gone let go)
+        lines.retain(|_, l| l.halves_alive());
+        match lines.get(&call).filter(|l| l.is_of(&halves)) {
+            Some(l) => l.clone(),
+            None => {
+                let l = std::sync::Arc::new(crate::istream::InputLine::new(&halves));
+                lines.insert(call, l.clone());
+                l
+            }
+        }
+    };
+    tally("tap.inputs");
+    line.send(input, shell.runtime.handle());
+    1
+}
+
 /// Stops a shell: what is under way is dropped, its answers never come.
 ///
 /// # Safety

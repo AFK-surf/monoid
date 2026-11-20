@@ -101,11 +101,10 @@ let open_app_words : @ui.TextStyle = @ui.text_style(size=Ui, weight=Semibold, co
 let open_app_box : @ui.Style = @ui.css("px=S5 py=S2 pb=S6")
 
 ///|
-/// Over another app (ShareActivity): what is shared taken, its sheet over that app and nothing else (the window's tree
-/// draws it: share_sheet_node); the toasts.
+/// Over another app (ShareActivity), after the old frame's old views (view_in, which took what is shared before them:
+/// share_in_frame): its sheet over that app and nothing else (the window's tree draws it: share_sheet_node); the toasts.
 fn over_view(c : @ui.Ctx, src : Source) -> Unit {
   ignore(src)
-  share_in_frame(c)
   // a browser's window of its own (the extension's): nothing under the sheet to show, so what it holds is the window's
   // (over_tree's share_window)
   if share_inline() {

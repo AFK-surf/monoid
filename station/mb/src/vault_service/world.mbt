@@ -109,6 +109,9 @@ pub(all) struct Hub {
 pub struct Lock {
   json : Json
   ws : String
+  /// Its genesis's hash: "" for a vault's lock made of its members' own locks, the workspace not in security mode
+  /// (cloud/vault-lock.ts).
+  genesis : String
   view : @vault.LockView
   /// Its members in their order: sub, email.
   members : Array[(String, String)]
@@ -134,10 +137,18 @@ pub fn Lock::of_json(j : Json) -> Lock {
   {
     json: j,
     ws: gtext(Some(j), "ws"),
+    genesis: gtext(Some(j), "genesis"),
     view: @vault_crypto.lock_view(j),
     members,
     devices,
   }
+}
+
+///|
+/// Whether it is a vault's lock made of its members' own locks (`genesis` ""): no security mode, anyone of the
+/// workspace a member.
+pub fn Lock::open_roster(self : Lock) -> Bool {
+  self.genesis == ""
 }
 
 ///|

@@ -17,8 +17,9 @@ test("the Router reads the current title of the requested workspace chat", async
   const asked: unknown[][] = [];
   const reply = JSON.stringify({ messages: [
     { kind: "message", n: 4, authorKind: "person", person: { name: "Ada" }, text: "hello", at: 42 },
-    { kind: "edit", n: 5, text: "later" },
-  ], last: 5 });
+    { kind: "message", n: 5, authorKind: "agent", author: "s1", text: "pick one", at: 43, card: { type: "options", options: [{ label: "Ship", recommended: true }] } },
+    { kind: "edit", n: 6, text: "later" },
+  ], last: 6 });
   const reads = {
     of: () => ({ workspace: "home", home: true }),
     here: async (op: string, args: unknown) => (asked.push(["here", op, args]), reply),
@@ -27,7 +28,12 @@ test("the Router reads the current title of the requested workspace chat", async
   try {
     stats.apply([station([chat(7, "Local")]), station([chat(7, "Peer")], "other")], [], from);
     assert.deepEqual(await routerReads(stats, reads, "7", 3, 20), {
-      title: "Local", messages: [{ seq: 4, author_kind: "person", author: "Ada", text: "hello", at: 42 }], through: 5,
+      title: "Local",
+      messages: [
+        { seq: 4, author_kind: "person", author: "Ada", text: "hello", at: 42 },
+        { seq: 5, author_kind: "agent", author: "s1", text: "pick one", at: 43, card: { type: "options", options: [{ label: "Ship", recommended: true }] } },
+      ],
+      through: 6,
     });
     assert.equal((await routerReads(stats, reads, "7@other", 0, 20)).title, "Peer");
     assert.deepEqual(asked, [

@@ -19,7 +19,7 @@ test "wide: the chat's \"…\" opens under its button; agent 往来 from it open
   assert_true(t.find("参与") is Some(_), msg="its facts")
   t.tap_text("agent 往来")
   // (the popover goes as a popover does: gone once its going is over; the panel slid in)
-  t.run_for(dmax(@kit.presence_out_ms, @ui.move_most_ms))
+  t.run_for(dmax(@motion.presence_out_ms, @ui.move_most_ms))
   // beside the chat, at its right: the chats written with
   let (x, _) = t.find("接手监督 mbui").unwrap()
   assert_true(x > 800.0, msg="at the pane's right")
@@ -167,7 +167,7 @@ test "wide: Station 文件 from the chat's \"…\" beside it (kept by the core: 
   t.frame()
   t.frame()
   t.tap_text("Station 文件")
-  t.run_for(dmax(@kit.presence_out_ms, @ui.move_most_ms))
+  t.run_for(dmax(@motion.presence_out_ms, @ui.move_most_ms))
   let opened = named(calls, "chat.tabs.open")
   assert_eq(opened.length(), 1)
   assert_eq(text(Some(opened[0].params), "chat"), "ws1/st1:s-c1")
@@ -210,9 +210,7 @@ test "wide: a new chat's Station 文件 beside it (NewChat.tsx): kept open, clos
   // (its page made either way: the old view's side_beside, or as nodes with its composer, new_side_node)
   both_pages(fn() raise {
     new_run()
-    if both_nodes.val {
-      both_way()
-    }
+    both_way()
     let calls : Array[Made] = []
     let base = fixture("newchat-files")
     let src : Source = {

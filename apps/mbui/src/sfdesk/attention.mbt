@@ -486,7 +486,7 @@ fn attention_item_node(row : @view.View, src : Source, i : () -> Json, go : () -
         fn(d) {
           @sf.action_box_node(d, fn() { @sf.t("web-main.attention.dismiss") }, fn(_) {
             match attention_dismiss(src, @signals.untracked(i)) {
-              Some(f) => f()
+              Some(f) => @view.transition(within=d.transitions_root(), f)
               None => ()
             }
           }, fn(x) {

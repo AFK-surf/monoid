@@ -103,8 +103,10 @@ pub const OPUS_MAX : Int = 1275
 
 ///|
 /// A person's input; coordinates are 0..1 of the screen. `mods`: bit 0 alt, 1 ctrl, 2 meta, 3 shift (CDP's order).
+/// A move's `delta`: how far the pointer moved (the screen's pixels) and whether it is only that (`relative`: an app on
+/// the screen holds the pointer, `ScreenView.watch_pointer_lock`).
 pub(all) enum ScreenInput {
-  Pointer(kind~ : String, x~ : Double, y~ : Double, buttons~ : Int)
+  Pointer(kind~ : String, x~ : Double, y~ : Double, buttons~ : Int, delta~ : PointerDelta?)
   Wheel(x~ : Double, y~ : Double, dx~ : Double, dy~ : Double)
   Key(kind~ : String, key~ : String, code~ : String, mods~ : Int)
   Text(String)
@@ -115,6 +117,60 @@ pub(all) enum ScreenInput {
   Device(String)
   /// A button of a simulator's device, held as long as it is here (its HID usage).
   Button(page~ : Int, usage~ : Int, down~ : Bool)
+  /// A game controller's whole state (source.ts `Gamepad`).
+  Gamepad(Pad)
+}
+
+///|
+/// How far a move went, in the screen's pixels (`moved`: said), and whether it is only that (`relative`; a press with it
+/// is where the pointer is).
+#derive(Eq, Debug)
+pub(all) struct PointerDelta {
+  dx : Double
+  dy : Double
+  moved : Bool
+  relative : Bool
+}
+
+///|
+/// A game controller's state as the W3C Standard Gamepad has it: its slot 0..3, a bit for each of its 17 buttons, the
+/// sticks -1..1, the triggers 0..1; `connected` false lets go of it.
+#derive(Eq, Debug)
+pub(all) struct Pad {
+  index : Int
+  connected : Bool
+  buttons : Int
+  lx : Double
+  ly : Double
+  rx : Double
+  ry : Double
+  lt : Double
+  rt : Double
+}
+
+///|
+/// A controller let go of (source.ts `gamepadReleased`).
+pub fn pad_released(index : Int) -> Pad {
+  { index, connected: false, buttons: 0, lx: 0.0, ly: 0.0, rx: 0.0, ry: 0.0, lt: 0.0, rt: 0.0 }
+}
+
+///|
+pub fn Pad::to_j(self : Pad, op? : String? = None) -> J {
+  jo([
+    match op {
+      Some(o) => ("op", js(o))
+      None => ("t", js("gamepad"))
+    },
+    ("index", ji(self.index)),
+    ("connected", jb(self.connected)),
+    ("buttons", ji(self.buttons)),
+    ("lx", jn(self.lx)),
+    ("ly", jn(self.ly)),
+    ("rx", jn(self.rx)),
+    ("ry", jn(self.ry)),
+    ("lt", jn(self.lt)),
+    ("rt", jn(self.rt)),
+  ])
 }
 
 ///|
@@ -134,7 +190,28 @@ pub fn input_of(j : J) -> ScreenInput? {
   let s = (k : String) => text(get(Some(j), k)).unwrap_or("")
   let n = (k : String) => num(get(Some(j), k)).unwrap_or(0.0)
   match text(get(Some(j), "t")) {
-    Some("pointer") => Some(Pointer(kind=s("kind"), x=n("x"), y=n("y"), buttons=to_int32(n("buttons"))))
+    Some("pointer") => {
+      let relative = get(Some(j), "relative") is Some(Bool(true))
+      let delta = match (num(get(Some(j), "dx")), num(get(Some(j), "dy"))) {
+        (Some(dx), Some(dy)) => Some({ dx, dy, moved: true, relative })
+        _ => if relative { Some({ dx: 0.0, dy: 0.0, moved: false, relative }) } else { None }
+      }
+      Some(Pointer(kind=s("kind"), x=n("x"), y=n("y"), buttons=to_int32(n("buttons")), delta~))
+    }
+    Some("gamepad") =>
+      Some(
+        Gamepad({
+          index: to_int32(n("index")),
+          connected: !(get(Some(j), "connected") is Some(Bool(false))),
+          buttons: to_int32(n("buttons")),
+          lx: n("lx"),
+          ly: n("ly"),
+          rx: n("rx"),
+          ry: n("ry"),
+          lt: n("lt"),
+          rt: n("rt"),
+        }),
+      )
     Some("wheel") => Some(Wheel(x=n("x"), y=n("y"), dx=n("dx"), dy=n("dy")))
     Some("key") => Some(Key(kind=s("kind"), key=s("key"), code=s("code"), mods=to_int32(n("mods"))))
     Some("text") => Some(Text(s("text")))
@@ -148,7 +225,20 @@ pub fn input_of(j : J) -> ScreenInput? {
 ///|
 pub fn ScreenInput::to_j(self : ScreenInput) -> J {
   match self {
-    Pointer(kind~, x~, y~, buttons~) => jo([("t", js("pointer")), ("kind", js(kind)), ("x", jn(x)), ("y", jn(y)), ("buttons", ji(buttons))])
+    Pointer(kind~, x~, y~, buttons~, delta~) => {
+      let fields = [("t", js("pointer")), ("kind", js(kind)), ("x", jn(x)), ("y", jn(y)), ("buttons", ji(buttons))]
+      if delta is Some(d) {
+        if d.moved {
+          fields.push(("dx", jn(d.dx)))
+          fields.push(("dy", jn(d.dy)))
+        }
+        if d.relative {
+          fields.push(("relative", jb(true)))
+        }
+      }
+      jo(fields)
+    }
+    Gamepad(pad) => pad.to_j()
     Wheel(x~, y~, dx~, dy~) => jo([("t", js("wheel")), ("x", jn(x)), ("y", jn(y)), ("dx", jn(dx)), ("dy", jn(dy))])
     Key(kind~, key~, code~, mods~) => jo([("t", js("key")), ("kind", js(kind)), ("key", js(key)), ("code", js(code)), ("mods", ji(mods))])
     Text(t) => jo([("t", js("text")), ("text", js(t))])
@@ -181,6 +271,11 @@ pub(all) struct ViewOptions {
   opus : Bool
   gamut : String?
   passkeys : Bool?
+  /// "444": its pictures sharp to the pixel, full-chroma where the source encodes it (still.fail Helper's HEVC).
+  chroma : String?
+  /// Opened for an agent's computer-use tool (hub.mbt `open_as`), not a person viewing remotely: the Windows desktop
+  /// skips the privileged screen service so agents never cross onto UAC/Winlogon desktops or elevated windows.
+  agent : Bool
 }
 
 ///|
@@ -195,8 +290,9 @@ pub fn ViewOptions::new(
   opus? : Bool = false,
   gamut? : String? = None,
   passkeys? : Bool? = None,
+  agent? : Bool = false,
 ) -> ViewOptions {
-  { max_width, max_height, codecs, peek, bitrate, fps, fit: None, audio, opus, gamut, passkeys }
+  { max_width, max_height, codecs, peek, bitrate, fps, fit: None, audio, opus, gamut, passkeys, chroma: None, agent }
 }
 
 ///|
@@ -226,6 +322,8 @@ pub fn view_options_of(j : J) -> ViewOptions {
       Some(Bool(b)) => Some(b)
       _ => None
     },
+    chroma: text(get(Some(j), "chroma")),
+    agent: get(Some(j), "agent") is Some(Bool(true)),
   }
 }
 
@@ -302,27 +400,10 @@ pub(all) enum Clip {
 }
 
 ///|
-pub fn Clip::type_name(self : Clip) -> String {
-  match self {
-    ClipText(_) => "text"
-    ClipPng(_) => "png"
-  }
-}
-
-///|
 pub fn Clip::to_j(self : Clip) -> J {
   match self {
     ClipText(t) => jo([("type", js("text")), ("text", js(t))])
     ClipPng(d) => jo([("type", js("png")), ("data", js(b64(d)))])
-  }
-}
-
-///|
-pub fn clip_of(j : J) -> Clip? {
-  match text(get(Some(j), "type")) {
-    Some("text") => Some(ClipText(text(get(Some(j), "text")).unwrap_or("")))
-    Some("png") => Some(ClipPng(@base64.decode_lossy(text(get(Some(j), "data")).unwrap_or(""))))
-    _ => None
   }
 }
 
@@ -391,12 +472,101 @@ pub fn ScreenVideo::to_j(self : ScreenVideo) -> J {
   jsome([("capture", Some(js(self.capture))), ("encoder", self.encoder.map(js)), ("hardware", self.hardware.map(jb))])
 }
 
-/// Where a screen's pointer is, 0..1 of the screen, and its shape as CSS names it.
+/// Where a screen's pointer is, 0..1 of the screen, and its shape as CSS names it, or "custom:<id>" (one of an app's
+/// own: its picture `ScreenView::cursor_image`).
 #derive(Eq)
 pub(all) struct ScreenCursor {
   x : Double
   y : Double
   shape : String
+}
+
+///|
+/// A source's virtual microphone (source.ts `ScreenMic`): one can be fed, an app there records it now, and which
+/// recording (u32, raised for each).
+#derive(Eq)
+pub(all) struct ScreenMic {
+  available : Bool
+  active : Bool
+  epoch : UInt
+}
+
+///|
+pub fn ScreenMic::to_j(self : ScreenMic) -> J {
+  jo([("available", jb(self.available)), ("active", jb(self.active)), ("epoch", jn(self.epoch.to_double()))])
+}
+
+///|
+/// The most bytes of one microphone packet (40 ms of 48 kHz mono s16le).
+pub const MIC_PCM_MAX : Int = 3840
+
+///|
+/// The most of a pointer's picture (its PNG), and how many pictures a view keeps.
+pub const CURSOR_PNG_MAX : Int = 65536
+
+///|
+pub const CURSOR_IMAGES_MOST : Int = 64
+
+///|
+/// A pointer's shape as a helper says one (source.ts `CURSOR_SHAPE`): a CSS cursor's name, `/^[a-z-]{1,24}$/`, or one
+/// of an app's own, `custom:` and 16 lowercase hex digits.
+pub fn cursor_shape(s : String) -> Bool {
+  let n = s.length()
+  if s.has_prefix("custom:") {
+    return n == 23 && hex16(s, 7)
+  }
+  if n < 1 || n > 24 {
+    return false
+  }
+  for c in s {
+    if !((c >= 'a' && c <= 'z') || c == '-') {
+      return false
+    }
+  }
+  true
+}
+
+///|
+/// 16 lowercase hex digits from `at` to its end.
+fn hex16(s : String, at : Int) -> Bool {
+  let mut i = 0
+  for c in s {
+    if i >= at && !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+      return false
+    }
+    i += 1
+  }
+  i == at + 16
+}
+
+///|
+/// The shape ("custom:<id>") a pointer's picture is of (source.ts `cursorImageShape`): its width and height (points,
+/// 1..128), its hot spot (0..width, 0..height), its id (16 lowercase hex digits), then a PNG of at most 64 KiB; None
+/// for any other.
+pub fn cursor_image_shape(payload : BytesView) -> String? {
+  let n = payload.length()
+  if n < 28 || n > 20 + CURSOR_PNG_MAX {
+    return None
+  }
+  let (w, h, hx, hy) = (payload[0].to_int(), payload[1].to_int(), payload[2].to_int(), payload[3].to_int())
+  if w < 1 || w > 128 || h < 1 || h > 128 || hx > w || hy > h {
+    return None
+  }
+  let id = StringBuilder::new()
+  for i in 4..<20 {
+    id.write_char(payload[i].to_int().unsafe_to_char())
+  }
+  let id = id.to_string()
+  if !hex16(id, 0) {
+    return None
+  }
+  let png : FixedArray[Byte] = [b'\x89', b'P', b'N', b'G', b'\r', b'\n', b'\x1a', b'\n']
+  for i in 0..<8 {
+    if payload[20 + i] != png[i] {
+      return None
+    }
+  }
+  Some("custom:" + id)
 }
 
 ///|
@@ -552,6 +722,8 @@ pub(all) struct ScreenView {
   set_clipboard : (async (Clip, Bool) -> Unit)?
   watch_clipboard : (((Clip) -> Unit) -> (() -> Unit))?
   watch_cursor : (((ScreenCursor) -> Unit) -> (() -> Unit))?
+  /// The picture of a pointer of an app's own `watch_cursor` said as "custom:<id>" (`cursor_image_shape`'s payload).
+  cursor_image : ((String) -> Bytes?)?
   watch_turn : (((Int) -> Unit) -> (() -> Unit))?
   watch_windows : (((ScreenWindows) -> Unit) -> (() -> Unit))?
   window : ((Double?) -> Unit)?
@@ -561,6 +733,16 @@ pub(all) struct ScreenView {
   watch_passkey : (((PasskeyAsk?) -> Unit) -> (() -> Unit))?
   passkey : (async (PasskeyAnswer) -> Unit)?
   watch_child : (((String) -> Unit) -> (() -> Unit))?
+  /// The clipboard set with the mark the person's copy had (0 none, 1 concealed, 2 transient, 3 auto), and heard with
+  /// the mark the screen's copy has: a view that carries marks (still.fail Helper's, stillfail-screen's); one without
+  /// them is set and heard by `set_clipboard` and `watch_clipboard`.
+  set_clipboard_marked : (async (Clip, Bool, Int) -> Unit)?
+  watch_clipboard_marked : (((Clip, Int) -> Unit) -> (() -> Unit))?
+  /// Hears whether an app on the source holds the pointer (source.ts `watchPointerLock`).
+  watch_pointer_lock : (((Bool) -> Unit) -> (() -> Unit))?
+  /// Hears the source's virtual microphone (source.ts `watchMic`), and feeds it a packet of a recording (`feedMic`).
+  watch_mic : (((ScreenMic) -> Unit) -> (() -> Unit))?
+  feed_mic : ((Bytes, UInt) -> Unit)?
 }
 
 ///|
@@ -585,6 +767,7 @@ pub fn ScreenView::bare(
     set_clipboard: None,
     watch_clipboard: None,
     watch_cursor: None,
+    cursor_image: None,
     watch_turn: None,
     watch_windows: None,
     window: None,
@@ -594,6 +777,11 @@ pub fn ScreenView::bare(
     watch_passkey: None,
     passkey: None,
     watch_child: None,
+    set_clipboard_marked: None,
+    watch_clipboard_marked: None,
+    watch_pointer_lock: None,
+    watch_mic: None,
+    feed_mic: None,
   }
 }
 

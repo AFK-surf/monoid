@@ -1,0 +1,11 @@
+wait 200
+tap 2x 放大
+wait 500
+tap 3x 细节
+wait 500
+tap 1x 适配
+wait 500
+tap 模拟惯性甩动复位
+wait 700
+tap 1x 适配
+wait 500

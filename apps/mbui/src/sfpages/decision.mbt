@@ -259,6 +259,9 @@ fn vault_ask_card(c : @ui.Ctx, here : MessageHere, m : Message, card : Card, ask
     command: ask.command,
     how_text: ask.how_text,
     save_kind: ask.save_kind,
+    save_vault_name: ask.save_vault_name,
+    save_shared: ask.save_shared,
+    save_targets: ask.save_targets,
     username: ask.username,
     filename: ask.filename,
     typed: ask.typed,
@@ -630,16 +633,20 @@ fn ask_dismiss(
     fn() {
       // (let go or answered: faded out where it is as its room closes)
       let look = @motion.presence(c, "dismiss-live/" + k, live, enter=@motion.trans(fade=0.0, spec=archive_tween))
-      let b = c.box(style=dismiss_room, id=if live { id } else { 0 }, fn() {
-        c.rich([@ui.span(@sf.t("web-main.chat.asks.dismiss"), underline=hot)], style=if hot {
-          dismiss_words_hot
-        } else {
-          dismiss_words
+      // (as wide as its words at the start, as the page made as nodes has it: not across the column)
+      c.box(style=decision_rooms, fn() {
+        let b = c.box(style=dismiss_room, id=if live { id } else { 0 }, fn() {
+          c.rich([@ui.span(@sf.t("web-main.chat.asks.dismiss"), underline=hot)], style=if hot {
+            dismiss_words_hot
+          } else {
+            dismiss_words
+          })
+          |> ignore
         })
-        |> ignore
+        c.look(b, look.unwrap_or(@ui.look(alpha=0.0)))
+        @motion.leaving(c, b, live)
       })
-      c.look(b, look.unwrap_or(@ui.look(alpha=0.0)))
-      @motion.leaving(c, b, live)
+      |> ignore
     },
   )
 }

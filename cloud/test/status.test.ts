@@ -147,3 +147,37 @@ test("a branch pipeline hands an R2 chunk to its readers by a receipt", async ()
     await h.close();
   }
 });
+
+test("a pipeline's token stands with GitHub's clock a little ahead, and GitHub's keys not had are a 503, not a refusal", async () => {
+  const { publicKey, privateKey } = await generateKeyPair("RS256");
+  const jwk = { ...(await exportJWK(publicKey)), kid: "actions", alg: "RS256", use: "sig" };
+  const ref = "refs/heads/branch";
+  const claims = { repository: "o/r", repository_id: "42", ref, event_name: "push", sha: "a".repeat(40), workflow_ref: `o/r/.github/workflows/pipeline.yml@${ref}` };
+  const token = (origin: string, notBefore?: number) => {
+    const jwt = new SignJWT(claims).setProtectedHeader({ alg: "RS256", kid: "actions" })
+      .setIssuer("https://token.actions.githubusercontent.com").setAudience(origin).setIssuedAt().setExpirationTime("10 years");
+    return (notBefore === undefined ? jwt : jwt.setNotBefore(notBefore)).sign(privateKey);
+  };
+  const put = async (h: Awaited<ReturnType<typeof harness>>, bearer: string) =>
+    h.fetch("/releases/ci-natives", { method: "PUT", headers: { authorization: `Bearer ${bearer}`, "content-length": "4" }, body: "part" });
+
+  // GitHub's clock 10 s ahead of the edge's: its token is good from 10 s on.
+  const ahead = await harness({ statusRepoId: "42", push: () => ({ status: 200, body: JSON.stringify({ keys: [jwk] }) }) });
+  try {
+    assert.equal((await put(ahead, await token(ahead.origin, Math.floor(Date.now() / 1000) + 10))).status, 201);
+  } finally {
+    await ahead.close();
+  }
+
+  // GitHub's keys answered with a 502 (a harness of its own: the keys a module once had are kept).
+  const down = await harness({ statusRepoId: "42", push: () => ({ status: 502, body: "bad gateway" }) });
+  try {
+    const answer = await put(down, await token(down.origin));
+    assert.equal(answer.status, 503);
+    assert.deepEqual(await answer.json(), { error: "jwks_unavailable" });
+    // A token that is not one is still refused.
+    assert.equal((await put(down, "not-a-token")).status, 401);
+  } finally {
+    await down.close();
+  }
+});

@@ -55,7 +55,8 @@ test "foldable tape: notifications bring their page over from the sidebar and ta
     ("item", "/o/ws1/st1/s-c2\n2", false, fn(_ : @ui.Tester) {  }, @sfdesk.TapePane::Side, false),
     ("async item", "/o/ws1/st1/s-c2\n2", true, fn(_ : @ui.Tester) {  }, @sfdesk.TapePane::Side, false),
     ("other workspace item", "/o/ws2/st9/s-x\n1", true, fn(_ : @ui.Tester) {  }, @sfdesk.TapePane::Side, false),
-    ("service", "/w/ws1/s/st1/services/j-web", false, fn(_ : @ui.Tester) {  }, @sfdesk.TapePane::Side, false),
+    // (a service opens over the whole window as its chat's tab: back closes that first, the chat in use, back taken)
+    ("service", "/w/ws1/s/st1/services/j-web", false, fn(_ : @ui.Tester) {  }, @sfdesk.TapePane::Page, true),
     ("chat link", "/w/ws1/s/st1/chats/s-c2", false, fn(_ : @ui.Tester) {  }, @sfdesk.TapePane::Side, false),
     ("from files", "/o/ws1/st1/s-c2\n2", false, fn(t : @ui.Tester) {
       @sfbase.go_place("files") |> ignore

@@ -6,7 +6,7 @@
 
 ///|
 /// One of the fixture's notices (seq 9, ts9): `words` (its Markdown's tree, `md`), a failure (`failed`), what failed
-/// said (`detail`); about a profile (`link` where its link starts); a runtime the station lacks (`install`); reportable;
+/// said (`detail`); about `profile` (`link` where its link starts, or `profile_action`, what to do of it at its end); a runtime the station lacks (`install`); reportable;
 /// its agent waiting to retry (`retry`), or its failed turn to try again (`again`); a chat's run changed (`short`, `lines`,
 /// `sides`); failures said alike folded into it (`count` of them, the last at `last`).
 fn nt_msg(
@@ -15,6 +15,8 @@ fn nt_msg(
   failed? : Bool = false,
   detail? : String = "",
   link? : Int = -1,
+  profile_action? : String = "",
+  profile? : String = "p1",
   install? : Bool = false,
   reportable? : Bool = false,
   retry? : Bool = false,
@@ -38,6 +40,9 @@ fn nt_msg(
   }
   if link >= 0 {
     n["linkAt"] = Json::number(link.to_double())
+  }
+  if profile_action != "" {
+    n["profileAction"] = Json::string(profile_action)
   }
   if retry {
     n["retrySession"] = "s-c1"
@@ -66,7 +71,7 @@ fn nt_msg(
     "author": "still.fail",
     "text": Json::string(words),
     "by": { "name": "still.fail" },
-    "profile": if link >= 0 { "p1" } else { "" },
+    "profile": if link >= 0 || profile_action != "" { Json::string(profile) } else { "" },
     "install": if install {
       { "runtime": "codex", "state": "missing", "title": "Willow 上没有 codex", "action": "安装" }
     } else {
@@ -260,6 +265,11 @@ fn nt_cases() -> Array[(String, Message, Json?, Bool)] {
     ("run changed sides open", sided, None, true),
     ("profile", nt_msg(words="Willow 上 codex 的登录已失效：请在设置里重新登录", failed=true, link=22), None, false),
     ("profile open", nt_msg(words="Willow 上 codex 的登录已失效：请在设置里重新登录", failed=true, link=22), None, true),
+    // (one the station says what to do of: that at its end, · 重新登录, · 设置代理, before · 上报 would be)
+    ("profile action", nt_msg(words="「Gemini-Pro」认证失败", failed=true, detail="401 UNAUTHENTICATED", profile_action="重新登录"), None, false),
+    ("profile action open", nt_msg(words="「Gemini-Pro」认证失败", failed=true, detail="401 UNAUTHENTICATED", profile_action="重新登录"), None, true),
+    ("profile action reportable", nt_msg(words="「Gemini-Pro」认证失败", failed=true, reportable=true, profile_action="重新登录"), None, false),
+    ("profile proxy", nt_msg(words="模型服务不支持此 station 所在地区", failed=true, profile_action="设置代理"), None, false),
     ("chat opened", nt_opened(), None, false),
     // (eleven failures said alike, folded: ×11 after its words, before what it ends in; its words cut short, never ×11
     // nor 重试 or 上报)
@@ -303,7 +313,7 @@ fn nt_audit(t : @ui.Tester, time : Int, copy : Int, act : Int, dot : Int) -> Arr
   let kinds : Array[(String, (String) -> Bool, Int)] = [
     ("time", fn(f) { room(f, ["1 分钟前"], "message_head_node.mbt") }, time),
     ("copy", fn(f) { room(f, ["复制"], "message_notice_node.mbt") }, copy),
-    ("act", fn(f) { room(f, ["安装", "上报", "取消", "重试", "重新分配账号"], "message_notice_node.mbt") }, act),
+    ("act", fn(f) { room(f, ["安装", "上报", "取消", "重试", "重新分配账号", "重新登录", "设置代理"], "message_notice_node.mbt") }, act),
     (
       "dot",
       // (the dot is the library's notice_end_action_node's, asked for by the notice's page)
@@ -332,7 +342,9 @@ fn nt_audit(t : @ui.Tester, time : Int, copy : Int, act : Int, dot : Int) -> Arr
 fn nt_known(c : (String, Message, Json?, Bool), scale : Double) -> (Int, Int, Int, Int) {
   let (_, m, doing, open) = c
   let small = scale == 1.0
-  let ends = (m.install is Some(_) || notice_after(m) is Some(_) || m.reportable) && m.notice_short == "" && m.notice_lines.is_empty()
+  let ends = (m.install is Some(_) || notice_after(m) is Some(_) || m.notice_profile_action != "" || m.reportable) &&
+    m.notice_short == "" &&
+    m.notice_lines.is_empty()
   (
     0,
     0,
@@ -372,7 +384,14 @@ fn nt_under(t : @ui.Tester, m : Message, scale : Double) -> Array[(Double, Doubl
   let act = match (m.install, notice_after(m)) {
     (Some(_), _) => "安装"
     (None, Some((_, label, _))) => label
-    (None, None) => if m.reportable { "上报" } else { "" }
+    (None, None) =>
+      if m.notice_profile_action != "" {
+        m.notice_profile_action
+      } else if m.reportable {
+        "上报"
+      } else {
+        ""
+      }
   }
   let said = (if act != "" && m.notice_short == "" { [act] } else { [] }) + ["复制"]
   said.filter_map(fn(s) {
@@ -570,6 +589,39 @@ test "a notice about a profile: what went wrong leads to the profile's page" {
   assert_true(app.nav.top() == Setting(@settings.Route::Profile("ws1/st1", "p1")))
   assert_eq(opened.get("ts9"), None, msg="the pill not opened")
   let faults = nt_audit(t, 0, 0, 0, 0)
+  assert_true(faults.is_empty(), msg=faults.join(" | "))
+}
+
+///|
+test "a notice about a profile the station says what to do of: · 重新登录 opens the profile's page, its words open what failed said, never · 上报 beside it" {
+  let opened : @sf.LiveMap[String, Bool] = @sf.LiveMap::new()
+  let m = fn() {
+    // (a profile of its own: the app's pages are the run's, another test's press may have left p1's open)
+    nt_msg(
+      words="「Gemini-Pro」认证失败",
+      failed=true,
+      detail="401 UNAUTHENTICATED",
+      reportable=true,
+      profile_action="重新登录",
+      profile="p2",
+    )
+  }
+  let t = nt_new(760.0, nt_src(None, []), m, opened~)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(Button, label="上报") is None, msg="what to do of it, not 上报")
+  assert_true(t.find("401 UNAUTHENTICATED") is None, msg="closed: what failed said not shown")
+  // (its words: the pill's press, which opens what failed said; once more, closed)
+  nt_open(t)
+  assert_eq(opened.get("ts9"), Some(true))
+  assert_true(t.find("401 UNAUTHENTICATED") is Some(_), msg="open: what failed said")
+  assert_true(app.nav.top() != Setting(@settings.Route::Profile("ws1/st1", "p2")), msg="the words open the pill, not the page")
+  nt_open(t)
+  assert_eq(opened.get("ts9"), Some(false))
+  t.click(Button, label="重新登录")
+  t.frame()
+  assert_true(app.nav.top() == Setting(@settings.Route::Profile("ws1/st1", "p2")))
+  assert_eq(opened.get("ts9"), Some(false), msg="the pill not opened by it")
+  let faults = nt_audit(t, 0, 0, 1, 1)
   assert_true(faults.is_empty(), msg=faults.join(" | "))
 }
 

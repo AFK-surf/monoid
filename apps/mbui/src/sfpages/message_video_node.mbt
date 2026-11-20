@@ -97,31 +97,36 @@ fn message_video_node(
           items.push(x)
         }
       }
-      // (being downloaded to be saved, or going up: nothing to load or stop here)
-      if !going_up() && !flag(download_of(src, here.station, owner, name), "active") {
-        match keeping_of(src, here.station, owner, name) {
-          Some(_) as brought => {
-            let id = text(brought, "id")
-            items.push(Some(@sf.menu_item_of(@sf.t("web-main.file.stopLoading"), fn() { keeping_stop(src, id) }, icon="stop")))
-          }
-          None => {
-            let (station, size) = (here.station, a.size)
-            let from : Map[String, Json] = { "session": Json::string(here.session), "file": attachment_json(a, a.owner) }
-            match here.view.thread {
-              Some(n) => from["thread"] = Json::number(n)
-              None => ()
+      with_reveal(src, here, a, owner, fn(reveal) {
+        if reveal is Some(_) {
+          items.push(reveal)
+        }
+        // (being downloaded to be saved, or going up: nothing to load or stop here)
+        if !going_up() && !flag(download_of(src, here.station, owner, name), "active") {
+          match keeping_of(src, here.station, owner, name) {
+            Some(_) as brought => {
+              let id = text(brought, "id")
+              items.push(Some(@sf.menu_item_of(@sf.t("web-main.file.stopLoading"), fn() { keeping_stop(src, id) }, icon="stop")))
             }
-            items.push(
-              Some(
-                @sf.menu_item_of(@sf.t("web-main.file.load"), fn() { fill_want(src, station, owner, name, size, Json::object(from)) }, icon="download"),
-              ),
-            )
+            None => {
+              let (station, size) = (here.station, a.size)
+              let from : Map[String, Json] = { "session": Json::string(here.session), "file": attachment_json(a, a.owner) }
+              match here.view.thread {
+                Some(n) => from["thread"] = Json::number(n)
+                None => ()
+              }
+              items.push(
+                Some(
+                  @sf.menu_item_of(@sf.t("web-main.file.load"), fn() { fill_want(src, station, owner, name, size, Json::object(from)) }, icon="download"),
+                ),
+              )
+            }
           }
         }
-      }
-      message_items_after(items, place.share)
-      @sf.menu(items, from=@sf.at_point(x, y))
-      held_menu.set(if finger { Some(@sf.last_presented()) } else { None })
+        message_items_after(items, place.share)
+        @sf.menu(items, from=@sf.at_point(x, y))
+        held_menu.set(if finger { Some(@sf.last_presented()) } else { None })
+      })
     }
     @sf.menu_presses_node(f, pressed, open_menu)
     @sf.lift_node(

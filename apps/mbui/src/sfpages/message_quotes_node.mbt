@@ -9,9 +9,9 @@
 /// viewer's (`mine`) at the column's end, as wide as the widest needs and at most as its bubble may be; anyone
 /// else's across the column. `at` names where its message is, as it is now (message_place: its quotes' pictures
 /// `at/q:<i>`; another message's, a block put by and taken for another row, each card made again for it); `said`
-/// its `said` (MessageFilesAt's). Sent from here a moment ago (`from`: where each card stood in the composer, in their
-/// order), each card flies from there as its words' bubble does from the field, at its own width all the way and from
-/// the height it stood at there to its own; its own picture from its square in that card (`flies_of`: by
+/// its `said` (MessageFilesAt's). Sent from here a moment ago, each card flies from the composer's as its words' bubble
+/// does from the field: from that card itself as one box (`shared_ids`, its composer made as nodes: the id each card
+/// there was shared by, in their order); its own picture from its square in that card (`flies_of`: by
 /// quote_picture_key, sfbase's sent_part_take), growing to its place in it as a file sent does; all of it with the rest of
 /// what was sent (`fly`: SentFly's, each card its part sent_quote_part, its picture by its key).
 fn message_quotes_node(
@@ -23,7 +23,7 @@ fn message_quotes_node(
   mine : Bool,
   at : () -> String,
   said? : () -> Bool = fn() { false },
-  from? : Array[(Double, Double, Double, Double)?] = [],
+  shared_ids? : Array[String] = [],
   flies_of? : (String) -> (Double, Double, Double, Double)? = fn(_) { None },
   fly? : SentFly = sent_fly_alone,
 ) -> Unit {
@@ -44,9 +44,9 @@ fn message_quotes_node(
       cards.each(keys, fn(k) { k }, fn(slot, k) {
         // (its row as wide as the cards' column, as the old card is, w=Full in it: quote_box)
         @sf.style_node(slot, fn() { quote_card_row })
-        // (sent from here a moment ago: where its card stood in the composer, taken once as it is made)
+        // (sent from here a moment ago: the id its card in the composer was shared by, taken once as it is made)
         let made_i = @signals.untracked(fn() { keys().search(k.get()).unwrap_or(0) })
-        let flies_from = from.get(made_i).unwrap_or(None)
+        let shared_id = shared_ids.get(made_i).unwrap_or("")
         // (read through its key, never kept: its place among the message's quotes)
         let i = fn() { keys().search(k.get()).unwrap_or(0) }
         let q = fn() -> Quote {
@@ -84,13 +84,12 @@ fn message_quotes_node(
             })
           },
         )
-        // (the card itself, its ground and all it draws, from where it stood in the composer, its words' bubble's way
-        // (mine_bubble_node: the same flight, as long as it is far, its rise as late): as wide as it is all the way, so
-        // its words are drawn at their size, its height from the one it stood at there to its own; a flight,
-        // sf/motion.mbt's kind 4, View::flies_in)
-        match flies_from {
-          Some((x, y, _, fh)) => fly.flies_in(card, sent_quote_part(made_i), fn(to) { Some((x, y, to.2, fh)) })
-          None => ()
+        // (the card itself from the composer's it was sent from, on its words' bubble's way (mine_bubble_node: the same
+        // flight, as long as it is far, its rise as late): one box from that card's (its ✕ and all) to this one's, what
+        // each holds at its own size in it, the composer's going as this one's comes (View::shared's `container`;
+        // sf/motion.mbt's kind 4))
+        if shared_id != "" {
+          fly.shares(card, sent_quote_part(made_i), shared_id)
         }
       })
       |> ignore

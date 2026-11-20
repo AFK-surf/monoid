@@ -74,7 +74,7 @@ fn glass_view(c : @ui.Ctx) -> Unit {
           align=ACenter,
           justify=JBetween,
           padx=24.0,
-          glass=@sf.glass_bottom_bar(),
+          glass=@sf.glass_tab_bar(),
           shadow=@sf.floating.sigma,
           shadow_color=@sf.floating.color,
           shadow_y=@sf.floating.dy,

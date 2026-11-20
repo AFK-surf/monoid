@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 import { timeFiles } from "../src/ops/file-waits.ts";
-import { signalGroup } from "../src/ops/group.ts";
+import { killGroups } from "./kill-groups.ts";
 import { Jobs } from "../src/jobs/jobs.ts";
 import { ROOM_RECENT_MS, Remote, TASKS_KEPT_MS, hash, latestIn, remoteBudget } from "../src/jobs/remote.ts";
 import { Store } from "../src/store/store.ts";
@@ -28,8 +28,8 @@ function station() {
   const remote = new Remote({ data: dir, store, jobs, notify: () => {}, version: "0.1.1" });
   cleanup.push(async () => {
     await remote.close();
-    for (const job of store.listJobs(null)) if (job.pgid !== null) signalGroup(job.pgid, "SIGKILL");
     await jobs.shutdown();
+    await killGroups(store.listJobs(null).map((job) => job.pgid));
     store.close();
   });
   return { dir, store, jobs, remote };

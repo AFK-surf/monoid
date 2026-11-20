@@ -381,7 +381,22 @@ pub fn invited_you(inv : Json) -> String {
 /// The invitations in the list in node `b`, under 邀请: who invited the viewer where, the account it is for, 加入 and
 /// 忽略; each made as the core lists it, let go as it lists it no more. 加入 done, `close` first.
 fn ws_invitations_node(b : @view.View, src : Source, close : () -> Unit) -> Unit {
-  let pending = fn() { invitations_waiting(src) }
+  let pending_src = fn() { invitations_waiting(src) }
+  // (invitations arriving or answered while the workspaces panel is open open/close smoothly inside this block so
+  // rows below in the panel list never jump)
+  let shown_pending = @signals.signal(@signals.untracked(pending_src), same=fn(a, b) { a == b })
+  b.reacts(
+    pending_src,
+    fn(next) {
+      if !@view.answering_now() {
+        @view.transition(within=b.transitions_root(), fn() { shown_pending.set(next) })
+      } else {
+        shown_pending.set(next)
+      }
+    },
+    at_start=false,
+  )
+  let pending = fn() { shown_pending.get() }
   b.show(fn() { pending().length() > 0 }, fn(l) { @sf.workspace_label_node(l, fn() { @sf.t("android-misc.invite.label") }) })
   // (each in a box of no padding of its own: what comes and goes down a column closes its way to none of what it
   // holds, its padding not)

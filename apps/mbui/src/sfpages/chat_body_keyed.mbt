@@ -4,7 +4,8 @@
 // head (its page before, its emptiness, what went elsewhere before its messages; what is newer, where it stands and
 // its agents at work after them). So a word streamed into a message works out that message's rows and reads none of
 // the others; the list's keys are made again only as a message comes, goes or moves, or a message's own keys change
-// (a block more), and a row reads only what it is. What is sent from here and what waits in the outbox are
+// (one gone elsewhere after it), and a row reads only what it is; how many slices a message's words are drawn in
+// (View::scrolls_window's `slices`) worked out of that message's JSON alone, its own computed too (chat_said_slices_raw). What is sent from here and what waits in the outbox are
 // chat_body_rows' still: while there is any, the list goes by it (ChatBodyList::of_made).
 
 ///|
@@ -13,6 +14,9 @@
 priv struct ChatBodyList {
   keys : () -> Array[String]
   row : (String) -> ChatBodyRow?
+  /// how many slices row `k` is drawn in (chat_body_pieces': a long agent's message a block a piece; 1 for any other),
+  /// told only as that changes
+  slices : (String) -> Int
   /// how many of what was sent from here the core's rows took over, as they did (told as one more is)
   taken : () -> Int
   /// what it worked out that nothing follows let go of what that read (read untracked as its list was laid out, told
@@ -32,6 +36,7 @@ fn ChatBodyList::of_made(made : () -> ChatBodyRows, rest? : () -> Unit = fn() { 
   {
     keys: fn() { made().keys },
     row: fn(k) { made().rows.get(k) },
+    slices: fn(k) { made().rows.get(k).map_or(1, fn(r) { r.slices }) },
     taken: fn() {
       made() |> ignore
       0
@@ -49,7 +54,7 @@ priv struct ChatBodyParts {
 
 ///|
 /// The rows message `m` is shown in, as chat_body_rows has them: the unread line over it where the chat's unread line
-/// (`unread`) is at it; its own, a block a piece where it is in pieces, by its key (chat_body_key's, what was sent from
+/// (`unread`) is at it; its own (in as many slices as it is in pieces: chat_body_slices), by its key (chat_body_key's, what was sent from
 /// here as as `kept` says); what went elsewhere after it. The first of them, where it is the list's first (`first`), with
 /// no room over it; the message's as it joins the one before or not; the rest apart. `followed` where what is sent from
 /// here after it goes close under it (sent_among's).
@@ -69,7 +74,7 @@ fn chat_body_parts_by(kept : ChatBodyKept, m : Message, unread : Double?, first 
   }
   if unread == Some(m.seq) {
     keys.push("line")
-    rows["line"] = { entry: Entry::Line, gap: gap_of(false), piece: None }
+    rows["line"] = { entry: Entry::Line, gap: gap_of(false), slices: 1 }
     lead = false
   }
   let e = Entry::Said(m)
@@ -79,22 +84,12 @@ fn chat_body_parts_by(kept : ChatBodyKept, m : Message, unread : Double?, first 
   let k = chat_body_key(kept, e)
   let gap = gap_of(m.joined)
   lead = false
-  match chat_body_pieces(e) {
-    Some(ps) =>
-      for b, pc in ps {
-        let pk = chat_piece_key(k, b)
-        rows[pk] = { entry: e, gap: if b == 0 { gap } else { NoGap }, piece: Some(pc) }
-        keys.push(pk)
-      }
-    None => {
-      rows[k] = { entry: e, gap, piece: None }
-      keys.push(k)
-    }
-  }
+  rows[k] = { entry: e, gap, slices: chat_body_slices(e) }
+  keys.push(k)
   for s in m.elsewhere {
     let se = Entry::Sent(s)
     let sk = se.id()
-    rows[sk] = { entry: se, gap: Apart, piece: None }
+    rows[sk] = { entry: se, gap: Apart, slices: 1 }
     keys.push(sk)
   }
   { keys, rows }
@@ -102,15 +97,14 @@ fn chat_body_parts_by(kept : ChatBodyKept, m : Message, unread : Double?, first 
 
 ///|
 /// The keys of the rows a message is shown in (chat_body_parts_by's, in its order) worked out of what it says of itself:
-/// its `seq`, `ts` and `outgoing`, the pieces its words are drawn in (`pieces`), the keys of what went elsewhere after
-/// it (`elsewhere`); the unread line over it where `unread` is at it.
+/// its `seq`, `ts` and `outgoing`, the keys of what went elsewhere after it (`elsewhere`); the unread line over it where
+/// `unread` is at it. Its slices are no keys of the list's (chat_said_slices_raw).
 fn chat_said_keys(
   kept : ChatBodyKept,
   unread : Double?,
   seq : Double,
   ts : String,
   outgoing : String,
-  pieces : Array[@sf.MdPiece]?,
   elsewhere : Array[String],
 ) -> Array[String] {
   let keys : Array[String] = []
@@ -126,11 +120,7 @@ fn chat_said_keys(
     Some(o) => "o:" + o
     None => "m:" + ts
   }
-  let k = kept.sent_as.get(core_key).unwrap_or(core_key)
-  match pieces {
-    Some(ps) => for b in 0..<ps.length() { keys.push(chat_piece_key(k, b)) }
-    None => keys.push(k)
-  }
+  keys.push(kept.sent_as.get(core_key).unwrap_or(core_key))
   for e in elsewhere {
     // (Entry::Sent's id)
     keys.push("s:" + e)
@@ -143,27 +133,33 @@ fn chat_said_keys(
 /// fields that say them alone: what a message's place among the list's keys costs, never the message read whole.
 fn chat_said_keys_raw(kept : ChatBodyKept, unread : Double?, j : Json) -> Array[String] {
   let s = Some(j)
-  let author_kind = text(s, "authorKind")
-  // (chat_body_pieces': an agent's words, but where a card is drawn in their place: message_cards_node's in_place_of)
-  let in_place = match field(s, "card") {
-    Some(Object(_)) as c =>
-      ["vaultAsk", "phoneAsk", "signinAsk", "rigAsk"].iter().any(fn(n) { field(c, n) is Some(Object(_)) })
-    _ => false
-  }
-  let pieces = if !flag(s, "mine") && !flag(s, "system") && author_kind != "person" && !in_place {
-    @sf.markdown_pieces(text(s, "text"), field(s, "md"))
-  } else {
-    None
-  }
   chat_said_keys(
     kept,
     unread,
     number(s, "seq"),
     text(s, "ts"),
     text(s, "outgoing"),
-    pieces,
     items(s, "elsewhere").map(fn(e) { text(Some(e), "key") }),
   )
+}
+
+///|
+/// How many slices message JSON `j`'s own row is drawn in (chat_body_slices' of it read as a Message), read of the few
+/// fields that say it alone: an agent's words in as many as sf's markdown_pieces cuts them into, but where a card is
+/// drawn in their place (message_cards_node's in_place_of); 1 for any other. Never the message read whole.
+fn chat_said_slices_raw(j : Json) -> Int {
+  let s = Some(j)
+  let author_kind = text(s, "authorKind")
+  let in_place = match field(s, "card") {
+    Some(Object(_)) as c =>
+      ["vaultAsk", "phoneAsk", "signinAsk", "rigAsk"].iter().any(fn(n) { field(c, n) is Some(Object(_)) })
+    _ => false
+  }
+  guard !flag(s, "mine") && !flag(s, "system") && author_kind != "person" && !in_place else { return 1 }
+  match @sf.markdown_pieces(text(s, "text"), field(s, "md")) {
+    Some(ps) if ps.length() > 1 => ps.length()
+    _ => 1
+  }
 }
 
 ///|
@@ -185,7 +181,7 @@ fn chat_body_ends(
   // (the list's first row has no room over it: the first over the messages, or under them where nothing is over them)
   let put = fn(p : ChatBodyParts, e : Entry, first : Bool) {
     let k = e.id()
-    p.rows[k] = { entry: e, gap: if first { NoGap } else { Apart }, piece: None }
+    p.rows[k] = { entry: e, gap: if first { NoGap } else { Apart }, slices: 1 }
     p.keys.push(k)
   }
   if v.more {
@@ -203,7 +199,7 @@ fn chat_body_ends(
     let ck = "o:" + o.id
     let k = kept.sent_as.get(ck).unwrap_or(ck)
     let first = lone()
-    under.rows[k] = { entry: Entry::Out(o), gap: if first { NoGap } else if o.joined { Joined } else { Apart }, piece: None }
+    under.rows[k] = { entry: Entry::Out(o), gap: if first { NoGap } else if o.joined { Joined } else { Apart }, slices: 1 }
     under.keys.push(k)
   }
   if v.newer {
@@ -455,15 +451,7 @@ fn chat_body_keyed(
             }
             let now = match (answered, own) {
               (Some(m), _) =>
-                chat_said_keys(
-                  kept,
-                  unread_at,
-                  m.seq,
-                  m.ts,
-                  m.outgoing,
-                  chat_body_pieces(Entry::Said(m)),
-                  m.elsewhere.map(fn(e) { e.key }),
-                )
+                chat_said_keys(kept, unread_at, m.seq, m.ts, m.outgoing, m.elsewhere.map(fn(e) { e.key }))
               (None, Some(j)) => chat_said_keys_raw(kept, unread_at, j)
               (None, None) => []
             }
@@ -479,6 +467,34 @@ fn chat_body_keyed(
           same=fn(a, b) { a == b },
         )
         part_keys[mk] = p
+        p
+      }
+    }
+  }
+  // (how many slices each message's own row is drawn in, worked out of its JSON's few fields (chat_said_slices_raw), as
+  // its keys are: told only as that count changes, a word streamed into it waking nothing else)
+  let slice_counts : Map[String, @signals.Computed[Int]] = Map([])
+  let slices_of = fn(mk : String) -> @signals.Computed[Int] {
+    match slice_counts.get(mk) {
+      Some(p) => p
+      None => {
+        let p = @signals.computed(
+          fn(_) {
+            let (_, _, _, card_mk, _, _) = marks.get()
+            let answered = if card_mk == Some(mk) {
+              @signals.untracked(card).map(fn(c) { c.1 })
+            } else {
+              None
+            }
+            match (answered, msgs.raw(mk)) {
+              (Some(m), _) => chat_body_slices(Entry::Said(m))
+              (None, Some(j)) => chat_said_slices_raw(j)
+              (None, None) => 1
+            }
+          },
+          same=fn(a, b) { a == b },
+        )
+        slice_counts[mk] = p
         p
       }
     }
@@ -531,6 +547,9 @@ fn chat_body_keyed(
         for mk in parts.keys().filter(fn(mk) { !here.contains(mk) }).collect() {
           parts.remove(mk)
         }
+        for mk in slice_counts.keys().filter(fn(mk) { !here.contains(mk) }).collect() {
+          slice_counts.remove(mk)
+        }
       }
       // (the same keys the same object as before: worked out anew as its page is woken from rest, what lays them out
       // finds them as it left them)
@@ -560,6 +579,11 @@ fn chat_body_keyed(
         p.dispose()
       }
     }
+    for _, p in slice_counts {
+      if !p.watched() {
+        p.dispose()
+      }
+    }
     if !marks.watched() {
       marks.dispose()
     }
@@ -585,6 +609,14 @@ fn chat_body_keyed(
         None => None
       }
     },
+    slices: fn(k) {
+      // (a message's own row alone: its unread line and what went elsewhere after it are one each)
+      guard k != "line" && !k.has_prefix("s:") else { return 1 }
+      match owner.get(k) {
+        Some("") | None => 1
+        Some(mk) => slices_of(mk).get()
+      }
+    },
   }
 }
 
@@ -593,12 +625,19 @@ fn chat_body_keyed(
 priv struct ChatBodyNow {
   keys : Array[String]
   row_of : (String) -> ChatBodyRow?
+  slices_of : (String) -> Int
 }
 
 ///|
 /// Its keys as they are now, and its rows as each is asked (what reads them in a computed follows what it reads).
 fn ChatBodyList::read(self : ChatBodyList) -> ChatBodyNow {
-  { keys: (self.keys)(), row_of: self.row }
+  { keys: (self.keys)(), row_of: self.row, slices_of: self.slices }
+}
+
+///|
+/// How many slices row `k` is drawn in (1 at least).
+fn ChatBodyNow::slices(self : ChatBodyNow, k : String) -> Int {
+  (self.slices_of)(k)
 }
 
 ///|

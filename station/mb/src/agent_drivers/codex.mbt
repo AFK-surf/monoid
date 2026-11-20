@@ -10,8 +10,11 @@
 let codex_scrubbed : Array[String] = ["OPENAI_API_KEY", "CODEX_HOME"]
 
 ///|
-/// The CA file Codex is pointed at.
-let ca_bundle = "/etc/ssl/cert.pem"
+/// The CA files Codex may be pointed at, the first there taken: Debian's, Ubuntu's and Alpine's, then Fedora's and
+/// RHEL's, then macOS's and the BSDs' (the TypeScript's one, which a Linux machine often lacks).
+pub fn ca_bundles() -> Array[String] {
+  ["/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt", "/etc/ssl/cert.pem"]
+}
 
 ///|
 /// What the station before ran on a host handed over, in its `turn_from` while its sessions are taken up.
@@ -54,15 +57,7 @@ let lent_renew_ms = 21600000.0
 ///|
 /// JavaScript's `a < b` of two strings: by their code units.
 pub fn js_less(a : String, b : String) -> Bool {
-  let n = if a.length() < b.length() { a.length() } else { b.length() }
-  for i in 0..<n {
-    let x = a.unsafe_charcode_at(i)
-    let y = b.unsafe_charcode_at(i)
-    if x != y {
-      return x < y
-    }
-  }
-  a.length() < b.length()
+  @jsjson.js_less(a, b)
 }
 
 ///|
@@ -187,7 +182,7 @@ pub fn ModelCatalog::take_page(self : ModelCatalog, answer : JValue?) -> Unit ra
       continue
     }
     let id = match get(Some(m), "id") {
-      Some(Str(u)) => Some(@jsjson.text(u))
+      Some(Str(u)) => Some(@jsjson.sanitize_str(u))
       None => str_at(Some(m), "model")
       _ => None
     }
@@ -267,7 +262,8 @@ pub(all) struct CodexWorld {
   /// where the user's own skills are walked for their SKILL.md files (`hostSkillsOff`'s walk)
   walk_skills : (String) -> Later[Array[String]]
   host_skills : String
-  ca_bundle : String
+  /// the CA files Codex may be pointed at, in order (`ca_bundles`)
+  ca_bundles : Array[String]
   /// a session's own Fast, its speed ("ultrafast", "fast", "standard"), a profile as the config says it now
   fast : ((String) -> Bool?)?
   speed : ((String) -> String?)?
@@ -425,6 +421,7 @@ pub fn Host::hosted_options(self : Host, label : String, orphans? : Bool = false
     orphans,
     heard: h => Took(self.heard(h)),
     attached: () => self.attached(),
+    handed: () => self.freeze(),
     exit: (said, stderr) => {
       self.on_exit(said, stderr)
       done(self.lp)
@@ -964,12 +961,22 @@ pub fn CodexDriver::host_args(self : CodexDriver, profile : JValue) -> Array[Str
 }
 
 ///|
-/// Points Codex at a CA file where none of its own is set and the file is there (`withCaBundle`).
-pub fn with_ca_bundle(m : Machine, env : Env, bundle : String) -> Later[Unit] {
+/// Points Codex at a CA file where none of its own is set: the first of `bundles` there (`withCaBundle`).
+pub fn with_ca_bundle(m : Machine, env : Env, bundles : Array[String]) -> Later[Unit] {
   if ["SSL_CERT_FILE", "SSL_CERT_DIR", "CODEX_CA_CERTIFICATE"].iter().any(k => env.has(k)) {
     return done(m.lp)
   }
-  m.there(bundle).map(yes => if yes { env.set("SSL_CERT_FILE", bundle) })
+  first_there(m.lp, m.there, bundles).map(found => if found is Some(bundle) { env.set("SSL_CERT_FILE", bundle) })
+}
+
+///|
+/// The first of `paths` there, each looked at only once the one before is not.
+fn first_there(lp : Loop, there : (String) -> Later[Bool], paths : Array[String]) -> Later[String?] {
+  fn from(i : Int) -> Later[String?] {
+    guard i < paths.length() else { return Later::ok(lp, None) }
+    there(paths[i]).bind(yes => if yes { Later::ok(lp, Some(paths[i])) } else { from(i + 1) })
+  }
+  from(0)
 }
 
 ///|
@@ -1002,7 +1009,7 @@ pub fn CodexDriver::start_host(
   .bind(until => {
     let env = self.child_env(profile)
     env.set("CODEX_HOME", home)
-    with_ca_bundle(self.m, env, self.world.ca_bundle).bind(_ => {
+    with_ca_bundle(self.m, env, self.world.ca_bundles).bind(_ => {
       let host = Host::new(self.m, profile_id(profile), self.host_signature(profile), 1.0, false, key)
       host.lent_until = until
       (self.procs.start)(
@@ -1388,7 +1395,7 @@ pub fn CodexDriver::drain(self : CodexDriver, host : Host) -> Later[Unit] {
       return done(lp)
     }
     self.serial(() => {
-      let killed = if host.alive() { (host.p().kill)(5000.0) } else { done(lp) }
+      let killed = if host.alive() { (host.p().kill)(5000.0) } else { (host.p().released)() }
       killed.map(_ => self.draining_delete(host))
     })
   })
@@ -1748,6 +1755,8 @@ pub fn CodexDriver::host(
       .retire_stale(key, installed)
       .bind(_ => {
         let mut replaced : Host? = None
+        let mut discarded = false
+        let mut retiring : Later[Unit] = done(lp)
         let current = self.host_at(key)
         // a thread of its could not reach the station's tools at the address this one is opened with (`host`)
         let unreachable = match (current, mcp_url) {
@@ -1780,18 +1789,23 @@ pub fn CodexDriver::host(
             }
             c.draining = true
             self.host_delete(key)
-            self.draining_add(c)
-            replaced = Some(c)
+            discarded = true
+            if c.turns.length() == 0 && c.threads.length() == 0 {
+              retiring = (c.p().kill)(5000.0)
+            } else {
+              self.draining_add(c)
+              replaced = Some(c)
+            }
           }
           _ => ()
         }
         let replaced = replaced
-        let kept = if replaced is Some(_) { None } else { current }
-        let renewing = match kept {
+        let kept = if discarded { None } else { current }
+        retiring
+        .bind(_ => match kept {
           Some(k) if k.alive() => self.renew_lent(k, profile)
           _ => done(lp)
-        }
-        renewing
+        })
         .bind(_ => match kept {
           Some(k) if k.alive() && k.signature != self.host_signature(profile) =>
             if k.turns.length() == 0 {
@@ -1885,7 +1899,7 @@ pub fn lent_expiry(m : Machine, home : String) -> Later[Double] {
     let token = match parse_json(text) {
       Some(j) =>
         match get(get(Some(j), "tokens"), "access_token") {
-          Some(Str(u)) => @jsjson.text(u)
+          Some(Str(u)) => @jsjson.sanitize_str(u)
           Some(other) => js_string_of(other)
           None => "undefined"
         }
@@ -1909,7 +1923,7 @@ pub fn js_string_of(v : JValue) -> String {
     Null => "null"
     Bool(x) => x.to_string()
     Num(_) => @jsjson.stringify(v)
-    Str(u) => @jsjson.text(u)
+    Str(u) => @jsjson.sanitize_str(u)
     Arr(_) => "[array]"
     Obj(_) => "[object Object]"
   }
@@ -3198,7 +3212,7 @@ pub fn remember_rollout(
   path : JValue,
 ) -> Later[String?] {
   guard path is Str(u) else { return Later::ok(m.lp, None) }
-  let p = @jsjson.text(u)
+  let p = @jsjson.sanitize_str(u)
   if !p.has_prefix("/") || id.contains("/") || id.contains("\\") || id.contains("\u{0}") {
     return Later::ok(m.lp, None)
   }

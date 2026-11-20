@@ -122,8 +122,8 @@ test "the helper's wire: a message's head, a clip's" {
 ///|
 test "a Mac's input: clicks counted, modifiers held, keys by their place" {
   let m = MacInput::new()
-  let down = Pointer(kind="down", x=0.1, y=0.1, buttons=1)
-  let up = Pointer(kind="up", x=0.1, y=0.1, buttons=0)
+  let down = Pointer(kind="down", x=0.1, y=0.1, buttons=1, delta=None)
+  let up = Pointer(kind="up", x=0.1, y=0.1, buttons=0, delta=None)
   assert_eq(stringify(ja(m.ops(down, 0.0))), "[{\"op\":\"mouse\",\"type\":\"down\",\"x\":0.1,\"y\":0.1,\"button\":0,\"buttons\":1,\"clicks\":1,\"flags\":0}]")
   ignore(m.ops(up, 10.0))
   assert_eq(stringify(ja(m.ops(down, 300.0))), "[{\"op\":\"mouse\",\"type\":\"down\",\"x\":0.1,\"y\":0.1,\"button\":0,\"buttons\":1,\"clicks\":2,\"flags\":0}]")
@@ -147,7 +147,7 @@ test "Windows' input: a wheel in its units, modifiers pressed round a key" {
 ///|
 test "a simulator's input: a finger from the edge, its shortcuts, text typed or pasted" {
   let s = SimInput::new()
-  assert_eq(stringify(ja(s.ops(Pointer(kind="down", x=0.5, y=0.99, buttons=1)))), "[{\"op\":\"touch\",\"type\":\"begin\",\"x\":0.5,\"y\":0.99,\"edge\":3}]")
+  assert_eq(stringify(ja(s.ops(Pointer(kind="down", x=0.5, y=0.99, buttons=1, delta=None)))), "[{\"op\":\"touch\",\"type\":\"begin\",\"x\":0.5,\"y\":0.99,\"edge\":3}]")
   assert_eq(stringify(ja(s.ops(Key(kind="down", key="h", code="KeyH", mods=12)))), "[{\"op\":\"button\",\"name\":\"home\"}]")
   assert_eq(stringify(ja(s.ops(Text("日本")))), "[{\"op\":\"paste\",\"text\":\"日本\"}]")
   assert_eq(s.ops(Text("A")).length(), 4)
@@ -157,7 +157,7 @@ test "a simulator's input: a finger from the edge, its shortcuts, text typed or 
 test "scrcpy's control messages and its H.264" {
   let a = AndroidInput::new()
   let size = (1080.0, 2400.0)
-  let m = a.messages(Pointer(kind="down", x=0.5, y=1.0, buttons=1), size)
+  let m = a.messages(Pointer(kind="down", x=0.5, y=1.0, buttons=1, delta=None), size)
   assert_eq(b64(m[0]), "AgD//////////gAAAhwAAAlfBDgJYP//AAAAAAAAAAA=")
   assert_eq(a.messages(Text("hi"), size), [b"\x01\x00\x00\x00\x02hi"])
   let nals = nals_of(b"\x00\x00\x00\x01\x67\x42\x00\x1e\x00\x00\x01\x68\x01\x00\x00\x01\x65\x09")
@@ -391,4 +391,12 @@ test "Windows' agent-desktop, stillfail-screen and scrcpy-server beside the stat
   let none = paths_io(code, _ => false)
   assert_eq(screen_binary(none, Env::new([("STILLFAIL_SCREEN", "C:\\none-4.exe")])), None)
   assert_eq(server_file(io), "C:\\repo\\station\\src\\screens\\scrcpy-server")
+}
+
+///|
+test "ViewOptions tracks agent views separately from human remote views" {
+  assert_false(ViewOptions::new(1280.0, 720.0, [H264]).agent)
+  assert_true(ViewOptions::new(1280.0, 720.0, [Jpeg], agent=true).agent)
+  assert_false(view_options_of(parse("{\"maxWidth\":1280,\"maxHeight\":720,\"codecs\":[\"h264\"]}")).agent)
+  assert_true(view_options_of(parse("{\"maxWidth\":1280,\"maxHeight\":720,\"codecs\":[\"jpeg\"],\"agent\":true}")).agent)
 }

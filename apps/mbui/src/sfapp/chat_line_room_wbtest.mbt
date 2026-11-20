@@ -37,7 +37,7 @@ fn cr_open(
 ) -> @ui.Tester {
   let (_, w, h, platform) = screen
   new_run()
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   fix_pace.val = pace
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })

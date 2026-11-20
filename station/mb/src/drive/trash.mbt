@@ -156,26 +156,5 @@ fn exists(path : String) -> Bool {
 ///|
 /// encodeURI: what is not a letter, a digit or one of `;,/?:@&=+$-_.!~*'()#` as %XX of its UTF-8.
 pub fn encode_uri(s : String) -> String {
-  let keep = ";,/?:@&=+$-_.!~*'()#"
-  let out = StringBuilder::new()
-  let hex = "0123456789ABCDEF"
-  for c in s {
-    let n = c.to_int()
-    let plain = (n >= 'a'.to_int() && n <= 'z'.to_int()) ||
-      (n >= 'A'.to_int() && n <= 'Z'.to_int()) ||
-      (n >= '0'.to_int() && n <= '9'.to_int()) ||
-      (n < 128 && keep.contains_char(c))
-    if plain {
-      out.write_char(c)
-    } else {
-      let b = @utf8.encode(c.to_string())
-      for i = 0; i < b.length(); i = i + 1 {
-        let v = b[i].to_int()
-        out.write_char('%')
-        out.write_char(hex.get_char(v >> 4).unwrap())
-        out.write_char(hex.get_char(v & 15).unwrap())
-      }
-    }
-  }
-  out.to_string()
+  @url.encode_uri(s)
 }

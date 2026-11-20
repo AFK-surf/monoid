@@ -265,23 +265,7 @@ fn js_string_of(v : Json) -> String {
 ///|
 /// `encodeURIComponent(s)`.
 pub fn encode_uri_component(s : String) -> String {
-  let b = StringBuilder()
-  let hex = "0123456789ABCDEF"
-  for byte in @utf8.encode(s) {
-    let c = byte.to_int()
-    let keep = (c >= 0x41 && c <= 0x5a) ||
-      (c >= 0x61 && c <= 0x7a) ||
-      (c >= 0x30 && c <= 0x39) ||
-      c == 0x2d || c == 0x5f || c == 0x2e || c == 0x21 || c == 0x7e || c == 0x2a || c == 0x27 || c == 0x28 || c == 0x29
-    if keep {
-      b.write_char(c.unsafe_to_char())
-    } else {
-      b.write_char('%')
-      b.write_char(hex.code_unit_at(c >> 4).to_int().unsafe_to_char())
-      b.write_char(hex.code_unit_at(c & 15).to_int().unsafe_to_char())
-    }
-  }
-  b.to_string()
+  @url.encode_uri_component(s)
 }
 
 ///|

@@ -198,15 +198,7 @@ pub fn host_io(
 ///|
 fn hex_bytes(h : String) -> Bytes {
   let n = h.length() / 2
-  let value = (c : Int) => if c >= '0' && c <= '9' {
-    c - '0'
-  } else if c >= 'a' && c <= 'f' {
-    c - 'a' + 10
-  } else if c >= 'A' && c <= 'F' {
-    c - 'A' + 10
-  } else {
-    0
-  }
+  let value = (c : Int) => @codec.hex_digit(c).unwrap_or(0)
   Bytes::from_array(
     FixedArray::makei(n, i => (value(h.unsafe_charcode_at(2 * i)) * 16 + value(h.unsafe_charcode_at(2 * i + 1))).to_byte()),
   )

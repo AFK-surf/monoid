@@ -29,3 +29,88 @@ pub fn velocity_capsule(
   let r = dmin(w + dw, h + dh) / 2.0
   { dx: -dw / 2.0, dy: -dh / 2.0, dw, dh, corners: Some((r, r, r, r)) }
 }
+
+///|
+/// 2D spring-following pointer/capsule controller: tracks `(x, y)` on two `NodeWay` axes plus a `held` presence way.
+/// Snaps silently on first engagement (when `held <= 0.001`) so the capsule never flies in from the origin, and computes
+/// velocity-stretched capsule geometry via `speed_stretch`.
+pub struct SpringFollow2D {
+  priv ax : NodeWay
+  priv ay : NodeWay
+  priv held : NodeWay
+}
+
+///|
+/// Create a `SpringFollow2D` at rest (`(0, 0)`, not held).
+pub fn SpringFollow2D::new() -> SpringFollow2D {
+  { ax: NodeWay::new(0.0), ay: NodeWay::new(0.0), held: NodeWay::new(0.0) }
+}
+
+///|
+/// Follow target `(x, y)` on `spec` (default `tactile_bounce`) and engage `held -> 1.0`.
+/// When appearing from rest (`held.target() == 0.0` and `held.value_at(v.cause_at()) <= 0.001`), snaps `(ax, ay)`
+/// immediately to `(x, y)` instead of flying in from the origin or previous position.
+pub fn SpringFollow2D::chase(
+  self : SpringFollow2D,
+  v : @view.View,
+  x : Double,
+  y : Double,
+  spec? : Spec = tactile_bounce,
+) -> Unit {
+  if self.held.target() == 0.0 && self.held.value_at(v.cause_at()) <= 0.001 {
+    self.ax.put(x)
+    self.ay.put(y)
+  } else {
+    self.ax.go(v, x, spec)
+    self.ay.go(v, y, spec)
+  }
+  self.held.go(v, 1.0, spec)
+}
+
+///|
+/// Release engagement (`held -> 0.0`) on `spec` (default `tactile_bounce`).
+pub fn SpringFollow2D::release(
+  self : SpringFollow2D,
+  v : @view.View,
+  spec? : Spec = tactile_bounce,
+) -> Unit {
+  self.held.go(v, 0.0, spec)
+}
+
+///|
+/// Whether the controller is engaged or still animating out (`held.target() > 0.0 || held.goes(v)`).
+pub fn SpringFollow2D::active(self : SpringFollow2D, v : @view.View) -> Bool {
+  self.held.target() > 0.0 || self.held.goes(v)
+}
+
+///|
+/// Current rendered engagement progress (`0..1`) on node `v`.
+pub fn SpringFollow2D::held_shown(self : SpringFollow2D, v : @view.View) -> Double {
+  self.held.shown(v)
+}
+
+///|
+/// Velocity-stretched capsule `GroundShape` for a `w` x `h` capsule laid out at center `(tx, ty)`.
+/// Stretches horizontally in the direction of motion and compresses vertically via `speed_stretch`.
+pub fn SpringFollow2D::capsule_shape(
+  self : SpringFollow2D,
+  v : @view.View,
+  w : Double,
+  h : Double,
+  tx : Double,
+  ty : Double,
+) -> @view.GroundShape {
+  let (x, xv) = self.ax.motion(v)
+  let y = self.ay.shown(v)
+  let vel = if (self.ax.target() - x).abs() < 0.5 { 0.0 } else { xv / 60.0 }
+  let (longer, lower) = speed_stretch(vel)
+  let mid = x + (if vel < 0.0 { -longer } else { longer }) / 2.0
+  let r = (h - lower) / 2.0
+  {
+    dx: mid - (w + longer) / 2.0 - (tx - w / 2.0),
+    dy: y - (h - lower) / 2.0 - (ty - h / 2.0),
+    dw: longer,
+    dh: -lower,
+    corners: Some((r, r, r, r)),
+  }
+}

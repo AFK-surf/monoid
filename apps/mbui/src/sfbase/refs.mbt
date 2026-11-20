@@ -302,11 +302,20 @@ pub fn refs_look(key : String, accent : Int64) -> (String) -> (String, Array[(In
   let read = ref_field(key)
   read.marks_of.get() |> ignore
   read.marks.length() |> ignore
+  refs_look_by(key, fn() { accent })
+}
+
+///|
+/// As `refs_look`, reading `marks_of` and `accent()` as the field's words are measured and painted (a field of the
+/// window's tree: re-colored as `ref.marks` answers or the theme's accent changes).
+pub fn refs_look_by(key : String, accent : () -> Int64) -> (String) -> (String, Array[(Int, Int, Int64)]) {
   fn(s) {
     let f = ref_field(key)
+    f.marks_of.get() |> ignore
     if s != f.marks_in || f.marks.is_empty() {
       return (s, [])
     }
+    let ink = accent()
     let sb = StringBuilder()
     let spans : Array[(Int, Int, Int64)] = []
     let mut at = 0
@@ -320,8 +329,8 @@ pub fn refs_look(key : String, accent : Int64) -> (String) -> (String, Array[(In
       sb.write_string(s.clamped_view(start=a + 2, end=b - 1).to_owned())
       sb.write_string("\u{200B}")
       at = b
-      spans.push((a + 1, a + 2, @sf.alpha(accent, ref_at_alpha)))
-      spans.push((a + 2, b - 1, accent))
+      spans.push((a + 1, a + 2, @sf.alpha(ink, ref_at_alpha)))
+      spans.push((a + 2, b - 1, ink))
     }
     sb.write_string(s.clamped_view(start=at).to_owned())
     (sb.to_string(), spans)

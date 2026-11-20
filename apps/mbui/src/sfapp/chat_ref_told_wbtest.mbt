@@ -22,7 +22,7 @@ test "desk composer: its menu of chats dismissed by Escape: closed for that @ as
     seen.push(closed())
     t.draw()
     seen.push(closed())
-    t.run_for(@kit.pop_out_ms)
+    t.run_for(@motion.pop_out_ms)
     assert_eq(seen, [false, true, true])
     assert_true(t.find("引用对话") is None)
     assert_true(composer_focused(), msg="the field keeps the focus")
@@ -263,7 +263,7 @@ test "desk composer: its menu, `[` typed after its @ and the core's answer for i
     t.frame()
     // (made as nodes, the menu going out on its way: pop_out_ms, offers_node's)
     if both_nodes.val {
-      t.run_for(@kit.pop_out_ms)
+      t.run_for(@motion.pop_out_ms)
     }
     assert_true(t.find("引用对话") is None, msg=desk_words(src))
     t.key_told(@ui.key_code_enter, 0, t.time())

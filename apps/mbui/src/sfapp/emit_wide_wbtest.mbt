@@ -4,7 +4,8 @@
 ///|
 test "wide: an agent's picture in its line is where its answer's is, out in the margin: the flying one lands with no step aside" {
   let calls : Array[Made] = []
-  let t = wide_tester(calls, mode="chat")
+  // (the old page's emits and flights (emits_of, emit_flight), as emit_wbtest's: held on the old page)
+  let t = wide_tester(calls, mode="chat", before=fn(_) { @sfbase.hold_chat_page_nodes(Some(false)) })
   let clock = Ref(0.0)
   fix_clock.val = Some(fn() { clock.val })
   t.tap_text("发消息")
@@ -24,7 +25,8 @@ test "wide: an agent's picture in its line is where its answer's is, out in the 
 ///|
 test "wide: the avatar an answer comes out of is drawn where it flies in the window, the chat beside the sidebar" {
   let calls : Array[Made] = []
-  let t = wide_tester(calls, mode="chat")
+  // (the old page's emits and flights (emits_of, emit_flight), as emit_wbtest's: held on the old page)
+  let t = wide_tester(calls, mode="chat", before=fn(_) { @sfbase.hold_chat_page_nodes(Some(false)) })
   let clock = Ref(0.0)
   fix_clock.val = Some(fn() { clock.val })
   t.tap_text("发消息")

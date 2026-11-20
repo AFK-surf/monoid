@@ -659,7 +659,48 @@ pub fn model_triple_node(
           None => open_triple_panel(src, station, of, At(x, y, w, h), saved~, gone=fn() { opened.set(false) }, asks~, up~)
         }
       }
-      @sf.presses_node(b, go, on=fn() { can() || (bound() && on_bound is Some(_)) })
+      // (said to a screen reader as the button it is, by what it shows: its model, then each part shown after it, a dot
+      // between, as the old one's row says them)
+      let said_label = fn() {
+        guard offers() else { return @sf.t("web-main.model.none") }
+        let model = text(value(), "model")
+        let name = if model == "" {
+          @sf.t("web-main.model.pick")
+        } else {
+          match (text(vo(), "name"), text(v(), "modelText")) {
+            ("", "") => model
+            ("", n) => n
+            (n, _) => n
+          }
+        }
+        let parts = [name]
+        if !flag(v(), "runtimeFixed") && (flag(v(), "showRuntime") || items(vo(), "runtimes").length() > 1) {
+          parts.push(@settings.runtime_short(runtime()))
+        }
+        let effort = text(value(), "effort")
+        if effort != "" || items(v(), "efforts").length() > 0 {
+          parts.push(if effort == "" { @sf.t("web-main.model.defaultEffort") } else { effort_text(effort) })
+        }
+        for k in ["fastText", "subagentText"] {
+          if text(v(), k) != "" {
+            parts.push(text(v(), k))
+          }
+        }
+        if account() is Some(Object(_)) && text(account(), "text") != "" {
+          parts.push(text(account(), "text"))
+        }
+        parts.join(" · ")
+      }
+      // (the row itself the button (the library's action box, in its node): pressed, focused and said by it while it can be opened)
+      @sf.action_box_node(
+        b,
+        said_label,
+        fn(_) { go() },
+        fn(_) {  },
+        disabled=fn() { !(can() || (bound() && on_bound is Some(_))) },
+        in_node=true,
+      )
+      |> ignore
       // (asked from elsewhere as it is made (`ask_open`): opened as it is first placed, as the old one's is as it is seen)
       if ask_open {
         @ui.after_frame(fn() {
@@ -1226,7 +1267,7 @@ fn triple_body_node(
   }
   // a scroller of the models: `most` tall at most, giving way where the panel has less room for it
   let scroll = fn(parent : @view.View, most : () -> Double, body : (@view.View) -> Unit) {
-    @sf.capped_node(parent, most, fn(col) {
+    @sf.capped_node(parent, most, bleed=false, fn(col) {
       @sf.style_node(col, fn() { triple_rows })
       body(col)
     })
@@ -1463,19 +1504,26 @@ fn triple_body_node(
         leaving.set(lv)
         held_back.set(held_back.untracked() + came)
         room.at_moment(room.cause_at() + @sf.leave_ms, fn() {
-          let lv = leaving.untracked().copy()
-          for g in gone {
-            lv.remove(g.0)
-          }
-          leaving.set(lv)
-          held_back.set(held_back.untracked().filter(fn(k) { !came.contains(k) }))
+          @view.transition(within=room.transitions_root(), fn() {
+            let lv = leaving.untracked().copy()
+            for g in gone {
+              lv.remove(g.0)
+            }
+            leaving.set(lv)
+            held_back.set(held_back.untracked().filter(fn(k) { !came.contains(k) }))
+          })
         })
         |> ignore
       })
       room.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      // (beside what opened it as tall as the column beside it where that is taller, the way to all of them at its
+      // foot: its line over it level with the panel foot's, as far over it as under it, never left over the rows)
+      if !sheet {
+        room.grow(Is(1.0)) |> ignore
+      }
       room
       .height(By(fn() { if level_h() { Some(triple_list_h) } else { None } }))
-      .lies_along(By(fn() { if level_h() { Between } else { Start } }))
+      .lies_along(By(fn() { if level_h() || (!sheet && !flat()) { Between } else { Start } }))
       |> ignore
       scroll(room, fn() { if flat() { list_most() } else { list_most() - row_h() } }, fn(scrolled) {
         // (the room between them each row's own: triple_first_gap)
@@ -1549,7 +1597,8 @@ fn triple_body_node(
       room.show(fn() { !flat() }, fn(ta) {
         ta.show(at_once=true, fn() { !first_keys().is_empty() }, fn(d) {
           @sf.style_node(d, fn() { triple_to_all_rule })
-          d.box(fn(l) { @sf.style_node(l, fn() { triple_rule_h }) }) |> ignore
+          triple_across(d, sheet, has_params)
+          d.box(fn(l) { @sf.style_node(l, fn() { triple_panel_rule_h }) }) |> ignore
         })
         to_all(ta)
       })
@@ -1573,6 +1622,9 @@ fn triple_body_node(
     parent.box(fn(room) {
       @sf.style_node(room, fn() { triple_room })
       room.shrink(Is(1.0)).min_height(By(fn() { param_min_h().unwrap_or(0.0) |> Some })) |> ignore
+      if !sheet {
+        room.grow(Is(1.0)) |> ignore
+      }
       room.height(By(fn() { if level_h() { Some(triple_list_h) } else { None } })) |> ignore
       // (the way back: beside what opened it a row over them; a step's head has its back key)
       let back_to = fn() { !searching() && !sheet && has_first() }
@@ -1590,23 +1642,43 @@ fn triple_body_node(
         )
         |> ignore
       })
-      let most = fn() { if back_to() { list_most() - row_h() } else { list_most() } }
+      // (beside what opened it, browsing makers, the line under the way back over them as well: its room taken from theirs)
+      let most = fn() {
+        (if back_to() { list_most() - row_h() } else { list_most() }) -
+        (if !sheet && !searching() { 2.0 * @sf.panel_pad + triple_rule_thick } else { 0.0 })
+      }
       room.pick(at_once=true, fn() { (searching(), sheet && kind_asked() == triple_no_kind) }, fn(x, k) {
         x.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        if !sheet {
+          x.grow(Is(1.0)) |> ignore
+        }
         match k {
           (true, _) => model_rows(x, most)
           (false, true) => kind_rows(x, most)
           (false, false) if sheet => model_rows(x, most)
-          (false, false) =>
+          (false, false) => {
+            // (a line under the way back across the column, from the panel's left edge to the line between the
+            // columns, as the one over 全部模型 › is; the one between the makers and their models down from it to the
+            // panel foot's, meeting both)
+            x.box(fn(d) {
+              @sf.style_node(d, fn() { triple_browse_rule_h })
+              triple_across(d, sheet, has_params)
+              d.box(fn(l) { @sf.style_node(l, fn() { triple_panel_rule_h }) }) |> ignore
+            })
+            |> ignore
             x.box(fn(br) {
               @sf.style_node(br, fn() { triple_browse })
-              br.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+              br.grow(Is(1.0)).shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
               br.box(fn(kc) {
                 @sf.style_node(kc, fn() { triple_kinds_column }, in_row=true)
                 kind_rows(kc, most)
               })
               |> ignore
-              br.box(fn(r) { @sf.style_node(r, fn() { triple_rule_v }, in_row=true) }) |> ignore
+              br.box(fn(r) {
+                @sf.style_node(r, fn() { triple_rule_v }, in_row=true)
+                r.margin(Is((0.0, -@sf.panel_pad, 0.0, -@sf.panel_pad))) |> ignore
+              })
+              |> ignore
               br.box(fn(mc) {
                 @sf.style_node(mc, fn() { triple_models_column }, in_row=true)
                 model_rows(mc, most)
@@ -1614,6 +1686,7 @@ fn triple_body_node(
               |> ignore
             })
             |> ignore
+          }
         }
       })
     })
@@ -1622,6 +1695,9 @@ fn triple_body_node(
   let models = fn(parent : @view.View) {
     parent.pick(at_once=sheet, all, fn(x, a) {
       x.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      if !sheet {
+        x.grow(Is(1.0)) |> ignore
+      }
       if a {
         all_level(x)
       } else {
@@ -1819,7 +1895,7 @@ fn triple_body_node(
               None
             } else {
               let params = param_w()
-              let makers = @ui.Space::px(S40) + 2.0 * @ui.Space::px(S1_5) + 1.0
+              let makers = @ui.Space::px(S40) + 2.0 * @ui.Space::px(S1_5) + triple_rule_thick
               let beside = if params > 0.0 { params + @ui.Space::px(S2) } else { 0.0 }
               Some(dmin(makers + row_least() + beside, room_w()))
             }
@@ -1843,61 +1919,78 @@ fn triple_body_node(
                 @sf.style_node(rule, fn() { triple_rule_v })
                 rule
                 .over(Is(true))
-                .width(Is(Some(1.0)))
+                .width(Is(Some(triple_rule_thick)))
                 .margin(Is((-triple_between_rule, -@sf.panel_pad, 0.0, -@sf.panel_pad)))
                 |> ignore
               })
               |> ignore
-              let param_head = fn(parent : @view.View, title : String, first : () -> Bool) {
-                parent.pick(at_once=true, first, fn(h, is_first) {
-                  if is_first {
-                    @sf.panel_head_node(h, fn() { title }) |> ignore
-                  } else {
-                    h.box(fn(d) {
-                      @sf.style_node(d, fn() { triple_param_rule })
-                      d.box(fn(l) { @sf.style_node(l, fn() { triple_rule_h }) }) |> ignore
-                    })
-                    |> ignore
-                    h.box(fn(b) {
-                      @sf.style_node(b, fn() { triple_param_head_box })
-                      @sf.words_node(b, fn() { title }, fn() { triple_param_title }) |> ignore
-                    })
-                    |> ignore
-                  }
+              // (a section: its line over it where one is over it, from the line between the columns to the panel's right
+              // edge, meeting both; its title and choices where the column's are, in by as much as the line is out)
+              let param_section = fn(
+                parent : @view.View,
+                title : String,
+                first : () -> Bool,
+                choices : (@view.View) -> Unit,
+              ) {
+                parent.show(at_once=true, fn() { !first() }, fn(d) {
+                  @sf.style_node(d, fn() { triple_param_rule })
+                  d.box(fn(l) { @sf.style_node(l, fn() { triple_panel_rule_h }) }) |> ignore
                 })
+                parent.box(fn(sec) {
+                  sec.padding(Is((triple_rule_side, 0.0, @sf.panel_pad, 0.0))) |> ignore
+                  sec.pick(at_once=true, first, fn(h, is_first) {
+                    if is_first {
+                      @sf.panel_head_node(h, fn() { title }) |> ignore
+                    } else {
+                      h.box(fn(b) {
+                        @sf.style_node(b, fn() { triple_param_head_box })
+                        @sf.words_node(b, fn() { title }, fn() { triple_param_title }) |> ignore
+                      })
+                      |> ignore
+                    }
+                  })
+                  choices(sec)
+                })
+                |> ignore
               }
-              @sf.capped_node(col, fn() { triple_list_h + 44.0 }, fn(sc) {
-                @sf.style_node(sc, fn() { triple_effort_column })
+              // (as wide as the column and as far past it as the lines across it reach: to the line between the columns
+              // and to the panel's right edge, what it holds in as far)
+              // (its sections end to end: the room round each line its box's own, as far over it as under it)
+              @sf.capped_node(col, fn() { triple_list_h + 44.0 }, bleed=false, fn(sc) {
                 sc.show(at_once=true, fn() { !all_efforts().is_empty() }, fn(sec) {
-                  param_head(sec, h_effort, fn() { true })
-                  triple_choices_node(sec, h_effort, all_efforts, effort_now, pick_effort)
+                  param_section(sec, h_effort, fn() { true }, fn(sec) {
+                    triple_choices_node(sec, h_effort, all_efforts, effort_now, pick_effort)
+                  })
                 })
                 sc.show(at_once=true, has_speed, fn(sec) {
-                  param_head(sec, h_speed, fn() { all_efforts().is_empty() })
-                  triple_choices_node(
-                    sec,
-                    h_speed,
-                    all_speeds,
-                    speed_now,
-                    pick_speed,
-                    icon_of=fn(w) { if w == "Fast" || w == "Ultrafast" { "zap" } else { "" } },
-                    tip_of=fn(w) {
-                      match w {
-                        "Fast" => @sf.t("web-main.model.fastNote")
-                        "Ultrafast" => @sf.t("web-main.model.ultrafastNote")
-                        _ => ""
-                      }
-                    },
-                    tips?,
-                  )
+                  param_section(sec, h_speed, fn() { all_efforts().is_empty() }, fn(sec) {
+                    triple_choices_node(
+                      sec,
+                      h_speed,
+                      all_speeds,
+                      speed_now,
+                      pick_speed,
+                      icon_of=fn(w) { if w == "Fast" || w == "Ultrafast" { "zap" } else { "" } },
+                      tip_of=fn(w) {
+                        match w {
+                          "Fast" => @sf.t("web-main.model.fastNote")
+                          "Ultrafast" => @sf.t("web-main.model.ultrafastNote")
+                          _ => ""
+                        }
+                      },
+                      tips?,
+                    )
+                  })
                 })
                 sc.show(at_once=true, fn() { !all_contexts().is_empty() }, fn(sec) {
-                  param_head(sec, h_context, fn() { all_efforts().is_empty() && !has_speed() })
-                  triple_choices_node(sec, h_context, all_contexts, context_now, pick_context)
+                  param_section(sec, h_context, fn() { all_efforts().is_empty() && !has_speed() }, fn(sec) {
+                    triple_choices_node(sec, h_context, all_contexts, context_now, pick_context)
+                  })
                 })
               })
               .shrink(Is(1.0))
               .min_height(Is(Some(0.0)))
+              .margin(Is((-triple_rule_side, 0.0, -@sf.panel_pad, 0.0)))
               |> ignore
             })
             |> ignore
@@ -2035,6 +2128,9 @@ fn triple_find_node(
       },
     )
     field.grow(Is(1.0)).basis(Is(Some(0.0))).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+    // (typed into as the panel opens beside its control with keys and a mouse; never on a sheet or by touch, where an
+    // input method raised would cover the models: 2026-11-19 用户「点开模型选择框时，编辑器焦点应该默认聚焦到输入框上」)
+    @sf.panel_search_at_hand_node(field)
     f.show(at_once=true, fn() { contents.field.text() != "" }, fn(cl) {
       // (concentric with the pill's right end: same inset from the right edge as from top and bottom)
       cl.margin(By(fn() { (0.0, 0.0, (@sf.menu_row_min - 20.0) / 2.0 - @ui.Space::px(S3), 0.0) })) |> ignore
@@ -2117,7 +2213,7 @@ fn triple_foot_node(
   // (what the pick says as it is now)
   let o = f
     o.box(fn(row) {
-      @sf.style_node(row, fn() { if flag(v(), "claudeModeAvailable") { triple_mode_room } else { triple_who_room } }, in_row=true)
+      @sf.style_node(row, fn() { if sheet || flag(v(), "claudeModeAvailable") { triple_mode_room } else { triple_who_room } }, in_row=true)
       row.wraps(Is(Some(@ui.Space::px(S2)))).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
       // who runs it, at the foot's start (the web's panel's foot, the phone's sheet's)
       let revert_none = fn() {
@@ -2462,7 +2558,7 @@ fn triple_sidekick_node(
         @sf.style_node(rule, fn() { triple_rule_v })
         rule
         .over(Is(true))
-        .width(Is(Some(1.0)))
+        .width(Is(Some(triple_rule_thick)))
         .margin(Is((-triple_between_rule, if sheet { 0.0 } else { -@sf.panel_pad }, 0.0, -@sf.panel_pad)))
         |> ignore
       })
@@ -3036,7 +3132,7 @@ fn triple_accounts_node(n : @view.View, src : Source, station : String, of : Str
   )
   n.show(fn() { !accounts().is_empty() }, fn(d) {
     @sf.style_node(d, fn() { triple_accounts_rule })
-    d.box(fn(l) { @sf.style_node(l, fn() { triple_rule_h }) }) |> ignore
+    d.box(fn(l) { @sf.style_node(l, fn() { triple_panel_rule_h }) }) |> ignore
   })
   n.each(accounts, fn(a) { text(Some(a), "id") }, fn(row, a) {
     let id = text(Some(a.untracked()), "id")
@@ -3351,8 +3447,8 @@ let triple_find_hot : @ui.Style = @ui.css("row w=Full px=S3 gap=S2 align=ACenter
 let triple_find_icon : Double = 14.0
 
 ///|
-/// A line across (a history's under its figures; the panel's over its foot is the presenters', `ruled`: kept,
-/// 2026-10-25 用户「这两个的分割线可以保留」).
+/// A line across (a history's under its figures; the model panel's own are triple_panel_rule_h, over its foot the
+/// presenters', `ruled`: kept, 2026-10-25 用户「这两个的分割线可以保留」).
 // kept across runs: a value (no field of it changes)
 pub let triple_rule_h : @ui.Style = @ui.css("w=Full h=SPx bg=Line")
 
@@ -3428,9 +3524,18 @@ let triple_kinds_column : @ui.Style = @ui.css("w=S40")
 let triple_models_column : @ui.Style = @ui.style(w=@sf.grow)
 
 ///|
-/// The line between them (the panel's columns', 2026-10-25 用户 kept them).
+/// How thick the panel's lines are: a hairline (用户「分割线细一点淡一点」), as its foot's (sf's foot_rule).
+let triple_rule_thick : Double = 0.5
+
+///|
+/// A line across the panel: a hairline, the line's colour faded, as its foot's.
 // kept across runs: a value (no field of it changes)
-let triple_rule_v : @ui.Style = @ui.css("w=SPx bg=Line")
+let triple_panel_rule_h : @ui.Style = @ui.style(w=Full, h=@sf.hairline, bg=A(Line, O60))
+
+///|
+/// The line between them (the panel's columns', 2026-10-25 用户 kept them), as thin and faint as those across.
+// kept across runs: a value (no field of it changes)
+let triple_rule_v : @ui.Style = @ui.style(w=@sf.hairline, bg=A(Line, O60))
 
 ///|
 /// The models and how hard it thinks side by side, 8 apart, the line between them in the middle of that.
@@ -3438,8 +3543,14 @@ let triple_rule_v : @ui.Style = @ui.css("w=SPx bg=Line")
 let triple_side_by_side : @ui.Style = @ui.css("row w=Full gap=S2")
 
 ///|
-/// Where the line between them starts, from how hard it thinks' start: in the middle of the 8 between them.
-let triple_between_rule : Double = 4.5
+/// Where the line between them starts, from how hard it thinks' start: in the middle of the 8 between them (4.25).
+let triple_between_rule : Double = (@ui.Space::S2.px() + triple_rule_thick) / 2.0
+
+///|
+/// How far the line between them stands off either column: 3.75 each side (its hairline the rest of the 8). The lines
+/// across a column reach that far past it to meet the line between them, end to end and never over it (`Line` is
+/// seen through: a hair over another is drawn darker where they cross).
+let triple_rule_side : Double = (@ui.Space::S2.px() - triple_rule_thick) / 2.0
 
 ///|
 /// How hard it thinks beside the models: as wide as its words need.
@@ -3500,22 +3611,44 @@ let triple_who_room : @ui.Style = @ui.style(row=true, w=@sf.grow, align=ACenter,
 
 ///|
 // kept across runs: a value (no field of it changes)
-let triple_mode_room : @ui.Style = triple_who_room
+// Keep the first and last capsules at the panel's side insets on 小屏 sheets (where 速度/上下文 stay in the foot)
+// and when the Claude mode capsule is shown, so changing 账号's width does not shift the trailing capsule.
+let triple_mode_room : @ui.Style = triple_who_room.then(@ui.css("justify=JBetween"))
 
 ///|
 /// Hairline separator between the first-level list and 「全部模型 >」.
 // kept across runs: a value (no field of it changes)
-let triple_to_all_rule : @ui.Style = @ui.css("w=Full py=S1")
+let triple_to_all_rule : @ui.Style = @ui.css("w=Full py=S1_5")
 
 ///|
 /// Hairline separator between sections (`思考深度` / `速度` / `上下文`) in the wide right column.
 // kept across runs: a value (no field of it changes)
-let triple_param_rule : @ui.Style = @ui.css("w=Full pt=S2 pb=S1")
+let triple_param_rule : @ui.Style = @ui.css("w=Full py=S1_5")
 
 ///|
-/// Subsequent section heading in the wide right parameter column (`速度`, `上下文`).
+/// Subsequent section heading in the wide right parameter column (`速度`, `上下文`): as far under its line as the first
+/// one's (`panel_head_box`) is under the panel's top.
 // kept across runs: a value (no field of it changes)
-let triple_param_head_box : @ui.Style = @ui.css("w=Full px=S2_5 pt=S1 pb=S1")
+let triple_param_head_box : @ui.Style = @ui.css("w=Full px=S2_5 pt=S1_5 pb=S1")
+
+///|
+/// A line's box `d` across the models' column, reaching out to meet what is round it: beside what opened it from the
+/// panel's left edge to the line between the columns (to its right edge where how it runs is not beside them); in a
+/// sheet, its sides, as the sheet foot's line does.
+fn triple_across(d : @view.View, sheet : Bool, has_params : () -> Bool) -> Unit {
+  if sheet {
+    // (a sheet opened by a press holds its rows this far in from its sides: sf's sheet_row_sides)
+    d.margin(Is((-@sf.panel_card_in, 0.0, -@sf.panel_card_in, 0.0))) |> ignore
+  } else {
+    d.margin(By(fn() { (-@sf.panel_pad, 0.0, if has_params() { -triple_rule_side } else { -@sf.panel_pad }, 0.0) }))
+    |> ignore
+  }
+}
+
+///|
+/// The line under ‹ 全部模型 over the makers and their models, as far from each as the one over 全部模型 ›.
+// kept across runs: a value (no field of it changes)
+let triple_browse_rule_h : @ui.Style = @ui.css("w=Full py=S1_5")
 
 ///|
 // kept across runs: a value (no field of it changes)

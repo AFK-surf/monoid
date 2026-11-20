@@ -28,9 +28,7 @@ fn fake_core(
 ) -> @ui.Tester {
   new_run()
   // (the chat's page made as nodes, its composer too, where `nodes` or `composed` says so: sfbase's chat_page_nodes)
-  if nodes || composed {
-    @sfbase.chat_page_nodes.set(true)
-  }
+  @sfbase.hold_chat_page_nodes(Some(nodes || composed))
   // the drafts the fake core has named (its `draft.put`)
   let drafts_named = Ref(0)
   let base = fixture("chat")
@@ -60,6 +58,8 @@ fn fake_core(
         "ref.at" | "ref.before" | "ref.marks" | "ref.words" | "ref.pasted" | "paste.info" => (base.call)(name, params, done)
         // the chat's draft, as the core keeps it (the composer's: sfpages, its fixture compose_fixture.mbt)
         _ if name.has_prefix("composer.") => (base.call)(name, params, done)
+        // the chat's side panel's tabs, as the core keeps them (what a file opened beside it puts there)
+        _ if name.has_prefix("chat.tabs.") => (base.call)(name, params, done)
         _ => ()
       }
     },

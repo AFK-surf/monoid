@@ -510,6 +510,11 @@ fn cpu_ms() -> Double {
 }
 
 ///|
+fn thread_cpu_ms() -> Double {
+  -1.0
+}
+
+///|
 /// A browser's page keeps no performance record (@hostapi.perf_state).
 fn perf_state() -> Int {
   -1
@@ -532,6 +537,14 @@ fn perf_where() -> String {
 
 ///|
 fn perf_open(go : Bool) -> Bool {
+  ignore(go)
+  false
+}
+
+///|
+/// A file of the device shown in its folder: a page reaches none.
+fn reveal_file(path : String, go : Bool) -> Bool {
+  ignore(path)
   ignore(go)
   false
 }
@@ -1416,6 +1429,7 @@ fn set_site_name(name : String) -> Unit {
 fn app_said(name : String) -> String {
   match name {
     "mbui.page.location" => js_history_location()
+    "mbui.page.loaded_title" => js_loaded_title()
     _ => js_app_said(name)
   }
 }
@@ -1446,6 +1460,29 @@ fn mods_held() -> Int {
 }
 
 ///|
+/// The pointer held by the window: a browser's is the page's own (web/src/mbui/screen-peripherals.ts, Pointer Lock),
+/// nothing here.
+fn pointer_lock(_on : Bool) -> Unit {
+  ()
+}
+
+///|
+fn pointer_locked() -> Bool {
+  false
+}
+
+///|
+fn pointer_delta(_out : FixedArray[Double]) -> Unit {
+  ()
+}
+
+///|
+/// A browser's game controllers are the page's own (web/src/mbui/screen-peripherals.ts): none read here.
+fn gamepads(_out : FixedArray[Double]) -> Int {
+  0
+}
+
+///|
 extern "js" fn js_set_page_title(title : String) -> Unit =
   #|(t) => { const H = globalThis.__mbhost; if (H && H.setPageTitle) H.setPageTitle(t) }
 
@@ -1457,6 +1494,10 @@ extern "js" fn js_set_theme_color(color : String) -> Unit =
 /// `{"face", "step", "families"}` (@webpage.set_cjk_face) handed to the page's host: the face's CJK companion.
 extern "js" fn js_set_cjk_face(said : String) -> Unit =
   #|(s) => { const H = globalThis.__mbhost; if (!H || !H.setCjkFace) return; const o = JSON.parse(s); H.setCjkFace(o.face, o.step, o.families) }
+
+///|
+extern "js" fn js_loaded_title() -> String =
+  #|() => { const H = globalThis.__mbhost; return H && H.loadedTitle ? H.loadedTitle() : '' }
 
 ///|
 extern "js" fn js_history_location() -> String =
@@ -1565,3 +1606,39 @@ fn post_next() -> (String, String, Bytes)? {
 /// part of its canvas again.
 extern "js" fn rn_dirty(x : Double, y : Double, w : Double, h : Double) -> Unit =
   #|(x, y, w, h) => { if (globalThis.__mbhost.renderDirty) globalThis.__mbhost.renderDirty(x, y, w, h) }
+
+///|
+extern "js" fn js_auto_launch() -> Bool =
+  #|() => (globalThis.__mbhost && globalThis.__mbhost.autoLaunch) ? !!globalThis.__mbhost.autoLaunch() : false
+
+///|
+extern "js" fn js_set_auto_launch(enabled : Bool) -> Bool =
+  #|(e) => (globalThis.__mbhost && globalThis.__mbhost.setAutoLaunch) ? !!globalThis.__mbhost.setAutoLaunch(e) : false
+
+///|
+extern "js" fn js_hotkey_set(id : String, accel : String) -> Bool =
+  #|(id, accel) => (globalThis.__mbhost && globalThis.__mbhost.hotkeySet) ? !!globalThis.__mbhost.hotkeySet(id, accel) : false
+
+///|
+extern "js" fn js_hotkey_clear(id : String) -> Unit =
+  #|(id) => { if (globalThis.__mbhost && globalThis.__mbhost.hotkeyClear) globalThis.__mbhost.hotkeyClear(id) }
+
+///|
+fn auto_launch() -> Bool {
+  js_auto_launch()
+}
+
+///|
+fn set_auto_launch(enabled : Bool) -> Bool {
+  js_set_auto_launch(enabled)
+}
+
+///|
+fn hotkey_set(id : String, accel : String) -> Bool {
+  js_hotkey_set(id, accel)
+}
+
+///|
+fn hotkey_clear(id : String) -> Unit {
+  js_hotkey_clear(id)
+}

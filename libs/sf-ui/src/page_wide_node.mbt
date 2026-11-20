@@ -585,6 +585,7 @@ fn wide_group_node(
         .gap(Is(page_card_gap))
         .radius(By(fn() { @ui.tree_theme().corner(Xl3) }))
         |> ignore
+        corner_card_node(k, fn() { @ui.tree_theme().corner(Xl3) }, inset=fn() { card_pad })
       } else {
         // (in a panel of its own a card of the panel's: its rows the ladder's inset in, a card's corner; desk_list_card)
         let (pad, corner) = list_card_in(k)
@@ -592,8 +593,9 @@ fn wide_group_node(
         let ends = if in_pane_node(k) { card_pad - wide_row_over } else { pad }
         k.padding(Is((pad, ends, pad, ends))).gap(Is(desk_list_gap)).radius(Is(corner))
         |> ignore
+        corner_card_node(k, fn() { corner }, inset=fn() { pad })
       }
-      k.ground(By(fn() { @ui.tree_theme().color(Card) })).lends(part_at, { ..at, list: !card }) |> ignore
+      k.ground(By(fn() { @ui.tree_theme().color(Card) })).lends(part_at, { ..at, list: !card, card }) |> ignore
       rows(k)
     })
     |> ignore
@@ -911,7 +913,7 @@ fn wide_control_row_node(
       cell
       // (as wide_in_list's: a row's room in at its start, at its end what holds its switch out of the card's corner,
       // 10 over and under)
-      .padding(Is((text_in, wide_row_over, if in_pane_node(parent) { text_in } else { list_control_end }, wide_row_over)))
+      .padding(Is((text_in, wide_row_over, if in_pane_node(parent) { card_control_end } else { list_control_end }, wide_row_over)))
       .lies_along(Is(Middle))
       .radius(Is(if in_pane_node(parent) { 0.0 } else { list_row_corner(cell) }))
       .min_height(By(fn() { Some(theme().items.least) }))
@@ -920,7 +922,18 @@ fn wide_control_row_node(
     })
     |> ignore
   } else {
-    parent.box(row) |> ignore
+    parent.box(fn(r) {
+      // (on a card of words, its padding in: what is at its end on the title's line held out of its corner where
+      // that is rounder, as far in as the corner is round)
+      if at.card {
+        let end = dmax(0.0, card_corner - card_pad)
+        if end > 0.0 {
+          r.padding(Is((0.0, 0.0, end, 0.0))) |> ignore
+        }
+      }
+      row(r)
+    })
+    |> ignore
   }
 }
 

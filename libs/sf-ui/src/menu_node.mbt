@@ -146,8 +146,7 @@ fn menu_node_by(
       let t = theme()
       // (how far in it is, from the moment it opened; out from the moment it closed, back into the side it grew from,
       // as panel_node's)
-      let look = @motion.presence_look(layer, @kit.pop_in, exit=@kit.pop_out)
-      let live = fn() { !layer.leaving() }
+      let (look, live) = @motion.overlay_presence(layer, enter=@motion.pop_in, exit=@motion.pop_out)
       // (its words and icons as far in as its look says: its ground first, then they, as pop_in has it)
       let words_in = fn() { look().words }
       // (its rows that can be chosen, by their index: the one with the focus is lit; the keyboard moves the focus along
@@ -190,6 +189,11 @@ fn menu_node_by(
       // (its panel, once made, and what opened it: what a press outside it is outside of, where it is not modal)
       let panel : Ref[@view.View?] = Ref(None)
       let opener : Ref[@view.View?] = Ref(None)
+      // (said before it is modal: the field the focus is in kept as the layer takes what is under it, never cleared)
+      if keep_field {
+        // (what is typed the field's it leaves the focus in: kit's dropdown_menu's initial focus none)
+        layer.leaves_typing() |> ignore
+      }
       layer
       .over(Is(true))
       // (modal while open: closing, what is under it its own again as it begins to go)
@@ -220,10 +224,6 @@ fn menu_node_by(
             cancel()
           }
         })
-      }
-      if keep_field {
-        // (what is typed the field's it leaves the focus in: kit's dropdown_menu's initial focus none)
-        layer.leaves_typing() |> ignore
       }
       // (not modal: the key back toward what opened it)
       let back = match side {
@@ -311,7 +311,7 @@ fn menu_node_by(
           match (if k.mods == 0 || k.mods == @ui.mod_shift_key { typed_char(k.code) } else { None }) {
             Some(ch) => {
               // (a second's worth together: the same letter again moves on to the next it starts)
-              let s = if k.at < typed_at.val + @kit.typeahead_ms { typed.val + ch.to_string() } else { ch.to_string() }
+              let s = if k.at < typed_at.val + @headless.typeahead_ms { typed.val + ch.to_string() } else { ch.to_string() }
               typed.val = s
               typed_at.val = k.at
               match typeahead_to(items, s, now) {
@@ -402,7 +402,7 @@ fn menu_node_by(
             .shadow(By(fn() { float_shadow() }))
             .clips(Is(true))
             .alpha(By(fn() { look().alpha }))
-            .scale(By(fn() { look().sx }), about=FromBeside)
+            .scale(By(fn() { look().sx }), about=FromBeside, max_shift=pop_max_shift)
             // (a press on it its own: on what of it takes none (its padding, a heading, a line, a row not to be chosen),
             // nothing, not outside it)
             |> ground_node
@@ -410,8 +410,10 @@ fn menu_node_by(
             p.box(fn(body) {
               // (all it holds as far in as its look says, past the panel's own ground, edge and shadow: its rows, their
               // grounds, checks, marks and words, its headings and lines, the same, Look's `words` as a surface's are)
-              body.alpha(By(words_in)) |> ignore
+              let side = panel_pad - reach
+              body.margin(Is((-side, 0.0, -side, 0.0))).alpha(By(words_in)) |> ignore
               body.scrolls(@view.Scroll::new(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(b) {
+                b.padding(Is((side, 0.0, side, 0.0))) |> ignore
                 if title != "" {
                   menu_heading_node(b, fn() { title }, past, reach)
                 }
@@ -458,7 +460,7 @@ fn menu_node_by(
       })
       |> ignore
     },
-    leave=@kit.pop_out_ms,
+    leave=@motion.pop_out_ms,
   )
 }
 

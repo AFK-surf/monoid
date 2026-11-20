@@ -11,6 +11,8 @@ import {
 // Values
 pub fn address_or_search(String) -> String?
 
+pub let agent_hold_idle_ms : Double
+
 pub fn all_cookies(@jsjson.JValue?) -> Array[@jsjson.JValue]
 
 pub let arrive_ms : Double
@@ -123,13 +125,13 @@ pub fn from_utf8(Bytes) -> String
 
 pub fn gh_source(String) -> (String, String, String)?
 
-pub async fn harness(@host.Host) -> Unit
-
 pub fn headful_agent(String) -> String
 
 pub fn host_cdp_open(@host.Host) -> async (String, CdpLink) -> CdpSocket
 
 pub fn host_clock(@host.Host, Double) -> Clock
+
+pub fn host_fetch_bytes(@host.Host, String) -> async (String) -> Bytes?
 
 pub fn host_file_of(@jsjson.JValue?) -> HostFile?
 
@@ -175,8 +177,6 @@ pub fn key_code(String, String) -> Int32
 
 pub fn key_event(@jsjson.JValue) -> @jsjson.JValue
 
-pub fn kind_of(Error) -> String
-
 pub let login_binding : String
 
 pub fn login_hook() -> String
@@ -195,6 +195,8 @@ pub fn num_text(@jsjson.JValue) -> String
 
 pub fn of_sites(String, Array[String]) -> Bool
 
+pub fn open_tab_of(@jsjson.JValue) -> (String, OpenTabMeta)?
+
 pub fn parse(String) -> @jsjson.JValue raise Thrown
 
 pub fn parse_active_port(String) -> (Int32, String)?
@@ -205,7 +207,7 @@ pub let passkey_binding : String
 
 pub fn passkey_binding_of(String) -> String
 
-pub fn passkey_hook(String) -> String
+pub fn passkey_hook(String, device? : Bool) -> String
 
 pub fn passkey_of(@jsjson.JValue?) -> Passkey?
 
@@ -267,7 +269,7 @@ pub fn utf8(String) -> Bytes
 
 pub fn viewport_of(@jsjson.JValue?) -> (Double, Double)?
 
-pub async fn[X] within(Clock, Double, async () -> X, String) -> X
+pub async fn[X] within(Clock, Double, async () -> X, String, late? : (X) -> Unit) -> X
 
 // Errors
 pub(all) suberror FsError {
@@ -301,6 +303,13 @@ pub(all) enum AgentAsk {
   Act(String, String, String)
 }
 
+pub(all) struct AgentHoldHub {
+  driving_people : (String) -> Array[String]
+  has_taken_view : (String) -> Bool
+  yield_to_agent : (String, String) -> Int32
+  join_agent : (String, String) -> () -> Unit
+}
+
 pub struct Authenticators {
   // private fields
 }
@@ -312,6 +321,14 @@ pub async fn Authenticators::put(Self, String, Array[Passkey]) -> Unit
 pub async fn Authenticators::read(Self, String, sites? : Array[String]) -> Array[Passkey]
 pub async fn Authenticators::start(Self) -> Unit
 pub async fn Authenticators::take_out(Self, String, Array[String]) -> Array[Passkey]
+
+pub struct BrowserAgentHold {
+  // private fields
+}
+pub fn BrowserAgentHold::act(Self, String, String, String) -> String?
+pub fn BrowserAgentHold::close(Self) -> Unit
+pub fn BrowserAgentHold::new(AgentHoldHub, (String) -> String, Clock) -> Self
+pub fn BrowserAgentHold::release_session(Self, String) -> Unit
 
 pub(all) struct BrowserOptions {
   dir : String
@@ -379,8 +396,10 @@ pub async fn Browsers::endpoint(Self, String) -> BrowserStatus
 pub fn Browsers::extend_sign_in(Self, String, String, Double) -> Unit
 pub async fn Browsers::form(Self, String, String) -> SignInForm
 pub async fn Browsers::new(BrowserOptions) -> Self
+pub fn Browsers::on_agent_act(Self, (String, String, String) -> String?) -> Unit
 pub fn Browsers::on_fresh(Self, (String) -> Unit) -> Unit
 pub fn Browsers::on_resumed(Self, (String) -> Unit) -> Unit
+pub fn Browsers::on_stopped(Self, (String) -> Unit) -> Unit
 pub fn Browsers::on_taken_out(Self, (String, String, String, String?) -> Unit) -> Unit
 pub fn Browsers::on_used(Self, (String, String) -> Unit) -> Unit
 pub async fn Browsers::open(Self, String) -> (String, GateParts)
@@ -503,7 +522,8 @@ pub(all) struct FarviewRelease {
 pub struct FarviewScreen {
   id : String
   mut changed : () -> Unit
-  mut opened : (String) -> Unit
+  mut opened : (String, OpenTabMeta) -> Unit
+  mut closed_by_page : () -> Unit
   // private fields
 }
 pub fn FarviewScreen::address(Self) -> String
@@ -547,7 +567,7 @@ pub async fn FarviewTabs::cookies(Self, String) -> Array[@jsjson.JValue]
 pub async fn FarviewTabs::endpoint(Self, String) -> BrowserStatus
 pub async fn FarviewTabs::form(Self, String, id? : String) -> SignInForm
 pub fn FarviewTabs::new(FarviewOptions) -> Self
-pub async fn FarviewTabs::open(Self, String, String) -> FarviewTab
+pub async fn FarviewTabs::open(Self, String, String, meta? : OpenTabMeta) -> FarviewTab
 pub async fn FarviewTabs::passkeys(Self, String) -> Array[Passkey]
 pub async fn FarviewTabs::put_cookies(Self, String, Array[@jsjson.JValue]) -> Unit
 pub async fn FarviewTabs::put_passkeys(Self, String, Array[Passkey]) -> Unit
@@ -634,6 +654,7 @@ pub(all) struct GateParts {
   context_of : (String) -> String?
   opened : ((String) -> Unit)?
   used : ((String, String?) -> Unit)?
+  act : ((String, String) -> String?)?
 }
 
 pub(all) struct HostFile {
@@ -641,6 +662,7 @@ pub(all) struct HostFile {
   port : Int32
   agent : Int32
   frame : Int32
+  closed : Bool
 }
 pub fn HostFile::to_j(Self) -> @jsjson.JValue
 
@@ -686,6 +708,13 @@ pub(all) struct MachineProcs {
   browsers_soon : async () -> Array[String]
   has_display : () -> Bool
 }
+
+pub(all) struct OpenTabMeta {
+  window : String
+  opener : String
+  origin : String
+}
+pub fn OpenTabMeta::to_j(Self) -> @jsjson.JValue
 
 pub struct Owners {
   // private fields
@@ -976,6 +1005,7 @@ pub(all) struct ViewOptions {
   max_height : Double
   peek : Bool
   fit : (Double, Double, Double)?
+  passkeys : Bool?
 }
 pub fn ViewOptions::of_j(@jsjson.JValue) -> Self
 

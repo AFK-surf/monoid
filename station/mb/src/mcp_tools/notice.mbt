@@ -69,200 +69,23 @@ pub(all) struct ReportDeps {
 ///|
 /// `new Date(ms).toISOString()`.
 pub fn iso_string(ms : Double) -> String {
-  let secs = (ms / 1000.0).floor()
-  let frac = (ms - secs * 1000.0).to_int()
-  let f = frac.to_string()
-  let f = "000".unsafe_substring(start=0, end=3 - f.length()) + f
-  "\{@api_routes.iso_seconds(ms)}.\{f}Z"
-}
-
-///|
-fn days_from_civil(y : Int, m : Int, d : Int) -> Int {
-  let y = if m <= 2 { y - 1 } else { y }
-  let era = (if y >= 0 { y } else { y - 399 }) / 400
-  let yoe = y - era * 400
-  let mp = if m > 2 { m - 3 } else { m + 9 }
-  let doy = (153 * mp + 2) / 5 + d - 1
-  let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
-  era * 146097 + doe - 719468
+  @jsjson.js_iso(ms)
 }
 
 ///|
 /// `Date.parse(s)` for the date-time string format (ISO 8601 as ECMAScript says it); NaN for what is not one. A time
 /// with no zone is read as UTC, the station's own logs writing theirs with Z.
 pub fn parse_iso(s : String) -> Double {
-  let nan = 0.0 / 0.0
-  let n = s.length()
-  let mut i = 0
-  let digits = (count : Int) => {
-    if i + count > n {
-      return None
-    }
-    let mut v = 0
-    for k in 0..<count {
-      let c = s.unsafe_charcode_at(i + k)
-      if c < '0' || c > '9' {
-        return None
-      }
-      v = v * 10 + (c - '0')
-    }
-    i += count
-    Some(v)
-  }
-  let at = (c : Int) => i < n && s.unsafe_charcode_at(i) == c
-  // the year: YYYY, or ±YYYYYY
-  let year = if at('+') || at('-') {
-    let neg = at('-')
-    i += 1
-    match digits(6) {
-      Some(y) => if neg { if y == 0 { return nan } else { -y } } else { y }
-      None => return nan
-    }
-  } else {
-    match digits(4) {
-      Some(y) => y
-      None => return nan
-    }
-  }
-  let mut month = 1
-  let mut day = 1
-  if at('-') {
-    i += 1
-    match digits(2) {
-      Some(m) => month = m
-      None => return nan
-    }
-    if at('-') {
-      i += 1
-      match digits(2) {
-        Some(d) => day = d
-        None => return nan
-      }
-    }
-  }
-  let mut hour = 0
-  let mut minute = 0
-  let mut second = 0
-  let mut milli = 0.0
-  let mut offset = 0
-  if at('T') || at('t') {
-    i += 1
-    match digits(2) {
-      Some(h) => hour = h
-      None => return nan
-    }
-    if !at(':') {
-      return nan
-    }
-    i += 1
-    match digits(2) {
-      Some(m) => minute = m
-      None => return nan
-    }
-    if at(':') {
-      i += 1
-      match digits(2) {
-        Some(sec) => second = sec
-        None => return nan
-      }
-      if at('.') {
-        i += 1
-        let start = i
-        let mut frac = 0.0
-        let mut scale = 100.0
-        while i < n &&
-              s.unsafe_charcode_at(i) >= '0' &&
-              s.unsafe_charcode_at(i) <= '9' {
-          frac = frac + (s.unsafe_charcode_at(i) - '0').to_double() * scale
-          scale = scale / 10.0
-          i += 1
-        }
-        if i == start {
-          return nan
-        }
-        milli = frac.floor()
-      }
-    }
-    if at('Z') || at('z') {
-      i += 1
-    } else if at('+') || at('-') {
-      let sign = if at('-') { -1 } else { 1 }
-      i += 1
-      let oh = match digits(2) {
-        Some(h) => h
-        None => return nan
-      }
-      if at(':') {
-        i += 1
-      }
-      let om = match digits(2) {
-        Some(m) => m
-        None => return nan
-      }
-      if oh > 23 || om > 59 {
-        return nan
-      }
-      offset = sign * (oh * 60 + om)
-    }
-  }
-  if i != n {
-    return nan
-  }
-  // (V8 takes a day up to 31 in any month, past its end into the next)
-  if month < 1 || month > 12 || day < 1 || day > 31 {
-    return nan
-  }
-  if hour > 24 ||
-    minute > 59 ||
-    second > 59 ||
-    (hour == 24 && (minute > 0 || second > 0 || milli > 0.0)) {
-    return nan
-  }
-  let days = days_from_civil(year, month, day).to_double()
-  days * 86400000.0 +
-  hour.to_double() * 3600000.0 +
-  minute.to_double() * 60000.0 +
-  second.to_double() * 1000.0 +
-  milli -
-  offset.to_double() * 60000.0
+  @jsjson.js_parse_iso(s).unwrap_or(0.0 / 0.0)
 }
 
 ///|
 /// The station's log as it ends: its last `most` bytes, from the first whole line (notice.ts `readTail`).
 pub async fn read_tail(b : ToolsBackend, path : String, most : Int) -> String? {
-  let file = b.ask("fs.open", [js(path), js("r")]) catch { _ => return None }
-  let name = ref_of(file).unwrap_or("")
-  let out = {
-    let size = jnumber(b.ask("\{name}.stat", []).get("size")).unwrap_or(0.0)
-    let from = if size - most.to_double() > 0.0 {
-      size - most.to_double()
-    } else {
-      0.0
-    }
-    let got = b.ask("\{name}.read", [jnum(0.0), jnum(size - from), jnum(from)])
-    let n = jnumber(got.get("bytesRead")).unwrap_or(0.0).to_int()
-    let bytes = @api_routes.bytes_of(got.get("buffer").unwrap_or(Null)).unwrap_or(
-      b"",
-    )
-    let n = if n < bytes.length() { n } else { bytes.length() }
-    let text = utf8_text(bytes[0:n].to_bytes())
-    if from == 0.0 {
-      text
-    } else {
-      slice(text, index_of(text, "\n") + 1)
-    }
-  } catch {
-    e => {
-      b.tell("\{name}.close", []) catch {
-        _ => ()
-      }
-      raise e
-    }
+  match (b.ask("fs.readTail", [js(path), jint(most)]) catch { _ => return None }) {
+    Str(text) => Some(text)
+    _ => None
   }
-  b.tell("\{name}.close", []) catch {
-    _ => ()
-  }
-  Some(out)
 }
 
 ///|

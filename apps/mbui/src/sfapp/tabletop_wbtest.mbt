@@ -129,8 +129,9 @@ test "half open: a recent chat under the composer is swiped left to archive it" 
   let calls : Array[Made] = []
   let t = duo_chat(626.0, 890.0, "regular", across("half"), calls~)
   let title = "首页的列表改成按天分组"
-  let (x, y) = t.find(title).unwrap()
-  t.drag(x + 420.0, y, x + 20.0, y)
+  // (from where its words begin, across the row: in the window whatever box they are in)
+  let (x, y, _, h) = words_at(t, title).unwrap()
+  t.drag(x + 420.0, y + h / 2.0, x + 20.0, y + h / 2.0)
   t.run_for(@ui.move_most_ms)
   let asked = named(calls, "chat.archive")
   assert_eq(asked.length(), 1)
@@ -169,6 +170,20 @@ fn islands_across() -> Array[(Double, Double)] {
 }
 
 ///|
+/// The pages of the window's tree as it draws them, a window `h` tall: where across and how wide; an old view by where
+/// it is hosted, a page made as nodes by its ground, laid as tall as the window from its top.
+fn pages_across(h : Double) -> Array[(Double, Double)] {
+  match @ui.view_tree() {
+    Some(tree) =>
+      tree
+      .drawn()
+      .filter(fn(d) { d.hosted || (d.y == 0.0 && (d.h - h).abs() < 0.5 && d.ground != 0L) })
+      .map(fn(d) { (d.x, d.w) })
+    None => []
+  }
+}
+
+///|
 test "the fold half open then, the window the same size: the shell it calls for, as if it had begun so" {
   let opened = duo_chat(626.0, 890.0, "regular", across("open"))
   let open_shell = islands_across()
@@ -185,13 +200,13 @@ test "the fold half open then, the window the same size: the shell it calls for,
 ///|
 test "turned sideways for a film, the bars the same: the window's sides given back; upright again, kept again" {
   let t = duo_chat(466.0, 678.0, "compact", "", bars="{\"bars\":{\"top\":0,\"bottom\":20,\"left\":0,\"right\":84}}")
-  let upright = islands_across()
+  let upright = pages_across(678.0)
   @hostapi.set_sideways(true)
   t.draw()
-  let sideways = islands_across()
+  let sideways = pages_across(678.0)
   @hostapi.set_sideways(false)
   t.draw()
   assert_true(upright.length() > 0 && upright.iter().all(fn(i) { i.1 == 382.0 }), msg="\{Repr(upright)}")
   assert_true(sideways.length() > 0 && sideways.iter().all(fn(i) { i.1 == 466.0 }), msg="\{Repr(sideways)}")
-  assert_eq(islands_across(), upright)
+  assert_eq(pages_across(678.0), upright)
 }

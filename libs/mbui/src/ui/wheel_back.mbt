@@ -20,6 +20,12 @@ let wheel_back_slop : Double = 10.0
 let wheel_back_still_ms : Double = 120.0
 
 ///|
+/// Fraction of the burst's peak horizontal speed at which a phase-0 host (a browser page, which cannot distinguish
+/// fingers lifting from the monotonically decaying momentum that follows) releases the swipe back instead of waiting
+/// 1-2 s for momentum to stop plus wheel_back_still_ms.
+let wheel_back_fall : Double = 0.7
+
+///|
 /// What a burst of the wheel is to the swipe back (WheelBack's `sweep`).
 #derive(Eq)
 priv enum WheelSweep {
@@ -45,15 +51,37 @@ priv struct WheelBack {
   /// where the swipe began (the pointer's x then) and how far right it has gone since
   mut x0 : Double
   mut across : Double
-  /// the last wheel's moment
+  /// the last wheel's moment and phase kind (kind 1 after kind 3 begins a new burst)
   mut last : Double
+  mut last_kind : Int
+  /// phase-0 momentum decay tracking while in Back: wheels seen in Back, peak speed (pt/ms), and last 3 (|dx|, dt)
+  mut back_count : Int
+  mut peak_v : Double
+  win_dx : FixedArray[Double]
+  win_dt : FixedArray[Double]
+  mut win_n : Int
+  mut win_at : Int
   /// what lets it go once the wheel is still (View::at_moment's), called off as the next wheel comes
   mut let_go : () -> Unit
 }
 
 ///|
 fn wheel_back_fresh() -> WheelBack {
-  { sweep: Still, sx: 0.0, x0: 0.0, across: 0.0, last: -1.0e18, let_go: fn() {  } }
+  {
+    sweep: Still,
+    sx: 0.0,
+    x0: 0.0,
+    across: 0.0,
+    last: -1.0e18,
+    last_kind: 0,
+    back_count: 0,
+    peak_v: 0.0,
+    win_dx: FixedArray::make(3, 0.0),
+    win_dt: FixedArray::make(3, 0.0),
+    win_n: 0,
+    win_at: 0,
+    let_go: fn() {  },
+  }
 }
 
 ///|
@@ -77,9 +105,10 @@ fn wheel_back_take(
   let t = h_event_time()
   let kind = phase % 16
   let mods = phase / 16
-  // (a burst over once the wheel was still: what comes now begins another; a swipe back not let go by then, its tree
-  // gone meanwhile, let go now)
-  if t - s.last >= wheel_back_still_ms {
+  let prev_last = s.last
+  // (a burst over once the wheel was still, or once fingers (kind 1) touch down after momentum (kind 3): what comes
+  // now begins another; a swipe back not let go by then, its tree gone meanwhile, let go now)
+  if t - s.last >= wheel_back_still_ms || (kind == 1 && s.last_kind == 3) {
     if s.sweep == Back {
       (s.let_go)()
       c.back_gesture(2, s.x0 + s.across, t) |> ignore
@@ -87,6 +116,7 @@ fn wheel_back_take(
     s.sweep = Still
   }
   s.last = t
+  s.last_kind = kind
   match s.sweep {
     Back => {
       (s.let_go)()
@@ -95,6 +125,9 @@ fn wheel_back_take(
       c.back_gesture(1, s.x0 + s.across, t) |> ignore
       // (its momentum begun: the fingers lifted, let go there, as fast as they went)
       if kind == 3 {
+        s.sweep = Spent
+        c.back_gesture(2, s.x0 + s.across, t) |> ignore
+      } else if kind == 0 && wheel_back_fell(s, dx, t - prev_last) {
         s.sweep = Spent
         c.back_gesture(2, s.x0 + s.across, t) |> ignore
       } else {
@@ -136,6 +169,10 @@ fn wheel_back_take(
         s.sweep = Back
         s.x0 = x
         s.across = -s.sx
+        s.back_count = 0
+        s.peak_v = 0.0
+        s.win_n = 0
+        s.win_at = 0
         c.back_gesture(0, s.x0, t) |> ignore
         c.back_gesture(1, s.x0 + s.across, t) |> ignore
         wheel_back_wait(t)
@@ -143,6 +180,33 @@ fn wheel_back_take(
       true
     }
   }
+}
+
+///|
+/// Record a phase-0 wheel during Back and report whether the recent 3-wheel speed has fallen to wheel_back_fall of the
+/// burst's peak after at least 4 wheels and once s.across >= back_far: past back_far every taker commits back, so
+/// releasing early on momentum decay only cuts the 1-2 s wait without changing the outcome; below back_far we keep
+/// following so slow or uneven drags are never prematurely cancelled.
+fn wheel_back_fell(s : WheelBack, dx : Double, dt : Double) -> Bool {
+  s.back_count = s.back_count + 1
+  s.win_dx[s.win_at] = dx.abs()
+  s.win_dt[s.win_at] = dmax(0.0, dt)
+  s.win_at = (s.win_at + 1) % 3
+  if s.win_n < 3 {
+    s.win_n = s.win_n + 1
+  }
+  if s.win_n < 3 {
+    return false
+  }
+  let span = s.win_dt[0] + s.win_dt[1] + s.win_dt[2]
+  if span <= 0.0 {
+    return false
+  }
+  let v = (s.win_dx[0] + s.win_dx[1] + s.win_dx[2]) / span
+  if v > s.peak_v {
+    s.peak_v = v
+  }
+  s.back_count >= 4 && s.across >= back_far && s.peak_v > 0.0 && v <= s.peak_v * wheel_back_fall
 }
 
 ///|

@@ -107,14 +107,6 @@ fn refresh(db : @sql.Db, thread : Json) -> Unit raise {
 }
 
 ///|
-fn value(row : Map[String, Json], name : String) -> Json {
-  match row.get(name) {
-    Some(j) => j
-    None => Json::null()
-  }
-}
-
-///|
 /// One batch of at most `limit` old chats, or of `requested`'s changed ones once the old are across; whether the
 /// old are across and nothing of `requested` is left to settle then.
 pub fn step(db : @sql.Db, requested : String, limit? : Int = 64) -> Bool raise {
@@ -126,21 +118,21 @@ pub fn step(db : @sql.Db, requested : String, limit? : Int = 64) -> Bool raise {
   }
   let lim = Json::number(limit.to_double())
   if state.get("done") is Some(Number(0.0, ..)) {
-    let cursor = value(state, "cursor")
+    let cursor = @sql.row_val(state, "cursor")
     let rows = if cursor is Null {
-      db.all("SELECT id AS thread FROM threads WHERE id <= ?1 ORDER BY id LIMIT ?2", [value(state, "last"), lim])
+      db.all("SELECT id AS thread FROM threads WHERE id <= ?1 ORDER BY id LIMIT ?2", [@sql.row_val(state, "last"), lim])
     } else {
       db.all("SELECT id AS thread FROM threads WHERE id > ?3 AND id <= ?1 ORDER BY id LIMIT ?2", [
-        value(state, "last"),
+        @sql.row_val(state, "last"),
         lim,
         cursor,
       ])
     }
     for row in rows {
-      refresh(db, value(row, "thread"))
+      refresh(db, @sql.row_val(row, "thread"))
     }
     let reached = match rows.last() {
-      Some(r) => value(r, "thread")
+      Some(r) => @sql.row_val(r, "thread")
       None => cursor
     }
     ignore(
@@ -156,7 +148,7 @@ pub fn step(db : @sql.Db, requested : String, limit? : Int = 64) -> Bool raise {
     )
     // (each thread settled in all its scopes in the same transaction)
     for row in rows {
-      refresh(db, value(row, "thread"))
+      refresh(db, @sql.row_val(row, "thread"))
     }
   }
   let across = db.all("SELECT done FROM outflow_chat_progress WHERE id = 1", []) is [p, ..] &&

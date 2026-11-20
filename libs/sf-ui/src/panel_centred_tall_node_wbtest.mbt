@@ -100,3 +100,50 @@ test "a dialog in the middle of the window a share of it tall, holding nodes: it
     #|at rest: dialog [340,38.5 520x923] 完成 [778,901.5 58x36] first row [364,123.5 a1]
   ))
 }
+
+///|
+test "a tall dialog's panel_list_node scrollbar hugs the dialog's right edge within scroll_bar_inset" {
+  let open = fn(_from : Anchor) {
+    panel_nodes(
+      "很长的单子",
+      from=Unanchored,
+      tall=0.86,
+      foot=fn(v, _) { button_node(v, fn() { "完成" }, fn() {  }, tone=Primary) |> ignore },
+      fn(v, _) {
+        panel_list_node(
+          v,
+          fn() { Array::makei(40, fn(i) { i }) },
+          fn(b, i) { link_row_node(b, fn() { "第 \{i} 行" }, fn() {  }, note=fn() { "说明" }) },
+          est=60.0,
+          fills=true,
+        )
+        |> ignore
+      },
+    )
+  }
+  presenters_reset()
+  let t = @ui.Tester::new(
+    fn(c) { c.with_theme(ui_theme(), fn() { @ui.old_views_here(c) }) },
+    tree=presented_tree(presenting_view(open)),
+    w=1200.0,
+    h=800.0,
+    platform=0,
+  )
+  t.check_looks(false)
+  t.draw()
+  t.tap_text("打开")
+  t.run_for(@ui.move_most_ms)
+  let dialog = t.all(Dialog, label="很长的单子")[0].rect
+  let dialog_right = dialog.0 + dialog.2
+  t.wheel(dialog.0 + dialog.2 / 2.0, dialog.1 + dialog.3 / 2.0, 200.0)
+  t.run_for(@ui.move_most_ms)
+  let thumbs = t
+    .drawn_order()
+    .filter(fn(d) { d.0 == 0 && d.3 == @ui.scroll_bar_size && d.1 > dialog.0 && d.1 < dialog_right && d.5 > 0.0 })
+  assert_eq(thumbs.length(), 1, msg="dialog scrollbar thumb count: \{Repr(thumbs)}")
+  let thumb_right = thumbs[0].1 + thumbs[0].3
+  assert_true(
+    (thumb_right - (dialog_right - @ui.scroll_bar_inset)).abs() <= 0.01,
+    msg="thumb_right=\{thumb_right} expected=\{dialog_right - @ui.scroll_bar_inset}",
+  )
+}

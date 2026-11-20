@@ -33,9 +33,7 @@ fn film_in_chat(
 ) -> (@ui.Tester, Double, Double) {
   new_run()
   // (the chat's page made as nodes, its composer too, where `nodes` says so: sfbase's chat_page_nodes)
-  if nodes {
-    @sfbase.chat_page_nodes.set(true)
-  }
+  @sfbase.hold_chat_page_nodes(Some(nodes))
   let src = fixture("chat-download-on")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let made : Ref[@ui.Tester?] = Ref(None)

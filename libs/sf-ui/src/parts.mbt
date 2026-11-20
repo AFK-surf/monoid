@@ -2600,7 +2600,7 @@ let field_hint : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Mut
 
 ///|
 /// A line to type in (controls.css.ts input, a one-line one: a pill as the buttons beside it are, 36 high at least,
-/// 16 in, a line of the strong grey, the field's hover grey pointed at or written in, on the canvas, its words 14, the
+/// 16 in, a hairline of the line, the border's pointed at or written in (control_edge), on the canvas, its words 14, the
 /// placeholder subtle): mbui's field (@kit.text_field), its editor `key`'s; `field`: what it holds, the view's own;
 /// `small`: 34 high (a small panel's, as its rows: input_box_small); `high`: as high as what is pressed beside it in
 /// its row, where that is not a field's height (a browser's round ← → ⟳ beside its address); `solid`: on a card's ground in a chat (field_solid);
@@ -2673,7 +2673,7 @@ fn field_corner() -> @ui.Style {
 ///|
 /// Lines to type in (controls.css.ts input as a textarea): a one-line field grown taller, round as its ends are
 /// (field_round, not the web's --r-field: its first line clears that round), its words as far in as its (16) and 8
-/// under its top; the strong grey's line, the field's hover grey pointed at or written in, on the canvas; its words 14
+/// under its top; a hairline of the line, the border's pointed at or written in (control_edge), on the canvas; its words 14
 /// on lines 1.6 of them, at least
 /// `rows` lines high and growing to `most`; `field`: what it holds, the view's own; `corner`, the ladder's where it
 /// stands (first in a card, on its words' inset in its corners: the small block's 10); `solid`: on a card's ground in a
@@ -2733,11 +2733,11 @@ let textarea_in : Double = 16.0
 
 ///|
 // kept across runs: a value (no field of it changes)
-let textarea_box : @ui.Style = @ui.css("w=Full px=S4 py=S2 bg=Surface border=B1 border_color=Border")
+let textarea_box : @ui.Style = @ui.css("w=Full px=S4 py=S2 bg=Surface border=B0_5 border_color=Line")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let textarea_box_hot : @ui.Style = textarea_box.then(@ui.css("border_color=FieldHover"))
+let textarea_box_hot : @ui.Style = textarea_box.then(@ui.css("border_color=Border"))
 
 ///|
 /// What is typed in: as what is read (global.css.ts --text-input), on the line of a list's words.
@@ -2746,19 +2746,19 @@ let input_size : Double = 14.0
 ///|
 // kept across runs: a value (no field of it changes)
 let input_box : @ui.Style = @ui.css((
-  #|row w=Full px=S4 py=S1_5 radius=Full bg=Surface border=B1 border_color=Border align=ACenter
+  #|row w=Full px=S4 py=S1_5 radius=Full bg=Surface border=B0_5 border_color=Line align=ACenter
   #|disabled{opacity=O55}
 ))
 
 ///|
-/// Pointed at or written in: the field's hover grey round it.
+/// Pointed at or written in: its hairline in the border (control_edge).
 // kept across runs: a value (no field of it changes)
-let input_box_hot : @ui.Style = input_box.then(@ui.css("border_color=FieldHover"))
+let input_box_hot : @ui.Style = input_box.then(@ui.css("border_color=Border"))
 
 ///|
 /// A field on a card's ground in a chat (a key typed in for an agent's request, as a login's code is: sfpages
 /// login_card.mbt lc_paste; MachineLogins.css.ts cardPaste, controls.css.ts inputSolid): solid, the page's own ground,
-/// no line of its own; pointed at or written in, the field's hover grey round it as any field's (`_hot`).
+/// no line of its own; pointed at or written in, the border's hairline round it as any field's (`_hot`).
 // kept across runs: a value (no field of it changes)
 let field_solid : @ui.Style = @ui.css("bg=Bg border_color=Bg")
 
@@ -2775,7 +2775,7 @@ let input_box_small : @ui.Style = input_box.then(@ui.style(h=Fixed(menu_row_min)
 
 ///|
 // kept across runs: a value (no field of it changes)
-let input_box_small_hot : @ui.Style = input_box_small.then(@ui.css("border_color=FieldHover"))
+let input_box_small_hot : @ui.Style = input_box_small.then(@ui.css("border_color=Border"))
 
 ///|
 /// A choice among a few (parts.tsx Select): closed, a pill as a one-line field is (input_box: the theme's control
@@ -2845,14 +2845,14 @@ pub fn select(
 ///|
 // kept across runs: a value (no field of it changes)
 let select_box : @ui.Style = @ui.css((
-  #|row w=Full px=S4 py=S1_5 gap=S2 radius=Full bg=Surface border=B1 border_color=Border align=ACenter
+  #|row w=Full px=S4 py=S1_5 gap=S2 radius=Full bg=Surface border=B0_5 border_color=Line align=ACenter
   #|justify=JBetween disabled{opacity=O55}
 ))
 
 ///|
-/// Pointed at, open or focused: the field's hover grey round it.
+/// Pointed at, open or focused: its hairline in the border (control_edge).
 // kept across runs: a value (no field of it changes)
-let select_box_hot : @ui.Style = select_box.then(@ui.css("border_color=FieldHover"))
+let select_box_hot : @ui.Style = select_box.then(@ui.css("border_color=Border"))
 
 ///|
 /// What is chosen in a select: its icon (where it has one) and its words, 6 apart.
@@ -3019,7 +3019,7 @@ pub fn choices(
 /// A choice: bordered, a block's corner of the ladder's (18: at a card's foot, reaching to its inset, concentric with
 /// its corners; every one alike).
 // kept across runs: a value (no field of it changes)
-let choice_card : @ui.Style = @ui.css("w=Full bg=Surface border=B1 border_color=Border disabled{opacity=O55}").then(
+let choice_card : @ui.Style = @ui.css("w=Full bg=Surface border=B0_5 border_color=Line disabled{opacity=O55}").then(
   @ui.style(radius=row_radius),
 )
 
@@ -3035,9 +3035,9 @@ fn choice_in_panel() -> @ui.Style {
 let choice_hit_in_panel : @ui.Style = @ui.style(px=room(card_pad), py=S4)
 
 ///|
-/// Pointed at: the field's hover grey round it; chosen: edged twice in the ink (its line and a ring of 1).
+/// Pointed at: its hairline in the border (control_edge); chosen: edged twice in the ink (its line and a ring of 1).
 // kept across runs: a value (no field of it changes)
-let choice_card_hot : @ui.Style = choice_card.then(@ui.css("border_color=FieldHover"))
+let choice_card_hot : @ui.Style = choice_card.then(@ui.css("border_color=Border"))
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -3121,34 +3121,6 @@ let radio_dot : @ui.Style = @ui.css("w=S2 h=S2 radius=Full bg=Fg")
 // PanelIconButton; parts.css.ts: inside a small panel, @sf.small_panel, its rows @sf.menu_item(panel=true))
 
 ///|
-/// A small panel's head (PanelHead): its title (13, 600) and `note` under it (12, muted), in by a row's padding, as far
-/// under the panel's top as a menu's first item's words (menu_row_over), 4 over what follows; `end` beside the title
-/// (panel's `head_end`).
-pub fn panel_head(c : @ui.Ctx, title : String, note? : String = "", end? : (@ui.Ctx) -> Unit) -> Unit {
-  match end {
-    // (what stands at its end beside its title, in the middle of their line, the rest of it: a search)
-    Some(f) => {
-      // (what stands at its end a row's capsule in the panel's top corner: out as far as makes it concentric with it,
-      // as a pick's search stands, menu_row_reach)
-      let r = menu_row_reach(theme().rows.pick)
-      c.box(style=panel_head_line.then(@ui.style(mt=room(-r), mr=room(-r))), fn() {
-        c.text(title, style=panel_title) |> ignore
-        c.box(style=panel_head_end, fn() { f(c) }) |> ignore
-      })
-      |> ignore
-    }
-    None =>
-      c.box(style=panel_head_box, fn() {
-        c.text(title, style=panel_title) |> ignore
-        if note != "" {
-          c.text(note, style=panel_note_words) |> ignore
-        }
-      })
-      |> ignore
-  }
-}
-
-///|
 /// A small panel's head with what stands at its end: its title in by a row's padding, 12 before what follows it, which
 /// takes the rest of the line, 4 over what follows.
 // kept across runs: a value (no field of it changes)
@@ -3157,37 +3129,6 @@ let panel_head_line : @ui.Style = @ui.css("row w=Full pl=S2_5 pb=S1 gap=S3 align
 ///|
 // kept across runs: a value (no field of it changes)
 let panel_head_end : @ui.Style = @ui.style(w=grow)
-
-///|
-/// A group of a small panel's rows (PanelGroup) under a small `label` (12, muted: in by a row's padding, as far under
-/// what is over it as a row's words, 2 over its rows), 2 apart.
-/// `lead`: what goes before its label (a workspace's mark: workspace_badge).
-pub fn panel_group(c : @ui.Ctx, body : () -> Unit, label? : String = "", lead? : (@ui.Ctx) -> Unit) -> Unit {
-  c.box(style=panel_group_box, fn() {
-    if label != "" {
-      c.box(style=panel_label_at, fn() {
-        match lead {
-          Some(draw) =>
-            c.box(style=panel_label_led, fn() {
-              draw(c)
-              c.text(label, style=panel_note_words) |> ignore
-            })
-            |> ignore
-          None => c.text(label, style=panel_note_words) |> ignore
-        }
-      })
-      |> ignore
-    }
-    body()
-  })
-  |> ignore
-}
-
-///|
-/// A note in a small panel (PanelNote): 12, muted, in by a row's padding.
-pub fn panel_note(c : @ui.Ctx, words : String) -> Unit {
-  c.box(style=panel_text_box, fn() { c.text(words, style=panel_note_words) |> ignore }) |> ignore
-}
 
 ///|
 /// How a small panel's button stands (PanelButton's tone): its words alone, the accent's ink (the one thing to do),
@@ -3256,7 +3197,7 @@ let panel_group_box : @ui.Style = @ui.css("w=Full")
 let panel_label_at : @ui.Style = @ui.css("w=Full px=S2_5 pt=S1_5 pb=S0_5")
 
 ///|
-/// A label with something before it (panel_group's `lead`): in a line, 6 apart.
+/// A label with something before it (panel_group_node's `lead`): in a line, 6 apart.
 // kept across runs: a value (no field of it changes)
 let panel_label_led : @ui.Style = @ui.css("row gap=S1_5 align=ACenter")
 
@@ -4215,6 +4156,14 @@ let sign_in_touch_w : Double = 420.0
 let sign_in_button_h : Double = 50.0
 
 ///|
+/// The button's words' room from its ends: past where its round ends turn, so its words are never in their curve.
+let sign_in_button_padx : Double = 20.0
+
+///|
+/// The button's words' room above and below, where they take two lines: within its 50 while they take one.
+let sign_in_button_pady : Double = 10.0
+
+///|
 /// The picture: as wide as the button at most (SignIn.kt: widthIn(max = 300.dp)), never past the page's sides.
 let sign_in_picture_w : Double = 300.0
 
@@ -4353,27 +4302,9 @@ let sync_out_ms : Double = 400.0
 let update_ring_at : @ui.Style = @ui.css("w=Full h=Full align=ACenter justify=JCenter")
 
 ///|
-/// What comes (a download), drawn as an icon in an icon's place (`size`, the box the icons beside it
-/// are drawn in, in `color`): a ring where those icons draw their circles (as check-circle's, 3.5 to 20.5 of their 24
-/// grid, a line as wide as theirs), the accent from its top as far round as it has come (`coming`, 0 to 1; None, the
-/// spinner's quarter turning: @sf.progress_spinner), a short arrow down in it. No bigger than the icons beside it: a
-/// ring drawn round the download's mark instead stood out of the row, half again as wide as its neighbours.
-pub fn coming_mark(c : @ui.Ctx, key : String, coming : Double?, size : Double, color : Int64) -> Unit {
-  let stroke = size * icon_stroke / 24.0
-  c.box(style=@ui.style(w=Fixed(size), h=Fixed(size), align=ACenter, justify=JCenter), fn() {
-    progress_spinner(c, key, coming, size=size * coming_ring / 24.0 + stroke, stroke~) |> ignore
-    c.layer(fn() {
-      c.box(style=update_ring_at, fn() { icon(c, "download-ring", size~, color~) |> ignore }) |> ignore
-    })
-    |> ignore
-  })
-  |> ignore
-}
-
-///|
-/// coming_mark as a node of the window's tree in `parent`: the download's mark `size` across in `color`, the ring round
-/// it the accent from its top as far round as `coming` says it has come (0 to 1), going to a part told anew over
-/// @kit.progress_ms, eased out (progress_spinner's).
+/// What comes (a download), drawn as an icon in an icon's place, as a node of the window's tree in `parent`: the
+/// download's mark `size` across in `color`, the ring round it the accent from its top as far round as `coming` says it
+/// has come (0 to 1), going to a part told anew over @motion.progress_ms, eased out (progress_spinner's).
 #callsite(autofill(loc))
 pub fn coming_mark_node(
   parent : @view.View,
@@ -4402,7 +4333,7 @@ pub fn coming_mark_node(
   let look = coming_mark_box(size)
   parent.box(made_for=loc, fn(m) {
     style_node(m, fn() { look })
-    m.reacts(part, fn(k) { way.go_ms(m, k, @kit.progress_ms) })
+    m.reacts(part, fn(k) { way.go_ms(m, k, @motion.progress_ms) })
     m.box(fn(l) {
       l
       .width(Is(Some(side)))
@@ -4430,7 +4361,7 @@ pub fn coming_mark_node(
 }
 
 ///|
-/// What coming_mark draws in: `size` square, what it holds in its middle.
+/// What coming_mark_node draws in: `size` square, what it holds in its middle.
 fn coming_mark_box(size : Double) -> @ui.Style {
   @ui.style(w=Fixed(size), h=Fixed(size), align=ACenter, justify=JCenter)
 }

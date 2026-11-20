@@ -10,6 +10,14 @@
 // between tries, so a test's front and clock are the ones it runs on.
 
 ///|
+fn strs(v : Json?) -> Array[String] {
+  match v {
+    Some(Array(xs)) => xs.filter_map(x => if x is String(s) { Some(s) } else { None })
+    _ => []
+  }
+}
+
+///|
 /// What frames say besides a length (client/shell's PIPE_END, PIPE_FAILED); the longest a frame written here is.
 pub let front_end : UInt = 0xfffffffeU
 
@@ -288,25 +296,7 @@ let opened_links : Ref[Int] = Ref(0)
 
 ///|
 pub fn dirname(path : String) -> String {
-  // (the last `/` or `\`: a Windows socket's path has the one, any other's the other)
-  let mut at = -1
-  for i in 0..<path.length() {
-    let c = path.code_unit_at(i)
-    if c == '/' || c == '\\' {
-      at = i
-    }
-  }
-  if at < 0 {
-    return "."
-  }
-  let root = at == 0 ||
-    (at == 2 && path.length() >= 3 && path.code_unit_at(1) == ':')
-  if root {
-    // (a root's directory is the root itself: `/`, `C:\`)
-    path.clamped_view(end=at + 1).to_owned()
-  } else {
-    path.clamped_view(end=at).to_owned()
-  }
+  @nodepath.dirname("\\", path)
 }
 
 ///|
@@ -817,6 +807,17 @@ async fn FrontStream::reset(self : FrontStream, code : Int) -> Unit {
 }
 
 ///|
+async fn FrontStream::media_datagrams(self : FrontStream, token : Double) -> Bool {
+  let said = self.front.ask(
+    "mediaDatagrams",
+    args=[("stream", jnum(self.id.to_double())), ("token", jnum(token))],
+  ) catch {
+    _ => return false
+  }
+  said is True
+}
+
+///|
 fn FrontStream::as_stream(self : FrontStream) -> @door.Stream {
   {
     read: () => self.read(),
@@ -824,6 +825,7 @@ fn FrontStream::as_stream(self : FrontStream) -> @door.Stream {
     finish: () => self.finish(),
     stopped: () => self.stopped(),
     reset: c => self.reset(c),
+    media_datagrams: Some(t => self.media_datagrams(t)),
   }
 }
 
@@ -1019,6 +1021,11 @@ pub struct FrontEndpoint {
   priv mut again : @effect.Deferred[Unit]?
   priv mut routed : Json?
   priv disabled : Map[String, Json]
+  /// What `keep`, `set_relay_entries` and `public_relays` last gave, given again to a front linked to anew (None:
+  /// never given, the front's own kept). The congestion controller `set_congestion` gave rides in `bind_`.
+  priv mut kept : Json?
+  priv mut entries : Json?
+  priv mut public_ : Bool?
   /// The mesh scopes as last asked (a config, or None: removed till the front says so), given again to a front linked
   /// to anew: a reply lost leaves what was asked unknown, so it is asked again before anything is served.
   priv mesh_wanted : Map[String, Json?]
@@ -1111,6 +1118,9 @@ pub async fn FrontEndpoint::bind(
     again: None,
     routed: None,
     disabled: Map([]),
+    kept: None,
+    entries: None,
+    public_: None,
     mesh_wanted: Map([]),
     mesh_listeners: Map([]),
     mesh_next: 0,
@@ -1264,6 +1274,16 @@ fn FrontEndpoint::watch(self : FrontEndpoint, front : Front) -> Unit {
                 }
               }
             }
+            // What the station set on the endpoint as it ran, given again.
+            if self.kept is Some(urls) {
+              told(next, "keep", jobj([("urls", urls)]))
+            }
+            if self.entries is Some(entries) {
+              told(next, "setRelayEntries", jobj([("entries", entries)]))
+            }
+            if self.public_ is Some(on) {
+              told(next, "publicRelays", jobj([("on", Json::boolean(on))]))
+            }
             if self.routed is Some(Object(r)) {
               ignore(next.ask("route", args=r.to_array()))
             }
@@ -1301,6 +1321,20 @@ fn FrontEndpoint::watch(self : FrontEndpoint, front : Front) -> Unit {
       ignore(again.succeed(()))
     }),
   )
+}
+
+///|
+/// `op` given again to a front linked to anew: one from before the operation refuses it (`no operation`), which leaves
+/// it as it was; any other failure is the link's, tried again.
+async fn told(next : Front, op : String, args : Json) -> Unit {
+  ignore(next.ask(op, args=[("args", args)])) catch {
+    e => {
+      let words = message_of(e)
+      if !(words.contains("no operation") || words.contains("not a function")) {
+        raise e
+      }
+    }
+  }
 }
 
 ///|
@@ -1369,6 +1403,13 @@ pub fn FrontEndpoint::relay_status(self : FrontEndpoint) -> Json {
 }
 
 ///|
+/// Whether the endpoint is reached through relay `url` now, end to end (`probeRelay`, endpoint.ts): `{"ok": true}`, or
+/// `{"ok": false, "stage": "probe_offline" | "endpoint_failed"}`. A front from before says `no operation`.
+pub async fn FrontEndpoint::probe_relay(self : FrontEndpoint, url : String) -> Json {
+  self.ask("probeRelay", args=[("args", jobj([("url", jstr(url))]))])
+}
+
+///|
 /// The relays a station is not reached through (`disabledRelays`), given again to a front linked to anew.
 pub async fn FrontEndpoint::disabled_relays(self : FrontEndpoint, id : String, relays : Array[String], no_public : Bool) -> Unit {
   let args = jobj([("peer", jstr(id)), ("relays", Json::array(relays.map(jstr))), ("public", Json::boolean(no_public))])
@@ -1418,6 +1459,7 @@ pub async fn FrontEndpoint::remove_relay(self : FrontEndpoint, url : String) -> 
 
 ///|
 pub async fn FrontEndpoint::public_relays(self : FrontEndpoint, on : Bool) -> Unit {
+  self.public_ = Some(on)
   ignore(self.ask("publicRelays", args=[("args", jobj([("on", Json::boolean(on))]))]))
 }
 
@@ -1429,6 +1471,7 @@ fn FrontEndpoint::tell(self : FrontEndpoint, op : String, args : Array[(String, 
 
 ///|
 pub fn FrontEndpoint::keep(self : FrontEndpoint, urls : Array[String]) -> Unit {
+  self.kept = Some(Json::array(urls.map(jstr)))
   self.tell("keep", [("args", jobj([("urls", Json::array(urls.map(jstr)))]))], e => (self.log)(
     "warn",
     "mesh",
@@ -1439,6 +1482,10 @@ pub fn FrontEndpoint::keep(self : FrontEndpoint, urls : Array[String]) -> Unit {
 
 ///|
 pub fn FrontEndpoint::set_congestion(self : FrontEndpoint, congestion : String) -> Unit {
+  // (what a link made again binds with: else it came back as first bound)
+  if self.bind_.get("options") is Some(Object(o)) {
+    o["congestion"] = jstr(congestion)
+  }
   self.tell("setCongestion", [("args", jobj([("congestion", jstr(congestion))]))], _ => ())
 }
 
@@ -1454,6 +1501,7 @@ pub fn FrontEndpoint::add_addr(self : FrontEndpoint, addr : Json) -> Unit {
 
 ///|
 pub async fn FrontEndpoint::set_relay_entries(self : FrontEndpoint, entries : Json) -> Unit {
+  self.entries = Some(entries)
   ignore(self.ask("setRelayEntries", args=[("args", jobj([("entries", entries)]))]))
 }
 

@@ -1,0 +1,8 @@
+import {
+  "base/codec",
+  "moonbitlang/core/encoding/utf8",
+}
+
+import {
+  "base/url",
+} for "test"

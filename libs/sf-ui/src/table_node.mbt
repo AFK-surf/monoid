@@ -685,7 +685,7 @@ fn table_key_node(
   let copied_off : Ref[() -> Unit] = Ref(fn() {  })
   let menu_open = @signals.signal(false)
   beside.box(made_for=loc, fn(k) {
-    k.owns(fn() { (copied_off.val)() }) |> ignore
+    k.transitions_only().owns(fn() { (copied_off.val)() }) |> ignore
     // (its room kept, as tall as the key, whether it shows or not)
     let top = fn() { dmax(0.0, (head_h() - table_key_size) / 2.0) }
     k
@@ -694,9 +694,13 @@ fn table_key_node(
     .padding(By(fn() { (table_key_gap, top(), table_key_gap, 0.0) }))
     |> ignore
     let shown = fn() { beside.pointed_in() || menu_open.get() || copied.get() || @ui.pointing() is Finger }
+    let shown_open = @signals.signal(@signals.untracked(shown), same=fn(a, b) { a == b })
     // (how far it shows: set off as it comes to show or not, turned back from where it has it)
     let seen = @motion.NodeWay::new(0.0)
-    k.reacts(shown, fn(on) { seen.go_ms(k, if on { 1.0 } else { 0.0 }, dur_ms) })
+    k.reacts(shown, fn(on) {
+      seen.go_ms(k, if on { 1.0 } else { 0.0 }, dur_ms)
+      @view.transition(within=k, fn() { shown_open.set(on) })
+    })
     k.alpha(By(fn() { seen.shown(k) })) |> ignore
     // (its block of a list taken for another message's table: copied said of none of it, the moment that would have
     // said so no more, its menu not open on it, and shown as it is for that one at once, no fade of the one before's)
@@ -705,11 +709,13 @@ fn table_key_node(
       copied_off.val = fn() {  }
       copied.set(false)
       menu_open.set(false)
-      seen.put(if @signals.untracked(shown) { 1.0 } else { 0.0 })
+      let on = @signals.untracked(shown)
+      seen.put(if on { 1.0 } else { 0.0 })
+      shown_open.set(on)
     })
     // (the key itself at once: what it is is there as it fades in, all of it, nothing of its place making its way in a
     // room kept as tall as it)
-    k.show(shown, leave=dur_ms, at_once=true, fn(slot) {
+    k.show(fn() { shown_open.get() }, leave=dur_ms, at_once=true, fn(slot) {
       table_copy_button_node(slot, k, key, table, widths_for, copied, copied_off, menu_open)
     })
   })

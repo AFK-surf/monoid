@@ -1,0 +1,15 @@
+wait 200
+tap 展开全屏
+wait 500
+tap 切换 Letterbox
+wait 250
+tap 飞回原位
+wait 500
+wheelat 320 展开全屏
+wait 200
+tap 播放四段编排
+wait 750
+tap 逆向回放
+wait 700
+tap 触发多源错峰
+wait 850

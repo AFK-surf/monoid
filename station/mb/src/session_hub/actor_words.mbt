@@ -24,7 +24,8 @@ pub fn retryable(turn : Json) -> Bool {
   let detail = str_of(turn, "detail").unwrap_or("")
   let failed_again = outcome == Some("failed") && declared_null && again_reasons.iter().any(r => detail.has_prefix("\{r}:"))
   let given_up = outcome == Some("completed") && declared_null
-  failed_again || given_up
+  let cut_off_restart = outcome == Some("aborted") && declared_null && detail == "other: cut off by restart"
+  failed_again || given_up || cut_off_restart
 }
 
 ///|
@@ -236,7 +237,7 @@ pub fn compact_failed_notice(words : Words, outcome : Json) -> String {
 ///|
 /// What failed as the runtime said it (runtime.ts `failureOf`, the claude package's).
 pub fn failure_reason(message : String) -> String {
-  @claude.failure_of(@jsjson.units(message))
+  @claude.failure_of(message)
 }
 
 ///|

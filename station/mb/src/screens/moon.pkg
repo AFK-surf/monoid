@@ -1,21 +1,17 @@
 import {
+  "base/time",
+  "base/codec",
+  "base/flate",
+  "base/hash",
   "station/host",
+  "station/host_world",
   "station/jsjson",
+  "station/jscase",
   "station/nodepath",
-  "station/ops_platform",
-  "station/jobs_host",
-  "station/wire",
   "mbui/effect",
   "base/net",
   "moonbitlang/core/buffer",
   "moonbitlang/core/double",
-  "moonbitlang/core/string",
   "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/encoding/base64",
-  "moonbitlang/core/compress/zlib",
-  "moonbitlang/core/compress/flate",
 }
-
-options(
-  "allow-experimental-packages": ["moonbitlang/core/compress/zlib", "moonbitlang/core/compress/flate"],
-)

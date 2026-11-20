@@ -65,7 +65,7 @@ pub fn switcher_open_with(words : String) -> Unit {
 ///|
 /// How ⌘K's panel comes (140 ms on the ease-out), grown out of 97% and faded in, its ground first.
 // kept across runs: a value (no field of it changes)
-let switcher_in : @motion.Trans = @motion.trans(fade=0.0, scale=0.97, oy=0.0, spec=@motion.tween(@kit.pop_ms, ease=Out), ground_first=true)
+let switcher_in : @motion.Trans = @motion.trans(fade=0.0, scale=0.97, oy=0.0, spec=@motion.tween(@motion.pop_ms, ease=Out), ground_first=true)
 
 ///|
 /// How its scrim comes: over 120 ms (tip_in's).
@@ -94,7 +94,7 @@ pub fn switcher_node(v : @view.View, src : Source) -> Unit {
     back_within=fn() { false },
     top_share=switcher_top_share,
     come=switcher_in,
-    come_ms=@kit.pop_ms,
+    come_ms=@motion.pop_ms,
     ground_ms=switcher_ground_ms,
     go_ms=0.0,
     fn(across, layer, look) {

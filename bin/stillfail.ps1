@@ -7,15 +7,26 @@
 #   stillfail station id
 #   stillfail lock status|reset                   the workspace lock on this station
 #   stillfail lock reset --workspace <id>         the lock of a workspace it joined
+#   stillfail screen-service install|uninstall|status
+#                                                 optional LocalSystem service for UAC, elevated windows, and lock screen
 #   stillfail uninstall [--purge]                 stops the station for good: its scheduled tasks, its processes, its
 #                                                 release and ~\.local\bin's command gone; its chats, memory and secrets
 #                                                 kept in the data (<data>\uninstalled says so) unless --purge
-# The data is in $env:STILLFAIL_DATA, default ~\.stillfail.
+# The data is in $env:STILLFAIL_DATA, default ~\.stillfail (another product's own: below).
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $PSScriptRoot
-$data = if ($env:STILLFAIL_DATA) { $env:STILLFAIL_DATA } else { Join-Path $env:USERPROFILE '.stillfail' }
+# From a release in another product's data directory beside still.fail's (~\.monoid\app, as its app and its command run
+# it: client/i18n/brand.ts), that product's.
+$own = Join-Path $env:USERPROFILE '.stillfail'
+$release = try { [IO.Path]::GetFullPath($here).TrimEnd('\', '/') } catch { '' }
+$userDir = try { [IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd('\', '/') } catch { '' }
+if ($release -and $userDir -and (Split-Path -Leaf $release) -eq 'app') {
+  $dir = Split-Path -Parent $release
+  if ((Split-Path -Parent $dir) -eq $userDir -and (Split-Path -Leaf $dir) -match '^\.[^.]') { $own = $dir }
+}
+$data = if ($env:STILLFAIL_DATA) { $env:STILLFAIL_DATA } else { $own }
 $station = if ($env:STILLFAIL_STATION_BIN) { $env:STILLFAIL_STATION_BIN } else { Join-Path $here 'mesh\target\release\stillfail-station.exe' }
-$usage = 'usage: stillfail start [--port N] | stillfail status | stillfail update [--beta|--stable] | stillfail station enroll <cloud-origin> <token> [--provider comma] | stillfail station id | stillfail lock status | stillfail lock reset [--workspace <id>] | stillfail uninstall [--purge]'
+$usage = 'usage: stillfail start [--port N] | stillfail status | stillfail update [--beta|--stable] | stillfail station enroll <cloud-origin> <token> [--provider comma] | stillfail station id | stillfail lock status | stillfail lock reset [--workspace <id>] | stillfail screen-service install|uninstall|status | stillfail uninstall [--purge] | stillfail admin <command>'
 $a = @($args)
 
 function Run([string[]] $more) {
@@ -47,6 +58,15 @@ function Uninstall([bool] $purge) {
     if ($apart -and -not (@($t.Actions) | Where-Object { ([string]$_.Execute + ' ' + [string]$_.Arguments).Contains($full) })) { continue }
     Stop-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
     try { Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction Stop } catch { [Console]::Error.WriteLine("stillfail uninstall: task $name not removed: $($_.Exception.Message)") }
+  }
+  if (-not $apart -and (Get-Service -Name 'StillfailScreenService' -ErrorAction SilentlyContinue)) {
+    $svcBin = 'C:\Program Files\still.fail\screen-service\stillfail-screen-svc.exe'
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if ($isAdmin -and (Test-Path -LiteralPath $svcBin)) {
+      & $svcBin uninstall | Out-Null
+    } else {
+      [Console]::Error.WriteLine('stillfail uninstall: StillfailScreenService is still installed (run `stillfail screen-service uninstall` as administrator to remove it)')
+    }
   }
   # What still runs of it: the launcher by its pid as it said it, and whatever runs from its release (by <app> in their
   # command lines, as install.ps1 ends them before it replaces a release).
@@ -114,6 +134,44 @@ switch ("$($a[0]) $($a[1])".Trim()) {
     if (-not $script) { [Console]::Error.WriteLine('stillfail update: no installer to run'); exit 1 }
     $env:STILLFAIL_DATA = $data
     & (Get-Process -Id $PID).Path -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $script
+    exit $LASTEXITCODE
+  }
+  { $a[0] -eq 'screen-service' } {
+    $sub = if ($a.Count -ge 2) { $a[1] } else { '' }
+    if ($sub -notin 'install', 'uninstall', 'status') { [Console]::Error.WriteLine('usage: stillfail screen-service install|uninstall|status'); exit 2 }
+    $svcBin = @(
+      (Join-Path $here 'station\stillfail-screen-svc.exe'),
+      (Join-Path $here 'station\native\screen\target\release\stillfail-screen-svc.exe'),
+      'C:\Program Files\still.fail\screen-service\stillfail-screen-svc.exe'
+    ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if (-not $svcBin) { [Console]::Error.WriteLine("stillfail screen-service: stillfail-screen-svc.exe not found in $here"); exit 1 }
+    if ($sub -eq 'status') {
+      & $svcBin status
+      exit $LASTEXITCODE
+    }
+    $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    $svcArgs = if ($sub -eq 'install') { @('install', '--user-sid', $sid) } else { @('uninstall') }
+    if ($isAdmin) {
+      & $svcBin @svcArgs
+      exit $LASTEXITCODE
+    }
+    $p = Start-Process -FilePath $svcBin -ArgumentList $svcArgs -Verb RunAs -PassThru -Wait
+    if ($p.ExitCode -ne 0) { exit $p.ExitCode }
+    & $svcBin status
+    exit 0
+  }
+  { $a[0] -eq 'admin' } {
+    $node = if ($env:STILLFAIL_NODE) { $env:STILLFAIL_NODE } else { Join-Path $here 'node\node.exe' }
+    if (-not (Test-Path -LiteralPath $node)) { $cmd = Get-Command node -ErrorAction SilentlyContinue; $node = if ($cmd) { $cmd.Source } else { $null } }
+    if (-not $node) { [Console]::Error.WriteLine('stillfail admin: node not found'); exit 1 }
+    $built = Join-Path $here 'station\admin-cli.js'
+    $src = Join-Path $here 'bin\admin-cli.ts'
+    $entry = if (Test-Path -LiteralPath $built) { $built } elseif (Test-Path -LiteralPath $src) { $src } else { $null }
+    if (-not $entry) { [Console]::Error.WriteLine("stillfail admin: admin-cli not found in $here\station or $here\bin"); exit 1 }
+    $env:STILLFAIL_DATA = $data
+    $rest = if ($a.Count -gt 1) { $a[1..($a.Count - 1)] } else { @() }
+    & $node $entry @rest
     exit $LASTEXITCODE
   }
   default { [Console]::Error.WriteLine($usage); exit 2 }

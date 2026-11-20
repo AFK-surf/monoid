@@ -12,8 +12,6 @@
 ///|
 priv struct AdminLive {
   admin : @api_routes.Admin
-  /// What the routes hold by reference (a hash being made).
-  handles : Map[String, @buffer.Buffer]
   /// The files the routes opened (`fs.open`'s handle, `fh:<n>`): the path each reads.
   files : Map[String, String]
   mut next_handle : Int
@@ -54,7 +52,7 @@ async fn p51_file_piece(host : @host.Host, file : String, from : Double, length 
   }
   let args : Json = { "path": Json::string(file), "from": Json::number(from), "length": Json::number(length.to_double()) }
   let (said, _) = host.shell("fs.bytes", args) catch {
-    @wire.ShellError(e) => raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": Json::string(e) }))
+    @wire.ShellError(e) => raise @api_routes.Thrown("Error", to_jv({ "message": Json::string(e) }))
     e => raise e
   }
   p51_piece_answered(file, said)
@@ -77,77 +75,32 @@ fn p51_file_piece_now(host : @host.Host, file : String, from : Double, length : 
 fn p51_piece_answered(file : String, said : Json) -> Bytes raise {
   match said {
     String(hex) => @cloud_lock.hex_bytes(hex)
-    { "error": String(e), .. } => raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": Json::string(e) }))
-    _ => raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": "ENOENT: no such file or directory, open '\{file}'", "code": "ENOENT" }))
-  }
-}
-
-///|
-/// read/sessions.ts `mime`: a file's type by its extension (Path::extension's: none for a name with no dot, or only the
-/// one it starts with).
-fn p51_mime(p : String) -> String {
-  let mut name = p
-  match name.rev_find("/") {
-    Some(i) => name = name[i + 1:].to_owned()
-    None => ()
-  }
-  match name.rev_find("\\") {
-    Some(i) => name = name[i + 1:].to_owned()
-    None => ()
-  }
-  let dot = name.rev_find(".").unwrap_or(-1)
-  if dot <= 0 {
-    return "application/octet-stream"
-  }
-  match name[dot + 1:].to_owned().to_lower() {
-    "png" => "image/png"
-    "jpg" | "jpeg" => "image/jpeg"
-    "gif" => "image/gif"
-    "webp" => "image/webp"
-    "svg" => "image/svg+xml"
-    "pdf" => "application/pdf"
-    "txt" => "text/plain; charset=utf-8"
-    "md" => "text/markdown; charset=utf-8"
-    "json" => "application/json"
-    _ => "application/octet-stream"
+    { "error": String(e), .. } => raise @api_routes.Thrown("Error", to_jv({ "message": Json::string(e) }))
+    _ => raise @api_routes.Thrown("Error", to_jv({ "message": "ENOENT: no such file or directory, open '\{file}'", "code": "ENOENT" }))
   }
 }
 
 ///|
 /// Whether a viewer manages the station, and whether one only reads (api_routes' `manages_station`, `read_only`).
 fn p51_manages(viewer : Json) -> Bool {
-  @api_routes.manages_station(@jsjson.JV::of_json(viewer))
+  @api_routes.manages_station(to_jv(viewer))
 }
 
 ///|
 fn p51_read_only(viewer : Json) -> Bool {
-  @api_routes.read_only(@jsjson.JV::of_json(viewer))
+  @api_routes.read_only(to_jv(viewer))
 }
 
 ///|
 /// A file system's failure as the routes take it (fs.mbt: an `Error` with its `code`), anything else as it was.
 fn p51_fs_thrown(e : Error) -> Error {
   match e {
+    DispatchFsError(code, message) =>
+      @api_routes.Thrown("Error", to_jv({ "message": Json::string(message), "code": Json::string(code) }))
     @drive.FsError(f) =>
-      @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": Json::string(f.message), "code": Json::string(f.code) }))
+      @api_routes.Thrown("Error", to_jv({ "message": Json::string(f.message), "code": Json::string(f.code) }))
     other => other
   }
-}
-
-///|
-/// The system's error number `n` of `call` on `p` (live_p5_2_sys.c's), as Node throws it.
-fn p51_errno_thrown(n : Int, call : String, p : String) -> Error {
-  let (code, words) = match n {
-    1 => ("EPERM", "operation not permitted")
-    2 => ("ENOENT", "no such file or directory")
-    13 => ("EACCES", "permission denied")
-    17 => ("EEXIST", "file already exists")
-    20 => ("ENOTDIR", "not a directory")
-    21 => ("EISDIR", "illegal operation on a directory")
-    28 => ("ENOSPC", "no space left on device")
-    _ => ("EIO", "i/o error")
-  }
-  @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": Json::string("\{code}: \{words}, \{call} '\{p}'"), "code": Json::string(code) }))
 }
 
 ///|
@@ -161,36 +114,78 @@ fn P51::restart_pid(self : P51) -> Int? {
 }
 
 ///|
-/// The station's parts as the routes ask them (api_routes `Backend`).
-async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@api_routes.JV]) -> @api_routes.JV {
-  let bus = self.bus
-  let arg = (i : Int) => @jsjson.JV::to_json(args.get(i).unwrap_or(Null))
+/// The station's parts whose answer is bytes, as the routes ask them (api_routes `Backend::ask_bytes`): a file's
+/// piece, a file whole, a stream's next piece and a reader's answer given as they are, never base64 and back (a part's
+/// piece is 4 MB); `None` where `backend` answers null. Any other part is `backend`'s answer decoded.
+async fn P51::backend_bytes(self : P51, a : AdminLive, name : String, args : Array[@api_routes.JV]) -> Bytes? {
   let text = (i : Int) => match args.get(i) {
     Some(Str(s)) => s
     _ => ""
   }
-  // A hash being made (`crypto.createHash` and what is asked of its handle).
-  if name.has_prefix("h:") {
-    let (handle, call) = match name.rev_find(".") {
-      Some(i) => (name[:i].to_owned(), name[i + 1:].to_owned())
-      None => (name, "")
+  match name {
+    "readers.readBytes" => {
+      let readers = self.readers.unwrap()
+      let background = match of_jv(args.get(3).unwrap_or(Null)) {
+        { "background": True, .. } => true
+        _ => false
+      }
+      let got = readers.read_bytes(text(0), of_jv(args.get(1).unwrap_or(Null)), text(2), background~) catch {
+        ReadFailed(status, m) => raise @api_routes.Thrown("HttpError", to_jv({ "message": Json::string(m), "status": Json::number(status.to_double()) }))
+        e => raise e
+      }
+      Some(got)
     }
-    guard a.handles.get(handle) is Some(buf) else { raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": "no handle \{handle}" })) }
-    match call {
-      "update" => {
-        match @api_routes.bytes_of(args.get(0).unwrap_or(Null)) {
-          Some(b) => buf.write_bytes(b)
-          None => buf.write_bytes(@utf8.encode(text(0)))
+    "fs.readFile" =>
+      match self.host.read_bytes(text(0)) {
+        Some(b) => Some(b)
+        None => raise @api_routes.Thrown("Error", to_jv({ "message": "ENOENT: no such file or directory, open '\{text(0)}'", "code": "ENOENT" }))
+      }
+    "drive/fs.readAt" => {
+      // (a handle `fs.open` gave, where to start, how much): the bytes there, fewer at the file's end
+      let handle = @api_routes.ref_of(args.get(0).unwrap_or(Null)).unwrap_or("")
+      guard a.files.get(handle) is Some(file) else {
+        raise @api_routes.Thrown("Error", to_jv({ "message": "EBADF: bad file descriptor", "code": "EBADF" }))
+      }
+      let num = (i : Int) => match args.get(i) {
+        Some(Num(n)) => n
+        _ => 0.0
+      }
+      Some(p51_file_piece(self.host, file, num(1), num(2).to_int()))
+    }
+    "$stream.next" => {
+      let id = match args.get(0) {
+        Some(Num(n)) => n.to_int()
+        _ => -1
+      }
+      guard a.streams.get(id) is Some(next) else { return None }
+      match next() {
+        Some(b) => Some(b)
+        None => {
+          a.streams.remove(id)
+          a.stream_stops.remove(id)
+          None
         }
-        return @api_routes.jref(handle)
       }
-      "digest" => {
-        a.handles.remove(handle)
-        let digest = @cloud_lock.sha256(buf.to_bytes())
-        return if text(0) == "hex" { Str(@cloud_lock.hex_of(digest)) } else { @api_routes.jbytes(digest) }
-      }
-      _ => raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": "no call \{call} of a hash" }))
     }
+    _ => {
+      let got = self.backend(a, name, args)
+      if @api_routes.nullish(got) {
+        None
+      } else {
+        @api_routes.bytes_of(got)
+      }
+    }
+  }
+}
+
+///|
+/// The station's parts as the routes ask them (api_routes `Backend`).
+async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@api_routes.JV]) -> @api_routes.JV {
+  let bus = self.bus
+  let arg = (i : Int) => of_jv(args.get(i).unwrap_or(Null))
+  let text = (i : Int) => match args.get(i) {
+    Some(Str(s)) => s
+    _ => ""
   }
   // A file the routes opened (`fs.open`): its size, a piece of it, let go.
   if name.has_prefix("fh:") {
@@ -199,7 +194,7 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
       None => (name, "")
     }
     guard a.files.get(handle) is Some(file) else {
-      raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": "EBADF: bad file descriptor", "code": "EBADF" }))
+      raise @api_routes.Thrown("Error", to_jv({ "message": "EBADF: bad file descriptor", "code": "EBADF" }))
     }
     match call {
       "stat" => return self.backend(a, "fs.stat", [Str(file)])
@@ -219,13 +214,13 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
         out.write_bytesview(buffer[0:at])
         out.write_bytesview(got[0:n])
         out.write_bytesview(buffer[at + n:])
-        return @jsjson.JV::of_json({ "bytesRead": Json::number(n.to_double()), "buffer": @jsjson.JV::to_json(@api_routes.jbytes(out.to_bytes())) })
+        return to_jv({ "bytesRead": Json::number(n.to_double()), "buffer": of_jv(@api_routes.jbytes(out.to_bytes())) })
       }
       "close" => {
         a.files.remove(handle)
         return Null
       }
-      _ => raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": "no call \{call} of a file" }))
+      _ => raise @api_routes.Thrown("Error", to_jv({ "message": "no call \{call} of a file" }))
     }
   }
   // A part's card choice (`parts.cardChoiceOf`'s): whether a member may choose on it, and what is done once they did.
@@ -235,7 +230,7 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
       None => (name[5:].to_owned(), "")
     }
     guard bus.parts.card_choice_named(handle) is Some(choice) else {
-      raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": "no card choice \{handle}" }))
+      raise @api_routes.Thrown("Error", to_jv({ "message": "no card choice \{handle}" }))
     }
     match call {
       "may" =>
@@ -247,7 +242,7 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
         (choice.chosen)(arg(0), arg(1), text(2), arg(3))
         return Null
       }
-      _ => raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": "no call \{call} of a card choice" }))
+      _ => raise @api_routes.Thrown("Error", to_jv({ "message": "no call \{call} of a card choice" }))
     }
   }
   // The page's restart, asked first (`restart`) and then told (`restart.go`) once its answer is on its way.
@@ -255,33 +250,25 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
     match self.restart_pid() {
       Some(pid) => {
         let front = bus.restart_front
-        ignore(
-          self.host.rt.fork_daemon("restart", on_error=e => @host.note("restart failed: \{e}"), async fn() {
-            @effect.sleep(150) // timer: a deadline (the answer's time to leave before the process ends)
-            match front {
-              Some(f) => f()
-              None => ignore(kill(pid, "SIGUSR2"))
-            }
-          }),
-        )
+        fork_bg(self.host, "restart", async fn() {
+          @effect.sleep(150) // timer: a deadline (the answer's time to leave before the process ends)
+          match front {
+            Some(f) => f()
+            None => ignore(kill(pid, "SIGUSR2"))
+          }
+        })
       }
       None => ()
     }
     return Null
   }
   match name {
-    "readers.readBytes" => {
-      let readers = self.readers.unwrap()
-      let background = match arg(3) {
-        { "background": True, .. } => true
-        _ => false
+    // (bytes as `{"$bytes": base64}`, for a caller that does not take them as they are: `backend_bytes`'s)
+    "readers.readBytes" | "fs.readFile" | "drive/fs.readAt" | "$stream.next" =>
+      match self.backend_bytes(a, name, args) {
+        Some(b) => @api_routes.jbytes(b)
+        None => Null
       }
-      let got = readers.read_bytes(text(0), arg(1), text(2), background~) catch {
-        ReadFailed(status, m) => raise @api_routes.Thrown("HttpError", @jsjson.JV::of_json({ "message": Json::string(m), "status": Json::number(status.to_double()) }))
-        e => raise e
-      }
-      @api_routes.jbytes(got)
-    }
     "readers.names.set" => {
       match (args.get(0), args.get(1)) {
         (Some(Str(email)), Some(Str(n))) => self.readers.unwrap().names[email] = n
@@ -289,7 +276,6 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
       }
       Null
     }
-    "clock.currentTimeMillisUnsafe" => Num(wall_ms().to_double())
     "crypto.randomBytes" => {
       let n = match args.get(0) {
         Some(Num(n)) => n.to_int()
@@ -297,37 +283,11 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
       }
       @api_routes.jbytes(@drive.random_bytes(n))
     }
-    "crypto.createHash" => {
-      a.next_handle += 1
-      let handle = "h:\{a.next_handle}"
-      a.handles[handle] = @buffer.new()
-      @api_routes.jref(handle)
-    }
-    "os.homedir" => Str(homedir())
-    "os.totalmem" =>
-      match machine() {
-        { "totalmem": Number(n, ..), .. } => Num(n)
-        _ => Num(0.0)
-      }
-    "os.cpus" =>
-      match machine() {
-        { "cpus": Array(c), .. } => @jsjson.JV::of_json(Json::array(c))
-        _ => Arr([])
-      }
-    "config.raw" => @jsjson.JV::of_json((bus.config_raw.val)())
-    "config.updateSoon" => {
-      let next = arg(0)
-      ignore((bus.config_update.val)(_ => next))
-      Null
-    }
-    "host.sample" => @jsjson.JV::of_json((bus.host_sample.val)())
-    "cloud.memberships" => @jsjson.JV::of_json((bus.cloud_call.val)("memberships", Json::null()))
-    "cloud.reload" => {
-      ignore((bus.cloud_call.val)("reload", Json::null()))
-      Null
-    }
+    "clock.currentTimeMillisUnsafe" | "os.homedir" | "os.totalmem" | "os.cpus" | "config.raw" | "config.updateSoon" | "cloud.memberships" | "cloud.reload" | "events.overviewChanged" | "events.tell" =>
+      to_jv(dispatch_infra(bus, name, args.map(of_jv)).unwrap_or(Json::null()))
+    "host.sample" => to_jv((bus.host_sample.val)())
     "events.open" => {
-      guard self.events is Some(events) else { raise @api_routes.Thrown("HttpError", @jsjson.JV::of_json({ "message": "events not ready", "status": 503 })) }
+      guard self.events is Some(events) else { raise @api_routes.Thrown("HttpError", to_jv({ "message": "events not ready", "status": 503 })) }
       let live = match arg(3) {
         Array(items) =>
           items.filter_map(i => match i {
@@ -349,10 +309,7 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
         host: arg(2) is True,
         live,
         logs,
-        since: match arg(5) {
-          String(s) => Some(s)
-          _ => None
-        },
+        since: as_text(arg(5)),
         brief: arg(6) is True,
         logins: match arg(7) {
           Array(l) => l.filter_map(x => match x { String(s) => Some(s); _ => None })
@@ -374,37 +331,11 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
       for kv in headers {
         h[kv.0] = Json::string(kv.1)
       }
-      @jsjson.JV::of_json({ "status": 200, "headers": Json::object(h), "body": { "$stream": Json::number(sid.to_double()) } })
-    }
-    "events.overviewChanged" => {
-      (bus.overview_changed.val)()
-      Null
+      to_jv({ "status": 200, "headers": Json::object(h), "body": { "$stream": Json::number(sid.to_double()) } })
     }
     "events.presetsChanged" => {
-      match self.events {
-        Some(e) => e.events.presets_changed()
-        None => ()
-      }
+      if self.events is Some(e) { e.events.presets_changed() }
       Null
-    }
-    "events.tell" => {
-      (bus.events_tell.val)(text(0), arg(1), text(2), arg(3))
-      Null
-    }
-    "$stream.next" => {
-      let id = match args.get(0) {
-        Some(Num(n)) => n.to_int()
-        _ => -1
-      }
-      guard a.streams.get(id) is Some(next) else { return Null }
-      match next() {
-        Some(b) => @api_routes.jbytes(b)
-        None => {
-          a.streams.remove(id)
-          a.stream_stops.remove(id)
-          Null
-        }
-      }
     }
     "$fn.call" => {
       let id = match args.get(0) {
@@ -446,164 +377,87 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
           } else {
             st
           }
-          @jsjson.JV::of_json({
+          to_jv({
             "size": Json::number(st.size),
             "mtimeMs": Json::number(st.mtime_ms),
             "file": Json::boolean(st.kind == "file"),
             "dir": Json::boolean(st.kind == "dir" || st.kind == "directory"),
           })
         }
-        _ => raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": "ENOENT: no such file or directory, stat '\{p}'", "code": "ENOENT" }))
+        _ => raise @api_routes.Thrown("Error", to_jv({ "message": "ENOENT: no such file or directory, stat '\{p}'", "code": "ENOENT" }))
       }
     }
-    "fs.readFile" =>
-      match self.host.read_bytes(text(0)) {
-        Some(b) => @api_routes.jbytes(b)
-        None => raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": "ENOENT: no such file or directory, open '\{text(0)}'", "code": "ENOENT" }))
-      }
     "fs.writeFile" => {
       let data = @api_routes.bytes_of(args.get(1).unwrap_or(Null)).unwrap_or_else(() => @utf8.encode(text(1)))
       let (excl, mode) = match arg(2) {
         Object(o) =>
           (
             o.get("flag") is Some(String("wx" | "xw")),
-            match o.get("mode") {
-              Some(Number(m, ..)) => m.to_int()
-              _ => 0
-            },
+            opt_num(o.get("mode")).map(n => n.to_int()).unwrap_or(0),
           )
         _ => (false, 0)
       }
-      let n = live_write_flags_ffi(live_c(text(0)), data, mode, if excl { 1 } else { 0 })
-      if n != 0 {
-        raise p51_errno_thrown(n, "open", text(0))
+      host_write_file(self.host, text(0), data, excl~, mode~) catch {
+        e => raise p51_fs_thrown(e)
       }
       Null
     }
     "fs.appendFile" => {
       let data = @api_routes.bytes_of(args.get(1).unwrap_or(Null)).unwrap_or_else(() => @utf8.encode(text(1)))
-      let n = live_append_ffi(live_c(text(0)), data)
-      if n != 0 {
-        raise p51_errno_thrown(n, "open", text(0))
-      }
-      Null
-    }
-    "fs.access" => {
-      ignore(@drive.stat(text(0)) catch { e => raise p51_fs_thrown(e) })
-      Null
-    }
-    "fs.readdir" => {
-      let dir = text(0)
-      let names = @drive.names(dir) catch { e => raise p51_fs_thrown(e) }
-      if arg(1) is { "withFileTypes": True, .. } {
-        // (a Dirent as the routes take it, `{name, file, dir}`: a link is neither, as Node's isFile and isDirectory)
-        @jsjson.JV::of_json(
-          Json::array(
-            names.map(n => {
-              let st = attempt(() => @drive.lstat(path([dir, n])))
-              {
-                "name": Json::string(n),
-                "file": Json::boolean(st is Ok(x) && x.file),
-                "dir": Json::boolean(st is Ok(x) && x.dir),
-              }
-            }),
-          ),
-        )
-      } else {
-        Arr(names.map(n => @api_routes.JV::Str(n)))
-      }
-    }
-    "fs.copyFile" => {
-      // (Node's mode: COPYFILE_EXCL, 1, only where nothing is; else what is there replaced, FICLONE or not)
-      let mode = match args.get(2) {
-        Some(Num(n)) => n.to_int()
-        _ => 0
-      }
-      if (mode & 1) != 0 {
-        @drive.copy_file(text(0), text(1)) catch {
-          e => raise p51_fs_thrown(e)
-        }
-      } else {
-        copy_file_over(text(0), text(1)) catch {
-          e => raise p51_fs_thrown(e)
-        }
-      }
-      Null
-    }
-    "fs.rename" => {
-      @drive.rename(text(0), text(1)) catch {
+      host_append_file(self.host, text(0), data) catch {
         e => raise p51_fs_thrown(e)
       }
       Null
     }
-    "fs.rm" => {
-      if !(arg(1) is { "force": True, .. }) {
-        match attempt(() => @drive.lstat(text(0))) {
-          Err(e) => raise p51_fs_thrown(e)
-          Ok(_) => ()
-        }
+    "fs.access" | "fs.readdir" | "fs.copyFile" | "fs.rename" | "fs.rm" | "fs.statfs" | "fs.mkdir" => {
+      let got = host_fs_op(self.host, name[3:].to_owned(), args.map(of_jv), strict_rm=true, readdir_file_field=true) catch {
+        e => raise p51_fs_thrown(e)
       }
-      ignore(remove_tree(text(0)))
-      Null
+      to_jv(got)
     }
-    "fs.statfs" =>
-      match disk_of(text(0)) {
-        Some((free, total)) =>
-          @jsjson.JV::of_json({ "blocks": Json::number(total), "bavail": Json::number(free), "bsize": Json::number(1.0) })
-        None => raise p51_errno_thrown(2, "statfs", text(0))
-      }
     "fs.open" => {
       let p = text(0)
       match (try { Ok(self.fs.lstat(p)) } catch { e => Err(e) }) {
         Ok(Some(_)) => ()
-        _ => raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": "ENOENT: no such file or directory, open '\{p}'", "code": "ENOENT" }))
+        _ => raise @api_routes.Thrown("Error", to_jv({ "message": "ENOENT: no such file or directory, open '\{p}'", "code": "ENOENT" }))
       }
       a.next_handle += 1
       let handle = "fh:\{a.next_handle}"
       a.files[handle] = p
       @api_routes.jref(handle)
     }
-    "drive/fs.readAt" => {
-      // (a handle `fs.open` gave, where to start, how much): the bytes there, fewer at the file's end
-      let handle = @api_routes.ref_of(args.get(0).unwrap_or(Null)).unwrap_or("")
-      guard a.files.get(handle) is Some(file) else {
-        raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": "EBADF: bad file descriptor", "code": "EBADF" }))
-      }
-      let num = (i : Int) => match args.get(i) {
-        Some(Num(n)) => n
-        _ => 0.0
-      }
-      @api_routes.jbytes(p51_file_piece(self.host, file, num(1), num(2).to_int()))
-    }
     // (lock.ts `admit` of the lock in force where `state` says, `vault.lock`'s: the device and role it admits)
     "cloud/lock.admit" => {
-      guard self.plane is Some(plane) else { raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": "no control plane" })) }
+      guard self.plane is Some(plane) else { raise @api_routes.Thrown("Error", to_jv({ "message": "no control plane" })) }
+      // (a vault's lock made of its members' own locks, no security mode: cloud/vault-lock.ts, lock.ts `admit`)
+      let personal = arg(0)
+      if personal is { "genesis": String(""), .. } {
+        let (id, role, sign_key) = @cloud_lock.admit_personal(plane.crypto, personal, who_of(arg(1))) catch {
+          e => raise @api_routes.Thrown("Error", to_jv({ "message": Json::string("\{e}") }))
+        }
+        let d : Map[String, Json] = { "id": Json::string(id), "sub": Json::string(who_of(arg(1)).sub), "kind": Json::string("app") }
+        if sign_key is Some(k) { d["sign_key"] = Json::string(k) }
+        return to_jv({ "device": Json::object(d), "role": Json::string(role) })
+      }
       let ws = match arg(0) {
         { "ws": String(w), .. } if Some(w) != plane.cloud.home() => Some(w)
         _ => None
       }
       guard plane.cloud.locked(ws~) is Some({ state: Some(st), .. }) else {
-        raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": "this workspace keeps no lock" }))
+        raise @api_routes.Thrown("Error", to_jv({ "message": "this workspace keeps no lock" }))
       }
       let now = match args.get(2) {
         Some(Num(n)) => n
         _ => wall_ms().to_double() / 1000.0
       }
       let (device, role) = @cloud_lock.admit(plane.crypto, st, who_of(arg(1)), now) catch {
-        e => raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": Json::string("\{e}") }))
+        e => raise @api_routes.Thrown("Error", to_jv({ "message": Json::string("\{e}") }))
       }
       let d : Map[String, Json] = { "id": Json::string(device.id), "sub": Json::string(device.sub), "kind": Json::string(device.kind) }
-      match device.by {
-        Some(b) => d["by"] = Json::string(b)
-        None => ()
-      }
-      match device.sign_key {
-        Some(k) => d["sign_key"] = Json::string(k)
-        None => ()
-      }
-      @jsjson.JV::of_json({ "device": Json::object(d), "role": Json::string(role) })
+      if device.by is Some(b) { d["by"] = Json::string(b) }
+      if device.sign_key is Some(k) { d["sign_key"] = Json::string(k) }
+      to_jv({ "device": Json::object(d), "role": Json::string(role) })
     }
-    "read/sessions.mime" => Str(p51_mime(text(0)))
     "cli.joinWorkspace" => {
       let home_locked = () => match self.plane {
         Some(plane) => plane.cloud.locked() is Some(_)
@@ -614,14 +468,10 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
         _ => None
       }
       let joined = join_workspace(self.host, text(0), text(1), lock, bus.version, home_locked) catch {
-        JoinRefused(kind, m) => raise @api_routes.Thrown(kind, @jsjson.JV::of_json({ "message": Json::string(m) }))
-        e => raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": Json::string("\{e}") }))
+        JoinRefused(kind, m) => raise @api_routes.Thrown(kind, to_jv({ "message": Json::string(m) }))
+        e => raise @api_routes.Thrown("Error", to_jv({ "message": Json::string("\{e}") }))
       }
-      @jsjson.JV::of_json(joined)
-    }
-    "fs.mkdir" => {
-      ignore(attempt(() => @drive.mkdir(text(0), true)))
-      Null
+      to_jv(joined)
     }
     "fs.createReadStream" => {
       let file = text(0)
@@ -661,9 +511,9 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
           Some(b)
         }
       }
-      @jsjson.JV::of_json({ "$stream": Json::number(sid.to_double()) })
+      to_jv({ "$stream": Json::number(sid.to_double()) })
     }
-    "agents.overview" => @jsjson.JV::of_json(self.overview(arg(0), text(1)))
+    "agents.overview" => to_jv(self.overview(arg(0), text(1)))
     "parts.mayView" =>
       match arg(0) {
         { "method": String(m), "path": String(p), .. } => Bool(bus.parts.may_view(m, p))
@@ -681,29 +531,19 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
         Some(_) => @api_routes.jref("restart.go")
         None => Null
       }
-    "store.getSession" => @jsjson.JV::of_json(bus.store.get_session(text(0)))
-    "hub.store.getSession" => @jsjson.JV::of_json(bus.store.get_session(text(0)))
     "store.sessionWs" =>
       match bus.store.session_ws(text(0)) {
         Null => @api_routes.jundef
-        ws => @jsjson.JV::of_json(ws)
+        ws => to_jv(ws)
       }
-    "store.getJob" => @jsjson.JV::of_json(bus.store.get_job(arg(0)))
-    "store.handedTo" => @jsjson.JV::of_json(bus.store.handed_to(text(0)))
-    "store.homeChat" => @jsjson.JV::of_json(bus.store.home_chat(arg(0)))
-    "store.threadSessions" => {
-      let rows = bus.db.all("SELECT * FROM thread_sessions WHERE thread = ? ORDER BY joined_at, rowid", [arg(0)])
-      Arr(
-        rows.map(r => {
-          @jsjson.JV::of_json({
-            "thread": r.get("thread").unwrap_or(Json::null()),
-            "session": r.get("session").unwrap_or(Json::null()),
-            "connect": r.get("connect").unwrap_or(Json::null()),
-            "joinedAt": r.get("joined_at").unwrap_or(Json::null()),
-            "leftAt": r.get("left_at").unwrap_or(Json::null()),
-          })
-        }),
-      )
+    "store.getSession" | "hub.store.getSession" => to_jv(bus.store.get_session(text(0)))
+    "store.getJob" => to_jv(bus.store.get_job(arg(0)))
+    "store.handedTo" => to_jv(bus.store.handed_to(text(0)))
+    "store.homeChat" => to_jv(bus.store.home_chat(arg(0)))
+    "hub.store.binding" => to_jv(bus.store.binding(arg(0)))
+    "store.setThreadTitle" => {
+      bus.store.set_thread_title(arg(0), arg(1))
+      Null
     }
     "store.told" => {
       match arg(0) {
@@ -712,77 +552,38 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
       }
       Null
     }
-    "hub.store.binding" => @jsjson.JV::of_json(bus.store.binding(arg(0)))
-    "store.getThread" =>
-      match bus.db.all("SELECT * FROM threads WHERE id = ?", [arg(0)]) {
-        [r, ..] => {
-          let c = (k : String) => r.get(k).unwrap_or(Json::null())
-          @jsjson.JV::of_json({
-            "id": c("id"),
-            "surface": c("surface"),
-            "channel": c("channel"),
-            "threadTs": c("thread_ts"),
-            "title": c("title"),
-            "autoTitle": c("auto_title"),
-            "createdBy": c("created_by"),
-            "createdAt": c("created_at"),
-            "home": c("home"),
-            "hiddenAt": c("hidden_at"),
-            "hiddenBy": c("hidden_by"),
-            "shownAt": c("shown_at"),
-          })
+    "store.threadSessions" =>
+      match self.threads_store() {
+        Some(t) => {
+          t.set_now(wall_ms().to_double())
+          let v = t.thread_sessions(arg(0))
+          told_threads(bus, t)
+          to_jv(v)
         }
-        _ => Null
+        None => Arr([])
       }
-    "store.setThreadTitle" => {
-      bus.store.set_thread_title(arg(0), arg(1))
-      Null
-    }
-    "runtimeView.runtimeView" => {
-      // (what a client from before takes of a shape: the runtimes it knows, events/compat.mbt)
-      let supported : Map[String, Unit] = {}
-      match arg(2) {
-        { "$set": Array(kinds), .. } =>
-          for k in kinds {
-            if k is String(x) {
-              supported[x] = ()
-            }
-          }
-        _ => ()
+    "store.getThread" =>
+      match self.threads_store() {
+        Some(t) => {
+          t.set_now(wall_ms().to_double())
+          let v = t.get_thread(arg(0))
+          told_threads(bus, t)
+          to_jv(v)
+        }
+        None => Null
       }
-      match @events.runtime_view(jv(arg(0)), Some(jv(arg(1))), supported) {
-        Omit => @jsjson.JV::of_json({ "$omit": true })
-        Value(Some(v)) => @jsjson.JV::of_json(of_jv(v))
-        Value(None) => @api_routes.jundef
-      }
-    }
-    "device/tools.accessOf" =>
-      match arg(0) {
-        { "tools": { "access": String(a), .. }, .. } if a == "off" || a == "read" || a == "full" => Str(a)
-        _ => Str("off")
-      }
-    "mesh/settings.networkView" => @jsjson.JV::of_json(@mesh_runtime.network_view(Some(arg(0))))
+    "mesh/settings.networkView" => to_jv(@mesh_runtime.network_view(Some(arg(0))))
     "read/machine.roots" => {
       let home = env_get("HOME").unwrap_or(".")
       let codex = match env_get("CODEX_HOME") {
         Some(c) if c != "" => c
         _ => path([home, ".codex"])
       }
-      @jsjson.JV::of_json({ "claude": Json::string(path([home, ".claude", "projects"])), "codex": Json::string(path([codex, "sessions"])) })
+      to_jv({ "claude": Json::string(path([home, ".claude", "projects"])), "codex": Json::string(path([codex, "sessions"])) })
     }
-    // (std::io::Error as anyhow shows it: read/sessions.ts `ioMessage`)
-    "read/sessions.ioMessage" =>
-      match arg(0) {
-        { "code": String("ENOENT"), .. } => Str("No such file or directory (os error 2)")
-        { "code": String("EACCES"), .. } => Str("Permission denied (os error 13)")
-        { "code": String("EISDIR"), .. } => Str("Is a directory (os error 21)")
-        { "code": String("EPERM"), .. } => Str("Operation not permitted (os error 1)")
-        { "message": String(m), .. } => Str(m)
-        _ => Str("")
-      }
     _ => {
       // Another slice's: asked through the bus with the arguments as JSON; what it refuses thrown as its kind.
-      let asked = Json::array(args.map(@jsjson.JV::to_json))
+      let asked = Json::array(args.map(of_jv))
       let ask = match slice_of(name) {
         "jobs" => bus.jobs_ask.val
         "ui" => bus.ui_ask.val
@@ -790,15 +591,15 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
         _ => bus.hub_ask.val
       }
       match (try { Ok(ask(name, asked)) } catch { e => Err(e) }) {
-        Ok(v) => @jsjson.JV::of_json(v)
+        Ok(v) => to_jv(v)
         Err(@api_routes.Thrown(_, _) as t) => raise t
         // (P5-4's refusals carry their kind and what the route reads of them: a drive's code, a vault's need)
-        Err(P54Refused(kind, said)) => raise @api_routes.Thrown(kind, @jsjson.JV::of_json(said))
+        Err(P54Refused(kind, said)) => raise @api_routes.Thrown(kind, to_jv(said))
         // (a file system's refusal keeps its code: ENOENT, EEXIST, what `ioMessage` and an exclusive write read)
         Err(@session_chats.Thrown(code, m)) =>
           raise @api_routes.Thrown(
             "Error",
-            @jsjson.JV::of_json(
+            to_jv(
               if code == "" {
                 { "message": Json::string(m) }
               } else {
@@ -807,7 +608,7 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
             ),
           )
         Err(@drive.FsError(_) as e) => raise p51_fs_thrown(e)
-        Err(e) => raise @api_routes.Thrown("Error", @jsjson.JV::of_json({ "message": Json::string(said_of(e)) }))
+        Err(e) => raise @api_routes.Thrown("Error", to_jv({ "message": Json::string(said_of(e)) }))
       }
     }
   }
@@ -818,7 +619,7 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
 /// (api/overview.ts), with the fields the station's parts add (parts.ts `overviewOf`).
 async fn P51::overview(self : P51, viewer : Json, lang : String) -> Json {
   let bus = self.bus
-  let made = (bus.hub_ask.val)("overview", { "viewer": viewer, "lang": Json::string(lang) }) catch { _ => Json::null() }
+  let made = bus.hub_overview(viewer, lang) catch { _ => Json::null() }
   let base : Map[String, Json] = match made {
     Object(m) => m.copy()
     _ =>
@@ -830,7 +631,27 @@ async fn P51::overview(self : P51, viewer : Json, lang : String) -> Json {
   for k, v in bus.parts.overview_of(viewer, lang) {
     base[k] = v
   }
+  match (try { Some((bus.hub_ask.val)("hub.interruptedIn", Json::array([viewer]))) } catch { _ => None }) {
+    Some(Object(m) as interrupted) =>
+      match m.get("count") {
+        Some(Number(n, ..)) if n > 0.0 => base["interrupted"] = interrupted
+        _ => ()
+      }
+    _ => ()
+  }
   Json::object(base)
+}
+
+///|
+fn P51::threads_store(self : P51) -> @store_threads.Store? {
+  match self.threads {
+    Some(t) => Some(t)
+    None => {
+      let t = (try { Some(@store_threads.Store::new(self.bus.db, wall_ms().to_double())) } catch { _ => None })
+      self.threads = t
+      t
+    }
+  }
 }
 
 ///|
@@ -840,19 +661,9 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
   let bus = self.bus
   let store = bus.store
   let host = self.host
-  let processes = (bus.hub_ask.val)("processes", Json::null()) catch { _ => Json::null() }
-  let threads = match self.threads {
-    Some(t) => Some(t)
-    None => {
-      let t = (try { Some(@store_threads.Store::new(bus.db, wall_ms().to_double())) } catch { _ => None })
-      self.threads = t
-      t
-    }
-  }
-  match threads {
-    Some(t) => t.set_now(wall_ms().to_double())
-    None => ()
-  }
+  let processes = bus.hub_processes() catch { _ => Json::null() }
+  let threads = self.threads_store()
+  if threads is Some(t) { t.set_now(wall_ms().to_double()) }
   // What the other slices say of it, asked first (the overview's own reads are synchronous): the accounts' views
   // (P5-3), the updates and the connects' connections (P5-5), Helper's grants (P5-4), the archive policy and the
   // decisions' version (P5-2), the model catalog as the cloud gave it.
@@ -863,6 +674,10 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
     }
   }
   let jobs = bus.jobs_ask.val
+  // (the decisions' parts, asked only where the overview does not keep their view already: below, `decisions_fresh`)
+  let decisions : Ref[Json?] = Ref(None)
+  let policy : Ref[Json?] = Ref(None)
+  let models_asked : Ref[Json?] = Ref(None)
   let accounts : @events.AccountsDeps? = match
     (
       asked(jobs, "accounts.profilesView", [viewer]),
@@ -872,7 +687,7 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
       asked(jobs, "accounts.decisionModels", []),
     ) {
     (Some(profiles), Some(logins), Some(providers), Some(machine), Some(models)) => {
-      let decisions = asked(jobs, "accounts.automaticDecisionsView", [viewer, Json::boolean(false)])
+      models_asked.val = Some(models)
       Some({
         // (accounts/index.ts `homesReadSoon`: the profiles' homes read again before the view is made)
         homes_read_soon: Some(k => ignore(
@@ -881,12 +696,12 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
             k()
           }),
         )),
-        profiles_view: _ => jv(profiles),
-        logins_view: _ => jv(logins),
-        api_providers: () => jv(providers),
-        machine_logins: () => jv(machine),
-        decision_models: () => jv(models),
-        automatic_decisions_view: (_, _, _) => decisions.map(jv),
+        profiles_view: _ => to_jv(profiles),
+        logins_view: _ => to_jv(logins),
+        api_providers: () => to_jv(providers),
+        machine_logins: () => to_jv(machine),
+        decision_models: () => to_jv(models),
+        automatic_decisions_view: (_, _, _) => decisions.val.map(to_jv),
       })
     }
     _ => None
@@ -927,16 +742,6 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
     _ => ()
   }
   let grants = if platform() == "darwin" { asked(bus.ui_ask.val, "grants.view", []) } else { None }
-  let decisions_version = asked(bus.hub_ask.val, "store.decisionsVersion", []).unwrap_or(Json::number(0.0))
-  let policy = if p51_manages(viewer) {
-    let ws = match viewer {
-      { "home": False, "workspace": String(w), .. } => Json::string(w)
-      _ => Json::null()
-    }
-    asked(bus.hub_ask.val, "storage.policyView", [ws, viewer])
-  } else {
-    None
-  }
   // (the drive's roots as P5-4 sees them, still.fail Helper's grants for a protected folder among them)
   let root_views : Map[String, Json] = {}
   let drive_of = match viewer {
@@ -952,12 +757,72 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
       }
     _ => ()
   }
-  let catalog = match read_json(path([bus.data, "model-catalog.json"])) {
-    Some({ "models": Object(_) as m, .. }) => m
-    _ => Json::object({})
+  // (the catalog as P5-3 keeps it, catalog.ts `catalog()`: the file, 126 KB, was read and parsed each overview; read
+  // only where none is kept, a P5-1 alone)
+  let catalog = match (bus.model_catalog.val)() {
+    { "models": Object(m) as models, .. } if !m.is_empty() => models
+    _ =>
+      match read_json(path([bus.data, "model-catalog.json"])) {
+        Some({ "models": Object(_) as m, .. }) => m
+        _ => Json::object({})
+      }
   }
+  // The automatic decisions and the archive policy, last before the overview is made: what it keeps of them a minute
+  // is given again without asking (overview.ts `decisionsView`), so they are asked only where it keeps none for this
+  // viewer and stamp. One time and one config for the whole overview (`store_now`, `config`), the ones this is judged
+  // by, so `decisions_view` finds what was found here.
+  let decisions_version = asked(bus.hub_ask.val, "store.decisionsVersion", []).unwrap_or(Json::number(0.0))
+  let config_now = (bus.config_raw.val)()
+  let overview_now = wall_ms().to_double()
+  let viewer_v = @events.Viewer::of(to_jv(viewer))
+  // (archive-policy.ts `policyView`'s parts: the week's checks counted by a reader, off the loop as agents.ts
+  // `hub.policyChecks` has them, then the view given them; the decisions' models as asked above, not made again)
+  let ask_decisions = async fn() {
+    decisions.val = asked(jobs, "accounts.automaticDecisionsView", [
+      viewer,
+      Json::boolean(false),
+      models_asked.val.unwrap_or(Json::null()),
+    ])
+    if p51_manages(viewer) {
+      let ws = match viewer {
+        { "home": False, "workspace": String(w), .. } => Json::string(w)
+        _ => Json::null()
+      }
+      let checks = (bus.reader_ask.val)(
+        "policyChecks",
+        {
+          "since": Json::number(overview_now - 7.0 * 86_400_000.0),
+          "viewer": {
+            "workspace": match viewer {
+              { "workspace": w, .. } => w
+              _ => Json::null()
+            },
+            "home": match viewer {
+              { "home": h, .. } => h
+              _ => Json::boolean(true)
+            },
+          },
+        },
+        "zh",
+      ) catch {
+        _ => Json::null()
+      }
+      policy.val = asked(bus.hub_ask.val, "storage.policyView", [ws, viewer, checks])
+    }
+  }
+  let decisions_fresh = match models_asked.val {
+    Some(models) =>
+      self.overview_kept.decisions_fresh(viewer_v, to_jv(decisions_version), to_jv(config_now), to_jv(models), overview_now)
+    None => false
+  }
+  if !decisions_fresh {
+    ask_decisions()
+  }
+  // (were what is kept gone by the time the overview looks, another viewer's overview having made it again
+  // meanwhile, they are asked then, once: never `prepare_decision_sessions` given back at once with nothing asked)
+  let decisions_asked = Ref(!decisions_fresh)
   let deps : @events.OverviewDeps = {
-    config: () => jv((bus.config_raw.val)()),
+    config: () => to_jv(config_now),
     session_counts: (v, ids) => match (try { Ok(store.overview_session_counts(of_jv(v.raw), ids.map(of_jv))) } catch { e => Err(e) }) {
       Ok({ "total": Number(total, ..), "byConnect": Array(by), .. }) => {
         let m : Map[String, Double] = {}
@@ -990,10 +855,10 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
     },
     session_ws: key => match (try { Ok(store.session_ws(key)) } catch { e => Err(e) }) {
       Ok(Null) | Err(_) => None
-      Ok(ws) => Some(jv(ws))
+      Ok(ws) => Some(to_jv(ws))
     },
     list_processes: () => match (try { Ok(store.list_processes()) } catch { e => Err(e) }) {
-      Ok(ps) => ps.map(jv)
+      Ok(ps) => ps.map(to_jv)
       Err(_) => []
     },
     data_dir: bus.data,
@@ -1014,22 +879,22 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
       }),
     ),
     disk_room: (p, k) => match disk_of(p) {
-      Some((free, total)) => k(jv({ "freeBytes": Json::number(free), "totalBytes": Json::number(total) }))
+      Some((free, total)) => k(to_jv({ "freeBytes": Json::number(free), "totalBytes": Json::number(total) }))
       None => k(@jsjson.JValue::Null)
     },
-    store_now: () => wall_ms().to_double(),
+    store_now: () => overview_now,
     binding: id => match (try { Ok(store.binding(Json::string(id))) } catch { e => Err(e) }) {
-      Ok(b) => jv(b)
+      Ok(b) => to_jv(b)
       Err(_) => @jsjson.JValue::Null
     },
     connect_kind: kind => if kinds.contains(kind) {
       Some({
         shown: c => match of_jv(c) {
-          { "id": String(id), .. } => jv(shown.get(id).unwrap_or(Json::object({})))
+          { "id": String(id), .. } => to_jv(shown.get(id).unwrap_or(Json::object({})))
           _ => @jsjson.JValue::Obj([])
         },
         connection: c => match of_jv(c) {
-          { "id": String(id), .. } => states.get(id).map(jv)
+          { "id": String(id), .. } => states.get(id).map(to_jv)
           _ => None
         },
       })
@@ -1038,14 +903,14 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
     },
     accounts,
     updates: match updates {
-      Some(u) => Some(_ => jv(u))
+      Some(u) => Some(_ => to_jv(u))
       None => None
     },
     slack_identities: email => match (try { Ok(store.slack_identities(Json::string(email))) } catch { e => Err(e) }) {
-      Ok(ids) => jv(Json::array(ids))
-      Err(_) => jv(Json::array([]))
+      Ok(ids) => to_jv(Json::array(ids))
+      Err(_) => to_jv(Json::array([]))
     },
-    root_view: (p, k) => k(jv(root_views.get(p).unwrap_or_else(() => @drive.root_view(p).to_json()))),
+    root_view: (p, k) => k(to_jv(root_views.get(p).unwrap_or_else(() => @drive.root_view(p).to_json()))),
     homedir: homedir(),
     has_spotlight: platform() == "darwin",
     permissions: match grants {
@@ -1053,31 +918,41 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
         Some(v => {
           let m = g.copy()
           m["request"] = Json::boolean(!p51_read_only(of_jv(v.raw)))
-          Some(jv(Json::object(m)))
+          Some(to_jv(Json::object(m)))
         })
       _ => None
     },
     cloud_state: () => match (bus.cloud_state.val)() {
-      Some(s) => Some(jv(s))
+      Some(s) => Some(to_jv(s))
       None => None
     },
     membership: ws => match (bus.cloud_state.val)() {
       Some(s) =>
         match s {
-          { "workspace": String(w), .. } if w == ws => Some(jv(s))
+          { "workspace": String(w), .. } if w == ws => Some(to_jv(s))
           { "joined": Array(j), .. } =>
-            j.iter().find_first(x => x is { "workspace": String(w), .. } && w == ws).map(jv)
+            j.iter().find_first(x => x is { "workspace": String(w), .. } && w == ws).map(to_jv)
           _ => None
         }
       None => None
     },
     reached: () => (bus.cloud_reached.val)(),
-    catalog: () => jv(catalog),
-    decisions_version: () => jv(decisions_version),
-    // (the checks are counted in the policy's view itself, session_storage `policy_view`)
+    catalog: () => to_jv(catalog),
+    decisions_version: () => to_jv(decisions_version),
+    // (the week's checks are a reader's, given to the policy's view asked above: `ask_decisions`)
     policy_checks: None,
-    policy_view: (_, _, _, _, _) => jv(policy.unwrap_or(Json::null())),
-    prepare_decision_sessions: k => k(),
+    policy_view: (_, _, _, _, _) => to_jv(policy.val.unwrap_or(Json::null())),
+    prepare_decision_sessions: k => if decisions_asked.val {
+      k()
+    } else {
+      decisions_asked.val = true
+      ignore(
+        host.rt.fork_quiet(name="overview decisions", async fn() {
+          ask_decisions()
+          k()
+        }),
+      )
+    },
     // (hub.ts `prepareSessionChatNames`: the cc index's chat names of these sessions, built before they are shown)
     prepare_session_chat_names: Some((keys, k) => ignore(
       host.rt.fork_quiet(name="session chat names", async fn() {
@@ -1108,11 +983,8 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
       match chat {
         Object(_) =>
           @adb_devices.chat_title(
-            jv(jfield(chat, "thread")),
-            match jfield(chat, "firstText") {
-              String(t) => Some(t)
-              _ => None
-            },
+            to_jv(jfield(chat, "thread")),
+            as_text(jfield(chat, "firstText")),
             None,
             tr(lang, "station.chat.untitled"),
             tr(lang, "station.chat.directMessage"),
@@ -1129,7 +1001,7 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
     built_at: bus.built_at,
   }
   let d : @effect.Deferred[Json] = @effect.Deferred::new()
-  @events.overview(deps, self.overview_kept, @events.Viewer::of(jv(viewer)), lang, r => match r {
+  @events.overview(deps, self.overview_kept, @events.Viewer::of(to_jv(viewer)), lang, r => match r {
     Ok(v) => ignore(d.succeed(of_jv(v)))
     Err(e) => ignore(d.succeed({ "error": Json::string(e) }))
   })
@@ -1162,7 +1034,7 @@ async fn P51::admin_live(self : P51) -> AdminLive {
     }
   }
   let setup = @api_routes.Setup::new(
-    @api_routes.Words::new(@jsjson.JV::of_json(zh), @jsjson.JV::of_json(en)),
+    @api_routes.Words::new(to_jv(zh), to_jv(en)),
     bus.version,
     @events.runtime_kinds,
     env_get("STILLFAIL_DEV") == Some("1"),
@@ -1178,10 +1050,12 @@ async fn P51::admin_live(self : P51) -> AdminLive {
     @api_routes.windows_paths(@drive.cwd())
   }
   let holder : Ref[AdminLive?] = Ref(None)
-  let backend = @api_routes.Backend::new(async fn(name, args) { self.backend(holder.val.unwrap(), name, args) })
+  let backend = @api_routes.Backend::new(
+    async fn(name, args) { self.backend(holder.val.unwrap(), name, args) },
+    call_bytes=async fn(name, args) { self.backend_bytes(holder.val.unwrap(), name, args) },
+  )
   let a : AdminLive = {
     admin: @api_routes.Admin::new(backend, setup),
-    handles: {},
     files: {},
     next_handle: 0,
     streams: {},
@@ -1202,7 +1076,7 @@ async fn P51::admin_live(self : P51) -> AdminLive {
       { "id": Number(n, ..), .. } => (n.to_int(), [])
       _ => raise BusError("$admin.called names no callback")
     }
-    (@jsjson.JV::to_json(a.admin.called(id, args.map(@jsjson.JV::of_json))), None)
+    (of_jv(a.admin.called(id, args.map(to_jv))), None)
   })
   // What a hand-over carries of the messages written under a key (move/live.ts `keptSends`, `keepSends`): those of the
   // threads `{"threads": [[here, there], …]}` here, each under its thread's id there, and those another station kept,
@@ -1301,10 +1175,7 @@ async fn P51::admin_answer(self : P51, a : AdminLive, r : @api_routes.Request) -
       "params": params,
       "query": Json::object(query),
       "queryPairs": Json::array(r.query.map(q => Json::array([Json::string(q.0), Json::string(q.1)]))),
-      "search": match r.search {
-        Some(s) => Json::string(s)
-        None => Json::null()
-      },
+      "search": jopt(r.search),
       "headers": Json::object(Map::from_array(r.headers.map(h => (h.0, Json::string(h.1))))),
       "body": if body_text == "" {
         Json::null()
@@ -1314,7 +1185,7 @@ async fn P51::admin_answer(self : P51, a : AdminLive, r : @api_routes.Request) -
         }
       },
       "rawBody": Json::string(body_text),
-      "viewer": @jsjson.JV::to_json(r.viewer),
+      "viewer": of_jv(r.viewer),
       "lang": Json::string(r.lang),
     }
     let said = (route.answer)(asked) catch {
@@ -1380,7 +1251,7 @@ async fn P51::local_admin(self : P51, a : AdminLive, r : Request, conn : Json) -
     r.query().map(q => "?" + q),
     r.headers,
     r.body,
-    @jsjson.JV::of_json(viewer),
+    to_jv(viewer),
     lang,
   )
   let answer = self.admin_answer(a, req)

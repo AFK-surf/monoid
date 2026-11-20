@@ -93,7 +93,10 @@ export const MeshLive = Layer.effectDiscard(
       yield* Effect.acquireRelease(Effect.sync(() => applyNetwork(endpoint, config)), (off) => Effect.sync(off));
       // What other stations are told of this one's relay (jobs/load.ts), while it is on the mesh.
       yield* Effect.acquireRelease(Effect.sync(() => side.net.attach(() => endpoint.home())), (off) => Effect.sync(off));
-      yield* Effect.forkScoped(keepRelays(endpoint, side.net, bound));
+      // An endpoint found stuck by its relays' probes (relays.ts `PROBE`): the launcher's front restarted, the Node handed
+      // over to the new one; where there is no front, closed, so its `accept` ends this run and keptRunning binds anew.
+      const stuck = endpoint;
+      yield* Effect.forkScoped(keepRelays(endpoint, side.net, bound, { onUnhealthy: restartFront ? () => restartFront() : () => void stuck.close() }));
       // Online at the cloud only once a relay can reach the station: a device that saw "online" and connected before
       // the relay link was up had its first packets dropped (~3 s of retransmits). Its members' connections are taken
       // meanwhile (below): those that reach it already (on its LAN, or by a relay it is on) are not kept waiting. Taken
@@ -170,9 +173,13 @@ export const MeshLive = Layer.effectDiscard(
         (stop) => Effect.sync(stop),
       );
       const connections = yield* FiberSet.make();
-      // The mesh's spans, when the config turns traces on (read at start, as the Rust does).
+      // The mesh's spans (read at start, as the Rust does): `telemetry.traces` false, none; true, every one; unset, only
+      // a failed or slow one.
       const traces = yield* Effect.acquireRelease(
-        Effect.sync(() => new Traces(config.raw()?.telemetry?.traces === true)),
+        Effect.sync(() => {
+          const said = config.raw()?.telemetry?.traces;
+          return said === false ? new Traces(false) : said === true ? new Traces(true) : new Traces(true, { tailOnly: true });
+        }),
         (traces) => Effect.promise(() => traces.close()),
       );
       if (traces.enabled) traces.exportTo((spans) => Effect.runPromise(plane.traces(spans)));
@@ -285,6 +292,10 @@ export const MeshLive = Layer.effectDiscard(
           : serve(members, conn),
         closing: STOPPING,
       });
+      // (an endpoint that gives no more connections while the station runs, its driver ended, serves nothing again:
+      // failed, so keptRunning closes what this run holds and binds again after its backoff; a station stopping
+      // interrupts `accept` before it gets here)
+      return yield* Effect.fail(new Error("mesh endpoint accept ended"));
     });
     yield* Effect.forkScoped(keptRunning(run));
   }),

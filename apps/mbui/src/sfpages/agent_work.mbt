@@ -106,7 +106,7 @@ pub fn work_mark(
 /// agent's badge), 10 in a 12 room, on a line of 12. They step on the resident clock, a frame a step (10 a second,
 /// each of the looks alone: nothing built, laid out or painted for them), and stand still while motion is reduced.
 fn work_spokes(c : @ui.Ctx) -> Unit {
-  @sf.spokes(c, 10.0, @sf.mark_yellow, box=12.0) |> ignore
+  @sf.spokes(c, 10.0, @sf.mark_yellow(), box=12.0) |> ignore
 }
 
 ///|
@@ -348,7 +348,7 @@ pub fn work_mark_node(
     }
   }
   let spokes = fn(x : @view.View) {
-    x.show(running, fn(s) { @sf.spokes_node(s, 10.0, fn() { @sf.mark_yellow }, box=12.0) |> ignore })
+    x.show(running, fn(s) { @sf.spokes_node(s, 10.0, @sf.mark_yellow, box=12.0) |> ignore })
   }
   // (each form its separator and what is pressed, left out of the row whole: the separator goes with it)
   let form = fn(r : @view.View, drop : Int, shown : () -> Bool, body : (@view.View) -> Unit) {

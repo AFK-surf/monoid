@@ -27,7 +27,7 @@ pub struct NameBook {
 pub fn NameBook::new(clock : Clock, kept? : J = Null, learn_after_ms? : Int = 200, save_after_ms? : Int = 2000) -> NameBook {
   let entries : Map[String, J] = Map([])
   match kept {
-    Obj(fs) => for f in fs { entries[@jsjson.text(f.0)] = f.1 }
+    Obj(fs) => for f in fs { entries[@jsjson.sanitize_str(f.0)] = f.1 }
     _ => ()
   }
   {
@@ -53,7 +53,7 @@ pub fn NameBook::on_learn(self : NameBook, f : () -> Unit) -> Unit {
 ///|
 /// The book as it is kept (`Object.fromEntries(entries)`).
 pub fn NameBook::to_j(self : NameBook) -> J {
-  Obj(self.entries.iter().map(e => (@jsjson.units(e.0), e.1)).collect())
+  Obj(self.entries.iter().map(e => (e.0, e.1)).collect())
 }
 
 ///|

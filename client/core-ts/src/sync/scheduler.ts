@@ -3,7 +3,7 @@
 // What exists to be synced is the sync's to say, whatever the UI shows; the UI only makes some of it more urgent
 // (`prioritize`: a chat opened, a page shown). A task asked for again while it waits or runs is the same task: its
 // priority is raised, and whoever asked waits on its one run.
-import { Deferred, Effect } from "effect";
+import { Deferred, Effect, type Fiber } from "effect";
 import type { CoreError } from "../error.ts";
 import type { Runner, Scoped } from "../runtime.ts";
 
@@ -31,6 +31,7 @@ type Waiting = {
   seq: number;
   work: Effect.Effect<void, CoreError>;
   done: Deferred.Deferred<void, CoreError>;
+  fiber?: Fiber.Fiber<void, never>;
 };
 
 /// Past a lane's width, how many more may run of what a UI has open or a person waits on (Priority.focused and up): on
@@ -213,12 +214,12 @@ export class Scheduler {
       }
       const [task] = lane.waiting.splice(best, 1);
       lane.running.set(task.key, task);
-      this.#runner.fork(
+      task.fiber = this.#runner.fork(
         task.work.pipe(
           Effect.exit,
           Effect.flatMap((exit) =>
             Effect.sync(() => {
-              lane.running.delete(task.key);
+              if (lane.running.get(task.key) === task) lane.running.delete(task.key);
               Deferred.doneUnsafe(task.done, exit);
               this.#pump(lane, name);
               if (lane.running.size === 0 && lane.waiting.length === 0) this.onIdle(name);
@@ -226,7 +227,10 @@ export class Scheduler {
           ),
           Effect.onInterrupt(() =>
             Effect.sync(() => {
-              lane.running.delete(task.key);
+              if (lane.running.get(task.key) === task) lane.running.delete(task.key);
+              Deferred.doneUnsafe(task.done, Effect.interrupt);
+              this.#pump(lane, name);
+              if (lane.running.size === 0 && lane.waiting.length === 0) this.onIdle(name);
             }),
           ),
         ),
@@ -243,6 +247,29 @@ export class Scheduler {
     else this.#boosts.set(who, [prefixes, priority]);
     // (raised to the urgent, it may go on now in the room kept for them; let go, it waits its turn again)
     for (const [name, lane] of this.#lanes) this.#pump(lane, name);
+  }
+
+  /// Cancels the queued or running task of `key` in `lane`, freeing its slot at once.
+  cancel(lane: string, key: string): void {
+    const l = this.#lanes.get(lane);
+    if (!l) return;
+    let changed = false;
+    for (let i = l.waiting.length - 1; i >= 0; i--) {
+      if (l.waiting[i]!.key !== key) continue;
+      const [task] = l.waiting.splice(i, 1);
+      Deferred.doneUnsafe(task!.done, Effect.interrupt);
+      changed = true;
+    }
+    const running = l.running.get(key);
+    if (running) {
+      l.running.delete(key);
+      Deferred.doneUnsafe(running.done, Effect.interrupt);
+      if (running.fiber) this.#runner.interrupt(running.fiber);
+      changed = true;
+    }
+    if (!changed) return;
+    this.#pump(l, lane);
+    if (l.foreground === 0 && l.running.size === 0 && l.waiting.length === 0) this.onIdle(lane);
   }
 
   /// Drops what waits in a lane (a station no longer reached, a signed-out account): those waiting on it are told.

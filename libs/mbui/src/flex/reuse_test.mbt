@@ -367,19 +367,28 @@ test "reused: absolute boxes in absolute boxes" {
 }
 
 ///|
-/// A row aligned by baseline lays its items out while it is only measured:
-/// reuse does not take it.
-test "reuse refuses items aligned by baseline: said (reuse_refused, what compute stops on as it comes to one)" {
+/// A row aligned by baseline lines its items up by measuring them, never laying them out while it is only measured:
+/// reuse takes it, laying it out as a fresh tree is.
+test "reused: items aligned by baseline, as a fresh tree's" {
   let root = @flex.Node::new()
   root.style.direction = Row
   root.style.align_items = Baseline
   let t = @flex.Node::new()
   t.measure = Some(text_of(5))
+  let box = @flex.Node::new()
+  box.style.set_padding_top(Pt(6.0))
+  let bt = @flex.Node::new()
+  bt.measure = Some(text_of(30))
+  box.add(bt)
   root.add(t)
-  assert_eq(@flex.reuse_refused(root), Some("flex: compute(reuse=true) with an item aligned by baseline"))
-  // (in a column, baseline is no item's way across: laid out by reuse)
-  root.style.direction = Column
-  assert_eq(@flex.reuse_refused(root), None)
+  root.add(box)
+  check_reuse(root, 300.0, 200.0, "300")
+  check_reuse(root, 120.0, 200.0, "120")
+  bt.measure = Some(text_of(50))
+  bt.dirty = true
+  box.dirty = true
+  root.dirty = true
+  check_reuse(root, 120.0, 200.0, "longer")
 }
 
 ///|

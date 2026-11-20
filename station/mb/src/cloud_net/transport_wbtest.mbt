@@ -307,3 +307,21 @@ test "a request given up leaves its pool's dial be: the socket it makes serves t
   assert_true(third.is_done())
   assert_eq(asked, ["over 0 https://app.still.fail/b", "direct https://comma.example/c"])
 }
+
+///|
+test "an entry config.json names wrongly fails the dial and the request: no direct TLS in its place" {
+  let r = rig()
+  let t = CloudTransport::new(() => raise NetError("cloudEntry wrong"), r.io)
+  let got = []
+  ignore(t.dial(http_budget, x => got.push(outcome(x))))
+  assert_eq(got, ["cloudEntry wrong []"])
+  assert_eq(r.attempts.length(), 0)
+  assert_eq(t.pending_dials(), 0)
+  let said = try {
+    ignore(t.eligible("https://app.still.fail/v1/x"))
+    "eligible"
+  } catch {
+    e => error_words(e)
+  }
+  assert_eq(said, "cloudEntry wrong")
+}

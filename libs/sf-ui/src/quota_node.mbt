@@ -203,6 +203,7 @@ pub fn quota_chips_node(
 /// allowance's, two a line: its windows have no shorter words, and three in a line cut 每周 · Fable and 2 天 4 小时后刷新
 /// at a third of a phone's card; with its models' own weeks, five, they ran past the card); else all in a line, in
 /// their full words where the line has the room for all of them so, else all in their short ones (one way for all).
+/// `press`: a dial that `turns` pressed (by its place), pressed with the hand, the keyboard or a screen reader.
 #callsite(autofill(loc))
 pub fn dials_node(
   parent : @view.View,
@@ -210,6 +211,7 @@ pub fn dials_node(
   details? : () -> Array[String] = fn() { [] },
   columns? : Int = 0,
   lines? : Int = 0,
+  press? : (Int) -> Unit,
   loc~ : SourceLoc,
 ) -> Unit {
   let narrow = part_of(parent).look == Narrow
@@ -219,7 +221,11 @@ pub fn dials_node(
     let one = @signals.computed(fn(_) { dials().get(i) })
     let detail = @signals.computed(fn(_) { details().get(i) })
     let detailed = @signals.computed(fn(_) { !details().is_empty() })
-    dial_node(d, fn() { one.get() }, fn() { detail.get() }, fn() { detailed.get() }, short, wraps, narrow, columns)
+    let pressed = match press {
+      Some(p) => Some(fn() { p(i) })
+      None => None
+    }
+    dial_node(d, fn() { one.get() }, fn() { detail.get() }, fn() { detailed.get() }, short, wraps, narrow, columns, pressed)
   }
   let line = fn(r : @view.View, short : Bool) {
     style_node(r, fn() { if narrow { dl_row_narrow } else { dl_row_wide } }, in_row=narrow)
@@ -277,7 +283,8 @@ pub fn dials_node(
 ///|
 /// A dial (dials' draw): what is left large, its unit after it quieter on its line; its ten cells, as many lit as `fill`
 /// says in its level's colour; its label and its note under (`short`: their short words where they have them), its
-/// `detail` under that where there is one (`detailed`: the note in the detail's look, as wide as it is).
+/// `detail` under that where there is one (`detailed`: the note in the detail's look, as wide as it is). `press`: done as
+/// it is pressed while it `turns` (the whole dial the button, read out by its label and its figure).
 #callsite(autofill(loc))
 fn dial_node(
   d : @view.View,
@@ -288,9 +295,10 @@ fn dial_node(
   wraps : Bool,
   narrow : Bool,
   columns : Int,
+  press : (() -> Unit)?,
   loc~ : SourceLoc,
 ) -> Unit {
-  let blank : Dial = { number: "", unit: "", fill: 0, level: "", label: "", note: "", label_short: "", note_short: "" }
+  let blank : Dial = { number: "", unit: "", fill: 0, level: "", label: "", note: "", label_short: "", note_short: "", turns: false }
   let now = fn() { dial().unwrap_or(blank) }
   // (its colour, whether it runs low and how many cells are lit, each worked out once of it, told only as it comes out
   // otherwise: its figure or its words changing run nothing of its ten cells)
@@ -317,6 +325,21 @@ fn dial_node(
   })
   let lit = fn() { lit_now.get() }
   style_node(d, fn() { if narrow { dl_dial_narrow } else if columns > 0 { dl_dial_wide_fixed } else { dl_dial_wide } }, in_row=true)
+  // (the dial itself the button where it turns: its look is what follows, drawn alike pressable or not)
+  if press is Some(p) {
+    let turns = @signals.computed(fn(_) { now().turns })
+    @headless.button(
+      made_for=loc,
+      d,
+      fn() { now().label },
+      fn(_) { p() },
+      fn(_, _) {  },
+      disabled=fn() { !turns.get() },
+      value=fn() { now().number + now().unit },
+      in_node=true,
+    )
+    |> ignore
+  }
   // (the figure and its unit one line's runs: the unit on the figure's baseline)
   let number = fn() { if low() { dl_number.then(@ui.text_style(color=Data(ink()))) } else { dl_number } }
   d.box(made_for=loc, fn(w) {

@@ -8,7 +8,7 @@
 /// longer.
 fn sheet_way_ms(t : @ui.Tester) -> Double {
   ignore(t)
-  dmax(@kit.sheet_scrim_ms, @ui.move_ms(844.0)) + 2.0 * @ui.input_step_ms
+  dmax(@motion.sheet_scrim_ms, @ui.move_ms(844.0)) + 2.0 * @ui.input_step_ms
 }
 
 ///|

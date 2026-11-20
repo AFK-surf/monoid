@@ -3,8 +3,8 @@
 // subtitle beside it: player_list_node.mbt) and a file's tab beside a chat embeds (`embedded`). What it shows is bound to what it is worked out of (how the player stands, as its host tells it: its
 // native view's signals; what it was told to do: `rev`), and what it does is done in a handler at the moment of its
 // cause: a tap left single after a double tap's time, a note said for its time, what it waits on said once it has
-// waited, its controls coming and going over their times from the moment that changed (what the old player's player does
-// by @kit.Media::frame and Media::stage each frame, by the clock's moments here). Its picture is a native node of the
+// waited, its controls coming and going over their times from the moment that changed (what the old view's player did
+// each frame, by the clock's moments here). Its picture is a native node of the
 // tree's, placed where its zoom has it as each frame is drawn.
 
 ///|
@@ -15,7 +15,7 @@
 /// where it has it, a held finger's speed (-1: none), a frame being saved; then what a finger's way on it holds, its
 /// handler's alone.
 priv struct PlayerNode {
-  p : @kit.Media
+  p : @player.Media
   v : PlayerView
   rev : @signals.Signal[Int]
   ready : @signals.Signal[Bool]
@@ -24,7 +24,7 @@ priv struct PlayerNode {
   near_foot : @signals.Signal[Bool]
   shown : @motion.NodeWay
   faded : @signals.Signal[Bool]
-  note : @signals.Signal[@kit.MediaNote?]
+  note : @signals.Signal[@player.MediaNote?]
   waited : @signals.Signal[Bool]
   rate : @signals.Signal[Double]
   rates : @signals.Signal[Bool]
@@ -59,7 +59,7 @@ priv struct PlayerNode {
 }
 
 ///|
-fn PlayerNode::new(p : @kit.Media, v : PlayerView, embedded : Bool, inset : Double, pl : PlayList) -> PlayerNode {
+fn PlayerNode::new(p : @player.Media, v : PlayerView, embedded : Bool, inset : Double, pl : PlayList) -> PlayerNode {
   let same_b = fn(a : Bool, b : Bool) { a == b }
   let same_d = fn(a : Double, b : Double) { a == b }
   {
@@ -121,7 +121,7 @@ fn PlayerNode::act(self : PlayerNode, f : () -> Unit) -> Unit {
 
 ///|
 /// How it stands now, followed (its native view's signals, and what it was told).
-fn PlayerNode::status(self : PlayerNode) -> @kit.MediaStatus {
+fn PlayerNode::status(self : PlayerNode) -> @player.MediaStatus {
   self.said()
   self.p.status()
 }
@@ -129,7 +129,7 @@ fn PlayerNode::status(self : PlayerNode) -> @kit.MediaStatus {
 ///|
 /// What is playing (Media::frame's phase): failed, opening till it is ready, at its end, waiting for more, playing,
 /// paused.
-fn PlayerNode::phase(self : PlayerNode, s : @kit.MediaStatus) -> @kit.MediaPhase {
+fn PlayerNode::phase(self : PlayerNode, s : @player.MediaStatus) -> @player.MediaPhase {
   if s.state < 0 {
     Failed
   } else if !self.ready.get() {
@@ -148,7 +148,7 @@ fn PlayerNode::phase(self : PlayerNode, s : @kit.MediaStatus) -> @kit.MediaPhase
 ///|
 /// Whether it is a song: known to be, or once its host is done opening it and has said no size of a picture
 /// (Media::frame's `audio`).
-fn PlayerNode::audio(self : PlayerNode, s : @kit.MediaStatus) -> Bool {
+fn PlayerNode::audio(self : PlayerNode, s : @player.MediaStatus) -> Bool {
   self.said()
   let known = match self.p.track() {
     Some(t) => t.audio
@@ -191,7 +191,7 @@ fn PlayerNode::rates_open(self : PlayerNode, on : Bool) -> Unit {
 }
 
 ///|
-/// Its controls brought back (Media::wake).
+/// Its controls brought back.
 fn PlayerNode::wake(self : PlayerNode) -> Unit {
   self.awake.set(true)
 }
@@ -245,7 +245,7 @@ fn PlayerNode::grab(self : PlayerNode, n : @view.View) -> Unit {
       self.grabbing.set(true)
       self.v.grab_at = fr.at
       nv.grab_frame(fr.start_of(fr.at))
-      n.at_moment(n.cause_at() + @kit.media_grab_wait_ms, fn() {
+      n.at_moment(n.cause_at() + @player.media_grab_wait_ms, fn() {
         if self.grabbing.untracked() && nv.grabbing() {
           self.grabbing.set(false)
           nv.give_up_grab()
@@ -295,7 +295,7 @@ fn PlayerNode::tapped(self : PlayerNode, n : @view.View, x : Double, w : Double)
     self.pending = false
     let third = w / 3.0
     let nudge = self.p.nudge_ms()
-    let note : @kit.MediaNote = if x < third {
+    let note : @player.MediaNote = if x < third {
       self.act(fn() { self.p.seek_by(-nudge) })
       Back(nudge)
     } else if x > third * 2.0 {
@@ -355,7 +355,7 @@ fn PlayerNode::follow(self : PlayerNode, n : @view.View, name : String) -> Unit 
       stall.val = fn() {  }
       match told {
         Some((_, 2, since)) if since >= 0.0 =>
-          stall.val = n.at_moment(since + @kit.media_decode_wait_ms, fn() {
+          stall.val = n.at_moment(since + @player.media_decode_wait_ms, fn() {
             pn.act(fn() { pn.p.decode_given_up() })
           })
         _ => ()
@@ -452,7 +452,7 @@ fn PlayerNode::follow(self : PlayerNode, n : @view.View, name : String) -> Unit 
 #callsite(autofill(loc))
 pub fn player_node(
   parent : @view.View,
-  p : @kit.Media,
+  p : @player.Media,
   file : ViewerFile,
   stage : () -> (Double, Double),
   back_label~ : () -> String,
@@ -1222,9 +1222,9 @@ fn timeline_node(
     room.height(Is(Some(h))) |> ignore
     room.by_room(fn(held, r) {
       // what a finger or the pointer does along it (Media::timeline): held on it a frame (as a frame drawn while it is
-      // down sees it held) or moved, the picture goes with it frame by frame (Media::scrub_to: each time where a frame
-      // starts), sent there once let go (Media::scrub_done); let go before that where it went down, a tap, there at
-      // once, played or paused as it was (Media::seek_near: the nearest key frame)
+      // down sees it held) or moved, the picture follows by nearest key frame (Media::scrub_to), then settles on the
+      // exact frame once let go (Media::scrub_done); let go before that where it went down, a tap, there at once,
+      // played or paused as it was (Media::seek_near: the nearest key frame)
       let pending : Ref[(Double, Double)?] = Ref(None)
       let dragging = Ref(false)
       let held_due : Ref[() -> Unit] = Ref(fn() {  })
@@ -1279,8 +1279,9 @@ fn timeline_node(
           Up => {
             (held_due.val)()
             if dragging.val || pn.p.scrubbing() is Some(_) {
-              scrub(e.x, e.w)
-              pn.act(fn() { pn.p.scrub_done() })
+              let target = at_x(e.x, e.w)
+              pn.act(fn() { pn.p.scrub_done(at?=target) })
+              pn.wake()
             } else if pending.val is Some(_) {
               match at_x(e.x, e.w) {
                 Some(ms) => {

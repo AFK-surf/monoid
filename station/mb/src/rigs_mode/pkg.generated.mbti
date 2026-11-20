@@ -28,6 +28,8 @@ pub fn disk_every(String) -> Double
 
 pub let disk_every_ms : Double
 
+pub fn disk_low(Double) -> Double
+
 pub let disk_low_bytes : Double
 
 pub fn disk_soft(Double) -> Double
@@ -51,8 +53,6 @@ pub fn error_message(Error) -> String
 pub let full_for : Double
 
 pub fn get(@json.Json?, String) -> @json.Json?
-
-pub async fn harness(@host.Host) -> Unit
 
 pub fn is_undefined(@json.Json) -> Bool
 
@@ -123,6 +123,18 @@ pub async fn rig_use_run(RigUse, String, @json.Json) -> String
 pub fn safe_int(Double) -> Bool
 
 pub fn said(Map[String, @json.Json]) -> String
+
+pub let screen_service_ask_ms : Double
+
+pub fn screen_service_ask_script(String, Bool, String?, Bool) -> String
+
+pub fn screen_service_overview(ScreenService, Viewer) -> @json.Json
+
+pub fn screen_service_parse_probe(String) -> ScreenServiceProbe
+
+pub fn screen_service_probe_script(Array[String]) -> String
+
+pub async fn screen_service_route(ScreenService, String, String, String, Viewer, (String) -> String) -> Answer?
 
 pub fn signature_holds(@cloud_lock.Crypto, String, @json.Json?) -> Bool
 
@@ -449,9 +461,38 @@ pub(all) struct RigsDeps {
   id : () -> String
 }
 
+pub struct ScreenService {
+  // private fields
+}
+pub async fn ScreenService::change(Self, Bool) -> Unit
+pub fn ScreenService::new(ScreenServiceDeps) -> Self
+pub async fn ScreenService::start(Self) -> Unit
+pub fn ScreenService::stop(Self) -> Unit
+pub fn ScreenService::view(Self, Bool) -> @json.Json
+
+pub(all) struct ScreenServiceDeps {
+  after : (Double, () -> Unit) -> () -> Unit
+  changed : () -> Unit
+  fork : (async () -> Unit) -> Unit
+  probe : async () -> ScreenServiceProbe
+  run : (String) -> Child
+}
+
+pub(all) struct ScreenServiceProbe {
+  installed : Bool
+  running : Bool
+  connected : Bool
+  elevated : Bool
+  admin : Bool
+  user_sid : String?
+  binary : String?
+}
+pub fn ScreenServiceProbe::empty() -> Self
+
 pub(all) struct Socket {
   destroy : () -> Unit
   on_close : (() -> Unit) -> Unit
+  pipe : async (@json.Json) -> Unit
 }
 
 pub(all) struct Viewer {
@@ -464,7 +505,7 @@ pub(all) struct Viewer {
 
 pub(all) struct World {
   call : async (String, Array[@json.Json]) -> @json.Json
-  callback : (async (Array[@json.Json]) -> @json.Json) -> @json.Json
+  callback : ((Array[@json.Json]) -> @json.Json raise) -> @json.Json
 }
 pub async fn World::ask(Self, String, Array[@json.Json]) -> @json.Json?
 

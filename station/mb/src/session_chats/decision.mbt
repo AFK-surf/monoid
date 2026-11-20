@@ -256,7 +256,7 @@ pub async fn decide(w : World, config : J, question : J, state : J) -> J {
     headers.push(("authorization", js("Bearer \{key}")))
   }
   if at(Some(config), "sessionHeader") is Some(Bool(true)) {
-    headers.push(("x-opencode-session", w.ask("random.uuid", [])))
+    headers.push(("x-opencode-session", js(@drive.random_uuid())))
   }
   let response = try {
     w.ask("net.fetch", [
@@ -310,7 +310,7 @@ pub fn codex_config(text : String) -> J? {
     let value = trim(v0)
     let text_v = if starts(value, "\"") && ends(value, "\"") && value.length() >= 2 && basic_ok(slice(value, 1, b=-1)) {
       match parse_opt("\"" + slice(value, 1, b=-1) + "\"") {
-        Some(Str(u)) => @jsjson.text(u)
+        Some(Str(u)) => @jsjson.sanitize_str(u)
         _ => return None
       }
     } else if starts(value, "'") && ends(value, "'") && value.length() >= 2 && !slice(value, 1, b=-1).contains("'") {
@@ -441,7 +441,7 @@ fn key_of_profile(profile : J) -> String {
 ///|
 /// The connection a profile reaches its models by, for decisions: base, key, provider, sessionHeader; None for none.
 pub async fn decision_connection(w : World, profile : J) -> J? {
-  let env = spread(w.dep("profileEnv", [profile, js("codex")]), match at(Some(profile), "env") { Some(Obj(_) as e) => e; _ => J::Obj([]) })
+  let env = spread(@agent_runtimes.profile_env(profile, "codex").json(), match at(Some(profile), "env") { Some(Obj(_) as e) => e; _ => J::Obj([]) })
   let get = (k : String) => match str_of(at(Some(env), k)) {
     Some(v) if trim(v) != "" => Some(v)
     _ => None
@@ -453,9 +453,9 @@ pub async fn decision_connection(w : World, profile : J) -> J? {
   if jev is Some(k) {
     return Some(conn(get("TYPESAFE_BASE_URL").unwrap_or("https://api.typesafe.ai/v1"), k, "jev", false))
   }
-  let kind = str_of(Some(w.dep("accessKind", [profile]))).unwrap_or("")
-  if kind == "opencode-go" || kind == "api-provider" {
-    let found = if kind == "opencode-go" { w.dep("opencodeGo", []) } else { w.dep("apiSource", [profile]) }
+  let kind = @session_hub.access_kind(profile.to_json())
+  if kind == "opencode-go" {
+    let found = w.dep("opencodeGo", [])
     if nullish(Some(found)) {
       return None
     }
@@ -467,6 +467,16 @@ pub async fn decision_connection(w : World, profile : J) -> J? {
     }
     guard str_of(at(endpoints, "chat")) is Some(chat) else { return None }
     return Some(conn(chat, key_of_profile(profile), "chat_logprobs", at(source, "sessionHeader") is Some(Bool(true))))
+  }
+  if kind == "api-provider" {
+    guard @agent_runtimes.api_source(@agent_runtimes.profile_via(profile)) is Some((source, endpoints)) else {
+      return None
+    }
+    if endpoints.decision is Some(d) {
+      return Some(conn(d, key_of_profile(profile), "jev", false))
+    }
+    guard endpoints.chat is Some(chat) else { return None }
+    return Some(conn(chat, key_of_profile(profile), "chat_logprobs", source.session_header))
   }
   if !arr_of(at(Some(profile), "runtimes")).unwrap_or([]).iter().any(r => str_of(Some(r)) == Some("codex")) {
     return None
@@ -515,12 +525,12 @@ fn conn(base : String, key : String, provider : String, session_header : Bool) -
 }
 
 ///|
-/// What a capability was found for: the profile as it reaches its models, hashed.
-pub async fn fingerprint(w : World, profile : J) -> String {
+/// What a capability was found for: the profile as it reaches its models, hashed, alongside the resolved connection.
+async fn fingerprint_with_conn(w : World, profile : J) -> (String, J?) {
   let c = decision_connection(w, profile)
   let value = ja([
     at(Some(profile), "id").unwrap_or(Null),
-    w.dep("accessKind", [profile]),
+    js(@session_hub.access_kind(profile.to_json())),
     at(Some(profile), "home").unwrap_or(Null),
     at(Some(profile), "named").unwrap_or(Null),
     match at(Some(profile), "model") { Some(m) => m; None => J::Null },
@@ -529,7 +539,13 @@ pub async fn fingerprint(w : World, profile : J) -> String {
       None => J::Null
     },
   ])
-  @memory.sha256_hex(utf8(stringify(value)))
+  (@memory.sha256_hex(utf8(stringify(value))), c)
+}
+
+///|
+/// What a capability was found for: the profile as it reaches its models, hashed.
+pub async fn fingerprint(w : World, profile : J) -> String {
+  fingerprint_with_conn(w, profile).0
 }
 
 ///|
@@ -554,17 +570,19 @@ pub fn decision_transport(connection : J, model : String) -> J {
 ///|
 /// The transport for `chosen` on this profile, when its capability is current and verified that model.
 pub async fn resolved_model(w : World, profile : J, capability : J, chosen : J) -> J? {
-  if str_of(at(Some(capability), "state")) != Some("ready") ||
-    str_of(at(Some(capability), "fingerprint")) != Some(fingerprint(w, profile)) {
+  if str_of(at(Some(capability), "state")) != Some("ready") {
     return None
   }
-  let c = decision_connection(w, profile)
+  let (fp, c) = fingerprint_with_conn(w, profile)
+  if str_of(at(Some(capability), "fingerprint")) != Some(fp) {
+    return None
+  }
   guard c is Some(c) else { return None }
   if !jeq(at(Some(c), "provider").unwrap_or(Null), at(Some(capability), "provider").unwrap_or(Null)) {
     return None
   }
   guard chosen is Str(u) else { return None }
-  let model = @jsjson.text(u)
+  let model = @jsjson.sanitize_str(u)
   let models = arr_of(at(Some(capability), "models")).unwrap_or([])
   if !jincludes(models, chosen) && str_of(at(Some(capability), "model")) != Some(model) {
     return None
@@ -652,7 +670,7 @@ pub async fn discover(w : World, profile : J, check : J) -> J {
     try {
       let headers = [("authorization", js("Bearer \{str_of(at(Some(c), "key")).unwrap_or("")}"))]
       if at(Some(c), "sessionHeader") is Some(Bool(true)) {
-        headers.push(("x-opencode-session", w.ask("random.uuid", [])))
+        headers.push(("x-opencode-session", js(@drive.random_uuid())))
       }
       let mut base = str_of(at(Some(c), "base")).unwrap_or("")
       while ends(base, "/") {

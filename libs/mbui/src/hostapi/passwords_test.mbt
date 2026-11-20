@@ -10,13 +10,19 @@ test "a login is for a site: its own host, a host under it, or one it is under; 
 }
 
 ///|
-test "op's answers: a site's logins from its list, a login's account and password from its fields" {
-  let listed = "[{\"id\":\"a\",\"title\":\"GitHub\",\"additional_information\":\"demo-user\",\"urls\":[{\"href\":\"https://github.com\"}]},{\"id\":\"b\",\"title\":\"GitLab\",\"urls\":[{\"href\":\"https://gitlab.com\"}]},{\"id\":\"c\",\"title\":\"No site\"}]"
-  assert_eq(@hostapi.logins_for(listed, "github.com"), [{ id: "a", title: "GitHub", username: "demo-user" }])
+test "op's answers: a site's logins from its list, a login's account, password and totp from its fields" {
+  let listed = "[{\"id\":\"a\",\"title\":\"GitHub\",\"additional_information\":\"demo-user\",\"vault\":{\"id\":\"v1\",\"name\":\"Personal\"},\"urls\":[{\"href\":\"https://github.com\"}]},{\"id\":\"b\",\"title\":\"GitLab\",\"urls\":[{\"href\":\"https://gitlab.com\"}]},{\"id\":\"c\",\"title\":\"No site\"}]"
+  assert_eq(@hostapi.logins_for(listed, "github.com"), [{ id: "a", title: "GitHub", username: "demo-user", vault: "v1" }])
+  assert_eq(@hostapi.logins_for(listed, "gitlab.com"), [{ id: "b", title: "GitLab", username: "", vault: "" }])
   assert_eq(@hostapi.logins_for("not json", "github.com"), [])
   let got = "[{\"id\":\"username\",\"label\":\"username\",\"value\":\"demo-user\"},{\"id\":\"password\",\"label\":\"password\",\"purpose\":\"PASSWORD\",\"value\":\"s3cret\"}]"
   assert_eq(@hostapi.login_fields(got), ("demo-user", "s3cret"))
   assert_eq(@hostapi.login_fields("{\"label\":\"password\",\"value\":\"only\"}"), ("", "only"))
+  let item = "{\"id\":\"a\",\"fields\":[{\"id\":\"username\",\"purpose\":\"USERNAME\",\"value\":\"demo-user\"},{\"id\":\"password\",\"purpose\":\"PASSWORD\",\"value\":\"s3cret\"},{\"id\":\"otp\",\"type\":\"OTP\",\"label\":\"one-time password\",\"value\":\"otpauth://totp/x\",\"totp\":\"654321\"}]}"
+  assert_eq(@hostapi.login_secret(item), ("demo-user", "s3cret", "654321", true))
+  let item_no_totp = "{\"id\":\"a\",\"fields\":[{\"id\":\"username\",\"purpose\":\"USERNAME\",\"value\":\"demo-user\"},{\"id\":\"password\",\"purpose\":\"PASSWORD\",\"value\":\"s3cret\"},{\"id\":\"otp\",\"type\":\"OTP\",\"value\":\"otpauth://totp/x\"}]}"
+  assert_eq(@hostapi.login_secret(item_no_totp), ("demo-user", "s3cret", "", true))
+  assert_eq(@hostapi.login_secret(got), ("demo-user", "s3cret", "", false))
 }
 
 ///|

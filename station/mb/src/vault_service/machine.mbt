@@ -4,8 +4,7 @@
 // agent sign with, and the sockets they are served on. Only the I/O and the primitives: what is decided (which run a
 // proxy's credentials name, whether a host is opened, what a header becomes, what an agent answers, what a
 // certificate says, what a command's output reads as) is the program's, in run.mbt, proxy.mbt, ssh_agent.mbt and
-// x509.mbt. Node answers these now (station/test/mb-vault-service.test.ts gives the same node:crypto, node:net and
-// child_process the TypeScript uses); a station that is only the program answers them by its shell.
+// x509.mbt. Node answers these when running under Node; a station that is only the program answers them by its shell.
 
 ///|
 /// A command to start (run.ts `startCommand`): `shell -c command` in `cwd` with `env` alone, in a group of its own,

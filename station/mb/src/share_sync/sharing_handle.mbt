@@ -32,9 +32,11 @@ pub async fn Sharing::handle(self : Sharing, peer : String, request : Json, work
   if entry_of(self.moved(), id) is Some(moved) && asked == "share.version" {
     return jobj([("moved", moved.get("to").unwrap_or(jnull()))])
   }
-  guard self.shares().get(id) is Some(own) else { raise Failed("this station does not share that") }
-  if !may_use(own.allow, peer) || self.reach(own.kind, own.profile, peer, self.rosters()) is None {
-    raise Failed("that share is not for this station")
+  guard self.shares().get(id) is Some(own) else { raise Failed(not_shared) }
+  // Who may use it is this station's own word, said as such (a copy is taken away on it, `not_ours`); where a station
+  // is, the cloud's list (not known, or leaving it out a while): refused apart, a copy kept on that.
+  if refusal_of(own.allow, peer, self.rosters(), r => self.reach(own.kind, own.profile, peer, Some(r))) is Some(no) {
+    raise Failed(no)
   }
   let hosted_all = self.hosted()
   let version_now = () => match entry_of(hosted_all, id) {
@@ -72,9 +74,7 @@ pub async fn Sharing::handle(self : Sharing, peer : String, request : Json, work
       } else {
         None
       }
-      guard self.shares().get(id) is Some(now) && now.kind == "profile" else {
-        raise Failed("this station does not share that")
-      }
+      guard self.shares().get(id) is Some(now) && now.kind == "profile" else { raise Failed(not_shared) }
       let at = version_now()
       // It has a copy now: it is told when this one changes.
       self.told(id, peer, at)
@@ -669,6 +669,13 @@ fn Sharing::not_lent(self : Sharing) -> ShareError {
 }
 
 ///|
+/// A copy asked of its host again (reconcile's share.version), as at the start of a run (index.ts `askAgain`).
+fn Sharing::ask_again(self : Sharing, profile : Json) -> Unit {
+  self.checked.remove(js_string(gets(Some(profile), ["share", "id"])))
+  self.reconcile_soon()
+}
+
+///|
 /// A borrowed Claude subscription's token, from its host; `rejected`, the one a process here was refused with.
 pub async fn Sharing::lend_claude(self : Sharing, profile : Json, rejected? : String? = None) -> (String, Double) {
   let host = host_of(profile)
@@ -694,9 +701,20 @@ pub async fn Sharing::lend_claude(self : Sharing, profile : Json, rejected? : St
     lent
   } catch {
     e => {
-      self.silent_hosts[host] = now()
+      // Left out by who may use it (`not_ours`): nothing lent before is used, and the copy is asked of again, which
+      // takes it away. Any other refusal is the host not answering, as before.
+      let ours = !not_ours(e)
+      if ours {
+        self.silent_hosts[host] = now()
+      } else {
+        self.lent_claude.remove(pid)
+        self.ask_again(profile)
+      }
       (self.deps.changed)()
-      if self.lent_claude.get(pid) is Some((token, at)) && Some(token) != rejected && at - now() >= keep_lent_ms {
+      if ours &&
+        self.lent_claude.get(pid) is Some((token, at)) &&
+        Some(token) != rejected &&
+        at - now() >= keep_lent_ms {
         self.deps.log.warn("share", "the host did not lend a new token; the one lent before is used", jobj([
           ("profile", jstr(pid)),
           ("error", jstr(error_words(e))),
@@ -735,10 +753,16 @@ pub async fn Sharing::lend_codex(self : Sharing, profile : Json, rejected? : Boo
     got
   } catch {
     e => {
-      self.silent_hosts[host] = now()
+      // Left out by who may use it (`not_ours`): as lend_claude.
+      let ours = !not_ours(e)
+      if ours {
+        self.silent_hosts[host] = now()
+      } else {
+        self.ask_again(profile)
+      }
       (self.deps.changed)()
-      let kept = self.kept_codex_expiry(file)
-      if !rejected && kept - now() >= keep_lent_ms {
+      let kept = if ours { self.kept_codex_expiry(file) } else { 0.0 }
+      if ours && !rejected && kept - now() >= keep_lent_ms {
         self.deps.log.warn("share", "the host did not lend a new login; the one lent before is used", jobj([
           ("profile", jstr(pid)),
           ("error", jstr(error_words(e))),
@@ -830,10 +854,16 @@ pub async fn Sharing::lend_agy(self : Sharing, profile : Json, rejected? : Bool 
     got
   } catch {
     e => {
-      self.silent_hosts[host] = now()
+      // Left out by who may use it (`not_ours`): as lend_claude.
+      let ours = !not_ours(e)
+      if ours {
+        self.silent_hosts[host] = now()
+      } else {
+        self.ask_again(profile)
+      }
       (self.deps.changed)()
-      let until = kept()
-      if !rejected && until - now() >= keep_agy_ms {
+      let until = if ours { kept() } else { 0.0 }
+      if ours && !rejected && until - now() >= keep_agy_ms {
         self.deps.log.warn("share", "the host did not lend a new sign-in; the one lent before is used", jobj([
           ("profile", jstr(pid)),
           ("error", jstr(error_words(e))),

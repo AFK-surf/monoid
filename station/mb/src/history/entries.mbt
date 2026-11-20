@@ -42,7 +42,7 @@ let small : Int = 600
 
 ///|
 fn jstr(s : String) -> @jsjson.JValue {
-  Str(@jsjson.units(s))
+  Str(s)
 }
 
 ///|
@@ -50,23 +50,23 @@ fn jstr(s : String) -> @jsjson.JValue {
 fn brief_of(input : @jsjson.JValue?) -> String {
   match input {
     Some(Obj(_) as o) => {
-      let kept : Array[(Array[Int], @jsjson.JValue)] = []
+      let kept : Array[(String, @jsjson.JValue)] = []
       for name in saying {
         match o.get(name) {
-          Some(Str(s)) => kept.push((@jsjson.units(name), jstr(first_chars(@jsjson.raw_text(s), brief_chars))))
-          Some(Num(n)) if !n.is_nan() && !n.is_inf() => kept.push((@jsjson.units(name), Num(n)))
-          Some(Bool(b)) => kept.push((@jsjson.units(name), Bool(b)))
+          Some(Str(s)) => kept.push((name, jstr(first_chars(s, brief_chars))))
+          Some(Num(n)) if !n.is_nan() && !n.is_inf() => kept.push((name, Num(n)))
+          Some(Bool(b)) => kept.push((name, Bool(b)))
           Some(Arr(xs)) =>
             kept.push((
-              @jsjson.units(name),
-              Arr(xs.filter_map(x => if x is Str(s) { Some(jstr(first_chars(@jsjson.raw_text(s), brief_chars))) } else { None })),
+              name,
+              Arr(xs.filter_map(x => if x is Str(s) { Some(jstr(first_chars(s, brief_chars))) } else { None })),
             ))
           _ => ()
         }
       }
       @jsjson.stringify(Obj(kept))
     }
-    Some(Str(s)) => first_chars(@jsjson.raw_text(s), brief_chars)
+    Some(Str(s)) => first_chars(s, brief_chars)
     Some(v) => first_chars(@jsjson.stringify(v), brief_chars)
     None => first_chars("null", brief_chars)
   }
@@ -90,7 +90,7 @@ fn dsh(r : @jsjson.JValue, out : Array[Entry]) -> Unit raise {
     None => data
   }
   if kind == "user/message" {
-    guard get(get(data, "source"), "kind") is Some(Str(k)) && @jsjson.raw_text(k) == "user" else { return }
+    guard get(get(data, "source"), "kind") is Some(Str(k)) && k == "user" else { return }
     let text = dsh_text(get(data, "content"))
     if trim(text) != "" {
       out.push(entry(at, "user", clip(text)))
@@ -134,7 +134,7 @@ fn pi(r : @jsjson.JValue, out : Array[Entry]) -> Unit {
   let role = string_of(get(message, "role")).unwrap_or("")
   if role == "user" {
     let text = match get(message, "content") {
-      Some(Str(s)) => @jsjson.raw_text(s)
+      Some(Str(s)) => s
       c => dsh_text(c)
     }
     if trim(text) != "" {
@@ -199,7 +199,7 @@ fn grok(r : @jsjson.JValue, out : Array[Entry]) -> Unit {
     if get(rj, "synthetic_reason") is Some(_) || get(rj, "prompt_index") is None {
       return
     }
-    let text = grok_query(match content { Some(Str(s)) => @jsjson.raw_text(s); c => dsh_text(c) })
+    let text = grok_query(match content { Some(Str(s)) => s; c => dsh_text(c) })
     if trim(text) != "" {
       out.push(entry(None, "user", clip(text)))
     }
@@ -212,7 +212,7 @@ fn grok(r : @jsjson.JValue, out : Array[Entry]) -> Unit {
       out.push(entry(None, "thinking", clip(text)))
     }
   } else if kind == "assistant" {
-    let text = match content { Some(Str(s)) => @jsjson.raw_text(s); c => dsh_text(c) }
+    let text = match content { Some(Str(s)) => s; c => dsh_text(c) }
     if trim(text) != "" {
       out.push(entry(None, "assistant", clip(text)))
     }
@@ -226,7 +226,7 @@ fn grok(r : @jsjson.JValue, out : Array[Entry]) -> Unit {
           Ok(parsed) => {
             input = parsed
             if name == "use_tool" && get(Some(parsed), "tool_name") is Some(Str(tool)) {
-              name = "mcp__" + @jsjson.raw_text(tool)
+              name = "mcp__" + tool
               input = match get(Some(parsed), "tool_input") { None | Some(Null) => @jsjson.JValue::Obj([]); Some(v) => v }
             }
             @jsjson.stringify_pretty(input)
@@ -239,7 +239,7 @@ fn grok(r : @jsjson.JValue, out : Array[Entry]) -> Unit {
     }
   } else if kind == "tool_result" {
     let text = match content {
-      Some(Str(s)) => @jsjson.raw_text(s)
+      Some(Str(s)) => s
       Some(c) => to_text(c)
       None => to_text(Null)
     }
@@ -325,7 +325,7 @@ fn cursor(r : @jsjson.JValue, out : Array[Entry]) -> Unit raise {
     }
     let call = entry(call_at, "tool_call", if kept_whole(name) { args } else { clip(args) }, tool=name)
     out.push(with_brief({ ..call, call_id: id }, Some(input)))
-    let ok = !(get(rj, "status") is Some(Str(s)) && @jsjson.raw_text(s) == "error")
+    let ok = !(get(rj, "status") is Some(Str(s)) && s == "error")
     out.push({ ..entry(result_at, "tool_result", clip(result_text), ok~), call_id: id })
   }
 }
@@ -337,11 +337,11 @@ fn claude(r : @jsjson.JValue, out : Array[Entry]) -> Unit {
   let at = string_of(get(rj, "timestamp"))
   let subagent = get(rj, "isSidechain") is Some(Bool(true))
   let queued = get(rj, "attachment")
-  if kind == "attachment" && get(queued, "type") is Some(Str(t)) && @jsjson.raw_text(t) == "queued_command" {
+  if kind == "attachment" && get(queued, "type") is Some(Str(t)) && t == "queued_command" {
     let prompts : Array[String?] = match get(queued, "prompt") {
-      Some(Str(s)) => [Some(@jsjson.raw_text(s))]
+      Some(Str(s)) => [Some(s)]
       Some(Arr(bs)) =>
-        bs.map(b => if get(Some(b), "type") is Some(Str(t)) && @jsjson.raw_text(t) == "text" { string_of(get(Some(b), "text")) } else { None })
+        bs.map(b => if get(Some(b), "type") is Some(Str(t)) && t == "text" { string_of(get(Some(b), "text")) } else { None })
       _ => []
     }
     for t in prompts {
@@ -356,7 +356,7 @@ fn claude(r : @jsjson.JValue, out : Array[Entry]) -> Unit {
   }
   let content = get(get(rj, "message"), "content")
   if content is Some(Str(s)) {
-    let text = @jsjson.raw_text(s)
+    let text = s
     if kind == "user" && claude_command(text) {
       return
     }
@@ -392,7 +392,7 @@ fn claude(r : @jsjson.JValue, out : Array[Entry]) -> Unit {
 ///|
 fn codex(r : @jsjson.JValue, state : ReadState, out : Array[Entry]) -> Unit {
   let rj = Some(r)
-  guard get(rj, "type") is Some(Str(t)) && @jsjson.raw_text(t) == "response_item" else { return }
+  guard get(rj, "type") is Some(Str(t)) && t == "response_item" else { return }
   let p = Some(get(rj, "payload").unwrap_or(Null))
   let at = string_of(get(rj, "timestamp"))
   let kind = string_of(get(p, "type")).unwrap_or("")
@@ -456,7 +456,7 @@ fn codex(r : @jsjson.JValue, state : ReadState, out : Array[Entry]) -> Unit {
     }
     let raw = match given {
       None => ""
-      Some(Str(s)) => @jsjson.raw_text(s)
+      Some(Str(s)) => s
       Some(g) => @jsjson.stringify(g)
     }
     let (parsed, args) = parsed_args(raw)
@@ -715,8 +715,8 @@ pub fn brief(e : Entry) -> (Entry, Bool) {
         if v.get("ok") is Some(Bool(ok)) {
           text = @jsjson.stringify(
             match v.get("ts") {
-              Some(Str(ts)) => Obj([(@jsjson.units("ok"), Bool(ok)), (@jsjson.units("ts"), Str(ts))])
-              _ => Obj([(@jsjson.units("ok"), Bool(ok))])
+              Some(Str(ts)) => Obj([("ok", Bool(ok)), ("ts", Str(ts))])
+              _ => Obj([("ok", Bool(ok))])
             },
           )
         }

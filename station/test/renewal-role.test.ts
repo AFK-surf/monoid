@@ -76,16 +76,22 @@ async function setUp(t: TestContext) {
   for (const timer of timers.splice(0)) timer.fire();
   // What a request is answered: who the station takes its asker for.
   const admin = { handle: async (r: Request) => json(200, JSON.stringify({ sub: r.viewer.sub, workspace: r.viewer.workspace, role: r.viewer.role })) } as unknown as Admin;
-  void (async () => {
+  // what serves each connection, and what it writes of the devices it saw, is awaited before its data goes: a hello's
+  // write of seen-devices.json was still under way as the directory was removed (ENOTEMPTY)
+  const served: Promise<void>[] = [];
+  const loop = (async () => {
     for (;;) {
       const conn = await at.accept();
       if (!conn) return;
-      void serve({ cloud, admin, up: () => true }, conn).catch(() => {});
+      served.push(serve({ cloud, admin, up: () => true }, conn).catch(() => {}));
     }
   })();
   t.after(async () => {
-    cloud.close();
     await Promise.all([at.close(), device.close()]);
+    await loop;
+    await Promise.allSettled(served);
+    cloud.close();
+    await seenDevicesOf(cloud).written();
     rmSync(data, { recursive: true, force: true });
   });
   const conn = await device.connect({ id: at.id() }, ALPN);

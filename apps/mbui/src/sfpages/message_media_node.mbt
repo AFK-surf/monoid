@@ -117,12 +117,17 @@ fn message_image_node(
           items.push(x)
         }
       }
-      if shown != "" && shown != "!" {
-        items.push(Some(@sf.menu_item_of(@sf.t("desktop.contextMenu.copyImage"), fn() { menu_doing.image.set(shown) }, icon="copy")))
-      }
-      message_items_after(items, place.share)
-      @sf.menu(items, from=@sf.at_point(x, y))
-      held_menu.set(if finger { Some(@sf.last_presented()) } else { None })
+      with_reveal(src, here, a, owner_of(here, a), fn(reveal) {
+        if reveal is Some(_) {
+          items.push(reveal)
+        }
+        if shown != "" && shown != "!" {
+          items.push(Some(@sf.menu_item_of(@sf.t("desktop.contextMenu.copyImage"), fn() { menu_doing.image.set(shown) }, icon="copy")))
+        }
+        message_items_after(items, place.share)
+        @sf.menu(items, from=@sf.at_point(x, y))
+        held_menu.set(if finger { Some(@sf.last_presented()) } else { None })
+      })
     }
     // (right clicked, its menu where the pointer is; held by a finger, there, felt, the press the menu's)
     @sf.menu_presses_node(f, pressed, open_menu)

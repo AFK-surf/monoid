@@ -38,10 +38,10 @@ pub fn pick_node(
       let th = theme()
       // (how far in it is, from the moment it opened)
       let way = @motion.NodeWay::new(0.0)
-      way.go_ms(layer, 1.0, @kit.pop_ms)
+      way.go_ms(layer, 1.0, @motion.pop_ms)
       let look = fn() {
         let p = way.shown(layer)
-        @kit.pop_in.at(p, p)
+        @motion.pop_in.at(p, p)
       }
       let words_in = fn() { look().words }
       // (what is found by the words typed, as they are now)
@@ -98,7 +98,7 @@ pub fn pick_node(
       .shadow(By(fn() { float_shadow() }))
       .clips(Is(true))
       .alpha(By(fn() { look().alpha }))
-      .scale(By(fn() { look().sx }), about=FromBeside)
+      .scale(By(fn() { look().sx }), about=FromBeside, max_shift=pop_max_shift)
       .carries_until(fn() { way.ends_at() })
       .says(Is(Some(@view.said(Dialog, label=title))))
       // (a press on it its own: on what of it takes none, nothing, not outside it)
@@ -166,8 +166,17 @@ pub fn pick_node(
           cb.listbox(cv, fn(l) {
             // (all it holds as far in as its look says, past the panel's own ground, edge and shadow: its rows, their
             // grounds, icons and words, the same, Look's `words` as a surface's are)
-            l.max_height(Is(Some(pick_list_most))).shrink(Is(1.0)).min_height(Is(Some(0.0))).alpha(By(words_in)) |> ignore
-            l.scrolls(list, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(b) {
+            let side = panel_pad - reach
+            l
+            .margin(Is((-side, 0.0, -side, 0.0)))
+            .max_height(Is(Some(pick_list_most)))
+            .shrink(Is(1.0))
+            .min_height(Is(Some(0.0)))
+            .alpha(By(words_in))
+            |> ignore
+            // (a finger scrolling what is found keeps its search's keyboard: View::scrolls' `for_in`)
+            l.scrolls(list, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), for_in?=search.val.map(fn(v) { v.id() }), fn(b) {
+              b.padding(Is((side, 0.0, side, 0.0))) |> ignore
               // (its choices by key, once: they are what it was given, the same while it is open; the first of a key the one)
               let by_key : Map[String, Choice] = Map([])
               for x in choices {

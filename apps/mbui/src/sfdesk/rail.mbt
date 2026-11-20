@@ -120,9 +120,9 @@ fn rail_label(src : Source, place : String) -> String {
 }
 
 ///|
-/// Whether the place has no sidebar: its page is the pane's whole (连接).
+/// Whether the place has no sidebar: its page is the pane's whole (连接, 用量, 密钥: an iPhone Duo's tab of it).
 pub fn place_bare(place : String) -> Bool {
-  place == "connects" || place == "usage"
+  place == "connects" || place == "usage" || place == "vault"
 }
 
 ///|

@@ -6,7 +6,7 @@ import type { CommaIndexes } from "./surface.ts";
 
 /// `within`: whether the station is in `workspace` now; `version` moves whenever the station's workspaces change.
 export function workspaceIndex(data: string, workspace: string, within: () => boolean, version: () => number,
-  read: Read, changes: (changed: () => void) => () => void): { stats: CommaStats; indexes: CommaIndexes } {
+  read: Read, changes: (changed: (fast?: boolean) => void) => () => void): { stats: CommaStats; indexes: CommaIndexes } {
   const guarded: Read = async (from, to) => {
     const at = version();
     const valid = () => within() && version() === at;
@@ -15,7 +15,7 @@ export function workspaceIndex(data: string, workspace: string, within: () => bo
     return { ...result, valid: () => valid() && (result.valid?.() ?? true) };
   };
   const stats = CommaStats.inWorkspace(data, workspace, guarded,
-    (changed) => changes(() => { if (within()) changed(); }));
+    (changed) => changes((fast) => { if (within()) changed(fast); }));
   let started: number | null = null;
   return {
     stats,

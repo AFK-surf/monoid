@@ -30,10 +30,10 @@ fn main {
     }
   }
   if @film.arg("MBUI_FILM_CHECK_RUN") == "1" {
-    @film.run(scene)
+    @film.run_legacy_ctx(scene)
     return
   }
-  let ok = @film.film(
+  let ok = @film.film_legacy_ctx(
     scene,
     script=if mode == "late-missing" { "tap Reveal\nexit" } else { "exit" },
     out=path,

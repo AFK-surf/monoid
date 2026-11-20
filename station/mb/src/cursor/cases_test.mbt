@@ -3,17 +3,17 @@
 
 ///|
 /// runtime-cases.ts `long`.
-fn long(n : Int) -> Array[Int] {
-  let out = []
+fn long(n : Int) -> String {
+  let out = StringBuilder()
   for i in 0..<n {
     if i % 7 == 3 {
-      out.push(0xd83d)
-      out.push(0xde00)
+      out.write_char((0xd83d : Int).unsafe_to_char())
+      out.write_char((0xde00 : Int).unsafe_to_char())
     } else {
-      out.push(0x61 + i % 26)
+      out.write_char((0x61 + i % 26).unsafe_to_char())
     }
   }
-  out
+  out.to_string()
 }
 
 ///|
@@ -21,7 +21,7 @@ fn long(n : Int) -> Array[Int] {
 fn expand(v : @jsjson.JValue) -> @jsjson.JValue {
   match v {
     Str(s) => {
-      let t = @jsjson.raw_text(s)
+      let t = s
       if t.has_prefix("<<long:") && t.has_suffix(">>") {
         let mut n = 0
         for i in 7..<(t.length() - 2) {
@@ -44,10 +44,10 @@ fn folded(v : @jsjson.JValue) -> @jsjson.JValue {
   match v {
     Str(s) if s.length() > 512 => {
       let mut h : UInt = 0x811c9dc5U
-      for c in s {
-        h = (h ^ c.reinterpret_as_uint()) * 0x01000193U
+      for i in 0..<s.length() {
+        h = (h ^ s.unsafe_get(i).to_int().reinterpret_as_uint()) * 0x01000193U
       }
-      Str(@jsjson.units("<<\{s.length()}:\{h.to_string(radix=16)}>>"))
+      Str("<<\{s.length()}:\{h.to_string(radix=16)}>>")
     }
     Arr(items) => Arr(items.map(folded))
     Obj(fields) => Obj(fields.map(f => (f.0, folded(f.1))))
@@ -112,9 +112,9 @@ test "what a crash reads again as the TypeScript read it" {
       replay.line(v)
     }
     let got = @jsjson.JValue::Obj([
-      (@jsjson.units("session"), match replay.session { Some(s) => Str(s); None => Null }),
-      (@jsjson.units("turn"), replay.turn.json()),
-      (@jsjson.units("live"), replay.live.state()),
+      ("session", match replay.session { Some(s) => Str(s); None => Null }),
+      ("turn", replay.turn.json()),
+      ("live", replay.live.state()),
     ])
     same("replay", at, got, result)
   }

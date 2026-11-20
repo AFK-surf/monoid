@@ -157,7 +157,7 @@ pub async fn Admin::read(
   } else {
     jobj([("background", jbool(r.background))])
   }
-  let got = self.backend.ask("readers.readBytes", [
+  let got = self.backend.ask_bytes("readers.readBytes", [
     js(op),
     args,
     js(r.lang),
@@ -169,7 +169,7 @@ pub async fn Admin::read(
         None => error(500, message_of(e))
       }
   }
-  json_bytes(200, bytes_of(got).unwrap_or(b""))
+  json_bytes(200, got.unwrap_or(b""))
 }
 
 ///|
@@ -645,28 +645,7 @@ pub async fn Admin::session_seen(
 /// store/rows.ts `remoteWs` (readops `remote_ws`): the workspace another station's task runs for, by its job's session key
 /// (`remote:<workspace>:<station>:<session>`, as `/^remote:([^:/]+):[^:/]+:.+$/` reads it), none for any other key.
 fn remote_ws(key : String) -> String? {
-  guard key.has_prefix("remote:") else { return None }
-  // remote, the workspace's id, the station's, then the session's key (with colons of its own)
-  let parts = key.split(":").map(v => v.to_owned()).collect()
-  guard parts.length() >= 4 else { return None }
-  let ws = parts[1]
-  let station = parts[2]
-  if ws == "" || station == "" || ws.contains("/") || station.contains("/") {
-    return None
-  }
-  let from = 7 + ws.length() + 1 + station.length() + 1
-  let n = key.length()
-  if from >= n {
-    return None
-  }
-  for i in from..<n {
-    let c = key.unsafe_get(i).to_int()
-    // (a regular expression's `.` takes no line's end)
-    if c == 0x0a || c == 0x0d || c == 0x2028 || c == 0x2029 {
-      return None
-    }
-  }
-  Some(ws)
+  @readops.remote_ws(key)
 }
 
 ///|
@@ -1008,77 +987,7 @@ pub fn percent_decode_uri(s : String) -> String {
 ///|
 /// decodeURIComponent: None where it throws (a `%` not followed by two hex digits, bytes that are not UTF-8).
 pub fn decode_uri_component(s : String) -> String? {
-  if !s.contains("%") {
-    return Some(s)
-  }
-  let out = StringBuilder::new()
-  let mut i = 0
-  while i < s.length() {
-    let c = s.unsafe_charcode_at(i)
-    if c != '%' {
-      out.write_char(c.unsafe_to_char())
-      i += 1
-      continue
-    }
-    // a run of %xx: its bytes, as UTF-8
-    let bytes = @buffer.new()
-    while i < s.length() && s.unsafe_charcode_at(i) == '%' {
-      if i + 2 >= s.length() {
-        return None
-      }
-      let h = hex_digit(s.unsafe_charcode_at(i + 1))
-      let l = hex_digit(s.unsafe_charcode_at(i + 2))
-      if h < 0 || l < 0 {
-        return None
-      }
-      bytes.write_byte((h * 16 + l).to_byte())
-      i += 3
-    }
-    let b = bytes.to_bytes()
-    match strict_utf8(b) {
-      Some(t) => out.write_string(t)
-      None => return None
-    }
-  }
-  Some(out.to_string())
-}
-
-///|
-/// Bytes as UTF-8, None where they are not (decodeURIComponent's URIError).
-fn strict_utf8(b : Bytes) -> String? {
-  let out = StringBuilder::new()
-  let mut i = 0
-  while i < b.length() {
-    let c = b[i].to_int()
-    let (n, min, first) = if c < 0x80 {
-      (0, 0, c)
-    } else if c >= 0xc2 && c < 0xe0 {
-      (1, 0x80, c & 0x1f)
-    } else if c >= 0xe0 && c < 0xf0 {
-      (2, 0x800, c & 0x0f)
-    } else if c >= 0xf0 && c < 0xf5 {
-      (3, 0x10000, c & 0x07)
-    } else {
-      return None
-    }
-    if i + n >= b.length() {
-      return None
-    }
-    let mut cp = first
-    for j in 1..<=n {
-      let d = b[i + j].to_int()
-      if (d & 0xc0) != 0x80 {
-        return None
-      }
-      cp = (cp << 6) | (d & 0x3f)
-    }
-    if cp < min || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff) {
-      return None
-    }
-    out.write_char(cp.unsafe_to_char())
-    i += n + 1
-  }
-  Some(out.to_string())
+  @url.decode_uri_component(s)
 }
 
 ///|

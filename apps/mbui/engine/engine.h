@@ -82,6 +82,11 @@ SF_ENGINE_API void sf_engine_tap(sf_engine *engine, sf_engine_said say, sf_engin
 /// call `call` itself (sf_engine_tap): 1, else 0 (the app asks the core). Any thread.
 SF_ENGINE_API int sf_engine_screen_ack(sf_engine *engine, uint64_t call, double ts);
 
+/// The app's input to a remote screen (`json`: what `screen.input` says in `input`, UTF-8, `len` bytes) sent straight
+/// to its station by the shell, in order, where it reads the view of the app's call `call` itself (sf_engine_tap): 1,
+/// else 0 (not a pointer's, the wheel's, a key's or a controller's, or not tapped: the app asks the core). Any thread.
+SF_ENGINE_API int sf_engine_screen_input(sf_engine *engine, uint64_t call, const uint8_t *json, size_t len);
+
 #ifdef __ANDROID__
 /// The core's JS sampled for `seconds` (the runtime is made registered for it; nothing is sampled until this is asked),
 /// its trace (Chrome's format) written to `path` then: what the core spends its time on, in the app as shipped.

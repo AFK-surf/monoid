@@ -600,6 +600,51 @@ static bool family_metrics(const WCHAR *name, int weight, int style, DWRITE_FONT
   return ok;
 }
 
+// The ink of code point `cp` in a family at this weight and style, in its design units: how far it reaches above the
+// baseline and below it (false: not on this system, or no such glyph). In a face's collection where one is given.
+static bool family_ink(const WCHAR *name, int weight, int style, UINT32 cp, double *above, double *below,
+                       IDWriteFontCollection *in = NULL) {
+  IDWriteFontCollection *fc = NULL;
+  IDWriteFontFamily *fam = NULL;
+  IDWriteFont *font = NULL;
+  IDWriteFontFace *ff = NULL;
+  UINT32 i = 0;
+  BOOL found = FALSE;
+  bool ok = false;
+  if (in) {
+    fc = in;
+    fc->AddRef();
+  } else {
+    dw->GetSystemFontCollection(&fc, FALSE);
+  }
+  UINT16 gi = 0;
+  DWRITE_GLYPH_METRICS gm = {};
+  if (SUCCEEDED(fc->FindFamilyName(name, &i, &found)) && found && SUCCEEDED(fc->GetFontFamily(i, &fam)) &&
+      SUCCEEDED(fam->GetFirstMatchingFont((DWRITE_FONT_WEIGHT)weight, DWRITE_FONT_STRETCH_NORMAL,
+                                          (style & 1) ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL, &font)) &&
+      SUCCEEDED(font->CreateFontFace(&ff)) && SUCCEEDED(ff->GetGlyphIndices(&cp, 1, &gi)) && gi &&
+      SUCCEEDED(ff->GetDesignGlyphMetrics(&gi, 1, &gm, FALSE))) {
+    *above = (double)gm.verticalOriginY - gm.topSideBearing;
+    *below = (double)gm.advanceHeight - gm.bottomSideBearing - gm.verticalOriginY;
+    ok = true;
+  }
+  if (ff) ff->Release();
+  if (font) font->Release();
+  if (fam) fam->Release();
+  fc->Release();
+  return ok;
+}
+
+// A line's ascent and descent for a face, as tall in all as the face's own (its ascent and descent, design units),
+// the baseline moved so that the line's middle is the middle of the ink reaching `above` over it and `below` under it: a line
+// centred in a box then shows its words centred in it (Segoe UI's ascent, 1.08 em, keeps room for accents over
+// capitals 0.70 high, and set its words low in every capsule).
+static void centred_line(double ascent, double descent, double above, double below, double *a, double *d) {
+  double half = (ascent + descent) / 2.0, mid = (above - below) / 2.0;
+  *a = half + mid;
+  *d = half - mid;
+}
+
 extern "C" void mb_host_font_metrics(double size, int32_t weight, int32_t style, double *out) {
   init();
   DWRITE_FONT_METRICS m = {};
@@ -610,16 +655,25 @@ extern "C" void mb_host_font_metrics(double size, int32_t weight, int32_t style,
   bool han = false;
   if (face) family_metrics(faces[face].family, weight, style, &m, faces[face].fc, &han);
   else family_metrics((style & 2) ? MONO : (style & 4) ? SERIF : FAMILY, weight, style, &m, NULL, &han);
-  out[0] = size * m.ascent / m.designUnitsPerEm;
-  out[1] = size * m.descent / m.designUnitsPerEm;
+  // (centred on its capitals' ink, H's; on the face's cap height where it has no H)
+  double em = m.designUnitsPerEm, a = m.ascent, d = m.descent, above = m.capHeight, below = 0.0;
+  const WCHAR *fam_name = face ? faces[face].family : (style & 2) ? MONO : (style & 4) ? SERIF : FAMILY;
+  family_ink(fam_name, weight, style, 'H', &above, &below, face ? faces[face].fc : NULL);
+  centred_line(m.ascent, m.descent, above, below, &a, &d);
+  out[0] = size * a / em;
+  out[1] = size * d / em;
   out[2] = round(size * 1.42);
   // the face a Han ideograph is drawn in: a line with Chinese in it is measured by the taller of the two (as
   // apple_text.m asks Core Text for 国's): the face's own where it has Han (Noto Sans SC, LXGW WenKai, SimSun), else
   // the one Han falls back to (Chinese Windows' UI font)
   DWRITE_FONT_METRICS h = m;
   if (!han) family_metrics(L"Microsoft YaHei UI", weight, style, &h);
-  out[3] = size * h.ascent / h.designUnitsPerEm;
-  out[4] = size * h.descent / h.designUnitsPerEm;
+  // (centred on an ideograph's ink, 国's, in the face Han is drawn in)
+  double ha = h.ascent, hd = h.descent, habove = h.capHeight, hbelow = 0.0;
+  family_ink(han ? fam_name : L"Microsoft YaHei UI", weight, style, 0x56FD, &habove, &hbelow, han && face ? faces[face].fc : NULL);
+  centred_line(h.ascent, h.descent, habove, hbelow, &ha, &hd);
+  out[3] = size * ha / h.designUnitsPerEm;
+  out[4] = size * hd / h.designUnitsPerEm;
   out[5] = 0;  // lines as asked, not on whole pixels
 }
 
@@ -777,7 +831,43 @@ extern "C" int32_t mb_host_text_key(moonbit_string_t text, double size, int32_t 
   return intern((const WCHAR *)text, Moonbit_array_length(text), size, weight, style);
 }
 
-extern "C" int32_t mb_host_atlas_generation(void) { return generation; }
+// The glyphs' keys and what each is of forgotten (the faces changed, or more than KEYS_MOST of them: each a cluster of a
+// size, weight and style ever shaped, a run left open on changing text growing them without end), the generation moved
+// on. Only where MoonBit reads the generation (text.mbt text_arrive, as a frame starts: what it shaped is dropped as it
+// sees it moved; faces.mbt words_forgotten, what it shaped dropped just before), never where it may still draw by a key
+// made before (a face given in a frame); a key past the table draws nothing (mb_host_glyph). What the threads drawing
+// ahead hold is their own (Ahead: its text copied), let go of by ahead_forget.
+#define KEYS_MOST 65536
+static int keys_stale;  // set as the faces change (faces_changed)
+static void ahead_forget(void);
+static void keys_sweep(void) {
+  if (!keys_stale && n_entries <= KEYS_MOST) return;
+  keys_stale = 0;
+  ahead_forget();
+  layout_cache_clear();
+  n_entries = 0;
+  pool_len = 0;
+  if (cap_entries > 1024) {
+    free(entries);
+    entries = NULL;
+    cap_entries = 0;
+    free(pool);
+    pool = NULL;
+    pool_cap = 0;
+  }
+  free(table);
+  table = NULL;
+  table_cap = 0;
+  free(held_px);
+  held_px = NULL;
+  held_key = -1;
+  generation++;
+}
+
+extern "C" int32_t mb_host_atlas_generation(void) {
+  keys_sweep();
+  return generation;
+}
 
 // (one atlas: colour glyphs in it with the others)
 extern "C" int32_t mb_host_atlas_size(int32_t colour) { return colour ? 0 : mb_atlas_size; }
@@ -801,6 +891,7 @@ static void faces_changed(void) {
   }
   ahead_forget();
   reset_atlas();
+  keys_stale = 1;
 }
 
 extern "C" void mb_text_set_scale(double scale) {

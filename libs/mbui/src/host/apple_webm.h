@@ -6,23 +6,16 @@
 @property(nonatomic, strong) id<WKURLSchemeTask> task;
 @property(nonatomic, copy) NSString *range;
 @property(nonatomic) long long next, end;
-@property(nonatomic) BOOL gone, probe, headed;
+@property(nonatomic) BOOL gone, probe, headed, unalignedRetry;
 @end
 @implementation MBWebLoad
-@end
-
-@interface MBWebCache : NSObject
-@property(nonatomic) long long off;
-@property(nonatomic, strong) NSMutableData *bytes;
-@end
-@implementation MBWebCache
 @end
 
 @interface MBWebRead : NSObject
 @property(nonatomic) int32_t rid;
 @property(nonatomic) long long off, len, got;
+@property(nonatomic) BOOL cacheBroken;
 @property(nonatomic, strong) MBWebLoad *load;
-@property(nonatomic, strong) MBWebCache *cache;
 @end
 @implementation MBWebRead
 @end
@@ -43,7 +36,7 @@
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, MBWebRead *> *taken;
 @property(nonatomic, strong) NSMutableArray<NSNumber *> *lettingGo;
 @property(nonatomic, strong) NSMutableArray<NSString *> *commands;
-@property(nonatomic, strong) NSMutableArray<MBWebCache *> *cache;
+@property(nonatomic, strong) MBFileCache *fileCache;
 @property(nonatomic, strong) NSDictionary *state;
 @property(nonatomic, copy) NSString *mime;
 @property(nonatomic, copy) NSString *html;
@@ -86,23 +79,25 @@ static NSString *const kWebVideoHTML =
      "const post=o=>window.webkit.messageHandlers.mbvideo.postMessage(o);"
      "const videoFrames=typeof v.requestVideoFrameCallback==='function'&&typeof v.cancelVideoFrameCallback==='function';"
      "let frameReady=!videoFrames,frameGeneration=0,frameRequest=null,seekTarget=null,lastFrame=null,frameStep=1;"
-     "let quiet=null,held=null;"
+     "let quiet=null,held=null,scrubbing=false,pendingSeek=null;"
      "const at=()=>held!==null?held:v.currentTime;"
      "function endQuiet(){if(quiet===null)return;const q=quiet;quiet=null;v.pause();v.muted=q.muted;v.playbackRate=q.rate}"
      "function loudAgain(){if(quiet===null)return;v.muted=quiet.muted;v.playbackRate=quiet.rate;quiet=null}"
      "function tryGrab(){if(pendingGrab!==null){const ms=pendingGrab;pendingGrab=null;grab(ms)}}"
+     "function doSeek(t,near){if(near&&typeof v.fastSeek==='function')v.fastSeek(t);else v.currentTime=t}"
+     "function flushSeek(){if(pendingSeek!==null&&!v.seeking){const s=pendingSeek;pendingSeek=null;held=null;seekTo(s.t,true,s.near)}}"
      "function watchFrame(){if(!videoFrames)return;const generation=frameGeneration;"
      "frameRequest=v.requestVideoFrameCallback((_,m)=>{if(generation!==frameGeneration)return;"
      "if(seekTarget!==null&&Math.abs(m.mediaTime-seekTarget)>frameStep*1.5){watchFrame();return}"
      "if(seekTarget===null&&lastFrame!==null){const step=m.mediaTime-lastFrame;if(step>0&&step<=1)frameStep=step}"
-     "lastFrame=m.mediaTime;seekTarget=null;frameReady=true;endQuiet();watchFrame();status();tryGrab()})}"
-     "function seekTo(t,still){if(Math.abs(at()-t)<.001&&!v.seeking&&quiet===null)return false;"
+     "lastFrame=m.mediaTime;seekTarget=null;frameReady=true;endQuiet();watchFrame();flushSeek();status();tryGrab()})}"
+     "function seekTo(t,still,near){if(Math.abs(v.currentTime-t)<.001&&!v.seeking&&quiet===null)return false;"
      "if(videoFrames){frameReady=false;seekTarget=t;frameGeneration++;if(frameRequest!==null)v.cancelVideoFrameCallback(frameRequest);watchFrame()}"
      "held=null;const playing=quiet===null&&!v.paused;"
      "if(playToSeek&&still&&!playing&&!(Number.isFinite(v.duration)&&t>=v.duration-.05)){"
-     "if(quiet===null){quiet={muted:v.muted,rate:v.playbackRate};v.muted=true}v.playbackRate=quietRate;held=t;v.currentTime=t;"
+     "if(quiet===null){quiet={muted:v.muted,rate:v.playbackRate};v.muted=true}v.playbackRate=quietRate;held=t;doSeek(t,!!near);"
      "v.play().catch(()=>{endQuiet();status()});return true}"
-     "endQuiet();v.currentTime=t;return true}"
+     "endQuiet();doSeek(t,!!near);return true}"
      "function status(){let b=0;for(let i=0;i<v.buffered.length;i++){"
      "if(v.buffered.start(i)<=v.currentTime+.001)b=Math.max(b,v.buffered.end(i));}"
      "post({type:'state',duration:Number.isFinite(v.duration)?v.duration*1000:-1,"
@@ -113,7 +108,7 @@ static NSString *const kWebVideoHTML =
      "function startTick(){if(!ticking){ticking=true;requestAnimationFrame(tick)}}"
      "for(const e of ['loadedmetadata','loadeddata','durationchange','progress','timeupdate','pause','seeked','ended','ratechange','volumechange'])"
      "v.addEventListener(e,status);"
-     "v.addEventListener('seeked',()=>{if(!videoFrames)endQuiet();else if(quiet!==null)v.playbackRate=quiet.rate;tryGrab()});"
+     "v.addEventListener('seeked',()=>{if(!videoFrames)endQuiet();else if(quiet!==null)v.playbackRate=quiet.rate;flushSeek();tryGrab()});"
      "v.addEventListener('timeupdate',()=>{if(quiet!==null&&!v.seeking&&held!==null&&v.currentTime>held+1){endQuiet();status()}});"
      "v.addEventListener('ended',()=>{if(quiet!==null){endQuiet();status()}});"
      "v.addEventListener('waiting',()=>{waiting=true;status()});"
@@ -133,9 +128,13 @@ static NSString *const kWebVideoHTML =
      "pendingGrab=-1;seekTo(ms/1000,true);return;}"
      "if(!atOnce&&(v.seeking||!frameReady)){pendingGrab=ms;return;}post({type:'grabReady'});}"
      "function endGrab(){pendingGrab=null;if(grabWait)grabWait();if(grabRestore&&grabRestore.changes===changes&&!v.error)seekTo(grabRestore.time,true);grabRestore=null;}"
-     "window.mbPlayer={play(){changes++;loudAgain();held=null;"
+     "window.mbPlayer={play(){changes++;pendingSeek=null;loudAgain();held=null;"
      "if(v.ended)seekTo(0);v.play().catch(()=>status());status()},"
-     "pause(){changes++;endQuiet();v.pause();status()},seek(ms){changes++;seekTo(Math.max(0,Math.min(Number.isFinite(v.duration)?v.duration:Infinity,ms/1000)),true);status()},"
+     "pause(){changes++;pendingSeek=null;endQuiet();v.pause();status()},"
+     "scrub(on){scrubbing=!!on;if(!scrubbing)flushSeek();status()},"
+     "seek(ms,near){changes++;const t=Math.max(0,Math.min(Number.isFinite(v.duration)?v.duration:Infinity,ms/1000));"
+     "if(scrubbing&&near&&v.seeking){pendingSeek={t,near:true};held=t;status();return}"
+     "if(pendingSeek!==null){pendingSeek=null;held=null}seekTo(t,true,!!near);status()},"
      "rate(r){if(quiet!==null)quiet.rate=r;else v.playbackRate=r;status()},volume(n){v.volume=n;status()},grab,endGrab};"
      "watchFrame();v.preload='auto';v.src='mbvideo://local/file.media';v.load();status();"
      "</script>";
@@ -183,14 +182,6 @@ static BOOL webm_range(NSString *header, long long size, long long *start, long 
   if (self.closed || l.gone) return;
   MBWebRead *r = [MBWebRead new];
   r.rid = ++self.nextRid; r.off = off; r.len = len; r.load = l;
-  // WebKit's MP4 demuxer often asks for a few bytes at a time. Keep a few bounded parts so those requests do not
-  // each make another round trip to a remote station.
-  if (!l.probe && [self.mime isEqualToString:@"video/mp4"] && len <= (128 << 10)) {
-    MBWebCache *cached = [MBWebCache new];
-    cached.off = off; cached.bytes = [NSMutableData new]; r.cache = cached;
-    [self.cache addObject:cached];
-    if (self.cache.count > 4) [self.cache removeObjectAtIndex:0];
-  }
   [self.pending addObject:r];
   mb_host_outside(MB_OUTSIDE_VIEW, self.owner.vid, 0);
   [self notify];
@@ -243,22 +234,34 @@ static BOOL webm_range(NSString *header, long long size, long long *start, long 
 
 - (void)advance:(MBWebLoad *)l {
   if (l.gone || self.closed) return;
-  for (MBWebCache *cached in [self.cache reverseObjectEnumerator]) {
-    long long end = cached.off + (long long)cached.bytes.length;
-    if (l.next < cached.off || l.next >= end) continue;
-    long long n = MIN(l.end - l.next, end - l.next);
-    NSData *data = [cached.bytes subdataWithRange:NSMakeRange((NSUInteger)(l.next - cached.off), (NSUInteger)n)];
+  while (l.next < l.end && self.fileCache) {
+    NSData *data = [self.fileCache readAt:l.next maxLength:l.end - l.next];
+    if (!data) break;
+    long long n = (long long)data.length;
     [self.delivered addIndexesInRange:NSMakeRange((NSUInteger)l.next, (NSUInteger)n)];
     l.next += n;
     [l.task didReceiveData:data];
     if (l.gone) return;
-    break;
   }
   if (l.next >= l.end) { [self end:l error:NO]; return; }
-  long long len = MIN(l.end - l.next, kMaxRead);
-  if ([self.mime isEqualToString:@"video/mp4"] && len < (128 << 10))
-    len = MIN((long long)(128 << 10), self.total - l.next);
-  [self ask:l off:l.next len:len];
+  long long reqOff = l.unalignedRetry ? l.next : (l.next / kCacheBlock) * kCacheBlock;
+  l.unalignedRetry = NO;
+  long long wantEnd = l.end;
+  if ([self.mime isEqualToString:@"video/mp4"] && wantEnd - l.next < (128 << 10))
+    wantEnd = MIN(self.total, l.next + (128 << 10));
+  long long reqEnd = ((wantEnd + kCacheBlock - 1) / kCacheBlock) * kCacheBlock;
+  if (self.total >= 0 && reqEnd > self.total) reqEnd = self.total;
+  if (reqEnd - reqOff > kMaxRead) reqEnd = reqOff + kMaxRead;
+  if (self.fileCache) {
+    long long nextCached = [self.fileCache nextCachedOffsetFrom:l.next limit:reqEnd];
+    if (nextCached > l.next && nextCached < reqEnd) reqEnd = nextCached;
+  }
+  long long len = reqEnd - reqOff;
+  if (len <= 0) {
+    reqOff = l.next;
+    len = MIN(l.end - l.next, kMaxRead);
+  }
+  [self ask:l off:reqOff len:len];
 }
 
 - (void)head:(MBWebLoad *)l {
@@ -331,12 +334,26 @@ static BOOL webm_range(NSString *header, long long size, long long *start, long 
   MBWebLoad *l = r.load;
   if (total == -2 || n < 0 || n > r.len - r.got ||
       (total >= 0 && self.total >= 0 && (long long)total != self.total)) { [self fail]; return; }
-  if (total >= 0) self.total = (long long)total;
+  if (total >= 0) {
+    self.total = (long long)total;
+    [self.fileCache setTotal:self.total];
+  }
   long long at = r.off + r.got;
   r.got += n;
   self.owner.answered += n;
+  if (!l.probe && self.fileCache && !r.cacheBroken) {
+    if (n > 0) {
+      if ([self.fileCache writeAt:at bytes:bytes length:n]) {
+        BOOL eof = !more && self.total >= 0 && r.off + r.got >= self.total;
+        [self.fileCache markCompleteFrom:r.off to:r.off + r.got isEOF:eof];
+      } else {
+        r.cacheBroken = YES;
+      }
+    } else if (!more && r.got > 0 && self.total >= 0 && r.off + r.got >= self.total) {
+      [self.fileCache markCompleteFrom:r.off to:r.off + r.got isEOF:YES];
+    }
+  }
   if (l.gone) return;
-  if (r.cache && n) [r.cache.bytes appendBytes:bytes length:(NSUInteger)n];
   if (!l.probe && n) {
     long long start = MAX(l.next, at), end = MIN(l.end, at + n);
     if (end > start) {
@@ -354,6 +371,7 @@ static BOOL webm_range(NSString *header, long long size, long long *start, long 
       [self fail];
       return;
     } else {
+      if (r.got > 0 && r.off < l.next && r.off + r.got <= l.next) l.unalignedRetry = YES;
       [self advance:l];
     }
   }
@@ -421,7 +439,9 @@ static BOOL webm_range(NSString *header, long long size, long long *start, long 
   switch (op) {
     case 1: [self send:@"mbPlayer.play()"]; break;
     case 2: [self send:@"mbPlayer.pause()"]; break;
-    case 3: case 11: [self send:[NSString stringWithFormat:@"mbPlayer.seek(%.6f)", MAX(0, value)]]; break;
+    case 3: [self send:[NSString stringWithFormat:@"mbPlayer.seek(%.6f,false)", MAX(0, value)]]; break;
+    case 11: [self send:[NSString stringWithFormat:@"mbPlayer.seek(%.6f,true)", MAX(0, value)]]; break;
+    case 9: [self send:value > 0 ? @"mbPlayer.scrub(true)" : @"mbPlayer.scrub(false)"]; break;
     case 4: if (value > 0) [self send:[NSString stringWithFormat:@"mbPlayer.rate(%.6f)", value]]; break;
     case 10: [self send:[NSString stringWithFormat:@"mbPlayer.volume(%.6f)", fmax(0, fmin(1, value))]]; break;
     case 20: self.owner.frames = @""; mb_host_request_frame(); break;
@@ -544,7 +564,9 @@ static void set_up_web_video(MBNative *v, NSString *mime) {
   video.delivered = [NSMutableIndexSet new];
   video.loads = [NSMutableArray new]; video.pending = [NSMutableArray new];
   video.taken = [NSMutableDictionary new]; video.lettingGo = [NSMutableArray new]; video.commands = [NSMutableArray new];
-  video.cache = [NSMutableArray new];
+  if (!v.fileCache) v.fileCache = [MBFileCache new];
+  video.fileCache = v.fileCache;
+  if (v.total >= 0) [v.fileCache setTotal:v.total];
   v.webVideo = video;
   WKWebViewConfiguration *c = [WKWebViewConfiguration new];
   c.websiteDataStore = [WKWebsiteDataStore nonPersistentDataStore];

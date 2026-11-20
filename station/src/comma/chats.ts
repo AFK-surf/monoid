@@ -80,6 +80,7 @@ export async function routerReads(stats: CommaStats, reads: Pick<WorkspaceReads,
     title: stats.taskTitle(ref),
     messages: messages.slice(0, limit).map((m) => ({
       seq: m.n, author_kind: m.authorKind, author: m.person?.name ?? m.person?.email ?? m.author, text: m.text, at: m.at,
+      ...(m.card !== null && typeof m.card === "object" && !Array.isArray(m.card) ? { card: m.card } : {}),
     })),
     through: got.last,
   };

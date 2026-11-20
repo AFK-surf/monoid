@@ -222,6 +222,7 @@ pub fn admission(m : Members, device : String) -> @door.Admit {
         device,
         base,
         field(line, "lock").unwrap_or(Json::null()),
+        role?=if admitted.viewer.role != "" { Some(admitted.viewer.role) } else { None },
       )
       let in_it = in_lock_bringing(k, admitted, named, device, line)
       let in_it = if in_it.viewer.lock_id is None && base is Some(_) {
@@ -523,6 +524,7 @@ fn tracing(
     finish: async fn() { (stream.finish)() },
     stopped: async fn() -> Int? { (stream.stopped)() },
     reset: async fn(code : Int) { (stream.reset)(code) },
+    media_datagrams: stream.media_datagrams,
   }
   (counted, head, error => end(false, error))
 }

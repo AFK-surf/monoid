@@ -106,7 +106,7 @@ test "a tip's keys each a cap at its end, 4 in from its top, foot and end, conce
       let t = caps_tester(dark, "")
       guard caps_drawn(t).0 is Some((_, _, _, h)) else { fail("dark \{dark}: no tip of words alone") }
       t.move_to(300.0, 220.0)
-      t.run_for(@kit.pop_out_ms * 2.0)
+      t.run_for(@motion.pop_out_ms * 2.0)
       h
     }
     let t = caps_tester(dark, "⌘⇧F")
@@ -126,7 +126,7 @@ test "a tip's keys each a cap at its end, 4 in from its top, foot and end, conce
     let faults = t.audit()
     assert_true(faults.is_empty(), msg="dark \{dark}: \{Repr(faults)}")
     t.move_to(300.0, 220.0)
-    t.run_for(@kit.pop_out_ms * 2.0)
+    t.run_for(@motion.pop_out_ms * 2.0)
   }
   set_dark(Some(false))
 }
@@ -149,7 +149,7 @@ test "the pointer moved to the next button: its tip comes at once from where the
   let t = caps_tester(true, "⌘⇧F")
   let k = t.get(Button, label="新对话")
   t.move_to(k.rect.0 + 17.0, k.rect.1 + 17.0)
-  t.run_for(@kit.pop_out_ms + tip_settled_ms)
+  t.run_for(@motion.pop_out_ms + tip_settled_ms)
   let tips = t.semantics().filter(fn(s) { s.role == Tooltip }).map(fn(s) { s.label })
   assert_eq(tips, ["新对话"])
   let (tip, caps) = caps_drawn(t)

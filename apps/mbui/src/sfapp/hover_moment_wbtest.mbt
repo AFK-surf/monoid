@@ -46,7 +46,7 @@ test "a hover card closes hover_close_ms after the pointer left its trigger, as 
     t.frame()
     t.run_for(@sfpages.hover_close_ms - (t.time() - left) - hover_around_ms / 2.0)
     seen.push((t.time() - left, t.find("机器详情") is Some(_)))
-    t.run_for(hover_around_ms + @kit.presence_out_ms)
+    t.run_for(hover_around_ms + @motion.presence_out_ms)
     seen.push((t.time() - left, t.find("机器详情") is Some(_)))
   }
   assert_eq(seen.map(fn(s) { s.1 }), [true, false, true, false], msg="(ms after it left, open): \{Repr(seen)}")
@@ -113,7 +113,7 @@ test "a hover card closes hover_close_ms after the pointer left the window, as t
   let seen : Array[(Double, Bool)] = []
   t.run_for(@sfpages.hover_close_ms - (t.time() - left) - hover_around_ms / 2.0)
   seen.push((t.time() - left, t.find("机器详情") is Some(_)))
-  t.run_for(hover_around_ms + @kit.presence_out_ms)
+  t.run_for(hover_around_ms + @motion.presence_out_ms)
   seen.push((t.time() - left, t.find("机器详情") is Some(_)))
   assert_eq(seen.map(fn(s) { s.1 }), [true, false], msg="(ms after it left, open): \{Repr(seen)}")
 }

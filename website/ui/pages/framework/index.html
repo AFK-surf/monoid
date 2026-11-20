@@ -1,0 +1,652 @@
+<!-- title: Framework — ui.monoid -->
+<!-- title-zh: 框架架构 — ui.monoid -->
+<!-- description: One retained window tree from MoonBit to six native GPU backends — fine-grained signals, closed-form motion, one-way layout, and deterministic offscreen testing. -->
+<!-- page: framework -->
+
+<section class="hero">
+  <div class="wrap">
+    <div class="eyebrow" data-en="MBUI ARCHITECTURE" data-zh="MBUI 架构">MBUI ARCHITECTURE</div>
+    <h1 data-en="One retained tree from MoonBit to GPU." data-zh="从 MoonBit 直达 GPU 的保留树引擎。">One retained tree from MoonBit to GPU.</h1>
+    <p class="lede" data-en="No virtual DOM, no WebView — one tree, six GPUs." data-zh="无虚拟 DOM、无 WebView：一棵树，直达六端 GPU。">No virtual DOM, no WebView — one tree, six GPUs.</p>
+    <div class="ctas">
+      <a class="btn btn-dark" href="/get-started/" data-en="Get Started" data-zh="开始使用">Get Started</a>
+      <a class="btn btn-line" href="/components/" data-en="Explore Components" data-zh="浏览组件库">Explore Components</a>
+    </div>
+
+    <div class="stage obsidian fw-stage">
+      <div class="demo fw-pipe-demo">
+        <div class="win dark-win fw-pipe-win" id="fw-pipe">
+          <div class="win-bar">
+            <span data-en="mbui · render pipeline" data-zh="mbui · 渲染管线">mbui · render pipeline</span>
+            <span class="fw-hint" data-en="Click a stage" data-zh="点击任一环节">Click a stage</span>
+          </div>
+          <div class="fw-pipe-body">
+            <div class="fw-flow">
+              <button type="button" class="fw-node on m-rise" style="--at: 80ms; --i: 0;" data-stage="0" aria-pressed="true">
+                <span class="fw-node-head">{{i:bolt}}<span>Signal[T]</span></span>
+                <span class="fw-node-tag">@signals</span>
+              </button>
+              <div class="fw-conn"><i class="m-grow" style="--at: 260ms; --dur: 420ms;"></i></div>
+              <button type="button" class="fw-node m-rise" style="--at: 180ms; --i: 1;" data-stage="1" aria-pressed="false">
+                <span class="fw-node-head">{{i:tree}}<span>View Tree</span></span>
+                <span class="fw-node-tag">@view</span>
+              </button>
+              <div class="fw-conn"><i class="m-grow" style="--at: 420ms; --dur: 420ms;"></i></div>
+              <button type="button" class="fw-node m-rise" style="--at: 280ms; --i: 2;" data-stage="2" aria-pressed="false">
+                <span class="fw-node-head">{{i:layers}}<span data-en="One-Way Flex" data-zh="单向 Flex 布局">One-Way Flex</span></span>
+                <span class="fw-node-tag">@flex</span>
+              </button>
+              <div class="fw-conn"><i class="m-grow" style="--at: 580ms; --dur: 420ms;"></i></div>
+              <button type="button" class="fw-node m-rise" style="--at: 380ms; --i: 3;" data-stage="3" aria-pressed="false">
+                <span class="fw-node-head">{{i:sparkles}}<span data-en="Display List" data-zh="统一绘制列表">Display List</span></span>
+                <span class="fw-node-tag">@paint</span>
+              </button>
+              <div class="fw-conn"><i class="m-grow" style="--at: 740ms; --dur: 420ms;"></i></div>
+              <button type="button" class="fw-node m-rise" style="--at: 480ms; --i: 4;" data-stage="4" aria-pressed="false">
+                <span class="fw-node-head">{{i:cpu}}<span data-en="6 GPU Backends" data-zh="六大 GPU 后端">6 GPU Backends</span></span>
+                <span class="fw-node-tag">@hostapi</span>
+              </button>
+            </div>
+
+            <div class="fw-backends-strip">
+              <div class="fw-gpu-pill m-pop" style="--at: 860ms; --i: 0; --step: 60ms;">
+                {{i:apple}}
+                <div class="fw-gpu-meta"><b>macOS</b><span>Metal</span></div>
+              </div>
+              <div class="fw-gpu-pill m-pop" style="--at: 860ms; --i: 1; --step: 60ms;">
+                {{i:phone}}
+                <div class="fw-gpu-meta"><b>iOS</b><span>Metal</span></div>
+              </div>
+              <div class="fw-gpu-pill m-pop" style="--at: 860ms; --i: 2; --step: 60ms;">
+                {{i:android}}
+                <div class="fw-gpu-meta"><b>Android</b><span>OpenGL ES</span></div>
+              </div>
+              <div class="fw-gpu-pill m-pop" style="--at: 860ms; --i: 3; --step: 60ms;">
+                {{i:laptop}}
+                <div class="fw-gpu-meta"><b>Windows</b><span>D3D11</span></div>
+              </div>
+              <div class="fw-gpu-pill m-pop" style="--at: 860ms; --i: 4; --step: 60ms;">
+                {{i:terminal}}
+                <div class="fw-gpu-meta"><b>Linux</b><span>OpenGL</span></div>
+              </div>
+              <div class="fw-gpu-pill m-pop" style="--at: 860ms; --i: 5; --step: 60ms;">
+                {{i:globe}}
+                <div class="fw-gpu-meta"><b>Web</b><span>WebGL 2</span></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="fw-pipe-foot tabular" aria-live="polite">
+            <span class="fw-pipe-note">
+              <b class="fw-pipe-tag" id="fw-pipe-tag">@signals</b>
+              <span id="fw-pipe-note" data-en="Equal writes stop here — T : Eq short-circuits." data-zh="相等写入在此短路（T : Eq）。">Equal writes stop here — T : Eq short-circuits.</span>
+            </span>
+            <span data-en="0 WebView · 0 JS bridge" data-zh="无 WebView · 无 JS 桥接">0 WebView · 0 JS bridge</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section band" id="signals">
+  <div class="wrap">
+    <div class="rows">
+      <div class="row">
+        <div class="row-text reveal">
+          <div class="eyebrow" data-en="SIGNALS & LAYOUT" data-zh="信号与布局">SIGNALS &amp; LAYOUT</div>
+          <h3 data-en="Build once. Update only what changed." data-zh="节点只建一次，只更新变化的那一叶。">Build once. Update only what changed.</h3>
+          <p data-en="Equal values stop at the signal; only the bound leaf repaints." data-zh="值未变即在信号处短路，只重绘绑定的那个叶节点。">Equal values stop at the signal; only the bound leaf repaints.</p>
+          <div class="fw-tags">
+            <span class="fw-tag">Signal[T]</span>
+            <span class="fw-tag">View::by_room</span>
+            <span class="fw-tag">View::scrolls_window</span>
+          </div>
+        </div>
+
+        <div class="demo cool">
+          <div class="win fw-sig-win" id="fw-sig">
+            <div class="win-bar fw-bar">
+              <span class="fw-bar-title">counter_badge.mbt</span>
+              <span class="fw-ctl">
+                <button type="button" class="fw-btn brand" data-sig="bump">unread.set(+1)</button>
+                <button type="button" class="fw-btn" data-sig="same" data-en="Set same value" data-zh="设为相同值">Set same value</button>
+              </span>
+            </div>
+<pre class="fw-code"><span class="kw">let</span> unread = @signals.<span class="fn">signal</span>(3)
+<span class="kw">let</span> label  = @signals.<span class="fn">computed</span>(<span class="kw">fn</span>(_) { <span class="str">"\{unread.get()} unread"</span> })
+row.<span class="fn">words_runs</span>(<span class="ty">By</span>(<span class="kw">fn</span>() { runs(label.<span class="fn">get</span>()) }))
+unread.<span class="fn">set</span>(<span class="str" id="fw-sig-arg">3</span>)</pre>
+            <div class="fw-sig-graph">
+              <div class="fw-sig-chain">
+                <div class="fw-sig-box" data-k="0">
+                  <b>Signal[Int]</b>
+                  <span id="fw-sig-s0">unread = 3</span>
+                </div>
+                <div class="fw-sig-arrow"><i></i></div>
+                <div class="fw-sig-box" data-k="1">
+                  <b>Computed[String]</b>
+                  <span id="fw-sig-s1" data-en="idle" data-zh="空闲">idle</span>
+                </div>
+                <div class="fw-sig-arrow"><i></i></div>
+                <div class="fw-sig-box" data-k="2">
+                  <b>View::words_runs</b>
+                  <span id="fw-sig-s2" data-en="idle" data-zh="空闲">idle</span>
+                </div>
+              </div>
+
+              <div class="fw-sig-siblings">
+                <div class="fw-sib"><span>Toolbar</span><span data-en="skipped" data-zh="跳过">skipped</span></div>
+                <div class="fw-sib"><span>Sidebar</span><span data-en="skipped" data-zh="跳过">skipped</span></div>
+                <div class="fw-sib"><span>ScrollList</span><span data-en="skipped" data-zh="跳过">skipped</span></div>
+              </div>
+
+              <div class="fw-sig-stat tabular" aria-live="polite">
+                <span class="fw-pill-ok" data-en="0 virtual DOM allocations" data-zh="0 次虚拟 DOM 分配">0 virtual DOM allocations</span>
+                <span id="fw-sig-sum" data-en="Click unread.set(+1)" data-zh="点击 unread.set(+1)">Click unread.set(+1)</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section dark" id="motion">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <div class="eyebrow" data-en="CLOSED-FORM MOTION" data-zh="闭式物理动效">CLOSED-FORM MOTION</div>
+      <h2 data-en="Motion as data, never frame loops." data-zh="动效即时间函数，拒绝帧循环。">Motion as data, never frame loops.</h2>
+      <p data-en="Springs are functions of time: interrupt anytime, velocity carries over." data-zh="弹簧是时间的函数：随时打断，速度无缝继承。">Springs are functions of time: interrupt anytime, velocity carries over.</p>
+    </div>
+
+    <div class="demo obsidian fw-motion-demo">
+      <div class="win dark-win fw-motion-win" id="fw-motion">
+        <div class="win-bar fw-bar">
+          <span class="fw-bar-title">NodeWay · spring</span>
+          <span class="fw-ctl">
+            <button type="button" class="fw-btn" data-t0="0" aria-pressed="false" data-en="No interrupt" data-zh="不打断">No interrupt</button>
+            <button type="button" class="fw-btn on" data-t0="140" aria-pressed="true" data-en="Interrupt @ 140 ms" data-zh="140 ms 打断">Interrupt @ 140 ms</button>
+            <button type="button" class="fw-btn" data-t0="240" aria-pressed="false" data-en="Interrupt @ 240 ms" data-zh="240 ms 打断">Interrupt @ 240 ms</button>
+          </span>
+        </div>
+        <div class="fw-motion-grid">
+          <div class="fw-curve-pane">
+            <div class="fw-curve-head">
+              <span>x(t)</span>
+              <div class="fw-curve-legend">
+                <span><i class="fw-swatch old"></i><em data-en="Original" data-zh="原轨迹">Original</em></span>
+                <span><i class="fw-swatch new"></i><em data-en="Retargeted" data-zh="打断后">Retargeted</em></span>
+              </div>
+            </div>
+            <div class="fw-curve-svg-wrap">
+              <svg class="fw-curve-svg" viewBox="0 0 520 214" role="img" aria-label="Damped spring position over time, retargeted mid-flight with preserved velocity">
+                <g stroke="#24242d" stroke-width="1">
+                  <line x1="36" y1="34" x2="500" y2="34"/>
+                  <line x1="36" y1="86.5" x2="500" y2="86.5"/>
+                  <line x1="36" y1="139" x2="500" y2="139"/>
+                  <line x1="36" y1="184" x2="500" y2="184"/>
+                </g>
+                <text x="6" y="38">1.0</text>
+                <text x="6" y="143">0.3</text>
+                <text x="6" y="188">0.0</text>
+                <text x="36" y="206">0ms</text>
+                <text x="466" y="206">500ms</text>
+                <text x="448" y="28">target A</text>
+                <text x="448" y="133" class="hi fw-mv-b">target B</text>
+                <line class="fw-mv-t0line" x1="166" y1="20" x2="166" y2="190" stroke="#ef6334" stroke-opacity="0.4" stroke-dasharray="3 3"/>
+                <text class="hi fw-mv-t0text" x="166" y="206" text-anchor="middle">140ms</text>
+                <path class="fw-mv-old" d="" fill="none" stroke="rgba(244,244,245,0.3)" stroke-width="2" stroke-dasharray="5 5"/>
+                <path class="fw-mv-pre" d="" fill="none" stroke="#f4f4f5" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+                <path class="fw-mv-post" d="" fill="none" stroke="#ef6334" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+                <g class="fw-mv-mark">
+                  <line class="fw-mv-tan" x1="0" y1="0" x2="0" y2="0" stroke="#f6855e" stroke-width="1.5" stroke-dasharray="2 2"/>
+                  <circle class="fw-mv-halo" cx="0" cy="0" r="11" fill="rgba(239,99,52,0.22)"/>
+                  <circle class="fw-mv-dot" cx="0" cy="0" r="4.5" fill="#ef6334" stroke="#ffffff" stroke-width="1.5"/>
+                  <text class="hi fw-mv-vtext" x="46" y="20">v(t₀)</text>
+                </g>
+              </svg>
+            </div>
+          </div>
+
+          <div class="fw-motion-side">
+            <div class="fw-kv-list tabular">
+              <div class="fw-kv"><span class="k">Retarget</span><span class="v brand" id="fw-mv-k0">t₀ = 140ms</span></div>
+              <div class="fw-kv"><span class="k">x(t₀)</span><span class="v" id="fw-mv-k1">—</span></div>
+              <div class="fw-kv"><span class="k">v(t₀)</span><span class="v" id="fw-mv-k2">—</span></div>
+              <div class="fw-kv"><span class="k">Δv jump</span><span class="v ok" id="fw-mv-k3">0.00/s</span></div>
+              <div class="fw-kv"><span class="k">Settles</span><span class="v ok" id="fw-mv-k4">—</span></div>
+            </div>
+<pre class="fw-motion-code"><span class="kw">let</span> way = @motion.<span class="fn">NodeWay::new</span>(0.0)
+way.<span class="fn">go</span>(v, 1.0, @motion.<span class="fn">spring</span>())
+way.<span class="fn">go</span>(v, 0.3, @motion.<span class="fn">spring</span>()) <span class="cm">// keeps v(t₀)</span></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="fw-tags dark-tags">
+      <span class="fw-tag">ComeGroup</span>
+      <span class="fw-tag">NodeWay::motion</span>
+      <span class="fw-tag" data-en="0 idle wakeups" data-zh="静止零唤醒">0 idle wakeups</span>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="backends">
+  <div class="wrap">
+    <div class="section-head split reveal">
+      <div>
+        <div class="eyebrow" data-en="6 GPU BACKENDS" data-zh="六大 GPU 后端">6 GPU BACKENDS</div>
+        <h2 data-en="One display list. Six native GPUs." data-zh="一份绘制列表，直达六端原生 GPU。">One display list. Six native GPUs.</h2>
+      </div>
+      <p data-en="Thin native hosts, native text and IME, one shared display list." data-zh="极薄原生宿主，原生排版与输入法，共用一份绘制列表。">Thin native hosts, native text and IME, one shared display list.</p>
+    </div>
+
+    <div class="bento">
+      <div class="tile w4 fw-plat">
+        <div class="ic">{{i:apple}}</div>
+        <div class="fw-plat-head"><h3>macOS</h3><span class="fw-plat-badge">Metal</span></div>
+        <p data-en="AppKit, CoreText, offscreen Metal capture." data-zh="AppKit、CoreText 与 Metal 离屏录制。">AppKit, CoreText, offscreen Metal capture.</p>
+      </div>
+      <div class="tile w4 fw-plat">
+        <div class="ic">{{i:phone}}</div>
+        <div class="fw-plat-head"><h3>iOS</h3><span class="fw-plat-badge">Metal</span></div>
+        <p data-en="UIKit touch, safe areas, native keyboard." data-zh="UIKit 触控、安全区与原生键盘。">UIKit touch, safe areas, native keyboard.</p>
+      </div>
+      <div class="tile w4 fw-plat">
+        <div class="ic">{{i:android}}</div>
+        <div class="fw-plat-head"><h3>Android</h3><span class="fw-plat-badge">OpenGL ES</span></div>
+        <p data-en="JNI host driving OpenGL ES directly." data-zh="JNI 宿主直驱 OpenGL ES。">JNI host driving OpenGL ES directly.</p>
+      </div>
+      <div class="tile w4 fw-plat">
+        <div class="ic">{{i:laptop}}</div>
+        <div class="fw-plat-head"><h3>Windows</h3><span class="fw-plat-badge">Direct3D 11</span></div>
+        <p data-en="Win32, DirectWrite, DPI-aware windows." data-zh="Win32、DirectWrite 与高 DPI 多窗口。">Win32, DirectWrite, DPI-aware windows.</p>
+      </div>
+      <div class="tile w4 fw-plat">
+        <div class="ic">{{i:terminal}}</div>
+        <div class="fw-plat-head"><h3>Linux</h3><span class="fw-plat-badge">OpenGL</span></div>
+        <p data-en="GTK 4 on Wayland, X11, headless CI." data-zh="GTK 4：Wayland、X11 与无头 CI。">GTK 4 on Wayland, X11, headless CI.</p>
+      </div>
+      <div class="tile w4 fw-plat">
+        <div class="ic">{{i:globe}}</div>
+        <div class="fw-plat-head"><h3>Web</h3><span class="fw-plat-badge">WebGL 2</span></div>
+        <p data-en="Canvas WebGL 2 for docs and Storybook." data-zh="Canvas WebGL 2，支撑文档与 Storybook。">Canvas WebGL 2 for docs and Storybook.</p>
+      </div>
+
+      <div class="tile w6">
+        <div class="ic">{{i:shield}}</div>
+        <h3 data-en="@hostapi boundary" data-zh="@hostapi 宿主边界">@hostapi boundary</h3>
+        <p data-en="Every OS call crosses one trait; tests swap in FakeHost." data-zh="系统调用只经一个 trait，测试换成 FakeHost。">Every OS call crosses one trait; tests swap in FakeHost.</p>
+        <div class="demo plain fw-arch-demo">
+          <div class="fw-arch-stack">
+            <div class="fw-arch-box m-rise" style="--at: 80ms;">
+              <span>App &amp; @view</span>
+              <small>MoonBit</small>
+            </div>
+            <div class="fw-arch-box trait m-rise m-flash" style="--at: 200ms;">
+              <span>@hostapi · Host</span>
+              <small data-en="one boundary" data-zh="唯一边界">one boundary</small>
+            </div>
+            <div class="fw-arch-split">
+              <div class="fw-arch-branch m-pop" style="--at: 360ms;">
+                <b>src/host/*</b>
+                <span data-en="6 GPU hosts" data-zh="6 端 GPU 宿主">6 GPU hosts</span>
+              </div>
+              <div class="fw-arch-branch m-pop" style="--at: 440ms;">
+                <b>FakeHost</b>
+                <span data-en="headless CI" data-zh="无头 CI">headless CI</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="tile w6">
+        <div class="ic">{{i:rocket}}</div>
+        <h3>mbui-runtime</h3>
+        <p data-en="Rebuild only the .wasm; a prebuilt Wasmtime shell runs it." data-zh="只重编 .wasm，预编译 Wasmtime 原生壳直接运行。">Rebuild only the .wasm; a prebuilt Wasmtime shell runs it.</p>
+        <div class="demo plain fw-arch-demo">
+          <div class="fw-arch-stack">
+            <div class="fw-wasm-row m-rise" style="--at: 100ms;">
+              <div class="fw-wasm-top">
+                <b data-en="Full native build" data-zh="完整原生编译">Full native build</b>
+                <span>C · Xcode · NDK</span>
+              </div>
+              <div class="bar-i"><i class="m-grow" style="--w: 88%; --c: #9a9aa4; --at: 260ms;"></i></div>
+            </div>
+            <div class="fw-wasm-row fast m-rise m-flash" style="--at: 240ms;">
+              <div class="fw-wasm-top">
+                <b>.wasm → Wasmtime</b>
+                <span data-en="seconds" data-zh="秒级">seconds</span>
+              </div>
+              <div class="bar-i"><i class="m-grow" style="--w: 22%; --c: var(--brand); --at: 420ms;"></i></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section band" id="tester">
+  <div class="wrap">
+    <div class="rows">
+      <div class="row">
+        <div class="row-text reveal">
+          <div class="eyebrow" data-en="DETERMINISTIC TESTER" data-zh="确定性测试器">DETERMINISTIC TESTER</div>
+          <h3 data-en="Time is declared, never waited for." data-zh="时间由测试声明，绝不靠 sleep 等待。">Time is declared, never waited for.</h3>
+          <p data-en="Script input, declare time, get identical pixels at every frame rate." data-zh="脚本驱动、声明时间，任意帧率像素逐一相同。">Script input, declare time, get identical pixels at every frame rate.</p>
+        </div>
+
+        <div class="demo cool">
+          <div class="win dark-win fw-test-win" id="fw-test">
+            <div class="win-bar fw-bar">
+              <span class="fw-bar-title">contract.drive</span>
+              <span class="fw-ctl">
+                <button type="button" class="fw-btn brand" data-run>{{i:play}}<span data-en="Run Script" data-zh="运行脚本">Run Script</span></button>
+              </span>
+            </div>
+            <div class="fw-test-grid">
+              <div class="fw-drive-col">
+                <div class="fw-drive-step"><span class="ln">01</span><span><b class="op">tapxy</b> 180 64</span></div>
+                <div class="fw-drive-step"><span class="ln">02</span><span><b class="op">drag</b> 240 420 240 160</span></div>
+                <div class="fw-drive-step"><span class="ln">03</span><span><b class="op">run_for</b> 320ms</span></div>
+                <div class="fw-drive-step"><span class="ln">04</span><span><b class="op">audit</b> --strict</span></div>
+                <div class="fw-drive-step"><span class="ln">05</span><span><b class="op">picture</b> out.webp</span></div>
+              </div>
+
+              <div class="fw-hash-col tabular">
+                <div class="fw-fps-row"><span class="rate">120 fps</span><span class="sha">sha256:9f4c…a81e</span><span class="eq">—</span></div>
+                <div class="fw-fps-row"><span class="rate">60 fps</span><span class="sha">sha256:9f4c…a81e</span><span class="eq">—</span></div>
+                <div class="fw-fps-row"><span class="rate">24 fps</span><span class="sha">sha256:9f4c…a81e</span><span class="eq">—</span></div>
+                <div class="fw-fps-row"><span class="rate">7 fps</span><span class="sha">sha256:9f4c…a81e</span><span class="eq">—</span></div>
+                <div class="fw-audit-pass" aria-live="polite">
+                  <span>{{i:check}}<b id="fw-audit">audit(): —</b></span>
+                  <span id="fw-audit-st" data-en="IDLE" data-zh="待运行">IDLE</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="closing dark">
+  <div class="wrap reveal">
+    <h2 data-en="See the engine running live." data-zh="亲自体验运行中的引擎。">See the engine running live.</h2>
+    <div class="ctas">
+      <a class="btn btn-brand" href="/components/" data-en="Explore Components" data-zh="浏览组件库">Explore Components</a>
+      <a class="btn btn-line" href="/get-started/" data-en="Get Started" data-zh="开始使用">Get Started</a>
+    </div>
+  </div>
+</section>
+
+<script>
+(() => {
+  const isZh = () => document.documentElement.dataset.lang === "zh";
+  // Leaf-only i18n: keep data-en / data-zh current so the site toggle re-renders it.
+  const say = (el, en, zh) => {
+    if (!el) return;
+    if (zh === undefined) {
+      delete el.dataset.en;
+      delete el.dataset.zh;
+      el.textContent = en;
+      return;
+    }
+    el.dataset.en = en;
+    el.dataset.zh = zh;
+    el.textContent = isZh() ? zh : en;
+  };
+  const ping = (el) => {
+    el.classList.remove("ping");
+    void el.offsetWidth;
+    el.classList.add("ping");
+  };
+  const onSeen = (el, fn) => {
+    if (!("IntersectionObserver" in window)) return fn();
+    const io = new IntersectionObserver((es) => {
+      if (es.some((e) => e.isIntersecting)) { io.disconnect(); fn(); }
+    }, { threshold: 0.5 });
+    io.observe(el);
+  };
+
+  // Hero: render pipeline stages
+  const pipe = document.getElementById("fw-pipe");
+  if (pipe) {
+    const notes = [
+      ["@signals", "Equal writes stop here — T : Eq short-circuits.", "相等写入在此短路（T : Eq）。"],
+      ["@view", "Each node is built once, bound via Live[T].", "节点只建一次，经 Live[T] 绑定。"],
+      ["@flex", "Layout flows one way — no read-back.", "布局单向流动，无回读震荡。"],
+      ["@paint", "Closed-form motion and SDF, evaluated at draw.", "绘制时求值闭式动效与 SDF。"],
+      ["@hostapi", "One list, drawn natively on six GPUs.", "同一列表，六端 GPU 原生直绘。"],
+    ];
+    const nodes = [...pipe.querySelectorAll(".fw-node")];
+    const conns = [...pipe.querySelectorAll(".fw-conn")];
+    const strip = pipe.querySelector(".fw-backends-strip");
+    const pick = (k) => {
+      nodes.forEach((n, i) => {
+        n.classList.toggle("on", i === k);
+        n.classList.toggle("past", i < k);
+        n.setAttribute("aria-pressed", String(i === k));
+      });
+      conns.forEach((c, i) => c.classList.toggle("lit", i < k));
+      strip.classList.toggle("lit", k === nodes.length - 1);
+      say(document.getElementById("fw-pipe-tag"), notes[k][0]);
+      say(document.getElementById("fw-pipe-note"), notes[k][1], notes[k][2]);
+      ping(nodes[k]);
+    };
+    nodes.forEach((n, i) => n.addEventListener("click", () => pick(i)));
+  }
+
+  // #signals: live dependency graph
+  const sig = document.getElementById("fw-sig");
+  if (sig) {
+    let n = 3;
+    let timers = [];
+    const boxes = [...sig.querySelectorAll(".fw-sig-box")];
+    const arrows = [...sig.querySelectorAll(".fw-sig-arrow")];
+    const sibs = [...sig.querySelectorAll(".fw-sib")];
+    const st = [0, 1, 2].map((i) => document.getElementById("fw-sig-s" + i));
+    const arg = document.getElementById("fw-sig-arg");
+    const sum = document.getElementById("fw-sig-sum");
+    const reset = () => {
+      timers.forEach(clearTimeout);
+      timers = [];
+      boxes.forEach((b) => b.classList.remove("hot", "cut"));
+      arrows.forEach((a) => a.classList.remove("lit", "cut"));
+      sibs.forEach((s) => s.classList.remove("on"));
+    };
+    const later = (ms, fn) => timers.push(setTimeout(fn, ms));
+    const bump = () => {
+      reset();
+      const prev = n;
+      n += 1;
+      say(arg, String(n));
+      const steps = [
+        () => say(st[0], `unread: ${prev} → ${n}`),
+        () => say(st[1], `"${n} unread"`),
+        () => say(st[2], "1 leaf repainted", "仅 1 个叶节点重绘"),
+      ];
+      boxes.forEach((b, i) => later(i * 260, () => {
+        if (i > 0) arrows[i - 1].classList.add("lit");
+        b.classList.add("hot");
+        ping(b);
+        steps[i]();
+      }));
+      later(3 * 260, () => {
+        sibs.forEach((s) => { s.classList.add("on"); ping(s); });
+        say(sum, "1 leaf updated · 3 subtrees skipped", "1 个叶节点更新 · 3 棵子树跳过");
+      });
+    };
+    const same = () => {
+      reset();
+      say(arg, String(n));
+      boxes[0].classList.add("hot");
+      ping(boxes[0]);
+      say(st[0], `${n} == ${n} · T : Eq`);
+      later(220, () => {
+        arrows.forEach((a) => a.classList.add("cut"));
+        boxes.slice(1).forEach((b, i) => {
+          b.classList.add("cut");
+          say(st[i + 1], "short-circuited (0 work)", "已短路（0 工作量）");
+        });
+        sibs.forEach((s) => s.classList.add("on"));
+        say(sum, "0 leaves updated · stopped at Signal", "0 个叶节点更新 · 在 Signal 处停止");
+      });
+    };
+    sig.querySelector('[data-sig="bump"]').addEventListener("click", bump);
+    sig.querySelector('[data-sig="same"]').addEventListener("click", same);
+    onSeen(sig, () => { if (n === 3) bump(); });
+  }
+
+  // #motion: closed-form damped spring, retargeted mid-flight
+  const mv = document.getElementById("fw-motion");
+  if (mv) {
+    const K = 220, C = 18;
+    const W0 = Math.sqrt(K), Z = C / (2 * W0), WD = W0 * Math.sqrt(1 - Z * Z), A = Z * W0;
+    // x(t), v(t) of an underdamped spring released at (x0, v0) toward target
+    const spring = (x0, v0, tg, t) => {
+      const d0 = x0 - tg, b = (v0 + A * d0) / WD, e = Math.exp(-A * t);
+      const c = Math.cos(WD * t), s = Math.sin(WD * t);
+      const d = e * (d0 * c + b * s);
+      return [tg + d, -A * d + e * WD * (b * c - d0 * s)];
+    };
+    const END = 0.5, A_T = 1, B_T = 0.3;
+    const px = (t) => 36 + t * 928;
+    const py = (x) => 184 - x * 150;
+    const pathOf = (pts) => pts.map((p, i) => (i ? "L" : "M") + px(p[0]).toFixed(1) + " " + py(p[1]).toFixed(1)).join(" ");
+    const svg = mv.querySelector("svg");
+    const q = (c) => svg.querySelector(c);
+    const old = [];
+    for (let t = 0; t <= END + 1e-9; t += 0.004) old.push([t, spring(0, 0, A_T, t)[0]]);
+    q(".fw-mv-old").setAttribute("d", pathOf(old));
+    const settle = (x0, v0, tg, from) => {
+      for (let t = 0; t < 3; t += 0.001) {
+        const [x, v] = spring(x0, v0, tg, t);
+        let ok = true;
+        for (let u = t; u < t + 0.2; u += 0.01) {
+          const [xu] = spring(x0, v0, tg, u);
+          if (Math.abs(xu - tg) > 0.005) { ok = false; break; }
+        }
+        if (ok && Math.abs(x - tg) < 0.005 && Math.abs(v) < 0.05) return from + t;
+      }
+      return from + 3;
+    };
+    const fmt = (v) => (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(2) + "/s";
+    const draw = (t0, final) => {
+      const cut = t0 < END - 0.002;
+      const pre = [], post = [];
+      for (let t = 0; t <= Math.min(t0, END) + 1e-9; t += 0.004) pre.push([t, spring(0, 0, A_T, t)[0]]);
+      const [x0, v0] = spring(0, 0, A_T, Math.min(t0, END));
+      pre.push([Math.min(t0, END), x0]);
+      if (cut) {
+        for (let t = t0; t <= END + 1e-9; t += 0.004) post.push([t, spring(x0, v0, B_T, t - t0)[0]]);
+        post.push([END, spring(x0, v0, B_T, END - t0)[0]]);
+      }
+      q(".fw-mv-pre").setAttribute("d", pathOf(pre));
+      q(".fw-mv-post").setAttribute("d", cut ? pathOf(post) : "");
+      svg.classList.toggle("whole", !cut);
+      const cx = px(t0), cy = py(x0);
+      for (const c of [q(".fw-mv-halo"), q(".fw-mv-dot")]) { c.setAttribute("cx", cx); c.setAttribute("cy", cy); }
+      q(".fw-mv-t0line").setAttribute("x1", cx);
+      q(".fw-mv-t0line").setAttribute("x2", cx);
+      const tt = q(".fw-mv-t0text");
+      tt.setAttribute("x", cx);
+      tt.textContent = Math.round(t0 * 1000) + "ms";
+      // tangent in screen space: dx = 928 px/s, dy = -150 * v px/s
+      const dx = 928, dy = -150 * v0, len = Math.hypot(dx, dy), L = 46;
+      const tan = q(".fw-mv-tan");
+      tan.setAttribute("x1", cx - (dx / len) * 14);
+      tan.setAttribute("y1", cy - (dy / len) * 14);
+      tan.setAttribute("x2", cx + (dx / len) * L);
+      tan.setAttribute("y2", cy + (dy / len) * L);
+      const vt = q(".fw-mv-vtext");
+      vt.textContent = "v(t₀) = " + fmt(v0);
+      if (!final) return;
+      if (cut) {
+        const [, vPost] = spring(x0, v0, B_T, 0);
+        say(document.getElementById("fw-mv-k0"), "t₀ = " + Math.round(t0 * 1000) + "ms");
+        say(document.getElementById("fw-mv-k1"), x0.toFixed(3));
+        say(document.getElementById("fw-mv-k2"), fmt(v0));
+        say(document.getElementById("fw-mv-k3"), Math.abs(vPost - v0).toFixed(2) + "/s");
+        say(document.getElementById("fw-mv-k4"), "≈ " + Math.round(settle(x0, v0, B_T, t0) * 1000) + "ms");
+      } else {
+        say(document.getElementById("fw-mv-k0"), "none", "无");
+        say(document.getElementById("fw-mv-k1"), "—");
+        say(document.getElementById("fw-mv-k2"), "—");
+        say(document.getElementById("fw-mv-k3"), "0.00/s");
+        say(document.getElementById("fw-mv-k4"), "≈ " + Math.round(settle(0, 0, A_T, 0) * 1000) + "ms");
+      }
+    };
+    let cur = 0.14, raf = 0;
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const go = (to) => {
+      cancelAnimationFrame(raf);
+      const from = cur, start = performance.now(), dur = reduce ? 0 : 520;
+      const step = (now) => {
+        const p = dur ? Math.min(1, (now - start) / dur) : 1;
+        const e = 1 - Math.pow(1 - p, 3);
+        cur = from + (to - from) * e;
+        draw(cur, p === 1);
+        if (p < 1) raf = requestAnimationFrame(step);
+      };
+      raf = requestAnimationFrame(step);
+    };
+    const btns = [...mv.querySelectorAll("[data-t0]")];
+    btns.forEach((b) => b.addEventListener("click", () => {
+      btns.forEach((o) => {
+        o.classList.toggle("on", o === b);
+        o.setAttribute("aria-pressed", String(o === b));
+      });
+      const ms = Number(b.dataset.t0);
+      go(ms ? ms / 1000 : END);
+    }));
+    draw(cur, true);
+  }
+
+  // #tester: step through a .drive script
+  const tst = document.getElementById("fw-test");
+  if (tst) {
+    let timers = [];
+    const steps = [...tst.querySelectorAll(".fw-drive-step")];
+    const rows = [...tst.querySelectorAll(".fw-fps-row")];
+    const audit = document.getElementById("fw-audit");
+    const auditSt = document.getElementById("fw-audit-st");
+    const box = tst.querySelector(".fw-audit-pass");
+    const later = (ms, fn) => timers.push(setTimeout(fn, ms));
+    const run = () => {
+      timers.forEach(clearTimeout);
+      timers = [];
+      steps.forEach((s) => s.classList.remove("run", "done"));
+      rows.forEach((r) => { r.classList.remove("ok"); say(r.querySelector(".eq"), "—"); });
+      box.classList.remove("ok");
+      say(audit, "audit(): …");
+      say(auditSt, "RUNNING", "运行中");
+      const STEP = 300;
+      steps.forEach((s, i) => {
+        later(i * STEP, () => { s.classList.add("run"); ping(s); });
+        later(i * STEP + STEP - 40, () => { s.classList.remove("run"); s.classList.add("done"); });
+      });
+      const t = steps.length * STEP;
+      rows.forEach((r, i) => later(t + i * 160, () => {
+        r.classList.add("ok");
+        say(r.querySelector(".eq"), "MATCH");
+        ping(r);
+      }));
+      later(t + rows.length * 160 + 120, () => {
+        box.classList.add("ok");
+        ping(box);
+        say(audit, "audit(): 0 faults");
+        say(auditSt, "PASS", "通过");
+      });
+    };
+    tst.querySelector("[data-run]").addEventListener("click", run);
+    onSeen(tst, run);
+  }
+})();
+</script>

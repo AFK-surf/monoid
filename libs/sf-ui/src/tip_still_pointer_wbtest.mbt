@@ -43,6 +43,6 @@ test "a tool's tip, the tool carried from under a still pointer on a way: shown 
   tree.event(at, fn() { grow.go(140.0, @motion.tween(carried_ms, ease=Out), at~) })
   t.run_for(carried_ms / 2.0)
   let midway = tips()
-  t.run_for(carried_ms / 2.0 + @kit.pop_out_ms * 2.0)
+  t.run_for(carried_ms / 2.0 + @motion.pop_out_ms * 2.0)
   assert_eq((midway, tips()), (1, 0))
 }

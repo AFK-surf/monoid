@@ -782,17 +782,17 @@ pub fn peeks_frame(c : @ui.Ctx, src : Source) -> Unit {
       continue
     }
     if p.run == PeekEnded &&
-      @kit.after(c, "peek-again/\{key}/\{p.view}", true, peek_again_ms, later=true) {
+      c.held("peek-again/\{key}/\{p.view}", true, peek_again_ms, later=true) {
       p.again = true
     }
     if p.run != PeekOn {
       continue
     }
     let n = p.acked
-    let due = n == 0 || @kit.after(c, "peek-ack/\{p.view}/\{n}", true, peek_ms, later=true)
+    let due = n == 0 || c.held("peek-ack/\{p.view}/\{n}", true, peek_ms, later=true)
     if due && p.waiting.length() > 0 {
       // the next one's wait from this one's
-      @kit.after(c, "peek-ack/\{p.view}/\{n + 1}", true, peek_ms, later=true) |> ignore
+      c.held("peek-ack/\{p.view}/\{n + 1}", true, peek_ms, later=true) |> ignore
       let view = p.view
       let ts = p.waiting[0]
       c.after_build("peek-ack/" + key, fn() {

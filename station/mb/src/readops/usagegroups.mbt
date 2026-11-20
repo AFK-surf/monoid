@@ -183,6 +183,12 @@ fn usage_15m_query(from : Int64, to : Int64, offset : Int64, viewer : Viewer?) -
 }
 
 ///|
+/// usage-15m.ts `usage15mQuery` for every workspace.
+pub fn usage_15m_query_all(from : Int64, to : Int64, offset : Int64) -> (String, Array[Json])? {
+  usage_15m_query(from, to, offset, None)
+}
+
+///|
 /// store/usage.ts `usageGroups` for a viewer (read/store.ts `usageGroups`).
 fn usage_groups(db : @sql.Db, from : Int64, to : Int64, offset : Int64, viewer : Viewer?) -> Array[Group] raise {
   match usage_15m_query(from, to, offset, viewer) {

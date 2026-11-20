@@ -48,6 +48,51 @@ pub let letters_own : Spacing = Ems(0.0)
 pub let words_plain : WordsLook = { size: 15.0, weight: 400, line: 22.0, wrap: true, tracking: letters_own, balance: false, max_lines: 0 }
 
 ///|
+/// Construct a `WordsLook` from its size with defaults (`weight=400`, `line=0.0` for the font's own line height,
+/// `wrap=true`, `tracking=letters_own`, `balance=false`, `max_lines=0`).
+pub fn WordsLook::of(
+  size : Double,
+  weight? : Int = 400,
+  line? : Double = 0.0,
+  wrap? : Bool = true,
+  tracking? : Spacing = letters_own,
+  balance? : Bool = false,
+  max_lines? : Int = 0,
+) -> WordsLook {
+  { size, weight, line, wrap, tracking, balance, max_lines }
+}
+
+///|
+/// Derive a single-line look (`wrap: false`) from `self`.
+pub fn WordsLook::one_line(self : WordsLook) -> WordsLook {
+  { ..self, wrap: false }
+}
+
+///|
+/// Derive a look with a different line height (`0.0` for the font's own, negative for a multiple of `size`).
+pub fn WordsLook::with_line(self : WordsLook, line : Double) -> WordsLook {
+  { ..self, line }
+}
+
+///|
+/// Derive a look with a different font weight (100 .. 900).
+pub fn WordsLook::with_weight(self : WordsLook, weight : Int) -> WordsLook {
+  { ..self, weight }
+}
+
+///|
+/// Derive a look with a different font size (and optionally a new line height; keeps `self.line` when omitted).
+pub fn WordsLook::with_size(self : WordsLook, size : Double, line? : Double) -> WordsLook {
+  { ..self, size, line: line.unwrap_or(self.line) }
+}
+
+///|
+/// Derive a wrapped look clamped to at most `max_lines` lines (`0` for unlimited).
+pub fn WordsLook::with_max_lines(self : WordsLook, max_lines : Int) -> WordsLook {
+  { ..self, wrap: true, max_lines }
+}
+
+///|
 /// How a node's words in pieces (View::words_runs) are set where a piece says nothing of it itself, as an old view's
 /// paragraph is (Ctx::rich's): a link's ink and its ground while it is pressed, code's ink and ground and its share of
 /// the words' size, and whether they are a person's words (in the face chosen for those). What changes how big they
@@ -350,6 +395,26 @@ pub fn runs_measure(
 }
 
 ///|
+/// Sentinel ink telling the host to draw words in the active theme's foreground (`tree_theme().fg`), updating
+/// automatically when the theme changes. Valid RRGGBBAA colors are always `>= 0L`.
+pub let ink_theme : Int64 = -1L
+
+///|
+/// The theme's default ink for words changed: every live node with words using `ink_theme` is marked to be drawn again
+/// (paint only, no layout).
+pub fn Tree::words_ink_again(self : Tree) -> Unit {
+  if self.rooming >= 0 {
+    self.once_laid_out(fn() { self.words_ink_again() })
+    return
+  }
+  for at, n in self.nodes {
+    if n.live && n.look.ink < 0L && (n.look.words != "" || !n.look.runs.is_empty() || n.look.words_drawn is Some(_)) {
+      self.look_marked_at(at)
+    }
+  }
+}
+
+///|
 /// The ink its words are drawn in, as it changes (a theme's, a state's): paint's.
 #callsite(autofill(loc))
 pub fn View::ink(self : View, ink : Live[Int64], loc~ : SourceLoc) -> View {
@@ -478,6 +543,8 @@ pub fn View::words_look(self : View, look : Live[WordsLook], loc~ : SourceLoc) -
     if n.shorter.length() > 0 {
       self.tree.give_way_applied(self.at)
     }
+    self.tree.soft_min_applied(self.at)
+    self.tree.structure_row_sync(self.at)
     // (how its words are set said: what follows it told, once this is)
     self.words_told()
   })
@@ -510,6 +577,15 @@ pub fn View::words_breaks_now(self : View) -> Bool {
 }
 
 ///|
+/// Whether single-line words are optically centered vertically within their line box (shifting Latin cap-height center
+/// onto the line box midpoint, while keeping CJK balanced), as it changes: paint only, no layout change.
+#callsite(autofill(loc))
+pub fn View::words_optical(self : View, on : Live[Bool], loc~ : SourceLoc) -> View {
+  self.bind(loc~, WordsOptical, on, Paint, fn(on) { self.tree.nodes[self.at].look.words_optical = on })
+  self
+}
+
+///|
 /// A last-resort ellipsis is intended without changing the words' layout sizing (as Ctx::text's allow_ellipsis).
 #callsite(autofill(loc))
 pub fn View::allow_ellipsis(self : View, on : Live[Bool], loc~ : SourceLoc) -> View {
@@ -538,9 +614,9 @@ pub fn Tree::allows_ellipsis(self : Tree, id : NodeId) -> Bool {
     let n = self.nodes[at]
     let style = n.flex.style
     let own = at == id.at
-    // (what lays it out: what holds it, past any slot; how it gives way or grows is across only in a row)
+    // (what lays it out: what holds it, past any slot or bare single-child structure box; how it gives way or grows is across only in a row)
     let mut p = n.parent
-    while p >= 0 && self.nodes[p].slot {
+    while p >= 0 && (self.nodes[p].slot || self.is_bare_single_structure(p)) {
       p = self.nodes[p].parent
     }
     let in_row = p >= 0 && self.nodes[p].flex.style.direction is (Row | RowReverse)
@@ -607,6 +683,7 @@ pub fn View::cuts(self : View, on : Live[Bool], loc~ : SourceLoc) -> View {
     }
     // (no wider than its column while cut short there, or as it was: Tree::capped_applied)
     self.tree.capped_applied(self.at)
+    self.tree.structure_row_sync(self.at)
   })
   self
 }
@@ -645,6 +722,7 @@ fn Tree::cut_applied(self : Tree, at : Int) -> Unit {
     n.flex.style.cut_least = least
     self.layout_marked_at(at)
   }
+  self.structure_row_sync(at)
 }
 
 ///|
@@ -658,6 +736,10 @@ fn Tree::cuts_under(self : Tree, at : Int) -> Unit {
     // (saying shorter words, giving way along a row alone)
     if self.nodes[k].shorter.length() > 0 {
       self.give_way_applied(k)
+    }
+    if self.nodes[k].structure_box {
+      self.cuts_under(k)
+      self.structure_row_sync_one(k)
     }
     if self.nodes[k].slot {
       self.cuts_under(k)

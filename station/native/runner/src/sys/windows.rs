@@ -44,7 +44,7 @@ use windows_sys::Win32::System::Threading::{
     CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateEventW, CreateProcessW,
     DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess, GetExitCodeProcess, GetProcessTimes, INFINITE,
     InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcess, OpenProcessToken, OpenThread, PROCESS_INFORMATION,
-    PROCESS_QUERY_LIMITED_INFORMATION, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, ResumeThread, STARTUPINFOEXW, THREAD_SUSPEND_RESUME, TerminateProcess,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, ResumeThread, STARTF_USESTDHANDLES, STARTUPINFOEXW, THREAD_SUSPEND_RESUME, TerminateProcess,
     UpdateProcThreadAttribute, WaitForSingleObject,
 };
 
@@ -623,7 +623,13 @@ pub fn spawn_pty(
         si.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
         si.lpAttributeList = attr_list;
         let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
-        // Do NOT pass CREATE_NO_WINDOW or STARTF_USESTDHANDLES with PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE.
+        // Its standard handles the pseudo-console's: said invalid, else a program started from a runner whose own are
+        // pipes (`--relay-pty`'s) is handed those, writes past the console and finds it is on no terminal (as WezTerm's
+        // portable-pty). Do NOT pass CREATE_NO_WINDOW with PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE.
+        si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+        si.StartupInfo.hStdInput = INVALID_HANDLE_VALUE;
+        si.StartupInfo.hStdOutput = INVALID_HANDLE_VALUE;
+        si.StartupInfo.hStdError = INVALID_HANDLE_VALUE;
         let flags = EXTENDED_STARTUPINFO_PRESENT
             | CREATE_UNICODE_ENVIRONMENT
             | CREATE_NEW_PROCESS_GROUP

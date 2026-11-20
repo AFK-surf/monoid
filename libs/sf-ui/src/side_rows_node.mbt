@@ -201,7 +201,7 @@ fn coming_node(
           let mid = ring / 2.0
           let rad = mid - stroke / 2.0
           let at = @motion.NodeWay::new(@signals.untracked(coming).unwrap_or(0.0))
-          p.reacts(fn() { coming().unwrap_or(0.0) }, fn(k) { at.go_ms(p, if k < 0.0 { 0.0 } else if k > 1.0 { 1.0 } else { k }, @kit.progress_ms) })
+          p.reacts(fn() { coming().unwrap_or(0.0) }, fn(k) { at.go_ms(p, if k < 0.0 { 0.0 } else if k > 1.0 { 1.0 } else { k }, @motion.progress_ms) })
           p.box(fn(l) {
             l
             .width(Is(Some(ring)))

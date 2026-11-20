@@ -29,6 +29,7 @@ pub struct Lines {
 }
 pub fn Lines::new() -> Self
 pub fn Lines::push(Self, BytesView) -> Array[String]
+pub fn Lines::unended(Self) -> String
 
 // Type aliases
 

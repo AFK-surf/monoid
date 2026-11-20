@@ -92,6 +92,7 @@ fn End::stream(_self : End, wire : Wire, from : Pipe, to : Pipe) -> Stream {
       ignore(to.stopped.succeed(Some(code)))
       ignore(from.pieces.try_offer(Reset(code)))
     },
+    media_datagrams: None,
   }
 }
 

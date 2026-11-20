@@ -589,15 +589,15 @@ test "下方栏: a place's \"−\" takes it off its bar (the bars kept as the wo
 }
 
 ///|
-test "下方栏: a place held and slid sideways goes where it is let go, by the slots it went; a tap moves nothing" {
+test "下方栏: a place held and slid down goes where it is let go, by the rows it went; a tap moves nothing" {
   let t = settings_tester("bars")
   bars_picked.set(None)
   let (x, y, w, h) = t.query(@ui.Role::Group, label="对话").unwrap().rect
   // a tap: nothing (only its drag)
   t.tap(x + w / 2.0, y + h / 2.0)
   assert_true(bars_picked.get() is None)
-  // held and slid a slot and a third to the right: after 文件
-  t.drag(x + w / 2.0, y + h / 2.0, x + w * 1.8, y + h / 2.0)
+  // held and slid a row and a third down: after 文件
+  t.drag(x + w / 2.0, y + h / 2.0, x + w / 2.0, y + h * 1.8)
   match bars_picked.get() {
     Some((sets, _)) => assert_eq(sets[0], ["files", "chats", "profiles", "stations"])
     None => fail("the bars were not changed")

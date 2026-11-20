@@ -89,6 +89,12 @@ extern "C" fn arch_ffi() -> Int = "sfs_arch"
 extern "C" fn machine_ffi() -> Bytes = "sfs_machine"
 
 ///|
+extern "C" fn open_fds_ffi() -> Int = "sfs_open_fds"
+
+///|
+extern "C" fn self_rss_ffi() -> Double = "sfs_self_rss"
+
+///|
 #borrow(path)
 extern "C" fn disk_of_ffi(path : Bytes) -> Bytes = "sfs_disk_of"
 
@@ -297,6 +303,20 @@ fn parsed(b : Bytes) -> Json? {
 /// footprint}` (the last two this process's).
 pub fn machine() -> Json {
   parsed(machine_ffi()).unwrap_or(Json::object({}))
+}
+
+///|
+/// This process's open descriptors (handles on Windows), where the system says it: one call, no child.
+pub fn open_fds() -> Int? {
+  let n = open_fds_ffi()
+  if n < 0 { None } else { Some(n) }
+}
+
+///|
+/// This process's resident memory in bytes, where the system says it: its own counters, not `machine()`'s whole read.
+pub fn self_rss_bytes() -> Double? {
+  let n = self_rss_ffi()
+  if n <= 0.0 { None } else { Some(n) }
 }
 
 ///|

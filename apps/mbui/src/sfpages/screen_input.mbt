@@ -168,6 +168,8 @@ fn cursor_of_shape(shape : String) -> @ui.Cursor {
     "text" | "vertical-text" => IBeam
     "ew-resize" | "col-resize" | "e-resize" | "w-resize" => ResizeX
     "ns-resize" | "row-resize" | "n-resize" | "s-resize" => ResizeY
+    "nwse-resize" | "nw-resize" | "se-resize" => ResizeNWSE
+    "nesw-resize" | "ne-resize" | "sw-resize" => ResizeNESW
     "grab" | "move" | "all-scroll" => Grab
     "grabbing" => Grabbing
     "crosshair" => Crosshair
@@ -267,11 +269,11 @@ fn type_words(send : (Json) -> Unit, held : HeldKeys, words : String) -> Unit {
 }
 
 ///|
-/// The frame's own zoom, on this device only (never sent): mbui's @kit.Zoom, the frame fitted edge to edge (larger
+/// The frame's own zoom, on this device only (never sent): mbui's @motion.Zoom, the frame fitted edge to edge (larger
 /// than its pixels where the stage has room), zoomed from the fitted size to `screen_max_zoom` times it. Kept within
 /// the stage: smaller than it, centred; larger, no gap at its edges.
-fn screen_zoom() -> @kit.Zoom {
-  @kit.Zoom::new(margin=fn(_) { 0.0 }, enlarge=true, min_scale=fn(fit) { fit }, max_scale=fn(fit) {
+fn screen_zoom() -> @motion.Zoom {
+  @motion.Zoom::new(margin=fn(_) { 0.0 }, enlarge=true, min_scale=fn(fit) { fit }, max_scale=fn(fit) {
     fit * screen_max_zoom
   })
 }

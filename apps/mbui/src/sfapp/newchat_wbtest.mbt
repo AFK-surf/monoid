@@ -7,10 +7,15 @@ fn bar_places_at() -> (Array[Double], Double) {
 }
 
 ///|
+/// Where the bar's action (令, ＋) is across in a 390 window: the middle of its circle at the bar's right.
+let bar_action_x : Double = 22.0 + (390.0 - 44.0) - act_size / 2.0
+
+///|
 test "the bar: a finger held still on it a moment has the ball a lens of liquid glass; a tap none; let go, the ball" {
   let t = tester("home")
   let (xs, y) = bar_places_at()
-  let lensed = fn() { t.drawn_glass().iter().any(fn(g) { g.4 == 6 }) }
+  // (the lens: liquid glass neither as high as the bar, as the capsule and 令's circle are, nor as tall as its panel)
+  let lensed = fn() { t.drawn_glass().iter().any(fn(g) { g.4 == 6 && (g.3 - bar_track).abs() > 1.0 && g.3 < 80.0 }) }
   t.tap(xs[0], y)
   t.run_for(bar_hold_ms)
   assert_false(lensed())
@@ -27,7 +32,7 @@ test "the bar: a finger held still on it a moment has the ball a lens of liquid 
 }
 
 ///|
-test "the bar: holding a place hides 令 or ＋, moving keeps it hidden, and letting go brings it back" {
+test "the bar: holding a place keeps 令 or ＋ beside the capsule, moving too, and letting go it still works" {
   let held_frame_ms = 1000.0
   let moved_frame_ms = 100.0
   for action in ["ling", "plus"] {
@@ -37,21 +42,21 @@ test "the bar: holding a place hides 令 or ＋, moving keeps it hidden, and let
       assert_true(@sfbase.go_place(place))
       t.run_for(@ui.move_most_ms)
     }
-    assert_eq(m_face.val, action)
+    assert_eq(m_face.val, bar_action_icon(action))
     let (xs, y) = bar_places_at()
     let told = bar.told.unwrap()
     let j = told.sets[told.cur].search(place).unwrap()
     let x = xs[j]
-    // The accent disc under the glass is part of the button, as are its glass and icon.
+    // The action's circle of glass at the bar's right is the button (drawn while it is seen at all).
     let disc_alpha = fn() {
-      let theme = @sf.theme()
-      let ink = @sf.over(theme.p.bg, @sf.alpha(theme.p.accent, action_ink))
-      t.drawn_rects()
-      .filter(fn(r) {
-        (r.2 - drop).abs() < 0.1 && (r.3 - drop).abs() < 0.1 &&
-        (r.0 - (195.0 - drop / 2.0)).abs() < 0.1 && r.1 > 600.0 && r.4 >> 8 == ink >> 8
-      })
-      .fold(init=0L, fn(a, r) { if (r.4 & 0xFFL) > a { r.4 & 0xFFL } else { a } })
+      let x = 22.0 + (390.0 - 44.0) - act_size
+      if t.drawn_glass().any(fn(g) {
+          (g.2 - act_size).abs() < 0.1 && (g.3 - act_size).abs() < 0.1 && (g.0 - x).abs() < 0.1 && g.1 > 600.0
+        }) {
+        1L
+      } else {
+        0L
+      }
     }
     assert_true(disc_alpha() > 0L, msg="\{action} before holding")
     t.press_at(x, y)
@@ -60,15 +65,15 @@ test "the bar: holding a place hides 令 or ＋, moving keeps it hidden, and let
     t.run_for(bar_hold_ms / 2.0)
     t.frame()
     t.run_for(held_frame_ms)
-    assert_eq(disc_alpha(), 0L, msg="\{action} held")
+    assert_true(disc_alpha() > 0L, msg="\{action} held")
     t.move_to(x + 12.0, y)
     t.run_for(moved_frame_ms)
-    assert_eq(disc_alpha(), 0L, msg="\{action} moved")
+    assert_true(disc_alpha() > 0L, msg="\{action} moved")
     t.release(x + 12.0, y)
     t.run_for(held_frame_ms)
     assert_true(disc_alpha() > 0L, msg="\{action} released")
     if action == "ling" {
-      t.tap(195.0, y - 28.0 - 4.0)
+      t.tap(bar_action_x, y)
       assert_true(app.nav.risen(), msg="令 works after letting go")
     }
   }
@@ -130,7 +135,10 @@ test "文件 and 用量 at the bar's top, their gear tapped: as 设置 comes in 
     t.run_for(@ui.move_most_ms / 2.0)
     let from = bar_title_x(t, title) - rest_x
     assert_true(from < 0.0, msg=place)
-    assert_eq(bar_words(t, from), at_rest, msg=place)
+    let under_words = bar_words(t, from)
+    let title_idx = at_rest.search_by(fn(w) { w.0 == title }).unwrap()
+    assert_true(under_words.length() > title_idx, msg=place)
+    assert_eq(under_words[:title_idx + 1].to_owned(), at_rest[:title_idx + 1].to_owned(), msg=place)
   }
 }
 
@@ -138,9 +146,9 @@ test "文件 and 用量 at the bar's top, their gear tapped: as 设置 comes in 
 test "the panel drawn up by a finger: the bar and the panel drawn up clear of the finger, a finger taken where they are laid out; let go, back down" {
   let t = tester("home")
   let (xs, y) = bar_places_at()
-  // the bar's glass (as wide as the bar: not the ball's, nor the lens'): where its foot is drawn
+  // the bar's capsule of glass (from its left, wider than the lens: not the lens', nor 令's): where its foot is drawn
   let foot = fn() {
-    t.drawn_glass_corners().fold(init=0.0, fn(a, g) { if g.2 > 300.0 { dmax(a, g.1 + g.3) } else { a } })
+    t.drawn_glass_corners().fold(init=0.0, fn(a, g) { if (g.0 - 22.0).abs() < 1.0 && g.2 > 250.0 { dmax(a, g.1 + g.3) } else { a } })
   }
   let rest = foot()
   t.press_at(xs[0], y)
@@ -242,7 +250,7 @@ test "a new chat: 令 raises it; the first message makes the chat and the page b
     let t = tester("home")
     let (_, y) = bar_places_at()
     // 令 stands over the bar's middle
-    t.tap(195.0, y - 28.0 - 4.0)
+    t.tap(bar_action_x, y)
     assert_eq(app.nav.depth(), 2)
     assert_true(app.nav.risen())
     t.run_for(@ui.move_most_ms)
@@ -269,7 +277,7 @@ test "a new chat with the keyboard up: the scene scrolls in what is left, the ch
   both_pages(fn() raise {
     let t = tester("home")
     let (_, y) = bar_places_at()
-    t.tap(195.0, y - 28.0 - 4.0)
+    t.tap(bar_action_x, y)
     t.run_for(@ui.move_most_ms)
     t.tap_text("做任何事")
     // the window laid out over the keyboard, as Android's host has it (adjustResize)
@@ -345,38 +353,39 @@ test "a new chat with disabled profiles leads back to enable them" {
 }
 
 ///|
-test "the bar is glass of one capture: the bar with its notch, 令 and the ball frosting the page under them" {
+test "the bar is liquid glass: its capsule and 令's circle beside it, each a shape of its own, no notch cut" {
   let t = tester("home")
   let gs = t.drawn_glass().filter(fn(g) { g.1 > 844.0 - 22.0 - 56.0 - 40.0 })
-  assert_true(gs.length() >= 3)
-  let (_, _, _, _, _, run) = gs[0]
-  assert_true(gs.iter().all(fn(g) { g.5 == run }))
-  // the notch cut into the bar's glass: 令's 28 and 6 round it, 4 over the edge
-  assert_true(t.drawn_notches().iter().any(fn(n) { n.0 == 5 && n.2 == -4.0 && n.3 == 34.0 && n.4 == 8.0 }))
+  let capsule = gs.filter(fn(g) { (g.0 - 22.0).abs() < 0.5 && (g.2 - bar_capsule_w(390.0 - 44.0, 1.0)).abs() < 0.5 })
+  let circle = gs.filter(fn(g) { (g.0 - (22.0 + 390.0 - 44.0 - act_size)).abs() < 0.5 && (g.2 - act_size).abs() < 0.5 })
+  assert_eq((capsule.length(), circle.length()), (1, 1), msg="\{Repr(gs)}")
+  assert_true(capsule[0].4 == 6 && circle[0].4 == 6)
+  assert_eq(t.drawn_notches().length(), 0)
 }
 
 ///|
-test "the notch's icon swaps with a short scale and fade while it stays open; closed, at once" {
+test "the notch's icon: 令 giving way to ＋ draws the same ＋ and stays still; closed, back at once" {
   let plus = bar_place_with("plus")
   let none = bar_place_with("")
   let (t, _) = bar_at_rest()
-  assert_eq(m_face.val, "ling")
-  // to a place whose action is another, the notch open throughout: the icon swaps
+  assert_eq(m_face.val, "plus")
+  // to a place whose action is ＋ from 令's, the notch open throughout: the one icon both draw, not swapped
   ignore(@sfbase.go_place(plus))
   t.frame()
   t.frame()
   t.frame()
-  assert_eq((m_face.val, bar.icon_was), ("plus", "ling"))
-  let p = bar.icon_swap.at(t.time()).0
-  assert_true(p > 0.0 && p < 1.0, msg="\{p}")
-  t.run_for(icon_swap_ms)
-  assert_true(bar.icon_swap.at(t.time()).0 == 1.0)
-  // the notch closed (a place with no action), then another action: nothing to see, at once
-  ignore(@sfbase.go_place(none))
-  t.run_for(bar_rest() - t.time())
+  assert_eq(bar.told.unwrap().action, "plus")
+  assert_eq((m_face.val, bar.icon_was, bar.icon_swap.at(t.time()).0), ("plus", "", 1.0))
   ignore(@sfbase.go_place("chats"))
   t.frame()
-  assert_eq((m_face.val, bar.icon_swap.at(t.time()).0), ("ling", 1.0))
+  assert_eq(bar.told.unwrap().action, "ling")
+  assert_eq((m_face.val, bar.icon_was, bar.icon_swap.at(t.time()).0), ("plus", "", 1.0))
+  // the notch closed (a place with no action), then an action again: at once
+  ignore(@sfbase.go_place(none))
+  t.run_for(bar_rest() - t.time())
+  ignore(@sfbase.go_place(plus))
+  t.frame()
+  assert_eq((m_face.val, bar.icon_swap.at(t.time()).0), ("plus", 1.0))
   t.run_for(bar_rest() - t.time())
   t.assert_idle()
 }
@@ -462,7 +471,7 @@ test "the bar drawn up clear of a finger as long as it has it: drawn up, further
   let t = tester("home")
   let (xs, y) = bar_places_at()
   let foot = fn() {
-    t.drawn_glass_corners().fold(init=0.0, fn(a, g) { if g.2 > 300.0 { dmax(a, g.1 + g.3) } else { a } })
+    t.drawn_glass_corners().fold(init=0.0, fn(a, g) { if (g.0 - 22.0).abs() < 1.0 && g.2 > 250.0 { dmax(a, g.1 + g.3) } else { a } })
   }
   let rest = foot()
   let raised = fn() {
@@ -505,8 +514,9 @@ test "the bar held: more room above the finger in a taller window, bounded by th
     new_run()
     let src = fixture("home")
     let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h~, platform=2)
-    // The bar is 346 wide here; the page's full-width top bar is not the panel.
-    let glass = fn() { t.drawn_glass_corners().filter(fn(g) { g.2 > 300.0 && g.2 < 360.0 }) }
+    // The bar is 346 wide here (its capsule 280 beside 令, 346 with the panel open); the page's full-width top bar is not
+    // the panel.
+    let glass = fn() { t.drawn_glass_corners().filter(fn(g) { (g.0 - 22.0).abs() < 1.0 && g.2 > 250.0 && g.2 < 360.0 }) }
     let foot = fn() { glass().fold(init=0.0, fn(a, g) { dmax(a, g.1 + g.3) }) }
     let rest = foot()
     let (xs, _) = bar_places_at()
@@ -549,8 +559,8 @@ let ns_screens : Array[(Int, Bool)] = [(2, false), (0, false), (0, true)]
 /// `calls`.
 fn ns_open(calls : Array[String], platform~ : Int, wide~ : Bool) -> @ui.Tester {
   new_run()
-  // (the chat's page made as both_pages runs it now, its new chat too: none outside one)
-  if both_nodes.val {
+  // (the chat's page made as both_pages runs it now, its new chat too; outside one, as the fixture's channel has it)
+  if both_running.val {
     both_way()
   }
   @sf.presenters_reset()
@@ -729,7 +739,7 @@ test "wide: a new chat's stations under a mouse have concentric corners in the p
     let (mx, my, mw, mh) = rows[1].rect
     // Pointer on the bottom row (Maple): its hover ground is concentric with the small panel's corners.
     t.move_to(mx + mw / 2.0, my + mh / 2.0)
-    t.draw()
+    t.run_for(@sf.dur_ms)
     assert_eq(t.corner_faults(), [])
     let lit_maple = t.boxes_held().filter(fn(b) { same_box(b, (mx, my, mw, mh)) })
     assert_true(lit_maple.length() == 1 && (lit_maple[0].radius - @sf.row_corner).abs() < 0.5, msg="\{lit_maple.length()} maple lit")
@@ -738,7 +748,7 @@ test "wide: a new chat's stations under a mouse have concentric corners in the p
       fail("no CPU chip in Willow")
     }
     t.move_to(cx + cw / 2.0, cy + ch / 2.0)
-    t.draw()
+    t.run_for(@sf.dur_ms)
     assert_eq(t.corner_faults(), [])
     let lit_willow = t.boxes_held().filter(fn(b) { same_box(b, (wx, wy, ww, wh)) })
     assert_true(lit_willow.length() == 1 && (lit_willow[0].radius - @sf.row_corner).abs() < 0.5, msg="\{lit_willow.length()} willow lit")

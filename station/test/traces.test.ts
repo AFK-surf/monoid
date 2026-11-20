@@ -1,7 +1,10 @@
 // The mesh's spans.
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import { Traces, parseParent, route } from "../src/mesh/traces.ts";
+import { mock, test } from "node:test";
+import { Effect, Exit, Scope } from "effect";
+import { TestClock } from "effect/testing";
+import { log } from "../src/ops/log.ts";
+import { Traces, otlpBody, parseParent, route } from "../src/mesh/traces.ts";
 
 test("a traceparent is read as W3C says", () => {
   const parent = parseParent("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")!;
@@ -34,4 +37,135 @@ test("spans only when on and sampled", async () => {
 test("routes hide ids", () => {
   assert.equal(route("/admin/api/threads/42/messages?limit=50"), "/admin/api/threads/:id/messages");
   assert.equal(route("/admin/api/sessions/slack:T1:C1/files?name=a.pdf"), "/admin/api/sessions/:id/files");
+});
+
+const PARENT = parseParent("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01");
+
+/// The monotonic clock spans are timed by, the batching wait's TestClock and what the traces said, the test's.
+async function clocked(f: (o: { hr: { ns: bigint }; clock: TestClock.TestClock; flush: () => Promise<void>; said: () => [string, string, unknown][] }) => Promise<void>) {
+  const hr = { ns: 1_000n };
+  const hrtime = mock.method(process.hrtime, "bigint", () => hr.ns);
+  const logged: [string, string, unknown][] = [];
+  const info = mock.method(log, "info", (at: string, words: string, fields?: unknown) => void (at === "telemetry" && logged.push(["info", words, fields])));
+  const warn = mock.method(log, "warn", (at: string, words: string, fields?: unknown) => void (at === "telemetry" && logged.push(["warn", words, fields])));
+  const scope = Effect.runSync(Scope.make());
+  const clock = Effect.runSync(Scope.provide(TestClock.make(), scope));
+  const flush = async () => {
+    await Effect.runPromise(clock.adjust(3_000));
+    for (let i = 0; i < 6; i++) await new Promise<void>((r) => setImmediate(r));
+  };
+  try {
+    await f({ hr, clock, flush, said: () => logged.splice(0) });
+  } finally {
+    hrtime.mock.restore();
+    info.mock.restore();
+    warn.mock.restore();
+    await Effect.runPromise(Scope.close(scope, Exit.void));
+  }
+}
+
+/// A span of `ms` that failed or not, ended.
+function spanOf(traces: Traces, hr: { ns: bigint }, ms: number, failed: boolean, name = "GET /a") {
+  const span = traces.start(PARENT);
+  if (span === null) return;
+  hr.ns += BigInt(ms) * 1_000_000n;
+  traces.end(span, name, [], failed);
+}
+
+test("where only the tail is kept: a failed or slow span, never a quick one that did not fail", async () => {
+  await clocked(async ({ hr, clock }) => {
+    const tail = new Traces(true, { clock, tailOnly: true });
+    spanOf(tail, hr, 20, false, "quick");
+    spanOf(tail, hr, 20, true, "failed");
+    spanOf(tail, hr, 999, false, "almost");
+    spanOf(tail, hr, 1_000, false, "slow");
+    assert.deepEqual((tail.spans as any[]).map((s) => s.name), ["failed", "slow"]);
+    // (its span still timed and passed on downstream)
+    assert.ok(tail.start(PARENT) !== null);
+    await tail.close();
+    const all = new Traces(true, { clock });
+    spanOf(all, hr, 20, false, "quick");
+    spanOf(all, hr, 20, true, "failed");
+    assert.deepEqual((all.spans as any[]).map((s) => s.name), ["quick", "failed"]);
+    await all.close();
+    const slower = new Traces(true, { clock, tailOnly: true, slowMs: 5_000 });
+    spanOf(slower, hr, 1_000, false, "slow");
+    assert.equal(slower.spans.length, 0);
+    await slower.close();
+    const off = new Traces(false, { clock });
+    assert.equal(off.start(PARENT), null);
+    await off.close();
+  });
+});
+
+test("a batch sent is not said; one that fails once goes at the next flush", async () => {
+  await clocked(async ({ hr, clock, flush, said }) => {
+    const traces = new Traces(true, { clock });
+    const sent: unknown[][] = [];
+    let failing = 1;
+    traces.exportTo(async (batch) => {
+      if (failing-- > 0) throw new Error("still.fail cloud answered 503");
+      sent.push(batch);
+    });
+    spanOf(traces, hr, 5, false);
+    spanOf(traces, hr, 5, false);
+    await flush();
+    assert.equal(sent.length, 0);
+    assert.equal(traces.spans.length, 2, "put back");
+    assert.deepEqual(said(), []);
+    await flush();
+    assert.deepEqual(sent.map((b) => b.length), [2]);
+    assert.equal(traces.spans.length, 0);
+    assert.deepEqual(said(), [], "no traces sent line");
+    await traces.close();
+  });
+});
+
+test("a batch that fails again is dropped, said once in 10 min; a 4xx is not sent again", async () => {
+  await clocked(async ({ hr, clock, flush, said }) => {
+    const traces = new Traces(true, { clock });
+    let calls = 0;
+    let error = "still.fail cloud answered 503";
+    traces.exportTo(async () => {
+      calls++;
+      throw new Error(error);
+    });
+    spanOf(traces, hr, 5, false);
+    await flush();
+    await flush();
+    assert.equal(calls, 2);
+    assert.equal(traces.spans.length, 0);
+    assert.deepEqual(said(), [["warn", "traces dropped", { error, count: 1 }]]);
+    // (within 10 min: dropped, not said)
+    spanOf(traces, hr, 5, false);
+    await flush();
+    await flush();
+    assert.equal(calls, 4);
+    assert.deepEqual(said(), []);
+    // a 4xx: dropped at once
+    error = "still.fail cloud answered 413";
+    spanOf(traces, hr, 5, false);
+    spanOf(traces, hr, 5, false);
+    await flush();
+    assert.equal(calls, 5);
+    assert.equal(traces.spans.length, 0);
+    assert.deepEqual(said(), []);
+    hr.ns += 600_000_000_000n;
+    spanOf(traces, hr, 5, false);
+    await flush();
+    assert.equal(calls, 6);
+    assert.deepEqual(said(), [["warn", "traces dropped", { error, count: 1 }]]);
+    await traces.close();
+  });
+});
+
+test("an OTLP batch says what describes the station, an empty one left out", () => {
+  assert.equal(otlpBody("s1", []), otlpBody("s1", [], []));
+  const body = JSON.parse(otlpBody("s1", [{ a: 1 }], [["service.version", "0.1.1"], ["os.type", "darwin"], ["host.arch", ""], ["", "x"]]));
+  assert.deepEqual(body.resourceSpans[0].resource.attributes, [
+    { key: "service.name", value: { stringValue: "stillfail-mesh" } },
+    { key: "stillfail.station", value: { stringValue: "s1" } },
+    { key: "service.version", value: { stringValue: "0.1.1" } },
+    { key: "os.type", value: { stringValue: "darwin" } },
+  ]);
 });

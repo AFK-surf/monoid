@@ -9,83 +9,15 @@
 pub let grant_ms : Double = 604800000.0
 
 ///|
-let b64_letters : String = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
-
-///|
 /// Buffer's toString("base64url"): no padding.
 pub fn base64url(b : Bytes) -> String {
-  let out = StringBuilder::new()
-  let n = b.length()
-  let mut i = 0
-  while i + 2 < n {
-    let v = (b[i].to_int() << 16) | (b[i + 1].to_int() << 8) | b[i + 2].to_int()
-    out.write_char(b64_letters.get_char((v >> 18) & 63).unwrap())
-    out.write_char(b64_letters.get_char((v >> 12) & 63).unwrap())
-    out.write_char(b64_letters.get_char((v >> 6) & 63).unwrap())
-    out.write_char(b64_letters.get_char(v & 63).unwrap())
-    i += 3
-  }
-  if n - i == 1 {
-    let v = b[i].to_int() << 16
-    out.write_char(b64_letters.get_char((v >> 18) & 63).unwrap())
-    out.write_char(b64_letters.get_char((v >> 12) & 63).unwrap())
-  } else if n - i == 2 {
-    let v = (b[i].to_int() << 16) | (b[i + 1].to_int() << 8)
-    out.write_char(b64_letters.get_char((v >> 18) & 63).unwrap())
-    out.write_char(b64_letters.get_char((v >> 12) & 63).unwrap())
-    out.write_char(b64_letters.get_char((v >> 6) & 63).unwrap())
-  }
-  out.to_string()
+  @codec.base64url_encode(b[:])
 }
 
 ///|
 /// Buffer.from(s, "base64url") (and "base64": both alphabets): what is no letter of them passed over, `=` ending it.
 pub fn from_base64(s : String) -> Bytes {
-  let out = @buffer.new()
-  let mut acc = 0
-  let mut bits = 0
-  for c in s {
-    let v = if c >= 'A' && c <= 'Z' {
-      c.to_int() - 'A'.to_int()
-    } else if c >= 'a' && c <= 'z' {
-      c.to_int() - 'a'.to_int() + 26
-    } else if c >= '0' && c <= '9' {
-      c.to_int() - '0'.to_int() + 52
-    } else if c == '-' || c == '+' {
-      62
-    } else if c == '_' || c == '/' {
-      63
-    } else if c == '=' {
-      break
-    } else {
-      continue
-    }
-    acc = (acc << 6) | v
-    bits += 6
-    if bits >= 8 {
-      bits -= 8
-      out.write_byte(((acc >> bits) & 0xFF).to_byte())
-    }
-  }
-  out.to_bytes()
-}
-
-///|
-fn unhex(s : String) -> Bytes {
-  let out = @buffer.new()
-  let v = (c : Int) => if c >= '0'.to_int() && c <= '9'.to_int() {
-    c - '0'.to_int()
-  } else {
-    c - 'a'.to_int() + 10
-  }
-  let mut i = 0
-  while i + 1 < s.length() {
-    out.write_byte(
-      ((v(s.unsafe_charcode_at(i)) << 4) | v(s.unsafe_charcode_at(i + 1))).to_byte(),
-    )
-    i += 2
-  }
-  out.to_bytes()
+  @codec.base64_decode_loose(s)
 }
 
 ///|
@@ -128,7 +60,7 @@ fn jfield(v : @jsjson.JValue, name : String) -> @jsjson.JValue? {
 /// A field of a JavaScript object as a string, where it is one.
 pub fn jstr(v : @jsjson.JValue, name : String) -> String? {
   match jfield(v, name) {
-    Some(Str(u)) => Some(@jsjson.text(u))
+    Some(Str(u)) => Some(@jsjson.sanitize_str(u))
     _ => None
   }
 }
@@ -168,7 +100,7 @@ pub fn grant_names(g : @jsjson.JValue) -> Array[String] {
       let out = []
       for n in a {
         if n is Str(u) {
-          out.push(@jsjson.text(u))
+          out.push(@jsjson.sanitize_str(u))
         }
       }
       out
@@ -188,7 +120,7 @@ pub fn verify(
 ) -> @jsjson.JValue raise DriveError {
   let refuse = () => drive_error("permission", "that is not a grant of this station's")
   guard grant is Some(Str(u)) else { raise refuse() }
-  let text = @jsjson.text(u)
+  let text = @jsjson.sanitize_str(u)
   let pieces = text.split(".").map(p => p.to_string()).to_array()
   let body = pieces[0]
   let sig = if pieces.length() > 1 { pieces[1] } else { "" }

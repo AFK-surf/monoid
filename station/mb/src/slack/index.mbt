@@ -52,7 +52,7 @@ pub fn connect_name(c : SlackConnect) -> String {
 ///|
 fn non_empty(v : J?) -> String? {
   match v {
-    Some(Str(u)) if u.length() > 0 => Some(@jsjson.text(u))
+    Some(Str(u)) if u.length() > 0 => Some(@jsjson.sanitize_str(u))
     _ => None
   }
 }

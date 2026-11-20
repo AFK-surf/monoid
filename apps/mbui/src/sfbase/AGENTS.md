@@ -17,13 +17,18 @@
 
 ## Unified beside-chat tabs
 
-- Everything opening beside a chat (files, web services, visualizations, mini-programs) shares one interaction (`apps/mbui/src/sfbase/tab_full.mbt`, `apps/mbui/src/sfdesk/tab_full_node.mbt`, `apps/mbui/src/sfbase/window.mbt`): a chat side-panel tab by default on wide screens, fullscreen over the window on Cmd+click or 全屏, and an independent window as its third host, rendered by the same nodes everywhere. Route every new beside-chat kind through it. Pictures, videos, and audio stay in the whole-window viewer until tabs support flight, marking, and stepping.
+- Everything opening beside a chat (files, web services, visualizations, mini-programs) shares one interaction (`apps/mbui/src/sfbase/tab_full.mbt`, `apps/mbui/src/sfdesk/tab_full_node.mbt`, `apps/mbui/src/sfbase/window.mbt`): fullscreen over the window by default on wide screens (as a side-panel tab put there only for it, closed with it), a chat side-panel tab on Cmd/Ctrl+click, 在侧边打开 or 移到侧边, and an independent window as its third host, rendered by the same nodes everywhere. Route every new beside-chat kind through it. Pictures, videos, and audio open as beside-chat tabs on Cmd/Ctrl+click, 在侧边打开 or 移到侧边: a picture tab supports in-place marking (`apps/mbui/src/sfbase/viewer_tab.mbt`) and stepping via `chat.tabs.replace`. Pressed plainly they open in the whole-window viewer instead, flying from their thumbnail and back (`opens_in_viewer`), as on 小屏 and for draft files.
 
 ## Topic subscriptions, unread calls, and feature registry
 
 - Subscribe only to what a page renders:
   - Stations: lists use `@settings.stations_of` (`station_rows`), detail pages use `@settings.station_of`, single-part overviews use `@settings.station_part`. Never fetch full stations in a list.
   - Connects: lists use `connects`, detail pages use `@settings.connect_of`, and `connectCandidates` is read only while a single-session connect's 更换 row shows.
-  - Accounts: lists use `profiles`, detail pages use `profile` (`@settings.profile_read`, `@settings.profile_by_key_read`), opened after local answer via `open_answered`/`show_answered`/`hand_over`/`hand_over_shown` (`apps/mbui/src/sfapp/account_open_wbtest.mbt`).
+  - Accounts: lists use `profiles`, detail pages use `profile` (`@settings.profile_read`, `@settings.profile_by_key_read`), opened after local answer via `open_answered`/`show_answered`/`hand_over`/`hand_over_shown` (`apps/mbui/src/sfapp_pages_test/account_open_test.mbt`).
 - Fire-and-forget calls omit `on_done` (`answer_unread` in `apps/mbui/src/sfbase/source.mbt`). Detlint `empty-on-done` rejects empty callbacks.
 - All unreleased features live in the single core registry (`client/core-ts/src/features.ts`, `scripts/features-check.ts`). The app reads `features`, `experimentalItems`, and station overview `features` (`apps/mbui/src/sfapp/settings/features.mbt`) with no local copy. `beta` follows the channel where its code runs (station features follow station channel). `experimental` starts off on both channels and toggles per device in 设置 › 实验性功能 (`betaOnly` offered on test channel only). Turning a feature off reverts UI immediately without restart. Remove the registry entry and all branches together when graduating or dropping.
+
+## Pictures kept for a run
+
+- Every map of image keys kept across pages is bounded (least lately used let go of, `@ui.forget_image` with it) and never lets go of a picture something still shows: one a node reads (its told signal watched), a viewer open, going or beside a chat shows (`preview_shown`), or a draft's tile shows (`writing_pictures`). Shown again, it is asked for again.
+- A draft's taken files keep their bytes (`writing_went`) until the message is taken into its chat or its outbox (`writing_committed`): a refused send puts them back (`writing_restore`, `writing_back_or_said`), so never let them go at `writing_take`.

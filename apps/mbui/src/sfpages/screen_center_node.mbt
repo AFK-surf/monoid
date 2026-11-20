@@ -6,7 +6,7 @@
 // 按键's, an entry of their own by the keyboard (pengxiao, 2026-11-12: 「常用键就不应该放控制中心，应该是个单独入口」).
 
 ///|
-/// What 控制中心 holds in `v`: 快捷操作, tiles each there only where it applies (全屏, 粘贴, 发送文件, 静音, 触控板, 在新窗口打开),
+/// What 控制中心 holds in `v`: 快捷操作, tiles each there only where it applies (全屏, 粘贴, 发送文件, 静音, 麦克风, 触控板, 在新窗口打开),
 /// a toggle lit while on; 画面, a row each for 画质, 帧率 and (where the station changes them) 缩放 and 分辨率, its choice at
 /// its end, pressed its choices beside it; then 连接 (a step further in: the view's figures), who else is on it, 结束其他查看
 /// and 断开. `from` what opened it; `done` closes it.
@@ -52,6 +52,10 @@ fn center_node(
     }
     if s.audio_ready.get() {
       ts.push("mute")
+    }
+    // (driving a screen with a virtual microphone: this device's shared into it, on while lit)
+    if s.mic_available() {
+      ts.push("mic")
     }
     // (touch's: with a mouse it is the screen's pointer; a simulator is touched where it is)
     if @sf.soft_keyboard() && s.driving() && !s.simulator() {
@@ -111,6 +115,10 @@ fn center_node(
                 fn() { s.audio_muted.get() },
                 fn() { s.toggle_audio() },
               )
+            "mic" =>
+              quick_tile_node(row, fn() { @sf.t("web-pages.screen.mic") }, fn() { s.mic_icon() }, fn() { s.mic_on.get() }, fn() {
+                s.toggle_mic()
+              })
             "pad" =>
               {
                 // (lit as it is chosen, by ScreenSess::pad_set: what is chosen is told the core after this press,

@@ -3,12 +3,12 @@
 ## Storage classes and log rotation
 
 - Register every top-level entry under `<data>` in `station/src/ops/storage.ts` `STORAGE_MANIFEST` with its class (`authoritative`, `session-bound`, `bounded-ephemeral`) and bound. `station/test/storage-classes.test.ts` scans the code and fails on unregistered paths joined onto `<data>`.
-- `Upkeep` enforces bounds on growing directories (logs, runner files, job logs, remote rooms, DB logs, caches).
+- `Upkeep` enforces bounds on growing directories (logs, runner files, job logs, remote rooms, DB logs, caches, 30-day `repo-bundles`), prunes stale unlocked `<data>/repos/*/.git/worktrees/*` registrations pointing to gone paths under `<data>/sessions`, and runs daily local branch cleanup (`pruneAllRepoBranches`, archiving >14d unpushed branches into verified bundles in `<data>/repo-bundles` before deletion) plus daily orphan session room pruning (`pruneOrphanRooms`). Shared clones in `<data>/repos` are `session-bound` and reclaimed only on low disk by `relieveRepos` (not regular `Upkeep`).
 - Never rename or unlink a log held open by other processes (`stillfail.log` is opened with `O_APPEND` by launchd/systemd for the launcher, front, and Node across updates). Truncate in place (`rotateInPlace`) so writers do not fill the disk through an unlinked inode.
 
 ## Background work yielding and bounded walks
 
-- Start non-interactive MoonBit builders (`station/src/read/mb-reader.ts` `BACKGROUND_BUILDERS`: backfills, `MbBackfill`, replica exports, workspace footprint) under `platform.backgrounded` (`mbSpawned`: `taskpolicy -b` on macOS for disk IO too, `ionice` and `nice` on Linux).
+- Start non-interactive MoonBit builders (`station/src/read/mb-reader.ts` `BACKGROUND_BUILDERS`: backfills, `MbBackfill`, replica exports, workspace footprint, usage counter) under `platform.backgrounded` (`mbSpawned`: `taskpolicy -b` on macOS for disk IO too, `ionice` and `nice` on Linux).
 - Keep interactive or permit-holding builders (`station/src/read/requested-builder.ts`) and device readers (`--data`, `--serve`, `--sessions`) at normal priority so they never stall users or hold the backfill permit.
 - Walk any tree the station does not own (workspaces, home directories, mirrored directories) through `station/src/ops/walk.ts` `walkBounded`: stay on one filesystem, skip symlinks (use `followLinks` with visited-real-dir tracking only for intentional link trees like `~/.agents/skills` in `codex.ts` `hostSkillsOff`), bound entries, depth, and time, and yield periodically. Codex rollouts (`station/src/read/machine.ts` `transcriptOf`) follow `ROLLOUT_DEPTH` and `ROLLOUT_ENTRIES`.
 

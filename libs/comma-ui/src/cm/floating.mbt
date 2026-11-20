@@ -384,7 +384,7 @@ pub fn dialog_node(
           .lies_along(Is(Middle))
           .padding(Is((space_xl, space_xl, space_xl, space_xl)))
           |> ignore
-          s.modal(Is(true)) |> ignore
+          s.modal(By(fn() { open.get() })) |> ignore
           // (the scrim: a press on it closes the dialog)
           @headless.button(s, fn() { "Close dialog" }, fn(_) { close() }, fn(c, _) {
             c

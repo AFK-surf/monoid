@@ -67,9 +67,11 @@ pub fn toaster_node(
       }
     }
     // (over all else of the window, the old frame's sheets and dialogs and the tree's modal layers too: View::over_all)
-    v.over(Is(true)).over_all(Is(true)) |> ignore
+    v.transitions_only().over(Is(true)).over_all(Is(true)) |> ignore
+    let shown_toasts = @signals.signal(@signals.untracked(toasts), same=fn(a, b) { a == b })
+    v.reacts(toasts, fn(next) { @view.transition(within=v, fn() { shown_toasts.set(next) }) }, at_start=false)
     // (while one is given, and as the last given goes out: none, nothing of it)
-    v.show(fn() { !toasts().is_empty() }, fn(room) {
+    v.show(fn() { !shown_toasts.get().is_empty() }, fn(room) {
       // (clear of the system's bars: `bottom` over what they leave of the window's foot, in the middle of what they
       // leave of its width)
       room
@@ -85,7 +87,7 @@ pub fn toaster_node(
       room.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
       @headless.toaster(
         room,
-        toasts,
+        fn() { shown_toasts.get() },
         fn(to) { to.id },
         fn(to) { (to.title, to.description) },
         duration,
@@ -95,10 +97,10 @@ pub fn toaster_node(
         gone,
         key~,
         label~,
-        leave=@kit.presence_out_ms,
+        leave=@motion.presence_out_ms,
       )
       |> ignore
-    }, leave=@kit.presence_out_ms)
+    }, leave=@motion.presence_out_ms)
   })
 }
 
@@ -118,13 +120,13 @@ fn toast_look(
   let id = @signals.untracked(fn() { s.toast().id })
   // (how far in it is: in as it is made, out as it is no longer given, in again as it is given again as it goes)
   let shown = ToastWay::new(0.0, key + "/" + id)
-  shown.go(row, 1.0, @motion.tween(@kit.presence_in_ms, ease=Out))
+  shown.go(row, 1.0, @motion.tween(@motion.presence_in_ms, ease=Out))
   let was_leaving = Ref(false)
   row.reacts(fn() { row.leaving() }, fn(l) {
     if l && !was_leaving.val {
-      shown.go(row, 0.0, @motion.tween(@kit.presence_out_ms, ease=Leave))
+      shown.go(row, 0.0, @motion.tween(@motion.presence_out_ms, ease=Leave))
     } else if !l && was_leaving.val {
-      shown.go(row, 1.0, @motion.tween(@kit.presence_in_ms, ease=Out))
+      shown.go(row, 1.0, @motion.tween(@motion.presence_in_ms, ease=Out))
     }
     was_leaving.val = l
   })
@@ -143,8 +145,10 @@ fn toast_look(
   s.moves(fn(now) { (shown.rest)(now) })
   row.owns(fn() {
     (shown.due)()
-    // (said to move no more: nothing of it is drawn, whatever its way would have done)
+    // (said to move no more: nothing of it is drawn, whatever its way would have done; its rest, which names it, let
+    // go of so: a ring native's counting never frees)
     shown.alive = false
+    shown.rest = fn(_) { -1.0 }
   })
   |> ignore
   // (how far in, 0 … 1, as it is drawn)

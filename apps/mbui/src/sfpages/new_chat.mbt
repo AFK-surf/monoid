@@ -51,13 +51,21 @@ let new_chat_state : NewChatPage = { asked: "" }
 ///|
 fn new_chat_reset() -> Unit {
   new_chat_state.asked = ""
+  new_chat_asked_seq.set(0)
 }
+
+///|
+/// How many times one of the page's picks was asked open (new_chat_ask's): what is made already told by it, a page on
+/// screen opening it then as one made after it does.
+// kept across runs: put back by new_chat_reset
+let new_chat_asked_seq : @signals.Signal[Int] = @signals.signal(0)
 
 ///|
 /// One of the page's picks opened as it is next drawn narrow, as though its capsule were pressed: "station" where it
 /// runs, "model" what it runs on (a fixture's screen of it).
 pub fn new_chat_ask(what : String) -> Unit {
   new_chat_state.asked = what
+  new_chat_asked_seq.set(new_chat_asked_seq.untracked() + 1)
 }
 
 ///|
@@ -544,9 +552,48 @@ fn take_asked(what : String) -> Bool {
 /// changes); picked, the core has it (`newChat.pick`) and the panel closes, showing what it showed till it is gone.
 fn station_rows_node(n : @view.View, src : Source, w : Workspace, v : Json?, close : () -> Unit) -> Unit {
   let current = text(field(v, "station"), "station")
+  let is_auto = flag(v, "autoStation")
+  let pool = count(v, "autoPoolCount")
+  if pool > 0 && !flag(v, "presetStations") {
+    @sf.panel_content_row_node(
+      n,
+      fn() { @sf.t("web-main.newChat.autoStation") },
+      fn(_) {
+        @sfbase.pick_new(src, w.id, { "autoStation": Json::boolean(true) })
+        close()
+      },
+      fn(row) {
+        @sf.style_node(row, fn() { station_row.then(@sf.panel_row_in_node(row)) })
+        row.box(fn(m) {
+          @sf.style_node(m, fn() { station_row_mark_box }, in_row=true)
+          @sf.icon_node(m, "sparks", station_row_mark, By(fn() { @sf.theme().p.accent_text })) |> ignore
+        })
+        |> ignore
+        row.box(fn(col) {
+          @sf.style_node(col, fn() { station_row_words }, in_row=true)
+          col.min_width(Is(Some(0.0))) |> ignore
+          col.box(fn(head) {
+            @sf.style_node(head, fn() { station_row_head })
+            @sf.words_node(head, fn() { @sf.t("web-main.newChat.autoStation") }, fn() { station_row_name })
+            .grow(Is(1.0))
+            .shrink(Is(1.0))
+            .min_width(Is(Some(0.0)))
+            |> ignore
+            if is_auto {
+              @sf.icon_node(head, "check", new_mark, By(fn() { @sf.theme().p.accent })) |> ignore
+            }
+          })
+          |> ignore
+          @sf.words_node(col, fn() { @sf.t("web-main.newChat.autoStationHint", args=[("n", pool.to_string())]) }, fn() { new_status })
+          |> ignore
+        })
+        |> ignore
+      },
+    )
+  }
   for s in items(v, "stations") {
     let st = Some(s)
-    let here = text(st, "station") == current
+    let here = !is_auto && text(st, "station") == current
     n.box(fn(row) {
       // (its words on the panel's words' line wherever it is drawn: @sf.panel_row_in_node; its ground under a mouse, as
       // panel_row_in's `hovered`)
@@ -1047,18 +1094,20 @@ fn new_send_go(
   let fresh = @sfbase.fresh
   let draft = station + ":" + key
   let sig = @sfbase.picked_sig(v)
-  fresh.starting.set(true)
-  fresh.sending.set(true)
-  fresh.sent.set(true)
-  fresh.made.set(key)
-  fresh.made_sig.set(sig)
-  carries()
-  // the page becomes the chat, in place, now: the scene leaving over it from here (new_chat_left), with the words
-  // (all of what the chat's page reads as it mounts — its scene, its composer's room and place, its foot, its fly_after —
-  // said before `became` mounts it)
-  fresh.scene.set(v)
-  leaves()
-  fresh.became.set(Some(r))
+  @view.transition(fn() {
+    fresh.starting.set(true)
+    fresh.sending.set(true)
+    fresh.sent.set(true)
+    fresh.made.set(key)
+    fresh.made_sig.set(sig)
+    carries()
+    // the page becomes the chat, in place, now: the scene leaving over it from here (new_chat_left), with the words
+    // (all of what the chat's page reads as it mounts — its scene, its composer's room and place, its foot, its fly_after —
+    // said before `became` mounts it)
+    fresh.scene.set(v)
+    leaves()
+    fresh.became.set(Some(r))
+  })
   @sfbase.writing_starting(src, d, true)
   // what the core does, in order: the words taken, the chat made, what is written meanwhile on into its draft; then
   // the message sent into it, once both are
@@ -1103,6 +1152,8 @@ fn new_send_go(
               @sfbase.flight_carry_gone(draft)
               @sfbase.writing_starting(src, d, false)
               @sfbase.sent_local_gone(rk, row)
+              // (never put back: what it took of the draft, its files' bytes, let go of as one taken)
+              @sfbase.writing_committed(d)
               toast_later(@sf.t("web-main.draft.notSent", args=[("error", why)]))
             }
             SentTaken => {
@@ -1110,6 +1161,7 @@ fn new_send_go(
                 fresh.starting.set(false)
               }
               @sfbase.writing_starting(src, d, false)
+              @sfbase.writing_committed(d)
             }
           }
         })
@@ -1173,9 +1225,11 @@ fn new_send_go(
   }
   // what is written meanwhile goes on in the chat's draft
   @sfbase.writing_carry(src, d.key, draft)
-  new_chat_reset()
-  sent(r)
-  app.nav.become(Chat(r))
+  @view.transition(fn() {
+    new_chat_reset()
+    sent(r)
+    app.nav.become(Chat(r))
+  })
 }
 
 

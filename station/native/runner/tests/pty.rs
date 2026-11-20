@@ -186,3 +186,27 @@ fn a_program_on_pipes_is_no_terminal() {
     let _ = child.wait();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn relay_pty_runs_its_program_on_a_terminal_of_the_size_asked_on_the_runners_pipes() {
+    // A prompt with no newline after it reaches the runner's stdout before anything is typed (a sign-in's waits there).
+    let mut child = Command::new(BIN)
+        .args(["--relay-pty", "--size", "1000x40", "/bin/sh", "-c", "stty size; printf 'code: '; read x; echo GOT:$x"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let mut out = Vec::new();
+    let mut buf = [0u8; 4096];
+    while !String::from_utf8_lossy(&out).contains("code: ") {
+        let n = std::io::Read::read(&mut stdout, &mut buf).unwrap();
+        assert!(n > 0, "{:?}", String::from_utf8_lossy(&out));
+        out.extend_from_slice(&buf[..n]);
+    }
+    assert!(String::from_utf8_lossy(&out).starts_with("40 1000"), "{:?}", String::from_utf8_lossy(&out));
+    child.stdin.as_mut().unwrap().write_all(b"hello\n").unwrap();
+    std::io::Read::read_to_end(&mut stdout, &mut out).unwrap();
+    assert!(String::from_utf8_lossy(&out).contains("GOT:hello"), "{:?}", String::from_utf8_lossy(&out));
+    assert_eq!(child.wait().unwrap().code(), Some(0));
+}

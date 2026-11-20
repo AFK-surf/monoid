@@ -79,7 +79,7 @@ test "sharing a chat on a small screen: a table wider than the screen and the us
   t.run_for(@sfpages.publish_in_ms)
     t.run_for(@ui.move_most_ms)
     t.click(Button, label="保存到相册")
-    t.run_for(@kit.presence_in_ms)
+    t.run_for(@motion.presence_in_ms)
     let (pw, ph) = png_size(t.kept()[0].2).unwrap()
     // Its width is the chat's widest column at two pixels a point, independent of the small screen's width.
     assert_eq(pw, 1520, msg="the picture should keep the chat's maximum width")
@@ -128,7 +128,7 @@ test "分享图片: the page shows the picture as it would be, 取消, 复制 an
   assert_true(viewer.get() is None)
   // nothing is published
   t.click(Button, label="保存到相册")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   // the picture taken: the chat's name, its messages, their times as dates, still.fail's; not the attachments left
   // out, nor the notes of what was hidden (for the one sharing it)
   let shots = t.shots()
@@ -164,7 +164,7 @@ test "分享图片: the page shows the picture as it would be, 取消, 复制 an
   assert_true(t.query(Button, label="已复制") is Some(_), msg=t.words().map(fn(w) { w.0 }).join("|"))
   // 取消, beside them at the foot, closes it: gone as a dialog goes
   t.click(Button, label="取消")
-  t.run_for(@kit.pop_out_ms)
+  t.run_for(@motion.pop_out_ms)
   assert_true(t.find("部署登录页") is None)
 }
 
@@ -203,7 +203,7 @@ test "分享图片 on an iPhone Duo: the system's tabs put away, its way back an
     }
     // 保存到相册 chosen there: the picture kept in the photo album
     t.post(@hostapi.system_channel, "{\"nav\":\"over/act\"}")
-    t.run_for(@kit.presence_in_ms)
+    t.run_for(@motion.presence_in_ms)
     assert_eq(t.kept_ways().map(fn(k) { (k.0, Show::to_string(k.1)) }), [("still.fail.png", "Photos")])
     // 复制图片 chosen there: the picture on the clipboard, nothing more in the album, 已复制 there a moment
     t.post(@hostapi.system_channel, "{\"nav\":\"over/copy\"}")
@@ -213,7 +213,7 @@ test "分享图片 on an iPhone Duo: the system's tabs put away, its way back an
     assert_true(t.nav_said().contains("已复制"), msg=t.nav_said())
     // closed there: gone as a dialog goes, the tabs back
     t.post(@hostapi.system_channel, "{\"nav\":\"lead/over/close\"}")
-    t.run_for(@kit.pop_out_ms)
+    t.run_for(@motion.pop_out_ms)
     assert_true(t.find("部署登录页") is None)
     assert_true(t.nav_said().contains("\"bare\":false"), msg=t.nav_said())
   }
@@ -252,7 +252,7 @@ test "分享图片: a message unticked fades on the page and is not in the pictu
   assert_true(@sfpages.publish_message_left_out(6.0))
   assert_true(!@sfpages.publish_message_left_out(4.0))
   t.click(Button, label="保存到相册")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   let words = t.shots()[0].join("|")
   assert_true(words.contains("截图、日志和构建缓存都附上了") && !words.contains("跑了 42 秒"), msg=words)
 }
@@ -287,7 +287,7 @@ test "多选: the chat's picture opened from a message has that message alone ti
   t.tap(x + w / 2.0, y + h / 2.0)
   assert_true(!@sfpages.publish_message_left_out(7.0) && @sfpages.publish_message_left_out(6.0))
   t.click(Button, label="保存到相册")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   let words = t.shots()[0].join("|")
   assert_true(words.contains("截图、日志和构建缓存都附上了") && words.contains("Axiom 查询 token") && !words.contains("跑了 42 秒") && !words.contains("帮我把登录页部署到预发"), msg=words)
 }
@@ -442,7 +442,7 @@ test "分享图片: a page of HTML its words place is drawn live on the page and
     }
   }))
   assert_true(t.view_said("{\"still\":{\"view\":\{view}},\"b\":\"\{@codec.hex(png)}\"}"))
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   t.each_frame(None)
   // The picture is wider than this screen, but its captured page keeps its original size and is not cropped.
   guard drawn.val is Some((iw, ih)) else { fail("no captured page in the picture") }
@@ -468,7 +468,7 @@ test "分享图片: a page of HTML whose grab fails, or is of a part of it, is i
     } else {
       assert_true(t.view_said("{\"still\":{\"view\":\{view}},\"b\":\"\{@codec.hex(publish_blank_png(100, 10))}\"}"))
     }
-    t.run_for(@kit.presence_in_ms)
+    t.run_for(@motion.presence_in_ms)
     assert_eq(t.shots().length(), 1)
     assert_true(t.shots()[0].join("|").contains(".html"), msg=t.shots()[0].join("|"))
     assert_true(!@sfpages.publish_has_still("f0"))
@@ -487,7 +487,7 @@ test "分享图片: a page of HTML taken out of the picture is its card on the p
   assert_true(@sfpages.publish_left_out("f0"))
   assert_true(t.find(".html") is Some(_), msg=t.words().map(fn(w) { w.0 }).join("|"))
   t.click(Button, label="保存到相册")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   // (taken at once: nothing to wait for)
   assert_eq(t.shots().length(), 1)
   assert_true(!t.shots()[0].join("|").contains(".html"), msg=t.shots()[0].join("|"))
@@ -500,7 +500,7 @@ test "分享图片: in a browser, which grabs no page, a page of HTML is its car
   assert_true(t.find(".html") is Some(_), msg=t.words().map(fn(w) { w.0 }).join("|"))
   assert_true(!viz_frames.keys().any(fn(k) { k.has_prefix("publish/") }))
   t.click(Button, label="复制图片")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_eq(t.shots().length(), 1)
   assert_true(t.shots()[0].join("|").contains(".html"), msg=t.shots()[0].join("|"))
 }

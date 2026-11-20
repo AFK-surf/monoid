@@ -109,6 +109,7 @@ const NOT_MEASURED: Record<string, string> = {
   admin: "still.fail's operators' console, not the app's", adminList: "still.fail's operators' console, not the app's", adminItem: "still.fail's operators' console, not the app's",
   adminOverview: "still.fail's operators' console, not the app's", adminRelays: "still.fail's operators' console, not the app's",
   screenCard: "eight fields of one screen (screens.ts screenCard)", terminalCard: "six fields of one terminal (terminals.ts terminalCard)", imageNear: "the two pictures beside one, at most (placed.ts near)",
+  stationDiag: "ten fields of one offline station's local diagnostics, capped at 8 addresses and 12 ways (< 2 KB: views/views.ts stationDiagView)",
   shareIn: "30 chats (share-in.ts LISTED) and the workspace's stations, 64 at most (client/limits.ts STATIONS_PER_WORKSPACE)",
   chatFeedback: UNBOUNDED,
   preset: "one preset whole, as the `presets` topic weighed sends each: its name, instructions and folders held to preset-records.ts NAME_MAX, INSTRUCTIONS_MAX, DIRS_MAX",
@@ -137,6 +138,8 @@ const chatEmpty = (older: boolean, compact: boolean): Record<string, string> => 
   "agents[].session.profiles": STATE,
   // (a Slack message given to the agent with files)
   "messages[].elsewhere[].attachments": STATE,
+  // (a secret_save card when the workspace has more than one keyed vault: the fixture's card is secret_use with one vault)
+  "messages[].card.vaultAsk.saveTargets": STATE, "decision.card.vaultAsk.saveTargets": STATE,
   // (what its agents said in Slack before its first message read: one read from its first message has said nothing before it)
   elsewhere: older ? OLDER : STATE,
   outbox: SAVING,
@@ -163,10 +166,10 @@ const EMPTY: Record<string, Record<string, string>> = {
   "stationPart profiles": { "[].modelsSaving": SAVING, "[].quota.windows[].time": NEVER, "[].decisionModels": NONE, "[].workspaces": NONE },
   // (a sign-in under way: Willow's)
   "stationPart logins": { "(whole)": STATE },
-  "chats": { "note.failing": ERROR },
-  "chats mine": { "note.failing": ERROR },
+  "chats": { "note.failing": ERROR, interrupted: STATE },
+  "chats mine": { "note.failing": ERROR, interrupted: STATE },
   // (foundMarks: a search's alone, views/search.ts foundChat; the chat weighed is shared with no other workspace)
-  "chatRow": { foundMarks: NEVER, "xshare.to": STATE },
+  "chatRow": { foundMarks: NEVER, "xshare.to": STATE, "decision.card.vaultAsk.saveTargets": STATE },
   // (profiles.ts gives its note no failing)
   "profiles": { "wait.failing": NEVER },
   // (a ChatGPT account's allowance: a count of resets and when each ends, no kinds, as a station tells Codex's,
@@ -200,11 +203,12 @@ const EMPTY: Record<string, Record<string, string>> = {
   "archive": { errors: ERROR, "wait.failing": ERROR },
   // (none of the chats found is one shared, or one waiting on a card)
   "search": {
-    "items[].xshare.to": STATE, "messages[].chat.decision.options": STATE, "messages[].chat.decision.card.options": STATE, "messages[].chat.decision.card.vaultAsk.hosts": STATE,
+    "items[].xshare.to": STATE, "items[].decision.card.vaultAsk.saveTargets": STATE, "messages[].chat.decision.options": STATE, "messages[].chat.decision.card.options": STATE, "messages[].chat.decision.card.vaultAsk.hosts": STATE,
+    "messages[].chat.decision.card.vaultAsk.saveTargets": STATE,
     "messages[].chat.foundMarks": NEVER, "wait.failing": ERROR,
   },
   // (words, messages: asked with `messages`, which the app does not pass)
-  "chatSearch": { "items[].xshare.to": STATE, "items[].foundMarks": NEVER, words: ASKED_SO, messages: ASKED_SO },
+  "chatSearch": { "items[].xshare.to": STATE, "items[].decision.card.vaultAsk.saveTargets": STATE, "items[].foundMarks": NEVER, words: ASKED_SO, messages: ASKED_SO },
   // (asked for its news alone: no tab is made, changelog.ts)
   "changelog news": { tabs: ASKED_SO },
   // (a rig's devices', a station that only runs tasks: the workspace has none)
@@ -217,12 +221,12 @@ const EMPTY: Record<string, Record<string, string>> = {
   // (this device being approved face to face)
   // (`upgrade`: a handover of safe mode under way on the owner's device, which none is while it is not done by itself)
   "lock": { "me.pair.approvers": STATE, "upgrade.lines": STATE },
-  "vaults": { refused: ERROR },
+  "vaults": { refused: ERROR, "vaults[].pendingDevices": STATE },
   // (a simulator's panels and case: none is up)
   "screens": { "screens[].panels": STATE, "screens[].chrome": STATE },
   "chatLetters": {
     "chats[].letters[].quotes": LETTER, "chats[].letters[].notice.lines": LETTER, "chats[].letters[].options": LETTER, "chats[].letters[].card.options": LETTER,
-    "chats[].letters[].card.vaultAsk.hosts": LETTER, "chats[].letters[].elsewhere": LETTER, "chats[].letters[].chats": LETTER,
+    "chats[].letters[].card.vaultAsk.hosts": LETTER, "chats[].letters[].card.vaultAsk.saveTargets": LETTER, "chats[].letters[].elsewhere": LETTER, "chats[].letters[].chats": LETTER,
   },
   // (what is looked for, `png`, only pictures' names have)
   "chatThings q": { files: ASKED_SO, links: ASKED_SO, pulls: ASKED_SO },

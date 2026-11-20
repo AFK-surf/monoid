@@ -1,6 +1,6 @@
 // Files the station keeps: where its data directory is, and writing them whole (a reader never sees half a file).
 import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
-import { mkdir, open, opendir, rename } from "node:fs/promises";
+import { mkdir, open, opendir, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { tr, type Lang } from "./i18n.ts";
@@ -66,12 +66,16 @@ export function flag(args: string[], name: string): string | undefined {
   return at >= 0 ? args[at + 1] : undefined;
 }
 
-/// Written beside and renamed into place, synced, readable by its owner only. Beside under this process's own name:
-/// another process writing the same file at once (`enroll` while the station runs) has its own. On the caller's thread:
-/// a lock's state and key are written whole before what follows them goes on (one step that must not be split).
+/// How many names beside a file this process gave (`writePrivate`, `writePrivateSoon`).
+let privateWriteSeq = 0;
+
+/// Written beside and renamed into place, synced, readable by its owner only. Beside under a name of its own (this
+/// process's and a number): another process writing the same file at once (`enroll` while the station runs), or another
+/// write of this one, has its own. On the caller's thread: a lock's state and key are written whole before what follows
+/// them goes on (one step that must not be split).
 export function writePrivate(path: string, data: string | Uint8Array) {
   mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.${process.pid}.tmp`;
+  const tmp = `${path}.${process.pid}.${++privateWriteSeq}.tmp`;
   const fd = openSync(tmp, "w", 0o600);
   try {
     writeSync(fd, typeof data === "string" ? Buffer.from(data) : data);
@@ -82,18 +86,55 @@ export function writePrivate(path: string, data: string | Uint8Array) {
   renameSync(tmp, path);
 }
 
-/// `writePrivate` off the station's thread: its sync waits on the disk, a fraction of a second on one kept busy.
-export async function writePrivateSoon(path: string, data: string | Uint8Array): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const tmp = `${path}.${process.pid}.tmp`;
-  const file = await open(tmp, "w", 0o600);
-  try {
-    await file.writeFile(data);
-    await file.sync();
-  } finally {
-    await file.close();
+/// How long a rename waits, attempt by attempt, for a lock that clears by itself (`renameRetrying`).
+export const RENAME_BACKOFF = [20, 40, 80, 160] as const;
+
+/// What a rename that retries is given in tests: the rename itself, the wait, and the waits between attempts.
+export type RenameRetry = {
+  rename?: (from: string, to: string) => Promise<void>;
+  wait?: (ms: number) => Promise<void>;
+  backoff?: readonly number[];
+};
+
+/// Renames `from` to `to`, waiting briefly on Windows transient file or directory locks (`EPERM`, `EBUSY`, `EACCES`):
+/// a virus scanner, the indexer, or a process that has just exited still holding a handle. Any other error, or one
+/// still there once the backoff is spent, is thrown as it came.
+export async function renameRetrying(from: string, to: string, opts?: RenameRetry): Promise<void> {
+  const move = opts?.rename ?? rename;
+  const wait = opts?.wait ?? wall.sleep;
+  const backoff = opts?.backoff ?? RENAME_BACKOFF;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await move(from, to);
+      return;
+    } catch (error) {
+      const delay = backoff[attempt];
+      const code = (error as NodeJS.ErrnoException)?.code;
+      if (delay === undefined || (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES")) throw error;
+      await wait(delay);
+    }
   }
-  await rename(tmp, path);
+}
+
+/// `writePrivate` off the station's thread: its sync waits on the disk, a fraction of a second on one kept busy. Two
+/// writes of the same file at once (two sessions opening one profile) each have a name of their own beside it: through
+/// one, the second's rename found none (ENOENT). What is left beside where one fails goes.
+export async function writePrivateSoon(path: string, data: string | Uint8Array, opts?: RenameRetry): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  const tmp = `${path}.${process.pid}.${++privateWriteSeq}.tmp`;
+  try {
+    const file = await open(tmp, "w", 0o600);
+    try {
+      await file.writeFile(data);
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+    await renameRetrying(tmp, path, opts);
+  } catch (error) {
+    await rm(tmp, { force: true }).catch(() => {});
+    throw error;
+  }
 }
 
 /// A file of the station's own that it keeps in memory and writes through (`writePrivateSoon`): what is asked while a

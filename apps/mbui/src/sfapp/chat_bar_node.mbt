@@ -158,6 +158,10 @@ fn bar_trailing_width(held : @view.View, agents : Array[Agent], station : Statio
 ///|
 /// Chat `r`'s bar (chat_bar_node) in `b`.
 fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> Unit {
+  let from_fresh = @signals.untracked(fn() { @sfbase.fresh.became.get() == Some(r) })
+  if from_fresh {
+    @sfbase.fresh_choreo.val.arm(b)
+  }
   let state = chat_bar_state(r)
   b.owns(fn() {
     let k = chat_bar_key(r)
@@ -274,6 +278,26 @@ fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> 
       .min_height(By(fn() { Some(status_top_now(row.window().0) + bar_h) }))
       .lines_up(Is(Some(Middle)))
       |> ignore
+      // (newly created from NewChat: keep outer glass stable while inner bar row crossfades in along bar_in)
+      if from_fresh {
+        row
+        .alpha(By(fn() {
+          if @sfbase.fresh_active(row) {
+            @sfbase.fresh_progress(row, "bar_in")
+          } else {
+            1.0
+          }
+        }))
+        .offset(By(fn() {
+          if @sfbase.fresh_active(row) {
+            let p = @sfbase.fresh_progress(row, "bar_in")
+            (-6.0 * (1.0 - p), 0.0)
+          } else {
+            (0.0, 0.0)
+          }
+        }))
+        |> ignore
+      }
       // (the find closed, what it marked in the list let go: back, the bar's or the system's, while it is open)
       let find_close = fn() {
         (@sfpages.chat_find_list(r).forget)()
@@ -337,8 +361,15 @@ fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> 
             // them, the people left out of it then or not at that moment alone, what is beside them drawn from where it
             // was to there on archive_tween; what an answer tells at once. The row's own, not the window's: bar_slides)
             let slides = bar_slides(e, fn() { bar_keys_shown(view, jobs) })
-            bar_middle_node(e, src, r, view, stint, state, expanded, can_toggle, mid_w_sig, slides)
-            e.show(read, at_once=true, fn(end) { bar_end_node(end, src, r, view, jobs, slides) })
+            let end_arriving = Ref(from_fresh && !@signals.untracked(read))
+            bar_middle_node(e, src, r, view, stint, state, expanded, can_toggle, mid_w_sig, slides, from_fresh~)
+            e.show(read, at_once=true, fn(end) {
+              if end_arriving.val {
+                end_arriving.val = false
+                end.alpha(By(@motion.presence_in(end, @motion.tween(140.0, ease=Out)))) |> ignore
+              }
+              bar_end_node(end, src, r, view, jobs, slides)
+            })
           }
         },
       )
@@ -443,6 +474,7 @@ fn bar_middle_node(
   can_toggle : () -> Bool,
   mid_w_sig : @signals.Signal[Double],
   slides : (@view.View) -> Unit,
+  from_fresh? : Bool = false,
 ) -> Unit {
   // (its station as the workspace's marks have it, what it last was while they are asked again: asked_again.mbt)
   let station_held = @sfbase.station_mark_held(src, r.station)
@@ -486,6 +518,16 @@ fn bar_middle_node(
       }
     }
   }
+  // (fade in agent avatars smoothly when the real chat topic arrives after an initially empty/pending fresh view)
+  let had_empty_agents = Ref(
+    from_fresh &&
+    @signals.untracked(fn() {
+      match view() {
+        Some(v) => v.agents.length() == 0
+        None => true
+      }
+    }),
+  )
   // (made again as what it shows changes, given what it shows)
   row.pick(marks, fn(mid_outer, marks) {
     mid_outer
@@ -564,6 +606,10 @@ fn bar_middle_node(
         p.drops(Is(bar_drop_people)).laid_nowhere(By(expanded)) |> ignore
         slides(p)
       }
+      let fade_agents = had_empty_agents.val && v.agents.length() > 0
+      if v.agents.length() > 0 {
+        had_empty_agents.val = false
+      }
       for i, ag in v.agents {
         let key = ag.key
         // each opens its card, said as the agent (with the station it runs on, the first's): its name said once
@@ -573,6 +619,9 @@ fn bar_middle_node(
         }
         @sf.action_box_node(mid, fn() { label }, label_is=label, fn(_) { open_agent(src, r, key) }, fn(k) {
           slides(k)
+          if fade_agents {
+            k.alpha(By(@motion.presence_in(k, @motion.tween(140.0, ease=Out)))) |> ignore
+          }
           if i == 0 {
             agent_station_node(k, ag, badge_of(key), station, via, stint)
           } else {
@@ -675,7 +724,7 @@ fn bar_keys_shown(view : () -> ChatView?, jobs : () -> Json?) -> (Bool, Bool, Bo
 
 ///|
 /// At the end of chat `r`'s bar (its view `view`, read), in `e`: 归档 while nothing is left in it, coming and going
-/// (chat_bar's: 280 ms, ArchiveEase, fading from or to 85% of its size where it stands, its room laid out at once),
+/// (fading in/out over @sf.dur_ms Out where it stands, its room laid out at once),
 /// its services and jobs while it has any (a dot when one died lately or a service is started again), what it is and
 /// "…"; each drawn on its way from where it was as 归档 or the services' key comes or goes (`slides`).
 fn bar_end_node(
@@ -702,7 +751,7 @@ fn bar_end_node(
       if @view.answering_now() {
         share.put(if on { 1.0 } else { 0.0 })
       } else {
-        share.go(k, if on { 1.0 } else { 0.0 }, archive_tween)
+        share.go_ms(k, if on { 1.0 } else { 0.0 }, @sf.dur_ms)
       }
     })
     slides(k)
@@ -721,7 +770,6 @@ fn bar_end_node(
       .lines_up(Is(Some(Middle)))
       .lies_along(Is(Middle))
       .alpha(By(s))
-      .scale(By(fn() { 0.85 + 0.15 * s() }))
       .presses(By(archivable))
       |> ignore
       b.show(fn() { @sfbase.doing(doing_key) }, fn(sp) { @sf.spinner_node(sp) |> ignore })

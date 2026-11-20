@@ -354,7 +354,10 @@ fn View::pick_leaving(
           leaving_faders.clear()
           gone_by.val = -1.0 / 0.0
         }
+        // (a side that showed nothing, said at once: its place holds what comes whole from the first, so nothing delays
+        // it; without at_once its place opens from nothing and what comes waits for it to be there)
         let unseen = quiet ||
+          (at_once && old.none) ||
           (match old.held.untracked() {
             1 =>
               match old.fader.live() {

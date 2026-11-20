@@ -20,4 +20,4 @@ import {
   "stillfail/sffixture",
 }
 
-import { "stillfail/sfkept", "stillfail/sfscreens", "stillfail/core", "mbui/dmath", "moonbitlang/core/cmp" } for "wbtest"
+import { "stillfail/sfkept", "stillfail/sfscreens", "stillfail/core", "mbui/dmath", "moonbitlang/core/cmp", "mbui/player" } for "wbtest"

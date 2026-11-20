@@ -150,12 +150,7 @@ fn P51::plane_live(self : P51) -> Plane {
     },
     log=m => p51_log("INFO", "presence", m),
   )
-  let entry = () => @cloud_net.cloud_entry((bus.config_raw.val)()) catch {
-    e => {
-      p51_log("WARN", "cloud", "cloudEntry not taken", fields={ "error": Json::string("\{e}") })
-      None
-    }
-  }
+  let entry = () => @cloud_net.cloud_entry((bus.config_raw.val)())
   let transport = @cloud_net.CloudTransport::new(entry, @cloud_net.host_dial_io(host))
   let http = @cloud_net.host_http(host)
   let sign = (m : String) => bus.key.sign(m) catch { _ => "" }
@@ -166,6 +161,12 @@ fn P51::plane_live(self : P51) -> Plane {
     () => wall_ms() / 1000L,
     transport,
     http,
+    trace_resource=[
+      ("service.version", bus.version),
+      ("os.type", platform()),
+      ("host.arch", arch()),
+      ("process.runtime.name", "moonbit"),
+    ],
   )
   let ways = @cloud_net.Ways::new(
     state.view(),
@@ -219,6 +220,15 @@ fn P51::plane_live(self : P51) -> Plane {
         Some(s) if s.text("station") != "" => Some(s.text("station"))
         _ => None
       }
+      if !writing.val {
+        p.tell()
+      }
+    }),
+  )
+  // (a person's log taken changes the lock a workspace's vault goes by out of security mode, made of them: told as
+  // cloud.json's changes are, so the vault's lock and its waiting requests are read again: state.ts `vaultLock`)
+  ignore(
+    cloud.person_chains().listen(_ => {
       if !writing.val {
         p.tell()
       }
@@ -283,10 +293,7 @@ fn file_stamp(fs : @ops_platform.Fs, file : String) -> String {
 async fn Plane::call(self : Plane, op : String, arg : Json) -> Json {
   let text = (k : String) => match arg {
     Object(m) =>
-      match m.get(k) {
-        Some(String(s)) => Some(s)
-        _ => None
-      }
+      opt_str(m.get(k))
     _ => None
   }
   match op {
@@ -315,10 +322,7 @@ async fn Plane::call(self : Plane, op : String, arg : Json) -> Json {
       Json::null()
     }
     "releaseBase" =>
-      match self.control.release_base() {
-        Some(b) => Json::string(b)
-        None => Json::null()
-      }
+      jopt(self.control.release_base())
     "credential" => {
       let c = self.control.credential()
       {
@@ -333,10 +337,7 @@ async fn Plane::call(self : Plane, op : String, arg : Json) -> Json {
     "memberships" => Json::array(self.cloud.memberships())
     "membership" => self.cloud.membership(text("workspace").unwrap_or("")).unwrap_or(Json::null())
     "home" =>
-      match self.cloud.home() {
-        Some(h) => Json::string(h)
-        None => Json::null()
-      }
+      jopt(self.cloud.home())
     "removed" => Json::boolean(self.cloud.removed())
     "reload" => {
       self.cloud.reload(tell=true)
@@ -397,11 +398,11 @@ async fn Plane::call(self : Plane, op : String, arg : Json) -> Json {
     "stillFails" => Json::array(@cloud_net.still_fails(self.state.view()).map(Json::string(_)))
     "addRelay" =>
       @cloud_net.add_relay(self.ways, text("workspace").unwrap_or(""), text("url").unwrap_or(""), text("by")).to_json() catch {
-        @cloud_net.WaysRefusal(m) => raise @api_routes.Thrown("WaysRefusal", @jsjson.JV::of_json({ "message": Json::string(m) }))
+        @cloud_net.WaysRefusal(m) => raise @api_routes.Thrown("WaysRefusal", to_jv({ "message": Json::string(m) }))
       }
     "removeRelay" =>
       @cloud_net.remove_relay(self.ways, text("workspace").unwrap_or(""), text("url").unwrap_or("")).to_json() catch {
-        @cloud_net.WaysRefusal(m) => raise @api_routes.Thrown("WaysRefusal", @jsjson.JV::of_json({ "message": Json::string(m) }))
+        @cloud_net.WaysRefusal(m) => raise @api_routes.Thrown("WaysRefusal", to_jv({ "message": Json::string(m) }))
       }
     // (the relays tool's mesh asks before the mesh's directory answers them, or while no mesh runs: answered as
     // agents.ts answers them with no directory, none listed and nothing enrolled or revoked; live_p5_1_scopes.mbt
@@ -418,6 +419,10 @@ async fn Plane::call(self : Plane, op : String, arg : Json) -> Json {
     // A lock as kept here (`Cloud.locked` and `Cloud.chain`), its state whole; `workspace` null: the home one's.
     "locked" => locked_json(self.cloud.locked(ws=text("workspace")))
     "chain" => locked_json(self.cloud.chain(ws=text("workspace")))
+    // The person logs kept here, each `[genesis, chain]` (state.ts `personChainsOf(cloud).every()`): what a vault's
+    // lock is made of where its workspace is not in security mode (live_p5_4_vault.mbt `p54_personal_lock`).
+    "personChains" =>
+      Json::array(self.cloud.person_chains().every().map(p => Json::array([Json::string(p.0), Json::array(p.1)])))
     "told" => Json::null()
     _ => raise BusError("no such control plane call: \{op}")
   }
@@ -462,23 +467,30 @@ async fn become_other(bus : LiveBus) -> Unit {
 ///|
 /// A lock's state as JSON (the vault's and the gate's reading of it): its head, its devices, members, stations and
 /// persons, where it moved.
-fn lock_state_json(st : @lock.LockState) -> Json {
+fn lock_state_json(st : @lock.LockState, member_objects? : Bool = false) -> Json {
   let devices : Map[String, Json] = {}
   for id, d in st.devices {
-    let m : Map[String, Json] = { "id": Json::string(id), "sub": Json::string(d.sub), "kind": Json::string(d.kind) }
-    match d.by {
-      Some(b) => m["by"] = Json::string(b)
-      None => ()
+    let m : Map[String, Json] = {
+      "id": Json::string(id),
+      "sub": Json::string(d.sub),
+      "kind": Json::string(d.kind),
+      "own": Json::boolean(d.own),
     }
-    match d.sign_key {
-      Some(k) => m["sign_key"] = Json::string(k)
-      None => ()
-    }
+    if d.by is Some(b) { m["by"] = Json::string(b) }
+    if d.sign_key is Some(k) { m["sign_key"] = Json::string(k) }
     devices[id] = Json::object(m)
+  }
+  let sign_keys : Map[String, Json] = {}
+  for id, ks in st.sign_keys {
+    sign_keys[id] = Json::array(ks.map(Json::string(_)))
   }
   let members : Map[String, Json] = {}
   for sub, m in st.members {
-    members[sub] = Json::string(m.role)
+    members[sub] = if member_objects {
+      { "sub": Json::string(sub), "email": Json::string(m.email), "role": Json::string(m.role) }
+    } else {
+      Json::string(m.role)
+    }
   }
   let persons : Map[String, Json] = {}
   for sub, g in st.persons {
@@ -490,13 +502,11 @@ fn lock_state_json(st : @lock.LockState) -> Json {
     "head": Json::string(st.head),
     "genesis": Json::string(st.genesis),
     "devices": Json::object(devices),
+    "signKeys": Json::object(sign_keys),
     "members": Json::object(members),
     "stations": Json::array(st.stations.keys().map(k => Json::string(k)).collect()),
     "persons": Json::object(persons),
-    "moved": match st.moved {
-      Some(m) => Json::string(m)
-      None => Json::null()
-    },
+    "moved": jopt(st.moved),
   }
   Json::object(out)
 }
@@ -508,7 +518,7 @@ fn locked_json(l : @cloud_lock.Locked?) -> Json {
     Some(x) =>
       {
         "state": match x.state {
-          Some(s) => lock_state_json(s)
+          Some(s) => lock_state_json(s, member_objects=true)
           None => Json::null()
         },
         "waiting": Json::boolean(x.waiting),

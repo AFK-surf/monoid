@@ -71,7 +71,7 @@ pub fn choice_cards_node(
           if item.focus_shown() {
             (@ui.tree_theme().focus_w, @ui.tree_theme().focus)
           } else if on() {
-            (1.0, theme().p.line)
+            (control_edge_w, theme().p.line)
           } else {
             (0.0, 0L)
           }

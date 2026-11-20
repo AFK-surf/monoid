@@ -308,6 +308,99 @@ pub async fn Files::unlock_worktrees(self : Files, room : String) -> Unit {
   self.unlink(path)
 }
 
+///|
+/// Collects worktree registration directories (`<common>/worktrees/<name>`) owned by `room`:
+/// from `.git` files under `room` and from `workspace-locks.json` for packed rooms.
+pub async fn Files::collect_worktree_registrations(self : Files, room : String) -> Array[String] {
+  let found : Array[String] = []
+  let add = async fn(candidate : String) {
+    guard self.realpath(candidate) is Some(resolved) else { return }
+    if self.basename(self.dirname(resolved)) != "worktrees" {
+      return
+    }
+    if !found.contains(resolved) {
+      found.push(resolved)
+    }
+  }
+  let visited = Ref(0)
+  async fn walk(dir : String, depth : Int) -> Unit {
+    if depth > 64 || visited.val >= 200_000 {
+      return
+    }
+    let entries = self.readdir_types(dir) catch { _ => return }
+    for entry in entries {
+      visited.val += 1
+      if visited.val >= 200_000 {
+        return
+      }
+      let (name, kind) = entry
+      let path = self.join([dir, name])
+      if name == ".git" && kind == "file" {
+        let said = self.read_text(path).unwrap_or("").trim().to_owned()
+        if said.strip_prefix("gitdir: ") is Some(rest) {
+          let named = rest.to_owned()
+          let resolved = if @nodepath.is_absolute(self.sep, named) { self.join([named]) } else { self.join([dir, named]) }
+          add(resolved)
+        }
+      } else if kind == "dir" {
+        walk(path, depth + 1)
+      }
+    }
+  }
+  walk(room, 0)
+  let locks_path = self.join([room, "workspace-locks.json"])
+  if self.there(locks_path) {
+    for locked in strings_in(self.read_text(locks_path)) {
+      if locked != "" {
+        add(self.dirname(locked))
+      }
+    }
+  }
+  found
+}
+
+///|
+/// Removes only the exact worktree registration directories in `admin_dirs` that belong to one of `room_paths`,
+/// whose target `.git` file no longer exists, and that have no `locked` file remaining.
+pub async fn Files::remove_worktree_registrations(
+  self : Files,
+  admin_dirs : Array[String],
+  room_paths : Array[String],
+) -> Array[String] {
+  let rooms = room_paths.map(r => @nodepath.join(self.sep, [r]))
+  let removed : Array[String] = []
+  for admin_dir in admin_dirs {
+    if self.basename(self.dirname(admin_dir)) != "worktrees" {
+      continue
+    }
+    if self.lkind(admin_dir) != Some("dir") {
+      continue
+    }
+    if self.lkind(self.join([admin_dir, "locked"])) is Some(_) {
+      continue
+    }
+    let raw_target = self.read_text(self.join([admin_dir, "gitdir"])).unwrap_or("").trim().to_owned()
+    if raw_target == "" || !@nodepath.is_absolute(self.sep, raw_target) {
+      continue
+    }
+    let target = @nodepath.join(self.sep, [raw_target])
+    let in_room = rooms.iter().any(r => target != r && self.within(target, r))
+    if !in_room {
+      continue
+    }
+    if self.lkind(target) is Some(_) {
+      continue
+    }
+    try {
+      self.remove_tree(admin_dir, force=true)
+      removed.push(admin_dir)
+    } catch {
+      _ => ()
+    }
+  }
+  removed
+}
+
 // ── workspaces ─────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ///|
@@ -462,6 +555,9 @@ pub async fn Files::restore_workspace(self : Files, room : String) -> Unit {
 pub async fn Files::empty_workspace(self : Files, room : String) -> Unit {
   let workspace = self.join([room, "workspace"])
   let archive = self.workspace_archive(room)
+  let raw_room = @nodepath.join(self.sep, [room])
+  let real_room = self.realpath(room).unwrap_or(raw_room)
+  let worktrees = self.collect_worktree_registrations(room)
   self.mkdirs(workspace)
   if self.there(archive) {
     let stage = self.join([room, "workspace.emptying"])
@@ -489,6 +585,8 @@ pub async fn Files::empty_workspace(self : Files, room : String) -> Unit {
   }
   self.readings_gone(room)
   self.unlock_worktrees(room)
+  let room_paths = if raw_room == real_room { [real_room] } else { [real_room, raw_room] }
+  ignore(self.remove_worktree_registrations(worktrees, room_paths))
 }
 
 ///|

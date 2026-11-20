@@ -7,6 +7,7 @@
 /// Node `p` drawn as a small panel is (small_panel's): what it holds panel_pad in, r_menu round, on the panel's ground,
 /// its line round it and its shadow under it, what reaches past its edge cut there. It.
 pub fn small_panel_node(p : @view.View) -> @view.View {
+  corner_card_node(p, fn() { r_menu }, inset=fn() { panel_pad })
   p
   .padding(Is((panel_pad, panel_pad, panel_pad, panel_pad)))
   .radius(Is(r_menu))
@@ -69,4 +70,11 @@ pub fn panel_button_node(
 /// its keys among what it holds), never a finger.
 pub fn hovered_in_node(v : @view.View) -> Bool {
   @ui.pointing() is Mouse && v.pointed_in()
+}
+
+///|
+/// Whether a mouse is over any block of the list's item `v` is a block of (@view.View::list_item_pointed: every slice of
+/// a long message as one), never a finger.
+pub fn hovered_item_node(v : @view.View) -> Bool {
+  @ui.pointing() is Mouse && v.list_item_pointed()
 }

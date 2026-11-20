@@ -482,3 +482,43 @@ let center_wide_said : Array[(String, String, Double, Double, Double, Double)] =
     ("Button", "断开其他连接（1）", 982.0, 438.0, 284.0, 36.0),
     ("Button", "断开", 982.0, 487.0, 284.0, 36.0),
   ]
+
+///|
+test "控制中心's 麦克风: there driving a screen with a virtual microphone, lit while this device's is shared, the panel open still" {
+  // (a browser's: its microphone taken)
+  let r = screen_rig(platform=4)
+  r.live(others=[])
+  open_center(r)
+  let mic = tr("web-pages.screen.mic")
+  assert_false(center_tile(r, mic))
+  shut(r)
+  // a desktop whose app records its virtual microphone (the fixture's screen-center-mic)
+  let more : Map[String, Json] = {
+    "kind": Json::string("desktop"),
+    "mic": { "available": true, "active": true, "epoch": 1.0 },
+  }
+  r.state("live", others=[], clipboard=["text", "png"], drop={ "folder": "/Users/alice/Downloads", "reveal": true }, more~)
+  open_center(r)
+  r.t.run_for(@ui.move_most_ms)
+  assert_eq(pressed_of(r, mic), Some(false))
+  assert_eq(r.t.audit(), [])
+  r.tap_label(mic)
+  r.t.draw()
+  assert_true(r.sess().mic_on.get())
+  assert_eq(pressed_of(r, mic), Some(true))
+  assert_true(r.told("screen.micOn").last().unwrap().stringify().contains("\"on\":true"))
+  assert_true(@sf.presenting())
+  assert_eq(r.t.audit(), [])
+  r.tap_label(mic)
+  r.t.draw()
+  assert_eq(pressed_of(r, mic), Some(false))
+  assert_true(r.told("screen.micOn").last().unwrap().stringify().contains("\"on\":false"))
+  // only looking: none
+  shut(r)
+  r.state("live", control=false, others=[])
+  r.t.run_for(@ui.move_most_ms)
+  open_center(r)
+  assert_false(center_tile(r, mic))
+  shut(r)
+  screen_done(r.t)
+}

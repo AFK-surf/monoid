@@ -716,23 +716,32 @@ export class Local {
   }
 
   beingArchived(station: string, row: J): boolean {
-    const thread = typeof get(row, "thread") === "number" ? row.thread : null;
-    const session = typeof get(row, "session") === "string" ? row.session : null;
-    return this.archivedChanging(station, thread, session) === true;
+    this.#seen.changing.read(station);
+    for (let i = this.#changing.length - 1; i >= 0; i--) {
+      const c = this.#changing[i];
+      if (!c.restoreGuard && Local.#matchesRow(c, station, row) && c.archived !== null) return c.archived === true;
+    }
+    return false;
   }
 
   changing(station: string, thread: number | null, session: string, row: Record<string, unknown>, archived: boolean | null): number {
     const id = ++this.#changes;
-    const key = join([station, thread === null ? `s:${session}` : `t:${thread}`]);
+    const listed = thread === null && session !== "" ? this.#data.chatForSession(station, session) : thread !== null ? this.#data.chatOfThread(station, thread) : undefined;
+    const resolvedThread = thread ?? (typeof get(listed, "thread") === "number" ? (get(listed, "thread") as number) : null);
+    const resolvedSession = resolvedThread === null && session !== ""
+      ? (typeof get(listed, "session") === "string" ? (get(listed, "session") as string)
+        : typeof get(listed, "id") === "string" ? (get(listed, "id") as string)
+        : this.#data.conversationOf(station, session))
+      : session;
+    const key = join([station, resolvedThread === null ? `s:${resolvedSession}` : `t:${resolvedThread}`]);
     if (archived === true) {
-      const listed = thread === null ? this.#data.chatOfSession(station, session) : this.#data.chatOfThread(station, thread);
-      const remembered = this.archivedChanging(station, thread, session) === false ? this.#archiveRows.get(key) : undefined;
+      const remembered = this.archivedChanging(station, resolvedThread, resolvedSession) === false ? this.#archiveRows.get(key) : undefined;
       this.#archiveRows.delete(key);
       if (listed !== undefined || remembered !== undefined) this.#archiveRows.set(key, listed ?? remembered);
       if (this.#archiveRows.size > 32) this.#archiveRows.delete(this.#archiveRows.keys().next().value!);
     }
     const restore = archived === false ? this.#archiveRows.get(key) : undefined;
-    const change: Change = { id, station, thread, session, row, archived, ...(restore === undefined ? {} : { restore }) };
+    const change: Change = { id, station, thread: resolvedThread, session: resolvedSession, row, archived, ...(restore === undefined ? {} : { restore }) };
     this.#changing.push(change);
     this.#data.putLocal(CHANGING, station, String(id), change);
     this.#changed({ kind: "changing", station });
@@ -766,7 +775,7 @@ export class Local {
       const c = this.#changing[i];
       if (c.station !== station || c.done === undefined) continue;
       const listed = c.archived === null ? undefined : c.thread === null
-        ? this.#data.chatOfSession(station, c.session)
+        ? this.#data.chatForSession(station, c.session)
         : this.#data.chatOfThread(station, c.thread);
       if (c.done.rev !== rev && (c.archived !== false || (c.restore === undefined && listed !== undefined))) {
         this.#changing.splice(i, 1);
@@ -841,14 +850,19 @@ export class Local {
     return c.station === station && (c.thread !== null ? thread === c.thread : session === c.session);
   }
 
+  static #matchesRow(c: Change, station: string, row: J): boolean {
+    if (c.station !== station) return false;
+    const thread = typeof get(row, "thread") === "number" ? (row.thread as number) : null;
+    if (c.thread !== null) return thread === c.thread;
+    return get(row, "session") === c.session || get(row, "id") === c.session;
+  }
+
   /// A station's row as the changes from here have it, oldest first (a copy when any applies).
   asChanging(station: string, row: J): J {
     this.#seen.changing.read(station);
-    const thread = typeof get(row, "thread") === "number" ? row.thread : null;
-    const session = typeof get(row, "session") === "string" ? row.session : null;
     let out = row;
     for (const c of this.#changing) {
-      if (c.restoreGuard || !Local.#matches(c, station, thread, session)) continue;
+      if (c.restoreGuard || !Local.#matchesRow(c, station, row)) continue;
       if (out === row) out = { ...row };
       Object.assign(out, c.row);
     }
@@ -858,17 +872,21 @@ export class Local {
   /// Whether a chat's page is being taken out of the archive (false) or put in it (true), from here.
   archivedChanging(station: string, thread: number | null, session: string | null): boolean | null {
     this.#seen.changing.read(station);
+    const anchor = thread === null && session !== null && session !== "" ? this.#data.conversationOf(station, session) : session;
     for (let i = this.#changing.length - 1; i >= 0; i--) {
       const c = this.#changing[i];
-      if (!c.restoreGuard && Local.#matches(c, station, thread, session) && c.archived !== null) return c.archived;
+      if (!c.restoreGuard && (Local.#matches(c, station, thread, session) || (anchor !== session && Local.#matches(c, station, thread, anchor))) && c.archived !== null) return c.archived;
     }
     return null;
   }
 
   restoring(station: string, row: J): boolean {
-    const thread = typeof get(row, "thread") === "number" ? row.thread : null;
-    const session = typeof get(row, "session") === "string" ? row.session : null;
-    return this.archivedChanging(station, thread, session) === false;
+    this.#seen.changing.read(station);
+    for (let i = this.#changing.length - 1; i >= 0; i--) {
+      const c = this.#changing[i];
+      if (!c.restoreGuard && Local.#matchesRow(c, station, row) && c.archived !== null) return c.archived === false;
+    }
+    return false;
   }
 
   /// Rows brought back by an undo, until the station lists them again.

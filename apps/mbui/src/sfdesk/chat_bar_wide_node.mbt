@@ -13,13 +13,14 @@
 /// Where a chat's bar keeps clear at its ends and over its buttons, as the frame it is in says (chat_bar_wide_node's):
 /// how much taller it is over its buttons (`over`: the tape's line), how far it is moved in from its ends while the
 /// folded sidebar is shown a while (`margins`, before and after: less than none before, drawn moved back), its room
-/// at its start (`start`) and at its end (`end`, given whether the side panel is open beside it and ⌘F's bar is in it),
+/// at its start (`start`, given whether a title starts it: one that has none starts with its marks, round as they
+/// are) and at its end (`end`, given whether the side panel is open beside it and ⌘F's bar is in it),
 /// the corner its buttons share with the window's (`linked`: none on the tape), its ground as drawn in node `bar`
 /// (`ground`: the page's; on the tape, the page's panel's, a step darker while that is behind the one in use).
 pub(all) struct ChatBarEnds {
   over : () -> Double
   margins : () -> (Double, Double)
-  start : () -> Double
+  start : (Bool) -> Double
   end : (Bool, Bool) -> Double
   linked : () -> @ui.CornerOf?
   ground : (@view.View) -> Int64
@@ -83,10 +84,23 @@ pub fn chat_bar_wide_node(
 fn new_bar_of(b : @view.View, src : Source, w : Workspace, ends : ChatBarEnds, tips : @sf.TipLayer) -> Unit {
   let high = fn() { @sf.wide_bar_h + (ends.over)() }
   let beside = fn() { new_files_open(src, w.id) }
+  // (its 文件 in the system's bars where they are, among the page's actions as a chat's are there (newchat.mbt's
+  // bar_action), nothing of its own over the page then: handed as it comes on top, as chat_bar_handed_node hands a chat's)
+  b.reacts(fn() { (app.nav.top() == NewChat, @sf.native_on()) }, fn(st) {
+    guard st.0 && st.1 else { return }
+    @signals.untracked(fn() {
+      nav_page_for(NewChat)
+      bar_action("new/files", @sf.t("web-pages.chat.files"), "folder", fn() {
+        new_files_set(src, w.id, !new_files_open(src, w.id))
+      })
+      |> ignore
+    })
+  })
   b
   .row(Is(true))
   .height(By(fn() { Some(high()) }))
   .alpha(By(fn() { if @sfbase.first_page_waits.get() { 0.0 } else { 1.0 } }))
+  .takes_unseen(Is(true))
   .offset(By(fn() { (dmin(0.0, (ends.margins)().0), 0.0) }))
   |> ignore
   bar_room_node(b, fn() { dmax(0.0, (ends.margins)().0) })
@@ -103,7 +117,8 @@ fn new_bar_of(b : @view.View, src : Source, w : Workspace, ends : ChatBarEnds, t
     .presses(Is(true))
     .moves_window(By(@ui.window_inset_now))
     |> ignore
-    bar.box(fn(e) {
+    // (none of its own where the system's bars hold it)
+    bar.show(fn() { !@sf.native_on() }, fn(e) {
       e.shrink(Is(0.0)) |> ignore
       @sf.icon_button_node(
         e,
@@ -115,7 +130,6 @@ fn new_bar_of(b : @view.View, src : Source, w : Workspace, ends : ChatBarEnds, t
       )
       |> ignore
     })
-    |> ignore
     bar_room_node(bar, fn() { (ends.end)(beside(), false) })
   })
   |> ignore
@@ -143,6 +157,13 @@ fn wide_bar_of(b : @view.View, src : Source, r : ChatRef, ends : ChatBarEnds, ti
       None => false
     }
   }
+  // (whether a title starts it: a chat with none starts with its marks)
+  let titled = fn() {
+    match view() {
+      Some(v) => v.title != ""
+      None => r.title != ""
+    }
+  }
   let beside = fn() {
     match view() {
       Some(v) => side_of(v).0.length() > 0
@@ -162,6 +183,7 @@ fn wide_bar_of(b : @view.View, src : Source, r : ChatRef, ends : ChatBarEnds, ti
     .height(By(fn() { Some(high()) }))
     // (drawn at none while the app's first page waits, as the page's old view is: sfbase's first_page_waits)
     .alpha(By(fn() { if @sfbase.first_page_waits.get() { 0.0 } else { 1.0 } }))
+    .takes_unseen(Is(true))
     // (its margins as spaces at its ends, one less than none taken back by drawing the row moved back as far)
     .offset(By(fn() { (dmin(0.0, (ends.margins)().0), 0.0) }))
     |> ignore
@@ -177,7 +199,7 @@ fn wide_bar_of(b : @view.View, src : Source, r : ChatRef, ends : ChatBarEnds, ti
       .presses(Is(true))
       .moves_window(By(fn() { @ui.window_inset() }))
       |> ignore
-      bar_room_node(bar, ends.start)
+      bar_room_node(bar, fn() { (ends.start)(titled()) })
       bar.box(fn(inner) {
         @sf.style_node(inner, fn() { chat_bar_inner }, in_row=true)
         wide_bar_title_row(inner, src, r, view, fn() { room.width() }, tips, stint)
@@ -569,9 +591,8 @@ fn wide_agent_tile(
     Some(s) if @sf.tile_whole() =>
       // (with touch the tile itself the button, as it is drawn: tapped its history's; held, its card and its
       // station's as one: the user, 2026-10-27: 它们是一体的)
-      parent.box(fn(t) {
+      @sf.action_box_node(parent, said, fn(_) { toggle() }, on_hold=fn() { if hand.val is Some(h) { (h.hold)() } }, fn(t) {
         @sf.style_node(t, fn() { if marked() { agent_station_on } else { agent_station } }, in_row=true)
-        t.says(By(fn() { Some(@view.said(Button, label=said())) })) |> ignore
         hand.val = Some(
           @sf.hover_card_node(
             tips,
@@ -587,7 +608,7 @@ fn wide_agent_tile(
             tile=true,
             padded=false,
             held=fn() { (held.val)() },
-            press=toggle,
+            pointed=fn() { t.pointed_in() },
           ),
         )
         let hot = fn() { @sf.lit_node(t) }
@@ -609,11 +630,10 @@ fn wide_agent_tile(
     Some(s) =>
       parent.box(fn(t) {
         @sf.style_node(t, fn() { if marked() { agent_station_on } else { agent_station } }, in_row=true)
-        let agent = t.box(fn(g) {
+        let agent = @sf.action_box_node(t, said, fn(_) { toggle() }, on_hold=fn() { if hand.val is Some(h) { (h.hold)() } }, fn(g) {
           let hot = fn() { @sf.lit_node(g) }
           @sf.style_node(g, fn() { if hot() { agent_station_agent_hot } else { agent_station_agent } }, in_row=true)
           wide_tile_seam(g, true)
-          g.says(By(fn() { Some(@view.said(Button, label=said())) })) |> ignore
           hand.val = Some(
             @sf.hover_card_node(
               tips,
@@ -621,7 +641,7 @@ fn wide_agent_tile(
               fn(c) { held.val = @sfpages.agent_card_node(c, src, r, a.key, tips, card) },
               tile=true,
               held=fn() { (held.val)() },
-              press=toggle,
+              pointed=fn() { g.pointed_in() },
             ),
           )
           wide_agent_mark(g, a, badge, badge_said, joined=true)
@@ -644,9 +664,8 @@ fn wide_agent_tile(
       })
       |> ignore
     None =>
-      parent.box(fn(t) {
+      @sf.action_box_node(parent, said, fn(_) { toggle() }, on_hold=fn() { if hand.val is Some(h) { (h.hold)() } }, fn(t) {
         @sf.style_node(t, fn() { if marked() { agent_mark_btn_on } else { agent_mark_btn } }, in_row=true)
-        t.says(By(fn() { Some(@view.said(Button, label=said())) })) |> ignore
         hand.val = Some(
           @sf.hover_card_node(
             tips,
@@ -654,7 +673,7 @@ fn wide_agent_tile(
             fn(c) { held.val = @sfpages.agent_card_node(c, src, r, a.key, tips, card) },
             tile=true,
             held=fn() { (held.val)() },
-            press=toggle,
+            pointed=fn() { t.pointed_in() },
           ),
         )
         wide_agent_mark(t, a, badge, badge_said, joined=false)

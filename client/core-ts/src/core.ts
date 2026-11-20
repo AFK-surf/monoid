@@ -13,7 +13,7 @@ import { toolCall, toolResult, type ToolPart } from "./tool-step.ts";
 import * as fonts from "./fonts.ts";
 import { MermaidAbsent, mermaidChart, provideMermaid } from "./mermaid.ts";
 import { parseCall, cancellable, callStation, counts, type Call } from "./core/calls.ts";
-import { execute, handlers, hooks } from "./core/execute.ts";
+import { execute, handlers, hooks, rereadAfterWrite } from "./core/execute.ts";
 import { Router } from "./core/routing.ts";
 import { importFormer } from "./db/import.ts";
 import { Data, holds } from "./data.ts";
@@ -71,7 +71,7 @@ import { Rigs } from "./rigs.ts";
 import { Devices } from "./devices.ts";
 import { Signer } from "./lock.ts";
 import { PersonalLock } from "./personal-lock.ts";
-import { answersOf, asked, bindPerson, enrolled, inForceOf, keepToPerson, lockSeen, movedBySelf, movedHere, ownLockEnv, ownLockFor, personalStations, refusedAgain, signerKnown, signerOf, signsAs, takeOffBound, tellStations, tookOrRefused, withBound } from "./views/lock.ts";
+import { answersOf, asked, bindPerson, enrolled, inForceOf, keepToPerson, lockSeen, movedBySelf, movedHere, ownLockEnv, ownLockFor, personStations, personalStations, refusedAgain, safeNow, signerKnown, signerOf, signsAs, takeOffBound, tellStations, tookOrRefused, withBound } from "./views/lock.ts";
 import { personalBegin, personalCancel, personalPairState, personalProve } from "./views/pair.ts";
 import { envOf, Views } from "./views/views.ts";
 import * as xshare from "./views/xshare.ts";
@@ -83,6 +83,7 @@ import * as vaultCalls from "./views/vault.ts";
 import * as waysCalls from "./views/ways-stations.ts";
 import * as stationMarkCalls from "./views/station-marks.ts";
 import * as presetCalls from "./views/presets.ts";
+import * as boardDraftCalls from "./views/board-drafts.ts";
 import * as movedChats from "./views/moved.ts";
 import { MOVED } from "./station/requests.ts";
 import * as transferCalls from "./views/transfers.ts";
@@ -156,6 +157,8 @@ export class Inner {
   choose!: Choose;
   /// A person's presets and starred models as their devices carry them (views/presets.ts).
   presets!: presetCalls.PresetViews;
+  /// A person's drafts of 待派发 as their devices carry them (views/board-drafts.ts).
+  boardDrafts!: boardDraftCalls.BoardDraftViews;
   changelog!: Changelog;
   forms!: Forms;
   adb!: Adb;
@@ -297,6 +300,7 @@ export class Core {
       waysCalls.install(inner);
       stationMarkCalls.install(inner);
       inner.presets = presetCalls.install(inner);
+      inner.boardDrafts = boardDraftCalls.install(inner);
       movedChats.install(inner);
       transferCalls.install(inner);
       browseCalls.install(inner);
@@ -359,6 +363,9 @@ export class Core {
               // (where its chain moved, the state in force made anew of the person's log now, the vaults following it:
               // views/lock.ts `inForceOf`, whether or not anything shown reads it)
               if (movedHere(inner, ws)) inner.runner.fork(laterSleep(0).pipe(Effect.andThen(Effect.sync(() => void inForceOf(inner, ws)))));
+              // (no safe mode: the vault goes by this very lock, views/vault.ts `personalLockOf`; its page and the chats'
+              // cards answered again, what it takes held, as a workspace's lock coming does)
+              else if (!safeNow(inner, ws)) inner.runner.fork(laterSleep(0).pipe(Effect.andThen(Effect.sync(() => vaultCalls.vaultCome(inner, ws)))));
             }
           },
           told: (sub, chain) => tellStations(inner, sub, chain),
@@ -368,6 +375,7 @@ export class Core {
         // (the vaults read first, while the device is still in: views/vault.ts `levelVaults`)
         tookOff: (sub, id, removal) => Effect.andThen(vaultCalls.levelVaultsOf(inner, sub, id), withBound(inner, sub, Effect.tap(removal, () => takeOffBound(inner, sub, id)))),
         subOf: (workspace) => inner.workspaces.owner(workspace),
+        stationsOf: (sub) => personStations(inner, sub).map(String),
         subs: () => inner.accounts.list().map((a) => ({ sub: a.sub, email: a.email })),
         pair: {
           begin: (subs) => personalBegin(inner, subs),
@@ -385,7 +393,11 @@ export class Core {
         subOf: (workspace) => inner.workspaces.owner(workspace),
         view: (workspace) => inner.data.shared({ topic: "workspace", workspace }),
         call: (station, method, path, body) => inner.stations.requests.call(station, method, path, body, { quiet: true }),
-        cloud: (sub, method, path, body) => inner.provider.request(sub, method, path, body),
+        // (a station's mode changed: the workspace's view it answers with is held at once, as a write through `op` is,
+        // so its page follows with no event of the cloud's; core/execute.ts)
+        cloud: (sub, method, path, body) =>
+          Effect.tap(inner.provider.request(sub, method, path, body), (answer) =>
+            method === "PATCH" ? rereadAfterWrite(inner, inner.cloudSync.afterWrite(sub, method, path, answer), null) : Effect.void),
         first: (asks, at) => answersOf(inner, asks, tookOrRefused, at),
         lock: {
           locked: (workspace) => signsAs(inner, workspace).locked,
@@ -418,7 +430,7 @@ export class Core {
       handlers.device = (_i, call) => inner.devices.run((call as Extract<Call, { kind: "device" }>).call);
       inner.stations.also.push({ read: (address) => inner.devices.read(address), event: (address, name, data) => inner.devices.heard(address, name, data) });
       // This person's chats' grants of their phone, as each station says them.
-      inner.stations.also.push({ read: (address) => inner.adb.readGrants(address), event: (address, name, data) => (name === "adb-grant" ? inner.adb.heard(address, data) : undefined), resume: true });
+      inner.stations.also.push({ read: (address) => inner.adb.readGrants(address), event: (address, name, data) => (name === "adb-grant" ? inner.adb.heard(address, data) : name === "adb-revoke" ? inner.adb.heardRevoke(address, data) : undefined), resume: true });
       handlers.ask = (_i, call) => asks.run((call as Extract<Call, { kind: "ask" }>).ask, inner.accounts);
       inner.changelog = new Changelog(inner.host, inner.store, inner.data);
       inner.router.owners.push(inner.changelog);

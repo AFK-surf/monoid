@@ -81,6 +81,8 @@ export interface Source {
   start(topic: Topic): void;
   /// The topic is subscribed to or watched again in the while it is kept after the last went (not started anew).
   resume?(topic: Topic): void;
+  /// The topic's last subscriber and watcher left (entering the eviction grace window).
+  idle?(topic: Topic): void;
   /// Nobody has subscribed for a while: stop streams and timers for it.
   stop(topic: Topic): void;
   /// The current value of a topic marked stale, as it goes out; undefined while it has none.
@@ -433,6 +435,7 @@ export class Store {
     const entry = this.#topics.get(topicKey(topic));
     if (!entry || entry.subscribers.length > 0 || entry.watchers.length > 0 || entry.usage.hasSubscribers()) return;
     entry.idle = idle;
+    this.#source?.idle?.(topic);
     if (ASKED_BY_WORDS.has(topic.topic)) this.#wordsLetGo.set(wordsKind(topic), topicKey(topic));
     this.runner.fork(laterSleep(EVICT_AFTER_MS).pipe(Effect.andThen(Effect.sync(() => this.#evict(topic, idle)))));
   }

@@ -111,11 +111,40 @@ pub fn stations_list_node(
           )
         "first" => sl_first_node(b, core, here, add, adding)
         "devices" => @sf.section_heading_node(b, fn() { @sf.t("web-pages.devices.title") })
-        "stations" =>
-          b.each(addresses, fn(k) { k }, fn(row, k) {
+        "stations" => {
+          // (live station additions/removals open or close their card slots within this block; card-internal updates stay static)
+          b.transitions_only() |> ignore
+          let shown_addresses = @signals.signal(@signals.untracked(addresses), same=fn(a, b) { a == b })
+          b.reacts(
+            addresses,
+            fn(next) {
+              if !@view.answering_now() {
+                @view.transition(within=b, fn() { shown_addresses.set(next) })
+              } else {
+                shown_addresses.set(next)
+              }
+            },
+            at_start=false,
+          )
+          b.each(fn() { shown_addresses.get() }, fn(k) { k }, fn(row, k) {
             let address = k.untracked()
-            // (its own station of the list, read by its address: told only as that one changes)
-            sl_station_card_node(row, core, fn() { stations_by.get(address) }, fn() { (core.push)(Station(address)) }, shown~)
+            // (its own station of the list, read by its address: told only as that one changes; while the row leaves after
+            // its address is dropped, keep the last known station so the leaving card does not blank or snap its height)
+            let last_station : Ref[Json?] = Ref(None)
+            let station = fn() {
+              match stations_by.get(address) {
+                Some(v) => {
+                  last_station.val = Some(v)
+                  Some(v)
+                }
+                None => last_station.val
+              }
+            }
+            row.box(fn(card) {
+              card.transitions_only() |> ignore
+              sl_station_card_node(card, core, station, fn() { (core.push)(Station(address)) }, shown~)
+            })
+            |> ignore
             // (its menu where the pointer's other button is pressed on it: opened, its name or its address copied)
             row.on_menu(fn(m) {
               let name = text(@signals.untracked(fn() { stations_by.get(address) }), "name")
@@ -130,6 +159,7 @@ pub fn stations_list_node(
             })
             |> ignore
           })
+        }
         k if k.has_prefix("rig/") => {
           let id = k.exact_view(start=4).to_owned()
           let r = fn() { rigs_by.get(id) }
@@ -322,6 +352,8 @@ fn sl_joined(s : Json?) -> String {
 /// those in their bones; reconnecting, faded as last heard. How it is reached read only while the page shows (`shown`,
 /// stations_list_node's).
 fn sl_station_body_node(card : @view.View, core : Core, s : () -> Json?, shown : () -> Bool) -> Unit {
+  // (its chips as this device says a CPU: idle or busy, @settings.meters_said; told again only as what they say changes)
+  let busy = @signals.computed(fn(_) { @settings.cpu_busy(core) })
   let online = fn() { flag(s(), "online") }
   let host = fn() {
     match field(s(), "host") {
@@ -329,6 +361,7 @@ fn sl_station_body_node(card : @view.View, core : Core, s : () -> Json?, shown :
       _ => None
     }
   }
+  let meters = @signals.computed(fn(_) { @settings.meters_said(items(host(), "meters"), busy.get()) })
   // (how this device reaches it, while it is up: the core's `stationNet`, sampled while shown)
   let net = fn() {
     if !online() || !shown() {
@@ -360,7 +393,7 @@ fn sl_station_body_node(card : @view.View, core : Core, s : () -> Json?, shown :
       m.min_height(Is(Some(@sf.fill_chip_h))) |> ignore
       m.box(fn(x) {
         x.alpha(By(fn() { seen(host() is Some(_)) })) |> ignore
-        @sf.meter_line_node(x, fn() { items(host(), "meters") })
+        @sf.meter_line_node(x, fn() { meters.get() })
       })
       |> ignore
       m.show(fn() { online() && host() is None && !unreadable() }, fn(o) {

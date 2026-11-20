@@ -35,16 +35,10 @@ pub async fn Adb::new(
   let gate_admit : Admit? = if admit {
     Some(async fn(grant, holders) {
       let deps : GateDeps = {
-        session: async fn(id) {
+        session: fn(id) raise {
           match session_of(id) {
             None => Null
-            Some(key) =>
-              jo([
-                (
-                  "workspace",
-                  get(w.store("getSession", [js(key)]), "workspace"),
-                ),
-              ])
+            Some(key) => jo([("workspace", get(w.get_session(key), "workspace"))])
           }
         },
         table: async fn() { w.ask("platform.processTable", []) },
@@ -71,9 +65,7 @@ pub async fn Adb::new(
         cwds: async fn(pids) {
           cwds_of(w.ask("platform.cwds", [ja(pids.map(ji))]))
         },
-        self_pid: num_of(Some(w.ask("process.pid", [])))
-        .unwrap_or(-1.0)
-        .to_int(),
+        self_pid: @host.pid(),
         elsewhere: None,
       }
       gate(deps, w, grant, holders)
@@ -163,6 +155,16 @@ pub async fn Adb::new(
       }
     },
     outcomes~,
+    told_revoke=async fn(signed, owner, request, workspace) {
+      ignore(
+        w.ask("events.tell", [
+          js("adb-revoke"),
+          signed,
+          js("adb-revoke\u{0}\{owner}\u{0}\{request}"),
+          jo([("workspace", js(workspace)), ("email", js(owner))]),
+        ]),
+      )
+    },
   )
   grants_ref.val = Some(grants)
   let shares = Shares::new(
@@ -187,7 +189,7 @@ fn cwds_of(v : J) -> Map[Int, String] {
   match v {
     Obj(fs) =>
       for f in fs {
-        match @session_chats.js_number(js(@jsjson.text(f.0))) {
+        match @session_chats.js_number(js(@jsjson.sanitize_str(f.0))) {
           Some(n) => out[n.to_int()] = js_text(f.1)
           None => ()
         }
@@ -238,7 +240,7 @@ pub async fn Adb::stream(
         ),
       ),
     )
-    ignore(w.ask("stream.finish", [stream]))
+    w.stream_finish(stream)
     return
   }
   // A grant decided, taken back, or the owner's grants listed (from their app).
@@ -261,7 +263,7 @@ pub async fn Adb::stream(
         ]),
       )
       stream_write(w, stream, @utf8.encode(stringify(body)))
-      ignore(w.ask("stream.finish", [stream]))
+      w.stream_finish(stream)
     }
     let email = text_of(at(Some(viewer), "email")).to_lower()
     let ws = text_of(at(Some(viewer), "workspace"))
@@ -272,6 +274,8 @@ pub async fn Adb::stream(
         200,
         jo([
           ("grants", ja(self.grants.of_owner(email, workspace=ws))),
+          // (`revokes`: what their devices signed to take grants back, each phone checking it, whichever station's grant)
+          ("revokes", ja(self.grants.revokes_of_owner(email))),
           ("lasts", js("chat")),
           ("signs", jb(true)),
         ]),
@@ -279,6 +283,14 @@ pub async fn Adb::stream(
     }
     if op == "lasts" {
       return reply(200, jo([("lasts", js("chat"))]))
+    }
+    // A taking back of a grant another station holds, brought here by the owner's device to be told to their phones
+    // (the grant's own station may never say it ended).
+    if op == "revoke" && at(Some(ask), "relay") is Some(Bool(true)) {
+      return match self.grants.keep_revoke(email, at(Some(ask), "signed"), ws) {
+        None => reply(200, jo([("ok", jb(true))]))
+        Some(why) => reply(422, jo([("message", js(why))]))
+      }
     }
     let id = match at(Some(ask), "request") {
       Some(Str(_) as r) => js_text(r)
@@ -299,7 +311,7 @@ pub async fn Adb::stream(
           ws,
           signed?=at(Some(ask), "signed"),
         )
-      _ => self.grants.revoke(email, id, ws)
+      _ => self.grants.revoke(email, id, ws, signed?=at(Some(ask), "signed"))
     }
     let request = self.grants.get(id)
     return match why {
@@ -634,7 +646,7 @@ pub async fn Adb::phone_send(self : Adb, session : String, args : J) -> String {
     is Some(share) else {
     return "Granted, but the phone is not lent to this station right now: call phone_use to see why."
   }
-  let row = w.store("getSession", [js(session)])
+  let row = w.get_session(session)
   guard at(Some(row), "workspace") is Some(workspace) else {
     raise fail_("unknown session \{session}")
   }

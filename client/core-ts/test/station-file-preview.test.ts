@@ -7,6 +7,9 @@ import { test } from "node:test";
 import { Effect } from "effect";
 import type { FakeHost } from "../src/testing.ts";
 import { PREVIEW_SMALL, chatKeptId, previewKeptId } from "../src/drive-kept.ts";
+import { BULK } from "../src/station/requests.ts";
+import { StationAddr } from "../src/station/addr.ts";
+import { HostWire, type StationWire } from "../src/station/wire.ts";
 import { call } from "./helpers.ts";
 import { Raw, started, stationReplies } from "./station-fixture.ts";
 
@@ -108,4 +111,32 @@ test("an image of PREVIEW_SMALL or less is read as it was: by its parts, no prev
   assert.deepEqual([got.ok, got.bytes], [{ type: "image/png" }, image]);
   assert.deepEqual(r.asked, ["parts small.png"]);
   r.core.close();
+});
+
+test("requests.file marks preview (thumb=2) and full file with BULK header, but not small thumbnail (thumb=1)", async () => {
+  const image = bytesOf(3_000_000, 1);
+  const preview = bytesOf(400_000, 7);
+  const seen: { path: string; bulk: string | undefined }[] = [];
+  const t = await started(undefined, 0, (host): StationWire => {
+    const fallback = new HostWire(host);
+    return {
+      request: (st, head, body) => {
+        if (head.path.includes("/sessions/k1/files")) {
+          seen.push({ path: head.path, bulk: head.headers.find(([k]) => k.toLowerCase() === BULK)?.[1] });
+        }
+        return fallback.request(st, head, body);
+      },
+    };
+  });
+  station(t.host, new Map([["shot.png", { bytes: image, preview }]]));
+  const addr = StationAddr.parse(ST);
+  await Effect.runPromise(t.core.inner.stations.requests.file(addr, "k1", "shot.png", "preview", () => {}, null));
+  await Effect.runPromise(t.core.inner.stations.requests.file(addr, "k1", "shot.png", false, () => {}, null));
+  await Effect.runPromise(t.core.inner.stations.requests.file(addr, "k1", "shot.png", true, () => {}, null));
+  assert.deepEqual(seen, [
+    { path: "/admin/api/sessions/k1/files?name=shot.png&thumb=2", bulk: "1" },
+    { path: "/admin/api/sessions/k1/files?name=shot.png", bulk: "1" },
+    { path: "/admin/api/sessions/k1/files?name=shot.png&thumb=1", bulk: undefined },
+  ]);
+  t.core.close();
 });

@@ -3,51 +3,16 @@
 // (`{ ...v, name }`), deleted, a string's text.
 
 ///|
-using @jsjson {type JValue}
-
-///|
-type J = JValue
-
-///|
-fn js(s : String) -> J {
-  Str(@jsjson.units(s))
-}
-
-///|
-fn jn(d : Double) -> J {
-  Num(d)
-}
-
-///|
-/// An object of these properties, in this order.
-fn jo(pairs : Array[(String, J)]) -> J {
-  Obj(pairs.map(p => (@jsjson.units(p.0), p.1)))
+using @jsjson {
+  type JValue as J, jval_str as js, jval_num as jn, jval_obj as jo, jval_array as ja,
+  jval_str_raw_of as text_of, jval_set_or_new as with_prop, jval_del as without, stringify,
+  jval_try_parse as parse, jval_stringify_num as num_text, js_compare,
 }
 
 ///|
 /// An object of these properties, those absent (undefined) left out as JSON.stringify leaves them.
 fn jopt(pairs : Array[(String, J?)]) -> J {
-  let out = []
-  for p in pairs {
-    if p.1 is Some(v) {
-      out.push((@jsjson.units(p.0), v))
-    }
-  }
-  Obj(out)
-}
-
-///|
-fn ja(items : Array[J]) -> J {
-  Arr(items)
-}
-
-///|
-/// The text of a string (its code units as they are).
-fn text_of(v : J?) -> String? {
-  match v {
-    Some(Str(s)) => Some(@jsjson.raw_text(s))
-    _ => None
-  }
+  Obj(pairs.filter_map(p => p.1.map(v => (p.0, v))))
 }
 
 ///|
@@ -57,10 +22,7 @@ fn str_prop(v : J, name : String) -> String? {
 
 ///|
 fn num_prop(v : J, name : String) -> Double? {
-  match v.get(name) {
-    Some(Num(d)) => Some(d)
-    _ => None
-  }
+  @jsjson.jval_num_of(v.get(name))
 }
 
 ///|
@@ -70,75 +32,18 @@ fn has(v : J, name : String) -> Bool {
 }
 
 ///|
-/// `{ ...v, [name]: value }`: an object's property set where it is, or put after the rest (anything but an object
-/// spread as none).
-fn with_prop(v : J, name : String, value : J) -> J {
-  let key = @jsjson.units(name)
-  let out = []
-  let mut set = false
-  if v is Obj(entries) {
-    for e in entries {
-      if e.0 == key {
-        if !set {
-          out.push((key, value))
-          set = true
-        }
-      } else {
-        out.push(e)
-      }
-    }
-  }
-  if !set {
-    out.push((key, value))
-  }
-  Obj(out)
-}
-
-///|
-/// `{ ...v }` without `name` (`delete copy[name]`).
-fn without(v : J, name : String) -> J {
-  let key = @jsjson.units(name)
-  match v {
-    Obj(entries) => Obj(entries.filter(e => e.0 != key))
-    other => other
-  }
-}
-
-///|
-fn stringify(v : J) -> String {
-  @jsjson.stringify(v)
-}
-
-///|
-/// JSON.parse; none for what is not JSON.
-fn parse(text : String) -> J? {
-  Some(@jsjson.parse(text)) catch {
-    _ => None
-  }
-}
-
-///|
 /// `String(v ?? "")`.
 fn string_of(v : J?) -> String {
   match v {
     None | Some(Null) => ""
-    Some(v) => @jsjson.raw_text(@jsjson.js_string(v))
+    Some(v) => @jsjson.js_string(v)
   }
-}
-
-///|
-/// A number as JavaScript writes it in a template string (`${n}`).
-fn num_text(d : Double) -> String {
-  @jsjson.stringify(Num(d))
 }
 
 ///|
 /// `v[i]`: none where `v` is no array or too short.
 fn at(v : J, i : Int32) -> J? {
-  match v {
-    Arr(items) if i >= 0 && i < items.length() => Some(items[i])
-    _ => None
-  }
+  @jsjson.jval_at_i(Some(v), i)
 }
 
 ///|
@@ -146,26 +51,12 @@ fn at(v : J, i : Int32) -> J? {
 fn spread(v : J) -> J {
   match v {
     Obj(_) => v
-    Str(units) =>
-      Obj(units.mapi((i, u) => (@jsjson.units(i.to_string()), Str([u]))))
+    Str(s) =>
+      Obj(Array::makei(s.length(), i => (i.to_string(), Str(s.unsafe_substring(start=i, end=i + 1)))))
     Arr(items) =>
-      Obj(items.mapi((i, item) => (@jsjson.units(i.to_string()), item)))
+      Obj(items.mapi((i, item) => (i.to_string(), item)))
     _ => Obj([])
   }
-}
-
-///|
-/// `a < b` of two strings, as JavaScript compares them: by their UTF-16 code units.
-fn js_compare(a : String, b : String) -> Int32 {
-  let n = if a.length() < b.length() { a.length() } else { b.length() }
-  for i in 0..<n {
-    let x = a.unsafe_charcode_at(i)
-    let y = b.unsafe_charcode_at(i)
-    if x != y {
-      return if x < y { -1 } else { 1 }
-    }
-  }
-  a.length().compare(b.length())
 }
 
 ///|
@@ -175,7 +66,7 @@ fn to_number(v : J) -> Double {
     Num(n) => n
     Null => 0.0
     Bool(b) => if b { 1.0 } else { 0.0 }
-    Str(s) => js_number(@jsjson.raw_text(s))
+    Str(s) => js_number(s)
     Arr([]) => 0.0
     Arr([one]) => to_number(Str(@jsjson.js_string(one)))
     _ => @double.not_a_number

@@ -211,21 +211,8 @@ pub fn collate(a : String, b : String) -> Int {
 ///|
 /// JavaScript's comparison of strings: by their UTF-16 code units.
 pub fn units_compare(a : String, b : String) -> Int {
-  let n = if a.length() < b.length() { a.length() } else { b.length() }
-  for i in 0..<n {
-    let p = a.unsafe_charcode_at(i)
-    let q = b.unsafe_charcode_at(i)
-    if p != q {
-      return if p < q { -1 } else { 1 }
-    }
-  }
-  if a.length() == b.length() {
-    0
-  } else if a.length() < b.length() {
-    -1
-  } else {
-    1
-  }
+  let d = @jsjson.js_compare(a, b)
+  if d < 0 { -1 } else if d > 0 { 1 } else { 0 }
 }
 
 ///|

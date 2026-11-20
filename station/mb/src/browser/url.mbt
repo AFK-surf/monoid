@@ -262,28 +262,9 @@ pub fn normalize_browser_url(raw : String) -> String? {
 }
 
 ///|
-/// `encodeURIComponent(s)`.
+/// `encodeURIComponent(s)` (a lone surrogate, where JavaScript throws, written as U+FFFD's bytes).
 pub fn encode_uri_component(s : String) -> String {
-  let sb = StringBuilder::new()
-  let hex = "0123456789ABCDEF".to_array()
-  for c in s {
-    let v = c.to_int()
-    if (v >= 'a'.to_int() && v <= 'z'.to_int()) ||
-      (v >= 'A'.to_int() && v <= 'Z'.to_int()) ||
-      (v >= '0'.to_int() && v <= '9'.to_int()) ||
-      "-_.!~*'()".contains_char(c) {
-      sb.write_char(c)
-    } else {
-      // (a lone surrogate throws in JavaScript; written as U+FFFD's bytes here)
-      let b = @utf8.encode(c.to_string())
-      for x in b {
-        sb.write_char('%')
-        sb.write_char(hex[x.to_int() >> 4])
-        sb.write_char(hex[x.to_int() & 15])
-      }
-    }
-  }
-  sb.to_string()
+  @url.encode_uri_component(s)
 }
 
 ///|

@@ -314,7 +314,7 @@ fn refused(lang : String, k : String, args? : Array[(String, J)] = []) -> Error 
 /// `String(error)`.
 fn error_text(e : Error) -> String {
   let name = match field_of(e, "name") {
-    Some(Str(u)) => @jsjson.text(u)
+    Some(Str(u)) => @jsjson.sanitize_str(u)
     _ =>
       match kind_of(e) {
         "TypeError" | "RangeError" | "SyntaxError" => kind_of(e)
@@ -414,10 +414,7 @@ pub struct Updates {
 ///|
 /// updates.ts `canonicalNow`: `realpathSync(p)`, none where it throws.
 async fn realpath_now(w : World, p : String) -> String? {
-  match (try Some(w.call("fs.realpathSync", [js(p)])) catch { _ => None }) {
-    Some(Str(u)) => Some(@jsjson.text(u))
-    _ => None
-  }
+  w.realpath_or_null(p, sync=true)
 }
 
 ///|
@@ -606,7 +603,7 @@ pub fn Updates::auto(self : Updates) -> Bool {
 /// itself is off until a newer one than it is out, then on again (resume_auto). Only while it is off.
 pub fn Updates::auto_after(self : Updates) -> String? {
   match get(Some(self.config.raw), "autoUpdateAfter") {
-    Some(Str(u)) if !self.auto() && build_or_none(Some(@jsjson.text(u))) is Some(_) => Some(@jsjson.text(u))
+    Some(Str(u)) if !self.auto() && build_or_none(Some(@jsjson.sanitize_str(u))) is Some(_) => Some(@jsjson.sanitize_str(u))
     _ => None
   }
 }
@@ -1986,7 +1983,7 @@ async fn Updates::place_node(self : Updates, kind : String, node : OwnNode) -> U
     return
   }
   let home = own_node_home(self.data)
-  w.mkdir(home, opts=jo([("recursive", jb(true))]))
+  w.mkdir(home)
   let dist = bget("dist")
   let archive = bget("archive")
   let file = pjoin([home, archive])
@@ -2059,7 +2056,7 @@ async fn Updates::fetch_codex(self : Updates, npm : String, env : Env) -> String
     let v = get(Some(self.fetch_json("\{self.registry}/\{pkg}/latest")), "version")
     let u = get(get(Some(self.fetch_json("\{self.registry}/\{pkg}/\{js_string_opt(v)}-\{p}")), "dist"), "tarball")
     match (v, u) {
-      (Some(Str(v)), Some(Str(u))) => Some((@jsjson.text(v), @jsjson.text(u)))
+      (Some(Str(v)), Some(Str(u))) => Some((@jsjson.sanitize_str(v), @jsjson.sanitize_str(u)))
       _ => None
     }
   } catch {
@@ -2261,7 +2258,7 @@ async fn Updates::update_station_rest(self : Updates, lang : String, begun : Beg
   }
   {
     errdefer put_back()
-    w.mkdir(run_dir, opts=jo([("recursive", jb(true))]))
+    w.mkdir(run_dir)
   }
   // Off the station's thread so cleanup does not delay its other work at every update.
   ignore(
@@ -2318,7 +2315,7 @@ async fn Updates::back_station(self : Updates, to : String, lang : String, begun
   }
   let plan = {
     errdefer put_back()
-    w.mkdir(run_dir, opts=jo([("recursive", jb(true))]))
+    w.mkdir(run_dir)
     ignore(
       @effect.all([
         async fn() { w.rm(pjoin([run_dir, "update.exit"])) },
@@ -2737,7 +2734,7 @@ async fn Updates::follow(self : Updates, started : Started) -> Unit {
   let look_soon = () => if !over.val && soon.val is None {
     soon.val = Some(self.fibers.after(50.0, async fn() { look() }))
   }
-  w.mkdir(run_dir, opts=jo([("recursive", jb(true))])) catch {
+  w.mkdir(run_dir) catch {
     _ => ()
   }
   if over.val {

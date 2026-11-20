@@ -9,6 +9,10 @@ let decide_src : Ref[Source?] = Ref(None)
 /// in a desktop's window when `wide`.
 fn decide_core(calls : Array[Made], mode : String, wide? : Bool = false, pointing? : @ui.Pointing) -> @ui.Tester {
   new_run()
+  // (the chat's page made as both_pages runs it now; outside one, as the fixture's channel has it)
+  if both_running.val {
+    both_way()
+  }
   let base = fixture(mode)
   let src : Source = {
     ..base,
@@ -375,7 +379,7 @@ test "接力到频道 on a phone: the pages' relay as a sheet, the places the bo
   assert_true(relay_dialog(t) is None, msg="the sheet not leaving once relayed")
   // (said at once, read out: seen as it has come in, toast_said)
   assert_true(toast_said(t, "已接力到 #dev"))
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(t.find("已接力到 #dev") is Some(_))
   // the sheet gone once its way out is over (asserted after it, not in the press's frame: what it showed, the note
   // with it, is kept on that way, where it was emptied before it closed)

@@ -8,6 +8,7 @@
 /// signKeys: {id: [key…]}}` (station/src/cloud/lock.ts `LockState`'s members, devices and signKeys).
 pub fn lock_view(lock : Json) -> @vault.LockView {
   let members : Map[String, Unit] = Map([])
+  let roles : Map[String, String] = Map([])
   let devices : Map[String, @vault.Device] = Map([])
   let sign_keys : Map[String, Array[String]] = Map([])
   let ws = match lock {
@@ -15,8 +16,23 @@ pub fn lock_view(lock : Json) -> @vault.LockView {
     _ => ""
   }
   match lock {
-    { "members": Array(ms), .. } => for m in ms { if m is String(s) { members[s] = () } }
-    { "members": Object(ms), .. } => for k, _ in ms { members[k] = () }
+    { "members": Array(ms), .. } =>
+      for m in ms {
+        if m is String(s) {
+          members[s] = ()
+          roles[s] = "member"
+        }
+      }
+    { "members": Object(ms), .. } =>
+      for k, v in ms {
+        members[k] = ()
+        let role = match v {
+          String(r) => r
+          { "role": String(r), .. } => r
+          _ => "member"
+        }
+        roles[k] = role
+      }
     _ => ()
   }
   if lock is { "devices": Object(ds), .. } {
@@ -52,7 +68,7 @@ pub fn lock_view(lock : Json) -> @vault.LockView {
       sign_keys[id] = keys
     }
   }
-  { ws, members, devices, sign_keys }
+  { ws, members, roles, devices, sign_keys }
 }
 
 ///|

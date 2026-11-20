@@ -401,7 +401,7 @@ test("the_operators_changes_are_listed_by_kind_in_words_and_found_by_who_and_wha
     ["标记反馈 · FB-12", "feedback-monitor · 已修复"],
     ["开通测试版 · bob@y.io", "ann@x.io"],
   ]);
-  assert.deepEqual(all.filters.map((f: J) => [f.id, f.count]), [["all", 3], ["users", 1], ["workspaces", 0], ["codes", 0], ["feedback", 1], ["relays", 1]]);
+  assert.deepEqual(all.filters.map((f: J) => [f.id, f.count]), [["all", 3], ["users", 1], ["workspaces", 0], ["codes", 0], ["feedback", 1], ["relays", 1], ["keys", 0]]);
   assert.deepEqual(ids(list("audit", audit, "", "relays", null, null, NOW)), ["a3"]);
   assert.deepEqual(ids(list("audit", audit, "bob", null, null, null, NOW)), ["a1"]);
   assert.deepEqual(ids(list("audit", audit, "测试版", null, null, null, NOW)), ["a1"]);
@@ -462,4 +462,51 @@ test("a_codes_row_carries_each_products_sign_up_link", () => {
   assert.deepEqual(row.links.map((l: J) => l.product), ["monoid", "still.fail"]);
   delete (codes.codes[0] as J).links;
   assert.equal("links" in list("invite-codes", codes, "", null, null, null, NOW).rows[0], false);
+});
+
+test("admin_keys_list_filters_sorts_searches_and_marks_states", () => {
+  const keys = {
+    keys: [
+      { id: "ak_1", name: "Ops CLI", prefix: "sfa_11111111", created_by: "u1", created_by_email: "alice@x.io", created_at: NOW - 10 * DAY, expires_at: NOW + 20 * DAY, last_used_at: NOW - 60, revoked_at: null },
+      { id: "ak_2", name: "CI Bot", prefix: "sfa_22222222", created_by: "u1", created_by_email: "alice@x.io", created_at: NOW - 2 * DAY, expires_at: null, last_used_at: null, revoked_at: null },
+      { id: "ak_3", name: "Expired Key", prefix: "sfa_33333333", created_by: "u2", created_by_email: "bob@x.io", created_at: NOW - 30 * DAY, expires_at: NOW - DAY, last_used_at: NOW - 5 * DAY, revoked_at: null },
+      { id: "ak_4", name: "Revoked Key", prefix: "sfa_44444444", created_by: "u1", created_by_email: "alice@x.io", created_at: NOW - 20 * DAY, expires_at: NOW + 10 * DAY, last_used_at: NOW - 15 * DAY, revoked_at: NOW - 3 * DAY },
+    ],
+  };
+  const all = list("keys", keys, "", null, null, null, NOW);
+  assert.equal(all.total, 4);
+  assert.deepEqual(ids(all), ["ak_2", "ak_1", "ak_4", "ak_3"]);
+  assert.deepEqual([count(all, "active"), count(all, "expired"), count(all, "revoked")], [2, 1, 1]);
+  assert.deepEqual(all.rows.map((r: J) => [r.id, r.prefix, r.state, r.marks[0].tone]), [
+    ["ak_2", "sfa_22222222", "active", "green"],
+    ["ak_1", "sfa_11111111", "active", "green"],
+    ["ak_4", "sfa_44444444", "revoked", "red"],
+    ["ak_3", "sfa_33333333", "expired", "amber"],
+  ]);
+  // Sort by last_used_at
+  const byUsed = list("keys", keys, "", null, "used", null, NOW);
+  assert.deepEqual(ids(byUsed), ["ak_1", "ak_3", "ak_4", "ak_2"]);
+  // Search by prefix & email
+  assert.deepEqual(ids(list("keys", keys, "sfa_3333", null, null, null, NOW)), ["ak_3"]);
+  assert.deepEqual(ids(list("keys", keys, "bob@x.io", null, null, null, NOW)), ["ak_3"]);
+  // Filter by state
+  assert.deepEqual(ids(list("keys", keys, "", "active", null, null, NOW)), ["ak_2", "ak_1"]);
+  assert.deepEqual(ids(list("keys", keys, "", "revoked", null, null, NOW)), ["ak_4"]);
+});
+
+test("audit_formats_key_create_and_revoke_entries", () => {
+  const audit = {
+    audit: [
+      { id: "k3", created_at: NOW - 5, actor: "alice@x.io", action: "key.revoke", target: "Ops CLI", detail: "sfa_11111111" },
+      { id: "k2", created_at: NOW - 10, actor: "alice@x.io", action: "key.create", target: "CI Bot", detail: "sfa_22222222 · never" },
+      { id: "k1", created_at: NOW - 20, actor: "alice@x.io", action: "key.create", target: "Ops CLI", detail: "sfa_11111111 · days=90" },
+    ],
+  };
+  const v = list("audit", audit, "", "keys", null, null, NOW);
+  assert.equal(count(v, "keys"), 3);
+  assert.deepEqual(v.rows.map((r: J) => [r.title, r.line]), [
+    ["吊销密钥 · Ops CLI", "alice@x.io · sfa_11111111"],
+    ["生成密钥 · CI Bot", "alice@x.io · sfa_22222222 · 永不过期"],
+    ["生成密钥 · Ops CLI", "alice@x.io · sfa_11111111 · 90 天内有效"],
+  ]);
 });

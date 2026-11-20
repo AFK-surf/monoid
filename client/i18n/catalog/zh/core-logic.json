@@ -79,6 +79,8 @@
   "core-logic.choose.problem.not_shared": "{name} 属于 {home}，其 Profile 尚未对此 workspace 开放：在 Profile 页开启「同时用于 {workspace}」",
   "core-logic.choose.problem.not_shared_elsewhere": "{name} 属于其他 workspace，其 Profile 尚未对此 workspace 开放：在 Profile 页开启「同时用于 {workspace}」",
   "core-logic.choose.problem.preset_model_missing": "{name} 上没有预设「{preset}」的模型 {model}：请换到有它的 station，或编辑预设、选「不用预设」",
+  "core-logic.choose.problem.auto_empty": "自动分配白名单中暂无在线 station，请在 station 设置中开启「加入自动分配白名单」，或手动指定一台 station",
+  "core-logic.choose.error.auto_empty": "自动分配白名单中暂无在线 station，请先在 station 设置中开启白名单或手动选择一台 station",
   "core-logic.choose.quota.low": "{label}剩余 {left}%",
   "core-logic.choose.repick.moved": "已改用 {name}",
   "core-logic.choose.repick.none": "没有其他账号可运行此对话",

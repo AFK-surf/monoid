@@ -22,7 +22,7 @@ pub async fn start_live_p5_2(bus : LiveBus) -> Unit {
   }
   let threads = @store_threads.Store::new(bus.db, wall_ms().to_double()) catch {
     e => {
-      live_log("error", "agents", "the threads' store does not open", {
+      slice_log("error", "agents", "the threads' store does not open", {
         "error": jstr(said_of(e)),
       })
       return
@@ -41,8 +41,8 @@ pub async fn start_live_p5_2(bus : LiveBus) -> Unit {
       en=maps(en),
       lang=(bus.lang.val)(),
     ),
-    cwords: @session_chats.Words::new(jv_of(zh), jv_of(en)),
-    rwords: @api_routes.Words::new(@jsjson.JV::of_json(zh), @jsjson.JV::of_json(en)),
+    cwords: @session_chats.Words::new(to_jv(zh), to_jv(en)),
+    rwords: @api_routes.Words::new(to_jv(zh), to_jv(en)),
     files: p52_cold_files(bus),
     config: Json::object({
       "dataDir": jstr(bus.data),
@@ -67,6 +67,10 @@ pub async fn start_live_p5_2(bus : LiveBus) -> Unit {
     feedback: None,
     card_outcomes: None,
     outcomes_following: false,
+    read_lately: Map([]),
+    runner_all: None,
+    runner_unnamed: Set::new(),
+    relieve_low_bytes: None,
   }
   p52_lang_fn.val = () => ctx.lang()
   // The cards' queued outcomes, written by the parts that decide a card (the rigs, the phones, the vault) and their
@@ -125,14 +129,8 @@ pub async fn start_live_p5_2(bus : LiveBus) -> Unit {
       Some(p) if !program.ended => out.push(p.pid)
       _ => ()
     }
-    match usage_counter_program.val.bind(c => c.pid()) {
-      Some(pid) => out.push(pid)
-      None => ()
-    }
-    match ctx.live_locator.bind(l => l.pid()) {
-      Some(pid) => out.push(pid)
-      None => ()
-    }
+    if usage_counter_program.val.bind(c => c.pid()) is Some(pid) { out.push(pid) }
+    if ctx.live_locator.bind(l => l.pid()) is Some(pid) { out.push(pid) }
     out
   })
   // (the hub's own reads of the threads' store, what they found not prepared asked of the builders as the store
@@ -140,14 +138,8 @@ pub async fn start_live_p5_2(bus : LiveBus) -> Unit {
   ignore(bus.subscribe_store(_ => bus.drain_thread_requests(threads)))
   bus.on_trim(() => {
     let mut n = 0
-    match ctx.live_locator {
-      Some(l) => n += l.trim_idle()
-      None => ()
-    }
-    match usage_counter_program.val {
-      Some(c) => n += c.trim_idle()
-      None => ()
-    }
+    if ctx.live_locator is Some(l) { n += l.trim_idle() }
+    if usage_counter_program.val is Some(c) { n += c.trim_idle() }
     n
   })
   // The agents' home (agenthome/module.ts).
@@ -155,18 +147,26 @@ pub async fn start_live_p5_2(bus : LiveBus) -> Unit {
   // Workspaces as the control plane says them (agents.ts `follow`).
   ignore(
     (bus.cloud_listen.val)(_ => {
-      ignore(
-        host.rt.fork_daemon("agents follow", on_error=e => @host.note("agents follow failed: \{e}"), async fn() {
-          match ctx.agents_side {
-            Some(side) => side.follow(ctx.place())
-            None => ()
-          }
-        }),
-      )
+      fork_bg(host, "agents follow", async fn() {
+        if ctx.agents_side is Some(side) { side.follow(ctx.place()) }
+      })
     }),
   )
+  // Drive the hub's scheduled timers (idle eviction, transcript lengths, usage) and deferred work.
+  fork_bg(host, "hub timers", async fn() {
+    hub.drive(host.rt, bus.stopped, f => {
+      fork_bg(host, "hub later", async fn() {
+        f() catch {
+          e =>
+            slice_log("warn", "session_hub", "hub later failed", {
+              "error": jstr(said_of(e)),
+            })
+        }
+      })
+    })
+  })
   // The auto-archive's timer, the archived sessions' expiry and the runners' sweep (lifecycle.ts).
-  ignore(host.rt.fork_daemon("lifecycle", on_error=e => @host.note("lifecycle failed: \{e}"), async fn() { ctx.lifecycle() }))
+  fork_bg(host, "lifecycle", async fn() { ctx.lifecycle() })
 }
 
 ///|
@@ -175,18 +175,52 @@ async fn P52::refresh_config(self : P52) -> Unit {
   let raw = (self.bus.config_raw.val)()
   let worked = @session_chats.hub_config(
     self.chats_world(),
-    jv_of(raw),
+    to_jv(raw),
     self.data,
     _ => None,
   ) catch {
     e => {
-      live_log("warn", "agents", "config.json's hub config not worked out", {
+      slice_log("warn", "agents", "config.json's hub config not worked out", {
         "error": jstr(said_of(e)),
       })
       return
     }
   }
-  self.config = p52_json_of_jv(worked)
+  let prev_max = match jfield(self.config, "maxConcurrentTurns") {
+    Number(n, ..) if n > 0.0 => n.to_int()
+    _ => 0
+  }
+  self.config = of_jv(worked)
+  self.apply_remote_connects()
+  let next_max = match jfield(self.config, "maxConcurrentTurns") {
+    Number(n, ..) if n > 0.0 => n.to_int()
+    _ => 0
+  }
+  if next_max != prev_max {
+    if self.actors_program is Some(p) {
+      p.set_max_concurrent_turns(next_max)
+    }
+  }
+}
+
+///|
+/// The connects of other stations a chat here runs on (`remoteConnects`, P5-5's) in the hub's config after
+/// config.json's (sessions/agents.ts `settings`, `moreConnects`): those it told before taken out, none over one of
+/// config.json's own.
+fn P52::apply_remote_connects(self : P52) -> Unit {
+  guard self.config is Object(m) else { return }
+  let own = jitems(jfield(self.config, "connects")).filter(c => !(jfield(c, "remote") is True))
+  let ids = own.map(c => jtext_or_empty(c, "id"))
+  for c in remote_connects.val {
+    let id = jtext_or_empty(c, "id")
+    if id != "" && !ids.contains(id) {
+      own.push(c)
+      ids.push(id)
+    }
+  }
+  let next = m.copy()
+  next["connects"] = Json::array(own)
+  self.config = Json::object(next)
 }
 
 ///|
@@ -347,7 +381,7 @@ fn P52::hub_told(self : P52, what : String, args : Json) -> Unit {
       match args {
         Object(m) =>
           for kv in m {
-            live_log(
+            slice_log(
               kv.0,
               "hub",
               match kv.1 {
@@ -375,7 +409,7 @@ fn P52::hub_told(self : P52, what : String, args : Json) -> Unit {
         self.host.rt.fork_quiet(name="actor told", async fn() {
           ignore(self.hub_asked("actor", args)) catch {
             e =>
-              live_log("warn", "hub", "an actor's call failed", {
+              slice_log("warn", "hub", "an actor's call failed", {
                 "error": jstr(said_of(e)),
               })
           }
@@ -386,7 +420,7 @@ fn P52::hub_told(self : P52, what : String, args : Json) -> Unit {
         self.host.rt.fork_quiet(name="chat post", async fn() {
           ignore(self.hub_asked("chat.post", args)) catch {
             e =>
-              live_log("warn", "hub", "a post failed", {
+              slice_log("warn", "hub", "a post failed", {
                 "error": jstr(said_of(e)),
               })
           }
@@ -400,21 +434,20 @@ fn P52::hub_told(self : P52, what : String, args : Json) -> Unit {
         match call {
           "detach" => (d.detach)()
           "thaw" => (d.thaw)()
-          "shutdown" =>
-            ignore(
-              self.host.rt.fork_daemon("driver shutdown", on_error=e => @host.note("driver shutdown failed: \{e}"), async fn() {
-                (d.shutdown)(again)
-              }),
-            )
+          "shutdown" if again =>
+            fork_bg(self.host, "driver shutdown", async fn() {
+              (d.shutdown)(true)
+            })
           _ => ()
         }
       }
+      // (for good: every driver's processes ended first, then the program they share let go)
+      if call == "shutdown" && !again {
+        fork_bg(self.host, "driver shutdown", async fn() { self.drivers_shut_down() })
+      }
     }
     "actors.close" =>
-      match self.actors_program {
-        Some(p) => p.close()
-        None => ()
-      }
+      if self.actors_program is Some(p) { p.close() }
     "live.call" =>
       match self.actors_program {
         Some(p) =>
@@ -436,32 +469,21 @@ fn P52::hub_told(self : P52, what : String, args : Json) -> Unit {
         },
       )
     "usage.close" =>
-      match usage_counter_program.val {
-        Some(p) => p.close()
-        None => ()
-      }
+      if usage_counter_program.val is Some(p) { p.close() }
     // (what the hub tells its live view, hub.ts's `live`: the shell of the program's `#live`)
     "live.running" =>
-      match ctx_live.val {
-        Some(l) => l.running(jtext(args, "key").unwrap_or(""), jfield(args, "running") is True)
-        None => ()
-      }
+      if ctx_live.val is Some(l) { l.running(jtext(args, "key").unwrap_or(""), jfield(args, "running") is True) }
+    "overview.changed" => (self.bus.overview_changed.val)()
     "live.forget" => {
       let key = match args {
         String(k) => k
         _ => jtext(args, "key").unwrap_or("")
       }
-      match ctx_live.val {
-        Some(l) => l.forget(key)
-        None => ()
-      }
+      if ctx_live.val is Some(l) { l.forget(key) }
       self.disarm(key)
     }
     "live.usageCounted" =>
-      match ctx_live.val {
-        Some(l) => l.usage_counted()
-        None => ()
-      }
+      if ctx_live.val is Some(l) { l.usage_counted() }
     "live.disarmAll" =>
       for key in transcript_watches.keys().collect() {
         self.disarm(key)
@@ -471,17 +493,11 @@ fn P52::hub_told(self : P52, what : String, args : Json) -> Unit {
     "live.listener" =>
       match jfield(args, "id") {
         Number(n, ..) =>
-          match live_listeners.get(n.to_int()) {
-            Some(send) => send(jv_of(jfield(args, "message")))
-            None => ()
-          }
+          if live_listeners.get(n.to_int()) is Some(send) { send(to_jv(jfield(args, "message"))) }
         _ => ()
       }
     "live.heldTold" =>
-      match live_events.val {
-        Some(e) => e.held_told(jtext(args, "key").unwrap_or(""), jv_of(jfield(args, "message")))
-        None => ()
-      }
+      if live_events.val is Some(e) { e.held_told(jtext(args, "key").unwrap_or(""), to_jv(jfield(args, "message"))) }
     "live.arm" => self.arm(jtext(args, "key").unwrap_or(""), jtext(args, "path").unwrap_or(""))
     "live.disarm" =>
       self.disarm(
@@ -506,7 +522,7 @@ fn P52::hub_told(self : P52, what : String, args : Json) -> Unit {
       if what.has_prefix("usageCheck.") || what.has_prefix("live.") {
         (self.bus.events_tell.val)(what, args, "", Json::null())
       } else {
-        live_log(
+        slice_log(
           "warn",
           "hub",
           "the hub told the station what it does not know",
@@ -628,10 +644,7 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
       }
     }
     "drivers.owns" => {
-      let id = match args {
-        String(x) => x
-        _ => ""
-      }
+      let id = as_text(args).unwrap_or("")
       let kind = match id.find("-") {
         Some(i) => id[:i].to_owned()
         None => id
@@ -657,7 +670,7 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
       // `accounts.profile(ranOn) ?? accounts.runOn(row.key)`)
       let ran_on = match jtext(args, "ranOn") {
         Some(id) if id != "" =>
-          match (try { Ok((self.bus.jobs_ask.val)("accounts.profile", { "id": jstr(id) })) } catch { e => Err(e) }) {
+          match (try { Ok(self.bus.jobs_accounts_profile(id)) } catch { e => Err(e) }) {
             Ok(Object(_) as p) => Some(p)
             _ => None
           }
@@ -695,7 +708,7 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
         e => {
           adopt_routers.remove(routed_by)
           actor.cancel_adopt(generation)
-          live_log("warn", "hub", "a session's process was not taken up", {
+          slice_log("warn", "hub", "a session's process was not taken up", {
             "session": jstr(key),
             "error": jstr(said_of(e)),
           })
@@ -741,7 +754,7 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
     "fs.mkdirs" => {
       for d in jitems(args) {
         match d {
-          String(p) => ignore(attempt(() => @drive.mkdir(p, true)))
+          String(p) => host_mkdir_quiet(self.host, p)
           _ => ()
         }
       }
@@ -749,7 +762,7 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
     }
     "fs.write" => {
       let p = s("path")
-      ignore(attempt(() => @drive.mkdir(@nodepath.dirname(sep(), p), true)))
+      host_mkdir_quiet(self.host, @nodepath.dirname(sep(), p))
       ignore(write_text_mode(p, s("text"), 0))
       Json::null()
     }
@@ -764,38 +777,116 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
           None => ()
         }
       }
-      match attempt(() => @drive.read_all(p)) {
-        Ok(b) => jstr(@utf8.decode_lossy(b))
-        Err(_) => Json::null()
+      match (self.host.read_text(p) catch { _ => None }) {
+        Some(t) => jstr(t)
+        None => Json::null()
       }
     }
     "fs.rm" => {
-      @drive.rm_force(s("path"))
+      host_remove_tree(self.host, s("path"))
       Json::null()
     }
     "fs.rmRoom" => {
-      ignore(remove_tree(s("home")))
+      let workspace = s("workspace")
+      let storage = self.storage()
+      match storage.room_of(workspace) {
+        Some(room) =>
+          storage.fs.with_lock(room, async fn() {
+            let worktrees = storage.fs.collect_worktree_registrations(room)
+            storage.fs.unlock_worktrees(room)
+            storage.fs.remove_tree(room, force=true)
+            let raw_room = @nodepath.join(sep(), [@nodepath.dirname(sep(), workspace)])
+            let room_paths = if raw_room == room { [room] } else { [room, raw_room] }
+            ignore(storage.fs.remove_worktree_registrations(worktrees, room_paths))
+          })
+        None => {
+          let real_sessions = storage.fs.realpath(path([self.data, "sessions"]))
+          let real_ws = storage.fs.realpath(workspace)
+          match (real_sessions, real_ws) {
+            (Some(rs), Some(rw)) if rw != rs && p53_within(rs, rw) =>
+              host_remove_tree(self.host, rw)
+            (_, Some(_)) =>
+              slice_log("warn", "hub", "not removing session workspace outside station sessions directory", { "workspace": jstr(workspace) })
+            _ => ()
+          }
+        }
+      }
       Json::null()
     }
     "actors.settled" => {
       guard self.actors_program is Some(p) else { return Json::object({}) }
       let limit = jnum_of(args, "limitMs").unwrap_or(30_000.0).to_int()
+      let skip : Map[String, Bool] = Map([])
+      for k in jitems(jfield(args, "skip")) {
+        if k is String(s) {
+          skip[s] = true
+        }
+      }
+      let pending : Map[String, Bool] = Map([])
       let done = @effect.timeout(limit, async fn() {
         // Each session's actor alone, its queue run out and again while more came (hub.ts `settled`): the
         // program's own count of asks under way is the shells' too (`#remote`, `#jobs`), which a mirror's sync keeps
         // busy for minutes. (What a runtime said goes to an actor in the program itself, not counted here: the
         // actor's `flushed` waits for it.)
         while true {
-          let actors = p.actors.values().to_array()
-          ignore(@effect.all(actors.map(a => async fn() { ignore(a.call("flushed", [])) })))
-          if actors.iter().all(a => a.settled()) && p.actors.values().all(a => a.settled()) {
+          let entries : Array[(String, MbActor)] = []
+          pending.clear()
+          for kv in p.actors {
+            if !skip.contains(kv.0) {
+              entries.push((kv.0, kv.1))
+              pending[kv.0] = true
+            }
+          }
+          ignore(
+            @effect.all(
+              entries.map(e => async fn() {
+                ignore(e.1.call("flushed", []))
+                pending.remove(e.0)
+              }),
+            ),
+          )
+          let mut all_ok = true
+          for e in entries {
+            if !e.1.settled() {
+              all_ok = false
+              break
+            }
+          }
+          if all_ok {
+            for kv in p.actors {
+              if !skip.contains(kv.0) && !kv.1.settled() {
+                all_ok = false
+                break
+              }
+            }
+          }
+          if all_ok {
             break
           }
         }
       })
       match done {
         Some(_) => Json::object({})
-        None => { "error": jstr("the sessions did not settle in \{limit} ms") }
+        None => {
+          let unsettled : Array[Json] = []
+          let seen : Map[String, Bool] = Map([])
+          for kv in p.actors {
+            if !skip.contains(kv.0) && (pending.contains(kv.0) || !kv.1.settled()) && !seen.contains(kv.0) {
+              seen[kv.0] = true
+              unsettled.push(jstr(kv.0))
+            }
+          }
+          for kv in pending {
+            if !skip.contains(kv.0) && !seen.contains(kv.0) {
+              seen[kv.0] = true
+              unsettled.push(jstr(kv.0))
+            }
+          }
+          {
+            "error": jstr("the sessions did not settle in \{limit} ms"),
+            "unsettled": Json::array(unsettled),
+          }
+        }
       }
     }
     "runners.allLeft" => {
@@ -829,7 +920,7 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
     // (hub.ts `takeUp`'s lookup of the sessions its runners are of by their ids' parts, its index no longer prepared:
     // "fallback", the sessions listed whole, as SandboxNameBuilder says where it is not ready)
     "sandboxNames.takeUp" => Json::null()
-    "machine.transcriptOf" | "transcripts.of" | "marks.forget" | "machine.copyTranscript" => self.machine_ask(what, args)
+    "machine.transcriptOf" | "transcripts.of" | "transcripts.exclusive" | "marks.forget" | "machine.copyTranscript" => self.machine_ask(what, args)
     "live.call" =>
       match self.actors_program {
         Some(p) => p.call("#live", s("method"), jitems(jfield(args, "args")))
@@ -840,6 +931,30 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
     // left to wait for once it asks)
     "live.handedOver" => Json::null()
     "cold.expires" => jb(true)
+    "cold.needsPack" =>
+      jb(
+        self
+        .storage()
+        .needs_pack(
+          match args {
+            String(k) => k
+            _ => s("key")
+          },
+        ),
+      )
+    "cold.cleanIdleRebuildable" =>
+      match
+        self
+        .storage()
+        .clean_idle_rebuildable(
+          match args {
+            String(k) => k
+            _ => s("key")
+          },
+        ) {
+        Some(freed) => jn(freed)
+        None => Json::null()
+      }
     "cold.holdsMore" =>
       jb(
         self
@@ -868,9 +983,14 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
       )
       Json::null()
     }
+    // (agents.ts `relieving`'s mark, `diskLow`, the one upkeep asks relieveArchived under; a lower one here left the hub
+    // finding the disk not low and emptying no archived workspace until 2 GiB were left)
     "disk.low" =>
       match disk_of(self.data) {
-        Some((free, _)) => jb(free < 2.0 * 1024.0 * 1024.0 * 1024.0)
+        Some((free, total)) => {
+          let low = self.relieve_low_bytes.unwrap_or(@ops_platform.disk_low(total))
+          jb(free < low)
+        }
         None => jb(false)
       }
     "places.directory" => {
@@ -884,11 +1004,11 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
       }
     }
     "agents.along" => (self.bus.coord_ask.val)("agents.along", args)
-    "agents.jobsRelaunch" => (self.bus.jobs_ask.val)("jobs.relaunch", args)
-    "agents.jobsStopAll" => (self.bus.jobs_ask.val)("jobs.stopAll", args)
+    "agents.jobsRelaunch" => self.bus.jobs_relaunch(args)
+    "agents.jobsStopAll" => self.bus.jobs_stop_all(args)
     "agents.becomeRig" => (self.bus.cloud_call.val)("becomeRig", { "due": args })
     "agents.openDoor" => {
-      let url = self.bus.door_ready.wait()
+      let url = (self.bus.open_door.val)()
       self.door_url = url
       jstr(url)
     }
@@ -906,10 +1026,7 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
     "usage.read" | "usage.drainStep" | "usage.stopIndexes" | "usage.inMemory" | "usage.retireStep" =>
       self.usage_ask(what, args)
     "usage.close" => {
-      match usage_counter_program.val {
-        Some(p) => p.close()
-        None => ()
-      }
+      if usage_counter_program.val is Some(p) { p.close() }
       Json::null()
     }
     // (agents.ts `hub.onClose`: a session archived or deleted: its other stations' tasks closed, a deleted one's
@@ -941,6 +1058,12 @@ fn P52::wire_bus(self : P52) -> Unit {
   let bus = self.bus
   bus.mcp_handle.val = Some(async fn(r) { self.mcp(r) })
   bus.hub_ask.val = async fn(op, arg) { self.hub_op(op, arg) }
+  bus.hub_models_for.val = connect_id => {
+    match self.hub {
+      Some(h) => h.models_for(connect_id) catch { _ => [] }
+      None => []
+    }
+  }
   bus.status_agents.val = () => Some(self.status_agents())
   bus.handover_sessions.val = async fn() { self.hand_over() }
   bus.take_handover.val = async fn(handed) { self.take_handover(handed) }
@@ -988,26 +1111,26 @@ async fn P52::peer_local(
     "configure" => storage.configure_for_peer(request, ws)
     "list" => storage.list_for_peer(request, ws)
     "create" =>
-      p52_json_of_jv(
+      of_jv(
         @session_chats.create_for_peer(
           w,
           peer,
-          jv_of(request),
+          to_jv(request),
           match ws {
-            Some(x) => j_s(x)
+            Some(x) => @jsjson.JValue::of_string(x)
             None => J::Null
           },
         ),
       )
     // (a turn of a chat a session here opened there ended: opened.ts `noticeForPeer`)
     "notice" =>
-      p52_json_of_jv(
+      of_jv(
         @session_chats.notice_for_peer(
           w,
           peer,
-          jv_of(request),
+          to_jv(request),
           match ws {
-            Some(x) => j_s(x)
+            Some(x) => @jsjson.JValue::of_string(x)
             None => J::Null
           },
         ),
@@ -1017,10 +1140,24 @@ async fn P52::peer_local(
       }
     // (a message to a session here: messages.ts `fromPeer`)
     _ =>
-      p52_json_of_jv(@session_chats.from_peer(w, peer, jv_of(request), ws)) catch {
+      of_jv(@session_chats.from_peer(w, peer, to_jv(request), ws)) catch {
         @session_chats.Thrown(_, m) => raise @gate.PeerRefused(m)
         e => raise e
       }
+  }
+}
+
+///|
+/// Every driver shut down for good, then the program they share let go (`AgentsHost::let_go`): a driver's own
+/// shutdown leaves it be, so one ended first never cuts the TERM of another's processes off.
+async fn P52::drivers_shut_down(self : P52) -> Unit {
+  for d in self.drivers.values() {
+    (d.shutdown)(false) catch {
+      _ => ()
+    }
+  }
+  ignore(self.pump.wait(self.agents.let_go())) catch {
+    _ => ()
   }
 }
 
@@ -1031,10 +1168,7 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
   match op {
     "settled" => {
       // (a turn ended as its opener is told: opened.ts `settled`, an agent that opened the chat woken by it)
-      let words = match jfield(arg, "words") {
-        String(w) => Some(w)
-        _ => None
-      }
+      let words = as_text(jfield(arg, "words"))
       @session_chats.settled(self.chats_world(), jtext(arg, "key").unwrap_or(""), jtext(arg, "state").unwrap_or(""), words)
       Json::null()
     }
@@ -1046,6 +1180,7 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
         return Json::null()
       }
       self.closed = true
+      self.close_helpers()
       hub.hold("drain")
       match self.actors_program {
         Some(p) =>
@@ -1056,15 +1191,8 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
           }
         None => ()
       }
-      for d in self.drivers.values() {
-        (d.shutdown)(false) catch {
-          _ => ()
-        }
-      }
-      match self.actors_program {
-        Some(p) => p.close()
-        None => ()
-      }
+      self.drivers_shut_down()
+      if self.actors_program is Some(p) { p.close() }
       self.program.kill_now()
       Json::null()
     }
@@ -1076,22 +1204,12 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
       let bus = self.bus
       p.shells[key] = (
         async fn(f, args) {
-          bus.call_peer("self", None, "$program.asked:" + key, {
-            "fn": jstr(f),
-            "args": Json::array(args),
-          }).0
+          bus.program_asked(key, f, args)
         },
         fn(t, args) {
-          ignore(
-            self.host.rt.fork_daemon("shell's tell", on_error=e => @host.note("shell's tell failed: \{e}"), async fn() {
-              ignore(
-                bus.call_peer("self", None, "$program.told:" + key, {
-                  "fn": jstr(t),
-                  "args": Json::array(args),
-                }),
-              )
-            }),
-          )
+          fork_bg(self.host, "shell's tell", async fn() {
+            bus.program_told(key, t, args)
+          })
         },
       )
       Json::boolean(true)
@@ -1120,11 +1238,16 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
       }
       Json::null()
     }
-    // ── what the other slices ask by an object of its fields ──
-    "notify" => {
-      hub.act(jtext(arg, "session").unwrap_or(""), "notify", args=[jfield(arg, "text")])
+    // (P5-5's connects of other stations a chat here runs on, told as they are learned, moved or kept: in the hub's
+    // config with config.json's, connects/workspace.ts `agents.connects`)
+    "remoteConnects" => {
+      remote_connects.val = jitems(arg)
+      self.apply_remote_connects()
       Json::null()
     }
+    // ── what the other slices ask by an object of its fields ──
+    // (hub.ts `notify`: the session's actor made where it is cold, an unknown session refused to the one telling)
+    "notify" => hub.command(jtext(arg, "session").unwrap_or(""), "notify", [jfield(arg, "text")])
     "link" => jopt(self.page_of(jtext(arg, "session").unwrap_or("")))
     "runners" => self.runners_with_sessions()
     "sweepRunners" =>
@@ -1132,23 +1255,56 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
         self.pump.wait(
           @agent_drivers.sweep_runners(self.pump.machine(), self.data, jnum_of(arg, "now").unwrap_or(wall_ms().to_double()), orphan=info => self.pump.later(
             "an orphan runner ended",
-            async fn() { hub.end_orphan(p52_json_of_jv(info.json), wall_ms().to_double()) },
+            async fn() { hub.end_orphan(of_jv(info.json), wall_ms().to_double()) },
           )),
         ).map(Json::string),
       )
+    "relieveIdleRebuildable" => {
+      let now = jnum_of(arg, "now").unwrap_or(wall_ms().to_double())
+      let idle_ms = jnum_of(arg, "idleMs").unwrap_or(@session_hub.idle_rebuild_low_ms)
+      let full = jfield(arg, "full") == Json::boolean(true)
+      let prev_low = self.relieve_low_bytes
+      match jnum_of(arg, "lowBytes") {
+        Some(low) => self.relieve_low_bytes = Some(low)
+        None => ()
+      }
+      defer {
+        self.relieve_low_bytes = prev_low
+      }
+      ji(hub.relieve_idle_rebuildable(now, idle_ms~, full~))
+    }
+    "packUnfinishedArchived" => {
+      let now = jnum_of(arg, "now").unwrap_or(wall_ms().to_double())
+      let limit = jnum_of(arg, "limit").map(n => n.to_int()).unwrap_or(@session_hub.pack_backfill_max_per_round)
+      ji(hub.pack_unfinished_archived(now, limit~))
+    }
+    "runArchiveUpkeepIfDue" => {
+      let now = jnum_of(arg, "now").unwrap_or(wall_ms().to_double())
+      let every_ms = jnum_of(arg, "everyMs").unwrap_or(@session_hub.archive_upkeep_every_ms)
+      jb(hub.run_archive_upkeep_if_due(now, every_ms~))
+    }
+    "cleanIdleRebuildable" => {
+      let now = jnum_of(arg, "now").unwrap_or(wall_ms().to_double())
+      let idle_ms = jnum_of(arg, "idleMs").unwrap_or(@session_hub.idle_rebuild_ms)
+      let limit = jnum_of(arg, "limit").map(n => n.to_int()).unwrap_or(@session_hub.idle_rebuild_max_per_round)
+      ji(hub.clean_idle_rebuildable(now, idle_ms~, limit~))
+    }
     "relieveArchived" => {
-      hub.relieve_archived()
+      let full = jfield(arg, "full") == Json::boolean(true)
+      hub.relieve_archived(full~)
       Json::null()
     }
+    "clones.active" => jb(clones_running.length() > 0)
     "profileGone" => {
       hub.profile_gone(jtext(arg, "profile").unwrap_or(""))
       Json::null()
     }
     // (a message another workspace's station sent a chat shared with it: xshare's inbox, messages.ts `fromPeer`)
-    "inbox" =>
-      p52_json_of_jv(
-        @session_chats.from_peer(self.chats_world(), jtext(arg, "station").unwrap_or(""), jv_of(jfield(arg, "request")), None),
-      )
+    "inbox" => {
+      let req = jfield(arg, "request")
+      let meth = jtext_or_empty(req, "method")
+      self.peer_local(jtext(arg, "station").unwrap_or(""), None, meth, req)
+    }
     "codex.renewRunning" | "codex.rateLimits" =>
       match self.drivers.get("codex") {
         Some(d) =>
@@ -1175,19 +1331,13 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
       }
     "sessions.allows" => {
       let a = jitems(arg)
-      let key = match a.get(0) {
-        Some(String(k)) => Some(k)
-        _ => None
-      }
+      let key = opt_str(a.get(0))
       Json::boolean(
         @session_hub.allowed_in(a.get(1).unwrap_or(Json::null()), hub.ws_of(key), self.workspaces().get(0)),
       )
     }
     "sessions.running" => {
-      let except = match jitems(arg).get(0) {
-        Some(String(k)) => Some(k)
-        _ => None
-      }
+      let except = opt_str(jitems(arg).get(0))
       let out = []
       for key, _ in hub.actors {
         if Some(key) == except || hub.process_state(key) == "cold" {
@@ -1206,10 +1356,7 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
     }
     "sessions.moved" => {
       let a = jitems(arg)
-      let key = match a.get(0) {
-        Some(String(k)) => k
-        _ => ""
-      }
+      let key = opt_str(a.get(0)).unwrap_or("")
       let was = a.get(1).unwrap_or(Json::null())
       match hub.get_session(key) {
         Some(now) if !hub.handed_over(key) => {
@@ -1254,16 +1401,16 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
       Json::null()
     }
     "decision.fingerprint" =>
-      Json::string(@session_chats.fingerprint(self.chats_world(), jv_of(jitems(arg).get(0).unwrap_or(Json::null()))))
+      Json::string(@session_chats.fingerprint(self.chats_world(), to_jv(jitems(arg).get(0).unwrap_or(Json::null()))))
     "decision.resolvedModel" => {
       let a = jitems(arg)
-      let at = (i : Int) => jv_of(a.get(i).unwrap_or(Json::null()))
+      let at = (i : Int) => to_jv(a.get(i).unwrap_or(Json::null()))
       Json::boolean(@session_chats.resolved_model(self.chats_world(), at(0), at(1), at(2)) is Some(_))
     }
     "decision.discover" => {
       let a = jitems(arg)
-      let at = (i : Int) => jv_of(a.get(i).unwrap_or(Json::null()))
-      p52_json_of_jv(@session_chats.discover(self.chats_world(), at(0), at(1)))
+      let at = (i : Int) => to_jv(a.get(i).unwrap_or(Json::null()))
+      of_jv(@session_chats.discover(self.chats_world(), at(0), at(1)))
     }
     // (sessions/archive-policy.ts `savePolicy` on the hub's store: what it changed, null where nothing)
     "policy.savePolicy" => {
@@ -1283,10 +1430,7 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
     }
     // (sessions/review.ts `startReview`: how many chats are reviewed, null where none can be)
     "reviewUndecided" =>
-      match @session_chats.start_review(self.chats_world()) {
-        Some(n) => Json::number(n)
-        None => Json::null()
-      }
+      (@session_chats.start_review(self.chats_world())).map(jn).unwrap_or(Json::null())
     // (agents.ts: the accounts follow the allowances while a stream is open or a session runs)
     "following" =>
       Json::boolean(
@@ -1310,7 +1454,7 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
         ignore(
           self.host.rt.fork_quiet(name="codex runtime changed", async fn() {
             ignore((d.ask)("runtimeChanged", { "replaced": jb(kind == "codex" && replaced), "drainBusy": jb(false) })) catch {
-              e => live_log("warn", "agents::codex", "codex app-servers not checked after an update", { "error": jstr(said_of(e)) })
+              e => slice_log("warn", "agents::codex", "codex app-servers not checked after an update", { "error": jstr(said_of(e)) })
             }
           }),
         )
@@ -1331,31 +1475,58 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
 async fn P52::runners_with_sessions(self : P52) -> Json {
   let infos = self.pump.wait(@agent_drivers.live_runners(self.pump.machine(), self.data))
   let whose : Map[String, String] = {}
-  let of = (rows : Json) => for s in jitems(rows) {
+  let of = (into : Map[String, String], rows : Array[Json]) => for s in rows {
     match jtext(s, "key") {
       Some(k) =>
         for kind in @events.runtime_kinds {
           let id = @agent_drivers.runner_id(kind, k)
-          if !whose.contains(id) {
-            whose[id] = k
+          if !into.contains(id) {
+            into[id] = k
           }
         }
       None => ()
     }
   }
   if infos.length() > 0 {
-    of(self.store("liveSessions", [])) catch {
+    of(whose, self.bus.store.live_sessions()) catch {
       _ => ()
     }
-    if infos.iter().any(i => !whose.contains(i.id())) {
-      of(self.store("listSessions", [])) catch {
-        _ => ()
+    // (every session asked again only for a runner neither named nor known to have none: a runner shared by no
+    // session's key, a Codex app-server's, asked it at every look, thousands of rows and their runners' ids hashed)
+    let rest = infos.filter(i => !whose.contains(i.id()))
+    let known = (id : String) => self.runner_unnamed.contains(id) ||
+      (match self.runner_all {
+        Some(all) => all.contains(id)
+        None => false
+      })
+    if rest.iter().any(i => !known(i.id())) {
+      let all : Map[String, String] = {}
+      let read = try {
+        of(all, self.bus.store.list_sessions())
+        true
+      } catch {
+        _ => false
+      }
+      if read {
+        self.runner_all = Some(all)
+        for i in rest {
+          if !all.contains(i.id()) {
+            self.runner_unnamed.add(i.id())
+          }
+        }
+      }
+    }
+    if self.runner_all is Some(all) {
+      for i in rest {
+        if all.get(i.id()) is Some(k) {
+          whose[i.id()] = k
+        }
       }
     }
   }
   Json::array(
     infos.map(i => {
-      let m = match p52_json_of_jv(i.json) {
+      let m = match of_jv(i.json) {
         Object(m) => m.copy()
         _ => {}
       }
@@ -1386,10 +1557,7 @@ fn P52::status_agents(self : P52) -> Json {
         "need": Json::null(),
       } : Json)
   })
-  let waiting = jnum_of(
-    Json::object({ "n": self.store("waitingCount", []) catch { _ => ji(0) } }),
-    "n",
-  ).unwrap_or(0.0)
+  let waiting = 0.0
   {
     "agents": {
       "busy": ji(if busy > running.length() { busy } else { running.length() }),
@@ -1414,13 +1582,24 @@ fn P52::status_agents(self : P52) -> Json {
 /// sessions handed over.
 async fn P52::hand_over(self : P52) -> Array[Json] {
   guard self.hub is Some(hub) else { return [] }
-  // Within the launcher's 30 s (`Times::exit`): a session that does not settle fails the handover in time for
-  // what the parts carry to be sent.
-  let handed = hub.hand_over(limit_ms=12_000.0) catch {
+  // Within the launcher's 30 s (`Times::exit`): partial handover keeps every settled session's snapshot while
+  // skipping any that did not settle in time; its runner is detached and taken up by crash-recovery on the next
+  // station.
+  let handed = hub.hand_over(limit_ms=15_000.0, partial=true) catch {
     e => {
-      live_log("warn", "agents", "the sessions were not handed over", {
+      slice_log("warn", "agents", "the sessions were not handed over", {
         "error": jstr(said_of(e)),
       })
+      // Never leave `self.closed = false` on handover failure: `hub_shutdown()` on stop would otherwise dispose
+      // every actor and kill running agent processes. Detach drivers and close the actors' program instead.
+      if self.actors_program is Some(p) { p.close() }
+      for d in self.drivers.values() {
+        (d.detach)()
+      }
+      all_left(5_000)
+      self.closed = true
+      self.close_helpers()
+      self.program.release(false)
       return []
     }
   }
@@ -1430,11 +1609,32 @@ async fn P52::hand_over(self : P52) -> Array[Json] {
 }
 
 ///|
-/// The sessions taken up once the agents' door is open (agents.ts `start`): what the process before handed over, the
-/// runners it left, turns released.
+/// The station stops or hands over: the background programs of its own it started (the usage counter's and the
+/// retirement's, the live view's locator) ended at once, the counter stopped so none starts again, where the station
+/// after would otherwise find them still writing to its database.
+fn P52::close_helpers(self : P52) -> Unit {
+  if usage_counter_program.val is Some(p) {
+    p.close(force=true)
+    usage_counter_program.val = None
+  }
+  if usage_retire_program.val is Some(p) {
+    p.close(force=true)
+    usage_retire_program.val = None
+  }
+  // (after the programs: the counter's `usage.close` finds none left to end on SIGTERM alone)
+  if self.hub is Some(h) {
+    h.usage_stop()
+  }
+  if self.live_locator is Some(l) {
+    l.close()
+    self.live_locator = None
+  }
+}
+
+///|
+/// The sessions taken up before opening the agents' door (agents.ts `start`): what the process before handed over, the
+/// runners it left, then the door opens and turns are released.
 async fn P52::take_handover(self : P52, handed : Json?) -> Unit {
-  let url = self.bus.door_ready.wait()
-  self.door_url = url
   carried_handover.val = handed
   guard self.hub is Some(hub) else {
     codex_left_taken_up()
@@ -1444,7 +1644,7 @@ async fn P52::take_handover(self : P52, handed : Json?) -> Unit {
   self.agents_side = Some(side)
   side.start(self.place()) catch {
     e =>
-      live_log("error", "agents", "the sessions were not taken up", {
+      slice_log("error", "agents", "the sessions were not taken up", {
         "error": jstr(said_of(e)),
       })
   }
@@ -1470,11 +1670,25 @@ async fn P52::drain(self : P52) -> String {
 ///|
 /// The sessions' lifecycle (lifecycle.ts): auto archive and the archived sessions' expiry, each when it is next due.
 async fn P52::lifecycle(self : P52) -> Unit {
+  while !self.taken && !self.bus.stopped.is_done() && !self.closed {
+    @effect.sleep(200) // timer: a deadline (waiting for take_handover before the first lifecycle pass)
+  }
   while !self.bus.stopped.is_done() && !self.closed {
     let next = match self.hub {
       Some(hub) if self.taken => {
-        let a = hub.auto_archive(wall_ms().to_double()) catch { _ => None }
-        let b = hub.expire_archived(wall_ms().to_double()) catch { _ => None }
+        let a = hub.auto_archive(wall_ms().to_double()) catch {
+          e => {
+            slice_log("warn", "hub", "auto-archiving failed", { "error": jstr(said_of(e)) })
+            None
+          }
+        }
+        let b = hub.expire_archived(wall_ms().to_double()) catch {
+          e => {
+            slice_log("warn", "hub", "expiring archived workspaces failed", { "error": jstr(said_of(e)) })
+            None
+          }
+        }
+        ignore(hub.run_archive_upkeep_if_due(wall_ms().to_double()))
         match (a, b) {
           (Some(x), Some(y)) => Some(if x < y { x } else { y })
           (Some(x), None) | (None, Some(x)) => Some(x)
@@ -1485,14 +1699,14 @@ async fn P52::lifecycle(self : P52) -> Unit {
     }
     let wait = match next {
       Some(at) => at - wall_ms().to_double()
-      None => 3_600_000.0
+      None => 600_000.0
     }
     // timer: a deadline (the next session due to be archived or expired, as the store says)
     @effect.sleep(
       if wait < 1000.0 {
         1000
-      } else if wait > 3_600_000.0 {
-        3_600_000
+      } else if wait > 600_000.0 {
+        600_000
       } else {
         wait.to_int()
       },
@@ -1510,6 +1724,11 @@ fn trace_on() -> Bool {
 ///|
 /// The connects' chat surfaces as the connects' part told them (`surfaces`), by connect.
 let connect_surfaces : Map[String, Json] = Map([])
+
+///|
+/// The connects of other stations a chat here runs on as the connects' part told them (`remoteConnects`), each as the
+/// hub reads a connect (connects_hub `connect_of`).
+let remote_connects : Ref[Array[Json]] = Ref([])
 
 ///|
 /// The hub's live view (hub.ts `live`, sessions/live.ts `LiveHub`): the shell of the program's `#live`, once made.
@@ -1558,7 +1777,7 @@ fn P52::mount_live(self : P52, hub : @session_hub.Hub) -> Unit {
     held_now=(keys, k) => ignore(
       host.rt.fork_quiet(name="the sessions at work now", async fn() {
         match (try { Ok(live.now_of(keys)) } catch { e => Err(e) }) {
-          Ok(v) => k(Ok(jv_of(v)))
+          Ok(v) => k(Ok(to_jv(v)))
           Err(e) => k(Err(said_of(e)))
         }
       }),
@@ -1566,7 +1785,7 @@ fn P52::mount_live(self : P52, hub : @session_hub.Hub) -> Unit {
     process_state=key => Some(hub.process_state(key)),
     followed=() => ignore(
       host.rt.fork_quiet(name="followed again", async fn() {
-        ignore((bus.jobs_ask.val)("accounts.followed", Json::array([]))) catch {
+        bus.jobs_accounts_followed() catch {
           _ => ()
         }
       }),

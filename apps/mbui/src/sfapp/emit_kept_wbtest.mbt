@@ -173,6 +173,7 @@ test "the avatar going home draws its movement without laying out the chat again
   t.set_rows_on_pixels(true)
   // A focused editor keeps its page live for its caret. Put the keyboard away to test the avatar's work alone.
   t.keyboard_gone()
+  t.run_for(@sfpages.let_go_ms + @sfpages.composer_shape_ms + @sf.hint_back_ms)
   t.frames_owed()
   fix_clock_set(clock, clock.val + fix_answer_ms)
   t.draw()

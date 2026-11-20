@@ -28,7 +28,7 @@ fn main {
       @sfgraphic.wrap_figure(c)
     }
     let path = if n == 1 && bad { root + "/missing/first.png" } else { root + "/\{n}.png" }
-    let ok = @film.picture(view, path~, w=960.0, h=540.0, scale=2.5)
+    let ok = @film.picture_legacy_ctx(view, path~, w=960.0, h=540.0, scale=2.5)
     if (n == 1 && bad && ok) || (!(n == 1 && bad) && !ok) {
       @film.exit(1)
       return

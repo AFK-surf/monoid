@@ -6,6 +6,7 @@ import { holdLanguage } from "../src/i18n.ts";
 import { profile as shownProfile } from "../src/present.ts";
 import { choices, models, runtimes, runnableOn, servingIn } from "../src/views/models.ts";
 import { stationProfileSummary, workspaceProfiles } from "../src/views/profiles.ts";
+import { profilesOverview } from "../src/views/profiles-overview.ts";
 
 holdLanguage();
 
@@ -297,6 +298,21 @@ test("a pending copy names the station cut off from still.fail cloud instead of 
   assert.deepEqual(placeOf([host, mba]), { text: "等待同步", tone: "neutral" });
 });
 
+test("an older station's copy of an account lent to another workspace is not listed here", () => {
+  const C = "c".repeat(64);
+  const own = profile("own", { runtime: "claude" });
+  const lent = profile("sh-cue", { runtime: "claude", email: "cue@example.com", serves: false, share: { id: "sh-cue", host: C, role: "user", reachable: true } });
+  const current = { ...station(A, "mine", true, [own, lent]), joined: true };
+  const listed = workspaceProfiles([current]);
+  assert.deepEqual(listed.items.flatMap((e: any) => e.members.map((m: any) => m.profileId)), ["own"]);
+  assert.equal(listed.attention, 0);
+  // The station page names its station by `address`.
+  const page = { id: A, address: current.station, name: "mine", online: true, joined: true };
+  const summary = stationProfileSummary(current.overview, page, new Map([[A, page]]));
+  assert.deepEqual(summary.profileGroups, [{ group: "claude", title: "Claude 订阅", profiles: ["own"], attention: 0 }]);
+  assert.deepEqual(summary.profileStates, {});
+});
+
 test("a share withheld from this workspace does not make its stations usable here", () => {
   const C = "c".repeat(64);
   const D = "d".repeat(64);
@@ -337,12 +353,17 @@ test("a station with two profiles signed in to the same account: its rows named 
 
 test("an account signed in on two stations, signed out on one: the row shows the one that works and names where the other needs a look", () => {
   const signedOut = shownProfile(profile("machine-claude", { email: "z@x.test", runtime: "claude", machine: true, check: { state: "login" } }));
-  const fine = shownProfile(profile("machine-claude", { email: "z@x.test", runtime: "claude", machine: true, check: { state: "ok" } }));
+  const fine = shownProfile(profile("machine-claude", { email: "z@x.test", runtime: "claude", machine: true, check: { state: "ok" },
+    quota: { state: "ok", windows: [{ label: "每周", minutes: 10080, usedPercent: 5 }] } }));
   const view = workspaceProfiles([station(A, "macbook", true, [signedOut]), station(B, "mini", true, [fine])]);
   assert.equal(view.items.length, 1);
   const row = view.items[0];
   assert.equal(row.stationName, "mini", "the copy that works");
   assert.deepEqual([row.look, row.state], [true, { text: "macbook：需要登录", tone: "amber" }]);
+  const pool = profilesOverview(view.items, () => undefined, 0, 0).pools[0]!;
+  assert.deepEqual([pool.ready, pool.total, pool.nowPct], [1, 1, 95]);
+  const unavailable = workspaceProfiles([station(A, "macbook", true, [signedOut]), station(B, "mini", true, [signedOut])]);
+  assert.equal(profilesOverview(unavailable.items, () => undefined, 0, 0).pools[0]!.ready, 0);
   // Both fine: nothing said.
   const both = workspaceProfiles([station(A, "macbook", true, [fine]), station(B, "mini", true, [fine])]);
   assert.deepEqual([both.items[0].look, both.items[0].state, both.items[0].stationName], [false, null, "macbook"]);

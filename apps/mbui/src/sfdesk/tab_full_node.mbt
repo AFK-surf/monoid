@@ -4,8 +4,9 @@
 // its tools' row has them, 移到侧边), under it the tab drawn by the nodes that draw it in the panel (a file's stage, a
 // web service's bar and page, a visualization's page), the panel showing nothing of it meanwhile (full_elsewhere), and
 // neither drawing it while the other still does (tab_held: what it holds, a service's address, is one editor's). A
-// modal layer while it is open: back, Escape, the bar's way back and 移到侧边 put it back in the panel, the tab staying;
-// its chat no longer the page in view, it goes back there too.
+// modal layer while it is open: back, Escape and the bar's way back close it, back in the panel where it was there
+// before, else out of it too (sfbase's tab_full_close, `lone`); 移到侧边 puts it back in the panel, the tab staying; its
+// chat no longer the page in view, it is closed so too.
 
 ///|
 /// What a panel's front stands as while its tab is over the whole window (no tab is named so).
@@ -126,6 +127,10 @@ fn full_ink() -> @sf.ViewerInk {
 /// made as one goes there and let go as it comes back: while its chat is the page in view; that no longer so, back in
 /// its panel at that change, and so as the wide frame goes (小屏, no panel to be back in).
 pub fn tab_full_layer_node(v : @view.View, src : Source) -> Unit {
+  // (a tab put in its panel only to go over the whole window taken out of it with no slide as it is closed, through
+  // the window's core, not this layer's: closed as the layer goes too)
+  let app_src = src
+  @sfbase.tab_full_drop.val = fn(f) { side_under(app_src, f.chat, "close", f.tab) }
   let src = src.owned_by(v)
   let asked = fn() {
     match (@sfbase.tab_full.get(), @sfbase.app.nav.top()) {
@@ -270,7 +275,7 @@ fn tab_full_node(n : @view.View, src : Source, f : @sfbase.TabFull) -> Unit {
           fn() { { icon: "panel-open", label: @sf.t("web-main.preview.moveBeside"), on: false, disabled: false } },
           ink,
           corner,
-          back,
+          fn() { side_put_beside(r) },
           tip=tips,
         )
         |> ignore
@@ -339,8 +344,9 @@ pub fn tab_window_open(src : Source, r : ChatRef, tab : String) -> Bool {
     }
     return false
   }
+  // (put away as it is, what it holds the window's now: never let go of here, lone or not)
   if @signals.untracked(fn() { @sfbase.tab_full_is(r.station, r.session, tab) }) {
-    @sfbase.tab_full_close()
+    @sfbase.tab_full_beside()
   }
   side_change(src, r, "close", Some(tab))
   true

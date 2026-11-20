@@ -116,11 +116,31 @@ pub fn delete_db(shell : @shell.Shell, name : String) -> Unit raise @shell.Shell
 // ── reading a row ──
 
 ///|
+fn parse_json_int64(n : Double, repr : String?) -> Int64 {
+  match repr {
+    Some(text) =>
+      match (try Some(@string.parse_int64(text)) catch { _ => None }) {
+        Some(v) => v
+        None => n.to_int64()
+      }
+    None => n.to_int64()
+  }
+}
+
+///|
 /// Column `i` as text: a number written out, anything else (NULL, past the row) empty.
 pub fn col_text(row : Array[Json], i : Int) -> String {
   match row.get(i) {
     Some(String(s)) => s
-    Some(Number(n, ..)) => if n == n.to_int64().to_double() { n.to_int64().to_string() } else { n.to_string() }
+    Some(Number(n, repr~)) =>
+      match repr {
+        Some(text) =>
+          match (try Some(@string.parse_int64(text)) catch { _ => None }) {
+            Some(v) => v.to_string()
+            None => if n == n.to_int64().to_double() { n.to_int64().to_string() } else { n.to_string() }
+          }
+        None => if n == n.to_int64().to_double() { n.to_int64().to_string() } else { n.to_string() }
+      }
     _ => ""
   }
 }
@@ -148,7 +168,7 @@ pub fn col_int(row : Array[Json], i : Int) -> Int {
 /// Column `i` as a 64-bit integer (a time in ms), 0 where it is none.
 pub fn col_int64(row : Array[Json], i : Int) -> Int64 {
   match row.get(i) {
-    Some(Number(n, ..)) => n.to_int64()
+    Some(Number(n, repr~)) => parse_json_int64(n, repr)
     Some(True) => 1L
     _ => 0L
   }
@@ -158,7 +178,7 @@ pub fn col_int64(row : Array[Json], i : Int) -> Int64 {
 /// Column `i` as a 64-bit integer, none where it is NULL or no number.
 pub fn col_opt_int64(row : Array[Json], i : Int) -> Int64? {
   match row.get(i) {
-    Some(Number(n, ..)) => Some(n.to_int64())
+    Some(Number(n, repr~)) => Some(parse_json_int64(n, repr))
     _ => None
   }
 }

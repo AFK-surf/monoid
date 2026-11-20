@@ -656,6 +656,26 @@ fn writes_hashes_and_moves_the_station_programs_files() {
     assert_eq!(std::fs::read(dir.path().join("a/moved.txt")).unwrap(), "中\n".as_bytes());
     assert_eq!(sync("fs.mkdir", json!({ "path": at("c/d") }))["value"], Value::Null);
     assert!(dir.path().join("c/d").is_dir());
+    // fs.mkdir with recursive=false is atomic and returns EEXIST when the directory already exists;
+    // recursive=true / omitted remains idempotent.
+    assert_eq!(sync("fs.mkdir", json!({ "path": at("c/d") }))["value"], Value::Null);
+    assert_eq!(sync("fs.mkdir", json!({ "path": at("c/d"), "recursive": true }))["value"], Value::Null);
+    assert_eq!(sync("fs.mkdir", json!({ "path": at("c/lock"), "recursive": false }))["value"], Value::Null);
+    assert!(dir.path().join("c/lock").is_dir());
+    let eexist = sync("fs.mkdir", json!({ "path": at("c/lock"), "recursive": false }))["error"]
+        .as_str()
+        .expect("non-recursive mkdir on existing dir must error")
+        .to_string();
+    assert!(eexist.contains("EEXIST"), "expected EEXIST in error, got: {eexist}");
+    // fs.utimes updates mtimeMs on both regular files and directories (OAuth lock heartbeat target).
+    let target_ms = 1_700_000_123_456.0_f64;
+    assert_eq!(sync("fs.utimes", json!({ "path": at("a/moved.txt"), "mtimeMs": target_ms }))["value"], Value::Null);
+    let file_mtime = sync("fs.lstat", json!({ "path": at("a/moved.txt") }))["value"]["mtimeMs"].as_f64().unwrap();
+    assert!((file_mtime - target_ms).abs() < 2.0, "file mtimeMs expected ~{target_ms}, got {file_mtime}");
+    assert_eq!(sync("fs.utimes", json!({ "path": at("c/lock"), "mtimeMs": target_ms }))["value"], Value::Null);
+    let dir_mtime = sync("fs.lstat", json!({ "path": at("c/lock") }))["value"]["mtimeMs"].as_f64().unwrap();
+    assert!((dir_mtime - target_ms).abs() < 2.0, "dir mtimeMs expected ~{target_ms}, got {dir_mtime}");
+    assert!(sync("fs.utimes", json!({ "path": at("c/missing"), "mtimeMs": target_ms }))["error"].is_string());
     assert!(sync("fs.remove", json!({ "path": at("a") }))["error"].is_string());
     assert_eq!(sync("fs.remove", json!({ "path": at("a"), "recursive": true }))["value"], Value::Null);
     assert!(!dir.path().join("a").exists());
@@ -782,6 +802,27 @@ fn answers_of_a_closed_endpoint() {
         let addr = json!({ "id": hex::encode(endpoint.id().as_bytes()), "ips": ["127.0.0.1:1"] });
         assert!(inner.run("iroh.connect", json!({ "id": id, "addr": addr }), Some(b"stillfail/test".to_vec())).await.is_err());
         assert!(inner.run("iroh.close", json!({ "id": id }), None).await.is_ok());
+    });
+}
+
+/// `iroh.probeRelay` reaches iroh_ops's probe (station/mb's front and live_p5_1_mesh ask it), never "no operation".
+#[test]
+fn probe_relay_is_an_operation() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+    shell.runtime.block_on(async move {
+        let probe = |id: u64, url: &str| inner.run("iroh.probeRelay", json!({ "id": id, "url": url }), None);
+        let endpoint = Endpoint::builder(Minimal).relay_mode(RelayMode::Disabled).bind().await.unwrap();
+        let id = inner.keep(Handle::Endpoint(endpoint, Arc::default()));
+        let said = probe(id, "not a url").await.err().unwrap();
+        assert!(!said.contains("no operation"), "{said}");
+        let other = inner.keep(Handle::Unbound { id: "x".into() });
+        assert_eq!(probe(other, "https://relay.example/").await.err().unwrap(), "the endpoint is closed");
+        inner.run("iroh.close", json!({ "id": id }), None).await.unwrap();
+        assert_eq!(probe(id, "https://relay.example/").await.err().unwrap(), "the endpoint is closed");
+        let written = inner.keep(Handle::Gone { remote: String::new(), reason: json!({}), stats: json!({}) });
+        assert_eq!(probe(written, "https://relay.example/").await.err().unwrap(), "not an endpoint");
     });
 }
 
@@ -949,6 +990,233 @@ fn a_routed_stream_goes_to_the_next_program_listening_or_else_to_node_never_rese
         assert!(said.try_recv().is_err(), "nothing else said");
         theirs.close(0u32.into(), b"bye");
         handing.await.unwrap().unwrap();
+    });
+}
+
+#[cfg(unix)]
+fn bind_unlistening_unix(path: &std::path::Path) -> std::os::fd::OwnedFd {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    let _ = std::fs::remove_file(path);
+    let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+    assert!(fd >= 0, "socket: {}", std::io::Error::last_os_error());
+    let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+    assert!(unsafe { libc::fcntl(owned.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } >= 0);
+    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    let bytes = path.as_os_str().as_encoded_bytes();
+    assert!(bytes.len() < addr.sun_path.len());
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), addr.sun_path.as_mut_ptr().cast::<u8>(), bytes.len());
+    }
+    let len = (std::mem::offset_of!(libc::sockaddr_un, sun_path) + bytes.len() + 1) as libc::socklen_t;
+    assert_eq!(
+        unsafe { libc::bind(owned.as_raw_fd(), (&addr as *const libc::sockaddr_un).cast::<libc::sockaddr>(), len) },
+        0,
+        "bind: {}",
+        std::io::Error::last_os_error()
+    );
+    owned
+}
+
+#[cfg(unix)]
+fn start_listening_unix(fd: std::os::fd::OwnedFd) -> tokio::net::UnixListener {
+    use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
+    assert_eq!(unsafe { libc::listen(fd.as_raw_fd(), 16) }, 0, "listen: {}", std::io::Error::last_os_error());
+    let std_listener = unsafe { std::os::unix::net::UnixListener::from_raw_fd(fd.into_raw_fd()) };
+    std_listener.set_nonblocking(true).unwrap();
+    tokio::net::UnixListener::from_std(std_listener).unwrap()
+}
+
+#[cfg(unix)]
+#[test]
+fn open_unix_retries_transient_connection_refused_and_fails_fast_when_missing() {
+    let dir = TempDir::new();
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+    rt.block_on(async move {
+        // Missing path (ENOENT) fails immediately without waiting through the retry budget.
+        let missing = dir.path().join("missing.sock");
+        let start = std::time::Instant::now();
+        assert!(crate::net::open_unix(missing.to_str().unwrap(), b"hello").await.is_err());
+        assert!(crate::net::tell_unix(missing.to_str().unwrap(), b"hello").await.is_err());
+        assert!(start.elapsed() < std::time::Duration::from_millis(500), "missing path should fail fast, took {:?}", start.elapsed());
+
+        // Bound-but-not-yet-listening socket returns ECONNREFUSED while the socket file exists;
+        // once listen() starts 30ms later, open_unix retries and delivers the head.
+        let open_path = dir.path().join("transient-open.sock");
+        let fd = bind_unlistening_unix(&open_path);
+        let server = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            let listener = start_listening_unix(fd);
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut got = [0u8; 5];
+            socket.read_exact(&mut got).await.unwrap();
+            got
+        });
+        let (_r, _w) = crate::net::open_unix(open_path.to_str().unwrap(), b"hello").await.expect("open_unix should recover from transient ECONNREFUSED");
+        assert_eq!(&server.await.unwrap(), b"hello");
+
+        // Same transient recovery for tell_unix.
+        let tell_path = dir.path().join("transient-tell.sock");
+        let fd = bind_unlistening_unix(&tell_path);
+        let server = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            let listener = start_listening_unix(fd);
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut got = [0u8; 4];
+            socket.read_exact(&mut got).await.unwrap();
+            got
+        });
+        crate::net::tell_unix(tell_path.to_str().unwrap(), b"skip").await.expect("tell_unix should recover from transient ECONNREFUSED");
+        assert_eq!(&server.await.unwrap(), b"skip");
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn conn_hand_sends_skip_on_delivery_failure_and_closes_when_unreachable() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+    shell.runtime.block_on(async move {
+        let alpn = b"stillfail/test".to_vec();
+        let bind = |alpns: Vec<Vec<u8>>| Endpoint::builder(Minimal).relay_mode(RelayMode::Disabled).alpns(alpns).bind();
+        let (a, b) = (bind(vec![]).await.unwrap(), bind(vec![alpn.clone()]).await.unwrap());
+        let port = b.bound_sockets().iter().find(|s| s.is_ipv4()).unwrap().port();
+        let addr = endpoint_addr(&json!({ "id": hex::encode(b.id().as_bytes()), "ips": [format!("127.0.0.1:{port}")] })).unwrap();
+        let dial = || {
+            let (inner, a, b, addr, alpn) = (inner.clone(), a.clone(), b.clone(), addr.clone(), alpn.clone());
+            async move {
+                let taken = tokio::spawn(async move { b.accept().await.unwrap().await.unwrap() });
+                let id = inner.keep_conn(a.connect(addr, &alpn).await.unwrap());
+                (id, taken.await.unwrap())
+            }
+        };
+
+        // Case 1: index == 0 fails (path unreachable) -> connection is closed rather than hung.
+        {
+            let (id, theirs) = dial().await;
+            let missing = dir.path().join("case1-missing.sock");
+            let handing = {
+                let inner = inner.clone();
+                let a = json!({ "id": id, "path": missing.to_str().unwrap() });
+                tokio::spawn(async move { inner.run("conn.hand", a, None).await })
+            };
+            let (mut send, _recv) = theirs.open_bi().await.unwrap();
+            send.write_all(b"{\"hello\":1}\n").await.unwrap();
+            send.finish().unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(2), theirs.closed())
+                .await
+                .expect("index 0 failure must close QUIC connection");
+            handing.await.unwrap().unwrap();
+        }
+
+        // Case 2: index > 0 fails and path is permanently unreachable -> connection is closed.
+        {
+            let (id, theirs) = dial().await;
+            let node = dir.path().join("case2-node.sock");
+            let (said_to, mut said) = tokio::sync::mpsc::unbounded_channel();
+            let node_task = taking_streams(tokio::net::UnixListener::bind(&node).unwrap(), "node", said_to);
+            let handing = {
+                let inner = inner.clone();
+                let a = json!({ "id": id, "path": node.to_str().unwrap() });
+                tokio::spawn(async move { inner.run("conn.hand", a, None).await })
+            };
+            let (mut send0, mut recv0) = theirs.open_bi().await.unwrap();
+            send0.write_all(b"{\"hello\":1}\n").await.unwrap();
+            send0.finish().unwrap();
+            assert_eq!(String::from_utf8(recv0.read_to_end(1 << 16).await.unwrap()).unwrap(), "node");
+            assert_eq!(said.recv().await.unwrap().2, 0);
+
+            node_task.abort();
+            let _ = node_task.await;
+            std::fs::remove_file(&node).unwrap();
+
+            let (mut send1, _recv1) = theirs.open_bi().await.unwrap();
+            send1.write_all(b"{\"method\":\"GET\",\"path\":\"/lost\"}\n").await.unwrap();
+            send1.finish().unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(2), theirs.closed())
+                .await
+                .expect("unreachable path on index > 0 must close QUIC connection");
+            handing.await.unwrap().unwrap();
+        }
+
+        // Case 3: routed stream succeeds at front, but tell_unix(node, skip) fails -> connection is closed.
+        {
+            let (id, theirs) = dial().await;
+            let node = dir.path().join("case3-node.sock");
+            let serve = dir.path().join("case3-serve.sock");
+            let (said_to, mut said) = tokio::sync::mpsc::unbounded_channel();
+            let node_task = taking_streams(tokio::net::UnixListener::bind(&node).unwrap(), "node", said_to.clone());
+            let _serve_task = taking_streams(tokio::net::UnixListener::bind(&serve).unwrap(), "served", said_to);
+            let handing = {
+                let inner = inner.clone();
+                let a = json!({ "id": id, "path": node.to_str().unwrap(), "front": [serve.to_str().unwrap()], "routes": ["GET /served"] });
+                tokio::spawn(async move { inner.run("conn.hand", a, None).await })
+            };
+            let (mut send0, mut recv0) = theirs.open_bi().await.unwrap();
+            send0.write_all(b"{\"hello\":1}\n").await.unwrap();
+            send0.finish().unwrap();
+            assert_eq!(String::from_utf8(recv0.read_to_end(1 << 16).await.unwrap()).unwrap(), "node");
+            assert_eq!(said.recv().await.unwrap().2, 0);
+
+            node_task.abort();
+            let _ = node_task.await;
+            std::fs::remove_file(&node).unwrap();
+
+            let (mut send1, _recv1) = theirs.open_bi().await.unwrap();
+            send1.write_all(b"{\"method\":\"GET\",\"path\":\"/served\"}\n").await.unwrap();
+            send1.finish().unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(2), theirs.closed())
+                .await
+                .expect("failed skip after routed stream must close QUIC connection");
+            handing.await.unwrap().unwrap();
+        }
+
+        // Case 4: index > 0 delivery fails transiently, path recovers for skip -> kind 3 skip frame sent and next stream delivered.
+        {
+            let (id, theirs) = dial().await;
+            let node = dir.path().join("case4-node.sock");
+            let (said_to, mut said) = tokio::sync::mpsc::unbounded_channel();
+            let node_task = taking_streams(tokio::net::UnixListener::bind(&node).unwrap(), "node", said_to.clone());
+            let handing = {
+                let inner = inner.clone();
+                let a = json!({ "id": id, "path": node.to_str().unwrap() });
+                tokio::spawn(async move { inner.run("conn.hand", a, None).await })
+            };
+            let (mut send0, mut recv0) = theirs.open_bi().await.unwrap();
+            send0.write_all(b"{\"hello\":1}\n").await.unwrap();
+            send0.finish().unwrap();
+            assert_eq!(String::from_utf8(recv0.read_to_end(1 << 16).await.unwrap()).unwrap(), "node");
+            assert_eq!(said.recv().await.unwrap(), ("node", 2, 0, b"{\"hello\":1}\n".to_vec()));
+
+            // Stop listening while keeping a bound (unlistening) socket so open_unix exhausts retries and resets stream 1.
+            node_task.abort();
+            let _ = node_task.await;
+            let unlistening_fd = bind_unlistening_unix(&node);
+
+            let (mut send1, mut recv1) = theirs.open_bi().await.unwrap();
+            send1.write_all(b"{\"method\":\"GET\",\"path\":\"/drop\"}\n").await.unwrap();
+            send1.finish().unwrap();
+            // Once stream 1 is reset, open_unix has failed and skip_or_close is about to tell_unix(node, skip).
+            assert!(recv1.read_to_end(1 << 16).await.is_err());
+
+            let _node_back = taking_streams(start_listening_unix(unlistening_fd), "node", said_to);
+            let skip_msg = tokio::time::timeout(std::time::Duration::from_secs(2), said.recv())
+                .await
+                .expect("skip frame must arrive")
+                .unwrap();
+            assert_eq!(skip_msg, ("node", 3, 1, vec![]));
+
+            // Subsequent stream (index 2) continues to be delivered normally on the same connection.
+            let (mut send2, mut recv2) = theirs.open_bi().await.unwrap();
+            send2.write_all(b"{\"method\":\"GET\",\"path\":\"/after\"}\n").await.unwrap();
+            send2.finish().unwrap();
+            assert_eq!(String::from_utf8(recv2.read_to_end(1 << 16).await.unwrap()).unwrap(), "node");
+            assert_eq!(said.recv().await.unwrap(), ("node", 2, 2, b"{\"method\":\"GET\",\"path\":\"/after\"}\n".to_vec()));
+
+            theirs.close(0u32.into(), b"bye");
+            handing.await.unwrap().unwrap();
+        }
     });
 }
 
@@ -1334,4 +1602,377 @@ fn a_screens_frames_as_datagrams_come_through_loss_at_once() {
         }
         assert!(report[0].2 > report[1].2 && report[2].2 > report[3].2);
     });
+}
+
+/// With `control: true`, `ws.ping` sends a Ping frame and `ws.next` surfaces incoming Pong and Ping frames (while
+/// tungstenite still replies with Pong to server Pings).
+#[test]
+fn ws_control_frames_and_ping_roundtrip() {
+    use futures::StreamExt;
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let call = |id: u64, op: &str, a: Value| {
+        shell.call(id, op.into(), a.to_string().as_bytes(), None);
+        let (json, error, _) = answer(id);
+        assert_eq!(error, "", "{op}");
+        serde_json::from_str::<Value>(&json).unwrap()
+    };
+    let (listener, addr) = shell.runtime.block_on(async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        (listener, addr)
+    });
+    let served = shell.runtime.spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+        // Receive client's ws.ping and reply with Pong.
+        let got_ping = ws.next().await.unwrap().unwrap();
+        match got_ping {
+            Message::Ping(payload) => ws.send(Message::Pong(payload)).await.unwrap(),
+            other => panic!("expected Ping from client, got {other:?}"),
+        }
+        // Send a server Ping and expect client's automatic Pong reply.
+        ws.send(Message::Ping(Default::default())).await.unwrap();
+        let got_pong = ws.next().await.unwrap().unwrap();
+        assert!(matches!(got_pong, Message::Pong(_)), "expected Pong from client, got {got_pong:?}");
+        // Wait for client close.
+        let _ = ws.next().await;
+    });
+    let opened = call(98_001, "ws.open", json!({ "url": format!("ws://{addr}/"), "control": true }));
+    let ws_id = opened["id"].as_u64().unwrap();
+    call(98_002, "ws.ping", json!({ "id": ws_id }));
+    assert_eq!(call(98_003, "ws.next", json!({ "id": ws_id })), json!({ "pong": true }));
+    assert_eq!(call(98_004, "ws.next", json!({ "id": ws_id })), json!({ "ping": true }));
+    call(98_005, "ws.close", json!({ "id": ws_id }));
+    shell.runtime.block_on(served).unwrap();
+}
+
+/// Without `control`, Ping and Pong frames stay internal and `ws.next` skips straight to the next data frame.
+#[test]
+fn ws_without_control_skips_ping_and_pong_frames() {
+    use futures::StreamExt;
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let call = |id: u64, op: &str, a: Value| {
+        shell.call(id, op.into(), a.to_string().as_bytes(), None);
+        let (json, error, _) = answer(id);
+        assert_eq!(error, "", "{op}");
+        serde_json::from_str::<Value>(&json).unwrap()
+    };
+    let (listener, addr) = shell.runtime.block_on(async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        (listener, addr)
+    });
+    let served = shell.runtime.spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+        ws.send(Message::Ping(Default::default())).await.unwrap();
+        ws.send(Message::Pong(Default::default())).await.unwrap();
+        ws.send(Message::text("hi")).await.unwrap();
+        let _ = ws.next().await;
+    });
+    let opened = call(98_011, "ws.open", json!({ "url": format!("ws://{addr}/") }));
+    let ws_id = opened["id"].as_u64().unwrap();
+    assert_eq!(call(98_012, "ws.next", json!({ "id": ws_id })), json!({ "text": "hi" }));
+    call(98_013, "ws.close", json!({ "id": ws_id }));
+    shell.runtime.block_on(served).unwrap();
+}
+
+/// A test's server on 127.0.0.1, its listener taken by `serve` on the shell's runtime; its address.
+fn served<F, T>(shell: &Shell, serve: impl FnOnce(tokio::net::TcpListener) -> F) -> (std::net::SocketAddr, tokio::task::JoinHandle<T>)
+where
+    F: std::future::Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
+    let listener = shell.runtime.block_on(tokio::net::TcpListener::bind("127.0.0.1:0")).unwrap();
+    let addr = listener.local_addr().unwrap();
+    (addr, shell.runtime.spawn(serve(listener)))
+}
+
+/// What came of call `id` asked with `a`: its JSON, or its error.
+fn asked(shell: &Shell, id: u64, op: &str, a: Value) -> Result<Value, String> {
+    shell.call(id, op.into(), a.to_string().as_bytes(), None);
+    let (json, error, _) = answer(id);
+    if error.is_empty() { Ok(serde_json::from_str(&json).unwrap()) } else { Err(error) }
+}
+
+/// An HTTP request's head read off `socket`.
+async fn head_of(socket: &mut tokio::net::TcpStream) -> String {
+    let mut request = Vec::new();
+    while !request.ends_with(b"\r\n\r\n") {
+        request.push(socket.read_u8().await.unwrap());
+    }
+    String::from_utf8(request).unwrap()
+}
+
+/// The other side's Close frame reaches `ws.next` with its code and reason (the plane's 4000, a presence socket
+/// replaced, and 4004, its station removed); one with none, and the socket's end after it, say only its end.
+#[test]
+fn a_close_frames_code_and_reason_reach_ws_next() {
+    use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+    use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let (addr, server) = served(&shell, |listener| async move {
+        for frame in [Some((4000, "replaced")), Some((4004, "removed")), None] {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            ws.close(frame.map(|(code, reason)| CloseFrame { code: CloseCode::from(code), reason: reason.into() })).await.unwrap();
+        }
+    });
+    for (n, said) in [(0, json!({ "end": true, "code": 4000, "reason": "replaced" })), (1, json!({ "end": true, "code": 4004, "reason": "removed" })), (2, json!({ "end": true }))] {
+        let ws = asked(&shell, 96_000 + n * 10, "ws.open", json!({ "url": format!("ws://{addr}/v1/presence") })).unwrap()["id"].clone();
+        assert_eq!(asked(&shell, 96_001 + n * 10, "ws.next", json!({ "id": ws })), Ok(said));
+        assert_eq!(asked(&shell, 96_002 + n * 10, "ws.next", json!({ "id": ws })), Ok(json!({ "end": true })));
+        asked(&shell, 96_003 + n * 10, "ws.close", json!({ "id": ws })).unwrap();
+    }
+    shell.runtime.block_on(server).unwrap();
+}
+
+/// A WebSocket whose Upgrade is never answered fails once its `timeoutMs` passed, directly and through an entry; one
+/// cancelled while it waits (`fetch.cancel`) drops its socket, and nothing of it is kept.
+#[test]
+fn a_websocket_opening_ends_by_its_deadline_or_when_cancelled() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let (heard, mut hearing) = tokio::sync::mpsc::unbounded_channel();
+    let (addr, _server) = served(&shell, |listener| async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let heard = heard.clone();
+            tokio::spawn(async move {
+                head_of(&mut socket).await;
+                let _ = heard.send(());
+                // Never answered; what the read ends with is the client's socket closing.
+                let _ = socket.read_u8().await;
+                let _ = heard.send(());
+            });
+        }
+    });
+    let entry = json!({ "host": "127.0.0.1", "port": addr.port() });
+    for (id, a) in [(96_101, json!({ "url": format!("ws://{addr}/"), "timeoutMs": 150 })), (96_102, json!({ "url": "ws://cloud.invalid/", "entry": entry, "timeoutMs": 150 }))] {
+        assert_eq!(asked(&shell, id, "ws.open", a), Err("websocket: open timed out within 150 ms".to_string()));
+    }
+    let kept = shell.inner.handles.lock().unwrap().len();
+    shell.call(96_103, "ws.open".into(), json!({ "url": format!("ws://{addr}/") }).to_string().as_bytes(), None);
+    shell.runtime.block_on(async {
+        for _ in 0..5 {
+            hearing.recv().await.unwrap();
+        }
+    });
+    let cancel = || serde_json::from_slice::<Value>(&shell.call_sync("fetch.cancel", json!({ "id": 96_103 }).to_string().as_bytes())).unwrap();
+    assert_eq!(cancel(), json!({ "value": true }));
+    assert_eq!(answer(96_103).1, "cancelled");
+    shell.runtime.block_on(hearing.recv()).unwrap();
+    assert_eq!(cancel(), json!({ "value": false }));
+    assert_eq!(shell.inner.handles.lock().unwrap().len(), kept);
+}
+
+/// `stream.open` given `timeoutMs` fails once its head has not come by then; `stream.read` given `stallMs` (or
+/// `timeoutMs`) once its next piece has not.
+#[test]
+fn a_streams_head_and_pieces_end_by_their_deadlines() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let (addr, _server) = served(&shell, |listener| async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            tokio::spawn(async move {
+                if head_of(&mut socket).await.starts_with("GET /body") {
+                    socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\na").await.unwrap();
+                }
+                // Nothing more comes, and the socket stays open.
+                let _ = socket.read_u8().await;
+            });
+        }
+    });
+    let at = |path: &str, within: Value| {
+        let mut a = json!({ "url": format!("http://{addr}{path}"), "method": "GET", "headers": [] });
+        a.as_object_mut().unwrap().extend(within.as_object().unwrap().clone());
+        a
+    };
+    assert_eq!(asked(&shell, 96_201, "stream.open", at("/head", json!({ "timeoutMs": 150 }))), Err("no answer within 150 ms".to_string()));
+    let stream = asked(&shell, 96_202, "stream.open", at("/body", json!({ "timeoutMs": 5000 }))).unwrap();
+    assert_eq!((stream["status"].clone(), stream["redirected"].clone()), (json!(200), json!(false)));
+    shell.call(96_203, "stream.read".into(), json!({ "id": stream["id"] }).to_string().as_bytes(), None);
+    assert_eq!(answer(96_203).2.unwrap(), b"a");
+    for (id, within) in [(96_204, json!({ "stallMs": 150 })), (96_205, json!({ "timeoutMs": 150 }))] {
+        let mut a = json!({ "id": stream["id"] });
+        a.as_object_mut().unwrap().extend(within.as_object().unwrap().clone());
+        assert_eq!(asked(&shell, id, "stream.read", a), Err("nothing more came within 150 ms".to_string()));
+    }
+}
+
+/// A 302 is answered as it came where `redirect` is not `"follow"` (said or not: `"manual"`), `redirected` false;
+/// followed where it is, its target's answer `redirected`, for `fetch` and `stream.open` alike.
+#[test]
+fn redirects_are_followed_only_when_asked() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let (addr, _server) = served(&shell, |listener| async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            tokio::spawn(async move {
+                loop {
+                    let head = head_of(&mut socket).await;
+                    let answer: &[u8] = if head.starts_with("GET /from ") {
+                        b"HTTP/1.1 302 Found\r\nLocation: /to\r\nContent-Length: 0\r\n\r\n"
+                    } else {
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nthere"
+                    };
+                    if socket.write_all(answer).await.is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    let from = |redirect: Option<&str>| {
+        let mut a = json!({ "url": format!("http://{addr}/from"), "method": "GET", "headers": [] });
+        if let Some(r) = redirect {
+            a["redirect"] = json!(r);
+        }
+        a
+    };
+    for (n, redirect) in [None, Some("manual")].into_iter().enumerate() {
+        let n = n as u64 * 10;
+        shell.call(96_301 + n, "fetch".into(), from(redirect).to_string().as_bytes(), None);
+        let (said, error, body) = answer(96_301 + n);
+        assert_eq!(error, "");
+        let said: Value = serde_json::from_str(&said).unwrap();
+        assert_eq!((said["status"].clone(), said["redirected"].clone(), body.unwrap()), (json!(302), json!(false), Vec::new()));
+        let stream = asked(&shell, 96_302 + n, "stream.open", from(redirect)).unwrap();
+        assert_eq!((stream["status"].clone(), stream["redirected"].clone()), (json!(302), json!(false)));
+    }
+    shell.call(96_321, "fetch".into(), from(Some("follow")).to_string().as_bytes(), None);
+    let (said, error, body) = answer(96_321);
+    assert_eq!(error, "");
+    let said: Value = serde_json::from_str(&said).unwrap();
+    assert_eq!((said["status"].clone(), said["redirected"].clone(), body.unwrap()), (json!(200), json!(true), b"there".to_vec()));
+    let stream = asked(&shell, 96_322, "stream.open", from(Some("follow"))).unwrap();
+    assert_eq!((stream["status"].clone(), stream["redirected"].clone()), (json!(200), json!(true)));
+}
+
+/// A WebSocket handshake refusal carries why the server refused it (Slack's `handshake-msg` header, Comma's JSON
+/// `error`/`message`, or plain body text collapsed to one line and capped at 300 characters), while an empty body
+/// keeps the bare `websocket refused (<status>)` form.
+#[test]
+fn ws_open_preserves_handshake_refusal_words() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let long_zh_body = format!("  {}\n\t{}  ", "冲突提示".repeat(80), "尾部");
+    let expected_zh = format!("{}…", "冲突提示".repeat(80).chars().take(299).collect::<String>());
+    let long_zh_for_server = long_zh_body.clone();
+    let (addr, _server) = served(&shell, move |listener| {
+        let long_zh = long_zh_for_server.clone();
+        async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let long_zh = long_zh.clone();
+                tokio::spawn(async move {
+                    let head = head_of(&mut socket).await;
+                    let answer: Vec<u8> = if head.starts_with("GET /comma-conflict ") {
+                        let body = r#"{"error":"this still.fail workspace is connected to station Alpha already"}"#;
+                        format!("HTTP/1.1 409 Conflict\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
+                    } else if head.starts_with("GET /slack-header ") {
+                        let body = r#"{"error":"ignored when handshake-msg is present"}"#;
+                        format!("HTTP/1.1 403 Forbidden\r\nhandshake-msg:  too_many_websockets \r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
+                    } else if head.starts_with("GET /empty-502 ") {
+                        b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()
+                    } else if head.starts_with("GET /long-utf8 ") {
+                        format!("HTTP/1.1 409 Conflict\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{long_zh}", long_zh.len()).into_bytes()
+                    } else {
+                        let body = r#"{"message":"  line one\n\tline two  "}"#;
+                        format!("HTTP/1.1 400 Bad Request\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
+                    };
+                    let _ = socket.write_all(&answer).await;
+                });
+            }
+        }
+    });
+    let open = |id: u64, path: &str| {
+        asked(&shell, id, "ws.open", json!({ "url": format!("ws://{addr}{path}"), "headers": [] }))
+    };
+    assert_eq!(
+        open(96_401, "/comma-conflict"),
+        Err("websocket refused (409): this still.fail workspace is connected to station Alpha already".to_string())
+    );
+    assert_eq!(
+        open(96_402, "/slack-header"),
+        Err("websocket refused (403): too_many_websockets".to_string())
+    );
+    assert_eq!(
+        open(96_403, "/empty-502"),
+        Err("websocket refused (502)".to_string())
+    );
+    assert_eq!(
+        open(96_404, "/long-utf8"),
+        Err(format!("websocket refused (409): {expected_zh}"))
+    );
+    assert_eq!(
+        open(96_405, "/message-field"),
+        Err("websocket refused (400): line one line two".to_string())
+    );
+}
+
+#[test]
+fn rotates_a_log_in_place_keeping_its_tail_and_inode() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().join("shell"), complete, ctx()).unwrap();
+    let rotate = |id: u64, args: Value| -> Value {
+        shell.call(id, "fs.rotate".into(), args.to_string().as_bytes(), None);
+        let (json, error, _) = answer(id);
+        assert_eq!(error, "");
+        serde_json::from_str::<Value>(&json).unwrap()
+    };
+
+    // Missing file returns false.
+    let missing = dir.path().join("missing.log");
+    assert_eq!(rotate(96_501, json!({ "path": missing.display().to_string(), "cap": 100 })), json!(false));
+
+    // File at or below cap returns false and leaves no .1 or .1.tmp behind.
+    let log = dir.path().join("job.log");
+    let backup = dir.path().join("job.log.1");
+    let tmp = dir.path().join("job.log.1.tmp");
+    std::fs::write(&log, vec![b'a'; 100]).unwrap();
+    assert_eq!(rotate(96_502, json!({ "path": log.display().to_string(), "cap": 100.0 })), json!(false));
+    assert!(!backup.exists() && !tmp.exists());
+    assert_eq!(std::fs::metadata(&log).unwrap().len(), 100);
+
+    // File past cap (> 64 KiB so the streaming buffer loops) with custom keep < cap (as floats).
+    let data: Vec<u8> = (0..150_000u32).map(|i| (i % 251) as u8).collect();
+    std::fs::write(&log, &data).unwrap();
+    #[cfg(unix)]
+    let ino_before = {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(&log).unwrap().ino()
+    };
+    assert_eq!(
+        rotate(96_503, json!({ "path": log.display().to_string(), "cap": 100_000.0, "keep": 80_000.0 })),
+        json!(true)
+    );
+    assert_eq!(std::fs::metadata(&log).unwrap().len(), 0);
+    assert!(!tmp.exists());
+    assert_eq!(std::fs::read(&backup).unwrap(), &data[data.len() - 80_000..]);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        assert_eq!(std::fs::metadata(&log).unwrap().ino(), ino_before);
+        assert_eq!(std::fs::metadata(&backup).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    // Default keep (omitted) equals cap.
+    let data2: Vec<u8> = (0..120_000u32).map(|i| ((i * 3) % 251) as u8).collect();
+    std::fs::write(&log, &data2).unwrap();
+    assert_eq!(rotate(96_504, json!({ "path": log.display().to_string(), "cap": 70_000 })), json!(true));
+    assert_eq!(std::fs::metadata(&log).unwrap().len(), 0);
+    assert!(!tmp.exists());
+    assert_eq!(std::fs::read(&backup).unwrap(), &data2[data2.len() - 70_000..]);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        assert_eq!(std::fs::metadata(&log).unwrap().ino(), ino_before);
+        assert_eq!(std::fs::metadata(&backup).unwrap().permissions().mode() & 0o777, 0o600);
+    }
 }

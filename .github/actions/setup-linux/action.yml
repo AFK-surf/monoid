@@ -8,6 +8,15 @@ runs:
   steps:
     - shell: bash
       run: |
+        if [ ! -f station/mb/build.sh ] || [ "$(git config --bool core.sparseCheckout 2>/dev/null)" = true ]; then
+          git config --worktree --unset-all core.sparseCheckout 2>/dev/null || true
+          git config --worktree --unset-all core.sparseCheckoutCone 2>/dev/null || true
+          git config --local --unset-all core.sparseCheckout 2>/dev/null || true
+          git config --local --unset-all core.sparseCheckoutCone 2>/dev/null || true
+          git config --local --unset-all extensions.worktreeConfig 2>/dev/null || true
+          rm -f .git/info/sparse-checkout .git/index
+          git reset --hard HEAD
+        fi
         echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
         echo "$HOME/.local/bin" >> "$GITHUB_PATH"
         echo "JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64" >> "$GITHUB_ENV"
@@ -39,6 +48,11 @@ runs:
           if [ -d "$HOME/stillfail-ci/reader-mbc-store" ]; then
             find "$HOME/stillfail-ci/reader-mbc-store" -name '*.lock' -mmin +120 -delete 2>/dev/null || true
             find "$HOME/stillfail-ci/reader-mbc-store" -mindepth 2 -maxdepth 2 -type d -mmin +1440 -exec rm -rf {} + 2>/dev/null || true
+          fi
+          # Each reader's prepared C shared among the runners (station/mb/build.sh), touched on use.
+          if [ -d "$HOME/stillfail-ci/reader-mbc-prepped" ]; then
+            find "$HOME/stillfail-ci/reader-mbc-prepped" -maxdepth 1 \( -name '*.lock' -o -name '*.tmp.*' \) -mmin +30 -exec rm -rf {} + 2>/dev/null || true
+            find "$HOME/stillfail-ci/reader-mbc-prepped" -maxdepth 1 -type f -name 'prepped-*.c' -mmin +180 -delete 2>/dev/null || true
           fi
           for diag in "$HOME"/actions-runner*/_diag; do
             [ -d "$diag" ] || continue

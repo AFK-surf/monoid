@@ -99,7 +99,7 @@ fn side_own_bar_node(n : @view.View, tabs : Array[String], front : String, on_ta
 fn side_bar_look_node(on_tape : Bool) -> @ui.Style {
   if on_tape {
     let roots = @ui.tree_corner_roots_now()
-    side_bar_tape_in(beside_column(tape_pane_corners(Panel, true), tape_room_now().under).map(fn(c) { c.radius(roots) }))
+    side_bar_tape_in(beside_column(tape_pane_corners(Panel, true), tape_room_now().under), roots)
   } else {
     side_bar_look.then(
       @ui.style(pr=@sf.room_of(@sf.window_end_in(side_bar_end, roots=@ui.tree_corner_roots_now()))),

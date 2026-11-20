@@ -33,9 +33,9 @@ test "a 文件 tab's row carried over the chat: 松开以添加到消息 over it
   guard t.find("首页截图.png") is Some((x, y)) else { fail("no tab row: \{Repr(t.words().map(fn(w) { w.0 }))}") }
   assert_true(t.find("松开以添加到消息") is None)
   // (carried to the chat's messages, left of the panel)
-  t.hold_drag(x, y, 300.0, 400.0)
+  t.hold_drag(x, y, 420.0, 400.0)
   assert_true(t.find("松开以添加到消息") is Some(_))
-  t.release(300.0, 400.0)
+  t.release(420.0, 400.0)
   t.run_for(@ui.move_most_ms)
   assert_true(t.find("松开以添加到消息") is None)
   let added = named(calls, "composer.add")

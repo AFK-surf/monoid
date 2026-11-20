@@ -43,7 +43,7 @@ async fn Storage::archive_here(self : Storage, chat : String, ws : String?, call
   if already {
     return "Already archived: \{chat}."
   }
-  self.st.tell("fn.archiveChat", [get(thread, "id").unwrap_or(Json::null()), jb(true)])
+  self.st.hub.archive_chat(get(thread, "id").unwrap_or(Json::null()), true)
   "Archived \{chat}."
 }
 

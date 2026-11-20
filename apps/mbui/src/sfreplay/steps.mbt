@@ -1250,7 +1250,7 @@ pub fn Flow::end(self : Flow, unmade? : Array[String] = []) -> String {
     }
     // (a toast's time too, before the frame owed: what is shown does not wait for it, but one left at the end goes at
     // its time, not as the end's last frame happens to fall)
-    let toast = @kit.toast_due("toast")
+    let toast = @sf.toast_due("toast").unwrap_or(-1.0)
     if toast > self.t.time() {
       self.t.run_for(toast - self.t.time())
       continue
@@ -1454,7 +1454,7 @@ pub fn Flow::clear(self : Flow) -> Unit {
 }
 
 ///|
-/// On the frames' clock to `end`, a motion's own end as it says it (`@kit.sheet_rest`, `@ui.nav_rest`,
+/// On the frames' clock to `end`, a motion's own end as it says it (`@ui.nav_rest`,
 /// `@sf.presented_rest`, `@sfapp.bar_rest`: asked, not its answer, so the strict pass can ask again at the run's next
 /// step, Flow::run_to_at), or none where the clock is past it already (the run's own waiting took it there: each says
 /// its end as it was once it is over, whichever frames were drawn): the test fails if it has not started yet (+inf:
@@ -1929,7 +1929,7 @@ pub fn Flow::wheel_at(self : Flow, what : String, dy : Double, loc~ : SourceLoc)
 
 ///|
 /// The toast on screen gone: its time shown (`@sfapp.toast_ms`, a timer), then the frame that sends it away and its way
-/// out (`@kit.toast_rest`).
+/// out (`@sf.toast_rest`).
 #callsite(autofill(loc))
 pub fn Flow::toast_gone(self : Flow, loc~ : SourceLoc) -> Unit {
   if pace_split.val != "" {
@@ -1939,9 +1939,9 @@ pub fn Flow::toast_gone(self : Flow, loc~ : SourceLoc) -> Unit {
   self.run_for(@sfapp.toast_ms)
   self.t.draw()
   // (its way out over already where it began before the test looked at it: a step that waited took the clock past)
-  let out = @kit.toast_rest("toast")
+  let out = @sf.toast_rest("toast").unwrap_or(-1.0)
   if out > self.t.time() {
-    self.run_to_at(site, fn() { @kit.toast_rest("toast") })
+    self.run_to_at(site, fn() { @sf.toast_rest("toast").unwrap_or(-1.0) })
   }
 }
 

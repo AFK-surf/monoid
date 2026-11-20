@@ -63,18 +63,7 @@ pub async fn PrivateFile::written(self : PrivateFile) -> Unit {
 ///|
 /// Whether a key is an array index, which a JavaScript object keeps first, in order (`/^(0|[1-9]\d*)$/`, below 2³²−1).
 fn index_key(k : String) -> Double? {
-  if k == "0" {
-    return Some(0.0)
-  }
-  if k.length() == 0 || k.length() > 10 || !all_digits(k) || k.has_prefix("0") {
-    return None
-  }
-  let n = js_num(Some(js(k)))
-  if n < 4294967295.0 {
-    Some(n)
-  } else {
-    None
-  }
+  @jsjson.index_key(k)
 }
 
 ///|
@@ -214,7 +203,7 @@ async fn Owners::load(self : Owners) -> Unit {
   }
   // (an object's index keys first, as Object.entries gives them)
   let ordered = match js_object(was.map(e => (e.0, js(e.1)))) {
-    Obj(fs) => fs.map(f => (@jsjson.text(f.0), js_str(Some(f.1))))
+    Obj(fs) => fs.map(f => (@jsjson.sanitize_str(f.0), js_str(Some(f.1))))
     _ => []
   }
   for e in ordered {

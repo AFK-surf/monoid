@@ -76,6 +76,8 @@ pub(all) struct ScreenViewPort {
   set_clipboard : (async (Clip, Bool) -> Unit)?
   watch_clipboard : (((Clip) -> Unit) -> () -> Unit)?
   watch_cursor : (((Json) -> Unit) -> () -> Unit)?
+  /// The picture of a pointer of an app's own `watch_cursor` said as "custom:<id>".
+  cursor_image : ((String) -> Bytes?)?
   watch_turn : (((Json) -> Unit) -> () -> Unit)?
   watch_windows : (((Json) -> Unit) -> () -> Unit)?
   window : ((Double?) -> Unit)?
@@ -85,6 +87,14 @@ pub(all) struct ScreenViewPort {
   watch_passkey : (((Json) -> Unit) -> () -> Unit)?
   passkey : (async (Json) -> Unit)?
   watch_child : (((String) -> Unit) -> () -> Unit)?
+  /// The clipboard set and heard with its mark (0 none, 1 concealed, 2 transient, 3 auto), where the view carries marks.
+  set_clipboard_marked : (async (Clip, Bool, Int) -> Unit)?
+  watch_clipboard_marked : (((Clip, Int) -> Unit) -> () -> Unit)?
+  /// Hears whether an app on the screen holds the pointer.
+  watch_pointer_lock : (((Bool) -> Unit) -> () -> Unit)?
+  /// Hears the screen's virtual microphone (`{available, active, epoch}`), and feeds it a packet of a recording.
+  watch_mic : (((Json) -> Unit) -> () -> Unit)?
+  feed_mic : ((Bytes, UInt) -> Unit)?
 }
 
 ///|
@@ -252,62 +262,7 @@ fn upper(s : String) -> String {
 ///|
 /// `decodeURIComponent(s)`; None where it throws (a `%` not of two hex digits, bytes that are no UTF-8).
 pub fn decode_uri_component(s : String) -> String? {
-  let out = StringBuilder()
-  let n = s.length()
-  let mut i = 0
-  let hexv = (c : Int) => digit_of(c, 16)
-  let byte_at = (at : Int) => {
-    if at + 2 > n - 1 {
-      return None
-    }
-    if s.code_unit_at(at).to_int() != 0x25 {
-      return None
-    }
-    match (hexv(s.code_unit_at(at + 1).to_int()), hexv(s.code_unit_at(at + 2).to_int())) {
-      (Some(h), Some(l)) => Some(h * 16 + l)
-      _ => None
-    }
-  }
-  while i < n {
-    let c = s.code_unit_at(i).to_int()
-    if c != 0x25 {
-      out.write_char(c.unsafe_to_char())
-      i += 1
-      continue
-    }
-    guard byte_at(i) is Some(b) else { return None }
-    i += 3
-    if b < 0x80 {
-      out.write_char(b.unsafe_to_char())
-      continue
-    }
-    let (more, least, first) = if b >= 0xc2 && b <= 0xdf {
-      (1, 0x80, b & 0x1f)
-    } else if b >= 0xe0 && b <= 0xef {
-      (2, 0x800, b & 0x0f)
-    } else if b >= 0xf0 && b <= 0xf4 {
-      (3, 0x10000, b & 0x07)
-    } else {
-      return None
-    }
-    let mut point = first
-    for _ in 0..<more {
-      guard byte_at(i) is Some(k) && (k & 0xc0) == 0x80 else { return None }
-      point = (point << 6) | (k & 0x3f)
-      i += 3
-    }
-    if point < least || point > 0x10ffff || (point >= 0xd800 && point <= 0xdfff) {
-      return None
-    }
-    if point >= 0x10000 {
-      let p = point - 0x10000
-      out.write_char((0xd800 + (p >> 10)).unsafe_to_char())
-      out.write_char((0xdc00 + (p & 0x3ff)).unsafe_to_char())
-    } else {
-      out.write_char(point.unsafe_to_char())
-    }
-  }
-  Some(out.to_string())
+  @url.decode_uri_component(s)
 }
 
 ///|
@@ -471,6 +426,9 @@ pub async fn answer_screen(
   if driven && no_passkeys {
     options.push(("passkeys", Json::boolean(false)))
   }
+  if field(ask, "chroma444") is Some(True) {
+    options.push(("chroma", jstr("444")))
+  }
   let view = (source.open)(jobj(options)) catch {
     ScreenRefused(status, key, args, access) => {
       let shown = access_shown(access, lang, tr)
@@ -520,7 +478,8 @@ pub async fn answer_screen(
   let max_width = num_of(field(ask, "maxWidth")).unwrap_or(1920.0)
   let max_height = num_of(field(ask, "maxHeight")).unwrap_or(1080.0)
   let quality = str_of(field(ask, "quality"))
-  let pacer = Pacer::new(now, start=Some(initial_rate), fps=num_of(field(ask, "fps")), stalled~)
+  let fps = num_of(field(ask, "fps"))
+  let pacer = Pacer::new(now, start=Some(initial_rate), fps~, stalled~)
   let sizer = Sizer::new(now, { max_width, max_height }, quality~)
   let session = ViewSession::new(
     hub,
@@ -544,6 +503,7 @@ pub async fn answer_screen(
     sizer,
     { max_width, max_height },
     quality,
+    fps,
     now,
     host_now.unwrap_or(now),
     rt,
@@ -552,6 +512,8 @@ pub async fn answer_screen(
     paths,
     initial_rate,
     field(ask, "binaryCursor") is Some(True),
+    field(ask, "customCursor") is Some(True),
+    field(ask, "privateClip") is Some(True),
   )
   session.run() catch {
     e => {
@@ -603,6 +565,8 @@ priv struct ViewSession {
   sizer : Sizer
   own : Bounds
   quality : String?
+  /// The 帧率 asked (None: 自动): the most its bit rate goes to with its 画质.
+  fps : Double?
   now : () -> Double
   rt : @effect.Runtime
   tr : Tr
@@ -616,6 +580,14 @@ priv struct ViewSession {
   start_rate : Double
   /// The client reads the pointer as `cursor` frames (asked `binaryCursor`), not a state's JSON.
   binary_cursor : Bool
+  /// The client draws the pointers of apps' own (asked `customCursor`), and those whose pictures it was sent.
+  custom_cursor : Bool
+  /// The client reads `privateClipboard` frames (asked `privateClip`).
+  private_clip : Bool
+  /// The controllers its input drove (their slots, as they came): let go of as it is made to only look.
+  pads : Array[Int]
+  mut unlock : () -> Unit
+  cursor_images_sent : Map[String, Bool]
   mut closed : Bool
   over : @effect.Deferred[Unit]
   /// The writes, in order: each waits for the one before.
@@ -625,8 +597,14 @@ priv struct ViewSession {
   mut move_seq : Int
   mut pending_move : PendingMove?
   mut wake_ : @effect.Deferred[Unit]
+  /// The source's next frame, asked while the last one was being written (`#ahead`): at most one.
+  mut ahead : @effect.Deferred[Result[ScreenFrame?, Error]]?
   mut timed : Bool
   mut sound_on : Bool
+  /// The person shares their microphone (`micOn`), the virtual one's state as the view said it last, and its watch.
+  mut mic_on : Bool
+  mut mic : Json?
+  mut unmic : () -> Unit
   mut leave : () -> Unit
   mut unwatch : () -> Unit
   mut unclip : () -> Unit
@@ -679,6 +657,7 @@ fn ViewSession::new(
   sizer : Sizer,
   own : Bounds,
   quality : String?,
+  fps : Double?,
   now : () -> Double,
   host_now : () -> Double,
   rt : @effect.Runtime,
@@ -687,6 +666,8 @@ fn ViewSession::new(
   paths : (() -> Array[LinkPath])?,
   start_rate : Double,
   binary_cursor : Bool,
+  custom_cursor : Bool,
+  private_clip : Bool,
 ) -> ViewSession {
   let loss = LinkLoss::new(now)
   // (its counters as the view begins: what went before is no part of it)
@@ -717,6 +698,7 @@ fn ViewSession::new(
     sizer,
     own,
     quality,
+    fps,
     now,
     rt,
     tr,
@@ -725,6 +707,11 @@ fn ViewSession::new(
     sharpen: Sharpener::new(),
     start_rate,
     binary_cursor,
+    custom_cursor,
+    private_clip,
+    pads: [],
+    unlock: () => (),
+    cursor_images_sent: {},
     closed: false,
     over: @effect.Deferred::new(),
     writes: done_now(),
@@ -732,8 +719,12 @@ fn ViewSession::new(
     move_seq: 0,
     pending_move: None,
     wake_: done_now(),
+    ahead: None,
     timed: false,
     sound_on: true,
+    mic_on: false,
+    mic: None,
+    unmic: () => (),
     leave: () => (),
     unwatch: () => (),
     unclip: () => (),
@@ -777,6 +768,42 @@ fn ViewSession::send(self : ViewSession, kind : Int, payload : Bytes) -> @effect
     }),
   )
   mine
+}
+
+///|
+/// The pointer as the client is told it (`#cursorShown`): one of an app's own, its picture sent first (once a view), to
+/// a client that draws them; else, and where its source has no picture of it, "default".
+fn ViewSession::cursor_shown(self : ViewSession, cursor : Json) -> Json {
+  guard field(cursor, "shape") is Some(String(shape)) && shape.has_prefix("custom:") else { return cursor }
+  if self.custom_cursor && self.cursor_images_sent.contains(shape) {
+    return cursor
+  }
+  let image = match self.view.cursor_image {
+    Some(f) if self.custom_cursor => f(shape)
+    _ => None
+  }
+  match image {
+    Some(b) => {
+      if self.cursor_images_sent.length() >= cursor_images_most {
+        self.cursor_images_sent.clear()
+      }
+      self.cursor_images_sent[shape] = true
+      ignore(self.send(kind_cursor_image, b))
+      cursor
+    }
+    None =>
+      match cursor {
+        Object(m) => {
+          let out : Map[String, Json] = Map([])
+          for k, v in m {
+            out[k] = v
+          }
+          out["shape"] = Json::string("default")
+          Json::object(out)
+        }
+        _ => cursor
+      }
+  }
 }
 
 ///|
@@ -843,6 +870,8 @@ fn ViewSession::stop(self : ViewSession, reason : String?) -> Unit {
   }
   self.closed = true
   (self.unclip)()
+  (self.unlock)()
+  (self.unmic)()
   (self.unlogin)()
   (self.unpasskey)()
   (self.unchild)()
@@ -876,6 +905,11 @@ fn ViewSession::watch_only(self : ViewSession, by : String?) -> Unit {
   }
   self.control = false
   (self.unclip)()
+  (self.unlock)()
+  self.mic_on = false
+  (self.unmic)()
+  self.unmic = () => ()
+  self.mic = None
   (self.unlogin)()
   (self.unpasskey)()
   (self.unchild)()
@@ -889,14 +923,31 @@ fn ViewSession::watch_only(self : ViewSession, by : String?) -> Unit {
   if at is Some(p) && !(field(p, "buttons") is Some(Number(0.0, ..))) {
     held.push(with_fields(p, [("kind", jstr("up")), ("buttons", jnum(0.0))]))
   }
+  for index in self.pads {
+    held.push(pad_released_json(index))
+  }
+  self.pads.clear()
   for e in held {
     self.then_(() => (self.view.input)(e))
   }
   let patch = [("control", Json::boolean(false)), ("login", Json::null()), ("passkey", Json::null())]
+  // (an app's hold on the pointer is a driver's: said gone, to a view that was told it)
+  if self.view.watch_pointer_lock is Some(_) {
+    patch.push(("pointerLock", Json::boolean(false)))
+  }
+  if self.view.watch_mic is Some(_) {
+    patch.push(("mic", Json::null()))
+  }
   if by is Some(b) {
     patch.push(("takenBy", jstr(b)))
   }
   ignore(self.state(jobj(patch)))
+}
+
+///|
+/// A controller let go of (source.ts `gamepadReleased`), as an input's JSON.
+fn pad_released_json(index : Int) -> Json {
+  parse_input(jobj([("t", jstr("gamepad")), ("index", jnum(index.to_double())), ("connected", Json::boolean(false))])).unwrap()
 }
 
 ///|
@@ -1017,6 +1068,31 @@ async fn ViewSession::sleep_or_wake(self : ViewSession, ms : Int?) -> Unit {
 }
 
 ///|
+/// The source's next frame: the one asked ahead, or asked now.
+async fn ViewSession::next_frame(self : ViewSession) -> ScreenFrame? {
+  guard self.ahead is Some(d) else { return (self.view.next)() }
+  self.ahead = None
+  match d.wait() {
+    Ok(f) => f
+    Err(e) => raise e
+  }
+}
+
+///|
+/// The source's next frame asked now, taken by the pump once it may go (`#ahead`); what it has not given by the time
+/// the view ends is let be.
+fn ViewSession::ask_ahead(self : ViewSession) -> Unit {
+  let d : @effect.Deferred[Result[ScreenFrame?, Error]] = @effect.Deferred::new()
+  self.ahead = Some(d)
+  ignore(
+    self.rt.fork_daemon("screen next", on_error=e => ignore(d.succeed(Err(e))), () => {
+      let got : Result[ScreenFrame?, Error] = try { Ok((self.view.next)()) } catch { e => Err(e) }
+      ignore(d.succeed(got))
+    }),
+  )
+}
+
+///|
 /// Frames out, while the client keeps up (`#pump`).
 async fn ViewSession::pump(self : ViewSession) -> Unit {
   while !self.closed {
@@ -1030,7 +1106,7 @@ async fn ViewSession::pump(self : ViewSession) -> Unit {
       self.sleep_or_wake(Some(wait.to_int()))
       continue
     }
-    let next = (self.view.next)() catch {
+    let next = self.next_frame() catch {
       ScreenRefused(_, key, args, access) => {
         let message = match access_shown(access, self.lang, self.tr) {
           Some(s) => str_of(field(s, "message")).unwrap_or("")
@@ -1062,19 +1138,24 @@ async fn ViewSession::pump(self : ViewSession) -> Unit {
           if self.peek {
             own_rate(c.width, c.height)
           } else {
-            rate_ceiling(c.width, c.height, self.quality)
+            rate_ceiling(c.width, c.height, self.quality, fps=self.fps)
           },
         )
         self.size = Some((c.width, c.height))
       }
       ignore(self.send(kind_config, config_bytes(c)))
     }
-    self.pacer.sent(f.ts, f.data.length().to_double())
+    self.pacer.sent(f.ts, f.data.length().to_double(), key=f.key)
     self.latency.sent(f.ts)
+    // (the next frame asked of the source as this one is written, where the pace would let it go: one at most)
+    if !self.closed && self.pacer.free() {
+      self.ask_ahead()
+    }
     self.send(kind_video, video_payload(f.key, f.ts, f.data)).wait() catch { _ => () }
     self.still(f.key)
-    // (a screen that keeps changing: its pictures as sharp as the rate now once it went up well past its key frame's)
-    if !self.closed && self.view.rate is Some(_) && self.sharpen.due_moving((self.now)(), self.rate) {
+    // (a screen that keeps changing: its pictures as sharp as the rate now once it went up well past its key frame's;
+    // never while frames wait in front of the link)
+    if !self.closed && self.view.rate is Some(_) && !self.pacer.backlogged() && self.sharpen.due_moving((self.now)(), self.rate) {
       (self.view.keyframe)()
     }
   }
@@ -1153,7 +1234,16 @@ fn ViewSession::take(self : ViewSession, kind : Int, payload : Bytes) -> Unit {
       v = (v << 8) | payload[i].to_uint64()
     }
     let acked = v.to_double()
-    self.pacer.acked(acked)
+    let wait_us = if payload.length() >= 12 {
+      let mut w = 0U
+      for i in 8..<12 {
+        w = (w << 8) | payload[i].to_uint()
+      }
+      w.to_double()
+    } else {
+      0.0
+    }
+    self.pacer.acked(acked, viewer_wait_ms=wait_us / 1000.0)
     if self.pacer.rtt() is Some(_) {
       self.timed = true
     }
@@ -1169,6 +1259,21 @@ fn ViewSession::take(self : ViewSession, kind : Int, payload : Bytes) -> Unit {
     if payload.length() == 1 {
       self.sound_on = payload[0] != b'\x00'
     }
+  } else if kind == kind_mic_on {
+    if self.control && payload.length() == 1 {
+      self.mic_on = payload[0] == b'\x01'
+    }
+  } else if kind == kind_mic {
+    // Only a driver's, shared, while something records the virtual microphone in the epoch the packet says.
+    guard parse_mic(payload) is Some((epoch, pcm)) else { return }
+    guard self.control && self.mic_on && self.mic is Some(m) && field(m, "active") is Some(True) else { return }
+    if epoch != js_u32(num_of(field(m, "epoch")).unwrap_or(@double.not_a_number)) {
+      return
+    }
+    match self.view.feed_mic {
+      Some(f) => f(pcm, epoch)
+      None => ()
+    }
   } else if kind == kind_look {
     if parse_look(payload, self.own) is Some((region, b)) {
       self.look(region, b)
@@ -1178,6 +1283,7 @@ fn ViewSession::take(self : ViewSession, kind : Int, payload : Bytes) -> Unit {
   } else if kind == kind_set_clipboard {
     guard self.control && self.view.set_clipboard is Some(set) else { return }
     guard parse_clip(payload) is Some((clip, paste)) else { return }
+    let privacy = parse_clip_privacy(payload)
     let types = self.source.clipboard.map(f => f()).unwrap_or([])
     let t = match clip {
       Text(_) => "text"
@@ -1187,7 +1293,11 @@ fn ViewSession::take(self : ViewSession, kind : Int, payload : Bytes) -> Unit {
       return
     }
     self.clip_known = Some(clip_payload(clip))
-    self.then_(() => set(clip, paste))
+    // (with its mark where the view carries marks)
+    match self.view.set_clipboard_marked {
+      Some(marked) => self.then_(() => marked(clip, paste, privacy))
+      None => self.then_(() => set(clip, paste))
+    }
   }
 }
 
@@ -1269,6 +1379,14 @@ fn ViewSession::input(self : ViewSession, raw : Json) -> Unit {
   guard parse_input(raw) is Some(e) else { return }
   match (field(e, "t"), field(e, "kind")) {
     (Some(String("pointer")), _) => self.pointer = Some(e)
+    (Some(String("gamepad")), _) => {
+      let index = num_of(field(e, "index")).unwrap_or(0.0).to_int()
+      match (self.pads.search(index), field(e, "connected")) {
+        (None, Some(True)) => self.pads.push(index)
+        (Some(i), Some(False)) => ignore(self.pads.remove(i))
+        _ => ()
+      }
+    }
     (Some(String("key")), kind) => {
       let code = str_of(field(e, "code")).unwrap_or("")
       let which = if code != "" { code } else { str_of(field(e, "key")).unwrap_or("") }
@@ -1280,8 +1398,10 @@ fn ViewSession::input(self : ViewSession, raw : Json) -> Unit {
     }
     _ => ()
   }
+  // (relative moves add up, none coalesced away)
   let move_ = match (field(e, "t"), field(e, "kind"), field(e, "buttons")) {
-    (Some(String("pointer")), Some(String("move")), Some(Number(b, ..))) => Some(b.to_int())
+    (Some(String("pointer")), Some(String("move")), Some(Number(b, ..))) if !(field(e, "relative") is Some(True)) =>
+      Some(b.to_int())
     _ => None
   }
   self.then_(() => (self.view.input)(e), move_~)
@@ -1358,7 +1478,7 @@ async fn ViewSession::run(self : ViewSession) -> Unit {
   }
   let types = if self.control { self.source.clipboard.map(f => f()).unwrap_or([]) } else { [] }
   if types.length() > 0 && self.view.watch_clipboard is Some(watch) {
-    self.unclip = watch(clip => {
+    let heard = (clip : Clip, privacy : Int) => {
       let t = match clip {
         Text(_) => "text"
         Png(_) => "png"
@@ -1371,7 +1491,30 @@ async fn ViewSession::run(self : ViewSession) -> Unit {
         return
       }
       self.clip_known = Some(payload)
-      ignore(self.send(kind_clipboard, payload))
+      // Marked private (a password manager's): with its mark to a client that reads it, else as any copy.
+      if privacy >= 1 && privacy <= 3 && self.private_clip {
+        ignore(self.send(kind_private_clipboard, private_clip_payload(clip, privacy)))
+      } else {
+        ignore(self.send(kind_clipboard, payload))
+      }
+    }
+    self.unclip = match self.view.watch_clipboard_marked {
+      Some(marked) => marked(heard)
+      None => watch(clip => heard(clip, 0))
+    }
+  }
+  // Whether an app on the screen holds the pointer (a game's), to a person who drives it.
+  if self.control && self.view.watch_pointer_lock is Some(watch) {
+    self.unlock = watch(locked => if !self.closed { ignore(self.state(jobj([("pointerLock", Json::boolean(locked))]))) })
+  }
+  // The screen's virtual microphone, to a person who drives it: whether something there records it now, and which
+  // recording, so their app sends their microphone only then (its packets dropped here otherwise).
+  if self.control && self.view.watch_mic is Some(watch) {
+    self.unmic = watch(mic => {
+      self.mic = Some(mic)
+      if !self.closed {
+        ignore(self.state(jobj([("mic", mic)])))
+      }
     })
   }
   let told = (k : String) => (v : Json) => if !self.closed { ignore(self.state(jobj([(k, v)]))) }
@@ -1386,6 +1529,7 @@ async fn ViewSession::run(self : ViewSession) -> Unit {
   }
   if self.view.watch_cursor is Some(watch) {
     self.unpoint = watch(cursor => if !self.closed {
+      let cursor = self.cursor_shown(cursor)
       if self.binary_cursor {
         ignore(self.send(kind_cursor, cursor_payload(cursor)))
       } else {

@@ -57,7 +57,7 @@ pub fn spokes_turn(v : @view.View) -> Double {
   if @ui.reduced_motion() {
     0.0
   } else {
-    v.cycle_resident(8.0 * spoke_step_ms) * 2.0 * 3.141592653589793
+    @motion.resident_cycle(v, 8.0 * spoke_step_ms) * 2.0 * 3.141592653589793
   }
 }
 

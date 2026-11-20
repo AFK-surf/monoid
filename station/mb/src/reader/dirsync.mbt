@@ -334,8 +334,9 @@ async fn Actors::apply_plan(
     if !files.contains(path) {
       continue
     }
+    // (the link itself let go, never what it names)
     let abs = try {
-      self.file_path(mirror, path, false)
+      self.file_path(mirror, path, false, allow_leaf_link=true)
     } catch {
       _ => {
         files.remove(path)
@@ -353,7 +354,8 @@ async fn Actors::apply_plan(
   let mut written = 0
   for r in ready {
     let (path, hash, mode, temp) = r
-    let abs = try self.file_path(mirror, path, true) catch {
+    // A link synced before may be replaced (renamed over, the link itself) or kept as it is; never set a mode through.
+    let abs = try self.file_path(mirror, path, true, allow_leaf_link=temp is Some(_) || mode == link_mode) catch {
       e => raise refusal("cannot write \{path} on the target: \{FsError::of(e)}")
     }
     match temp {
@@ -368,6 +370,9 @@ async fn Actors::apply_plan(
         match self.lstat(abs) {
           Some(st) if kind_of_stat(st) == "dir" =>
             try self.remove(abs) catch { _ => raise refusal("cannot write \{path} on the target: a directory is there") }
+          // (a link let go first, as a directory is: renaming over one is not alike on every system)
+          Some(st) if kind_of_stat(st) == "link" =>
+            try self.remove(abs) catch { e => raise refusal("cannot write \{path} on the target: \{FsError::of(e)}") }
           _ => ()
         }
         self.rename(t, abs)

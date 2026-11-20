@@ -17,7 +17,7 @@ pub fn lift_of(c : @ui.Ctx, key : String, held : Bool, open : Bool) -> Double {
     } else {
       0.0
     },
-    spec=lift_spring,
+    spec=@motion.tactile_bounce,
   )
 }
 
@@ -53,7 +53,6 @@ pub let lift_held : Double = 0.35
 
 ///|
 // kept across runs: a value (no field of it changes)
-let lift_spring : @motion.Spec = @motion.lift_spring
 
 ///|
 /// How far over a sheet coming up over it what is lifted stays.

@@ -127,3 +127,147 @@ test "spacing on the window's tree: a bar's title and its last button's icon as 
   let even = tree_rule(tree_bar(20.0, 12.0), "rule 4")
   assert_eq((near.length(), even), (1, []), msg=near.join("\n"))
 }
+
+///|
+/// A 16 by 16 mark of the window's tree (its own drawing, told by tree_marks_at, not by the node's shapes).
+fn panel_mark(v : @view.View) -> Unit {
+  v.box(fn(i) {
+    i
+    .width(Is(Some(16.0)))
+    .height(Is(Some(16.0)))
+    .shapes(Is([@paint.shape_of([([0.0, 0.0, 16.0, 0.0, 16.0, 16.0, 0.0, 16.0], true)], fill=0x000000FFL)]))
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// A panel of the tree, 320 wide, 24 round, 6 in: `above` laid first in it, then two rows 44 high, 18 round, that light
+/// up under the hand, 10 in to what they hold (a mark first where `marked`, 12 before the words), then `below`.
+fn list_panel(
+  marked : Bool,
+  above : (@view.View) -> Unit,
+  below : (@view.View) -> Unit,
+) -> Tester {
+  let t = Tester::new(
+    fn(c) { c.with_theme({ ..Theme::light(), lit_apart: 2.0, lit_reach: 6.0 }, fn() {  }) },
+    w=400.0,
+    h=400.0,
+    corners_held=false,
+    tree=fn(root) {
+      root.box(fn(panel) {
+        panel
+        .width(Is(Some(320.0)))
+        .padding(Is((6.0, 6.0, 6.0, 6.0)))
+        .gap(Is(2.0))
+        .ground(Is(0xFFFFFFFFL))
+        .radius(Is(24.0))
+        |> ignore
+        above(panel)
+        for i in 0..<2 {
+          panel.box(fn(row) {
+            row
+            .width(Is(Some(308.0)))
+            .height(Is(Some(44.0)))
+            .radius(Is(18.0))
+            .row(Is(true))
+            .lines_up(Is(Some(Middle)))
+            .gap(Is(12.0))
+            .padding(Is((10.0, 0.0, 10.0, 0.0)))
+            .on_press(fn() {  })
+            .says(Is(Some(@view.said(Button, label="row \{i}"))))
+            .ground(By(fn() { if row.pointed() || row.pressed() { 0xEEEEEEFFL } else { 0L } }))
+            |> ignore
+            if marked {
+              panel_mark(row)
+            }
+            row.box(fn(w) { w.words(Is("row \{i}")) |> ignore }) |> ignore
+          })
+          |> ignore
+        }
+        below(panel)
+      })
+      |> ignore
+    },
+  )
+  t.draw()
+  t
+}
+
+///|
+/// Words `x` in from the panel's left (its padding 6 and a box's), as a section's heading stands.
+fn panel_words_at(x : Double, words : String) -> (@view.View) -> Unit {
+  fn(v) {
+    v.box(fn(b) {
+      b.padding(Is((x - 6.0, 0.0, 0.0, 0.0))) |> ignore
+      b.box(fn(w) { w.words(Is(words)) |> ignore }) |> ignore
+    })
+    |> ignore
+  }
+}
+
+///|
+/// A mark `x` in from the panel's left, on a line of its own.
+fn panel_mark_at(x : Double) -> (@view.View) -> Unit {
+  fn(v) {
+    v.box(fn(b) {
+      b.padding(Is((x - 6.0, 0.0, 0.0, 0.0))) |> ignore
+      panel_mark(b)
+    })
+    |> ignore
+  }
+}
+
+///|
+test "spacing on the window's tree: rows' marks set their words' line (rule 8), a heading and a mark as far in say nothing; 10 in, said" {
+  // (the rows' marks 16 in (6 + 10), their words 44)
+  let even = tree_rule(list_panel(true, panel_words_at(16.0, "a heading"), panel_mark_at(16.0)), "rule 8")
+  let heading = tree_rule(list_panel(true, panel_words_at(10.0, "a heading"), panel_mark_at(16.0)), "rule 8")
+  let mark = tree_rule(list_panel(true, panel_words_at(16.0, "a heading"), panel_mark_at(10.0)), "rule 8")
+  assert_eq((even, heading.length(), mark.length()), ([], 1, 1), msg=(heading + mark).join("\n"))
+}
+
+///|
+/// A block as wide as the rows and as far in, 18 round, its own ground at rest (a row opened in place to its body):
+/// `inner` in to its words, and words 20 further in under them.
+fn panel_opened_row(inner : Double) -> (@view.View) -> Unit {
+  fn(v) {
+    v.box(fn(b) {
+      b
+      .width(Is(Some(308.0)))
+      .radius(Is(18.0))
+      .ground(Is(0xE4E4E8FFL))
+      .padding(Is((inner, 10.0, inner, 10.0)))
+      .gap(Is(4.0))
+      |> ignore
+      b.box(fn(w) { w.words(Is("opened words")) |> ignore }) |> ignore
+      b.box(fn(d) {
+        d.padding(Is((20.0, 0.0, 0.0, 0.0))) |> ignore
+        d.box(fn(w) { w.words(Is("its body")) |> ignore }) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  }
+}
+
+///|
+/// A tag 80 by 24, 8 round, its own ground, at the panel's left (6 in).
+fn panel_tag(v : @view.View) -> Unit {
+  v.box(fn(b) { b.width(Is(Some(80.0))).height(Is(Some(24.0))).radius(Is(8.0)).ground(Is(0xE4E4E8FFL)) |> ignore })
+  |> ignore
+}
+
+///|
+test "spacing on the window's tree: a row opened in place with a ground at rest is the rows' (rule 8), what it holds on their words' line; 4 in, said; a tag at the edge, said" {
+  // (the rows' words 16 in (6 + 10); the opened row 6 in as they are, its words 16 and 36 in)
+  let none = fn(_v : @view.View) {  }
+  let even = tree_rule(list_panel(false, none, panel_opened_row(10.0)), "rule 8")
+  let short = tree_rule(list_panel(false, none, panel_opened_row(4.0)), "rule 8")
+  let tag = tree_rule(list_panel(false, panel_tag, panel_opened_row(10.0)), "rule 8")
+  assert_eq(
+    (even, short.length(), short.all(fn(f) { f.contains("stands 10 ") }), tag.length()),
+    ([], 1, true, 1),
+    msg=(short + tag).join("\n"),
+  )
+}

@@ -98,14 +98,18 @@ const OVER_READ: Record<string, number> = {
   railCard: 344,
   "railCard usage": 232,
   workspaceMarks: 344,
-  search: 176,
+  // (merged #7744 acceptAutoChats + #7730 startsOnStations on station 0's c-slack-1 crossed 176.0 KB, 2026-11-20)
+  search: 184,
   chatSearch: 128,
-  // (its people's messages and their edits alone read, account.ts peopleEntries: 672 before, 2026-11-18)
-  chatOutline: 224,
+  // (its people's messages and their edits alone read, account.ts peopleEntries: 672 before, 2026-11-18; +39 B
+  // startsOnStations on station 0's c-slack-1 crossed 224.0 KB, 2026-11-20)
+  chatOutline: 232,
   "driveBrowse phone": 40,
   "driveBrowse columns": 40,
-  vaults: 184,
-  vaultItems: 184,
+  // (the vault of the workspace with no safe mode its person's own, encrypted, its items' records read beside it; the
+  // plain library of before 184, 2026-11-19)
+  vaults: 220,
+  vaultItems: 220,
   chatThings: 48,
   "chatThings q": 48,
   "start 小屏/waited": 472,
@@ -113,8 +117,8 @@ const OVER_READ: Record<string, number> = {
   "start 大屏/waited": 472,
   "start 大屏/idle": 472,
   "switch 大屏 to 新对话/waited": 128,
-  "place vault/waited": 184,
-  "place vault/idle": 184,
+  "place vault/waited": 220,
+  "place vault/idle": 220,
   "place usage/waited": 304,
   "place usage/idle": 304,
 };
@@ -144,7 +148,8 @@ const GROWS: Record<string, Partial<Record<Knob, number>>> = {
   profile: { profiles: 200, stations: 216 },
   "profile key": { profiles: 200, stations: 216 },
   newChat: { profiles: 64 },
-  pick: { profiles: 272, stations: 416 },
+  // (merged #7744 acceptAutoChats + #7730 startsOnStations across 15 station overviews crossed 416.0 KB, 2026-11-20)
+  pick: { profiles: 272, stations: 424 },
   settings: { stations: 96 },
   history: { profiles: 72 },
   agentCard: { profiles: 72 },
@@ -160,10 +165,10 @@ const GROWS: Record<string, Partial<Record<Knob, number>>> = {
   chatRow: { people: 16 },
   archive: { people: 24 },
   "railCard usage": { stations: 696 },
-  vaults: { stations: 376 },
-  vaultItems: { stations: 376 },
-  "place vault/waited": { stations: 376 },
-  "place vault/idle": { stations: 376 },
+  vaults: { stations: 432 },
+  vaultItems: { stations: 432 },
+  "place vault/waited": { stations: 432 },
+  "place vault/idle": { stations: 432 },
 };
 
 /// The changes reading more than `READ_PER_SENT` × what they write and send and `READ_FREE_KB` now, by `<cause> alone`
@@ -173,7 +178,6 @@ const OVER_WRITE: Record<string, number> = {
   "edit held": 16,
   "said held": 16,
   "archived held": 120,
-  "screen held": 16,
   "member held": 24,
   "message six pages held": 32,
 };

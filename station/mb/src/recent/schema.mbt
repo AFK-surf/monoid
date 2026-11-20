@@ -31,8 +31,8 @@ fn installed(db : @sql.Db, part : String) -> Bool raise {
         raise e
       }
       let found = one(db, tables_query, [Json::string(component(part))])
-      if int(found, "versions") != 1 {
-        if int(found, "component") != 1 {
+      if @sql.row_int(found, "versions") != 1 {
+        if @sql.row_int(found, "component") != 1 {
           return false
         }
         fail("recent chat \{part} index has an incompatible or missing version")
@@ -42,10 +42,10 @@ fn installed(db : @sql.Db, part : String) -> Bool raise {
     }
   }
   let current = marker.get("current").unwrap_or(Json::null())
-  if int(marker, "component") != 1 && current is Null {
+  if @sql.row_int(marker, "component") != 1 && current is Null {
     return false
   }
-  if int(marker, "component") != 1 || int(marker, "current") != 1 {
+  if @sql.row_int(marker, "component") != 1 || @sql.row_int(marker, "current") != 1 {
     fail("recent chat \{part} index has an incompatible or missing version")
   }
   true
@@ -74,7 +74,7 @@ fn install(
   if installed(db, part) {
     return
   }
-  write(db, () => {
+  db.write(() => {
     if !installed(db, part) {
       db.exec(ddl)
       more()

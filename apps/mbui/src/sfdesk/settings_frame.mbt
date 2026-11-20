@@ -52,6 +52,26 @@ pub fn settings_fixture(src : Source, core : Core) -> Unit {
     "new-connect" => @sfpages.new_connect_dialog(src, core, @settings.here_of(core, "ws1", "星火工作室"), "ws1/st1")
     "vault-add" => @sfpages.fx_vault_add_up.val = true
     "vault-editor" => @sfpages.vault_editor_dialog(core, "ws1", "v1", None, kind="token")
+    "vault-workspace-members" => {
+      let here = @settings.here_of(core, "ws1", "星火工作室")
+      let row = items((core.topic)("vaults", { "workspace": str("ws1") }).get().value, "vaults").iter().find_first(fn(r) {
+        text(Some(r), "scope") == "workspace"
+      })
+      @sfpages.vault_members_dialog(core, here, row)
+    }
+    "vault-devices-dialog" => {
+      let here = @settings.here_of(core, "ws1", "星火工作室")
+      @sfpages.vault_devices_dialog(core, here, "v-ws")
+    }
+    "vault-workspace-editor" =>
+      @sfpages.vault_editor_dialog(
+        core,
+        "ws1",
+        "v1",
+        None,
+        kind="token",
+        targets=[("v1", "林的库"), ("v-ws", @sf.t("web-pages.vault.workspaceVault"))],
+      )
     "vault-recover" => @sfpages.vault_recover_dialog(core, "ws1")
     "copies-confirm" =>
       match items(@settings.fixture_copies(), "offers") {
@@ -104,7 +124,11 @@ fn settings_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
     }
   }
   // (while the app's first page waits for what it shows: drawn at none, the splash in its place, as the old views are)
-  s.grow(Is(1.0)).min_height(Is(Some(0.0))).alpha(By(fn() { if @sfbase.first_page_waits.get() { 0.0 } else { 1.0 } }))
+  s
+  .grow(Is(1.0))
+  .min_height(Is(Some(0.0)))
+  .alpha(By(fn() { if @sfbase.first_page_waits.get() { 0.0 } else { 1.0 } }))
+  .takes_unseen(Is(true))
   |> ignore
   let in_settings = fn() { app.nav.pages().iter().any(fn(p) { p is (Settings | Setting(_)) }) }
   s.reacts(in_settings, fn(on) { if !on { @sfpages.settings_search_reset() } })

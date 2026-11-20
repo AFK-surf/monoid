@@ -58,7 +58,8 @@ describe("<data>'s manifest", () => {
       assert.ok(["authoritative", "session-bound", "bounded-ephemeral"].includes(e.class), e.name);
       if (e.class !== "authoritative") assert.ok(e.maxBytes !== undefined || e.maxAgeMs !== undefined || e.reclaim !== undefined, `${e.name}: its bound or what holds it`);
     }
-    for (const lasting of ["stillfail.db", "config.json", "transcripts", "uploads", "homes", "repos"]) assert.equal(storageEntry(lasting)?.class, "authoritative", lasting);
+    for (const lasting of ["stillfail.db", "config.json", "transcripts", "uploads", "homes"]) assert.equal(storageEntry(lasting)?.class, "authoritative", lasting);
+    assert.equal(storageEntry("repos")?.class, "session-bound");
     assert.equal(storageEntry("config.json.bak-1794678500")?.class, "bounded-ephemeral");
   });
 });

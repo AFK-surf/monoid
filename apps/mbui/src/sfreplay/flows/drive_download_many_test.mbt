@@ -30,7 +30,7 @@ fn replay_drive_download_many() -> Unit raise {
     f.tap("大文件.bin")
     f.key("cmd+a")
     f.right_click("大文件.bin")
-    f.run_for(@kit.presence_in_ms)
+    f.run_for(@motion.presence_in_ms)
     f.see("下载 2 个文件")
     f.tap("下载 2 个文件")
     // its toast, up as the download begins (looked for then: how long the parts take is the run's own, the toast's

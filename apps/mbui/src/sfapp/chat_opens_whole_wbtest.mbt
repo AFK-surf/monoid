@@ -147,8 +147,14 @@ priv struct OwThing {
 fn ow_left(t : @ui.Tester, was : Double) -> Double {
   let mut f : (Double, Double, Double, Double)? = None
   for s in t.semantics() {
-    if s.role == @ui.Role::TextField && !s.hidden && (f is None || f.unwrap().1 < s.rect.1) {
-      f = Some(s.rect)
+    if s.role == @ui.Role::TextField && !s.hidden {
+      let better = match f {
+        None => true
+        Some(prev) => s.rect.1 > prev.1 + 1.0 || ((s.rect.1 - prev.1).abs() <= 1.0 && s.rect.0 > prev.0)
+      }
+      if better {
+        f = Some(s.rect)
+      }
     }
   }
   match f {
@@ -347,7 +353,7 @@ fn ow_app(
 ) -> @ui.Tester {
   new_run()
   ow_begin()
-  @sfbase.chat_page_nodes.set(nodes)
+  @sfbase.hold_chat_page_nodes(Some(nodes))
   let armed = Ref(false)
   let src = ow_source(
     round_trip_again(core(fixture(mode)), 0.0, heard~, late=fn(_, _) { if armed.val { ms } else { 0.0 } }),

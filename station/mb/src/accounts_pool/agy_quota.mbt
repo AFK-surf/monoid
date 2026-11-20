@@ -392,6 +392,26 @@ fn network_failure(text : String) -> Bool {
 }
 
 ///|
+/// `agyVerify`: Google holding an account until a person verifies it ("Eligibility check failed: Your current account
+/// is not eligible for Antigravity. Verify your account to continue." and the page to do it on; its backend
+/// `VALIDATION_REQUIRED`): that page, "" when it gives none, None when it is not that.
+pub fn agy_verify(text : String) -> String? {
+  let l = lower(text)
+  if !["verify your account", "not eligible for antigravity", "validation_required"].iter().any(w => l.contains(w)) {
+    return None
+  }
+  let at = index_of(text, "https://accounts.google.com/")
+  if at < 0 {
+    return Some("")
+  }
+  let mut end = at
+  while end < text.length() && !js_space(text.unsafe_charcode_at(end)) {
+    end += 1
+  }
+  Some(slice(text, at, b=end))
+}
+
+///|
 fn auth_failure(text : String) -> Bool {
   let l = lower(text)
   [
@@ -559,6 +579,24 @@ pub async fn agy_quota(
   let said = match jget(parsed, "error") {
     Some(Str(e)) if trim_js(e) != "" => trim_js(e)
     _ => if trim_js(stderr) != "" { trim_js(stderr) } else { trim_js(stdout) }
+  }
+  // Google refusing the account until a person verifies it: blocked, saying where to verify it. Its page comes after
+  // the first 300 characters.
+  match agy_verify(said) {
+    Some(url) => {
+      let detail = if url != "" {
+        ctx.tr(lang, "station.quota.agyVerifyAt", args=[("url", url)])
+      } else {
+        ctx.tr(lang, "station.quota.agyVerify")
+      }
+      return jobj([
+        ("state", js("blocked")),
+        ("windows", jarr([])),
+        ("detail", js(detail)),
+        ("checkedAt", jint(0)),
+      ])
+    }
+    None => ()
   }
   let detail = slice(said, 0, b=300)
   if auth_failure(detail) {

@@ -74,6 +74,11 @@ let check_frames : Array[Link?] = []
 let propagate_frames : Array[Link?] = []
 
 ///|
+/// Mutable nodes touched by an inner-write propagation (`run.run_depth > 0`), given `RECURSED` once this walk ends so
+/// diamond merges stay single-visit within the walk yet remain re-traversable by a later write before the effect exits.
+let inner_recursed : Array[ReactiveNode?] = []
+
+///|
 /// ReactiveFlags.
 pub const NONE : Int = 0
 
@@ -198,18 +203,22 @@ fn propagate(start : Link, inner_write : Bool) -> Unit {
   let mut link = start
   let mut next = link.next_sub
   let base = propagate_frames.length()
+  let rec_base = inner_recursed.length()
   while true {
     let sub = link.sub
     let mut flags = sub.flags
     if (flags & (RECURSED_CHECK | RECURSED | DIRTY | PENDING)) == 0 {
       sub.flags = flags | PENDING
-      if inner_write {
-        sub.flags = sub.flags | RECURSED
+      if inner_write && (flags & MUTABLE) != 0 {
+        inner_recursed.push(Some(sub))
       }
     } else if (flags & (RECURSED_CHECK | RECURSED)) == 0 {
       flags = NONE
     } else if (flags & RECURSED_CHECK) == 0 {
       sub.flags = (flags & RECURSED.lnot()) | PENDING
+      if inner_write && (flags & MUTABLE) != 0 {
+        inner_recursed.push(Some(sub))
+      }
     } else if (flags & (DIRTY | PENDING)) == 0 && is_valid_link(link, sub) {
       sub.flags = flags | (RECURSED | PENDING)
       flags = flags & MUTABLE
@@ -253,6 +262,15 @@ fn propagate(start : Link, inner_write : Bool) -> Unit {
       continue
     }
     break
+  }
+  while inner_recursed.length() > rec_base {
+    let i = inner_recursed.length() - 1
+    let n = inner_recursed[i].unwrap()
+    inner_recursed[i] = None
+    inner_recursed.pop() |> ignore
+    if (n.flags & (PENDING | DIRTY)) != 0 {
+      n.flags = n.flags | RECURSED
+    }
   }
   let limit = fanout_limit.val
   if limit > 0 {

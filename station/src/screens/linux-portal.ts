@@ -6,8 +6,10 @@ import { hostname } from "node:os";
 import { fileURLToPath } from "node:url";
 import { wall } from "../ops/fibers.ts";
 import { ScreenRefused } from "./hub.ts";
-import type { Frame, ScreenAccess, ScreenInput, ScreenSource, ScreenVideo, ScreenView, ViewOptions } from "./source.ts";
+import { LinuxMicPart } from "./linux-mic.ts";
+import type { Frame, ScreenAccess, ScreenInput, ScreenMic, ScreenSource, ScreenVideo, ScreenView, ViewOptions } from "./source.ts";
 import { EVDEV } from "./x11-desktop.ts";
+import { LinuxGamepads } from "./linux-gamepad.ts";
 
 const MAX_FRAME = 16 * 1024 * 1024;
 const CONSENT_WAIT = 4_000;
@@ -119,6 +121,10 @@ class PortalProcess implements ScreenView {
   readonly #gone: () => void;
   readonly #capture: string;
   readonly #keys = new Set<number>();
+  /// Its controllers: virtual ones, else the desktop driven with them through the portal's pointer and keys.
+  readonly #pads: LinuxGamepads;
+  /// The desktop's virtual microphone (linux-mic.ts) while its driver watches it.
+  readonly #mic = new LinuxMicPart();
   #resolveReady!: () => void;
   #rejectReady!: (error: Error) => void;
   #resolveFirst!: () => void;
@@ -150,6 +156,7 @@ class PortalProcess implements ScreenView {
     void this.ready.catch(() => {});
     void this.#first.catch(() => {});
     this.#child = spawn(python, ["-u", helper], { env, stdio: ["pipe", "pipe", "pipe"] });
+    this.#pads = new LinuxGamepads((e) => this.input(e), env, python);
     this.#child.stdin.on("error", () => {});
     this.#child.stderr.on("data", (data: Buffer) => { this.#error = (this.#error + data.toString()).slice(-2000); });
     this.#child.stdout.on("data", (data: Buffer) => this.#read(data));
@@ -242,6 +249,7 @@ class PortalProcess implements ScreenView {
   video(): ScreenVideo { return { capture: this.#capture, encoder: "GStreamer JPEG (software)" }; }
 
   input(event: ScreenInput): Promise<void> {
+    if (event.t === "gamepad") return this.#pads.input(event);
     // Consecutive pointer, key and modifier events must reach the portal in the same order they arrived.
     const next = this.#input.then(() => this.#post(event));
     this.#input = next.catch(() => {});
@@ -286,11 +294,15 @@ class PortalProcess implements ScreenView {
     for (const waiting of this.#waiting.splice(0)) {
       if (this.#failure) waiting.reject(this.#failure); else waiting.resolve(null);
     }
+    this.#mic.stop();
     this.#gone();
   }
   why(): string | undefined { return this.#why; }
+  watchMic(heard: (mic: ScreenMic) => void): () => void { return this.#ended ? () => {} : this.#mic.watch(heard); }
+  feedMic(pcm16le: Uint8Array, epoch: number): void { this.#mic.feed(pcm16le, epoch); }
   close(): void {
     if (this.#ended) return;
+    this.#pads.close();
     this.#normal = true;
     // A live helper can release its virtual keys and buttons before the portal session closes. An unanswered
     // permission dialog cannot read this command, so #end still bounds the lifetime of the process.

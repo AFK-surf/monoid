@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { appendFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { Effect, Layer } from "effect";
+import { Clock, Duration, Effect, Layer } from "effect";
 import type { Route } from "../api/admin.ts";
 import { error, input, ok, Refused, segment } from "../api/request.ts";
 import { type Inbox, Refused as Declined } from "../mesh/bus.ts";
@@ -43,7 +43,15 @@ export type WorkspaceConnectsDeps = {
   bus: { ask(station: string, request: Json): Promise<Json>; on(method: string, inbox: Inbox): void; heard?(f: (peer: string) => void): void };
   /// Each platform's names book.
   names: (kind: ConnectKind) => NameBook | null;
+  /// This station's own `describe` payload (load, mode, sessions) without sending a peer RPC to itself.
+  selfLoad?: () => Promise<Json>;
+  /// Effect Clock sleep for bounding `describe` RPC waits (no raw setTimeout).
+  sleep?: (ms: number) => Promise<void>;
+  /// Timeout per `describe` RPC when balancing across a multi-station allowlist (default 1500 ms).
+  describeTimeoutMs?: number;
 };
+
+const DESCRIBE_TIMEOUT_MS = 1_500;
 
 export class WorkspaceConnects {
   readonly remote: RemoteConnects;
@@ -68,6 +76,10 @@ export class WorkspaceConnects {
   }
   /// One event at a time per thread: a conversation's first message is handed on before its next is looked at.
   private readonly gates = new Map<string, Promise<void>>();
+  /// In-flight fresh conversation dispatches per (connect, station), so simultaneous arrivals spread immediately.
+  private readonly inflight = new Map<string, number>();
+  /// Per-connect round-robin cursor across its allowlist, breaking idle ties deterministically.
+  private readonly rrCursor = new Map<string, number>();
   /// What a platform says of a workspace whose chats this station hands to another (hub `quiet`), acknowledged and kept
   /// in order, on disk, until it goes there (`moveAll`); one at a time, the kept ones before any after them.
   private readonly heldFile: string;
@@ -195,8 +207,61 @@ export class WorkspaceConnects {
   private inWorkspace(ws: string, station: string): boolean {
     return this.d.stations(ws).some((p) => p?.id === station);
   }
+  private isTasksOnly(ws: string, station: string): boolean {
+    const p = this.d.stations(ws).find((x) => x?.id === station);
+    return p?.mode === "tasks" || (p?.rig !== undefined && p?.rig !== null);
+  }
   private nameOf(ws: string, station: string): string {
     return String(this.d.stations(ws).find((p) => p?.id === station)?.name ?? station);
+  }
+  private inflightCount(connectId: string, stationId: string): number {
+    return this.inflight.get(`${connectId}\0${stationId}`) ?? 0;
+  }
+  private addInflight(connectId: string, stationId: string, delta: number): void {
+    const key = `${connectId}\0${stationId}`;
+    const next = (this.inflight.get(key) ?? 0) + delta;
+    if (next <= 0) this.inflight.delete(key);
+    else this.inflight.set(key, next);
+  }
+  /// Bare station id from either a bare id ("st2") or a `<workspace>/<station_id>` address ("ws1/st2").
+  private bareStationId(s: string): string {
+    const t = s.trim();
+    const slash = t.lastIndexOf("/");
+    return slash >= 0 ? t.slice(slash + 1).trim() : t;
+  }
+  /// The manual allowlist for a connect's new conversations: explicit `stations` (deduped) > `station` > `[here]`.
+  private allowlistOf(entry: Json): string[] {
+    if (Array.isArray(entry?.stations)) {
+      const out = [...new Set<string>(entry.stations.filter((x: unknown): x is string => typeof x === "string").map((x: string) => this.bareStationId(x)).filter((x: string) => x !== ""))];
+      if (out.length > 0) return out;
+    }
+    if (typeof entry?.station === "string") {
+      const s = this.bareStationId(entry.station);
+      if (s !== "") return [s];
+    }
+    return [this.d.here()];
+  }
+  private async boundedDescribe(work: Promise<Json>): Promise<{ ok: Json } | null> {
+    const ms = this.d.describeTimeoutMs ?? DESCRIBE_TIMEOUT_MS;
+    const sleep = this.d.sleep ?? ((t: number) => Effect.runPromise(Effect.sleep(Duration.millis(t))));
+    let out: { ok: Json } | null = null;
+    const settled = work.then(
+      (ok) => void (out = { ok }),
+      () => void (out = null),
+    );
+    await Promise.race([settled, sleep(ms)]);
+    return out;
+  }
+  private async queryStationLoad(ws: string, station: string): Promise<Json | null> {
+    if (station === this.d.here()) {
+      if (this.d.selfLoad === undefined) {
+        return { sessions: true, load: { running: { turns: 0 }, memory: { totalBytes: null, availableBytes: null } } };
+      }
+      const got = await this.boundedDescribe(Promise.resolve().then(() => this.d.selfLoad!()));
+      return got?.ok ?? null;
+    }
+    const got = await this.boundedDescribe(this.d.bus.ask(station, { method: "describe", workspace: ws }));
+    return got?.ok ?? null;
   }
   /// A connect running here, its surface: config.json's, not one of another station's.
   private own(id: string) {
@@ -458,18 +523,104 @@ export class WorkspaceConnects {
       }
       // (its chats here going to another station: kept for it)
       if (hub.quietIn(ws)) return this.hold(id, ws, event);
-      // A new conversation starts on the station the connect names (absent, or not of its workspace: this one).
-      const want = typeof entry.station === "string" ? entry.station : null;
+      // A new conversation starts on the station(s) the connect explicitly allowlists (absent: this one).
       const fresh = event.type === "message" && event.message.addressed && this.d.store.threadAt(hub.surface(id), thread.channel, thread.threadTs) === null;
-      if (!fresh || want === null || want === this.d.here() || !this.inWorkspace(ws, want)) return hub.receive(id, event);
-      try {
-        await this.forward(want, id, ws, event);
-        this.d.store.setConnectThreadStation(id, thread.channel, thread.threadTs, want);
-        log.info("connects", "a new conversation runs on another station", { connect: id, station: want });
-      } catch (e) {
-        log.warn("connects", "the connect's station for new conversations did not take one; it runs here", { connect: id, station: want, error: (e as Error).message });
-        await hub.receive(id, event);
+      if (!fresh) return hub.receive(id, event);
+      const here = this.d.here();
+      const autoMode = entry?.autoStation === true;
+      let rawPool: string[];
+      let pool: string[];
+      if (autoMode) {
+        const seen = new Set<string>();
+        const all: string[] = [];
+        for (const p of this.d.stations(ws)) {
+          if (typeof p?.id === "string") {
+            const s = this.bareStationId(p.id);
+            if (s !== "" && !seen.has(s)) {
+              seen.add(s);
+              all.push(s);
+            }
+          }
+        }
+        if (here !== "" && !seen.has(here)) {
+          seen.add(here);
+          all.push(here);
+        }
+        rawPool = all;
+        pool = all.filter((s) => !this.isTasksOnly(ws, s));
+      } else {
+        rawPool = this.allowlistOf(entry);
+        pool = rawPool.filter((s) => (s === here || this.inWorkspace(ws, s)) && !this.isTasksOnly(ws, s));
+        if (rawPool.length === 1) {
+          const want = pool[0] ?? null;
+          if (want === null || want === here) return hub.receive(id, event);
+          try {
+            await this.forward(want, id, ws, event);
+            this.d.store.setConnectThreadStation(id, thread.channel, thread.threadTs, want);
+            log.info("connects", "a new conversation runs on another station", { connect: id, station: want });
+          } catch (e) {
+            log.warn("connects", "the connect's station for new conversations did not take one; it runs here", { connect: id, station: want, error: (e as Error).message });
+            await hub.receive(id, event);
+          }
+          return;
+        }
       }
+      // Multi-station manual allowlist or workspace auto-assign allowlist: query live load via peer `describe`
+      // (event-driven, no polling) and pick least busy. In `autoMode`, strictly require `acceptAutoChats === true`.
+      const probed = await Promise.all(
+        pool.map(async (station, idx) => {
+          const described = await this.queryStationLoad(ws, station);
+          if (described === null || described?.mode === "tasks" || described?.sessions === false) return null;
+          if (autoMode && described?.acceptAutoChats !== true) return null;
+          const load = described?.load;
+          const rawTurns = load?.running?.turns;
+          const baseTurns = typeof rawTurns === "number" && Number.isFinite(rawTurns) ? rawTurns : 0;
+          const total = load?.memory?.totalBytes;
+          const avail = load?.memory?.availableBytes;
+          const memRatio = typeof total === "number" && Number.isFinite(total) && total > 0 && typeof avail === "number" && Number.isFinite(avail) && avail >= 0 ? avail / total : -1;
+          return { station, idx, baseTurns, memRatio };
+        }),
+      );
+      // Read `inflightCount` and `rrCursor` after the parallel probe settles so simultaneous arrivals spread at once.
+      const cursor = pool.length > 0 ? (this.rrCursor.get(id) ?? 0) % pool.length : 0;
+      const ranked = probed
+        .filter((x): x is { station: string; idx: number; baseTurns: number; memRatio: number } => x !== null)
+        .map((x) => ({ ...x, turns: x.baseTurns + this.inflightCount(id, x.station) }))
+        .sort((a, b) => {
+          if (a.turns !== b.turns) return a.turns - b.turns;
+          if (a.memRatio !== b.memRatio) return b.memRatio - a.memRatio;
+          const da = (a.idx - cursor + pool.length) % pool.length;
+          const db = (b.idx - cursor + pool.length) % pool.length;
+          return da - db;
+        });
+      for (const candidate of ranked) {
+        this.addInflight(id, candidate.station, 1);
+        try {
+          if (candidate.station === here) {
+            await hub.receive(id, event);
+          } else {
+            await this.forward(candidate.station, id, ws, event);
+            this.d.store.setConnectThreadStation(id, thread.channel, thread.threadTs, candidate.station);
+            log.info("connects", "a new conversation runs on another station", { connect: id, station: candidate.station });
+          }
+          this.rrCursor.set(id, (candidate.idx + 1) % pool.length);
+          return;
+        } catch (e) {
+          log.warn("connects", "an allowlisted station for new conversations did not take one; trying next", { connect: id, station: candidate.station, error: (e as Error).message });
+        } finally {
+          this.addInflight(id, candidate.station, -1);
+        }
+      }
+      // Hard allowlist safety invariant:
+      // - In `autoMode`, NEVER fall back to `here` or any non-allowlisted station when 0 allowlisted stations are reachable.
+      // - In manual allowlist mode, only fall back to `here` if `here` is explicitly in the allowlist.
+      if (!autoMode && pool.includes(here)) {
+        await hub.receive(id, event);
+        return;
+      }
+      const names = rawPool.map((s) => this.nameOf(ws, s)).join(tr(stationLang(), "station.list.separator"));
+      log.warn("connects", autoMode ? "no workspace-allowlisted station reachable for autoStation connect; refusing local fallback" : "no allowlisted station reachable for new conversation; refusing local fallback", { connect: id, autoStation: autoMode, stations: rawPool });
+      await this.own(id)?.post(thread, markNotice(`⚠️ ${tr(stationLang(), "station.connect.stationAway", { station: names })}`), []).catch(() => {});
     });
   }
 
@@ -645,6 +796,7 @@ export class WorkspaceConnects {
   /// `awaiting`: the chats of it (a connect that is not routed) still here, to come there after it: what its platform
   /// says meanwhile is kept there for them (`arrived`).
   async move(id: string, to: string, viewer: string | null, lang = stationLang(), localsTo = this.d.here(), awaiting: string[] = []): Promise<void> {
+    to = this.bareStationId(to);
     const entry = this.entryOf(id);
     const ws = entry === undefined ? null : this.workspaceOf(entry);
     if (entry === undefined || ws === null || (viewer !== null && this.d.home() !== null && ws !== viewer)) throw new Refused(404, `unknown connect ${id}`);
@@ -692,6 +844,7 @@ export const WorkspaceConnectsLive = Layer.effectDiscard(
     const config = yield* StationConfig;
     const parts = yield* Parts;
     const cloud = (yield* ControlPlane).state;
+    const clock = yield* Clock.clockWith(Effect.succeed);
     const connects = new WorkspaceConnects({
       data, store, config, bus,
       hub: () => agents.hub,
@@ -699,6 +852,8 @@ export const WorkspaceConnectsLive = Layer.effectDiscard(
       home: () => cloud.home(),
       stations: (ws) => cloud.membership(ws)?.peers ?? [],
       names: (kind) => agents.nameBooks.get(kind) ?? null,
+      selfLoad: () => agents.remote.selfDescribe(),
+      sleep: (ms) => Effect.runPromise(Effect.sleep(Duration.millis(ms)).pipe(Effect.provideService(Clock.Clock, clock))),
     });
     // (the connects of other stations its chats run on, known before the hub asks for them)
     yield* Effect.promise(() => connects.remote.ready());

@@ -89,7 +89,7 @@ fn Accounts::keep_check(self : Accounts, id : String, check : JV) -> JV {
   self.checks[id] = check
   self.hub_cache = None
   self.background.track(async fn() {
-    ignore(self.ask("store.setProfileCheck", [js(id), check]))
+    self.b.with_store(s => s.set_profile_check(Json::string(id), jv_to_json(check)))
   })
   let before_models = match jget(before, "models") {
     None => Some(JV::Null)
@@ -479,8 +479,16 @@ async fn Accounts::check_borrowed(self : Accounts, profile : Profile, lang : Str
         to_number(m.get("checkedAt"))
       None => false
     }
+    // A reading the same as the one kept (rechecks while the host has not read again) is not written again.
+    let same = match mine {
+      Some(m) => json_text(got_quota) == stringify(m)
+      None => false
+    }
     match got_quota {
-      Some(Obj(_) as q) if !is_truthy(jget(local, "codexRevoked")) && !complete_here && !older => {
+      Some(Obj(_) as q) if !is_truthy(jget(local, "codexRevoked")) &&
+        !complete_here &&
+        !same &&
+        !older => {
         self.quotas[id] = q
         self.keep_quota(id, q)
       }
@@ -707,7 +715,8 @@ async fn Accounts::ask_quota(self : Accounts, id : String, stands : Bool) -> JV?
   let answer = self.quota_fn(profile)
   let signed_out = answer.get("signedOut") == Some(Bool(true))
   let no_answer = answer.get("unanswered") == Some(Bool(true))
-  let asked = jdel(jdel(answer, "signedOut"), "unanswered")
+  let recheck = answer.get("recheck") == Some(Bool(true))
+  let asked = jdel(jdel(jdel(answer, "signedOut"), "unanswered"), "recheck")
   if self.login_generation.get(id).unwrap_or(0) != generation {
     return self.quotas.get(id)
   }
@@ -760,6 +769,22 @@ async fn Accounts::ask_quota(self : Accounts, id : String, stands : Bool) -> JV?
       self.codex_login(id, false, lang)
     }
   } else if signed_out && jget(self.checks.get(id), "state") != Some(Str("login")) {
+    self.background.spawn(async fn() {
+      ignore(self.check(id, self.ctx.station_lang)) catch {
+        _ => ()
+      }
+    })
+  } else if recheck && jget(self.checks.get(id), "state") == Some(Str("ok")) {
+    self.background.spawn(async fn() {
+      ignore(self.check(id, self.ctx.station_lang)) catch {
+        _ => ()
+      }
+    })
+  } else if profile.runtime == "claude" &&
+    access_kind(profile.raw) == "subscription" &&
+    read.get("state") == Some(Str("ok")) &&
+    (jget(self.checks.get(id), "state") == Some(Str("failed")) ||
+      jget(self.checks.get(id), "state") == Some(Str("login"))) {
     self.background.spawn(async fn() {
       ignore(self.check(id, self.ctx.station_lang)) catch {
         _ => ()

@@ -4,53 +4,19 @@
 // written as `JSON.stringify` writes it (keys in their order, strings escaped as JS escapes them).
 
 ///|
-let hex_digits : String = "0123456789abcdef"
-
-///|
-let b64_std : String = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-
-///|
-let b64_url : String = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
-
-///|
 /// `b` as lower-case hex.
 pub fn hex(b : BytesView) -> String {
-  let s = StringBuilder()
-  for x in b {
-    s.write_char(hex_digits.code_unit_at(x.to_int() >> 4).to_int().unsafe_to_char())
-    s.write_char(hex_digits.code_unit_at(x.to_int() & 15).to_int().unsafe_to_char())
-  }
-  s.to_string()
-}
-
-///|
-fn hex_value(c : Int) -> Int {
-  if c >= 48 && c <= 57 {
-    c - 48
-  } else if c >= 97 && c <= 102 {
-    c - 87
-  } else if c >= 65 && c <= 70 {
-    c - 55
-  } else {
-    -1
-  }
+  @codec.hex_encode(b)
 }
 
 ///|
 /// `Buffer.from(s, "hex")`: its pairs up to the first that is not one (an odd last character left).
 pub fn unhex(s : String) -> Bytes {
-  let out : Array[Byte] = []
-  let mut i = 0
-  while i + 1 < s.length() {
-    let hi = hex_value(s.code_unit_at(i).to_int())
-    let lo = hex_value(s.code_unit_at(i + 1).to_int())
-    if hi < 0 || lo < 0 {
-      break
-    }
-    out.push((hi * 16 + lo).to_byte())
-    i = i + 2
+  let mut n = 0
+  while n < s.length() && @codec.hex_digit(s.code_unit_at(n).to_int()) is Some(_) {
+    n += 1
   }
-  Bytes::from_array(out)
+  @codec.hex_decode(s.unsafe_substring(start=0, end=n / 2 * 2)).unwrap()
 }
 
 ///|
@@ -69,81 +35,22 @@ pub fn hex_of_length(s : String, n : Int) -> Bool {
 }
 
 ///|
-fn encode64(b : BytesView, alphabet : String, pad : Bool) -> String {
-  let s = StringBuilder()
-  let n = b.length()
-  let mut i = 0
-  while i < n {
-    let b0 = b[i].to_int()
-    let b1 = if i + 1 < n { b[i + 1].to_int() } else { 0 }
-    let b2 = if i + 2 < n { b[i + 2].to_int() } else { 0 }
-    let v = (b0 << 16) | (b1 << 8) | b2
-    let chars = if i + 2 < n { 4 } else if i + 1 < n { 3 } else { 2 }
-    for k in 0..<4 {
-      if k < chars {
-        s.write_char(alphabet.code_unit_at((v >> (18 - 6 * k)) & 63).to_int().unsafe_to_char())
-      } else if pad {
-        s.write_char('=')
-      }
-    }
-    i = i + 3
-  }
-  s.to_string()
-}
-
-///|
 /// `b` as base64url, unpadded (`toString("base64url")`).
 pub fn b64url(b : BytesView) -> String {
-  encode64(b, b64_url, false)
+  @codec.base64url_encode(b)
 }
 
 ///|
 /// `b` as base64, padded (`toString("base64")`).
 pub fn b64(b : BytesView) -> String {
-  encode64(b, b64_std, true)
-}
-
-///|
-fn b64_value(c : Int) -> Int {
-  if c >= 65 && c <= 90 {
-    c - 65
-  } else if c >= 97 && c <= 122 {
-    c - 71
-  } else if c >= 48 && c <= 57 {
-    c + 4
-  } else if c == 43 || c == 45 {
-    62
-  } else if c == 47 || c == 95 {
-    63
-  } else {
-    -1
-  }
+  @codec.base64_encode(b)
 }
 
 ///|
 /// `Buffer.from(s, "base64")` or `"base64url"` (Node reads both alphabets either way): what is of neither skipped, the
 /// first `=` ending it, a last character alone giving nothing.
 pub fn unb64(s : String) -> Bytes {
-  let out : Array[Byte] = []
-  let mut acc = 0
-  let mut n = 0
-  for i in 0..<s.length() {
-    let c = s.code_unit_at(i).to_int()
-    if c == 61 {
-      break
-    }
-    let v = b64_value(c)
-    if v < 0 {
-      continue
-    }
-    acc = ((acc << 6) | v) & 0xffffff
-    n = n + 6
-    if n >= 8 {
-      n = n - 8
-      out.push(((acc >> n) & 255).to_byte())
-    }
-  }
-  Bytes::from_array(out)
+  @codec.base64_decode_loose(s)
 }
 
 ///|
@@ -161,9 +68,7 @@ pub fn text_of_bytes(b : BytesView) -> String {
 ///|
 fn unicode_escape(b : StringBuilder, c : Int) -> Unit {
   b.write_string("\\u")
-  for k in 0..<4 {
-    b.write_char(hex_digits.code_unit_at((c >> (12 - 4 * k)) & 15).to_int().unsafe_to_char())
-  }
+  b.write_string(@codec.hex_encode(Bytes::from_array([(c >> 8).to_byte(), (c & 255).to_byte()])))
 }
 
 ///|
@@ -211,19 +116,7 @@ pub fn quote(b : StringBuilder, s : String) -> Unit {
 ///|
 /// A number as JS writes it: a whole one below 1e21 without a fraction.
 pub fn js_number(n : Double) -> String {
-  if n != n {
-    "null"
-  } else if n == n.floor() && n.abs() < 1.0e21 {
-    if n == 0.0 {
-      "0"
-    } else {
-      n.to_int64().to_string()
-    }
-  } else if n.abs() == @double.infinity {
-    "null"
-  } else {
-    n.to_string()
-  }
+  @jsjson.jval_stringify_num(n)
 }
 
 ///|
@@ -270,25 +163,7 @@ pub fn stringify(v : Json) -> String {
 }
 
 ///|
-fn of_js(v : @jsjson.JValue) -> Json {
-  match v {
-    Null => Json::null()
-    Bool(b) => Json::boolean(b)
-    Num(n) => Json::number(n)
-    Str(s) => Json::string(@jsjson.raw_text(s))
-    Arr(xs) => Json::array(xs.map(of_js))
-    Obj(kvs) => {
-      let m : Map[String, Json] = Map([])
-      for kv in kvs {
-        m[@jsjson.raw_text(kv.0)] = of_js(kv.1)
-      }
-      Json::object(m)
-    }
-  }
-}
-
-///|
 /// `JSON.parse(text)`: a lone surrogate kept, a duplicate key's last value in its first place, integer-like keys first.
 pub fn parse_js(text : String) -> Json raise {
-  of_js(@jsjson.parse(text))
+  @jsjson.parse(text).to_json()
 }

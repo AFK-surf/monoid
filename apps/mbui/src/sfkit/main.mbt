@@ -10,8 +10,8 @@ fn main {
     @sf.set_dark(Some(true))
   }
   if @ui.env("MBUI_SCREEN") == "glass" {
-    @ui.run("MoonBit UI 玻璃", glass_view)
+    @ui.run_legacy_ctx("MoonBit UI 玻璃", glass_view)
   } else {
-    @ui.run("MoonBit UI 组件", kit_view)
+    @ui.run_legacy_ctx("MoonBit UI 组件", kit_view)
   }
 }

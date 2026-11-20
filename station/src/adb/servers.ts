@@ -32,6 +32,9 @@ function freePort(): Promise<number> {
 /// later is not it).
 type Kept = { pid: number; port: number; started: number | null; dir?: string };
 
+/// How many records' names beside them this process gave (`GrantServers.#write`, as adb_devices/servers.mbt `record_seq`).
+let recordSeq = 0;
+
 export class GrantServers {
   readonly #adb: () => string | null;
   readonly #servers = new Map<string, Promise<Server | null>>();
@@ -78,16 +81,18 @@ export class GrantServers {
   }
 
   /// One write at a time, each of what is kept as it begins: two servers that ended at once (as a station hands over)
-  /// wrote through the same temporary file, and the second's rename, finding none, ended the process (ccvm 2026-11-04).
+  /// wrote through the same temporary file, and the second's rename, finding none, ended the process (ccvm 2026-11-04);
+  /// each has a name of its own beside it, let go of where it fails.
   #write(): Promise<void> {
     const record = this.#record;
     if (record === null) return Promise.resolve();
     this.#writing = this.#writing.then(async () => {
-      const temp = `${record}.${process.pid}.tmp`;
+      const temp = `${record}.${process.pid}.${++recordSeq}.tmp`;
       try {
         await writeFile(temp, JSON.stringify([...this.#kept.values()]));
         await rename(temp, record);
       } catch (error) {
+        await rm(temp, { force: true }).catch(() => {});
         log.warn("adb", "the grants' adb servers were not written down", { error: (error as Error).message });
       }
     });

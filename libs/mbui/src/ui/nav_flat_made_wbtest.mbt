@@ -217,3 +217,85 @@ test "a flat stack's page made or drawn by its old view as what `made` reads say
   t.draw()
   assert_eq((built, flat_made_nodes("a").length()), (["a", "a"], 1))
 }
+
+///|
+test "a flat stack's covered made page on push_over parks at rest and keeps layout cache on pop" {
+  let nav = Nav::new("home")
+  let count = @signals.signal(0)
+  let runs = Ref(0)
+  let t = Tester::new(fn(_c) {  }, w=390.0, h=600.0)
+  t.check_looks(false)
+  set_view_app(fn(root) {
+    nav_flat_view(
+      root,
+      nav,
+      fn(c, p) { c.text(p, size=12.0) |> ignore },
+      fn(_) { true },
+      0.0,
+      made=fn(p) {
+        if p == "home" {
+          Some(
+            (
+              "home",
+              fn(v, _page, _under, _stint, _k) {
+                v.box(fn(counter) {
+                  counter
+                  .height(Is(Some(24.0)))
+                  .words(
+                    By(fn() {
+                      runs.val += 1
+                      "flat_count=\{count.get()}"
+                    }),
+                    look={ ..@view.words_plain, size: 12.0 },
+                  )
+                  |> ignore
+                })
+                |> ignore
+                v.box(fn(list) {
+                  for i in 0..<50 {
+                    list.box(fn(row) {
+                      row.height(Is(Some(12.0))).words(Is("flat_row \{i}"), look={ ..@view.words_plain, size: 10.0 }) |> ignore
+                    })
+                    |> ignore
+                  }
+                })
+                |> ignore
+              },
+            ),
+          )
+        } else {
+          Some(
+            (
+              "over",
+              fn(v, _page, _under, _stint, _k) {
+                v.box(fn(h) { h.height(Is(Some(40.0))).words(Is("over"), look={ ..@view.words_plain, size: 12.0 }) |> ignore })
+                |> ignore
+              },
+            ),
+          )
+        }
+      },
+    )
+    |> ignore
+  })
+  t.draw()
+  assert_true(t.find("flat_count=0") is Some(_))
+  // Push a page over home and finish its slide animation.
+  view_event(fn() { nav.push_over("top") })
+  t.run_for(nav.rest() - t.time() + 16.0)
+  // While covered, home is parked at rest: background signal updates trigger 0 times.
+  let runs_while_covered = runs.val
+  count.set(1)
+  t.draw()
+  count.set(2)
+  t.draw()
+  assert_eq(runs.val, runs_while_covered, msg="covered flat made page should be at rest")
+  // Pop back to home: layout cache is preserved (far fewer than 50 laid nodes),
+  // and updated signal value is shown.
+  let laid_before = view_tree().unwrap().work().laid
+  view_event(fn() { nav.pop() |> ignore })
+  t.run_for(nav.rest() - t.time() + 16.0)
+  let laid_delta = view_tree().unwrap().work().laid - laid_before
+  assert_true(laid_delta <= 15, msg="expected parked layout cache reuse on flat stack, got laid_delta=\{laid_delta}")
+  assert_true(t.find("flat_count=2") is Some(_), msg="woken flat page should reflect updated signal")
+}

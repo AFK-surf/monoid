@@ -56,15 +56,15 @@ pub fn progress(
 ///|
 /// How long a progress bar's fill takes to a value told anew (still.fail's: waiting.css.ts progress, its width 200 ms
 /// on the ease-out).
-pub let progress_ms : Double = 200.0
+pub let progress_ms : Double = @motion.progress_ms
 
 ///|
 /// How long what runs along a progress bar while it is not known takes to draw itself into the part come (and back).
-pub let progress_known_ms : Double = 360.0
+pub let progress_known_ms : Double = @motion.progress_known_ms
 
 ///|
 /// How long the band of a progress bar not known takes to sweep across once (its look's `period`).
-pub let progress_sweep_ms : Double = 1400.0
+pub let progress_sweep_ms : Double = @motion.progress_sweep_ms
 
 ///|
 /// A progress bar's look (still.fail's): `h` high on `track` (the theme's line: what is empty of what fills, seen on any

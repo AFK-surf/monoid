@@ -75,6 +75,11 @@ pub fn Ctx::focusable(self : Ctx, id : Int, node? : Int = -1, keys? : Int = 3, o
   // (the old view it is in, built in no layer of its own: what a modal layer of the window's tree asks of it, as it is
   // used: island_allows)
   let island = if self.layer_cur == 0 { island_building.val } else { None }
+  // (kept past the frames that build it: what the focus on it is kept by while its old view is not built)
+  match island {
+    Some(isl) => self.focus_island[id] = isl
+    None => self.focus_island.remove(id)
+  }
   let f = { id, group: self.group_cur, layer: self.layer_cur, node, keys, on_press, island }
   // (held by its node the way there's 1: by `node`, else by the id's, made or to be: Ctx::id_built)
   let i = if node >= 0 {
@@ -520,7 +525,12 @@ fn Ctx::focus_frame_end(self : Ctx) -> Unit {
     if self.editors.contains(self.focus) {
       let island = match self.last_focusables.iter().find_first(fn(f) { f.id == self.focus }) {
         Some(f) => f.island
-        None => self.island_of_id(self.focus)
+        None =>
+          match self.island_of_id(self.focus) {
+            Some(i) => Some(i)
+            // (its old view not built for frames, laid out nowhere: the one it was last built in)
+            None => self.focus_island.get(self.focus)
+          }
       }
       match island {
         Some(i) if (islands_built.contains(i) || !old_islands.iter().any(fn(o) { o.id == i })) &&

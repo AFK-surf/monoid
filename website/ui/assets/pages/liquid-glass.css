@@ -1,0 +1,176 @@
+/* Page-specific styles for /liquid-glass/ (inlined into <head> by build.mjs). */
+
+/* Dark dramatic hero seamlessly transitioning below the light sticky .bar */
+.lg-hero {
+  padding: 64px 0 56px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  background:
+    radial-gradient(68% 42% at 50% 0%, rgba(239, 99, 52, 0.14) 0%, rgba(14, 14, 16, 0) 68%),
+    var(--d-ground);
+}
+.lg-hero > .wrap > .stage { margin-top: 36px; }
+.lg-hero + .section { padding-top: 32px; }
+
+#lg-stage {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+#lg-stage .shot-pending { min-height: 500px; }
+.lg-preview { display: none; }
+.lg-preview.on { display: block; animation: m-fade 240ms var(--ease-out); }
+
+/* Compact mode switcher dock below stage */
+.lg-dock {
+  margin-top: 16px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.lg-surface-seg {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px;
+  border-radius: 999px;
+  background: #16161a;
+  border: 1px solid var(--d-line);
+  gap: 2px;
+}
+.lg-seg-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--d-sub);
+  font: 500 13px/1 var(--text);
+  cursor: pointer;
+  transition: background-color .14s var(--ease-out), color .14s var(--ease-out);
+}
+.lg-seg-btn svg { width: 13px; height: 13px; }
+.lg-seg-btn:hover { color: var(--d-ink); }
+.lg-seg-btn[aria-selected="true"] {
+  background: #27272e;
+  color: var(--d-ink);
+}
+.lg-seg-btn[aria-selected="true"] svg { color: var(--d-brand); }
+
+.lg-scene-pills {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.lg-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 13px;
+  border-radius: 999px;
+  background: #16161a;
+  border: 1px solid var(--d-line-strong);
+  color: var(--d-ink);
+  font: 500 13px/1 var(--text);
+  letter-spacing: -0.004em;
+  cursor: pointer;
+  transition: background-color .14s var(--ease-out), border-color .14s var(--ease-out), color .14s var(--ease-out);
+}
+.lg-pill:hover { background: #202026; border-color: #484852; }
+.lg-pill svg { width: 14px; height: 14px; color: var(--d-sub); }
+.lg-pill.is-active {
+  background: #ffffff;
+  border-color: #ffffff;
+  color: #171717;
+}
+.lg-pill.is-active svg { color: var(--brand); }
+.lg-full {
+  background: transparent;
+  border-color: var(--d-line);
+  color: var(--d-sub);
+}
+.lg-full:hover { background: #1c1c22; color: var(--d-ink); }
+
+/* 4-card 1:1 optical close-up Bento gallery */
+.lg-gallery-band { padding-top: 24px; }
+.lg-tile {
+  padding: 0;
+  gap: 0;
+  background: #141418;
+  border: 1px solid var(--d-line);
+  overflow: hidden;
+}
+.lg-shot-frame {
+  flex: 1;
+  padding: clamp(16px, 2.2vw, 24px);
+  background:
+    radial-gradient(60% 70% at 20% 10%, rgba(239, 99, 52, 0.14) 0%, rgba(16, 16, 20, 0) 60%),
+    #101014;
+  display: grid;
+  place-items: center;
+  border-bottom: 1px solid var(--d-line);
+}
+.lg-shot-frame.lg-shot-light {
+  background:
+    radial-gradient(68% 82% at 10% 8%, #f5ece4 0%, rgba(245, 236, 228, 0) 64%),
+    linear-gradient(135deg, #e7dcd2 0%, #d8c6b8 100%);
+}
+.lg-shot-frame .shot {
+  width: 100%;
+  border-radius: var(--r-s);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.32);
+}
+.lg-tile-meta {
+  padding: 20px 24px 22px;
+}
+.lg-tile-meta h3 {
+  font: 500 17px/1.35 var(--text);
+  letter-spacing: -0.011em;
+  color: var(--d-ink);
+}
+.lg-tile-meta p {
+  margin-top: 6px;
+  font-size: 14px;
+  line-height: 1.48;
+  color: var(--d-sub);
+}
+
+/* Quick code & Apache-2.0 attribution layout */
+.lg-code-grid {
+  display: grid;
+  grid-template-columns: 7fr 5fr;
+  gap: 28px;
+  align-items: start;
+}
+.lg-code-grid .term {
+  margin: 0;
+  padding: 20px 84px 20px 22px;
+}
+.lg-code-grid .term .kw  { color: #f6855e; }
+.lg-code-grid .term .fn  { color: #8ab4f8; }
+.lg-code-grid .term .str { color: #a8dab5; }
+.lg-code-grid .term .num { color: #fdd663; }
+
+.lg-attr-card {
+  background: var(--ground);
+  border: 1px solid var(--line);
+  gap: 10px;
+}
+.lg-attr-card .acts {
+  padding-top: 12px;
+}
+.lg-attr-card .btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+@media (max-width: 860px) {
+  .lg-hero { padding: 44px 0 40px; }
+  .lg-hero > .wrap > .stage { margin-top: 28px; }
+  #lg-stage .shot-pending { min-height: 280px; }
+  .lg-dock { justify-content: flex-start; }
+  .lg-code-grid { grid-template-columns: 1fr; }
+}

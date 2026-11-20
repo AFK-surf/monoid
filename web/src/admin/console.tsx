@@ -4,7 +4,7 @@
 // each page together (views/admin.ts: found, filtered, sorted, counted); this draws it. Where the page is (a list's
 // words, filter and sort, the item open) is in its URL, so a link shows the same. A page's own parts are beside it:
 // feedback.tsx, workspace.tsx, relays.tsx; what they share, shared.tsx; what the core gives, types.ts.
-import { Boxes, ChevronRight, Copy, List as ListIcon, LogOut, Monitor, Plus, Said, Server, Ticket, Users } from "@stillfail/ui/icons.tsx";
+import { Boxes, ChevronRight, Copy, Key, List as ListIcon, LogOut, Monitor, Plus, Said, Server, Ticket, Users } from "@stillfail/ui/icons.tsx";
 import { useEffect, useState, type ReactNode } from "preact/compat";
 import { Link, Redirect, Route, Switch as Routes, useLocation, useParams, useRoute, useSearchParams } from "wouter-preact";
 import { Wordmark } from "../brand.tsx";
@@ -44,6 +44,7 @@ export function Console({ account }: { account: Account }) {
           <NavRow to="/codes"><Ticket {...ICON} />{t("web-pages.cloud.inviteCode")}</NavRow>
           <NavRow to="/feedback"><Said {...ICON} />{t("web-pages.admin.feedback")}</NavRow>
           <NavRow to="/relays"><Server {...ICON} />{t("web-pages.admin.relays")}</NavRow>
+          <NavRow to="/keys"><Key {...ICON} />{t("web-pages.admin.keys")}</NavRow>
           <NavRow to="/audit"><ListIcon {...ICON} />{t("web-pages.admin.audit")}</NavRow>
         </div>
         <div className={`${nav.navFootRow} ${css.adminFoot}`}>
@@ -60,6 +61,7 @@ export function Console({ account }: { account: Account }) {
           <Route path="/codes"><ListPage account={account} list="invite-codes" /></Route>
           <Route path="/feedback/:id?"><ListPage account={account} list="feedback" /></Route>
           <Route path="/relays"><RelaysPage account={account} /></Route>
+          <Route path="/keys"><ListPage account={account} list="keys" /></Route>
           <Route path="/audit"><ListPage account={account} list="audit" /></Route>
           <Route><Redirect to="/" replace /></Route>
         </Routes>
@@ -137,12 +139,12 @@ function OverviewBody({ view }: { view: Overview }) {
 const TITLE: Record<List, string> = {
   get users() { return t("web-pages.admin.users"); }, workspaces: "Workspace",
   get "invite-codes"() { return t("web-pages.cloud.inviteCode"); }, get feedback() { return t("web-pages.admin.feedback"); },
-  get audit() { return t("web-pages.admin.audit"); },
+  get audit() { return t("web-pages.admin.audit"); }, get keys() { return t("web-pages.admin.keys"); },
 };
 const PLACEHOLDER: Record<List, string> = {
   get users() { return t("web-pages.admin.search.users"); }, get workspaces() { return t("web-pages.admin.search.workspaces"); },
   get "invite-codes"() { return t("web-pages.admin.search.codes"); }, get feedback() { return t("web-pages.admin.search.feedback"); },
-  get audit() { return t("web-pages.admin.search.audit"); },
+  get audit() { return t("web-pages.admin.search.audit"); }, get keys() { return t("web-pages.admin.search.keys"); },
 };
 const STEP = 50;
 
@@ -157,10 +159,11 @@ function ListPage({ account, list }: { account: Account; list: List }) {
   const { value: view, error } = useKept<ListView>({ topic: "adminList", account: account.sub, list, query, ...(filter ? { filter } : {}), ...(sort ? { sort } : {}), limit });
   const set = (key: string, value: string | null) => setParams((p) => { const next = new URLSearchParams(p); if (value) next.set(key, value); else next.delete(key); return next; }, { replace: true });
   const [making, setMaking] = useState(false);
+  const [makingKey, setMakingKey] = useState(false);
   const [granting, setGranting] = useState(false);
   const [creating, setCreating] = useState(false);
   const search = params.toString() ? `?${params}` : "";
-  const detail = id && list !== "invite-codes" && list !== "audit";
+  const detail = id && list !== "invite-codes" && list !== "audit" && list !== "keys";
   // A report's list is narrowed by its area too, said after its tab in the one filter (views/admin.ts: `new@android`).
   const [tab, area] = filter?.includes("@") ? [filter.slice(0, filter.indexOf("@")), filter.slice(filter.indexOf("@") + 1)] : [filter ?? "", ""];
   const setFilter = (nextTab: string, nextArea: string) => set("filter", nextArea ? `${nextTab === "all" ? "" : nextTab}@${nextArea}` : nextTab === "all" || nextTab === "" ? null : nextTab);
@@ -171,6 +174,7 @@ function ListPage({ account, list }: { account: Account; list: List }) {
         <header className={pagesCss.pageHead}>
           <div><h1>{TITLE[list]}{view && <span className={css.total}>{view.total}</span>}</h1></div>
           {list === "invite-codes" && <Button icon={Plus} variant="primary" onClick={() => setMaking(true)}>{t("web-pages.admin.code.make")}</Button>}
+          {list === "keys" && <Button icon={Plus} variant="primary" onClick={() => setMakingKey(true)}>{t("web-pages.admin.key.make")}</Button>}
           {list === "users" && <Button icon={Plus} onClick={() => setGranting(true)}>{t("web-pages.admin.pending.add")}</Button>}
           {list === "workspaces" && <Button icon={Plus} onClick={() => setCreating(true)}>{t("web-pages.admin.ws.new")}</Button>}
         </header>
@@ -196,6 +200,7 @@ function ListPage({ account, list }: { account: Account; list: List }) {
         {list === "feedback" && error?.status === 404 ? <p className={css.empty}>{t("web-pages.admin.noFeedback")}</p> : <Failed error={error} />}
         {!view ? !error && <Waiting sample={<div className={css.list}>{sampleRows(list).map((row) => list === "invite-codes"
           ? <CodeRow key={row.id} account={account} row={row} />
+          : list === "keys" ? <KeyRow key={row.id} account={account} row={row} />
           : list === "audit" ? <AuditRow key={row.id} row={row} /> : <ItemRow key={row.id} list={list} row={row} open={false} to="" />)}</div>} />
           : view.rows.length === 0 ? (
           <p className={css.empty}>{query ? t("web-pages.admin.notFound") : t("web-pages.admin.empty")}</p>
@@ -203,6 +208,7 @@ function ListPage({ account, list }: { account: Account; list: List }) {
           <div className={css.list}>
             {view.rows.map((row) => list === "invite-codes"
               ? <CodeRow key={row.id} account={account} row={row} />
+              : list === "keys" ? <KeyRow key={row.id} account={account} row={row} />
               : list === "audit" ? <AuditRow key={row.id} row={row} />
               : <ItemRow key={row.id} list={list} row={row} sort={view.sort} open={row.id === id} to={`${PATH[list]}/${encodeURIComponent(row.id)}${search}`} />)}
             {view.more && <button className={css.more} onClick={() => setLimit((n) => n + STEP)}>{t("web-pages.admin.more", { n: Math.min(STEP, view.found - view.rows.length), total: view.found })}</button>}
@@ -215,6 +221,7 @@ function ListPage({ account, list }: { account: Account; list: List }) {
           ? <FeedbackDetail key={id} account={account} id={id} close={`${PATH.feedback}${search}`} />
           : <WorkspaceDetail key={id} account={account} id={id} close={`${PATH.workspaces}${search}`} />)}
       {making && <NewCodeDialog account={account} onClose={() => setMaking(false)} />}
+      {makingKey && <NewKeyDialog account={account} onClose={() => setMakingKey(false)} />}
       {granting && <PendingDialog account={account} search={search} onClose={() => setGranting(false)} />}
       {creating && <NewWorkspaceDialog account={account} search={search} onClose={() => setCreating(false)} />}
     </div>
@@ -281,6 +288,46 @@ function CodeRow({ account, row }: { account: Account; row: Row }) {
       <Confirm open={revoking} onClose={() => setRevoking(false)} onConfirm={() => { setRevoking(false); void revoke.run(); }}
         title={t("web-pages.admin.code.revokeConfirm", { code: row.title })} action={t("web-pages.admin.code.revoke")}
         description={t("web-pages.admin.code.revokeBody")} />
+    </div>
+  );
+}
+
+/** An Admin API key row: name, mono prefix, state pill, creator/usage/expiry line, and revoke action when active. */
+function KeyRow({ account, row }: { account: Account; row: Row }) {
+  const toast = useToast();
+  const [revoking, setRevoking] = useState(false);
+  const revoke = useAction(() => admin.revokeKey(account.sub, row.id), () => toast(t("web-pages.admin.key.revoked")));
+  const at = row.state === "revoked" ? stamp(row, "revoked_at") : stamp(row, "created_at");
+  const lastUsed = stamp(row, "last_used_at");
+  const expires = stamp(row, "expires_at");
+  const creator = row.line.split(" · ")[0] ?? "";
+  const subline = [
+    creator,
+    lastUsed ? t("web-pages.admin.key.lastUsed", { ago: lastUsed.ago }) : t("web-pages.admin.key.neverUsed"),
+    ...(row.state === "active"
+      ? [expires ? t("web-pages.admin.expires", { until: expires.until }) : t("web-pages.admin.key.neverExpires")]
+      : []),
+  ].filter(Boolean).join(" · ");
+  return (
+    <div className={css.row} data-static>
+      <span className={css.rowText}>
+        <span className={css.rowLine1}>
+          <b>{row.title}</b>
+          {row.prefix && <span className={`${shellCss.mono} ${css.keyPrefix}`}>{row.prefix}…</span>}
+          <span className={css.rowTail}>
+            <Marks marks={row.marks} />
+            <span className={css.rowTime}>
+              {row.state === "active"
+                ? <Button variant="ghost" busy={revoke.busy} onClick={() => setRevoking(true)}>{t("web-pages.admin.key.revokeShort")}</Button>
+                : <Time stamp={at} fixed />}
+            </span>
+          </span>
+        </span>
+        <span className={css.rowLine2}>{subline}</span>
+      </span>
+      <Confirm open={revoking} onClose={() => setRevoking(false)} onConfirm={() => { setRevoking(false); void revoke.run(); }}
+        title={t("web-pages.admin.key.revokeConfirm", { name: row.title })} action={t("web-pages.admin.key.revoke")}
+        description={t("web-pages.admin.key.revokeBody")} />
     </div>
   );
 }
@@ -414,6 +461,54 @@ function NewCodeDialog({ account, onClose }: { account: Account; onClose(): void
             <Select value={days} onChange={setDays} label={t("web-pages.admin.code.validity")} options={DAYS.map((d) => ({ value: String(d), label: t("web-pages.admin.code.days", { n: d }) }))} />
           </Field>
           <SwitchRow title={t("web-pages.admin.code.beta")} description={t("web-pages.admin.code.betaHint")} checked={beta} onChange={setBeta} />
+        </>
+      )}
+      {make.error && <ErrorLine>{make.error.message}</ErrorLine>}
+    </Dialog>
+  );
+}
+
+const KEY_DAYS = [30, 90, 365];
+
+function NewKeyDialog({ account, onClose }: { account: Account; onClose(): void }) {
+  const [name, setName] = useState("");
+  const [days, setDays] = useState("90");
+  const make = useAction(() => admin.createKey(account.sub, name.trim(), days ? Number(days) : undefined));
+  const made = make.result;
+  const ready = name.trim() !== "" && !make.busy;
+  return (
+    <Dialog open onClose={onClose} wide title={made ? t("web-pages.admin.key.made") : t("web-pages.admin.key.make")}
+      description={made ? t("web-pages.admin.key.madeLead") : t("web-pages.admin.key.makeLead")}
+      footer={made ? <Button variant="primary" onClick={onClose}>{t("common.done")}</Button> : <>
+        <Button variant="ghost" onClick={onClose}>{t("common.cancel")}</Button>
+        <Button variant="primary" busy={make.busy} disabled={!ready} onClick={() => make.run()}>{t("web-pages.admin.key.makeShort")}</Button>
+      </>}>
+      {made ? (
+        <>
+          <Field label={t("web-pages.admin.key.secret")}><div className={css.command}><CopyCommand text={made.key} /></div></Field>
+          <div className={css.vaultTip}>
+            <b>{t("web-pages.admin.key.vaultTitle")}</b>
+            <span>{t("web-pages.admin.key.vaultHint")}</span>
+            <ul>
+              <li>{t("web-pages.admin.key.vaultKind")}</li>
+              <li>{t("web-pages.admin.key.vaultHost", { host: made.host })}</li>
+              <li>{t("web-pages.admin.key.vaultEnv")}</li>
+            </ul>
+          </div>
+          <Field label={t("web-pages.admin.key.cliExample")}><div className={css.command}><CopyCommand text={`STILLFAIL_ADMIN_ORIGIN=${made.origin} stillfail admin whoami`} /></div></Field>
+        </>
+      ) : (
+        <>
+          <Field label={t("web-pages.admin.key.name")} htmlFor="key-name">
+            <TextInput id="key-name" value={name} autoFocus maxLength={80} onChange={(e) => setName(e.currentTarget.value)} placeholder={t("web-pages.admin.key.namePlaceholder")}
+              onKeyDown={(e) => { if (e.key === "Enter" && !e.isComposing && ready) make.run(); }} />
+          </Field>
+          <Field label={t("web-pages.admin.key.validity")}>
+            <Select value={days} onChange={setDays} label={t("web-pages.admin.key.validity")} options={[
+              ...KEY_DAYS.map((d) => ({ value: String(d), label: t("web-pages.admin.code.days", { n: d }) })),
+              { value: "", label: t("web-pages.admin.key.never") },
+            ]} />
+          </Field>
         </>
       )}
       {make.error && <ErrorLine>{make.error.message}</ErrorLine>}

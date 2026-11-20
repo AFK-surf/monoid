@@ -42,7 +42,7 @@ let bar_field_editing : @ui.Style = bar_field_box.then(@ui.css("bg=Card border=B
 ///|
 /// A capsule on a bar of the canvas's own ground (`framed`, a station's browser's): the card's, its line round it.
 // kept across runs: a value (no field of it changes)
-let bar_field_framed : @ui.Style = bar_field_box.then(@ui.css("bg=Card border=B1 border_color=Line"))
+let bar_field_framed : @ui.Style = bar_field_box.then(@ui.css("bg=Card border=B0_5 border_color=Line"))
 
 ///|
 /// How thick a pane's edge is on the tape (the frame's page_apart: a point), what a bar at its top stands under.

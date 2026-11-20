@@ -920,6 +920,8 @@ pub fn Ctx::editor(
       s
     }
   }
+  // (let go with the old view it is built in, if it is: old_presses_gone)
+  island_said_id(3, id)
   // (what the app wrote in it from outside the hand: a part kept is built again to show it)
   st.written.get() |> ignore
   st.limit = paste_limit
@@ -1607,9 +1609,9 @@ fn Ctx::paint_field(
   let bar = bar()
   let focused = self.has_focus(fb.id)
   let ml = st.marked.length()
-  // selection
+  // selection (kept visible while a menu or modal parks the field's focus)
   let (a, b) = st.sel()
-  if focused && a != b && ml == 0 {
+  if (focused || self.focus_parked(fb.id)) && a != b && ml == 0 {
     let (x0, l0) = st.place_of(tl, a)
     let (x1, l1) = st.place_of(tl, b)
     for l in l0..=l1 {
@@ -1825,6 +1827,29 @@ fn Ctx::sync_ime(self : Ctx) -> Unit {
         self.ime_sig = ""
         h_set_ime(false, 0.0, 0.0, 0.0, 0.0, "", 0, 0)
       }
+  }
+}
+
+///|
+/// What it was told to do as it is edited, sent or drawn (Ctx::editor's on_submit, on_change, on_edit, look; a tree
+/// field's placeholder fade) let go: the editor that said them gone, they hold what it was built in (its page, the
+/// draft it writes into, what it read), and the Field that keeps this, held by what keeps the draft, held them: a ring
+/// native's counting never frees once the draft is let go. Said again by the next editor built over it.
+fn EditorState::clear_handlers(self : EditorState) -> Unit {
+  self.on_submit = None
+  self.on_change = None
+  self.on_edit = None
+  self.look = None
+  self.looked = None
+  self.ph_alpha_by = None
+}
+
+///|
+/// An editor of id `id` let go of: what it was told let go, unless its state is another's by now (a field of the
+/// window's tree's, or an editor of another id built over the same Field).
+fn editor_gone(st : EditorState, id : Int) -> Unit {
+  if st.built_id == id && st.tree_node is None {
+    st.clear_handlers()
   }
 }
 
@@ -2416,6 +2441,17 @@ pub fn Ctx::field_edit(self : Ctx, id : Int, what : Int, paste? : String = "") -
       }
       self.focus_on(id)
       self.read_changed("a field edited")
+      match tree_said_ids.get(id) {
+        Some(nid) =>
+          match tree_fields.get(nid) {
+            Some(tf) => {
+              tree_field_told(tf)
+              tree_field_redraw()
+            }
+            None => ()
+          }
+        None => ()
+      }
     }
     None => ()
   }

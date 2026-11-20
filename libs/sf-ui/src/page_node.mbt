@@ -66,7 +66,25 @@ pub fn hover_ground_node(
   let src = by.unwrap_or(target)
   let lit_fn = lit.unwrap_or(fn() { lit_node(src) })
   let active = fn() { on() && (lit_fn() || extra()) }
-  target.ground_over(By(fn() { if active() { color() } else { 0L } })) |> ignore
+  let fade = @motion.hover_fade(target, active, duration_ms=dur_ms, instant_off=fn() { @ui.pointing() is Finger })
+  target.ground_over(By(fn() {
+    // (read as it was before the fade, untracked: View::ground_over still learns it follows the hand and the focus,
+    // its corners' and focus's checks, with no further subscription)
+    @signals.untracked(active) |> ignore
+    let p = fade()
+    if p <= 0.0 {
+      0L
+    } else {
+      let c = color()
+      if p >= 1.0 || c == 0L {
+        c
+      } else {
+        let a = ((c & 0xFFL).to_double() * p).round().to_int64()
+        (c & 0xFFFFFF00L) | a
+      }
+    }
+  }))
+  |> ignore
 }
 
 ///|
@@ -391,7 +409,7 @@ pub fn page_node(
     None => TipLayer::new(fn() { tips_at.val })
   }
   v.pick(look, fn(p, l) {
-    p.grow(Is(1.0)).min_height(Is(Some(0.0))).lends(part_at, { look: l, section: false, list: false }) |> ignore
+    p.grow(Is(1.0)).min_height(Is(Some(0.0))).lends(part_at, { look: l, section: false, list: false, card: false }) |> ignore
     // (where its list is scrolled to, kept by whoever holds the page where it says (a part of a page a page each,
     // each as it was left), else the page's own; the same through its arrangements)
     let scroll = match scroll {
@@ -416,11 +434,14 @@ pub fn page_node(
 
 ///|
 /// Where a part of a page made once is (page_node's, lent to all of it): how the page is laid out, whether it is in a
-/// section of a wide page (wide_alone's), and whether on a list's card (its rows a wide list's: wide_in_list's).
+/// section of a wide page (wide_alone's), whether on a list's card (its rows a wide list's: wide_in_list's), and
+/// whether on a card of words (a wide group's card, page_card_node's: its rows its padding in, a control at their end
+/// held out of its corner where that is rounder).
 priv struct PartAt {
   look : Look
   section : Bool
   list : Bool
+  card : Bool
 }
 
 ///|
@@ -443,14 +464,14 @@ fn in_pane_node(v : @view.View) -> Bool {
 ///|
 /// Where node `v` of a page made once is (page_node's: lent it); narrow, in nothing, outside one.
 fn part_of(v : @view.View) -> PartAt {
-  v.lent(part_at).unwrap_or({ look: Narrow, section: false, list: false })
+  v.lent(part_at).unwrap_or({ look: Narrow, section: false, list: false, card: false })
 }
 
 ///|
 /// What is made in node `v` laid out as a page laid out `look` lays out its parts (what a frame puts by a page made once,
 /// as its page is: a bar's actions), in no section or list of it.
 pub fn look_lent(v : @view.View, look : Look) -> Unit {
-  v.lends(part_at, { look, section: false, list: false }) |> ignore
+  v.lends(part_at, { look, section: false, list: false, card: false }) |> ignore
 }
 
 ///|
@@ -923,9 +944,11 @@ fn line_end_while_node(parent : @view.View, on : () -> Bool, make : (@view.View)
     .height(By(fn() {
       guard on() else { return None }
       let th = @ui.tree_theme()
-      let line = match look_node(l) {
-        Narrow => th.text_size(Body).1
-        Wide => th.leading(L6).unwrap_or(th.text_size(Ui).1)
+      // (a title's line: the body's narrow or on touch, where a wide row's title is the body's too; else the list's)
+      let line = if theme().touch || look_node(l) is Narrow {
+        th.text_size(Body).1
+      } else {
+        th.leading(L6).unwrap_or(th.text_size(Ui).1)
       }
       Some(node_sp(l, line))
     }))
@@ -960,7 +983,8 @@ pub fn group_node(parent : @view.View, rows : (@view.View) -> Unit, card? : Bool
   if parent.lent(panel_in_lent) is Some(p) && !p.small {
     parent.box(made_for=loc, fn(k) {
       style_node(k, fn() { panel_card_group.then(panel_card_rows).then(panel_card_out_node(k)) })
-      k.lends(on_card_lent, true).lends(part_at, { ..at, list: at.look is Wide }) |> ignore
+      k.lends(on_card_lent, true).lends(part_at, { ..at, list: at.look is Wide, card: false }) |> ignore
+      corner_card_node(k, fn() { card_corner }, inset=fn() { corner_inset })
       rows(k)
     })
     |> ignore
@@ -982,6 +1006,7 @@ pub fn group_node(parent : @view.View, rows : (@view.View) -> Unit, card? : Bool
       .clips(Is(true))
       .lends(on_card_lent, true)
       |> ignore
+      corner_card_node(card, fn() { corner }, inset=fn() { pad })
       rows(card)
     })
     |> ignore
@@ -1875,7 +1900,7 @@ pub fn switch_node(
         .radius(By(fn() { size().1 / 2.0 }))
         .ground(By(fn() {
           let p = theme().p
-          @kit.blend(backdrop_track_ink(), p.accent, dclamp(knob.shown(track), 0.0, 1.0))
+          @ui.blend(track_glass_ink(), p.accent, dclamp(knob.shown(track), 0.0, 1.0))
         }))
         |> ignore
         let d = fn() { size().1 - 2.0 * switch_in }
@@ -1902,7 +1927,7 @@ pub fn switch_node(
               let calm = 1.0 - dmin(1.0, dmax(lens(), 0.0))
               @motion.velocity_capsule(thumb_w(), d(), speed * travel() * calm, 0.0)
             }))
-            .alpha(By(fn() { if lens() > 0.0 { 0.0 } else { 1.0 } }))
+            .alpha(By(fn() { 1.0 - dclamp(lens(), 0.0, 1.0) }))
             |> ignore
           })
           |> ignore
@@ -1911,20 +1936,26 @@ pub fn switch_node(
         track.show(fn() { lens() > 0.0 }, fn(o) {
           o.over(Is(true)).lines_up(Is(Some(Start))) |> ignore
           o.box(fn(l) {
-            let lens_wh = fn() {
-              (thumb_w() * scale_x.shown(l), d() * scale_y.shown(l))
-            }
             l
-            .width(By(fn() { Some(lens_wh().0) }))
-            .height(By(fn() { Some(lens_wh().1) }))
-            .radius(By(fn() { lens_wh().1 / 2.0 }))
-            .glass(By(fn() { Some(backdrop_toggle(lens())) }))
+            .width(By(fn() { Some(thumb_w()) }))
+            .height(By(fn() { Some(d()) }))
+            .radius(By(fn() { d() / 2.0 }))
+            .glass(By(fn() { Some(glass_toggle_lens(lens())) }))
+            .alpha(By(fn() { dclamp(lens(), 0.0, 1.0) }))
             .shadow(Is((4.0, 4.0 / 6.0, 0x0000000DL)))
-            .offset(By(fn() {
-              let (lw, lh) = lens_wh()
-              let (_, h) = size()
-              let mid = switch_in + thumb_w() / 2.0 + travel() * k()
-              (mid - lw / 2.0, (h - lh) / 2.0)
+            .offset(By(fn() { (switch_in + travel() * k(), switch_in) }))
+            .ground_drawn(By(fn() {
+              let w = thumb_w()
+              let h = d()
+              let lw = w * scale_x.shown(l)
+              let lh = h * scale_y.shown(l)
+              {
+                dx: (w - lw) / 2.0,
+                dy: (h - lh) / 2.0,
+                dw: lw - w,
+                dh: lh - h,
+                corners: Some((lh / 2.0, lh / 2.0, lh / 2.0, lh / 2.0)),
+              }
             }))
             |> ignore
           })
@@ -1959,7 +1990,8 @@ let switch_disabled_alpha : Double = 0.5
 
 ///|
 /// A row on a group's card that turns something on or off (switch_row's; narrow, in a card: its title, `note` quieter
-/// under it, its switch at its end across their middle; wide: wide_control_row_node's); the switch alone answers. `on`,
+/// under it, its switch at its end on the title's line where there is a note, else in the row's middle; wide:
+/// wide_control_row_node's, the same); the switch alone answers. `on`,
 /// `turn`: switch_node's. `in_words`: on a page's card of words (page_card_node), where narrow it is a row of its words
 /// (16 between them and the switch), not a group's row. `busy`: what it set is on its way (switch_row's: a spinner
 /// before its switch, not turned again meanwhile).
@@ -1980,38 +2012,61 @@ pub fn switch_row_node(
     r.show(busy, fn(s) { spinner_node(s, size=spinner_size) |> ignore })
     switch_node(r, on, turn, title, disabled=fn() { disabled() || busy() })
   }
+  // (with a note under its title the switch is on the title's first line, never across their middle; alone, in the
+  // row's middle as it was)
+  let noted = fn() { note() != "" }
   if look_node(parent) is Wide {
     // (among a card's words, its title as strong as a setting's: switch_row's wide)
     if in_words {
-      wide_control_row_node(parent, title, note, lead, control, looks=(fn() { setting_title() }, fn() { theme().rows.note }))
+      wide_control_row_node(
+        parent,
+        title,
+        note,
+        lead,
+        control,
+        looks=(fn() { setting_title() }, fn() { theme().rows.note }),
+        first_line=true,
+        first_line_while=noted,
+      )
     } else {
-      wide_control_row_node(parent, title, note, lead, control)
+      wide_control_row_node(parent, title, note, lead, control, first_line=true, first_line_while=noted)
     }
     return
   }
   // (narrow, among a card's words: a row of words with its switch, no row's ground or room of its own, switch_row's
   // in_words)
   if in_words {
-    wide_control_row_node(parent, title, note, lead, control, looks=(fn() { pg_switch_title }, fn() { meta.then(full_words) }))
+    wide_control_row_node(
+      parent,
+      title,
+      note,
+      lead,
+      control,
+      looks=(fn() { pg_switch_title }, fn() { meta.then(full_words) }),
+      first_line=true,
+      first_line_while=noted,
+    )
     return
   }
   parent.box(made_for=loc, fn(r) {
     r
     .row(Is(true))
     .gap(Is(12.0))
-    .padding(Is((text_in, text_in, text_in, text_in)))
+    // (at its end as far in as holds a switch on its title's line out of the row's and the card's corners, every
+    // switch of a card at one edge)
+    .padding(Is((text_in, text_in, dmax(text_in, group_corner - list_pad), text_in)))
     .radius(Is(@ui.concentric(group_corner, list_pad)))
     .min_height(By(fn() { Some(theme().items.least) }))
-    .lines_up(Is(Some(Middle)))
+    .lines_up(By(fn() { Some(if noted() { Start } else { Middle }) }))
     |> ignore
     r.box(fn(words) {
       // (as wide as the row leaves it, narrower where what it holds is wider: its words wrapped there, as a row's are)
       words.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
       led_title_node(words, title, fn() { pg_switch_title }, lead)
-      words.show(fn() { note() != "" }, fn(n) { styled_words(n, note, fn() { switch_row_note }) |> ignore })
+      words.show(noted, fn(n) { styled_words(n, note, fn() { switch_row_note }) |> ignore })
     })
     |> ignore
-    control(r)
+    line_end_while_node(r, noted, control)
   })
   |> ignore
 }
@@ -2051,7 +2106,7 @@ pub fn block_node(parent : @view.View, make : (@view.View) -> Unit, loc~ : Sourc
   let narrow = look_node(parent) is Narrow
   let listed = !narrow && part_of(parent).list
   let room = if narrow { (text_in, text_in, text_in, text_in) } else if listed {
-    (text_in, wide_row_over, if in_pane_node(parent) { text_in } else { list_control_end }, wide_row_over)
+    (text_in, wide_row_over, if in_pane_node(parent) { card_control_end } else { list_control_end }, wide_row_over)
   } else {
     (0.0, 0.0, 0.0, 0.0)
   }
@@ -2246,6 +2301,7 @@ pub fn page_card_node(
   layered? : Bool = false,
   loc~ : SourceLoc,
 ) -> Unit {
+  let at = part_of(parent)
   let card = fn(v : @view.View) {
     v.box(fn(k) {
       k
@@ -2253,12 +2309,12 @@ pub fn page_card_node(
       .gap(Is(page_card_gap))
       .radius(By(fn() { @ui.tree_theme().corner(Xl3) }))
       .ground(By(fn() { @ui.tree_theme().color(Card) }))
+      .lends(part_at, { ..at, list: false, card: true })
       |> ignore
       body(k)
     })
     |> ignore
   }
-  let at = part_of(parent)
   if layered || (at.look is Wide && at.section) {
     card(parent)
   } else {
@@ -2375,7 +2431,7 @@ pub fn round_key_node(
   }
   match opener {
     Some(o) =>
-      @headless.disclosure(made_for=loc, parent, label, fn() { o.open() }, fn(_) { press() }, fn(k, d) {
+      @headless.disclosure(made_for=loc, parent, label, fn() { o.open() }, fn(_) { @view.transition(press) }, fn(k, d) {
         look(k, fn() { d.press() })
       })
       |> ignore
@@ -2603,4 +2659,58 @@ pub fn[K : Hash + Eq] pg_blocks_read(was : Ref[Set[K]], other : Ref[Bool], now :
   }
   was.val = seen
   now
+}
+
+///|
+/// A column of rows inside a list card (`group_node`), spaced as the card's rows are on either screen (`desk_list_gap`
+/// wide, none narrow).
+#callsite(autofill(loc))
+pub fn list_rows_node(parent : @view.View, make : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit {
+  let wide = look_node(parent) is Wide
+  parent.box(made_for=loc, fn(r) {
+    if wide {
+      r.gap(Is(desk_list_gap)) |> ignore
+    }
+    make(r)
+  })
+  |> ignore
+}
+
+///|
+/// The leading face of a list card's row that holds its own gesture or trailing control beside it (`bars.mbt`):
+/// `mark` (20 wide, 24 high) before `title`, laid out with the room and words of the card's other rows on either
+/// screen (`link_row_node` narrow, `wide_link_row_node` wide); `make` given the face node itself.
+#callsite(autofill(loc))
+pub fn list_row_face_node(
+  parent : @view.View,
+  mark : (@view.View) -> Unit,
+  title : () -> String,
+  make? : (@view.View) -> Unit = fn(_) {  },
+  loc~ : SourceLoc,
+) -> Unit {
+  let wide = look_node(parent) is Wide
+  let over = if wide { wide_row_over } else { text_in }
+  parent.box(made_for=loc, fn(face) {
+    face
+    .row(Is(true))
+    .grow(Is(1.0))
+    .shrink(Is(1.0))
+    .min_width(Is(Some(0.0)))
+    .padding(Is((text_in, over, 12.0, over)))
+    .gap(Is(12.0))
+    .lines_up(Is(Some(Middle)))
+    |> ignore
+    make(face)
+    face.box(fn(m) {
+      m.width(Is(Some(20.0))).height(Is(Some(24.0))).lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
+      mark(m)
+    })
+    |> ignore
+    face.box(fn(w) {
+      w.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+      words_node(w, title, fn() { if wide { desk_list_title } else { pg_row_title } }) |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
 }

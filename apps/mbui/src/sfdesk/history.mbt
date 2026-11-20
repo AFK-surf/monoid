@@ -330,7 +330,12 @@ fn wh_details_node(
         |> ignore
       },
       fn(e) {
-        let low = fn() { items(host(), "meters").filter(fn(m) { text(Some(m), "level") != "ok" }) }
+        // (as this device says a CPU: idle or busy, @settings.meters_said)
+        let low = fn() {
+          @settings.meters_said(items(host(), "meters"), @settings.cpu_busy_of(src.topic("prefs", {}).get().value)).filter(fn(m) {
+            text(Some(m), "level") != "ok"
+          })
+        }
         e.show(at_once=true, fn() { low().length() > 0 }, fn(x) { @sf.meter_chips_node(x, low, tips~) })
       },
     )

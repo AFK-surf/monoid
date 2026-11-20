@@ -4,101 +4,8 @@
 // `cleared`, `longChat`, `resumeLost`), and a session's usage now (read/usage.ts `usageNow`), which it is decided by.
 
 ///|
-/// read/usage.ts `PRICES`: the standard short-context list prices, for a model the catalog has no price for (the same
-/// table as readops' models.mbt, whose `price` it keeps to itself). Longer names first.
-let list_prices : Array[(String, Double, Double, Double)] = [
-  ("gpt-6-astra", 10.0, 50.0, 1.0),
-  ("gpt-6.1-sol", 2.0, 10.0, 0.1),
-  ("gpt-6.1-terra", 1.0, 5.0, 0.05),
-  ("gpt-6-sol", 2.0, 10.0, 0.2),
-  ("gpt-6-luna", 0.1, 0.5, 0.01),
-  ("gpt-5.6-sol", 4.0, 20.0, 0.4),
-  ("claude-fable-5-2", 8.0, 40.0, 0.2),
-  ("claude-fable-5-1", 10.0, 50.0, 0.25),
-  ("claude-mythos-5-1", 10.0, 50.0, 0.25),
-  ("claude-fable-5", 10.0, 50.0, 1.0),
-  ("claude-mythos-5", 10.0, 50.0, 1.0),
-  ("claude-opus-5-5", 4.0, 20.0, 0.2),
-  ("claude-opus-5", 5.0, 25.0, 0.5),
-  ("claude-opus-4-8", 5.0, 25.0, 0.5),
-  ("claude-opus-4-7", 5.0, 25.0, 0.5),
-  ("claude-opus-4-6", 5.0, 25.0, 0.5),
-  ("claude-opus-4-5", 5.0, 25.0, 0.5),
-  ("claude-sonnet-5-5", 2.0, 10.0, 0.1),
-  ("claude-sonnet-5", 2.0, 10.0, 0.2),
-  ("claude-sonnet-4-6", 3.0, 15.0, 0.3),
-  ("claude-sonnet-4-5", 3.0, 15.0, 0.3),
-  ("claude-haiku-4-5", 1.0, 5.0, 0.1),
-]
-
-///|
-/// read/usage.ts `price`: (input, output, cache read) dollars a million tokens: the catalog's, else the station's
-/// table's; none for a model without a list price in either.
-pub fn price(model : String) -> (Double, Double, Double)? {
-  let key = @readops.model_key(model)
-  let at = index_of(key, "[")
-  let bare = if at >= 0 { slice(key, 0, to=at) } else { key }
-  let facts = match @readops.model_catalog.val.get(bare) {
-    Some(f) => Some(f)
-    None =>
-      match @readops.split_agy_tier(bare) {
-        Some(m) => @readops.model_catalog.val.get(m)
-        None => None
-      }
-  }
-  match facts {
-    Some(f) =>
-      match field(f, "cost") {
-        Some(Object(_) as told) =>
-          match (num_of(told, "input"), num_of(told, "output")) {
-            (Some(i), Some(o)) => return Some((i, o, num_of(told, "cacheRead").unwrap_or(i)))
-            _ => ()
-          }
-        _ => ()
-      }
-    None => ()
-  }
-  let listed = (candidate : String) => {
-    for p in list_prices {
-      if candidate == p.0 || (candidate.has_prefix(p.0) && slice(candidate, p.0.length()).has_prefix("[")) {
-        return Some((p.1, p.2, p.3))
-      }
-    }
-    None
-  }
-  match listed(key) {
-    Some(p) => return Some(p)
-    None => ()
-  }
-  match @readops.split_agy_tier(bare) {
-    None => None
-    Some(m) => listed(if at >= 0 { m + slice(key, at) } else { m })
-  }
-}
-
-///|
-/// read/usage.ts `cost` of a group of calls (store/usage.ts UsageGroup): None where its model has no price.
-fn group_cost(g : Json) -> Double? {
-  let model = match str_of(g, "model") {
-    Some(m) => m
-    None => return None
-  }
-  let (input, output, cache_read) = match price(model) {
-    Some(p) => p
-    None => return None
-  }
-  let n = (k : String) => num_of(g, k).unwrap_or(0.0)
-  let tokens = n("input") * input + n("cacheWrite") * input * 1.25 + n("cacheWriteLong") * input * 2.0 +
-    n("cacheRead") * cache_read +
-    n("output") * output
-  Some(tokens / 1.0e6 * (if is_true(g, "fast") { 2.0 } else { 1.0 }))
-}
-
-///|
-let cache_short_ms : Double = 300_000.0
-
-///|
-let cache_long_ms : Double = 3_600_000.0
+/// read/usage.ts `price`: (input, output, cache read) dollars a million tokens, delegated to `@ops_platform`.
+pub using @ops_platform {model_price as price}
 
 ///|
 let cache_calls : Int = 5
@@ -107,104 +14,19 @@ let cache_calls : Int = 5
 /// read/usage.ts `usageNow`: a session's usage now, from what is recorded of its calls (None before one is).
 pub fn Hub::usage_now(self : Hub, key : String) -> Json? raise {
   let groups = self.store.usage_of_session(key)
-  let mut model_calls = 0.0
-  let mut input = 0.0
-  let mut cached = 0.0
-  let mut output = 0.0
-  let mut cost = 0.0
-  let mut unpriced = 0.0
-  for g in groups {
-    let n = (k : String) => num_of(g, k).unwrap_or(0.0)
-    model_calls += n("calls")
-    input += n("input") + n("cacheRead") + n("cacheWrite") + n("cacheWriteLong")
-    cached += n("cacheRead")
-    output += n("output")
-    match group_cost(g) {
-      None => unpriced += n("calls")
-      Some(c) => cost += c
-    }
-  }
-  if model_calls == 0.0 {
-    return None
-  }
   let all = self.store.last_contexts(key, cache_calls)
-  let latest = all.last()
-  let out : Map[String, Json] = {
-    "modelCalls": num(model_calls),
-    "inputTokens": num(input),
-    "cachedTokens": num(cached),
-    "outputTokens": num(output),
-    "cost": num(cost),
-    "unpricedCalls": num(unpriced),
-    "model": match latest { Some(l) => field(l, "model").unwrap_or(Json::null()); None => Json::null() },
-    "contextWindow": match latest { Some(l) => field(l, "window").unwrap_or(Json::null()); None => Json::null() },
-  }
   let since = match self.store.conversation_since(key) {
     Number(s, ..) => Some(s)
     _ => None
   }
-  let calls = match since {
-    None => []
-    Some(s) => all.filter(c => num_of(c, "at").unwrap_or(0.0) >= s)
+  let saved = match self.store.saved_compact_context(key) {
+    Object(_) as s => Some(s)
+    _ => None
   }
-  match calls.last() {
-    Some(last) => {
-      match field(last, "context") {
-        Some(Number(_) as c) => out["contextTokens"] = c
-        _ => ()
-      }
-      out["lastCallAt"] = field(last, "at").unwrap_or(Json::null())
-      let mut wrote : Json? = None
-      for c in calls {
-        if num_of(c, "cacheWrite").unwrap_or(0.0) + num_of(c, "cacheWriteLong").unwrap_or(0.0) > 0.0 {
-          wrote = Some(c)
-        }
-      }
-      match wrote {
-        Some(w) => {
-          let long = num_of(w, "cacheWriteLong").unwrap_or(0.0) > 0.0
-          out["cacheMs"] = num(if long { cache_long_ms } else { cache_short_ms })
-          match (str_of(last, "model"), num_of(last, "context")) {
-            (Some(m), Some(context)) =>
-              match price(m) {
-                Some((p_input, _, _)) =>
-                  out["rereadCost"] = num(
-                    context * p_input * (if long { 2.0 } else { 1.25 }) / 1.0e6 *
-                    (if is_true(last, "fast") { 2.0 } else { 1.0 }),
-                  )
-                None => ()
-              }
-            _ => ()
-          }
-        }
-        None => ()
-      }
-    }
-    None => ()
+  match @ops_platform.usage_now(groups, all, since, saved) {
+    Null => None
+    u => Some(u)
   }
-  let saved = self.store.saved_compact_context(key)
-  match (saved, since) {
-    (Object(_), Some(s)) => {
-      let at = num_of(saved, "lastCallAt").unwrap_or(0.0)
-      let newer = match latest {
-        None => true
-        Some(l) => at > num_of(l, "at").unwrap_or(0.0)
-      }
-      if at >= s && newer {
-        out["model"] = field(saved, "model").unwrap_or(Json::null())
-        out["contextWindow"] = field(saved, "contextWindow").unwrap_or(Json::null())
-        out["lastCallAt"] = field(saved, "lastCallAt").unwrap_or(Json::null())
-        for name in ["contextTokens", "cacheMs", "rereadCost"] {
-          match field(saved, name) {
-            Some(v) => out[name] = v
-            None => out.remove(name)
-          }
-        }
-      }
-    }
-    _ => ()
-  }
-  Some(Json::object(out))
 }
 
 // ── what the agent is told (agents/instructions.ts) ──

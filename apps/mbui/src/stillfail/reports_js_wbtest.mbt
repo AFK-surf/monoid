@@ -87,3 +87,37 @@ test "a Field conflict reports its kind without editor paths or filenames" {
   assert_eq(params.get("source"), Some(Json::string("ui_fault")))
   assert_eq(params.get("message"), Some(Json::string("editor field reused")))
 }
+
+///|
+test "a core failing on a host without its own reporter reaches the core started after it" {
+  let previous_fault = @view.fault_told.val
+  let previous_failed = @core.on_failed.val
+  let previous_restarted = @core.on_restarted.val
+  @core.client.reset()
+  capture_fault_calls()
+  defer {
+    @view.fault_told.val = previous_fault
+    @core.on_failed.val = previous_failed
+    @core.on_restarted.val = previous_restarted
+    pending_core_failed.val = None
+    @core.client.reset()
+    restore_fault_core()
+  }
+  reports_start()
+  guard @core.on_failed.val is Some(failed) else { fail("expected on_failed set") }
+  guard @core.on_restarted.val is Some(restarted) else { fail("expected on_restarted set") }
+  failed("first failure")
+  failed("core failed: out of memory")
+  // (the core that failed is gone: nothing sent to it)
+  assert_eq(captured_fault_calls(), "[]")
+  restarted()
+  restarted()
+  let calls = @json.parse(captured_fault_calls()) catch { _ => Json::null() }
+  guard calls is Array(a) else { fail("expected a list of core calls") }
+  assert_eq(a.length(), 1)
+  guard a[0] is Object(call) else { fail("expected a core call") }
+  assert_eq(call.get("call"), Some(Json::string("client.error")))
+  guard call.get("params") is Some(Object(params)) else { fail("expected call parameters") }
+  assert_eq(params.get("source"), Some(Json::string("core_failed")))
+  assert_eq(params.get("message"), Some(Json::string("core failed: out of memory")))
+}

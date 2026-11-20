@@ -30,10 +30,13 @@ function browser(platform, clipboard) {
   win.__mbhost.run('test', () => {}, () => {}, () => {}, (code, mods) => keys.push([code, mods]), () => {});
   return {
     host: win.__mbhost,
+    mouseBack() {
+      win.dispatch('mouseup', { button: 3, preventDefault() {} });
+    },
     press(target, key, mods = {}) {
       const event = { target: target === 'ime' ? ime : canvas, key, code: mods.code || '',
-        ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, ...mods,
-        defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+        ctrlKey: false, metaKey: false, altKey: false, shiftKey: false,
+        defaultPrevented: false, ...mods, preventDefault() { this.defaultPrevented = true; } };
       keys.length = 0;
       if (target === 'ime') ime.dispatch('keydown', event);
       win.dispatch('keydown', event);
@@ -52,6 +55,52 @@ function browser(platform, clipboard) {
     },
     blur() { keys.length = 0; win.dispatch('blur', {}); return [...keys]; },
   };
+}
+
+for (const platform of ['MacIntel', 'Win32']) {
+  test(`${platform}: editing keys never also navigate back`, () => {
+    const b = browser(platform);
+    let backs = 0;
+    b.host.setBack(() => backs++);
+    b.host.backEnabled(true);
+    for (const recording of [false, true]) {
+      b.host.keyCatch(recording);
+      for (const shiftKey of [false, true]) {
+        for (const [key, code] of [['ArrowLeft', 3], ['ArrowRight', 4]]) {
+          assert.deepEqual(b.press('ime', key, { altKey: true, shiftKey }),
+            { prevented: true, keys: [[code, 4 | (shiftKey ? 1 : 0)]] });
+          assert.equal(backs, 0);
+        }
+      }
+      for (const composition of [{ isComposing: true }, { keyCode: 229 }]) {
+        b.press('ime', 'ArrowLeft', { altKey: true, ...composition });
+        b.press('page', 'ArrowLeft', { altKey: true, ...composition });
+        assert.equal(backs, 0);
+      }
+    }
+    b.host.keyCatch(false);
+    for (const target of [{ tagName: 'INPUT' }, { tagName: 'TEXTAREA' }, { isContentEditable: true }]) {
+      b.press('page', 'ArrowLeft', { altKey: true, target });
+      assert.equal(backs, 0);
+    }
+    b.host.keyCatch(true);
+    assert.deepEqual(b.press('page', 'ArrowLeft', { altKey: true }), { prevented: true, keys: [[3, 4]] });
+    assert.equal(backs, 0);
+    b.host.keyCatch(false);
+    for (const extra of [{ shiftKey: true }, { ctrlKey: true }, { metaKey: true }]) {
+      assert.equal(b.press('page', 'ArrowLeft', { altKey: true, ...extra }).keys.length, 1);
+      assert.equal(backs, 0);
+    }
+    b.press('page', 'ArrowLeft', { altKey: true, defaultPrevented: true });
+    assert.equal(backs, 0);
+    b.press('page', 'ArrowLeft', { altKey: true });
+    assert.equal(backs, 1);
+    b.mouseBack();
+    assert.equal(backs, 2);
+    b.host.backEnabled(false);
+    assert.deepEqual(b.press('page', 'ArrowLeft', { altKey: true }), { prevented: false, keys: [] });
+    assert.equal(backs, 2);
+  });
 }
 
 for (const [platform, key, flag, bit] of [['MacIntel', 'Meta', 'metaKey', 8], ['Win32', 'Control', 'ctrlKey', 2]]) {

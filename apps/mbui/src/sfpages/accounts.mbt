@@ -1012,6 +1012,11 @@ fn profile_trouble_node(
   let issue = fn() { field(p(), "trouble") }
   let action = fn() { text(issue(), "action") }
   let online = fn() { flag(s(), "online") }
+  let link = fn() { trouble_link(text(issue(), "detail")) }
+  let next = fn() {
+    join([text(issue(), "next"), if online() { "" } else { @sf.t("android-settings.profile.offline", args=[("name", text(s(), "name"))]) }], "\n")
+  }
+  let bad = fn() { failed_of(core, ["profile.check", "profile.quota"], on).unwrap_or("") }
   let checking = fn() { is_doing(core, ["profile.check"], on) }
   let refreshing = fn() { is_doing(core, ["profile.quota"], on) }
   let check = fn() {
@@ -1021,15 +1026,19 @@ fn profile_trouble_node(
     @sf.card_lines_node(
       k,
       fn() { text(issue(), "title") },
-      words=fn() { text(issue(), "detail") },
-      note=fn() {
-        join([text(issue(), "next"), if online() { "" } else { @sf.t("android-settings.profile.offline", args=[("name", text(s(), "name"))]) }], "\n")
-      },
-      bad=fn() { failed_of(core, ["profile.check", "profile.quota"], on).unwrap_or("") },
+      words=fn() { trouble_words(text(issue(), "detail")) },
+      note=fn() { if link() == "" { next() } else { "" } },
+      bad=fn() { if link() == "" { bad() } else { "" } },
     )
     k.show(at_once=true, fn() { action() == "command" }, fn(x) {
       x.box(fn(b) { @sf.code_block_node(b, fn() { text(p(), "loginCommand") }, fn() { "" }, fn() { None }, command=true) }) |> ignore
     })
+    // (the link its words give to open, on its one line with its copy key: the page's words cannot be selected)
+    k.show(at_once=true, fn() { link() != "" }, fn(x) {
+      @sf.code_block_node(x, link, fn() { "" }, fn() { None }, command=true)
+    })
+    // (what to do, under the link its words lead to)
+    k.show(at_once=true, fn() { link() != "" }, fn(x) { @sf.card_lines_node(x, fn() { "" }, note=next, bad~) })
     @sf.card_foot_node(k, fn(f) {
       @sf.button_node(
         f,
@@ -1049,12 +1058,45 @@ fn profile_trouble_node(
         card_words=true,
       )
       |> ignore
+      f.show(at_once=true, fn() { link() != "" }, fn(x) {
+        @sf.button_node(x, fn() { @sf.t("android-settings.profile.openLink") }, fn() { (core.open_link)(@signals.untracked(link)) }, tone=Ghost, icon="external")
+        |> ignore
+      })
       f.show(at_once=true, fn() { action() == "key" || action() == "env" }, fn(x) {
         @sf.button_node(x, fn() { @sf.t("android-settings.profile.recheck") }, check, tone=Ghost, busy=checking, disabled=fn() { !online() })
         |> ignore
       })
     })
   })
+}
+
+///|
+/// The link a trouble's words give the person to open, up to the space or line after it (Google's where an Antigravity
+/// CLI account is to be verified first: `… Please verify your account in your browser to continue:\nhttps://…`), else
+/// "".
+fn trouble_link(detail : String) -> String {
+  match detail.find("https://") {
+    None => ""
+    Some(i) => {
+      let rest = detail.unsafe_substring(start=i, end=detail.length())
+      let ends = [rest.find(" "), rest.find("\n"), rest.find("\t")].filter_map(fn(e) { e })
+      let end = ends.fold(init=rest.length(), fn(a, e) { if e < a { e } else { a } })
+      rest.unsafe_substring(start=0, end~)
+    }
+  }
+}
+
+///|
+/// A trouble's words without the link they give (trouble_link): it is on a line of its own under them, to copy.
+fn trouble_words(detail : String) -> String {
+  let link = trouble_link(detail)
+  match detail.find(link) {
+    Some(i) if link != "" =>
+      (detail.unsafe_substring(start=0, end=i) + detail.unsafe_substring(start=i + link.length(), end=detail.length()))
+      .trim(chars=" \n\r\t")
+      .to_owned()
+    _ => detail
+  }
 }
 
 // ── its allowance and who uses it ───────────────────────────────────────
@@ -1160,7 +1202,8 @@ fn profile_quota_node(
               note=fn() {
                 let q = quota()
                 let st = text(q, "state")
-                let detail = opt_text(q, "detail").unwrap_or("")
+                // (without the link it gives: the trouble's card over it has it, to copy and open)
+                let detail = trouble_words(opt_text(q, "detail").unwrap_or(""))
                 join(
                   [
                     detail,
@@ -1450,34 +1493,28 @@ fn profile_station_rows_node(
       fn() { @sf.t("web-pages.profiles.share.switch") },
       shared,
       fn(now) {
-        let change = fn() {
+        if now {
+          let sub = @signals.untracked(subscription)
+          let claude = sub && text(@signals.untracked(p), "runtime") == "claude"
+          pick_stations(
+            core,
+            address,
+            id,
+            @signals.untracked(stations),
+            @signals.untracked(sid),
+            None,
+            initial=true,
+            subscription=sub,
+            claude~,
+          )
+        } else {
           @settings.act(
             core,
             @sf.t("web-pages.profiles.share.switch"),
             "profile.share",
-            obj([("station", str(address)), ("id", str(id)), ("on", Json::boolean(now))]),
-            done=if now { @sf.t("web-pages.profiles.share.shared") } else { @sf.t("web-pages.profiles.share.unshared") },
+            obj([("station", str(address)), ("id", str(id)), ("on", Json::boolean(false))]),
+            done=@sf.t("web-pages.profiles.share.unshared"),
           )
-        }
-        if now {
-          let sub = @signals.untracked(subscription)
-          let claude = sub && text(@signals.untracked(p), "runtime") == "claude"
-          @sf.confirm(
-            if claude { @sf.t("web-pages.profiles.share.confirmClaudeTitle") } else { @sf.t("web-pages.profiles.share.confirmTitle") },
-            if claude {
-              @sf.t("web-pages.profiles.share.confirmClaudeBody")
-            } else if sub {
-              @sf.t("web-pages.profiles.share.confirmSubscriptionBody")
-            } else {
-              @sf.t("web-pages.profiles.share.confirmCopyBody")
-            }
-            ,
-            if claude { @sf.t("web-pages.profiles.share.confirmUnderstood") } else { @sf.t("web-pages.profiles.share.confirmAction") },
-            change,
-            warning=if claude { @sf.t("web-pages.profiles.share.confirmClaudeWarning") } else { "" },
-          )
-        } else {
-          change()
         }
       },
       note=fn() { @sf.t("web-pages.profiles.share.switchNote") },
@@ -1577,23 +1614,104 @@ fn move_dialog(core : Core, s : Json?, p : Json?, targets : Array[Json]) -> Unit
 
 ///|
 /// Which stations may use a share (PickStations), ticked in a panel: every one (those to come too), or those ticked;
-/// the one that has it always. Those listed are the workspace's, not every one the share reaches where its station is
-/// in several: they are said as what it was chosen among (`among`), so that only theirs change and a choice made in
-/// another workspace stands (share/index.ts shareProfile).
-fn pick_stations(core : Core, address : String, id : String, stations : Array[Json], own : String, allowed : Array[String]?) -> Unit {
+/// the one that has it always. On first share (`initial = true`), every other station starts off and `among` is omitted
+/// so a fresh share does not inherit stations from other workspaces; when editing an existing share (`initial = false`),
+/// those listed are said as `among` so only this workspace's stations change (share/index.ts shareProfile).
+fn pick_stations(
+  core : Core,
+  address : String,
+  id : String,
+  stations : Array[Json],
+  own : String,
+  allowed : Array[String]?,
+  initial? : Bool = false,
+  subscription? : Bool = false,
+  claude? : Bool = false,
+) -> Unit {
   let ticked : @sf.LiveMap[String, Bool] = @sf.LiveMap::new()
   for x in stations {
     let xid = text(Some(x), "id")
-    ticked.put(xid, match allowed {
-      None => true
-      Some(a) => a.contains(xid)
+    ticked.put(
+      xid,
+      if initial {
+        xid == own
+      } else {
+        match allowed {
+          None => true
+          Some(a) => a.contains(xid)
+        }
+      },
+    )
+  }
+  let future_all = @signals.signal(if initial { false } else { allowed is None })
+  let has_others = stations.iter().any(fn(x) { text(Some(x), "id") != own })
+  let all = fn() {
+    if has_others {
+      stations.iter().all(fn(x) {
+        let xid = text(Some(x), "id")
+        xid == own || ticked.get(xid).unwrap_or(false)
+      })
+    } else {
+      future_all.get()
+    }
+  }
+  let any_picked = fn() {
+    all() ||
+    stations.iter().any(fn(x) {
+      let xid = text(Some(x), "id")
+      xid != own && ticked.get(xid).unwrap_or(false)
     })
   }
-  let all = fn() { stations.iter().all(fn(x) { text(Some(x), "id") == own || ticked.get(text(Some(x), "id")).unwrap_or(false) }) }
+  let title = if initial {
+    if claude {
+      @sf.t("web-pages.profiles.share.confirmClaudeTitle")
+    } else {
+      @sf.t("web-pages.profiles.share.confirmTitle")
+    }
+  } else {
+    @sf.t("web-pages.profiles.share.stations")
+  }
+  let description = if initial {
+    if claude {
+      @sf.t("web-pages.profiles.share.confirmClaudeBody")
+    } else if subscription {
+      @sf.t("web-pages.profiles.share.confirmSubscriptionBody")
+    } else {
+      @sf.t("web-pages.profiles.share.confirmCopyBody")
+    }
+  } else {
+    ""
+  }
   open_dialog_nodes(
-    @sf.t("web-pages.profiles.share.stations"),
+    title,
+    description~,
     fn(v, _) {
-      @sf.page_note_node(v, fn() { if all() { @sf.t("web-pages.profiles.share.futureIn") } else { @sf.t("web-pages.profiles.share.futureOut") } })
+      if initial && claude {
+        @sf.page_note_node(v, fn() { @sf.t("web-pages.profiles.share.confirmClaudeWarning") }, bad=fn() { true })
+      }
+      @sf.group_node(v, fn(g) {
+        @sf.switch_row_node(
+          g,
+          fn() { @sf.t("web-pages.profiles.share.allStations") },
+          all,
+          fn(now) {
+            future_all.set(now)
+            for x in stations {
+              let xid = text(Some(x), "id")
+              if xid != own {
+                ticked.set(xid, now)
+              }
+            }
+          },
+          note=fn() {
+            if all() {
+              @sf.t("web-pages.profiles.share.futureIn")
+            } else {
+              @sf.t("web-pages.profiles.share.futureOut")
+            }
+          },
+        )
+      })
       @sf.group_node(v, fn(g) {
         g.each(fn() { stations.mapi(fn(i, x) { (i, x) }) }, fn(x) { x.0 }, fn(row, x) {
           let xv = Some(x.untracked().1)
@@ -1619,9 +1737,22 @@ fn pick_stations(core : Core, address : String, id : String, stations : Array[Js
       })
     },
     fn(v, shut) {
+      if initial {
+        @sf.button_node(v, fn() { @sf.t("common.cancel") }, shut, tone=Ghost) |> ignore
+      }
       @sf.button_node(
         v,
-        fn() { @sf.t("web-pages.profiles.share.done") },
+        fn() {
+          if initial {
+            if claude {
+              @sf.t("web-pages.profiles.share.confirmUnderstood")
+            } else {
+              @sf.t("web-pages.profiles.share.confirmAction")
+            }
+          } else {
+            @sf.t("web-pages.profiles.share.done")
+          }
+        },
         fn() {
           shut()
           let params = [("station", str(address)), ("id", str(id)), ("on", Json::boolean(true))]
@@ -1635,10 +1766,23 @@ fn pick_stations(core : Core, address : String, id : String, stations : Array[Js
             }
             params.push(("allow", Json::array(allow)))
           }
-          params.push(("among", Json::array(stations.map(fn(x) { str(text(Some(x), "id")) }))))
-          @settings.act(core, @sf.t("web-pages.profiles.share.stations"), "profile.share", obj(params))
+          if !initial {
+            params.push(("among", Json::array(stations.map(fn(x) { str(text(Some(x), "id")) }))))
+          }
+          if initial {
+            @settings.act(
+              core,
+              @sf.t("web-pages.profiles.share.switch"),
+              "profile.share",
+              obj(params),
+              done=@sf.t("web-pages.profiles.share.shared"),
+            )
+          } else {
+            @settings.act(core, @sf.t("web-pages.profiles.share.stations"), "profile.share", obj(params))
+          }
         },
         tone=Primary,
+        disabled=fn() { initial && !any_picked() },
       )
       |> ignore
     },

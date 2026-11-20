@@ -10,6 +10,7 @@ import * as present from "./present.ts";
 import { money } from "./views/usage.ts";
 import { isStationAuthor } from "./titles.ts";
 import { sentFrom } from "./sent-from.ts";
+import { withoutMentions } from "./titles.ts";
 import { cleanCommand, cleanPath, closeCut, isOpaqueId, summaryCommand } from "./tool-step.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -1115,7 +1116,8 @@ function itemsOf(held: J[], from: number, cx: Context, sig: Sig | null, day: num
             const sent = m.agent ? sentFrom(m.text) : null;
             if (sent !== null) {
               const said = mentions(sent[2], cx);
-              return [{ key: m.ts, from: { name: sent[0], slackUser: null, bound: false }, text: said, place: place(m.thread, m.slack ? m.ts : null), md: mdOf(said) }];
+              const title = withoutMentions(sent[0]).replace(/\s+/g, " ").trim() || mentions(sent[0], cx).replace(/^@/, "");
+              return [{ key: m.ts, from: { name: title, slackUser: null, bound: false }, text: said, place: place(m.thread, m.slack ? m.ts : null), md: mdOf(said) }];
             }
             let from: J;
             if (m.slack) {

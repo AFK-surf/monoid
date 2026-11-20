@@ -34,12 +34,72 @@ SA=$O/linux/stage/app
 if [ -n "$APPMOD" ]; then
   EXE=$AM/_build/native/$MODE/build/$(sed -n 's/^name *= *"\(.*\)"/\1/p' "$APPMOD/moon.mod")/$PKG/$(basename $PKG).exe
 fi
+if [ -n "${MBUI_WASM_THUNKS:-}" ]; then
+  WASM_OUT=${MBUI_WASM_OUT:-$O/linux/wasm-shell}
+  EXE=$WASM_OUT/mbui-runtime
+fi
 [ -z "${MBUI_LINUX_HOOK:-}" ] || . "$MBUI_LINUX_HOOK"
 # GTK 4 and what the host files use beside it; an app's own (MBUI_LINUX_CFLAGS, MBUI_LINUX_LDFLAGS) after them
 LIBS="gtk4 epoxy pangocairo pangoft2 fontconfig gdk-pixbuf-2.0 libsoup-3.0 zlib"
 CFLAGS="$(pkg-config --cflags $LIBS) ${MBUI_LINUX_CFLAGS:-}"
 LDFLAGS="$(pkg-config --libs $LIBS) -lm -lpthread ${MBUI_LINUX_LDFLAGS:-}"
 STUBS='"linux_app.c", "linux_render.c", "linux_text.c", "linux_image.c", "linux_views.c", "linux_stream.c", "linux_listen.c", "linux_browser_login.c", "linux_film.c"'
+
+WT_VERSION=50.0.1
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@" | awk '{print $1}'
+  else shasum -a 256 "$@" | awk '{print $1}'; fi
+}
+
+wasmtime_linux_lib() {
+  local arch sha
+  case "$(uname -m)" in
+    x86_64|amd64) arch=x86_64 sha=e2c0c26e1aef52f82f0b9918ad6f34cc30f4b557aee3e261cb127a9462be8f4d ;;
+    aarch64|arm64) arch=aarch64 sha=1a36140a016a9cc098f02a37bb0cc7be6451032861ba70049127928d2f31ef84 ;;
+    *) echo "linux.sh: unsupported arch $(uname -m) for wasmtime" >&2; exit 1 ;;
+  esac
+  WT=$O/wasmtime-v$WT_VERSION-$arch-linux-c-api
+  if [ ! -f "$WT/lib/libwasmtime.so" ]; then
+    mkdir -p "$O"
+    local tar_file="$O/wasmtime-v$WT_VERSION-$arch-linux-c-api.tar.xz"
+    curl -fsSL --retry 3 -o "$tar_file" \
+      "https://github.com/bytecodealliance/wasmtime/releases/download/v$WT_VERSION/wasmtime-v$WT_VERSION-$arch-linux-c-api.tar.xz"
+    [ "$(sha256_of "$tar_file")" = "$sha" ] \
+      || { rm -f "$tar_file"; echo "linux.sh: wasmtime: checksum mismatch" >&2; exit 1; }
+    tar xf "$tar_file" -C "$O"
+    rm -f "$tar_file"
+  fi
+}
+
+build_wasm_shell() {
+  mkdir -p "$WASM_OUT/obj"
+  wasmtime_linux_lib
+  cp -p "$WT/lib/libwasmtime.so" "$WASM_OUT/libwasmtime.so"
+  local moon_root cc wflags f o sum
+  moon_root=${MOON_HOME:-$(dirname "$(dirname "${MBUI_REAL_MOON:-$(command -v moon)}")")}
+  [ -f "$moon_root/lib/runtime/runtime.c" ] || { echo "linux.sh: missing MoonBit runtime at $moon_root/lib/runtime/runtime.c" >&2; exit 1; }
+  cc=${MBC_REAL_CC:-$(command -v clang || command -v cc)}
+  wflags="-O2 -fwrapv -fno-strict-aliasing -Wno-unused-value -I$moon_root/include -I$WT/include -Isrc/host $CFLAGS"
+  local srcs=(
+    src/host/linux_app.c src/host/linux_render.c src/host/linux_text.c src/host/linux_image.c
+    src/host/linux_views.c src/host/linux_stream.c src/host/linux_listen.c
+    src/host/linux_browser_login.c src/host/linux_film.c
+    src/host/wasm_shell.c "$MBUI_WASM_THUNKS"
+  )
+  for f in ${MBUI_WASM_STUBS:-}; do srcs+=("$f"); done
+  srcs+=("$moon_root/lib/runtime/runtime.c")
+  local objs=() pids=()
+  for f in "${srcs[@]}"; do
+    o="$WASM_OUT/obj/$(echo "$f" | tr '/.' '__').o"
+    objs+=("$o")
+    sum=$( (echo "$cc $wflags"; cat "$f" src/host/*.h "$moon_root/include/moonbit.h" 2>/dev/null) | sha256_of )
+    if [ -f "$o" ] && [ "$(cat "$o.sum" 2>/dev/null)" = "$sum" ]; then continue; fi
+    (rm -f "$o.sum"; "$cc" $wflags -c "$f" -o "$o" && echo "$sum" > "$o.sum") &
+    pids+=($!)
+  done
+  for p in ${pids[@]+"${pids[@]}"}; do wait "$p" || exit 1; done
+  "$cc" -o "$EXE" "${objs[@]}" "-L$WASM_OUT" -lwasmtime '-Wl,-rpath,$ORIGIN' $LDFLAGS
+}
 
 # A package's moon.pkg for Linux: its native stubs compiled with GTK's flags (Objective-C's ARC flag dropped), a
 # main's linking GTK's libraries in place of Apple's frameworks.
@@ -96,17 +156,21 @@ case $EXE in /*) X=$EXE ;; *) X=./$EXE ;; esac
 case "${1:-build}" in
   build)
     if type app_prebuild >/dev/null 2>&1; then app_prebuild; fi
-    sync
-    # moon's build, with the C that moonc generates split and compiled in parallel (scripts/mbc: a `cc` first on PATH
-    # that moon uses for every C step, all but that one passed through; MBC_SPLIT=0 compiles it whole)
-    rm -f $O/mbc.log
-    export MBC_REAL_CC=${MBC_REAL_CC:-$(command -v clang || command -v cc)}
-    B=$M; [ -z "$APPMOD" ] || B=$AM
-    code=0
-    (cd $B && PATH="$("$D/mbc" shim "$(cd ../.. && pwd)/mbc/linux"):$PATH" MBC_LOG="$(cd ../.. && pwd)/mbc.log" \
-      moon build --target native $FLAG src/$PKG) || code=$?
-    cat $O/mbc.log 2>/dev/null || true
-    [ $code = 0 ] || exit $code
+    if [ -n "${MBUI_WASM_THUNKS:-}" ]; then
+      build_wasm_shell
+    else
+      sync
+      # moon's build, with the C that moonc generates split and compiled in parallel (scripts/mbc: a `cc` first on PATH
+      # that moon uses for every C step, all but that one passed through; MBC_SPLIT=0 compiles it whole)
+      rm -f $O/mbc.log
+      export MBC_REAL_CC=${MBC_REAL_CC:-$(command -v clang || command -v cc)}
+      B=$M; [ -z "$APPMOD" ] || B=$AM
+      code=0
+      (cd $B && PATH="$("$D/mbc" shim "$(cd ../.. && pwd)/mbc/linux"):$PATH" MBC_LOG="$(cd ../.. && pwd)/mbc.log" \
+        moon build --target native $FLAG src/$PKG) || code=$?
+      cat $O/mbc.log 2>/dev/null || true
+      [ $code = 0 ] || exit $code
+    fi
     if type app_postbuild >/dev/null 2>&1; then app_postbuild; fi
     ls -la $EXE ;;
   run)

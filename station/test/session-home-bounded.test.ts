@@ -25,7 +25,7 @@ test("finding a session's own conversation does not traverse its other membershi
           if (sql.includes("FROM thread_sessions ts JOIN threads t") && sql.includes("ORDER BY ts.joined_at DESC")) {
             observed = sql.replace("WHERE ts.session = ?", "WHERE ts.session = ? AND visited_session_home(ts.thread)=ts.thread");
           } else if (sql.includes("threads_home") && sql.includes("ts.connect")) {
-            observed = sql.replace("t.home = ?1", "t.home = ?1 AND visited_session_home(t.id)=t.id");
+            observed = sql.replace("AND ts.session = ?1", "AND ts.session = ?1 AND visited_session_home(t.id)=t.id");
           }
           if (observed !== sql) {
             const plan = (text: string) => target.prepare(`EXPLAIN QUERY PLAN ${text}`).all("s").map((row) => row.detail);

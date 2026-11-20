@@ -215,3 +215,32 @@ test "中屏 to 用量 while the tape goes: the block closes from where the tape
   assert_false(@sfdesk.wide.tape.get())
   assert_eq(from, tape)
 }
+
+///|
+test "大屏: 侧栏折叠途中快速折返打开，前 2 帧平滑减速转向且最终完整展开" {
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, mode="chat")
+  let open_col = @sfdesk.pane_seen().unwrap().1
+  @sfdesk.wide.folded.set(true)
+  if !@ui.test_at_a_rate() {
+    for _ in [0, 1, 2] {
+      t.frame()
+    }
+    let col_mid = @sfdesk.pane_seen().unwrap().1
+    assert_true(col_mid < open_col - 10.0, msg="folding mid-way: open=\{open_col}, mid=\{col_mid}")
+    @sfdesk.wide.folded.set(false)
+    t.frame()
+    let col_f1 = @sfdesk.pane_seen().unwrap().1
+    t.frame()
+    let col_f2 = @sfdesk.pane_seen().unwrap().1
+    // (velocity continuity: no snap-jump at reversal, smoothly turns back toward open_col)
+    assert_true((col_f1 - col_mid).abs() < 45.0, msg="no jump on frame 1: mid=\{col_mid}, f1=\{col_f1}")
+    assert_true(col_f2 > col_f1 - 15.0, msg="turning smoothly toward open: f1=\{col_f1}, f2=\{col_f2}")
+  } else {
+    t.run_for(@ui.input_step_ms * 3.0)
+    @sfdesk.wide.folded.set(false)
+  }
+  t.run_for(@ui.move_most_ms)
+  let end_col = @sfdesk.pane_seen().unwrap().1
+  assert_true((end_col - open_col).abs() < 0.5, msg="fully reopened: open=\{open_col}, end=\{end_col}")
+}

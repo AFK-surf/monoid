@@ -3,7 +3,7 @@
 
 ///|
 /// A call the page made: its name, its params, its bytes (if any) and its answer to give.
-pub struct Made {
+pub(all) struct Made {
   name : String
   params : Json
   bytes : Bytes?
@@ -82,6 +82,7 @@ pub fn screen_in(
   mode : String,
   win : (String, Double, Double, Int, String),
   lang : String,
+  said? : Bool = false,
   source? : ((@sfbase.Source) -> @sfbase.Source)? = None,
   dark? : Bool = false,
   font_scale? : Double = 1.0,
@@ -98,11 +99,20 @@ pub fn screen_in(
         let s = match source {
           Some(wrap) => {
             @sfapp.reset()
-            let s = wrap(@sffixture.fixture(mode))
+            let base = if said { @sffixture.said_longest_source(@sffixture.fixture(mode)) } else { @sffixture.fixture(mode) }
+            let s = wrap(base)
             @sfapp.open_fixture_over(mode, s)
             s
           }
-          None => @sfapp.fixture_app(mode)
+          None =>
+            if said {
+              @sfapp.reset()
+              let s = @sffixture.said_longest_source(@sffixture.fixture(mode))
+              @sfapp.open_fixture_over(mode, s)
+              s
+            } else {
+              @sfapp.fixture_app(mode)
+            }
         }
         src.val = Some(s)
         s

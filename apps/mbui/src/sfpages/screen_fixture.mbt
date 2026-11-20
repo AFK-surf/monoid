@@ -32,6 +32,10 @@
 //                                       alone
 //   screen-login-fill, -pick (-dark)    driving a tab whose focus is in github.com's password field: 用 1Password
 //                                       填入 offered; pressed, its two logins there to pick from
+//   screen-mic-active (-dark)           a Mac's desktop driven, an app there recording its virtual microphone: 麦克风
+//                                       on the bars, this device's not shared yet
+//   screen-center-mic (-dark)           screen-center's desktop with a virtual microphone recorded: 控制中心 open, its
+//                                       麦克风 tile among 快捷操作
 
 ///|
 /// The fixture's screen mode ("" none), its dark taken off.
@@ -108,7 +112,7 @@ pub fn open_screen_fixture(mode : String) -> Unit {
     mode
   }
   screen_fix_mode.val = m
-  let at = if m == "screen-windows" || m == "screen-window" {
+  let at = if m == "screen-windows" || m == "screen-window" || m == "screen-mic-active" {
     { ..screen_fix_at, screen: "desktop", title: "Willow 的屏幕" }
   } else if m == "screen-user-pages" || m == "screen-user-tabs" {
     { ..screen_fix_at, screen: "browser:u_mail", title: "收件箱 - Proton Mail" }
@@ -134,7 +138,7 @@ pub fn open_screen_fixture(mode : String) -> Unit {
       u.full.set(true)
       u.tools_open.set(true)
     }
-    "screen-center" => u.asked_panel.set("center")
+    "screen-center" | "screen-center-mic" => u.asked_panel.set("center")
     "screen-user-tabs" => u.asked_panel.set("tabs")
     "screen-keys" => u.asked_panel.set("keys")
     "screen-stats" => u.asked_panel.set("net")
@@ -352,7 +356,7 @@ pub fn screen_fixture_stream(
     "screen-clipboard-driving" =>
       live(true, true, [], None, None, None, None, Some(["text", "png"]), Some(drop))
     "screen-clipboard-old-station" => live(true, true, [], None, None, None, None, None, None)
-    "screen-center" | "screen-stats" | "screen-keys" => {
+    "screen-center" | "screen-stats" | "screen-keys" | "screen-center-mic" => {
       live(true, true, [], None, None, None, None, Some(["text", "png"]), Some(drop))
       let st = match screen_fix_state("live", true, true, [], "", None, None, None, None, Some(["text", "png"]), Some(drop)) {
         Object(m) => m.copy()
@@ -366,6 +370,9 @@ pub fn screen_fixture_stream(
       st["scale"] = { "percent": 125.0, "recommended": 150.0, "steps": [100.0, 125.0, 150.0, 175.0] }
       st["latency"] = { "frame": 46.0, "before": 11.0 }
       st["video"] = { "capture": "Windows.Graphics.Capture", "encoder": "NVENC", "hardware": true }
+      if m == "screen-center-mic" {
+        st["mic"] = screen_fix_mic
+      }
       on_value({ "state": Json::object(st) }, None)
     }
     "screen-simulator" | "screen-simulator-center" | "screen-simulator-logs" | "screen-simulator-apps" | "screen-simulator-device" => {
@@ -413,7 +420,7 @@ pub fn screen_fixture_stream(
       live(true, true, [], None, None, None, None, Some(["text", "png"]), Some(drop))
       screen_fix_drops(m == "screen-files-done")
     }
-    "screen-windows" | "screen-window" => {
+    "screen-windows" | "screen-window" | "screen-mic-active" => {
       live(true, true, [], None, None, None, None, Some(["text", "png"]), Some(drop))
       let st = match screen_fix_state("live", true, true, [], "", None, None, None, None, Some(["text", "png"]), Some(drop)) {
         Object(o) => o.copy()
@@ -428,6 +435,9 @@ pub fn screen_fixture_stream(
       ]
       if m == "screen-window" {
         st["window"] = Json::number(214.0)
+      }
+      if m == "screen-mic-active" {
+        st["mic"] = screen_fix_mic
       }
       on_value({ "state": Json::object(st) }, None)
     }
@@ -498,6 +508,11 @@ pub fn screen_fixture_stream(
   }
   1
 }
+
+///|
+/// The screen's virtual microphone as its station says it while an app there records it (the state's `mic`).
+// kept across runs: a value, never written
+let screen_fix_mic : Json = { "available": true, "active": true, "epoch": 1.0 }
 
 ///|
 /// A ScreenViewState as the fixture says it (ScreenViewerTest's `state`).

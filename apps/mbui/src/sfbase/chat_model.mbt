@@ -228,6 +228,9 @@ pub(all) struct VaultAsk {
   /// How it is given, including the allowed hosts, as the core says it.
   how_text : String
   save_kind : String
+  save_vault_name : String
+  save_shared : Bool
+  save_targets : Array[(String, String, Bool)]
   username : String
   /// a file's name, where the agent gave one
   filename : String
@@ -446,6 +449,9 @@ pub(all) struct Message {
   notice_failed : Bool
   notice_words : String
   notice_link : Int
+  /// one about `profile` the station says what to do of: that, at the pill's end (重新登录, 设置代理), opening the
+  /// profile's page; "" otherwise
+  notice_profile_action : String
   notice_md : Json?
   /// the agent whose capacity retry this notice can cancel, while that retry waits
   notice_retry_session : String
@@ -556,6 +562,11 @@ pub fn message_of(m : Json) -> Message {
                 command: text(a, "command"),
                 how_text: text(a, "howText"),
                 save_kind: text(field(a, "save"), "kind"),
+                save_vault_name: text(field(a, "save"), "vaultName"),
+                save_shared: flag(field(a, "save"), "shared"),
+                save_targets: items(a, "saveTargets").map(fn(t) {
+                  (text(Some(t), "id"), text(Some(t), "name"), flag(Some(t), "workspace"))
+                }),
                 username: text(field(a, "save"), "username"),
                 filename: text(field(a, "save"), "filename"),
                 typed: flag(field(a, "save"), "typed"),
@@ -659,6 +670,7 @@ pub fn message_of(m : Json) -> Message {
       Some(n) => n.to_int()
       None => -1
     },
+    notice_profile_action: text(field(s, "notice"), "profileAction"),
     notice_md: field(field(s, "notice"), "md"),
     notice_retry_session: text(field(s, "notice"), "retrySession"),
     notice_again_session: text(field(s, "notice"), "againSession"),

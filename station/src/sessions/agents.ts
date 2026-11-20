@@ -30,7 +30,7 @@ import { liveMemory } from "../jobs/memory.ts";
 import { WorkspaceWatch, workspaceWorking, type WorkspaceReading } from "../jobs/workspace-size.ts";
 import { Remote, followRoster } from "../jobs/remote.ts";
 import { ConfigFile } from "../ops/config.ts";
-import { DISK_EVERY_MS, DISK_LOW_BYTES, diskEvery, diskFree, diskSoft, diskTier } from "../ops/disk.ts";
+import { DISK_EVERY_MS, DISK_LOW_BYTES, diskEvery, diskFree, diskLow, diskSoft, diskTier } from "../ops/disk.ts";
 import { Upkeep, diskOf } from "../ops/storage.ts";
 import { sweepRunners } from "../agents/runner.ts";
 import type { Control } from "../ops/launcher.ts";
@@ -86,11 +86,12 @@ import { Hub } from "./hub.ts";
 import { LiveLocator } from "./live-locator.ts";
 import { peekPackedProgram } from "./packed-mb.ts";
 import { buildWorkspaceActivity } from "./workspace-activity-builder.ts";
+import { buildConversationBackfill } from "./conversation-backfill.ts";
 import { buildSessionCounts } from "./session-count-builder.ts";
 import { PostBlockBuilder } from "./post-block-builder.ts";
 import { roomOfSoon } from "./footprint.ts";
 import { InternalChat } from "./internal.ts";
-import { expireArchived, relieveArchived, startAutoArchiveTimer } from "./lifecycle.ts";
+import { expireArchived, relieveLowDiskFull, runArchiveUpkeepIfDue, startAutoArchiveTimer } from "./lifecycle.ts";
 import { fromPeer, sender } from "./messages.ts";
 import { CREATE, CREATE_PRESET, CREATE_SPEED, CREATE_PRESET_SPEED, CREATE_PRESET_TUI, NOTICE, createForPeer, noticeForPeer } from "./opened.ts";
 import { ARCHIVE, archiveForPeer } from "./chat-archive.ts";
@@ -339,6 +340,10 @@ export const AgentsLive = (control: Control) =>
         (builder) => Effect.promise(() => builder.close()),
       );
       hub.waitForWorkspaceActivity = () => workspaceActivity.ready;
+      yield* Effect.acquireRelease(
+        Effect.sync(() => buildConversationBackfill(store, previous)),
+        (builder) => Effect.promise(() => builder.close()),
+      );
       const sessionCounts = yield* Effect.acquireRelease(
         Effect.sync(() => buildSessionCounts(store, previous)),
         (builder) => Effect.promise(() => builder.close()),
@@ -371,7 +376,7 @@ export const AgentsLive = (control: Control) =>
         },
       });
       const meshBus = yield* Peers;
-      const remote = new Remote({ data, store, jobs, notify: (session, text) => hub.notify(session, text), places: hub.places, bus: meshBus });
+      const remote = new Remote({ data, store, jobs, notify: (session, text) => hub.notify(session, text), places: hub.places, bus: meshBus, acceptAutoChats: () => config.raw()?.acceptAutoChats === true });
       // Its sandboxes (config.json's `sandboxes`): targets of station_task whose tasks run there as this station's jobs.
       remote.setSandboxes(() => sandboxesOf(config.raw()));
       jobs.setSandboxes((name) => sandboxesOf(config.raw()).find((s) => s.name === name) ?? null);
@@ -679,6 +684,7 @@ export const AgentsLive = (control: Control) =>
       const view = async (viewer: Viewer, lang: Lang) => ({ ...((await platformView(viewer, lang)) as object), ...(await parts.overviewOf(viewer, lang)) });
 
       hub.live.heldTold = (key, message) => events.heldTold(key, message);
+      hub.onInterruptedChanged(() => events.overviewChanged());
       // A transcript's past is read by the readers, which keep where its reading stands (read/transcripts.ts): the live
       // view goes on from there, and gives a listener what it lacks from them, none of it read on the main thread.
       hub.live.history = {
@@ -946,7 +952,8 @@ export const AgentsLive = (control: Control) =>
       const stopArchiving = startAutoArchiveTimer(hub, time, readers);
 
       // Chats archived long enough keep only their history and the files sent in them: looked at when the next one
-      // comes due, and every hour for the setting changed.
+      // comes due, and every hour for the setting changed. Also backfills unfinished archive packs and cleans
+      // rebuildable directories of idle unarchived sessions (each bounded per round).
       const emptying = async () => {
         let next: number | null = null;
         try {
@@ -954,6 +961,7 @@ export const AgentsLive = (control: Control) =>
         } catch (error) {
           log.warn("hub", "emptying long-archived workspaces failed", { error: (error as Error).message });
         }
+        await runArchiveUpkeepIfDue(hub, hub.now());
         time.after(Math.min(3_600_000, next === null ? Infinity : next - hub.now()), emptying);
       };
       time.after(300_000, emptying);
@@ -967,22 +975,27 @@ export const AgentsLive = (control: Control) =>
         jobs: (now) => jobs.upkeep(now),
         remote: (now, disk) => remote.upkeep(now, disk),
         checkpoint: () => readers.checkpointHard(),
+        orphans: store,
+        clonesActive: () => hub.clones.hasActive(),
       });
       upkeep.start();
 
       // The disk of the station's data getting full: what is made again when asked for goes, then the mirrors of other
-      // stations' tasks not in use; low, then archived workspaces before their time (ops/disk.ts).
+      // stations' tasks not in use; below low, runs a full pass across idle unarchived rebuildables, archived
+      // workspaces, orphan UUID transcripts, and unreferenced shared clones (throttled to once per RELIEVE_FULL_EVERY_MS).
       const relieving = async () => {
         const free = () => diskFree(data).catch(() => Infinity);
         let tier: "ok" | "soft" | "low" = "ok";
         try {
+          const now = hub.now();
           const disk = await diskOf(data).catch(() => null);
           tier = disk === null ? "ok" : diskTier(disk.free, disk.total);
           if (tier !== "ok") {
-            await upkeep.renewables(hub.now());
-            await remote.relieve(hub.now(), disk === null ? DISK_LOW_BYTES : diskSoft(disk.total));
+            await upkeep.renewables(now);
+            await remote.relieve(now, disk === null ? DISK_LOW_BYTES : diskSoft(disk.total));
           }
-          if ((await free()) < DISK_LOW_BYTES) await relieveArchived(hub, free);
+          const low = disk === null ? DISK_LOW_BYTES : diskLow(disk.total);
+          await relieveLowDiskFull(hub, free, low);
         } catch (error) {
           log.warn("hub", "making room on the disk failed", { error: (error as Error).message });
         }
@@ -997,11 +1010,17 @@ export const AgentsLive = (control: Control) =>
       // not only the ones that end all_done from now on; and once after the start (the profiles' checks read by then).
       const reviewing = () => void reviewUndecided(hub).catch((error) => log.warn("hub", "reviewing done chats failed", { error: (error as Error).message }));
       let rule = hub.config().automaticDecisions.completion;
+      let maxConcurrentTurns = hub.config().maxConcurrentTurns;
       const unlistenRule = config.listen(() => {
-        const now = hub.config().automaticDecisions.completion;
+        const cfg = hub.config();
+        const now = cfg.automaticDecisions.completion;
         const changed = now.enabled && (!rule.enabled || now.model !== rule.model);
         rule = now;
         if (changed) reviewing();
+        if (cfg.maxConcurrentTurns !== maxConcurrentTurns) {
+          maxConcurrentTurns = cfg.maxConcurrentTurns;
+          hub.setMaxConcurrentTurns(maxConcurrentTurns);
+        }
       });
       time.after(120_000, reviewing);
 

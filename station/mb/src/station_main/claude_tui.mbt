@@ -128,10 +128,7 @@ async fn tui_hook(host : @host.Host) -> Int {
   }
   // Tool inputs, pasted messages and the last assistant response can be large. Never send them to the runner.
   let event : Map[String, Json] = {
-    "key": match env_get("STILLFAIL_TUI_KEY") {
-      Some(k) => Json::string(k)
-      None => Json::null()
-    },
+    "key": jopt(env_get("STILLFAIL_TUI_KEY")),
     "event": tui_field(h, "hook_event_name").unwrap_or(Json::null()),
   }
   match event.get("event") {
@@ -186,9 +183,7 @@ async fn tui_serve_mcp(host : @host.Host, url : String) -> Int {
   let abort = (call : (Ref[Int64], Ref[Bool])) => {
     call.1.val = true
     if call.0.val > 0L {
-      ignore(host.shell_sync("fetch.cancel", { "id": Json::number(call.0.val.to_double()) })) catch {
-        _ => ()
-      }
+      host.cancel_fetch(call.0.val)
     }
   }
   let running : Ref[Int] = Ref(0)
@@ -212,33 +207,20 @@ async fn tui_serve_mcp(host : @host.Host, url : String) -> Int {
     }
     let mut listed = false
     let attempt = try {
-      let (answer, body) = host.shell(
-        "fetch",
-        {
-          "url": Json::string(url),
-          "method": Json::string("POST"),
-          "headers": Json::array([
-            Json::array([Json::string("content-type"), Json::string("application/json")]),
-            Json::array([Json::string("authorization"), Json::string("Bearer " + token)]),
-          ]),
-        },
-        bytes=@utf8.encode(line),
+      let r = host.fetch(
+        url,
+        method_="POST",
+        headers=[("content-type", "application/json"), ("authorization", "Bearer " + token)],
+        body=@utf8.encode(line),
         called=i => call.0.val = i,
       )
-      let status = match tui_field(answer, "status") {
-        Some(Number(n, ..)) => n.to_int()
-        _ => 0
-      }
+      let status = r.status
       // (as fetch's `redirect: "error"`: one sent elsewhere is no answer)
       if status < 200 || status >= 300 {
         raise LiveError("Station MCP returned HTTP \{status}")
       }
       if expects_reply {
-        let text = match body {
-          Some(b) => @utf8.decode_lossy(b)
-          None => ""
-        }
-        let result = @json.parse(text)
+        let result = @json.parse(r.text())
         host.say(result.stringify())
         listed = tui_field(request, "method") == Some(Json::string("tools/list")) &&
           (match tui_field(result, "result") {
@@ -273,10 +255,7 @@ async fn tui_serve_mcp(host : @host.Host, url : String) -> Int {
     }
     if listed {
       tui_notify(host, {
-        "key": match env_get("STILLFAIL_TUI_KEY") {
-          Some(k) => Json::string(k)
-          None => Json::null()
-        },
+        "key": jopt(env_get("STILLFAIL_TUI_KEY")),
         "event": "ToolsListed",
       })
     }
@@ -402,10 +381,7 @@ async fn tui_run(host : @host.Host, script : String, given : Array[String]) -> I
       }
       let url = match servers.get("stillfail") {
         Some(Object(s)) =>
-          match s.get("url") {
-            Some(String(u)) => u
-            _ => ""
-          }
+          opt_str(s.get("url")).unwrap_or("")
         _ => ""
       }
       servers["stillfail"] = {
@@ -432,10 +408,7 @@ async fn tui_run(host : @host.Host, script : String, given : Array[String]) -> I
   let closing = Ref(false)
   let frame = (v : Json) => host.say(v.stringify())
   let clear_deadline = () => {
-    match deadline.val {
-      Some(f) => f.interrupt()
-      None => ()
-    }
+    if deadline.val is Some(f) { f.interrupt() }
     deadline.val = None
   }
   let close = (error : String?) => {
@@ -452,10 +425,7 @@ async fn tui_run(host : @host.Host, script : String, given : Array[String]) -> I
         pending.val = None
       }
       // EOF kills the PTY's process group. An interrupt starts a fresh TUI on --resume for the next turn.
-      match terminal.val {
-        Some(t) => t.end_input()
-        None => ()
-      }
+      if terminal.val is Some(t) { t.end_input() }
     }
   }
   let expect_hook = (reason : String) => {
@@ -491,10 +461,7 @@ async fn tui_run(host : @host.Host, script : String, given : Array[String]) -> I
     if closing.val {
       return
     }
-    let event = match tui_field(h, "event") {
-      Some(String(e)) => e
-      _ => ""
-    }
+    let event = opt_str(tui_field(h, "event")).unwrap_or("")
     // (a manually requested compaction finishes at its PostCompact: as a Stop)
     let mut ends = false
     match event {
@@ -619,77 +586,73 @@ async fn tui_run(host : @host.Host, script : String, given : Array[String]) -> I
   }
   terminal.val = Some(child)
   let finished : @effect.Deferred[Unit] = @effect.Deferred::new()
-  ignore(
-    host.rt.fork_daemon("the TUI's terminal", on_error=e => @host.note("the TUI's terminal failed: \{e}"), async fn() {
-      while true {
-        match child.events.take() {
-          Out(_) => () // (the terminal's bytes are the PTY's: read and let go)
-          Err(b) => @host.note(@utf8.decode_lossy(b).trim_end(chars="\n").to_owned())
-          Exit(code, signal) => {
-            if !closing.val {
-              let why = match (signal, code) {
-                (Some(s), _) => s
-                (None, Some(c)) => c.to_string()
-                (None, None) => "null"
-              }
-              close(Some("Claude TUI exited (\{why})"))
+  fork_bg(host, "the TUI's terminal", async fn() {
+    while true {
+      match child.events.take() {
+        Out(_) => () // (the terminal's bytes are the PTY's: read and let go)
+        Err(b) => @host.note(@utf8.decode_lossy(b).trim_end(chars="\n").to_owned())
+        Exit(code, signal) => {
+          if !closing.val {
+            let why = match (signal, code) {
+              (Some(s), _) => s
+              (None, Some(c)) => c.to_string()
+              (None, None) => "null"
             }
-            ignore(finished.succeed(()))
-            break
+            close(Some("Claude TUI exited (\{why})"))
           }
+          ignore(finished.succeed(()))
+          break
         }
       }
-    }),
-  )
-  ignore(
-    host.rt.fork_daemon("the TUI's turns", on_error=e => @host.note("the TUI's turns failed: \{e}"), async fn() {
-      while host.line() is Some(line) {
-        if closing.val {
+    }
+  })
+  fork_bg(host, "the TUI's turns", async fn() {
+    while host.line() is Some(line) {
+      if closing.val {
+        continue
+      }
+      let packet : Json = @json.parse(line) catch {
+        e => {
+          close(Some(e.to_string()))
           continue
         }
-        let packet : Json = @json.parse(line) catch {
-          e => {
-            close(Some(e.to_string()))
-            continue
-          }
+      }
+      let kind = tui_field(packet, "type")
+      if kind == Some(Json::string("user")) || kind == Some(Json::string("compact")) {
+        if pending.val is Some(_) {
+          close(Some("Claude TUI received overlapping turns"))
+          continue
         }
-        let kind = tui_field(packet, "type")
-        if kind == Some(Json::string("user")) || kind == Some(Json::string("compact")) {
-          if pending.val is Some(_) {
-            close(Some("Claude TUI received overlapping turns"))
-            continue
-          }
-          compact.val = kind == Some(Json::string("compact"))
-          pending.val = Some(
-            if compact.val {
-              ""
-            } else {
-              match packet {
-                { "message": { "content": [{ "text": String(t), .. }, ..], .. }, .. } => t
-                _ => {
-                  close(Some("TypeError: Cannot read properties of undefined (reading 'text')"))
-                  continue
-                }
+        compact.val = kind == Some(Json::string("compact"))
+        pending.val = Some(
+          if compact.val {
+            ""
+          } else {
+            match packet {
+              { "message": { "content": [{ "text": String(t), .. }, ..], .. }, .. } => t
+              _ => {
+                close(Some("TypeError: Cannot read properties of undefined (reading 'text')"))
+                continue
               }
-            },
-          )
-          frame({ "type": "system", "subtype": "init" })
-          deliver()
-        } else {
-          let subtype = match tui_field(packet, "request") {
-            Some(r) => tui_field(r, "subtype")
-            None => None
-          }
-          if subtype == Some(Json::string("interrupt")) {
-            close(None)
-          } else if subtype == Some(Json::string("background_tasks")) && submitted.val {
-            ignore(child.write(b"\x02"))
-          }
+            }
+          },
+        )
+        frame({ "type": "system", "subtype": "init" })
+        deliver()
+      } else {
+        let subtype = match tui_field(packet, "request") {
+          Some(r) => tui_field(r, "subtype")
+          None => None
+        }
+        if subtype == Some(Json::string("interrupt")) {
+          close(None)
+        } else if subtype == Some(Json::string("background_tasks")) && submitted.val {
+          ignore(child.write(b"\x02"))
         }
       }
-      close(None)
-    }),
-  )
+    }
+    close(None)
+  })
   expect_hook(
     "Claude TUI is waiting for its startup hook or station tools. Check the station connection and trust its sessions folder in Claude Code, or select Print in model settings.",
   )

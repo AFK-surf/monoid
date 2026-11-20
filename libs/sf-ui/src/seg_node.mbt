@@ -118,12 +118,9 @@ pub fn seg_node(
         }
         let w_of = fn(k : Int) { widths().get(k).unwrap_or(0.0) }
         // (where its thumb is along the track and how wide, as its cover has it: off from where it set out to the
-        // chosen one's place and width together as that changes, on move_spring; where only the columns' widths change
+        // chosen one's place and width together as that changes, on move_damped; where only the columns' widths change
         // (the words' size, their language, the room), there at once)
         let n = @signals.untracked(labels).length()
-        let first = @signals.untracked(chosen)
-        let cover : @signals.Signal[(Array[(Int, Double)], Int)] = @signals.signal(([(first, 1.0)], first))
-        let way = @motion.NodeWay::new(1.0)
         let ink = fn() { theme().p.text }
         @headless.radio_group(
           inner,
@@ -141,36 +138,33 @@ pub fn seg_node(
             // side by side: the thumb, under the options' words, and the options
             g.show(fn() { !menu() }, fn(strip) {
               strip.row(Is(true)).gap(Is(segmented_gap)) |> ignore
-              strip.reacts(chosen, fn(k) {
-                let (from, to) = cover.untracked()
-                if k != to {
-                  let p = way.value_at(strip.cause_at())
-                  cover.set((@ui.cover_set_out(from, to, p), k))
-                  way.go_from(strip, 0.0, 1.0, @motion.move_spring)
-                }
-              })
-              let rect = fn() {
-                let (from, to) = cover.get()
-                let p = way.shown(strip)
-                @ui.cover_rect(from, to, p, fn(k) {
+              let rect = @motion.cover_indicator(
+                strip,
+                chosen,
+                fn(k) {
                   if k >= 0 && k < n {
                     Some((x_of(k), 0.0, w_of(k), segmented_h))
                   } else {
                     None
                   }
-                })
-              }
-              // the thumb: where its cover has it, as each frame draws it while it goes, its width moving with its x
+                },
+              )
+              // the thumb: where its cover has it, drawn directly in paint layer via ground_drawn (zero relayout)
               strip.box(fn(th) {
                 th
                 .over(Is(true))
-                .offset(By(fn() { (rect().map(fn(r) { r.0 }).unwrap_or(segmented_pad) - segmented_pad, 0.0) }))
-                .width(By(fn() { rect().map(fn(r) { r.2 }) }))
+                .width(Is(Some(0.0)))
                 .height(Is(Some(segmented_h)))
                 .radius(Is(segmented_corner))
                 .ground(By(fn() { @ui.tree_theme().lifted }))
                 .edge(By(fn() { (0.5, theme().p.line) }))
                 .shadow(By(fn() { (1.0, 0.0, theme().p.shadow) }))
+                .ground_drawn(By(fn() {
+                  match rect() {
+                    Some((x, _, w, _)) => { dx: x - segmented_pad, dy: 0.0, dw: w, dh: 0.0, corners: None }
+                    None => @view.ground_as_laid
+                  }
+                }))
                 |> ignore
               })
               |> ignore
@@ -311,7 +305,7 @@ pub fn SegThumb::new(owner : @view.View, chosen : () -> Int) -> SegThumb {
   let goal = fn() { fingered.get().unwrap_or(chosen().to_double()) }
   let position = @motion.NodeWay::new(@signals.untracked(goal))
   owner.reacts(at_start=false, goal, fn(p) {
-    let spring = if fingered.untracked() is Some(_) { @kit.follow_spring } else { @motion.cover_damped_spring }
+    let spring = if fingered.untracked() is Some(_) { @motion.tactile_bounce } else { @motion.snappy_damped }
     position.go(owner, p, spring)
   })
   { held, position, fingered }
@@ -351,7 +345,7 @@ pub fn seg_fill_node(
     .row(Is(true))
     .height(Is(Some(segmented_narrow_h)))
     .radius(Is(seg_radius))
-    .ground(By(backdrop_track_ink))
+    .ground(By(track_glass_ink))
     |> ignore
     // (what it holds by the room the track is given: its options shared or fitted to that as the layout comes to it)
     track.by_room(fn(inner, given) {
@@ -521,21 +515,26 @@ pub fn seg_fill_node(
               None
             }
           }
-          // the thumb: where its cover has it, its corner concentric in the track's; faded under the lens
+          // the thumb: where its cover has it, its corner concentric in the track's; faded under the lens (zero relayout)
           strip.show(fn() { w_of(chosen()) > 0.0 }, fn(th) {
             th
             .over(Is(true))
-            .offset(By(fn() { (rect().map(fn(r) { r.0 }).unwrap_or(seg_inset) - seg_inset, 0.0) }))
-            .width(By(fn() { rect().map(fn(r) { r.2 }) }))
+            .width(Is(Some(0.0)))
             .height(Is(Some(segmented_narrow_h - 2.0 * seg_inset)))
             .radius(Is(@ui.concentric(seg_radius, seg_inset)))
-            .corners(By(fn() {
+            .ground(By(fn() { @ui.tree_theme().lifted }))
+            .ground_drawn(By(fn() {
               match rect() {
-                Some(r) => thumb_corners(r)
-                None => None
+                Some((x, y, w, h)) => {
+                  dx: x - seg_inset,
+                  dy: 0.0,
+                  dw: w,
+                  dh: 0.0,
+                  corners: thumb_corners((x, y, w, h)),
+                }
+                None => @view.ground_as_laid
               }
             }))
-            .ground(By(fn() { @ui.tree_theme().lifted }))
             // (as the old thumb: faded only while the lens is out, not past 1 as the hand's spring comes back past 0)
             .alpha(By(fn() {
               let l = lens()
@@ -585,17 +584,34 @@ pub fn seg_fill_node(
           // larger as it is held (past the track's edges), raised off it by a shadow as far as it is in the finger
           strip.show(fn() { lens() > 0.0 }, fn(l) {
             let full = fn() { dmin(1.0, lens()) }
+            let h = segmented_narrow_h - 2.0 * seg_inset
             l
             .over(Is(true))
-            .offset(By(fn() { (rect().map(fn(r) { r.0 }).unwrap_or(seg_inset) - seg_inset, 0.0) }))
-            .width(By(fn() { rect().map(fn(r) { r.2 }) }))
-            .height(Is(Some(segmented_narrow_h - 2.0 * seg_inset)))
+            .offset(Is((0.0, 0.0)))
+            .width(Is(Some(0.0)))
+            .height(Is(Some(h)))
             // (round as a pill is said to be, Full, as the old lens's capsule: as round as it can be)
             .radius(Is(1.0e6))
-            .glass(By(fn() { Some(backdrop_tab(full())) }))
+            .glass(By(fn() { Some(glass_tab_lens(full())) }))
             .shadow(By(fn() { (seg_lens_shadow * full(), seg_lens_shadow_y * full(), @ui.tree_theme().shadow) }))
             .alpha(By(full))
-            .scale(By(fn() { 1.0 + (78.0 / 56.0 - 1.0) * lens() }))
+            .ground_drawn(By(fn() {
+              match rect() {
+                Some((rx, _, rw, _)) => {
+                  let s = 1.0 + (78.0 / 56.0 - 1.0) * lens()
+                  let lw = rw * s
+                  let lh = h * s
+                  {
+                    dx: (rx - seg_inset) + (rw - lw) / 2.0,
+                    dy: (h - lh) / 2.0,
+                    dw: lw,
+                    dh: lh - h,
+                    corners: Some((lh / 2.0, lh / 2.0, lh / 2.0, lh / 2.0)),
+                  }
+                }
+                None => @view.ground_as_laid
+              }
+            }))
             |> ignore
           })
           })
@@ -819,7 +835,7 @@ pub fn seg_icons_node(
         if k == last.val {
           way.put(x)
         } else {
-          way.go(x, @motion.move_spring, at=g.cause_at())
+          way.go(x, @motion.move_damped, at=g.cause_at())
         }
         last.val = k
       })

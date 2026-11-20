@@ -12,7 +12,7 @@
 
 - Compute effective state via `rules` (`state4_moved` in `client/core-ts/src/lock-moved.ts`, read through `client/core-ts/src/views/lock.ts` `stateOf`) from the moved chain, personal logs (`lockLogs`), and statement bodies (`lockBodies`, synced by head hashes via `GET /lock/heads` and `POST /lock/given`). Never sign on the moved chain (`Lock.append` returns `lock_moved`). Determine safe mode via `client/core-ts/src/views/lock.ts` `safeMode` (`lockSafe`), falling back to cloud `locked` only when no lock is held.
 - Express post-move workspace changes as statements in the actor's personal log (`client/core-ts/src/lock-statements.ts` `sayMoved`), prompting the person each time so an unlocked stolen phone cannot alter rosters or undo its removal. Simulate effects via `rules` first: re-state any collateral removals (removing one person must not remove others) and refuse no-op statements. Send bodies only to stations named in that workspace's list, never to cloud or another workspace's station.
-- Only the root person disables or re-enables safe mode on their bound log (`lock_root_only`, naming them and `stillfail lock reset`). Turning a moved workspace off prompts twice (open personal secrets first, then sign `off`).
+- Only the root person disables or re-enables safe mode on their bound log (`lock_root_only`, naming them and `stillfail lock reset`). Turning a workspace off prompts once, for `off` (or `disable`) alone: no vault is opened or written out in plain text.
 - Web sessions in a moved workspace require at least one app device on that person's log (`web` approved face to face, else return `lock_needs_app` / `needsAppIn`). Web-only members do not block a move and keep their session until `exp`.
 - When admitting a newcomer (`member {sub, email, lock, role}`), use `notedRole` (defaulting to `member`) capped by the cloud view's role, never trusting cloud alone.
 - Before removing a device or member, level vaults from reachable stations (`levelVaults`, `takeBefore`) verifying against the pre-removal state. Removal reads no box key. Rekeying vaults for removed members waits until the owner next unseals the key.
@@ -30,6 +30,12 @@
 - Known non-goals: pre-8799 stations of another workspace keep a stale log copy after a statement. Partial build 9040-9054 handover statements contradicted by the chain stay silently ignored. Moved workspaces growing past `LOGS_BEFORE` logs with an old station misread on old cores.
 - Tests: `client/core-ts/test/lock-moved-state.test.ts`, `lock-statements-made.test.ts`, `lock-handover.test.ts`, `lock-handover-model.test.ts`, `lock-left-out.test.ts`, `lock-pair-modes-faults.test.ts`, `lock-state-invariants.test.ts`.
 
+## The vault
+
+- A vault is always encrypted and kept by its person's own devices, with safe mode on or off. In safe mode it follows the workspace's lock in force (`client/core-ts/src/views/vault.ts` `lockOf`). Without safe mode it follows the person's own pinned lock (`personalLockOf`, genesis `""`), as each station builds it from members' own logs (`station/src/cloud/vault-lock.ts`). Turning safe mode on or off changes nothing in the vaults.
+- 开启 (`vault.setup`) begins the person's own lock where none exists, with this device on it, then makes the vault and moves old plain items in (`migrate`). Nothing is written to the plain library again (`plainMode` is always false). Its items are only read to move them and delete them.
+- Shared workspace vaults (`scope: "workspace"`) work both with and without safe mode: in safe mode they follow the workspace lock; without safe mode `personalLockOf` folds and verifies teammates' personal chains returned by `GET /vault/boxes` locally (never replacing this person's own pinned chain) and merges workspace roles. Workspace owners/admins who are members manage them (`canManage`).
+
 ## A person's presets and starred models
 
 - Devices keep each workspace's records (`client/core-ts/src/presets-kept.ts` `presetRecords`, stars in `choice` `ws:<ws>:liked`) and carry updates to stations (`client/core-ts/src/views/presets.ts`) using the shared merge logic (`client/core-ts/src/preset-records.ts`, never duplicated).
@@ -37,3 +43,4 @@
 - Trim kept deletions with `goneKept` (`GONE_KEPT`) so devices never send deletions a station would drop. Claim ownerless legacy deletions (`presets-kept.ts` `ownerless`) only when this device owns that preset.
 - For older stations (`GET /presets/kept` returns `no route`), never PUT: use legacy endpoints, open chats by id when listed, and send `presetCopy` otherwise.
 - Show own presets by default and others on press (`otherPresets`, in-memory except picked, `OTHERS_WAIT_MS` cap so slow stations do not stall the UI). Others' presets are viewable, usable, and copyable (`preset.copy`), never editable.
+- The board's drafts of 待派发 are the person's too and carried the same way (`client/core-ts/src/views/board-drafts.ts`, the rule `client/core-ts/src/board-drafts.ts`, the `boardDrafts` topic), no longer the prefs': what a device kept there is taken in once. A draft's files go up to the station it is to run on as they are added; another device shows them from there (`BoardDraftViews.picture`, `GET /board/files`) and, starting it, has that station copy them among its uploads (`client/core-ts/src/composer.ts` `#board`).

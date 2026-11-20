@@ -1,11 +1,12 @@
 import {
-  "station/host",
+  "base/codec",
   "station/wire",
   "station/sql",
   "station/legacy",
   "station/jsjson",
   "station/jscase",
   "station/readops",
+  "station/store_schema",
   "moonbitlang/core/json",
   "mbui/effect",
 }

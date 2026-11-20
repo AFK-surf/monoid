@@ -590,12 +590,12 @@ fn Tabs::heard(self : Tabs, e : CdpEvent) -> Unit {
   let p = Some(e.params)
   let info = at(p, "targetInfo")
   match (at(info, "targetId"), at(info, "browserContextId")) {
-    (Some(Str(t)), Some(Str(c))) => self.contexts[@jsjson.text(t)] = @jsjson.text(c)
+    (Some(Str(t)), Some(Str(c))) => self.contexts[@jsjson.sanitize_str(t)] = @jsjson.sanitize_str(c)
     _ => ()
   }
   if e.method == "Target.targetDestroyed" {
     match at(p, "targetId") {
-      Some(Str(u)) if !self.tabs.contains(@jsjson.text(u)) => self.contexts.remove(@jsjson.text(u))
+      Some(Str(u)) if !self.tabs.contains(@jsjson.sanitize_str(u)) => self.contexts.remove(@jsjson.sanitize_str(u))
       _ => ()
     }
   }

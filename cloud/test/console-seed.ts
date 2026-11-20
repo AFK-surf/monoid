@@ -116,10 +116,22 @@ export function seedConsole(sql: Sql, now: number, admin: { sub: string; email: 
   run(sql, "INSERT OR IGNORE INTO relay_tokens (token_hash, name, url, target, made_by, expires_at) VALUES (?, '东京 2', NULL, NULL, ?, ?)", "a1b2c3d4e5f60718".padEnd(64, "0"), admin.email, now + 20 * 3600);
   run(sql, "INSERT OR IGNORE INTO relay_tokens (token_hash, name, url, target, made_by, expires_at) VALUES (?, '上海入口', NULL, ?, ?, ?)", "f0e1d2c3b4a59687".padEnd(64, "0"), SEED_RELAYS.hk, admin.email, now + 3 * 3600);
 
+  // Admin API keys: one active & recently used, one active & never used / never expires, one revoked.
+  const keys: [string, string, string, string, number, number | null, number | null, number | null][] = [
+    ["ak_01JD3KEY00000000000000001", "日常运维 CLI", "sfa_9xKmP2qR", "seed-key-hash-1", 14, 76, 0.02, null],
+    ["ak_01JD3KEY00000000000000002", "CI 发布脚本", "sfa_4tBnV8wL", "seed-key-hash-2", 5, null, null, null],
+    ["ak_01JD3KEY00000000000000003", "旧笔记本临时密钥", "sfa_7hZpQ1mN", "seed-key-hash-3", 45, 45, 20, 10],
+  ];
+  for (const [id, name, prefix, hash, ago, left, usedAgo, revokedAgo] of keys) {
+    run(sql, "INSERT OR IGNORE INTO admin_keys (id, name, prefix, key_hash, created_by, created_by_email, created_at, expires_at, last_used_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      id, name, prefix, hash, admin.sub, admin.email, now - ago * DAY, left === null ? null : now + left * DAY, usedAgo === null ? null : now - Math.round(usedAgo * DAY), revokedAgo === null ? null : now - revokedAgo * DAY);
+  }
+
   // What the operators changed (a cloud from before keeps none).
   const audit: [number, string, string, string, string][] = [
     [0.004, admin.email, "feedback.reply", "FB-2", ""],
     [0.02, "feedback-monitor", "feedback.status", "FB-2", "triaged"],
+    [0.15, admin.email, "key.create", "CI 发布脚本", "sfa_4tBnV8wL · never"],
     [0.3, admin.email, "relay.token", "上海入口", SEED_RELAYS.hk],
     [0.8, admin.email, "user.beta", "chen@acme.cn", "on"],
     [1, admin.email, "workspace.limits", "Acme 研发", "members=20"],

@@ -103,7 +103,7 @@ pub fn new_connect_dialog(src : Source, core : Core, here : Here, station : Stri
     live=fn() { nc_words_at(f, view, 0) },
     fn(v, _) {
       // (the dialog's steps brought to the wizard's as the core says its step)
-      v.reacts(fn() { nc_step_of(view()) }, fn(step) { nc_follow(src, core, f, view, step, first, close, back) })
+      v.reacts(fn() { nc_step_of(view()) }, fn(step) { nc_follow(src, core, f, view, step, first, v, close, back) })
       v.pick(fn() { first.get() }, fn(p, step) {
         if step == "" {
           @sf.wait_line_node(p, fn() { @sf.t("common.reading") }) |> ignore
@@ -179,6 +179,7 @@ fn nc_follow(
   view : () -> Json?,
   step : String,
   first : @signals.Signal[String],
+  within : @view.View,
   close : () -> Unit,
   back : () -> Unit,
 ) -> Unit {
@@ -191,7 +192,7 @@ fn nc_follow(
     ()
   } else if n == 0 {
     f.pages.push(step)
-    first.set(step)
+    @view.transition(within=within.transitions_root(), fn() { first.set(step) })
   } else if f.pages[n - 1] == step {
     ()
   } else if n >= 2 && f.pages[n - 2] == step {

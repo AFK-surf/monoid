@@ -18,9 +18,11 @@
 //                             its input ends:
 //   in   1 next      (empty)  the next new picture, encoded
 //        2 keyframe  (empty)  the next one a key frame, the screen changed or not
-//        3 input     JSON     win-input.ts's ops: {op:"mouse", type:"move"|"down"|"up", x, y, button},
+//        3 input     JSON     win-input.ts's ops: {op:"mouse", type:"move"|"down"|"up", x, y, button, dx?, dy?, relative?},
+//                             {op:"gamepad", index, connected, buttons, lx, ly, rx, ry, lt, rt} (gamepad.rs),
 //                             {op:"wheel", x, y, dx, dy}, {op:"key", scan, ext, vk, down}, {op:"text", text}
-//        4 clipboard 1 byte flags (bit 0: paste with Ctrl+V), 1 byte type (1 text, 2 PNG), the bytes
+//        4 clipboard 1 byte flags (bit 0: paste with Ctrl+V, bits 1..2 the clip's mark: privacy.rs), 1 byte type
+//                             (1 text, 2 PNG), the bytes
 //        5 watch     1 byte       1: say each copy made on the machine from now on (message 5 out), 0: stop
 //        6 reveal    UTF-8        a file's path, shown selected in Explorer
 //        7 rate      4 bytes      bits a second (big-endian) to encode at from the next frame on
@@ -28,15 +30,22 @@
 //                             `region` of the display alone ({x, y, w, h}, 0..1 of it: a client zoomed in) or, without
 //                             it, of the whole
 //        9 audio     (empty)      the latest 20 ms of system output (only with audio:true)
+//       11 watch mic 1 byte       1: watch the virtual microphone (VB-Cable: mic.rs), said as message 4 {mic}; 0: stop
+//       12 mic       flags, the recording's epoch (4 bytes big-endian), 48 kHz mono PCM16: played into the cable
+//                             only while an app records it, in that epoch
 //   out  1 info      JSON     first: {width, height, encoder, codec, regions: true} (h265 where asked and the hardware has it), or
 //                             {error, code: "capture"|"display"|"encoder"}
 //        2 config    4 bytes width, 4 bytes height, then the avcC or hvcC (none for JPEG): before the first frame and whenever
 //                             it changes
 //        3 frame     1 byte flags (bit 0: key frame), 8 bytes timestamp (µs), then the frame (AVCC, or one JPEG)
-//        4 event     JSON     what the station logs
+//        4 event     JSON     {pointerLock: bool} whether an app holds the pointer (pointer_lock.rs), {mic:
+//                             {available, active, epoch}} the virtual microphone while watched, else what the
+//                             station logs
 //        5 clipboard 1 byte type (1 text, 2 PNG), the bytes: what was copied, while watched
-//        6 cursor    JSON     {x, y, shape}: the pointer (0..1 of the display, a CSS cursor's name; "none" hidden) as it
-//                             moves or changes; a video's pictures leave it out, a JPEG's have it drawn in
+//       12 clipboard 1 byte its mark (1 concealed, 2 transient), then as 5: a copy an app marked private
+//        6 cursor    JSON     {x, y, shape}: the pointer (0..1 of the display, a CSS cursor's name; "none" hidden;
+//                             "custom:<id>" one of an app's own: message 11) as it moves or changes; a video's
+//                             pictures leave it out, a JPEG's have it drawn in
 //        7 region    JSON     {region: {x, y, w, h} | null}: the part of the display the frames from the next one on
 //                             show, as it was cut (null the whole), said before a frame whose part is another than the
 //                             last one's (that frame a key frame)
@@ -45,6 +54,7 @@
 //                             the view asked `audioCodec: "opus"`
 //        9 audio     8 bytes timestamp (µs), then 3840 bytes stereo PCM16 little-endian, or one Opus packet of those
 //                             20 ms (audio_packets.rs); none for digital silence
+//       11 cursor image       a pointer of an app's own, before the first message 6 that names it (cursor_image.rs)
 //
 // Windows.Graphics.Capture captures the main display (the cursor drawn in, no border), a picture only when the screen
 // changed (an HDR display's as FP16, made SDR by a pixel shader: hdr.rs); the GPU's video processor scales it into the
@@ -68,6 +78,10 @@ mod capture;
 mod clipboard;
 #[cfg(windows)]
 mod cursor;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod cursor_image;
+#[cfg(windows)]
+mod display;
 #[cfg(windows)]
 mod encode;
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -79,10 +93,26 @@ mod input;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod pace;
 #[cfg_attr(not(windows), allow(dead_code))]
+mod pointer_lock;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod privacy;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod gamepad;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod mic;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod mouse;
+#[cfg_attr(not(windows), allow(dead_code))]
 mod region;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod resolution;
 mod scale;
+#[cfg(windows)]
+mod svc_client;
+#[cfg(windows)]
+mod svc_pipe;
+#[allow(dead_code)]
+mod svc_proto;
 #[cfg(windows)]
 mod view;
 

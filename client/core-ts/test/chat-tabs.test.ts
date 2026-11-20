@@ -57,6 +57,20 @@ test("closing_one_brings_the_last_left_to_the_front_if_it_was_in_front_and_clear
   assert.deepEqual(changed(kept, AGENTS, false, null, { action: "clear", tab: null, auto: true }), { tabs: [], active: "a2" });
 });
 
+test("a_tab_replaced_takes_the_place_of_the_one_it_replaces_in_front", () => {
+  const pic = (n: number) => `view:${JSON.stringify(["chat", "ws/st", "a1", `/out/${n}.png`, `${n}.png`, 100])}`;
+  const [p1, p2, p9] = [pic(1), pic(2), pic(9)];
+  const kept = { tabs: ["a1", p1, "jobs"], active: p1 };
+  const replace = (was: string, tab: string): Change => ({ action: "replace", tab, was, auto: true });
+  assert.deepEqual(changed(kept, AGENTS, false, null, replace(p1, p2)), { tabs: ["a1", p2, "jobs"], active: p2 });
+  // The one it replaces not open: opened as any is.
+  assert.deepEqual(changed(kept, AGENTS, false, null, replace(p9, p2)), { tabs: ["a1", p1, "jobs", p2], active: p2 });
+  // Open already: the one it replaces closed, it brought to the front where it is.
+  assert.deepEqual(changed({ tabs: [p1, "jobs", p2], active: p1 }, AGENTS, false, null, replace(p1, p2)), { tabs: ["jobs", p2], active: p2 });
+  assert.deepEqual(parseCall("chat.tabs.replace", { chat: "ws/st:k1", tab: p2, was: p1 }), { kind: "chatTabs", chat: "ws/st:k1", action: "replace", tab: p2, was: p1, auto: true });
+  assert.throws(() => parseCall("chat.tabs.replace", { chat: "ws/st:k1", tab: p2 }));
+});
+
 test("the_history_a_chat_opens_by_itself_is_gone_from_where_a_client_shows_none", () => {
   // Shown (a wide page): what is opened joins it.
   assert.deepEqual(changed(undefined, AGENTS, true, "a1", open("jobs")), { tabs: ["a1", "jobs"], active: "jobs" });

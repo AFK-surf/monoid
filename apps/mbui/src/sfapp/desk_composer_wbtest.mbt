@@ -308,7 +308,7 @@ test "desk composer: `@` and words offer the chats they find over it (ChatRefMen
     assert_eq(desk_words(src), "看 @[首页的列表改成按天分组] ")
     // (made as nodes, the menu going out on its way: pop_out_ms, offers_node's)
     if both_nodes.val {
-      t.run_for(@kit.pop_out_ms)
+      t.run_for(@motion.pop_out_ms)
     }
     assert_true(t.find("引用对话") is None)
     // drawn as the mark: `[@…]`, its brackets clear
@@ -404,7 +404,7 @@ test "desk composer: Escape closes the `@` menu for that `@`; the words stay, En
     t.frame()
     // (made as nodes, the menu going out on its way: pop_out_ms, offers_node's)
     if both_nodes.val {
-      t.run_for(@kit.pop_out_ms)
+      t.run_for(@motion.pop_out_ms)
     }
     assert_true(t.find("引用对话") is None)
     t.enter()
@@ -932,11 +932,11 @@ test "a phone's ＋: the sheet of what can go in (Attach.kt); 照片和视频 as
     let calls : Array[Made] = []
     let (t, _) = desk_composer_tester(calls, pointing=Finger, platform=2)
     t.draw()
-    // (this window's ＋ panel beside it, not a sheet: open at its declared moment, its way in over @kit.pop_ms from the
+    // (this window's ＋ panel beside it, not a sheet: open at its declared moment, its way in over @motion.pop_ms from the
     // press)
     let pressed = t.time()
     t.click(Button, label=@sf.t("web-main.composer.attach"))
-    t.run_for(pressed + @kit.pop_ms - t.time())
+    t.run_for(pressed + @motion.pop_ms - t.time())
     assert_true(t.find("照片") is Some(_))
     assert_true(t.find("Station 文件") is Some(_))
     // (what the system's picker answers, said before it is asked; the tile, not the strip's last, which asks for the

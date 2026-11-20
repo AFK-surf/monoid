@@ -52,28 +52,7 @@ fn PngOut::chunk(self : PngOut, kind : String, data : Array[Byte]) -> Unit {
 }
 
 ///|
-/// RGBA pixels (`w` × `h`, straight alpha, rows from the top) as a PNG (stored, not compressed: small pictures made
-/// here, decoded anywhere), to hand to @ui.add_image.
-pub fn png(w : Int, h : Int, rgba : FixedArray[Byte]) -> Bytes {
-  let o : PngOut = { buf: [] }
-  for b in [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A] {
-    o.byte(b)
-  }
-  let ihdr : PngOut = { buf: [] }
-  ihdr.u32(w.reinterpret_as_uint())
-  ihdr.u32(h.reinterpret_as_uint())
-  for b in [8, 6, 0, 0, 0] {
-    ihdr.byte(b)
-  }
-  o.chunk("IHDR", ihdr.buf)
-  // the rows, each after its filter byte (none), in stored deflate blocks
-  let raw : Array[Byte] = []
-  for y in 0..<h {
-    raw.push(b'\x00')
-    for x in 0..<(w * 4) {
-      raw.push(rgba[y * w * 4 + x])
-    }
-  }
+fn png_stored_idat(raw : Array[Byte]) -> Array[Byte] {
   let z : PngOut = { buf: [] }
   z.byte(0x78)
   z.byte(0x01)
@@ -100,7 +79,84 @@ pub fn png(w : Int, h : Int, rgba : FixedArray[Byte]) -> Bytes {
     b = (b + a) % 65521U
   }
   z.u32((b << 16) | a)
-  o.chunk("IDAT", z.buf)
+  z.buf
+}
+
+///|
+/// RGBA pixels (`w` × `h`, straight alpha, rows from the top) as a PNG (stored, not compressed: small pictures made
+/// here, decoded anywhere), to hand to @ui.add_image.
+pub fn png(w : Int, h : Int, rgba : FixedArray[Byte]) -> Bytes {
+  let o : PngOut = { buf: [] }
+  for b in [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A] {
+    o.byte(b)
+  }
+  let ihdr : PngOut = { buf: [] }
+  ihdr.u32(w.reinterpret_as_uint())
+  ihdr.u32(h.reinterpret_as_uint())
+  for b in [8, 6, 0, 0, 0] {
+    ihdr.byte(b)
+  }
+  o.chunk("IHDR", ihdr.buf)
+  // the rows, each after its filter byte (none), in stored deflate blocks
+  let raw : Array[Byte] = []
+  for y in 0..<h {
+    raw.push(b'\x00')
+    for x in 0..<(w * 4) {
+      raw.push(rgba[y * w * 4 + x])
+    }
+  }
+  o.chunk("IDAT", png_stored_idat(raw))
+  o.chunk("IEND", [])
+  Bytes::from_array(o.buf)
+}
+
+///|
+/// 4-bit indexed-colour pixels (`w` × `h`, `indices` 0..15 per pixel, `palette` 3 bytes per colour, `alphas` 1 byte per
+/// colour) as a PNG (color type 3, bit depth 4, PLTE + tRNS, stored deflate blocks).
+pub fn png_indexed(
+  w : Int,
+  h : Int,
+  palette : FixedArray[Byte],
+  alphas : FixedArray[Byte],
+  indices : FixedArray[Byte],
+) -> Bytes {
+  let o : PngOut = { buf: [] }
+  for b in [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A] {
+    o.byte(b)
+  }
+  let ihdr : PngOut = { buf: [] }
+  ihdr.u32(w.reinterpret_as_uint())
+  ihdr.u32(h.reinterpret_as_uint())
+  for b in [4, 3, 0, 0, 0] {
+    ihdr.byte(b)
+  }
+  o.chunk("IHDR", ihdr.buf)
+  let plte : Array[Byte] = Array(capacity=palette.length())
+  for b in palette {
+    plte.push(b)
+  }
+  o.chunk("PLTE", plte)
+  if alphas.length() > 0 {
+    let trns : Array[Byte] = Array(capacity=alphas.length())
+    for b in alphas {
+      trns.push(b)
+    }
+    o.chunk("tRNS", trns)
+  }
+  let stride = (w + 1) / 2
+  let raw : Array[Byte] = Array(capacity=h * (stride + 1))
+  for y in 0..<h {
+    raw.push(b'\x00')
+    let row = y * w
+    let mut x = 0
+    while x < w {
+      let hi = indices[row + x].to_int() & 0x0F
+      let lo = if x + 1 < w { indices[row + x + 1].to_int() & 0x0F } else { 0 }
+      raw.push(((hi << 4) | lo).to_byte())
+      x += 2
+    }
+  }
+  o.chunk("IDAT", png_stored_idat(raw))
   o.chunk("IEND", [])
   Bytes::from_array(o.buf)
 }

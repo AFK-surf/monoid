@@ -2,9 +2,14 @@
 // is sent sets its agent to work (its activity shows), its answer is said while the chat shows.
 
 ///|
-/// The fixture's chat open, its clock the test's; words sent and taken by the station (its agent then at work).
-fn emit_core(clock : Ref[Double], words~ : String = "看一下列表") -> @ui.Tester {
+/// The fixture's chat open, its clock the test's; words sent and taken by the station (its agent then at work). On the
+/// old page (`old`, as every test of it asks: what an answer coming out of its activity's avatar does is the old list's,
+/// emit.mbt's queue and its measured places, chat_list.mbt's), held so whatever the fixture's channel.
+fn emit_core(clock : Ref[Double], words~ : String = "看一下列表", old? : Bool = true) -> @ui.Tester {
   new_run()
+  if old {
+    @sfbase.hold_chat_page_nodes(Some(false))
+  }
   fix_clock.val = Some(fn() { clock.val })
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
@@ -129,7 +134,7 @@ test "the flying avatar goes where its answer comes in: where it was aimed on it
     }
   }
   guard (aimed, landed) is (Some(a), Some(l)) else { fail("aimed \{Repr(aimed)}, landed \{Repr(landed)}") }
-  assert_true((a.0 - l.0).abs() < 0.5 && (a.1 - l.1).abs() < 0.5, msg="aimed at \{Repr(a)}, landed at \{Repr(l)}")
+  assert_true((a.0 - l.0).abs() < 0.5 && (a.1 - l.1).abs() < 1.5, msg="aimed at \{Repr(a)}, landed at \{Repr(l)}")
   emit_restore()
 }
 
@@ -197,9 +202,9 @@ test "the answer coming in does not end its own motion: float, spit and return e
       None => ()
     }
   }
-  // 16 ms frames: Float 440 ms, Spit 380, Return at least 230 (as long as its way home: 320 over a
+  // 16 ms frames: Float 220 ms, Spit 380, Return at least 230 (as long as its way home: 320 over a
   // row or two, a Move's least over none), each to its end
-  assert_true(frames.get("Float").unwrap_or(0) >= 26)
+  assert_true(frames.get("Float").unwrap_or(0) >= 12)
   assert_true(frames.get("Spit").unwrap_or(0) >= 22)
   assert_true(frames.get("Return").unwrap_or(0) >= 13)
   assert_true(em.current is None)

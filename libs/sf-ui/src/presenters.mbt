@@ -347,7 +347,9 @@ let presented_drawn_said : Ref[@signals.Keyed[Int]] = Ref(@signals.keyed())
 ///|
 fn presented_told() -> Unit {
   // (one closed, whether the tree draws it still going out: what the host lets go of as it is gone)
-  presented_said.val.set(presented_now.map(fn(p) { (p.serial, p.open, !p.open && tree_presented.contains(p.serial)) }))
+  @view.transition(fn() {
+    presented_said.val.set(presented_now.map(fn(p) { (p.serial, p.open, !p.open && tree_presented.contains(p.serial)) }))
+  })
 }
 
 ///|
@@ -382,7 +384,7 @@ pub fn presenters_reset() -> Unit {
   presented_popovers.clear()
   presented_drawn_said.val.set([])
   presented_items_said.clear()
-  presented_told()
+  presented_said.val.set([])
   presented_count.val = 0
   presented_alone.val = false
   presented_how.clear()
@@ -391,10 +393,13 @@ pub fn presenters_reset() -> Unit {
   presented_sheet_next.val = 0
   presented_sheet_ended.val = -1.0
   sheet_win_h.val = 0.0
+  window_root_at.val = None
+  hover_panel_old_reset()
 }
 
 ///|
 fn present(shows : Shows, from : Anchor, line? : String = "", gone? : () -> Unit = fn() {  }) -> Unit {
+  hover_panel_old_close()
   // (presented as a sheet closed, none drawn of that going yet (what was chosen or pressed in it presents this): in
   // that one's place, the topmost of them's; a menu by what was chosen in a menu, a page of that one's sheet)
   let chosen_in = presented_now.iter().filter(fn(q) { q.closed_now && q.stands > 0.0 && q.taken_by == 0 }).last()
@@ -1059,14 +1064,14 @@ fn panel_page(p : Presented, x : PanelOf, from : Anchor, gone : () -> Unit) -> U
     None => ()
   }
   // (a dialog in steps to its new step's height, from as it is now)
-  match steps_reshaping.get(p.serial) {
-    Some(f) => f()
-    None => ()
-  }
-  @signals.start_batch()
-  p.more.set([..p.more.untracked(), { n: p.steps_made, x, from, gone }])
-  presented_told()
-  @signals.end_batch()
+  @view.transition(fn() {
+    match steps_reshaping.get(p.serial) {
+      Some(f) => f()
+      None => ()
+    }
+    p.more.set([..p.more.untracked(), { n: p.steps_made, x, from, gone }])
+    presented_told()
+  })
 }
 
 ///|
@@ -1104,11 +1109,13 @@ fn panel_pop(p : Presented) -> Bool {
     Some(f) => p.stands = f()
     None => ()
   }
-  match steps_reshaping.get(p.serial) {
-    Some(f) => f()
-    None => ()
-  }
-  p.more.set(more[:more.length() - 1].to_owned())
+  @view.transition(fn() {
+    match steps_reshaping.get(p.serial) {
+      Some(f) => f()
+      None => ()
+    }
+    p.more.set(more[:more.length() - 1].to_owned())
+  })
   (last.gone)()
   true
 }
@@ -1531,24 +1538,13 @@ let sheet_win_h : Ref[Double] = Ref(0.0)
 let sheet_win_lent : @view.Lent[() -> Double] = @view.Lent::new()
 
 ///|
-/// The height of the window for what node `v` of a sheet's body made of nodes is laid out by (sheet_window_h's: the
+/// The height of the window for what node `v` of a sheet's body made of nodes is laid out by (the
 /// screen's full height while no field in the sheet has the focus, the room over the soft keyboard while one does);
 /// outside a sheet, the window's.
 pub fn sheet_window_h_node(v : @view.View) -> Double {
   match v.lent(sheet_win_lent) {
     Some(f) => f()
     None => v.window().1
-  }
-}
-
-///|
-/// The height of the window for what a sheet holds (`present_sheet`, `sheet_node`): the screen's full height while no
-/// field in the sheet has the focus, or the room over the soft keyboard while one does. Outside a sheet, `c.window_size().1`.
-pub fn sheet_window_h(c : @ui.Ctx) -> Double {
-  if sheet_win_h.val > 0.0 {
-    sheet_win_h.val
-  } else {
-    c.window_size().1
   }
 }
 
@@ -1686,14 +1682,14 @@ let sheet_foot_at : @ui.Style = @ui.css("row w=Full px=S5 pt=S6 pb=S6 gap=S2 jus
 let sheet_ruled_foot_at : @ui.Style = @ui.css("row w=Full px=S5 pt=S3 pb=S4 gap=S2 justify=JEnd")
 
 ///|
-/// The line over a ruled panel's foot (`panel`'s `ruled`), across the panel.
+/// The line over a ruled panel's foot (`panel`'s `ruled`), across the panel: a hairline, the line's colour faded.
 // kept across runs: a value (no field of it changes)
-let foot_rule : @ui.Style = @ui.css("w=Full h=SPx bg=Line")
+let foot_rule : @ui.Style = @ui.style(w=Full, h=hairline, bg=A(Line, O60))
 
 ///|
 /// The same in a sheet: as far under what it holds as its rows are in from its sides (sheet_held_sides: 12).
 // kept across runs: a value (no field of it changes)
-let sheet_foot_rule : @ui.Style = @ui.style(w=Full, h=SPx, mt=room(sheet_rule_over), bg=Line)
+let sheet_foot_rule : @ui.Style = @ui.style(w=Full, h=hairline, mt=room(sheet_rule_over), bg=A(Line, O60))
 
 ///|
 let sheet_rule_over : Double = 12.0

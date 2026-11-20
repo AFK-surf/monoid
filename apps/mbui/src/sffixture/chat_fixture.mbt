@@ -764,7 +764,6 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
     // chat-login-station: the same, where the station's own browser can open it too
     // login-link: a loopback login opened from its Slack link (/w/<ws>/s/<station>/login/<id>) in a standalone sheet
     // chat-login-again: its login out of time, offered again from its card (重新发起)
-    // chat-login-ask: the chat open, another chat's login card waiting for the viewer, told in a toast
     "machineLogins" if f.mode == "chat-login" ||
       f.mode == "chat-login-station" ||
       f.mode == "login-link" ||
@@ -1565,7 +1564,16 @@ pub fn fixture_chat_call(f : Fixture, name : String, params : Json) -> Result[Js
     "chat.around" => {
       let ts = text(p, "ts")
       if ts == "" {
-        return Some(Ok({ "seq": Json::number(number(p, "seq")) }))
+        // (a message older than those held: the pages before it held as the core would read them in)
+        let target = number(p, "seq")
+        if target < 0.0 {
+          let need = ((-target).to_int() + 99) / 100
+          if need > f.older {
+            f.older = need
+            f.changed()
+          }
+        }
+        return Some(Ok({ "seq": Json::number(target) }))
       }
       let all = items(Some(rich_chat(f.older)), "messages")
       Some(
@@ -1821,7 +1829,8 @@ pub fn seeded_outbox(mode : String) -> Array[Json] {
 // card answered) and chat-answering (an option under way) open the first row's chat so (scripts/shots.sh cards);
 // chat-vault, with an agent asking to keep a password at its end, decided here as the core decides it; chat-vault-typed,
 // asking the person to type a token in instead; chat-vault-oauth, to sign in to Slack for one; chat-vault-file, to pick a
-// file; chat-vault-describe, to rename an item; chat-vault-remove, to delete one
+// file; chat-vault-describe, to rename an item; chat-vault-remove, to delete one; chat-vault-off, to keep a password
+// while the person's vault is not turned on
 // and say what it is.
 
 ///|
@@ -1855,7 +1864,7 @@ pub let fix_vault : Ref[String] = Ref("")
 ///|
 /// chat-vault's last post: an agent asking to keep a password (`typed`: a token the person types in; `file`: a file
 /// they pick), or `use_secret` for an already answered request to use a token; its card as the core says it.
-pub fn vault_post(typed : Bool, file? : Bool = false, use_secret? : Bool = false, timed? : Bool = false, describe? : Bool = false, remove? : Bool = false, oauth? : Bool = false) -> Json {
+pub fn vault_post(typed : Bool, file? : Bool = false, use_secret? : Bool = false, timed? : Bool = false, describe? : Bool = false, remove? : Bool = false, oauth? : Bool = false, off? : Bool = false, no_key? : Bool = false) -> Json {
   let ask : Map[String, Json] = if remove {
     { "name": "办公室 Mac 主机管理员登录", "reason": "这个密码在 Office-Host-2 上登不上，能用的那个已经另存了，留着会让别的 agent 拿它去试", "mode": "env", "hosts": [], "remove": true, "answer": "approve" }
   } else if describe {
@@ -1882,6 +1891,13 @@ pub fn vault_post(typed : Bool, file? : Bool = false, use_secret? : Bool = false
     { "name": "OpenCode Go", "mode": "proxy", "hosts": ["opencode.ai"], "save": { "kind": "token", "typed": true }, "answer": "approve" }
   } else {
     { "name": "测试服务登录", "reason": "把测试服务密码安全保存，方便以后登录", "mode": "env", "save": { "kind": "login", "username": "demo-user" }, "answer": "approve" }
+  }
+  // (chat-vault-off: the person's vault not turned on yet, the workspace in no safe mode or not: 开启 first, on the card)
+  if off {
+    ask["answer"] = "setUp"
+  }
+  if no_key {
+    ask["answer"] = "noKey"
   }
   if timed {
     ask["timeoutKind"] = "idle"
@@ -2063,7 +2079,7 @@ pub fn with_cards(f : Fixture, v : Json, session : String) -> Json {
   let notice_many = f.mode == "chat-notice-many"
   // (chat-file-alone: its last message a file of its agent's, no words with it)
   let file_alone = f.mode == "chat-file-alone"
-  let vault = f.mode == "chat-vault" || f.mode == "chat-vault-typed" || f.mode == "chat-vault-oauth" || f.mode == "chat-vault-file" || f.mode == "chat-vault-use" || f.mode == "chat-vault-timeout" || f.mode == "chat-vault-before" || f.mode == "chat-vault-describe" || f.mode == "chat-vault-remove"
+  let vault = f.mode == "chat-vault" || f.mode == "chat-vault-off" || f.mode == "chat-vault-typed" || f.mode == "chat-vault-oauth" || f.mode == "chat-vault-file" || f.mode == "chat-vault-use" || f.mode == "chat-vault-timeout" || f.mode == "chat-vault-before" || f.mode == "chat-vault-no-key" || f.mode == "chat-vault-describe" || f.mode == "chat-vault-remove"
   let linked = f.mode.has_prefix("chat-phone-linked-")
   let signin = f.mode.has_prefix("chat-signin")
   // (chat-rig: an agent's request for the viewer's rig, waiting; -other: someone else's rig; -web: on a web page;
@@ -2154,7 +2170,7 @@ pub fn with_cards(f : Fixture, v : Json, session : String) -> Json {
       }
       // chat-vault's request to keep a password, last
       if vault {
-        all.push(vault_post(f.mode == "chat-vault-typed", file=f.mode == "chat-vault-file", use_secret=f.mode == "chat-vault-use" || f.mode == "chat-vault-timeout" || f.mode == "chat-vault-before", timed=f.mode == "chat-vault-timeout", describe=f.mode == "chat-vault-describe", remove=f.mode == "chat-vault-remove", oauth=f.mode == "chat-vault-oauth"))
+        all.push(vault_post(f.mode == "chat-vault-typed", file=f.mode == "chat-vault-file", use_secret=f.mode == "chat-vault-use" || f.mode == "chat-vault-timeout" || f.mode == "chat-vault-before" || f.mode == "chat-vault-no-key", timed=f.mode == "chat-vault-timeout", describe=f.mode == "chat-vault-describe", remove=f.mode == "chat-vault-remove", oauth=f.mode == "chat-vault-oauth", off=f.mode == "chat-vault-off", no_key=f.mode == "chat-vault-no-key"))
       }
       // chat-phone's request for the person's phone, last
       if phone {
@@ -3718,7 +3734,8 @@ pub fn fixture_station_overview() -> Json {
 }
 
 ///|
-/// The places the made-up station's one bot is in (`chat.relayPlaces`): one relayed to before, a private one.
+/// The places the made-up station's bots are in (`chat.relayPlaces`): its Slack bot's, one relayed to before and a
+/// private one; its group connect's space (a new topic there).
 pub fn fix_relay_places() -> Json {
   {
     "connects": [
@@ -3731,6 +3748,14 @@ pub fn fix_relay_places() -> Json {
           { "id": "C1", "name": "dev", "kind": "channel", "used": 20 },
           { "id": "C2", "name": "ops", "kind": "channel", "private": true },
         ],
+      },
+      {
+        "id": "group-1",
+        "kind": "group",
+        "name": "星火助手",
+        "team": null,
+        "teamId": "anchor-1",
+        "places": [{ "id": "s_team", "name": "研发群", "kind": "space" }],
       },
     ],
   }

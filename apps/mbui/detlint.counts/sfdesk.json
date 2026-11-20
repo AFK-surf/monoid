@@ -29,9 +29,6 @@
       "src/sfdesk/pane_view.mbt": 1,
       "src/sfdesk/tape_view.mbt": 1
     },
-    "old-island": {
-      "src/sfdesk/tape_view.mbt": 1
-    },
     "reused-untracked-key": {
       "src/sfdesk/archive_side_node.mbt": 1
     },
@@ -42,11 +39,19 @@
       "src/sfdesk/tape_view.mbt": 1
     },
     "page-control-by-hand": {
-      "src/sfdesk/chat_bar_wide_node.mbt": 3,
       "src/sfdesk/page_pane.mbt": 1,
       "src/sfdesk/pane_view.mbt": 1,
       "src/sfdesk/side_node.mbt": 2,
       "src/sfdesk/tape_view.mbt": 1
+    },
+    "structure-box": {
+      "src/sfdesk/archive_side_node.mbt": 1,
+      "src/sfdesk/attention.mbt": 3,
+      "src/sfdesk/chat_bar_wide_node.mbt": 1,
+      "src/sfdesk/chat_info_node.mbt": 1,
+      "src/sfdesk/lists.mbt": 1,
+      "src/sfdesk/places_side_node.mbt": 2,
+      "src/sfdesk/side_node.mbt": 2
     }
   },
   "excused": {

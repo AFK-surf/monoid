@@ -1,7 +1,7 @@
 // A chat's side panel (the mbui app's wide_panel.mbt): the tabs open beside it and the one in
 // front, kept on this device for each chat (prefs `chatTabs`, by `<station>:<session>` as its page names it; `new:<workspace>`
 // for a workspace's new chat). What a client draws is the chat view's `tabs`: those kept that the chat has, and the one
-// in front; it changes them with `chat.tabs.open/close/front/clear`, which keep the result. Self-contained: the web's
+// in front; it changes them with `chat.tabs.open/close/front/clear/replace`, which keep the result. Self-contained: the web's
 // demo shows and changes its chats' tabs with it, typechecked as the web is.
 
 type Obj = Record<string, unknown>;
@@ -118,12 +118,14 @@ export function tabsOf(kept: unknown, agents: readonly unknown[], noChat: boolea
   return { open, ...(shown !== undefined ? { shown } : {}), ...(auto ? { auto: true as const } : {}) };
 }
 
-export type Change = { action: "open" | "close" | "front" | "clear"; tab: string | null; auto: boolean };
+export type Change = { action: "open" | "close" | "front" | "clear" | "replace"; tab: string | null; auto: boolean; was?: string };
 
 /// What is kept after a change, from what the chat shows (`tabsOf`; `auto` false: a client that shows none opened by
 /// itself, which it goes from); null when nothing changes. Opened: in front, an agent's history after the histories
 /// open (before the other tabs), any other last. Closed: the one in front, if it was, the last left. In front: as said.
-/// Cleared (the panel closed): none, the one in front kept as it was.
+/// Cleared (the panel closed): none, the one in front kept as it was. Replaced (a picture's tab stepped to the one
+/// beside it): in the place of the one it replaces (`was`), in front; that one not open, opened as said; open already,
+/// the one it replaces closed and it brought to the front where it is.
 export function changed(kept: unknown, agents: readonly unknown[], noChat: boolean, session: string | null, change: Change): Kept | null {
   const now = tabsOf(kept, agents, noChat, session);
   const open = now.auto && !change.auto ? [] : now.open;
@@ -151,5 +153,12 @@ export function changed(kept: unknown, agents: readonly unknown[], noChat: boole
       return keep(open, tab);
     case "clear":
       return keep([], active);
+    case "replace": {
+      const was = change.was ?? "";
+      const at = open.indexOf(was);
+      if (at < 0 || was === tab) return changed(kept, agents, noChat, session, { ...change, action: "open" });
+      if (open.includes(tab)) return keep(open.filter((k) => k !== was), tab);
+      return keep([...open.slice(0, at), tab, ...open.slice(at + 1)], tab);
+    }
   }
 }

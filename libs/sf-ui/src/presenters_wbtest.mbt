@@ -16,16 +16,16 @@ test "an anchored panel animates both entering and leaving before its presenter 
   // (how far its words are seen, as drawn: None where they are not)
   let seen = fn() { t.words().iter().find_first(fn(w) { w.0 == "面板内容" }).map(fn(w) { w.5 }) }
   t.tap_text("打开")
-  t.run_for(@kit.pop_ms / 2.0)
+  t.run_for(@motion.pop_ms / 2.0)
   let entering = seen().unwrap()
   assert_true(entering > 0.0 && entering < 1.0, msg="entering \{entering}")
-  t.run_for(@kit.pop_ms)
+  t.run_for(@motion.pop_ms)
   close_presented()
   t.frame()
-  t.run_for(@kit.pop_out_ms / 2.0)
+  t.run_for(@motion.pop_out_ms / 2.0)
   let leaving = seen().unwrap()
   assert_true(leaving > 0.0 && leaving < 1.0, msg="leaving \{leaving}")
-  t.run_for(@kit.pop_out_ms)
+  t.run_for(@motion.pop_out_ms)
   assert_true(seen() is None)
 }
 
@@ -75,7 +75,7 @@ fn open_it(t : @ui.Tester) -> Unit {
   if presented_how == [AsSheet] {
     t.run_for(presented_rest() - t.time())
   } else {
-    t.run_for(@kit.presence_in_ms)
+    t.run_for(@motion.presence_in_ms)
   }
 }
 
@@ -775,7 +775,7 @@ test "a menu's item that opens a menu, with a mouse at Large: the next menu besi
   let t = presenting_tester(desk, menu_with_more(said))
   open_it(t)
   t.tap_text("分享")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_eq(presented_how, [AsPopover])
   assert_true(t.find("复制链接") is Some(_))
   assert_true(t.key_named("esc"))
@@ -924,11 +924,11 @@ test "a panel a panel's button opens as it closes, with a mouse at Large: a step
   let t = presenting_tester(desk, panel_with_more(said))
   open_it(t)
   t.tap_text("看详情")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(t.find("详情内容") is Some(_) && t.find("信息内容") is None)
   // its back key, before its title: back to the first
   t.click(Button, label="common.back")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(presenting())
   assert_true(t.find("信息内容") is Some(_) && t.find("详情内容") is None)
   assert_eq(said, ["detail gone"])
@@ -936,9 +936,9 @@ test "a panel a panel's button opens as it closes, with a mouse at Large: a step
   assert_true(t.query(Button, label="common.back") is None)
   // Escape: back to the first, then closed
   t.tap_text("看详情")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(t.key_named("esc"))
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(presenting() && t.find("信息内容") is Some(_))
   assert_true(t.key_named("esc"))
   assert_true(!presenting())
@@ -946,7 +946,7 @@ test "a panel a panel's button opens as it closes, with a mouse at Large: a step
   // a press outside the step further in: all of it closed
   open_it(t)
   t.tap_text("看详情")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   t.tap(8.0, 8.0)
   assert_true(!presenting())
 }
@@ -1010,7 +1010,7 @@ test "with a finger at Small, whatever kind of sheet closes for whatever kind: t
         (firsts[i].1)()
       })
       t.tap_text("打开")
-      t.run_for(@ui.move_most_ms + @kit.sheet_scrim_ms)
+      t.run_for(@ui.move_most_ms + @motion.sheet_scrim_ms)
       let at = named.val
       let first = t.drawn_glass().filter(fn(g) { g.3 > 100.0 })
       assert_eq(first.length(), 1, msg="\{at}: the first: \{Repr(first)}")
@@ -1038,7 +1038,7 @@ test "with a finger at Small, whatever kind of sheet closes for whatever kind: t
       for _ in 0..<3 {
         if presenting() {
           t.back()
-          t.run_for(@ui.move_most_ms + @kit.sheet_scrim_ms)
+          t.run_for(@ui.move_most_ms + @motion.sheet_scrim_ms)
         }
       }
       assert_true(!presenting(), msg=at)
@@ -1053,7 +1053,7 @@ test "one over another with a mouse at Large: a confirm over a dialog dims no da
   assert_eq(presented_how, [AsDialog])
   assert_eq(scrims_drawn(t, desk), 1)
   t.tap_text("删掉")
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_eq(presented_how, [AsDialog, AsDialog])
   assert_eq(scrims_drawn(t, desk), 1)
   // (the dialog under it taking nothing: dimmed over itself, as the window is)
@@ -1061,7 +1061,7 @@ test "one over another with a mouse at Large: a confirm over a dialog dims no da
   assert_true(veiled_drawn(t, desk), msg="\{Repr(t.drawn_rects())}")
   // (the confirm closed: the dialog's scrim as it was all along, none fading over it)
   assert_true(t.key_named("esc"))
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_eq(scrims_drawn(t, desk), 1)
 }
 

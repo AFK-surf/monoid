@@ -21,20 +21,26 @@ fn new_frame(src : Source, w : Workspace) -> @sfpages.NewChatFrame {
 /// frame's, over it: chat_bar_wide_node's new_bar_node), nothing under it; a row of the 文件 tab carried over it, let go
 /// there: into its message (chat_drop_node, as a chat's page made so: new_chat_page's drop_hint, chat_drop); as it
 /// becomes its chat, the files open beside it open beside the chat (new_sent). Its 文件 beside it is the tree's
-/// (side_panel_node's new_side_node; on the tape the frame's, tape_side).
+/// (side_panel_node's new_side_node; on the tape a panel of its own, tape_view's tape_new_side_node).
 /// `ground`: as node `n` draws it (the pane's; a tape's panel's: tape_page_ground); `width`: the page's, as the frame
-/// lays it out.
+/// lays it out; `apart` and `pane`: its composer's, as the chat's in the same place has them (chat_composer_node's);
+/// `bar`: what is over its top (a pane's: the window's top row it drags by, page_pane's new_node).
 fn new_frame_node(
   src : Source,
   w : Workspace,
   width : () -> Double,
   ground? : (@view.View) -> Int64 = fn(_) { @sf.theme().p.bg },
+  apart? : () -> Bool = fn() { false },
+  pane? : () -> FixedArray[@ui.CornerOf]? = fn() { None },
+  bar? : (@view.View) -> Unit = fn(_) {  },
 ) -> @sfpages.NewChatNodeFrame {
   {
     core: settings_core(src, w),
     ground,
     width,
-    bar: fn(_) {  },
+    apart,
+    pane,
+    bar,
     foot: fn() { 0.0 },
     // (what is let go going up to the station its 文件 tab starts on, as the page's own picks say it now)
     over: fn(v, shows) {
@@ -92,8 +98,8 @@ pub fn new_chat_page(c : @ui.Ctx, src : Source, w : Workspace, tape~ : Bool) -> 
     })
     |> ignore
   }
-  // (on the tape, laid out Medium, its panel is a panel of its own beside the page's, as a chat's: the frame's,
-  // tape_side)
+  // (on the tape, laid out Medium, its panel is a panel of its own beside the page's, as a chat's: the tape's,
+  // tape_new_side_node)
   if tape {
     with_bar()
     return
@@ -200,7 +206,7 @@ fn new_files_set(src : Source, ws : String, on : Bool) -> Unit {
 /// workspace's stations, what is added going into the new chat's draft (DriveTab).
 fn new_files_panel(c : @ui.Ctx, src : Source, w : Workspace, address : String) -> Unit {
   c.box(style=side_panel_style, fn() {
-    c.box(style=if side_on_tape.val || @sf.in_pane() { side_bar_tape() } else { side_bar() }, fn() {
+    c.box(style=if @sf.in_pane() { side_bar_tape() } else { side_bar() }, fn() {
       c.box(style=side_tab_list, fn() {
         let close = c.id("new/files-tab-close")
         c.on_press(close, fn() {

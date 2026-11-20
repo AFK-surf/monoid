@@ -7,8 +7,10 @@
 /// button's words, whether it is at work and what is said under it as the core's sign-in step says them as it changes.
 /// The node.
 pub fn sign_in_node(parent : @view.View, src : Source) -> @view.View {
-  let step = fn() { (src.sign_in_step)() }
-  @sf.way_in_node(
+  let step_src = fn() { (src.sign_in_step)() }
+  let step_shown = @signals.signal(@signals.untracked(step_src), same=fn(a, b) { a == b })
+  let step = fn() { step_shown.get() }
+  let page = @sf.way_in_node(
     parent,
     fn() { if @sf.theme().dark { "illus_sign_in_dark" } else { "illus_sign_in" } },
     fn() { @sf.t("android-settings.signIn.title") },
@@ -33,4 +35,8 @@ pub fn sign_in_node(parent : @view.View, src : Source) -> @view.View {
       }
     },
   )
+  // (sign-in state changes reshape the gate button smoothly, scoped to this page alone)
+  page.transitions_only() |> ignore
+  page.reacts(step_src, fn(next) { @view.transition(within=page, fn() { step_shown.set(next) }) }, at_start=false)
+  page
 }

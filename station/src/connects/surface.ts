@@ -24,6 +24,25 @@ type Json = any;
 
 const MAX_BACKOFF_MS = 60_000;
 
+/// How much of a refused handshake's answer is read for why it was refused.
+const REFUSAL_BYTES = 4096;
+
+/// Why a platform refused a socket, as its answer says: its `handshake-msg` header (Slack), else its body's `error` or
+/// `message` when that is JSON (Comma), else the body's text, on one line and at most 300 characters.
+export function refusalWords(header: string, body: string): string {
+  if (header.trim() !== "") return header.trim();
+  const text = body.trim();
+  if (text === "") return "";
+  let said = text;
+  try {
+    const json = JSON.parse(text);
+    const words = typeof json?.error === "string" ? json.error : typeof json?.message === "string" ? json.message : null;
+    if (words !== null) said = words;
+  } catch {}
+  said = said.replace(/\s+/g, " ").trim();
+  return said.length > 300 ? `${said.slice(0, 299)}…` : said;
+}
+
 export type SurfaceOptions = {
   /// The connect it is (for the log).
   connect?: string;
@@ -297,8 +316,30 @@ export abstract class ConnectedSurface implements Connection {
           }
         };
         // The platform says no in the handshake's answer (an app without the socket, too many sockets).
+        // Slack says why in its `handshake-msg` header. Comma says it in the answer's body (`{"error": "..."}`, a 409
+        // naming the station of the workspace connected already and what to do). Up to REFUSAL_BYTES of the body are read
+        // before the socket is cut, so the connect's page says what to do next, not a bare status.
         socket.on("unexpected-response", (_request, response) => {
-          end(new Error(`${kind} refused the connection: HTTP ${response.statusCode} ${response.headers["handshake-msg"] ?? ""}`.trim()));
+          const status = response.statusCode;
+          const header = response.headers["handshake-msg"];
+          const chunks: Buffer[] = [];
+          let size = 0;
+          let told = false;
+          const tell = () => {
+            if (told) return;
+            told = true;
+            const why = refusalWords(typeof header === "string" ? header : "", Buffer.concat(chunks).toString("utf8"));
+            end(new Error(`${kind} refused the connection: HTTP ${status} ${why}`.trim()));
+          };
+          response.on("data", (chunk: Buffer) => {
+            if (size >= REFUSAL_BYTES) return;
+            chunks.push(chunk);
+            size += chunk.length;
+            if (size >= REFUSAL_BYTES) tell();
+          });
+          response.on("end", tell);
+          response.on("close", tell);
+          response.on("error", tell);
         });
         socket.on("open", () => {
           heard = clock.currentTimeMillisUnsafe();

@@ -8,7 +8,7 @@ import { Admin } from "../src/api/admin.ts";
 import { json } from "../src/api/request.ts";
 import { RUNTIME_KINDS } from "../src/agents/runtime.ts";
 import { Cloud, writeState } from "../src/cloud/state.ts";
-import { ALPN, Reader, serve, writeLine } from "../src/mesh/serve.ts";
+import { ALPN, Reader, seenDevicesOf, serve, writeLine } from "../src/mesh/serve.ts";
 import { HttpError } from "./reference/views.ts";
 import { GrantKey } from "./fake-control-plane.ts";
 import { memoryMesh } from "./memory-mesh.ts";
@@ -180,6 +180,7 @@ for (const batch of [false, true]) test(`a device abandoning ${batch ? "a batch"
     await loop;
     await Promise.allSettled(served);
     cloud.close();
+    await seenDevicesOf(cloud).written();
     rmSync(data, { recursive: true, force: true });
   });
   const conn = await device.connect({ id: at.id() }, ALPN);

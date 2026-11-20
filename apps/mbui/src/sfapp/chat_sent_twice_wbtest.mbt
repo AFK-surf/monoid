@@ -79,7 +79,7 @@ fn st_look(t : @ui.Tester) -> StFrame {
 fn st_walk(screen : (String, Double, Double, Int), after : Double, deliver : Double, core : Double) -> (Array[StFrame], Int) raise {
   let (_, w, h, platform) = screen
   new_run()
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   fix_pace.val = (deliver, 30000.0, fix_turn_end_ms)
   fix_sent_for.val = -1.0
   fix_core_for.val = core

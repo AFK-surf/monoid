@@ -89,7 +89,10 @@ export function vaultTools(secrets: Secrets, workspace: (session: string) => str
       inputSchema: { type: "object", properties: { person: PERSON }, additionalProperties: false },
       run: async (key, args) => {
         const person = personOf(args).person;
-        const items = secrets.listings(key, person).map(({ item, listing }) => ({ item, name: listing.name, ...(listing.about ? { about: listing.about } : {}), kind: listing.kind, modes: listing.modes, hosts: listing.hosts, ...(listing.env ? { env: listing.env } : {}) }));
+        const items = secrets.listings(key, person).map(({ item, listing, vaultName, scope }) => ({
+          item, name: listing.name, ...(listing.about ? { about: listing.about } : {}), kind: listing.kind, modes: listing.modes, hosts: listing.hosts,
+          ...(listing.env ? { env: listing.env } : {}), ...(vaultName !== undefined ? { vaultName } : {}), ...(scope !== undefined ? { scope } : {}),
+        }));
         const held = secrets.held(key).map((h) => ({ grant: h.request.id, item: h.request.item, mode: h.grant.mode, hosts: h.grant.hosts, scope: h.grant.scope, until: new Date((h.until ?? h.grant.exp) * 1000).toISOString(), ...(h.grant.timeout ? { timeout: h.grant.timeout } : {}), ...(h.grant.mode === "proxy" ? { placeholder: placeholder(h.request.id) } : {}), ...(h.request.runOn ? { station: h.request.runOn.name } : {}), ...(accountOf(h.secret) !== null ? { username: accountOf(h.secret)! } : {}) }));
         const vault = VAULT_WORDS[secrets.status(key, person)];
         if (items.length === 0 && held.length === 0) return `No secrets may be asked for here: this station holds none of the vault's items open to agents for ${person ?? "whoever started this chat"}. One kept on another station of the workspace reaches this one once a device of its owner's still.fail app has been online with both. ${vault}`;

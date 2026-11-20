@@ -442,6 +442,23 @@ test("a new database is made at version 13", () => {
   db.close();
 });
 
+test("a database already at this version opens while another process holds its write lock", () => {
+  const path = join(tempdir(), "held.db");
+  open(path).close();
+  // The station before (or its backfill) mid-write, as a handover finds it: opening again writes nothing.
+  const holder = new DatabaseSync(path);
+  holder.exec("BEGIN IMMEDIATE");
+  try {
+    open(path).close();
+  } finally {
+    holder.exec("ROLLBACK");
+    holder.close();
+  }
+  const db = new DatabaseSync(path, { readOnly: true });
+  assert.equal((db.prepare("PRAGMA user_version").get() as any).user_version, SCHEMA_VERSION);
+  db.close();
+});
+
 test("a database from before the index on turns gets it as it is opened", () => {
   const path = join(tempdir(), "turns.db");
   open(path).close();

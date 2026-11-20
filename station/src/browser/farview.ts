@@ -12,8 +12,12 @@
 // one profile (<chat>/profile: cookies and local storage, shared as they change, FV_PROFILE_DIR), gone with the chat.
 // Tab 0 is the chat's first, started as its agent asks for its browser; the others are opened by the agent or by a
 // page (a link to a new window, window.open: the host says `openTab` on its frame port, FV_NEW_TABS), each one of the
-// screens. A host listens on 127.0.0.1 only: its agent port (driven with `agent.exe`, which the `browser` tool tells
-// the agent of) and its frame port (JSON lines; what the tab's screen is made of, farview-screen.ts). It is started as
+// screens. Each tab's host knows its own id among the profile's (FV_TAB_ID) and, for a window a page opened with a
+// handle to it (an OAuth popup), the tab that opened it and its origin (FV_OPENER_ID, FV_OPENER_ORIGIN): the two talk
+// through the profile (postMessage, window.opener). A page that closes its tab (window.close()) has it closed here
+// (`closeTab` on its frame port, and `closed: true` in its host.json for a station process that takes it up later).
+// A host listens on 127.0.0.1 only: its agent port (driven with `agent.exe`, which the `browser` tool tells the agent
+// of) and its frame port (JSON lines; what the tab's screen is made of, farview-screen.ts). It is started as
 // a job is, in a group of its own, and outlives a station process: the next one takes it up by the `host.json` it
 // wrote.
 //
@@ -37,7 +41,7 @@ import type { BrowserStatus } from "./browser.ts";
 import { askTab } from "./farview-agent.ts";
 import { FARVIEW_RELEASES, type FarviewRelease, farviewCacheDir, farviewSources, farviewAsset, farviewTarget, unpackRelease, type Fetch } from "./farview-release.ts";
 import { FarviewForm } from "./farview-form.ts";
-import { FarviewScreen } from "./farview-screen.ts";
+import { FarviewScreen, type OpenTabMeta } from "./farview-screen.ts";
 import { type Passkey, passkeyOf, sitePasskeys } from "./passkeys.ts";
 import { type CookieParam, allCookies, ofSites } from "./signins.ts";
 import type { TabInfo } from "./tabs.ts";
@@ -83,13 +87,14 @@ export function farviewFor(config: FarviewConfig | null, session: string, chosen
   return config.engine === "farview" || config.sessions.includes(session);
 }
 
-/// What a host writes into its state directory once it listens: its process and its ports.
-export type HostFile = { pid: number; port: number; agent: number; frame: number };
+/// What a host writes into its state directory once it listens: its process and its ports; `closed` once its page
+/// closed its tab.
+export type HostFile = { pid: number; port: number; agent: number; frame: number; closed?: true };
 
 export function hostFileOf(v: any): HostFile | null {
   const port = (n: unknown) => typeof n === "number" && Number.isInteger(n) && n > 0 && n < 65536;
   return v && typeof v === "object" && Number.isInteger(v.pid) && v.pid > 0 && port(v.port) && port(v.agent) && port(v.frame)
-    ? { pid: v.pid, port: v.port, agent: v.agent, frame: v.frame }
+    ? { pid: v.pid, port: v.port, agent: v.agent, frame: v.frame, ...(v.closed === true ? { closed: true as const } : {}) }
     : null;
 }
 
@@ -220,21 +225,29 @@ export class FarviewTabs {
     return file === null ? null : this.#up(session, n, dir, file, await startTimeOf(file.pid));
   }
 
-  async #alive(dir: string): Promise<HostFile | null> {
-    let file: HostFile | null;
+  async #fileOf(dir: string): Promise<HostFile | null> {
     try {
-      file = hostFileOf(JSON.parse(await readFile(join(dir, "host.json"), "utf8")));
+      return hostFileOf(JSON.parse(await readFile(join(dir, "host.json"), "utf8")));
     } catch {
       return null;
     }
+  }
+
+  async #alive(dir: string): Promise<HostFile | null> {
+    const file = await this.#fileOf(dir);
     return file !== null && groupAlive(file.pid) && (await answers(file.agent)) ? file : null;
   }
 
   #up(session: string, n: number, dir: string, file: HostFile, started: number | null): Host {
     const screen = new FarviewScreen({ session, port: file.frame, n });
-    // (a page that asks for a new tab: opened beside it, one of the screens)
-    screen.opened = (url) => {
-      void this.open(session, url).catch((e) => log.warn("browser", "a tab a page asked for could not be opened", { session, error: (e as Error).message }));
+    // (a page that asks for a new tab: opened beside it, one of the screens, linked to this one where it is a window
+    // the page holds)
+    screen.opened = (url, meta) => {
+      void this.open(session, url, meta).catch((e) => log.warn("browser", "a tab a page asked for could not be opened", { session, error: (e as Error).message }));
+    };
+    // (a page that closed its tab: closed here, back to the tab that opened it; never the chat's first)
+    screen.closedByPage = () => {
+      if (n !== 0) void this.closeTab(session, screen.id).catch((e) => log.warn("browser", "a tab its page closed could not be closed", { session, error: (e as Error).message }));
     };
     const unscreen = this.#o.screens?.add(screen) ?? (() => {});
     screen.watch();
@@ -279,7 +292,7 @@ export class FarviewTabs {
     }
   }
 
-  async #start(session: string, n: number, url?: string): Promise<Host> {
+  async #start(session: string, n: number, url?: string, meta?: OpenTabMeta): Promise<Host> {
     const config = this.active();
     if (config === null) throw new Error("Farview is not this station's browser (config.json `browser`).");
     await this.ready(config);
@@ -305,6 +318,8 @@ export class FarviewTabs {
         url = FIRST_PAGE;
       }
     }
+    // (its id among the profile's tabs: the window id its opener's page holds, else its screen's)
+    const tabId = meta?.window ? meta.window : `fv_${chatDir(session)}${n ? `_${n}` : ""}`;
     const child = startLasting(config.host, ["--tab", "0", url], {
       cwd: dir,
       stdio: "ignore",
@@ -316,6 +331,8 @@ export class FarviewTabs {
         FV_AGENT_PORT: "0",
         FV_FRAME_PORT: "0",
         FV_BIND: "127.0.0.1",
+        FV_TAB_ID: tabId,
+        ...(meta?.opener ? { FV_OPENER_ID: meta.opener, FV_OPENER_ORIGIN: meta.origin ?? "" } : {}),
       },
     });
     let ended: number | null | undefined;
@@ -340,9 +357,9 @@ export class FarviewTabs {
     }
   }
 
-  /// A new tab of `session`'s chat on `url` (its agent's, or a page's that asked for one): the next number after every
-  /// tab its directory holds.
-  async open(session: string, url: string): Promise<FarviewTab> {
+  /// A new tab of `session`'s chat on `url` (its agent's, or a page's that asked for one, `meta` linking it to the
+  /// tab that did): the next number after every tab its directory holds.
+  async open(session: string, url: string, meta?: OpenTabMeta): Promise<FarviewTab> {
     const before = this.#opening.get(session) ?? Promise.resolve();
     const made = before.catch(() => {}).then(async () => {
       let n = 1;
@@ -350,7 +367,7 @@ export class FarviewTabs {
         for (const name of await readdir(join(this.#chatOf(session), "tabs"))) if (/^\d+$/.test(name)) n = Math.max(n, Number(name) + 1);
       } catch {}
       for (const k of this.#hosts.get(session)?.keys() ?? []) n = Math.max(n, k + 1);
-      const host = await this.#start(session, n, url || FIRST_PAGE);
+      const host = await this.#start(session, n, url || FIRST_PAGE, meta);
       return this.#tabOf(session, host);
     });
     this.#opening.set(session, made);
@@ -422,6 +439,18 @@ export class FarviewTabs {
       for (const t of tabs) {
         const n = Number(t);
         if (this.#hosts.get(session)?.has(n)) continue;
+        // (a tab its page closed while no station process held it: closed now, never taken up again, its host ended
+        // where it still runs and answers)
+        if (n !== 0) {
+          const dir = join(chat, "tabs", t);
+          const file = await this.#fileOf(dir);
+          if (file?.closed === true) {
+            if ((await this.#alive(dir)) !== null) await this.#end(file.pid);
+            await rm(dir, { recursive: true, force: true });
+            log.info("browser", "a chat's Farview tab its page closed, closed", { session, tab: n, pid: file.pid });
+            continue;
+          }
+        }
         const found = await this.#find(session, n, join(chat, "tabs", t)).catch(() => null);
         if (found !== null) log.info("browser", "a chat's Farview tab taken up", { session, tab: n, pid: found.pid });
       }

@@ -304,7 +304,7 @@ pub struct Accounts {
   pending : Map[String, Pending]
   making : Map[String, Unit]
   codex_accounts : Map[String, (String, String?)]
-  codex_account_reads : Map[String, @effect.Deferred[Unit]]
+  codex_account_reads : Map[String, (String, @effect.Deferred[Unit])]
   homes : Map[String, (String, HomeSays)]
   mut homes_read : Double
   mut homes_reading : Bool
@@ -401,7 +401,7 @@ pub async fn Accounts::new(
     unchecking: None,
     machine_said: Ref(None),
   }
-  for entry in jitems(Some(b.ask("store.profileStatus", []))) {
+  for entry in jitems(Some(json_to_jv(b.with_store(s => s.profile_status())))) {
     let items = jitems(Some(entry))
     let id = js_string(items.get(0))
     let status = items.get(1)
@@ -647,17 +647,11 @@ pub fn Accounts::hub_config(self : Accounts) -> HubConfig {
 }
 
 ///|
-/// Only the profile asked is made: `health` asks it once a profile, and a view goes through every profile's health
-/// (and `health_of` each other's too), so making all of them each time made the overview cubic in the profiles
-/// (21 profiles held a station's thread at 100%). A profile is made of its own entry alone, its id `js_string` of
-/// the entry's, as `hub_config` makes each.
+/// The profile asked, of `hub_config()` as kept: `health` asks it once a profile, and a view goes through every
+/// profile's health (and `health_of` each other's too), so making even the one asked each time made the overview
+/// quadratic in the profiles (29 profiles, 841 made a view, 0.1.10401). The first of that id, as `hub_config` makes each.
 fn Accounts::profile(self : Accounts, id : String) -> Profile? {
-  for p in jitems(self.config_raw.get("profiles")) {
-    if js_string(p.get("id")) == id {
-      return Some(profile_of(p, self.given.data, id => self.found(id)))
-    }
-  }
-  None
+  self.hub_config().profiles.iter().find_first(p => p.id == id)
 }
 
 ///|
@@ -695,16 +689,16 @@ async fn Accounts::codex_account_read(
 ) -> Unit {
   let under = self.codex_account_reads.get(profile.id)
   match under {
-    Some(u) if !again => {
+    Some((u_home, u)) if !again && u_home == profile.home => {
       u.wait()
       return
     }
     _ => ()
   }
   let read = @effect.Deferred::new()
-  self.codex_account_reads[profile.id] = read
+  self.codex_account_reads[profile.id] = (profile.home, read)
   match under {
-    Some(u) => u.wait() catch { _ => () }
+    Some((_, u)) => u.wait() catch { _ => () }
     None => ()
   }
   let account = self.ask("codex.accountIdentity", [js(profile.home)]) catch {
@@ -720,7 +714,7 @@ async fn Accounts::codex_account_read(
     )
   }
   match self.codex_account_reads.get(profile.id) {
-    Some(r) if physical_equal(r, read) => self.codex_account_reads.remove(profile.id)
+    Some((_, r)) if physical_equal(r, read) => self.codex_account_reads.remove(profile.id)
     _ => ()
   }
   ignore(read.succeed(()))
@@ -781,7 +775,7 @@ pub async fn Accounts::claude_token(
     None | Some(Null) => ""
     h => js_string(h)
   }
-  let joined = js_string(Some(self.ask("paths.join", [js(self.given.data), js(home)])))
+  let joined = @nodepath.join(self.b.sep, [self.given.data, home])
   let (token, expires_at) = claude_oauth_token(
     self.ctx,
     Some(joined),
@@ -1288,7 +1282,7 @@ pub fn manages_station(viewer : JV) -> Bool {
 /// `#keepQuota`: an allowance read kept, and as its hour's.
 fn Accounts::keep_quota(self : Accounts, id : String, quota : JV) -> Unit {
   self.background.track(async fn() {
-    ignore(self.ask("store.setProfileQuota", [js(id), quota]))
+    self.b.with_store(s => s.set_profile_quota(Json::string(id), jv_to_json(quota)))
   })
   self.pace_rev += 1
 }
@@ -1309,7 +1303,7 @@ pub async fn Accounts::delete_profile(
     }
     jset(raw, "profiles", jarr(list.filter(p => p.get("id") != Some(Str(id)))))
   })
-  ignore(self.ask("store.forgetProfileHours", [js(id)]))
+  self.b.with_store(s => s.forget_profile_hours(Json::string(id)))
   self.pace_rev += 1
   if self.given.hub_profile_gone {
     self.background.track(async fn() {

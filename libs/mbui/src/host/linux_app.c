@@ -902,6 +902,16 @@ static void app_state(void) {
   static int told = -1;
   int s = (shown ? 1 : 0) | (front ? 2 : 0);
   if (s == told) return;
+  // (no window of the run's on the screen any more: what drawing holds beyond its frames given back, in the run's
+  // context, made again as a frame is drawn: mb_render_trim)
+  if (!shown && told > 0 && (told & 1)) {
+    GtkWidget *a = area_with_context(-1);
+    if (a) {
+      gdk_gl_context_clear_current();
+      gtk_gl_area_make_current(GTK_GL_AREA(a));
+      if (!gtk_gl_area_get_error(GTK_GL_AREA(a))) mb_render_trim();
+    }
+  }
   told = s;
   state_cb(s);
   schedule();
@@ -1645,6 +1655,44 @@ void mb_host_set_perf(int32_t on) { (void)on; }
 void mb_host_perf_line(moonbit_string_t line) { (void)line; }
 moonbit_string_t mb_host_perf_where(void) { return moonbit_make_string_raw(0); }
 int32_t mb_host_perf_open(int32_t go) { (void)go; return 0; }
+
+// A file shown chosen in its folder in the desktop's file manager (@hostapi.reveal_file: 在文件夹中显示), or whether
+// that can be done here (go 0): it can. Asked of the file manager over D-Bus (org.freedesktop.FileManager1's ShowItems,
+// which Nautilus, Dolphin, Nemo and others serve); where none answers, its folder opened as any folder is. Only a file
+// that is there.
+int32_t mb_host_reveal_file(moonbit_string_t s, int32_t go) {
+  if (!go) return 1;
+  char *path = utf8(s);
+  int ok = 0;
+  if (path[0] && g_file_test(path, G_FILE_TEST_EXISTS)) {
+    fprintf(stdout, "reveal-file: %s\n", path);
+    fflush(stdout);
+    char *uri = g_filename_to_uri(path, NULL, NULL);
+    GDBusConnection *bus = uri ? g_bus_get_sync(G_BUS_TYPE_SESSION, NULL, NULL) : NULL;
+    if (bus) {
+      const char *items[] = {uri, NULL};
+      GVariant *r = g_dbus_connection_call_sync(bus, "org.freedesktop.FileManager1", "/org/freedesktop/FileManager1",
+                                                "org.freedesktop.FileManager1", "ShowItems",
+                                                g_variant_new("(^ass)", items, ""), NULL, G_DBUS_CALL_FLAGS_NONE, 2000,
+                                                NULL, NULL);
+      if (r) {
+        ok = 1;
+        g_variant_unref(r);
+      }
+      g_object_unref(bus);
+    }
+    if (!ok) {
+      char *dir = g_path_get_dirname(path);
+      char *dir_uri = g_filename_to_uri(dir, NULL, NULL);
+      ok = dir_uri && g_app_info_launch_default_for_uri(dir_uri, NULL, NULL);
+      g_free(dir_uri);
+      g_free(dir);
+    }
+    g_free(uri);
+  }
+  g_free(path);
+  return ok;
+}
 double mb_host_perf_size(void) { return 0; }
 moonbit_bytes_t mb_host_perf_read(void) { return moonbit_make_bytes(0, 0); }
 
@@ -1792,6 +1840,12 @@ int32_t mb_host_mods_held(void) {
   return kb ? mods_of(gdk_device_get_modifier_state(kb)) : 0;
 }
 
+// The pointer held by the window and game controllers (@hostapi.set_pointer_lock, gamepads): none here.
+void mb_host_pointer_lock(int32_t on) { (void)on; }
+int32_t mb_host_pointer_locked(void) { return 0; }
+void mb_host_pointer_delta(double *out) { out[0] = 0; out[1] = 0; }
+int32_t mb_host_gamepads(double *out) { (void)out; return 0; }
+
 // The pointer's shape (@hostapi.set_cursor): CSS's names, as GTK takes them.
 void mb_host_set_cursor(int32_t kind) {
   static int now = -1;
@@ -1823,6 +1877,14 @@ double mb_host_cpu_ms(void) {
   struct rusage u;
   if (getrusage(RUSAGE_SELF, &u) != 0) return -1;
   return (u.ru_utime.tv_sec + u.ru_stime.tv_sec) * 1000.0 + (u.ru_utime.tv_usec + u.ru_stime.tv_usec) / 1000.0;
+}
+
+// The CPU time of the calling thread (@hostapi.thread_cpu_ms), in ms (-1: unsupported).
+double mb_host_thread_cpu_ms(void) {
+  struct timespec ts;
+  if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) == 0)
+    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
+  return -1.0;
 }
 
 double mb_host_mem_bytes(void) {

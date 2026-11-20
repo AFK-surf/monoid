@@ -70,7 +70,7 @@ test "wide: 接力到频道 from a row's menu: the dialog lists the bot's places
   // where it went said
   // (said at once, read out: seen as it has come in, toast_said)
   assert_true(toast_said(t, "已接力到 #dev"))
-  t.run_for(@kit.presence_in_ms)
+  t.run_for(@motion.presence_in_ms)
   assert_true(t.find("已接力到 #dev") is Some(_))
   // the dialog gone once its way out is over (asserted after it, not in the press's frame: what it showed, the note
   // with it, is kept on that way, where it was emptied before it closed)
@@ -143,7 +143,7 @@ test "wide: an @ typed in the relay's note offers the people there in a popover 
   assert_eq(relaying.note.text(), "看下 @peter ")
   assert_eq(named(calls, "chat.relay").length(), 0)
   // (gone once its way out is over)
-  t.run_for(@kit.pop_out_ms)
+  t.run_for(@motion.pop_out_ms)
   assert_true(t.find("可以 @ 的人") is None, msg="still offered once picked")
   // another @: Escape closes the menu for it, and the dialog stays
   t.type_text("@p")
@@ -151,7 +151,7 @@ test "wide: an @ typed in the relay's note offers the people there in a popover 
   t.frame()
   assert_true(t.find("可以 @ 的人") is Some(_))
   t.key(@ui.key_escape)
-  t.run_for(@kit.pop_out_ms)
+  t.run_for(@motion.pop_out_ms)
   assert_true(t.find("可以 @ 的人") is None)
   assert_true(t.find("开头附一句（可选）") is Some(_), msg="the dialog went with the menu")
   assert_eq(relaying.note.text(), "看下 @peter @p")

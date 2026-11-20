@@ -1,0 +1,155 @@
+/* /docs/ — engineering documentation: compact header, sticky left table of contents,
+   780px reading column. At ≤860px the contents fold into a sticky horizontal strip. */
+
+.docs-head { padding: 72px 0 40px; border-bottom: 1px solid var(--line); }
+.docs-head h1 { margin-top: 14px; font: 400 48px/1.1 var(--display); letter-spacing: -0.025em; }
+.docs-lede { margin-top: 16px; max-width: 64ch; color: var(--sub); font: 400 18px/1.55 var(--text); letter-spacing: -0.014em; }
+.docs-meta { margin-top: 24px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; }
+.docs-meta .link-arrow { font-size: 14px; }
+.docs-tag {
+  display: inline-flex; align-items: center; height: 26px; padding: 0 10px; border-radius: 999px;
+  background: var(--brand-soft); color: var(--brand-ink); font: 500 12px/1 var(--text); letter-spacing: 0;
+}
+
+.docs {
+  display: grid; grid-template-columns: 220px minmax(0, 780px); gap: 72px;
+  align-items: start; padding-top: 48px; padding-bottom: var(--sec);
+}
+
+/* Contents */
+.docs-toc { position: sticky; top: calc(var(--bar-h) + 28px); }
+.docs-toc h6 {
+  margin: 0 0 12px; font: 500 11px/1.4 var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--faint);
+}
+.docs-toc nav { display: flex; flex-direction: column; gap: 2px; border-left: 1px solid var(--line); }
+.docs-toc a {
+  display: grid; grid-template-columns: 22px 1fr; align-items: baseline;
+  margin-left: -1px; padding: 6px 0 6px 14px; border-left: 1px solid transparent;
+  color: var(--sub); font-size: 14px; line-height: 20px; letter-spacing: -0.006em;
+  transition: color .14s var(--ease-out), border-color .14s var(--ease-out);
+}
+.docs-toc a:hover { color: var(--ink); border-left-color: var(--line-strong); }
+.docs-toc .n { font: 500 11px/20px var(--mono); color: var(--faint); letter-spacing: 0; }
+
+/* Reading column */
+.docs-body { min-width: 0; }
+.doc { padding: 8px 0 56px; scroll-margin-top: calc(var(--bar-h) + 24px); }
+.doc + .doc { padding-top: 48px; border-top: 1px solid var(--line); }
+.doc-k { font: 500 12px/1.35 var(--mono); color: var(--brand-ink); letter-spacing: .08em; }
+.doc h2 { margin-top: 10px; font: 400 32px/1.2 var(--display); letter-spacing: -0.019em; }
+.doc h3 { margin-top: 36px; font: 500 16px/1.4 var(--text); letter-spacing: -0.011em; }
+.doc > p { margin-top: 14px; color: var(--sub); font-size: 16px; line-height: 1.65; letter-spacing: -0.011em; }
+.doc > h2 + p { margin-top: 16px; }
+.doc code { font-size: 0.86em; color: var(--ink); }
+.doc .term { margin-top: 20px; font-size: 12.5px; line-height: 1.7; }
+.doc h3 + .term, .doc h3 + .doc-table { margin-top: 14px; }
+.doc-note { margin-top: 20px !important; font-size: 14px !important; line-height: 1.55 !important; color: var(--faint) !important; }
+.doc-note .link-arrow { font-size: 14px; }
+
+/* Tables: scroll inside their own box, never the page */
+.doc-table { margin-top: 20px; overflow-x: auto; border: 1px solid var(--line); border-radius: var(--r-m); }
+.doc-table table { width: 100%; border-collapse: collapse; font-size: 14px; line-height: 1.5; letter-spacing: -0.006em; }
+.doc-table th {
+  text-align: left; padding: 10px 14px; background: var(--band); border-bottom: 1px solid var(--line);
+  font: 500 12px/1.4 var(--text); color: var(--sub); letter-spacing: 0; white-space: nowrap;
+}
+.doc-table td { padding: 11px 14px; vertical-align: top; color: var(--sub); border-top: 1px solid var(--line); }
+.doc-table tbody tr:first-child td { border-top: 0; }
+.doc-table td:first-child { color: var(--ink); white-space: nowrap; }
+.doc-table td code { white-space: nowrap; }
+.doc-table td code + code { margin-left: 6px; }
+
+/* API rows: identifier left, plain description right (first-line aligned) */
+.api { margin: 24px 0 0; display: flex; flex-direction: column; }
+.api > div {
+  display: grid; grid-template-columns: 220px 1fr; gap: 20px;
+  padding: 14px 0; border-top: 1px solid var(--line);
+}
+.api > div:last-child { border-bottom: 1px solid var(--line); }
+.api dt { margin: 0; line-height: 22px; }
+.api dt code { font-size: 12.5px; line-height: 22px; color: var(--ink); overflow-wrap: anywhere; }
+.api dd { margin: 0; color: var(--sub); font-size: 14px; line-height: 22px; letter-spacing: -0.006em; }
+
+/* Three layers */
+.doc-layers { list-style: none; margin: 14px 0 0; padding: 0; display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; counter-reset: layer; }
+.doc-layers li {
+  counter-increment: layer; display: flex; flex-direction: column; gap: 6px;
+  padding: 16px; border-radius: var(--r-l); background: var(--card);
+}
+.doc-layers li::before { content: "L" counter(layer); font: 500 11px/1.4 var(--mono); color: var(--brand-ink); letter-spacing: .06em; }
+.doc-layers b { font: 500 15px/1.4 var(--text); letter-spacing: -0.009em; }
+.doc-layers span { color: var(--sub); font-size: 13px; line-height: 1.5; letter-spacing: -0.003em; }
+
+/* Headless control names */
+.pills { list-style: none; margin: 20px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.pills li {
+  padding: 4px 9px; border-radius: var(--r-xs); background: var(--card);
+  font: 400 12px/1.4 var(--mono); color: var(--ink); letter-spacing: 0;
+}
+
+/* Look libraries */
+.libs { margin-top: 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.lib { padding: 18px; border: 1px solid var(--line); border-radius: var(--r-l); }
+.lib h3 { margin: 0; display: flex; align-items: center; gap: 8px; font: 500 15px/22px var(--mono); letter-spacing: 0; }
+.lic {
+  display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border-radius: var(--r-xs);
+  background: var(--card); color: var(--sub); font: 500 11px/1 var(--text); letter-spacing: 0;
+}
+.lib p { margin-top: 8px; color: var(--sub); font-size: 14px; line-height: 1.55; letter-spacing: -0.006em; }
+
+/* Next links */
+.docs-next { margin-top: 24px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.docs-next a {
+  display: flex; flex-direction: column; gap: 4px; padding: 16px 18px;
+  border: 1px solid var(--line); border-radius: var(--r-l);
+  transition: border-color .14s var(--ease-out), background-color .14s var(--ease-out);
+}
+.docs-next a:hover { border-color: var(--line-strong); background: var(--band); }
+.docs-next a:last-child { text-align: right; }
+.docs-next small { font-size: 12px; line-height: 1.35; color: var(--faint); }
+.docs-next b { font: 500 16px/1.4 var(--text); letter-spacing: -0.011em; }
+
+@media (max-width: 1100px) {
+  .docs { grid-template-columns: 190px minmax(0, 1fr); gap: 48px; }
+  .api > div { grid-template-columns: 190px 1fr; }
+}
+
+@media (max-width: 860px) {
+  .docs-head { padding: 44px 0 28px; }
+  .docs-head h1 { font-size: 34px; letter-spacing: -0.021em; }
+  .docs-lede { font-size: 16px; }
+  .docs { display: block; padding-top: 0; }
+  .docs-toc {
+    position: sticky; top: var(--bar-h); z-index: 20;
+    margin: 0 calc(-1 * var(--gutter)); padding: 0 var(--gutter);
+    background: rgba(255, 255, 255, 0.94);
+    -webkit-backdrop-filter: saturate(1.4) blur(12px); backdrop-filter: saturate(1.4) blur(12px);
+    border-bottom: 1px solid var(--line);
+  }
+  .docs-toc h6 { display: none; }
+  .docs-toc nav {
+    flex-direction: row; gap: 4px; border-left: 0; padding: 8px 0;
+    overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch;
+  }
+  .docs-toc nav::-webkit-scrollbar { display: none; }
+  .docs-toc a {
+    flex: none; display: inline-flex; align-items: baseline; gap: 6px;
+    margin: 0; padding: 6px 10px; border: 0; border-radius: var(--r-xs);
+    font-size: 13px; white-space: nowrap;
+  }
+  .docs-toc a:hover { background: var(--card); }
+  .doc { padding-top: 32px; scroll-margin-top: calc(var(--bar-h) + 56px); }
+  .doc + .doc { padding-top: 40px; }
+  .doc h2 { font-size: 26px; letter-spacing: -0.016em; }
+  .doc > p { font-size: 15px; }
+  .api > div { grid-template-columns: 1fr; gap: 4px; }
+  .doc-layers, .libs { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 600px) {
+  /* Code keeps its lines and scrolls inside the block rather than wrapping */
+  .doc .term { white-space: pre; overflow-wrap: normal; padding: 44px 16px 14px; }
+  .doc .term .copy { top: 10px; }
+  .docs-next { grid-template-columns: 1fr; }
+  .docs-next a:last-child { text-align: left; }
+}

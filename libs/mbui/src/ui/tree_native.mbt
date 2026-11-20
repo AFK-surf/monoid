@@ -49,12 +49,35 @@ pub fn native(
 ) -> @view.View {
   parent.box(made_for=loc, fn(b) {
     let id = b.id()
-    if tree_natives.iter().any(fn(e) { e.0 != id && physical_equal(e.1.view, view) }) {
-      b.fault("native: one native view given to two nodes of the tree's: a view is shown in one place")
-    }
-    tree_natives_rev.val = tree_natives_rev.val + 1
-    tree_natives[id] = { view, corners, kept }
-    b.owns(fn() { tree_native_gone(id) }) |> ignore
+    let tree = b.tree
+    // (given to another node still shown, a fault; one no longer shown (put by till its change is committed whole as
+    // what flies from it is, Tree::departs; leaving; laid out nowhere) hands it over: no longer its, not closed, so
+    // that its letting go later closes nothing of this one's)
+    // (said in the window its tree is drawn in, whichever window is in place as it is made: in_tree_window)
+    in_tree_window(tree, fn() {
+      let root = tree.root().id()
+      let gone : Array[@view.NodeId] = []
+      let mut live_dup = false
+      for o, e in tree_natives {
+        if o != id && physical_equal(e.view, view) {
+          if tree.holds(root, o) && !tree.leaving(o) && !tree.laid_out_nowhere(o) {
+            live_dup = true
+          } else {
+            gone.push(o)
+          }
+        }
+      }
+      for o in gone {
+        tree_natives.remove(o)
+        tree_natives_rev.val = tree_natives_rev.val + 1
+      }
+      if live_dup {
+        b.fault("native: one native view given to two nodes of the tree's: a view is shown in one place")
+      }
+      tree_natives_rev.val = tree_natives_rev.val + 1
+      tree_natives[id] = { view, corners, kept }
+    })
+    b.owns(fn() { in_tree_window(tree, fn() { tree_native_gone(id) }) }) |> ignore
   })
 }
 
@@ -79,7 +102,7 @@ let tree_hits_passed : Ref[Int] = Ref(0)
 
 ///|
 /// Native node `id` drawn this frame at (`x`, `y`), `w` × `h` where it is drawn: its hole there (NativeView::paint_in),
-/// its corners as `s` makes them, what is over it found from it (its covers: Tree::finger_areas, Tree::taken_over).
+/// its corners (`ground_corners`, else its own) as `s` makes them, what is over it found from it (its covers: Tree::finger_areas, Tree::taken_over).
 fn Ctx::paint_tree_native(
   self : Ctx,
   id : @view.NodeId,
@@ -89,12 +112,17 @@ fn Ctx::paint_tree_native(
   w : Double,
   h : Double,
   s : Double,
+  ground_corners? : (Double, Double, Double, Double)? = None,
 ) -> Unit {
   // (a shot shows no native view: it is the window's, where the page has it)
   if shooting.val {
     return
   }
-  let (r0, r1, r2, r3) = (tn.corners)()
+  // (as round as its ground is drawn, where that says (View::ground_drawn); else its own)
+  let (r0, r1, r2, r3) = match ground_corners {
+    Some(gc) => gc
+    None => (tn.corners)()
+  }
   let radii = FixedArray::from_array([dmax(r0, 0.0) * s, dmax(r1, 0.0) * s, dmax(r2, 0.0) * s, dmax(r3, 0.0) * s])
   // (what is over it is what of the tree's is drawn after it and takes a finger (Tree::taken_over), and the old views'
   // targets after those of the old views the walk came to before it, found before the walk: tree_hits_passed)

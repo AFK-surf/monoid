@@ -92,7 +92,11 @@ const MEASURE_LEFT : Int = 3
 /// where they say another thing: their place across seen anew); which slots this frame measured (`touched`, as of
 /// `at`): one it did not is let go as the frame ends, as one never seen. And for each slot whether the frame of its
 /// second sample came with nothing to cause it (`first_unasked`: frame_quiet), its first two frames its first ever
-/// (`ever`: the slots seen so far, a slot seen anew after a gap no node's first frame).
+/// (`ever`: the slots seen so far, a slot seen anew after a gap no node's first frame). And how big it was drawn across and
+/// down (its holders' scales and its own, as one) in its last frame and the one before, the frames as its samples have
+/// them (a frame laid out again in half a period the same frame, `scale_at` when that frame began, `scale_end` when it was
+/// last seen): what holds it grown or shrunk about a point since carries what is in it by as much more as it is further
+/// from that holder's edge (Ctx::sizes_faults' carried).
 priv struct SizesSeen {
   seen : FixedArray[Array[(Double, Double, Double)]]
   turned : FixedArray[Double]
@@ -101,6 +105,13 @@ priv struct SizesSeen {
   mut touched : Int
   first_unasked : FixedArray[Bool]
   mut ever : Int
+  mut scale_at : Double
+  mut scale_end : Double
+  mut scale_prev : (Double, Double)
+  mut scale_now : (Double, Double)
+  /// how many times the block of a page's list it is in had been taken for another key when it was last seen
+  /// (Tree::reused_epoch_of, one more; 0 in none; -1 not seen yet): another count, it shows another key, seen anew
+  mut reused : Int
 }
 
 ///|
@@ -113,6 +124,11 @@ fn SizesSeen::new(text : String) -> SizesSeen {
     touched: 0,
     first_unasked: FixedArray::make(6, false),
     ever: 0,
+    scale_at: -1.0e9,
+    scale_end: -1.0e9,
+    scale_prev: (1.0, 1.0),
+    scale_now: (1.0, 1.0),
+    reused: -1,
   }
 }
 
@@ -497,6 +513,13 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
     // what shows held where it was by it: worked out from what holds it)
     let k = self.count
     let ya = Array::make(k, 1.0)
+    // (and how big it is drawn across and down, its holders' scales and its own (corner_scale_at for a node of the
+    // window's tree, as the tree's walk worked it out; else its holder's by its look's); its drawn edges, left and top, in
+    // the window's terms; and how big it was drawn in the frame before over how big now, across and down)
+    let sx_at = Array::make(k, 1.0)
+    let sy_at = Array::make(k, 1.0)
+    let drawn_pos : Array[(Double, Double)] = Array::make(k, (0.0, 0.0))
+    let scale_ratio : Array[(Double, Double)] = Array::make(k, (1.0, 1.0))
     let yb = Array::make(k, 0.0)
     let al = Array::make(k, 1.0)
     let c_top = Array::make(k, -1.0e9)
@@ -525,6 +548,14 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
     // (and whether it shakes across now, itself or what holds it (View::shakes_while, motion's ShakeWay::shakes): where
     // its left edge is drawn is that way's while it goes, turning back on purpose; its top and its sizes judged as ever)
     let shaken = Array::make(k, false)
+    // (and whether it is held at a top as what scrolls it moves, itself or what holds it in its row (View::sticky):
+    // where it is down its row is the hold's, stopping as it is caught and going on as it is let go on purpose; its
+    // sizes, where it is across and where it is down out of a row judged as ever)
+    let stuck = Array::make(k, false)
+    // (and how many times the block of a page's list it is in was taken for another key (Tree::reused_epoch_of), one
+    // more; 0 in none: what is drawn in a block taken for another key is that key's, never the one before stepping, even
+    // where the block was out of sight between, put by)
+    let reused_ep = Array::make(k, 0)
     let puts_now : Map[Int, (Double, Double)] = Map([])
     let laids_now : Map[Int, Double] = Map([])
     // (what holds each before it: a node of the window's tree put among the frame's may come after what it holds)
@@ -547,15 +578,31 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
       let n = self.nodes[i]
       let p = n.parent
       let (pa, pb, palpha) = if p >= 0 && p < k { (ya[p], yb[p], al[p]) } else { (1.0, 0.0, 1.0) }
-      let (la, lb, lalpha, ldx) = match self.drawn_entry(i) {
+      let (la, lb, lalpha, ldx, lax) = match self.drawn_entry(i) {
         Some(e) => {
           let l = e.look_now()
           let oy = n.y + l.oy * n.fh
-          (l.sy, oy * (1.0 - l.sy) + l.dy, l.alpha, l.dx)
+          (l.sy, oy * (1.0 - l.sy) + l.dy, l.alpha, l.dx, l.sx)
         }
-        None => (1.0, 0.0, 1.0, 0.0)
+        None => (1.0, 0.0, 1.0, 0.0, 1.0)
+      }
+      if tree_frame_ids.contains(i) {
+        let ts = corner_scale_at.get(i).unwrap_or(1.0)
+        sx_at[i] = ts
+        sy_at[i] = ts
+      } else {
+        sx_at[i] = (if p >= 0 && p < k { sx_at[p] } else { 1.0 }) * lax
+        sy_at[i] = (if p >= 0 && p < k { sy_at[p] } else { 1.0 }) * la
       }
       xb[i] = (if p >= 0 && p < k { xb[p] } else { 0.0 }) + ldx
+      reused_ep[i] = match (tree, tree_frame_ids.get(i)) {
+        (Some(tr), Some(id)) =>
+          match tr.reused_epoch_of(id.at) {
+            Some(ep) => ep + 1
+            None => 0
+          }
+        _ => if p >= 0 && p < k { reused_ep[p] } else { 0 }
+      }
       ya[i] = pa * la
       yb[i] = pa * lb + pb
       al[i] = palpha * n.opacity * lalpha
@@ -593,6 +640,10 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
       }
       if p >= 0 && p < k && put_now[p] {
         put_now[i] = true
+      }
+      match (tree, tree_frame_ids.get(i)) {
+        (Some(tr), Some(id)) if tr.sticks_any() && tr.is_sticky(id) => stuck[i] = true
+        _ => ()
       }
       shaken[i] = (p >= 0 && p < k && shaken[p]) ||
         (match (tree, tree_frame_ids.get(i)) {
@@ -645,6 +696,18 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
           col_at[i] = col_at[p]
           in_row[i] = in_row[p]
           set_out[i] = set_out[p]
+          stuck[i] = stuck[i] || stuck[p]
+        }
+        // (on a flight's way: drawn in the window's terms, in no row of what it is drawn among (shared.mbt), what it
+        // holds measured from it as ever)
+        match (tree, tree_frame_ids.get(i)) {
+          (Some(tr), Some(id)) if tr.lifted_at(id.at) => {
+            row_at[i] = 0.0
+            col_at[i] = 0.0
+            in_row[i] = false
+            set_out[i] = -1.0
+          }
+          _ => ()
         }
       }
     }
@@ -802,10 +865,54 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
           s
         }
       }
+      drawn_pos[i] = (left0, top0)
+      // (its block taken for another key since it was last seen: another key's, seen anew from this frame, its first)
+      if ns.reused != reused_ep[i] {
+        if ns.reused >= 0 {
+          ns.text = n.text
+          ns.ever = 0
+          ns.scale_at = -1.0e9
+          ns.scale_end = -1.0e9
+          ns.scale_prev = (sx_at[i], sy_at[i])
+          ns.scale_now = (sx_at[i], sy_at[i])
+          for s in 0..<6 {
+            ns.seen[s].clear()
+            ns.turned[s] = -1.0e9
+            ns.first_unasked[s] = false
+          }
+        }
+        ns.reused = reused_ep[i]
+      }
       if ns.at != now {
         ns.at = now
         ns.touched = 0
+        // (how big it is drawn, its frames as its samples': once a frame)
+        let scale = (sx_at[i], sy_at[i])
+        let scale_gap = ns.scale_end > -1.0e8 && now - ns.scale_end > 2.5 * period
+        if scale_gap || resized || !shows || self.down || view_holds() || (hand_now && by_scroll[i]) || put_now[i] {
+          ns.scale_at = -1.0e9
+          ns.scale_end = -1.0e9
+          ns.scale_prev = scale
+          ns.scale_now = scale
+        } else if ns.scale_at < -1.0e8 {
+          ns.scale_at = now
+          ns.scale_end = now
+          ns.scale_prev = scale
+          ns.scale_now = scale
+        } else if now - ns.scale_at < 0.5 * period {
+          ns.scale_end = now
+          ns.scale_now = scale
+        } else {
+          ns.scale_at = now
+          ns.scale_end = now
+          ns.scale_prev = ns.scale_now
+          ns.scale_now = scale
+        }
       }
+      scale_ratio[i] = (
+        if sx_at[i] > 0.0 { ns.scale_prev.0 / sx_at[i] } else { 1.0 },
+        if sy_at[i] > 0.0 { ns.scale_prev.1 / sy_at[i] } else { 1.0 },
+      )
       // (words saying another thing: new words where they stand across)
       if words && !physical_equal(ns.text, n.text) && ns.text != n.text {
         ns.text = n.text
@@ -830,6 +937,14 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
         // (its left edge while it shakes across: the shake's, there and back on purpose; seen anew from its first frame
         // at rest, as one never seen)
         if shaken[i] && m.0 == MEASURE_LEFT {
+          seen.clear()
+          ns.turned[slot] = -1.0e9
+          ns.first_unasked[slot] = false
+          continue
+        }
+        // (where it is down its row while it is held at a top (View::sticky): the hold's, caught and let go on purpose;
+        // seen anew from its first frame at rest)
+        if stuck[i] && in_row && m.0 == MEASURE_TOP {
           seen.clear()
           ns.turned[slot] = -1.0e9
           ns.first_unasked[slot] = false
@@ -880,7 +995,9 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
       }
     }
     // (what goes as what holds it went, by as far in the frame, carried by it: that one said, the outermost so carried,
-    // not each thing in it; down by its top, across by its left edge)
+    // not each thing in it; down by its top, across by its left edge. What holds it drawn grown or shrunk about a point
+    // since the frame before, from s0 to s1, carries it by as far again as it stands from that holder's edge times
+    // 1 - s0 / s1, where it is now: what is further in goes further as it grows, nothing of its own)
     let placed : Map[(Int, Bool), Double] = Map([])
     for f in faults {
       if measure_place(f.2) {
@@ -892,14 +1009,21 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
       if !measure_place(f.2) {
         continue
       }
+      let across = measure_across(f.2)
+      let cpos = if across { drawn_pos[f.0].0 } else { drawn_pos[f.0].1 }
       let mut p = self.nodes[f.0].parent
       while p >= 0 {
-        match placed.get((p, measure_across(f.2))) {
-          Some(w) if (w - f.3).abs() < 0.01 => {
-            carried.add(k)
-            break
+        match placed.get((p, across)) {
+          Some(w) => {
+            let ppos = if across { drawn_pos[p].0 } else { drawn_pos[p].1 }
+            let ratio = if across { scale_ratio[p].0 } else { scale_ratio[p].1 }
+            let expected = w + (cpos - ppos) * (1.0 - ratio)
+            if (expected - f.3).abs() < 0.01 {
+              carried.add(k)
+              break
+            }
           }
-          _ => ()
+          None => ()
         }
         p = self.nodes[p].parent
       }

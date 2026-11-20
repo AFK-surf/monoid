@@ -1114,6 +1114,8 @@ export class Data {
     // Its person's presets as the device carries them, and which of its stations are from before (presets-kept.ts):
     // in the workspace's, by its id.
     if (table === "presetRecords") return [this.#ofWorkspace(key) ?? null, [key, "presetRecords"]];
+    // Its person's drafts of 待派发 as the device carries them (views/board-drafts.ts): in the workspace's, by its id.
+    if (table === "boardDrafts") return [this.#ofWorkspace(key) ?? null, [key, "boardDrafts"]];
     // A workspace's vaults as its stations hold them (views/vault.ts): the vaults, box certificates and requests by the
     // workspace's id; each vault's items by `<workspace>/<vault>`.
     if (table === "vault") return [this.#ofWorkspace(key) ?? null, [key, "vault"]];
@@ -1343,6 +1345,28 @@ export class Data {
     void this.listed(station, "chats");
     this.#readQuery(readTopic(CHAT_READS.session.name, [station, session]));
     return this.of(station)?.chatOfSession(station, session);
+  }
+
+  /// The anchor session key of `session`'s conversation (`conv ?? session`), from its summary (or detail when unlisted).
+  conversationOf(station: string, session: string): string {
+    this.#readQuery({ topic: "session", station, key: session });
+    const db = this.of(station);
+    const summary = db?.summary(station, session);
+    const src = summary !== undefined ? summary : (db?.detail(station, session) as Record<string, unknown> | undefined)?.session;
+    const conv = src !== null && typeof src === "object" ? (src as Record<string, unknown>).conv : undefined;
+    return typeof conv === "string" && conv !== "" ? conv : session;
+  }
+
+  /// The listed chat row of a session: first check exact row id / session (zero session-table read on the common anchor
+  /// path), then resolve its conversation anchor (`conv ?? session`) by row id / session, and finally fall back to
+  /// `chat_agent` when no distinct `conv` is declared (legacy stations without `conv`).
+  chatForSession(station: string, session: string): unknown {
+    const direct = this.chat(station, session) ?? this.chatOfSession(station, session);
+    if (direct !== undefined) return direct;
+    const conv = this.conversationOf(station, session);
+    if (conv !== session) return this.chat(station, conv) ?? this.chatOfSession(station, conv);
+    this.#readQuery(readTopic(CHAT_READS.agent.name, [station, session]));
+    return this.of(station)?.chatOfAgent(station, session);
   }
 
   /// The listed chat an agent's session is in: its own (chatOfSession), else the first it is among the agents of

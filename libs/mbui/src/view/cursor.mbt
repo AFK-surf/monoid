@@ -96,15 +96,46 @@ pub fn View::cursor(self : View, shape : Live[Cursor?], loc~ : SourceLoc) -> Vie
 }
 
 ///|
+/// Whether `role` is an interactive control whose default pointer shape (when it takes presses and is not a ground) is
+/// the pressed shape (`Hand`), even when driven by drag/gesture rather than `on_press` (e.g. a slider).
+fn role_is_interactive(role : Role) -> Bool {
+  match role {
+    Button
+    | Link
+    | Checkbox
+    | Radio
+    | Switch
+    | Tab
+    | MenuItem
+    | MenuItemCheckbox
+    | MenuItemRadio
+    | Option
+    | Slider => true
+    _ => false
+  }
+}
+
+///|
 /// The pointer's shape over node `id` as it is now: the one it says (View::cursor); else the shape of what is pressed
-/// (Tree::pressed_shape: a hand, unless the app said otherwise) where a press on it does something (its on_press) and
-/// it takes presses; else the arrow (a node only dragged, a ground). One gone: the arrow.
+/// (Tree::pressed_shape: a hand, unless the app said otherwise) where it takes presses (and is not hover-only) and
+/// either has an on_press handler or declares an interactive control role (and is not a ground); else the arrow (a
+/// plain dragged region, a ground). One gone: the arrow.
 pub fn Tree::cursor_of(self : Tree, id : NodeId) -> Cursor {
   guard self.alive_id(id) else { return Arrow }
   let n = self.nodes[id.at]
   match n.cursor {
     Some(c) => c
-    None => if n.on_press is Some(_) && !n.points && self.takes_presses(id) { self.pressed_shape() } else { Arrow }
+    None => {
+      let interactive_role = match n.said {
+        Some(s) if !n.as_ground => role_is_interactive(s.role)
+        _ => false
+      }
+      if (n.on_press is Some(_) || interactive_role) && !n.points && self.takes_presses(id) {
+        self.pressed_shape()
+      } else {
+        Arrow
+      }
+    }
   }
 }
 

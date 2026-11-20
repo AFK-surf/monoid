@@ -36,6 +36,11 @@ void mb_core_stop(void);
 /// Android's (android_core.c).
 int mb_core_screen_ack(double call, double ts);
 
+/// The app's input to a remote screen (`json`: what `screen.input` says in `input`, UTF-8, `len` bytes) sent straight
+/// to its station by the shell, in order, where it reads the view of the app's call `call` itself (client/shell
+/// `sf_shell_screen_input`): 1, else 0 (the app asks the core). Apple's, Windows' and Android's, as mb_core_screen_ack.
+int mb_core_screen_input(double call, const uint8_t *json, size_t len);
+
 /// Where the shell offers a remote screen's records it reads itself (client/shell `Media`), before saying them to the
 /// app: `take(call, kind, key, seq, ts, bytes, len)`, from the shell's threads, a view's in order (2 a video frame, 6 a
 /// sound packet, 1 and 5 their configs, offered to be seen); 1 when it took it (nothing said to the app then). The

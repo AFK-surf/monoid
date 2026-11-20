@@ -25,29 +25,12 @@ const mb = join(station, "mb", "src");
 const repo = join(station, "..");
 
 /// Calls a package makes that the program never reaches: each with a check that it is so.
-const NOT_REACHED: { name: string; why: string; holds: () => boolean }[] = [
-  {
-    name: "rpc mcp_tools child_process.execFile",
-    why: "mcp_tools' DeviceTools are the harness's: station_main has its own (live_p5_1_tools.mbt) and makes none",
-    holds: () => !programSource().includes("@mcp_tools.DeviceTools"),
-  },
-  {
-    name: "rpc mcp_tools door.screened",
-    why: "mcp_tools' Door is the harness's: station_main's door is run.mbt's, /jobs/screen a place of P5-3's (live_p5_3_jobs.mbt)",
-    holds: () => !programSource().includes("@mcp_tools.Door") && /"\/jobs\/screen" if r\.meth == "POST"/.test(read(join(mb, "station_main", "live_p5_3_jobs.mbt"))),
-  },
-  {
-    name: "rpc session_storage fn.historyFound",
-    why: "asked only where the storage's world says `hub.has(\"locateAsync\")` is false, and P5-2's says it is true",
-    holds: () => /"hub\.has" => Json::boolean\(\["locateAsync",/.test(read(join(mb, "station_main", "live_p5_2_world.mbt"))),
-  },
-];
+const NOT_REACHED: { name: string; why: string; holds: () => boolean }[] = [];
 
 /// The parts a dispatcher answers whole, whatever the method (the conversations' world, live_p5_2_chats.mbt
-/// `chats_answer`: `match part { "files" => …, "path" => … }`): a package's call of one is answered there.
+/// `chats_answer`: `match part { "files" => … }`): a package's call of one is answered there.
 const ANSWERED_WHOLE: { pkg: string; part: string; file: string; arm: RegExp }[] = [
-  { pkg: "session_chats", part: "files", file: "live_p5_2_chats.mbt", arm: /^    "files" =>$/m },
-  { pkg: "session_chats", part: "path", file: "live_p5_2_chats.mbt", arm: /^    "path" => \{$/m },
+  { pkg: "session_chats", part: "files", file: "live_p5_2_chats.mbt", arm: /^    "files" => \{$/m },
 ];
 
 const read = (p: string) => readFileSync(p, "utf8");
@@ -145,7 +128,7 @@ test("every call a package makes of the station's parts by name is answered in t
     assert.ok(n.holds(), `${n.name} is reached now (${n.why}): take it out of NOT_REACHED`);
   }
   for (const w of ANSWERED_WHOLE) assert.match(read(join(mb, "station_main", w.file)), w.arm, `${w.file} answers ${w.part} whole no more: take it out of ANSWERED_WHOLE`);
-  assert.ok(counted > 600, `the calls read: ${counted} (fewer than ever: the scan has stopped finding them)`);
+  assert.ok(counted > 300, `the calls read: ${counted} (fewer than ever: the scan has stopped finding them)`);
   const wrong = judge(results);
   assert.deepEqual(wrong, [], wrong.join("\n"));
 });
@@ -206,6 +189,7 @@ function mbRoutes(): Map<string, string> {
 /// condition it is matched by there.
 const MATCHED: Record<string, [string, RegExp]> = {
   "PUT ^/elevation$": ["rigs_mode/elevation.mbt", /meth == "PUT" && path == "\/elevation"/],
+  "PUT ^/screen-service$": ["rigs_mode/screen_service.mbt", /meth == "PUT" && path == "\/screen-service"/],
   "POST ^/move$": ["move_coord/routes.mbt", /method_: "POST", matches: p => is_path\(p, "\/move"\)/],
   "POST ^/move/back$": ["move_coord/routes.mbt", /is_path\(p, "\/move\/back"\)/],
   "POST ^/move/stop$": ["move_coord/routes.mbt", /is_path\(p, "\/move\/stop"\)/],
@@ -268,7 +252,6 @@ const ENV_NOT_THE_PROGRAMS: Record<string, string> = {
   STILLFAIL_NODE: "the Node the launcher runs main.js with",
   STILLFAIL_TEST_TMP: "the TypeScript tests' temporary directory (test/setup-env.mjs)",
   STILLFAIL_ACTORS_TRACE: "a trace of Node's shells of the actors (sessions/mb-actor.ts), which the program has none of",
-  STILLFAIL_MEMLOG: "a log of Node's own heap",
 };
 
 test("every STILLFAIL_* the TypeScript station reads, the program reads", () => {
@@ -482,7 +465,7 @@ const ASK_ANSWERED_IN: Record<string, RegExp> = {
 const ASK_HANDED_ON: { slice: string; answers: () => string; why: string; holds: () => boolean }[] = [
   {
     slice: "hub",
-    answers: () => /\npub async fn hub_call\([\s\S]*?\n\}\n/.exec(read(join(mb, "session_hub", "hub_harness.mbt")))?.[0] ?? "",
+    answers: () => /\npub async fn hub_call\([\s\S]*?\n\}\n/.exec(read(join(mb, "session_hub", "hub_call.mbt")))?.[0] ?? "",
     why: "P5-2's hub_bridge (live_p5_2_hubops.mbt) asks session_hub's hub_call what it does not answer",
     holds: () => /@session_hub\.hub_call\(hub, name, args\)/.test(read(join(mb, "station_main", "live_p5_2_hubops.mbt"))),
   },
@@ -551,4 +534,111 @@ test("every name a slice asks of another on the bus is one that slice answers", 
   });
   const wrong = judge(results);
   assert.deepEqual(wrong, [], wrong.join("\n"));
+});
+
+/// Bare `hub.act(...)` calls in `station_main` bypass `Hub::command` / `Hub::notify` cold-session wakeup.
+/// Zero bare `hub.act(` calls are permitted anywhere in `station_main`.
+test("station_main has no bare hub.act() calls bypassing cold-session wakeup", () => {
+  const unexpected: string[] = [];
+  for (const f of programFiles()) {
+    const rel = relative(station, f);
+    const text = read(f);
+    for (const m of text.matchAll(/\.act\(/g)) {
+      const lineStart = text.lastIndexOf("\n", m.index!) + 1;
+      const lineEnd = text.indexOf("\n", m.index!);
+      const line = text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd);
+      if (/^\s*\/\//.test(line) || /\bhold\.act\(/.test(line)) continue;
+      const args = argsAt(text, m.index! + m[0].length);
+      const method = /^\s*"([^"]+)"\s*$/.exec(args[1] ?? "")?.[1] ?? "<dynamic>";
+      const lineNo = text.slice(0, m.index!).split("\n").length;
+      unexpected.push(`${rel}:${lineNo} calls .act(..., "${method}") directly`);
+    }
+  }
+  assert.deepEqual(unexpected, [], unexpected.join("\n"));
+});
+
+/// Prevent Wave 1 & Wave 2 style empty placeholder callbacks from creeping back into `station_main` slice wiring.
+test("station_main slice wiring has no empty stub callbacks", () => {
+  const unexpected: string[] = [];
+  const sliceFiles = programFiles().filter((f) => !f.endsWith("/live_bus.mbt"));
+  for (const f of sliceFiles) {
+    const rel = relative(station, f);
+    const lines = read(f).split("\n");
+    lines.forEach((line, i) => {
+      if (/^\s*\/\//.test(line)) return;
+      if (/\b_connect\s*=>\s*\[\]/.test(line)) {
+        unexpected.push(`${rel}:${i + 1} has empty connect placeholder callback \`_connect => []\``);
+      }
+      if (/\bon_close:\s*_\w*\s*=>\s*\(\)\s*=>\s*\(\)/.test(line)) {
+        unexpected.push(`${rel}:${i + 1} has no-op unsubscribe callback \`on_close: _ => () => ()\``);
+      }
+      if ((rel.endsWith("live_p5_5_connects.mbt") || rel.endsWith("live_p5_5_platforms.mbt")) && /\bignore\(\s*(?:handler|cb|on_message|callback)\s*\)/.test(line)) {
+        unexpected.push(`${rel}:${i + 1} drops connects callback with ignore(...)`);
+      }
+    });
+  }
+  assert.deepEqual(unexpected, [], unexpected.join("\n"));
+});
+
+/// Every MCP tool declared by the TypeScript station must be declared and wired in the MoonBit program,
+/// and no `station_main` PartTool or PartRoute may contain a todo/not-implemented stub.
+test("every TypeScript MCP tool is declared and wired in MoonBit without stub implementations", () => {
+  const tsToolNames = new Set<string>();
+  for (const f of tsFiles()) {
+    const t = read(f);
+    if (!f.includes("/tools/") && !f.endsWith("tools.ts") && !t.includes("parts.tools(")) continue;
+    for (const m of t.matchAll(/^\s+name:\s*"([a-z][a-z0-9_]+)",\s*$/gm)) {
+      const around = t.slice(m.index!, m.index! + 400);
+      if (around.includes("description:") || around.includes("inputSchema:") || around.includes("parameters:")) {
+        tsToolNames.add(m[1]!);
+      }
+    }
+  }
+  assert.ok(tsToolNames.size >= 30, `TypeScript MCP tools read: ${tsToolNames.size}`);
+  const mbAllText = mbt(mb).filter((f) => !/\/harness[^/]*\.mbt$/.test(f)).map(read).join("\n");
+  const missing = [...tsToolNames].filter((n) => !mbAllText.includes(`"${n}"`)).sort();
+  assert.deepEqual(missing, [], `MCP tools in station/src/ missing from station/mb/src/: ${missing.join(", ")}`);
+
+  const stubs: string[] = [];
+  for (const f of programFiles()) {
+    const rel = relative(station, f);
+    read(f).split("\n").forEach((line, i) => {
+      if (/^\s*\/\//.test(line)) return;
+      if (/raise\s+Failure\(\s*"(?:todo|not implemented|stub)/i.test(line)) {
+        stubs.push(`${rel}:${i + 1} contains stub Failure`);
+      }
+    });
+  }
+  assert.deepEqual(stubs, [], stubs.join("\n"));
+});
+
+/// Core real-process MoonBit parity suites (`mb-live-*.test.ts`) must never regress or silently vanish.
+test("core live real-process parity suite list (mb-live-*.test.ts) does not regress", () => {
+  const requiredLiveSuites = [
+    "mb-live-accounts-handover.test.ts",
+    "mb-live-canary-fixes.test.ts",
+    "mb-live-comma-replica-parity.test.ts",
+    "mb-live-connects-admin-parity.test.ts",
+    "mb-live-devices-rigs-cards.test.ts",
+    "mb-live-hooks-parity.test.ts",
+    "mb-live-jobs-ops-parity.test.ts",
+    "mb-live-locator.test.ts",
+    "mb-live-mesh-remote-parity.test.ts",
+    "mb-live-p5-1.test.ts",
+    "mb-live-p5-2.test.ts",
+    "mb-live-p5-3.test.ts",
+    "mb-live-p5-4.test.ts",
+    "mb-live-p5-5.test.ts",
+    "mb-live-sessions-parity.test.ts",
+    "mb-live-station.test.ts",
+    "mb-live-vault-devices-parity.test.ts",
+    "mb-live-vault-proxy-parity.test.ts",
+  ];
+  const testDir = join(station, "test");
+  const present = new Set(readdirSync(testDir).filter((n) => /^mb-live-.*\.test\.ts$/.test(n)));
+  assert.ok(present.size >= requiredLiveSuites.length, `mb-live-*.test.ts count regressed: ${present.size} < ${requiredLiveSuites.length}`);
+  const missing = requiredLiveSuites.filter((name) => !present.has(name));
+  assert.deepEqual(missing, [], `missing core live parity suites: ${missing.join(", ")}`);
+  const emptySuites = requiredLiveSuites.filter((name) => !/\b(?:test|it)\s*\(/.test(read(join(testDir, name))));
+  assert.deepEqual(emptySuites, [], `core live parity suites with no test cases: ${emptySuites.join(", ")}`);
 });

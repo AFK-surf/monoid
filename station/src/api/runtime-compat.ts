@@ -93,7 +93,7 @@ export function runtimeCompatible(r: Request, answer: Answer): Answer {
   // Account writes return an overview, sometimes wrapped with the newly created id. Read-only old clients must
   // not be broken by an unrelated account edit either. Files/preview/module replies never enter this branch.
   const entries = /^\/threads\/[^/]+\/entries$/.test(path);
-  const account = /^\/(profiles|logins|automatic-decisions|archiving|connects|slack|feishu|group|me\/slack)(\/|$)/.test(path);
+  const account = /^\/(profiles|logins|automatic-decisions|archiving|auto-chats|connects|slack|feishu|group|me\/slack)(\/|$)/.test(path);
   if (!type && !account && !entries) return answer;
   const raw = JSON.parse(answer.body.toString("utf8"));
   let view: unknown;

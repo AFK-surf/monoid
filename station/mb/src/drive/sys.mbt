@@ -456,14 +456,7 @@ pub fn random_bytes(n : Int) -> Bytes {
 ///|
 /// Bytes as lowercase hex.
 pub fn hex(b : BytesView) -> String {
-  let digits = "0123456789abcdef"
-  let out = StringBuilder::new()
-  for i = 0; i < b.length(); i = i + 1 {
-    let v = b[i].to_int()
-    out.write_char(digits.get_char(v >> 4).unwrap())
-    out.write_char(digits.get_char(v & 15).unwrap())
-  }
-  out.to_string()
+  @codec.hex_encode(b)
 }
 
 ///|

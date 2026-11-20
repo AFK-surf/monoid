@@ -24,7 +24,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { Clock, Effect, Fiber } from "effect";
-import { liveClock, within } from "../ops/fibers.ts";
+import { liveClock, wall, within } from "../ops/fibers.ts";
 import { RUNTIME_KINDS, type AgentDriver, type AgentSession, type RuntimeKind } from "../agents/runtime.ts";
 import { endRunner, runnerId } from "../agents/process.ts";
 import { RUNNER_LEFT_MS, allLeft, isTerminalRunner, liveRunners, type RunnerInfo } from "../agents/runner.ts";
@@ -32,9 +32,9 @@ import { log } from "../ops/log.ts";
 import { tr, stationLang } from "../ops/i18n.ts";
 import { iso, sessionPlaces } from "../read/transcript.ts";
 import { transcriptSourcesSoon } from "../read/transcript-soon.ts";
-import { type Attachment, MANUAL, type SessionRow, type Store, STILLFAIL_SURFACE, feishuSurface, commaSurface, groupSurface, slackSurface, type MessageRow, type ThreadRow, type ThreadSummary } from "../store/store.ts";
+import { type ArchivedWorkspace, type Attachment, MANUAL, type SessionRow, type Store, STILLFAIL_SURFACE, feishuSurface, commaSurface, groupSurface, slackSurface, type MessageRow, type ThreadRow, type ThreadSummary } from "../store/store.ts";
 import type { DeliveryCardState, InWorkspace, PendingMessage } from "../store/rows.ts";
-import { comingWs, handedWs } from "../store/rows.ts";
+import { comingWs, handedWs, sees } from "../store/rows.ts";
 import { isNotice, markNotice } from "./chat.ts";
 import { runShown } from "./run-change.ts";
 import type { PolicyChecks } from "./archive-policy.ts";
@@ -54,6 +54,7 @@ import { LiveHub } from "./live.ts";
 import type { Jobs } from "./neighbours.ts";
 import { agentHomePaths, workspaceAgentHome, workspaceAgentHomePath } from "./agent-home.ts";
 import { Presets, RepoIndex } from "./presets.ts";
+import { BoardDrafts } from "./board-drafts.ts";
 import { Clones } from "./clones.ts";
 import { type Roots, roots as machineRoots } from "../read/machine.ts";
 import { carrySubagents, goesAfresh, startsAfresh, toldCleared, toldLongChat, toldResumeLost } from "./afresh.ts";
@@ -101,6 +102,11 @@ export interface ColdStorage {
   /// Whether an archived session's directory holds more than its chat's files, and empties it of that.
   holdsMore?(key: string): Promise<boolean>;
   expire?(key: string, before: number): Promise<void>;
+  /// Whether an archived session still lacks its `cold` mark and is eligible to be packed now.
+  needsPack?(key: string): Promise<boolean>;
+  /// Removes rebuildable build/install directories from an idle unarchived session without packing or marking cold.
+  /// Returns removed bytes (>= 0) when measured, or null when skipped before measuring (not cleanable / shared / job).
+  cleanIdleRebuildable?(key: string): Promise<number | null>;
 }
 
 /// The most of a shared file the station fetches, as much as an agent may attach.
@@ -236,6 +242,8 @@ export class Hub {
   readonly actors = new Map<string, Actor>();
   /// The MoonBit program its actors run in (mb-actor.ts), where it is built: opened with the first.
   private actorsProgram: ActorsProgram | null | undefined;
+  /// Latest concurrency limit set on this hub (null: read from config() when actorsProgram opens).
+  private maxConcurrentTurnsOverride: number | null = null;
   /// Installed by the agents' side: older stores finish indexing active keys without holding the station thread.
   waitForWorkspaceActivity: (() => Promise<boolean>) | null = null;
   /// An older store's session totals are built in bounded batches after handover.
@@ -252,6 +260,20 @@ export class Hub {
   prepareSessionChatNames: ((sessions: readonly string[], signal?: AbortSignal) => Promise<void>) | null = null;
   /// The sessions whose latest conversation must be ready before an asynchronous operation can continue.
   prepareLatestThreads: ((sessions: readonly string[], signal?: AbortSignal) => Promise<void>) | null = null;
+  /// Cross-round cursor for `packUnfinishedArchived` (`lifecycle.ts`).
+  packBackfillCursor: ArchivedWorkspace | null = null;
+  /// Last time periodic archive backfill & idle rebuildable cleanup ran (`lifecycle.ts` `runArchiveUpkeepIfDue`),
+  /// initialized to hub startup time so startup never triggers an immediate burst.
+  lastArchiveUpkeepAt: number;
+  /// Bounded `sessionKey -> lastActiveAt` memo for idle rebuildable cleanup (`lifecycle.ts`), cleared on archive/delete.
+  readonly idleMeasured = new Map<string, number>();
+  /// Last time a full low-disk reclamation pass completed (`lifecycle.ts` `relieveLowDiskFull`).
+  lastFullRelieveAt: number | null = null;
+
+  /// Drops a session's cached idle-rebuildable measurement (called on archive or delete).
+  forgetIdleMeasured(key: string): void {
+    this.idleMeasured.delete(key);
+  }
   private awaitingWorkspaceActivity = new Set<string>();
   private sandboxNames: SandboxNameBuilder | null = null;
   private sessionDirectories: SessionDirectoryBuilder | null = null;
@@ -264,6 +286,11 @@ export class Hub {
   private holdsNow = new Set<Hold>();
   /// Sessions taken up from the previous station: their turns run on, not cut off.
   private adopted = new Set<string>();
+  /// Whether `takeUp` found no handover.json (crash / OOM / machine reboot, not an update handover).
+  private nonUpdateRestart = false;
+  /// Sessions whose turns were cut off by a non-update restart and still await manual resume or dismissal.
+  private readonly interruptedByRestart = new Set<string>();
+  private interruptedHook: (() => void) | null = null;
   /// Whether its drivers hold every agent's process of this station's that goes on (`ownsRunner`): from the end of
   /// `takeUp` to a handover or the end.
   private holdsRunners = false;
@@ -291,6 +318,13 @@ export class Hub {
     workspace: (ws) => ws ?? this.workspaces()[0] ?? null,
     stationName: (id) => this.options.stationName?.(id) ?? null,
   });
+  /// Each person's drafts of 待派发 and the files of those to run here (board-drafts.ts).
+  readonly boardDrafts = new BoardDrafts({
+    store: () => this.store,
+    dir: () => join(this.config().dataDir, "board-files"),
+    uploads: () => join(this.config().dataDir, "uploads"),
+    now: () => wall.now(),
+  });
   /// The repositories on the machine, offered as a preset's folders (presets.ts).
   readonly repoIndex = new RepoIndex({ roots: () => [homedir()], file: () => join(this.config().dataDir, "repo-index.json"), now: () => this.now(), besides: () => [this.config().dataDir] });
   /// Repositories cloned from git into the repository cache, for presets to name (clones.ts).
@@ -303,6 +337,7 @@ export class Hub {
   constructor(options: HubOptions) {
     this.options = options;
     this.clock = options.clock ?? liveClock;
+    this.lastArchiveUpkeepAt = this.now();
     this.store = options.store;
     this.internal = options.internal ?? null;
     this.drivers = new Map(options.drivers.map((d) => [d.runtime(), d]));
@@ -351,8 +386,17 @@ export class Hub {
     this.unlistenRunning = this.store.subscribe((change) => {
       // Its summary is told now: with its transcript's length as read.
       if (change.type === "session" && this.lengths.has(change.key)) this.writeLengths([change.key]);
-      if (change.type === "session") this.live.running(change.key, this.store.getSession(change.key)?.running === true);
-      else if (change.type === "sessionRemoved") this.live.running(change.key, false);
+      if (change.type === "session") {
+        const row = this.store.getSession(change.key);
+        this.live.running(change.key, row?.running === true);
+        if (this.interruptedByRestart.has(change.key) && (row === null || row.running || row.archivedAt !== null)) {
+          this.interruptedByRestart.delete(change.key);
+          this.interruptedHook?.();
+        }
+      } else if (change.type === "sessionRemoved") {
+        this.live.running(change.key, false);
+        if (this.interruptedByRestart.delete(change.key)) this.interruptedHook?.();
+      }
     });
     this.deps = this.sessionDeps();
   }
@@ -680,6 +724,7 @@ export class Hub {
     const file = handoverFile(this.config().dataDir);
     let handed: Handover = { sessions: [] };
     const text = await readFile(file, "utf8").catch((error: NodeJS.ErrnoException) => (error.code === "ENOENT" ? null : error));
+    this.nonUpdateRestart = text === null;
     if (text !== null) {
       try {
         if (text instanceof Error) throw text;
@@ -1118,13 +1163,108 @@ export class Hub {
     for (const actor of this.actors.values()) void actor.toolsAt(url);
   }
 
+  /// Called whenever the set of sessions interrupted by a non-update restart changes (pushes `/overview`).
+  onInterruptedChanged(f: () => void) {
+    this.interruptedHook = f;
+  }
+
+  /// Sessions interrupted by a non-update restart visible to `viewer`, newest active first (items capped at 20).
+  interruptedIn(viewer: InWorkspace): { count: number; items: { key: string; thread: number | null; title: string }[] } {
+    const rows: SessionRow[] = [];
+    for (const key of this.interruptedByRestart) {
+      const row = this.store.getSession(key);
+      if (!row || row.running || row.archivedAt !== null || this.handedOver(key)) continue;
+      if (!sees(viewer, row.ws ?? null)) continue;
+      rows.push(row);
+    }
+    rows.sort((a, b) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0));
+    return {
+      count: rows.length,
+      items: rows.slice(0, 20).map((row) => {
+        const latest = this.store.latestThread(row.key);
+        return { key: row.key, thread: latest?.thread.id ?? null, title: row.title || latest?.thread.title || "" };
+      }),
+    };
+  }
+
+  /// Resumes sessions interrupted by a non-update restart visible to `viewer` (optionally narrowed to `keys`),
+  /// gently staggered on the hub clock so a batch click does not spike the machine all at once.
+  resumeInterrupted(viewer: InWorkspace, keys?: string[]): number {
+    const wanted = keys ? new Set(keys) : null;
+    const rows: SessionRow[] = [];
+    for (const key of [...this.interruptedByRestart]) {
+      if (wanted !== null && !wanted.has(key)) continue;
+      const row = this.store.getSession(key);
+      if (!row || row.running || row.archivedAt !== null || this.handedOver(key)) {
+        this.interruptedByRestart.delete(key);
+        continue;
+      }
+      if (!sees(viewer, row.ws ?? null)) continue;
+      this.interruptedByRestart.delete(key);
+      rows.push(row);
+    }
+    if (rows.length === 0) return 0;
+    this.interruptedHook?.();
+    rows.sort((a, b) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0));
+    const eligible = rows.filter((row) => this.online(row));
+    if (eligible.length === 0) return 0;
+    void this.actor(eligible[0]!).recover();
+    if (eligible.length > 1) {
+      const rest = eligible.slice(1);
+      const self = this;
+      this.fork(
+        Effect.gen(function* () {
+          for (const row of rest) {
+            // timer: stagger batch manual resume after non-update restart
+            yield* Effect.sleep(250);
+            const now = self.store.getSession(row.key);
+            if (!now || now.running || now.archivedAt !== null || self.handedOver(row.key) || !self.online(now)) continue;
+            void self.actor(now).recover();
+          }
+        }),
+      );
+    }
+    return eligible.length;
+  }
+
+  /// Dismisses sessions interrupted by a non-update restart visible to `viewer` (optionally narrowed to `keys`).
+  dismissInterrupted(viewer: InWorkspace, keys?: string[]): number {
+    const wanted = keys ? new Set(keys) : null;
+    let removed = 0;
+    for (const key of [...this.interruptedByRestart]) {
+      if (wanted !== null && !wanted.has(key)) continue;
+      const row = this.store.getSession(key);
+      if (row && !sees(viewer, row.ws ?? null)) continue;
+      if (this.interruptedByRestart.delete(key)) removed++;
+    }
+    if (removed > 0) this.interruptedHook?.();
+    return removed;
+  }
+
   /// After a restart: resume cut-off turns (those not taken up with their runtime), then deliver whatever is still
-  /// pending.
+  /// pending. On a non-update restart (no handover.json), cut-off turns are ended cleanly and await manual resume
+  /// instead of auto-spawning every runtime process at once.
   recover() {
+    const manualResume = this.nonUpdateRestart;
+    this.nonUpdateRestart = false;
     const recovering = new Set<string>();
-    for (const row of this.store.runningSessions()) {
+    const running = [...this.store.runningSessions()].sort((a, b) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0));
+    for (const row of running) {
       // Taken up from the previous station: its turn runs on.
       if (this.adopted.has(row.key) || !this.online(row)) continue;
+      if (manualResume) {
+        log.info("hub", "turn cut off by non-update restart; awaiting manual resume", { session: row.key });
+        void this.actor(row).cutOffByRestart().then((interrupted) => {
+          if (!interrupted) return;
+          const now = this.store.getSession(row.key);
+          if (!now || now.running || now.archivedAt !== null || this.handedOver(row.key)) return;
+          if (!this.interruptedByRestart.has(row.key)) {
+            this.interruptedByRestart.add(row.key);
+            this.interruptedHook?.();
+          }
+        }).catch(() => {});
+        continue;
+      }
       log.info("hub", "recovering a turn cut off by restart", { session: row.key });
       recovering.add(row.key);
       void this.actor(row).recover();
@@ -1178,9 +1318,9 @@ export class Hub {
 
   // ── warm processes ─────────────────────────────────────────────────────────────────────────────────────────────
 
-  /// Ends idle claude and dsh processes (one per session) beyond the warm limit, oldest first, once they have idled
-  /// past warmMs. Codex threads share a process and stay. Runs when a process goes idle (the count grew) and at each
-  /// idle process's deadline.
+  /// Ends idle claude and dsh processes (one per session) beyond the warm limit (immediately, oldest first), and any
+  /// remaining idle processes once they have idled past warmMs (when warmMs > 0). Codex threads share a process and
+  /// stay. Runs when a process goes idle (the count grew) and at each idle process's deadline.
   private evictIdle() {
     const config = this.config();
     const now = this.now();
@@ -1191,11 +1331,17 @@ export class Hub {
         return ms === null ? [] : [[a, ms] as const];
       })
       .sort((a, b) => b[1] - a[1]);
-    let excess = idle.length - config.maxWarmClaude;
+    const cap = Math.max(0, Math.trunc(config.maxWarmClaude));
+    let excess = idle.length - cap;
     for (const [actor, ms] of idle) {
-      if (excess <= 0 || ms < config.warmMs) break;
-      void actor.evict();
-      excess--;
+      if (excess > 0) {
+        void actor.evict();
+        excess--;
+      } else if (config.warmMs > 0 && ms >= config.warmMs) {
+        void actor.evict();
+      } else {
+        break;
+      }
     }
   }
 
@@ -1229,8 +1375,9 @@ export class Hub {
 
   /// A process went idle: look again when it has idled past warmMs.
   idleNow(key: string) {
-    // A manual archive may have arrived during the last turn. Finish that archive when the turn ends; never sweep old
-    // directories on a clock or at startup.
+    // A manual archive may have arrived during the last turn. Finish that archive when the turn ends; any archive whose
+    // packing did not finish is backfilled periodically by `packUnfinishedArchived` (bounded per round, with a cursor,
+    // only for sessions not yet past `archivedWorkspaceMs`), never via a one-shot full sweep at startup.
     const row = this.store.getSession(key);
     if (row && row.archivedAt !== null) {
       const actor = this.actor(row);
@@ -1713,10 +1860,19 @@ export class Hub {
     log.info("hub", "session created", { session: key, connect: connect.id, scope, runtime, model: model ?? "", profile: profile.id });
   }
 
+  /// Updates the maximum concurrent running turns without restarting the station.
+  setMaxConcurrentTurns(n: number) {
+    const limit = typeof n === "number" && Number.isFinite(n) && n > 0 ? Math.trunc(n) : 0;
+    this.maxConcurrentTurnsOverride = limit;
+    if (this.actorsProgram) this.actorsProgram.setMaxConcurrentTurns(limit);
+  }
+
   /// The program its actors run in, the station's jobs too (jobs/jobs.ts), started for its first use (none: not built
   /// here).
   program(): ActorsProgram | null {
-    if (this.actorsProgram === undefined) this.actorsProgram = ActorsProgram.open(this.config().dataDir, this.clock, this.store);
+    if (this.actorsProgram === undefined) {
+      this.actorsProgram = ActorsProgram.open(this.config().dataDir, this.clock, this.store, this.maxConcurrentTurnsOverride ?? this.config().maxConcurrentTurns);
+    }
     return this.actorsProgram;
   }
 
@@ -1783,6 +1939,7 @@ export class Hub {
       spend: (key, ranOn, model) => this.accounts.spend(key, ranOn, model),
       refillsAt: (key) => this.accounts.refillsAt(key),
       recheck: (profile) => this.accounts.recheck(profile),
+      canAuthRetry: (key, failedProfile) => this.accounts.canAuthRetry(key, failedProfile),
       limitAfter: (profile, model) => this.accounts.limitAfter(profile, model),
       mcpUrl: () => (typeof this.options.mcpUrl === "string" ? this.options.mcpUrl : this.options.mcpUrl()),
       ...(this.options.toolsHeard ? { toolsHeard: this.options.toolsHeard } : {}),

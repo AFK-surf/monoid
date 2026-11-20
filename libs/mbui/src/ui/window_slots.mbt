@@ -233,6 +233,42 @@ pub fn window_close_here(wid : Int) -> Unit {
 }
 
 ///|
+/// The first window's tree (view_made_now's, as window 0 makes it): what a node's tree is matched by in_tree_window.
+// kept across runs: put back by view_forget
+let window_zero_tree : Ref[@view.Tree?] = Ref(None)
+
+///|
+/// `f` with the globals of the window `tree` is drawn in in place (a window beside the first telling the first's tree to
+/// show something: what it says of the first's nodes said in the first's state), then the one in place before put back.
+/// At once where `tree` is the one in place.
+fn in_tree_window(tree : @view.Tree, f : () -> Unit) -> Unit {
+  if view_app.val is Some(t) && physical_equal(t, tree) {
+    f()
+    return
+  }
+  let target = if window_zero_tree.val is Some(z) && physical_equal(z, tree) {
+    Some(0)
+  } else {
+    let mut found = None
+    for wid, t in window_trees {
+      if physical_equal(t, tree) {
+        found = Some(wid)
+      }
+    }
+    found
+  }
+  match target {
+    Some(wid) if wid != window_now.now => {
+      let back = window_now.now
+      window_put_in(wid) |> ignore
+      f()
+      window_put_in(back) |> ignore
+    }
+    _ => f()
+  }
+}
+
+///|
 /// The globals made to hold window `wid`'s state (window_put_in), its tree made where it is a window not met before.
 fn window_use(wid : Int) -> Unit {
   if window_put_in(wid) {

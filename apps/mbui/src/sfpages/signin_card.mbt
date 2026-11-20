@@ -16,6 +16,7 @@ priv struct SignInRun {
   run : @signals.Signal[@hostapi.OpRun?]
   choices : @signals.Signal[Array[@hostapi.PasswordLogin]]
   mut picked : String
+  mut vault : String
   mut username : String
   mut password : String
 }
@@ -58,6 +59,7 @@ fn signin_reset() -> Unit {
   signin_menu.val = ""
   signin_saving.clear()
   signin_code.clear()
+  @hostapi.op_list_cache_reset()
 }
 
 ///|
@@ -65,7 +67,7 @@ fn signin_run(id : String) -> SignInRun {
   match signin_runs.get(id) {
     Some(r) => r
     None => {
-      let r = { run: @signals.signal_ref(None), choices: @signals.signal([]), picked: "", username: "", password: "" }
+      let r = { run: @signals.signal_ref(None), choices: @signals.signal([]), picked: "", vault: "", username: "", password: "" }
       signin_runs[id] = r
       r
     }
@@ -114,6 +116,16 @@ fn signin_start(core : @settings.Core, station : String, ask : SignInAsk) -> Uni
     signin_steps[ask.id] = "auto"
     return
   }
+  let cached = @hostapi.op_list_cached_for(ask.site)
+  if cached.length() == 1 {
+    signin_pick(core, station, ask, cached[0])
+    return
+  }
+  if cached.length() > 1 {
+    signin_run(ask.id).choices.set(cached)
+    signin_steps[ask.id] = "choosing"
+    return
+  }
   signin_op(core, station, ask, ["item", "list", "--categories", "Login", "--format", "json"], "listing")
 }
 
@@ -129,12 +141,13 @@ fn signin_op(_core : @settings.Core, _station : String, ask : SignInAsk, args : 
 }
 
 ///|
-/// One of the site's logins picked (or the only one): its account and password asked for.
+/// One of the site's logins picked (or the only one): its account, password and any TOTP asked in one call.
 fn signin_pick(core : @settings.Core, station : String, ask : SignInAsk, l : @hostapi.PasswordLogin) -> Unit {
   let r = signin_run(ask.id)
   r.choices.set([])
   r.picked = l.id
-  signin_op(core, station, ask, ["item", "get", l.id, "--fields", "label=username,label=password", "--reveal", "--format", "json"], "getting")
+  r.vault = l.vault
+  signin_op(core, station, ask, op_item_get_args(l, fields=false), "getting")
 }
 
 ///|
@@ -154,6 +167,9 @@ fn signin_took(core : @settings.Core, station : String, ask : SignInAsk) -> Unit
   }
   match d.trouble() {
     Some(t) => {
+      if step == "getting" {
+        @hostapi.op_list_cache_reset()
+      }
       signin_said(ask.id, op_trouble_words(t))
       return
     }
@@ -161,6 +177,7 @@ fn signin_took(core : @settings.Core, station : String, ask : SignInAsk) -> Unit
   }
   match step {
     "listing" => {
+      @hostapi.op_list_cache_keep(d.out)
       let found = @hostapi.logins_for(d.out, ask.site)
       if found.is_empty() {
         signin_said(ask.id, @sf.t("android-misc.screen.fill.none", args=[("host", ask.site)]))
@@ -172,15 +189,19 @@ fn signin_took(core : @settings.Core, station : String, ask : SignInAsk) -> Unit
       }
     }
     "getting" => {
-      let (username, password) = @hostapi.login_fields(d.out)
+      let (username, password, code, has_otp) = @hostapi.login_secret(d.out)
       if username == "" && password == "" {
         signin_said(ask.id, @sf.t("android-misc.screen.fill.empty"))
         return
       }
       r.username = username
       r.password = password
-      // (its one-time code too, where it has one: the page asks it after the password)
-      signin_op(core, station, ask, ["item", "get", r.picked, "--otp"], "otp")
+      // (a full item JSON already holds the live `totp` code; fall back to `--otp` only when an OTP field lacked one)
+      if has_otp && code == "" {
+        signin_op(core, station, ask, op_item_otp_args(r.picked, r.vault), "otp")
+      } else {
+        signin_send(core, station, ask, username, password, code)
+      }
     }
     _ => ()
   }

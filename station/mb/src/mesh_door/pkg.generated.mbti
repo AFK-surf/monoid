@@ -2,27 +2,11 @@
 package "station/mesh_door"
 
 import {
-  "moonbitlang/core/json",
   "station/host",
   "station/mesh_door/door",
-  "station/mesh_door/gate",
 }
 
 // Values
-pub async fn echo_admin(@gate.AdminAsk) -> @door.Answer
-
-pub async fn harness(@host.Host) -> Unit
-
-pub fn interop_admit(@door.Packer) -> async (@json.Json, @door.Connection) -> @door.Said
-
-pub fn interop_bus() -> @gate.PeerBus
-
-pub async fn interop_client(@door.Connection, @door.Wire, Int32, Array[@json.Json], @host.Host, async () -> Unit) -> Array[@json.Json]
-
-pub fn interop_here() -> @gate.HereLocal
-
-pub async fn peer_client_step(async (String, String?, @json.Json, @gate.Body?) -> (@json.Json, @gate.Body?), String, @json.Json) -> @json.Json
-
 pub fn shell_packer(@host.Host) -> @door.Packer
 
 // Errors

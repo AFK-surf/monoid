@@ -9,14 +9,17 @@ export const PREF_SHAPES: Record<string, Shape> = {
   BoardFile: struct([
     ["id", "String"],
     ["name", "String"],
-  ], { doc: "A queued task's file, named by its composer id; its bytes stay in the device's draft store." }),
+  ], { doc: "A queued task's file, named by its composer id; its bytes are the device's draft store's where it was added,\nkept by the station the task is to run on for the person's other devices." }),
   BoardDraft: struct([
     ["id", "String"],
     ["title", "String"],
     ["station", "String"],
     ["stationName", "String"],
     ["files", opt(vec("BoardFile"))],
-  ], { doc: "An unstarted task kept in a workspace's 待派发 column on this device: its key, its words, the station it is to run on and that station's name." }),
+  ], { doc: "An unstarted task of a workspace's 待派发 column: its key, its words, the station it is to run on and that station's name." }),
+  BoardDraftsView: struct([
+    ["drafts", vec("BoardDraft")],
+  ], { doc: "A person's unstarted tasks of a workspace's 待派发 (the `boardDrafts` topic), newest first: the same on all their\ndevices, kept by the workspace's stations and carried by those devices (views/board-drafts.ts)." }),
   KeptTabs: struct([
     ["tabs", vec("String")],
     ["active", opt("String")],
@@ -33,7 +36,7 @@ export const PREF_SHAPES: Record<string, Shape> = {
     ["boardViews", map("String"), { default: true, doc: "How a workspace's chats are shown on this device, by workspace: `board` (by columns), or none (its list)." }],
     ["boardGroups", map("BoardGroup"), { default: true, doc: "How a workspace's board columns are grouped on this device, by workspace; none: `state`." }],
     ["boardShowEmpty", map("bool"), { default: true, doc: "A workspace's board leaving out its empty columns on this device, by workspace: `false`; none: shown." }],
-    ["boardDrafts", map(vec("BoardDraft")), { default: true, doc: "Unstarted tasks kept in a workspace's 待派发 column on this device, by workspace, newest first (at most 200)." }],
+    ["boardDrafts", map(vec("BoardDraft")), { default: true, doc: "Unstarted tasks a workspace's 待派发 kept on this device before they were carried (by workspace):\ntaken into the `boardDrafts` topic's once and left out of here." }],
     ["listFilter", map("ListFilter"), { default: true, doc: "The list filter chosen in each workspace, by workspace; one not there goes by `only_mine` and `only_watching`\n(one filter for all, as devices kept it before)." }],
     ["appearance", "Appearance", { default: true }],
     ["accent", opt("String"), { doc: "The app's colour theme on this device: `blue`, `teal`, `purple`, `pink`, `custom:<hue>` (0 to 359: a theme the app\nmakes of that hue), or none for still.fail's orange." }],
@@ -59,6 +62,7 @@ export const PREF_SHAPES: Record<string, Shape> = {
     ["driveFavorites", map("String"), { default: true, doc: "Folders this person keeps at hand on the files' page, by workspace, on this device: each a station's folder\n(JSON: [{station, path, name}]), whoever else browses there." }],
     ["driveFavoritesHidden", map("String"), { default: true, doc: "Formerly pinned folders the person removed from their shortcuts on this device, by workspace (JSON places).\nThis leaves the station's existing pinned folders and access rules unchanged." }],
     ["shareLook", opt("String"), { doc: "The look the card shared of the agents at work is drawn in, as last chosen under it on this device: the app's\nkey for it (`night`, `poster`, …; none or one the app does not know: its first)." }],
+    ["cpuDial", opt("String"), { doc: "How a machine's CPU dial says it on this device (its page's 资源, the dial pressed to turn it): `busy`, how much\nof it is used; or (none) how much is idle." }],
     ["dropAs", opt("String"), { doc: "How files dragged into a chat go unless the chat says otherwise (`dropFiles`): file, or (none) path." }],
     ["sendKey", opt("String"), { doc: "How the composer sends on this device (快捷键): `mod`, ⌘Enter (Ctrl+Enter elsewhere), Enter and ⇧Enter a new\nline; or (none) Enter, ⇧Enter a new line. A screen's keyboard's Enter is a new line whatever this says." }],
     ["reports", opt("String"), { doc: "Whether what people use is counted and sent from this device where its host keeps no switch of its own\n(设置 → 关于 → 发送使用统计和错误报告: macOS, Windows, Linux, the web; use-counts.ts): `off`, or none for on." }],

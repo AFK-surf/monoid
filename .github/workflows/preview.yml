@@ -103,7 +103,7 @@ jobs:
             base=${{ github.event.before }}
             [ -n "$branch" ] && base=$(git merge-base origin/main HEAD)
             if git cat-file -e "$base^{commit}" 2>/dev/null && git diff --name-only "$base" HEAD |
-              grep -qE '^(apps/mbui/windows/|apps/mbui/e2e/win/handoff\.sh$|apps/mbui/scripts/win\.sh$|apps/mbui/src/host/win_core\.c$|apps/mbui/src/host/win_electron_sealed\.h$|libs/mbui/src/host/win_(life|update)\.h$|scripts/(win-feeds|release)\.sh$|scripts/release-sign\.ts$|station/src/updates/)'; then v=yes; fi
+              grep -qE '^(apps/mbui/windows/|apps/mbui/e2e/win/handoff\.sh$|apps/mbui/scripts/win\.sh$|apps/mbui/src/host/win_core\.c$|apps/mbui/src/host/win_(electron_sealed|hello)\.h$|libs/mbui/src/host/win_(life|update)\.h$|scripts/(win-feeds|release)\.sh$|scripts/release-sign\.ts$|station/src/updates/)'; then v=yes; fi
           fi
           echo "handoff=$v" >> "$GITHUB_OUTPUT"
           echo "handoff: $v"
@@ -147,19 +147,14 @@ jobs:
       MBC_STORE: ${{ github.workspace }}/.ci/mbc-store
       HBC_CACHE: ${{ github.workspace }}/.ci/hbc
     steps:
-      # (when the job is cut, its timeout-minutes above, for its build's own limit to the second (scripts/with-timeout.sh);
-      # and the runner's image (GitHub's ImageVersion; none, a runner of our own: own), for the units' store: GitHub
-      # gives a push one of two images while it moves to a newer one, and their compilers or headers make other units,
-      # so one store over both kept only the last run's image's units (used.sh), the other's run compiling all again:
-      # preview's ios on main, 20261104.0337.1 and 20261112.0361.1 in turn, 43919855625 to 43925936518, 2026-11-16)
+      # (when the job is cut, its timeout-minutes above, for its build's own limit to the second (scripts/with-timeout.sh))
       # (less the 1-5 s of "Set up job" before it, as windows')
       # (a branch's app: mbc's MBC_LIGHT_TESTS, each unit taken at -O2 where main's store has it as this program's would
       # be, what it has not compiled at -O0, as pipeline.yml's desktop-build: all at -O2 a push after main took a large
       # change and before it saved a store of it was cut. Main's stays -O2)
-      - name: The job's end and its image
+      - name: The job's end
         run: |
           echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 - 5 ))" >> "$GITHUB_ENV"
-          echo "IMG=$(printf '%s' "${ImageVersion:-own}" | tr -c 'A-Za-z0-9._-' '_')" >> "$GITHUB_ENV"
           git config --global http.lowSpeedLimit 1024
           git config --global http.lowSpeedTime 20
           [ "$GITHUB_REF" = refs/heads/main ] || echo "MBC_LIGHT_TESTS=stillfail/stillfail" >> "$GITHUB_ENV"
@@ -169,6 +164,25 @@ jobs:
         with:
           name: mbui-linux-${{ matrix.arch }}
           packages: libgtk-4-dev libepoxy-dev libsoup-3.0-dev libsecret-1-dev clang
+      # (the runner's compiler and headers (IMG: cc and 12 hex digits of clang, its --version, the C standard headers
+      # as it preprocesses them and the GTK -dev packages' versions; none, a runner of our own: own), for the units' store: other compilers or headers make other units,
+      # so one store over two kept only the last run's units (used.sh), the other's run compiling all again (preview's
+      # ios on main, 20261104.0337.1 and 20261112.0361.1 in turn, 43919855625 to 43925936518, 2026-11-16). Not the
+      # image's ImageVersion, as mbui-check.yml says: images of one clang and libc tore main's store apart)
+      - name: The runner's compiler
+        run: |
+          if [ -z "${ImageVersion:-}" ]; then
+            img=own
+          else
+            cc_bin=$(command -v clang || true)
+            img="cc$({
+              [ -n "$cc_bin" ] && sha256sum "$cc_bin" && "$cc_bin" --version &&
+                printf '#include <stdio.h>\n#include <stdlib.h>\n#include <stdint.h>\n#include <string.h>\n#include <math.h>\n#include <limits.h>\n' | "$cc_bin" -E -x c - 2>/dev/null || true
+              dpkg-query -W -f='${Package}=${Version}\n' libgtk-4-dev libepoxy-dev libsoup-3.0-dev libsecret-1-dev 2>/dev/null || true
+            } | sha256sum | cut -c1-12)"
+          fi
+          echo "IMG=$img" >> "$GITHUB_ENV"
+          echo "IMG=$img (image=${ImageVersion:-own}, cc=$(${cc_bin:-clang} --version 2>/dev/null | head -1))"
       # (Node alone here: pnpm and its store only for a core.hbc not kept, below)
       - uses: ./.github/actions/node
       # (mbc and chk alone, as pipeline.yml's desktop-build: the other tools' keys and caches were a step's 12 s)
@@ -574,6 +588,21 @@ jobs:
         run: if bash apps/mbui/scripts/core.sh hermes-kept apple; then echo "kept=true" >> "$GITHUB_OUTPUT"; fi
       - uses: ./.github/actions/setup
         with: { pnpm: "${{ steps.core.outputs.kept != 'true' }}" }
+      # core.hbc not kept: made at once, in the background (pnpm's packages, esbuild, hermesc: ~57 s), beside the restores
+      # below and moonc's C, which it shares nothing with (it writes client/core-ts's packages, out/core's core-hermes.js
+      # and core.hbc, .ci/hbc). Made in the build step after the restores, it ended 22 s after moonc's C and pushed mbc's
+      # split and compile into the cut (main 31f2ead0ac and 873e7ac281, jobs 135458429309 and 135478118156: exit 124
+      # at 288-289 s). Its processes carry the build's mark, stopped with the rest when the build is cut.
+      - name: Start the core's bytecode (core.sh hermes apple, beside the restores)
+        if: steps.core.outputs.kept != 'true'
+        run: |
+          H=$RUNNER_TEMP/ios-hermes
+          mkdir -p "$H"
+          MBUI_BUILD_TREE=$(cat "$RUNNER_TEMP/build-tree") SF_SRC=$PWD nohup bash -c '
+            bash apps/mbui/scripts/core.sh hermes apple > "$0/log" 2>&1
+            echo $? > "$0/status.tmp" && mv "$0/status.tmp" "$0/status"
+          ' "$H" > /dev/null 2>&1 < /dev/null &
+          echo "$!" > "$H/pid"
       # (its icon, drawn by scripts/mac-icon.swift run with swift and compiled by actool, made once for that script, as
       # the build does, not again on each fresh runner)
       - uses: actions/cache@v4
@@ -617,11 +646,15 @@ jobs:
       # (a build cut short by its own limit, before the job's, still keeps what it compiled: main's store saved over what
       # was restored, nothing taken out, so the next run goes on from there, as the Linux jobs' do. Cut at the job's five
       # minutes it kept nothing: main's ten pushes up to c64dfaa7 (2026-11-16, libs/mbui changed) each compiled from
-      # the same old store till they were cut, 43908146733's after 254 s of it. Cut 30 s before the job is, moon's
+      # the same old store till they were cut, 43908146733's after 254 s of it. Cut 24 s before the job is, moon's
       # build saved after the store too: the upload, the key and both saves after a whole build took 14 s
       # (43981912517), ~21 s on a slower runner, and the post steps ~6 s; after a cut the stop, the key, both saves and
-      # the post steps 18 s (44411432671; 40 s before, 22 s of it went unused). The core for a device first (its
-      # engine, the shell's and libghostty-vt's headers, core.hbc), beside moonc where that still runs, so that
+      # the post steps 18 s (44411432671; 40 s before, 22 s of it went unused), 14 s in main's jobs 135458429309 and
+      # 135478118156 (16 s of the 30 left unused). Cut at 24 s, the store's and hbc's saves left moon-room 11-13 s, under
+      # its 18, and moon's build was never saved, each run's moonc 111 s again (44722052834): cut at 32 s, moon-room
+      # needs 14 (its save 10-11 s, the post steps 2-3). The core for a device first (its
+      # engine, the shell's and libghostty-vt's headers; core.hbc, from the step that began it beside the restores or
+      # HBC_CACHE's), beside moonc where that still runs, so that
       # ios.sh's own (app_libs, beside its mbc compile) only finds it and no unit reads ghostty/vt.h as it is copied;
       # then moonc's end awaited, ios.sh's mbc gen finding its C made. The .ipa: the app moved into Payload/ and back,
       # not copied, and zipped fast (-1: upload-artifact zips it again))
@@ -629,8 +662,19 @@ jobs:
         id: build
         run: |
           export MBUI_BUILD_TREE=$(cat "$RUNNER_TEMP/build-tree")
-          APP=stillfail MBUI_IOS_SDK=iphoneos MBUI_IOS_ID=fail.still.mbui SF_SRC=$PWD bash scripts/with-timeout.sh @$((JOB_END - 30)) bash -ec '
-            bash apps/mbui/scripts/core.sh apple aarch64-apple-ios
+          APP=stillfail MBUI_IOS_SDK=iphoneos MBUI_IOS_ID=fail.still.mbui SF_SRC=$PWD bash scripts/with-timeout.sh @$((JOB_END - 32)) bash -ec '
+            bash apps/mbui/scripts/core.sh apple-native aarch64-apple-ios
+            H=$RUNNER_TEMP/ios-hermes
+            if [ -f "$H/pid" ]; then
+              while [ ! -s "$H/status" ]; do
+                kill -0 "$(cat "$H/pid")" 2>/dev/null || { [ -s "$H/status" ] && break; cat "$H/log" 2>/dev/null || true; exit 1; }
+                sleep 1
+              done
+              cat "$H/log"
+              [ "$(cat "$H/status")" = 0 ] || exit 1
+            else
+              bash apps/mbui/scripts/core.sh hermes apple
+            fi
             B=$RUNNER_TEMP/ios-gen
             while [ ! -s "$B/status" ]; do
               kill -0 "$(cat "$B/pid")" 2>/dev/null || { [ -s "$B/status" ] && break; cat "$B/log" apps/mbui/out/ios-device/moon.log 2>/dev/null || true; exit 1; }
@@ -710,7 +754,7 @@ jobs:
         run: |
           c=apps/mbui/out/ios-device/_build/native/release/build/stillfail/stillfail/stillfail.c
           left=$(( JOB_END - $(date +%s) ))
-          if [ "$(cat "$RUNNER_TEMP/ios-gen/status" 2>/dev/null)" = 0 ] && [ -s "$c" ] && [ "$left" -gt 18 ]; then
+          if [ "$(cat "$RUNNER_TEMP/ios-gen/status" 2>/dev/null)" = 0 ] && [ -s "$c" ] && [ "$left" -gt 14 ]; then
             find apps/mbui/out/ios-device/_build -type d -name '*.mbc' -prune -exec rm -rf {} +
             echo "key=mbui-ios-moon-$(shasum -a 256 "$c" | cut -c1-16)" >> "$GITHUB_OUTPUT"
           else
@@ -813,8 +857,10 @@ jobs:
         uses: actions/setup-node@v5
         with: { node-version-file: .node-version, package-manager-cache: false }
       - uses: ./.github/actions/msvc
+      # (pack too: win.sh runs `scripts/mbui meta`, pack.exe, which uncached was built from nothing there, 36 tasks and
+      # ~35 s of the build: `the build not done after 105 s`, 44684094519)
       - uses: ./.github/actions/mbui-moonbit
-        with: { tools: 'mbc chk' }
+        with: { tools: 'mbc chk pack' }
       - name: Tools (MSVC's link.exe for cargo, which Git Bash's /usr/bin/link shadows)
         run: |
           echo "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$(cygpath -m "$(dirname "$(which cl)")/link.exe")" >> "$GITHUB_ENV"
@@ -836,6 +882,16 @@ jobs:
           node scripts/native.ts fetch shell win32-x64
           node scripts/native.ts fetch engine win32-x64
           node scripts/native.ts fetch ghostty-vt win32-x64
+      # collate, sealed and hello need only MSVC and the Windows natives above, nothing of the app's build (hello's
+      # WinRT UserConsentVerifier::CheckAvailabilityAsync alone took 41-72 s on cold windows-2025 runners, pushing the
+      # post-build checks past the 5 min cap: 44733105178, 44757376609). Start them here so they compile while the
+      # caches restore and finish while the app builds; the post-build check step collects their exit codes and logs.
+      - name: Host checks (collate, sealed, hello), started
+        run: |
+          L=$RUNNER_TEMP/win-checks; mkdir -p "$L"
+          for c in collate sealed hello; do
+            nohup bash -c 'bash apps/mbui/scripts/win.sh "$1" > "$0/$1.log" 2>&1; echo $? > "$0/$1.status"' "$L" "$c" > /dev/null 2>&1 &
+          done
       # The app's build as the last run on main left it (mbui's in libs/mbui: moon's _build, the split C and its objects, the .exe): of main's pushes that run this job, three in four leave the app's C
       # as it was (tests, docs, client/, media/; 96 of 129, 2026-10-18 to 20), and then moonc writes the same C again,
       # scripts/mbc finds every unit's object made of the same inputs (by content) and the same link made already:
@@ -1079,19 +1135,35 @@ jobs:
           export GITHUB_STEP_SUMMARY="$Z/summary"
           nohup bash -c 'bash apps/mbui/scripts/beta.sh win > "$0/log" 2>&1; echo $? > "$0/signed"' "$Z" > /dev/null 2>&1 &
       # the installer (apps/mbui/windows/setup.c) made of the app as built, put into a folder of this run's, put again
-      # over it, taken away (e2e/win/setup.sh: ~5 s)
-      - name: The installer, installed and taken away (e2e/win/setup.sh)
+      # over it, taken away (e2e/win/setup.sh: ~12 s), and beside it the synchronous answers across the engine DLL
+      # (engine-sync); then the three host checks begun before the caches were restored (collate, sealed, hello: the
+      # step `Host checks (collate, sealed, hello), started`), each waited for by its status file and its log shown.
+      # Each writes only its own directory (setup's in RUNNER_TEMP, out/collate, out/engine-sync, out/sealed, out/hello):
+      # one after another the first four were 21 s of the job's 300, which main's 44497568003 ran out of 1-2 s short of
+      # saving its caches; hello alone then grew to 41-72 s on cold runners (44733105178, 44757376609).
+      - name: The installer, installed and taken away (e2e/win/setup.sh) and engine-sync beside it; collate, sealed and hello collected
         run: |
-          bash apps/mbui/e2e/win/setup.sh "$(ls apps/mbui/out/setup/stillfail-setup-*.exe)"
-      # (these two checks need nothing of the app's or the e2e flow's: done while the e2e flow runs, not before it)
-      # the order of names the host gives the core (text.collate: src/host/win_collate.h), checked (a C program, ~2 s)
-      - name: The order of names (win.sh collate)
-        run: bash apps/mbui/scripts/win.sh collate
-      - name: Synchronous answers across the engine DLL
-        run: bash apps/mbui/scripts/win.sh engine-sync
-      # what still.fail's desktop app kept sealed, opened by the app built in its place (src/host/win_electron_sealed.h)
-      - name: The desktop app's sealed values (win.sh sealed)
-        run: bash apps/mbui/scripts/win.sh sealed
+          L=$RUNNER_TEMP/win-checks; mkdir -p "$L"
+          t0=$SECONDS
+          bash apps/mbui/e2e/win/setup.sh "$(ls apps/mbui/out/setup/stillfail-setup-*.exe)" > "$L/setup.log" 2>&1 & p_setup=$!
+          bash apps/mbui/scripts/win.sh engine-sync > "$L/engine-sync.log" 2>&1 & p_engine=$!
+          bad=0
+          for c in setup:$p_setup engine-sync:$p_engine; do
+            s=0; wait "${c#*:}" || s=$?
+            echo "::group::${c%%:*} (exit $s)"; cat "$L/${c%%:*}.log"; echo "::endgroup::"
+            [ "$s" = 0 ] || { echo "::error::${c%%:*} failed (exit $s)"; bad=1; }
+          done
+          echo "setup and engine-sync side by side: $((SECONDS - t0)) s"
+          for c in collate sealed hello; do
+            if [ ! -s "$L/$c.status" ]; then
+              node apps/mbui/scripts/waitfor.mjs --deadline 60 --what "win.sh $c" --exists "$(cygpath -w "$L/$c.status")" > /dev/null || true
+            fi
+            s=$(tr -d '\r\n' < "$L/$c.status" 2>/dev/null); s=${s:-none}
+            echo "::group::$c (exit $s)"; cat "$L/$c.log" 2>/dev/null; echo "::endgroup::"
+            [ "$s" = 0 ] || { echo "::error::$c failed (exit $s)"; bad=1; }
+          done
+          echo "the five collected: $((SECONDS - t0)) s"
+          exit $bad
       # out before the e2e flow ends (its tests hold nothing back): put, checked, then its feed, once its signing (begun
       # after the build) is over, beside the caches' saves and the e2e flow (the put mostly waiting on the network)
       - name: The Windows app's installer put, checked, then its feed, started
