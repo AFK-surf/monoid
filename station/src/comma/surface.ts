@@ -136,6 +136,8 @@ export type CommaSurfaceOptions = {
   name: string;
   /// The still.fail workspace the connect is of; null before the station is in one.
   workspace?: string | null;
+  /// The still.fail email of the person who owns this Comma connect, when known.
+  ownerEmail?: string | null;
   tasks: CommaTasks;
   store: Store;
   /// The models its sessions can run (the hub's `modelsFor` the connect).
@@ -168,6 +170,7 @@ export class CommaSurface extends ConnectedSurface {
   private readonly token: string;
   private readonly name: string;
   private readonly ofWorkspace: string | null;
+  private readonly ownerEmail: string | null;
   private readonly tasks: CommaTasks;
   private readonly store: Store;
   private readonly models: () => ModelChoice[];
@@ -196,6 +199,8 @@ export class CommaSurface extends ConnectedSurface {
     this.token = options.token;
     this.name = options.name;
     this.ofWorkspace = options.workspace ?? null;
+    const rawOwner = typeof options.ownerEmail === "string" ? options.ownerEmail.trim().toLowerCase() : "";
+    this.ownerEmail = /^[^\s@]+@[^\s@]+$/.test(rawOwner) && rawOwner.length <= 200 ? rawOwner : null;
     this.tasks = options.tasks;
     this.store = options.store;
     this.models = options.models;
@@ -331,7 +336,12 @@ export class CommaSurface extends ConnectedSurface {
       const known = (models[m.runtime] ??= []);
       if (m.model !== null && !known.includes(m.model)) known.push(m.model);
     }
-    return { scope: "", persistent_processes: false, computer_use_tool: false, host_access_required: false, execution_boundary: "stillfail-connect", runtime_probe: false, tasks: TASKS_VERSION, task_models: models, ...(this.stats === null ? {} : { stats_index: 1, task_index: 1 }) };
+    return {
+      scope: "", persistent_processes: false, computer_use_tool: false, host_access_required: false,
+      execution_boundary: "stillfail-connect", runtime_probe: false, tasks: TASKS_VERSION, task_models: models,
+      ...(this.stats === null ? {} : { stats_index: 1, task_index: 1 }),
+      ...(this.ownerEmail === null ? {} : { stillfail_owner_email: this.ownerEmail }),
+    };
   }
 
   /// Tells Comma it is here, and how far it has each Task it takes part in: Comma gives what it missed.

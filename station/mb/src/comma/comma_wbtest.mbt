@@ -69,11 +69,15 @@ test "base64 both ways, as node reads it" {
 ///|
 test "a connect's credentials, what makes its connection another" {
   let c : ScopedConnect = {
-    connect: { id: "c", enabled: true, server: "https://s", token: "t", workspace: None },
+    connect: { id: "c", enabled: true, server: "https://s", token: "t", workspace: None, owner_email: None },
     scope: Some("w"),
     scope_version: 2,
   }
-  assert_eq(credentials(c), Some("[\"https://s\",\"t\",null,\"w\",2]"))
+  assert_eq(credentials(c), Some("[\"https://s\",\"t\",null,\"w\",2,null]"))
+  assert_eq(
+    credentials({ ..c, connect: { ..c.connect, owner_email: Some("ada@example.test") } }),
+    Some("[\"https://s\",\"t\",null,\"w\",2,\"ada@example.test\"]"),
+  )
   assert_eq(credentials({ ..c, connect: { ..c.connect, token: "" } }), None)
 }
 
@@ -247,15 +251,17 @@ test "chats already_said_j, Attachment::of_j, comma_connects and shown" {
 
   let connects = comma_connects(
     @jsjson.parse(
-      "{\"connects\":[{\"id\":\"c1\",\"kind\":\"comma\",\"comma\":{\"server\":\"https://c.ex\",\"token\":\"tok-1234\"},\"workspace\":\"ws1\"},{\"id\":\"s1\",\"kind\":\"slack\"},{\"id\":\"c2\",\"kind\":\"comma\",\"enabled\":false,\"comma\":{\"server\":\"https://c2.ex\",\"token\":\"abcd5678\"}}]}",
+      "{\"connects\":[{\"id\":\"c1\",\"kind\":\"comma\",\"comma\":{\"server\":\"https://c.ex\",\"token\":\"tok-1234\"},\"workspace\":\"ws1\",\"createdBy\":{\"id\":\" Peng@Example.COM \"}},{\"id\":\"s1\",\"kind\":\"slack\"},{\"id\":\"c2\",\"kind\":\"comma\",\"enabled\":false,\"comma\":{\"server\":\"https://c2.ex\",\"token\":\"abcd5678\"},\"createdBy\":{\"id\":\"local\"}}]}",
     ),
   )
   assert_eq(connects.length(), 2)
   assert_eq(connects[0].id, "c1")
   assert_true(connects[0].enabled)
   assert_eq(connects[0].workspace, Some("ws1"))
+  assert_eq(connects[0].owner_email, Some("peng@example.com"))
   assert_eq(connects[1].id, "c2")
   assert_false(connects[1].enabled)
+  assert_eq(connects[1].owner_email, None)
 
   let s = shown(@jsjson.parse("{\"comma\":{\"server\":\"https://c.ex\",\"token\":\"secret-9876\"}}"))
   assert_eq(

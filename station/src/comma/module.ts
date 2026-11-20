@@ -163,6 +163,12 @@ export const CommaLive = Layer.effectDiscard(
       name: (ws) => {
         const m = cloud.membership(ws ?? cloud.home() ?? "");
         return m === null ? hostname() : `${m.workspace_name} · ${m.name === "" ? hostname() : m.name}`;
+      },
+      ownerEmail: (ws) => {
+        const state = cloud.rosterOf(ws ?? cloud.home() ?? null)?.state;
+        if (!state || state.members.size !== 1) return null;
+        const only = state.members.values().next().value;
+        return typeof only?.email === "string" ? only.email : null;
       } }), { kind: "comma", shown: (c, raw) => c.shown(raw), entry: commaEntry });
     // (what offers Comma as a platform in the connect wizard: a station from before says nothing)
     parts.overview("comma", () => true);

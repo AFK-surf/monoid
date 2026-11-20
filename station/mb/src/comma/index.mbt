@@ -11,6 +11,7 @@ pub(all) struct CommaConnect {
   server : String
   token : String
   workspace : String?
+  owner_email : String?
 }
 
 ///|
@@ -21,6 +22,7 @@ pub fn CommaConnect::to_j(self : CommaConnect) -> J {
     ("server", jstr(self.server)),
     ("token", jstr(self.token)),
     ("workspace", self.workspace.map(jstr).unwrap_or(Null)),
+    ("ownerEmail", self.owner_email.map(jstr).unwrap_or(Null)),
   ])
 }
 
@@ -53,6 +55,20 @@ fn non_empty(v : J?) -> String? {
   }
 }
 
+fn owner_email_of(v : J?) -> String? {
+  match v {
+    Some(Str(u)) => {
+      let email = @jscase.lower(js_trim(u))
+      if email_like(email) && email.length() <= max_text {
+        Some(email)
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+}
+
 ///|
 /// config.json's Comma connects.
 pub fn comma_connects(raw : J) -> Array[CommaConnect] {
@@ -70,6 +86,7 @@ pub fn comma_connects(raw : J) -> Array[CommaConnect] {
       server: non_empty(prop(prop(cc, "comma"), "server")).unwrap_or(""),
       token: non_empty(prop(prop(cc, "comma"), "token")).unwrap_or(""),
       workspace: non_empty(prop(cc, "workspace")),
+      owner_email: owner_email_of(prop(prop(cc, "createdBy"), "id")),
     }
   })
 }
@@ -193,6 +210,7 @@ pub fn credentials(c : ScopedConnect) -> String? {
         c.connect.workspace.map(jstr).unwrap_or(Null),
         c.scope.map(jstr).unwrap_or(Null),
         ji(c.scope_version),
+        c.connect.owner_email.map(jstr).unwrap_or(Null),
       ]),
     ),
   )
@@ -256,6 +274,7 @@ pub fn CommaParts::create(self : CommaParts, c : ScopedConnect) -> CommaSurface 
         None => self.io.hostname
       },
       workspace,
+      owner_email: c.connect.owner_email,
       tasks: self.tasks,
       store: options.store,
       models: () => (options.models)(c.connect.id),

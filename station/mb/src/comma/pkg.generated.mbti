@@ -230,6 +230,7 @@ pub(all) struct CommaConnect {
   server : String
   token : String
   workspace : String?
+  owner_email : String?
 }
 pub fn CommaConnect::to_j(Self) -> @jsjson.JValue
 
@@ -324,6 +325,7 @@ pub fn CommaSurface::new(SurfaceOptions, Io, @effect.Runtime) -> Self
 pub fn CommaSurface::of_workspace(Self) -> String?
 pub async fn CommaSurface::post(Self, String, String, String, Array[Attachment], card? : @jsjson.JValue?) -> String
 pub fn CommaSurface::session_link(Self) -> String?
+pub fn CommaSurface::set_handler(Self, async (@jsjson.JValue) -> Unit) -> Unit
 pub fn CommaSurface::stands_at(Self, String, String, String, String?) -> Unit
 
 pub struct CommaTasks {
@@ -522,6 +524,7 @@ pub(all) struct SurfaceOptions {
   token : String
   name : String
   workspace : String?
+  owner_email : String?
   tasks : CommaTasks
   store : SurfaceStore
   models : () -> Array[@jsjson.JValue]

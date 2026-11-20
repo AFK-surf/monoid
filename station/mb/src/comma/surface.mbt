@@ -218,6 +218,8 @@ pub(all) struct SurfaceOptions {
   name : String
   /// The still.fail workspace the connect is of; None before the station is in one.
   workspace : String?
+  /// The still.fail email of the person who owns this Comma connect, when known.
+  owner_email : String?
   tasks : CommaTasks
   store : SurfaceStore
   /// The models its sessions can run (`{runtime, model}`).
@@ -249,6 +251,7 @@ pub struct CommaSurface {
   priv token : String
   priv name : String
   priv of_workspace : String?
+  priv owner_email : String?
   priv tasks : CommaTasks
   priv store : SurfaceStore
   priv models : () -> Array[J]
@@ -282,6 +285,17 @@ pub fn CommaSurface::new(options : SurfaceOptions, io : Io, runtime : @effect.Ru
     token: options.token,
     name: options.name,
     of_workspace: options.workspace,
+    owner_email: match options.owner_email {
+      Some(u) => {
+        let email = @jscase.lower(js_trim(u))
+        if email_like(email) && email.length() <= max_text {
+          Some(email)
+        } else {
+          None
+        }
+      }
+      None => None
+    },
     tasks: options.tasks,
     store: options.store,
     models: options.models,
@@ -552,6 +566,7 @@ fn CommaSurface::capabilities(self : CommaSurface) -> J {
     ("task_models", Some(Obj(models))),
     ("stats_index", if self.stats is Some(_) { Some(ji(1)) } else { None }),
     ("task_index", if self.stats is Some(_) { Some(ji(1)) } else { None }),
+    ("stillfail_owner_email", self.owner_email.map(jstr)),
   ])
 }
 
