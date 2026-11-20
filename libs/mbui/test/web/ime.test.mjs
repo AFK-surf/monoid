@@ -9,7 +9,7 @@ import vm from 'node:vm';
 
 const source = readFileSync(new URL('../../web/host.js', import.meta.url), 'utf8');
 
-function browser(search = '') {
+function browser(search = '', nav = { platform: 'iPhone' }) {
   const queued = [], frames = [], texts = [];
   // what the app does as a pointer comes (its kind, x, y) and as a frame is drawn (the frame's height)
   const app = { pointer() {}, frame() {} };
@@ -34,7 +34,7 @@ function browser(search = '') {
     focus() { if (document.activeElement !== this) this.focusings++; document.activeElement = this; },
     blur() { if (document.activeElement === this) { document.activeElement = null; this.dispatch('blur'); } } };
   const visualViewport = { ...element(), height: 300, offsetTop: 0, scale: 1 };
-  const win = { ...element(), document, navigator: { platform: 'iPhone' }, location: { search }, URLSearchParams,
+  const win = { ...element(), document, navigator: nav, location: { search }, URLSearchParams,
     Intl, devicePixelRatio: 1, performance: { now: () => 0 }, requestAnimationFrame: (f) => queued.push(f),
     cancelAnimationFrame: (id) => { queued[id - 1] = null; },
     visualViewport, matchMedia: () => ({ addEventListener() {}, removeEventListener() {} }) };
@@ -169,6 +169,24 @@ test("a mouse's click is drawn at the display's frame, as before", async () => {
   assert.equal(b.document.activeElement, null, 'nothing drawn in the click');
   b.draw();
   assert.equal(b.document.activeElement, b.ta);
+});
+
+test('on Android touch tap coalesces into a single rAF frame without synchronous tick in gesture', async () => {
+  const b = browser('', {
+    platform: 'Linux armv8l',
+    userAgent: 'Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36',
+  });
+  await Promise.resolve();
+  b.draw();
+  aField(b, true);
+  const before = b.frames.length;
+  b.tap('touch');
+  assert.equal(b.frames.length, before, 'no synchronous tick inside pointerdown/pointerup on Android');
+  assert.equal(b.document.activeElement, null, 'deferred to rAF frame');
+  assert.equal(b.asked(), 1, 'coalesced into a single animation frame');
+  b.draw();
+  assert.equal(b.frames.length - before, 1, 'drawn once on rAF');
+  assert.equal(b.document.activeElement, b.ta, 'textarea focused on rAF frame');
 });
 
 // A field's keyboard (@hostapi.ime_action, said before setIme): what the textarea asks the phone's keyboard for. Moving

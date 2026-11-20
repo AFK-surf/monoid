@@ -246,13 +246,13 @@ test('glass\'s textures given back after 180 frames with none, and as the page i
   for (let i = 1; i < 180; i++) frame(false);
   assert.equal(levels(), before, 'kept through 179 frames with none');
   frame(false);
-  assert.equal(levels(), before + 5, 'the five levels given back at the 180th');
+  assert.equal(levels(), before + 6, 'the five levels and glass slot given back at the 180th');
   frame(true);
   frame(false);
   // hidden: given back at once
   b.document.hidden = true;
   for (const f of b.document.seen) f();
-  assert.equal(levels(), before + 10, 'given back as the page is hidden');
+  assert.equal(levels(), before + 12, 'given back as the page is hidden');
   assert.ok(b.said.filter((x) => Array.isArray(x)).every((x) => x[2]), 'only what the context made deleted');
 });
 
