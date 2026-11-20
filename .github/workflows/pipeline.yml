@@ -2093,6 +2093,10 @@ jobs:
           [ ! -d "$HBC_CACHE" ] || mv "$HBC_CACHE" .ci/hbc
           if [ "${{ steps.finish.outcome }}" = success ] && [ "${{ steps.bundle.outcome }}" = success ]; then
             sh apps/mbui/scripts/used.sh "$RUNNER_TEMP/start" .ci/mbc-store
+            # (the app built, bundled and handed over: its store not saved where too little is left for it, rather
+            # than the save carrying the job past its five minutes, its release skipped; a cut build's is always saved)
+            left=$(( JOB_END - $(date +%s) ))
+            [ "$left" -ge 10 ] || { echo "the store not saved: ${left} s left"; exit 0; }
           else
             # (where the build was as it was cut: its worker's log is said only as it ends, so a cut said nothing of what
             # it had come to, main 6a896dd6, 202a54dc and 0ff80373 on 2026-11-16)
@@ -2117,6 +2121,10 @@ jobs:
         run: |
           c=apps/mbui/_build/native/release/build/stillfail/stillfail/stillfail.c
           [ -s "$c" ] || { echo "moonc had not made the app's C: moon's build not kept"; exit 0; }
+          # (its save takes ~16 s, 4 to make ready, 8 to upload, the post steps 2-4, as preview.yml's ios moon-room: main
+          # 136452385742 began it with 8 s left, its app already handed over, and was cut at 300 s, desktop skipped)
+          left=$(( JOB_END - $(date +%s) ))
+          [ "$left" -ge 16 ] || { echo "moon's build not kept: ${left} s left"; exit 0; }
           find apps/mbui/_build -type d -name '*.mbc' -prune -exec rm -rf {} +
           echo "MOON_KEY=mbui-mac-moon-$(shasum -a 256 "$c" | cut -c1-16)" >> "$GITHUB_ENV"
       - if: always() && github.ref == 'refs/heads/main' && env.MOON_KEY != '' && env.MOON_KEY != steps.moon.outputs.cache-matched-key
