@@ -440,7 +440,7 @@ async fn P55::start_moves(self : P55) -> Unit {
     }),
     sessions_in: async fn(ws, after, limit) { self.sessions_in(ws, after, limit) },
     repos_dir: path([data, "repos"]),
-    remove: Some(async fn(p) { ignore(host.shell("fs.rm", { "path": Json::string(p), "recursive": Json::boolean(true) })) }),
+    remove: Some(async fn(p) { move_remove(host, p) }),
     room: Some(async fn() {
       let (free, total) = room_of(data)
       to_jv({ "free": match free { Some(f) => Json::number(f); None => Json::null() }, "total": match total { Some(t) => Json::number(t); None => Json::null() } })
@@ -644,6 +644,13 @@ fn handover_waiting(made : @effect.Deferred[@move_coord.HandoverPort]) -> @move_
 }
 
 ///|
+/// A folder a move made let go with all it holds, nothing there no failure (move/repos.ts `rm(d, { recursive: true,
+/// force: true })`); any other failure raised, as rm's.
+async fn move_remove(host : @host.Host, p : String) -> Unit {
+  ignore(host.shell("fs.remove", { "path": Json::string(p), "recursive": Json::boolean(true) }))
+}
+
+///|
 /// A move's routes (routes.ts) as the admin API's: each matched by its own test of the path.
 fn move_part_routes(routes : Array[@move_coord.MoveRoute]) -> Array[PartRoute] {
   let meths : Array[String] = []
@@ -712,6 +719,11 @@ fn P55::move_ops(self : P55, moves : @move_coord.Moves) -> Unit {
   self.op("move.refusal", async fn(arg) {
     let a = args_of(arg)
     jopt(moves.refusal(s(a, 0), s(a, 1)))
+  })
+  // (what a move made here let go as it goes back: repos.ts's `remove`, a folder and all it holds)
+  self.op("move.remove", async fn(arg) {
+    move_remove(self.bus.host, s(args_of(arg), 0))
+    Json::null()
   })
   self.op("move.room", async fn(arg) {
     let a = args_of(arg)

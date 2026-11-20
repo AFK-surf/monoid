@@ -424,6 +424,7 @@ fn p54_vault_world(
   }
   let hub_ask = async fn(op : String, args : Json) -> Json { (bus.hub_ask.val)(op, args) }
   let fork = (name : String, f : async () -> Unit) => ignore(host.rt.fork_quiet(name~, async fn() { f() catch { _ => () } }))
+  let backfill = P54Backfill::new()
   ({
     hub: {
       store: p54_vault_store(bus, threads),
@@ -510,15 +511,47 @@ fn p54_vault_world(
       })),
     }),
     machine: p54_vault_machine(bus),
-    hold: () => () => (),
+    hold: () => @updates.hold(),
     log: (level, part, said, about) => slice_log(level, part, said, about),
     random: n => crypto.random(n) catch { _ => @drive.random_bytes(n) },
     env: () => env_all(),
     index_db: Some(() => @sql.Db::attach(host, db_path, wait=5000)),
-    backfill_take: () => true,
-    backfill_give: () => (),
-    foreground: _ => (),
+    backfill_take: () => backfill.take(),
+    backfill_give: () => backfill.give(),
+    foreground: begins => backfill.foreground(begins),
   } : @vault_service.World)
+}
+
+///|
+/// The vault's backfills' one permit (store/backfill.ts): one batch at a time, taken only while no foreground write is
+/// under way; a write that begins meanwhile waits only for the batch already running.
+priv struct P54Backfill {
+  mut busy : Bool
+  mut writes : Int
+}
+
+///|
+fn P54Backfill::new() -> P54Backfill {
+  { busy: false, writes: 0 }
+}
+
+///|
+fn P54Backfill::take(self : P54Backfill) -> Bool {
+  if self.busy || self.writes > 0 {
+    return false
+  }
+  self.busy = true
+  true
+}
+
+///|
+fn P54Backfill::give(self : P54Backfill) -> Unit {
+  self.busy = false
+}
+
+///|
+fn P54Backfill::foreground(self : P54Backfill, begins : Bool) -> Unit {
+  self.writes = if begins { self.writes + 1 } else { (self.writes - 1).max(0) }
 }
 
 ///|
@@ -877,6 +910,35 @@ async fn p54_vault_ask(v : P54Vault, op : String, a : Json) -> Json? {
       let key = @vault_service.parse_ssh_key(v.world.machine, s(0))
       ignore(@vault_service.serve_agent(v.world.machine, s(1), key, () => true))
       { "blob": Json::string(@drive.hex(key.blob)), "kind": Json::string(key.kind) }
+    }
+    // (a test's: the backfills' one permit as the vault's world gives it, a foreground write before it; and a hold on
+    // the station's updating itself, while a command with a secret runs)
+    "test.backfillPermit" if p54_testing() => {
+      let w = v.world
+      let first = (w.backfill_take)()
+      let second = (w.backfill_take)()
+      (w.backfill_give)()
+      let given_back = (w.backfill_take)()
+      (w.backfill_give)()
+      (w.foreground)(true)
+      let while_writing = (w.backfill_take)()
+      (w.foreground)(false)
+      let written = (w.backfill_take)()
+      (w.backfill_give)()
+      let before = @updates.holding()
+      let let_go = (w.hold)()
+      let held = @updates.holding()
+      let_go()
+      let_go()
+      {
+        "first": Json::boolean(first),
+        "second": Json::boolean(second),
+        "givenBack": Json::boolean(given_back),
+        "whileWriting": Json::boolean(while_writing),
+        "written": Json::boolean(written),
+        "held": Json::number((held - before).to_double()),
+        "after": Json::number((@updates.holding() - before).to_double()),
+      }
     }
     "test.proxy" if p54_testing() => {
       let proxy = secrets.proxy

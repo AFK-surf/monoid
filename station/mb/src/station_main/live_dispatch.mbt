@@ -977,3 +977,39 @@ fn bus_pty_terminal(
   }
   None
 }
+
+///|
+/// A tasks-only station's device reached for a chat (rig.mbt `reach`, devices/connect.ts `reachDevice`): the devices'
+/// slice opens it (`devices.reachDevice`, the device as its owner signed it) and keeps the socket; `destroy` closes it,
+/// and what `on_close` is given is told once as it ends, by a destroy or by the other end, at once where it ended.
+async fn bus_rig_reach(bus : LiveBus, device : Json) -> @rigs_mode.Socket {
+  let id = (bus.ui_ask.val)("devices.reachDevice", Json::array([device])) catch {
+    e => raise @rigs_mode.DeviceRefused(502, "the device was not reached: \{e}")
+  }
+  if id is Null {
+    raise @rigs_mode.DeviceRefused(503, "devices cannot be reached on this rig yet")
+  }
+  let ended = Ref(false)
+  let told : Array[() -> Unit] = []
+  fork_bg(bus.host, "rig device end", async fn() {
+    ignore((bus.ui_ask.val)("devices.socketClosed", Json::array([id]))) catch {
+      _ => ()
+    }
+    ended.val = true
+    let fs = told.copy()
+    told.clear()
+    for f in fs {
+      f()
+    }
+  })
+  {
+    destroy: () => if !ended.val {
+      fork_bg(bus.host, "rig device destroy", async fn() {
+        ignore((bus.ui_ask.val)("devices.socketDestroy", Json::array([id]))) catch {
+          _ => ()
+        }
+      })
+    },
+    on_close: f => if ended.val { f() } else { told.push(f) },
+  }
+}

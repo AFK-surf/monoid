@@ -585,8 +585,14 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
       Json::string(named)
     }
     "cloud.removedLater" => {
-      // (said once the station is taken out of its workspace: not before it stops here)
-      ignore(bus.stopped.wait())
+      // (said once the station is taken out of its workspace, as the control plane tells it, or as it stops here:
+      // adb/link.ts `removed`, its listener let go either way)
+      let gone : @effect.Deferred[Unit] = @effect.Deferred::new()
+      let off = (bus.cloud_listen.val)(_ => if bus_cloud_removed(bus) { ignore(gone.succeed(())) })
+      defer off()
+      if !bus_cloud_removed(bus) {
+        @effect.race(async fn() { gone.wait() }, async fn() { ignore(bus.stopped.wait()) })
+      }
       Json::null()
     }
     "grants.home" => jopt(bus_home(bus))
@@ -813,6 +819,22 @@ async fn p54_devices_ask(d : P54Devices, op : String, a : Json) -> Json? {
     // (a device attached here, forwarded to a chat's port by P5-1's forwards: `[session, reach]`, the target's `reach`
     // called and what it opened, a TCP connection or a serial port, given as one of the shell's loopback connections)
     "devices.reachForward" => p54_reach_forward(d, call_arg(a, 1).unwrap_or(Json::null()))
+    // (a tasks-only station's device a chat's grant lets it reach (P5-1's rigs, rig.mbt `reach`: devices/connect.ts
+    // `reachDevice` of the device as its owner signed it): the socket's number; its end waited for, the socket let go
+    // then; and it closed)
+    "devices.reachDevice" => of_jv(@adb_devices.reach_device(d.dev, to_jv(call_arg(a, 0).unwrap_or(Json::null()))))
+    "devices.socketClosed" => {
+      let id = p54_int(call_arg(a, 0))
+      match d.world.socks.get(id) {
+        Some(sk) => {
+          sk.closed.wait()
+          d.world.socks.remove(id)
+        }
+        None => ()
+      }
+      Json::null()
+    }
+    "devices.socketDestroy" => of_jv(d.world.call("net.destroy", [to_jv(call_arg(a, 0).unwrap_or(Json::null()))]))
     // (who may use a device forwarded to a session's port: devices/module.ts `admitFor`, null to let them in)
     "devices.admit" => {
       let holders = match call_arg(a, 2) {
@@ -835,6 +857,60 @@ async fn p54_devices_ask(d : P54Devices, op : String, a : Json) -> Json? {
         String(b) => Json::string(@utf8.decode_lossy(@drive.from_base64(b)))
         _ => Json::null()
       }
+    }
+    // (a test's: a share's wait for the station taken out of its workspace (link.mbt `cloud.removedLater`), the control
+    // plane's state and its listeners the test's for it: said as the plane tells the removal, the station still
+    // running, its listener let go; said at once where it was removed before)
+    "test.removedLater" if p54_testing() => {
+      let bus = d.world.bus
+      let (state_was, listen_was) = (bus.cloud_state.val, bus.cloud_listen.val)
+      let removed = Ref(false)
+      let listeners : Array[(Int, (Json?) -> Unit)] = []
+      let next = Ref(0)
+      let listening : @effect.Deferred[Unit] = @effect.Deferred::new()
+      bus.cloud_state.val = () => if removed.val { Some({ "removed_at": Json::number(1.0) }) } else { state_was() }
+      bus.cloud_listen.val = f => {
+        next.val += 1
+        let id = next.val
+        listeners.push((id, f))
+        ignore(listening.succeed(()))
+        () => ignore(listeners.search_by(x => x.0 == id).map(i => listeners.remove(i)))
+      }
+      let said : @effect.Deferred[Unit] = @effect.Deferred::new()
+      fork_bg(bus.host, "test removedLater", async fn() {
+        ignore(d.world.call("cloud.removedLater", []))
+        ignore(said.succeed(()))
+      })
+      listening.wait()
+      let waited = !said.is_done() && listeners.length() == 1
+      removed.val = true
+      for l in listeners.copy() {
+        (l.1)(None)
+      }
+      said.wait()
+      let let_go = listeners.is_empty()
+      // (removed before it is asked: at once)
+      ignore(d.world.call("cloud.removedLater", []))
+      let none_left = listeners.is_empty()
+      bus.cloud_state.val = state_was
+      bus.cloud_listen.val = listen_was
+      {
+        "waited": Json::boolean(waited),
+        "running": Json::boolean(!bus.stopped.is_done()),
+        "letGo": Json::boolean(let_go && none_left),
+      }
+    }
+    // (a test's: a tasks-only station's device reached as its rig reaches one, then let go: its end told)
+    "test.rigReach" if p54_testing() => {
+      let socket = bus_rig_reach(d.world.bus, call_arg(a, 0).unwrap_or(Json::null()))
+      let ended : @effect.Deferred[Unit] = @effect.Deferred::new()
+      (socket.on_close)(() => ignore(ended.succeed(())))
+      (socket.destroy)()
+      ended.wait()
+      // (told once more after the end: at once)
+      let again = Ref(false)
+      (socket.on_close)(() => again.val = true)
+      Json::boolean(again.val)
     }
     // (a test's: a device here reached as another station's tunnel reaches it, the tunnel's stream a connection to
     // the test's port; the slots live_p5_4_io.c holds; a connection read to its end, one called off as it connects)

@@ -435,13 +435,7 @@ fn P51::rig_live(self : P51) -> Unit {
         _ => None
       })
     },
-    reach: async fn(device) {
-      let said = (bus.ui_ask.val)("devices.reach", device)
-      if said is Null {
-        raise @rigs_mode.DeviceRefused(503, "devices cannot be reached on this rig yet")
-      }
-      { destroy: () => (), on_close: _ => () }
-    },
+    reach: async fn(device) { bus_rig_reach(bus, device) },
     spawn: spawn_,
     clock,
     files: @rigs_mode.Files::of_host(host),

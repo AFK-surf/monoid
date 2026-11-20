@@ -519,6 +519,14 @@ test("the parts as the admin API asks them: the overview's features, updates, mo
   assert.ok(Array.isArray(page.body.modules), JSON.stringify(page.body));
   assert.equal((await h.ok({ step: "route", method: "POST", path: "/move", body: { to: "b".repeat(64), module: "chats", item: "s1" }, viewer: member, lang: "en" })).status, 403);
   assert.equal(await h.ok({ step: "coord", name: "move.here", arg: [] }), id);
+  // a folder a move made let go as it goes back (repos.ts `remove`): all it holds, the shell's `fs.remove`; nothing
+  // there no failure
+  const made = join(data, "repos", "made-by-move");
+  mkdirSync(join(made, "a", "b"), { recursive: true });
+  writeFileSync(join(made, "a", "b", "f"), "x");
+  assert.equal(await h.ok({ step: "coord", name: "move.remove", arg: [made] }), null);
+  assert.equal(existsSync(made), false);
+  assert.equal(await h.ok({ step: "coord", name: "move.remove", arg: [made] }), null);
   // the copies' routes: a retirement's start refused (switched off), a restore asked without what it needs
   const retire = await h.ok({ step: "route", method: "POST", path: "/retire", body: { to: "b".repeat(64) }, viewer: owner, lang: "en" });
   assert.equal(retire.status, 409);

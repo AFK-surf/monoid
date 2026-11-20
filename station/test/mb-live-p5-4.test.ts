@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { generateKeyPairSync, verify as verifySignature } from "node:crypto";
 import { linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { connect as netConnect, createConnection, createServer, type Server, type Socket } from "node:net";
+import { type AddressInfo, connect as netConnect, createConnection, createServer, type Server, type Socket } from "node:net";
 import { createServer as httpServer, request } from "node:http";
 import { networkInterfaces, tmpdir } from "node:os";
 import { connect as tlsConnect } from "node:tls";
@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
+import { WebSocketServer } from "ws";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Store } from "../src/store/store.ts";
 
@@ -559,6 +560,54 @@ test("run: the vault's SSH agent and its HTTPS proxy, and a device's TCP on any 
     assert.equal((await ask(door, "test.ioHeld")).answer, held, "the device's connection let go once the tunnel ended");
     const missing = await ask(door, "test.hereDevice", ["ws1", "0000000000000000", 1, ""]);
     assert.match(JSON.stringify(missing), /no such device/);
+
+    // a tasks-only station's device as its rig reaches one (rig.mbt `reach`, devices/connect.ts `reachDevice`): the
+    // device as its owner signed it opened, let go by `destroy`, its end told, and told again at once after it
+    let rigClosed!: () => void;
+    const rigGone = new Promise<void>((r) => (rigClosed = r));
+    let rigReached = 0;
+    const rigDevice = createServer((s) => {
+      rigReached++;
+      s.resume();
+      s.on("close", () => rigClosed());
+    });
+    await new Promise<void>((r) => rigDevice.listen(0, "127.0.0.1", () => r()));
+    const rigTarget = `127.0.0.1:${(rigDevice.address() as any).port}`;
+    assert.deepEqual(await ask(door, "test.rigReach", [{ id: "0123456789abcdef", name: "rig echo", kind: "tcp", target: rigTarget }]), { answer: true });
+    await rigGone;
+    rigDevice.close();
+    assert.equal(rigReached, 1);
+    assert.equal((await ask(door, "test.ioHeld")).answer, held, "the rig's device connection let go");
+    // a share's wait for the station taken out of its workspace: said as the control plane tells the removal, while
+    // the station runs, its listener let go
+    assert.deepEqual(await ask(door, "test.removedLater"), { answer: { waited: true, running: true, letGo: true } });
+
+    // the browser's DevTools end: let go where the client is gone before its 101, and once where the gate terminates
+    // it (terminated twice, then closed)
+    const devtools = new WebSocketServer({ port: 0, host: "127.0.0.1" });
+    await new Promise<void>((r) => devtools.on("listening", () => r()));
+    let devtoolsOpened = 0;
+    let devtoolsClosed = 0;
+    let bothClosed!: () => void;
+    const bothGone = new Promise<void>((r) => (bothClosed = r));
+    devtools.on("connection", (s) => {
+      devtoolsOpened++;
+      s.on("close", () => {
+        if (++devtoolsClosed === 2) bothClosed();
+      });
+    });
+    const devtoolsUrl = `ws://127.0.0.1:${(devtools.address() as AddressInfo).port}/devtools/browser/test`;
+    assert.deepEqual(await ask(door, "test.devtoolsUnanswered", [devtoolsUrl]), { answer: true });
+    assert.deepEqual(await ask(door, "test.devtoolsEnded", [devtoolsUrl]), { answer: true });
+    await bothGone;
+    devtools.close();
+    assert.deepEqual([devtoolsOpened, devtoolsClosed], [2, 2]);
+    // a browser's process group whose leader ended while one of it goes on (Chrome's renderers): alive as a group,
+    // ended by end_group
+    assert.deepEqual(await ask(door, "test.groupLeftBehind"), { answer: { leader: false, group: true, after: false } });
+
+    // the vault's backfills' one permit (store/backfill.ts) and its hold on the station's updating itself
+    assert.deepEqual(await ask(door, "test.backfillPermit"), { answer: { first: true, second: false, givenBack: true, whileWriting: false, written: true, held: 1, after: 0 } });
 
     a.tell({ op: "stop" });
     assert.equal(await a.ended, 0);
