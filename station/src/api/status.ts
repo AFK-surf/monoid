@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { Effect, Layer } from "effect";
 import { Fibers } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
+import { platform } from "../platform/index.ts";
 import { version } from "../ops/version.ts";
 import type { FrontLink } from "../ops/health.ts";
 import { AgentsSide, ControlPlane, MeshNative, Paths, Store } from "../services.ts";
@@ -172,9 +173,11 @@ export function statusServer(now: () => LocalStatus, changed: (f: () => void) =>
   };
 }
 
-/// The local status's socket, for as long as the station runs.
+/// The local status's socket, for as long as the station runs: none where there are no Unix sockets (Windows, as
+/// station/mb/src/station_main/run.mbt has it).
 export const StatusLive = Layer.effectDiscard(
   Effect.gen(function* () {
+    if (!platform.hasUnixSockets) return;
     const { data } = yield* Paths;
     const store = yield* Store;
     const plane = yield* ControlPlane;

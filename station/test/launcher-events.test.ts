@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { launcherEventOf, reportLauncherEvents } from "../src/ops/launcher-events.ts";
+import { launcherEventOf, nodeCrashOf, recordNodeCrash, reportLauncherEvents, reportNodeCrash } from "../src/ops/launcher-events.ts";
 import { tempDir } from "./temp-dir.ts";
 
 function dataWith(lines: string[] | null): string {
@@ -62,4 +62,65 @@ test("with no level said, a kill or a crash is an error and the rest warnings", 
   assert.deepEqual(["node_hung_killed", "node_crashed", "front_hung_killed", "front_gone", "handoff_failed", "retiring_killed", "something_new"].map((k) => level(k)), ["error", "error", "error", "warn", "warn", "warn", "warn"]);
   assert.equal(level("front_gone", "error"), "error", "as the launcher said it");
   assert.equal(level("node_crashed", "info"), "error", "a level it does not know: by its kind");
+});
+
+// What ended a Node station by a fatal error (src/main.ts), kept as it ends and said once by the next.
+
+function crashes() {
+  const said: Record<string, unknown>[] = [];
+  return { said, emit: (fields: Record<string, unknown>) => void said.push(fields) };
+}
+
+test("a crash kept is said once by the next station, and the file is gone", async () => {
+  const data = dataWith(null);
+  recordNodeCrash(data, { origin: "uncaughtException", error: "Error: boom\n    at x (main.js:1:1)", version: "0.1.1000", pid: 4242, at: 1795091426000 });
+  const { said, emit } = crashes();
+  assert.equal(await reportNodeCrash(data, emit), true);
+  assert.deepEqual(said, [{ at: 1795091426000, pid: 4242, version: "0.1.1000", origin: "uncaughtException", error: "Error: boom\n    at x (main.js:1:1)" }]);
+  assert.deepEqual(readdirSync(join(data, "run")), [], "neither the file nor the one taken is left");
+  assert.equal(await reportNodeCrash(data, emit), false, "said once");
+  assert.equal(said.length, 1);
+});
+
+test("no crash kept: nothing said", async () => {
+  const data = dataWith(null);
+  const { said, emit } = crashes();
+  assert.equal(await reportNodeCrash(data, emit), false);
+  assert.equal(await reportNodeCrash(join(data, "none"), emit), false, "nor a run/ at all");
+  assert.deepEqual(said, []);
+});
+
+test("a crash is kept where run/ is not there yet, with this process's pid", async () => {
+  const data = join(dataWith(null), "fresh");
+  recordNodeCrash(data, { origin: "fiberExit", error: "Exit.die", version: "0.1.2" });
+  const { said, emit } = crashes();
+  assert.equal(await reportNodeCrash(data, emit), true);
+  assert.equal(said[0]?.pid, process.pid);
+  assert.equal(typeof said[0]?.at, "number");
+});
+
+test("only a crash's own fields are said", () => {
+  assert.deepEqual(
+    nodeCrashOf(JSON.stringify({ at: 5, pid: 7, version: "0.1.3", origin: "unhandledRejection", error: "Error: no", home: "/Users/someone", token: "secret", nested: { a: 1 } })),
+    { at: 5, pid: 7, version: "0.1.3", origin: "unhandledRejection", error: "Error: no" },
+  );
+});
+
+test("a long error is kept to its first 4000 characters", async () => {
+  const data = dataWith(null);
+  recordNodeCrash(data, { origin: "uncaughtException", error: "x".repeat(10_000), version: "0.1.4", pid: 1, at: 1 });
+  const { said, emit } = crashes();
+  assert.equal(await reportNodeCrash(data, emit), true);
+  assert.equal((said[0]?.error as string).length, 4_000);
+});
+
+test("a file that is not a crash is passed over and removed", async () => {
+  for (const text of ["{\"origin\":\"uncaughtExc", "[1]", "null", JSON.stringify({ origin: "uncaughtException" }), JSON.stringify({ error: "Error" }), JSON.stringify({ origin: "", error: "Error" }), JSON.stringify({ origin: "x", error: 3 })]) {
+    const data = dataWith(null);
+    writeFileSync(join(data, "run", "node-crash.json"), text);
+    const { said, emit } = crashes();
+    assert.equal(await reportNodeCrash(data, emit), false, text);
+    assert.deepEqual(said, [], text);
+    assert.deepEqual(readdirSync(join(data, "run")), [], text);
+  }
 });

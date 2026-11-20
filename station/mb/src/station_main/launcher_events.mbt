@@ -60,3 +60,43 @@ fn report_launcher_events(data : String, emit? : (String, String, Json) -> Unit 
   }
   n
 }
+
+// What ended a Node station by a fatal error (src/main.ts `recordCrash`: <data>/run/node-crash.json), said once in
+// the log by the station that comes up next, as launcher-events.ts `reportNodeCrash` says it.
+
+///|
+/// The fields said of a crash (launcher-events.ts CRASH_FIELDS, in its order).
+let node_crash_fields : Array[String] = ["at", "pid", "version", "origin", "error"]
+
+///|
+/// The file's crash: its own fields; None for one that is not a crash (launcher-events.ts `nodeCrashOf`).
+fn parse_node_crash(text : String) -> Json? {
+  guard attempt(() => @json.parse(text)) is Ok(Object(m)) else { None }
+  guard m.get("origin") is Some(String(origin)) && origin != "" else { None }
+  guard m.get("error") is Some(String(error)) && error != "" else { None }
+  let fields : Map[String, Json] = Map([])
+  for name in node_crash_fields {
+    if m.get(name) is Some(value) {
+      fields[name] = value
+    }
+  }
+  Some(Json::object(fields))
+}
+
+///|
+fn node_crash_logged(fields : Json) -> Unit {
+  p51_log("ERROR", "station", "previous process ended with fatal error", fields~)
+}
+
+///|
+/// Says the crash the station before kept (`emit`, the log by default) and removes it: whether there was one.
+fn report_node_crash(data : String, emit? : (Json) -> Unit = node_crash_logged) -> Bool {
+  let dir = path([data, "run"])
+  let claimed = path([dir, "node-crash.\{@drive.pid()}.json"])
+  guard attempt(() => @drive.rename(path([dir, "node-crash.json"]), claimed)) is Ok(_) else { return false }
+  let text = read_text(claimed).unwrap_or("")
+  @drive.rm_force(claimed)
+  guard parse_node_crash(text) is Some(fields) else { return false }
+  emit(fields)
+  true
+}

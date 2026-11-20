@@ -898,6 +898,8 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
   p51_log("INFO", "station", if bus.as_rig() { "rig up" } else { "station up" }, fields={ "version": Json::string(s.version), "data": Json::string(data) })
   // What the launcher did to recover while none was up (launcher_events.mbt): said in this log, once.
   ignore(report_launcher_events(data))
+  // What ended the Node station before, if a fatal error did (launcher_events.mbt): said in this log, once.
+  ignore(report_node_crash(data))
   // The loopback port: the launcher's, or 4760 on the machine's own data directory, else any free one.
   let named_port = match flag(args, "--port") {
     Some(p) => attempt(() => @string.parse_int(p)).to_option()
