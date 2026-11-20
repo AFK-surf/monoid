@@ -1117,7 +1117,7 @@ fn chat_rail_node(
       }, fn(press) {
         @sf.style_node(press, fn() { chat_rail_press })
         let hovered_idx = fn() -> Int? {
-          if @ui.pointing() is Mouse && press.pointed_in() {
+          if @sf.pointer_rests() && press.pointed_in() {
             let i = press.pointer_piece(fn(_px, py) { chat_rail_tick_index_at(ticks.get(), py) })
             if i >= 0 { Some(i) } else { None }
           } else {
@@ -1155,7 +1155,7 @@ fn chat_rail_node(
               close,
               @signals.untracked(stint),
               hovered_seq,
-              fn() { @ui.pointing() is Mouse && press.pointed_in() },
+              fn() { @sf.pointer_rests() && press.pointed_in() },
               fn(h) {
                 panel_held.val = h
                 panel_held_ver.set(panel_held_ver.untracked() + 1)
@@ -1195,7 +1195,7 @@ fn chat_rail_node(
               None => ()
             }
           },
-          hold=(@ui.long_press_ms, fn(_) { if @ui.pointing() is Finger { (hand.hold)() } }),
+          hold=(@ui.long_press_ms, fn(_) { if !@sf.pointer_rests() { (hand.hold)() } }),
         )
         |> ignore
         // (its ticks changed as the chat goes on while it shows (a message said, the reader moved along it): a live cause
