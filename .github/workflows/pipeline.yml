@@ -32,7 +32,7 @@ env:
   FARVIEW_DEPLOY_KEY: ${{ secrets.FARVIEW_DEPLOY_KEY }}
   # The native parts a branch's checks and builds use, split between ci-1 (`BRANCH_NATIVES`: Linux, Windows cross-builds,
   # Wasm and Android) and macos-ci (`BRANCH_MAC_NATIVES`: Apple's darwin-arm64 parts).
-  BRANCH_NATIVES: archive-rs:linux-x64 reader:linux-x64 iroh-wasm shell:android-arm64 engine:android-arm64 mesh:linux-x64 runner:linux-x64 launcher:linux-x64 mesh:win32-x64 launcher:win32-x64 runner:win32-x64 screen:win32-x64 agent-desktop:win32-x64
+  BRANCH_NATIVES: archive-rs:linux-x64 reader:linux-x64 iroh-wasm:wasm32 shell:android-arm64 engine:android-arm64 mesh:linux-x64 runner:linux-x64 launcher:linux-x64 mesh:win32-x64 launcher:win32-x64 runner:win32-x64 screen:win32-x64 agent-desktop:win32-x64
   # Windows' reader, built in a job of its own on ci-1 (natives-win-reader, main's natives-win-reader-main after natives): two readers side by side there,
   # each cold at -O2, took 244-253 s of natives' five minutes and its upload was cut (44208145437, 2026-11-18).
   BRANCH_WIN_READER: reader:win32-x64
@@ -118,20 +118,38 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # One `native.ts missing` for every list below, split here: each call started Node, listed the release and
+          # read the checkout's keys again, three to eight calls 20-40 s of plan (main 44674271258, 2026-11-20). `pick`
+          # is what of $all is in the lists named (each part:target, as the BRANCH_ lists say them), in $all's order.
+          pick() { printf '%s\n' $all | awk 'BEGIN { for (i = 1; i < ARGC; i++) w[ARGV[i]] = 1; ARGC = 1 } $0 in w' "$@"; }
+          # (Apple's: native.ts's --mac, its targets darwin-* and ios-*, test/native-missing-plan.test.ts)
+          apple() { printf '%s\n' $all | grep -E ':(darwin|ios)-' || true; }
+          non_apple() { printf '%s\n' $all | grep -vE ':(darwin|ios)-' | grep . || true; }
+          if [ "$GITHUB_REF" = refs/heads/main ]; then
+            # (shell-station:linux-x64, which natives_harness_runner asks after, is one of --linux's)
+            all=$(node scripts/native.ts missing --linux --mac)
+          else
+            want="$BRANCH_NATIVES $BRANCH_WIN_READER $BRANCH_HARNESS"
+            if grep -qE '^(check_mac|station|release_smoke)=true$' "$RUNNER_TEMP/plan"; then want="$want $BRANCH_MAC_NATIVES"; fi
+            if grep -qE '^(check_mac|station)=true$' "$RUNNER_TEMP/plan"; then want="$want $BRANCH_MAC_READER"; fi
+            # (where natives and natives-win-reader build, below)
+            if [ "${{ vars.CI_1 }}" != off ]; then want="$want shell-station:linux-x64 shell-station:win32-x64"; fi
+            all=$(node scripts/native.ts missing $want)
+          fi
           if [ "${{ vars.CI_1 }}" = off ]; then
             # (the non-Apple parts all in natives on macos-ci; the Apple ones in natives-mac all the same, which takes no
             # ci-1 runner, so that desktop-build waits for those alone)
             if [ "$GITHUB_REF" = refs/heads/main ]; then
-              missing=$(node scripts/native.ts missing --linux)
-              all_mac=$(node scripts/native.ts missing --mac)
+              missing=$(non_apple)
+              all_mac=$(apple)
               missing_mac=$(printf '%s\n' $all_mac | grep -v '^reader:darwin-arm64$' || true)
               missing_mac_reader=$(printf '%s\n' $all_mac | grep '^reader:darwin-arm64$' || true)
             else
-              missing=$(node scripts/native.ts missing $BRANCH_NATIVES $BRANCH_WIN_READER $BRANCH_HARNESS)
-              if grep -qE '^(check_mac|station|release_smoke)=true$' "$RUNNER_TEMP/plan"; then missing_mac=$(node scripts/native.ts missing $BRANCH_MAC_NATIVES)
+              missing=$(pick $BRANCH_NATIVES $BRANCH_WIN_READER $BRANCH_HARNESS)
+              if grep -qE '^(check_mac|station|release_smoke)=true$' "$RUNNER_TEMP/plan"; then missing_mac=$(pick $BRANCH_MAC_NATIVES)
               else missing_mac=""; echo "missing (mac): skipped (no mac job planned)"; fi
               # (release_smoke's desktop-build uses no reader)
-              if grep -qE '^(check_mac|station)=true$' "$RUNNER_TEMP/plan"; then missing_mac_reader=$(node scripts/native.ts missing $BRANCH_MAC_READER)
+              if grep -qE '^(check_mac|station)=true$' "$RUNNER_TEMP/plan"; then missing_mac_reader=$(pick $BRANCH_MAC_READER)
               else missing_mac_reader=""; fi
             fi
             missing=$(printf '%s\n' $missing | tr '\n' ' ' | xargs)
@@ -156,25 +174,25 @@ jobs:
               # (main's Windows reader in natives-win-reader-main: three readers at -O2 in one natives job took 270-300 s
               # of its five minutes, and nothing but ui-windows and the station's release waits for it)
               # (and the tests' program in natives-harness, which only check-station waits for)
-              all_linux=$(node scripts/native.ts missing --linux)
+              all_linux=$(non_apple)
               missing=$(printf '%s\n' $all_linux | grep -v -e '^reader:win32-x64$' -e '^reader-harness:' || true)
               missing_win=$(printf '%s\n' $all_linux | grep '^reader:win32-x64$' || true)
               missing_harness=$(printf '%s\n' $all_linux | grep '^reader-harness:' || true)
-              all_mac=$(node scripts/native.ts missing --mac)
+              all_mac=$(apple)
               missing_mac=$(printf '%s\n' $all_mac | grep -v '^reader:darwin-arm64$' || true)
               missing_mac_reader=$(printf '%s\n' $all_mac | grep '^reader:darwin-arm64$' || true)
             else
-              missing=$(node scripts/native.ts missing $BRANCH_NATIVES)
+              missing=$(pick $BRANCH_NATIVES)
               # (only ui-windows uses Windows' reader, and only for a change to the station)
-              if grep -qE '^station=true$' "$RUNNER_TEMP/plan"; then missing_win=$(node scripts/native.ts missing $BRANCH_WIN_READER)
+              if grep -qE '^station=true$' "$RUNNER_TEMP/plan"; then missing_win=$(pick $BRANCH_WIN_READER)
               else missing_win=""; fi
               # (only check-station runs the harnesses)
-              if grep -qE '^station_tests=true$' "$RUNNER_TEMP/plan"; then missing_harness=$(node scripts/native.ts missing $BRANCH_HARNESS)
+              if grep -qE '^station_tests=true$' "$RUNNER_TEMP/plan"; then missing_harness=$(pick $BRANCH_HARNESS)
               else missing_harness=""; fi
-              if grep -qE '^(check_mac|station|release_smoke)=true$' "$RUNNER_TEMP/plan"; then missing_mac=$(node scripts/native.ts missing $BRANCH_MAC_NATIVES)
+              if grep -qE '^(check_mac|station|release_smoke)=true$' "$RUNNER_TEMP/plan"; then missing_mac=$(pick $BRANCH_MAC_NATIVES)
               else missing_mac=""; echo "missing (mac): skipped (no mac job planned)"; fi
               # (release_smoke's desktop-build uses no reader)
-              if grep -qE '^(check_mac|station)=true$' "$RUNNER_TEMP/plan"; then missing_mac_reader=$(node scripts/native.ts missing $BRANCH_MAC_READER)
+              if grep -qE '^(check_mac|station)=true$' "$RUNNER_TEMP/plan"; then missing_mac_reader=$(pick $BRANCH_MAC_READER)
               else missing_mac_reader=""; fi
             fi
             # (each one line, the parts the natives jobs build: no part is asked of the release again there)
@@ -219,14 +237,14 @@ jobs:
           # Where natives and natives-win-reader build: a branch missing only readers whose shell-station main already
           # published needs moon, mbc and zig alone (-O0 on GitHub's runner, station/mb/build.sh), so it builds on
           # ubuntu-24.04 and does not wait for ci-1 (a change to station/mb queued while ci-1 was away, #7347).
-          if [ "${{ vars.CI_1 }}" != off ] && [ "$GITHUB_REF" != refs/heads/main ] && [ "${missing:-}" = "reader:linux-x64" ] && [ -z "$(node scripts/native.ts missing shell-station:linux-x64)" ]; then
+          if [ "${{ vars.CI_1 }}" != off ] && [ "$GITHUB_REF" != refs/heads/main ] && [ "${missing:-}" = "reader:linux-x64" ] && [ -z "$(pick shell-station:linux-x64)" ]; then
             echo 'natives_runner="ubuntu-24.04"' >> "$GITHUB_OUTPUT"
           elif [ "${{ vars.CI_1 }}" != off ]; then
             echo 'natives_runner=["self-hosted","ci-1"]' >> "$GITHUB_OUTPUT"
           else
             echo 'natives_runner=["self-hosted","quick"]' >> "$GITHUB_OUTPUT"
           fi
-          if [ "${{ vars.CI_1 }}" != off ] && [ "$GITHUB_REF" != refs/heads/main ] && [ -z "$(node scripts/native.ts missing shell-station:win32-x64)" ]; then
+          if [ "${{ vars.CI_1 }}" != off ] && [ "$GITHUB_REF" != refs/heads/main ] && [ -z "$(pick shell-station:win32-x64)" ]; then
             echo 'natives_win_runner="ubuntu-24.04"' >> "$GITHUB_OUTPUT"
           else
             echo 'natives_win_runner=["self-hosted","ci-1"]' >> "$GITHUB_OUTPUT"
@@ -234,7 +252,7 @@ jobs:
           # (the tests' program, main's too, on GitHub's runner whenever shell-station is published: at -O0, all a test
           # needs, it takes no ci-1 runner, and it cannot be a third job of the readers' concurrency group there, whose
           # pending job a third one queued would cancel)
-          if [ "${{ vars.CI_1 }}" != off ] && [ -z "$(node scripts/native.ts missing shell-station:linux-x64)" ]; then
+          if [ "${{ vars.CI_1 }}" != off ] && [ -z "$(pick shell-station:linux-x64)" ]; then
             echo 'natives_harness_runner="ubuntu-24.04"' >> "$GITHUB_OUTPUT"
           else
             echo 'natives_harness_runner=["self-hosted","ci-1"]' >> "$GITHUB_OUTPUT"
