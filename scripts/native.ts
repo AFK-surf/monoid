@@ -1581,20 +1581,51 @@ async function published(): Promise<Set<string> | null> {
   const out = gh(["api", `repos/${REPO}/releases/tags/${RELEASE}`, "--jq", ".assets[].name"], { allowFail: true });
   return out ? new Set(out.split("\n").filter(Boolean)) : null;
 }
-async function exists(name: string): Promise<boolean> {
-  const r = await fetch(`${GITHUB}/${REPO}/releases/download/${RELEASE}/${name}`, { method: "HEAD", redirect: "manual" });
-  return r.status === 302 || r.status === 200;
-}
-/// Whether the store of prebuilt parts has it.
-async function inStore(name: string): Promise<boolean> {
-  try {
-    // (its first byte: the store answers HEAD 404 for what it has)
-    const r = await fetchNative(`${STORE}/${name}`, { headers: { Range: "bytes=0-0" }, redirect: "follow", signal: AbortSignal.timeout(30_000) });
-    await r.body?.cancel();
-    return r.ok;
-  } catch {
-    return false;
+/// A fetch asked again, ATTEMPTS times in all and RETRY_MS × the tries so far between, when it threw (a connection or
+/// its body broken off: one `fetch failed` ended main's store-sync after seven parts downloaded, none put, 44669202703,
+/// 2026-11-20) or answered 5xx or 429; read takes an answer's body inside the try, so a body cut short is asked again
+/// too. Each try is given its own init (a fresh AbortSignal.timeout). What still fails is thrown, or answered.
+async function fetchRetry<T>(url: string, init: () => RequestInit, read: (r: Response) => Promise<T>, attempts = ATTEMPTS): Promise<{ response: Response; value: T | null }> {
+  for (let n = 1; ; n++) {
+    try {
+      const response = await fetch(url, init());
+      if (passing(response.status) && n < attempts) await response.body?.cancel().catch(() => {});
+      else if (!response.ok) { await response.body?.cancel().catch(() => {}); return { response, value: null }; }
+      else return { response, value: await read(response) };
+    } catch (e) {
+      if (n >= attempts) throw e;
+    }
+    await pause(RETRY_MS * n);
   }
+}
+async function exists(name: string): Promise<boolean> {
+  const { response } = await fetchRetry(`${GITHUB}/${REPO}/releases/download/${RELEASE}/${name}`,
+    () => ({ method: "HEAD", redirect: "manual", signal: AbortSignal.timeout(30_000) }), async () => null);
+  return response.status === 302 || response.status === 200;
+}
+/// Whether the store of prebuilt parts has it (asked twice when the first try threw: one break taken for its lack sent
+/// the part to be downloaded and put again).
+async function inStore(name: string): Promise<boolean> {
+  for (let n = 1; ; n++) {
+    try {
+      // (its first byte: the store answers HEAD 404 for what it has)
+      const r = await fetchNative(`${STORE}/${name}`, { headers: { Range: "bytes=0-0" }, redirect: "follow", signal: AbortSignal.timeout(30_000) });
+      await r.body?.cancel();
+      return r.ok;
+    } catch {
+      if (n >= 2) return false;
+    }
+    await pause(RETRY_MS * n);
+  }
+}
+/// Each of items through f, at most `width` at once, the answers in the items' order.
+async function inTurn<T, U>(items: T[], width: number, f: (item: T) => Promise<U>): Promise<U[]> {
+  const out: U[] = new Array(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(width, items.length) }, async () => {
+    while (next < items.length) { const i = next++; out[i] = await f(items[i]!); }
+  }));
+  return out;
 }
 // pigz gzips on every core (a reader's package took ~10 s of one with tar's gzip): the same .tar.gz, read by tar -xzf
 // and gunzipSync. --use-compress-program, which GNU tar and bsdtar both take (bsdtar's -I is -T); not on Windows;
@@ -1825,15 +1856,25 @@ async function main(argv: string[]) {
       let any = false;
       try {
         // (not the tests' program, reader-harness: only check-station runs it, from the release)
-        for (const [p, t] of ours()) {
-          if (p === "reader-harness") continue;
-          const name = asset(p, t, key(p, t));
-          if (await inStore(name)) { console.log(`${name}: in the store`); continue; }
-          if (!(await exists(name))) { console.log(`${name}: in neither (prebuild it: the prebuild workflow, or node scripts/native.ts prebuild ${p}:${t})`); continue; }
-          const r = await fetch(`${GITHUB}/${REPO}/releases/download/${RELEASE}/${name}`, { redirect: "follow", signal: AbortSignal.timeout(300_000) });
+        const parts = ours().filter(([p]) => p !== "reader-harness").map(([p, t]) => ({ p, t, name: asset(p, t, key(p, t)) }));
+        // (the store asked 8 at a time, and the release once for all it lacks, by its API: each asked in turn, a HEAD
+        // a part for the release, was ~45 s of the job, 44669202703)
+        const stored = await inTurn(parts, 8, ({ name }) => inStore(name));
+        const release = stored.every(Boolean) ? null : await published();
+        for (const [i, { p, t, name }] of parts.entries()) {
+          if (stored[i]) { console.log(`${name}: in the store`); continue; }
           // (one the release does not give now is left for main's next run, as prune leaves one GitHub dropped)
-          if (!r.ok) { console.log(`${name}: the release answered ${r.status}; the next run copies it`); continue; }
-          writeFileSync(join(work, "natives", name), Buffer.from(await r.arrayBuffer()));
+          try {
+            if (!(release ? release.has(name) : await exists(name))) { console.log(`${name}: in neither (prebuild it: the prebuild workflow, or node scripts/native.ts prebuild ${p}:${t})`); continue; }
+            const { response, value } = await fetchRetry(`${GITHUB}/${REPO}/releases/download/${RELEASE}/${name}`,
+              () => ({ redirect: "follow", signal: AbortSignal.timeout(300_000) }), async (r) => Buffer.from(await r.arrayBuffer()));
+            if (value === null) { console.log(`${name}: the release answered ${response.status}; the next run copies it`); continue; }
+            writeFileSync(join(work, "natives", name), value);
+          } catch (e) {
+            const cause = (e as Error & { cause?: Error }).cause?.message;
+            console.log(`${name}: the release failed (${(e as Error).message}${cause ? `: ${cause}` : ""}); the next run copies it`);
+            continue;
+          }
           console.log(`${name}: from the release, to the store`);
           any = true;
         }
