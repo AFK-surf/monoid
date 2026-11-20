@@ -1155,7 +1155,9 @@ pub async fn PhoneGrants::keep_revoke(
     return None
   }
   let owner = email.to_lower()
+  // (one transaction: those ended let go, this one kept, the oldest past the cap let go; the reads write nothing)
   try {
+    self.db.exec("BEGIN IMMEDIATE")
     ignore(
       self.db.run("DELETE FROM adb_revokes WHERE owner = ? AND exp <= ?", [
         Json::string(owner),
@@ -1179,8 +1181,14 @@ pub async fn PhoneGrants::keep_revoke(
         [Json::string(owner), Json::number(revokes_per_owner_max.to_double())],
       ),
     )
+    self.db.exec("COMMIT")
   } catch {
-    e => return Some(e.to_string())
+    e => {
+      self.db.exec("ROLLBACK") catch {
+        _ => ()
+      }
+      return Some(e.to_string())
+    }
   }
   match self.told_revoke {
     Some(f) => f(kept, owner, request, workspace)
@@ -1190,25 +1198,18 @@ pub async fn PhoneGrants::keep_revoke(
 }
 
 ///|
-/// The signed takings back of `email`'s grants kept here (those ended let go).
+/// The signed takings back of `email`'s grants kept here, those ended left out. Only reads (grants.ts
+/// `revokesOfOwner`): `keep_revoke` lets the ended go.
 pub fn PhoneGrants::revokes_of_owner(
   self : PhoneGrants,
   email : String,
 ) -> Array[J] raise {
   let owner = email.to_lower()
-  ignore(
-    self.db.run("DELETE FROM adb_revokes WHERE owner = ? AND exp <= ?", [
-      Json::string(owner),
-      Json::number(self.secs()),
-    ]),
-  ) catch {
-    e => raise sql_err(e)
-  }
   self
-  .rows("SELECT body FROM adb_revokes WHERE owner = ? ORDER BY exp LIMIT ?", [
-    js(owner),
-    jn(revokes_per_owner_max.to_double()),
-  ])
+  .rows(
+    "SELECT body FROM adb_revokes WHERE owner = ? AND exp > ? ORDER BY exp LIMIT ?",
+    [js(owner), jn(self.secs()), jn(revokes_per_owner_max.to_double())],
+  )
   .map(row => @session_chats.parse_js(text_of(at(Some(row), "body"))))
 }
 

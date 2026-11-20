@@ -566,8 +566,34 @@ test("what the owner's device signed to take a grant back is kept until the gran
     now += 7200_000 + 300_000;
     assert.deepEqual(grants.revokesOfOwner("pat@example.com"), []);
     // Read by its index, bounded.
-    const plan = file.prepare("EXPLAIN QUERY PLAN SELECT body FROM adb_revokes WHERE owner = ? ORDER BY exp LIMIT ?").all("pat@example.com", 256) as { detail: string }[];
+    const plan = file.prepare("EXPLAIN QUERY PLAN SELECT body FROM adb_revokes WHERE owner = ? AND exp > ? ORDER BY exp LIMIT ?").all("pat@example.com", now / 1000, 256) as { detail: string }[];
     assert.ok(plan.some((p) => /adb_revokes_by_owner/.test(p.detail)), JSON.stringify(plan));
+  } finally {
+    file.close();
+    w.db.close();
+  }
+});
+
+test("reading an owner's signed takings back writes nothing: the ended are left out, not deleted, so a read never waits for the write lock", () => {
+  const w = world();
+  const file = new DatabaseSync(":memory:");
+  let now = 1_800_000_000_000;
+  const grants = new PhoneGrants({ db: file, hub: w.hub, home: () => "home", title: () => null, now: () => now });
+  try {
+    const secs = now / 1000;
+    const signed = (request: string, exp: number) => ({ body: { v: 1, sub: "s", station: "ws/st1", request, exp }, sig: { key: "ed25519:aa", sig: "bb" } });
+    assert.equal(grants.keepRevoke("pat@example.com", signed("soon", secs + 60), "work-a"), null);
+    assert.equal(grants.keepRevoke("pat@example.com", signed("later", secs + 3600), "work-a"), null);
+    file.exec("PRAGMA query_only = ON");
+    assert.deepEqual(grants.revokesOfOwner("pat@example.com"), [signed("soon", secs + 60), signed("later", secs + 3600)]);
+    now += 60_000;
+    assert.deepEqual(grants.revokesOfOwner("pat@example.com"), [signed("later", secs + 3600)], "one ending now is left out");
+    now += 3600_000;
+    assert.deepEqual(grants.revokesOfOwner("pat@example.com"), []);
+    file.exec("PRAGMA query_only = OFF");
+    assert.equal((file.prepare("SELECT count(*) AS n FROM adb_revokes").get() as { n: number }).n, 2, "the ended stay until the next keep");
+    assert.equal(grants.keepRevoke("pat@example.com", signed("next", secs + 7200), "work-a"), null);
+    assert.equal((file.prepare("SELECT count(*) AS n FROM adb_revokes").get() as { n: number }).n, 1, "a keep lets the ended go");
   } finally {
     file.close();
     w.db.close();
