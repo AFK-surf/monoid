@@ -62,6 +62,7 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
     "putAway" =>
       self.enqueue(a, async fn() {
         a.notices.clear()
+        a.queued_retry = None
         if a.codex_update is Some(_) {
           a.codex_update = None
           self.set_running(a, false)
@@ -201,7 +202,7 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
         if self.has_pending(a) {
           return self.pump(a)
         }
-        self.start_turn(a, "resume", self.words(a, "GO_ON_AFTER_REFILL"))
+        self.start_turn(a, "resume", self.words(a, "GO_ON_AFTER_REFILL"), passive=true)
       })
     "recover" => return self.recover(a)
     "takeWait" => self.enqueue(a, async fn() { self.take_wait(a) })
@@ -412,6 +413,7 @@ async fn Actors::undeclare(self : Actors, a : Actor) -> Unit raise {
 async fn Actors::stop(self : Actors, a : Actor) -> Json raise {
   let stop_recovery = a.recoveries > 0 || a.recovery_deferred
   a.recovery_deferred = false
+  a.queued_retry = None
   self.remove_turn_wait(a.key)
   a.delivery_interruptions += 1
   // (what is being read and formatted for it: Node's, given up at once there, mb-actor.ts)
@@ -676,6 +678,22 @@ async fn Actors::wake_queued(self : Actors, a : Actor) -> Unit raise {
         return
       }
     }
+    if a.queued_retry is Some(r) {
+      if self.archived(a) {
+        a.queued_retry = None
+      } else if !self.held(a) {
+        a.queued_retry = None
+        if !self.has_pending(a) {
+          self.start_turn(a, r.kind, r.text, by=r.by)
+          if a.turn is Some(nt) && r.codex_retried {
+            nt.codex_retried = true
+          }
+          if a.turn is Some(_) {
+            return
+          }
+        }
+      }
+    }
     self.pump(a, before_failures=before)
     if a.turn is None && a.notices.length() > 0 {
       self.give_notices(a)
@@ -698,6 +716,11 @@ async fn Actors::release(self : Actors, a : Actor) -> Json raise {
     }
     if a.refill is Some(_) && a.refill_at <= self.now {
       self.await_refill(a, self.now)
+    }
+    if a.queued_retry is Some(_) {
+      self.enqueue_turn_wait(a)
+      self.drain_turn_queue()
+      return
     }
     self.pump(a, before_failures=before)
     if a.notices.length() > 0 {
@@ -877,6 +900,7 @@ async fn Actors::suspend(self : Actors, a : Actor, why? : String = "the station 
     let had_slot = turn is Some(_) || a.starting_turn
     a.turn = None
     a.starting_turn = false
+    a.queued_retry = None
     self.remove_turn_wait(a.key)
     defer {
       if had_slot && a.turn is None && !a.starting_turn {
@@ -923,6 +947,7 @@ fn Actors::snapshot(self : Actors, a : Actor) -> Json {
         "id": jstr(t.id),
         "authRetried": jbool(t.auth_retried),
         "codexRetried": jbool(t.codex_retried),
+        "passive": jbool(t.passive),
         "by": t.by,
         "declared": match kind_of(t.declared) { Some(k) => jstr(k); None => Json::null() },
         "wait": if kind_of(t.declared) == Some("waiting") { t.declared.unwrap().value("seconds").unwrap_or(Json::null()) } else { Json::null() },
@@ -977,6 +1002,7 @@ fn Actors::adopt(self : Actors, a : Actor, snap : Json, agent : Json, profile : 
         id: str_of(t.get("id")).unwrap_or(""),
         auth_retried: t.get("authRetried") is Some(True),
         codex_retried: t.get("codexRetried") is Some(True),
+        passive: t.get("passive") is Some(True),
         by: t.get("by").unwrap_or(turn_for_nobody()),
         declared: match str_of(t.get("declared")) {
           Some(k) => parse_declared(k, num_of(t.get("wait")).unwrap_or(0.0))
@@ -1023,6 +1049,7 @@ fn Actors::close(self : Actors, a : Actor) -> Unit {
   a.phase = "closed"
   a.turn = None
   a.starting_turn = false
+  a.queued_retry = None
   self.remove_turn_wait(a.key)
   for cancel in a.timers.values() {
     cancel()
@@ -1374,6 +1401,7 @@ async fn Actors::start_turn(
   text : String,
   by? : Json = turn_for_nobody(),
   delivery? : Delivery? = None,
+  passive? : Bool = false,
 ) -> Unit raise {
   let own_slot = !a.starting_turn
   if own_slot {
@@ -1396,7 +1424,7 @@ async fn Actors::start_turn(
     self.log(a, "info", "archived: no turn of its own", fields={ "kind": jstr(kind) })
     return
   }
-  self.start_turn_body(a, kind, text, by, retry_about, delivery) catch {
+  self.start_turn_body(a, kind, text, by, retry_about, delivery, passive) catch {
     e => {
       let turn = a.turn
       a.turn = None
@@ -1455,6 +1483,7 @@ async fn Actors::start_turn_body(
   by : Json,
   retry_about : Json,
   delivery : Delivery?,
+  passive : Bool,
 ) -> Unit raise {
   self.live_event(a.key, { "kind": "phase", "phase": "starting" })
   if (kind == "input" || kind == "job") && !self.holding(a) && !self.busy(a) &&
@@ -1507,7 +1536,7 @@ async fn Actors::start_turn_body(
   a.steered = []
   a.steered_for = []
   a.unread = []
-  self.begin_turn(a, kind, by)
+  self.begin_turn(a, kind, by, passive~)
   if !(retry_about is Null) && a.turn is Some(t) {
     ignore(self.store(a, "setAbout", [jstr(t.id), [retry_about.value("thread").unwrap_or(Json::null()), retry_about.value("seq").unwrap_or(Json::null()), retry_about.value("ts").unwrap_or(Json::null())]]))
   }
@@ -1573,14 +1602,16 @@ async fn Actors::refused_thread(self : Actors, a : Actor) -> Unit raise {
 }
 
 ///|
-async fn Actors::begin_turn(self : Actors, a : Actor, kind : String, by : Json) -> Unit raise {
+async fn Actors::begin_turn(self : Actors, a : Actor, kind : String, by : Json, passive? : Bool = false) -> Unit raise {
+  a.queued_retry = None
   if kind == "input" || kind == "job" {
     a.last_said = ""
     a.posted = false
   }
   let id = str_of(Some(self.rpc(a.key, "node.uuid", []))).unwrap_or("")
   let asked_before = if kind == "job" { self.asked_now(a) } else { None }
-  a.turn = Some({ id, declared: None, auth_retried: kind == "auth_retry", codex_retried: kind == "codex_retry", by, asked_before })
+  let is_passive = passive || kind == "title" || kind == "nudge"
+  a.turn = Some({ id, declared: None, auth_retried: kind == "auth_retry", codex_retried: kind == "codex_retry", passive: is_passive, by, asked_before })
   a.phase = "running"
   a.waiting = None
   let for_ = match by {
@@ -2072,20 +2103,36 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
   // (agy: a sign-in lent by another station runs out under a process that never reads it again; a new one opens on
   // one lent anew, agents/agy.ts AGY_LENT_RENEW_MS)
   if (a.runtime == "claude" || a.runtime == "codex" || a.runtime == "agy") && kind == "failed" && reason == "auth" && !stop_requested &&
-    !self.held(a) && turn is Some(t) && (!t.auth_retried || lent_expired) && t.declared is None {
-    a.nudges = 0
+    !self.held(a) && turn is Some(t) && (!t.auth_retried || lent_expired) && (!t.passive || lent_expired) && t.declared is None {
     let agent = a.agent
     self.set_agent(a, None)
     self.end_process(a, agent)
     if a.runtime == "claude" && !(a.profile is Null) {
       ignore(self.deps(a, "recheck", [a.profile]))
     }
-    self.log(a, "info", "authentication failed; reopening and continuing once", fields={ "runtime": jstr(a.runtime) })
-    self.start_turn(a, "auth_retry", self.words(a, "GO_ON_AFTER_AUTH"), by=t.by)
-    if a.turn is Some(nt) && t.codex_retried {
-      nt.codex_retried = true
+    let allow_retry = if !(a.profile is Null) && !lent_expired {
+      !(self.deps(a, "canAuthRetry", [jstr(a.key), a.profile]) is False)
+    } else {
+      true
     }
-    return
+    if !allow_retry {
+      self.notify_store(a)
+      self.log(a, "info", "authentication failed; profile unusable and no healthy fallback, waiting for user", fields={ "runtime": jstr(a.runtime) })
+    } else {
+      a.nudges = 0
+      self.log(a, "info", "authentication failed; reopening and continuing once", fields={ "runtime": jstr(a.runtime) })
+      let text = self.words(a, "GO_ON_AFTER_AUTH")
+      if self.max_concurrent_turns > 0 && self.active_turn_slots() > self.max_concurrent_turns {
+        a.queued_retry = Some({ kind: "auth_retry", text, by: t.by, codex_retried: t.codex_retried })
+        self.enqueue_turn_wait(a)
+        return
+      }
+      self.start_turn(a, "auth_retry", text, by=t.by)
+      if a.turn is Some(nt) && t.codex_retried {
+        nt.codex_retried = true
+      }
+      return
+    }
   }
   if a.runtime == "agy" && kind == "failed" && reason == "auth" && a.agent is Some(_) {
     let agent = a.agent
@@ -2112,6 +2159,13 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
       self.end_process(a, agent)
       self.log(a, "info", "allowance ran out; going on on another profile", fields={ "from": m[0], "to": m[1] })
       a.refill = None
+      if self.max_concurrent_turns > 0 && self.active_turn_slots() > self.max_concurrent_turns {
+        if !self.has_pending(a) {
+          a.queued_retry = Some({ kind: "resume", text: self.words(a, "GO_ON_AFTER_SPENT"), by: turn_for_nobody(), codex_retried: false })
+        }
+        self.enqueue_turn_wait(a)
+        return
+      }
       if self.has_pending(a) {
         return self.pump(a)
       }
@@ -2426,6 +2480,7 @@ async fn Actors::stop_background(self : Actors, a : Actor) -> Unit raise {
 ///|
 async fn Actors::let_go(self : Actors, a : Actor) -> Unit raise {
   a.notices = []
+  a.queued_retry = None
   a.nudges = 0
   let waited = a.waiting is Some(_)
   a.waiting = None
@@ -2474,7 +2529,7 @@ async fn Actors::fire_wait(self : Actors, a : Actor, wait : Int, seconds : Doubl
   let last = self.last_turn(a)
   if !(last is Null) && retrying(last) {
     self.log(a, "info", "trying again a turn the provider had no room for", fields={ "seconds": jnum(seconds) })
-    return self.start_turn(a, "resume", self.words(a, "GO_ON_AFTER_OVERLOADED"))
+    return self.start_turn(a, "resume", self.words(a, "GO_ON_AFTER_OVERLOADED"), passive=true)
   }
   if !(last.value("waitWatch") is Some(False)) && truthy(self.store(a, "hasSessionActiveWatch", [jstr(a.key)])) {
     return self.wait_ms(a, seconds, seconds * 1000.0)
@@ -2535,7 +2590,7 @@ async fn Actors::fire_refill(self : Actors, a : Actor, refill : Int) -> Unit rai
   if self.has_pending(a) {
     return self.pump(a)
   }
-  self.start_turn(a, "resume", self.words(a, "GO_ON_AFTER_REFILL"))
+  self.start_turn(a, "resume", self.words(a, "GO_ON_AFTER_REFILL"), passive=true)
 }
 
 ///|

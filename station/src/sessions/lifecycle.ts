@@ -4,7 +4,6 @@ import { modelSpeed, type ModelSpeed } from "../../../client/core-ts/src/model-s
 // continue_machine_session). Archiving here is the record (archived, hidden) and what goes with it (the process ends,
 // other stations are told); packing an archived session's files is the hub's ColdStorage.
 import { COPY as PRESET_COPY_FILE, NoPreset, type PresetCopy, keepCopy, presetRefusal } from "./presets.ts";
-import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFile, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, join, relative, sep } from "node:path";
@@ -14,8 +13,7 @@ import { log } from "../ops/log.ts";
 import { tr, type Lang, stationLang } from "../ops/i18n.ts";
 import { clean, inside, samePath, within } from "../ops/paths.ts";
 import { RELIEVE_FULL_EVERY_MS, pruneRepoWorktrees, relieveOrphanTranscripts, treeBytes } from "../ops/storage.ts";
-import { startEnv } from "../ops/agent-env.ts";
-import { wall } from "../ops/fibers.ts";
+import { REPO_GIT_TIMEOUT_MS, type RepoGitRun, isProcessFile, pruneRepoBranchesIn, runRepoGit } from "../ops/repo-branches.ts";
 import { checkContext } from "./context-cap.ts";
 import { type MachineSession, type Roots, ROLLOUT_DEPTH, ROLLOUT_ENTRIES, extension, rolloutOf } from "../read/machine.ts";
 import { usageNow } from "../read/usage.ts";
@@ -702,37 +700,9 @@ export async function relieveLowDiskFull(
 }
 
 /// A shared clone in `<data>/repos` untouched for this long may be reclaimed when disk space is below the low mark:
-/// 14 days matches job log retention and gives active projects two weeks of buffer against transient disk spikes.
-export const REPO_IDLE_MS = 14 * 24 * 3_600_000;
-/// Short deadline for local read-only git checks during low-disk clone reclamation.
-export const REPO_GIT_TIMEOUT_MS = 15_000;
-
-export type RepoGitRun = (dir: string, args: string[]) => Promise<{ ok: boolean; stdout: string }>;
-
-const runRepoGit: RepoGitRun = (dir, args) =>
-  new Promise((resolve) => {
-    const env = { ...startEnv(), GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: "ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new" };
-    const child = spawn("git", ["-C", dir, ...args], { env, stdio: ["ignore", "pipe", "ignore"] });
-    let stdout = "";
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (d: string) => {
-      if (stdout.length < 64 * 1024) stdout += d;
-    });
-    let late = false;
-    // timer: a deadline to a process (git status/rev-list given REPO_GIT_TIMEOUT_MS at most)
-    const stop = wall.after(REPO_GIT_TIMEOUT_MS, () => {
-      late = true;
-      child.kill("SIGKILL");
-    });
-    child.on("error", () => {
-      stop();
-      resolve({ ok: false, stdout: "" });
-    });
-    child.on("close", (code) => {
-      stop();
-      resolve({ ok: !late && code === 0, stdout });
-    });
-  });
+/// 3 days protects active work across a weekend while letting low-disk reclamation free unused shared clones promptly.
+export const REPO_IDLE_MS = 3 * 24 * 3_600_000;
+export { REPO_GIT_TIMEOUT_MS, type RepoGitRun };
 
 async function repoLastTouchedMs(repoPath: string): Promise<number | null> {
   let latest: number | null = null;
@@ -890,13 +860,30 @@ export async function relieveRepos(
     const urlRes = await git(cand.path, ["remote", "get-url", primary]);
     const remoteUrl = urlRes.stdout.trim();
     if (!urlRes.ok || !isRecoverableRemoteUrl(remoteUrl)) continue;
+    // Run local branch cleanup (unthrottled by daily cadence) so merged/applied/process-only branches are dropped
+    // and stale (>14d) unpushed branches are archived into a verified bundle before checking remaining unpushed tips.
+    await pruneRepoBranchesIn(dataDir, cand.name, cand.path, now, { git });
     const revRes = await git(cand.path, ["rev-list", "--count", "--all", "HEAD", "--not", "--remotes"]);
     if (!revRes.ok || revRes.stdout.trim() !== "0") continue;
     const stashRes = await git(cand.path, ["for-each-ref", "refs/stash"]);
     if (!stashRes.ok || stashRes.stdout.trim() !== "") continue;
-    // Condition 3: clean main working tree (including untracked files, regardless of repo status.showUntrackedFiles).
-    const statusRes = await git(cand.path, ["--no-optional-locks", "status", "--porcelain", "--untracked-files=normal"]);
-    if (!statusRes.ok || statusRes.stdout !== "") continue;
+    // Condition 3: main working tree has no tracked changes; untracked files are allowed only if all are process files.
+    const statusRes = await git(cand.path, ["-c", "core.quotepath=false", "--no-optional-locks", "status", "--porcelain", "--untracked-files=all"]);
+    if (!statusRes.ok) continue;
+    let dirty = false;
+    for (const line of statusRes.stdout.split(/\r?\n/)) {
+      if (line === "") continue;
+      if (!line.startsWith("?? ")) {
+        dirty = true;
+        break;
+      }
+      const rel = line.slice(3).trim();
+      if (!isProcessFile(rel)) {
+        dirty = true;
+        break;
+      }
+    }
+    if (dirty) continue;
     // Re-check before rm: a session may have added a worktree or touched the repo during the git checks.
     const recheckWt = await readdir(join(cand.path, ".git", "worktrees")).catch((e: NodeJS.ErrnoException) => (e.code === "ENOENT" ? [] : null));
     if (recheckWt === null || recheckWt.length > 0) continue;

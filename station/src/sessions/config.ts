@@ -2,6 +2,7 @@
 // and the numbers that govern turns, warm processes and archiving. Read on every use (the hub is given a function), so
 // edits apply to the next decision. A profile stays config.json's object (the drivers read its access, env, model…),
 // its home made absolute and what parse_config derives added: name, runtimes, models, backgroundOnMessage.
+import { totalmem } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { afreshThreshold } from "../../../client/core-ts/src/cache-policy.ts";
 import { agyBaseModel } from "../agents/agy.ts";
@@ -66,9 +67,9 @@ export type HubConfig = {
   /// Whether an agent whose turn ends with its chat untitled is asked once to name it.
   askToName: boolean;
   automaticDecisions: { completion: DecisionRule };
-  /// Idle claude processes kept alive at most this long before they may be evicted.
+  /// Idle claude processes kept alive at most this long (when > 0) before they are evicted.
   warmMs: number;
-  /// Idle claude processes beyond this count are evicted, oldest first, once past warmMs.
+  /// Maximum number of idle claude processes kept warm; any beyond this count are evicted immediately, oldest first.
   maxWarmClaude: number;
   /// Maximum number of concurrent running turns across all sessions on this station; 0: unlimited.
   maxConcurrentTurns: number;
@@ -98,11 +99,24 @@ const under = (dataDir: string, path: string) => (isAbsolute(path) ? path : join
 /// it was said with: read from another machine, that was the other machine.
 const machineName = (name: string | undefined) => name?.replace(/（本机）$| \(local\)$/, "").replace(/^本机 |^Local /, "");
 
+const GiB = 1024 ** 3;
+
+/// Default concurrent turn cap scaled by host RAM: floor(totalBytes / 1.5 GiB), clamped to [4, 32] (0 if unknown).
+export function defaultMaxConcurrentTurns(totalBytes: number): number {
+  if (!Number.isFinite(totalBytes) || !(totalBytes > 0)) return 0;
+  return Math.min(32, Math.max(4, Math.floor(totalBytes / (1.5 * GiB))));
+}
+
 /// config.json (parsed) as the hub reads it: parse_config's defaults and derivations, without its checks (the config
 /// module refuses a config that does not pass them before anything reads it). `found`: the models a profile's last check
 /// found (accounts/index.ts), which it runs besides those config.json names; none for one that runs no runtime (a
 /// provider of the automatic decisions alone: its models are not chat models).
-export function hubConfig(raw: any, dataDir: string, found: (id: string) => readonly string[] | null = () => null): HubConfig {
+export function hubConfig(
+  raw: any,
+  dataDir: string,
+  found: (id: string) => readonly string[] | null = () => null,
+  totalBytes: number = totalmem(),
+): HubConfig {
   const profiles: Profile[] = (Array.isArray(raw?.profiles) ? raw.profiles : []).map((p: any): Profile => {
     const seen = new Set<string>();
     const models = (Array.isArray(p.models) ? p.models : [])
@@ -169,7 +183,10 @@ export function hubConfig(raw: any, dataDir: string, found: (id: string) => read
     automaticDecisions: { completion: { enabled: completion.enabled === true, model: str(completion.model) ?? null } },
     warmMs: Math.trunc((typeof raw?.warmMinutes === "number" ? raw.warmMinutes : 30) * 60_000),
     maxWarmClaude: typeof raw?.maxWarmClaude === "number" ? raw.maxWarmClaude : 4,
-    maxConcurrentTurns: typeof raw?.maxConcurrentTurns === "number" && Number.isFinite(raw.maxConcurrentTurns) ? Math.max(0, Math.trunc(raw.maxConcurrentTurns)) : 0,
+    maxConcurrentTurns:
+      typeof raw?.maxConcurrentTurns === "number" && Number.isFinite(raw.maxConcurrentTurns)
+        ? Math.max(0, Math.trunc(raw.maxConcurrentTurns))
+        : defaultMaxConcurrentTurns(totalBytes),
     autoArchiveMs: Math.trunc(Math.max(0, typeof raw?.autoArchiveDays === "number" ? raw.autoArchiveDays : 1) * 86_400_000),
     slackArchiveMs: Math.trunc(Math.max(0, typeof raw?.slackArchiveDays === "number" ? raw.slackArchiveDays : 3) * 86_400_000),
     autoArchiveReviewed: raw?.autoArchiveReviewed === true,

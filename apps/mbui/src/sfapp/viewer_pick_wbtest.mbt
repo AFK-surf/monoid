@@ -1,17 +1,22 @@
 // A passage of a message picked (a finger held on its words) and a picture in the chat opened, on a wide window a
 // finger points at: what a tap on the picture does to what is picked, and what closes it, each in turn. On a wide
-// window a picture opens in a tab beside the chat (sfbase's viewer_tab.mbt), closed by its tab's ×.
+// window a picture opens as a tab of the chat's over the whole window (sfbase's tab_full.mbt), closed by back, its
+// tab with it.
 
 ///|
-/// Whether the chat's picture is open beside it (its tab).
+/// Whether the chat's picture is open: its tab over the whole window, or in the panel beside the chat.
 fn picture_open(t : @ui.Tester) -> Bool {
-  t.all(Tab, label="compare.png").length() > 0
+  @sfbase.tab_full.get() is Some(_) || t.all(Tab, label="compare.png").length() > 0
 }
 
 ///|
-/// The chat's picture's tab closed by its ×, the moves it sets off done.
+/// The chat's picture closed: by back over the whole window, else by its tab's ×; the moves it sets off done.
 fn picture_closed(t : @ui.Tester) -> Unit raise {
-  t.click(Button, label=@sf.t("web-pages.chat.close", args=[("name", "compare.png")]))
+  if @sfbase.tab_full.get() is Some(_) {
+    t.back()
+  } else {
+    t.click(Button, label=@sf.t("web-pages.chat.close", args=[("name", "compare.png")]))
+  }
   t.run_for(@ui.move_most_ms)
   t.run_for(@sfpages.reveal_ms)
 }
@@ -26,7 +31,7 @@ fn picture_at(t : @ui.Tester) -> (Double, Double) raise {
 }
 
 ///|
-test "touch wide: words picked, then a picture in the chat tapped: the tap lets go of what is picked and opens nothing (the two never open at once); the next tap opens the picture beside the chat, its tab's × closes it, the chat as it was" {
+test "touch wide: words picked, then a picture in the chat tapped: the tap lets go of what is picked and opens nothing (the two never open at once); the next tap opens the picture over the whole window, back closes it and its tab, the chat as it was" {
   let t = touch_wide_tester()
   // (scrolled up to the picture, its message's words beside it)
   let mut tries = 0
@@ -41,12 +46,12 @@ test "touch wide: words picked, then a picture in the chat tapped: the tap lets 
     [] => fail("the picture never on the screen")
   }
   let page = (app.nav.top(), app.nav.depth())
-  // (nothing picked: the picture opens, its tab's × closes it)
+  // (nothing picked: the picture opens, back closes it)
   t.tap(px, py)
   t.run_for(@ui.move_most_ms)
-  assert_true(picture_open(t), msg="the picture there opens beside the chat")
+  assert_true(@sfbase.tab_full.get() is Some(_), msg="the picture there opens over the whole window")
   picture_closed(t)
-  assert_true(!picture_open(t), msg="closed")
+  assert_true(!picture_open(t), msg="closed, its tab with it")
   let (px, py) = picture_at(t)
   // (words picked, then the picture tapped)
   hold_on(t, "改好后的样子") |> ignore
@@ -59,7 +64,7 @@ test "touch wide: words picked, then a picture in the chat tapped: the tap lets 
   // (the tap the pick's: let go of, nothing else; never both at once)
   assert_true(t.picking() is None, msg="the tap let go of what was picked")
   assert_true(!opened, msg="that tap opened nothing")
-  // (the next tap the picture's, its tab's × closes it)
+  // (the next tap the picture's, back closes it)
   t.tap(px, py)
   t.run_for(@ui.move_most_ms)
   assert_true(picture_open(t), msg="the next tap opens the picture")
@@ -69,7 +74,7 @@ test "touch wide: words picked, then a picture in the chat tapped: the tap lets 
 }
 
 ///|
-test "touch wide, a tall window: a link held (its menu up), then a picture in the chat tapped: the tap closes the menu and opens nothing (the two never open at once); the next tap opens the picture beside the chat, its tab's × closes it, the chat as it was" {
+test "touch wide, a tall window: a link held (its menu up), then a picture in the chat tapped: the tap closes the menu and opens nothing (the two never open at once); the next tap opens the picture over the whole window, back closes it and its tab, the chat as it was" {
   new_run()
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
@@ -86,12 +91,12 @@ test "touch wide, a tall window: a link held (its menu up), then a picture in th
     [] => fail("the picture not on the screen with the link: \{Repr(link)}")
   }
   let page = (app.nav.top(), app.nav.depth())
-  // (nothing over it: the picture opens, its tab's × closes it)
+  // (nothing over it: the picture opens, back closes it)
   t.tap(px, py)
   t.run_for(@ui.move_most_ms)
-  assert_true(picture_open(t), msg="the picture there opens beside the chat")
+  assert_true(@sfbase.tab_full.get() is Some(_), msg="the picture there opens over the whole window")
   picture_closed(t)
-  assert_true(!picture_open(t), msg="closed")
+  assert_true(!picture_open(t), msg="closed, its tab with it")
   let (px, py) = picture_at(t)
   let link = match t.run_rects("example.com/bench/list") {
     [r, ..] => r
@@ -114,7 +119,7 @@ test "touch wide, a tall window: a link held (its menu up), then a picture in th
   // (the tap the menu's: gone, nothing else opened; never both at once)
   assert_true(!menu, msg="that tap closed the menu")
   assert_true(!opened, msg="that tap opened nothing")
-  // (the next tap the picture's, its tab's × closes it)
+  // (the next tap the picture's, back closes it)
   t.tap(px, py)
   t.run_for(@ui.move_most_ms)
   assert_true(picture_open(t), msg="the next tap opens the picture")

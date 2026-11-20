@@ -59,6 +59,10 @@ pub fn settings_fixture(src : Source, core : Core) -> Unit {
       })
       @sfpages.vault_members_dialog(core, here, row)
     }
+    "vault-devices-dialog" => {
+      let here = @settings.here_of(core, "ws1", "星火工作室")
+      @sfpages.vault_devices_dialog(core, here, "v-ws")
+    }
     "vault-workspace-editor" =>
       @sfpages.vault_editor_dialog(
         core,

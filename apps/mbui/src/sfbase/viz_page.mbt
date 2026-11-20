@@ -785,8 +785,8 @@ pub let viz_full : @signals.Signal[VizFull?] = @signals.signal(None)
 ///|
 /// Visualization `name` (at `path`, sent by session `key` of chat `session` on `station`) opened as a press asks: where
 /// the shell has a side panel for the page in view, a tab there (a page's: PreviewFile; a `.mbui` / `.wasm` mini-program
-/// a file's), over the whole window as that tab where `full` asks it (its 全屏; by default the command key held:
-/// full_held); else, or beside the system's bars (an iPhone Duo's), over the whole window on its own (`linked`: opened
+/// a file's), over the whole window as that tab where `full` asks it (its 全屏; by default unless the command key is
+/// held: full_asked); else, or beside the system's bars (an iPhone Duo's), over the whole window on its own (`linked`: opened
 /// by a link in a sentence, its wait said under the words).
 pub fn viz_open(
   name : String,
@@ -797,7 +797,7 @@ pub fn viz_open(
   linked? : Bool = false,
   full? : Bool,
 ) -> Unit {
-  let full = full.unwrap_or(full_held())
+  let full = full.unwrap_or(full_asked())
   if is_mbui_viz(name) || is_mbui_viz(path) {
     let a : Attachment = {
       name: if name != "" { name } else { base_name(path) },

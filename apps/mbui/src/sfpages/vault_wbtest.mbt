@@ -431,3 +431,70 @@ test "vault page save card defaults to personal vault and switches to workspace 
   assert_eq(text(Some(approved[0].1), "request"), "r-ws-save")
   assert_eq(text(Some(approved[0].1), "vault"), "v-ws")
 }
+
+///|
+test "vault devices row opens per-device dialog, authorizes single device by exact id, and passes audit across widths and 1.3x" {
+  let calls : Array[(String, Json)] = []
+  let t = setting_tester(Vault, 1100.0, platform=0, mode="settings-vault-workspace", over=fn(base) {
+    {
+      ..base,
+      call: fn(name, params, done) {
+        calls.push((name, params))
+        (base.call)(name, params, done)
+      },
+    }
+  })
+  t.run_for(@ui.move_most_ms)
+  scrolled_to(t, 1100.0, "1 台新设备待授权")
+  assert_true(t.find("1 台新设备待授权") is Some(_))
+  // clicking the row opens the per-device dialog instead of blindly authorizing
+  tap_words(t, "1 台新设备待授权")
+  t.frame()
+  presented_in(t)
+  assert_true(@sf.presenting())
+  assert_eq(calls.filter(fn(c) { c.0 == "vault.addDevice" }).length(), 0)
+  for words in ["Workspace 密钥库 的设备", "待授权设备", "Pixel 9 · still.fail Android", "核对码 K7M-4PX", "已授权设备", "林的 MacBook Pro · still.fail（本机）", "Ana 的 MacBook Air · still.fail"] {
+    assert_true(t.find(words) is Some(_), msg="missing: \{words}")
+  }
+  let faults = t.audit()
+  assert_true(faults.is_empty(), msg="dialog desktop audit: " + faults.join(" | "))
+  // click single-device authorize button
+  t.click(Button, label="授权")
+  t.run_for(@ui.move_most_ms)
+  let added = calls.filter(fn(c) { c.0 == "vault.addDevice" })
+  assert_eq(added.length(), 1)
+  assert_eq(added[0].1, { "workspace": "ws1", "vault": "v-ws", "device": "d-new" })
+  // device moves reactively from pending to authorized
+  assert_true(t.find("待授权设备") is None)
+  assert_true(t.find("Pixel 9 · still.fail Android") is Some(_))
+  // narrow and 1.3x audit on the open dialog
+  for size in [(390.0, 844.0, 2, 1.0), (390.0, 844.0, 2, 1.3)] {
+    let (w, h, platform, scale) = size
+    let t2 = setting_tester(Vault, w, platform~, mode="settings-vault-workspace", h~)
+    t2.set_font_scale(scale)
+    t2.frame()
+    t2.run_for(@ui.move_most_ms)
+    scrolled_to(t2, w, "1 台新设备待授权")
+    tap_words(t2, "1 台新设备待授权")
+    t2.frame()
+    presented_in(t2)
+    let f2 = t2.audit()
+    assert_true(f2.is_empty(), msg="\{w}×\{h} @\{scale}: " + f2.join(" | "))
+  }
+}
+
+///|
+test "vault no-key card displays thisDeviceCode and passes audit across widths and 1.3x" {
+  for size in [(1100.0, 760.0, 0, 1.0), (390.0, 844.0, 2, 1.0), (390.0, 844.0, 2, 1.3)] {
+    let (w, h, platform, scale) = size
+    let t = setting_tester(Vault, w, platform~, mode="settings-vault-no-key-code", h~)
+    t.set_font_scale(scale)
+    t.frame()
+    t.run_for(@ui.move_most_ms)
+    let at = "\{w}×\{h} @\{scale}"
+    assert_true(t.find("本机核对码：") is Some(_), msg="\{at}: missing label")
+    assert_true(t.find("K7M-4PX") is Some(_), msg="\{at}: missing code")
+    let faults = t.audit()
+    assert_true(faults.is_empty(), msg="\{at}: " + faults.join(" | "))
+  }
+}

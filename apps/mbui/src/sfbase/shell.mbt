@@ -24,9 +24,10 @@ pub(all) struct Shell {
   detail : (Source, ChatRef, String) -> Unit
   /// a file asked to be opened beside the page (its `view:` tab: viewer_tab.mbt) put there where the layout has a side
   /// panel for the page in view (the wide frame's chat), in front: the tab it put there (that file's tab there
-  /// already, by whatever key it was opened with), none where it has nowhere (what asked opens it over the whole
-  /// window). What open_preview calls, never a page itself
-  beside : (String) -> String?
+  /// already, by whatever key it was opened with) and whether it was put there new, none where it has nowhere (what
+  /// asked opens it over the whole window). `beside(tab, full)`: `full`, put there to go over the whole window at once
+  /// (tab_full.mbt), a new one put there with no slide of the panel. What open_preview calls, never a page itself
+  beside : (String, Bool) -> (String, Bool)?
   /// a file's tab put in the place of another of the page in view's side panel (`beside_for(tab, was)`: a picture's tab
   /// stepped to the one beside it, viewer_tab.mbt), in front: the tab it put there, none where it has no such panel
   beside_for : (String, String) -> String?
@@ -61,7 +62,7 @@ pub fn bare_shell() -> Shell {
     open: stack_open,
     open_over: stack_open,
     detail: fn(_, _, _) {  },
-    beside: fn(_) { None },
+    beside: fn(_, _) { None },
     beside_for: fn(_, _) { None },
     beside_room: fn() { false },
     back: stack_back,

@@ -194,7 +194,7 @@ fn side_narrower(src : Source, n : @view.View, serial : Int) -> @sfbase.ColumnLa
   // (a chat's; or the new chat's made as nodes beside its Station 文件 (new_side_node), its column centred in what it
   // is drawn in all the way, as it is at rest: by half of how much narrower it is laid out)
   let (key, open, centred) = match app.nav.page_of(serial) {
-    Some((Chat(r), _)) => (chat_key(r), fn() { side_now(src, r).0.length() > 0 }, false)
+    Some((Chat(r), _)) => (chat_key(r), fn() { side_drawn_open(src, r, chat_key(r)) }, false)
     Some((NewChat, _)) =>
       match @sfbase.workspace_in_view(src).0 {
         Some(w) => ("new:" + w.id, fn() { new_files_open(src, w.id) && new_drive_station(src, w) is Some(_) }, true)
@@ -302,8 +302,18 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
       }
       return
     }
-    let open = fn() { side_now(src, r).0.length() > 0 }
+    let open = fn() { side_drawn_open(src, r, key) }
     col.reacts(open, fn(open) { side_slides(col, src, key, r.station + "\u{1}" + r.session, open) })
+    // (opened only for a tab over the whole window and closed with it: let go of, side_unseen)
+    col.reacts(
+      fn() { side_now(src, r).0.is_empty() },
+      fn(none) {
+        if none && side_unseen.untracked() == key {
+          side_unseen.set("")
+        }
+      },
+      at_start=false,
+    )
     // (its page kept under another, shown no more: what a file's tab plays here paused, as when its tab is let go)
     col.reacts(fn() { app.nav.shows(serial) }, fn(shows) {
       if !shows {
@@ -708,11 +718,13 @@ fn side_own_node(
     s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))).clips(Is(true)) |> ignore
     if tab == "jobs" {
       jobs_tab_node(s, src, r, tips, foot_card, fn(job) {
-        // (over the whole window, the command key held as it was pressed: sfbase's tab_full.mbt)
-        let full = @sfbase.full_held()
+        // (over the whole window, the command key not held as it was pressed: sfbase's tab_full.mbt; not in the panel
+        // yet, only to go there, lone)
+        let full = @sfbase.full_asked()
+        let lone = full && !side_now(src, r).0.contains("service:" + job)
         side_tab_open(src, r, "service:" + job)
         if full {
-          @sfbase.tab_full_open(r, "service:" + job)
+          @sfbase.tab_full_open(r, "service:" + job, lone~)
         }
       })
       // (what its press asked, taken over by what it read as it was made: side_front_pressed)

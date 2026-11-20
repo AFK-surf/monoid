@@ -17,10 +17,20 @@ priv struct Turn {
   mut declared : Json?
   auth_retried : Bool
   mut codex_retried : Bool
+  passive : Bool
   by : Json
   // (a turn its background work woke, `job`: the need of the turn before it, still asked of a person as it began, so
   // that a turn that only says how that work goes and waits on asks the same; `begin_turn`)
   asked_before : Json?
+}
+
+///|
+/// An `auth_retry` or `spend` failover continuation deferred while active turn slots exceed `max_concurrent_turns`.
+priv struct QueuedRetry {
+  kind : String
+  text : String
+  by : Json
+  codex_retried : Bool
 }
 
 ///|
@@ -73,6 +83,8 @@ priv struct Actor {
   mut turn : Turn?
   /// true while acquiring/opening a turn before `turn` is set, or deciding continuation in `on_turn_ended`
   mut starting_turn : Bool
+  /// deferred `auth_retry` / `spend` continuation waiting for a concurrency slot
+  mut queued_retry : QueuedRetry?
   mut codex_update : CodexUpdate?
   mut codex_next : Int
   /// the Codex thread taken up again from its rollout after its turn was refused with a bare Bad Request (FB-26;
@@ -282,6 +294,7 @@ fn Actors::actor(self : Actors, key : String, runtime : String) -> Actor {
         phase: "idle",
         turn: None,
         starting_turn: false,
+        queued_retry: None,
         codex_update: None,
         codex_next: 0,
         codex_reloaded: None,

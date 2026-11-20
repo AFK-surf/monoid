@@ -20,6 +20,9 @@ let rule_names : Array[String] = [
 ///|
 let rule_words : Map[String, String] = {
   "structure-box": "a structure's callback (View::show, pick, switch_by: `fn(x) { x.box(…) }`) wraps its only child in a bare `x.box(…)` with no other statements on `x`: the structure already makes that box for you, so the extra box is redundant and hides row layout properties; put the properties and children directly on `x` (calling a part function like `words_node(x, …)` is fine)",
+  "scroll-each": "a `.scrolls(…)` body calls `.each(…)` or `.each_of(…)` directly without virtualization: every item is built and laid out at once regardless of viewport; for long or growing lists use `View::list_reused` / `View::scrolls_reused` / `View::scrolls_window`, or for a small fixed set mark `// det-ok(scroll-each): <reason>`",
+  "bare-on-press": "a node calls `.on_press(…)` without `.says(…)` or `.as_ground()` on the same node: screen readers and keyboard focus cannot name or reach a bare pressable box; use `@headless.button` (or a component built on it) or declare `.says(…)` / `.as_ground()`",
+  "old-run-ctx": "uses a legacy immediate-mode `Ctx` entry (`@ui.run(…)`, `@film.run(…)`, `@film.picture(…)`, `@film.film(…)`, or `Tester::new(…)`): use the pure-tree entry (`@ui.run_tree(…)`, `@film.run_tree(…)`, `@film.picture_tree(…)`, `@film.film_tree(…)`, or `Tester::tree(…)`)",
   "page-headless": "a page (detlint.json `pages`) says mbui's headless components itself (`@headless.button`, `toggle`, `combobox`…: each `@headless.<name>` counted): a page is made of the app's component library (`library`), whose parts are those components with the app's look (AGENTS.md, Components); a page that gives one a look of its own is a part the library lacks: write it there and use it",
   "page-control-by-hand": "a page (detlint.json `pages`) says a control's role itself (`@view.said(Button, …)`, `Checkbox`, `Radio`, `Switch`, `Tab`, `Tablist`, `Menu`, `MenuItem*`, `Combobox`, `Listbox`, `Option`), with a press, a focus or keys of its own, where a headless component is that control to the hand, the keyboard and a screen reader and the library's part is it with the app's look: use the library's part (a page's link, region, status, heading or dialog not counted)",
   "along-row-at-once": "a structure said both along a row and at once (View::show, pick or each given along_row=true and at_once=true): along a row it makes its way, at once it makes none, so it is a fault as it is made (view's along_row.mbt), seen only where that part shows; say the one meant",
@@ -310,7 +313,7 @@ fn under(rel : String, prefixes : Array[String]) -> Bool {
     } else {
       p
     }
-    rel == p || rel.has_prefix(q + "/")
+    q == "." || rel == p || rel.has_prefix(q + "/")
   })
 }
 

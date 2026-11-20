@@ -2,8 +2,8 @@
 
 ///|
 fn scene_tester(
-  view : (@ui.Ctx) -> Unit,
-  tree? : (@view.View) -> Unit,
+  view : ((@ui.Ctx) -> Unit)?,
+  tree : ((@view.View) -> Unit)?,
   w~ : Double,
   h~ : Double,
   scale~ : Double,
@@ -13,49 +13,115 @@ fn scene_tester(
   window_corner~ : Double,
   corners_held~ : Bool,
   words_over_held~ : Bool,
+  theme? : () -> @ui.Theme,
+  transitions_only? : Bool,
 ) -> @ui.Tester {
   // Take the real host before the Tester installs its own. Its text and decoded images are what the renderer draws.
   let host = @hostapi.host()
   init_offscreen(w, h, scale)
-  let t = @ui.Tester::new(
-    view,
-    tree?,
-    w~,
-    h~,
-    scale~,
-    platform~,
-    dark~,
-    pointing?=match arg("MBUI_POINTING") {
-      "finger" => Some(@ui.Pointing::Finger)
-      "mouse" => Some(@ui.Pointing::Mouse)
-      _ => None
-    },
-    native?=match arg("MBUI_NATIVE_INPUT") {
-      "finger" => Some(@ui.Pointing::Finger)
-      "mouse" => Some(@ui.Pointing::Mouse)
-      _ => None
-    },
-    keyboard?=match arg("MBUI_KEYBOARD") {
-      "1" => Some(true)
-      "0" => Some(false)
-      _ => None
-    },
-    env=[("MBUI_TEXT_RECORD", "1"), ("MBUI_LOCALE", arg("MBUI_LOCALE")), ("MBUI_DARK", arg("MBUI_DARK")),
-      // (a picture of words as a shaper that spaces none sets them: hostapi's words_spaced)
-      ("MBUI_AUTOSPACE", arg("MBUI_AUTOSPACE")),
-    ],
-    corners_held~,
-    words_over_held~,
-    live={ host, turn: fn() { spin(1.0) } },
-    before=fn() {
-      let z = @ui.window_zoom()
-      set_offscreen_view(w / z, h / z, scale * z)
-    },
-    window_corner~,
-    nav_able=arg("MBUI_FILM_NAV_ABLE") == "1",
-    // (MBUI_FILM_WINDOWS=1: windows of the run open to the app from its first frame, as its tree is made; below)
-    windows_beside=arg("MBUI_FILM_WINDOWS") == "1",
-  )
+  let pointing = match arg("MBUI_POINTING") {
+    "finger" => Some(@ui.Pointing::Finger)
+    "mouse" => Some(@ui.Pointing::Mouse)
+    _ => None
+  }
+  let native = match arg("MBUI_NATIVE_INPUT") {
+    "finger" => Some(@ui.Pointing::Finger)
+    "mouse" => Some(@ui.Pointing::Mouse)
+    _ => None
+  }
+  let keyboard = match arg("MBUI_KEYBOARD") {
+    "1" => Some(true)
+    "0" => Some(false)
+    _ => None
+  }
+  let env = [
+    ("MBUI_TEXT_RECORD", "1"),
+    ("MBUI_LOCALE", arg("MBUI_LOCALE")),
+    ("MBUI_DARK", arg("MBUI_DARK")),
+    // (a picture of words as a shaper that spaces none sets them: hostapi's words_spaced)
+    ("MBUI_AUTOSPACE", arg("MBUI_AUTOSPACE")),
+  ]
+  let live : @ui.Live = { host, turn: fn() { spin(1.0) } }
+  let before = fn() {
+    let z = @ui.window_zoom()
+    set_offscreen_view(w / z, h / z, scale * z)
+  }
+  let nav_able = arg("MBUI_FILM_NAV_ABLE") == "1"
+  // (MBUI_FILM_WINDOWS=1: windows of the run open to the app from its first frame, as its tree is made; below)
+  let windows_beside = arg("MBUI_FILM_WINDOWS") == "1"
+  let t = match (view, tree) {
+    (None, Some(make)) =>
+      @ui.Tester::tree(
+        make,
+        w~,
+        h~,
+        scale~,
+        platform~,
+        dark~,
+        pointing?,
+        native?,
+        keyboard?,
+        env~,
+        corners_held~,
+        words_over_held~,
+        live~,
+        before~,
+        window_corner~,
+        nav_able~,
+        windows_beside~,
+        theme?,
+        transitions_only=transitions_only.unwrap_or(true),
+        fanout_limit=0,
+        unseen_press_held=false,
+      )
+    (Some(v), _) =>
+      @ui.Tester::new(
+        v,
+        tree?,
+        w~,
+        h~,
+        scale~,
+        platform~,
+        dark~,
+        pointing?,
+        native?,
+        keyboard?,
+        env~,
+        corners_held~,
+        words_over_held~,
+        live~,
+        before~,
+        window_corner~,
+        nav_able~,
+        windows_beside~,
+        theme?,
+        transitions_only=transitions_only.unwrap_or(false),
+      )
+    (None, None) =>
+      @ui.Tester::tree(
+        fn(_) { () },
+        w~,
+        h~,
+        scale~,
+        platform~,
+        dark~,
+        pointing?,
+        native?,
+        keyboard?,
+        env~,
+        corners_held~,
+        words_over_held~,
+        live~,
+        before~,
+        window_corner~,
+        nav_able~,
+        windows_beside~,
+        theme?,
+        transitions_only=transitions_only.unwrap_or(true),
+        fanout_limit=0,
+        unseen_press_held=false,
+      )
+  }
   // (as a host builds and lays out: no frame built again keeping no rows to be compared, a list's rows on the
   // device's pixels; film.mbt's head)
   t.check_looks(false)

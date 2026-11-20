@@ -248,10 +248,10 @@ let named_open_serial : Ref[Int] = Ref(0)
 ///|
 /// A file an agent names by its path: check it in the agent's session before opening it. A path in code can name
 /// something that was never a file, or one removed since the pointer last rested on it. `beside`: asked beside the chat
-/// (its menu's 在侧边打开); else as the press asked, over the whole window or not said as it is pressed (full_held), not
-/// as the answer comes.
+/// (its menu's 在侧边打开); else as the press asked, over the whole window or not said as it is pressed (full_asked),
+/// not as the answer comes.
 fn open_named(src : Source, station : String, agent : String, path : String, beside? : Bool) -> Unit {
-  let full = beside is None && @sfbase.full_held()
+  let full = beside is None && @sfbase.full_asked()
   named_open_serial.val += 1
   let serial = named_open_serial.val
   guard agent != "" && !path.has_suffix("/") else { return }

@@ -31,6 +31,108 @@ pub fn picture(
   corners_held? : Bool = true,
   corner_faults_ok? : (Array[String]) -> Bool = fn(faults) { faults.is_empty() },
   words_over_held? : Bool = true,
+  theme? : () -> @ui.Theme,
+) -> Bool {
+  picture_impl(
+    Some(view),
+    tree,
+    path~,
+    w~,
+    h~,
+    scale~,
+    platform~,
+    dark~,
+    inset~,
+    window_corner~,
+    prepare~,
+    script~,
+    at~,
+    frame?,
+    fps~,
+    max~,
+    transparent~,
+    corners_held~,
+    corner_faults_ok~,
+    words_over_held~,
+    theme?,
+  )
+}
+
+///|
+/// Pure-tree counterpart of `picture`: renders `tree` made once without any legacy `Ctx` view, using `@ui.Tester::tree`.
+pub fn picture_tree(
+  tree : (@view.View) -> Unit,
+  path~ : String,
+  w~ : Double,
+  h~ : Double,
+  scale? : Double = 2.0,
+  platform? : Int = 0,
+  dark? : Bool = false,
+  inset? : Bool = false,
+  window_corner? : Double = 0.0,
+  prepare? : String = "",
+  script? : String = "",
+  at? : Double = 0.0,
+  frame? : Int,
+  fps? : Int = film_fps,
+  max? : Int = 3000,
+  transparent? : Bool = false,
+  corners_held? : Bool = true,
+  corner_faults_ok? : (Array[String]) -> Bool = fn(faults) { faults.is_empty() },
+  words_over_held? : Bool = true,
+  theme? : () -> @ui.Theme,
+  transitions_only? : Bool = true,
+) -> Bool {
+  picture_impl(
+    None,
+    Some(tree),
+    path~,
+    w~,
+    h~,
+    scale~,
+    platform~,
+    dark~,
+    inset~,
+    window_corner~,
+    prepare~,
+    script~,
+    at~,
+    frame?,
+    fps~,
+    max~,
+    transparent~,
+    corners_held~,
+    corner_faults_ok~,
+    words_over_held~,
+    theme?,
+    transitions_only~,
+  )
+}
+
+///|
+fn picture_impl(
+  view : ((@ui.Ctx) -> Unit)?,
+  tree : ((@view.View) -> Unit)?,
+  path~ : String,
+  w~ : Double,
+  h~ : Double,
+  scale~ : Double,
+  platform~ : Int,
+  dark~ : Bool,
+  inset~ : Bool,
+  window_corner~ : Double,
+  prepare~ : String,
+  script~ : String,
+  at~ : Double,
+  frame? : Int,
+  fps~ : Int,
+  max~ : Int,
+  transparent~ : Bool,
+  corners_held~ : Bool,
+  corner_faults_ok~ : (Array[String]) -> Bool,
+  words_over_held~ : Bool,
+  theme? : () -> @ui.Theme,
+  transitions_only? : Bool,
 ) -> Bool {
   if !supported || path == "" || w <= 0.0 || h <= 0.0 || scale <= 0.0 ||
      w.is_nan() || h.is_nan() || scale.is_nan() || w.is_inf() || h.is_inf() || scale.is_inf() ||
@@ -42,7 +144,7 @@ pub fn picture(
   let host = @hostapi.host()
   let t = scene_tester(
     view,
-    tree?,
+    tree,
     w~,
     h~,
     scale~,
@@ -52,6 +154,8 @@ pub fn picture(
     window_corner~,
     corners_held=false,
     words_over_held~,
+    theme?,
+    transitions_only?,
   )
   defer { t.end_run(host) }
   t.set_frame_period(1000.0 / fps.to_double())
@@ -147,7 +251,12 @@ pub fn picture(
 
 ///|
 /// The same program and arguments as `run`, with MBUI_PICTURE selecting a PNG instead of a film.
-fn run_picture(view : (@ui.Ctx) -> Unit, tree? : (@view.View) -> Unit) -> Unit {
+fn run_picture_impl(
+  view : ((@ui.Ctx) -> Unit)?,
+  tree : ((@view.View) -> Unit)?,
+  theme? : () -> @ui.Theme,
+  transitions_only? : Bool,
+) -> Unit {
   let path = arg("MBUI_PICTURE")
   let prepare_path = arg("MBUI_FILM_PREPARE")
   let drive_path = arg("MBUI_FILM_DRIVE")
@@ -194,9 +303,9 @@ fn run_picture(view : (@ui.Ctx) -> Unit, tree? : (@view.View) -> Unit) -> Unit {
         }
       }
   }
-  let ok = picture(
+  let ok = picture_impl(
     view,
-    tree?,
+    tree,
     path~,
     w~,
     h~,
@@ -212,17 +321,20 @@ fn run_picture(view : (@ui.Ctx) -> Unit, tree? : (@view.View) -> Unit) -> Unit {
     fps~,
     max=number(arg("MBUI_FILM_FRAMES")).unwrap_or(3000.0).to_int(),
     transparent=arg("MBUI_PICTURE_TRANSPARENT") == "1",
-    corner_faults_ok?=if arg("MBUI_FILM_ALLOW_CORNER_FAULTS") == "1" {
-      Some(fn(faults) {
+    corners_held=true,
+    corner_faults_ok=if arg("MBUI_FILM_ALLOW_CORNER_FAULTS") == "1" {
+      fn(faults) {
         for fault in faults {
           say("picture: \{fault}")
         }
         true
-      })
+      }
     } else {
-      None
+      fn(faults) { faults.is_empty() }
     },
     words_over_held=false,
+    theme?,
+    transitions_only?,
   )
   exit(if ok { 0 } else { 1 })
 }

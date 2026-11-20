@@ -227,3 +227,123 @@ test "the window's tree said to show no hand over what is pressed: the arrow ove
   tree.hand_over_presses(true)
   assert_eq(t.cursor(), Hand, msg="said again: the tree's button's hand at once, the pointer still, no frame")
 }
+
+///|
+test "interactive roles (button, toggle, disclosure, slider) default to Hand when enabled, Arrow when disabled, explicit cursor overrides, and roleless drag or as_ground stays Arrow" {
+  let on = fn(v : Bool) { @signals.signal(v, same=fn(a, b) { a == b }) }
+  let able = on(true)
+  let t = Tester::new(fn(_c) {  }, w=500.0, h=100.0)
+  t.check_looks(false)
+  set_view_app(fn(root) {
+    root.row(Is(true)) |> ignore
+    // 0..60: button pattern (on_press + Button)
+    root.box(fn(b) {
+      b
+      .width(Is(Some(60.0)))
+      .height(Is(Some(40.0)))
+      .presses(By(fn() { able.get() }))
+      .says(Is(Some(@view.said(Button, label="Save"))))
+      .on_press(fn() {  })
+      |> ignore
+    })
+    |> ignore
+    // 60..120: toggle pattern (on_press + Switch)
+    root.box(fn(b) {
+      b
+      .width(Is(Some(60.0)))
+      .height(Is(Some(40.0)))
+      .presses(By(fn() { able.get() }))
+      .says(Is(Some(@view.said(Switch, label="Mute"))))
+      .on_press(fn() {  })
+      |> ignore
+    })
+    |> ignore
+    // 120..180: disclosure pattern (on_press + Button expanded)
+    root.box(fn(b) {
+      b
+      .width(Is(Some(60.0)))
+      .height(Is(Some(40.0)))
+      .presses(By(fn() { able.get() }))
+      .says(Is(Some(@view.said(Button, label="More", expanded=false))))
+      .on_press(fn() {  })
+      |> ignore
+    })
+    |> ignore
+    // 180..240: slider pattern (on_drag only, no on_press + Slider)
+    root.box(fn(b) {
+      b
+      .width(Is(Some(60.0)))
+      .height(Is(Some(40.0)))
+      .presses(By(fn() { able.get() }))
+      .says(Is(Some(@view.said(Slider, label="Volume"))))
+      .on_drag(fn(_) {  })
+      |> ignore
+    })
+    |> ignore
+    // 240..300: slider with explicit cursor override
+    root.box(fn(b) {
+      b
+      .width(Is(Some(60.0)))
+      .height(Is(Some(40.0)))
+      .presses(By(fn() { able.get() }))
+      .says(Is(Some(@view.said(Slider, label="Pan"))))
+      .on_drag(fn(_) {  })
+      .cursor(Is(Some(Grab)))
+      |> ignore
+    })
+    |> ignore
+    // 300..360: roleless drag region (stays Arrow)
+    root.box(fn(b) {
+      b
+      .width(Is(Some(60.0)))
+      .height(Is(Some(40.0)))
+      .presses(Is(true))
+      .on_drag(fn(_) {  })
+      |> ignore
+    })
+    |> ignore
+    // 360..420: as_ground with interactive role (stays Arrow)
+    root.box(fn(b) {
+      b
+      .width(Is(Some(60.0)))
+      .height(Is(Some(40.0)))
+      .presses(Is(true))
+      .says(Is(Some(@view.said(Slider, label="Ground"))))
+      .as_ground()
+      .on_drag(fn(_) {  })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  // Enabled: button, toggle, disclosure, slider all show Hand; explicit Grab overrides; roleless drag & as_ground show Arrow
+  let enabled_cases : Array[(Double, Cursor, String)] = [
+    (30.0, Hand, "button"),
+    (90.0, Hand, "toggle"),
+    (150.0, Hand, "disclosure"),
+    (210.0, Hand, "slider"),
+    (270.0, Grab, "slider explicit Grab"),
+    (330.0, Arrow, "roleless drag"),
+    (390.0, Arrow, "as_ground"),
+  ]
+  for pair in enabled_cases {
+    finger(1, pair.0, 20.0)
+    t.frames_owed()
+    assert_eq(t.cursor(), pair.1, msg="enabled: \{pair.2}")
+  }
+  // Disabled: button, toggle, disclosure, slider revert to Arrow (and disabled node with presses=false is skipped by hit-testing)
+  able.set(false)
+  t.frames_owed()
+  let disabled_cases : Array[(Double, Cursor, String)] = [
+    (30.0, Arrow, "button disabled"),
+    (90.0, Arrow, "toggle disabled"),
+    (150.0, Arrow, "disclosure disabled"),
+    (210.0, Arrow, "slider disabled"),
+    (270.0, Arrow, "slider explicit Grab skipped when presses=false"),
+  ]
+  for pair in disabled_cases {
+    finger(1, pair.0, 20.0)
+    t.frames_owed()
+    assert_eq(t.cursor(), pair.1, msg="disabled: \{pair.2}")
+  }
+}

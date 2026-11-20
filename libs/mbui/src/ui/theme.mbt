@@ -292,7 +292,7 @@ pub fn Theme::light() -> Theme {
     corner_fit: None,
     lit_apart: 0.0,
     lit_reach: 0.0,
-    tabular: false,
+    tabular: true,
   }
 }
 
@@ -456,6 +456,7 @@ pub fn Theme::ios_light() -> Theme {
     corner_fit: None,
     lit_apart: 0.0,
     lit_reach: 0.0,
+    // iOS system theme keeps San Francisco's proportional figures unless opted in.
     tabular: false,
   }
 }

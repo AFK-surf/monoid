@@ -855,6 +855,12 @@ async fn LiveBus::jobs_accounts_recheck(self : LiveBus, profile : Json) -> Json 
 }
 
 ///|
+/// Whether a turn that failed with auth on `failed_profile` should automatically reopen and retry.
+async fn LiveBus::jobs_accounts_can_auth_retry(self : LiveBus, key : Json, failed_profile : Json) -> Json {
+  (self.jobs_ask.val)("accounts.canAuthRetry", { "key": key, "failedProfile": failed_profile })
+}
+
+///|
 /// The accounts followed again (the machine's logins and homes).
 async fn LiveBus::jobs_accounts_followed(self : LiveBus) -> Unit {
   ignore((self.jobs_ask.val)("accounts.followed", Json::array([])))

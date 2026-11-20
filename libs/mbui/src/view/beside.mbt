@@ -222,6 +222,43 @@ pub fn View::beside(
 }
 
 ///|
+/// Float over what holds it (`View::over(Is(true))`) and, when `anchor` is `Some`, place it beside `anchor`
+/// (`View::beside` with the same placement parameters).
+#callsite(autofill(loc))
+pub fn View::float_beside(
+  self : View,
+  anchor : View?,
+  side? : Side = Bottom,
+  along? : Along = Middle,
+  offset? : Double = 4.0,
+  padding? : Double = 8.0,
+  at_pointer? : Bool = false,
+  width? : BesideWidth = Own,
+  piece? : (Double, Double) -> (Double, Double, Double, Double)?,
+  along_offset? : Double = 0.0,
+  holds_side? : Bool = false,
+  loc~ : SourceLoc,
+) -> View {
+  self.over(Is(true), loc~) |> ignore
+  match anchor {
+    Some(a) =>
+      self.beside(
+        a.id(),
+        side~,
+        along~,
+        offset~,
+        padding~,
+        at_pointer~,
+        width~,
+        piece?,
+        along_offset~,
+        holds_side~,
+      )
+    None => self
+  }
+}
+
+///|
 /// Placed beside the node `anchor` says as that changes (View::beside, all else as it says): bound as any property is
 /// (View::bind: set again as what it reads changes, at that change's moment, before anything is laid out or worked out
 /// for it, so what reads where it goes as of that moment, Moves of @motion among them, reads it beside its new anchor,

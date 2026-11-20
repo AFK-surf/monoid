@@ -208,3 +208,69 @@ test "a finger opens no hover card: a tap and a long press on its trigger leave 
   k.t.release(x, y)
   assert_eq(k.open.get(), false)
 }
+
+///|
+test "Popover::layer + View::float_beside positions beside opener, closes on Escape and outside press, and clears opener when trigger unmounts" {
+  let open = @signals.signal(false)
+  let show_trigger = @signals.signal(true)
+  let pop = @headless.Popover::new(fn() { open.get() }, fn(v) { open.set(v) })
+  let size = fn(v : @view.View) { v.width(Is(Some(120.0))).height(Is(Some(40.0))) |> ignore }
+  let t = window(fn(root) {
+    root.show(at_once=true, fn() { show_trigger.get() }, fn(s) {
+      pop.trigger(s, fn() { "筛选" }, fn(v, _) { size(v) }) |> ignore
+    })
+    @headless.button(root, fn() { "别处" }, fn(_) {  }, fn(v, _) { size(v) }) |> ignore
+    pop.layer(
+      root,
+      fn() { "浮层菜单" },
+      fn(v, anchor) {
+        v
+        .float_beside(anchor, side=Bottom, along=Start, offset=4.0)
+        .width(Is(Some(140.0)))
+        .height(Is(Some(80.0)))
+        .ground(Is(c_rest))
+        |> ignore
+        @headless.button(v, fn() { "选项" }, fn(_) {  }, fn(b, _) { size(b) }) |> ignore
+      },
+      at_once=true,
+    )
+  })
+  assert_true(pop.opener() is Some(_))
+  let (_tx, ty, _tw, th) = t.get(Button, label="筛选").rect
+  t.click(Button, label="筛选")
+  let (px, py, pw, ph) = t.get(Dialog, label="浮层菜单").rect
+  // (x clamped to default 8px window padding since trigger sits at x=0)
+  assert_eq((px, py, pw, ph), (8.0, ty + th + 4.0, 140.0, 80.0))
+  // Escape closes it
+  t.key(@ui.key_escape)
+  assert_eq((open.get(), t.query(Dialog, label="浮层菜单") is Some(_)), (false, false))
+  // Reopen and close by pressing outside both trigger and popover
+  t.click(Button, label="筛选")
+  assert_true(t.query(Dialog, label="浮层菜单") is Some(_))
+  t.tap(300.0, 200.0)
+  assert_eq((open.get(), t.query(Dialog, label="浮层菜单") is Some(_)), (false, false))
+  // Unmounting the trigger clears opener()
+  show_trigger.set(false)
+  t.draw()
+  assert_true(pop.opener() is None)
+}
+
+///|
+test "HoverCard::opener exposes trigger node while mounted and None after trigger unmounts" {
+  let open = @signals.signal(false)
+  let show_trigger = @signals.signal(true)
+  let card = @headless.HoverCard::new(fn() { open.get() }, fn(v) { open.set(v) })
+  let t = window(fn(root) {
+    root.show(at_once=true, fn() { show_trigger.get() }, fn(s) {
+      @headless.button(s, fn() { "作者" }, fn(_) {  }, fn(v, _) {
+        v.width(Is(Some(120.0))).height(Is(Some(40.0))) |> ignore
+        card.trigger(v)
+      })
+      |> ignore
+    })
+  })
+  assert_true(card.opener() is Some(_))
+  show_trigger.set(false)
+  t.draw()
+  assert_true(card.opener() is None)
+}

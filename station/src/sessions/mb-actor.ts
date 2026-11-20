@@ -653,7 +653,7 @@ export class MbActor {
     }
     if (part === "deps") {
       const d = deps as Json;
-      if (typeof d[name] !== "function") return null;
+      if (typeof d[name] !== "function") return name === "canAuthRetry" ? true : null;
       return await d[name](...args);
     }
     if (part === "agent") {

@@ -350,6 +350,26 @@ pub fn runs_measure(
 }
 
 ///|
+/// Sentinel ink telling the host to draw words in the active theme's foreground (`tree_theme().fg`), updating
+/// automatically when the theme changes. Valid RRGGBBAA colors are always `>= 0L`.
+pub let ink_theme : Int64 = -1L
+
+///|
+/// The theme's default ink for words changed: every live node with words using `ink_theme` is marked to be drawn again
+/// (paint only, no layout).
+pub fn Tree::words_ink_again(self : Tree) -> Unit {
+  if self.rooming >= 0 {
+    self.once_laid_out(fn() { self.words_ink_again() })
+    return
+  }
+  for at, n in self.nodes {
+    if n.live && n.look.ink < 0L && (n.look.words != "" || !n.look.runs.is_empty() || n.look.words_drawn is Some(_)) {
+      self.look_marked_at(at)
+    }
+  }
+}
+
+///|
 /// The ink its words are drawn in, as it changes (a theme's, a state's): paint's.
 #callsite(autofill(loc))
 pub fn View::ink(self : View, ink : Live[Int64], loc~ : SourceLoc) -> View {
@@ -509,6 +529,15 @@ pub fn View::words_breaks(self : View, on : Live[Bool], loc~ : SourceLoc) -> Vie
 pub fn View::words_breaks_now(self : View) -> Bool {
   guard self.live() is Some(n) else { return false }
   n.look.words_breaks
+}
+
+///|
+/// Whether single-line words are optically centered vertically within their line box (shifting Latin cap-height center
+/// onto the line box midpoint, while keeping CJK balanced), as it changes: paint only, no layout change.
+#callsite(autofill(loc))
+pub fn View::words_optical(self : View, on : Live[Bool], loc~ : SourceLoc) -> View {
+  self.bind(loc~, WordsOptical, on, Paint, fn(on) { self.tree.nodes[self.at].look.words_optical = on })
+  self
 }
 
 ///|

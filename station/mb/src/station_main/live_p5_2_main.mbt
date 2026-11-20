@@ -178,6 +178,7 @@ async fn P52::refresh_config(self : P52) -> Unit {
     to_jv(raw),
     self.data,
     _ => None,
+    total_bytes=jnum_of(machine(), "totalmem").unwrap_or(0.0),
   ) catch {
     e => {
       slice_log("warn", "agents", "config.json's hub config not worked out", {

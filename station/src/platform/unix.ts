@@ -675,9 +675,10 @@ export const unix: Platform = {
     try {
       if (MACOS) {
         const level = (await run("sysctl", ["-n", "kern.memorystatus_vm_pressure_level"])).stdout;
-        if (trim(level) !== "2") return pressureOfLevel(level);
-        // Read without waiting: this is asked every few seconds exactly while the memory is short, when a process
-        // started takes longest (host.memory's three, each waited on, held the main thread).
+        const trimmed = trim(level);
+        if (trimmed !== "1" && trimmed !== "2") return pressureOfLevel(level);
+        // Read without waiting: this is asked every few seconds while memory may be short (level 1 can stay normal
+        // on a 14 GB VM even with <100 MB free, and level 2 can warn with plenty of reclaimable memory).
         const mem = await macMemory();
         return mem.known === false ? pressureOfLevel(level) : pressureOfLevel(level, mem.totalBytes - mem.usedBytes, mem.totalBytes);
       }

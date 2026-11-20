@@ -64,7 +64,10 @@ test "wide: a web service's panel sliding in beside a chat, its tabs coming late
   let client = @core.Client::new(fn(_) {  })
   let (t, src, chat_value, chat_id) = panel_gap_open(client)
   let link = @sfbase.link_target({ "opens": "item", "workspace": "ws1", "station": "st1", "session": "s-c1", "service": "j-web" })
+  // (with ⌘ held: beside the chat, its panel sliding in; a plain press opens it over the whole window)
+  t.hold_mods(@ui.mod_cmd)
   assert_true(@sfbase.open_target(src, link, false, None))
+  t.hold_mods(0)
   t.frame()
   t.frame()
   let with_tabs = chat_value.copy()
@@ -179,7 +182,10 @@ test "wide: a web service's panel sliding in beside a chat and out, no file in i
   let client = @core.Client::new(fn(_) {  })
   let (t, src, chat_value, chat_id) = panel_gap_open(client, drop=false)
   let link = @sfbase.link_target({ "opens": "item", "workspace": "ws1", "station": "st1", "session": "s-c1", "service": "j-web" })
+  // (with ⌘ held: beside the chat, its panel sliding in; a plain press opens it over the whole window)
+  t.hold_mods(@ui.mod_cmd)
   assert_true(@sfbase.open_target(src, link, false, None))
+  t.hold_mods(0)
   t.frame()
   t.frame()
   let with_tabs = chat_value.copy()
@@ -226,7 +232,10 @@ fn panel_way_seen(every : Double) -> Array[String] raise {
   let hz60 = 1000.0 / 60.0
   t.set_frame_period(hz60)
   let link = @sfbase.link_target({ "opens": "item", "workspace": "ws1", "station": "st1", "session": "s-c1", "service": "j-web" })
+  // (with ⌘ held: beside the chat, its panel sliding in; a plain press opens it over the whole window)
+  t.hold_mods(@ui.mod_cmd)
   assert_true(@sfbase.open_target(src, link, false, None))
+  t.hold_mods(0)
   t.run_for(way_look_ms)
   let seen = []
   let look = fn(phase : String) {

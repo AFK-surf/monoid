@@ -52,8 +52,8 @@ let p53_node_part_ms : Double = 24.0 * 3600000.0
 let p53_board_files_gone_ms : Double = 24.0 * 3600000.0
 
 ///|
-/// Shared clones untouched for this long may be reclaimed on low disk (sessions/lifecycle.ts `REPO_IDLE_MS`).
-let p53_repo_idle_ms : Double = 14.0 * 24.0 * 3600000.0
+/// Shared clones untouched for this long may be reclaimed on low disk (sessions/lifecycle.ts `REPO_IDLE_MS`, 3 days).
+let p53_repo_idle_ms : Double = 3.0 * 24.0 * 3600000.0
 
 ///|
 let p53_repo_git_timeout_ms : Int = 15000
@@ -98,12 +98,13 @@ priv struct P53Upkeep {
   mut tier : String
   mut running : Bool
   mut last_orphan_rooms_at : Double?
+  mut last_repo_branches_at : Double?
   mut last_full_relieve_at : Double?
 }
 
 ///|
 fn P53Upkeep::new(bus : LiveBus, jobs : P53Jobs, remote : P53Remote) -> P53Upkeep {
-  { bus, jobs, remote, tier: "ok", running: false, last_orphan_rooms_at: None, last_full_relieve_at: None }
+  { bus, jobs, remote, tier: "ok", running: false, last_orphan_rooms_at: None, last_repo_branches_at: None, last_full_relieve_at: None }
 }
 
 ///|
@@ -237,6 +238,19 @@ async fn P53Upkeep::pass(self : P53Upkeep) -> Json {
   note("repo worktrees", async fn() {
     Json::array(p53_prune_repo_worktrees(host, data).map(jstr))
   })
+  note("repo bundles", async fn() {
+    Json::array(p53_prune_expired_repo_bundles(host, data, now).map(jstr))
+  })
+  let run_repo_branches = match self.last_repo_branches_at {
+    None => true
+    Some(last) => now - last >= p53_repo_branches_every_ms
+  }
+  if run_repo_branches {
+    self.last_repo_branches_at = Some(now)
+    note("repo branches", async fn() {
+      Json::array(self.prune_all_repo_branches(now))
+    })
+  }
   let run_orphan_rooms = match self.last_orphan_rooms_at {
     None => true
     Some(last) => now - last >= p53_orphan_room_every_ms
@@ -419,24 +433,7 @@ async fn p53_prune_repo_worktrees(host : @host.Host, data : String) -> Array[Str
 
 ///|
 async fn p53_run_repo_git(host : @host.Host, dir : String, args : Array[String]) -> (Bool, String) {
-  let pairs = [
-    ("GIT_TERMINAL_PROMPT", "0"),
-    ("GIT_SSH_COMMAND", "ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new"),
-  ]
-  let git = find_command("git", pairs).unwrap_or("git")
-  let full = ["-C", dir] + args
-  let proc = spawn(host, git, full, env=pairs, stdout=Piped, stderr=Ignored) catch {
-    _ => return (false, "")
-  }
-  let late = Ref(false)
-  let killer = host.rt.fork(name="repo git check deadline", async fn() {
-    @effect.sleep(p53_repo_git_timeout_ms) // timer: a deadline to a process (git check given p53_repo_git_timeout_ms at most)
-    late.val = true
-    ignore(kill(proc.pid, "SIGKILL"))
-  })
-  let (code, _, out, _) = proc.finished()
-  killer.interrupt()
-  (!late.val && code == Some(0), @utf8.decode_lossy(out))
+  p53_run_repo_git_with_timeout(host, dir, args, p53_repo_git_timeout_ms)
 }
 
 ///|
@@ -690,6 +687,9 @@ async fn P53Upkeep::relieve_repos(self : P53Upkeep, now : Double, low : Double, 
     if !url_ok || !p53_is_recoverable_remote_url(remote_url) {
       continue
     }
+    // Run local branch cleanup (unthrottled by daily cadence) so merged/applied/process-only branches are dropped
+    // and stale (>14d) unpushed branches are archived into a verified bundle before checking remaining unpushed tips.
+    ignore(p53_prune_repo_branches_in(host, data, name, repo_path, now))
     let (rev_ok, rev_out) = p53_run_repo_git(host, repo_path, ["rev-list", "--count", "--all", "HEAD", "--not", "--remotes"])
     if !rev_ok || rev_out.trim().to_owned() != "0" {
       continue
@@ -698,8 +698,12 @@ async fn P53Upkeep::relieve_repos(self : P53Upkeep, now : Double, low : Double, 
     if !stash_ok || stash_out.trim().to_owned() != "" {
       continue
     }
-    let (status_ok, status_out) = p53_run_repo_git(host, repo_path, ["--no-optional-locks", "status", "--porcelain", "--untracked-files=normal"])
-    if !status_ok || status_out != "" {
+    let (status_ok, status_out) = p53_run_repo_git(
+      host,
+      repo_path,
+      ["-c", "core.quotepath=false", "--no-optional-locks", "status", "--porcelain", "--untracked-files=all"],
+    )
+    if !status_ok || !p53_status_has_only_process_untracked(status_out) {
       continue
     }
     // Re-check worktrees (fail closed on read error) and mtime right before deletion.

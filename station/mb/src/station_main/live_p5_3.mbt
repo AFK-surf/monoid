@@ -476,6 +476,18 @@ async fn P53::ask(self : P53, op : String, arg : Json) -> Json {
         .prune_orphan_rooms(num(0, "now").unwrap_or(wall_ms().to_double()))
         .map(jstr),
       )
+    "upkeep.pruneRepoBranches" =>
+      Json::array(
+        self.upkeep.prune_all_repo_branches(num(0, "now").unwrap_or(wall_ms().to_double())),
+      )
+    "upkeep.pruneExpiredRepoBundles" =>
+      Json::array(
+        p53_prune_expired_repo_bundles(
+          self.bus.host,
+          self.bus.data,
+          num(0, "now").unwrap_or(wall_ms().to_double()),
+        ).map(jstr),
+      )
     "upkeep.relieveOrphanTranscripts" =>
       Json::array(
         self.upkeep

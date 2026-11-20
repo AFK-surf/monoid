@@ -678,7 +678,12 @@ fn tape_settle(chat : String, open : String, known : Bool, at : Double) -> Unit 
         if wide.tape_at.get() == Panel {
           wide.tape_ask.set(Some(Page))
         }
-      } else if open != "" && open != wide.tape_panel.get() && wide.tape_panel.get() != tape_unknown && known {
+      } else if open != "" &&
+        open != wide.tape_panel.get() &&
+        wide.tape_panel.get() != tape_unknown &&
+        known &&
+        side_under_chat.val != chat {
+        // (not a panel opened under the whole window only for what goes there: panel.mbt's side_under_chat)
         wide.tape_ask.set(Some(Panel))
       } else if open == "" && known && wide.tape_at.get() == Panel {
         wide.tape_ask.set(Some(Page))

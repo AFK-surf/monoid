@@ -53,6 +53,10 @@ test("what the machines say reads", () => {
   assert.equal(fieldOrNull("Anonymous pages: unknown\n", "Anonymous pages"), null);
   assert.equal(fieldOrNull("Pages wired down: 123.\n", "Anonymous pages"), null);
   assert.equal(pressureOfLevel("1\n"), "normal");
+  // Level 1 still catches memory exhaustion when available RAM falls below 10% / 4% (e.g. 14 GiB macOS VM).
+  assert.equal(pressureOfLevel("1", 4 * GiB, 14 * GiB), "normal");
+  assert.equal(pressureOfLevel("1", 1 * GiB, 14 * GiB), "high");
+  assert.equal(pressureOfLevel("1", 80 * 1024 ** 2, 14 * GiB), "critical");
   assert.equal(pressureOfLevel("2"), "high");
   // Warn with a quarter of the memory available is not pressure (#4355); with under a tenth it is.
   assert.equal(pressureOfLevel("2", 6, 24), "normal");

@@ -77,13 +77,15 @@ pub fn view_step(src : Source, r : ChatRef, tab : String, was : String) -> Strin
   }
   let put = open.unwrap_or(tab)
   let full = @signals.untracked(fn() { @sfbase.tab_full_is(r.station, r.session, was) })
+  // (put there only to go over the whole window, as `was` was: lone, unless it was there already)
+  let lone = full && open is None && @sfbase.tab_full_lone()
   side_changing(chat_key(r), now.0, now.1, true)
   tab_let_go(src, r, was)
   tab_kept(r, put)
   let params : Map[String, Json] = { "chat": Json::string(tabs_key(r)), "tab": Json::string(put), "was": Json::string(was) }
   (src.call)("chat.tabs.replace", Json::object(params), @sfbase.answer_unread)
   if full {
-    @sfbase.tab_full_open(r, put)
+    @sfbase.tab_full_open(r, put, lone~)
   }
   put
 }
@@ -195,11 +197,12 @@ pub fn side_ask(src : Source, r : ChatRef, action : String, tab : String?) -> Un
 ///|
 /// File tab `tab` opened beside chat `r` (the shell's `beside`: sfapp's beside_where), in front; a tab of that file open
 /// there already (the same file, what it said of itself then aside: view_tab_file's same_file), that one brought to the
-/// front, never a second: the tab put in front.
-pub fn view_beside(src : Source, r : ChatRef, tab : String) -> String {
+/// front, never a second: the tab put in front, and whether it is new there. `full`: to go over the whole window at
+/// once, a new one put there under it with no slide of the panel (side_under).
+pub fn view_beside(src : Source, r : ChatRef, tab : String, full? : Bool = false) -> (String, Bool) {
   // (that file in a window of its own: the window to the front, the panel left as it is: sfbase's tab_window_front)
   match @sfbase.tab_window_front(r, tab) {
-    Some(there) => return there
+    Some(there) => return (there, false)
     None => ()
   }
   let open = match @sfbase.view_tab_file(tab) {
@@ -215,8 +218,73 @@ pub fn view_beside(src : Source, r : ChatRef, tab : String) -> String {
     None => None
   }
   let put = open.unwrap_or(tab)
-  side_change(src, r, "open", Some(put))
-  put
+  if full && open is None {
+    side_under(src, r, "open", put)
+  } else {
+    side_change(src, r, "open", Some(put))
+  }
+  (put, open is None)
+}
+
+///|
+/// Tab `tab` of chat `r` opened in its panel (`action` open) or closed there (close) while over the whole window, put
+/// there only to go there (sfbase's tab_full.mbt, `lone`): the panel told nothing, so it is open or closed under it at
+/// once, sliding neither way as the whole window's layer comes or goes.
+pub fn side_under(src : Source, r : ChatRef, action : String, tab : String) -> Unit {
+  match action {
+    "open" => {
+      side_under_chat.val = chat_key(r)
+      // (nothing in the panel before: it stays closed under the whole window, the chat's column as wide as it was, till
+      // the tab is put beside to stay or closed with the layer: side_unseen)
+      if side_now(src, r).0.is_empty() {
+        side_unseen.set(chat_key(r))
+      }
+      tab_kept(r, tab)
+    }
+    _ => {
+      side_under_chat.val = ""
+      tab_let_go(src, r, tab)
+    }
+  }
+  side_ask(src, r, action, Some(tab))
+}
+
+///|
+/// The chat whose panel holds a tab put there only to go over the whole window (side_under), till it is closed or put
+/// beside to stay (side_put_beside): on the tape its panel not brought over as it opens (tape_settle), so nothing of
+/// the tape moves under the whole window nor slides back as it closes.
+// kept across runs: put back by chat_page_reset
+let side_under_chat : Ref[String] = Ref("")
+
+///|
+/// The chat whose panel was opened, from none, only for a tab over the whole window (side_under): drawn closed, its
+/// column none wide and the chat's as wide as with no panel, so nothing under the whole window moves as its layer comes
+/// or goes; let go of once the panel has no tabs (closed with the layer: panel_node's side_panel_node) or the tab is put
+/// beside to stay (side_put_beside: the panel slides in then).
+// kept across runs: put back by chat_page_reset
+let side_unseen : @signals.Signal[String] = @signals.signal("")
+
+///|
+/// Whether chat `key`'s panel is open as it is drawn: some tabs in it, not opened only for one over the whole window
+/// (side_unseen).
+fn side_drawn_open(src : Source, r : ChatRef, key : String) -> Bool {
+  side_now(src, r).0.length() > 0 && side_unseen.get() != key
+}
+
+///|
+/// The tab over the whole window put in its chat's panel to stay (its 移到侧边: sfbase's tab_full_beside), the panel
+/// brought over on the tape.
+fn side_put_beside(r : ChatRef) -> Unit {
+  @sfbase.tab_full_beside()
+  if side_under_chat.val == chat_key(r) {
+    side_under_chat.val = ""
+  }
+  // (opened only for it: slid in now, as a change asked here)
+  if side_unseen.untracked() == chat_key(r) {
+    panel_own.asked.set(chat_key(r))
+    side_unseen.set("")
+  }
+  tape_bring_side(r)
 }
 
 ///|

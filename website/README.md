@@ -4,8 +4,9 @@
 
 ```sh
 python3 -m http.server -d website 4173      # or any static server: the folder works unbuilt, in English
-node website/build.mjs                      # → dist/website: a page per language + assets + sitemap.xml, robots.txt, _headers
-node website/build.mjs --site still.fail --out dist/site   # still.fail's (pnpm build:site; youdid.wtf: build:site-beta)
+node website/build.mjs                      # → dist/website: monoid.build (a page per language + assets + sitemap.xml, robots.txt, _headers)
+node website/build.mjs --site still.fail --out dist/site   # classic single-page still.fail (youdid.wtf: --site youdid.wtf --out dist/site-beta)
+bash website/stillfail/shots.sh             # recapture real apps/mbui offscreen WebP screenshots for still.fail / youdid.wtf
 node website/og.mjs [site…]                 # the share cards again (Chrome, playwright-core)
 node website/build.mjs --check              # translations: missing, extra, stale, markup, glyphs (exit 1 on any)
 ```

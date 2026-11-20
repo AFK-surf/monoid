@@ -158,6 +158,8 @@ export type SessionDeps = {
   refillsAt?(key: string): number;
   /// A runtime failed to sign in on `profile`: it is checked again (the pool passes over one whose login is over).
   recheck?(profile: string): Promise<void>;
+  /// Read-only check whether a turn that failed with `auth` on `failedProfile` should automatically reopen and retry.
+  canAuthRetry?(key: string, failedProfile: string): boolean;
   /// A turn on `profile` failed with words that name no limit: what its allowance, asked again, says it ran into
   /// (accounts.ts `limitAfter`: a model's own limit by its name, null the account's, undefined none).
   limitAfter?(profile: string, model: string | null): Promise<string | null | undefined>;

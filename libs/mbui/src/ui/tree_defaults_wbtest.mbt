@@ -90,3 +90,30 @@ test "tree defaults: Tester::tree(..., transitions_only=false) retains legacy au
   t.run_for(move_most_ms)
   assert_true(t.at_rest())
 }
+
+///|
+test "tree defaults: Tester::new defaults transitions_only=false and opts in with transitions_only=true" {
+  let flag = @signals.signal(false)
+  let made_show : Ref[@view.View?] = Ref(None)
+  let t = Tester::new(
+    fn(_c) { () },
+    tree=fn(root) {
+      root.show(fn() { flag.get() }, fn(s) {
+        made_show.val = Some(s)
+        s.box(fn(b) { b.height(Is(Some(30.0))).ground(Is(0x3366CCFFL)) |> ignore }) |> ignore
+      })
+      root.box(fn(line) { line.height(Is(Some(40.0))) |> ignore }) |> ignore
+    },
+    w=300.0,
+    h=200.0,
+    transitions_only=true,
+  )
+  t.draw()
+  flag.set(true)
+  t.frame()
+  assert_true(t.at_rest(), msg="Tester::new(..., transitions_only=true) must settle outside @view.transition")
+  match made_show.val {
+    Some(v) => assert_true(v.comes_end() < 0.0, msg="show should not animate when transitions_only=true")
+    None => @halt.saying("expected show child to be created")
+  }
+}

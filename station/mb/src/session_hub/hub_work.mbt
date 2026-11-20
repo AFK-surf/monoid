@@ -48,7 +48,8 @@ pub fn Hub::next_ts(self : Hub) -> String {
 // ── warm processes ──
 
 ///|
-/// Ends idle claude and dsh processes beyond the warm limit, oldest first, once they have idled past warmMs.
+/// Ends idle claude and dsh processes beyond the warm limit (immediately, oldest first), and any remaining idle
+/// processes once they have idled past warmMs (when warmMs > 0).
 fn Hub::evict_idle(self : Hub) -> Unit {
   let config = self.config()
   let now = self.now()
@@ -72,14 +73,19 @@ fn Hub::evict_idle(self : Hub) -> Unit {
       0
     }
   })
-  let mut excess = sorted.length() - num_of(config, "maxWarmClaude").unwrap_or(4.0).to_int()
+  let raw_cap = num_of(config, "maxWarmClaude").unwrap_or(4.0).to_int()
+  let cap = if raw_cap > 0 { raw_cap } else { 0 }
+  let mut excess = sorted.length() - cap
   let warm = num_of(config, "warmMs").unwrap_or(1_800_000.0)
   for x in sorted {
-    if excess <= 0 || x.1 < warm {
+    if excess > 0 {
+      self.act(x.0, "evict")
+      excess -= 1
+    } else if warm > 0.0 && x.1 >= warm {
+      self.act(x.0, "evict")
+    } else {
       break
     }
-    self.act(x.0, "evict")
-    excess -= 1
   }
 }
 

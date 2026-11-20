@@ -966,7 +966,7 @@ let pa_rest_off_known : Array[(String, String, Double, Double, Double, String)] 
 /// while the agent works on any of them (chat_body_node's ChatTurnsOut: its line out with the answer to its last turn).
 let pa_rest_known : Array[(String, Double, Double, String)] = [
   ("send-over-line", 3700.0, 5100.0, "the agent's line kept while it works on the second words as nodes; the old page's let go as the first's answer came"),
-  ("desk-notice-card-viewer", 5183.0, 8300.0, "a video opened beside a list scrolled up, the column narrowed: as nodes what is read stays where it was and the agent's line at work keeps its words cut short (pa_why_panel_read, pa_why_panel_working); the old page's 16 higher, its line's words not drawn"),
+  ("desk-notice-card-viewer", 5183.0, 8300.0, "a picture opened over the whole window from a list scrolled up, its tab put in the panel under it at once (pa_why_panel_under), the old page's column narrowed and widened again as it closes, the page made as nodes' left as wide as it was (sfdesk's side_unseen): as nodes what is read stays where it was (View::read_from) and the agent's line at work keeps its words cut short (message_working_node's line.cuts); the old page's 16 higher, its top row held by its top, its line's words not drawn"),
 ]
 
 ///|
@@ -1106,6 +1106,9 @@ let pa_why_spit : String = "the answer's words as they are spat out, from their 
 let pa_why_float : String = "the answer's head line (Claude, its time) as the agent's picture sets out (Float): as nodes laid out where it rests from that frame; the old page's a frame later, from beside the picture"
 
 ///|
+let pa_why_panel_under : String = "a file opened over the whole window, its tab put in the side panel under it only to go there and taken out as it closes (sfbase's tab_full.mbt, `lone`; sfdesk's side_under): the panel at once, no slide; as nodes the column takes its width from that frame (on the tape; beside the page, a panel opened only for it shown closed and the column left as it is: side_unseen), the old page a frame later (its laid_w), under the whole window's layer as it comes and as it goes"
+
+///|
 let pa_why_panel_first : String = "the side panel set off and come to rest: as nodes the column laid out at the narrower end from the cause's frame (column_laid, column_sets_off) and its words moved across with the page; the old page takes the width a frame later (page_way, its laid_w)"
 
 ///|
@@ -1113,15 +1116,6 @@ let pa_why_panel_mine : String = "words at the column's right and middle on the 
 
 ///|
 let pa_why_room_way : String = "the composer's room under it going where the page goes from the frame the side panel sets off, on both pages (composer_foot_in, the user 2026-11-17: 「很 q 弹的垃圾」), no more held at the narrower end to go on by itself once the page is there: the rows over it go up with it as the panel closes, the old page's on the old list's way and the page made as nodes' on its own, so what crosses the bar's edge then crosses it a frame apart, and the panel's switch's tip under the still pointer comes as the page made as nodes is at rest, a frame before the old page's way ends"
-
-///|
-let pa_why_panel_floats : String = "the round buttons over the list (跳到最新, 对话目录, the bell) as a tab opened beside narrows the column: as nodes they go with the column's right edge as it is drawn on the panel's way; the old page puts them where they go at once, their size its own (32 against 44) till both rest"
-
-///|
-let pa_why_panel_working : String = "the agent's line at work as a tab opened beside narrows the column: as nodes its words cut short to the room left them (message_working_node's line.cuts) and its ground with the column's way; the old page draws its ground at the narrower width at once and none of its words there (not run down yet)"
-
-///|
-let pa_why_panel_read : String = "a tab opened beside a list scrolled up: as nodes what is read stays where it was (View::read_from: the top message's words, its head line over them still showing) as the column narrows; the old page holds its top row by its top, all of it 16 higher once narrowed"
 
 ///|
 let pa_why_card : String = "a decision card answered: as nodes the answer comes into the list in the press's frame and the card's 忽略 and choices fade by pick(leave=…) as its room closes on the list's way; the old page closes it in its own Changed frame"
@@ -1996,29 +1990,6 @@ let pa_way_known : Array[PaWay] = [
   { drive: "desk-notice-card-viewer", what: Key("old alone 「处理中」"), from: 2317.0, to: 2317.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_working },
   { drive: "desk-notice-card-viewer", what: Key("ring old alone"), from: 2400.0, to: 3350.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_old_ring },
   { drive: "desk-notice-card-viewer", what: Key("button @outline nodes alone"), from: 3333.0, to: 3333.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_wheel },
-  { drive: "desk-notice-card-viewer", what: Key("composer"), from: 5183.0, to: 5250.0, dx: 5.3, dy: 8.1, dw: 10.4, why: pa_why_composer_way },
-  { drive: "desk-notice-card-viewer", what: Key("words 「Claude」"), from: 5200.0, to: 5283.0, dx: 19.4, dy: 9.6, dw: 0.2, why: pa_why_panel_first },
-  { drive: "desk-notice-card-viewer", what: Key("words 「1 小时前」"), from: 5200.0, to: 5283.0, dx: 19.4, dy: 9.6, dw: 0.2, why: pa_why_panel_first },
-  { drive: "desk-notice-card-viewer", what: Key("words 「改好后的样子：」"), from: 5183.0, to: 5183.0, dx: 0.2, dy: 0.2, dw: 181.2, why: pa_why_panel_first },
-  { drive: "desk-notice-card-viewer", what: Key("words 「对比图和构建日志附在下面。」"), from: 5183.0, to: 5183.0, dx: 0.2, dy: 0.2, dw: 181.2, why: pa_why_panel_first },
-  { drive: "desk-notice-card-viewer", what: Key("button 跳到最新 old alone"), from: 5183.0, to: 5300.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_floats },
-  { drive: "desk-notice-card-viewer", what: Key("button 跳到最新 nodes alone"), from: 5183.0, to: 5300.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_floats },
-  { drive: "desk-notice-card-viewer", what: Key("button @outline old alone"), from: 5183.0, to: 5300.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_floats },
-  { drive: "desk-notice-card-viewer", what: Key("button @outline nodes alone"), from: 5183.0, to: 5300.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_floats },
-  { drive: "desk-notice-card-viewer", what: Key("button 跳转到待决策的消息 old alone"), from: 5183.0, to: 5300.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_floats },
-  { drive: "desk-notice-card-viewer", what: Key("button 跳转到待决策的消息 nodes alone"), from: 5183.0, to: 5300.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_floats },
-  { drive: "desk-notice-card-viewer", what: Key("button 跳到最新"), from: 5317.0, to: 5467.0, dx: 106.8, dy: 2.5, dw: 0.2, why: pa_why_panel_floats },
-  { drive: "desk-notice-card-viewer", what: Key("button @outline"), from: 5317.0, to: 5467.0, dx: 106.8, dy: 2.5, dw: 0.2, why: pa_why_panel_floats },
-  { drive: "desk-notice-card-viewer", what: Key("button 跳转到待决策的消息"), from: 5317.0, to: 5467.0, dx: 106.8, dy: 2.5, dw: 0.2, why: pa_why_panel_floats },
-  { drive: "desk-notice-card-viewer", what: Key("old alone 「Claude：其余的行按估计的高度占位，滚到时再量真实高度」"), from: 5200.0, to: 5217.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_working },
-  { drive: "desk-notice-card-viewer", what: Key("nodes alone 「Claude：其余的行按估计的高度占位，滚到时再量真实高度」"), from: 5200.0, to: 8217.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_working },
-  { drive: "desk-notice-card-viewer", what: Key("ground"), from: 5200.0, to: 8217.0, dx: 176.7, dy: 16.2, dw: 156.2, why: pa_why_panel_working },
-  { drive: "desk-notice-card-viewer", what: Key("ground old alone"), from: 5200.0, to: 5217.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_working },
-  { drive: "desk-notice-card-viewer", what: Key("ground nodes alone"), from: 5200.0, to: 5200.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_working },
-  { drive: "desk-notice-card-viewer", what: Key("nodes alone 「Claude」"), from: 5300.0, to: 8217.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_read },
-  { drive: "desk-notice-card-viewer", what: Key("nodes alone 「1 小时前」"), from: 5300.0, to: 8217.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_read },
-  { drive: "desk-notice-card-viewer", what: Key("picture"), from: 5267.0, to: 8217.0, dx: 2.4, dy: 16.2, dw: 0.2, why: pa_why_panel_read },
-  { drive: "desk-notice-card-viewer", what: Rows, from: 5267.0, to: 8217.0, dx: pa_way_tol, dy: 16.2, dw: pa_way_tol, why: pa_why_panel_read },
   { drive: "desk-notice-card-viewer", what: Key("button 跳到最新 nodes alone"), from: 3333.0, to: 3333.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_wheel },
   { drive: "desk-notice-card-viewer", what: Key("old alone 「你 选择了「一起换」」"), from: 3333.0, to: 3333.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_old_ring },
   { drive: "desk-notice-card-viewer", what: Key("nodes alone 「.log」"), from: 3450.0, to: 3450.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_wheel },
@@ -3112,9 +3083,13 @@ let pa_way_known : Array[PaWay] = [
   { drive: "viewer-video", what: Key("button @asks.go nodes alone"), from: 17.0, to: 633.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_bell },
   { drive: "viewer-video", what: Key("old alone 「0:13」"), from: 650.0, to: 650.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_viewer },
   { drive: "viewer-video", what: Key("button @asks.go nodes alone"), from: 2183.0, to: 3700.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_bell },
-  { drive: "viewer-video-medium", what: Key("words 「打好的发布包在这里，下载下来装一下看看。」"), from: 1550.0, to: 1650.0, dx: 0.2, dy: 0.2, dw: 58.2, why: pa_why_panel_read },
-  { drive: "viewer-video-medium", what: Key("words 「做完了：列表、跳到最新的按钮、加载更早的消息都好了，截图也换了。」"), from: 1550.0, to: 1750.0, dx: 0.2, dy: 0.2, dw: 58.2, why: pa_why_panel_read },
-  { drive: "viewer-video-medium", what: Key("words 「推送截图前要先登录 gh。」"), from: 1550.0, to: 1617.0, dx: 0.2, dy: 0.2, dw: 58.2, why: pa_why_panel_read },
+  { drive: "viewer-video-medium", what: Key("words 「做完了：列表、跳到最新的按钮、加载更早的消息都好了，截图也换了。」"), from: 1550.0, to: 1550.0, dx: 0.2, dy: 0.2, dw: 58.1, why: pa_why_panel_under },
+  { drive: "viewer-video-medium", what: Key("words 「Willow 上 codex 的登录已失效：请在设置里重新登录」"), from: 1550.0, to: 1550.0, dx: 29.1, dy: 0.2, dw: 0.2, why: pa_why_panel_under },
+  { drive: "viewer-video-medium", what: Key("words 「发消息」"), from: 1550.0, to: 1550.0, dx: 0.2, dy: 0.3, dw: 58.1, why: pa_why_panel_under },
+  { drive: "viewer-video-medium", what: Key("words 「打好的发布包在这里，下载下来装一下看看。」"), from: 1550.0, to: 1550.0, dx: 0.2, dy: 0.2, dw: 58.1, why: pa_why_panel_under },
+  { drive: "viewer-video-medium", what: Key("words 「推送截图前要先登录 gh。」"), from: 1550.0, to: 1550.0, dx: 0.2, dy: 0.2, dw: 58.1, why: pa_why_panel_under },
+  { drive: "viewer-video-medium", what: Key("composer"), from: 1550.0, to: 1550.0, dx: 0.2, dy: 0.3, dw: 58.1, why: pa_why_panel_under },
+  { drive: "viewer-video-medium", what: Key("composer"), from: 3067.0, to: 3067.0, dx: 0.2, dy: 0.3, dw: 58.1, why: pa_why_panel_under },
   { drive: "picture-lift", what: Key("nodes alone 「1 小时前」"), from: 1850.0, to: 1850.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_wheel },
   { drive: "picture-lift", what: Key("nodes alone 「40 分钟前」"), from: 1850.0, to: 1850.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_wheel },
   { drive: "picture-lift", what: Key("nodes alone 「Claude：其余的行按估计的高度占位，滚到时再量真实高度」"), from: 1850.0, to: 1850.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_wheel },
@@ -3469,8 +3444,6 @@ let pa_way_known : Array[PaWay] = [
   { drive: "desk-notice-card-viewer", what: Key("nodes alone 「好，按「一起换」来。」"), from: 2567.0, to: 2667.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_spit },
   { drive: "desk-notice-card-viewer", what: Key("alpha 「Claude」"), from: 2567.0, to: 2583.0, dx: 0.2, dy: 0.2, dw: 0.4, why: pa_why_send },
   { drive: "desk-notice-card-viewer", what: Key("alpha 「刚刚」"), from: 2567.0, to: 2583.0, dx: 0.2, dy: 0.2, dw: 0.4, why: pa_why_timein },
-  { drive: "desk-notice-card-viewer", what: Key("ground nodes alone"), from: 5217.0, to: 5250.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_read },
-  { drive: "desk-notice-card-viewer", what: Key("old alone 「Claude」"), from: 5250.0, to: 5250.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_read },
   { drive: "send", what: Key("alpha 「处理中」"), from: 4033.0, to: 4033.0, dx: 0.2, dy: 0.2, dw: 0.4, why: pa_why_working },
   { drive: "send", what: Key("alpha 「0s」"), from: 4033.0, to: 4050.0, dx: 0.2, dy: 0.2, dw: 0.4, why: pa_why_working },
   { drive: "send", what: Key("ring old alone"), from: 4133.0, to: 4183.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_old_ring },

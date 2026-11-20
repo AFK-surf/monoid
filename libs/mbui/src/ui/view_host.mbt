@@ -352,6 +352,13 @@ fn view_made_now(make : (@view.View) -> Unit) -> Unit {
           None => ()
         }
       })
+      // (its words using the default theme ink (ink_theme): drawn again as the theme's foreground changes, paint only)
+      root.reacts(fn() { tree_theme().fg }, fn(_fg) {
+        match made.val {
+          Some(tree) => tree.words_ink_again()
+          None => ()
+        }
+      })
     },
     measure=view_words_measure,
     measure_runs=view_runs_measure,
@@ -2699,6 +2706,31 @@ fn glyphs_held_drawn() -> Unit {
 }
 
 ///|
+/// Optical vertical shift (in points) for a single line of text within its line box:
+/// aligns the visual ink midpoint (Latin cap-height center or CJK em-box center) with the geometric line midpoint
+/// (`line_h * 0.5`), clamped to `[-0.18 * size, 0.18 * size]`.
+fn optical_shift_y(text : String, size : Double, ascent : Double, line_h : Double) -> Double {
+  if size <= 0.0 || line_h <= 0.0 {
+    return 0.0
+  }
+  let ink_mid = if words_cjk(text) {
+    ascent - 0.38 * size
+  } else {
+    let cap_h = 0.715 * size
+    ascent - cap_h * 0.5
+  }
+  let dy = line_h * 0.5 - ink_mid
+  let bound = 0.18 * size
+  if dy > bound {
+    bound
+  } else if dy < -bound {
+    -bound
+  } else {
+    dy
+  }
+}
+
+///|
 /// Content `c`'s instances made (its ground, its words) where it is its own (its top left at 0, 0, wholly opaque), out
 /// of the frame's: what is kept for it, composed wherever it is drawn (Ctx::view_blit). Its words at the size of words
 /// `tree` says its node's are at (Tree::words_scale_of), as they were measured.
@@ -2883,7 +2915,13 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
     // ending in an ellipsis, as its plain words are)
     let (r, lay, over) = view_runs_laid(c.runs, c.words_look, c.runs_look, c.w, words_scale, kept=c.words_breaks)
     // (each run's ink its own, else a link's, code's, else the node's: as an old view's paragraph's, Rich::run_colors)
-    let colors = r.run_colors(c.ink)
+    let ink = if c.ink < 0L { @signals.untracked(fn() { tree_theme().fg }) } else { c.ink }
+    let colors = r.run_colors(ink)
+    let dy = if !c.words_look.wrap && c.words_optical && lay.line_h.length() == 1 {
+      optical_shift_y(lay.text, view_sp(words_scale, c.words_look.size), lay.line_base[0], lay.line_h[0])
+    } else {
+      0.0
+    }
     let k = clip_top()
     let from = self.ninst - start
     let center_in = if c.words_center { c.w } else { -1.0 }
@@ -2957,7 +2995,7 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
       r,
       lay,
       0.0,
-      0.0,
+      dy,
       colors,
       1.0,
       clip_stack[k + 1],
@@ -2966,7 +3004,7 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
       center_in~,
     )
     self.halo_fill(halo_at, c.halo.0)
-    self.paint_run_lines(r, lay, 0.0, 0.0, colors, 1.0, center_in~)
+    self.paint_run_lines(r, lay, 0.0, dy, colors, 1.0, center_in~)
     // (past its box where it says so, View::ellipsis_past: as its plain words, below)
     if over && lay.w > c.w + 0.5 && !c.ellipsis_past {
       cut = (from, self.ninst - start)
@@ -2992,6 +3030,12 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
     let from = self.ninst - start
     // (the edge round them, under them: they in its colour, as far off each of the eight ways, each glyph its own look
     // as theirs (numbered again from where theirs are): View::words_edge)
+    let ink = if c.ink < 0L { @signals.untracked(fn() { tree_theme().fg }) } else { c.ink }
+    let dy = if !k.wrap && c.words_optical && tl.line_start.length() == 1 {
+      optical_shift_y(shown, size, tl.ascent, tl.line_h)
+    } else {
+      0.0
+    }
     let (edge_out, edge_ink) = tree.words_edge_of(c.id)
     if edge_out > 0.0 && (edge_ink & 0xFFL) != 0L {
       let n_was = glyph_n.val
@@ -3000,7 +3044,7 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
         self.emit_text(
           tl,
           o.0 * edge_out,
-          o.1 * edge_out,
+          o.1 * edge_out + dy,
           edge_ink,
           1.0,
           unplaced=glyphs,
@@ -3014,8 +3058,8 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
     self.emit_text(
       tl,
       0.0,
-      0.0,
-      c.ink,
+      dy,
+      ink,
       1.0,
       unplaced=glyphs,
       center_in=if c.words_center { c.w } else { -1.0 },

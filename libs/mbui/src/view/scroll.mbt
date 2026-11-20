@@ -1039,6 +1039,7 @@ pub fn View::scrolls(
   bar_clear? : () -> (Double, Double),
   bar_here? : () -> Bool,
   for_in? : NodeId,
+  fill? : Bool = false,
 ) -> View {
   guard self.live() is Some(_) else { return self }
   self.mark_structure_own()
@@ -1093,6 +1094,9 @@ pub fn View::scrolls(
     self.row(Is(true)).min_width(Is(Some(0.0))) |> ignore
   } else {
     self.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+  }
+  if fill {
+    self.fill() |> ignore
   }
   // (what it holds laid out as tall as it is, whatever room it has: its content's own height, as CSS's overflow scroll
   // has it)

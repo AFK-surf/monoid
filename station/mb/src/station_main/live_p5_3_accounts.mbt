@@ -57,6 +57,15 @@ priv struct P53Accounts {
 }
 
 ///|
+/// Anthropic's API, or $STILLFAIL_ANTHROPIC_API (a test's stand-in, as profiles.ts `URLS` reads it): the allowances'
+/// and the checks' alike.
+fn p53_anthropic_api_url() -> String {
+  match env_get("STILLFAIL_ANTHROPIC_API") {
+    Some(u) if u != "" => u
+    _ => "https://api.anthropic.com"
+  }
+}
+
 ///|
 fn P53Accounts::new(bus : LiveBus) -> P53Accounts {
   let me : Ref[P53Accounts?] = Ref(None)
@@ -86,16 +95,7 @@ fn P53Accounts::new(bus : LiveBus) -> P53Accounts {
     urls: to_jv(
       jobj_of([
         ("opencode", jstr(@agent_runtimes.opencode)),
-        // ($STILLFAIL_ANTHROPIC_API: a test's stand-in, as profiles.ts reads it)
-        (
-          "anthropic",
-          jstr(
-            match env_get("STILLFAIL_ANTHROPIC_API") {
-              Some(u) if u != "" => u
-              _ => "https://api.anthropic.com"
-            },
-          ),
-        ),
+        ("anthropic", jstr(p53_anthropic_api_url())),
         ("chatgpt", jstr("https://chatgpt.com")),
         ("claudeToken", jstr("https://platform.claude.com/v1/oauth/token")),
         ("console", jstr(@accounts_oauth.console_url)),
@@ -550,6 +550,7 @@ async fn P53Accounts::ask(self : P53Accounts, m : String, arg : Json) -> Json {
         sessions().recheck(text(0, "profile"))
         done
       }
+      "canAuthRetry" => jb(sessions().can_auth_retry(text(0, "key"), text(1, "failedProfile")))
       // (agents.ts: someone follows the events again, after nobody did: the allowances read again)
       "followed" => {
         self.made().followed()
