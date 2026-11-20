@@ -48,11 +48,11 @@ test "the bar chooses the page by a tap and by the arrow keys, and goes while th
   t.tab(back=true)
   t.key(@ui.key_code_right)
   t.run_for(settled)
-  let opened = (chosen_page(t), t.all(Dialog, label="Dialog Title").length(), t.all(Radio).length())
+  let opened = (chosen_page(t), t.all(Dialog, label="Publish ui.monoid").length(), t.all(Radio).length())
   // (the dialog closed by Escape: the bar back, the overview chosen, as what is shown)
   t.key(@ui.key_escape)
   t.run_for(settled)
-  let closed = (chosen_page(t), t.all(Dialog, label="Dialog Title").length())
+  let closed = (chosen_page(t), t.all(Dialog, label="Publish ui.monoid").length())
   assert_eq(
     (first, tapped, opened, closed),
     (("Overview", ["Light", "Dark"]), "Interactive", ("", 1, 0), ("Overview", 0)),
