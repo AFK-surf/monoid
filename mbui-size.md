@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b62885c7a](https://github.com/AFK-surf/monoid/commit/b62885c7a4b0c908f096f39d85bf11a00a2c190c) fix(station): say why a lent profile cannot serve  | 2.77 | 3.74 | 15.24 | 37.3 | 57.72 | 32.69 | 66.65 | 98.42 | 126.19 |
 | [b8c850ece](https://github.com/AFK-surf/monoid/commit/b8c850ece362fd8c79db6729999c6b628a0a9eab) chore(mbui): delete unreachable Ctx views from sf- | 2.77 | 3.74 | 15.24 | 37.3 | 57.72 | 32.69 | 66.65 | 98.42 | 126.19 |
 | [ede8c9a28](https://github.com/AFK-surf/monoid/commit/ede8c9a2850aae2ce08bc0910afdfb2fab86993f) fix(mbui): use pixel quantization band for sub-hal | 2.77 | 3.74 | 15.24 | 37.3 | 57.72 | 32.69 | 66.65 | 98.42 | 116.32 |
 | [99ed258ba](https://github.com/AFK-surf/monoid/commit/99ed258ba77de9070356e1c86ec95ffa268f8891) fix(ci): skip desktop-build cache saves when too l | 2.77 | 3.74 | 15.24 | 37.3 | 57.72 | 32.69 | 66.65 | 98.53 | 126.14 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [77041e99a](https://github.com/AFK-surf/monoid/commit/77041e99a162337b05b1a3c2ad96d99414ca2e7e) feat(mbui): auto-follow system dark in pure trees, | 2.74 | 3.7 | 15.06 | 37.13 | 57.16 | 32.55 | 66.26 | 98.32 | 124.79 |
 | [e6742bf88](https://github.com/AFK-surf/monoid/commit/e6742bf88943d29e348741e7c81bcca923528466) feat(mbui): upgrade Scroll::new to list feel, add  | 2.74 | 3.7 | 15.06 | 37.13 | 57.16 | 32.55 | 66.26 | 98.32 | 124.79 |
 | [5a5a14727](https://github.com/AFK-surf/monoid/commit/5a5a147270915846c1a5606e6a2454f5dea71404) test(station/mb): hold agents' faults, warm evicti | 2.74 | 3.7 | 15.06 | 37.13 | 57.16 | 32.55 | 66.26 | 98.32 | 124.79 |
-| [e2007e998](https://github.com/AFK-surf/monoid/commit/e2007e9983962fcfaeb39a1d382af2df6c69ee16) fix(station): stream fs.rotate in shell to avoid l | 2.74 | 3.7 | 15.06 | 37.13 | 57.15 | 32.55 | 66.26 | 98.16 | 128.95 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b62885c7a](https://github.com/AFK-surf/monoid/commit/b62885c7a4b0c908f096f39d85bf11a00a2c190c) fix(station): say why a lent profile cannot serve  | 0.47 | 0.61 | 2.36 | 3.4 | 5.59 | 1.7 | 4.6 | 53.89 |
 | [b8c850ece](https://github.com/AFK-surf/monoid/commit/b8c850ece362fd8c79db6729999c6b628a0a9eab) chore(mbui): delete unreachable Ctx views from sf- | 0.46 | 0.61 | 2.36 | 3.4 | 5.58 | 1.7 | 4.6 | 54.25 |
 | [ede8c9a28](https://github.com/AFK-surf/monoid/commit/ede8c9a2850aae2ce08bc0910afdfb2fab86993f) fix(mbui): use pixel quantization band for sub-hal | 0.46 | 0.61 | 2.36 | 3.4 | 5.58 | 1.7 | 4.6 | 54.25 |
 | [99ed258ba](https://github.com/AFK-surf/monoid/commit/99ed258ba77de9070356e1c86ec95ffa268f8891) fix(ci): skip desktop-build cache saves when too l | 0.46 | 0.61 | 2.36 | 3.4 | 5.58 | 1.7 | 4.6 | 54.1 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [77041e99a](https://github.com/AFK-surf/monoid/commit/77041e99a162337b05b1a3c2ad96d99414ca2e7e) feat(mbui): auto-follow system dark in pure trees, | 0.46 | 0.6 | 2.34 | 3.38 | 5.52 | 1.69 | 4.57 | 53.99 |
 | [e6742bf88](https://github.com/AFK-surf/monoid/commit/e6742bf88943d29e348741e7c81bcca923528466) feat(mbui): upgrade Scroll::new to list feel, add  | 0.46 | 0.6 | 2.33 | 3.37 | 5.51 | 1.69 | 4.57 | 54.15 |
 | [5a5a14727](https://github.com/AFK-surf/monoid/commit/5a5a147270915846c1a5606e6a2454f5dea71404) test(station/mb): hold agents' faults, warm evicti | 0.46 | 0.6 | 2.33 | 3.37 | 5.51 | 1.69 | 4.57 | 53.95 |
-| [e2007e998](https://github.com/AFK-surf/monoid/commit/e2007e9983962fcfaeb39a1d382af2df6c69ee16) fix(station): stream fs.rotate in shell to avoid l | 0.46 | 0.6 | 2.33 | 3.37 | 5.51 | 1.69 | 4.57 | 53.95 |
