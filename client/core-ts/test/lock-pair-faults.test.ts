@@ -267,7 +267,8 @@ test("signed in in one workspace it waits in and not another: the other's page s
   await r.ask("lock.pairCode", { workspace: "ws", code });
   assert.deepEqual(r.cloud.posted.map((p) => [p.ws, p.kind, p.id]), [["ws", "device", PHONE]]);
   assert.equal(pairs.mine(r.core.inner, "ws")?.state, "done");
-  assert.deepEqual(pairs.mine(r.core.inner, "w2"), { state: "failed", devices: 0, error: t("core-misc.lock.pairElsewhere", { names: "W" }) });
+  const w2Pair = pairs.mine(r.core.inner, "w2");
+  assert.deepEqual({ state: w2Pair?.state, devices: w2Pair?.devices, error: w2Pair?.error }, { state: "failed", devices: 0, error: t("core-misc.lock.pairElsewhere", { names: "W" }) });
 });
 
 /// The code typed on the new device as the app sends it, the clock stepped 10 ms at a time (`during` told each step,
@@ -374,7 +375,8 @@ test("a trusted device goes silent after showing its code (suspended with no clo
     assert.ok(answer !== undefined && "error" in answer, JSON.stringify(answer));
     const error = answer.error as { code: string; message: string };
     assert.deepEqual([error.code, error.message], ["pair_ended", TEXTS.gone]);
-    assert.deepEqual(pairs.mine(r.core.inner, "ws"), { state: "failed", devices: 0, error: TEXTS.gone });
+    const wsPair = pairs.mine(r.core.inner, "ws");
+    assert.deepEqual({ state: wsPair?.state, devices: wsPair?.devices, error: wsPair?.error }, { state: "failed", devices: 0, error: TEXTS.gone });
     assert.equal(phoneSigned(r), 0);
   }
   // Silent after the pake (hello, code, pake, pake: 4) or after the confirmation (5): the approval lost on the way
@@ -399,7 +401,8 @@ test("a trusted device goes silent after showing its code (suspended with no clo
       assert.ok(answer !== undefined && "error" in answer, JSON.stringify(answer));
       const error = answer.error as { code: string; message: string };
       assert.deepEqual([error.code, error.message], ["pair_ended", TEXTS.gone]);
-      assert.deepEqual(pairs.mine(r.core.inner, "ws"), { state: "failed", devices: 0, error: TEXTS.gone });
+      const wsPair = pairs.mine(r.core.inner, "ws");
+    assert.deepEqual({ state: wsPair?.state, devices: wsPair?.devices, error: wsPair?.error }, { state: "failed", devices: 0, error: TEXTS.gone });
     }
   }
 });

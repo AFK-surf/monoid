@@ -134,7 +134,6 @@ pub(all) struct SaveAsk {
   station : String?
   browser : String?
   person : String?
-  scope : String?
   oauth : String?
   about : String?
   /// Kept from a sign-in's card: no card of its own, its request told to it.
@@ -154,28 +153,11 @@ fn basename(p : String) -> String {
 }
 
 ///|
-/// The workspace vault `sub` is a member of in `lock`'s workspace, if any (non-deleted).
-fn Secrets::workspace_vault_for(self : Secrets, lock : Lock?, sub : String?) -> Json? raise {
-  guard (lock, sub) is (Some(l), Some(u)) else { return None }
-  for v in self.vaults.vaults(l.ws) {
-    if !truthy(get(Some(v), "deleted")) &&
-      gs(Some(v), "scope") == Some("workspace") &&
-      members_of(v).contains(u) {
-      return Some(v)
-    }
-  }
-  None
-}
-
-///|
 /// secret_save: a request from `session` to keep a secret in the vault of whoever started its chat, given as `value`,
 /// printed by `command` or, given neither, typed in by that person on its card.
 pub async fn Secrets::save_secret(self : Secrets, session : String, a : SaveAsk) -> String {
   let (ws, place_lock) = self.place_of(session)
   let mut lock = place_lock
-  if a.scope is Some(sc) && sc != "personal" && sc != "workspace" {
-    raise Refused("scope is personal or workspace")
-  }
   let kind = a.kind
   // A sign-in is read from a browser, never given, printed or typed in.
   if kind == "browser" && (a.value is Some(_) || a.command is Some(_) || a.path is Some(_) || a.station is Some(_)) {
@@ -291,11 +273,6 @@ pub async fn Secrets::save_secret(self : Secrets, session : String, a : SaveAsk)
   }
   if lock is Some(l) && !l.open_roster() && sub is None {
     raise Refused("\{email} is not in the workspace's security mode: there is no vault of theirs to keep it in.")
-  }
-  if a.scope == Some("workspace") && self.workspace_vault_for(lock, sub) is None {
-    raise Refused(
-      "No workspace vault exists yet (or you are not a member): an owner or admin can create one in Settings → Vault, or omit scope to save to your personal vault.",
-    )
   }
   let lf = [("name", js(name)), ("kind", js(kind)), ("modes", jstrs(modes)), ("hosts", jstrs(hosts))]
   if a.env is Some(e) && e != "" {
@@ -438,12 +415,6 @@ pub async fn Secrets::save_secret(self : Secrets, session : String, a : SaveAsk)
   if lock is Some(l) && !l.open_roster() && sub is None {
     raise Refused("\{email} is not in the workspace's security mode: there is no vault of theirs to keep it in.")
   }
-  let ws_vault = if a.scope == Some("workspace") { self.workspace_vault_for(lock, sub) } else { None }
-  if a.scope == Some("workspace") && ws_vault is None {
-    raise Refused(
-      "No workspace vault exists yet (or you are not a member): an owner or admin can create one in Settings → Vault, or omit scope to save to your personal vault.",
-    )
-  }
   let fields = if typed { None } else { Some(fields_of(value)) }
   let requested_at = self.now()
   let id = "r_" + ulid(requested_at, (self.w.random)(16))
@@ -469,21 +440,11 @@ pub async fn Secrets::save_secret(self : Secrets, session : String, a : SaveAsk)
   if about != "" {
     sf.push(("about", js(about)))
   }
-  if ws_vault is Some(wv) {
-    if gs(Some(wv), "name") is Some(vn) && vn != "" {
-      sf.push(("vaultName", js(vn)))
-    }
-    sf.push(("shared", jb(true)))
-  }
   let save = obj(sf)
-  let vault_id = match ws_vault {
-    Some(wv) => gtext(Some(wv), "id")
-    None =>
-      match (lock, sub) {
-        (None, _) => @vault_crypto.plain_id
-        (Some(_), None) => ""
-        (Some(l), Some(u)) => self.vault_for(l, u)
-      }
+  let vault_id = match (lock, sub) {
+    (None, _) => @vault_crypto.plain_id
+    (Some(_), None) => ""
+    (Some(l), Some(u)) => self.vault_for(l, u)
   }
   let rf = [
     ("id", js(id)),
@@ -647,13 +608,6 @@ async fn Secrets::post_save(
     }
     if oauth != "" {
       sv.push(("oauth", js(oauth)))
-    }
-    let vault_name = gtext(s, "vaultName")
-    if vault_name != "" {
-      sv.push(("vaultName", js(vault_name)))
-    }
-    if truthy(get(s, "shared")) {
-      sv.push(("shared", jb(true)))
     }
     v.push(("save", obj(sv)))
     Some(

@@ -1255,7 +1255,18 @@ fn truthy(v : Json?) -> Bool {
 ///|
 fn home_membership(s : CloudState) -> Json {
   let out : Map[String, Json] = Map([])
-  for k in ["workspace", "workspace_name", "name", "peers", "revocations"] {
+  for k in ["workspace", "workspace_name"] {
+    if s.get(k) is Some(v) {
+      out[k] = v
+    }
+  }
+  if s.get("workspace_emoji") is Some(String(e)) && e != "" {
+    out["workspace_emoji"] = jstr(e)
+  }
+  if s.get("workspace_icon") is Some(String(ic)) && ic != "" {
+    out["workspace_icon"] = jstr(ic)
+  }
+  for k in ["name", "peers", "revocations"] {
     if s.get(k) is Some(v) {
       out[k] = v
     }

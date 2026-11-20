@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { WebSocketServer, type WebSocket } from "ws";
-import { commaLine } from "../src/comma/index.ts";
+import { commaConnects, commaLine } from "../src/comma/index.ts";
 import { type CommaWorkspaceMeta, CommaSurface, connectUrl, questionOf, workspaceMetaOf } from "../src/comma/surface.ts";
 import { CommaTasks, threadTsOf } from "../src/comma/tasks.ts";
 import { Rig, settle } from "./hub-fakes.ts";
@@ -100,6 +100,15 @@ test("the line Comma shows reads as its server and token; anything else does not
   assert.equal(commaLine("comma https://api.comma.surf short"), null);
   assert.equal(connectUrl("https://api.comma.surf", "mac").replace(/&os=.*/, ""), "wss://api.comma.surf/v1/connect?name=mac");
   assert.equal(new URL(connectUrl("https://api.comma.surf", "mac", "ws_1")).searchParams.get("stillfail_workspace"), "ws_1");
+  assert.deepEqual(
+    commaConnects({
+      connects: [
+        { id: "c1", kind: "comma", comma: { server: "https://api.comma.surf", token: "tok123456" }, createdBy: { id: "  Peng@Example.COM ", name: "Peng" } },
+        { id: "c2", kind: "comma", comma: { server: "https://api.comma.surf", token: "tok123456" }, createdBy: { id: "local", name: "local" } },
+      ],
+    }).map((c) => [c.id, c.ownerEmail]),
+    [["c1", "peng@example.com"], ["c2", null]],
+  );
 });
 
 test("an options card is Comma's question card, the recommended one marked; a text card or one option is words alone", () => {
@@ -120,7 +129,7 @@ test("a Comma Task is a thread its agent works in: invited, its Messages heard f
   let seq = 10;
   fake.answer = (f) => (f.method === "task.post" ? { seq: ++seq } : {});
   const surface = new CommaSurface({
-    connect: "cm", server: fake.base, token: "salix_conn_test123", name: "mac", tasks, store: rig.store,
+    connect: "cm", server: fake.base, token: "salix_conn_test123", name: "mac", ownerEmail: "Ada@Example.Test", tasks, store: rig.store,
     models: () => rig.hub.modelsFor("cm"),
   });
   try {
@@ -133,6 +142,7 @@ test("a Comma Task is a thread its agent works in: invited, its Messages heard f
     assert.equal(fake.auth, "Bearer salix_conn_test123");
     const meta = fake.frames.find((f) => f.type === "metadata");
     assert.equal(meta.capabilities.tasks, 2);
+    assert.equal(meta.capabilities.stillfail_owner_email, "ada@example.test");
     assert.ok("claude" in meta.capabilities.task_models);
     // Comma's heartbeat is answered.
     fake.socket!.send(JSON.stringify({ type: "heartbeat" }));

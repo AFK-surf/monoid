@@ -59,17 +59,51 @@ let p53_repo_idle_ms : Double = 14.0 * 24.0 * 3600000.0
 let p53_repo_git_timeout_ms : Int = 15000
 
 ///|
+/// Orphaned session rooms older than 24 hours are removed by Upkeep (ops/storage.ts `ORPHAN_ROOM_MS`).
+let p53_orphan_room_ms : Double = 24.0 * 3600000.0
+
+///|
+/// How often Upkeep scans for orphaned session rooms (once per day; also runs on the first round after startup).
+let p53_orphan_room_every_ms : Double = 24.0 * 3600000.0
+
+///|
+let p53_orphan_room_max : Int = 32
+
+///|
+let p53_orphan_walk_max_ms : Double = 10000.0
+
+///|
+/// Orphaned Claude/Codex UUID transcripts older than 7 days may be reclaimed under low disk.
+let p53_orphan_transcript_ms : Double = 7.0 * 24.0 * 3600000.0
+
+///|
+/// Minimum interval between full low-disk reclamation passes (30 minutes).
+let p53_relieve_full_every_ms : Double = 30.0 * 60000.0
+
+///|
+let p53_orphan_transcript_max : Int = 64
+
+///|
+let p53_orphan_walk_max_entries : Int = 10000
+
+///|
+/// Time budget for a full low-disk orphan transcript scan (2 minutes); stops and logs if exceeded.
+let p53_orphan_transcript_full_max_ms : Double = 2.0 * 60000.0
+
+///|
 priv struct P53Upkeep {
   bus : LiveBus
   jobs : P53Jobs
   remote : P53Remote
   mut tier : String
   mut running : Bool
+  mut last_orphan_rooms_at : Double?
+  mut last_full_relieve_at : Double?
 }
 
 ///|
 fn P53Upkeep::new(bus : LiveBus, jobs : P53Jobs, remote : P53Remote) -> P53Upkeep {
-  { bus, jobs, remote, tier: "ok", running: false }
+  { bus, jobs, remote, tier: "ok", running: false, last_orphan_rooms_at: None, last_full_relieve_at: None }
 }
 
 ///|
@@ -203,6 +237,16 @@ async fn P53Upkeep::pass(self : P53Upkeep) -> Json {
   note("repo worktrees", async fn() {
     Json::array(p53_prune_repo_worktrees(host, data).map(jstr))
   })
+  let run_orphan_rooms = match self.last_orphan_rooms_at {
+    None => true
+    Some(last) => now - last >= p53_orphan_room_every_ms
+  }
+  if run_orphan_rooms {
+    self.last_orphan_rooms_at = Some(now)
+    note("orphan session rooms", async fn() {
+      Json::array(self.prune_orphan_rooms(now).map(jstr))
+    })
+  }
   let (free, total) = disk_of(data).unwrap_or((-1.0, -1.0))
   out["free"] = jn(free)
   out["total"] = jn(total)
@@ -249,18 +293,34 @@ async fn P53Upkeep::relieving(self : P53Upkeep) -> Json {
   }
   match disk_of(bus.data) {
     Some((left, _)) if left < p53_disk_low(total) => {
-      bus.hub_relieve_archived(low_bytes=p53_disk_low(total)) catch {
-        e => slice_log("warn", "hub", "making room on the disk failed", jobj_of([("error", jstr(p53_words(e)))]))
+      let low = p53_disk_low(total)
+      let due = match self.last_full_relieve_at {
+        None => true
+        Some(prev) => now - prev >= p53_relieve_full_every_ms
       }
-      match disk_of(bus.data) {
-        Some((still_left, _)) if still_left < p53_disk_low(total) =>
-          ignore(self.relieve_repos(now, p53_disk_low(total)) catch {
-            e => {
-              slice_log("warn", "hub", "reclaiming unused shared clones failed", jobj_of([("error", jstr(p53_words(e)))]))
-              []
-            }
-          })
-        _ => ()
+      if due {
+        ignore(bus.hub_relieve_idle_rebuildable(now, low_bytes=low, full=true) catch {
+          e => {
+            slice_log("warn", "hub", "cleaning rebuildable files of idle sessions failed", jobj_of([("error", jstr(p53_words(e)))]))
+            Json::null()
+          }
+        })
+        bus.hub_relieve_archived(low_bytes=low, full=true) catch {
+          e => slice_log("warn", "hub", "making room on the disk failed", jobj_of([("error", jstr(p53_words(e)))]))
+        }
+        ignore(self.relieve_orphan_transcripts(now, low, full=true) catch {
+          e => {
+            slice_log("warn", "hub", "reclaiming orphan transcripts failed", jobj_of([("error", jstr(p53_words(e)))]))
+            []
+          }
+        })
+        ignore(self.relieve_repos(now, low, full=true) catch {
+          e => {
+            slice_log("warn", "hub", "reclaiming unused shared clones failed", jobj_of([("error", jstr(p53_words(e)))]))
+            []
+          }
+        })
+        self.last_full_relieve_at = Some(wall_ms().to_double())
       }
     }
     _ => ()
@@ -461,9 +521,9 @@ async fn p53_read_json_object_strict(host : @host.Host, path : String) -> Result
 }
 
 ///|
-/// Reclaims unreferenced shared clones in `<data>/repos` when disk remains below `low` after `relieve_archived`
-/// (sessions/lifecycle.ts `relieveRepos`).
-async fn P53Upkeep::relieve_repos(self : P53Upkeep, now : Double, low : Double) -> Array[String] {
+/// Reclaims unreferenced shared clones in `<data>/repos` when disk is below `low` (when `full` is true, reclaims
+/// all eligible clones without stopping early when `free >= low`).
+async fn P53Upkeep::relieve_repos(self : P53Upkeep, now : Double, low : Double, full? : Bool = false) -> Array[String] {
   let bus = self.bus
   let host = bus.host
   let data = bus.data
@@ -471,7 +531,7 @@ async fn P53Upkeep::relieve_repos(self : P53Upkeep, now : Double, low : Double) 
     Some((free, _)) => free < low
     None => false
   }
-  if !below_low() {
+  if !full && !below_low() {
     return []
   }
   if bus.hub_clones_active() {
@@ -542,7 +602,7 @@ async fn P53Upkeep::relieve_repos(self : P53Upkeep, now : Double, low : Double) 
         None => ()
       }
       if ws != "" && jfield(row, "archivedAt") == Json::null() {
-        match p53_read_json_object_strict(host, @nodepath.join(sep(), [ws, ".stillfail-preset.json"])) {
+        match p53_read_json_object_strict(host, @nodepath.join(sep(), [ws, @session_chats.copy_file])) {
           None => ()
           Some(Err(_)) => return []
           Some(Ok(m)) =>
@@ -593,8 +653,7 @@ async fn P53Upkeep::relieve_repos(self : P53Upkeep, now : Double, low : Double) 
     if jtext(p53_lstat(host, repo_path), "kind") != Some("dir") {
       continue
     }
-    let wt_root = @nodepath.join(sep(), [repo_path, ".git", "worktrees"])
-    if jtext(p53_lstat(host, wt_root), "kind") is Some(_) && p53_names(host, wt_root).length() > 0 {
+    if !p53_worktrees_empty(host, repo_path) {
       continue
     }
     if refs.iter().any(r => p53_within(repo_path, r) || p53_within(raw_path, r)) {
@@ -609,7 +668,7 @@ async fn P53Upkeep::relieve_repos(self : P53Upkeep, now : Double, low : Double) 
 
   let removed : Array[String] = []
   for cand in candidates {
-    if !below_low() || bus.hub_clones_active() {
+    if (!full && !below_low()) || bus.hub_clones_active() {
       break
     }
     let (name, repo_path, orig_mtime) = cand
@@ -643,15 +702,14 @@ async fn P53Upkeep::relieve_repos(self : P53Upkeep, now : Double, low : Double) 
     if !status_ok || status_out != "" {
       continue
     }
-    // Re-check worktrees and mtime right before deletion.
-    let wt_root = @nodepath.join(sep(), [repo_path, ".git", "worktrees"])
-    if jtext(p53_lstat(host, wt_root), "kind") is Some(_) && p53_names(host, wt_root).length() > 0 {
+    // Re-check worktrees (fail closed on read error) and mtime right before deletion.
+    if !p53_worktrees_empty(host, repo_path) {
       continue
     }
     if p53_repo_last_touched_ms(host, repo_path) != Some(orig_mtime) {
       continue
     }
-    if !below_low() || bus.hub_clones_active() {
+    if (!full && !below_low()) || bus.hub_clones_active() {
       break
     }
     let (freed, _, _) = @ops_platform.tree_bytes(@ops_platform.Fs::new(host), repo_path, 1_000_000, () => wall_ms().to_double()) catch {
@@ -667,6 +725,521 @@ async fn P53Upkeep::relieve_repos(self : P53Upkeep, now : Double, low : Double) 
     removed.push(name)
   }
   removed
+}
+
+///|
+/// Whether `<repo>/.git/worktrees` is absent or empty. Fails closed (returns false) on any read error so
+/// `relieve_repos` skips the clone if `.git/worktrees` cannot be read.
+async fn p53_worktrees_empty(host : @host.Host, repo_path : String) -> Bool {
+  let wt_root = @nodepath.join(sep(), [repo_path, ".git", "worktrees"])
+  if jtext(p53_lstat(host, wt_root), "kind") is None {
+    return true
+  }
+  match host_readdir_names(host, wt_root) {
+    Some(names) => names.length() == 0
+    None => false
+  }
+}
+
+///|
+/// Whether any incoming handover (`<data>/replica/handover/in/*.json`) is currently in `coming` state.
+async fn p53_has_incoming_handover(host : @host.Host, data : String) -> Bool {
+  let in_dir = @nodepath.join(sep(), [data, "replica", "handover", "in"])
+  for name in p53_names(host, in_dir) {
+    if !name.has_suffix(".json") {
+      continue
+    }
+    match p53_read_json_object_strict(host, @nodepath.join(sep(), [in_dir, name])) {
+      None => ()
+      Some(Err(_)) => return true
+      Some(Ok(m)) =>
+        if m.get("step") == Some(Json::string("coming")) {
+          return true
+        }
+    }
+  }
+  false
+}
+
+///|
+/// Removes orphaned `<data>/sessions/<connect>/<room>` directories older than `p53_orphan_room_ms` (24h)
+/// that have no session row's workspace and no active job's cwd inside (ops/storage.ts `pruneOrphanRooms`).
+async fn P53Upkeep::prune_orphan_rooms(self : P53Upkeep, now : Double) -> Array[String] {
+  let bus = self.bus
+  let host = bus.host
+  let data = bus.data
+  if p53_has_incoming_handover(host, data) {
+    return []
+  }
+  let raw_sessions = @nodepath.join(sep(), [data, "sessions"])
+  guard p53_realpath(host, raw_sessions) is Some(real_sessions) else { return [] }
+
+  // Map every session workspace to its parent room directory (literal + realpath) for O(1) Set lookup;
+  // keep active jobs' cwds in a small array for `p53_within` checks.
+  let room_refs : Set[String] = Set::new()
+  let job_cwds : Array[String] = []
+  let add_room_ref = async fn(ws : String) {
+    if ws == "" {
+      return
+    }
+    let room = @nodepath.join(sep(), [@nodepath.dirname(sep(), ws)])
+    room_refs.add(room)
+    match p53_realpath(host, room) {
+      Some(r) => room_refs.add(r)
+      None => ()
+    }
+  }
+  let mut after_key = ""
+  while true {
+    let page = bus.store.session_paths_page(Json::string(after_key), 200) catch { _ => return [] }
+    if page.length() == 0 {
+      break
+    }
+    for row in page {
+      let ws = jtext(row, "workspace").unwrap_or("")
+      if ws != "" {
+        add_room_ref(ws)
+      }
+      after_key = jtext(row, "key").unwrap_or(after_key)
+    }
+  }
+  let jobs_up = bus.store.jobs_up() catch { _ => return [] }
+  for job in jobs_up {
+    match jtext(job, "cwd") {
+      Some(c) if c != "" => {
+        job_cwds.push(@nodepath.join(sep(), [c]))
+        match p53_realpath(host, c) {
+          Some(r) => job_cwds.push(r)
+          None => ()
+        }
+      }
+      _ => ()
+    }
+  }
+
+  let deadline = wall_ms().to_double() + p53_orphan_walk_max_ms
+  let gone : Array[String] = []
+  let cold_fs = p52_cold_files(bus)
+  for connect in p53_names(host, real_sessions) {
+    if gone.length() >= p53_orphan_room_max || wall_ms().to_double() >= deadline {
+      break
+    }
+    if connect.has_prefix(".") {
+      continue
+    }
+    let connect_path = @nodepath.join(sep(), [real_sessions, connect])
+    if jtext(p53_lstat(host, connect_path), "kind") != Some("dir") {
+      continue
+    }
+    for room in p53_names(host, connect_path) {
+      if gone.length() >= p53_orphan_room_max || wall_ms().to_double() >= deadline {
+        break
+      }
+      if room.has_prefix(".") {
+        continue
+      }
+      let room_path = @nodepath.join(sep(), [connect_path, room])
+      let raw_room_path = @nodepath.join(sep(), [raw_sessions, connect, room])
+      let room_st = p53_lstat(host, room_path)
+      if jtext(room_st, "kind") != Some("dir") {
+        continue
+      }
+      let room_mtime = jnum_of(room_st, "mtimeMs").unwrap_or(now)
+      let ws_mtime = jnum_of(p53_lstat(host, @nodepath.join(sep(), [room_path, "workspace"])), "mtimeMs").unwrap_or(0.0)
+      let mtime = if ws_mtime > room_mtime { ws_mtime } else { room_mtime }
+      if now - mtime < p53_orphan_room_ms {
+        continue
+      }
+      if room_refs.contains(room_path) || room_refs.contains(raw_room_path) {
+        continue
+      }
+      if job_cwds.iter().any(c => p53_within(room_path, c) || p53_within(raw_room_path, c)) {
+        continue
+      }
+      let worktrees = cold_fs.collect_worktree_registrations(room_path) catch { _ => [] }
+      cold_fs.unlock_worktrees(room_path) catch { _ => () }
+      let removed = try {
+        cold_fs.remove_tree(room_path, force=true)
+        true
+      } catch {
+        _ => false
+      }
+      if removed {
+        if worktrees.length() > 0 {
+          let room_paths = if raw_room_path == room_path { [room_path] } else { [room_path, raw_room_path] }
+          ignore(cold_fs.remove_worktree_registrations(worktrees, room_paths) catch { _ => [] })
+        }
+        gone.push("\{connect}/\{room}")
+      }
+    }
+  }
+  gone
+}
+
+///|
+fn p53_is_hex(c : Int) -> Bool {
+  (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+}
+
+///|
+fn p53_is_uuid(s : String) -> Bool {
+  if s.length() != 36 {
+    return false
+  }
+  for i = 0; i < 36; i = i + 1 {
+    let c = s.unsafe_charcode_at(i)
+    if i == 8 || i == 13 || i == 18 || i == 23 {
+      if c != '-' {
+        return false
+      }
+    } else if !p53_is_hex(c) {
+      return false
+    }
+  }
+  true
+}
+
+///|
+/// Claude transcript candidate: after stripping `.zst` and `.jsonl`, stem must be an exact UUID.
+fn p53_claude_uuid_id(name : String) -> String? {
+  let base = if name.has_suffix(".zst") { name[:name.length() - 4].to_owned() } else { name }
+  if !base.has_suffix(".jsonl") {
+    return None
+  }
+  let stem = base[:base.length() - 6].to_owned()
+  if p53_is_uuid(stem) {
+    Some(stem)
+  } else {
+    None
+  }
+}
+
+///|
+/// Codex rollout candidate: `<uuid>.jsonl(.zst)` or `...-<uuid>.jsonl(.zst)`.
+fn p53_codex_uuid_id(name : String) -> String? {
+  let base = if name.has_suffix(".zst") { name[:name.length() - 4].to_owned() } else { name }
+  if !base.has_suffix(".jsonl") {
+    return None
+  }
+  let stem = base[:base.length() - 6].to_owned()
+  if stem.length() == 36 && p53_is_uuid(stem) {
+    return Some(stem)
+  }
+  if stem.length() > 37 && stem.unsafe_charcode_at(stem.length() - 37) == '-' {
+    let cand = stem[stem.length() - 36:].to_owned()
+    if p53_is_uuid(cand) {
+      return Some(cand)
+    }
+  }
+  None
+}
+
+///|
+/// Bounded scan of a directory's newest mtime and total bytes. Returns None if truncated or unreadable
+/// (treated as too fresh, never deleted).
+async fn p53_bounded_dir_age_bytes(host : @host.Host, dir : String, deadline : Double) -> (Double, Double)? {
+  let root_st = p53_lstat(host, dir)
+  if jtext(root_st, "kind") != Some("dir") {
+    return None
+  }
+  let mut newest = jnum_of(root_st, "mtimeMs").unwrap_or(0.0)
+  let mut bytes = 0.0
+  let queue : Array[(String, Int)] = [(dir, 0)]
+  let mut qi = 0
+  let mut visited = 0
+  while qi < queue.length() {
+    if visited >= 2000 || wall_ms().to_double() >= deadline {
+      return None
+    }
+    let (cur, depth) = queue[qi]
+    qi += 1
+    let names = match host_readdir_names(host, cur) {
+      Some(ns) => ns
+      None => return None
+    }
+    for n in names {
+      visited += 1
+      if visited >= 2000 || wall_ms().to_double() >= deadline {
+        return None
+      }
+      let p = @nodepath.join(sep(), [cur, n])
+      let st = p53_lstat(host, p)
+      let kind = jtext(st, "kind")
+      if kind is None {
+        return None
+      }
+      let m = jnum_of(st, "mtimeMs").unwrap_or(0.0)
+      if m > newest {
+        newest = m
+      }
+      if kind == Some("file") {
+        let blocks = jnum_of(st, "blocks")
+        bytes += match blocks {
+          Some(b) if b >= 0.0 => b * 512.0
+          _ => jnum_of(st, "size").unwrap_or(0.0)
+        }
+      } else if kind == Some("dir") {
+        if depth >= 16 {
+          return None
+        }
+        queue.push((p, depth + 1))
+      }
+    }
+  }
+  Some((newest, bytes))
+}
+
+///|
+/// Low-disk reclamation of orphaned Claude (`<uuid>.jsonl(.zst)` + companion `<uuid>/`, or standalone `<uuid>/`
+/// with no sibling `.jsonl(.zst)`) and Codex (`-<uuid>.jsonl(.zst)`) transcripts under `<data>` older than 7 days
+/// (ops/storage.ts `relieveOrphanTranscripts`). Never deletes non-UUID files or directories (e.g. `memory/`).
+async fn P53Upkeep::relieve_orphan_transcripts(
+  self : P53Upkeep,
+  now : Double,
+  low : Double,
+  full? : Bool = false,
+) -> Array[String] {
+  let bus = self.bus
+  let host = bus.host
+  let data = bus.data
+  let below_low = () => match disk_of(data) {
+    Some((free, _)) => free < low
+    None => false
+  }
+  if !full && !below_low() {
+    return []
+  }
+  guard p53_realpath(host, data) is Some(real_data) else { return [] }
+
+  let budget_ms = if full { p53_orphan_transcript_full_max_ms } else { p53_orphan_walk_max_ms }
+  let deadline = wall_ms().to_double() + budget_ms
+  let gone : Array[String] = []
+  let mut timed_out = false
+  let mut visited = 0
+  let check_deadline = () => {
+    if wall_ms().to_double() >= deadline {
+      timed_out = true
+      true
+    } else {
+      false
+    }
+  }
+  let hit_entries = () => !full && visited >= p53_orphan_walk_max_entries
+  let hit_limit = () => !full && gone.length() >= p53_orphan_transcript_max
+  let done_now = () => hit_limit() || check_deadline() || (!full && !below_low())
+
+  let claude_roots : Array[String] = []
+  let codex_roots : Array[String] = []
+  let transcripts_dir = @nodepath.join(sep(), [real_data, "transcripts"])
+  for name in p53_names(host, transcripts_dir) {
+    if name != "claude" && name != "codex" {
+      continue
+    }
+    let p = @nodepath.join(sep(), [transcripts_dir, name])
+    if jtext(p53_lstat(host, p), "kind") != Some("dir") {
+      continue
+    }
+    if name == "claude" {
+      claude_roots.push(p)
+    } else {
+      codex_roots.push(p)
+    }
+  }
+
+  let homes_dir = @nodepath.join(sep(), [real_data, "homes"])
+  for home_name in p53_names(host, homes_dir) {
+    if home_name.has_prefix(".") {
+      continue
+    }
+    let home_path = @nodepath.join(sep(), [homes_dir, home_name])
+    if jtext(p53_lstat(host, home_path), "kind") != Some("dir") {
+      continue
+    }
+    guard p53_realpath(host, home_path) is Some(real_home) else { continue }
+    if !p53_within(real_data, real_home) || real_home == real_data {
+      continue
+    }
+    let proj = @nodepath.join(sep(), [real_home, "projects"])
+    if jtext(p53_lstat(host, proj), "kind") == Some("dir") {
+      claude_roots.push(proj)
+    }
+    let sess = @nodepath.join(sep(), [real_home, "sessions"])
+    if jtext(p53_lstat(host, sess), "kind") == Some("dir") {
+      codex_roots.push(sess)
+    }
+  }
+
+  let safe_inside_data = async fn(p : String) -> Bool {
+    let kind = jtext(p53_lstat(host, p), "kind")
+    if kind != Some("file") && kind != Some("dir") {
+      return false
+    }
+    match p53_realpath(host, p) {
+      Some(r) => p53_within(real_data, r) && r != real_data
+      None => false
+    }
+  }
+  let rel_of = (p : String) => {
+    let prefix = real_data + sep()
+    if p.has_prefix(prefix) {
+      p[prefix.length():].to_owned()
+    } else {
+      p
+    }
+  }
+
+  // 1. Claude roots: <root>/<proj>/<uuid>.jsonl(.zst) + companion <uuid>/, or standalone <uuid>/ without main file.
+  for root in claude_roots {
+    if done_now() || hit_entries() {
+      break
+    }
+    for proj in p53_names(host, root) {
+      if done_now() || hit_entries() {
+        break
+      }
+      if proj.has_prefix(".") {
+        continue
+      }
+      let proj_path = @nodepath.join(sep(), [root, proj])
+      if jtext(p53_lstat(host, proj_path), "kind") != Some("dir") {
+        continue
+      }
+      let files : Array[(String, String, Double, Double)] = []
+      let uuid_dirs : Array[(String, String)] = []
+      let main_present : Set[String] = Set::new()
+      for entry in p53_names(host, proj_path) {
+        if hit_entries() || check_deadline() {
+          break
+        }
+        visited += 1
+        let p = @nodepath.join(sep(), [proj_path, entry])
+        let st = p53_lstat(host, p)
+        match jtext(st, "kind") {
+          Some("file") =>
+            match p53_claude_uuid_id(entry) {
+              Some(cid) => {
+                main_present.add(cid)
+                let mtime = jnum_of(st, "mtimeMs").unwrap_or(now)
+                let bytes = match jnum_of(st, "blocks") {
+                  Some(b) if b >= 0.0 => b * 512.0
+                  _ => jnum_of(st, "size").unwrap_or(0.0)
+                }
+                files.push((p, cid, mtime, bytes))
+              }
+              None => ()
+            }
+          Some("dir") if p53_is_uuid(entry) => uuid_dirs.push((p, entry))
+          _ => ()
+        }
+      }
+      for f in files {
+        if done_now() {
+          break
+        }
+        let (p, cid, mtime, bytes) = f
+        if now - mtime < p53_orphan_transcript_ms {
+          continue
+        }
+        let referenced = bus.store.transcript_referenced(Json::string("claude"), Json::string(cid), Json::string("")) catch { _ => return gone }
+        if referenced || !safe_inside_data(p) {
+          continue
+        }
+        p53_remove(host, p)
+        if jtext(p53_lstat(host, p), "kind") is None {
+          let rp = rel_of(p)
+          slice_log("info", "hub", "reclaimed orphan transcript", jobj_of([("path", jstr(rp)), ("runtime", jstr("claude")), ("bytes", jn(bytes))]))
+          gone.push(rp)
+          let comp = @nodepath.join(sep(), [proj_path, cid])
+          if safe_inside_data(comp) {
+            match p53_bounded_dir_age_bytes(host, comp, deadline) {
+              Some((newest, dbytes)) if now - newest >= p53_orphan_transcript_ms => {
+                p53_remove(host, comp)
+                if jtext(p53_lstat(host, comp), "kind") is None {
+                  slice_log("info", "hub", "reclaimed orphan transcript", jobj_of([("path", jstr(rel_of(comp))), ("runtime", jstr("claude")), ("bytes", jn(dbytes))]))
+                }
+              }
+              _ => ()
+            }
+          }
+        }
+      }
+      for d in uuid_dirs {
+        if done_now() {
+          break
+        }
+        let (p, cid) = d
+        if main_present.contains(cid) {
+          continue
+        }
+        let referenced = bus.store.transcript_referenced(Json::string("claude"), Json::string(cid), Json::string("")) catch { _ => return gone }
+        if referenced || !safe_inside_data(p) {
+          continue
+        }
+        match p53_bounded_dir_age_bytes(host, p, deadline) {
+          Some((newest, dbytes)) if now - newest >= p53_orphan_transcript_ms => {
+            p53_remove(host, p)
+            if jtext(p53_lstat(host, p), "kind") is None {
+              let rp = rel_of(p)
+              slice_log("info", "hub", "reclaimed orphan transcript", jobj_of([("path", jstr(rp)), ("runtime", jstr("claude")), ("bytes", jn(dbytes))]))
+              gone.push(rp)
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+  }
+
+  // 2. Codex roots: BFS up to depth 6 for *-<uuid>.jsonl(.zst)
+  for root in codex_roots {
+    if done_now() || hit_entries() {
+      break
+    }
+    let queue : Array[(String, Int)] = [(root, 0)]
+    let mut qi = 0
+    while qi < queue.length() && !done_now() && !hit_entries() {
+      let (dir, depth) = queue[qi]
+      qi += 1
+      for entry in p53_names(host, dir) {
+        if done_now() || hit_entries() {
+          break
+        }
+        visited += 1
+        let p = @nodepath.join(sep(), [dir, entry])
+        let st = p53_lstat(host, p)
+        match jtext(st, "kind") {
+          Some("dir") if depth < 6 && !entry.has_prefix(".") => queue.push((p, depth + 1))
+          Some("file") => {
+            let mtime = jnum_of(st, "mtimeMs").unwrap_or(now)
+            if now - mtime < p53_orphan_transcript_ms {
+              continue
+            }
+            guard p53_codex_uuid_id(entry) is Some(cid) else { continue }
+            let referenced = bus.store.transcript_referenced(Json::string("codex"), Json::string(cid), Json::string("")) catch { _ => return gone }
+            if referenced || !safe_inside_data(p) {
+              continue
+            }
+            let bytes = match jnum_of(st, "blocks") {
+              Some(b) if b >= 0.0 => b * 512.0
+              _ => jnum_of(st, "size").unwrap_or(0.0)
+            }
+            p53_remove(host, p)
+            if jtext(p53_lstat(host, p), "kind") is None {
+              let rp = rel_of(p)
+              slice_log("info", "hub", "reclaimed orphan transcript", jobj_of([("path", jstr(rp)), ("runtime", jstr("codex")), ("bytes", jn(bytes))]))
+              gone.push(rp)
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+  }
+
+  if full && timed_out {
+    slice_log("info", "hub", "orphan transcript full scan reached time budget before finishing", jobj_of([("reclaimed", ji(gone.length())), ("budgetMs", jn(budget_ms))]))
+  }
+  gone
 }
 
 ///|

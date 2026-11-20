@@ -1396,8 +1396,9 @@ pub(all) struct ViewOptions {
   gamut : String?
   passkeys : Bool?
   chroma : String?
+  agent : Bool
 }
-pub fn ViewOptions::new(Double, Double, Array[Codec], peek? : Bool, bitrate? : Double?, fps? : Double?, audio? : Bool, opus? : Bool, gamut? : String?, passkeys? : Bool?) -> Self
+pub fn ViewOptions::new(Double, Double, Array[Codec], peek? : Bool, bitrate? : Double?, fps? : Double?, audio? : Bool, opus? : Bool, gamut? : String?, passkeys? : Bool?, agent? : Bool) -> Self
 
 pub(all) struct ViewShown {
   id : String

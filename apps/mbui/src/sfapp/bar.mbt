@@ -941,8 +941,8 @@ fn bar_tell(told : BarTold, at : Double) -> Unit {
   let notched = told.action != ""
   // shown or not
   let p_now = if shown && app.nav.root_shows() { app.nav.root_progress(fn() { at }) } else { 0.0 }
-  if shown && m.vis.target < 0.5 && p_now > 0.01 && p_now < 0.99 {
-    // Handing off from an interactive swipe-back gesture: continue smoothly from its live progress.
+  if shown && m.vis.target < 0.5 && m.vis.at(at).0 <= 0.01 && p_now > 0.01 && p_now < 0.99 {
+    // Handing off from a swipe-back gesture (the bar gone all the way down): on smoothly from its live progress
     m.vis.snap(p_now)
     m.vis.go_by(1.0, @motion.moved(points=bar_drop * (1.0 - p_now)), at~)
   } else {

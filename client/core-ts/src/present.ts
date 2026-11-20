@@ -13,6 +13,7 @@ import * as jobsMod from "./jobs.ts";
 import { permissionsShown } from "./permissions.ts";
 import { copiesShown } from "./copies.ts";
 import { elevationShown } from "./elevation.ts";
+import { screenServiceShown } from "./screen-service.ts";
 import * as model from "./shapes/model.ts";
 import * as providers from "./shapes/providers.ts";
 import { arr as arrU, equal, get as getU, isObject, shaped, str, u64 } from "./util.ts";
@@ -1500,6 +1501,10 @@ function overview(value: J, c: Clock, station: string | null): J {
   const elevation = elevationShown(v.elevation);
   if (elevation === undefined) delete v.elevation;
   else v.elevation = elevation;
+  // A Windows station's optional LocalSystem screen service, in words (screen-service.ts); none said, none shown.
+  const screenService = screenServiceShown(v.screenService);
+  if (screenService === undefined) delete v.screenService;
+  else v.screenService = screenService;
   // Where its chats are copied (copies.ts); none said, none shown.
   const copies = copiesShown(v.copies, c);
   if (copies === undefined) delete v.copies;

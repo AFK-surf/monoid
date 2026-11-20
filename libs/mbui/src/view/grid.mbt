@@ -33,6 +33,57 @@ pub fn grid_columns(
 ///|
 /// A grid in `self` of `count()` cells (0 ..< count()), laid out in as many columns of at least `min_col_w` (`gap`
 /// apart across, `row_gap` apart down, or `gap` where `row_gap` is omitted; at most `max_cols` columns where > 0) as
+/// fit `room_w()`. Like `View::grid`, but reuses an enclosing room width instead of adding a nested `View::by_room`.
+#callsite(autofill(loc))
+pub fn View::grid_in(
+  self : View,
+  room_w : () -> Double,
+  count : () -> Int,
+  min_col_w~ : Double,
+  gap? : Double = 0.0,
+  row_gap? : Double,
+  max_cols? : Int = 0,
+  cell : (View, Int) -> Unit,
+  loc~ : SourceLoc,
+) -> View {
+  let vgap = row_gap.unwrap_or(gap)
+  self.gap(Is(vgap)) |> ignore
+  self.pick(
+    at_once=true,
+    fn() {
+      let (cols, _) = grid_columns(room_w(), min_col_w, gap, max_cols~)
+      (cols, count())
+    },
+    fn(v, spec) {
+      let (cols, total) = spec
+      v.gap(Is(vgap)) |> ignore
+      let mut i = 0
+      while i < total {
+        let row_start = i
+        v.box(loc~, fn(r) {
+          r.row(Is(true)).gap(Is(gap)) |> ignore
+          for c in 0..<cols {
+            let idx = row_start + c
+            r.box(loc~, fn(slot) {
+              slot.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
+              if idx < total {
+                cell(slot, idx)
+              }
+            })
+            |> ignore
+          }
+        })
+        |> ignore
+        i = i + cols
+      }
+    },
+  )
+  self
+}
+
+///|
+/// A grid in `self` of `count()` cells (0 ..< count()), laid out in as many columns of at least `min_col_w` (`gap`
+/// apart across, `row_gap` apart down, or `gap` where `row_gap` is omitted; at most `max_cols` columns where > 0) as
 /// fit the room `self` is given. Each cell's box is handed to `cell(box, index)` with equal column width across its
 /// row, trailing empty column slots in the last row keeping partial rows aligned with the columns above.
 #callsite(autofill(loc))
@@ -46,38 +97,7 @@ pub fn View::grid(
   cell : (View, Int) -> Unit,
   loc~ : SourceLoc,
 ) -> View {
-  let vgap = row_gap.unwrap_or(gap)
   self.by_room(loc~, fn(held, room) {
-    held.gap(Is(vgap)) |> ignore
-    held.pick(
-      at_once=true,
-      fn() {
-        let (cols, _) = grid_columns(room.width(), min_col_w, gap, max_cols~)
-        (cols, count())
-      },
-      fn(v, spec) {
-        let (cols, total) = spec
-        v.gap(Is(vgap)) |> ignore
-        let mut i = 0
-        while i < total {
-          let row_start = i
-          v.box(loc~, fn(r) {
-            r.row(Is(true)).gap(Is(gap)) |> ignore
-            for c in 0..<cols {
-              let idx = row_start + c
-              r.box(loc~, fn(slot) {
-                slot.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
-                if idx < total {
-                  cell(slot, idx)
-                }
-              })
-              |> ignore
-            }
-          })
-          |> ignore
-          i = i + cols
-        }
-      },
-    )
+    held.grid_in(loc~, fn() { room.width() }, count, min_col_w~, gap~, row_gap?, max_cols~, cell) |> ignore
   })
 }

@@ -1,12 +1,11 @@
-// Marks drawn as nodes of the window's tree (icons.mbt's work_ring and icon_parts, picture.mbt's drawable, maker_mark,
+// Marks drawn as nodes of the window's tree (icons.mbt's spokes and icon_parts, picture.mbt's drawable, maker_mark,
 // slack_mark; waiting.mbt's updating_mark): the same drawings, made once, moved by the clock where they move.
 
 ///|
-/// At work (work_ring's), `size` across in a box `box` across (`size` where none), in `color` as it changes, its arc
-/// turning round once every eight steps (work_ring_step's) about the ring's middle, its box's, for as long as it
-/// shows. The node.
+/// The spokes (spokes'), `size` across in a box `box` across (`size` where none), in `color` as it changes, turning
+/// round once every eight steps (spoke_turn's) for as long as they show. The node.
 #callsite(autofill(loc))
-pub fn work_ring_node(
+pub fn spokes_node(
   parent : @view.View,
   size : Double,
   color : () -> Int64,
@@ -20,9 +19,8 @@ pub fn work_ring_node(
     v
     .width(Is(Some(box)))
     .height(Is(Some(box)))
-    .shapes(By(fn() { work_ring_shapes(size, box, color()) }))
-    // (about its box's middle, the ring's: what it draws, an arc a third round, is not round its middle)
-    .turn(By(fn() { work_ring_turn(v) }))
+    .lines(By(fn() { spokes_lines(size, box, color()) }))
+    .turn(By(fn() { spokes_turn(v) }), drawn=true)
     |> ignore
   })
   |> ignore
@@ -30,13 +28,36 @@ pub fn work_ring_node(
 }
 
 ///|
-/// How far node `v`'s ring is turned as it is drawn (work_ring_node's): once round every eight steps (work_ring_step's),
-/// held at its first step while motion is reduced, as work_ring_step's: nothing woken for it.
-pub fn work_ring_turn(v : @view.View) -> Double {
+/// The spokes' lines (spokes_node's), `size` across in a box `box` across, in `ink`: for a node that draws them as it
+/// is told to, in place (an agent's badge's state).
+pub fn spokes_lines(size : Double, box : Double, ink : Int64) -> Array[@paint.Line] {
+  let u = size / 24.0
+  let mid = box / 2.0
+  let pi = 3.141592653589793
+  let lines = []
+  for i in 0..<8 {
+    let a = i.to_double() * pi / 4.0
+    let dx = @dmath.sin(a) * u
+    let dy = -@dmath.cos(a) * u
+    lines.push(
+      @ui.line(
+        [(mid + dx * 4.8, mid + dy * 4.8), (mid + dx * 9.6, mid + dy * 9.6)],
+        width=2.9 * u,
+        color=alpha(ink, spoke_alpha[(8 - i) % 8]),
+      ),
+    )
+  }
+  lines
+}
+
+///|
+/// How far node `v`'s spokes are turned as it is drawn (spokes_node's): once round every eight steps (spoke_turn's),
+/// held at its first step while motion is reduced, as spoke_turn's: nothing woken for it.
+pub fn spokes_turn(v : @view.View) -> Double {
   if @ui.reduced_motion() {
     0.0
   } else {
-    @motion.resident_cycle(v, 8.0 * work_step_ms) * 2.0 * 3.141592653589793
+    @motion.resident_cycle(v, 8.0 * spoke_step_ms) * 2.0 * 3.141592653589793
   }
 }
 

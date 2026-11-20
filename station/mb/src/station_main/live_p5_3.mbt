@@ -448,6 +448,44 @@ async fn P53::ask(self : P53, op : String, arg : Json) -> Json {
     }
     "upkeep" => self.upkeep.pass()
     "relieve" => self.upkeep.relieving()
+    "hub.packUnfinishedArchived" =>
+      self.bus.hub_pack_unfinished_archived(
+        num(0, "now").unwrap_or(wall_ms().to_double()),
+        limit?=num(1, "limit").map(n => n.to_int()),
+      )
+    "hub.runArchiveUpkeepIfDue" =>
+      self.bus.hub_run_archive_upkeep_if_due(
+        num(0, "now").unwrap_or(wall_ms().to_double()),
+        every_ms?=num(1, "everyMs"),
+      )
+    "hub.cleanIdleRebuildable" =>
+      self.bus.hub_clean_idle_rebuildable(
+        num(0, "now").unwrap_or(wall_ms().to_double()),
+        idle_ms?=num(1, "idleMs"),
+        limit?=num(2, "limit").map(n => n.to_int()),
+      )
+    "hub.relieveIdleRebuildable" =>
+      self.bus.hub_relieve_idle_rebuildable(
+        num(0, "now").unwrap_or(wall_ms().to_double()),
+        low_bytes=num(1, "low").unwrap_or(p53_disk_low_bytes),
+        idle_ms?=num(2, "idleMs"),
+      )
+    "upkeep.pruneOrphanRooms" =>
+      Json::array(
+        self.upkeep
+        .prune_orphan_rooms(num(0, "now").unwrap_or(wall_ms().to_double()))
+        .map(jstr),
+      )
+    "upkeep.relieveOrphanTranscripts" =>
+      Json::array(
+        self.upkeep
+        .relieve_orphan_transcripts(
+          num(0, "now").unwrap_or(wall_ms().to_double()),
+          num(1, "low").unwrap_or(p53_disk_low_bytes),
+          full=at(2, "full") is True,
+        )
+        .map(jstr),
+      )
     "upkeep.relieveRepos" =>
       Json::array(
         self.upkeep

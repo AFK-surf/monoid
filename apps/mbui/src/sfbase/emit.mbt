@@ -740,44 +740,14 @@ fn glyph_out(ms : Double, at : @ui.GlyphAt, col : (Double, Double, Double, Doubl
 /// One glyph arriving, shared by an agent's message and its activity. `turn` is when its place in reading order
 /// would come; its own little variation, fade and rise are the same in either place.
 pub fn glyph_in(ms : Double, turn : Double, index : Int, salt : Int) -> @ui.GlyphLook {
-  let still : @ui.GlyphLook = { alpha: 1.0, dx: 0.0, dy: 0.0, scale: 1.0, sx: 1.0 }
-  let (j0, j1) = (glyph_noise(index, salt), glyph_noise(index, salt + 7919))
-  let start = dmax(turn + (j0 - 0.5) * emit_glyph_jitter, 0.0)
-  let p = (ms - start) / emit_glyph_ms
-  if p <= 0.0 {
-    return { alpha: 0.0, dx: 0.0, dy: 0.0, scale: 1.0, sx: 1.0 }
-  }
-  if p >= 1.0 {
-    return still
-  }
-  let rise = emit_glyph_rise * (0.7 + 0.6 * j1)
-  { alpha: @ui.Ease::Out.at(dmin(p / 0.7, 1.0)), dx: 0.0, dy: rise * (1.0 - @ui.Ease::Out.at(p)), scale: 1.0, sx: 1.0 }
+  @motion.glyph_in(ms, turn, index, salt)
 }
 
 ///|
 /// One glyph giving way to its successor in the next activity. It fades away before its successor rises and fades in,
 /// so the two do not overlap. `turn` is a gentle reading-order bias; each place varies its timing and its rise.
 pub fn glyph_change(ms : Double, turn : Double, index : Int, salt : Int, incoming : Bool) -> @ui.GlyphLook {
-  let start = turn * 0.25 + glyph_change_line_ms * glyph_noise(index, salt) * 0.75
-  let duration = emit_glyph_ms * (0.8 + 0.4 * glyph_noise(index, salt + 7919))
-  let p = dmax(dmin((ms - start) / duration, 1.0), 0.0)
-  let rise = emit_glyph_rise * (0.7 + 0.6 * glyph_noise(index, salt + 15838))
-  if incoming {
-    let q = @ui.Ease::Out.at(dmax(p * 2.0 - 1.0, 0.0))
-    { alpha: q, dx: 0.0, dy: rise * (1.0 - q), scale: 1.0, sx: 1.0 }
-  } else {
-    let q = @ui.Ease::Leave.at(dmin(p * 2.0, 1.0))
-    { alpha: 1.0 - q, dx: 0.0, dy: -rise * 0.25 * q, scale: 1.0, sx: 1.0 }
-  }
-}
-
-///|
-/// A number from 0 to 1 for glyph `i` of message `salt`, the same each time (a hash: no chance in it).
-fn glyph_noise(i : Int, salt : Int) -> Double {
-  let mut h = (i * 374761393 + salt * 668265263).reinterpret_as_uint()
-  h = (h ^ (h >> 13)) * 1274126177U
-  h = h ^ (h >> 16)
-  (h & 0xFFFFU).reinterpret_as_int().to_double() / 65535.0
+  @motion.glyph_change(ms, turn, index, salt, incoming)
 }
 
 ///|
@@ -812,9 +782,6 @@ let emit_glyph_jitter : Double = 50.0
 
 ///|
 let emit_glyph_ms : Double = 220.0
-
-///|
-let emit_glyph_rise : Double = 6.0
 
 ///|
 /// The head's sliding out (ms); how long it all takes at most.

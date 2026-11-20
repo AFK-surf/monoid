@@ -960,6 +960,33 @@ test("a runtime not installed is said about it, and what waited goes on once it 
   await r.close();
 });
 
+test("a runtime installed that still fails to start is said, though its missing was said before in the same words first", async () => {
+  const r = new Rig();
+  r.claude.missing = true;
+  const open = r.claude.open.bind(r.claude);
+  let opens = 0;
+  r.claude.open = (o, e) => (opens++, open(o, e));
+  const m = message();
+  await r.accept(m);
+  await settle();
+  const warned = () => r.chat.texts().filter((t: string) => t.startsWith("⚠️"));
+  assert.deepEqual(warned(), ["⚠️ 无法启动 agent：此 station 尚未安装 Claude Code"]);
+  // Installed, and it ends as it starts: said, not taken for the missing notice it begins like.
+  r.claude.missing = false;
+  r.claude.refuses = "claude session is closed";
+  r.hub.installed("claude");
+  await settle();
+  assert.equal(opens, 2);
+  const failed = "⚠️ 无法启动 agent\n\n```\nclaude session is closed\n```";
+  assert.deepEqual(warned(), ["⚠️ 无法启动 agent：此 station 尚未安装 Claude Code", failed]);
+  // Failing so again with nothing said since: not said twice.
+  r.hub.installed("claude");
+  await settle();
+  assert.equal(opens, 3);
+  assert.deepEqual(warned(), ["⚠️ 无法启动 agent：此 station 尚未安装 Claude Code", failed]);
+  await r.close();
+});
+
 test("a turn that could not start is started once on what waits, however many wakes came meanwhile; what comes after starts it again", async () => {
   const r = new Rig();
   const open = r.claude.open.bind(r.claude);

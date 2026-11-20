@@ -188,6 +188,24 @@ export type LinkNet = {
   lan?: string[];
 };
 
+/// One dial attempt of the latest round to a peer (`Mesh.diag`).
+export type DialAttempt = {
+  via: string;
+  outcome: "ok" | "no_answer" | "refused" | "error" | "interrupted";
+  stage: "onto" | "credential" | "dial" | "open_bi" | "send" | "hello" | "done";
+  totalMs: number;
+  error?: string;
+};
+
+/// Local connection diagnostics for a peer (`Mesh.diag`).
+export type PeerDiag = {
+  at: number;
+  relays: { url: string; connected: boolean }[];
+  lan: string[];
+  tailnet: string[];
+  attempts: DialAttempt[];
+};
+
 /// The client's half of a socket stream.
 export interface SocketOut {
   write(bytes: Uint8Array): Effect.Effect<void, CoreError>;
@@ -908,6 +926,8 @@ export class Mesh {
   readonly #slowSeen = new Map<string, { bps: number; at: number }>();
   /// By address: when on-demand bulk relay exploration last ran.
   readonly #bulkExploredAt = new Map<string, number>();
+  /// By address: the latest dial round's per-route outcomes (`#dialAll`, `diag`).
+  readonly #diags = new Map<string, { at: number; attempts: DialAttempt[] }>();
 
   private constructor(env: MeshEnv, relays: string[], entries: string[], targets: Record<string, string>, endpoint: IrohEndpoint, secret: Uint8Array, days: Record<string, Day>, speeds: Record<string, Record<string, Speed>>, said: Record<string, Said>) {
     this.#env = env;
@@ -998,6 +1018,18 @@ export class Mesh {
   /// Where the station said it is on its LAN, none until it did.
   lan(addr: string): string[] {
     return this.#said[addr]?.lan ?? [];
+  }
+
+  /// Local connection diagnostics for `addr`: latest dial round, relay connection states, and known direct addresses.
+  diag(addr: string): PeerDiag {
+    const d = this.#diags.get(addr);
+    return {
+      at: d?.at ?? 0,
+      relays: this.#endpoint.relayStatus().slice(0, 12),
+      lan: this.lan(addr),
+      tailnet: this.#said[addr]?.tailnet ?? [],
+      attempts: d ? [...d.attempts] : [],
+    };
   }
 
   /// What the station's links carried on this device today, both ways (in every workspace it is reached in).
@@ -1774,6 +1806,11 @@ export class Mesh {
   #dialAll(addr: string, endpoint: IrohEndpoint, credentials: CredentialSource, fresh: boolean, ctx: SpanContext | undefined): Effect.Effect<Link, CoreError> {
     return Effect.suspend(() => {
       this.#exploredAt.set(addr, this.now());
+      const round = { at: this.now(), attempts: [] as DialAttempt[] };
+      this.#diags.set(addr, round);
+      const onDone = (attempt: DialAttempt) => {
+        if (round.attempts.length < 12) round.attempts.push(attempt);
+      };
       const relays = this.relaysFor(addr);
       // On the main endpoint, one connection: a path through every relay the station is on (the endpoint is home on
       // all of them), to the addresses it said it is reached straight at, and those iroh punches through; iroh moves
@@ -1784,7 +1821,7 @@ export class Mesh {
       let at: Effect.Effect<Link, CoreError>[] = [];
       if (this.#mainOn(addr)) {
         const straight = this.#straightAt(addr);
-        const dial = open(this.#env, endpoint, relays, endpointId(addr), credentials, fresh, null, ctx, straight, addr);
+        const dial = open(this.#env, endpoint, relays, endpointId(addr), credentials, fresh, null, ctx, straight, addr, onDone);
         // Given those addresses, its last dial went unanswered: each relay's own endpoint (on that relay alone, at no
         // address) dialled beside it. An address can reach the station one way only, and iroh's handshake goes on the
         // way the station heard first: a station in WSL with mirrored networking says the Windows machine's own
@@ -1799,12 +1836,12 @@ export class Mesh {
         const lost = this.#lostMain.delete(addr);
         if (!unanswered && !lost) return dial;
         main.push(dial);
-        pinned = (unanswered ? this.#waysFor(addr) : this.#pinnable(addr)).map((r) => this.#dialPinned(addr, r, credentials, fresh, ctx));
+        pinned = (unanswered ? this.#waysFor(addr) : this.#pinnable(addr)).map((r) => this.#dialPinned(addr, r, credentials, fresh, ctx, onDone));
       } else {
-        pinned = this.#pinnable(addr).map((r) => this.#dialPinned(addr, r, credentials, fresh, ctx));
+        pinned = this.#pinnable(addr).map((r) => this.#dialPinned(addr, r, credentials, fresh, ctx, onDone));
         // Where the station said (in a run before, perhaps) it is reached straight: dialled beside the relays, not
         // after one of them brought its answer again.
-        at = AT_ADDRESSES.flatMap((kind) => this.#dialAt(addr, kind, credentials, fresh) ?? []);
+        at = AT_ADDRESSES.flatMap((kind) => this.#dialAt(addr, kind, credentials, fresh, onDone) ?? []);
       }
       const all = [...main, ...pinned, ...at];
       if (all.length === 0) return Effect.fail(meshError(t("core-logic.mesh.all_off")));
@@ -1860,11 +1897,11 @@ export class Mesh {
 
   /// A link through `relay` alone, on that relay's own endpoint (`#pinnedEndpoint`); through a fence's relays, or a path
   /// punched through them, on the fence's.
-  #dialPinned(addr: string, relay: string, credentials: CredentialSource, fresh: boolean, ctx: SpanContext | undefined): Effect.Effect<Link, CoreError> {
+  #dialPinned(addr: string, relay: string, credentials: CredentialSource, fresh: boolean, ctx: SpanContext | undefined, onDone?: (attempt: DialAttempt) => void): Effect.Effect<Link, CoreError> {
     return Effect.suspend(() => {
       this.#dialing++;
       return Effect.flatMap(this.#pinnedEndpoint(relay), (endpoint) =>
-        endpoint === null ? Effect.fail(unreached({ message: `no endpoint for ${relayHost(relay)}` })) : open(this.#env, endpoint, this.#fences.get(relay) ?? [relay], endpointId(addr), credentials, fresh, relay, ctx, [], addr),
+        endpoint === null ? Effect.fail(unreached({ message: `no endpoint for ${relayHost(relay)}` })) : open(this.#env, endpoint, this.#fences.get(relay) ?? [relay], endpointId(addr), credentials, fresh, relay, ctx, [], addr, onDone),
       ).pipe(Effect.ensuring(Effect.sync(() => this.#dialing--)));
     });
   }
@@ -1913,7 +1950,7 @@ export class Mesh {
   /// A dial of the station at its addresses of `kind`, on that kind's endpoint (`pinned` LAN or TAILNET): null when it
   /// said none, its workspace turned that kind off, one is under way or a way to it is on that endpoint already. Counted
   /// as under way from now: the caller runs it at once (`#dialAtIf` adopts what comes through; `#dialAll` races it).
-  #dialAt(addr: string, kind: AtAddresses, credentials: CredentialSource, fresh: boolean): Effect.Effect<Link, CoreError> | null {
+  #dialAt(addr: string, kind: AtAddresses, credentials: CredentialSource, fresh: boolean, onDone?: (attempt: DialAttempt) => void): Effect.Effect<Link, CoreError> | null {
     const at = this.#said[addr]?.[kind] ?? [];
     const key = atKey(kind, addr);
     if (at.length === 0 || this.#isOff(addr, kind) || this.#atDialling.has(key) || this.#live(addr).some((w) => w.link.pinned === kind)) return null;
@@ -1922,7 +1959,7 @@ export class Mesh {
     this.#atDialling.add(key);
     this.#dialing++;
     return Effect.flatMap(this.#pinnedEndpoint(kind), (endpoint) =>
-      endpoint === null ? Effect.fail(unreached({ message: `no ${kind} endpoint` })) : open(this.#env, endpoint, [], endpointId(addr), credentials, fresh, kind, undefined, at, addr),
+      endpoint === null ? Effect.fail(unreached({ message: `no ${kind} endpoint` })) : open(this.#env, endpoint, [], endpointId(addr), credentials, fresh, kind, undefined, at, addr, onDone),
     ).pipe(
       Effect.ensuring(
         Effect.sync(() => {
@@ -2735,10 +2772,12 @@ function open(
   ctx: SpanContext | undefined,
   ips: string[] = [],
   address: string = stationId,
+  onDone?: (attempt: DialAttempt) => void,
 ): Effect.Effect<Link, CoreError> {
   // (the record's: each dial a line as it ends, where lines are kept: record.ts)
   const n = ++dials;
   const stages = { onto: -1, credential: -1, dialled: -1, openBi: -1, sent: -1 };
+  let credFailed = false;
   const startedAt = env.host.nowMs();
   const dial = Effect.suspend(() => {
     const began = env.host.nowMs();
@@ -2772,7 +2811,11 @@ function open(
         }),
       );
       const had = Effect.ensuring(
-        credentials(device, fresh),
+        Effect.tapError(credentials(device, fresh), () =>
+          Effect.sync(() => {
+            credFailed = true;
+          }),
+        ),
         Effect.sync(() => {
           opened.credential = since();
           stages.credential = opened.credential;
@@ -2823,13 +2866,48 @@ function open(
       }
     })));
   });
-  if (!recording(env.host)) return dial;
+  const rec = recording(env.host);
+  if (!rec && onDone === undefined) return dial;
   // the DHT's lines kept from the dial's start: a lookup it asks, a socket failing as it does (the record turned on, or
   // a first dial, after none was kept)
-  const dialFrom = Effect.andThen(Effect.sync(() => recordDht(env.host, endpoint)), dial);
+  const dialFrom = rec ? Effect.andThen(Effect.sync(() => recordDht(env.host, endpoint)), dial) : dial;
   const via = pinned === null ? (ips.length > 0 ? "main+addresses" : "main") : pinned === LAN ? "lan" : pinned === TAILNET ? "tailnet" : isFenced(pinned) ? "fenced" : `relay:${relayHost(pinned)}`;
   return Effect.onExit(dialFrom, (exit) =>
     Effect.sync(() => {
+      const totalMs = Math.max(0, Math.round(env.host.nowMs() - startedAt));
+      if (onDone !== undefined) {
+        const stage: DialAttempt["stage"] = Exit.isSuccess(exit)
+          ? "done"
+          : stages.sent >= 0
+            ? "hello"
+            : stages.openBi >= 0
+              ? "send"
+              : stages.dialled >= 0
+                ? "open_bi"
+                : credFailed
+                  ? "credential"
+                  : stages.onto < 0 && relays.length > 0
+                    ? "onto"
+                    : "dial";
+        if (Exit.isSuccess(exit)) onDone({ via, outcome: "ok", stage, totalMs });
+        else if (Exit.hasInterrupts(exit)) onDone({ via, outcome: "interrupted", stage, totalMs });
+        else {
+          const e = Cause.squash(exit.cause) as { code?: unknown; cause?: unknown; message?: unknown };
+          const code = typeof e?.code === "string" ? e.code : "";
+          const msg = typeof e?.message === "string" ? e.message : String(e);
+          const isTimeout = e instanceof OpeningTimeout || msg === noAnswer();
+          const isRefused = code === "credential_refused" || code === "lock_unconfirmed" || code === "lock_station" || code === "client_upgrade_required";
+          const rawErr = typeof e?.cause === "string" && e.cause !== "" ? e.cause : msg;
+          onDone({
+            via,
+            outcome: isTimeout ? "no_answer" : isRefused ? "refused" : "error",
+            stage,
+            totalMs,
+            ...(rawErr ? { error: said(rawErr) } : {}),
+          });
+        }
+      }
+      if (!rec) return;
       // what the DHT went through as it dialled (a lookup of this station's address among them, if one was asked)
       recordDht(env.host, endpoint);
       record(env.host, "conn dial", () =>
@@ -2838,7 +2916,7 @@ function open(
           station: stationId,
           via,
           ...stages,
-          total: env.host.nowMs() - startedAt,
+          total: totalMs,
           outcome: Exit.isSuccess(exit) ? "ok" : Exit.hasInterrupts(exit) ? "interrupted" : (() => {
             const e = Cause.squash(exit.cause) as { message?: string };
             const m = String(e?.message ?? e);

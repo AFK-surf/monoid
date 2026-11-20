@@ -52,6 +52,22 @@ pub fn settings_fixture(src : Source, core : Core) -> Unit {
     "new-connect" => @sfpages.new_connect_dialog(src, core, @settings.here_of(core, "ws1", "星火工作室"), "ws1/st1")
     "vault-add" => @sfpages.fx_vault_add_up.val = true
     "vault-editor" => @sfpages.vault_editor_dialog(core, "ws1", "v1", None, kind="token")
+    "vault-workspace-members" => {
+      let here = @settings.here_of(core, "ws1", "星火工作室")
+      let row = items((core.topic)("vaults", { "workspace": str("ws1") }).get().value, "vaults").iter().find_first(fn(r) {
+        text(Some(r), "scope") == "workspace"
+      })
+      @sfpages.vault_members_dialog(core, here, row)
+    }
+    "vault-workspace-editor" =>
+      @sfpages.vault_editor_dialog(
+        core,
+        "ws1",
+        "v1",
+        None,
+        kind="token",
+        targets=[("v1", "林的库"), ("v-ws", @sf.t("web-pages.vault.workspaceVault"))],
+      )
     "vault-recover" => @sfpages.vault_recover_dialog(core, "ws1")
     "copies-confirm" =>
       match items(@settings.fixture_copies(), "offers") {

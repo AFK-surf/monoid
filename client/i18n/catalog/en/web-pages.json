@@ -1048,7 +1048,17 @@
   "web-pages.stations.software": "Software",
   "web-pages.stations.softwareOffline": "The station is offline. Updates appear once it connects.",
   "web-pages.stationUpdates.app": "This app",
-  "web-pages.stations.settingsOffline": "The station is offline. Its settings appear once it connects.",
+  "web-pages.stations.settingsOffline": "Snapshot before offline · Editable once connected",
+  "web-pages.stations.diag.title": "Diagnostics",
+  "web-pages.stations.diag.copy": "Copy",
+  "web-pages.stations.diag.copied": "Diagnostics copied",
+  "web-pages.stations.diag.cloud": "Cloud",
+  "web-pages.stations.diag.lastNet": "Last route",
+  "web-pages.stations.diag.addresses": "Addresses",
+  "web-pages.stations.diag.ways": "Recent attempts",
+  "web-pages.stations.diag.localLog": "View local log",
+  "web-pages.stations.resourcesSnapshot": "Snapshot before offline",
+  "web-pages.stations.processesSnapshot": "Snapshot before offline",
   "web-pages.stations.uses": "{name} uses",
   "web-pages.stations.total": "{total} total",
   "web-pages.stations.netNone": "Not connected",
@@ -1901,6 +1911,8 @@
   "web-pages.stations.elevation.section": "Administrator",
   "web-pages.stations.elevation.admin": "Run as administrator",
   "web-pages.stations.elevation.what": "switch running as administrator",
+  "web-pages.stations.screenService.title": "Remote control of UAC and lock screen",
+  "web-pages.stations.screenService.what": "switch remote control of UAC and lock screen",
   "web-pages.stations.search.section": "Search",
   "web-pages.stations.search.personal": "Search personal data",
   "web-pages.stations.search.personalLine": "Workspace members can also search mail, messages, calendars, contacts, notes and photos",
@@ -2311,7 +2323,10 @@
   "web-pages.connect.recentNone.group": "No sessions yet. @{name} in a group or message it to start",
   "web-pages.connect.disabled.group": "Disabled, Group disconnected",
   "web-pages.connect.deleteBody.group": "Disconnects from Group. This station's member and device stay on the server: its owner removes them if need be.",
-  "web-pages.connect.deleteBodySessions.group": {"one": "Disconnects from Group. Its 1 session keeps its history but gets no new messages. This station's member and device stay on the server: its owner removes them if need be.", "other": "Disconnects from Group. Its {n} sessions keep their history but get no new messages. This station's member and device stay on the server: its owner removes them if need be."},
+  "web-pages.connect.deleteBodySessions.group": {
+    "one": "Disconnects from Group. Its 1 session keeps its history but gets no new messages. This station's member and device stay on the server: its owner removes them if need be.",
+    "other": "Disconnects from Group. Its {n} sessions keep their history but get no new messages. This station's member and device stay on the server: its owner removes them if need be."
+  },
   "web-pages.connect.group.section": "Group server",
   "web-pages.connect.group.rebindLead": "Where the server removed this station's device, or to be another member, give a new join code. It connects again once saved.",
   "web-pages.connect.mentionOn.group": "Once @-mentioned, later messages in that group need no @; every message of a private chat goes into the session.",
@@ -2355,5 +2370,27 @@
   "web-pages.farview.copyImageLink": "Copy image address",
   "web-pages.farview.zoomReset": "Reset zoom ({zoom})",
   "web-pages.farview.downloaded": "Saved to Downloads: {name}",
-  "web-pages.farview.downloadedOnHost": "{name} is too large: saved in the station's downloads"
+  "web-pages.farview.downloadedOnHost": "{name} is too large: saved in the station's downloads",
+  "web-pages.vault.workspaceVault": "Workspace vault",
+  "web-pages.vault.workspaceCreateNote": "End-to-end encrypted shared vault for this workspace. Members can use and add secrets; removing a member rotates the vault key.",
+  "web-pages.vault.workspaceCreate": "Create workspace vault",
+  "web-pages.vault.workspaceCreateWhat": "create workspace vault",
+  "web-pages.vault.workspaceCreated": "Workspace vault created",
+  "web-pages.vault.deleteNamed": "Delete {name}",
+  "web-pages.vault.deleteWorkspaceBody": {
+    "one": "All members will lose access to the {n} secret in this vault and it can't be recovered; grants already given last till they end",
+    "other": "All members will lose access to the {n} secrets in this vault and they can't be recovered; grants already given last till they end"
+  },
+  "web-pages.vault.deleteWorkspaceEmpty": "Members will no longer be able to use this shared workspace vault",
+  "web-pages.vault.members.title": "Shared members",
+  "web-pages.vault.members.count": {
+    "one": "{n} member",
+    "other": "{n} members"
+  },
+  "web-pages.vault.members.dialogTitle": "Workspace vault members",
+  "web-pages.vault.members.you": "You",
+  "web-pages.vault.members.rekeyNote": "Removing a member rotates the vault key and re-encrypts all items.",
+  "web-pages.vault.members.saveWhat": "save shared members",
+  "web-pages.vault.members.saved": "Shared members updated",
+  "web-pages.vault.editor.saveTo": "Save to"
 }

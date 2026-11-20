@@ -1322,6 +1322,23 @@ export interface StationElevation {
 	canChange: boolean;
 }
 
+/** Whether a Windows station has the optional LocalSystem screen service installed, as its page shows it. */
+export interface StationScreenService {
+	/** Where its switch stands: installed, or what a change under way goes to (`screenService.set`). */
+	on: boolean;
+	/** A change is under way (Windows' UAC prompt up, installing or uninstalling): the switch waits. */
+	busy: boolean;
+	/** What it means, or how the change under way goes. */
+	line: string;
+	/** How the last change failed (nothing changed then), in a line; none when it did not. */
+	failed?: string;
+	/**
+	 * The viewer may switch it now (one of the workspace's owners and admins, binary present, Windows user an
+	 * administrator, no change under way).
+	 */
+	canChange: boolean;
+}
+
 /** A backup of a station no longer there that a station with no chats could restore. */
 export interface CopyOffer {
 	/** The lost station's id: `copies.restore`'s `origin`. */
@@ -1485,6 +1502,11 @@ export interface Overview {
 	 * then shows nothing).
 	 */
 	elevation?: StationElevation;
+	/**
+	 * Whether the optional LocalSystem Windows screen service is installed for remote control of UAC, elevated
+	 * windows and the lock screen (a Windows station only; none from one older than it, which then shows nothing).
+	 */
+	screenService?: StationScreenService;
 	/** The copies of its chats kept off it (copies.ts). None from a station older than them, which then shows nothing. */
 	copies?: StationCopies;
 	/** Whether moving its things to another station is offered on it (move.ts). None from a station older than it: not offered. */
@@ -2207,6 +2229,13 @@ export interface VaultDescribe {
 	wasAbout: string;
 }
 
+/** A keyed vault a secret_save card may save into. */
+export interface VaultTarget {
+	id: string;
+	name: string;
+	workspace?: boolean;
+}
+
 /** An agent's request to use a vault item, or to keep one, as its card in the chat says it (station/src/vault/secrets.ts). */
 export interface VaultAsk {
 	/** The item's name. */
@@ -2256,6 +2285,8 @@ export interface VaultAsk {
 	answer?: string;
 	/** With answer approve, a use: the longest it may be given for (once | hour | chat). */
 	lasts?: string;
+	/** With answer approve, a save when more than one keyed vault exists: personal vaults first, workspace vaults after. */
+	saveTargets?: VaultTarget[];
 }
 
 /** A site's sign-in asked of the person on a card, as it stands. */

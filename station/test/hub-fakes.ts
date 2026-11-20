@@ -336,7 +336,7 @@ export const reply = (to: InboundMessage, ts: string, text: string, over: Partia
 
 /// `workspaces`: those the station is in, its home one first; a session's link names its own.
 /// `askToName`: asked to name an untitled chat as its turn ends (off unless a test looks at it).
-export type Setup = { maxNudges?: number; askToName?: boolean; maxWarmClaude?: number; warmMinutes?: number; teamRequireMention?: boolean; link?: boolean; cold?: ColdStorage; clock?: Clock.Clock; place?: { workspace: string; station: string }; workspaces?: string[]; fileStore?: boolean; toolsHeard?: Map<string, number> };
+export type Setup = { maxNudges?: number; askToName?: boolean; maxWarmClaude?: number; maxConcurrentTurns?: number; warmMinutes?: number; teamRequireMention?: boolean; link?: boolean; cold?: ColdStorage; clock?: Clock.Clock; place?: { workspace: string; station: string }; workspaces?: string[]; fileStore?: boolean; toolsHeard?: Map<string, number> };
 
 /// A TestClock for a rig (its hub's, its store's, its sessions'): `adjust(ms)` moves it on, and what was due by then runs.
 /// `asked()` counts the waits begun on it; `begun(n)` resolves once `n` have, each then sleeping on it (an adjust
@@ -401,6 +401,7 @@ export class Rig {
     if (o.maxNudges !== undefined) this.raw.maxNudges = o.maxNudges;
     this.raw.askToName = o.askToName ?? false;
     if (o.maxWarmClaude !== undefined) this.raw.maxWarmClaude = o.maxWarmClaude;
+    if (o.maxConcurrentTurns !== undefined) this.raw.maxConcurrentTurns = o.maxConcurrentTurns;
     if (o.warmMinutes !== undefined) this.raw.warmMinutes = o.warmMinutes;
     this.config = hubConfig(this.raw, this.dir);
     // In a file, as a station's: the sessions' actors read and write it themselves where they run in the MoonBit program

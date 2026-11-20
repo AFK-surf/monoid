@@ -46,7 +46,7 @@ fn new_side_node(col : @view.View, src : Source, w : Workspace, key : String, ti
       true
     })
     |> ignore
-    new_side_bar_node(p, close, tips)
+    side_bar_clip_node(p, src, at, fn(inner) { new_side_bar_node(inner, close, tips) })
     p.box(fn(q) {
       q.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))).clips(Is(true)) |> ignore
       // (the station its tab starts at, as the page's picks say it: another, the tab made again there)
@@ -91,7 +91,7 @@ fn tape_new_side_node(q : @view.View, src : Source, ws : String, tips : @sf.TipL
     true
   })
   |> ignore
-  new_side_bar_node(q, close, tips, tape=true)
+  tape_side_bar_clip_node(q, fn(inner) { new_side_bar_node(inner, close, tips, tape=true) })
   q.box(fn(b) {
     b.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))).clips(Is(true)) |> ignore
     // (the station its tab starts at, as the page's picks say it: another, the tab made again there)

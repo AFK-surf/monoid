@@ -343,17 +343,17 @@ let side_bar_look : @ui.Style = @ui.css("row w=Full h=S11 pl=S2 gap=S2 align=ACe
 /// that (it follows a round window), clear of it, as in the wide frame at least (side_bar's 8 and 12); its foot as
 /// before.
 pub fn side_bar_tape() -> @ui.Style {
-  match @sf.pane_radii() {
-    Some(k) => side_bar_tape_in(k)
+  match @sf.pane_round.val {
+    Some(k) => side_bar_tape_in(k, @ui.corner_roots())
     None => side_bar()
   }
 }
 
 ///|
-/// side_bar_tape's, its panel's corners `radii` round (the tree's bar, side_bar_node: as the tree has the window's
-/// corner).
-fn side_bar_tape_in(radii : FixedArray[Double]) -> @ui.Style {
-  let (left, right) = (radii[0], radii[1])
+/// side_bar_tape's, its panel's corners `corners` (worked out from `roots`; the tree's bar, side_bar_node, has the
+/// window's corner and Windows' own window keys).
+fn side_bar_tape_in(corners : FixedArray[@ui.CornerOf], roots : @ui.CornerRoots) -> @ui.Style {
+  let left = corners[0].radius(roots)
   // (the switch the tallest in it, the row's top its, the tab's middle on its)
   let side = bar_button_side()
   @ui.style(
@@ -362,7 +362,7 @@ fn side_bar_tape_in(radii : FixedArray[Double]) -> @ui.Style {
     pt=@sf.room_of(@ui.capsule_in(@sf.tape_corner, side)),
     pb=S1_5,
     pl=@sf.room_of(@sf.line_end_in(left, side_bar_start, side=@sf.side_tab_side)),
-    pr=@sf.room_of(@sf.line_end_in(right, side_bar_end, side~)),
+    pr=@sf.room_of(@sf.tape_bar_end_of(corners, roots, side_bar_end, side~)),
     gap=S2,
     align=ACenter,
   )

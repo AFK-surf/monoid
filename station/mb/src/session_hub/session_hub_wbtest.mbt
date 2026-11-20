@@ -126,3 +126,182 @@ test "cold_afresh and cold_worth thresholds" {
   assert_true(js_number(Json::string(" 3.5 ")) == Some(3.5))
   assert_eq(undefined(), { "$undefined": true })
 }
+
+///|
+test "drive_loop fires timers on deadline and wakes early for earlier timers" {
+  let rt = @effect.Runtime::new(start=1_000L)
+  let stopped : @effect.Deferred[Unit] = @effect.Deferred::new()
+  let timers : Array[Timer] = []
+  let waiters : Array[@effect.Deferred[Unit]] = []
+  let work : Array[async () -> Unit] = []
+  let seq : Ref[Int] = { val: 0 }
+  let fired : Array[(String, Int64)] = []
+  let after = (ms : Double, run : () -> Unit) => {
+    seq.val += 1
+    let due = rt.now().to_double() + (if ms > 0.0 { ms } else { 0.0 })
+    timers.push({ id: seq.val, due, run })
+    wake_waiters_list(waiters)
+  }
+  let driver = rt.fork(name="drive", async fn() {
+    drive_loop(rt, stopped, () => rt.now().to_double(), timers, waiters, work, f => {
+      ignore(rt.fork_quiet(name="later", f))
+    })
+  })
+  ignore(rt.run_ready())
+  assert_eq(next_due_in(timers), None)
+  // Schedule a 10s timer at t=1000 (due at 11000).
+  after(10_000.0, () => fired.push(("10s", rt.now())))
+  rt.advance(1_000)
+  assert_eq(fired.length(), 0)
+  // Insert an earlier 2s timer at t=2000 (due at 4000) — must wake and preempt the 10s sleep.
+  after(2_000.0, () => fired.push(("2s", rt.now())))
+  rt.advance(1_999)
+  assert_eq(fired.length(), 0)
+  rt.advance(1)
+  assert_eq(fired, [("2s", 4_000L)])
+  rt.advance(6_999)
+  assert_eq(fired.length(), 1)
+  rt.advance(1)
+  assert_eq(fired, [("2s", 4_000L), ("10s", 11_000L)])
+  assert_eq(next_due_in(timers), None)
+  // Stop exits cleanly with no leaked waiters or fibers.
+  ignore(stopped.succeed(()))
+  ignore(rt.run_ready())
+  assert_true(driver.is_done())
+  assert_eq(waiters.length(), 0)
+  assert_true(rt.idle())
+}
+
+///|
+test "drive_loop wakes immediately for deferred later work and drains chained work" {
+  let rt = @effect.Runtime::new(start=0L)
+  let stopped : @effect.Deferred[Unit] = @effect.Deferred::new()
+  let timers : Array[Timer] = []
+  let waiters : Array[@effect.Deferred[Unit]] = []
+  let work : Array[async () -> Unit] = []
+  let ran : Array[String] = []
+  let driver = rt.fork(name="drive", async fn() {
+    drive_loop(rt, stopped, () => rt.now().to_double(), timers, waiters, work, f => {
+      ignore(rt.fork_quiet(name="later", f))
+    })
+  })
+  ignore(rt.run_ready())
+  // No timers scheduled; pushing deferred work must wake drive_loop immediately.
+  work.push(async fn() {
+    @effect.pause()
+    ran.push("first")
+    work.push(async fn() {
+      @effect.pause()
+      ran.push("chained")
+    })
+    wake_waiters_list(waiters)
+  })
+  wake_waiters_list(waiters)
+  ignore(rt.run_ready())
+  assert_eq(ran, ["first", "chained"])
+  assert_eq(work.length(), 0)
+  ignore(stopped.succeed(()))
+  ignore(rt.run_ready())
+  assert_true(driver.is_done())
+  assert_eq(waiters.length(), 0)
+  assert_true(rt.idle())
+}
+
+///|
+test "drive_loop cleans up timer_waiters when stopped mid-sleep and handles >60s deadlines" {
+  let rt = @effect.Runtime::new(start=0L)
+  let stopped : @effect.Deferred[Unit] = @effect.Deferred::new()
+  let timers : Array[Timer] = []
+  let waiters : Array[@effect.Deferred[Unit]] = []
+  let work : Array[async () -> Unit] = []
+  let fired : Ref[Int64] = { val: -1L }
+  timers.push({ id: 1, due: 150_000.0, run: () => fired.val = rt.now() })
+  let driver = rt.fork(name="drive", async fn() {
+    drive_loop(rt, stopped, () => rt.now().to_double(), timers, waiters, work, f => {
+      ignore(rt.fork_quiet(name="later", f))
+    })
+  })
+  // Advance in chunks across the 60s clamp boundary.
+  rt.advance(60_000)
+  assert_eq(fired.val, -1L)
+  assert_eq(waiters.length(), 1)
+  rt.advance(89_999)
+  assert_eq(fired.val, -1L)
+  rt.advance(1)
+  assert_eq(fired.val, 150_000L)
+  // Schedule another future timer and stop mid-sleep: must exit and remove its waiter.
+  timers.push({ id: 2, due: 200_000.0, run: () => () })
+  wake_waiters_list(waiters)
+  ignore(rt.run_ready())
+  assert_eq(waiters.length(), 1)
+  ignore(stopped.succeed(()))
+  ignore(rt.run_ready())
+  assert_true(driver.is_done())
+  assert_eq(waiters.length(), 0)
+  assert_true(rt.idle())
+}
+
+///|
+test "drive_loop flushes gathered transcript lengths and resets lengths_due for subsequent writes" {
+  let rt = @effect.Runtime::new(start=0L)
+  let stopped : @effect.Deferred[Unit] = @effect.Deferred::new()
+  let timers : Array[Timer] = []
+  let waiters : Array[@effect.Deferred[Unit]] = []
+  let work : Array[async () -> Unit] = []
+  let seq : Ref[Int] = { val: 0 }
+  let written : Array[(String, Int, Int64)] = []
+  let lengths : Map[String, Int] = Map([])
+  let lengths_due : Ref[Bool] = { val: false }
+  let length_written : Set[String] = Set([])
+  let flush = () => {
+    lengths_due.val = false
+    for k, v in lengths {
+      written.push((k, v, rt.now()))
+    }
+    lengths.clear()
+  }
+  let note_length = (key : String, n : Int) => {
+    lengths[key] = n
+    if !length_written.contains(key) {
+      length_written.add(key)
+      written.push((key, n, rt.now()))
+      lengths.remove(key)
+      return
+    }
+    if lengths_due.val {
+      return
+    }
+    lengths_due.val = true
+    seq.val += 1
+    timers.push({ id: seq.val, due: rt.now().to_double() + lengths_gather_ms, run: flush })
+    wake_waiters_list(waiters)
+  }
+  let driver = rt.fork(name="drive", async fn() {
+    drive_loop(rt, stopped, () => rt.now().to_double(), timers, waiters, work, f => {
+      ignore(rt.fork_quiet(name="later", f))
+    })
+  })
+  ignore(rt.run_ready())
+  // First write happens immediately.
+  note_length("chat:c-1", 10)
+  assert_eq(written, [("chat:c-1", 10, 0L)])
+  // Second and third writes within lengths_gather_ms are gathered.
+  note_length("chat:c-1", 20)
+  note_length("chat:c-1", 30)
+  assert_true(lengths_due.val)
+  rt.advance(4_999)
+  assert_eq(written.length(), 1)
+  rt.advance(1)
+  assert_eq(written, [("chat:c-1", 10, 0L), ("chat:c-1", 30, 5_000L)])
+  assert_true(!lengths_due.val)
+  // Subsequent update after reset schedules and flushes again.
+  note_length("chat:c-1", 40)
+  assert_true(lengths_due.val)
+  rt.advance(5_000)
+  assert_eq(written, [("chat:c-1", 10, 0L), ("chat:c-1", 30, 5_000L), ("chat:c-1", 40, 10_000L)])
+  assert_true(!lengths_due.val)
+  ignore(stopped.succeed(()))
+  ignore(rt.run_ready())
+  assert_true(driver.is_done())
+  assert_eq(waiters.length(), 0)
+}

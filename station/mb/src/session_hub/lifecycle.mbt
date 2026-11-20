@@ -470,6 +470,7 @@ pub async fn Hub::archive_by(self : Hub, key : String, archived : Bool, by : Str
     return
   }
   self.store.set_archived(key, archived, by)
+  self.idle_measured.remove(key)
   (self.world.tell)("closed", Json::string(key))
   let actor = self.actor(row)
   self.act(actor, "putAway")
@@ -517,6 +518,7 @@ pub async fn Hub::delete_session(self : Hub, key : String) -> Unit {
     None => ()
   }
   (self.world.tell)("live.forget", Json::string(key))
+  self.idle_measured.remove(key)
   let transcripts = (self.world.ask)("transcripts.of", { "key": Json::string(key), "row": row })
   let sources = self.store.runtime_session_sources(key, None)
   let exclusive_sources = []
@@ -1056,10 +1058,62 @@ pub async fn Hub::auto_archive(self : Hub, now : Double, look? : Json, missing? 
 let archived_workspace_batch : Int = 64
 
 ///|
+/// store.ts `IDLE_UNARCHIVED_BATCH`.
+let idle_unarchived_batch : Int = 64
+
+///|
+/// Minimum interval between periodic archive backfill (`pack_unfinished_archived`) and idle rebuildable cleanup
+/// (`clean_idle_rebuildable`) rounds (10 minutes): packing up to 16 sessions per round clears a backlog of several
+/// hundred sessions within a few hours without contending with the main lifecycle loop.
+pub let archive_upkeep_every_ms : Double = 10.0 * 60000.0
+
+///|
+/// Max unfinished archived sessions packed per periodic round.
+pub let pack_backfill_max_per_round : Int = 16
+
+///|
+/// Max archived sessions checked per periodic backfill round before advancing the cross-round cursor.
+pub let pack_backfill_check_max_per_round : Int = 256
+
+///|
+/// Unarchived sessions idle this long have their rebuildable directories cleaned (24 hours: acceptable to reinstall
+/// dependencies when returning the next day).
+pub let idle_rebuild_ms : Double = 24.0 * 3600000.0
+
+///|
+/// Aggressive idle threshold for cleaning rebuildable directories of unarchived sessions when disk is below `diskLow`.
+pub let idle_rebuild_low_ms : Double = 3600000.0
+
+///|
+/// Max idle unarchived sessions measured per periodic round.
+pub let idle_rebuild_max_per_round : Int = 16
+
+///|
+let idle_measured_max : Int = 4096
+
+///|
+fn Hub::record_idle_measured(self : Hub, key : String, last_active_at : Double) -> Unit {
+  self.idle_measured.remove(key)
+  self.idle_measured[key] = last_active_at
+  if self.idle_measured.length() > idle_measured_max {
+    match self.idle_measured.keys().head() {
+      Some(k) => self.idle_measured.remove(k)
+      None => ()
+    }
+  }
+}
+
+///|
 /// rows of archived workspaces, a page at a time, through `through` (a time, or the last one as `{key, archivedAt}`),
 /// each given to `each` while `needed` says so.
-async fn Hub::archived_workspaces(self : Hub, through : Json, each : async (Json) -> Bool, needed? : async () -> Bool) -> Unit {
-  let mut after = Json::null()
+async fn Hub::archived_workspaces(
+  self : Hub,
+  through : Json,
+  each : async (Json) -> Bool,
+  needed? : async () -> Bool,
+  start? : Json = Json::null(),
+) -> Unit {
+  let mut after = start
   while true {
     match needed {
       Some(n) => if !n() { return }
@@ -1104,6 +1158,214 @@ pub async fn Hub::expire_archived(self : Hub, now : Double) -> Double? {
 }
 
 ///|
+/// Runs `pack_unfinished_archived` and `clean_idle_rebuildable` on their own cadence (`archive_upkeep_every_ms`),
+/// independent of how frequently `P52::lifecycle` wakes. `last_archive_upkeep_at` is initialized to hub startup time
+/// so startup never runs an immediate burst. Returns whether a round ran.
+pub async fn Hub::run_archive_upkeep_if_due(
+  self : Hub,
+  now : Double,
+  every_ms? : Double = archive_upkeep_every_ms,
+) -> Bool {
+  if now - self.last_archive_upkeep_at < every_ms {
+    return false
+  }
+  self.last_archive_upkeep_at = now
+  ignore(self.pack_unfinished_archived(now) catch {
+    e => {
+      (self.world.tell)("log", { "warn": Json::string("backfilling unfinished archived workspaces failed"), "error": Json::string(e.to_string()) })
+      0
+    }
+  })
+  ignore(self.clean_idle_rebuildable(now) catch {
+    e => {
+      (self.world.tell)("log", { "warn": Json::string("cleaning rebuildable files of idle sessions failed"), "error": Json::string(e.to_string()) })
+      0
+    }
+  })
+  true
+}
+
+///|
+/// `packUnfinishedArchived`: finishes packing archived sessions not yet past `archivedWorkspaceMs` that lack a `cold`
+/// mark, one at a time via each session's actor queue, using a cross-round cursor and capping both checked and packed
+/// sessions per round.
+pub async fn Hub::pack_unfinished_archived(
+  self : Hub,
+  now : Double,
+  limit? : Int = pack_backfill_max_per_round,
+  check_limit? : Int = pack_backfill_check_max_per_round,
+) -> Int {
+  if limit <= 0 || check_limit <= 0 || (self.world.ask)("cold.expires", Json::null()) != Json::boolean(true) {
+    return 0
+  }
+  let through = self.store.last_archived_session()
+  if through == Json::null() {
+    self.pack_cursor = Json::null()
+    return 0
+  }
+  let after_ms = num_of(self.config(), "archivedWorkspaceMs").unwrap_or(0.0)
+  let window_start : Json = if after_ms > 0.0 {
+    { "archivedAt": num(now - after_ms), "key": Json::string("") }
+  } else {
+    Json::null()
+  }
+  let through_at = num_of(through, "archivedAt").unwrap_or(0.0)
+  let through_key = str_of(through, "key").unwrap_or("")
+  let saved_in_window = match (num_of(self.pack_cursor, "archivedAt"), str_of(self.pack_cursor, "key")) {
+    (Some(sat), Some(sk)) =>
+      (after_ms <= 0.0 || sat >= now - after_ms) && (sat < through_at || (sat == through_at && sk < through_key))
+    _ => false
+  }
+  let start = if saved_in_window { self.pack_cursor } else { window_start }
+
+  let mut checked = 0
+  let mut attempted = 0
+  let mut packed = 0
+  let mut last_seen = Json::null()
+  let mut stopped_early = false
+  self.archived_workspaces(
+    through,
+    async fn(s) {
+      if checked >= check_limit || attempted >= limit {
+        stopped_early = true
+        return false
+      }
+      checked += 1
+      last_seen = s
+      let key_j = field(s, "key").unwrap_or(Json::null())
+      let key = match key_j {
+        String(k) => k
+        _ => return true
+      }
+      try {
+        if (self.world.ask)("cold.needsPack", key_j) == Json::boolean(true) {
+          let row = self.store.get_session(key)
+          if row != Json::null() && field(row, "archivedAt").unwrap_or(Json::null()) != Json::null() {
+            attempted += 1
+            let actor = self.actor(row)
+            ignore(self.ask_actor(actor, "cleanArchive"))
+            packed += 1
+          }
+        }
+      } catch {
+        e => (self.world.tell)("log", { "warn": Json::string("an archived session's files not put away on backfill"), "session": Json::string(key), "error": Json::string(e.to_string()) })
+      }
+      if checked >= check_limit || attempted >= limit {
+        stopped_early = true
+        return false
+      }
+      true
+    },
+    needed=async fn() { checked < check_limit && attempted < limit },
+    start~,
+  )
+  self.pack_cursor = if stopped_early && last_seen != Json::null() { last_seen } else { Json::null() }
+  packed
+}
+
+///|
+/// `cleanIdleRebuildable`: cleans rebuildable directories of idle unarchived sessions (`last_active_at <= now - idle_ms`),
+/// oldest activity first, capped at `limit` measured sessions per round, skipping sessions whose `last_active_at` has
+/// not changed since they were last measured. Never packs, writes `cold`, or touches transcripts.
+pub async fn Hub::clean_idle_rebuildable(
+  self : Hub,
+  now : Double,
+  idle_ms? : Double = idle_rebuild_ms,
+  limit? : Int = idle_rebuild_max_per_round,
+) -> Int {
+  if limit <= 0 || (self.world.ask)("cold.expires", Json::null()) != Json::boolean(true) {
+    return 0
+  }
+  let through = num(now - idle_ms)
+  let mut after = Json::null()
+  let mut measured = 0
+  while measured < limit {
+    let page = self.store.idle_unarchived_sessions(after, through, idle_unarchived_batch)
+    for s in page {
+      if measured >= limit {
+        return measured
+      }
+      let key_j = field(s, "key").unwrap_or(Json::null())
+      let key = match key_j {
+        String(k) => k
+        _ => continue
+      }
+      let last_active_at = num_of(s, "lastActiveAt").unwrap_or(0.0)
+      if self.idle_measured.get(key) == Some(last_active_at) {
+        continue
+      }
+      try {
+        match (self.world.ask)("cold.cleanIdleRebuildable", key_j) {
+          Number(_, ..) => {
+            self.record_idle_measured(key, last_active_at)
+            measured += 1
+          }
+          _ => ()
+        }
+      } catch {
+        e => (self.world.tell)("log", { "warn": Json::string("rebuildable files of an idle session not cleaned"), "session": key_j, "error": Json::string(e.to_string()) })
+      }
+    }
+    if page.length() < idle_unarchived_batch {
+      break
+    }
+    after = page[page.length() - 1]
+  }
+  measured
+}
+
+///|
+/// `relieveIdleRebuildable`: low-disk reclamation of rebuildable directories from idle unarchived sessions
+/// (threshold `idle_rebuild_low_ms`, oldest activity first). When `full` is true, cleans all eligible sessions
+/// without stopping early when disk is no longer low. Shares `idle_measured` with `clean_idle_rebuildable`.
+pub async fn Hub::relieve_idle_rebuildable(
+  self : Hub,
+  now : Double,
+  idle_ms? : Double = idle_rebuild_low_ms,
+  full? : Bool = false,
+) -> Int {
+  if (self.world.ask)("cold.expires", Json::null()) != Json::boolean(true) || (!full && !self.disk_free_low()) {
+    return 0
+  }
+  let through = num(now - idle_ms)
+  let mut after = Json::null()
+  let mut measured = 0
+  while full || self.disk_free_low() {
+    let page = self.store.idle_unarchived_sessions(after, through, idle_unarchived_batch)
+    for s in page {
+      if !full && !self.disk_free_low() {
+        return measured
+      }
+      let key_j = field(s, "key").unwrap_or(Json::null())
+      let key = match key_j {
+        String(k) => k
+        _ => continue
+      }
+      let last_active_at = num_of(s, "lastActiveAt").unwrap_or(0.0)
+      if self.idle_measured.get(key) == Some(last_active_at) {
+        continue
+      }
+      try {
+        match (self.world.ask)("cold.cleanIdleRebuildable", key_j) {
+          Number(_, ..) => {
+            self.record_idle_measured(key, last_active_at)
+            measured += 1
+          }
+          _ => ()
+        }
+      } catch {
+        e => (self.world.tell)("log", { "warn": Json::string("rebuildable files of an idle session not cleaned"), "session": key_j, "error": Json::string(e.to_string()) })
+      }
+    }
+    if page.length() < idle_unarchived_batch {
+      break
+    }
+    after = page[page.length() - 1]
+  }
+  measured
+}
+
+///|
 /// relieve's DISK_LOW_BYTES (ops/disk.ts), as the world says it.
 async fn Hub::disk_free_low(self : Hub) -> Bool {
   (self.world.ask)("disk.low", Json::null()) == Json::boolean(true)
@@ -1111,13 +1373,13 @@ async fn Hub::disk_free_low(self : Hub) -> Bool {
 
 ///|
 /// `relieveArchived`: the disk of the station's data is low: archived workspaces emptied before archivedWorkspaceMs, the
-/// longest archived first, until it is not.
-pub async fn Hub::relieve_archived(self : Hub) -> Unit {
+/// longest archived first (when `full` is true, empties all eligible workspaces without stopping early).
+pub async fn Hub::relieve_archived(self : Hub, full? : Bool = false) -> Unit {
   if num_of(self.config(), "archivedWorkspaceMs").unwrap_or(0.0) <= 0.0 ||
     (self.world.ask)("cold.expires", Json::null()) != Json::boolean(true) {
     return
   }
-  if !self.disk_free_low() {
+  if !full && !self.disk_free_low() {
     return
   }
   let through = self.store.last_archived_session()
@@ -1127,7 +1389,7 @@ pub async fn Hub::relieve_archived(self : Hub) -> Unit {
   self.archived_workspaces(
     through,
     async fn(s) {
-      if !self.disk_free_low() {
+      if !full && !self.disk_free_low() {
         return false
       }
       let key = field(s, "key").unwrap_or(Json::null())
@@ -1135,7 +1397,7 @@ pub async fn Hub::relieve_archived(self : Hub) -> Unit {
         if (self.world.ask)("cold.holdsMore", key) != Json::boolean(true) {
           return true
         }
-        if !self.disk_free_low() {
+        if !full && !self.disk_free_low() {
           return false
         }
         ignore((self.world.ask)("cold.expire", { "key": key, "before": field(s, "archivedAt").unwrap_or(Json::null()) }))
@@ -1144,7 +1406,7 @@ pub async fn Hub::relieve_archived(self : Hub) -> Unit {
       }
       true
     },
-    needed=async fn() { self.disk_free_low() },
+    needed=async fn() { full || self.disk_free_low() },
   )
 }
 

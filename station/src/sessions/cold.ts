@@ -110,14 +110,15 @@ export class ColdRooms implements ColdStorage {
     await Promise.all([...paths].map(canonical));
   }
 
-  /// An archived session's own directory, while nothing needs it: not back in the lists or at work, and no other
-  /// session or active job (running, or a service waiting to restart) using it.
-  archiveRoom(key: string): string | null {
+  /// A session's own directory, while nothing needs it: archived when `requireArchived` is true (else unarchived),
+  /// not running, and no other in-use session or active job using its directory.
+  private cleanableRoom(key: string, requireArchived: boolean): string | null {
     const hub = this.hub();
     const row = hub.store.getSession(key);
     if (!row) return null;
     const dir = keptRoom(row.workspace);
-    if (dir === null || row.archivedAt === null || row.running || hub.processState(key) === "running") return null;
+    const archivedMatch = requireArchived ? row.archivedAt !== null : row.archivedAt === null;
+    if (dir === null || !archivedMatch || row.running || hub.processState(key) === "running") return null;
     // The sessions in use alone (by their indexes): this is asked again and again as a session is packed.
     const shared = hub.store
       .sessionsInUse()
@@ -128,6 +129,19 @@ export class ColdRooms implements ColdStorage {
       );
     if (shared || this.hasJobs(key, dir)) return null;
     return dir;
+  }
+
+  /// An archived session's own directory, while nothing needs it: not back in the lists or at work, and no other
+  /// session or active job (running, or a service waiting to restart) using it.
+  archiveRoom(key: string): string | null {
+    return this.cleanableRoom(key, true);
+  }
+
+  /// Whether an archived session still lacks its `cold` mark and is eligible to be packed now.
+  async needsPack(key: string): Promise<boolean> {
+    await this.findRoom(key);
+    const dir = this.archiveRoom(key);
+    return dir !== null && !(await there(join(dir, "cold")));
   }
 
   private hasJobs(key: string, dir: string): boolean {
@@ -141,18 +155,17 @@ export class ColdRooms implements ColdStorage {
     return jobs.some((job) => job.sessionKey === key || inRoom(job.cwd, dir));
   }
 
-  /// Removes what a build or an install makes again (node_modules, a Cargo target, …; footprint.ts `rebuildableSoon`) from
-  /// an archived session's own directory: it may come back, and is built again then. Left as it is while the session is
-  /// back in the lists or at work, or a session/job still uses its directory. Returns removed allocated file bytes.
-  async cleanRebuildable(key: string): Promise<number> {
+  private async cleanRebuildableIn(key: string, requireArchived: boolean): Promise<number | null> {
     await this.findRoom(key);
-    const dir = this.archiveRoom(key);
-    if (dir === null) return 0;
+    const dir = this.cleanableRoom(key, requireArchived);
+    if (dir === null) return null;
     let freed = 0;
     for (const [path, bytes] of (await measureRoom(dir)).rebuild) {
-      // Restoring a chat updates the store before its next message reaches the actor queue.
+      // Restoring/activating a chat updates the store before its next message reaches the actor queue.
       const row = this.hub().store.getSession(key);
-      if (!(row && row.archivedAt !== null && !row.running) || this.hasJobs(key, dir)) break;
+      const stillOk = row !== null && (requireArchived ? row.archivedAt !== null : row.archivedAt === null)
+        && !row.running && this.hub().processState(key) !== "running";
+      if (!stillOk || this.hasJobs(key, dir)) break;
       if (!(await safeToRemove(path))) continue;
       try {
         await archive.removeTree(path);
@@ -161,8 +174,28 @@ export class ColdRooms implements ColdStorage {
         log.warn("hub", "not removed", { path, error: (error as Error).message });
       }
     }
-    if (freed > 0) log.info("hub", "rebuildable files of an archived session cleaned", { session: key, freed });
+    if (freed > 0) {
+      log.info(
+        "hub",
+        requireArchived ? "rebuildable files of an archived session cleaned" : "rebuildable files of an idle session cleaned",
+        { session: key, freed },
+      );
+    }
     return freed;
+  }
+
+  /// Removes what a build or an install makes again (node_modules, a Cargo target, …; footprint.ts `rebuildableSoon`) from
+  /// an archived session's own directory: it may come back, and is built again then. Left as it is while the session is
+  /// back in the lists or at work, or a session/job still uses its directory. Returns removed allocated file bytes.
+  async cleanRebuildable(key: string): Promise<number> {
+    return (await this.cleanRebuildableIn(key, true)) ?? 0;
+  }
+
+  /// Removes rebuildable build/install directories from an idle unarchived session's own directory without packing,
+  /// marking cold, or touching transcripts. Returns removed bytes (>= 0) when measured, or null when skipped before
+  /// measuring (running / shared / active job).
+  cleanIdleRebuildable(key: string): Promise<number | null> {
+    return this.cleanRebuildableIn(key, false);
   }
 
   /// The files of an archived session's transcripts that cold storage puts away, nothing of it on the station's thread.

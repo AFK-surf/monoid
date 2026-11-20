@@ -656,3 +656,39 @@ test("Feishu's and Comma's sockets kept up as comma/surface.ts and feishu/surfac
   h.child.stdin!.end();
   assert.equal(await new Promise((r) => h.child.on("exit", r)), 0);
 });
+
+test("the parts that download follow a 302 as Node's fetch does (Slack's url_private telling it was sent elsewhere, Feishu's, the updates', Farview's release, the accounts' unless `manual`), on the shell against a server of the test's", { skip }, async () => {
+  const hits: string[] = [];
+  const server = createServer((req, res) => {
+    hits.push(req.url ?? "");
+    if (req.url === "/moved") {
+      res.writeHead(302, { location: "/final" });
+      res.end();
+    } else if (req.url === "/final") {
+      res.writeHead(200, { "content-type": "application/octet-stream" });
+      res.end("final");
+    } else {
+      res.writeHead(404);
+      res.end("none");
+    }
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  closers.push(() => server.close());
+  const at = (path: string) => `http://127.0.0.1:${(server.address() as AddressInfo).port}${path}`;
+  const h = harness();
+  const via = (part: string, path: string, manual = false) => h.ok({ step: "fetchVia", via: part, url: path.startsWith("gh:") ? path : at(path), manual });
+  assert.deepEqual(await via("slack", "/moved"), { status: 200, redirected: true, body: "final" });
+  assert.deepEqual(await via("slack", "/final"), { status: 200, redirected: false, body: "final" });
+  assert.deepEqual(await via("feishu", "/moved"), { status: 200, body: "final" });
+  assert.deepEqual(await via("updates", "/moved"), { status: 200, body: "final" });
+  assert.deepEqual(await via("farview", "/moved"), { body: "final" });
+  assert.equal(await via("farview", "/gone"), null);
+  // (a gh: source with no gh on the PATH: none from there, as fetchBytes says it)
+  assert.equal(await via("farview", "gh:AFK-surf/farview@builds/none.tgz"), null);
+  assert.deepEqual(await via("oauth", "/moved"), { status: 200, body: "final" });
+  hits.length = 0;
+  assert.deepEqual(await via("oauth", "/moved", true), { status: 302, body: "" });
+  assert.deepEqual(hits, ["/moved"]);
+  h.child.stdin!.end();
+  assert.equal(await new Promise((r) => h.child.on("exit", r)), 0);
+});

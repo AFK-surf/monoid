@@ -25,6 +25,9 @@ priv struct SettingsFixture {
   /// a Windows station's running as administrator, as the core shows it (its overview's `elevation`), as a test sets
   /// it; none: not a Windows station
   mut elevation : Json?
+  /// a Windows station's optional LocalSystem screen service, as the core shows it (its overview's `screenService`),
+  /// as a test sets it; none: not a Windows station
+  mut screen_service : Json?
   /// the copies of its chats as the core shows them (its overview's `copies`), as a mode sets them; none: a station
   /// from before them
   mut copies : Json?
@@ -63,6 +66,10 @@ priv struct SettingsFixture {
   /// the workspace in no safe mode, the vault its person's own (settings-vault-own-…): "" in safe mode; "off" not turned on
   /// yet (开启 begins their own lock); "on" turned on here; "outside" this device to be approved by another of theirs
   mut vault_own : String
+  /// shared workspace vault fixture mode: "" none, "create" admin can create one, "has" workspace vault exists
+  mut vault_workspace : String
+  /// members of the workspace vault in the fixture
+  vault_workspace_members : Array[String]
   /// the skills shared (true) or no longer (false) since the run started (`skill.share`), by name
   skills_shared : Map[String, Bool]
   /// the quota's resets used on ChatGPT 团队 (`profile.resetQuota`)
@@ -188,6 +195,7 @@ let fx : SettingsFixture = {
   logs: true,
   accept_auto_chats: false,
   elevation: None,
+  screen_service: None,
   copies: None,
   gpus: false,
   more_gpus: false,
@@ -203,6 +211,8 @@ let fx : SettingsFixture = {
   plain_left: 0,
   vault_waits: false,
   vault_own: "",
+  vault_workspace: "",
+  vault_workspace_members: ["u1", "u2", "u3"],
   skills_shared: {},
   resets_used: 0,
   reset_expiry: false,
@@ -298,6 +308,43 @@ fn fx_vault_row() -> Json {
     row.push(("waits", str("Willow")))
   }
   obj(row)
+}
+
+///|
+/// The shared workspace vault in the fixture (`settings-vault-workspace*`).
+fn fx_workspace_vault_row() -> Json {
+  obj([
+    ("id", str("v-ws")),
+    ("name", str("Workspace 密钥库")),
+    ("scope", str("workspace")),
+    ("owner", str("u1")),
+    ("ownerName", str("林")),
+    ("mine", Json::boolean(false)),
+    ("manages", Json::boolean(true)),
+    (
+      "members",
+      Json::array(
+        fx.vault_workspace_members.map(fn(s) {
+          let name = match s {
+            "u1" => "林"
+            "u2" => "Ana"
+            "u3" => "周"
+            _ => s
+          }
+          obj([("sub", str(s)), ("name", str(name))])
+        }),
+      ),
+    ),
+    ("station", str("st1")),
+    ("stationName", str("Willow")),
+    ("items", Json::number(2.0)),
+    ("devices", Json::number(4.0)),
+    ("open", Json::boolean(false)),
+    ("keyed", Json::boolean(true)),
+    ("missing", Json::number(1.0)),
+    ("recoverable", Json::boolean(false)),
+    ("lasts", str("chat")),
+  ])
 }
 
 ///|
@@ -425,6 +472,7 @@ fn fixture_reset() -> Unit {
   fx.logs = true
   fx.accept_auto_chats = false
   fx.elevation = None
+  fx.screen_service = None
   fx.copies = None
   fixture_retire_asked.clear()
   fx_remote_made.clear()
@@ -444,6 +492,9 @@ fn fixture_reset() -> Unit {
   fx.plain_left = 0
   fx.vault_waits = false
   fx.vault_own = ""
+  fx.vault_workspace = ""
+  fx.vault_workspace_members.clear()
+  fx.vault_workspace_members.append(["u1", "u2", "u3"])
   fx.pairing = false
   fx.pairing_personal = false
   fx.pairing_more = false
@@ -695,6 +746,12 @@ pub fn fixture_scanned() -> Unit {
 /// Willow a Windows station, running as administrator as `v` says (the core's `StationElevation`), or not.
 pub fn fixture_elevation(v : Json?) -> Unit {
   fx.elevation = v
+}
+
+///|
+/// Willow a Windows station, with the optional LocalSystem screen service as `v` says (the core's `StationScreenService`), or not.
+pub fn fixture_screen_service(v : Json?) -> Unit {
+  fx.screen_service = v
 }
 
 ///|
@@ -1043,6 +1100,20 @@ pub fn fixture_page(mode : String) -> String {
     "settings-vault-words" => recovery_words["ws1"] = fx_words()
     "settings-vault-add" => fixture_open.desk = "vault-add"
     "settings-vault-editor" => fixture_open.desk = "vault-editor"
+    "settings-vault-workspace-create" => fx.vault_workspace = "create"
+    "settings-vault-workspace" => fx.vault_workspace = "has"
+    "settings-vault-workspace-save-picked" => {
+      fx.vault_workspace = "has"
+      vault_target_picked["r-ws-save"] = ("v-ws", "Workspace 密钥库", true)
+    }
+    "settings-vault-workspace-members" => {
+      fx.vault_workspace = "has"
+      fixture_open.desk = "vault-workspace-members"
+    }
+    "settings-vault-workspace-editor" => {
+      fx.vault_workspace = "has"
+      fixture_open.desk = "vault-workspace-editor"
+    }
     "settings-vault-recover" => fixture_open.desk = "vault-recover"
     "settings-add-people" => up("add-people", "", 0)
     "settings-workspace-mark" => up("workspace-mark", "", 0)
@@ -1111,10 +1182,11 @@ pub fn fixture_page(mode : String) -> String {
     "settings-new-connect" | "settings-new-connect-platform" | "settings-new-connect-scan" | "settings-new-connect-app" | "settings-new-connect-comma"
     | "settings-new-connect-platform-group" | "settings-new-connect-group" => "connects"
     "settings-vault-off" | "settings-vault-elsewhere" | "settings-vault-words" | "settings-vault-recover" | "settings-vault-plain" | "settings-vault-waits"
+    | "settings-vault-workspace-create" | "settings-vault-workspace" | "settings-vault-workspace-save-picked" | "settings-vault-workspace-members"
     | "settings-vault-own-off" | "settings-vault-own-on" | "settings-vault-own-outside" | "settings-vault-own-code" | "settings-vault-own-replaced"
     | "settings-vault-confirm" | "settings-vault-syncing" | "settings-vault-waiting" | "settings-vault-waiting-was" | "settings-vault-replaced"
     | "settings-vault-replaced-was" => "vault"
-    "settings-vault-items" | "settings-vault-add" | "settings-vault-editor" => "vault-items"
+    "settings-vault-items" | "settings-vault-add" | "settings-vault-editor" | "settings-vault-workspace-editor" => "vault-items"
     "settings-vault-item" => "vault-item:v1#it1"
     "settings-decisions" => "decisions-settings"
     "settings-completion" => "completion"
@@ -2227,16 +2299,50 @@ fn fx_station(address : String) -> Json {
       ("mine", Json::boolean(!fx.willow_theirs)),
       ("profileGroups", Json::array(fx_station_profile_groups(profiles))),
       ("profileStates", fx_station_profile_states(profiles)),
-      ("link", obj([("state", str(if fx.willow_away { "offline" } else { "online" }))])),
-      ("stateText", str(if fx.willow_away { "2 天前在线" } else { "" })),
+      ("link", obj([
+        ("state", str(if fx.willow_away { "offline" } else { "online" })),
+        ..if fx.willow_away {
+          [("cause", str("unreached")), ("message", str("连接超时，未收到 station 响应"))]
+        } else {
+          []
+        },
+      ])),
+      ("stateText", str(if fx.willow_away { "5 分钟前在线" } else { "" })),
       (
         "problems",
         if fx.willow_incompatible {
           [obj([("key", str("incompatible")), ("level", str("amber")), ("text", str("版本不兼容：这台 station 和这个 still.fail 的版本不匹配，部分信息无法显示。请更新 still.fail 和这台 station。"))])]
         } else if fx.willow_away {
-          [obj([("key", str("away")), ("level", str("red")), ("text", str("离线：在该机器上打开 still.fail 即可重新连接"))])]
+          [obj([("key", str("away")), ("level", str("red")), ("text", str("无法连接：可能已离线，或受中继、防火墙影响"))])]
         } else {
           []
+        },
+      ),
+      (
+        "diag",
+        if fx.willow_away {
+          obj([
+            ("cause", str("unreached")),
+            ("summary", str("本机已连上 still.fail cloud，但所有路径均无法连上这台 station")),
+            ("detail", str("连接超时，未收到 station 响应")),
+            ("lastOnlineText", str("5 分钟前（15:42）")),
+            ("cloudStatus", str("正常")),
+            ("retryText", str("已连续失败 5 次 · 下次重试 15:52:10（每 10 分钟）")),
+            ("lastNetText", str("东京中继 · 42 ms")),
+            ("addresses", [str("192.168.1.24:41901"), str("100.64.0.12:41901")]),
+            (
+              "ways",
+              [
+                obj([("name", str("局域网直连")), ("status", str("timeout")), ("resultText", str("无响应（握手 · 10 秒）"))]),
+                obj([("name", str("Tailscale")), ("status", str("error")), ("resultText", str("失败（握手 · 320ms） · connection refused"))]),
+                obj([("name", str("东京中继")), ("status", str("timeout")), ("resultText", str("无响应（等待认证 · 10 秒）"))]),
+                obj([("name", str("新加坡中继")), ("status", str("down")), ("resultText", str("中继未连接"))]),
+              ],
+            ),
+            ("copyText", str("Station: Willow (st1) v0.1.1288\nCause: unreached — 本机已连上 still.fail cloud，但所有路径均无法连上这台 station\nCloud: 正常\nLast online: 5 分钟前（15:42）\nLast route: 东京中继 · 42 ms\nAddresses: 192.168.1.24:41901, 100.64.0.12:41901\nRetry: 已连续失败 5 次 · 下次重试 15:52:10（每 10 分钟）\nDetail: 连接超时，未收到 station 响应\nRoutes:\n  - [timeout] 局域网直连: 无响应（握手 · 10 秒）\n  - [error] Tailscale: 失败（握手 · 320ms） · connection refused\n  - [timeout] 东京中继: 无响应（等待认证 · 10 秒）\n  - [down] 新加坡中继: 中继未连接")),
+          ])
+        } else {
+          Json::null()
         },
       ),
       ("protect", Json::boolean(fx_unprotected.val && !fx.willow_away)),
@@ -2272,8 +2378,12 @@ fn fx_station(address : String) -> Json {
             "meters",
             [
               meter("CPU", if fx.low_meters { 8 } else { 72 }, if fx.low_meters { "red" } else { "ok" }, if fx.low_meters { "空闲 8%" } else { "空闲 72%" }, if fx.low_meters { "8" } else { "72" }, "%", "CPU 空闲率", "负载 1.4", title_short="CPU 空闲"),
-              meter("内存", 18, "amber", "剩 5.8 G", "5.8", "GB", "可用内存", "总内存 32 GB", total_short="总 32 GB"),
-              if fx.low_meters {
+              if fx.willow_away {
+                meter("内存", 6, "red", "剩 1.9 G", "1.9", "GB", "可用内存", "总内存 32 GB", total_short="总 32 GB")
+              } else {
+                meter("内存", 18, "amber", "剩 5.8 G", "5.8", "GB", "可用内存", "总内存 32 GB", total_short="总 32 GB")
+              },
+              if fx.low_meters || fx.willow_away {
                 meter("磁盘", 9, "amber", "剩 19.4 G", "19.4", "GB", "可用磁盘", "总磁盘 1 TB", total_short="总 1 TB")
               } else {
                 meter("磁盘", 42, "ok", "剩 420 G", "420", "GB", "可用磁盘", "总磁盘 1 TB", total_short="总 1 TB")
@@ -2294,17 +2404,31 @@ fn fx_station(address : String) -> Json {
       ),
       (
         "net",
-        obj([
-          ("path", str("直连")),
-          ("via", str("direct")),
-          ("rtt", obj([("text", str("38 ms")), ("level", str("ok"))])),
-          ("rttHistory", []),
-          ("down", str("1.4 MB/s")),
-          ("up", str("96 KB/s")),
-          ("total", str("")),
-          ("downTotal", str("212 MB")),
-          ("upTotal", str("9.6 MB")),
-        ]),
+        if fx.willow_away {
+          obj([
+            ("path", str("东京中继")),
+            ("via", str("relay")),
+            ("rtt", obj([("text", str("42 ms")), ("level", str("ok"))])),
+            ("rttHistory", []),
+            ("down", str("0 B/s")),
+            ("up", str("0 B/s")),
+            ("total", str("")),
+            ("downTotal", str("212 MB")),
+            ("upTotal", str("9.6 MB")),
+          ])
+        } else {
+          obj([
+            ("path", str("直连")),
+            ("via", str("direct")),
+            ("rtt", obj([("text", str("38 ms")), ("level", str("ok"))])),
+            ("rttHistory", []),
+            ("down", str("1.4 MB/s")),
+            ("up", str("96 KB/s")),
+            ("total", str("")),
+            ("downTotal", str("212 MB")),
+            ("upTotal", str("9.6 MB")),
+          ])
+        },
       ),
       (
         "overview",
@@ -2361,10 +2485,10 @@ fn fx_station(address : String) -> Json {
                 ("channel", str("stable")),
                 ("auto", Json::boolean(if fx_station_back.val == "" { fx.auto } else { fx_station_back.val == "settings-station-back" })),
                 ("updatable", Json::boolean(true)),
-                ("state", str(if fx_station_update_failed.val { "failed" } else { "idle" })),
+                ("state", str(if fx_station_update_failed.val || fx.willow_away { "failed" } else { "idle" })),
                 ("failedText", str("更新失败")),
-                ("message", str(if fx_station_update_failed.val { "无法读取 C:\\Users\\Willow\\.stillfail\\mesh\\cloud.json：文件可能已加密或损坏。请在文件加密软件中允许程序 C:\\Users\\Willow\\.stillfail\\app\\node\\node.exe 读取，或从备份恢复文件。" } else { "" })),
-                ("checkedAt", Json::number(1.0)),
+                ("message", str(if fx_station_update_failed.val { "无法读取 C:\\Users\\Willow\\.stillfail\\mesh\\cloud.json：文件可能已加密或损坏。请在文件加密软件中允许程序 C:\\Users\\Willow\\.stillfail\\app\\node\\node.exe 读取，或从备份恢复文件。" } else if fx.willow_away { "下载更新包超时，请检查网络连接后重试" } else { "" })),
+                ("checkedAt", Json::number(if fx.willow_away { 1795189320000.0 } else { 1.0 })),
                 ("done", str(if fx_station_updated.val { "已更新到 0.1.1300，agent 未中断" } else { "" })),
                 // (the core's words of it: present.ts software)
                 ("shownText", str(if fx_station_updated.val { "0.1.1300" } else { "0.1.1288" })),
@@ -2385,7 +2509,7 @@ fn fx_station(address : String) -> Json {
                 ("newer", Json::boolean(false)),
                 ("updatable", Json::boolean(true)),
                 ("state", str("idle")),
-                ("checkedAt", Json::number(1.0)),
+                ("checkedAt", Json::number(if fx.willow_away { 1795189320000.0 } else { 1.0 })),
                 ("shownText", str("2.1.4")),
                 ("tipText", str("已是最新")),
               ]),
@@ -2396,7 +2520,7 @@ fn fx_station(address : String) -> Json {
                 ("newer", Json::boolean(false)),
                 ("updatable", Json::boolean(true)),
                 ("state", str("idle")),
-                ("checkedAt", Json::number(1.0)),
+                ("checkedAt", Json::number(if fx.willow_away { 1795189320000.0 } else { 1.0 })),
                 ("shownText", str("未安装")),
                 ("tipText", str("")),
               ]),
@@ -2430,6 +2554,7 @@ fn fx_station(address : String) -> Json {
           ("autoChats", obj([("enabled", Json::boolean(fx.accept_auto_chats)), ("canEdit", Json::boolean(true))])),
           ("network", obj([("congestion", str(fx.congestion))])),
           ("elevation", fx.elevation.unwrap_or(Json::null())),
+          ("screenService", fx.screen_service.unwrap_or(Json::null())),
           ("copies", fx.copies.unwrap_or(Json::null())),
           ("move", fx_move_offer()),
           ("features", fx_station_features()),
@@ -3574,40 +3699,67 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
             Json::boolean(fx.vault_own != "outside" && !["confirm", "syncing", "waiting", "waiting-was", "replaced", "replaced-was"].contains(fx.lock_case)),
           ),
           ("setUp", Json::boolean(!fx.vault_off)),
+          ("canCreateWorkspace", Json::boolean(fx.vault_workspace == "create")),
           ("plainLeft", Json::number(fx.plain_left.to_double())),
           (
             "vaults",
             // (none where it is on nowhere: settings-vault-off in safe mode too)
-            if fx.vault_own == "off" || fx.vault_own == "outside" || (fx.vault_off && !fx.vault_elsewhere) { [] } else { [fx_vault_row()] },
+            if fx.vault_own == "off" || fx.vault_own == "outside" || (fx.vault_off && !fx.vault_elsewhere) {
+              []
+            } else if fx.vault_workspace == "has" {
+              [fx_vault_row(), fx_workspace_vault_row()]
+            } else {
+              [fx_vault_row()]
+            },
           ),
           (
             "requests",
             if fx.vault_own == "off" || fx.vault_own == "outside" {
               []
             } else {
-              [
-              obj([
-                ("id", str("r1")),
-                ("vault", str("v1")),
-                ("vaultName", str("林的库")),
-                ("item", str("it1")),
-                ("itemName", str("GitHub token")),
-                ("session", str("s-c1")),
-                ("station", str("st1")),
-                ("chat", str("c1")),
-                ("mode", str("proxy")),
-                ("reason", str("要把发布清单推到仓库")),
-                ("command", str("git push origin main")),
-                ("hosts", ["api.github.com"]),
-                ("howText", str("代理 · 限 api.github.com")),
-                ("at", Json::number(0.0)),
-              ]),
+              let reqs = [
+                obj([
+                  ("id", str("r1")),
+                  ("vault", str("v1")),
+                  ("vaultName", str("林的库")),
+                  ("item", str("it1")),
+                  ("itemName", str("GitHub token")),
+                  ("session", str("s-c1")),
+                  ("station", str("st1")),
+                  ("chat", str("c1")),
+                  ("mode", str("proxy")),
+                  ("reason", str("要把发布清单推到仓库")),
+                  ("command", str("git push origin main")),
+                  ("hosts", ["api.github.com"]),
+                  ("howText", str("代理 · 限 api.github.com")),
+                  ("at", Json::number(0.0)),
+                ]),
               ]
+              if fx.vault_workspace == "has" {
+                reqs.push(
+                  obj([
+                    ("id", str("r-ws-save")),
+                    ("vault", str("v1")),
+                    ("vaultName", str("林的库")),
+                    ("item", str("")),
+                    ("itemName", str("Sentry DSN")),
+                    ("session", str("s-c1")),
+                    ("station", str("st1")),
+                    ("chat", str("c1")),
+                    ("mode", str("env")),
+                    ("reason", str("存入错误上报配置")),
+                    ("howText", str("环境变量 · SENTRY_DSN")),
+                    ("save", obj([("kind", str("token"))])),
+                    ("at", Json::number(0.0)),
+                  ]),
+                )
+              }
+              Json::array(reqs)
             },
           ),
           ("refused", []),
-          // (the core's words of it: its one request waits; none where no vault of theirs is kept)
-          ("statusText", str(if fx.vault_own == "off" || fx.vault_own == "outside" { "" } else { "1 个待批准" })),
+          // (the core's words of it: its requests wait; none where no vault of theirs is kept)
+          ("statusText", str(if fx.vault_own == "off" || fx.vault_own == "outside" { "" } else if fx.vault_workspace == "has" { "2 个待批准" } else { "1 个待批准" })),
           ("statusBad", Json::boolean(!(fx.vault_own == "off" || fx.vault_own == "outside"))),
         ] +
         (match fx.lock_case {
@@ -3943,6 +4095,20 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
     }
     // this device asking for the keys it lacks: its other devices told
     "vault.ask" => Some(Ok(obj([("asked", Json::number(1.0))])))
+    "vault.create" => {
+      if text(p, "scope") == "workspace" {
+        fx.vault_workspace = "has"
+        fx_changed()
+      }
+      Some(Ok(obj([("id", str(if text(p, "scope") == "workspace" { "v-ws" } else { "v1" }))])))
+    }
+    "vault.setMembers" => {
+      fx.vault_workspace_members.clear()
+      fx.vault_workspace_members.append(strings(p, "members"))
+      fx_changed()
+      Some(Ok(obj([])))
+    }
+    "vault.putItem" => Some(Ok(obj([("id", str("it-new"))])))
     // the new device turned away, or its prompt closed: no longer shown
     "lockPrompt.deny" | "lockPrompt.hide" => {
       fx.pairing = false
@@ -4043,6 +4209,20 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
           shown["busy"] = Json::boolean(true)
           shown["canChange"] = Json::boolean(false)
           fx.elevation = Some(Json::object(shown))
+          fx_changed()
+        }
+        _ => ()
+      }
+      Some(Ok(obj([])))
+    }
+    "screenService.set" => {
+      match fx.screen_service {
+        Some(Object(e)) => {
+          let shown = e.copy()
+          shown["on"] = Json::boolean(flag(p, "on"))
+          shown["busy"] = Json::boolean(true)
+          shown["canChange"] = Json::boolean(false)
+          fx.screen_service = Some(Json::object(shown))
           fx_changed()
         }
         _ => ()

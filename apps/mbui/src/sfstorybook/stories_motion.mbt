@@ -1,9 +1,26 @@
-// Motion library showcase pages (动效库): 8 interactive pages demonstrating
+// Motion library showcase pages (动效库): 11 interactive pages demonstrating
 // curves & springs, press/hover/shake, controls & glass, overlays & handoff,
-// reveal/list/flash, waiting/resident cycles, transitions & shared flight, and zoom & gestures.
+// reveal/list/flash, waiting/resident cycles, transitions & shared flight, zoom & gestures,
+// text morph & rolling slots, gesture physics & velocity deformation, and hero flight & choreography.
 
 ///|
 let motion_group : String = "动效库"
+
+///|
+/// Format a finite number to at most 1 decimal place without trailing floating-point noise.
+fn motion_round1(v : Double) -> String {
+  let scaled = (v * 10.0).round().to_int()
+  let neg = scaled < 0
+  let abs_v = if neg { -scaled } else { scaled }
+  let whole = abs_v / 10
+  let frac = abs_v % 10
+  let sign = if neg && abs_v > 0 { "-" } else { "" }
+  if frac == 0 {
+    "\{sign}\{whole}"
+  } else {
+    "\{sign}\{whole}.\{frac}"
+  }
+}
 
 ///|
 let motion_curve_w : Double = 56.0
@@ -170,7 +187,7 @@ fn motion_curves_play() -> Play {
 }
 
 ///|
-/// The 6 motion library showcase stories (group: "动效库").
+/// The 11 motion library showcase stories (group: "动效库").
 fn motion_stories(tips : @sf.TipLayer) -> Array[Story] {
   [
     // 1. Curves & Springs
@@ -508,6 +525,41 @@ fn motion_stories(tips : @sf.TipLayer) -> Array[Story] {
             |> ignore
           },
         ),
+        (
+          "长按确认填充与反色 HoldButton",
+          fn(card) {
+            let confirmed = kept(0)
+            let undone = kept(0)
+            let note = kept("按住蓄力填满后触发，松手即回流")
+            side_by_side(card, fn(r) {
+              @sf.hold_button_node(
+                r,
+                fn() { "长按清除缓存" },
+                fn() {
+                  confirmed.set(confirmed.untracked() + 1)
+                  note.set("已确认清除（撤销窗口内可撤回）")
+                },
+                hold_ms=650.0,
+                danger=true,
+                undo=(
+                  fn() {
+                    undone.set(undone.untracked() + 1)
+                    note.set("已撤销清除操作")
+                  },
+                  4000.0,
+                ),
+                undo_label=fn() { "撤销" },
+              )
+              |> ignore
+            })
+            @sf.words_node(
+              card,
+              fn() { "\{note.get()}（确认 \{confirmed.get()} / 撤销 \{undone.get()}）" },
+              fn() { @sf.caption },
+            )
+            |> ignore
+          },
+        ),
       ],
     },
     // 3. Controls & Glass
@@ -630,6 +682,48 @@ fn motion_stories(tips : @sf.TipLayer) -> Array[Story] {
               @sf.button_node(r, fn() { "加 10" }, fn() { num.set(if num.get() <= 90 { num.get() + 10 } else { 100 }) }, tone=Ghost)
               |> ignore
             })
+          },
+        ),
+        (
+          "手风琴折叠展开 Accordion",
+          fn(card) {
+            let active_sec = kept("")
+            @sf.accordion_node(
+              card,
+              [
+                @sf.accordion_section("sec-arrow", fn() { "首行箭头旋转与平滑展开" }, fn(body) {
+                  @sf.words_node(
+                    body,
+                    fn() { "展开时首行指示箭头同步旋转，面板按实测高度以 Move 曲线平滑打开。" },
+                    fn() { @sf.meta },
+                  )
+                  |> ignore
+                }),
+                @sf.accordion_section("sec-clip", fn() { "软边裁剪与退场释放点击" }, fn(body) {
+                  @sf.words_node(
+                    body,
+                    fn() { "折叠瞬间首帧即释放交互命中，并伴随上下柔和淡边收起。" },
+                    fn() { @sf.meta },
+                  )
+                  |> ignore
+                }),
+              ],
+              fn(k) { active_sec.get() == k },
+              fn(k) { active_sec.set(if active_sec.untracked() == k { "" } else { k }) },
+            )
+            |> ignore
+            @sf.words_node(
+              card,
+              fn() {
+                match active_sec.get() {
+                  "sec-arrow" => "当前展开：首行箭头旋转与平滑展开"
+                  "sec-clip" => "当前展开：软边裁剪与退场释放点击"
+                  _ => "当前展开：全部收起"
+                }
+              },
+              fn() { @sf.caption },
+            )
+            |> ignore
           },
         ),
       ],
@@ -776,6 +870,50 @@ fn motion_stories(tips : @sf.TipLayer) -> Array[Story] {
             |> ignore
           },
         ),
+        (
+          "Toast 提示条弹出与堆叠",
+          fn(card) {
+            let stack : @signals.Signal[Array[@sf.Toast]] = kept([])
+            let seq = kept(0)
+            let drop_one = fn(id : String) { stack.set(stack.untracked().filter(fn(t) { t.id != id })) }
+            side_by_side(card, fn(r) {
+              @sf.button_node(r, fn() { "弹出提示条" }, fn() {
+                let n = seq.untracked() + 1
+                seq.set(n)
+                stack.set(stack.untracked() + [@sf.toast("motion-stack-\{n}", "配置项 #\{n} 已同步")])
+              })
+              |> ignore
+              @sf.button_node(
+                r,
+                fn() { "弹出带撤销提示" },
+                fn() {
+                  let n = seq.untracked() + 1
+                  seq.set(n)
+                  stack.set(stack.untracked() + [@sf.toast("motion-stack-\{n}", "已归档条目 #\{n}", action="撤销")])
+                },
+                tone=Ghost,
+              )
+              |> ignore
+              @sf.button_node(r, fn() { "清空提示" }, fn() { stack.set([]) }, tone=Ghost) |> ignore
+            })
+            @sf.words_node(
+              card,
+              fn() { "当前堆叠 \{stack.get().length()} 条（累计弹出 \{seq.get()} 条）" },
+              fn() { @sf.caption },
+            )
+            |> ignore
+            @sf.toaster_node(
+              card,
+              fn() { stack.get() },
+              fn(t) { if t.action != "" { @sf.toast_action_ms } else { @sf.toast_ms } },
+              fn() { 24.0 },
+              drop_one,
+              drop_one,
+              key="motion-story-toast-stack",
+            )
+            |> ignore
+          },
+        ),
       ],
     },
     // 5. Reveal, List & Flash
@@ -784,9 +922,9 @@ fn motion_stories(tips : @sf.TipLayer) -> Array[Story] {
       group: motion_group,
       name: "揭幕与闪烁 Reveal",
       file: "libs/mbui/src/motion/tools.mbt",
-      api: [("tools.mbt", "flash_way")],
+      api: [("tools.mbt", "flash_way"), ("reveal_node.mbt", "curtain_reveal")],
       play: None,
-      about: "光绘逐字揭幕、图片解码揭幕、引用定位高亮闪烁，以及列表插删的 ComeGroup 平滑让位。",
+      about: "光绘逐字揭幕、图片解码揭幕、软边窗帘揭幕、引用定位高亮闪烁，以及列表插删的 ComeGroup 平滑让位。",
       cases: [
         (
           "光绘逐字揭幕 SpatialReveal",
@@ -942,6 +1080,70 @@ fn motion_stories(tips : @sf.TipLayer) -> Array[Story] {
               })
             })
             |> ignore
+          },
+        ),
+        (
+          "软边窗帘揭幕 CurtainReveal",
+          fn(card) {
+            let replay = kept(0)
+            card.box(fn(frame) {
+              frame
+              .padding(Is((14.0, 12.0, 14.0, 12.0)))
+              .radius(Is(@sf.small_corner))
+              .ground(By(fn() { @sf.theme().p.canvas }))
+              .edge(By(fn() { (1.0, @sf.theme().p.line) }))
+              .clips(Is(true))
+              .gap(Is(6.0))
+              |> ignore
+              @sf.words_node(frame, fn() { "渲染就绪卡片" }, fn() { story_card_title }) |> ignore
+              @sf.words_node(
+                frame,
+                fn() { "由 @motion.curtain_reveal 驱动 16 条像素对齐柔和窗帘自上而下拂去，完成后自动卸载零开销。" },
+                fn() { @sf.meta },
+              )
+              |> ignore
+              frame.box(fn(overlay_host) {
+                overlay_host
+                .over(Is(true))
+                .fills_across(Is(true))
+                .height_share(Is(1.0))
+                .presses(Is(false))
+                .points(Is(false))
+                |> ignore
+                overlay_host.pick(fn() { replay.get() }, fn(layer, n) {
+                  if n > 0 {
+                    layer
+                    .over(Is(true))
+                    .fills_across(Is(true))
+                    .height_share(Is(1.0))
+                    .presses(Is(false))
+                    .points(Is(false))
+                    |> ignore
+                    @motion.curtain_reveal(layer, fn() { true }, fn() { @sf.theme().p.line })
+                  }
+                })
+              })
+              |> ignore
+            })
+            |> ignore
+            side_by_side(card, fn(r) {
+              @sf.button_node(
+                r,
+                fn() { "重播窗帘揭幕" },
+                fn() { replay.set(replay.untracked() + 1) },
+                icon="play",
+              )
+              |> ignore
+              @sf.words_node(
+                r,
+                fn() {
+                  let n = replay.get()
+                  if n == 0 { "点击重播查看自上而下软边拂去" } else { "已重播 \{n} 次" }
+                },
+                fn() { @sf.caption },
+              )
+              |> ignore
+            })
           },
         ),
       ],
@@ -1596,6 +1798,1015 @@ fn motion_stories(tips : @sf.TipLayer) -> Array[Story] {
                   }
                 },
                 icon="play",
+              )
+              |> ignore
+            })
+          },
+        ),
+      ],
+    },
+    // 9. Text Morph & Rolling Slots
+    {
+      key: "motion-morph",
+      group: motion_group,
+      name: "形变与文本 Morph",
+      file: "libs/mbui/src/motion/text_morph.mbt",
+      api: [
+        ("text_morph.mbt", "glyph_in"),
+        ("text_morph.mbt", "glyph_change"),
+        ("text_morph.mbt", "TextMorph::new"),
+        ("rolling.mbt", "rolling_slots_node"),
+      ],
+      play: None,
+      about: "字符格平滑变形与逐字揭幕（TextMorph / glyph_in）、里程表逐位弹簧滚动（rolling_slots_node），以及按钮文案切换宽度形变（moves_for）。",
+      cases: [
+        (
+          "字符格平滑变形 TextMorph",
+          fn(card) {
+            let lines : Array[String] = [
+              "正在读取工作区依赖…",
+              "并行校验 270 项多帧率单测",
+              "全部检查通过，准备发布",
+            ]
+            let idx = kept(0)
+            let changing : @signals.Signal[(String, String, @motion.TextMorph)?] = kept(None)
+            let reveal = @motion.Way::new(1.0)
+            let swap = @motion.Way::new(1.0)
+            let due : Ref[() -> Unit] = Ref(fn() {  })
+            let host_ref : Ref[@view.View?] = Ref(None)
+            let visible_w = Ref(260.0)
+            let switch_to = fn(next : Int) {
+              let cur = idx.untracked()
+              if next == cur {
+                return
+              }
+              let was_text = lines[cur]
+              let now_text = lines[next]
+              idx.set(next)
+              match host_ref.val {
+                Some(v) => {
+                  (due.val)()
+                  due.val = fn() {  }
+                  let at = v.cause_at()
+                  let look = @ui.style_words(@sf.meta)
+                  let scale = v.words_scale()
+                  let seen = visible_w.val
+                  let (was, from, set_out) = match changing.untracked() {
+                    Some((_, prev_now, prev_morph)) if swap.goes_at(at) => {
+                      let k = swap.value_at(at)
+                      (
+                        prev_now,
+                        Some(prev_morph.across(k, seen)),
+                        prev_morph.now_cells.mapi(fn(i, _) { prev_morph.place(k, i, true) }),
+                      )
+                    }
+                    _ => (was_text, None, [])
+                  }
+                  let was_cells = @ui.glyph_cells(was, look, scale)
+                  let now_cells = @ui.glyph_cells(now_text, look, scale)
+                  let mut places = 0
+                  for c in was_cells {
+                    if c.0 - c.1 / 2.0 < seen {
+                      places += 1
+                    }
+                  }
+                  let mut now_places = 0
+                  for c in now_cells {
+                    if c.0 - c.1 / 2.0 < seen {
+                      now_places += 1
+                    }
+                  }
+                  if now_places > places {
+                    places = now_places
+                  }
+                  let morph = @motion.TextMorph::new(was_cells, now_cells, places, 37 + next * 13, from?, set_out~)
+                  let widened = @sf.dmin(morph.whole_to, seen) - morph.across(0.0, seen)
+                  let line_h = @ui.tree_theme().text_size(Meta).1
+                  reveal.put(0.0)
+                  reveal.go(1.0, @motion.tween(@motion.glyph_change_in_ms, ease=Linear), at~)
+                  swap.put(0.0)
+                  swap.go(1.0, @motion.moved(over=@sf.dmax(line_h, widened.abs())), at~)
+                  let ends = @sf.dmax(reveal.end(), swap.end())
+                  if ends <= at {
+                    changing.set(None)
+                  } else {
+                    changing.set(Some((was, now_text, morph)))
+                    due.val = v.at_moment(ends, fn() { changing.set(None) })
+                  }
+                }
+                None => ()
+              }
+            }
+            card.box(fn(stage) {
+              stage
+              .padding(Is((12.0, 10.0, 12.0, 10.0)))
+              .radius(Is(@sf.small_corner))
+              .ground(By(fn() { @sf.theme().p.canvas }))
+              .edge(By(fn() { (1.0, @sf.theme().p.line) }))
+              .clips(Is(true))
+              |> ignore
+              stage.owns(fn() { (due.val)() }) |> ignore
+              stage.by_room(fn(inner, room) {
+                host_ref.val = Some(inner)
+                inner.reacts(fn() { room.width() }, fn(w) {
+                  if w > 0.0 {
+                    visible_w.val = w
+                  }
+                })
+                inner.cuts(Is(true)).min_width(Is(Some(0.0))) |> ignore
+                inner.pick(fn() { changing.get() }, fn(k, ch) {
+                  match ch {
+                    None => {
+                      k.cuts(Is(true)).min_width(Is(Some(0.0))) |> ignore
+                      k.box(fn(w) {
+                        w
+                        .words_runs(By(fn() { [@ui.span(lines[idx.get()])] }))
+                        .words_look(By(fn() { @ui.style_words(@sf.meta) }))
+                        .ink(By(fn() { @ui.style_ink(@sf.meta) }))
+                        .cuts(Is(true))
+                        .min_width(Is(Some(0.0)))
+                        .allow_ellipsis(Is(true))
+                        |> ignore
+                      })
+                      |> ignore
+                    }
+                    Some((was, now_text, morph)) => {
+                      k.cuts(Is(true)).min_width(Is(Some(0.0))) |> ignore
+                      k.box(fn(window) {
+                        let seen = fn() { @sf.dmax(room.width(), 40.0) }
+                        let across = fn() { morph.across(swap.shown_on(window), seen()) }
+                        window
+                        .max_width(By(fn() { Some(across()) }))
+                        .cuts(Is(true))
+                        .min_width(Is(Some(0.0)))
+                        .clips(Is(true))
+                        |> ignore
+                        window.box(fn(both) {
+                          both
+                          .lines_up(Is(Some(Start)))
+                          .width(By(fn() {
+                            let sv = seen()
+                            Some(
+                              if morph.whole_from > sv + 0.5 || morph.whole_to > sv + 0.5 {
+                                across()
+                              } else {
+                                @sf.dmax(morph.whole_from, morph.whole_to)
+                              },
+                            )
+                          }))
+                          |> ignore
+                          both.box(fn(w) {
+                            w
+                            .words_runs(By(fn() { [@ui.span(was)] }))
+                            .words_look(By(fn() { @ui.style_words(@sf.meta) }))
+                            .ink(By(fn() { @ui.style_ink(@sf.meta) }))
+                            .glyphs_by(
+                              By(fn() { (reveal.shown_on(w), swap.shown_on(w)) }),
+                              fn(st, at) { morph.look(st.0, st.1, at, false) },
+                            )
+                            |> ignore
+                          })
+                          |> ignore
+                          both.box(fn(layer) {
+                            layer.over(Is(true)) |> ignore
+                            layer.box(fn(w) {
+                              w
+                              .words_runs(By(fn() { [@ui.span(now_text)] }))
+                              .words_look(By(fn() { @ui.style_words(@sf.meta) }))
+                              .ink(By(fn() { @ui.style_ink(@sf.meta) }))
+                              .glyphs_by(
+                                By(fn() { (reveal.shown_on(w), swap.shown_on(w)) }),
+                                fn(st, at) { morph.look(st.0, st.1, at, true) },
+                              )
+                              |> ignore
+                            })
+                            |> ignore
+                          })
+                          |> ignore
+                        })
+                        |> ignore
+                      })
+                      |> ignore
+                    }
+                  }
+                })
+              })
+              |> ignore
+            })
+            |> ignore
+            side_by_side(card, fn(r) {
+              @sf.button_node(
+                r,
+                fn() { "切换状态文案" },
+                fn() { switch_to((idx.untracked() + 1) % lines.length()) },
+                icon="play",
+                tone=Primary,
+              )
+              |> ignore
+              @sf.button_node(r, fn() { "读取依赖" }, fn() { switch_to(0) }, tone=Ghost) |> ignore
+              @sf.button_node(r, fn() { "校验单测" }, fn() { switch_to(1) }, tone=Ghost) |> ignore
+              @sf.button_node(r, fn() { "准备发布" }, fn() { switch_to(2) }, tone=Ghost) |> ignore
+            })
+          },
+        ),
+        (
+          "里程表逐位滚数字 RollingSlots",
+          fn(card) {
+            let count = kept(1024)
+            side_by_side(card, fn(r) {
+              r.box(fn(badge) {
+                badge
+                .padding(Is((14.0, 8.0, 14.0, 8.0)))
+                .radius(Is(@sf.small_corner))
+                .ground(By(fn() { @sf.theme().p.canvas }))
+                .edge(By(fn() { (1.0, @sf.theme().p.line) }))
+                |> ignore
+                @sf.rolling_number_node(badge, fn() { count.get() }, format=fn(n) { "\{n}" }) |> ignore
+              })
+              |> ignore
+              @sf.button_node(r, fn() { "+1" }, fn() { count.set(count.untracked() + 1) }, tone=Ghost) |> ignore
+              @sf.button_node(r, fn() { "+128" }, fn() { count.set(count.untracked() + 128) }, tone=Ghost) |> ignore
+              @sf.button_node(
+                r,
+                fn() { "-45" },
+                fn() {
+                  let next = count.untracked() - 45
+                  count.set(if next < 0 { 0 } else { next })
+                },
+                tone=Ghost,
+              )
+              |> ignore
+            })
+            @sf.words_node(card, fn() { "右对齐槽位：未变位静止，变化位按增减方向弹簧滚动。" }, fn() { @sf.caption })
+            |> ignore
+          },
+        ),
+        (
+          "容器宽度平滑形变 moves_for",
+          fn(card) {
+            let step = kept(0)
+            let label = fn() {
+              match step.get() {
+                0 => "保存"
+                1 => "正在写入配置…"
+                _ => "已保存"
+              }
+            }
+            side_by_side(card, fn(r) {
+              @sf.button_node(
+                r,
+                label,
+                fn() { step.set((step.untracked() + 1) % 3) },
+                tone=Primary,
+                busy=fn() { step.get() == 1 },
+                done=fn() { step.get() == 2 },
+              )
+              |> ignore
+              @sf.button_node(r, fn() { "重置按钮" }, fn() { step.set(0) }, tone=Ghost) |> ignore
+            })
+            @sf.words_node(card, fn() { "点击按钮在 3 档文案间切换，观察 button_reshape 宽度平滑形变。" }, fn() { @sf.caption })
+            |> ignore
+          },
+        ),
+      ],
+    },
+    // 10. Gesture Physics & Velocity Deformation
+    {
+      key: "motion-physics",
+      group: motion_group,
+      name: "手势与形变物理 Physics",
+      file: "libs/mbui/src/motion/pull.mbt",
+      api: [
+        ("pull.mbt", "EdgePull::new"),
+        ("pull.mbt", "dismiss_drag_offset"),
+        ("pull.mbt", "should_dismiss"),
+        ("deform.mbt", "SpringFollow2D::new"),
+      ],
+      play: None,
+      about: "边界过拉橡皮筋（EdgePull）、2D 弹簧追随速度形变胶囊（SpringFollow2D），以及拖拽关闭的单向阻尼与速度判停（should_dismiss）。",
+      cases: [
+        (
+          "边界过拉橡皮筋 EdgePull",
+          fn(card) {
+            let pull = @motion.EdgePull::new(limit=18.0)
+            let raw_past = kept(0.0)
+            let bar_ref : Ref[@view.View?] = Ref(None)
+            let down_wx = Ref(0.0)
+            card.box(fn(stage) {
+              stage
+              .height(Is(Some(64.0)))
+              .radius(Is(@sf.small_corner))
+              .ground(By(fn() { @sf.theme().p.canvas }))
+              .edge(By(fn() { (1.0, @sf.theme().p.line) }))
+              .lines_up(Is(Some(Middle)))
+              .lies_along(Is(Middle))
+              .clips(Is(true))
+              |> ignore
+              stage.box(fn(bar) {
+                bar_ref.val = Some(bar)
+                bar
+                .padding(Is((14.0, 8.0, 14.0, 8.0)))
+                .radius(Is(8.0))
+                .ground(By(fn() { @sf.theme().p.paper }))
+                .edge(By(fn() { (1.5, @sf.theme().p.accent) }))
+                .offset(By(fn() { (pull.shown_on(bar).0, 0.0) }))
+                .cursor(Is(Some(Grab)))
+                .says(Is(Some(@view.said(Slider, label="边界过拉演示滑块"))))
+                .on_drag(fn(d) {
+                  match d.kind {
+                    Down => down_wx.val = d.wx
+                    Moved => {
+                      let past = d.wx - down_wx.val
+                      raw_past.set(past)
+                      pull.drag(past, d.y, 64.0)
+                    }
+                    Up | Off => {
+                      raw_past.set(0.0)
+                      pull.let_go(bar)
+                    }
+                  }
+                })
+                |> ignore
+                @sf.words_node(
+                  bar,
+                  fn() { "左右过拉边界，松手回弹" },
+                  fn() { @ui.text_style(size=Caption, weight=Medium, color=Fg, wrap=false) },
+                )
+                |> ignore
+              })
+              |> ignore
+            })
+            |> ignore
+            card.box(fn(readout) {
+              @sf.words_node(
+                readout,
+                fn() {
+                  let (aside, _, _) = pull.shown_on(readout)
+                  "原始过拉 \{motion_round1(raw_past.get())} px   橡皮筋位移 \{motion_round1(aside)} px（渐近上限 18 px）"
+                },
+                fn() { @sf.caption },
+              )
+              |> ignore
+            })
+            |> ignore
+            side_by_side(card, fn(r) {
+              @sf.button_node(
+                r,
+                fn() { "模拟左拉过界" },
+                fn() {
+                  raw_past.set(-48.0)
+                  pull.drag(-48.0, 32.0, 64.0)
+                },
+                tone=Ghost,
+              )
+              |> ignore
+              @sf.button_node(
+                r,
+                fn() { "模拟右拉过界" },
+                fn() {
+                  raw_past.set(48.0)
+                  pull.drag(48.0, 32.0, 64.0)
+                },
+                tone=Ghost,
+              )
+              |> ignore
+              @sf.button_node(
+                r,
+                fn() { "松手回弹" },
+                fn() {
+                  raw_past.set(0.0)
+                  match bar_ref.val {
+                    Some(b) => pull.let_go(b)
+                    None => ()
+                  }
+                },
+                icon="play",
+              )
+              |> ignore
+            })
+          },
+        ),
+        (
+          "2D 速度跟随形变胶囊 SpringFollow2D",
+          fn(card) {
+            let follow = @motion.SpringFollow2D::new()
+            let anchor = kept(1)
+            let cap_ref : Ref[@view.View?] = Ref(None)
+            let stage_w = Ref(280.0)
+            let cap_w = 72.0
+            let cap_h = 34.0
+            let stage_h = 96.0
+            let anchor_x = fn(i : Int) {
+              let w = stage_w.val
+              match i {
+                0 => w * 0.2
+                1 => w * 0.5
+                _ => w * 0.8
+              }
+            }
+            let chase_anchor = fn(i : Int) {
+              anchor.set(i)
+              match cap_ref.val {
+                Some(c) => follow.chase(c, anchor_x(i), stage_h / 2.0)
+                None => ()
+              }
+            }
+            card.box(fn(stage) {
+              stage
+              .height(Is(Some(stage_h)))
+              .radius(Is(@sf.small_corner))
+              .ground(By(fn() { @sf.theme().p.canvas }))
+              .edge(By(fn() { (1.0, @sf.theme().p.line) }))
+              .clips(Is(true))
+              |> ignore
+              stage.by_room(fn(inner, room) {
+                inner.over(Is(true)).fills_across(Is(true)).height_share(Is(1.0)) |> ignore
+                let seeded = Ref(false)
+                // 3 anchor markers
+                for i in 0..<3 {
+                  inner.box(fn(mark) {
+                    mark
+                    .over(Is(true))
+                    .width(Is(Some(8.0)))
+                    .height(Is(Some(8.0)))
+                    .radius(Is(4.0))
+                    .ground(By(fn() { @sf.theme().p.line_strong }))
+                    .offset(By(fn() {
+                      let w = @sf.dmax(room.width(), 120.0)
+                      let x = match i {
+                        0 => w * 0.2
+                        1 => w * 0.5
+                        _ => w * 0.8
+                      }
+                      (x - 4.0, stage_h / 2.0 - 4.0)
+                    }))
+                    |> ignore
+                  })
+                  |> ignore
+                }
+                // Velocity-deforming capsule (laid out at center of stage so it stays clear of outer corners)
+                inner.box(fn(cap) {
+                  cap_ref.val = Some(cap)
+                  let lay_x = fn() { @sf.dmax(room.width(), 120.0) * 0.5 }
+                  let lay_y = stage_h / 2.0
+                  cap
+                  .over(Is(true))
+                  .width(Is(Some(cap_w)))
+                  .height(Is(Some(cap_h)))
+                  .radius(Is(cap_h / 2.0))
+                  .ground(By(fn() { @sf.theme().p.accent }))
+                  .offset(By(fn() { (lay_x() - cap_w / 2.0, lay_y - cap_h / 2.0) }))
+                  .alpha(By(fn() { follow.held_shown(cap) }))
+                  .ground_drawn(By(fn() {
+                    follow.capsule_shape(cap, cap_w, cap_h, lay_x(), lay_y)
+                  }))
+                  |> ignore
+                })
+                |> ignore
+                inner.reacts(fn() { room.width() }, fn(w) {
+                  if w > 0.0 {
+                    stage_w.val = w
+                    if !seeded.val {
+                      match cap_ref.val {
+                        Some(c) => {
+                          seeded.val = true
+                          follow.chase(c, w * 0.5, stage_h / 2.0)
+                        }
+                        None => ()
+                      }
+                    }
+                  }
+                })
+              })
+              |> ignore
+            })
+            |> ignore
+            side_by_side(card, fn(r) {
+              @sf.button_node(r, fn() { "左锚点" }, fn() { chase_anchor(0) }, tone=Ghost) |> ignore
+              @sf.button_node(r, fn() { "中锚点" }, fn() { chase_anchor(1) }, tone=Ghost) |> ignore
+              @sf.button_node(r, fn() { "右锚点" }, fn() { chase_anchor(2) }, tone=Ghost) |> ignore
+              @sf.button_node(
+                r,
+                fn() { "收起" },
+                fn() {
+                  anchor.set(-1)
+                  match cap_ref.val {
+                    Some(c) => follow.release(c)
+                    None => ()
+                  }
+                },
+                tone=Ghost,
+              )
+              |> ignore
+            })
+            @sf.words_node(
+              card,
+              fn() {
+                match anchor.get() {
+                  0 => "目标：左锚点（高速飞跃时胶囊水平拉长、垂直压扁）"
+                  1 => "目标：中锚点（高速飞跃时胶囊水平拉长、垂直压扁）"
+                  2 => "目标：右锚点（高速飞跃时胶囊水平拉长、垂直压扁）"
+                  _ => "目标：已收起（再次点锚点时原地显现，不从原点飞入）"
+                }
+              },
+              fn() { @sf.caption },
+            )
+            |> ignore
+          },
+        ),
+        (
+          "拖拽关闭阻尼与判停 DismissDrag",
+          fn(card) {
+            let dismissed = kept(false)
+            let verdict = kept("尚未拖拽")
+            let drag_y = @motion.NodeWay::new(0.0)
+            let sheet_ref : Ref[@view.View?] = Ref(None)
+            let down_wy = Ref(0.0)
+            let stage_h = 152.0
+            card.box(fn(stage) {
+              stage
+              .height(Is(Some(stage_h)))
+              .radius(Is(@sf.small_corner))
+              .ground(By(fn() { @sf.theme().p.canvas }))
+              .edge(By(fn() { (1.0, @sf.theme().p.line) }))
+              .lines_up(Is(Some(Middle)))
+              .lies_along(Is(Middle))
+              .clips(Is(true))
+              |> ignore
+              stage.box(fn(sheet) {
+                sheet_ref.val = Some(sheet)
+                sheet
+                .width(Is(Some(220.0)))
+                .padding(Is((14.0, 12.0, 14.0, 12.0)))
+                .radius(Is(10.0))
+                .ground(By(fn() { @sf.theme().p.paper }))
+                .edge(By(fn() { (1.5, @sf.theme().p.accent) }))
+                .gap(Is(4.0))
+                .offset(By(fn() { (0.0, drag_y.shown(sheet)) }))
+                .alpha(By(fn() {
+                  let y = drag_y.shown(sheet)
+                  if y <= 0.0 { 1.0 } else { @sf.dclamp(1.0 - y / stage_h, 0.0, 1.0) }
+                }))
+                .presses(By(fn() { !dismissed.get() }))
+                .cursor(Is(Some(Grab)))
+                .says(Is(Some(@view.said(Slider, label="拖拽关闭卡片"))))
+                .on_drag(fn(d) {
+                  match d.kind {
+                    Down => down_wy.val = d.wy
+                    Moved => {
+                      let visual = @motion.dismiss_drag_offset(d.wy - down_wy.val, stage_h)
+                      drag_y.put(visual)
+                    }
+                    Up | Off => {
+                      let visual = @motion.dismiss_drag_offset(d.wy - down_wy.val, stage_h)
+                      let vy = d.vy() * 1000.0
+                      if @motion.should_dismiss(visual, vy, 56.0) {
+                        dismissed.set(true)
+                        verdict.set("判定：关闭（位移 \{motion_round1(visual)} px）")
+                        drag_y.go(sheet, stage_h, @motion.tween(220.0, ease=Leave))
+                      } else {
+                        dismissed.set(false)
+                        verdict.set("判定：回弹保留（位移 \{motion_round1(visual)} px）")
+                        drag_y.go(sheet, 0.0, @motion.tactile_bounce)
+                      }
+                    }
+                  }
+                })
+                |> ignore
+                @sf.words_node(sheet, fn() { "可上下拖拽卡片" }, fn() { story_card_title }) |> ignore
+                @sf.words_node(sheet, fn() { "上拉受橡皮筋阻尼，下拉 1:1 跟手" }, fn() { @sf.caption }) |> ignore
+              })
+              |> ignore
+            })
+            |> ignore
+            @sf.words_node(card, fn() { verdict.get() }, fn() { @sf.caption }) |> ignore
+            side_by_side(card, fn(r) {
+              @sf.button_node(
+                r,
+                fn() { "轻拉回弹" },
+                fn() {
+                  dismissed.set(false)
+                  let visual = @motion.dismiss_drag_offset(32.0, stage_h)
+                  let closed = @motion.should_dismiss(visual, 120.0, 56.0)
+                  verdict.set(if closed { "判定：关闭" } else { "判定：轻拉回弹（位移 32 px，未过阈值 56 px）" })
+                  match sheet_ref.val {
+                    Some(s) => {
+                      drag_y.put(visual)
+                      drag_y.go(s, 0.0, @motion.tactile_bounce)
+                    }
+                    None => ()
+                  }
+                },
+                tone=Ghost,
+              )
+              |> ignore
+              @sf.button_node(
+                r,
+                fn() { "快甩关闭" },
+                fn() {
+                  let visual = @motion.dismiss_drag_offset(28.0, stage_h)
+                  let closed = @motion.should_dismiss(visual, 780.0, 56.0)
+                  dismissed.set(closed)
+                  verdict.set(if closed { "判定：快甩关闭（速度 780 px/s 超过阈值 500）" } else { "判定：保留" })
+                  match sheet_ref.val {
+                    Some(s) => {
+                      drag_y.put(visual)
+                      drag_y.go(s, stage_h, @motion.tween(220.0, ease=Leave))
+                    }
+                    None => ()
+                  }
+                },
+                tone=Ghost,
+              )
+              |> ignore
+              @sf.button_node(
+                r,
+                fn() { "恢复卡片" },
+                fn() {
+                  dismissed.set(false)
+                  verdict.set("已恢复卡片")
+                  match sheet_ref.val {
+                    Some(s) => drag_y.go(s, 0.0, @motion.move_damped)
+                    None => ()
+                  }
+                },
+                icon="refresh",
+              )
+              |> ignore
+            })
+          },
+        ),
+      ],
+    },
+    // 11. Hero Flight & Choreography
+    {
+      key: "motion-choreography",
+      group: motion_group,
+      name: "空间飞行与编排 Choreography",
+      file: "libs/mbui/src/motion/hero_flight.mbt",
+      api: [
+        ("hero_flight.mbt", "hero_flight_box"),
+        ("choreography.mbt", "Choreography::new"),
+        ("choreography.mbt", "SerialQueue::new"),
+      ],
+      play: None,
+      about: "保持宽高比与滚动裁切框的 Hero 矩形飞行（hero_flight_box），以及多轨并行（Choreography）与多源错峰串行编排（SerialQueue）。",
+      cases: [
+        (
+          "裁切缩略图 Hero 飞行 hero_flight_box",
+          fn(card) {
+            let expanded = kept(false)
+            let letterbox = kept(false)
+            let fly = @motion.NodeWay::new(0.0)
+            let hero_ref : Ref[@view.View?] = Ref(None)
+            let stage_h = 200.0
+            card.box(fn(stage) {
+              stage
+              .height(Is(Some(stage_h)))
+              .radius(Is(@sf.small_corner))
+              .ground(By(fn() { @sf.theme().p.canvas }))
+              .edge(By(fn() { (1.0, @sf.theme().p.line) }))
+              .clips(Is(true))
+              |> ignore
+              stage.by_room(fn(inner, room) {
+                inner.over(Is(true)).fills_across(Is(true)).height_share(Is(1.0)) |> ignore
+                let current_flight = fn(v : @view.View) -> @motion.HeroFlightBox {
+                  let sw = @sf.dmax(room.width(), 160.0)
+                  let sh = stage_h
+                  let pad = 12.0
+                  let max_w = sw - pad * 2.0
+                  let max_h = sh - pad * 2.0
+                  let target_w = @sf.dmin(max_w, max_h * 16.0 / 9.0)
+                  let target_h = target_w * 9.0 / 16.0
+                  let to = ((sw - target_w) / 2.0, (sh - target_h) / 2.0, target_w, target_h)
+                  let thumb : @motion.HeroThumb = {
+                    x: 16.0,
+                    y: sh - 92.0,
+                    w: 116.0,
+                    h: 76.0,
+                    seen: None,
+                    corners: (12.0, 12.0, 12.0, 12.0),
+                    letterbox: letterbox.get(),
+                    start_crop: false,
+                  }
+                  let p = fly.shown(v)
+                  @motion.hero_flight_box(thumb, 0.0, to, p, sw, sh).unwrap_or({
+                    cut: (0.0, 0.0, sw, sh),
+                    box: to,
+                    corners: (0.0, 0.0, 0.0, 0.0),
+                    picture: to,
+                  })
+                }
+                inner.box(fn(hero) {
+                  hero_ref.val = Some(hero)
+                  hero
+                  .over(Is(true))
+                  .clips(Is(true))
+                  .ground(By(fn() { if letterbox.get() { @sf.theme().p.chip } else { @sf.theme().p.paper } }))
+                  .edge(By(fn() { (1.5, @sf.theme().p.accent) }))
+                  .offset(By(fn() {
+                    let f = current_flight(hero)
+                    (f.box.0, f.box.1)
+                  }))
+                  .width(By(fn() { Some(current_flight(hero).box.2) }))
+                  .height(By(fn() { Some(current_flight(hero).box.3) }))
+                  .corners(By(fn() { Some(current_flight(hero).corners) }))
+                  |> ignore
+                  hero.box(fn(pic) {
+                    pic
+                    .over(Is(true))
+                    .ground(By(fn() { @ui.alpha(@sf.theme().p.accent, 0.16) }))
+                    .offset(By(fn() {
+                      let f = current_flight(pic)
+                      (f.picture.0 - f.box.0, f.picture.1 - f.box.1)
+                    }))
+                    .width(By(fn() { Some(current_flight(pic).picture.2) }))
+                    .height(By(fn() { Some(current_flight(pic).picture.3) }))
+                    .lines_up(Is(Some(Middle)))
+                    .lies_along(Is(Middle))
+                    |> ignore
+                    @sf.words_node(
+                      pic,
+                      fn() { if letterbox.get() { "16:9 Letterbox" } else { "16:9 Cover" } },
+                      fn() { @ui.text_style(size=Caption, weight=Medium, color=Fg, wrap=false) },
+                    )
+                    |> ignore
+                  })
+                  |> ignore
+                })
+                |> ignore
+              })
+              |> ignore
+            })
+            |> ignore
+            side_by_side(card, fn(r) {
+              @sf.button_node(
+                r,
+                fn() { if expanded.get() { "飞回原位" } else { "展开全屏" } },
+                fn() {
+                  let next = !expanded.untracked()
+                  expanded.set(next)
+                  match hero_ref.val {
+                    Some(v) => fly.go(v, if next { 1.0 } else { 0.0 }, @motion.moved(over=240.0))
+                    None => ()
+                  }
+                },
+                icon="play",
+                tone=Primary,
+              )
+              |> ignore
+              @sf.button_node(
+                r,
+                fn() { if letterbox.get() { "切换 Cover" } else { "切换 Letterbox" } },
+                fn() { letterbox.set(!letterbox.untracked()) },
+                tone=Ghost,
+              )
+              |> ignore
+            })
+          },
+        ),
+        (
+          "多轨与错峰串行编排 Choreography + SerialQueue",
+          fn(card) {
+            let choreo = @motion.Choreography::new([
+              {
+                name: "fold",
+                forward: @motion.tween(140.0, ease=Out),
+                backward: @motion.tween(140.0, ease=Out, delay=280.0),
+              },
+              {
+                name: "fly",
+                forward: @motion.tween(240.0, ease=Out, delay=80.0),
+                backward: @motion.tween(240.0, ease=Out, delay=120.0),
+              },
+              {
+                name: "reveal",
+                forward: @motion.tween(200.0, ease=Out, delay=220.0),
+                backward: @motion.tween(160.0, ease=Leave, delay=40.0),
+              },
+              {
+                name: "settle",
+                forward: @motion.tween(160.0, ease=Out, delay=320.0),
+                backward: @motion.tween(120.0, ease=Leave),
+              },
+            ])
+            let dir_note = kept("就绪（4 轨并行编排）")
+            let choreo_ref : Ref[@view.View?] = Ref(None)
+            let tracks : Array[(String, String)] = [
+              ("fold", "折叠 fold"),
+              ("fly", "起飞 fly"),
+              ("reveal", "浮现 reveal"),
+              ("settle", "落位 settle"),
+            ]
+            // Choreography stage with flying badge + 4 track bars
+            card.box(fn(panel) {
+              choreo_ref.val = Some(panel)
+              panel
+              .padding(Is((12.0, 10.0, 12.0, 10.0)))
+              .radius(Is(@sf.small_corner))
+              .ground(By(fn() { @sf.theme().p.canvas }))
+              .edge(By(fn() { (1.0, @sf.theme().p.line) }))
+              .gap(Is(8.0))
+              |> ignore
+              // Flying badge lane
+              panel.box(fn(lane) {
+                lane
+                .height(Is(Some(32.0)))
+                .radius(Is(6.0))
+                .ground(By(fn() { @sf.theme().p.paper }))
+                .edge(By(fn() { (1.0, @sf.theme().p.line) }))
+                .clips(Is(true))
+                |> ignore
+                lane.by_room(fn(inner, room) {
+                  inner.over(Is(true)).fills_across(Is(true)).height_share(Is(1.0)) |> ignore
+                  inner.box(fn(badge) {
+                    badge
+                    .over(Is(true))
+                    .width(Is(Some(24.0)))
+                    .height(Is(Some(20.0)))
+                    .radius(Is(6.0))
+                    .ground(By(fn() { @sf.theme().p.accent }))
+                    .offset(By(fn() {
+                      let w = @sf.dmax(room.width() - 32.0, 60.0)
+                      let fly_p = choreo.progress(badge, "fly")
+                      let x = 4.0 + w * fly_p
+                      (x, 6.0)
+                    }))
+                    .alpha(By(fn() {
+                      let fold_p = choreo.progress(badge, "fold")
+                      let rev_p = choreo.progress(badge, "reveal")
+                      0.75 + 0.25 * @sf.dmax(fold_p, rev_p)
+                    }))
+                    |> ignore
+                  })
+                  |> ignore
+                })
+                |> ignore
+              })
+              |> ignore
+              // 4 named track progress bars
+              for item in tracks {
+                let (key, label) = item
+                panel.box(fn(row) {
+                  row.row(Is(true)).gap(Is(8.0)).lines_up(Is(Some(Middle))) |> ignore
+                  row.box(fn(lbl) {
+                    lbl.width(Is(Some(108.0))) |> ignore
+                    @sf.words_node(
+                      lbl,
+                      fn() { label },
+                      fn() { @ui.text_style(size=Caption, color=Muted, wrap=false) },
+                    )
+                    |> ignore
+                  })
+                  |> ignore
+                  row.box(fn(bar) {
+                    bar
+                    .grow(Is(1.0))
+                    .basis(Is(Some(0.0)))
+                    .height(Is(Some(8.0)))
+                    .radius(Is(4.0))
+                    .ground(By(fn() { @sf.theme().p.chip }))
+                    .clips(Is(true))
+                    |> ignore
+                    bar.by_room(fn(inner, room) {
+                      inner.over(Is(true)).fills_across(Is(true)).height_share(Is(1.0)) |> ignore
+                      inner.box(fn(fill) {
+                        fill
+                        .height(Is(Some(8.0)))
+                        .radius(Is(4.0))
+                        .ground(By(fn() { @sf.theme().p.accent }))
+                        .width(By(fn() { Some(room.width() * choreo.progress(fill, key)) }))
+                        |> ignore
+                      })
+                      |> ignore
+                    })
+                    |> ignore
+                  })
+                  |> ignore
+                })
+                |> ignore
+              }
+            })
+            |> ignore
+            // SerialQueue 3-source staggered bars
+            let queue = @motion.SerialQueue::new()
+            let q_ways = [@motion.NodeWay::new(0.0), @motion.NodeWay::new(0.0), @motion.NodeWay::new(0.0)]
+            let q_note = kept("异源任务自动错峰排队（同源不阻塞）")
+            let q_ref : Ref[@view.View?] = Ref(None)
+            card.box(fn(qpanel) {
+              q_ref.val = Some(qpanel)
+              qpanel
+              .padding(Is((12.0, 10.0, 12.0, 10.0)))
+              .radius(Is(@sf.small_corner))
+              .ground(By(fn() { @sf.theme().p.canvas }))
+              .edge(By(fn() { (1.0, @sf.theme().p.line) }))
+              .gap(Is(6.0))
+              |> ignore
+              for i in 0..<3 {
+                let src_label = match i {
+                  0 => "源 A"
+                  1 => "源 B"
+                  _ => "源 C"
+                }
+                qpanel.box(fn(row) {
+                  row.row(Is(true)).gap(Is(8.0)).lines_up(Is(Some(Middle))) |> ignore
+                  row.box(fn(lbl) {
+                    lbl.width(Is(Some(42.0))) |> ignore
+                    @sf.words_node(lbl, fn() { src_label }, fn() { @sf.caption }) |> ignore
+                  })
+                  |> ignore
+                  row.box(fn(bar) {
+                    bar
+                    .grow(Is(1.0))
+                    .basis(Is(Some(0.0)))
+                    .height(Is(Some(8.0)))
+                    .radius(Is(4.0))
+                    .ground(By(fn() { @sf.theme().p.chip }))
+                    .clips(Is(true))
+                    |> ignore
+                    bar.by_room(fn(inner, room) {
+                      inner.over(Is(true)).fills_across(Is(true)).height_share(Is(1.0)) |> ignore
+                      inner.box(fn(fill) {
+                        fill
+                        .height(Is(Some(8.0)))
+                        .radius(Is(4.0))
+                        .ground(By(fn() { @sf.theme().p.accent }))
+                        .width(By(fn() { Some(room.width() * q_ways[i].shown(fill)) }))
+                        |> ignore
+                      })
+                      |> ignore
+                    })
+                    |> ignore
+                  })
+                  |> ignore
+                })
+                |> ignore
+              }
+            })
+            |> ignore
+            @sf.words_node(card, fn() { "\{dir_note.get()}   \{q_note.get()}" }, fn() { @sf.caption }) |> ignore
+            side_by_side(card, fn(r) {
+              @sf.button_node(
+                r,
+                fn() { "播放四段编排" },
+                fn() {
+                  dir_note.set("正向播放：fold → fly → reveal → settle")
+                  match choreo_ref.val {
+                    Some(v) => {
+                      choreo.start(v.cause_at())
+                      choreo.arm(v)
+                    }
+                    None => ()
+                  }
+                },
+                icon="play",
+                tone=Primary,
+              )
+              |> ignore
+              @sf.button_node(
+                r,
+                fn() { "逆向回放" },
+                fn() {
+                  dir_note.set("逆向回放：从当前位置与速度无缝反转")
+                  match choreo_ref.val {
+                    Some(v) => {
+                      choreo.reverse(v.cause_at())
+                      choreo.arm(v)
+                    }
+                    None => ()
+                  }
+                },
+                tone=Ghost,
+              )
+              |> ignore
+              @sf.button_node(
+                r,
+                fn() { "触发多源错峰" },
+                fn() {
+                  match q_ref.val {
+                    Some(v) => {
+                      let now = v.cause_at()
+                      queue.reset()
+                      let span = 260.0
+                      let lead = 60.0
+                      let starts : Array[Int] = []
+                      for i in 0..<3 {
+                        let name = match i {
+                          0 => "src-a"
+                          1 => "src-b"
+                          _ => "src-c"
+                        }
+                        let st = queue.next_at(name, now, lead~)
+                        queue.commit(name, st + span)
+                        starts.push((st - now).round().to_int())
+                        q_ways[i].go_from(v, 0.0, 1.0, @motion.tween(span, ease=Out, delay=st - now))
+                      }
+                      q_note.set("错峰启动：+\{starts[0]} / +\{starts[1]} / +\{starts[2]} ms")
+                    }
+                    None => ()
+                  }
+                },
+                tone=Ghost,
               )
               |> ignore
             })

@@ -19,8 +19,15 @@ pub(all) struct CdpSocket {
 }
 
 ///|
-/// What is waited for within a time (ops/fibers.ts `wall.within`): its value, or `words` raised once `ms` passed.
-pub async fn[X] within(clock : Clock, ms : Double, f : async () -> X, words : String) -> X {
+/// What is waited for within a time (ops/fibers.ts `wall.within`): its value, or `words` raised once `ms` passed. A
+/// value that comes after that (or after `f`'s caller gave up on it) is given `late`, as nobody else holds it then.
+pub async fn[X] within(
+  clock : Clock,
+  ms : Double,
+  f : async () -> X,
+  words : String,
+  late? : (X) -> Unit = _ => (),
+) -> X {
   let d : @effect.Deferred[X] = @effect.Deferred::new()
   let stop = (clock.after)(ms, async fn() { ignore(d.fail(fail_(words))) })
   (clock.spawn)(async fn() {
@@ -30,7 +37,9 @@ pub async fn[X] within(clock : Clock, ms : Double, f : async () -> X, words : St
         return
       }
     }
-    ignore(d.succeed(v))
+    if !d.succeed(v) {
+      late(v)
+    }
   })
   let r = try Ok(d.wait()) catch { e => Err(e) }
   stop()
@@ -209,7 +218,14 @@ pub async fn connect_cdp(
     },
     clock,
   )
-  let socket = within(clock, cdp_open_ms, async fn() { open(url, link) }, "the browser's DevTools did not answer at \{url}")
+  // (one that opens only after the time given is closed at once: nothing else would ever close it)
+  let socket = within(
+    clock,
+    cdp_open_ms,
+    async fn() { open(url, link) },
+    "the browser's DevTools did not answer at \{url}",
+    late=s => (s.close)(),
+  )
   socket_ref.val = Some(socket)
   link.cdp()
 }

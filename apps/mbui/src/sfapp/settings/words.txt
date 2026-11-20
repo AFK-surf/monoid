@@ -1650,6 +1650,8 @@ web-pages.stations.diagnostics.what
 web-pages.stations.elevation.admin
 web-pages.stations.elevation.section
 web-pages.stations.elevation.what
+web-pages.stations.screenService.title
+web-pages.stations.screenService.what
 web-pages.stations.search.personal
 web-pages.stations.search.personalLine
 web-pages.stations.search.section
@@ -2036,3 +2038,5 @@ web-main.rail.remote
 web-pages.remote.openTerminal
 web-pages.remote.openBrowser
 web-pages.remote.openDesktop
+android-settings.vault.ask.saveSharedNamed
+android-settings.vault.ask.saveShared

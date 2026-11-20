@@ -8,6 +8,10 @@ publish = false
 name = "stillfail-screen"
 path = "src/main.rs"
 
+[[bin]]
+name = "stillfail-screen-svc"
+path = "src/svc_main.rs"
+
 [dependencies]
 serde_json = "1"
 # A view's sound as Opus (audio_packets.rs): the encoder of the decoder the apps' shell has (client/shell), pure Rust.
@@ -32,14 +36,22 @@ windows = { version = "0.62", features = [
     "Win32_Graphics_Imaging",
     "Win32_Media_MediaFoundation",
     "Win32_Media_Audio",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
     "Win32_System_DataExchange",
+    "Win32_System_IO",
     "Win32_System_LibraryLoader",
     "Win32_System_Memory",
     "Win32_System_Ole",
+    "Win32_System_Pipes",
     "Win32_System_Power",
     "Win32_System_Registry",
+    "Win32_System_RemoteDesktop",
+    "Win32_System_Services",
+    "Win32_System_StationsAndDesktops",
     "Win32_System_Threading",
     "Win32_System_Variant",
     "Win32_System_WinRT",

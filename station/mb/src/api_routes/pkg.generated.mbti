@@ -279,6 +279,7 @@ pub(all) enum Body {
   Stream(async () -> Bytes?)
   Streamed(async () -> Bytes?, async () -> Unit)
 }
+pub fn Body::stop_with(Self, Signal, (async () -> Unit) -> Unit) -> () -> Unit
 
 pub enum Claim {
   KeptAnswer(Kept)

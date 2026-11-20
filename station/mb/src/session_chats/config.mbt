@@ -221,6 +221,10 @@ pub async fn hub_config(_w : World, raw : J, data_dir : String, found : (String)
     Some(Num(x)) if !x.is_nan() && !x.is_inf() && x >= 0.0 => x
     _ => 1.0
   }
+  let max_concurrent_turns = match at(Some(raw), "maxConcurrentTurns") {
+    Some(Num(x)) if !x.is_nan() && !x.is_inf() && x > 0.0 => js_trunc(x)
+    _ => 0.0
+  }
   jo([
     ("dataDir", js(data_dir)),
     ("agentHome", js(agent_home)),
@@ -242,6 +246,7 @@ pub async fn hub_config(_w : World, raw : J, data_dir : String, found : (String)
     ),
     ("warmMs", jn(js_trunc(num_or(at(Some(raw), "warmMinutes"), 30.0) * 60000.0))),
     ("maxWarmClaude", jn(num_or(at(Some(raw), "maxWarmClaude"), 4.0))),
+    ("maxConcurrentTurns", jn(max_concurrent_turns)),
     ("autoArchiveMs", jn(days("autoArchiveDays", 1.0))),
     ("slackArchiveMs", jn(days("slackArchiveDays", 3.0))),
     ("autoArchiveReviewed", jb(at(Some(raw), "autoArchiveReviewed") is Some(Bool(true)))),

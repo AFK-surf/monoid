@@ -255,6 +255,21 @@ function withHidden(part: Part): Part {
   };
 }
 
+/// The Windows screen helper's part: ships its LocalSystem service binary beside stillfail-screen.exe.
+function withScreenService(part: Part): Part {
+  const svc = "stillfail-screen-svc.exe";
+  return {
+    ...part,
+    targets: ["win32-x64"],
+    env: "STILLFAIL_SCREEN",
+    files: (t) => [...part.files(t), svc],
+    build(t, out) {
+      part.build(t, out);
+      copyFileSync(join(stationTargetDir("station/native/screen", t), TRIPLE(t), "release", svc), join(out, svc));
+    },
+  };
+}
+
 const MESH_LIB = (t: Target) => (t === "darwin-arm64" ? "libstillfail_mesh.dylib" : t === "win32-x64" ? "stillfail_mesh.dll" : "libstillfail_mesh.so");
 
 /// libghostty-vt (the app's terminal, the runner's copy of one's screen): Ghostty's source and dependency tarballs of a
@@ -426,8 +441,9 @@ const PARTS: Record<string, Part> = {
   launcher: withHidden(stationCrate("station/native/launcher", exe("stillfail-station"), exe("stillfail-station"))),
   // With libghostty-vt linked (macOS, Linux, Windows), the screen of a terminal it keeps (its build.rs, src/ghostty.rs).
   runner: withGhosttyVt({ ...stationCrate("station/native/runner", exe("stillfail-runner"), exe("stillfail-runner")), targets: STATION_BINS, env: "STILLFAIL_RUNNER" }),
-  // Windows' display as the station's desktop screen, what still.fail Helper is on macOS.
-  screen: { ...stationCrate("station/native/screen", () => "stillfail-screen.exe", "stillfail-screen.exe"), targets: ["win32-x64"], env: "STILLFAIL_SCREEN" },
+  // Windows' display as the station's desktop screen, what still.fail Helper is on macOS,
+  // with its optional LocalSystem service binary beside it for UAC / elevated windows / lock screen.
+  screen: withScreenService(stationCrate("station/native/screen", () => "stillfail-screen.exe", "stillfail-screen.exe")),
   // Linux's native display capture, OpenH264/JPEG encoding, and input helper.
   "screen-linux": { ...stationCrate("station/native/screen-linux", () => "stillfail-screen-linux", "stillfail-screen-linux"), targets: ["linux-x64", "linux-arm64"], env: "STILLFAIL_SCREEN_LINUX" },
   // For the station's tests: the Rust station's cold storage as a command (test/cold-compat.test.ts), and a member's

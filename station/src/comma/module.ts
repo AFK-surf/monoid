@@ -164,6 +164,12 @@ export const CommaLive = Layer.effectDiscard(
         const m = cloud.membership(ws ?? cloud.home() ?? "");
         return m === null ? hostname() : `${m.workspace_name} · ${m.name === "" ? hostname() : m.name}`;
       },
+      ownerEmail: (ws) => {
+        const state = cloud.rosterOf(ws ?? cloud.home() ?? null)?.state;
+        if (!state || state.members.size !== 1) return null;
+        const only = state.members.values().next().value;
+        return typeof only?.email === "string" ? only.email : null;
+      },
       workspaceMeta: (ws) => {
         const target = ws ?? cloud.home();
         if (target === null) return null;

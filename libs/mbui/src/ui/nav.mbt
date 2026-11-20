@@ -125,6 +125,10 @@ struct Nav[P] {
   // how far it goes, in widths or heights of its room, where that room was not known as it was told (never laid out):
   // how long it takes worked out once it is, from when it was told (Ctx::nav); none, known
   mut dur_way : Double?
+  // (the room its slide was laid out across as it set out, in points: a way turned back (Nav::pop_now of a push still
+  // coming in) goes in points, come_way_by; and what that way keeps of its turn)
+  mut slide_room : Double
+  slide_turn : ComeKept
   mut v0 : Double
   // the room it was last built in (Ctx::nav): how far a width or a height of its way is
   mut room_w : Double
@@ -252,6 +256,8 @@ pub fn[P] Nav::new(
     t0: -1.0,
     dur: 0.0,
     dur_way: None,
+    slide_room: 0.0,
+    slide_turn: come_kept(),
     v0: 0.0,
     room_w: 0.0,
     room_h: 0.0,
@@ -508,9 +514,15 @@ fn[P] Nav::go(
     None => (self.room_w, self.room_h)
   }
   let room = if rising { room_h } else { room_w }
+  self.slide_room = room
   // (a room not known (no frame has laid it out): no way is no length; how long, once it is known, Ctx::nav)
   self.dur_way = if room > 0.0 { None } else { Some((p1 - self.p).abs()) }
-  self.dur = move_ms((p1 - self.p).abs() * room)
+  // (set out away from where it goes (a push still coming in, popped): slowing to rest, then back, come_way_ms)
+  self.dur = if room > 0.0 && v * (p1 - self.p) < 0.0 {
+    come_way_ms(self.p * room, v * room, p1 * room, kept=self.slide_turn)
+  } else {
+    move_ms((p1 - self.p).abs() * room)
+  }
   self.v0 = v
   // told in a frame, it starts there, at its time (its end known as it is told); told between frames, at the next
   // frame that builds it (Ctx::nav)
@@ -1040,7 +1052,18 @@ fn[P] Nav::pop_now(self : Nav[P]) -> Bool {
     self.shown_told()
     return true
   }
-  if self.mode != 0 && self.mode != 3 {
+  // (one still coming in: turned back from where it is, as fast as it goes there, not put in place first)
+  let mut carry_v = 0.0
+  if self.mode == 1 && self.t0 >= 0.0 && self.leaving is None {
+    let now = match self.hosted {
+      Some(h) => (h.now)()
+      None => g().clock
+    }
+    let (cur_p, cur_v) = self.slid_motion_at(now)
+    self.p = cur_p
+    carry_v = cur_v
+    self.settle_swap()
+  } else if self.mode != 0 && self.mode != 3 {
     self.settle()
     if self.pages.length() < 2 {
       return false
@@ -1049,7 +1072,7 @@ fn[P] Nav::pop_now(self : Nav[P]) -> Bool {
   self.leaving = self.pages.pop()
   self.topped()
   self.told()
-  self.go(2, 1.0, brings=true)
+  self.go(2, 1.0, brings=true, v=carry_v)
   true
 }
 
@@ -1658,10 +1681,30 @@ fn[P] Nav::slide_end(self : Nav[P], c : Ctx) -> Double {
 /// Where its slide has the top page at `now`, the one way it is read (Nav::at as a frame is laid out, Nav::p_at as it
 /// is painted alone: the two read alike to the bit): its time gone on the moments' grid (gone_ms).
 fn[P] Nav::slid_at(self : Nav[P], now : Double) -> Double {
+  self.slid_motion_at(now).0
+}
+
+///|
+/// Where its slide has the top page at `now` (Nav::slid_at) and how fast it goes there (its widths per ms).
+fn[P] Nav::slid_motion_at(self : Nav[P], now : Double) -> (Double, Double) {
   let gone = @flex.time_gone(now, self.t0)
   let t = if self.dur <= 0.0 || gone >= self.dur { self.dur } else { dmax(gone, 0.0) }
-  let (x, _) = move_path(self.p0 - self.p1, self.v0, t, self.dur)
-  self.p1 + x
+  if self.slide_room > 0.0 && self.v0 * (self.p1 - self.p0) < 0.0 {
+    // (turned back: in points across its room, as long as Nav::go said)
+    let room = self.slide_room
+    let (pos, vel) = come_way_by(
+      self.p0 * room,
+      self.v0 * room,
+      self.p1 * room,
+      self.p1 * room,
+      t,
+      kept=self.slide_turn,
+    )
+    (pos / room, vel / room)
+  } else {
+    let (x, v) = move_path(self.p0 - self.p1, self.v0, t, self.dur)
+    (self.p1 + x, v)
+  }
 }
 
 ///|

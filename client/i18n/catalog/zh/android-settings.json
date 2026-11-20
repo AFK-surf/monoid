@@ -777,5 +777,7 @@
   "android-settings.vault.timeout.detail.fixed": "从批准时开始计时，使用不续期",
   "android-settings.vault.timeout.custom": "自定义",
   "android-settings.vault.timeout.method": "失效方式",
-  "android-settings.vault.timeout.nDays": "{n} 天"
+  "android-settings.vault.timeout.nDays": "{n} 天",
+  "android-settings.vault.ask.saveSharedNamed": "将存入团队共享密钥库「{name}」",
+  "android-settings.vault.ask.saveShared": "将存入 Workspace 密钥库（团队共享）"
 }

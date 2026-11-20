@@ -338,7 +338,11 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
       p.show(at_once=true, fn() {
         let (tabs, front) = side_shown(src, r)
         !side_own_bar_node(p, tabs, front, false)
-      }, fn(b) { side_bar_node(b, src, r, fn() { side_shown(src, r) }, false, tips) })
+      }, fn(b) {
+        side_bar_clip_node(b, src, at, fn(inner) {
+          side_bar_node(inner, src, r, fn() { side_shown(src, r) }, false, tips)
+        })
+      })
       let prev_front : Ref[(String, Int)?] = Ref(None)
       p.pick(at_once=true, fn() { history_in_front(src, r) }, fn(q, agent) {
         q.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
@@ -807,6 +811,43 @@ fn side_station_node(
         { back: None, top: 0.0, foot: 0.0, named: true }
       }, width~, tips~)
     })
+  })
+  |> ignore
+}
+
+///|
+/// Wraps a side panel's top bar (`make`) in a container that clips it clear of Windows' own window keys (`| - □ ×`)
+/// while the panel slides (`at() < side_whole`), without shrinking the bar's inner layout width.
+fn side_bar_clip_node(
+  parent : @view.View,
+  src : Source,
+  at : () -> Double,
+  make : (@view.View) -> Unit,
+) -> Unit {
+  if !@ui.window_keys_own() {
+    make(parent)
+    return
+  }
+  parent.box(fn(c) {
+    let sliding_win = fn() { at() < side_whole(src, c) - 0.5 }
+    c
+    .shrink(Is(0.0))
+    .clips(By(sliding_win))
+    .width(
+      By(fn() {
+        if sliding_win() {
+          Some(dmax(0.0, at() - @sf.window_keys_room(roots=@ui.tree_corner_roots_now())))
+        } else {
+          None
+        }
+      }),
+    )
+    |> ignore
+    c.box(fn(inner) {
+      inner.shrink(Is(0.0)).width(By(fn() { Some(side_whole(src, inner)) })) |> ignore
+      make(inner)
+    })
+    |> ignore
   })
   |> ignore
 }

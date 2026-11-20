@@ -125,6 +125,8 @@ pub fn not_there(Error) -> Bool
 
 pub let optional_calls : Array[String]
 
+pub fn parse_ws_refusal(String) -> (Int32, String)?
+
 pub fn person_key(String, String) -> String
 
 pub let protocol_version : Int32

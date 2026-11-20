@@ -879,6 +879,40 @@ test("a_windows_stations_running_as_administrator_is_said_with_how_a_change_goes
   assert.equal("elevation" in (p.decorate(topic, { counts: {} }, c) as J), false);
 });
 
+test("a_windows_stations_screen_service_is_said_with_how_a_change_goes_and_how_it_failed", () => {
+  const c = { now: 0, offsetMin: 0 };
+  const topic = { topic: "overview", station: "w/s" };
+  const shown = (screenService: J): J => (p.decorate(topic, { screenService }, c) as J).screenService;
+  const base = { on: false, running: false, canChange: true, available: true, manage: true };
+  let o = shown(base);
+  assert.deepEqual(o, {
+    on: false,
+    busy: false,
+    line: "远程查看屏幕时可显示并点击 UAC 弹窗、管理员窗口和锁屏界面；仅人工远程操作生效，agent 保持普通权限",
+    canChange: true,
+  });
+  assert.ok("ok" in conform("StationScreenService", o), JSON.stringify(conform("StationScreenService", o)));
+  // Windows UAC prompt up: switch moves to target, waiting.
+  o = shown({ ...base, step: "asking", want: true });
+  assert.deepEqual([o.on, o.busy, o.canChange], [true, true, false]);
+  assert.match(o.line, /需要有人在这台电脑前点「是」/);
+  assert.equal(shown({ ...base, on: true, running: true, step: "applying", want: false }).line, "正在应用系统服务更改");
+  // Installed but service not running.
+  assert.match(shown({ ...base, on: true, running: false }).line, /当前未运行/);
+  // Failed states.
+  o = shown({ ...base, failed: "unanswered", want: true });
+  assert.deepEqual([o.on, o.busy, o.canChange], [false, false, true]);
+  assert.match(o.failed, /^2 分钟内没人确认 UAC/);
+  assert.equal(shown({ ...base, failed: "declined" }).failed, "UAC 被拒绝，设置没有改变");
+  assert.equal(shown({ ...base, failed: "error", message: "拒绝访问" }).failed, "切换失败，设置没有改变：拒绝访问");
+  // Non-admin, missing binary, or non-manager cannot toggle.
+  assert.deepEqual([shown({ ...base, canChange: false }).canChange, shown({ ...base, canChange: false }).line], [false, "运行 station 的 Windows 账号不是管理员，无法安装系统服务"]);
+  assert.deepEqual([shown({ ...base, canChange: false, available: false }).canChange, shown({ ...base, canChange: false, available: false }).line], [false, "当前 station 版本不含系统屏幕服务组件，请先更新 station"]);
+  assert.equal(shown({ ...base, manage: false }).canChange, false);
+  // Not Windows, or older station: omitted.
+  assert.equal("screenService" in (p.decorate(topic, { counts: {} }, c) as J), false);
+});
+
 test("a_connect_says_where_it_is_reached_how_it_runs_and_what_switching_it_does", () => {
   const base: J = { id: "f1", name: "助手", kind: "feishu", mode: "single-session", requireMention: true, session: "s1", feishu: { appId: "cli_1", domain: "lark" }, bind: { runtime: "claude" } };
   const c = p.connect(base);

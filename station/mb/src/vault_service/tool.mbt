@@ -193,11 +193,6 @@ fn tool_run(
             _ => None
           },
           oauth: opt("oauth"),
-          scope: match gs(Some(args), "scope") {
-            Some("personal") => Some("personal")
-            Some("workspace") => Some("workspace")
-            _ => None
-          },
           person: person_of(args),
           cwd: home,
           quiet: None,

@@ -1853,3 +1853,65 @@ fn redirects_are_followed_only_when_asked() {
     let stream = asked(&shell, 96_322, "stream.open", from(Some("follow"))).unwrap();
     assert_eq!((stream["status"].clone(), stream["redirected"].clone()), (json!(200), json!(true)));
 }
+
+/// A WebSocket handshake refusal carries why the server refused it (Slack's `handshake-msg` header, Comma's JSON
+/// `error`/`message`, or plain body text collapsed to one line and capped at 300 characters), while an empty body
+/// keeps the bare `websocket refused (<status>)` form.
+#[test]
+fn ws_open_preserves_handshake_refusal_words() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let long_zh_body = format!("  {}\n\t{}  ", "冲突提示".repeat(80), "尾部");
+    let expected_zh = format!("{}…", "冲突提示".repeat(80).chars().take(299).collect::<String>());
+    let long_zh_for_server = long_zh_body.clone();
+    let (addr, _server) = served(&shell, move |listener| {
+        let long_zh = long_zh_for_server.clone();
+        async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let long_zh = long_zh.clone();
+                tokio::spawn(async move {
+                    let head = head_of(&mut socket).await;
+                    let answer: Vec<u8> = if head.starts_with("GET /comma-conflict ") {
+                        let body = r#"{"error":"this still.fail workspace is connected to station Alpha already"}"#;
+                        format!("HTTP/1.1 409 Conflict\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
+                    } else if head.starts_with("GET /slack-header ") {
+                        let body = r#"{"error":"ignored when handshake-msg is present"}"#;
+                        format!("HTTP/1.1 403 Forbidden\r\nhandshake-msg:  too_many_websockets \r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
+                    } else if head.starts_with("GET /empty-502 ") {
+                        b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()
+                    } else if head.starts_with("GET /long-utf8 ") {
+                        format!("HTTP/1.1 409 Conflict\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{long_zh}", long_zh.len()).into_bytes()
+                    } else {
+                        let body = r#"{"message":"  line one\n\tline two  "}"#;
+                        format!("HTTP/1.1 400 Bad Request\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
+                    };
+                    let _ = socket.write_all(&answer).await;
+                });
+            }
+        }
+    });
+    let open = |id: u64, path: &str| {
+        asked(&shell, id, "ws.open", json!({ "url": format!("ws://{addr}{path}"), "headers": [] }))
+    };
+    assert_eq!(
+        open(96_401, "/comma-conflict"),
+        Err("websocket refused (409): this still.fail workspace is connected to station Alpha already".to_string())
+    );
+    assert_eq!(
+        open(96_402, "/slack-header"),
+        Err("websocket refused (403): too_many_websockets".to_string())
+    );
+    assert_eq!(
+        open(96_403, "/empty-502"),
+        Err("websocket refused (502)".to_string())
+    );
+    assert_eq!(
+        open(96_404, "/long-utf8"),
+        Err(format!("websocket refused (409): {expected_zh}"))
+    );
+    assert_eq!(
+        open(96_405, "/message-field"),
+        Err("websocket refused (400): line one line two".to_string())
+    );
+}

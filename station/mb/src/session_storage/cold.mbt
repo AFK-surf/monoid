@@ -171,11 +171,13 @@ async fn Storage::follow_in_use(self : Storage) -> Unit {
 }
 
 ///|
-/// An archived session's own directory, while nothing needs it (cold.ts `archiveRoom`).
-pub async fn Storage::archive_room(self : Storage, key : String) -> String? {
+/// A session's own directory, while nothing needs it: archived when `require_archived` is true (else unarchived),
+/// not running, and no other in-use session or active job using its directory.
+async fn Storage::cleanable_room(self : Storage, key : String, require_archived~ : Bool) -> String? {
   guard self.session(key) is Some(row) else { return None }
   guard self.rooms.get(str(row, "workspace").unwrap_or("")) is Some(Some(dir)) else { return None }
-  if nullish(get(row, "archivedAt")) || get(row, "running") is Some(True) || self.st.hub.process_state(key) == "running" {
+  let archived_ok = if require_archived { !nullish(get(row, "archivedAt")) } else { nullish(get(row, "archivedAt")) }
+  if !archived_ok || get(row, "running") is Some(True) || self.st.hub.process_state(key) == "running" {
     return None
   }
   for s in self.st.store.sessions_in_use() {
@@ -192,6 +194,22 @@ pub async fn Storage::archive_room(self : Storage, key : String) -> String? {
     return None
   }
   Some(dir)
+}
+
+///|
+/// An archived session's own directory, while nothing needs it (cold.ts `archiveRoom`).
+pub async fn Storage::archive_room(self : Storage, key : String) -> String? {
+  self.cleanable_room(key, require_archived=true)
+}
+
+///|
+/// Whether an archived session still lacks its `cold` mark and is eligible to be packed now.
+pub async fn Storage::needs_pack(self : Storage, key : String) -> Bool {
+  self.find_room(key)
+  match self.archive_room(key) {
+    Some(dir) => !self.fs.there(self.fs.join([dir, "cold"]))
+    None => false
+  }
 }
 
 ///|
@@ -347,22 +365,24 @@ async fn Files::rebuild_of(self : Files, dir : String) -> Array[(String, Double)
 }
 
 ///|
-async fn Storage::still_archived(self : Storage, key : String) -> Bool {
+async fn Storage::still_cleanable(self : Storage, key : String, require_archived~ : Bool) -> Bool {
   match self.session(key) {
-    Some(row) => !nullish(get(row, "archivedAt")) && !(get(row, "running") is Some(True))
+    Some(row) => {
+      let archived_ok = if require_archived { !nullish(get(row, "archivedAt")) } else { nullish(get(row, "archivedAt")) }
+      archived_ok && !(get(row, "running") is Some(True)) && self.st.hub.process_state(key) != "running"
+    }
     None => false
   }
 }
 
 ///|
-/// Removes what a build or an install makes again from an archived session's own directory: the bytes removed.
-pub async fn Storage::clean_rebuildable(self : Storage, key : String) -> Double {
+async fn Storage::clean_rebuildable_in(self : Storage, key : String, require_archived~ : Bool) -> Double? {
   self.find_room(key)
-  guard self.archive_room(key) is Some(dir) else { return 0.0 }
+  guard self.cleanable_room(key, require_archived~) is Some(dir) else { return None }
   let mut freed = 0.0
   for pair in self.fs.rebuild_of(dir) {
     let (path, bytes) = pair
-    if !self.still_archived(key) || self.has_jobs(key, dir) {
+    if !self.still_cleanable(key, require_archived~) || self.has_jobs(key, dir) {
       break
     }
     if !self.fs.safe_to_remove(path) {
@@ -375,9 +395,27 @@ pub async fn Storage::clean_rebuildable(self : Storage, key : String) -> Double 
     }
   }
   if freed > 0.0 {
-    self.log("info", "hub", "rebuildable files of an archived session cleaned", jo([("session", js(key)), ("freed", jn(freed))]))
+    let msg = if require_archived {
+      "rebuildable files of an archived session cleaned"
+    } else {
+      "rebuildable files of an idle session cleaned"
+    }
+    self.log("info", "hub", msg, jo([("session", js(key)), ("freed", jn(freed))]))
   }
-  freed
+  Some(freed)
+}
+
+///|
+/// Removes what a build or an install makes again from an archived session's own directory: the bytes removed.
+pub async fn Storage::clean_rebuildable(self : Storage, key : String) -> Double {
+  self.clean_rebuildable_in(key, require_archived=true).unwrap_or(0.0)
+}
+
+///|
+/// Removes rebuildable build/install directories from an idle unarchived session's own directory without packing,
+/// marking cold, or touching transcripts: Some(bytes) when measured, None when skipped before measuring.
+pub async fn Storage::clean_idle_rebuildable(self : Storage, key : String) -> Double? {
+  self.clean_rebuildable_in(key, require_archived=false)
 }
 
 ///|

@@ -530,119 +530,26 @@ fn background_here(host : @host.Host) -> @ops_platform.Background {
 ///|
 /// The copies' export in a process of its own (replica/runner.ts `exportThread`: `--builder replica-export`), started
 /// as the station's background work is (mb-reader.ts `BACKGROUND_BUILDERS`, under `platform.backgrounded`), so its
-/// reads, hashing, compressing and writing yield the disk and the CPU to the foreground. Asked a step at a time on its
-/// stdin, `{id, type, now, …}`, answered `{id, answer}` or `{id, error}` a line each; one that ended is started again
-/// at the next ask, told the workspaces again.
+/// reads, hashing, compressing and writing yield the disk and the CPU to the foreground; asked as replica_coord's
+/// `process_runner` asks it, which alone reads what it says (its end too, so a close waits for it however an ask is).
 fn P55::export_runner(self : P55, db : String, replica : String, data : String, origin : String) -> @replica_coord.Runner {
-  let bus = self.bus
-  let host = bus.host
-  let proc : Ref[Proc?] = Ref(None)
-  let pending = @buffer.Buffer()
-  let places : Ref[Json?] = Ref(None)
-  let closed = Ref(false)
-  let next = Ref(0)
-  let one = @effect.Semaphore::new(1)
+  let host = self.bus.host
   let how = background_here(host)
   let args = ["--builder", "replica-export", "--db", db, "--replica", replica, "--data-dir", data, "--origin", origin, "--sep", sep()]
-  let line_of = async fn(p : Proc) -> String {
-    while true {
-      let had = pending.to_bytes()
-      let mut nl : Int? = None
-      for i = 0; i < had.length(); i = i + 1 {
-        if had[i] == b'\n' {
-          nl = Some(i)
-          break
+  let start = fn() -> @replica_coord.ExportProcess raise {
+    let (program, argv) = @ops_platform.backgrounded_on(how, self.bus.argv0, args)
+    let p = spawn(host, program, argv, stdin_piped=true, stdout=Piped, stderr=Ignored)
+    {
+      write: b => p.write(b),
+      end_input: () => p.end_input(),
+      next: async fn() {
+        match p.events.take() {
+          Out(b) => Said(b)
+          Err(_) => Other
+          Exit(code, signal) => Ended(code, signal)
         }
-      }
-      match nl {
-        Some(i) => {
-          let line = @utf8.decode_lossy(had[0:i].to_owned())
-          let rest = had[i + 1:].to_owned()
-          pending.reset()
-          pending.write_bytes(rest)
-          return line
-        }
-        None => ()
-      }
-      match p.events.take() {
-        Out(b) => pending.write_bytes(b)
-        Err(_) => ()
-        Exit(code, signal) => {
-          proc.val = None
-          pending.reset()
-          raise BusError("the copies' export ended (\{code}, \{signal})")
-        }
-      }
-    }
-    ""
-  }
-  let ask_now = async fn(p : Proc, kind : String, fields : Array[(String, Json)]) -> @jsjson.JValue {
-    next.val += 1
-    let id = next.val
-    let m : Map[String, Json] = { "id": Json::number(id.to_double()), "type": Json::string(kind), "now": Json::number(wall_ms().to_double()) }
-    for f in fields {
-      m[f.0] = f.1
-    }
-    if !p.write(@utf8.encode(Json::object(m).stringify() + "\n")) {
-      proc.val = None
-      raise BusError("the copies' export took nothing more")
-    }
-    while true {
-      let line = line_of(p)
-      guard attempt(() => @jsjson.parse(line)) is Ok(said) else { continue }
-      match said.get("failed") {
-        Some(Str(why)) => {
-          proc.val = None
-          raise BusError("the copies' thread failed: \{@jsjson.sanitize_str(why)}")
-        }
-        _ => ()
-      }
-      guard said.get("id") is Some(Num(n)) && n == id.to_double() else { continue }
-      match said.get("error") {
-        Some(Str(e)) => raise BusError(@jsjson.sanitize_str(e))
-        _ => return said.get("answer").unwrap_or(Null)
-      }
-    }
-    Null
-  }
-  let started = async fn() -> Proc {
-    if closed.val {
-      raise BusError("the copies' thread is closed")
-    }
-    match proc.val {
-      Some(p) => p
-      None => {
-        let (program, argv) = @ops_platform.backgrounded_on(how, bus.argv0, args)
-        let p = spawn(host, program, argv, stdin_piped=true, stdout=Piped, stderr=Ignored)
-        proc.val = Some(p)
-        pending.reset()
-        if places.val is Some(pl) { ignore(ask_now(p, "places", [("places", pl)])) }
-        p
-      }
+      },
     }
   }
-  let ask = async fn(kind : String, fields : Array[(String, Json)]) -> @jsjson.JValue {
-    one.with_permit(async fn() { ask_now(started(), kind, fields) })
-  }
-  {
-    places: async fn(p) {
-      places.val = Some(of_jv(p))
-      ignore(ask("places", [("places", of_jv(p))]))
-    },
-    pass: async fn(told) { ask("pass", [("told", of_jv(told))]) },
-    new_generations: async fn(after) { ignore(ask("newGenerations", [("after", Json::number(after))])) },
-    sources: async fn(hashes) { ask("sources", [("hashes", Json::array(hashes.map(Json::string(_))))]) },
-    close: async fn() {
-      closed.val = true
-      match proc.val {
-        Some(p) => {
-          proc.val = None
-          ignore(p.write(@utf8.encode("{\"id\":0,\"type\":\"close\"}\n")))
-          p.end_input()
-          ignore(p.finished())
-        }
-        None => ()
-      }
-    },
-  }
+  @replica_coord.process_runner(start, () => wall_ms().to_double())
 }

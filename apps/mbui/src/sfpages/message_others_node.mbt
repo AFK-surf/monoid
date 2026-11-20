@@ -77,6 +77,17 @@ fn message_others_node(
               // (its menu beside its room, which is there whether the ⋯ shows or not: open while it is)
               let open = fn() { @sf.presented_from(Node(room)) }
               menu_on.val = open
+              // (the message's key its ⋯ lit, let go as its menu closes however it closes: an item chosen too (多选,
+              // 复制), which @sf.menu's `gone` is not told of)
+              let lit_for = Ref("")
+              room.reacts(open, fn(on) {
+                if !on && lit_for.val != "" {
+                  if @signals.untracked(fn() { @sfbase.message_more.get() }) == lit_for.val {
+                    @sfbase.message_more.set("")
+                  }
+                  lit_for.val = ""
+                }
+              }, at_start=false)
               // (at once, as the old row's hand_shown: shown by where the hand is, no coming or going of its own, so
               // the ⋯ of a row the pointer left is gone as it leaves, not still there beside the next's)
               room.show(fn() { @sf.hovered_item_node(row) || open() }, at_once=true, fn(m) {
@@ -84,11 +95,11 @@ fn message_others_node(
                   // (the message lit while it shows, by its key: every piece of a long one, as its right click's)
                   let k = @signals.untracked(s.key)
                   @sfbase.message_more.set(k)
+                  lit_for.val = k
                   @sf.menu(
                     @sfbase.message_items(@signals.untracked(s.link), @signals.untracked(s.words), s.go),
                     from=Node(room),
                     along=End,
-                    gone=fn() { if @signals.untracked(fn() { @sfbase.message_more.get() }) == k { @sfbase.message_more.set("") } },
                   )
                 }, size=msg_share_side, tips=here.tips)
                 |> ignore

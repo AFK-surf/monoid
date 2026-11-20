@@ -578,6 +578,23 @@ test("run: the vault's SSH agent and its HTTPS proxy, and a device's TCP on any 
     rigDevice.close();
     assert.equal(rigReached, 1);
     assert.equal((await ask(door, "test.ioHeld")).answer, held, "the rig's device connection let go");
+    // a rig's device through a chat's tunnel (P5-1's `HereLocal` `device` on a rig: `Rig::device`'s socket carried
+    // with the tunnel): what came with the ask first, then both ways, its end told the rig, nothing of it left
+    let rigHeard = "";
+    const rigTunnelEnd = createServer((s) => {
+      s.write("more");
+      s.on("data", (d) => {
+        rigHeard += d;
+        if (rigHeard.includes("echo:first") && rigHeard.includes("more", rigHeard.indexOf("echo:"))) s.end();
+      });
+    });
+    await new Promise<void>((r) => rigTunnelEnd.listen(0, "127.0.0.1", () => r()));
+    const rigEcho = { id: "0123456789abcdef", name: "rig echo", kind: "tcp", target: `${lan ?? "127.0.0.1"}:${echoPort}` };
+    assert.deepEqual(await ask(door, "test.rigTunnel", [rigEcho, (rigTunnelEnd.address() as any).port, "first"]), { answer: true });
+    rigTunnelEnd.close();
+    assert.ok(rigHeard.startsWith("echo:first"), rigHeard);
+    assert.match(rigHeard, /echo:.*more/);
+    assert.equal((await ask(door, "test.ioHeld")).answer, held, "the rig's device and its tunnel let go once it ended");
     // a share's wait for the station taken out of its workspace: said as the control plane tells the removal, while
     // the station runs, its listener let go
     assert.deepEqual(await ask(door, "test.removedLater"), { answer: { waited: true, running: true, letGo: true } });

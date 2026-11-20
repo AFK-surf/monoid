@@ -15,10 +15,15 @@ import { CommaTasks } from "./tasks.ts";
 type Json = any;
 
 /// A Comma connect as config.json has it, as far as its connection goes.
-export type CommaConnect = { id: string; enabled: boolean; server: string; token: string; workspace?: string | null };
-type ScopedConnect = CommaConnect & { scope: string | null; scopeVersion: number };
+export type CommaConnect = { id: string; enabled: boolean; server: string; token: string; workspace?: string | null; ownerEmail?: string | null };
+type ScopedConnect = CommaConnect & { scope: string | null; scopeVersion: number; resolvedOwnerEmail: string | null };
 
 const nonEmpty = (v: unknown): string | null => (typeof v === "string" && v !== "" ? v : null);
+const ownerEmailOf = (v: unknown): string | null => {
+  if (typeof v !== "string") return null;
+  const email = v.trim().toLowerCase();
+  return /^[^\s@]+@[^\s@]+$/.test(email) && email.length <= 200 ? email : null;
+};
 
 export function commaConnects(raw: Json): CommaConnect[] {
   return (Array.isArray(raw?.connects) ? raw.connects : [])
@@ -29,6 +34,7 @@ export function commaConnects(raw: Json): CommaConnect[] {
       server: nonEmpty(c?.comma?.server) ?? "",
       token: nonEmpty(c?.comma?.token) ?? "",
       workspace: nonEmpty(c?.workspace),
+      ownerEmail: ownerEmailOf(c?.createdBy?.id),
     }));
 }
 
@@ -73,6 +79,9 @@ export type CommaOptions = ConnectsOptions & {
   /// What the station calls itself to Comma for a connect of workspace `ws` (null: the home one): that workspace's
   /// name and its own there, so the still.fail stations Comma lists say which workspace each is. Default: the host's name.
   name?: (ws: string | null) => string;
+  /// Fallback owner email for a connect whose config has no `createdBy` email (only when unambiguous, e.g. a
+  /// single-member workspace).
+  ownerEmail?: (ws: string | null) => string | null;
   /// Metadata of workspace `ws` (null: the home one) reported in capabilities.stillfail_workspace.
   workspaceMeta?: (ws: string | null) => CommaWorkspaceMeta | null;
   /// Notifies when workspace metadata may have changed.
@@ -113,7 +122,7 @@ export function makeComma(options: CommaOptions) {
         read: (ref, after, limit) => scoped().chats.read(ref, after, limit),
         say: (ref, text, key, requester, connect) => scoped().chats.say(ref, text, key, requester, connect),
       } : null;
-      return new CommaSurface({ connect: c.id, server: c.server, token: c.token, name: options.name?.(c.workspace ?? null) ?? hostname(), workspace, tasks: t, store: options.store,
+      return new CommaSurface({ connect: c.id, server: c.server, token: c.token, name: options.name?.(c.workspace ?? null) ?? hostname(), workspace, ownerEmail: c.resolvedOwnerEmail, tasks: t, store: options.store,
         models: () => options.models?.(c.id) ?? [], book, stats: isIn ? () => scoped().indexes : options.empty,
         chats, inScope, previousExited: options.previousExited,
         workspaceMeta: isIn && options.workspaceMeta ? () => options.workspaceMeta!(c.workspace ?? null) : undefined,
@@ -122,9 +131,14 @@ export function makeComma(options: CommaOptions) {
   const connects = makeConnects<ScopedConnect>(options, {
     kind: "comma",
     names: NAMES_FILE.comma,
-    connects: (raw) => commaConnects(raw).map((c) => ({ ...c, scope: c.workspace ?? options.home(), scopeVersion: options.scopeVersion() })),
-    // A workspace edit changes what this connection is allowed to see, even if its token is unchanged.
-    credentials: (c) => (c.server === "" || c.token === "" ? null : JSON.stringify([c.server, c.token, c.workspace ?? null, c.scope, c.scopeVersion])),
+    connects: (raw) => commaConnects(raw).map((c) => ({
+      ...c,
+      scope: c.workspace ?? options.home(),
+      scopeVersion: options.scopeVersion(),
+      resolvedOwnerEmail: c.ownerEmail ?? ownerEmailOf(options.ownerEmail?.(c.workspace ?? null)),
+    })),
+    // A workspace or owner edit changes what this connection sends or is allowed to see, even if its token is unchanged.
+    credentials: (c) => (c.server === "" || c.token === "" ? null : JSON.stringify([c.server, c.token, c.workspace ?? null, c.scope, c.scopeVersion, c.resolvedOwnerEmail])),
     create: (c, book) => create(c, book, tasks),
     seen: () => null,
   });

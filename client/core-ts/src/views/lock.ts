@@ -2602,6 +2602,23 @@ export function askPerson(inner: Inner, reason: string, code = "lock_refused"): 
     e.message === "no_device_lock" ? Effect.void : Effect.fail(CoreError.refused(e, code)));
 }
 
+/// Alphabet for deterministic 6-character device verification codes (32 chars, omitting 0/O/1/I).
+const CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+
+/// Deterministic 6-character device verification code (`XXX-XXX`) derived from the device's cryptographic id
+/// (`stillfail-device-code/v1:<deviceId>`), identical on both requesting and approving devices without wire changes.
+export function deviceVerifyCode(deviceId: string): string {
+  if (!deviceId) return "";
+  const d = sha256(utf8(`stillfail-device-code/v1:${deviceId}`));
+  const bits = ((d[0]! << 24) | (d[1]! << 16) | (d[2]! << 8) | d[3]!) >>> 0;
+  let out = "";
+  for (let i = 0; i < 6; i++) {
+    if (i === 3) out += "-";
+    out += CODE_ALPHABET[(bits >>> (27 - i * 5)) & 31]!;
+  }
+  return out;
+}
+
 /// A device's name as people know it, in a line of its own: which machine it is, then which app (左子健的 MacBook Air ·
 /// still.fail 桌面版); a name of its own as it is; else what kind of client it is (an older client's, said so).
 export function deviceText(d: { kind: string; label: string; older?: boolean }): string {

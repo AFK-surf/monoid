@@ -38,14 +38,14 @@
 /* An agent as an avatar: its maker's 12 logo on a disc of ink at 7.5%. */
 .mk-av { position: relative; display: inline-grid; place-items: center; flex: none; width: 18px; height: 18px; border-radius: 50%; background: var(--nb); }
 .mk-av > .mk-lg { --s: 12px; }
-/* Chat marks, in a 10 slot before the title: done / your turn (blue), needs you (red), working (the app's amber ring: a
-   track at 22% and a third of it lit, stepping round). The page and its pictures are light only: the app's day ink. */
+/* Chat marks, in a 10 slot before the title: done / your turn (blue), needs you (red), working (the app's amber spokes,
+   stepping). The page and its pictures are light only: the app's day ink. */
 .mk-dot { flex: none; width: 8px; height: 8px; margin: 0 1px; border-radius: 50%; background: #3B82F6; }
 .mk-dot.r { background: #E5484D; }
 .mk-slot { flex: none; width: 10px; }
-.mk-busy { --ring: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='3.8' stroke-linecap='round'><circle cx='12' cy='12' r='8.5' stroke-opacity='.22'/><path d='M12 3.5A8.5 8.5 0 0 1 19.36 16.25'/></svg>");
+.mk-busy { --spokes: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.9' stroke-linecap='round'><path d='M12 7.2V2.4'/><path d='M15.39 8.61l3.4-3.4' stroke-opacity='.2'/><path d='M16.8 12h4.8' stroke-opacity='.2'/><path d='M15.39 15.39l3.4 3.4' stroke-opacity='.25'/><path d='M12 16.8v4.8' stroke-opacity='.32'/><path d='M8.61 15.39l-3.4 3.4' stroke-opacity='.42'/><path d='M7.2 12H2.4' stroke-opacity='.55'/><path d='M8.61 8.61l-3.4-3.4' stroke-opacity='.75'/></svg>");
   display: inline-block; flex: none; width: 10px; height: 10px; background: #E08A00;
-  -webkit-mask: var(--ring) center / 100% no-repeat; mask: var(--ring) center / 100% no-repeat; }
+  -webkit-mask: var(--spokes) center / 100% no-repeat; mask: var(--spokes) center / 100% no-repeat; }
 /* The running ring: eight dashes 3px outside the avatar in the product's orange, the lead bright and the tail fading. */
 .mk-av.ag::after { content: ""; position: absolute; inset: -3px; background: #DC5929;
   --segments: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.5'><path d='M8.99 1.16A11.25 11.25 0 0 1 15.01 1.16'/><path d='M17.54 2.21A11.25 11.25 0 0 1 21.79 6.46' stroke-opacity='.2'/><path d='M22.84 8.99A11.25 11.25 0 0 1 22.84 15.01' stroke-opacity='.2'/><path d='M21.79 17.54A11.25 11.25 0 0 1 17.54 21.79' stroke-opacity='.25'/><path d='M15.01 22.84A11.25 11.25 0 0 1 8.99 22.84' stroke-opacity='.32'/><path d='M6.46 21.79A11.25 11.25 0 0 1 2.21 17.54' stroke-opacity='.42'/><path d='M1.16 15.01A11.25 11.25 0 0 1 1.16 8.99' stroke-opacity='.55'/><path d='M2.21 6.46A11.25 11.25 0 0 1 6.46 2.21' stroke-opacity='.75'/></svg>");
@@ -138,8 +138,8 @@
 .mk-faces > .mk-face + .mk-face { margin-left: -4px; box-shadow: 0 0 0 1.5px var(--cv); }
 .mk-bar > .end { margin-left: auto; display: flex; gap: 2px; color: var(--mu); }
 .mk-bar > .end > .mk-i { --s: 16px; margin: 8px; }
-/* The agent·station pill: logo | station name, the online dot (10 with a 2 ring of the page) on its corner; the working
-   ring on the logo while it works. */
+/* The agent·station pill: logo | station name, the online dot (10 with a 2 ring of the page) on its corner; spokes on
+   the logo while it works. */
 .mk-pill { position: relative; flex: none; display: inline-flex; align-items: center; height: 20px; border-radius: 7.5px; background: var(--nb); font-size: 12px; line-height: 20px; color: var(--mu); }
 .mk-pill > .lg { position: relative; display: grid; place-items: center; width: 20px; height: 20px; }
 .mk-pill > .lg > .mk-busy { position: absolute; right: -1px; bottom: -1px; width: 8px; height: 8px; }

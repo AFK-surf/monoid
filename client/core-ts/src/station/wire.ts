@@ -4,12 +4,12 @@ import { Effect, Scope } from "effect";
 import { CoreError, asCoreError } from "../error.ts";
 import type { Host, Pull } from "../host.ts";
 import { t } from "../i18n.ts";
-import type { LinkNet, RequestHead, SocketOut } from "../mesh.ts";
+import type { LinkNet, PeerDiag, RequestHead, SocketOut } from "../mesh.ts";
 import type { StationAddr } from "./addr.ts";
 
 /// A request's head as it goes to a station, how a link to one runs and the client's half of a socket stream: the
 /// mesh's own (mesh.ts), said here for what asks a station.
-export type { LinkNet, RequestHead, SocketOut };
+export type { LinkNet, PeerDiag, RequestHead, SocketOut };
 
 /// A station's answer: status, headers, and the body as it arrives (open while the request's scope is); how it came
 /// (`relay`, `direct`), when known.
@@ -79,6 +79,8 @@ export interface StationWire {
   net?(station: StationAddr): LinkNet | null;
   /// Number of fast bulk lanes available to the station for concurrent striped transfers.
   bulkLanes?(station: StationAddr): number;
+  /// Local connection diagnostics for the station; null where there is no mesh.
+  diag?(station: StationAddr): PeerDiag | null;
   /// Measures the ways to the station now.
   measure?(station: StationAddr): Effect.Effect<void, CoreError>;
   /// A preview page's WebSocket. Only the mesh carries one.

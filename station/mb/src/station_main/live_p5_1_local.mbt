@@ -153,6 +153,25 @@ fn P51::here_local(self : P51) -> @gate.HereLocal {
     forwarded: Some(port => (bus.forwarded_port.val)(port)),
     allowed: None,
     device: Some(async fn(peer, ws, session, device, probe) {
+      // A rig's devices are reached through its grants (rig/main.ts: `rig.device`, refused while it is starting), the
+      // chat's use of one logged, its connection cut once its grant ends; a whole station's need none (all its chats'
+      // alike: devices/connect.ts through the devices' slice).
+      if bus.as_rig() {
+        let socket = @rigs_mode.mesh_device(self.rig, peer, ws, session, device, probe) catch {
+          @rigs_mode.DeviceRefused(status, m) => raise @gate.DeviceRefused(status, m)
+          e => raise e
+        }
+        guard socket is Some(socket) else { return None }
+        return Some(async fn(stream, carry) {
+          let tunnel = shell_handle(host, stream, carry)
+          (socket.pipe)(tunnel) catch {
+            e => {
+              p51_log("WARN", "devices", "a device's connection ended", fields={ "error": Json::string("\{e}") })
+              (socket.destroy)()
+            }
+          }
+        })
+      }
       let ask : Json = {
         "peer": Json::string(peer),
         "workspace": Json::string(ws),

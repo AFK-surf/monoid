@@ -189,6 +189,7 @@ function mbRoutes(): Map<string, string> {
 /// condition it is matched by there.
 const MATCHED: Record<string, [string, RegExp]> = {
   "PUT ^/elevation$": ["rigs_mode/elevation.mbt", /meth == "PUT" && path == "\/elevation"/],
+  "PUT ^/screen-service$": ["rigs_mode/screen_service.mbt", /meth == "PUT" && path == "\/screen-service"/],
   "POST ^/move$": ["move_coord/routes.mbt", /method_: "POST", matches: p => is_path\(p, "\/move"\)/],
   "POST ^/move/back$": ["move_coord/routes.mbt", /is_path\(p, "\/move\/back"\)/],
   "POST ^/move/stop$": ["move_coord/routes.mbt", /is_path\(p, "\/move\/stop"\)/],

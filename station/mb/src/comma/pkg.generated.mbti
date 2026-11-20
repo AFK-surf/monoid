@@ -196,6 +196,8 @@ pub fn workspace_db_name(String) -> String
 
 pub fn workspace_index(String, String, () -> Bool, () -> Int32, async (Double, Double) -> ReadRows, ((Bool) -> Unit) -> () -> Unit, Io, @effect.Runtime) -> (CommaStats, CommaIndexes) raise
 
+pub fn workspace_meta_of(@jsjson.JValue, String, String) -> @jsjson.JValue
+
 pub fn workspace_read(WorkspaceReads) -> async (Double, Double) -> ReadRows
 
 pub fn ws_j((String, Bool)) -> @jsjson.JValue
@@ -230,6 +232,7 @@ pub(all) struct CommaConnect {
   server : String
   token : String
   workspace : String?
+  owner_email : String?
 }
 pub fn CommaConnect::to_j(Self) -> @jsjson.JValue
 
@@ -256,6 +259,7 @@ pub async fn CommaLive::say_handler(Self, String, @jsjson.JValue, String?) -> @j
 pub fn CommaLive::scope(Self, String) -> (CommaIndexes, CommaChats) raise
 pub fn CommaLive::scope_version(Self) -> Int32
 pub fn CommaLive::within(Self, String) -> Bool
+pub fn CommaLive::workspace_meta(Self, String?) -> @jsjson.JValue?
 
 pub(all) struct CommaOptions {
   data : String
@@ -272,6 +276,8 @@ pub(all) struct CommaOptions {
   on_scope_change : (() -> Unit) -> () -> Unit
   previous_exited : async () -> Unit
   name : ((String?) -> String)?
+  workspace_meta : ((String?) -> @jsjson.JValue?)?
+  on_workspace_meta_change : ((() -> Unit) -> () -> Unit)?
   reconcile : async () -> Unit
   close_connects : async () -> Unit
 }
@@ -324,6 +330,7 @@ pub fn CommaSurface::new(SurfaceOptions, Io, @effect.Runtime) -> Self
 pub fn CommaSurface::of_workspace(Self) -> String?
 pub async fn CommaSurface::post(Self, String, String, String, Array[Attachment], card? : @jsjson.JValue?) -> String
 pub fn CommaSurface::session_link(Self) -> String?
+pub fn CommaSurface::set_handler(Self, async (@jsjson.JValue) -> Unit) -> Unit
 pub fn CommaSurface::stands_at(Self, String, String, String, String?) -> Unit
 
 pub struct CommaTasks {
@@ -522,6 +529,7 @@ pub(all) struct SurfaceOptions {
   token : String
   name : String
   workspace : String?
+  owner_email : String?
   tasks : CommaTasks
   store : SurfaceStore
   models : () -> Array[@jsjson.JValue]
@@ -530,6 +538,8 @@ pub(all) struct SurfaceOptions {
   chats : CommaChats?
   previous_exited : async () -> Unit
   in_scope : () -> Bool
+  workspace_meta : (() -> @jsjson.JValue?)?
+  on_workspace_meta_change : ((() -> Unit) -> () -> Unit)?
 }
 
 pub(all) struct SurfaceStore {

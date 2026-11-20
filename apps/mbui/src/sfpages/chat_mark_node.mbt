@@ -3,7 +3,7 @@
 
 ///|
 /// A chat's mark (chat_mark's) in `parent` as `tone` says it now (busy, done, alert, wait; anything else none): a dot 8
-/// across, blue or red, or at work a yellow ring stepping round in 10. One that comes while it shows fades in over
+/// across, blue or red, or at work yellow spokes stepping round in 10. One that comes while it shows fades in over
 /// @sf.dur_ms (140 ms Out, no scale); one there as it is made does not.
 pub fn chat_mark_node(parent : @view.View, tone : () -> String) -> Unit {
   let pop = @motion.NodeWay::new(1.0)
@@ -44,7 +44,7 @@ pub fn chat_mark_node(parent : @view.View, tone : () -> String) -> Unit {
           .radius(Is(1.0e6))
           .ground(By(fn() { @ui.tree_theme().color(if which == 1 { @sf.mark_blue } else { @sf.mark_red }) }))
           |> ignore
-        3 => @sf.work_ring_node(k, mark_busy_side, @sf.mark_yellow) |> ignore
+        3 => @sf.spokes_node(k, mark_busy_side, @sf.mark_yellow) |> ignore
         _ => ()
       }
     })

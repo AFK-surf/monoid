@@ -1218,7 +1218,7 @@ fn fixture_answer(f : Fixture, name : String, params : Map[String, Json], versio
       match fixture_topic_inner(f, "stations", { "scope": Json::string(ws) }) {
         Some(Array(list)) =>
           for x in list {
-            if text(Some(x), "station") == address && flag(Some(x), "online") {
+            if text(Some(x), "station") == address {
               net = field(Some(x), "net")
             }
           }
@@ -1227,6 +1227,24 @@ fn fixture_answer(f : Fixture, name : String, params : Map[String, Json], versio
       // (answered whatever it has, as the core does: a station that says no network, none, client/core-ts views.ts
       // stationNet's `ok: null`)
       Some(net.unwrap_or(Json::null()))
+    }
+    "stationDiag" => {
+      let address = text(Some(Json::object(params)), "station")
+      let ws = match address.find("/") {
+        Some(i) => address.exact_view(end=i).to_owned()
+        None => address
+      }
+      let mut diag = None
+      match fixture_topic_inner(f, "stations", { "scope": Json::string(ws) }) {
+        Some(Array(list)) =>
+          for x in list {
+            if text(Some(x), "station") == address {
+              diag = field(Some(x), "diag")
+            }
+          }
+        _ => ()
+      }
+      Some(diag.unwrap_or(Json::null()))
     }
     _ => value
   }

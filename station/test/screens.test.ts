@@ -1763,6 +1763,13 @@ test("Windows' desktop: a stillfail-screen process a view, asked for each frame,
   const capped = await desktop.open({ maxWidth: 1280, maxHeight: 800, codecs: ["h264"], fps: 120 });
   assert.equal(readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l)).at(-1).fps, 120);
   capped.close();
+  // Agent and preview views mark themselves so stillfail-screen keeps privileged service input human-only.
+  const agentView = await desktop.open({ maxWidth: 640, maxHeight: 400, codecs: ["jpeg"], agent: true });
+  assert.equal(readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l)).at(-1).agent, true);
+  agentView.close();
+  const peekView = await desktop.open({ maxWidth: 640, maxHeight: 400, codecs: ["jpeg"], peek: true });
+  assert.equal(readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l)).at(-1).peek, true);
+  peekView.close();
   // One that cannot capture says why.
   await assert.rejects(desktop.open({ maxWidth: 1, maxHeight: 1, codecs: ["jpeg"] }), (e: ScreenRefused) => e.status === 503 && /no display to capture/.test(e.message));
   await desktop.close();

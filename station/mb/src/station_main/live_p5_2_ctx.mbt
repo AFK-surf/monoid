@@ -55,6 +55,7 @@ priv struct P52 {
   mut runner_all : Map[String, String]?
   /// The runners no session has (`unnamed`): asked of `listSessions` once.
   runner_unnamed : Set[String]
+  mut relieve_low_bytes : Double?
 }
 
 ///|

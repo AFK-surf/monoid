@@ -71,6 +71,8 @@ priv struct Actor {
   mut read_back : Bool
   mut phase : String
   mut turn : Turn?
+  /// true while acquiring/opening a turn before `turn` is set, or deciding continuation in `on_turn_ended`
+  mut starting_turn : Bool
   mut codex_update : CodexUpdate?
   mut codex_next : Int
   /// the Codex thread taken up again from its rollout after its turn was refused with a bare Bad Request (FB-26;
@@ -145,11 +147,15 @@ priv struct Actors {
   mut live : LiveState
   /// the separator of this station's system's paths (`--sep`): what is joined here as Node joins it (remote_files.mbt)
   sep : String
+  /// maximum concurrent running turns across all sessions (0: unlimited)
+  mut max_concurrent_turns : Int
+  /// deduplicated FIFO queue of session keys waiting for a turn slot
+  turn_wait_queue : Array[String]
 }
 
 ///|
 fn Actors::new(host : @host.Host, sep : String) -> Actors {
-  { host, actors: Map([]), asked: Map([]), timers: Map([]), next: 0, now: 0.0, active: 0, seen: 0, db: None, jobs: JobsState::new(), remote: RemoteState::new(), agents: None, live: LiveState::new(), sep }
+  { host, actors: Map([]), asked: Map([]), timers: Map([]), next: 0, now: 0.0, active: 0, seen: 0, db: None, jobs: JobsState::new(), remote: RemoteState::new(), agents: None, live: LiveState::new(), sep, max_concurrent_turns: 0, turn_wait_queue: [] }
 }
 
 ///|
@@ -275,6 +281,7 @@ fn Actors::actor(self : Actors, key : String, runtime : String) -> Actor {
         read_back: false,
         phase: "idle",
         turn: None,
+        starting_turn: false,
         codex_update: None,
         codex_next: 0,
         codex_reloaded: None,
@@ -493,9 +500,97 @@ fn live_for_actor(e : Json) -> Json? {
 }
 
 ///|
+/// Whether `a` currently holds a concurrency slot (running a turn or transitioning into/out of one).
+fn holds_turn_slot(a : Actor) -> Bool {
+  a.phase != "closed" && (a.turn is Some(_) || a.starting_turn)
+}
+
+///|
+fn Actors::active_turn_slots(self : Actors) -> Int {
+  let mut n = 0
+  for a in self.actors.values() {
+    if holds_turn_slot(a) {
+      n += 1
+    }
+  }
+  n
+}
+
+///|
+fn Actors::turn_slots_full(self : Actors, a : Actor) -> Bool {
+  if self.max_concurrent_turns <= 0 || holds_turn_slot(a) {
+    return false
+  }
+  self.active_turn_slots() >= self.max_concurrent_turns
+}
+
+///|
+fn Actors::enqueue_turn_wait(self : Actors, a : Actor) -> Unit {
+  if a.phase == "closed" {
+    return
+  }
+  if !self.turn_wait_queue.contains(a.key) {
+    self.turn_wait_queue.push(a.key)
+  }
+}
+
+///|
+fn Actors::remove_turn_wait(self : Actors, key : String) -> Unit {
+  if self.turn_wait_queue.search_by(k => k == key) is Some(i) {
+    ignore(self.turn_wait_queue.remove(i))
+  }
+}
+
+///|
+fn Actors::set_max_concurrent_turns(self : Actors, next : Int) -> Unit {
+  let prev = self.max_concurrent_turns
+  self.max_concurrent_turns = if next > 0 { next } else { 0 }
+  if self.max_concurrent_turns == 0 || (prev > 0 && self.max_concurrent_turns > prev) {
+    self.drain_turn_queue()
+  }
+}
+
+///|
+/// Wakes up to the available slot budget of queued sessions in strict FIFO order.
+/// Each popped actor synchronously reserves `starting_turn = true` before spawning
+/// `wake_queued`, so `active_turn_slots()` reflects the reservation immediately and
+/// never cascades across the rest of the queue.
+fn Actors::drain_turn_queue(self : Actors) -> Unit {
+  let mut budget = if self.max_concurrent_turns <= 0 {
+    self.turn_wait_queue.length()
+  } else {
+    self.max_concurrent_turns - self.active_turn_slots()
+  }
+  while budget > 0 && self.turn_wait_queue.length() > 0 {
+    let key = self.turn_wait_queue.remove(0)
+    match self.actors.get(key) {
+      Some(actor) => {
+        if actor.phase == "closed" || holds_turn_slot(actor) {
+          continue
+        }
+        actor.starting_turn = true
+        budget -= 1
+        self.spawn(() => {
+          self.wake_queued(actor) catch {
+            e => {
+              actor.starting_turn = false
+              self.log(actor, "error", "queued session wake failed", fields={ "error": jstr(Asked::message(e)) })
+              if actor.turn is None {
+                self.drain_turn_queue()
+              }
+            }
+          }
+        })
+      }
+      None => ()
+    }
+  }
+}
+
+///|
 /// Whether a line of Node's is for the actors: what Node says them begins so (mb-actor.ts `post`, its keys first).
 fn actors_line(line : String) -> Bool {
-  ["{\"call\":", "{\"answer\":", "{\"due\":", "{\"db\":", "{\"runtime\":", "{\"event\":", "{\"routed\":", "{\"codexUpdated\":"].iter().any(p => line.has_prefix(p))
+  ["{\"call\":", "{\"answer\":", "{\"due\":", "{\"db\":", "{\"maxConcurrentTurns\":", "{\"runtime\":", "{\"event\":", "{\"routed\":", "{\"codexUpdated\":"].iter().any(p => line.has_prefix(p))
 }
 
 ///|
@@ -512,6 +607,8 @@ fn Actors::heard(self : Actors, line : String) -> Unit {
       self.actors.clear()
       self.asked.clear()
       self.timers.clear()
+      self.turn_wait_queue.clear()
+      self.max_concurrent_turns = 0
       self.seen = 1
       self.active = 0
       self.jobs = JobsState::new()
@@ -530,6 +627,11 @@ fn Actors::heard(self : Actors, line : String) -> Unit {
           }
         _ => None
       }
+      return
+    }
+    { "maxConcurrentTurns": Number(n, ..), .. } => {
+      let next = if n.is_nan() || n.is_inf() || n <= 0.0 { 0 } else { n.to_int() }
+      self.set_max_concurrent_turns(next)
       return
     }
     { "answer": Number(id, ..), .. } => {

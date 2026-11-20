@@ -180,6 +180,23 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
           a.refill_at = self.now
           return
         }
+        if self.turn_slots_full(a) {
+          a.refill_at = self.now
+          self.enqueue_turn_wait(a)
+          return
+        }
+        let reserved = !a.starting_turn
+        if reserved {
+          a.starting_turn = true
+        }
+        defer {
+          if reserved {
+            a.starting_turn = false
+            if a.turn is None {
+              self.drain_turn_queue()
+            }
+          }
+        }
         a.refill = None
         if self.has_pending(a) {
           return self.pump(a)
@@ -395,6 +412,7 @@ async fn Actors::undeclare(self : Actors, a : Actor) -> Unit raise {
 async fn Actors::stop(self : Actors, a : Actor) -> Json raise {
   let stop_recovery = a.recoveries > 0 || a.recovery_deferred
   a.recovery_deferred = false
+  self.remove_turn_wait(a.key)
   a.delivery_interruptions += 1
   // (what is being read and formatted for it: Node's, given up at once there, mb-actor.ts)
   self.enqueue(a, async fn() {
@@ -541,13 +559,20 @@ async fn Actors::stop_from_slack(self : Actors, a : Actor, args : Array[Json]) -
 
 ///|
 /// actor.ts `recover`.
-async fn Actors::recover(self : Actors, a : Actor) -> Json raise {
+async fn Actors::recover(self : Actors, a : Actor, slot_reserved? : Bool = false) -> Json raise {
   a.recoveries += 1
   self.enqueue(a, async fn() {
     let mut reading = true
+    let mut reserved = slot_reserved && a.starting_turn
     defer {
       if reading {
         a.recoveries -= 1
+      }
+      if reserved {
+        a.starting_turn = false
+        if a.turn is None {
+          self.drain_turn_queue()
+        }
       }
     }
     if a.delivery_interruptions > 0 {
@@ -566,6 +591,15 @@ async fn Actors::recover(self : Actors, a : Actor) -> Json raise {
     if self.held(a) {
       a.recovery_deferred = true
       return
+    }
+    if self.turn_slots_full(a) {
+      a.recovery_deferred = true
+      self.enqueue_turn_wait(a)
+      return
+    }
+    if !a.starting_turn {
+      a.starting_turn = true
+      reserved = true
     }
     a.recovery_deferred = false
     let delivery = self.pending_and_format(a, true)
@@ -608,6 +642,45 @@ async fn Actors::take_wait(self : Actors, a : Actor) -> Unit raise {
   let seconds = num_of(last.value("waitSeconds")).unwrap_or(0.0)
   self.log(a, "info", "taking up a wait on record", fields={ "seconds": jnum(seconds) })
   self.wait_ms(a, seconds, num_of(last.value("endedAt")).unwrap_or(0.0) + seconds * 1000.0 - self.now)
+}
+
+///|
+/// Wakes a session popped from `turn_wait_queue` with `starting_turn` already reserved.
+/// Releases the reserved slot and drains the next queued session if this actor does not start a turn.
+async fn Actors::wake_queued(self : Actors, a : Actor) -> Unit raise {
+  if a.recovery_deferred && a.recoveries == 0 {
+    a.recovery_deferred = false
+    ignore(self.recover(a, slot_reserved=true))
+    return
+  }
+  let before = a.start_failures
+  self.enqueue(a, async fn() {
+    let owned = a.starting_turn
+    defer {
+      if owned {
+        a.starting_turn = false
+        if a.turn is None {
+          self.drain_turn_queue()
+        }
+      }
+    }
+    if a.waiting is Some(wait) && a.waiting_until <= self.now {
+      self.fire_wait(a, wait, a.waiting_seconds)
+      if a.turn is Some(_) {
+        return
+      }
+    }
+    if a.refill is Some(refill) && a.refill_at <= self.now {
+      self.fire_refill(a, refill)
+      if a.turn is Some(_) {
+        return
+      }
+    }
+    self.pump(a, before_failures=before)
+    if a.turn is None && a.notices.length() > 0 {
+      self.give_notices(a)
+    }
+  })
 }
 
 ///|
@@ -801,7 +874,15 @@ async fn Actors::suspend(self : Actors, a : Actor, why? : String = "the station 
     self.set_agent(a, None)
     let busy = self.busy_of(a, agent)
     let turn = a.turn
+    let had_slot = turn is Some(_) || a.starting_turn
     a.turn = None
+    a.starting_turn = false
+    self.remove_turn_wait(a.key)
+    defer {
+      if had_slot && a.turn is None && !a.starting_turn {
+        self.drain_turn_queue()
+      }
+    }
     a.tools.clear()
     a.working_for = []
     a.stop_requested = false
@@ -938,12 +1019,19 @@ fn Actors::adopt(self : Actors, a : Actor, snap : Json, agent : Json, profile : 
 ///|
 /// For shutdown or handover: queued and later tasks are skipped, timers end.
 fn Actors::close(self : Actors, a : Actor) -> Unit {
+  let had_slot = a.turn is Some(_) || a.starting_turn
   a.phase = "closed"
+  a.turn = None
+  a.starting_turn = false
+  self.remove_turn_wait(a.key)
   for cancel in a.timers.values() {
     cancel()
   }
   a.timers.clear()
   self.mirror(a)
+  if had_slot {
+    self.drain_turn_queue()
+  }
 }
 
 // ── inside the queue ──────────────────────────────────────────────────────────────────────────────────────────────
@@ -1013,6 +1101,25 @@ async fn Actors::give_notices(self : Actors, a : Actor) -> Unit raise {
     }
     return
   }
+  if a.notices.length() == 0 {
+    return
+  }
+  if self.turn_slots_full(a) {
+    self.enqueue_turn_wait(a)
+    return
+  }
+  let reserved = !a.starting_turn
+  if reserved {
+    a.starting_turn = true
+  }
+  defer {
+    if reserved {
+      a.starting_turn = false
+      if a.turn is None {
+        self.drain_turn_queue()
+      }
+    }
+  }
   if self.take_notices(a) is Some(text) {
     self.start_turn(a, "job", text)
   }
@@ -1065,6 +1172,23 @@ async fn Actors::pump(self : Actors, a : Actor, before_failures? : Int = -1) -> 
   }
   if self.interrupted(a) || self.held(a) || self.archived(a) || a.compacting {
     return
+  }
+  let mut reserved = false
+  if a.turn is None && !a.starting_turn {
+    if self.turn_slots_full(a) {
+      self.enqueue_turn_wait(a)
+      return
+    }
+    a.starting_turn = true
+    reserved = true
+  }
+  defer {
+    if reserved {
+      a.starting_turn = false
+      if a.turn is None {
+        self.drain_turn_queue()
+      }
+    }
   }
   let delivery = self.pending_and_format(a, false)
   guard delivery is Some(d) else { return }
@@ -1128,6 +1252,14 @@ async fn Actors::pump(self : Actors, a : Actor, before_failures? : Int = -1) -> 
       a.steered_for = a.steered_for.filter(w => !from(w)) + a.working_for.filter(from)
     }
     return
+  }
+  if self.turn_slots_full(a) {
+    self.enqueue_turn_wait(a)
+    return
+  }
+  if !a.starting_turn {
+    a.starting_turn = true
+    reserved = true
   }
   a.nudges = 0
   a.tools_restarts = 0
@@ -1243,6 +1375,18 @@ async fn Actors::start_turn(
   by? : Json = turn_for_nobody(),
   delivery? : Delivery? = None,
 ) -> Unit raise {
+  let own_slot = !a.starting_turn
+  if own_slot {
+    a.starting_turn = true
+  }
+  defer {
+    if own_slot {
+      a.starting_turn = false
+      if a.turn is None {
+        self.drain_turn_queue()
+      }
+    }
+  }
   let retry_about = if text == self.words(a, "GO_ON_AFTER_OVERLOADED") {
     self.last_turn(a).value("about").unwrap_or(Json::null())
   } else {
@@ -1278,14 +1422,23 @@ async fn Actors::start_turn(
       if missing {
         ignore(self.deps(a, "runtimeMissing", [jstr(a.runtime)]))
       }
-      let said = if missing {
+      async fn missing_said() -> String raise {
         "⚠️ " + self.t(a, "station.notice.runtimeMissing", args={ "name": self.rpc(a.key, "node.words", [jstr("runtimeLabel"), jstr(a.runtime)]) })
+      }
+      let said = if missing {
+        missing_said()
       } else {
         "⚠️ " + self.failed_words(a, "cannotStartWords", e)
       }
+      // (a start failing is said once until a person speaks, whatever its reason; but the runtime said missing
+      // before, starting with the same words, is not that: its failing now that it is there is news)
       let cannot_start = "⚠️ " + self.t(a, "station.notice.cannotStart")
-      let last = self.said_last(a)
-      if !(last is Some(l) && (l == said || (!missing && l.has_prefix(cannot_start)))) {
+      let dup = match self.said_last(a) {
+        Some(l) if l == said => true
+        Some(l) if !missing && l.has_prefix(cannot_start) => l != missing_said()
+        _ => false
+      }
+      if !dup {
         self.notice(a, said, runtime=if missing { jstr(a.runtime) } else { Json::null() }, about=turn.map(t => t.id))
       }
       raise e
@@ -1748,6 +1901,18 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
   self.idle_now(a)
   let turn = a.turn
   a.turn = None
+  let had_turn = turn is Some(_)
+  if had_turn {
+    a.starting_turn = true
+  }
+  defer {
+    if had_turn {
+      a.starting_turn = false
+      if a.turn is None {
+        self.drain_turn_queue()
+      }
+    }
+  }
   a.phase = "idle"
   // (a thread taken up again that ends otherwise than refused so is one that works: refused later, it is taken up
   // again first, `refused_thread`)
@@ -2276,6 +2441,49 @@ async fn Actors::let_go(self : Actors, a : Actor) -> Unit raise {
 }
 
 ///|
+async fn Actors::fire_wait(self : Actors, a : Actor, wait : Int, seconds : Double) -> Unit raise {
+  if self.held(a) || a.waiting != Some(wait) {
+    return
+  }
+  if self.archived(a) {
+    return self.let_go(a)
+  }
+  if a.compacting {
+    a.over_while_compacting = true
+    return
+  }
+  if self.turn_slots_full(a) {
+    a.waiting_until = self.now
+    self.enqueue_turn_wait(a)
+    return
+  }
+  let reserved = !a.starting_turn
+  if reserved {
+    a.starting_turn = true
+  }
+  defer {
+    if reserved {
+      a.starting_turn = false
+      if a.turn is None {
+        self.drain_turn_queue()
+      }
+    }
+  }
+  a.waiting = None
+  a.phase = "idle"
+  let last = self.last_turn(a)
+  if !(last is Null) && retrying(last) {
+    self.log(a, "info", "trying again a turn the provider had no room for", fields={ "seconds": jnum(seconds) })
+    return self.start_turn(a, "resume", self.words(a, "GO_ON_AFTER_OVERLOADED"))
+  }
+  if !(last.value("waitWatch") is Some(False)) && truthy(self.store(a, "hasSessionActiveWatch", [jstr(a.key)])) {
+    return self.wait_ms(a, seconds, seconds * 1000.0)
+  }
+  self.log(a, "info", "the wait is over without word; asking again", fields={ "seconds": jnum(seconds) })
+  self.start_turn(a, "nudge", self.words(a, "waitOver", args=[jnum(seconds)]))
+}
+
+///|
 /// Asks the agent again after `seconds` (`ms` of it left), unless a turn has started by then: a wait of Node's clock.
 fn Actors::wait_ms(self : Actors, a : Actor, seconds : Double, ms : Double) -> Unit {
   a.waits += 1
@@ -2284,30 +2492,7 @@ fn Actors::wait_ms(self : Actors, a : Actor, seconds : Double, ms : Double) -> U
   a.phase = "waiting"
   a.waiting_until = self.now + ms
   a.waiting_seconds = seconds
-  self.timer(a, "wait", ms, async fn() {
-    if self.held(a) || a.waiting != Some(wait) {
-      return
-    }
-    if self.archived(a) {
-      return self.let_go(a)
-    }
-    if a.compacting {
-      a.over_while_compacting = true
-      return
-    }
-    a.waiting = None
-    a.phase = "idle"
-    let last = self.last_turn(a)
-    if !(last is Null) && retrying(last) {
-      self.log(a, "info", "trying again a turn the provider had no room for", fields={ "seconds": jnum(seconds) })
-      return self.start_turn(a, "resume", self.words(a, "GO_ON_AFTER_OVERLOADED"))
-    }
-    if !(last.value("waitWatch") is Some(False)) && truthy(self.store(a, "hasSessionActiveWatch", [jstr(a.key)])) {
-      return self.wait_ms(a, seconds, seconds * 1000.0)
-    }
-    self.log(a, "info", "the wait is over without word; asking again", fields={ "seconds": jnum(seconds) })
-    self.start_turn(a, "nudge", self.words(a, "waitOver", args=[jnum(seconds)]))
-  })
+  self.timer(a, "wait", ms, async fn() { self.fire_wait(a, wait, seconds) })
 }
 
 ///|
@@ -2317,28 +2502,49 @@ async fn Actors::said_last(self : Actors, a : Actor) -> String? raise {
 }
 
 ///|
+async fn Actors::fire_refill(self : Actors, a : Actor, refill : Int) -> Unit raise {
+  if a.refill != Some(refill) {
+    return
+  }
+  if self.held(a) {
+    return
+  }
+  if self.archived(a) || a.turn is Some(_) || self.busy(a) {
+    a.refill = None
+    return
+  }
+  if self.turn_slots_full(a) {
+    a.refill_at = self.now
+    self.enqueue_turn_wait(a)
+    return
+  }
+  let reserved = !a.starting_turn
+  if reserved {
+    a.starting_turn = true
+  }
+  defer {
+    if reserved {
+      a.starting_turn = false
+      if a.turn is None {
+        self.drain_turn_queue()
+      }
+    }
+  }
+  a.refill = None
+  self.log(a, "info", "its allowance should have refilled; going on")
+  if self.has_pending(a) {
+    return self.pump(a)
+  }
+  self.start_turn(a, "resume", self.words(a, "GO_ON_AFTER_REFILL"))
+}
+
+///|
 fn Actors::await_refill(self : Actors, a : Actor, at : Double) -> Unit {
   a.refills += 1
   let refill = a.refills
   a.refill = Some(refill)
   a.refill_at = at
-  self.timer(a, "refill", at - self.now, async fn() {
-    if a.refill != Some(refill) {
-      return
-    }
-    if self.held(a) {
-      return
-    }
-    a.refill = None
-    if self.archived(a) || a.turn is Some(_) || self.busy(a) {
-      return
-    }
-    self.log(a, "info", "its allowance should have refilled; going on")
-    if self.has_pending(a) {
-      return self.pump(a)
-    }
-    self.start_turn(a, "resume", self.words(a, "GO_ON_AFTER_REFILL"))
-  })
+  self.timer(a, "refill", at - self.now, async fn() { self.fire_refill(a, refill) })
 }
 
 ///|

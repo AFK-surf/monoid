@@ -135,9 +135,50 @@ fn http_error(error: reqwest::Error) -> String {
     message
 }
 
+/// How much of a refused WebSocket handshake's body is read for why it was refused
+/// (station/src/connects/surface.ts `REFUSAL_BYTES`).
+const WS_REFUSAL_BYTES: usize = 4096;
+
+/// Why a platform refused a WebSocket handshake, as its answer says: its `handshake-msg` header (Slack),
+/// else its body's `error` or `message` when that is JSON (Comma), else the body's text, collapsed to one
+/// line and at most 300 characters (station/src/connects/surface.ts `refusalWords`).
+fn ws_refusal_words(header: Option<&str>, body: Option<&[u8]>) -> String {
+    if let Some(h) = header.map(str::trim).filter(|s| !s.is_empty()) {
+        return h.to_string();
+    }
+    let Some(bytes) = body else { return String::new() };
+    let slice = &bytes[..bytes.len().min(WS_REFUSAL_BYTES)];
+    let text = String::from_utf8_lossy(slice);
+    let text = text.trim();
+    if text.is_empty() {
+        return String::new();
+    }
+    let mut said = text.to_string();
+    if let Ok(json) = serde_json::from_str::<Value>(text) {
+        if let Some(words) = json.get("error").and_then(Value::as_str).or_else(|| json.get("message").and_then(Value::as_str)) {
+            said = words.to_string();
+        }
+    }
+    let collapsed = said.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() > 300 {
+        format!("{}…", collapsed.chars().take(299).collect::<String>())
+    } else {
+        collapsed
+    }
+}
+
 fn ws_error(error: WsError) -> String {
     match error {
-        WsError::Http(response) => format!("websocket refused ({})", response.status().as_u16()),
+        WsError::Http(response) => {
+            let status = response.status().as_u16();
+            let header = response.headers().get("handshake-msg").and_then(|v| std::str::from_utf8(v.as_bytes()).ok());
+            let why = ws_refusal_words(header, response.body().as_deref());
+            if why.is_empty() {
+                format!("websocket refused ({status})")
+            } else {
+                format!("websocket refused ({status}): {why}")
+            }
+        }
         error => format!("websocket: {error}"),
     }
 }

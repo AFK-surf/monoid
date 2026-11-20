@@ -1453,7 +1453,9 @@ fn tape_side_node(pane : @view.View, src : Source) -> Unit {
     q.show(at_once=true, fn() {
       let (tabs, front) = shown()
       !side_own_bar_node(q, tabs, front, true)
-    }, fn(b) { side_bar_node(b, src, r, shown, true, tips) })
+    }, fn(b) {
+      tape_side_bar_clip_node(b, fn(inner) { side_bar_node(inner, src, r, shown, true, tips) })
+    })
     let front = fn() {
       match shown().1 {
         front if side_node_tab(front) => full_elsewhere(r, front)
@@ -1749,4 +1751,42 @@ fn tape_goes_over(pulled : Double, span : Double, v : Double) -> Bool {
   let line = if span > 0.0 { far } else { -far }
   let over = span != 0.0 && @ui.lands_past(pulled, v / 1000.0, line)
   toward || (over && !away)
+}
+
+///|
+/// Wraps a tape side panel's top bar (`make`) in a container that clips it clear of Windows' own window keys (`| - □ ×`)
+/// while the tape slides, without shrinking the bar's inner layout width.
+fn tape_side_bar_clip_node(parent : @view.View, make : (@view.View) -> Unit) -> Unit {
+  if !@ui.window_keys_own() {
+    make(parent)
+    return
+  }
+  parent.box(fn(c) {
+    let sliding_win = fn() {
+      let t = tape_drawn_at(c)
+      t != @double.infinity && tape_goes.way.goes_at(t)
+    }
+    c
+    .shrink(Is(0.0))
+    .clips(By(sliding_win))
+    .width(
+      By(fn() {
+        if sliding_win() {
+          let r = tape_room_now()
+          let t = tape_drawn_at(c)
+          let panel_left = tape_x_at(r, t) + tape_col_at(t) + tape_page_at(t) + bar_gap_now()
+          Some(dmax(0.0, r.tw - @sf.window_keys_room_tape(roots=@ui.tree_corner_roots_now()) - panel_left))
+        } else {
+          None
+        }
+      }),
+    )
+    |> ignore
+    c.box(fn(inner) {
+      inner.shrink(Is(0.0)).width(By(fn() { Some(tape_room_now().panel_w) })) |> ignore
+      make(inner)
+    })
+    |> ignore
+  })
+  |> ignore
 }

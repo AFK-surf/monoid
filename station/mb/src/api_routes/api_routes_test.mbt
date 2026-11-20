@@ -177,3 +177,25 @@ test "the routes' own small rules" {
   assert_eq(@api_routes.lang_of("zh-CN"), "zh")
   assert_eq(@api_routes.lang_of("fr"), "en")
 }
+
+///|
+test "a body stopped before its end aborts its request's signal, a streamed one's own stop set going after" {
+  let order = []
+  let spawned = []
+  let spawn = (f : async () -> Unit) => spawned.push(f)
+  let a = @api_routes.Signal::new()
+  let stop = @api_routes.Body::Stream(async fn() { None }).stop_with(a, spawn)
+  assert_false(a.aborted)
+  stop()
+  assert_true(a.aborted)
+  assert_eq(spawned.length(), 0)
+  let b = @api_routes.Signal::new()
+  let stop = @api_routes.Body::Streamed(async fn() { None }, async fn() { order.push("stopped") }).stop_with(b, spawn)
+  stop()
+  assert_true(b.aborted)
+  assert_eq(spawned.length(), 1)
+  let rt = @effect.Runtime::new()
+  ignore(rt.fork(spawned[0]))
+  rt.advance(1)
+  assert_eq(order, ["stopped"])
+}
