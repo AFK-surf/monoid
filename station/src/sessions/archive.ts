@@ -20,8 +20,9 @@
 // this process (one station at a time works on a data directory; only an overlap at a handover would see both).
 import { loadMesh } from "../mesh/native.ts";
 import { chmod, copyFile, lstat, mkdir, open, readFile, readdir, readlink, realpath, rename, rm, stat, unlink } from "node:fs/promises";
-import { basename, dirname, join, relative, resolve } from "node:path";
-import { segments } from "../ops/paths.ts";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { log } from "../ops/log.ts";
+import { clean, inside, segments } from "../ops/paths.ts";
 import { walkBounded } from "../ops/walk.ts";
 import { link as symlinkOrStandIn } from "../ops/links.ts";
 import { platform } from "../platform/index.ts";
@@ -314,6 +315,65 @@ export async function unlockWorktrees(room: string): Promise<void> {
   await unlink(path);
 }
 
+/// Collects worktree registration directories (`<common>/worktrees/<name>`) owned by a session room:
+/// from `.git` files under the room (walked via `walkBounded`) and from `workspace-locks.json` for packed rooms.
+export async function collectWorktreeRegistrations(room: string): Promise<string[]> {
+  const found = new Set<string>();
+  const add = async (candidate: string) => {
+    const resolved = await realpath(candidate).catch(() => null);
+    if (resolved === null) return;
+    if (basename(dirname(resolved)) !== "worktrees") return;
+    found.add(resolved);
+  };
+  const gitFiles: string[] = [];
+  await walkBounded(room, (entry) => {
+    if (entry.file && entry.name === ".git") gitFiles.push(entry.path);
+  }, { onError: () => {} });
+  for (const file of gitFiles) {
+    const said = (await readFile(file, "utf8").catch(() => "")).trim();
+    if (!said.startsWith("gitdir: ")) continue;
+    await add(resolve(dirname(file), said.slice("gitdir: ".length)));
+  }
+  const locksPath = join(room, "workspace-locks.json");
+  const locksText = await readFile(locksPath, "utf8").catch(() => null);
+  if (locksText !== null) {
+    try {
+      const locks = JSON.parse(locksText) as unknown;
+      if (Array.isArray(locks)) {
+        for (const locked of locks) {
+          if (typeof locked === "string" && locked !== "") await add(dirname(locked));
+        }
+      }
+    } catch {}
+  }
+  return [...found];
+}
+
+/// Removes only the exact worktree registration directories in `adminDirs` that belong to `roomPaths`,
+/// whose target `.git` file no longer exists, and that have no `locked` file remaining.
+export async function removeWorktreeRegistrations(adminDirs: readonly string[], roomPaths: readonly string[]): Promise<string[]> {
+  const rooms = roomPaths.map((r) => clean(r));
+  const removed: string[] = [];
+  for (const adminDir of adminDirs) {
+    try {
+      if (basename(dirname(adminDir)) !== "worktrees") continue;
+      const st = await lstat(adminDir).catch(() => null);
+      if (st === null || !st.isDirectory() || st.isSymbolicLink()) continue;
+      if (await lstat(join(adminDir, "locked")).then(() => true, () => false)) continue;
+      const rawTarget = (await readFile(join(adminDir, "gitdir"), "utf8").catch(() => "")).trim();
+      if (rawTarget === "" || !isAbsolute(rawTarget)) continue;
+      const target = clean(rawTarget);
+      if (!rooms.some((r) => inside(target, r))) continue;
+      if (await lstat(target).then(() => true, () => false)) continue;
+      await rm(adminDir, { recursive: true, force: true });
+      removed.push(adminDir);
+    } catch (error) {
+      log.warn("hub", "worktree registration not removed", { path: adminDir, error: (error as Error).message });
+    }
+  }
+  return removed;
+}
+
 // ── workspaces ─────────────────────────────────────────────────────────────────────────────────────────────────────
 
 export const packWorkspace = (room: string) => packWorkspaceIf(room, () => true);
@@ -447,6 +507,9 @@ export async function restoreWorkspace(room: string): Promise<void> {
 export async function emptyWorkspace(room: string): Promise<void> {
   const workspace = join(room, "workspace");
   const archive = workspaceArchive(room);
+  const rawRoom = clean(room);
+  const realRoom = await realpath(room).catch(() => rawRoom);
+  const worktrees = await collectWorktreeRegistrations(room);
   await mkdir(workspace, { recursive: true });
   if (await exists(archive)) {
     const stage = join(room, "workspace.emptying");
@@ -470,6 +533,7 @@ export async function emptyWorkspace(room: string): Promise<void> {
   }
   await readingsGone(room);
   await unlockWorktrees(room);
+  await removeWorktreeRegistrations(worktrees, rawRoom === realRoom ? [realRoom] : [realRoom, rawRoom]);
 }
 
 /// The files in `from`'s uploads moved into `workspace`'s, durably; those already there are kept (one put back on the

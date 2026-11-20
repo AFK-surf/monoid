@@ -100,7 +100,7 @@ export class LiveHub {
   locateAsync: AsyncLocate | null = null;
   /// What the usage counter recorded of a session's calls (usage/module.ts `usageNow`), and asking it to count what a
   /// session at work wrote since.
-  #count: { of: (key: string) => SessionUsage | null; ask: (key: string) => void } | null = null;
+  #count: { of: (key: string) => SessionUsage | null; ask: (key: string) => void; flush?: (key: string) => Promise<void> } | null = null;
   /// Where what the sessions at work say goes (api/events.ts: every stream whose viewer sees them).
   heldTold: ((key: string, message: LiveMessage) => void) | null = null;
   /// Where each watched transcript's length goes as it changes (the store: its session's summary says it).
@@ -122,8 +122,12 @@ export class LiveHub {
     this.#given = program ?? null;
   }
 
-  countWith(count: { of: (key: string) => SessionUsage | null; ask: (key: string) => void }) {
+  countWith(count: { of: (key: string) => SessionUsage | null; ask: (key: string) => void; flush?: (key: string) => Promise<void> }) {
     this.#count = count;
+  }
+
+  async flushUsage(key: string): Promise<void> {
+    await this.#count?.flush?.(key);
   }
 
   #program(): ActorsProgram | null {

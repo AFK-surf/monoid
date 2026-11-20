@@ -180,6 +180,17 @@ export const TRANSCRIPT_IN_USE = `SELECT 1 FROM runtime_sessions r INDEXED BY ru
     WHERE s.runtime_session_id = ?1 AND s.runtime = ?2 AND s.key <> ?3 AND (s.archived_at IS NULL OR s.running = 1)
       AND NOT EXISTS (SELECT 1 FROM runtime_sessions r WHERE r.session_key = s.key AND r.id = ?1)
   LIMIT 1`;
+/// Whether any other session row (including archived ones) references a runtime transcript.
+export const TRANSCRIPT_REFERENCED = `SELECT 1 FROM runtime_sessions r INDEXED BY runtime_sessions_by_id
+    CROSS JOIN sessions s ON s.key = r.session_key
+    WHERE r.id = ?1 AND COALESCE(r.runtime, s.original_runtime, s.runtime) = ?2 AND s.key <> ?3
+  UNION ALL SELECT 1 FROM sessions s INDEXED BY sessions_by_runtime_id
+    WHERE s.runtime_session_id = ?1 AND s.runtime = ?2 AND s.key <> ?3
+      AND NOT EXISTS (SELECT 1 FROM runtime_sessions r WHERE r.session_key = s.key AND r.id = ?1)
+  LIMIT 1`;
+export const SESSION_PATHS_BATCH = 200;
+/// Bounded primary-key page of session workspace/cwd paths for low-disk clone reclamation.
+export const SESSION_PATHS_PAGE = `SELECT key, workspace, cwd FROM sessions WHERE key > ?1 ORDER BY key LIMIT ?2`;
 /// A session's messages not delivered yet and its latest turn (`statsOf`): what is not delivered by the index of those
 /// alone. By (session, thread), SQLite went over every message the session was ever given, and every turn was counted
 /// besides, for no one: auto-archiving looked at each session shown so, on the main thread, 13 s and 22 s on a station short
@@ -1555,6 +1566,20 @@ export class Store {
   /// A transcript is left unpacked while another shown or running session can still write it.
   transcriptInUse(runtime: string, id: string, except: string): boolean {
     return this.#one(TRANSCRIPT_IN_USE, id, runtime, except) !== undefined;
+  }
+
+  /// Whether any other session row (including archived ones) still references this transcript.
+  transcriptReferenced(runtime: string, id: string, except: string): boolean {
+    return this.#one(TRANSCRIPT_REFERENCED, id, runtime, except) !== undefined;
+  }
+
+  /// A primary-key-bounded page of session workspace/cwd paths for low-disk clone reclamation.
+  sessionPathsPage(after: string, limit = SESSION_PATHS_BATCH): { key: string; workspace: string; cwd: string | null }[] {
+    return (this.#all(SESSION_PATHS_PAGE, after, limit) as Json[]).map((r) => ({
+      key: String(r.key),
+      workspace: String(r.workspace),
+      cwd: r.cwd === null || r.cwd === undefined ? null : String(r.cwd),
+    }));
   }
 
   setRunning(key: string, running: boolean): void {

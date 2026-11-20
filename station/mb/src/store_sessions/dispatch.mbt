@@ -104,6 +104,18 @@ pub fn Store::call(self : Store, name : String, x : Array[Json]) -> Json raise {
       Json::array(self.runtime_session_sources(s(x, 0), arg(x, 1)))
     "transcriptInUse" =>
       jbool(self.transcript_in_use(a(x, 0), a(x, 1), a(x, 2)))
+    "transcriptReferenced" =>
+      jbool(self.transcript_referenced(a(x, 0), a(x, 1), a(x, 2)))
+    "sessionPathsPage" =>
+      Json::array(
+        self.session_paths_page(
+          a(x, 0),
+          match arg(x, 1) {
+            Some(Number(n, ..)) => n.to_int()
+            _ => 200
+          },
+        ),
+      )
     "setRunning" => unit(self.set_running(s(x, 0), b(x, 1)))
     "touch" => unit(self.touch(s(x, 0)))
     "manuallyArchived" => jbool(self.manually_archived(a(x, 0)))

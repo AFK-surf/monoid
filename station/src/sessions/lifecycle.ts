@@ -3,19 +3,24 @@ import { modelSpeed, type ModelSpeed } from "../../../client/core-ts/src/model-s
 // add_to_thread, say, bind_single, configure, archive, archive_chat, auto_archive, delete_session,
 // continue_machine_session). Archiving here is the record (archived, hidden) and what goes with it (the process ends,
 // other stations are told); packing an archived session's files is the hub's ColdStorage.
-import { NoPreset, type PresetCopy, keepCopy, presetRefusal } from "./presets.ts";
+import { NoPreset, type PresetCopy, keepCopy, presetRefusal, readPresetsFile } from "./presets.ts";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, rename, rm } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, join, relative, sep } from "node:path";
 import { DISK_LOW_BYTES } from "../ops/disk.ts";
 import { PlaceRefused } from "../ops/places.ts";
 import { log } from "../ops/log.ts";
 import { tr, type Lang, stationLang } from "../ops/i18n.ts";
+import { clean, inside, within } from "../ops/paths.ts";
+import { pruneRepoWorktrees, treeBytes } from "../ops/storage.ts";
+import { startEnv } from "../ops/agent-env.ts";
+import { wall } from "../ops/fibers.ts";
 import { checkContext } from "./context-cap.ts";
 import { type MachineSession, type Roots, ROLLOUT_DEPTH, ROLLOUT_ENTRIES, extension, rolloutOf } from "../read/machine.ts";
 import { usageNow } from "../read/usage.ts";
-import { sessionPlaces, sharedTranscripts } from "../read/transcript.ts";
-import { transcriptSourcesSoon } from "../read/transcript-soon.ts";
+import { homesFirst, sessionPlaces, sharedTranscripts } from "../read/transcript.ts";
+import { transcriptPathsSoon, transcriptSourcesSoon } from "../read/transcript-soon.ts";
 import { forgetMarksSoon, marksDir } from "../read/transcripts.ts";
 import { walkBounded } from "../ops/walk.ts";
 import { ARCHIVED_WORKSPACE_BATCH, AUTO, type ArchivedWorkspace, type Attachment, MANUAL, type Quote, STILLFAIL_SURFACE, type ThreadRow, type WorkOf, type ArchiveLook, type SessionRow } from "../store/store.ts";
@@ -23,7 +28,9 @@ import { sessionBindingsReady } from "../store/session-bindings-index.ts";
 import { archiveMarksReady } from "../store/archive-mark-index.ts";
 import type { SessionChange } from "./accounts.ts";
 import { runChanged, runShown } from "./run-change.ts";
-import { unlockWorktrees, withLock } from "./archive.ts";
+import { collectWorktreeRegistrations, jsonlFilesSoon, packed, removeWorktreeRegistrations, unlockWorktrees, withLock } from "./archive.ts";
+import { agentHomes } from "./agent-home.ts";
+import { safeUrl } from "./clones.ts";
 import { roomOfSoon } from "./footprint.ts";
 import { type Profile, type Runtime, runs, runtimeNamed, runtimeTitle } from "./config.ts";
 import { FAST_RUNTIMES } from "../agents/profiles.ts";
@@ -442,6 +449,168 @@ export async function relieveArchived(hub: Hub, free: () => number | Promise<num
   }
 }
 
+/// A shared clone in `<data>/repos` untouched for this long may be reclaimed when disk space is below the low mark:
+/// 14 days matches job log retention and gives active projects two weeks of buffer against transient disk spikes.
+export const REPO_IDLE_MS = 14 * 24 * 3_600_000;
+/// Short deadline for local read-only git checks during low-disk clone reclamation.
+export const REPO_GIT_TIMEOUT_MS = 15_000;
+
+export type RepoGitRun = (dir: string, args: string[]) => Promise<{ ok: boolean; stdout: string }>;
+
+const runRepoGit: RepoGitRun = (dir, args) =>
+  new Promise((resolve) => {
+    const env = { ...startEnv(), GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: "ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new" };
+    const child = spawn("git", ["-C", dir, ...args], { env, stdio: ["ignore", "pipe", "ignore"] });
+    let stdout = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (d: string) => {
+      if (stdout.length < 64 * 1024) stdout += d;
+    });
+    let late = false;
+    // timer: a deadline to a process (git status/rev-list given REPO_GIT_TIMEOUT_MS at most)
+    const stop = wall.after(REPO_GIT_TIMEOUT_MS, () => {
+      late = true;
+      child.kill("SIGKILL");
+    });
+    child.on("error", () => {
+      stop();
+      resolve({ ok: false, stdout: "" });
+    });
+    child.on("close", (code) => {
+      stop();
+      resolve({ ok: !late && code === 0, stdout });
+    });
+  });
+
+async function repoLastTouchedMs(repoPath: string): Promise<number | null> {
+  let latest: number | null = null;
+  for (const rel of [".git/HEAD", ".git/FETCH_HEAD", ".git/index", ".git/logs/HEAD"]) {
+    const st = await stat(join(repoPath, rel)).catch(() => null);
+    if (st !== null && (latest === null || st.mtimeMs > latest)) latest = st.mtimeMs;
+  }
+  return latest;
+}
+
+/// Reclaims unreferenced shared clones in `<data>/repos` when disk space remains below `low` after `relieveArchived`:
+/// least recently used first, stopping as soon as free space reaches `low`. Only clones that are real directories under
+/// `<data>/repos`, clean, pushed to a remote, have no stash or worktree registrations, are unreferenced by presets,
+/// sessions, active jobs, or `move/repos.json`, and have not been touched for REPO_IDLE_MS are removed.
+export async function relieveRepos(
+  hub: Hub,
+  free: () => number | Promise<number>,
+  low = DISK_LOW_BYTES,
+  options?: { git?: RepoGitRun },
+): Promise<string[]> {
+  if ((await free()) >= low) return [];
+  if (hub.clones.hasActive()) return [];
+  const { dataDir, agentHome } = hub.config();
+  await pruneRepoWorktrees(dataDir);
+  const rawRepos = clean(join(dataDir, "repos"));
+  const realRepos = await realpath(rawRepos).catch(() => null);
+  if (realRepos === null) return [];
+
+  // Collect all referenced paths once: presets across all workspaces, all session rows, active jobs, and move/repos.json.
+  const refs = new Set<string>();
+  const addRef = async (p: string | null | undefined) => {
+    if (!p) return;
+    refs.add(clean(p));
+    const r = await realpath(p).catch(() => null);
+    if (r !== null) refs.add(r);
+  };
+  for (const home of await agentHomes(agentHome)) {
+    const { presets } = await readPresetsFile(home);
+    for (const preset of presets) {
+      for (const dir of preset.dirs) await addRef(dir.path);
+    }
+  }
+  let afterKey = "";
+  for (;;) {
+    const page = hub.store.sessionPathsPage(afterKey);
+    for (const s of page) {
+      await addRef(s.workspace);
+      await addRef(s.cwd);
+    }
+    if (page.length === 0) break;
+    afterKey = page[page.length - 1]!.key;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  try {
+    for (const job of hub.store.jobsUp()) await addRef(job.cwd);
+  } catch {
+    return [];
+  }
+  const moveReposPath = join(dataDir, "move", "repos.json");
+  const moveReposText = await readFile(moveReposPath, "utf8").catch((error: NodeJS.ErrnoException) => (error.code === "ENOENT" ? null : undefined));
+  if (moveReposText === undefined) return [];
+  if (moveReposText !== null) {
+    try {
+      const parsed = JSON.parse(moveReposText) as Record<string, { dir?: unknown }>;
+      if (parsed && typeof parsed === "object") {
+        for (const entry of Object.values(parsed)) {
+          if (typeof entry?.dir === "string") await addRef(entry.dir);
+        }
+      }
+    } catch {
+      return [];
+    }
+  }
+
+  const now = hub.now();
+  const candidates: { name: string; path: string; rawPath: string; mtime: number }[] = [];
+  for (const name of await readdir(realRepos).catch(() => [] as string[])) {
+    if (name.startsWith(".")) continue;
+    const repoPath = join(realRepos, name);
+    const rawPath = join(rawRepos, name);
+    const st = await lstat(repoPath).catch(() => null);
+    if (st === null || !st.isDirectory() || st.isSymbolicLink()) continue;
+    // Condition 4: no worktree registrations remaining (including locked ones).
+    const worktrees = await readdir(join(repoPath, ".git", "worktrees")).catch((e: NodeJS.ErrnoException) => (e.code === "ENOENT" ? [] : null));
+    if (worktrees === null || worktrees.length > 0) continue;
+    // Condition 5: no preset, session, active job, or move/repos.json references this clone or a subdir.
+    let referenced = false;
+    for (const ref of refs) {
+      if (within(ref, repoPath) || within(ref, rawPath)) {
+        referenced = true;
+        break;
+      }
+    }
+    if (referenced) continue;
+    // Condition 6: untouched for at least REPO_IDLE_MS.
+    const mtime = await repoLastTouchedMs(repoPath);
+    if (mtime === null || now - mtime < REPO_IDLE_MS) continue;
+    candidates.push({ name, path: repoPath, rawPath, mtime });
+  }
+
+  candidates.sort((a, b) => a.mtime - b.mtime);
+  const git = options?.git ?? runRepoGit;
+  const removed: string[] = [];
+  for (const cand of candidates) {
+    if ((await free()) >= low) break;
+    if (hub.clones.hasActive()) break;
+    // Condition 2: has a remote, no unpushed commits on branches/tags, no refs/stash.
+    const remotesRes = await git(cand.path, ["remote"]);
+    if (!remotesRes.ok) continue;
+    const remotes = remotesRes.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    if (remotes.length === 0) continue;
+    const primary = remotes.includes("origin") ? "origin" : remotes[0]!;
+    const urlRes = await git(cand.path, ["remote", "get-url", primary]);
+    if (!urlRes.ok || urlRes.stdout.trim() === "") continue;
+    const revRes = await git(cand.path, ["rev-list", "--count", "--branches", "--tags", "--not", "--remotes"]);
+    if (!revRes.ok || revRes.stdout.trim() !== "0") continue;
+    const stashRes = await git(cand.path, ["for-each-ref", "refs/stash"]);
+    if (!stashRes.ok || stashRes.stdout.trim() !== "") continue;
+    // Condition 3: clean main working tree (including untracked files).
+    const statusRes = await git(cand.path, ["status", "--porcelain"]);
+    if (!statusRes.ok || statusRes.stdout !== "") continue;
+    if (hub.clones.hasActive() || (await free()) >= low) break;
+    const { bytes } = await treeBytes(cand.path);
+    await rm(cand.path, { recursive: true, force: true });
+    log.info("hub", "reclaimed unused shared clone", { path: cand.path, remote: safeUrl(urlRes.stdout.trim()), freed: bytes });
+    removed.push(cand.name);
+  }
+  return removed;
+}
+
 /// Archives what has idled past autoArchiveMs (counted from its last activity, or from being shown again by hand) and is
 /// done: nothing running or waiting to be heard, no background job or service of its own still up (a watch above all),
 /// not stopped at a block for someone, nothing its chat's starter has not read, and no single-session connect feeding
@@ -680,32 +849,73 @@ export function startAutoArchiveTimer(hub: Hub, time: { after(ms: number, run: (
 }
 
 /// Deletes a session: its process ends, its rows go (with the threads only it was in) and its workspace directory,
-/// transcript copy and what the readers kept of its transcripts' reading with them. The runtime's transcript stays in
-/// the profile's home, which may be a person's own.
+/// transcript copy, exclusive transcripts under `<data>`, and what the readers kept of its transcripts' reading with
+/// them. Runtime transcripts in a person's own profile home outside `<data>`, or referenced by any other session row
+/// (including archived ones), are never deleted.
 export async function deleteSession(hub: Hub, key: string) {
   const row = hub.store.getSession(key);
   if (!row) throw new Error(`unknown session ${key}`);
   const actor = hub.dropActor(key);
   await actor?.dispose();
+  // Flush any unread transcript tail into usage statistics before removing the session row and its transcripts.
+  await hub.live.flushUsage(key).catch((error) => log.warn("hub", "flushing usage before session delete failed", { session: key, error: (error as Error).message }));
   hub.live.forget(key);
   const { dataDir, profiles } = hub.config();
-  const transcripts = (await transcriptSourcesSoon(dataDir, profiles, hub.store.runtimeSessionSources(key), sessionPlaces(row))).paths.map((p) => p.path);
+  const sources = hub.store.runtimeSessionSources(key);
+  const places = sessionPlaces(row);
+  const transcripts = (await transcriptSourcesSoon(dataDir, profiles, sources, places)).paths.map((p) => p.path);
+  // Collect exclusive transcript files under `<data>` before removing the session row.
+  const realData = await realpath(dataDir).catch(() => null);
+  const exclusiveFiles: string[] = [];
+  if (realData !== null) {
+    for (const source of sources) {
+      if (hub.store.transcriptReferenced(source.runtime, source.id, key)) continue;
+      const runtime = runtimeNamed(source.runtime);
+      if (!runtime) continue;
+      const found = (await transcriptPathsSoon(runtime, dataDir, homesFirst(profiles, source.profile), [source.id], places)).paths[0];
+      if (found === undefined) continue;
+      const parent = await realpath(dirname(found)).catch((error: NodeJS.ErrnoException) => (error.code === "ENOENT" ? null : Promise.reject(error)));
+      if (parent === null || !within(parent, realData)) continue;
+      const logical = join(parent, basename(found));
+      exclusiveFiles.push(logical);
+      if (runtime === "claude") await jsonlFilesSoon(join(parent, basename(found, ".jsonl")), exclusiveFiles);
+    }
+  }
   hub.store.deleteSession(key);
   hub.closed(key);
   await rm(transcriptCopy(hub, key), { force: true });
   await forgetMarksSoon(marksDir(dataDir), transcripts);
-  // Sessions made by the station keep their workspace in a directory of their own.
-  const sessions = join(dataDir, "sessions");
-  const own = basename(row.workspace) === "workspace" && (row.workspace + sep).startsWith(sessions + sep);
-  const home = own ? dirname(row.workspace) : row.workspace;
+  if (realData !== null) {
+    for (const logical of new Set(exclusiveFiles)) {
+      for (const candidate of [logical, packed(logical)]) {
+        const st = await lstat(candidate).catch(() => null);
+        if (st === null || st.isSymbolicLink()) continue;
+        const realPath = await realpath(candidate).catch(() => null);
+        if (realPath === null || !within(realPath, realData)) continue;
+        await rm(candidate, { force: true }).catch((error) => log.warn("hub", "exclusive transcript not removed", { session: key, path: candidate, error: (error as Error).message }));
+      }
+    }
+  }
+  // Sessions made by the station keep their workspace in a directory of their own under `<data>/sessions`.
+  // Never remove directories outside `<data>/sessions` (e.g. a user's own repository).
   const room = await roomOfSoon(dataDir, row.workspace);
   if (room !== null) {
-    // Git worktrees it archived are let go first, so `git worktree prune` can clean them up.
     await withLock(room, async () => {
+      const worktrees = await collectWorktreeRegistrations(room);
       await unlockWorktrees(room);
-      await rm(home, { recursive: true, force: true });
+      await rm(room, { recursive: true, force: true });
+      const rawRoom = clean(dirname(row.workspace));
+      await removeWorktreeRegistrations(worktrees, rawRoom === room ? [room] : [room, rawRoom]);
     });
-  } else await rm(home, { recursive: true, force: true });
+  } else {
+    const realSessions = await realpath(join(dataDir, "sessions")).catch(() => null);
+    const realWs = await realpath(row.workspace).catch(() => null);
+    if (realSessions !== null && realWs !== null && inside(realWs, realSessions)) {
+      await rm(realWs, { recursive: true, force: true });
+    } else if (realWs !== null) {
+      log.warn("hub", "not removing session workspace outside station sessions directory", { session: key, workspace: row.workspace });
+    }
+  }
   log.info("hub", "session deleted", { session: key });
 }
 

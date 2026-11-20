@@ -1334,6 +1334,27 @@ pub fn Store::transcript_in_use(
 }
 
 ///|
+pub fn Store::transcript_referenced(
+  self : Store,
+  runtime : Json,
+  id : Json,
+  except : Json,
+) -> Bool raise {
+  self.one(transcript_referenced, [id, runtime, except]) is Some(_)
+}
+
+///|
+pub fn Store::session_paths_page(
+  self : Store,
+  after : Json,
+  limit : Int,
+) -> Array[Json] raise {
+  self
+  .all(session_paths_page, [after, jint(limit.to_int64())])
+  .map(r => { "key": col(r, "key"), "workspace": col(r, "workspace"), "cwd": col(r, "cwd") })
+}
+
+///|
 pub fn Store::set_running(
   self : Store,
   key : String,

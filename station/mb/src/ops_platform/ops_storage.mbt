@@ -128,7 +128,7 @@ pub let storage_manifest : Array[StorageEntry] = [
     reclaim="Upkeep goneBoardFiles",
   ),
   se("homes", "authoritative", "the runtimes' homes (accounts' sign-ins, their settings)"),
-  se("repos", "authoritative", "the repositories' shared clones"),
+  se("repos", "session-bound", "the repositories' shared clones", reclaim="sessions/lifecycle.ts relieveRepos (low disk only)"),
   se("agent", "authoritative", "the agents' memory and skills"),
   se("share", "authoritative", "the memory's versions shared between stations"),
   se("xshare", "authoritative", "chats shared with other workspaces"),

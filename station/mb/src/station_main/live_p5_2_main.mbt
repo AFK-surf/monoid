@@ -734,7 +734,30 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
       Json::null()
     }
     "fs.rmRoom" => {
-      host_remove_tree(self.host, s("home"))
+      let workspace = s("workspace")
+      let storage = self.storage()
+      match storage.room_of(workspace) {
+        Some(room) =>
+          storage.fs.with_lock(room, async fn() {
+            let worktrees = storage.fs.collect_worktree_registrations(room)
+            storage.fs.unlock_worktrees(room)
+            storage.fs.remove_tree(room, force=true)
+            let raw_room = @nodepath.join(sep(), [@nodepath.dirname(sep(), workspace)])
+            let room_paths = if raw_room == room { [room] } else { [room, raw_room] }
+            ignore(storage.fs.remove_worktree_registrations(worktrees, room_paths))
+          })
+        None => {
+          let real_sessions = storage.fs.realpath(path([self.data, "sessions"]))
+          let real_ws = storage.fs.realpath(workspace)
+          match (real_sessions, real_ws) {
+            (Some(rs), Some(rw)) if rw != rs && p53_within(rs, rw) =>
+              host_remove_tree(self.host, rw)
+            (_, Some(_)) =>
+              slice_log("warn", "hub", "not removing session workspace outside station sessions directory", { "workspace": jstr(workspace) })
+            _ => ()
+          }
+        }
+      }
       Json::null()
     }
     "actors.settled" => {
@@ -844,7 +867,7 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
     // (hub.ts `takeUp`'s lookup of the sessions its runners are of by their ids' parts, its index no longer prepared:
     // "fallback", the sessions listed whole, as SandboxNameBuilder says where it is not ready)
     "sandboxNames.takeUp" => Json::null()
-    "machine.transcriptOf" | "transcripts.of" | "marks.forget" | "machine.copyTranscript" => self.machine_ask(what, args)
+    "machine.transcriptOf" | "transcripts.of" | "transcripts.exclusive" | "marks.forget" | "machine.copyTranscript" => self.machine_ask(what, args)
     "live.call" =>
       match self.actors_program {
         Some(p) => p.call("#live", s("method"), jitems(jfield(args, "args")))
@@ -1142,6 +1165,7 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
       hub.relieve_archived()
       Json::null()
     }
+    "clones.active" => jb(clones_running.length() > 0)
     "profileGone" => {
       hub.profile_gone(jtext(arg, "profile").unwrap_or(""))
       Json::null()

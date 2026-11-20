@@ -90,7 +90,7 @@ import { buildSessionCounts } from "./session-count-builder.ts";
 import { PostBlockBuilder } from "./post-block-builder.ts";
 import { roomOfSoon } from "./footprint.ts";
 import { InternalChat } from "./internal.ts";
-import { expireArchived, relieveArchived, startAutoArchiveTimer } from "./lifecycle.ts";
+import { expireArchived, relieveArchived, relieveRepos, startAutoArchiveTimer } from "./lifecycle.ts";
 import { fromPeer, sender } from "./messages.ts";
 import { CREATE, CREATE_PRESET, CREATE_SPEED, CREATE_PRESET_SPEED, CREATE_PRESET_TUI, NOTICE, createForPeer, noticeForPeer } from "./opened.ts";
 import { ARCHIVE, archiveForPeer } from "./chat-archive.ts";
@@ -984,6 +984,7 @@ export const AgentsLive = (control: Control) =>
           }
           const low = disk === null ? DISK_LOW_BYTES : diskLow(disk.total);
           if ((await free()) < low) await relieveArchived(hub, free, low);
+          if ((await free()) < low) await relieveRepos(hub, free, low);
         } catch (error) {
           log.warn("hub", "making room on the disk failed", { error: (error as Error).message });
         }

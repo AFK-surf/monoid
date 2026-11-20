@@ -3,7 +3,7 @@
 ## Storage classes and log rotation
 
 - Register every top-level entry under `<data>` in `station/src/ops/storage.ts` `STORAGE_MANIFEST` with its class (`authoritative`, `session-bound`, `bounded-ephemeral`) and bound. `station/test/storage-classes.test.ts` scans the code and fails on unregistered paths joined onto `<data>`.
-- `Upkeep` enforces bounds on growing directories (logs, runner files, job logs, remote rooms, DB logs, caches).
+- `Upkeep` enforces bounds on growing directories (logs, runner files, job logs, remote rooms, DB logs, caches) and prunes stale unlocked `<data>/repos/*/.git/worktrees/*` registrations pointing to gone paths under `<data>/sessions`. Shared clones in `<data>/repos` are `session-bound` and reclaimed only on low disk by `relieveRepos` (not regular `Upkeep`).
 - Never rename or unlink a log held open by other processes (`stillfail.log` is opened with `O_APPEND` by launchd/systemd for the launcher, front, and Node across updates). Truncate in place (`rotateInPlace`) so writers do not fill the disk through an unlinked inode.
 
 ## Background work yielding and bounded walks

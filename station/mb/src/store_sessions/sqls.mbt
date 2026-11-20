@@ -44,6 +44,20 @@ let transcript_in_use : String =
   #|  LIMIT 1
 
 ///|
+let transcript_referenced : String =
+  #|SELECT 1 FROM runtime_sessions r INDEXED BY runtime_sessions_by_id
+  #|    CROSS JOIN sessions s ON s.key = r.session_key
+  #|    WHERE r.id = ?1 AND COALESCE(r.runtime, s.original_runtime, s.runtime) = ?2 AND s.key <> ?3
+  #|  UNION ALL SELECT 1 FROM sessions s INDEXED BY sessions_by_runtime_id
+  #|    WHERE s.runtime_session_id = ?1 AND s.runtime = ?2 AND s.key <> ?3
+  #|      AND NOT EXISTS (SELECT 1 FROM runtime_sessions r WHERE r.session_key = s.key AND r.id = ?1)
+  #|  LIMIT 1
+
+///|
+let session_paths_page : String =
+  #|SELECT key, workspace, cwd FROM sessions WHERE key > ?1 ORDER BY key LIMIT ?2
+
+///|
 let stats_of : String =
   #|SELECT
   #|    ((SELECT COUNT(*) FROM deliveries d INDEXED BY deliveries_pending WHERE d.session = s.key AND d.delivered_at IS NULL) +

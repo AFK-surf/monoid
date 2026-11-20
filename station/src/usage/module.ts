@@ -37,7 +37,13 @@ export function repriceUsage(store: StationStore, live: LiveHub): void {
 
 /// The live view reads each saved summary. Only sessions whose recorded usage changes are updated and told.
 export function keepCounted(store: StationStore, live: LiveHub, counter: UsageCounter): () => void {
-  live.countWith({ of: (key) => store.sessionUsage(key), ask: (key) => counter.soon(key) });
+  live.countWith({
+    of: (key) => store.sessionUsage(key),
+    ask: (key) => counter.soon(key),
+    flush: async (key) => {
+      await counter.read(new Set([key]));
+    },
+  });
   return store.subscribe((change) => {
     if (change.type === "usage" && change.statisticsOnly) return;
     // A session gone on in another conversation (its context cleared, as 换新上下文 does): its context is that one's.

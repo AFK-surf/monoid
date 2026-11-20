@@ -52,6 +52,13 @@ let p53_node_part_ms : Double = 24.0 * 3600000.0
 let p53_board_files_gone_ms : Double = 24.0 * 3600000.0
 
 ///|
+/// Shared clones untouched for this long may be reclaimed on low disk (sessions/lifecycle.ts `REPO_IDLE_MS`).
+let p53_repo_idle_ms : Double = 14.0 * 24.0 * 3600000.0
+
+///|
+let p53_repo_git_timeout_ms : Int = 15000
+
+///|
 priv struct P53Upkeep {
   bus : LiveBus
   jobs : P53Jobs
@@ -193,6 +200,9 @@ async fn P53Upkeep::pass(self : P53Upkeep) -> Json {
   note("board files", async fn() {
     Json::array(p53_gone_board_files(host, at(["board-files"]), p53_board_files_gone_ms, now).map(jstr))
   })
+  note("repo worktrees", async fn() {
+    Json::array(p53_prune_repo_worktrees(host, data).map(jstr))
+  })
   let (free, total) = disk_of(data).unwrap_or((-1.0, -1.0))
   out["free"] = jn(free)
   out["total"] = jn(total)
@@ -238,13 +248,339 @@ async fn P53Upkeep::relieving(self : P53Upkeep) -> Json {
     self.remote.relieve(now, p53_disk_soft(total))
   }
   match disk_of(bus.data) {
-    Some((left, _)) if left < p53_disk_low(total) =>
+    Some((left, _)) if left < p53_disk_low(total) => {
       bus.hub_relieve_archived(low_bytes=p53_disk_low(total)) catch {
         e => slice_log("warn", "hub", "making room on the disk failed", jobj_of([("error", jstr(p53_words(e)))]))
       }
+      match disk_of(bus.data) {
+        Some((still_left, _)) if still_left < p53_disk_low(total) =>
+          ignore(self.relieve_repos(now, p53_disk_low(total)) catch {
+            e => {
+              slice_log("warn", "hub", "reclaiming unused shared clones failed", jobj_of([("error", jstr(p53_words(e)))]))
+              []
+            }
+          })
+        _ => ()
+      }
+    }
     _ => ()
   }
   jobj_of([("tier", jstr(self.tier)), ("free", jn(free)), ("total", jn(total))])
+}
+
+///|
+fn p53_inside(path : String, dir : String) -> Bool {
+  path != dir && path.has_prefix(dir + sep())
+}
+
+///|
+fn p53_safe_url(url : String) -> String {
+  match url.find("://") {
+    None => url
+    Some(scheme_end) => {
+      let scheme = url[:scheme_end + 3].to_owned()
+      let rest = url[scheme_end + 3:].to_owned()
+      let slash = rest.find("/").unwrap_or(rest.length())
+      let auth = rest[:slash].to_owned()
+      match auth.rev_find("@") {
+        None => url
+        Some(at) => {
+          let lower = scheme.to_lower()
+          if lower == "http://" || lower == "https://" {
+            scheme + rest[at + 1:].to_owned()
+          } else {
+            let user_part = auth[:at].to_owned()
+            match user_part.find(":") {
+              Some(colon) => scheme + user_part[:colon].to_owned() + "@" + rest[at + 1:].to_owned()
+              None => url
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+///|
+/// Removes stale, unlocked git worktree registrations in `<data>/repos/*/.git/worktrees/*`
+/// whose literal `gitdir` target lies under `<data>/sessions` and no longer exists (ops/storage.ts `pruneRepoWorktrees`).
+async fn p53_prune_repo_worktrees(host : @host.Host, data : String) -> Array[String] {
+  guard p53_realpath(host, @nodepath.join(sep(), [data, "repos"])) is Some(real_repos) else { return [] }
+  let raw_sessions = @nodepath.join(sep(), [data, "sessions"])
+  let real_sessions = p53_realpath(host, raw_sessions)
+  let gone : Array[String] = []
+  for repo_name in p53_names(host, real_repos) {
+    if repo_name.has_prefix(".") {
+      continue
+    }
+    let repo_path = @nodepath.join(sep(), [real_repos, repo_name])
+    if jtext(p53_lstat(host, repo_path), "kind") != Some("dir") {
+      continue
+    }
+    let wt_root = @nodepath.join(sep(), [repo_path, ".git", "worktrees"])
+    if jtext(p53_lstat(host, wt_root), "kind") != Some("dir") {
+      continue
+    }
+    for wt_name in p53_names(host, wt_root) {
+      let admin_dir = @nodepath.join(sep(), [wt_root, wt_name])
+      if jtext(p53_lstat(host, admin_dir), "kind") != Some("dir") {
+        continue
+      }
+      if jtext(p53_lstat(host, @nodepath.join(sep(), [admin_dir, "locked"])), "kind") is Some(_) {
+        continue
+      }
+      let raw_target = (host.read_text(@nodepath.join(sep(), [admin_dir, "gitdir"])) catch { _ => None })
+        .unwrap_or("")
+        .trim()
+        .to_string()
+      if raw_target == "" || !@nodepath.is_absolute(sep(), raw_target) {
+        continue
+      }
+      let target = @nodepath.join(sep(), [raw_target])
+      let under = p53_inside(target, raw_sessions) ||
+        (match real_sessions {
+          Some(rs) => p53_inside(target, rs)
+          None => false
+        })
+      if !under {
+        continue
+      }
+      if jtext(p53_lstat(host, target), "kind") is Some(_) {
+        continue
+      }
+      p53_remove(host, admin_dir)
+      gone.push(repo_name + "/" + wt_name)
+    }
+  }
+  gone
+}
+
+///|
+async fn p53_run_repo_git(host : @host.Host, dir : String, args : Array[String]) -> (Bool, String) {
+  let pairs = [
+    ("GIT_TERMINAL_PROMPT", "0"),
+    ("GIT_SSH_COMMAND", "ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new"),
+  ]
+  let git = find_command("git", pairs).unwrap_or("git")
+  let full = ["-C", dir] + args
+  let proc = spawn(host, git, full, env=pairs, stdout=Piped, stderr=Ignored) catch {
+    _ => return (false, "")
+  }
+  let late = Ref(false)
+  let killer = host.rt.fork(name="repo git check deadline", async fn() {
+    @effect.sleep(p53_repo_git_timeout_ms) // timer: a deadline to a process (git check given p53_repo_git_timeout_ms at most)
+    late.val = true
+    ignore(kill(proc.pid, "SIGKILL"))
+  })
+  let (code, _, out, _) = proc.finished()
+  killer.interrupt()
+  (!late.val && code == Some(0), @utf8.decode_lossy(out))
+}
+
+///|
+async fn p53_repo_last_touched_ms(host : @host.Host, repo_path : String) -> Double? {
+  let mut latest : Double? = None
+  for rel in [".git/HEAD", ".git/FETCH_HEAD", ".git/index", ".git/logs/HEAD"] {
+    let p = @nodepath.join(sep(), [repo_path, rel])
+    match (try { Ok(host.shell("fs.meta", { "path": Json::string(p) })) } catch { e => Err(e) }) {
+      Ok((m, _)) =>
+        match jnum_of(m, "mtimeMs") {
+          Some(at) =>
+            match latest {
+              None => latest = Some(at)
+              Some(cur) if at > cur => latest = Some(at)
+              _ => ()
+            }
+          None => ()
+        }
+      Err(_) => ()
+    }
+  }
+  latest
+}
+
+///|
+/// Reclaims unreferenced shared clones in `<data>/repos` when disk remains below `low` after `relieve_archived`
+/// (sessions/lifecycle.ts `relieveRepos`).
+async fn P53Upkeep::relieve_repos(self : P53Upkeep, now : Double, low : Double) -> Array[String] {
+  let bus = self.bus
+  let host = bus.host
+  let data = bus.data
+  let below_low = () => match disk_of(data) {
+    Some((free, _)) => free < low
+    None => false
+  }
+  if !below_low() {
+    return []
+  }
+  if bus.hub_clones_active() {
+    return []
+  }
+  ignore(p53_prune_repo_worktrees(host, data))
+  let raw_repos = @nodepath.join(sep(), [data, "repos"])
+  guard p53_realpath(host, raw_repos) is Some(real_repos) else { return [] }
+
+  // Gather referenced paths: presets across all workspaces, all session rows, active jobs, move/repos.json.
+  let refs : Array[String] = []
+  let add_ref = async fn(p : String) {
+    if p == "" {
+      return
+    }
+    let norm = @nodepath.join(sep(), [p])
+    if !refs.contains(norm) {
+      refs.push(norm)
+    }
+    match p53_realpath(host, p) {
+      Some(r) if !refs.contains(r) => refs.push(r)
+      _ => ()
+    }
+  }
+  let agent_home = @nodepath.join(sep(), [data, "agent"])
+  let preset_homes : Array[String] = [agent_home]
+  let ws_dir = @nodepath.join(sep(), [agent_home, "workspaces"])
+  for ws in p53_names(host, ws_dir) {
+    let p = @nodepath.join(sep(), [ws_dir, ws])
+    if jtext(p53_lstat(host, p), "kind") == Some("dir") {
+      preset_homes.push(p)
+    }
+  }
+  for home in preset_homes {
+    match (host.read_text(@nodepath.join(sep(), [home, "presets.json"])) catch { _ => None }) {
+      Some(text) => {
+        let parsed = @json.parse(text) catch { _ => Json::null() }
+        for preset in jitems(jfield(parsed, "presets")) {
+          for d in jitems(jfield(preset, "dirs")) {
+            match jtext(d, "path") {
+              Some(p) => add_ref(p)
+              None => ()
+            }
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  let mut after_key = ""
+  while true {
+    let page = bus.store.session_paths_page(Json::string(after_key), 200) catch { _ => return [] }
+    if page.length() == 0 {
+      break
+    }
+    for row in page {
+      match jtext(row, "workspace") {
+        Some(w) => add_ref(w)
+        None => ()
+      }
+      match jtext(row, "cwd") {
+        Some(c) => add_ref(c)
+        None => ()
+      }
+      after_key = jtext(row, "key").unwrap_or(after_key)
+    }
+  }
+  let jobs_up = bus.store.jobs_up() catch { _ => return [] }
+  for job in jobs_up {
+    match jtext(job, "cwd") {
+      Some(c) => add_ref(c)
+      None => ()
+    }
+  }
+  let move_repos_path = @nodepath.join(sep(), [data, "move", "repos.json"])
+  if jtext(p53_lstat(host, move_repos_path), "kind") is Some(_) {
+    match (host.read_text(move_repos_path) catch { _ => None }) {
+      Some(text) => {
+        let parsed = @json.parse(text) catch { _ => return [] }
+        match parsed {
+          Object(m) =>
+            for _, entry in m {
+              match jtext(entry, "dir") {
+                Some(d) => add_ref(d)
+                None => ()
+              }
+            }
+          _ => return []
+        }
+      }
+      None => return []
+    }
+  }
+
+  let candidates : Array[(String, String, Double)] = []
+  for name in p53_names(host, real_repos) {
+    if name.has_prefix(".") {
+      continue
+    }
+    let repo_path = @nodepath.join(sep(), [real_repos, name])
+    let raw_path = @nodepath.join(sep(), [raw_repos, name])
+    if jtext(p53_lstat(host, repo_path), "kind") != Some("dir") {
+      continue
+    }
+    let wt_root = @nodepath.join(sep(), [repo_path, ".git", "worktrees"])
+    if jtext(p53_lstat(host, wt_root), "kind") is Some(_) && p53_names(host, wt_root).length() > 0 {
+      continue
+    }
+    if refs.iter().any(r => p53_within(repo_path, r) || p53_within(raw_path, r)) {
+      continue
+    }
+    match p53_repo_last_touched_ms(host, repo_path) {
+      Some(at) if now - at >= p53_repo_idle_ms => candidates.push((name, repo_path, at))
+      _ => ()
+    }
+  }
+  candidates.sort_by((a, b) => a.2.compare(b.2))
+
+  let removed : Array[String] = []
+  for cand in candidates {
+    if !below_low() || bus.hub_clones_active() {
+      break
+    }
+    let (name, repo_path, _) = cand
+    let (rem_ok, rem_out) = p53_run_repo_git(host, repo_path, ["remote"])
+    if !rem_ok {
+      continue
+    }
+    let remotes : Array[String] = rem_out
+      .split("\n")
+      .map(s => s.trim().to_string())
+      .filter(s => s != "")
+      .collect()
+    if remotes.length() == 0 {
+      continue
+    }
+    let primary = if remotes.contains("origin") { "origin" } else { remotes[0] }
+    let (url_ok, url_out) = p53_run_repo_git(host, repo_path, ["remote", "get-url", primary])
+    let remote_url = url_out.trim().to_string()
+    if !url_ok || remote_url == "" {
+      continue
+    }
+    let (rev_ok, rev_out) = p53_run_repo_git(host, repo_path, ["rev-list", "--count", "--branches", "--tags", "--not", "--remotes"])
+    if !rev_ok || rev_out.trim().to_string() != "0" {
+      continue
+    }
+    let (stash_ok, stash_out) = p53_run_repo_git(host, repo_path, ["for-each-ref", "refs/stash"])
+    if !stash_ok || stash_out.trim().to_string() != "" {
+      continue
+    }
+    let (status_ok, status_out) = p53_run_repo_git(host, repo_path, ["status", "--porcelain"])
+    if !status_ok || status_out != "" {
+      continue
+    }
+    if !below_low() || bus.hub_clones_active() {
+      break
+    }
+    let (freed, _, _) = @ops_platform.tree_bytes(@ops_platform.Fs::new(host), repo_path, 1_000_000, () => wall_ms().to_double()) catch {
+      _ => (0.0, 0, false)
+    }
+    p53_remove(host, repo_path)
+    slice_log(
+      "info",
+      "hub",
+      "reclaimed unused shared clone",
+      jobj_of([("path", jstr(repo_path)), ("remote", jstr(p53_safe_url(remote_url))), ("freed", jn(freed))]),
+    )
+    removed.push(name)
+  }
+  removed
 }
 
 ///|

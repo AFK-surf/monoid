@@ -510,12 +510,38 @@ pub async fn Hub::delete_session(self : Hub, key : String) -> Unit {
   if self.drop_actor(key) {
     ignore(self.ask_actor(key, "dispose"))
   }
+  // Flush any unread transcript tail into usage statistics before deleting the session row and its transcripts.
+  match self.counter {
+    Some(c) => ignore(c.read(Some([key])))
+    None => ()
+  }
   (self.world.tell)("live.forget", Json::string(key))
   let transcripts = (self.world.ask)("transcripts.of", { "key": Json::string(key), "row": row })
+  let sources = self.store.runtime_session_sources(key, None)
+  let exclusive_sources = []
+  for s in sources {
+    let rt = field(s, "runtime").unwrap_or(Json::null())
+    let id = field(s, "id").unwrap_or(Json::null())
+    if !self.store.transcript_referenced(rt, id, Json::string(key)) {
+      exclusive_sources.push(s)
+    }
+  }
+  let exclusive_files = if exclusive_sources.length() > 0 {
+    (self.world.ask)("transcripts.exclusive", { "key": Json::string(key), "row": row, "sources": Json::array(exclusive_sources) }) catch {
+      _ => Json::array([])
+    }
+  } else {
+    Json::array([])
+  }
   self.store.delete_session(key)
   (self.world.tell)("closed", Json::string(key))
   ignore((self.world.ask)("fs.rm", { "path": Json::string(self.transcript_copy(key)) }))
   ignore((self.world.ask)("marks.forget", transcripts))
+  for file in items(Some(exclusive_files)) {
+    if file is String(p) {
+      ignore((self.world.ask)("fs.rm", { "path": Json::string(p) }) catch { _ => Json::null() })
+    }
+  }
   let data = str_of(self.config(), "dataDir").unwrap_or("")
   let sessions = join_path([data, "sessions"])
   let workspace = str_of(row, "workspace").unwrap_or("")

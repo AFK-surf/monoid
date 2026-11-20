@@ -536,6 +536,12 @@ async fn LiveBus::hub_relieve_archived(self : LiveBus, low_bytes~ : Double) -> U
 }
 
 ///|
+/// Whether any repository clone is currently in progress.
+async fn LiveBus::hub_clones_active(self : LiveBus) -> Bool {
+  ((self.hub_ask.val)("clones.active", Json::null()) catch { _ => Json::boolean(false) }) == Json::boolean(true)
+}
+
+///|
 /// A decided card's outcome queued for the agents' side's worker (agents.ts `cardOutcomes.save`): its id.
 async fn LiveBus::hub_card_outcomes_save(self : LiveBus, outcome : Json) -> Json {
   (self.hub_ask.val)("cardOutcomes.save", Json::array([outcome]))

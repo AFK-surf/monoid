@@ -3,7 +3,7 @@
 // STORAGE_MANIFEST (test/storage-classes.test.ts reads the code and fails on one that is not): a new one says what it is
 // and, if it grows, what bounds it.
 //
-// - authoritative: what lasts or is a person's (the database, the config, transcripts, uploads, homes, clones). Never
+// - authoritative: what lasts or is a person's (the database, the config, transcripts, uploads, homes). Never
 //   removed by upkeep.
 // - session-bound: goes with its chat or task (an archived chat's workspace, a remote room): its own lifecycle removes it
 //   (sessions/lifecycle.ts, jobs/remote.ts), upkeep only when the disk is low.
@@ -20,9 +20,10 @@
 // write lands at its new end (an O_APPEND write goes to the end the file has then).
 import { Clock } from "effect";
 import { type Dirent } from "node:fs";
-import { lstat, open, readdir, readFile, rename, rm, stat, statfs, truncate } from "node:fs/promises";
-import { join } from "node:path";
+import { lstat, open, readdir, readFile, realpath, rename, rm, stat, statfs, truncate } from "node:fs/promises";
+import { isAbsolute, join } from "node:path";
 import { Fibers } from "./fibers.ts";
+import { clean, inside } from "./paths.ts";
 import { walkBounded } from "./walk.ts";
 import { log } from "./log.ts";
 
@@ -109,7 +110,7 @@ export const STORAGE_MANIFEST: readonly StorageEntry[] = [
   { name: "uploads", class: "authoritative", what: "files sent in chats" },
   { name: "board-files", class: "authoritative", what: "the files of people's drafts of 待派发 (sessions/board-drafts.ts; those of a draft started or deleted, .gone, a day more, held by Upkeep)", maxAgeMs: BOARD_FILES_GONE_MS, reclaim: "Upkeep goneBoardFiles" },
   { name: "homes", class: "authoritative", what: "the runtimes' homes (accounts' sign-ins, their settings)" },
-  { name: "repos", class: "authoritative", what: "the repositories' shared clones" },
+  { name: "repos", class: "session-bound", what: "the repositories' shared clones", reclaim: "sessions/lifecycle.ts relieveRepos (low disk only)" },
   { name: "agent", class: "authoritative", what: "the agents' memory and skills" },
   { name: "share", class: "authoritative", what: "the memory's versions shared between stations" },
   { name: "xshare", class: "authoritative", what: "chats shared with other workspaces" },
@@ -298,6 +299,40 @@ export async function orphanMarks(dir: string): Promise<string[]> {
   return gone;
 }
 
+/// Removes stale, unlocked git worktree registrations in `<data>/repos/*/.git/worktrees/*`
+/// whose literal `gitdir` target lies under `<data>/sessions` and no longer exists.
+export async function pruneRepoWorktrees(data: string): Promise<string[]> {
+  const realRepos = await realpath(join(data, "repos")).catch(() => null);
+  if (realRepos === null) return [];
+  const rawSessions = clean(join(data, "sessions"));
+  const realSessions = await realpath(join(data, "sessions")).catch(() => null);
+  const gone: string[] = [];
+  for (const repoName of await readdir(realRepos).catch(() => [] as string[])) {
+    if (repoName.startsWith(".")) continue;
+    const repoPath = join(realRepos, repoName);
+    const repoSt = await lstat(repoPath).catch(() => null);
+    if (repoSt === null || !repoSt.isDirectory() || repoSt.isSymbolicLink()) continue;
+    const wtRoot = join(repoPath, ".git", "worktrees");
+    const wtRootSt = await lstat(wtRoot).catch(() => null);
+    if (wtRootSt === null || !wtRootSt.isDirectory() || wtRootSt.isSymbolicLink()) continue;
+    for (const wtName of await readdir(wtRoot).catch(() => [] as string[])) {
+      const adminDir = join(wtRoot, wtName);
+      const adminSt = await lstat(adminDir).catch(() => null);
+      if (adminSt === null || !adminSt.isDirectory() || adminSt.isSymbolicLink()) continue;
+      if (await lstat(join(adminDir, "locked")).then(() => true, () => false)) continue;
+      const rawTarget = (await readFile(join(adminDir, "gitdir"), "utf8").catch(() => "")).trim();
+      if (rawTarget === "" || !isAbsolute(rawTarget)) continue;
+      const target = clean(rawTarget);
+      const underSessions = inside(target, rawSessions) || (realSessions !== null && inside(target, realSessions));
+      if (!underSessions) continue;
+      if (await lstat(target).then(() => true, () => false)) continue;
+      await rm(adminDir, { recursive: true, force: true }).catch(() => undefined);
+      gone.push(`${repoName}/${wtName}`);
+    }
+  }
+  return gone;
+}
+
 /// How the disk of `path` stands: free for the station, and its whole size.
 export async function diskOf(path: string): Promise<{ free: number; total: number }> {
   const st = await statfs(path);
@@ -375,6 +410,7 @@ export class Upkeep {
     await this.#step("config backups", () => keepNewest(data, "config.json.bak-", CONFIG_BACKUPS_KEPT));
     await this.#step("transcript marks", () => orphanMarks(join(data, "transcript-marks")));
     await this.#step("board files", () => goneBoardFiles(join(data, "board-files"), BOARD_FILES_GONE_MS, now));
+    await this.#step("repo worktrees", () => pruneRepoWorktrees(data));
   }
 
   async #step(what: string, f: () => Promise<unknown>): Promise<void> {
