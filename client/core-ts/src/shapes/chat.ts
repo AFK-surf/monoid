@@ -364,7 +364,8 @@ export const CHAT_SHAPES: Record<string, Shape> = {
     ["open", vec("String"), { doc: "The tabs open beside it, in their order, of those kept the ones it has (an agent's history by its session's key,\n`service:<job>` one of its agents' services, `jobs`, `files`, `letters`, `file:[…]` a visualization, `screen:[…]` a station's\nscreen); all kept while its\nagents are not known. None kept: none, or where its agent has no chat yet its history (`auto`)." }],
     ["shown", opt("String"), { doc: "The one in front: as kept, else the first; none with none open." }],
     ["auto", opt("bool"), { doc: "None kept: `open` is what the chat opens by itself (its agent's history, it having no chat yet). A client where\nthe panel would lie over the chat shows none, and changes them with `auto: false`." }],
-  ], { doc: "A chat's side panel (`chat.tabs.open/close/front/clear` change it)." }),
+    ["canReopen", opt("bool"), { doc: "Whether closed tabs are kept in history that can be reopened (`chat.tabs.reopen`). Absent when none." }],
+  ], { doc: "A chat's side panel (`chat.tabs.open/close/closeOthers/closeRight/move/reopen/front/clear/replace` change it)." }),
   ChatPublish: struct([
     ["may", "bool", { doc: "The viewer may draw it as a picture (not a read-only member)." }],
   ], { doc: "A chat as a picture, for its \"…\": whether the viewer may draw it." }),

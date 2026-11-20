@@ -135,11 +135,11 @@ fn side_bar_node(
           side_title_node(p, src, r, view, fn() { tabs().get(0).unwrap_or("") })
         } else {
           @sf.style_node(p, fn() { side_tab_list }, in_row=true)
-          side_tabs_node(p, src, r, view, tabs, front, tips)
+          side_tabs_node(p, src, r, view, tabs, front, true, tips)
         }
       })
     } else {
-      side_tabs_node(bar, src, r, view, tabs, front, tips)
+      side_tabs_node(bar, src, r, view, tabs, front, false, tips)
     }
     // the station's screen or terminal in front: expand to full window, or pop out to a window of its own (a screen's
     // with touch its own 全屏 does it, over all of it with the system's bars put away: sfpages' full_asked, so not
@@ -248,11 +248,140 @@ fn side_mark_node(n : @view.View, src : Source, r : ChatRef, view : () -> ChatVi
 }
 
 ///|
-/// The panel's tabs in `p` (@sf.tab_bar_node's capsules, one tab list: Tab stopping at the one in front, ← → bringing
-/// each in front): each its mark and its name, cut short where the tabs have not the room (all of it in its tip then,
-/// but for the chat's own four), pressed to bring it in front; its × at its end closing it, concentric with it, a
-/// control of its own. In front on the selected ground, its words the words' colour and 500; behind, lit by the hand
-/// on the pointer's ground, its mark and words brought up to the words' colour.
+/// Window-root overlay menu for side-panel tab context menus and the overflow tab switcher
+/// (mounted in overlays_node so the modal backdrop and anchor span the full window).
+priv struct SideTabMenuReq {
+  id : Int
+  anchor : (Double, Double, Double, Double)
+  along : @ui.Along
+  offset : Double
+  entries : () -> Array[(@sf.MenuItem?, String)]
+}
+
+///|
+// kept across runs: reset via side_tab_menu_reset
+let side_tab_menu_count : Ref[Int] = Ref(0)
+
+///|
+// kept across runs: reset via side_tab_menu_reset
+let side_tab_menu_now : @signals.Signal[Int] = @signals.signal(0)
+
+///|
+// kept across runs: reset via side_tab_menu_reset
+let side_tab_menu_ids : @signals.Signal[Array[Int]] = @signals.signal([], same=fn(a, b) { a == b })
+
+///|
+// kept across runs: reset via side_tab_menu_reset
+let side_tab_menu_reqs : Map[Int, SideTabMenuReq] = Map([])
+
+///|
+// kept across runs: reset via side_tab_menu_reset
+let side_tab_menu_gone : Map[Int, Bool] = Map([])
+
+///|
+fn side_tab_menu_reset() -> Unit {
+  side_tab_menu_count.val = 0
+  side_tab_menu_now.set(0)
+  side_tab_menu_ids.set([])
+  side_tab_menu_reqs.clear()
+  side_tab_menu_gone.clear()
+}
+
+///|
+fn side_tab_menu_open(
+  anchor : (Double, Double, Double, Double),
+  along : @ui.Along,
+  offset : Double,
+  entries : () -> Array[(@sf.MenuItem?, String)],
+) -> Unit {
+  side_tab_menu_count.val += 1
+  let id = side_tab_menu_count.val
+  let kept = side_tab_menu_ids.untracked().filter(fn(x) { !side_tab_menu_gone.contains(x) })
+  for gid, _ in side_tab_menu_gone {
+    side_tab_menu_reqs.remove(gid)
+  }
+  side_tab_menu_gone.clear()
+  side_tab_menu_reqs[id] = { id, anchor, along, offset, entries }
+  side_tab_menu_ids.set(kept + [id])
+  side_tab_menu_now.set(id)
+}
+
+///|
+fn side_tab_menu_node(v : @view.View) -> Unit {
+  v.each(fn() { side_tab_menu_ids.get() }, fn(id) { id }, fn(cell, k) {
+    cell.over(Is(true)) |> ignore
+    let id = k.untracked()
+    guard side_tab_menu_reqs.get(id) is Some(req) else { return }
+    let open = fn() { side_tab_menu_now.get() == req.id }
+    let close_menu = fn() {
+      if @signals.untracked(open) {
+        side_tab_menu_now.set(0)
+      }
+    }
+    let kept : Ref[Array[(@sf.MenuItem?, String)]?] = Ref(None)
+    let items = fn() {
+      match kept.val {
+        Some(xs) => xs
+        None => (req.entries)()
+      }
+    }
+    let hold = fn() {
+      if kept.val is None {
+        kept.val = Some(@signals.untracked(req.entries))
+      }
+    }
+    cell.reacts(open, at_start=false, fn(on) {
+      if !on {
+        hold()
+      }
+    })
+    @sf.menu_node(
+      cell,
+      open,
+      fn(layer) { @sf.fixed_anchor(layer, req.anchor) },
+      fn() { items().map(fn(x) { x.0 }) },
+      "",
+      req.along,
+      req.offset,
+      false,
+      false,
+      fn(item) {
+        hold()
+        close_menu()
+        (item.select)()
+      },
+      fn() {
+        hold()
+        close_menu()
+      },
+      gone=fn() { side_tab_menu_gone[req.id] = true },
+      extras=fn(i) {
+        let value = match @signals.untracked(items).get(i) {
+          Some((_, hint)) => hint
+          None => ""
+        }
+        { note: "", value, mark: None, end: None }
+      },
+      min_w=200.0,
+    )
+  })
+}
+
+
+///|
+/// Menu icon name for a side tab (used in the overflow tab switcher menu).
+fn side_tab_menu_icon(src : Source, r : ChatRef, v : ChatView?, tab : String) -> String {
+  match side_mark_of(src, r, v, tab) {
+    Icon(name) => name
+    Maker(_, _) => "thread"
+    Dot(_) => "web"
+  }
+}
+
+///|
+/// The panel's tabs in `p` as retained window tree nodes (`@sf.tab_strip_node`): uniform slot widths with deferred
+/// resize on repeated × clicks, smart × visibility (zero alpha=0 click-through), horizontal scrolling with wheel
+/// support and edge fades, overflow switcher menu, context menu, and drag-to-reorder.
 fn side_tabs_node(
   p : @view.View,
   src : Source,
@@ -260,9 +389,9 @@ fn side_tabs_node(
   view : () -> ChatView?,
   tabs : () -> Array[String],
   front : () -> String,
+  on_tape : Bool,
   tips : @sf.TipLayer,
 ) -> Unit {
-  // each service tab's job, held as it was while a new ask of it has no answer yet (the panel taken back kept left)
   let jobs_held : Map[String, @signals.Computed[Json?]] = Map([])
   let job_of = fn(job : String) -> Json? {
     let held = match jobs_held.get(job) {
@@ -276,37 +405,104 @@ fn side_tabs_node(
     held.get()
   }
   let names = fn(tab : String) { side_tab_names(src, r, view(), tab, job_of~) }
-  @sf.tab_bar_node(
-    p,
-    fn() { @sf.t("web-pages.screen.tabs") },
+  let can_reopen = fn() { view().map(fn(v) { v.tabs.can_reopen }).unwrap_or(false) }
+  let key_hint = fn(action : String) -> String {
+    @settings.key_label(src.topic("prefs", {}).get().value, action)
+  }
+  let strip_h = if on_tape { bar_button_side() } else { 44.0 }
+
+  @sf.tab_strip_node(p, {
+    group_label: fn() { @sf.t("web-pages.screen.tabs") },
+    more_label: fn() { @sf.t("web-pages.chat.moreTabs") },
     tabs,
     front,
-    fn(tab) { side_front_pressed(src, r, tab) },
-    fn(tab) { names(tab).0 },
-    fn(b, tab, shown) {
-      side_mark_node(b, src, r, view, tab, fn() { shown.front() || shown.lit() })
-      @sf.words_node(b, fn() { names(tab).0 }, fn() {
-        if shown.front() {
-          side_tab_front
-        } else if shown.lit() {
-          side_tab_words_lit
-        } else {
-          side_tab_words
+    names,
+    mark: fn(v, key, bright) { side_mark_node(v, src, r, view, key, bright) },
+    on_select: fn(tab) { side_front_pressed(src, r, tab) },
+    on_close: fn(key) { side_change(src, r, "close", Some(key)) },
+    on_move: fn(key, to) { side_move(src, r, key, to) },
+    on_menu: fn(key, wx, wy) {
+      side_tab_menu_open((wx, wy, 0.0, 0.0), Start, 0.0, fn() {
+        let cur = tabs()
+        let idx = cur.search(key).unwrap_or(-1)
+        let n = cur.length()
+        let out : Array[(@sf.MenuItem?, String)] = [
+          (
+            Some(@sf.menu_item_of(@sf.t("web-pages.chat.closeTab"), fn() { side_change(src, r, "close", Some(key)) })),
+            key_hint("panel.tab.close"),
+          ),
+          (
+            Some(@sf.menu_item_of(@sf.t("web-pages.chat.closeOtherTabs"), disabled=n <= 1, fn() {
+              side_change(src, r, "closeOthers", Some(key))
+            })),
+            "",
+          ),
+          (
+            Some(@sf.menu_item_of(@sf.t("web-pages.chat.closeRightTabs"), disabled=idx < 0 || idx >= n - 1, fn() {
+              side_change(src, r, "closeRight", Some(key))
+            })),
+            "",
+          ),
+          (
+            Some(@sf.menu_item_of(@sf.t("web-pages.chat.closeAllTabs"), fn() { side_change(src, r, "clear", None) })),
+            key_hint("panel.close"),
+          ),
+          (None, ""),
+          (
+            Some(@sf.menu_item_of(@sf.t("web-pages.chat.reopenTab"), disabled=!can_reopen(), fn() { side_reopen(src, r) })),
+            key_hint("panel.tab.reopen"),
+          ),
+        ]
+        let win_page = match station_tab_page(r, key) {
+          Some(pg) if @sfbase.window_opens_for(pg) => Some(pg)
+          _ => None
         }
+        if win_page is Some(_) || tab_window_offered(r, key) {
+          out.push((None, ""))
+          out.push((
+            Some(@sf.menu_item_of(@sf.t("web-pages.screen.window"), fn() {
+              match win_page {
+                Some(pg) => if @sfbase.open_window(pg) { side_change(src, r, "close", Some(key)) }
+                None => tab_window_open(src, r, key) |> ignore
+              }
+            })),
+            "",
+          ))
+        }
+        out
       })
-      .shrink(Is(1.0))
-      .min_width(Is(Some(0.0)))
-      |> ignore
     },
-    close=fn(tab) { side_change(src, r, "close", Some(tab)) },
-    close_label=fn(tab) { names(tab).1 },
-    at_once=true,
-    tips~,
-    tip=fn(tab) { !(tab is ("jobs" | "files" | "letters" | "things")) },
-  )
-  .grow(Is(1.0))
-  .min_width(Is(Some(0.0)))
-  |> ignore
+    on_overflow: fn(anchor) {
+      side_tab_menu_open(anchor, End, 4.0, fn() {
+        let cur = tabs()
+        let f = front()
+        let v = view()
+        let out : Array[(@sf.MenuItem?, String)] = []
+        for t in cur {
+          let label = names(t).0
+          let icon = side_tab_menu_icon(src, r, v, t)
+          out.push((
+            Some(@sf.menu_item_of(label, icon~, chosen=t == f, fn() { side_front_pressed(src, r, t) })),
+            "",
+          ))
+        }
+        if can_reopen() {
+          out.push((None, ""))
+          out.push((
+            Some(@sf.menu_item_of(@sf.t("web-pages.chat.reopenTab"), fn() { side_reopen(src, r) })),
+            key_hint("panel.tab.reopen"),
+          ))
+        }
+        out
+      })
+    },
+    tips,
+    strip_h,
+    panel_w: fn() { panel_own.width.get() },
+    words_front: side_tab_front,
+    words_lit: side_tab_words_lit,
+    words_rest: side_tab_words,
+  })
 }
 
 ///|

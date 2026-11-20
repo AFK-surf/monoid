@@ -1028,6 +1028,10 @@ web-main.keymap.group.global
 web-main.keymap.nav.back
 web-main.keymap.nav.forward
 web-main.keymap.panel.close
+web-main.keymap.panel.tab.close
+web-main.keymap.panel.tab.reopen
+web-main.keymap.panel.tab.prev
+web-main.keymap.panel.tab.next
 web-main.keymap.settings
 web-main.keymap.shortcuts
 web-main.keymap.sidebar.toggle
@@ -1925,6 +1929,12 @@ web-pages.chat.close
 web-pages.chat.closeFiles
 web-pages.chat.closeJobs
 web-pages.chat.closePanel
+web-pages.chat.closeTab
+web-pages.chat.closeOtherTabs
+web-pages.chat.closeRightTabs
+web-pages.chat.closeAllTabs
+web-pages.chat.reopenTab
+web-pages.chat.moreTabs
 web-pages.chat.compact
 web-pages.chat.context
 web-pages.chat.contextActions

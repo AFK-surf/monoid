@@ -45,16 +45,81 @@ test("an_agents_history_opens_after_the_histories_open_and_anything_else_last", 
   assert.deepEqual(changed({ tabs: ["gone", "a1"] }, AGENTS, false, null, open("jobs")), { tabs: ["a1", "jobs"], active: "jobs" });
 });
 
-test("closing_one_brings_the_last_left_to_the_front_if_it_was_in_front_and_clearing_keeps_none", () => {
+test("closing_one_activates_right_neighbor_else_left_and_clearing_records_history", () => {
   const kept = { tabs: ["a1", "a2", "jobs"], active: "a2" };
-  assert.deepEqual(changed(kept, AGENTS, false, null, close("a2")), { tabs: ["a1", "jobs"], active: "jobs" });
-  assert.deepEqual(changed(kept, AGENTS, false, null, close("a1")), { tabs: ["a2", "jobs"], active: "a2" });
-  // None kept in front: the first was; the last left comes.
-  assert.deepEqual(changed({ tabs: ["a1", "a2", "jobs"] }, AGENTS, false, null, close("a1")), { tabs: ["a2", "jobs"], active: "jobs" });
-  assert.deepEqual(changed({ tabs: ["jobs"], active: "jobs" }, AGENTS, false, null, close("jobs")), { tabs: [] });
+  // Middle active closed -> right neighbor ("jobs")
+  assert.deepEqual(changed(kept, AGENTS, false, null, close("a2")), { tabs: ["a1", "jobs"], active: "jobs", closed: [{ tabs: ["a2"], at: 1, active: "a2" }] });
+  // Non-active closed -> active stays
+  assert.deepEqual(changed(kept, AGENTS, false, null, close("a1")), { tabs: ["a2", "jobs"], active: "a2", closed: [{ tabs: ["a1"], at: 0 }] });
+  // First active closed (implicit active = first) -> right neighbor ("a2"), not last ("jobs")
+  assert.deepEqual(changed({ tabs: ["a1", "a2", "jobs"] }, AGENTS, false, null, close("a1")), { tabs: ["a2", "jobs"], active: "a2", closed: [{ tabs: ["a1"], at: 0, active: "a1" }] });
+  // Last active closed -> left neighbor ("a2")
+  assert.deepEqual(changed({ tabs: ["a1", "a2", "jobs"], active: "jobs" }, AGENTS, false, null, close("jobs")), { tabs: ["a1", "a2"], active: "a2", closed: [{ tabs: ["jobs"], at: 2, active: "jobs" }] });
+  // Only tab closed -> empty, no active
+  assert.deepEqual(changed({ tabs: ["jobs"], active: "jobs" }, AGENTS, false, null, close("jobs")), { tabs: [], closed: [{ tabs: ["jobs"], at: 0, active: "jobs" }] });
   assert.equal(changed(kept, AGENTS, false, null, close("letters")), null, "one not open: nothing");
   assert.deepEqual(changed(kept, AGENTS, false, null, { action: "front", tab: "jobs", auto: true }), { tabs: ["a1", "a2", "jobs"], active: "jobs" });
-  assert.deepEqual(changed(kept, AGENTS, false, null, { action: "clear", tab: null, auto: true }), { tabs: [], active: "a2" });
+  assert.deepEqual(changed(kept, AGENTS, false, null, { action: "clear", tab: null, auto: true }), { tabs: [], active: "a2", closed: [{ tabs: ["a1", "a2", "jobs"], at: 0, active: "a2" }] });
+});
+
+test("close_others_close_right_move_and_reopen", () => {
+  const kept = { tabs: ["a1", "a2", "jobs", "files"], active: "jobs" };
+  // closeOthers
+  const afterOthers = changed(kept, AGENTS, false, null, { action: "closeOthers", tab: "a2", auto: true });
+  assert.deepEqual(afterOthers, { tabs: ["a2"], active: "a2", closed: [{ tabs: ["a1", "jobs", "files"], at: 0, active: "jobs" }] });
+  assert.equal(changed({ tabs: ["a2"], active: "a2" }, AGENTS, false, null, { action: "closeOthers", tab: "a2", auto: true }), null);
+  assert.equal(changed(kept, AGENTS, false, null, { action: "closeOthers", tab: "letters", auto: true }), null);
+
+  // closeRight when active is among closed tabs -> activates target tab
+  const afterRight = changed(kept, AGENTS, false, null, { action: "closeRight", tab: "a2", auto: true });
+  assert.deepEqual(afterRight, { tabs: ["a1", "a2"], active: "a2", closed: [{ tabs: ["jobs", "files"], at: 2, active: "jobs" }] });
+  // closeRight when active is left of target -> keeps active
+  const afterRightKeep = changed({ tabs: ["a1", "a2", "jobs", "files"], active: "a1" }, AGENTS, false, null, { action: "closeRight", tab: "a2", auto: true });
+  assert.deepEqual(afterRightKeep, { tabs: ["a1", "a2"], active: "a1", closed: [{ tabs: ["jobs", "files"], at: 2 }] });
+  // closeRight on rightmost tab -> null
+  assert.equal(changed(kept, AGENTS, false, null, { action: "closeRight", tab: "files", auto: true }), null);
+
+  // move
+  assert.deepEqual(changed(kept, AGENTS, false, null, { action: "move", tab: "a1", to: 2, auto: true }), { tabs: ["a2", "jobs", "a1", "files"], active: "jobs" });
+  assert.deepEqual(changed(kept, AGENTS, false, null, { action: "move", tab: "files", to: 0, auto: true }), { tabs: ["files", "a1", "a2", "jobs"], active: "jobs" });
+  assert.deepEqual(changed(kept, AGENTS, false, null, { action: "move", tab: "a1", to: 99, auto: true }), { tabs: ["a2", "jobs", "files", "a1"], active: "jobs" });
+  assert.equal(changed(kept, AGENTS, false, null, { action: "move", tab: "a2", to: 1, auto: true }), null);
+  assert.equal(changed(kept, AGENTS, false, null, { action: "move", tab: "letters", to: 0, auto: true }), null);
+
+  // reopen single, batch, clear, and canReopen
+  assert.equal(tabsOf(kept, AGENTS, false, null).canReopen, undefined);
+  assert.equal(tabsOf(afterRight, AGENTS, false, null).canReopen, true);
+  const reopenedRight = changed(afterRight, AGENTS, false, null, { action: "reopen", tab: null, auto: true });
+  assert.deepEqual(reopenedRight, { tabs: ["a1", "a2", "jobs", "files"], active: "jobs" });
+  assert.equal(tabsOf(reopenedRight, AGENTS, false, null).canReopen, undefined);
+
+  // clear then reopen restores all tabs and previous active
+  const cleared = changed(kept, AGENTS, false, null, { action: "clear", tab: null, auto: true });
+  assert.equal(tabsOf(cleared, AGENTS, false, null).canReopen, true);
+  assert.deepEqual(changed(cleared, AGENTS, false, null, { action: "reopen", tab: null, auto: true }), { tabs: ["a1", "a2", "jobs", "files"], active: "jobs" });
+
+  // reopen skips batches whose tabs are no longer known or already open
+  const withStale = {
+    tabs: ["a1"],
+    active: "a1",
+    closed: [
+      { tabs: ["jobs"], at: 1, active: "jobs" },
+      { tabs: ["gone", "a1"], at: 1, active: "gone" },
+    ],
+  };
+  assert.equal(tabsOf(withStale, AGENTS, false, null).canReopen, true);
+  assert.deepEqual(changed(withStale, AGENTS, false, null, { action: "reopen", tab: null, auto: true }), { tabs: ["a1", "jobs"], active: "jobs" });
+  assert.equal(tabsOf({ tabs: ["a1"], active: "a1", closed: [{ tabs: ["gone"], at: 0 }] }, AGENTS, false, null).canReopen, undefined);
+  assert.equal(changed({ tabs: ["a1"], active: "a1", closed: [{ tabs: ["gone"], at: 0 }] }, AGENTS, false, null, { action: "reopen", tab: null, auto: true }), null);
+
+  // closed history cap at 8
+  let cur: J = { tabs: ["a1", "a2", "jobs", "files", "letters", "things", FILE, SCREEN, TERMINAL], active: "a1" };
+  for (const t of ["a1", "a2", "jobs", "files", "letters", "things", FILE, SCREEN, TERMINAL]) {
+    cur = changed(cur, AGENTS, false, null, close(t));
+  }
+  assert.equal(cur.closed.length, 8);
+  assert.deepEqual(cur.closed[0].tabs, ["a2"]);
+  assert.deepEqual(cur.closed[7].tabs, [TERMINAL]);
 });
 
 test("a_tab_replaced_takes_the_place_of_the_one_it_replaces_in_front", () => {
@@ -74,7 +139,7 @@ test("a_tab_replaced_takes_the_place_of_the_one_it_replaces_in_front", () => {
 test("the_history_a_chat_opens_by_itself_is_gone_from_where_a_client_shows_none", () => {
   // Shown (a wide page): what is opened joins it.
   assert.deepEqual(changed(undefined, AGENTS, true, "a1", open("jobs")), { tabs: ["a1", "jobs"], active: "jobs" });
-  assert.deepEqual(changed(undefined, AGENTS, true, "a1", close("a1")), { tabs: [] });
+  assert.deepEqual(changed(undefined, AGENTS, true, "a1", close("a1")), { tabs: [], closed: [{ tabs: ["a1"], at: 0, active: "a1" }] });
   // Not shown (the panel would lie over the chat): from none.
   assert.deepEqual(changed(undefined, AGENTS, true, "a1", { action: "open", tab: "jobs", auto: false }), { tabs: ["jobs"], active: "jobs" });
   assert.equal(changed(undefined, AGENTS, true, "a1", { action: "close", tab: "a1", auto: false }), null);
@@ -83,8 +148,13 @@ test("the_history_a_chat_opens_by_itself_is_gone_from_where_a_client_shows_none"
 test("the_calls_read_the_chat_and_the_tab", () => {
   assert.deepEqual(parseCall("chat.tabs.open", { chat: "ws/st:k1", tab: "jobs" }), { kind: "chatTabs", chat: "ws/st:k1", action: "open", tab: "jobs", auto: true });
   assert.deepEqual(parseCall("chat.tabs.close", { chat: "ws/st:k1", tab: "jobs", auto: false }), { kind: "chatTabs", chat: "ws/st:k1", action: "close", tab: "jobs", auto: false });
+  assert.deepEqual(parseCall("chat.tabs.closeOthers", { chat: "ws/st:k1", tab: "jobs" }), { kind: "chatTabs", chat: "ws/st:k1", action: "closeOthers", tab: "jobs", auto: true });
+  assert.deepEqual(parseCall("chat.tabs.closeRight", { chat: "ws/st:k1", tab: "jobs" }), { kind: "chatTabs", chat: "ws/st:k1", action: "closeRight", tab: "jobs", auto: true });
+  assert.deepEqual(parseCall("chat.tabs.move", { chat: "ws/st:k1", tab: "jobs", to: 2 }), { kind: "chatTabs", chat: "ws/st:k1", action: "move", tab: "jobs", auto: true, to: 2 });
+  assert.deepEqual(parseCall("chat.tabs.reopen", { chat: "ws/st:k1" }), { kind: "chatTabs", chat: "ws/st:k1", action: "reopen", tab: null, auto: true });
   assert.deepEqual(parseCall("chat.tabs.clear", { chat: "new:ws" }), { kind: "chatTabs", chat: "new:ws", action: "clear", tab: null, auto: true });
   assert.throws(() => parseCall("chat.tabs.front", { chat: "ws/st:k1" }));
+  assert.throws(() => parseCall("chat.tabs.move", { chat: "ws/st:k1", tab: "jobs" }));
   assert.throws(() => parseCall("chat.tabs.open", { chat: "", tab: "jobs" }));
 });
 
@@ -109,7 +179,7 @@ test("a_chats_view_says_its_tabs_as_the_calls_change_them", async () => {
   call(core, ui, 5, "chat.tabs.close", { chat: "ws/st:7", tab: "k1" });
   await host.settle();
   apply(host, values);
-  assert.deepEqual(v(values, 1).tabs, { open: ["jobs"], shown: "jobs" });
+  assert.deepEqual(v(values, 1).tabs, { open: ["jobs"], shown: "jobs", canReopen: true });
   // A workspace's new chat's (no chat to go by): kept all the same.
   call(core, ui, 6, "chat.tabs.open", { chat: "new:ws", tab: "files" });
   await host.settle();
@@ -139,8 +209,8 @@ test("a_file_in_the_viewer_is_kept_while_the_agents_are_known_opened_last_and_cl
   // Opened: last, in front; again: brought to the front where it is, never twice.
   assert.deepEqual(changed({ tabs: ["a1", "jobs"], active: "a1" }, AGENTS, false, null, open(md)), { tabs: ["a1", "jobs", md], active: md });
   assert.deepEqual(changed({ tabs: ["a1", md, "jobs"], active: "jobs" }, AGENTS, false, null, open(md)), { tabs: ["a1", md, "jobs"], active: md });
-  // Closed in front: the last left comes to the front.
-  assert.deepEqual(changed({ tabs: ["a1", md, "jobs"], active: md }, AGENTS, false, null, close(md)), { tabs: ["a1", "jobs"], active: "jobs" });
+  // Closed in front: the right neighbor comes to the front.
+  assert.deepEqual(changed({ tabs: ["a1", md, "jobs"], active: md }, AGENTS, false, null, close(md)), { tabs: ["a1", "jobs"], active: "jobs", closed: [{ tabs: [md], at: 1, active: md }] });
 });
 
 test("station_destinations_survive_reload_and_reopening_focuses_the_existing_tab", () => {

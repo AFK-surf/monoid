@@ -327,6 +327,11 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
     .width(By(fn() { Some(if over() { 0.0 } else { at() }) }))
     .clips(By(fn() { !over() && at() < side_whole(src, col) }))
     .offset(By(fn() { (pane_aside_at(src, col), 0.0) }))
+    .key_context("Chat")
+    .on_action("panel.tab.close", fn(_) { side_close_front(src, r) })
+    .on_action("panel.tab.reopen", fn(_) { side_reopen_key(src, r) })
+    .on_action("panel.tab.prev", fn(_) { side_step(src, r, -1) })
+    .on_action("panel.tab.next", fn(_) { side_step(src, r, 1) })
     |> ignore
     col.show(at_once=true, fn() { side_shown(src, r).0.length() > 0 }, fn(p) {
       p

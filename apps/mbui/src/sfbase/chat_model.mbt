@@ -903,6 +903,7 @@ pub(all) struct ChatTabs {
   open : Array[String]
   shown : String?
   auto : Bool
+  can_reopen : Bool
 }
 
 ///|
@@ -1013,6 +1014,7 @@ fn chat_view_of(v : Json, messages : Array[Message], was : (Json, ChatView)?) ->
         open: items(field(s, "tabs"), "open").filter_map(fn(t) { if t is String(k) { Some(k) } else { None } }),
         shown: opt_text(field(s, "tabs"), "shown"),
         auto: flag(field(s, "tabs"), "auto"),
+        can_reopen: flag(field(s, "tabs"), "canReopen"),
       }
     }),
     cc: chat_part(v, was, "cc", fn(w) { w.cc }, fn() {

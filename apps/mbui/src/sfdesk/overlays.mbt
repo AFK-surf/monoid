@@ -16,5 +16,6 @@ pub fn overlays_node(v : @view.View, src : Source) -> Unit {
   rail_native_marks_node(v)
   rail_overlays_node(v, src)
   attention_panel_node(v, src)
+  side_tab_menu_node(v)
 }
 

@@ -20,10 +20,16 @@ export const PREF_SHAPES: Record<string, Shape> = {
   BoardDraftsView: struct([
     ["drafts", vec("BoardDraft")],
   ], { doc: "A person's unstarted tasks of a workspace's 待派发 (the `boardDrafts` topic), newest first: the same on all their\ndevices, kept by the workspace's stations and carried by those devices (views/board-drafts.ts)." }),
+  ClosedTabBatch: struct([
+    ["tabs", vec("String")],
+    ["at", "u32"],
+    ["active", opt("String")],
+  ], { doc: "A batch of closed tabs kept for reopening (`chat.tabs.reopen`)." }),
   KeptTabs: struct([
     ["tabs", vec("String")],
     ["active", opt("String")],
-  ], { doc: "A chat's history tabs as last left: which are open, which is in front." }),
+    ["closed", opt(vec("ClosedTabBatch"))],
+  ], { doc: "A chat's history tabs as last left: which are open, which is in front, and recent closed batches." }),
   DeviceView: struct([
     ["app", "String", { default: true, doc: "`web`, `desktop` or `android`; empty until told." }],
     ["phone", "bool", { default: true, doc: "A phone (the Android app, or a phone's browser)." }],
@@ -133,7 +139,7 @@ export const PREF_SHAPES: Record<string, Shape> = {
   ]),
   KeyGroupName: words(["global","chat","files"], { doc: "Where an action works: anywhere in the app, in a chat, or in a folder of the files." }),
   KeyTyping: words(["yes","no","empty"], { doc: "Whether an action works with the cursor in a text field: always (a binding with ⌘ or ⌥ does nothing there),\nnever (it is a key the field types), or when the field is empty (the key moves the cursor in text)." }),
-  KeyActionName: words(["chat.switch","chat.new","chat.prev","chat.next","sidebar.toggle","nav.back","nav.forward","settings","shortcuts","zoom.in","zoom.out","zoom.reset","composer.focus","composer.file","chat.stop","chat.history","chat.jobs","chat.screen","chat.latest","chat.find","chat.outline","chat.said.prev","chat.said.next","chat.archive","panel.close","files.preview"], { doc: "An action keys do (keymap.ts ACTIONS)." }),
+  KeyActionName: words(["chat.switch","chat.new","chat.prev","chat.next","sidebar.toggle","nav.back","nav.forward","settings","shortcuts","zoom.in","zoom.out","zoom.reset","composer.focus","composer.file","chat.stop","chat.history","chat.jobs","chat.screen","chat.latest","chat.find","chat.outline","chat.said.prev","chat.said.next","chat.archive","panel.close","panel.tab.close","panel.tab.reopen","panel.tab.prev","panel.tab.next","files.preview"], { doc: "An action keys do (keymap.ts ACTIONS)." }),
   KeyAction: struct([
     ["action", "KeyActionName"],
     ["group", "KeyGroupName"],

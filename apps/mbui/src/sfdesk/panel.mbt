@@ -162,24 +162,83 @@ fn side_tab_reads(r : ChatRef, tab : String) -> Array[(String, Map[String, Json]
 fn side_change_from(src : Source, r : ChatRef, action : String, tab : String?, now : (Array[String], String)) -> Unit {
   let (tabs, front) = now
   let any = match action {
-    "open" | "front" => true
+    "open" | "front" | "closeOthers" | "closeRight" | "reopen" => true
     "close" => tabs.iter().any(fn(t) { Some(t) != tab })
     _ => false
   }
   side_changing(chat_key(r), tabs, front, any)
-  // a tab opened or brought to the front beside the chat shown while its panel was open already: on the tape, the panel
-  // brought over (none open yet: tape_settle's, once the core says it)
-  if tabs.length() > 0 && (action == "open" || action == "front") {
+  // a tab opened, brought to the front, or reopened beside the chat shown while its panel was open already: on the tape,
+  // the panel brought over (none open yet: tape_settle's, once the core says it)
+  if tabs.length() > 0 && (action == "open" || action == "front" || action == "reopen") {
     tape_bring_side(r)
   }
   // a web service's, visualization's, screen's or terminal's tab closed lets its session go
   match (action, tab) {
     ("close", Some(t)) => tab_let_go(src, r, t)
+    ("closeOthers", Some(keep_t)) =>
+      for t in tabs {
+        if t != keep_t {
+          tab_let_go(src, r, t)
+        }
+      }
+    ("closeRight", Some(keep_t)) =>
+      match tabs.search(keep_t) {
+        Some(idx) =>
+          for i = idx + 1; i < tabs.length(); i = i + 1 {
+            tab_let_go(src, r, tabs[i])
+          }
+        None => ()
+      }
     ("clear", _) => for t in tabs { tab_let_go(src, r, t) }
     ("open", Some(t)) => tab_kept(r, t)
     _ => ()
   }
   side_ask(src, r, action, tab)
+}
+
+///|
+/// Reorder tab `tab` of chat `r`'s side panel to index `to`.
+pub fn side_move(src : Source, r : ChatRef, tab : String, to : Int) -> Unit {
+  let params : Map[String, Json] = {
+    "chat": Json::string(tabs_key(r)),
+    "tab": Json::string(tab),
+    "to": Json::number(to.to_double()),
+  }
+  (src.call)("chat.tabs.move", Json::object(params), @sfbase.answer_unread)
+}
+
+///|
+/// Reopen the most recently closed batch of tabs for chat `r`.
+pub fn side_reopen(src : Source, r : ChatRef) -> Unit {
+  side_change(src, r, "reopen", None)
+}
+
+///|
+/// Step the active side-panel tab of chat `r` by `delta` (-1 previous, +1 next), wrapping around.
+fn side_step(src : Source, r : ChatRef, delta : Int) -> Bool {
+  let (tabs, front) = side_now(src, r)
+  guard tabs.length() > 1 else { return false }
+  let idx = tabs.search(front).unwrap_or(0)
+  let next = tabs[(idx + delta + tabs.length()) % tabs.length()]
+  side_change(src, r, "front", Some(next))
+  true
+}
+
+///|
+/// Close the currently active side-panel tab of chat `r` (`panel.tab.close`).
+fn side_close_front(src : Source, r : ChatRef) -> Bool {
+  let (tabs, front) = side_now(src, r)
+  guard tabs.length() > 0 && front != "" else { return false }
+  side_change(src, r, "close", Some(front))
+  true
+}
+
+///|
+/// Reopen the most recently closed tab batch of chat `r` if available (`panel.tab.reopen`).
+fn side_reopen_key(src : Source, r : ChatRef) -> Bool {
+  guard @sfbase.chat_view_now(src, r) is Some(cv) && cv.tabs.can_reopen else { return false }
+  side_reopen(src, r)
+  true
 }
 
 ///|
@@ -491,7 +550,7 @@ let side_tab_words_lit : @ui.TextStyle = side_tab_words.then(@ui.text_style(colo
 
 ///|
 // kept across runs: a value (no field of it changes)
-pub let side_tab_front : @ui.TextStyle = @ui.text_style(size=Ui, weight=Medium, color=Fg, wrap=false, w=Cut)
+pub let side_tab_front : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, color=Fg, wrap=false, w=Cut)
 
 ///|
 /// Its close (sideTabClose): 20 round, concentric in the tab's end; pointed at, the pointer's ground over the tab's.
@@ -533,6 +592,7 @@ pub fn side_slide_reset() -> Unit {
   panel_own.asked.set("")
   panel_own.leaving.set(None)
   panel_own.goes.clear()
+  side_tab_menu_reset()
 }
 
 ///|

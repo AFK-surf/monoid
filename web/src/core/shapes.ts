@@ -305,7 +305,7 @@ export interface Job {
 }
 
 /** An action keys do (keymap.ts ACTIONS). */
-export type KeyActionName = "chat.switch" | "chat.new" | "chat.prev" | "chat.next" | "sidebar.toggle" | "nav.back" | "nav.forward" | "settings" | "shortcuts" | "zoom.in" | "zoom.out" | "zoom.reset" | "composer.focus" | "composer.file" | "chat.stop" | "chat.history" | "chat.jobs" | "chat.screen" | "chat.latest" | "chat.find" | "chat.outline" | "chat.said.prev" | "chat.said.next" | "chat.archive" | "panel.close" | "files.preview";
+export type KeyActionName = "chat.switch" | "chat.new" | "chat.prev" | "chat.next" | "sidebar.toggle" | "nav.back" | "nav.forward" | "settings" | "shortcuts" | "zoom.in" | "zoom.out" | "zoom.reset" | "composer.focus" | "composer.file" | "chat.stop" | "chat.history" | "chat.jobs" | "chat.screen" | "chat.latest" | "chat.find" | "chat.outline" | "chat.said.prev" | "chat.said.next" | "chat.archive" | "panel.close" | "panel.tab.close" | "panel.tab.reopen" | "panel.tab.prev" | "panel.tab.next" | "files.preview";
 
 /** Where an action works: anywhere in the app, in a chat, or in a folder of the files. */
 export type KeyGroupName = "global" | "chat" | "files";
@@ -1561,10 +1561,18 @@ export interface OpenChat {
 	key: string;
 }
 
-/** A chat's history tabs as last left: which are open, which is in front. */
+/** A batch of closed tabs kept for reopening (`chat.tabs.reopen`). */
+export interface ClosedTabBatch {
+	tabs: string[];
+	at: number;
+	active?: string;
+}
+
+/** A chat's history tabs as last left: which are open, which is in front, and recent closed batches. */
 export interface KeptTabs {
 	tabs: string[];
 	active?: string;
+	closed?: ClosedTabBatch[];
 }
 
 /** What the badge counts (`prefs.set {badgeKinds}`, always whole): each kind of chat that wants them, on or off. */

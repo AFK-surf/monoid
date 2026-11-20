@@ -411,3 +411,219 @@ fn side_change(r : ChatRef, action : String, tab : String?) -> Unit {
     None => ()
   }
 }
+
+///|
+/// The panel's tab bar nodes as a screen reader sees them (label, selected, rect).
+fn wide_tabs_said(t : @ui.Tester) -> Array[(String, Bool, (Double, Double, Double, Double))] {
+  t.semantics().filter(fn(s) { s.role == @ui.Role::Tab && !s.hidden }).map(fn(s) { (s.label, s.selected == Some(true), s.rect) })
+}
+
+///|
+test "wide: repeated × clicks freeze tab width so next tab × lands under stationary pointer, then expand on pointer leave" {
+  new_run()
+  let src = fixture("chat")
+  let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+  open_chat(r)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  t.run_for(@ui.move_most_ms)
+  side_change(r, "open", Some("s-c1"))
+  t.frame()
+  side_change(r, "open", Some("jobs"))
+  t.frame()
+  side_change(r, "open", Some("files"))
+  t.frame()
+  side_change(r, "front", Some("s-c1"))
+  t.run_for(@ui.move_most_ms)
+  assert_eq(side_now(r), (["s-c1", "jobs", "files"], "s-c1"))
+  let tabs0 = wide_tabs_said(t)
+  assert_eq(tabs0.length(), 3, msg="\{Repr(tabs0)}")
+  let w0 = tabs0[0].2.2
+  // Move pointer to first tab's × and click it
+  let x0_rect = t.get(Button, label=@sf.t("web-pages.chat.close", args=[("name", tabs0[0].0)])).rect
+  let (cx, cy) = (x0_rect.0 + x0_rect.2 / 2.0, x0_rect.1 + x0_rect.3 / 2.0)
+  t.move_to(cx, cy)
+  t.draw()
+  t.tap(cx, cy)
+  t.run_for(@ui.move_most_ms)
+  // Right neighbor ("jobs") becomes active, width remains frozen at w0
+  assert_eq(side_now(r), (["jobs", "files"], "jobs"))
+  let tabs1 = wide_tabs_said(t)
+  assert_eq(tabs1.length(), 2, msg="\{Repr(tabs1)}")
+  assert_true((tabs1[0].2.2 - w0).abs() < 2.0, msg="width stays frozen: was \{w0}, now \{tabs1[0].2.2}")
+  // Click the exact same (cx, cy) without moving pointer -> closes "jobs"
+  t.tap(cx, cy)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(side_now(r), (["files"], "files"))
+  let tabs2 = wide_tabs_said(t)
+  assert_eq(tabs2.length(), 1, msg="\{Repr(tabs2)}")
+  assert_true((tabs2[0].2.2 - w0).abs() < 2.0, msg="width still frozen before pointer leave: \{tabs2[0].2.2}")
+  // Move pointer out of tab strip -> smoothly expands to natural width (168pt)
+  t.move_to(10.0, 500.0)
+  t.run_for(@ui.move_most_ms)
+  let tabs3 = wide_tabs_said(t)
+  assert_true(tabs3[0].2.2 > w0 + 4.0, msg="expanded after leave: was \{w0}, now \{tabs3[0].2.2}")
+  assert_eq(t.audit().filter(fn(f) { f.contains("panel_bar_node") }), [])
+}
+
+///|
+test "wide: closing middle tab activates right neighbor and closing rightmost tab activates left neighbor" {
+  new_run()
+  let src = fixture("chat")
+  let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+  open_chat(r)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  t.run_for(@ui.move_most_ms)
+  side_change(r, "open", Some("s-c1"))
+  t.frame()
+  side_change(r, "open", Some("jobs"))
+  t.frame()
+  side_change(r, "open", Some("files"))
+  t.frame()
+  side_change(r, "front", Some("jobs"))
+  t.run_for(@ui.move_most_ms)
+  // Close middle ("jobs") -> right neighbor ("files")
+  side_change(r, "close", Some("jobs"))
+  t.run_for(@ui.move_most_ms)
+  assert_eq(side_now(r), (["s-c1", "files"], "files"))
+  // Close rightmost ("files") -> left neighbor ("s-c1")
+  side_change(r, "close", Some("files"))
+  t.run_for(@ui.move_most_ms)
+  assert_eq(side_now(r), (["s-c1"], "s-c1"))
+}
+
+///|
+test "wide: inactive tab × is unmounted until hover when wide, stays unmounted when narrow, and hover causes zero height jump" {
+  new_run()
+  let src = fixture("chat")
+  let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+  open_chat(r)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  t.run_for(@ui.move_most_ms)
+  side_change(r, "open", Some("s-c1"))
+  t.frame()
+  side_change(r, "open", Some("jobs"))
+  t.frame()
+  side_change(r, "front", Some("s-c1"))
+  t.run_for(@ui.move_most_ms)
+  // Wide inactive tab ("jobs"): × not mounted before hover (no alpha=0 click-through)
+  assert_true(t.query(Button, label=@sf.t("web-pages.chat.closeJobs")) is None, msg="no × before hover")
+  let before_rect = wide_tabs_said(t)[1].2
+  t.move_to(before_rect.0 + before_rect.2 / 2.0, before_rect.1 + before_rect.3 / 2.0)
+  t.draw()
+  assert_true(t.query(Button, label=@sf.t("web-pages.chat.closeJobs")) is Some(_), msg="× mounts on hover")
+  let after_rect = wide_tabs_said(t)[1].2
+  assert_eq(after_rect.3, before_rect.3, msg="zero height jump on hover")
+  assert_eq(t.audit().filter(fn(f) { f.contains("panel_bar_node") }), [])
+  // Narrow inactive tabs (5 tabs -> slot width < 116pt): hover never mounts ×
+  let md_tab = "view:" + Json::array([Json::string("chat"), Json::string("ws1/st1"), Json::string("s-c1"), Json::string("notes.md"), Json::string("notes.md"), Json::number(100.0)]).stringify()
+  side_change(r, "open", Some("files"))
+  t.frame()
+  side_change(r, "open", Some("letters"))
+  t.frame()
+  side_change(r, "open", Some(md_tab))
+  t.frame()
+  side_change(r, "front", Some("s-c1"))
+  t.run_for(@ui.move_most_ms)
+  let narrow_tabs = wide_tabs_said(t)
+  let (_, _, (fx, fy, fw, fh)) = narrow_tabs[2]
+  t.move_to(fx + fw / 2.0, fy + fh / 2.0)
+  t.draw()
+  assert_true(t.query(Button, label=@sf.t("web-pages.chat.closeFiles")) is None, msg="narrow inactive tab has no × on hover")
+  // Clicking narrow inactive tab switches to it without closing
+  t.tap(fx + fw / 2.0, fy + fh / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(side_now(r).1, "files")
+  assert_eq(side_now(r).0.length(), 5)
+}
+
+///|
+test "wide: overflow tabs show dropdown button that lists all tabs and switches active tab into view" {
+  new_run()
+  let src = fixture("chat")
+  let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+  open_chat(r)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  t.run_for(@ui.move_most_ms)
+  let extra1 = "view:" + Json::array([Json::string("chat"), Json::string("ws1/st1"), Json::string("s-c1"), Json::string("a.md"), Json::string("a.md"), Json::number(100.0)]).stringify()
+  let extra2 = "view:" + Json::array([Json::string("chat"), Json::string("ws1/st1"), Json::string("s-c1"), Json::string("b.md"), Json::string("b.md"), Json::number(100.0)]).stringify()
+  let extra3 = "view:" + Json::array([Json::string("chat"), Json::string("ws1/st1"), Json::string("s-c1"), Json::string("c.md"), Json::string("c.md"), Json::number(100.0)]).stringify()
+  for tab in ["s-c1", "jobs", "files", "letters", extra1, extra2, extra3] {
+    side_change(r, "open", Some(tab))
+    t.frame()
+  }
+  side_change(r, "front", Some("s-c1"))
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(Button, label=@sf.t("web-pages.chat.moreTabs")) is Some(_), msg="overflow button shown")
+  t.click(Button, label=@sf.t("web-pages.chat.moreTabs"))
+  t.run_for(@ui.move_most_ms)
+  t.click(MenuItemRadio, label="c.md")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(side_now(r).1, extra3)
+}
+
+///|
+test "wide: tab context menu supports close right, reopen, close others, and drag reorder + keyboard shortcuts" {
+  new_run()
+  let src = fixture("chat")
+  let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+  open_chat(r)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  t.run_for(@ui.move_most_ms)
+  for tab in ["s-c1", "jobs", "files", "letters"] {
+    side_change(r, "open", Some(tab))
+    t.frame()
+  }
+  side_change(r, "front", Some("s-c1"))
+  t.run_for(@ui.move_most_ms)
+  // Context menu on "jobs" -> Close tabs to the right
+  let (_, _, (jx, jy, jw, jh)) = wide_tabs_said(t)[1]
+  t.right_click(jx + jw / 2.0, jy + jh / 2.0)
+  t.run_for(@ui.move_most_ms)
+  t.tap_text(@sf.t("web-pages.chat.closeRightTabs"))
+  t.run_for(@ui.move_most_ms)
+  assert_eq(side_now(r), (["s-c1", "jobs"], "s-c1"))
+  // Context menu -> Reopen closed tab restores ["files", "letters"]
+  let (_, _, (jx2, jy2, jw2, jh2)) = wide_tabs_said(t)[1]
+  t.right_click(jx2 + jw2 / 2.0, jy2 + jh2 / 2.0)
+  t.run_for(@ui.move_most_ms)
+  t.tap_text(@sf.t("web-pages.chat.reopenTab"))
+  t.run_for(@ui.move_most_ms)
+  assert_eq(side_now(r).0, ["s-c1", "jobs", "files", "letters"])
+  // Drag reorder: drag first tab ("s-c1") right over second tab ("jobs")
+  let tabs_drag = wide_tabs_said(t)
+  let (x0, y0, w0, h0) = tabs_drag[0].2
+  let (x1, _, w1, _) = tabs_drag[1].2
+  t.drag(x0 + w0 / 2.0, y0 + h0 / 2.0, x1 + w1 * 0.75, y0 + h0 / 2.0, steps=8)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(side_now(r).0, ["jobs", "s-c1", "files", "letters"])
+  // Keyboard shortcuts: next, prev, close, reopen
+  side_change(r, "front", Some("jobs"))
+  t.run_for(@ui.move_most_ms)
+  let mod_cs = @ui.mod_cmd | @ui.mod_shift_key
+  t.key(@ui.key_of_char(']'), mods=mod_cs)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(side_now(r).1, "s-c1")
+  t.key(@ui.key_of_char('['), mods=mod_cs)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(side_now(r).1, "jobs")
+  t.key(@ui.key_of_char('w'), mods=mod_cs)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(side_now(r), (["s-c1", "files", "letters"], "s-c1"))
+  t.key(@ui.key_of_char('t'), mods=mod_cs)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(side_now(r), (["jobs", "s-c1", "files", "letters"], "jobs"))
+  // Context menu -> Close other tabs
+  let (_, _, (cx, cy, cw, ch)) = wide_tabs_said(t)[0]
+  t.right_click(cx + cw / 2.0, cy + ch / 2.0)
+  t.run_for(@ui.move_most_ms)
+  t.tap_text(@sf.t("web-pages.chat.closeOtherTabs"))
+  t.run_for(@ui.move_most_ms)
+  assert_eq(side_now(r), (["jobs"], "jobs"))
+  // Esc clears panel, then ⌘⇧T reopens
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(side_now(r), ([], ""))
+  t.key(@ui.key_of_char('t'), mods=mod_cs)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(side_now(r), (["jobs"], "jobs"))
+}

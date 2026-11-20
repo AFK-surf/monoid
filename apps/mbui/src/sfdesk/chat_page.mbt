@@ -216,6 +216,10 @@ fn chat_keys(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef, v : ChatView
     @sfpages.pick_files(writing(src, r.station + ":" + r.session))
     true
   })
+  c.on_action("panel.tab.close", fn() { side_close_front(src, r) })
+  c.on_action("panel.tab.reopen", fn() { side_reopen_key(src, r) })
+  c.on_action("panel.tab.prev", fn() { side_step(src, r, -1) })
+  c.on_action("panel.tab.next", fn() { side_step(src, r, 1) })
 }
 
 ///|

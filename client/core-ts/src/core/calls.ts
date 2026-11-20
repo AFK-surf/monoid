@@ -61,7 +61,7 @@ export type Call =
   | { kind: "decisionReply"; station: string; thread: number; seq: number; text: string; attachments: unknown; uploads?: { id: string; name: string; size: number; width?: number; height?: number }[]; quotes: unknown }
   | { kind: "decisionDismiss"; op: ops.Request; station: string; thread: number; seq: number }
   /// A chat's side-panel tabs changed (chat-tabs.ts): by the key they are kept under, the tab.
-  | { kind: "chatTabs"; chat: string; action: "open" | "close" | "front" | "clear" | "replace"; tab: string | null; auto: boolean; was?: string }
+  | { kind: "chatTabs"; chat: string; action: "open" | "close" | "closeOthers" | "closeRight" | "move" | "reopen" | "front" | "clear" | "replace"; tab: string | null; auto: boolean; was?: string; to?: number }
   | { kind: "chatRetryIn"; station: string; session: string; id: string }
   | { kind: "chatDiscardIn"; station: string; session: string; id: string }
   | { kind: "chatRetry"; station: string; thread: number; id: string }
@@ -599,20 +599,34 @@ export function parseCall(name: string, params: unknown, bytes?: Uint8Array): Ca
     }
     case "chat.tabs.open":
     case "chat.tabs.close":
+    case "chat.tabs.closeOthers":
+    case "chat.tabs.closeRight":
+    case "chat.tabs.move":
+    case "chat.tabs.reopen":
     case "chat.tabs.front":
     case "chat.tabs.clear":
     case "chat.tabs.replace": {
-      const action = name.slice("chat.tabs.".length) as "open" | "close" | "front" | "clear" | "replace";
+      const action = name.slice("chat.tabs.".length) as "open" | "close" | "closeOthers" | "closeRight" | "move" | "reopen" | "front" | "clear" | "replace";
+      const needsTab = action !== "clear" && action !== "reopen";
       const p = read(params, [
         ["chat", S, "req"],
-        ["tab", S, action === "clear" ? "opt" : "req"],
+        ["tab", S, needsTab ? "req" : "opt"],
         ["was", S, action === "replace" ? "req" : "opt"],
+        ["to", "u32", action === "move" ? "req" : "opt"],
         ["auto", "bool", "opt"],
       ]);
       if (p.chat === "") throw CoreError.invalid(t("core-misc.params.missing", { field: "chat" }));
-      if (action !== "clear" && p.tab === "") throw CoreError.invalid(t("core-misc.params.missing", { field: "tab" }));
+      if (needsTab && p.tab === "") throw CoreError.invalid(t("core-misc.params.missing", { field: "tab" }));
       if (action === "replace" && p.was === "") throw CoreError.invalid(t("core-misc.params.missing", { field: "was" }));
-      return { kind: "chatTabs", chat: p.chat as string, action, tab: action === "clear" ? null : (p.tab as string), auto: p.auto !== false, ...(action === "replace" ? { was: p.was as string } : {}) };
+      return {
+        kind: "chatTabs",
+        chat: p.chat as string,
+        action,
+        tab: needsTab ? (p.tab as string) : null,
+        auto: p.auto !== false,
+        ...(action === "replace" ? { was: p.was as string } : {}),
+        ...(action === "move" ? { to: p.to as number } : {}),
+      };
     }
     case "chat.retry":
     case "chat.discard": {

@@ -15,11 +15,29 @@ export const FILES = "files";
 export const LETTERS = "letters";
 export const THINGS = "things";
 
-export type Tabs = { open: string[]; shown?: string; auto?: true };
-/// What is kept for a chat: its tabs, and the one in front when there is one.
-export type Kept = { tabs: string[]; active?: string };
+export type ClosedTabBatch = { tabs: string[]; at: number; active?: string };
+export type Tabs = { open: string[]; shown?: string; auto?: true; canReopen?: true };
+/// What is kept for a chat: its tabs, the one in front when there is one, and recent closed batches for reopen.
+export type Kept = { tabs: string[]; active?: string; closed?: ClosedTabBatch[] };
+
+const CLOSED_MAX = 8;
 
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+
+function closedOf(kept: unknown): ClosedTabBatch[] {
+  const raw = get(kept, "closed");
+  if (!Array.isArray(raw)) return [];
+  const out: ClosedTabBatch[] = [];
+  for (const item of raw) {
+    if (!isObject(item)) continue;
+    const tabs = strings(item.tabs);
+    if (tabs.length === 0) continue;
+    const at = typeof item.at === "number" && Number.isFinite(item.at) ? Math.max(0, Math.floor(item.at)) : 0;
+    const active = typeof item.active === "string" && item.active !== "" ? item.active : undefined;
+    out.push(active !== undefined ? { tabs, at, active } : { tabs, at });
+  }
+  return out.length > CLOSED_MAX ? out.slice(out.length - CLOSED_MAX) : out;
+}
 
 /// A visualization's tab (`file:["<session>","<path>","<name>"]`).
 function isFile(key: string): boolean {
@@ -115,26 +133,52 @@ export function tabsOf(kept: unknown, agents: readonly unknown[], noChat: boolea
   const open = agents.length ? tabs.filter(known) : tabs;
   const active = isObject(kept) && typeof kept.active === "string" ? kept.active : null;
   const shown = active !== null && open.includes(active) ? active : open[0];
-  return { open, ...(shown !== undefined ? { shown } : {}), ...(auto ? { auto: true as const } : {}) };
+  const closed = closedOf(kept);
+  const canReopen = closed.some((b) => b.tabs.some((k) => (!agents.length || known(k)) && !open.includes(k)));
+  return {
+    open,
+    ...(shown !== undefined ? { shown } : {}),
+    ...(auto ? { auto: true as const } : {}),
+    ...(canReopen ? { canReopen: true as const } : {}),
+  };
 }
 
-export type Change = { action: "open" | "close" | "front" | "clear" | "replace"; tab: string | null; auto: boolean; was?: string };
+export type Change = {
+  action: "open" | "close" | "closeOthers" | "closeRight" | "move" | "reopen" | "front" | "clear" | "replace";
+  tab: string | null;
+  auto: boolean;
+  was?: string;
+  to?: number;
+};
 
 /// What is kept after a change, from what the chat shows (`tabsOf`; `auto` false: a client that shows none opened by
 /// itself, which it goes from); null when nothing changes. Opened: in front, an agent's history after the histories
-/// open (before the other tabs), any other last. Closed: the one in front, if it was, the last left. In front: as said.
-/// Cleared (the panel closed): none, the one in front kept as it was. Replaced (a picture's tab stepped to the one
-/// beside it): in the place of the one it replaces (`was`), in front; that one not open, opened as said; open already,
-/// the one it replaces closed and it brought to the front where it is.
+/// open (before the other tabs), any other last. Closed: the one in front, if it was, its right neighbor else left.
+/// closeOthers / closeRight / clear record closed batches for reopen. move reorders without changing active.
+/// reopen restores the latest batch with at least one known, currently closed tab.
 export function changed(kept: unknown, agents: readonly unknown[], noChat: boolean, session: string | null, change: Change): Kept | null {
   const now = tabsOf(kept, agents, noChat, session);
   const open = now.auto && !change.auto ? [] : now.open;
   const shown = now.auto && !change.auto ? null : now.shown ?? null;
   const active = isObject(kept) && typeof kept.active === "string" ? kept.active : null;
-  const { histories } = chatHas(agents);
+  const prevClosed = closedOf(kept);
+  const has = chatHas(agents);
+  const { histories } = has;
   const isAgent = (key: string) => histories.has(key);
+  const known = (key: string) => key === JOBS || key === FILES || key === LETTERS || key === THINGS || isFile(key) || isView(key) || isScreen(key) || isTerminal(key) || isStationPage(key) || (key.startsWith("service:") && has.jobs.has(key.slice("service:".length))) || has.histories.has(key);
   const tab = change.tab ?? "";
-  const keep = (tabs: string[], front: string | null): Kept => (front ? { tabs, active: front } : { tabs });
+  const keep = (tabs: string[], front: string | null, closed: ClosedTabBatch[] = prevClosed): Kept => {
+    const trimmed = closed.length > CLOSED_MAX ? closed.slice(closed.length - CLOSED_MAX) : closed;
+    return {
+      tabs,
+      ...(front ? { active: front } : {}),
+      ...(trimmed.length > 0 ? { closed: trimmed } : {}),
+    };
+  };
+  const pushClosed = (batch: ClosedTabBatch): ClosedTabBatch[] => {
+    const next = [...prevClosed, batch];
+    return next.length > CLOSED_MAX ? next.slice(next.length - CLOSED_MAX) : next;
+  };
   switch (change.action) {
     case "open": {
       if (isAgent(tab) && !open.includes(tab)) {
@@ -145,14 +189,70 @@ export function changed(kept: unknown, agents: readonly unknown[], noChat: boole
       return keep(open.includes(tab) ? open : [...open, tab], tab);
     }
     case "close": {
-      if (!open.includes(tab)) return null;
+      const idx = open.indexOf(tab);
+      if (idx < 0) return null;
       const next = open.filter((k) => k !== tab);
-      return keep(next, shown === tab ? next.at(-1) ?? null : active);
+      const nextFront = shown === tab ? (next[idx] ?? next[idx - 1] ?? null) : shown;
+      const batch: ClosedTabBatch = shown === tab ? { tabs: [tab], at: idx, active: tab } : { tabs: [tab], at: idx };
+      return keep(next, nextFront, pushClosed(batch));
+    }
+    case "closeOthers": {
+      const idx = open.indexOf(tab);
+      if (idx < 0 || open.length <= 1) return null;
+      const closedTabs = open.filter((k) => k !== tab);
+      const batch: ClosedTabBatch = {
+        tabs: closedTabs,
+        at: idx === 0 ? 1 : 0,
+        ...(shown !== null && closedTabs.includes(shown) ? { active: shown } : {}),
+      };
+      return keep([tab], tab, pushClosed(batch));
+    }
+    case "closeRight": {
+      const idx = open.indexOf(tab);
+      if (idx < 0 || idx >= open.length - 1) return null;
+      const next = open.slice(0, idx + 1);
+      const closedTabs = open.slice(idx + 1);
+      const nextFront = shown !== null && closedTabs.includes(shown) ? tab : shown;
+      const batch: ClosedTabBatch = {
+        tabs: closedTabs,
+        at: idx + 1,
+        ...(shown !== null && closedTabs.includes(shown) ? { active: shown } : {}),
+      };
+      return keep(next, nextFront, pushClosed(batch));
+    }
+    case "move": {
+      const idx = open.indexOf(tab);
+      if (idx < 0 || typeof change.to !== "number" || !Number.isFinite(change.to)) return null;
+      const dest = Math.max(0, Math.min(open.length - 1, Math.trunc(change.to)));
+      if (dest === idx) return null;
+      const next = open.slice();
+      const [moved] = next.splice(idx, 1);
+      next.splice(dest, 0, moved);
+      return keep(next, active ?? shown);
+    }
+    case "reopen": {
+      const rest = prevClosed.slice();
+      while (rest.length > 0) {
+        const batch = rest.pop()!;
+        const restore: string[] = [];
+        for (const k of batch.tabs) {
+          if ((!agents.length || known(k)) && !open.includes(k) && !restore.includes(k)) restore.push(k);
+        }
+        if (restore.length === 0) continue;
+        const at = Math.max(0, Math.min(open.length, batch.at));
+        const next = [...open.slice(0, at), ...restore, ...open.slice(at)];
+        const nextFront = batch.active !== undefined && restore.includes(batch.active) ? batch.active : restore[0];
+        return keep(next, nextFront, rest);
+      }
+      return null;
     }
     case "front":
       return keep(open, tab);
-    case "clear":
-      return keep([], active);
+    case "clear": {
+      if (open.length === 0) return keep([], active);
+      const batch: ClosedTabBatch = shown !== null ? { tabs: open, at: 0, active: shown } : { tabs: open, at: 0 };
+      return keep([], active, pushClosed(batch));
+    }
     case "replace": {
       const was = change.was ?? "";
       const at = open.indexOf(was);

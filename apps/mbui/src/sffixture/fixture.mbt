@@ -219,11 +219,16 @@ pub fn fixture_tabs_call(f : Fixture, name : String, params : Json) -> Result[Js
       "close" => {
         let idx = cur.search(tab_str)
         match idx {
-          Some(i) => cur.remove(i) |> ignore
+          Some(i) => {
+            cur.remove(i) |> ignore
+            if shown == tab_str {
+              shown = match cur.get(i) {
+                Some(s) => s
+                None => if i > 0 { cur.get(i - 1).unwrap_or("") } else { "" }
+              }
+            }
+          }
           None => ()
-        }
-        if shown == tab_str {
-          shown = cur.last().unwrap_or("")
         }
       }
       "clear" => {
@@ -247,6 +252,10 @@ pub fn fixture_tabs_call(f : Fixture, name : String, params : Json) -> Result[Js
   // (a tab put in another's place: the one it replaces)
   match field(Some(params), "was") {
     Some(String(w)) => change["was"] = Json::string(w)
+    _ => ()
+  }
+  match field(Some(params), "to") {
+    Some(Number(n, ..)) => change["to"] = Json::number(n)
     _ => ()
   }
   let change = Json::object(change)
@@ -2669,7 +2678,15 @@ pub fn fixture(mode : String) -> Source {
           done(Ok(Json::object({})))
         }
         "screen.settings" | "screen.setSetting" => done(Ok({ "appearance": "light", "textSize": "large" }))
-        "chat.tabs.open" | "chat.tabs.close" | "chat.tabs.front" | "chat.tabs.clear" | "chat.tabs.replace" =>
+        "chat.tabs.open"
+        | "chat.tabs.close"
+        | "chat.tabs.closeOthers"
+        | "chat.tabs.closeRight"
+        | "chat.tabs.move"
+        | "chat.tabs.reopen"
+        | "chat.tabs.front"
+        | "chat.tabs.clear"
+        | "chat.tabs.replace" =>
           done(fixture_tabs_call(f, name, params))
         "decision.show" => done(Ok(Json::null()))
         "keys.set" => {

@@ -182,6 +182,11 @@ fn chat_body_nodes(
     chat_remote_first(r, cv.screens, cv.can_terminal())
     true
   })
+  .key_context("Chat")
+  .on_action("panel.tab.close", fn(_) { side_close_front(src, r) })
+  .on_action("panel.tab.reopen", fn(_) { side_reopen_key(src, r) })
+  .on_action("panel.tab.prev", fn(_) { side_step(src, r, -1) })
+  .on_action("panel.tab.next", fn(_) { side_step(src, r, 1) })
   |> ignore
   // (another chat's find let go as this one's page comes to be drawn, as chat_page did as it was built: closed, what it
   // looked for forgotten, nothing left to go to there; a page kept of a chat left too, as it is drawn again; not while

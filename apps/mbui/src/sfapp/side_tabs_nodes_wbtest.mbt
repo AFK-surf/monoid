@@ -138,7 +138,10 @@ test "大屏: the panel's bar, nodes: a tab pressed comes in front; one's × clo
   t.run_for(@ui.move_most_ms)
   assert_eq(side_now(side_tab_chat).1, "s-c1")
   assert_eq(side_tabs_said(t).map(fn(x) { (x.0, x.1) }), [(agent, true), (tabs[1].0, false)])
-  // (任务's × behind: it closes, the agent's history staying in front)
+  // (任务's × behind: revealed on hover, it closes, the agent's history staying in front)
+  let (jx, jy, jw, jh) = side_tabs_said(t)[1].2
+  t.move_to(jx + jw / 2.0, jy + jh / 2.0)
+  t.draw()
   let x = t.get(Button, label=@sf.t("web-pages.chat.closeJobs")).rect
   t.tap(x.0 + x.2 / 2.0, x.1 + x.3 / 2.0)
   t.run_for(@ui.move_most_ms)
