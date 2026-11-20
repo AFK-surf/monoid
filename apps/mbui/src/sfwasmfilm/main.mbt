@@ -340,7 +340,7 @@ fn main { }
 pub fn film() -> Unit {
   @hostapi.set_host(WasmHost::{})
   let (view, tree) = scene_app(@film.arg)
-  @film.run(view, tree~)
+  @film.run_legacy_ctx(view, tree~)
 }
 
 ///|

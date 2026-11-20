@@ -1,7 +1,7 @@
 // Zero-config strict pure-tree preset (`detlint --preset=tree <ROOT>`) and its tree-specific rules:
 // - scroll-each: `.each(` / `.each_of(` directly inside a `.scrolls(...)` callback instead of virtualized list
 // - bare-on-press: `.on_press(` without `.says(` or `.as_ground()` on the same node
-// - old-run-ctx: legacy immediate-mode entries (`@ui.run`, `@film.run`/`picture`/`film`, `Tester::new`)
+// - old-run-ctx: legacy immediate-mode entries (`@ui.run_legacy_ctx`, `@film.*_legacy_ctx`, `Tester::new`)
 
 ///|
 let preset_tree_rules : Array[String] = [
@@ -270,17 +270,17 @@ fn lint_bare_on_press(f : MbtFile, out : Array[Finding]) -> Unit {
 }
 
 ///|
-/// old-run-ctx: calls to `@ui.run(`, `@film.run(`, `@film.picture(`, `@film.film(`, or `Tester::new(`.
+/// old-run-ctx: calls to `@ui.run_legacy_ctx(`, `@film.run_legacy_ctx(`, `@film.picture_legacy_ctx(`, `@film.film_legacy_ctx(`, or `Tester::new(`.
 fn lint_old_run_ctx(f : MbtFile, out : Array[Finding]) -> Unit {
   let toks = f.toks
   for c in f.calls {
     if c.is_def {
       continue
     }
-    let hit = (c.kind == "pkg" && c.qual == "@ui" && c.name == "run") ||
+    let hit = (c.kind == "pkg" && c.qual == "@ui" && c.name == "run_legacy_ctx") ||
       (c.kind == "pkg" &&
       c.qual == "@film" &&
-      (c.name == "run" || c.name == "picture" || c.name == "film")) ||
+      (c.name == "run_legacy_ctx" || c.name == "picture_legacy_ctx" || c.name == "film_legacy_ctx")) ||
       (c.kind == "type" && c.qual == "Tester" && c.name == "new")
     if hit {
       out.push(finding("old-run-ctx", f.rel, toks[c.at].line, f.line_text(c.at)))

@@ -30,8 +30,7 @@ fn main {
     @cm.set_dark(Some(dark))
     let path = "\{dir}/\{name}-\{if open == "" { "closed" } else { open }}-\{if dark { "dark" } else { "light" }}.png"
     let ok = @film.picture(
-      fn(_c) {  },
-      tree=fn(root) { @pages.page(root, more~, open~) },
+      fn(root) { @pages.page(root, more~, open~) },
       path~,
       w=1280.0,
       h=1000.0,

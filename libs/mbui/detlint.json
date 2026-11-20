@@ -273,9 +273,7 @@
       "src/demo/main.mbt": 1,
       "src/textdiff/main.mbt": 1
     },
-    "old-empty-around": {
-      "src/pacedemo/main.mbt": 1
-    },
+    "old-empty-around": {},
     "click-read": {},
     "key-read": {},
     "submitted-read": {

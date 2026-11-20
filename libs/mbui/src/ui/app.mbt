@@ -60,10 +60,11 @@ priv struct Bench {
 }
 
 ///|
+/// LEGACY immediate-mode entry; new apps use `@ui.run`.
 /// Opens the window and runs `view` for every frame until it closes: the window a tree made once, `tree` (`view` the
 /// old frame around the old views it holds, put where `view` says: old_views_here), else `view` its one old view
 /// (view_host.mbt). `theme`: the theme the tree's nodes are drawn in (set_view_app's).
-pub fn run(
+pub fn run_legacy_ctx(
   title : String,
   view : (Ctx) -> Unit,
   tree? : (@view.View) -> Unit,
@@ -93,7 +94,7 @@ pub fn run(
 /// Opens the window and runs `tree`, made once, until it closes (`theme`: the theme its nodes are drawn in, followed
 /// as it changes). No old frame is built around it. `transitions_only` defaults to true so changes settle at once
 /// unless wrapped in `@view.transition`.
-pub fn run_tree(
+pub fn run(
   title : String,
   tree : (@view.View) -> Unit,
   theme? : () -> Theme,
@@ -113,7 +114,19 @@ pub fn run_tree(
 }
 
 ///|
-/// The window `title` opened on the host, its frames and inputs handed to what was set to run in it (run, run_tree).
+/// Compatibility alias for `run`.
+pub fn run_tree(
+  title : String,
+  tree : (@view.View) -> Unit,
+  theme? : () -> Theme,
+  transitions_only? : Bool = true,
+) -> Unit {
+  run(title, tree, theme?, transitions_only~)
+}
+
+///|
+/// The window `title` opened on the host, its frames and inputs handed to what was set to run in it (run, run_tree,
+/// run_legacy_ctx).
 fn start_host_window(title : String) -> Unit {
   bench.host = @hostapi.bench_mode()
   // (the app's own bench, bench_app: the framework's does not run beside it)

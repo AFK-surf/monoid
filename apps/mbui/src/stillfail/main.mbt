@@ -515,7 +515,7 @@ fn main {
   @ui.on_message("local_station", fn(_, _) { () })
   if core_linked() == 0 || !@sfcore.start() {
     @sfapp.host_setup()
-    @ui.run(@sf.product(), fn(c) {
+    @ui.run_legacy_ctx(@sf.product(), fn(c) {
       @sf.begin(c) |> ignore
       c.box(w=Fill(1.0), h=Fill(1.0), align=ACenter, justify=JCenter, fn() {
         c.text("这个版本没有链接内核（APP=stillfail scripts/mac.sh build）", size=13.0, color=@sf.theme().p.muted)
@@ -573,7 +573,7 @@ fn main {
   // (the page shown as the journal was told it, sfbase's shown_kind: what the hang reports say too)
   @ui.perf_also("page", fn(_) { @ui.journal_shown() })
   @ui.perf_also("screens", @sfpages.screens_perf)
-  @ui.run(
+  @ui.run_legacy_ctx(
     @sf.product(),
     fn(c) {
       // (what the core said since the last frame is handed to @core.receive as the frame begins, before this:

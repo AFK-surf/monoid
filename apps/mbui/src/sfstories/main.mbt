@@ -13,5 +13,5 @@ fn main {
     _ => ()
   }
   @hostapi.window_setup(360.0, 560.0, 1280.0, 820.0)
-  @ui.run("still.fail 组件", @sfstorybook.stories_view, tree=@sfstorybook.stories_tree(@ui.env("STORY")))
+  @ui.run_legacy_ctx("still.fail 组件", @sfstorybook.stories_view, tree=@sfstorybook.stories_tree(@ui.env("STORY")))
 }
