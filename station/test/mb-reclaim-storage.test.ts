@@ -221,12 +221,13 @@ test("MoonBit station reclaims worktrees, exclusive transcripts, and eligible cl
 
   // ── Setup for Items 1, 3, 5 (delete_session, transcripts.exclusive, fs.rmRoom) ──
   const store = Store.open(join(data, "stillfail.db"));
+  const recentAt = Date.now();
   const wsEx = join(data, "sessions", "cl", "s-ex", "workspace");
   mkdirSync(wsEx, { recursive: true });
   git(wtRepo, ["worktree", "add", "-b", "b-ex", join(wsEx, "ex-wt")]);
   store.insertSession({
     key: "s-ex", connect: "cl", runtime: "claude", profile: "cc",
-    workspace: wsEx, runtimeSessionId: "ex-id", token: "tok-ex", createdAt: 1, lastActiveAt: 1,
+    workspace: wsEx, runtimeSessionId: "ex-id", token: "tok-ex", createdAt: recentAt, lastActiveAt: recentAt,
   });
   store.ranIn("s-ex", "ex-id", "cc");
   const exProj = join(data, "transcripts", "claude", claudeProject(wsEx));
@@ -243,12 +244,12 @@ test("MoonBit station reclaims worktrees, exclusive transcripts, and eligible cl
   mkdirSync(wsShB, { recursive: true });
   store.insertSession({
     key: "s-sha", connect: "cl", runtime: "claude", profile: "cc",
-    workspace: wsShA, runtimeSessionId: "sh-id", token: "tok-sha", createdAt: 1, lastActiveAt: 1,
+    workspace: wsShA, runtimeSessionId: "sh-id", token: "tok-sha", createdAt: recentAt, lastActiveAt: recentAt,
   });
   store.ranIn("s-sha", "sh-id", "cc");
   store.insertSession({
     key: "s-shb", connect: "cl", runtime: "claude", profile: "cc",
-    workspace: wsShB, runtimeSessionId: "sh-id", token: "tok-shb", createdAt: 1, lastActiveAt: 1,
+    workspace: wsShB, runtimeSessionId: "sh-id", token: "tok-shb", createdAt: recentAt, lastActiveAt: recentAt,
   });
   store.ranIn("s-shb", "sh-id", "cc");
   store.setArchived("s-shb", true, MANUAL);
@@ -264,7 +265,7 @@ test("MoonBit station reclaims worktrees, exclusive transcripts, and eligible cl
   writeFileSync(extUserFile, "keep\n");
   store.insertSession({
     key: "s-ext", connect: "cl", runtime: "claude", profile: "user-cc",
-    workspace: extUserDir, runtimeSessionId: "user-id", token: "tok-ext", createdAt: 1, lastActiveAt: 1,
+    workspace: extUserDir, runtimeSessionId: "user-id", token: "tok-ext", createdAt: recentAt, lastActiveAt: recentAt,
   });
   store.ranIn("s-ext", "user-id", "user-cc");
   const userTranscript = join(userHome, "projects", claudeProject(extUserDir), "user-id.jsonl");
@@ -279,7 +280,7 @@ test("MoonBit station reclaims worktrees, exclusive transcripts, and eligible cl
   }));
   store.insertSession({
     key: "s-pcopy", connect: "cl", runtime: "claude", profile: "cc",
-    workspace: wsPCopy, cwd: null, runtimeSessionId: null, token: "tok-pcopy", createdAt: 1, lastActiveAt: 1,
+    workspace: wsPCopy, cwd: null, runtimeSessionId: null, token: "tok-pcopy", createdAt: recentAt, lastActiveAt: recentAt,
   });
   store.close();
 
