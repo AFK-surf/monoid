@@ -256,6 +256,41 @@ int main(void) {
       CHECK(canvas_as_whole());
     }
 
+    // Fourteen independent glass groups of mixed sizes and blur radii on one screen: all 14 stay cached when only the
+    // top-level caret moves (blurs_made delta == 0) and match a fresh render byte-for-byte.
+    {
+      double g14[16 * MB_INST];
+      static const double blurs[4] = {1.0, 3.0, 7.0, 16.0};
+      rect_at(g14, 0, 0, 400, 300, 0, 0.92, 0.90, 0.88, 0);
+      for (int i = 0; i < 14; i++) {
+        int col = i % 7, row = i / 7;
+        double gx = 8 + col * 52;
+        double gy = 8 + row * 128;
+        double gw = 32 + i * 4;
+        double gh = 24 + i * 4;
+        double *d = g14 + (i + 1) * MB_INST;
+        rect_at(d, gx, gy, gw, gh, 5, 1, 1, 1, -(101 + i));
+        d[7] = blurs[i % 4];
+        d[11] = 0.4;
+      }
+      rect_at(g14 + 15 * MB_INST, 368, 264, 8, 24, 0, 0, 0, 0, 0);
+      glass_free();
+      int made = blurs_made;
+      mb_render_present(g14, 16, 0.1, 0.2, 0.3);
+      present_drain();
+      CHECK(blurs_made == made + 14);
+      CHECK(canvas_as_whole());
+      g14[15 * MB_INST + 0] = 376;  // only top-level caret moves
+      made = blurs_made;
+      mb_render_present(g14, 16, 0.1, 0.2, 0.3);
+      present_drain();
+      CHECK(blurs_made == made);
+      CHECK(kept_ok == 1);
+      CHECK(canvas_as_whole());
+      glass_forget();
+      CHECK(canvas_as_whole());
+    }
+
     // Frames handed over while the queue is busy (here held by a block of the test's): drawn once, the newest, in
     // part, what both said to differ joined; the glyph put between them kept; the canvas then the same to the byte as
     // that frame drawn whole.

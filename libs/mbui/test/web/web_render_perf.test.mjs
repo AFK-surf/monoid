@@ -291,6 +291,55 @@ test('glass allocates tight capture-box levels and reuses cached blur from glass
   assert.ok(b.calls.filter((c) => c.fn === 'drawArrays').length > 0, 'changed content under glass triggers fresh blur');
 });
 
+test('14 mixed-size/blur glass captures pre-size levels once, hit 100% cache when static, and avoid texStorage2D on scroll', () => {
+  const b = makeHost({ w: 600, h: 2000, dpr: 2 });
+  b.resetCalls();
+
+  const N = 14;
+  const blurs = [1, 3, 7, 16]; // at dpr=2 -> k = 0, 1, 2, 3
+  const buf = new Float64Array(INST * (N + 1));
+  makeRect(buf, 0, 0, 0, 600, 2000, { r: 0.25, a: 1 });
+  let y = 20;
+  for (let i = 0; i < N; i++) {
+    const o = (i + 1) * INST;
+    const gw = 60 + i * 20;
+    const gh = 30 + i * 10;
+    buf[o] = 40; buf[o + 1] = y; buf[o + 2] = gw; buf[o + 3] = gh;
+    buf[o + 5] = 5; // frosted glass
+    buf[o + 7] = blurs[i % blurs.length];
+    buf[o + 8] = 1; buf[o + 9] = 1; buf[o + 10] = 1; buf[o + 11] = 0.2;
+    buf[o + 15] = 1;
+    buf[o + 16] = -1e9; buf[o + 17] = -1e9; buf[o + 18] = 1e9; buf[o + 19] = 1e9;
+    buf[o + 20] = -(i + 1);
+    y += gh + 20;
+  }
+
+  // Frame 1: lv pre-sized once at max capture box (5 lv textures + 14 slot textures = 19 texStorage2D, 0 deleteTexture)
+  b.H.present(buf, N + 1, 0.1, 0.1, 0.1);
+  assert.equal(b.calls.filter((c) => c.fn === 'texStorage2D').length, 19, 'frame 1 allocates 5 lv + 14 slot textures once');
+  assert.equal(b.calls.filter((c) => c.fn === 'deleteTexture').length, 0, 'frame 1 performs zero mid-frame texture deletes');
+
+  // Frame 2: static frame -> all 14 glasses hit cache (0 drawArrays, 0 blitFramebuffer, 0 texStorage2D)
+  b.resetCalls();
+  b.H.present(buf, N + 1, 0.1, 0.1, 0.1);
+  assert.equal(b.calls.filter((c) => c.fn === 'drawArrays').length, 0, 'static frame runs zero blur passes');
+  assert.equal(b.calls.filter((c) => c.fn === 'blitFramebuffer').length, 0, 'static frame runs zero blits');
+  assert.equal(b.calls.filter((c) => c.fn === 'texStorage2D').length, 0, 'static frame allocates zero textures');
+
+  // Frames 3..8: 6 consecutive scroll frames (moving background invalidates all 14 glasses each frame).
+  // Once slots warm up (frames 5..8), texture-affinity eviction keeps texStorage2D == 0 and deleteTexture == 0.
+  for (let frame = 3; frame <= 8; frame++) {
+    b.resetCalls();
+    buf[0] = (frame - 2) * 5;
+    b.H.present(buf, N + 1, 0.1, 0.1, 0.1);
+    assert.ok(b.calls.filter((c) => c.fn === 'drawArrays').length > 0, `scroll frame ${frame} re-blurs invalidated glasses`);
+    if (frame >= 5) {
+      assert.equal(b.calls.filter((c) => c.fn === 'texStorage2D').length, 0, `scroll frame ${frame} allocates zero textures`);
+      assert.equal(b.calls.filter((c) => c.fn === 'deleteTexture').length, 0, `scroll frame ${frame} deletes zero textures`);
+    }
+  }
+});
+
 test('ONE_KIND lazy shader compilation, progFlat for large solid rects, and banded strips for hollow border & occluded shadow', () => {
   const b = makeHost({ w: 400, h: 400, dpr: 2 }); // 800x800 px
   const initLinks = b.calls.filter((c) => c.fn === 'linkProgram');

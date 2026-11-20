@@ -23,7 +23,7 @@
   let cb = null;
   let modifiersSaid = 0;
   const MB_KINDS = 12;
-  const GLASS_SLOTS = 8;
+  const GLASS_SLOTS = 32;
   function makeGlassSlots() {
     return Array.from({ length: GLASS_SLOTS }, () => ({
       bt: null, bfb: null, bw: 0, bh: 0, bf: 0,
@@ -1703,15 +1703,29 @@
     gl.blitFramebuffer(0, 0, w, h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
   }
 
-  function slotFill(m) {
-    let s = glassSlots[0];
+  function slotFill(m, frameClock) {
+    const L = grabBlurred(m);
+    let t0 = -1, t1 = -1, t2 = -1, t3 = -1, t4 = -1, fallback = 0;
     for (let i = 0; i < GLASS_SLOTS; i++) {
-      if (!glassSlots[i].valid) { s = glassSlots[i]; break; }
-      if (glassSlots[i].used < s.used) s = glassSlots[i];
+      const s = glassSlots[i];
+      if (s.used < glassSlots[fallback].used) fallback = i;
+      if (s.used > frameClock) continue;
+      const hasBt = s.bt !== null;
+      const sameTex = hasBt && s.bw === L.w && s.bh === L.h && s.bf === L.format;
+      if (!s.valid) {
+        if (sameTex) { if (t0 < 0) t0 = i; }
+        else if (!hasBt) { if (t1 < 0) t1 = i; }
+        else { if (t3 < 0) t3 = i; }
+      } else if (sameTex) {
+        if (t2 < 0 || s.used < glassSlots[t2].used) t2 = i;
+      }
+      if (t4 < 0 || s.used < glassSlots[t4].used) t4 = i;
     }
+    const idx = t0 >= 0 ? t0 : t1 >= 0 ? t1 : t2 >= 0 ? t2 : t3 >= 0 ? t3 : t4 >= 0 ? t4 : fallback;
+    const s = glassSlots[idx];
     s.valid = false;
     const [lw, lh] = grabLevels(m);
-    slotCopy(s, grabBlurred(m), lw[m.k], lh[m.k]);
+    slotCopy(s, L, lw[m.k], lh[m.k]);
     return s;
   }
 
@@ -1733,7 +1747,7 @@
 
   // what the run [start, end) of glass sees, frosted glass of the same capture further on (glass.mbt
   // shares_capture) too; false when none of it shows. Leaves mainState in place when true.
-  function capture(start, end, count, pieces, r, g, b) {
+  function capture(start, end, count, pieces, r, g, b, frameClock) {
     const m = grabOf(start, end, count);
     if (!m) return false;
     const key = [canvas.width, canvas.height, dpr, r, g, b];
@@ -1741,7 +1755,7 @@
     let s = known ? slotSame(m, key) : null;
     if (!s) {
       blurGlass(m);
-      s = slotFill(m);
+      s = slotFill(m, frameClock);
       const canKeep = !cutOn || (m.px0 >= cut[0] && m.px0 + m.w <= cut[0] + cut[2] && m.pb0 >= cut[1] && m.pb0 + m.h <= cut[1] + cut[3]);
       if (known && !drewMissing && canKeep) slotKeep(s, m, key);
     }
@@ -2218,7 +2232,8 @@
     // one draw per run of instances showing the same image (slot 20) of one kind (its program: useProg), or sharing
     // one capture of glass (negative); WebGL has no base instance, so the attributes start at the run instead
     // (and per run of holes, kind 9: written transparent with no blending, where a native view shows)
-    let start = 0, bound = 0, shows = false;
+    let start = 0, bound = 0, shows = false, levelsSized = false;
+    const frameGlassClock = glassSlotsClock;
     while (start < n) {
       const tid = f32[start * INST + 20] | 0;
       const kind = Math.round(f32[start * INST + 5]);
@@ -2234,8 +2249,32 @@
       useProg(own ? kind : -1);
       if (tid < 0) {
         glassDrawn = true;
+        if (!levelsSized) {
+          levelsSized = true;
+          let maxW = 0, maxH = 0, scanBound = 0;
+          for (let s0 = start; s0 < n; ) {
+            const stid = f32[s0 * INST + 20] | 0;
+            let e0 = s0 + 1;
+            if (stid < 0) {
+              while (e0 < n && (f32[e0 * INST + 20] | 0) === stid) e0++;
+              if (stid !== scanBound) {
+                scanBound = stid;
+                const gm = grabOf(s0, e0, n);
+                if (gm) {
+                  if (gm.w > maxW) maxW = gm.w;
+                  if (gm.h > maxH) maxH = gm.h;
+                }
+              }
+            }
+            s0 = e0;
+          }
+          if (maxW > lvW || maxH > lvH) {
+            ensureLevels(maxW, maxH);
+            mainState();
+          }
+        }
         if (tid !== bound) {
-          shows = capture(start, end, n, pieces, r, g, b);
+          shows = capture(start, end, n, pieces, r, g, b, frameGlassClock);
           bound = tid;
         }
         if (shows) {

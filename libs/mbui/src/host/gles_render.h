@@ -1027,7 +1027,7 @@ static void blur(const Grab *m) {
 // left for them (apple_render.m's slots, Metal's); one where something moved under one group of glass makes that
 // group's blur again, the others' kept. A stream or a native view's picture drawn into it (its pictures change under
 // the same instances) is blurred anew each frame, as is a frame an image under it had no texture for yet.
-#define MB_GLASS_SLOTS 8
+#define MB_GLASS_SLOTS 32
 typedef struct {
   GLuint bt, bfb;
   int bw, bh;
@@ -1188,19 +1188,33 @@ static void slot_copy(GLuint *t, GLuint *fb, int *tw, int *th, GLenum *tf, const
 
 // The blur just made (blur) kept in the slot least lately shown: copied out of the levels.
 // Not yet said to be of anything (valid).
-static glass_slot *slot_fill(const Grab *m) {
-  glass_slot *s = &slots[0];
+static glass_slot *slot_fill(const Grab *m, unsigned frame_clock) {
+  level *L = grab_blurred(m);
+  int t0 = -1, t1 = -1, t2 = -1, t3 = -1, t4 = -1, fallback = 0;
   for (int i = 0; i < MB_GLASS_SLOTS; i++) {
-    if (!slots[i].valid) {
-      s = &slots[i];
-      break;
+    glass_slot *s = &slots[i];
+    if (s->used < slots[fallback].used) fallback = i;
+    if (s->used > frame_clock) continue;
+    int has_bt = s->bt != 0;
+    int same_tex = has_bt && s->bw == L->w && s->bh == L->h && s->bf == L->format;
+    if (!s->valid) {
+      if (same_tex) {
+        if (t0 < 0) t0 = i;
+      } else if (!has_bt) {
+        if (t1 < 0) t1 = i;
+      } else {
+        if (t3 < 0) t3 = i;
+      }
+    } else if (same_tex) {
+      if (t2 < 0 || s->used < slots[t2].used) t2 = i;
     }
-    if (slots[i].used < s->used) s = &slots[i];
+    if (t4 < 0 || s->used < slots[t4].used) t4 = i;
   }
+  int idx = t0 >= 0 ? t0 : t1 >= 0 ? t1 : t2 >= 0 ? t2 : t3 >= 0 ? t3 : t4 >= 0 ? t4 : fallback;
+  glass_slot *s = &slots[idx];
   s->valid = 0;
   int lw[4], lh[4];
   grab_levels(m, lw, lh);
-  level *L = grab_blurred(m);
   slot_copy(&s->bt, &s->bfb, &s->bw, &s->bh, &s->bf, L, lw[m->k], lh[m->k]);
   return s;
 }
@@ -1229,7 +1243,7 @@ static void main_state(void);
 // What the run [start, end) of glass sees (`pieces`: where the frame's shapes' pieces start, `r`, `g`, `b` the ground it
 // was cleared to), blurred anew or as a slot keeps it; 0 when none of it shows. Leaves the main programs' state.
 static int capture(const float *f, int32_t start, int32_t end, int32_t count, int32_t pieces, double r, double g,
-                   double b) {
+                   double b, unsigned frame_clock) {
   Grab m;
   int shows = grab_of(&m, f, start, end, count);
   double key[9] = {fb_w, fb_h, cur_scale, cur_w, cur_h, r, g, b, over_other};
@@ -1238,7 +1252,7 @@ static int capture(const float *f, int32_t start, int32_t end, int32_t count, in
     glass_slot *s = known ? slot_same(&m, key) : NULL;
     if (!s) {
       blur(&m);
-      s = slot_fill(&m);
+      s = slot_fill(&m, frame_clock);
       // (an image drawn under it that had no texture yet: it comes under the same instances, so this blur is not kept
       // to be shown again as theirs)
       if (known && !encode_missing) slot_keep(s, &m, key);
@@ -1638,7 +1652,8 @@ static void draw_into(GLuint fb, int part) {
   // picture where it shows, kind 9: nothing until it has one) of one kind (its program: use_prog), or sharing one
   // capture of glass (negative); GLES has no base instance, so the attributes start at the run instead
   int32_t start = 0;
-  int bound = 0, shows = 0;
+  int bound = 0, shows = 0, levels_sized = 0;
+  unsigned frame_clock = slots_clock;
   // (where the pieces of the frame's shapes start: what a capture is of, with what is before it)
   int32_t pieces = count;
   while (pieces > 0 && (int)(fbuf[(pieces - 1) * MB_INST + 5] + 0.5f) == 12) pieces--;
@@ -1656,8 +1671,29 @@ static void draw_into(GLuint fb, int part) {
     use_prog(own ? kind : -1);
     if (tid < 0) {
       glass_drawn = 1;
+      if (!levels_sized) {
+        levels_sized = 1;
+        int max_w = 0, max_h = 0, scan_bound = 0;
+        for (int32_t s0 = start; s0 < count;) {
+          int stid = (int)fbuf[s0 * MB_INST + 20];
+          int32_t e0 = s0 + 1;
+          if (stid < 0) {
+            while (e0 < count && (int)fbuf[e0 * MB_INST + 20] == stid) e0++;
+            if (stid != scan_bound) {
+              scan_bound = stid;
+              Grab gm;
+              if (grab_of(&gm, fbuf, s0, e0, count)) {
+                if (gm.w > max_w) max_w = gm.w;
+                if (gm.h > max_h) max_h = gm.h;
+              }
+            }
+          }
+          s0 = e0;
+        }
+        if (max_w > lv_w || max_h > lv_h) ensure_levels(max_w, max_h);
+      }
       if (tid != bound) {
-        shows = capture(fbuf, start, end, count, pieces, r, g, b);
+        shows = capture(fbuf, start, end, count, pieces, r, g, b, frame_clock);
         bound = tid;
       }
       if (shows) {

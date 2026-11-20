@@ -1144,7 +1144,7 @@ static void blur(id<MTLCommandBuffer> cb, id<MTLTexture> target, const Grab *m) 
 // under one group of glass makes that group's blur again, the others' kept. A stream or a native view's hole drawn
 // into it (its pictures change under the same instances) is blurred anew each frame, as is a frame an image under it
 // had no texture for yet.
-#define MB_GLASS_SLOTS 8
+#define MB_GLASS_SLOTS 32
 typedef struct {
   float *under;
   size_t under_cap, under_n;
@@ -1275,19 +1275,32 @@ static void slot_copy(id<MTLBlitCommandEncoder> bl, id<MTLTexture> __strong *t, 
 
 // The blur just made (blur) kept in the slot least lately shown: copied out of the levels.
 // Not yet said to be of anything (valid).
-static int slot_fill(id<MTLCommandBuffer> cb, const Grab *m) {
-  int i = 0;
+static int slot_fill(id<MTLCommandBuffer> cb, const Grab *m, unsigned frame_clock) {
+  id<MTLTexture> L = grab_blurred(m);
+  int t0 = -1, t1 = -1, t2 = -1, t3 = -1, t4 = -1, fallback = 0;
   for (int j = 0; j < MB_GLASS_SLOTS; j++) {
+    if (slots[j].used < slots[fallback].used) fallback = j;
+    if (slots[j].used > frame_clock) continue;
+    int has_bt = slot_bt[j] != nil;
+    int same_tex = has_bt && (int)slot_bt[j].width == (int)L.width && (int)slot_bt[j].height == (int)L.height &&
+                   slot_bt[j].pixelFormat == L.pixelFormat;
     if (!slots[j].valid) {
-      i = j;
-      break;
+      if (same_tex) {
+        if (t0 < 0) t0 = j;
+      } else if (!has_bt) {
+        if (t1 < 0) t1 = j;
+      } else {
+        if (t3 < 0) t3 = j;
+      }
+    } else if (same_tex) {
+      if (t2 < 0 || slots[j].used < slots[t2].used) t2 = j;
     }
-    if (slots[j].used < slots[i].used) i = j;
+    if (t4 < 0 || slots[j].used < slots[t4].used) t4 = j;
   }
+  int i = t0 >= 0 ? t0 : t1 >= 0 ? t1 : t2 >= 0 ? t2 : t3 >= 0 ? t3 : t4 >= 0 ? t4 : fallback;
   slots[i].valid = 0;
   int lw[4], lh[4];
   grab_levels(m, lw, lh);
-  id<MTLTexture> L = grab_blurred(m);
   id<MTLBlitCommandEncoder> bl = [cb blitCommandEncoder];
   slot_copy(bl, &slot_bt[i], L, lw[m->k], lh[m->k]);
   [bl endEncoding];
@@ -1453,7 +1466,8 @@ static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderP
   // and holes for native views (kind 9) apart, unblended. Glass over a hole
   // sees the hole (the canvas only, not the view under it).
   int32_t start = 0;
-  int bound = 0, shows = 0;
+  int bound = 0, shows = 0, levels_sized = 0;
+  unsigned frame_clock = slots_clock;
   while (start < count) {
     int tid = (int)f[start * MB_INST + 20];
     int kind = (int)(f[start * MB_INST + 5] + 0.5f), hole = kind == 9;
@@ -1466,6 +1480,27 @@ static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderP
       end++;
     }
     if (tid < 0) {
+      if (!levels_sized) {
+        levels_sized = 1;
+        int max_w = 0, max_h = 0, scan_bound = 0;
+        for (int32_t s0 = start; s0 < count;) {
+          int stid = (int)f[s0 * MB_INST + 20];
+          int32_t e0 = s0 + 1;
+          if (stid < 0) {
+            while (e0 < count && (int)f[e0 * MB_INST + 20] == stid) e0++;
+            if (stid != scan_bound) {
+              scan_bound = stid;
+              Grab gm;
+              if (grab_of(&gm, f, s0, e0, count, (int)target.width, (int)target.height) && grab_in_part(&gm)) {
+                if (gm.w > max_w) max_w = gm.w;
+                if (gm.h > max_h) max_h = gm.h;
+              }
+            }
+          }
+          s0 = e0;
+        }
+        if (max_w > lv_w || max_h > lv_h) ensure_levels(max_w, max_h);
+      }
       if (tid != bound) {
         Grab m;
         shows = grab_of(&m, f, start, end, count, (int)target.width, (int)target.height);
@@ -1485,7 +1520,7 @@ static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderP
         } else if (shows) {
           [enc endEncoding];
           blur(cb, target, &m);
-          slot = slot_fill(cb, &m);
+          slot = slot_fill(cb, &m, frame_clock);
           // (an image drawn under it that had no texture yet: it comes under the same instances, so this blur is not
           // kept to be shown again as theirs)
           if (known && !encode_missing) slot_keep(slot, &m, key);
