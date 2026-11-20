@@ -1085,6 +1085,10 @@ pub fn fixture_page(mode : String) -> String {
     "settings-vault-editor" => fixture_open.desk = "vault-editor"
     "settings-vault-workspace-create" => fx.vault_workspace = "create"
     "settings-vault-workspace" => fx.vault_workspace = "has"
+    "settings-vault-workspace-save-picked" => {
+      fx.vault_workspace = "has"
+      vault_target_picked["r-ws-save"] = ("v-ws", "Workspace 密钥库", true)
+    }
     "settings-vault-workspace-members" => {
       fx.vault_workspace = "has"
       fixture_open.desk = "vault-workspace-members"
@@ -1161,7 +1165,7 @@ pub fn fixture_page(mode : String) -> String {
     "settings-new-connect" | "settings-new-connect-platform" | "settings-new-connect-scan" | "settings-new-connect-app" | "settings-new-connect-comma"
     | "settings-new-connect-platform-group" | "settings-new-connect-group" => "connects"
     "settings-vault-off" | "settings-vault-elsewhere" | "settings-vault-words" | "settings-vault-recover" | "settings-vault-plain" | "settings-vault-waits"
-    | "settings-vault-workspace-create" | "settings-vault-workspace" | "settings-vault-workspace-members"
+    | "settings-vault-workspace-create" | "settings-vault-workspace" | "settings-vault-workspace-save-picked" | "settings-vault-workspace-members"
     | "settings-vault-own-off" | "settings-vault-own-on" | "settings-vault-own-outside" | "settings-vault-own-code" | "settings-vault-own-replaced"
     | "settings-vault-confirm" | "settings-vault-syncing" | "settings-vault-waiting" | "settings-vault-waiting-was" | "settings-vault-replaced"
     | "settings-vault-replaced-was" => "vault"
@@ -3654,17 +3658,17 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
                 reqs.push(
                   obj([
                     ("id", str("r-ws-save")),
-                    ("vault", str("v-ws")),
-                    ("vaultName", str("Workspace 密钥库")),
+                    ("vault", str("v1")),
+                    ("vaultName", str("林的库")),
                     ("item", str("")),
                     ("itemName", str("Sentry DSN")),
                     ("session", str("s-c1")),
                     ("station", str("st1")),
                     ("chat", str("c1")),
                     ("mode", str("env")),
-                    ("reason", str("存入团队共享的错误上报配置")),
+                    ("reason", str("存入错误上报配置")),
                     ("howText", str("环境变量 · SENTRY_DSN")),
-                    ("save", obj([("kind", str("token")), ("vaultName", str("Workspace 密钥库")), ("shared", Json::boolean(true))])),
+                    ("save", obj([("kind", str("token"))])),
                     ("at", Json::number(0.0)),
                   ]),
                 )

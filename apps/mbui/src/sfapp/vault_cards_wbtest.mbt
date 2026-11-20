@@ -718,27 +718,74 @@ test "a request to delete an item: 删除密钥 and its name, 删除 deletes it"
 }
 
 ///|
-test "a shared save request card shows the shared workspace vault notice" {
-  new_run()
+test "a save request card defaults to personal vault and only shows shared notice after manually picking workspace vault" {
+  let multi_vault_src = fn(calls : Array[String]) -> Source {
+    let base = vault_src(["r1"], true, calls, save=true)
+    {
+      ..base,
+      topic_read: fn(name, params) {
+        if name == "vaults" {
+          {
+            value: Some(
+              Json::object({
+                "available": Json::boolean(true),
+                "locked": Json::boolean(true),
+                "setUp": Json::boolean(true),
+                "vaults": Json::array([
+                  Json::object({ "id": Json::string("v1"), "name": Json::string("个人密钥库"), "keyed": Json::boolean(true), "mine": Json::boolean(true) }),
+                  Json::object({ "id": Json::string("v-ws"), "name": Json::string("Workspace 密钥库"), "scope": Json::string("workspace"), "keyed": Json::boolean(true), "manages": Json::boolean(true) }),
+                ]),
+                "requests": Json::array([
+                  Json::object({
+                    "id": Json::string("r1"),
+                    "save": Json::object({ "kind": Json::string("token") }),
+                  }),
+                ]),
+              }),
+            ),
+            error: None,
+            version: 1,
+          }
+        } else {
+          (base.topic_read)(name, params)
+        }
+      },
+    }
+  }
   let w : Workspace = { id: "ws1", name: "", emoji: "", icon: "", email: "" }
-  let asked_named : @settings.Asked = { name: "Sentry DSN", reason: "存入团队共享的错误上报配置", timeout_kind: "", timeout_seconds: 0, approved_timeout_kind: "", approved_timeout_seconds: 0, mode: "env", command: "", how_text: "环境变量 · SENTRY_DSN", save_kind: "token", save_vault_name: "Workspace 密钥库", save_shared: true, username: "", filename: "", typed: false, oauth: "", station: "", describe: false, new_name: "", new_about: "", was_about: "", remove: false }
-  let t = @ui.Tester::new(fn(_c) {  }, w=390.0, h=844.0, platform=2)
-  let core = settings_core(vault_src(["r1"], true, [], save=true), w)
-  @ui.set_view_app(fn(root) {
-    root.box(fn(b) { @settings.vault_request_node(b, core, fn() { "ws1" }, fn() { "r1" }, fn() { asked_named }) }) |> ignore
-  })
-  t.draw()
-  assert_true(t.find("将存入团队共享密钥库「Workspace 密钥库」") is Some(_))
-  // fallback notice when vault name is empty
+  // Even if an older station sent save_shared=true, default stays personal vault with no shared warning.
+  let asked : @settings.Asked = { name: "Sentry DSN", reason: "存入错误上报配置", timeout_kind: "", timeout_seconds: 0, approved_timeout_kind: "", approved_timeout_seconds: 0, mode: "env", command: "", how_text: "环境变量 · SENTRY_DSN", save_kind: "token", save_vault_name: "Workspace 密钥库", save_shared: true, username: "", filename: "", typed: false, oauth: "", station: "", describe: false, new_name: "", new_about: "", was_about: "", remove: false }
+
+  // 1. Default save goes to personal vault (v1) with no shared notice.
   new_run()
-  let asked_fallback : @settings.Asked = { ..asked_named, save_vault_name: "" }
-  let t2 = @ui.Tester::new(fn(_c) {  }, w=390.0, h=844.0, platform=2)
-  let core2 = settings_core(vault_src(["r1"], true, [], save=true), w)
+  let calls1 : Array[String] = []
+  let t1 = @ui.Tester::new(fn(_c) {  }, w=480.0, h=844.0, platform=0)
+  let core1 = settings_core(multi_vault_src(calls1), w)
   @ui.set_view_app(fn(root) {
-    root.box(fn(b) { @settings.vault_request_node(b, core2, fn() { "ws1" }, fn() { "r1" }, fn() { asked_fallback }) }) |> ignore
+    root.box(fn(b) { @settings.vault_request_node(b, core1, fn() { "ws1" }, fn() { "r1" }, fn() { asked }) }) |> ignore
+  })
+  t1.draw()
+  assert_true(t1.find("个人密钥库") is Some(_))
+  assert_true(t1.find("将存入团队共享密钥库「Workspace 密钥库」") is None)
+  vt_press(t1, "存入")
+  assert_eq(vt_vault_calls(calls1), ["vault.approve {\"workspace\":\"ws1\",\"request\":\"r1\",\"scope\":\"once\",\"vault\":\"v1\"}"])
+
+  // 2. Manually switching chooser to Workspace 密钥库 shows shared notice and approves with vault=v-ws.
+  new_run()
+  let calls2 : Array[String] = []
+  let t2 = @ui.Tester::new(fn(_c) {  }, w=480.0, h=844.0, platform=0)
+  let core2 = settings_core(multi_vault_src(calls2), w)
+  @ui.set_view_app(fn(root) {
+    root.box(fn(b) { @settings.vault_request_node(b, core2, fn() { "ws1" }, fn() { "r1" }, fn() { asked }) }) |> ignore
   })
   t2.draw()
-  assert_true(t2.find("将存入 Workspace 密钥库（团队共享）") is Some(_))
+  vt_press(t2, "个人密钥库")
+  t2.run_for(@ui.move_most_ms)
+  vt_press(t2, "Workspace 密钥库")
+  t2.run_for(@ui.move_most_ms)
+  assert_true(t2.find("将存入团队共享密钥库「Workspace 密钥库」") is Some(_))
+  vt_press(t2, "存入")
+  assert_eq(vt_vault_calls(calls2), ["vault.approve {\"workspace\":\"ws1\",\"request\":\"r1\",\"scope\":\"once\",\"vault\":\"v-ws\"}"])
 }
 
 ///|
@@ -747,6 +794,7 @@ test "workspace vault fixture modes pass audit across wide, narrow, and 1.3x fon
   let modes : Array[String] = [
     "settings-vault-workspace-create",
     "settings-vault-workspace",
+    "settings-vault-workspace-save-picked",
     "settings-vault-workspace-members",
     "settings-vault-workspace-editor",
   ]

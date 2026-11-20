@@ -180,7 +180,6 @@ pub fn Vault::new(w : World, db : @vault_crypto.Db, crypto : @vault_crypto.Crypt
         station: None,
         browser: None,
         person: None,
-        scope: None,
         oauth: None,
       })
     },

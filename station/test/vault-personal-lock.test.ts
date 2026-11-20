@@ -271,7 +271,7 @@ test("non-security mode personalVaultLock preserves member roles and GET /vault/
   }
 });
 
-test("workspace vault agent tools: secret_use assigns to chat starter member, secret_list reports scope/vaultName, and secret_save supports scope=workspace", async () => {
+test("workspace vault agent tools: secret_use assigns to chat starter member, secret_list reports scope/vaultName, and secret_save defaults to personal vault", async () => {
   const alice = person("alice"), bob = person("bob");
   const roles = new Map([["alice", "owner"], ["bob", "member"]]);
   const s = {
@@ -310,11 +310,9 @@ test("workspace vault agent tools: secret_use assigns to chat starter member, se
     vaults.putBox(alice.cert());
     vaults.putBox(bob.cert());
 
-    // Without a workspace vault yet, secret_save { scope: "workspace" } fails clearly.
-    await assert.rejects(
-      () => callTool("secret_save", { name: "Shared Token", about: "CI token", kind: "token", reason: "shared", value: "tok_1", scope: "workspace" }),
-      /No workspace vault exists yet/,
-    );
+    // secret_save schema must not expose a scope parameter (agents never pre-bind workspace vault).
+    const saveSchema = tools.find((t) => t.name === "secret_save")!.inputSchema as { properties: Record<string, unknown> };
+    assert.equal("scope" in saveSchema.properties, false);
 
     // Create a workspace vault owned by Alice with members [Alice, Bob], plus Bob's personal vault.
     const wsVaultId = "v_01HZZZZZZZZZZZZZZZZZZZZZZW";
@@ -380,15 +378,15 @@ test("workspace vault agent tools: secret_use assigns to chat starter member, se
     );
     assert.equal(secrets.grant(getLock(), "bob", grant), null);
 
-    // 3. secret_save { scope: "workspace" } prefills request.vault with wsVaultId and sets shared: true & vaultName on request.save and card.
+    // 3. secret_save always defaults to Bob's personal vault (never pre-binds workspace vault, even if extra scope arg is passed).
     await callTool("secret_save", { name: "Shared Token", about: "CI token", kind: "token", reason: "shared", value: "tok_shared", scope: "workspace" });
     const [saveReq] = secrets.pending(WS, getLock(), { sub: "bob", email: "bob@x.com" });
-    assert.equal(saveReq?.vault, wsVaultId);
-    assert.equal(saveReq?.save?.shared, true);
-    assert.equal(saveReq?.save?.vaultName, "Team Vault");
-    assert.equal(cards.at(-1)!.card.vault.save.shared, true);
-    assert.equal(cards.at(-1)!.card.vault.save.vaultName, "Team Vault");
-    // Sealed to Bob's own device (so Bob can approve and write to the shared vault).
+    assert.equal(saveReq?.vault, pVaultId);
+    assert.equal(saveReq?.save?.shared, undefined);
+    assert.equal(saveReq?.save?.vaultName, undefined);
+    assert.equal(cards.at(-1)!.card.vault.save.shared, undefined);
+    assert.equal(cards.at(-1)!.card.vault.save.vaultName, undefined);
+    // Sealed to Bob's own device (so Bob can approve and save to personal or manually pick workspace vault).
     assert.deepEqual(
       JSON.parse(Buffer.from(openSeal(bob.box.priv, saveReq!.sealed!.find((x) => x.box === bob.box.pub)!.secret, saveContext(WS, saveReq!.id))).toString()),
       { value: "tok_shared" },

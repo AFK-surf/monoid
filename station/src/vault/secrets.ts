@@ -1577,12 +1577,6 @@ export class Secrets {
     return this.#vaultFor(lock, sub) !== "" ? "on" : "off";
   }
 
-  /// The workspace vault `sub` is a member of in `lock`'s workspace, if any (non-deleted).
-  #workspaceVaultFor(lock: LockState | null, sub: string | null): Vault | null {
-    if (lock === null || sub === null) return null;
-    return this.#d.vaults.vaults(lock.ws).find((v) => !v.deleted && v.scope === "workspace" && v.members.includes(sub)) ?? null;
-  }
-
   /// secret_save: a request from `session` to keep a secret in the vault of whoever started its chat, given as `value`,
   /// printed by `command` (run here in `cwd`; what it prints is never shown) or, given neither, typed in by that person
   /// on its card (`save.typed`: nothing of it held or sealed here); its card posted, decided, the session is told (#settle).
@@ -1590,7 +1584,7 @@ export class Secrets {
     session: string,
     a: {
       name: string; kind: string; reason: string; value?: string; command?: string; path?: string; username?: string; public_key?: string; filename?: string; modes?: string[]; hosts?: string[]; env?: string;
-      cwd: string; station?: string; browser?: "chat" | "station"; person?: string; scope?: "personal" | "workspace";
+      cwd: string; station?: string; browser?: "chat" | "station"; person?: string;
       /// A token the person signs in to this service for on the card (OAUTH), in place of typing one in.
       oauth?: string;
       /// What it is and how it is used (its listing's `about`, the item's notes): shown to agents with its name.
@@ -1603,7 +1597,6 @@ export class Secrets {
     const place = this.#placeOf(session);
     const ws = place.ws;
     let lock = place.lock;
-    if (a.scope !== undefined && a.scope !== "personal" && a.scope !== "workspace") throw new Refused("scope is personal or workspace");
     const kind = a.kind as Kind;
     // A sign-in is read from a browser, never given, printed or typed in.
     if (kind === "browser" && (a.value !== undefined || a.command !== undefined || a.path !== undefined || a.station !== undefined)) throw new Refused("A sign-in (kind browser) is read from this chat's browser (or the station's: browser \"station\"), its cookies of hosts: give no value, command, path or station.");
@@ -1641,9 +1634,6 @@ export class Secrets {
     let sub = lock === null ? null : this.#memberOf(lock, email);
     // (security mode off: one whose own lock is not heard here yet is sealed to as they turn their vault on, `boxed`)
     if (lock !== null && sub === null && lock.genesis !== "") throw new Refused(`${email} is not in the workspace's security mode: there is no vault of theirs to keep it in.`);
-    if (a.scope === "workspace" && this.#workspaceVaultFor(lock, sub) === null) {
-      throw new Refused("No workspace vault exists yet (or you are not a member): an owner or admin can create one in Settings → Vault, or omit scope to save to your personal vault.");
-    }
     const listing: Listing = { name, kind, modes, hosts, ...(a.env ? { env: a.env } : {}), ...(about ? { about } : {}) };
     const now = this.#d.now();
     const item = `i_${ulid(now)}`;
@@ -1691,20 +1681,15 @@ export class Secrets {
     lock = currentLock();
     sub = lock === null ? null : this.#memberOf(lock, email);
     if (lock !== null && sub === null && lock.genesis !== "") throw new Refused(`${email} is not in the workspace's security mode: there is no vault of theirs to keep it in.`);
-    const wsVault = a.scope === "workspace" ? this.#workspaceVaultFor(lock, sub) : null;
-    if (a.scope === "workspace" && wsVault === null) {
-      throw new Refused("No workspace vault exists yet (or you are not a member): an owner or admin can create one in Settings → Vault, or omit scope to save to your personal vault.");
-    }
     const fields = typed ? null : fieldsOf(value);
     const requestedAt = this.#d.now();
     const id = `r_${ulid(requestedAt)}`;
     const save: Save = {
       kind, name, modes, hosts, ...(a.env ? { env: a.env } : {}), ...(a.username ? { username: a.username } : {}), ...(a.public_key ? { public_key: a.public_key } : {}), ...(filename ? { filename } : {}),
       ...(typed ? { typed: true as const } : {}), ...(a.oauth !== undefined ? { oauth: a.oauth } : {}), ...(about ? { about } : {}),
-      ...(wsVault !== null ? { vaultName: wsVault.name, shared: true as const } : {}),
     };
     const request: Request = {
-      id, ws, vault: wsVault !== null ? wsVault.id : lock === null ? PLAIN : sub === null ? "" : this.#vaultFor(lock, sub), item, session, chat: "", mode: modes[0]!, reason: a.reason.trim(),
+      id, ws, vault: lock === null ? PLAIN : sub === null ? "" : this.#vaultFor(lock, sub), item, session, chat: "", mode: modes[0]!, reason: a.reason.trim(),
       ...(command !== undefined ? { command } : {}), ...(hosts.length ? { hosts } : {}),
       // A vault's: a box for the grant to this chat that comes with keeping it (the app seals the secret to it too).
       box: lock === null ? "" : this.keeper.open(id), at: Math.floor(requestedAt / 1000), status: "pending", owner: email, save, ...(from ? { runOn: from } : {}),
@@ -1764,7 +1749,7 @@ export class Secrets {
             request: r.id, name: s.name, reason: r.reason, ...(r.command ? { command: r.command } : {}), mode: s.modes[0], hosts: hosted(s.modes[0]!) ? s.hosts : [],
             ...(s.about ? { about: s.about } : {}),
             ...(r.runOn ? { station: r.runOn.name } : {}),
-            save: { kind: s.kind, ...(s.username ? { username: s.username } : {}), ...(s.filename ? { filename: s.filename } : {}), ...(s.typed ? { typed: true } : {}), ...(s.oauth ? { oauth: s.oauth } : {}), ...(s.vaultName ? { vaultName: s.vaultName } : {}), ...(s.shared ? { shared: true } : {}) },
+            save: { kind: s.kind, ...(s.username ? { username: s.username } : {}), ...(s.filename ? { filename: s.filename } : {}), ...(s.typed ? { typed: true } : {}), ...(s.oauth ? { oauth: s.oauth } : {}) },
           },
         }
       : null;
