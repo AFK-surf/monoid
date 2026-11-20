@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bc9485830](https://github.com/AFK-surf/monoid/commit/bc94858304607d88c8cb1819961bedae3c442597) fix(mbui): keep a list's anchor through mid-fill a | 2.65 | 3.57 | 14.57 | 36.81 | 56.11 | 32.29 | 65.43 | 97.4 | 125.75 |
 | [a205e3a34](https://github.com/AFK-surf/monoid/commit/a205e3a341774588b5e85a97ede6bbff6d4e36c1) fix(sf-ui): keep file card trailing buttons clicka | 2.65 | 3.57 | 14.57 | 36.81 | 56.1 | 32.28 | 65.43 | 97.54 | 121.1 |
 | [7ce56223e](https://github.com/AFK-surf/monoid/commit/7ce56223e96dfb7b96dc96ce8793adab177e3571) fix(mbui): close tree ui::field focus parity gaps  | 2.65 | 3.57 | 14.56 | 36.81 | 56.1 | 32.28 | 65.43 | 97.44 | 112.7 |
 | [7e332f4cb](https://github.com/AFK-surf/monoid/commit/7e332f4cb0e38b530ba3b1792fb908b2f7cf9baa) fix(mbui): keep a tree field's asked focus while i | 2.65 | 3.57 | 14.56 | 36.81 | 56.1 | 32.28 | 65.42 | 97.52 | 127.45 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a1159d02f](https://github.com/AFK-surf/monoid/commit/a1159d02fe8a0d89eb6b1cea188d9181b9643eee) refactor(station): type cross-slice asks as LiveBu | 2.64 | 3.55 | 14.52 | 36.73 | 55.89 | 32.21 | 65.25 | 97.54 | 125.05 |
 | [a0d09c1b9](https://github.com/AFK-surf/monoid/commit/a0d09c1b9c81b30482ccce2321403095672b0988) fix(mbui): let go of an old view's focus while its | 2.64 | 3.55 | 14.52 | 36.73 | 55.89 | 32.22 | 65.25 | 97.67 | 117.03 |
 | [d88c8b63f](https://github.com/AFK-surf/monoid/commit/d88c8b63f7f61c50c79526f6a17b33b8cfd869a0) refactor(station-mb): deduplicate shared JS/JSON a | 2.64 | 3.55 | 14.51 | 36.73 | 55.89 | 32.22 | 65.25 | 97.67 | 119.2 |
-| [0dd687991](https://github.com/AFK-surf/monoid/commit/0dd68799112a53d8e8a1660e1ed4b6e16ca6717a) refactor(mbui): move Zoom to mbui/motion and Media | 2.64 | 3.55 | 14.51 | 36.73 | 55.89 | 32.22 | 65.25 | 97.34 | 119.5 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bc9485830](https://github.com/AFK-surf/monoid/commit/bc94858304607d88c8cb1819961bedae3c442597) fix(mbui): keep a list's anchor through mid-fill a | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.3 |
 | [a205e3a34](https://github.com/AFK-surf/monoid/commit/a205e3a341774588b5e85a97ede6bbff6d4e36c1) fix(sf-ui): keep file card trailing buttons clicka | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.23 |
 | [7ce56223e](https://github.com/AFK-surf/monoid/commit/7ce56223e96dfb7b96dc96ce8793adab177e3571) fix(mbui): close tree ui::field focus parity gaps  | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.23 |
 | [7e332f4cb](https://github.com/AFK-surf/monoid/commit/7e332f4cb0e38b530ba3b1792fb908b2f7cf9baa) fix(mbui): keep a tree field's asked focus while i | 0.45 | 0.59 | 2.27 | 3.36 | 5.45 | 1.67 | 4.5 | 54.13 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a1159d02f](https://github.com/AFK-surf/monoid/commit/a1159d02fe8a0d89eb6b1cea188d9181b9643eee) refactor(station): type cross-slice asks as LiveBu | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 53.89 |
 | [a0d09c1b9](https://github.com/AFK-surf/monoid/commit/a0d09c1b9c81b30482ccce2321403095672b0988) fix(mbui): let go of an old view's focus while its | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 53.89 |
 | [d88c8b63f](https://github.com/AFK-surf/monoid/commit/d88c8b63f7f61c50c79526f6a17b33b8cfd869a0) refactor(station-mb): deduplicate shared JS/JSON a | 0.45 | 0.59 | 2.27 | 3.35 | 5.43 | 1.66 | 4.46 | 53.68 |
-| [0dd687991](https://github.com/AFK-surf/monoid/commit/0dd68799112a53d8e8a1660e1ed4b6e16ca6717a) refactor(mbui): move Zoom to mbui/motion and Media | 0.45 | 0.59 | 2.27 | 3.35 | 5.43 | 1.66 | 4.46 | 53.68 |
