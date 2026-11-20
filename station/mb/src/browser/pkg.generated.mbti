@@ -269,7 +269,7 @@ pub fn utf8(String) -> Bytes
 
 pub fn viewport_of(@jsjson.JValue?) -> (Double, Double)?
 
-pub async fn[X] within(Clock, Double, async () -> X, String) -> X
+pub async fn[X] within(Clock, Double, async () -> X, String, late? : (X) -> Unit) -> X
 
 // Errors
 pub(all) suberror FsError {

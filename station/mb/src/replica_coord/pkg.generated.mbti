@@ -237,6 +237,8 @@ pub async fn peer_read(World, String, String, String, String?, String) -> Body
 
 pub let previous_limit_ms : Double
 
+pub fn process_runner(() -> ExportProcess raise, () -> Double) -> Runner
+
 pub fn program_runner(Fs, String, String, String, String, () -> Double) -> Runner
 
 pub let quiet_unreached_ms : Double
@@ -430,6 +432,18 @@ pub async fn CopiesPart::start(Self) -> Unit
 pub struct Driver {
   station : String
   session : String
+}
+
+pub(all) struct ExportProcess {
+  write : (Bytes) -> Bool
+  end_input : () -> Unit
+  next : async () -> ExportSaid
+}
+
+pub(all) enum ExportSaid {
+  Said(Bytes)
+  Other
+  Ended(Int?, String?)
 }
 
 pub struct FolderPlace {

@@ -154,7 +154,8 @@ fn p54_screen_os_of(argv0 : String) -> @screens.Os {
 }
 
 ///|
-fn p54_screen_words() -> @screens.Words {
+/// `station_lang`: the station's own language (what is said to nobody in particular).
+fn p54_screen_words(station_lang : () -> String) -> @screens.Words {
   {
     tr: (lang, key, args) => {
       let given = match of_jv(args) {
@@ -163,7 +164,7 @@ fn p54_screen_words() -> @screens.Words {
       }
       tr(lang, key, args=given)
     },
-    station_lang: () => "zh",
+    station_lang,
   }
 }
 
@@ -237,7 +238,7 @@ async fn p54_helper_evict(host : @host.Host, dir : String) -> Unit {
 /// The screens made (services.ts `Helper`, `Grants`, `HelperFolders`, `ScreenRegistry`), each list's change told.
 fn p54_screens_start(bus : LiveBus) -> P54Screens {
   let host = bus.host
-  let io = @screens.host_io(host, p54_screen_procs(host), p54_screen_os(bus), p54_screen_words(), now=Some(() => wall_ms().to_double()))
+  let io = @screens.host_io(host, p54_screen_procs(host), p54_screen_os(bus), p54_screen_words(() => (bus.lang.val)()), now=Some(() => wall_ms().to_double()))
   let downloads = path([homedir(), "Downloads"])
   let hub = @screens.ScreenHub::new(io, drop=Some(() => if (try { Ok(@drive.stat(downloads)) } catch { e => Err(e) }) is Ok(_) { Some(downloads) } else { None }))
   let mac = platform() == "darwin"
@@ -327,7 +328,22 @@ fn p54_screens_start(bus : LiveBus) -> P54Screens {
     Some(g) => ignore(g.on_change(() => (bus.overview_changed.val)()))
     None => ()
   }
-  { bus, hub, io, helper, grants, files, views: Map([]), debugs: Map([]), next_view: 0 }
+  let views : Map[String, @screens.ScreenView] = Map([])
+  // The station stopping (services.ts's release of the hub, `hub.close`): every view ends, said so; the agents' views
+  // too (tools/computer.ts `whenStopping` → `closeAll`), which are this slice's.
+  ignore(hub.when_stopping(() => {
+    for _, view in views.copy() {
+      (view.close)()
+    }
+    views.clear()
+  }))
+  fork_bg(host, "screens stopping", async fn() {
+    ignore(bus.stopped.wait()) catch {
+      _ => ()
+    }
+    hub.close()
+  })
+  { bus, hub, io, helper, grants, files, views, debugs: Map([]), next_view: 0 }
 }
 
 ///|
@@ -437,7 +453,7 @@ async fn P54Screens::ask(self : P54Screens, op : String, a : Json) -> Json? {
               )
             _ => None
           }
-          match @screens.access_shown(p54_screen_words(), access, s(1)) {
+          match @screens.access_shown(p54_screen_words(() => (self.bus.lang.val)()), access, s(1)) {
             Some(shown) => of_jv(shown.to_j())
             None => Json::null()
           }
@@ -470,6 +486,8 @@ async fn P54Screens::ask(self : P54Screens, op : String, a : Json) -> Json? {
           hub.refresh()
           Json::null()
         }
+        // (the agents' views end as the station stops: closed by the hook the hub was given as it was made, the views
+        // being this slice's, so the tools' callback is not needed)
         "whenStopping" => Json::null()
         "takeControl" => Json::number(hub.take_control(s(0), by=opt_str(call_arg(a, 1))).to_double())
         "endView" => {

@@ -269,9 +269,22 @@ async fn workspace_for(k : Keeper, target : String, workspace : String?, outside
 }
 
 ///|
+/// The relay `conn`'s chosen path goes through now (relays.ts `goesThrough`'s `paths().find(selected).relay`), None
+/// where it goes direct or says no paths.
+pub fn chosen_relay(conn : @door.Connection) -> String? {
+  guard conn.paths is Some(paths) else { return None }
+  match paths().iter().find_first(p => p.selected) {
+    Some(p) => p.relay
+    None => None
+  }
+}
+
+///|
 /// Where the stations are dialed (relays.ts `stationAddr`, peer-relays.ts): a connection to `target` asked in a
 /// workspace, offering `stillfail/station/2` then `/1`, given up once `given_up` is done; `hold` sets its relays turned
-/// off before it is dialed (None: the endpoint holds none, a kept connection through one is closed by `goes_off`).
+/// off before it is dialed; `goes_off` says a kept connection goes through one, to be closed (and dialed anew), where
+/// the endpoint does not hold them (None, or false while it does: peer.ts `holds()`, which an endpoint from before,
+/// with no such operation, turns false only once it is asked).
 pub(all) struct Dialing {
   connect : async (String, String?, @effect.Deferred[Unit]) -> @door.Connection
   hold : (async (String) -> Unit)?
@@ -349,11 +362,7 @@ pub fn peer_call(
 ) -> StationCall {
   let connections : Map[String, @door.Connection] = Map([])
   let asked_in : Map[String, String?] = Map([])
-  let holds = dialing.hold is Some(_)
   let sweep = () => {
-    if holds {
-      return
-    }
     guard dialing.goes_off is Some(goes) else { return }
     for target, conn in connections.copy() {
       if (conn.is_closed)() || !goes(conn, target, asked_in.get(target).unwrap_or(None)) {
@@ -420,7 +429,7 @@ pub fn peer_call(
     match connections.get(target) {
       Some(open) if !(open.is_closed)() => {
         let off = match dialing.goes_off {
-          Some(goes) if !holds => goes(open, target, ws)
+          Some(goes) => goes(open, target, ws)
           _ => false
         }
         if !off {

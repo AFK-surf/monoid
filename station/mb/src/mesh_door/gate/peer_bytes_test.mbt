@@ -133,3 +133,51 @@ test "a peer's connection lost as a stream is awaited: serve_peer fails with it,
   assert_eq(said, ["failed: connection lost"])
   assert_eq(defects, [])
 }
+
+///|
+test "a kept connection whose relay is turned off is closed and dialed anew, though the endpoint is given the relays to hold" {
+  let rt = @effect.Runtime::new()
+  let (a1, b1) = @door.pair("a", "b", alpn=@gate.peer_bytes_alpn)
+  let (a2, b2) = @door.pair("a", "b", alpn=@gate.peer_bytes_alpn)
+  answers_at_once(rt, b1)
+  answers_at_once(rt, b2)
+  let dialed = [a1, a2]
+  let held = []
+  let off = Ref(false)
+  let dialing : @gate.Dialing = {
+    connect: async fn(_t, _ws, _given_up) { dialed.remove(0) },
+    hold: Some(async fn(t) { held.push(t) }),
+    // (the endpoint said it holds none: what goes through a relay turned off is said so here)
+    goes_off: Some((_conn, _t, _ws) => off.val),
+    relays_changed: None,
+  }
+  let station = @gate.peer_call(bytes_keeper(), dialing, rt)
+  let said = []
+  ignore(
+    rt.fork(() => {
+      said.push((station.call)("b", None, { "method": "x" }, None).0.stringify())
+      said.push((station.call)("b", None, { "method": "x" }, None).0.stringify())
+      off.val = true
+      said.push((station.call)("b", None, { "method": "x" }, None).0.stringify())
+    } catch { e => said.push("failed: " + @gate.words_of(e)) }),
+  )
+  rt.advance(10)
+  assert_eq(said, ["{\"ok\":true}", "{\"ok\":true}", "{\"ok\":true}"])
+  // (the first kept while its relay was on, then let go and the second dialed)
+  assert_true((a1.is_closed)())
+  assert_false((a2.is_closed)())
+  assert_eq(dialed.length(), 0)
+  assert_true(held.length() >= 2)
+}
+
+///|
+test "the relay a connection's chosen path goes through" {
+  let (a, _) = @door.pair("a", "b", alpn=@gate.peer_bytes_alpn)
+  let path = (selected : Bool, relay : String?) => @door.Path::{ selected, relay, ip: None, rtt_ms: None, tx_packets: 0.0, lost_packets: 0.0 }
+  assert_eq(@gate.chosen_relay({ ..a, paths: None }), None)
+  assert_eq(@gate.chosen_relay({ ..a, paths: Some(() => [path(false, Some("https://r1/")), path(true, None)]) }), None)
+  assert_eq(
+    @gate.chosen_relay({ ..a, paths: Some(() => [path(false, None), path(true, Some("https://r1/"))]) }),
+    Some("https://r1/"),
+  )
+}

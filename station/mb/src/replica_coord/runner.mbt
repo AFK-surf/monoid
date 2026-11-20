@@ -160,3 +160,149 @@ pub fn tell(t : Told, change : J) -> Bool {
     _ => false
   }
 }
+
+///|
+/// What an export in a process of its own says next (`--builder replica-export`): a piece of its stdout, something
+/// else (its stderr), or its end, its code and signal.
+pub(all) enum ExportSaid {
+  Said(Bytes)
+  Other
+  Ended(Int?, String?)
+}
+
+///|
+/// An export's process as the runner asks it: a line written to its stdin (false where it takes no more), its stdin
+/// closed, what it says next.
+pub(all) struct ExportProcess {
+  write : (Bytes) -> Bool
+  end_input : () -> Unit
+  next : async () -> ExportSaid
+}
+
+///|
+priv struct Running {
+  p : ExportProcess
+  /// What it said past its last whole line.
+  pending : @buffer.Buffer
+  mut ended : Bool
+}
+
+///|
+/// The export in a process of its own (replica/runner.ts `exportThread`), `start`ed as it is first asked and again at
+/// the next ask after one that ended, told the workspaces again. Asked a step at a time on its stdin, `{id, type, now,
+/// …}`, answered `{id, answer}` or `{id, error}` a line each, one ask at a time. What it says is read only by whoever
+/// holds the turn (`one`), its end too: `close` tells it to end and waits its turn for that end, so an ask reading it
+/// meanwhile is answered by the end and the end is never taken from under the close (its process left running).
+pub fn process_runner(start : () -> ExportProcess raise, now : () -> Double) -> Runner {
+  let proc : Ref[Running?] = Ref(None)
+  let places : Ref[J?] = Ref(None)
+  let closed = Ref(false)
+  let next = Ref(0)
+  let one = @effect.Semaphore::new(1)
+  let gone = (r : Running) => if proc.val is Some(x) && physical_equal(x, r) { proc.val = None }
+  let line_of = async fn(r : Running) -> String {
+    while true {
+      let had = r.pending.to_bytes()
+      let mut nl : Int? = None
+      for i = 0; i < had.length(); i = i + 1 {
+        if had[i] == b'\n' {
+          nl = Some(i)
+          break
+        }
+      }
+      if nl is Some(i) {
+        let line = @utf8.decode_lossy(had[0:i].to_owned())
+        let rest = had[i + 1:].to_owned()
+        r.pending.reset()
+        r.pending.write_bytes(rest)
+        return line
+      }
+      if r.ended {
+        raise failed("the copies' export ended")
+      }
+      match (r.p.next)() {
+        Said(b) => r.pending.write_bytes(b)
+        Other => ()
+        Ended(code, signal) => {
+          r.ended = true
+          gone(r)
+          r.pending.reset()
+          let c = match code {
+            Some(c) => c.to_string()
+            None => "null"
+          }
+          raise failed("the copies' export ended (\{c}, \{signal.unwrap_or("null")})")
+        }
+      }
+    }
+    ""
+  }
+  let ask_now = async fn(r : Running, kind : String, fields : Array[(String, J)]) -> J {
+    next.val += 1
+    let id = next.val
+    let asked_fields = [("id", ji(id)), ("type", js(kind)), ("now", jn(now()))]
+    asked_fields.append(fields)
+    let asked = jo(asked_fields)
+    if !(r.p.write)(@utf8.encode(stringify(asked) + "\n")) {
+      gone(r)
+      raise failed("the copies' export took nothing more")
+    }
+    while true {
+      let line = line_of(r)
+      guard (try Some(parse(line)) catch { _ => None }) is Some(said) else { continue }
+      if at(said, "failed") is Some(Str(why)) {
+        gone(r)
+        raise failed("the copies' thread failed: \{@jsjson.sanitize_str(why)}")
+      }
+      guard at(said, "id") is Some(Num(n)) && n == id.to_double() else { continue }
+      match at(said, "error") {
+        Some(Str(e)) => raise failed(@jsjson.sanitize_str(e))
+        _ => return at(said, "answer").unwrap_or(Null)
+      }
+    }
+    Null
+  }
+  let started = async fn() -> Running {
+    if closed.val {
+      raise failed("the copies' thread is closed")
+    }
+    match proc.val {
+      Some(r) => r
+      None => {
+        let r : Running = { p: start(), pending: @buffer.new(), ended: false }
+        proc.val = Some(r)
+        if places.val is Some(pl) {
+          ignore(ask_now(r, "places", [("places", pl)]))
+        }
+        r
+      }
+    }
+  }
+  let ask = async fn(kind : String, fields : Array[(String, J)]) -> J {
+    one.with_permit(async fn() { ask_now(started(), kind, fields) })
+  }
+  {
+    places: async fn(p) {
+      places.val = Some(p)
+      ignore(ask("places", [("places", p)]))
+    },
+    pass: async fn(told) { ask("pass", [("told", told)]) },
+    new_generations: async fn(after) { ignore(ask("newGenerations", [("after", jn(after))])) },
+    sources: async fn(hashes) { ask("sources", [("hashes", jstrs(hashes))]) },
+    close: async fn() {
+      closed.val = true
+      guard proc.val is Some(r) else { return }
+      proc.val = None
+      ignore((r.p.write)(@utf8.encode("{\"id\":0,\"type\":\"close\"}\n")))
+      (r.p.end_input)()
+      // (its end waited for in turn: an ask reading it now is answered by that end, then it is here)
+      one.with_permit(async fn() {
+        while !r.ended {
+          if (r.p.next)() is Ended(_, _) {
+            r.ended = true
+          }
+        }
+      })
+    },
+  }
+}

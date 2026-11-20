@@ -252,17 +252,25 @@ async fn shell_endpoint(host : @host.Host, options : Json, key : Bytes) -> Endpo
     },
     connect: async fn(addr, alpn, given_up) {
       let call = Ref(0L)
-      match given_up {
+      // (the dial called off once it is given up; its watch let go as the dial ends either way, not kept for good)
+      let watch = match given_up {
         Some(g) =>
-          fork_bg(host, "dial given up", async fn() {
-            g.wait()
-            if call.val != 0L {
-              ignore(host.shell_sync("fetch.cancel", { "id": Json::number(call.val.to_double()) })) catch {
-                _ => ()
+          Some(
+            host.rt.fork_quiet(name="dial given up", async fn() {
+              g.wait()
+              if call.val != 0L {
+                ignore(host.shell_sync("fetch.cancel", { "id": Json::number(call.val.to_double()) })) catch {
+                  _ => ()
+                }
               }
-            }
-          })
-        None => ()
+            }),
+          )
+        None => None
+      }
+      defer {
+        if watch is Some(w) {
+          w.interrupt()
+        }
       }
       let (made, _) = host.shell("iroh.connect", { "id": eid, "addr": addr }, bytes=alpn, called=c => call.val = c)
       guard made is { "id": cid, .. } else { raise BusError("no connection") }
@@ -986,15 +994,23 @@ async fn P51::mesh_run(self : P51, m : MeshLive, rig : Bool) -> Unit {
       }
     None => peer_addr(plane, target, ws)
   }
+  // The relays each station is not reached through, held by the endpoint (peer-relays.ts) while it can: one from before,
+  // with no such operation, holds none (`holds` false once it says so), and a kept connection whose chosen path goes
+  // through a relay turned off is closed instead (relays.ts `goesThrough`), as it is dialed again or the ways change.
+  let holds = Ref(true)
   let dialing : @gate.Dialing = {
     connect: async fn(target, ws, given_up) {
       (endpoint.connect)(scoped(target, ws), @utf8.encode(@gate.peer_bytes_alpn), Some(given_up)) |> with_alpn
     },
     hold: Some(async fn(target) {
+      guard holds.val else { return }
       let addr = @cloud_net.station_addr(plane.ways, target)
-      (endpoint.disabled_relays)(target, addr.disabled_relays, @cloud_net.ours_off(plane.ways))
+      (endpoint.disabled_relays)(target, addr.disabled_relays, @cloud_net.ours_off(plane.ways)) catch {
+        e => if @cloud_net.unsupported("\{e}") { holds.val = false } else { raise e }
+      }
     }),
-    goes_off: None,
+    goes_off: Some((conn, target, ws) => !holds.val &&
+      @cloud_net.goes_through(@gate.chosen_relay(conn), Some(@cloud_net.station_addr(plane.ways, target, workspace?=ws).disabled_relays))),
     relays_changed: Some(f => plane.ways.listen(_ => f())),
   }
   let call = @gate.peer_call(keeper, dialing, host.rt, outside=(target, ws) => (bus.outside_reaches.val)(target, Some(ws)))
@@ -1302,15 +1318,12 @@ async fn P51::member_admin(self : P51, ask : @gate.AdminAsk) -> @door.Answer {
   )
   let answer = self.admin_answer(a, req)
   let headers = answer.headers.to_array()
+  // (a device gone before a stream's end: the request's signal aborted, so what reads for it stops, and a streamed
+  // body's own stop after it)
+  let stop = answer.body.stop_with(signal, f => ignore(self.host.rt.fork_quiet(name="stream stop", async fn() { f() catch { _ => () } })))
   match answer.body {
     Whole(b) => { status: answer.status, headers, body: Whole(b) }
-    Stream(next) => { status: answer.status, headers, body: Coming({ next, stop: () => () }) }
-    Streamed(next, stop) =>
-      {
-        status: answer.status,
-        headers,
-        body: Coming({ next, stop: () => ignore(self.host.rt.fork_quiet(name="stream stop", async fn() { stop() catch { _ => () } })) }),
-      }
+    Stream(next) | Streamed(next, _) => { status: answer.status, headers, body: Coming({ next, stop }) }
   }
 }
 

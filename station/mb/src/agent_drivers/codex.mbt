@@ -10,8 +10,11 @@
 let codex_scrubbed : Array[String] = ["OPENAI_API_KEY", "CODEX_HOME"]
 
 ///|
-/// The CA file Codex is pointed at.
-let ca_bundle = "/etc/ssl/cert.pem"
+/// The CA files Codex may be pointed at, the first there taken: Debian's, Ubuntu's and Alpine's, then Fedora's and
+/// RHEL's, then macOS's and the BSDs' (the TypeScript's one, which a Linux machine often lacks).
+pub fn ca_bundles() -> Array[String] {
+  ["/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt", "/etc/ssl/cert.pem"]
+}
 
 ///|
 /// What the station before ran on a host handed over, in its `turn_from` while its sessions are taken up.
@@ -259,7 +262,8 @@ pub(all) struct CodexWorld {
   /// where the user's own skills are walked for their SKILL.md files (`hostSkillsOff`'s walk)
   walk_skills : (String) -> Later[Array[String]]
   host_skills : String
-  ca_bundle : String
+  /// the CA files Codex may be pointed at, in order (`ca_bundles`)
+  ca_bundles : Array[String]
   /// a session's own Fast, its speed ("ultrafast", "fast", "standard"), a profile as the config says it now
   fast : ((String) -> Bool?)?
   speed : ((String) -> String?)?
@@ -957,12 +961,22 @@ pub fn CodexDriver::host_args(self : CodexDriver, profile : JValue) -> Array[Str
 }
 
 ///|
-/// Points Codex at a CA file where none of its own is set and the file is there (`withCaBundle`).
-pub fn with_ca_bundle(m : Machine, env : Env, bundle : String) -> Later[Unit] {
+/// Points Codex at a CA file where none of its own is set: the first of `bundles` there (`withCaBundle`).
+pub fn with_ca_bundle(m : Machine, env : Env, bundles : Array[String]) -> Later[Unit] {
   if ["SSL_CERT_FILE", "SSL_CERT_DIR", "CODEX_CA_CERTIFICATE"].iter().any(k => env.has(k)) {
     return done(m.lp)
   }
-  m.there(bundle).map(yes => if yes { env.set("SSL_CERT_FILE", bundle) })
+  first_there(m.lp, m.there, bundles).map(found => if found is Some(bundle) { env.set("SSL_CERT_FILE", bundle) })
+}
+
+///|
+/// The first of `paths` there, each looked at only once the one before is not.
+fn first_there(lp : Loop, there : (String) -> Later[Bool], paths : Array[String]) -> Later[String?] {
+  fn from(i : Int) -> Later[String?] {
+    guard i < paths.length() else { return Later::ok(lp, None) }
+    there(paths[i]).bind(yes => if yes { Later::ok(lp, Some(paths[i])) } else { from(i + 1) })
+  }
+  from(0)
 }
 
 ///|
@@ -995,7 +1009,7 @@ pub fn CodexDriver::start_host(
   .bind(until => {
     let env = self.child_env(profile)
     env.set("CODEX_HOME", home)
-    with_ca_bundle(self.m, env, self.world.ca_bundle).bind(_ => {
+    with_ca_bundle(self.m, env, self.world.ca_bundles).bind(_ => {
       let host = Host::new(self.m, profile_id(profile), self.host_signature(profile), 1.0, false, key)
       host.lent_until = until
       (self.procs.start)(

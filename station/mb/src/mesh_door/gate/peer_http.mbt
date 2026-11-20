@@ -251,7 +251,7 @@ async fn PeerHttp::stream(self : PeerHttp, id : String, given : String, workspac
     }
     let conn = made.wait()
     let off = match self.dialing.goes_off {
-      Some(goes) if self.dialing.hold is None => attempt == 0 && !(conn.is_closed)() && goes(conn, id, Some(workspace))
+      Some(goes) => attempt == 0 && !(conn.is_closed)() && goes(conn, id, Some(workspace))
       _ => false
     }
     if off {

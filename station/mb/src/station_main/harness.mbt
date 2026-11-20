@@ -240,7 +240,7 @@ pub async fn harness(host : @host.Host) -> Unit {
       // `launch` {program, args} given its socket and token, as `p54_helper_launch` launches it)
       "helperRequest" => {
         let launcher = strs("launch")
-        let io = @screens.host_io(host, p54_screen_procs(host), p54_screen_os_of(s("program")), p54_screen_words())
+        let io = @screens.host_io(host, p54_screen_procs(host), p54_screen_os_of(s("program")), p54_screen_words(() => "zh"))
         let opened = async fn(_app : String, env : Array[(String, String)]) {
           ignore(spawn(host, launcher[0], launcher[1:].to_array(), env=env_all() + env, group=true)) catch {
             SysError(why) => raise Failure(why)

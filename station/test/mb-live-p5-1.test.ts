@@ -521,6 +521,44 @@ test("on the mesh: a member let in by its credential asks the admin API; two sta
   assert.equal(await b.ended, 0, b.err());
 });
 
+test("a rig on the mesh: another station's tunnel to a device goes through the rig's grants", { skip: skip || (addon === null ? "the mesh addon is not built here (scripts/native.ts run mesh)" : false) }, async () => {
+  // (a station of the workspace's, by real iroh, its key the test's)
+  const station = await addon!.bind({ secretKey: randomBytes(32), alpns: [Buffer.from("client/1")], relayUrls: [], discovery: false, bindAddr: "127.0.0.1:0" });
+  after(() => station.close());
+  const data = fresh("rigmesh");
+  const app = fresh("app");
+  writeFileSync(join(app, "BUILD"), "9503\n");
+  const id = stationId(data);
+  const port = await freeUdpPort();
+  const peers = [{ id: station.id(), name: "alpha", ips: [] }, { id, name: "rig", ips: [`127.0.0.1:${port}`] }];
+  const plane = await controlPlane(peers);
+  mkdirSync(join(data, "mesh"), { recursive: true });
+  writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify({
+    origin: plane.origin, station: id, workspace: "w1", workspace_name: "团队", name: "rig", relay_url: "", relay_urls: [], grant_keys: {}, peers, revocations: [],
+    rig: { owner: "u1", owner_email: "a@b.c", owner_name: "A", person: "ab".repeat(32) },
+  }));
+  const r = await launch(data, app, { STILLFAIL_LOCAL_ADMIN: "1", STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${port}` });
+  await r.next("ready", (m) => m.ready === true);
+  await given("presence.json online", () => readJson(join(data, "run", "presence.json"))?.online === true);
+  // a device the rig has none of: refused by its grants (`Rig::device`), not by a whole station's devices
+  const conn = await given("connected to the rig", () => station.connect({ id, ips: [`127.0.0.1:${port}`] }, Buffer.from("stillfail/http/1")));
+  const asked = async (probe: boolean) => {
+    const stream = await conn.openBi();
+    await line(stream, { workspace: "w1", session: "s1", device: "0123456789abcdef", tcp: true, probe });
+    await stream.finish();
+    const reader = new Reader(stream);
+    const head = await reader.line();
+    return { status: head.status, body: (await reader.rest()).toString() };
+  };
+  for (const probe of [true, false]) {
+    const said = await asked(probe);
+    assert.equal(said.status, 404, JSON.stringify(said));
+    assert.equal(said.body, "that machine refused: no such device on this rig");
+  }
+  r.tell({ op: "stop" });
+  assert.equal(await r.ended, 0, r.err());
+});
+
 test("a part's route matched as the admin API matches it: a pattern's groups, Express's segments by name", { skip }, async () => {
   const child = spawn(harnessProgram!, ["--builder", "harness-station-main", "--shell-dir", fresh("shell")], { stdio: ["pipe", "pipe", "inherit"], env: noNode() });
   children.push(child);
