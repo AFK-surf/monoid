@@ -17,6 +17,8 @@ on:
       - "libs/mbui/src/host/win.h"
       - "libs/mbui/src/host/log_files.h"
       - "libs/mbui/scripts/win_logs_test.c"
+      - "libs/mbui/scripts/win_stack_test.c"
+      - "libs/mbui/scripts/win_a11y_test.cpp"
       - "libs/mbui/scripts/win_keys_test.c"
       - "libs/mbui/scripts/win_clip_test.c"
       - "libs/mbui/scripts/win_sound_test.c"
@@ -103,6 +105,16 @@ jobs:
           grep -q 'crt line password=hunter2' out/logs/stderr.txt
           grep -q 'handle line https://a.example/p?token=hunter3' out/logs/stderr.txt
           grep -q 'after the stall' out/logs/stderr.txt
+      - name: "Hang stack sampling: unwinds a spinning thread without deadlock and survives log redaction (src/host/win_stack.h)"
+        run: |
+          mkdir -p out/stack
+          cl.exe -nologo -O2 -W4 -WX -Isrc/host scripts/win_stack_test.c -Foout/stack/ -Feout/stack/win_stack_test.exe
+          out/stack/win_stack_test.exe
+      - name: "UI Automation updates defer notifications out of draw_frame and survive COM re-entrancy (src/host/win_a11y.cpp)"
+        run: |
+          mkdir -p out/a11y
+          cl.exe -nologo -EHsc -W4 -WX -Isrc/host scripts/win_a11y_test.cpp -Foout/a11y/ -Feout/a11y/win_a11y_test.exe -link user32.lib oleaut32.lib uiautomationcore.lib runtimeobject.lib
+          out/a11y/win_a11y_test.exe
 
   kitdemo:
     runs-on: windows-latest
