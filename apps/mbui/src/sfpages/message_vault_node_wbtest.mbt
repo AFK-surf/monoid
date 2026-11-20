@@ -611,3 +611,24 @@ test "a vault item's request for a time asked, made once as nodes: how long acro
     }
   }
 }
+
+///|
+test "a vault item's request on a chat card when this device has no key: 前往授权 opens Vault without approving, 拒绝 calls vault.deny" {
+  let calls : Array[(String, Json)] = []
+  let t = card_new(760.0, vault_src(None, calls~), fn() { vault_card_post(vault_use(more={ "answer": "noKey" })) })
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(Button, label="允许") is None)
+  assert_true(t.query(Button, label="本对话内") is None)
+  t.click(Button, label="前往授权")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(calls.length(), 0)
+  assert_true(app.nav.top() == Setting(@settings.Route::Vault))
+  card_audit(t, "noKey authorize", 0)
+  let calls : Array[(String, Json)] = []
+  let t = card_new(390.0, vault_src(None, calls~), fn() { vault_card_post(vault_use(more={ "answer": "noKey" })) })
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="拒绝")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(calls.map(fn(c) { c.0 + " " + c.1.stringify() }), ["vault.deny {\"workspace\":\"ws1\",\"request\":\"r1\"}"])
+  card_audit(t, "noKey deny", 0)
+}

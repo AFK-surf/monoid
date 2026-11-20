@@ -326,7 +326,7 @@ pub fn vault_card(
   @sf.card(c, fill=ask.picks_file(), fn() {
     vault_asked(c, ask)
     answered_in_place(c, "vault/" + request, ended.map(fn(e) { (e.0 == "granted", vault_outcome_words(ask, e.0, e.1)) }), fn() {
-      vault_foot(c, core, ws, request, answer, ask.writes(), typed=ask.typed_in(), timeout_kind=ask.timeout_kind, timeout_seconds=ask.timeout_seconds, foot=answer is (Approve(_) | SetUp), describe=ask.describe, remove=ask.remove)
+      vault_foot(c, core, ws, request, answer, ask.writes(), typed=ask.typed_in(), timeout_kind=ask.timeout_kind, timeout_seconds=ask.timeout_seconds, foot=answer is (Approve(_) | SetUp | NoKey), describe=ask.describe, remove=ask.remove)
     })
   })
   |> ignore
@@ -611,7 +611,10 @@ pub fn vault_foot(
     }
     NoKey => {
       note(tr("web-pages.vault.approve.noKey"))
-      return
+      if !foot {
+        return
+      }
+      ""
     }
     Decided => {
       note(tr("android-settings.vault.approve.decided"))
@@ -625,7 +628,7 @@ pub fn vault_foot(
     Approve(l) => l
   }
   let pending = vault_pending.get(request)
-  let timed = !save && timeout_seconds > 0
+  let timed = !save && answer is Approve(_) && timeout_seconds > 0
   let scopes = if save { ["once"] } else if timed { if lasts == "once" { ["once"] } else { ["once", "idle", "fixed"] } } else { vault_scopes_up_to(lasts) }
   let scope = match vault_picked.get(request) {
     Some(s) if scopes.contains(s) => s
@@ -739,7 +742,7 @@ pub fn vault_foot(
   // its buttons, last in the card's foot corners; how long beside them where the line has the room for it, else on a
   // line of its own over them (never under: the buttons keep the foot), its ends where theirs are: the foot's flow,
   // its later line over its first (flow_reverse), laid out in the pass that lays out the card, nothing read back.
-  let picks = !save && scopes.length() > 1
+  let picks = !save && answer is Approve(_) && scopes.length() > 1
   let pick = fn() {
     if picks && timed {
       let words = if scope == "once" { tr("android-settings.vault.scope.once") } else {
@@ -766,6 +769,11 @@ pub fn vault_foot(
       if answer is SetUp {
         // kept only in a vault that is on here: the way to turn it on first
         @sf.button(c, tr("android-settings.vault.turnOn"), key="vault/" + request + "/on", tone=Primary, on_press=fn() {
+          (core.push)(Route::Vault)
+        })
+      } else if answer is NoKey {
+        // this device does not hold a key to this vault yet: open Vault to request access or recover
+        @sf.button(c, tr("web-pages.vault.approve.authorize"), key="vault/" + request + "/auth", tone=Primary, on_press=fn() {
           (core.push)(Route::Vault)
         })
       } else {

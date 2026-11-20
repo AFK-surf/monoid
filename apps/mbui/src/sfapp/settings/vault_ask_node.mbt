@@ -66,7 +66,7 @@ pub fn vault_foot_node(
       _ => ""
     }
   }
-  let timed = fn() { !save() && timeout().1 > 0 }
+  let timed = fn() { !save() && answer() is Some(Approve(_)) && timeout().1 > 0 }
   let scopes = fn() {
     if save() {
       ["once"]
@@ -326,7 +326,7 @@ pub fn vault_foot_node(
   // its buttons, last in the card's foot corners; how long beside them where the foot has the room for it, else on a
   // line of its own over them (never under: the buttons keep the foot), its ends where theirs are; beside them on a
   // card, how long chosen in 授权时限 across from them, in the foot's end corner as they are in its start corner
-  let picks = fn() { !save() && scopes().length() > 1 }
+  let picks = fn() { !save() && answer() is Some(Approve(_)) && scopes().length() > 1 }
   let choice = fn(at : @view.View) {
     at.pick(timed, fn(p, by_panel) {
       if by_panel {
@@ -361,10 +361,14 @@ pub fn vault_foot_node(
   // its buttons: `grouped`, one part of the foot's row (across from how long, beside them); else each a part of the
   // foot's own row, as an ask's are (@sf.ask_buttons_node): where they have not the room on one line, the one after goes
   // on to a line over the first, the first kept in the foot's start corner
-  let primary = fn(p : @view.View, set_up : Bool) {
-    if set_up {
+  let primary = fn(p : @view.View, kind : Int) {
+    if kind == 1 {
       // (kept only in a vault that is on here: the way to turn it on first)
       @sf.button_node(p, fn() { tr("android-settings.vault.turnOn") }, fn() { (core.push)(Route::Vault) }, tone=Primary, card_words=foot)
+      |> ignore
+    } else if kind == 2 {
+      // (this device does not hold a key to this vault yet: open Vault to request access or recover)
+      @sf.button_node(p, fn() { tr("web-pages.vault.approve.authorize") }, fn() { (core.push)(Route::Vault) }, tone=Primary, card_words=foot)
       |> ignore
     } else {
       @sf.button_node(
@@ -402,15 +406,24 @@ pub fn vault_foot_node(
     |> ignore
   }
   let acts = fn(at : @view.View, grouped : Bool) {
-    at.pick(fn() { answer() is Some(SetUp) }, fn(p, set_up) {
-      if grouped {
-        @sf.style_node(p, fn() { @sf.ask_foot })
-      }
-      primary(p, set_up)
-      if grouped {
-        deny(p)
-      }
-    })
+    at.pick(
+      fn() {
+        match answer() {
+          Some(SetUp) => 1
+          Some(NoKey) => 2
+          _ => 0
+        }
+      },
+      fn(p, kind) {
+        if grouped {
+          @sf.style_node(p, fn() { @sf.ask_foot })
+        }
+        primary(p, kind)
+        if grouped {
+          deny(p)
+        }
+      },
+    )
     if !grouped {
       deny(at)
     }
@@ -451,7 +464,7 @@ pub fn vault_foot_node(
     })
     |> ignore
   }
-  v.show(fn() { answer() is Some(Approve(_) | SetUp) }, fn(s) {
+  v.show(fn() { answer() is Some(Approve(_) | SetUp) || (foot && answer() is Some(NoKey)) }, fn(s) {
     s.width_share(Is(1.0)) |> ignore
     s.pick(picks, fn(r, two) {
       // (across what holds it: ask_room's)
