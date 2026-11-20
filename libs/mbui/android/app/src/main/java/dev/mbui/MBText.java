@@ -4,6 +4,8 @@ import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffXfermode;
 import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.icu.text.Bidi;
@@ -21,6 +23,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.concurrent.ConcurrentHashMap;
@@ -43,6 +46,9 @@ final class MBText {
         final float size;
         final int weight;
         final int style;  // 1 italic, 2 the code face
+        final boolean mayColour;
+        // All phases at a scale and face generation share the same ink bounds.
+        volatile GlyphBounds bounds;
         // drawn ahead (under `lock`), by phase (bit `sub`: glyphSub): the phases asked and not begun (`want`), being
         // drawn by a thread ahead (`drawing`), drawn and not taken (`have`, their pictures in `drawn`), being drawn
         // ahead when the app's thread already drew them itself (`skip`, recycled on completion); of those asked,
@@ -66,6 +72,20 @@ final class MBText {
             this.size = size;
             this.weight = weight;
             this.style = style;
+            this.mayColour = mayBeColour(text);
+        }
+    }
+
+    /** The phase-independent bounds. The rectangle is read-only after publication. */
+    static final class GlyphBounds {
+        final Rect rect = new Rect();
+        final float scale;
+        final int faces;
+
+        GlyphBounds(Entry e, float scale, int faces, Paint p) {
+            this.scale = scale;
+            this.faces = faces;
+            p.getTextBounds(e.text, 0, e.text.length(), rect);
         }
     }
 
@@ -75,11 +95,18 @@ final class MBText {
      */
     static final class Drawn {
         Bitmap bmp;
-        final Rect b = new Rect();
+        byte[] bytes;
+        int w, h;
         int x0, y0;
         int color;
         float scale;
         int faces;
+
+        void release() {
+            if (bmp != null) bmp.recycle();
+            bmp = null;
+            bytes = null;
+        }
     }
 
     /**
@@ -106,14 +133,23 @@ final class MBText {
     /** A glyph put in an atlas this frame (colour glyphs' or the words'), its picture to be uploaded there (flush). */
     static final class Placed {
         final Bitmap bmp;
-        final int x, y;
+        byte[] bytes;
+        final int w, h, x, y;
         final boolean colour;
 
-        Placed(Bitmap bmp, int x, int y, boolean colour) {
+        Placed(byte[] bytes, Bitmap bmp, int w, int h, int x, int y, boolean colour) {
+            this.bytes = bytes;
             this.bmp = bmp;
+            this.w = w;
+            this.h = h;
             this.x = x;
             this.y = y;
             this.colour = colour;
+        }
+
+        void release() {
+            if (bmp != null) bmp.recycle();
+            bytes = null;
         }
     }
 
@@ -128,6 +164,9 @@ final class MBText {
     static final class Clusters {
         final HashMap<String, Integer> map = new HashMap<>();
         final int[][] units = new int[256][];
+        final float[][] unitAdv = new float[256][];
+        float advScale;
+        int advFaces;
     }
 
     // each font's clusters (fontKey: its size, weight and style)
@@ -139,6 +178,8 @@ final class MBText {
     // the glyph drawn last (glyph), its picture until it is put in its atlas (glyphPut), and whether it is in colours
     static int heldKey = -1;
     static Bitmap held;
+    static byte[] heldBytes;
+    static int heldW, heldH;
     static boolean heldColour;
     // moves on as the faces change: what was drawn in them before is drawn again (read by the threads ahead too:
     // typeface)
@@ -149,12 +190,25 @@ final class MBText {
 
     /**
      * What drawing a glyph takes each time (draw), kept by each thread that draws (the app's: `mine`; each thread ahead
-     * its own): the canvas it draws with, given the glyph's bitmap and let go of it after, and the pixels it is read
-     * through for colours (isColor), grown as a glyph needs more.
+     * its own): a canvas, a small coverage bitmap, and the buffers that read coverage and colour pixels.
      */
     static final class Scratch {
+        static final int ALPHA_SIZE = 96;
         final Canvas canvas = new Canvas();
         int[] px = new int[1024];
+        Bitmap alphaBmp;
+        ByteBuffer alphaBuf;
+        int alphaStride;
+        Paint clearPaint;
+
+        void initAlpha() {
+            Bitmap bmp = Bitmap.createBitmap(ALPHA_SIZE, ALPHA_SIZE, Bitmap.Config.ALPHA_8);
+            alphaStride = bmp.getRowBytes();
+            alphaBuf = ByteBuffer.allocate(alphaStride * ALPHA_SIZE);
+            clearPaint = new Paint();
+            clearPaint.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.CLEAR));
+            alphaBmp = bmp;
+        }
     }
 
     // (the app's thread's)
@@ -446,14 +500,17 @@ final class MBText {
         char[] chars = MBText.chars;
         text.getChars(0, n, chars, 0);
         Clusters font = clusters((float) size, weight, style);
+        boolean units = unitClusters(chars, n);
         // a run at a time in its own direction (shaped left to right, Arabic came out in letters that do not join,
         // wider than the system draws the word)
-        if (Bidi.requiresBidi(chars, 0, n)) {
+        if (!units && Bidi.requiresBidi(chars, 0, n)) {
             Bidi b = new Bidi(chars, 0, null, 0, n, Bidi.DIRECTION_DEFAULT_LEFT_TO_RIGHT);
             for (int r = 0; r < b.getRunCount(); r++) {
                 int rs = b.getRunStart(r), rl = b.getRunLimit(r) - rs;
                 p.getTextRunAdvances(chars, rs, rl, rs, rl, (b.getRunLevel(r) & 1) != 0, adv, rs);
             }
+        } else if (units) {
+            measureUnits(p, font, chars, n, d);
         } else {
             p.getTextRunAdvances(chars, 0, n, 0, n, false, adv, 0);
         }
@@ -466,7 +523,6 @@ final class MBText {
         for (int i = 0; i < n; i++) adv[i] /= d;
         // (words whose every unit is a cluster of its own, as ASCII's and nearly all of Chinese, Japanese and Korean
         // are, cut a unit at a time; the rest where ICU's grapheme rules cut them)
-        boolean units = unitClusters(chars, n);
         if (!units) graphemes.setText(text);
         int cap = out.length / 4;
         int k = 0;
@@ -501,6 +557,60 @@ final class MBText {
         return k;
     }
 
+    /** Minikin's layout cache starts a new piece before each Han character. */
+    static boolean isHan(char c) {
+        return c >= 0x3400 && c <= 0x9FFF;
+    }
+
+    /** A Han piece of one unit ends at the end of the run or at the next Minikin boundary. */
+    static boolean isolatedHan(char[] text, int i, int n) {
+        if (!isHan(text[i])) return false;
+        if (i + 1 == n) return true;
+        char next = text[i + 1];
+        return isHan(next) || next == ' ' || next == 0x3000;
+    }
+
+    /**
+     * Reuse the advances of Han characters that Android shapes alone. Keep each other Minikin
+     * piece whole, including kana, Hangul, punctuation, and line feeds.
+     */
+    static void measureUnits(Paint p, Clusters font, char[] text, int n, float scale) {
+        if (font.advScale != scale || font.advFaces != faces) {
+            Arrays.fill(font.unitAdv, null);
+            font.advScale = scale;
+            font.advFaces = faces;
+        }
+        int start = 0;
+        for (int i = 0; i < n; i++) {
+            if (!isolatedHan(text, i, n)) continue;
+            char c = text[i];
+            float[] page = font.unitAdv[c >>> 8];
+            if (page == null || Float.isNaN(page[c & 255])) continue;
+            measureAndRemember(p, font, text, start, i, n);
+            adv[i] = page[c & 255];
+            start = i + 1;
+        }
+        measureAndRemember(p, font, text, start, n, n);
+    }
+
+    static void measureAndRemember(Paint p, Clusters font, char[] text, int start, int end, int n) {
+        int count = end - start;
+        if (count == 0) return;
+        p.getTextRunAdvances(text, start, count, start, count, false, adv, start);
+        for (int i = start; i < end; i++) {
+            if (!isolatedHan(text, i, n)) continue;
+            char c = text[i];
+            int index = c >>> 8;
+            float[] page = font.unitAdv[index];
+            if (page == null) {
+                page = new float[256];
+                Arrays.fill(page, Float.NaN);
+                font.unitAdv[index] = page;
+            }
+            page[c & 255] = adv[i];
+        }
+    }
+
     /**
      * Whether each of `chars[0..n)` is an extended grapheme cluster of its own, whatever is beside it, as ICU's
      * BreakIterator cuts them (shape): only where every unit is a tab, a line feed, printable ASCII, or of CJK's ranges
@@ -524,7 +634,7 @@ final class MBText {
                 return false;
             }
             if (c <= 0x3029 || (c >= 0x3041 && c <= 0x3096) || (c >= 0x30A1 && c <= 0x30FF)
-                    || (c >= 0x3400 && c <= 0x9FFF) || (c >= 0xAC00 && c <= 0xD7A3) || (c >= 0xFF01 && c <= 0xFF60)) {
+                    || isHan(c) || (c >= 0xAC00 && c <= 0xD7A3) || (c >= 0xFF01 && c <= 0xFF60)) {
                 continue;
             }
             return false;
@@ -548,7 +658,7 @@ final class MBText {
         int[] page = font.units[c >>> 8];
         if (page == null) {
             page = new int[256];
-            java.util.Arrays.fill(page, -1);
+            Arrays.fill(page, -1);
             font.units[c >>> 8] = page;
         }
         int key = page[c & 255];
@@ -619,12 +729,15 @@ final class MBText {
             int rest = SUB_ALL & ~e.subsQueued;
             if (rest != 0) aheadOne(e, rest, sc);
         }
-        if (d.bmp == null) return;
+        if (d.bytes == null && d.bmp == null) return;
         heldKey = fullKey;
         held = d.bmp;
+        heldBytes = d.bytes;
+        heldW = d.w;
+        heldH = d.h;
         heldColour = d.color != 0;
-        out[2] = d.bmp.getWidth() / sc;
-        out[3] = d.bmp.getHeight() / sc;
+        out[2] = d.w / sc;
+        out[3] = d.h / sc;
         out[4] = d.x0 / sc;
         out[5] = d.y0 / sc;
         out[6] = d.color;
@@ -636,9 +749,10 @@ final class MBText {
      */
     static void glyphPut(int key, int x, int y) {
         boolean colour = x >= COLOUR_U;
-        if (key != heldKey || held == null || colour != heldColour) return;
-        placed.add(new Placed(held, colour ? x - COLOUR_U : x, y, colour));
+        if (key != heldKey || (heldBytes == null && held == null) || colour != heldColour) return;
+        placed.add(new Placed(heldBytes, held, heldW, heldH, colour ? x - COLOUR_U : x, y, colour));
         held = null;
+        heldBytes = null;
         heldKey = -1;
     }
 
@@ -646,6 +760,7 @@ final class MBText {
     static void dropHeld() {
         if (held != null) held.recycle();
         held = null;
+        heldBytes = null;
         heldKey = -1;
     }
 
@@ -658,26 +773,48 @@ final class MBText {
         Drawn d = new Drawn();
         d.scale = sc;
         d.faces = faces;
-        Rect b = d.b;
-        p.getTextBounds(e.text, 0, e.text.length(), b);
+        GlyphBounds bounds = e.bounds;
+        if (bounds == null || bounds.scale != sc || bounds.faces != faces) {
+            bounds = new GlyphBounds(e, sc, faces, p);
+            e.bounds = bounds;
+        }
+        Rect b = bounds.rect;
         int pad = 1;
         if (b.width() <= 0 || b.height() <= 0) return d;
         int x0 = (int) Math.floor(b.left + subDx) - pad, x1 = (int) Math.ceil(b.right + subDx) + pad;
         int pw = x1 - x0, ph = b.height() + 2 * pad;
         if (pw > 512 || ph > 512) return d;
-        // what cannot come out in colours drawn as its cover alone (a byte a pixel, what the words' atlas takes), not
-        // looked through for colours
-        boolean mayColour = mayBeColour(e.text);
-        Bitmap bmp = Bitmap.createBitmap(pw, ph, mayColour ? Bitmap.Config.ARGB_8888 : Bitmap.Config.ALPHA_8);
+        boolean reuseAlpha = !e.mayColour && pw <= Scratch.ALPHA_SIZE && ph <= Scratch.ALPHA_SIZE;
+        Bitmap bmp;
+        if (reuseAlpha) {
+            if (scratch.alphaBmp == null) scratch.initAlpha();
+            bmp = scratch.alphaBmp;
+        } else {
+            bmp = Bitmap.createBitmap(pw, ph, e.mayColour ? Bitmap.Config.ARGB_8888 : Bitmap.Config.ALPHA_8);
+        }
         // (a canvas given the bitmap draws as one made for it, its matrix and clip put back; let go of it after, the
         // bitmap the frame's alone)
         Canvas c = scratch.canvas;
         c.setBitmap(bmp);
-        // (the paint's SUBPIXEL_TEXT_FLAG: its glyphs where they fall, not on whole pixels)
-        c.drawText(e.text, -x0 + subDx, pad - b.top, p);
-        c.setBitmap(null);
-        d.color = mayColour && isColor(bmp, scratch) ? 1 : 0;
-        d.bmp = bmp;
+        try {
+            if (reuseAlpha) c.drawRect(0, 0, pw, ph, scratch.clearPaint);
+            c.drawText(e.text, -x0 + subDx, pad - b.top, p);
+        } finally {
+            c.setBitmap(null);
+        }
+        if (reuseAlpha) {
+            ByteBuffer pixels = scratch.alphaBuf;
+            pixels.clear();
+            bmp.copyPixelsToBuffer(pixels);
+            byte[] src = pixels.array();
+            d.bytes = new byte[pw * ph];
+            for (int y = 0; y < ph; y++) System.arraycopy(src, y * scratch.alphaStride, d.bytes, y * pw, pw);
+        } else {
+            d.color = e.mayColour && isColor(bmp, scratch) ? 1 : 0;
+            d.bmp = bmp;
+        }
+        d.w = pw;
+        d.h = ph;
         d.x0 = x0;
         d.y0 = b.top - pad;
         return d;
@@ -732,8 +869,8 @@ final class MBText {
             while (j < n && placed.get(j).colour == first.colour && placed.get(j).y == first.y
                     && placed.get(j).x == right + 1) {
                 Placed g = placed.get(j);
-                right = g.x + g.bmp.getWidth();
-                h = Math.max(h, g.bmp.getHeight());
+                right = g.x + g.w;
+                h = Math.max(h, g.h);
                 j++;
             }
             int tex = first.colour ? Native.colourAtlasTexture() : Native.atlasTexture();
@@ -757,12 +894,18 @@ final class MBText {
                 }
             } else {
                 GLES30.glPixelStorei(GLES30.GL_UNPACK_ALIGNMENT, 1);
-                if (j - i == 1 && first.bmp.getConfig() == Bitmap.Config.ALPHA_8
-                        && first.bmp.getRowBytes() == first.bmp.getWidth()) {
+                if (j - i == 1 && first.bytes != null) {
+                    ByteBuffer one = glyphBuffer(first.bytes.length);
+                    one.put(first.bytes);
+                    one.flip();
+                    GLES30.glTexSubImage2D(GLES30.GL_TEXTURE_2D, 0, first.x, first.y, first.w, first.h,
+                            GLES30.GL_RED, GLES30.GL_UNSIGNED_BYTE, one);
+                } else if (j - i == 1 && first.bmp.getConfig() == Bitmap.Config.ALPHA_8
+                        && first.bmp.getRowBytes() == first.w) {
                     // one glyph drawn as its cover alone: its bytes as they are
                     ByteBuffer one = coverOf(first.bmp);
-                    GLES30.glTexSubImage2D(GLES30.GL_TEXTURE_2D, 0, first.x, first.y, first.bmp.getWidth(),
-                            first.bmp.getHeight(), GLES30.GL_RED, GLES30.GL_UNSIGNED_BYTE, one);
+                    GLES30.glTexSubImage2D(GLES30.GL_TEXTURE_2D, 0, first.x, first.y, first.w, first.h,
+                            GLES30.GL_RED, GLES30.GL_UNSIGNED_BYTE, one);
                 } else {
                     // each glyph's alpha where it lies in the row, nothing (0) round it
                     if (cover == null || cover.capacity() < w * h) {
@@ -775,9 +918,14 @@ final class MBText {
                     }
                     for (int k = i; k < j; k++) {
                         Placed g = placed.get(k);
-                        int gw = g.bmp.getWidth(), gh = g.bmp.getHeight();
+                        int gw = g.w, gh = g.h;
                         int ox = g.x - first.x;
-                        if (g.bmp.getConfig() == Bitmap.Config.ALPHA_8) {
+                        if (g.bytes != null) {
+                            for (int y = 0; y < gh; y++) {
+                                cover.position(y * w + ox);
+                                cover.put(g.bytes, y * gw, gw);
+                            }
+                        } else if (g.bmp.getConfig() == Bitmap.Config.ALPHA_8) {
                             // (its rows as Android keeps them, each maybe longer than the glyph is wide)
                             ByteBuffer src = coverOf(g.bmp);
                             int rb = g.bmp.getRowBytes();
@@ -800,7 +948,7 @@ final class MBText {
                 }
                 GLES30.glPixelStorei(GLES30.GL_UNPACK_ALIGNMENT, 4);
             }
-            for (int k = i; k < j; k++) placed.get(k).bmp.recycle();
+            for (int k = i; k < j; k++) placed.get(k).release();
             i = j;
         }
         placed.clear();
@@ -815,21 +963,26 @@ final class MBText {
     static ByteBuffer cover;
     static final byte[] ZEROS = new byte[4096];
 
-    /** The bytes of `bmp` (ALPHA_8: a byte a pixel, a row getRowBytes long) in glyphBytes, from its start. */
-    static ByteBuffer coverOf(Bitmap bmp) {
-        int n = bmp.getRowBytes() * bmp.getHeight();
+    /** The cleared upload buffer for one glyph. */
+    static ByteBuffer glyphBuffer(int n) {
         if (glyphBytes == null || glyphBytes.capacity() < n) {
             glyphBytes = ByteBuffer.allocateDirect(Math.max(n, 1 << 16)).order(ByteOrder.nativeOrder());
         }
         glyphBytes.clear();
-        bmp.copyPixelsToBuffer(glyphBytes);
-        glyphBytes.flip();
         return glyphBytes;
+    }
+
+    /** The bytes of `bmp` (ALPHA_8: a byte a pixel, a row getRowBytes long) in glyphBytes, from its start. */
+    static ByteBuffer coverOf(Bitmap bmp) {
+        ByteBuffer bytes = glyphBuffer(bmp.getRowBytes() * bmp.getHeight());
+        bmp.copyPixelsToBuffer(bytes);
+        bytes.flip();
+        return bytes;
     }
 
     /** What was put and not uploaded, let go: the atlas is gone (reset). */
     static void dropPlaced() {
-        for (Placed g : placed) g.bmp.recycle();
+        for (Placed g : placed) g.release();
         placed.clear();
     }
 
@@ -997,7 +1150,7 @@ final class MBText {
     /** The phases of `e` drawn ahead and not taken, let go (under lock). */
     static void dropDrawn(Entry e) {
         for (int s = 0; s < SUB_COUNT; s++) {
-            if (e.drawn[s] != null && e.drawn[s].bmp != null) e.drawn[s].bmp.recycle();
+            if (e.drawn[s] != null) e.drawn[s].release();
             e.drawn[s] = null;
         }
         e.have = 0;
@@ -1061,7 +1214,7 @@ final class MBText {
             }
             if (!asked(e)) aheadCount--;
             if (stale) {
-                if (d.bmp != null) d.bmp.recycle();
+                d.release();
                 return null;
             }
             return d;
@@ -1073,9 +1226,9 @@ final class MBText {
      * own paints and scratch, as the app's thread would draw it.
      */
     static void drawAhead() {
-        // nice 1 (not THREAD_PRIORITY_BACKGROUND): stays in top-app cgroup so FT_Face mutexes held during
-        // Canvas.drawText never suffer severe priority inversion against mbui-logic (-8).
-        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_LESS_FAVORABLE);
+        // Nice 0 keeps these threads in top-app, below the logic and GL threads. It lets the first
+        // batch compete with other normal-priority work between layout and paint.
+        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DEFAULT);
         HashMap<Long, Paint> paints = new HashMap<>();
         int paintsFaces = -1;
         Scratch scratch = new Scratch();
@@ -1143,7 +1296,7 @@ final class MBText {
                 e.skip &= ~bit;
                 if (d != null) {
                     if (skipped) {
-                        if (d.bmp != null) d.bmp.recycle();
+                        d.release();
                     } else {
                         e.drawn[s] = d;
                         e.have |= bit;

@@ -221,7 +221,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         @Override public String frameName() { return MBText.takeFrameName(); }
 
         @Override public void dropped(java.util.List<MBText.Placed> glyphs) {
-            for (MBText.Placed g : glyphs) g.bmp.recycle();
+            for (MBText.Placed g : glyphs) g.release();
         }
 
         @Override public void failed(RuntimeException e) {
