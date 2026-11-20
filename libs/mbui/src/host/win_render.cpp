@@ -67,11 +67,9 @@ struct level { ID3D11Texture2D *t; ID3D11RenderTargetView *rt; ID3D11ShaderResou
 static level lv[5];
 static MBContained post_edge;
 static int lv_w, lv_h;
-struct GU { float map[4]; float uvc[4]; float gb[4]; float shape[8][4]; float rad[8][4]; float misc[4]; float rmap[4]; float ruvc[4]; };
+struct GU { float map[4]; float uvc[4]; float gb[4]; float shape[8][4]; float rad[8][4]; float misc[4]; };
 static GU gu;
 static ID3D11ShaderResourceView *gsrv;
-// the capture's sharp level liquid glass sees through its lip (t1 while it is drawn)
-static ID3D11ShaderResourceView *rsrv;
 // What is a window's own (win_app.c: the windows of one run): its swap chain and its buffer's view, its composition's
 // target, root, the native views' visual under the canvas's and the canvas's (NULL: the swap chain is the window's own),
 // its buffer's size in pixels and its size in points and scale (mb_render_set_size's); the last frame, kept for
@@ -149,9 +147,8 @@ static const char *shader_src =
     "#endif\n"
     "cbuffer U : register(b0) { float2 vp; float scale; float pad; };\n"
     "// glass (src/ui/glass.mbt): where a point is in the blurred copy under it (uv = p * gmap.xy + gmap.zw, kept in guvc),\n"
-    "// a liquid group's bounds, shapes, corners (x of each), how many; where it is in the capture's sharp level (img while\n"
-    "// liquid glass is drawn: capture's rsrv)\n"
-    "cbuffer G : register(b1) { float4 gmap; float4 guvc; float4 ggb; float4 gshape[8]; float4 grad[8]; float4 gmisc; float4 grmap; float4 gruvc; };\n"
+    "// a liquid group's bounds, shapes, corners (x of each), how many\n"
+    "cbuffer G : register(b1) { float4 gmap; float4 guvc; float4 ggb; float4 gshape[8]; float4 grad[8]; float4 gmisc; };\n"
     "Texture2D atlas : register(t0);\n"
     "Texture2D img : register(t1);\n"
     "Texture2D bd : register(t2);\n"
@@ -174,8 +171,8 @@ static const char *shader_src =
     "  float2 corner = float2((vid == 1 || vid == 4 || vid == 5) ? 1.0 : 0.0,\n"
     "                         (vid == 2 || vid == 3 || vid == 5) ? 1.0 : 0.0);\n"
     "  int kind = int(I.p.y + 0.5);\n"
-    "  bool merged_liquid = kind == 6 && I.c2.z >= 0.0;\n"
-    "  float grow = kind == 2 ? I.p.w * 3.0 + 2.0 : ((kind == 0 || kind == 4 || kind == 5 || (kind == 6 && I.c2.z < 0.0)) ? 1.0 : 0.0);\n"
+    "  bool merged_liquid = kind == 6 && I.c2.z >= 0.0 && I.pd.w > 0.0;\n"
+    "  float grow = kind == 2 ? I.p.w * 3.0 + 2.0 : (kind == 6 && I.c2.z >= 0.0 && I.pd.w <= 0.0) ? 2.0 : ((kind == 0 || kind == 4 || kind == 5 || (kind == 6 && I.c2.z < 0.0)) ? 1.0 : 0.0);\n"
     "  float2 pos = I.rect.xy - grow + corner * (I.rect.zw + 2.0 * grow);\n"
     "  if (merged_liquid) pos = lerp(ggb.xy, ggb.zw, corner);\n"
     "  // the pieces of shapes (kind 12): nothing drawn\n"
@@ -461,16 +458,23 @@ static const char *shader_src =
     "    // Copyright 2025, Tim Lehmann for whynotmake.it. Adapted from flutter_liquid_glass\n"
     "    // liquid_glass_final_render_core.glsl, Apache-2.0.\n"
     "    float k = I.pd.w;\n"
-    "    float d = sd_group(p, k);\n"
+    "    float4 s_rr = max(max(I.rr.x, I.rr.y), max(I.rr.z, I.rr.w)) > 0.0 ? I.rr : float4(I.prm.x, I.prm.x, I.prm.x, I.prm.x);\n"
+    "    float d;\n"
     "    float halfMinor = 1e9;\n"
-    "    float best_d = 1e9;\n"
-    "    int n_sh = int(gmisc.x + 0.5);\n"
-    "    [loop] for (int i = 0; i < 8; i++) {\n"
-    "      if (i >= n_sh) break;\n"
-    "      float di = sd_rr(p, gshape[i], grad[i].xxxx);\n"
-    "      if (di < best_d) {\n"
-    "        best_d = di;\n"
-    "        halfMinor = min(gshape[i].z, gshape[i].w) * 0.5;\n"
+    "    if (k <= 0.0) {\n"
+    "      d = sd_rr(p, I.rect, s_rr);\n"
+    "      halfMinor = min(I.rect.z, I.rect.w) * 0.5;\n"
+    "    } else {\n"
+    "      d = sd_group(p, k);\n"
+    "      float best_d = 1e9;\n"
+    "      int n_sh = int(gmisc.x + 0.5);\n"
+    "      [loop] for (int i = 0; i < 8; i++) {\n"
+    "        if (i >= n_sh) break;\n"
+    "        float di = sd_rr(p, gshape[i], grad[i].xxxx);\n"
+    "        if (di < best_d) {\n"
+    "          best_d = di;\n"
+    "          halfMinor = min(gshape[i].z, gshape[i].w) * 0.5;\n"
+    "        }\n"
     "      }\n"
     "    }\n"
     "    halfMinor = max(halfMinor, 1.0);\n"
@@ -482,10 +486,15 @@ static const char *shader_src =
     "                  - mb_contour_int(max(outward - 0.5, 0.0), edgeW);\n"
     "    if (materialAlpha < 0.01 && ext_cov < 0.01) discard;\n"
     "    float e = 0.5;\n"
-    "    float2 sdfGrad = float2(\n"
-    "      sd_group(p + float2(e, 0.0), k) - sd_group(p - float2(e, 0.0), k),\n"
-    "      sd_group(p + float2(0.0, e), k) - sd_group(p - float2(0.0, e), k)\n"
-    "    ) / (2.0 * e);\n"
+    "    float2 sdfGrad = k <= 0.0\n"
+    "      ? float2(\n"
+    "          sd_rr(p + float2(e, 0.0), I.rect, s_rr) - sd_rr(p - float2(e, 0.0), I.rect, s_rr),\n"
+    "          sd_rr(p + float2(0.0, e), I.rect, s_rr) - sd_rr(p - float2(0.0, e), I.rect, s_rr)\n"
+    "        ) / (2.0 * e)\n"
+    "      : float2(\n"
+    "          sd_group(p + float2(e, 0.0), k) - sd_group(p - float2(e, 0.0), k),\n"
+    "          sd_group(p + float2(0.0, e), k) - sd_group(p - float2(0.0, e), k)\n"
+    "        ) / (2.0 * e);\n"
     "    float gradLen = length(sdfGrad);\n"
     "    float2 surfaceNormal = gradLen > 0.0001 ? sdfGrad / gradLen : float2(0.0, 0.0);\n"
     "    float shortening = sqrt(saturate(gradLen));\n"
@@ -1243,7 +1252,6 @@ static void glass_free(void) {
   ID3D11ShaderResourceView *none[3] = {NULL, NULL, NULL};
   ctx->PSSetShaderResources(0, 3, none);
   gsrv = NULL;
-  rsrv = NULL;
   for (int j = 0; j < 5; j++)
     if (lv[j].t) {
       lv[j].srv->Release();
@@ -1379,8 +1387,8 @@ static int capture(ID3D11RenderTargetView *target, int pw, int ph, const float *
   // A negative blur is contained: its straight edges are the capture's edges, its curved ones extended separately.
   float blur = fabsf(a[7]);
   int kind = (int)(a[5] + 0.5f);
-  int merged_liquid = (kind == 6 && a[14] >= 0.0f);
-  int lens = (kind == 6 && a[14] < 0.0f);
+  int merged_liquid = (kind == 6 && a[14] >= 0.0f && a[23] > 0.0f);
+  int unmerged_liquid = (kind == 6 && !merged_liquid);
   float margin = a[7] < 0.0f ? 0.0f : 3.0f * blur + (kind == 6 ? a[21] * (1.0f + a[22]) + fmaxf(a[23], 0.0f) : 0.0f) + 2.0f;
   float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
   int n = 0;
@@ -1389,14 +1397,14 @@ static int capture(ID3D11RenderTargetView *target, int pw, int ph, const float *
     float bx0 = b[0] > b[16] ? b[0] : b[16], by0 = b[1] > b[17] ? b[1] : b[17];
     float bx1 = b[0] + b[2] < b[18] ? b[0] + b[2] : b[18], by1 = b[1] + b[3] < b[19] ? b[1] + b[3] : b[19];
     if (kind == 6) {
-      float m23 = fmaxf(lens ? b[23] : a[23], 0.0f);
+      float m23 = fmaxf(unmerged_liquid ? b[23] : a[23], 0.0f);
       bx0 = b[0] - m23; by0 = b[1] - m23; bx1 = b[0] + b[2] + m23; by1 = b[1] + b[3] + m23;
       if (merged_liquid && n < 8) {
         for (int k = 0; k < 4; k++) gu.shape[n][k] = b[k];
         gu.rad[n][0] = b[4];
         n++;
       }
-      if (lens && a[7] >= 0.0f) {
+      if (unmerged_liquid && a[7] >= 0.0f) {
         float bm = 3.0f * blur + b[21] * (1.0f + b[22]) + m23 + 2.0f;
         if (bm > margin) margin = bm;
       }
@@ -1406,11 +1414,11 @@ static int capture(ID3D11RenderTargetView *target, int pw, int ph, const float *
     if (bx1 > x1) x1 = bx1;
     if (by1 > y1) y1 = by1;
   }
-  for (int32_t i = end; (kind == 5 || lens) && i < count; i++) {
+  for (int32_t i = end; (kind == 5 || unmerged_liquid) && i < count; i++) {
     const float *b = f + i * MB_INST;
     if (b[20] != a[20]) continue;
     float bx0, by0, bx1, by1;
-    if (lens) {
+    if (unmerged_liquid) {
       float m23 = fmaxf(b[23], 0.0f);
       bx0 = b[0] - m23; by0 = b[1] - m23; bx1 = b[0] + b[2] + m23; by1 = b[1] + b[3] + m23;
       if (a[7] >= 0.0f) {
@@ -1484,15 +1492,6 @@ static int capture(ID3D11RenderTargetView *target, int pw, int ph, const float *
   gu.map[0] = sc / d / L->w; gu.map[1] = sc / d / L->h;
   gu.map[2] = -(float)px0 / d / L->w; gu.map[3] = -(float)py0 / d / L->h;
   gu.uvc[0] = 0.5f / L->w; gu.uvc[1] = 0.5f / L->h; gu.uvc[2] = (lw[k] - 0.5f) / L->w; gu.uvc[3] = (lh[k] - 0.5f) / L->h;
-  // the sharp one, of the levels its blur left as they were copied: the half once halved twice or more, the copy once
-  // halved (not contained: contained, its copy is the edge's pass's), else L
-  int rk = k >= 2 ? 1 : k == 1 && !contained ? 0 : k;
-  level *R = k >= 2 ? &lv[1] : k == 1 && !contained ? &lv[0] : L;
-  float rd = (float)(1 << rk);
-  rsrv = R->srv;
-  gu.rmap[0] = sc / rd / R->w; gu.rmap[1] = sc / rd / R->h;
-  gu.rmap[2] = -(float)px0 / rd / R->w; gu.rmap[3] = -(float)py0 / rd / R->h;
-  gu.ruvc[0] = 0.5f / R->w; gu.ruvc[1] = 0.5f / R->h; gu.ruvc[2] = (lw[rk] - 0.5f) / R->w; gu.ruvc[3] = (lh[rk] - 0.5f) / R->h;
   return 1;
 }
 
@@ -1596,7 +1595,6 @@ static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count
   ctx->UpdateSubresource(ubuf, 0, NULL, &u, 0, 0);
   memset(&gu, 0, sizeof gu);
   gsrv = NULL;
-  rsrv = NULL;
   segs_upload(f, count);
   main_state(target, pw, ph);
   if (part) {
@@ -1620,10 +1618,9 @@ static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count
         main_state(target, pw, ph);
       }
       ctx->PSSetShader(ps, NULL, 0);
-      // liquid: the group as one shape, drawn once, its capture's sharp level in t1 (an image's run after it binds its
-      // own there again)
-      int merged_liquid = (int)(f[start * MB_INST + 5] + 0.5f) == 6 && f[start * MB_INST + 14] >= 0.0f;
-      if (shows && merged_liquid) ctx->PSSetShaderResources(1, 1, rsrv ? &rsrv : &atlas_srv);
+      // merged liquid (merge > 0): the group as one shape, drawn once; unmerged liquid and frosted: each instance
+      int merged_liquid = (int)(f[start * MB_INST + 5] + 0.5f) == 6 && f[start * MB_INST + 14] >= 0.0f &&
+                          f[start * MB_INST + 23] > 0.0f;
       if (shows) ctx->DrawInstanced(6, merged_liquid ? 1 : (UINT)(end - start), 0, (UINT)start);
       start = end;
       continue;

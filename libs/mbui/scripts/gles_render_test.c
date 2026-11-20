@@ -315,10 +315,9 @@ int main(void) {
   CHECK(blurs_made == made + 1);
   CHECK(surface_as_fresh(surface));
 
-  // What drawing holds beyond its frames given back: a slot that kept liquid glass's sharp level lets it go as frosted
-  // glass is kept in it; the trim lets go of glass's textures and the read back's framebuffer; glass's textures go once
-  // MB_GLASS_IDLE frames in a row drew none. Each made again as it is next needed, the surface then the same to the byte
-  // as the frame drawn whole.
+  // What drawing holds beyond its frames given back: the trim lets go of glass's textures and the read back's
+  // framebuffer; glass's textures go once MB_GLASS_IDLE frames in a row drew none. Each made again as it is next
+  // needed, the surface then the same to the byte as the frame drawn whole.
   {
     double g1[2 * MB_INST];
     rect_at(g1, 10, 10, 40, 20, 0, 0.9, 0.1, 0.1, 0);
@@ -332,22 +331,20 @@ int main(void) {
     gl_present(g1, 2, 0.1, 0.2, 0.3);
     CHECK(lv[0].t != 0 && lv_w > 0);
     CHECK(slots[0].bt != 0);
-    CHECK(slots[0].rt != 0);
     CHECK(surface_as_fresh(surface));
-    // the same capture frosted (kind 5), kept in the same slot: its sharp level let go
+    // the same capture frosted (kind 5), kept in the same slot
     g1[MB_INST + 5] = 5;
     g1[0] = 11;
     glass_forget();
     gl_present(g1, 2, 0.1, 0.2, 0.3);
     CHECK(slots[0].bt != 0);
-    CHECK(slots[0].rt == 0 && slots[0].rfb == 0);
     CHECK(surface_as_fresh(surface));
 
     CHECK(read_fb != 0);
     mb_render_trim();
     CHECK(read_fb == 0 && read_tex == 0);
     CHECK(lv[0].t == 0 && lv[4].t == 0 && lv_w == 0 && lv_h == 0);
-    for (int i = 0; i < MB_GLASS_SLOTS; i++) CHECK(slots[i].bt == 0 && slots[i].rt == 0 && slots[i].under == NULL);
+    for (int i = 0; i < MB_GLASS_SLOTS; i++) CHECK(slots[i].bt == 0 && slots[i].under == NULL);
     g1[0] = 12;
     made = blurs_made;
     gl_present(g1, 2, 0.1, 0.2, 0.3);
@@ -364,7 +361,7 @@ int main(void) {
       if (i == MB_GLASS_IDLE - 1) CHECK(lv[0].t != 0 && slots[0].bt != 0);
     }
     CHECK(lv[0].t == 0 && lv_w == 0);
-    for (int i = 0; i < MB_GLASS_SLOTS; i++) CHECK(slots[i].bt == 0 && slots[i].rt == 0);
+    for (int i = 0; i < MB_GLASS_SLOTS; i++) CHECK(slots[i].bt == 0);
     g1[0] = 13;
     made = blurs_made;
     gl_present(g1, 2, 0.1, 0.2, 0.3);
@@ -385,7 +382,7 @@ int main(void) {
   }
 
   // Shared Backdrop lenses (kind 6, a[14] < 0) separated by a non-glass shadow (kind 2): only one backdrop capture
-  // is made, no sharp level (r_tex) is allocated even when k >= 1, and pixels match separate captures byte-for-byte.
+  // is made, and pixels match separate captures byte-for-byte.
   {
     double ls[5 * MB_INST];
     rect_at(ls, 0, 0, W, H, 0, 0.92, 0.90, 0.85, 0);
@@ -394,7 +391,7 @@ int main(void) {
     rect_at(ls + 2 * MB_INST, 6, 48, 30, 14, 6, 1, 1, 1, -6);
     ls[2 * MB_INST + 4] = 7;
     ls[2 * MB_INST + 6] = 1;
-    ls[2 * MB_INST + 7] = 4;  // sp = 8, k = 2 (R != L): verifies r_tex is skipped for lens
+    ls[2 * MB_INST + 7] = 4;  // sp = 8, k = 2
     ls[2 * MB_INST + 11] = 0.25;
     ls[2 * MB_INST + 12] = 0.7;
     ls[2 * MB_INST + 13] = 6;
@@ -425,7 +422,6 @@ int main(void) {
     made = blurs_made;
     gl_present(ls, 5, 0.1, 0.2, 0.3);
     CHECK(blurs_made == made + 1);
-    for (int i = 0; i < MB_GLASS_SLOTS; i++) CHECK(slots[i].rt == 0 && slots[i].rfb == 0);
     CHECK(surface_as_fresh(surface));
 
     // With k == 0 (blur = 1.5 at scale 2 -> sp = 3.0), shared capture vs two separate captures are byte-identical.
@@ -451,6 +447,89 @@ int main(void) {
     CHECK(memcmp(px_shared, px_sep, (size_t)fb_w * fb_h * 4) == 0);
     free(px_shared);
     free(px_sep);
+  }
+
+  // Unmerged liquid glass (kind 6, a[14] >= 0, a[23] <= 0):
+  // (1) single shape with merge=0 (tight quad + direct sd_rr) matches merge=1 (merged_liquid + sd_group) byte-for-byte;
+  // (2) two unmerged liquid shapes separated by a shadow (kind 2) sharing one capture make only 1 blur and preserve each
+  //     instance's own spot, matching separate captures byte-for-byte at k == 0.
+  {
+    double eq[2 * MB_INST];
+    rect_at(eq, 0, 0, W, H, 0, 0.85, 0.30, 0.20, 0);
+    rect_at(eq + MB_INST, 18, 22, 54, 24, 6, 1, 1, 1, -9);
+    eq[MB_INST + 4] = 12;
+    eq[MB_INST + 6] = 1;
+    eq[MB_INST + 7] = 2;
+    eq[MB_INST + 11] = 0.25;
+    eq[MB_INST + 12] = 0.8;
+    eq[MB_INST + 13] = 8;
+    eq[MB_INST + 14] = 0;
+    eq[MB_INST + 15] = 1;
+    eq[MB_INST + 21] = 4;
+    eq[MB_INST + 22] = 0.2;
+    eq[MB_INST + 23] = 0;
+    glass_forget();
+    gl_present(eq, 2, 0.1, 0.2, 0.3);
+    unsigned char *px_single = pixels_of_fb(surface);
+
+    eq[MB_INST + 23] = 1.0;
+    glass_forget();
+    gl_present(eq, 2, 0.1, 0.2, 0.3);
+    unsigned char *px_merged = pixels_of_fb(surface);
+    CHECK(memcmp(px_single, px_merged, (size_t)fb_w * fb_h * 4) == 0);
+    free(px_single);
+    free(px_merged);
+
+    double lq[5 * MB_INST];
+    rect_at(lq, 0, 0, W, H, 0, 0.92, 0.90, 0.85, 0);
+    rect_at(lq + 1 * MB_INST, 10, 46, 76, 18, 0, 0.85, 0.25, 0.20, 0);
+    // left capsule (no spot, merge=0)
+    rect_at(lq + 2 * MB_INST, 6, 48, 30, 14, 6, 1, 1, 1, -9);
+    lq[2 * MB_INST + 4] = 7;
+    lq[2 * MB_INST + 6] = 1;
+    lq[2 * MB_INST + 7] = 1.5;  // sp = 3.0 -> k == 0
+    lq[2 * MB_INST + 11] = 0.25;
+    lq[2 * MB_INST + 12] = 0.8;
+    lq[2 * MB_INST + 13] = 6;
+    lq[2 * MB_INST + 14] = 0;
+    lq[2 * MB_INST + 15] = 1;
+    lq[2 * MB_INST + 21] = 2;
+    lq[2 * MB_INST + 22] = 0;
+    lq[2 * MB_INST + 23] = 0;
+    // shadow between the two shapes (outside the right disc's capture box)
+    rect_at(lq + 3 * MB_INST, 6, 48, 10, 6, 2, 0, 0, 0, 0);
+    lq[3 * MB_INST + 7] = 1;
+    lq[3 * MB_INST + 11] = 0.2;
+    // right disc (with its own spot, merge=0, sharing capture -9)
+    rect_at(lq + 4 * MB_INST, 68, 48, 18, 14, 6, 1, 1, 1, -9);
+    lq[4 * MB_INST + 4] = 7;
+    lq[4 * MB_INST + 6] = 1;
+    lq[4 * MB_INST + 7] = 1.5;
+    lq[4 * MB_INST + 11] = 0.25;
+    lq[4 * MB_INST + 12] = 0.8;
+    lq[4 * MB_INST + 13] = 6;
+    lq[4 * MB_INST + 14] = 537.0 * 4096.0 + 528.0 + 1.0;
+    lq[4 * MB_INST + 15] = 1;
+    lq[4 * MB_INST + 21] = 2;
+    lq[4 * MB_INST + 22] = 0;
+    lq[4 * MB_INST + 23] = 0;
+
+    glass_forget();
+    made = blurs_made;
+    gl_present(lq, 5, 0.1, 0.2, 0.3);
+    CHECK(blurs_made == made + 1);
+    unsigned char *px_lq_shared = pixels_of_fb(surface);
+
+    lq[2 * MB_INST + 20] = -10;
+    lq[4 * MB_INST + 20] = -11;
+    glass_forget();
+    made = blurs_made;
+    gl_present(lq, 5, 0.1, 0.2, 0.3);
+    CHECK(blurs_made == made + 2);
+    unsigned char *px_lq_sep = pixels_of_fb(surface);
+    CHECK(memcmp(px_lq_shared, px_lq_sep, (size_t)fb_w * fb_h * 4) == 0);
+    free(px_lq_shared);
+    free(px_lq_sep);
   }
 
   // A group the host keeps drawn out by its header straight into the floats: each instance moved in doubles, then

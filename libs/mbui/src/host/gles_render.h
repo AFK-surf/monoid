@@ -61,8 +61,8 @@ static const char *VS =
     "  int vid = gl_VertexID;\n"
     "  vec2 corner = vec2((vid == 1 || vid == 4 || vid == 5) ? 1.0 : 0.0, (vid == 2 || vid == 3 || vid == 5) ? 1.0 : 0.0);\n"
     "  int kind = int(a_p.y + 0.5);\n"
-    "  bool merged_liquid = kind == 6 && a_c2.z >= 0.0;\n"
-    "  float grow = kind == 2 ? a_p.w * 3.0 + 2.0 : ((kind == 0 || kind == 4 || kind == 5 || (kind == 6 && a_c2.z < 0.0)) ? 1.0 : 0.0);\n"
+    "  bool merged_liquid = kind == 6 && a_c2.z >= 0.0 && a_pad.w > 0.0;\n"
+    "  float grow = kind == 2 ? a_p.w * 3.0 + 2.0 : (kind == 6 && a_c2.z >= 0.0 && a_pad.w <= 0.0) ? 2.0 : ((kind == 0 || kind == 4 || kind == 5 || (kind == 6 && a_c2.z < 0.0)) ? 1.0 : 0.0);\n"
     "  vec2 pos = a_rect.xy - grow + corner * (a_rect.zw + 2.0 * grow);\n"
     "  if (merged_liquid) pos = mix(u_gb.xy, u_gb.zw, corner);\n"
     "  // the pieces of shapes (kind 12): nothing drawn\n"
@@ -100,9 +100,6 @@ static const char *FS =
     "uniform highp sampler2D u_bd;\n"
     "uniform vec4 u_map;\n"
     "uniform vec4 u_uvc;\n"
-    "// where a point is in the capture's sharp level (u_img while liquid glass is drawn: capture's r_tex)\n"
-    "uniform vec4 u_rmap;\n"
-    "uniform vec4 u_ruvc;\n"
     "// a liquid group's bounds (as the vertex shader has them)\n"
     "uniform vec4 u_gb;\n"
     "uniform vec4 u_shape[8];\n"
@@ -349,15 +346,22 @@ static const char *FS =
     "    // Copyright 2025, Tim Lehmann for whynotmake.it. Adapted from flutter_liquid_glass\n"
     "    // liquid_glass_final_render_core.glsl, Apache-2.0.\n"
     "    float k = v_pad.w;\n"
-    "    float d = sd_group(p, k);\n"
+    "    vec4 s_rr = max(max(v_rr.x, v_rr.y), max(v_rr.z, v_rr.w)) > 0.0 ? v_rr : vec4(v_p.x);\n"
+    "    float d;\n"
     "    float halfMinor = 1e9;\n"
-    "    float best_d = 1e9;\n"
-    "    for (int i = 0; i < 8; i++) {\n"
-    "      if (i >= u_n) break;\n"
-    "      float di = sd_rr(p, u_shape[i], vec4(u_rad[i / 4][i % 4]));\n"
-    "      if (di < best_d) {\n"
-    "        best_d = di;\n"
-    "        halfMinor = min(u_shape[i].z, u_shape[i].w) * 0.5;\n"
+    "    if (k <= 0.0) {\n"
+    "      d = sd_rr(p, v_rect, s_rr);\n"
+    "      halfMinor = min(v_rect.z, v_rect.w) * 0.5;\n"
+    "    } else {\n"
+    "      d = sd_group(p, k);\n"
+    "      float best_d = 1e9;\n"
+    "      for (int i = 0; i < 8; i++) {\n"
+    "        if (i >= u_n) break;\n"
+    "        float di = sd_rr(p, u_shape[i], vec4(u_rad[i / 4][i % 4]));\n"
+    "        if (di < best_d) {\n"
+    "          best_d = di;\n"
+    "          halfMinor = min(u_shape[i].z, u_shape[i].w) * 0.5;\n"
+    "        }\n"
     "      }\n"
     "    }\n"
     "    halfMinor = max(halfMinor, 1.0);\n"
@@ -369,10 +373,15 @@ static const char *FS =
     "                  - mb_contour_int(max(outward - 0.5, 0.0), edgeW);\n"
     "    if (materialAlpha < 0.01 && ext_cov < 0.01) discard;\n"
     "    float e = 0.5;\n"
-    "    vec2 grad = vec2(\n"
-    "      sd_group(p + vec2(e, 0.0), k) - sd_group(p - vec2(e, 0.0), k),\n"
-    "      sd_group(p + vec2(0.0, e), k) - sd_group(p - vec2(0.0, e), k)\n"
-    "    ) / (2.0 * e);\n"
+    "    vec2 grad = k <= 0.0\n"
+    "      ? vec2(\n"
+    "          sd_rr(p + vec2(e, 0.0), v_rect, s_rr) - sd_rr(p - vec2(e, 0.0), v_rect, s_rr),\n"
+    "          sd_rr(p + vec2(0.0, e), v_rect, s_rr) - sd_rr(p - vec2(0.0, e), v_rect, s_rr)\n"
+    "        ) / (2.0 * e)\n"
+    "      : vec2(\n"
+    "          sd_group(p + vec2(e, 0.0), k) - sd_group(p - vec2(e, 0.0), k),\n"
+    "          sd_group(p + vec2(0.0, e), k) - sd_group(p - vec2(0.0, e), k)\n"
+    "        ) / (2.0 * e);\n"
     "    float gradLen = length(grad);\n"
     "    vec2 surfaceNormal = gradLen > 0.0001 ? grad / gradLen : vec2(0.0, 0.0);\n"
     "    float shortening = sqrt(clamp(gradLen, 0.0, 1.0));\n"
@@ -661,7 +670,7 @@ static GLint pu_src, pu_a, pu_b, pu_c;
 static int has_own_prog(int kind) { return (kind >= 0 && kind <= 4) || kind == 10 || kind == 11; }
 typedef struct {
   GLuint p;
-  GLint vp, scale, map, uvc, rmap, ruvc, gb, shape, rad, n;
+  GLint vp, scale, map, uvc, gb, shape, rad, n;
   unsigned gen;
 } kprog;
 static kprog progs[MB_KINDS + 1];
@@ -728,8 +737,6 @@ static kprog make_prog(GLuint vs, int kind) {
   k.scale = glGetUniformLocation(k.p, "u_scale");
   k.map = glGetUniformLocation(k.p, "u_map");
   k.uvc = glGetUniformLocation(k.p, "u_uvc");
-  k.rmap = glGetUniformLocation(k.p, "u_rmap");
-  k.ruvc = glGetUniformLocation(k.p, "u_ruvc");
   k.gb = glGetUniformLocation(k.p, "u_gb");
   k.shape = glGetUniformLocation(k.p, "u_shape");
   k.rad = glGetUniformLocation(k.p, "u_rad");
@@ -807,8 +814,8 @@ static void gl_setup(void) {
 typedef struct { GLuint t, fb; int w, h; GLenum format; } level;
 static level lv[5];
 static int lv_w, lv_h;
-static GLuint bd_tex, r_tex;  // r_tex: the capture's sharp level liquid glass sees through its lip (unit 1 then)
-static float gmap[4], guvc[4], ggb[4], gshape[32], grad[8], rmap[4], ruvc[4];
+static GLuint bd_tex;
+static float gmap[4], guvc[4], ggb[4], gshape[32], grad[8];
 static int gn;
 // the app's part of the surface (MBView: the soft keyboard over the rest), in its pixels from the foot
 static int vy0, vhp;
@@ -1004,8 +1011,8 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
   // A negative blur is contained: its straight edges are the capture's edges, its curved ones extended separately.
   float blur = fabsf(a[7]);
   int kind = (int)(a[5] + 0.5f);
-  int merged_liquid = (kind == 6 && a[14] >= 0.0f);
-  int lens = (kind == 6 && a[14] < 0.0f);
+  int merged_liquid = (kind == 6 && a[14] >= 0.0f && a[23] > 0.0f);
+  int unmerged_liquid = (kind == 6 && !merged_liquid);
   float margin = a[7] < 0.0f ? 0.0f : 3.0f * blur + (kind == 6 ? a[21] * (1.0f + a[22]) + fmaxf(a[23], 0.0f) : 0.0f) + 2.0f;
   float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
   for (int32_t i = start; i < end; i++) {
@@ -1013,14 +1020,14 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
     float bx0 = b[0] > b[16] ? b[0] : b[16], by0 = b[1] > b[17] ? b[1] : b[17];
     float bx1 = b[0] + b[2] < b[18] ? b[0] + b[2] : b[18], by1 = b[1] + b[3] < b[19] ? b[1] + b[3] : b[19];
     if (kind == 6) {
-      float m23 = fmaxf(lens ? b[23] : a[23], 0.0f);
+      float m23 = fmaxf(unmerged_liquid ? b[23] : a[23], 0.0f);
       bx0 = b[0] - m23; by0 = b[1] - m23; bx1 = b[0] + b[2] + m23; by1 = b[1] + b[3] + m23;
       if (merged_liquid && m->n < 8) {
         for (int k = 0; k < 4; k++) m->shape[m->n * 4 + k] = b[k];
         m->rad[m->n] = b[4];
         m->n++;
       }
-      if (lens && a[7] >= 0.0f) {
+      if (unmerged_liquid && a[7] >= 0.0f) {
         float bm = 3.0f * blur + b[21] * (1.0f + b[22]) + m23 + 2.0f;
         if (bm > margin) margin = bm;
       }
@@ -1030,11 +1037,11 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
     if (bx1 > x1) x1 = bx1;
     if (by1 > y1) y1 = by1;
   }
-  for (int32_t i = end; (kind == 5 || lens) && i < count; i++) {
+  for (int32_t i = end; (kind == 5 || unmerged_liquid) && i < count; i++) {
     const float *b = f + i * MB_INST;
     if (b[20] != a[20]) continue;
     float bx0, by0, bx1, by1;
-    if (lens) {
+    if (unmerged_liquid) {
       float m23 = fmaxf(b[23], 0.0f);
       bx0 = b[0] - m23; by0 = b[1] - m23; bx1 = b[0] + b[2] + m23; by1 = b[1] + b[3] + m23;
       if (a[7] >= 0.0f) {
@@ -1085,12 +1092,12 @@ static void grab_levels(const Grab *m, int lw[4], int lh[4]) {
   }
 }
 
-// What the glass shows of a grab's blur in texture `bt` (bw × bh, level k's place in it) and its sharp level in `rt`
-// (rw × rh): bd_tex, r_tex and the uniforms that say where in them it is.
-static void show_blur(const Grab *m, GLuint bt, int bw, int bh, GLuint rt, int rw, int rh) {
+// What the glass shows of a grab's blur in texture `bt` (bw × bh, level k's place in it): bd_tex and the uniforms
+// that say where in it it is.
+static void show_blur(const Grab *m, GLuint bt, int bw, int bh) {
   int lw[4], lh[4];
   grab_levels(m, lw, lh);
-  int k = m->k, contained = m->contained, px0 = m->px0, pb0 = m->pb0, top = m->top;
+  int k = m->k, px0 = m->px0, pb0 = m->pb0, top = m->top;
   float sc = (float)cur_scale;
   memcpy(ggb, m->gb, sizeof ggb);
   memcpy(gshape, m->shape, sizeof gshape);
@@ -1101,21 +1108,10 @@ static void show_blur(const Grab *m, GLuint bt, int bw, int bh, GLuint rt, int r
   gmap[0] = sc / d / bw; gmap[1] = -sc / d / bh;
   gmap[2] = -(float)px0 / d / bw; gmap[3] = (float)(top - pb0) / d / bh;
   guvc[0] = 0.5f / bw; guvc[1] = 0.5f / bh; guvc[2] = (lw[k] - 0.5f) / bw; guvc[3] = (lh[k] - 0.5f) / bh;
-  // the sharp one, of the levels its blur left as they were copied: the half once halved twice or more, the copy once
-  // halved (not contained: contained, its copy is the edge's pass's), else the blurred one (grab_sharp)
-  int rk = k >= 2 ? 1 : k == 1 && !contained ? 0 : k;
-  float rd = (float)(1 << rk);
-  r_tex = rt;
-  rmap[0] = sc / rd / rw; rmap[1] = -sc / rd / rh;
-  rmap[2] = -(float)px0 / rd / rw; rmap[3] = (float)(top - pb0) / rd / rh;
-  ruvc[0] = 0.5f / rw; ruvc[1] = 0.5f / rh; ruvc[2] = (lw[rk] - 0.5f) / rw; ruvc[3] = (lh[rk] - 0.5f) / rh;
 }
 
-// The level a grab's blur is left in, and the one its sharp level is (the blur's own where it has none apart).
+// The level a grab's blur is left in.
 static level *grab_blurred(const Grab *m) { return m->contained && m->k == 0 ? &lv[4] : &lv[m->k]; }
-static level *grab_sharp(const Grab *m) {
-  return m->k >= 2 ? &lv[1] : m->k == 1 && !m->contained ? &lv[0] : grab_blurred(m);
-}
 
 // A grab of target_fb blurred into the levels: what is drawn so far in its rectangle copied out, halved k times, the
 // Gaussian left (grab_blurred). The levels are shared by every capture: what is shown is the copy a slot keeps (below).
@@ -1151,7 +1147,7 @@ static void blur(const Grab *m) {
 
 // The blurs kept, a slot each, as many as a screen has groups of glass at once (a bar at the top, a composer and its
 // ground at the foot, a sheet's, a page sliding over another: 2 to 6), the one least lately shown taken for a new one.
-// A slot holds a capture's blur (and liquid glass's sharp level) copied out of the levels, as big as the levels (so it
+// A slot holds a capture's blur copied out of the levels, as big as the levels (so it
 // is shown by the same numbers as the level it came from, to the byte), and what it was of. What a capture copies is
 // what the frame drew before it in the grab's rectangle (the instances up to the glass that reach into it, the pieces
 // of the frame's shapes they are drawn by, the ground the frame cleared to) of a surface of that size: a frame that
@@ -1162,9 +1158,9 @@ static void blur(const Grab *m) {
 // the same instances) is blurred anew each frame, as is a frame an image under it had no texture for yet.
 #define MB_GLASS_SLOTS 8
 typedef struct {
-  GLuint bt, bfb, rt, rfb;
-  int bw, bh, rw, rh;
-  GLenum bf, rf;
+  GLuint bt, bfb;
+  int bw, bh;
+  GLenum bf;
   float *under;
   size_t under_cap, under_n;
   int32_t whole, picked;
@@ -1191,8 +1187,8 @@ static void glass_lost(void) {
   lv_w = lv_h = 0;
   for (int i = 0; i < MB_GLASS_SLOTS; i++) {
     glass_slot *s = &slots[i];
-    s->bt = s->bfb = s->rt = s->rfb = 0;
-    s->bw = s->bh = s->rw = s->rh = 0;
+    s->bt = s->bfb = 0;
+    s->bw = s->bh = 0;
   }
   glass_forget();
 }
@@ -1212,15 +1208,11 @@ static void glass_free(void) {
       glDeleteFramebuffers(1, &s->bfb);
       glDeleteTextures(1, &s->bt);
     }
-    if (s->rt) {
-      glDeleteFramebuffers(1, &s->rfb);
-      glDeleteTextures(1, &s->rt);
-    }
     free(s->under);
     s->under = NULL;
     s->under_cap = s->under_n = 0;
   }
-  bd_tex = r_tex = 0;
+  bd_tex = 0;
   glass_lost();
 }
 
@@ -1323,8 +1315,8 @@ static void slot_copy(GLuint *t, GLuint *fb, int *tw, int *th, GLenum *tf, const
   glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
 }
 
-// The blur just made (blur) kept in the slot least lately shown: copied out of the levels, liquid glass's sharp level
-// too where it is apart. Not yet said to be of anything (valid).
+// The blur just made (blur) kept in the slot least lately shown: copied out of the levels.
+// Not yet said to be of anything (valid).
 static glass_slot *slot_fill(const Grab *m) {
   glass_slot *s = &slots[0];
   for (int i = 0; i < MB_GLASS_SLOTS; i++) {
@@ -1337,26 +1329,14 @@ static glass_slot *slot_fill(const Grab *m) {
   s->valid = 0;
   int lw[4], lh[4];
   grab_levels(m, lw, lh);
-  level *L = grab_blurred(m), *R = grab_sharp(m);
-  int rk = m->k >= 2 ? 1 : m->k == 1 && !m->contained ? 0 : m->k;
+  level *L = grab_blurred(m);
   slot_copy(&s->bt, &s->bfb, &s->bw, &s->bh, &s->bf, L, lw[m->k], lh[m->k]);
-  // (frosted glass sees no sharp level, liquid's shapes are counted: grab_of)
-  // (a sharp level the slot kept for liquid glass before is given back: slot_show reads it only as this says)
-  if (m->n > 0 && R != L) slot_copy(&s->rt, &s->rfb, &s->rw, &s->rh, &s->rf, R, lw[rk], lh[rk]);
-  else if (s->rt) {
-    glDeleteFramebuffers(1, &s->rfb);
-    glDeleteTextures(1, &s->rt);
-    s->rt = s->rfb = 0;
-    s->rw = s->rh = 0;
-  }
   return s;
 }
 
 static void slot_show(const Grab *m, glass_slot *s) {
   s->used = ++slots_clock;
-  int sharp_apart = m->n > 0 && grab_sharp(m) != grab_blurred(m);
-  if (sharp_apart) show_blur(m, s->bt, s->bw, s->bh, s->rt, s->rw, s->rh);
-  else show_blur(m, s->bt, s->bw, s->bh, s->bt, s->bw, s->bh);
+  show_blur(m, s->bt, s->bw, s->bh);
 }
 
 static void slot_keep(glass_slot *s, const Grab *m, const double key[9]) {
@@ -1410,8 +1390,6 @@ static void use_prog(int kind) {
   glUniform1f(k->scale, (float)cur_scale);
   glUniform4fv(k->map, 1, gmap);
   glUniform4fv(k->uvc, 1, guvc);
-  glUniform4fv(k->rmap, 1, rmap);
-  glUniform4fv(k->ruvc, 1, ruvc);
   glUniform4fv(k->gb, 1, ggb);
   glUniform4fv(k->shape, 8, gshape);
   glUniform4fv(k->rad, 2, grad);
@@ -1770,7 +1748,6 @@ static void draw_into(GLuint fb, int part) {
   gr[16] = -1e9f; gr[17] = -1e9f; gr[18] = 1e9f; gr[19] = 1e9f;
   segs_upload(count);
   bd_tex = 0;
-  r_tex = 0;
   memset(gmap, 0, sizeof gmap);
   memset(guvc, 0, sizeof guvc);
   memset(ggb, 0, sizeof ggb);
@@ -1815,14 +1792,9 @@ static void draw_into(GLuint fb, int part) {
       if (shows) {
         for (int i = 0; i < MB_INST / 4; i++)
           glVertexAttribPointer(i, 4, GL_FLOAT, GL_FALSE, MB_INST * 4, (void *)(intptr_t)(start * MB_INST * 4 + i * 16));
-        // liquid: the group as one shape, drawn once, its capture's sharp level in unit 1 (an image's run after it
-        // binds its own there again; the unit left active as main_state leaves it, 2)
-        int merged_liquid = (int)(fbuf[start * MB_INST + 5] + 0.5f) == 6 && fbuf[start * MB_INST + 14] >= 0.0f;
-        if (merged_liquid) {
-          glActiveTexture(GL_TEXTURE1);
-          glBindTexture(GL_TEXTURE_2D, r_tex ? r_tex : atlas);
-          glActiveTexture(GL_TEXTURE2);
-        }
+        // merged liquid (merge > 0): the group as one shape, drawn once; unmerged liquid and frosted: each instance
+        int merged_liquid = (int)(fbuf[start * MB_INST + 5] + 0.5f) == 6 && fbuf[start * MB_INST + 14] >= 0.0f &&
+                            fbuf[start * MB_INST + 23] > 0.0f;
         glDrawArraysInstanced(GL_TRIANGLES, 0, 6, merged_liquid ? 1 : end - start);
       }
       start = end;

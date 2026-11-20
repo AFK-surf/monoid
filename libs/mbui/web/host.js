@@ -454,8 +454,8 @@
     int vid = gl_VertexID;
     vec2 corner = vec2((vid == 1 || vid == 4 || vid == 5) ? 1.0 : 0.0, (vid == 2 || vid == 3 || vid == 5) ? 1.0 : 0.0);
     int kind = int(a_p.y + 0.5);
-    bool merged_liquid = kind == 6 && a_c2.z >= 0.0;
-    float grow = kind == 2 ? a_p.w * 3.0 + 2.0 : ((kind == 0 || kind == 4 || kind == 5 || (kind == 6 && a_c2.z < 0.0)) ? 1.0 : 0.0);
+    bool merged_liquid = kind == 6 && a_c2.z >= 0.0 && a_pad.w > 0.0;
+    float grow = kind == 2 ? a_p.w * 3.0 + 2.0 : (kind == 6 && a_c2.z >= 0.0 && a_pad.w <= 0.0) ? 2.0 : ((kind == 0 || kind == 4 || kind == 5 || (kind == 6 && a_c2.z < 0.0)) ? 1.0 : 0.0);
     vec2 pos = a_rect.xy - grow + corner * (a_rect.zw + 2.0 * grow);
     if (merged_liquid) pos = mix(u_gb.xy, u_gb.zw, corner);
     // the pieces of shapes (kind 12): nothing drawn
@@ -781,9 +781,6 @@
   uniform highp sampler2D u_bd;
   uniform vec4 u_map;
   uniform vec4 u_uvc;
-  // where a point is in the capture's sharp level (u_img while liquid glass is drawn: capture's rTex)
-  uniform vec4 u_rmap;
-  uniform vec4 u_ruvc;
   // a liquid group's bounds (as the vertex shader has them)
   uniform vec4 u_gb;
   uniform vec4 u_shape[8];
@@ -1022,15 +1019,22 @@
       // Copyright 2025, Tim Lehmann for whynotmake.it. Adapted from flutter_liquid_glass
       // liquid_glass_final_render_core.glsl, Apache-2.0.
       float k = v_pad.w;
-      float d = sd_group(p, k);
+      vec4 s_rr = max(max(v_rr.x, v_rr.y), max(v_rr.z, v_rr.w)) > 0.0 ? v_rr : vec4(v_p.x);
+      float d;
       float halfMinor = 1e9;
-      float best_d = 1e9;
-      for (int i = 0; i < 8; i++) {
-        if (i >= u_n) break;
-        float di = sd_rr(p, u_shape[i], vec4(u_rad[i / 4][i % 4]));
-        if (di < best_d) {
-          best_d = di;
-          halfMinor = min(u_shape[i].z, u_shape[i].w) * 0.5;
+      if (k <= 0.0) {
+        d = sd_rr(p, v_rect, s_rr);
+        halfMinor = min(v_rect.z, v_rect.w) * 0.5;
+      } else {
+        d = sd_group(p, k);
+        float best_d = 1e9;
+        for (int i = 0; i < 8; i++) {
+          if (i >= u_n) break;
+          float di = sd_rr(p, u_shape[i], vec4(u_rad[i / 4][i % 4]));
+          if (di < best_d) {
+            best_d = di;
+            halfMinor = min(u_shape[i].z, u_shape[i].w) * 0.5;
+          }
         }
       }
       halfMinor = max(halfMinor, 1.0);
@@ -1042,10 +1046,15 @@
                     - mb_contour_int(max(outward - 0.5, 0.0), edgeW);
       if (materialAlpha < 0.01 && ext_cov < 0.01) discard;
       float e = 0.5;
-      vec2 grad = vec2(
-        sd_group(p + vec2(e, 0.0), k) - sd_group(p - vec2(e, 0.0), k),
-        sd_group(p + vec2(0.0, e), k) - sd_group(p - vec2(0.0, e), k)
-      ) / (2.0 * e);
+      vec2 grad = k <= 0.0
+        ? vec2(
+            sd_rr(p + vec2(e, 0.0), v_rect, s_rr) - sd_rr(p - vec2(e, 0.0), v_rect, s_rr),
+            sd_rr(p + vec2(0.0, e), v_rect, s_rr) - sd_rr(p - vec2(0.0, e), v_rect, s_rr)
+          ) / (2.0 * e)
+        : vec2(
+            sd_group(p + vec2(e, 0.0), k) - sd_group(p - vec2(e, 0.0), k),
+            sd_group(p + vec2(0.0, e), k) - sd_group(p - vec2(0.0, e), k)
+          ) / (2.0 * e);
       float gradLen = length(grad);
       vec2 surfaceNormal = gradLen > 0.0001 ? grad / gradLen : vec2(0.0, 0.0);
       float shortening = sqrt(clamp(gradLen, 0.0, 1.0));
@@ -1325,7 +1334,7 @@
     gl.attachShader(post, compile(gl.FRAGMENT_SHADER, PFS));
     gl.linkProgram(post);
     if (!gl.getProgramParameter(post, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(post));
-    for (const n of ['u_vp', 'u_scale', 'u_atlas', 'u_img', 'u_bd', 'u_map', 'u_uvc', 'u_rmap', 'u_ruvc', 'u_gb', 'u_shape', 'u_rad', 'u_n', 'u_segs']) U[n] = gl.getUniformLocation(prog, n);
+    for (const n of ['u_vp', 'u_scale', 'u_atlas', 'u_img', 'u_bd', 'u_map', 'u_uvc', 'u_gb', 'u_shape', 'u_rad', 'u_n', 'u_segs']) U[n] = gl.getUniformLocation(prog, n);
     for (const n of ['u_src', 'u_a', 'u_b', 'u_c']) PU[n] = gl.getUniformLocation(post, n);
     vao = gl.createVertexArray();
     gl.bindVertexArray(vao);
@@ -1358,9 +1367,8 @@
   // channel as the canvas has; what the passes write keeps 10 (RGB10_A2, in as many bytes): at 8 each pass rounds the
   // frost's slow slopes into flat steps, a texel of the last level 8 pixels wide on the screen (a blur under 4 pixels,
   // too narrow to halve, is written back into the copy: it leaves no slope that wide).
-  let lv = null, lvW = 0, lvH = 0, bdTex = null, rTex = null;
+  let lv = null, lvW = 0, lvH = 0, bdTex = null;
   const gmap = new Float32Array(4), guvc = new Float32Array(4), ggb = new Float32Array(4);
-  const rmap = new Float32Array(4), ruvc = new Float32Array(4);
   const gshape = new Float32Array(32), grad = new Float32Array(8);
   let gn = 0;
   function levelTex(format, w, h) {
@@ -1383,7 +1391,7 @@
   let glassIdle = 0, glassDrawn = false;
   function glassFree() {
     if (lv && gl) for (const l of lv) { gl.deleteTexture(l.t); gl.deleteFramebuffer(l.fb); }
-    lv = null; lvW = 0; lvH = 0; bdTex = null; rTex = null;
+    lv = null; lvW = 0; lvH = 0; bdTex = null;
   }
   function glassIdleTick() {
     if (glassDrawn) glassIdle = 0;
@@ -1472,8 +1480,8 @@
     const a = start * INST;
     // A negative blur is contained: its straight edges are the capture's edges, its curved ones extended separately.
     const blur = Math.abs(f32[a + 7]), kind = Math.round(f32[a + 5]);
-    const mergedLiquid = kind === 6 && f32[a + 14] >= 0;
-    const lens = kind === 6 && f32[a + 14] < 0;
+    const mergedLiquid = kind === 6 && f32[a + 14] >= 0 && f32[a + 23] > 0;
+    const unmergedLiquid = kind === 6 && !mergedLiquid;
     let margin = f32[a + 7] < 0 ? 0 : 3 * blur + (kind === 6 ? f32[a + 21] * (1 + f32[a + 22]) + Math.max(f32[a + 23], 0) : 0) + 2;
     let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
     gn = 0;
@@ -1482,24 +1490,24 @@
       let bx0 = Math.max(f32[b], f32[b + 16]), by0 = Math.max(f32[b + 1], f32[b + 17]);
       let bx1 = Math.min(f32[b] + f32[b + 2], f32[b + 18]), by1 = Math.min(f32[b + 1] + f32[b + 3], f32[b + 19]);
       if (kind === 6) {
-        const m = Math.max(lens ? f32[b + 23] : f32[a + 23], 0);
+        const m = Math.max(unmergedLiquid ? f32[b + 23] : f32[a + 23], 0);
         bx0 = f32[b] - m; by0 = f32[b + 1] - m; bx1 = f32[b] + f32[b + 2] + m; by1 = f32[b + 1] + f32[b + 3] + m;
         if (mergedLiquid && gn < 8) {
           for (let k = 0; k < 4; k++) gshape[gn * 4 + k] = f32[b + k];
           grad[gn] = f32[b + 4];
           gn++;
         }
-        if (lens && f32[a + 7] >= 0) {
+        if (unmergedLiquid && f32[a + 7] >= 0) {
           const bm = 3 * blur + f32[b + 21] * (1 + f32[b + 22]) + m + 2;
           if (bm > margin) margin = bm;
         }
       }
       x0 = Math.min(x0, bx0); y0 = Math.min(y0, by0); x1 = Math.max(x1, bx1); y1 = Math.max(y1, by1);
     }
-    for (let i = end; (kind === 5 || lens) && i < count; i++) {
+    for (let i = end; (kind === 5 || unmergedLiquid) && i < count; i++) {
       const b = i * INST;
       if (f32[b + 20] !== f32[a + 20]) continue;
-      if (lens) {
+      if (unmergedLiquid) {
         const m = Math.max(f32[b + 23], 0);
         x0 = Math.min(x0, f32[b] - m); y0 = Math.min(y0, f32[b + 1] - m);
         x1 = Math.max(x1, f32[b] + f32[b + 2] + m); y1 = Math.max(y1, f32[b + 1] + f32[b + 3] + m);
@@ -1566,14 +1574,6 @@
     gmap[0] = sc / d / L.w; gmap[1] = -sc / d / L.h;
     gmap[2] = -px0 / d / L.w; gmap[3] = (Hh - pb0) / d / L.h;
     guvc[0] = 0.5 / L.w; guvc[1] = 0.5 / L.h; guvc[2] = (lw[k] - 0.5) / L.w; guvc[3] = (lh[k] - 0.5) / L.h;
-    // the sharp one liquid glass sees through its lip, of the levels its blur left as they were copied: the half once
-    // halved twice or more, the copy once halved (not contained: contained, its copy is the edge's pass's), else L
-    const rk = k >= 2 ? 1 : k === 1 && !contained ? 0 : k;
-    const R = k >= 2 ? lv[1] : k === 1 && !contained ? lv[0] : L, rd = 1 << rk;
-    rTex = R.t;
-    rmap[0] = sc / rd / R.w; rmap[1] = -sc / rd / R.h;
-    rmap[2] = -px0 / rd / R.w; rmap[3] = (Hh - pb0) / rd / R.h;
-    ruvc[0] = 0.5 / R.w; ruvc[1] = 0.5 / R.h; ruvc[2] = (lw[rk] - 0.5) / R.w; ruvc[3] = (lh[rk] - 0.5) / R.h;
     return true;
   }
   // the main program's state, after the passes
@@ -1603,8 +1603,6 @@
     gl.uniform1i(U.u_bd, 2);
     gl.uniform4fv(U.u_map, gmap);
     gl.uniform4fv(U.u_uvc, guvc);
-    gl.uniform4fv(U.u_rmap, rmap);
-    gl.uniform4fv(U.u_ruvc, ruvc);
     gl.uniform4fv(U.u_gb, ggb);
     gl.uniform4fv(U.u_shape, gshape);
     gl.uniform4fv(U.u_rad, grad);
@@ -1725,7 +1723,6 @@
       if (n === 0) return;
     }
     bdTex = null;
-    rTex = null;
     gmap.fill(0); guvc.fill(0); ggb.fill(0); gn = 0;
     gl.useProgram(prog);
     gl.bindVertexArray(vao);
@@ -1757,13 +1754,8 @@
         }
         if (shows) {
           for (let i = 0; i < INST / 4; i++) gl.vertexAttribPointer(i, 4, gl.FLOAT, false, INST * 4, start * INST * 4 + i * 16);
-          // liquid: the group as one shape, drawn once, its capture's sharp level in unit 1 (an image's run after it
-          // binds its own there again)
-          const mergedLiquid = Math.round(f32[start * INST + 5]) === 6 && f32[start * INST + 14] >= 0;
-          if (mergedLiquid) {
-            gl.activeTexture(gl.TEXTURE1);
-            gl.bindTexture(gl.TEXTURE_2D, rTex || atlasTex);
-          }
+          // merged liquid (merge > 0): the group as one shape, drawn once; unmerged liquid and frosted: each instance
+          const mergedLiquid = Math.round(f32[start * INST + 5]) === 6 && f32[start * INST + 14] >= 0 && f32[start * INST + 23] > 0;
           gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, mergedLiquid ? 1 : end - start);
         }
         start = end;
@@ -3530,7 +3522,7 @@
   };
   const contextRestored = () => {
     setupGL();
-    lv = null; lvW = 0; lvH = 0; bdTex = null; rTex = null;
+    lv = null; lvW = 0; lvH = 0; bdTex = null;
     segsTex = null; segsRows = 0; segsHad = null; segsHadRows = 0;
     uploadedFor = -1;
     textChanged();
@@ -4186,7 +4178,7 @@
   function winSave(s) {
     Object.assign(s, {
       canvas, gl, prog, post, vao, instBuf, atlasTex, ta, U, PU, cssW, cssH, dpr, sizeDirty, sizeObserver,
-      lv, lvW, lvH, bdTex, rTex, cv, cvOk, target, dirty, dirtyWhole, dirtyTold, missing, drewMissing, cutOn,
+      lv, lvW, lvH, bdTex, cv, cvOk, target, dirty, dirtyWhole, dirtyTold, missing, drewMissing, cutOn,
       segsTex, segsRows, segsHad, segsHadRows, uploadedFor, imeActive, composing, taHad, imeKind, viewLayer,
       under, coverBoxes, takePresses, doc, hostWin, glassIdle,
     });
@@ -4194,7 +4186,7 @@
   function winLoad(s) {
     ({
       canvas, gl, prog, post, vao, instBuf, atlasTex, ta, U, PU, cssW, cssH, dpr, sizeDirty, sizeObserver,
-      lv, lvW, lvH, bdTex, rTex, cv, cvOk, target, dirty, dirtyWhole, dirtyTold, missing, drewMissing, cutOn,
+      lv, lvW, lvH, bdTex, cv, cvOk, target, dirty, dirtyWhole, dirtyTold, missing, drewMissing, cutOn,
       segsTex, segsRows, segsHad, segsHadRows, uploadedFor, imeActive, composing, taHad, imeKind, viewLayer,
       under, coverBoxes, takePresses, doc, hostWin, glassIdle,
     } = s);
@@ -4329,7 +4321,7 @@
     }
     Object.assign(s, {
       gl: null, prog: null, post: null, vao: null, instBuf: null, atlasTex: null, segsTex: null, segsHad: null,
-      lv: null, lvW: 0, lvH: 0, bdTex: null, rTex: null, cv: null, cvOk: false, target: null,
+      lv: null, lvW: 0, lvH: 0, bdTex: null, cv: null, cvOk: false, target: null,
     });
     // (the views it showed, the app's still where it keeps them: out of its document, placed again where it next shows
     // one, H.viewPlace)
@@ -4443,7 +4435,7 @@
       texs: new Map(),
       canvas: ccanvas, gl: null, prog: null, post: null, vao: null, instBuf: null, atlasTex: null, ta: cta,
       U: {}, PU: {}, cssW: 0, cssH: 0, dpr: child.devicePixelRatio || 1, sizeDirty: true, sizeObserver: null,
-      lv: null, lvW: 0, lvH: 0, bdTex: null, rTex: null, cv: null, cvOk: false, target: null, dirty: [],
+      lv: null, lvW: 0, lvH: 0, bdTex: null, cv: null, cvOk: false, target: null, dirty: [],
       dirtyWhole: false, dirtyTold: false, missing: false, drewMissing: false, cutOn: false, segsTex: null,
       segsRows: 0, segsHad: null, segsHadRows: 0, uploadedFor: -1, imeActive: false, composing: false, taHad: '',
       imeKind: 0, viewLayer: null, under: null, coverBoxes: [], takePresses: null, doc: cdoc, hostWin: child,
@@ -4493,7 +4485,7 @@
     s.canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); });
     s.canvas.addEventListener('webglcontextrestored', () => inWin(wid, () => {
       setupGL();
-      lv = null; lvW = 0; lvH = 0; bdTex = null; rTex = null;
+      lv = null; lvW = 0; lvH = 0; bdTex = null;
       segsTex = null; segsRows = 0; segsHad = null; segsHadRows = 0;
       uploadedFor = -1;
       s.texs.clear();

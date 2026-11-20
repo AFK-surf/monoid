@@ -260,8 +260,8 @@ static NSString *shader_src = @
 "struct U { float2 vp; float scale; float pad; };\n"
 "// glass: where a point's backdrop is in the blurred copy (uv = p * map.xy + map.zw, kept in uvc), a liquid group's\n"
 "// bounds, shapes and corners, how many (misc.x); misc.y 1 where what it copied of a native view's hole is let through\n"
-"// (glass_through); rmap and ruvc where it is in the capture's sharp level (img, while liquid glass is drawn)\n"
-"struct G { float4 map; float4 uvc; float4 gb; float4 shape[8]; float4 rad[2]; float4 misc; float4 rmap; float4 ruvc; };\n"
+"// (glass_through)\n"
+"struct G { float4 map; float4 uvc; float4 gb; float4 shape[8]; float4 rad[2]; float4 misc; };\n"
 "struct VOut { float4 pos [[position]]; float2 p; float2 cp; uint iid [[flat]]; };\n"
 "vertex VOut vmain(uint vid [[vertex_id]], uint iid [[instance_id]],\n"
 "    const device Inst* inst [[buffer(0)]], constant U& u [[buffer(1)]], constant G& g [[buffer(2)]]) {\n"
@@ -269,8 +269,8 @@ static NSString *shader_src = @
 "  float2 corner = float2((vid == 1 || vid == 4 || vid == 5) ? 1.0 : 0.0,\n"
 "                         (vid == 2 || vid == 3 || vid == 5) ? 1.0 : 0.0);\n"
 "  int kind = int(I.p.y + 0.5);\n"
-"  bool merged_liquid = kind == 6 && I.c2.z >= 0.0;\n"
-"  float grow = kind == 2 ? I.p.w * 3.0 + 2.0 : ((kind == 0 || kind == 4 || kind == 5 || (kind == 6 && I.c2.z < 0.0)) ? 1.0 : 0.0);\n"
+"  bool merged_liquid = kind == 6 && I.c2.z >= 0.0 && I.pad.w > 0.0;\n"
+"  float grow = kind == 2 ? I.p.w * 3.0 + 2.0 : (kind == 6 && I.c2.z >= 0.0 && I.pad.w <= 0.0) ? 2.0 : ((kind == 0 || kind == 4 || kind == 5 || (kind == 6 && I.c2.z < 0.0)) ? 1.0 : 0.0);\n"
 "  float2 pos = I.rect.xy - grow + corner * (I.rect.zw + 2.0 * grow);\n"
 "  if (merged_liquid) pos = mix(g.gb.xy, g.gb.zw, corner);\n"
 "  // the pieces of shapes (kind 12): nothing drawn\n"
@@ -516,16 +516,23 @@ MB_CORNER_SL
 "    // Copyright 2025, Tim Lehmann for whynotmake.it. Adapted from flutter_liquid_glass\n"
 "    // liquid_glass_final_render_core.glsl, Apache-2.0.\n"
 "    float k = I.pad.w;\n"
-"    float d = sd_group(p, g, k);\n"
+"    float4 s_rr = max(max(I.rr.x, I.rr.y), max(I.rr.z, I.rr.w)) > 0.0 ? I.rr : float4(I.p.x);\n"
+"    float d;\n"
 "    float halfMinor = 1e9;\n"
-"    float best_d = 1e9;\n"
-"    int n_sh = int(g.misc.x + 0.5);\n"
-"    for (int i = 0; i < 8; i++) {\n"
-"      if (i >= n_sh) break;\n"
-"      float di = sd_rr(p, g.shape[i], float4(g.rad[i / 4][i % 4]));\n"
-"      if (di < best_d) {\n"
-"        best_d = di;\n"
-"        halfMinor = min(g.shape[i].z, g.shape[i].w) * 0.5;\n"
+"    if (k <= 0.0) {\n"
+"      d = sd_rr(p, I.rect, s_rr);\n"
+"      halfMinor = min(I.rect.z, I.rect.w) * 0.5;\n"
+"    } else {\n"
+"      d = sd_group(p, g, k);\n"
+"      float best_d = 1e9;\n"
+"      int n_sh = int(g.misc.x + 0.5);\n"
+"      for (int i = 0; i < 8; i++) {\n"
+"        if (i >= n_sh) break;\n"
+"        float di = sd_rr(p, g.shape[i], float4(g.rad[i / 4][i % 4]));\n"
+"        if (di < best_d) {\n"
+"          best_d = di;\n"
+"          halfMinor = min(g.shape[i].z, g.shape[i].w) * 0.5;\n"
+"        }\n"
 "      }\n"
 "    }\n"
 "    halfMinor = max(halfMinor, 1.0);\n"
@@ -537,10 +544,15 @@ MB_CORNER_SL
 "                  - mb_contour_int(max(outward - 0.5, 0.0), edgeW);\n"
 "    if (materialAlpha < 0.01 && ext_cov < 0.01) discard_fragment();\n"
 "    float e = 0.5;\n"
-"    float2 grad = float2(\n"
-"      sd_group(p + float2(e, 0.0), g, k) - sd_group(p - float2(e, 0.0), g, k),\n"
-"      sd_group(p + float2(0.0, e), g, k) - sd_group(p - float2(0.0, e), g, k)\n"
-"    ) / (2.0 * e);\n"
+"    float2 grad = k <= 0.0\n"
+"      ? float2(\n"
+"          sd_rr(p + float2(e, 0.0), I.rect, s_rr) - sd_rr(p - float2(e, 0.0), I.rect, s_rr),\n"
+"          sd_rr(p + float2(0.0, e), I.rect, s_rr) - sd_rr(p - float2(0.0, e), I.rect, s_rr)\n"
+"        ) / (2.0 * e)\n"
+"      : float2(\n"
+"          sd_group(p + float2(e, 0.0), g, k) - sd_group(p - float2(e, 0.0), g, k),\n"
+"          sd_group(p + float2(0.0, e), g, k) - sd_group(p - float2(0.0, e), g, k)\n"
+"        ) / (2.0 * e);\n"
 "    float gradLen = length(grad);\n"
 "    float2 surfaceNormal = gradLen > 0.0001 ? grad / gradLen : float2(0.0, 0.0);\n"
 "    float shortening = sqrt(clamp(gradLen, 0.0, 1.0));\n"
@@ -983,10 +995,9 @@ static void atlas_flush(uint64_t upto) {
 // slopes into flat steps, a texel of the last level 8 pixels wide on the screen (a blur under 4 pixels, too narrow to
 // halve, is written back into the copy: it leaves no slope that wide).
 
-typedef struct { float map[4]; float uvc[4]; float gb[4]; float shape[8][4]; float rad[2][4]; float misc[4]; float rmap[4]; float ruvc[4]; } GU;
+typedef struct { float map[4]; float uvc[4]; float gb[4]; float shape[8][4]; float rad[2][4]; float misc[4]; } GU;
 static GU gu;
 static id<MTLTexture> gtex;  // the blurred copy the glass in view shows
-static id<MTLTexture> rtex;  // the sharp level of it liquid glass sees through its lip (texture 1 while it is drawn)
 
 static id<MTLTexture> level_tex(MTLPixelFormat format, int w, int h) {
   MTLTextureDescriptor *td = [MTLTextureDescriptor
@@ -1129,8 +1140,8 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
   // A negative blur is contained: its straight edges are the capture's edges, its curved ones extended separately.
   float blur = fabsf(a[7]);
   int kind = (int)(a[5] + 0.5f);
-  int merged_liquid = (kind == 6 && a[14] >= 0.0f);
-  int lens = (kind == 6 && a[14] < 0.0f);
+  int merged_liquid = (kind == 6 && a[14] >= 0.0f && a[23] > 0.0f);
+  int unmerged_liquid = (kind == 6 && !merged_liquid);
   float margin = a[7] < 0.0f ? 0.0f : 3.0f * blur + (kind == 6 ? a[21] * (1.0f + a[22]) + fmaxf(a[23], 0.0f) : 0.0f) + 2.0f;
   float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
   int n = 0;
@@ -1140,25 +1151,25 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
     float bx0 = fmaxf(b[0], b[16]), by0 = fmaxf(b[1], b[17]);
     float bx1 = fminf(b[0] + b[2], b[18]), by1 = fminf(b[1] + b[3], b[19]);
     if (kind == 6) {
-      float m23 = fmaxf(lens ? b[23] : a[23], 0.0f);
+      float m23 = fmaxf(unmerged_liquid ? b[23] : a[23], 0.0f);
       bx0 = b[0] - m23; by0 = b[1] - m23; bx1 = b[0] + b[2] + m23; by1 = b[1] + b[3] + m23;
       if (merged_liquid && n < 8) {
         for (int k = 0; k < 4; k++) m->g.shape[n][k] = b[k];
         m->g.rad[n / 4][n % 4] = b[4];
         n++;
       }
-      if (lens && a[7] >= 0.0f) {
+      if (unmerged_liquid && a[7] >= 0.0f) {
         float bm = 3.0f * blur + b[21] * (1.0f + b[22]) + m23 + 2.0f;
         if (bm > margin) margin = bm;
       }
     }
     x0 = fminf(x0, bx0); y0 = fminf(y0, by0); x1 = fmaxf(x1, bx1); y1 = fmaxf(y1, by1);
   }
-  if (kind == 5 || lens) {
+  if (kind == 5 || unmerged_liquid) {
     for (int32_t i = end; i < count; i++) {
       const float *b = f + i * MB_INST;
       if (b[20] != a[20]) continue;
-      if (lens) {
+      if (unmerged_liquid) {
         float m23 = fmaxf(b[23], 0.0f);
         x0 = fminf(x0, b[0] - m23); y0 = fminf(y0, b[1] - m23);
         x1 = fmaxf(x1, b[0] + b[2] + m23); y1 = fmaxf(y1, b[1] + b[3] + m23);
@@ -1206,9 +1217,9 @@ static void grab_levels(const Grab *m, int lw[4], int lh[4]) {
   }
 }
 
-// What the glass shows of a grab's blur in texture `bt` (level k's place in it) and its sharp level in `rt`: gtex,
-// rtex, and gu, its numbers with where in them it is.
-static void show_blur(const Grab *m, id<MTLTexture> bt, id<MTLTexture> rt) {
+// What the glass shows of a grab's blur in texture `bt` (level k's place in it): gtex and gu, its numbers with where
+// in it it is.
+static void show_blur(const Grab *m, id<MTLTexture> bt) {
   int lw[4], lh[4];
   grab_levels(m, lw, lh);
   gu = m->g;
@@ -1219,23 +1230,10 @@ static void show_blur(const Grab *m, id<MTLTexture> bt, id<MTLTexture> rt) {
   gu.map[2] = -(float)m->px0 / d / W; gu.map[3] = -(float)m->py0 / d / H;
   gu.uvc[0] = 0.5f / W; gu.uvc[1] = 0.5f / H;
   gu.uvc[2] = ((float)lw[m->k] - 0.5f) / W; gu.uvc[3] = ((float)lh[m->k] - 0.5f) / H;
-  // the sharp one, of the levels its blur left as they were copied (blur): the half once halved twice or more, the
-  // copy once halved (not contained: contained, its copy is the edge's pass's, ltmp), else the blurred one itself
-  // (grab_sharp)
-  int rk = m->k >= 2 ? 1 : m->k == 1 && !m->contained ? 0 : m->k;
-  rtex = rt;
-  float RW = (float)rtex.width, RH = (float)rtex.height, rd = (float)(1 << rk);
-  gu.rmap[0] = sc / rd / RW; gu.rmap[1] = sc / rd / RH;
-  gu.rmap[2] = -(float)m->px0 / rd / RW; gu.rmap[3] = -(float)m->py0 / rd / RH;
-  gu.ruvc[0] = 0.5f / RW; gu.ruvc[1] = 0.5f / RH;
-  gu.ruvc[2] = ((float)lw[rk] - 0.5f) / RW; gu.ruvc[3] = ((float)lh[rk] - 0.5f) / RH;
 }
 
-// The level a grab's blur is left in, and the one its sharp level is (the blur's own where it has none apart).
+// The level a grab's blur is left in.
 static id<MTLTexture> grab_blurred(const Grab *m) { return m->contained && m->k == 0 ? ltmp : lv[m->k]; }
-static id<MTLTexture> grab_sharp(const Grab *m) {
-  return m->k >= 2 ? lv[1] : m->k == 1 && !m->contained ? lv[0] : grab_blurred(m);
-}
 
 // A grab of target blurred into the levels: what is drawn so far in its rectangle copied out, halved k times, the
 // Gaussian left (passes of their own, the target's pass ended before; grab_blurred). The levels are shared by every
@@ -1266,7 +1264,7 @@ static void blur(id<MTLCommandBuffer> cb, id<MTLTexture> target, const Grab *m) 
 
 // The blurs kept, a slot each, as many as a window has groups of glass at once (a bar at the top, a composer and its
 // ground at the foot, a sheet's, a page sliding over another: 2 to 6), the one least lately shown taken for a new one
-// (gles_render.h's, GLES's). A slot holds a capture's blur (and liquid glass's sharp level) copied out of the levels,
+// (gles_render.h's, GLES's). A slot holds a capture's blur copied out of the levels,
 // as big as the levels (so it is shown by the same numbers as the level it came from, to the byte), and what it was
 // of. What a capture copies is what the frame drew before it in the grab's rectangle (the instances up to the glass
 // that reach into it, the pieces of the frame's shapes they are drawn by, the ground the frame cleared to) of a target
@@ -1286,7 +1284,7 @@ typedef struct {
   unsigned used;
 } GlassSlot;
 static GlassSlot slots[MB_GLASS_SLOTS];
-static id<MTLTexture> slot_bt[MB_GLASS_SLOTS], slot_rt[MB_GLASS_SLOTS];
+static id<MTLTexture> slot_bt[MB_GLASS_SLOTS];
 static unsigned slots_clock;
 // what the capture now is of (under_take), as a slot keeps it
 static float *under_now;
@@ -1302,9 +1300,8 @@ static void glass_free(void) {
   for (int j = 0; j < 4; j++) lv[j] = nil;
   ltmp = nil;
   gtex = nil;
-  rtex = nil;
   for (int i = 0; i < MB_GLASS_SLOTS; i++) {
-    slot_bt[i] = slot_rt[i] = nil;
+    slot_bt[i] = nil;
     free(slots[i].under);
     slots[i].under = NULL;
     slots[i].under_cap = slots[i].under_n = 0;
@@ -1405,8 +1402,8 @@ static void slot_copy(id<MTLBlitCommandEncoder> bl, id<MTLTexture> __strong *t, 
     destinationOrigin:MTLOriginMake(0, 0, 0)];
 }
 
-// The blur just made (blur) kept in the slot least lately shown: copied out of the levels, liquid glass's sharp level
-// too where it is apart. Not yet said to be of anything (valid).
+// The blur just made (blur) kept in the slot least lately shown: copied out of the levels.
+// Not yet said to be of anything (valid).
 static int slot_fill(id<MTLCommandBuffer> cb, const Grab *m) {
   int i = 0;
   for (int j = 0; j < MB_GLASS_SLOTS; j++) {
@@ -1419,22 +1416,16 @@ static int slot_fill(id<MTLCommandBuffer> cb, const Grab *m) {
   slots[i].valid = 0;
   int lw[4], lh[4];
   grab_levels(m, lw, lh);
-  int rk = m->k >= 2 ? 1 : m->k == 1 && !m->contained ? 0 : m->k;
-  id<MTLTexture> L = grab_blurred(m), R = grab_sharp(m);
+  id<MTLTexture> L = grab_blurred(m);
   id<MTLBlitCommandEncoder> bl = [cb blitCommandEncoder];
   slot_copy(bl, &slot_bt[i], L, lw[m->k], lh[m->k]);
-  // (frosted glass sees no sharp level, liquid's shapes are counted: grab_of)
-  // (a sharp level the slot kept for liquid glass before let go of: slot_show reads it only as this says)
-  if (m->g.misc[0] > 0.0f && R != L) slot_copy(bl, &slot_rt[i], R, lw[rk], lh[rk]);
-  else slot_rt[i] = nil;
   [bl endEncoding];
   return i;
 }
 
 static void slot_show(const Grab *m, int i) {
   slots[i].used = ++slots_clock;
-  int sharp_apart = m->g.misc[0] > 0.0f && grab_sharp(m) != grab_blurred(m);
-  show_blur(m, slot_bt[i], sharp_apart ? slot_rt[i] : slot_bt[i]);
+  show_blur(m, slot_bt[i]);
 }
 
 static void slot_keep(int i, const Grab *m, const double key[7]) {
@@ -1574,7 +1565,6 @@ static NSMutableDictionary<NSNumber *, id> *frame_texs(const float *f, int32_t c
 static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderPipelineState> p,
                    id<MTLBuffer> buf, int32_t count, double r, double g, double b, double alpha, const MTLScissorRect *part) {
   gtex = nil;
-  rtex = nil;
   memset(&gu, 0, sizeof gu);
   encode_missing = 0;
   const float *f = (const float *)buf.contents;
@@ -1635,11 +1625,10 @@ static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderP
         bound = tid;
       }
       [enc setRenderPipelineState:p];
-      // liquid: the group as one shape, drawn once, its capture's sharp level in texture 1 (an image's run after it
-      // binds its own there again)
+      // merged liquid (merge > 0): the group as one shape, drawn once; unmerged liquid and frosted: each instance
       if (shows) {
-        int merged_liquid = (int)(f[start * MB_INST + 5] + 0.5f) == 6 && f[start * MB_INST + 14] >= 0.0f;
-        if (merged_liquid) [enc setFragmentTexture:(rtex ?: atlas) atIndex:1];
+        int merged_liquid = (int)(f[start * MB_INST + 5] + 0.5f) == 6 && f[start * MB_INST + 14] >= 0.0f &&
+                            f[start * MB_INST + 23] > 0.0f;
         [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6
                 instanceCount:merged_liquid ? 1 : end - start baseInstance:start];
       }

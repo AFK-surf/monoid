@@ -327,6 +327,8 @@ fn window_kept_ui_3() -> Array[WindowKept] {
   frost_run: 0,
   lens_run: 0,
   lens_blur: 0.0,
+  liquid_run: 0,
+  liquid_blur: 0.0,
   run_start: -1,
   run_len: 0,
   solid: false,
@@ -833,6 +835,8 @@ fn GlassPaint::window_put(self : GlassPaint, o : GlassPaint) -> Unit {
   self.frost_run = o.frost_run
   self.lens_run = o.lens_run
   self.lens_blur = o.lens_blur
+  self.liquid_run = o.liquid_run
+  self.liquid_blur = o.liquid_blur
   self.run_start = o.run_start
   self.run_len = o.run_len
   self.solid = o.solid

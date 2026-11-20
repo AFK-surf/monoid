@@ -369,3 +369,53 @@ test "Backdrop lenses share a capture across non-glass when sharing() with match
   assert_true(lenses[2][20] < 0.0 && lenses[2][20] != lenses[0][20])
   assert_eq(lenses[3][20], lenses[2][20])
 }
+
+///|
+test "unmerged liquid glass (merge=0) shares a capture across shadow when sharing() with matching blur, auto-merges when non-overlapping, and keeps per-corner radii" {
+  let g21 = @ui.Glass::liquid(blur=2.1, merge=0.0)
+  let g21_spot = @ui.Glass::liquid(blur=2.1, merge=0.0, spot=Some((28.0, 28.0)))
+  let g40 = @ui.Glass::liquid(blur=4.0, merge=0.0)
+  let t = @ui.Tester::new(fn(c) {
+    c.box(w=Fill(1.0), h=Fill(1.0), bg=0xE5704AFFL, gap=8.0, fn() {
+      // first unmerged liquid with shadow (kind 2) drawn right after it
+      c.box(w=Px(120.0), h=Px(44.0), radius=22.0, glass=g21, shadow=4.0, fn() {  }) |> ignore
+      // second marked sharing() with same blur and its own spot: shares first's capture across the shadow
+      c.box(w=Px(44.0), h=Px(44.0), radius=22.0, glass=g21_spot.sharing(), shadow=4.0, fn() {  }) |> ignore
+      // third marked sharing() with different blur: must not share
+      c.box(w=Px(44.0), h=Px(44.0), radius=22.0, glass=g40.sharing(), fn() {  }) |> ignore
+      // fourth adjacent non-overlapping (gap=8 > 4) with same blur as third: shares third's capture
+      c.box(w=Px(44.0), h=Px(44.0), radius=22.0, glass=g40, fn() {  }) |> ignore
+    })
+    |> ignore
+  })
+  let gs = t.drawn_instances().filter(fn(a) { a[5] == 6.0 })
+  assert_eq(gs.length(), 4)
+  assert_true(gs[0][20] < 0.0)
+  assert_eq(gs[1][20], gs[0][20])
+  assert_true(gs[1][14] > 0.5)
+  assert_true(gs[2][20] < 0.0 && gs[2][20] != gs[0][20])
+  assert_eq(gs[3][20], gs[2][20])
+
+  // overlapping (or within 2pt quad growth: gap < 4) unmerged liquid instances take separate captures
+  let t2 = @ui.Tester::new(fn(c) {
+    c.box(w=Fill(1.0), h=Fill(1.0), bg=0xE5704AFFL, gap=2.0, fn() {
+      c.box(w=Px(80.0), h=Px(44.0), radius=22.0, glass=g21, fn() {  }) |> ignore
+      c.box(w=Px(80.0), h=Px(44.0), radius=22.0, glass=g21, fn() {  }) |> ignore
+    })
+    |> ignore
+  })
+  let gs2 = t2.drawn_instances().filter(fn(a) { a[5] == 6.0 })
+  assert_eq(gs2.length(), 2)
+  assert_true(gs2[0][20] != gs2[1][20])
+
+  // unmerged liquid glass keeps per-corner radii in a[36..39]
+  let t3 = @ui.Tester::new(fn(c) {
+    c.box(w=Fill(1.0), h=Fill(1.0), bg=0xE5704AFFL, fn() {
+      c.box(style=@ui.style(radius=Corners(20.0, 4.0, 12.0, 0.0)), w=Px(120.0), h=Px(60.0), glass=g21, fn() {  })
+      |> ignore
+    })
+    |> ignore
+  })
+  let gs3 = t3.drawn_instances().filter(fn(a) { a[5] == 6.0 })
+  assert_eq(gs3.map(fn(a) { (a[4], a[36], a[37], a[38], a[39]) }), [(20.0, 20.0, 4.0, 12.0, 0.0)])
+}
