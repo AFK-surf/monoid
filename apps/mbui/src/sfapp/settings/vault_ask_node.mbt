@@ -66,7 +66,7 @@ pub fn vault_foot_node(
       _ => ""
     }
   }
-  let timed = fn() { !save() && answer() is Some(Approve(_)) && timeout().1 > 0 }
+  let timed = fn() { !save() && timeout().1 > 0 }
   let scopes = fn() {
     if save() {
       ["once"]
