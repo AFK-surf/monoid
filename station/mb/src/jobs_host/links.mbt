@@ -738,6 +738,8 @@ pub async fn github_api_on(host : @host.Host, path : String) -> Json {
     "https://api.github.com/\{path}",
     headers=[("user-agent", user_agent), ("accept", "application/vnd.github+json")],
     timeout_ms=link_timeout_ms,
+    // (as preview.ts's `fetch`: a renamed repository's 301 followed)
+    redirect="follow",
   ) catch {
     @host.FetchTimeout => raise HostError(@host.fetch_timed_out)
     e => raise e

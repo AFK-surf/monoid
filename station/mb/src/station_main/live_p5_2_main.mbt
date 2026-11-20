@@ -70,6 +70,7 @@ pub async fn start_live_p5_2(bus : LiveBus) -> Unit {
     read_lately: Map([]),
     runner_all: None,
     runner_unnamed: Set::new(),
+    relieve_low_bytes: None,
   }
   p52_lang_fn.val = () => ctx.lang()
   // The cards' queued outcomes, written by the parts that decide a card (the rigs, the phones, the vault) and their
@@ -151,6 +152,19 @@ pub async fn start_live_p5_2(bus : LiveBus) -> Unit {
       })
     }),
   )
+  // Drive the hub's scheduled timers (idle eviction, transcript lengths, usage) and deferred work.
+  fork_bg(host, "hub timers", async fn() {
+    hub.drive(host.rt, bus.stopped, f => {
+      fork_bg(host, "hub later", async fn() {
+        f() catch {
+          e =>
+            slice_log("warn", "session_hub", "hub later failed", {
+              "error": jstr(said_of(e)),
+            })
+        }
+      })
+    })
+  })
   // The auto-archive's timer, the archived sessions' expiry and the runners' sweep (lifecycle.ts).
   fork_bg(host, "lifecycle", async fn() { ctx.lifecycle() })
 }
@@ -164,6 +178,7 @@ async fn P52::refresh_config(self : P52) -> Unit {
     to_jv(raw),
     self.data,
     _ => None,
+    total_bytes=jnum_of(machine(), "totalmem").unwrap_or(0.0),
   ) catch {
     e => {
       slice_log("warn", "agents", "config.json's hub config not worked out", {
@@ -172,7 +187,20 @@ async fn P52::refresh_config(self : P52) -> Unit {
       return
     }
   }
+  let prev_max = match jfield(self.config, "maxConcurrentTurns") {
+    Number(n, ..) if n > 0.0 => n.to_int()
+    _ => 0
+  }
   self.config = of_jv(worked)
+  let next_max = match jfield(self.config, "maxConcurrentTurns") {
+    Number(n, ..) if n > 0.0 => n.to_int()
+    _ => 0
+  }
+  if next_max != prev_max {
+    if self.actors_program is Some(p) {
+      p.set_max_concurrent_turns(next_max)
+    }
+  }
 }
 
 ///|
@@ -878,6 +906,30 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
     // left to wait for once it asks)
     "live.handedOver" => Json::null()
     "cold.expires" => jb(true)
+    "cold.needsPack" =>
+      jb(
+        self
+        .storage()
+        .needs_pack(
+          match args {
+            String(k) => k
+            _ => s("key")
+          },
+        ),
+      )
+    "cold.cleanIdleRebuildable" =>
+      match
+        self
+        .storage()
+        .clean_idle_rebuildable(
+          match args {
+            String(k) => k
+            _ => s("key")
+          },
+        ) {
+        Some(freed) => jn(freed)
+        None => Json::null()
+      }
     "cold.holdsMore" =>
       jb(
         self
@@ -910,7 +962,10 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
     // finding the disk not low and emptying no archived workspace until 2 GiB were left)
     "disk.low" =>
       match disk_of(self.data) {
-        Some((free, total)) => jb(free < @ops_platform.disk_low(total))
+        Some((free, total)) => {
+          let low = self.relieve_low_bytes.unwrap_or(@ops_platform.disk_low(total))
+          jb(free < low)
+        }
         None => jb(false)
       }
     "places.directory" => {
@@ -1161,8 +1216,39 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
           )),
         ).map(Json::string),
       )
+    "relieveIdleRebuildable" => {
+      let now = jnum_of(arg, "now").unwrap_or(wall_ms().to_double())
+      let idle_ms = jnum_of(arg, "idleMs").unwrap_or(@session_hub.idle_rebuild_low_ms)
+      let full = jfield(arg, "full") == Json::boolean(true)
+      let prev_low = self.relieve_low_bytes
+      match jnum_of(arg, "lowBytes") {
+        Some(low) => self.relieve_low_bytes = Some(low)
+        None => ()
+      }
+      defer {
+        self.relieve_low_bytes = prev_low
+      }
+      ji(hub.relieve_idle_rebuildable(now, idle_ms~, full~))
+    }
+    "packUnfinishedArchived" => {
+      let now = jnum_of(arg, "now").unwrap_or(wall_ms().to_double())
+      let limit = jnum_of(arg, "limit").map(n => n.to_int()).unwrap_or(@session_hub.pack_backfill_max_per_round)
+      ji(hub.pack_unfinished_archived(now, limit~))
+    }
+    "runArchiveUpkeepIfDue" => {
+      let now = jnum_of(arg, "now").unwrap_or(wall_ms().to_double())
+      let every_ms = jnum_of(arg, "everyMs").unwrap_or(@session_hub.archive_upkeep_every_ms)
+      jb(hub.run_archive_upkeep_if_due(now, every_ms~))
+    }
+    "cleanIdleRebuildable" => {
+      let now = jnum_of(arg, "now").unwrap_or(wall_ms().to_double())
+      let idle_ms = jnum_of(arg, "idleMs").unwrap_or(@session_hub.idle_rebuild_ms)
+      let limit = jnum_of(arg, "limit").map(n => n.to_int()).unwrap_or(@session_hub.idle_rebuild_max_per_round)
+      ji(hub.clean_idle_rebuildable(now, idle_ms~, limit~))
+    }
     "relieveArchived" => {
-      hub.relieve_archived()
+      let full = jfield(arg, "full") == Json::boolean(true)
+      hub.relieve_archived(full~)
       Json::null()
     }
     "clones.active" => jb(clones_running.length() > 0)
@@ -1535,6 +1621,7 @@ async fn P52::lifecycle(self : P52) -> Unit {
             None
           }
         }
+        ignore(hub.run_archive_upkeep_if_due(wall_ms().to_double()))
         match (a, b) {
           (Some(x), Some(y)) => Some(if x < y { x } else { y })
           (Some(x), None) | (None, Some(x)) => Some(x)

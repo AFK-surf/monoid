@@ -107,12 +107,14 @@ pub fn OpRun::end(self : OpRun) -> Unit {
 }
 
 ///|
-/// A login of the password manager: its id there, its title, its account (not secret: the person picks by it).
+/// A login of the password manager: its id there, its title, its account, and its vault id when given (not secret: the
+/// person picks by it, and the vault narrows `op item get`).
 #derive(Eq, Debug)
 pub(all) struct PasswordLogin {
   id : String
   title : String
   username : String
+  vault : String
 }
 
 ///|
@@ -170,21 +172,35 @@ pub fn logins_for(listed : String, host : String) -> Array[PasswordLogin] {
       Some(String(v)) => v
       _ => ""
     }
-    out.push({ id: str("id"), title: str("title"), username })
+    let vault = match o.get("vault") {
+      Some(Object(vo)) =>
+        match vo.get("id") {
+          Some(String(v)) => v
+          _ => ""
+        }
+      _ => ""
+    }
+    out.push({ id: str("id"), title: str("title"), username, vault })
   }
   out
 }
 
 ///|
-/// The account and password of `op item get <id> --fields label=username,label=password --reveal --format json`'s
-/// answer (fields by their label or purpose); either may be "".
-pub fn login_fields(got : String) -> (String, String) {
+/// The account, password, current TOTP code, and whether an OTP field exists from `op item get <id> --reveal --format
+/// json` (a whole item object with `fields`) or `--fields ... --format json` (an array or single field object).
+pub fn login_secret(got : String) -> (String, String, String, Bool) {
   let mut user = ""
   let mut pass = ""
-  let v = @json.parse(got) catch { _ => return (user, pass) }
+  let mut otp = ""
+  let mut has_otp = false
+  let v = @json.parse(got) catch { _ => return (user, pass, otp, has_otp) }
   let fields = match v {
     Array(a) => a
-    Object(_) as one => [one]
+    Object(o) as one =>
+      match o.get("fields") {
+        Some(Array(a)) => a
+        _ => [one]
+      }
     _ => []
   }
   for f in fields {
@@ -195,12 +211,71 @@ pub fn login_fields(got : String) -> (String, String) {
         _ => ""
       }
     }
-    let what = str("purpose").to_lower() + " " + str("label").to_lower() + " " + str("id").to_lower()
+    let kind = str("type").to_lower()
+    let purpose = str("purpose").to_lower()
+    if kind == "otp" || purpose == "otp" {
+      has_otp = true
+      let code = str("totp").trim(chars=" \n").to_owned()
+      if code != "" && otp == "" {
+        otp = code
+      }
+      continue
+    }
+    let what = purpose + " " + str("label").to_lower() + " " + str("id").to_lower()
     if what.contains("password") && pass == "" {
       pass = str("value")
     } else if what.contains("username") && user == "" {
       user = str("value")
     }
   }
+  (user, pass, otp, has_otp)
+}
+
+///|
+/// The account and password of `op item get <id> --fields label=username,label=password --reveal --format json`'s
+/// answer (fields by their label or purpose); either may be "".
+pub fn login_fields(got : String) -> (String, String) {
+  let (user, pass, _, _) = login_secret(got)
   (user, pass)
+}
+
+///|
+/// How long non-secret metadata from `op item list --categories Login --format json` stays warm in memory (ids, titles,
+/// usernames, URLs, vault ids; never passwords), avoiding repeated full-vault queries on Windows where `op` has no
+/// local cache daemon.
+let op_list_ttl_ms : Double = 300000.0
+
+///|
+// kept across runs: emptied by op_list_cache_reset (Tester's reset_globals)
+let op_list_cache_json : Ref[String] = Ref("")
+
+///|
+// kept across runs: emptied by op_list_cache_reset (Tester's reset_globals)
+let op_list_cache_at : Ref[Double] = Ref(-1.0)
+
+///|
+/// Clears the cached non-secret `op item list` metadata (on test reset or when an item lookup fails).
+pub fn op_list_cache_reset() -> Unit {
+  op_list_cache_json.val = ""
+  op_list_cache_at.val = -1.0
+}
+
+///|
+/// Keeps the raw non-secret JSON from a successful `op item list --categories Login --format json` run.
+pub fn op_list_cache_keep(listed : String) -> Unit {
+  op_list_cache_json.val = listed
+  op_list_cache_at.val = now()
+}
+
+///|
+/// Returns cached logins matching `host` while the cached list is within `op_list_ttl_ms`; empty once expired or cold.
+pub fn op_list_cached_for(host : String) -> Array[PasswordLogin] {
+  if op_list_cache_at.val < 0.0 || op_list_cache_json.val == "" {
+    return []
+  }
+  if now() - op_list_cache_at.val >= op_list_ttl_ms {
+    op_list_cache_reset()
+    return []
+  }
+  logins_for(op_list_cache_json.val, host)
 }

@@ -688,35 +688,28 @@ test("secret_save shared/explicit vault targeting, vaultNoKey, and personal-only
     await bob2.sync();
 
     const reqBox = boxPublic(fill(99));
-    // 1. Shared save request targeting wsVault: bob2 has personal vault key, NOT wsVault key -> must report noKey and fail vault_no_key!
-    const rShared: Request = {
-      id: "r_shared", ws: "ws", vault: wsVault.id, item: "i_01JASHARED0000000000000001", session: "k1", chat: "7",
-      mode: "env", hosts: [], reason: "save shared", box: reqBox, at: 200, status: "pending", owner: "bob@x.com",
-      save: { kind: "token", name: "SharedTok", modes: ["env"], hosts: [], typed: true, shared: true, vaultName: "Shared" },
+    // 1. Default personal secret_save (no vault passed on approve): MUST land in personal vault, never workspace vault.
+    const rDefault: Request = {
+      id: "r_default", ws: "ws", vault: "", item: "i_01JADEF0000000000000000001", session: "k1", chat: "7",
+      mode: "env", hosts: [], reason: "save personal", box: reqBox, at: 200, status: "pending", owner: "bob@x.com",
+      save: { kind: "token", name: "PersonalTok", modes: ["env"], hosts: [], typed: true },
     };
-    st.requests.push(rShared);
-    await bob2.sync();
+    st.requests.push(rDefault);
     await bob.sync();
+    // askAnswers carries saveTargets (personal first, workspace second) for chat save cards when >1 keyed vault exists.
+    const bobAns = askAnswers(bob.core.inner, "ws", [{ request: "r_default", save: true }]);
+    assert.equal(bobAns[0]?.answer, "approve");
+    assert.equal(bobAns[0]?.saveTargets?.length, 2);
+    assert.equal(bobAns[0]?.saveTargets?.[0]?.id, bobPersonalId);
+    assert.equal(bobAns[0]?.saveTargets?.[0]?.workspace, undefined);
+    assert.equal(bobAns[0]?.saveTargets?.[1]?.id, wsVault.id);
+    assert.equal(bobAns[0]?.saveTargets?.[1]?.workspace, true);
+    const okDefault = await bob.ask("vault.approve", { request: "r_default", scope: "once", typed: { secret: "tok_personal" } });
+    assert.equal(okDefault.vault, bobPersonalId, "default secret_save lands in personal vault, not workspace vault");
 
-    assert.deepEqual(askAnswers(bob2.core.inner, "ws", [{ request: "r_shared", save: true }]), [{ answer: "noKey" }]);
-    const b2View = vaultsView(bob2.core.inner, "ws") as any;
-    const reqRowB2 = b2View.requests.find((x: any) => x.id === "r_shared");
-    assert.equal(reqRowB2.noKey, true);
-    assert.equal(reqRowB2.save.shared, true);
-    assert.equal(reqRowB2.save.vaultName, "Shared");
-
-    const errShared = await bob2.askErr("vault.approve", { request: "r_shared", scope: "once", typed: { secret: "tok_shared" } });
-    assert.equal(errShared.code, "vault_no_key", "shared save refuses without silently falling back to personal vault");
-
-    // Bob's keyed device (bobDev) approves r_shared -> lands in wsVault
-    assert.deepEqual(askAnswers(bob.core.inner, "ws", [{ request: "r_shared", save: true }]), [{ answer: "approve" }]);
-    const okShared = await bob.ask("vault.approve", { request: "r_shared", scope: "once", typed: { secret: "tok_shared" } });
-    assert.equal(okShared.vault, wsVault.id);
-    assert.equal(st.items.get("i_01JASHARED0000000000000001")!.vault, wsVault.id);
-
-    // 2. Explicit targetVault on approve: bob2 passing vault=wsVault fails vault_no_key; bob passing vault=wsVault succeeds
+    // 2. Explicit targetVault on approve: bob2 passing vault=wsVault fails vault_no_key; bob passing vault=wsVault succeeds and Alice can decrypt it immediately.
     const rExplicit: Request = {
-      id: "r_explicit", ws: "ws", vault: "", item: "i_01JAEXPLICIT00000000000001", session: "k1", chat: "7",
+      id: "r_explicit", ws: "ws", vault: "", item: "i_01JAEX00000000000000000001", session: "k1", chat: "7",
       mode: "env", hosts: [], reason: "save explicit", box: reqBox, at: 201, status: "pending", owner: "bob@x.com",
       save: { kind: "token", name: "ExplicitTok", modes: ["env"], hosts: [], typed: true },
     };
@@ -727,17 +720,28 @@ test("secret_save shared/explicit vault targeting, vaultNoKey, and personal-only
     assert.equal(errExp.code, "vault_no_key");
     const okExp = await bob.ask("vault.approve", { request: "r_explicit", scope: "once", typed: { secret: "tok_exp" }, vault: wsVault.id });
     assert.equal(okExp.vault, wsVault.id);
+    assert.equal(st.items.get("i_01JAEX00000000000000000001")!.vault, wsVault.id);
+    await alice.sync();
+    assert.equal((await alice.ask("vault.open", { item: "i_01JAEX00000000000000000001" })).plain.fields.value, "tok_exp");
 
-    // 3. Default personal secret_save (no shared flag, empty r.vault): MUST land in personal vault, never workspace vault
-    const rDefault: Request = {
-      id: "r_default", ws: "ws", vault: "", item: "i_01JADEFAULT000000000000001", session: "k1", chat: "7",
-      mode: "env", hosts: [], reason: "save personal", box: reqBox, at: 202, status: "pending", owner: "bob@x.com",
-      save: { kind: "token", name: "PersonalTok", modes: ["env"], hosts: [], typed: true },
+    // 3. Even if an older station sends save.shared=true with r.vault=wsVault.id, approving without explicit vault STILL defaults to personal vault (and bob2 with personal key is NOT noKey).
+    const rLegacyShared: Request = {
+      id: "r_shared", ws: "ws", vault: wsVault.id, item: "i_01JASHARED0000000000000001", session: "k1", chat: "7",
+      mode: "env", hosts: [], reason: "save legacy shared", box: reqBox, at: 202, status: "pending", owner: "bob@x.com",
+      save: { kind: "token", name: "SharedTok", modes: ["env"], hosts: [], typed: true, shared: true, vaultName: "Shared" },
     };
-    st.requests.push(rDefault);
+    st.requests.push(rLegacyShared);
+    await bob2.sync();
     await bob.sync();
-    const okDefault = await bob.ask("vault.approve", { request: "r_default", scope: "once", typed: { secret: "tok_personal" } });
-    assert.equal(okDefault.vault, bobPersonalId, "default secret_save lands in personal vault, not workspace vault");
+
+    assert.equal(askAnswers(bob2.core.inner, "ws", [{ request: "r_shared", save: true }])[0]?.answer, "approve");
+    const b2View = vaultsView(bob2.core.inner, "ws") as any;
+    const reqRowB2 = b2View.requests.find((x: any) => x.id === "r_shared");
+    assert.equal(reqRowB2.noKey, undefined);
+
+    const okLegacy = await bob2.ask("vault.approve", { request: "r_shared", scope: "once", typed: { secret: "tok_legacy" } });
+    assert.equal(okLegacy.vault, bobPersonalId, "legacy save.shared=true without explicit targetVault still defaults to personal vault");
+    assert.equal(st.items.get("i_01JASHARED0000000000000001")!.vault, bobPersonalId);
   } finally {
     alice.core.close();
     bob.core.close();

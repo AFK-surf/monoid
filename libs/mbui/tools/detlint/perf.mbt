@@ -543,6 +543,9 @@ fn lint_perf(files : Array[MbtFile], cfg : Config, out : Array[Finding]) -> Unit
     }
     lint_width_structure(f, given, out)
     lint_reused_untracked_key(f, given, out)
+    lint_scroll_each(f, given, out)
+    lint_bare_on_press(f, out)
+    lint_old_run_ctx(f, out)
     let made = made_by(f)
     if made.is_empty() {
       continue

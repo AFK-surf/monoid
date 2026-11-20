@@ -200,3 +200,250 @@ test "a Windows window laid out Medium: a settings page's bar made as nodes ends
     }
   }
 }
+
+///|
+/// A button's x coordinate in `t.semantics()`, if exactly one visible button has `label`.
+fn button_x_opt(t : @ui.Tester, label : String) -> Double? {
+  let all = t.semantics().filter(fn(s) { !s.hidden && s.label == label && s.role is Button }).map(fn(s) { s.rect.0 })
+  if all.length() == 1 {
+    Some(all[0])
+  } else {
+    None
+  }
+}
+
+///|
+/// Whether a persistent chat bar action button (`归档`, `对话信息`, `更多`, `Station 文件`) in the top bar band reaches
+/// past `x` (buttons inside `.clips(true)` sliding/leaving containers still appear at unclipped layout rects in
+/// `t.semantics()`, so during a slide we check persistent chat bar keys here and clipped panel content via
+/// `top_glyph_seen_past`, while asserting full `past_rule(t, x) == None` at every rest state).
+fn chat_bar_past_rule(t : @ui.Tester, x : Double) -> String? {
+  for s in t.semantics() {
+    let (sx, sy, sw, sh) = s.rect
+    if !s.hidden &&
+      (s.label == "归档" || s.label == "对话信息" || s.label == "更多" || s.label == "Station 文件") &&
+      (s.role is Button) &&
+      sy >= 0.0 &&
+      sy + sh <= 60.0 &&
+      sx + sw > x {
+      return Some(s.label)
+    }
+  }
+  None
+}
+
+///|
+/// Whether any visible (unoccluded, post-clip) text glyph in the top bar band (`y1 <= 44`) extends past `x`.
+fn top_glyph_seen_past(t : @ui.Tester, x : Double) -> Double? {
+  for g in t.glyphs_seen() {
+    let (gx0, gy0, gx1, gy1) = g
+    if gy0 >= 0.0 && gy1 <= 44.0 && gx1 > gx0 && gy1 > gy0 && gx1 > x + 0.5 {
+      return Some(gx1)
+    }
+  }
+  None
+}
+
+///|
+test "a Windows window laid out Large: chat side panel open, close and interrupted slide keep bar keys monotonic and clear of window keys" {
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, mode="chat", platform=3, window_corner=8.0, window_inset=true)
+  t.run_for(@ui.move_most_ms)
+  guard named_at(t, "最小化") is Some((mx, _, _, _)) else { fail("no minimize button") }
+  let limit = mx - 17.0
+  assert_eq(past_rule(t, limit), None)
+  guard button_x_opt(t, "更多") is Some(more0) else { fail("no 更多 button") }
+  guard button_x_opt(t, "对话信息") is Some(info0) else { fail("no 对话信息 button") }
+
+  // 1) Open side panel: every frame clear of window keys, 更多 & 对话信息 monotonically move left
+  let open_faults : Array[String] = []
+  let open_more : Array[Double] = [more0]
+  let open_info : Array[Double] = [info0]
+  t.each_frame(
+    Some(fn() {
+      if chat_bar_past_rule(t, limit) is Some(lbl) {
+        open_faults.push("open t=\{t.time()} past_rule=\{lbl}")
+      }
+      if top_glyph_seen_past(t, limit) is Some(r) {
+        open_faults.push("open t=\{t.time()} glyph_right=\{r} > \{limit}")
+      }
+      if button_x_opt(t, "更多") is Some(x) {
+        open_more.push(x)
+      }
+      if button_x_opt(t, "对话信息") is Some(x) {
+        open_info.push(x)
+      }
+    }),
+  )
+  t.click(Button, label="打开侧栏")
+  t.run_for(@ui.move_most_ms * 2.0)
+  t.each_frame(None)
+  assert_eq(open_faults, [])
+  assert_eq(past_rule(t, limit), None)
+  assert_true(open_more.length() >= 2 && open_more[open_more.length() - 1] < more0 - 50.0, msg="open_more=\{Repr(open_more)}")
+  for i in 1..<open_more.length() {
+    assert_true(
+      open_more[i] <= open_more[i - 1] + 0.5,
+      msg="open 更多 moved right at frame \{i}: \{open_more[i - 1]} -> \{open_more[i]} (all=\{Repr(open_more)})",
+    )
+  }
+  for i in 1..<open_info.length() {
+    assert_true(
+      open_info[i] <= open_info[i - 1] + 0.5,
+      msg="open 对话信息 moved right at frame \{i}: \{open_info[i - 1]} -> \{open_info[i]} (all=\{Repr(open_info)})",
+    )
+  }
+
+  // 2) Close side panel: every frame clear of window keys, 更多 & 对话信息 monotonically return right to exact start
+  let close_faults : Array[String] = []
+  let close_more : Array[Double] = [open_more[open_more.length() - 1]]
+  let close_info : Array[Double] = [open_info[open_info.length() - 1]]
+  t.each_frame(
+    Some(fn() {
+      if chat_bar_past_rule(t, limit) is Some(lbl) {
+        close_faults.push("close t=\{t.time()} past_rule=\{lbl}")
+      }
+      if top_glyph_seen_past(t, limit) is Some(r) {
+        close_faults.push("close t=\{t.time()} glyph_right=\{r} > \{limit}")
+      }
+      if button_x_opt(t, "更多") is Some(x) {
+        close_more.push(x)
+      }
+      if button_x_opt(t, "对话信息") is Some(x) {
+        close_info.push(x)
+      }
+    }),
+  )
+  t.click(Button, label="收起侧栏")
+  t.run_for(@ui.move_most_ms * 2.0)
+  t.each_frame(None)
+  assert_eq(close_faults, [])
+  assert_eq(past_rule(t, limit), None)
+  for i in 1..<close_more.length() {
+    assert_true(
+      close_more[i] >= close_more[i - 1] - 0.5,
+      msg="close 更多 moved left at frame \{i}: \{close_more[i - 1]} -> \{close_more[i]} (all=\{Repr(close_more)})",
+    )
+  }
+  for i in 1..<close_info.length() {
+    assert_true(
+      close_info[i] >= close_info[i - 1] - 0.5,
+      msg="close 对话信息 moved left at frame \{i}: \{close_info[i - 1]} -> \{close_info[i]} (all=\{Repr(close_info)})",
+    )
+  }
+  assert_true((close_more[close_more.length() - 1] - more0).abs() < 0.5, msg="close 更多 ended at \{close_more[close_more.length() - 1]}, expected \{more0}")
+  assert_true((close_info[close_info.length() - 1] - info0).abs() < 0.5, msg="close 对话信息 ended at \{close_info[close_info.length() - 1]}, expected \{info0}")
+
+  // 3) Interrupted open -> close mid-flight: every frame clear of window keys and returns cleanly
+  let mid_faults : Array[String] = []
+  t.each_frame(
+    Some(fn() {
+      if chat_bar_past_rule(t, limit) is Some(lbl) {
+        mid_faults.push("mid t=\{t.time()} past_rule=\{lbl}")
+      }
+      if top_glyph_seen_past(t, limit) is Some(r) {
+        mid_faults.push("mid t=\{t.time()} glyph_right=\{r} > \{limit}")
+      }
+    }),
+  )
+  t.click(Button, label="打开侧栏")
+  t.run_for(@ui.move_most_ms / 3.0)
+  // (at 1/3 of the slide, 收起侧栏 is clipped clear of window keys; interrupt via panel.close / Escape)
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms * 2.0)
+  t.each_frame(None)
+  assert_eq(mid_faults, [])
+  assert_eq(past_rule(t, limit), None)
+  guard button_x_opt(t, "更多") is Some(more_end) else { fail("no 更多 after interrupt") }
+  assert_true((more_end - more0).abs() < 0.5, msg="interrupt 更多 ended at \{more_end}, expected \{more0}")
+}
+
+///|
+test "a Windows window laid out Large: new chat Station 文件 side panel close and reopen keep bar keys clear of window keys" {
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, mode="newchat-files", platform=3, window_corner=8.0, window_inset=true)
+  t.run_for(@ui.move_most_ms)
+  guard named_at(t, "最小化") is Some((mx, _, _, _)) else { fail("no minimize button") }
+  let limit = mx - 17.0
+  assert_eq(past_rule(t, limit), None)
+  let faults : Array[String] = []
+  t.each_frame(
+    Some(fn() {
+      if chat_bar_past_rule(t, limit) is Some(lbl) {
+        faults.push("t=\{t.time()} past_rule=\{lbl}")
+      }
+      if top_glyph_seen_past(t, limit) is Some(r) {
+        faults.push("t=\{t.time()} glyph_right=\{r} > \{limit}")
+      }
+    }),
+  )
+  t.click(Button, label="收起侧栏")
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_eq(past_rule(t, limit), None)
+  t.click(Button, label="Station 文件")
+  t.run_for(@ui.move_most_ms * 2.0)
+  t.each_frame(None)
+  assert_eq(faults, [])
+  assert_eq(past_rule(t, limit), None)
+}
+
+///|
+test "a Windows window laid out Large narrow (overlay panel): chat bar keys stay clear of window keys while panel opens and closes" {
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, w=960.0, h=800.0, mode="chat", platform=3, window_corner=8.0, window_inset=true)
+  t.run_for(@ui.move_most_ms)
+  guard named_at(t, "最小化") is Some((mx, _, _, _)) else { fail("no minimize button") }
+  let limit = mx - 17.0
+  assert_eq(past_rule(t, limit), None)
+  let faults : Array[String] = []
+  t.each_frame(
+    Some(fn() {
+      if chat_bar_past_rule(t, limit) is Some(lbl) {
+        faults.push("t=\{t.time()} past_rule=\{lbl}")
+      }
+      if top_glyph_seen_past(t, limit) is Some(r) {
+        faults.push("t=\{t.time()} glyph_right=\{r} > \{limit}")
+      }
+    }),
+  )
+  t.click(Button, label="打开侧栏")
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_eq(past_rule(t, limit), None)
+  t.click(Button, label="收起侧栏")
+  t.run_for(@ui.move_most_ms * 2.0)
+  t.each_frame(None)
+  assert_eq(faults, [])
+  assert_eq(past_rule(t, limit), None)
+}
+
+///|
+test "a Windows window laid out Medium: chat side panel open and close keep bar keys and panel switch clear of window keys" {
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, w=800.0, h=800.0, mode="chat", platform=3, window_corner=8.0, window_inset=true)
+  t.run_for(@ui.move_most_ms)
+  page_over(t, 800.0)
+  guard named_at(t, "最小化") is Some((mx, _, _, _)) else { fail("no minimize button") }
+  let limit = mx - 17.0
+  assert_eq(past_rule(t, limit), None)
+  let faults : Array[String] = []
+  t.each_frame(
+    Some(fn() {
+      if chat_bar_past_rule(t, limit) is Some(lbl) {
+        faults.push("t=\{t.time()} past_rule=\{lbl}")
+      }
+      if top_glyph_seen_past(t, limit) is Some(r) {
+        faults.push("t=\{t.time()} glyph_right=\{r} > \{limit}")
+      }
+    }),
+  )
+  t.click(Button, label="打开侧栏")
+  t.run_for(@ui.move_most_ms * 2.0)
+  guard named_at(t, "收起侧栏") is Some((cx, _, cw, _)) else { fail("no 收起侧栏 on Medium panel") }
+  assert_true(cx + cw <= limit, msg="Medium panel 收起侧栏 at \{cx + cw} > \{limit}")
+  assert_eq(past_rule(t, limit), None)
+  t.click(Button, label="收起侧栏")
+  t.run_for(@ui.move_most_ms * 2.0)
+  t.each_frame(None)
+  assert_eq(faults, [])
+  assert_eq(past_rule(t, limit), None)
+}

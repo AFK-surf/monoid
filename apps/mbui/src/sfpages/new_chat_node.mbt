@@ -51,7 +51,15 @@ priv enum NewKind {
 /// that leaves over new_leave_ms), leaving as it becomes its chat, its scene leaving over it (what it shows then is as
 /// it was sent: the view it showed, fresh.scene; nothing of it pressed: View::leaving). Its tips in `tips`.
 pub fn new_chat_node(v : @view.View, src : Source, w : Workspace, frame : NewChatNodeFrame, tips : @sf.TipLayer) -> Unit {
-  let going = fn() { v.leaving() }
+  // (told as it starts leaving, as what reads it there is at rest (View::leaving): its composer's pick let go of then)
+  let left = @signals.signal(false)
+  v.on_leaving(fn() { left.set(true) }) |> ignore
+  v.reacts(fn() { v.leaving() }, at_start=false, fn(l) {
+    if !l {
+      left.set(false)
+    }
+  })
+  let going = fn() { v.leaving() || left.get() }
   // (made anew after its leaving finished because newChat.create failed: arm the reversing choreography on this node)
   if @sfbase.fresh_back.val {
     @sfbase.fresh_choreo.val.arm(v)
@@ -97,7 +105,7 @@ pub fn new_chat_node(v : @view.View, src : Source, w : Workspace, frame : NewCha
     }
   }
   // (its ground none as it leaves: what is left of it seen over the chat it became, as new_chat_left's)
-  v.grow(Is(1.0)).min_height(Is(Some(0.0))).ground(By(fn() { if going() { 0L } else { (frame.ground)(v) } })) |> ignore
+  v.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))).ground(By(fn() { if going() { 0L } else { (frame.ground)(v) } })) |> ignore
   // (its bar fades out smoothly along bar_out while non-interactive, crossfading with the chat bar's bar_in)
   v.box(fn(b) {
     b
@@ -108,9 +116,9 @@ pub fn new_chat_node(v : @view.View, src : Source, w : Workspace, frame : NewCha
   })
   |> ignore
   v.box(fn(room) {
-    room.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+    room.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
     room.pick(kind, at_once=true, fn(p, k) {
-      p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      p.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
       match k {
         On => new_on_node(p, v, src, w, frame, tips, topic, view, going)
         Blocked => new_blocked_node(p, src, w, frame, tips, view)
@@ -187,6 +195,8 @@ fn new_on_tree(v : @view.View, on : NewOn) -> Unit {
   // comes to be, never on a way between the two (View::lays_anew), what holds it going its own way meanwhile)
   v
   .grow(Is(1.0))
+  .shrink(Is(1.0))
+  .basis(Is(Some(0.0)))
   .min_height(Is(Some(0.0)))
   .lines_up(Is(Some(Middle)))
   .padding(By(fn() { if wide() { (new_column_in, 0.0, new_column_in, 0.0) } else { (0.0, 0.0, 0.0, 0.0) } }))
@@ -224,6 +234,8 @@ fn new_on_tree(v : @view.View, on : NewOn) -> Unit {
     .lines_up(By(fn() { if wide() { Some(Middle) } else { None } }))
     .gap(By(fn() { if wide() { @ui.Space::px(S2_5) } else { 0.0 } }))
     .grow(Is(1.0))
+    .shrink(Is(1.0))
+    .basis(Is(Some(0.0)))
     .min_height(Is(Some(0.0)))
     |> ignore
     // (wide, as much room over the scene and the composer as under them; narrow, none: the scene takes it all)
@@ -676,7 +688,39 @@ fn new_preset_control_node(parent : @view.View, on : NewOn, address : String, fl
 /// first value not come): its room as it will be, nothing of it shown or in use.
 fn new_composer_place_node(c : @view.View, on : NewOn, roomy : () -> Bool) -> Unit {
   let away = fn() { (on.going)() || ((on.held)() && on.address() == "") }
-  c.pick(fn() { on.address() }, at_once=true, fn(p, address) {
+  // (narrow, its choices in glass over it, at its foot with it: drawn with its top as it opens; wrap in a child box so
+  // we never clobber composer_node's over_drawn offset on `r`, while holding pre-send multi-line height via
+  // fresh_over_held and fading out smoothly along choices_out; the same as the page leaves, its composer gone)
+  let over_choices = fn(r : @view.View) {
+    r.box(fn(inner) {
+      inner
+      .alpha(By(fn() { 1.0 - @sfbase.fresh_progress(inner, "choices_out") }))
+      .offset(By(fn() {
+        let p = @sfbase.fresh_progress(inner, "choices_out")
+        let dy = if (on.going)() { -@sfbase.fresh_over_held.get() - 4.0 * p } else { 0.0 }
+        (0.0, dy)
+      }))
+      |> ignore
+      new_choosers_node(inner, on, true)
+    })
+    |> ignore
+  }
+  // (gone as the page leaves (sent: it becomes its chat): its draft's composer let go of in that frame, what it read
+  // with it; its room kept as tall as it was laid out, so that nothing under it moves as it goes, its choices fading
+  // out in it along choices_out, as they were over it)
+  c.pick(fn() { if (on.going)() { None } else { Some(on.address()) } }, at_once=true, fn(p, addr) {
+    guard addr is Some(address) else {
+      let (_, _, _, h) = c.placed_window_now()
+      p.height(Is(Some(h))).lines_up(Is(Some(Middle))) |> ignore
+      if !@signals.untracked(roomy) {
+        p.by_room(fn(host, room) {
+          host.width(By(fn() { Some(composer_width(room.width())) })) |> ignore
+          over_choices(host)
+        })
+        |> ignore
+      }
+      return
+    }
     p.grow(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
     let name = fn() { text((on.station)(), "name") }
     new_composer_node(
@@ -699,23 +743,8 @@ fn new_composer_place_node(c : @view.View, on : NewOn, roomy : () -> Bool) -> Un
         },
         send: fn(d) { new_send_node(on, address, name(), d) },
         starting: fn() { @sfbase.fresh.starting.get() },
-        // (narrow, its choices in glass over it, at its foot with it: drawn with its top as it opens; wrap in a child
-        // box so we never clobber composer_node's over_drawn offset on `r`, while holding pre-send multi-line height
-        // via fresh_over_held and fading out smoothly along choices_out)
-        over_it: Some(fn(r) {
-          r.box(fn(inner) {
-            inner
-            .alpha(By(fn() { 1.0 - @sfbase.fresh_progress(inner, "choices_out") }))
-            .offset(By(fn() {
-              let p = @sfbase.fresh_progress(inner, "choices_out")
-              let dy = if (on.going)() { -@sfbase.fresh_over_held.get() - 4.0 * p } else { 0.0 }
-              (0.0, dy)
-            }))
-            |> ignore
-            new_choosers_node(inner, on, true)
-          })
-          |> ignore
-        }),
+        // (narrow, its choices over it: over_choices)
+        over_it: Some(over_choices),
         over_tall: @sf.glass_chooser_h.points().unwrap_or(0.0) + @ui.Space::px(S1_5),
         away,
       },

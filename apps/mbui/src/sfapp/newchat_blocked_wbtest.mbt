@@ -6,8 +6,8 @@
 /// The new chat over the `newchat-noprofile` fixture, the core's `newChat` view as `over` makes it.
 fn blocked_new(over? : (Map[String, Json]) -> Unit = fn(_) {  }) -> @ui.Tester {
   new_run()
-  // (the chat's page made as both_pages runs it now, its new chat too: none outside one)
-  if both_nodes.val {
+  // (the chat's page made as both_pages runs it now, its new chat too; outside one, as the fixture's channel has it)
+  if both_running.val {
     both_way()
   }
   let base = fixture("newchat-noprofile")

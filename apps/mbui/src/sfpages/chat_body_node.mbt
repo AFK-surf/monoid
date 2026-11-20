@@ -606,35 +606,6 @@ fn chat_follows_foot(scroll : @view.Scroll) -> Bool {
 }
 
 ///|
-/// The messages of a chat's agents coming out one at a time, whichever agent says them (chat_body_node's): when the last
-/// planned is out (`tail_end`, its Spit's end: -inf none), whose it is (`last_agent`). Two agents answering in
-/// one change come out one after the other, never over each other in what shows.
-priv struct AgentOutQueue {
-  mut tail_end : Double
-  mut last_agent : String
-}
-
-///|
-/// The moment an agent `agent`'s message come by data at `now` may set out from, after `queue`'s last (another agent's
-/// still coming out: from when it is out, `lead` before it, a fold's time where its own line folds first), else `now`.
-fn AgentOutQueue::after(self : AgentOutQueue, agent : String, now : Double, lead : Double) -> Double {
-  if self.last_agent != agent && self.tail_end - lead > now {
-    self.tail_end - lead
-  } else {
-    now
-  }
-}
-
-///|
-/// `plan`, agent `agent`'s, the last of `queue`'s from now.
-fn AgentOutQueue::told(self : AgentOutQueue, agent : String, plan : AgentOutPlan) -> Unit {
-  if plan.spit_end > self.tail_end {
-    self.tail_end = plan.spit_end
-  }
-  self.last_agent = agent
-}
-
-///|
 /// The plan of an agent's message come by data at `now` with no picture of its agent at work to come out of (no line
 /// before it: its answer at once), after another's still coming out where `queue` says one is: its picture there as it
 /// comes, its head sliding out and its words revealed from `now` (or that one's end), nothing folding or flying.
@@ -995,7 +966,7 @@ fn chat_body_node(
   // (those let in so, by key: what their plans' moments do nothing of)
   let flushed : Map[String, Bool] = Map([])
   // (its agents' messages coming out one at a time, whoever says them)
-  let queue : AgentOutQueue = { tail_end: @double.neg_infinity, last_agent: "" }
+  let queue = @motion.SerialQueue::new()
   // (each agent's line kept for a held answer that ends its turn (its key, act:<agent>): its row as last read, and the key
   // it stood under (none: at the list's end))
   let lingering : Map[String, (ChatBodyRow, String?)] = Map([])
@@ -1031,11 +1002,11 @@ fn chat_body_node(
     |> ignore
   }
   let hold = fn(k : String, m : Message, face : AgentFace, ks : Array[String], was : Array[String]) {
-    // (after another agent's still coming out: its line folding as that one is out (AgentOutQueue))
+    // (after another agent's still coming out: its line folding as that one is out (SerialQueue))
     let agent = @signals.untracked(fn() { message_agent_of(here, m.by.agent) })
-    let now = queue.after(agent, @sf.dmax(v.cause_at(), sent_lands.val), @sfbase.Pose::Fold.ms())
+    let now = queue.next_at(agent, @sf.dmax(v.cause_at(), sent_lands.val), lead=@sfbase.Pose::Fold.ms())
     let plan = agent_out_plan(face, now)
-    queue.told(agent, plan)
+    queue.commit(agent, plan.spit_end)
     held[k] = plan
     out_plans[k] = plan
     let ends = if m.ending != "" && !m.system { chat_agent_of(here, m) } else { None }
@@ -1137,9 +1108,9 @@ fn chat_body_node(
             None => {
               let agent = @signals.untracked(fn() { message_agent_of(here, m.by.agent) })
               let now = v.cause_at()
-              let start = queue.after(agent, @sf.dmax(now, sent_lands.val), 0.0)
+              let start = queue.next_at(agent, @sf.dmax(now, sent_lands.val))
               let plan = agent_out_plan_faceless(start)
-              queue.told(agent, plan)
+              queue.commit(agent, plan.spit_end)
               out_plans[k] = plan
               if start > now {
                 // (nothing it comes out of: held_by has none of it, `flush` letting it in as it is)
@@ -1183,7 +1154,7 @@ fn chat_body_node(
         held_by.remove(k)
       }
       lingering.clear()
-      queue.tail_end = @double.neg_infinity
+      queue.reset()
       held_told.set(held_told.untracked() + 1)
     })
   })

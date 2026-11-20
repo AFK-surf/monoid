@@ -88,6 +88,8 @@ test "refused by the core: what was sent leaves the list, the words back in the 
 ///|
 test "the core's row goes on from what was sent: the words fly on to it, it does not rise in again" {
   new_run()
+  // (the old page's flight and its list's reading, send_flight's and chat_list.mbt's: held so whatever the channel)
+  @sfbase.hold_chat_page_nodes(Some(false))
   let clock : Ref[Double] = { val: 0.0 }
   fix_clock.val = Some(fn() { clock.val })
   let src = fixture("chat")

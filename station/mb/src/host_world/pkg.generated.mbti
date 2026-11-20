@@ -65,7 +65,9 @@ pub async fn sleep_ms(Int32) -> Unit
 
 pub fn spawn_daemon(@host.Host, String, async () -> Unit, silent? : Bool) -> Unit
 
-pub async fn ws_open(@host.Host, String, String, headers? : Array[(String, String)], entry? : (String, Int32)?, on_message~ : (String) -> Unit, on_error? : (String) -> Unit, on_close~ : (Bool) -> Unit) -> WsHandle
+pub fn ws_close_of(@json.Json) -> (Int32, String)
+
+pub async fn ws_open(@host.Host, String, String, headers? : Array[(String, String)], entry? : (String, Int32)?, timeout_ms? : Int32, on_message~ : (String) -> Unit, on_error? : (String) -> Unit, on_close~ : (Bool) -> Unit, on_closed? : (Int32, String) -> Unit) -> WsHandle
 
 // Errors
 

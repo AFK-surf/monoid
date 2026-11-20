@@ -472,3 +472,33 @@ test "a sign-in ended as its card is made, made once as nodes: the line saying h
   assert_true(t.words().iter().any(fn(w) { w.0.has_prefix("已登录 github.com") }), msg="\{Repr(t.words().map(fn(w) { w.0 }))}")
   assert_true(signin_seen(t, "在画面中登录") is None)
 }
+
+///|
+test "sign-in card reads username, password and inline TOTP from one op item get with --vault and skips --otp" {
+  let calls : Array[(String, Json)] = []
+  let t = card_new(760.0, signin_src(calls~), fn() { signin_post_with() }, begun=fn() {
+    signin_reset()
+    @sf.presenters_reset()
+    @ui.fake_op_runs.clear()
+    @ui.fake_op.val = Some(fn(args) {
+      if args.contains("list") {
+        (0, "[{\"id\":\"gh1\",\"title\":\"GitHub\",\"additional_information\":\"lin\",\"vault\":{\"id\":\"v1\"},\"urls\":[{\"href\":\"https://github.com\"}]}]", "")
+      } else {
+        (0, "{\"id\":\"gh1\",\"fields\":[{\"id\":\"username\",\"purpose\":\"USERNAME\",\"value\":\"lin\"},{\"id\":\"password\",\"purpose\":\"PASSWORD\",\"value\":\"s3cret\"},{\"id\":\"otp\",\"type\":\"OTP\",\"totp\":\"246810\"}]}", "")
+      }
+    })
+  })
+  t.run_for(@ui.move_most_ms)
+  signin_press(t, "用 1Password 登录")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(@ui.fake_op_runs.length(), 2)
+  assert_eq(@ui.fake_op_runs[0], ["item", "list", "--categories", "Login", "--format", "json"])
+  assert_eq(@ui.fake_op_runs[1], ["item", "get", "gh1", "--vault", "v1", "--reveal", "--format", "json"])
+  let fills = calls.filter(fn(c) { c.0 == "signin.fill" })
+  assert_eq(fills.length(), 1)
+  let login = field(Some(fills[0].1), "login")
+  assert_eq(text(login, "username"), "lin")
+  assert_eq(text(login, "password"), "s3cret")
+  assert_eq(text(login, "code"), "246810")
+  @ui.fake_op.val = None
+}

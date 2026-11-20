@@ -477,6 +477,9 @@ test("a runtime missing, or ending as it starts: said in its chat as such, the s
     // as mb-actor.ts `errorOf` tells it of runner.ts `CommandMissing`), not as an agent that failed to start.
     const missing = await ask("are you there?", (n) => n.length > 0);
     assert.deepEqual(missing, ["⚠️ 无法启动 agent：此 station 尚未安装 Claude Code"], detail());
+    // (a person's word in between: session_send's letter writes nothing in the thread, so the notice above would stay
+    // the station's last word there, and a start failure saying the same prefix is not said again (actor_run.mbt))
+    store.insertMessage({ thread: thread.id, ts: "1790000000.000003", authorKind: "person", author: "ada@x.com", text: "installed, trying again" });
 
     // Ending as it starts, saying why on its standard error: said, and not left running.
     writeFileSync(join(bin, "claude"), "#!/bin/sh\necho 'claude: cannot start here' >&2\nexit 3\n");

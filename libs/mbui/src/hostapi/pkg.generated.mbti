@@ -257,6 +257,8 @@ pub fn login_fields(String) -> (String, String)
 
 pub fn login_for_host(String, String) -> Bool
 
+pub fn login_secret(String) -> (String, String, String, Bool)
+
 pub fn logins_for(String, String) -> Array[PasswordLogin]
 
 pub fn mem_bytes() -> Double
@@ -294,6 +296,12 @@ pub fn notice_settings() -> Bool
 pub fn notice_show(channel~ : String, tag~ : String, title~ : String, body~ : String, opens~ : String) -> Unit
 
 pub fn now() -> Double
+
+pub fn op_list_cache_keep(String) -> Unit
+
+pub fn op_list_cache_reset() -> Unit
+
+pub fn op_list_cached_for(String) -> Array[PasswordLogin]
 
 pub fn op_run(Array[String]) -> OpRun?
 
@@ -818,6 +826,7 @@ pub(all) struct PasswordLogin {
   id : String
   title : String
   username : String
+  vault : String
 }
 
 pub struct Pick {

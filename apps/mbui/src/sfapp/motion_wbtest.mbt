@@ -149,6 +149,9 @@ test "Home: a row swiped off is archived once it has gone, and leaves no copy of
 test "words sent fly from the field into their bubble" {
   // the fixture's own station takes what is sent: the outbox at once, the message after
   new_run()
+  // (the old page's words on their way (its SendFlight), what stable keeps: the page made as nodes flies them as
+  // tree nodes, composer_sent_nodes_wbtest's)
+  @sfbase.hold_chat_page_nodes(Some(false))
   let clock = Ref(0.0)
   fix_clock.val = Some(fn() { clock.val })
   let src = fixture("chat")
@@ -191,6 +194,9 @@ test "words sent fly from the field into their bubble" {
 ///|
 test "words sent: the composer stays as it was while they are in it, and comes down as they let go of it, not from under them" {
   new_run()
+  // (the old page's words on their way (its SendFlight), what stable keeps: the page made as nodes flies them as
+  // tree nodes, composer_sent_nodes_wbtest's)
+  @sfbase.hold_chat_page_nodes(Some(false))
   let clock = Ref(0.0)
   fix_clock.val = Some(fn() { clock.val })
   let src = fixture("chat")
@@ -232,6 +238,9 @@ test "words sent: the composer stays as it was while they are in it, and comes d
 ///|
 test "words sent set out from where they were typed and land where their message has them, set alike all the way" {
   new_run()
+  // (the old page's words on their way (its SendFlight), what stable keeps: the page made as nodes flies them as
+  // tree nodes, composer_sent_nodes_wbtest's)
+  @sfbase.hold_chat_page_nodes(Some(false))
   let clock = Ref(0.0)
   fix_clock.val = Some(fn() { clock.val })
   let src = fixture("chat")
@@ -271,6 +280,9 @@ test "words sent set out from where they were typed and land where their message
 ///|
 test "words sent break their lines in their message where the composer broke them: a paragraph goes a line a piece" {
   new_run()
+  // (the old page's words on their way (its SendFlight), what stable keeps: the page made as nodes flies them as
+  // tree nodes, composer_sent_nodes_wbtest's)
+  @sfbase.hold_chat_page_nodes(Some(false))
   let clock = Ref(0.0)
   fix_clock.val = Some(fn() { clock.val })
   let src = fixture("chat")

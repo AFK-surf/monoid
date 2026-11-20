@@ -157,7 +157,7 @@ pub async fn Admin::read(
   } else {
     jobj([("background", jbool(r.background))])
   }
-  let got = self.backend.ask("readers.readBytes", [
+  let got = self.backend.ask_bytes("readers.readBytes", [
     js(op),
     args,
     js(r.lang),
@@ -169,7 +169,7 @@ pub async fn Admin::read(
         None => error(500, message_of(e))
       }
   }
-  json_bytes(200, bytes_of(got).unwrap_or(b""))
+  json_bytes(200, got.unwrap_or(b""))
 }
 
 ///|

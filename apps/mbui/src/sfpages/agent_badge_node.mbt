@@ -2,8 +2,8 @@
 
 ///|
 /// The badge at the corner of an agent's mark `side` across (sfpages' agent_badge, as nodes): a dot ringed in the
-/// page's ground (or `ground`: what the mark stands on, as agent_badge's), blue waiting on a person, red failed; at work
-/// the yellow ring turning. A chat's bar's on every screen (小屏's chat_bar_node, 中屏's and 大屏's chat_bar_wide_node), a chat's
+/// page's ground (or `ground`: what the mark stands on, as agent_badge's), blue waiting on a person, red failed; yellow
+/// spokes at work. A chat's bar's on every screen (小屏's chat_bar_node, 中屏's and 大屏's chat_bar_wide_node), a chat's
 /// info's (its panel's ground).
 pub fn agent_badge_node(
   v : @view.View,
@@ -50,7 +50,7 @@ pub fn agent_badge_in(
       let d = 10.0 * k
       let at = side - d + 2.0 * k
       r.over(Is(true)).width(Is(Some(d))).height(Is(Some(d))).offset(Is((at, at))) |> ignore
-      @sf.work_ring_node(r, d, @sf.mark_yellow) |> ignore
+      @sf.spokes_node(r, d, @sf.mark_yellow) |> ignore
     }
     // (none: over it, of no size, nothing drawn)
     _ => r.over(Is(true)).width(Is(Some(0.0))).height(Is(Some(0.0))) |> ignore
@@ -59,9 +59,9 @@ pub fn agent_badge_in(
 
 ///|
 /// The badge at the corner of mark `m` (`side` across) as `badge` says it now: two nodes, its ground's and what is drawn
-/// in it (a dot, or at work's ring), each told again in place as it comes to another, laid out nowhere while it has none
+/// in it (a dot, or the spokes), each told again in place as it comes to another, laid out nowhere while it has none
 /// (agent_badge_in's looks, by one binding); none made while it has none, as most marks have, till it first comes to
-/// one. Its ring turned only once it has first been at work, about its box's middle, the ring's.
+/// one. Its spokes turned only once it has first been at work.
 pub fn agent_badge_slot(m : @view.View, badge : () -> String, side : Double) -> Unit {
   let k = if side / 20.0 < 1.0 { side / 20.0 } else { 1.0 }
   let made = Ref(false)
@@ -73,7 +73,7 @@ pub fn agent_badge_slot(m : @view.View, badge : () -> String, side : Double) -> 
         let turning = Ref(false)
         let turn = fn() {
           turning.val = true
-          c.turn(By(fn() { if badge() == "run" { @sf.work_ring_turn(c) } else { 0.0 } })) |> ignore
+          c.turn(By(fn() { if badge() == "run" { @sf.spokes_turn(c) } else { 0.0 } }), drawn=true) |> ignore
         }
         c.sets_together(
           fn() {
@@ -101,7 +101,7 @@ pub fn agent_badge_slot(m : @view.View, badge : () -> String, side : Double) -> 
                 .padding(Is((2.0 * k, 2.0 * k, 2.0 * k, 2.0 * k)))
                 .ground(Is(ground))
                 |> ignore
-                c.width(Is(None)).height(Is(None)).grow(Is(1.0)).radius(Is(d / 2.0)).ground(Is(ink)).shapes(Is([]))
+                c.width(Is(None)).height(Is(None)).grow(Is(1.0)).radius(Is(d / 2.0)).ground(Is(ink)).lines(Is([]))
                 |> ignore
               }
               "run" => {
@@ -116,7 +116,7 @@ pub fn agent_badge_slot(m : @view.View, badge : () -> String, side : Double) -> 
                 .padding(Is((0.0, 0.0, 0.0, 0.0)))
                 .ground(Is(0L))
                 |> ignore
-                c.width(Is(Some(d))).height(Is(Some(d))).grow(Is(0.0)).radius(Is(0.0)).ground(Is(0L)).shapes(Is(@sf.work_ring_shapes(d, d, ink)))
+                c.width(Is(Some(d))).height(Is(Some(d))).grow(Is(0.0)).radius(Is(0.0)).ground(Is(0L)).lines(Is(@sf.spokes_lines(d, d, ink)))
                 |> ignore
                 if !turning.val {
                   turn()
@@ -124,7 +124,7 @@ pub fn agent_badge_slot(m : @view.View, badge : () -> String, side : Double) -> 
               }
               _ => {
                 r.laid_nowhere(Is(true)) |> ignore
-                c.shapes(Is([])) |> ignore
+                c.lines(Is([])) |> ignore
               }
             }
           },

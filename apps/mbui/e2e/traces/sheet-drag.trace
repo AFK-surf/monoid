@@ -57,8 +57,8 @@
 {"step":"now dragon 0 640 400 切换 workspace","acted":true,"w":1794097345398.244}
 {"step":"wait 400","w":1794097345832.033}
 {"step":"now gone 切换 workspace","w":1794097346247.49}
-{"step":"tap icon:ling","w":1794097346247.549}
-{"step":"tap icon:ling","acted":true,"w":1794097346247.949}
+{"step":"tap icon:plus","w":1794097346247.549}
+{"step":"tap icon:plus","acted":true,"w":1794097346247.949}
 {"out":{"id":20,"subscribe":{"topic":"newChat","scope":"01M6W8GSGQRC5Y90S4HKG51NXP"},"keyed":true},"w":1794097346263.72}
 {"out":{"id":21,"call":"client.focus","params":{"visible":true,"focused":true,"workspace":"01M6W8GSGQRC5Y90S4HKG51NXP","newChat":"01M6W8GSGQRC5Y90S4HKG51NXP"}},"w":1794097346267.808}
 {"step":"wait 500","w":1794097346268.533}

@@ -282,9 +282,10 @@ fn P51::rigs_live(self : P51) -> Unit {
       },
     ],
   )
-  // Windows: running as the machine's administrator.
+  // Windows: running as the machine's administrator, and the optional LocalSystem screen service.
   if is_windows() {
     self.elevation_live()
+    self.screen_service_live()
   }
 }
 
@@ -367,6 +368,78 @@ fn P51::elevation_live(self : P51) -> Unit {
     },
   ])
   bus.parts.overview("elevation", async fn(viewer, _) { @rigs_mode.elevation_overview(elevation, rigs_viewer(viewer)) }) catch {
+    _ => ()
+  }
+}
+
+///|
+/// screens/service-module.ts ScreenServiceLive (Windows only).
+fn P51::screen_service_live(self : P51) -> Unit {
+  let bus = self.bus
+  let host = self.host
+  let powershell = (script : String) => spawn(host, "powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded_command(script)], stdout=Piped)
+  let candidates = [
+    env_get("STILLFAIL_SCREEN_SVC").unwrap_or(""),
+    @rigs_mode.path_join([bus.app, "station", "stillfail-screen-svc.exe"]),
+    @rigs_mode.path_join([bus.app, "native", "screen", "target", "release", "stillfail-screen-svc.exe"]),
+  ]
+  let service = @rigs_mode.ScreenService::new({
+    after: (ms, f) => self.after(ms.to_int(), f),
+    changed: () => (bus.overview_changed.val)(),
+    fork: f => self.fork("screen-service", f),
+    probe: async fn() {
+      let script = @rigs_mode.screen_service_probe_script(candidates)
+      match (try { Ok(powershell(script)) } catch { e => Err(e) }) {
+        Ok(p) => {
+          let (_, _, out, _) = p.finished()
+          @rigs_mode.screen_service_parse_probe(@utf8.decode_lossy(out))
+        }
+        Err(_) => @rigs_mode.ScreenServiceProbe::empty()
+      }
+    },
+    run: script => match (try { Ok(powershell(script)) } catch { e => Err(e) }) {
+      Ok(p) => {
+        let exits : Array[(Int?) -> Unit] = []
+        fork_bg(host, "screen-service script", async fn() {
+          let (code, _, _, _) = p.finished()
+          for f in exits {
+            f(code)
+          }
+        })
+        { kill: () => ignore(kill(p.pid, "SIGKILL")), on_error: _ => (), on_exit: f => exits.push(f) }
+      }
+      Err(_) => {
+        let failed : Array[() -> Unit] = []
+        ignore(host.rt.fork_quiet(name="screen-service failed", async fn() { for f in failed { f() } }))
+        { kill: () => (), on_error: f => failed.push(f), on_exit: _ => () }
+      }
+    },
+  })
+  self.fork("screen-service", async fn() { service.start() })
+  self.stops.push(() => service.stop())
+  bus.parts.routes([
+    {
+      meth: "PUT",
+      path: "^\\/screen-service$",
+      answer: async fn(r) {
+        let t = (k : String) => match r {
+          Object(m) =>
+            opt_str(m.get(k)).unwrap_or("")
+          _ => ""
+        }
+        let viewer = match r {
+          Object(m) => m.get("viewer").unwrap_or(Json::null())
+          _ => Json::null()
+        }
+        let lang = t("lang")
+        match @rigs_mode.screen_service_route(service, t("method"), t("path"), t("rawBody"), rigs_viewer(viewer), k => tr(lang, k)) {
+          Some(a) => part_answer(a)
+          None => { "status": 404, "body": "{\"error\":\"no route\"}" }
+        }
+      },
+    },
+  ])
+  bus.parts.overview("screenService", async fn(viewer, _) { @rigs_mode.screen_service_overview(service, rigs_viewer(viewer)) }) catch {
     _ => ()
   }
 }

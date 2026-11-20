@@ -3,8 +3,7 @@ import { modelSpeed, type ModelSpeed } from "../../../client/core-ts/src/model-s
 // add_to_thread, say, bind_single, configure, archive, archive_chat, auto_archive, delete_session,
 // continue_machine_session). Archiving here is the record (archived, hidden) and what goes with it (the process ends,
 // other stations are told); packing an archived session's files is the hub's ColdStorage.
-import { NoPreset, type PresetCopy, keepCopy, presetRefusal } from "./presets.ts";
-import { spawn } from "node:child_process";
+import { COPY as PRESET_COPY_FILE, NoPreset, type PresetCopy, keepCopy, presetRefusal } from "./presets.ts";
 import { createHash } from "node:crypto";
 import { copyFile, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, join, relative, sep } from "node:path";
@@ -13,17 +12,16 @@ import { PlaceRefused } from "../ops/places.ts";
 import { log } from "../ops/log.ts";
 import { tr, type Lang, stationLang } from "../ops/i18n.ts";
 import { clean, inside, samePath, within } from "../ops/paths.ts";
-import { pruneRepoWorktrees, treeBytes } from "../ops/storage.ts";
-import { startEnv } from "../ops/agent-env.ts";
-import { wall } from "../ops/fibers.ts";
+import { RELIEVE_FULL_EVERY_MS, pruneRepoWorktrees, relieveOrphanTranscripts, treeBytes } from "../ops/storage.ts";
+import { REPO_GIT_TIMEOUT_MS, type RepoGitRun, isProcessFile, pruneRepoBranchesIn, runRepoGit } from "../ops/repo-branches.ts";
 import { checkContext } from "./context-cap.ts";
 import { type MachineSession, type Roots, ROLLOUT_DEPTH, ROLLOUT_ENTRIES, extension, rolloutOf } from "../read/machine.ts";
 import { usageNow } from "../read/usage.ts";
 import { homesFirst, sessionPlaces, sharedTranscripts } from "../read/transcript.ts";
 import { transcriptPathsSoon, transcriptSourcesSoon } from "../read/transcript-soon.ts";
 import { forgetMarksSoon, marksDir } from "../read/transcripts.ts";
-import { walkBounded } from "../ops/walk.ts";
-import { ARCHIVED_WORKSPACE_BATCH, AUTO, type ArchivedWorkspace, type Attachment, MANUAL, type Quote, STILLFAIL_SURFACE, type ThreadRow, type WorkOf, type ArchiveLook, type SessionRow } from "../store/store.ts";
+import { walkBounded, yieldLoop } from "../ops/walk.ts";
+import { ARCHIVED_WORKSPACE_BATCH, AUTO, type ArchivedWorkspace, type Attachment, IDLE_UNARCHIVED_BATCH, MANUAL, type Quote, STILLFAIL_SURFACE, type ThreadRow, type WorkOf, type ArchiveLook, type SessionRow } from "../store/store.ts";
 import { sessionBindingsReady } from "../store/session-bindings-index.ts";
 import { archiveMarksReady } from "../store/archive-mark-index.ts";
 import type { SessionChange } from "./accounts.ts";
@@ -374,6 +372,7 @@ export function archiveBy(hub: Hub, key: string, archived: boolean, by: string, 
     return restoring ? restoring.then(shown) : shown();
   }
   hub.store.setArchived(key, archived, by);
+  hub.forgetIdleMeasured(key);
   hub.closed(key);
   const actor = hub.actor(row);
   void actor
@@ -396,8 +395,13 @@ export function archiveChat(hub: Hub, thread: number, archived: boolean): void |
 }
 
 /// A snapshot-bounded walk of archived workspaces; no main-thread query returns more than a page.
-async function* archivedWorkspaces(hub: Hub, through: number | ArchivedWorkspace, needed: () => boolean | Promise<boolean> = () => true): AsyncGenerator<ArchivedWorkspace> {
-  let after: ArchivedWorkspace | null = null;
+async function* archivedWorkspaces(
+  hub: Hub,
+  through: number | ArchivedWorkspace,
+  needed: () => boolean | Promise<boolean> = () => true,
+  start: ArchivedWorkspace | null = null,
+): AsyncGenerator<ArchivedWorkspace> {
+  let after: ArchivedWorkspace | null = start;
   for (;;) {
     if (!(await needed())) return;
     const page = hub.store.archivedSessions(after, through);
@@ -406,6 +410,40 @@ async function* archivedWorkspaces(hub: Hub, through: number | ArchivedWorkspace
     after = page[page.length - 1]!;
     // Even if every file check completes immediately, other station work gets a turn before the next database page.
     await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
+
+/// Minimum interval between periodic archive backfill (`packUnfinishedArchived`) and idle rebuildable cleanup
+/// (`cleanIdleRebuildable`) rounds (10 minutes): packing up to 16 sessions per round clears a backlog of several
+/// hundred sessions within a few hours without contending with the main lifecycle loop.
+export const ARCHIVE_UPKEEP_EVERY_MS = 10 * 60_000;
+
+/// Max unfinished archived sessions packed per periodic round to prevent a startup/timer storm.
+export const PACK_BACKFILL_MAX_PER_ROUND = 16;
+
+/// Max archived sessions checked per periodic backfill round before advancing the cross-round cursor.
+export const PACK_BACKFILL_CHECK_MAX_PER_ROUND = 256;
+
+/// Unarchived sessions idle this long have their rebuildable directories (node_modules, target, ...) cleaned:
+/// 24 hours makes returning the next day and reinstalling dependencies acceptable.
+export const IDLE_REBUILD_MS = 24 * 3_600_000;
+
+/// Aggressive idle threshold for cleaning rebuildable directories of unarchived sessions when disk is below `diskLow`.
+export const IDLE_REBUILD_LOW_MS = 3_600_000;
+
+/// Max idle unarchived sessions measured per periodic round.
+export const IDLE_REBUILD_MAX_PER_ROUND = 16;
+
+/// Upper bound on cached `key -> lastActiveAt` entries for idle rebuildable measurements.
+const IDLE_MEASURED_MAX = 4096;
+
+function recordIdleMeasured(hub: Hub, key: string, lastActiveAt: number): void {
+  const map = hub.idleMeasured;
+  map.delete(key);
+  map.set(key, lastActiveAt);
+  if (map.size > IDLE_MEASURED_MAX) {
+    const oldest = map.keys().next().value;
+    if (oldest !== undefined) map.delete(oldest);
   }
 }
 
@@ -427,21 +465,194 @@ export async function expireArchived(hub: Hub, now: number): Promise<number | nu
   return next === null ? null : next + after;
 }
 
-/// The disk of the station's data is low (ops/disk.ts): archived workspaces are emptied before archivedWorkspaceMs, the
-/// longest archived first, as `expireArchived` empties them, until `free` is `low` (ops/disk.ts `diskLow`) again. None with
-/// archivedWorkspaceDays 0 (kept on purpose).
-export async function relieveArchived(hub: Hub, free: () => number | Promise<number>, low = DISK_LOW_BYTES): Promise<void> {
+/// Periodically finishes packing archived sessions that are not yet past `archivedWorkspaceMs` and still lack a `cold`
+/// mark (e.g. after a transient archive failure). Uses a cross-round cursor so persistent failures at the head do not
+/// starve later sessions, caps both checked (`checkLimit`) and packed (`limit`) sessions per round, and yields between
+/// sessions.
+export async function packUnfinishedArchived(
+  hub: Hub,
+  now: number,
+  limit = PACK_BACKFILL_MAX_PER_ROUND,
+  checkLimit = PACK_BACKFILL_CHECK_MAX_PER_ROUND,
+): Promise<number> {
   const { cold } = hub;
+  if (!cold.needsPack || limit <= 0 || checkLimit <= 0) return 0;
+  const through = hub.store.lastArchivedSession();
+  if (through === null) {
+    hub.packBackfillCursor = null;
+    return 0;
+  }
+  const afterMs = hub.config().archivedWorkspaceMs;
+  const windowFloor = afterMs > 0 ? now - afterMs : -Infinity;
+  const windowStart: ArchivedWorkspace | null = afterMs > 0 ? { archivedAt: now - afterMs, key: "" } : null;
+  const saved = hub.packBackfillCursor;
+  const savedInWindow =
+    saved !== null &&
+    saved.archivedAt >= windowFloor &&
+    (saved.archivedAt < through.archivedAt || (saved.archivedAt === through.archivedAt && saved.key < through.key));
+  const start = savedInWindow ? saved : windowStart;
+
+  let checked = 0;
+  let attempted = 0;
+  let packedCount = 0;
+  let lastSeen: ArchivedWorkspace | null = null;
+  let stoppedEarly = false;
+  for await (const s of archivedWorkspaces(hub, through, () => checked < checkLimit && attempted < limit, start)) {
+    if (checked >= checkLimit || attempted >= limit) {
+      stoppedEarly = true;
+      break;
+    }
+    checked++;
+    lastSeen = s;
+    try {
+      if (!(await cold.needsPack(s.key))) continue;
+      const row = hub.store.getSession(s.key);
+      if (!row || row.archivedAt === null) continue;
+      attempted++;
+      await hub.actor(row).cleanArchive();
+      packedCount++;
+    } catch (error) {
+      log.warn("hub", "an archived session's files not put away on backfill", { session: s.key, error: (error as Error).message });
+    }
+    await yieldLoop();
+    if (checked >= checkLimit || attempted >= limit) {
+      stoppedEarly = true;
+      break;
+    }
+  }
+  hub.packBackfillCursor = stoppedEarly && lastSeen !== null ? lastSeen : null;
+  return packedCount;
+}
+
+/// Cleans rebuildable build/install directories from idle unarchived sessions (`last_active_at <= now - idleMs`),
+/// oldest activity first, one at a time, capped at `limit` measured sessions per round. Memoizes `key -> lastActiveAt`
+/// so already-measured sessions are skipped until new activity updates `last_active_at`. Never packs, writes `cold`,
+/// or touches transcripts.
+export async function cleanIdleRebuildable(
+  hub: Hub,
+  now: number,
+  options?: { idleMs?: number; limit?: number },
+): Promise<number> {
+  const { cold } = hub;
+  if (!cold.cleanIdleRebuildable) return 0;
+  const idleMs = options?.idleMs ?? IDLE_REBUILD_MS;
+  const limit = options?.limit ?? IDLE_REBUILD_MAX_PER_ROUND;
+  if (limit <= 0) return 0;
+  const measuredMap = hub.idleMeasured;
+  const through = now - idleMs;
+  let after: { lastActiveAt: number; key: string } | null = null;
+  let measured = 0;
+  for (;;) {
+    if (measured >= limit) break;
+    const page = hub.store.idleUnarchivedSessions(after, through, IDLE_UNARCHIVED_BATCH);
+    for (const s of page) {
+      if (measured >= limit) break;
+      if (measuredMap.get(s.key) === s.lastActiveAt) continue;
+      try {
+        const freed = await cold.cleanIdleRebuildable(s.key);
+        if (freed !== null) {
+          recordIdleMeasured(hub, s.key, s.lastActiveAt);
+          measured++;
+        }
+      } catch (error) {
+        log.warn("hub", "rebuildable files of an idle session not cleaned", { session: s.key, error: (error as Error).message });
+      }
+      await yieldLoop();
+    }
+    if (page.length < IDLE_UNARCHIVED_BATCH) break;
+    const last = page[page.length - 1]!;
+    after = { lastActiveAt: last.lastActiveAt, key: last.key };
+  }
+  return measured;
+}
+
+/// Runs `packUnfinishedArchived` and `cleanIdleRebuildable` on their own cadence (`ARCHIVE_UPKEEP_EVERY_MS`),
+/// independent of how frequently `expireArchived` wakes. `hub.lastArchiveUpkeepAt` is initialized to hub startup time
+/// so startup never runs an immediate burst. Returns whether a round ran.
+export async function runArchiveUpkeepIfDue(
+  hub: Hub,
+  now: number,
+  everyMs = ARCHIVE_UPKEEP_EVERY_MS,
+): Promise<boolean> {
+  if (now - hub.lastArchiveUpkeepAt < everyMs) return false;
+  hub.lastArchiveUpkeepAt = now;
+  try {
+    await packUnfinishedArchived(hub, now);
+  } catch (error) {
+    log.warn("hub", "backfilling unfinished archived workspaces failed", { error: (error as Error).message });
+  }
+  try {
+    await cleanIdleRebuildable(hub, now);
+  } catch (error) {
+    log.warn("hub", "cleaning rebuildable files of idle sessions failed", { error: (error as Error).message });
+  }
+  return true;
+}
+
+/// Low-disk reclamation of rebuildable directories from idle unarchived sessions (threshold `IDLE_REBUILD_LOW_MS`,
+/// oldest activity first). When `full` is true, cleans all eligible sessions without stopping early when `free() >= low`;
+/// otherwise stops as soon as `free()` reaches `low`. Shares the `last_active_at` measurement cache with
+/// `cleanIdleRebuildable`. Runs before `relieveArchived`.
+export async function relieveIdleRebuildable(
+  hub: Hub,
+  free: () => number | Promise<number>,
+  low = DISK_LOW_BYTES,
+  idleMs = IDLE_REBUILD_LOW_MS,
+  options?: { full?: boolean },
+): Promise<number> {
+  const { cold } = hub;
+  const full = options?.full === true;
+  if (!cold.cleanIdleRebuildable) return 0;
+  if (!full && (await free()) >= low) return 0;
+  const measuredMap = hub.idleMeasured;
+  const through = hub.now() - idleMs;
+  let after: { lastActiveAt: number; key: string } | null = null;
+  let measured = 0;
+  for (;;) {
+    if (!full && (await free()) >= low) break;
+    const page = hub.store.idleUnarchivedSessions(after, through, IDLE_UNARCHIVED_BATCH);
+    for (const s of page) {
+      if (!full && (await free()) >= low) return measured;
+      if (measuredMap.get(s.key) === s.lastActiveAt) continue;
+      try {
+        const freed = await cold.cleanIdleRebuildable(s.key);
+        if (freed !== null) {
+          recordIdleMeasured(hub, s.key, s.lastActiveAt);
+          measured++;
+        }
+      } catch (error) {
+        log.warn("hub", "rebuildable files of an idle session not cleaned", { session: s.key, error: (error as Error).message });
+      }
+      await yieldLoop();
+    }
+    if (page.length < IDLE_UNARCHIVED_BATCH) break;
+    const last = page[page.length - 1]!;
+    after = { lastActiveAt: last.lastActiveAt, key: last.key };
+  }
+  return measured;
+}
+
+/// The disk of the station's data is low (ops/disk.ts): archived workspaces are emptied before archivedWorkspaceMs, the
+/// longest archived first. When `full` is true, empties all eligible archived workspaces without stopping early when
+/// `free() >= low`; otherwise stops once `free() >= low`. None with archivedWorkspaceDays 0 (kept on purpose).
+export async function relieveArchived(
+  hub: Hub,
+  free: () => number | Promise<number>,
+  low = DISK_LOW_BYTES,
+  options?: { full?: boolean },
+): Promise<void> {
+  const { cold } = hub;
+  const full = options?.full === true;
   if (hub.config().archivedWorkspaceMs <= 0 || !cold.expire || !cold.holdsMore) return;
-  if ((await free()) >= low) return;
+  if (!full && (await free()) >= low) return;
   const through = hub.store.lastArchivedSession();
   if (through === null) return;
-  for await (const s of archivedWorkspaces(hub, through, async () => (await free()) < low)) {
-    if ((await free()) >= low) return;
+  for await (const s of archivedWorkspaces(hub, through, full ? () => true : async () => (await free()) < low)) {
+    if (!full && (await free()) >= low) return;
     try {
       // Shown and archived again since, it is not the one looked at: `expire` leaves it.
       if (!(await cold.holdsMore(s.key))) continue;
-      if ((await free()) >= low) return;
+      if (!full && (await free()) >= low) return;
       await cold.expire(s.key, s.archivedAt);
     } catch (error) {
       log.warn("hub", "the workspace of an archived session was not emptied", { session: s.key, error: (error as Error).message });
@@ -449,38 +660,49 @@ export async function relieveArchived(hub: Hub, free: () => number | Promise<num
   }
 }
 
+/// Runs a full low-disk reclamation pass across all four steps (idle rebuildables, archived workspaces,
+/// orphan UUID transcripts, and unreferenced shared clones) without stopping early between steps when
+/// `free() < low`, throttled to at most once per `RELIEVE_FULL_EVERY_MS` (30 minutes). Each step is isolated
+/// so a failure in one step never skips the remaining steps or the cooldown timestamp. Returns whether a pass ran.
+export async function relieveLowDiskFull(
+  hub: Hub,
+  free: () => number | Promise<number>,
+  low = DISK_LOW_BYTES,
+  options?: { git?: RepoGitRun; cooldownMs?: number },
+): Promise<boolean> {
+  if ((await free()) >= low) return false;
+  const now = hub.now();
+  const cooldownMs = options?.cooldownMs ?? RELIEVE_FULL_EVERY_MS;
+  const prev = hub.lastFullRelieveAt;
+  if (prev !== null && now - prev < cooldownMs) return false;
+  try {
+    await relieveIdleRebuildable(hub, free, low, IDLE_REBUILD_LOW_MS, { full: true });
+  } catch (error) {
+    log.warn("hub", "cleaning rebuildable files of idle sessions failed", { error: (error as Error).message });
+  }
+  try {
+    await relieveArchived(hub, free, low, { full: true });
+  } catch (error) {
+    log.warn("hub", "making room on the disk failed", { error: (error as Error).message });
+  }
+  try {
+    await relieveOrphanTranscripts(hub.config().dataDir, now, hub.store, free, low, { full: true });
+  } catch (error) {
+    log.warn("hub", "reclaiming orphan transcripts failed", { error: (error as Error).message });
+  }
+  try {
+    await relieveRepos(hub, free, low, { full: true, git: options?.git });
+  } catch (error) {
+    log.warn("hub", "reclaiming unused shared clones failed", { error: (error as Error).message });
+  }
+  hub.lastFullRelieveAt = hub.now();
+  return true;
+}
+
 /// A shared clone in `<data>/repos` untouched for this long may be reclaimed when disk space is below the low mark:
-/// 14 days matches job log retention and gives active projects two weeks of buffer against transient disk spikes.
-export const REPO_IDLE_MS = 14 * 24 * 3_600_000;
-/// Short deadline for local read-only git checks during low-disk clone reclamation.
-export const REPO_GIT_TIMEOUT_MS = 15_000;
-
-export type RepoGitRun = (dir: string, args: string[]) => Promise<{ ok: boolean; stdout: string }>;
-
-const runRepoGit: RepoGitRun = (dir, args) =>
-  new Promise((resolve) => {
-    const env = { ...startEnv(), GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: "ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new" };
-    const child = spawn("git", ["-C", dir, ...args], { env, stdio: ["ignore", "pipe", "ignore"] });
-    let stdout = "";
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (d: string) => {
-      if (stdout.length < 64 * 1024) stdout += d;
-    });
-    let late = false;
-    // timer: a deadline to a process (git status/rev-list given REPO_GIT_TIMEOUT_MS at most)
-    const stop = wall.after(REPO_GIT_TIMEOUT_MS, () => {
-      late = true;
-      child.kill("SIGKILL");
-    });
-    child.on("error", () => {
-      stop();
-      resolve({ ok: false, stdout: "" });
-    });
-    child.on("close", (code) => {
-      stop();
-      resolve({ ok: !late && code === 0, stdout });
-    });
-  });
+/// 3 days protects active work across a weekend while letting low-disk reclamation free unused shared clones promptly.
+export const REPO_IDLE_MS = 3 * 24 * 3_600_000;
+export { REPO_GIT_TIMEOUT_MS, type RepoGitRun };
 
 async function repoLastTouchedMs(repoPath: string): Promise<number | null> {
   let latest: number | null = null;
@@ -529,9 +751,10 @@ export async function relieveRepos(
   hub: Hub,
   free: () => number | Promise<number>,
   low = DISK_LOW_BYTES,
-  options?: { git?: RepoGitRun },
+  options?: { git?: RepoGitRun; full?: boolean },
 ): Promise<string[]> {
-  if ((await free()) >= low) return [];
+  const full = options?.full === true;
+  if (!full && (await free()) >= low) return [];
   if (hub.clones.hasActive()) return [];
   const { dataDir, agentHome } = hub.config();
   await pruneRepoWorktrees(dataDir);
@@ -568,7 +791,7 @@ export async function relieveRepos(
       await addRef(s.workspace);
       await addRef(s.cwd);
       if (s.archivedAt === null) {
-        const copyRes = await readJsonObjectStrict(join(s.workspace, ".stillfail-preset.json"));
+        const copyRes = await readJsonObjectStrict(join(s.workspace, PRESET_COPY_FILE));
         if (copyRes.kind === "error") return [];
         if (copyRes.kind === "ok" && Array.isArray(copyRes.value.dirs)) {
           for (const dir of copyRes.value.dirs as any[]) {
@@ -626,7 +849,7 @@ export async function relieveRepos(
   const git = options?.git ?? runRepoGit;
   const removed: string[] = [];
   for (const cand of candidates) {
-    if ((await free()) >= low) break;
+    if (!full && (await free()) >= low) break;
     if (hub.clones.hasActive()) break;
     // Condition 2: has a non-local remote, no unpushed commits (including detached HEAD / all refs), no refs/stash.
     const remotesRes = await git(cand.path, ["remote"]);
@@ -637,19 +860,36 @@ export async function relieveRepos(
     const urlRes = await git(cand.path, ["remote", "get-url", primary]);
     const remoteUrl = urlRes.stdout.trim();
     if (!urlRes.ok || !isRecoverableRemoteUrl(remoteUrl)) continue;
+    // Run local branch cleanup (unthrottled by daily cadence) so merged/applied/process-only branches are dropped
+    // and stale (>14d) unpushed branches are archived into a verified bundle before checking remaining unpushed tips.
+    await pruneRepoBranchesIn(dataDir, cand.name, cand.path, now, { git });
     const revRes = await git(cand.path, ["rev-list", "--count", "--all", "HEAD", "--not", "--remotes"]);
     if (!revRes.ok || revRes.stdout.trim() !== "0") continue;
     const stashRes = await git(cand.path, ["for-each-ref", "refs/stash"]);
     if (!stashRes.ok || stashRes.stdout.trim() !== "") continue;
-    // Condition 3: clean main working tree (including untracked files, regardless of repo status.showUntrackedFiles).
-    const statusRes = await git(cand.path, ["--no-optional-locks", "status", "--porcelain", "--untracked-files=normal"]);
-    if (!statusRes.ok || statusRes.stdout !== "") continue;
+    // Condition 3: main working tree has no tracked changes; untracked files are allowed only if all are process files.
+    const statusRes = await git(cand.path, ["-c", "core.quotepath=false", "--no-optional-locks", "status", "--porcelain", "--untracked-files=all"]);
+    if (!statusRes.ok) continue;
+    let dirty = false;
+    for (const line of statusRes.stdout.split(/\r?\n/)) {
+      if (line === "") continue;
+      if (!line.startsWith("?? ")) {
+        dirty = true;
+        break;
+      }
+      const rel = line.slice(3).trim();
+      if (!isProcessFile(rel)) {
+        dirty = true;
+        break;
+      }
+    }
+    if (dirty) continue;
     // Re-check before rm: a session may have added a worktree or touched the repo during the git checks.
     const recheckWt = await readdir(join(cand.path, ".git", "worktrees")).catch((e: NodeJS.ErrnoException) => (e.code === "ENOENT" ? [] : null));
     if (recheckWt === null || recheckWt.length > 0) continue;
     const recheckMtime = await repoLastTouchedMs(cand.path);
     if (recheckMtime === null || recheckMtime !== cand.mtime) continue;
-    if (hub.clones.hasActive() || (await free()) >= low) break;
+    if (hub.clones.hasActive() || (!full && (await free()) >= low)) break;
     const { bytes } = await treeBytes(cand.path);
     await rm(cand.path, { recursive: true, force: true });
     log.info("hub", "reclaimed unused shared clone", { path: cand.path, remote: safeUrl(remoteUrl), freed: bytes });
@@ -907,6 +1147,7 @@ export async function deleteSession(hub: Hub, key: string) {
   // Flush any unread transcript tail into usage statistics before removing the session row and its transcripts.
   await hub.live.flushUsage(key).catch((error) => log.warn("hub", "flushing usage before session delete failed", { session: key, error: (error as Error).message }));
   hub.live.forget(key);
+  hub.forgetIdleMeasured(key);
   const { dataDir, profiles } = hub.config();
   const sources = hub.store.runtimeSessionSources(key);
   const places = sessionPlaces(row);

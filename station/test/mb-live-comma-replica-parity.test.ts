@@ -362,6 +362,9 @@ function mcpCall(port: number, token: string, name: string, args: Record<string,
 
 async function startControlPlane(opts: {
   workspace?: string;
+  workspaceEmoji?: string;
+  workspaceIcon?: string;
+  stationName?: string;
   peers?: Array<{ id: string; name: string; ips?: string[] }>;
   models?: Record<string, unknown>;
 } = {}) {
@@ -407,7 +410,9 @@ async function startControlPlane(opts: {
           type: "state",
           workspace,
           workspace_name: "Parity Team",
-          name: me?.name ?? "station",
+          ...(opts.workspaceEmoji ? { workspace_emoji: opts.workspaceEmoji } : {}),
+          ...(opts.workspaceIcon ? { workspace_icon: opts.workspaceIcon } : {}),
+          name: opts.stationName ?? me?.name ?? "station",
           peers,
           relay_urls: [],
         }),
@@ -562,7 +567,13 @@ test(
       connects: [],
       maxNudges: 1,
     });
-    const plane = await startControlPlane({ workspace: "w1", peers: [{ id, name: "comma-host" }] });
+    const plane = await startControlPlane({
+      workspace: "w1",
+      workspaceEmoji: "🚀",
+      workspaceIcon: "glyph:rocket",
+      stationName: "comma-host",
+      peers: [{ id, name: "comma-host" }],
+    });
     mkdirSync(join(data, "mesh"), { recursive: true });
     writeFileSync(
       join(data, "mesh", "cloud.json"),
@@ -571,6 +582,8 @@ test(
         station: id,
         workspace: "w1",
         workspace_name: "Parity Team",
+        workspace_emoji: "🚀",
+        workspace_icon: "glyph:rocket",
         name: "comma-host",
         relay_url: "",
         relay_urls: [],
@@ -617,6 +630,49 @@ test(
       const meta = comma.frames.find((f) => f.type === "metadata");
       assert.ok(meta, `missing metadata frame: ${JSON.stringify(comma.frames)}`);
       assert.equal(meta.capabilities.tasks, 2);
+      assert.deepEqual(meta.capabilities.stillfail_workspace, {
+        id: "w1",
+        name: "Parity Team",
+        station: "comma-host",
+        emoji: "🚀",
+        icon: "glyph:rocket",
+        stations: [{ id, name: "comma-host" }],
+      });
+
+      // Live workspace metadata update from control plane pushes a new metadata frame on the same socket.
+      const peer2 = "b".repeat(64);
+      const sockBeforeMetaPush = comma.active();
+      plane.push({
+        type: "state",
+        workspace: "w1",
+        workspace_name: "Parity Renamed",
+        name: "comma-host",
+        peers: [
+          { id, name: "comma-host" },
+          { id: peer2, name: "peer-two" },
+        ],
+        relay_urls: [],
+      });
+      const updatedMeta = await given(
+        "updated metadata frame after control plane state push",
+        () =>
+          comma.frames
+            .filter((f) => f.type === "metadata")
+            .find((f) => f.capabilities?.stillfail_workspace?.name === "Parity Renamed"),
+        () => JSON.stringify(comma.frames.filter((f) => f.type === "metadata")),
+      );
+      assert.equal(comma.active(), sockBeforeMetaPush, "metadata update should stay on the same Comma socket");
+      assert.deepEqual(updatedMeta.capabilities.stillfail_workspace, {
+        id: "w1",
+        name: "Parity Renamed",
+        station: "comma-host",
+        stations: [
+          { id, name: "comma-host" },
+          { id: peer2, name: "peer-two" },
+        ],
+      });
+      assert.equal("emoji" in updatedMeta.capabilities.stillfail_workspace, false);
+      assert.equal("icon" in updatedMeta.capabilities.stillfail_workspace, false);
 
       // Overview reports comma: true and connect state "connected".
       await given(

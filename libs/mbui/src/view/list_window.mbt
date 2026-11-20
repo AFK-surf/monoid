@@ -750,6 +750,48 @@ pub fn[K : Hash + Eq] View::scrolls_reused(
 }
 
 ///|
+/// Minimal virtualized recycled list entry point: thin generic shell over `View::scrolls_reused` that creates a
+/// `Scroll::list()` when `scroll` is omitted and applies `View::fill()` by default (`fill=true`) so the list fills
+/// remaining flex room without overflowing its parent.
+#callsite(autofill(loc))
+pub fn[K : Hash + Eq] View::list_reused(
+  self : View,
+  keys : () -> Array[K],
+  make : (View, () -> K) -> Unit,
+  scroll? : Scroll,
+  est? : Double = 44.0,
+  shape? : (K) -> Int = fn(_) { 0 },
+  bar? : ScrollBar,
+  at_once? : Bool = false,
+  fill? : Bool = true,
+  head? : (View) -> Unit,
+  foot? : (View) -> Unit,
+  place? : ListPlace[K],
+  loc~ : SourceLoc,
+) -> View {
+  guard self.live() is Some(_) else { return self }
+  if fill {
+    self.fill(loc~) |> ignore
+  }
+  let s = match scroll {
+    Some(s) => s
+    None => Scroll::list()
+  }
+  self.scrolls_reused(
+    s,
+    keys,
+    make,
+    shape~,
+    est~,
+    bar?=bar,
+    at_once~,
+    place?=place,
+    head?=head,
+    foot?=foot,
+  )
+}
+
+///|
 /// View::scrolls_window's work, of its keys by their numbers (ListKeys): compiled once, not once for every type of key
 /// a page's list holds (11 of it were 26 MB of a program's C).
 fn View::scrolls_window_ids(

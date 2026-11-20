@@ -120,6 +120,7 @@ pub struct Capture {
     format: DirectXPixelFormat,
     sdr: Option<super::hdr::ToSdr>,
     /// The display it captures.
+    #[allow(dead_code)]
     pub monitor: HMONITOR,
 }
 

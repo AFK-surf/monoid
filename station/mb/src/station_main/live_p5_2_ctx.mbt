@@ -55,6 +55,7 @@ priv struct P52 {
   mut runner_all : Map[String, String]?
   /// The runners no session has (`unnamed`): asked of `listSessions` once.
   runner_unnamed : Set[String]
+  mut relieve_low_bytes : Double?
 }
 
 ///|
@@ -1098,6 +1099,7 @@ async fn P52::deps(self : P52, _key : String, name : String, args : Array[Json])
         _ => jn(wall_ms().to_double() + 3_600_000.0)
       }
     "recheck" => self.bus.jobs_accounts_recheck(a(0))
+    "canAuthRetry" => self.bus.jobs_accounts_can_auth_retry(a(0), a(1))
     "runtimeMissing" => {
       hub.runtime_updated(s(0))
       self.bus.coord_updates_runtime_missing(a(0))

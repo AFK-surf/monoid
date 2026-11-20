@@ -9,7 +9,7 @@
 /// those words: each frame's (moment, the name's x, the words' x), where both are seen.
 fn panel_way_heads() -> Array[(Double, Double, Double)] {
   new_run()
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   let src = fixture_app("chat", chat_nodes=true)
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0, words_over_held=false)
   t.check_looks(false)

@@ -9,7 +9,7 @@
 let presets_file : String = "presets.json"
 
 ///|
-let copy_file : String = ".stillfail-preset.json"
+pub let copy_file : String = ".stillfail-preset.json"
 
 ///|
 pub let live_most : Int = 1000

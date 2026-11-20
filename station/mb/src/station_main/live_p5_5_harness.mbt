@@ -19,6 +19,9 @@
 //   whether it is open before it opened, once opened, and once the server closed it after its ping
 //   ({before, opened, said, after}), and a second socket cut off once opened ({cutOpened, cut});
 // - {step: "pageBase", state, channel}: where the session pages are as Comma's part is given them (`page_base_of`).
+// - {step: "fetchVia", via, url, manual}: a GET as the part `via` names asks the shell for it (Slack's `host_net`,
+//   Feishu's, the updates' `fetch_on`, Farview's release download `host_fetch_bytes`, the accounts' `host_io` with its
+//   `manual`), its answer ({status, redirected?, body}; Farview's: {body} or null).
 
 ///|
 let p5_5_harnessed : Ref[LiveBus?] = Ref(None)
@@ -47,6 +50,7 @@ async fn p5_5_step(host : @host.Host, ask : Json) -> Json {
       { "feishu": said(feishu_surface_options(host, "f1", None)), "comma": said(comma_surface_options(host, "c1", None)) }
     }
     "socket" => p5_5_socket_probe(host, jtext_or_empty(ask, "url"))
+    "fetchVia" => p5_5_fetch_via(host, jtext_or_empty(ask, "via"), jtext_or_empty(ask, "url"), jfield(ask, "manual") is True)
     "pageBase" =>
       page_base_of(
         match jfield(ask, "state") {
@@ -206,5 +210,35 @@ async fn p5_5_socket_probe(host : @host.Host, url : String) -> Json {
     "after": Json::boolean(after),
     "cutOpened": Json::boolean(cut_opened),
     "cut": Json::boolean((other.is_open)()),
+  }
+}
+
+///|
+/// The step "fetchVia": `url` asked as the part `via` asks the shell for it.
+async fn p5_5_fetch_via(host : @host.Host, via : String, url : String, manual : Bool) -> Json {
+  let text = (b : Bytes) => Json::string(@utf8.decode_lossy(b))
+  match via {
+    "slack" => {
+      let r = (@slack.host_net(host, @slack.Wall::new(0.0)).fetch)("GET", url, [], None, 10_000)
+      { "status": Json::number(r.status.to_double()), "redirected": Json::boolean(r.redirected), "body": text(r.body) }
+    }
+    "feishu" => {
+      let r = (@feishu.host_net(host).fetch)({ url, verb: "GET", headers: [], body: None, timeout_ms: 10_000 })
+      { "status": Json::number(r.status.to_double()), "body": text(r.body) }
+    }
+    "updates" => {
+      let r = @updates.fetch_on(host, url)
+      { "status": Json::number(r.status.to_double()), "body": text(r.bytes()) }
+    }
+    "farview" =>
+      match (@browser.host_fetch_bytes(host, tmpdir()))(url) {
+        Some(b) => { "body": text(b) }
+        None => Json::null()
+      }
+    "oauth" => {
+      let r = (@accounts_oauth.host_io(host).fetch)({ url, method_: "GET", headers: [], body: None, timeout_ms: 10_000, manual })
+      { "status": Json::number(r.status.to_double()), "body": Json::string(r.body) }
+    }
+    other => raise LiveError("no part \{other} fetches")
   }
 }

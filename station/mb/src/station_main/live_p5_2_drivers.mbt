@@ -280,12 +280,9 @@ fn claude_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers
     open: async fn(options, events) { agent_of(pump.wait(d.open(to_jv(options), events))) },
     adopt: async fn(options, snap, events) { agent_of(pump.wait(d.adopt(to_jv(options), snap.map(to_jv), events))) },
     shutdown: async fn(again) {
+      // (own-process.ts `shutdown`: each session disposed either way; used again, its program is kept)
       for s in d.sessions.copy() {
-        if again {
-          ignore(pump.wait(s.dispose())) catch { _ => () }
-        } else {
-          ignore(pump.wait(s.dispose())) catch { _ => () }
-        }
+        ignore(pump.wait(s.dispose())) catch { _ => () }
       }
       if !again {
         ignore(pump.wait((procs.close)())) catch { _ => () }
@@ -385,7 +382,7 @@ fn codex_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers.
       found
     }),
     host_skills: path([home, ".agents", "skills"]),
-    ca_bundle: "/etc/ssl/cert.pem",
+    ca_bundles: @agent_drivers.ca_bundles(),
     fast: Some(thread => {
       let v = ctx.bus.store.codex_session_fast(thread) catch { _ => Json::null() }
       match v {

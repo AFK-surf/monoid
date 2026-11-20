@@ -119,3 +119,28 @@ test "what the station starts never carries the launcher's front, whatever its e
   assert_true(env.get("PATH") == Some("/bin"))
   assert_true(start_env(raw, []).get("STILLFAIL_MESH_FRONT") is None)
 }
+
+///|
+test "Codex's CA file: the first of the system's there, each looked at only after the one before is not" {
+  let lp = Loop::new()
+  let asked = []
+  let there = (have : Array[String]) => (p : String) => {
+    asked.push(p)
+    Later::ok(lp, have.contains(p))
+  }
+  let got : Ref[String?] = Ref(None)
+  // (a Fedora machine: Debian's file not there, its own is; macOS's never looked at)
+  first_there(lp, there(["/etc/pki/tls/certs/ca-bundle.crt", "/etc/ssl/cert.pem"]), ca_bundles()).map(f => got.val = f)
+  |> ignore
+  lp.run()
+  assert_eq(got.val, Some("/etc/pki/tls/certs/ca-bundle.crt"))
+  assert_eq(asked, ["/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt"])
+  // (a Mac: macOS's, the last)
+  first_there(lp, there(["/etc/ssl/cert.pem"]), ca_bundles()).map(f => got.val = f) |> ignore
+  lp.run()
+  assert_eq(got.val, Some("/etc/ssl/cert.pem"))
+  // (none there: none)
+  first_there(lp, there([]), ca_bundles()).map(f => got.val = f) |> ignore
+  lp.run()
+  assert_eq(got.val, None)
+}

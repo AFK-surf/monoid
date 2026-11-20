@@ -244,7 +244,7 @@ test "sizes_steady: a box that steps in its first frame and stands, while someth
             n
             .over(Is(true))
             .offset(Is((10.0, 10.0)))
-            .width(By(fn() { Some(if tree_theme().tabular { 120.0 } else { 60.0 }) }))
+            .width(By(fn() { Some(if tree_theme().focus == 0x224466FFL { 120.0 } else { 60.0 }) }))
             .height(Is(Some(40.0)))
             .ground(Is(0x3366CCFFL))
             |> ignore

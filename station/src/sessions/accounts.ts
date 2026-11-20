@@ -124,6 +124,20 @@ export class Accounts {
     return run;
   }
 
+  /// Read-only check whether a turn that failed with `auth` on `failedProfile` should automatically reopen and retry:
+  /// allowed when `recheck` did not mark `failedProfile` as `"login"` / `"failed"`, or when another healthy profile is
+  /// available for `key`; false when `failedProfile` is confirmed unusable and no healthy fallback exists.
+  canAuthRetry(key: string, failedProfile: string): boolean {
+    const state = this.healthOf(failedProfile).check?.state;
+    if (state !== "login" && state !== "failed") return true;
+    const row = this.deps.store.getSession(key);
+    if (!row) return false;
+    if (row.profile !== failedProfile && this.can(row.profile, row.model)) return true;
+    if (row.profilePinned) return false;
+    const fallbacks = [...this.others(row), ...this.acrossOthers(row)];
+    return fallbacks.some((p) => p.id !== failedProfile && this.can(p.id, row.model));
+  }
+
   /// Several profiles can spend the same account's allowance. An unknown account keeps its own profile's identity.
   private accountKey(id: string, health = this.health(id)): string {
     return typeof health.account === "string" && health.account !== "" ? `account:${health.account}` : `profile:${id}`;

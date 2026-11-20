@@ -436,14 +436,7 @@ async fn p54_browser_start(bus : LiveBus, threads : @store_threads.Store, screen
     dir: path([dir, "farview"]),
     config: () => @browser.farview_config(Some(to_jv((bus.config_raw.val)())), release_target, @browser.farview_releases(), native_cache),
     screens: Some(station_screens),
-    fetch: async fn(url) {
-      let r = host.fetch(url) catch { _ => return None }
-      if r.status >= 200 && r.status < 300 {
-        Some(r.body)
-      } else {
-        None
-      }
-    },
+    fetch: @browser.host_fetch_bytes(host, tmpdir()),
     sources: name => @browser.farview_sources(name, env_map),
     machine,
     files,

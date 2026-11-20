@@ -1,12 +1,17 @@
-// The chat's page both ways (sfbase's chat_page_nodes: its old view, and its inside made as nodes, its composer too),
-// for a test that
-// holds what the page does whichever way it is made: newchat_send's, chat_send_from_above's, quote_flight's and
-// chat_parity's run once each way, each Tester made with the page as `both_nodes` says.
+// The chat's page both ways, held so whatever the fixture's channel (sfbase's hold_chat_page_nodes: its old view,
+// and its inside made as nodes, its composer too), for a test that holds what the page does whichever way it is
+// made: newchat_send's, chat_send_from_above's, quote_flight's and chat_parity's run once each way, each Tester
+// made with the page as `both_nodes` says.
 
 ///|
 /// Which way the chat's page is made by a Tester a both_pages test makes now (set just before it is made).
 // kept across runs: said by both_pages for each run of its test, false once it is done
 let both_nodes : Ref[Bool] = Ref(false)
+
+///|
+/// Whether a both_pages test runs now (a Tester made outside one has the page as its fixture's channel does).
+// kept across runs: said by both_pages while its test runs, false once it is done
+let both_running : Ref[Bool] = Ref(false)
 
 ///|
 /// `f` run with the chat's page made each way: its old view, then its inside as nodes; a failure says which. One way
@@ -16,18 +21,25 @@ fn both_pages(f : () -> Unit raise, old_only? : String = "", nodes_only? : Strin
   let ways = if old_only != "" { [false] } else if nodes_only != "" { [true] } else { [false, true] }
   for nodes in ways {
     both_nodes.val = nodes
+    both_running.val = true
     try f() catch {
       Failure(e) => {
         both_nodes.val = false
+        both_running.val = false
+        @sfbase.hold_chat_page_nodes(None)
         fail("[\{if nodes { "nodes" } else { "old" }}] \{e}")
       }
       e => {
         both_nodes.val = false
+        both_running.val = false
+        @sfbase.hold_chat_page_nodes(None)
         fail("[\{if nodes { "nodes" } else { "old" }}] \{e}")
       }
     }
   }
   both_nodes.val = false
+  both_running.val = false
+  @sfbase.hold_chat_page_nodes(None)
 }
 
 ///|
@@ -48,5 +60,5 @@ fn waiting_tile_at(t : @ui.Tester, seen : String) -> (Double, Double, Double, Do
 ///|
 /// The chat's page made the way both_pages runs now, said as a Tester is about to be made (after its run's reset).
 fn both_way() -> Unit {
-  @sfbase.chat_page_nodes.set(both_nodes.val)
+  @sfbase.hold_chat_page_nodes(Some(both_nodes.val))
 }

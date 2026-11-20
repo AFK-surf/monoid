@@ -390,7 +390,7 @@ test "the vault's page's request where it is not this device's to answer, or dec
 /// phone's window, drawn.
 fn vault_ask(src : Source) -> @ui.Tester {
   let w : Workspace = { id: "ws1", name: "", emoji: "", icon: "", email: "" }
-  let asked : @settings.Asked = { name: "GitHub token", reason: "", timeout_kind: "", timeout_seconds: 0, approved_timeout_kind: "", approved_timeout_seconds: 0, mode: "proxy", command: "", how_text: "", save_kind: "", username: "", filename: "", typed: false, oauth: "", station: "", describe: false, new_name: "", new_about: "", was_about: "", remove: false }
+  let asked : @settings.Asked = { name: "GitHub token", reason: "", timeout_kind: "", timeout_seconds: 0, approved_timeout_kind: "", approved_timeout_seconds: 0, mode: "proxy", command: "", how_text: "", save_kind: "", save_vault_name: "", save_shared: false, save_targets: [], username: "", filename: "", typed: false, oauth: "", station: "", describe: false, new_name: "", new_about: "", was_about: "", remove: false }
   let t = @ui.Tester::new(fn(_c) {  }, w=390.0, h=844.0, platform=2)
   let core = settings_core(src, w)
   @ui.set_view_app(fn(root) {
@@ -715,4 +715,101 @@ test "a request to delete an item: 删除密钥 and its name, 删除 deletes it"
   assert_eq(card_faults, [])
   vt_press(t, "删除")
   assert_eq(vt_vault_calls(calls), ["vault.approve {\"workspace\":\"ws1\",\"request\":\"r-demo\",\"scope\":\"once\"}"])
+}
+
+///|
+test "a save request card defaults to personal vault and only shows shared notice after manually picking workspace vault" {
+  let multi_vault_src = fn(calls : Array[String]) -> Source {
+    let base = vault_src(["r1"], true, calls, save=true)
+    {
+      ..base,
+      topic_read: fn(name, params) {
+        if name == "vaults" {
+          {
+            value: Some(
+              Json::object({
+                "available": Json::boolean(true),
+                "locked": Json::boolean(true),
+                "setUp": Json::boolean(true),
+                "vaults": Json::array([
+                  Json::object({ "id": Json::string("v1"), "name": Json::string("个人密钥库"), "keyed": Json::boolean(true), "mine": Json::boolean(true) }),
+                  Json::object({ "id": Json::string("v-ws"), "name": Json::string("Workspace 密钥库"), "scope": Json::string("workspace"), "keyed": Json::boolean(true), "manages": Json::boolean(true) }),
+                ]),
+                "requests": Json::array([
+                  Json::object({
+                    "id": Json::string("r1"),
+                    "save": Json::object({ "kind": Json::string("token") }),
+                  }),
+                ]),
+              }),
+            ),
+            error: None,
+            version: 1,
+          }
+        } else {
+          (base.topic_read)(name, params)
+        }
+      },
+    }
+  }
+  let w : Workspace = { id: "ws1", name: "", emoji: "", icon: "", email: "" }
+  // Even if an older station sent save_shared=true, default stays personal vault with no shared warning.
+  let asked : @settings.Asked = { name: "Sentry DSN", reason: "存入错误上报配置", timeout_kind: "", timeout_seconds: 0, approved_timeout_kind: "", approved_timeout_seconds: 0, mode: "env", command: "", how_text: "环境变量 · SENTRY_DSN", save_kind: "token", save_vault_name: "Workspace 密钥库", save_shared: true, save_targets: [], username: "", filename: "", typed: false, oauth: "", station: "", describe: false, new_name: "", new_about: "", was_about: "", remove: false }
+
+  // 1. Default save goes to personal vault (v1) with no shared notice.
+  new_run()
+  let calls1 : Array[String] = []
+  let t1 = @ui.Tester::new(fn(_c) {  }, w=480.0, h=844.0, platform=0)
+  let core1 = settings_core(multi_vault_src(calls1), w)
+  @ui.set_view_app(fn(root) {
+    root.box(fn(b) { @settings.vault_request_node(b, core1, fn() { "ws1" }, fn() { "r1" }, fn() { asked }) }) |> ignore
+  })
+  t1.draw()
+  assert_true(t1.find("个人密钥库") is Some(_))
+  assert_true(t1.find("将存入团队共享密钥库「Workspace 密钥库」") is None)
+  vt_press(t1, "存入")
+  assert_eq(vt_vault_calls(calls1), ["vault.approve {\"workspace\":\"ws1\",\"request\":\"r1\",\"scope\":\"once\",\"vault\":\"v1\"}"])
+
+  // 2. Manually switching chooser to Workspace 密钥库 shows shared notice and approves with vault=v-ws.
+  new_run()
+  let calls2 : Array[String] = []
+  let t2 = @ui.Tester::new(fn(_c) {  }, w=480.0, h=844.0, platform=0)
+  let core2 = settings_core(multi_vault_src(calls2), w)
+  @ui.set_view_app(fn(root) {
+    root.box(fn(b) { @settings.vault_request_node(b, core2, fn() { "ws1" }, fn() { "r1" }, fn() { asked }) }) |> ignore
+  })
+  t2.draw()
+  vt_press(t2, "个人密钥库")
+  t2.run_for(@ui.move_most_ms)
+  vt_press(t2, "Workspace 密钥库")
+  t2.run_for(@ui.move_most_ms)
+  assert_true(t2.find("将存入团队共享密钥库「Workspace 密钥库」") is Some(_))
+  vt_press(t2, "存入")
+  assert_eq(vt_vault_calls(calls2), ["vault.approve {\"workspace\":\"ws1\",\"request\":\"r1\",\"scope\":\"once\",\"vault\":\"v-ws\"}"])
+}
+
+///|
+test "workspace vault fixture modes pass audit across wide, narrow, and 1.3x font scale" {
+  let sizes : Array[(Double, Double, Int, Double)] = [(1100.0, 760.0, 0, 1.0), (390.0, 844.0, 2, 1.0), (390.0, 844.0, 2, 1.3)]
+  let modes : Array[String] = [
+    "settings-vault-workspace-create",
+    "settings-vault-workspace",
+    "settings-vault-workspace-save-picked",
+    "settings-vault-workspace-members",
+    "settings-vault-workspace-editor",
+  ]
+  for size in sizes {
+    let (w, h, platform, scale) = size
+    for mode in modes {
+      let src = fixture_app(mode)
+      let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)
+      t.set_font_scale(scale)
+      t.frame()
+      vt_rest(t)
+      let at = "\{mode} \{w}×\{h} @\{scale}"
+      // (the wide frame's 12px sidebar drag edge overlaps its neighboring panes by 6px on every wide settings screen)
+      let faults = t.audit().filter(fn(f) { !f.contains("edge_node.mbt") })
+      assert_true(faults.is_empty(), msg=at + ": " + faults.join(" | "))
+    }
+  }
 }

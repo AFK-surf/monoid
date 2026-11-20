@@ -231,20 +231,44 @@ fn path_seg(r : Json, n : Int) -> String {
 // ── the control plane's state, as cloud.json says it (bus.cloud_state) ──
 
 ///|
-/// The workspaces this station is in: (workspace, name, home, its stations as cloud.json lists them).
-fn P55::memberships(self : P55) -> Array[(String, String, Bool, Array[Json])] {
+/// The workspaces this station is in: (workspace, workspace_name, home, peers, station_name, workspace_emoji, workspace_icon).
+fn P55::memberships(self : P55) -> Array[(String, String, Bool, Array[Json], String, String?, String?)] {
   let state = (self.bus.cloud_state.val)().unwrap_or(Json::null())
+  let non_empty = (j : Json, k : String) => match jtext(j, k) {
+    Some(s) if s != "" => Some(s)
+    _ => None
+  }
   let out = []
   let home = jtext_or_empty(state, "workspace")
   if home != "" && !(jfield(state, "removed_at") is Number(_, ..)) {
-    out.push((home, jtext_or_empty(state, "workspace_name"), true, match jfield(state, "peers") { Array(xs) => xs; _ => [] }))
+    out.push(
+      (
+        home,
+        jtext_or_empty(state, "workspace_name"),
+        true,
+        match jfield(state, "peers") { Array(xs) => xs; _ => [] },
+        jtext_or_empty(state, "name"),
+        non_empty(state, "workspace_emoji"),
+        non_empty(state, "workspace_icon"),
+      ),
+    )
   }
   match jfield(state, "joined") {
     Array(xs) =>
       for j in xs {
         let ws = jtext_or_empty(j, "workspace")
         if ws != "" && ws != home {
-          out.push((ws, jtext_or_empty(j, "workspace_name"), false, match jfield(j, "peers") { Array(ps) => ps; _ => [] }))
+          out.push(
+            (
+              ws,
+              jtext_or_empty(j, "workspace_name"),
+              false,
+              match jfield(j, "peers") { Array(ps) => ps; _ => [] },
+              jtext_or_empty(j, "name"),
+              non_empty(j, "workspace_emoji"),
+              non_empty(j, "workspace_icon"),
+            ),
+          )
         }
       }
     _ => ()

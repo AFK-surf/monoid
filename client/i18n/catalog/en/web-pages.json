@@ -1056,7 +1056,17 @@
   "web-pages.stations.software": "Software",
   "web-pages.stations.softwareOffline": "The station is offline. Updates appear once it connects.",
   "web-pages.stationUpdates.app": "This app",
-  "web-pages.stations.settingsOffline": "The station is offline. Its settings appear once it connects.",
+  "web-pages.stations.settingsOffline": "Snapshot before offline · Editable once connected",
+  "web-pages.stations.diag.title": "Diagnostics",
+  "web-pages.stations.diag.copy": "Copy",
+  "web-pages.stations.diag.copied": "Diagnostics copied",
+  "web-pages.stations.diag.cloud": "Cloud",
+  "web-pages.stations.diag.lastNet": "Last route",
+  "web-pages.stations.diag.addresses": "Addresses",
+  "web-pages.stations.diag.ways": "Recent attempts",
+  "web-pages.stations.diag.localLog": "View local log",
+  "web-pages.stations.resourcesSnapshot": "Snapshot before offline",
+  "web-pages.stations.processesSnapshot": "Snapshot before offline",
   "web-pages.stations.uses": "{name} uses",
   "web-pages.stations.total": "{total} total",
   "web-pages.stations.netNone": "Not connected",
@@ -1119,6 +1129,7 @@
   "web-pages.profiles.share.move": "Move",
   "web-pages.profiles.share.moved": "Moved to {station}",
   "web-pages.profiles.share.stations": "Stations that can use it",
+  "web-pages.profiles.share.allStations": "All stations",
   "web-pages.profiles.share.everyStation": "All",
   "web-pages.profiles.share.change": "Change",
   "web-pages.profiles.share.futureIn": "Stations added later can use it too",
@@ -1435,6 +1446,27 @@
   "web-pages.security.confirmDevice": "approve the device",
   "web-pages.security.pairTitle": "{name}'s new device asks for approval",
   "web-pages.security.pairBody": "{device}. Confirm the person and the device, then enter the security code below on the new device. If you can't confirm them, deny the request.",
+  "web-pages.security.pairDeviceCode": "Device code: ",
+  "web-pages.security.pairBuild": "Client version {build}",
+  "web-pages.security.pairGrantHead": "Approving will grant",
+  "web-pages.security.pairGrantSign": "Become your trusted device (can approve other devices and actions)",
+  "web-pages.security.pairGrantVaultPersonal": {
+    "one": "Personal vault “{name}” · {n} secret",
+    "other": "Personal vault “{name}” · {n} secrets"
+  },
+  "web-pages.security.pairGrantVaultPersonalIn": {
+    "one": "Personal vault “{name}” ({workspace}) · {n} secret",
+    "other": "Personal vault “{name}” ({workspace}) · {n} secrets"
+  },
+  "web-pages.security.pairGrantVaultWorkspace": {
+    "one": "Shared workspace vault “{name}” · {n} secret",
+    "other": "Shared workspace vault “{name}” · {n} secrets"
+  },
+  "web-pages.security.pairGrantVaultWorkspaceIn": {
+    "one": "Shared workspace vault “{name}” ({workspace}) · {n} secret",
+    "other": "Shared workspace vault “{name}” ({workspace}) · {n} secrets"
+  },
+  "web-pages.security.thisDeviceCodeLabel": "This device code: ",
   "web-pages.security.pairNote": "The security code shows only on this device and is never sent",
   "web-pages.security.pairRetry": "Nothing yet? Ask again",
   "web-pages.security.pairDeny": "Deny",
@@ -1799,6 +1831,32 @@
   "web-pages.vault.asked": "Your other devices were told",
   "web-pages.vault.promptTitle": "{device} asks for a vault key",
   "web-pages.vault.promptBody": "This device is in the lock of security mode and asked for the key to “{vault}” {at}. With it, it can use the secrets in that vault.",
+  "web-pages.vault.promptBodyNoSafeMode": "This device is among your trusted devices and asked for the key to “{vault}” {at}. Check the details below before giving it the key.",
+  "web-pages.vault.promptDeviceCode": "Device code",
+  "web-pages.vault.promptOwner": "Owner",
+  "web-pages.vault.promptOwnerSelf": "{name} (You)",
+  "web-pages.vault.promptAskedAt": "Requested",
+  "web-pages.vault.promptScopeWorkspace": "Shared workspace vault (can decrypt and use secrets in this shared vault)",
+  "web-pages.vault.promptScopeWorkspaceItems": {
+    "one": "Shared workspace vault · {n} secret (can decrypt and use secrets in this shared vault)",
+    "other": "Shared workspace vault · {n} secrets (can decrypt and use secrets in this shared vault)"
+  },
+  "web-pages.vault.promptScopePersonal": "Personal vault (can decrypt and use secrets in this personal vault)",
+  "web-pages.vault.promptScopePersonalItems": {
+    "one": "Personal vault · {n} secret (can decrypt and use secrets in this personal vault)",
+    "other": "Personal vault · {n} secrets (can decrypt and use secrets in this personal vault)"
+  },
+  "web-pages.vault.thisDeviceCodeLabel": "This device code: ",
+  "web-pages.vault.thisDeviceCodeHint": " (match this on an authorized device before approving)",
+  "web-pages.vault.devicesDialog.title": "Devices for {name}",
+  "web-pages.vault.devicesDialog.titleFallback": "Authorized devices",
+  "web-pages.vault.devicesDialog.pendingTitle": "Awaiting authorization",
+  "web-pages.vault.devicesDialog.pendingNote": "Check each device's owner and code before authorizing it individually.",
+  "web-pages.vault.devicesDialog.authorizedTitle": "Authorized devices",
+  "web-pages.vault.devicesDialog.authorize": "Authorize",
+  "web-pages.vault.devicesDialog.current": "{device} (This device)",
+  "web-pages.vault.devicesDialog.codePrefix": "Code {code}",
+  "web-pages.vault.devicesDialog.legacyPendingNote": "Devices are awaiting authorization, but device details are unavailable on this core version.",
   "web-pages.vault.promptGive": "Give the key",
   "web-pages.vault.promptLater": "Later",
   "web-pages.vault.recover": "Use recovery words",
@@ -1906,6 +1964,8 @@
   "web-pages.stations.elevation.section": "Administrator",
   "web-pages.stations.elevation.admin": "Run as administrator",
   "web-pages.stations.elevation.what": "switch running as administrator",
+  "web-pages.stations.screenService.title": "Remote control of UAC and lock screen",
+  "web-pages.stations.screenService.what": "switch remote control of UAC and lock screen",
   "web-pages.stations.search.section": "Search",
   "web-pages.stations.search.personal": "Search personal data",
   "web-pages.stations.search.personalLine": "Workspace members can also search mail, messages, calendars, contacts, notes and photos",
@@ -2316,7 +2376,10 @@
   "web-pages.connect.recentNone.group": "No sessions yet. @{name} in a group or message it to start",
   "web-pages.connect.disabled.group": "Disabled, Group disconnected",
   "web-pages.connect.deleteBody.group": "Disconnects from Group. This station's member and device stay on the server: its owner removes them if need be.",
-  "web-pages.connect.deleteBodySessions.group": {"one": "Disconnects from Group. Its 1 session keeps its history but gets no new messages. This station's member and device stay on the server: its owner removes them if need be.", "other": "Disconnects from Group. Its {n} sessions keep their history but get no new messages. This station's member and device stay on the server: its owner removes them if need be."},
+  "web-pages.connect.deleteBodySessions.group": {
+    "one": "Disconnects from Group. Its 1 session keeps its history but gets no new messages. This station's member and device stay on the server: its owner removes them if need be.",
+    "other": "Disconnects from Group. Its {n} sessions keep their history but get no new messages. This station's member and device stay on the server: its owner removes them if need be."
+  },
   "web-pages.connect.group.section": "Group server",
   "web-pages.connect.group.rebindLead": "Where the server removed this station's device, or to be another member, give a new join code. It connects again once saved.",
   "web-pages.connect.mentionOn.group": "Once @-mentioned, later messages in that group need no @; every message of a private chat goes into the session.",
@@ -2326,8 +2389,6 @@
   "web-pages.experimental.title": "Experimental features",
   "web-pages.experimental.lead": "Features still being completed or explored, off by default on this device alone; turn any off to switch right back.",
   "web-pages.experimental.enabledCount": "{n} on",
-  "web-pages.experimental.chatPage.title": "Try the new chat page",
-  "web-pages.experimental.chatPage.description": "New chat page, new-chat screen and composer where what you read stays put; turn it off anytime to switch back",
   "web-pages.experimental.farviewNative.title": "Native Farview tab rendering",
   "web-pages.experimental.farviewNative.description": "Draw Farview browser tabs directly on this device for instant scrolling and typing; turn it off anytime to switch back to screenshots",
   "web-pages.experimental.board.title": "Board view for chats",
@@ -2362,5 +2423,27 @@
   "web-pages.farview.copyImageLink": "Copy image address",
   "web-pages.farview.zoomReset": "Reset zoom ({zoom})",
   "web-pages.farview.downloaded": "Saved to Downloads: {name}",
-  "web-pages.farview.downloadedOnHost": "{name} is too large: saved in the station's downloads"
+  "web-pages.farview.downloadedOnHost": "{name} is too large: saved in the station's downloads",
+  "web-pages.vault.workspaceVault": "Workspace vault",
+  "web-pages.vault.workspaceCreateNote": "End-to-end encrypted shared vault for this workspace. Members can use and add secrets; removing a member rotates the vault key.",
+  "web-pages.vault.workspaceCreate": "Create workspace vault",
+  "web-pages.vault.workspaceCreateWhat": "create workspace vault",
+  "web-pages.vault.workspaceCreated": "Workspace vault created",
+  "web-pages.vault.deleteNamed": "Delete {name}",
+  "web-pages.vault.deleteWorkspaceBody": {
+    "one": "All members will lose access to the {n} secret in this vault and it can't be recovered; grants already given last till they end",
+    "other": "All members will lose access to the {n} secrets in this vault and they can't be recovered; grants already given last till they end"
+  },
+  "web-pages.vault.deleteWorkspaceEmpty": "Members will no longer be able to use this shared workspace vault",
+  "web-pages.vault.members.title": "Shared members",
+  "web-pages.vault.members.count": {
+    "one": "{n} member",
+    "other": "{n} members"
+  },
+  "web-pages.vault.members.dialogTitle": "Workspace vault members",
+  "web-pages.vault.members.you": "You",
+  "web-pages.vault.members.rekeyNote": "Removing a member rotates the vault key and re-encrypts all items.",
+  "web-pages.vault.members.saveWhat": "save shared members",
+  "web-pages.vault.members.saved": "Shared members updated",
+  "web-pages.vault.editor.saveTo": "Save to"
 }

@@ -114,7 +114,17 @@ fn ActorsProgram::new(ctx : P52) -> ActorsProgram {
   })
   // (where the station's database is, for what of the store an actor reads and writes itself: said first)
   ignore(p.post(jobj_of([("db", jstr(path([ctx.data, "stillfail.db"])))])))
+  match jfield(ctx.config, "maxConcurrentTurns") {
+    Number(n, ..) if n > 0.0 => p.set_max_concurrent_turns(n.to_int())
+    _ => ()
+  }
   p
+}
+
+///|
+fn ActorsProgram::set_max_concurrent_turns(self : ActorsProgram, n : Int) -> Unit {
+  let limit = if n > 0 { n } else { 0 }
+  ignore(self.post(jobj_of([("maxConcurrentTurns", jn(limit.to_double()))])))
 }
 
 ///|

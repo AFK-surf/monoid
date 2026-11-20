@@ -151,7 +151,6 @@ export function vaultTools(secrets: Secrets, workspace: (session: string) => str
           env: { type: "string", description: "The variable a command gets it in (GH_TOKEN; a file's path: KUBECONFIG)." },
           oauth: { type: "string", enum: ["slack"] },
           station: { type: "string", description: "Another station of the workspace (its name or id) to run command on, where the password manager is signed in; default this one." },
-          scope: { type: "string", enum: ["personal", "workspace"], description: "Where to save it: personal (default, your own vault) or workspace (shared workspace vault)." },
           person: PERSON,
         },
         required: ["name", "about", "kind", "reason"],
@@ -179,7 +178,6 @@ export function vaultTools(secrets: Secrets, workspace: (session: string) => str
           ...(text(args, "station").trim() ? { station: text(args, "station").trim() } : {}),
           ...(args.browser === "chat" || args.browser === "station" ? { browser: args.browser } : {}),
           ...opt("oauth"),
-          ...(args.scope === "personal" || args.scope === "workspace" ? { scope: args.scope } : {}),
           ...personOf(args),
           cwd: home,
         });

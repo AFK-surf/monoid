@@ -455,7 +455,7 @@ async fn P53Accounts::check_profile(self : P53Accounts, request : Json, lang : S
     }),
     urls: Some({
       opencode: @agent_runtimes.opencode,
-      anthropic: "https://api.anthropic.com",
+      anthropic: p53_anthropic_api_url(),
       chatgpt: "https://chatgpt.com",
       claude_token: "https://platform.claude.com/v1/oauth/token",
       console: @accounts_oauth.console_url,

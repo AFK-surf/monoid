@@ -36,7 +36,10 @@
 /// rule 4's one fewer in each half: 文件 and a station's drive made once as nodes, its folder 12 in from its frame's sides; chat-remote swept
 /// (a chat whose 远程's menu its bar opens): rule 4's one more in each, its wide chat's head as every wide chat's (its
 /// title 12 in, its faces 6 from its end); 2026-11-18, chat-info-bare swept (the chat's sheet with nothing in its thread,
-/// its station's screen an agent drives): rule 4's one more in each, its wide chat's head as every wide chat's. The
+/// its station's screen an agent drives): rule 4's one more in each, its wide chat's head as every wide chat's;
+/// 2026-11-19, the chat's page made as nodes on the test channel: rule 5's last, gone with the old chat's page, and
+/// rule 8's one fewer in each half of the first windows and the wide ones (a small panel's rows' icons taken as
+/// where their words stand, the panel's own rows lit at rest not counted among its words). The
 /// Chinese odd windows run in two groups to fit the CI time limit.
 /// Their counts add up to the earlier counts for all odd windows. 2026-11-19, rule 8 counting the tree's marks among
 /// the rows' words (Ctx::tree_draws) and taking a row with a ground at rest as wide and as far in as the rows (the one
@@ -47,7 +50,7 @@ let gaps_known : Map[String, Int] = {
   "zh 0/4 rule 2": 0,
   "zh 0/4 rule 3": 0,
   "zh 0/4 rule 4": 2,
-  "zh 0/4 rule 5": 1,
+  "zh 0/4 rule 5": 0,
   "zh 0/4 rule 6": 0,
   "zh 0/4 rule 7": 0,
   "zh 0/4 rule 8": 2,
@@ -74,7 +77,7 @@ let gaps_known : Map[String, Int] = {
   "en 0/2 rule 2": 0,
   "en 0/2 rule 3": 0,
   "en 0/2 rule 4": 4,
-  "en 0/2 rule 5": 1,
+  "en 0/2 rule 5": 0,
   "en 0/2 rule 6": 0,
   "en 0/2 rule 7": 0,
   "en 0/2 rule 8": 4,

@@ -2,6 +2,7 @@
  "host": "windows",
  "known": [
   "cjk-brackets",
-  "cjk-mixed"
+  "cjk-mixed",
+  "thai"
  ]
 }

@@ -151,3 +151,124 @@ test "tell tracks sessions, removals, and ignores unrelated events" {
     content="{\"sessions\":[\"s1\"],\"threads\":[],\"removedSessions\":[{\"key\":\"s2\",\"ws\":\"W1\"}],\"removedThreads\":[{\"id\":9,\"ws\":null}],\"marks\":[]}",
   )
 }
+
+///|
+/// An export's process of the test's own: the lines it was written, an answer given each ask as `answer` says (none:
+/// it waits), its end once its stdin is closed.
+fn fake_export(
+  written : Array[String],
+  answer : (J) -> String?,
+  started : Ref[Int],
+) -> () -> ExportProcess raise {
+  () => {
+    started.val += 1
+    let out : @effect.Queue[ExportSaid] = @effect.Queue::unbounded()
+    let open = Ref(true)
+    {
+      write: b => {
+        guard open.val else { return false }
+        let line = @utf8.decode_lossy(b)
+        written.push(line.trim_end(chars="\n").to_string())
+        if (try Some(parse(line)) catch { _ => None }) is Some(asked) && answer(asked) is Some(said) {
+          ignore(out.try_offer(Other))
+          ignore(out.try_offer(Said(@utf8.encode(said + "\n"))))
+        }
+        true
+      },
+      end_input: () => {
+        open.val = false
+        ignore(out.try_offer(Ended(Some(0), None)))
+      },
+      next: async fn() { out.take() },
+    }
+  }
+}
+
+///|
+test "the export's process: an ask answered by its id, a process started told the workspaces first, started once" {
+  let rt = @effect.Runtime::new()
+  let written = []
+  let started = Ref(0)
+  let answer = (asked : J) => match str_at(asked, "type") {
+    Some("pass") => Some("{\"id\":\{num_at(asked, "id").unwrap_or(0.0).to_int()},\"answer\":{\"empty\":true}}")
+    Some("places") => Some("{\"id\":\{num_at(asked, "id").unwrap_or(0.0).to_int()},\"answer\":null}")
+    _ => None
+  }
+  let runner = process_runner(fake_export(written, answer, started), () => 7.0)
+  let got = Ref("")
+  ignore(
+    rt.fork(async fn() {
+      try {
+        (runner.places)(jo([("w1", js("/p"))]))
+        got.val = stringify((runner.pass)(jo([])))
+        (runner.close)()
+      } catch {
+        e => got.val = "failed: " + message_of(e)
+      }
+    }),
+  )
+  rt.advance(1)
+  assert_eq(got.val, "{\"empty\":true}")
+  assert_eq(started.val, 1)
+  // (a process started told the workspaces first, then asked)
+  assert_eq(written, [
+    "{\"id\":1,\"type\":\"places\",\"now\":7,\"places\":{\"w1\":\"/p\"}}", "{\"id\":2,\"type\":\"places\",\"now\":7,\"places\":{\"w1\":\"/p\"}}",
+    "{\"id\":3,\"type\":\"pass\",\"now\":7,\"told\":{}}", "{\"id\":0,\"type\":\"close\"}",
+  ])
+}
+
+///|
+test "the export closed while an ask waits on it: the ask answered by its end, the close by that end too, never stuck" {
+  let rt = @effect.Runtime::new()
+  let written = []
+  let started = Ref(0)
+  // (it answers nothing: the pass waits until the export ends)
+  let runner = process_runner(fake_export(written, _ => None, started), () => 7.0)
+  let passed = Ref("")
+  let closed = Ref(false)
+  ignore(
+    rt.fork(async fn() {
+      ignore((runner.pass)(jo([]))) catch {
+        e => passed.val = message_of(e)
+      }
+    }),
+  )
+  rt.advance(1)
+  assert_eq(written, ["{\"id\":1,\"type\":\"pass\",\"now\":7,\"told\":{}}"])
+  ignore(
+    rt.fork(async fn() {
+      (runner.close)()
+      closed.val = true
+    }),
+  )
+  rt.advance(1)
+  assert_eq(passed.val, "the copies' export ended (0, null)")
+  assert_true(closed.val)
+  assert_eq(written[1], "{\"id\":0,\"type\":\"close\"}")
+  // (closed: no ask starts it again)
+  let after = Ref("")
+  ignore(rt.fork(async fn() { ignore((runner.pass)(jo([]))) catch { e => after.val = message_of(e) } }))
+  rt.advance(1)
+  assert_eq(after.val, "the copies' thread is closed")
+  assert_eq(started.val, 1)
+}
+
+///|
+test "the export closed with no ask on it waits for its end itself" {
+  let rt = @effect.Runtime::new()
+  let written = []
+  let started = Ref(0)
+  let answer = (asked : J) => Some("{\"id\":\{num_at(asked, "id").unwrap_or(0.0).to_int()},\"answer\":1}")
+  let runner = process_runner(fake_export(written, answer, started), () => 7.0)
+  let closed = Ref(false)
+  ignore(
+    rt.fork(async fn() {
+      ignore((runner.sources)(["h"]))
+      (runner.close)()
+      closed.val = true
+    }),
+  )
+  rt.advance(1)
+  assert_true(closed.val)
+  assert_eq(started.val, 1)
+}

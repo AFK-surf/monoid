@@ -32,7 +32,7 @@ import { log } from "../ops/log.ts";
 import { tr, stationLang } from "../ops/i18n.ts";
 import { iso, sessionPlaces } from "../read/transcript.ts";
 import { transcriptSourcesSoon } from "../read/transcript-soon.ts";
-import { type Attachment, MANUAL, type SessionRow, type Store, STILLFAIL_SURFACE, feishuSurface, commaSurface, groupSurface, slackSurface, type MessageRow, type ThreadRow, type ThreadSummary } from "../store/store.ts";
+import { type ArchivedWorkspace, type Attachment, MANUAL, type SessionRow, type Store, STILLFAIL_SURFACE, feishuSurface, commaSurface, groupSurface, slackSurface, type MessageRow, type ThreadRow, type ThreadSummary } from "../store/store.ts";
 import type { DeliveryCardState, InWorkspace, PendingMessage } from "../store/rows.ts";
 import { comingWs, handedWs } from "../store/rows.ts";
 import { isNotice, markNotice } from "./chat.ts";
@@ -102,6 +102,11 @@ export interface ColdStorage {
   /// Whether an archived session's directory holds more than its chat's files, and empties it of that.
   holdsMore?(key: string): Promise<boolean>;
   expire?(key: string, before: number): Promise<void>;
+  /// Whether an archived session still lacks its `cold` mark and is eligible to be packed now.
+  needsPack?(key: string): Promise<boolean>;
+  /// Removes rebuildable build/install directories from an idle unarchived session without packing or marking cold.
+  /// Returns removed bytes (>= 0) when measured, or null when skipped before measuring (not cleanable / shared / job).
+  cleanIdleRebuildable?(key: string): Promise<number | null>;
 }
 
 /// The most of a shared file the station fetches, as much as an agent may attach.
@@ -237,6 +242,8 @@ export class Hub {
   readonly actors = new Map<string, Actor>();
   /// The MoonBit program its actors run in (mb-actor.ts), where it is built: opened with the first.
   private actorsProgram: ActorsProgram | null | undefined;
+  /// Latest concurrency limit set on this hub (null: read from config() when actorsProgram opens).
+  private maxConcurrentTurnsOverride: number | null = null;
   /// Installed by the agents' side: older stores finish indexing active keys without holding the station thread.
   waitForWorkspaceActivity: (() => Promise<boolean>) | null = null;
   /// An older store's session totals are built in bounded batches after handover.
@@ -253,6 +260,20 @@ export class Hub {
   prepareSessionChatNames: ((sessions: readonly string[], signal?: AbortSignal) => Promise<void>) | null = null;
   /// The sessions whose latest conversation must be ready before an asynchronous operation can continue.
   prepareLatestThreads: ((sessions: readonly string[], signal?: AbortSignal) => Promise<void>) | null = null;
+  /// Cross-round cursor for `packUnfinishedArchived` (`lifecycle.ts`).
+  packBackfillCursor: ArchivedWorkspace | null = null;
+  /// Last time periodic archive backfill & idle rebuildable cleanup ran (`lifecycle.ts` `runArchiveUpkeepIfDue`),
+  /// initialized to hub startup time so startup never triggers an immediate burst.
+  lastArchiveUpkeepAt: number;
+  /// Bounded `sessionKey -> lastActiveAt` memo for idle rebuildable cleanup (`lifecycle.ts`), cleared on archive/delete.
+  readonly idleMeasured = new Map<string, number>();
+  /// Last time a full low-disk reclamation pass completed (`lifecycle.ts` `relieveLowDiskFull`).
+  lastFullRelieveAt: number | null = null;
+
+  /// Drops a session's cached idle-rebuildable measurement (called on archive or delete).
+  forgetIdleMeasured(key: string): void {
+    this.idleMeasured.delete(key);
+  }
   private awaitingWorkspaceActivity = new Set<string>();
   private sandboxNames: SandboxNameBuilder | null = null;
   private sessionDirectories: SessionDirectoryBuilder | null = null;
@@ -311,6 +332,7 @@ export class Hub {
   constructor(options: HubOptions) {
     this.options = options;
     this.clock = options.clock ?? liveClock;
+    this.lastArchiveUpkeepAt = this.now();
     this.store = options.store;
     this.internal = options.internal ?? null;
     this.drivers = new Map(options.drivers.map((d) => [d.runtime(), d]));
@@ -1130,7 +1152,8 @@ export class Hub {
   /// pending.
   recover() {
     const recovering = new Set<string>();
-    for (const row of this.store.runningSessions()) {
+    const running = [...this.store.runningSessions()].sort((a, b) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0));
+    for (const row of running) {
       // Taken up from the previous station: its turn runs on.
       if (this.adopted.has(row.key) || !this.online(row)) continue;
       log.info("hub", "recovering a turn cut off by restart", { session: row.key });
@@ -1186,9 +1209,9 @@ export class Hub {
 
   // ── warm processes ─────────────────────────────────────────────────────────────────────────────────────────────
 
-  /// Ends idle claude and dsh processes (one per session) beyond the warm limit, oldest first, once they have idled
-  /// past warmMs. Codex threads share a process and stay. Runs when a process goes idle (the count grew) and at each
-  /// idle process's deadline.
+  /// Ends idle claude and dsh processes (one per session) beyond the warm limit (immediately, oldest first), and any
+  /// remaining idle processes once they have idled past warmMs (when warmMs > 0). Codex threads share a process and
+  /// stay. Runs when a process goes idle (the count grew) and at each idle process's deadline.
   private evictIdle() {
     const config = this.config();
     const now = this.now();
@@ -1199,11 +1222,17 @@ export class Hub {
         return ms === null ? [] : [[a, ms] as const];
       })
       .sort((a, b) => b[1] - a[1]);
-    let excess = idle.length - config.maxWarmClaude;
+    const cap = Math.max(0, Math.trunc(config.maxWarmClaude));
+    let excess = idle.length - cap;
     for (const [actor, ms] of idle) {
-      if (excess <= 0 || ms < config.warmMs) break;
-      void actor.evict();
-      excess--;
+      if (excess > 0) {
+        void actor.evict();
+        excess--;
+      } else if (config.warmMs > 0 && ms >= config.warmMs) {
+        void actor.evict();
+      } else {
+        break;
+      }
     }
   }
 
@@ -1237,8 +1266,9 @@ export class Hub {
 
   /// A process went idle: look again when it has idled past warmMs.
   idleNow(key: string) {
-    // A manual archive may have arrived during the last turn. Finish that archive when the turn ends; never sweep old
-    // directories on a clock or at startup.
+    // A manual archive may have arrived during the last turn. Finish that archive when the turn ends; any archive whose
+    // packing did not finish is backfilled periodically by `packUnfinishedArchived` (bounded per round, with a cursor,
+    // only for sessions not yet past `archivedWorkspaceMs`), never via a one-shot full sweep at startup.
     const row = this.store.getSession(key);
     if (row && row.archivedAt !== null) {
       const actor = this.actor(row);
@@ -1721,10 +1751,19 @@ export class Hub {
     log.info("hub", "session created", { session: key, connect: connect.id, scope, runtime, model: model ?? "", profile: profile.id });
   }
 
+  /// Updates the maximum concurrent running turns without restarting the station.
+  setMaxConcurrentTurns(n: number) {
+    const limit = typeof n === "number" && Number.isFinite(n) && n > 0 ? Math.trunc(n) : 0;
+    this.maxConcurrentTurnsOverride = limit;
+    if (this.actorsProgram) this.actorsProgram.setMaxConcurrentTurns(limit);
+  }
+
   /// The program its actors run in, the station's jobs too (jobs/jobs.ts), started for its first use (none: not built
   /// here).
   program(): ActorsProgram | null {
-    if (this.actorsProgram === undefined) this.actorsProgram = ActorsProgram.open(this.config().dataDir, this.clock, this.store);
+    if (this.actorsProgram === undefined) {
+      this.actorsProgram = ActorsProgram.open(this.config().dataDir, this.clock, this.store, this.maxConcurrentTurnsOverride ?? this.config().maxConcurrentTurns);
+    }
     return this.actorsProgram;
   }
 
@@ -1791,6 +1830,7 @@ export class Hub {
       spend: (key, ranOn, model) => this.accounts.spend(key, ranOn, model),
       refillsAt: (key) => this.accounts.refillsAt(key),
       recheck: (profile) => this.accounts.recheck(profile),
+      canAuthRetry: (key, failedProfile) => this.accounts.canAuthRetry(key, failedProfile),
       limitAfter: (profile, model) => this.accounts.limitAfter(profile, model),
       mcpUrl: () => (typeof this.options.mcpUrl === "string" ? this.options.mcpUrl : this.options.mcpUrl()),
       ...(this.options.toolsHeard ? { toolsHeard: this.options.toolsHeard } : {}),

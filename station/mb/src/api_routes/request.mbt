@@ -45,6 +45,20 @@ pub(all) enum Body {
 }
 
 ///|
+/// What a reader that stops before the body's end calls (the device gone mid-stream): the request's `signal` aborted,
+/// so what reads for it stops, then a `Streamed` body's own stop set going on `spawn`.
+pub fn Body::stop_with(self : Body, signal : Signal, spawn : (async () -> Unit) -> Unit) -> () -> Unit {
+  match self {
+    Whole(_) | Stream(_) => () => signal.abort()
+    Streamed(_, stop) =>
+      () => {
+        signal.abort()
+        spawn(stop)
+      }
+  }
+}
+
+///|
 pub struct Answer {
   status : Int32
   headers : Map[String, String]

@@ -673,35 +673,46 @@ fn pane_chat_bar_ends(
       }
     },
     end: fn(beside, finding) {
-      let col_w = match page() {
-        Some(Chat(r)) if pane_w_at(src, n) >= side_both_least => {
-          let key = chat_key(r)
-          let _ = side_way(key)
-          if panel_own.asked.get() == key {
-            0.0
-          } else {
-            side_col(src, n, key, beside)
-          }
-        }
-        _ => 0.0
+      let side_key = match page() {
+        Some(Chat(r)) => Some(chat_key(r))
+        Some(NewChat) => @sfbase.workspace_in_view(src).0.map(fn(w) { "new:" + w.id })
+        _ => None
       }
-      if col_w > 0.5 {
+      let roots = @ui.tree_corner_roots_now()
+      let closed_end = if finding {
         if @ui.window_keys_own() {
-          bar_in
+          @sf.window_keys_room(roots~) + bar_in
         } else {
-          dmax(bar_in, @sf.window_corner_past(4.0, roots=@ui.tree_corner_roots_now()) - col_w)
-        }
-      } else if beside {
-        // (beside what the pane shows next to it, not a chat's side column: a history's, as before)
-        bar_in
-      } else if finding {
-        if @ui.window_keys_own() {
-          @sf.window_keys_room(roots=@ui.tree_corner_roots_now()) + bar_in
-        } else {
-          @sf.window_corner_past(bar_in, roots=@ui.tree_corner_roots_now())
+          @sf.window_corner_past(bar_in, roots~)
         }
       } else {
-        @sf.window_end_in(bar_in, roots=@ui.tree_corner_roots_now())
+        @sf.window_end_in(bar_in, roots~)
+      }
+      match side_key {
+        Some(key) => {
+          let side_by_side = pane_w_at(src, n) >= side_both_least
+          let col_w = if side_by_side {
+            let _ = side_way(key)
+            side_col(src, n, key, beside)
+          } else {
+            0.0
+          }
+          if @ui.window_keys_own() {
+            if !side_by_side || col_w <= 0.0 {
+              closed_end
+            } else {
+              let whole = side_whole(src, n)
+              let frac = if whole > 0.5 { dmax(0.0, dmin(1.0, col_w / whole)) } else { 1.0 }
+              let smooth = bar_in + (closed_end - bar_in) * (1.0 - frac)
+              dmax(bar_in, dmax(closed_end - col_w, smooth))
+            }
+          } else if col_w > 0.5 {
+            dmax(bar_in, @sf.window_corner_past(4.0, roots~) - col_w)
+          } else {
+            closed_end
+          }
+        }
+        None => if beside { bar_in } else { closed_end }
       }
     },
     linked: fn() { if @ui.window_keys_own() { None } else { Some(@sf.window_corner_key()) } },

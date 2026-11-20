@@ -122,3 +122,54 @@ test "a set keeps its order of adding, as JavaScript's does" {
   assert_eq(s.iter().head(), Some("id-298"))
   assert_eq(s.iter().last(), Some("id-299"))
 }
+
+///|
+test "parse_ws_refusal extracts status and refusal words and ConnectedSurface surfaces them" {
+  assert_eq(
+    parse_ws_refusal("websocket refused (409): this still.fail workspace is connected already"),
+    Some((409, "this still.fail workspace is connected already")),
+  )
+  assert_eq(parse_ws_refusal("websocket refused (502)"), Some((502, "")))
+  assert_eq(parse_ws_refusal("websocket refused (403):   too_many_websockets  "), Some((403, "too_many_websockets")))
+  assert_eq(parse_ws_refusal("websocket: connection reset"), None)
+  assert_eq(parse_ws_refusal("websocket refused ()"), None)
+  let rt = @effect.Runtime::new()
+  let got : Ref[String?] = Ref(None)
+  ignore(
+    rt.fork(async fn() {
+      let surface = ConnectedSurface::new(
+        "comma",
+        {
+          connect: Some("cm-1"),
+          book: None,
+          ping_ms: 5000.0,
+          stale_ms: 20000.0,
+          backoff_ms: 1000.0,
+          clock: {
+            now: () => rt.now().to_double(),
+            sleep: async fn(ms) { @effect.sleep(ms.to_int()) },
+          },
+          on_heard: () => (),
+          log: { write: (_, _, _, _) => () },
+          open_socket: Some(
+            (_, _) => {
+              let events : @effect.Queue[SocketEvent] = @effect.Queue::unbounded()
+              let (n, why) = parse_ws_refusal("websocket refused (409): workspace already connected").unwrap()
+              ignore(events.try_offer(Refused(n, why)))
+              { events, send: _ => (), ping: () => (), terminate: () => (), is_open: () => false }
+            },
+          ),
+        },
+      )
+      surface.socket_to(
+        "wss://comma.invalid/ws",
+        { opened: _ => (), message: (_, _, _, _, _) => (), ping: _ => () },
+      ) catch {
+        e => got.val = Some(thrown_message(e))
+      }
+      surface.stop()
+    }),
+  )
+  rt.advance(0)
+  assert_eq(got.val, Some("comma refused the connection: HTTP 409 workspace already connected"))
+}

@@ -599,7 +599,7 @@ fn oa_open_late(
 ) -> Array[String] {
   new_run()
   oa_begin()
-  @sfbase.chat_page_nodes.set(nodes)
+  @sfbase.hold_chat_page_nodes(Some(nodes))
   let armed = Ref(false)
   let src = oa_source(round_trip_again(fixture("chat"), 0.0, late=fn(_, _) { if armed.val { ms } else { 0.0 } }))
   open_chat(oa_c2)
@@ -846,7 +846,7 @@ fn oa_tick(a : OaAttend, t : @ui.Tester) -> () -> Unit {
 fn oa_held_then(s : (String, Double, Double, Int), nodes : Bool, device : Bool, later : OaLater) -> Array[String] {
   new_run()
   oa_begin()
-  @sfbase.chat_page_nodes.set(nodes)
+  @sfbase.hold_chat_page_nodes(Some(nodes))
   let a = oa_attend()
   let src = oa_source(oa_attending(a))
   open_chat(oa_c2)
@@ -1004,7 +1004,7 @@ fn oa_stroke(t : @ui.Tester, s : (String, Double, Double, Int), d : Double) -> U
 fn oa_read_up(s : (String, Double, Double, Int), nodes : Bool, device : Bool, ms : Double) -> Array[String] {
   new_run()
   oa_begin()
-  @sfbase.chat_page_nodes.set(nodes)
+  @sfbase.hold_chat_page_nodes(Some(nodes))
   let l = long_chat()
   let held : Array[(Double, () -> Unit)] = []
   let clock = Ref(0.0)
@@ -1062,7 +1062,7 @@ fn oa_case3(nodes : Bool, which? : OaWhich = Held) -> Unit raise {
 fn oa_read_down(s : (String, Double, Double, Int), nodes : Bool, device : Bool, ms : Double) -> Array[String] {
   new_run()
   oa_begin()
-  @sfbase.chat_page_nodes.set(nodes)
+  @sfbase.hold_chat_page_nodes(Some(nodes))
   let l = long_chat(unread=60)
   let held : Array[(Double, () -> Unit)] = []
   let clock = Ref(0.0)
@@ -1142,7 +1142,7 @@ fn oa_switch(
 ) -> Array[String] {
   new_run()
   oa_begin()
-  @sfbase.chat_page_nodes.set(nodes)
+  @sfbase.hold_chat_page_nodes(Some(nodes))
   let armed = Ref(false)
   let src = oa_source(round_trip_again(fixture("chat"), 0.0, late=fn(_, _) { if armed.val { ms } else { 0.0 } }))
   open_chat(oa_c1)
@@ -1196,7 +1196,7 @@ fn oa_case5(nodes : Bool, ways? : Bool = false, which? : OaWhich = Held) -> Unit
 fn oa_covered(s : (String, Double, Double, Int), nodes : Bool, device : Bool) -> Array[String] {
   new_run()
   oa_begin()
-  @sfbase.chat_page_nodes.set(nodes)
+  @sfbase.hold_chat_page_nodes(Some(nodes))
   let a = oa_attend()
   let src = oa_source(oa_attending(a))
   open_chat(oa_c1)
@@ -1247,7 +1247,7 @@ fn oa_case6(nodes : Bool, which? : OaWhich = Held) -> Unit raise {
 fn oa_working(s : (String, Double, Double, Int), nodes : Bool, device : Bool, ms : Double) -> Array[String] {
   new_run()
   oa_begin()
-  @sfbase.chat_page_nodes.set(nodes)
+  @sfbase.hold_chat_page_nodes(Some(nodes))
   let l = long_chat()
   let held : Array[(Double, () -> Unit)] = []
   let clock = Ref(0.0)

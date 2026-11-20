@@ -198,7 +198,7 @@ test "on a phone, its details' turns say its work after them, its head as it was
 }
 
 ///|
-test "the mark of an agent's work: at work's ring before it while something runs in the background, none for a checklist alone" {
+test "the mark of an agent's work: at work's spokes before it while something runs in the background, none for a checklist alone" {
   let cycles = fn(running : Bool) -> Array[String] {
     new_run()
     let src = work_source("chat-history-side", running~)
@@ -207,10 +207,10 @@ test "the mark of an agent's work: at work's ring before it while something runs
       w=400.0,
       h=40.0,
     )
-    t.run_for(@sf.work_step_ms)
+    t.run_for(@sf.spoke_step_ms)
     t.cycles()
   }
-  // the ring's step, on the resident clock (10 a second)
+  // the spokes' step, on the resident clock (10 a second)
   assert_true(cycles(true).iter().any(fn(c) { c.has_prefix("800 ms") }), msg="\{Repr(cycles(true))}")
   assert_eq(cycles(false), [])
 }

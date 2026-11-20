@@ -5,7 +5,10 @@
 pub using @paint {
   type Shape,
   type Line,
+  type Rect,
   line,
+  rect,
+  rect_of,
   arc,
   shape_of,
   vector_shapes,

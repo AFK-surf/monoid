@@ -1,7 +1,7 @@
-// 实验性功能's 试用新对话页 (the experimental feature `chatPage`, the prefs' `experimental`; sfbase's chat_page_from_prefs):
-// off unless a person turns it on, kept on the device by the core; a chat's page or a new chat's (its composer with
-// it) open as it is pressed becomes the one chosen at once, and the app started with it kept on opens its first chat on the page made as nodes (an older app's
-// `chatPage` is the core's to read as the switch: client/core-ts features.ts).
+// The new chat page by the channel (the device's `beta` feature `chatPage`, the prefs' `features`; sfbase's
+// chat_page_from_prefs): on the test channel a chat's page, a new chat's and their composer are made as nodes with no
+// switch, on stable their old views; a test or a scene holding one way (sfbase's hold_chat_page_nodes) has a chat or a
+// new chat open become that way at once, both ways.
 
 ///|
 /// The fixture's chat s-c1, as tests open it.
@@ -41,56 +41,6 @@ fn setting_chat_opened(t : @ui.Tester, at : String) -> Bool raise {
 }
 
 ///|
-/// 实验性功能 opened over what is shown, its 试用新对话页 pressed, and back to what was shown.
-fn setting_pressed(t : @ui.Tester) -> Unit raise {
-  app.nav.push(Settings)
-  app.nav.push(Setting(@settings.Route::Experimental))
-  t.draw()
-  t.run_for(@ui.move_most_ms)
-  t.click(Switch, label="试用新对话页")
-  t.frame()
-  t.frame()
-  app.nav.pop() |> ignore
-  app.nav.pop() |> ignore
-  t.run_for(@ui.move_most_ms)
-}
-
-///|
-test "试用新对话页 off by default: a chat opened is the old page; pressed, kept and the next chat the page made as nodes; pressed again, the old" {
-  new_run()
-  assert_false(@sfbase.chat_page_nodes.get(), msg="a run begins on the old page")
-  let src = fixture("chat")
-  let t = setting_tester(src)
-  t.run_for(@ui.move_most_ms)
-  let kept = fn() { field(field(src.topic("prefs", {}).get().value, "experimental"), "chatPage") is Some(True) }
-  assert_false(kept())
-  assert_false(setting_chat_opened(t, "by default"), msg="by default: the old page")
-  setting_pressed(t)
-  assert_true(kept(), msg="turned on: kept on the device")
-  assert_true(setting_chat_opened(t, "turned on"), msg="turned on: the page made as nodes")
-  setting_pressed(t)
-  assert_false(kept(), msg="turned off: none kept")
-  assert_false(setting_chat_opened(t, "turned off"), msg="turned off: the old page")
-}
-
-///|
-test "试用新对话页 pressed while a chat is open: the page under the settings becomes the one chosen, at once, both ways" {
-  new_run()
-  let src = fixture("chat")
-  let t = setting_tester(src)
-  t.run_for(@ui.move_most_ms)
-  open_chat(setting_chat)
-  t.run_for(@ui.move_most_ms)
-  assert_false(setting_page_nodes(t, "open"), msg="open: the old page")
-  setting_pressed(t)
-  assert_true(app.nav.top() is Chat(_), msg="back on the chat")
-  assert_true(setting_page_nodes(t, "turned on while open"), msg="turned on while open: the page made as nodes")
-  setting_pressed(t)
-  assert_true(app.nav.top() is Chat(_), msg="back on the chat again")
-  assert_false(setting_page_nodes(t, "turned off while open"), msg="turned off while open: the old page again")
-}
-
-///|
 /// Whether the new chat shown is the one made as nodes (sfpages' new_chat_node): its heading drawn by a node made
 /// there; the old view's (new_chat.mbt, none of the window's tree's) the other way round.
 fn setting_new_nodes(t : @ui.Tester, at : String) -> Bool raise {
@@ -100,38 +50,94 @@ fn setting_new_nodes(t : @ui.Tester, at : String) -> Bool raise {
 }
 
 ///|
-test "试用新对话页 pressed while a new chat is open: the new chat under the settings becomes the one chosen (its composer with it), at once, both ways" {
+/// The app on 小屏 over `src`, a new chat opened, shown at rest: whether it is the one made as nodes; then back.
+fn setting_new_opened(t : @ui.Tester, at : String) -> Bool raise {
+  app.nav.rise(NewChat)
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.top() is NewChat, msg="\{at}: the new chat not opened")
+  let nodes = setting_new_nodes(t, at)
+  app.nav.pop() |> ignore
+  t.run_for(@ui.move_most_ms)
+  nodes
+}
+
+///|
+test "the test channel's app: a chat opened is the page made as nodes, a new chat too, with no 实验性功能 switch of it" {
+  new_run()
+  assert_false(@sfbase.chat_page_nodes.get(), msg="a run begins on the old page, till the prefs say")
+  let src = fixture("home")
+  let t = setting_tester(src)
+  t.run_for(@ui.move_most_ms)
+  assert_true(field(field(src.topic("prefs", {}).get().value, "features"), "chatPage") is Some(True))
+  assert_true(setting_chat_opened(t, "test channel"), msg="test channel: the page made as nodes")
+  assert_true(setting_new_opened(t, "test channel"), msg="test channel: the new chat made as nodes")
+}
+
+///|
+test "the stable app: a chat opened is the old page, a new chat the old one too" {
+  new_run()
+  let src = fixture("home-stable")
+  let t = setting_tester(src)
+  t.run_for(@ui.move_most_ms)
+  assert_true(field(field(src.topic("prefs", {}).get().value, "features"), "chatPage") is Some(False))
+  assert_false(setting_chat_opened(t, "stable"), msg="stable: the old page")
+  assert_false(setting_new_opened(t, "stable"), msg="stable: the old new chat")
+}
+
+///|
+test "the test channel's app started on a chat opens it on the page made as nodes; stable's on the old" {
   new_run()
   let src = fixture("chat")
+  open_chat(setting_chat)
+  let t = setting_tester(src)
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.top() is Chat(_), msg="started on the chat")
+  assert_true(setting_page_nodes(t, "started"), msg="started: the page made as nodes")
+  new_run()
+  let src = fixture("chat-stable")
+  open_chat(setting_chat)
+  let t = setting_tester(src)
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.top() is Chat(_), msg="stable: started on the chat")
+  assert_false(setting_page_nodes(t, "stable started"), msg="stable started: the old page")
+}
+
+///|
+test "held one way while a chat is open: the page shown becomes it at once, both ways, the prefs told meanwhile not over it" {
+  new_run()
+  let src = fixture("chat")
+  open_chat(setting_chat)
+  let t = setting_tester(src)
+  t.run_for(@ui.move_most_ms)
+  assert_true(setting_page_nodes(t, "open"), msg="open: the page made as nodes")
+  @sfbase.hold_chat_page_nodes(Some(false))
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.top() is Chat(_), msg="still on the chat")
+  assert_false(setting_page_nodes(t, "held old"), msg="held old: the old page at once")
+  // (the prefs told again, as on any change of them: the hold stands)
+  (src.call)("prefs.set", { "motion": "reduce" }, fn(_) {  })
+  t.run_for(@ui.move_most_ms)
+  assert_false(setting_page_nodes(t, "held old, prefs told"), msg="held old, prefs told: the old page still")
+  @sfbase.hold_chat_page_nodes(Some(true))
+  t.run_for(@ui.move_most_ms)
+  assert_true(setting_page_nodes(t, "held nodes"), msg="held nodes: the page made as nodes again")
+}
+
+///|
+test "held one way while a new chat is open: the new chat shown becomes it (its composer with it), at once, both ways" {
+  new_run()
+  let src = fixture("home")
   let t = setting_tester(src)
   t.run_for(@ui.move_most_ms)
   app.nav.rise(NewChat)
   t.run_for(@ui.move_most_ms)
   assert_true(app.nav.top() is NewChat, msg="the new chat not opened")
-  assert_false(setting_new_nodes(t, "open"), msg="open: the old new chat")
-  setting_pressed(t)
-  assert_true(app.nav.top() is NewChat, msg="back on the new chat")
-  assert_true(setting_new_nodes(t, "turned on while open"), msg="turned on while open: the new chat made as nodes")
-  setting_pressed(t)
-  assert_true(app.nav.top() is NewChat, msg="back on the new chat again")
-  assert_false(setting_new_nodes(t, "turned off while open"), msg="turned off while open: the old new chat again")
-}
-
-///|
-test "试用新对话页 kept on: the app started again opens its first chat on the page made as nodes; the run after, none kept, the old" {
-  new_run()
-  let src = fixture("chat")
-  (src.call)("prefs.set", { "experimental": { "chatPage": true } }, fn(_) {  })
-  open_chat(setting_chat)
-  let t = setting_tester(src)
+  assert_true(setting_new_nodes(t, "open"), msg="open: the new chat made as nodes")
+  @sfbase.hold_chat_page_nodes(Some(false))
   t.run_for(@ui.move_most_ms)
-  assert_true(app.nav.top() is Chat(_), msg="started on the chat")
-  assert_true(setting_page_nodes(t, "started kept on"), msg="started kept on: the page made as nodes")
-  // the next run, on a device that keeps none: nothing of the one before
-  new_run()
-  let src = fixture("chat")
-  open_chat(setting_chat)
-  let t = setting_tester(src)
+  assert_true(app.nav.top() is NewChat, msg="still on the new chat")
+  assert_false(setting_new_nodes(t, "held old"), msg="held old: the old new chat")
+  @sfbase.hold_chat_page_nodes(Some(true))
   t.run_for(@ui.move_most_ms)
-  assert_false(setting_page_nodes(t, "the run after"), msg="the run after: the old page")
+  assert_true(setting_new_nodes(t, "held nodes"), msg="held nodes: the new chat made as nodes again")
 }

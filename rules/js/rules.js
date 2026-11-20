@@ -13,7 +13,7 @@ function _M0TPC16string10StringView(param0, param1, param2) {
 }
 function _M0DTPC16option6OptionGdE4None() {}
 _M0DTPC16option6OptionGdE4None.prototype.$tag = 0;
-const _M0DTPC16option6OptionGdE4None__ = new _M0DTPC16option6OptionGdE4None();
+var _M0DTPC16option6OptionGdE4None__ = new _M0DTPC16option6OptionGdE4None();
 function _M0DTPC16option6OptionGdE4Some(param0) {
   this._0 = param0;
 }
@@ -24,7 +24,7 @@ function _M0DTP39stillfail5rules4lock3Off8NotValid(param0) {
 _M0DTP39stillfail5rules4lock3Off8NotValid.prototype.$tag = 0;
 function _M0DTP39stillfail5rules4lock3Off8NoParent() {}
 _M0DTP39stillfail5rules4lock3Off8NoParent.prototype.$tag = 1;
-const _M0DTP39stillfail5rules4lock3Off8NoParent__ = new _M0DTP39stillfail5rules4lock3Off8NoParent();
+var _M0DTP39stillfail5rules4lock3Off8NoParent__ = new _M0DTP39stillfail5rules4lock3Off8NoParent();
 function _M0DTP39stillfail5rules4lock3Off6Beaten(param0, param1) {
   this._0 = param0;
   this._1 = param1;
@@ -36,7 +36,7 @@ function _M0DTP39stillfail5rules4lock3Off5Below(param0) {
 _M0DTP39stillfail5rules4lock3Off5Below.prototype.$tag = 3;
 function _M0DTP39stillfail5rules4lock3Off5Again() {}
 _M0DTP39stillfail5rules4lock3Off5Again.prototype.$tag = 4;
-const _M0DTP39stillfail5rules4lock3Off5Again__ = new _M0DTP39stillfail5rules4lock3Off5Again();
+var _M0DTP39stillfail5rules4lock3Off5Again__ = new _M0DTP39stillfail5rules4lock3Off5Again();
 function $oob() {
   throw new Error("Index out of bounds");
 }
@@ -47,7 +47,7 @@ function $panic(message) {
 function _M0TPB13StringBuilder(param0) {
   this.val = param0;
 }
-const _M0FPB12random__seed = () => {
+var _M0FPB12random__seed = () => {
   const cryptoObj = globalThis.crypto;
   if (cryptoObj != null && typeof cryptoObj.getRandomValues === "function") {
     try {
@@ -60,10 +60,10 @@ const _M0FPB12random__seed = () => {
   }
   return Math.floor(Math.random() * 0x100000000) | 0; // Fallback to Math.random
 };
-const _M0FPB19int__to__string__js = (x, radix) => {
+var _M0FPB19int__to__string__js = (x, radix) => {
   return x.toString(radix);
 };
-const _M0FPB21int64__to__string__js = (num, radix) => BigInt.asIntN(64, num).toString(radix);
+var _M0FPB21int64__to__string__js = (num, radix) => BigInt.asIntN(64, num).toString(radix);
 function _M0TPB4IterGUsRPB3MapGsuEEE(param0, param1) {
   this.f = param0;
   this.size_hint = param1;
@@ -84,14 +84,14 @@ function $make_array_len_and_init(a, b) {
 function _M0TPB8MutLocalGiE(param0) {
   this.val = param0;
 }
-const _M0FPB13js__index__of = (s, start, end, p) => {
+var _M0FPB13js__index__of = (s, start, end, p) => {
   if (end - start < p.length) return -1;
   if (end === s.length) return s.indexOf(p, start);
   const i = s.substring(start, end).indexOf(p);
   return i < 0 ? i : start + i;
 };
-const _M0FPB13js__substring = (s, start, end) => start === 0 && end === s.length ? s : s.substring(start, end);
-const _M0FPB22js__code__unit__string = (c) => String.fromCharCode(c);
+var _M0FPB13js__substring = (s, start, end) => start === 0 && end === s.length ? s : s.substring(start, end);
+var _M0FPB22js__code__unit__string = (c) => String.fromCharCode(c);
 function _M0TPB5ArrayGUssEE(param0, param1) {
   this.buf = param0;
   this.len = param1;
@@ -112,7 +112,7 @@ function $compare_int(a, b) {
 }
 function _M0DTPC16option6OptionGORPC14json4JsonE4None() {}
 _M0DTPC16option6OptionGORPC14json4JsonE4None.prototype.$tag = 0;
-const _M0DTPC16option6OptionGORPC14json4JsonE4None__ = new _M0DTPC16option6OptionGORPC14json4JsonE4None();
+var _M0DTPC16option6OptionGORPC14json4JsonE4None__ = new _M0DTPC16option6OptionGORPC14json4JsonE4None();
 function _M0DTPC16option6OptionGORPC14json4JsonE4Some(param0) {
   this._0 = param0;
 }
@@ -425,13 +425,13 @@ function _M0TPB9ArrayViewGUsRPC14json4JsonEE(param0, param1, param2) {
 }
 function _M0DTPC14json4Json4Null() {}
 _M0DTPC14json4Json4Null.prototype.$tag = 0;
-const _M0DTPC14json4Json4Null__ = new _M0DTPC14json4Json4Null();
+var _M0DTPC14json4Json4Null__ = new _M0DTPC14json4Json4Null();
 function _M0DTPC14json4Json4True() {}
 _M0DTPC14json4Json4True.prototype.$tag = 1;
-const _M0DTPC14json4Json4True__ = new _M0DTPC14json4Json4True();
+var _M0DTPC14json4Json4True__ = new _M0DTPC14json4Json4True();
 function _M0DTPC14json4Json5False() {}
 _M0DTPC14json4Json5False.prototype.$tag = 2;
-const _M0DTPC14json4Json5False__ = new _M0DTPC14json4Json5False();
+var _M0DTPC14json4Json5False__ = new _M0DTPC14json4Json5False();
 function _M0DTPC14json4Json6Number(param0, param1) {
   this._0 = param0;
   this._1 = param1;
@@ -798,13 +798,13 @@ function _M0DTP39stillfail5rules4role6Change3Own(param0) {
 _M0DTP39stillfail5rules4role6Change3Own.prototype.$tag = 2;
 function _M0DTP39stillfail5rules4role6Change6Roster() {}
 _M0DTP39stillfail5rules4role6Change6Roster.prototype.$tag = 3;
-const _M0DTP39stillfail5rules4role6Change6Roster__ = new _M0DTP39stillfail5rules4role6Change6Roster();
+var _M0DTP39stillfail5rules4role6Change6Roster__ = new _M0DTP39stillfail5rules4role6Change6Roster();
 function _M0DTP39stillfail5rules4role6Change9CloudKeys() {}
 _M0DTP39stillfail5rules4role6Change9CloudKeys.prototype.$tag = 4;
-const _M0DTP39stillfail5rules4role6Change9CloudKeys__ = new _M0DTP39stillfail5rules4role6Change9CloudKeys();
+var _M0DTP39stillfail5rules4role6Change9CloudKeys__ = new _M0DTP39stillfail5rules4role6Change9CloudKeys();
 function _M0DTP39stillfail5rules4role6Change7Disable() {}
 _M0DTP39stillfail5rules4role6Change7Disable.prototype.$tag = 5;
-const _M0DTP39stillfail5rules4role6Change7Disable__ = new _M0DTP39stillfail5rules4role6Change7Disable();
+var _M0DTP39stillfail5rules4role6Change7Disable__ = new _M0DTP39stillfail5rules4role6Change7Disable();
 function _M0TPB9ArrayViewGUsRPB5ArrayGRP39stillfail5rules4lock6DeviceEEE(param0, param1, param2) {
   this.buf = param0;
   this.start = param1;
@@ -913,14 +913,14 @@ function _M0TPB5ArrayGRP39stillfail5rules4lock6CommitE(param0, param1) {
   this.buf = param0;
   this.len = param1;
 }
-const _M0FP39stillfail5rules2js8js__kind = (v) => v === null ? 0 : typeof v === "boolean" ? 1 : typeof v === "number" ? 2 : typeof v === "string" ? 3 : Array.isArray(v) ? 4 : typeof v === "object" ? 5 : 6;
-const _M0FP39stillfail5rules2js8js__bool = (v) => v;
-const _M0FP39stillfail5rules2js7js__num = (v) => v;
-const _M0FP39stillfail5rules2js7js__str = (v) => v;
-const _M0FP39stillfail5rules2js7js__len = (v) => v.length;
-const _M0FP39stillfail5rules2js6js__at = (v, i) => v[i];
-const _M0FP39stillfail5rules2js8js__keys = (v) => Object.keys(v).filter((k) => v[k] !== undefined);
-const _M0FP39stillfail5rules2js7js__get = (v, k) => v[k];
+var _M0FP39stillfail5rules2js8js__kind = (v) => v === null ? 0 : typeof v === "boolean" ? 1 : typeof v === "number" ? 2 : typeof v === "string" ? 3 : Array.isArray(v) ? 4 : typeof v === "object" ? 5 : 6;
+var _M0FP39stillfail5rules2js8js__bool = (v) => v;
+var _M0FP39stillfail5rules2js7js__num = (v) => v;
+var _M0FP39stillfail5rules2js7js__str = (v) => v;
+var _M0FP39stillfail5rules2js7js__len = (v) => v.length;
+var _M0FP39stillfail5rules2js6js__at = (v, i) => v[i];
+var _M0FP39stillfail5rules2js8js__keys = (v) => Object.keys(v).filter((k) => v[k] !== undefined);
+var _M0FP39stillfail5rules2js7js__get = (v, k) => v[k];
 function _M0DTPC16result6ResultGRPC14json4JsonRP39stillfail5rules4form7InvalidE3Err(param0) {
   this._0 = param0;
 }
@@ -929,19 +929,19 @@ function _M0DTPC16result6ResultGRPC14json4JsonRP39stillfail5rules4form7InvalidE2
   this._0 = param0;
 }
 _M0DTPC16result6ResultGRPC14json4JsonRP39stillfail5rules4form7InvalidE2Ok.prototype.$tag = 1;
-const _M0FP39stillfail5rules2js15js__sha256__hex = (c, s) => c.sha256Hex(s);
-const _M0FP39stillfail5rules2js14js__sig__valid = (c, sig, hash, origins, rp, passkey) => c.sigValid(sig, hash, origins, rp, passkey);
-const _M0FP39stillfail5rules2js18js__valid__key__id = (c, id) => c.validKeyId(id);
-const _M0FP39stillfail5rules2js19js__endpoint__proof = (c, ws, base, endpoint, proof) => c.endpointProof(ws, base, endpoint, proof);
-const _M0FP39stillfail5rules2js22js__tagged__sig__valid = (c, key, sig, tag, digest) => typeof c.taggedSigValid === 'function' && c.taggedSigValid(key, sig, tag, digest) === true;
-const _M0FP39stillfail5rules2js14js__new__array = () => [];
-const _M0FP39stillfail5rules2js15js__new__object = () => ({});
-const _M0FP39stillfail5rules2js8js__null = () => null;
-const _M0FP39stillfail5rules2js12js__of__bool = (b) => b;
-const _M0FP39stillfail5rules2js11js__of__num = (n) => n;
-const _M0FP39stillfail5rules2js11js__of__str = (s) => s;
-const _M0FP39stillfail5rules2js8js__push = (a, v) => { a.push(v) };
-const _M0FP39stillfail5rules2js7js__put = (o, k, v) => { o[k] = v };
+var _M0FP39stillfail5rules2js15js__sha256__hex = (c, s) => c.sha256Hex(s);
+var _M0FP39stillfail5rules2js14js__sig__valid = (c, sig, hash, origins, rp, passkey) => c.sigValid(sig, hash, origins, rp, passkey);
+var _M0FP39stillfail5rules2js18js__valid__key__id = (c, id) => c.validKeyId(id);
+var _M0FP39stillfail5rules2js19js__endpoint__proof = (c, ws, base, endpoint, proof) => c.endpointProof(ws, base, endpoint, proof);
+var _M0FP39stillfail5rules2js22js__tagged__sig__valid = (c, key, sig, tag, digest) => typeof c.taggedSigValid === 'function' && c.taggedSigValid(key, sig, tag, digest) === true;
+var _M0FP39stillfail5rules2js14js__new__array = () => [];
+var _M0FP39stillfail5rules2js15js__new__object = () => ({});
+var _M0FP39stillfail5rules2js8js__null = () => null;
+var _M0FP39stillfail5rules2js12js__of__bool = (b) => b;
+var _M0FP39stillfail5rules2js11js__of__num = (n) => n;
+var _M0FP39stillfail5rules2js11js__of__str = (s) => s;
+var _M0FP39stillfail5rules2js8js__push = (a, v) => { a.push(v) };
+var _M0FP39stillfail5rules2js7js__put = (o, k, v) => { o[k] = v };
 function _M0DTPC16result6ResultGRPB5ArrayGRPC14json4JsonERP39stillfail5rules4form7InvalidE3Err(param0) {
   this._0 = param0;
 }
@@ -950,9 +950,9 @@ function _M0DTPC16result6ResultGRPB5ArrayGRPC14json4JsonERP39stillfail5rules4for
   this._0 = param0;
 }
 _M0DTPC16result6ResultGRPB5ArrayGRPC14json4JsonERP39stillfail5rules4form7InvalidE2Ok.prototype.$tag = 1;
-const _M0FP39stillfail5rules2js6handle = (s) => s;
-const _M0FP39stillfail5rules2js11js__entries = (m) => [...m];
-const _M0FP39stillfail5rules2js22js__record__sig__valid = (c, sig, tag, text) => c.recordSigValid(sig, tag, text);
+var _M0FP39stillfail5rules2js6handle = (s) => s;
+var _M0FP39stillfail5rules2js11js__entries = (m) => [...m];
+var _M0FP39stillfail5rules2js22js__record__sig__valid = (c, sig, tag, text) => c.recordSigValid(sig, tag, text);
 function _M0TPB9ArrayViewGUsRP39stillfail5rules5vault6DeviceEE(param0, param1, param2) {
   this.buf = param0;
   this.start = param1;
@@ -999,153 +999,156 @@ function _M0TP39stillfail5rules4lock6Commit(param0, param1) {
   this.genesis = param0;
   this.chain = param1;
 }
-const _M0FP078stillfail_2frules_2fjs_2fJsCrypto_24as_24_40stillfail_2frules_2fvault_2eCrypto = { method_0: _M0IP39stillfail5rules2js8JsCryptoP39stillfail5rules5vault6Crypto18record__sig__valid };
-const _M0FP092moonbitlang_2fcore_2fbuiltin_2fStringBuilder_24as_24_40moonbitlang_2fcore_2fbuiltin_2eLogger = { method_0: _M0IPB13StringBuilderPB6Logger13write__string, method_1: _M0IP016_24default__implPB6Logger16write__substringGRPB13StringBuilderE, method_2: _M0IPB13StringBuilderPB6Logger11write__view, method_3: _M0IPB13StringBuilderPB6Logger11write__char, method_4: _M0IP016_24default__implPB6Logger28write__string__interpolationGRPB13StringBuilderE, method_5: _M0IP016_24default__implPB6Logger5writeGRPB13StringBuilderE };
-const _M0FP077stillfail_2frules_2fjs_2fJsCrypto_24as_24_40stillfail_2frules_2flock_2eCrypto = { method_0: _M0IP39stillfail5rules2js8JsCryptoP39stillfail5rules4lock6Crypto11sha256__hex, method_1: _M0IP39stillfail5rules2js8JsCryptoP39stillfail5rules4lock6Crypto10sig__valid, method_2: _M0IP39stillfail5rules2js8JsCryptoP39stillfail5rules4lock6Crypto14valid__key__id, method_3: _M0IP39stillfail5rules2js8JsCryptoP39stillfail5rules4lock6Crypto15endpoint__proof, method_4: _M0IP39stillfail5rules2js8JsCryptoP39stillfail5rules4lock6Crypto18tagged__sig__valid };
+var _M0FP078stillfail_2frules_2fjs_2fJsCrypto_24as_24_40stillfail_2frules_2fvault_2eCrypto = { method_0: _M0IP39stillfail5rules2js8JsCryptoP39stillfail5rules5vault6Crypto18record__sig__valid };
+var _M0FP092moonbitlang_2fcore_2fbuiltin_2fStringBuilder_24as_24_40moonbitlang_2fcore_2fbuiltin_2eLogger = { method_0: _M0IPB13StringBuilderPB6Logger13write__string, method_1: _M0IP016_24default__implPB6Logger16write__substringGRPB13StringBuilderE, method_2: _M0IPB13StringBuilderPB6Logger11write__view, method_3: _M0IPB13StringBuilderPB6Logger11write__char, method_4: _M0IP016_24default__implPB6Logger28write__string__interpolationGRPB13StringBuilderE, method_5: _M0IP016_24default__implPB6Logger5writeGRPB13StringBuilderE };
+var _M0FP077stillfail_2frules_2fjs_2fJsCrypto_24as_24_40stillfail_2frules_2flock_2eCrypto = { method_0: _M0IP39stillfail5rules2js8JsCryptoP39stillfail5rules4lock6Crypto11sha256__hex, method_1: _M0IP39stillfail5rules2js8JsCryptoP39stillfail5rules4lock6Crypto10sig__valid, method_2: _M0IP39stillfail5rules2js8JsCryptoP39stillfail5rules4lock6Crypto14valid__key__id, method_3: _M0IP39stillfail5rules2js8JsCryptoP39stillfail5rules4lock6Crypto15endpoint__proof, method_4: _M0IP39stillfail5rules2js8JsCryptoP39stillfail5rules4lock6Crypto18tagged__sig__valid };
+function _M0FP15Error22_2ato__string__default(_e) {
+  return _M0FP15Error10_2amethods[_e.$tag]._0;
+}
 function _M0FP15Error10to__string(_e) {
   const _f = _M0FP15Error10_2amethods[_e.$tag]._1;
   return _f(_e);
 }
-const _M0FP15Error13_2amethods__0 = { _0: "stillfail/rules/form.Invalid.Invalid", _1: (_e) => _M0FP15Error10_2amethods[_e.$tag]._0 };
-const _M0FP15Error13_2amethods__1 = { _0: "stillfail/rules/lock.LockError.Refusal", _1: (_e) => _M0FP15Error10_2amethods[_e.$tag]._0 };
-const _M0FP15Error13_2amethods__2 = { _0: "stillfail/rules/lock.LockError.Refused", _1: (_e) => _M0FP15Error10_2amethods[_e.$tag]._0 };
-const _M0FP15Error10_2amethods = [_M0FP15Error13_2amethods__0, _M0FP15Error13_2amethods__1, _M0FP15Error13_2amethods__2];
-const _M0MPB4Iter4nextN6constrS596GUsRPB3MapGsuEEE = 0;
-const _M0MPB4Iter4nextN6constrS597GUsRPB3MapGsuEEE = 0;
-const _M0MPB4Iter4nextN6constrS692GORPC14json4JsonE = 0;
-const _M0MPB4Iter4nextN6constrS693GORPC14json4JsonE = 0;
-const _M0MPB4Iter4nextN6constrS700GcE = 0;
-const _M0MPB4Iter4nextN6constrS701GcE = 0;
-const _M0MPB4Iter3newN6constrS808GUsRPB3MapGsuEEE = 0;
-const _M0MPB4Iter3newN6constrS880GORPC14json4JsonE = 0;
-const _M0MPB4Iter3newN6constrS886GcE = 0;
-const _M0FP39stillfail5rules4form11hex__digits = "0123456789abcdef";
-const _M0FP39stillfail5rules4lock9bind__tag = "stillfail-lock-bind/1";
-const _M0FP39stillfail5rules4lock6copied = new _M0TPC13ref3RefGiE(0);
-const _M0FP39stillfail5rules4lock11root__admit = "~root";
-const _M0FP39stillfail5rules4lock7stepped = new _M0TPC13ref3RefGiE(0);
-const _M0FP39stillfail5rules4lock8role__ofN6constrS6995 = 3;
-const _M0FP39stillfail5rules4lock8role__ofN6constrS6996 = 2;
-const _M0FP39stillfail5rules4lock8role__ofN6constrS6997 = 1;
-const _M0FP39stillfail5rules4lock8role__ofN6constrS6998 = 0;
-const _M0FP39stillfail5rules5vault6scopes = new _M0TPB5ArrayGsE(["once", "hour", "chat"], 3);
-const _M0FP39stillfail5rules5vault5kinds = new _M0TPB5ArrayGsE(["token", "ssh_key", "login", "file", "browser"], 5);
-const _M0FP39stillfail5rules5vault5modes = new _M0TPB5ArrayGsE(["proxy", "ssh", "env", "file", "browser"], 5);
+var _M0FP15Error13_2amethods__0 = { _0: "stillfail/rules/form.Invalid.Invalid", _1: _M0FP15Error22_2ato__string__default };
+var _M0FP15Error13_2amethods__1 = { _0: "stillfail/rules/lock.LockError.Refusal", _1: _M0FP15Error22_2ato__string__default };
+var _M0FP15Error13_2amethods__2 = { _0: "stillfail/rules/lock.LockError.Refused", _1: _M0FP15Error22_2ato__string__default };
+var _M0FP15Error10_2amethods = [_M0FP15Error13_2amethods__0, _M0FP15Error13_2amethods__1, _M0FP15Error13_2amethods__2];
+var _M0MPB4Iter4nextN6constrS596GUsRPB3MapGsuEEE = 0;
+var _M0MPB4Iter4nextN6constrS597GUsRPB3MapGsuEEE = 0;
+var _M0MPB4Iter4nextN6constrS692GORPC14json4JsonE = 0;
+var _M0MPB4Iter4nextN6constrS693GORPC14json4JsonE = 0;
+var _M0MPB4Iter4nextN6constrS700GcE = 0;
+var _M0MPB4Iter4nextN6constrS701GcE = 0;
+var _M0MPB4Iter4IterN6constrS808GUsRPB3MapGsuEEE = 0;
+var _M0MPB4Iter4IterN6constrS880GORPC14json4JsonE = 0;
+var _M0MPB4Iter4IterN6constrS886GcE = 0;
+var _M0FP39stillfail5rules4form11hex__digits = "0123456789abcdef";
+var _M0FP39stillfail5rules4lock9bind__tag = "stillfail-lock-bind/1";
+var _M0FP39stillfail5rules4lock6copied = new _M0TPC13ref3RefGiE(0);
+var _M0FP39stillfail5rules4lock11root__admit = "~root";
+var _M0FP39stillfail5rules4lock7stepped = new _M0TPC13ref3RefGiE(0);
+var _M0FP39stillfail5rules4lock8role__ofN6constrS6995 = 3;
+var _M0FP39stillfail5rules4lock8role__ofN6constrS6996 = 2;
+var _M0FP39stillfail5rules4lock8role__ofN6constrS6997 = 1;
+var _M0FP39stillfail5rules4lock8role__ofN6constrS6998 = 0;
+var _M0FP39stillfail5rules5vault6scopes = new _M0TPB5ArrayGsE(["once", "hour", "chat"], 3);
+var _M0FP39stillfail5rules5vault5kinds = new _M0TPB5ArrayGsE(["token", "ssh_key", "login", "file", "browser"], 5);
+var _M0FP39stillfail5rules5vault5modes = new _M0TPB5ArrayGsE(["proxy", "ssh", "env", "file", "browser"], 5);
 let _M0FPB4seed__held;
 const _M0FPB4seed__drawn = () => (_M0FPB4seed__held === undefined ? (_M0FPB4seed__held = _M0FPB12random__seed()) : _M0FPB4seed__held);
-const _M0FP39stillfail5rules4lock7passkeyN6recordS7015 = new _M0TPC16string10StringView("p256:", 0, 5);
-const _M0FP39stillfail5rules4lock4stepN6constrS7184 = new _M0DTPC16option6OptionGdE4Some(1);
-const _M0FP39stillfail5rules4lock7genesisN6constrS7066 = "genesis";
-const _M0FP39stillfail5rules4lock7genesisN6constrS7067 = new _M0DTPC16option6OptionGdE4Some(0);
-const _M0FP39stillfail5rules4lock7genesisN6constrS7068 = new _M0DTPC16option6OptionGdE4Some(1);
-const _M0FP39stillfail5rules4lock14person__deviceN6recordS6155 = new _M0TPC16string10StringView("ed25519:", 0, 8);
-const _M0FP39stillfail5rules4lock14person__deviceN6recordS6156 = new _M0TPC16string10StringView("ed25519:", 0, 8);
-const _M0FP39stillfail5rules4lock12person__stepN6constrS6191 = new _M0DTPC16option6OptionGdE4Some(1);
-const _M0FP39stillfail5rules5vault8box__keyN6recordS7956 = new _M0TPC16string10StringView("x25519:", 0, 7);
-const _M0FP39stillfail5rules5vault10sig__shapeN6constrS7997 = "Ed25519";
-const _M0FP39stillfail5rules5vault10sig__shapeN6constrS7998 = "ES256";
-const _M0FP39stillfail5rules5vault8cert__okN6constrS8031 = "the box certificate's device is not an app device in the lock";
-const _M0FP39stillfail5rules5vault8cert__okN6constrS8032 = "the box certificate's device was put in the lock by someone else, not its person";
-const _M0FP39stillfail5rules5vault8cert__okN6constrS8033 = "a box certificate is signed by its own device's key";
-const _M0FP39stillfail5rules5vault8cert__okN6constrS8034 = "the box certificate's signature is invalid";
-const _M0FP39stillfail5rules5vault8cert__okN5shapeS8035 = "a box certificate is {v: 1, ws, device, box, at, sig} of this workspace";
-const _M0FP39stillfail5rules5vault9vault__okN6constrS8059 = "a vault is {v: 1, ws, …} of this workspace";
-const _M0FP39stillfail5rules5vault9vault__okN6constrS8060 = "a vault's id is v_<ULID>";
-const _M0FP39stillfail5rules5vault9vault__okN6constrS8061 = "seq, epoch and at are whole numbers";
-const _M0FP39stillfail5rules5vault9vault__okN6constrS8062 = "a vault has an owner and a name";
-const _M0FP39stillfail5rules5vault9vault__okN6constrS8063 = "members are distinct subs";
-const _M0FP39stillfail5rules5vault9vault__okN6constrS8064 = "the owner is a member";
-const _M0FP39stillfail5rules5vault9vault__okN6constrS8065 = "keys is a list";
-const _M0FP39stillfail5rules5vault9vault__okN6constrS8066 = "recovery is a seal";
-const _M0FP39stillfail5rules5vault9vault__okN6constrS8067 = "lasts is once, hour or chat";
-const _M0FP39stillfail5rules5vault9vault__okN6constrS8068 = "scope is workspace";
-const _M0FP39stillfail5rules5vault9vault__okN6constrS8069 = "a deleted vault is sealed to no one";
-const _M0FP39stillfail5rules5vault9vault__okN6constrS8070 = "a vault is signed";
-const _M0FP39stillfail5rules5vault9vault__okN6constrS8071 = "a vault's first version is seq 0";
-const _M0FP39stillfail5rules5vault9vault__okN6constrS8072 = "another vault";
-const _M0FP39stillfail5rules5vault9vault__okN6constrS8073 = "a vault's scope does not change";
-const _M0FP39stillfail5rules5vault9vault__okN6constrS8074 = "a vault's owner does not change";
-const _M0FP39stillfail5rules5vault9vault__okN6constrS8075 = "a deleted vault stays deleted";
-const _M0FP39stillfail5rules5vault9vault__okN6constrS8076 = "the epoch does not go back";
-const _M0FP39stillfail5rules5vault9vault__okN6constrS8077 = "removing a member or device takes a new epoch (a new vault key)";
-const _M0FP39stillfail5rules5vault9vault__okN6constrS8078 = "a key is {cert, wrapped}";
-const _M0FP39stillfail5rules5vault9vault__okN6constrS8079 = "the vault's signature is invalid";
-const _M0MPC16string10StringView4findN6constrS1097 = 0;
-const _M0FP39stillfail5rules5vault4hostN6recordS7962 = new _M0TPC16string10StringView("*.", 0, 2);
-const _M0FP39stillfail5rules5vault4hostN6recordS7963 = new _M0TPC16string10StringView(".", 0, 1);
-const _M0FP39stillfail5rules5vault20browser__listing__okN6constrS8190 = "a sign-in (kind browser) is given into a chat's browser (modes: [\"browser\"]), and only a sign-in is";
-const _M0FP39stillfail5rules5vault20browser__listing__okN6recordS8191 = new _M0TPC16string10StringView("*.", 0, 2);
-const _M0FP39stillfail5rules5vault20browser__listing__okN6constrS8192 = "a sign-in names the sites it is for (github.com: its subdomains with it)";
-const _M0FP39stillfail5rules5vault11listing__okN6constrS8198 = "a listing is {name, kind, modes, hosts, env?}";
-const _M0FP39stillfail5rules5vault11listing__okN6constrS8199 = "modes are proxy, ssh, env, file or browser";
-const _M0FP39stillfail5rules5vault11listing__okN6constrS8200 = "hosts are domain names (*.example.com allowed)";
-const _M0FP39stillfail5rules5vault11listing__okN6constrS8201 = "env is a variable name";
-const _M0FP39stillfail5rules5vault11listing__okN6constrS8202 = "lasts is once, hour or chat";
-const _M0FP39stillfail5rules5vault8item__okN6constrS8246 = "an item is {v: 1, ws, vault, …} of this vault";
-const _M0FP39stillfail5rules5vault8item__okN6constrS8247 = "an item's id is i_<ULID>";
-const _M0FP39stillfail5rules5vault8item__okN6constrS8248 = "version, epoch and at are whole numbers";
-const _M0FP39stillfail5rules5vault8item__okN6constrS8249 = "deleted is true or absent";
-const _M0FP39stillfail5rules5vault8item__okN6constrS8250 = "ct is base64url";
-const _M0FP39stillfail5rules5vault8item__okN6constrS8251 = "a deleted item has no ciphertext or listing";
-const _M0FP39stillfail5rules5vault8item__okN6constrS8252 = "an item holds a ciphertext";
-const _M0FP39stillfail5rules5vault8item__okN6constrS8253 = "an item is signed";
-const _M0FP39stillfail5rules5vault8item__okN6constrS8254 = "an item's first version is 0";
-const _M0FP39stillfail5rules5vault8item__okN6constrS8255 = "another item";
-const _M0FP39stillfail5rules5vault8item__okN6constrS8256 = "the item was deleted";
-const _M0FP39stillfail5rules5vault8item__okN6constrS8257 = "the item's signature is invalid";
-const _M0FP39stillfail5rules5vault8item__okN6constrS8258 = "an item is signed by a vault member's device in the lock";
-const _M0FP39stillfail5rules4fork4stepN6constrS5619 = 0;
-const _M0FP39stillfail5rules4fork4stepN6constrS5620 = 1;
-const _M0FP39stillfail5rules4fork4stepN6constrS5621 = 2;
-const _M0FP39stillfail5rules4fork4stepN6constrS5622 = 3;
-const _M0FP39stillfail5rules4lock6beforeN5tupleS7404 = { _0: 0, _1: 1 };
-const _M0FP39stillfail5rules4lock6beforeN5tupleS7405 = { _0: 1, _1: 0 };
-const _M0FP39stillfail5rules4lock6beforeN5tupleS7406 = { _0: 0, _1: 0 };
-const _M0FP39stillfail5rules4lock6activeN6constrS7435GRP39stillfail5rules4lock9LockStateE = new _M0DTP39stillfail5rules4lock3Off8NotValid("not the genesis this log is pinned to");
-const _M0FP39stillfail5rules4lock11lock__chainN6constrS7805 = "device.remove";
-const _M0FP39stillfail5rules4lock13person__chainN6constrS7828 = "device.remove";
-const _M0FP39stillfail5rules4lock9body__whyN6constrS6004 = "a body is {ws, kind, …, salt}";
-const _M0FP39stillfail5rules4lock9body__whyN6constrS6005 = "a body is {ws, kind, …, salt}";
-const _M0FP39stillfail5rules4lock9body__whyN6constrS6006 = "a body names the statement before it";
-const _M0FP39stillfail5rules4lock9body__whyN6constrS6007 = "no such statement";
-const _M0FP39stillfail5rules4lock9body__whyN6constrS6008 = "an admit names a person, their email, a lock and a role";
-const _M0FP39stillfail5rules4lock9body__whyN6constrS6009 = "a removal names whom and what it cancels";
-const _M0FP39stillfail5rules4lock9body__whyN6constrS6010 = "a station is named by its key";
-const _M0FP39stillfail5rules4lock9body__whyN6constrS6011 = "a removal names whom and what it cancels";
-const _M0FP39stillfail5rules4lock9body__whyN6constrS6012 = "open names the settings";
-const _M0FP39stillfail5rules4lock9body__whyN6constrS6013 = "off says nothing more";
-const _M0FP39stillfail5rules4lock9body__whyN6constrS6014 = "a binding names the signer that proves it and its signature";
-const _M0FP39stillfail5rules4lock3mgrN6constrS6269 = "owner";
-const _M0FP39stillfail5rules4lock3mgrN6constrS6270 = "admin";
-const _M0FP39stillfail5rules4lock9binds__ofN6constrS5875 = "bind";
-const _M0FP39stillfail5rules4lock10roster__ofN6constrS6286 = "ws";
-const _M0FP39stillfail5rules4lock10roster__ofN6constrS6287 = "open";
-const _M0FP39stillfail5rules4lock10roster__ofN6constrS6288 = "off";
-const _M0FP39stillfail5rules4lock10roster__ofN6constrS6289 = "in";
-const _M0FP39stillfail5rules4lock10roster__ofN6constrS6290 = "out";
-const _M0FP39stillfail5rules4lock10roster__ofN6constrS6291 = "in";
-const _M0FP39stillfail5rules4lock10roster__ofN6constrS6292 = "out";
-const _M0FP39stillfail5rules4lock10roster__ofN6constrS6293 = "in";
-const _M0FP39stillfail5rules4lock10roster__ofN6recordS6294 = new _M0TPC16string10StringView("~", 0, 1);
-const _M0FP39stillfail5rules4lock10roster__ofN6recordS6295 = new _M0TPC16string10StringView("~", 0, 1);
-const _M0FP39stillfail5rules4lock10roster__ofN6recordS6296 = new _M0TPC16string10StringView("~", 0, 1);
-const _M0FP39stillfail5rules4lock10roster__ofN6constrS6297 = "admit cancelled";
-const _M0FP39stillfail5rules4lock10roster__ofN6constrS6298 = "its signer may not give that role";
-const _M0FP39stillfail5rules4lock10roster__ofN6constrS6299 = "another admit of the person outranks it (a lower role given later changes nothing)";
-const _M0FP39stillfail5rules4lock10roster__ofN6constrS6300 = "its cancellations are undecided (a circle of removals)";
-const _M0FP39stillfail5rules4lock10roster__ofN6constrS6301 = "station cancelled";
-const _M0FP39stillfail5rules4lock10state4__ofN6constrS6795 = "off";
-const _M0FP39stillfail5rules4lock10state4__ofN6constrS6796 = "off";
-const _M0FP39stillfail5rules4lock10state4__ofN6recordS6797 = new _M0TPC16string10StringView("~", 0, 1);
-const _M0FP39stillfail5rules4lock10state4__ofN6constrS6798 = "chain";
-const _M0FP39stillfail5rules4lock10state4__ofN6constrS6799 = "chain";
-const _M0FP39stillfail5rules4lock13body__refusalN6constrS7843 = "no entry it keeps commits to it";
-const _M0FP39stillfail5rules4lock13body__refusalN6constrS7844 = "ws";
-const _M0FP39stillfail5rules4lock13body__refusalN6constrS7845 = "ws";
-const _M0FP39stillfail5rules4lock13body__refusalN6constrS7846 = "its prev is not a statement before it in that log";
-const _M0FP39stillfail5rules4lock13body__refusalN6constrS7847 = "its entry's tag is not its workspace's in that log";
-const _M0FP39stillfail5rules4lock13body__refusalN6constrS7848 = "no entry it keeps commits to it";
-const _M0FP39stillfail5rules4lock13body__refusalN6constrS7849 = "it names no workspace this keeper keeps";
+var _M0FP39stillfail5rules4lock7passkeyN6recordS7015 = new _M0TPC16string10StringView("p256:", 0, 5);
+var _M0FP39stillfail5rules4lock4stepN6constrS7184 = new _M0DTPC16option6OptionGdE4Some(1);
+var _M0FP39stillfail5rules4lock7genesisN6constrS7066 = "genesis";
+var _M0FP39stillfail5rules4lock7genesisN6constrS7067 = new _M0DTPC16option6OptionGdE4Some(0);
+var _M0FP39stillfail5rules4lock7genesisN6constrS7068 = new _M0DTPC16option6OptionGdE4Some(1);
+var _M0FP39stillfail5rules4lock14person__deviceN6recordS6155 = new _M0TPC16string10StringView("ed25519:", 0, 8);
+var _M0FP39stillfail5rules4lock14person__deviceN6recordS6156 = new _M0TPC16string10StringView("ed25519:", 0, 8);
+var _M0FP39stillfail5rules4lock12person__stepN6constrS6191 = new _M0DTPC16option6OptionGdE4Some(1);
+var _M0FP39stillfail5rules5vault8box__keyN6recordS7956 = new _M0TPC16string10StringView("x25519:", 0, 7);
+var _M0FP39stillfail5rules5vault10sig__shapeN6constrS7997 = "Ed25519";
+var _M0FP39stillfail5rules5vault10sig__shapeN6constrS7998 = "ES256";
+var _M0FP39stillfail5rules5vault8cert__okN6constrS8031 = "the box certificate's device is not an app device in the lock";
+var _M0FP39stillfail5rules5vault8cert__okN6constrS8032 = "the box certificate's device was put in the lock by someone else, not its person";
+var _M0FP39stillfail5rules5vault8cert__okN6constrS8033 = "a box certificate is signed by its own device's key";
+var _M0FP39stillfail5rules5vault8cert__okN6constrS8034 = "the box certificate's signature is invalid";
+var _M0FP39stillfail5rules5vault8cert__okN5shapeS8035 = "a box certificate is {v: 1, ws, device, box, at, sig} of this workspace";
+var _M0FP39stillfail5rules5vault9vault__okN6constrS8059 = "a vault is {v: 1, ws, …} of this workspace";
+var _M0FP39stillfail5rules5vault9vault__okN6constrS8060 = "a vault's id is v_<ULID>";
+var _M0FP39stillfail5rules5vault9vault__okN6constrS8061 = "seq, epoch and at are whole numbers";
+var _M0FP39stillfail5rules5vault9vault__okN6constrS8062 = "a vault has an owner and a name";
+var _M0FP39stillfail5rules5vault9vault__okN6constrS8063 = "members are distinct subs";
+var _M0FP39stillfail5rules5vault9vault__okN6constrS8064 = "the owner is a member";
+var _M0FP39stillfail5rules5vault9vault__okN6constrS8065 = "keys is a list";
+var _M0FP39stillfail5rules5vault9vault__okN6constrS8066 = "recovery is a seal";
+var _M0FP39stillfail5rules5vault9vault__okN6constrS8067 = "lasts is once, hour or chat";
+var _M0FP39stillfail5rules5vault9vault__okN6constrS8068 = "scope is workspace";
+var _M0FP39stillfail5rules5vault9vault__okN6constrS8069 = "a deleted vault is sealed to no one";
+var _M0FP39stillfail5rules5vault9vault__okN6constrS8070 = "a vault is signed";
+var _M0FP39stillfail5rules5vault9vault__okN6constrS8071 = "a vault's first version is seq 0";
+var _M0FP39stillfail5rules5vault9vault__okN6constrS8072 = "another vault";
+var _M0FP39stillfail5rules5vault9vault__okN6constrS8073 = "a vault's scope does not change";
+var _M0FP39stillfail5rules5vault9vault__okN6constrS8074 = "a vault's owner does not change";
+var _M0FP39stillfail5rules5vault9vault__okN6constrS8075 = "a deleted vault stays deleted";
+var _M0FP39stillfail5rules5vault9vault__okN6constrS8076 = "the epoch does not go back";
+var _M0FP39stillfail5rules5vault9vault__okN6constrS8077 = "removing a member or device takes a new epoch (a new vault key)";
+var _M0FP39stillfail5rules5vault9vault__okN6constrS8078 = "a key is {cert, wrapped}";
+var _M0FP39stillfail5rules5vault9vault__okN6constrS8079 = "the vault's signature is invalid";
+var _M0MPC16string10StringView4findN6constrS1097 = 0;
+var _M0FP39stillfail5rules5vault4hostN6recordS7962 = new _M0TPC16string10StringView("*.", 0, 2);
+var _M0FP39stillfail5rules5vault4hostN6recordS7963 = new _M0TPC16string10StringView(".", 0, 1);
+var _M0FP39stillfail5rules5vault20browser__listing__okN6constrS8190 = "a sign-in (kind browser) is given into a chat's browser (modes: [\"browser\"]), and only a sign-in is";
+var _M0FP39stillfail5rules5vault20browser__listing__okN6recordS8191 = new _M0TPC16string10StringView("*.", 0, 2);
+var _M0FP39stillfail5rules5vault20browser__listing__okN6constrS8192 = "a sign-in names the sites it is for (github.com: its subdomains with it)";
+var _M0FP39stillfail5rules5vault11listing__okN6constrS8198 = "a listing is {name, kind, modes, hosts, env?}";
+var _M0FP39stillfail5rules5vault11listing__okN6constrS8199 = "modes are proxy, ssh, env, file or browser";
+var _M0FP39stillfail5rules5vault11listing__okN6constrS8200 = "hosts are domain names (*.example.com allowed)";
+var _M0FP39stillfail5rules5vault11listing__okN6constrS8201 = "env is a variable name";
+var _M0FP39stillfail5rules5vault11listing__okN6constrS8202 = "lasts is once, hour or chat";
+var _M0FP39stillfail5rules5vault8item__okN6constrS8246 = "an item is {v: 1, ws, vault, …} of this vault";
+var _M0FP39stillfail5rules5vault8item__okN6constrS8247 = "an item's id is i_<ULID>";
+var _M0FP39stillfail5rules5vault8item__okN6constrS8248 = "version, epoch and at are whole numbers";
+var _M0FP39stillfail5rules5vault8item__okN6constrS8249 = "deleted is true or absent";
+var _M0FP39stillfail5rules5vault8item__okN6constrS8250 = "ct is base64url";
+var _M0FP39stillfail5rules5vault8item__okN6constrS8251 = "a deleted item has no ciphertext or listing";
+var _M0FP39stillfail5rules5vault8item__okN6constrS8252 = "an item holds a ciphertext";
+var _M0FP39stillfail5rules5vault8item__okN6constrS8253 = "an item is signed";
+var _M0FP39stillfail5rules5vault8item__okN6constrS8254 = "an item's first version is 0";
+var _M0FP39stillfail5rules5vault8item__okN6constrS8255 = "another item";
+var _M0FP39stillfail5rules5vault8item__okN6constrS8256 = "the item was deleted";
+var _M0FP39stillfail5rules5vault8item__okN6constrS8257 = "the item's signature is invalid";
+var _M0FP39stillfail5rules5vault8item__okN6constrS8258 = "an item is signed by a vault member's device in the lock";
+var _M0FP39stillfail5rules4fork4stepN6constrS5619 = 0;
+var _M0FP39stillfail5rules4fork4stepN6constrS5620 = 1;
+var _M0FP39stillfail5rules4fork4stepN6constrS5621 = 2;
+var _M0FP39stillfail5rules4fork4stepN6constrS5622 = 3;
+var _M0FP39stillfail5rules4lock6beforeN5tupleS7404 = { _0: 0, _1: 1 };
+var _M0FP39stillfail5rules4lock6beforeN5tupleS7405 = { _0: 1, _1: 0 };
+var _M0FP39stillfail5rules4lock6beforeN5tupleS7406 = { _0: 0, _1: 0 };
+var _M0FP39stillfail5rules4lock6activeN6constrS7435GRP39stillfail5rules4lock9LockStateE = new _M0DTP39stillfail5rules4lock3Off8NotValid("not the genesis this log is pinned to");
+var _M0FP39stillfail5rules4lock11lock__chainN6constrS7805 = "device.remove";
+var _M0FP39stillfail5rules4lock13person__chainN6constrS7828 = "device.remove";
+var _M0FP39stillfail5rules4lock9body__whyN6constrS6004 = "a body is {ws, kind, …, salt}";
+var _M0FP39stillfail5rules4lock9body__whyN6constrS6005 = "a body is {ws, kind, …, salt}";
+var _M0FP39stillfail5rules4lock9body__whyN6constrS6006 = "a body names the statement before it";
+var _M0FP39stillfail5rules4lock9body__whyN6constrS6007 = "no such statement";
+var _M0FP39stillfail5rules4lock9body__whyN6constrS6008 = "an admit names a person, their email, a lock and a role";
+var _M0FP39stillfail5rules4lock9body__whyN6constrS6009 = "a removal names whom and what it cancels";
+var _M0FP39stillfail5rules4lock9body__whyN6constrS6010 = "a station is named by its key";
+var _M0FP39stillfail5rules4lock9body__whyN6constrS6011 = "a removal names whom and what it cancels";
+var _M0FP39stillfail5rules4lock9body__whyN6constrS6012 = "open names the settings";
+var _M0FP39stillfail5rules4lock9body__whyN6constrS6013 = "off says nothing more";
+var _M0FP39stillfail5rules4lock9body__whyN6constrS6014 = "a binding names the signer that proves it and its signature";
+var _M0FP39stillfail5rules4lock3mgrN6constrS6269 = "owner";
+var _M0FP39stillfail5rules4lock3mgrN6constrS6270 = "admin";
+var _M0FP39stillfail5rules4lock9binds__ofN6constrS5875 = "bind";
+var _M0FP39stillfail5rules4lock10roster__ofN6constrS6286 = "ws";
+var _M0FP39stillfail5rules4lock10roster__ofN6constrS6287 = "open";
+var _M0FP39stillfail5rules4lock10roster__ofN6constrS6288 = "off";
+var _M0FP39stillfail5rules4lock10roster__ofN6constrS6289 = "in";
+var _M0FP39stillfail5rules4lock10roster__ofN6constrS6290 = "out";
+var _M0FP39stillfail5rules4lock10roster__ofN6constrS6291 = "in";
+var _M0FP39stillfail5rules4lock10roster__ofN6constrS6292 = "out";
+var _M0FP39stillfail5rules4lock10roster__ofN6constrS6293 = "in";
+var _M0FP39stillfail5rules4lock10roster__ofN6recordS6294 = new _M0TPC16string10StringView("~", 0, 1);
+var _M0FP39stillfail5rules4lock10roster__ofN6recordS6295 = new _M0TPC16string10StringView("~", 0, 1);
+var _M0FP39stillfail5rules4lock10roster__ofN6recordS6296 = new _M0TPC16string10StringView("~", 0, 1);
+var _M0FP39stillfail5rules4lock10roster__ofN6constrS6297 = "admit cancelled";
+var _M0FP39stillfail5rules4lock10roster__ofN6constrS6298 = "its signer may not give that role";
+var _M0FP39stillfail5rules4lock10roster__ofN6constrS6299 = "another admit of the person outranks it (a lower role given later changes nothing)";
+var _M0FP39stillfail5rules4lock10roster__ofN6constrS6300 = "its cancellations are undecided (a circle of removals)";
+var _M0FP39stillfail5rules4lock10roster__ofN6constrS6301 = "station cancelled";
+var _M0FP39stillfail5rules4lock10state4__ofN6constrS6795 = "off";
+var _M0FP39stillfail5rules4lock10state4__ofN6constrS6796 = "off";
+var _M0FP39stillfail5rules4lock10state4__ofN6recordS6797 = new _M0TPC16string10StringView("~", 0, 1);
+var _M0FP39stillfail5rules4lock10state4__ofN6constrS6798 = "chain";
+var _M0FP39stillfail5rules4lock10state4__ofN6constrS6799 = "chain";
+var _M0FP39stillfail5rules4lock13body__refusalN6constrS7843 = "no entry it keeps commits to it";
+var _M0FP39stillfail5rules4lock13body__refusalN6constrS7844 = "ws";
+var _M0FP39stillfail5rules4lock13body__refusalN6constrS7845 = "ws";
+var _M0FP39stillfail5rules4lock13body__refusalN6constrS7846 = "its prev is not a statement before it in that log";
+var _M0FP39stillfail5rules4lock13body__refusalN6constrS7847 = "its entry's tag is not its workspace's in that log";
+var _M0FP39stillfail5rules4lock13body__refusalN6constrS7848 = "no entry it keeps commits to it";
+var _M0FP39stillfail5rules4lock13body__refusalN6constrS7849 = "it names no workspace this keeper keeps";
 function _M0MPC16string10StringView12unsafe__view(self, start, end) {
   return new _M0TPC16string10StringView(self.str, self.start + start | 0, self.start + end | 0);
 }
@@ -1280,15 +1283,20 @@ function _M0MPB18UninitializedArray23make__and__blit_2einnerGRP39stillfail5rules
     return _M0MPB18UninitializedArray23unsafe__make__and__blitGRP39stillfail5rules4lock4StmtE(src, allocate_len, src_offset, dst_offset, len);
   } else {
     const _string_builder = _M0MPB13StringBuilder21StringBuilder_2einner(8);
-    _M0IPB13StringBuilderPB6Logger13write__string(_string_builder, "bounds check failed: allocate_len = ");
+    const _p = "bounds check failed: allocate_len = ";
+    _string_builder.val = `${_string_builder.val}${_p}`;
     _M0MPB13StringBuilder13write__objectGiE(_string_builder, allocate_len);
-    _M0IPB13StringBuilderPB6Logger13write__string(_string_builder, ", src_offset = ");
+    const _p$2 = ", src_offset = ";
+    _string_builder.val = `${_string_builder.val}${_p$2}`;
     _M0MPB13StringBuilder13write__objectGiE(_string_builder, src_offset);
-    _M0IPB13StringBuilderPB6Logger13write__string(_string_builder, ", dst_offset = ");
+    const _p$3 = ", dst_offset = ";
+    _string_builder.val = `${_string_builder.val}${_p$3}`;
     _M0MPB13StringBuilder13write__objectGiE(_string_builder, dst_offset);
-    _M0IPB13StringBuilderPB6Logger13write__string(_string_builder, ", len = ");
+    const _p$4 = ", len = ";
+    _string_builder.val = `${_string_builder.val}${_p$4}`;
     _M0MPB13StringBuilder13write__objectGiE(_string_builder, len);
-    _M0IPB13StringBuilderPB6Logger13write__string(_string_builder, ", src.length = ");
+    const _p$5 = ", src.length = ";
+    _string_builder.val = `${_string_builder.val}${_p$5}`;
     _M0MPB13StringBuilder13write__objectGiE(_string_builder, src.length);
     return $panic(_string_builder.val);
   }
@@ -1317,15 +1325,20 @@ function _M0MPB18UninitializedArray23make__and__blit_2einnerGiE(src, allocate_le
     return _M0MPB18UninitializedArray23unsafe__make__and__blitGiE(src, allocate_len, src_offset, dst_offset, len);
   } else {
     const _string_builder = _M0MPB13StringBuilder21StringBuilder_2einner(8);
-    _M0IPB13StringBuilderPB6Logger13write__string(_string_builder, "bounds check failed: allocate_len = ");
+    const _p = "bounds check failed: allocate_len = ";
+    _string_builder.val = `${_string_builder.val}${_p}`;
     _M0MPB13StringBuilder13write__objectGiE(_string_builder, allocate_len);
-    _M0IPB13StringBuilderPB6Logger13write__string(_string_builder, ", src_offset = ");
+    const _p$2 = ", src_offset = ";
+    _string_builder.val = `${_string_builder.val}${_p$2}`;
     _M0MPB13StringBuilder13write__objectGiE(_string_builder, src_offset);
-    _M0IPB13StringBuilderPB6Logger13write__string(_string_builder, ", dst_offset = ");
+    const _p$3 = ", dst_offset = ";
+    _string_builder.val = `${_string_builder.val}${_p$3}`;
     _M0MPB13StringBuilder13write__objectGiE(_string_builder, dst_offset);
-    _M0IPB13StringBuilderPB6Logger13write__string(_string_builder, ", len = ");
+    const _p$4 = ", len = ";
+    _string_builder.val = `${_string_builder.val}${_p$4}`;
     _M0MPB13StringBuilder13write__objectGiE(_string_builder, len);
-    _M0IPB13StringBuilderPB6Logger13write__string(_string_builder, ", src.length = ");
+    const _p$5 = ", src.length = ";
+    _string_builder.val = `${_string_builder.val}${_p$5}`;
     _M0MPB13StringBuilder13write__objectGiE(_string_builder, src.length);
     return $panic(_string_builder.val);
   }
@@ -1508,36 +1521,36 @@ function _M0MPC13int3Int18to__string_2einner(self, radix) {
 function _M0MPC15int645Int6418to__string_2einner(self, radix) {
   return _M0FPB21int64__to__string__js(self, radix);
 }
-function _M0MPB4Iter3newGUsRPB3MapGsuEEE(f, size_hint) {
+function _M0MPB4Iter4IterGUsRPB3MapGsuEEE(f, size_hint) {
   let size_hint$2;
   if (size_hint === undefined) {
     size_hint$2 = undefined;
   } else {
     const _Some = size_hint;
     const _n = _Some;
-    size_hint$2 = _n > 0 ? _n : _M0MPB4Iter3newN6constrS808GUsRPB3MapGsuEEE;
+    size_hint$2 = _n > 0 ? _n : _M0MPB4Iter4IterN6constrS808GUsRPB3MapGsuEEE;
   }
   return new _M0TPB4IterGUsRPB3MapGsuEEE(f, size_hint$2);
 }
-function _M0MPB4Iter3newGORPC14json4JsonE(f, size_hint) {
+function _M0MPB4Iter4IterGORPC14json4JsonE(f, size_hint) {
   let size_hint$2;
   if (size_hint === undefined) {
     size_hint$2 = undefined;
   } else {
     const _Some = size_hint;
     const _n = _Some;
-    size_hint$2 = _n > 0 ? _n : _M0MPB4Iter3newN6constrS880GORPC14json4JsonE;
+    size_hint$2 = _n > 0 ? _n : _M0MPB4Iter4IterN6constrS880GORPC14json4JsonE;
   }
   return new _M0TPB4IterGORPC14json4JsonE(f, size_hint$2);
 }
-function _M0MPB4Iter3newGcE(f, size_hint) {
+function _M0MPB4Iter4IterGcE(f, size_hint) {
   let size_hint$2;
   if (size_hint === undefined) {
     size_hint$2 = undefined;
   } else {
     const _Some = size_hint;
     const _n = _Some;
-    size_hint$2 = _n > 0 ? _n : _M0MPB4Iter3newN6constrS886GcE;
+    size_hint$2 = _n > 0 ? _n : _M0MPB4Iter4IterN6constrS886GcE;
   }
   return new _M0TPB4IterGcE(f, size_hint$2);
 }
@@ -1594,7 +1607,7 @@ function _M0MPC16string10StringView4iter(self) {
   const start = self.start;
   const end = self.end;
   const index = new _M0TPB8MutLocalGiE(start);
-  return _M0MPB4Iter3newGcE(() => {
+  return _M0MPB4Iter4IterGcE(() => {
     if (index.val < end) {
       const c1 = self.str.charCodeAt(index.val);
       if (c1 >= 55296 && c1 <= 56319 && (index.val + 1 | 0) < self.end) {
@@ -1933,7 +1946,7 @@ function _M0MPC16string10StringView5split(self, sep) {
     });
   }
   const remaining = new _M0TPB8MutLocalGORPC16string10StringViewE(self);
-  return _M0MPB4Iter3newGUsRPB3MapGsuEEE(() => {
+  return _M0MPB4Iter4IterGUsRPB3MapGsuEEE(() => {
     const _bind = remaining.val;
     if (_bind === undefined) {
       return undefined;
@@ -2009,7 +2022,7 @@ function _M0IPC13int3IntPB4Show10to__string(self) {
 function _M0MPC15array9ArrayView4iterGRP39stillfail5rules4lock4StmtE(self) {
   const i = new _M0TPB8MutLocalGiE(0);
   const len = self.end - self.start | 0;
-  return _M0MPB4Iter3newGUsRPB3MapGsuEEE(() => {
+  return _M0MPB4Iter4IterGUsRPB3MapGsuEEE(() => {
     if (i.val < len) {
       const elem = self.buf[self.start + i.val | 0];
       i.val = i.val + 1 | 0;
@@ -2022,7 +2035,7 @@ function _M0MPC15array9ArrayView4iterGRP39stillfail5rules4lock4StmtE(self) {
 function _M0MPC15array9ArrayView4iterGORPC14json4JsonE(self) {
   const i = new _M0TPB8MutLocalGiE(0);
   const len = self.end - self.start | 0;
-  return _M0MPB4Iter3newGORPC14json4JsonE(() => {
+  return _M0MPB4Iter4IterGORPC14json4JsonE(() => {
     if (i.val < len) {
       const elem = self.buf[self.start + i.val | 0];
       i.val = i.val + 1 | 0;
@@ -5739,7 +5752,7 @@ function _M0MPB3Map4iterGsRP39stillfail5rules4lock12PersonDeviceE(self) {
   const curr_entry = new _M0TPB8MutLocalGORPB5EntryGsRP39stillfail5rules4lock12PersonDeviceEE(self.head);
   const len = self.size;
   const remaining = new _M0TPB8MutLocalGiE(len);
-  return _M0MPB4Iter3newGUsRPB3MapGsuEEE(() => {
+  return _M0MPB4Iter4IterGUsRPB3MapGsuEEE(() => {
     _L: {
       if (remaining.val > 0) {
         const _bind = curr_entry.val;
@@ -5766,7 +5779,7 @@ function _M0MPB3Map4iterGsuE(self) {
   const curr_entry = new _M0TPB8MutLocalGORPB5EntryGsuEE(self.head);
   const len = self.size;
   const remaining = new _M0TPB8MutLocalGiE(len);
-  return _M0MPB4Iter3newGUsRPB3MapGsuEEE(() => {
+  return _M0MPB4Iter4IterGUsRPB3MapGsuEEE(() => {
     _L: {
       if (remaining.val > 0) {
         const _bind = curr_entry.val;
@@ -5799,7 +5812,7 @@ function _M0MPB3Map4keysGsRP39stillfail5rules4lock12PersonDeviceE(self) {
   const curr_entry = new _M0TPB8MutLocalGORPB5EntryGsRP39stillfail5rules4lock12PersonDeviceEE(self.head);
   const len = self.size;
   const remaining = new _M0TPB8MutLocalGiE(len);
-  return _M0MPB4Iter3newGUsRPB3MapGsuEEE(() => {
+  return _M0MPB4Iter4IterGUsRPB3MapGsuEEE(() => {
     _L: {
       if (remaining.val > 0) {
         const _bind = curr_entry.val;
@@ -5825,7 +5838,7 @@ function _M0MPB3Map4keysGsuE(self) {
   const curr_entry = new _M0TPB8MutLocalGORPB5EntryGsuEE(self.head);
   const len = self.size;
   const remaining = new _M0TPB8MutLocalGiE(len);
-  return _M0MPB4Iter3newGUsRPB3MapGsuEEE(() => {
+  return _M0MPB4Iter4IterGUsRPB3MapGsuEEE(() => {
     _L: {
       if (remaining.val > 0) {
         const _bind = curr_entry.val;
@@ -5851,7 +5864,7 @@ function _M0MPB3Map6valuesGsRP39stillfail5rules4lock12PersonDeviceE(self) {
   const curr_entry = new _M0TPB8MutLocalGORPB5EntryGsRP39stillfail5rules4lock12PersonDeviceEE(self.head);
   const len = self.size;
   const remaining = new _M0TPB8MutLocalGiE(len);
-  return _M0MPB4Iter3newGUsRPB3MapGsuEEE(() => {
+  return _M0MPB4Iter4IterGUsRPB3MapGsuEEE(() => {
     _L: {
       if (remaining.val > 0) {
         const _bind = curr_entry.val;
@@ -5897,7 +5910,7 @@ function _M0IPB3MapPB2Eq5equalGsRPC14json4JsonE(self, that) {
   }
 }
 function _M0MPB4Iter6filterGsE(self, f) {
-  return _M0MPB4Iter3newGUsRPB3MapGsuEEE(() => {
+  return _M0MPB4Iter4IterGUsRPB3MapGsuEEE(() => {
     while (true) {
       const _bind = _M0MPB4Iter4nextGUsRPB3MapGsuEEE(self);
       if (_bind === undefined) {
@@ -7131,7 +7144,8 @@ function _M0FP39stillfail5rules4form6joined(parts, from, to) {
   }
 }
 function _M0FP39stillfail5rules4form15unicode__escape(b, c) {
-  _M0IPB13StringBuilderPB6Logger13write__string(b, "\\u");
+  const _p = "\\u";
+  b.val = `${b.val}${_p}`;
   let _bind_buf = [12, 8, 4, 0];
   let _bind_len = 4;
   const _bind = _bind_len;
@@ -7159,25 +7173,32 @@ function _M0FP39stillfail5rules4form5quote(b, s) {
       const _tmp = i;
       const c = _tmp >>> 0 < s.length ? s.charCodeAt(_tmp) : $oob();
       if (c === 34) {
-        _M0IPB13StringBuilderPB6Logger13write__string(b, "\\\"");
+        const _p = "\\\"";
+        b.val = `${b.val}${_p}`;
       } else {
         if (c === 92) {
-          _M0IPB13StringBuilderPB6Logger13write__string(b, "\\\\");
+          const _p = "\\\\";
+          b.val = `${b.val}${_p}`;
         } else {
           if (c === 8) {
-            _M0IPB13StringBuilderPB6Logger13write__string(b, "\\b");
+            const _p = "\\b";
+            b.val = `${b.val}${_p}`;
           } else {
             if (c === 12) {
-              _M0IPB13StringBuilderPB6Logger13write__string(b, "\\f");
+              const _p = "\\f";
+              b.val = `${b.val}${_p}`;
             } else {
               if (c === 10) {
-                _M0IPB13StringBuilderPB6Logger13write__string(b, "\\n");
+                const _p = "\\n";
+                b.val = `${b.val}${_p}`;
               } else {
                 if (c === 13) {
-                  _M0IPB13StringBuilderPB6Logger13write__string(b, "\\r");
+                  const _p = "\\r";
+                  b.val = `${b.val}${_p}`;
                 } else {
                   if (c === 9) {
-                    _M0IPB13StringBuilderPB6Logger13write__string(b, "\\t");
+                    const _p = "\\t";
+                    b.val = `${b.val}${_p}`;
                   } else {
                     if (c < 32) {
                       _M0FP39stillfail5rules4form15unicode__escape(b, c);
@@ -13782,11 +13803,13 @@ function _M0FP39stillfail5rules5vault10js__string(v) {
           if (i < _bind) {
             const x = _bind$2[i];
             if (i > 0) {
-              _M0IPB13StringBuilderPB6Logger13write__string(b, ",");
+              const _p = ",";
+              b.val = `${b.val}${_p}`;
             }
             if (x.$tag === 0) {
             } else {
-              _M0IPB13StringBuilderPB6Logger13write__string(b, _M0FP39stillfail5rules5vault10js__string(x));
+              const _p = _M0FP39stillfail5rules5vault10js__string(x);
+              b.val = `${b.val}${_p}`;
             }
             _tmp = i + 1 | 0;
             continue;

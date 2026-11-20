@@ -1,6 +1,6 @@
 // An agent's mark (still.fail web/src/ui.tsx AgentMark, ui.css.ts agentMark): its model's maker on a tile of the neutral
-// ground, its corner .3 of its side; where it stands a mark at the corner, the chat list's own (chat_mark.mbt): the yellow
-// ring stepping round at work, blue when it waits on a person, red when it failed, ringed in the ground it is on.
+// ground, its corner .3 of its side; where it stands a mark at the corner, the chat list's own (chat_mark.mbt): yellow
+// spokes stepping round at work, blue when it waits on a person, red when it failed, ringed in the ground it is on.
 
 ///|
 /// `maker`'s mark (of `runtime`) on its tile `side` across: 14 (an agent's line in the chat's info), 16 (a line of a
@@ -35,7 +35,7 @@ pub fn agent_mark(
 ///|
 /// The badge at a mark's corner `side` across, as a 20 one's has it (ui.css.ts agentMark ::after, ::before) and no
 /// larger on a larger one: a dot 12 across ringed 2 in `ground`, 3 past the corner, blue waiting on a person (block)
-/// and red failed; at work's ring 10, 2 past it. On a smaller mark all of it as much smaller, its maker still seen past it
+/// and red failed; the spokes 10, 2 past it. On a smaller mark all of it as much smaller, its maker still seen past it
 /// (a badge 12 across covered a 14 one's whole maker but a sliver). A phone's bar draws this one too.
 pub fn agent_badge(c : @ui.Ctx, badge : String, side : Double, ground : Int64) -> Unit {
   let k = dmin(side / agent_badge_full, 1.0)
@@ -53,11 +53,11 @@ pub fn agent_badge(c : @ui.Ctx, badge : String, side : Double, ground : Int64) -
       |> ignore
     }
     "run" => {
-      let d = agent_ring * k
-      let at = side - d + agent_ring_past * k
+      let d = agent_spokes * k
+      let at = side - d + agent_spokes_past * k
       c.layer(fn() {
         c.box(style=@ui.style(w=Fixed(d), h=Fixed(d)), tx=at, ty=at, fn() {
-          @sf.work_ring(c, d, @sf.mark_yellow()) |> ignore
+          @sf.spokes(c, d, @sf.mark_yellow()) |> ignore
         })
         |> ignore
       })
@@ -73,7 +73,7 @@ let agent_logo_of : Double = 0.62
 
 ///|
 /// The side a badge is drawn whole at (the chat's bar's mark: the web's, made for it), smaller marks' badges as much
-/// smaller: the red one 12 across, its ring 2, 3 past the corner; at work's ring 10, 2 past it.
+/// smaller: the red one 12 across, its ring 2, 3 past the corner; the spokes 10, 2 past it.
 let agent_badge_full : Double = 20.0
 
 ///|
@@ -86,10 +86,10 @@ let agent_badge_ring : Double = 2.0
 let agent_badge_past : Double = 3.0
 
 ///|
-let agent_ring : Double = 10.0
+let agent_spokes : Double = 10.0
 
 ///|
-let agent_ring_past : Double = 2.0
+let agent_spokes_past : Double = 2.0
 
 ///|
 /// A tile of the neutral ground, what is on it in its middle (its side and corner the mark's).

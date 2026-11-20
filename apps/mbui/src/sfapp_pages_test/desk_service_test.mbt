@@ -145,7 +145,7 @@ test "desk: a web service beside its chat goes over the whole window by the pane
 }
 
 ///|
-test "desk: a web service or a visualization asked with ⌘ held opens over the whole window as its chat's tab; without it, beside" {
+test "desk: a web service or a visualization asked opens over the whole window as its chat's tab, closed with it; with ⌘ held, beside" {
   new_run()
   let src = fixture("chat-viz")
   let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
@@ -153,9 +153,7 @@ test "desk: a web service or a visualization asked with ⌘ held opens over the 
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
   t.run_for(@ui.move_most_ms)
   let tab = @sfdesk.file_tab("s-c1", "work/s-c1/release.html", "release.html")
-  t.hold_mods(@ui.mod_cmd)
   open_page(PreviewFile("ws1/st1", "s-c1", "work/s-c1/release.html", "release.html"))
-  t.hold_mods(0)
   t.frame()
   t.frame()
   t.run_for(@ui.move_most_ms)
@@ -169,9 +167,18 @@ test "desk: a web service or a visualization asked with ⌘ held opens over the 
   assert_true(x < 800.0, msg="its name in the whole window's bar: \{x}")
   t.back()
   t.run_for(@ui.move_most_ms)
-  assert_true(@sfbase.tab_full.get() is None, msg="back: beside")
-  assert_eq(side_now(r), ([tab], tab), msg="its tab stays")
-  // its 全屏 in the message, as a press asks: the same tab over the whole window
+  assert_true(@sfbase.tab_full.get() is None, msg="back: closed")
+  assert_eq(side_now(r), ([], ""), msg="its tab gone with it, never left beside")
+  // with ⌘ held: beside, nothing over the whole window
+  t.hold_mods(@ui.mod_cmd)
+  open_page(PreviewFile("ws1/st1", "s-c1", "work/s-c1/release.html", "release.html"))
+  t.hold_mods(0)
+  t.frame()
+  t.frame()
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.tab_full.get() is None, msg="⌘: beside")
+  assert_eq(side_now(r), ([tab], tab))
+  // its 全屏 in the message, as a press asks: the same tab over the whole window, back in the panel after
   viz_open_full("release.html", "ws1/st1", "s-c1", "work/s-c1/release.html", "s-c1")
   t.frame()
   t.frame()
@@ -179,6 +186,10 @@ test "desk: a web service or a visualization asked with ⌘ held opens over the 
   assert_true(@sfbase.tab_full.get() is Some(_), msg="its 全屏")
   assert_true(@sfbase.viz_full.get() is None, msg="never the visualization's own whole window here")
   assert_eq(side_now(r), ([tab], tab), msg="never a second tab")
+  t.back()
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.tab_full.get() is None)
+  assert_eq(side_now(r), ([tab], tab), msg="beside before, beside again")
 }
 
 ///|

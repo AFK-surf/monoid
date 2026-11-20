@@ -232,6 +232,25 @@ fn shape_band_of(
   hw : Double,
   even_odd : Bool,
 ) -> Array[ShapeBand] {
+  let mut total_segs = 0
+  for o in outlines {
+    let (pts, closed) = o
+    let n = pts.length() / 2
+    if n == 0 || (fill && n < 2) {
+      continue
+    }
+    if n == 1 {
+      total_segs += 1
+    } else {
+      total_segs += n - 1
+      if fill || closed {
+        total_segs += 1
+      }
+    }
+  }
+  if total_segs > 32 {
+    return shape_band_made(outlines, fill, hw, even_odd)
+  }
   let key = (outlines, fill, hw, even_odd)
   match shape_bands_known.get(key) {
     Some(b) => return b
@@ -270,14 +289,23 @@ fn shape_band_made(
     }
     if n == 1 {
       // a dot: a piece of no length, round
-      segs.append([pts[0], pts[1], pts[0], pts[1]])
+      segs.push(pts[0])
+      segs.push(pts[1])
+      segs.push(pts[0])
+      segs.push(pts[1])
       continue
     }
     for k in 0..<(n - 1) {
-      segs.append([pts[2 * k], pts[2 * k + 1], pts[2 * k + 2], pts[2 * k + 3]])
+      segs.push(pts[2 * k])
+      segs.push(pts[2 * k + 1])
+      segs.push(pts[2 * k + 2])
+      segs.push(pts[2 * k + 3])
     }
     if fill || closed {
-      segs.append([pts[2 * n - 2], pts[2 * n - 1], pts[0], pts[1]])
+      segs.push(pts[2 * n - 2])
+      segs.push(pts[2 * n - 1])
+      segs.push(pts[0])
+      segs.push(pts[1])
     }
   }
   let count = segs.length() / 4
@@ -294,35 +322,55 @@ fn shape_band_made(
   }
   y0 = y0 - m
   y1 = y1 + m
+  let b0s : Array[Double] = []
+  let b1s : Array[Double] = []
   let mut b0 = y0
   while b0 < y1 {
     let b1 = dmin(b0 + shape_band, y1)
-    let mut x0 = 1.0e18
-    let mut x1 = -1.0e18
-    let mine : Array[Int] = []
-    for k in 0..<count {
-      let ya = dmin(segs[4 * k + 1], segs[4 * k + 3])
-      let yb = dmax(segs[4 * k + 1], segs[4 * k + 3])
-      if yb >= b0 - m && ya <= b1 + m {
-        mine.push(k)
+    b0s.push(b0)
+    b1s.push(b1)
+    b0 = b1
+  }
+  let band_count = b0s.length()
+  if band_count == 0 {
+    return out
+  }
+  let buckets : Array[Array[Int]] = Array::makei(band_count, fn(_) { [] })
+  for k in 0..<count {
+    let ya = dmin(segs[4 * k + 1], segs[4 * k + 3])
+    let yb = dmax(segs[4 * k + 1], segs[4 * k + 3])
+    let raw0 = ((ya - m - y0) / shape_band).floor().to_int() - 1
+    let raw1 = ((yb + m - y0) / shape_band).floor().to_int() + 1
+    let bi0 = if raw0 < 0 { 0 } else if raw0 >= band_count { band_count - 1 } else { raw0 }
+    let bi1 = if raw1 < 0 { 0 } else if raw1 >= band_count { band_count - 1 } else { raw1 }
+    for bi in bi0..=bi1 {
+      if yb >= b0s[bi] - m && ya <= b1s[bi] + m {
+        buckets[bi].push(k)
+      }
+    }
+  }
+  for bi in 0..<band_count {
+    let mine = buckets[bi]
+    if mine.length() > 0 {
+      let mut x0 = 1.0e18
+      let mut x1 = -1.0e18
+      for k in mine {
         x0 = dmin(x0, dmin(segs[4 * k], segs[4 * k + 2]))
         x1 = dmax(x1, dmax(segs[4 * k], segs[4 * k + 2]))
       }
-    }
-    if mine.length() > 0 {
       let bx = x0 - m
       let bw = x1 - x0 + 2.0 * m
-      let bh = b1 - b0
+      let cur_b0 = b0s[bi]
+      let bh = b1s[bi] - cur_b0
       let pieces : Array[Double] = []
       for k in mine {
         pieces.push((segs[4 * k] - bx) / bw)
-        pieces.push((segs[4 * k + 1] - b0) / bh)
+        pieces.push((segs[4 * k + 1] - cur_b0) / bh)
         pieces.push((segs[4 * k + 2] - bx) / bw)
-        pieces.push((segs[4 * k + 3] - b0) / bh)
+        pieces.push((segs[4 * k + 3] - cur_b0) / bh)
       }
-      out.push({ x: bx, y: b0, w: bw, h: bh, pieces, even_odd: fill && even_odd })
+      out.push({ x: bx, y: cur_b0, w: bw, h: bh, pieces, even_odd: fill && even_odd })
     }
-    b0 = b1
   }
   out
 }

@@ -340,3 +340,141 @@ test "Comma's plane signs in its own tag in still.fail's headers and is told no 
   (s.events.message)("{\"type\":\"tool\",\"id\":\"t1\",\"request\":{}}")
   assert_true(s.sent[s.sent.length() - 1].contains("unavailable"))
 }
+
+///|
+/// The socket closed as the shell's `ws.next` says its end (`@host_world.ws_close_of`, what `host_ws` tells).
+fn World::ended_by(self : World, frame : Json) -> Unit {
+  let (code, reason) = @host_world.ws_close_of(frame)
+  (self.last().events.close)(code, reason)
+}
+
+///|
+test "the plane's Close frames as the shell says them: 4000 three times waits a minute, 4004 removes, none is neither" {
+  let w = world()
+  w.rt.advance(10)
+  for wait in [1000, 2000, 0] {
+    (w.last().events.open)()
+    w.ended_by({ "end": true, "code": 4000, "reason": "replaced" })
+    w.rt.advance(wait)
+  }
+  assert_eq(
+    w.presence[w.presence.length() - 1],
+    "false \{conflict_error} (still.fail cloud closed the presence socket (4000 replaced)) true",
+  )
+  w.rt.advance(59_999)
+  assert_eq(w.socks.length(), 3)
+  w.rt.advance(1)
+  assert_eq(w.socks.length(), 4)
+  (w.last().events.open)()
+  w.ended_by({ "end": true, "code": 4004, "reason": "removed" })
+  assert_true(w.cloud.removed())
+  w.rt.advance(600_000)
+  assert_eq(w.socks.length(), 4)
+  // (an end with no code, 1005: neither replaced nor removed, tried again a second later)
+  let w = world()
+  w.rt.advance(10)
+  (w.last().events.open)()
+  w.ended_by({ "end": true })
+  w.rt.advance(1000)
+  assert_eq(w.socks.length(), 2)
+  assert_false(w.cloud.removed())
+  assert_eq(w.presence[w.presence.length() - 1], "false still.fail cloud closed the presence socket (1005) false")
+}
+
+///|
+test "apply_frame persists workspace_emoji and workspace_icon for home and joined, clears when omitted, and ignores wrong_home when locked" {
+  let w = world()
+  let send = (_ : Json) => ()
+  apply_frame(
+    w.plane,
+    {
+      "type": "state",
+      "origin": "https://app.still.fail",
+      "workspace": "w1",
+      "workspace_name": "Home",
+      "workspace_emoji": "🚀",
+      "workspace_icon": "glyph:rocket",
+      "name": "here",
+      "relay_urls": ["https://relay.example"],
+      "peers": [{ "id": Json::string(station_id), "name": "here" }],
+      "revocations": [],
+      "workspaces": [
+        {
+          "workspace": "w2",
+          "workspace_name": "Lab",
+          "workspace_emoji": "🧪",
+          "workspace_icon": "glyph:beaker",
+          "name": "here-lab",
+          "peers": [],
+          "revocations": [],
+        },
+      ],
+    },
+    send,
+  )
+  let st = w.cloud.state.unwrap()
+  assert_eq(st.get("workspace_emoji"), Some(Json::string("🚀")))
+  assert_eq(st.get("workspace_icon"), Some(Json::string("glyph:rocket")))
+  let joined = array_of(st.get("joined")).unwrap()
+  assert_eq(joined.length(), 1)
+  assert_eq(field(joined[0], "workspace_emoji"), Some(Json::string("🧪")))
+  assert_eq(field(joined[0], "workspace_icon"), Some(Json::string("glyph:beaker")))
+
+  // Locked with wrong_home: a state frame naming another workspace must NOT overwrite or clear home emoji/icon.
+  let locked_hooks = { ..LockHooks::unlocked(() => (None, None)), pinned: ws => ws is None, locked: () => true }
+  let locked_plane = PlaneCloud::new(w.cloud, () => w.rt.now() / 1000L, lock=locked_hooks)
+  apply_frame(
+    locked_plane,
+    {
+      "type": "state",
+      "origin": "https://app.still.fail",
+      "workspace": "w_other",
+      "workspace_name": "Other",
+      "workspace_emoji": "💣",
+      "workspace_icon": "glyph:bomb",
+      "name": "here",
+      "relay_urls": ["https://relay.example"],
+      "peers": [],
+      "revocations": [],
+      "workspaces": [],
+    },
+    send,
+  )
+  let st_locked = w.cloud.state.unwrap()
+  assert_eq(st_locked.get("workspace"), Some(Json::string("w1")))
+  assert_eq(st_locked.get("workspace_emoji"), Some(Json::string("🚀")))
+  assert_eq(st_locked.get("workspace_icon"), Some(Json::string("glyph:rocket")))
+
+  // Subsequent state frame for home without emoji/icon clears them on home and joined.
+  apply_frame(
+    w.plane,
+    {
+      "type": "state",
+      "origin": "https://app.still.fail",
+      "workspace": "w1",
+      "workspace_name": "Home",
+      "name": "here",
+      "relay_urls": ["https://relay.example"],
+      "peers": [],
+      "revocations": [],
+      "workspaces": [
+        {
+          "workspace": "w2",
+          "workspace_name": "Lab",
+          "workspace_emoji": "",
+          "name": "here-lab",
+          "peers": [],
+          "revocations": [],
+        },
+      ],
+    },
+    send,
+  )
+  let st_after = w.cloud.state.unwrap()
+  assert_eq(st_after.get("workspace_emoji"), None)
+  assert_eq(st_after.get("workspace_icon"), None)
+  let joined_after = array_of(st_after.get("joined")).unwrap()
+  assert_eq(joined_after.length(), 1)
+  assert_eq(field(joined_after[0], "workspace_emoji"), None)
+  assert_eq(field(joined_after[0], "workspace_icon"), None)
+}

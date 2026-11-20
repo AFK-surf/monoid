@@ -740,21 +740,29 @@ fn response_of(j : J) -> Response {
 }
 
 ///|
-/// `request(url, { headers, signal[, method] })` by the request `via` names (`fetch`, the cloud's transport
-/// `cloud.fetch`).
+/// Node's `fetch(url, { headers, signal[, method] })` on the shell: its redirects followed as `fetch` follows them (a
+/// release's or a manifest's 302 to the storage it is served from).
+pub async fn fetch_on(host : @host.Host, url : String, meth? : String) -> Response {
+  let r = host.fetch(
+    url,
+    method_=meth.unwrap_or("GET"),
+    headers=[("user-agent", "stillfail-station")],
+    head_ms=fetch_head_ms,
+    stall_ms=fetch_stall_ms,
+    redirect="follow",
+  ) catch {
+    e => raise thrown("TypeError", "fetch failed", more=[("cause", js(@host_world.shell_error_msg(e)))])
+  }
+  let hs = jo(r.headers.map(h => (@jscase.lower(h.0), js(h.1))))
+  { status: r.status, headers: hs, chunks: [r.body], has_body: true, breaks: None }
+}
+
+///|
+/// `request(url, { headers, signal[, method] })` by the request `via` names (`fetch`, `fetch_on`; the cloud's
+/// transport `cloud.fetch`).
 pub async fn World::fetch(self : World, via : String, url : String, meth? : String) -> Response {
   if via == "fetch" {
-    let r = self.host.fetch(
-      url,
-      method_=meth.unwrap_or("GET"),
-      headers=[("user-agent", "stillfail-station")],
-      head_ms=fetch_head_ms,
-      stall_ms=fetch_stall_ms,
-    ) catch {
-      e => raise thrown("TypeError", "fetch failed", more=[("cause", js(@host_world.shell_error_msg(e)))])
-    }
-    let hs = jo(r.headers.map(h => (@jscase.lower(h.0), js(h.1))))
-    return { status: r.status, headers: hs, chunks: [r.body], has_body: true, breaks: None }
+    return fetch_on(self.host, url, meth?)
   }
   let init = [("headers", jo([("user-agent", js("stillfail-station"))]))]
   match meth {

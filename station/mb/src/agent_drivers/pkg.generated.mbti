@@ -97,6 +97,8 @@ pub fn bring_transcript(Machine, String, String, String, String) -> Later[Unit]
 
 pub fn bytes_within(Machine, String, Int32, Int32, chunk? : Int32) -> Later[Array[(Bytes, Int32)]]
 
+pub fn ca_bundles() -> Array[String]
+
 pub fn chars(String, Int32) -> String
 
 pub fn chars_js(String, Int32) -> String
@@ -327,7 +329,7 @@ pub fn version_in(String) -> String?
 
 pub fn wait_gone(Machine, Int32, Int32) -> Later[Unit]
 
-pub fn with_ca_bundle(Machine, Env, String) -> Later[Unit]
+pub fn with_ca_bundle(Machine, Env, Array[String]) -> Later[Unit]
 
 pub fn words_of(Error) -> String
 
@@ -666,7 +668,7 @@ pub(all) struct CodexWorld {
   agent_env : () -> Array[(String, String)]
   walk_skills : (String) -> Later[Array[String]]
   host_skills : String
-  ca_bundle : String
+  ca_bundles : Array[String]
   fast : ((String) -> Bool?)?
   speed : ((String) -> String?)?
   current_profile : ((String) -> @jsjson.JValue?)?

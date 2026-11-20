@@ -21,8 +21,9 @@ fn downloads_src(
     ..base,
     topic_read: fn(name, params) {
       if name == "downloads" {
-        told.get() |> ignore
-        { value: Some({ "downloads": Json::array(list), "keeping": Json::array(keeping) }), error: None, version: 1 }
+        // (a new answer each time it is told: its own copy of the rows and a version of its own, as the core's)
+        let v = told.get() + 1
+        { value: Some({ "downloads": Json::array(list.copy()), "keeping": Json::array(keeping.copy()) }), error: None, version: v }
       } else {
         base.topic(name, params).get().snapshot()
       }

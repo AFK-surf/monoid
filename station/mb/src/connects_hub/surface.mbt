@@ -29,6 +29,36 @@ pub fn unanswered(e : Error) -> Bool {
 }
 
 ///|
+/// Parses a shell `ws.open` refusal message (`"websocket refused (<code>)"` or `"websocket refused (<code>): <why>"`)
+/// into `(status, why)`.
+pub fn parse_ws_refusal(words : String) -> (Int, String)? {
+  match words.find("websocket refused (") {
+    Some(at) => {
+      let rest = words.unsafe_substring(start=at + 19, end=words.length())
+      let digits = rest.iter().take_while(c => c >= '0' && c <= '9').collect()
+      if digits.is_empty() || digits.length() > 6 {
+        return None
+      }
+      let mut n = 0
+      for c in digits {
+        n = n * 10 + (c.to_int() - '0'.to_int())
+      }
+      let tail = words.unsafe_substring(start=at + 19 + digits.length(), end=words.length())
+      if !tail.has_prefix(")") {
+        return None
+      }
+      let why = if tail.has_prefix("): ") {
+        tail.unsafe_substring(start=3, end=tail.length()).trim().to_owned()
+      } else {
+        ""
+      }
+      Some((n, why))
+    }
+    None => None
+  }
+}
+
+///|
 /// One socket of the machine's (the `ws` package's WebSocket), as `socket_to` keeps it up.
 pub(all) struct Socket {
   /// What it says, in order, as it comes.

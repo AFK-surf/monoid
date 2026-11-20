@@ -284,24 +284,14 @@ let ring_room_style : @ui.Style = @ui.css("w=Full h=Full")
 
 ///|
 /// A change of what an agent's line says, under way (steady_words' two steps at once): the words it was and is, each
-/// in its face and cut into its cells (@ui.glyph_cells), how wide each is whole, how many places of them show
-/// (activity_change_places, as the change began), the noise of its row (`salt`); taking over one still under way, the
-/// width it set out from and where each of the words it was had come to then (each glyph moved and narrowed), none
-/// otherwise.
+/// in its face, plus the cell-aligned morph geometry (`@motion.TextMorph`).
 #derive(Eq, Debug)
 struct WorkingChange {
   was : String
   was_mono : Bool
   now : String
   now_mono : Bool
-  was_cells : Array[(Double, Double)]
-  now_cells : Array[(Double, Double)]
-  whole_from : Double
-  whole_to : Double
-  places : Int
-  salt : Int
-  from : Double?
-  set_out : Array[(Double, Double)]
+  morph : @motion.TextMorph
 }
 
 ///|
@@ -319,19 +309,14 @@ fn working_cells(words : String, look : @view.WordsLook, scale : Double, mono? :
 ///|
 /// How wide words cut into `cells` are on their line: to their last glyph's end (0: none).
 fn cells_wide(cells : Array[(Double, Double)]) -> Double {
-  match cells.last() {
-    Some((x, w)) => x + w / 2.0
-    None => 0.0
-  }
+  @motion.TextMorph::cells_width(cells)
 }
 
 ///|
 /// How wide change `ch`'s line is as its width's way is `k` of the way there (0 to 1), `visible` of the row its words
 /// have: from the one's width to the other's, each cut to what shows (steady_words' `across`).
 fn WorkingChange::across(self : WorkingChange, k : Double, visible : Double) -> Double {
-  let from = self.from.unwrap_or(dmin(self.whole_from, visible))
-  let to = dmin(self.whole_to, visible)
-  from + (to - from) * k
+  self.morph.across(k, visible)
 }
 
 ///|
@@ -340,37 +325,7 @@ fn WorkingChange::across(self : WorkingChange, k : Double, visible : Double) -> 
 /// together from where the old one set out to the new one's place, the wider of them narrowed to the width between;
 /// the old words' glyphs past the new's last follow its end, the new's past the old's last come from after its end.
 fn WorkingChange::place(self : WorkingChange, k : Double, i : Int, incoming : Bool) -> (Double, Double) {
-  let olds = self.was_cells
-  let news = self.now_cells
-  let set_out = fn(n : Int) { if n < self.set_out.length() { self.set_out[n] } else { (0.0, 1.0) } }
-  if i < olds.length() && i < news.length() {
-    let (old_x, old_w) = olds[i]
-    let (new_x, new_w) = news[i]
-    let (d0, s0) = set_out(i)
-    let distance = new_x - old_x - d0
-    let width = old_w * s0 + (new_w - old_w * s0) * k
-    let face_w = if incoming { new_w } else { old_w }
-    (
-      if incoming { -distance * (1.0 - k) } else { d0 + distance * k },
-      if face_w > 0.0 { dmin(width / face_w, 1.0) } else { 1.0 },
-    )
-  } else if i < olds.length() && news.length() > 0 {
-    // (the old words longer: their tail follows the end of the glyphs paired)
-    let n = news.length() - 1
-    let (old_x, old_w) = olds[n]
-    let (new_x, new_w) = news[n]
-    let (d0, s0) = set_out(i)
-    (d0 + (new_x + new_w / 2.0 - old_x - old_w / 2.0 - d0) * k, s0 + (1.0 - s0) * k)
-  } else if i < news.length() && olds.length() > 0 {
-    // (the new words longer: their tail comes from after the old's end, its own spacing kept as the room opens)
-    let n = olds.length() - 1
-    let (old_x, old_w) = olds[n]
-    let (new_x, new_w) = news[n]
-    let (dn, _) = set_out(n)
-    ((old_x + old_w / 2.0 + dn - new_x - new_w / 2.0) * (1.0 - k), 1.0)
-  } else {
-    (0.0, 1.0)
-  }
+  self.morph.place(k, i, incoming)
 }
 
 ///|
@@ -379,17 +334,14 @@ fn WorkingChange::place(self : WorkingChange, k : Double, i : Int, incoming : Bo
 /// fades before the new comes (sfbase's glyph_change), in reading order over what shows, each where WorkingChange::place
 /// has it.
 fn WorkingChange::look(self : WorkingChange, reveal : Double, k : Double, at : @ui.GlyphAt, incoming : Bool) -> @ui.GlyphLook {
-  let intervals = if self.places > 1 { self.places - 1 } else { 1 }
-  let along = dmin(at.index.to_double() / intervals.to_double(), 1.0)
-  let look = @sfbase.glyph_change(
-    reveal * @sfbase.glyph_change_in_ms,
-    along * @sfbase.glyph_change_line_ms,
-    at.index,
-    self.salt,
+  self.morph.look(
+    reveal,
+    k,
+    at,
     incoming,
+    in_ms=@sfbase.glyph_change_in_ms,
+    line_ms=@sfbase.glyph_change_line_ms,
   )
-  let (dx, sx) = self.place(k, at.index, incoming)
-  { ..look, dx, sx }
 }
 
 ///|
@@ -456,28 +408,29 @@ fn working_words_node(
       let (was, was_mono, from, set_out) = match under_way {
         Some(p) if swap.goes_at(s.at) => {
           let k = swap.value_at(s.at)
-          (p.now, p.now_mono, Some(p.across(k, seen)), p.now_cells.mapi(fn(i, _) { p.place(k, i, true) }))
+          (p.now, p.now_mono, Some(p.across(k, seen)), p.morph.now_cells.mapi(fn(i, _) { p.place(k, i, true) }))
         }
         _ => (s.was, s.was_mono, None, [])
       }
       let was_cells = working_cells(was, look, scale, mono=was_mono)
       let now_cells = working_cells(s.said.words, look, scale, mono=s.said.mono)
+      let morph = @motion.TextMorph::new(
+        was_cells,
+        now_cells,
+        activity_change_places(was_cells, now_cells, seen),
+        salt,
+        from?,
+        set_out~,
+      )
       let ch : WorkingChange = {
         was,
         was_mono,
         now: s.said.words,
         now_mono: s.said.mono,
-        was_cells,
-        now_cells,
-        whole_from: cells_wide(was_cells),
-        whole_to: cells_wide(now_cells),
-        places: activity_change_places(was_cells, now_cells, seen),
-        salt,
-        from,
-        set_out,
+        morph,
       }
       // (a Move as long as the line's change in width, a line's height at the least)
-      let widened = dmin(ch.whole_to, seen) - ch.across(0.0, seen)
+      let widened = dmin(ch.morph.whole_to, seen) - ch.across(0.0, seen)
       let line = @ui.tree_theme().text_size(Meta).1
       reveal.put(0.0)
       reveal.go(1.0, @motion.tween(@sfbase.glyph_change_in_ms, ease=Linear), at=s.at)
@@ -531,8 +484,8 @@ fn working_words_node(
             let seen = visible()
             let k = swap.shown_on(window)
             let gone = (ch.across(1.0, seen) - ch.across(0.0, seen)).abs()
-            let from_fade = if ch.whole_from > seen + 0.5 { @ui.cut_soft_most } else { 0.0 }
-            let to_fade = if ch.whole_to > seen + 0.5 { @ui.cut_soft_most } else { 0.0 }
+            let from_fade = if ch.morph.whole_from > seen + 0.5 { @ui.cut_soft_most } else { 0.0 }
+            let to_fade = if ch.morph.whole_to > seen + 0.5 { @ui.cut_soft_most } else { 0.0 }
             (0.0, 0.0, dmax(@ui.cut_soft(gone * k, gone * (1.0 - k)), from_fade * (1.0 - k) + to_fade * k), 0.0)
           }))
           |> ignore
@@ -543,10 +496,10 @@ fn working_words_node(
             .width(By(fn() {
               let seen = visible()
               Some(
-                if ch.whole_from > seen + 0.5 || ch.whole_to > seen + 0.5 {
+                if ch.morph.whole_from > seen + 0.5 || ch.morph.whole_to > seen + 0.5 {
                   across()
                 } else {
-                  dmax(ch.whole_from, ch.whole_to)
+                  dmax(ch.morph.whole_from, ch.morph.whole_to)
                 },
               )
             }))

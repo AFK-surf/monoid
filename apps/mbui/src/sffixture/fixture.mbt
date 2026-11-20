@@ -1218,7 +1218,7 @@ fn fixture_answer(f : Fixture, name : String, params : Map[String, Json], versio
       match fixture_topic_inner(f, "stations", { "scope": Json::string(ws) }) {
         Some(Array(list)) =>
           for x in list {
-            if text(Some(x), "station") == address && flag(Some(x), "online") {
+            if text(Some(x), "station") == address {
               net = field(Some(x), "net")
             }
           }
@@ -1227,6 +1227,24 @@ fn fixture_answer(f : Fixture, name : String, params : Map[String, Json], versio
       // (answered whatever it has, as the core does: a station that says no network, none, client/core-ts views.ts
       // stationNet's `ok: null`)
       Some(net.unwrap_or(Json::null()))
+    }
+    "stationDiag" => {
+      let address = text(Some(Json::object(params)), "station")
+      let ws = match address.find("/") {
+        Some(i) => address.exact_view(end=i).to_owned()
+        None => address
+      }
+      let mut diag = None
+      match fixture_topic_inner(f, "stations", { "scope": Json::string(ws) }) {
+        Some(Array(list)) =>
+          for x in list {
+            if text(Some(x), "station") == address {
+              diag = field(Some(x), "diag")
+            }
+          }
+        _ => ()
+      }
+      Some(diag.unwrap_or(Json::null()))
     }
     _ => value
   }
@@ -2041,10 +2059,14 @@ pub fn fixture_stable_mode(mode : String) -> Bool {
 /// The core's experimental features (client/core-ts/src/features.ts `FEATURES`, stage `experimental`), in its order,
 /// each with its `betaOnly`: what this made-up core says of them (scripts/features-check.ts holds it to the core's).
 let fixture_experimental_features : Array[(String, Bool)] = [
-  ("chatPage", true),
   ("farviewNative", true),
   ("board", false),
 ]
+
+///|
+/// The core's `beta` features of the device's own (features.ts `FEATURES`, stage `beta`, not `station`), in its order:
+/// on as the made-up app is of the test channel, off on stable (scripts/features-check.ts holds it to the core's).
+let fixture_beta_features : Array[String] = ["chatPage"]
 
 ///|
 /// The prefs' `experimental`: the switches on of those the core has.
@@ -2059,9 +2081,13 @@ fn fixture_experimental_json(on : Map[String, Bool]) -> Json {
 }
 
 ///|
-/// The prefs' `features` (features.ts `featuresOf`): the device's own, a `betaOnly` one never on a stable app.
+/// The prefs' `features` (features.ts `featuresOf`): the device's own, a `beta` one on the test channel alone, a
+/// `betaOnly` one never on a stable app.
 fn fixture_features_json(test_channel : Bool, on : Map[String, Bool]) -> Json {
   let out : Map[String, Json] = Map([])
+  for id in fixture_beta_features {
+    out[id] = Json::boolean(test_channel)
+  }
   for e in fixture_experimental_features {
     out[e.0] = Json::boolean((!e.1 || test_channel) && on.get(e.0) == Some(true))
   }

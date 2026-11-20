@@ -37,10 +37,13 @@ let again_for_ms : Double = 3600000.0
 let log_max : Double = 200.0
 
 ///|
-/// A connection to a device of this rig (devices/connect.ts `reachDevice`'s socket): ended here, and told as it closes.
+/// A connection to a device of this rig (devices/connect.ts `reachDevice`'s socket): ended here, told as it closes,
+/// and carried both ways with a chat's tunnel to it (mesh/peer-http.ts's pipe of the stream and the socket), the
+/// tunnel handed as its program holds it (the stream and what came with its ask), until either ends.
 pub(all) struct Socket {
   destroy : () -> Unit
   on_close : (() -> Unit) -> Unit
+  pipe : async (Json) -> Unit
 }
 
 ///|

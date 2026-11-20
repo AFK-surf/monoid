@@ -221,3 +221,25 @@ test "said formats pending, undelivered, ended and device-scoped grant statuses"
   assert_true(said(dev).contains("usb-cam"))
   assert_true(said(dev).contains("bob@example.com"))
 }
+
+///|
+test "screen_service_ask_script and screen_service_parse_probe handle quoting, UAC and status JSON" {
+  let inst = screen_service_ask_script("C:\\O'Brien\\stillfail-screen-svc.exe", true, Some("S-1-5-21-1-2-3-1001"), true)
+  assert_true(inst.contains("C:\\O''Brien\\stillfail-screen-svc.exe"))
+  assert_true(inst.contains("'install', '--user-sid', 'S-1-5-21-1-2-3-1001'"))
+  assert_true(inst.contains("-Verb RunAs"))
+  assert_true(inst.contains("NativeErrorCode -eq 1223) { exit 4 }"))
+  let uninst = screen_service_ask_script("C:\\app\\stillfail-screen-svc.exe", false, None, false)
+  assert_true(uninst.contains("@('uninstall')"))
+  assert_true(!uninst.contains("-Verb RunAs"))
+  let parsed = screen_service_parse_probe(
+    "{\"elevated\":false,\"admin\":true,\"userSid\":\"S-1-5-21-1-2-3-1001\",\"binary\":\"C:\\\\app\\\\stillfail-screen-svc.exe\",\"status\":\"{\\\"installed\\\":true,\\\"running\\\":true,\\\"connected\\\":true}\"}",
+  )
+  assert_true(parsed.installed)
+  assert_true(parsed.running)
+  assert_true(parsed.connected)
+  assert_true(!parsed.elevated)
+  assert_true(parsed.admin)
+  assert_eq(parsed.user_sid, Some("S-1-5-21-1-2-3-1001"))
+  assert_eq(parsed.binary, Some("C:\\app\\stillfail-screen-svc.exe"))
+}

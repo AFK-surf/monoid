@@ -533,9 +533,52 @@ async fn LiveBus::hub_runtime_changed(
 }
 
 ///|
-/// The disk low: archived sessions' rooms made smaller, until `low_bytes` are free.
-async fn LiveBus::hub_relieve_archived(self : LiveBus, low_bytes~ : Double) -> Unit {
-  ignore((self.hub_ask.val)("relieveArchived", { "lowBytes": Json::number(low_bytes) }))
+/// The disk low: idle unarchived sessions' rebuildable directories cleaned before `relieve_archived`.
+async fn LiveBus::hub_relieve_idle_rebuildable(self : LiveBus, now : Double, low_bytes~ : Double, idle_ms? : Double, full? : Bool = false) -> Json {
+  let args : Map[String, Json] = { "now": Json::number(now), "lowBytes": Json::number(low_bytes), "full": Json::boolean(full) }
+  if idle_ms is Some(ms) {
+    args["idleMs"] = Json::number(ms)
+  }
+  (self.hub_ask.val)("relieveIdleRebuildable", Json::object(args))
+}
+
+///|
+/// Backfill packing for unfinished archived sessions (capped per round).
+async fn LiveBus::hub_pack_unfinished_archived(self : LiveBus, now : Double, limit? : Int) -> Json {
+  let args : Map[String, Json] = { "now": Json::number(now) }
+  if limit is Some(n) {
+    args["limit"] = Json::number(n.to_double())
+  }
+  (self.hub_ask.val)("packUnfinishedArchived", Json::object(args))
+}
+
+///|
+/// Run periodic archive backfill & idle rebuildable cleanup if due on `archive_upkeep_every_ms` cadence.
+async fn LiveBus::hub_run_archive_upkeep_if_due(self : LiveBus, now : Double, every_ms? : Double) -> Json {
+  let args : Map[String, Json] = { "now": Json::number(now) }
+  if every_ms is Some(e) {
+    args["everyMs"] = Json::number(e)
+  }
+  (self.hub_ask.val)("runArchiveUpkeepIfDue", Json::object(args))
+}
+
+///|
+/// Clean rebuildable directories of idle unarchived sessions (capped per round).
+async fn LiveBus::hub_clean_idle_rebuildable(self : LiveBus, now : Double, idle_ms? : Double, limit? : Int) -> Json {
+  let args : Map[String, Json] = { "now": Json::number(now) }
+  if idle_ms is Some(ms) {
+    args["idleMs"] = Json::number(ms)
+  }
+  if limit is Some(n) {
+    args["limit"] = Json::number(n.to_double())
+  }
+  (self.hub_ask.val)("cleanIdleRebuildable", Json::object(args))
+}
+
+///|
+/// The disk low: archived sessions' rooms made smaller.
+async fn LiveBus::hub_relieve_archived(self : LiveBus, low_bytes~ : Double, full? : Bool = false) -> Unit {
+  ignore((self.hub_ask.val)("relieveArchived", { "lowBytes": Json::number(low_bytes), "full": Json::boolean(full) }))
 }
 
 ///|
@@ -809,6 +852,12 @@ async fn LiveBus::jobs_accounts_refills_at(self : LiveBus, key : Json) -> Json {
 /// A profile's limits checked again.
 async fn LiveBus::jobs_accounts_recheck(self : LiveBus, profile : Json) -> Json {
   (self.jobs_ask.val)("accounts.recheck", { "profile": profile })
+}
+
+///|
+/// Whether a turn that failed with auth on `failed_profile` should automatically reopen and retry.
+async fn LiveBus::jobs_accounts_can_auth_retry(self : LiveBus, key : Json, failed_profile : Json) -> Json {
+  (self.jobs_ask.val)("accounts.canAuthRetry", { "key": key, "failedProfile": failed_profile })
 }
 
 ///|

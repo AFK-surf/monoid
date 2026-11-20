@@ -1,5 +1,5 @@
 // An agent at work in a chat: its ring of eight arcs steps round, a step every 100 ms (Spokes.kt;
-// the steps themselves: libs/sf-ui/src/work_ring_test.mbt).
+// the steps themselves: src/sf/spokes_test.mbt).
 
 ///|
 test "activity: its ring steps round" {
@@ -21,7 +21,7 @@ test "activity: its ring steps round" {
   // the keyboard put away: the field's caret no longer blinks
   t.keyboard_gone()
   let at = t.drawlist()
-  t.run_for(@sf.work_step_ms)
+  t.run_for(@sf.spoke_step_ms)
   assert_true(t.drawlist() != at)
   fix_clock.val = None
 }
@@ -240,8 +240,12 @@ test "activity: an agent given words it has yet to take is at work: its line the
 ///|
 /// The working agent's chat on 小屏, its agent's `live` as the core client holds it (`live`: its version one more each
 /// time it is another value), the rest the fixture's.
-fn activity_live_chat(live : @signals.Signal[Json]) -> @ui.Tester {
+fn activity_live_chat(live : @signals.Signal[Json], old? : Bool = false) -> @ui.Tester {
   new_run()
+  // (the old page's own, its list's (sfbase's chat_list.mbt): held so whatever the fixture's channel)
+  if old {
+    @sfbase.hold_chat_page_nodes(Some(false))
+  }
   let base = fixture("chat-working")
   let version = Ref(0)
   let seen : Ref[Json?] = Ref(None)
@@ -292,7 +296,7 @@ test "activity: what its agent's stream changes beside the line builds nothing i
     ({ "activity": { "now": now("call:1", @sffixture.working_step) } } : Json),
     same=fn(a, b) { physical_equal(a, b) },
   )
-  let t = activity_live_chat(live)
+  let t = activity_live_chat(live, old=true)
   assert_true(t.find(@sffixture.working_step) is Some(_), msg="the line says its step")
   // a rate, a call's input growing, a step ended: nothing comes
   let none = activity_frame_after(t, fn() { () })

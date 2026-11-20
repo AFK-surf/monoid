@@ -224,3 +224,46 @@ pub fn host_release_io(host : @host.Host) -> ReleaseIo {
     },
   }
 }
+
+///|
+/// farview-release.ts `fetchBytes` on the shell: a `gh:<owner>/<repo>@<tag>/<name>` source by the machine's `gh release
+/// download` into a folder of its own under `tmp` (a private repository's: none where `gh` is not there, signed in or let
+/// in), any other address by HTTP with its redirects followed (a GitHub release's asset is a 302 to its storage); None
+/// where it has none or cannot be reached.
+pub fn host_fetch_bytes(host : @host.Host, tmp : String) -> async (String) -> Bytes? {
+  async fn(url) {
+    match gh_source(url) {
+      Some((repo, tag, name)) => {
+        let dir = pjoin([tmp, "farview-gh-\{@host_world.random_hex(host, 6)}"])
+        let got = try {
+          @host_world.fs_mkdir(host, dir)
+          let (ran, _) = host.shell("proc.run", {
+            "command": "gh",
+            "args": Json::array(["release", "download", tag, "-R", repo, "-p", name, "-D", dir].map(Json::string)),
+            // (as long as a release's download may take: `run` waits on it with none)
+            "timeoutMs": 600_000,
+          })
+          if ran is Null {
+            None
+          } else {
+            @host_world.fs_read_bytes(host, pjoin([dir, name]))
+          }
+        } catch {
+          _ => None
+        }
+        @host_world.fs_remove(host, dir, recursive=true) catch {
+          _ => ()
+        }
+        got
+      }
+      None => {
+        let r = host.fetch(url, redirect="follow") catch { _ => return None }
+        if r.status >= 200 && r.status < 300 {
+          Some(r.body)
+        } else {
+          None
+        }
+      }
+    }
+  }
+}

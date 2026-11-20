@@ -11,7 +11,8 @@ fn nav_black_scrims(t : @ui.Tester) -> Array[Int64] {
 
 ///|
 fn nav_bar_glass_foot(t : @ui.Tester) -> Double? {
-  let gs = t.drawn_glass_corners().filter(fn(g) { g.2 > 300.0 && g.2 < 360.0 })
+  // (the bar's capsule: as high as the bar's track, wider than the action's circle beside it)
+  let gs = t.drawn_glass_corners().filter(fn(g) { (g.3 - bar_track).abs() < 1.0 && g.2 > 200.0 && g.2 < 360.0 })
   if gs.is_empty() {
     None
   } else {
@@ -62,7 +63,7 @@ test "narrow nav: Home -> NewChat rise applies full-bleed depth scrim and 1px to
   let t = tester("home")
   let (_, y) = bar_places_at()
   let rest_w = t.rect_of("整理发布清单").unwrap().2
-  t.tap(195.0, y - 28.0 - 4.0)
+  t.tap(bar_action_x, y)
   assert_true(app.nav.risen())
   t.run_for(@ui.move_ms(844.0) * 0.5)
   assert_true(!nav_black_scrims(t).is_empty(), msg="expected depth scrim during NewChat rise")

@@ -382,17 +382,17 @@ test "a picture an agent places in its words: told another size, its box follows
 
 ///|
 test "a chat's agents' messages coming out one at a time: another agent's after the last is out, folding its line as that one is; the same agent's as it plans it; none before it, at once" {
-  let q : AgentOutQueue = { tail_end: @double.neg_infinity, last_agent: "" }
+  let q = @motion.SerialQueue::new()
   // (none out: from now)
-  assert_eq(q.after("a", 100.0, @sfbase.Pose::Fold.ms()), 100.0)
-  q.told("a", { ..ag_held_plan(), spit_end: 990.0 })
+  assert_eq(q.next_at("a", 100.0, lead=@sfbase.Pose::Fold.ms()), 100.0)
+  q.commit("a", 990.0)
   // (another agent's come at 200 while a's is out till 990: its line folds from 990 less a fold, out at 990)
   let lead = @sfbase.Pose::Fold.ms()
-  assert_eq(q.after("b", 200.0, lead), 990.0 - lead)
+  assert_eq(q.next_at("b", 200.0, lead~), 990.0 - lead)
   // (a's own: as its own plan has it, dropping on from its last)
-  assert_eq(q.after("a", 200.0, lead), 200.0)
+  assert_eq(q.next_at("a", 200.0, lead~), 200.0)
   // (after it is out: from then)
-  assert_eq(q.after("b", 1200.0, lead), 1200.0)
+  assert_eq(q.next_at("b", 1200.0, lead~), 1200.0)
 }
 
 ///|

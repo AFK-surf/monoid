@@ -2,9 +2,14 @@
 // is sent sets its agent to work (its activity shows), its answer is said while the chat shows.
 
 ///|
-/// The fixture's chat open, its clock the test's; words sent and taken by the station (its agent then at work).
-fn emit_core(clock : Ref[Double], words~ : String = "看一下列表") -> @ui.Tester {
+/// The fixture's chat open, its clock the test's; words sent and taken by the station (its agent then at work). On the
+/// old page (`old`, as every test of it asks: what an answer coming out of its activity's avatar does is the old list's,
+/// emit.mbt's queue and its measured places, chat_list.mbt's), held so whatever the fixture's channel.
+fn emit_core(clock : Ref[Double], words~ : String = "看一下列表", old? : Bool = true) -> @ui.Tester {
   new_run()
+  if old {
+    @sfbase.hold_chat_page_nodes(Some(false))
+  }
   fix_clock.val = Some(fn() { clock.val })
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })

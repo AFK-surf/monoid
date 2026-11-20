@@ -98,7 +98,7 @@ fn chat_vs_again(
       Some(s) => s
       None => {
         @sfapp.reset()
-        @sfbase.chat_page_nodes.set(nodes)
+        @sfbase.hold_chat_page_nodes(Some(nodes))
         // (Home as these bars were counted on it, its 看板 key on: 实验性功能's 对话列表看板视图, off by default since, takes
         // the key off Home under both pages alike)
         @sfbase.board_feature.set(true)

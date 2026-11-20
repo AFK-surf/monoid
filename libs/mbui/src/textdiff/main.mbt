@@ -327,8 +327,8 @@ fn main {
   let rows = corpus_rows(@ui.env("MBUI_TEXTDIFF_ONLY"))
   let st = { page: 0, drawn: false, taken: false, starts: [], laid_h: -1.0 }
   @ui.run("textdiff", fn(c) {
-    // drawn in the colours Core Text's side is (iOS's)
-    c.set_theme(@ui.Theme::ios_light())
+    // drawn in the colours Core Text's side is (iOS's); keep proportional digits to match platform ref_text (style=0)
+    c.set_theme({ ..@ui.Theme::ios_light(), tabular: false })
     view(c, rows, st)
   })
 }

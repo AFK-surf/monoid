@@ -499,7 +499,7 @@ fn viz_reveal(c : @ui.Ctx, f : VizFrame, w : Double, h : Double, waited : (Doubl
 /// brushed off from its top, an edge half its height deep going down it (the ease out) in viz_reveal_steps steps, and
 /// fading out from 800 ms (300 ms). Each strip on the screen's pixels, one meeting the next with no seam; each worked out
 /// of the frame's height as it is drawn (View::moved_by), nothing laid out again for it.
-pub fn viz_reveal_node(parent : @view.View, page : Bool, from : Double) -> Unit {
+pub fn viz_reveal_node(parent : @view.View, page : Bool, _from : Double) -> Unit {
   // (cut to the frame, its corners the placeholder's where it is a fragment's)
   parent
   .over(Is(true))
@@ -508,45 +508,17 @@ pub fn viz_reveal_node(parent : @view.View, page : Bool, from : Double) -> Unit 
   .clips(Is(true))
   .radius(By(fn() { if page { 0.0 } else { @ui.tree_theme().corner(Xl) } }))
   |> ignore
-  let way = @motion.Eased::new(0.0)
-  way.go(parent, 1.0, viz_reveal_ms, ease=Linear)
-  // (how far in at `t`, eased out: viz_reveal's `e`)
-  let e_at = fn(t : Double) { @ui.Out.at(dmin(1.0, dmax(0.0, (t - from) / viz_reveal_ms))) }
-  let ends = fn(_w : Double, _h : Double) { from + viz_reveal_ms }
-  // (how much of what it waited under is still there as it is drawn)
-  let gone = fn(n : @view.View) {
-    let p = way.shown(n)
-    1.0 - dmin(1.0, dmax(0.0, (p * viz_reveal_ms - viz_reveal_wait_after_ms) / viz_reveal_wait_out_ms))
-  }
-  let steps = viz_reveal_steps.to_double()
-  // strip `k` of the edge (`k` = steps: all of it under the edge), a share of the frame's height (`share`: the frame
-  // `share`'s inverse times as tall as it), at `alpha` of what is left: what it waited under (a whole page's paper, a
-  // fragment's line grey), its top worked out of the frame's height as it is drawn
-  let strip = fn(k : Int, share : Double, alpha : Double) {
-    parent.box(fn(s) {
-      s.over(Is(true)).fills_across(Is(true)).height_share(Is(share)) |> ignore
-      s
-      .ground(By(fn() {
-        @ui.tree_theme().color(if !page { Line } else if @sf.theme().dark { @sf.viz_paper_dark } else { @sf.viz_paper })
-      }))
-      .alpha(By(fn() { alpha * gone(s) }))
-      // (its top, from the frame's: the edge's top, k steps down it, on the screen's pixels)
-      .moved_by(
-        fn(_w, h, t) {
-          let frame = h / share
-          let y = frame * (-0.5 + 1.5 * e_at(t)) + k.to_double() * frame * 0.5 / steps
-          (0.0, (y * s.pixel_scale()).round() / s.pixel_scale())
-        },
-        ends,
-      )
-      |> ignore
-    })
-    |> ignore
-  }
-  for k in 0..<viz_reveal_steps {
-    strip(k, 0.5 / steps, (k.to_double() + 0.5) / steps)
-  }
-  strip(viz_reveal_steps, 1.0, 1.0)
+  @motion.curtain_reveal(
+    parent,
+    fn() { true },
+    fn() {
+      @ui.tree_theme().color(if !page { Line } else if @sf.theme().dark { @sf.viz_paper_dark } else { @sf.viz_paper })
+    },
+    duration_ms=viz_reveal_ms,
+    wait_after_ms=viz_reveal_wait_after_ms,
+    wait_out_ms=viz_reveal_wait_out_ms,
+    steps=viz_reveal_steps,
+  )
 }
 
 ///|
@@ -813,8 +785,8 @@ pub let viz_full : @signals.Signal[VizFull?] = @signals.signal(None)
 ///|
 /// Visualization `name` (at `path`, sent by session `key` of chat `session` on `station`) opened as a press asks: where
 /// the shell has a side panel for the page in view, a tab there (a page's: PreviewFile; a `.mbui` / `.wasm` mini-program
-/// a file's), over the whole window as that tab where `full` asks it (its 全屏; by default the command key held:
-/// full_held); else, or beside the system's bars (an iPhone Duo's), over the whole window on its own (`linked`: opened
+/// a file's), over the whole window as that tab where `full` asks it (its 全屏; by default unless the command key is
+/// held: full_asked); else, or beside the system's bars (an iPhone Duo's), over the whole window on its own (`linked`: opened
 /// by a link in a sentence, its wait said under the words).
 pub fn viz_open(
   name : String,
@@ -825,7 +797,7 @@ pub fn viz_open(
   linked? : Bool = false,
   full? : Bool,
 ) -> Unit {
-  let full = full.unwrap_or(full_held())
+  let full = full.unwrap_or(full_asked())
   if is_mbui_viz(name) || is_mbui_viz(path) {
     let a : Attachment = {
       name: if name != "" { name } else { base_name(path) },

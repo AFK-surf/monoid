@@ -1778,6 +1778,33 @@ test "a chat's page made with its inside nodes, 大屏, its rows on the pixels: 
 }
 
 ///|
+/// Its ⋯'s menu closed by an item chosen in it (复制消息链接, 多选 and back out of what it opened), not let go unsaid:
+/// the message unlit all the same (2026-11-20: 多选 left, its band still there).
+test "a chat's page made with its inside nodes, 大屏: a message whose ⋯'s menu closed by an item chosen in it is no more lit" {
+  for item in ["复制消息链接", "多选"] {
+    let (t, _) = chat_nodes_calling(1237.0, 800.0, 0, [], long_md=true, on_pixels=true)
+    // (the long answer brought into sight, its flash gone: its ⋯'s band the only ground of the pointer's colour)
+    @signals.start_batch()
+    @sfbase.go_to({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }, 3.0)
+    @signals.end_batch()
+    t.run_for(@sfbase.flash_ms + @ui.move_most_ms)
+    guard t.rect_of("核心的一段在") is Some((x, y, _, _)) else { fail("\{item}: a line of a later piece not drawn") }
+    t.move_to(x + 8.0, y + 8.0)
+    t.frame()
+    t.frame()
+    t.click(Button, label="更多操作")
+    t.run_for(@ui.move_most_ms)
+    assert_true(row_bands(t, @ui.tree_theme().color(Hover)) is [_], msg="\{item}: its ⋯ lit")
+    t.tap_text(item)
+    t.frame()
+    @sf.close_all_presented()
+    t.run_for(@ui.move_most_ms * 2.0)
+    assert_false(@sf.presenting(), msg=item)
+    assert_eq(row_bands(t, @ui.tree_theme().color(Hover)), [], msg="\{item}: chosen, still lit")
+  }
+}
+
+///|
 /// The composer at the foot of the room while the chat's view is read, then one in the list's foot as it comes: written in
 /// meanwhile, its cursor, its keyboard and its words go on in the second (held so 2026-11-17, asked of a report).
 test "小屏, a chat's page made with its inside nodes, written in before its view comes: the cursor kept in the composer as it comes, the keyboard never told down, what was typed there" {

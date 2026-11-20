@@ -1,6 +1,7 @@
 // These parts' IO on the station's program: the shell's (`@host.Host::shell`, client/shell's `run`), on the program's
 // runtime. What the shell does not offer yet is said where it is asked, never made up:
-// - `fetch` never follows redirects (`Policy::none()`), matching `manual: true`;
+// - `fetch` follows redirects (up to ten) as Node's `fetch` does, but a request's `manual` (`redirect: "manual"`)
+//   answers a 3xx as it came;
 // - a command's run has no stdin and keeps the station's environment, the variables a login drops unset by `sh`
 //   (`commands_on`), its stderr kept in a file beside it; not run through `sh` on Windows (no stderr there).
 
@@ -26,6 +27,7 @@ pub fn host_io(host : @host.Host) -> Io {
         headers=req.headers,
         body?=req.body.map(utf8_of),
         timeout_ms=req.timeout_ms,
+        redirect=if req.manual { "manual" } else { "follow" },
       ) catch {
         @host.FetchTimeout => raise Failed(@host.fetch_timed_out)
         e => raise e

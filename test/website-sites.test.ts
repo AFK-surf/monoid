@@ -42,11 +42,65 @@ test("a test channel's page opens its own web app and downloads the beta apps fr
 
 test("every site has its share cards and Android code", async () => {
   const { existsSync } = await import("node:fs");
-  for (const site of Object.keys(SITES).filter((s) => s !== "monoid.build")) {
+  for (const [site, cfg] of Object.entries(SITES) as [string, { style?: string }][]) {
+    if (site === "monoid.build") continue;
     assert.ok(existsSync(new URL(`../website/assets/android-qr-${site}.svg`, import.meta.url)), `${site}: Android code`);
-    for (const code of ["en", "zh-CN", "zh-TW", "ja", "ko"]) {
-      assert.ok(existsSync(new URL(`../website/assets/og/${site}/${code}.png`, import.meta.url)), `${site}: share card (${code})`);
+    if (cfg.style === "classic") {
+      assert.ok(existsSync(new URL(`../website/assets/og/${site}/og.png`, import.meta.url)), `${site}: classic share card`);
+    } else {
+      for (const code of ["en", "zh-CN", "zh-TW", "ja", "ko"]) {
+        assert.ok(existsSync(new URL(`../website/assets/og/${site}/${code}.png`, import.meta.url)), `${site}: share card (${code})`);
+      }
     }
+  }
+});
+
+test("still.fail and youdid.wtf build the classic single-page site with real app shots", async () => {
+  const { execFileSync } = await import("node:child_process");
+  const { existsSync, mkdtempSync, readFileSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const root = new URL("..", import.meta.url).pathname;
+  const tmp = mkdtempSync(join(tmpdir(), "classic-site-test-"));
+  try {
+    for (const [site, app, suf] of [
+      ["still.fail", "https://app.still.fail", ""],
+      ["youdid.wtf", "https://app.youdid.wtf", "-beta"],
+    ] as const) {
+      const out = join(tmp, site);
+      execFileSync(process.execPath, [join(root, "website/build.mjs"), "--site", site, "--out", out], { stdio: "ignore" });
+      const html = readFileSync(join(out, "index.html"), "utf8");
+      assert.match(html, new RegExp(`<title>${site.replace(".", "\\.")} · 还是不行！干的什么 JB！</title>`));
+      assert.match(html, new RegExp(`href="${app}"`));
+      assert.match(html, new RegExp(`https://app\\.still\\.fail/releases/latest/mac${suf}"`));
+      assert.match(html, new RegExp(`https://app\\.still\\.fail/releases/latest/win${suf}"`));
+      assert.match(html, new RegExp(`https://app\\.still\\.fail/releases/latest/android${suf}"`));
+      assert.match(html, new RegExp(`https://${site.replace(".", "\\.")}/assets/og/${site.replace(".", "\\.")}/og\\.png`));
+      assert.match(html, new RegExp(`/assets/android-qr-${site.replace(".", "\\.")}\\.svg`));
+      const statusUrl = site === "still.fail" ? "/status" : "https://still.fail/status";
+      assert.match(html, new RegExp(`href="${statusUrl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}">状态</a>`));
+      assert.match(html, /我来指挥/);
+      assert.match(html, /开喷/);
+      assert.match(html, /\/assets\/shots\/chat-dark\.webp/);
+      assert.match(html, /\/assets\/shots\/viz-dark\.webp/);
+      assert.match(html, /\/assets\/shots\/station-dark\.webp/);
+      assert.match(html, /\/assets\/shots\/crop-terminal-dark\.webp/);
+      assert.match(html, /\/assets\/shots\/crop-station-dark\.webp/);
+      assert.match(html, /\/assets\/shots\/mobile-dark\.webp/);
+      assert.ok(!html.includes("monoid.site.locale"), `${site}: should not contain monoid official site i18n redirect`);
+      const referencedShots = new Set(html.match(/\/assets\/shots\/[a-z0-9._-]+\.webp/gi) ?? []);
+      assert.ok(referencedShots.size >= 24, `${site}: expected >=24 shot references, got ${referencedShots.size}`);
+      for (const shot of referencedShots) {
+        assert.ok(existsSync(join(out, shot.slice(1))), `${site}: missing referenced shot ${shot}`);
+      }
+      assert.ok(existsSync(join(out, "assets/fonts/suisse-intl-regular.woff2")), `${site}: suisse-intl-regular.woff2`);
+      assert.ok(existsSync(join(out, `assets/og/${site}/og.png`)), `${site}: og.png`);
+      assert.ok(existsSync(join(out, `assets/android-qr-${site}.svg`)), `${site}: android qr`);
+      assert.ok(existsSync(join(out, "terms.html")), `${site}: terms.html`);
+      assert.ok(existsSync(join(out, "en/terms.html")), `${site}: en/terms.html`);
+    }
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
   }
 });
 

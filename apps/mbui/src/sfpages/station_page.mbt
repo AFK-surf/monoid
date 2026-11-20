@@ -546,6 +546,10 @@ let st_count : @ui.TextStyle = @ui.text_style(size=Meta, leading=L7, weight=Medi
 let st_memory : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, color=Muted, w=Full)
 
 ///|
+// kept across runs: a value (no field of it changes)
+let st_offline_note : @ui.Style = @ui.css("w=Full pb=S4")
+
+///|
 /// A profile's maker's mark, concentric with its row's corner.
 // kept across runs: a value (no field of it changes)
 let st_profile_mark : @ui.Style = @ui.css("w=S9 h=S9 bg=Neutral align=ACenter justify=JCenter").then(
@@ -569,6 +573,51 @@ let st_problem : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Mut
 ///|
 // kept across runs: a value (no field of it changes)
 let st_problem_bad : @ui.TextStyle = st_problem.then(@ui.text_style(color=Danger))
+
+///|
+// kept across runs: a value (no field of it changes)
+let st_diag_head : @ui.Style = @ui.css("w=Full gap=S1")
+
+///|
+// kept across runs: a value (no field of it changes)
+let st_diag_summary : @ui.TextStyle = @ui.text_style(size=Body, leading=L6, weight=Medium, color=Fg, w=Full)
+
+///|
+// kept across runs: a value (no field of it changes)
+let st_diag_meta : @ui.Style = @ui.css("w=Full gap=S1_5")
+
+///|
+// kept across runs: a value (no field of it changes)
+let st_diag_meta_row : @ui.Style = @ui.css("row w=Full gap=S2_5 align=AStart")
+
+///|
+// kept across runs: a value (no field of it changes)
+let st_diag_meta_val_box : @ui.Style = @ui.style(w=@sf.grow)
+
+///|
+// kept across runs: a value (no field of it changes)
+let st_diag_meta_val : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, w=Full)
+
+///|
+/// Aligned label column minimum width in diagnostic key-value and route rows (keeps values aligned while leaving
+/// >=168px on 320px 1.3x screens for IPv4:port tokens).
+let st_diag_label_w : Double = 74.0
+
+///|
+// kept across runs: a value (no field of it changes)
+let st_diag_ways : @ui.Style = @ui.css("w=Full gap=S1_5")
+
+///|
+// kept across runs: a value (no field of it changes)
+let st_diag_way_row : @ui.Style = @ui.css("row w=Full gap=S2 align=AStart")
+
+///|
+// kept across runs: a value (no field of it changes)
+let st_diag_way_dot : @ui.Style = @ui.css("h=S4 align=ACenter justify=JCenter")
+
+///|
+// kept across runs: a value (no field of it changes)
+let st_diag_way_name : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, weight=Medium, color=Fg, wrap=false)
 
 ///|
 /// Taking a station out of the workspace, asked first (its ⋯'s 移出, and 移出 workspace once its chats were moved

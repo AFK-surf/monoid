@@ -54,9 +54,9 @@ fn tab_let_go(src : Source, r : ChatRef, tab : String) -> Unit {
   if @signals.untracked(fn() { @sfbase.window_has_tab(r.station, r.session, tab) }) {
     return
   }
-  // (over the whole window: back, as it is gone)
+  // (over the whole window: put away, as it is gone already, closed by what let it go)
   if @signals.untracked(fn() { @sfbase.tab_full_is(r.station, r.session, tab) }) {
-    @sfbase.tab_full_close()
+    @sfbase.tab_full_beside()
   }
   panel_screen_pages.remove(tabs_key(r) + "/" + tab)
   panel_terminal_pages.remove(tabs_key(r) + "/" + tab)
@@ -349,6 +349,12 @@ fn tab_beside(
   }
   // (in a window of its own: that window to the front instead, sfbase's tab_window_front)
   if @sfbase.tab_window_front(r, tab) is Some(_) {
+    return
+  }
+  // (over the whole window and not in the panel yet: put there under it, only to go there, lone)
+  if full && !now.0.contains(tab) {
+    side_under(src, r, "open", tab)
+    @sfbase.tab_full_open(r, tab, lone=true)
     return
   }
   side_change_from(src, r, "open", Some(tab), now)

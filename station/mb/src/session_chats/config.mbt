@@ -79,9 +79,26 @@ fn num_or(v : J?, d : Double) -> Double {
 }
 
 ///|
+/// Default concurrent turn cap scaled by host RAM: floor(total_bytes / 1.5 GiB), clamped to [4, 32] (0 if unknown).
+pub fn default_max_concurrent_turns(total_bytes : Double) -> Double {
+  if total_bytes.is_nan() || total_bytes.is_inf() || !(total_bytes > 0.0) {
+    return 0.0
+  }
+  let gib = 1073741824.0
+  let n = (total_bytes / (1.5 * gib)).floor()
+  if n < 4.0 {
+    4.0
+  } else if n > 32.0 {
+    32.0
+  } else {
+    n
+  }
+}
+
+///|
 /// config.json (parsed) as the hub reads it: parse_config's defaults and derivations. `found`: the models a profile's
 /// last check found (by its id).
-pub async fn hub_config(_w : World, raw : J, data_dir : String, found : (String) -> Array[String]?) -> J {
+pub async fn hub_config(_w : World, raw : J, data_dir : String, found : (String) -> Array[String]?, total_bytes? : Double = 0.0) -> J {
   let profiles = []
   for p in arr_of(at(Some(raw), "profiles")).unwrap_or([]) {
     let seen : Array[String] = []
@@ -221,6 +238,10 @@ pub async fn hub_config(_w : World, raw : J, data_dir : String, found : (String)
     Some(Num(x)) if !x.is_nan() && !x.is_inf() && x >= 0.0 => x
     _ => 1.0
   }
+  let max_concurrent_turns = match at(Some(raw), "maxConcurrentTurns") {
+    Some(Num(x)) if !x.is_nan() && !x.is_inf() => if x > 0.0 { js_trunc(x) } else { 0.0 }
+    _ => default_max_concurrent_turns(total_bytes)
+  }
   jo([
     ("dataDir", js(data_dir)),
     ("agentHome", js(agent_home)),
@@ -242,6 +263,7 @@ pub async fn hub_config(_w : World, raw : J, data_dir : String, found : (String)
     ),
     ("warmMs", jn(js_trunc(num_or(at(Some(raw), "warmMinutes"), 30.0) * 60000.0))),
     ("maxWarmClaude", jn(num_or(at(Some(raw), "maxWarmClaude"), 4.0))),
+    ("maxConcurrentTurns", jn(max_concurrent_turns)),
     ("autoArchiveMs", jn(days("autoArchiveDays", 1.0))),
     ("slackArchiveMs", jn(days("slackArchiveDays", 3.0))),
     ("autoArchiveReviewed", jb(at(Some(raw), "autoArchiveReviewed") is Some(Bool(true)))),

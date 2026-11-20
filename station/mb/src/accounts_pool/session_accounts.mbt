@@ -230,6 +230,31 @@ pub async fn SessionAccounts::recheck(self : SessionAccounts, id : String) -> Un
 }
 
 ///|
+/// `canAuthRetry`: read-only check whether a turn that failed with `auth` on `failed_profile` should auto-retry.
+pub async fn SessionAccounts::can_auth_retry(
+  self : SessionAccounts,
+  key : String,
+  failed_profile : String,
+) -> Bool {
+  let cfg = (self.config)()
+  let state = jget(self.health_of(cfg, failed_profile).check, "state")
+  if state != Some(Str("login")) && state != Some(Str("failed")) {
+    return true
+  }
+  guard self.row(key) is Some(row) else { return false }
+  if row.profile != failed_profile && self.can(cfg, row.profile, row.model) {
+    return true
+  }
+  if row.pinned {
+    return false
+  }
+  let allows = self.allowed(key, cfg)
+  let fallbacks = self.others(cfg, row, allows)
+  fallbacks.push_iter(self.across_others(cfg, row, allows).iter())
+  fallbacks.iter().any(p => p.id != failed_profile && self.can(cfg, p.id, row.model))
+}
+
+///|
 /// `accountKey`: several profiles can spend the same account's allowance.
 fn SessionAccounts::account_key(
   self : SessionAccounts,

@@ -350,7 +350,7 @@ fn page_draws(t : @ui.Tester, title : String) -> Bool {
 ///|
 /// How late the core answers what a test's first chat asks (its six asks one after another): nearly at once, the chat
 /// shown in a few frames, the core then made `late` for what the test watches. (Answered `late` from the start, a 10 s
-/// view's setup ran the window through a minute of its clock: a frame at each step of the working rings shown meanwhile, each
+/// view's setup ran the window through a minute of its clock: a frame at each step of the spokes shown meanwhile, each
 /// built whole again to be checked: most of this file's 18 s on Willow, 2026-10-31.)
 let setup_answer_ms : Double = 10.0
 
@@ -861,7 +861,8 @@ test "on the tape a finger's short swipe let go slowly goes back; quick, it is f
   let t = tape_chat(2, 720.0, 840.0, width="medium", height="medium")
   page_over(t, 720.0)
   t.press_at(360.0, 400.0)
-  t.advance(@ui.input_step_ms * 40.0)
+  // (moved before a long press's time: a pull, not the words held to be picked)
+  t.advance(@ui.input_step_ms * 10.0)
   t.move_to(380.0, 400.0)
   t.advance(@ui.input_step_ms * 40.0)
   t.move_to(390.0, 400.0)

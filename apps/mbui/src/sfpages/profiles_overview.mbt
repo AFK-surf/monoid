@@ -149,13 +149,82 @@ fn ov_speed_top(points : Array[Double]) -> Double {
 }
 
 ///|
+/// Ramer-Douglas-Peucker polyline simplification on flat [x0, y0, x1, y1, ...] coordinates, preserving endpoints and
+/// vertices whose perpendicular deviation exceeds `eps` (sub-pixel 0.25 keeps curves visually indistinguishable).
+fn ov_simplify_polyline(pts : Array[Double], eps : Double) -> Array[Double] {
+  let n = pts.length() / 2
+  if n <= 2 {
+    return pts
+  }
+  let keep = Array::make(n, false)
+  keep[0] = true
+  keep[n - 1] = true
+  let eps2 = eps * eps
+  let stack : Array[(Int, Int)] = [(0, n - 1)]
+  while !stack.is_empty() {
+    let (a, b) = stack.unsafe_pop()
+    if b <= a + 1 {
+      continue
+    }
+    let ax = pts[2 * a]
+    let ay = pts[2 * a + 1]
+    let bx = pts[2 * b]
+    let by = pts[2 * b + 1]
+    let dx = bx - ax
+    let dy = by - ay
+    let len2 = dx * dx + dy * dy
+    let mut best_i = -1
+    let mut best_d2 = -1.0
+    for i in (a + 1)..<b {
+      let px = pts[2 * i]
+      let py = pts[2 * i + 1]
+      let d2 = if len2 <= 1.0e-12 {
+        let ex = px - ax
+        let ey = py - ay
+        ex * ex + ey * ey
+      } else {
+        let cross = (px - ax) * dy - (py - ay) * dx
+        cross * cross / len2
+      }
+      if d2 > best_d2 {
+        best_d2 = d2
+        best_i = i
+      }
+    }
+    if best_i > a && best_d2 > eps2 {
+      keep[best_i] = true
+      stack.push((a, best_i))
+      stack.push((best_i, b))
+    }
+  }
+  let out : Array[Double] = []
+  for i in 0..<n {
+    if keep[i] {
+      out.push(pts[2 * i])
+      out.push(pts[2 * i + 1])
+    }
+  }
+  out
+}
+
+///|
+fn ov_flat_to_pairs(pts : Array[Double]) -> Array[(Double, Double)] {
+  let n = pts.length() / 2
+  let out : Array[(Double, Double)] = Array(capacity=n)
+  for i in 0..<n {
+    out.push((pts[2 * i], pts[2 * i + 1]))
+  }
+  out
+}
+
+///|
 /// Each point the speed of the window that ends there, the last now's at the right edge, the first as far in as its
 /// span says (the points end a step apart over the whole span); a run of windows timed one line, one alone a dot, those
 /// not timed a gap.
-fn ov_speed_shapes(points : Array[Double], top : Double, w : Double, h : Double) -> Array[@ui.Shape] {
+fn ov_speed_plot(points : Array[Double], top : Double, w : Double, h : Double) -> (Array[@ui.Shape], Array[@ui.Line]) {
   let n = points.length()
   if w <= 10.0 || n < 2 || top <= 0.0 {
-    return []
+    return ([], [])
   }
   let t = @sf.theme()
   let pad_top = 6.0
@@ -164,8 +233,9 @@ fn ov_speed_shapes(points : Array[Double], top : Double, w : Double, h : Double)
   let x_of = fn(i : Int) -> Double { (i + 1).to_double() / n.to_double() * w }
   let y_of = fn(v : Double) -> Double { pad_top + (1.0 - @cmp.minimum(1.0, v / top)) * ph }
   let shapes : Array[@ui.Shape] = []
+  let lines : Array[@ui.Line] = []
   for yg in [y_of(top), y_of(top / 2.0), y_of(0.0)] {
-    shapes.push(@ui.shape_of([([0.0, yg, w, yg], false)], stroke=t.p.line, width=1.0))
+    lines.push(@ui.line([(0.0, yg), (w, yg)], width=1.0, color=t.p.line))
   }
   let ink = t.p.accent
   let mut i = 0
@@ -182,24 +252,25 @@ fn ov_speed_shapes(points : Array[Double], top : Double, w : Double, h : Double)
       i += 1
     }
     if i - start == 1 {
-      shapes.push(@ui.shape_of([(ov_circle_poly(line[0], line[1], 2.6), true)], fill=ink))
+      lines.push(@ui.line([(line[0], line[1])], width=5.2, color=ink))
     } else {
-      let area = line.copy()
+      let simp = ov_simplify_polyline(line, 0.25)
+      let area = simp.copy()
       area.push(x_of(i - 1))
       area.push(y_of(0.0))
       area.push(x_of(start))
       area.push(y_of(0.0))
       shapes.push(@ui.shape_of([(area, true)], fill=@sf.alpha(ink, if t.dark { 0.10 } else { 0.08 })))
-      shapes.push(@ui.shape_of([(line, false)], stroke=ink, width=2.0))
+      lines.push(@ui.line(ov_flat_to_pairs(simp), width=2.0, color=ink))
     }
   }
   if points[n - 1] >= 0.0 {
     let x = x_of(n - 1)
     let y = y_of(points[n - 1])
-    shapes.push(@ui.shape_of([(ov_circle_poly(x, y, 4.6), true)], fill=t.p.card))
-    shapes.push(@ui.shape_of([(ov_circle_poly(x, y, 3.1), true)], fill=ink))
+    lines.push(@ui.line([(x, y)], width=9.2, color=t.p.card))
+    lines.push(@ui.line([(x, y)], width=6.2, color=ink))
   }
-  shapes
+  (shapes, lines)
 }
 
 ///|
@@ -241,94 +312,8 @@ fn ov_en() -> Bool {
 }
 
 ///|
-// kept across runs: a constant unit-circle lookup table (never mutated)
-let ov_unit_circle : Array[(Double, Double)] = [
-  (1.0, 0.0),
-  (0.92388, 0.38268),
-  (0.70711, 0.70711),
-  (0.38268, 0.92388),
-  (0.0, 1.0),
-  (-0.38268, 0.92388),
-  (-0.70711, 0.70711),
-  (-0.92388, 0.38268),
-  (-1.0, 0.0),
-  (-0.92388, -0.38268),
-  (-0.70711, -0.70711),
-  (-0.38268, -0.92388),
-  (0.0, -1.0),
-  (0.38268, -0.92388),
-  (0.70711, -0.70711),
-  (0.92388, -0.38268),
-]
-
-///|
-fn ov_circle_poly(cx : Double, cy : Double, r : Double) -> Array[Double] {
-  let pts : Array[Double] = []
-  for p in ov_unit_circle {
-    pts.push(cx + r * p.0)
-    pts.push(cy + r * p.1)
-  }
-  pts
-}
-
-///|
-fn ov_bar_poly(x : Double, y : Double, w : Double, h : Double, rt : Double, rb : Double) -> Array[Double] {
-  if w <= 0.0 || h <= 0.0 {
-    return []
-  }
-  let r_top = @cmp.minimum(rt, @cmp.minimum(w / 2.0, h / 2.0))
-  let r_bot = @cmp.minimum(rb, @cmp.minimum(w / 2.0, h / 2.0))
-  let pts : Array[Double] = []
-  if r_top > 0.5 {
-    pts.push(x)
-    pts.push(y + r_top)
-    pts.push(x + r_top * 0.2929)
-    pts.push(y + r_top * 0.2929)
-    pts.push(x + r_top)
-    pts.push(y)
-  } else {
-    pts.push(x)
-    pts.push(y)
-  }
-  if r_top > 0.5 {
-    pts.push(x + w - r_top)
-    pts.push(y)
-    pts.push(x + w - r_top * 0.2929)
-    pts.push(y + r_top * 0.2929)
-    pts.push(x + w)
-    pts.push(y + r_top)
-  } else {
-    pts.push(x + w)
-    pts.push(y)
-  }
-  if r_bot > 0.5 {
-    pts.push(x + w)
-    pts.push(y + h - r_bot)
-    pts.push(x + w - r_bot * 0.2929)
-    pts.push(y + h - r_bot * 0.2929)
-    pts.push(x + w - r_bot)
-    pts.push(y + h)
-  } else {
-    pts.push(x + w)
-    pts.push(y + h)
-  }
-  if r_bot > 0.5 {
-    pts.push(x + r_bot)
-    pts.push(y + h)
-    pts.push(x + r_bot * 0.2929)
-    pts.push(y + h - r_bot * 0.2929)
-    pts.push(x)
-    pts.push(y + h - r_bot)
-  } else {
-    pts.push(x)
-    pts.push(y + h)
-  }
-  pts
-}
-
-///|
-fn ov_push_v_dash(
-  out : Array[@ui.Shape],
+fn ov_push_v_dash_lines(
+  out : Array[@ui.Line],
   x : Double,
   y0 : Double,
   y1 : Double,
@@ -337,15 +322,11 @@ fn ov_push_v_dash(
   ink : Int64,
   width : Double,
 ) -> Unit {
-  let outlines : Array[(Array[Double], Bool)] = []
   let mut y = y0
   while y < y1 {
     let ye = @cmp.minimum(y1, y + dash)
-    outlines.push(([x, y, x, ye], false))
+    out.push(@ui.line([(x, y), (x, ye)], width~, color=ink))
     y += dash + gap
-  }
-  if !outlines.is_empty() {
-    out.push(@ui.shape_of(outlines, stroke=ink, width~))
   }
 }
 
@@ -548,10 +529,14 @@ pub fn profiles_side_summary(list : Array[Json]) -> (String, String) {
 }
 
 ///|
-fn ov_account_mark_node(parent : @view.View, e : Json?, side? : Double = 18.0) -> Unit {
-  let p = field(e, "profile")
-  @sf.provider_logo_node(parent, text(p, "runtime"), text(field(p, "access"), "kind"), side, text(p, "providerMark"))
-  |> ignore
+fn ov_account_mark_node(parent : @view.View, ev : () -> Json?, side? : Double = 18.0) -> Unit {
+  parent.pick(
+    fn() {
+      let p = field(ev(), "profile")
+      (text(p, "runtime"), text(field(p, "access"), "kind"), text(p, "providerMark"))
+    },
+    fn(m, of) { @sf.provider_logo_node(m, of.0, of.1, side, of.2) |> ignore },
+  )
 }
 
 ///|
@@ -569,9 +554,9 @@ fn ov_open_account(
 }
 
 ///|
-fn ov_trajectory_shapes(pool : ModelPool, w : Double, h : Double) -> Array[@ui.Shape] {
+fn ov_trajectory_plot(pool : ModelPool, w : Double, h : Double) -> (Array[@ui.Rect], Array[@ui.Shape], Array[@ui.Line]) {
   if w <= 10.0 || pool.traj.length() < 217 {
-    return []
+    return ([], [], [])
   }
   let t = @sf.theme()
   let pad_top = 6.0
@@ -585,15 +570,13 @@ fn ov_trajectory_shapes(pool : ModelPool, w : Double, h : Double) -> Array[@ui.S
   let y_bot = y_of(0.0)
   let y_mid = y_of(50.0)
   let y_top = y_of(100.0)
+  let rects : Array[@ui.Rect] = []
   let shapes : Array[@ui.Shape] = []
+  let lines : Array[@ui.Line] = []
 
-  shapes.push(
-    @ui.shape_of(
-      [([0.0, y_top, w, y_top], false), ([0.0, y_mid, w, y_mid], false), ([0.0, y_bot, w, y_bot], false)],
-      stroke=t.p.line,
-      width=1.0,
-    ),
-  )
+  lines.push(@ui.line([(0.0, y_top), (w, y_top)], width=1.0, color=t.p.line))
+  lines.push(@ui.line([(0.0, y_mid), (w, y_mid)], width=1.0, color=t.p.line))
+  lines.push(@ui.line([(0.0, y_bot), (w, y_bot)], width=1.0, color=t.p.line))
 
   let mut idx = 48
   while idx < 216 {
@@ -605,10 +588,8 @@ fn ov_trajectory_shapes(pool : ModelPool, w : Double, h : Double) -> Array[@ui.S
       let x0 = x_of(start_i)
       let x1 = x_of(idx)
       if x1 > x0 + 0.5 {
-        shapes.push(
-          @ui.shape_of([([x0, y_top, x1, y_top, x1, y_bot, x0, y_bot], true)], fill=@sf.alpha(t.p.red, 0.09)),
-        )
-        shapes.push(@ui.shape_of([([x0, y_bot, x1, y_bot], false)], stroke=t.p.red, width=2.4))
+        rects.push(@ui.rect_of(x0, y_top, x1 - x0, y_bot - y_top, color=@sf.alpha(t.p.red, 0.09)))
+        lines.push(@ui.line([(x0, y_bot), (x1, y_bot)], width=2.4, color=t.p.red))
       }
     } else {
       idx += 1
@@ -620,17 +601,16 @@ fn ov_trajectory_shapes(pool : ModelPool, w : Double, h : Double) -> Array[@ui.S
     past_line.push(x_of(i))
     past_line.push(y_of(pool.traj[i]))
   }
-  let past_area = past_line.copy()
+  let past_simp = ov_simplify_polyline(past_line, 0.25)
+  let past_area = past_simp.copy()
   past_area.push(x_of(48))
   past_area.push(y_bot)
   past_area.push(0.0)
   past_area.push(y_bot)
   shapes.push(@ui.shape_of([(past_area, true)], fill=@sf.alpha(t.p.text, if t.dark { 0.12 } else { 0.07 })))
-  shapes.push(@ui.shape_of([(past_line, false)], stroke=t.p.text, width=2.0))
+  lines.push(@ui.line(ov_flat_to_pairs(past_simp), width=2.0, color=t.p.text))
 
   let refill_dots : Array[(Double, Double)] = []
-  let green_strokes : Array[(Array[Double], Bool)] = []
-  let red_strokes : Array[(Array[Double], Bool)] = []
   let mut run_pts : Array[Double] = []
   let mut run_ink = 0L
   let mut run_starve = false
@@ -638,12 +618,13 @@ fn ov_trajectory_shapes(pool : ModelPool, w : Double, h : Double) -> Array[@ui.S
   let mut run_x1 = 0.0
   let flush_run = fn() {
     if !run_pts.is_empty() {
-      run_pts.push(run_x1)
-      run_pts.push(y_bot)
-      run_pts.push(run_x0)
-      run_pts.push(y_bot)
+      let simp = ov_simplify_polyline(run_pts, 0.25)
+      simp.push(run_x1)
+      simp.push(y_bot)
+      simp.push(run_x0)
+      simp.push(y_bot)
       shapes.push(
-        @ui.shape_of([(run_pts, true)], fill=@sf.alpha(run_ink, if run_starve { 0.12 } else { 0.10 })),
+        @ui.shape_of([(simp, true)], fill=@sf.alpha(run_ink, if run_starve { 0.12 } else { 0.10 })),
       )
       run_pts = []
     }
@@ -678,45 +659,33 @@ fn ov_trajectory_shapes(pool : ModelPool, w : Double, h : Double) -> Array[@ui.S
     }
 
     if is_jump {
-      green_strokes.push(([x0, y0, x1, y1], false))
+      lines.push(@ui.line([(x0, y0), (x1, y1)], width=2.0, color=t.p.green))
       if v1 - v0 >= 6.0 {
         refill_dots.push((x1, y1))
       }
     } else if !(v0 <= 0.4 && v1 <= 0.4) && step % 3 != 2 {
-      if seg_ink == t.p.green {
-        green_strokes.push(([x0, y0, x1, y1], false))
-      } else {
-        red_strokes.push(([x0, y0, x1, y1], false))
-      }
+      lines.push(@ui.line([(x0, y0), (x1, y1)], width=2.0, color=seg_ink))
     }
   }
   flush_run()
-  if !green_strokes.is_empty() {
-    shapes.push(@ui.shape_of(green_strokes, stroke=t.p.green, width=2.0))
-  }
-  if !red_strokes.is_empty() {
-    shapes.push(@ui.shape_of(red_strokes, stroke=t.p.red, width=2.0))
-  }
 
   let x_now = x_of(48)
   let y_now = y_of(pool.traj[48])
-  ov_push_v_dash(shapes, x_now, y_top, y_bot, 3.5, 3.0, @sf.alpha(t.p.text, 0.28), 1.0)
+  ov_push_v_dash_lines(lines, x_now, y_top, y_bot, 3.5, 3.0, @sf.alpha(t.p.text, 0.28), 1.0)
 
   if !refill_dots.is_empty() {
-    let outer : Array[(Array[Double], Bool)] = []
-    let inner : Array[(Array[Double], Bool)] = []
     for pt in refill_dots {
-      outer.push((ov_circle_poly(pt.0, pt.1, 3.6), true))
-      inner.push((ov_circle_poly(pt.0, pt.1, 2.3), true))
+      lines.push(@ui.line([(pt.0, pt.1)], width=7.2, color=t.p.card))
     }
-    shapes.push(@ui.shape_of(outer, fill=t.p.card))
-    shapes.push(@ui.shape_of(inner, fill=t.p.green))
+    for pt in refill_dots {
+      lines.push(@ui.line([(pt.0, pt.1)], width=4.6, color=t.p.green))
+    }
   }
 
-  shapes.push(@ui.shape_of([(ov_circle_poly(x_now, y_now, 4.6), true)], fill=t.p.card))
-  shapes.push(@ui.shape_of([(ov_circle_poly(x_now, y_now, 3.1), true)], fill=t.p.text))
+  lines.push(@ui.line([(x_now, y_now)], width=9.2, color=t.p.card))
+  lines.push(@ui.line([(x_now, y_now)], width=6.2, color=t.p.text))
 
-  shapes
+  (rects, shapes, lines)
 }
 
 ///|
@@ -759,9 +728,9 @@ fn ov_net_top(p : ModelPool) -> Double {
 /// Each hour against the pace the pool could keep up all week (0, the line through the middle): the last 24 left of
 /// now, the next 24 as foreseen right of it (lighter); above it green where it spent less than that, under it red where
 /// it spent more or goes without, each bar from 0 rounded at its far end.
-fn ov_net_shapes(pool : ModelPool, scale_top : Double, w : Double, h : Double) -> Array[@ui.Shape] {
+fn ov_net_plot(pool : ModelPool, scale_top : Double, w : Double, h : Double) -> (Array[@ui.Rect], Array[@ui.Line]) {
   if w <= 10.0 || pool.hourly_net.length() < 48 || scale_top <= 0.0 {
-    return []
+    return ([], [])
   }
   let t = @sf.theme()
   let pad_top = 6.0
@@ -770,11 +739,11 @@ fn ov_net_shapes(pool : ModelPool, scale_top : Double, w : Double, h : Double) -
   let y_top = pad_top
   let y_zero = pad_top + half
   let y_bot = pad_top + half * 2.0
-  let shapes : Array[@ui.Shape] = []
-  shapes.push(
-    @ui.shape_of([([0.0, y_top, w, y_top], false), ([0.0, y_bot, w, y_bot], false)], stroke=t.p.line, width=1.0),
-  )
-  ov_push_v_dash(shapes, 0.5 * w, y_top, y_bot, 3.5, 3.0, @sf.alpha(t.p.text, 0.28), 1.0)
+  let rects : Array[@ui.Rect] = []
+  let lines : Array[@ui.Line] = []
+  lines.push(@ui.line([(0.0, y_top), (w, y_top)], width=1.0, color=t.p.line))
+  lines.push(@ui.line([(0.0, y_bot), (w, y_bot)], width=1.0, color=t.p.line))
+  ov_push_v_dash_lines(lines, 0.5 * w, y_top, y_bot, 3.5, 3.0, @sf.alpha(t.p.text, 0.28), 1.0)
   let slot_w = w / 48.0
   let bar_w = @cmp.minimum(9.0, @cmp.maximum(1.5, slot_w * 0.64))
   for i in 0..<48 {
@@ -786,17 +755,15 @@ fn ov_net_shapes(pool : ModelPool, scale_top : Double, w : Double, h : Double) -
     let x = (i.to_double() + 0.5) * slot_w - bar_w / 2.0
     let ink = if v >= 0.0 { t.p.green } else { t.p.red }
     let ink = if i >= 24 { @sf.alpha(ink, 0.42) } else { ink }
-    let poly = if v >= 0.0 {
-      ov_bar_poly(x, y_zero - bh, bar_w, bh, bar_w / 2.0, 0.0)
+    let r = @cmp.minimum(bar_w / 2.0, bh / 2.0)
+    if v >= 0.0 {
+      rects.push(@ui.rect_of(x, y_zero - bh, bar_w, bh, color=ink, corners=(r, r, 0.0, 0.0)))
     } else {
-      ov_bar_poly(x, y_zero, bar_w, bh, 0.0, bar_w / 2.0)
-    }
-    if poly.length() > 0 {
-      shapes.push(@ui.shape_of([(poly, true)], fill=ink))
+      rects.push(@ui.rect_of(x, y_zero, bar_w, bh, color=ink, corners=(0.0, 0.0, r, r)))
     }
   }
-  shapes.push(@ui.shape_of([([0.0, y_zero, w, y_zero], false)], stroke=@sf.alpha(t.p.text, 0.34), width=1.25))
-  shapes
+  lines.push(@ui.line([(0.0, y_zero), (w, y_zero)], width=1.25, color=@sf.alpha(t.p.text, 0.34)))
+  (rects, lines)
 }
 
 ///|
@@ -909,37 +876,44 @@ fn ov_pools_card_node(
     |> ignore
 
     card.show(fn() { active_pool() is Some(_) }, fn(has_pools) {
-      has_pools.gap(Is(4.0)) |> ignore
-      // (the one shown, by its title: a pill is told only as it comes to be shown or stops being so: View::selected)
-      let shown_is = has_pools.selected(fn() { active_pool().map(fn(p) { p.title }) })
+      has_pools.by_room(fn(inner, room) {
+        inner.gap(Is(4.0)) |> ignore
+        let inner_w = fn() { room.width() }
+        // (the one shown, by its title: a pill is told only as it comes to be shown or stops being so: View::selected)
+        let shown_is = inner.selected(fn() { active_pool().map(fn(p) { p.title }) })
 
-      // 1. Reactive Pool Selector Grid (2 columns on phone widths, up to 4 across wider panes)
-      has_pools.grid(fn() { pools().length() }, min_col_w=136.0, gap=6.0, row_gap=6.0, max_cols=4, fn(slot, idx) {
-        slot.row(Is(true)) |> ignore
-        // (its pool's title, count and whether it runs short, each worked out once of the pools, told only as that comes
-        // out otherwise: another pool's change runs none of this pill)
-        let pool_at = fn() -> ModelPool? { pools().get(idx) }
-        let title = @signals.computed(fn(_) { pool_at().map(fn(p) { p.title }).unwrap_or("") })
-        let count = @signals.computed(fn(_) {
-          match pool_at() {
-            Some(p) => p.ready.to_string() + "/" + p.total.to_string()
-            None => "0/0"
-          }
+        // 1. Reactive Pool Selector Grid (2 columns on phone widths, up to 4 across wider panes; reuses outer room width)
+        inner.box(fn(grid_box) {
+          grid_box.grid_in(inner_w, fn() { pools().length() }, min_col_w=136.0, gap=6.0, row_gap=6.0, max_cols=4, fn(slot, idx) {
+            slot.row(Is(true)) |> ignore
+            // (its pool's title, count and whether it runs short, each worked out once of the pools, told only as that comes
+            // out otherwise: another pool's change runs none of this pill)
+            let pool_at = fn() -> ModelPool? { pools().get(idx) }
+            let title = @signals.computed(fn(_) { pool_at().map(fn(p) { p.title }).unwrap_or("") })
+            let count = @signals.computed(fn(_) {
+              match pool_at() {
+                Some(p) => p.ready.to_string() + "/" + p.total.to_string()
+                None => "0/0"
+              }
+            })
+            let low = @signals.computed(fn(_) { pool_at().map(fn(p) { p.over_pace }).unwrap_or(false) })
+            ov_pool_pill_node(
+              slot,
+              fn() { title.get() },
+              fn() { count.get() },
+              fn() { low.get() },
+              fn() { shown_is(title.get()) },
+              fn() { ov_picked_pool.set(@signals.untracked(fn() { title.get() })) },
+            )
+          })
+          |> ignore
         })
-        let low = @signals.computed(fn(_) { pool_at().map(fn(p) { p.over_pace }).unwrap_or(false) })
-        ov_pool_pill_node(
-          slot,
-          fn() { title.get() },
-          fn() { count.get() },
-          fn() { low.get() },
-          fn() { shown_is(title.get()) },
-          fn() { ov_picked_pool.set(@signals.untracked(fn() { title.get() })) },
-        )
+        |> ignore
+
+        // 2. Reactive Two Synchronized Charts (stacked on narrow panes, 2 columns side-by-side when >= 564px)
+        ov_charts_node(inner, active_pool, Some(share), tips, room_w=fn() { @cmp.maximum(0.0, inner_w() - 24.0) })
       })
       |> ignore
-
-      // 2. Reactive Two Synchronized Charts (stacked on narrow panes, 2 columns side-by-side when >= 564px)
-      ov_charts_node(has_pools, active_pool, Some(share), tips)
     })
 
     // 3. Deduplicated Pay-as-you-go API Balance Rows
@@ -983,34 +957,62 @@ fn ov_pools_card_node(
 ///|
 /// A pool's two charts (额度与恢复, 消耗速度: stacked on narrow panes, side by side from 564 wide), `active_pool` the pool
 /// they draw as it is now, what it would take more under them; `share` at the first's head (the page's, the pool
-/// shown; none in the picture shared of them all, share_quota.mbt).
+/// shown; none in the picture shared of them all, share_quota.mbt). When `room_w` is supplied by the enclosing card's
+/// `by_room`, no nested `by_room` is created here.
 fn ov_charts_node(
   parent : @view.View,
   active_pool : () -> ModelPool?,
   share : (() -> Unit)?,
   tips : @sf.TipLayer?,
   show_speed? : Bool = true,
+  room_w? : () -> Double,
 ) -> Unit {
   parent.box(fn(body) {
     body.padding(Is((12.0, 10.0, 12.0, 10.0))) |> ignore
-    let c1_badge = fn() {
-      match active_pool() {
-        Some(active) =>
-          match active.exhaust_hours {
-            Some(eh) if eh <= 0 => active.now_pct.to_string() + (if ov_en() { "% · out now" } else { "% · 已断档" })
-            Some(eh) =>
-              if ov_en() {
-                active.now_pct.to_string() + "% · out in " + ov_hours_short(eh)
-              } else {
-                active.now_pct.to_string() + "% · " + ov_hours_short(eh) + "后断档"
-              }
-            None => active.now_pct.to_string() + "%"
-          }
-        None => ""
-      }
+    match room_w {
+      Some(w) => ov_charts_body_node(body, active_pool, share, tips, show_speed, w)
+      None =>
+        body.by_room(fn(inner, room) {
+          ov_charts_body_node(inner, active_pool, share, tips, show_speed, fn() { room.width() })
+        })
+        |> ignore
     }
+  })
+  |> ignore
+}
 
-    body.grid(fn() { 2 }, min_col_w=270.0, gap=24.0, row_gap=16.0, max_cols=2, fn(col, idx) {
+///|
+fn ov_charts_body_node(
+  body : @view.View,
+  active_pool : () -> ModelPool?,
+  share : (() -> Unit)?,
+  tips : @sf.TipLayer?,
+  show_speed : Bool,
+  body_w : () -> Double,
+) -> Unit {
+  let col_w = fn() { @view.grid_columns(body_w(), 270.0, 24.0, max_cols=2).1 }
+  let cv1_w = fn() { @cmp.maximum(0.0, col_w() - ov_axis_w - 6.0) }
+  let cv2_w = fn() { @cmp.maximum(0.0, col_w() - ov_burn_axis_w - 6.0) }
+  let speed_w = fn() { @cmp.maximum(0.0, body_w() - ov_axis_w - 6.0) }
+  let c1_badge = fn() {
+    match active_pool() {
+      Some(active) =>
+        match active.exhaust_hours {
+          Some(eh) if eh <= 0 => active.now_pct.to_string() + (if ov_en() { "% · out now" } else { "% · 已断档" })
+          Some(eh) =>
+            if ov_en() {
+              active.now_pct.to_string() + "% · out in " + ov_hours_short(eh)
+            } else {
+              active.now_pct.to_string() + "% · " + ov_hours_short(eh) + "后断档"
+            }
+          None => active.now_pct.to_string() + "%"
+        }
+      None => ""
+    }
+  }
+
+  body.box(fn(grid_box) {
+    grid_box.grid_in(body_w, fn() { 2 }, min_col_w=270.0, gap=24.0, row_gap=16.0, max_cols=2, fn(col, idx) {
       if idx == 0 {
         // Chart 1: 额度与恢复
         col.gap(Is(6.0)) |> ignore
@@ -1043,6 +1045,12 @@ fn ov_charts_node(
           }
         })
 
+        let traj_plot = @signals.computed(fn(_) {
+          match active_pool() {
+            Some(ap) => ov_trajectory_plot(ap, cv1_w(), ov_chart_h)
+            None => ([], [], [])
+          }
+        })
         col.box(fn(plot1) {
           plot1.row(Is(true)).gap(Is(6.0)) |> ignore
           plot1.box(fn(ys) {
@@ -1053,18 +1061,15 @@ fn ov_charts_node(
           })
           |> ignore
           plot1.box(fn(cv1) {
-            cv1.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
-            cv1.by_room(fn(canvas, room) {
-              canvas
-              .height(Is(Some(ov_chart_h)))
-              .shapes(By(fn() {
-                match active_pool() {
-                  Some(ap) => ov_trajectory_shapes(ap, room.width(), ov_chart_h)
-                  None => []
-                }
-              }))
-              |> ignore
-            })
+            cv1
+            .grow(Is(1.0))
+            .basis(Is(Some(0.0)))
+            .min_width(Is(Some(0.0)))
+            .height(Is(Some(ov_chart_h)))
+            .says(By(fn() { Some(@view.said(Image, label=if ov_en() { "Quota" } else { "额度与恢复" })) }))
+            .rects(By(fn() { traj_plot.get().0 }))
+            .shapes(By(fn() { traj_plot.get().1 }))
+            .lines(By(fn() { traj_plot.get().2 }))
             |> ignore
           })
           |> ignore
@@ -1106,6 +1111,12 @@ fn ov_charts_node(
           |> ignore
         })
 
+        let net_plot = @signals.computed(fn(_) {
+          match active_pool() {
+            Some(ap) => ov_net_plot(ap, ov_net_top(ap), cv2_w(), ov_chart_h)
+            None => ([], [])
+          }
+        })
         col.box(fn(plot2) {
           plot2.row(Is(true)).gap(Is(6.0)) |> ignore
           let top = fn() {
@@ -1122,18 +1133,14 @@ fn ov_charts_node(
           })
           |> ignore
           plot2.box(fn(cv2) {
-            cv2.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
-            cv2.by_room(fn(canvas, room) {
-              canvas
-              .height(Is(Some(ov_chart_h)))
-              .shapes(By(fn() {
-                match active_pool() {
-                  Some(ap) => ov_net_shapes(ap, ov_net_top(ap), room.width(), ov_chart_h)
-                  None => []
-                }
-              }))
-              |> ignore
-            })
+            cv2
+            .grow(Is(1.0))
+            .basis(Is(Some(0.0)))
+            .min_width(Is(Some(0.0)))
+            .height(Is(Some(ov_chart_h)))
+            .says(By(fn() { Some(@view.said(Image, label=if ov_en() { "Net Pace" } else { "消耗速度" })) }))
+            .rects(By(fn() { net_plot.get().0 }))
+            .lines(By(fn() { net_plot.get().1 }))
             |> ignore
           })
           |> ignore
@@ -1143,38 +1150,38 @@ fn ov_charts_node(
       }
     })
     |> ignore
-    // (how many more accounts would keep it going, under both charts: only where it does not keep up as it is; at once
-    // as another pool is picked, as the charts over it are)
-    body.show(fn() { active_pool().map(fn(p) { p.needed_accounts > 0 }).unwrap_or(false) }, at_once=true, fn(hint) {
-      hint.padding(Is((0.0, 8.0, 0.0, 0.0))) |> ignore
-      @sf.words_node(hint, fn() { ov_needed_words(active_pool().map(fn(p) { p.needed_accounts }).unwrap_or(0)) }, fn() {
-        @ui.text_style(size=Meta, leading=L5, wrap=true, w=Full, color=Data(@sf.theme().p.red))
-      })
-      |> ignore
-    })
-    if show_speed {
-      ov_speed_node(body, active_pool)
-    }
   })
   |> ignore
+  // (how many more accounts would keep it going, under both charts: only where it does not keep up as it is; at once
+  // as another pool is picked, as the charts over it are)
+  body.show(fn() { active_pool().map(fn(p) { p.needed_accounts > 0 }).unwrap_or(false) }, at_once=true, fn(hint) {
+    hint.padding(Is((0.0, 8.0, 0.0, 0.0))) |> ignore
+    @sf.words_node(hint, fn() { ov_needed_words(active_pool().map(fn(p) { p.needed_accounts }).unwrap_or(0)) }, fn() {
+      @ui.text_style(size=Meta, leading=L5, wrap=true, w=Full, color=Data(@sf.theme().p.red))
+    })
+    |> ignore
+  })
+  if show_speed {
+    ov_speed_node(body, active_pool, speed_w)
+  }
 }
 
 ///|
 /// `输出速度`, under the pool's two charts: its title and the speed now, the span to show, and each window's speed over
 /// it; where none of the pool's calls was timed in the span, says so in the chart's place. A pool none of whose calls
 /// was timed in any span shows none of it, title and spans too: nothing to choose between.
-fn ov_speed_node(parent : @view.View, active_pool : () -> ModelPool?) -> Unit {
+fn ov_speed_node(parent : @view.View, active_pool : () -> ModelPool?, speed_w : () -> Double) -> Unit {
   let points_now = @signals.computed(fn(_) { active_pool().map(ov_speed_points).unwrap_or([]) }, same=fn(a, b) { a == b })
   let points = fn() { points_now.get() }
   let any_timed = @signals.computed(
     fn(_) { active_pool().map(fn(p) { p.speed.iter().any(ov_speed_known) }).unwrap_or(false) },
     same=fn(a, b) { a == b },
   )
-  parent.show(fn() { any_timed.get() }, at_once=true, fn(sec) { ov_speed_section_node(sec, points) })
+  parent.show(fn() { any_timed.get() }, at_once=true, fn(sec) { ov_speed_section_node(sec, points, speed_w) })
 }
 
 ///|
-fn ov_speed_section_node(parent : @view.View, points : () -> Array[Double]) -> Unit {
+fn ov_speed_section_node(parent : @view.View, points : () -> Array[Double], speed_w : () -> Double) -> Unit {
   parent.box(fn(col) {
     col.gap(Is(6.0)).padding(Is((0.0, 16.0, 0.0, 0.0))) |> ignore
     ug_line_node(col, fn(h) {
@@ -1210,6 +1217,7 @@ fn ov_speed_section_node(parent : @view.View, points : () -> Array[Double]) -> U
       known.box(fn(plot) {
         plot.row(Is(true)).gap(Is(6.0)) |> ignore
         let top = fn() { ov_speed_top(points()) }
+        let speed_plot = @signals.computed(fn(_) { ov_speed_plot(points(), top(), speed_w(), ov_chart_h) })
         plot.box(fn(ys) {
           ys.min_width(Is(Some(ov_axis_w))).min_height(Is(Some(ov_chart_h))).lies_along(Is(Between)).shrink(Is(0.0)) |> ignore
           @sf.words_node(ys, fn() { ov_rate_number(top()) }, fn() { ug_scale_label }) |> ignore
@@ -1218,11 +1226,14 @@ fn ov_speed_section_node(parent : @view.View, points : () -> Array[Double]) -> U
         })
         |> ignore
         plot.box(fn(cv) {
-          cv.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
-          cv.by_room(fn(canvas, room) {
-            canvas.height(Is(Some(ov_chart_h))).shapes(By(fn() { ov_speed_shapes(points(), top(), room.width(), ov_chart_h) }))
-            |> ignore
-          })
+          cv
+          .grow(Is(1.0))
+          .basis(Is(Some(0.0)))
+          .min_width(Is(Some(0.0)))
+          .height(Is(Some(ov_chart_h)))
+          .says(By(fn() { Some(@view.said(Image, label=if ov_en() { "Output speed" } else { "输出速度" })) }))
+          .shapes(By(fn() { speed_plot.get().0 }))
+          .lines(By(fn() { speed_plot.get().1 }))
           |> ignore
         })
         |> ignore
@@ -1252,6 +1263,101 @@ fn ov_speed_section_node(parent : @view.View, points : () -> Array[Double]) -> U
 /// A speed's scale label: whole tokens a second.
 fn ov_rate_number(v : Double) -> String {
   v.round().to_int().to_string()
+}
+
+///|
+#derive(Eq)
+priv enum OvAlertItem {
+  OvBroken(Json)
+  OvWaste(Json, Int, String)
+}
+
+///|
+fn ov_alert_same(a : (String, OvAlertItem, @sf.CardPiece), b : (String, OvAlertItem, @sf.CardPiece)) -> Bool {
+  a.0 == b.0 &&
+  a.2 == b.2 &&
+  (match (a.1, b.1) {
+    (OvBroken(x), OvBroken(y)) => json_same(x, y)
+    (OvWaste(x, lx, dx), OvWaste(y, ly, dy)) => lx == ly && dx == dy && json_same(x, y)
+    _ => false
+  })
+}
+
+///|
+fn ov_alert_block(
+  b : @view.View,
+  core : Core,
+  open_profile : ((String, String) -> Unit)?,
+  alerts : @signals.KeyedList[String, (String, OvAlertItem, @sf.CardPiece)],
+  kind : Int,
+  key : () -> String,
+) -> Unit {
+  let last : Ref[(OvAlertItem, @sf.CardPiece)?] = Ref(None)
+  let now = @signals.computed(fn(_) {
+    match alerts.get(key()) {
+      Some((_, item, piece)) => last.val = Some((item, piece))
+      None => ()
+    }
+    last.val
+  }, same=fn(a, b) {
+    match (a, b) {
+      (Some((ix, px)), Some((iy, py))) =>
+        px == py &&
+        (match (ix, iy) {
+          (OvBroken(x), OvBroken(y)) => json_same(x, y)
+          (OvWaste(x, lx, dx), OvWaste(y, ly, dy)) => lx == ly && dx == dy && json_same(x, y)
+          _ => false
+        })
+      (None, None) => true
+      _ => false
+    }
+  })
+  b.grow(Is(1.0)) |> ignore
+  @sf.card_piece_node(b, fn() { now.get().map(fn(n) { n.1 }).unwrap_or(@sf.CardPiece::CardWhole) }, wide_group=true, fn(card) {
+    if kind == 0 {
+      let ev = fn() {
+        match now.get() {
+          Some((OvBroken(e), _)) => Some(e)
+          _ => None
+        }
+      }
+      @sf.link_row_node(
+        card,
+        fn() { ov_account_name(ev()) },
+        fn() { ov_open_account(core, open_profile, @signals.untracked(ev)) },
+        title_cut=true,
+        value=fn() { ov_issue_action_label(ev()) },
+        trouble=fn() { ov_issue_short(ev()) },
+        lead=LeadLine(fn(l) { ov_account_mark_node(l, ev) }),
+      )
+    } else {
+      let ev = fn() {
+        match now.get() {
+          Some((OvWaste(e, _, _), _)) => Some(e)
+          _ => None
+        }
+      }
+      @sf.link_row_node(
+        card,
+        fn() { ov_account_name(ev()) },
+        fn() { ov_open_account(core, open_profile, @signals.untracked(ev)) },
+        title_cut=true,
+        note=fn() {
+          match now.get() {
+            Some((OvWaste(_, left, dur), _)) =>
+              if ov_en() {
+                left.to_string() + "% weekly unused · resets to zero in " + dur
+              } else {
+                "周额度剩 " + left.to_string() + "% 未用 · " + dur + "后重置清零"
+              }
+            _ => ""
+          }
+        },
+        lacks=true,
+        lead=LeadLine(fn(l) { ov_account_mark_node(l, ev) }),
+      )
+    }
+  })
 }
 
 ///|
@@ -1294,6 +1400,25 @@ pub fn profiles_overview_node(
     out
   })
   let waste_items = fn() { waste_now.get() }
+  let alerts_list = @signals.computed(fn(_) {
+    let broken = broken_items()
+    let waste = waste_items()
+    let total = broken.length() + waste.length()
+    let out : Array[(String, OvAlertItem, @sf.CardPiece)] = []
+    let mut i = 0
+    for e in broken {
+      out.push(("ab/" + text(Some(e), "key"), OvBroken(e), @sf.card_piece_of(i, total)))
+      i += 1
+    }
+    for it in waste {
+      out.push(("aw/" + text(Some(it.0), "key"), OvWaste(it.0, it.1, it.2), @sf.card_piece_of(i, total)))
+      i += 1
+    }
+    out
+  }, same=fn(a, b) {
+    a.length() == b.length() && a.iter().zip(b.iter()).all(fn(p) { ov_alert_same(p.0, p.1) })
+  })
+  let alerts = v.keyed_by(fn() { alerts_list.get() }, fn(x) { x.0 }, same=ov_alert_same)
   // (its blocks, worked out once: what reads them is told only as one comes or goes)
   let blocks_now = @signals.computed(fn(_) {
     let out : Array[String] = []
@@ -1303,8 +1428,10 @@ pub fn profiles_overview_node(
     if pools().length() > 0 || balance_keys().length() > 0 {
       out.push("pools")
     }
-    if broken_items().length() > 0 || waste_items().length() > 0 {
-      out.push("alerts")
+    let alert_keys = alerts.keys()
+    if !alert_keys.is_empty() {
+      out.push("alerts_head")
+      out.append(alert_keys)
     }
     out
   })
@@ -1354,6 +1481,8 @@ pub fn profiles_overview_node(
     said?,
     width?,
     tips?,
+    reused=fn(k) { if k.has_prefix("ab/") { Some(0) } else if k.has_prefix("aw/") { Some(1) } else { None } },
+    make_reused=fn(b, kind, key) { ov_alert_block(b, core, open_profile, alerts, kind, key) },
     fn() { blocks_now.get() },
     fn(b, key) {
       if key == "choice" {
@@ -1377,42 +1506,12 @@ pub fn profiles_overview_node(
           ov_pools_card_node(sec, core, open_profile, pools, balance_keys, fn() { pool_share_open(core, fn() { here().workspace }) }, tips)
         })
         |> ignore
-      } else if key == "alerts" {
-        @sf.section_node(b, fn() { if ov_en() { "Needs attention" } else { "需处理" } }, fn(sec) {
-          @sf.group_node(sec, fn(g) {
-            g.each(broken_items, fn(e) { text(Some(e), "key") }, fn(slot, e_sig) {
-              let ev = fn() { Some(e_sig.get()) }
-              @sf.link_row_node(
-                slot,
-                fn() { ov_account_name(ev()) },
-                fn() { ov_open_account(core, open_profile, @signals.untracked(ev)) },
-                title_cut=true,
-                value=fn() { ov_issue_action_label(ev()) },
-                trouble=fn() { ov_issue_short(ev()) },
-                lead=LeadLine(fn(l) { ov_account_mark_node(l, ev()) }),
-              )
-            })
-            g.each(waste_items, fn(it) { text(Some(it.0), "key") }, fn(slot, it_sig) {
-              let ev = fn() { Some(it_sig.get().0) }
-              @sf.link_row_node(
-                slot,
-                fn() { ov_account_name(ev()) },
-                fn() { ov_open_account(core, open_profile, @signals.untracked(ev)) },
-                title_cut=true,
-                note=fn() {
-                  let (_, left, dur) = it_sig.get()
-                  if ov_en() {
-                    left.to_string() + "% weekly unused · resets to zero in " + dur
-                  } else {
-                    "周额度剩 " + left.to_string() + "% 未用 · " + dur + "后重置清零"
-                  }
-                },
-                lacks=true,
-                lead=LeadLine(fn(l) { ov_account_mark_node(l, ev()) }),
-              )
-            })
-          })
-        })
+      } else if key == "alerts_head" {
+        @sf.section_heading_node(b, fn() { if ov_en() { "Needs attention" } else { "需处理" } })
+      } else if key.has_prefix("ab/") {
+        ov_alert_block(b, core, open_profile, alerts, 0, fn() { key })
+      } else if key.has_prefix("aw/") {
+        ov_alert_block(b, core, open_profile, alerts, 1, fn() { key })
       }
     },
   )

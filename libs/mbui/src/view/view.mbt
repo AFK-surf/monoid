@@ -72,6 +72,8 @@ pub(all) struct Look {
   mut shadow : (Double, Double, Int64)
   /// the halo its words are drawn on, under them (its blur's sigma in points, its colour; 0 blur: none): View::words_halo
   mut halo : (Double, Int64)
+  /// the rounded rectangles it draws over its ground, under its shapes: View::rects
+  mut rects : Array[@paint.Rect]
   /// the shapes it draws over its ground (their outlines, as said: what they come to drawn kept by them), and the one
   /// colour they are drawn in where it is not 0 (their own where it is): View::shapes, View::tint
   mut shapes : Array[@paint.Shape]
@@ -153,6 +155,8 @@ pub(all) struct Look {
   mut words_center : Bool
   /// whether its words, not wrapped, keep their line breaks, each line as it is (View::words_breaks)
   mut words_breaks : Bool
+  /// whether single-line words are optically centered vertically within their line box (View::words_optical)
+  mut words_optical : Bool
   /// how many times what its glyphs are drawn by was said (View::glyphs_by): its words drawn again as it is
   mut glyphs_said : Int
   /// whether its words' ellipsis, one line cut short past it, is drawn past its box (View::ellipsis_past)
@@ -184,6 +188,7 @@ pub(all) struct Content {
   shadow : (Double, Double, Int64)
   /// the halo its words are drawn on (View::words_halo)
   halo : (Double, Int64)
+  rects : Array[@paint.Rect]
   shapes : Array[@paint.Shape]
   lines : Array[@paint.Line]
   tint : Int64
@@ -226,6 +231,8 @@ pub(all) struct Content {
   words_center : Bool
   /// its words, not wrapped, on their lines as written (View::words_breaks)
   words_breaks : Bool
+  /// its single-line words optically centered vertically within their line box (View::words_optical)
+  words_optical : Bool
   /// how many times what its glyphs are drawn by was said (View::glyphs_by; Tree::glyphs_of)
   glyphs_said : Int
   /// its words' ellipsis drawn past its box where it has not the room for it (View::ellipsis_past)
@@ -253,6 +260,7 @@ pub fn Content::draws(self : Content) -> Bool {
   (self.ring.0 > 0.0 && (self.ring.2 & 0xFFL) != 0L) ||
   self.image is Some(_) ||
   self.words != "" ||
+  !self.rects.is_empty() ||
   !self.shapes.is_empty() ||
   !self.lines.is_empty() ||
   self.picture is Some(_) ||
@@ -272,6 +280,7 @@ fn look_draws_any(l : Look, hosted : Bool, ring : (Double, Double, Int64)) -> Bo
   (ring.0 > 0.0 && (ring.2 & 0xFFL) != 0L) ||
   l.image is Some(_) ||
   l.words != "" ||
+  !l.rects.is_empty() ||
   !l.shapes.is_empty() ||
   !l.lines.is_empty() ||
   l.picture is Some(_) ||
@@ -305,6 +314,7 @@ pub(all) struct Drawn {
   shadow : (Double, Double, Int64)
   /// the halo its words are drawn on (View::words_halo)
   halo : (Double, Int64)
+  rects : Array[@paint.Rect]
   shapes : Array[@paint.Shape]
   lines : Array[@paint.Line]
   tint : Int64
@@ -347,6 +357,8 @@ pub(all) struct Drawn {
   words_center : Bool
   /// its words, not wrapped, on their lines as written (View::words_breaks)
   words_breaks : Bool
+  /// its single-line words optically centered vertically within their line box (View::words_optical)
+  words_optical : Bool
   /// how many times what its glyphs are drawn by was said (View::glyphs_by; Tree::glyphs_of)
   glyphs_said : Int
   /// its words' ellipsis drawn past its box where it has not the room for it (View::ellipsis_past)
@@ -1930,6 +1942,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.look.clips = false
       n.look.words_center = false
       n.look.words_breaks = false
+      n.look.words_optical = false
       n.look.glyphs_said = 0
       n.look.ellipsis_past = false
       n.look.picture = None
@@ -1941,6 +1954,9 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.look.drawn_exact = false
       n.look.ground_drawn = ground_as_laid
       n.look.cut_soft = false
+      if n.look.rects.length() > 0 {
+        n.look.rects = []
+      }
       if n.look.lines.length() > 0 {
         n.look.lines = []
       }
@@ -2094,7 +2110,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         gen: 0,
         live: true,
         flex: @flex.Node::new(),
-        look: { ground: 0L, ground_over: 0L, ink: 0L, words: "", words_drawn: None, words_look: words_plain, runs: [], runs_look: runs_plain, runs_pressed: -1, runs_picked: (0, 0), runs_marks: [], shadow: (0.0, 0.0, 0L), halo: (0.0, 0L), shapes: [], tint: 0L, lines: [], edge: (0.0, 0L), ring: (0.0, 0.0, 0L), focus_ring: None, image: None, image_for: (0.0, 0.0), image_cover: false, image_contain: false, image_cover_at: None, image_fade: false, stretch: 0.0, image_in: None, radius: 0.0, corners: None, glass: None, alpha: 1.0, dx: 0.0, dy: 0.0, sx: 0.0, sy: 0.0, scale: 1.0, pivot: At(0.5, 0.5), scale_shift: 0.0, scale_peak: 0.0, turn: 0.0, turn_drawn: false, fades: (0.0, 0.0, 0.0, 0.0), drawn_off: (0.0, 0.0), drawn_exact: false, ground_drawn: ground_as_laid, cut_soft: false, drawn_as: "", clips: false, clips_past: 0.0, words_center: false, words_breaks: false, glyphs_said: 0, ellipsis_past: false, picture: None },
+        look: { ground: 0L, ground_over: 0L, ink: 0L, words: "", words_drawn: None, words_look: words_plain, runs: [], runs_look: runs_plain, runs_pressed: -1, runs_picked: (0, 0), runs_marks: [], shadow: (0.0, 0.0, 0L), halo: (0.0, 0L), rects: [], shapes: [], tint: 0L, lines: [], edge: (0.0, 0L), ring: (0.0, 0.0, 0L), focus_ring: None, image: None, image_for: (0.0, 0.0), image_cover: false, image_contain: false, image_cover_at: None, image_fade: false, stretch: 0.0, image_in: None, radius: 0.0, corners: None, glass: None, alpha: 1.0, dx: 0.0, dy: 0.0, sx: 0.0, sy: 0.0, scale: 1.0, pivot: At(0.5, 0.5), scale_shift: 0.0, scale_peak: 0.0, turn: 0.0, turn_drawn: false, fades: (0.0, 0.0, 0.0, 0.0), drawn_off: (0.0, 0.0), drawn_exact: false, ground_drawn: ground_as_laid, cut_soft: false, drawn_as: "", clips: false, clips_past: 0.0, words_center: false, words_breaks: false, words_optical: false, glyphs_said: 0, ellipsis_past: false, picture: None },
         parent,
         allow_ellipsis: false,
         words_as_said,
@@ -2451,7 +2467,7 @@ fn Tree::beat_set(self : Tree, ms : Double) -> Unit {
 
 ///|
 /// Where a cycle of `period` ms is on the resident clock's steps (0 to 1, from moment 0 on), followed: for an endless
-/// decoration (a working mark's ring, a waiting mark's breath) drawn anew only at each step, as an old view's resident
+/// decoration (a working mark's spokes, a waiting mark's breath) drawn anew only at each step, as an old view's resident
 /// cycle is (Ctx::cycle's `resident`): what hosts the tree wakes for its next step, said `later` (Tree::resident_next),
 /// not a frame after each frame.
 pub fn View::cycle_resident(self : View, period : Double) -> Double {
@@ -3948,6 +3964,8 @@ priv enum Prop {
   Sticky
   Reveals
   TakesUnseen
+  Rects
+  WordsOptical
 }
 
 ///|
@@ -4063,6 +4081,8 @@ impl Show for Prop with output(self, logger) {
       Sticky => "Sticky"
       Reveals => "Reveals"
       TakesUnseen => "TakesUnseen"
+      Rects => "Rects"
+      WordsOptical => "WordsOptical"
     },
   )
 }
@@ -4202,6 +4222,8 @@ fn Prop::ord(self : Prop) -> Int {
     Sticky => 102
     Reveals => 103
     TakesUnseen => 104
+    Rects => 105
+    WordsOptical => 106
   }
 }
 
@@ -5791,6 +5813,15 @@ pub fn View::carries_until(self : View, ends : () -> Double) -> View {
 }
 
 ///|
+/// The rounded rectangles it draws over its ground, under its shapes (@paint.Rect: native kind 0 rounded rectangles
+/// from its top left, each in its own colour and corner radii): paint's.
+#callsite(autofill(loc))
+pub fn View::rects(self : View, rects : Live[Array[@paint.Rect]], loc~ : SourceLoc) -> View {
+  self.bind(loc~, Rects, rects, Paint, fn(r) { self.tree.nodes[self.at].look.rects = r })
+  self
+}
+
+///|
 /// The lines it draws over its shapes (@paint.Line: round-capped strokes through points from its top left, each in its
 /// own colour, as far along as it says), as an old view's box draws them (Ctx::lines): paint's.
 #callsite(autofill(loc))
@@ -5993,6 +6024,7 @@ fn draws_of(n : Node) -> Bool {
   l.image is Some(_) ||
   l.words != "" ||
   !l.runs.is_empty() ||
+  !l.rects.is_empty() ||
   !l.shapes.is_empty() ||
   !l.lines.is_empty() ||
   l.picture is Some(_) ||
@@ -6007,6 +6039,7 @@ fn words_alone(n : Node) -> Bool {
   (l.ground & 0xFFL) == 0L &&
   !(l.edge.0 > 0.0 && (l.edge.1 & 0xFFL) != 0L) &&
   l.image is None &&
+  l.rects.is_empty() &&
   l.shapes.is_empty() &&
   l.lines.is_empty() &&
   l.picture is None &&
@@ -7401,7 +7434,7 @@ pub fn Tree::takes_presses(self : Tree, id : NodeId) -> Bool {
 pub fn View::words(
   self : View,
   words : Live[String],
-  ink? : Int64 = 0x000000FFL,
+  ink? : Int64 = ink_theme,
   look? : WordsLook = words_plain,
   loc~ : SourceLoc,
 ) -> View {
@@ -7607,7 +7640,7 @@ pub fn[K : Eq] View::measured(
 pub fn View::words_runs(
   self : View,
   runs : Live[Array[@text.Run]],
-  ink? : Int64 = 0x000000FFL,
+  ink? : Int64 = ink_theme,
   look? : WordsLook = words_plain,
   loc~ : SourceLoc,
 ) -> View {
@@ -9740,11 +9773,13 @@ pub fn[K : Eq] View::pick(
   along_row? : Bool = false,
   leave? : Double = 0.0,
   leave_of? : (K, K) -> Double,
+  keeps? : Bool = false,
+  keeps_max? : Int = 0,
   loc~ : SourceLoc,
 ) -> Unit {
   guard self.alive() else { return }
   let (which, leave_of) = Picked::of(which, make, leave_of)
-  self.pick_by(which, at_once, along_row, leave, leave_of, loc)
+  self.pick_by(which, at_once, along_row, leave, leave_of, keeps, keeps_max, loc)
 }
 
 ///|
@@ -9809,12 +9844,15 @@ fn View::pick_by(
   along_row : Bool,
   leave : Double,
   leave_of : ((Picked, Picked) -> Double)?,
+  keeps : Bool,
+  keeps_max : Int,
   loc : SourceLoc,
 ) -> Unit {
   let slot = self.slot(loc)
   slot.along_row_said(along_row, at_once, "pick", loc)
-  // (what it showed leaving over a time as what it shows now waits to be seen: pick_leave.mbt)
-  if leave > 0.0 {
+  // (what it showed leaving over a time as what it shows now waits to be seen: pick_leave.mbt; ignored when `keeps`
+  // parks branches instead of letting them leave)
+  if !keeps && leave > 0.0 {
     slot.pick_leaving(which, at_once, leave, loc)
     return
   }
@@ -9822,6 +9860,8 @@ fn View::pick_by(
   // (what it showed on its way out, `leave_of`'s: its key, its node, and what makes what it shows now at that way's end
   // called off)
   let going : Ref[(Picked, View, () -> Unit)?] = Ref(None)
+  // (parked branches kept alive at rest when `keeps` is true, oldest-used first for LRU eviction when `keeps_max > 0`)
+  let parked : Array[(Picked, View, () -> Unit)] = []
   let stop = slot.tree.structured(which, fn(k) {
     guard slot.alive() else { return }
     // (on its way out: back as what it showed is asked again; else what it shows now waits for that way's end)
@@ -9838,7 +9878,7 @@ fn View::pick_by(
       None => ()
     }
     match (had.val, leave_of) {
-      (Some((was, v)), Some(of)) if was != k && !at_once && v.alive() && slot.tree.transition_gate(v.at) => {
+      (Some((was, v)), Some(of)) if !keeps && was != k && !at_once && v.alive() && slot.tree.transition_gate(v.at) => {
         let ms = of(was, k)
         if ms > 0.0 {
           slot.tree.work.structure = slot.tree.work.structure + 1
@@ -9861,40 +9901,81 @@ fn View::pick_by(
       Some((was, _)) if was == k => ()
       _ => {
         slot.tree.work.structure = slot.tree.work.structure + 1
+        // (take any parked branch matching `k` before parking `was` so LRU eviction cannot evict `k` itself)
+        let mut reused : (View, () -> Unit)? = None
+        if keeps {
+          for i in 0..<parked.length() {
+            if parked[i].0 == k {
+              let (_, pv, wake) = parked.remove(i)
+              reused = Some((pv, wake))
+              break
+            }
+          }
+        }
         // (and whether the one before was on its way from nothing or to it: the new one goes on with that, a box taking
         // no room holding nothing following it still, Style's come_fill)
         let (tall, fill) = match had.val {
-          Some((_, v)) => {
+          Some((was, v)) => {
             // (one over what holds it, or along a row it makes no way along, took none of the column's room)
             let (tall, fill) = if v.live() is Some(n) && slot.tree.makes_way(v.at) {
               (slot.tree.along_now(v.at, slot.tree.cause_now()), n.coming && n.flex.style.come_fill)
             } else {
               (0.0, false)
             }
-            // (going in another's place: what it holds told it starts leaving, then let go)
-            slot.tree.tell_leaving(v.at)
-            slot.drop(v)
+            if keeps {
+              if v.alive() {
+                let wake = slot.park(v)
+                parked.push((was, v, wake))
+                if keeps_max > 0 {
+                  while parked.length() > keeps_max {
+                    let (_, evicted, _) = parked.remove(0)
+                    evicted.let_go()
+                  }
+                }
+              }
+            } else {
+              // (going in another's place: what it holds told it starts leaving, then let go)
+              slot.tree.tell_leaving(v.at)
+              slot.drop(v)
+            }
             (tall, fill)
           }
           None => (0.0 / 0.0, false)
         }
-        let said = slot.tree.said_count
-        let v = slot.structure_box(fn(v) { (k.make)(v) }, loc~)
-        let none = slot.tree.structural(v, said)
-        if tall == tall && !at_once {
-          if none && tall >= 0.5 {
-            // (one that made nothing: its way closes from as tall as the one before was to nothing, and stays there, a
-            // box taking no room holding nothing closing its padding with it (flex's come_fill, nothing_made))
-            slot.comes(v, tall, 0.0, stays=true) |> ignore
-          } else {
-            slot.comes(v, tall, 1.0, fill~) |> ignore
+        match reused {
+          Some((pv, wake)) if pv.alive() => {
+            slot.take_in(pv)
+            answering(fn() { wake() })
+            had.val = Some((k, pv))
+          }
+          _ => {
+            let said = slot.tree.said_count
+            let v = slot.structure_box(fn(v) { (k.make)(v) }, loc~)
+            let none = slot.tree.structural(v, said)
+            if tall == tall && !at_once {
+              if none && tall >= 0.5 {
+                // (one that made nothing: its way closes from as tall as the one before was to nothing, and stays there, a
+                // box taking no room holding nothing closing its padding with it (flex's come_fill, nothing_made))
+                slot.comes(v, tall, 0.0, stays=true) |> ignore
+              } else {
+                slot.comes(v, tall, 1.0, fill~) |> ignore
+              }
+            }
+            had.val = Some((k, v))
           }
         }
-        had.val = Some((k, v))
       }
     }
   })
-  slot.owns(stop) |> ignore
+  slot.owns(fn() {
+    stop()
+    let all = parked.copy()
+    parked.clear()
+    for entry in all {
+      entry.1.let_go()
+    }
+  })
+  |> ignore
 }
 
 ///|
@@ -9909,9 +9990,11 @@ pub fn[K : Eq] View::switch_by(
   which : () -> K,
   make : (View, K) -> Unit,
   leave? : Double = 0.0,
+  keeps? : Bool = false,
+  keeps_max? : Int = 0,
   loc~ : SourceLoc,
 ) -> Unit {
-  self.pick(which, make, at_once=true, leave~, loc~)
+  self.pick(which, make, at_once=true, leave~, keeps~, keeps_max~, loc~)
 }
 
 ///|
@@ -13179,6 +13262,7 @@ fn Tree::made_again(self : Tree, at : Int) -> Unit {
     ink: n.look.ink,
     words: n.look.words,
     words_drawn: n.look.words_drawn,
+    rects: n.look.rects,
     shapes: n.look.shapes,
     lines: n.look.lines,
     tint: n.look.tint,
@@ -13218,6 +13302,7 @@ fn Tree::made_again(self : Tree, at : Int) -> Unit {
     },
     words_center: n.look.words_center,
     words_breaks: n.look.words_breaks,
+    words_optical: n.look.words_optical,
     glyphs_said: n.look.glyphs_said,
     ellipsis_past: n.look.ellipsis_past,
     picture: n.look.picture,
@@ -14104,6 +14189,7 @@ fn unfolded(c : Content, x : Double, y : Double, a : Double, s : Double) -> Draw
     ground: c.ground,
     ink: c.ink,
     words: c.words,
+    rects: c.rects,
     shapes: c.shapes,
     lines: c.lines,
     tint: c.tint,
@@ -14133,6 +14219,7 @@ fn unfolded(c : Content, x : Double, y : Double, a : Double, s : Double) -> Draw
     clips_way: c.clips_way,
     words_center: c.words_center,
     words_breaks: c.words_breaks,
+    words_optical: c.words_optical,
     glyphs_said: c.glyphs_said,
     ellipsis_past: c.ellipsis_past,
     picture: c.picture,

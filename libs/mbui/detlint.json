@@ -317,9 +317,7 @@
     "layout-drawn-while": {},
     "shader-int": {},
     "raw-hover-ground": {},
-    "width-structure": {
-      "src/view/grid.mbt": 1
-    },
+    "width-structure": {},
     "reused-untracked-key": {},
     "manual-fade-way": {},
     "page-at-moment": {},

@@ -30,6 +30,11 @@ export const IDEMPOTENT = "stillfail-idempotent";
 /// never asked twice at once on another way when slow (mesh-wire.ts), only again where its way is gone. Said to the wire
 /// alone, never sent.
 export const NO_HEDGE = "stillfail-no-hedge";
+/// A large transfer (file parts, whole file downloads, upload parts): routed on the highest-throughput way when
+/// available (mesh-wire.ts), keeping interactive requests on the lowest-latency way. Said to the wire alone, never sent.
+export const BULK = "stillfail-bulk";
+/// Lane index for striped multi-way bulk transfers (mesh-wire.ts). Said to the wire alone, never sent.
+export const BULK_LANE = "stillfail-bulk-lane";
 /// What a batch's answer is as a station streams it (station/src/api/admin.ts `batchLines`): a line of JSON a read,
 /// in order.
 export const NDJSON = "application/x-ndjson";
@@ -451,7 +456,8 @@ export class Requests {
   /// far, as they go.
   uploadPart(station: StationAddr, q: { id: string; name: string; size: number; offset: number; sha256?: string }, bytes: Uint8Array, ctx: SpanContext | null, wrote?: (sent: number) => void): Effect.Effect<{ have: number; file?: unknown }, CoreError> {
     const path = `/uploads/parts?id=${encode(q.id)}&name=${encode(q.name)}&size=${q.size}&offset=${q.offset}${q.sha256 ? `&sha256=${q.sha256}` : ""}`;
-    return Effect.flatMap(this.exchange(station, "POST", path, [["content-type", "application/octet-stream"]], bytes, false, ctx, undefined, wrote), (r) => {
+    const headers: [string, string][] = bytes.length > 0 ? [["content-type", "application/octet-stream"], [BULK, "1"]] : [["content-type", "application/octet-stream"]];
+    return Effect.flatMap(this.exchange(station, "POST", path, headers, bytes, false, ctx, undefined, wrote), (r) => {
       const parsed = parseJson(r.body);
       const data = parsed === undefined ? {} : parsed;
       if (r.status === 404 || r.status === 405) return this.#wholeUpload(station, q, bytes, ctx);
@@ -517,7 +523,7 @@ export class Requests {
         const path = `/sessions/${encode(key)}/files?name=${encode(name)}${thumb === "preview" ? "&thumb=2" : thumb ? "&thumb=1" : ""}`;
         const status = this.#status(station);
         const waiting = status.begin({ station: station.toString() }, stationWhat("GET", path), false);
-        const [span, head] = this.#head(station, "GET", path, [], 0, ctx);
+        const [span, head] = this.#head(station, "GET", path, thumb === false ? [[BULK, "1"]] : [], 0, ctx);
         const result = yield* Effect.result(
           Effect.gen({ self: this }, function* () {
             const reply = yield* this.wire.request(station, head, empty);
@@ -558,12 +564,12 @@ export class Requests {
   /// `said`: what the station says it is, as its answer begins (before its bytes). `quiet`: in the background, not said
   /// to be waited on; `noHedge`: never asked twice at once (NO_HEDGE). A final short batch is handed to readers even
   /// when the transfer is interrupted.
-  filePart(station: StationAddr, key: string, name: string, offset: number, length: number, ctx: SpanContext | null, heard?: (loaded: number) => void, sink?: (piece: Uint8Array) => void, said?: (head: { type: string; total: number }) => void, quiet = false, noHedge = false): Effect.Effect<{ type: string; total: number; bytes: Uint8Array }, CoreError> {
+  filePart(station: StationAddr, key: string, name: string, offset: number, length: number, ctx: SpanContext | null, heard?: (loaded: number) => void, sink?: (piece: Uint8Array) => void, said?: (head: { type: string; total: number }) => void, quiet = false, noHedge = false, lane?: number): Effect.Effect<{ type: string; total: number; bytes: Uint8Array }, CoreError> {
     return this.#chatParts.read(JSON.stringify([station.toString(), key, name]), offset, length,
-      (at, count, take, head) => this.#filePart(station, key, name, at, count, ctx, take, head, quiet, noHedge), heard, sink, said);
+      (at, count, take, head) => this.#filePart(station, key, name, at, count, ctx, take, head, quiet, noHedge, lane), heard, sink, said);
   }
 
-  #filePart(station: StationAddr, key: string, name: string, offset: number, length: number, ctx: SpanContext | null, sink: (piece: Uint8Array) => void, said?: (head: { type: string; total: number }) => void, quiet = false, noHedge = false): Effect.Effect<{ type: string; total: number; bytes: Uint8Array }, CoreError> {
+  #filePart(station: StationAddr, key: string, name: string, offset: number, length: number, ctx: SpanContext | null, sink: (piece: Uint8Array) => void, said?: (head: { type: string; total: number }) => void, quiet = false, noHedge = false, lane?: number): Effect.Effect<{ type: string; total: number; bytes: Uint8Array }, CoreError> {
     const path = `/sessions/${encode(key)}/parts?name=${encode(name)}&offset=${offset}&length=${length}`;
     const onHead = said && ((status: number, headers: [string, string][]) => {
       if (status !== 200) return;
@@ -572,7 +578,9 @@ export class Requests {
     });
     let received = 0;
     const take = (bytes: Uint8Array) => { received += bytes.length; sink(bytes); };
-    return Effect.flatMap(this.exchange(station, "GET", path, noHedge ? [[NO_HEDGE, "1"]] : [], empty, quiet, ctx, undefined, undefined, take, onHead, false, true), (r) => {
+    const headers: [string, string][] = noHedge ? [[NO_HEDGE, "1"], [BULK, "1"]] : [[BULK, "1"]];
+    if (lane !== undefined) headers.push([BULK_LANE, String(lane)]);
+    return Effect.flatMap(this.exchange(station, "GET", path, headers, empty, quiet, ctx, undefined, undefined, take, onHead, false, true), (r) => {
       if (r.status === 404 && isNoRoute(r.body)) return Effect.fail(new CoreError("unsupported", t("station.core.fileOldStation"), 404));
       if (r.status !== 200) {
         const data = parseJson(r.body);
@@ -621,12 +629,12 @@ export class Requests {
 
   /// GET /drive/read?root=&path=&offset=&length=: a part of a file of the station's drive, its whole size and time.
   /// `heard`, `sink`, `said`, `quiet`, `noHedge`: as filePart's.
-  driveRead(station: StationAddr, root: string, path: string, offset: number, length: number, ctx: SpanContext | null, heard?: (loaded: number) => void, sink?: (piece: Uint8Array) => void, said?: (head: { type: string; total: number; mtime: number | null }) => void, quiet = false, version?: readonly [number, number], noHedge = false): Effect.Effect<{ type: string; total: number; mtime: number | null; bytes: Uint8Array }, CoreError> {
+  driveRead(station: StationAddr, root: string, path: string, offset: number, length: number, ctx: SpanContext | null, heard?: (loaded: number) => void, sink?: (piece: Uint8Array) => void, said?: (head: { type: string; total: number; mtime: number | null }) => void, quiet = false, version?: readonly [number, number], noHedge = false, lane?: number): Effect.Effect<{ type: string; total: number; mtime: number | null; bytes: Uint8Array }, CoreError> {
     return this.#driveParts.read(JSON.stringify([station.toString(), root, path, version]), offset, length,
-      (at, count, take, head) => this.#driveRead(station, root, path, at, count, ctx, take, head, quiet, noHedge), heard, sink, said);
+      (at, count, take, head) => this.#driveRead(station, root, path, at, count, ctx, take, head, quiet, noHedge, lane), heard, sink, said);
   }
 
-  #driveRead(station: StationAddr, root: string, path: string, offset: number, length: number, ctx: SpanContext | null, sink: (piece: Uint8Array) => void, said?: (head: { type: string; total: number; mtime: number | null }) => void, quiet = false, noHedge = false): Effect.Effect<{ type: string; total: number; mtime: number | null; bytes: Uint8Array }, CoreError> {
+  #driveRead(station: StationAddr, root: string, path: string, offset: number, length: number, ctx: SpanContext | null, sink: (piece: Uint8Array) => void, said?: (head: { type: string; total: number; mtime: number | null }) => void, quiet = false, noHedge = false, lane?: number): Effect.Effect<{ type: string; total: number; mtime: number | null; bytes: Uint8Array }, CoreError> {
     const asked = `/drive/read?root=${encode(root)}&path=${encode(path)}&offset=${offset}&length=${length}`;
     const onHead = said && ((status: number, headers: [string, string][]) => {
       if (status !== 200) return;
@@ -636,7 +644,9 @@ export class Requests {
     });
     let received = 0;
     const take = (bytes: Uint8Array) => { received += bytes.length; sink(bytes); };
-    return Effect.flatMap(this.exchange(station, "GET", asked, noHedge ? [[NO_HEDGE, "1"]] : [], empty, quiet, ctx, undefined, undefined, take, onHead, false, true), (r) => {
+    const headers: [string, string][] = noHedge ? [[NO_HEDGE, "1"], [BULK, "1"]] : [[BULK, "1"]];
+    if (lane !== undefined) headers.push([BULK_LANE, String(lane)]);
+    return Effect.flatMap(this.exchange(station, "GET", asked, headers, empty, quiet, ctx, undefined, undefined, take, onHead, false, true), (r) => {
       if (r.status === 404 && isNoRoute(r.body)) return Effect.fail(new CoreError("unsupported", t("station.core.driveOldStation"), 404));
       if (r.status !== 200) {
         const data = parseJson(r.body);
@@ -654,7 +664,8 @@ export class Requests {
   /// with how much the station has (`have` on the error's answer: the next part starts there).
   driveUploadPart(station: StationAddr, q: { root: string; path: string; id: string; offset: number; total: number; replace: boolean }, bytes: Uint8Array, ctx: SpanContext | null): Effect.Effect<{ have: number; entry: unknown | null }, CoreError> {
     const asked = `/drive/upload?root=${encode(q.root)}&path=${encode(q.path)}&id=${encode(q.id)}&offset=${q.offset}&total=${q.total}${q.replace ? "&replace=1" : ""}`;
-    return Effect.flatMap(this.exchange(station, "PUT", asked, [["content-type", "application/octet-stream"]], bytes, false, ctx), (r) => {
+    const headers: [string, string][] = bytes.length > 0 ? [["content-type", "application/octet-stream"], [BULK, "1"]] : [["content-type", "application/octet-stream"]];
+    return Effect.flatMap(this.exchange(station, "PUT", asked, headers, bytes, false, ctx), (r) => {
       const parsed = parseJson(r.body);
       const data = parsed === undefined ? {} : parsed;
       if (r.status === 409 && get(data, "code") === "upload_lost") {

@@ -4,9 +4,7 @@
 ///|
 test "a sign-in card's first action starts at its title" {
   let calls : Array[Made] = []
-  let t = cards_core(calls, mode="chat-signin")
-  @ui.fake_autofill.val = true
-  t.draw()
+  let t = cards_core(calls, mode="chat-signin", autofill=true)
   let (title_x, _, _, _) = t.rect_of("登录 github.com").unwrap()
   let (action_x, _, _, _) = t.rect_of("用密码管理器登录").unwrap()
   assert_true((action_x - title_x).abs() < 0.01, msg="title \{title_x}, action \{action_x}")
@@ -15,9 +13,7 @@ test "a sign-in card's first action starts at its title" {
 ///|
 test "a sign-in card keeps its primary action at the bottom when the choice wraps" {
   let calls : Array[Made] = []
-  let t = cards_core(calls, mode="chat-signin")
-  @ui.fake_autofill.val = true
-  t.draw()
+  let t = cards_core(calls, mode="chat-signin", autofill=true)
   let (title_x, _, _, _) = t.rect_of("登录 github.com").unwrap()
   let (action_x, action_y, _, _) = t.rect_of("用密码管理器登录").unwrap()
   let (choice_x, choice_y, _, _) = t.rect_of("登录后存入密钥库").unwrap()
@@ -31,9 +27,7 @@ test "a sign-in card keeps its primary action at the bottom when the choice wrap
 ///|
 test "the sign-in choice has the button's size and keeps its quiet colors" {
   let calls : Array[Made] = []
-  let t = cards_core(calls, mode="chat-signin")
-  @ui.fake_autofill.val = true
-  t.draw()
+  let t = cards_core(calls, mode="chat-signin", autofill=true)
   let primary = t.words().filter(fn(w) { w.0 == "用密码管理器登录" })[0]
   let choice = t.words().filter(fn(w) { w.0 == "登录后存入密钥库" })[0]
   assert_true((primary.4 - choice.4).abs() < 0.01, msg="the two labels have the same line height")
@@ -53,9 +47,7 @@ test "the sign-in choice has the button's size and keeps its quiet colors" {
 ///|
 test "the wrapped sign-in choice opens and stays aligned after choosing" {
   let calls : Array[Made] = []
-  let t = cards_core(calls, mode="chat-signin")
-  @ui.fake_autofill.val = true
-  t.draw()
+  let t = cards_core(calls, mode="chat-signin", autofill=true)
   t.click(Button, label="登录后存入密钥库")
   assert_true(t.find("不存入密钥库") is Some(_))
   t.tap_text("不存入密钥库")
@@ -67,9 +59,7 @@ test "the wrapped sign-in choice opens and stays aligned after choosing" {
 ///|
 test "the sign-in choice's menu leaves the primary action visible" {
   let calls : Array[Made] = []
-  let t = cards_core(calls, mode="chat-signin")
-  @ui.fake_autofill.val = true
-  t.draw()
+  let t = cards_core(calls, mode="chat-signin", autofill=true)
   let (ax, ay, aw, ah) = t.get(Button, label="用密码管理器登录").rect
   t.click(Button, label="登录后存入密钥库")
   let (mx, my, mw, mh) = t.get(Menu).rect

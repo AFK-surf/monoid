@@ -406,6 +406,8 @@ pub async fn WindowsDesktop::open(self : WindowsDesktop, options : ViewOptions) 
     ("maxHeight", Some(jn(options.max_height))),
     ("bitrate", options.bitrate.map(b => jn(js_round(b)))),
     ("fps", options.fps.map(jn)),
+    ("peek", if options.peek { Some(jb(true)) } else { None }),
+    ("agent", if options.agent { Some(jb(true)) } else { None }),
   ])
   let first = self.start_view(binary, codec, ask, audio, input) catch {
     e => raise self.io.refused(503, "station.screen.failed", args=jo([("said", js(message_of(e)))]))

@@ -63,11 +63,27 @@ priv struct Bench {
 /// Opens the window and runs `view` for every frame until it closes: the window a tree made once, `tree` (`view` the
 /// old frame around the old views it holds, put where `view` says: old_views_here), else `view` its one old view
 /// (view_host.mbt). `theme`: the theme the tree's nodes are drawn in (set_view_app's).
-pub fn run(title : String, view : (Ctx) -> Unit, tree? : (@view.View) -> Unit, theme? : () -> Theme) -> Unit {
+pub fn run(
+  title : String,
+  view : (Ctx) -> Unit,
+  tree? : (@view.View) -> Unit,
+  theme? : () -> Theme,
+  transitions_only? : Bool,
+) -> Unit {
   // (an app's run on a host: what faults is told and its boundary shows it, the app going on: @view's boundary.mbt)
   @view.faults_stop.val = false
   match tree {
-    Some(make) => set_view_app(make, around=view, theme?)
+    Some(make) => {
+      let made = if transitions_only.unwrap_or(true) {
+        fn(root : @view.View) {
+          root.transitions_only() |> ignore
+          make(root)
+        }
+      } else {
+        make
+      }
+      set_view_app(made, around=view, theme?)
+    }
     None => set_view_app(fn(root) { old(root, view).grow(Is(1.0)) |> ignore }, theme?)
   }
   start_host_window(title)

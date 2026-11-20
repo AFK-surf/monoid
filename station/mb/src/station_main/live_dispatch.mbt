@@ -1011,5 +1011,6 @@ async fn bus_rig_reach(bus : LiveBus, device : Json) -> @rigs_mode.Socket {
       })
     },
     on_close: f => if ended.val { f() } else { told.push(f) },
+    pipe: async fn(tunnel) { ignore((bus.ui_ask.val)("devices.socketTunnel", Json::array([id, tunnel]))) },
   }
 }

@@ -10,20 +10,29 @@
 pub fn vault_add(core : Core, here : Here, from~ : @sf.Beside) -> Unit {
   let ws = here.workspace
   let v = (core.topic)("vaults", { "workspace": str(ws) }).get().value
-  let mine = items(v, "vaults").iter().find_first(fn(x) { flag(Some(x), "mine") })
+  let all_vaults = items(v, "vaults")
   let plain = flag(v, "plain")
+  let keyed_personal = all_vaults.filter(fn(x) { (flag(Some(x), "keyed") || plain) && !vault_is_workspace(Some(x)) })
+  let keyed_workspace = all_vaults.filter(fn(x) { (flag(Some(x), "keyed") || plain) && vault_is_workspace(Some(x)) })
+  let keyed_vaults = keyed_personal + keyed_workspace
+  let mine = all_vaults.iter().find_first(fn(x) { flag(Some(x), "mine") && !vault_is_workspace(Some(x)) })
   let kinds = ["profile"]
   // (a service signed in to as the person: its token kept as one typed in would be, where one is)
   let into = match mine {
     Some(m) => text(Some(m), "id")
-    None => if plain { "plain" } else { "" }
+    None =>
+      match keyed_vaults.get(0) {
+        Some(kv) => text(Some(kv), "id")
+        None => if plain { "plain" } else { "" }
+      }
   }
   if into != "" {
     kinds.push("slack")
   }
-  if mine is Some(_) {
+  if keyed_vaults.length() > 0 {
     kinds.append(vault_kinds)
   }
+  let targets = keyed_vaults.map(fn(x) { (text(Some(x), "id"), text(Some(x), "name")) })
   let choices = kinds.map(fn(k) {
     match k {
       "slack" =>
@@ -48,8 +57,8 @@ pub fn vault_add(core : Core, here : Here, from~ : @sf.Beside) -> Unit {
     } else if k == "slack" {
       vault_oauth(core, ws, into, "slack")
     } else {
-      match mine {
-        Some(m) => vault_editor_dialog(core, ws, text(Some(m), "id"), None, kind=k, plain~, kinds=false)
+      match targets.get(0) {
+        Some((vid, _)) => vault_editor_dialog(core, ws, vid, None, kind=k, plain~, kinds=false, targets~)
         None => ()
       }
     }
@@ -88,6 +97,7 @@ pub fn vault_editor_dialog(
   kind? : String = "",
   plain? : Bool = false,
   kinds? : Bool = true,
+  targets? : Array[(String, String)] = [],
 ) -> Unit {
   let was = match editing {
     Some((_, p)) => Some(p)
@@ -96,6 +106,15 @@ pub fn vault_editor_dialog(
   let row = match editing {
     Some((r, _)) => Some(r)
     None => None
+  }
+  let start_target = targets.search_by(fn(t) { t.0 == vault }).unwrap_or(0)
+  let target_idx : @signals.Signal[Int] = @signals.signal(start_target)
+  let target_vault = fn() {
+    if was is None && targets.length() > 1 {
+      targets.get(target_idx.get()).map(fn(t) { t.0 }).unwrap_or(vault)
+    } else {
+      vault
+    }
   }
   let start_kind = match was {
     Some(p) => text(Some(p), "kind")
@@ -163,6 +182,16 @@ pub fn vault_editor_dialog(
           })
         })
         |> ignore
+      }
+      if was is None && targets.length() > 1 {
+        @sf.field_node(v, said("web-pages.vault.editor.saveTo"), fn(f) {
+          f.box(fn(s) {
+            @sf.segmented_node(s, fn() { targets.map(fn(t) { t.1 }) }, fn() { target_idx.get() }, fn(i) {
+              target_idx.set(i)
+            })
+          })
+          |> ignore
+        })
       }
       input(v, "name", said("web-pages.vault.editor.name"), fn() {
         @sf.t(if k() == "file" { "web-pages.vault.editor.fileNamePlaceholder" } else { "web-pages.vault.editor.namePlaceholder" })
@@ -325,7 +354,7 @@ pub fn vault_editor_dialog(
             core,
             ws,
             "putItem",
-            vault_put_params(vault, row, was, k(), words(), agent.get(), mode.get(), vault_lasts[lasts.get()]),
+            vault_put_params(@signals.untracked(target_vault), row, was, k(), words(), agent.get(), mode.get(), vault_lasts[lasts.get()]),
             @sf.t("web-pages.vault.saveWhat"),
             done=@sf.t("web-pages.vault.saved"),
             then=fn(_) {
@@ -534,6 +563,283 @@ pub fn vault_recover_dialog(core : Core, ws : String) -> Unit {
 }
 
 ///|
+/// Workspace vault member management dialog: admins can toggle workspace members (self disabled) and save via
+/// `vault.setMembers` (showing a key-rotation notice whenever any existing member is unchecked); non-admins see a
+/// read-only list of current shared members.
+pub fn vault_members_dialog(core : Core, here : Here, rv : Json?) -> Unit {
+  let ws = here.workspace
+  let my_sub = here.sub
+  let vault_id = text(rv, "id")
+  let initial = vault_member_subs(rv)
+  let can_manage = vault_can_manage(rv)
+  let ws_members = fn() {
+    items((core.topic)("workspace", { "workspace": str(ws) }).get().value, "members")
+  }
+  let selected : @signals.Signal[Array[String]] = @signals.signal(initial.copy())
+  let saving : @signals.Signal[Bool] = @signals.signal(false)
+  let error : @signals.Signal[String] = @signals.signal("")
+  let changed = fn() {
+    let cur = selected.get()
+    cur.length() != initial.length() || cur.iter().any(fn(s) { !initial.contains(s) })
+  }
+  let has_removed = fn() {
+    let cur = selected.get()
+    initial.iter().any(fn(s) { !cur.contains(s) })
+  }
+  open_dialog_nodes(
+    @sf.t("web-pages.vault.members.dialogTitle"),
+    fn(v, _) {
+      if can_manage {
+        @sf.group_node(v, fn(g) {
+          g.each(ws_members, fn(m) { text(Some(m), "sub") }, fn(row, m) {
+            let mv = fn() { Some(m.get()) }
+            let sub = fn() { text(mv(), "sub") }
+            let is_me = fn() { my_sub != "" && sub() == my_sub }
+            let title = fn() {
+              let n = text(mv(), "name")
+              if n != "" { n } else { text(mv(), "email") }
+            }
+            let note = fn() {
+              if is_me() {
+                @sf.t("web-pages.vault.members.you")
+              } else {
+                text(mv(), "email")
+              }
+            }
+            @sf.switch_row_node(
+              row,
+              title,
+              fn() { selected.get().contains(sub()) },
+              fn(on) {
+                let id = @signals.untracked(sub)
+                let cur = selected.untracked()
+                if on {
+                  if !cur.contains(id) {
+                    let next = cur.copy()
+                    next.push(id)
+                    selected.set(next)
+                  }
+                } else if cur.contains(id) {
+                  selected.set(cur.filter(fn(x) { x != id }))
+                }
+              },
+              note~,
+              disabled=fn() { is_me() || saving.get() },
+            )
+          })
+        })
+        v.show(has_removed, fn(s) {
+          @sf.words_node(s, fn() { @sf.t("web-pages.vault.members.rekeyNote") }, fn() { vd_note }) |> ignore
+        })
+        v.show(fn() { error.get() != "" }, fn(e) {
+          @sf.words_node(e, fn() { error.get() }, fn() { vd_note_bad }) |> ignore
+        })
+      } else {
+        let shown = fn() {
+          let from_ws = ws_members().filter(fn(m) { initial.contains(text(Some(m), "sub")) })
+          if from_ws.length() > 0 {
+            from_ws
+          } else {
+            items(rv, "members")
+          }
+        }
+        @sf.group_node(v, fn(g) {
+          g.each(shown, fn(m) { text(Some(m), "sub") }, fn(row, m) {
+            let mv = fn() { Some(m.get()) }
+            let title = fn() {
+              let n = text(mv(), "name")
+              if n != "" {
+                n
+              } else {
+                let e = text(mv(), "email")
+                if e != "" { e } else { text(mv(), "sub") }
+              }
+            }
+            @sf.link_row_node(row, title, fn() {  }, note=fn() { text(mv(), "email") }, goes=false)
+          })
+        })
+      }
+    },
+    fn(v, shut) {
+      @sf.foot_spacer_node(v)
+      if can_manage {
+        @sf.button_node(
+          v,
+          fn() { @sf.t("common.cancel") },
+          fn() { shut() },
+          tone=Ghost,
+          disabled=fn() { saving.get() },
+        )
+        |> ignore
+        @sf.button_node(
+          v,
+          fn() { @sf.t("common.save") },
+          fn() {
+            saving.set(true)
+            error.set("")
+            vault_act(
+              core,
+              ws,
+              "setMembers",
+              [("vault", str(vault_id)), ("members", Json::array(selected.untracked().map(str)))],
+              @sf.t("web-pages.vault.members.saveWhat"),
+              done=@sf.t("web-pages.vault.members.saved"),
+              then=fn(_) {
+                saving.set(false)
+                shut()
+              },
+              failed=fn(err) {
+                saving.set(false)
+                error.set(vault_said(err).unwrap_or(""))
+              },
+            )
+          },
+          tone=Primary,
+          busy=fn() { saving.get() },
+          disabled=fn() { !changed() || saving.get() },
+        )
+        |> ignore
+      } else {
+        @sf.button_node(v, fn() { @sf.t("common.close") }, fn() { shut() }, tone=Primary) |> ignore
+      }
+    },
+  )
+}
+
+///|
+/// Formats a device row's subtitle (`核对码 K7M-4PX · 林 · 3 分钟前`), omitting absent parts.
+fn vd_device_meta(dv : Json?) -> String {
+  let parts : Array[String] = []
+  let code = text(dv, "deviceCode")
+  if code != "" {
+    parts.push(@sf.t("web-pages.vault.devicesDialog.codePrefix", args=[("code", code)]))
+  }
+  let owner = text(dv, "ownerName")
+  if owner != "" {
+    parts.push(owner)
+  }
+  let at = text(dv, "atText")
+  if at != "" {
+    parts.push(at)
+  }
+  parts.join(" · ")
+}
+
+///|
+/// Per-vault devices detail dialog: reactively lists pending devices (each with its own single-device
+/// `vault.addDevice` authorize button aligned to the first line) and authorized devices, with a graceful
+/// fallback for older cores that omit device arrays.
+pub fn vault_devices_dialog(core : Core, here : Here, vault_id : String) -> Unit {
+  let ws = here.workspace
+  let rv = fn() {
+    items((core.topic)("vaults", { "workspace": str(ws) }).get().value, "vaults")
+    .iter()
+    .find_first(fn(r) { text(Some(r), "id") == vault_id })
+  }
+  let initial_name = text(@signals.untracked(rv), "name")
+  let title = if initial_name != "" {
+    @sf.t("web-pages.vault.devicesDialog.title", args=[("name", initial_name)])
+  } else {
+    @sf.t("web-pages.vault.devicesDialog.titleFallback")
+  }
+  let pending = fn() { items(rv(), "pendingDevices") }
+  let authorized = fn() { items(rv(), "authorizedDevices") }
+  let can_give = fn() { vault_can_manage(rv()) && flag(rv(), "keyed") }
+  open_dialog_nodes(
+    title,
+    fn(v, _) {
+      v.show(fn() { !pending().is_empty() }, fn(sec) {
+        @sf.style_node(sec, fn() { vd_dev_section })
+        @sf.words_node(sec, fn() { @sf.t("web-pages.vault.devicesDialog.pendingTitle") }, fn() {
+          @sf.meta.then(@sf.strong).then(@sf.full_words)
+        })
+        |> ignore
+        @sf.words_node(sec, fn() { @sf.t("web-pages.vault.devicesDialog.pendingNote") }, fn() { @sf.pg_note }) |> ignore
+        @sf.group_node(sec, fn(g) {
+          g.each(pending, fn(d) { text(Some(d), "device") }, fn(row, d) {
+            let dv = fn() { Some(d.get()) }
+            let dev_id = @signals.untracked(fn() { text(dv(), "device") })
+            let is_first = fn() { pending().get(0).map(fn(x) { text(Some(x), "device") }) == Some(dev_id) }
+            let busy = fn() { is_doing(core, ["vault.addDevice"], [("workspace", ws), ("vault", vault_id), ("device", dev_id)]) }
+            let press = fn() {
+              vault_act(
+                core,
+                ws,
+                "addDevice",
+                [("vault", str(vault_id)), ("device", str(dev_id))],
+                @sf.t("web-pages.vault.addDeviceWhat"),
+                done=@sf.t("web-pages.vault.addedDevice"),
+              )
+            }
+            @sf.link_row_node(
+              row,
+              fn() { text(dv(), "deviceText") },
+              fn() {  },
+              note=fn() { vd_device_meta(dv()) },
+              goes=false,
+              chevron=false,
+              control=fn(c) {
+                c.show(can_give, fn(btn) {
+                  btn.pick(is_first, fn(p, first) {
+                    if first {
+                      @sf.row_corner_button_node(p, fn() { @sf.t("web-pages.vault.devicesDialog.authorize") }, press, busy~) |> ignore
+                    } else {
+                      @sf.row_end_button_node(p, fn() { @sf.t("web-pages.vault.devicesDialog.authorize") }, press, busy~) |> ignore
+                    }
+                  })
+                })
+              },
+            )
+          })
+        })
+      })
+      v.show(fn() { !authorized().is_empty() }, fn(sec) {
+        @sf.style_node(sec, fn() { vd_dev_section })
+        @sf.words_node(sec, fn() { @sf.t("web-pages.vault.devicesDialog.authorizedTitle") }, fn() {
+          @sf.meta.then(@sf.strong).then(@sf.full_words)
+        })
+        |> ignore
+        @sf.group_node(sec, fn(g) {
+          g.each(authorized, fn(d) { text(Some(d), "device") }, fn(row, d) {
+            let dv = fn() { Some(d.get()) }
+            let dev_title = fn() {
+              let name = text(dv(), "deviceText")
+              if flag(dv(), "current") {
+                @sf.t("web-pages.vault.devicesDialog.current", args=[("device", name)])
+              } else {
+                name
+              }
+            }
+            @sf.link_row_node(row, dev_title, fn() {  }, note=fn() { vd_device_meta(dv()) }, goes=false)
+          })
+        })
+      })
+      v.show(fn() { pending().is_empty() && authorized().is_empty() }, fn(fallback) {
+        @sf.style_node(fallback, fn() { vd_dev_section })
+        @sf.words_node(
+          fallback,
+          fn() { @sf.t("web-pages.vault.devicesHold", args=[("n", count(rv(), "devices").to_string())]) },
+          fn() { @sf.pg_note },
+        )
+        |> ignore
+        fallback.show(fn() { count(rv(), "missing") > 0 }, fn(m) {
+          @sf.words_node(m, fn() { @sf.t("web-pages.vault.devicesDialog.legacyPendingNote") }, fn() { @sf.pg_note }) |> ignore
+        })
+      })
+    },
+    fn(v, shut) {
+      @sf.foot_spacer_node(v)
+      @sf.button_node(v, fn() { @sf.t("common.close") }, fn() { shut() }, tone=Primary) |> ignore
+    },
+  )
+}
+
+///|
+/// Vertical stack for each section inside the vault devices dialog.
+// kept across runs: a value (no field of it changes)
+let vd_dev_section : @ui.Style = @ui.css("w=Full gap=S2")
+
+///|
 /// (a file: its name and size, then the button that picks another, 12 apart)
 // kept across runs: a value (no field of it changes)
 let vd_file : @ui.Style = @ui.css("row w=Full gap=S3 align=ACenter")
@@ -551,3 +857,11 @@ let vd_agent : @ui.Style = @ui.css("w=Full gap=S2_5 pt=S1")
 /// (warn: the amber, the meta's size, in lines)
 // kept across runs: a value (no field of it changes)
 let vt_warn_lines : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=WarnInk, w=Full)
+
+///|
+// kept across runs: a value (no field of it changes)
+let vd_note : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, w=Full)
+
+///|
+// kept across runs: a value (no field of it changes)
+let vd_note_bad : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Danger, w=Full)

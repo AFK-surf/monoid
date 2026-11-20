@@ -310,8 +310,8 @@ pub async fn UsageCounter::read(self : UsageCounter, only : Array[String]?, time
 ///|
 /// Runs `f` as work of the hub's own, after what set it going (a fiber of no sleep).
 pub fn Hub::later(self : Hub, f : async () -> Unit) -> Unit {
-  ignore(self)
   pending_work.push(f)
+  self.wake_waiters()
 }
 
 ///|

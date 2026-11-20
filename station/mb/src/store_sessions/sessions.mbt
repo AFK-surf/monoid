@@ -126,6 +126,35 @@ pub fn Store::next_archived_at(self : Store, after : Json) -> Json raise {
 }
 
 ///|
+/// Bounded page of idle unarchived, non-running sessions with `last_active_at <= through`, oldest activity first,
+/// using the `sessions_live` partial index.
+pub fn Store::idle_unarchived_sessions(
+  self : Store,
+  after : Json,
+  through : Json,
+  limit : Int,
+) -> Array[Json] raise {
+  let sql = StringBuilder::new()
+  sql.write_string(
+    "SELECT key, workspace, last_active_at FROM sessions INDEXED BY sessions_live WHERE archived_at IS NULL AND running = 0 AND last_active_at <= ?",
+  )
+  let args : Array[Json] = [through]
+  if !(after is Null) {
+    sql.write_string(" AND last_active_at >= ? AND (last_active_at > ? OR key > ?)")
+    let at = field(after, "lastActiveAt").unwrap_or(Json::null())
+    let k = field(after, "key").unwrap_or(Json::null())
+    args.push(at)
+    args.push(at)
+    args.push(k)
+  }
+  sql.write_string(" ORDER BY last_active_at ASC, key ASC LIMIT ?")
+  args.push(jint(limit.to_int64()))
+  self
+  .all(sql.to_string(), args)
+  .map(r => { "key": col(r, "key"), "workspace": col(r, "workspace"), "lastActiveAt": col(r, "last_active_at") })
+}
+
+///|
 pub fn Store::list_sessions(self : Store) -> Array[Json] raise {
   self
   .all("SELECT * FROM sessions ORDER BY last_active_at DESC", [])

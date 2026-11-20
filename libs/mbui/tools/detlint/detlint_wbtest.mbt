@@ -3582,3 +3582,274 @@ test "structure-box" {
   let fs = found([("src/app/view.mbt", src)], "structure-box", 3)
   assert_eq(lines(fs), [2, 3, 4])
 }
+
+///|
+test "scroll-each" {
+  let hits =
+    #|fn list_node(v : @view.View, s : @view.Scroll, xs : () -> Array[String]) -> Unit {
+    #|  v.scrolls(s, fn(body) {
+    #|    body.each(xs, fn(x) { x }, fn(r, x) { r.words(By(fn() { x.get() })) |> ignore })
+    #|  }) |> ignore
+    #|  v.scrolls(fn(body) {
+    #|    body.box(fn(col) {
+    #|      col.each_of(xs, fn(r, x) { r.words(Is(x)) |> ignore })
+    #|    }) |> ignore
+    #|  }) |> ignore
+    #|}
+  let fs = found([("src/app/list.mbt", hits)], "scroll-each", 2)
+  assert_eq(lines(fs), [3, 7])
+  let misses =
+    #|fn list_node(v : @view.View, s : @view.Scroll, xs : () -> Array[String]) -> Unit {
+    #|  v.each(xs, fn(x) { x }, fn(r, x) { r.words(By(fn() { x.get() })) |> ignore })
+    #|  v.scrolls_window(s, xs, fn(r, x) { r.words(Is(x)) |> ignore }) |> ignore
+    #|  v.scrolls(s, fn(body) {
+    #|    let arr = [1, 2, 3]
+    #|    arr.each(fn(n) { ignore(n) })
+    #|    body.on_press(fn() { body.each(xs, fn(x) { x }, fn(_, _) {  }) }) |> ignore
+    #|    // det-ok(scroll-each): fixed 3 settings rows
+    #|    body.each(xs, fn(x) { x }, fn(r, _) { r.words(Is("a")) |> ignore })
+    #|  }) |> ignore
+    #|}
+  found(
+    [("src/app/ok.mbt", misses), ("src/app/list_wbtest.mbt", hits)],
+    "scroll-each",
+    0,
+  )
+  |> ignore
+}
+
+///|
+test "bare-on-press" {
+  let hits =
+    #|fn view(v : @view.View) -> Unit {
+    #|  v.box(fn(b) {
+    #|    b.on_press(fn() { go() }) |> ignore
+    #|  }) |> ignore
+    #|  v.box(fn(b) {
+    #|    b.says(Is(Some(@view.said(Button, label="ok")))) |> ignore
+    #|  }) |> ignore
+    #|  v.box(fn(b) {
+    #|    b.on_press(fn() { go() }) |> ignore
+    #|  }) |> ignore
+    #|  v.box(fn(b) { b.words(Is("x")) |> ignore }).on_press(fn() { go() }) |> ignore
+    #|}
+  let fs = found([("src/app/view.mbt", hits)], "bare-on-press", 3)
+  assert_eq(lines(fs), [3, 9, 11])
+  let misses =
+    #|fn view(v : @view.View) -> Unit {
+    #|  v.box(fn(b) {
+    #|    b.says(Is(Some(@view.said(Button, label="Save")))).on_press(fn() { go() }) |> ignore
+    #|  }) |> ignore
+    #|  v.box(fn(b) {
+    #|    b.on_press(fn() { go() }).as_ground() |> ignore
+    #|  }) |> ignore
+    #|  v.box(fn(b) {
+    #|    b.says(Is(Some(@view.said(Button, label="Save")))) |> ignore
+    #|    b.on_press(fn() { go() }) |> ignore
+    #|  }) |> ignore
+    #|  v.box(fn(b) {
+    #|    b.on_press(fn() { go() }) |> ignore
+    #|  }).says(Is(Some(@view.said(Button, label="Outer")))) |> ignore
+    #|  v.box(fn(b) {
+    #|    b.as_ground() |> ignore
+    #|  }).on_press(fn() { go() }) |> ignore
+    #|  // det-ok(bare-on-press): scrim dismisses overlay
+    #|  v.box(fn(b) { b.on_press(fn() { close() }) |> ignore }) |> ignore
+    #|}
+  found(
+    [
+      ("src/app/ok.mbt", misses),
+      ("src/headless/button.mbt", hits),
+      ("src/app/view_wbtest.mbt", hits),
+      ("src/app/view_test.mbt", hits),
+    ],
+    "bare-on-press",
+    0,
+  )
+  |> ignore
+}
+
+///|
+test "old-run-ctx" {
+  let hits =
+    #|fn main {
+    #|  @ui.run("app", fn(_c) {  })
+    #|  @film.run(fn(_c) {  })
+    #|  @film.picture(fn(_c) {  })
+    #|  @film.film(fn(_c) {  })
+    #|}
+    #|test "t" {
+    #|  let _ = Tester::new(fn(_c) {  })
+    #|  let _ = @ui.Tester::new(fn(_c) {  })
+    #|}
+  let fs = found([("src/app/main.mbt", hits)], "old-run-ctx", 6)
+  assert_eq(lines(fs), [2, 3, 4, 5, 8, 9])
+  let misses =
+    #|fn run(s : String) -> Unit { ignore(s) }
+    #|fn main {
+    #|  @ui.run_tree("app", fn(_v) {  })
+    #|  @film.run_tree(fn(_v) {  })
+    #|  @film.picture_tree(fn(_v) {  })
+    #|  @film.film_tree(fn(_v) {  })
+    #|  x.run("ok")
+    #|  run("ok")
+    #|}
+    #|test "t" {
+    #|  let _ = Tester::tree(fn(_v) {  })
+    #|  let _ = @ui.Tester::tree(fn(_v) {  })
+    #|}
+  found([("src/app/ok.mbt", misses)], "old-run-ctx", 0) |> ignore
+}
+
+///|
+let preset_tree_seq : Ref[Int] = { val: 0 }
+
+///|
+fn make_raw_tree(files : Array[(String, String)]) -> String {
+  preset_tree_seq.val += 1
+  let root = "/tmp/detlint_preset_\{preset_tree_seq.val}"
+  let t : Tree = { root, }
+  t.clear()
+  @sys.makedirs(root)
+  for x in files {
+    let p = @sys.join(root, x.0)
+    @sys.makedirs(@sys.dirname(p))
+    let _ = @sys.write_text(p, x.1)
+  }
+  root
+}
+
+///|
+fn run_cli(argv : Array[String]) -> (Int, String, String) {
+  let out = []
+  let err = []
+  let code = run(argv, out, err)
+  (code, out.join("\n"), err.join("\n"))
+}
+
+///|
+test "preset=tree: zero-config clean, hits, skip, det-ok, list orders, unknown preset" {
+  // 1. Clean pure-tree repo with no detlint.json (and skipped vendor/monoid/libs/mbui dirs containing violations)
+  let clean_root = make_raw_tree([
+    (
+      "src/main.mbt",
+      "fn main {\n  @ui.run_tree(\"app\", fn(v) {\n    v.box(fn(b) { b.says(Is(Some(@view.said(Button, label=\"Go\")))).on_press(fn() {  }) |> ignore }) |> ignore\n  })\n}\n",
+    ),
+    (
+      "libs/mbui/src/legacy.mbt",
+      "fn main {\n  @ui.run(\"ignored\", fn(_c) {  })\n}\n",
+    ),
+    (
+      "monoid/libs/mbui/src/legacy.mbt",
+      "fn main {\n  @ui.run(\"ignored\", fn(_c) {  })\n}\n",
+    ),
+    (
+      "vendor/dep/main.mbt",
+      "fn main {\n  @ui.run(\"ignored\", fn(_c) {  })\n}\n",
+    ),
+  ])
+  let (c1, o1, _) = run_cli(["--preset=tree", clean_root])
+  assert_eq(c1, 0)
+  assert_has(o1, "preset=tree")
+  let (c2, _, _) = run_cli([clean_root, "--preset=tree"])
+  assert_eq(c2, 0)
+
+  // 2. Violations: scroll-each, bare-on-press, old-run-ctx, width-structure, at-rest-wait
+  let dirty_root = make_raw_tree([
+    (
+      "src/app.mbt",
+      (
+        #|fn main {
+        #|  @ui.run("bad", fn(_c) {  })
+        #|}
+        #|fn page(v : @view.View, s : @view.Scroll, xs : () -> Array[String]) -> Unit {
+        #|  v.scrolls(s, fn(body) {
+        #|    body.each(xs, fn(x) { x }, fn(r, _) { r.words(Is("a")) |> ignore })
+        #|  }) |> ignore
+        #|  v.box(fn(b) { b.on_press(fn() {  }) |> ignore }) |> ignore
+        #|  v.by_room(fn(o, room) {
+        #|    o.show(fn() { room.width() < 300.0 }, fn(_) {  })
+        #|  }) |> ignore
+        #|}
+        #|
+      ),
+    ),
+    ("flows/a.drive", "rest\n"),
+  ])
+  let (dc, dout, _) = run_cli(["--preset=tree", dirty_root])
+  assert_eq(dc, 1)
+  assert_has(dout, "old-run-ctx: src/app.mbt: 1 > 0")
+  assert_has(dout, "scroll-each: src/app.mbt: 1 > 0")
+  assert_has(dout, "bare-on-press: src/app.mbt: 1 > 0")
+  assert_has(dout, "width-structure: src/app.mbt: 1 > 0")
+  assert_has(dout, "at-rest-wait: flows/a.drive: 1 > 0")
+
+  // 3. --preset=tree --list [RULE] <ROOT> in arbitrary argument orders
+  let (lc1, lout1, _) = run_cli(["--preset=tree", "--list", dirty_root])
+  assert_eq(lc1, 0)
+  assert_has(lout1, "scroll-each\tsrc/app.mbt:6")
+  assert_has(lout1, "bare-on-press\tsrc/app.mbt:8")
+  assert_has(lout1, "old-run-ctx\tsrc/app.mbt:2")
+  assert_has(lout1, "width-structure\tsrc/app.mbt:10")
+  assert_has(lout1, "at-rest-wait\tflows/a.drive:1")
+
+  let (lc2, lout2, _) = run_cli(["--preset=tree", "--list", "scroll-each", dirty_root])
+  assert_eq(lc2, 0)
+  assert_has(lout2, "scroll-each\tsrc/app.mbt:6")
+  assert_eq(lout2.contains("bare-on-press"), false)
+
+  let (lc3, lout3, _) = run_cli(["--preset=tree", dirty_root, "--list", "scroll-each"])
+  assert_eq(lc3, 0)
+  assert_eq(lout3, lout2)
+
+  let (lc4, lout4, _) = run_cli([dirty_root, "--list", "--preset=tree"])
+  assert_eq(lc4, 0)
+  assert_eq(lout4, lout1)
+
+  // 4. det-ok(<rule>): <reason> passes and prints [det-ok: ...]; det-ok without reason fails
+  let ok_exc_root = make_raw_tree([
+    (
+      "src/app.mbt",
+      (
+        #|fn page(v : @view.View, s : @view.Scroll, xs : () -> Array[String]) -> Unit {
+        #|  v.scrolls(s, fn(body) {
+        #|    // det-ok(scroll-each): fixed 3 items
+        #|    body.each(xs, fn(x) { x }, fn(r, _) { r.words(Is("a")) |> ignore })
+        #|  }) |> ignore
+        #|}
+        #|
+      ),
+    ),
+  ])
+  let (ec1, eout1, _) = run_cli(["--preset=tree", ok_exc_root])
+  assert_eq(ec1, 0)
+  assert_has(eout1, "[det-ok: fixed 3 items]")
+
+  let bad_exc_root = make_raw_tree([
+    (
+      "src/app.mbt",
+      (
+        #|fn page(v : @view.View, s : @view.Scroll, xs : () -> Array[String]) -> Unit {
+        #|  v.scrolls(s, fn(body) {
+        #|    // det-ok(scroll-each):
+        #|    body.each(xs, fn(x) { x }, fn(r, _) { r.words(Is("a")) |> ignore })
+        #|  }) |> ignore
+        #|}
+        #|
+      ),
+    ),
+  ])
+  let (ec2, eout2, _) = run_cli(["--preset=tree", bad_exc_root])
+  assert_eq(ec2, 1)
+  assert_has(eout2, "det-ok without a reason")
+
+  // 5. Unknown preset returns exit 2
+  let (uc, _, uerr) = run_cli(["--preset=foo", clean_root])
+  assert_eq(uc, 2)
+  assert_has(uerr, "unknown preset")
+
+  ({ root: clean_root, } : Tree).clear()
+  ({ root: dirty_root, } : Tree).clear()
+  ({ root: ok_exc_root, } : Tree).clear()
+  ({ root: bad_exc_root, } : Tree).clear()
+}

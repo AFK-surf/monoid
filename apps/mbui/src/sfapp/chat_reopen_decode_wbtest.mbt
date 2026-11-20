@@ -174,7 +174,7 @@ fn rd_reopen(nodes : Bool, one_more : Bool, screen : (String, Double, Double, In
   let label = "\{name} \{if nodes { "nodes" } else { "old" }}\{if one_more { " +1" } else { "" }}"
   new_run()
   @sf.presenters_reset()
-  @sfbase.chat_page_nodes.set(nodes)
+  @sfbase.hold_chat_page_nodes(Some(nodes))
   let held : LsHeld = { value: None, version: 0, changes: @signals.signal(0), ops: None }
   let told : Array[(String, Json)] = []
   // (its unread line over a message in its middle, so its rows hold one)

@@ -57,6 +57,12 @@ pub fn Popover::close(self : Popover) -> Unit {
 }
 
 ///|
+/// Its trigger's node while it is made, or `None` when none is mounted.
+pub fn Popover::opener(self : Popover) -> @view.View? {
+  self.opener.val
+}
+
+///|
 /// Its trigger in `parent`: a disclosure called `label` (disclosure.mbt), expanded while it is open, a press opening it
 /// where it is closed and closing it where it is open; `disabled` while it opens nothing. `look` as the disclosure's.
 /// The node.
@@ -152,6 +158,32 @@ pub fn Popover::content(
 }
 
 ///|
+/// Mount its content in `host` while it is open (`View::show`), passing `look` the content node and its trigger node
+/// (`Popover::opener`) so a look can float and position it in one step.
+#callsite(autofill(loc))
+pub fn Popover::layer(
+  self : Popover,
+  host : @view.View,
+  label : () -> String,
+  look : (@view.View, @view.View?) -> Unit,
+  leave? : Double = 0.0,
+  at_once? : Bool = false,
+  made_for? : SourceLoc,
+  loc~ : SourceLoc,
+) -> Unit {
+  let place = made_for.unwrap_or(loc)
+  host.show(
+    self.now,
+    fn(s) {
+      self.content(s, label, fn(v) { look(v, self.opener.val) }, made_for=place, loc~) |> ignore
+    },
+    leave~,
+    at_once~,
+    loc~,
+  )
+}
+
+///|
 /// A hover card's trigger and card, made once by its caller and handed to each (`HoverCard::trigger`, `HoverCard::card`).
 pub struct HoverCard {
   priv now : () -> Bool
@@ -200,6 +232,12 @@ pub fn HoverCard::new(
 /// Whether it is open now (as its caller says).
 pub fn HoverCard::open(self : HoverCard) -> Bool {
   (self.now)()
+}
+
+///|
+/// Its trigger's node while it is made, or `None` when none is mounted. Followed where a binding reads it.
+pub fn HoverCard::opener(self : HoverCard) -> @view.View? {
+  self.opener.get()
 }
 
 ///|

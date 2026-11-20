@@ -834,6 +834,14 @@ async fn p54_devices_ask(d : P54Devices, op : String, a : Json) -> Json? {
       }
       Json::null()
     }
+    // (a chat's tunnel to such a device (P5-1's `HereLocal` `device` on a rig, through `Rig::device`): the tunnel as
+    // P5-1 handed it, `{stream, kind, carry}`, carried both ways with the socket until either ends)
+    "devices.socketTunnel" => {
+      let tunnel = call_arg(a, 1).unwrap_or(Json::null())
+      let stream = p54_member_stream(d.world.bus.host, p54_stream_handle(tunnel))
+      p54_device_tunnel(d.world, call_arg(a, 0).unwrap_or(Json::null()), p54_bytes_of(opt_field(Some(tunnel), "carry")), stream)
+      Json::null()
+    }
     "devices.socketDestroy" => of_jv(d.world.call("net.destroy", [to_jv(call_arg(a, 0).unwrap_or(Json::null()))]))
     // (who may use a device forwarded to a session's port: devices/module.ts `admitFor`, null to let them in)
     "devices.admit" => {
@@ -911,6 +919,18 @@ async fn p54_devices_ask(d : P54Devices, op : String, a : Json) -> Json? {
       let again = Ref(false)
       (socket.on_close)(() => again.val = true)
       Json::boolean(again.val)
+    }
+    // (a test's: a rig's device reached as `Rig::device` reaches it and a chat's tunnel carried with it, the tunnel a
+    // connection to the test's port with what came with its ask; its end told the rig)
+    "test.rigTunnel" if p54_testing() => {
+      let socket = bus_rig_reach(d.world.bus, call_arg(a, 0).unwrap_or(Json::null()))
+      let ended : @effect.Deferred[Unit] = @effect.Deferred::new()
+      (socket.on_close)(() => ignore(ended.succeed(())))
+      let c = p54_tcp_open(d.world.bus.host, opt_num(call_arg(a, 1)).unwrap_or(0.0).to_int())
+      (socket.pipe)({ "kind": "tcp", "stream": c.id, "carry": { "$bytes": Json::string(@drive.base64(@utf8.encode(s(2)))) } })
+      c.close()
+      ended.wait()
+      Json::boolean(true)
     }
     // (a test's: a device here reached as another station's tunnel reaches it, the tunnel's stream a connection to
     // the test's port; the slots live_p5_4_io.c holds; a connection read to its end, one called off as it connects)

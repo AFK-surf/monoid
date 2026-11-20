@@ -235,3 +235,49 @@ pub fn Choreography::stop(self : Choreography) -> Unit {
     (entry.1)()
   }
 }
+
+///|
+/// Staggered serial scheduling queue: lets consecutive items from the same `source` run immediately at `now`, while
+/// queueing items from a different `source` behind the active tail end (optionally overlapped by `lead` ms).
+pub struct SerialQueue {
+  priv mut tail_end : Double
+  priv mut last_source : String
+}
+
+///|
+/// Create an empty `SerialQueue`.
+pub fn SerialQueue::new() -> SerialQueue {
+  { tail_end: 0.0, last_source: "" }
+}
+
+///|
+/// Compute the start moment for an item from `source` arriving at `now`, overlapping the previous tail by `lead` ms
+/// when switching sources. Same-source arrivals always start immediately at `now`.
+pub fn SerialQueue::next_at(
+  self : SerialQueue,
+  source : String,
+  now : Double,
+  lead? : Double = 0.0,
+) -> Double {
+  if self.last_source != "" && source != self.last_source && self.tail_end - lead > now {
+    self.tail_end - lead
+  } else {
+    now
+  }
+}
+
+///|
+/// Record a scheduled item from `source` finishing at `end_at`, advancing `tail_end` monotonically.
+pub fn SerialQueue::commit(self : SerialQueue, source : String, end_at : Double) -> Unit {
+  if end_at > self.tail_end {
+    self.tail_end = end_at
+  }
+  self.last_source = source
+}
+
+///|
+/// Reset the queue back to empty.
+pub fn SerialQueue::reset(self : SerialQueue) -> Unit {
+  self.tail_end = 0.0
+  self.last_source = ""
+}

@@ -416,6 +416,7 @@ pub async fn Hub::delete_session(Self, String) -> Unit
 pub fn Hub::deliver(Self, @json.Json, @json.Json, Array[String], String, retry_pending? : Bool, workspace? : String?) -> Unit raise
 pub fn Hub::deliver_letter(Self, @json.Json, @json.Json, Array[String]) -> Unit raise
 pub fn Hub::drop_actor(Self, String) -> Bool
+pub async fn[T] Hub::drive(Self, @effect.Runtime, @effect.Deferred[T], (async () -> Unit) -> Unit) -> Unit
 pub async fn Hub::end_orphan(Self, @json.Json, Double) -> Bool
 pub fn Hub::every_changed(Self) -> Unit
 pub fn Hub::evict(Self, String) -> Unit
@@ -448,6 +449,7 @@ pub fn Hub::new_chat_key(Self) -> String
 pub async fn Hub::new_session(Self, @json.Json, lang? : String) -> (String, @json.Json)
 pub fn Hub::new_single_session_key(Self, String) -> String
 pub fn Hub::new_token(Self) -> String
+pub fn Hub::next_due(Self) -> Double?
 pub fn Hub::next_ts(Self) -> String
 pub fn Hub::note_length(Self, String, @json.Json) -> Unit
 pub fn Hub::now(Self) -> Double
