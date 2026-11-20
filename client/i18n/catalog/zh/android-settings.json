@@ -339,7 +339,7 @@
   "android-settings.profiles.empty": "此机器暂无 Profile",
   "android-settings.profiles.note": "agent 运行模型所用的账号。需查看的排在前面，点击可查看原因和处理办法。",
   "android-settings.profiles.stationOffline": "station 离线，无法读取 Profile",
-  "android-settings.quota.blocked": "已停用",
+  "android-settings.quota.blocked": "账号被拒",
   "android-settings.quota.check": "查询额度",
   "android-settings.quota.checkWhat": "查询额度",
   "android-settings.quota.checkedAt": "{ago}查询",

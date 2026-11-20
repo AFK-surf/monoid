@@ -515,3 +515,16 @@ test "signs_in skips blocked quota, pick_profile prefers healthy over unavailabl
   // Healthy crowded cc2 must never move onto unavailable cc1 even when cheap_to_leave is true.
   assert_eq(run_choice("cc2", false, false, true, [p_cc1, p_cc2]), "cc2")
 }
+
+///|
+test "agy says where to verify an account Google holds until it is verified" {
+  let page = "https://accounts.google.com/v3/signin/continue?plt=AKgnsb&continue=https://developers.google.com/x&sarp=1"
+  assert_eq(
+    agy_verify(
+      "Eligibility check failed: Your current account is not eligible for Antigravity. Verify your account to continue.\n\nPlease verify your account in your browser to continue:\n\{page}",
+    ),
+    Some(page),
+  )
+  assert_eq(agy_verify("PERMISSION_DENIED (code 403): Verify your account to continue."), Some(""))
+  assert_eq(agy_verify("Your account has been suspended"), None)
+}

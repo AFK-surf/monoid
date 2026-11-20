@@ -1216,7 +1216,7 @@ let en : Map[String, String] = {
   "web-main.preview.unsupported": "Can't preview this file type",
   "web-main.preview.zoomInKey": "Zoom in (+)",
   "web-main.preview.zoomOutKey": "Zoom out (-)",
-  "web-main.profile.blocked": "Disabled",
+  "web-main.profile.blocked": "Refused",
   "web-main.profile.machineSignedIn": "Signed in",
   "web-main.profile.signedIn": "Signed in",
   "web-main.prose.copyCsv": "Copy as CSV",

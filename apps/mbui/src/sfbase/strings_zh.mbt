@@ -1197,7 +1197,7 @@ let zh : Map[String, String] = {
   "web-main.preview.unsupported": "此文件类型不支持预览",
   "web-main.preview.zoomInKey": "放大（+）",
   "web-main.preview.zoomOutKey": "缩小（-）",
-  "web-main.profile.blocked": "已停用",
+  "web-main.profile.blocked": "账号被拒",
   "web-main.profile.machineSignedIn": "已登录",
   "web-main.profile.signedIn": "已登录",
   "web-main.prose.copyCsv": "复制为 CSV",

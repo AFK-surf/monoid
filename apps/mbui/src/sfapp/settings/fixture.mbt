@@ -50,8 +50,8 @@ priv struct SettingsFixture {
   /// a new profile's draft at a key's form with a region and a protocol to choose (settings-new-profile-key)
   mut new_key : Bool
   /// Claude 主账号's trouble: "" none, "quota" its allowance unreadable (settings-profile-quota-failed), "verify" its
-  /// provider asking the account to be verified at a link first (settings-profile-verify), "blocked"
-  /// its allowance used up (settings-profile-blocked), "login" to be signed in to again (settings-profile-signin)
+  /// provider refusing the account until it is verified at a link (settings-profile-verify), "blocked"
+  /// its provider refusing it for its allowance used up (settings-profile-blocked), "login" to be signed in to again (settings-profile-signin)
   mut trouble : String
   /// the vault not set up on this device (settings-vault-off: on nowhere, no vault of theirs; settings-vault-elsewhere:
   /// on another device of theirs, their vault there with no key here yet)
@@ -1922,15 +1922,15 @@ fn fx_profile_places() -> Array[Json] {
 /// Claude 主账号's dot as its trouble has it (fx.trouble).
 fn fx_cc_tone() -> String {
   match fx.trouble {
-    "login" | "blocked" => "red"
+    "login" | "blocked" | "verify" => "red"
     _ => "green"
   }
 }
 
 ///|
-/// What Antigravity CLI says where Google asks the account to be verified first, its link whole (agy-quota.ts
-/// clipKeepingLinks).
-let fx_verify_said : String = "Eligibility check failed: Your current account is not eligible for Antigravity. Verify your account to continue.\n\nAlternatively, try signing in with another personal Google account.\n\nPlease verify your account in your browser to continue:\nhttps://accounts.google.com/v3/signin/continue?plt=AKgnsbvgpMGWUxHL-LdY6TaKwyqigcx13EZGzlKmZcGrDxrNDt57SPhlkbXKa1uIKydtd8wIqmUCw2x25ooo2v5G_JN2S8spn6C0rCAJWTFB47we5La_Ckx-UMLZpie3MBHPZkmLQIIq&continue=https://developers.google.com/gemini-code-assist/auth/auth_success_gemini&sarp=1&scc=1&flowName=GlifWebSignIn&authuser"
+/// What the station says where Google asks an Antigravity CLI account to be verified first (agy-quota.ts `agyVerify`,
+/// station.quota.agyVerifyAt): the account refused, the link whole on its own line last.
+let fx_verify_detail : String = "Google 要求先验证这个账号才能用 Antigravity。用登录了这个 Google 账号的浏览器打开下面的链接完成验证，然后重新查询额度\nhttps://accounts.google.com/v3/signin/continue?plt=AKgnsbvgpMGWUxHL-LdY6TaKwyqigcx13EZGzlKmZcGrDxrNDt57SPhlkbXKa1uIKydtd8wIqmUCw2x25ooo2v5G_JN2S8spn6C0rCAJWTFB47we5La_Ckx-UMLZpie3MBHPZkmLQIIq&continue=https://developers.google.com/gemini-code-assist/auth/auth_success_gemini&sarp=1&scc=1&flowName=GlifWebSignIn&authuser"
 
 ///|
 /// Claude 主账号's own (`more`) and its trouble (fx.trouble) as the core says it (present.ts profileTrouble), with what
@@ -1947,8 +1947,9 @@ fn fx_cc_with(more : Array[(String, Json)]) -> Array[(String, Json)] {
       ]
     "verify" =>
       [
-        issue("额度查询失败", fx_verify_said, "查不到额度不代表账号不能用。先重新查询；还是失败，再按返回的原因检查登录或网络。", "quota", "重新查询额度"),
-        ("quota", obj([("state", str("unavailable")), ("detail", str(fx_verify_said)), ("windows", []), ("checkedAt", Json::number(0.0))])),
+        issue("服务商拒绝了这个账号", fx_verify_detail, "按上面的原因到服务商处理（解除停用、完成验证等），处理后重新查询额度", "quota", "重新查询额度"),
+        ("quota", obj([("state", str("blocked")), ("detail", str(fx_verify_detail)), ("windows", []), ("checkedAt", Json::number(0.0))])),
+        ("checkText", str("账号被拒")),
       ]
     "blocked" =>
       [

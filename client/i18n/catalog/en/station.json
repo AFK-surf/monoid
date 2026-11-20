@@ -654,6 +654,8 @@
   "station.quota.agyUnsupported": "Antigravity CLI doesn't report plan usage to the station",
   "station.quota.agyPayAsYouGo": "This company account pays as it goes, with no fixed allowance",
   "station.quota.agyNoWindows": "Antigravity CLI didn't return quota windows",
+  "station.quota.agyVerify": "Google needs this account verified before it can use Antigravity: sign in to accounts.google.com with this Google account, follow the prompts to verify it, then check the quota again",
+  "station.quota.agyVerifyAt": "Google needs this account verified before it can use Antigravity. Open the link below in a browser signed in to this Google account, verify it, then check the quota again\n{url}",
   "station.updates.devinElsewhere": "Installed at {path}, not by Devin's installer; update it manually on that machine",
   "station.login.devinNoTerminal": "Devin's sign-in needs a terminal, which this machine can't provide; sign in on another station",
   "station.login.agyNoTerminal": "Antigravity CLI's sign-in needs a terminal, which this machine can't provide; sign in on another station",
