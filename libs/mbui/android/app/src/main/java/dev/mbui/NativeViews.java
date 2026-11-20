@@ -2350,6 +2350,10 @@ final class NativeViews {
             if (player != null) player.setVideoSurface(picture.surface);
         }
 
+        /** How far from the time asked a near seek's key frame may be (NativeView::seek_near). */
+        static final long NEAR_US = 1_000_000L;
+        static final SeekParameters NEAR = new SeekParameters(NEAR_US, NEAR_US);
+
         @Override
         void control(int op, double value) {
             if (player == null) return;
@@ -2367,9 +2371,11 @@ final class NativeViews {
                     position = value;
                     stood();
                     break;
-                // about there, at once: the key frame nearest it (nothing before the frame asked decoded first)
+                // about there, at once: the key frame nearest it within NEAR_US (nothing before the frame asked
+                // decoded first), else the very frame: a film with key frames far apart (a screen's recording) would
+                // otherwise show its one key frame all along a finger's way through it
                 case 11:
-                    player.setSeekParameters(SeekParameters.CLOSEST_SYNC);
+                    player.setSeekParameters(NEAR);
                     player.seekTo((long) Math.floor(value));
                     position = value;
                     stood();

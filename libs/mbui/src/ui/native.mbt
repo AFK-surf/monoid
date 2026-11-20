@@ -631,8 +631,10 @@ pub fn NativeView::seek(self : NativeView, ms : Double) -> Unit {
 
 ///|
 /// To about `ms` in, at once: the nearest point the player can show without working through the frames before it (a
-/// key frame: Android's CLOSEST_SYNC, Apple's seek with any tolerance), for a jump (±15 s, a tap on the timeline) where
-/// the very frame does not matter and waiting for it would; `seek` goes to the very frame.
+/// key frame within a second of `ms`: Android's SeekParameters, Apple's seek tolerance; none that near, the very frame,
+/// so a film with key frames far apart is not shown at one of them all along a finger's way), for a jump (±15 s, a tap
+/// on the timeline, a finger along it) where the very frame does not matter and waiting for it would; `seek` goes to
+/// the very frame.
 pub fn NativeView::seek_near(self : NativeView, ms : Double) -> Unit {
   if self.id != 0 && !self.closed {
     h_view_control(self.id, 11, ms)

@@ -664,8 +664,10 @@ static int32_t player_failure(NSError *error) {
   [self stood];
   int gen = ++self.seekGen;
   __weak MBNative *wv = self;
-  // (to the µs: a frame's start, said with its fraction of a ms, is that frame's, not the one before)
-  CMTime slack = near ? kCMTimePositiveInfinity : kCMTimeZero;
+  // (to the µs: a frame's start, said with its fraction of a ms, is that frame's, not the one before; near, a key frame
+  // within a second, as Android's NEAR_US: unbounded, a film with key frames far apart shows its one key frame all
+  // along a finger's way through it)
+  CMTime slack = near ? CMTimeMake(1, 1) : kCMTimeZero;
   [self.player seekToTime:CMTimeMake((int64_t)llround(ms * 1000.0), 1000000)
           toleranceBefore:slack
            toleranceAfter:slack
