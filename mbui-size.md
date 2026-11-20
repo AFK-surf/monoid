@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [69bc50c72](https://github.com/AFK-surf/monoid/commit/69bc50c723914f1c5016dc9975dd43303bffce25) fix(core-ts): match multi-word search, sort chats  | 2.75 | 3.71 | 15.09 | 37.17 | 57.27 | 32.58 | 66.33 | 98.44 | 121.64 |
 | [b254297ee](https://github.com/AFK-surf/monoid/commit/b254297eec986c271ce504c0b024baea014545f2) feat(station): Farview Stage 11A release, farview. | 2.75 | 3.71 | 15.09 | 37.17 | 57.27 | 32.58 | 66.33 | 98.44 | 121.64 |
 | [e253c7ef7](https://github.com/AFK-surf/monoid/commit/e253c7ef7307cbcf4767ee53385ab6bdbef9f105) fix(mbui): title the web app's tab with the page's | 2.75 | 3.71 | 15.09 | 37.17 | 57.27 | 32.58 | 66.33 | 98.44 | 121.64 |
 | [e5bdea018](https://github.com/AFK-surf/monoid/commit/e5bdea01886282646562dd77f3ddd9541a173f57) fix(station): keep connect files whole and route o | 2.75 | 3.71 | 15.09 | 37.17 | 57.27 | 32.58 | 66.33 | 98.44 | 121.64 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4bb241178](https://github.com/AFK-surf/monoid/commit/4bb2411780548bc311cab4b69d670a1c210dddbe) feat(core): dual-track bulk routing and direct spe | 2.73 | 3.69 | 14.99 | 37.09 | 56.87 | 32.52 | 66.11 | 97.62 | 120.88 |
 | [a30a38f5c](https://github.com/AFK-surf/monoid/commit/a30a38f5cd10ade0374c79759bf730b5a3bcd1c9) fix(station): atomic OAuth lock mkdir/utimes and f | 2.73 | 3.68 | 14.98 | 37.08 | 56.87 | 32.51 | 66.11 | 97.76 | 121.56 |
 | [923377ccc](https://github.com/AFK-surf/monoid/commit/923377ccc4e457a8803a3c5a139d47295cc1a3c4) feat(motion,sf-ui): add universal motion primitive | 2.73 | 3.68 | 14.98 | 37.08 | 56.87 | 32.51 | 66.08 | 97.78 | 124.33 |
-| [e0865e126](https://github.com/AFK-surf/monoid/commit/e0865e1261a17c9c095f26fe45e38e61dc3168fc) fix(sf-ui): keep pill button words inside the pill | 2.73 | 3.68 | 14.98 | 37.08 | 56.87 | 32.51 | 66.08 | 97.78 | 124.33 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [69bc50c72](https://github.com/AFK-surf/monoid/commit/69bc50c723914f1c5016dc9975dd43303bffce25) fix(core-ts): match multi-word search, sort chats  | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 53.87 |
 | [b254297ee](https://github.com/AFK-surf/monoid/commit/b254297eec986c271ce504c0b024baea014545f2) feat(station): Farview Stage 11A release, farview. | 0.46 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 53.81 |
 | [e253c7ef7](https://github.com/AFK-surf/monoid/commit/e253c7ef7307cbcf4767ee53385ab6bdbef9f105) fix(mbui): title the web app's tab with the page's | 0.46 | 0.61 | 2.35 | 3.4 | 5.59 | 1.7 | 4.6 | 53.92 |
 | [e5bdea018](https://github.com/AFK-surf/monoid/commit/e5bdea01886282646562dd77f3ddd9541a173f57) fix(station): keep connect files whole and route o | 0.46 | 0.61 | 2.35 | 3.4 | 5.59 | 1.7 | 4.6 | 54.2 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4bb241178](https://github.com/AFK-surf/monoid/commit/4bb2411780548bc311cab4b69d670a1c210dddbe) feat(core): dual-track bulk routing and direct spe | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 54.07 |
 | [a30a38f5c](https://github.com/AFK-surf/monoid/commit/a30a38f5cd10ade0374c79759bf730b5a3bcd1c9) fix(station): atomic OAuth lock mkdir/utimes and f | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 54.07 |
 | [923377ccc](https://github.com/AFK-surf/monoid/commit/923377ccc4e457a8803a3c5a139d47295cc1a3c4) feat(motion,sf-ui): add universal motion primitive | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 54.07 |
-| [e0865e126](https://github.com/AFK-surf/monoid/commit/e0865e1261a17c9c095f26fe45e38e61dc3168fc) fix(sf-ui): keep pill button words inside the pill | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 53.94 |
