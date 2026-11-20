@@ -23,8 +23,11 @@ pub struct Storage {
   mut swept : @effect.Deferred[Unit]?
   /// agent-home.ts `leftAlone`.
   left_alone : Set[String]
-  /// The tasks started that go on after their call (a clone): awaited by `settled`.
+  /// The tasks started that go on after their call (a clone, a link followed): awaited by `settled`. Only those still
+  /// running are kept (`track_going`).
   going : Array[@effect.Fiber[Unit]]
+  /// The paths being followed in the background (`followed_now`): one fiber a path at once.
+  priv following : Set[String]
 }
 
 ///|
@@ -42,7 +45,23 @@ pub fn Storage::new(st : Station, fs : Files) -> Storage {
     swept: None,
     left_alone: Set::new(),
     going: [],
+    following: Set([]),
   }
+}
+
+///|
+/// A task that goes on after its call kept in `going`, those that ended let go first: `going` holds what still runs,
+/// not every task an upkeep round ever started.
+fn Storage::track_going(self : Storage, f : @effect.Fiber[Unit]) -> Unit {
+  keep_running(self.going, f)
+}
+
+///|
+fn keep_running(going : Array[@effect.Fiber[Unit]], f : @effect.Fiber[Unit]) -> Unit {
+  going.retain(x => !x.is_done())
+  // (`retain` leaves what it took out in the slots past the end, still held)
+  going.release_unused(placeholder=f)
+  going.push(f)
 }
 
 ///|

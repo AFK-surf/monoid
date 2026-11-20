@@ -104,6 +104,7 @@ pub fn Store::has_turns(Self, @json.Json) -> Bool raise
 pub fn Store::home_chat(Self, @json.Json) -> @json.Json raise
 pub fn Store::import_ctx(Self, @json.Json) -> @json.Json raise
 pub fn Store::import_rows(Self, @json.Json, String, Array[@json.Json], @json.Json?) -> Unit raise
+pub fn Store::in_use_places(Self) -> Array[(String, String, String)] raise
 pub fn Store::insert_job(Self, @json.Json) -> Unit raise
 pub fn Store::insert_opened(Self, @json.Json) -> Unit raise
 pub fn Store::insert_session(Self, @json.Json) -> Unit raise
@@ -116,6 +117,7 @@ pub fn Store::jobs_mark_of(Self, Array[@json.Json]) -> @json.Json raise
 pub fn Store::jobs_running(Self) -> Array[@json.Json] raise
 pub fn Store::jobs_up(Self) -> Array[@json.Json] raise
 pub fn Store::jobs_up_of(Self, Array[@json.Json]) -> Array[@json.Json] raise
+pub fn Store::jobs_up_places(Self) -> Array[(String, String)] raise
 pub fn Store::lapse_chat_shares(Self, Double) -> @json.Json raise
 pub fn Store::lapsed_share_workspaces(Self, @json.Json) -> @json.Json raise
 pub fn Store::last_archived_session(Self) -> @json.Json raise

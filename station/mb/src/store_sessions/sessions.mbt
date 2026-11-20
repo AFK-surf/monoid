@@ -275,6 +275,21 @@ pub fn Store::sessions_in_use(self : Store) -> Array[Json] raise {
 }
 
 ///|
+/// What `sessions_in_use` gives of a session for its directories: its key, workspace (`""` for none) and cwd (its
+/// workspace for none), as `to_session`'s `key`, `workspace` and `cwd` read as strings.
+fn place_of_session(r : Map[String, Json]) -> (String, String, String) {
+  let ws = str_of(col(r, "workspace")).unwrap_or("")
+  (str_of(col(r, "key")).unwrap_or(""), ws, str_of(col(r, "cwd")).unwrap_or(ws))
+}
+
+///|
+/// The sessions of `sessions_in_use`, each its key, workspace and cwd only (no row made whole): what cold storage asks
+/// of each session of an upkeep round.
+pub fn Store::in_use_places(self : Store) -> Array[(String, String, String)] raise {
+  self.all(in_use_places, []).map(place_of_session)
+}
+
+///|
 /// session-counts.ts `sessionCountsReady`.
 fn Store::session_counts_ready(self : Store) -> Bool raise {
   match

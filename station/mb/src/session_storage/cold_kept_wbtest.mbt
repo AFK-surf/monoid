@@ -40,8 +40,8 @@ test "the sessions directory followed once found, asked again while it is not th
 
 ///|
 test "a room found is kept for a round's sessions, none found asked again, found again once old" {
-  let rooms : Map[String, String?] = {}
-  let at : Map[String, Double] = {}
+  let rooms : Map[String, String?] = Map([])
+  let at : Map[String, Double] = Map([])
   let mut now = 0.0
   let asked : Map[String, Int] = {}
   let find = async fn(w : String) -> String? {
@@ -73,18 +73,102 @@ test "a room found is kept for a round's sessions, none found asked again, found
 }
 
 ///|
-test "rooms kept at most 1024, their times let go with them" {
-  let rooms : Map[String, String?] = {}
-  let at : Map[String, Double] = {}
+test "rooms of a large station all kept for a round, not let go of each other" {
+  // (2026-11: a station of 3,998 sessions let go of every room and link each round at 1024, and found them all again)
+  let rooms : Map[String, String?] = Map([])
+  let at : Map[String, Double] = Map([])
+  let mut asked = 0
+  let find = async fn(w : String) -> String? {
+    asked += 1
+    Some(w)
+  }
   run_async(async fn() {
-    for i in 0..<1100 {
+    for _ in 0..<3 {
+      for i in 0..<1500 {
+        find_kept(rooms, at, "/w\{i}", () => 0.0, find)
+      }
+    }
+  })
+  assert_eq(rooms.length(), 1500)
+  assert_eq(asked, 1500)
+  assert_eq(rooms.get("/w0"), Some(Some("/w0")))
+}
+
+///|
+test "rooms kept at most cache_cap, the least recently found let go first, their times with them" {
+  let rooms : Map[String, String?] = Map([])
+  let at : Map[String, Double] = Map([])
+  run_async(async fn() {
+    for i in 0..<(cache_cap + 100) {
       find_kept(rooms, at, "/w\{i}", () => 0.0, async fn(w) { Some(w) })
     }
   })
-  assert_eq(rooms.length(), 1024)
-  assert_eq(at.length(), 1024)
+  assert_eq(rooms.length(), cache_cap)
+  assert_eq(at.length(), cache_cap)
   assert_eq(rooms.get("/w0"), None)
   assert_eq(at.get("/w0"), None)
+  assert_eq(rooms.get("/w99"), None)
+  assert_eq(at.get("/w99"), None)
+  assert_eq(rooms.get("/w100"), Some(Some("/w100")))
+  assert_true(at.get("/w100") is Some(_))
+}
+
+///|
+test "the tasks kept going are only those still running" {
+  let rt = @effect.Runtime::new()
+  let going : Array[@effect.Fiber[Unit]] = []
+  let held : @effect.Deferred[Unit] = @effect.Deferred::new()
+  let long = rt.fork(async fn() { held.wait() })
+  keep_running(going, long)
+  for _ in 0..<500 {
+    keep_running(going, rt.fork(async fn() { () }))
+    rt.advance(1)
+  }
+  // each ended task let go of as the next is kept: the long one and the last
+  assert_eq(going.length(), 2)
+  assert_true(physical_equal(going[0], long))
+  ignore(held.succeed(()))
+  rt.advance(1)
+  keep_running(going, rt.fork(async fn() { held.wait() }))
+  assert_eq(going.length(), 1)
+}
+
+///|
+test "a path being followed is not followed again alongside, and is again once that ends" {
+  let rt = @effect.Runtime::new()
+  let following : Set[String] = Set([])
+  let mut started = 0
+  let mut gate : @effect.Deferred[Unit] = @effect.Deferred::new()
+  let follow = async fn() {
+    started += 1
+    gate.wait()
+  }
+  let fork = (f : async () -> Unit) => rt.fork(f)
+  let mut forked = 0
+  for _ in 0..<300 {
+    if follow_once(following, "/p", fork, follow) is Some(_) {
+      forked += 1
+    }
+    rt.advance(1)
+  }
+  assert_eq(forked, 1)
+  assert_eq(started, 1)
+  assert_true(following.contains("/p"))
+  // another path is followed beside it
+  assert_true(follow_once(following, "/q", fork, follow) is Some(_))
+  ignore(gate.succeed(()))
+  rt.advance(1)
+  assert_eq(following.length(), 0)
+  // one that fails lets go of its path too
+  gate = @effect.Deferred::new()
+  let f = follow_once(following, "/p", fork, follow)
+  rt.advance(1)
+  assert_true(following.contains("/p"))
+  ignore(gate.fail(Failure("a link changed as it was followed")))
+  rt.advance(1)
+  assert_true(f is Some(f) && f.is_done())
+  assert_eq(following.length(), 0)
+  assert_eq(started, 3)
 }
 
 ///|

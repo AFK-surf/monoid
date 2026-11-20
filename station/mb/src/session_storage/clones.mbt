@@ -364,7 +364,7 @@ pub async fn Storage::clones_start(self : Storage, ws : String?, given : Json?, 
   changed()
   let owner = dir_name(if parts.length() >= 2 { parts[parts.length() - 2] } else { "" })
   let owner = if parts.length() >= 2 { owner } else { "" }
-  self.going.push(
+  self.track_going(
     self.fs.host.rt.fork(name="clone", async fn() {
       self.clone_run(clone, url, owner) catch {
         e => self.clone_failed(clone, message_of(e))

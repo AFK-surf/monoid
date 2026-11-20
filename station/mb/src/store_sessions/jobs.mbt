@@ -418,6 +418,18 @@ pub fn Store::jobs_up(self : Store) -> Array[Json] raise {
 }
 
 ///|
+/// What `jobs_up` gives of a job for its directory: its session's key and cwd (`""` for none).
+fn place_of_job(r : Map[String, Json]) -> (String, String) {
+  (str_of(col(r, "session_key")).unwrap_or(""), str_of(col(r, "cwd")).unwrap_or(""))
+}
+
+///|
+/// The jobs of `jobs_up`, each its session's key and cwd only.
+pub fn Store::jobs_up_places(self : Store) -> Array[(String, String)] raise {
+  self.all(jobs_up_places, []).map(place_of_job)
+}
+
+///|
 pub fn Store::jobs_up_of(self : Store, keys : Array[Json]) -> Array[Json] raise {
   let out = []
   for k in keys {
