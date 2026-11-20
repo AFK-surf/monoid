@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [fe47bab07](https://github.com/AFK-surf/monoid/commit/fe47bab076c13a892ea8a3483c1eebed469ba91d) fix(mbui): draw the working mark as spokes again,  | 2.73 | 3.69 | 15 | 37.03 | 56.91 | 32.47 | 66.05 | 98.21 | 127.87 |
 | [12506b5ac](https://github.com/AFK-surf/monoid/commit/12506b5ac038ac1da968efa10789e1c51b1f5c0d) feat(station): add offline diagnostics and read-on | 2.73 | 3.69 | 15 | 37.03 | 56.91 | 32.47 | 66.05 | 98.21 | 127.87 |
 | [19bb26f58](https://github.com/AFK-surf/monoid/commit/19bb26f58d3f818d77aa3f9ed375b4f2d3c6b1f6) fix(mbui): turn a page still coming in back from w | 2.73 | 3.68 | 14.98 | 37.01 | 56.86 | 32.45 | 66.01 | 98.04 | 119.16 |
 | [52fc07d66](https://github.com/AFK-surf/monoid/commit/52fc07d669219243532cf4dd29deb31fc18c051e) feat(core): multi-way striped parallel downloads a | 2.73 | 3.68 | 14.98 | 37.01 | 56.86 | 32.45 | 66.01 | 98.04 | 119.16 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d70ea4c58](https://github.com/AFK-surf/monoid/commit/d70ea4c58335abb30a7045f9b4f3c7d8d0c84305) fix(mbui): track foot end shift in rows_steady and | 2.67 | 3.58 | 14.64 | 36.94 | 56.33 | 32.39 | 65.67 | 97.67 | 121.41 |
 | [414eaf84e](https://github.com/AFK-surf/monoid/commit/414eaf84ee8e0af343c4a8db970cbb05f9abcb62) perf(scripts): speed up release delta generation ( | 2.67 | 3.58 | 14.64 | 36.94 | 56.33 | 32.39 | 65.67 | 97.52 | 119.15 |
 | [3aae0e034](https://github.com/AFK-surf/monoid/commit/3aae0e034e5456924b2b4731cfa449e5f147b2a7) perf(mbui): gate Android a11y to screen readers, d | 2.67 | 3.58 | 14.64 | 36.94 | 56.33 | 32.39 | 65.67 | 97.52 | 119.15 |
-| [147cbffea](https://github.com/AFK-surf/monoid/commit/147cbffeab11883ae0e572fdbb1ae16c43ad2b02) ci(android): hash APK inputs in batches and put fi | 2.67 | 3.58 | 14.64 | 36.93 | 56.33 | 32.39 | 65.67 | 97.63 | 125.92 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [fe47bab07](https://github.com/AFK-surf/monoid/commit/fe47bab076c13a892ea8a3483c1eebed469ba91d) fix(mbui): draw the working mark as spokes again,  | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 54.3 |
 | [12506b5ac](https://github.com/AFK-surf/monoid/commit/12506b5ac038ac1da968efa10789e1c51b1f5c0d) feat(station): add offline diagnostics and read-on | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 53.9 |
 | [19bb26f58](https://github.com/AFK-surf/monoid/commit/19bb26f58d3f818d77aa3f9ed375b4f2d3c6b1f6) fix(mbui): turn a page still coming in back from w | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 53.9 |
 | [52fc07d66](https://github.com/AFK-surf/monoid/commit/52fc07d669219243532cf4dd29deb31fc18c051e) feat(core): multi-way striped parallel downloads a | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 60.13 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d70ea4c58](https://github.com/AFK-surf/monoid/commit/d70ea4c58335abb30a7045f9b4f3c7d8d0c84305) fix(mbui): track foot end shift in rows_steady and | 0.46 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.28 |
 | [414eaf84e](https://github.com/AFK-surf/monoid/commit/414eaf84ee8e0af343c4a8db970cbb05f9abcb62) perf(scripts): speed up release delta generation ( | 0.46 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.28 |
 | [3aae0e034](https://github.com/AFK-surf/monoid/commit/3aae0e034e5456924b2b4731cfa449e5f147b2a7) perf(mbui): gate Android a11y to screen readers, d | 0.45 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.08 |
-| [147cbffea](https://github.com/AFK-surf/monoid/commit/147cbffeab11883ae0e572fdbb1ae16c43ad2b02) ci(android): hash APK inputs in batches and put fi | 0.45 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.08 |
