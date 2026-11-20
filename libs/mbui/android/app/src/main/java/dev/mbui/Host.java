@@ -302,18 +302,23 @@ final class Host {
     /** The input method's edits sent to MoonBit (MBView.MBInput.edited, main thread) and taken by it (its thread). */
     static int imeSent;
     static volatile int imeTaken;
+    private static int imeTakenSeen;
 
     static void setIme(boolean active, double x, double y, double w, double h,
                        String text, int a, int b) {
         boolean was = imeActive;
+        // the input method's edits MoonBit had taken when it said this: said before it took them all, it is not its
+        // own change but what it had before them (the field's state here is newer)
+        final int taken = imeTaken;
         if (!active && !was) {
             imeText = text;
             selStart = a;
             selEnd = b;
+            imeTakenSeen = taken;
             return;
         }
-        if (active == was && lifts == liftsSeen && a == selStart && b == selEnd
-                && java.util.Objects.equals(text, imeText)) {
+        if (active == was && lifts == liftsSeen && taken == imeTakenSeen
+                && a == selStart && b == selEnd && java.util.Objects.equals(text, imeText)) {
             return;
         }
         boolean cleared = text.isEmpty() && !imeText.isEmpty();
@@ -323,9 +328,7 @@ final class Host {
         imeText = text;
         selStart = a;
         selEnd = b;
-        // the input method's edits MoonBit had taken when it said this: said before it took them all, it is not its
-        // own change but what it had before them (the field's state here is newer)
-        final int taken = imeTaken;
+        imeTakenSeen = taken;
         main.post(() -> {
             InputMethodManager imm = (InputMethodManager)
                     activity.getSystemService(Context.INPUT_METHOD_SERVICE);
