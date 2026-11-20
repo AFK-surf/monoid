@@ -9,7 +9,7 @@ import { type ConnectsOptions, makeConnects } from "../connects/connects.ts";
 import { NAMES_FILE } from "../connects/keys.ts";
 import type { NameBook } from "../connects/names.ts";
 import { log } from "../ops/log.ts";
-import { type CommaChats, type CommaIndexes, CommaSurface } from "./surface.ts";
+import { type CommaChats, type CommaIndexes, type CommaWorkspaceMeta, CommaSurface } from "./surface.ts";
 import { CommaTasks } from "./tasks.ts";
 
 type Json = any;
@@ -73,6 +73,10 @@ export type CommaOptions = ConnectsOptions & {
   /// What the station calls itself to Comma for a connect of workspace `ws` (null: the home one): that workspace's
   /// name and its own there, so the still.fail stations Comma lists say which workspace each is. Default: the host's name.
   name?: (ws: string | null) => string;
+  /// Metadata of workspace `ws` (null: the home one) reported in capabilities.stillfail_workspace.
+  workspaceMeta?: (ws: string | null) => CommaWorkspaceMeta | null;
+  /// Notifies when workspace metadata may have changed.
+  onWorkspaceMetaChange?: (changed: () => void) => () => void;
 };
 
 export type CommaParts = ReturnType<typeof makeComma>;
@@ -111,7 +115,9 @@ export function makeComma(options: CommaOptions) {
       } : null;
       return new CommaSurface({ connect: c.id, server: c.server, token: c.token, name: options.name?.(c.workspace ?? null) ?? hostname(), workspace, tasks: t, store: options.store,
         models: () => options.models?.(c.id) ?? [], book, stats: isIn ? () => scoped().indexes : options.empty,
-        chats, inScope, previousExited: options.previousExited });
+        chats, inScope, previousExited: options.previousExited,
+        workspaceMeta: isIn && options.workspaceMeta ? () => options.workspaceMeta!(c.workspace ?? null) : undefined,
+        onWorkspaceMetaChange: isIn ? options.onWorkspaceMetaChange : undefined });
     });
   const connects = makeConnects<ScopedConnect>(options, {
     kind: "comma",

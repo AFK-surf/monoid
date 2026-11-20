@@ -13,7 +13,7 @@ import { stationLang } from "../ops/i18n.ts";
 import { Agents } from "../sessions/agents.ts";
 import { ControlPlane, Parts, Paths, Peers, Previous, Readers, StationConfig, Store } from "../services.ts";
 import { makeComma } from "./index.ts";
-import type { CommaChats } from "./surface.ts";
+import { type CommaChats, workspaceMetaOf } from "./surface.ts";
 import { CHANGED, READ, SAY, type WorkspaceReads, answerText, peerRead, workspaceRead } from "./peer.ts";
 import { routerReads, routerSaysAfter } from "./chats.ts";
 import { CommaStats, FAST_SETTLE_MS, RevIndex, chatOf } from "./stats.ts";
@@ -163,7 +163,14 @@ export const CommaLive = Layer.effectDiscard(
       name: (ws) => {
         const m = cloud.membership(ws ?? cloud.home() ?? "");
         return m === null ? hostname() : `${m.workspace_name} · ${m.name === "" ? hostname() : m.name}`;
-      } }), { kind: "comma", shown: (c, raw) => c.shown(raw), entry: commaEntry });
+      },
+      workspaceMeta: (ws) => {
+        const target = ws ?? cloud.home();
+        if (target === null) return null;
+        const m = cloud.membership(target);
+        return m === null ? null : workspaceMetaOf(m, cloud.state?.station ?? "");
+      },
+      onWorkspaceMetaChange: (changed) => cloud.listen(() => changed()) }), { kind: "comma", shown: (c, raw) => c.shown(raw), entry: commaEntry });
     // (what offers Comma as a platform in the connect wizard: a station from before says nothing)
     parts.overview("comma", () => true);
     parts.routes(

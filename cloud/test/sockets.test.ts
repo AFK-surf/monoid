@@ -319,3 +319,54 @@ test("the Directory counts its calls by what they serve, without writing on a re
     await h.close();
   }
 });
+
+test("state frames carry workspace_emoji and workspace_icon for home and joined workspaces, omitting unset keys and pushing updates", async () => {
+  const h = await harness();
+  try {
+    const { alice, w, station } = await setUp(h);
+    const second = ((await (await alice("POST", "/v1/workspaces", { name: "Lab" })).json()) as any).id as string;
+    const joinEnrollment = (await (await alice("POST", `/v1/workspaces/${second}/enrollments`, { name: "willow-lab" })).json()) as any;
+    const joinedRes = await h.fetch("/v1/stations/join", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        token: joinEnrollment.token,
+        station: station.id,
+        signature: await station.sign(`stillfail-station-enroll-v1:${h.origin}:${joinEnrollment.token}:${station.id}`),
+      }),
+    });
+    assert.equal(joinedRes.status, 200);
+
+    const presence = await connect(h, station);
+    const initial = (await presence.take()).find((f) => f.type === "state");
+    assert.equal("workspace_emoji" in initial, false);
+    assert.equal("workspace_icon" in initial, false);
+    assert.equal(initial.workspaces.length, 1);
+    assert.equal("workspace_emoji" in initial.workspaces[0], false);
+    assert.equal("workspace_icon" in initial.workspaces[0], false);
+
+    assert.equal((await alice("PATCH", `/v1/workspaces/${w}`, { emoji: "🚀", icon: "glyph:rocket" })).status, 200);
+    const homeUpdated = (await presence.take()).filter((f) => f.type === "state").at(-1);
+    assert.equal(homeUpdated.workspace_emoji, "🚀");
+    assert.equal(homeUpdated.workspace_icon, "glyph:rocket");
+
+    assert.equal((await alice("PATCH", `/v1/workspaces/${second}`, { emoji: "🧪", icon: "glyph:beaker:blue" })).status, 200);
+    const joinedUpdated = (await presence.take()).filter((f) => f.type === "state").at(-1);
+    assert.equal(joinedUpdated.workspaces[0].workspace_emoji, "🧪");
+    assert.equal(joinedUpdated.workspaces[0].workspace_icon, "glyph:beaker:blue");
+
+    assert.equal((await alice("PATCH", `/v1/workspaces/${w}`, { emoji: "", icon: null })).status, 200);
+    const homeCleared = (await presence.take()).filter((f) => f.type === "state").at(-1);
+    assert.equal("workspace_emoji" in homeCleared, false);
+    assert.equal("workspace_icon" in homeCleared, false);
+    assert.equal(homeCleared.workspaces[0].workspace_emoji, "🧪");
+    assert.equal(homeCleared.workspaces[0].workspace_icon, "glyph:beaker:blue");
+
+    assert.equal((await alice("PATCH", `/v1/workspaces/${second}`, { emoji: null, icon: "" })).status, 200);
+    const joinedCleared = (await presence.take()).filter((f) => f.type === "state").at(-1);
+    assert.equal("workspace_emoji" in joinedCleared.workspaces[0], false);
+    assert.equal("workspace_icon" in joinedCleared.workspaces[0], false);
+  } finally {
+    await h.close();
+  }
+});
