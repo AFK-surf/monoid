@@ -2,18 +2,31 @@
 // (may_be_bidi), the same as Bidi::new's wherever they are.
 
 ///|
-test "may_be_bidi is over every BMP character whose class makes levels worth working out, and every surrogate" {
+test "may_be_bidi covers every BMP and non-BMP complex-class character while skipping Emoji and CJK extensions" {
   let missed = []
   for cp in 0..<0x10000 {
     if cp >= 0xD800 && cp <= 0xDFFF {
-      if !may_be_bidi(cp) {
-        missed.push(cp)
-      }
-    } else if complex_class(bidi_class(cp)) && !may_be_bidi(cp) {
+      continue
+    }
+    if complex_class(bidi_class(cp)) && !may_be_bidi(cp) {
       missed.push(cp)
     }
   }
+  for cp in 0x10000..=0x10FFFF {
+    if complex_class(bidi_class(cp)) {
+      let hi = 0xD800 + ((cp - 0x10000) >> 10)
+      if !may_be_bidi(hi) {
+        missed.push(cp)
+      }
+    }
+  }
   assert_eq(missed, [])
+  // Emoji and CJK extension characters must not trigger may_be_bidi on any UTF-16 code unit.
+  for s in ["😀", "👍🏽", "🎉", "\u{20000}", "\u{2A700}"] {
+    for i in 0..<s.length() {
+      assert_false(may_be_bidi(s.at(i).to_int()), msg="unexpected may_be_bidi for \{s} unit \{i}")
+    }
+  }
 }
 
 ///|

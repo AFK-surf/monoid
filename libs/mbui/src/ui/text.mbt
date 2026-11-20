@@ -99,8 +99,6 @@ priv struct TextCache {
   mut colour_atlas : @hostapi.Atlas?
   // the glyphs of what was shaped in this frame that it has not drawn yet, for the host to draw ahead (glyphs_ahead)
   fresh : Array[Int]
-  // keys already dispatched to h_glyphs_ahead in this frame when dedup=true (cleared at text_frame / glyphs_forget)
-  ahead_sent : Map[Int, Bool]
   mut generation : Int
   // the frame being drawn, and the last that let go of what was shaped longest ago (shapes_thin)
   mut frame : Int
@@ -124,7 +122,6 @@ let text_cache : TextCache = {
   atlas: None,
   colour_atlas: None,
   fresh: [],
-  ahead_sent: Map([]),
   generation: -1,
   frame: 0,
   thinned: -1,
@@ -140,9 +137,6 @@ let text_cache : TextCache = {
 /// A frame begins: what it shapes and draws from the atlas is kept through it.
 fn text_frame() -> Unit {
   text_cache.frame = text_cache.frame + 1
-  if !text_cache.ahead_sent.is_empty() {
-    text_cache.ahead_sent.clear()
-  }
   for a in [text_cache.atlas, text_cache.colour_atlas] {
     match a {
       Some(a) => a.next_frame()
@@ -217,10 +211,13 @@ fn glyphs_forget() -> Unit {
   glyph_moves.val += 1
   text_cache.glyphs.clear()
   text_cache.fresh.clear()
-  if !text_cache.ahead_sent.is_empty() {
-    text_cache.ahead_sent.clear()
-  }
   glyphs_laid.clear()
+  if !glyphs_ahead_laid_keys.is_empty() {
+    glyphs_ahead_laid_keys.clear()
+  }
+  if !glyphs_ahead_laid_bases.is_empty() {
+    glyphs_ahead_laid_bases.clear()
+  }
   text_cache.atlas = None
   text_cache.colour_atlas = None
 }
@@ -1356,8 +1353,8 @@ fn laid_ahead(keys : Array[Int], x : (Int) -> Double) -> Unit {
       glyphs_laid.push(glyph_sub_at(k, x(c), sc, z))
     }
   }
-  if glyphs_laid.length() >= glyphs_ahead_batch && view_app.val is Some(_) {
-    glyphs_ahead(dedup=true)
+  if glyphs_laid.length() >= glyphs_ahead_batch {
+    glyphs_laid_flush()
   }
 }
 
@@ -1367,6 +1364,42 @@ fn laid_ahead(keys : Array[Int], x : (Int) -> Double) -> Unit {
 let glyphs_laid : Array[Int] = []
 
 ///|
+/// Exact phased keys already flushed mid-layout by `glyphs_laid_flush` since the last `glyphs_ahead`.
+// kept across runs: emptied as each frame hands them on (glyphs_ahead) and with the glyphs (glyphs_forget)
+let glyphs_ahead_laid_keys : Map[Int, Bool] = Map([])
+
+///|
+/// Base glyph keys already flushed at an exact layout phase by `glyphs_laid_flush` since the last `glyphs_ahead`,
+/// so `glyphs_ahead` does not re-dispatch them at phase 0 from `text_cache.fresh`.
+// kept across runs: emptied as each frame hands them on (glyphs_ahead) and with the glyphs (glyphs_forget)
+let glyphs_ahead_laid_bases : Map[Int, Bool] = Map([])
+
+///|
+/// Flush only `glyphs_laid` to the host mid-layout without touching `text_cache.fresh`, so glyphs shaped for later
+/// nodes are not prematurely dispatched at phase 0 before their own layout computes their exact subpixel phases.
+fn glyphs_laid_flush() -> Unit {
+  let laid = glyphs_laid
+  if laid.is_empty() {
+    return
+  }
+  let keys = FixedArray::make(laid.length(), 0)
+  let mut n = 0
+  for k in laid {
+    let base = k & 0x03FFFFFF
+    if !glyphs_ahead_laid_keys.contains(k) && !glyph_drawn_any_sub(base) {
+      glyphs_ahead_laid_keys[k] = true
+      glyphs_ahead_laid_bases[base] = true
+      keys[n] = k
+      n = n + 1
+    }
+  }
+  laid.clear()
+  if n > 0 {
+    h_glyphs_ahead(keys, n)
+  }
+}
+
+///|
 /// The glyphs of what the frame shaped and laid out and did not draw yet (a page pushed, still off the screen; the lines
 /// below what a list shows; what the frame is about to paint), handed to the host to draw them ahead, off the frames'
 /// thread: as the window's tree is laid out, as the painting begins and as it is over (app.mbt), so what was laid out is
@@ -1374,43 +1407,46 @@ let glyphs_laid : Array[Int] = []
 /// more later. Each at the phase its line put it at (glyphs_laid: bits 26..27 of its key, glyph_sub_at), the host
 /// drawing that phase first; one shaped and not laid out at phase 0. What is drawn is the same; only when and where the
 /// work is done changes (@hostapi.glyphs_ahead).
-fn glyphs_ahead(dedup? : Bool = false) -> Unit {
+fn glyphs_ahead() -> Unit {
   let fresh = text_cache.fresh
   let laid = glyphs_laid
   if fresh.is_empty() && laid.is_empty() {
+    if !glyphs_ahead_laid_keys.is_empty() {
+      glyphs_ahead_laid_keys.clear()
+    }
+    if !glyphs_ahead_laid_bases.is_empty() {
+      glyphs_ahead_laid_bases.clear()
+    }
     return
   }
   let keys = FixedArray::make(fresh.length() + laid.length(), 0)
   let mut n = 0
   // (each key once; a glyph laid out at a phase not asked again at phase 0 for having been shaped)
   let asked : Map[Int, Bool] = Map([])
-  let sent = text_cache.ahead_sent
   for k in laid {
     let base = k & 0x03FFFFFF
-    if !asked.contains(k) && (!dedup || !sent.contains(k)) && !glyph_drawn_any_sub(base) {
+    if !glyphs_ahead_laid_keys.contains(k) && !asked.contains(k) && !glyph_drawn_any_sub(base) {
       asked[k] = true
       asked[base | (1 << 30)] = true
-      if dedup {
-        sent[k] = true
-        sent[base | (1 << 30)] = true
-      }
       keys[n] = k
       n = n + 1
     }
   }
   for k in fresh {
-    let fk = k | (1 << 30)
-    if !asked.contains(fk) && (!dedup || !sent.contains(fk)) && !glyph_drawn_any_sub(k) {
-      asked[fk] = true
-      if dedup {
-        sent[fk] = true
-      }
+    if !asked.contains(k | (1 << 30)) && !glyphs_ahead_laid_bases.contains(k) && !glyph_drawn_any_sub(k) {
+      asked[k | (1 << 30)] = true
       keys[n] = k
       n = n + 1
     }
   }
   fresh.clear()
   laid.clear()
+  if !glyphs_ahead_laid_keys.is_empty() {
+    glyphs_ahead_laid_keys.clear()
+  }
+  if !glyphs_ahead_laid_bases.is_empty() {
+    glyphs_ahead_laid_bases.clear()
+  }
   if n > 0 {
     h_glyphs_ahead(keys, n)
   }

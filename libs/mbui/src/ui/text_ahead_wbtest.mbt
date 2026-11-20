@@ -168,7 +168,7 @@ test "between-frame event layout dispatches glyphs_ahead before next draw with z
 }
 
 ///|
-test "heavy single-frame layout flushes mid-layout at glyphs_ahead_batch with zero duplicates" {
+test "heavy single-frame layout flushes glyphs_laid mid-layout without touching fresh and with zero duplicates" {
   let asked : Array[Int] = []
   let t = Tester::new(fn(_c) {  }, w=400.0, h=600.0, scale=2.75)
   t.latin_advances(
@@ -178,7 +178,12 @@ test "heavy single-frame layout flushes mid-layout at glyphs_ahead_batch with ze
   set_view_app(fn(_root) {  })
   t.draw()
   fake_ahead.val = Some(asked)
-  // > 48 distinct characters in one layout_text call triggers mid-layout flush automatically when view_app is active.
+  // Pre-shape a second paragraph (as Flex width measurement does) before laying out the first paragraph.
+  let long_b = "菜重芥姜海咸河淡鳞潜羽翔龙师火帝鸟官人皇始制文字乃服衣裳推位让国有虞陶唐"
+  let shaped_b = shape(long_b, 15.3, 400)
+  let fresh_before = text_cache.fresh.length()
+  assert_true(fresh_before > 20)
+  // > 48 distinct characters in one layout_text call triggers glyphs_laid_flush() mid-layout without draining fresh.
   let long_a = "天地玄黄宇宙洪荒日月盈昃辰宿列张寒来暑往秋收冬藏闰余成岁律吕调阳云腾致雨露结为霜金生丽水玉出昆冈剑号巨阙珠称夜光果珍李柰"
   let _ = layout_text(long_a, 15.3, 400, 328.0, true)
   let mid_count = asked.length()
@@ -186,10 +191,21 @@ test "heavy single-frame layout flushes mid-layout at glyphs_ahead_batch with ze
     mid_count >= glyphs_ahead_batch,
     msg="expected mid-layout flush >= \{glyphs_ahead_batch}, got \{mid_count}",
   )
-  // Second layout overlapping characters from long_a plus new characters, followed by frame-end dedup flush.
-  let long_b = "天地玄黄宇宙洪荒菜重芥姜海咸河淡鳞潜羽翔龙师火帝鸟官人皇始制文字乃服衣裳推位让国有虞陶唐"
-  let _ = layout_text(long_b, 15.3, 400, 328.0, true)
-  glyphs_ahead(dedup=true)
+  // text_cache.fresh must NOT have been drained by glyphs_laid_flush().
+  assert_true(text_cache.fresh.length() >= fresh_before, msg="glyphs_laid_flush must not drain text_cache.fresh")
+  // None of long_b's unique glyphs should have been prematurely dispatched at phase 0 before long_b is laid out.
+  let asked_mid : Map[Int, Bool] = Map([])
+  for k in asked {
+    asked_mid[k & 0x03FFFFFF] = true
+  }
+  for k in shaped_b.keys {
+    if k >= 0 {
+      assert_false(asked_mid.contains(k), msg="shaped-only glyph \{k} must not be flushed before its layout")
+    }
+  }
+  // Now lay out long_b (with overlapping chars from long_a too) and flush frame end with glyphs_ahead().
+  let _ = layout_text("天地玄黄" + long_b, 15.3, 400, 328.0, true)
+  glyphs_ahead()
   fake_ahead.val = None
   assert_true(asked.length() > mid_count, msg="expected remaining glyphs flushed after second layout")
   let seen : Map[Int, Bool] = Map([])
