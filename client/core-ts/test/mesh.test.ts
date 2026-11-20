@@ -1206,6 +1206,64 @@ sim("an_entry_told_after_connecting_updates_the_existing_connection", async (s) 
   await close(s, station, mesh);
 });
 
+// Zero latency isolates the number of five-second ticks from RTT. Replies still
+// cross real simulated streams and the production control protocol.
+async function pingFixture(s: Sim) {
+  const net = new SimNet(s.time.clock, 1, 0);
+  net.direct.ms = 0;
+  const station = await s.settle(Station.start(undefined, net.world()));
+  const mesh = await s.run(Mesh.make({ ...env(s), iroh: net.iroh() }, []));
+  mesh.addAddr(station.addr());
+  const link = await s.run(mesh.link(station.id(), grants("ok", { n: 0 })));
+  assert.equal(link.pinned, null);
+  const replyFor = async (milliseconds: number) => {
+    const end = s.time.now() + milliseconds;
+    while (s.time.now() < end) {
+      const next = Math.min(end, s.time.now() + 1000);
+      const reply = await request(s, link, head("/admin/api/overview"));
+      await s.run(readAll(reply.body));
+      await s.time.pass(next - s.time.now());
+    }
+  };
+  return { station, mesh, link, replyFor };
+}
+
+sim("sole_main_reply_traffic_sends_two_exchanges_in_sixty_seconds", async (s) => {
+  const { station, mesh, replyFor } = await pingFixture(s);
+  const before = station.grants.length, start = s.time.now();
+  await replyFor(60_000);
+  assert.equal(s.time.now() - start, 60_000);
+  assert.equal(station.grants.length - before, 2);
+  assert.equal(mesh.ways(station.id()).length, 1);
+  assert.equal(mesh.healthy(station.id()), true);
+  await close(s, station, mesh);
+});
+
+sim("sole_main_without_reply_traffic_still_pings_every_five_seconds", async (s) => {
+  const { station, mesh } = await pingFixture(s);
+  const before = station.grants.length;
+  for (let tick = 1; tick <= 12; tick++) {
+    await s.time.pass(TICK_MS);
+    assert.equal(station.grants.length - before, tick);
+  }
+  await close(s, station, mesh);
+});
+
+sim("sole_main_reply_traffic_stopping_has_bounded_dead_detection", async (s) => {
+  const measurements: number[] = [];
+  for (let phase = 0; phase < 6; phase++) {
+    const { station, mesh, replyFor } = await pingFixture(s);
+    await replyFor(phase * TICK_MS + 1000);
+    station.deadBelow = Number.MAX_SAFE_INTEGER;
+    const start = s.time.now();
+    assert.equal(await s.settle(s.runner.run(mesh.healthChange(station.id(), true)), 48_000), false);
+    measurements.push(s.time.now() - start);
+    await close(s, station, mesh);
+  }
+  console.log(JSON.stringify({ test: "sole_main_dead_detection", milliseconds: measurements }));
+  assert.ok(Math.max(...measurements) <= 4 * TICK_MS + PING_TIMEOUT_MS + 5 * TICK_MS);
+});
+
 sim("its_pings_say_when_no_way_answers_and_when_one_answers_again", async (s) => {
   const a = s.relay("https://a.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
   const b = s.relay("https://b.relay.test/", { device: { ms: 30 }, station: { ms: 30 } });
