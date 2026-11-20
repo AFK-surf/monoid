@@ -93,6 +93,7 @@ pub fn bind(options: JsValue) -> Promise {
             .secret_key(SecretKey::from_bytes(&bytes))
             .relay_mode(if relays.is_empty() { RelayMode::Disabled } else { RelayMode::Custom(relay_map) })
             .home_on_every_relay()
+            .net_report_config(iroh::NetReportConfig::minimal())
             .transport_config(transport());
         if let Some(urls) = options.relay_allowlist {
             let mut allowlist: Vec<RelayUrl> = urls.iter().map(|u| relay_url(u)).collect::<Result<_, _>>()?;
