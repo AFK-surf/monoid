@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [1f5003692](https://github.com/AFK-surf/monoid/commit/1f5003692dee3df202d0f1e9e9e737d504182c37) perf(mbui): expand text fast paths, reuse shape_wi | 2.66 | 3.57 | 14.59 | 36.85 | 56.18 | 32.31 | 65.48 | 97.63 | 119.45 |
 | [b9717a798](https://github.com/AFK-surf/monoid/commit/b9717a7986e436479ab3981de509fdff6c0479a3) test(mb): add upstream SSE, zlib, HTTP, and FS sui | 2.66 | 3.57 | 14.59 | 36.85 | 56.18 | 32.31 | 65.48 | 97.63 | 119.45 |
 | [c732e0d4a](https://github.com/AFK-surf/monoid/commit/c732e0d4a24334935b84c58e76f3e0fad3bc1466) fix(ci): settle two station test races and share t | 2.66 | 3.57 | 14.59 | 36.85 | 56.18 | 32.31 | 65.48 | 97.54 | 115.28 |
 | [b07397ae4](https://github.com/AFK-surf/monoid/commit/b07397ae4c9e9a9a02e4eb69535af18025cdefc0) feat(mbui): add motion library tools, Storybook mo | 2.66 | 3.57 | 14.59 | 36.85 | 56.18 | 32.31 | 65.48 | 97.47 | 124.48 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3412edbc0](https://github.com/AFK-surf/monoid/commit/3412edbc09d5120f3eec92a9e51873969de105cb) feat(mbui): cap farthest-corner shift on View::sca | 2.65 | 3.56 | 14.52 | 36.74 | 55.93 | 32.23 | 65.28 | 97.37 | 130.24 |
 | [fc16aebfe](https://github.com/AFK-surf/monoid/commit/fc16aebfe588120daf8aee436396ca5ede254b75) fix(mbui): count tree marks and open row grounds i | 2.65 | 3.56 | 14.52 | 36.74 | 55.93 | 32.23 | 65.28 | 97.5 | 122.31 |
 | [97ebdfd69](https://github.com/AFK-surf/monoid/commit/97ebdfd69129f3b404a2f399be8f2ab1e125542a) feat(mbui): add swipe-back hint on wide frames and | 2.65 | 3.56 | 14.52 | 36.74 | 55.93 | 32.23 | 65.28 | 97.5 | 122.31 |
-| [1889203ca](https://github.com/AFK-surf/monoid/commit/1889203caa71d297d82a02e596aababbb8a8b2f5) refactor(station/mb): replace thin helper forwarde | 2.65 | 3.56 | 14.52 | 36.74 | 55.93 | 32.23 | 65.28 | 97.5 | 122.31 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [1f5003692](https://github.com/AFK-surf/monoid/commit/1f5003692dee3df202d0f1e9e9e737d504182c37) perf(mbui): expand text fast paths, reuse shape_wi | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 53.84 |
 | [b9717a798](https://github.com/AFK-surf/monoid/commit/b9717a7986e436479ab3981de509fdff6c0479a3) test(mb): add upstream SSE, zlib, HTTP, and FS sui | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.43 |
 | [c732e0d4a](https://github.com/AFK-surf/monoid/commit/c732e0d4a24334935b84c58e76f3e0fad3bc1466) fix(ci): settle two station test races and share t | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.43 |
 | [b07397ae4](https://github.com/AFK-surf/monoid/commit/b07397ae4c9e9a9a02e4eb69535af18025cdefc0) feat(mbui): add motion library tools, Storybook mo | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.43 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3412edbc0](https://github.com/AFK-surf/monoid/commit/3412edbc09d5120f3eec92a9e51873969de105cb) feat(mbui): cap farthest-corner shift on View::sca | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.1 |
 | [fc16aebfe](https://github.com/AFK-surf/monoid/commit/fc16aebfe588120daf8aee436396ca5ede254b75) fix(mbui): count tree marks and open row grounds i | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.1 |
 | [97ebdfd69](https://github.com/AFK-surf/monoid/commit/97ebdfd69129f3b404a2f399be8f2ab1e125542a) feat(mbui): add swipe-back hint on wide frames and | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.02 |
-| [1889203ca](https://github.com/AFK-surf/monoid/commit/1889203caa71d297d82a02e596aababbb8a8b2f5) refactor(station/mb): replace thin helper forwarde | 0.45 | 0.59 | 2.27 | 3.35 | 5.44 | 1.66 | 4.48 | 54.12 |
