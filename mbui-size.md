@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [99ed258ba](https://github.com/AFK-surf/monoid/commit/99ed258ba77de9070356e1c86ec95ffa268f8891) fix(ci): skip desktop-build cache saves when too l | 2.77 | 3.74 | 15.24 | 37.3 | 57.72 | 32.69 | 66.65 | 98.53 | 126.14 |
 | [796c5771d](https://github.com/AFK-surf/monoid/commit/796c5771d8d4cbb36f530c7c264c10dbdc4f1a07) test(station/mb): hold phones' grants and outbox,  | 2.77 | 3.74 | 15.24 | 37.3 | 57.72 | 32.69 | 66.65 | 98.34 | 124.21 |
 | [65c250355](https://github.com/AFK-surf/monoid/commit/65c2503556894227c8ec23525eec03eba66017e2) refactor(mbui): remove legacy backdrop_lens and un | 2.77 | 3.74 | 15.24 | 37.3 | 57.72 | 32.69 | 66.65 | 98.5 | 126.42 |
 | [72e6bdf52](https://github.com/AFK-surf/monoid/commit/72e6bdf52a4c4f3204622e8fcb12739567fdcfde) feat(station): Farview Stage 13A release, farview. | 2.77 | 3.74 | 15.24 | 37.3 | 57.73 | 32.7 | 66.66 | 98.58 | 127.7 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e2007e998](https://github.com/AFK-surf/monoid/commit/e2007e9983962fcfaeb39a1d382af2df6c69ee16) fix(station): stream fs.rotate in shell to avoid l | 2.74 | 3.7 | 15.06 | 37.13 | 57.15 | 32.55 | 66.26 | 98.16 | 128.95 |
 | [413090148](https://github.com/AFK-surf/monoid/commit/413090148513c1855ac506278877c12d75b75ce1) fix(mbui): speed up Windows 1Password fill and sto | 2.74 | 3.7 | 15.06 | 37.13 | 57.15 | 32.55 | 66.25 | 98.17 | 144.34 |
 | [136d854b0](https://github.com/AFK-surf/monoid/commit/136d854b0521e6857f138ea9014c558bea9802e9) fix(station): cap warm idle processes, scale turn  | 2.74 | 3.7 | 15.06 | 37.13 | 57.15 | 32.55 | 66.25 | 98.17 | 144.34 |
-| [86375dec2](https://github.com/AFK-surf/monoid/commit/86375dec27dc17f2f0d322d4427520854baffe5f) fix(mbui): center Windows text on its ink, not on  | 2.74 | 3.7 | 15.06 | 37.13 | 57.15 | 32.54 | 66.23 | 98.17 | 113.97 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [99ed258ba](https://github.com/AFK-surf/monoid/commit/99ed258ba77de9070356e1c86ec95ffa268f8891) fix(ci): skip desktop-build cache saves when too l | 0.46 | 0.61 | 2.36 | 3.4 | 5.58 | 1.7 | 4.6 | 54.1 |
 | [796c5771d](https://github.com/AFK-surf/monoid/commit/796c5771d8d4cbb36f530c7c264c10dbdc4f1a07) test(station/mb): hold phones' grants and outbox,  | 0.46 | 0.61 | 2.36 | 3.4 | 5.58 | 1.7 | 4.6 | 54.1 |
 | [65c250355](https://github.com/AFK-surf/monoid/commit/65c2503556894227c8ec23525eec03eba66017e2) refactor(mbui): remove legacy backdrop_lens and un | 0.46 | 0.61 | 2.36 | 3.4 | 5.58 | 1.7 | 4.6 | 54.1 |
 | [72e6bdf52](https://github.com/AFK-surf/monoid/commit/72e6bdf52a4c4f3204622e8fcb12739567fdcfde) feat(station): Farview Stage 13A release, farview. | 0.46 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.12 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e2007e998](https://github.com/AFK-surf/monoid/commit/e2007e9983962fcfaeb39a1d382af2df6c69ee16) fix(station): stream fs.rotate in shell to avoid l | 0.46 | 0.6 | 2.33 | 3.37 | 5.51 | 1.69 | 4.57 | 53.95 |
 | [413090148](https://github.com/AFK-surf/monoid/commit/413090148513c1855ac506278877c12d75b75ce1) fix(mbui): speed up Windows 1Password fill and sto | 0.46 | 0.6 | 2.33 | 3.37 | 5.51 | 1.69 | 4.57 | 53.95 |
 | [136d854b0](https://github.com/AFK-surf/monoid/commit/136d854b0521e6857f138ea9014c558bea9802e9) fix(station): cap warm idle processes, scale turn  | 0.46 | 0.6 | 2.33 | 3.37 | 5.51 | 1.69 | 4.57 | 54.26 |
-| [86375dec2](https://github.com/AFK-surf/monoid/commit/86375dec27dc17f2f0d322d4427520854baffe5f) fix(mbui): center Windows text on its ink, not on  | 0.46 | 0.6 | 2.33 | 3.37 | 5.51 | 1.69 | 4.57 | 54.26 |
