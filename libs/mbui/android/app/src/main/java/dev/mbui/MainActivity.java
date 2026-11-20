@@ -169,7 +169,10 @@ public class MainActivity extends Activity {
                 WindowInsetsAnimation.Callback.DISPATCH_MODE_CONTINUE_ON_SUBTREE) {
             @Override
             public void onPrepare(WindowInsetsAnimation a) {
-                if ((a.getTypeMask() & WindowInsets.Type.ime()) != 0) imeMoving = true;
+                if ((a.getTypeMask() & WindowInsets.Type.ime()) != 0) {
+                    imeMoving = true;
+                    if (mbView != null) mbView.imeMovingStarted();
+                }
             }
 
             @Override

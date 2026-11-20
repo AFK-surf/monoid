@@ -209,8 +209,8 @@ final class Host {
      *  imeActive is, on the app's thread, so the two never disagree. */
     static volatile boolean imeAwaited;
     /** Fingers lifted off the view (MBView, main thread), and as many as setIme had seen. */
-    static int lifts;
-    private static int liftsSeen;
+    static volatile int lifts;
+    private static volatile int liftsSeen;
     private static boolean imeControllable;
     private static android.view.View imeWatched;  // the view whose controller tells them (an activity made anew: anew)
 
@@ -306,6 +306,16 @@ final class Host {
     static void setIme(boolean active, double x, double y, double w, double h,
                        String text, int a, int b) {
         boolean was = imeActive;
+        if (!active && !was) {
+            imeText = text;
+            selStart = a;
+            selEnd = b;
+            return;
+        }
+        if (active == was && lifts == liftsSeen && a == selStart && b == selEnd
+                && java.util.Objects.equals(text, imeText)) {
+            return;
+        }
         boolean cleared = text.isEmpty() && !imeText.isEmpty();
         // (MoonBit's words, what is composed left out: what a connection made anew starts from, MBView.MBInput)
         imeActive = active;
@@ -324,6 +334,7 @@ final class Host {
             if (active && !was) {
                 view.requestFocus();
                 imm.restartInput(view);
+                view.imeMovingStarted();
                 imeOwed = true;
                 showOwedIme();
             } else if (!active && was) {
@@ -333,6 +344,7 @@ final class Host {
                 // the field it has tapped again with no keyboard up (one that did not come, or went): asked for again,
                 // as Compose's tap on a focused field shows it (the app says its field anew on such a tap)
                 if (ImeRequest.retryOnTap(lifted, imeVisible, imeOwed, activity.isInMultiWindowMode())) {
+                    view.imeMovingStarted();
                     imeOwed = true;
                     imeAwaited = true;
                     showOwedIme();

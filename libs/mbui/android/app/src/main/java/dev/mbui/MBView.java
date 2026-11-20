@@ -515,7 +515,8 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         if (Host.view != this || paused) return;
         Latency.frameBegins();
         boolean app = pacer.appWanted.getAndSet(false), pictured = pacer.picturesOnly.getAndSet(false);
-        float w = getWidth() / density, h = Math.max(1, getHeight() - Host.imeBottom) / density;
+        final int imeUsed = Host.imeBottom;
+        float w = getWidth() / density, h = Math.max(1, getHeight() - imeUsed) / density;
         long[] at = pacer.vsyncAt();
         if (pictured && !app) {
             if (mail.redrawAsked(at[1])) requestRender();
@@ -535,6 +536,10 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         pacer.ended(more, later, b.following, pacedRate);
         NativeViews.framed(more || later);
         frameWorked(System.nanoTime() - began, glWorked);
+        if (Host.imeBottom != imeUsed && Host.view == this && !paused) {
+            pacer.appWanted.set(true);
+            makeFrame();
+        }
     }
 
     /**
@@ -715,8 +720,15 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
             int gl = lastGlTid;
             hintsFor(gl > 0 && glAlive ? new int[] {logicTid, gl} : new int[] {logicTid});
         }
-        if (android.os.Build.VERSION.SDK_INT >= 31 && hints != null && hintTarget > 0) {
-            hints.reportActualWorkDuration(hintTarget);
+        if (android.os.Build.VERSION.SDK_INT >= 31 && hints != null) {
+            long target = pacer.framePeriod * 7 / 10;
+            if (target > 0 && target != hintTarget) {
+                hintTarget = target;
+                hints.updateTargetWorkDuration(target);
+            }
+            if (hintTarget > 0) {
+                hints.reportActualWorkDuration(hintTarget);
+            }
         }
     }
 
@@ -799,6 +811,26 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
     /** The field's typing begun or ended (MainActivity, as the keyboard shows or goes): the rate said or let go from now. */
     void typingChanged() {
         onApp(pacer::typingChanged);
+    }
+
+    /**
+     * The soft keyboard asked to show or beginning to move (main thread): ADPF session woken with a full target budget
+     * and the display's highest rate asked before its first inset step arrives, so the logic and GL threads are not
+     * preempted while the input method starts up.
+     */
+    void imeMovingStarted() {
+        if (paused) return;
+        if (!ONE && logic != null) {
+            logic.post(() -> {
+                wakeHints();
+                pacer.sayRate(true);
+            });
+        } else {
+            queueEvent(() -> {
+                wakeHints();
+                pacer.sayRate(true);
+            });
+        }
     }
 
     @Override
