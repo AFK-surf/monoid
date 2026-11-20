@@ -1574,6 +1574,7 @@ async fn P52::lifecycle(self : P52) -> Unit {
   while !self.taken && !self.bus.stopped.is_done() && !self.closed {
     @effect.sleep(200) // timer: a deadline (waiting for take_handover before the first lifecycle pass)
   }
+  let mut first = true
   while !self.bus.stopped.is_done() && !self.closed {
     let next = match self.hub {
       Some(hub) if self.taken => {
@@ -1589,18 +1590,23 @@ async fn P52::lifecycle(self : P52) -> Unit {
             None
           }
         }
-        ignore(hub.pack_unfinished_archived(wall_ms().to_double()) catch {
-          e => {
-            slice_log("warn", "hub", "backfilling unfinished archived workspaces failed", { "error": jstr(said_of(e)) })
-            0
-          }
-        })
-        ignore(hub.clean_idle_rebuildable(wall_ms().to_double()) catch {
-          e => {
-            slice_log("warn", "hub", "cleaning rebuildable files of idle sessions failed", { "error": jstr(said_of(e)) })
-            0
-          }
-        })
+        // Defer periodic archive backfill and idle rebuildable cleanup past the immediate startup pass
+        // (matching Node's initial 60s delay in lifecycle.ts).
+        if !first {
+          ignore(hub.pack_unfinished_archived(wall_ms().to_double()) catch {
+            e => {
+              slice_log("warn", "hub", "backfilling unfinished archived workspaces failed", { "error": jstr(said_of(e)) })
+              0
+            }
+          })
+          ignore(hub.clean_idle_rebuildable(wall_ms().to_double()) catch {
+            e => {
+              slice_log("warn", "hub", "cleaning rebuildable files of idle sessions failed", { "error": jstr(said_of(e)) })
+              0
+            }
+          })
+        }
+        first = false
         match (a, b) {
           (Some(x), Some(y)) => Some(if x < y { x } else { y })
           (Some(x), None) | (None, Some(x)) => Some(x)
