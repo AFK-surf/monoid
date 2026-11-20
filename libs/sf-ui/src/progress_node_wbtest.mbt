@@ -176,3 +176,38 @@ test "a progress bar as nodes finishing: read out whole (its most, 100%) as it i
   assert_eq(finishing, ("100%", Some((0.0, 100.0, 100.0))))
   assert_eq(not_known, ("", None))
 }
+
+///|
+test "progress_node: determinate animation and indeterminate sweep cause zero relayout (laid == 0)" {
+  let part : @signals.Signal[Double?] = @signals.signal(Some(0.2), same=fn(a, b) { a == b })
+  let t = @ui.Tester::new(fn(_c) {  }, w=300.0, h=60.0)
+  t.check_looks(false)
+  @ui.set_view_app(fn(root) {
+    root.box(fn(b) {
+      b.width(Is(Some(200.0))) |> ignore
+      progress_node(b, fn() { part.get() }, fn() { @ui.tree_theme().line }, fn() { theme().p.accent }).width_share(
+        Is(1.0),
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  // Determinate progress transition: 0.2 -> 0.8
+  part.set(Some(0.8))
+  t.draw()
+  t.tree_frames_from_now()
+  t.run_for(@motion.progress_ms)
+  for f in t.tree_frames() {
+    assert_eq(f.laid, 0, msg="determinate progress relaid out: \{Repr(f)}")
+  }
+  // Indeterminate sweep
+  part.set(None)
+  t.draw()
+  t.run_for(@motion.progress_known_ms)
+  t.tree_frames_from_now()
+  t.run_for(@motion.progress_sweep_ms / 2.0)
+  for f in t.tree_frames() {
+    assert_eq(f.laid, 0, msg="indeterminate sweep relaid out: \{Repr(f)}")
+  }
+}

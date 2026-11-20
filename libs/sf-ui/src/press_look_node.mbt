@@ -91,7 +91,7 @@ fn press_look(
         let out_at = dmax(at, r.at + @motion.ripple_enter_ms)
         r.due.push(
           v.at_moment(out_at, fn() {
-            r.way.go(1.0, @motion.tween(@motion.ripple_exit_ms, ease=Linear), at=out_at)
+            r.way.go(1.0, @motion.tween(@motion.ripple_exit_ms, ease=Leave), at=out_at)
             r.due.push(
               v.at_moment(r.way.end(), fn() {
                 made.remove(n)

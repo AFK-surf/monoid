@@ -111,6 +111,10 @@ pub fn tab_bar_node(
       }
       // (which tab is in front read by each by its own key: a tab is told only as it comes in front or leaves it)
       let front_of = g.selected(fn() { Some(front()) })
+      let hands : @motion.Handoff? = match look {
+        Capsule | Groove => Some(@motion.Handoff::new())
+        Chip => None
+      }
       if look is Chip {
         g.wraps(Is(Some(tab_chip_gap))) |> ignore
       }
@@ -146,9 +150,47 @@ pub fn tab_bar_node(
         if !(look is Chip) {
           slot.fits(Is(true)) |> ignore
         }
-        if look is Groove {
-          // (the one in front raised over the others: its shadow said on the node, which style_node does not set)
-          slot.shadow(By(fn() { if is_front() { (2.0, 1.0, @ui.tree_theme().shadow) } else { (0.0, 0.0, 0L) } })) |> ignore
+        match hands {
+          Some(h) => {
+            let part = h.part(fn(_) { if @signals.untracked(is_front) { 1.0 } else { 0.0 } })
+            slot.box(fn(pill) {
+              pill
+              .over(Is(true), edges=(Some(0.0), Some(0.0), Some(0.0), Some(0.0)))
+              .radius(Is(1.0e6))
+              .ground(By(fn() {
+                if is_front() {
+                  match look {
+                    Capsule => @ui.tree_theme().color(Selected)
+                    Groove => @ui.tree_theme().color(Bg)
+                    Chip => 0L
+                  }
+                } else {
+                  0L
+                }
+              }))
+              |> ignore
+              if look is Groove {
+                pill.shadow(By(fn() { if is_front() { (2.0, 1.0, @ui.tree_theme().shadow) } else { (0.0, 0.0, 0L) } }))
+                |> ignore
+              }
+              part.draws(pill)
+            })
+            |> ignore
+            if @signals.untracked(is_front) {
+              part.came(0.0, @motion.snappy_damped, takes=false) |> ignore
+            }
+            slot.reacts(is_front, at_start=false, fn(on) {
+              let at = slot.cause_at()
+              if on {
+                part.came(at, @motion.snappy_damped) |> ignore
+              } else {
+                part.left(at)
+                part.still()
+              }
+            })
+            slot.owns(fn() { part.gone() }) |> ignore
+          }
+          None => ()
         }
         if look is Chip {
           hover_ground_node(slot, on=fn() { !is_front() }, lit=Some(lit))
@@ -279,22 +321,8 @@ fn tab_list_look(look : TabLook) -> @ui.Style {
 /// concentric with them.
 fn tab_look(look : TabLook, front : Bool, lit : Bool) -> @ui.Style {
   match look {
-    Capsule =>
-      if front {
-        tab_capsule_front
-      } else if lit {
-        tab_capsule_lit
-      } else {
-        tab_capsule
-      }
-    Groove =>
-      if front {
-        tab_groove_front
-      } else if lit {
-        tab_groove_lit
-      } else {
-        tab_groove
-      }
+    Capsule => if !front && lit { tab_capsule_lit } else { tab_capsule }
+    Groove => if !front && lit { tab_groove_lit } else { tab_groove }
     Chip => if front { tab_chip_front } else { tab_chip }
   }
 }
@@ -371,10 +399,6 @@ let tab_capsule : @ui.Style = @ui.style(row=true, h=side_tab_h, min_w=S0, px=roo
 
 ///|
 // kept across runs: a value (no field of it changes)
-let tab_capsule_front : @ui.Style = tab_capsule.then(@ui.css("bg=Selected"))
-
-///|
-// kept across runs: a value (no field of it changes)
 let tab_capsule_lit : @ui.Style = tab_capsule.then(@ui.css("bg=Hover"))
 
 ///|
@@ -405,10 +429,6 @@ let tab_capsule_body_open : @ui.Style = tab_capsule_body.then(@ui.style(pr=room_
 /// with its end), round.
 // kept across runs: a value (no field of it changes)
 let tab_groove : @ui.Style = @ui.css("row min_w=S0 h=S7 px=S1_5 gap=S1 radius=Full align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let tab_groove_front : @ui.Style = tab_groove.then(@ui.css("bg=Bg"))
 
 ///|
 // kept across runs: a value (no field of it changes)

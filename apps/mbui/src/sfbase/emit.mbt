@@ -34,8 +34,8 @@ pub impl Show for Pose with output(self, logger) {
 ///|
 pub fn Pose::ms(self : Pose) -> Double {
   match self {
-    Fold => 170.0
-    Float => 440.0
+    Fold => 110.0
+    Float => 220.0
     Spit => 380.0
     Return => 320.0
   }

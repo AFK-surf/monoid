@@ -46,7 +46,7 @@ fn refused_x(t : @ui.Tester, label : String) -> Double {
 ///|
 /// Each of the three tapped in turn as `off` and `busy` say, under a finger: where it was at rest, at its widest swing,
 /// and past its end; the presses run, the haptics felt.
-fn refused_taps(off : Bool, busy : Bool) -> (Array[(Double, Double, Double)], Int, Array[@ui.Haptic], Bool) {
+fn refused_taps(off : Bool, busy : Bool) -> (Array[(Double, Double, Double)], Int, Array[@ui.Haptic], String?) {
   let pressed = Ref(0)
   let t = refused_case(@signals.signal(off), @signals.signal(busy), pressed)
   t.host_says_finger(Some(true))
@@ -60,7 +60,7 @@ fn refused_taps(off : Bool, busy : Bool) -> (Array[(Double, Double, Double)], In
     t.run_for(refused_past_ms)
     got.push((rest, mid - rest, refused_x(t, label) - rest))
   }
-  let idle = t.idle_said() is None
+  let idle = t.idle_said()
   t.host_says_finger(None)
   (got, pressed.val, t.haptics(), idle)
 }
@@ -68,13 +68,15 @@ fn refused_taps(off : Bool, busy : Bool) -> (Array[(Double, Double, Double)], In
 ///|
 test "refused: a disabled button, wide button and send tapped shake across, then rest exactly where they are laid out" {
   let (got, pressed, haptics, idle) = refused_taps(true, false)
-  let widest = refused_dx(refused_mid_ms / refused_ms)
+  let probe = @motion.ShakeWay::new(amplitude=refused_reach, duration_ms=refused_ms, cycles=1.5)
+  probe.shake(at=0.0)
+  let widest = probe.offset_at(refused_mid_ms)
   assert_true(widest > 2.0, msg="its first swing at \{widest}")
   for g in got {
-    assert_true((g.1 - widest).abs() < 0.01, msg="its widest swing \{g.1}, refused_dx's \{widest}")
+    assert_true((g.1 - widest).abs() < 0.01, msg="its widest swing \{g.1}, ShakeWay's \{widest}")
     assert_eq(g.2, 0.0)
   }
-  assert_eq((pressed, haptics, idle), (0, [@ui.Reject, @ui.Reject, @ui.Reject], true))
+  assert_eq((pressed, haptics, idle), (0, [@ui.Reject, @ui.Reject, @ui.Reject], None))
 }
 
 ///|

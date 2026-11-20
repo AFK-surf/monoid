@@ -80,10 +80,10 @@ test "one of a few as a node beside the old one, with touch and with keyboard an
         t.draw()
         let lit = drawn_within(t, l.rect)
         t.move_to(r.rect.0 + 30.0, r.rect.1 + r.rect.3 / 2.0)
-        t.draw()
+        t.run_for(dur_ms)
         assert_eq(lit, drawn_within(t, r.rect), msg="\{at}: pointed at")
         t.leave()
-        t.draw()
+        t.run_for(dur_ms)
       }
     }
   }

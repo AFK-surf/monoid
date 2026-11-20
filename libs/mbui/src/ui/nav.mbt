@@ -1,15 +1,11 @@
-// A stack of pages, as still.fail's Android app moves between them
-// : a page pushed comes in whole from the right as the one
-// under it goes out whole to the left, side by side, 300 ms on the standard
-// curve (.4, 0, .2, 1), nothing fading; back, the other way. A page the
-// stack says comes from the left (`from_left`) comes in from there, the one under it going out to
-// the right, and goes back that way. Swiped back
-// (from the left edge with a finger or a mouse here; on Android, the system's
-// back gesture, its predictive back, and no edge of mbui's), the page follows
-// the finger and the one under it comes along beside it, edge to edge; let
-// go past a third of the way (or flung) it goes on from there, easing out
-// (.25, .46, .45, .94) over what is left of 280 ms (120 at least), else it
-// comes back in 200 ms.
+// A stack of pages, as still.fail's Android app moves between them:
+// a page pushed comes in whole from the right as the one under it goes out whole to the left, side by side,
+// following `move_path` over `move_ms(distance)` (distance-adaptive duration on Move ease), nothing fading;
+// back, the other way. A page the stack says comes from the left (`from_left`) comes in from there, the one under it
+// going out to the right, and goes back that way. Swiped back (from the left edge with a finger or a mouse here; on
+// Android, the system's back gesture, its predictive back, and no edge of mbui's), the page follows the finger and the
+// one under it comes along beside it, edge to edge; let go past a third of the way (or flung) it continues along
+// `move_path` over `move_ms(remaining)`, else it returns along `move_path` over `move_ms(remaining)`.
 //
 // A page brought in (pushed, risen, gone back to) is built whole in the frame its slide starts in, which may take longer
 // than the display's frame (its words shaped, its rows laid out for the first time): its slide's clock does not run

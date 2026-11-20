@@ -1,0 +1,9 @@
+wait 200
+tap 重播揭幕
+wait 150
+tap 模拟解码完成
+wait 150
+wheelat 280 模拟解码完成
+wait 150
+tap 触发定位闪烁
+wait 1300

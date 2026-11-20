@@ -3141,7 +3141,7 @@ pub fn Viewer::go(self : Viewer, c : @ui.Ctx, src : Source, dir : Int, velocity 
   let (before, after) = self.near(src)
   let to = if dir < 0 { before } else { after }
   match to {
-    None => strip.go(0.0, @motion.sheet_spring, at~, velocity~)
+    None => strip.go(0.0, @motion.carousel_spring, at~, velocity~)
     Some(n) => {
       let width = self.zoom.bw + slide_gap
       let from = strip.value_at(at)
@@ -3161,7 +3161,7 @@ pub fn Viewer::go(self : Viewer, c : @ui.Ctx, src : Source, dir : Int, velocity 
       viewer.set(Some(n))
       pv_strip.near.remove(n.thumb_id())
       strip.put(from + dir.to_double() * width)
-      strip.go(0.0, @motion.sheet_spring, at~, velocity~)
+      strip.go(0.0, @motion.carousel_spring, at~, velocity~)
       // the frame built again from the one it stepped to: a swipe let go steps in the middle of the stage's build,
       // which would go on to draw this one's picture where the strip now puts the next one (a frame of this one in its
       // place, or of nothing where the one before comes)

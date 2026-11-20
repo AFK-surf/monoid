@@ -46,12 +46,8 @@ fn tip_hand_tag(side : @view.Side, at_pointer : Bool) -> Int {
 }
 
 ///|
-/// How a tip comes in (kit's tip_in: faded in, eased out, 120 ms); it goes as pop_out does (faded, eased to leave).
+/// How a tip comes in (kit's tip_in: faded in, eased out, 120 ms); it goes symmetrically as pure fade (eased to leave).
 let tip_in_ms : Double = 120.0
-
-///|
-/// How big a tip is drawn as it has gone (pop_out's scale).
-let tip_out_scale : Double = 0.97
 
 ///|
 /// A tip saying `label` (as it changes; none said: no tip) of the control `anchor`, on its `side`, in `tips` (its
@@ -469,19 +465,6 @@ fn tip_look_node(
       1.0
     }
   }))
-  // (going, drawn smaller as it fades, to 0.97 of itself, about its edge toward its control (kit's pop_out, grown_from):
-  // coming, whole, as tip_in has it, from wherever it was turned back)
-  .scale(
-    By(fn() {
-      let a = fade.shown(t)
-      if fade.to > 0.5 {
-        1.0
-      } else {
-        tip_out_scale + (1.0 - tip_out_scale) * a
-      }
-    }),
-    about=@view.FromBeside,
-  )
   .says(By(fn() { Some(@view.said(Tooltip, label=label())) }))
   .hides(By(fn() { !@headless.tip_owns(owner) }))
   |> ignore

@@ -160,17 +160,22 @@ pub fn seg_node(
                   }
                 })
               }
-              // the thumb: where its cover has it, as each frame draws it while it goes, its width moving with its x
+              // the thumb: where its cover has it, drawn directly in paint layer via ground_drawn (zero relayout)
               strip.box(fn(th) {
                 th
                 .over(Is(true))
-                .offset(By(fn() { (rect().map(fn(r) { r.0 }).unwrap_or(segmented_pad) - segmented_pad, 0.0) }))
-                .width(By(fn() { rect().map(fn(r) { r.2 }) }))
+                .width(Is(Some(0.0)))
                 .height(Is(Some(segmented_h)))
                 .radius(Is(segmented_corner))
                 .ground(By(fn() { @ui.tree_theme().lifted }))
                 .edge(By(fn() { (0.5, theme().p.line) }))
                 .shadow(By(fn() { (1.0, 0.0, theme().p.shadow) }))
+                .ground_drawn(By(fn() {
+                  match rect() {
+                    Some((x, _, w, _)) => { dx: x - segmented_pad, dy: 0.0, dw: w, dh: 0.0, corners: None }
+                    None => @view.ground_as_laid
+                  }
+                }))
                 |> ignore
               })
               |> ignore
@@ -521,21 +526,26 @@ pub fn seg_fill_node(
               None
             }
           }
-          // the thumb: where its cover has it, its corner concentric in the track's; faded under the lens
+          // the thumb: where its cover has it, its corner concentric in the track's; faded under the lens (zero relayout)
           strip.show(fn() { w_of(chosen()) > 0.0 }, fn(th) {
             th
             .over(Is(true))
-            .offset(By(fn() { (rect().map(fn(r) { r.0 }).unwrap_or(seg_inset) - seg_inset, 0.0) }))
-            .width(By(fn() { rect().map(fn(r) { r.2 }) }))
+            .width(Is(Some(0.0)))
             .height(Is(Some(segmented_narrow_h - 2.0 * seg_inset)))
             .radius(Is(@ui.concentric(seg_radius, seg_inset)))
-            .corners(By(fn() {
+            .ground(By(fn() { @ui.tree_theme().lifted }))
+            .ground_drawn(By(fn() {
               match rect() {
-                Some(r) => thumb_corners(r)
-                None => None
+                Some((x, y, w, h)) => {
+                  dx: x - seg_inset,
+                  dy: 0.0,
+                  dw: w,
+                  dh: 0.0,
+                  corners: thumb_corners((x, y, w, h)),
+                }
+                None => @view.ground_as_laid
               }
             }))
-            .ground(By(fn() { @ui.tree_theme().lifted }))
             // (as the old thumb: faded only while the lens is out, not past 1 as the hand's spring comes back past 0)
             .alpha(By(fn() {
               let l = lens()

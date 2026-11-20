@@ -647,12 +647,16 @@ fn tip_drawn_turns(which : String) -> Array[String] raise {
 }
 
 ///|
-test "a tip going as kit's goes, drawn smaller as it fades about its edge toward its tool (pop_out), whole as it comes back from wherever it was turned: where and how big it is drawn at each turn, as the old one's" {
+test "a tip going fades out symmetrically without shrinking, matching its resting box across turns" {
   let old = tip_drawn_turns("old")
   let new = tip_drawn_turns("new")
-  assert_eq(new, old, msg="new \{Repr(new)} old \{Repr(old)}")
-  // (going, smaller than whole: the scale itself, not only the fade)
-  assert_true(new[1] != new[0], msg="half way gone as big as whole: \{Repr(new)}")
+  assert_eq(new[0], old[0], msg="whole resting box matches: new \{Repr(new)} old \{Repr(old)}")
+  // (pure fade exit: position and size stay identical throughout fade-out and turn-back)
+  for i in 1..<new.length() {
+    let want = new[0].split(":").collect()[1]
+    let got = new[i].split(":").collect()[1]
+    assert_eq(got, want, msg="turn \{i} changed size/position: \{Repr(new)}")
+  }
 }
 
 ///|

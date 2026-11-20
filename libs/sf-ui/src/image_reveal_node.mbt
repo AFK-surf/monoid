@@ -271,10 +271,10 @@ fn reveal_px(w : Double, h : Double, scale : Double) -> Double {
 ///|
 /// How long a picture takes to come in once decoded, how blurred it starts, how much larger, when what it waited on
 /// starts fading and for how long, and in how many steps its edge is drawn (sfpages' image_reveal's).
-pub let reveal_ms : Double = 1100.0
+pub let reveal_ms : Double = 420.0
 
 ///|
-let reveal_blur : Double = 14.0
+let reveal_blur : Double = 8.0
 
 ///|
 let reveal_blur_least : Double = 0.25
@@ -283,13 +283,13 @@ let reveal_blur_least : Double = 0.25
 let reveal_grow : Double = 0.04
 
 ///|
-let reveal_wait_after_ms : Double = 800.0
+let reveal_wait_after_ms : Double = 260.0
 
 ///|
-let reveal_wait_out_ms : Double = 300.0
+let reveal_wait_out_ms : Double = 160.0
 
 ///|
-let reveal_steps : Int = 16
+let reveal_steps : Int = 6
 
 ///|
 let reveal_px_most : Double = 8192.0

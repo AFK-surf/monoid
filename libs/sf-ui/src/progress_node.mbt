@@ -82,57 +82,60 @@ pub fn progress_node(
       let s1 = if start + 0.4 > 1.0 { 1.0 } else { start + 0.4 }
       (s0 + (0.0 - s0) * b, s1 + (k - s1) * b)
     }
-    // (in from the track's start as far as the part's start, then the part)
-    bar.box(fn(before) {
-      before.width_share(By(fn() { span().0 })) |> ignore
-    })
-    |> ignore
-    bar.box(fn(piece) {
-      piece
-      .height(Is(Some(h)))
-      .radius(Is(h / 2.0))
-      .ground(By(fill))
-      .width_share(By(fn() {
-        let (lo, hi) = span()
-        if hi > lo {
-          hi - lo
-        } else {
-          0.0
-        }
-      }))
-      |> ignore
-    })
-    |> ignore
-    // (finishing: a light over the full part, a band a third as wide running across it once a period, faded in as it
-    // comes on at the start and out as it leaves at the end; while it shows, a wait drawn by View::cycle, nothing of it
-    // made else)
-    bar.show(fn() { finishing() && !@ui.reduced_motion() }, at_once=true, fn(o) {
-      o.over(Is(true)).row(Is(true)) |> ignore
-      let wave = fn() -> (Double, Double, Double) {
-        let f = bar.cycle(period)
-        let start = -progress_wave_w + (1.0 + progress_wave_w) * f
-        let lo = if start > 0.0 { start } else { 0.0 }
-        let hi = if start + progress_wave_w < 1.0 { start + progress_wave_w } else { 1.0 }
-        (lo, hi, @dmath.sin(3.141592653589793 * f))
-      }
-      o.box(fn(before) { before.width_share(By(fn() { wave().0 })) |> ignore }) |> ignore
-      o.box(fn(band) {
-        band
+    // (painted directly over the track with ground_drawn: zero relayout while progress or indeterminate sweep animates)
+    bar
+    .by_room(fn(inner, room) {
+      inner.over(Is(true)) |> ignore
+      inner.box(fn(piece) {
+        piece
+        .over(Is(true))
+        .width(Is(Some(0.0)))
         .height(Is(Some(h)))
         .radius(Is(h / 2.0))
-        .width_share(By(fn() {
-          let (lo, hi, _) = wave()
-          if hi > lo {
-            hi - lo
-          } else {
-            0.0
-          }
+        .ground(By(fill))
+        .ground_drawn(By(fn() {
+          let (lo, hi) = span()
+          let w = room.width()
+          let x = lo * w
+          let pw = if hi > lo { (hi - lo) * w } else { 0.0 }
+          { dx: x, dy: 0.0, dw: pw, dh: 0.0, corners: None }
         }))
-        .ground(By(fn() { alpha(0xFFFFFFFFL, progress_wave_light * wave().2) }))
         |> ignore
       })
       |> ignore
+      // (finishing: a light over the full part, a band a third as wide running across it once a period, faded in as it
+      // comes on at the start and out as it leaves at the end; while it shows, a wait drawn by View::cycle, nothing of it
+      // made else)
+      inner.show(fn() { finishing() && !@ui.reduced_motion() }, at_once=true, fn(o) {
+        o.over(Is(true)) |> ignore
+        let wave = fn() -> (Double, Double, Double) {
+          let f = bar.cycle(period)
+          let start = -progress_wave_w + (1.0 + progress_wave_w) * f
+          let lo = if start > 0.0 { start } else { 0.0 }
+          let hi = if start + progress_wave_w < 1.0 { start + progress_wave_w } else { 1.0 }
+          (lo, hi, @dmath.sin(3.141592653589793 * f))
+        }
+        o.box(fn(band) {
+          band
+          .over(Is(true))
+          .width(Is(Some(0.0)))
+          .height(Is(Some(h)))
+          .radius(Is(h / 2.0))
+          .ground(By(fn() { alpha(0xFFFFFFFFL, progress_wave_light * wave().2) }))
+          .ground_drawn(By(fn() {
+            let (lo, hi, _) = wave()
+            let w = room.width()
+            let x = lo * w
+            let bw = if hi > lo { (hi - lo) * w } else { 0.0 }
+            { dx: x, dy: 0.0, dw: bw, dh: 0.0, corners: None }
+          }))
+          |> ignore
+        })
+        |> ignore
+      })
     })
+    .grow(Is(1.0))
+    |> ignore
   })
 }
 
