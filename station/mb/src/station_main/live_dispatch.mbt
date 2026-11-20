@@ -476,6 +476,7 @@ async fn dispatch_threads_card(
   name : String,
   args : Array[Json],
   run_cb : async (Json, Array[Json]) -> Json?,
+  run_write : (Json) -> Unit raise,
 ) -> Json? {
   let a = (i : Int) => arg_at(args, i)
   match name {
@@ -506,9 +507,22 @@ async fn dispatch_threads_card(
       told_threads(bus, threads)
       Some(got)
     }
+    // (store.ts `saveCardOutcome`: the part's request written, its card closed and its outcome queued in one
+    // transaction, so a failed queue leaves no request decided under a card still waiting; the agents' side's worker
+    // woken once it commits)
     "cardOutcomes.save" => {
-      ignore(run_cb(a(1), []))
-      Some(bus.hub_card_outcomes_save(a(0)))
+      threads.set_now(wall_ms().to_double())
+      let id = threads.save_card_outcome(@store_threads.CardOutcome::from_json(to_jv(a(0))), () => run_write(a(1))) catch {
+        e => {
+          told_threads(bus, threads)
+          raise e
+        }
+      }
+      told_threads(bus, threads)
+      bus.hub_card_outcomes_wake() catch {
+        _ => ()
+      }
+      Some(Json::string(id))
     }
     _ => None
   }

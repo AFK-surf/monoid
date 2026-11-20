@@ -460,7 +460,8 @@ async fn RigRequests::save_and_restate(self : RigRequests, r : RigRequest, close
   let thread = r.get("thread")
   let ts = r.get("cardTs")
   if thread is Some(t) && ts is Some(s) && self.d.card_outcomes {
-    let saved = (self.d.world.callback)(async fn(_ : Array[Json]) {
+    // (written in the same transaction as the card's close and its queued outcome: neither without the other)
+    let saved = (self.d.world.callback)(fn(_ : Array[Json]) raise {
       self.save(r)
       undefined_json()
     })
@@ -485,7 +486,7 @@ async fn RigRequests::save_and_restate(self : RigRequests, r : RigRequest, close
       self.d.world.ask("store.withdrawCard", [session, t, s]) |> ignore
     }
     let outcome = outcome_of(r)
-    let made = (self.d.world.callback)(async fn(args : Array[Json]) {
+    let made = (self.d.world.callback)(fn(args : Array[Json]) {
       let was = args.get(0)
       spread(was, Some(jobj([("rig", spread(get(was, "rig"), Some(jobj([("outcome", outcome)]))))])))
     })

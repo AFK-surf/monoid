@@ -38,6 +38,7 @@ priv struct P54DevWorld {
   listeners : Map[Int, Json]
   procs : Map[Int, P54Proc]
   fns : Map[Int, async (Array[@jsjson.JValue]) -> @jsjson.JValue]
+  writes : Map[Int, (Array[@jsjson.JValue]) -> @jsjson.JValue raise]
   mut next : Int
 }
 
@@ -539,12 +540,30 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
     }
     // the store's chats and cards (writes/requests needing bus notifications)
     "store.latestThread" | "store.latestThreadIfReady" | "store.insertMessage" | "store.withdrawCard" | "store.restateCard" | "cardOutcomes.save" =>
-      dispatch_threads_card(bus, self.threads, name, args, async fn(cb, cb_args) {
-        match fn_of(Some(cb)) {
-          Some(f) => Some(of_jv(f(cb_args.map(to_jv))))
-          None => None
-        }
-      }).unwrap_or(Json::null())
+      dispatch_threads_card(
+        bus,
+        self.threads,
+        name,
+        args,
+        async fn(cb, cb_args) {
+          match fn_of(Some(cb)) {
+            Some(f) => Some(of_jv(f(cb_args.map(to_jv))))
+            None => None
+          }
+        },
+        cb => match opt_num(opt_field(Some(cb), "$fn")) {
+          Some(n) =>
+            match self.writes.get(n.to_int()) {
+              Some(f) => {
+                // (called once, inside the transaction: let go after)
+                self.writes.remove(n.to_int())
+                ignore(f([]))
+              }
+              None => raise LiveError("no write \{n}")
+            }
+          None => raise LiveError("no write given")
+        },
+      ).unwrap_or(Json::null())
     "store.sessionChat" | "store.sessionThread" => (bus.hub_ask.val)(name, jarr)
     // the hub and the agents' side (P5-2's)
     "hub.identity" | "hub.notify" | "hub.shared" | "hub.prepareCardPosts" | "hub.prepareLatestThreads" | "chat.post" | "agents.runners" =>
@@ -640,6 +659,7 @@ async fn p54_devices_start(bus : LiveBus, threads : @store_threads.Store, cloud 
     listeners: Map([]),
     procs: Map([]),
     fns: Map([]),
+    writes: Map([]),
     next: 0,
   }
   let (zh, en) = catalogs_json()
@@ -651,6 +671,11 @@ async fn p54_devices_start(bus : LiveBus, threads : @store_threads.Store, cloud 
     f => {
       let id = w0.id()
       w0.fns[id] = f
+      @jsjson.JValue::Obj([("$fn", @jsjson.JValue::Num(id.to_double()))])
+    },
+    f => {
+      let id = w0.id()
+      w0.writes[id] = f
       @jsjson.JValue::Obj([("$fn", @jsjson.JValue::Num(id.to_double()))])
     },
     () => wall_ms().to_double(),
@@ -675,7 +700,13 @@ async fn p54_devices_start(bus : LiveBus, threads : @store_threads.Store, cloud 
       to_jv(opt_field(Some(asked), "viewer").unwrap_or(Json::null())),
       to_jv(opt_field(Some(asked), "head").unwrap_or(Json::null())),
       to_jv(p54_stream_handle(asked)),
-    )
+    ) catch {
+      // (what failed, a decision's write too, said before the link is let go as the TypeScript's handler lets it go)
+      e => {
+        slice_log("warn", "adb", "adb stream failed", { "error": jstr(said_of(e)) })
+        raise e
+      }
+    }
   })
   bus.parts.tools([
     p54_declared_tool(@adb_devices.phone_use_decl, async fn(session, args) { adb.phone_use(session, to_jv(args)) }),

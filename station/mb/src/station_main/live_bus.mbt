@@ -588,12 +588,6 @@ async fn LiveBus::hub_clones_active(self : LiveBus) -> Bool {
 }
 
 ///|
-/// A decided card's outcome queued for the agents' side's worker (agents.ts `cardOutcomes.save`): its id.
-async fn LiveBus::hub_card_outcomes_save(self : LiveBus, outcome : Json) -> Json {
-  (self.hub_ask.val)("cardOutcomes.save", Json::array([outcome]))
-}
-
-///|
 /// A job stopped by its id.
 async fn LiveBus::jobs_stop(self : LiveBus, id : Json) -> Unit {
   ignore((self.jobs_ask.val)("jobs.stop", { "id": id }))

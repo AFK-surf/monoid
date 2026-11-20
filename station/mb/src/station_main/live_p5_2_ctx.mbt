@@ -135,23 +135,6 @@ fn P52::outcomes_start(self : P52) -> Unit {
 }
 
 ///|
-/// card-outbox-worker.ts `save`: a card's outcome queued (`{thread, ts, agent, field, close, outcome}`), the card
-/// closed in the same write where asked and the close told; the worker restates it. Its id in the queue.
-fn P52::outcome_save(self : P52, item : Json) -> Json raise {
-  guard self.card_outcomes is Some(worker) else { raise LiveError("the cards' outcomes are not kept yet") }
-  self.threads.set_now(wall_ms().to_double())
-  let id = worker.save(@store_threads.CardOutcome::from_json(to_jv(item)), () => ()) catch {
-    e => {
-      told_threads(self.bus, self.threads)
-      raise e
-    }
-  }
-  told_threads(self.bus, self.threads)
-  self.outcomes_follow()
-  Json::string(id)
-}
-
-///|
 /// What the worker writes as it goes (a card restated, one let go) told on the bus as the store's own writes are:
 /// after each of its turns while it goes through the queue, again after a busy write's retry while one waits. A long
 /// scan's own pages tell what came before them (`card_page`); its end wakes the worker, which the next save follows.
