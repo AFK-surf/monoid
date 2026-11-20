@@ -4,13 +4,14 @@
 // the station no longer has is let go; a drive's video goes on too.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Effect } from "effect";
+import { Deferred, Effect } from "effect";
 import type { FakeHost } from "../src/testing.ts";
 import { Core } from "../src/core.ts";
 import { HostError } from "../src/error.ts";
 import { FILL_RECENT_MS, IDLE_MS } from "../src/fill.ts";
 import { chatKeptId, keptId } from "../src/drive-kept.ts";
-import { HostWire } from "../src/station/wire.ts";
+import { HostWire, type StationWire } from "../src/station/wire.ts";
+import { BULK_LANE } from "../src/station/requests.ts";
 import { RECONNECT_MS } from "../src/station/sync.ts";
 import { AGAIN_MS } from "../src/views/downloads.ts";
 import { call } from "./helpers.ts";
@@ -408,4 +409,66 @@ test("a load stopped keeps what came; loaded again, it goes on from there; it go
   // nothing that came asked again)
   assert.deepEqual(asked(t.host, "film.mp4", size), [[0, 4 * MB], [4 * MB, 8 * MB], [4 * MB, 8 * MB], [8 * MB, size], [8 * MB, size]]);
   core.close();
+});
+
+test("fill.want loads concurrently across bulk lanes while background fill stays single-lane", async () => {
+  const wantedFilm = bytesOf(10 * MB, 13);
+  const bgFilm = bytesOf(10 * MB, 19);
+  const inflight = new Map<string, number>();
+  const maxInflight = new Map<string, number>();
+  const lanes = new Map<string, (string | undefined)[]>();
+  const gates = new Map<string, Deferred.Deferred<void>[]>();
+  const hold = new Set<string>(["wanted.mp4"]);
+  const t = await started(undefined, 0, (host): StationWire => {
+    const fallback = new HostWire(host);
+    return {
+      bulkLanes: () => 2,
+      request: (station, head, body) => {
+        const u = new URL(head.path, "https://stillfail.test");
+        if (!u.pathname.endsWith("/sessions/k1/parts")) return fallback.request(station, head, body);
+        const name = u.searchParams.get("name") ?? "";
+        return Effect.suspend(() => {
+          const cur = (inflight.get(name) ?? 0) + 1;
+          inflight.set(name, cur);
+          maxInflight.set(name, Math.max(maxInflight.get(name) ?? 0, cur));
+          const seenLanes = lanes.get(name) ?? [];
+          seenLanes.push(head.headers.find(([k]) => k.toLowerCase() === BULK_LANE)?.[1]);
+          lanes.set(name, seenLanes);
+          const list = gates.get(name) ?? [];
+          gates.set(name, list);
+          const gate = hold.has(name) && list.length < 2 ? Deferred.makeUnsafe<void>() : null;
+          if (gate !== null) list.push(gate);
+          return (gate !== null ? Effect.andThen(Deferred.await(gate), fallback.request(station, head, body)) : fallback.request(station, head, body)).pipe(
+            Effect.ensuring(Effect.sync(() => { inflight.set(name, (inflight.get(name) ?? 1) - 1); })),
+          );
+        });
+      },
+    };
+  });
+  files(t.host, new Map([["wanted.mp4", wantedFilm], ["bg.mp4", bgFilm]]));
+  const r = await rig(t);
+  await r.ask("fill.want", { station: ST, key: "k1", name: "wanted.mp4", size: wantedFilm.length });
+  assert.equal((gates.get("wanted.mp4") ?? []).length, 2, "wanted load must start 2 concurrent parts");
+  assert.equal(maxInflight.get("wanted.mp4"), 2);
+  assert.deepEqual([...(lanes.get("wanted.mp4") ?? [])].sort(), ["0", "1"]);
+  hold.delete("wanted.mp4");
+  for (const g of gates.get("wanted.mp4") ?? []) Deferred.doneUnsafe(g, Effect.void);
+  await t.host.settle();
+  assert.equal(await r.whole(chatKeptId(ST, "k1", "wanted.mp4"), wantedFilm.length), true);
+  tiles(asked(t.host, "wanted.mp4", wantedFilm.length), wantedFilm.length);
+  const check = await r.ask("station.file.part", { station: ST, key: "k1", name: "wanted.mp4", offset: 0, length: 4 * MB, keep: true, size: wantedFilm.length });
+  assert.deepEqual([...(check!.bytes as Uint8Array)], [...wantedFilm.slice(0, 4 * MB)]);
+  // Background (!wanted) fill must remain single-lane even when bulkLanes() === 2.
+  await r.ask("station.file.part", { station: ST, key: "k1", name: "bg.mp4", offset: 0, length: MB, keep: true, size: bgFilm.length, stream: true });
+  hold.add("bg.mp4");
+  await t.host.time.pass(IDLE_MS + 100);
+  assert.equal((gates.get("bg.mp4") ?? []).length, 1, "background fill must only have 1 part in flight");
+  assert.equal(maxInflight.get("bg.mp4"), 1);
+  hold.delete("bg.mp4");
+  for (const g of gates.get("bg.mp4") ?? []) Deferred.doneUnsafe(g, Effect.void);
+  await t.host.settle();
+  assert.equal(await r.whole(chatKeptId(ST, "k1", "bg.mp4"), bgFilm.length), true);
+  assert.equal(maxInflight.get("bg.mp4"), 1);
+  tiles(asked(t.host, "bg.mp4", bgFilm.length), bgFilm.length);
+  t.core.close();
 });

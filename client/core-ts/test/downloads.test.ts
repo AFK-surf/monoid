@@ -13,7 +13,8 @@ import { AGAIN_MS, titleOf } from "../src/views/downloads.ts";
 import { chatKeptId, sentKeptId } from "../src/drive-kept.ts";
 import { RECONNECT_MS } from "../src/station/sync.ts";
 import { HostError } from "../src/error.ts";
-import { HostWire } from "../src/station/wire.ts";
+import { HostWire, type StationWire } from "../src/station/wire.ts";
+import { BULK_LANE } from "../src/station/requests.ts";
 import { apply as applyOps } from "../src/delta.ts";
 import { call, subscribe } from "./helpers.ts";
 import { Raw, started, stationReplies, status } from "./station-fixture.ts";
@@ -758,4 +759,126 @@ test("a folder downloaded: zipped on the station first (正在打包), then fetc
   const part = await r.ask("download.read", { id, offset: 0, length: 4 * MB });
   assert.deepEqual([...part.bytes], [...zip]);
   r.core.close();
+});
+
+for (const source of ["chat", "drive"] as const) test(`multi-way striped download fetches ${source} parts concurrently across lanes`, async () => {
+  const file = bytesOf(12 * MB, source === "chat" ? 11 : 17);
+  let inflight = 0;
+  let maxInflight = 0;
+  let count = 0;
+  const lanes: (string | undefined)[] = [];
+  const gates: Deferred.Deferred<void>[] = [];
+  let hold = true;
+  const t = await started(undefined, 0, (host): StationWire => {
+    const fallback = new HostWire(host);
+    return {
+      bulkLanes: () => 2,
+      request: (station, head, body) => {
+        const u = new URL(head.path, "https://stillfail.test");
+        if (!u.pathname.endsWith(source === "drive" ? "/drive/read" : "/sessions/k1/parts")) return fallback.request(station, head, body);
+        return Effect.suspend(() => {
+          count++;
+          lanes.push(head.headers.find(([k]) => k.toLowerCase() === BULK_LANE)?.[1]);
+          inflight++;
+          maxInflight = Math.max(maxInflight, inflight);
+          const gate = hold && gates.length < 2 ? Deferred.makeUnsafe<void>() : null;
+          if (gate !== null) gates.push(gate);
+          return (gate !== null ? Effect.andThen(Deferred.await(gate), fallback.request(station, head, body)) : fallback.request(station, head, body)).pipe(
+            Effect.ensuring(Effect.sync(() => { inflight--; })),
+          );
+        });
+      },
+    };
+  });
+  files(t.host, new Map([["big.bin", file]]), new Set(), new Set(), {
+    files: new Map([["docs\nbig.bin", { bytes: file, mtime: 42 }]]),
+    zips: new Map(),
+  });
+  const r = await watch(t);
+  const params = source === "drive"
+    ? { station: ST, root: "docs", path: "big.bin", name: "big.bin", size: file.length, mtime: 42 }
+    : { station: ST, key: "k1", name: "big.bin", size: file.length };
+  const id = (await r.ask("download.start", params)).ok.download.id as string;
+  assert.equal(gates.length, 2, `${source}: expected 2 concurrent parts in flight`);
+  assert.equal(maxInflight, 2, `${source}: maxInflight should be 2`);
+  hold = false;
+  for (const g of gates) Deferred.doneUnsafe(g, Effect.void);
+  const [d] = await r.view();
+  assert.deepEqual([d.state, d.loaded], ["ready", file.length]);
+  assert.equal(count, 3, `${source}: no duplicate part requests`);
+  assert.deepEqual([...lanes].sort(), ["0", "1", "2"], `${source}: parts assigned distinct lanes`);
+  await r.ask("download.take", { id });
+  const out = new Uint8Array(file.length);
+  for (let off = 0; off < file.length; off += 4 * MB) {
+    const got = await r.ask("download.read", { id, offset: off, length: 4 * MB });
+    out.set(got.bytes, off);
+  }
+  assert.deepEqual(out, file);
+  t.core.close();
+});
+
+test("cancelling a multi-way download preserves received bytes from concurrent parts and resumes only missing ranges", async () => {
+  const file = bytesOf(12 * MB, 29);
+  const prefix = 64 * 1024;
+  let phase: "cut" | "full" = "cut";
+  let inflight = 0;
+  let maxInflight = 0;
+  const resumed: [number, number][] = [];
+  const t = await started(undefined, 0, (host): StationWire => {
+    const fallback = new HostWire(host);
+    return {
+      bulkLanes: () => 2,
+      request: (station, head, body) => {
+        const u = new URL(head.path, "https://stillfail.test");
+        if (!u.pathname.endsWith("/sessions/k1/parts")) return fallback.request(station, head, body);
+        const offset = Number(u.searchParams.get("offset"));
+        const length = Number(u.searchParams.get("length"));
+        if (phase === "full") {
+          resumed.push([offset, length]);
+          return fallback.request(station, head, body);
+        }
+        return Effect.gen(function* () {
+          inflight++;
+          maxInflight = Math.max(maxInflight, inflight);
+          yield* Effect.addFinalizer(() => Effect.sync(() => { inflight--; }));
+          let sent = false;
+          return {
+            status: 200,
+            headers: [["content-type", "application/octet-stream"], ["stillfail-total", String(file.length)]] as [string, string][],
+            via: null,
+            body: {
+              take: Effect.suspend(() => {
+                if (!sent) {
+                  sent = true;
+                  return Effect.succeed(file.slice(offset, offset + prefix));
+                }
+                return Effect.never;
+              }),
+            },
+          };
+        });
+      },
+    };
+  });
+  files(t.host, new Map([["big.bin", file]]));
+  const r = await watch(t);
+  const params = { station: ST, key: "k1", name: "big.bin", size: file.length };
+  const id = (await r.ask("download.start", params)).ok.download.id as string;
+  assert.equal(maxInflight, 2);
+  await r.ask("download.cancel", { id });
+  assert.equal(await Effect.runPromise(t.core.inner.driveKept.keptUntil(id, 0, file.length, 0, file.length)), prefix);
+  assert.equal(await Effect.runPromise(t.core.inner.driveKept.keptUntil(id, 0, file.length, 4 * MB, file.length)), 4 * MB + prefix);
+  phase = "full";
+  await r.ask("download.start", params);
+  const [d] = await r.view();
+  assert.equal(d.state, "ready");
+  assert.deepEqual([...resumed].sort((a, b) => a[0] - b[0]), [[prefix, 4 * MB - prefix], [4 * MB + prefix, 4 * MB], [8 * MB + prefix, 4 * MB - prefix]]);
+  await r.ask("download.take", { id });
+  const out = new Uint8Array(file.length);
+  for (let off = 0; off < file.length; off += 4 * MB) {
+    const got = await r.ask("download.read", { id, offset: off, length: 4 * MB });
+    out.set(got.bytes, off);
+  }
+  assert.deepEqual(out, file);
+  t.core.close();
 });

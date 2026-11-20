@@ -19,7 +19,7 @@ import { RELAY, type Place, type Status } from "../status.ts";
 import { route } from "../route.ts";
 import { utf8 } from "../util.ts";
 import type { StationAddr } from "./addr.ts";
-import { BULK, IDEMPOTENCY_KEY, IDEMPOTENT, NDJSON, NO_HEDGE, READS } from "./requests.ts";
+import { BULK, BULK_LANE, IDEMPOTENCY_KEY, IDEMPOTENT, NDJSON, NO_HEDGE, READS } from "./requests.ts";
 import type { LinkNet, RequestHead, ScreenAsk, StationWire, TerminalAsk, WireReply, WireSocket } from "./wire.ts";
 import { RECHECKING } from "./words.ts";
 
@@ -105,14 +105,22 @@ export class MeshWire implements StationWire {
       const off = env.off?.(workspace);
       const asker = `${head.method.toUpperCase()} ${route(head.path)}`;
       const mesh = yield* waiting(status, RELAY, t("station.core.connecting"), env.mesh());
-      // Kept current in the background (requests.ts NO_HEDGE) or routed as a bulk transfer (BULK): wire-only marks,
-      // stripped before sending to any station.
+      // Kept current in the background (requests.ts NO_HEDGE) or routed as a bulk transfer (BULK, BULK_LANE):
+      // wire-only marks, stripped before sending to any station.
       const bulk = head.headers.some(([k]) => k.toLowerCase() === BULK);
+      const laneHeader = head.headers.find(([k]) => k.toLowerCase() === BULK_LANE)?.[1];
+      const laneParsed = laneHeader !== undefined ? Number(laneHeader) : Number.NaN;
+      const lane = Number.isInteger(laneParsed) && laneParsed >= 0 ? laneParsed : null;
       const noHedge = head.headers.some(([k]) => k.toLowerCase() === NO_HEDGE);
-      const sent: RequestHead = noHedge || bulk
-        ? { ...head, headers: head.headers.filter(([k]) => { const low = k.toLowerCase(); return low !== NO_HEDGE && low !== BULK; }) }
+      const sent: RequestHead = noHedge || bulk || laneHeader !== undefined
+        ? { ...head, headers: head.headers.filter(([k]) => { const low = k.toLowerCase(); return low !== NO_HEDGE && low !== BULK && low !== BULK_LANE; }) }
         : head;
-      const pickLink = () => (bulk && typeof mesh.bulkLink === "function" ? mesh.bulkLink(key, credentials, theirs, off, asker) : mesh.link(key, credentials, theirs, off, asker));
+      const pickLink = (attempt = 0) =>
+        bulk && lane !== null && typeof mesh.bulkLinkAt === "function"
+          ? mesh.bulkLinkAt(key, lane + attempt, credentials, theirs, off, asker)
+          : bulk && typeof mesh.bulkLink === "function"
+            ? mesh.bulkLink(key, credentials, theirs, off, asker)
+            : mesh.link(key, credentials, theirs, off, asker);
       const link = yield* waiting(status, address, t("station.core.connecting"), pickLink());
       const repeats = mayRepeat(head, idempotent.has(key));
       const write = !["GET", "HEAD"].includes(head.method.toUpperCase()) && !onlyReads(head);
@@ -150,8 +158,8 @@ export class MeshWire implements StationWire {
             const w = status.begin(address, RECHECKING(), true);
             let pause = 1_000;
             answered = yield* Effect.gen(function* () {
-              for (;;) {
-                const again = yield* Effect.result(Effect.flatMap(pickLink(), ask));
+              for (let tries = 1; ; tries++) {
+                const again = yield* Effect.result(Effect.flatMap(pickLink(tries), ask));
                 if (again._tag === "Success") return again.success;
                 if (again.failure.code !== "mesh") return yield* Effect.fail(again.failure);
                 if (mesh.now() - started >= RECHECK_MS) return yield* Effect.fail(unconfirmed(again.failure));
@@ -165,7 +173,7 @@ export class MeshWire implements StationWire {
             // seed 143365259, 2026-10-17), a few times.
             answered = yield* Effect.gen(function* () {
               for (let tries = 1; ; tries++) {
-                const l = yield* waiting(status, address, t("station.core.connecting"), pickLink());
+                const l = yield* waiting(status, address, t("station.core.connecting"), pickLink(tries));
                 const again = yield* Effect.result(ask(l));
                 if (again._tag === "Success") return again.success;
                 if (again.failure.code !== "mesh" || l.closed() === null || tries >= LOST_TRIES) return yield* Effect.fail(again.failure);
@@ -237,6 +245,12 @@ export class MeshWire implements StationWire {
     const link = mesh?.current(key) ?? null;
     if (mesh === null || link === null) return null;
     return { ...link.net(), measured: mesh.measured(key), today: mesh.today(key), lan: mesh.lan(key) };
+  }
+
+  bulkLanes(station: StationAddr): number {
+    const mesh = this.#env.meshNow();
+    if (mesh === null || typeof mesh.fastBulkLinks !== "function") return 1;
+    return Math.max(1, mesh.fastBulkLinks(station.toString()).length);
   }
 
   measure(station: StationAddr): Effect.Effect<void, CoreError> {

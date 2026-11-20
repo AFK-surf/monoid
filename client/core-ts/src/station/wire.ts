@@ -77,6 +77,8 @@ export interface StationWire {
   healthChange?(station: StationAddr, was: boolean): Effect.Effect<boolean>;
   /// How the connection to the station runs now; null where there is none of its own.
   net?(station: StationAddr): LinkNet | null;
+  /// Number of fast bulk lanes available to the station for concurrent striped transfers.
+  bulkLanes?(station: StationAddr): number;
   /// Measures the ways to the station now.
   measure?(station: StationAddr): Effect.Effect<void, CoreError>;
   /// A preview page's WebSocket. Only the mesh carries one.
