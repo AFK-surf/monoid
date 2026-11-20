@@ -361,15 +361,7 @@ fn P52::hub_world(self : P52) -> @session_hub.World {
       }
     },
     random_hex: n => @drive.hex(@drive.random_bytes(n)),
-    move_on: () => {
-      Some(
-        station_feature(
-          "stationMove",
-          (self.bus.config_raw.val)(),
-          self.bus.app,
-        ),
-      )
-    },
+    move_on: () => Some(true),
   }
 }
 

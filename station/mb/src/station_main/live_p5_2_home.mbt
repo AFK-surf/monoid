@@ -36,7 +36,7 @@ async fn P52::keep_agent_home(self : P52) -> Unit {
       Some(st) => jtext(st, "origin").unwrap_or("").contains("still.fail")
       None => false
     })
-  let move_on = station_feature("stationMove", raw, self.bus.app)
+  let move_on = true
   let site = match env_get("STILLFAIL_SITE_SKILLS") {
     Some(d) if d != "" => Some(d)
     _ => None

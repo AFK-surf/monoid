@@ -63,7 +63,8 @@ export const STATION_SHAPES: Record<string, Shape> = {
     ["elevation", opt("StationElevation"), { doc: "As Overview's." }],
     ["screenService", opt("StationScreenService"), { doc: "As Overview's." }],
     ["copies", opt("StationCopies"), { doc: "As Overview's." }],
-    ["features", vec("String"), { default: true, doc: "As Overview's: what of its 迁移 and 终端 it offers (features.ts `station: true`)." }],
+    ["move", opt("StationMoveOffer"), { doc: "As Overview's: whether its 迁移 is offered (every station's since moving graduated, 2026-11-21)." }],
+    ["features", vec("String"), { default: true, doc: "As Overview's: what of its 终端 it offers (features.ts `station: true`), and `stationMove` for apps from before." }],
   ], { doc: "A station's overview as its page reads it (`StationView.overview`: station_node.mbt, station_page.mbt, a profile's\npage, the pages of its archiving and its archive policy, a new profile's). The rest of an Overview is not sent there:\nwho is looking, its mesh, its Slack people, teams and apps, its Feishu bots, Comma, its disk, the sign-ins under way\nand the console's (`viewer`, `mesh`, `slackUsers`, `slackTeams`, `slackApps`, `feishuRegistrations`, `comma`, `disk`,\n`logins`, `consoleSignIn`); a connect's page asks `connect`, a part shown of every station `stationPart`." }),
   StationConnect: struct([
     ["id", "String"],

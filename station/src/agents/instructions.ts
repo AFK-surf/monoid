@@ -8,13 +8,13 @@ import { type CardChoice, STILLFAIL_SURFACE } from "../store/rows.ts";
 import { STATION_AUTHOR } from "../store/rows.ts";
 
 
-/// What points an agent at moving a station's things, said only where moving is on (features.ts stationMoveOn).
+/// What points an agent at moving a station's things, said only where moving is on (move/station.ts `on`).
 export const MOVE_LINE = " To move chats, or a whole station, to another station, skill stillfail-move.";
 
 /// `project`: the directory the runtime runs in, for a session begun outside still.fail (in a terminal) and continued here.
 /// `memory`: the workspace's memory as it is now (`readMemory`). `site`: what the deployment adds (`readSiteInstructions`).
-/// `station`: this station's name ("" where it has none). `move`: whether moving to another station is on here (a `beta`
-/// feature of the station's, features.ts): where it is not, its skill is not named.
+/// `station`: this station's name ("" where it has none). `move`: whether moving to another station is on here (every
+/// station's since 2026-11-21; a test's may say not): where it is not, its skill is not named.
 export function sessionInstructions(workspace: string, project: string | null, repos_dir: string, memory_path: string, memory: string, site = "", station = "", move = true): string {
   const projectLine = project === null ? "" : `- Project directory: ${project}. This session began outside still.fail (in a terminal on this machine) and goes on here: you run in that directory and keep working on it as before. The session workspace below is for scratch files only.\n`;
   const told = instructions(projectLine, workspace, repos_dir, memory_path, station);

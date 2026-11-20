@@ -179,7 +179,7 @@ export type SessionDeps = {
   siteInstructions?(): string;
   /// This station's name (what its agents are told they run on); "" where it has none.
   ownName?(): string;
-  /// Whether moving to another station is on here (features.ts stationMoveOn): its skill named in the instructions.
+  /// Whether moving to another station is on here (every station's; a test's may say not): its skill named in the instructions.
   moveOn?(): boolean;
   maxNudges(): number;
   /// The chat session `key` last heard from (its address), when it has no title and nobody is at work in it.

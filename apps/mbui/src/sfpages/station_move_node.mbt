@@ -28,9 +28,9 @@ pub fn station_move_node(
   tips? : @sf.TipLayer,
 ) -> Unit {
   let s = fn() { station_of(core, here(), address) }
-  // (moving is a station's on the test channel (its overview's `features`): where the station says it is not, as a link
-  // opened of a stable one, the page goes back to where it was opened from, never one of a turn that would be refused)
-  v.reacts(fn() { (core.move_on)() && (s() is None || @settings.station_feature(s(), "stationMove")) }, fn(on) {
+  // (where the station says it takes no moves (its overview's `move.offered`: a stable one from before moving graduated),
+  // as a link opened of one, the page goes back to where it was opened from, never one of a turn that would be refused)
+  v.reacts(fn() { (core.move_on)() && (s() is None || @settings.move_said(s())) }, fn(on) {
     if !on {
       on_back()
     }

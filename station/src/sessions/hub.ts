@@ -162,7 +162,7 @@ export type HubOptions = {
   /// What the deployment adds to every session's instructions, as the station read it at its start
   /// (agents/instructions.ts `readSiteInstructions`); none by default.
   siteInstructions?: string;
-  /// Whether moving to another station is on here (features.ts stationMoveOn); on where none is said.
+  /// Whether moving to another station is on here (every station's; a test's may say not); on where none is said.
   moveOn?: () => boolean;
 };
 

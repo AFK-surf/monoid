@@ -109,7 +109,7 @@ pub(all) struct Core {
   devices_on : () -> Bool
   /// whether a station's page asks what of it moves (its 迁移 row: sfpages station_node.mbt): the source's
   /// `asks_station_move`, not in a replay of a run from before; where the station offers it is its own to say
-  /// (`station_feature(s, "stationMove")`)
+  /// (`move_said`: its overview's `move.offered`)
   move_on : () -> Bool
   /// whether a station's terminals are asked for (the source's `asks_terminals`: not in a replay of a run from before);
   /// where the station offers them is its own to say (`station_feature(s, "terminal")`)

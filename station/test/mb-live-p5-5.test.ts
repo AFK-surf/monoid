@@ -3,7 +3,7 @@
 // `beta` features. `run` under a launcher of the test's, against a Slack and a still.fail feed of the test's on
 // 127.0.0.1: a Slack connect connected on its socket and slack_api called through the agents' door as the session's
 // bot; the station's latest release read from the channel it is on, and that channel switched as `stillfail update
-// --beta` asks it, station_move offered to the agents only then; a stop that leaves nothing. Then the same parts made
+// --beta` asks it, station_move offered to the agents on either channel; a stop that leaves nothing. Then the same parts made
 // in the harness (`--builder harness-station-main`'s "p5_5"), as the admin API (P5-1's, not made yet) would ask them:
 // the overview's `features`, `updates`, `move` and `copies`, the routes of the updates, the moves and the copies, and
 // the mesh's methods of the copies, a retirement, a hand-over and a move answered. Every program is run with a PATH
@@ -254,7 +254,7 @@ const toolNames = async (port: number, token: string) => {
   return listed.result.tools.map((t: any) => t.name).filter((n: string) => PARTS_TOOLS.has(n)).sort();
 };
 
-test("run: a Slack connect and a Feishu one connected, slack_api and feishu_api called as their bots, the release read from the channel it is on and that channel switched, station_move offered only on the test channel, a stop that leaves nothing", { skip }, async () => {
+test("run: a Slack connect and a Feishu one connected, slack_api and feishu_api called as their bots, the release read from the channel it is on and that channel switched, station_move offered on either channel, a stop that leaves nothing", { skip }, async () => {
   const slack = await slackStandIn();
   const feed = await feedStandIn();
   const feishu = await FakeFeishu.start();
@@ -309,8 +309,9 @@ test("run: a Slack connect and a Feishu one connected, slack_api and feishu_api 
   store.insertSession({ key: "s1", connect: "c1", runtime: "claude", profile: "cc", workspace: data, token: "t1", createdAt: Date.now(), lastActiveAt: Date.now() });
   store.insertSession({ key: "s2", connect: "f1", runtime: "claude", profile: "cc", workspace: data, token: "t2", createdAt: Date.now(), lastActiveAt: Date.now() });
   store.close();
-  // the agents' tools on a stable station: the parts', station_move not among them (station_retire is hidden from tools/list)
-  assert.deepEqual(await toolNames(mcp.port, "t1"), ["feishu_api", "slack_api", "station_version"]);
+  // the agents' tools on a stable station: the parts', station_move among them since moving graduated (station_retire is
+  // hidden from tools/list)
+  assert.deepEqual(await toolNames(mcp.port, "t1"), ["feishu_api", "slack_api", "station_move", "station_version"]);
   // station_version: the release as the agents see it; an action it does not know refused as the TypeScript's
   const version = await post(mcp.port, "/mcp", { jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "station_version", arguments: { action: "list" } } }, "t1");
   assert.equal(version.result.isError, undefined, JSON.stringify(version));
@@ -341,14 +342,14 @@ test("run: a Slack connect and a Feishu one connected, slack_api and feishu_api 
   assert.equal(readFileSync(join(data, "run", "channel-answer"), "utf8"), "ok beta\n");
   assert.equal(JSON.parse(readFileSync(join(data, "config.json"), "utf8")).updateChannel, "beta");
   await until("the beta feed read", () => feed.asked.includes("/releases/station-beta.json"), 20_000, () => a.err());
-  // on the test channel: moving is offered, station_move an agent's tool
+  // on the test channel: station_move an agent's tool as on stable
   assert.deepEqual(await toolNames(mcp.port, "t1"), ["feishu_api", "slack_api", "station_move", "station_version"]);
-  // back to stable: off again
+  // back to stable: the same
   writeFileSync(join(data, "run", "channel-ask"), "stable\n");
   rmSync(join(data, "run", "channel-answer"));
   a.tell({ op: "hup" });
   await until("the channel answered again", () => existsSync(join(data, "run", "channel-answer")), 20_000, () => a.err());
-  assert.deepEqual(await toolNames(mcp.port, "t1"), ["feishu_api", "slack_api", "station_version"]);
+  assert.deepEqual(await toolNames(mcp.port, "t1"), ["feishu_api", "slack_api", "station_move", "station_version"]);
   // the copies' export: a process of its own (`--builder replica-export`), not in the station's, started as background
   // work: on macOS under `taskpolicy -b` (which execs it), its priority the background band's, under the station's
   if (process.platform !== "win32") {
@@ -430,13 +431,14 @@ test("the parts as the admin API asks them: the overview's features, updates, mo
   const member = { role: "member", workspace: "w1", email: "m@x.y" };
   // the overview on a stable station
   const first = await h.ok({ step: "overview", viewer: owner, lang: "en" });
-  assert.deepEqual(first.features, []);
-  assert.deepEqual(first.move, { offered: false });
+  // (moving graduated: offered on stable too, and said in `features` for apps from before)
+  assert.deepEqual(first.features, ["stationMove"]);
+  assert.deepEqual(first.move, { offered: true });
   assert.equal(first.updates[0].id, "station");
   assert.equal(typeof first.copies, "object");
   assert.deepEqual([first.slackTeams, first.slackApps], [[], []]);
   assert.deepEqual(await h.ok({ step: "coord", name: "connects.states", arg: [] }), []);
-  assert.deepEqual((await h.ok({ step: "tools" })).sort(), ["feishu_api", "slack_api", "station_retire", "station_version"]);
+  assert.deepEqual((await h.ok({ step: "tools" })).sort(), ["feishu_api", "slack_api", "station_move", "station_retire", "station_version"]);
   assert.deepEqual([first.comma, first.group, first.feishuRegistrations], [true, true, []]);
   // what the admin API's own routes (api_routes) ask of the connect kinds and Slack's, Feishu's and Comma's parts
   for (const kind of ["slack", "feishu", "comma", "group"]) assert.deepEqual(await h.ok({ step: "coord", name: "connectKinds.get", arg: [kind] }), { $ref: kind });
@@ -544,8 +546,8 @@ test("the parts as the admin API asks them: the overview's features, updates, mo
   assert.equal(await h.ok({ step: "coord", name: "updates.setChannel", arg: ["stable", "en"] }), null);
   assert.equal(await h.ok({ step: "coord", name: "agents.updates.channel", arg: [] }), "stable");
   assert.equal(JSON.parse(readFileSync(join(data, "config.json"), "utf8")).updateChannel, "stable");
-  assert.deepEqual((await h.ok({ step: "overview", viewer: owner, lang: "en" })).features, []);
-  assert.deepEqual((await h.ok({ step: "tools" })).sort(), ["feishu_api", "slack_api", "station_retire", "station_version"]);
+  assert.deepEqual((await h.ok({ step: "overview", viewer: owner, lang: "en" })).features, ["stationMove"]);
+  assert.deepEqual((await h.ok({ step: "tools" })).sort(), ["feishu_api", "slack_api", "station_move", "station_retire", "station_version"]);
   // the copies' and a retirement's on coord_ask: a refusal thrown as the routes take it, its words kept
   const retireCoord = await h.send({ step: "coord", name: "retire.retire", arg: ["w1", "b".repeat(64), "o@x.y"] });
   assert.ok(retireCoord.error !== undefined, JSON.stringify(retireCoord));

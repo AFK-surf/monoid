@@ -1,13 +1,13 @@
 // MovesLive (move/live.ts): migrations between stations of a workspace (move_coord's `Moves`: its modules and their
 // scheduler), a chat handed over by replica_coord's `Handover`, `handover.*` and `move.*` answered, the routes of a
-// move, station_move given while moving is on here (features.ts `stationMoveOn`: the `beta` feature `stationMove`), its
+// move, station_move given while moving is on here (every station's since it graduated, 2026-11-21), its
 // card chosen. What a move asks of the hub, the store, the jobs and the accounts goes on the bus (`hub_ask`, `jobs_ask`)
 // by the names the TypeScript calls them; of the connects, this slice's own (`coord_connects`).
 
 ///|
-/// Whether moving is offered and taken here (features.ts `stationMoveOn`).
-fn P55::move_on(self : P55) -> Bool {
-  station_feature("stationMove", (self.bus.config_raw.val)(), self.bus.app)
+/// Whether moving is offered and taken here: on every station since it graduated (2026-11-21).
+fn P55::move_on(_self : P55) -> Bool {
+  true
 }
 
 ///|
@@ -542,7 +542,6 @@ async fn P55::start_moves(self : P55) -> Unit {
         forget_vault: async fn(ws, id) { ignore(self.ui("vaults.forgetVault", [Json::string(ws), Json::string(id)])) },
       },
     }),
-    // (a beta feature of the station's: features.ts stationMoveOn)
     move_on: Some(() => self.move_on()),
     plan_page: None,
     clones_elsewhere: Some(async fn() { core_strs(self.hub("hub.repoClones", [])) }),

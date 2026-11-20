@@ -406,7 +406,8 @@ test("connects (Slack & Feishu): overview state, inbound routing -> fake claude 
   assert.equal(typeof ov.counts.running, "number");
   assert.equal(typeof ov.counts.warm, "number");
   assert.ok(Array.isArray(ov.features), JSON.stringify(ov.features));
-  assert.equal(ov.features.includes("stationMove"), false, `stable station must not enable stationMove: ${JSON.stringify(ov.features)}`);
+  // (moving graduated: a stable station says it too, for apps from before; its terminals stay the test channel's)
+  assert.deepEqual(ov.features, ["stationMove"], `a stable station's features: ${JSON.stringify(ov.features)}`);
   assert.equal(typeof ov.archiving, "object");
   assert.equal(typeof ov.archiving.days, "number");
   assert.equal(typeof ov.archiving.slackDays, "number");
@@ -786,15 +787,13 @@ test("presets CRUD + chat_create inheritance, MCP search across chat/message/job
   assert.equal(gemAfter.cost, 12);
   assert.equal(gemAfter.unpricedCalls, 0);
 
-  // ── 4. Station Move route & MCP tool contract (stable refused vs beta enabled) ──
+  // ── 4. Station Move route & MCP tool contract (offered on stable and beta alike since moving graduated) ──
   const listTools = async () => (await mcpCall(door, "t-main", "tools/list")).result.tools.map((t: any) => t.name as string);
 
-  // On stable channel: station_move not offered, POST /admin-api/move refused (409)
-  assert.equal((await listTools()).includes("station_move"), false, "station_move must not be offered on stable");
+  // On stable channel: station_move offered, moving offered
+  assert.equal((await listTools()).includes("station_move"), true, "station_move must be offered on stable");
   const ovStable = JSON.parse((await ask(door, "/admin-api/overview")).body);
-  assert.equal(ovStable.move?.offered, false);
-  const moveRefused = await ask(door, "/admin-api/move", { method: "POST", body: { to: "other", all: true } });
-  assert.equal(moveRefused.status, 409, `POST /admin-api/move must be refused on stable: ${moveRefused.body}`);
+  assert.equal(ovStable.move?.offered, true);
 
   // Switch to beta channel via run/channel-ask + hup
   writeFileSync(join(data, "run", "channel-ask"), "beta\n");

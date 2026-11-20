@@ -73,8 +73,8 @@ test("the_new_chat_page_is_the_test_channels_whatever_was_chosen", () => {
   assert.equal(featureEnabled("chatPage", {}, false), false);
   assert.equal(featureEnabled("chatPage", { chatPage: "nodes", experimental: { chatPage: true } }, false), false);
   assert.deepEqual(experimentalOf({ chatPage: "nodes", experimental: { chatPage: true } }), {});
-  assert.deepEqual(Object.keys(FEATURES), ["chatPage", "farviewNative", "board", "terminal", "stationMove"]);
-  assert.deepEqual(stationFeatureIds(), ["terminal", "stationMove"]);
+  assert.deepEqual(Object.keys(FEATURES), ["chatPage", "farviewNative", "board", "terminal"]);
+  assert.deepEqual(stationFeatureIds(), ["terminal"]);
 });
 
 test("the_switches_are_kept_on_the_device_and_shown_with_the_prefs", async () => {

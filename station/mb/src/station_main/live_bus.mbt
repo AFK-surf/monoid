@@ -478,18 +478,19 @@ pub fn station_channel(raw : Json, app : String) -> String {
 }
 
 ///|
-/// features.ts `stationFeature`: `id` first so `scripts/features-check.ts` matches `station_feature("terminal", ...)` and `station_feature("stationMove", ...)`.
+/// features.ts `stationFeature`: `id` first so `scripts/features-check.ts` matches `station_feature("terminal", ...)`.
 pub fn station_feature(id : String, raw : Json, app : String) -> Bool {
-  (id == "terminal" || id == "stationMove") && station_channel(raw, app) == "beta"
+  id == "terminal" && station_channel(raw, app) == "beta"
 }
 
 ///|
-/// features.ts `stationFeatures`: the `beta` features on here, for `overview("features", ...)`.
+/// features.ts `stationFeatures`: the `beta` features on here, for `overview("features", ...)`, and those graduated
+/// since that apps from before still decide by (`GRADUATED_SAID`: moving, on every channel since 2026-11-21).
 pub fn station_features(raw : Json, app : String) -> Array[String] {
   if station_channel(raw, app) == "beta" {
     ["terminal", "stationMove"]
   } else {
-    []
+    ["stationMove"]
   }
 }
 

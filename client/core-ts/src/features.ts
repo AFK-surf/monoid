@@ -26,7 +26,6 @@ export const FEATURES = {
   farviewNative: { stage: "experimental", betaOnly: true },
   board: { stage: "experimental" },
   terminal: { stage: "beta", station: true },
-  stationMove: { stage: "beta", station: true },
 } as const satisfies Record<string, FeatureSpec>;
 
 export type FeatureId = keyof typeof FEATURES;

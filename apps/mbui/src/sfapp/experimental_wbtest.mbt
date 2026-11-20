@@ -232,15 +232,15 @@ test "Farview 原生标签页渲染 off by default: a Farview tab is its station
 }
 
 ///|
-test "a stable station: its page has no terminals (屏幕与浏览器) and its ⋯ no 迁移到另一台 station; the test channel's has them" {
+test "a stable station: its page has no terminals (屏幕与浏览器), the test channel's has them; both ⋯ offer 迁移到另一台 station (moving graduated)" {
   let calls : Array[Made] = []
   let t = move_tester(calls, "settings-station-terminals")
   assert_true(t.find("屏幕、浏览器与终端") is Some(_), msg="beta: " + move_all_words(t))
   let t = move_tester(calls, "settings-station-terminals-stable")
   assert_true(t.find("屏幕与浏览器") is Some(_), msg="stable: " + move_all_words(t))
   assert_true(t.find("屏幕、浏览器与终端") is None, msg="stable: " + move_all_words(t))
-  // 迁移: its ⋯'s 迁移到另一台 station (its page's row is what a move left there, which a stable station that never moved has
-  // none of: station_move_wbtest's)
+  // 迁移: its ⋯'s 迁移到另一台 station, on either channel (its overview's `move.offered`; its page's row is what a move left
+  // there: station_move_wbtest's)
   let t = move_tester(calls, "settings-station-move-offered")
   t.click(Button, label="更多")
   t.run_for(@ui.move_most_ms)
@@ -248,12 +248,12 @@ test "a stable station: its page has no terminals (屏幕与浏览器) and its �
   let t = move_tester(calls, "settings-station-move-offered-stable")
   t.click(Button, label="更多")
   t.run_for(@ui.move_most_ms)
-  assert_true(!move_said(t, "迁移到另一台 station"), msg="stable: " + move_all_words(t))
+  assert_true(move_said(t, "迁移到另一台 station"), msg="stable: " + move_all_words(t))
   assert_true(move_said(t, "从 workspace 移除"), msg="stable: its ⋯ as ever: " + move_all_words(t))
 }
 
 ///|
-test "a station's terminals and 迁移 are as the station's channel says, never the app's: a stable app sees a beta station's, a beta app none of a stable one's" {
+test "a station's terminals are as the station's channel says, never the app's, and its 迁移 as the station offers it: a stable app sees a beta station's, a beta app a stable one's 迁移 but no terminals" {
   let calls : Array[Made] = []
   // the app on stable, Willow on the test channel
   let t = move_tester(calls, "settings-station-terminals-stable")
@@ -276,7 +276,7 @@ test "a station's terminals and 迁移 are as the station's channel says, never 
   t.run_for(@ui.move_most_ms)
   t.click(Button, label="更多")
   t.run_for(@ui.move_most_ms)
-  assert_true(!move_said(t, "迁移到另一台 station"), msg="beta app, stable station: " + move_all_words(t))
+  assert_true(move_said(t, "迁移到另一台 station"), msg="beta app, stable station: " + move_all_words(t))
 }
 
 ///|
@@ -356,14 +356,14 @@ test "设置: no 实验性功能 row where the core says the channel shows none 
 }
 
 ///|
-test "a stable station: 迁移's page opened by its route goes back at once; the test channel's stays" {
+test "迁移's page opened by its route stays on a stable station as on the test channel's (moving graduated)" {
   let calls : Array[Made] = []
   let t = move_tester(calls, "settings-station-move")
   assert_true(app.nav.top() is Setting(StationMove(_)), msg="beta: 迁移's page")
   assert_true(move_said(t, "迁到"), msg="beta: " + move_all_words(t))
   let t = move_tester(calls, "settings-station-move-stable")
-  assert_false(app.nav.top() is Setting(StationMove(_)), msg="stable: gone back")
-  assert_true(!move_said(t, "迁到"), msg="stable: " + move_all_words(t))
+  assert_true(app.nav.top() is Setting(StationMove(_)), msg="stable: 迁移's page")
+  assert_true(move_said(t, "迁到"), msg="stable: " + move_all_words(t))
 }
 
 ///|
