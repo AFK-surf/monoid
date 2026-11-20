@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [413090148](https://github.com/AFK-surf/monoid/commit/413090148513c1855ac506278877c12d75b75ce1) fix(mbui): speed up Windows 1Password fill and sto | 2.74 | 3.7 | 15.06 | 37.13 | 57.15 | 32.55 | 66.25 | 98.17 | 144.34 |
 | [136d854b0](https://github.com/AFK-surf/monoid/commit/136d854b0521e6857f138ea9014c558bea9802e9) fix(station): cap warm idle processes, scale turn  | 2.74 | 3.7 | 15.06 | 37.13 | 57.15 | 32.55 | 66.25 | 98.17 | 144.34 |
 | [86375dec2](https://github.com/AFK-surf/monoid/commit/86375dec27dc17f2f0d322d4427520854baffe5f) fix(mbui): center Windows text on its ink, not on  | 2.74 | 3.7 | 15.06 | 37.13 | 57.15 | 32.54 | 66.23 | 98.17 | 113.97 |
 | [136d854b0](https://github.com/AFK-surf/monoid/commit/136d854b0521e6857f138ea9014c558bea9802e9) fix(station): cap warm idle processes, scale turn  | 2.74 | 3.7 | 15.06 | 37.13 | 57.15 | 32.54 | 66.23 | 98.17 | 113.97 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [6f789f91a](https://github.com/AFK-surf/monoid/commit/6f789f91a29c080057372ef3e33bfe8472aa44e6) fix(ci): recover ci-1 checkouts and leave time for | 2.72 | 3.68 | 14.96 | 37.03 | 56.78 | 32.47 | 66.01 | 97.73 | 125.49 |
 | [f3954d252](https://github.com/AFK-surf/monoid/commit/f3954d252b7ce305e6b240511974909a93b0a056) perf(mbui): park covered made nav pages at rest wh | 2.72 | 3.68 | 14.96 | 36.94 | 56.33 | 32.47 | 66.01 | 97.76 | 123.51 |
 | [d74c5683d](https://github.com/AFK-surf/monoid/commit/d74c5683d0dfc7bfcde8b5951a04851b3b71de75) fix(web): enroll a console's machine as the accoun | 2.72 | 3.67 | 14.85 | 36.94 | 56.33 | 32.41 | 65.73 | 97.8 | 123.51 |
-| [5edb9ef7f](https://github.com/AFK-surf/monoid/commit/5edb9ef7f092ae40dd05a125bc2db5e28aab565e) refactor(motion): converge motion tools, sf-ui len | 2.72 | 3.67 | 14.85 | 36.94 | 56.33 | 32.41 | 65.73 | 97.72 | 123.51 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [413090148](https://github.com/AFK-surf/monoid/commit/413090148513c1855ac506278877c12d75b75ce1) fix(mbui): speed up Windows 1Password fill and sto | 0.46 | 0.6 | 2.33 | 3.37 | 5.51 | 1.69 | 4.57 | 53.95 |
 | [136d854b0](https://github.com/AFK-surf/monoid/commit/136d854b0521e6857f138ea9014c558bea9802e9) fix(station): cap warm idle processes, scale turn  | 0.46 | 0.6 | 2.33 | 3.37 | 5.51 | 1.69 | 4.57 | 54.26 |
 | [86375dec2](https://github.com/AFK-surf/monoid/commit/86375dec27dc17f2f0d322d4427520854baffe5f) fix(mbui): center Windows text on its ink, not on  | 0.46 | 0.6 | 2.33 | 3.37 | 5.51 | 1.69 | 4.57 | 54.26 |
 | [136d854b0](https://github.com/AFK-surf/monoid/commit/136d854b0521e6857f138ea9014c558bea9802e9) fix(station): cap warm idle processes, scale turn  | 0.46 | 0.6 | 2.33 | 3.37 | 5.51 | 1.69 | 4.57 | 54.13 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [6f789f91a](https://github.com/AFK-surf/monoid/commit/6f789f91a29c080057372ef3e33bfe8472aa44e6) fix(ci): recover ci-1 checkouts and leave time for | 0.46 | 0.6 | 2.32 | 3.36 | 5.48 | 1.67 | 4.53 | 54.35 |
 | [f3954d252](https://github.com/AFK-surf/monoid/commit/f3954d252b7ce305e6b240511974909a93b0a056) perf(mbui): park covered made nav pages at rest wh | 0.46 | 0.6 | 2.32 | 3.36 | 5.48 | 1.67 | 4.53 | 54.35 |
 | [d74c5683d](https://github.com/AFK-surf/monoid/commit/d74c5683d0dfc7bfcde8b5951a04851b3b71de75) fix(web): enroll a console's machine as the accoun | 0.46 | 0.6 | 2.32 | 3.36 | 5.48 | 1.67 | 4.53 | 54.35 |
-| [5edb9ef7f](https://github.com/AFK-surf/monoid/commit/5edb9ef7f092ae40dd05a125bc2db5e28aab565e) refactor(motion): converge motion tools, sf-ui len | 0.46 | 0.6 | 2.32 | 3.36 | 5.48 | 1.67 | 4.53 | 54.35 |
