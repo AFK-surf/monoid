@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [2cb7928bb](https://github.com/AFK-surf/monoid/commit/2cb7928bb32e111f58e9cdbeef9cc78b48b5dfe4) fix(mbui): forget glyph keys shaped before the fir | 2.76 | 3.73 | 15.18 | 37.26 | 57.53 | 32.66 | 66.51 | 98.29 | 121.9 |
 | [c045a928e](https://github.com/AFK-surf/monoid/commit/c045a928e75f6125dd4a471b95abb7a6639f4a64) feat(cloud,core,app): allow managers to switch sta | 2.76 | 3.73 | 15.18 | 37.26 | 57.53 | 32.66 | 66.51 | 98.29 | 121.9 |
 | [bf467b14a](https://github.com/AFK-surf/monoid/commit/bf467b14a768cb2e247ae9180e95b11574a39c1b) fix(station): revert default maxConcurrentTurns ba | 2.76 | 3.73 | 15.18 | 37.26 | 57.53 | 32.66 | 66.51 | 98.32 | 121.42 |
 | [628f68ea9](https://github.com/AFK-surf/monoid/commit/628f68ea93b9a6d11bb18a16d7625484d83f93f2) fix(mbui): skip sharp copy/overdraw for backdrop_l | 2.76 | 3.73 | 15.17 | 37.24 | 57.51 | 32.58 | 66.33 | 98.44 | 126.44 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [52fc07d66](https://github.com/AFK-surf/monoid/commit/52fc07d669219243532cf4dd29deb31fc18c051e) feat(core): multi-way striped parallel downloads a | 2.73 | 3.68 | 14.98 | 37.01 | 56.86 | 32.45 | 66.01 | 98.04 | 119.16 |
 | [610441335](https://github.com/AFK-surf/monoid/commit/6104413355243786b5356bfd298a9ebc22fdf21b) fix(rules): defer the hash seed under moonc 0.10.2 | 2.73 | 3.69 | 14.99 | 37.01 | 56.89 | 32.45 | 66.01 | 98.04 | 119.52 |
 | [ea8f4a0a7](https://github.com/AFK-surf/monoid/commit/ea8f4a0a7494995a59eb623b612694fb65970beb) fix(station): keep an account's verification link  | 2.73 | 3.69 | 14.99 | 37.01 | 56.89 | 32.45 | 66.01 | 97.9 | 125.81 |
-| [b73fb6698](https://github.com/AFK-surf/monoid/commit/b73fb6698d4db710a8e7d9f39eccca3e829cac11) mbui(mac): rebind display links across sleep and s | 2.73 | 3.68 | 14.99 | 37.01 | 56.88 | 32.44 | 66.01 | 98.14 | 122.74 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [2cb7928bb](https://github.com/AFK-surf/monoid/commit/2cb7928bb32e111f58e9cdbeef9cc78b48b5dfe4) fix(mbui): forget glyph keys shaped before the fir | 0.46 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.2 |
 | [c045a928e](https://github.com/AFK-surf/monoid/commit/c045a928e75f6125dd4a471b95abb7a6639f4a64) feat(cloud,core,app): allow managers to switch sta | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.05 |
 | [bf467b14a](https://github.com/AFK-surf/monoid/commit/bf467b14a768cb2e247ae9180e95b11574a39c1b) fix(station): revert default maxConcurrentTurns ba | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.05 |
 | [628f68ea9](https://github.com/AFK-surf/monoid/commit/628f68ea93b9a6d11bb18a16d7625484d83f93f2) fix(mbui): skip sharp copy/overdraw for backdrop_l | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.05 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [52fc07d66](https://github.com/AFK-surf/monoid/commit/52fc07d669219243532cf4dd29deb31fc18c051e) feat(core): multi-way striped parallel downloads a | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 60.13 |
 | [610441335](https://github.com/AFK-surf/monoid/commit/6104413355243786b5356bfd298a9ebc22fdf21b) fix(rules): defer the hash seed under moonc 0.10.2 | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 60.13 |
 | [ea8f4a0a7](https://github.com/AFK-surf/monoid/commit/ea8f4a0a7494995a59eb623b612694fb65970beb) fix(station): keep an account's verification link  | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 60.13 |
-| [b73fb6698](https://github.com/AFK-surf/monoid/commit/b73fb6698d4db710a8e7d9f39eccca3e829cac11) mbui(mac): rebind display links across sleep and s | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 60.13 |
