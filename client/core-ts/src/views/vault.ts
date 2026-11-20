@@ -56,7 +56,7 @@
 //   oauthComplete {query}         what the browser came back with: their token written into `vault` (`{name}`)
 //   lock                          the unlocked keys forgotten now
 //   state                         the `vaults` topic's value, as a call
-import { Effect, Semaphore } from "effect";
+import { Effect, Option, Semaphore } from "effect";
 import type { Inner } from "../core.ts";
 import { ulid } from "../accounts.ts";
 import { handlers } from "../core/execute.ts";
@@ -96,6 +96,8 @@ type Of = Extract<Call, { kind: "vault" }>;
 export const UNLOCK_MS = 5 * 60_000;
 /// How long a write by the owner's device waits for its vault to be keyed anew first (`#writable`).
 const REKEY_WAIT_MS = 1_500;
+/// How long a vault's or item's write waits on one station, where another holds the vault too, before trying the next.
+const WRITE_TRY_MS = 3_000;
 /// The secure storage's box key (X25519, asks the person to be read), and its public half where the app keeps the
 /// rest (no asking needed to know it).
 export const BOX_KEY = "vault-box";
@@ -869,18 +871,29 @@ function holds(h: Held, v: Vault, station: string, items: Item[] | null, fit: Fi
   take(h, v, fit);
 }
 
-/// Where vault `id` is written from this device (`at` as it is written to, `hostOf`): the first by id of the stations
-/// holding it that the workspace has now (its list, and the lock's stations where the lock names any), the same on
-/// every device that holds the same; `at` where none of them holds it. A station taken out of the workspace stays in
-/// `on` (nothing reads it again to say it holds none), and where its id was the first, every write and keying anew of
-/// the vault went to it, a station no longer there: the locks' end to end, 2026-11-15, a station enrolled, given the
-/// vault's copy, taken out and stopped, then the owner's write refused `vault_waiting` naming it.
+/// Where vault `id` is written from this device (`at` as it is written to, `hostOf`): the first of `writeHosts`, of the
+/// stations holding it that the workspace has now (its list, and the lock's stations where the lock names any) the
+/// first by id of those whose link is up, the same on every device that holds the same; `at` where none of them holds
+/// it. A station taken out of the workspace stays in `on` (nothing reads it again to say it holds none), and where its
+/// id was the first, every write and keying anew of the vault went to it, a station no longer there: the locks' end to
+/// end, 2026-11-15, a station enrolled, given the vault's copy, taken out and stopped, then the owner's write refused
+/// `vault_waiting` naming it.
 function hostOf(inner: Inner, ws: string, id: string): string {
+  return writeHosts(inner, ws, id)[0] ?? "";
+}
+
+/// The stations vault `id` may be written on, in the order tried (`#putVault`, `#putItem`): those holding it that the
+/// workspace has now (as `hostOf` says), the ones whose link is up first, then those not found down, then the rest,
+/// each by id within (so every device whose links agree writes on the same one); `at` alone where none of them holds it.
+function writeHosts(inner: Inner, ws: string, id: string): string[] {
   const h = held(inner, ws);
   const listed = new Set(stationsOf(inner, ws).map((s) => s.id));
   const named = stateOf(inner, ws).stations;
   const there = Object.keys(h.on[id] ?? {}).filter((s) => listed.has(s) && (named.size === 0 || named.has(s))).sort();
-  return there[0] ?? h.at[id] ?? "";
+  if (there.length === 0) return h.at[id] ? [h.at[id]!] : [];
+  const tier = (s: string) => inner.stations.online(`${ws}/${s}`) ? 0 : inner.stations.reachable(`${ws}/${s}`) ? 1 : 2;
+  const tiers = there.map((s) => [tier(s), s] as const);
+  return [0, 1, 2].flatMap((t) => tiers.filter(([at]) => at === t).map(([, s]) => s));
 }
 
 /// Vault `v` held over the version held where the rules say so (of one seq, written on two stations at once: the one
@@ -2308,8 +2321,9 @@ class Vaults {
   }
 
   /// Seals all owned vaults in this workspace to `cert` during pairing handover, using RAM-cached keys or `boxPriv`
-  /// without prompting again. If a station rejects `PUT /vault/vaults` (e.g. its lock cache has not yet pulled the new
-  /// device), `next` is still persisted locally on this device and queued for `spreadAll` so neither device drops `seq + 1`.
+  /// without prompting again. Each `seq + 1` is held here at once and handed to the new device over the pairing link;
+  /// the stations are brought it afterwards (`spreadAll`, each in its own lane), so a slow or stuck station never holds
+  /// the pairing up, and one whose lock has not taken the new device yet is brought it again as it is next read.
   handover(cert: BoxCert, boxPriv: Uint8Array | null, effectiveLock?: Checked, givenSigner?: Signer): Effect.Effect<HandedVault[], CoreError> {
     const self = this;
     return Effect.gen(function* () {
@@ -2363,8 +2377,6 @@ class Vaults {
             const keys = [...keptKeys.filter((k) => k.cert.device !== cleanCert.device), { cert: cleanCert, wrapped }];
             const { sig: _, ...rest } = v;
             const next = sign({ ...rest, seq: v.seq + 1, keys, at: nowS(inner) }, TAG.vault, signer);
-            const put = yield* Effect.result(self.#putVault(next, hostOf(inner, self.ws, v.id)));
-            if (put._tag === "Success") return { ws: self.ws, vault: put.success, cert: cleanCert };
             const fit = fitsWith(inner, self.ws, lock);
             change(inner, self.ws, (h) => take(h, next, fit));
             spreadAll(inner, self.ws);
@@ -2636,19 +2648,26 @@ class Vaults {
   /// A vault's version taken by its station, held here as it is; where no station can take it now (`station` none, or
   /// `localFallback`), held here alone, no station said to hold it, so each is brought it as it can be (`spreadAll`,
   /// another online at once). A station's refusal by the rules fails it.
+  /// Where another station holds the vault too, each is waited on `WRITE_TRY_MS` before the next is tried
+  /// (`writeHosts` order); only a station that cannot take it now passes it on, never one refusing it by the rules.
   #putVault(next: Vault, station: string): Effect.Effect<Vault, CoreError> {
     const self = this;
     return Effect.gen(function* () {
       const inner = self.#inner;
-      if (station !== "") {
-        const res = yield* Effect.result(self.#station(station, "PUT", "/vault/vaults", next));
-        if (res._tag === "Success") {
-          const v = (get(res.success, "vault") as Vault | undefined) ?? next;
-          change(inner, self.ws, (h) => holds(h, v, station, null, fits(inner, self.ws)));
+      const targets = station === "" ? [] : [station, ...writeHosts(inner, self.ws, next.id).filter((s) => s !== station)];
+      for (const s of targets) {
+        const put = self.#station(s, "PUT", "/vault/vaults", next);
+        const res = targets.length > 1
+          ? yield* Effect.timeoutOption(Effect.result(put), WRITE_TRY_MS) // timer: a deadline
+          : Option.some(yield* Effect.result(put));
+        if (Option.isNone(res)) continue;
+        if (res.value._tag === "Success") {
+          const v = (get(res.value.success, "vault") as Vault | undefined) ?? next;
+          change(inner, self.ws, (h) => holds(h, v, s, null, fits(inner, self.ws)));
           spreadAll(inner, self.ws);
           return v;
         }
-        if (!localFallback(res.failure)) return yield* Effect.fail(res.failure);
+        if (!localFallback(res.value.failure)) return yield* Effect.fail(res.value.failure);
       }
       change(inner, self.ws, (h) => take(h, next, fits(inner, self.ws)));
       spreadAll(inner, self.ws);
@@ -3043,22 +3062,31 @@ class Vaults {
   /// An item's version taken by its station; one that was not the next (another device wrote meanwhile) has the vault's
   /// items read again before it fails. Where no station can take it now (the vault on none, or `localFallback`), held
   /// here alone, no station said to hold it, so each is brought it as it can be (`spreadAll`).
+  /// Where another station holds the vault too, each is waited on `WRITE_TRY_MS` before the next is tried, as
+  /// `#putVault`.
   #putItem(next: Item, v: Vault): Effect.Effect<unknown, CoreError> {
     const self = this;
-    const station = hostOf(this.#inner, this.ws, v.id);
+    const targets = writeHosts(this.#inner, this.ws, v.id);
     return Effect.gen(function* () {
       const inner = self.#inner;
       let item = next;
       let on = "";
-      if (station !== "") {
-        const res = yield* Effect.result(self.#station(station, "PUT", "/vault/items", next));
-        if (res._tag === "Success") {
-          item = (get(res.success, "item") as Item | undefined) ?? next;
-          on = station;
-        } else if (res.failure.code === "vault_conflict") {
-          yield* Effect.ignore(readItems(inner, `${self.ws}/${station}`, v.id), { log: "Unhandled", message: "vault items read" });
-          return yield* Effect.fail(res.failure);
-        } else if (!localFallback(res.failure)) return yield* Effect.fail(res.failure);
+      for (const s of targets) {
+        const put = self.#station(s, "PUT", "/vault/items", next);
+        const res = targets.length > 1
+          ? yield* Effect.timeoutOption(Effect.result(put), WRITE_TRY_MS) // timer: a deadline
+          : Option.some(yield* Effect.result(put));
+        if (Option.isNone(res)) continue;
+        if (res.value._tag === "Success") {
+          item = (get(res.value.success, "item") as Item | undefined) ?? next;
+          on = s;
+          break;
+        }
+        if (res.value.failure.code === "vault_conflict") {
+          yield* Effect.ignore(readItems(inner, `${self.ws}/${s}`, v.id), { log: "Unhandled", message: "vault items read" });
+          return yield* Effect.fail(res.value.failure);
+        }
+        if (!localFallback(res.value.failure)) return yield* Effect.fail(res.value.failure);
       }
       const fit = fits(inner, self.ws);
       changeItems(inner, self.ws, v.id, (all) => { if (newer(item, all[item.id], fit)) all[item.id] = item; });

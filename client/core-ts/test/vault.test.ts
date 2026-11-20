@@ -42,7 +42,7 @@ import { Queue } from "effect";
 import { world as pairWorld } from "./lock-pair-world.ts";
 import { subscribe, call } from "./helpers.ts";
 import { withoutMesh } from "./lock-rig.ts";
-import { type Answers, base, entry, started, stationLater, stationReplies, status } from "./station-fixture.ts";
+import { type Answers, Status, base, entry, started, stationLater, stationReplies, status } from "./station-fixture.ts";
 // @ts-ignore: the MoonBit build's JS, untyped
 import * as rules from "../../../rules/js/rules.js";
 
@@ -372,10 +372,11 @@ async function rig(web = false, two = false, more: Answers = {}, also?: Record<s
     }
   };
   /// A call's answer: its value, or a failure with its code.
-  const ask = async (name: string, params: Record<string, unknown>): Promise<any> => {
+  /// (`steps`: how many 10 ms steps of the test clock it is given to answer)
+  const ask = async (name: string, params: Record<string, unknown>, steps = 200): Promise<any> => {
     const n = ++id;
     call(s.core, ui, n, name, { workspace: "ws", ...params });
-    for (let i = 0; i < 200 && !done.has(n); i++) {
+    for (let i = 0; i < steps && !done.has(n); i++) {
       await s.host.time.pass(10);
       take();
     }
@@ -3649,6 +3650,205 @@ test("handover preserves seq + 1 locally on both d1 and d2 when station temporar
     d1.core.close();
     d2.core.close();
   }
+});
+
+test("pairing hands the vault over without waiting on a station that does not answer its write: both devices hold seq + 1 at once, the station brought it once it answers", async () => {
+  const st = fakeStation();
+  const personalCloud: { entries: Entry[] } = { entries: [] };
+  const D1 = "77".repeat(32);
+  const D2 = "88".repeat(32);
+  // (`held`: the station's answers to PUT /vault/vaults while it is stuck, given once it answers again)
+  const stuck = { on: false };
+  const held: (() => void)[] = [];
+  const reply = (req: HttpRequest) => {
+    if (req.url.includes("/v1/me/personal-lock")) {
+      if (req.method === "GET") return { entries: personalCloud.entries };
+      const body = req.body ? JSON.parse(new TextDecoder().decode(req.body)) : {};
+      const incoming = Array.isArray(body.entries) ? (body.entries as Entry[]) : [];
+      for (const e of incoming) if (e.seq === personalCloud.entries.length) personalCloud.entries = [...personalCloud.entries, e];
+      return { entries: personalCloud.entries };
+    }
+    return st.reply(req);
+  };
+  const makeDevice = async (devId: string) => {
+    const s = await started(undefined, 0, undefined, (x) => {
+      x.host.appKeys = true;
+      stationReplies(x.host, reply);
+      stationLater(x.host, (req) => {
+        if (!stuck.on || req.method !== "PUT" || !req.url.includes("/vault/vaults")) return undefined;
+        return new Promise((done) => held.push(() => {
+          const said = reply(req);
+          done(said instanceof Status ? jsonResponse(said.code, said.body) : jsonResponse(200, said));
+        }));
+      });
+    });
+    s.core.inner.mesh = () => withoutMesh(devId);
+    const ui = s.core.connect();
+    let reqId = 500;
+    const ask = async (callName: string, params: Record<string, unknown> = {}) => {
+      const id = ++reqId;
+      s.host.takeEmitted();
+      call(s.core, ui, id, callName, { workspace: "ws", ...params });
+      let found: any = undefined;
+      for (let i = 0; i < 60 && found === undefined; i++) {
+        await s.host.time.pass(50);
+        for (const [, m] of s.host.takeEmitted()) {
+          const rec = m as any;
+          if (rec.id === id && ("ok" in rec || "error" in rec)) found = rec;
+        }
+      }
+      assert.ok(found !== undefined, `${callName}: no answer`);
+      assert.equal(found.error, undefined, `${callName}: ${JSON.stringify(found.error)}`);
+      return found.ok as any;
+    };
+    return { ...s, ask };
+  };
+
+  const d1 = await makeDevice(D1);
+  const { made } = await d1.ask("vault.setup", {});
+  const { id: itemId } = await d1.ask("vault.putItem", {
+    vault: made,
+    plain: { kind: "token", name: "StuckStationSecret", fields: { value: "sk_stuck_ok" } },
+    listing: { name: "StuckStationSecret", kind: "token", modes: ["env"], hosts: [] },
+  });
+  await d1.ask("vault.lock", {});
+  await d1.host.time.pass(50);
+  const d2 = await makeDevice(D2);
+  await runOn(d2.host, d2.core.inner, d2.core.inner.adb.personal().refresh("s1"));
+
+  // The station takes PUT /vault/vaults and answers nothing.
+  stuck.on = true;
+  const origOpen = dialer.open;
+  dialer.open = (_inner, id) => Effect.suspend(() => {
+    if (id !== D1) return Effect.fail(new CoreError("pair", "wrong peer"));
+    const [trusted, phone] = duplexPipe();
+    d1.core.inner.runner.fork(serveTrusted(d1.core.inner, D2, D1, trusted));
+    return Effect.succeed(phone);
+  });
+  try {
+    await runOn(d2.host, d2.core.inner, personalBegin(d2.core.inner, ["s1"]));
+    await d2.host.time.pass(200);
+    await d1.host.time.pass(200);
+    const code = pairs.shown(d1.core.inner)[0].code as string;
+    let done: any = null;
+    const from = d1.host.nowMs();
+    d2.core.inner.runner.fork(Effect.match(personalProve(d2.core.inner, code), {
+      onSuccess: (ok) => void (done = { ok }),
+      onFailure: (error) => void (done = { error }),
+    }));
+    for (let i = 0; i < 200 && done === null; i++) {
+      await d1.host.time.pass(10);
+      await d2.host.time.pass(10);
+    }
+    assert.ok(done && !done.error, `personalProve failed: ${JSON.stringify(done)}`);
+    assert.ok(d1.host.nowMs() - from < 1000, `paired in ${d1.host.nowMs() - from} ms of the test clock, not waiting on the station`);
+    assert.ok(held.length > 0, "the station was asked, and has not answered");
+    assert.equal(st.vaults.get(made)!.seq, 0, "the station holds the version before");
+    const d1Held = (d1.core.inner.data.record("vault", "ws") as any).vaults[made] as Vault;
+    assert.equal(d1Held.seq, 1, "d1 holds seq + 1");
+    assert.ok(d1Held.keys.some((k) => k.cert.device === D2), "sealed to d2");
+    const view2 = vaultsView(d2.core.inner, "ws") as any;
+    assert.equal(view2.vaults[0].keyed, true, "d2 keyed at once");
+    assert.equal(((d2.core.inner.data.record("vault", "ws") as any).vaults[made] as Vault).seq, 1, "d2 holds seq + 1");
+
+    // The station answers again: what it was given and what it is brought next takes seq + 1 there.
+    stuck.on = false;
+    for (const give of held.splice(0)) give();
+    subscribe(d1.core, 1, 99, { topic: "vaults", workspace: "ws" });
+    await d1.host.time.pass(300);
+    assert.equal(st.vaults.get(made)!.seq, 1, "the station brought seq + 1");
+    assert.ok(st.vaults.get(made)!.keys.some((k) => k.cert.device === D2));
+    const opened = await d2.ask("vault.open", { item: itemId });
+    assert.equal(opened.plain.fields.value, "sk_stuck_ok");
+  } finally {
+    dialer.open = origOpen;
+    d1.core.close();
+    d2.core.close();
+  }
+});
+
+/// The PUTs (not copies) each station of a two-station rig was sent of `/vault/<kind>`.
+function putsOf(r: Awaited<ReturnType<typeof rig>>): { st: string[]; st2: string[] } {
+  const seen = { st: [] as string[], st2: [] as string[] };
+  stationReplies(r.host, (req) => {
+    const two = req.headers.some(([k, v]) => k === "x-test-station" && v === "st2");
+    const m = /\/vault\/(vaults|items)(\?copy=1)?$/.exec(req.url);
+    if (req.method === "PUT" && m && !m[2]) (two ? seen.st2 : seen.st).push(m[1]!);
+    return two ? r.st2.reply(req) : r.st.reply(req);
+  });
+  return seen;
+}
+
+test("a vault held on two stations, the first by id found down: its writes go to the other, the one down not asked", async () => {
+  const r = await rig(false, true);
+  r.putLock();
+  const { made: id } = await r.ask("vault.setup", {});
+  const put = await r.ask("vault.putItem", { vault: id, plain: { kind: "token", name: "GitHub", fields: { value: "ghp_x" } } });
+  await r.host.time.pass(1000);
+  assert.equal(r.st2.items.get(put.id)?.version, 0, "both hold it");
+  // `st` (first by id) found down by its link, `st2` up.
+  const stations = r.core.inner.stations;
+  mock.method(stations, "online", (a: string) => a === "ws/st2");
+  mock.method(stations, "reachable", (a: string) => a === "ws/st2");
+  const seen = putsOf(r);
+  await r.ask("vault.putItem", { vault: id, id: put.id, plain: { kind: "token", name: "GitHub", fields: { value: "ghp_y" } } });
+  await r.ask("vault.setLasts", { vault: id, lasts: "once" });
+  assert.deepEqual(seen.st, [], "the station down not asked");
+  assert.ok(seen.st2.includes("items") && seen.st2.includes("vaults"), `written on the other: ${JSON.stringify(seen.st2)}`);
+  assert.equal(r.st2.items.get(put.id)!.version, 1);
+  assert.equal(r.st2.vaults.get(id)!.lasts, "once");
+  assert.deepEqual([r.st.items.get(put.id)!.version, r.st.vaults.get(id)!.seq], [0, 0], "the station down unchanged");
+  r.core.close();
+});
+
+test("a vault held on two stations up, the first stuck: its write tried there WRITE_TRY_MS, then taken on the other; a refusal by the rules there fails it, not passed on", async () => {
+  const r = await rig(false, true);
+  r.putLock();
+  const { made: id } = await r.ask("vault.setup", {});
+  const put = await r.ask("vault.putItem", { vault: id, plain: { kind: "token", name: "GitHub", fields: { value: "ghp_x" } } });
+  await r.host.time.pass(1000);
+  assert.equal(r.st2.vaults.get(id)?.seq, 0, "both hold it");
+  const stations = r.core.inner.stations;
+  mock.method(stations, "online", () => true);
+  mock.method(stations, "reachable", () => true);
+  const seen = putsOf(r);
+  // `st` takes the PUTs and answers nothing.
+  const stuck = { on: true };
+  stationLater(r.host, (req) => stuck.on && req.method === "PUT" && !req.headers.some(([k, v]) => k === "x-test-station" && v === "st2") ? new Promise(() => {}) : undefined);
+  const from = r.host.nowMs();
+  await r.ask("vault.putItem", { vault: id, id: put.id, plain: { kind: "token", name: "GitHub", fields: { value: "ghp_y" } } }, 600);
+  const took = r.host.nowMs() - from;
+  assert.ok(took >= 3000 && took < 4000, `the other tried once the first had WRITE_TRY_MS: ${took} ms`);
+  assert.equal(r.st2.items.get(put.id)!.version, 1, "taken on the other");
+  await r.ask("vault.setLasts", { vault: id, lasts: "once" }, 600);
+  assert.equal(r.st2.vaults.get(id)!.lasts, "once", "the vault's version too");
+  assert.equal(r.st.vaults.get(id)!.seq, 0, "the stuck station unchanged");
+  // `st` answers again, refusing by the rules: the write fails at once, `st2` not asked.
+  stuck.on = false;
+  stationLater(r.host, () => undefined);
+  await r.host.time.pass(1000);
+  seen.st2.length = 0;
+  stationReplies(r.host, (req) => {
+    const two = req.headers.some(([k, v]) => k === "x-test-station" && v === "st2");
+    if (req.method === "PUT" && /\/vault\/(items|vaults)$/.test(req.url)) {
+      if (two) seen.st2.push(req.url);
+      else return status(400, { error: "invalid", code: "vault_invalid" });
+    }
+    return two ? r.st2.reply(req) : r.st.reply(req);
+  });
+  await fails(r.ask("vault.putItem", { vault: id, id: put.id, plain: { kind: "token", name: "GitHub", fields: { value: "ghp_z" } } }), "vault_invalid");
+  await fails(r.ask("vault.setLasts", { vault: id, lasts: "hour" }), "vault_invalid");
+  stationReplies(r.host, (req) => {
+    const two = req.headers.some(([k, v]) => k === "x-test-station" && v === "st2");
+    if (req.method === "PUT" && /\/vault\/(items|vaults)$/.test(req.url)) {
+      if (two) seen.st2.push(req.url);
+      else return status(409, { error: "seq", code: "vault_conflict" });
+    }
+    return two ? r.st2.reply(req) : r.st.reply(req);
+  });
+  await fails(r.ask("vault.putItem", { vault: id, id: put.id, plain: { kind: "token", name: "GitHub", fields: { value: "ghp_z" } } }), "vault_conflict");
+  assert.deepEqual(seen.st2, [], "never passed on to the other");
+  r.core.close();
 });
 
 test("askAnswers and vaultsView report noKey on a !keyed device for encrypted use/describe/remove/typed-save requests, keep plain approve, and flip back to approve once keyed", async () => {
