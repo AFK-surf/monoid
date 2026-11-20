@@ -988,8 +988,14 @@ fn decisions_stamp_of(decisions_version : J, config : J, decision_models : J) ->
 }
 
 ///|
-/// Whose decisions a view is kept as: the viewer's role, home, workspace and email.
+/// Whose decisions a view is kept as: whether the viewer manages the station, its home flag and its workspace (never
+/// who it is, so a workspace's managers share one).
 fn decisions_whose(viewer : Viewer) -> String {
+  let manages = if viewer.role == "owner" || viewer.role == "admin" {
+    "1"
+  } else {
+    "0"
+  }
   let home = match viewer.raw.get("home") {
     None => "undefined"
     Some(h) => @jsjson.js_string(h)
@@ -998,7 +1004,7 @@ fn decisions_whose(viewer : Viewer) -> String {
     None | Some(Null) => ""
     Some(w) => @jsjson.js_string(w)
   }
-  "\{viewer.role}\u{0}\{home}\u{0}\{workspace}\u{0}\{viewer.email}"
+  "\{manages}\u{0}\{home}\u{0}\{workspace}"
 }
 
 ///|

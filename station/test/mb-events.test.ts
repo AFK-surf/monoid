@@ -893,6 +893,9 @@ test("the overview's decisions: kept as long as OverviewKept.decisions_fresh say
   const viewerOf = (email: string, workspace: string, more: Json = {}) => ({ sub: `s-${email}`, email, name: email, role: "member", workspace, device: "d", ...more });
   const owner = viewerOf("o@x", "w1", { role: "owner", home: true });
   const joined = viewerOf("j@x", "w2", { role: "admin", home: false });
+  // the same workspace's other manager shares the kept view; a member there does not
+  const otherAdmin = viewerOf("k@x", "w2", { role: "owner", home: false });
+  const member = viewerOf("m@x", "w2", { home: false });
   const world = {
     now: 1_000_000,
     dataDir: "/data",
@@ -932,6 +935,10 @@ test("the overview's decisions: kept as long as OverviewKept.decisions_fresh say
     { do: "overview", viewer: joined },
     { do: "fresh", viewer: owner },
     { do: "overview", viewer: owner },
+    { do: "fresh", viewer: otherAdmin },
+    { do: "overview", viewer: otherAdmin },
+    { do: "fresh", viewer: member },
+    { do: "overview", viewer: member },
   ];
   const moon = await mb({ op: "overview", world, script });
   assert.equal(moon.error, undefined, `the program failed: ${moon.error}`);
@@ -943,7 +950,7 @@ test("the overview's decisions: kept as long as OverviewKept.decisions_fresh say
     else if (r[0] === "decisions" && judged.length > 0) judged[judged.length - 1]!.made = true;
     else assert.notEqual(r[0], "prepareDecisions", "the accounts are ready: nothing prepared");
   }
-  assert.deepEqual(judged.map((j) => j.fresh), [false, true, true, false, false, false, true, false, false, true, true]);
+  assert.deepEqual(judged.map((j) => j.fresh), [false, true, true, false, false, false, true, false, false, true, true, true, false]);
   for (const [i, j] of judged.entries()) assert.equal(j.made, !j.fresh, `judgement ${i}: fresh ${j.fresh}, made again ${j.made}`);
 });
 

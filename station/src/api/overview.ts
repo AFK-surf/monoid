@@ -71,17 +71,27 @@ async function processMemory(pgids: number[]): Promise<Map<number, number>> {
 }
 
 /// processMemory, as measured within MEMORY_KEPT_MS for the same groups: every overview (each viewer's, at each change)
-/// asked it of `ps` anew.
+/// asked it of `ps` anew. Overviews that miss it at once share the one measuring under way.
 const MEMORY_KEPT_MS = 5_000;
 const memoryKept = new WeakMap<object, { at: number; pgids: string; memory: Map<number, number> }>();
+const memoryPending = new WeakMap<object, { pgids: string; promise: Promise<Map<number, number>> }>();
 async function keptMemory(d: OverviewDeps, pgids: number[]): Promise<Map<number, number>> {
   const key = pgids.join(",");
   const kept = memoryKept.get(d.store);
   const now = d.store.now();
   if (kept !== undefined && kept.pgids === key && now - kept.at < MEMORY_KEPT_MS) return kept.memory;
-  const memory = await processMemory(pgids);
-  memoryKept.set(d.store, { at: now, pgids: key, memory });
-  return memory;
+  const pending = memoryPending.get(d.store);
+  if (pending !== undefined && pending.pgids === key) return pending.promise;
+  const promise: Promise<Map<number, number>> = processMemory(pgids)
+    .then((memory) => {
+      memoryKept.set(d.store, { at: now, pgids: key, memory });
+      return memory;
+    })
+    .finally(() => {
+      if (memoryPending.get(d.store)?.promise === promise) memoryPending.delete(d.store);
+    });
+  memoryPending.set(d.store, { pgids: key, promise });
+  return promise;
 }
 
 /// The data disk's room: what clients warn of when it runs low.
@@ -252,90 +262,115 @@ function withPermissions(d: OverviewDeps, viewer: Viewer): { permissions?: unkno
 async function decisionsView(d: OverviewDeps, viewer: Viewer): Promise<unknown> {
   // Made again only once a check or the policy is written, the rule or its models change, or DECISIONS_KEPT_MS on (the
   // last days' window moves, a chat is renamed): each making reads the checks of the last days and names their chats.
-  const stamp = JSON.stringify([d.store.decisionsVersion(), d.config()?.automaticDecisions ?? null, d.accounts!.decisionModels()]);
-  const whose = `${viewer.role}\0${viewer.home}\0${viewer.workspace ?? ""}\0${viewer.email}`;
+  const stamp = decisionsStamp(d);
+  // Kept by what the view is made of: whether the viewer manages the station, its home flag and its workspace (never
+  // who it is, so a workspace's managers share one).
+  const manages = viewer.role === "owner" || viewer.role === "admin";
+  const whose = `${manages ? "1" : "0"}\0${viewer.home}\0${viewer.workspace ?? ""}`;
   let kept = decisionsKept.get(d.store);
   if (kept === undefined) decisionsKept.set(d.store, (kept = new Map()));
-  const now = d.store.now();
   const was = kept.get(whose);
-  if (was !== undefined && was.stamp === stamp && now - was.at < DECISIONS_KEPT_MS) return structuredClone(was.view);
+  if (was !== undefined && was.stamp === stamp && d.store.now() - was.at < DECISIONS_KEPT_MS) return structuredClone(was.view);
+  // Overviews that miss it at once (every device told the same change) share the one making under way for this stamp.
+  let pending = decisionsPending.get(d.store);
+  if (pending === undefined) decisionsPending.set(d.store, (pending = new Map()));
+  const making = pending.get(whose);
+  if (making !== undefined && making.stamp === stamp) return structuredClone(await making.promise);
+  const promise = makeDecisionsView(d, viewer, manages, whose, kept);
+  pending.set(whose, { stamp, promise });
+  const shared = pending;
+  try { return structuredClone(await promise); }
+  finally { if (shared.get(whose)?.promise === promise) shared.delete(whose); }
+}
+
+function decisionsStamp(d: OverviewDeps): string {
+  return JSON.stringify([d.store.decisionsVersion(), d.config()?.automaticDecisions ?? null, d.accounts!.decisionModels()]);
+}
+
+/// Makes the decisions' view and keeps it for `whose`, making it again (never waiting on another making) where old data
+/// had to be prepared first, the viewer's chats moved or the stamp changed meanwhile.
+async function makeDecisionsView(d: OverviewDeps, viewer: Viewer, manages: boolean, whose: string,
+  kept: Map<string, { at: number; stamp: string; view: unknown }>): Promise<unknown> {
   const notReady = Symbol("decision sessions not ready");
-  // The policy's checks counted by a reader, before the view is made (none: counted as it is made).
-  const manages = viewer.role === "owner" || viewer.role === "admin";
-  const checks = manages && d.hub.policyChecks != null ? await d.hub.policyChecks(policySince(now), viewer) : null;
-  const make = (name: (session: string) => string, visible?: Map<string, boolean>) => {
-    try { return madeDecisionsView(d, viewer, name, visible, checks ?? undefined); }
-    catch (error) { if (error instanceof DecisionSessionsUnavailable) return notReady; throw error; }
-  };
-  let view: unknown;
-  if (d.hub.prepareSessionChatNames == null) {
-    view = make((session) => chatTitleOf(d.store, session));
-    if (view === notReady) { await d.store.prepareDecisionSessions(); return decisionsView(d, viewer); }
-  }
-  else {
-    // The policy and checks already select the names they show. Collect those names as placeholders while making the
-    // view once, prepare them together, and replace only the placeholders after their bounded reads are ready.
-    const placeholders = new Map<string, object>();
-    const sessions = new WeakMap<object, string>();
-    const pendingTitle = (session: string): string => {
-      let placeholder = placeholders.get(session);
-      if (placeholder === undefined) {
-        placeholder = {};
-        placeholders.set(session, placeholder);
-        sessions.set(placeholder, session);
-      }
-      return placeholder as unknown as string;
+  for (;;) {
+    const stamp = decisionsStamp(d);
+    // The policy's checks counted by a reader, before the view is made (none: counted as it is made).
+    const checks = manages && d.hub.policyChecks != null ? await d.hub.policyChecks(policySince(d.store.now()), viewer) : null;
+    const make = (name: (session: string) => string, visible?: Map<string, boolean>) => {
+      try { return madeDecisionsView(d, viewer, name, visible, checks ?? undefined); }
+      catch (error) { if (error instanceof DecisionSessionsUnavailable) return notReady; throw error; }
     };
-    const visible = new Map<string, boolean>();
-    view = make(pendingTitle, visible);
-    if (view === notReady) { await d.store.prepareDecisionSessions(); return decisionsView(d, viewer); }
-    const names = new Map<string, string>();
-    let waited = false;
-    for (;;) {
-      const missing: string[] = [];
-      let moved = false;
-      names.clear();
-      // Read readiness and all names in one snapshot; a writer cannot make a name fall back to the old scan between
-      // the readiness check and sessionChat(). Do not hold a database snapshot while waiting for the worker.
-      d.store.db.exec("SAVEPOINT overview_chat_names");
-      try {
-        if (waited) for (const [session, was] of visible) {
-          if (sees(viewer, d.store.sessionWs(session) ?? null) !== was) { moved = true; break; }
-        }
-        if (!moved) for (const session of placeholders.keys()) {
-          // A historical check can name a session deleted while the worker was preparing it. It has no scope to
-          // prepare; retain the original title fallback rather than waiting for that scope forever.
-          if (d.store.getSession(session) === null) names.set(session, chatTitleOf(d.store, session));
-          else if (!sessionChatReadable(d.store.db, session)) missing.push(session);
-          else names.set(session, chatTitleOf(d.store, session));
-        }
-      } finally { d.store.db.exec("RELEASE overview_chat_names"); }
-      if (moved) return decisionsView(d, viewer);
-      if (missing.length === 0) break;
-      await d.hub.prepareSessionChatNames(missing);
-      waited = true;
+    let view: unknown;
+    if (d.hub.prepareSessionChatNames == null) {
+      view = make((session) => chatTitleOf(d.store, session));
+      if (view === notReady) { await d.store.prepareDecisionSessions(); continue; }
     }
-    const fill = (value: any): any => {
-      if (value === null || typeof value !== "object") return value;
-      const session = sessions.get(value);
-      if (session !== undefined) return names.get(session)!;
-      if (Array.isArray(value)) return value.map(fill);
-      for (const key of Object.keys(value)) value[key] = fill(value[key]);
-      return value;
-    };
-    view = fill(view);
-    // Checks or policy may have changed during old-data preparation. Build their view again instead of caching an
-    // obsolete selection with the old stamp.
-    const current = JSON.stringify([d.store.decisionsVersion(), d.config()?.automaticDecisions ?? null, d.accounts!.decisionModels()]);
-    if (current !== stamp) return decisionsView(d, viewer);
+    else {
+      // The policy and checks already select the names they show. Collect those names as placeholders while making the
+      // view once, prepare them together, and replace only the placeholders after their bounded reads are ready.
+      const placeholders = new Map<string, object>();
+      const sessions = new WeakMap<object, string>();
+      const pendingTitle = (session: string): string => {
+        let placeholder = placeholders.get(session);
+        if (placeholder === undefined) {
+          placeholder = {};
+          placeholders.set(session, placeholder);
+          sessions.set(placeholder, session);
+        }
+        return placeholder as unknown as string;
+      };
+      const visible = new Map<string, boolean>();
+      view = make(pendingTitle, visible);
+      if (view === notReady) { await d.store.prepareDecisionSessions(); continue; }
+      const names = new Map<string, string>();
+      let waited = false;
+      let moved = false;
+      for (;;) {
+        const missing: string[] = [];
+        names.clear();
+        // Read readiness and all names in one snapshot; a writer cannot make a name fall back to the old scan between
+        // the readiness check and sessionChat(). Do not hold a database snapshot while waiting for the worker.
+        d.store.db.exec("SAVEPOINT overview_chat_names"); // deferred: only reads (names and readiness)
+        try {
+          if (waited) for (const [session, was] of visible) {
+            if (sees(viewer, d.store.sessionWs(session) ?? null) !== was) { moved = true; break; }
+          }
+          if (!moved) for (const session of placeholders.keys()) {
+            // A historical check can name a session deleted while the worker was preparing it. It has no scope to
+            // prepare; retain the original title fallback rather than waiting for that scope forever.
+            if (d.store.getSession(session) === null) names.set(session, chatTitleOf(d.store, session));
+            else if (!sessionChatReadable(d.store.db, session)) missing.push(session);
+            else names.set(session, chatTitleOf(d.store, session));
+          }
+        } finally { d.store.db.exec("RELEASE overview_chat_names"); }
+        if (moved || missing.length === 0) break;
+        await d.hub.prepareSessionChatNames(missing);
+        waited = true;
+      }
+      if (moved) continue;
+      const fill = (value: any): any => {
+        if (value === null || typeof value !== "object") return value;
+        const session = sessions.get(value);
+        if (session !== undefined) return names.get(session)!;
+        if (Array.isArray(value)) return value.map(fill);
+        for (const key of Object.keys(value)) value[key] = fill(value[key]);
+        return value;
+      };
+      view = fill(view);
+      // Checks or policy may have changed during old-data preparation. Build their view again instead of caching an
+      // obsolete selection with the old stamp.
+      if (decisionsStamp(d) !== stamp) continue;
+    }
+    kept.set(whose, { at: d.store.now(), stamp, view: structuredClone(view) });
+    return view;
   }
-  kept.set(whose, { at: d.store.now(), stamp, view: structuredClone(view) });
-  return view;
 }
 
 /// How long the automatic decisions are kept as they were made at most (decisionsView).
 const DECISIONS_KEPT_MS = 60_000;
 const decisionsKept = new WeakMap<object, Map<string, { at: number; stamp: string; view: unknown }>>();
+/// The making of each kept view under way, with the stamp it was started at (decisionsView).
+const decisionsPending = new WeakMap<object, Map<string, { stamp: string; promise: Promise<unknown> }>>();
 
 function madeDecisionsView(d: OverviewDeps, viewer: Viewer, name: (session: string) => string,
   visible = new Map<string, boolean>(), checks?: PolicyChecks): unknown {
