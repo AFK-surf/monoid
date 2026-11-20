@@ -4,6 +4,9 @@
 // `waiting: false` (the local core has not answered yet), the first page still waits normally.
 
 ///|
+let card_wait_margin_ms : Double = 50.0
+
+///|
 fn chat_with_service_link(base : Source) -> Source {
   {
     ..base,
@@ -21,9 +24,8 @@ fn chat_with_service_link(base : Source) -> Source {
         msgs.push({
           "seq": 999.0,
           "ts": "t999",
-          "authorKind": "agent",
-          "author": "claude",
-          "text": "服务已启动",
+          "authorKind": "person",
+          "text": "预览服务",
           "words": [
             {
               "text": "预览服务",
@@ -31,7 +33,7 @@ fn chat_with_service_link(base : Source) -> Source {
               "to": { "card": "service", "station": "ws1/st1", "job": "j-web" },
             },
           ],
-          "by": { "name": "Claude", "agent": "claude" },
+          "by": { "name": "Ada" },
         })
         m["messages"] = Json::array(msgs)
         { ..got, value: Some(Json::object(m)) }
@@ -61,12 +63,12 @@ test "wide startup restoring to a chat with a login card: remote waiting release
     open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
     let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
     if remote_waiting {
-      t.run_for(100.0)
+      t.run_for(@sf.local_ms)
       assert_true(first_shown.get(), msg="machineLogin waiting=true must release first page immediately")
       assert_true(!@sfbase.first_page_waits.get(), msg="machineLogin waiting=true must clear first_page_waits")
       assert_true(t.find(tr("android-misc.workspaces.loading")) is None, msg="no loading bar when machineLogin waits on station")
     } else {
-      t.run_for(first_page_ms - 50.0)
+      t.run_for(first_page_ms - card_wait_margin_ms)
       assert_true(!first_shown.get(), msg="machineLogin waiting=false must still hold first page before first_page_ms")
       assert_true(@sfbase.first_page_waits.get(), msg="machineLogin waiting=false must keep first_page_waits")
     }
@@ -92,12 +94,12 @@ test "wide startup restoring to a chat with a service job card: remote waiting r
     open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
     let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
     if remote_waiting {
-      t.run_for(100.0)
+      t.run_for(@sf.local_ms)
       assert_true(first_shown.get(), msg="job waiting=true must release first page immediately")
       assert_true(!@sfbase.first_page_waits.get(), msg="job waiting=true must clear first_page_waits")
       assert_true(t.find(tr("android-misc.workspaces.loading")) is None, msg="no loading bar when job waits on station")
     } else {
-      t.run_for(first_page_ms - 50.0)
+      t.run_for(first_page_ms - card_wait_margin_ms)
       assert_true(!first_shown.get(), msg="job waiting=false must still hold first page before first_page_ms")
       assert_true(@sfbase.first_page_waits.get(), msg="job waiting=false must keep first_page_waits")
     }
