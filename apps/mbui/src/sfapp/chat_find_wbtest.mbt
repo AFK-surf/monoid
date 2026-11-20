@@ -628,12 +628,12 @@ test "对话目录: the rail's ticks, one for each said, the reader's (the 16th:
   let p = @sf.theme().p
   let long = ticks.mapi(fn(i, k) { (i, k) }).filter(fn(k) { k.1.1 == outline_hex(p.text) })
   assert_eq(long.map(fn(k) { k.0 }), [15], msg="\{Repr(ticks)}")
-  assert_eq(long[0].1.0, 16.0)
-  // (the rest one colour, quieter than the ink, each as long as its turn: shorter than the reader's, 4 for one message,
+  assert_eq(long[0].1.0, 20.0)
+  // (the rest one colour, quieter than the ink, each as long as its turn: shorter than the reader's, 6 for one message,
   // longer as more answered it: 林's first (Claude answering, then Ana) longer than Ana's next (林 straight after))
   let short = ticks.filter(fn(k) { k.1 != long[0].1.1 })
-  assert_true(short.iter().all(fn(k) { k.1 == short[0].1 && k.0 >= 4.0 && k.0 <= 12.0 }), msg="\{Repr(ticks)}")
-  assert_true(ticks[0].0 > ticks[1].0 && ticks[1].0 == 4.0, msg="\{Repr(ticks)}")
+  assert_true(short.iter().all(fn(k) { k.1 == short[0].1 && k.0 >= 6.0 && k.0 <= 14.0 }), msg="\{Repr(ticks)}")
+  assert_true(ticks[0].0 > ticks[1].0 && ticks[1].0 == 6.0, msg="\{Repr(ticks)}")
   // three said: the rail as tall as a press at least, its ticks in its middle
   let three : Json = {
     "days": [{ "date": "2026-11-10", "day": "今天", "seqs": [2, 4, 6] }],
@@ -1086,7 +1086,7 @@ fn outline_tick_places(t : @ui.Tester) -> Array[(Double, Bool)] {
     r.0 >= rx && r.0 + r.2 <= rx + rw + 0.5 && r.1 >= ry && r.1 + r.3 <= ry + rh + 0.5 && r.3 <= 2.5
   })
   ticks.sort_by(fn(a, b) { a.1.compare(b.1) })
-  ticks.map(fn(r) { (r.1, r.2 > 12.5) })
+  ticks.map(fn(r) { (r.1, r.2 > 14.5) })
 }
 
 ///|
@@ -1174,38 +1174,83 @@ test "对话目录: scrolled to its end, its last row whole in the panel, over i
 }
 
 ///|
-test "对话目录: a tick of the rail pointed at says its message's first line and time, its chunk asked for then, once; pressed, it goes to that message, which flashes" {
+test "对话目录: hovering the rail highlights the nearest tick immediately (including across day gaps), opens interactive hover panel after 180ms without stealing focus, supports search lock and Escape/outside close, direct click jumps without opening panel, and ⌘G never stacks two panels" {
   let calls : Array[Made] = []
   let t = outline_tester(calls)
-  let rail = outline_buttons(t)[0]
+  let rail = outline_buttons(t).filter(fn(b) { b.2 >= 44.0 })[0]
   let (rx, ry, rw, rh) = rail
-  let ticks = outline_drawn(t, "rect").filter(fn(r) {
-    r.0 >= rx && r.0 + r.2 <= rx + rw + 0.5 && r.1 >= ry && r.1 + r.3 <= ry + rh + 0.5 && r.3 <= 2.5
-  })
-  ticks.sort_by(fn(a, b) { a.1.compare(b.1) })
-  let asked = outline_rows_asked(calls).length()
-  // (the first tick: 林's 星期六 09:12; pointed at beside it, in its room across the press)
-  t.move_to(rx + rw / 2.0, ticks[0].1 + 1.0)
-  t.run_for(@sf.tip_delay_ms + @ui.move_most_ms)
-  assert_eq(outline_rows_asked(calls).length(), asked + 1)
-  let tip = t.semantics().filter(fn(s) { s.role == Tooltip }).map(fn(s) { s.label })
-  assert_eq(tip.length(), 1, msg="\{Repr(tip)}")
-  assert_true(tip[0].has_prefix("早，今天想把发布清单") && tip[0].has_suffix("09:12"), msg="\{Repr(tip)}")
-  // (the next: Ana's 09:40, its words held already, nothing asked)
-  t.move_to(rx + rw / 2.0, ticks[1].1 + 1.0)
-  t.run_for(@sf.tip_delay_ms + @ui.move_most_ms)
-  assert_eq(outline_rows_asked(calls).length(), asked + 1)
-  let tip = t.semantics().filter(fn(s) { s.role == Tooltip }).map(fn(s) { s.label })
-  assert_true(tip.length() == 1 && tip[0].has_prefix("签名证书下周三过期") && tip[0].has_suffix("09:40"), msg="\{Repr(tip)}")
-  // (pressed there, it goes to that tick's message, which flashes, without opening the outline panel)
-  t.tap(rx + rw / 2.0, ticks[1].1 + 1.0)
+  let raw_ticks = fn() {
+    let ts = outline_drawn(t, "rect").filter(fn(r) {
+      r.0 >= rx && r.0 + r.2 <= rx + rw + 0.5 && r.1 >= ry && r.1 + r.3 <= ry + rh + 0.5 && r.3 <= 2.5
+    })
+    ts.sort_by(fn(a, b) { a.1.compare(b.1) })
+    ts
+  }
+  let base_ticks = raw_ticks()
+  assert_eq(base_ticks.length(), 31)
+  assert_eq(named(calls, "chat.bring").length(), 0)
+  assert_eq(named(calls, "chat.outline.rows").length(), 0)
+  let muted = outline_hex(@sf.theme().p.muted)
+  // 0ms instant hover highlight on tick 1 (Ana's 09:40, seq 3)
+  t.move_to(rx + rw / 2.0, base_ticks[1].1 + 1.0)
+  t.draw()
+  let after_hover = raw_ticks()
+  assert_eq(after_hover[1].4, muted, msg="tick 1 should highlight Muted at 0ms")
+  assert_true(after_hover[1].2 >= 16.0, msg="tick 1 should elongate on hover: \{after_hover[1].2}")
+  assert_true(outline_panel(t) is None, msg="hover panel must not open at 0ms")
+  // day gap between day 0 (index 6) and day 1 (index 7): no dead zone!
+  let gap_mid_y = (base_ticks[6].1 + base_ticks[7].1) / 2.0 + 1.0
+  t.move_to(rx + rw / 2.0, gap_mid_y)
+  t.draw()
+  let in_gap = raw_ticks()
+  assert_true(in_gap[6].4 == muted || in_gap[7].4 == muted, msg="day gap must snap to nearest tick with no dead zone")
+  // after 180ms + settle: hover panel opens on the left without stealing focus
+  t.run_for(@sf.hover_panel_open_ms + @ui.move_most_ms)
+  guard outline_panel(t) is Some((px, py, pw, ph)) else { fail("hover panel did not open after 180ms") }
+  assert_true(px + pw <= rx + 0.5, msg="panel at \{px}+\{pw} should be left of rail \{rx}")
+  assert_eq(named(calls, "chat.bring").length(), 1)
+  assert_true(t.find("昨天") is Some(_))
+  // focus was not stolen by the hover panel's search field
+  let focused_is_outline_field = match t.focused() {
+    Some(s) => s.rect.0 >= px && s.rect.0 + s.rect.2 <= px + pw + 0.5 && s.rect.1 >= py && s.rect.1 <= py + ph
+    None => false
+  }
+  assert_false(focused_is_outline_field, msg="hover panel must not steal keyboard focus")
+  assert_eq(outline_faults(t), [])
+  // move into hover panel: stays open past close delay
+  t.move_to(px + pw / 2.0, py + ph / 2.0)
+  t.run_for(@sf.hover_panel_close_ms + @ui.move_most_ms)
+  assert_true(outline_panel(t) is Some(_))
+  // click search input inside hover panel -> locks open when mouse leaves, Escape closes
+  t.tap_text(@sf.t("web-main.outline.placeholder"))
+  t.draw()
+  t.move_to(100.0, 100.0)
+  t.run_for(@sf.hover_panel_close_ms + @ui.move_most_ms)
+  assert_true(outline_panel(t) is Some(_), msg="focused search input must hold hover panel open")
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+  assert_true(outline_panel(t) is None, msg="Escape closes locked hover panel")
+  // re-open hover panel, then press ⌘G: never stacks two Dialog panels
+  t.move_to(rx + rw / 2.0, base_ticks[1].1 + 1.0)
+  t.run_for(@sf.hover_panel_open_ms + @ui.move_most_ms)
+  assert_eq(t.semantics().filter(fn(s) { s.role == Dialog && s.label == "对话目录" }).length(), 1)
+  t.key(@ui.key_of_char('g'), mods=@ui.mod_cmd)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.semantics().filter(fn(s) { s.role == Dialog && s.label == "对话目录" }).length(), 1)
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+  assert_true(outline_panel(t) is None)
+  // direct click on tick 1 without waiting 180ms: jumps immediately without opening panel
+  t.move_to(100.0, 100.0)
+  t.draw()
+  t.tap(rx + rw / 2.0, base_ticks[1].1 + 1.0)
   t.run_for(@ui.move_most_ms)
   t.run_for(@ui.move_most_ms)
   assert_true(outline_panel(t) is None)
   assert_true(gone_lit(t, said_3), msg="ts3 flashing")
   assert_true(t.semantics().iter().any(fn(s) { s.role == Button && s.label == "回到刚才的位置" }))
   assert_eq(outline_faults(t), [])
-  // (on the longer chat's map: a press on its first tick reads the page before and goes to the chat's first said)
+  // on the longer chat's map: a press on its first tick reads the page before and goes to the chat's first said
   let calls : Array[Made] = []
   let t = outline_tester(calls, mode="chat-outline-long")
   t.key(@ui.key_escape)

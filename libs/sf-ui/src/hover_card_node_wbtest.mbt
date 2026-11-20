@@ -776,3 +776,93 @@ test "a button's card (action_box_node's on_hold, `pointed`): a finger's tap its
   assert_eq(pressed.val, 2, msg="a mouse's long press: a click")
   assert_eq(t.audit(), [])
 }
+
+///|
+test "hover_panel_node: 0 cold-start body nodes; opens after 180ms, stays open on card, closes 160ms after leave; held locks against mouse-leave while Escape and outside press still close it" {
+  let t = @ui.Tester::new(fn(_c) {  }, w=900.0, h=600.0, platform=0)
+  t.check_looks(false)
+  let hand : Ref[HoverHand?] = Ref(None)
+  let built = Ref(0)
+  let held = @signals.signal(false)
+  let layer_ref : Ref[@view.View?] = Ref(None)
+  @ui.set_view_app(fn(root) {
+    let tips = TipLayer::new(fn() { layer_ref.val })
+    root.box(fn(k) {
+      k
+      .margin(Is((820.0, 240.0, 0.0, 0.0)))
+      .width(Is(Some(44.0)))
+      .height(Is(Some(120.0)))
+      .presses(Is(true))
+      .points(Is(true))
+      .says(Is(Some(@view.said(Button, label="刻度"))))
+      |> ignore
+      hand.val = Some(
+        hover_panel_node(
+          tips,
+          k,
+          "目录浮卡",
+          fn(b, _close) {
+            built.val += 1
+            b.box(fn(w) { w.words(Is("浮卡内容")) |> ignore }) |> ignore
+          },
+          held=fn() { held.get() },
+          pointed=fn() { k.pointed_in() },
+        ),
+      )
+    })
+    |> ignore
+    layer_ref.val = Some(root.box(fn(l) { l.over(Is(true)).over_all(Is(true)) |> ignore }))
+  })
+  t.draw()
+  let open = fn() { hand.val is Some(h) && @signals.untracked(h.open) }
+  let panel = fn() { t.semantics().iter().find_first(fn(s) { s.role == Dialog && s.label == "目录浮卡" }).map(fn(s) { s.rect }) }
+  // cold start: 0 body built, no panel
+  assert_eq(built.val, 0)
+  assert_false(open())
+  assert_true(panel() is None)
+  // hover anchor: not open at 160ms, open at 180ms
+  t.move_to(840.0, 300.0)
+  t.run_for(hover_panel_open_ms - hover_short_ms)
+  assert_false(open())
+  assert_eq(built.val, 0)
+  t.run_for(hover_short_ms + hover_settled_ms)
+  assert_true(open())
+  assert_eq(built.val, 1)
+  guard panel() is Some((px, py, pw, ph)) else { fail("no hover panel") }
+  assert_eq(pw, confirm_w)
+  assert_true(px + pw <= 820.0, msg="panel at \{px}+\{pw} should be left of 820")
+  assert_eq(t.audit(), [])
+  // move into card: stays open past close_delay
+  t.move_to(px + pw / 2.0, py + ph / 2.0)
+  t.run_for(hover_panel_close_ms + hover_settled_ms)
+  assert_true(open())
+  // leave both: still open at 140ms, closes after 160ms
+  t.move_to(50.0, 50.0)
+  t.run_for(hover_panel_close_ms - hover_short_ms)
+  assert_true(open())
+  t.run_for(hover_short_ms + hover_settled_ms)
+  assert_false(open())
+  assert_true(panel() is None)
+  // re-open and lock with held=true: mouse leave does not close, Escape closes
+  t.move_to(840.0, 300.0)
+  t.run_for(hover_panel_open_ms + hover_settled_ms)
+  assert_true(open())
+  held.set(true)
+  t.move_to(50.0, 50.0)
+  t.run_for(hover_panel_close_ms + hover_settled_ms)
+  assert_true(open(), msg="held should lock open on mouse leave")
+  t.key(@ui.key_escape)
+  t.run_for(hover_settled_ms)
+  assert_false(open(), msg="Escape closes even when held")
+  // re-open with held=true: outside press closes
+  t.move_to(840.0, 300.0)
+  t.run_for(hover_panel_open_ms + hover_settled_ms)
+  assert_true(open())
+  t.move_to(50.0, 50.0)
+  t.run_for(hover_panel_close_ms + hover_settled_ms)
+  assert_true(open())
+  t.tap(50.0, 50.0)
+  t.run_for(hover_settled_ms)
+  assert_false(open(), msg="outside click closes even when held")
+  assert_eq(t.audit(), [])
+}

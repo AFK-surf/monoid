@@ -54,8 +54,8 @@ test "对话目录 on a wide page of a chat's page made as nodes: the rail there
   assert_eq(ticks.length(), 31, msg="\{Repr(ticks)}")
   let ink = outline_hex(@sf.theme().p.text)
   assert_eq(ticks.mapi(fn(i, k) { (i, k) }).filter(fn(k) { k.1.1 == ink }).map(fn(k) { k.0 }), [15], msg="\{Repr(ticks)}")
-  assert_eq(ticks[15].0, 16.0)
-  assert_true(ticks.iter().all(fn(k) { k.1 == ink || (k.1 == ticks[0].1 && k.0 < 16.0) }), msg="\{Repr(ticks)}")
+  assert_eq(ticks[15].0, 20.0)
+  assert_true(ticks.iter().all(fn(k) { k.1 == ink || (k.1 == ticks[0].1 && k.0 >= 6.0 && k.0 <= 14.0) }), msg="\{Repr(ticks)}")
   assert_eq(outline_faults(t), [])
   // (nothing asked of the core for it: the outline's index is what it shows)
   assert_eq(calls.filter(fn(c) { c == "chat.bring" || c == "chat.outline.rows" }), [])
@@ -108,4 +108,80 @@ test "对话目录's rail on a chat's page made as nodes: a tick pressed takes t
   t.run_for(@ui.move_most_ms)
   guard place_within_line(t, said_22) is Some((y1, _)) else { fail("22 not drawn after the wheel") }
   assert_true(y1 < y0 - 30.0, msg="\{y0} \{y1}")
+}
+
+///|
+test "对话目录's rail on a chat's page made as nodes: 0ms hover highlight (including day gaps), 180ms hover panel without stealing focus, follow on rail slide, click row to jump, search lock with Escape/outside close, and ⌘G closes hover panel" {
+  let calls : Array[String] = []
+  let t = rail_nodes_tester(1280.0, 800.0, calls)
+  t.run_for(@ui.move_most_ms)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(calls.filter(fn(c) { c == "chat.bring" || c == "chat.outline.rows" }), [])
+  guard rail_nodes_rails(t, 1280.0) is [(rx, ry, rw, rh)] else { fail("no rail") }
+  let raw_ticks = fn() {
+    let ts = outline_drawn(t, "rect").filter(fn(r) {
+      r.0 >= rx && r.0 + r.2 <= rx + rw + 0.5 && r.1 >= ry && r.1 + r.3 <= ry + rh + 0.5 && r.3 <= 2.5
+    })
+    ts.sort_by(fn(a, b) { a.1.compare(b.1) })
+    ts
+  }
+  let base_ticks = raw_ticks()
+  assert_eq(base_ticks.length(), 31)
+  let muted = outline_hex(@sf.theme().p.muted)
+  // 0ms hover highlight on tick 1
+  t.move_to(rx + rw / 2.0, base_ticks[1].1 + 1.0)
+  t.draw()
+  let hovered = raw_ticks()
+  assert_eq(hovered[1].4, muted, msg="tick 1 should highlight Muted immediately")
+  assert_true(hovered[1].2 >= 16.0, msg="tick 1 should elongate on hover: \{hovered[1].2}")
+  assert_true(outline_panel(t) is None)
+  // day gap between index 6 and index 7: snaps to nearest tick
+  let gap_mid_y = (base_ticks[6].1 + base_ticks[7].1) / 2.0 + 1.0
+  t.move_to(rx + rw / 2.0, gap_mid_y)
+  t.draw()
+  let in_gap = raw_ticks()
+  assert_true(in_gap[6].4 == muted || in_gap[7].4 == muted, msg="day gap snaps to nearest tick")
+  // 180ms hover opens interactive outline panel on the left without stealing focus
+  t.run_for(@sf.hover_panel_open_ms + @ui.move_most_ms)
+  guard outline_panel(t) is Some((px, py, pw, ph)) else { fail("hover panel did not open") }
+  assert_true(px + pw <= rx + 0.5, msg="panel at \{px}+\{pw} should be left of rail \{rx}")
+  assert_eq(calls.filter(fn(c) { c == "chat.bring" }).length(), 1)
+  let focused_in_panel = match t.focused() {
+    Some(s) => s.rect.0 >= px && s.rect.0 + s.rect.2 <= px + pw + 0.5 && s.rect.1 >= py && s.rect.1 <= py + ph
+    None => false
+  }
+  assert_false(focused_in_panel, msg="hover panel must not steal focus")
+  assert_eq(outline_faults(t), [])
+  // move into hover panel -> stays open, click search input -> locks open on leave, outside tap closes
+  t.move_to(px + pw / 2.0, py + ph / 2.0)
+  t.run_for(@sf.hover_panel_close_ms + @ui.move_most_ms)
+  assert_true(outline_panel(t) is Some(_))
+  t.tap_text(@sf.t("web-main.outline.placeholder"))
+  t.draw()
+  t.move_to(100.0, 100.0)
+  t.run_for(@sf.hover_panel_close_ms + @ui.move_most_ms)
+  assert_true(outline_panel(t) is Some(_), msg="focused search input holds panel open")
+  t.tap(100.0, 100.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(outline_panel(t) is None, msg="outside click closes locked hover panel")
+  // re-open hover panel, click a row inside it -> jumps to message and closes hover panel
+  t.move_to(rx + rw / 2.0, base_ticks[1].1 + 1.0)
+  t.run_for(@sf.hover_panel_open_ms + @ui.move_most_ms)
+  assert_true(outline_panel(t) is Some(_))
+  t.tap_text("签名证书下周三过期，我建议这次发布前就换新证书，不然商店那边会拒…")
+  t.run_for(@ui.move_most_ms)
+  t.run_for(@ui.move_most_ms)
+  assert_true(outline_panel(t) is None)
+  assert_true(gone_lit(t, said_3), msg="ts3 flashing after clicking hover panel row")
+  // re-open hover panel, then ⌘G -> only 1 Dialog (never two stacked)
+  t.move_to(rx + rw / 2.0, base_ticks[1].1 + 1.0)
+  t.run_for(@sf.hover_panel_open_ms + @ui.move_most_ms)
+  assert_eq(t.semantics().filter(fn(s) { s.role == Dialog && s.label == "对话目录" }).length(), 1)
+  t.key(@ui.key_of_char('g'), mods=@ui.mod_cmd)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.semantics().filter(fn(s) { s.role == Dialog && s.label == "对话目录" }).length(), 1)
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+  assert_true(outline_panel(t) is None)
+  assert_eq(outline_faults(t), [])
 }

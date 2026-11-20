@@ -803,8 +803,7 @@ fn list_reset() -> Unit {
   outline_entries.clear()
   outline_presets.clear()
   find_goes.clear()
-  rail_said.set({})
-  rail_asking.clear()
+  outline_hover_reset()
 }
 
 ///|
