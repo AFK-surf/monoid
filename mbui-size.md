@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f01cb2955](https://github.com/AFK-surf/monoid/commit/f01cb295503137fc410dde9b0611a05443aaaf7b) feat(station): Farview Stage 14A release, farview. | 2.77 | 3.74 | 15.24 | 37.3 | 57.72 | 32.7 | 66.65 | 98.09 | 122.24 |
 | [b62885c7a](https://github.com/AFK-surf/monoid/commit/b62885c7a4b0c908f096f39d85bf11a00a2c190c) fix(station): say why a lent profile cannot serve  | 2.77 | 3.74 | 15.24 | 37.3 | 57.72 | 32.69 | 66.65 | 98.42 | 126.19 |
 | [b8c850ece](https://github.com/AFK-surf/monoid/commit/b8c850ece362fd8c79db6729999c6b628a0a9eab) chore(mbui): delete unreachable Ctx views from sf- | 2.77 | 3.74 | 15.24 | 37.3 | 57.72 | 32.69 | 66.65 | 98.42 | 126.19 |
 | [ede8c9a28](https://github.com/AFK-surf/monoid/commit/ede8c9a2850aae2ce08bc0910afdfb2fab86993f) fix(mbui): use pixel quantization band for sub-hal | 2.77 | 3.74 | 15.24 | 37.3 | 57.72 | 32.69 | 66.65 | 98.42 | 116.32 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7ad2f50b5](https://github.com/AFK-surf/monoid/commit/7ad2f50b595341dbc5b234c990c7386e445a4421) refactor(mbui): flip @ui.run and @film.* to pure-t | 2.74 | 3.7 | 15.06 | 37.13 | 57.16 | 32.55 | 66.26 | 98.34 | 119.04 |
 | [77041e99a](https://github.com/AFK-surf/monoid/commit/77041e99a162337b05b1a3c2ad96d99414ca2e7e) feat(mbui): auto-follow system dark in pure trees, | 2.74 | 3.7 | 15.06 | 37.13 | 57.16 | 32.55 | 66.26 | 98.32 | 124.79 |
 | [e6742bf88](https://github.com/AFK-surf/monoid/commit/e6742bf88943d29e348741e7c81bcca923528466) feat(mbui): upgrade Scroll::new to list feel, add  | 2.74 | 3.7 | 15.06 | 37.13 | 57.16 | 32.55 | 66.26 | 98.32 | 124.79 |
-| [5a5a14727](https://github.com/AFK-surf/monoid/commit/5a5a147270915846c1a5606e6a2454f5dea71404) test(station/mb): hold agents' faults, warm evicti | 2.74 | 3.7 | 15.06 | 37.13 | 57.16 | 32.55 | 66.26 | 98.32 | 124.79 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f01cb2955](https://github.com/AFK-surf/monoid/commit/f01cb295503137fc410dde9b0611a05443aaaf7b) feat(station): Farview Stage 14A release, farview. | 0.47 | 0.61 | 2.36 | 3.4 | 5.59 | 1.7 | 4.6 | 53.89 |
 | [b62885c7a](https://github.com/AFK-surf/monoid/commit/b62885c7a4b0c908f096f39d85bf11a00a2c190c) fix(station): say why a lent profile cannot serve  | 0.47 | 0.61 | 2.36 | 3.4 | 5.59 | 1.7 | 4.6 | 53.89 |
 | [b8c850ece](https://github.com/AFK-surf/monoid/commit/b8c850ece362fd8c79db6729999c6b628a0a9eab) chore(mbui): delete unreachable Ctx views from sf- | 0.46 | 0.61 | 2.36 | 3.4 | 5.58 | 1.7 | 4.6 | 54.25 |
 | [ede8c9a28](https://github.com/AFK-surf/monoid/commit/ede8c9a2850aae2ce08bc0910afdfb2fab86993f) fix(mbui): use pixel quantization band for sub-hal | 0.46 | 0.61 | 2.36 | 3.4 | 5.58 | 1.7 | 4.6 | 54.25 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7ad2f50b5](https://github.com/AFK-surf/monoid/commit/7ad2f50b595341dbc5b234c990c7386e445a4421) refactor(mbui): flip @ui.run and @film.* to pure-t | 0.46 | 0.6 | 2.34 | 3.38 | 5.52 | 1.69 | 4.57 | 53.99 |
 | [77041e99a](https://github.com/AFK-surf/monoid/commit/77041e99a162337b05b1a3c2ad96d99414ca2e7e) feat(mbui): auto-follow system dark in pure trees, | 0.46 | 0.6 | 2.34 | 3.38 | 5.52 | 1.69 | 4.57 | 53.99 |
 | [e6742bf88](https://github.com/AFK-surf/monoid/commit/e6742bf88943d29e348741e7c81bcca923528466) feat(mbui): upgrade Scroll::new to list feel, add  | 0.46 | 0.6 | 2.33 | 3.37 | 5.51 | 1.69 | 4.57 | 54.15 |
-| [5a5a14727](https://github.com/AFK-surf/monoid/commit/5a5a147270915846c1a5606e6a2454f5dea71404) test(station/mb): hold agents' faults, warm evicti | 0.46 | 0.6 | 2.33 | 3.37 | 5.51 | 1.69 | 4.57 | 53.95 |
