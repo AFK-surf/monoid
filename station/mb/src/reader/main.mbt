@@ -944,6 +944,7 @@ fn main {
         { "kind": "legacy-decision-time", .. } => Some(@legacy.decision_time_step(db))
         { "kind": "legacy-decision-session", .. } => Some(@legacy.decision_session_step(db))
         { "kind": "legacy-decision-session-repair", .. } => Some(@legacy.decision_session_repair_step(db))
+        { "kind": "conversation-backfill", .. } => Some(@sql.backfill_conversations_step(db, Json::number(@host.now().to_double())))
         { "kind": String(_), .. } => None
         _ => Some(@activity.activity_step(db))
       })

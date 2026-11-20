@@ -1530,7 +1530,19 @@ export class Views implements Owner {
           // said there, is read from its history, `#sentElsewhere`; so its history is held as one shown is, its latest
           // page first: left to the sync's sweep of every agent's, on a station of many it came long after the page
           // opened, the page empty meanwhile)
-          if (session !== null) topics.push({ topic: "session", station, key: session }, { topic: "live", station, key: session });
+          if (session !== null) {
+            const data = this.#core.data;
+            const anchor = data.conversationOf(station, session);
+            const row = data.chatForSession(station, session) ?? (anchor !== session ? data.chatNamed(station, anchor)?.row : undefined);
+            const keys: string[] = [];
+            const add = (k: unknown) => {
+              if (typeof k === "string" && k !== "" && !keys.includes(k)) keys.push(k);
+            };
+            for (const a of arr(get(row, "agents"))) add(get(a, "key"));
+            add(anchor);
+            add(session);
+            for (const key of keys) topics.push({ topic: "session", station, key }, { topic: "live", station, key });
+          }
           topics.push(
             { topic: "threads", station },
             { topic: "chatRows", station },
@@ -1794,9 +1806,20 @@ export class Views implements Owner {
 
   /// The chat an agent's item has: the still.fail chat bound to it, as the station's items say, or its threads do.
   boundThread(station: string, key: string): number | null {
-    const fromRows = u64(get(this.#core.data.chatOfSession(station, key), "thread"));
+    const data = this.#core.data;
+    const fromRows = u64(get(data.chatForSession(station, key), "thread"));
     if (fromRows !== null) return fromRows;
-    return this.#core.data.threadOf(station, key);
+    const anchor = data.conversationOf(station, key);
+    if (anchor !== key) {
+      const fromNamed = u64(get(data.chatNamed(station, anchor)?.row, "thread"));
+      if (fromNamed !== null) return fromNamed;
+      const anchorThread = data.threadOf(station, anchor);
+      if (anchorThread !== null) return anchorThread;
+      const own = arr(get(this.ok({ topic: "session", station, key: anchor }), "threads")).find((t) => isOwnSurface(str(get(t, "surface")) ?? ""));
+      const fromDetail = u64(get(own, "id"));
+      if (fromDetail !== null) return fromDetail;
+    }
+    return data.threadOf(station, key);
   }
 
   /// A thread among the station's (null when it lists none such, or its threads were never read).
@@ -1842,7 +1865,7 @@ export class Views implements Owner {
     const data = this.#core.data;
     if (!data.listed(station, "chats")) return undefined;
     this.local.settle(station, data.rowsRev(station));
-    const raw = "thread" in by ? data.chatOfThread(station, by.thread) : data.chat(station, by.session);
+    const raw = "thread" in by ? data.chatOfThread(station, by.thread) : data.chatForSession(station, by.session);
     return raw === undefined ? null : this.local.asChanging(station, raw);
   }
 
@@ -2520,7 +2543,7 @@ export class Views implements Owner {
         const asked = [...this.local.pendingRows(s.address), ...this.local.restoringRows(s.address).filter((row) => {
           const thread = get(row, "thread");
           const session = get(row, "session");
-          return (typeof thread === "number" ? data.chatOfThread(s.address, thread) : data.chatOfSession(s.address, String(session ?? ""))) === undefined;
+          return (typeof thread === "number" ? data.chatOfThread(s.address, thread) : data.chatForSession(s.address, String(session ?? ""))) === undefined;
         })];
         // What failed to go in the station's chats, once for the list (looked up for each row, 1400 of them, on every
         // change of one: 2026-11-08).
@@ -3125,7 +3148,7 @@ export class Views implements Owner {
     const data = this.#core.data;
     if (!data.listed(station, "chats")) return undefined;
     this.local.settle(station, data.rowsRev(station));
-    const raw: J = data.chatOfSession(station, session) ?? data.chat(station, session)
+    const raw: J = data.chatForSession(station, session)
       ?? this.local.pendingRows(station).find((r) => get(r, "session") === session || get(r, "clientKey") === session);
     if (raw === undefined || this.local.beingArchived(station, raw)) return { ok: null };
     const row = this.#wholeOf(s, stations.length > 1, this.local.asChanging(station, raw));
@@ -4735,7 +4758,7 @@ export class Views implements Owner {
 
   /// An agent as its sidebar row lists it, with the connect its row came from.
   #rowAgent(station: string, key: string): J {
-    const row: J = this.#core.data.chatOfSession(station, key);
+    const row: J = this.#core.data.chatForSession(station, key);
     const agent = arr(get(row, "agents")).find((a) => get(a, "key") === key);
     if (agent === undefined) return null;
     const out = structuredClone(agent);
@@ -4776,8 +4799,9 @@ export class Views implements Owner {
 
   /// The page of an item whose agent has no chat yet.
   #unchatted(station: string, key: string): Value | undefined {
-    const agent = this.agent(station, key);
-    if (agent === null) {
+    const data = this.#core.data;
+    const anchor = data.conversationOf(station, key);
+    if (anchor === key && this.agent(station, key) === null) {
       const detail = this.value({ topic: "session", station, key });
       if (detail === undefined) return undefined;
       // (the station has no such session: the chat is not there, said so, whatever the station's words for it)
@@ -4786,25 +4810,54 @@ export class Views implements Owner {
     }
     const found = this.#row(station, { session: key });
     if (found === undefined && this.listKnown(station, "chats") === undefined) return undefined;
-    const row = found ?? undefined;
+    const archivedFound = found === null ? data.chatNamed(station, anchor) : undefined;
+    const row = found ?? archivedFound?.row;
+    const agentKeys: string[] = [];
+    const addKey = (k: unknown) => {
+      if (typeof k === "string" && k !== "" && !agentKeys.includes(k)) agentKeys.push(k);
+    };
+    for (const a of arr(get(row, "agents"))) addKey(get(a, "key"));
+    addKey(anchor);
+    addKey(key);
+    if (anchor !== key && this.agent(station, anchor) === null) {
+      const anchorDetail = this.value({ topic: "session", station, key: anchor });
+      if (anchorDetail === undefined) return undefined;
+    }
+    const agents: J[] = [];
+    for (const k of agentKeys) {
+      const a = this.agent(station, k);
+      if (a !== null) agents.push(a);
+    }
+    if (agents.length === 0) {
+      const detail = this.value({ topic: "session", station, key });
+      if (detail === undefined) return undefined;
+      const none = new CoreError("http_404", t("core-views.error.no_chat"), 404);
+      return { err: "err" in detail && detail.err.status !== 404 ? detail.err : none };
+    }
     if (row === undefined) {
       const threads = this.value({ topic: "threads", station });
       if (threads === undefined) return undefined;
       if ("err" in threads) return threads;
     }
-    const archived = this.local.archivedChanging(station, null, key) ?? (get(agent.session, "archivedAt") !== undefined && get(agent.session, "archivedAt") !== null);
-    // An agent that has only been in Slack: what was said there is all it has to show.
+    const archived = this.local.archivedChanging(station, null, anchor)
+      ?? (anchor !== key ? this.local.archivedChanging(station, null, key) : null)
+      ?? (archivedFound?.archived === true || agents.some((a) => get(a.session, "archivedAt") !== undefined && get(a.session, "archivedAt") !== null));
+    // An agent (or merged conversation) that has only been in Slack: what was said there is all it has to show.
     const members_ = arr(get(this.ok({ topic: "workspace", workspace: ofAddress(station) }), "members"));
-    const bot = agent.connect !== undefined ? present.botOf(agent.connect) : null;
-    const elsewhere = this.#sentElsewhere(station, null, [agent], [], false, false, { members: members_, bots: (bot === null ? [] : [bot]).concat(this.#core.data.slackNames(station)) });
-    // No chat at all, as its detail says: none here, none in Slack (a Slack thread has no chat here either), not archived.
-    const detail = this.value({ topic: "session", station, key });
-    const noChat = !archived && detail !== undefined && "ok" in detail && arr(get(detail.ok, "threads")).length === 0;
+    const bots = agents.flatMap((a) => {
+      const bot = a.connect !== undefined ? present.botOf(a.connect) : null;
+      return bot === null ? [] : [bot];
+    }).concat(this.#core.data.slackNames(station));
+    const elsewhere = this.#sentElsewhere(station, null, agents, [], false, false, { members: members_, bots });
+    // No chat at all, as their details say: none here, none in Slack (a Slack thread has no chat here either), not archived.
+    const details = agentKeys.map((k) => this.value({ topic: "session", station, key: k }));
+    const noChat = !archived && details.length > 0 && details.every((d) => d !== undefined && "ok" in d && arr(get(d.ok, "threads")).length === 0);
     // Where the Slack or Feishu thread it came from is (the row's origin), as a chat's page says its own.
     const origin = get(row, "origin");
     const strOf = (v: J, k: string) => str(get(v, k)) ?? "";
-    const surface = isObject(origin) && isObject(agent.connect) ? `${strOf(agent.connect, "kind")}:${strOf(agent.connect, "id")}` : "";
-    const where = isObject(origin) ? this.#whereIn(station, [agent], surface, strOf(origin, "channel"), strOf(origin, "channelName"), strOf(origin, "threadTs")) : null;
+    const primaryConnect = agents.find((a) => isObject(a.connect))?.connect;
+    const surface = isObject(origin) && isObject(primaryConnect) ? `${strOf(primaryConnect, "kind")}:${strOf(primaryConnect, "id")}` : "";
+    const where = isObject(origin) ? this.#whereIn(station, agents, surface, strOf(origin, "channel"), strOf(origin, "channelName"), strOf(origin, "threadTs")) : null;
     return {
       ok: {
         me: this.me(ofAddress(station)),
@@ -4815,7 +4868,7 @@ export class Views implements Owner {
         title: row !== undefined && row.title !== undefined ? row.title : t("core-views.new_chat"),
         people: [],
         archived,
-        agents: [agent],
+        agents,
         messages: [],
         elsewhere,
         more: false,

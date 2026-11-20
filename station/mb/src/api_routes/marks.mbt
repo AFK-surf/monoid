@@ -75,9 +75,13 @@ fn Admin::marks_routes(self : Admin) -> Array[Route] {
         let key = segment(m[0].unwrap())
         session(key)
         let name = title_of(i)
-        ignore(self.store("setTitle", [js(key), name]))
+        let anchor = match self.store("conversationOf", [js(key)]) {
+          Str(c) if c != "" => c
+          _ => key
+        }
+        ignore(self.store("setTitle", [js(anchor), name]))
         // Once the session has a chat of its own, the list names it by that chat: the chat takes the name too.
-        let home = self.store("homeChat", [js(key)])
+        let home = self.store("homeChat", [js(anchor)])
         if !(home is Null) {
           ignore(
             self.store("setThreadTitle", [
@@ -123,10 +127,14 @@ fn Admin::marks_routes(self : Admin) -> Array[Route] {
       self.store_write(async fn() {
         let key = segment(m[0].unwrap())
         session(key)
+        let anchor = match self.store("conversationOf", [js(key)]) {
+          Str(c) if c != "" => c
+          _ => key
+        }
         ignore(
-          self.store("setPin", [js(r.email()), js(key), jbool(verb == "PUT")]),
+          self.store("setPin", [js(r.email()), js(anchor), jbool(verb == "PUT")]),
         )
-        ok(jobj([("session", js(key)), ("pinned", jbool(verb == "PUT"))]))
+        ok(jobj([("session", js(anchor)), ("pinned", jbool(verb == "PUT"))]))
       })
     })
   }) +

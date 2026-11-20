@@ -198,15 +198,38 @@ fn viewer_chats(db : @sql.Db, known : Known, viewer : Json, words : Json, archiv
   let pins : Map[String, Json] = Map([])
   let pin_rows = match scope {
     None => db.all("SELECT session, at FROM pins WHERE viewer = ?", [Json::string(email)])
-    Some(_) =>
-      if keys.length() == 0 {
+    Some(_) => {
+      let pin_keys : Array[String] = []
+      for r in rows {
+        if r.value("id") is Some(String(id)) && !pin_keys.contains(id) {
+          pin_keys.push(id)
+        }
+        if r.value("agents") is Some(Array(ags)) {
+          for a in ags {
+            if a.value("key") is Some(String(ak)) && !pin_keys.contains(ak) {
+              pin_keys.push(ak)
+            }
+          }
+        }
+      }
+      if pin_keys.is_empty() {
         []
       } else {
-        db.all("SELECT session, at FROM pins WHERE viewer = ?1 AND session IN (SELECT value FROM json_each(?2))", [Json::string(email), ids_json(keys.map(Json::string))])
+        db.all("SELECT session, at FROM pins WHERE viewer = ?1 AND session IN (SELECT value FROM json_each(?2))", [Json::string(email), ids_json(pin_keys.map(Json::string))])
       }
+    }
   }
   for r in pin_rows {
-    pins[js_text(field(r, "session"))] = field(r, "at")
+    let raw_key = js_text(field(r, "session"))
+    let anchor = @sql.conversation_of(db, raw_key)
+    let at = field(r, "at")
+    match pins.get(anchor) {
+      None => pins[anchor] = at
+      Some(prev) =>
+        if num(at) < num(prev) {
+          pins[anchor] = at
+        }
+    }
   }
   let slack = db.all("SELECT slack_user FROM identities WHERE viewer = ? ORDER BY at", [Json::string(email)]).map(r => js_text(field(r, "slack_user")))
   let own : Own = { email, slack, reads, dismissed, kept, hidden, muted, pins }
@@ -235,7 +258,7 @@ pub fn viewer_chat_list(db : @sql.Db, host : @host.Host, data : String, sep : St
     _ => (Json::number(9007199254740991.0), Json::string("\u{ffff}"))
   }
   let items = db.all(
-    "SELECT kind, id, at FROM (\n    SELECT 's' AS kind, key AS id, archived_at AS at FROM sessions INDEXED BY sessions_put_away WHERE archived_at IS NOT NULL AND (archived_at < ?1 OR (archived_at = ?1 AND key < ?2))\n    UNION ALL\n    SELECT 't' AS kind, CAST(id AS TEXT) AS id, hidden_at AS at FROM threads INDEXED BY threads_put_away WHERE hidden_at IS NOT NULL AND (hidden_at < ?1 OR (hidden_at = ?1 AND CAST(id AS TEXT) < ?2))\n  ) ORDER BY at DESC, id DESC LIMIT ?3",
+    "SELECT kind, id, at FROM (\n    SELECT 's' AS kind, key AS id, archived_at AS at FROM sessions INDEXED BY sessions_put_away WHERE archived_at IS NOT NULL AND (conv IS NULL OR conv = key) AND (archived_at < ?1 OR (archived_at = ?1 AND key < ?2))\n    UNION ALL\n    SELECT 't' AS kind, CAST(id AS TEXT) AS id, hidden_at AS at FROM threads INDEXED BY threads_put_away WHERE hidden_at IS NOT NULL AND (hidden_at < ?1 OR (hidden_at = ?1 AND CAST(id AS TEXT) < ?2))\n  ) ORDER BY at DESC, id DESC LIMIT ?3",
     [when, id, Json::number(archive_page.to_double())],
   )
   let sessions = items.filter(i => field(i, "kind") == Json::string("s")).map(i => js_text(field(i, "id")))

@@ -105,6 +105,7 @@ function sessionJson(r: SessionRow): Json {
   // Handed here from another station (replica/handover.ts): that station, so that a device drops the row it kept of
   // it there, as that station may never tell it.
   if (typeof r.from === "string") v.from = r.from;
+  if (typeof r.conv === "string" && r.conv !== "" && r.conv !== r.key) v.conv = r.conv;
   return v;
 }
 

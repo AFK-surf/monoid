@@ -559,16 +559,21 @@ async function choicesWith(deps: SessionDeps, key: string, now: number, text: st
 }
 
 /// What another agent goes by in a thread: the bot of the connect it posts there through, with its mention; in the
-/// station's own chats, its runtime and model.
+/// station's own chats, its birth connect's bot name when born on an external connect, else its runtime and model.
 function agentName(deps: SessionDeps, key: string, thread: number): string {
   const via = deps.store.threadSessions(thread).find((m) => m.session === key)?.connect;
-  const chat = via && via !== INTERNAL_CONNECT ? deps.chat(via) : undefined;
+  const row = deps.store.getSession(key);
+  const externalVia = via && via !== INTERNAL_CONNECT ? via : undefined;
+  const connect = externalVia ?? (row && row.connect !== INTERNAL_CONNECT ? row.connect : undefined);
+  const chat = connect ? deps.chat(connect) : undefined;
   const name = chat?.botName?.() ?? "";
   if (name !== "") {
-    const user = chat?.botUserId?.() ?? "";
-    return user === "" ? name : `${name} (<@${user}>)`;
+    if (externalVia !== undefined) {
+      const user = chat?.botUserId?.() ?? "";
+      return user === "" ? name : `${name} (<@${user}>)`;
+    }
+    return name;
   }
-  const row = deps.store.getSession(key);
   return row ? `${runtimeLabel(runtimeKind(row.runtime) ?? "claude")}${row.model ? ` ${row.model}` : ""}` : "another agent";
 }
 

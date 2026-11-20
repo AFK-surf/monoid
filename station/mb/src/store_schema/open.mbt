@@ -62,6 +62,7 @@ pub fn open(db : @sql.Db, host : @host.Host, path : String, now : Int64, archive
   add_small_job_column(db)
   add_wait_watch_column(db)
   add_workspace_columns(db)
+  add_conv_column(db)
   install_archive_policy_index(db)
   add_opener_title(db)
   add_led_column(db)

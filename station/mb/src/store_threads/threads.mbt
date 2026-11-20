@@ -76,12 +76,67 @@ pub fn Store::thread_of_message(self : Store, surface : Json, channel : Json, ts
 pub fn Store::join_thread(self : Store, thread : Json, session : Json, connect : Json) -> Json raise {
   let connect = own_name(connect)
   self.with_(changes => {
-    let joined = self.run(member_join_if_needed_sql, [thread, session, connect, self.now_json()]) > 0
-    if joined {
-      changes.push({ "type": "session", "key": session })
-      changes.push({ "type": "thread", "id": thread, "entries": [] })
+    if self.one("SELECT 1 FROM thread_sessions WHERE thread = ? AND session = ? AND left_at IS NULL", [thread, session]) is Some(_) {
+      jbool(false)
+    } else {
+      let now = self.now_json()
+      let s_scope = match self.one("SELECT scope FROM sessions WHERE key = ?", [session]) {
+        Some(r) => text_of(r.get("scope").unwrap_or(Json::null())).unwrap_or("")
+        None => ""
+      }
+      let sk = text_of(session).unwrap_or("")
+      let is_birth_candidate = if s_scope == "thread" {
+        match self.one("SELECT channel, thread_ts FROM threads WHERE id = ?", [thread]) {
+          Some(t) => {
+            let ch = text_of(t.get("channel").unwrap_or(Json::null())).unwrap_or("")
+            let ts = text_of(t.get("thread_ts").unwrap_or(Json::null())).unwrap_or("")
+            ch != "" && ts != "" && sk.has_suffix(":\{ch}:\{ts}")
+          }
+          None => false
+        }
+      } else {
+        false
+      }
+      if !is_birth_candidate {
+        let joined = self.run(member_join_if_needed_sql, [thread, session, connect, now]) > 0
+        if joined {
+          changes.push({ "type": "session", "key": session })
+          changes.push({ "type": "thread", "id": thread, "entries": [] })
+        }
+        jbool(joined)
+      } else {
+        let mut joined = false
+        let mut settled_sessions : Array[String] = []
+        let mut settled_threads : Array[Json] = []
+        self.tx(() => {
+          let is_born = self.one("SELECT 1 FROM thread_sessions WHERE session = ? LIMIT 1", [session]) is None &&
+            self.one("SELECT 1 FROM turns WHERE session_key = ? LIMIT 1", [session]) is None &&
+            self.one("SELECT 1 FROM chat_shares WHERE session = ? LIMIT 1", [session]) is None
+          joined = self.run(member_join_if_needed_sql, [thread, session, connect, now]) > 0
+          if joined {
+            let born : String? = if is_born { text_of(session) } else { None }
+            let (ss, ts) = @sql.settle_conversation_in_tx(self.db, thread, now, born~)
+            settled_sessions = ss
+            settled_threads = ts
+          }
+        })
+        if joined {
+          changes.push({ "type": "session", "key": session })
+          changes.push({ "type": "thread", "id": thread, "entries": [] })
+          for s in settled_sessions {
+            if s != sk {
+              changes.push({ "type": "session", "key": jstr(s) })
+            }
+          }
+          for id in settled_threads {
+            if id != thread {
+              changes.push({ "type": "thread", "id": id, "entries": [] })
+            }
+          }
+        }
+        jbool(joined)
+      }
     }
-    jbool(joined)
   })
 }
 
@@ -167,7 +222,11 @@ pub fn Store::session_thread_by_id(self : Store, session : Json, thread : Json) 
 
 ///|
 pub fn Store::session_home_thread(self : Store, session : Json) -> Json raise {
-  opt_row(self.one(session_home_thread_sql, [session]), session_thread_of)
+  let anchor = match text_of(session) {
+    Some(k) => jstr(@sql.conversation_of(self.db, k))
+    None => session
+  }
+  opt_row(self.one(session_home_thread_sql, [anchor, session]), session_thread_of)
 }
 
 ///|
@@ -270,7 +329,11 @@ fn Store::recent_thread_rows(self : Store, session : Json, limit : Int) -> (Arra
   let attempt = self.one(latest_thread_attempt_sql, [session]).unwrap()
   let ready = is_num(col(attempt, "_latest_version"), 1.0) && is_num(col(attempt, "_latest_ready"), 1.0)
   let heard = if ready { self.all(latest_threads_indexed_sql, [session, jint(limit)]) } else { [] }
-  let home = self.one(session_home_thread_sql, [session])
+  let home_anchor = match text_of(session) {
+    Some(k) => jstr(@sql.conversation_of(self.db, k))
+    None => session
+  }
+  let home = self.one(session_home_thread_sql, [home_anchor, session])
   let half = (limit + 1) / 2
   let order : Array[Map[String, Json]] = []
   if home is Some(h) {

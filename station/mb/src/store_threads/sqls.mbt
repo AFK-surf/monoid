@@ -53,7 +53,7 @@ let few_session_threads_sql : String =
 ///|
 let session_home_thread_sql : String =
   #|SELECT t.*, ts.connect FROM threads t INDEXED BY threads_home
-  #|  CROSS JOIN thread_sessions ts WHERE t.home = ?1 AND ts.thread = t.id AND ts.session = ?1
+  #|  CROSS JOIN thread_sessions ts WHERE t.home = ?1 AND ts.thread = t.id AND ts.session = ?2
   #|  ORDER BY ts.joined_at DESC, ts.rowid DESC LIMIT 1
 
 ///|

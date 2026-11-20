@@ -514,11 +514,23 @@ fn Handover::reads(self : Handover) -> SessionReads {
       }
     },
     home_members: async fn(k) {
-      let home = self.store("homeChat", [js(k)])
-      if home is Null || text_at(home, "surface") != stillfail_surface {
-        return None
+      let anchor = str_of(Some(self.store("conversationOf", [js(k)]))).unwrap_or(k)
+      let out : Array[String] = []
+      let home = self.store("homeChat", [js(anchor)])
+      if !(home is Null) && text_at(home, "surface") == stillfail_surface {
+        for m in items(Some(self.store("threadSessions", [at(home, "id").unwrap_or(Null)]))) {
+          let s = text_at(m, "session")
+          if !out.contains(s) {
+            out.push(s)
+          }
+        }
       }
-      Some(items(Some(self.store("threadSessions", [at(home, "id").unwrap_or(Null)]))).map(m => text_at(m, "session")))
+      for m in strings_of(Some(self.store("membersOf", [js(anchor)]))) {
+        if !out.contains(m) {
+          out.push(m)
+        }
+      }
+      if out.is_empty() { None } else { Some(out) }
     },
     ran_on: async fn(k) {
       let rows = items(Some(self.store("chatPage", [js("runtime_sessions"), js(k), Null, ji(500)])))
@@ -1138,7 +1150,7 @@ fn Handover::given(self : Handover, o : Rec) -> Unit raise {
 }
 
 ///|
-/// The sessions handed over with `key`: those that share its still.fail home chat.
+/// The sessions handed over with `key`: those that share its still.fail home chat and its conversation.
 pub async fn Handover::together(self : Handover, key : String, reads? : SessionReads? = None) -> Array[String] {
   let r = reads.unwrap_or(self.reads())
   let keys = [key]

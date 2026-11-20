@@ -130,7 +130,7 @@ test("a Slack thread's chat handed over, its station not reached: what is said i
   assert.ok(a.rig.chat.marked.includes(posts), "as the station's notice");
 });
 
-test("two bots' sessions in one thread: one handed over, the other stays; each bot's events go to its own", async () => {
+test("two bots' sessions in one thread move together as one conversation; both bots' events go there", async () => {
   const w = world();
   const a = w.get(A);
   const b = w.get(B);
@@ -141,17 +141,22 @@ test("two bots' sessions in one thread: one handed over, the other stays; each b
   const gpt = sessionKey("gpt", first.channel, first.threadTs);
   await endTurn(a, cl);
   await endTurn(a, gpt, "codex");
+  assert.deepEqual(a.moves.handover.together(cl), [cl, gpt].sort());
+  assert.deepEqual(a.moves.handover.together(gpt), [cl, gpt].sort());
   const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: cl });
   await w.quiet();
   assert.equal(out.failed, null, JSON.stringify(out));
   assert.equal(a.rig.store.handedTo(cl)?.station, B);
-  assert.equal(a.rig.store.handedTo(gpt), null);
-  assert.equal(b.rig.store.getSession(gpt), null, "the other bot's stays");
+  assert.equal(a.rig.store.handedTo(gpt)?.station, B);
+  assert.ok(b.rig.store.getSession(cl) !== null, "cl moved to B");
+  assert.ok(b.rig.store.getSession(gpt) !== null, "gpt moved together to B");
+  assert.equal(b.rig.store.conversationOf(gpt), b.rig.store.conversationOf(cl));
   await a.connects.receive("gpt", { type: "message", message: reply(first, "1801.1", "<@UGPT> you", { addressed: true }) });
   await a.connects.receive("cl", { type: "message", message: reply(first, "1801.2", "<@UBOT> you", { addressed: true }) });
   await w.quiet();
-  assert.ok(a.rig.codex.sessions.flatMap((x) => x.prompts).join("\n").includes("<@UGPT> you"), "gpt's goes on here");
+  assert.equal(a.rig.codex.sessions.flatMap((x) => x.prompts).join("\n").includes("<@UGPT> you"), false, "gpt no longer runs on A");
   assert.equal(b.rig.claude.count(), 1, "cl's there");
+  assert.equal(b.rig.codex.count(), 1, "gpt's there too");
   const there = b.rig.store.threadAt("slack:T1", first.channel, first.threadTs)!;
   assert.equal(b.rig.said(there.id).at(-1)?.text, "<@UBOT> you");
 });

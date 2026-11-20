@@ -109,32 +109,57 @@ fn Store::manually_archived(self : Store, thread : Json) -> Bool raise {
 ///|
 /// store.ts `#setArchived(key, false, by, changes)`: shown again (what bringing back does).
 fn Store::set_unarchived(self : Store, key : String, by : String, changes : Array[Json]) -> Unit raise {
-  let mut leaders : Array[Json] = []
+  let leaders : Array[Json] = []
+  let mut targets : Array[String] = [key]
   self.tx(() => {
-    let row = self.one(
-      "UPDATE sessions SET archived_at = NULL, archived_by = NULL, shown_at = COALESCE(?, shown_at) WHERE key = ? \{leaders_returning}",
-      [if by == manual { self.now_json() } else { Json::null() }, jstr(key)],
-    )
-    leaders = match row {
-      None => []
-      Some(r) => {
-        let text = match col(r, "leaders") {
-          String(s) => s
-          Null => "[]"
-          v => v.stringify()
-        }
-        match (try @json.parse(text) catch { _ => Json::array([]) }) {
-          Array(xs) => xs
-          _ => []
+    let anchor = @sql.conversation_of(self.db, key)
+    let members = @sql.members_of(self.db, anchor)
+    targets = if members.is_empty() { [key] } else { members }
+    if !targets.contains(key) {
+      targets.push(key)
+    }
+    for m in targets {
+      let row = self.one(
+        "UPDATE sessions SET archived_at = NULL, archived_by = NULL, shown_at = COALESCE(?, shown_at) WHERE key = ? \{leaders_returning}",
+        [if by == manual { self.now_json() } else { Json::null() }, jstr(m)],
+      )
+      match row {
+        None => ()
+        Some(r) => {
+          let text = match col(r, "leaders") {
+            String(s) => s
+            Null => "[]"
+            v => v.stringify()
+          }
+          match (try @json.parse(text) catch { _ => Json::array([]) }) {
+            Array(xs) =>
+              for p in xs {
+                if !leaders.contains(p) {
+                  leaders.push(p)
+                }
+              }
+            _ => ()
+          }
         }
       }
     }
-    ignore(self.run("UPDATE threads SET hidden_at = ?, hidden_by = ? WHERE home = ?", [Json::null(), Json::null(), jstr(key)]))
+    ignore(self.run("UPDATE threads SET hidden_at = ?, hidden_by = ? WHERE home = ?", [Json::null(), Json::null(), jstr(anchor)]))
   })
-  for t in self.session_threads_rows(key, -1) {
-    changes.push({ "type": "thread", "id": col(t, "id"), "entries": [] })
+  let touched_threads : Array[Json] = []
+  for m in targets {
+    for t in self.session_threads_rows(m, -1) {
+      let id = col(t, "id")
+      if !touched_threads.contains(id) {
+        touched_threads.push(id)
+      }
+    }
   }
-  changes.push({ "type": "session", "key": jstr(key) })
+  for id in touched_threads {
+    changes.push({ "type": "thread", "id": id, "entries": [] })
+  }
+  for m in targets {
+    changes.push({ "type": "session", "key": jstr(m) })
+  }
   for parent in leaders {
     changes.push({ "type": "session", "key": parent })
   }

@@ -65,9 +65,10 @@ export const routes = ({ read, store, cardChoice }: Tools): Route[] => {
           const key = segment(k!);
           session(s, key);
           const name = title(i);
-          s.setTitle(key, name);
+          const anchor = s.conversationOf(key);
+          s.setTitle(anchor, name);
           // Once the session has a chat of its own, the list names it by that chat: the chat takes the name too.
-          const home = s.homeChat(key);
+          const home = s.homeChat(anchor);
           if (home !== null) s.setThreadTitle(home.id, name);
           return ok({ ok: true });
         }),
@@ -98,8 +99,9 @@ export const routes = ({ read, store, cardChoice }: Tools): Route[] => {
           write((s) => {
             const key = segment(k!);
             session(s, key);
-            s.setPin(r.viewer.email, key, method === "PUT");
-            return ok({ session: key, pinned: method === "PUT" });
+            const anchor = s.conversationOf(key);
+            s.setPin(r.viewer.email, anchor, method === "PUT");
+            return ok({ session: anchor, pinned: method === "PUT" });
           }),
       }),
     ),

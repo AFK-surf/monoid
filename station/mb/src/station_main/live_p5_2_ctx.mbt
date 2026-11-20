@@ -765,14 +765,50 @@ async fn P52::format_delivery(self : P52, key : String, said : Array[Json], canc
 
 ///|
 /// What another agent goes by in a thread (actor.ts `agentName`).
-fn P52::agent_name(self : P52, key : String, thread : Json) -> String {
+async fn P52::agent_name(self : P52, key : String, thread : Json) -> String {
+  let via = jitems(self.with_threads(t => t.thread_sessions(thread)))
+    .iter()
+    .find_first(m => jtext(m, "session") == Some(key))
+    .bind(m => jtext(m, "connect"))
   let row = self.bus.store.get_session(key) catch { _ => Json::null() }
+  let birth = if row == Json::null() { None } else { jtext(row, "connect") }
+  let external_via = match via {
+    Some(c) if c != "" && c != @session_hub.internal_connect => Some(c)
+    _ => None
+  }
+  let connect = match external_via {
+    Some(c) => Some(c)
+    None =>
+      match birth {
+        Some(c) if c != "" && c != @session_hub.internal_connect => Some(c)
+        _ => None
+      }
+  }
+  match connect {
+    Some(c) =>
+      match self.bus.coord_chat_bot(c) {
+        Object(_) as bot =>
+          match jtext(bot, "name") {
+            Some(name) if name != "" =>
+              if external_via is Some(_) {
+                match jtext(bot, "user") {
+                  Some(user) if user != "" => return "\{name} (<@\{user}>)"
+                  _ => return name
+                }
+              } else {
+                return name
+              }
+            _ => ()
+          }
+        _ => ()
+      }
+    None => ()
+  }
   if row == Json::null() {
     return "another agent"
   }
   let runtime = @session_hub.runtime_named(jtext(row, "runtime").unwrap_or("")).unwrap_or("claude")
   let label = @session_hub.runtime_label(runtime)
-  ignore(thread)
   match jtext(row, "model") {
     Some(m) => "\{label} \{m}"
     None => label

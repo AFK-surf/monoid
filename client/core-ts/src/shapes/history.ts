@@ -4,6 +4,7 @@ import { map, opt, struct, tagged, vec, type Shape } from "./dsl.ts";
 export const HISTORY_SHAPES: Record<string, Shape> = {
   Session: struct([
     ["key", "String"],
+    ["conv", opt("String"), { doc: "The anchor session key of the conversation this session belongs to, when different from its own key." }],
     ["connect", opt("String")],
     ["scope", opt("String"), { doc: "thread | all" }],
     ["title", opt("String"), { said: true }],

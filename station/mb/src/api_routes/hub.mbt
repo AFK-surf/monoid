@@ -1097,7 +1097,7 @@ fn Admin::hub_routes(self : Admin) -> Array[Route] {
           Some(Str(t)) => trim_js(t)
           _ => ""
         }
-        let chat = self.backend.ask("sessions/lifecycle.openChat", [
+        let chat = self.backend.ask("sessions/lifecycle.ensureConversationChat", [
           jref("hub"),
           js(key),
           js(r.email()),

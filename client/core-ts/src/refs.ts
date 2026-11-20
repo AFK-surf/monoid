@@ -167,8 +167,22 @@ export function search(chats: J, query: string, station: string | null | undefin
     if (!places.has(name)) places.set(name, at);
   });
   const rank = (i: J): number => {
-    const of = (f: string) => (typeof get(i, f) === "string" ? places.get(`${get(i, "station")}\u0001${get(i, f)}`) : undefined) ?? opened.length;
-    return Math.min(of("id"), of("session"));
+    const s = get(i, "station");
+    let best = opened.length;
+    const check = (k: unknown) => {
+      if (typeof k !== "string") return;
+      const at = places.get(`${s}\u0001${k}`);
+      if (at !== undefined && at < best) best = at;
+    };
+    check(get(i, "id"));
+    check(get(i, "session"));
+    for (const a of arr(get(i, "agents"))) check(get(a, "key"));
+    return best;
+  };
+  const matchesExclude = (i: J): boolean => {
+    if (exclude == null) return false;
+    if (get(i, "id") === exclude || get(i, "session") === exclude) return true;
+    return arr(get(i, "agents")).some((a) => get(a, "key") === exclude);
   };
   const active = (i: J): number => (typeof get(i, "lastActiveAt") === "number" ? (get(i, "lastActiveAt") as number) : 0);
   // (only what it finds is ranked, cut to `limit` and copied: a letter typed in the `@` menu walked every chat of the
@@ -192,7 +206,7 @@ export function search(chats: J, query: string, station: string | null | undefin
   const titled: { row: J; index: number; rank: number; active: number }[] = [];
   const rest: { row: J; index: number; rank: number; active: number }[] = [];
   rows.forEach((row, index) => {
-    if (get(row, "pending") === true || (exclude != null && !["id", "session"].every((f) => get(row, f) !== exclude))) return;
+    if (get(row, "pending") === true || matchesExclude(row)) return;
     const into = titledOf(row) ? titled : restOf(row) ? rest : null;
     into?.push({ row, index, rank: rank(row), active: active(row) });
   });

@@ -27,6 +27,7 @@ import {
   continueMachineSession,
   deleteSession,
   newSession,
+  ensureConversationChat,
   openChat,
   say,
 } from "../../sessions/lifecycle.ts";
@@ -540,7 +541,7 @@ export const routes = (tools: Tools): Route[] => {
           const key = text(i.session);
           session(s, key, r);
           const t = typeof i.title === "string" ? i.title.trim() : "";
-          const chat = openChat(a.hub, key, r.viewer.email, t === "" ? null : chars(t, 80));
+          const chat = ensureConversationChat(a.hub, key, r.viewer.email, t === "" ? null : chars(t, 80));
           return threadView(r, chat.id);
         }),
     },

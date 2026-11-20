@@ -306,9 +306,13 @@ fn recent_threads(db : @sql.Db, key : Json, limit : Int) -> Array[Map[String, Js
   } else {
     []
   }
+  let home_anchor = match key {
+    String(k) => Json::string(@sql.conversation_of(db, k))
+    _ => key
+  }
   let home = db.all(
-    "SELECT t.*, ts.connect FROM threads t INDEXED BY threads_home CROSS JOIN thread_sessions ts WHERE t.home = ?1 AND ts.thread = t.id AND ts.session = ?1 ORDER BY ts.joined_at DESC, ts.rowid DESC LIMIT 1",
-    [key],
+    "SELECT t.*, ts.connect FROM threads t INDEXED BY threads_home CROSS JOIN thread_sessions ts WHERE t.home = ?1 AND ts.thread = t.id AND ts.session = ?2 ORDER BY ts.joined_at DESC, ts.rowid DESC LIMIT 1",
+    [home_anchor, key],
   )
   let half = (limit + 1) / 2
   let order : Array[Map[String, Json]] = []
@@ -354,13 +358,26 @@ fn archive_facts(db : @sql.Db, key : Json, bindings : Bool, marks : Bool) -> Jso
   } else {
     Json::null()
   }
+  let k = match key {
+    String(s) => s
+    _ => ""
+  }
+  let anchor = if k != "" { @sql.conversation_of(db, k) } else { "" }
+  let members = if anchor != "" { @sql.members_of(db, anchor) } else { [] }
+  let conv_members = if members.is_empty() { [key] } else { members.map(Json::string) }
+  let is_pinned = if !marks {
+    Json::null()
+  } else {
+    Json::boolean(conv_members.iter().any(m => one(db, "SELECT 1 FROM archive_pin_rows WHERE session = ? LIMIT 1", [m]) is Some(_)))
+  }
   Some({
     "bound": if bindings { Json::boolean(one(db, "SELECT 1 FROM session_binding_rows WHERE session = ? LIMIT 1", [key]) is Some(_)) } else { Json::null() },
-    "pinned": if marks { Json::boolean(one(db, "SELECT 1 FROM archive_pin_rows WHERE session = ? LIMIT 1", [key]) is Some(_)) } else { Json::null() },
+    "pinned": is_pinned,
     "threads": Json::array(threads),
     "kept": kept,
     "work": work,
     "upJob": if session_up_jobs_ready(db, key) { Json::boolean(one(db, "SELECT 1 FROM session_up_job_rows WHERE session = ? LIMIT 1", [key]) is Some(_)) } else { Json::null() },
+    "convMembers": Json::array(conv_members),
   })
 }
 

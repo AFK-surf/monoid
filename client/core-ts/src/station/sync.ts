@@ -446,8 +446,15 @@ export class StationsSync {
   bringPushed(address: string, session: string, seq: number | null): Effect.Effect<void, CoreError> {
     return Effect.gen({ self: this }, function* () {
       const bound = () => {
-        const thread = get(this.#core.data.chatOfSession(address, session), "thread");
-        return typeof thread === "number" ? thread : this.#core.data.threadOf(address, session);
+        const data = this.#core.data;
+        const thread = get(data.chatForSession(address, session), "thread");
+        if (typeof thread === "number") return thread;
+        const anchor = data.conversationOf(address, session);
+        if (anchor !== session) {
+          const anchorThread = data.threadOf(address, anchor);
+          if (anchorThread !== null) return anchorThread;
+        }
+        return data.threadOf(address, session);
       };
       let thread = bound();
       if (thread === null) {
@@ -2146,7 +2153,7 @@ export class StationsSync {
           // the station has confirmed it: leave a quiet guard for an older removal still on its way.
           if (!l.sharedRows?.has(rowId)) return;
           this.#made(address, { ids: [rowId] });
-          const listed = current.thread === null ? this.#core.data.chatOfSession(address, current.session) : this.#core.data.chatOfThread(address, current.thread);
+          const listed = current.thread === null ? this.#core.data.chatForSession(address, current.session) : this.#core.data.chatOfThread(address, current.thread);
           if (listed !== undefined) this.#core.views.local.guardRestore(address, current.id);
           return;
         }

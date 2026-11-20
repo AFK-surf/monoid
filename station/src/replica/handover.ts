@@ -393,10 +393,7 @@ export class Handover {
     this.#flush = d.flush !== undefined ? d.flush : flushesOnce ? flushOnce : null;
     this.#reads = {
       session: (k) => d.store.getSession(k),
-      homeMembers: (k) => {
-        const home = d.store.homeChat(k);
-        return home !== null && home.surface === STILLFAIL_SURFACE ? d.store.threadSessions(home.id).map((m) => m.session) : null;
-      },
+      homeMembers: (k) => d.store.stillfailHomes([k]).get(k) ?? null,
       ranOn: (k) => [...new Set(d.store.chatPage("runtime_sessions", k, null, 500).flatMap((r) => (typeof r.profile === "string" ? [r.profile as string] : [])))],
     };
     this.#load();
@@ -785,8 +782,8 @@ export class Handover {
     if (o.abandoned === true) throw new Said(why("abandoned"));
   }
 
-  /// The sessions handed over with `key`: those that share its still.fail home chat (threads.home).
-  /// `reads`: what reads the sessions (a plan's page).
+  /// The sessions handed over with `key`: those that share its still.fail home chat (threads.home) and its conversation.
+  /// `reads`: what reads the sessions (a plan's page, batch-loading home & conversation members).
   together(key: string, reads: SessionReads = this.#reads): string[] {
     const keys = new Set([key]);
     for (const m of reads.homeMembers(key) ?? []) keys.add(m);
@@ -794,7 +791,7 @@ export class Handover {
   }
 
   /// The chat session `key` goes with, by the first of its keys (`together`): a member of another's still.fail home
-  /// chat goes with that chat (as the chats' plan lists it), else its own.
+  /// chat or conversation goes with that chat (as the chats' plan lists it), else its own.
   chatOf(key: string): string {
     const home = this.#d.store.sessionThreads(key, 64).find((m) => m.thread.surface === STILLFAIL_SURFACE && m.thread.home !== null && m.thread.home !== key)?.thread.home;
     return this.together(home ?? key)[0] ?? key;

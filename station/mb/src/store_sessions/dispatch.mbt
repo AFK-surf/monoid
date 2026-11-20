@@ -73,6 +73,8 @@ pub fn Store::call(self : Store, name : String, x : Array[Json]) -> Json raise {
       )
     "setRunning" => unit(self.set_running(s(x, 0), b(x, 1)))
     "setThreadTitle" => unit(self.set_thread_title(a(x, 0), a(x, 1)))
+    "conversationOf" => jstr(self.conversation_of(s(x, 0)))
+    "membersOf" => strings(self.members_of(s(x, 0)))
     "homeChat" => self.home_chat(a(x, 0))
     // ── hand-overs ──
     "chatThreads" =>

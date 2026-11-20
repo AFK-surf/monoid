@@ -74,7 +74,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   archived_by TEXT,
   shown_at INTEGER,
   cwd TEXT,
-  original_runtime TEXT
+  original_runtime TEXT,
+  conv TEXT
 );
 -- The sessions shown (store.ts LIVE_SESSIONS): what the station's own periodic work goes over; the archived ones only grow.
 CREATE INDEX IF NOT EXISTS sessions_live ON sessions (last_active_at) WHERE archived_at IS NULL;
@@ -1475,6 +1476,14 @@ export function addWorkspaceColumns(db: DatabaseSync): void {
   // took the join of legacy-decision-session-store.test.ts's sessions by key from its index).
   db.exec("DROP INDEX IF EXISTS sessions_by_ws");
   db.exec("CREATE INDEX IF NOT EXISTS sessions_of_ws ON sessions (COALESCE(ws, ''), key)");
+}
+
+/// Conversation anchor column (`sessions.conv`) and its lookup indexes.
+export function addConvColumn(db: DatabaseSync): void {
+  if (!has(db, "sessions", "conv")) db.exec("ALTER TABLE sessions ADD COLUMN conv TEXT");
+  db.exec(`CREATE INDEX IF NOT EXISTS sessions_conv ON sessions (conv, key);
+    CREATE INDEX IF NOT EXISTS sessions_conv_todo ON sessions (key) WHERE scope = 'thread' AND conv IS NULL;
+    CREATE INDEX IF NOT EXISTS sessions_conv_grouped ON sessions (conv, key) WHERE conv IS NOT NULL AND conv != key;`);
 }
 
 /// The station's own chats as their names are now (rows.ts STILLFAIL_SURFACE, STILLFAIL_CONNECT): what stations wrote

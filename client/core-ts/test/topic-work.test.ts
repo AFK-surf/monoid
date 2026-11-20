@@ -178,7 +178,6 @@ const OVER_WRITE: Record<string, number> = {
   "edit held": 16,
   "said held": 16,
   "archived held": 120,
-  "screen held": 16,
   "member held": 24,
   "message six pages held": 32,
 };
