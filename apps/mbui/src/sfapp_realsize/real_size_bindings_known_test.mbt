@@ -635,9 +635,6 @@ let real_size_bindings_known : Map[String, Int] = {
   "wide chat chatJobs compact summary/job": 2,
   "wide chat job/job": 5,
   "wide chat history/step": 15,
-  // Folding wide history details removes agentCard/step and agentCard/job from wide chat (-22 bindings),
-  // shifting the 1s clock tick from wide chat live/step (2 -> 0) onto wide chat chatRow/message (0 -> 2).
-  "wide chat chatRow/message": 2,
   "wide chat-agent chat compact/thing": 32,
   "wide chat-agent chat compact/screen": 34,
   "wide chat-agent chat compact/message": 32,
@@ -663,7 +660,6 @@ let real_size_bindings_known : Map[String, Int] = {
   "wide chat-jobs job/job": 5,
   "wide chat-jobs history/step": 15,
   "wide chat-jobs chatJobs compact/job": 13,
-  "wide chat-jobs-pop chatJobs compact/job": 2,
   "wide chat-letters-info chatThings/thing": 15,
   "wide chat-things chatThings/thing": 33,
   "wide chat-info-pulls chatThings/thing": 15,
