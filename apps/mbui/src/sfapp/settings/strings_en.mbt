@@ -590,6 +590,7 @@ let en : Map[String, String] = {
   "android-settings.profile.notChecked": "Not checked yet",
   "android-settings.profile.notSaved": "Not saved",
   "android-settings.profile.offline": "{name} is offline; available once it reconnects",
+  "android-settings.profile.openLink": "Open link",
   "android-settings.profile.pasteKey": "Paste key",
   "android-settings.profile.pickModels.lead": "{name} was added. Every model it lists can be chosen for new chats and connects.",
   "android-settings.profile.pickModels.none": "This profile lists no models; you can add them later on its page",

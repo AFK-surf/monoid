@@ -1012,6 +1012,11 @@ fn profile_trouble_node(
   let issue = fn() { field(p(), "trouble") }
   let action = fn() { text(issue(), "action") }
   let online = fn() { flag(s(), "online") }
+  let link = fn() { trouble_link(text(issue(), "detail")) }
+  let next = fn() {
+    join([text(issue(), "next"), if online() { "" } else { @sf.t("android-settings.profile.offline", args=[("name", text(s(), "name"))]) }], "\n")
+  }
+  let bad = fn() { failed_of(core, ["profile.check", "profile.quota"], on).unwrap_or("") }
   let checking = fn() { is_doing(core, ["profile.check"], on) }
   let refreshing = fn() { is_doing(core, ["profile.quota"], on) }
   let check = fn() {
@@ -1021,15 +1026,19 @@ fn profile_trouble_node(
     @sf.card_lines_node(
       k,
       fn() { text(issue(), "title") },
-      words=fn() { text(issue(), "detail") },
-      note=fn() {
-        join([text(issue(), "next"), if online() { "" } else { @sf.t("android-settings.profile.offline", args=[("name", text(s(), "name"))]) }], "\n")
-      },
-      bad=fn() { failed_of(core, ["profile.check", "profile.quota"], on).unwrap_or("") },
+      words=fn() { trouble_words(text(issue(), "detail")) },
+      note=fn() { if link() == "" { next() } else { "" } },
+      bad=fn() { if link() == "" { bad() } else { "" } },
     )
     k.show(at_once=true, fn() { action() == "command" }, fn(x) {
       x.box(fn(b) { @sf.code_block_node(b, fn() { text(p(), "loginCommand") }, fn() { "" }, fn() { None }, command=true) }) |> ignore
     })
+    // (the link its words give to open, on its one line with its copy key: the page's words cannot be selected)
+    k.show(at_once=true, fn() { link() != "" }, fn(x) {
+      x.box(fn(b) { @sf.code_block_node(b, link, fn() { "" }, fn() { None }, command=true) }) |> ignore
+    })
+    // (what to do, under the link its words lead to)
+    k.show(at_once=true, fn() { link() != "" }, fn(x) { @sf.card_lines_node(x, fn() { "" }, note=next, bad~) })
     @sf.card_foot_node(k, fn(f) {
       @sf.button_node(
         f,
@@ -1049,12 +1058,45 @@ fn profile_trouble_node(
         card_words=true,
       )
       |> ignore
+      f.show(at_once=true, fn() { link() != "" }, fn(x) {
+        @sf.button_node(x, fn() { @sf.t("android-settings.profile.openLink") }, fn() { (core.open_link)(@signals.untracked(link)) }, tone=Ghost, icon="external")
+        |> ignore
+      })
       f.show(at_once=true, fn() { action() == "key" || action() == "env" }, fn(x) {
         @sf.button_node(x, fn() { @sf.t("android-settings.profile.recheck") }, check, tone=Ghost, busy=checking, disabled=fn() { !online() })
         |> ignore
       })
     })
   })
+}
+
+///|
+/// The link a trouble's words give the person to open, up to the space or line after it (Google's where an Antigravity
+/// CLI account is to be verified first: `… Please verify your account in your browser to continue:\nhttps://…`), else
+/// "".
+fn trouble_link(detail : String) -> String {
+  match detail.find("https://") {
+    None => ""
+    Some(i) => {
+      let rest = detail.unsafe_substring(start=i, end=detail.length())
+      let ends = [rest.find(" "), rest.find("\n"), rest.find("\t")].filter_map(fn(e) { e })
+      let end = ends.fold(init=rest.length(), fn(a, e) { if e < a { e } else { a } })
+      rest.unsafe_substring(start=0, end~)
+    }
+  }
+}
+
+///|
+/// A trouble's words without the link they give (trouble_link): it is on a line of its own under them, to copy.
+fn trouble_words(detail : String) -> String {
+  let link = trouble_link(detail)
+  match detail.find(link) {
+    Some(i) if link != "" =>
+      (detail.unsafe_substring(start=0, end=i) + detail.unsafe_substring(start=i + link.length(), end=detail.length()))
+      .trim(chars=" \n\r\t")
+      .to_owned()
+    _ => detail
+  }
 }
 
 // ── its allowance and who uses it ───────────────────────────────────────
@@ -1160,7 +1202,8 @@ fn profile_quota_node(
               note=fn() {
                 let q = quota()
                 let st = text(q, "state")
-                let detail = opt_text(q, "detail").unwrap_or("")
+                // (without the link it gives: the trouble's card over it has it, to copy and open)
+                let detail = trouble_words(opt_text(q, "detail").unwrap_or(""))
                 join(
                   [
                     detail,

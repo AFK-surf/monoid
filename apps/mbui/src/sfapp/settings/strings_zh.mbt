@@ -573,6 +573,7 @@ let zh : Map[String, String] = {
   "android-settings.profile.notChecked": "尚未检查",
   "android-settings.profile.notSaved": "未保存",
   "android-settings.profile.offline": "{name} 已离线，恢复连接后才能操作",
+  "android-settings.profile.openLink": "打开链接",
   "android-settings.profile.pasteKey": "粘贴 key",
   "android-settings.profile.pickModels.lead": "已添加 {name}。它列出的模型都可在新对话和连接中选择。",
   "android-settings.profile.pickModels.none": "此 Profile 未列出模型，可稍后在 Profile 页添加",

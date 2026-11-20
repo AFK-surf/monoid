@@ -8,6 +8,10 @@
 // open_jobs.mbt): a change of the chats' list (chats/down, card, archived) runs the bindings of the rows of a screen more
 // of chats shown in their place; what is left up long changing (longJobs/job) runs none on Home.
 
+// Added 2026-11-20: an account's trouble giving a link to open (fixture_open.mbt settings-profile-verify: Google asking
+// an Antigravity CLI account to be verified), a new screen holding the profile and its station as 额度查询失败's does, at
+// its bar.
+
 // Added 2026-11-17: the screens of safe mode after its upgrade (fixture_open.mbt: lock-out-security, settings-vault-
 // syncing and -confirm, settings-lock-prompt-role, settings-security-again, -root-off, -root and -confirm), new screens
 // each holding the profiles' list as the settings' pages beside them do, at their bar.
@@ -1309,6 +1313,29 @@ let real_size_bindings_known : Map[String, Int] = {
   "wide settings-profile-unshareable profiles/down": 6,
   "wide settings-profile-login profiles/down": 6,
   "wide settings-profile-quota-failed profiles/down": 6,
+  "phone settings-profile-verify profile/quota": 7,
+  "phone settings-profile-verify profile/down": 7,
+  "phone settings-profile-verify station/updating": 40,
+  "phone settings-profile-verify station/session": 40,
+  "phone settings-profile-verify station/quota": 40,
+  "phone settings-profile-verify station/off": 40,
+  "phone settings-profile-verify station/machine": 40,
+  "phone settings-profile-verify station/login": 40,
+  "phone settings-profile-verify station/host": 8,
+  "phone settings-profile-verify station/decided": 40,
+  "phone settings-profile-verify station/archiving": 40,
+  "wide settings-profile-verify profile/quota": 2,
+  "wide settings-profile-verify profile/down": 2,
+  "wide settings-profile-verify station/updating": 22,
+  "wide settings-profile-verify station/session": 22,
+  "wide settings-profile-verify station/quota": 22,
+  "wide settings-profile-verify station/off": 22,
+  "wide settings-profile-verify station/machine": 22,
+  "wide settings-profile-verify station/login": 22,
+  "wide settings-profile-verify station/host": 3,
+  "wide settings-profile-verify station/decided": 22,
+  "wide settings-profile-verify station/archiving": 22,
+  "wide settings-profile-verify profiles/down": 6,
   "wide settings-profile-copy profiles/down": 6,
   "wide settings-profile-blocked profiles/down": 6,
   "wide settings-profile-signin profiles/down": 6,

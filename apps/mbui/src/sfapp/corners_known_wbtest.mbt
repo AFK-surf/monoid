@@ -136,7 +136,7 @@ let corners_tape_rail : Array[String] = [
   "settings-profile", "settings-profile-fable", "settings-profile-own3",
   "settings-profile-week-fable", "settings-profile-quota", "settings-profile-quota-kinds",
   "settings-profile-lower", "settings-profile-unshareable", "settings-profile-login", "settings-profile-login-failed",
-  "settings-profile-quota-failed", "settings-profile-blocked", "settings-profile-signin", "settings-profile-key", "settings-profile-copy",
+  "settings-profile-quota-failed", "settings-profile-verify", "settings-profile-blocked", "settings-profile-signin", "settings-profile-key", "settings-profile-copy",
   "settings-new-profile", "settings-new-profile-stations", "settings-new-profile-key", "settings-connects", "settings-connect", "settings-connect-menu", "settings-connect-mode",
   "settings-connect-run", "settings-new-connect", "settings-new-connect-platform", "settings-new-connect-scan",
   "settings-new-connect-app", "settings-new-connect-comma", "settings-connect-comma", "settings-connect-feishu", "settings-new-connect-platform-group", "settings-new-connect-group", "settings-connect-group", "settings-slack-app", "settings-memory", "settings-memory-doc", "settings-usage",

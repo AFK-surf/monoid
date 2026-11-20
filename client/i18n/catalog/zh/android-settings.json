@@ -324,6 +324,7 @@
   "android-settings.profile.notSaved": "未保存",
   "android-settings.profile.offline": "{name} 已离线，恢复连接后才能操作",
   "android-settings.profile.pasteKey": "粘贴 key",
+  "android-settings.profile.openLink": "打开链接",
   "android-settings.profile.recheck": "重新检查",
   "android-settings.profile.renameWhat": "重命名 Profile",
   "android-settings.profile.run": "运行",

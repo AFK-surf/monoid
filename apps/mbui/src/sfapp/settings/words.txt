@@ -566,6 +566,7 @@ android-settings.profile.none
 android-settings.profile.notChecked
 android-settings.profile.notSaved
 android-settings.profile.offline
+android-settings.profile.openLink
 android-settings.profile.pasteKey
 android-settings.profile.pickModels.lead
 android-settings.profile.pickModels.none
