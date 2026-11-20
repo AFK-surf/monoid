@@ -966,7 +966,7 @@ let pa_rest_off_known : Array[(String, String, Double, Double, Double, String)] 
 /// while the agent works on any of them (chat_body_node's ChatTurnsOut: its line out with the answer to its last turn).
 let pa_rest_known : Array[(String, Double, Double, String)] = [
   ("send-over-line", 3700.0, 5100.0, "the agent's line kept while it works on the second words as nodes; the old page's let go as the first's answer came"),
-  ("desk-notice-card-viewer", 5183.0, 8300.0, "a picture opened over the whole window from a list scrolled up, its tab put in the panel under it at once (pa_why_panel_under), the column narrowed and widened again as it closes: as nodes what is read stays where it was (View::read_from) and the agent's line at work keeps its words cut short (message_working_node's line.cuts); the old page's 16 higher, its top row held by its top, its line's words not drawn"),
+  ("desk-notice-card-viewer", 5183.0, 8300.0, "a picture opened over the whole window from a list scrolled up, its tab put in the panel under it at once (pa_why_panel_under), the old page's column narrowed and widened again as it closes, the page made as nodes' left as wide as it was (sfdesk's side_unseen): as nodes what is read stays where it was (View::read_from) and the agent's line at work keeps its words cut short (message_working_node's line.cuts); the old page's 16 higher, its top row held by its top, its line's words not drawn"),
 ]
 
 ///|
@@ -1106,7 +1106,7 @@ let pa_why_spit : String = "the answer's words as they are spat out, from their 
 let pa_why_float : String = "the answer's head line (Claude, its time) as the agent's picture sets out (Float): as nodes laid out where it rests from that frame; the old page's a frame later, from beside the picture"
 
 ///|
-let pa_why_panel_under : String = "a file opened over the whole window, its tab put in the side panel under it only to go there and taken out as it closes (sfbase's tab_full.mbt, `lone`; sfdesk's side_under): the panel at once, no slide; as nodes the column takes its width from that frame, the old page a frame later (its laid_w), under the whole window's layer as it comes and as it goes"
+let pa_why_panel_under : String = "a file opened over the whole window, its tab put in the side panel under it only to go there and taken out as it closes (sfbase's tab_full.mbt, `lone`; sfdesk's side_under): the panel at once, no slide; as nodes the column takes its width from that frame (on the tape; beside the page, a panel opened only for it shown closed and the column left as it is: side_unseen), the old page a frame later (its laid_w), under the whole window's layer as it comes and as it goes"
 
 ///|
 let pa_why_panel_first : String = "the side panel set off and come to rest: as nodes the column laid out at the narrower end from the cause's frame (column_laid, column_sets_off) and its words moved across with the page; the old page takes the width a frame later (page_way, its laid_w)"
@@ -1990,23 +1990,6 @@ let pa_way_known : Array[PaWay] = [
   { drive: "desk-notice-card-viewer", what: Key("old alone 「处理中」"), from: 2317.0, to: 2317.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_working },
   { drive: "desk-notice-card-viewer", what: Key("ring old alone"), from: 2400.0, to: 3350.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_old_ring },
   { drive: "desk-notice-card-viewer", what: Key("button @outline nodes alone"), from: 3333.0, to: 3333.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_wheel },
-  { drive: "desk-notice-card-viewer", what: Key("words 「1 小时前」"), from: 5183.0, to: 5183.0, dx: 71.1, dy: 0.2, dw: 0.2, why: pa_why_panel_under },
-  { drive: "desk-notice-card-viewer", what: Key("words 「改好后的样子：」"), from: 5183.0, to: 5183.0, dx: 96.1, dy: 0.2, dw: 181.1, why: pa_why_panel_under },
-  { drive: "desk-notice-card-viewer", what: Key("words 「对比图和构建日志附在下面。」"), from: 5183.0, to: 5183.0, dx: 96.1, dy: 0.2, dw: 181.1, why: pa_why_panel_under },
-  { drive: "desk-notice-card-viewer", what: Key("old alone 「Claude」"), from: 5183.0, to: 5183.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_under },
-  { drive: "desk-notice-card-viewer", what: Key("old alone 「build」"), from: 5183.0, to: 5183.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_under },
-  { drive: "desk-notice-card-viewer", what: Key("old alone 「.log」"), from: 5183.0, to: 5183.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_under },
-  { drive: "desk-notice-card-viewer", what: Key("old alone 「18 KB」"), from: 5183.0, to: 5183.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_under },
-  { drive: "desk-notice-card-viewer", what: Key("old alone 「Claude：其余的行按估计的高度占位，滚到时再量真实高度」"), from: 5183.0, to: 5183.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_under },
-  { drive: "desk-notice-card-viewer", what: Key("nodes alone 「Claude：其余的行按估计的高度占位，滚到时再量真实高度」"), from: 5183.0, to: 5183.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_under },
-  { drive: "desk-notice-card-viewer", what: Key("composer"), from: 5183.0, to: 5183.0, dx: 82.1, dy: 8.1, dw: 209.1, why: pa_why_panel_under },
-  { drive: "desk-notice-card-viewer", what: Key("composer"), from: 6700.0, to: 6700.0, dx: 82.1, dy: 8.1, dw: 209.1, why: pa_why_panel_under },
-  { drive: "desk-notice-card-viewer", what: Key("button 跳到最新 old alone"), from: 6700.0, to: 6700.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_under },
-  { drive: "desk-notice-card-viewer", what: Key("button 跳到最新 nodes alone"), from: 6700.0, to: 6700.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_under },
-  { drive: "desk-notice-card-viewer", what: Key("button 对话目录 old alone"), from: 6700.0, to: 6700.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_under },
-  { drive: "desk-notice-card-viewer", what: Key("button 对话目录 nodes alone"), from: 6700.0, to: 6717.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_under },
-  { drive: "desk-notice-card-viewer", what: Key("button 跳转到待决策的消息 old alone"), from: 6700.0, to: 6700.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_under },
-  { drive: "desk-notice-card-viewer", what: Key("button 跳转到待决策的消息 nodes alone"), from: 6700.0, to: 6700.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_panel_under },
   { drive: "desk-notice-card-viewer", what: Key("button 跳到最新 nodes alone"), from: 3333.0, to: 3333.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_wheel },
   { drive: "desk-notice-card-viewer", what: Key("old alone 「你 选择了「一起换」」"), from: 3333.0, to: 3333.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_old_ring },
   { drive: "desk-notice-card-viewer", what: Key("nodes alone 「.log」"), from: 3450.0, to: 3450.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_wheel },
