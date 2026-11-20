@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c877b9401](https://github.com/AFK-surf/monoid/commit/c877b9401b55f30f565af218486c8a0b290941d7) feat(mbui): add iOS 27 capillary liquid bridge mer | 2.78 | 3.75 | 15.29 | 37.35 | 57.86 | 32.74 | 66.76 | 98.49 | 119.09 |
 | [ae684ef51](https://github.com/AFK-surf/monoid/commit/ae684ef5190c837baf00bb4d75f7f2d01d8c9b30) perf(mbui): show each frame at once when scrubbing | 2.78 | 3.75 | 15.28 | 37.34 | 57.85 | 32.73 | 66.76 | 98.34 | 120.72 |
 | [793585a59](https://github.com/AFK-surf/monoid/commit/793585a59780b2a0a5e419a88ca12af9a75f1e5b) feat(liquid-glass): redesign gallery as ui.monoid  | 2.78 | 3.75 | 15.28 | 37.34 | 57.85 | 32.73 | 66.74 | 98.44 | 123.53 |
 | [d80265b89](https://github.com/AFK-surf/monoid/commit/d80265b89d03e34b98135083a05a17d83f2fd73b) fix(mbui): show the exact frame under the finger w | 2.78 | 3.75 | 15.28 | 37.34 | 57.86 | 32.73 | 66.74 | 98.22 | 135.54 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [c045a928e](https://github.com/AFK-surf/monoid/commit/c045a928e75f6125dd4a471b95abb7a6639f4a64) feat(cloud,core,app): allow managers to switch sta | 2.76 | 3.73 | 15.18 | 37.26 | 57.53 | 32.66 | 66.51 | 98.29 | 121.9 |
 | [bf467b14a](https://github.com/AFK-surf/monoid/commit/bf467b14a768cb2e247ae9180e95b11574a39c1b) fix(station): revert default maxConcurrentTurns ba | 2.76 | 3.73 | 15.18 | 37.26 | 57.53 | 32.66 | 66.51 | 98.32 | 121.42 |
 | [628f68ea9](https://github.com/AFK-surf/monoid/commit/628f68ea93b9a6d11bb18a16d7625484d83f93f2) fix(mbui): skip sharp copy/overdraw for backdrop_l | 2.76 | 3.73 | 15.17 | 37.24 | 57.51 | 32.58 | 66.33 | 98.44 | 126.44 |
-| [7ff2df2a5](https://github.com/AFK-surf/monoid/commit/7ff2df2a5b9e69afc1450d292ab1861e2e68419c) feat(mbui): port iOS 27 flutter_liquid_glass model | 2.75 | 3.71 | 15.09 | 37.17 | 57.27 | 32.58 | 66.33 | 98.44 | 121.64 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c877b9401](https://github.com/AFK-surf/monoid/commit/c877b9401b55f30f565af218486c8a0b290941d7) feat(mbui): add iOS 27 capillary liquid bridge mer | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.71 | 4.62 | 54.08 |
 | [ae684ef51](https://github.com/AFK-surf/monoid/commit/ae684ef5190c837baf00bb4d75f7f2d01d8c9b30) perf(mbui): show each frame at once when scrubbing | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.71 | 4.62 | 54.22 |
 | [793585a59](https://github.com/AFK-surf/monoid/commit/793585a59780b2a0a5e419a88ca12af9a75f1e5b) feat(liquid-glass): redesign gallery as ui.monoid  | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.6 | 54.15 |
 | [d80265b89](https://github.com/AFK-surf/monoid/commit/d80265b89d03e34b98135083a05a17d83f2fd73b) fix(mbui): show the exact frame under the finger w | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.6 | 54.15 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [c045a928e](https://github.com/AFK-surf/monoid/commit/c045a928e75f6125dd4a471b95abb7a6639f4a64) feat(cloud,core,app): allow managers to switch sta | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.05 |
 | [bf467b14a](https://github.com/AFK-surf/monoid/commit/bf467b14a768cb2e247ae9180e95b11574a39c1b) fix(station): revert default maxConcurrentTurns ba | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.05 |
 | [628f68ea9](https://github.com/AFK-surf/monoid/commit/628f68ea93b9a6d11bb18a16d7625484d83f93f2) fix(mbui): skip sharp copy/overdraw for backdrop_l | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.05 |
-| [7ff2df2a5](https://github.com/AFK-surf/monoid/commit/7ff2df2a5b9e69afc1450d292ab1861e2e68419c) feat(mbui): port iOS 27 flutter_liquid_glass model | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.05 |
