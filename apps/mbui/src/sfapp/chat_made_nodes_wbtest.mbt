@@ -17,7 +17,7 @@ fn made_tester(w : Double, h : Double, platform : Int, nodes : Bool) -> (@ui.Tes
 fn made_new_chat_sent(t : @ui.Tester, small : Bool, words : String) -> ChatRef raise {
   if small {
     let (_, y) = bar_places_at()
-    t.tap(195.0, y - 28.0 - 4.0)
+    t.tap(bar_action_x, y)
   }
   t.run_for(@ui.move_most_ms)
   assert_true(app.nav.top() is NewChat)
@@ -227,7 +227,7 @@ test "a new chat become its chat with its inside nodes, on 小屏 and 大屏: it
     let (t, _) = made_tester(w, h, platform, true)
     if name == "小屏" {
       let (_, y) = bar_places_at()
-      t.tap(195.0, y - 28.0 - 4.0)
+      t.tap(bar_action_x, y)
     }
     t.run_for(@ui.move_most_ms)
     let title = "想让 agent 做什么？"

@@ -46,7 +46,7 @@ fn trans_composer_glass_rect(t : @ui.Tester, min_x : Double, min_w : Double) -> 
 test "小屏 NewChat -> Chat: 顶栏取消平滑淡出、胶囊平滑淡出、欢迎场景平滑淡出、发送文字 40ms 后立即起飞" {
   let (t, _) = made_tester(390.0, 844.0, 2, true)
   let (_, y) = bar_places_at()
-  t.tap(195.0, y - 28.0 - 4.0)
+  t.tap(bar_action_x, y)
   t.run_for(@ui.move_most_ms)
   assert_true(app.nav.top() is NewChat)
 
@@ -105,7 +105,7 @@ test "小屏 NewChat -> Chat: 顶栏取消平滑淡出、胶囊平滑淡出、�
 test "小屏 NewChat 3 行文本发送: 首帧输入框高度连续不塌陷，随后平滑回落至单行高度" {
   let (t, _) = made_tester(390.0, 844.0, 2, true)
   let (_, y) = bar_places_at()
-  t.tap(195.0, y - 28.0 - 4.0)
+  t.tap(bar_action_x, y)
   t.run_for(@ui.move_most_ms)
   assert_true(app.nav.top() is NewChat)
 
@@ -263,7 +263,7 @@ test "小屏 newChat.create 失败中途倒带: 场景与胶囊平滑恢复无�
   }
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
   let (_, y) = bar_places_at()
-  t.tap(195.0, y - 28.0 - 4.0)
+  t.tap(bar_action_x, y)
   t.run_for(@ui.move_most_ms)
   assert_true(app.nav.top() is NewChat)
 

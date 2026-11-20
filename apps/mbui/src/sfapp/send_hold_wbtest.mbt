@@ -199,7 +199,7 @@ test "a new chat's first words: what holds its composer is said as their row is 
   // (the old new chat's page and composer, what stable keeps: their words on their way the old SendFlight's)
   @sfbase.hold_chat_page_nodes(Some(false))
   let (_, y) = bar_places_at()
-  t.tap(195.0, y - 28.0 - 4.0)
+  t.tap(bar_action_x, y)
   t.run_for(@ui.move_most_ms)
   t.tap_text("做任何事")
   t.type_text("把发布说明写一下")

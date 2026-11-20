@@ -53,7 +53,7 @@ test "bar: a slide past the next place's middle, let go still there: that place,
 ///|
 test "bar: where a slide let go carries it, a place's room at most, and none where the finger is still" {
   let w = 390.0 - 44.0
-  let slot = (w - 2.0 * c0) / 3.0
+  let slot = bar_item_w(w, 1.0, 4)
   assert_eq(
     (bar_flung(100.0, 0.0, w), bar_flung(100.0, 0.5, w), bar_flung(100.0, 50.0, w), bar_flung(100.0, -50.0, w)),
     (100.0, 100.0 + 0.5 * bar_fling_ms, 100.0 + slot, 100.0 - slot),

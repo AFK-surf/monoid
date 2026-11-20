@@ -218,14 +218,14 @@ let strict_known : Map[String, (String, String)] = Map([
   (
     "chat-audio",
     (
-      "its motion at rest at 3795.85693359375 ms, 966.98583984375 ms after the run's next step (2828.87109375 ms; its timeline 81.203125 ms later from its first step); said since the last step that acted: bar/k to 0, told at src/sfapp/bar.mbt:237:3-237:36@stillfail (at rest at 3184.2972278094203 ms) | the bar's springs (at rest at 3184.2972278094203 ms)",
-      "untraced: the bar's springs still moving as the run's next step came (src/sfapp/bar.mbt:237, bar_node.mbt's said_moving)",
+      "its motion at rest at 3795.85693359375 ms, 966.98583984375 ms after the run's next step (2828.87109375 ms; its timeline 81.203125 ms later from its first step); said since the last step that acted: bar/k to 0, told at src/sfapp/bar.mbt:248:3-248:36@stillfail (at rest at 3184.2972278094203 ms) | bar/ball-x to 49.25, told at src/sfapp/bar.mbt:248:3-248:36@stillfail (at rest at 3080.0790917382365 ms) | the bar's springs (at rest at 3184.2972278094203 ms)",
+      "untraced: the bar's springs still moving as the run's next step came (src/sfapp/bar.mbt:248, bar_node.mbt's said_moving): its notch closing as the chat comes on top, the ball with it, as the capsule gives back the action's room",
     ),
   ),
   (
     "draft",
     (
-      "its motion at rest at 3290.177388696544 ms, 189.09438088404386 ms after the run's next step (3101.0830078125 ms; its timeline 21.912109375 ms later from its first step); said since the last step that acted: bar/k to 0, told at src/sfapp/bar.mbt:237:3-237:36@stillfail (at rest at 3290.177388696544 ms) | the bar's springs (at rest at 3290.177388696544 ms) | a stack's slide, told at src/ui/nav_view.mbt:472:7-472:68@mbui (at rest at 2902.3291015625 ms) | Anim \"composer/send/able\" to 1, told at src/sfpages/composer.mbt:1194:14-1194:124@stillfail (at rest at 2740 ms) | Anim \"composer/hint\" to 1, told at src/sfpages/composer.mbt:1097:5-1097:68@stillfail (at rest at 3066.6666666666665 ms)",
+      "its motion at rest at 3290.177388696544 ms, 189.09438088404386 ms after the run's next step (3101.0830078125 ms; its timeline 21.912109375 ms later from its first step); said since the last step that acted: bar/k to 0, told at src/sfapp/bar.mbt:248:3-248:36@stillfail (at rest at 3290.177388696544 ms) | bar/ball-x to 49.25, told at src/sfapp/bar.mbt:248:3-248:36@stillfail (at rest at 3185.9185117961974 ms) | the bar's springs (at rest at 3290.177388696544 ms) | a stack's slide, told at src/ui/nav_view.mbt:472:7-472:68@mbui (at rest at 2902.3291015625 ms) | Anim \"composer/send/able\" to 1, told at src/sfpages/composer.mbt:1194:14-1194:124@stillfail (at rest at 2740 ms) | Anim \"composer/hint\" to 1, told at src/sfpages/composer.mbt:1097:5-1097:68@stillfail (at rest at 3066.6666666666665 ms)",
       "untraced: the bar's springs, the stack's slide and the composer's ways still moving as the run's next step came",
     ),
   ),
@@ -253,7 +253,7 @@ let strict_known : Map[String, (String, String)] = Map([
   (
     "sheets-sinking",
     (
-      "its motion at rest at 3420.119873046875 ms, 16.410888671875 ms after the run's next step (3403.708984375 ms; its timeline 55.970947265625 ms later from its first step); said since the last step that acted: the bar's springs (at rest at 3275.2762317156703 ms) | bar/ball-x to 28, told at src/sfapp/bar.mbt:237:3-237:36@stillfail (at rest at 3177.116067317097 ms) | bar/k to 0, told at src/sfapp/bar.mbt:237:3-237:36@stillfail (at rest at 3275.2762317156703 ms)",
+      "its motion at rest at 3420.119873046875 ms, 16.410888671875 ms after the run's next step (3403.708984375 ms; its timeline 55.970947265625 ms later from its first step); said since the last step that acted: the bar's springs (at rest at 3469.379128703425 ms) | bar/ball-x to 49.25, told at src/sfapp/bar.mbt:248:3-248:36@stillfail (at rest at 3469.379128703425 ms) | bar/k to 0, told at src/sfapp/bar.mbt:248:3-248:36@stillfail (at rest at 3275.2762317156703 ms)",
       "traced (libs/sf-ui/src/sheet_node.mbt:1282, SheetRise @ui.move_ms(d)): as history's, the chat's sheet (ⓘ) at rest 16.4 ms after the run's next step (its scrim tapped), the bar's springs said before at rest long before it (a frame later since chat_info_node holds what is done in the chat and the stations' files: its sheet taller than when the trace was recorded)",
     ),
   ),

@@ -206,7 +206,7 @@ test "a new chat on a page made as nodes, 小屏, a finger's: its first three li
     t.set_rows_on_pixels(true)
     t.draw()
     let (_, y) = bar_places_at()
-    t.tap(195.0, y - 28.0 - 4.0)
+    t.tap(bar_action_x, y)
     t.run_for(@ui.move_most_ms)
     t.tap_text("做任何事")
     t.type_text("第一行\n第二行\n第三行")

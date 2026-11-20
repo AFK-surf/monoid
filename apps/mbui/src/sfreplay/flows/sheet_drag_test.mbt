@@ -16,7 +16,7 @@ test "32-sheet-drag" {
     f.drag("切换 workspace", 0.0, 640.0, steps=sheet_drag_steps)
     f.run_to(@sf.presented_rest)
     f.gone("切换 workspace")
-    f.tap("icon:ling")
+    f.tap("icon:plus")
     f.run_for(@ui.move_most_ms)
     f.see("想让 agent 做什么？")
     f.tap("=willow")
