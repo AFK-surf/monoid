@@ -2,6 +2,7 @@
 package "mbui/motion"
 
 import {
+  "mbui/signals",
   "mbui/ui",
   "mbui/view",
   "moonbitlang/core/debug",
@@ -31,7 +32,11 @@ pub let backdrop_scale_y_spring : Spec
 
 pub fn bounce_to_damping_ratio(Double) -> Double
 
+pub fn breathe_alpha(@view.View, period_ms? : Double, low? : Double, resident? : Bool, still? : () -> Bool) -> () -> Double
+
 pub fn calc_generator_duration(Generator, time_step? : Double, max_duration? : Double, keyframes? : Array[Double]) -> Double
+
+pub let carousel_spring : Spec
 
 pub fn circ_in(Double) -> Double
 
@@ -45,6 +50,9 @@ pub fn compose_to_motion(Double, Double) -> (Double, Double, Double)
 
 pub let cover_damped_spring : Spec
 
+#callsite(autofill(loc))
+pub fn cover_indicator(@view.View, () -> Int32, (Int32) -> (Double, Double, Double, Double)?, spec? : Spec, loc~ : SourceLoc) -> () -> (Double, Double, Double, Double)?
+
 pub let cover_spring : Spec
 
 pub fn cubic_bezier(Double, Double, Double, Double) -> (Double) -> Double
@@ -57,15 +65,19 @@ pub let dialog_in : Trans
 
 pub let dialog_ms : Double
 
-pub let digit_spring : Spec
+pub let dialog_out : Trans
 
-pub let drawer_spring : Spec
+pub let dialog_out_ms : Double
+
+pub let digit_spring : Spec
 
 pub fn ease_in(Double) -> Double
 
 pub fn ease_in_out(Double) -> Double
 
 pub fn ease_out(Double) -> Double
+
+pub fn eased_on(@view.View, () -> Bool, Spec) -> Eased
 
 pub fn easing_named(String) -> ((Double) -> Double)?
 
@@ -74,6 +86,12 @@ pub fn entering(@ui.Ctx, Int32, String, Trans, at_once? : Bool) -> Unit
 pub fn fill_offset(Array[Double], Int32) -> Unit
 
 pub fn find_spring(Double, Double) -> (Double, Double, Double)
+
+#callsite(autofill(loc))
+pub fn flash_way(@view.View, () -> Int32, in_ms? : Double, hold_ms? : Double, out_ms? : Double, loc~ : SourceLoc) -> () -> Double
+
+#callsite(autofill(loc))
+pub fn flash_way_keyed(@view.View, () -> String, () -> (String, Double), in_ms? : Double, held_ms? : Double, total_ms? : Double, hold? : () -> Bool, loc~ : SourceLoc) -> Way
 
 pub fn flight_by(Spec) -> @view.Flight
 
@@ -91,20 +109,31 @@ pub fn generator_duration(Generator) -> Double
 
 pub fn generator_easing((Double, Double, Double) -> Generator, Double, Double, velocity? : Double, scale? : Double) -> ((Double) -> Double, Double)
 
+pub fn glass_lens_springs() -> (Spec, Spec, Spec)
+
 pub let ground_in : Trans
 
 pub let ground_out : Trans
 
 pub fn grown_shown(@ui.Ctx, String) -> Double?
 
+pub let hand_spring : Spec
+
 #callsite(autofill(loc))
 pub fn hold_way(@view.View, Double, () -> Unit, live? : () -> Bool, recoil_ms? : Double, loc~ : SourceLoc) -> HoldWay
+
+#callsite(autofill(loc))
+pub fn hover_fade(@view.View, () -> Bool, duration_ms? : Double, instant_off? : () -> Bool, loc~ : SourceLoc) -> () -> Double
+
+#callsite(autofill(loc))
+pub fn hover_fade_keyed(@view.View, () -> String, () -> Bool, duration_ms? : Double, instant_off? : () -> Bool, loc~ : SourceLoc) -> () -> Double
+
+#callsite(autofill(loc))
+pub fn indicator_rect(@view.View, () -> (Double, Double, Double, Double)?, spec? : Spec, loc~ : SourceLoc) -> () -> (Double, Double, Double, Double)?
 
 pub fn inertia_generator(Double, velocity? : Double, power? : Double, time_constant? : Double, bounce_damping? : Double, bounce_stiffness? : Double, modify_target? : (Double) -> Double, min? : Double, max? : Double, rest_delta? : Double, rest_speed? : Double) -> Generator
 
 pub fn inertia_to(power? : Double, time_constant? : Double, bounce_damping? : Double, bounce_stiffness? : Double, modify_target? : (Double) -> Double, min? : Double, max? : Double, rest_delta? : Double, rest_speed? : Double, delay? : Double) -> Spec
-
-pub let hand_spring : Spec
 
 pub fn interpolate(Array[Double], Array[Double], clamp? : Bool, ease? : (Double) -> Double, eases? : Array[(Double) -> Double], mixer? : (Double, Double) -> (Double) -> Double) -> (Double) -> Double
 
@@ -168,6 +197,10 @@ pub fn motion_spring(Double, bounce? : Double, threshold? : Double, delay? : Dou
 
 pub fn motion_to_compose(Double, Double, Double) -> (Double, Double)
 
+pub let move_damped : Spec
+
+pub fn move_duration_ms(Double) -> Double
+
 pub let move_spring : Spec
 
 pub fn moved(points? : Double, over? : Double, delay? : Double) -> Spec
@@ -177,6 +210,8 @@ pub fn[T : Eq] moves_for(@view.View, () -> T, spec? : Spec, spec_of? : (T, T) ->
 pub fn ms_to_seconds(Double) -> Double
 
 pub fn offsets_to_times(Array[Double], Double) -> Array[Double]
+
+pub fn overlay_presence(@view.View, enter~ : Trans, exit~ : Trans) -> (() -> @ui.Look, () -> Bool)
 
 pub fn pipe(Array[(Double) -> Double]) -> (Double) -> Double
 
@@ -211,7 +246,11 @@ pub fn presence(@ui.Ctx, String, Bool, enter? : Trans, exit? : Trans, initial? :
 #callsite(autofill(loc))
 pub fn presence_by(@ui.Ctx, String, Bool, enter? : Trans, exit? : Trans, initial? : Bool, start_at? : Double, loc~ : SourceLoc) -> Showing?
 
+pub fn presence_in(@view.View, Spec, exit? : Spec, from? : Double, carries? : Bool, gate? : (() -> Unit) -> Unit, stop_gate? : () -> Unit) -> () -> Double
+
 pub let presence_in_ms : Double
+
+pub fn presence_look(@view.View, Trans, exit? : Trans, gate? : (() -> Unit) -> Unit, stop_gate? : () -> Unit) -> () -> @ui.Look
 
 pub let presence_out_ms : Double
 
@@ -232,8 +271,6 @@ pub let progress_sweep_ms : Double
 
 pub fn project_landing(Double, Double, decel_rate? : Double) -> Double
 
-pub let push_spring : Spec
-
 pub fn reshape(@ui.Ctx, Int32, String, by~ : String, spec~ : Spec, carry? : Bool, foot? : Bool, at? : Double) -> Unit
 
 pub fn reshape_share(@ui.Ctx, String) -> ((Double) -> Double)?
@@ -241,6 +278,10 @@ pub fn reshape_share(@ui.Ctx, String) -> ((Double) -> Double)?
 pub fn reshape_way(@ui.Ctx, String) -> (Double, Double)?
 
 pub fn reshaped_over(@ui.Ctx, String) -> Double
+
+pub fn resident_cycle(@view.View, Double) -> Double
+
+pub fn resident_step(@view.View, Double, Int32) -> Int32
 
 pub fn reveal(@ui.Ctx, String, Double, from_top? : Bool, clip? : Bool, middle? : Bool, align? : @ui.Align, () -> Unit) -> Unit
 
@@ -266,6 +307,10 @@ pub fn rubber_band(Double, Double, coeff? : Double) -> Double
 
 pub fn rubber_band_clamped(Double, Double, Double, Double, coeff? : Double) -> Double
 
+pub fn sample_ease(@ui.Ease, Int32) -> Array[Double]
+
+pub fn sample_spec(Spec, Double, Int32) -> Array[Double]
+
 pub fn scope(@ui.Ctx, Int32, bottom? : Bool) -> Unit
 
 pub fn seconds_to_ms(Double) -> Double
@@ -282,6 +327,8 @@ pub let sheet_scrim_ms : Double
 pub let sheet_spring : Spec
 
 pub fn snap_detent(Double, Double, Array[Double], close_past? : Double, decel_rate? : Double) -> Int32?
+
+pub let snappy_damped : Spec
 
 pub fn speed_stretch(Double) -> (Double, Double)
 
@@ -301,7 +348,13 @@ pub fn steps(Int32, direction? : StepsAt) -> (Double) -> Double
 
 pub fn stop_for(@ui.Ctx, String, Double) -> Unit
 
+pub let tactile_bounce : Spec
+
 pub let tip_in : Trans
+
+pub let tip_out : Trans
+
+pub let tip_out_ms : Double
 
 #callsite(autofill(loc))
 pub fn told(@ui.Ctx, String, Double, spec? : Spec, loc~ : SourceLoc) -> Anim
@@ -361,6 +414,43 @@ pub fn Anim::target(Self) -> Double
 pub fn Anim::value_at(Self, Double) -> Double
 pub impl @ui.Moving for Anim
 
+pub struct Choreography {
+  // private fields
+}
+pub fn Choreography::active(Self, @view.View) -> Bool
+pub fn Choreography::arm(Self, @view.View) -> Unit
+pub fn Choreography::duration(Self) -> Double
+pub fn Choreography::ends_at(Self) -> Double
+pub fn Choreography::new(Array[TrackSpec]) -> Self
+pub fn Choreography::progress(Self, @view.View, String) -> Double
+#callsite(autofill(loc))
+pub fn Choreography::put(Self, Double, loc~ : SourceLoc) -> Unit
+#callsite(autofill(loc))
+pub fn Choreography::reverse(Self, Double, loc~ : SourceLoc) -> Unit
+#callsite(autofill(loc))
+pub fn Choreography::start(Self, Double, loc~ : SourceLoc) -> Unit
+pub fn Choreography::stop(Self) -> Unit
+pub fn Choreography::track_delay(Self, String) -> Double
+pub fn Choreography::value_at(Self, String, Double) -> Double
+
+pub struct Eased {
+  way : Way
+  ended : @signals.Signal[Int32]
+  mut due : () -> Unit
+}
+pub fn Eased::end(Self) -> Double
+#callsite(autofill(loc))
+pub fn Eased::go(Self, @view.View, Double, Double, ease? : @ui.Ease, delay? : Double, loc~ : SourceLoc) -> Unit
+#callsite(autofill(loc))
+pub fn Eased::go_by(Self, @view.View, Double, Spec, velocity? : Double, loc~ : SourceLoc) -> Unit
+#callsite(autofill(loc))
+pub fn Eased::go_from(Self, @view.View, Double, Double, Spec, loc~ : SourceLoc) -> Unit
+pub fn Eased::motion(Self, @view.View) -> (Double, Double)
+pub fn Eased::new(Double) -> Self
+pub fn Eased::put(Self, Double) -> Unit
+pub fn Eased::shown(Self, @view.View) -> Double
+pub fn Eased::target(Self) -> Double
+
 #derive(Eq, @debug.Debug)
 pub(all) struct GenState {
   done : Bool
@@ -417,6 +507,31 @@ pub fn Moves::moves_with(Self, @view.View) -> Unit
 pub fn Moves::over(Self) -> Bool
 pub fn Moves::reshapes(Self, @view.View, carry? : () -> Bool, foot? : Bool) -> Unit
 
+pub struct NodeWay {
+  // private fields
+}
+pub fn NodeWay::end(Self) -> Double
+pub fn NodeWay::ends_at(Self) -> Double
+#callsite(autofill(loc))
+pub fn NodeWay::go(Self, @view.View, Double, Spec, velocity? : Double, loc~ : SourceLoc) -> Unit
+#callsite(autofill(loc))
+pub fn NodeWay::go_from(Self, @view.View, Double, Double, Spec, at? : Double, loc~ : SourceLoc) -> Unit
+#callsite(autofill(loc))
+pub fn NodeWay::go_ms(Self, @view.View, Double, Double, ease? : @ui.Ease, loc~ : SourceLoc) -> Unit
+pub fn NodeWay::goes(Self, @view.View) -> Bool
+pub fn NodeWay::goes_at(Self, Double) -> Bool
+pub fn NodeWay::motion(Self, @view.View) -> (Double, Double)
+pub fn NodeWay::new(Double) -> Self
+#callsite(autofill(loc))
+pub fn NodeWay::put(Self, Double, loc~ : SourceLoc) -> Unit
+#callsite(autofill(loc))
+pub fn NodeWay::put_at(Self, @view.View, Double, Double, Spec, Double, loc~ : SourceLoc) -> Unit
+pub fn NodeWay::shown(Self, @view.View) -> Double
+pub fn NodeWay::starts_at(Self) -> Double
+pub fn NodeWay::stop(Self) -> Unit
+pub fn NodeWay::target(Self) -> Double
+pub fn NodeWay::value_at(Self, Double) -> Double
+
 pub struct PressFeel {
   // private fields
 }
@@ -424,26 +539,6 @@ pub fn PressFeel::down(Self, @view.Drag) -> Unit
 pub fn PressFeel::hovered_on(Self, @view.View) -> Double
 pub fn PressFeel::pressed_on(Self, @view.View) -> Double
 pub fn PressFeel::scale_on(Self, @view.View) -> Double
-
-pub struct PushWay {
-  // private fields
-}
-pub fn PushWay::at(Self, Double) -> (Double, Double)
-pub fn PushWay::attach_edge(Self, @view.View, width~ : () -> Double, close~ : () -> Unit, slop? : Double) -> Unit
-pub fn PushWay::edge_width(Self) -> Double
-pub fn PushWay::follows(Self, @view.View, () -> Bool) -> Unit
-#callsite(autofill(loc))
-pub fn PushWay::go(Self, Bool, at~ : Double, velocity? : Double, loc~ : SourceLoc) -> Unit
-pub fn PushWay::leave_ms(Self) -> Double
-pub fn PushWay::new(spec? : Spec, leave_ms? : Double, edge_width? : Double, off_past? : Double) -> Self
-pub fn PushWay::offset_x(Self, @view.View) -> Double
-pub fn PushWay::scrim_alpha(Self, @view.View) -> Double
-#callsite(autofill(loc))
-pub fn PushWay::show_in(Self, @view.View, open~ : () -> Bool, close~ : () -> Unit, scrim? : (Double) -> Int64, edge_top? : Double, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
-pub fn PushWay::shown_on(Self, @view.View) -> Double
-pub fn PushWay::target(Self) -> Double
-#callsite(autofill(loc))
-pub fn PushWay::under_pushed(Self, @view.View, loc~ : SourceLoc) -> Unit
 
 pub struct ShakeWay {
   amplitude : Double
@@ -459,23 +554,6 @@ pub fn ShakeWay::shake(Self, at~ : Double, loc~ : SourceLoc) -> Unit
 #callsite(autofill(loc))
 pub fn ShakeWay::shakes(Self, @view.View, reduced_motion? : Bool, loc~ : SourceLoc) -> @view.View
 
-pub struct SheetWay {
-  // private fields
-}
-pub fn SheetWay::at(Self, Double) -> (Double, Double)
-pub fn SheetWay::attach_handle(Self, @view.View, span~ : () -> Double, close~ : () -> Unit, on_tap? : () -> Unit, slop? : Double) -> Unit
-pub fn SheetWay::covered_on(Self, @view.View) -> Double
-pub fn SheetWay::follows(Self, @view.View, () -> Bool) -> Unit
-#callsite(autofill(loc))
-pub fn SheetWay::go_detent(Self, Int32, at~ : Double, velocity? : Double, loc~ : SourceLoc) -> Unit
-pub fn SheetWay::leave_ms(Self) -> Double
-pub fn SheetWay::new(detents? : Array[Double], opens_at? : Int32, spec? : Spec, leave_ms? : Double, close_past? : Double) -> Self
-pub fn SheetWay::offset_y(Self, @view.View, Double) -> Double
-#callsite(autofill(loc))
-pub fn SheetWay::show_in(Self, @view.View, open~ : () -> Bool, close~ : () -> Unit, scrim? : (Double) -> Int64, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
-pub fn SheetWay::shown_on(Self, @view.View) -> Double
-pub fn SheetWay::target(Self) -> Double
-
 pub struct Showing {
   // private fields
 }
@@ -489,6 +567,7 @@ pub(all) enum Spec {
   Snap(Double)
   Motion(Transition)
 }
+pub fn Spec::delay(Self) -> Double
 pub fn Spec::delayed(Self, Double) -> Self
 pub fn Spec::duration(Self, Double, Double, Double) -> Double
 pub fn Spec::over(Self, Double) -> Self
@@ -500,6 +579,12 @@ pub fn Spec::way_said(Self) -> Bool
 pub(all) enum StepsAt {
   End
   Start
+}
+
+pub(all) struct TrackSpec {
+  name : String
+  forward : Spec
+  backward : Spec
 }
 
 #derive(Eq)

@@ -187,7 +187,7 @@ pub fn stops_node(
       let thumb_h = fn() { high() - 2.0 * pad }
       let p = @motion.NodeWay::new(@signals.untracked(goal))
       inner.reacts(at_start=false, goal, fn(g) {
-        let spec = if finger.untracked() is Some(_) { @motion.follow_spring } else { @motion.snappy_damped }
+        let spec = if finger.untracked() is Some(_) { @motion.tactile_bounce } else { @motion.snappy_damped }
         p.go(inner, g, spec)
       })
       let rail_h = 10.0
@@ -268,14 +268,17 @@ pub fn stops_node(
           l.over(Is(true)) |> ignore
           l.box(fn(lens) {
             style_node(lens, fn() { stops_ball_room })
-            let lens_wh = fn() { (tw() * scale_x.shown(lens), thumb_h() * scale_y.shown(lens)) }
             lens
             .over(Is(true))
-            .width(By(fn() { Some(lens_wh().0) }))
-            .height(By(fn() { Some(lens_wh().1) }))
-            .offset(By(fn() {
-              let (lw, lh) = lens_wh()
-              (x_now(lens) + (tw() - lw) / 2.0, (thumb_h() - lh) / 2.0)
+            .width(By(fn() { Some(tw()) }))
+            .height(By(fn() { Some(thumb_h()) }))
+            .offset(By(fn() { (x_now(lens), 0.0) }))
+            .ground_drawn(By(fn() {
+              let w = tw()
+              let h = thumb_h()
+              let lw = w * scale_x.shown(lens)
+              let lh = h * scale_y.shown(lens)
+              { dx: (w - lw) / 2.0, dy: (h - lh) / 2.0, dw: lw - w, dh: lh - h, corners: None }
             }))
             .glass(By(fn() { Some(backdrop_slider(lensed(lens))) }))
             .alpha(By(fn() { lensed(lens) }))

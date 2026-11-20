@@ -51,13 +51,13 @@ pub fn loupe_node(root : @view.View, on : () -> Bool, loc~ : SourceLoc) -> Unit 
               ax.put(tx)
               ay.put(ty)
             } else {
-              ax.go(l, tx, @motion.follow_spring)
-              ay.go(l, ty, @motion.follow_spring)
+              ax.go(l, tx, @motion.tactile_bounce)
+              ay.go(l, ty, @motion.tactile_bounce)
             }
             read.set(Some(p))
-            held.go(l, 1.0, @motion.lift_spring)
+            held.go(l, 1.0, @motion.tactile_bounce)
           }
-          None => held.go(l, 0.0, @motion.lift_spring)
+          None => held.go(l, 0.0, @motion.tactile_bounce)
         }
       },
     )

@@ -29,13 +29,13 @@ Sampling helpers: `move_duration_ms(distance)`, `sample_ease(ease, steps)`, `sam
 
 ## 3. High-Frequency Node Tools (`tools.mbt`)
 
-### `hover_fade`
+### `hover_fade` / `hover_fade_keyed`
 ```moonbit
 let hover_p = @motion.hover_fade(node, fn() { node.pointed() }, duration_ms=140.0)
 node.ground_over(By(fn() { with_alpha(hover_ink, hover_p()) })) |> ignore
 ```
 
-### `flash_way`
+### `flash_way` / `flash_way_keyed`
 ```moonbit
 let flash_p = @motion.flash_way(node, fn() { flash_seq.get() })
 node.ground_over(By(fn() { with_alpha(accent_bg, flash_p()) })) |> ignore
@@ -52,10 +52,10 @@ node.alpha(By(alpha)) |> ignore
 let step = @motion.resident_step(node, 800.0, 8) // 0..7 at 10 Hz
 ```
 
-### `indicator_rect`
+### `indicator_rect` / `cover_indicator`
 ```moonbit
-let rect = @motion.indicator_rect(bar, fn() { active_rect.get() }, spec=@motion.snappy_damped)
-bar.ground_drawn(By(fn() {
+let rect = @motion.cover_indicator(strip, chosen, rect_of, spec=@motion.move_damped)
+thumb.ground_drawn(By(fn() {
   match rect() {
     Some((x, y, w, h)) => { dx: x, dy: y, dw: w, dh: h, corners: None }
     None => @view.ground_as_laid
@@ -76,5 +76,4 @@ panel.modal(By(modal_live)).alpha(By(fn() { look().alpha })).scale(By(fn() { loo
 - `HoldWay` (`hold_way`): safety hold confirmation progress (not shortened by reduced motion).
 - `Handoff` / `HandPart`: continuous position + velocity handoff across sibling nodes.
 - `PressFeel` (`press_feel`): unified hover + press sink feel.
-- `SheetWay` / `PushWay`: gesture-coupled bottom sheet and edge-swipe push transitions.
 - `Zoom`: pinch, pan, double-tap, and inertia fling state machine.

@@ -176,3 +176,34 @@ test "stops_node: discrete keyboard switch uses critically damped spring without
     assert_true(x >= x0 - 0.05 && x <= x2 + 0.05, msg="stops_node discrete switch overshot [\{x0}, \{x2}]: x=\{x}")
   }
 }
+
+///|
+test "stops_node: liquid glass lens scale animation causes zero relayout (laid == 0)" {
+  let labels = ["低", "中", "高", "极高"]
+  let chosen = @signals.signal(1)
+  let state = Stops::new()
+  let t = @ui.Tester::new(fn(_c) {  }, w=360.0, h=200.0, platform=2)
+  t.check_looks(false)
+  @ui.set_view_app(fn(root) {
+    root.padding(Is((20.0, 20.0, 20.0, 20.0))) |> ignore
+    stops_node(root, fn() { labels }, fn() { chosen.get() }, state, said="思考深度", on_pick=fn(i) { chosen.set(i) })
+    |> ignore
+  })
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  let (x, y, w, h) = t.get(@ui.Role::Slider, label="思考深度").rect
+  let mid = y + h / 2.0
+  let lens_step_ms = @ui.move_most_ms / 2.0
+  t.touch(0, x + w * 1.5 / 4.0, mid)
+  t.draw()
+  t.tree_frames_from_now()
+  t.run_for(lens_step_ms)
+  let frames = t.tree_frames()
+  assert_true(frames.length() > 0, msg="expected animation frames while lens scales")
+  assert_true(
+    frames.iter().all(fn(f) { f.laid == 0 }),
+    msg="stops_node lens animation must not trigger relayout: \{Repr(frames.map(fn(f) { f.laid }))}",
+  )
+  t.touch(2, x + w * 1.5 / 4.0, mid)
+  t.run_for(@ui.move_most_ms * 2.0)
+}

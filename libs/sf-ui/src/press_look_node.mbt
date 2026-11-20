@@ -87,7 +87,7 @@ fn press_look(
           sink.go(0.0, out, at=out_at)
         })
       }
-      None => sink.go(0.0, @motion.lift_spring, at~)
+      None => sink.go(0.0, @motion.tactile_bounce, at~)
     }
     for n in ripples.untracked() {
       guard made.get(n) is Some((slot, ver)) else { continue }
@@ -166,7 +166,7 @@ fn press_look(
     }
     if @signals.untracked(grounded) {
       sink_most.val = dmin(press_sink_most, @motion.press_sink / dmax(dmax(d.w, d.h), 1.0))
-      sink.go(1.0, @motion.lift_spring, at~)
+      sink.go(1.0, @motion.tactile_bounce, at~)
     }
     let enter_way = @motion.Way::new(0.0)
     enter_way.go(0.5, @motion.tween(@motion.ripple_enter_ms, ease=Out), at~)

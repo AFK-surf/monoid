@@ -162,7 +162,7 @@ pub let mouse_chat_list : ChatList = {
   keys: true,
   found: mouse_found,
   slide: @motion.moved(),
-  reorder: @motion.move_spring,
+  reorder: @motion.move_damped,
 }
 
 ///|
@@ -219,7 +219,7 @@ pub let touch_chat_list : ChatList = {
   keys: false,
   found: touch_found,
   slide: @motion.moved(),
-  reorder: @motion.row_spring,
+  reorder: @motion.move_damped,
 }
 
 ///|
