@@ -4892,47 +4892,59 @@ fn View::scrolls_window_ids(
             sv.alive() &&
             self.tree.reveal_in(sv.id(), self.tree.clock.untracked())
           }
+          let ever_whole : Map[Int, Bool] = Map([])
           let set_out_at = fn(k : Int, y : Double) {
             let (_, ay, _, ah) = after[k]
             items[k] = { off: (0.0, y - ay, 0.0, if reveals(k) { 0.0 } else { ah }), v: (0.0, 0.0, 0.0, 0.0) }
           }
-          let mut run_s = 0
-          while run_s < order.length() {
-            guard before.get(order[run_s]) is None else {
-              run_s = run_s + 1
-              continue
-            }
-            let mut run_e = run_s
-            while run_e < order.length() && before.get(order[run_e]) is None {
-              run_e = run_e + 1
-            }
-            match (if run_s > 0 { before.get(order[run_s - 1]) } else { None }) {
-              Some((_, by, _, bh)) => {
-                let mut y = by + bh
-                for idx in run_s..<run_e {
-                  let k = order[idx]
-                  guard fresh.contains(k) && !carried_in(k) else { continue }
-                  set_out_at(k, y)
-                  if reveals(k) {
-                    y = y + after[k].3
-                  }
-                }
+          let place_fresh_runs = fn() {
+            let mut run_s = 0
+            while run_s < order.length() {
+              guard before.get(order[run_s]) is None else {
+                run_s = run_s + 1
+                continue
               }
-              None =>
-                if run_e < order.length() && before.get(order[run_e]) is Some((_, by, _, _)) {
-                  let mut y = by
-                  for idx = run_e - 1; idx >= run_s; idx = idx - 1 {
+              let mut run_e = run_s
+              while run_e < order.length() && before.get(order[run_e]) is None {
+                run_e = run_e + 1
+              }
+              match (if run_s > 0 { before.get(order[run_s - 1]) } else { None }) {
+                Some((_, by, _, bh)) => {
+                  let mut y = by + bh
+                  for idx in run_s..<run_e {
                     let k = order[idx]
-                    guard fresh.contains(k) && !carried_in(k) else { continue }
-                    if reveals(k) {
-                      y = y - after[k].3
+                    guard fresh.contains(k) else { continue }
+                    if carried_in(k) || ever_whole.contains(k) {
+                      y = dmax(y, after[k].1 + after[k].3)
+                      continue
                     }
                     set_out_at(k, y)
+                    if reveals(k) {
+                      y = y + after[k].3
+                    }
                   }
                 }
+                None =>
+                  if run_e < order.length() && before.get(order[run_e]) is Some((_, by, _, _)) {
+                    let mut y = by
+                    for idx = run_e - 1; idx >= run_s; idx = idx - 1 {
+                      let k = order[idx]
+                      guard fresh.contains(k) else { continue }
+                      if carried_in(k) || ever_whole.contains(k) {
+                        y = dmin(y, after[k].1)
+                        continue
+                      }
+                      if reveals(k) {
+                        y = y - after[k].3
+                      }
+                      set_out_at(k, y)
+                    }
+                  }
+              }
+              run_s = run_e
             }
-            run_s = run_e
           }
+          place_fresh_runs()
           // (one never drawn before, come into sight by the change: going with the one before it, else after it)
           for i, k in order {
             guard !items.contains(k) else { continue }
@@ -5166,13 +5178,24 @@ fn View::scrolls_window_ids(
                 // (the key this flight carries drawn whole on its way alone, as where it is told with the change: one an
                 // earlier flight carried, still going on that one's way as the change came, is on this way now, whole
                 // with it no more, what of it does not fly not held unseen till this one lands)
+                let was_whole = flip_whole.copy()
                 flip_whole.clear()
                 flip_whole[k] = true
+                for prev, _ in was_whole {
+                  if prev != k {
+                    ever_whole[prev] = true
+                    flip_new.remove(prev)
+                    if fresh.contains(prev) && items.get(prev) is Some(it) {
+                      items[prev] = { ..it, off: (it.off.0, it.off.1, it.off.2, 0.0) }
+                    }
+                  }
+                }
                 flip_raise()
                 match after.get(k) {
                   Some(a) => items[k] = { off: (0.0, 0.0, 0.0, a.3), v: (0.0, 0.0, 0.0, 0.0) }
                   None => ()
                 }
+                place_fresh_runs()
                 let list : Array[@flex.FlipItem] = []
                 flip_items.clear()
                 for key, i in items {
@@ -5180,7 +5203,9 @@ fn View::scrolls_window_ids(
                   list.push(i)
                 }
                 for key, _ in fresh {
-                  flip_new[key] = true
+                  if !flip_whole.contains(key) && !was_whole.contains(key) && !ever_whole.contains(key) {
+                    flip_new[key] = true
+                  }
                 }
                 for a, amt in amts_now {
                   flip_in_amts[a] = amt
@@ -5212,7 +5237,9 @@ fn View::scrolls_window_ids(
                 list.push(it)
               }
               for key, _ in fresh {
-                flip_new[key] = true
+                if !flip_whole.contains(key) {
+                  flip_new[key] = true
+                }
               }
               for a in inner_now {
                 match flip_in_amts.get(a) {
@@ -5233,6 +5260,16 @@ fn View::scrolls_window_ids(
               return
             }
             _ => ()
+          }
+          let next_whole : Int? = match flip_said.val {
+            Some((t, k, _)) if t >= at && t - at < 100.0 && fresh.contains(k) => Some(k)
+            _ => None
+          }
+          let was_whole = flip_whole.copy()
+          for prev, _ in was_whole {
+            if Some(prev) != next_whole && fresh.contains(prev) && items.get(prev) is Some(it) {
+              items[prev] = { ..it, off: (it.off.0, it.off.1, it.off.2, 0.0) }
+            }
           }
           let list : Array[@flex.FlipItem] = []
           for _, i in items {
@@ -5260,14 +5297,14 @@ fn View::scrolls_window_ids(
             None => @flex.FlipWay::new(at, list)
           }
           flip_whole.clear()
-          match flip_said.val {
-            Some((t, k, _)) if t >= at && t - at < 100.0 && fresh.contains(k) => flip_whole[k] = true
-            _ => ()
+          match next_whole {
+            Some(k) => flip_whole[k] = true
+            None => ()
           }
           flip_raise()
           let kept_new : Array[Int] = []
           for k, _ in flip_new {
-            if !flip_whole.contains(k) && items.get(k) is Some(i) && i.off.3 > 0.5 {
+            if !flip_whole.contains(k) && !was_whole.contains(k) && items.get(k) is Some(i) && i.off.3 > 0.5 {
               kept_new.push(k)
             }
           }
@@ -5280,7 +5317,9 @@ fn View::scrolls_window_ids(
             flip_new[k] = true
           }
           for k, _ in fresh {
-            flip_new[k] = true
+            if !flip_whole.contains(k) && !was_whole.contains(k) {
+              flip_new[k] = true
+            }
           }
           // (where it rests set before the way is told: the first way set out binds what each block made at rest
           // (flip_unbound), and that commit pairs a flight in the change's block (View::flies_in, Tree::carried) at
