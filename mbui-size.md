@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [edec068e2](https://github.com/AFK-surf/monoid/commit/edec068e2cf5070a445028717d83aaa624b7f12d) fix(station-mb): drive session_hub timers and defe | 2.73 | 3.69 | 15 | 37.03 | 56.91 | 32.47 | 66.05 | 97.98 | 122.89 |
 | [48e5e6774](https://github.com/AFK-surf/monoid/commit/48e5e6774e57a407ed5f1b56bab66627c6106135) feat(comma): report stillfail_workspace metadata i | 2.73 | 3.69 | 15 | 37.03 | 56.91 | 32.47 | 66.05 | 97.98 | 122.89 |
 | [fe47bab07](https://github.com/AFK-surf/monoid/commit/fe47bab076c13a892ea8a3483c1eebed469ba91d) fix(mbui): draw the working mark as spokes again,  | 2.73 | 3.69 | 15 | 37.03 | 56.91 | 32.47 | 66.05 | 98.21 | 127.87 |
 | [12506b5ac](https://github.com/AFK-surf/monoid/commit/12506b5ac038ac1da968efa10789e1c51b1f5c0d) feat(station): add offline diagnostics and read-on | 2.73 | 3.69 | 15 | 37.03 | 56.91 | 32.47 | 66.05 | 98.21 | 127.87 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [5a2370970](https://github.com/AFK-surf/monoid/commit/5a23709704f453c3cfee73966e5b1f2aa880b303) feat(mbui): support NavTransition::layered in nav_ | 2.67 | 3.58 | 14.64 | 36.94 | 56.33 | 32.39 | 65.67 | 97.76 | 121.75 |
 | [af1a63f87](https://github.com/AFK-surf/monoid/commit/af1a63f87f45807a26c47e423046ee983b972dee) fix(station): show why a platform refused a connec | 2.67 | 3.58 | 14.64 | 36.94 | 56.33 | 32.39 | 65.67 | 97.76 | 121.75 |
 | [d70ea4c58](https://github.com/AFK-surf/monoid/commit/d70ea4c58335abb30a7045f9b4f3c7d8d0c84305) fix(mbui): track foot end shift in rows_steady and | 2.67 | 3.58 | 14.64 | 36.94 | 56.33 | 32.39 | 65.67 | 97.67 | 121.41 |
-| [414eaf84e](https://github.com/AFK-surf/monoid/commit/414eaf84ee8e0af343c4a8db970cbb05f9abcb62) perf(scripts): speed up release delta generation ( | 2.67 | 3.58 | 14.64 | 36.94 | 56.33 | 32.39 | 65.67 | 97.52 | 119.15 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [edec068e2](https://github.com/AFK-surf/monoid/commit/edec068e2cf5070a445028717d83aaa624b7f12d) fix(station-mb): drive session_hub timers and defe | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.57 | 53.97 |
 | [48e5e6774](https://github.com/AFK-surf/monoid/commit/48e5e6774e57a407ed5f1b56bab66627c6106135) feat(comma): report stillfail_workspace metadata i | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 54.3 |
 | [fe47bab07](https://github.com/AFK-surf/monoid/commit/fe47bab076c13a892ea8a3483c1eebed469ba91d) fix(mbui): draw the working mark as spokes again,  | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 54.3 |
 | [12506b5ac](https://github.com/AFK-surf/monoid/commit/12506b5ac038ac1da968efa10789e1c51b1f5c0d) feat(station): add offline diagnostics and read-on | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 53.9 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [5a2370970](https://github.com/AFK-surf/monoid/commit/5a23709704f453c3cfee73966e5b1f2aa880b303) feat(mbui): support NavTransition::layered in nav_ | 0.46 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.35 |
 | [af1a63f87](https://github.com/AFK-surf/monoid/commit/af1a63f87f45807a26c47e423046ee983b972dee) fix(station): show why a platform refused a connec | 0.46 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.28 |
 | [d70ea4c58](https://github.com/AFK-surf/monoid/commit/d70ea4c58335abb30a7045f9b4f3c7d8d0c84305) fix(mbui): track foot end shift in rows_steady and | 0.46 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.28 |
-| [414eaf84e](https://github.com/AFK-surf/monoid/commit/414eaf84ee8e0af343c4a8db970cbb05f9abcb62) perf(scripts): speed up release delta generation ( | 0.46 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.28 |
