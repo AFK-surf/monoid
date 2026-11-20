@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a4e3eccff](https://github.com/AFK-surf/monoid/commit/a4e3eccff1674484b81b728d94c157d6a51072f4) feat(mbui): add workspace vault UI, member managem | 2.74 | 3.7 | 15.03 | 37.08 | 57.03 | 32.47 | 66.05 | 97.98 | 125.52 |
 | [a98651b19](https://github.com/AFK-surf/monoid/commit/a98651b196b8f2e9b609ca2de48cc74431a5d2ea) perf(mbui): optimize profiles overview rendering,  | 2.74 | 3.69 | 15.01 | 37.06 | 56.95 | 32.47 | 66.05 | 97.98 | 122.47 |
 | [edec068e2](https://github.com/AFK-surf/monoid/commit/edec068e2cf5070a445028717d83aaa624b7f12d) fix(station-mb): drive session_hub timers and defe | 2.73 | 3.69 | 15 | 37.03 | 56.91 | 32.47 | 66.05 | 97.98 | 122.89 |
 | [48e5e6774](https://github.com/AFK-surf/monoid/commit/48e5e6774e57a407ed5f1b56bab66627c6106135) feat(comma): report stillfail_workspace metadata i | 2.73 | 3.69 | 15 | 37.03 | 56.91 | 32.47 | 66.05 | 97.98 | 122.89 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [963a04cee](https://github.com/AFK-surf/monoid/commit/963a04cee0c02fd32efba2b514ef7263cf5d89f4) feat(mbui): show a chat's file in Finder from its  | 2.67 | 3.59 | 14.64 | 36.94 | 56.35 | 32.4 | 65.68 | 97.58 | 111.21 |
 | [1d75aef0d](https://github.com/AFK-surf/monoid/commit/1d75aef0d90882292a20ebb41a87aa703f812eb1) fix(station/mb): extract pure choose_run_on_profil | 2.67 | 3.58 | 14.64 | 36.94 | 56.33 | 32.39 | 65.67 | 97.62 | 154.51 |
 | [5a2370970](https://github.com/AFK-surf/monoid/commit/5a23709704f453c3cfee73966e5b1f2aa880b303) feat(mbui): support NavTransition::layered in nav_ | 2.67 | 3.58 | 14.64 | 36.94 | 56.33 | 32.39 | 65.67 | 97.76 | 121.75 |
-| [af1a63f87](https://github.com/AFK-surf/monoid/commit/af1a63f87f45807a26c47e423046ee983b972dee) fix(station): show why a platform refused a connec | 2.67 | 3.58 | 14.64 | 36.94 | 56.33 | 32.39 | 65.67 | 97.76 | 121.75 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a4e3eccff](https://github.com/AFK-surf/monoid/commit/a4e3eccff1674484b81b728d94c157d6a51072f4) feat(mbui): add workspace vault UI, member managem | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.57 | 53.97 |
 | [a98651b19](https://github.com/AFK-surf/monoid/commit/a98651b196b8f2e9b609ca2de48cc74431a5d2ea) perf(mbui): optimize profiles overview rendering,  | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.57 | 53.97 |
 | [edec068e2](https://github.com/AFK-surf/monoid/commit/edec068e2cf5070a445028717d83aaa624b7f12d) fix(station-mb): drive session_hub timers and defe | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.57 | 53.97 |
 | [48e5e6774](https://github.com/AFK-surf/monoid/commit/48e5e6774e57a407ed5f1b56bab66627c6106135) feat(comma): report stillfail_workspace metadata i | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 54.3 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [963a04cee](https://github.com/AFK-surf/monoid/commit/963a04cee0c02fd32efba2b514ef7263cf5d89f4) feat(mbui): show a chat's file in Finder from its  | 0.45 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.13 |
 | [1d75aef0d](https://github.com/AFK-surf/monoid/commit/1d75aef0d90882292a20ebb41a87aa703f812eb1) fix(station/mb): extract pure choose_run_on_profil | 0.46 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.35 |
 | [5a2370970](https://github.com/AFK-surf/monoid/commit/5a23709704f453c3cfee73966e5b1f2aa880b303) feat(mbui): support NavTransition::layered in nav_ | 0.46 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.35 |
-| [af1a63f87](https://github.com/AFK-surf/monoid/commit/af1a63f87f45807a26c47e423046ee983b972dee) fix(station): show why a platform refused a connec | 0.46 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.28 |
