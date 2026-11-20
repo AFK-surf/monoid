@@ -538,7 +538,7 @@ fn motion_node(card : @view.View) -> Unit {
   let at_end = @signals.signal(false)
   let ways = [
     ("缓动 enter_ms \{points(@sf.enter_ms)} ms", @motion.tween(@sf.enter_ms, ease=Out)),
-    ("弹簧 move_spring", @sf.move_spring),
+    ("弹簧 move_damped", @motion.move_damped),
   ]
   let starts : Array[(Bool) -> Unit] = []
   for w in ways {

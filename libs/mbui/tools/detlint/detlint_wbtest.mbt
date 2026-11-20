@@ -2165,7 +2165,7 @@ test "motion-spring" {
         "  a.animate(0.0, @motion.spring(ratio=1.0, stiffness=400.0))\n" +
         "  let k = c.spring(\"bars\", 1.0, stiffness=600.0, damping=50.0)\n" +
         "  a.animate(0.0, @motion.motion_spring(0.3, bounce=0.2))\n" +
-        "  a.animate(0.0, @motion.sheet_spring)\n" +
+        "  a.animate(0.0, @motion.carousel_spring)\n" +
         "}\n",
       ),
       ("src/app/sheet_wbtest.mbt", "test \"t\" {\n  a.animate(0.0, @motion.spring())\n}\n"),

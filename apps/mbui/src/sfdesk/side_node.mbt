@@ -340,14 +340,11 @@ fn lists_band_node(
           })
           opener.mark()
         }, expanded=fn() { opener.open() }, fn(f) {
-          let hot = @motion.NodeWay::new(0.0)
-          f.reacts(fn() { @sf.lit_node(f) || @sfpages.filter_menu_open() }, fn(on) {
-            hot.go_ms(f, if on { 1.0 } else { 0.0 }, @sf.dur_ms)
-          })
+          let hot = @motion.hover_fade(f, fn() { @sf.lit_node(f) || @sfpages.filter_menu_open() }, duration_ms=@sf.dur_ms)
           @sf.style_node(f, fn() { filter_box })
           // (round as its ground is while it shows one, as an old view's is drawn: at rest nothing of it stands in the
           // panel's corner; in the closed bar's, its corner linked, below)
-          f.radius(By(fn() { if band_at().in_bar || hot.shown(f) > 0.0 { 1.0e6 } else { 0.0 } })) |> ignore
+          f.radius(By(fn() { if band_at().in_bar || hot() > 0.0 { 1.0e6 } else { 0.0 } })) |> ignore
           // (in the closed bar's corner, its ground's corner linked to that corner, concentric with it: filter_box_bar)
           @ui.tree_corners_linked(f, fn() {
             if band_at().in_bar {
@@ -356,10 +353,10 @@ fn lists_band_node(
               None
             }
           })
-          f.ground(By(fn() { @sf.alpha(@sf.theme().p.hover, hot.shown(f)) })) |> ignore
+          f.ground(By(fn() { @sf.alpha(@sf.theme().p.hover, hot()) })) |> ignore
           @sf.icon_node(f, "filter", side_icon, By(fn() {
             let t = @sf.theme()
-            @sf.mix(t.p.text, hot.shown(f), t.p.muted)
+            @sf.mix(t.p.text, hot(), t.p.muted)
           }))
           |> ignore
           @sf.tip_node(tips, f, fn() { @sf.t("web-main.filter.chats") }) |> ignore

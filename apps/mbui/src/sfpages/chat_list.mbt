@@ -656,7 +656,7 @@ fn to_ask(
   // (while the chat opens, where it is found: chat_float_look)
   let rk = r.station + "\u{1}" + r.session
   let lifting = if @sfbase.floats_settled(c, @sfbase.reading_of(rk)) {
-    let told = @motion.told(c, "chat-ask/lift/" + rk, lift, spec=@sf.move_spring)
+    let told = @motion.told(c, "chat-ask/lift/" + rk, lift, spec=@motion.move_damped)
     fn() { told.get(c) }
   } else {
     fn() { lift }

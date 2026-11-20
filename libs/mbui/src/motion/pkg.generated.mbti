@@ -48,12 +48,8 @@ pub fn clamp(Double, Double, Double) -> Double
 
 pub fn compose_to_motion(Double, Double) -> (Double, Double, Double)
 
-pub let cover_damped_spring : Spec
-
 #callsite(autofill(loc))
 pub fn cover_indicator(@view.View, () -> Int32, (Int32) -> (Double, Double, Double, Double)?, spec? : Spec, loc~ : SourceLoc) -> () -> (Double, Double, Double, Double)?
-
-pub let cover_spring : Spec
 
 pub fn cubic_bezier(Double, Double, Double, Double) -> (Double) -> Double
 
@@ -102,8 +98,6 @@ pub fn fly(@ui.Ctx, Int32, Double, Double, scale? : Double, px~ : Double, py~ : 
 pub fn fly_by(@ui.Ctx, Int32, () -> (Double, Double, Double, Double, Double, Double)) -> Unit
 
 pub fn flying_placed(@ui.Ctx, Int32) -> Unit
-
-pub let follow_spring : Spec
 
 pub fn generator_duration(Generator) -> Double
 
@@ -155,8 +149,6 @@ pub fn leaving(@ui.Ctx, Int32, Bool) -> Unit
 
 pub let lift_ms : Double
 
-pub let lift_spring : Spec
-
 pub fn lifted(@ui.Ctx, Int32, String) -> Double
 
 pub fn linear(Double) -> Double
@@ -187,8 +179,6 @@ pub fn measured_rect(@ui.Ctx, String) -> (Double, Double, Double, Double)?
 
 pub fn measured_size(@ui.Ctx, String) -> (Double, Double)?
 
-pub let menu_spring : Spec
-
 pub fn mirror_easing((Double) -> Double) -> (Double) -> Double
 
 pub fn mix(Double, Double, Double) -> Double
@@ -200,8 +190,6 @@ pub fn motion_to_compose(Double, Double, Double) -> (Double, Double)
 pub let move_damped : Spec
 
 pub fn move_duration_ms(Double) -> Double
-
-pub let move_spring : Spec
 
 pub fn moved(points? : Double, over? : Double, delay? : Double) -> Spec
 
@@ -301,8 +289,6 @@ pub let ripple_ink : Int64
 
 pub let ripple_tap_ms : Double
 
-pub let row_spring : Spec
-
 pub fn rubber_band(Double, Double, coeff? : Double) -> Double
 
 pub fn rubber_band_clamped(Double, Double, Double, Double, coeff? : Double) -> Double
@@ -323,8 +309,6 @@ pub fn sheet_drag_closes(Double, Double, Double) -> Bool
 pub fn sheet_goes_to(Array[Double], Double, Double, Double, Double) -> Double?
 
 pub let sheet_scrim_ms : Double
-
-pub let sheet_spring : Spec
 
 pub fn snap_detent(Double, Double, Array[Double], close_past? : Double, decel_rate? : Double) -> Int32?
 

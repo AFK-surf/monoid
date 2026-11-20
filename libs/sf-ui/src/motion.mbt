@@ -42,12 +42,6 @@ pub let waiting_in : @motion.Trans = @motion.trans(fade=0.0, dy=enter_rise, spec
 pub let hint_back_ms : Double = 200.0
 
 ///|
-/// How what makes way for a small service moves (MOVE): a spring of 0.28 s, no bounce, so a goal that moves on is
-/// followed, not started again.
-// kept across runs: a value (no field of it changes)
-pub let move_spring : @motion.Spec = @motion.move_spring
-
-///|
 /// The most a motion, or a page moved to, waits for what is here already (LOCAL_MS): the core's answer from what it
 /// holds, a picture decoded. Never for the network.
 pub let local_ms : Double = 100.0

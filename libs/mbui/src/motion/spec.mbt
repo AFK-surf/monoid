@@ -145,34 +145,6 @@ pub fn motion_spring(
 let pi : Double = 3.141592653589793
 
 ///|
-/// Motion.kt MoveSpring (the web's motion.ts MOVE): what follows another
-/// thing's place, a list's rows; stiffness (2π / .336)² ≈ 350, critically
-/// damped, at rest within half a pixel.
-// kept across runs: a constant: its fields are not mut, nothing changes it
-pub let move_spring : Spec = motion_spring(0.28, threshold=0.5)
-
-///|
-/// ListMotion.kt's rows' placement: the MOVE spring as it writes it out
-/// (stiffness 350, critically damped), at rest within a pixel
-/// (IntOffset.VisibilityThreshold).
-// kept across runs: a constant: its fields are not mut, nothing changes it
-pub let row_spring : Spec = Spring(1.0, 350.0, 1.0, 0.0)
-
-///|
-/// Motion.kt SheetSpring: a sheet let go, opened or closed (motionSpring(.32),
-/// at rest within half a pixel); `v` from the finger's speed.
-// kept across runs: a constant: its fields are not mut, nothing changes it
-pub let sheet_spring : Spec = motion_spring(0.32, threshold=0.5)
-
-///|
-/// What the hand holds or lifts (the one spring with a bounce: still.fail's
-/// sf/motion.mbt): a finger's ripple sinking (Android's), a switch's knob
-/// held, a card lifted, the long-press menu's scale, the loupe following the
-/// finger (motionSpring(.25, bounce .35)).
-// kept across runs: a constant: its fields are not mut, nothing changes it
-pub let lift_spring : Spec = motion_spring(0.25, bounce=0.35)
-
-///|
 /// What a control's thumb flung to its other side goes by (a switch's knob, a segment's thumb sent on): crisp, a little
 /// past it and back, at rest within its length (motionSpring(.2, bounce .12)); its speed drawn by it as it flies
 /// (velocity_capsule).
@@ -184,46 +156,6 @@ pub let knob_spring : Spec = motion_spring(0.2, bounce=0.12)
 /// its line and stays, never past it and back, a figure beside a still one never a pixel off it).
 // kept across runs: a constant: its fields are not mut, nothing changes it
 pub let digit_spring : Spec = motion_spring(0.2)
-
-///|
-/// A cover's spring critically damped (as stiff as cover_spring, 420): a sliding thumb sent to one of a few items side
-/// by side that comes to the last of them without going past it, out of what holds them, and slows to rest there. Of an
-/// item's index (0, 1, …): at rest within a thousandth of one.
-// kept across runs: a value, never written
-pub let cover_damped_spring : Spec = spring(ratio=1.0, stiffness=420.0, threshold=0.001)
-
-///|
-/// A cover's spring (@ui.Ctx::cover's: a sliding thumb sent to another item), for what moves one otherwise: its way
-/// solved as the cover's is (@ui.cover_spring_at), at rest when the cover's is (@ui.cover_spring_end). Gone from 0 (where
-/// it set out from) to 1 (the item it goes to), the way a cover's is.
-// kept across runs: a constant: its fields are not mut, nothing changes it
-pub let cover_spring : Spec = Motion({
-  kind: "cover",
-  delay: 0.0,
-  make: fn(from, to, v) {
-    let d = from - to
-    let end = @ui.cover_spring_end(d, v)
-    {
-      next_: fn(t) {
-        if t >= end {
-          { done: true, value: to }
-        } else {
-          { done: false, value: to + @ui.cover_spring_at(d, v, t).0 }
-        }
-      },
-      velocity_: Some(fn(t) { if t >= end { 0.0 } else { @ui.cover_spring_at(d, v, t).1 } }),
-      retarget_: None,
-      duration_: Some(end),
-      calculated: Some(end),
-    }
-  },
-  said: None,
-})
-
-///|
-/// The long-press menu's scale: lifted by the hand (lift_spring).
-// kept across runs: a constant: its fields are not mut, nothing changes it
-pub let menu_spring : Spec = lift_spring
 
 ///|
 /// Where a spring is `t` seconds after it was let go `d` from its rest with
