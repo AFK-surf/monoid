@@ -81,6 +81,8 @@ mod cursor;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod cursor_image;
 #[cfg(windows)]
+mod display;
+#[cfg(windows)]
 mod encode;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod hdr;
@@ -105,6 +107,12 @@ mod region;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod resolution;
 mod scale;
+#[cfg(windows)]
+mod svc_client;
+#[cfg(windows)]
+mod svc_pipe;
+#[allow(dead_code)]
+mod svc_proto;
 #[cfg(windows)]
 mod view;
 

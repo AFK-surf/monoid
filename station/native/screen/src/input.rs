@@ -2,11 +2,13 @@
 // place on the main display (in the virtual desktop's absolute units), wheels in their own units, keys by their scan
 // code (where they are on the keyboard, whatever its layout) or virtual key, text as Unicode.
 use serde_json::Value;
+use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN};
+use windows::core::{s, w};
 
+use super::display::main_display;
 use super::mouse::{Carry, absolute};
-use super::view::main_display;
 
 pub struct Input {
     /// Where the pointer was put last, in the virtual desktop's units.
@@ -109,6 +111,9 @@ impl Input {
                 send(&[press(vk, scan, op["ext"].as_bool().unwrap_or(false), op["down"].as_bool().unwrap_or(true))]);
             }
             Some("text") => self.text(op["text"].as_str().unwrap_or("")),
+            Some("paste") => self.paste(),
+            Some("nudge") => self.nudge(),
+            Some("sas") => send_sas(),
             _ => {}
         }
     }
@@ -141,5 +146,17 @@ impl Input {
     /// The display woken (as a person moving the mouse does): one that went to sleep is captured black.
     pub fn nudge(&mut self) {
         send(&[mouse(0, 0, 0, MOUSEEVENTF_MOVE)]);
+    }
+}
+
+/// Triggers Ctrl+Alt+Del (Secure Attention Sequence) via sas.dll when called from a SYSTEM service/worker.
+pub fn send_sas() {
+    unsafe {
+        if let Ok(module) = LoadLibraryW(w!("sas.dll")) {
+            if let Some(proc) = GetProcAddress(module, s!("SendSAS")) {
+                let func: extern "system" fn(i32) = std::mem::transmute(proc);
+                func(0); // FALSE = as service
+            }
+        }
     }
 }

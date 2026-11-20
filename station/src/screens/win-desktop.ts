@@ -5,8 +5,9 @@
 // and output in still.fail Helper's messages (desktop.ts `HelperView`); it ends as its input does.
 //
 // Nothing is granted on Windows: a station runs in its person's session (a scheduled task at logon), where the display
-// can be captured and driven. What cannot be is what Windows keeps from any app there: the sign-in and UAC's secure
-// desktop, and windows of apps run as administrator (their input).
+// can be captured and driven. When the optional LocalSystem service (stillfail-screen-svc.exe) is installed, human
+// remote views route input and Winlogon capture through it so elevated windows (UIPI), UAC secure desktop prompts, and
+// the lock screen work without running agents elevated. Agent views (`agent: true`) never use the privileged service.
 import { type ChildProcess, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
@@ -252,7 +253,7 @@ export class WindowsDesktop implements ScreenSource {
     // The system output too, as Opus where the viewer decodes it (stillfail-screen's audio_packets.rs). The colours and
     // chroma asked go as the Mac's helper is told them (desktop.ts): stillfail-screen lets be what it does not make
     // (its pictures stay 4:2:0, as their parameter sets say).
-    const ask = { codec, ...(options.audio === true && !options.peek ? { audio: true, ...(options.opus ? { audioCodec: "opus" as const } : {}) } : {}), maxWidth: options.maxWidth, maxHeight: options.maxHeight, ...(options.bitrate ? { bitrate: Math.round(options.bitrate) } : {}), ...(options.fps ? { fps: options.fps } : {}), ...(options.gamut ? { gamut: options.gamut } : {}), ...(options.chroma ? { chroma: options.chroma } : {}) };
+    const ask = { codec, ...(options.audio === true && !options.peek ? { audio: true, ...(options.opus ? { audioCodec: "opus" as const } : {}) } : {}), maxWidth: options.maxWidth, maxHeight: options.maxHeight, ...(options.bitrate ? { bitrate: Math.round(options.bitrate) } : {}), ...(options.fps ? { fps: options.fps } : {}), ...(options.gamut ? { gamut: options.gamut } : {}), ...(options.chroma ? { chroma: options.chroma } : {}), ...(options.agent === true ? { agent: true } : {}), ...(options.peek === true ? { peek: true } : {}) };
     let first: HelperView;
     try {
       first = await this.#start(binary, ask, input);
@@ -265,7 +266,7 @@ export class WindowsDesktop implements ScreenSource {
   }
 
   /// One process for a view, answering (its info had); fails with what it said.
-  async #start(binary: string, ask: { codec: Codec; maxWidth: number; maxHeight: number; bitrate?: number; fps?: number; gamut?: "p3"; chroma?: "444"; audio?: boolean; audioCodec?: "opus" }, input: WinInput): Promise<HelperView> {
+  async #start(binary: string, ask: { codec: Codec; maxWidth: number; maxHeight: number; bitrate?: number; fps?: number; gamut?: "p3"; chroma?: "444"; audio?: boolean; audioCodec?: "opus"; agent?: boolean; peek?: boolean }, input: WinInput): Promise<HelperView> {
     const child = (this.#o.start ?? start)(binary, ["view"]);
     child.stdin!.write(`${JSON.stringify(ask)}\n`);
     const view = new HelperView(ask.codec, childPipe(child), () => {}, input, "Windows.Graphics.Capture", ask.audio, true);
