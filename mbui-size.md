@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [05ca57c9c](https://github.com/AFK-surf/monoid/commit/05ca57c9c0e1ea864891e03d6ca938ccb4f4838e) fix(mbui): decode an image again when its key gets | 2.76 | 3.73 | 15.18 | 37.26 | 57.53 | 32.67 | 66.53 | 98.26 | 122.81 |
 | [99884b6e3](https://github.com/AFK-surf/monoid/commit/99884b6e37139704f2119e65eecee3ae59f1bdeb) fix(mesh): enforce relay allowlist on client endpo | 2.76 | 3.73 | 15.18 | 37.26 | 57.53 | 32.67 | 66.53 | 98.26 | 122.81 |
 | [6d19980fa](https://github.com/AFK-surf/monoid/commit/6d19980fa800cf2f775045f29ca86df9ceb3a0a4) ci(preview): start windows host checks before the  | 2.76 | 3.73 | 15.18 | 37.26 | 57.53 | 32.65 | 66.51 | 98.22 | 121.84 |
 | [ee0907d04](https://github.com/AFK-surf/monoid/commit/ee0907d0429d86dc7e6806861c6164144d30833c) fix(station): support thumb=2 preview images in Mo | 2.76 | 3.73 | 15.18 | 37.26 | 57.53 | 32.65 | 66.51 | 98.47 | 115.64 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [48e5e6774](https://github.com/AFK-surf/monoid/commit/48e5e6774e57a407ed5f1b56bab66627c6106135) feat(comma): report stillfail_workspace metadata i | 2.73 | 3.69 | 15 | 37.03 | 56.91 | 32.47 | 66.05 | 97.98 | 122.89 |
 | [fe47bab07](https://github.com/AFK-surf/monoid/commit/fe47bab076c13a892ea8a3483c1eebed469ba91d) fix(mbui): draw the working mark as spokes again,  | 2.73 | 3.69 | 15 | 37.03 | 56.91 | 32.47 | 66.05 | 98.21 | 127.87 |
 | [12506b5ac](https://github.com/AFK-surf/monoid/commit/12506b5ac038ac1da968efa10789e1c51b1f5c0d) feat(station): add offline diagnostics and read-on | 2.73 | 3.69 | 15 | 37.03 | 56.91 | 32.47 | 66.05 | 98.21 | 127.87 |
-| [19bb26f58](https://github.com/AFK-surf/monoid/commit/19bb26f58d3f818d77aa3f9ed375b4f2d3c6b1f6) fix(mbui): turn a page still coming in back from w | 2.73 | 3.68 | 14.98 | 37.01 | 56.86 | 32.45 | 66.01 | 98.04 | 119.16 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [05ca57c9c](https://github.com/AFK-surf/monoid/commit/05ca57c9c0e1ea864891e03d6ca938ccb4f4838e) fix(mbui): decode an image again when its key gets | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.2 |
 | [99884b6e3](https://github.com/AFK-surf/monoid/commit/99884b6e37139704f2119e65eecee3ae59f1bdeb) fix(mesh): enforce relay allowlist on client endpo | 0.46 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.2 |
 | [6d19980fa](https://github.com/AFK-surf/monoid/commit/6d19980fa800cf2f775045f29ca86df9ceb3a0a4) ci(preview): start windows host checks before the  | 0.46 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.2 |
 | [ee0907d04](https://github.com/AFK-surf/monoid/commit/ee0907d0429d86dc7e6806861c6164144d30833c) fix(station): support thumb=2 preview images in Mo | 0.46 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.2 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [48e5e6774](https://github.com/AFK-surf/monoid/commit/48e5e6774e57a407ed5f1b56bab66627c6106135) feat(comma): report stillfail_workspace metadata i | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 54.3 |
 | [fe47bab07](https://github.com/AFK-surf/monoid/commit/fe47bab076c13a892ea8a3483c1eebed469ba91d) fix(mbui): draw the working mark as spokes again,  | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 54.3 |
 | [12506b5ac](https://github.com/AFK-surf/monoid/commit/12506b5ac038ac1da968efa10789e1c51b1f5c0d) feat(station): add offline diagnostics and read-on | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 53.9 |
-| [19bb26f58](https://github.com/AFK-surf/monoid/commit/19bb26f58d3f818d77aa3f9ed375b4f2d3c6b1f6) fix(mbui): turn a page still coming in back from w | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 53.9 |
