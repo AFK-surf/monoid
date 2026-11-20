@@ -25,9 +25,9 @@
   object-fit: cover;
 }
 #hero-stage .live-bar {
-  top: 14px;
-  right: 14px;
-  bottom: auto;
+  top: auto;
+  right: 20px;
+  bottom: 22px;
   left: auto;
 }
 #hero-stage .live-launch {
