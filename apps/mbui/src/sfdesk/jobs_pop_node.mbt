@@ -138,8 +138,8 @@ fn jobs_pop_row(
     @sf.hover_ground_node(b, on=fn() { !open() })
     b.box(fn(on) {
       @sf.style_node(on, fn() { job_row_on }, in_row=true)
-      on.box(fn(d) {
-        @sf.style_node(d, fn() { job_dot_room }, in_row=true)
+      // (its dot and its end's icon on its name's line, whatever is under it: @sf.first_line_node)
+      @sf.first_line_node(on, Ui, leading=L6, fn(d) {
         @sf.state_dot_node(d, size=@sfpages.job_dot_across, breathes=true, fn() { @sfpages.job_dot_tone(text(job(), "tone")) })
       })
       |> ignore
@@ -153,8 +153,8 @@ fn jobs_pop_row(
       |> ignore
     })
     |> ignore
-    b.box(fn(e) {
-      @sf.style_node(e, fn() { job_end }, in_row=true)
+    @sf.first_line_node(b, Ui, leading=L6, fn(e) {
+      e.width(Is(Some(@ui.Space::S6.px()))) |> ignore
       @sf.icon_node(e, "", 16.0, By(fn() { if @sf.lit_node(b) { @sf.theme().p.text } else { @sf.theme().p.subtle } }), name_now=end)
       |> ignore
     })

@@ -349,6 +349,14 @@ fn tape_moves_from(at : Double, change : () -> Unit, velocity_px? : Double = 0.0
     tape_goes.x[1] = to.x
     tape_goes.page[0] = page
     tape_goes.page[1] = to.page
+    // (the chat's page going to another width with the tape: what it lays out by its width set off on that way too, as
+    // a side panel sliding beside it does (panel_node's), @sfbase.column_sets_off)
+    if (to.page - page).abs() > 0.5 {
+      match app.nav.top() {
+        Chat(r) => @sfbase.column_sets_off(r.station + "\u{1}" + r.session)
+        _ => ()
+      }
+    }
     tape_goes.col[0] = col
     tape_goes.col[1] = to.col
     for i in 0..<3 {
@@ -1103,6 +1111,8 @@ fn tape_cover(n : @view.View, p : TapePane, room : () -> (Double, Double, Double
       // (the one in use, at rest, takes what is done on it; moving to it, or pulled, still the cover's)
       fn() { tape_covered(p) },
       fn(cover) {
+        // (a finger's press on it keeps what a finger picked: its pull begins all the same, as the old cover's)
+        @ui.keeps_picked(cover) |> ignore
         cover
         .grow(Is(1.0))
         // (what a screen reader says of it: a button, what pressing it does; none of the one in use, on its way to it

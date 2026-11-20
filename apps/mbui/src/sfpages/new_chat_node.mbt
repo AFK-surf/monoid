@@ -18,11 +18,16 @@
 /// Android's do) or beside it, and what the frame does as the page becomes the chat; its ground as node `n` draws it (a
 /// tape's panel's, a step darker while behind the one in use); the width it is drawn at (`width`: what its frame gives
 /// it, by which it is laid out); what the frame puts over the whole page (`over`: a pane's, a row of its 文件 tab
-/// carried over it to let go into its message), given the page's node and whether it shows (not leaving).
+/// carried over it to let go into its message), given the page's node and whether it shows (not leaving); whether its
+/// composer stands apart from the page's edges (`apart`: on the tape, in a panel of its own) and the corners of the
+/// panel it stands in (`pane`: a tape's panel's, so what is in its corners is concentric with them), as a chat's
+/// composer is given them (chat_composer_node's).
 pub(all) struct NewChatNodeFrame {
   core : Core
   ground : (@view.View) -> Int64
   width : () -> Double
+  apart : () -> Bool
+  pane : () -> FixedArray[@ui.CornerOf]?
   bar : (@view.View) -> Unit
   over : (@view.View, () -> Bool) -> Unit
   foot : () -> Double
@@ -51,6 +56,19 @@ pub fn new_chat_node(v : @view.View, src : Source, w : Workspace, frame : NewCha
   if @sfbase.fresh_back.val {
     @sfbase.fresh_choreo.val.arm(v)
   }
+  // the chat's keys here as on a chat's page (chat_page_node's): composer.focus the cursor in its composer, the page
+  // brought over first where the tape has it behind
+  let draft = new_chat_drafts + w.id
+  let wr = @signals.untracked(fn() { @sfbase.writing(src, draft) })
+  v.key_context("Chat")
+  .on_action("composer.focus", fn(e) {
+    (@sfbase.page_for_key.val)(e.at)
+    wr.field.focus()
+    composer_take_focus()
+    @sfbase.draft_given(draft)
+    true
+  })
+  |> ignore
   let topic = fn() { src.topic("newChat", new_chat_asked(w.id)).get() }
   // (as it was sent while it leaves: what the core says of it since is the chat's)
   let view = fn() {
@@ -187,9 +205,7 @@ fn new_on_tree(v : @view.View, on : NewOn) -> Unit {
     w_draft.field,
     fn(paths) {
       if @signals.untracked(composes) {
-        for d in @sfbase.finder_dragged(on.src, paths) {
-          @sfbase.files_into(draft, d)
-        }
+        @sfbase.files_into_many(draft, @sfbase.finder_dragged(on.src, paths))
       }
     },
     takes=fn() { @signals.untracked(composes) && @sfbase.finder_by_station_in(on.w.id) },
@@ -418,10 +434,14 @@ fn new_choosers_node(row : @view.View, on : NewOn, floating : Bool) -> Unit {
       new_station_control_node(r, on, on.station, on.view, floating)
     }
     if waiting {
-      // (its profiles read: a made-up model's, in its bones)
-      @sf.waiting_node(r, fn(b) {
-        model_triple_node(b, @sfbase.sample_source, "sample", "new", face=fn() { field(Some(new_sample_view()), "pick") }, small=true, floating~)
-      })
+      // (its profiles read: a made-up model's, in its bones, as narrow as the row leaves it: what it drops to fit dropped)
+      @sf.waiting_node(
+        r,
+        fn(b) {
+          model_triple_node(b, @sfbase.sample_source, "sample", "new", face=fn() { field(Some(new_sample_view()), "pick") }, small=true, floating~)
+        },
+        fits=true,
+      )
     } else if none {
       // nothing to run it with: the way to where models are enabled
       new_capsule_node(r, fn() { @sf.t("web-main.newChat.noModels") }, floating, fn() { false }, fn(_) {
@@ -538,12 +558,16 @@ fn new_station_control_node(
     |> ignore
     b.show(fn() { !fixed() }, fn(c) { @sf.icon_node(c, "chevron-down", new_chevron, By(fn() { @sf.theme().p.muted })) |> ignore })
   })
-  // (asked from elsewhere: opened as it is seen)
-  if !parent.in_bones() && !@signals.untracked(fixed) && take_asked("station") {
-    @ui.after_frame(fn() {
-      match made.val {
-        Some(b) if b.alive() => open(b)
-        _ => ()
+  // (asked from elsewhere: opened as it is seen, or as it is asked while it is)
+  if !parent.in_bones() {
+    parent.reacts(fn() { new_chat_asked_seq.get() }, fn(_) {
+      if !@signals.untracked(fixed) && take_asked("station") {
+        @ui.after_frame(fn() {
+          match made.val {
+            Some(b) if b.alive() => open(b)
+            _ => ()
+          }
+        })
       }
     })
   }
@@ -599,46 +623,49 @@ fn new_preset_control_node(parent : @view.View, on : NewOn, address : String, fl
     })
     |> ignore
   })
-  // (asked from elsewhere: a fixture's screen of what the control opens, once the frame is drawn)
+  // (asked from elsewhere: a fixture's screen of what the control opens, once the frame is drawn; or as it is asked
+  // while it is)
   let w = on.w
-  let stations = items(@signals.untracked(v), "stations")
-  let first = text(items(@signals.untracked(v), "presets").get(0), "id")
-  for ask in [
-    ("preset-new", "", ""),
-    ("preset-edit", first, ""),
-    ("preset-add", first, "add"),
-    ("preset-new-add", "", "add"),
-    ("preset-new-browse", "", "browse"),
-    ("preset-new-clone", "", "clone"),
-    ("preset-new-browse-repos", "", "browse:/Users/lin/项目"),
-  ] {
-    if take_asked(ask.0) {
-      @ui.after_frame(fn() { preset_dialog(on.src, w, address, ask.1, stations, then=ask.2) })
+  parent.reacts(fn() { new_chat_asked_seq.get() }, fn(_) {
+    let stations = items(@signals.untracked(v), "stations")
+    let first = text(items(@signals.untracked(v), "presets").get(0), "id")
+    for ask in [
+      ("preset-new", "", ""),
+      ("preset-edit", first, ""),
+      ("preset-add", first, "add"),
+      ("preset-new-add", "", "add"),
+      ("preset-new-browse", "", "browse"),
+      ("preset-new-clone", "", "clone"),
+      ("preset-new-browse-repos", "", "browse:/Users/lin/项目"),
+    ] {
+      if take_asked(ask.0) {
+        @ui.after_frame(fn() { preset_dialog(on.src, w, address, ask.1, stations, then=ask.2) })
+      }
     }
-  }
-  if take_asked("preset-new-clones") {
-    @ui.after_frame(fn() {
-      preset_dialog(on.src, w, address, "", stations, clones=[
-        { station: address, id: "c-web", repo: "github.com/acme/shop", name: "shop" },
-        { station: address, id: "c-bad", repo: "github.com/acme/private", name: "private" },
-      ])
-    })
-  }
-  for ask in ["preset", "preset-others"] {
-    if take_asked(ask) {
+    if take_asked("preset-new-clones") {
       @ui.after_frame(fn() {
-        match made.val {
-          Some(b) if b.alive() =>
-            if ask == "preset" {
-              open(b)
-            } else {
-              preset_others_open(on.src, w, @signals.untracked(v), Node(b))
-            }
-          _ => ()
-        }
+        preset_dialog(on.src, w, address, "", stations, clones=[
+          { station: address, id: "c-web", repo: "github.com/acme/shop", name: "shop" },
+          { station: address, id: "c-bad", repo: "github.com/acme/private", name: "private" },
+        ])
       })
     }
-  }
+    for ask in ["preset", "preset-others"] {
+      if take_asked(ask) {
+        @ui.after_frame(fn() {
+          match made.val {
+            Some(b) if b.alive() =>
+              if ask == "preset" {
+                open(b)
+              } else {
+                preset_others_open(on.src, w, @signals.untracked(v), Node(b))
+              }
+            _ => ()
+          }
+        })
+      }
+    }
+  })
 }
 
 ///|
@@ -694,6 +721,8 @@ fn new_composer_place_node(c : @view.View, on : NewOn, roomy : () -> Bool) -> Un
       },
       shows=fn() { !(on.going)() },
       tips=on.tips,
+      apart=on.frame.apart,
+      pane=on.frame.pane,
       // (at the band's foot, the choices' own room over it: new_choosers_row's)
       over=0.0,
     )

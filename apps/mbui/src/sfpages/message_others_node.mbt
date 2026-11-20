@@ -90,7 +90,7 @@ fn message_others_node(
                     along=End,
                     gone=fn() { if @signals.untracked(fn() { @sfbase.message_more.get() }) == k { @sfbase.message_more.set("") } },
                   )
-                }, size=msg_share_side)
+                }, size=msg_share_side, tips=here.tips)
                 |> ignore
               })
             })

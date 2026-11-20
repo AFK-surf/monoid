@@ -63,6 +63,7 @@ fn chat_read_node(
   rest? : () -> Unit = fn() {  },
   reopening? : () -> Bool = fn() { false },
   on_reopened? : Ref[(Bool) -> Unit] = Ref(fn(_) {  }),
+  on_stack? : () -> Bool = fn() { true },
 ) -> Unit {
   let k = r.station + "\u{1}" + r.session
   // (the chat's while it is open: a page made again for it, as another comes over it and goes, goes on from it)
@@ -84,16 +85,14 @@ fn chat_read_node(
         rest_unwatched: fn() {  },
       }
   }
-  a.rest_unwatched = fn() {
-    (rows.rest_unwatched)()
-    rest()
-  }
-  chat_reads[k] = a
-  a.src = src
-  a.view = view
-  a.page = Some(v)
+  // (the chat's read by this page only once a frame has drawn it, still shown: a page made and gone before that (pushed
+  // and popped in one go, or an entry of the same chat made over the one drawn) takes nothing of the chat's read, tells
+  // the core nothing, and leaves the one drawn its own; drawn_once, register below)
+  let drawn_once = Ref(false)
   // (while the chat is open, none once it is left, and its page is drawn)
-  let live = fn() { chat_reads.get(k) is Some(now) && physical_equal(now, a) && @signals.untracked(shows) }
+  let live = fn() {
+    drawn_once.val && chat_reads.get(k) is Some(now) && physical_equal(now, a) && @signals.untracked(shows)
+  }
   // what is in sight taken as it changes, the hand on it or not, as the old page's list read it each frame (sfbase's
   // read_place): where it is (where it was left, to the pixel, as it is left there: chat_read_left) and the last
   // message seen whole
@@ -218,7 +217,7 @@ fn chat_read_node(
     }
   }
   let seen = fn(s : @view.Sight[String]) {
-    guard live() else { return }
+    guard drawn_once.val && live() else { return }
     taken(s)
     owed.val = true
     tell()
@@ -228,20 +227,66 @@ fn chat_read_node(
   // (what it has in sight this moment while the list still goes by itself (a fling's glide, a notch easing in) or is in
   // the hand: what was last told is where it was let go, not where it is. At rest what was last told is where it is,
   // taken as it came to rest: read again as the page goes, it would be read off a list laid out for leaving)
-  a.refresh = fn() {
+  let refresh = fn() {
     guard @signals.untracked(fn() { scroll.in_hand() }) || scroll.glides_till() is Some(_) else { return }
     match place.sight_live() {
       Some(s) if !(a.sight is Some((was, _)) && was == s) => taken(s)
       _ => ()
     }
   }
+  // (this page the chat's read's, once drawn: what it is read by, where it is, what in sight then told)
+  let register = fn() {
+    drawn_once.val = true
+    a.rest_unwatched = fn() {
+      (rows.rest_unwatched)()
+      rest()
+    }
+    a.refresh = refresh
+    if !(chat_reads.get(k) is Some(now) && physical_equal(now, a)) {
+      chat_reads[k] = a
+      a.told_focus = ""
+    }
+    a.src = src
+    a.view = view
+    a.page = Some(v)
+    if place.sight_now() is Some(s) {
+      seen(s)
+    }
+  }
+  // (as a frame has drawn it, shown and still made: register)
+  let register_drawn = fn() {
+    @ui.after_drawn_frame(fn() {
+      if !drawn_once.val && v.alive() && @signals.untracked(shows) && @signals.untracked(on_stack) {
+        register()
+      }
+    })
+  }
+  register_drawn()
   // (its page let go: where it was left this moment, before what its list counts goes; chat_read_left tells it)
   v.owns(fn() { if chat_reads.get(k) is Some(now) && physical_equal(now, a) { (a.refresh)() } }) |> ignore
   // (put by at rest on the stack's kept left: where it was left this moment, its page no longer one that shows it
   // (chat_read_left's `unless_shown`); taken back, its page again, and the chat's read again where it shows then, told
   // anew that it shows (its `shows` the same as it rested, so the reaction under tells nothing))
+  // (what its list read let go of, as chat_read_left lets a drawn one's go: a page never drawn left by nothing else)
+  let rest_undrawn = fn() {
+    (rows.rest_unwatched)()
+    rest()
+  }
+  // (put by now: between on_rest and its wake)
+  let resting = Ref(false)
   v.on_rest(
     fn() {
+      resting.val = true
+      // (put by never drawn (an entry over another of its chat, kept left before a frame drew it): nothing told of it
+      // leaving, what it read let go of all the same, as a drawn one's chat_read_left lets go)
+      if !drawn_once.val {
+        rest_undrawn()
+        @ui.after_frame(fn() {
+          if !drawn_once.val && v.alive() && resting.val {
+            rest_undrawn()
+          }
+        })
+      }
       if chat_reads.get(k) is Some(now) && physical_equal(now, a) {
         (a.refresh)()
       }
@@ -250,6 +295,12 @@ fn chat_read_node(
       }
     },
     wake=fn() {
+      resting.val = false
+      guard @signals.untracked(on_stack) else { return }
+      guard drawn_once.val else {
+        register_drawn()
+        return
+      }
       a.src = src
       a.view = view
       a.page = Some(v)
@@ -285,6 +336,10 @@ fn chat_read_node(
           }
           chat_read_place(src, r, cv, a, exact=true)
         }
+        return
+      }
+      guard drawn_once.val else {
+        register_drawn()
         return
       }
       if !(chat_reads.get(k) is Some(now) && physical_equal(now, a)) {

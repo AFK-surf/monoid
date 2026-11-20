@@ -659,7 +659,48 @@ pub fn model_triple_node(
           None => open_triple_panel(src, station, of, At(x, y, w, h), saved~, gone=fn() { opened.set(false) }, asks~, up~)
         }
       }
-      @sf.presses_node(b, go, on=fn() { can() || (bound() && on_bound is Some(_)) })
+      // (said to a screen reader as the button it is, by what it shows: its model, then each part shown after it, a dot
+      // between, as the old one's row says them)
+      let said_label = fn() {
+        guard offers() else { return @sf.t("web-main.model.none") }
+        let model = text(value(), "model")
+        let name = if model == "" {
+          @sf.t("web-main.model.pick")
+        } else {
+          match (text(vo(), "name"), text(v(), "modelText")) {
+            ("", "") => model
+            ("", n) => n
+            (n, _) => n
+          }
+        }
+        let parts = [name]
+        if !flag(v(), "runtimeFixed") && (flag(v(), "showRuntime") || items(vo(), "runtimes").length() > 1) {
+          parts.push(@settings.runtime_short(runtime()))
+        }
+        let effort = text(value(), "effort")
+        if effort != "" || items(v(), "efforts").length() > 0 {
+          parts.push(if effort == "" { @sf.t("web-main.model.defaultEffort") } else { effort_text(effort) })
+        }
+        for k in ["fastText", "subagentText"] {
+          if text(v(), k) != "" {
+            parts.push(text(v(), k))
+          }
+        }
+        if account() is Some(Object(_)) && text(account(), "text") != "" {
+          parts.push(text(account(), "text"))
+        }
+        parts.join(" · ")
+      }
+      // (the row itself the button (the library's action box, in its node): pressed, focused and said by it while it can be opened)
+      @sf.action_box_node(
+        b,
+        said_label,
+        fn(_) { go() },
+        fn(_) {  },
+        disabled=fn() { !(can() || (bound() && on_bound is Some(_))) },
+        in_node=true,
+      )
+      |> ignore
       // (asked from elsewhere as it is made (`ask_open`): opened as it is first placed, as the old one's is as it is seen)
       if ask_open {
         @ui.after_frame(fn() {

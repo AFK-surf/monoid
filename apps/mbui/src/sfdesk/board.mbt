@@ -134,7 +134,7 @@ fn board_pane_bar(parent : @view.View, src : Source, make : (@view.View) -> Unit
       .presses(Is(true))
       .moves_window(By(fn() { @ui.window_inset() }))
       |> ignore
-      bar_room_node(bar, ends.start)
+      bar_room_node(bar, fn() { (ends.start)(true) })
       bar.box(fn(inner) {
         // (as wide as the bar gives it, not as all it holds: what has not the room leaves, board_bar_items')
         inner.row(Is(true)).grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).lines_up(Is(Some(Middle))) |> ignore
@@ -187,7 +187,7 @@ fn board_beside(s : @view.View, src : Source, r : ChatRef, tips : @sf.TipLayer, 
     col.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
     col.box(fn(page) {
       page.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-      // (the chat's page as the pane draws it: made as nodes or its old view, as 试用新对话页 says now)
+      // (the chat's page as the pane draws it: made as nodes or its old view, as chat_page_nodes says now)
       board_beside_page(page, src, r, tips, serial)
     })
     |> ignore

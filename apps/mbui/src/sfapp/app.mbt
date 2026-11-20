@@ -353,7 +353,15 @@ fn pages_left(src : Source) -> Unit {
             }
             viz_chat_left(r.station, r.session)
           }
-          None => ()
+          // (an entry never drawn: nothing told; what the window's source read of its chat, nothing following it, let
+          // go of where no page of that chat is left on the stack)
+          None =>
+            if !app.nav
+              .pages()
+              .iter()
+              .any(fn(q) { q is Chat(x) && x.station == r.station && x.session == r.session }) {
+              @sfbase.chat_reads_forget_from(src, r)
+            }
         }
       }
       DriveRead(at) => reader_left(at)
@@ -685,8 +693,9 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
       @sfbase.language_from_prefs(p)
       @sfbase.stale_build_from_prefs(p)
     })
-    // (the experimental switches of 实验性功能 (试用新对话页, Farview 原生标签页渲染, 看板), told before any page of nodes
-    // is made and in the frame a switch is pressed: what is chosen here before the core answers is read with the prefs)
+    // (the device's features (the test channel's new chat page, 实验性功能's Farview 原生标签页渲染 and 看板), told
+    // before any page of nodes is made and in the frame a switch is pressed: what is chosen here before the core
+    // answers is read with the prefs)
     root.reacts(
       fn() {
         let p = src.topic("prefs", {}).get().value
@@ -1652,14 +1661,20 @@ fn first_page_node(v : @view.View, src : Source) -> Unit {
             // the test, on a device it is told as a ui_fault report (src/stillfail/reports.mbt) and the app goes on,
             // the first page waiting for it as not answered till first_page_ms. A read the first page comes to have
             // goes in its shell's function, sfapp's home_opens or sfdesk's frame_opens, never here)
-            let params = p.copy()
-            @signals.after_flush(fn() {
-              if @sfbase.read_held_found(src)(n, params) is None {
-                @view.fault(
-                  "first_page_node (stillfail/src/sfapp/app.mbt): the first page reads \{n} \{Json::object(params).stringify()}, which the shell's function it opens by (sfapp's home_opens, sfdesk's frame_opens) does not say",
-                )
-              }
-            })
+            // (once answered, not a fault: opens_ahead_node and page_opens_node, done with the first page as it was
+            // answered, declare nothing more of what it comes to read after (a chat's older messages, one come before
+            // it shows, a login card in it); a read the first page waits for and nothing declares leaves it unanswered,
+            // told so as ever)
+            if !answered {
+              let params = p.copy()
+              @signals.after_flush(fn() {
+                if @sfbase.read_held_found(src)(n, params) is None {
+                  @view.fault(
+                    "first_page_node (stillfail/src/sfapp/app.mbt): the first page reads \{n} \{Json::object(params).stringify()}, which the shell's function it opens by (sfapp's home_opens, sfdesk's frame_opens) does not say",
+                  )
+                }
+              })
+            }
             { value: None, error: None, version: -1, waiting: false }
           }
         }
