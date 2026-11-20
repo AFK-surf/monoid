@@ -435,15 +435,27 @@ test("a station's chats copied to the other as it keeps them, their files with t
   const oneSha = await attach(alpha.door, one.thread, "plan.bin", oneFile, "the first chat's file");
   const goneSha = await attach(alpha.door, gone.thread, "gone.txt", goneFile, "the deleted chat's file");
 
-  // ── kept on beta: a head naming the three chats and both files, the files' bytes as they were ──
-  const first = await given("alpha's copy kept on beta with its three chats and both files", () => {
+  // (each message sent with a file is a turn of its chat: both answered, every chat idle, before what alpha says is read)
+  const ended = (key: string) => storeA.listTurns(key).filter((t) => t.summary.endedAt != null).length;
+  await given("the turns on the files sent ended", () => ended(one.key) >= 2 && ended(gone.key) >= 2, both);
+  const wantBefore = new Map<string, string[]>();
+  for (const c of [one, two, gone]) wantBefore.set(c.key, await texts(alpha.door, c.thread));
+
+  // ── kept on beta: a head naming the three chats and both files, what a fresh station takes back of it the chats as
+  // they are on alpha (each head taken back once) ──
+  const tried = new Map<string, ReturnType<typeof restoreFrom>>();
+  const first = await given("alpha's copy kept on beta with its three chats as they are, and both files", () => {
     const h = newestHead(kept);
-    return h !== null && h.head.chats === 3 && oneSha in h.head.files && goneSha in h.head.files && existsSync(join(kept, "files", oneSha)) && existsSync(join(kept, "files", goneSha)) ? h : null;
+    if (h === null || h.head.chats !== 3 || !(oneSha in h.head.files) || !(goneSha in h.head.files) || !existsSync(join(kept, "files", oneSha)) || !existsSync(join(kept, "files", goneSha))) return null;
+    const at = `${h.gen}:${h.head.to}`;
+    if (!tried.has(at)) tried.set(at, restoreFrom(b.data, a.id, "alpha", b.id, bin));
+    const r = tried.get(at)!;
+    return [one, two, gone].every((c) => JSON.stringify(r.said(c.key)) === JSON.stringify(wantBefore.get(c.key))) ? { ...h, restored: r } : null;
   }, () => `kept=${JSON.stringify(newestHead(kept)?.head)}; ${both()}`, 60_000);
   assert.deepEqual(readFileSync(join(kept, "files", oneSha)), oneFile);
   assert.deepEqual(readFileSync(join(kept, "files", goneSha)), goneFile);
   // what a fresh station takes back of it is the chats as they were on alpha, their files where their messages say
-  const before = restoreFrom(b.data, a.id, "alpha", b.id, bin);
+  const before = first.restored;
   assert.deepEqual(before.sessions, [one.key, two.key, gone.key].sort());
   for (const c of [one, two, gone]) assert.deepEqual(before.said(c.key), await texts(alpha.door, c.thread), c.key);
   assert.deepEqual(before.files.map((f) => [f.name, f.sha]).sort(), [["gone.txt", goneSha], ["plan.bin", oneSha]]);
@@ -451,10 +463,12 @@ test("a station's chats copied to the other as it keeps them, their files with t
 
   // ── beta away: alpha's chats change meanwhile (said to, one made, one deleted with its file), its own copy goes on ──
   await beta.stop();
+  const keptAtStop = newestHead(kept)!;
   const ownBefore = newestHead(own)!;
+  const turnsBefore = ended(one.key);
   const sent = await http(alpha.door, `/admin-api/threads/${one.thread}/messages`, { body: { text: "said while beta was away" } });
   assert.ok(sent.status < 300, sent.text);
-  await given("the first chat's second turn ended", () => storeA.listTurns(one.key).filter((t) => t.summary.endedAt != null).length >= 2, both);
+  await given("the first chat's turn on it ended", () => ended(one.key) >= turnsBefore + 1, both);
   const three = await chat(alpha.door, storeA, "cc", "a chat made while beta was away", both);
   const deleted = await http(alpha.door, `/admin-api/sessions/${encodeURIComponent(gone.key)}`, { method: "DELETE" });
   assert.ok(deleted.status < 300, deleted.text);
@@ -464,7 +478,7 @@ test("a station's chats copied to the other as it keeps them, their files with t
     return h !== null && h.head.chats === 3 && !(goneSha in h.head.files) && oneSha in h.head.files && (h.gen !== ownBefore.gen || h.head.to > ownBefore.head.to) ? h : null;
   }, () => `own=${JSON.stringify(newestHead(own)?.head)}; ${alpha.err()}`, 60_000);
   // nothing reached beta while it was away: its copy as it was
-  assert.deepEqual(newestHead(kept)!.head, first.head);
+  assert.deepEqual(newestHead(kept)!.head, keptAtStop.head);
   assert.ok(existsSync(join(kept, "files", goneSha)));
 
   // ── beta back: told by nobody but its coming back, its copy level with alpha's own, the deleted file gone ──
