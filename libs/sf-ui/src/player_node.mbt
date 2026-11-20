@@ -1222,8 +1222,9 @@ fn timeline_node(
     room.height(Is(Some(h))) |> ignore
     room.by_room(fn(held, r) {
       // what a finger or the pointer does along it (Media::timeline): held on it a frame (as a frame drawn while it is
-      // down sees it held) or moved, the picture follows by nearest key frame (Media::scrub_to), then settles on the
-      // exact frame once let go (Media::scrub_done); let go before that where it went down, a tap, there at once,
+      // down sees it held) or moved, the picture goes with it frame by frame (Media::scrub_to: the very frame, each
+      // time where a frame starts), the frame let go on sent once let go (Media::scrub_done); let go before that where
+      // it went down, a tap, there at once,
       // played or paused as it was (Media::seek_near: the nearest key frame)
       let pending : Ref[(Double, Double)?] = Ref(None)
       let dragging = Ref(false)

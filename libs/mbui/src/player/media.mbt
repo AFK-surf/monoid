@@ -573,9 +573,10 @@ pub fn Media::times(self : Media) -> (Double, Double, Double, Double, Double) {
 
 ///|
 /// A finger moving it through the time, at `ms` now: paused while the finger is on it, the player told its seeks come
-/// one after another (NativeView::scrub: each frame gone to shown before the next is taken up), sent there by nearest
-/// key frame (Media::seek_near) when that is not where it was last sent; Media::scrubbing says where, until
-/// Media::scrub_done.
+/// one after another (NativeView::scrub: each frame gone to shown before the next is taken up), sent to the very frame
+/// there (Media::seek) when that is not where it was last sent; Media::scrubbing says where, until Media::scrub_done.
+/// Never a key frame near it (Media::seek_near): a finger shows the frame it is on, and a film whose key frames are far
+/// apart would show one of them all along.
 pub fn Media::scrub_to(self : Media, ms : Double) -> Unit {
   if self.scrub < 0.0 {
     self.scrub_played = self.status().playing
@@ -591,7 +592,7 @@ pub fn Media::scrub_to(self : Media, ms : Double) -> Unit {
   self.scrub = ms
   if ms != self.scrub_sent {
     self.scrub_sent = ms
-    self.seek_near(ms)
+    self.seek(ms)
   }
 }
 
@@ -602,8 +603,8 @@ pub fn Media::scrub_resumes(self : Media) -> Bool {
 }
 
 ///|
-/// The finger let go: sent to the exact frame at `at` (or where it was last moved to), its seeks as before, played
-/// again if it played when the finger came.
+/// The finger let go: sent to the frame at `at` (or where it was last moved to) when the last seek was not there, its
+/// seeks as before, played again if it played when the finger came.
 pub fn Media::scrub_done(self : Media, at? : Double) -> Unit {
   if self.scrub < 0.0 {
     return
@@ -611,7 +612,9 @@ pub fn Media::scrub_done(self : Media, at? : Double) -> Unit {
   if at is Some(ms) {
     self.scrub = ms
   }
-  self.seek(self.scrub)
+  if self.scrub != self.scrub_sent {
+    self.seek(self.scrub)
+  }
   match self.view {
     Some(n) => {
       n.scrub(false)
