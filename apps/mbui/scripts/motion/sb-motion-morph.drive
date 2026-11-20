@@ -1,0 +1,13 @@
+wait 200
+tap 切换状态文案
+wait 550
+tap 切换状态文案
+wait 550
+tap +128
+wait 450
+tap -45
+wait 450
+tap 保存
+wait 500
+tap 正在写入配置…
+wait 500

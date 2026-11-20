@@ -1,6 +1,6 @@
-// The 8 motion library showcase stories (stories_motion.mbt) in a Tester:
+// The 11 motion library showcase stories (stories_motion.mbt) in a Tester:
 // every page passes Tester::audit() at 390 and 1280 width and at 1.0x and 1.3x font scale,
-// and core interactive controls across all 8 pages work cleanly.
+// and core interactive controls across all 11 pages work cleanly.
 
 ///|
 fn motion_story_keys() -> Array[String] {
@@ -13,6 +13,9 @@ fn motion_story_keys() -> Array[String] {
     "motion-cycles",
     "motion-transitions",
     "motion-zoom",
+    "motion-morph",
+    "motion-physics",
+    "motion-choreography",
   ]
 }
 
@@ -29,7 +32,7 @@ fn motion_tester(key : String, w : Double, scale? : Double = 1.0, h? : Double = 
 }
 
 ///|
-test "all 8 motion stories pass audit at 390 and 1280 width and 1.0 and 1.3 scale" {
+test "all 11 motion stories pass audit at 390 and 1280 width and 1.0 and 1.3 scale" {
   let all : Array[String] = []
   for key in motion_story_keys() {
     for w in [390.0, 1280.0] {
@@ -150,6 +153,108 @@ test "motion-zoom: 2x, 3x, inertia fling, and 1x reset run cleanly" {
   assert_true(t.find("倍率 1x") is Some(_), msg="reset to 1x")
   t.click(Button, label="模拟惯性甩动复位")
   t.run_for(@ui.move_most_ms * 3.0)
+  let faults = page_faults(t)
+  assert_true(faults.is_empty(), msg=faults.join("\n"))
+}
+
+///|
+test "motion-press: HoldButton with undo confirms and undoes cleanly" {
+  let t = motion_tester("motion-press", 1280.0, h=1800.0)
+  let b = t.get(Button, label="长按清除缓存").rect
+  let (cx, cy) = (b.0 + b.2 / 2.0, b.1 + b.3 / 2.0)
+  t.press_at(cx, cy)
+  t.run_for(@ui.move_most_ms * 2.0)
+  t.release(cx, cy)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("撤销") is Some(_), msg="hold_button entered undo window")
+  t.click(Button, label="撤销")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("已撤销清除操作（确认 1 / 撤销 1）") is Some(_), msg="hold_button undo triggered")
+  let faults = page_faults(t)
+  assert_true(faults.is_empty(), msg=faults.join("\n"))
+}
+
+///|
+test "motion-controls: Accordion expands and collapses sections cleanly" {
+  let t = motion_tester("motion-controls", 1280.0, h=1800.0)
+  t.click(Button, label="首行箭头旋转与平滑展开")
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_true(t.find("当前展开：首行箭头旋转与平滑展开") is Some(_), msg="accordion expanded first section")
+  t.click(Button, label="软边裁剪与退场释放点击")
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_true(t.find("当前展开：软边裁剪与退场释放点击") is Some(_), msg="accordion switched to second section")
+  let faults = page_faults(t)
+  assert_true(faults.is_empty(), msg=faults.join("\n"))
+}
+
+///|
+test "motion-reveal: CurtainReveal replays and unmounts cleanly at rest" {
+  let t = motion_tester("motion-reveal", 1280.0, h=1800.0)
+  t.click(Button, label="重播窗帘揭幕")
+  t.run_for(@sfbase.viz_reveal_ms + @ui.move_most_ms)
+  assert_true(t.find("已重播 1 次") is Some(_), msg="curtain_reveal replayed")
+  assert_true(t.at_rest(), msg="curtain_reveal at rest after completion")
+  let faults = page_faults(t)
+  assert_true(faults.is_empty(), msg=faults.join("\n"))
+}
+
+///|
+test "motion-morph: TextMorph, RollingSlots, and button reshape run cleanly" {
+  let t = motion_tester("motion-morph", 1280.0, h=1400.0)
+  t.click(Button, label="切换状态文案")
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_true(t.find("并行校验 270 项多帧率单测") is Some(_), msg="TextMorph switched to second line")
+  t.click(Button, label="+128")
+  t.run_for(@ui.move_most_ms * 2.0)
+  t.click(Button, label="-45")
+  t.run_for(@ui.move_most_ms * 2.0)
+  t.click(Button, label="保存")
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_true(t.find("正在写入配置…") is Some(_), msg="button reshaped to busy state")
+  let faults = page_faults(t)
+  assert_true(faults.is_empty(), msg=faults.join("\n"))
+}
+
+///|
+test "motion-physics: EdgePull, SpringFollow2D, and DismissDrag run cleanly" {
+  let t = motion_tester("motion-physics", 1280.0, h=1600.0)
+  t.click(Button, label="模拟右拉过界")
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="松手回弹")
+  t.run_for(@ui.move_most_ms * 2.0)
+  t.click(Button, label="左锚点")
+  t.run_for(@ui.move_most_ms * 2.0)
+  t.click(Button, label="右锚点")
+  t.run_for(@ui.move_most_ms * 2.0)
+  t.click(Button, label="轻拉回弹")
+  t.run_for(@ui.move_most_ms * 2.0)
+  t.click(Button, label="快甩关闭")
+  t.run_for(@ui.move_most_ms * 2.0)
+  t.click(Button, label="恢复卡片")
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_true(t.find("已恢复卡片") is Some(_), msg="dismiss card restored")
+  let faults = page_faults(t)
+  assert_true(faults.is_empty(), msg=faults.join("\n"))
+}
+
+///|
+test "motion-choreography: hero_flight_box, Choreography, and SerialQueue run cleanly" {
+  let t = motion_tester("motion-choreography", 1280.0, h=1600.0)
+  t.click(Button, label="展开全屏")
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_true(t.find("飞回原位") is Some(_), msg="hero expanded")
+  t.click(Button, label="切换 Letterbox")
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="飞回原位")
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_true(t.find("展开全屏") is Some(_), msg="hero returned")
+  t.click(Button, label="播放四段编排")
+  t.run_for(@ui.move_most_ms * 3.0)
+  t.click(Button, label="逆向回放")
+  t.run_for(@ui.move_most_ms * 3.0)
+  t.click(Button, label="触发多源错峰")
+  t.run_for(@ui.move_most_ms * 3.0)
+  assert_true(t.find("错峰启动：+0 / +200 / +400 ms") is Some(_), msg="serial queue staggered 3 sources")
   let faults = page_faults(t)
   assert_true(faults.is_empty(), msg=faults.join("\n"))
 }

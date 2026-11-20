@@ -2806,23 +2806,12 @@ pub fn Viewer::shown_picture(self : Viewer, c : @ui.Ctx, src : Source, r : (Doub
 /// to the picture's place, what the stage shows of it where it is zoomed past it, and none); `picture`, the picture in
 /// it (from where it lies in the box, covering it or fitted inside it, to its place), at its own proportions all the
 /// way.
-priv struct FlightBox {
-  cut : (Double, Double, Double, Double)
-  box : (Double, Double, Double, Double)
-  corners : (Double, Double, Double, Double)
-  picture : (Double, Double, Double, Double)
-}
+type FlightBox = @motion.HeroFlightBox
 
 ///|
 /// What a stage `w` × `h` shows of `r` (x, y, w, h); `r` itself where it shows none of it.
 fn seen_of(r : (Double, Double, Double, Double), w : Double, h : Double) -> (Double, Double, Double, Double) {
-  let (x0, y0) = (dmax(r.0, 0.0), dmax(r.1, 0.0))
-  let (x1, y1) = (dmin(r.0 + r.2, w), dmin(r.1 + r.3, h))
-  if x1 > x0 && y1 > y0 {
-    (x0, y0, x1 - x0, y1 - y0)
-  } else {
-    r
-  }
+  @motion.hero_seen_of(r, w, h)
 }
 
 ///|
@@ -2836,48 +2825,23 @@ fn flight_box(
   stage_w : Double,
   stage_h : Double,
 ) -> FlightBox? {
-  // out from under the bar or the composer first, at its own size, uncut as it comes clear of what cut it there
-  let dy = lift_of(from) * lifted
-  let (sx, sy, sw, sh) = from.seen.unwrap_or((from.x, from.y, from.w, from.h))
-  // (a side cut by what it is in stays where that cuts it, on the screen; a side nothing cut goes with the box, its
-  // corners whole all the way)
-  let (sx, sy, sw, sh) = if dy == 0.0 {
-    (sx, sy, sw, sh)
-  } else {
-    let cut = 0.5
-    let y0 = if sy > from.y + cut { sy } else { from.y + dy }
-    let y1 = if sy + sh < from.y + from.h - cut { sy + sh } else { from.y + dy + from.h }
-    (sx, y0, sw, y1 - y0)
-  }
-  let from = { ..from, y: from.y + dy }
-  let (tx, ty, tw, th) = to
-  if tw <= 0.0 || th <= 0.0 {
-    return None
-  }
-  // where the picture lies in the thumbnail's box: covering it, or fitted inside it
-  let k = if from.letterbox { dmin(from.w / tw, from.h / th) } else { dmax(from.w / tw, from.h / th) }
-  let (pw0, ph0) = (tw * k, th * k)
-  let (px0, py0) = if from.start_crop {
-    (from.x, from.y)
-  } else {
-    (from.x + (from.w - pw0) / 2.0, from.y + (from.h - ph0) / 2.0)
-  }
-  let along = fn(a : Double, b : Double) { a + (b - a) * p }
-  // (the box to what the stage shows of a picture zoomed past it: its round corners on what is seen all the way; out
-  // past the stage's cut they were square till it landed)
-  let (bx, by, bw, bh) = seen_of(to, stage_w, stage_h)
-  // cut, at the thumbnail, as the thumbnail is by what it is in (its card's edge), the stage whole at the other end
-  let (cx, cy) = (along(sx, 0.0), along(sy, 0.0))
-  Some({
-    cut: (cx, cy, along(sx + sw, stage_w) - cx, along(sy + sh, stage_h) - cy),
-    box: (along(from.x, bx), along(from.y, by), along(from.w, bw), along(from.h, bh)),
-    corners: {
-      let (tl, tr, br, bl) = from.corners.each()
-      let k = 1.0 - p
-      (tl * k, tr * k, br * k, bl * k)
+  @motion.hero_flight_box(
+    {
+      x: from.x,
+      y: from.y,
+      w: from.w,
+      h: from.h,
+      seen: from.seen,
+      corners: from.corners.each(),
+      letterbox: from.letterbox,
+      start_crop: from.start_crop,
     },
-    picture: (along(px0, tx), along(py0, ty), along(pw0, tw), along(ph0, th)),
-  })
+    lift_of(from) * lifted,
+    to,
+    p,
+    stage_w,
+    stage_h,
+  )
 }
 
 ///|
