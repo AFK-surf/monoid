@@ -46,6 +46,8 @@ jobs:
     environment: production
     timeout-minutes: 10
     steps:
+      # (when the job is cut, less its setting up: monoid's below ends before it)
+      - run: echo "JOB_END=$(( $(date +%s) + 10 * 60 - 15 ))" >> "$GITHUB_ENV"
       - uses: actions/checkout@v5
         with: { ref: '${{ needs.plan.outputs.sha }}', fetch-depth: 0 }
       - uses: ./.github/actions/setup-mac
@@ -58,14 +60,22 @@ jobs:
         run: sh .github/release.sh --stable android
       # monoid's (build.monoid.android, the same key): from the same build, in the same warm cache (only the package is
       # made again: its id, name and links are in its manifest and resources); put by monoid-android. Not a reason to hold
-      # still.fail's release back: monoid-android, apart from done, fails where this did.
+      # still.fail's release back: monoid-android, apart from done, fails where this did. Ended before the job is: run
+      # beside the pipeline's android on the same Mac it ran on to the job's 10 minutes, and the job cut skipped web,
+      # station, site and done after it (44770813931, 2026-11-20).
       - name: Build and sign monoid's stable Android app from the same build
         continue-on-error: true
         env:
           ANDROID_DEBUG_KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 }}
           POSTHOG_JSON: ${{ secrets.POSTHOG_JSON }}
           RELEASE_DIR: ${{ runner.temp }}/monoid
-        run: sh .github/release.sh --product monoid --stable android
+        run: |
+          left=$(( JOB_END - $(date +%s) - 25 ))
+          if [ "$left" -lt 30 ]; then
+            echo "::warning::skipping monoid's stable Android build: only ${left} s left before job end"
+            exit 1
+          fi
+          bash scripts/with-timeout.sh "@$(( JOB_END - 25 ))" sh .github/release.sh --product monoid --stable android
       - uses: actions/upload-artifact@v4
         continue-on-error: true
         with: { name: "monoid-android-stable", path: "${{ runner.temp }}/monoid", if-no-files-found: error, retention-days: 1, compression-level: 0 }
@@ -431,8 +441,7 @@ jobs:
       contents: write # the release native-artifacts' assets
     env:
       WANT: >-
-        reader:linux-x64 reader:linux-arm64 launcher:linux-x64 launcher:linux-arm64 mesh:linux-x64 mesh:linux-arm64
-        runner:linux-x64 runner:linux-arm64 screen-linux:linux-x64 screen-linux:linux-arm64 launcher:win32-x64
+        reader:linux-x64 launcher:linux-x64 mesh:linux-x64 runner:linux-x64 screen-linux:linux-x64 launcher:win32-x64
         mesh:win32-x64 runner:win32-x64 screen:win32-x64 agent-desktop:win32-x64
     steps: &station-natives-linux-steps
       - uses: actions/checkout@v5
@@ -493,6 +502,24 @@ jobs:
           # shellcheck disable=SC2086 # part:target words
           STILLFAIL_NATIVE_READERS=$r node scripts/native.ts ensure --publish $MISSING
 
+  # The arm64 parts apart, as Windows' reader: a release's readers are in main's store only where main built the same
+  # revision's, never for one with fixes picked onto it, and two cold readers in one job were more than its 5 minutes.
+  # After station-natives-win, whatever it came to: a concurrency group keeps one job pending and cancels the one
+  # pending before it, so the readers' group takes no third queued at once.
+  station-natives-linux-arm64:
+    needs: [plan, station-natives-win]
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
+    runs-on: ${{ fromJSON(vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '["ubuntu-24.04"]') }}
+    concurrency:
+      group: ${{ vars.CI_1 != 'off' && format('ci1-readers-stable-{0}', github.run_id) || format('station-natives-linux-arm64-{0}', github.run_id) }}
+      cancel-in-progress: false
+    timeout-minutes: 5
+    permissions:
+      contents: write # the release native-artifacts' assets
+    env:
+      WANT: reader:linux-arm64 launcher:linux-arm64 mesh:linux-arm64 runner:linux-arm64 screen-linux:linux-arm64
+    steps: *station-natives-linux-steps
+
   station-natives-win:
     needs: plan
     runs-on: ${{ fromJSON(vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '["ubuntu-24.04"]') }}
@@ -532,10 +559,10 @@ jobs:
   # a cut run left new packages beside the old station.json for 20 minutes). Its native parts only fetched
   # (station-natives-*).
   station:
-    needs: [plan, web, station-natives-linux, station-natives-win, station-natives-mac]
+    needs: [plan, web, station-natives-linux, station-natives-linux-arm64, station-natives-win, station-natives-mac]
     # web needs mbui-web, skipped when web=artifact; without this, the default success() over a skipped ancestor skips
     # this job and everything after it (0.1.8278, 2026-11-12).
-    if: ${{ !cancelled() && needs.web.result == 'success' && needs.station-natives-linux.result == 'success' && needs.station-natives-win.result == 'success' && needs.station-natives-mac.result == 'success' }}
+    if: ${{ !cancelled() && needs.web.result == 'success' && needs.station-natives-linux.result == 'success' && needs.station-natives-linux-arm64.result == 'success' && needs.station-natives-win.result == 'success' && needs.station-natives-mac.result == 'success' }}
     runs-on: macos-26
     environment: production
     timeout-minutes: 5

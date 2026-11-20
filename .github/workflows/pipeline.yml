@@ -1686,7 +1686,8 @@ jobs:
             if [ "$used" -gt 200 ]; then
               echo "::warning::monoid's beta Android app left for the next release: this job has used ${used} s of its 300"
             else
-              (unset CLOUDFLARE_API_TOKEN; RELEASE_DIR="$RUNNER_TEMP/monoid" sh .github/release.sh --product monoid android) \
+              (unset CLOUDFLARE_API_TOKEN; RELEASE_DIR="$RUNNER_TEMP/monoid" \
+                bash scripts/with-timeout.sh "@$(( JOB_BEGAN + 275 ))" sh .github/release.sh --product monoid android) \
                 > "$RUNNER_TEMP/monoid.log" 2>&1 &
               monoid=$!
             fi
@@ -1699,10 +1700,17 @@ jobs:
           else
             echo "::error::still.fail's beta Android app was not put"; failed=1
           fi
+          # (monoid's ended before the job is, 25 s left for the rest: run beside stable's android on the same Mac it ran
+          # on to the job's 5 minutes, and the job cut after still.fail's beta was put, 44770976468; out of time it is
+          # left for the next release, not this one's failure)
           if [ -n "$monoid" ]; then
-            if wait "$monoid"; then
+            ms=0; wait "$monoid" || ms=$?
+            if [ "$ms" = 0 ]; then
               echo "::group::monoid's beta Android app"; cat "$RUNNER_TEMP/monoid.log"; echo "::endgroup::"
               echo "packed=1" >> "$GITHUB_OUTPUT"
+            elif [ "$ms" = 124 ]; then
+              cat "$RUNNER_TEMP/monoid.log"
+              echo "::warning::monoid's beta Android app did not finish before the job's end and is left for the next release"
             else
               cat "$RUNNER_TEMP/monoid.log"; echo "::error::monoid's beta Android app was not built"; failed=1
             fi
