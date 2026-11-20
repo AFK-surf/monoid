@@ -1440,6 +1440,7 @@ let en : Map[String, String] = {
   "web-pages.profiles.account.each": "Available on",
   "web-pages.profiles.installThenSignIn": "Sign-in starts once it is installed",
   "web-pages.profiles.models": "Models",
+  "web-pages.profiles.share.allStations": "All stations",
   "web-pages.profiles.share.changeThere": "Change it there",
   "web-pages.profiles.share.confirmAction": "Share account",
   "web-pages.profiles.share.confirmClaudeBody": "Other stations borrow this account's login credentials and send requests directly to Claude from their own machines",

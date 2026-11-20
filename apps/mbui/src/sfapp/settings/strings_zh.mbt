@@ -1412,6 +1412,7 @@ let zh : Map[String, String] = {
   "web-pages.profiles.account.each": "可使用的 station",
   "web-pages.profiles.installThenSignIn": "安装完成后开始登录",
   "web-pages.profiles.models": "模型",
+  "web-pages.profiles.share.allStations": "全部 station",
   "web-pages.profiles.share.changeThere": "在该 station 上修改",
   "web-pages.profiles.share.confirmAction": "分享账号",
   "web-pages.profiles.share.confirmClaudeBody": "分享后，其他 station 会借用此账号的登录凭证，在各自的机器上直接向 Claude 发送请求",

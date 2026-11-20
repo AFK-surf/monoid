@@ -1121,6 +1121,7 @@
   "web-pages.profiles.share.move": "Move",
   "web-pages.profiles.share.moved": "Moved to {station}",
   "web-pages.profiles.share.stations": "Stations that can use it",
+  "web-pages.profiles.share.allStations": "All stations",
   "web-pages.profiles.share.everyStation": "All",
   "web-pages.profiles.share.change": "Change",
   "web-pages.profiles.share.futureIn": "Stations added later can use it too",

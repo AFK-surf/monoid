@@ -1070,6 +1070,7 @@
   "web-pages.profiles.share.move": "更换",
   "web-pages.profiles.share.moved": "已移到 {station}",
   "web-pages.profiles.share.stations": "可用的 station",
+  "web-pages.profiles.share.allStations": "全部 station",
   "web-pages.profiles.share.everyStation": "全部",
   "web-pages.profiles.share.change": "更改",
   "web-pages.profiles.share.futureIn": "以后新加的 station 也能用",
