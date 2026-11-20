@@ -999,11 +999,17 @@ export const AgentsLive = (control: Control) =>
       // not only the ones that end all_done from now on; and once after the start (the profiles' checks read by then).
       const reviewing = () => void reviewUndecided(hub).catch((error) => log.warn("hub", "reviewing done chats failed", { error: (error as Error).message }));
       let rule = hub.config().automaticDecisions.completion;
+      let maxConcurrentTurns = hub.config().maxConcurrentTurns;
       const unlistenRule = config.listen(() => {
-        const now = hub.config().automaticDecisions.completion;
+        const cfg = hub.config();
+        const now = cfg.automaticDecisions.completion;
         const changed = now.enabled && (!rule.enabled || now.model !== rule.model);
         rule = now;
         if (changed) reviewing();
+        if (cfg.maxConcurrentTurns !== maxConcurrentTurns) {
+          maxConcurrentTurns = cfg.maxConcurrentTurns;
+          hub.setMaxConcurrentTurns(maxConcurrentTurns);
+        }
       });
       time.after(120_000, reviewing);
 

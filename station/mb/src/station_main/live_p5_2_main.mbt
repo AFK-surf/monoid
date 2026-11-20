@@ -172,7 +172,20 @@ async fn P52::refresh_config(self : P52) -> Unit {
       return
     }
   }
+  let prev_max = match jfield(self.config, "maxConcurrentTurns") {
+    Number(n, ..) if n > 0.0 => n.to_int()
+    _ => 0
+  }
   self.config = of_jv(worked)
+  let next_max = match jfield(self.config, "maxConcurrentTurns") {
+    Number(n, ..) if n > 0.0 => n.to_int()
+    _ => 0
+  }
+  if next_max != prev_max {
+    if self.actors_program is Some(p) {
+      p.set_max_concurrent_turns(next_max)
+    }
+  }
 }
 
 ///|

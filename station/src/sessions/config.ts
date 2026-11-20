@@ -70,6 +70,8 @@ export type HubConfig = {
   warmMs: number;
   /// Idle claude processes beyond this count are evicted, oldest first, once past warmMs.
   maxWarmClaude: number;
+  /// Maximum number of concurrent running turns across all sessions on this station; 0: unlimited.
+  maxConcurrentTurns: number;
   /// Chats idle this long, and done (auto archive), are archived by the station; 0: never.
   autoArchiveMs: number;
   /// Sessions heard only in Slack idle this long are archived even when stopped at a block for someone (nobody sees
@@ -167,6 +169,7 @@ export function hubConfig(raw: any, dataDir: string, found: (id: string) => read
     automaticDecisions: { completion: { enabled: completion.enabled === true, model: str(completion.model) ?? null } },
     warmMs: Math.trunc((typeof raw?.warmMinutes === "number" ? raw.warmMinutes : 30) * 60_000),
     maxWarmClaude: typeof raw?.maxWarmClaude === "number" ? raw.maxWarmClaude : 4,
+    maxConcurrentTurns: typeof raw?.maxConcurrentTurns === "number" && Number.isFinite(raw.maxConcurrentTurns) ? Math.max(0, Math.trunc(raw.maxConcurrentTurns)) : 0,
     autoArchiveMs: Math.trunc(Math.max(0, typeof raw?.autoArchiveDays === "number" ? raw.autoArchiveDays : 1) * 86_400_000),
     slackArchiveMs: Math.trunc(Math.max(0, typeof raw?.slackArchiveDays === "number" ? raw.slackArchiveDays : 3) * 86_400_000),
     autoArchiveReviewed: raw?.autoArchiveReviewed === true,

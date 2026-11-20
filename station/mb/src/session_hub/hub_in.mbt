@@ -844,7 +844,12 @@ pub fn Hub::tools_at(self : Hub, url : String) -> Unit {
 /// After a restart: resume cut-off turns (those not taken up with their runtime), then deliver whatever is pending.
 pub fn Hub::recover(self : Hub) -> Unit raise {
   let recovering : Array[String] = []
-  for row in self.running_sessions() {
+  let running = self.running_sessions()
+  running.sort_by((a, b) => {
+    let diff = num_of(b, "lastActiveAt").unwrap_or(0.0) - num_of(a, "lastActiveAt").unwrap_or(0.0)
+    if diff > 0.0 { 1 } else if diff < 0.0 { -1 } else { 0 }
+  })
+  for row in running {
     if self.adopted.contains(row_key(row)) || !self.online(row) {
       continue
     }

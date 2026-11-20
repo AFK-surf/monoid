@@ -82,7 +82,7 @@ export class ActorsProgram {
 
   readonly #store: { told(changes: any[]): void } | null;
 
-  private constructor(data: string, clock: Clock.Clock, store: { told(changes: any[]): void; db: any } | null) {
+  private constructor(data: string, clock: Clock.Clock, store: { told(changes: any[]): void; db: any } | null, maxConcurrentTurns = 0) {
     this.#clock = clock;
     this.#store = store;
     // (it ends with its hub, which closes it: the process waits on it only while it has something going)
@@ -94,6 +94,7 @@ export class ActorsProgram {
     // memory (a test's) is this process's alone, asked as the rest is. Said first: the program's actors begin here.
     const main = store === null ? undefined : (store.db.prepare("PRAGMA database_list").all() as { name: string; file: string }[]).find((d) => d.name === "main");
     this.post({ db: main !== undefined && main.file !== "" ? main.file : null });
+    if (maxConcurrentTurns > 0) this.setMaxConcurrentTurns(maxConcurrentTurns);
   }
 
   #lost(code: number) {
@@ -117,9 +118,15 @@ export class ActorsProgram {
   }
 
   /// The program for a hub on `data`, where it is built (none: a checkout that did not build it runs no session).
-  static open(data: string, clock: Clock.Clock, store: { told(changes: any[]): void; db: any } | null = null): ActorsProgram | null {
+  static open(data: string, clock: Clock.Clock, store: { told(changes: any[]): void; db: any } | null = null, maxConcurrentTurns = 0): ActorsProgram | null {
     if (mbReaderBinary() === null) return null;
-    return new ActorsProgram(data, clock, store);
+    return new ActorsProgram(data, clock, store, maxConcurrentTurns);
+  }
+
+  /// Updates the maximum concurrent running turns in the sessions program without restarting.
+  setMaxConcurrentTurns(n: number) {
+    const limit = typeof n === "number" && Number.isFinite(n) && n > 0 ? Math.trunc(n) : 0;
+    this.post({ maxConcurrentTurns: limit });
   }
 
   now() {

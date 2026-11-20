@@ -237,6 +237,8 @@ export class Hub {
   readonly actors = new Map<string, Actor>();
   /// The MoonBit program its actors run in (mb-actor.ts), where it is built: opened with the first.
   private actorsProgram: ActorsProgram | null | undefined;
+  /// Latest concurrency limit set on this hub (null: read from config() when actorsProgram opens).
+  private maxConcurrentTurnsOverride: number | null = null;
   /// Installed by the agents' side: older stores finish indexing active keys without holding the station thread.
   waitForWorkspaceActivity: (() => Promise<boolean>) | null = null;
   /// An older store's session totals are built in bounded batches after handover.
@@ -1130,7 +1132,8 @@ export class Hub {
   /// pending.
   recover() {
     const recovering = new Set<string>();
-    for (const row of this.store.runningSessions()) {
+    const running = [...this.store.runningSessions()].sort((a, b) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0));
+    for (const row of running) {
       // Taken up from the previous station: its turn runs on.
       if (this.adopted.has(row.key) || !this.online(row)) continue;
       log.info("hub", "recovering a turn cut off by restart", { session: row.key });
@@ -1721,10 +1724,19 @@ export class Hub {
     log.info("hub", "session created", { session: key, connect: connect.id, scope, runtime, model: model ?? "", profile: profile.id });
   }
 
+  /// Updates the maximum concurrent running turns without restarting the station.
+  setMaxConcurrentTurns(n: number) {
+    const limit = typeof n === "number" && Number.isFinite(n) && n > 0 ? Math.trunc(n) : 0;
+    this.maxConcurrentTurnsOverride = limit;
+    if (this.actorsProgram) this.actorsProgram.setMaxConcurrentTurns(limit);
+  }
+
   /// The program its actors run in, the station's jobs too (jobs/jobs.ts), started for its first use (none: not built
   /// here).
   program(): ActorsProgram | null {
-    if (this.actorsProgram === undefined) this.actorsProgram = ActorsProgram.open(this.config().dataDir, this.clock, this.store);
+    if (this.actorsProgram === undefined) {
+      this.actorsProgram = ActorsProgram.open(this.config().dataDir, this.clock, this.store, this.maxConcurrentTurnsOverride ?? this.config().maxConcurrentTurns);
+    }
     return this.actorsProgram;
   }
 
