@@ -1193,14 +1193,37 @@ fn P51::presence_parts(self : P51, plane : Plane) -> @cloud_net.PresenceParts {
 
 ///|
 /// The keeper the gate asks of the locks: cloud_lock's, as this station keeps them.
-fn P51::keeper_of(self : P51, plane : Plane) -> @gate.Keeper {
+fn P51::keeper_of(self : P51, plane : Plane) -> @gate.Keeper raise {
   let bus = self.bus
   let host = self.host
+  // The devices' builds kept in stillfail.db (`device_builds`, `device_builds_since`), as mesh.ts gives
+  // device-builds.ts the store: kept across a restart, `since` the first start's, in whole seconds (`nowSecs`). Its
+  // first write refused while another writer holds the lock raises, and the mesh's start is tried again.
+  let now_secs = (wall_ms() / 1000L).to_double()
+  let since = match bus.store.device_builds_since(Json::number(now_secs)) {
+    Number(n, ..) => n
+    _ => now_secs
+  }
+  let rows = bus.store
+    .device_builds()
+    .filter_map(r => match r {
+      { "id": String(id), "build": Number(b, ..), "at": Number(at, ..), .. } => Some((id, b.to_int(), at))
+      _ => None
+    })
+  let kept : @cloud_lock.BuildsKept = {
+    device_builds: () => rows,
+    put_device_build: (id, build, at) => {
+      bus.store.put_device_build(Json::string(id), Json::number(build.to_double()), Json::number(at)) catch {
+        e => p51_log("WARN", "mesh", "device build write failed", fields={ "error": Json::string("\{e}") })
+      }
+    },
+    device_builds_since: _ => since,
+  }
   let parts : KeeperParts = {
     cloud: plane.cloud,
     crypto: plane.crypto,
     plane,
-    builds: @cloud_lock.DeviceBuilds::new(None, wall_ms().to_double() / 1000.0),
+    builds: @cloud_lock.DeviceBuilds::new(Some(kept), now_secs),
     states: [],
     call: self.keeper_call,
   }
