@@ -882,9 +882,9 @@ async fn P52::tools_call(
       to_jv((self.bus.cloud_call.val)("addRelay", { "workspace": of_jv(a(1)), "url": of_jv(a(2)), "by": of_jv(a(3)) }))
     "mesh/ways.removeRelay" =>
       to_jv((self.bus.cloud_call.val)("removeRelay", { "workspace": of_jv(a(1)), "url": of_jv(a(2)) }))
-    // (relays.ts `probeRelay`: a relay reached over https, its answer's status)
+    // (relays.ts `probeRelay`: a relay reached over https, its answer's status, redirects followed as its `fetch` does)
     "fetch" => {
-      let answer = (p5_oauth_io(self.host).fetch)({ url: s(0), method_: "GET", headers: [], body: None, timeout_ms: 10000, manual: true })
+      let answer = (p5_oauth_io(self.host).fetch)({ url: s(0), method_: "GET", headers: [], body: None, timeout_ms: 10000, manual: false })
       @api_routes.jobj([("status", @api_routes.jnum(answer.status.to_double()))])
     }
     // ── the feedback's (feedback/module.ts) ──

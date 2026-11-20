@@ -44,7 +44,8 @@ pub fn Wall::now(self : Wall) -> Double {
 
 ///|
 /// HTTP on the shell, the machine's time the wall's: a request whose answer the shell did not get (no way there, a
-/// timeout) is `Unanswered`.
+/// timeout) is `Unanswered`. Redirects are followed as Node's `fetch` follows them (a file's `url_private` sent to
+/// Slack's sign-in page where the app lacks files:read is told by `redirected`).
 pub fn host_net(host : @host.Host, wall : Wall) -> Net {
   let fetch = async fn(
     meth : String,
@@ -53,11 +54,11 @@ pub fn host_net(host : @host.Host, wall : Wall) -> Net {
     body : Bytes?,
     timeout_ms : Int,
   ) -> HttpAnswer {
-    let r = host.fetch(url, method_=meth, headers~, body?=body, timeout_ms~) catch {
+    let r = host.fetch(url, method_=meth, headers~, body?=body, timeout_ms~, redirect="follow") catch {
       @host.FetchTimeout => raise Unanswered(@host.fetch_timed_out)
       e => raise Unanswered(shell_words(e))
     }
-    { status: r.status, headers: r.headers, body: r.body, redirected: false }
+    { status: r.status, headers: r.headers, body: r.body, redirected: r.redirected }
   }
   { fetch, now: () => wall.now(), sleep: async fn(ms : Int) { @effect.sleep(ms) } }
 }

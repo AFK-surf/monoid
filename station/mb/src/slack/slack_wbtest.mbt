@@ -349,3 +349,48 @@ test "slack socket fails on stale silence after pings, closes, and reconnects" {
   surface.stop()
   rt.advance(0)
 }
+
+///|
+/// A client whose every request is answered `kind`'s `body`, said to have come by a redirect where `redirected`.
+fn answering_slack_client(rt : @effect.Runtime, kind : String, redirected : Bool) -> SlackClient {
+  SlackClient::new({
+    fetch: async fn(_meth, _url, _headers, _body, _timeout_ms) {
+      { status: 200, headers: [("content-type", kind)], body: b"<html>", redirected }
+    },
+    now: () => rt.now().to_double(),
+    sleep: async fn(ms) { @effect.sleep(ms) },
+  })
+}
+
+///|
+/// What `download` came to: the bytes' length, or its failure's words.
+fn downloaded(rt : @effect.Runtime, client : SlackClient, name : String) -> Result[Int, String] {
+  let got : Ref[Result[Int, String]?] = Ref(None)
+  ignore(
+    rt.fork(async fn() {
+      got.val = Some(
+        try {
+          Ok(client.download("https://files.slack.com/files-pri/T1-F1/\{name}", name, "xoxb-test").length())
+        } catch {
+          e => Err(message_of(e))
+        },
+      )
+    }),
+  )
+  rt.advance(0)
+  got.val.unwrap()
+}
+
+///|
+test "download refuses Slack's sign-in page, an .html file's too where a redirect led there (web.ts `got.redirected`)" {
+  let rt = @effect.Runtime::new()
+  // an HTML page for a file not named .html: the sign-in page, redirected or not
+  assert_true(downloaded(rt, answering_slack_client(rt, "text/html", false), "a.png") is Err(_))
+  // an .html file's own bytes, asked straight: kept
+  assert_eq(downloaded(rt, answering_slack_client(rt, "text/html; charset=utf-8", false), "page.html"), Ok(6))
+  // an .html file asked and sent elsewhere (files:read missing): the sign-in page, refused
+  let refused = downloaded(rt, answering_slack_client(rt, "text/html; charset=utf-8", true), "page.html")
+  assert_true(refused is Err(e) && e.contains("files:read"))
+  // a file's bytes by its storage's 302: kept
+  assert_eq(downloaded(rt, answering_slack_client(rt, "image/png", true), "a.png"), Ok(6))
+}

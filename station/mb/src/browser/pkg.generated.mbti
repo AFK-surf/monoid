@@ -131,6 +131,8 @@ pub fn host_cdp_open(@host.Host) -> async (String, CdpLink) -> CdpSocket
 
 pub fn host_clock(@host.Host, Double) -> Clock
 
+pub fn host_fetch_bytes(@host.Host, String) -> async (String) -> Bytes?
+
 pub fn host_file_of(@jsjson.JValue?) -> HostFile?
 
 pub fn host_files(@host.Host) -> Files

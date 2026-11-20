@@ -109,6 +109,8 @@ pub fn feed(String, String) -> String
 
 pub let feed_again_ms : Array[Double]
 
+pub async fn fetch_on(@host.Host, String, meth? : String) -> Response
+
 pub fn field_of(Error, String) -> @jsjson.JValue?
 
 pub async fn find_command_soon(World, String, Array[(String, String)]) -> Found?
