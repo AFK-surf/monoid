@@ -748,9 +748,82 @@ impl Inner {
             }
             return Ok(Some(Value::Array(values)));
         }
-        // A folder and those it is in, made where they are not (mkdirSync's `recursive`).
+        // A folder made where it is not; with `recursive` (default true), its parents too (`mkdirSync`'s `recursive`).
         if op == "fs.mkdir" {
-            std::fs::create_dir_all(str_of(a, "path")?).map_err(err)?;
+            let path = str_of(a, "path")?;
+            let recursive = a.get("recursive").and_then(Value::as_bool).unwrap_or(true);
+            if recursive {
+                std::fs::create_dir_all(path).map_err(err)?;
+            } else {
+                std::fs::create_dir(path).map_err(|e| {
+                    if e.kind() == std::io::ErrorKind::AlreadyExists {
+                        format!("EEXIST: file already exists, mkdir '{path}'")
+                    } else {
+                        err(e)
+                    }
+                })?;
+            }
+            return Ok(Some(Value::Null));
+        }
+        // Update access and modification timestamps of a file or directory (used by OAuth lock heartbeats).
+        if op == "fs.utimes" {
+            let path = str_of(a, "path")?;
+            let mtime_ms = a
+                .get("mtimeMs")
+                .and_then(Value::as_f64)
+                .filter(|v| v.is_finite())
+                .ok_or_else(|| "no mtimeMs".to_string())?;
+            let atime_ms = a
+                .get("atimeMs")
+                .and_then(Value::as_f64)
+                .filter(|v| v.is_finite())
+                .unwrap_or(mtime_ms);
+            #[cfg(unix)]
+            {
+                let to_ts = |ms: f64| -> libc::timespec {
+                    let secs_f = (ms / 1000.0).floor();
+                    let mut sec = secs_f as i64;
+                    let mut nsec = ((ms - secs_f * 1000.0) * 1_000_000.0).round() as i64;
+                    if nsec >= 1_000_000_000 {
+                        sec += 1;
+                        nsec -= 1_000_000_000;
+                    } else if nsec < 0 {
+                        sec -= 1;
+                        nsec += 1_000_000_000;
+                    }
+                    libc::timespec { tv_sec: sec as libc::time_t, tv_nsec: nsec as _ }
+                };
+                let c_path = std::ffi::CString::new(path).map_err(|_| format!("invalid path: {path}"))?;
+                let times = [to_ts(atime_ms), to_ts(mtime_ms)];
+                let rc = unsafe { libc::utimensat(libc::AT_FDCWD, c_path.as_ptr(), times.as_ptr(), 0) };
+                if rc != 0 {
+                    return Err(err(std::io::Error::last_os_error()));
+                }
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::OpenOptionsExt;
+                let to_time = |ms: f64| -> Result<std::time::SystemTime, String> {
+                    if ms >= 0.0 {
+                        std::time::UNIX_EPOCH
+                            .checked_add(std::time::Duration::from_secs_f64(ms / 1000.0))
+                            .ok_or_else(|| "time out of range".to_string())
+                    } else {
+                        std::time::UNIX_EPOCH
+                            .checked_sub(std::time::Duration::from_secs_f64(-ms / 1000.0))
+                            .ok_or_else(|| "time out of range".to_string())
+                    }
+                };
+                let file = std::fs::OpenOptions::new()
+                    .access_mode(0x0100) // FILE_WRITE_ATTRIBUTES
+                    .custom_flags(0x02000000) // FILE_FLAG_BACKUP_SEMANTICS
+                    .open(path)
+                    .map_err(err)?;
+                let times = std::fs::FileTimes::new()
+                    .set_accessed(to_time(atime_ms)?)
+                    .set_modified(to_time(mtime_ms)?);
+                file.set_times(times).map_err(err)?;
+            }
             return Ok(Some(Value::Null));
         }
         // What is at `path` let go, a folder with all it holds with `recursive`; nothing there is no failure (rmSync's

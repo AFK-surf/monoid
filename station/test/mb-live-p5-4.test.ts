@@ -203,6 +203,19 @@ test("run: the vault, the drive, the screens, the browser, the devices, the term
   assert.deepEqual(await ask(door, "logins.logins"), { answer: [] });
   assert.equal(Array.isArray((await ask(door, "screens.list")).answer), true);
 
+  // P1-1: accounts_oauth host_io atomic mkdir(recursive=false) EEXIST + hold.utimes on lock dir
+  const oauthLock = (await ask(door, "p54.oauthHostLock")).answer;
+  assert.equal(oauthLock.eexist, "EEXIST", JSON.stringify(oauthLock));
+  assert.ok(Math.abs(oauthLock.mtimeMs - 1_700_000_555_000) < 2, JSON.stringify(oauthLock));
+  assert.equal(oauthLock.afterRemove, "ENOENT", JSON.stringify(oauthLock));
+
+  // P1-2: P51::member_screens passes raw @door.Stream + media_datagrams directly to answer_screen
+  const screenDgram = (await ask(door, "p54.memberScreensDatagrams")).answer;
+  assert.deepEqual(screenDgram.tokens, [42], JSON.stringify(screenDgram));
+  const screenHead = JSON.parse(screenDgram.firstLine);
+  assert.equal(screenHead.status, 200, JSON.stringify(screenHead));
+  assert.equal(screenHead.headers?.["x-screen-dgram"], "42", JSON.stringify(screenHead));
+
   // a handover: what the vault holds in memory carried to the next process, and taken up there
   const b = await launch(data, app);
   await b.next("ready", (m) => m.ready === true);

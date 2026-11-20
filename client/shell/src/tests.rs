@@ -656,6 +656,26 @@ fn writes_hashes_and_moves_the_station_programs_files() {
     assert_eq!(std::fs::read(dir.path().join("a/moved.txt")).unwrap(), "中\n".as_bytes());
     assert_eq!(sync("fs.mkdir", json!({ "path": at("c/d") }))["value"], Value::Null);
     assert!(dir.path().join("c/d").is_dir());
+    // fs.mkdir with recursive=false is atomic and returns EEXIST when the directory already exists;
+    // recursive=true / omitted remains idempotent.
+    assert_eq!(sync("fs.mkdir", json!({ "path": at("c/d") }))["value"], Value::Null);
+    assert_eq!(sync("fs.mkdir", json!({ "path": at("c/d"), "recursive": true }))["value"], Value::Null);
+    assert_eq!(sync("fs.mkdir", json!({ "path": at("c/lock"), "recursive": false }))["value"], Value::Null);
+    assert!(dir.path().join("c/lock").is_dir());
+    let eexist = sync("fs.mkdir", json!({ "path": at("c/lock"), "recursive": false }))["error"]
+        .as_str()
+        .expect("non-recursive mkdir on existing dir must error")
+        .to_string();
+    assert!(eexist.contains("EEXIST"), "expected EEXIST in error, got: {eexist}");
+    // fs.utimes updates mtimeMs on both regular files and directories (OAuth lock heartbeat target).
+    let target_ms = 1_700_000_123_456.0_f64;
+    assert_eq!(sync("fs.utimes", json!({ "path": at("a/moved.txt"), "mtimeMs": target_ms }))["value"], Value::Null);
+    let file_mtime = sync("fs.lstat", json!({ "path": at("a/moved.txt") }))["value"]["mtimeMs"].as_f64().unwrap();
+    assert!((file_mtime - target_ms).abs() < 2.0, "file mtimeMs expected ~{target_ms}, got {file_mtime}");
+    assert_eq!(sync("fs.utimes", json!({ "path": at("c/lock"), "mtimeMs": target_ms }))["value"], Value::Null);
+    let dir_mtime = sync("fs.lstat", json!({ "path": at("c/lock") }))["value"]["mtimeMs"].as_f64().unwrap();
+    assert!((dir_mtime - target_ms).abs() < 2.0, "dir mtimeMs expected ~{target_ms}, got {dir_mtime}");
+    assert!(sync("fs.utimes", json!({ "path": at("c/missing"), "mtimeMs": target_ms }))["error"].is_string());
     assert!(sync("fs.remove", json!({ "path": at("a") }))["error"].is_string());
     assert_eq!(sync("fs.remove", json!({ "path": at("a"), "recursive": true }))["value"], Value::Null);
     assert!(!dir.path().join("a").exists());

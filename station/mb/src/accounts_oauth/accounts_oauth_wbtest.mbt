@@ -491,3 +491,43 @@ test "Claude subscription check fails when renewal fails and old token is reject
   assert_eq(get(get(Some(still_401), "result"), "state"), Some(Json::string("login")))
   assert_eq(get(get(Some(still_401), "result"), "detail"), Some(Json::string("station.quota.signInExpired")))
 }
+
+///|
+test "RefreshLock heartbeat calls utimes every 5s past 60s and non-recursive mkdir raises EEXIST" {
+  let w = World::new({ "now": Json::number(t0) })
+  let io = w.io()
+  let lock_path = "/h/.oauth_refresh.lock"
+  let eexist_code = Ref("")
+  let mtime_after_70s = Ref(0.0)
+  let second_acquired_at = Ref(0L)
+  let lock_ref : Ref[RefreshLock?] = Ref(None)
+  ignore(w.drive(async fn() {
+    (io.mkdir)("/h", true)
+    let lock = RefreshLock::acquire(io, words(), lock_path, "en")
+    lock_ref.val = Some(lock)
+    // Atomic non-recursive mkdir on an existing lock directory raises EEXIST.
+    (io.mkdir)(lock_path, false) catch {
+      e => eexist_code.val = code_of(e)
+    }
+    Json::null()
+  }, timers=false))
+  assert_eq(eexist_code.val, "EEXIST")
+  // Advance past the 60s stale threshold: the 5s utimes heartbeat must keep mtime fresh.
+  w.rt.advance(70_000)
+  mtime_after_70s.val = w.dirs.get(lock_path).unwrap().1
+  assert_true(mtime_after_70s.val >= t0 + 65_000.0)
+  // A second contender arriving at +70s must NOT treat the live lock as stale.
+  ignore(w.rt.fork(async fn() {
+    let l2 = RefreshLock::acquire(io, words(), lock_path, "en")
+    second_acquired_at.val = w.now()
+    l2.release()
+  }))
+  ignore(w.rt.run_ready())
+  w.rt.advance(1_000)
+  assert_eq(second_acquired_at.val, 0L)
+  // Releasing the first lock lets the contender acquire it.
+  ignore(w.rt.fork(async fn() { lock_ref.val.unwrap().release() }))
+  ignore(w.rt.run_ready())
+  w.rt.advance(500)
+  assert_true(second_acquired_at.val > 0L)
+}

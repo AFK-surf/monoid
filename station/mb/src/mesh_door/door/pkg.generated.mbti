@@ -178,6 +178,7 @@ pub(all) struct Stream {
   finish : async () -> Unit
   stopped : async () -> Int32?
   reset : async (Int32) -> Unit
+  media_datagrams : (async (Double) -> Bool)?
 }
 
 pub(all) struct Taken {

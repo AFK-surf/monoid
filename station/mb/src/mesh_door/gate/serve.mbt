@@ -524,6 +524,7 @@ fn tracing(
     finish: async fn() { (stream.finish)() },
     stopped: async fn() -> Int? { (stream.stopped)() },
     reset: async fn(code : Int) { (stream.reset)(code) },
+    media_datagrams: stream.media_datagrams,
   }
   (counted, head, error => end(false, error))
 }

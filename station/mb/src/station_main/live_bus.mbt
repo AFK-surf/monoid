@@ -94,6 +94,8 @@ pub(all) struct LiveBus {
   jobs_ask : Ref[async (String, Json) -> Json]
   /// P5-4: Vault, StationDrive, Helper, Grants, HelperFolders, ScreenRegistry, Browser, Adb, Devices, Terminals, Logins.
   ui_ask : Ref[async (String, Json) -> Json]
+  /// P5-4: Direct typed screen-view handler receiving the raw `@door.Stream` (preserving QUIC `media_datagrams`).
+  ui_screen_view : Ref[(async (@door.Stream, Bytes, Json, Json) -> Bool)?]
   /// P5-5: Slack, Feishu, Comma, Group, WorkspaceConnects, Copies, Moves, Updates, Features.
   coord_ask : Ref[async (String, Json) -> Json]
   // ── Hooks any slice registers on (plain lists: each slice adds its own, none provides a whole) ──
@@ -257,6 +259,7 @@ pub fn LiveBus::new(
     status_agents: Ref(() => None),
     jobs_ask: Ref(async fn(_op, _arg) { Json::null() }),
     ui_ask: Ref(async fn(_op, _arg) { Json::null() }),
+    ui_screen_view: Ref(None),
     coord_ask: Ref(async fn(_op, _arg) { Json::null() }),
     release_hearers: [],
     peer_hearers: [],
@@ -827,12 +830,6 @@ async fn LiveBus::jobs_sharing_lend_agy(self : LiveBus, profile : Json) -> Json 
 }
 
 // ── The screens and the devices (P5-4), asked by the others ──
-
-///|
-/// A screen's view a member opens (`head` as it asked), given its stream's handle: null where no screens answer.
-async fn LiveBus::ui_screens_view(self : LiveBus, head : Json, viewer : Json, stream : Json) -> Json {
-  (self.ui_ask.val)("screens.view", { "head": head, "viewer": viewer, "stream": stream })
-}
 
 ///|
 /// A device of this station reached for `session`: its connection (`{id}`).

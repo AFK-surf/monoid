@@ -555,6 +555,7 @@ test "a view of a screen not there is refused, said in the asker's language" {
     finish: async fn() { finished.val = true },
     stopped: async fn() -> Int? { None },
     reset: async fn(_) {  },
+    media_datagrams: None,
   }
   let hub : @mesh_runtime.ScreenHubPort = {
     get: _ => None,

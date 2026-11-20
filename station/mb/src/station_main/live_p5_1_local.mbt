@@ -231,17 +231,23 @@ fn P51::member_stream(self : P51, answer : async (Json) -> Unit) -> async (@gate
 }
 
 ///|
-/// A screen's view a member opens (`{"screen": …}`): the screens' slice's (`ui_ask` `screens.view`), given the stream
-/// as a handle at the shell; none there, refused.
+/// A screen's view a member opens (`{"screen": …}`): handed straight to P5-4's `ui_screen_view` with the raw
+/// `@door.Stream` so QUIC `media_datagrams` stays intact; none there, refused.
 fn P51::member_screens(self : P51) -> async (@door.Stream, Bytes, Json, @gate.Viewer, () -> Bool) -> Unit {
   let bus = self.bus
-  let host = self.host
   async fn(stream, carry, head, viewer, _up) {
-    let handle = shell_handle(host, stream, carry)
-    let said = bus.ui_screens_view(head, viewer.to_json(), handle)
-    if said is Null {
-      @door.write_line(stream, { "status": 404, "error": "no screens on this station" })
-      (stream.finish)()
+    match bus.ui_screen_view.val {
+      Some(view) => {
+        let handled = view(stream, carry, head, viewer.to_json())
+        if !handled {
+          @door.write_line(stream, { "status": 404, "error": "no screens on this station" })
+          (stream.finish)()
+        }
+      }
+      None => {
+        @door.write_line(stream, { "status": 404, "error": "no screens on this station" })
+        (stream.finish)()
+      }
     }
   }
 }

@@ -97,6 +97,9 @@ fn shell_stream(host : @host.Host, id : Json) -> @door.Stream {
       }
     },
     reset: async fn(code) { ignore(host.shell("istream.reset", { "id": id, "code": Json::number(code.to_double()) })) },
+    media_datagrams: Some(async fn(token) {
+      host.shell("istream.mediaDatagrams", { "id": id, "token": Json::number(token) }).0 is True
+    }),
   }
 }
 
