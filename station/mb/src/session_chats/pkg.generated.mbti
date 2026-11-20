@@ -5,6 +5,9 @@ import {
   "moonbitlang/core/ref",
   "station/jsjson",
   "station/session_hub",
+  "station/sql",
+  "station/store_sessions",
+  "station/store_threads",
 }
 
 // Values
@@ -264,7 +267,7 @@ pub fn percent_decode(String) -> String
 
 pub async fn policy_stamp(World, String) -> @jsjson.JValue
 
-pub async fn policy_ws(World, @jsjson.JValue) -> @jsjson.JValue
+pub fn policy_ws(World, @jsjson.JValue) -> @jsjson.JValue raise
 
 pub async fn post_card(World, String, @jsjson.JValue, String, @jsjson.JValue, ((String) -> Error)?, (async () -> Bool)?) -> @jsjson.JValue
 
@@ -434,11 +437,11 @@ pub async fn undecided(World) -> Array[String]
 
 pub fn undefined_j() -> @jsjson.JValue
 
-pub async fn unheld(World, String, @jsjson.JValue) -> Held
+pub fn unheld(World, String, @jsjson.JValue) -> Held raise
 
 pub fn units_compare(Array[Int32], Array[Int32]) -> Int32
 
-pub async fn untitled_chat(World, String) -> String?
+pub fn untitled_chat(World, String) -> String? raise
 
 pub fn utf8(String) -> Bytes
 
@@ -455,6 +458,15 @@ pub(all) suberror Thrown {
 pub impl Show for Thrown
 
 // Types and methods
+pub struct ChatState {
+  held : Map[String, Map[String, @jsjson.JValue]]
+  openings : Map[String, @jsjson.JValue]
+  titles : Map[String, @jsjson.JValue]
+  mut held_count : Int32
+}
+pub fn ChatState::new() -> Self
+pub fn ChatState::set_opening(Self, String, @jsjson.JValue) -> Unit
+
 #derive(Eq, Show)
 pub struct Facts {
   width : Double
@@ -476,6 +488,15 @@ pub fn Found::to_j(Self) -> @jsjson.JValue
 pub(all) struct Held {
   id : String?
   args : @jsjson.JValue
+}
+
+pub(all) struct Live {
+  store : @store_sessions.Store
+  threads : @store_threads.Store
+  hub : @session_hub.Hub
+  db : @sql.Db
+  state : ChatState
+  flush_threads : () -> Unit
 }
 
 pub struct PresetsFile {
@@ -513,21 +534,21 @@ pub(all) struct World {
   words : Words
   lang : @ref.Ref[String]
   thrown : @ref.Ref[@jsjson.JValue]
+  live : Live?
 }
 pub async fn World::actor(Self, String, String, Array[@jsjson.JValue]) -> @jsjson.JValue
 pub async fn World::ask(Self, String, Array[@jsjson.JValue]) -> @jsjson.JValue
 pub async fn World::ask_u(Self, String, Array[@jsjson.JValue]) -> @jsjson.JValue?
 pub async fn World::call_fn(Self, @jsjson.JValue, Array[@jsjson.JValue]) -> @jsjson.JValue
 pub async fn World::chat(Self, String, String, Array[@jsjson.JValue]) -> @jsjson.JValue
-pub async fn World::config(Self) -> @jsjson.JValue
+pub fn World::config(Self) -> @jsjson.JValue
 pub async fn World::dep(Self, String, Array[@jsjson.JValue]) -> @jsjson.JValue
 pub async fn World::has(Self, String) -> Bool
-pub async fn World::has_actor(Self, String) -> Bool
+pub fn World::has_actor(Self, String) -> Bool
 pub async fn World::hub(Self, String, Array[@jsjson.JValue]) -> @jsjson.JValue
 pub async fn World::log(Self, String, String, String, @jsjson.JValue) -> Unit
-pub async fn World::now(Self) -> Double
+pub fn World::now(Self) -> Double
 pub async fn World::sleep(Self, Double) -> Unit
-pub async fn World::state(Self, String, Array[@jsjson.JValue]) -> @jsjson.JValue
 pub async fn World::store(Self, String, Array[@jsjson.JValue]) -> @jsjson.JValue
 pub async fn World::store_has(Self, String) -> Bool
 pub async fn World::store_u(Self, String, Array[@jsjson.JValue]) -> @jsjson.JValue?

@@ -55,6 +55,7 @@ fn as_chats(w : World) -> @session_chats.World {
     words: w.words,
     lang: Ref(w.lang),
     thrown: Ref(Null),
+    live: None,
   }
 }
 

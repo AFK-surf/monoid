@@ -71,15 +71,15 @@ pub(all) struct Held {
 
 ///|
 /// chat_post's arguments with a held post sent by send put back as it was written; its state is what this call gives.
-pub async fn unheld(w : World, key : String, args : J) -> Held {
+pub fn unheld(w : World, key : String, args : J) -> Held raise {
   guard at(Some(args), "send") is Some(send) else { return { id: None, args } }
   if keys_of(Some(args)).iter().any(k => !send_keys.contains(k)) {
     raise fail_("send takes only to, send and the state (kind, need, done, about): the held post goes as it was written")
   }
   let id = js_string(send)
-  let held = w.state("heldGet", [js(key), js(id)])
-  if is_undefined(held) || held is Null {
-    raise fail_("no held post \{id}: it was sent already, or the station restarted since; write the post again")
+  let held = match w.require_live().state.held.get(key).bind(m => m.get(id)) {
+    Some(h) if !is_undefined(h) && !(h is Null) => h
+    _ => raise fail_("no held post \{id}: it was sent already, or the station restarted since; write the post again")
   }
   let to = at(Some(args), "to")
   let held_to = at(Some(held), "to")
@@ -96,19 +96,27 @@ pub async fn unheld(w : World, key : String, args : J) -> Held {
 
 ///|
 /// A new id for a post held back from session `key`.
-async fn hold(w : World, key : String) -> String {
-  w.state("heldEnsure", [js(key)]) |> ignore
-  while num_of(Some(w.state("heldSize", [js(key)]))).unwrap_or(0.0) >= held_kept.to_double() {
-    w.state("heldDeleteOldest", [js(key)]) |> ignore
+fn hold(w : World, key : String) -> String raise {
+  let st = w.require_live().state
+  let m = match st.held.get(key) {
+    Some(m) => m
+    None => {
+      let m : Map[String, J] = Map([])
+      st.held[key] = m
+      m
+    }
   }
-  let n = w.state("heldCountNext", [])
-  "held-\{js_string_of(Some(n))}"
+  while m.length() >= held_kept {
+    if m.keys().next() is Some(k) { m.remove(k) } else { break }
+  }
+  st.held_count += 1
+  "held-\{st.held_count}"
 }
 
 ///|
 /// The ts of the messages in the thread before entry `n` the session has not read.
 async fn unseen_in(w : World, key : String, thread : J, n : Double) -> Array[String] {
-  let pending = arr_of(Some(w.store("pendingBefore", [js(key), thread, jn(n)]))).unwrap_or([])
+  let pending = arr_of(Some(w.with_threads_j(t => t.pending_before(Json::string(key), thread.to_json(), Json::number(n))))).unwrap_or([])
   let unread = arr_of(Some(w.actor(key, "unreadIn", [thread, jn(n)]))).unwrap_or([])
   let out : Array[String] = []
   for p in pending {
@@ -148,26 +156,27 @@ async fn into_opening(
   check_turn : async () -> Unit,
 ) -> (J, J)? {
   let tid = at(Some(thread), "id").unwrap_or(Null)
-  let pending = w.state("openingGet", [tid])
+  let openings = w.require_live().state.openings
+  let okey = tid.to_json().stringify()
+  let pending = openings.get(okey).unwrap_or(Null)
   if pending is Null || str_of(at(Some(pending), "session")) != Some(key) {
     return None
   }
   if at(Some(pending), "claimed") is Some(Bool(true)) {
-    w.state("openingDelete", [tid]) |> ignore
+    openings.remove(okey)
     return None
   }
-  let mark = at(Some(pending), "$id").unwrap_or(Null)
-  w.state("openingClaim", [tid, mark, jb(true)]) |> ignore
+  let set_claimed = (claimed : Bool) => match openings.get(okey) {
+    Some(Obj(fs)) => openings[okey] = Obj([..fs.filter(f => @jsjson.sanitize_str(f.0) != "claimed"), ("claimed", jb(claimed))])
+    _ => ()
+  }
+  set_claimed(true)
   let mut retry = false
   let mut edited = false
   let pts = at(Some(pending), "ts").unwrap_or(Null)
-  let finish = async fn() {
-    if w.state("openingIs", [tid, mark]) is Bool(true) {
-      if retry {
-        w.state("openingClaim", [tid, mark, jb(false)]) |> ignore
-      } else {
-        w.state("openingDelete", [tid]) |> ignore
-      }
+  let finish = fn() {
+    if openings.contains(okey) {
+      if retry { set_claimed(false) } else { openings.remove(okey) }
     }
   }
   let result = try {
@@ -177,24 +186,24 @@ async fn into_opening(
     }
     let prepare = w.has("prepareLegacyEdits")
     let mut opening = if prepare {
-      w.store_u("messageAtIfReady", [tid, pts])
+      w.with_threads_opt(t => t.message_at_if_ready(tid.to_json(), pts.to_json()))
     } else {
-      Some(w.store("messageAt", [tid, pts]))
+      Some(w.with_threads_j(t => t.message_at(tid.to_json(), pts.to_json())))
     }
     let mut waited = false
     while opening is None {
       waited = true
       w.hub("prepareLegacyEdits", [js("<effect>")]) |> ignore
-      opening = w.store_u("messageAtIfReady", [tid, pts])
+      opening = w.with_threads_opt(t => t.message_at_if_ready(tid.to_json(), pts.to_json()))
     }
     if waited {
-      let current = w.store("sessionThread", [js(key), at(Some(thread), "channel").unwrap_or(Null), at(Some(thread), "threadTs").unwrap_or(Null)])
+      let current = w.with_threads_j(t => t.session_thread(Json::string(key), at(Some(thread), "channel").unwrap_or(Null).to_json(), at(Some(thread), "threadTs").unwrap_or(Null).to_json()))
       if nullish(Some(current)) ||
         !jeq(at(at(Some(current), "thread"), "id").unwrap_or(Null), tid) ||
-        !(w.ask("hub.sameChat", [at(Some(current), "connect").unwrap_or(Null), js(connect)]) is Bool(true)) {
+        str_of(at(Some(current), "connect")).unwrap_or("") != connect {
         raise fail_("the conversation changed while preparing its first message; try again")
       }
-      if w.store("manuallyArchived", [tid]) is Bool(true) {
+      if w.store_manually_archived(tid) {
         raise fail_("the conversation was archived while preparing its first message; restore it first")
       }
     }
@@ -226,12 +235,8 @@ async fn into_opening(
     let surface = at(Some(thread), "surface").unwrap_or(Null)
     let channel = at(Some(thread), "channel").unwrap_or(Null)
     let thread_ts = at(Some(thread), "threadTs").unwrap_or(Null)
-    if w.ask("hub.isNull", [js("prepareLegacyEdits")]) is Bool(true) {
-      w.store("editMessage", [surface, channel, thread_ts, pts, js(whole)]) |> ignore
-    } else {
-      while w.store_u("editMessageIfReady", [surface, channel, thread_ts, pts, js(whole)]) is None {
-        w.hub("prepareLegacyEdits", []) |> ignore
-      }
+    while w.with_threads_opt(t => t.edit_message_if_ready(surface.to_json(), channel.to_json(), thread_ts.to_json(), pts.to_json(), Json::string(whole))) is None {
+      w.hub("prepareLegacyEdits", []) |> ignore
     }
     (pts, at(Some(opening), "n").unwrap_or(Null))
   } catch {
@@ -263,7 +268,7 @@ pub async fn chat_post(w : World, key : String, args : J, held : Held) -> String
     }
     let thread = target(w, key, at(Some(args), "to"))
     let tid = at(at(Some(thread), "thread"), "id").unwrap_or(Null)
-    let vault = at(Some(w.store("cardAt", [tid, js(ts)])), "vault")
+    let vault = at(Some(w.with_threads_j(t => t.card_at(tid.to_json(), Json::string(ts)))), "vault")
     match str_of(at(vault, "request")) {
       Some(r) =>
         raise fail_(
@@ -271,7 +276,7 @@ pub async fn chat_post(w : World, key : String, args : J, held : Held) -> String
         )
       None => ()
     }
-    if !(w.store("withdrawCard", [js(key), tid, js(ts)]) is Bool(true)) {
+    if !(w.with_threads_j(t => t.withdraw_card(Json::string(key), tid.to_json(), Json::string(ts))) is Bool(true)) {
       raise fail_("withdraw must name your own message with a card in this conversation")
     }
     return "Withdrew the answer card; its message is kept. Continue your work and record the appropriate ending state."
@@ -286,7 +291,7 @@ pub async fn chat_post(w : World, key : String, args : J, held : Held) -> String
     }
     let thread = target(w, key, at(Some(args), "to"))
     let row = at(Some(thread), "thread")
-    if w.store("manuallyArchived", [at(row, "id").unwrap_or(Null)]) is Bool(true) {
+    if w.store_manually_archived(at(row, "id").unwrap_or(Null)) {
       raise archived_by_hand(row)
     }
     let said = trim(name_chat(w, row.unwrap_or(Null), t))
@@ -335,7 +340,7 @@ pub async fn chat_post(w : World, key : String, args : J, held : Held) -> String
   let tid = at(row, "id").unwrap_or(Null)
   let connect = str_of(at(Some(thread), "connect")).unwrap_or("")
   let surface = str_of(at(row, "surface")).unwrap_or("")
-  if w.store("manuallyArchived", [tid]) is Bool(true) {
+  if w.store_manually_archived(tid) {
     raise archived_by_hand(row)
   }
   match str_of(at(Some(card), "assignee")) {
@@ -381,8 +386,8 @@ pub async fn chat_post(w : World, key : String, args : J, held : Held) -> String
   let mut about = J::Null
   let ts = about_ts(args)
   let need_help = kind_kind(kind) == "need_help"
-  let checking_question = need_help && ts is Some(_) && w.has("stateQuestion")
-  let checking_default = need_help && ts is None && w.has("statePendingCard")
+  let checking_question = need_help && ts is Some(_)
+  let checking_default = need_help && ts is None
   let guarded = checking_question || checking_default
   let question_actor = if guarded { actor_id(w, key) } else { J::Null }
   let question_turn = if guarded && !(question_actor is Null) { w.actor(key, "currentTurnId", []) } else { J::Null }
@@ -402,7 +407,7 @@ pub async fn chat_post(w : World, key : String, args : J, held : Held) -> String
           str_of(at(Some(current), "connect")) != Some(connect) {
           raise fail_("the conversation changed while checking the question; try again")
         }
-        if w.store("manuallyArchived", [at(at(Some(current), "thread"), "id").unwrap_or(Null)]) is Bool(true) {
+        if w.store_manually_archived(at(at(Some(current), "thread"), "id").unwrap_or(Null)) {
           raise archived_by_hand(at(Some(current), "thread"))
         }
         [at(at(Some(current), "thread"), "id").unwrap_or(Null)]
@@ -429,23 +434,23 @@ pub async fn chat_post(w : World, key : String, args : J, held : Held) -> String
       None => hold(w, key)
     }
     let post = without(held.args, ["kind", "need", "done", "about"])
-    w.state("heldSet", [js(key), js(id), post]) |> ignore
+    if w.require_live().state.held.get(key) is Some(m) { m[id] = post }
     let one = unseen.length() == 1
     return "\{not_posted} \{if one { "a message" } else { "messages" }} you had not read came in \{address_of_row(row)} (ts \{unseen.join(", ")}), and \{if one { "it comes" } else { "they come" }} to you next; no state was recorded. Held as \{id}. After reading \{if one { "it" } else { "them" }}, if this post still stands as written, call chat_post with to, send=\"\{id}\" and the state the turn now ends with (kind, need, done, about), without writing it again; otherwise post what fits now."
   }
   if held.id is Some(i) {
-    w.state("heldDelete", [js(key), js(i)]) |> ignore
+    if w.require_live().state.held.get(key) is Some(m) { m.remove(i) }
   }
   if surface == stillfail_surface {
-    let srow = w.store("getSession", [js(key)])
+    let srow = w.store_get_session(key)
     if srow is Null {
       raise fail_("unknown session")
     }
     text = prepare(w, text, paths, str_of(at(Some(srow), "workspace")).unwrap_or(""))
   }
   let slack = surface != stillfail_surface && paths.length() > 0
-  let link = async fn() {
-    match str_of(Some(w.hub("link", [js(key)]))) {
+  let link = fn() raise {
+    match w.hub_link(key) {
       Some(l) => l
       None =>
         raise fail_(
@@ -503,7 +508,7 @@ pub async fn chat_post(w : World, key : String, args : J, held : Held) -> String
       if identity is Some(i) {
         fields.push(("agentIdentity", i))
       }
-      n = at_i(Some(w.store("insertMessage", [jo(fields)])), 0).unwrap_or(Null)
+      n = at_i(Some(w.store_insert_message(jo(fields))), 0).unwrap_or(Null)
     }
   }
   let offered = if card is Null {
@@ -511,7 +516,7 @@ pub async fn chat_post(w : World, key : String, args : J, held : Held) -> String
   } else {
     "\{@session_hub.card_said(card.to_json())} Card message ts: \{js_string_of(Some(posted))}."
   }
-  w.hub("shared", [tid, n, js(key), js(text)]) |> ignore
+  w.hub_shared(tid, n, key, text)
   let actor = if guarded { question_actor } else { actor_id(w, key) }
   let has_actor = !(actor is Null)
   if guarded {
@@ -531,7 +536,7 @@ pub async fn chat_post(w : World, key : String, args : J, held : Held) -> String
   let mut state_error : String? = None
   if !(kind is Null) {
     let threads_here = async fn() {
-      let current = w.store("sessionThreadById", [js(key), tid])
+      let current = w.store_session_thread_by_id(key, tid)
       if !(current is Null) && str_of(at(Some(current), "connect")) == Some(connect) {
         [tid]
       } else {
@@ -539,20 +544,12 @@ pub async fn chat_post(w : World, key : String, args : J, held : Held) -> String
       }
     }
     if about is Null && need_help {
-      if w.has("statePendingCard") {
-        try {
-          about = pending_for_state(w, key, threads_here)
-        } catch {
-          e => {
-            recorded = false
-            state_error = Some(thrown_message(e))
-          }
-        }
-      } else {
-        let pending = w.store("pendingCard", [tid])
-        if !nullish(Some(pending)) {
-          let p0 = at_i(Some(pending), 0)
-          about = ja([at(p0, "thread").unwrap_or(Null), at(p0, "n").unwrap_or(Null), at(p0, "ts").unwrap_or(Null)])
+      try {
+        about = pending_for_state(w, key, threads_here)
+      } catch {
+        e => {
+          recorded = false
+          state_error = Some(thrown_message(e))
         }
       }
     }

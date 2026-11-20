@@ -392,11 +392,11 @@ pub async fn RepoIndex::walk(self : RepoIndex, w : World) -> Unit {
   let found = []
   let skip = []
   for p in arr_of(Some(w.ask("repoIndex.besides", []))).unwrap_or([]) {
-    skip.push(str_of(Some(w.ask("path.resolve", [p]))).unwrap_or(""))
+    skip.push(resolve_path([str_of(Some(p)).unwrap_or("")]))
   }
   let looked = Ref::new(0)
   for root in arr_of(Some(w.ask("repoIndex.roots", []))).unwrap_or([]) {
-    let r = str_of(Some(w.ask("path.resolve", [root]))).unwrap_or("")
+    let r = resolve_path([str_of(Some(root)).unwrap_or("")])
     walk_into(w, r, 0, looked, skip, found)
   }
   let held = jo([("at", w.ask("repoIndex.now", [])), ("repos", ja(found))])

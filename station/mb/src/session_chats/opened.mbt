@@ -76,7 +76,7 @@ async fn starter_of(w : World, key : String) -> J {
   match at(Some(thread), "createdBy") {
     Some(c) if !(c is Null) => c
     _ =>
-      match at(Some(w.store("getSession", [js(key)])), "createdBy") {
+      match at(Some(w.store_get_session(key)), "createdBy") {
         Some(c) if !(c is Null) => c
         _ => js("local")
       }
@@ -126,10 +126,8 @@ async fn make_chat(w : World, o : J, more : J) -> J {
 ///|
 async fn preset_named(w : World, ws : J, named : String) -> J {
   let at_ws = if ws is Null {
-    match at_i(Some(w.hub("workspaces", [])), 0) {
-      Some(x) => x
-      None => J::Null
-    }
+    let wss = w.with_hub(h => h.workspaces())
+    if wss.length() > 0 { js(wss[0]) } else { J::Null }
   } else {
     ws
   }
@@ -164,7 +162,7 @@ async fn bound_here(w : World, ws : J, pm : J, name : String) -> (J, J) {
   let runtime = match str_of(at(Some(pm), "runtime")) {
     Some(r) => Some(r)
     None => {
-      let cands = @session_hub.candidates(json_items(w.hub("profilesIn", [ws])), None).map(@jsjson.JValue::of_json)
+      let cands = @session_hub.candidates(w.with_hub(h => h.profiles_in(str_of(Some(ws)))), None).map(@jsjson.JValue::of_json)
       let mut found = None
       for c in cands {
         match str_of(at(Some(c), "model")) {
@@ -240,13 +238,13 @@ async fn copy_for(w : World, p : J, here : String, there : String) -> J {
 }
 
 ///|
-async fn used_within(w : World) -> Double {
+fn used_within(w : World) -> Double {
   w.now() - @session_hub.used_within_ms
 }
 
 ///|
 async fn usual_effort(w : World, created_by : J, runtime : J, model : J) -> J {
-  let used = w.store("effortsUsedBy", [created_by, runtime, model, jn(used_within(w))])
+  let used = ja(w.with_store(s => s.efforts_used_by(created_by.to_json(), runtime.to_json(), model.to_json(), Json::number(used_within(w)))).map(of_json_j))
   match at(at_i(Some(used), 0), "effort") {
     Some(e) => e
     None => Null
@@ -256,7 +254,7 @@ async fn usual_effort(w : World, created_by : J, runtime : J, model : J) -> J {
 ///|
 async fn chosen_here(w : World, created_by : J, ws : J, runtime : J) -> J {
   let rt = str_of(Some(runtime))
-  let cands = @session_hub.candidates(json_items(w.hub("profilesIn", [ws])), rt)
+  let cands = @session_hub.candidates(w.with_hub(h => h.profiles_in(str_of(Some(ws)))), rt)
   if cands.length() == 0 {
     raise fail_(
       match rt {
@@ -265,8 +263,8 @@ async fn chosen_here(w : World, created_by : J, ws : J, runtime : J) -> J {
       },
     )
   }
-  let used = json_items(w.store("modelsUsedBy", [created_by, jn(used_within(w))]))
-  let leads = @session_hub.candidates(json_items(w.hub("profilesIn", [ws])), rt, leads=true)
+  let used = w.with_store(s => s.models_used_by(created_by.to_json(), Json::number(used_within(w))))
+  let leads = @session_hub.candidates(w.with_hub(h => h.profiles_in(str_of(Some(ws)))), rt, leads=true)
   let c = @jsjson.JValue::of_json(@session_hub.choose(cands, used, leads~))
   match at(Some(c), "ask") {
     Some(ask) => raise fail_(@session_hub.ask_which(json_items(ask), "the station it is opened on"))
@@ -284,7 +282,7 @@ fn address_of_thread(thread : J) -> String {
 ///|
 async fn station_named(w : World, key : String, named : String?) -> String? {
   guard named is Some(named) else { return None }
-  let link = str_of(Some(w.hub("link", [js(key)])))
+  let link = w.hub_link(key)
   let here = match link {
     Some(l) => @session_storage.linked_station(l)
     None => None
@@ -344,7 +342,7 @@ fn opened_said(session : String, link : String?, thread : String, station : Stri
 
 ///|
 async fn say_opened(w : World, key : String, title : String, link : String?, led : Bool) -> Unit {
-  let latest = w.store("latestThread", [js(key)])
+  let latest = w.with_threads_j(t => t.latest_thread(Json::string(key)))
   if nullish(Some(latest)) {
     return
   }
@@ -355,7 +353,7 @@ async fn say_opened(w : World, key : String, title : String, link : String?, led
   )
   try {
     let ts = w.chat(str_of(at(Some(latest), "connect")).unwrap_or(""), "post", [thread_ref(row), js(mark_notice(text)), ja([])])
-    w.store("insertMessage", [message_j(at(row, "id").unwrap_or(Null), ts, station_author, station_author, text, Some(ja([])))]) |> ignore
+    w.store_insert_message(message_j(at(row, "id").unwrap_or(Null), ts, station_author, station_author, text, Some(ja([])))) |> ignore
   } catch {
     e =>
       w.log("warn", "hub", "an opened chat was not said in its opener's", jo([("session", js(key)), ("error", js(thrown_message(e)))]))
@@ -363,15 +361,8 @@ async fn say_opened(w : World, key : String, title : String, link : String?, led
 }
 
 ///|
-async fn opener_said(w : World, thread : J, author : String, agent_only : Bool) -> Bool {
-  if w.has("openedChatSaid") {
-    return w.hub("openedChatSaid", [thread, js(author), jb(agent_only)]) is Bool(true)
-  }
-  arr_of(Some(w.store("messagesBefore", [thread, Null, ji(200)])))
-  .unwrap_or([])
-  .iter()
-  .any(m => str_of(at(Some(m), "author")) == Some(author) &&
-    (!agent_only || str_of(at(Some(m), "authorKind")) == Some("agent")))
+fn opener_said(w : World, thread : J, author : String, agent_only : Bool) -> Bool raise {
+  w.with_db_j(db => @readops.opened_chat_said(db, { "thread": thread.to_json(), "author": Json::string(author), "agentOnly": Json::boolean(agent_only) })) is Bool(true)
 }
 
 ///|
@@ -384,11 +375,11 @@ fn first_line60(text : String) -> String {
 /// chat_create from session `key`. (One asked again with a key while it is made waits for it: the station's own
 /// queue, `oneByKey`, keeps calls of one key in turn.)
 pub async fn chat_create(w : World, key : String, args : J) -> String {
-  let row = w.store("getSession", [js(key)])
+  let row = w.store_get_session(key)
   if row is Null {
     raise fail_("unknown session")
   }
-  let opened_by = w.store("openerOf", [js(key)])
+  let opened_by = w.with_store_j(s => s.opener_of(Json::string(key)))
   if !(opened_by is Null) && !(at(Some(opened_by), "led") is Some(Bool(false))) {
     raise fail_(
       "this chat was opened by another agent, and opens none itself: ask its opener (session_send) or a person to open more",
@@ -462,7 +453,7 @@ pub async fn chat_create(w : World, key : String, args : J) -> String {
   let there = station_named(w, key, station_arg)
   let target_station = match there {
     Some(t) => Some(t)
-    None => str_of(Some(w.hub("station", [])))
+    None => (w.require_live().hub.world.station)()
   }
   if !(preset is Null) && binds_to.length() > 0 && target_station is Some(t) && !binds_to.contains(t) {
     raise fail_(
@@ -483,11 +474,11 @@ pub async fn chat_create(w : World, key : String, args : J) -> String {
     }
     post_from(w, thread, key, from, from_link, text, [child], kept, true) |> ignore
   }
-  let before = w.store("openedWith", [js(""), js(key), js(k), js(there.unwrap_or(""))])
+  let before = w.with_store_j(s => s.opened_with(Json::string(""), Json::string(key), Json::string(k), Json::string(there.unwrap_or(""))))
   if !(before is Null) {
     let child = str_of(at(Some(before), "child")).unwrap_or("")
     let mut thread = child
-    if there is None && !(w.store("getSession", [js(child)]) is Null) {
+    if there is None && !(w.store_get_session(child) is Null) {
       let chat = w.dep("sessionThreadOf", [js(child)])
       send_here(child, chat)
       thread = address_of_thread(chat)
@@ -529,8 +520,8 @@ pub async fn chat_create(w : World, key : String, args : J) -> String {
       )
       let child = str_of(at_i(Some(made), 0)).unwrap_or("")
       let chat = at_i(Some(made), 1).unwrap_or(Null)
-      let link = str_of(Some(w.hub("link", [js(child)])))
-      w.store("insertOpened", [
+      let link = w.hub_link(child)
+      w.with_store(s => s.insert_opened(
         jo([
           ("childStation", js("")),
           ("child", js(child)),
@@ -541,9 +532,8 @@ pub async fn chat_create(w : World, key : String, args : J) -> String {
           ("link", jopt(link)),
           ("openerTitle", js(from)),
           ("led", jb(led)),
-        ]),
-      ])
-      |> ignore
+        ]).to_json(),
+      ))
       let thread = jo([("thread", chat), ("connect", js(internal_connect))])
       send_here(child, thread)
       say_opened(w, key, match title { Some(t) => t; None => first_line60(text) }, link, led)
@@ -589,7 +579,7 @@ pub async fn chat_create(w : World, key : String, args : J) -> String {
         fields.push(("context", context))
       }
       if !(preset is Null) {
-        fields.push(("presetCopy", copy_for(w, preset, str_of(Some(w.hub("station", []))).unwrap_or(""), there)))
+        fields.push(("presetCopy", copy_for(w, preset, (w.require_live().hub.world.station)().unwrap_or(""), there)))
       }
       let request = jo(fields)
       let made = try {
@@ -634,7 +624,7 @@ pub async fn chat_create(w : World, key : String, args : J) -> String {
             )
         }
       }
-      w.store("insertOpened", [
+      w.with_store(s => s.insert_opened(
         jo([
           ("childStation", js(there)),
           ("child", js(child)),
@@ -644,9 +634,8 @@ pub async fn chat_create(w : World, key : String, args : J) -> String {
           ("title", jopt(title)),
           ("link", jopt(link)),
           ("led", jb(led)),
-        ]),
-      ])
-      |> ignore
+        ]).to_json(),
+      ))
       say_opened(w, key, match title { Some(t) => t; None => first_line60(text) }, link, led)
       opened_said(child, link, thread, Some(there), false, led)
     }
@@ -661,20 +650,20 @@ pub async fn create_for_peer(w : World, peer : String, request : J, ws : J) -> J
     raise fail_("session is required")
   }
   let k = key_of(request)
-  let before = w.store("openedWith", [js(peer), js(parent), js(k), js("")])
+  let before = w.with_store_j(s => s.opened_with(Json::string(peer), Json::string(parent), Json::string(k), Json::string("")))
   let answer = async fn(child : String) {
     let thread = w.dep("sessionThreadOf", [js(child)])
     let said = opener_said(w, at(at(Some(thread), "thread"), "id").unwrap_or(Null), "\{peer}/\{parent}", false)
     jo([
       ("session", js(child)),
-      ("link", jopt(str_of(Some(w.hub("link", [js(child)]))))),
+      ("link", jopt(w.hub_link(child))),
       ("thread", js(address_of_thread(thread))),
       ("said", jb(said)),
     ])
   }
   if !(before is Null) {
     let child = str_of(at(Some(before), "child")).unwrap_or("")
-    if !(w.store("getSession", [js(child)]) is Null) && (ws is Null || w.hub("inWorkspace", [js(child), ws]) is Bool(true)) {
+    if !(w.store_get_session(child) is Null) && (ws is Null || w.with_hub(h => h.get_session(child) is Some(_) && h.ws_of(Some(child)) == str_of(Some(ws)))) {
       return answer(child)
     }
     raise fail_("the chat key \{k} opened here is gone (deleted, or of another workspace): use another key")
@@ -744,7 +733,7 @@ pub async fn create_for_peer(w : World, peer : String, request : J, ws : J) -> J
     Some(Bool(true)) => jb(true)
     _ => J::Null
   }
-  w.store("insertOpened", [
+  w.with_store(s => s.insert_opened(
     jo([
       ("childStation", js("")),
       ("child", js(child)),
@@ -752,12 +741,11 @@ pub async fn create_for_peer(w : World, peer : String, request : J, ws : J) -> J
       ("parent", js(parent)),
       ("key", js(k)),
       ("title", jopt(title)),
-      ("link", jopt(str_of(Some(w.hub("link", [js(child)]))))),
+      ("link", jopt(w.hub_link(child))),
       ("openerTitle", opener_title),
       ("led", led),
-    ]),
-  ])
-  |> ignore
+    ]).to_json(),
+  ))
   w.log("info", "hub", "chat opened for another station's session", jo([("session", js(child)), ("station", js(peer)), ("opener", js(parent))]))
   answer(child)
 }
@@ -796,7 +784,7 @@ pub fn opened_notice(title : String, link : String?, state : String, words : Str
 /// A turn of session `key` ended: its opener, if an agent opened its chat, is told how. (A notice to another station
 /// that fails is said in the chat: `settled_far_failed`.)
 pub async fn settled(w : World, key : String, state : String, words : String?) -> Unit {
-  let opener = w.store("openerOf", [js(key)])
+  let opener = w.with_store_j(s => s.opener_of(Json::string(key)))
   if opener is Null {
     return
   }
@@ -810,9 +798,11 @@ pub async fn settled(w : World, key : String, state : String, words : String?) -
     _ => None
   }
   if parent_station == "" {
-    w.store("setOpenedState", [js(""), js(key), js(state)]) |> ignore
+    w.with_store(s => s.set_opened_state(Json::string(""), Json::string(key), Json::string(state)))
     try {
-      w.hub("notify", [at(Some(opener), "parent").unwrap_or(Null), js(opened_notice(title, link, state, words, led))]) |> ignore
+      let parent_key = str_of(at(Some(opener), "parent")).unwrap_or("")
+      let msg = opened_notice(title, link, state, words, led)
+      w.with_hub_async(async fn(h) { ignore(h.command(parent_key, "notify", [Json::string(msg)])) })
     } catch {
       e =>
         w.log(
@@ -849,7 +839,7 @@ pub async fn settled(w : World, key : String, state : String, words : String?) -
         "the opener of a chat on another station was not told",
         jo([("session", js(key)), ("station", js(parent_station)), ("error", js(thrown_message(e)))]),
       )
-      let latest = w.store("latestThread", [js(key)])
+      let latest = w.with_threads_j(t => t.latest_thread(Json::string(key)))
       if nullish(Some(latest)) {
         return
       }
@@ -857,7 +847,7 @@ pub async fn settled(w : World, key : String, state : String, words : String?) -
       let text = w.tr("station.session.openerNotTold", args=[("error", thrown_message(e))])
       try {
         let ts = w.chat(str_of(at(Some(latest), "connect")).unwrap_or(""), "post", [thread_ref(row), js(mark_notice(text)), ja([])])
-        w.store("insertMessage", [message_j(at(row, "id").unwrap_or(Null), ts, station_author, station_author, text, Some(ja([])))]) |> ignore
+        w.store_insert_message(message_j(at(row, "id").unwrap_or(Null), ts, station_author, station_author, text, Some(ja([])))) |> ignore
       } catch {
         _ => ()
       }
@@ -870,19 +860,19 @@ pub async fn settled(w : World, key : String, state : String, words : String?) -
 pub async fn notice_for_peer(w : World, peer : String, request : J, ws : J) -> J {
   let child = str_of(at(Some(request), "session")).unwrap_or("")
   let parent = str_of(at(Some(request), "to")).unwrap_or("")
-  if !(ws is Null) && !(w.hub("inWorkspace", [js(parent), ws]) is Bool(true)) {
+  if !(ws is Null) && !w.with_hub(h => h.get_session(parent) is Some(_) && h.ws_of(Some(parent)) == str_of(Some(ws))) {
     raise fail_("\{parent} opened no chat \{child} on that station")
   }
   let state = str_of(at(Some(request), "state"))
   guard state is Some(("all_done" | "need_human" | "failed" | "stopped") as state) else {
     raise fail_("state must be all_done, need_human, failed or stopped")
   }
-  let records = arr_of(Some(w.store("openedBy", [js(parent)]))).unwrap_or([])
+  let records = w.with_store(s => s.opened_by(Json::string(parent))).map(of_json_j)
   guard records.search_by(o => str_of(at(Some(o), "childStation")) == Some(peer) && str_of(at(Some(o), "child")) == Some(child)) is Some(i) else {
     raise fail_("\{parent} opened no chat \{child} on that station")
   }
   let record = records[i]
-  w.store("setOpenedState", [js(peer), js(child), js(state)]) |> ignore
+  w.with_store(s => s.set_opened_state(Json::string(peer), Json::string(child), Json::string(state)))
   let title = match given_arg(request, "title") {
     Some(t) => t
     None =>
@@ -895,7 +885,7 @@ pub async fn notice_for_peer(w : World, peer : String, request : J, ws : J) -> J
     Some(Bool(b)) => Some(b)
     _ => None
   }
-  w.hub("notify", [js(parent), js(opened_notice(title, str_of(at(Some(record), "link")), state, given_arg(request, "words"), led))])
-  |> ignore
+  let msg = opened_notice(title, str_of(at(Some(record), "link")), state, given_arg(request, "words"), led)
+  w.with_hub_async(async fn(h) { ignore(h.command(parent, "notify", [Json::string(msg)])) })
   jo([("told", jb(true))])
 }
