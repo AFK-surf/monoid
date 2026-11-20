@@ -46,11 +46,13 @@ function setup() {
   };
   const close = async () => {
     await readers.close();
+    // (the jobs' own `--sessions` program, which it opened as none was given it: left running else)
+    await jobs.shutdown();
     await hub.shutdown();
     store.close();
     rmSync(data, { recursive: true, force: true });
   };
-  return { data, store, hub, readers, admin, ask, close };
+  return { data, store, hub, jobs, readers, admin, ask, close };
 }
 
 test("shared_rows merges unchatted Slack thread into one row, preserves id across chat creation and archive (§4 L)", async () => {
