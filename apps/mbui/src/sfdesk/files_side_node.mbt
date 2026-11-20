@@ -84,8 +84,10 @@ fn files_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () ->
     // the places: a folder chosen there opened in the page (on the tape brought over to show it); what the page left
     // read handed to the one opened (open_handing_held)
     // (in from its sides by its lines' own room, list_line's, as the archive's side is: not the box's as well)
+    // (the rest of the sidebar under the band, not as tall as its rows: shrunk from none, so the list scrolls all of
+    // them, as place_side_node's list does)
     q.box(fn(l) {
-      l.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      l.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
       @sfpages.files_places_node(l, src, ws, list_at, top=fn() { files_side_top }, foot=fn() { 0.0 }, go=fn(to) {
         @sfbase.open_handing_held(fn() { files_go(to) })
         @sfbase.show_chosen()

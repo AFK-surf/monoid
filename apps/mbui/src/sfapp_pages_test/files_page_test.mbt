@@ -764,3 +764,32 @@ fn edge_round(t : @ui.Tester, x : Double, y : Double) -> (Double, Int64) {
     None => (0.0, 0L)
   }
 }
+
+///|
+/// 大屏's files' sidebar in a window shorter than its places scrolls down to its last row: the list under the band no
+/// taller than the room left it (as tall as its rows, it overflowed the sidebar and scrolled only as far as the band).
+test "files sidebar scrolls to its last place in a short window" {
+  new_run()
+  let src = fixture("home")
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=360.0, platform=0)
+  app.nav.replace(Files)
+  @sfpages.nav_open("ws1/st1")
+  @sfpages.nav_open("ws1/st2")
+  t.run_for(@ui.move_most_ms)
+  // the sidebar's last row's words: the bottom of the sidebar's words, where they are drawn
+  let last_bottom = fn() {
+    let mut b = 0.0
+    for w in t.words() {
+      if w.1 > 80.0 && w.1 < 296.0 && w.5 > 0.0 {
+        b = @cmp.maximum(b, w.2 + w.4)
+      }
+    }
+    b
+  }
+  assert_true(last_bottom() > 360.0)
+  for _ in 0..<6 {
+    t.wheel_phase(250.0, 200.0, 120.0, 4)
+    t.run_for(@ui.move_most_ms)
+  }
+  assert_true(last_bottom() <= 360.0, msg="the sidebar's last row ends at \{last_bottom()}, under the window's 360")
+}
