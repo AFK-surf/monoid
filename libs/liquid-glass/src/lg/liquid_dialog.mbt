@@ -9,21 +9,21 @@
 // and a press outside it (on the scrim).
 
 ///|
-/// The card's glass.
+/// The card's glass (iOS 27 regular liquid glass, large card blur=8.0).
 fn dialog_glass() -> @paint.Glass {
   let d = is_dark()
   let c = colors()
-  @paint.Glass::backdrop_lens(
-    height=24.0,
-    amount=48.0,
-    blur=if d { 8.0 } else { 16.0 },
-    tint=c.dialog_container,
+  @paint.Glass::liquid(
+    blur=8.0,
+    tint=if d { 0x202020FFL } else { 0xFDFCFD67L },
     solid=alpha(c.dialog_container, if d { 1.0 / 0.4 } else { 1.0 / 0.6 }),
-    highlight=1.0,
-    style=Some(Plain),
-    saturation=1.5,
-    brightness=if d { 0.0 } else { 0.2 },
-    depth_effect=true,
+    saturation=1.0,
+    rim=0.6,
+    bezel=20.0,
+    refraction=48.0,
+    chroma=0.0,
+    merge=0.0,
+    adaptive=false,
   )
 }
 

@@ -981,8 +981,7 @@ fn is_glass(kind : Int) -> Bool {
 }
 
 ///|
-/// Liquid glass's 23 at `o`: how far round its shape its group merges, or a Backdrop lens's InnerShadow radius; below 0
-/// a lens's spot packed with it (ui's glass.mbt backdrop_rim), which reaches nothing round it.
+/// Liquid glass's 23 at `o`: liquid glass merge radius.
 fn glass_rim(a : FixedArray[Double], o : Int) -> Double {
   dmax(a[o + 23], 0.0)
 }

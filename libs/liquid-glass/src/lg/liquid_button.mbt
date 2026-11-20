@@ -6,30 +6,39 @@
 // hand, the keys and a screen reader is mbui's headless button's: a press, Enter or Space, Activate.
 
 ///|
-/// The glass of a LiquidButton as `n` is drawn: `press` how far a finger holds it, at `spot` (points from its top
+/// The glass of a LiquidButton (iOS 27 liquid glass): `press` how far a finger holds it, at `spot` (points from its top
 /// left); `tint` and `surface` its colours (clear: none).
 fn button_glass(press : Double, spot : (Double, Double)?, tint : Int64, surface : Int64) -> @paint.Glass {
+  let d = is_dark()
   let tinted = tint != clear
-  let laid = if tinted { alpha(tint, 0.75) } else { surface }
+  let glass_tint = if tinted {
+    alpha(tint, 0.75)
+  } else if d {
+    0x202020FFL
+  } else {
+    0xFDFCFD67L
+  }
   let solid = if tinted {
     tint
   } else if surface != clear {
     over(colors().dialog_container, surface)
+  } else if d {
+    0x1E1F24FFL
   } else {
-    alpha(colors().dialog_container, 1.0 / 0.6)
+    0xFAFAFAFFL
   }
-  @paint.Glass::backdrop_lens(
-    height=12.0,
-    amount=24.0,
-    blur=2.0,
-    tint=if tinted && surface != clear { over(laid, surface) } else { laid },
+  @paint.Glass::liquid(
+    blur=2.1,
+    tint=glass_tint,
     solid~,
-    highlight=1.0,
-    style=Some(Default),
-    saturation=1.5,
-    tint_hue=tinted,
-    spot~,
-    spot_alpha=press,
+    saturation=1.0,
+    rim=0.6,
+    bezel=20.0,
+    refraction=24.0,
+    chroma=0.0,
+    merge=0.0,
+    adaptive=false,
+    spot=if press > 0.01 { spot } else { None },
   )
 }
 

@@ -1,9 +1,8 @@
 // Ported from Kyant0/AndroidLiquidGlass (Apache-2.0): catalog/utils/InteractiveHighlight.kt. Where a finger is on a
 // piece of glass and how far it is pressed: its press by a soft spring (0.5, 300), the finger's way from where it went
-// down snapped to it as it drags and sent back by the same spring as it lets go. What it lights is mbui's lens's spot
-// (Glass::backdrop_lens `spot`, `spot_alpha`: 8% white over it all and 15% round the finger, as far as one and a half
-// times its shorter side, BlendMode.Plus, the shader InteractiveHighlight draws), and what it stretches is the glass's
-// size and place (LiquidButton's layerBlock: `stretch`).
+// down snapped to it as it drags and sent back by the same spring as it lets go. What it lights is mbui's liquid
+// glass spot (`Glass::liquid` `spot`), and what it stretches is the glass's size and place (LiquidButton's layerBlock:
+// `stretch`).
 
 ///|
 /// The press spring and the finger's (pressProgressAnimationSpec, positionAnimationSpec).

@@ -1,8 +1,11 @@
 # The liquid glass library in mbui (for agents)
 
-A component library of its own beside mbui (`libs/mbui`), which it alone imports: Kyant0/AndroidLiquidGlass's catalog
-(`catalog/components`, `catalog/utils`, `catalog/destinations`; Apache-2.0) ported 1:1 to mbui's window tree. mbui is
-the framework and holds no look; a library holds the looks; an app uses a library.
+A component library of its own beside mbui (`libs/mbui`), which it alone imports: layout, motion and interaction
+structure ported from Kyant0/AndroidLiquidGlass's catalog (`catalog/components`, `catalog/utils`, `catalog/destinations`;
+Apache-2.0), with all glass materials unified on mbui's iOS 27 `flutter_liquid_glass` `@paint.Glass::liquid` optical
+model (uniform blurred backdrop, quarter-circle bevel refraction, adaptive iOS 27 light/dark/clear color transfer,
+inner bevel shadow, glint, and 0.75pt external contour). mbui is the framework and holds no look; a library holds the
+looks; an app uses a library.
 
 - `src/lg` is the library; `src/pages` the gallery's pages (overview, dialog, interactive: the overview with every part
   held, film: what the film drags) and the gallery round them (`gallery.mbt`: a bar of glass choosing the page and the

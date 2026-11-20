@@ -370,7 +370,7 @@ test "a narrow page's thumb sent to either end stays in the track and slows to r
 }
 
 ///|
-test "a held narrow choice draws the Backdrop lens and respects reduced transparency" {
+test "a held narrow choice draws the liquid glass lens and respects reduced transparency" {
   let rig = seg_rig(true, 390.0, seg_three)
   let t = rig.t
   assert_true(!t.drawn_glass().iter().any(fn(g) { g.4 == 6 }))
@@ -378,8 +378,7 @@ test "a held narrow choice draws the Backdrop lens and respects reduced transpar
   t.run_for(part_whole_ms)
   let lenses = t.drawn_instances().filter(fn(i) { i[5] == 6.0 })
   assert_eq(lenses.length(), 1)
-  // Default highlight (1) | depth_effect (4) -> -5.0
-  assert_eq(lenses[0][14], -5.0)
+  assert_eq(lenses[0][14], 0.0)
   assert_true(lenses[0][21] > 0.0)
   t.set_reduce_transparency(true)
   t.run_for(part_whole_ms)

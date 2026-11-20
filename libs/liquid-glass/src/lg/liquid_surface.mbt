@@ -60,27 +60,28 @@ pub fn liquid_progressive_blur_node(
 
 ///|
 /// The glass of an adaptive surface over what is `lum` light (0 black, 1 white), `min_side` its shorter side
-/// (AdaptiveLuminanceGlassContent's effects: `l = sign(2 lum - 1) (2 lum - 1)²`; brightness 0.1 to 0.5 as it is
-/// lighter, to -0.2 as it is darker; contrast 1 to 0 as it is lighter; blur 8 to 16 as it is lighter, to 2 as it is
-/// darker; a saturation of 1.5; a lens 24 deep moving by half its shorter side, with depth; its highlight Plain).
+/// (flutter_liquid_glass size-responsive blur curve + iOS 27 light/dark adaptive color transfer).
 pub fn adaptive_glass(lum : Double, min_side : Double) -> @paint.Glass {
-  let x = clamp(lum, 0.0, 1.0) * 2.0 - 1.0
-  let l = if x < 0.0 { -x * x } else { x * x }
-  let brightness = if l > 0.0 { lerp(0.1, 0.5, l) } else { lerp(0.1, -0.2, -l) }
-  let contrast = if l > 0.0 { lerp(1.0, 0.0, l) } else { 1.0 }
-  let blur = if l > 0.0 { lerp(8.0, 16.0, l) } else { lerp(8.0, 2.0, -l) }
-  @paint.Glass::backdrop_lens(
-    height=24.0,
-    amount=min_side / 2.0,
+  let smooth = fn(t : Double) {
+    let u = clamp(t, 0.0, 1.0)
+    u * u * (3.0 - 2.0 * u)
+  }
+  let blur = 2.1 +
+    2.4 * smooth((min_side - 63.0) / 31.0) +
+    1.1 * smooth((min_side - 94.0) / 24.0) +
+    2.4 * clamp((min_side - 118.0) / 32.0, 0.0, 1.0)
+  let is_light = lum > 0.5
+  @paint.Glass::liquid(
     blur~,
-    tint=clear,
-    solid=if lum > 0.5 { white } else { black },
-    highlight=1.0,
-    style=Some(Plain),
-    saturation=1.5,
-    brightness~,
-    contrast~,
-    depth_effect=true,
+    tint=if is_light { 0xFDFCFD67L } else { 0x202020FFL },
+    solid=if is_light { white } else { black },
+    saturation=1.0,
+    rim=0.6,
+    bezel=20.0,
+    refraction=min_side / 2.0,
+    chroma=0.0,
+    merge=0.0,
+    adaptive=false,
   )
 }
 
@@ -126,21 +127,19 @@ pub fn liquid_adaptive_surface_node(
 }
 
 ///|
-/// The magnifier's glass: a lens 8 deep moving by up to 24 with depth, the colours split, its InnerShadow 16 (the whole
-/// radius lower, InnerShadow.kt's default), Backdrop's default highlight.
+/// The magnifier's glass (iOS 27 clear loupe).
 fn magnifier_glass() -> @paint.Glass {
-  @paint.Glass::backdrop_lens(
-    height=8.0,
-    amount=24.0,
+  @paint.Glass::liquid(
     blur=0.0,
-    tint=clear,
+    tint=0xFFFFFF00L,
     solid=colors().paper,
-    highlight=1.0,
-    style=Some(Default),
-    dispersion=true,
-    depth_effect=true,
-    inner_shadow=16.0,
-    inner_shadow_full=true,
+    saturation=1.0,
+    rim=0.6,
+    bezel=20.0,
+    refraction=24.0,
+    chroma=-0.06,
+    merge=0.0,
+    adaptive=false,
   )
 }
 

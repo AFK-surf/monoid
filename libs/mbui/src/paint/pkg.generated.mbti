@@ -51,13 +51,6 @@ pub fn vector_shapes(@pixels.Vector, Double, Double, tint? : Int64) -> Array[Sha
 
 // Types and methods
 #derive(Eq, @debug.Debug)
-pub(all) enum BackdropHighlight {
-  Default
-  Ambient
-  Plain
-}
-
-#derive(Eq, @debug.Debug)
 pub(all) struct CornerFit {
   least : Double
   most : Double
@@ -103,17 +96,7 @@ pub(all) struct Glass {
   shares_capture : Bool
   contained : Bool
   spot : (Double, Double)?
-  backdrop_highlight : Int
-  brightness : Double
-  contrast : Double
-  depth_effect : Bool
-  highlight_angle : Double
-  highlight_falloff : Double
-  tint_hue : Bool
-  spot_alpha : Double
-  inner_shadow_full : Bool
 }
-pub fn Glass::backdrop_lens(height~ : Double, amount~ : Double, blur~ : Double, tint~ : Int64, solid~ : Int64, highlight~ : Double, ambient? : Bool, dispersion? : Bool, inner_shadow? : Double, style? : BackdropHighlight?, saturation? : Double, brightness? : Double, contrast? : Double, depth_effect? : Bool, highlight_angle? : Double, highlight_falloff? : Double, tint_hue? : Bool, spot? : (Double, Double)?, spot_alpha? : Double, inner_shadow_full? : Bool) -> Self
 pub fn Glass::frosted(blur~ : Double, tint~ : Int64, solid~ : Int64, saturation? : Double, rim_edge? : Double, rim_lit? : Double, rim_back? : Double, shares_capture? : Bool, contained? : Bool) -> Self
 pub fn Glass::liquid(blur? : Double, tint? : Int64, solid? : Int64, saturation? : Double, rim? : Double, bezel? : Double, refraction? : Double, chroma? : Double, merge? : Double, adaptive? : Bool, spot? : (Double, Double)?) -> Self
 pub fn Glass::sharing(Self) -> Self

@@ -12,38 +12,41 @@
 // each tab is drawn in a colour going from its words' to the accent as far as the lens is over it.
 
 ///|
-/// The bar's glass, lit by a finger at `spot` as far as `light` says.
+/// The bar's glass (iOS 27 regular liquid glass calibrated for 56–64pt controls), lit by a finger at `spot` while
+/// `light > 0.01`.
 fn tabs_glass(light : Double, spot : (Double, Double)?) -> @paint.Glass {
-  let c = colors()
-  @paint.Glass::backdrop_lens(
-    height=24.0,
-    amount=24.0,
-    blur=8.0,
-    tint=c.container,
-    solid=alpha(c.container, 1.0 / 0.4),
-    highlight=1.0,
-    style=Some(Default),
-    saturation=1.5,
-    spot~,
-    spot_alpha=light,
+  let d = is_dark()
+  @paint.Glass::liquid(
+    blur=2.1,
+    tint=if d { 0x202020FFL } else { 0xFDFCFD67L },
+    solid=if d { 0x1E1F24FFL } else { 0xFAFAFAFFL },
+    saturation=1.0,
+    rim=0.6,
+    bezel=20.0,
+    refraction=28.0,
+    chroma=0.0,
+    merge=0.0,
+    adaptive=false,
+    spot=if light > 0.01 { spot } else { None },
   )
 }
 
 ///|
-/// The lens's glass over the chosen tab, held `p`.
+/// The lens's glass over the chosen tab (iOS 27 clear loupe), held `p`.
 fn tab_lens_glass(p : Double) -> @paint.Glass {
   let p = clamp(p, 0.0, 1.0)
   let c = colors()
-  @paint.Glass::backdrop_lens(
-    height=10.0 * p,
-    amount=14.0 * p,
+  @paint.Glass::liquid(
     blur=0.0,
-    tint=over(alpha(c.lens_idle, 1.0 - p), alpha(black, 0.03 * p)),
+    tint=0xFFFFFF00L,
     solid=alpha(c.container, 1.0 / 0.4),
-    highlight=p,
-    style=Some(Default),
-    dispersion=true,
-    inner_shadow=8.0 * p,
+    saturation=1.0,
+    rim=0.6 * p,
+    bezel=16.0 * p,
+    refraction=24.0 * p,
+    chroma=-0.06 * p,
+    merge=0.0,
+    adaptive=false,
   )
 }
 
@@ -208,7 +211,25 @@ pub fn liquid_bottom_tabs_node(
           let (s, dy, ink) = shadow_default
           (s, dy, alpha(ink, dd.pressed(lens)))
         }))
-        .glass(By(fn() { Some(tab_lens_glass(dd.pressed(lens))) }))
+        |> ignore
+        // Idle selection pill fades out as the clear glass loupe fades in (avoids ios27Clear veil at rest).
+        lens.box(fn(pill) {
+          pill
+          .over(Is(true))
+          .radius(By(fn() { size().1 / 2.0 }))
+          .ground(By(fn() { colors().lens_idle }))
+          .alpha(By(fn() { 1.0 - clamp(dd.pressed(pill), 0.0, 1.0) }))
+          |> ignore
+        })
+        |> ignore
+        lens.box(fn(gl) {
+          gl
+          .over(Is(true))
+          .radius(By(fn() { size().1 / 2.0 }))
+          .glass(By(fn() { Some(tab_lens_glass(dd.pressed(gl))) }))
+          .alpha(By(fn() { clamp(dd.pressed(gl), 0.0, 1.0) }))
+          |> ignore
+        })
         |> ignore
         // (held, dragged and let go by a finger: the lens's own, over the tabs; its tabs are pressed round it)
         let stopped = fn() {

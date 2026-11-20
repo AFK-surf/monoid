@@ -9,19 +9,20 @@
 // The catalog's lens also sees the track scaled under it (a combined backdrop): mbui's glass sees the track as it is.
 
 ///|
-/// The thumb's glass, held `p`.
+/// The thumb's glass, held `p` (iOS 27 clear loupe).
 fn slider_glass(p : Double) -> @paint.Glass {
   let p = clamp(p, 0.0, 1.0)
-  @paint.Glass::backdrop_lens(
-    height=10.0 * p,
-    amount=14.0 * p,
-    blur=8.0 * (1.0 - p),
-    tint=alpha(white, 1.0 - p),
+  @paint.Glass::liquid(
+    blur=0.0,
+    tint=0xFFFFFF00L,
     solid=white,
-    highlight=p,
-    style=Some(Ambient),
-    dispersion=true,
-    inner_shadow=4.0 * p,
+    saturation=1.0,
+    rim=0.6 * p,
+    bezel=10.0 * p,
+    refraction=14.0 * p,
+    chroma=-0.06 * p,
+    merge=0.0,
+    adaptive=false,
   )
 }
 
@@ -167,7 +168,24 @@ pub fn liquid_slider_node(
             (x + (thumb_w - tw) / 2.0, (thumb_h - th) / 2.0)
           }))
           .shadow(Is(shadow_thumb))
-          .glass(By(fn() { Some(slider_glass(dd.pressed(thumb))) }))
+          |> ignore
+          thumb.box(fn(solid) {
+            solid
+            .over(Is(true))
+            .radius(By(fn() { size().1 / 2.0 }))
+            .ground(Is(white))
+            .alpha(By(fn() { 1.0 - clamp(dd.pressed(solid), 0.0, 1.0) }))
+            |> ignore
+          })
+          |> ignore
+          thumb.box(fn(gl) {
+            gl
+            .over(Is(true))
+            .radius(By(fn() { size().1 / 2.0 }))
+            .glass(By(fn() { Some(slider_glass(dd.pressed(gl))) }))
+            .alpha(By(fn() { clamp(dd.pressed(gl), 0.0, 1.0) }))
+            |> ignore
+          })
           |> ignore
         })
         |> ignore

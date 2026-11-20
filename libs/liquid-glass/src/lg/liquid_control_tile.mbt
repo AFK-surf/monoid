@@ -6,22 +6,22 @@
 // tile lights it where it is (InteractiveHighlight), as a LiquidButton's.
 
 ///|
-/// A tile's glass, lit by a finger at `spot` as far as `light` says, its highlight along `angle`.
+/// A tile's glass (iOS 27 regular liquid glass), lit by a finger at `spot` while `light > 0.01`.
 fn tile_glass(angle : Double, light : Double, spot : (Double, Double)?) -> @paint.Glass {
-  @paint.Glass::backdrop_lens(
-    height=24.0,
-    amount=48.0,
-    blur=0.0,
-    tint=tile_container,
+  ignore(angle)
+  let d = is_dark()
+  @paint.Glass::liquid(
+    blur=2.1,
+    tint=if d { 0x202020FFL } else { 0xFDFCFD67L },
     solid=over(colors().dialog_container, tile_container),
-    highlight=1.0,
-    style=Some(Default),
-    saturation=1.5,
-    depth_effect=true,
-    highlight_angle=angle,
-    highlight_falloff=2.0,
-    spot~,
-    spot_alpha=light,
+    saturation=1.0,
+    rim=0.6,
+    bezel=20.0,
+    refraction=34.0,
+    chroma=0.0,
+    merge=0.0,
+    adaptive=false,
+    spot=if light > 0.01 { spot } else { None },
   )
 }
 

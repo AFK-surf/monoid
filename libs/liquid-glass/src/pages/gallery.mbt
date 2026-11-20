@@ -1,8 +1,8 @@
 // The gallery around the pages (src/gallery shows it in a window, and on the web: scripts/web.sh): the page asked for
 // first, under a bar of glass at the window's top middle that chooses the page (Overview, Interactive, Dialog) and
-// the look (Light, Dark). The bar is the gallery's, not the catalog's: its glass is LiquidBottomTabs' (the container's
-// colour over a lens 12 deep bending by up to 24, blurred by 8), each choice a capsule in it 4 in, the chosen one
-// over a share of the accent. Without `chrome` there is no bar (the page shown in another page, alone).
+// the look (Light, Dark). The bar is the gallery's, not the catalog's: its glass is LiquidBottomTabs' (`@paint.Glass::liquid`),
+// each choice a capsule in it 4 in, the chosen one over a share of the accent. Without `chrome` there is no bar (the
+// page shown in another page, alone).
 
 ///|
 /// The bar's height: a choice's capsule (36) and 4 round it.
@@ -39,16 +39,18 @@ pub let gallery_pages : Array[(String, String)] = [
 ///|
 /// The bar's glass: LiquidBottomTabs' (liquid_bottom_tabs.mbt, tabs_glass), unlit.
 fn bar_glass() -> @paint.Glass {
-  let c = @lg.colors()
-  @paint.Glass::backdrop_lens(
-    height=12.0,
-    amount=24.0,
-    blur=8.0,
-    tint=c.container,
-    solid=@lg.alpha(c.container, 1.0 / 0.4),
-    highlight=1.0,
-    style=Some(Default),
-    saturation=1.5,
+  let d = @lg.is_dark()
+  @paint.Glass::liquid(
+    blur=2.1,
+    tint=if d { 0x202020FFL } else { 0xFDFCFD67L },
+    solid=if d { 0x1E1F24FFL } else { 0xFAFAFAFFL },
+    saturation=1.0,
+    rim=0.6,
+    bezel=20.0,
+    refraction=28.0,
+    chroma=0.0,
+    merge=0.0,
+    adaptive=false,
   )
 }
 
@@ -105,6 +107,7 @@ fn bar(parent : @view.View, name : @signals.Signal[String]) -> Unit {
       .padding(Is((bar_pad, bar_pad, bar_pad, bar_pad)))
       .radius(Is(bar_h / 2.0))
       .shadow(Is(@lg.shadow_default))
+      .shadow_outside(Is(true))
       .glass(By(fn() { Some(bar_glass()) }))
       |> ignore
       @headless.radio_group(b, fn() { "Page" }, fn() { name.get() }, fn(n) { name.set(n) }, kind=Tab, fn(g, rg) {

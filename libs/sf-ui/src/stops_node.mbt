@@ -198,7 +198,7 @@ pub fn stops_node(
           .height(Is(Some(rail_h)))
           .radius(Is(rail_h / 2.0))
           .offset(By(fn() { (cell() / 2.0, (thumb_h() - rail_h) / 2.0) }))
-          .ground(By(backdrop_track_ink))
+          .ground(By(track_glass_ink))
         |> ignore
         r.box(fn(fill) {
           fill.width(By(fn() { Some(span()) }))
@@ -280,7 +280,7 @@ pub fn stops_node(
               let lh = h * scale_y.shown(lens)
               { dx: (w - lw) / 2.0, dy: (h - lh) / 2.0, dw: lw - w, dh: lh - h, corners: None }
             }))
-            .glass(By(fn() { Some(backdrop_slider(lensed(lens))) }))
+            .glass(By(fn() { Some(glass_slider_lens(lensed(lens))) }))
             .alpha(By(fn() { lensed(lens) }))
             |> ignore
           })

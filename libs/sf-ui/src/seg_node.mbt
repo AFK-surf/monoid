@@ -345,7 +345,7 @@ pub fn seg_fill_node(
     .row(Is(true))
     .height(Is(Some(segmented_narrow_h)))
     .radius(Is(seg_radius))
-    .ground(By(backdrop_track_ink))
+    .ground(By(track_glass_ink))
     |> ignore
     // (what it holds by the room the track is given: its options shared or fitted to that as the layout comes to it)
     track.by_room(fn(inner, given) {
@@ -592,7 +592,7 @@ pub fn seg_fill_node(
             .height(Is(Some(h)))
             // (round as a pill is said to be, Full, as the old lens's capsule: as round as it can be)
             .radius(Is(1.0e6))
-            .glass(By(fn() { Some(backdrop_tab(full())) }))
+            .glass(By(fn() { Some(glass_tab_lens(full())) }))
             .shadow(By(fn() { (seg_lens_shadow * full(), seg_lens_shadow_y * full(), @ui.tree_theme().shadow) }))
             .alpha(By(full))
             .ground_drawn(By(fn() {
