@@ -451,6 +451,8 @@ fn Ctx::image_px(self : Ctx, src : String, bw : Double, bh : Double, fit : Fit) 
 /// what is kept fits the budget.
 fn Ctx::trim_images(self : Ctx) -> Unit {
   images_said_trim()
+  // (the frames of GIFs that move made past their first, by their own budget: gif.mbt)
+  trim_gif_frames(self.frame_no)
   let mut total = image_bytes.val
   if total <= image_budget {
     return
@@ -638,6 +640,8 @@ fn Ctx::moving_src(self : Ctx, n : Node) -> String {
 fn Ctx::moving_key(self : Ctx, src : String, bw : Double, bh : Double, fit : Fit) -> String {
   match moving_images.get(src) {
     Some(m) => {
+      // (drawn this frame: its frames kept while it is, trim_gif_frames)
+      m.last_used = self.frame_no
       let px = self.image_px(m.keys[0], bw, bh, fit)
       let px = if px <= 0.0 { 256.0 } else { px }
       let length = m.ends[m.ends.length() - 1]
@@ -979,6 +983,18 @@ fn image_ready_asking_none(src : String) -> Bool {
 /// holds, so what draws it shows nothing more (a picture drawn again under another key, the one before no longer
 /// shown: a tile of a page each time it changes). What is told of it goes once nothing follows it.
 pub fn forget_image(key : String) -> Unit {
+  // (a GIF that moves: each of its frames with it, its first too, and what it is made from)
+  match moving_images.get(key) {
+    Some(m) => {
+      for k in 1..<m.keys.length() {
+        m.unmake(k)
+      }
+      m.unmake(0)
+      moving_images.remove(key)
+    }
+    None => ()
+  }
+  pixels_forget(key)
   image_data.remove(key)
   image_vector_drawers.remove(key)
   match image_cache.get(key) {

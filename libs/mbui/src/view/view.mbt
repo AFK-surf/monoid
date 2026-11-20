@@ -8853,6 +8853,64 @@ pub fn View::owned_count(self : View) -> Int {
 }
 
 ///|
+/// What a node let go of holds of its own (View::let_go's last step): what it draws and what it was given to read or
+/// call, each set as Tree::made sets it; never what a count of the tree's goes by (those put back by View::let_go).
+/// An array empty already left as it is (Tree::made's: each set anew, never changed in place).
+fn Node::let_go_held(self : Node) -> Unit {
+  let look = self.look
+  look.words = ""
+  look.words_drawn = None
+  if look.runs.length() > 0 {
+    look.runs = []
+  }
+  if look.runs_marks.length() > 0 {
+    look.runs_marks = []
+  }
+  if look.shapes.length() > 0 {
+    look.shapes = []
+  }
+  if look.lines.length() > 0 {
+    look.lines = []
+  }
+  look.image = None
+  look.picture = None
+  look.glass = None
+  look.drawn_as = ""
+  if self.shorter.length() > 0 {
+    self.shorter = []
+  }
+  if self.takes_units.length() > 0 {
+    self.takes_units = []
+  }
+  self.within_cell = None
+  self.said_cell = None
+  self.going = None
+  self.come_said = None
+  self.source = None
+  self.lift = None
+  self.share_flight = None
+  self.in_flight = None
+  self.content = None
+  self.scroll_shown = None
+  self.claims = None
+  self.claims_from = None
+  self.claims_for = None
+  self.shows = None
+  self.shows_room = None
+  self.hold_only = None
+  self.piece_cell = None
+  self.scroll_off = None
+  self.glyphs_fn = None
+  self.moved_by = None
+  self.moved_holds = None
+  self.moved_ends = None
+  self.fault_to = None
+  self.come_off = fn() {  }
+  self.come_wake = None
+  self.share_told = None
+}
+
+///|
 /// Lets it go: what it holds first, then its scope stopped (what it was made with: its bindings, its effects, their
 /// cleanups run), what goes with it run, its callback and measure dropped, its index free.
 fn View::let_go(self : View) -> Unit {
@@ -9020,6 +9078,11 @@ fn View::let_go(self : View) -> Unit {
   if self.tree.hosting == self.at {
     self.tree.hosting = -1
   }
+  // (what it holds of its own let go now, not when its index is next made: its words, runs, shapes, picture, the
+  // signals and the functions it was given, and all they hold. Nothing reads them of an index let go (a handle on it
+  // finds nothing), and Tree::made sets each again; what counts on how it was set (behind_set, bones_set…) put back
+  // above)
+  n.let_go_held()
   self.tree.removed.push({ at: self.at, gen: self.gen })
   self.tree.free.push(self.at)
   // (its run taken out of the order by itself, the rest as it was; one held by what is being let go, none: its run goes
