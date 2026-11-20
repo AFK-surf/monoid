@@ -1,7 +1,8 @@
 // ui.monoid · Spatial Optical Stage (src/gallery shows it in a window and on the web; src/shots draws it offscreen):
-// a single-viewport (1120×690 zero-scroll, also responsive to 1280×1040) interactive optical workbench with a floating
-// glass Dock switching three scenes — Optics (draggable liquid prism + live Glass::liquid inspector), Deck (full 2×2
-// Monoid hardware deck + continuous Adaptive Luminance bench), and Loupe (Progressive Blur + MoonBit source magnifier).
+// a single-viewport (1120×690 zero-scroll, also responsive to 1120×637 and 1280×1040) interactive optical workbench
+// with a floating glass Dock switching four scenes — Optics (draggable liquid prism + live Glass::liquid inspector),
+// Deck (full 2×2 Monoid hardware deck + continuous Adaptive Luminance bench), Loupe (Progressive Blur + MoonBit source
+// magnifier), and Merge (iOS 27 capillary liquid bridge hysteresis & programmatic GlassEffectContainer bench).
 
 ///|
 /// The parts' glass, as held still for a picture of them held: what the interactive page presses as it is made.
@@ -69,6 +70,17 @@ fn fmt_signed(v : Double) -> String {
 }
 
 ///|
+/// Format a signed number to one decimal place with explicit sign (e.g. `-8.0`, `+48.0`).
+fn fmt_signed_tenth(v : Double) -> String {
+  let t = (v * 10.0).round().to_int()
+  let sign = if t < 0 { "-" } else { "+" }
+  let a = if t < 0 { -t } else { t }
+  let whole = a / 10
+  let frac = a % 10
+  "\{sign}\{whole}.\{frac}"
+}
+
+///|
 /// The page named `name` in the window's `root`: "overview", "dialog" (the overview, its dialog open) or
 /// "interactive" (the overview, its parts held), "film" (the film's parts). `top`: room left over the parts, for what
 /// lies over the page's top (the gallery's bar); `closed`: told as the dialog closes.
@@ -120,7 +132,7 @@ fn held_now() -> Held {
     button: @lg.InteractiveHighlight::new(),
     toggle: @lg.DampedDrag::new(1.0, lo=0.0, hi=1.0, held_scale=@lg.thumb_held_scale),
     slider: @lg.DampedDrag::new(28.0, lo=0.0, hi=56.0, threshold=0.01, held_scale=@lg.thumb_held_scale),
-    tabs: @lg.DampedDrag::new(0.0, lo=0.0, hi=2.0, held_scale=@lg.tab_lens_held_scale),
+    tabs: @lg.DampedDrag::new(0.0, lo=0.0, hi=3.0, held_scale=@lg.tab_lens_held_scale),
     tabs_light: @lg.InteractiveHighlight::new(),
     tile: @lg.InteractiveHighlight::new(),
   }
@@ -1239,6 +1251,452 @@ fn loupe_scene(parent : @view.View) -> Unit {
 }
 
 ///|
+/// Compact law row in the Capillary Hysteresis telemetry card: left label, right formula readout.
+fn merge_law_row(parent : @view.View, title : String, formula : String) -> Unit {
+  parent.box(fn(r) {
+    r.row(Is(true)).lies_along(Is(Between)).lines_up(Is(Some(Middle))).gap(Is(8.0)) |> ignore
+    r.box(fn(l) {
+      l
+      .words(Is(title), look=@lg.words_at(11.5, weight=600))
+      .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.78) }))
+      |> ignore
+    })
+    |> ignore
+    r.box(fn(v) {
+      v
+      .words(Is(formula), look=@lg.words_at(11.0, weight=500))
+      .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.56) }))
+      |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// Scene 3 — `Merge`: two-column iOS 27 capillary liquid bridge workbench (left responsive optical stage with free
+/// drag and programmatic `GlassEffectContainer` specimens over high-contrast non-glass targets; right 348pt
+/// `Capillary Hysteresis` telemetry & control island).
+fn merge_scene(
+  parent : @view.View,
+  drag_ctrl : @lg.LiquidMerge,
+  toggle_ctrl : @lg.LiquidMerge,
+) -> Unit {
+  let insp_ref : Ref[@view.View?] = Ref(None)
+  let cause_at = fn() -> Double {
+    match insp_ref.val {
+      Some(n) => n.cause_at()
+      None => 0.0
+    }
+  }
+  parent.box(fn(row) {
+    row.row(Is(true)).grow(Is(1.0)).gap(Is(24.0)).lines_up(Is(Some(Middle))) |> ignore
+    // Left interactive capillary optical stage (same responsive height contract as `optics_scene`: zero clipping and
+    // zero dock collision across 1120×637, 1120×690, and 1280×1040)
+    row.box(fn(stage_host) {
+      stage_host.grow(Is(1.0)).fills_across(Is(true)).lies_along(Is(Middle)).clips(Is(true)) |> ignore
+      stage_host.by_room(fn(stage, room) {
+        stage.grow(Is(1.0)).clips(Is(true)) |> ignore
+        let rw = fn() { room.width() }
+        let rh = fn() { room.height().unwrap_or(stage_most) }
+        // 1. Soft Monoid Vermilion orb (180pt solid circle, upper-left area)
+        stage.box(fn(orb) {
+          orb
+          .over(Is(true))
+          .points(Is(false))
+          .width(Is(Some(180.0)))
+          .height(Is(Some(180.0)))
+          .radius(Is(90.0))
+          .offset(By(fn() { (rw() * 0.28 - 90.0, rh() * 0.34 - 90.0) }))
+          .ground(Is(monoid_vermilion))
+          |> ignore
+        })
+        |> ignore
+        // 2. Inverse-luminance architectural calibration plate (240×120, radius 26pt, zero glass-on-glass)
+        stage.box(fn(plate) {
+          plate
+          .over(Is(true))
+          .points(Is(false))
+          .width(Is(Some(240.0)))
+          .height(Is(Some(120.0)))
+          .radius(Is(26.0))
+          .clips(Is(true))
+          .offset(By(fn() { (rw() * 0.56 - 96.0, rh() * 0.54 - 60.0) }))
+          .ground(By(fn() { if @lg.is_dark() { 0xF5F2EBFFL } else { 0x151720FFL } }))
+          |> ignore
+          plate_stripes(
+            plate,
+            26.0,
+            fn() { if @lg.is_dark() { 0xDDD8CEFFL } else { 0x292D3BFFL } },
+            18.0,
+            18.0,
+          )
+        })
+        |> ignore
+        // 3. Low-opacity oversized architectural watermark `capillary` (88pt weight 700)
+        stage.box(fn(wm) {
+          wm
+          .over(Is(true))
+          .points(Is(false))
+          .offset(By(fn() { (rw() * 0.5 - 186.0, rh() * 0.72 - 36.0) }))
+          .words(Is("capillary"), look=@lg.words_at(88.0, weight=700))
+          .ink(By(fn() { if @lg.is_dark() { 0xFFFFFF1EL } else { 0x14172018L } }))
+          |> ignore
+        })
+        |> ignore
+        // 4. Top-left HUD pill (`DRAG TO SPLIT · TOUCH TO FUSE`)
+        stage.box(fn(hud_wrap) {
+          hud_wrap
+          .over(Is(true))
+          .points(Is(false))
+          .padding(Is((10.0, 10.0, 0.0, 0.0)))
+          .lines_up(Is(Some(Start)))
+          |> ignore
+          hud_wrap.box(fn(pill) {
+            pill
+            .row(Is(true))
+            .height(Is(Some(24.0)))
+            .padding(Is((10.0, 0.0, 10.0, 0.0)))
+            .radius(Is(12.0))
+            .gap(Is(6.0))
+            .lines_up(Is(Some(Middle)))
+            .ground(By(fn() { if @lg.is_dark() { 0x0B0C1080L } else { 0xFFFFFFA6L } }))
+            |> ignore
+            pill.box(fn(dot) {
+              dot
+              .width(Is(Some(6.0)))
+              .height(Is(Some(6.0)))
+              .radius(Is(3.0))
+              .shrink(Is(0.0))
+              .ground(Is(monoid_vermilion))
+              |> ignore
+            })
+            |> ignore
+            pill.box(fn(lbl) {
+              lbl
+              .words(
+                Is("DRAG TO SPLIT · TOUCH TO FUSE"),
+                look={ ..@lg.words_at(10.5, weight=600), tracking: Points(0.8) },
+              )
+              .ink(By(fn() { @lg.colors().content }))
+              |> ignore
+            })
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+        // 5. Centered two-specimen capillary stack (22pt vertical gap)
+        stage.box(fn(center_stack) {
+          center_stack
+          .over(Is(true))
+          .lines_up(Is(Some(Middle)))
+          .lies_along(Is(Middle))
+          .padding(Is((0.0, 24.0, 0.0, 0.0)))
+          |> ignore
+          center_stack.box(fn(samples) {
+            samples.width(Is(Some(348.0))).gap(Is(22.0)).lines_up(Is(Some(Start))) |> ignore
+            samples.box(fn(s1) {
+              s1.gap(Is(6.0)).lines_up(Is(Some(Start))) |> ignore
+              s1.box(fn(lbl_pill) {
+                lbl_pill
+                .row(Is(true))
+                .height(Is(Some(22.0)))
+                .padding(Is((9.0, 0.0, 9.0, 0.0)))
+                .radius(Is(11.0))
+                .lines_up(Is(Some(Middle)))
+                .ground(By(fn() { if @lg.is_dark() { 0x0B0C10A8L } else { 0xFFFFFFCCL } }))
+                |> ignore
+                lbl_pill.box(fn(lbl) {
+                  lbl
+                  .words(
+                    Is("01 / FREE DRAG · PINCH-OFF & CONTACT FUSE"),
+                    look={ ..@lg.words_at(10.5, weight=600), tracking: Points(0.8) },
+                  )
+                  .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.86) }))
+                  |> ignore
+                })
+                |> ignore
+              })
+              |> ignore
+              @lg.liquid_merge_node(
+                s1,
+                controller=drag_ctrl,
+                main_w=200.0,
+                main_h=60.0,
+                sat_size=60.0,
+                main_label=fn() { "Liquid Capsule" },
+                sat_label=fn() { "+" },
+                label=fn() { "Drag Droplet" },
+              )
+              |> ignore
+            })
+            |> ignore
+            samples.box(fn(s2) {
+              s2.gap(Is(6.0)).lines_up(Is(Some(Start))) |> ignore
+              s2.box(fn(lbl_pill) {
+                lbl_pill
+                .row(Is(true))
+                .height(Is(Some(22.0)))
+                .padding(Is((9.0, 0.0, 9.0, 0.0)))
+                .radius(Is(11.0))
+                .lines_up(Is(Some(Middle)))
+                .ground(By(fn() { if @lg.is_dark() { 0x0B0C10A8L } else { 0xFFFFFFCCL } }))
+                |> ignore
+                lbl_pill.box(fn(lbl) {
+                  lbl
+                  .words(
+                    Is("02 / PROGRAMMATIC · GLASSEFFECTCONTAINER"),
+                    look={ ..@lg.words_at(10.5, weight=600), tracking: Points(0.8) },
+                  )
+                  .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.86) }))
+                  |> ignore
+                })
+                |> ignore
+              })
+              |> ignore
+              @lg.liquid_merge_node(
+                s2,
+                controller=toggle_ctrl,
+                main_w=172.0,
+                main_h=50.0,
+                sat_size=50.0,
+                main_label=fn() { "Container" },
+                sat_label=fn() { "+" },
+                label=fn() { "Container Droplet" },
+              )
+              |> ignore
+            })
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+      })
+      .grow(Is(1.0))
+      .min_height(Is(Some(stage_least)))
+      .max_height(Is(Some(stage_most)))
+      |> ignore
+    })
+    |> ignore
+    // Right floating `CAPILLARY HYSTERESIS` telemetry & control island (348pt wide, single glass layer)
+    row.box(fn(insp_col) {
+      insp_col.shrink(Is(0.0)).lies_along(Is(Middle)) |> ignore
+      insp_col.box(fn(insp) {
+        insp_ref.val = Some(insp)
+        insp
+        .width(Is(Some(348.0)))
+        .shrink(Is(0.0))
+        .radius(Is(44.0))
+        .padding(Is((20.0, 18.0, 20.0, 20.0)))
+        .gap(Is(12.0))
+        .shadow(Is(@lg.shadow_default))
+        .shadow_outside(Is(true))
+        .glass(By(fn() { Some(inspector_glass()) }))
+        |> ignore
+        // Header row
+        insp.box(fn(ih) {
+          ih.row(Is(true)).lies_along(Is(Between)).lines_up(Is(Some(Middle))) |> ignore
+          ih.box(fn(l) {
+            l
+            .words(Is("CAPILLARY HYSTERESIS"), look={ ..@lg.words_at(11.0, weight=600), tracking: Points(0.9) })
+            .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.62) }))
+            |> ignore
+          })
+          |> ignore
+          ih.box(fn(r) {
+            r
+            .words(Is("iOS 27 BOND"), look=@lg.words_at(11.0, weight=500))
+            .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.52) }))
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+        // Live bond status capsule (`BONDED` / `SEPARATED`)
+        insp.box(fn(status_row) {
+          status_row.row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
+          status_row.box(fn(badge) {
+            badge
+            .row(Is(true))
+            .height(Is(Some(26.0)))
+            .padding(Is((10.0, 0.0, 10.0, 0.0)))
+            .radius(Is(13.0))
+            .gap(Is(7.0))
+            .lines_up(Is(Some(Middle)))
+            .ground(By(fn() { if @lg.is_dark() { 0x090A0E7AL } else { 0x1417200FL } }))
+            .edge(By(fn() { (1.0, if @lg.is_dark() { 0xFFFFFF18L } else { 0x14172016L }) }))
+            |> ignore
+            badge.box(fn(dot) {
+              dot
+              .width(Is(Some(7.0)))
+              .height(Is(Some(7.0)))
+              .radius(Is(3.5))
+              .shrink(Is(0.0))
+              .ground(By(fn() {
+                let _ = drag_ctrl.merge_on(dot)
+                let _ = drag_ctrl.is_separated()
+                if drag_ctrl.is_bonded() {
+                  monoid_vermilion
+                } else {
+                  @lg.alpha(@lg.colors().content, 0.42)
+                }
+              }))
+              |> ignore
+            })
+            |> ignore
+            badge.box(fn(lbl) {
+              lbl
+              .words(
+                By(fn() {
+                  let _ = drag_ctrl.merge_on(lbl)
+                  let _ = drag_ctrl.is_separated()
+                  if drag_ctrl.is_bonded() { "BONDED" } else { "SEPARATED" }
+                }),
+                look={ ..@lg.words_at(10.5, weight=600), tracking: Points(0.9) },
+              )
+              .ink(By(fn() { @lg.colors().content }))
+              |> ignore
+            })
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+        // Live numeric telemetry (`Surface Gap` & `Smooth Merge k`)
+        insp.box(fn(telem) {
+          telem
+          .radius(Is(14.0))
+          .padding(Is((12.0, 10.0, 12.0, 10.0)))
+          .gap(Is(8.0))
+          .ground(By(fn() { if @lg.is_dark() { 0x090A0E7AL } else { 0x1417200FL } }))
+          .edge(By(fn() { (1.0, if @lg.is_dark() { 0xFFFFFF14L } else { 0x14172014L }) }))
+          |> ignore
+          telem.box(fn(r1) {
+            r1.row(Is(true)).lies_along(Is(Between)).lines_up(Is(Some(Middle))) |> ignore
+            r1.box(fn(l) {
+              l
+              .words(Is("Surface Gap"), look=@lg.words_at(12.5, weight=500))
+              .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.78) }))
+              |> ignore
+            })
+            |> ignore
+            r1.box(fn(v) {
+              v
+              .words(
+                By(fn() { "\{fmt_signed_tenth(drag_ctrl.gap_on(v))} pt" }),
+                look=@lg.words_at(12.5, weight=600),
+              )
+              .ink(By(fn() { @lg.colors().content }))
+              |> ignore
+            })
+            |> ignore
+          })
+          |> ignore
+          telem.box(fn(r2) {
+            r2.row(Is(true)).lies_along(Is(Between)).lines_up(Is(Some(Middle))) |> ignore
+            r2.box(fn(l) {
+              l
+              .words(Is("Smooth Merge k"), look=@lg.words_at(12.5, weight=500))
+              .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.78) }))
+              |> ignore
+            })
+            |> ignore
+            r2.box(fn(v) {
+              v
+              .words(
+                By(fn() { "\{fmt_tenth(@lg.clamp(drag_ctrl.merge_on(v), 0.0, 99.9))} pt" }),
+                look=@lg.words_at(12.5, weight=600),
+              )
+              .ink(By(fn() { @lg.colors().content }))
+              |> ignore
+            })
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+        // Hairline separator + 3 capillary hysteresis physics laws
+        insp.box(fn(sep) {
+          sep.height(Is(Some(1.0))).ground(By(fn() { @lg.alpha(@lg.colors().content, 0.12) })) |> ignore
+        })
+        |> ignore
+        insp.box(fn(laws) {
+          laws.gap(Is(6.0)) |> ignore
+          merge_law_row(laws, "Pinch-Off", "gap >= 11.7 pt -> snap 0")
+          merge_law_row(laws, "Approach", "gap > 0 pt -> zero pull")
+          merge_law_row(laws, "Coalesce", "gap <= 0 pt -> liquid bloom")
+        })
+        |> ignore
+        // Action row: primary programmatic Split/Fuse + Reset pill
+        insp.box(fn(acts) {
+          acts.row(Is(true)).gap(Is(10.0)).lines_up(Is(Some(Middle))) |> ignore
+          acts.box(fn(b1) {
+            b1.grow(Is(1.0)) |> ignore
+            @lg.liquid_button_node(
+              b1,
+              fn() { if toggle_ctrl.is_separated() { "Fuse Droplet" } else { "Split Droplet" } },
+              fn() { toggle_ctrl.set_separated(!toggle_ctrl.is_separated(), at=cause_at()) },
+              tint=monoid_vermilion,
+            )
+            |> ignore
+          })
+          |> ignore
+          @headless.button(
+            acts,
+            fn() { "Reset" },
+            fn(_) {
+              let at = cause_at()
+              drag_ctrl.set_separated(false, at~)
+              toggle_ctrl.set_separated(false, at~)
+            },
+            fn(b, btn) {
+              b
+              .row(Is(true))
+              .height(Is(Some(48.0)))
+              .padding(Is((18.0, 0.0, 18.0, 0.0)))
+              .radius(Is(24.0))
+              .lines_up(Is(Some(Middle)))
+              .lies_along(Is(Middle))
+              .ground(By(fn() {
+                let d = @lg.is_dark()
+                if btn.pressed() || btn.hovered() {
+                  if d { 0xFFFFFF24L } else { 0x14172018L }
+                } else if d {
+                  0xFFFFFF14L
+                } else {
+                  0xFFFFFFA8L
+                }
+              }))
+              .edge(By(fn() { (1.0, if @lg.is_dark() { 0xFFFFFF22L } else { 0x1417201AL }) }))
+              |> ignore
+              b.box(fn(w) {
+                w.words(Is("Reset"), look=@lg.words_at(14.0, weight=500)).ink(By(fn() { @lg.colors().content }))
+                |> ignore
+              })
+              |> ignore
+              b.show(fn() { btn.focus_shown() }, fn(ring) {
+                ring
+                .over(Is(true))
+                .margin(Is((-3.0, -3.0, -3.0, -3.0)))
+                .radius(Is(27.0))
+                .edge(By(fn() { (2.0, @lg.colors().accent) }))
+                |> ignore
+              })
+            },
+          )
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
 /// How far the dock lies from the window's foot.
 let dock_gap : Double = 18.0
 
@@ -1248,8 +1706,8 @@ let dock_room : Double = dock_gap + 64.0 + 14.0
 
 ///|
 /// Spatial Optical Stage: full-viewport two-tier Flex column (zero outer scroll) with top Studio Bar and reactive
-/// 3-scene stage (`Optics` / `Deck` / `Loupe`), and over it the bottom centered floating glass Dock (`396 × 64`),
-/// where it is whatever the scene.
+/// 4-scene stage (`Optics` / `Deck` / `Loupe` / `Merge`), and over it the bottom centered floating glass Dock
+/// (`468 × 64`), where it is whatever the scene.
 fn overview(
   root : @view.View,
   held : Held?,
@@ -1266,6 +1724,8 @@ fn overview(
   let live_lum = @signals.signal(88.0)
   let build_count = @signals.signal(0)
   let last_action = @signals.signal("60 fps · SDF Glass")
+  let drag_ctrl = @lg.LiquidMerge::new(separated=false)
+  let toggle_ctrl = @lg.LiquidMerge::new(separated=false)
   let reset_all = fn() {
     prism_pos.set((0.0, 0.0))
     refraction_val.set(28.0)
@@ -1293,6 +1753,7 @@ fn overview(
         match idx {
           1 => deck_scene(scene_host, held, grid_on, boost, live_lum, build_count, last_action, reset_all)
           2 => loupe_scene(scene_host)
+          3 => merge_scene(scene_host, drag_ctrl, toggle_ctrl)
           _ =>
             optics_scene(
               scene_host,
@@ -1310,7 +1771,7 @@ fn overview(
     |> ignore
   })
   |> ignore
-  // 3. Bottom Centered Floating Glass Dock (396 × 64): over the stage, `dock_gap` from the window's foot whatever the
+  // 3. Bottom Centered Floating Glass Dock (468 × 64): over the stage, `dock_gap` from the window's foot whatever the
   // scene, so choosing one never moves it; the stage keeps `dock_room` clear under it
   root.box(fn(dock_row) {
     dock_row
@@ -1321,10 +1782,10 @@ fn overview(
     .padding(Is((0.0, 0.0, 0.0, dock_gap)))
     |> ignore
     dock_row.box(fn(dock_w) {
-      dock_w.width(Is(Some(396.0))).shrink(Is(0.0)).points(Is(true)) |> ignore
+      dock_w.width(Is(Some(468.0))).shrink(Is(0.0)).points(Is(true)) |> ignore
       @lg.liquid_bottom_tabs_node(
         dock_w,
-        ["Optics", "Deck", "Loupe"],
+        ["Optics", "Deck", "Loupe", "Merge"],
         fn() { scene.get() },
         fn(i) { scene.set(i) },
         label="Stage scenes",
@@ -1332,6 +1793,7 @@ fn overview(
           studio_tab_face("Optics", icon_prism),
           studio_tab_face("Deck", icon_sliders),
           studio_tab_face("Loupe", icon_terminal),
+          studio_tab_face("Merge", icon_merge),
         ],
         drag?=held.map(fn(h) { h.tabs }),
         light?=held.map(fn(h) { h.tabs_light }),
@@ -1350,7 +1812,7 @@ fn overview(
         h.slider.press()
         h.tabs.press()
         h.tabs.update_value(0.55)
-        h.tabs_light.down(80.0, 32.0, 396.0, 64.0)
+        h.tabs_light.down(80.0, 32.0, 468.0, 64.0)
       })
     None => ()
   }

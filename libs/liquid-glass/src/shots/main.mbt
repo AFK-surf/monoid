@@ -100,6 +100,28 @@ let merge_script : String =
   #|wait 850
 
 ///|
+/// Interactive 60 fps demo of the 1120×690 Spatial Optical Stage `Merge` scene:
+/// Optics -> tap Dock `Merge` (0.00px dock stability) -> drag `Drag Droplet` past pinch-off -> drag back to ~3pt
+/// hover (zero magnetic attraction) -> drag past contact (instant capillary fusion) -> tap `Split Droplet` /
+/// `Fuse Droplet` -> return to `Optics`.
+let stage_merge_script : String =
+  #|wait 350
+  #|tapxy 735 640
+  #|wait 550
+  #|drag 422 295 36 0 550
+  #|wait 650
+  #|drag 478 295 -45 0 650
+  #|wait 650
+  #|drag 433 295 -16 0 350
+  #|wait 650
+  #|tap Split Droplet
+  #|wait 800
+  #|tap Fuse Droplet
+  #|wait 800
+  #|tapxy 384 640
+  #|wait 550
+
+///|
 /// The gallery's pictures: each its name, the page first shown, and what is done before it is drawn.
 let gallery_shots : Array[(String, String, String)] = [
   ("overview", "overview", ""),
@@ -200,6 +222,49 @@ fn main {
     let ok = @film.film(
       fn(root) { @pages.page(root, "overview") },
       script=stage_script,
+      out~,
+      w=1120.0,
+      h=690.0,
+      scale=2.0,
+      dark=true,
+      fps=60,
+    )
+    println("shots: \{out} \{if ok { "ok" } else { "failed" }}")
+    if !ok {
+      failed += 1
+    }
+  }
+  if only == "stage-merge" {
+    let sizes : Array[(String, Double, Double, Int)] = [
+      ("1120x637", 1120.0, 637.0, 587),
+      ("1120x690", 1120.0, 690.0, 640),
+    ]
+    for sz in sizes {
+      let (tag, w, h, dock_y) = sz
+      for dark in [false, true] {
+        @lg.set_dark(Some(dark))
+        let path = "\{dir}/stage-merge-\{tag}-\{if dark { "dark" } else { "light" }}.png"
+        let ok = @film.picture(
+          fn(root) { @pages.page(root, "overview") },
+          path~,
+          w~,
+          h~,
+          scale=3.0,
+          dark~,
+          script="tapxy 735 \{dock_y}\nwait 1000",
+          at=1000.0,
+        )
+        println("shots: \{path} \{if ok { "ok" } else { "failed" }}")
+        if !ok {
+          failed += 1
+        }
+      }
+    }
+    @lg.set_dark(Some(true))
+    let out = "\{dir}/stage-merge-demo-dark.mp4"
+    let ok = @film.film(
+      fn(root) { @pages.page(root, "overview") },
+      script=stage_merge_script,
       out~,
       w=1120.0,
       h=690.0,

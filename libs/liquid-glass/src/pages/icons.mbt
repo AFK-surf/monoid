@@ -312,6 +312,27 @@ fn icon_refresh(parent : @view.View, size : Double, ink : () -> Int64) -> Unit {
 }
 
 ///|
+/// Capillary merge / two-droplet liquid bridge icon (Merge).
+fn icon_merge(parent : @view.View, size : Double, ink : () -> Int64) -> Unit {
+  let k = size / 24.0
+  icon_box(parent, size, fn() {
+    let c = ink()
+    [
+      @paint.shape_of(
+        [
+          circle_outline(7.8, 12.0, 4.3, k),
+          circle_outline(16.8, 12.0, 3.5, k),
+          (flat_scaled([(10.6, 8.8), (12.6, 10.1), (14.7, 9.3)], k), false),
+          (flat_scaled([(10.6, 15.2), (12.6, 13.9), (14.7, 14.7)], k), false),
+        ],
+        stroke=c,
+        width=1.8 * k,
+      ),
+    ]
+  })
+}
+
+///|
 /// Bottom tab face for `LiquidBottomTabs`: 22pt vector icon, 4pt gap, 12pt medium label.
 fn studio_tab_face(name : String, icon : (@view.View, Double, () -> Int64) -> Unit) -> (@view.View, () -> Int64) -> Unit {
   fn(f, ink) {

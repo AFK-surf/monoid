@@ -7,7 +7,7 @@
   <div class="wrap">
     <div class="eyebrow" data-en="Apache-2.0 · iOS 27 UIGlassEffect Model" data-zh="Apache-2.0 · iOS 27 UIGlassEffect 光学模型">Apache-2.0 · iOS 27 UIGlassEffect Model</div>
     <h1 data-en="Liquid Glass, refracted live." data-zh="实时折射的液态玻璃。">Liquid Glass, refracted live.</h1>
-    <p class="lede" data-en="Uniform blur, quarter-circle bevel refraction, adaptive ios27Light / ios27Dark / ios27Clear transmission, touch spots, and shared backdrop capture on WebGL 2." data-zh="对标 Apple iOS 27 UIGlassEffect（flutter_liquid_glass 光学模型）：均匀轻雾、四分之一圆倒角折射、明暗自适应传输、触摸光斑与共享捕获。">Uniform blur, quarter-circle bevel refraction, adaptive ios27Light / ios27Dark / ios27Clear transmission, touch spots, and shared backdrop capture on WebGL 2.</p>
+    <p class="lede" data-en="Uniform blur, quarter-circle bevel refraction, capillary liquid bridge merge &amp; split, adaptive ios27Light / ios27Dark / ios27Clear transmission, touch spots, and shared backdrop capture on WebGL 2." data-zh="对标 Apple iOS 27 UIGlassEffect（flutter_liquid_glass 光学模型）：均匀轻雾、四分之一圆倒角折射、毛细液桥融合与分离、明暗自适应传输、触摸光斑与共享捕获。">Uniform blur, quarter-circle bevel refraction, capillary liquid bridge merge &amp; split, adaptive ios27Light / ios27Dark / ios27Clear transmission, touch spots, and shared backdrop capture on WebGL 2.</p>
 
     <div class="stage obsidian" id="lg-stage">
       <div class="live-stage" id="lg-live" data-live-src="/liquid-glass/app/?MBUI_LG_PAGE=overview&amp;MBUI_DARK=1&amp;MBUI_LG_CHROME=0" data-live-title="ui.monoid Liquid Glass">
@@ -48,6 +48,9 @@
         </button>
         <button type="button" class="lg-pill" data-lg-page="dialog" aria-pressed="false">
           {{i:layers}}<span data-en="Dialog" data-zh="对话框">Dialog</span>
+        </button>
+        <button type="button" class="lg-pill" data-lg-page="merge" aria-pressed="false">
+          {{i:motion}}<span data-en="Merge" data-zh="液态融合">Merge</span>
         </button>
         <button type="button" class="lg-pill live-close-dock" data-live-close="lg-stage" hidden>
           {{i:close}}<span data-en="Return to Preview" data-zh="回到静态图">Return to Preview</span>
@@ -141,10 +144,18 @@ let tab = @signals.signal(0)
 
 @lg.liquid_bottom_tabs_node(
   col,
-  [&quot;Tab 1&quot;, &quot;Tab 2&quot;, &quot;Tab 3&quot;],
+  [&quot;Optics&quot;, &quot;Deck&quot;, &quot;Loupe&quot;, &quot;Merge&quot;],
   fn() { tab.get() },
   fn(i) { tab.set(i) },
   label=&quot;Tabs&quot;,
+) |&gt; ignore
+
+// iOS 27 capillary liquid bridge (@motion.LiquidBond)
+let bond = @lg.LiquidMerge::new(separated=false)
+@lg.liquid_merge_node(
+  col,
+  controller=bond,
+  main_label=fn() { &quot;Liquid Capsule&quot; },
 ) |&gt; ignore" data-en="Copy" data-zh="复制">Copy</button><span class="dim">// libs/liquid-glass/src/pages/pages.mbt</span>
 <span class="kw">let</span> wifi = @signals.signal(<span class="ok">true</span>)
 <span class="kw">let</span> brightness = @signals.signal(<span class="num">40.0</span>)
@@ -173,16 +184,24 @@ let tab = @signals.signal(0)
 
 @lg.<span class="fn">liquid_bottom_tabs_node</span>(
   col,
-  [<span class="str">"Tab 1"</span>, <span class="str">"Tab 2"</span>, <span class="str">"Tab 3"</span>],
+  [<span class="str">"Optics"</span>, <span class="str">"Deck"</span>, <span class="str">"Loupe"</span>, <span class="str">"Merge"</span>],
   <span class="kw">fn</span>() { tab.get() },
   <span class="kw">fn</span>(i) { tab.set(i) },
   label=<span class="str">"Tabs"</span>,
+) |&gt; ignore
+
+<span class="dim">// iOS 27 capillary liquid bridge (@motion.LiquidBond)</span>
+<span class="kw">let</span> bond = @lg.<span class="fn">LiquidMerge::new</span>(separated=<span class="ok">false</span>)
+@lg.<span class="fn">liquid_merge_node</span>(
+  col,
+  controller=bond,
+  main_label=<span class="kw">fn</span>() { <span class="str">"Liquid Capsule"</span> },
 ) |&gt; ignore</pre>
 
       <div class="card lg-attr-card">
         <div class="ic">{{i:shield}}</div>
         <h3 data-en="Apache-2.0 Attribution" data-zh="Apache-2.0 开源致谢">Apache-2.0 Attribution</h3>
-        <p data-en="Glass::liquid unifies Apple iOS 27 UIGlassEffect optics (uniform blur, quarter-circle bevel refraction, ios27Light / ios27Dark / ios27Clear, inner bevel shadow &amp; outline, touch spot, and .sharing() capture) based on whynotmake-it/flutter_liquid_glass, with the interactive control catalog adapted from Kyant0/AndroidLiquidGlass." data-zh="Glass::liquid 统一对标 Apple iOS 27 UIGlassEffect 光学模型（均匀轻雾、四分之一圆倒角折射、ios27Light / ios27Dark / ios27Clear、内倒角阴影与外轮廓、触摸光斑及 .sharing() 共享捕获），光学模型致谢 whynotmake-it/flutter_liquid_glass，交互组件目录致谢 Kyant0/AndroidLiquidGlass。">Glass::liquid unifies Apple iOS 27 UIGlassEffect optics (uniform blur, quarter-circle bevel refraction, ios27Light / ios27Dark / ios27Clear, inner bevel shadow &amp; outline, touch spot, and .sharing() capture) based on whynotmake-it/flutter_liquid_glass, with the interactive control catalog adapted from Kyant0/AndroidLiquidGlass.</p>
+        <p data-en="Glass::liquid unifies Apple iOS 27 UIGlassEffect optics (uniform blur, quarter-circle bevel refraction, capillary liquid bridge hysteresis via @motion.LiquidBond and @lg.liquid_merge_node, ios27Light / ios27Dark / ios27Clear, inner bevel shadow &amp; outline, touch spot, and .sharing() capture) based on whynotmake-it/flutter_liquid_glass, with the interactive control catalog adapted from Kyant0/AndroidLiquidGlass." data-zh="Glass::liquid 统一对标 Apple iOS 27 UIGlassEffect 光学模型（均匀轻雾、四分之一圆倒角折射、基于 @motion.LiquidBond 与 @lg.liquid_merge_node 的毛细液桥滞回融合分离、ios27Light / ios27Dark / ios27Clear、内倒角阴影与外轮廓、触摸光斑及 .sharing() 共享捕获），光学模型致谢 whynotmake-it/flutter_liquid_glass，交互组件目录致谢 Kyant0/AndroidLiquidGlass。">Glass::liquid unifies Apple iOS 27 UIGlassEffect optics (uniform blur, quarter-circle bevel refraction, capillary liquid bridge hysteresis via @motion.LiquidBond and @lg.liquid_merge_node, ios27Light / ios27Dark / ios27Clear, inner bevel shadow &amp; outline, touch spot, and .sharing() capture) based on whynotmake-it/flutter_liquid_glass, with the interactive control catalog adapted from Kyant0/AndroidLiquidGlass.</p>
         <div class="acts">
           <a class="btn btn-line btn-s" href="https://github.com/whynotmake-it/flutter_liquid_glass" target="_blank" rel="noopener noreferrer">
             {{i:github}}<span data-en="flutter_liquid_glass" data-zh="flutter_liquid_glass">flutter_liquid_glass</span>

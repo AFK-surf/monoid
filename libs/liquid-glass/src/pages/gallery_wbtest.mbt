@@ -134,7 +134,7 @@ fn chosen_at() -> Array[String] raise {
 }
 
 ///|
-test "the bottom dock switches between Optics, Deck and Loupe, and Publish opens and closes the dialog" {
+test "the bottom dock switches between Optics, Deck, Loupe and Merge, and Publish opens and closes the dialog" {
   let t = gallery_case("overview", chrome=false)
   let (dx, dy) = middle_of(t, Tab, "Deck")
   t.tap(dx, dy)
@@ -144,6 +144,30 @@ test "the bottom dock switches between Optics, Deck and Loupe, and Publish opens
   t.tap(lx, ly)
   t.run_for(settled)
   let on_loupe = t.all(Group, label="Optical Loupe").length()
+  let (mx, my) = middle_of(t, Tab, "Merge")
+  t.tap(mx, my)
+  t.run_for(settled)
+  let on_merge = (
+    t.all(Group, label="Drag Droplet").length(),
+    t.all(Group, label="Container Droplet").length(),
+    t.all(Button, label="Split Droplet").length(),
+  )
+  let before_x = t.get(Group, label="Container Droplet").rect.0
+  let (sx, sy) = middle_of(t, Button, "Split Droplet")
+  t.tap(sx, sy)
+  t.run_for(settled)
+  let after_split = (
+    t.all(Button, label="Fuse Droplet").length(),
+    t.all(Button, label="Split Droplet").length(),
+    t.get(Group, label="Container Droplet").rect.0 - before_x > 40.0,
+  )
+  let (fx, fy) = middle_of(t, Button, "Fuse Droplet")
+  t.tap(fx, fy)
+  t.run_for(settled)
+  let after_fuse = (
+    t.all(Button, label="Split Droplet").length(),
+    (t.get(Group, label="Container Droplet").rect.0 - before_x).abs() < 0.5,
+  )
   let (ox, oy) = middle_of(t, Tab, "Optics")
   t.tap(ox, oy)
   t.run_for(settled)
@@ -154,7 +178,10 @@ test "the bottom dock switches between Optics, Deck and Loupe, and Publish opens
   t.key(@ui.key_escape)
   t.run_for(settled)
   let dialog_closed = t.all(Dialog, label="Publish ui.monoid").length()
-  assert_eq((on_deck, on_loupe, dialog_shown, dialog_closed), ((1, 1), 1, 1, 0))
+  assert_eq(
+    (on_deck, on_loupe, on_merge, after_split, after_fuse, dialog_shown, dialog_closed),
+    ((1, 1), 1, (1, 1, 1), (1, 0, true), (1, true), 1, 0),
+  )
 }
 
 ///|
@@ -182,7 +209,7 @@ fn dock_through_scenes(w : Double, h : Double) -> Array[String] raise {
   t.draw()
   let r = fn(x : Double) { (x * 100.0).round() / 100.0 }
   let out = []
-  for name in ["Optics", "Deck", "Loupe", "Optics"] {
+  for name in ["Optics", "Deck", "Loupe", "Merge", "Optics"] {
     let (x, y) = middle_of(t, Tab, name)
     t.tap(x, y)
     t.run_for(settled)
@@ -207,21 +234,24 @@ fn dock_through_scenes(w : Double, h : Double) -> Array[String] raise {
 test "the bottom dock stays where it is as each scene is chosen, 18 from the window's foot, its tabs alike" {
   // (1120 by 637: the home page's live hero, its 690 less the bar over it; 690: its pictures; 1280 by 1040: the shots')
   inspect(dock_through_scenes(1120.0, 637.0).join("\n"), content=(
-    #|Optics 362,555,396,64 foot 18 tabs 3 even true clear true
-    #|Deck 362,555,396,64 foot 18 tabs 3 even true clear true
-    #|Loupe 362,555,396,64 foot 18 tabs 3 even true clear true
-    #|Optics 362,555,396,64 foot 18 tabs 3 even true clear true
+    #|Optics 326,555,468,64 foot 18 tabs 4 even true clear true
+    #|Deck 326,555,468,64 foot 18 tabs 4 even true clear true
+    #|Loupe 326,555,468,64 foot 18 tabs 4 even true clear true
+    #|Merge 326,555,468,64 foot 18 tabs 4 even true clear true
+    #|Optics 326,555,468,64 foot 18 tabs 4 even true clear true
   ))
   inspect(dock_through_scenes(1120.0, 690.0).join("\n"), content=(
-    #|Optics 362,608,396,64 foot 18 tabs 3 even true clear true
-    #|Deck 362,608,396,64 foot 18 tabs 3 even true clear true
-    #|Loupe 362,608,396,64 foot 18 tabs 3 even true clear true
-    #|Optics 362,608,396,64 foot 18 tabs 3 even true clear true
+    #|Optics 326,608,468,64 foot 18 tabs 4 even true clear true
+    #|Deck 326,608,468,64 foot 18 tabs 4 even true clear true
+    #|Loupe 326,608,468,64 foot 18 tabs 4 even true clear true
+    #|Merge 326,608,468,64 foot 18 tabs 4 even true clear true
+    #|Optics 326,608,468,64 foot 18 tabs 4 even true clear true
   ))
   inspect(dock_through_scenes(1280.0, 1040.0).join("\n"), content=(
-    #|Optics 442,958,396,64 foot 18 tabs 3 even true clear true
-    #|Deck 442,958,396,64 foot 18 tabs 3 even true clear true
-    #|Loupe 442,958,396,64 foot 18 tabs 3 even true clear true
-    #|Optics 442,958,396,64 foot 18 tabs 3 even true clear true
+    #|Optics 406,958,468,64 foot 18 tabs 4 even true clear true
+    #|Deck 406,958,468,64 foot 18 tabs 4 even true clear true
+    #|Loupe 406,958,468,64 foot 18 tabs 4 even true clear true
+    #|Merge 406,958,468,64 foot 18 tabs 4 even true clear true
+    #|Optics 406,958,468,64 foot 18 tabs 4 even true clear true
   ))
 }
