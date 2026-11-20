@@ -106,6 +106,44 @@ async fn moved_bytes(host : @host.Host, b : @move_coord.Bytes_?) -> Bytes? {
 }
 
 ///|
+/// A failure of a request to another station as the moves tell it apart (move/station.ts `#asked`, by class): the
+/// other's refusal (mesh/bus.ts `Refused`), its connection gone (mesh/peer.ts `PeerGone`) or its process stopping or
+/// handing over (`PeerStopped`); any other as it is.
+fn move_error_of(e : Error) -> Error {
+  match e {
+    @gate.PeerGone(m, true) => @move_coord.PeerStopped(m)
+    @gate.PeerGone(m, false) => @move_coord.PeerGone(m)
+    @gate.PeerRefused(m) => @move_coord.Refused(m)
+    e => e
+  }
+}
+
+///|
+/// A move's failure as replica_coord's `Handover` tells it apart (by its class's name, `kind_of`), with its words.
+fn handover_error_of(e : Error) -> Error {
+  match e {
+    @move_coord.Said(m)
+    | @move_coord.AskAgain(m)
+    | @move_coord.Gone(m)
+    | @move_coord.Refused(m)
+    | @move_coord.PeerGone(m)
+    | @move_coord.PeerStopped(m)
+    | @move_coord.Failed(m) => @replica_coord.Thrown(@move_coord.kind_of(e), to_jv({ "message": Json::string(m) }))
+    e => e
+  }
+}
+
+///|
+/// What replica_coord's `Handover` fails with, as the moves tell it apart (move_coord's `MoveError`, by its class's
+/// name): a hand-over's `Said`, `Gone` or `Refused` reaches people in its own words, as move/module.ts `sayOf` says them.
+async fn[T] handed(f : async () -> T) -> T {
+  f() catch {
+    @replica_coord.Thrown(kind, _) as e => raise @move_coord.error_of(kind, @replica_coord.message_of(e))
+    e => raise e
+  }
+}
+
+///|
 /// The hand-over of one chat (replica_coord's `Handover`) as a move's `chats` module takes it (move_coord's
 /// `HandoverPort`), made of what the move hands it (`HandoverHooks`).
 async fn P55::handover_port(self : P55, hooks : @move_coord.HandoverHooks) -> @move_coord.HandoverPort {
@@ -161,7 +199,20 @@ async fn P55::handover_port(self : P55, hooks : @move_coord.HandoverHooks) -> @m
       _ => to_jv(self.hub(name, a.map(of_jv)))
     }
   }
-  let w = self.replica_world(answer, (name, _a) => if name == "changed" { (hooks.changed)() })
+  let world = self.replica_world(answer, (name, _a) => if name == "changed" { (hooks.changed)() })
+  // (move/station.ts hands its `Handover` the move's own `ask`: in a turn a station found gone by a hand-over's request
+  // is asked nothing more, and one found gone before fails the hand-over's next request at once in its words)
+  let w = {
+    ..world,
+    ask_peer: async fn(station, request, body, itself) {
+      if itself {
+        return (world.ask_peer)(station, request, body, itself)
+      }
+      let bytes = body.map(b => @move_coord.Bytes_::Came(b.reader(world.fs)))
+      let value = (hooks.ask.ask)(station, request, bytes) catch { e => raise handover_error_of(e) }
+      { value, body: None }
+    },
+  }
   let told = hooks.told
   let previous : @replica_coord.Later[Unit] = @replica_coord.Later::new()
   bus.host.rt.fork(async fn() {
@@ -187,9 +238,11 @@ async fn P55::handover_port(self : P55, hooks : @move_coord.HandoverHooks) -> @m
     pack_bytes: None,
     work: self.carry_work(),
     told: {
-      asked: async fn(to, key, make, progress) { told.asked(to, key, () => (make(), None), progress?) },
+      asked: async fn(to, key, make, progress) {
+        told.asked(to, key, () => (make(), None), progress?) catch { e => raise handover_error_of(e) }
+      },
       run: async fn(peer, key, work, measure) {
-        told.run(peer, key, async fn(_p) { Some(work()) }, measure?)
+        told.run(peer, key, async fn(_p) { Some(work()) }, measure?) catch { e => raise handover_error_of(e) }
       },
       let_go: (to, key, words) => told.let_go(to, key, @move_coord.error_of("Said", words)),
       settle: async fn() { told.settle() },
@@ -200,35 +253,37 @@ async fn P55::handover_port(self : P55, hooks : @move_coord.HandoverHooks) -> @m
     previous_pid: bus.previous_pid.map(p => p.to_double()),
   })
   {
-    together: async fn(k, page) { h.together(k, reads=self.reads_of(page)) },
-    chat_of: async fn(k) { h.chat_of(k) },
+    together: async fn(k, page) { handed(() => h.together(k, reads=self.reads_of(page))) },
+    chat_of: async fn(k) { handed(() => h.chat_of(k)) },
     accounts_of: async fn(keys, page) {
-      h.accounts_of(keys, reads=self.reads_of(page)).map(p => (p.0, match p.1 { Null => None; x => Some(x) }))
+      handed(() => h.accounts_of(keys, reads=self.reads_of(page))).map(p => (p.0, match p.1 { Null => None; x => Some(x) }))
     },
     past_left: async fn(accounts, keys, page) {
-      h.past_left(accounts.map(p => (p.0, p.1.unwrap_or(Null))), keys, reads=self.reads_of(page))
+      handed(() => h.past_left(accounts.map(p => (p.0, p.1.unwrap_or(Null))), keys, reads=self.reads_of(page)))
     },
-    check: async fn(k, to, planning, page) { h.check(k, to, planning~, reads=self.reads_of(page)) },
-    coming_in: async fn(ws) { h.coming_in(ws) },
+    check: async fn(k, to, planning, page) { handed(() => h.check(k, to, planning~, reads=self.reads_of(page))) },
+    coming_in: async fn(ws) { handed(() => h.coming_in(ws)) },
     abandon: () => h.abandon(),
-    hand_over: async fn(k, to, wait, progress, stopped_for) { h.hand_over(k, to, wait~, progress~, stopped_for=stopped_for.map(x => x.to_j())) },
-    arrived: async fn(k, ms) { h.arrived(k, within_ms=Some(ms.to_double())) },
-    out_of: async fn(k) { h.out_of(k) },
-    coming_from: async fn(k) { h.coming_from(k) },
-    waits_for_turn: async fn(o) {
-      h.waits_for_turn(match o { Obj(_) => match of_jv(o) { x => jtext_or_empty(x, "id") }; Str(u) => @jsjson.sanitize_str(u); _ => "" })
+    hand_over: async fn(k, to, wait, progress, stopped_for) {
+      handed(() => h.hand_over(k, to, wait~, progress~, stopped_for=stopped_for.map(x => x.to_j())))
     },
-    start: async fn() { h.start() },
-    close: async fn() { h.close() },
-    settle: async fn() { h.settle() },
-    loaded_within: async fn() { h.loaded_within() },
+    arrived: async fn(k, ms) { handed(() => h.arrived(k, within_ms=Some(ms.to_double()))) },
+    out_of: async fn(k) { handed(() => h.out_of(k)) },
+    coming_from: async fn(k) { handed(() => h.coming_from(k)) },
+    waits_for_turn: async fn(o) {
+      handed(() => h.waits_for_turn(match o { Obj(_) => match of_jv(o) { x => jtext_or_empty(x, "id") }; Str(u) => @jsjson.sanitize_str(u); _ => "" }))
+    },
+    start: async fn() { handed(() => h.start()) },
+    close: async fn() { handed(() => h.close()) },
+    settle: async fn() { handed(() => h.settle()) },
+    loaded_within: async fn() { handed(() => h.loaded_within()) },
     answer: async fn(peer, request, ws, bytes) {
       let body : @replica_coord.Body? = match bytes {
         None => None
         Some(FileBytes(p, from, len)) => Some(File(p, from.to_double(), len.to_double()))
         Some(Came(next)) => Some(Stream(next))
       }
-      h.answer(hooks.admits, peer, request, body, ws)
+      handed(() => h.answer(hooks.admits, peer, request, body, ws))
     },
     reached: peer => h.reached(peer),
   }
@@ -306,7 +361,9 @@ async fn P55::start_moves(self : P55) -> Unit {
   }
   let ask_peer = async fn(station : String, request : @jsjson.JValue, body : @move_coord.Bytes_?) -> @jsjson.JValue {
     let r = of_jv(request)
-    let (value, _) = bus.call_peer(station, jtext(r, "workspace"), jtext_or_empty(r, "method"), r, bytes?=moved_bytes(host, body))
+    let (value, _) = bus.call_peer(station, jtext(r, "workspace"), jtext_or_empty(r, "method"), r, bytes?=moved_bytes(host, body)) catch {
+      e => raise move_error_of(e)
+    }
     to_jv(value)
   }
   let hub_bool = async fn(name : String, args : Array[Json]) -> Bool { self.hub(name, args) is True }
