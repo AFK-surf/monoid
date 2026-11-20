@@ -3047,3 +3047,15 @@ web-pages.vault.members.rekeyNote
 web-pages.vault.members.saveWhat
 web-pages.vault.members.saved
 web-pages.vault.editor.saveTo
+web-pages.vault.thisDeviceCodeLabel
+web-pages.vault.thisDeviceCodeHint
+web-pages.security.thisDeviceCodeLabel
+web-pages.vault.devicesDialog.title
+web-pages.vault.devicesDialog.titleFallback
+web-pages.vault.devicesDialog.pendingTitle
+web-pages.vault.devicesDialog.pendingNote
+web-pages.vault.devicesDialog.authorizedTitle
+web-pages.vault.devicesDialog.authorize
+web-pages.vault.devicesDialog.current
+web-pages.vault.devicesDialog.codePrefix
+web-pages.vault.devicesDialog.legacyPendingNote

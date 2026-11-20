@@ -707,6 +707,139 @@ pub fn vault_members_dialog(core : Core, here : Here, rv : Json?) -> Unit {
 }
 
 ///|
+/// Formats a device row's subtitle (`核对码 K7M-4PX · 林 · 3 分钟前`), omitting absent parts.
+fn vd_device_meta(dv : Json?) -> String {
+  let parts : Array[String] = []
+  let code = text(dv, "deviceCode")
+  if code != "" {
+    parts.push(@sf.t("web-pages.vault.devicesDialog.codePrefix", args=[("code", code)]))
+  }
+  let owner = text(dv, "ownerName")
+  if owner != "" {
+    parts.push(owner)
+  }
+  let at = text(dv, "atText")
+  if at != "" {
+    parts.push(at)
+  }
+  parts.join(" · ")
+}
+
+///|
+/// Per-vault devices detail dialog: reactively lists pending devices (each with its own single-device
+/// `vault.addDevice` authorize button aligned to the first line) and authorized devices, with a graceful
+/// fallback for older cores that omit device arrays.
+pub fn vault_devices_dialog(core : Core, here : Here, vault_id : String) -> Unit {
+  let ws = here.workspace
+  let rv = fn() {
+    items((core.topic)("vaults", { "workspace": str(ws) }).get().value, "vaults")
+    .iter()
+    .find_first(fn(r) { text(Some(r), "id") == vault_id })
+  }
+  let initial_name = text(@signals.untracked(rv), "name")
+  let title = if initial_name != "" {
+    @sf.t("web-pages.vault.devicesDialog.title", args=[("name", initial_name)])
+  } else {
+    @sf.t("web-pages.vault.devicesDialog.titleFallback")
+  }
+  let pending = fn() { items(rv(), "pendingDevices") }
+  let authorized = fn() { items(rv(), "authorizedDevices") }
+  let can_give = fn() { vault_can_manage(rv()) && flag(rv(), "keyed") }
+  open_dialog_nodes(
+    title,
+    fn(v, _) {
+      v.show(fn() { !pending().is_empty() }, fn(sec) {
+        @sf.style_node(sec, fn() { vd_dev_section })
+        @sf.words_node(sec, fn() { @sf.t("web-pages.vault.devicesDialog.pendingTitle") }, fn() {
+          @sf.meta.then(@sf.strong).then(@sf.full_words)
+        })
+        |> ignore
+        @sf.words_node(sec, fn() { @sf.t("web-pages.vault.devicesDialog.pendingNote") }, fn() { @sf.pg_note }) |> ignore
+        @sf.group_node(sec, fn(g) {
+          g.each(pending, fn(d) { text(Some(d), "device") }, fn(row, d) {
+            let dv = fn() { Some(d.get()) }
+            let dev_id = @signals.untracked(fn() { text(dv(), "device") })
+            let is_first = fn() { pending().get(0).map(fn(x) { text(Some(x), "device") }) == Some(dev_id) }
+            let busy = fn() { is_doing(core, ["vault.addDevice"], [("workspace", ws), ("vault", vault_id), ("device", dev_id)]) }
+            let press = fn() {
+              vault_act(
+                core,
+                ws,
+                "addDevice",
+                [("vault", str(vault_id)), ("device", str(dev_id))],
+                @sf.t("web-pages.vault.addDeviceWhat"),
+                done=@sf.t("web-pages.vault.addedDevice"),
+              )
+            }
+            @sf.link_row_node(
+              row,
+              fn() { text(dv(), "deviceText") },
+              fn() {  },
+              note=fn() { vd_device_meta(dv()) },
+              goes=false,
+              chevron=false,
+              control=fn(c) {
+                c.show(can_give, fn(btn) {
+                  btn.pick(is_first, fn(p, first) {
+                    if first {
+                      @sf.row_corner_button_node(p, fn() { @sf.t("web-pages.vault.devicesDialog.authorize") }, press, busy~) |> ignore
+                    } else {
+                      @sf.row_end_button_node(p, fn() { @sf.t("web-pages.vault.devicesDialog.authorize") }, press, busy~) |> ignore
+                    }
+                  })
+                })
+              },
+            )
+          })
+        })
+      })
+      v.show(fn() { !authorized().is_empty() }, fn(sec) {
+        @sf.style_node(sec, fn() { vd_dev_section })
+        @sf.words_node(sec, fn() { @sf.t("web-pages.vault.devicesDialog.authorizedTitle") }, fn() {
+          @sf.meta.then(@sf.strong).then(@sf.full_words)
+        })
+        |> ignore
+        @sf.group_node(sec, fn(g) {
+          g.each(authorized, fn(d) { text(Some(d), "device") }, fn(row, d) {
+            let dv = fn() { Some(d.get()) }
+            let dev_title = fn() {
+              let name = text(dv(), "deviceText")
+              if flag(dv(), "current") {
+                @sf.t("web-pages.vault.devicesDialog.current", args=[("device", name)])
+              } else {
+                name
+              }
+            }
+            @sf.link_row_node(row, dev_title, fn() {  }, note=fn() { vd_device_meta(dv()) }, goes=false)
+          })
+        })
+      })
+      v.show(fn() { pending().is_empty() && authorized().is_empty() }, fn(fallback) {
+        @sf.style_node(fallback, fn() { vd_dev_section })
+        @sf.words_node(
+          fallback,
+          fn() { @sf.t("web-pages.vault.devicesHold", args=[("n", count(rv(), "devices").to_string())]) },
+          fn() { @sf.pg_note },
+        )
+        |> ignore
+        fallback.show(fn() { count(rv(), "missing") > 0 }, fn(m) {
+          @sf.words_node(m, fn() { @sf.t("web-pages.vault.devicesDialog.legacyPendingNote") }, fn() { @sf.pg_note }) |> ignore
+        })
+      })
+    },
+    fn(v, shut) {
+      @sf.foot_spacer_node(v)
+      @sf.button_node(v, fn() { @sf.t("common.close") }, fn() { shut() }, tone=Primary) |> ignore
+    },
+  )
+}
+
+///|
+/// Vertical stack for each section inside the vault devices dialog.
+// kept across runs: a value (no field of it changes)
+let vd_dev_section : @ui.Style = @ui.css("w=Full gap=S2")
+
+///|
 /// (a file: its name and size, then the button that picks another, 12 apart)
 // kept across runs: a value (no field of it changes)
 let vd_file : @ui.Style = @ui.css("row w=Full gap=S3 align=ACenter")

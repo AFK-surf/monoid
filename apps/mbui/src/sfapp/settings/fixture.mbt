@@ -92,6 +92,8 @@ priv struct SettingsFixture {
   mut pairing_personal : Bool
   /// asked into one more workspace meanwhile (开源, its mark an emoji): fixture_prompts_now
   mut pairing_more : Bool
+  /// pairing prompt with deviceCode, build, willSign, and handoverVaults (settings-pair-prompt)
+  mut pairing_clarity : Bool
   /// Maple is being added to security mode (settings-security-protecting).
   mut protecting : Bool
   /// the lock's changes made here that no station took yet, by id (settings-security-pending: `fx_pending_rows`),
@@ -125,6 +127,12 @@ priv struct SettingsFixture {
   mut key_ask_ended : String
   /// the key being given it (the core's `doing`: vault.addDevice under way): fixture_prompts_now
   mut key_giving : Bool
+  /// whether the workspace in key_ask is in safe mode (false tests the non-safe-mode prompt wording)
+  mut key_ask_safe_mode : Bool
+  /// this device's verification code shown on vault no-key card (settings-vault-no-key-code)
+  mut this_device_code : String
+  /// whether pending device d-new on v-ws has been authorized in the current fixture run
+  mut vault_ws_pending_done : Bool
   /// Maple online too (settings-profiles-pick: Profile's ＋ asks which station)
   mut mba_online : Bool
   /// how many other stations are online to take Willow's chats as it is retired (settings-station-retire…): 1 Maple,
@@ -222,6 +230,7 @@ let fx : SettingsFixture = {
   pairing: false,
   pairing_personal: false,
   pairing_more: false,
+  pairing_clarity: false,
   protecting: false,
   pending: [],
   upgrade: "",
@@ -235,6 +244,9 @@ let fx : SettingsFixture = {
   key_ask: false,
   key_ask_ended: "",
   key_giving: false,
+  key_ask_safe_mode: true,
+  this_device_code: "",
+  vault_ws_pending_done: false,
   mba_online: false,
   retire_others: 0,
   retire_home: true,
@@ -300,6 +312,32 @@ fn fx_vault_row() -> Json {
     ("keyed", Json::boolean(!fx.vault_elsewhere)),
     ("missing", Json::number(0.0)),
     ("recoverable", Json::boolean(true)),
+    (
+      "authorizedDevices",
+      Json::array([
+        obj([
+          ("device", str("d-mac")),
+          ("deviceText", str("林的 MacBook Pro · still.fail")),
+          ("deviceCode", str("A3B-9CD")),
+          ("ownerName", str("林")),
+          ("ownerEmail", str("lin@example.com")),
+          ("current", Json::boolean(true)),
+          ("at", Json::number(0.0)),
+          ("atText", str("1 小时前")),
+        ]),
+        obj([
+          ("device", str("d-ios")),
+          ("deviceText", str("林的 iPhone · still.fail")),
+          ("deviceCode", str("M4N-8PQ")),
+          ("ownerName", str("林")),
+          ("ownerEmail", str("lin@example.com")),
+          ("current", Json::boolean(false)),
+          ("at", Json::number(0.0)),
+          ("atText", str("昨天")),
+        ]),
+      ]),
+    ),
+    ("pendingDevices", []),
   ]
   if fx.vault_waits {
     row.push(("waits", str("Willow")))
@@ -310,6 +348,44 @@ fn fx_vault_row() -> Json {
 ///|
 /// The shared workspace vault in the fixture (`settings-vault-workspace*`).
 fn fx_workspace_vault_row() -> Json {
+  let pending_dev = obj([
+    ("device", str("d-new")),
+    ("deviceText", str("Pixel 9 · still.fail Android")),
+    ("deviceCode", str("K7M-4PX")),
+    ("ownerName", str("林")),
+    ("ownerEmail", str("lin@example.com")),
+    ("current", Json::boolean(false)),
+    ("at", Json::number(0.0)),
+    ("atText", str("3 分钟前")),
+  ])
+  let authorized : Array[Json] = [
+    obj([
+      ("device", str("d-mac")),
+      ("deviceText", str("林的 MacBook Pro · still.fail")),
+      ("deviceCode", str("A3B-9CD")),
+      ("ownerName", str("林")),
+      ("ownerEmail", str("lin@example.com")),
+      ("current", Json::boolean(true)),
+      ("at", Json::number(0.0)),
+      ("atText", str("1 小时前")),
+    ]),
+    obj([
+      ("device", str("d-ana")),
+      ("deviceText", str("Ana 的 MacBook Air · still.fail")),
+      ("deviceCode", str("E5F-2GH")),
+      ("ownerName", str("Ana")),
+      ("ownerEmail", str("ana@example.com")),
+      ("current", Json::boolean(false)),
+      ("at", Json::number(0.0)),
+      ("atText", str("昨天")),
+    ]),
+  ]
+  let pending : Array[Json] = if fx.vault_ws_pending_done {
+    authorized.push(pending_dev)
+    []
+  } else {
+    [pending_dev]
+  }
   obj([
     ("id", str("v-ws")),
     ("name", str("Workspace 密钥库")),
@@ -335,12 +411,14 @@ fn fx_workspace_vault_row() -> Json {
     ("station", str("st1")),
     ("stationName", str("Willow")),
     ("items", Json::number(2.0)),
-    ("devices", Json::number(4.0)),
+    ("devices", Json::number(authorized.length().to_double())),
     ("open", Json::boolean(false)),
     ("keyed", Json::boolean(true)),
-    ("missing", Json::number(1.0)),
+    ("missing", Json::number(pending.length().to_double())),
     ("recoverable", Json::boolean(false)),
     ("lasts", str("chat")),
+    ("authorizedDevices", Json::array(authorized)),
+    ("pendingDevices", Json::array(pending)),
   ])
 }
 
@@ -494,6 +572,7 @@ fn fixture_reset() -> Unit {
   fx.pairing = false
   fx.pairing_personal = false
   fx.pairing_more = false
+  fx.pairing_clarity = false
   fx.protecting = false
   fx.pending.clear()
   fx.upgrade = ""
@@ -507,6 +586,9 @@ fn fixture_reset() -> Unit {
   fx.key_ask = false
   fx.key_ask_ended = ""
   fx.key_giving = false
+  fx.key_ask_safe_mode = true
+  fx.this_device_code = ""
+  fx.vault_ws_pending_done = false
   fx.mba_online = false
   fx.retire_others = 0
   fx.retire_home = true
@@ -656,11 +738,18 @@ pub fn fixture_key_ask_ended() -> String {
 /// What the made-up core's `lockPrompts` holds now, as another device changed it (lock_prompts.mbt, vault_prompts.mbt):
 /// the new device asking (`pairing`; into one more workspace meanwhile, `more`), the device waiting for the vault's key
 /// (`key_ask`; the key being given it, `giving`), told to what follows its topics.
-pub fn fixture_prompts_now(pairing~ : Bool, more? : Bool = false, key_ask~ : Bool, giving? : Bool = false) -> Unit {
+pub fn fixture_prompts_now(
+  pairing~ : Bool,
+  more? : Bool = false,
+  key_ask~ : Bool,
+  giving? : Bool = false,
+  safe_mode? : Bool = true,
+) -> Unit {
   fx.pairing = pairing
   fx.pairing_more = more
   fx.key_ask = key_ask
   fx.key_giving = giving
+  fx.key_ask_safe_mode = safe_mode
   fx_changed()
 }
 
@@ -1071,6 +1160,10 @@ pub fn fixture_page(mode : String) -> String {
       fx_adb.val = "lock-replaced"
     }
     "settings-lock-prompt" => fx.pairing = true
+    "settings-pair-prompt" => {
+      fx.pairing = true
+      fx.pairing_clarity = true
+    }
     // (one asking into the person's own lock: no workspace named)
     "settings-lock-prompt-personal" => {
       fx.pairing = true
@@ -1109,6 +1202,15 @@ pub fn fixture_page(mode : String) -> String {
     "settings-vault-workspace-editor" => {
       fx.vault_workspace = "has"
       fixture_open.desk = "vault-workspace-editor"
+    }
+    "settings-vault-devices-dialog" => {
+      fx.vault_workspace = "has"
+      fixture_open.desk = "vault-devices-dialog"
+    }
+    "settings-vault-no-key-code" => {
+      fx.vault_off = true
+      fx.vault_elsewhere = true
+      fx.this_device_code = "K7M-4PX"
     }
     "settings-vault-recover" => fixture_open.desk = "vault-recover"
     "settings-add-people" => up("add-people", "", 0)
@@ -1177,8 +1279,8 @@ pub fn fixture_page(mode : String) -> String {
     "settings-connect-comma" | "settings-connect-feishu" | "settings-connect-group" => "connect:ws1/st1#k1"
     "settings-new-connect" | "settings-new-connect-platform" | "settings-new-connect-scan" | "settings-new-connect-app" | "settings-new-connect-comma"
     | "settings-new-connect-platform-group" | "settings-new-connect-group" => "connects"
-    "settings-vault-off" | "settings-vault-elsewhere" | "settings-vault-words" | "settings-vault-recover" | "settings-vault-plain" | "settings-vault-waits"
-    | "settings-vault-workspace-create" | "settings-vault-workspace" | "settings-vault-workspace-save-picked" | "settings-vault-workspace-members"
+    "settings-vault-off" | "settings-vault-elsewhere" | "settings-vault-no-key-code" | "settings-vault-words" | "settings-vault-recover" | "settings-vault-plain" | "settings-vault-waits"
+    | "settings-vault-workspace-create" | "settings-vault-workspace" | "settings-vault-workspace-save-picked" | "settings-vault-workspace-members" | "settings-vault-devices-dialog"
     | "settings-vault-own-off" | "settings-vault-own-on" | "settings-vault-own-outside" | "settings-vault-own-code" | "settings-vault-own-replaced"
     | "settings-vault-confirm" | "settings-vault-syncing" | "settings-vault-waiting" | "settings-vault-waiting-was" | "settings-vault-replaced"
     | "settings-vault-replaced-was" => "vault"
@@ -1205,7 +1307,7 @@ pub fn fixture_page(mode : String) -> String {
     "settings-station-devices" => "station:ws1/st1"
     "settings-station-tasks" | "settings-station-tasks-locked" => "station:ws1/aa11"
     "settings-station-tasks-other" => "station:ws1/bb22"
-    "settings-notify-off" | "settings-lock-prompt" | "settings-lock-prompt-personal" | "settings-lock-prompt-role" | "settings-vault-prompt" =>
+    "settings-notify-off" | "settings-lock-prompt" | "settings-lock-prompt-personal" | "settings-lock-prompt-role" | "settings-pair-prompt" | "settings-vault-prompt" =>
       "home"
     // (the notifications' page; the system having refused them: its banner's way to allow them)
     "settings-notify" | "settings-notify-denied" => "notifications"
@@ -3234,7 +3336,37 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
                   ("untilText", str("14:05 前有效")),
                   ("workspaces", if fx.pairing_personal { [] } else { Json::array(pairing_places()) }),
                 ] +
-                (if fx.lock_case == "role" { [("roleText", str("「星火工作室」：批准后以管理员身份加入"))] } else { [] })),
+                (if fx.lock_case == "role" { [("roleText", str("「星火工作室」：批准后以管理员身份加入"))] } else { [] }) +
+                (if fx.pairing_clarity {
+                  [
+                    ("deviceCode", str("K7M-4PX")),
+                    ("build", str("0.1.10587")),
+                    ("willSign", Json::boolean(true)),
+                    (
+                      "handoverVaults",
+                      Json::array([
+                        obj([
+                          ("id", str("v1")),
+                          ("name", str("林的库")),
+                          ("scope", str("personal")),
+                          ("items", Json::number(5.0)),
+                          ("workspace", str("ws1")),
+                          ("workspaceName", str("星火工作室")),
+                        ]),
+                        obj([
+                          ("id", str("v-ws")),
+                          ("name", str("Workspace 密钥库")),
+                          ("scope", str("workspace")),
+                          ("items", Json::number(3.0)),
+                          ("workspace", str("ws1")),
+                          ("workspaceName", str("星火工作室")),
+                        ]),
+                      ]),
+                    ),
+                  ]
+                } else {
+                  []
+                })),
               ]
             } else {
               []
@@ -3252,6 +3384,13 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
                   ("vaultName", str("林的库")),
                   ("device", str("d-new")),
                   ("deviceText", str("Pixel 9")),
+                  ("deviceCode", str("K7M-4PX")),
+                  ("ownerName", str("林")),
+                  ("ownerEmail", str("lin@example.com")),
+                  ("isOwnDevice", Json::boolean(true)),
+                  ("vaultScope", str("personal")),
+                  ("vaultItems", Json::number(3.0)),
+                  ("safeMode", Json::boolean(fx.key_ask_safe_mode)),
                   ("at", Json::number(0.0)),
                   ("atText", str("3 分钟前")),
                 ]),
@@ -3757,6 +3896,7 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
           ("statusText", str(if fx.vault_own == "off" || fx.vault_own == "outside" { "" } else if fx.vault_workspace == "has" { "2 个待批准" } else { "1 个待批准" })),
           ("statusBad", Json::boolean(!(fx.vault_own == "off" || fx.vault_own == "outside"))),
         ] +
+        (if fx.this_device_code != "" { [("thisDeviceCode", str(fx.this_device_code))] } else { [] }) +
         (match fx.lock_case {
           // (not signing for a reason of its own: the core's words, and 验证 where a press ends it)
           "confirm" | "replaced-was" => [("stateText", str("此设备需完成一次验证后才能使用密钥库")), ("confirmText", str("验证"))]
@@ -4083,6 +4223,9 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
     }
     // the device waiting for a key given it (the vault's key unsealed here), or its prompt put away: no longer shown
     "vault.addDevice" | "vault.hidePrompt" => {
+      if name == "vault.addDevice" && text(p, "vault") == "v-ws" && text(p, "device") == "d-new" {
+        fx.vault_ws_pending_done = true
+      }
       fx.key_ask = false
       fx.key_ask_ended = if name == "vault.addDevice" { "give" } else { "hide" }
       fx_changed()

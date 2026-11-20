@@ -1386,6 +1386,27 @@
   "web-pages.security.confirmDevice": "批准设备",
   "web-pages.security.pairTitle": "{name}的新设备请求批准",
   "web-pages.security.pairBody": "{device}。确认申请人和设备后，在新设备上输入下方安全码；无法确认请拒绝。",
+  "web-pages.security.pairDeviceCode": "设备核对码：",
+  "web-pages.security.pairBuild": "客户端版本 {build}",
+  "web-pages.security.pairGrantHead": "批准后将授予",
+  "web-pages.security.pairGrantSign": "成为你的受信任设备（可批准其他设备与审批操作）",
+  "web-pages.security.pairGrantVaultPersonal": {
+    "one": "个人密钥库「{name}」· {n} 条密钥",
+    "other": "个人密钥库「{name}」· {n} 条密钥"
+  },
+  "web-pages.security.pairGrantVaultPersonalIn": {
+    "one": "个人密钥库「{name}」（{workspace}）· {n} 条密钥",
+    "other": "个人密钥库「{name}」（{workspace}）· {n} 条密钥"
+  },
+  "web-pages.security.pairGrantVaultWorkspace": {
+    "one": "团队共享密钥库「{name}」· {n} 条密钥",
+    "other": "团队共享密钥库「{name}」· {n} 条密钥"
+  },
+  "web-pages.security.pairGrantVaultWorkspaceIn": {
+    "one": "团队共享密钥库「{name}」（{workspace}）· {n} 条密钥",
+    "other": "团队共享密钥库「{name}」（{workspace}）· {n} 条密钥"
+  },
+  "web-pages.security.thisDeviceCodeLabel": "本机核对码：",
   "web-pages.security.pairNote": "安全码只显示在此设备上，不会发送给任何人",
   "web-pages.security.pairRetry": "没收到？重新申请",
   "web-pages.security.pairDeny": "拒绝",
@@ -1750,6 +1771,32 @@
   "web-pages.vault.asked": "已通知你的其他设备",
   "web-pages.vault.promptTitle": "{device} 申请密钥库的钥匙",
   "web-pages.vault.promptBody": "这台设备已在安全模式的锁里，{at}申请「{vault}」的钥匙。授权后它就能用这个库里的密钥。",
+  "web-pages.vault.promptBodyNoSafeMode": "此设备已在你的受信任设备中，{at}申请「{vault}」的钥匙。请核对以下信息无误后再授权。",
+  "web-pages.vault.promptDeviceCode": "设备核对码",
+  "web-pages.vault.promptOwner": "所属人",
+  "web-pages.vault.promptOwnerSelf": "{name}（本人）",
+  "web-pages.vault.promptAskedAt": "申请时间",
+  "web-pages.vault.promptScopeWorkspace": "团队共享密钥库（授权后可解密并使用该团队共享库内的密钥）",
+  "web-pages.vault.promptScopeWorkspaceItems": {
+    "one": "团队共享密钥库 · 共 {n} 条密钥（授权后可解密并使用该团队共享库内的密钥）",
+    "other": "团队共享密钥库 · 共 {n} 条密钥（授权后可解密并使用该团队共享库内的密钥）"
+  },
+  "web-pages.vault.promptScopePersonal": "个人密钥库（授权后可解密并使用此个人密钥库内的密钥）",
+  "web-pages.vault.promptScopePersonalItems": {
+    "one": "个人密钥库 · 共 {n} 条密钥（授权后可解密并使用此个人密钥库内的密钥）",
+    "other": "个人密钥库 · 共 {n} 条密钥（授权后可解密并使用此个人密钥库内的密钥）"
+  },
+  "web-pages.vault.thisDeviceCodeLabel": "本机核对码：",
+  "web-pages.vault.thisDeviceCodeHint": "（请在已授权设备上核对一致后再点授权）",
+  "web-pages.vault.devicesDialog.title": "{name} 的设备",
+  "web-pages.vault.devicesDialog.titleFallback": "已授权设备",
+  "web-pages.vault.devicesDialog.pendingTitle": "待授权设备",
+  "web-pages.vault.devicesDialog.pendingNote": "请核对每台设备的所属人与核对码后再单独授权。",
+  "web-pages.vault.devicesDialog.authorizedTitle": "已授权设备",
+  "web-pages.vault.devicesDialog.authorize": "授权",
+  "web-pages.vault.devicesDialog.current": "{device}（本机）",
+  "web-pages.vault.devicesDialog.codePrefix": "核对码 {code}",
+  "web-pages.vault.devicesDialog.legacyPendingNote": "有待授权设备，当前版本未返回设备详情，请在已授权设备的弹窗中确认。",
   "web-pages.vault.promptGive": "授权",
   "web-pages.vault.promptLater": "稍后",
   "web-pages.vault.recover": "使用恢复码",

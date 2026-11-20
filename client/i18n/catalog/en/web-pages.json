@@ -1437,6 +1437,27 @@
   "web-pages.security.confirmDevice": "approve the device",
   "web-pages.security.pairTitle": "{name}'s new device asks for approval",
   "web-pages.security.pairBody": "{device}. Confirm the person and the device, then enter the security code below on the new device. If you can't confirm them, deny the request.",
+  "web-pages.security.pairDeviceCode": "Device code: ",
+  "web-pages.security.pairBuild": "Client version {build}",
+  "web-pages.security.pairGrantHead": "Approving will grant",
+  "web-pages.security.pairGrantSign": "Become your trusted device (can approve other devices and actions)",
+  "web-pages.security.pairGrantVaultPersonal": {
+    "one": "Personal vault “{name}” · {n} secret",
+    "other": "Personal vault “{name}” · {n} secrets"
+  },
+  "web-pages.security.pairGrantVaultPersonalIn": {
+    "one": "Personal vault “{name}” ({workspace}) · {n} secret",
+    "other": "Personal vault “{name}” ({workspace}) · {n} secrets"
+  },
+  "web-pages.security.pairGrantVaultWorkspace": {
+    "one": "Shared workspace vault “{name}” · {n} secret",
+    "other": "Shared workspace vault “{name}” · {n} secrets"
+  },
+  "web-pages.security.pairGrantVaultWorkspaceIn": {
+    "one": "Shared workspace vault “{name}” ({workspace}) · {n} secret",
+    "other": "Shared workspace vault “{name}” ({workspace}) · {n} secrets"
+  },
+  "web-pages.security.thisDeviceCodeLabel": "This device code: ",
   "web-pages.security.pairNote": "The security code shows only on this device and is never sent",
   "web-pages.security.pairRetry": "Nothing yet? Ask again",
   "web-pages.security.pairDeny": "Deny",
@@ -1801,6 +1822,32 @@
   "web-pages.vault.asked": "Your other devices were told",
   "web-pages.vault.promptTitle": "{device} asks for a vault key",
   "web-pages.vault.promptBody": "This device is in the lock of security mode and asked for the key to “{vault}” {at}. With it, it can use the secrets in that vault.",
+  "web-pages.vault.promptBodyNoSafeMode": "This device is among your trusted devices and asked for the key to “{vault}” {at}. Check the details below before giving it the key.",
+  "web-pages.vault.promptDeviceCode": "Device code",
+  "web-pages.vault.promptOwner": "Owner",
+  "web-pages.vault.promptOwnerSelf": "{name} (You)",
+  "web-pages.vault.promptAskedAt": "Requested",
+  "web-pages.vault.promptScopeWorkspace": "Shared workspace vault (can decrypt and use secrets in this shared vault)",
+  "web-pages.vault.promptScopeWorkspaceItems": {
+    "one": "Shared workspace vault · {n} secret (can decrypt and use secrets in this shared vault)",
+    "other": "Shared workspace vault · {n} secrets (can decrypt and use secrets in this shared vault)"
+  },
+  "web-pages.vault.promptScopePersonal": "Personal vault (can decrypt and use secrets in this personal vault)",
+  "web-pages.vault.promptScopePersonalItems": {
+    "one": "Personal vault · {n} secret (can decrypt and use secrets in this personal vault)",
+    "other": "Personal vault · {n} secrets (can decrypt and use secrets in this personal vault)"
+  },
+  "web-pages.vault.thisDeviceCodeLabel": "This device code: ",
+  "web-pages.vault.thisDeviceCodeHint": " (match this on an authorized device before approving)",
+  "web-pages.vault.devicesDialog.title": "Devices for {name}",
+  "web-pages.vault.devicesDialog.titleFallback": "Authorized devices",
+  "web-pages.vault.devicesDialog.pendingTitle": "Awaiting authorization",
+  "web-pages.vault.devicesDialog.pendingNote": "Check each device's owner and code before authorizing it individually.",
+  "web-pages.vault.devicesDialog.authorizedTitle": "Authorized devices",
+  "web-pages.vault.devicesDialog.authorize": "Authorize",
+  "web-pages.vault.devicesDialog.current": "{device} (This device)",
+  "web-pages.vault.devicesDialog.codePrefix": "Code {code}",
+  "web-pages.vault.devicesDialog.legacyPendingNote": "Devices are awaiting authorization, but device details are unavailable on this core version.",
   "web-pages.vault.promptGive": "Give the key",
   "web-pages.vault.promptLater": "Later",
   "web-pages.vault.recover": "Use recovery words",

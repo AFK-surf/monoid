@@ -258,7 +258,7 @@ fn vault_library_block(
           |> ignore
         })
       })
-    "kept" => vault_kept_node(b, core, ws, v)
+    "kept" => vault_kept_node(b, core, here, v)
     "delete" =>
       @sf.group_node(b, fn(g) {
         let manageable = fn() { items(v(), "vaults").filter(fn(x) { vault_can_manage(Some(x)) }) }
@@ -302,7 +302,7 @@ fn vault_workspace_node(b : @view.View, core : Core, here : () -> Here, rv : () 
           @sf.t("web-pages.vault.members.count", args=[("n", n.to_string())])
         },
       )
-      vault_devices_row_node(g, core, ws, rv, fn() { false })
+      vault_devices_row_node(g, core, here, rv, fn() { false })
       g.show(fn() { vault_can_manage(rv()) }, fn(l) {
         vault_lasts_row_node(l, core, ws, rv)
       })
@@ -373,7 +373,8 @@ fn vault_request_node(card : @view.View, core : Core, ws : () -> String, row : (
 /// viewer's secrets lasts where a secret says none (its choices, each with what it means, through the presenters); the
 /// devices holding each vault's key (given to new ones from its end). A row that does something does it pressed,
 /// saying what at its end (vault_do_row_node); what is not as it should be said in amber.
-fn vault_kept_node(b : @view.View, core : Core, ws : () -> String, v : () -> Json?) -> Unit {
+fn vault_kept_node(b : @view.View, core : Core, here : () -> Here, v : () -> Json?) -> Unit {
+  let ws = fn() { here().workspace }
   let plain = fn() { flag(v(), "plain") }
   let vaults = fn() { items(v(), "vaults") }
   // (which of its rows show, as `v` says now: plain; or sealed, opened, those left in plain text)
@@ -425,7 +426,7 @@ fn vault_kept_node(b : @view.View, core : Core, ws : () -> String, v : () -> Jso
     let by_id = g.keyed_by(personal, fn(r) { text(Some(r), "id") })
     g.each(fn() { if plain() { [] } else { by_id.keys() } }, fn(id) { id }, fn(row, id) {
       let id = id.untracked()
-      vault_devices_row_node(row, core, ws, fn() { by_id.get(id) }, fn() {
+      vault_devices_row_node(row, core, here, fn() { by_id.get(id) }, fn() {
         personal().length() > 1
       })
     })
@@ -494,44 +495,28 @@ fn vault_lasts_row_node(g : @view.View, core : Core, ws : () -> String, mine : (
 
 ///|
 /// The devices holding a vault's key (`rv`, as it is now; its name where there are more than one, `many`) in `row`:
-/// how many, under it; where some new ones have none yet, how many, in amber, given it from its end by its owner's
-/// device holding it.
-fn vault_devices_row_node(row : @view.View, core : Core, ws : () -> String, rv : () -> Json?, many : () -> Bool) -> Unit {
+/// opens the per-device authorization dialog (`vault_devices_dialog`) instead of blindly authorizing all pending devices.
+fn vault_devices_row_node(row : @view.View, core : Core, here : () -> Here, rv : () -> Json?, many : () -> Bool) -> Unit {
   let id = fn() { text(rv(), "id") }
   let title = fn() { if many() { text(rv(), "name") } else { @sf.t("android-settings.vault.devices") } }
   let missing = fn() { count(rv(), "missing") }
   row.pick(
-    fn() {
-      if missing() == 0 {
-        0
-      } else if !(vault_can_manage(rv()) && flag(rv(), "keyed")) {
-        1
-      } else {
-        2
-      }
-    },
-    fn(p, how) {
-      match how {
-        0 =>
-          @sf.link_row_node(p, title, fn() {  }, note=fn() { @sf.t("web-pages.vault.devicesHold", args=[("n", count(rv(), "devices").to_string())]) }, goes=false)
-        1 =>
-          @sf.link_row_node(p, title, fn() {  }, note=fn() { @sf.t("web-pages.vault.missing", args=[("n", missing().to_string())]) }, lacks=true, goes=false)
-        // (given it from its owner's device holding it)
-        _ =>
-          vault_do_row_node(
-            p,
-            title,
-            fn() { @sf.t("web-pages.vault.missing", args=[("n", missing().to_string())]) },
-            fn() { @sf.t("web-pages.vault.addDevice") },
-            fn() { is_doing(core, ["vault.addDevice"], [("workspace", ws()), ("vault", id())]) },
-            lacks=true,
-            fn() {
-              vault_act(core, @signals.untracked(ws), "addDevice", [("vault", str(@signals.untracked(id)))], @sf.t("web-pages.vault.addDeviceWhat"), done=@sf.t(
-                "web-pages.vault.addedDevice",
-              ))
-            },
-          )
-      }
+    fn() { missing() > 0 },
+    fn(p, has_missing) {
+      @sf.link_row_node(
+        p,
+        title,
+        fn() { vault_devices_dialog(core, @signals.untracked(here), @signals.untracked(id)) },
+        note=fn() {
+          if has_missing {
+            @sf.t("web-pages.vault.missing", args=[("n", missing().to_string())])
+          } else {
+            @sf.t("web-pages.vault.devicesHold", args=[("n", count(rv(), "devices").to_string())])
+          }
+        },
+        lacks=has_missing,
+        goes=true,
+      )
     },
   )
 }
@@ -572,9 +557,25 @@ fn vault_delete_row_node(row : @view.View, core : Core, ws : () -> String, rv : 
 /// how to get one; 申请授权 (`vault.ask`: this device's certificate published anew, so the owner's devices are prompted for
 /// the key, or give it at once where one holds it unsealed) and the recovery words typed where they can give it one.
 fn vault_no_key_node(b : @view.View, core : Core, ws : () -> String, rv : () -> Json?) -> Unit {
+  let this_code = fn() { text((core.topic)("vaults", { "workspace": str(ws()) }).get().value, "thisDeviceCode") }
   @sf.section_node(b, fn() { text(rv(), "name") }, fn(s) {
     @sf.page_card_node(s, footed=true, fn(k) {
       @sf.card_lines_node(k, fn() { @sf.t("android-settings.vault.noKey") }, note=fn() { @sf.t("android-settings.vault.noKeyHow") })
+      k.show(fn() { this_code() != "" }, fn(c) {
+        @sf.style_node(c, fn() { vt_code_box })
+        c
+        .words_runs(
+          By(fn() {
+            [
+              @ui.span(@sf.t("web-pages.vault.thisDeviceCodeLabel"), color=@sf.theme().p.muted),
+              @ui.span(this_code(), mono=true, bold=true, color=@sf.theme().p.text),
+              @ui.span(@sf.t("web-pages.vault.thisDeviceCodeHint"), color=@sf.theme().p.muted),
+            ]
+          }),
+          look=@ui.style_words(@sf.meta.then(@sf.full_words)),
+        )
+        |> ignore
+      })
       @sf.card_foot_node(k, fn(f) {
         @sf.button_node(
           f,
@@ -686,6 +687,11 @@ let vt_glyph : Double = 16.0
 /// (actions: a card's buttons at its foot, 8 apart, its words before them)
 // kept across runs: a value (no field of it changes)
 pub let vt_actions : @ui.Style = @ui.css("row w=Full gap=S2 pt=S1 align=ACenter")
+
+///|
+/// Full-width wrapper for the device verification code line on the no-key card.
+// kept across runs: a value (no field of it changes)
+let vt_code_box : @ui.Style = @ui.css("w=Full")
 
 ///|
 /// 全部密钥's field: over its list, as wide as its card, 10 above it.

@@ -116,6 +116,7 @@ fn pair_steps_node(col : @view.View, core : Core, ws : () -> String, in_card? : 
   // (the devices it dials, the core's rows; typing, those showing the code alone)
   let dialled = fn() { items(pair(), "approvers") }
   let showing = fn() { dialled().filter(fn(d) { flag(Some(d), "showing") }) }
+  let this_code = fn() { text(pair(), "thisDeviceCode") }
   // (what is typed, kept while the page shows: emptied as a code is refused or a new one asked for)
   let typed = @ui.Field::new()
   col.pick(shows, fn(v, shown) {
@@ -123,6 +124,7 @@ fn pair_steps_node(col : @view.View, core : Core, ws : () -> String, in_card? : 
     match shown {
       Typing => {
         lock_note_node(v, fn() { @sf.t("web-pages.security.pairEnter") }, in_card~)
+        v.show(fn() { this_code() != "" }, fn(c) { lock_this_code_node(c, this_code, in_card~) })
         @ui.code_field_node(
           v,
           typed,
@@ -190,6 +192,7 @@ fn pair_steps_node(col : @view.View, core : Core, ws : () -> String, in_card? : 
       }
       Finding => {
         lock_note_node(v, fn() { @sf.t("web-pages.security.pairFinding") }, turning=true, in_card~)
+        v.show(fn() { this_code() != "" }, fn(c) { lock_this_code_node(c, this_code, in_card~) })
         // asked again while it looks: the person opened a trusted device and nothing came up (2026-11-06 the user:
         // 「直接加个没收到重新申请的按钮」)
         v.show(fn() { !asking() }, fn(n) {
@@ -277,6 +280,31 @@ let lock_steps : @ui.Style = @ui.css("w=Full gap=S3_5 align=ACenter")
 /// page's).
 // kept across runs: a value (no field of it changes)
 let lock_steps_carded : @ui.Style = @ui.css("w=Full gap=S2 align=AStart")
+
+///|
+/// This device's verification code shown under the pairing instruction so the user can match it on their trusted device.
+fn lock_this_code_node(parent : @view.View, code : () -> String, in_card? : Bool = false) -> Unit {
+  parent.box(fn(box) {
+    @sf.style_node(box, fn() { lock_this_code_box })
+    box
+    .words_runs(
+      By(fn() {
+        [
+          @ui.span(@sf.t("web-pages.security.thisDeviceCodeLabel"), color=@sf.theme().p.muted),
+          @ui.span(code(), mono=true, bold=true, color=@sf.theme().p.text),
+        ]
+      }),
+      look=@ui.style_words(@sf.meta.then(@sf.full_words)),
+    )
+    .words_centered(Is(!in_card))
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+// kept across runs: a value (no field of it changes)
+let lock_this_code_box : @ui.Style = @ui.css("w=Full")
 
 ///|
 /// What is so (lock_note's): `words()`, a turning ring before it where `turning`; each line in the middle but

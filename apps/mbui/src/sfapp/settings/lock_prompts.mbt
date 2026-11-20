@@ -75,9 +75,59 @@ fn pair_sheet(core : Core, r : Json) -> Unit {
       }
     }
     let places = fn() { items(shown(), "workspaces") }
+    let handover = fn() { items(shown(), "handoverVaults") }
+    let has_meta = fn() {
+      let s = shown()
+      text(s, "deviceCode") != "" || text(s, "build") != "" || (text(s, "email") != "" && text(s, "email") != text(s, "name"))
+    }
+    let has_grants = fn() { flag(shown(), "willSign") || !handover().is_empty() }
     v.box(fn(col) {
       @sf.style_node(col, fn() { pair_column })
       @sf.words_node(col, fn() { fill("web-pages.security.pairBody", [("device", text(shown(), "deviceText"))]) }, fn() { pair_body }) |> ignore
+      // device verification code, client build, and requester email (when present)
+      col.show(has_meta, fn(m) {
+        @sf.style_node(m, fn() { pair_meta_box })
+        m.show(fn() { text(shown(), "deviceCode") != "" }, fn(line) {
+          @sf.style_node(line, fn() { pair_meta_line })
+          line
+          .words_runs(
+            By(fn() {
+              [
+                @ui.span(tr("web-pages.security.pairDeviceCode"), color=@sf.theme().p.muted),
+                @ui.span(text(shown(), "deviceCode"), mono=true, bold=true, color=@sf.theme().p.text),
+              ]
+            }),
+            look=@ui.style_words(pair_body),
+          )
+          |> ignore
+        })
+        m.show(
+          fn() {
+            let s = shown()
+            text(s, "build") != "" || (text(s, "email") != "" && text(s, "email") != text(s, "name"))
+          },
+          fn(line) {
+            @sf.words_node(
+              line,
+              fn() {
+                let s = shown()
+                let parts : Array[String] = []
+                let b = text(s, "build")
+                if b != "" {
+                  parts.push(fill("web-pages.security.pairBuild", [("build", b)]))
+                }
+                let email = text(s, "email")
+                if email != "" && email != text(s, "name") {
+                  parts.push(email)
+                }
+                parts.join(" · ")
+              },
+              fn() { pair_body },
+            )
+            |> ignore
+          },
+        )
+      })
       // (asked into the person's own lock, no workspace's: said so)
       col.show(fn() { places().is_empty() }, fn(p) {
         @sf.words_node(p, fn() { tr("web-pages.security.pairPersonal") }, fn() { pair_places_head }) |> ignore
@@ -96,6 +146,35 @@ fn pair_sheet(core : Core, r : Json) -> Unit {
         // from where 申请访问 and the workspaces' marks start)
         p.show(fn() { text(shown(), "roleText") != "" }, fn(r) {
           @sf.words_node(r, fn() { text(shown(), "roleText") }, fn() { pair_body }) |> ignore
+        })
+      })
+      // explicit grant scope: signing capability and vaults whose keys will be handed over automatically
+      col.show(has_grants, fn(g) {
+        @sf.style_node(g, fn() { pair_places })
+        @sf.words_node(g, fn() { tr("web-pages.security.pairGrantHead") }, fn() { pair_places_head }) |> ignore
+        g.show(fn() { flag(shown(), "willSign") }, fn(s) {
+          @sf.words_node(s, fn() { tr("web-pages.security.pairGrantSign") }, fn() { pair_grant_item }) |> ignore
+        })
+        g.each(handover, fn(v) { text(Some(v), "id") }, fn(row, v) {
+          let vv = fn() { Some(v.get()) }
+          @sf.words_node(
+            row,
+            fn() {
+              let name = text(vv(), "name")
+              let n = count(vv(), "items").to_string()
+              let ws_name = text(vv(), "workspaceName")
+              let multi_ws = places().length() > 1 && ws_name != ""
+              let is_ws = text(vv(), "scope") == "workspace"
+              match (is_ws, multi_ws) {
+                (true, true) => fill("web-pages.security.pairGrantVaultWorkspaceIn", [("name", name), ("workspace", ws_name), ("n", n)])
+                (true, false) => fill("web-pages.security.pairGrantVaultWorkspace", [("name", name), ("n", n)])
+                (false, true) => fill("web-pages.security.pairGrantVaultPersonalIn", [("name", name), ("workspace", ws_name), ("n", n)])
+                (false, false) => fill("web-pages.security.pairGrantVaultPersonal", [("name", name), ("n", n)])
+              }
+            },
+            fn() { pair_grant_item },
+          )
+          |> ignore
         })
       })
       // the code, large, in the code face, in the middle
@@ -129,6 +208,21 @@ let pair_column : @ui.Style = @ui.css("w=Full gap=S3")
 /// Whose device it is and what.
 // kept across runs: a value (no field of it changes)
 let pair_body : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, w=Full)
+
+///|
+/// Lightweight tinted block for device verification code, client build, and requester email.
+// kept across runs: a value (no field of it changes)
+let pair_meta_box : @ui.Style = @ui.css("w=Full px=S3 py=S2 gap=S1 radius=Md bg=Tint")
+
+///|
+/// Full-width line holder inside the meta block.
+// kept across runs: a value (no field of it changes)
+let pair_meta_line : @ui.Style = @ui.css("w=Full")
+
+///|
+/// A granted capability or handed-over vault row under 批准后将授予.
+// kept across runs: a value (no field of it changes)
+let pair_grant_item : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Fg, w=Full)
 
 ///|
 /// Where it asks to be let in: 申请访问 (13 muted), each workspace's name under it (16 semibold), 4 apart.
