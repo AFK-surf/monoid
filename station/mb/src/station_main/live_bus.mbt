@@ -74,6 +74,8 @@ pub(all) struct LiveBus {
   mesh_relay_conflict : Ref[() -> Bool]
   mesh_net_info : Ref[() -> Json]
   peer_http : Ref[async (Request, Json) -> Reply?]
+  door_ports : Ref[Array[Int]]
+  peer_outside : Ref[(async (String, Json, Bytes?, String) -> (Json, Bytes?))?]
   outside_reaches : Ref[(String, String?) -> Bool]
   forwarded_port : Ref[(Int) -> Bool]
   runtimes_available : Ref[() -> Array[String]]
@@ -239,6 +241,8 @@ pub fn LiveBus::new(
     mesh_relay_conflict: Ref(() => false),
     mesh_net_info: Ref(() => Json::null()),
     peer_http: Ref(async fn(_r, _conn) { Some(plain(503, "mesh not up")) }),
+    door_ports: Ref([]),
+    peer_outside: Ref(None),
     outside_reaches: Ref((_target, _ws) => false),
     forwarded_port: Ref(_port => false),
     runtimes_available: Ref(() => []),

@@ -990,6 +990,7 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
             None => port
           }
           s.mcp_port = Some(shown)
+          bus.door_ports.val = if shown == port { [port] } else { [shown, port] }
           let url = "http://127.0.0.1:\{shown}/mcp"
           s.parts.door_open(url)
           write_whole(path([data, "run", "mcp.json"]), "{\"port\":\{shown}}\n")

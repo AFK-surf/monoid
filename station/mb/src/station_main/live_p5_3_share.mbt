@@ -306,7 +306,7 @@ fn P53Share::attach(self : P53Share) -> Unit {
       store: sql.store(),
       cloud,
       chat_ws: Some(session => match bus_session_row(bus, session) { Null => None; row => either(jtext(row, "ws"), bus_home(bus)) }),
-      ask: async fn(station, request) { self.ask(station, None, request) },
+      ask: async fn(station, request) { self.ask(station, jtext(request, "workspace"), request) },
       link: session => match bus_home(bus) {
         Some(ws) => match p53_origin(bus) {
           Some(o) => Some("\{o}/o/\{ws}/\{bus_station_id(bus)}/\{session}")
@@ -315,7 +315,37 @@ fn P53Share::attach(self : P53Share) -> Unit {
         None => None
       },
       title: session => jtext_or_empty(bus_session_row(bus, session), "title"),
-      touches: entry => match jfield(entry, "session") { String(s) => [s]; _ => [] },
+      touches: entry => {
+        let key_of = (raw : String) => {
+          let trimmed = raw.trim().to_string()
+          if trimmed == "" {
+            ""
+          } else {
+            let no_q = match trimmed.find("?") {
+              Some(i) => trimmed[:i].to_owned()
+              None => trimmed
+            }
+            let tail = match no_q.rev_find("/") {
+              Some(i) => no_q[i + 1:].to_owned()
+              None => no_q
+            }
+            @api_routes.decode_uri_component(tail).unwrap_or(tail)
+          }
+        }
+        let target = match jtext_or_empty(entry, "method") {
+          "session.read" => jtext(jfield(entry, "args"), "chat")
+          "session.file" => jtext(entry, "chat")
+          "session.message" | "session.put" => jtext(entry, "to")
+          _ => jtext(entry, "session")
+        }
+        match target {
+          Some(s) => {
+            let k = key_of(s)
+            if k == "" { [] } else { [k] }
+          }
+          None => []
+        }
+      },
       inbox: async fn(station, request) { bus.hub_inbox(station, request) },
       prepare_index: Some(() => index.request()),
       clock: self.clock,
@@ -326,6 +356,23 @@ fn P53Share::attach(self : P53Share) -> Unit {
   )
   self.shares = Some(shares)
   bus.on_peer_prefix("xshare.", async fn(peer, ws, _meth, request, _bytes) { (shares.inside(peer, request, workspace=ws), None) })
+  bus.peer_outside.val = Some(async fn(peer, request, bytes, ws) {
+    let req = match bytes {
+      Some(b) => jwith(request, "$bytes", jstr(@base64.encode(b)))
+      None => request
+    }
+    let answer = shares.outside(peer, req, workspace=Some(ws)) catch {
+      e => raise @gate.PeerRefused(p53_words(e))
+    }
+    match answer {
+      Object(m) if m.get("$bytes") is Some(String(b)) => {
+        let c = m.copy()
+        c.remove("$bytes")
+        (Json::object(c), Some(@base64.decode(b)))
+      }
+      _ => (answer, None)
+    }
+  })
   bus.outside_reaches.val = (target, ws) => match ws {
     Some(w) => shares.reaches(target, w)
     None => false

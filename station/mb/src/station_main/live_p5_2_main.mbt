@@ -1141,10 +1141,11 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
       Json::null()
     }
     // (a message another workspace's station sent a chat shared with it: xshare's inbox, messages.ts `fromPeer`)
-    "inbox" =>
-      of_jv(
-        @session_chats.from_peer(self.chats_world(), jtext(arg, "station").unwrap_or(""), to_jv(jfield(arg, "request")), None),
-      )
+    "inbox" => {
+      let req = jfield(arg, "request")
+      let meth = jtext_or_empty(req, "method")
+      self.peer_local(jtext(arg, "station").unwrap_or(""), None, meth, req)
+    }
     "codex.renewRunning" | "codex.rateLimits" =>
       match self.drivers.get("codex") {
         Some(d) =>

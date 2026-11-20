@@ -318,11 +318,16 @@ fn p51_forwards_named(given : Json) -> Json {
       m["port"] = a(2)
       match a(3) {
         { "local": l, .. } => m["local"] = l
+        Number(_, ..) as l => m["local"] = l
         _ => ()
       }
       match a(3) {
         { "job": j, .. } => m["job"] = j
-        _ => ()
+        _ =>
+          match a(4) {
+            String(_) as j => m["job"] = j
+            _ => ()
+          }
       }
     }
     "remove" => {
