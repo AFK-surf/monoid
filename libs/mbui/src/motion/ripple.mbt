@@ -38,11 +38,11 @@ let ripples : Map[Int, Array[Ripple]] = Map([])
 
 ///|
 /// How long a ripple takes to its middle as the finger goes down.
-pub let ripple_enter_ms : Double = 220.0
+pub let ripple_enter_ms : Double = 200.0
 
 ///|
 /// How long it takes from there to gone once the finger lifts.
-pub let ripple_exit_ms : Double = 180.0
+pub let ripple_exit_ms : Double = 150.0
 
 ///|
 /// How long a tap's ripple lasts, shown whole: its way in, then out.
