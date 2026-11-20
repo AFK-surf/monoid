@@ -361,6 +361,13 @@ void mb_host_stream_jpeg(int32_t id, moonbit_bytes_t data, double ts) {
   j->ts = ts;
   j->data = g_bytes_new(data, (gsize)Moonbit_array_length(data));
   g_mutex_lock(&lock);
+  // (closed: nothing more of it decoded, its bytes let go of)
+  if (s->closed) {
+    g_mutex_unlock(&lock);
+    g_bytes_unref(j->data);
+    g_free(j);
+    return;
+  }
   g_queue_push_tail(&s->jobs, j);
   int start = !s->busy && !s->closed;
   if (start) s->busy = 1;
@@ -429,8 +436,9 @@ void mb_host_stream_close(int32_t id) {
     g_free(s->dec->caps);
     g_clear_pointer(&s->dec, g_free);
   }
-  // (its texture let go as the next frame begins, in the GL context: mb_streams_upload; the stream itself kept, as a
-  // decode under way still holds it: it does nothing more)
+  // (its texture let go as the next frame begins, in the GL context, and the stream itself once no JPEG of it is being
+  // decoded (its pool thread holds it till then): mb_streams_upload. Its decoder's callbacks ended with its pipeline,
+  // decoder_stop; whatever looks it up by its id after finds none, stream_of)
 }
 
 int32_t mb_host_h264_here(void) { return h264_decodes(); }
@@ -477,9 +485,21 @@ unsigned mb_stream_tex(int id) {
 void mb_streams_upload(void) {
   for (guint i = 1; streams && i < streams->len; i++) {
     Stream *s = g_ptr_array_index(streams, i);
-    if (s->closed && s->tex) {
-      glDeleteTextures(1, &s->tex);
+    if (!s) continue;
+    if (s->closed) {
+      if (s->tex) glDeleteTextures(1, &s->tex);
       s->tex = 0;
+      g_mutex_lock(&lock);
+      int busy = s->busy;
+      g_mutex_unlock(&lock);
+      // (its pool thread done with it: let go of, its id kept from another, stream_of none)
+      if (!busy) {
+        g_queue_clear_full(&s->events, g_free);
+        g_queue_clear_full(&s->decoded, (GDestroyNotify)frame_free);
+        g_ptr_array_index(streams, i) = NULL;
+        g_free(s);
+      }
+      continue;
     }
     if (!s->closed && s->shown && s->shown->yuv.data) {
       mb_yuv_draw(&s->shown->yuv, &s->tex, &s->tex_w, &s->tex_h);
@@ -492,6 +512,7 @@ void mb_streams_upload(void) {
 void mb_streams_lost(void) {
   for (guint i = 1; streams && i < streams->len; i++) {
     Stream *s = g_ptr_array_index(streams, i);
+    if (!s) continue;
     s->tex = 0;
     s->tex_w = s->tex_h = 0;
   }

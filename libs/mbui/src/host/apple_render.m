@@ -1252,6 +1252,36 @@ static float *under_now;
 static size_t under_now_cap, under_now_n;
 static int32_t under_whole, under_picked;
 
+static void glass_forget(void);
+// Glass's own textures let go of (on present_q, or the main thread with present_q drained: whoever draws now): the
+// levels, the slots' copies and what each was of. A command buffer still in flight keeps what it encoded (it retains
+// its textures till it completes), and the next capture makes what it needs again at its size (ensure_levels,
+// slot_copy), its blur the same to the byte.
+static void glass_free(void) {
+  for (int j = 0; j < 4; j++) lv[j] = nil;
+  ltmp = nil;
+  gtex = nil;
+  rtex = nil;
+  for (int i = 0; i < MB_GLASS_SLOTS; i++) {
+    slot_bt[i] = slot_rt[i] = nil;
+    free(slots[i].under);
+    slots[i].under = NULL;
+    slots[i].under_cap = slots[i].under_n = 0;
+  }
+  lv_w = lv_h = 0;
+  glass_forget();
+}
+
+// Glass's textures (its levels as big as the largest capture yet, a copy a slot) let go of once this many frames in a
+// row drew no glass (a sheet closed, the composer gone): held on, they are tens of MB at a window's size.
+#define MB_GLASS_IDLE 180
+static int glass_idle_frames;
+
+static void glass_idle_tick(int glass) {
+  if (glass) glass_idle_frames = 0;
+  else if (glass_idle_frames < MB_GLASS_IDLE && ++glass_idle_frames == MB_GLASS_IDLE && lv_w > 0) glass_free();
+}
+
 static void glass_forget(void) {
   for (int i = 0; i < MB_GLASS_SLOTS; i++) slots[i].valid = 0;
   kept_ok = 0;
@@ -1353,7 +1383,9 @@ static int slot_fill(id<MTLCommandBuffer> cb, const Grab *m) {
   id<MTLBlitCommandEncoder> bl = [cb blitCommandEncoder];
   slot_copy(bl, &slot_bt[i], L, lw[m->k], lh[m->k]);
   // (frosted glass sees no sharp level, liquid's shapes are counted: grab_of)
+  // (a sharp level the slot kept for liquid glass before let go of: slot_show reads it only as this says)
   if (m->g.misc[0] > 0.0f && R != L) slot_copy(bl, &slot_rt[i], R, lw[rk], lh[rk]);
+  else slot_rt[i] = nil;
   [bl endEncoding];
   return i;
 }
@@ -1781,6 +1813,9 @@ static void present_probe(double ring, double upload_s, double drawable, double 
   memset(present_ms, 0, sizeof present_ms);
 }
 
+// the texture the last frame is drawn again into for the CPU to read (read_last), kept while its size is
+static id<MTLTexture> read_tex;
+
 // What drawing holds, given back as the window stops being shown (mac_app.m tell_state: the window covered,
 // minimized, hidden or the Mac asleep): Core Animation keeps the layer's drawables (three or four, each
 // the window's size in pixels: 22 MB at 3024 × 1890), and the glass its levels. The drawables shrink to a pixel, which
@@ -1794,13 +1829,10 @@ void mb_render_trim(void) {
   present_drain();
   for (int i = 0; i < 3; i++) dispatch_semaphore_wait(inflight, DISPATCH_TIME_FOREVER);
   for (int i = 0; i < 3; i++) dispatch_semaphore_signal(inflight);
-  for (int j = 0; j < 4; j++) lv[j] = nil;
-  ltmp = nil;
-  gtex = nil;
-  rtex = nil;
-  for (int i = 0; i < MB_GLASS_SLOTS; i++) slot_bt[i] = slot_rt[i] = nil;
-  lv_w = lv_h = 0;
-  glass_forget();
+  glass_free();
+  glass_idle_frames = 0;
+  // (and the read back's texture, the size of the last picture read: made again by the next read)
+  read_tex = nil;
   // (and the canvas: the next frame drawn whole into one made again, not skipped as the same as before)
   canvas = nil;
   canvas_ok = 0;
@@ -1909,6 +1941,7 @@ static int draw_frame(MBRenderWin *w, MBFrame *fr, int tx, int check) {
   }
   at_texs = nil;
   at_through_n = 0;
+  glass_idle_tick(fr->glass);
   present_drawn++;
   present_probe(p1 - p0, e0 - p1, p3 - p2, (p2 - e0) + (CACurrentMediaTime() - p3));
   if (check && checked > 0) check_part(cb, checked, w);
@@ -2024,9 +2057,6 @@ void mb_render_set_bands(double top, double bottom, uint32_t ground) {
   band_bottom = bottom;
   band_ground = ground;
 }
-
-// the texture the last frame is drawn again into for the CPU to read (read_last), kept while its size is
-static id<MTLTexture> read_tex;
 
 // Instances `f` (`count` of them, as a frame's floats are) drawn on the ground `bg` into a texture the CPU reads, at
 // `sw` × `sh` points, `scale` pixels a point, and its pixels: BGRA, premultiplied, rows from the top, *pw × *ph; the

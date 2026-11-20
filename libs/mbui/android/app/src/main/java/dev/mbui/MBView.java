@@ -152,6 +152,8 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
     @Override
     public void onPause() {
         paused = true;
+        // queued before the GL thread pauses (it takes its queue first): its context still current there
+        trim();
         if (!ONE && logic != null) {
             logic.post(this::closeHints);
         } else {
@@ -171,6 +173,17 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
             queueEvent(this::wakeHints);
         }
         wantFrame();
+    }
+
+    /**
+     * What drawing holds beyond its frames given back on the GL thread (android_host.c's mb_render_trim: glass's
+     * textures, the read back's framebuffer), made again as a frame needs them. Only with the context current there:
+     * paused, the GL thread lets its surface go and nothing is current (the context, kept, keeps them till then).
+     */
+    void trim() {
+        queueEvent(() -> {
+            if (android.opengl.EGL14.eglGetCurrentContext() != android.opengl.EGL14.EGL_NO_CONTEXT) Native.trim();
+        });
     }
 
     // ---- the app's thread ----

@@ -314,6 +314,7 @@ final class MBText {
         typefaces.clear();
         faces++;
         reset();
+        keysStale = true;
     }
 
     static Paint paint(float size, int weight, int style) {
@@ -345,7 +346,50 @@ final class MBText {
     }
 
     static int atlasGeneration() {
+        keysSweep();
         return generation;
+    }
+
+    /** The most glyph keys kept (each a cluster of a size, weight and style ever shaped) before all are forgotten. */
+    static final int KEYS_MOST = 65536;
+    /** The faces changed since the keys were last forgotten (the app's thread's). */
+    static boolean keysStale;
+
+    /**
+     * The glyphs' keys and what each is of forgotten (the faces changed, or more than KEYS_MOST of them: a run left
+     * open on changing text growing them without end), the generation moved on. Only where MoonBit reads the generation
+     * (text.mbt text_arrive, as a frame starts: what it shaped is dropped as it sees it moved; faces.mbt
+     * words_forgotten, what it shaped dropped just before), never where it may still draw by a key made before (a face
+     * given in a frame); a key past the table draws nothing (glyph). What is asked ahead of the old entries is let go
+     * of: what a thread ahead draws of one now it recycles as it is done (`skip`), counted in aheadCount till then.
+     */
+    static void keysSweep() {
+        if (!keysStale && entries.size() <= KEYS_MOST) return;
+        keysStale = false;
+        synchronized (lock) {
+            int drawing = 0;
+            for (Entry e : entries) {
+                if (e.drawing != 0) {
+                    e.skip |= e.drawing;
+                    drawing++;
+                }
+                dropDrawn(e);
+                e.want = 0;
+                e.first = 0;
+                e.inFirst = false;
+                e.inRest = false;
+                e.listed = false;
+            }
+            askedFirst.clear();
+            askedRest.clear();
+            drawnAhead.clear();
+            aheadCount = drawing;
+        }
+        keys.clear();
+        entries.clear();
+        entries.trimToSize();
+        dropHeld();
+        generation++;
     }
 
     /** Pixels a point: text is measured at the size it is drawn in on the screen. */

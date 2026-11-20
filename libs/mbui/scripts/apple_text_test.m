@@ -343,6 +343,46 @@ static void ahead_page(void) {
   CHECK(left == 0, "%d glyphs still asked ahead, all their phases taken", left);
 }
 
+// The keys forgotten only where MoonBit reads the generation (keys_sweep): the faces changed in a frame keep them
+// through it (a key made before still draws), and the next read forgets them, the generation moved on, what was asked
+// ahead let go, a key made before drawing nothing, one made after drawing as before; and past KEYS_MOST of them, the
+// same.
+static void keys_bounded(void) {
+  // (what the tests before changed of the faces forgotten as a frame would start)
+  mb_host_atlas_generation();
+  int k = key_of(@"a", 14, 0);
+  CHECK(k >= 0, "no key for a");
+  int g = mb_host_atlas_generation();
+  CHECK(mb_host_atlas_generation() == g, "the generation moved with nothing changed");
+  CHECK(n_entries > 0, "no keys kept");
+  double out[8];
+  mb_host_glyph(k, out);
+  CHECK(out[2] > 0, "a not drawn");
+  int32_t ask[1] = {k};
+  mb_host_glyphs_ahead(ask, 1);
+  faces_changed();
+  // (in the frame the faces changed in: what it shaped still draws)
+  CHECK(n_entries > k, "keys forgotten as the faces changed, in the frame");
+  mb_host_glyph(k, out);
+  CHECK(out[2] > 0, "a not drawn in the frame the faces changed in");
+  int g2 = mb_host_atlas_generation();
+  CHECK(g2 > g, "the generation not moved on");
+  CHECK(n_entries == 0 && keys.count == 0 && texts.count == 0 && n_ascii == 0, "keys kept: %d", n_entries);
+  CHECK(ahead_order.count == 0 && ahead_of.count == 0, "%lu still asked ahead", (unsigned long)ahead_order.count);
+  CHECK(mb_host_atlas_generation() == g2, "the generation moved again");
+  mb_host_glyph(k + 5, out);
+  CHECK(out[2] == 0 && out[3] == 0, "a key made before drew");
+  int k2 = key_of(@"a", 14, 0);
+  CHECK(k2 == 0, "the first key after %d", k2);
+  mb_host_glyph(k2, out);
+  CHECK(out[2] > 0, "a not drawn after");
+  // past KEYS_MOST: forgotten as the generation is next read, not before
+  for (int i = 0; n_entries <= KEYS_MOST; i++) intern(@"b", 10 + i * 0.001, 400, 0);
+  CHECK(n_entries == KEYS_MOST + 1, "%d keys", n_entries);
+  int g3 = mb_host_atlas_generation();
+  CHECK(g3 > g2 && n_entries == 0, "%d keys kept past the most, generation %d", n_entries, g3);
+}
+
 int main(int argc, char **argv) {
   @autoreleasepool {
     text_scale = 2.0;
@@ -358,6 +398,7 @@ int main(int argc, char **argv) {
     cut_cjk(@"Hiragino Sans");
     rests_in_turn();
     ahead_page();
+    keys_bounded();
   }
   if (failed) return 1;
   printf("apple_text_test: ok\n");

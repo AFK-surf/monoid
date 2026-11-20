@@ -477,6 +477,9 @@ JNIEXPORT void JNICALL Java_dev_mbui_Native_dropPending(JNIEnv *env, jclass c) {
 // (GL thread) the frame taken drawn (gl_present_kept: straight onto the surface or through the canvas)
 JNIEXPORT void JNICALL Java_dev_mbui_Native_draw(JNIEnv *env, jclass c) { gl_present_kept(kept_count, kept_r, kept_g, kept_b); }
 
+// (MBView.trim, GL thread, its context current: the view paused, the system short of memory)
+JNIEXPORT void JNICALL Java_dev_mbui_Native_trim(JNIEnv *env, jclass c) { mb_render_trim(); }
+
 // (MBView.onDrawFrame, GL thread: only a native view's picture changed since the last frame, or nothing to draw but the
 // surface to fill)
 JNIEXPORT void JNICALL Java_dev_mbui_Native_redraw(JNIEnv *env, jclass c) {

@@ -1129,10 +1129,18 @@ static Gpu gpu_copy_off(Stream *s, H264 *d, IMFSample *smp) {
       ReleaseSRWLockExclusive(&fence_lock);
       dctx->Flush();
       if (copied_fence->GetCompletedValue() < v) {
-        static thread_local HANDLE done;
-        if (!done) done = CreateEventW(NULL, FALSE, FALSE, NULL);
+        // (the event a thread of the pool waits on, made once and closed as the thread ends)
+        struct DoneEvent {
+          HANDLE h = NULL;
+          ~DoneEvent() {
+            if (h) CloseHandle(h);
+          }
+        };
+        static thread_local DoneEvent done;
+        if (!done.h) done.h = CreateEventW(NULL, FALSE, FALSE, NULL);
         // (a GPU that never finishes it: the frame let go, after 2 s)
-        if (!done || FAILED(copied_fence->SetEventOnCompletion(v, done)) || WaitForSingleObject(done, 2000) != WAIT_OBJECT_0)
+        if (!done.h || FAILED(copied_fence->SetEventOnCompletion(v, done.h)) ||
+            WaitForSingleObject(done.h, 2000) != WAIT_OBJECT_0)
           gpu_drop(&g);
       }
       g.bt601 = d->bt601;
@@ -2134,6 +2142,9 @@ void mb_host_stream_close(int32_t id) {
   sound_stop(s);
   // (its sound's clock set back: only here)
   s->sound_played_before = 0;
+  // (its packets' memory: its voice destroyed, which reads it no more, and none made again once it is gone: sound_take)
+  free(s->sound_ring);
+  s->sound_ring = NULL;
   ReleaseSRWLockExclusive(&sound_lock);
   layer_drop(s);
   if (s->ptr_px) free(s->ptr_px);
@@ -2141,14 +2152,20 @@ void mb_host_stream_close(int32_t id) {
   s->ptr_new = 0;
   EnterCriticalSection(&lock);
   s->closed = 1;
+  // (what it says and its work let go of with their arrays: nothing is said or queued of it once closed, say_locked
+  // and queue_bytes, and its work thread takes no more, work)
   for (int i = 0; i < s->nevents; i++) free(s->events[i]);
-  s->nevents = 0;
+  free(s->events);
+  s->events = NULL;
+  s->nevents = s->cap_events = 0;
   StreamFrame *left = s->decoded;
   int nleft = s->ndecoded;
   s->decoded = NULL;
   s->ndecoded = s->cap_decoded = 0;
   for (int i = 0; i < s->njobs; i++) free(s->jobs[i].data);
-  s->njobs = 0;
+  free(s->jobs);
+  s->jobs = NULL;
+  s->njobs = s->cap_jobs = 0;
   Gpu pool[POOL];
   int npool = s->npool;
   memcpy(pool, s->pool, sizeof pool);

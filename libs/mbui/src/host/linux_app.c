@@ -902,6 +902,16 @@ static void app_state(void) {
   static int told = -1;
   int s = (shown ? 1 : 0) | (front ? 2 : 0);
   if (s == told) return;
+  // (no window of the run's on the screen any more: what drawing holds beyond its frames given back, in the run's
+  // context, made again as a frame is drawn: mb_render_trim)
+  if (!shown && told > 0 && (told & 1)) {
+    GtkWidget *a = area_with_context(-1);
+    if (a) {
+      gdk_gl_context_clear_current();
+      gtk_gl_area_make_current(GTK_GL_AREA(a));
+      if (!gtk_gl_area_get_error(GTK_GL_AREA(a))) mb_render_trim();
+    }
+  }
   told = s;
   state_cb(s);
   schedule();

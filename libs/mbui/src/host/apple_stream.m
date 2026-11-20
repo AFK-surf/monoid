@@ -219,12 +219,30 @@ static void route_acked(uint64_t route, double ts) {
 
 void mb_stream_route_acks(int (*ack)(double route, double ts)) { route_ack = ack; }
 
+// The most frames fed from a route kept as let go (-1 in s.direct, so one the decoder gives after all is not shown):
+// past it the oldest of them forgotten. A decoder holds a few frames, never this many; while it gives none (each
+// dropped) nothing else forgets them till it is made again (stop).
+#define DIRECT_LET_GO_MOST 256
+
+// (the stream's queue) the marks of frames let go past DIRECT_LET_GO_MOST, the oldest, forgotten
+static void direct_let_go_bound(MBStream *s) {
+  if (s.direct.count <= DIRECT_LET_GO_MOST) return;
+  NSMutableArray<NSNumber *> *gone = [NSMutableArray new];
+  for (NSNumber *t in s.direct) {
+    if (s.direct[t].longValue < 0) [gone addObject:t];
+  }
+  if (gone.count <= DIRECT_LET_GO_MOST / 2) return;
+  [gone sortUsingSelector:@selector(compare:)];
+  for (NSUInteger i = 0; i + DIRECT_LET_GO_MOST / 2 < gone.count; i++) [s.direct removeObjectForKey:gone[i]];
+}
+
 // Frame ts let go (the stream's queue): one fed from a route acknowledged to its sender here, else said.
 static void let_go(MBStream *s, double ts) {
   NSNumber *d = s.direct[@(ts)];
   if (d) {
     if (d.longValue >= 0) {
       s.direct[@(ts)] = @(-1);
+      direct_let_go_bound(s);
       uint64_t route = s.directRoute;
       dispatch_async(dispatch_get_main_queue(), ^{ route_acked(route, ts); });
     }

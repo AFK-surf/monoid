@@ -333,6 +333,92 @@ int main(void) {
       mb_render_set_size(400, 300, 2);
     }
 
+    // What drawing holds beyond its frames given back: the trim lets go of the read back's texture and glass's (made
+    // again by the next read and the next glass, the canvas then the same to the byte as the frame drawn whole); a
+    // slot that kept liquid glass's sharp level lets it go as frosted glass is kept in it; and glass's textures go
+    // once MB_GLASS_IDLE frames in a row drew none, the glass after them blurred anew, as the frame drawn whole.
+    {
+      double g1[2 * MB_INST];
+      rect_at(g1, 30, 30, 160, 80, 0, 0.9, 0.1, 0.1, 0);
+      rect_at(g1 + MB_INST, 20, 20, 200, 100, 6, 1, 1, 1, -5);
+      g1[MB_INST + 4] = 24;
+      g1[MB_INST + 7] = 8;
+      g1[MB_INST + 11] = 0.3;
+      g1[MB_INST + 21] = 8;
+      g1[MB_INST + 23] = 4;
+      glass_forget();
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(g1, 2, 0.1, 0.2, 0.3);
+      present_drain();
+      CHECK(lv[0] != nil && lv_w > 0);
+      CHECK(slot_bt[0] != nil);
+      CHECK(slot_rt[0] != nil);
+      // the same capture frosted (kind 5), kept in the same slot: its sharp level let go
+      g1[MB_INST + 5] = 5;
+      g1[0] = 32;
+      glass_forget();
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(g1, 2, 0.1, 0.2, 0.3);
+      present_drain();
+      CHECK(slot_bt[0] != nil);
+      CHECK(slot_rt[0] == nil);
+      CHECK(canvas_as_whole());
+
+      int fw, fh;
+      free(read_last(&fw, &fh));
+      CHECK(read_tex != nil);
+      mb_render_trim();
+      CHECK(read_tex == nil);
+      CHECK(lv[0] == nil && ltmp == nil && lv_w == 0 && lv_h == 0);
+      CHECK(slot_bt[0] == nil && slot_rt[0] == nil);
+      mb_render_set_size(400, 300, 2);
+      g1[0] = 34;
+      mb_render_present(g1, 2, 0.1, 0.2, 0.3);
+      present_drain();
+      CHECK(lv[0] != nil);
+      CHECK(canvas_as_whole());
+
+      // frames with no glass: the glass's textures kept till the MB_GLASS_IDLE-th, then let go
+      double plain[MB_INST];
+      rect_at(plain, 30, 30, 160, 80, 0, 0.9, 0.1, 0.1, 0);
+      for (int i = 1; i <= MB_GLASS_IDLE; i++) {
+        plain[0] = 30 + i % 50;  // (each a frame of its own: the same numbers would be the one shown)
+        mb_host_render_dirty(0, 0, 400, 300);
+        mb_render_present(plain, 1, 0.1, 0.2, 0.3);
+        present_drain();
+        if (i == MB_GLASS_IDLE - 1) CHECK(lv[0] != nil && slot_bt[0] != nil);
+      }
+      CHECK(lv[0] == nil && ltmp == nil && lv_w == 0);
+      for (int i = 0; i < MB_GLASS_SLOTS; i++) CHECK(slot_bt[i] == nil && slot_rt[i] == nil);
+      // a frame with glass after: its blur made anew, as the frame drawn whole
+      int made = blurs_made;
+      g1[0] = 36;
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(g1, 2, 0.1, 0.2, 0.3);
+      present_drain();
+      CHECK(blurs_made == made + 1);
+      CHECK(lv[0] != nil);
+      CHECK(canvas_as_whole());
+      // a frame with glass among those without keeps them: the count starts again
+      for (int i = 1; i < MB_GLASS_IDLE; i++) {
+        plain[0] = 30 + i % 50;
+        mb_host_render_dirty(0, 0, 400, 300);
+        mb_render_present(plain, 1, 0.1, 0.2, 0.3);
+        present_drain();
+      }
+      g1[0] = 38;
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(g1, 2, 0.1, 0.2, 0.3);
+      present_drain();
+      for (int i = 1; i < MB_GLASS_IDLE; i++) {
+        plain[0] = 30 + i % 50;
+        mb_host_render_dirty(0, 0, 400, 300);
+        mb_render_present(plain, 1, 0.1, 0.2, 0.3);
+        present_drain();
+      }
+      CHECK(lv[0] != nil);
+    }
+
     // A group kept by the host (groups.h) drawn out by a header, straight into the floats: each instance moved in
     // doubles, then made a float, as the app's own instance moved there would be.
     double kept[MB_INST];

@@ -1155,6 +1155,45 @@ static void glass_lost(void) {
   glass_forget();
 }
 
+// The glass's own textures given back, in the context they were made in (current): the levels, the slots' copies and
+// what each slot was of. The next capture makes what it needs again at its size (ensure_levels, slot_copy), its blur
+// the same to the byte (a blur is of what is drawn under it, not of what was kept).
+static void glass_free(void) {
+  for (int j = 0; j < 5; j++)
+    if (lv[j].t) {
+      glDeleteTextures(1, &lv[j].t);
+      glDeleteFramebuffers(1, &lv[j].fb);
+    }
+  for (int i = 0; i < MB_GLASS_SLOTS; i++) {
+    glass_slot *s = &slots[i];
+    if (s->bt) {
+      glDeleteFramebuffers(1, &s->bfb);
+      glDeleteTextures(1, &s->bt);
+    }
+    if (s->rt) {
+      glDeleteFramebuffers(1, &s->rfb);
+      glDeleteTextures(1, &s->rt);
+    }
+    free(s->under);
+    s->under = NULL;
+    s->under_cap = s->under_n = 0;
+  }
+  bd_tex = r_tex = 0;
+  glass_lost();
+}
+
+// Glass's textures (its levels as big as the largest capture yet, a copy a slot) are given back once this many frames
+// in a row drew no glass (a sheet closed, the composer gone): held on, they are tens of MB at a screen's size.
+#define MB_GLASS_IDLE 180
+static int glass_idle_frames;
+static int glass_drawn;  // the frame drawing now reached glass (draw_into)
+
+static void glass_idle_tick(void) {
+  if (glass_drawn) glass_idle_frames = 0;
+  else if (glass_idle_frames < MB_GLASS_IDLE && ++glass_idle_frames == MB_GLASS_IDLE && lv_w > 0) glass_free();
+  glass_drawn = 0;
+}
+
 // Whether instance i (its run of glass starting at `run`) draws anything in g (x0, y0, x1, y1, points): its quad as
 // the vertex shader makes it (VS: grown round its rect, liquid glass over its group's bounds), turned ones always.
 static int reaches(const float *f, int32_t i, int32_t run, const float g[4]) {
@@ -1260,7 +1299,14 @@ static glass_slot *slot_fill(const Grab *m) {
   int rk = m->k >= 2 ? 1 : m->k == 1 && !m->contained ? 0 : m->k;
   slot_copy(&s->bt, &s->bfb, &s->bw, &s->bh, &s->bf, L, lw[m->k], lh[m->k]);
   // (frosted glass sees no sharp level, liquid's shapes are counted: grab_of)
+  // (a sharp level the slot kept for liquid glass before is given back: slot_show reads it only as this says)
   if (m->n > 0 && R != L) slot_copy(&s->rt, &s->rfb, &s->rw, &s->rh, &s->rf, R, lw[rk], lh[rk]);
+  else if (s->rt) {
+    glDeleteFramebuffers(1, &s->rfb);
+    glDeleteTextures(1, &s->rt);
+    s->rt = s->rfb = 0;
+    s->rw = s->rh = 0;
+  }
   return s;
 }
 
@@ -1439,7 +1485,14 @@ static void gl_present(const double *buf, int32_t count, double r, double g, dou
 
 // The frame in fbuf (`count` instances as floats, its groups drawn out: gl_present's, or Android's made on the app's
 // thread and handed over) kept and drawn, as gl_present says.
+static void gl_present_drawn(int32_t count, double r, double g, double b);
 static void gl_present_kept(int32_t count, double r, double g, double b) {
+  glass_drawn = 0;
+  gl_present_drawn(count, r, g, b);
+  glass_idle_tick();
+}
+
+static void gl_present_drawn(int32_t count, double r, double g, double b) {
   kept_count = count;
   kept_r = r;
   kept_g = g;
@@ -1499,6 +1552,19 @@ static void draw_kept_read(void) {
   }
   draw_into(read_fb, 0);
   glBindFramebuffer(GL_FRAMEBUFFER, read_fb);
+}
+
+// What drawing holds beyond what frames need given back (the window hidden, the app put away; its context current):
+// glass's textures and the read back's framebuffer. A frame after makes what it needs again as it draws.
+void mb_render_trim(void) {
+  glass_free();
+  glass_idle_frames = 0;
+  if (read_fb) {
+    glDeleteFramebuffers(1, &read_fb);
+    glDeleteTextures(1, &read_tex);
+    read_fb = read_tex = 0;
+    read_w = read_h = 0;
+  }
 }
 
 // That frame's pixels in the rectangle x, y, w × h (from the top left) into `out` as RGBA, premultiplied, rows from
@@ -1699,6 +1765,7 @@ static void draw_into(GLuint fb, int part) {
     }
     use_prog(own ? kind : -1);
     if (tid < 0) {
+      glass_drawn = 1;
       if (tid != bound) {
         shows = capture(fbuf, start, end, count, pieces, r, g, b);
         bound = tid;
