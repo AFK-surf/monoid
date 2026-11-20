@@ -1464,7 +1464,10 @@ fn chat_body_node(
       // there is seen whole, flying to the viewer and back from where it is, not from under a foot it is not under)
       foot_clear=foot,
       bands~,
-      bar_clear=fn() { (top(), 0.0) },
+      bar_clear=fn() {
+        let f = scroll.foot_hides_now()
+        (cover() + @ui.scroll_bar_clear, if f > 0.0 { f + @ui.scroll_bar_clear } else { 0.0 })
+      },
       // (its Top, the chat's bar and the room under it, the list's head; its Foot, the list's foot: the room under its
       // rows, then the composer (`composer`), the room under the last row as tall as both are laid out)
       head=fn(h) {

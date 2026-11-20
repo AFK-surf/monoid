@@ -3623,8 +3623,13 @@ fn open_tool_reader(title : String, raw_copy : String, body : (@view.View) -> Un
       // (what it holds scrolling in itself past the panel's share of the window, its title and foot where they are: a
       // tall panel's body scrolls itself, panel_nodes' `tall`)
       p.box(fn(room) {
+        let side = @sf.panel_sides_at_node(room)
+        @sf.style_node(room, fn() { @sf.panel_bleed_node(room) })
         @ui.words_picked(room)
         room.scrolls(@view.Scroll::new(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(s) {
+          if side > 0.0 {
+            s.padding(Is((side, 0.0, side, 0.0))) |> ignore
+          }
           s.box(fn(b) {
             @sf.style_node(b, fn() { @sf.panel_words_in_node(b).then(tool_reader_body) })
             body(b)

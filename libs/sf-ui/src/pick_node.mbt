@@ -166,9 +166,17 @@ pub fn pick_node(
           cb.listbox(cv, fn(l) {
             // (all it holds as far in as its look says, past the panel's own ground, edge and shadow: its rows, their
             // grounds, icons and words, the same, Look's `words` as a surface's are)
-            l.max_height(Is(Some(pick_list_most))).shrink(Is(1.0)).min_height(Is(Some(0.0))).alpha(By(words_in)) |> ignore
+            let side = panel_pad - reach
+            l
+            .margin(Is((-side, 0.0, -side, 0.0)))
+            .max_height(Is(Some(pick_list_most)))
+            .shrink(Is(1.0))
+            .min_height(Is(Some(0.0)))
+            .alpha(By(words_in))
+            |> ignore
             // (a finger scrolling what is found keeps its search's keyboard: View::scrolls' `for_in`)
             l.scrolls(list, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), for_in?=search.val.map(fn(v) { v.id() }), fn(b) {
+              b.padding(Is((side, 0.0, side, 0.0))) |> ignore
               // (its choices by key, once: they are what it was given, the same while it is open; the first of a key the one)
               let by_key : Map[String, Choice] = Map([])
               for x in choices {

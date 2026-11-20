@@ -1267,7 +1267,7 @@ fn triple_body_node(
   }
   // a scroller of the models: `most` tall at most, giving way where the panel has less room for it
   let scroll = fn(parent : @view.View, most : () -> Double, body : (@view.View) -> Unit) {
-    @sf.capped_node(parent, most, fn(col) {
+    @sf.capped_node(parent, most, bleed=false, fn(col) {
       @sf.style_node(col, fn() { triple_rows })
       body(col)
     })
@@ -1956,7 +1956,7 @@ fn triple_body_node(
               // (as wide as the column and as far past it as the lines across it reach: to the line between the columns
               // and to the panel's right edge, what it holds in as far)
               // (its sections end to end: the room round each line its box's own, as far over it as under it)
-              @sf.capped_node(col, fn() { triple_list_h + 44.0 }, fn(sc) {
+              @sf.capped_node(col, fn() { triple_list_h + 44.0 }, bleed=false, fn(sc) {
                 sc.show(at_once=true, fn() { !all_efforts().is_empty() }, fn(sec) {
                   param_section(sec, h_effort, fn() { true }, fn(sec) {
                     triple_choices_node(sec, h_effort, all_efforts, effort_now, pick_effort)

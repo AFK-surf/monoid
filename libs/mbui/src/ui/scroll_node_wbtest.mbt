@@ -1054,3 +1054,81 @@ test "a column of the tree's that scrolls in a layer that leaves what is typed t
     }
   }
 }
+
+///|
+test "scroll_bar on padded scroll nodes: thumb hugs padding box edge, bar_near matches, drag reaches most" {
+  let v_scroll = @view.Scroll::plain()
+  let h_scroll = @view.Scroll::across()
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=400.0, platform=0)
+  t.check_looks(false)
+  set_view_app(fn(root) {
+    root.box(fn(v) {
+      v
+      .width(Is(Some(300.0)))
+      .height(Is(Some(180.0)))
+      .padding(Is((8.0, 4.0, 8.0, 12.0)))
+      .scrolls(v_scroll, bar=tree_scroll_bar(), fn(held) {
+        for _ in 0..<10 {
+          held.box(fn(r) { r.width(Is(Some(280.0))).height(Is(Some(40.0))) |> ignore }) |> ignore
+        }
+      })
+      |> ignore
+    })
+    |> ignore
+    root.box(fn(h) {
+      h
+      .width(Is(Some(300.0)))
+      .height(Is(Some(120.0)))
+      .padding(Is((8.0, 4.0, 8.0, 12.0)))
+      .scrolls(h_scroll, bar=tree_scroll_bar(), fn(held) {
+        held.row(Is(true)) |> ignore
+        for _ in 0..<10 {
+          held.box(fn(r) { r.width(Is(Some(80.0))).height(Is(Some(80.0))) |> ignore }) |> ignore
+        }
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  // Vertical: pointer near right edge of padding box (x = 300 - scroll_bar_near + 1) wakes bar
+  t.move_to(300.0 - scroll_bar_near + 1.0, 90.0)
+  t.run_for(turn_done_ms)
+  let v_thumbs = t
+    .drawn_order()
+    .filter(fn(d) { d.0 == 0 && d.3 == scroll_bar_size && d.2 < 180.0 && d.5 > 0.0 })
+  assert_eq(v_thumbs.length(), 1, msg="vertical thumb count: \{Repr(v_thumbs)}")
+  let vt = v_thumbs[0]
+  let v_right = vt.1 + vt.3
+  assert_true(
+    (v_right - (300.0 - scroll_bar_inset)).abs() <= 0.01,
+    msg="vertical thumb right=\{v_right} expected=\{300.0 - scroll_bar_inset}",
+  )
+  // Drag vertical thumb to the bottom: reaches most()
+  t.drag(vt.1 + vt.3 / 2.0, vt.2 + vt.4 / 2.0, vt.1 + vt.3 / 2.0, 260.0)
+  t.draw()
+  assert_true(
+    (v_scroll.at(view_tree().unwrap()) - v_scroll.most()).abs() <= 0.5,
+    msg="vertical drag to end: at=\{v_scroll.at(view_tree().unwrap())} most=\{v_scroll.most()}",
+  )
+  // Horizontal: box is y=[180, 300], pointer near bottom edge wakes bar
+  t.move_to(150.0, 300.0 - scroll_bar_near + 1.0)
+  t.run_for(turn_done_ms)
+  let h_thumbs = t
+    .drawn_order()
+    .filter(fn(d) { d.0 == 0 && d.4 == scroll_bar_size && d.2 >= 180.0 && d.5 > 0.0 })
+  assert_eq(h_thumbs.length(), 1, msg="horizontal thumb count: \{Repr(h_thumbs)}")
+  let ht = h_thumbs[0]
+  let h_bottom = ht.2 + ht.4
+  assert_true(
+    (h_bottom - (300.0 - scroll_bar_inset)).abs() <= 0.01,
+    msg="horizontal thumb bottom=\{h_bottom} expected=\{300.0 - scroll_bar_inset}",
+  )
+  // Drag horizontal thumb to the right end: reaches most()
+  t.drag(ht.1 + ht.3 / 2.0, ht.2 + ht.4 / 2.0, 380.0, ht.2 + ht.4 / 2.0)
+  t.draw()
+  assert_true(
+    (h_scroll.at(view_tree().unwrap()) - h_scroll.most()).abs() <= 0.5,
+    msg="horizontal drag to end: at=\{h_scroll.at(view_tree().unwrap())} most=\{h_scroll.most()}",
+  )
+}

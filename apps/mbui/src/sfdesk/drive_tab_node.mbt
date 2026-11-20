@@ -563,8 +563,7 @@ fn ftab_folder_node(
     }
   }
   v.box(fn(list) {
-    @sf.style_node(list, fn() { ftab_list })
-    list.min_height(Is(Some(0.0))) |> ignore
+    list.fills_across(Is(true)).grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))).clips(Is(true)) |> ignore
     // (a ground round its rows: a press there chooses none)
     list.presses(Is(true)).on_press(s.clear) |> ignore
     list.pick(fn() {
@@ -575,16 +574,22 @@ fn ftab_folder_node(
         (Some(_), _) => if b.arranged(src, at.path) is None { TabReading } else { TabRead }
       }
     }, fn(l, shows) {
-      l.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      l.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+      let s2 = @ui.Space::px(S2)
       match shows {
-        TabFailed =>
+        TabFailed => {
+          l.padding(Is((s2, 0.0, s2, s2))) |> ignore
           l.box(fn(p) {
             @sf.style_node(p, fn() { ftab_problem })
             @sf.words_node(p, fn() { b.folder(src, at).1.unwrap_or("") }, fn() { tab_trouble }) |> ignore
             @sf.button_node(p, fn() { @sf.t("web-pages.drive.retry") }, fn() { @sfpages.refresh_folder(src, at) }, tone=Ghost, icon="retry") |> ignore
           })
           |> ignore
-        TabReading => @sfpages.rows_sample_node(l, s, at, 5, compact=true, card=false)
+        }
+        TabReading => {
+          l.padding(Is((s2, 0.0, s2, s2))) |> ignore
+          @sfpages.rows_sample_node(l, s, at, 5, compact=true, card=false)
+        }
         TabRead =>
           @sfpages.rows_view_node(
             l,
@@ -593,6 +598,7 @@ fn ftab_folder_node(
             false,
             compact=true,
             card=false,
+            pad=(s2, 0.0, s2, s2),
             head=fn(hv) {
               // (the folder as a whole, where it is under it: the library's row of choices, as the places' rows)
               @sf.choice_row_node(

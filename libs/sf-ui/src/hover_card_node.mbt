@@ -210,8 +210,9 @@ pub fn hover_card_node(
       t.lends(submenu_layer_lent, holder) |> ignore
       gate.val.collect(fn() {
       t.box(fn(b) {
-        b.alpha(By(fn() { look().words })) |> ignore
+        b.margin(Is((-panel_pad, 0.0, -panel_pad, 0.0))).alpha(By(fn() { look().words })) |> ignore
         b.scrolls(@view.Scroll::new(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(s) {
+          s.padding(Is((panel_pad, 0.0, panel_pad, 0.0))) |> ignore
           s.box(fn(inner) {
             inner.fills_across(Is(true)) |> ignore
             if padded {

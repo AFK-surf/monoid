@@ -712,7 +712,7 @@ let job_detail_last : @ui.Style = @ui.css("w=Full pb=S3")
 ///|
 /// Its output (jobOutput): the rest of it, 4 over, 8 under and at its end; 11.5 mono on 1.6, the words' ink.
 // kept across runs: a value (no field of it changes)
-let job_output_box : @ui.Style = @ui.style(w=Full, h=@sf.grow, mt=S1, mb=S2, pr=S2)
+let job_output_box : @ui.Style = @ui.style(w=Full, h=@sf.grow, mt=S1, mb=S2)
 
 ///|
 // kept across runs: a value (no field of it changes)

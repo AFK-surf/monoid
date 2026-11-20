@@ -218,7 +218,7 @@ pub fn button_opens_node(@view.View, () -> String, (@view.View) -> Unit, tone? :
 
 pub fn button_start_reach() -> @ui.Style
 
-pub fn capped_node(@view.View, () -> Double, (@view.View) -> Unit) -> @view.View
+pub fn capped_node(@view.View, () -> Double, (@view.View) -> Unit, bleed? : Bool) -> @view.View
 
 pub fn capsule_chooser_node(@view.View, () -> String, () -> Array[(String, String)], () -> String, (String) -> Unit, disabled? : () -> Bool, side? : @ui.Side, on_open? : (Bool) -> Unit, loc~ : SourceLoc) -> @view.View
 
@@ -1564,6 +1564,7 @@ pub fn panel_said_row_node(@view.View, () -> Array[@text.Run], () -> Unit, () ->
 
 pub fn panel_search_at_hand_node(@view.View) -> Unit
 
+pub fn panel_sides_at_node(@view.View) -> Double
 
 pub fn panel_switch_row_node(@view.View, () -> String, () -> Bool, (Bool) -> Unit, note? : () -> String, disabled? : () -> Bool, busy? : () -> Bool) -> Unit
 

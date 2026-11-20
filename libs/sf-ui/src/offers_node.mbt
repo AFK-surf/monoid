@@ -329,9 +329,14 @@ pub fn offers_node(
         style_node(p, fn() { offers_box })
         p.box(fn(body) {
           // (all it holds as far in as its look says, past the panel's own glass and shadow: Look's `words`)
-          body.alpha(By(fn() { look().words })).max_height(Is(Some(offers_most - 2.0 * panel_pad))) |> ignore
+          body
+          .margin(Is((-panel_pad, 0.0, -panel_pad, 0.0)))
+          .alpha(By(fn() { look().words }))
+          .max_height(Is(Some(offers_most - 2.0 * panel_pad)))
+          |> ignore
           // (a finger scrolling them keeps the keyboard of the field `around` holds: View::scrolls' `for_in`)
           body.scrolls(@view.Scroll::new(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), for_in=around.id(), fn(b) {
+            b.padding(Is((panel_pad, 0.0, panel_pad, 0.0))) |> ignore
             b.show(fn() { head().0 != "" }, at_once=true, fn(h) {
               style_node(h, fn() { offers_head })
               words_node(h, fn() { head().0 }, fn() { offers_head_words }) |> ignore

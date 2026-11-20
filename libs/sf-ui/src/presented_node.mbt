@@ -468,6 +468,12 @@ pub fn panel_bleed_node(v : @view.View) -> @ui.Style {
 }
 
 ///|
+/// How far in from the panel's edges node `v`'s body column sits (panel_bleed_node's width on each side), in points.
+pub fn panel_sides_at_node(v : @view.View) -> Double {
+  panel_in_of(v).sides
+}
+
+///|
 /// Node `v` of a panel's body clear of an untitled dialog's close button at its end (untitled_clear's, where the body is
 /// nodes); none elsewhere.
 pub fn untitled_clear_node(v : @view.View) -> @ui.Style {
