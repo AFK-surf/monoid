@@ -191,10 +191,18 @@ pub fn field(
     // words are as said, a check's tree says so, View::words_follow_system)
     f.words_follow_system("a field")
     // (one Field, one editor: held by another node still, it is told; an old view's editor given it then, Ctx::editor.
-    // Given so, a fault (the boundary round it shows it), this field taking it over meanwhile)
+    // Given so, a fault (the boundary round it shows it), this field taking it over meanwhile. One that node no longer
+    // shows (put by till its change is committed whole as what flies from it is (Tree::departs), leaving, laid out
+    // nowhere) hands it over: let go of here, so that its letting go later takes nothing from this one)
     match st.tree_node {
-      Some(other) if other != id && tree_fields.contains(other) =>
-        f.fault("field: one Field given to two fields of the tree's: a Field is one editor's")
+      Some(other) if other != id && tree_fields.contains(other) => {
+        let root = f.tree.root().id()
+        if f.tree.holds(root, other) && !f.tree.leaving(other) && !f.tree.laid_out_nowhere(other) {
+          f.fault("field: one Field given to two fields of the tree's: a Field is one editor's")
+        } else {
+          tree_field_gone(other)
+        }
+      }
       _ => ()
     }
     st.tree_node = Some(id)

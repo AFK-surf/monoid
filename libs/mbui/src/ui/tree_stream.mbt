@@ -48,7 +48,26 @@ pub fn stream(
 ) -> @view.View {
   parent.box(made_for=loc, fn(b) {
     let id = b.id()
-    if tree_streams.iter().any(fn(e) { e.0 != id && physical_equal(e.1.stream, s) }) {
+    // (given to another node still drawn, a fault; one no longer drawn (put by till its change is committed whole as
+    // what flies from it is, Tree::departs; leaving; laid out nowhere) hands it over: no longer its, not closed, so
+    // that its letting go later closes nothing of this one's)
+    let root = b.tree.root().id()
+    let gone : Array[@view.NodeId] = []
+    let mut live_dup = false
+    for o, ts in tree_streams {
+      if o != id && physical_equal(ts.stream, s) {
+        if b.tree.holds(root, o) && !b.tree.leaving(o) && !b.tree.laid_out_nowhere(o) {
+          live_dup = true
+        } else {
+          gone.push(o)
+        }
+      }
+    }
+    for o in gone {
+      tree_streams.remove(o)
+      tree_streams_rev.val = tree_streams_rev.val + 1
+    }
+    if live_dup {
       b.fault("stream: one stream given to two nodes of the tree's: a stream is drawn in one place")
     }
     tree_streams_rev.val = tree_streams_rev.val + 1

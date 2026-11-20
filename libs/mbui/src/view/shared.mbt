@@ -1154,8 +1154,10 @@ fn Tree::in_change(self : Tree) -> Bool {
 /// The shared nodes in node `at` (it, or what it holds), the outermost of each: none in another of them.
 fn Tree::shared_in(self : Tree, at : Int, out : Array[Int]) -> Unit {
   let n = self.nodes[at]
-  // (one said View::shared whose id is none now: its id may be said by what lets it go, Tree::departed)
-  if n.share is Some(_) || (n.share_flight is Some(_) && self.shared_how_of(at) is Some({ refresh: Some(_), .. })) {
+  // (one that moves: one that stays never flies out as it goes, View::shared; one said View::shared whose id is none
+  // now, its id may be said by what lets it go, Tree::departed)
+  if !n.share_stays &&
+    (n.share is Some(_) || (n.share_flight is Some(_) && self.shared_how_of(at) is Some({ refresh: Some(_), .. }))) {
     out.push(at)
     return
   }
@@ -1423,7 +1425,10 @@ fn Tree::departs(self : Tree, holder : View, v : View) -> Bool {
   let found = self.departs_of(v)
   // (none to fly: `v` let go of as it would have been, nothing parked)
   guard found.length() > 0 else { return false }
-  self.departed(found, v.id(), false)
+  // (none of them told as one (an id said By that says none as it goes): nothing to keep it for, let go of at once)
+  if !self.departed(found, v.id(), false) {
+    return false
+  }
   holder.park(v) |> ignore
   true
 }
@@ -1435,7 +1440,7 @@ fn Tree::departs_leaving(self : Tree, v : View) -> Unit {
   guard self.sharing() && self.in_change() && v.live() is Some(_) else { return }
   let found = self.departs_of(v)
   guard found.length() > 0 else { return }
-  self.departed(found, v.id(), true)
+  self.departed(found, v.id(), true) |> ignore
 }
 
 ///|
@@ -1451,8 +1456,9 @@ fn Tree::departs_of(self : Tree, v : View) -> Array[Int] {
 
 ///|
 /// The shared nodes `found`, let go of with `held` (or leaving with it), told as such: where each was drawn as the
-/// change came (where it was on a flight's way, its flight ended), as it looked.
-fn Tree::departed(self : Tree, found : Array[Int], held : NodeId, leaving : Bool) -> Unit {
+/// change came (where it was on a flight's way, its flight ended), as it looked. Whether any was told so.
+fn Tree::departed(self : Tree, found : Array[Int], held : NodeId, leaving : Bool) -> Bool {
+  let mut any = false
   for at in found {
     let n = self.nodes[at]
     // (its id as said now, where it is said By: what it is let go of as)
@@ -1463,7 +1469,11 @@ fn Tree::departed(self : Tree, found : Array[Int], held : NodeId, leaving : Bool
     guard n.share is Some(id) else { continue }
     // (told once a change: one leaving with what holds it as that leaves too (a row of a show said to pop out of the
     // flow with it, pop_leave.mbt) is one departure, not two)
-    guard !self.departures.iter().any(fn(d) { d.node.at == at && d.node.gen == n.gen }) else { continue }
+    // (told already, as much a departure kept for as one told now)
+    guard !self.departures.iter().any(fn(d) { d.node.at == at && d.node.gen == n.gen }) else {
+      any = true
+      continue
+    }
     let (from, look) = match n.lift {
       Some(l) => {
         // (on a flight's way: where it is drawn as of the change's moment, as it looks there; that flight over)
@@ -1498,8 +1508,12 @@ fn Tree::departed(self : Tree, found : Array[Int], held : NodeId, leaving : Bool
       chain: self.held_chain(at),
       hang,
     })
+    any = true
   }
-  self.pairs_due()
+  if any {
+    self.pairs_due()
+  }
+  any
 }
 
 ///|
