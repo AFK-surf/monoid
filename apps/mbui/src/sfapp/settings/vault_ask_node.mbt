@@ -556,16 +556,15 @@ fn vault_title_runs(ask : Asked) -> Array[@ui.Run] {
 /// another station; none where neither is.
 fn vault_odd_runs(ask : Asked) -> Array[@ui.Run] {
   let shared = vault_save_shared_text(ask)
-  if shared != "" {
-    return [@ui.span(shared, color=@sf.theme().p.warn_ink)]
-  }
   let risky = !ask.writes() && (ask.mode == "env" || ask.mode == "file")
   let elsewhere = ask.station != ""
   let runs : Array[@ui.Run] = []
-  if risky {
+  if shared != "" {
+    runs.push(@ui.span(shared, color=@sf.theme().p.warn_ink))
+  } else if risky {
     runs.push(@ui.span(tr("android-settings.vault.ask.plain"), color=@sf.theme().p.warn_ink))
   }
-  if risky && elsewhere {
+  if (shared != "" || risky) && elsewhere {
     runs.push(@ui.span(" · "))
   }
   if elsewhere {

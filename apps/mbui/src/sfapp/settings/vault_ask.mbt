@@ -447,10 +447,6 @@ fn vault_asked(c : @ui.Ctx, ask : Asked, full_command? : Bool = false) -> Unit {
     if ask.reason != "" {
       c.text(ask.reason, style=@sf.ask_note) |> ignore
     }
-    let shared_text = vault_save_shared_text(ask)
-    if shared_text != "" {
-      c.rich([@ui.span(shared_text, color=t.p.warn_ink)], style=@sf.ask_note) |> ignore
-    }
     if ask.oauth != "" {
       // (what signing in lets agents do, and that it stays theirs: vault_oauth_gives_node's)
       c.box(style=vault_oauth_gives, fn() {
@@ -490,14 +486,17 @@ fn vault_asked(c : @ui.Ctx, ask : Asked, full_command? : Bool = false) -> Unit {
     if ask.how_text != "" && !ask.describe && !ask.remove && ask.oauth == "" {
       c.text(ask.how_text, style=@sf.ask_note) |> ignore
     }
+    let shared = vault_save_shared_text(ask)
     let risky = !ask.writes() && (ask.mode == "env" || ask.mode == "file")
     let elsewhere = ask.station != ""
-    if risky || elsewhere {
+    if shared != "" || risky || elsewhere {
       let runs : Array[@ui.Run] = []
-      if risky {
+      if shared != "" {
+        runs.push(@ui.span(shared, color=t.p.warn_ink))
+      } else if risky {
         runs.push(@ui.span(tr("android-settings.vault.ask.plain"), color=t.p.warn_ink))
       }
-      if risky && elsewhere {
+      if (shared != "" || risky) && elsewhere {
         runs.push(@ui.span(" · "))
       }
       if elsewhere {
