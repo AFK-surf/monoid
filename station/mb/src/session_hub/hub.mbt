@@ -198,6 +198,16 @@ pub fn Hub::new(world : World, store : @store_sessions.Store, threads : @store_t
 }
 
 ///|
+/// Record another station's bot IDs for a connect (connects/workspace.ts `told`).
+pub fn Hub::set_told_bots(self : Hub, connect : String, bots : Array[String]) -> Unit {
+  let set : Set[String] = Set([])
+  for b in bots {
+    set.add(b)
+  }
+  self.told_bots[connect] = set
+}
+
+///|
 /// What the store told: a session changed (its summary is told now, with its transcript's length as read), or gone.
 pub fn Hub::told(self : Hub, change : Json) -> Unit {
   match (str_of(change, "type"), str_of(change, "key")) {

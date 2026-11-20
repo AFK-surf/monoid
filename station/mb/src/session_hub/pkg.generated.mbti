@@ -478,6 +478,7 @@ pub fn Hub::runtime_updated(Self, String) -> Unit
 pub fn Hub::say(Self, @json.Json, String, String, attachments? : Array[@json.Json], quotes? : Array[@json.Json], client? : String) -> @json.Json raise
 pub fn Hub::session_ws(Self, String) -> String??
 pub fn Hub::sessions_with_pending(Self) -> Array[String]
+pub fn Hub::set_told_bots(Self, String, Array[String]) -> Unit
 pub async fn Hub::settle(Self) -> Unit
 pub fn Hub::shared(Self, @json.Json, @json.Json, String, String) -> Unit raise
 pub fn Hub::shutdown(Self) -> Unit
@@ -493,7 +494,9 @@ pub fn Hub::told_long_chat(Self, String) -> String? raise
 pub async fn Hub::told_resume_lost(Self, String) -> String
 pub fn Hub::tools_at(Self, String) -> Unit
 pub async fn Hub::unquiet(Self, String) -> Unit
+pub fn Hub::usage_drain(Self) -> Unit
 pub fn Hub::usage_now(Self, String) -> @json.Json? raise
+pub async fn Hub::usage_start(Self) -> Unit
 pub fn Hub::wake_chat(Self, String) -> Unit raise Refused
 pub fn Hub::workspaces(Self) -> Array[String]
 pub fn Hub::ws_of(Self, String?) -> String?

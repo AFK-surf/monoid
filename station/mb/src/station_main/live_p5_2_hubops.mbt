@@ -500,7 +500,10 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
       "hub.repoIndex.repos" => self.repo_index_repos(arg_or_null(args, 0))
       "hub.accounts.change" | "hub.accounts.modelEfforts" =>
         (self.bus.jobs_ask.val)(op[4:].to_owned(), Json::array(args))
-      "hub.toldBots" => @session_hub.hub_call(hub, "told", args)
+      "hub.toldBots" => {
+        hub.set_told_bots(arg_text(args, 0), jitems(arg_or_null(args, 1)).map(b => as_text(b).unwrap_or("")))
+        Json::null()
+      }
       // (replica/handover.ts's store/handover.ts and read/usage.ts, as a hand-over of chats asks them)
       "fn.handedStations" => Json::array(@store_sessions.handed_stations(self.bus.db))
       "fn.handedWithUsage" =>

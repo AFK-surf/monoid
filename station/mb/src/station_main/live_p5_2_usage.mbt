@@ -366,15 +366,13 @@ async fn P52::usage_ask(self : P52, what : String, args : Json) -> Json {
 /// chats drained and the old statistics retired.
 async fn P52::start_usage(self : P52) -> Unit {
   guard self.hub is Some(hub) else { return }
-  ignore(@session_hub.hub_call(hub, "usageStart", [])) catch {
+  hub.usage_start() catch {
     e => slice_log("warn", "usage", "the usage counter did not start", { "error": jstr(said_of(e)) })
   }
   fork_bg(self.host, "usage after the station before", async fn() {
     (self.bus.previous_gone)()
-    ignore(@session_hub.hub_call(hub, "usageDrain", [])) catch {
-      e => slice_log("warn", "usage", "the chats of moved sessions are not counted again", { "error": jstr(said_of(e)) })
-    }
-    ignore(@session_hub.hub_call(hub, "retireUsage", [])) catch {
+    hub.usage_drain()
+    hub.retire_usage() catch {
       e => slice_log("warn", "usage", "the old usage statistics were not retired", { "error": jstr(said_of(e)) })
     }
   })
