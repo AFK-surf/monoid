@@ -21,11 +21,6 @@ pub fn from_base64(s : String) -> Bytes {
 }
 
 ///|
-fn unhex(s : String) -> Bytes {
-  @codec.hex_decode(s).unwrap_or(b"")
-}
-
-///|
 /// HMAC-SHA256 (RFC 2104).
 pub fn hmac_sha256(key : Bytes, data : Bytes) -> Bytes {
   @hash.hmac_sha256(key[:], data[:])

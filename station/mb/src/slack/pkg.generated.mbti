@@ -52,8 +52,6 @@ pub fn files_to_look_up(@jsjson.JValue?) -> Array[String]
 
 pub fn form_encoded(Array[(String, String)]) -> String
 
-pub async fn harness(@host.Host) -> Unit
-
 pub fn header(Array[(String, String)], String) -> String?
 
 pub fn host_clock(@host.Host, now? : () -> Double) -> Clock

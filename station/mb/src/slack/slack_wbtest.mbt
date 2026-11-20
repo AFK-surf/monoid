@@ -1,7 +1,6 @@
-// The package's own pieces where station/test/mb-slack.test.ts does not reach them one by one: a form as
-// URLSearchParams writes it, a header as `Headers.get` reads it, an HTTP date as `Date.parse` takes it, and a socket's
-// stop. (Nothing here reaches the shell: a test of the package links no shell.) The values are Node's (`new
-// URLSearchParams(…).toString()`, `Date.parse`).
+// Unit tests for pure Slack helpers: form encoding as URLSearchParams writes it, case-insensitive header lookup,
+// HTTP dates as `Date.parse` takes them, event parsing, and text truncation. (Nothing here reaches the shell: a test
+// of the package links no shell.)
 
 ///|
 test "a form is written as URLSearchParams writes it" {
@@ -72,4 +71,117 @@ test "chat.update's text is cut to 3,500 bytes as Slack counts them at a whole c
   assert_eq(update_text("a".repeat(200), max_bytes=200), "a".repeat(200))
   assert_eq(update_text("a".repeat(201), max_bytes=200), "a".repeat(197) + "…")
   assert_eq(update_text("&".repeat(41), max_bytes=200), "&".repeat(39) + "…")
+}
+
+///|
+test "to_event maps user messages, edits and app_mentions while filtering own bot and deletes" {
+  let msg = to_event(
+    Some(
+      jo([
+        ("type", js("message")),
+        ("channel", js("C1")),
+        ("ts", js("100.1")),
+        ("user", js("U1")),
+        ("text", js("hello")),
+      ]),
+    ),
+    "UBOT",
+    "BBOT",
+  )
+  assert_eq(str_of(at(msg, "type")), Some("message"))
+  let inner = at(msg, "message")
+  assert_eq(str_of(at(inner, "threadTs")), Some("100.1"))
+  assert_eq(str_of(at(inner, "user")), Some("U1"))
+  assert_eq(str_of(at(inner, "text")), Some("hello"))
+  // own messages (by user or bot_id) and deletes are dropped
+  assert_true(
+    to_event(
+      Some(jo([("type", js("message")), ("channel", js("C1")), ("ts", js("1")), ("user", js("UBOT")), ("text", js("hi"))])),
+      "UBOT",
+      "BBOT",
+    )
+    is None,
+  )
+  assert_true(
+    to_event(
+      Some(jo([("type", js("message")), ("subtype", js("bot_message")), ("bot_id", js("BBOT")), ("ts", js("1"))])),
+      "UBOT",
+      "BBOT",
+    )
+    is None,
+  )
+  assert_true(
+    to_event(Some(jo([("type", js("message")), ("subtype", js("message_deleted")), ("ts", js("1"))])), "UBOT", "BBOT")
+    is None,
+  )
+  // message_changed maps to changed with threadTs fallback to ts
+  let edited = to_event(
+    Some(
+      jo([
+        ("type", js("message")),
+        ("subtype", js("message_changed")),
+        ("channel", js("C1")),
+        ("message", jo([("ts", js("200.2")), ("user", js("U2")), ("text", js("updated"))])),
+      ]),
+    ),
+    "UBOT",
+    "BBOT",
+  )
+  assert_eq(str_of(at(edited, "type")), Some("changed"))
+  assert_eq(str_of(at(edited, "threadTs")), Some("200.2"))
+  assert_eq(str_of(at(edited, "text")), Some("updated"))
+}
+
+///|
+test "slack config, masking, api_base and connect helpers handle normal and edge inputs" {
+  assert_eq(api_base(None), slack_api)
+  assert_eq(api_base(Some("https://example.test/api/")), "https://example.test/api/")
+  assert_eq(mask_value("xoxb-1234567890-abcdef"), "xoxb-…cdef")
+  assert_eq(mask_value("short"), "••••")
+  assert_true(connect_blocked("app.exe"))
+  assert_true(connect_blocked("build.DMG"))
+  assert_true(!connect_blocked("notes.txt"))
+  let connects = slack_connects(
+    Some(
+      jo([
+        (
+          "connects",
+          ja([
+            jo([
+              ("id", js("sl-1")),
+              ("kind", js("slack")),
+              ("enabled", Bool(true)),
+              ("slack", jo([("appToken", js("xapp-1")), ("botToken", js("xoxb-1"))])),
+            ]),
+            jo([("id", js("fs-1")), ("kind", js("feishu")), ("enabled", Bool(true))]),
+          ]),
+        ),
+      ]),
+    ),
+  )
+  assert_eq(connects.length(), 1)
+  assert_eq(connects[0].id, "sl-1")
+  assert_eq(slack_credentials(connects[0]), Some("xapp-1\nxoxb-1"))
+}
+
+///|
+test "slack manifest helpers enable socket mode and stop event idempotently" {
+  let base = slack_manifest("Stillfail Bot")
+  let with_sock = with_socket_mode(Some(base), true)
+  assert_eq(at(at(Some(with_sock), "settings"), "socket_mode_enabled").map(stringify), Some("true"))
+  // slack_manifest already includes agent_session_stopped, so with_stop_event is a no-op
+  assert_true(with_stop_event(Some(base)) is None)
+  // a socket-mode manifest without agent_session_stopped gets it and agent_view added
+  let bare = jo([
+    (
+      "settings",
+      jo([
+        ("socket_mode_enabled", Bool(true)),
+        ("event_subscriptions", jo([("bot_events", ja([js("app_mention")]))])),
+      ]),
+    ),
+  ])
+  let patched = with_stop_event(Some(bare))
+  assert_true(patched is Some(_))
+  assert_true(with_stop_event(patched) is None)
 }

@@ -123,8 +123,6 @@ pub fn forget_releases() -> Unit
 
 pub fn get(@jsjson.JValue?, String) -> @jsjson.JValue?
 
-pub async fn harness(@host.Host) -> Unit
-
 pub async fn has_codex_host_soon(World, String) -> Bool
 
 pub fn hex(BytesView) -> String

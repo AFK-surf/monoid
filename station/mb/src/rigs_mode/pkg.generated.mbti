@@ -54,8 +54,6 @@ pub let full_for : Double
 
 pub fn get(@json.Json?, String) -> @json.Json?
 
-pub async fn harness(@host.Host) -> Unit
-
 pub fn is_undefined(@json.Json) -> Bool
 
 pub fn iso(Double) -> String

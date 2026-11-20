@@ -1,7 +1,6 @@
 // What these parts ask of the station and the machine, one way: a call by its TypeScript name (`fs.readFile`,
 // `platform.findCommandSoon`, `log.warn`, `fetch`) with its arguments as JSON, answered with JSON or refused with a
-// JavaScript error's class and fields. The station's program gives it the shell's and Node's answers; the tests'
-// harness gives it the test's world (test/mb-updates.test.ts), which answers the TypeScript's own calls the same way.
+// JavaScript error's class and fields. The station's program gives it the shell's and Node's answers.
 // Time is the part's clock (`Clock`: the station's, a test's), timers and fibers on the program's runtime.
 
 ///|
