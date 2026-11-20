@@ -18,7 +18,6 @@ import { mkdir, open, readFile, rm, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { type Bytes, bytesOf, withBytes } from "../mesh/bus.ts";
 import { fileBytes, oneBytes, writeBytes } from "../mesh/files.ts";
-import { FeishuFile } from "../feishu/web.ts";
 import { PrivateFile } from "../ops/files.ts";
 import { log } from "../ops/log.ts";
 import type { ChatEvent, ChatMessage, ChatSurface, InboundFile, Member, Person, Place, ThreadRef } from "../sessions/chat.ts";
@@ -26,6 +25,7 @@ import type { Connect, ConnectKind, ConnectMode } from "../sessions/config.ts";
 import type { Attachment } from "../store/rows.ts";
 import type { CardEnd } from "./card-ends.ts";
 import type { BotIdentity } from "./connections.ts";
+import { FeishuFile } from "./feishu-file.ts";
 import { REMOTE_FILE, channelKey, personKey } from "./keys.ts";
 import type { NameBook } from "./names.ts";
 
