@@ -87,7 +87,7 @@ pub let devin_manifest : String
 
 pub fn downloading(String, Double, Double?) -> (Words, Int32?)
 
-pub async fn earlier_in(World, @jsjson.JValue, Array[(String, String)]?) -> (Array[@jsjson.JValue], Array[String])
+pub fn earlier_in(World, @jsjson.JValue, Array[(String, String)]?) -> (Array[@jsjson.JValue], Array[String]) raise
 
 pub fn ends_with(String, String) -> Bool
 
@@ -365,11 +365,11 @@ pub fn uses_codex_host(String) -> Bool
 
 pub fn utf8_text(Bytes) -> String
 
-pub async fn verified_or_null(World, @jsjson.JValue, Array[(String, String)]?) -> (@jsjson.JValue?, String?)
+pub fn verified_or_null(World, @jsjson.JValue, Array[(String, String)]?) -> (@jsjson.JValue?, String?) raise
 
-pub async fn verify_feed(World, @jsjson.JValue, Array[(String, String)]) -> @jsjson.JValue
+pub fn verify_feed(World, @jsjson.JValue, Array[(String, String)]) -> @jsjson.JValue raise
 
-pub async fn verify_signed(World, @jsjson.JValue, Array[(String, String)]) -> @jsjson.JValue
+pub fn verify_signed(World, @jsjson.JValue, Array[(String, String)]) -> @jsjson.JValue raise
 
 pub fn version_in(String) -> String?
 
@@ -537,9 +537,10 @@ pub struct Response {
 }
 pub fn Response::bytes(Self) -> Bytes
 pub fn Response::header(Self, String) -> String?
-pub async fn Response::json(Self, World) -> @jsjson.JValue
+pub fn Response::json(Self, World) -> @jsjson.JValue raise
 pub fn Response::ok(Self) -> Bool
 pub fn Response::text(Self) -> String
+pub fn Response::to_j(Self) -> @jsjson.JValue
 
 pub struct Signal {
   mut aborted : Bool
@@ -557,6 +558,7 @@ pub struct Stat {
   dev : Double
   ino : Double
   mtime_ms : Double
+  mode : Double
 }
 
 pub(all) struct Timing {
@@ -649,44 +651,51 @@ pub(all) enum Words {
 pub fn Words::to_j(Self) -> @jsjson.JValue
 
 pub struct World {
+  host : @host.Host
   ask : async (String, Array[@jsjson.JValue]) -> @jsjson.JValue
   say_now : (String, Array[@jsjson.JValue]) -> Unit
-  wall_after : async (Double, async () -> Unit) -> (() -> Unit)
   clock : Clock
   rt : @effect.Runtime
-  json_error : async (String) -> String
-  verify : async (Bytes, Bytes, Bytes) -> Bool
   watch : async (String, (String?) -> Unit) -> (async () -> Unit)
-  hash_stream : (async (String) -> (String, Double))?
 }
-pub async fn World::access(Self, String, mode? : Int32) -> Unit
+pub async fn World::access(Self, String, mode? : Int32, sync? : Bool) -> Unit
 pub async fn World::accessible(Self, String) -> Bool
 pub async fn World::call(Self, String, Array[@jsjson.JValue]) -> @jsjson.JValue
+pub async fn World::exists(Self, String, sync? : Bool) -> Bool
 pub async fn World::exists_soon(Self, String) -> Bool
 pub async fn World::fetch(Self, String, String, meth? : String) -> Response
 pub fn World::go(Self, async () -> Unit) -> Unit
 pub async fn World::handle_size(Self, String) -> Double
 pub async fn World::hash_file(Self, String) -> (String, Double)
 pub fn World::info(Self, String, String, fields? : @jsjson.JValue) -> Unit
-pub async fn World::json(Self, String) -> @jsjson.JValue
-pub async fn World::lstat(Self, String) -> Stat
-pub async fn World::mkdir(Self, String, opts? : @jsjson.JValue) -> Unit
+pub fn World::json(Self, String) -> @jsjson.JValue raise
+pub async fn World::link(Self, String, String, sync? : Bool) -> Unit
+pub async fn World::lstat(Self, String, sync? : Bool) -> Stat
+pub async fn World::lstat_or_null(Self, String, sync? : Bool) -> Stat?
+pub async fn World::mkdir(Self, String, sync? : Bool) -> Unit
 pub fn World::now(Self, String, Array[@jsjson.JValue]) -> Unit
+pub async fn World::random_bytes(Self, Int32) -> Bytes
 pub async fn World::read_at(Self, String, Int32, Double) -> Bytes?
+pub async fn World::read_bytes(Self, String, sync? : Bool) -> Bytes
 pub async fn World::read_stream(Self, String) -> Bytes
-pub async fn World::read_text(Self, String) -> String
-pub async fn World::read_text_or_null(Self, String) -> String?
-pub async fn World::readdir(Self, String) -> Array[String]
-pub async fn World::realpath(Self, String) -> String
-pub async fn World::realpath_or_null(Self, String) -> String?
-pub async fn World::rename(Self, String, String) -> Unit
-pub async fn World::rm(Self, String, recursive? : Bool) -> Unit
-pub async fn World::rm_quiet(Self, String, recursive? : Bool) -> Unit
-pub async fn World::stat(Self, String) -> Stat
+pub async fn World::read_text(Self, String, sync? : Bool) -> String
+pub async fn World::read_text_or_null(Self, String, sync? : Bool) -> String?
+pub async fn World::readdir(Self, String, sync? : Bool) -> Array[String]
+pub async fn World::readlink(Self, String, sync? : Bool) -> String
+pub async fn World::realpath(Self, String, sync? : Bool) -> String
+pub async fn World::realpath_or_null(Self, String, sync? : Bool) -> String?
+pub async fn World::rename(Self, String, String, sync? : Bool) -> Unit
+pub async fn World::rm(Self, String, recursive? : Bool, sync? : Bool) -> Unit
+pub async fn World::rm_quiet(Self, String, recursive? : Bool, sync? : Bool) -> Unit
+pub async fn World::stat(Self, String, sync? : Bool) -> Stat
+pub async fn World::symlink(Self, String, String, sync? : Bool) -> Unit
 pub async fn World::tell(Self, String, Array[@jsjson.JValue]) -> Unit
+pub fn World::verify(Self, Bytes, Bytes, Bytes) -> Bool
+pub fn World::wall_after(Self, Double, async () -> Unit) -> () -> Unit
 pub fn World::warn(Self, String, String, fields? : @jsjson.JValue) -> Unit
-pub async fn World::write_file(Self, String, String) -> Unit
-pub async fn World::write_stream(Self, String) -> WriteStream
+pub async fn World::write_bytes(Self, String, Bytes) -> Unit
+pub async fn World::write_file(Self, String, String, sync? : Bool) -> Unit
+pub fn World::write_stream(Self, String) -> WriteStream
 
 pub struct WriteStream {
   w : World

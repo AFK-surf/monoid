@@ -434,12 +434,6 @@ pub(all) enum Old {
 }
 
 ///|
-/// `readFileSync(path)`.
-async fn read_bytes_sync(w : World, path : String) -> Bytes {
-  bytes_of(Some(w.call("fs.readFileSync", [js(path)])))
-}
-
-///|
 /// `readOld`: the old blob a delta wants, checked against its size and sha256.
 pub async fn read_old(w : World, h : Header, from : Old) -> Bytes {
   let blob = Buffer()
@@ -450,24 +444,23 @@ pub async fn read_old(w : World, h : Header, from : Old) -> Bytes {
       }
       let mut total = 0.0
       for f in h.files {
-        let st = w.call("fs.lstatSync", [js(pjoin([dir, f])), jo([("throwIfNoEntry", jb(false))])])
-        if !(st is Obj(_) && stat_of(st).file) {
+        guard w.lstat_or_null(pjoin([dir, f]), sync=true) is Some(st) && st.file else {
           raise fail("the old file \{f} is not there")
         }
-        total += stat_of(st).size
+        total += st.size
       }
       if total != h.old_size {
         raise fail("the old files are \{num_text(total)} bytes, the delta's old blob \{num_text(h.old_size)}")
       }
       for f in h.files {
-        blob.write_bytes(read_bytes_sync(w, pjoin([dir, f])))
+        blob.write_bytes(w.read_bytes(pjoin([dir, f]), sync=true))
       }
     }
     Apk(apk_path) => {
       if h.files.length() > 0 {
         raise fail("a folder's delta, given an apk")
       }
-      let apk = read_bytes_sync(w, apk_path)
+      let apk = w.read_bytes(apk_path, sync=true)
       let mut p = 0
       let most = if h.old_size > 1.0 { h.old_size.to_int() } else { 1 }
       for r in h.inflate {
@@ -501,8 +494,8 @@ pub async fn read_old(w : World, h : Header, from : Old) -> Bytes {
 }
 
 ///|
-/// `applyFile`: applies the delta file to what is installed, writing the made package to `out` as it comes; nothing
-/// is left on failure.
+/// `applyFile`: applies the delta file to what is installed, writing the made package to `out`; nothing is left on
+/// failure.
 pub async fn apply_file(
   w : World,
   from : Old,
@@ -510,33 +503,21 @@ pub async fn apply_file(
   out : String,
   deflate : async (Bytes) -> Bytes,
 ) -> Unit {
-  let d = read_bytes_sync(w, delta_path)
+  let d = w.read_bytes(delta_path, sync=true)
   let h = parse_header(d)
   let old = read_old(w, h, from)
-  let fd = w.call("fs.openSync", [js(out), js("w")])
+  w.write_bytes(out, b"")
+  let buf = Buffer()
   let wrote : Result[Unit, Error] = try {
-    apply(
-      h,
-      old,
-      d,
-      async fn(b) {
-        let mut at = 0
-        while at < b.length() {
-          let n = num(Some(w.call("fs.writeSync", [fd, jbytes(b[at:].to_owned())]))).unwrap_or(0.0)
-          at += n.to_int()
-        }
-      },
-      deflate,
-    )
+    apply(h, old, d, async fn(b) { buf.write_bytes(b) }, deflate)
     Ok(())
   } catch {
     e => Err(e)
   }
   match wrote {
-    Ok(_) => ignore(w.call("fs.closeSync", [fd]))
+    Ok(_) => w.write_bytes(out, buf.to_bytes())
     Err(e) => {
-      ignore(w.call("fs.closeSync", [fd]))
-      ignore(w.call("fs.rmSync", [js(out), jo([("force", jb(true))])]))
+      w.rm(out, sync=true)
       raise e
     }
   }

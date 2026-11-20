@@ -97,7 +97,7 @@ fn trusted_or_default(trusted : Array[(String, String)]?) -> Array[(String, Stri
 
 ///|
 /// `verifiedOrNull`: the release `said` names, verified; none when it does not verify (why: `why`).
-pub async fn verified_or_null(w : World, said : J, trusted : Array[(String, String)]?) -> (J?, String?) {
+pub fn verified_or_null(w : World, said : J, trusted : Array[(String, String)]?) -> (J?, String?) raise {
   let t = trusted_or_default(trusted)
   (Some(verify_feed(w, said, t)), None) catch {
     Thrown("Unverified", _) as e => (None, Some(message_of(e)))
@@ -386,7 +386,7 @@ pub fn apply_apart(w : World) -> Applier {
 ///|
 /// Where the installer takes an archive it is handed from: a directory of its own in the temporary one.
 async fn handed_archive(w : World) -> (String, String) {
-  let hex_ = hex(bytes_of(Some(w.call("crypto.randomBytes", [ji(16)]))))
+  let hex_ = hex(w.random_bytes(16))
   let tmp = text(Some(w.call("os.tmpdir", []))).unwrap_or("")
   if machine.val.installer_ext == "ps1" {
     (pjoin([tmp, "stillfail-handed-\{hex_}"]), "stillfail.zip")
@@ -496,7 +496,7 @@ pub async fn take_delta(
   let (dir, archive) = handed_archive(w)
   let made = pjoin([dir, archive])
   let took : Result[Array[(String, String)], Error] = try {
-    w.mkdir(dir, opts=jo([("mode", ji(448))]))
+    w.mkdir(dir)
     let file = pjoin([dir, "delta"])
     let mut i = 0
     while true {
@@ -559,7 +559,7 @@ pub async fn take_delta(
 ///|
 /// `earlierIn`: the releases `said` names as before it (`earlier`), each whose words verify (as `verify_feed`'s); of
 /// each that does not, why. Newest first, each build once.
-pub async fn earlier_in(w : World, said : J, trusted : Array[(String, String)]?) -> (Array[J], Array[String]) {
+pub fn earlier_in(w : World, said : J, trusted : Array[(String, String)]?) -> (Array[J], Array[String]) raise {
   let t = trusted_or_default(trusted)
   let releases : Array[J] = []
   let why : Array[String] = []
@@ -696,7 +696,7 @@ pub async fn take_archive(
   let (dir, archive) = handed_archive(w)
   let file = pjoin([dir, archive])
   let took : Result[Array[(String, String)], Error] = try {
-    w.mkdir(dir, opts=jo([("mode", ji(448))]))
+    w.mkdir(dir)
     let mut i = 0
     while true {
       let got : Result[Unit, Error] = try {

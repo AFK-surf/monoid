@@ -83,7 +83,7 @@ pub async fn set_channel(
     None => async fn(pid) { w.call("platform.isLauncher", [jn(pid)]) is Bool(true) }
   }
   let run_dir = pjoin([data, "run"])
-  w.mkdir(run_dir, opts=jo([("recursive", jb(true))]))
+  w.mkdir(run_dir)
   let said = read_json(w, pjoin([run_dir, "station.json"]))
   let pid = match get(said, "pid") {
     Some(Num(p)) if is_safe_integer(Some(Num(p))) && p > 0.0 => Some(p)

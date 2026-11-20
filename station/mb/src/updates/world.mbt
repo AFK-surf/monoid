@@ -1,6 +1,7 @@
-// What these parts ask of the station and the machine, one way: a call by its TypeScript name (`fs.readFile`,
-// `platform.findCommandSoon`, `log.warn`, `fetch`) with its arguments as JSON, answered with JSON or refused with a
-// JavaScript error's class and fields. The station's program gives it the shell's and Node's answers.
+// What these parts ask of the station and the machine: files, HTTP and Ed25519 directly through `@host.Host`
+// (`@host_world.*`, `host.fetch`, `host.shell_sync`); station/platform callbacks (`platform.*`, `ConfigFile.*`,
+// `config.updateSoon`, `processes.*`, `CloudTransport.*`, `cloud.fetch`, `shellPath.*`, `cursor.sdkVersionSoon`,
+// `os.tmpdir`, `console.*`, `wall.sleep`, `process.kill`) through `ask` / `say_now`.
 // Time is the part's clock (`Clock`: the station's, a test's), timers and fibers on the program's runtime.
 
 ///|
@@ -76,23 +77,46 @@ pub(all) struct Clock {
 ///|
 /// What the part asks of the station and the machine (see the head of this file).
 pub struct World {
+  host : @host.Host
   ask : async (String, Array[J]) -> J
   /// A call JavaScript makes and does not wait on (a log line, a listener told): said at once, its answer let go.
   say_now : (String, Array[J]) -> Unit
-  /// The machine's own timers (`wall.after`: deadlines given other programs): the function returned calls it off.
-  wall_after : async (Double, async () -> Unit) -> () -> Unit
   clock : Clock
   rt : @effect.Runtime
-  /// How JSON.parse says what is wrong with `text` (V8's words).
-  json_error : async (String) -> String
-  /// Whether `signature` is Ed25519's over `message` by the raw public `key` (the shell's `crypto.verify`).
-  verify : async (Bytes, Bytes, Bytes) -> Bool
   /// `fs.watch(dir, (_, name) => …)`: the callback told each change's name (none where it says none); the function
   /// returned closes it.
   watch : async (String, (String?) -> Unit) -> async () -> Unit
-  /// A file's sha256 and size read as a stream where the world can (the shell's `fs.hash`); none: read whole
-  /// (`createReadStream`).
-  hash_stream : (async (String) -> (String, Double))?
+}
+
+///|
+/// The world on the station's program: the shell's files, HTTP and Ed25519 directly on `host`, the rest asked of the
+/// station (`node`, and what is only told it, `tell`). `clock`: the station's time; `watch`: a directory's changes.
+pub fn host_world(
+  host : @host.Host,
+  node : async (String, Array[J]) -> J,
+  tell : (String, Array[J]) -> Unit,
+  clock : Clock,
+  watch : async (String, (String?) -> Unit) -> async () -> Unit,
+) -> World {
+  { host, ask: node, say_now: tell, clock, rt: host.rt, watch }
+}
+
+///|
+/// The machine's own timers (`wall.after`: deadlines given other programs): the function returned calls it off.
+pub fn World::wall_after(self : World, ms : Double, f : async () -> Unit) -> () -> Unit {
+  @host_world.after_async(self.host, ms.to_int(), f)
+}
+
+///|
+/// Whether `signature` is Ed25519's over `message` by the raw public `key` (the shell's `crypto.verify`).
+pub fn World::verify(self : World, key : Bytes, signature : Bytes, message : Bytes) -> Bool {
+  let args : Json = {
+    "alg": Json::string("Ed25519"),
+    "key": Json::string(hex(key)),
+    "signature": Json::string(hex(signature)),
+    "message": Json::string(hex(message)),
+  }
+  (try self.host.shell_sync("crypto.verify", args) catch { _ => Json::null() }) is True
 }
 
 ///|
@@ -149,10 +173,11 @@ pub fn World::go(self : World, f : async () -> Unit) -> Unit {
 }
 
 ///|
-/// `JSON.parse(text)`, refused with V8's words.
-pub async fn World::json(self : World, t : String) -> J {
+/// `JSON.parse(text)`.
+pub fn World::json(self : World, t : String) -> J raise {
+  ignore(self)
   parse(t) catch {
-    _ => raise thrown("SyntaxError", (self.json_error)(t))
+    e => raise thrown("SyntaxError", e.to_string())
   }
 }
 
@@ -318,7 +343,20 @@ pub fn Fibers::close(self : Fibers) -> Unit {
   self.live.clear()
 }
 
-// ── the files (node:fs/promises, node:fs) ──────────────────────────────────────────────────────────────────────────
+// ── the files (direct `@host_world.*` on `self.host`) ──────────────────────────────────────────────────────────────
+
+///|
+fn enoent(syscall : String, path : String) -> Error {
+  thrown("Error", @host_world.enoent_msg(syscall, path), more=[("code", js("ENOENT"))])
+}
+
+///|
+async fn[T] wrap_shell(f : async () -> T) -> T {
+  f() catch {
+    Thrown(_, _) as e => raise e
+    e => raise fail(@host_world.shell_error_msg(e))
+  }
+}
 
 ///|
 /// A file's stat as the world says it.
@@ -330,73 +368,115 @@ pub struct Stat {
   dev : Double
   ino : Double
   mtime_ms : Double
+  mode : Double
 }
 
 ///|
-fn stat_of(j : J) -> Stat {
+fn stat_of_lstat(st : @host_world.LstatInfo) -> Stat {
   {
-    size: num(get(Some(j), "size")).unwrap_or(0.0),
-    file: get(Some(j), "file") is Some(Bool(true)),
-    dir: get(Some(j), "dir") is Some(Bool(true)),
-    symlink: get(Some(j), "symlink") is Some(Bool(true)),
-    dev: num(get(Some(j), "dev")).unwrap_or(0.0),
-    ino: num(get(Some(j), "ino")).unwrap_or(0.0),
-    mtime_ms: num(get(Some(j), "mtimeMs")).unwrap_or(0.0),
+    size: st.size,
+    file: st.kind == "file",
+    dir: st.kind == "dir",
+    symlink: st.kind == "link",
+    dev: 0.0,
+    ino: st.ino,
+    mtime_ms: st.mtime_ms,
+    mode: st.mode,
   }
 }
 
 ///|
 /// `readFile(path, "utf8")`.
-pub async fn World::read_text(self : World, path : String) -> String {
-  match self.call("fs.readFile", [js(path), js("utf8")]) {
-    Str(u) => @jsjson.sanitize_str(u)
-    _ => ""
-  }
+pub async fn World::read_text(self : World, path : String, sync? : Bool = false) -> String {
+  wrap_shell(async fn() {
+    match @host_world.fs_read_text(self.host, path, sync~) {
+      Some(t) => t
+      None => raise enoent("open", path)
+    }
+  })
+}
+
+///|
+/// `readFile(path)`.
+pub async fn World::read_bytes(self : World, path : String, sync? : Bool = false) -> Bytes {
+  wrap_shell(async fn() {
+    match @host_world.fs_read_bytes(self.host, path, sync~) {
+      Some(b) => b
+      None => raise enoent("open", path)
+    }
+  })
 }
 
 ///|
 /// `readFile(path, "utf8")`, null where it fails.
-pub async fn World::read_text_or_null(self : World, path : String) -> String? {
-  Some(self.read_text(path)) catch {
+pub async fn World::read_text_or_null(self : World, path : String, sync? : Bool = false) -> String? {
+  Some(self.read_text(path, sync~)) catch {
     _ => None
   }
 }
 
 ///|
-/// `stat(path)`.
-pub async fn World::stat(self : World, path : String) -> Stat {
-  stat_of(self.call("fs.stat", [js(path)]))
+/// `lstat(path, { throwIfNoEntry: false })`.
+pub async fn World::lstat_or_null(self : World, path : String, sync? : Bool = false) -> Stat? {
+  wrap_shell(async fn() { @host_world.fs_lstat(self.host, path, sync~).map(stat_of_lstat) })
 }
 
 ///|
 /// `lstat(path)`.
-pub async fn World::lstat(self : World, path : String) -> Stat {
-  stat_of(self.call("fs.lstat", [js(path)]))
+pub async fn World::lstat(self : World, path : String, sync? : Bool = false) -> Stat {
+  match self.lstat_or_null(path, sync~) {
+    Some(st) => st
+    None => raise enoent("lstat", path)
+  }
+}
+
+///|
+async fn World::stat_or_null(self : World, path : String, sync? : Bool = false) -> Stat? {
+  wrap_shell(async fn() {
+    match @host_world.fs_realpath(self.host, path, sync~) {
+      Some(r) => @host_world.fs_lstat(self.host, r, sync~).map(stat_of_lstat)
+      None => None
+    }
+  })
+}
+
+///|
+/// `stat(path)`.
+pub async fn World::stat(self : World, path : String, sync? : Bool = false) -> Stat {
+  match self.stat_or_null(path, sync~) {
+    Some(st) => st
+    None => raise enoent("stat", path)
+  }
 }
 
 ///|
 /// `realpath(path)`.
-pub async fn World::realpath(self : World, path : String) -> String {
-  text(Some(self.call("fs.realpath", [js(path)]))).unwrap_or("")
+pub async fn World::realpath(self : World, path : String, sync? : Bool = false) -> String {
+  wrap_shell(async fn() {
+    match @host_world.fs_realpath(self.host, path, sync~) {
+      Some(r) => r
+      None => raise enoent("realpath", path)
+    }
+  })
 }
 
 ///|
 /// `realpath(path).catch(() => null)`.
-pub async fn World::realpath_or_null(self : World, path : String) -> String? {
-  Some(self.realpath(path)) catch {
+pub async fn World::realpath_or_null(self : World, path : String, sync? : Bool = false) -> String? {
+  Some(self.realpath(path, sync~)) catch {
     _ => None
   }
 }
 
 ///|
 /// `access(path[, mode])`.
-pub async fn World::access(self : World, path : String, mode? : Int) -> Unit {
-  let args = [js(path)]
-  match mode {
-    Some(m) => args.push(ji(m))
-    None => ()
+pub async fn World::access(self : World, path : String, mode? : Int = 0, sync? : Bool = false) -> Unit {
+  guard self.stat_or_null(path, sync~) is Some(st) else { raise enoent("access", path) }
+  let bits = st.mode.to_int()
+  let unix = machine.val.plat is Unix
+  if ((mode & 2) != 0 && (bits & 0o222) == 0) || (unix && (mode & 1) != 0 && (bits & 0o111) == 0) {
+    raise thrown("Error", "EACCES: permission denied, access '\{path}'", more=[("code", js("EACCES"))])
   }
-  ignore(self.call("fs.access", args))
 }
 
 ///|
@@ -411,51 +491,89 @@ pub async fn World::accessible(self : World, path : String) -> Bool {
 }
 
 ///|
-/// `mkdir(path, opts)`.
-pub async fn World::mkdir(self : World, path : String, opts? : J) -> Unit {
-  let args = [js(path)]
-  match opts {
-    Some(o) => args.push(o)
-    None => ()
-  }
-  ignore(self.call("fs.mkdir", args))
+/// `existsSync(path)` / `exists(path)`.
+pub async fn World::exists(self : World, path : String, sync? : Bool = false) -> Bool {
+  wrap_shell(async fn() { @host_world.fs_exists(self.host, path, sync~) })
+}
+
+///|
+/// `mkdir(path)`.
+pub async fn World::mkdir(self : World, path : String, sync? : Bool = false) -> Unit {
+  wrap_shell(async fn() { @host_world.fs_mkdir(self.host, path, sync~) })
 }
 
 ///|
 /// `rm(path, opts)`.
-pub async fn World::rm(self : World, path : String, recursive? : Bool = false) -> Unit {
-  let opts = if recursive {
-    jo([("recursive", jb(true)), ("force", jb(true))])
-  } else {
-    jo([("force", jb(true))])
-  }
-  ignore(self.call("fs.rm", [js(path), opts]))
+pub async fn World::rm(self : World, path : String, recursive? : Bool = false, sync? : Bool = false) -> Unit {
+  wrap_shell(async fn() { @host_world.fs_remove(self.host, path, recursive~, sync~) })
 }
 
 ///|
 /// `rm(path, opts).catch(() => {})`.
-pub async fn World::rm_quiet(self : World, path : String, recursive? : Bool = false) -> Unit {
-  self.rm(path, recursive~) catch {
+pub async fn World::rm_quiet(self : World, path : String, recursive? : Bool = false, sync? : Bool = false) -> Unit {
+  self.rm(path, recursive~, sync~) catch {
     _ => ()
   }
 }
 
 ///|
-pub async fn World::rename(self : World, from : String, to : String) -> Unit {
-  ignore(self.call("fs.rename", [js(from), js(to)]))
+pub async fn World::rename(self : World, from : String, to : String, sync? : Bool = false) -> Unit {
+  wrap_shell(async fn() { @host_world.fs_rename(self.host, from, to, sync~) })
 }
 
 ///|
-pub async fn World::write_file(self : World, path : String, t : String) -> Unit {
-  ignore(self.call("fs.writeFile", [js(path), js(t)]))
+pub async fn World::write_file(self : World, path : String, t : String, sync? : Bool = false) -> Unit {
+  wrap_shell(async fn() { @host_world.fs_write(self.host, path, t, sync~) })
 }
 
 ///|
-pub async fn World::readdir(self : World, path : String) -> Array[String] {
-  match self.call("fs.readdir", [js(path)]) {
-    Arr(xs) => xs.filter_map(x => text(Some(x)))
-    _ => []
-  }
+pub async fn World::write_bytes(self : World, path : String, data : Bytes) -> Unit {
+  wrap_shell(async fn() { @host_world.fs_put_whole(self.host, path, data) })
+}
+
+///|
+pub async fn World::readdir(self : World, path : String, sync? : Bool = false) -> Array[String] {
+  wrap_shell(async fn() {
+    match @host_world.fs_readdir(self.host, path, sync~) {
+      Some(xs) => xs
+      None => raise enoent("scandir", path)
+    }
+  })
+}
+
+///|
+pub async fn World::readlink(self : World, path : String, sync? : Bool = false) -> String {
+  wrap_shell(async fn() {
+    match @host_world.fs_readlink(self.host, path, sync~) {
+      Some(t) => t
+      None => raise enoent("readlink", path)
+    }
+  })
+}
+
+///|
+pub async fn World::symlink(self : World, target : String, path : String, sync? : Bool = false) -> Unit {
+  wrap_shell(async fn() { @host_world.fs_symlink(self.host, target, path, sync~) })
+}
+
+///|
+pub async fn World::link(self : World, from : String, to : String, sync? : Bool = false) -> Unit {
+  wrap_shell(async fn() {
+    if @host_world.shell_call(self.host, sync, "fs.link", { "from": Json::string(from), "to": Json::string(to) }) is False {
+      raise thrown("Error", "EEXIST: file already exists, link '\{from}' -> '\{to}'", more=[("code", js("EEXIST"))])
+    }
+  })
+}
+
+///|
+/// `crypto.randomBytes(n)`.
+pub async fn World::random_bytes(self : World, n : Int) -> Bytes {
+  wrap_shell(async fn() {
+    match @host_world.shell_call(self.host, true, "crypto.random", { "bytes": Json::number(n.to_double()) }) {
+      String(h) => @host_world.hex_bytes(h)
+      _ => raise fail("no random bytes")
+    }
+  })
 }
 
 ///|
@@ -470,54 +588,44 @@ pub async fn World::exists_soon(self : World, path : String) -> Bool {
 }
 
 ///|
-/// The first `len` bytes at `pos` of a file opened for reading (`open`, `read`, `close`): what was read, none where it
-/// could not be opened. The read's failure is `raise`d after the close.
+/// The first `len` bytes at `pos` of a file opened for reading: what was read, none where it could not be opened.
 pub async fn World::read_at(self : World, path : String, len : Int, pos : Double) -> Bytes? {
-  let opened = Some(self.call("fs.open", [js(path), js("r")])) catch { _ => None }
-  match opened {
-    None => None
-    Some(_) => {
-      let got : Result[Bytes, Error] = try {
-        let r = self.call("fh.read", [js(path), ji(0), ji(len), jn(pos)])
-        let all = bytes_of(get(Some(r), "buffer"))
-        let n = num(get(Some(r), "bytesRead")).unwrap_or(0.0).to_int()
-        Ok(all[0:if n > all.length() { all.length() } else { n }].to_owned())
-      } catch {
-        e => Err(e)
-      }
-      ignore(self.call("fh.close", [js(path)])) catch {
-        _ => ()
-      }
-      match got {
-        Ok(b) => Some(b)
-        Err(e) => raise e
-      }
-    }
+  let opened = (try { ignore(self.stat(path)); true } catch { _ => false })
+  if !opened {
+    return None
   }
+  let got = wrap_shell(async fn() {
+    @host_world.fs_read_bytes(self.host, path, from=pos, length=len.to_double())
+  }).unwrap_or(b"")
+  Some(got)
 }
 
 ///|
-/// A file's size as its handle says it (`fh.stat()`).
+/// A file's size (`fh.stat()`).
 pub async fn World::handle_size(self : World, path : String) -> Double {
-  num(get(Some(self.call("fh.stat", [js(path)])), "size")).unwrap_or(0.0)
+  self.stat(path).size
 }
 
 ///|
 /// `createReadStream(path)` read whole (its bytes; failing as the stream errs).
 pub async fn World::read_stream(self : World, path : String) -> Bytes {
-  bytes_of(Some(self.call("fs.createReadStream", [js(path)])))
+  self.read_bytes(path)
 }
 
 ///|
-/// A file's sha256 (hex) and size, as `hashFile` streams it.
+/// A file's sha256 (hex) and size, its bytes read a MiB at a time by the shell (`fs.hash`).
 pub async fn World::hash_file(self : World, path : String) -> (String, Double) {
-  match self.hash_stream {
-    Some(f) => f(path)
-    None => {
-      let b = self.read_stream(path)
-      (sha256(b), b.length().to_double())
+  wrap_shell(async fn() {
+    guard @host_world.fs_realpath(self.host, path) is Some(real) else { raise enoent("open", path) }
+    guard @host_world.fs_lstat(self.host, real) is Some(st) else { raise enoent("open", path) }
+    if st.kind == "dir" {
+      raise thrown("Error", "EISDIR: illegal operation on a directory, read", more=[("code", js("EISDIR"))])
     }
-  }
+    match @host_world.shell_call(self.host, false, "fs.hash", { "path": Json::string(real) }) {
+      String(h) => (h, st.size)
+      _ => raise enoent("open", path)
+    }
+  })
 }
 
 ///|
@@ -529,8 +637,7 @@ pub struct WriteStream {
 }
 
 ///|
-pub async fn World::write_stream(self : World, path : String) -> WriteStream {
-  ignore(self.call("fs.createWriteStream", [js(path)]))
+pub fn World::write_stream(self : World, path : String) -> WriteStream {
   { w: self, path, buf: Buffer() }
 }
 
@@ -542,10 +649,16 @@ pub fn WriteStream::write(self : WriteStream, b : Bytes) -> Unit {
 ///|
 /// `out.end(cb)`: the bytes written (an error ending it raised).
 pub async fn WriteStream::end(self : WriteStream) -> Unit {
-  ignore(self.w.call("fs.writeStream.end", [js(self.path), jbytes(self.buf.to_bytes())]))
+  self.w.write_bytes(self.path, self.buf.to_bytes())
 }
 
 // ── HTTP (fetch) ───────────────────────────────────────────────────────────────────────────────────────────────────
+
+///|
+let fetch_head_ms : Int = 15000
+
+///|
+let fetch_stall_ms : Int = 60000
 
 ///|
 /// A response as fetch gives it: its status, its headers, its body in the pieces it came in.
@@ -557,6 +670,15 @@ pub struct Response {
   has_body : Bool
   /// What reading its body ends with after its chunks (a connection broken off), when it does.
   breaks : Error?
+}
+
+///|
+pub fn Response::to_j(self : Response) -> J {
+  jo([
+    ("status", jn(self.status.to_double())),
+    ("headers", self.headers),
+    ("chunks", ja(self.chunks.map(jbytes))),
+  ])
 }
 
 ///|
@@ -590,7 +712,7 @@ pub fn Response::text(self : Response) -> String {
 
 ///|
 /// `response.json()`.
-pub async fn Response::json(self : Response, w : World) -> J {
+pub fn Response::json(self : Response, w : World) -> J raise {
   w.json(self.text())
 }
 
@@ -621,6 +743,19 @@ fn response_of(j : J) -> Response {
 /// `request(url, { headers, signal[, method] })` by the request `via` names (`fetch`, the cloud's transport
 /// `cloud.fetch`).
 pub async fn World::fetch(self : World, via : String, url : String, meth? : String) -> Response {
+  if via == "fetch" {
+    let r = self.host.fetch(
+      url,
+      method_=meth.unwrap_or("GET"),
+      headers=[("user-agent", "stillfail-station")],
+      head_ms=fetch_head_ms,
+      stall_ms=fetch_stall_ms,
+    ) catch {
+      e => raise thrown("TypeError", "fetch failed", more=[("cause", js(@host_world.shell_error_msg(e)))])
+    }
+    let hs = jo(r.headers.map(h => (@jscase.lower(h.0), js(h.1))))
+    return { status: r.status, headers: hs, chunks: [r.body], has_body: true, breaks: None }
+  }
   let init = [("headers", jo([("user-agent", js("stillfail-station"))]))]
   match meth {
     Some(m) => init.insert(0, ("method", js(m)))

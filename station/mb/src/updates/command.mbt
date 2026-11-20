@@ -49,7 +49,7 @@ pub async fn release_base_in(w : World, data : String) -> String? {
 ///|
 /// `readJsonFile(path)` (ops/json-file.ts): refused as InvalidJsonFile where it is not JSON.
 pub async fn read_json_file(w : World, path : String) -> J {
-  let t = text(Some(w.call("fs.readFileSync", [js(path), js("utf8")]))).unwrap_or("")
+  let t = w.read_text(path, sync=true)
   parse(t) catch {
     _ => raise invalid_json_file(path)
   }
@@ -99,7 +99,7 @@ pub async fn update_command(
       None => ()
     }
     let mut raw = jo([])
-    if w.call("fs.existsSync", [js(config_path(data))]) is Bool(true) {
+    if w.exists(config_path(data), sync=true) {
       raw = read_json_file(w, config_path(data))
     }
     ignore(w.call("CloudTransport.new", []))

@@ -576,7 +576,15 @@ fn build_updates_world(
       None => ()
     }
     match name {
-      "cloud.fetch" => match world.val { Some(w) => w.call("fetch", a); None => to_jv(Json::null()) }
+      "cloud.fetch" =>
+        match world.val {
+          Some(w) => {
+            let url = match core(0) { String(u) => u; _ => "" }
+            let meth = match core(1) { Object({ "method": String(m), .. }) => Some(m); _ => None }
+            w.fetch("fetch", url, meth?).to_j()
+          }
+          None => to_jv(Json::null())
+        }
       "CloudTransport.new" | "CloudTransport.close" | "ConfigFile.new" | "listener.changed" => to_jv(Json::null())
       "wall.sleep" => {
         if core(0) is Number(ms, ..) { @effect.sleep(ms.to_int()) }

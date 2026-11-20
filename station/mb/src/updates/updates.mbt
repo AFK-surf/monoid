@@ -414,10 +414,7 @@ pub struct Updates {
 ///|
 /// updates.ts `canonicalNow`: `realpathSync(p)`, none where it throws.
 async fn realpath_now(w : World, p : String) -> String? {
-  match (try Some(w.call("fs.realpathSync", [js(p)])) catch { _ => None }) {
-    Some(Str(u)) => Some(@jsjson.sanitize_str(u))
-    _ => None
-  }
+  w.realpath_or_null(p, sync=true)
 }
 
 ///|
@@ -1986,7 +1983,7 @@ async fn Updates::place_node(self : Updates, kind : String, node : OwnNode) -> U
     return
   }
   let home = own_node_home(self.data)
-  w.mkdir(home, opts=jo([("recursive", jb(true))]))
+  w.mkdir(home)
   let dist = bget("dist")
   let archive = bget("archive")
   let file = pjoin([home, archive])
@@ -2261,7 +2258,7 @@ async fn Updates::update_station_rest(self : Updates, lang : String, begun : Beg
   }
   {
     errdefer put_back()
-    w.mkdir(run_dir, opts=jo([("recursive", jb(true))]))
+    w.mkdir(run_dir)
   }
   // Off the station's thread so cleanup does not delay its other work at every update.
   ignore(
@@ -2318,7 +2315,7 @@ async fn Updates::back_station(self : Updates, to : String, lang : String, begun
   }
   let plan = {
     errdefer put_back()
-    w.mkdir(run_dir, opts=jo([("recursive", jb(true))]))
+    w.mkdir(run_dir)
     ignore(
       @effect.all([
         async fn() { w.rm(pjoin([run_dir, "update.exit"])) },
@@ -2737,7 +2734,7 @@ async fn Updates::follow(self : Updates, started : Started) -> Unit {
   let look_soon = () => if !over.val && soon.val is None {
     soon.val = Some(self.fibers.after(50.0, async fn() { look() }))
   }
-  w.mkdir(run_dir, opts=jo([("recursive", jb(true))])) catch {
+  w.mkdir(run_dir) catch {
     _ => ()
   }
   if over.val {

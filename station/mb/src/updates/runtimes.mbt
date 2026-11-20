@@ -96,16 +96,15 @@ pub async fn own_node(w : World, data : String, version : String) -> OwnNode? {
 pub async fn put_own_nodes(w : World, env : Env, data : String) -> Unit {
   let build = w.call("platform.nodeBuild", [js("0")])
   guard build is Obj(_) else { return }
-  let names = match (try Some(w.call("fs.readdirSync", [js(own_node_home(data))])) catch { _ => None }) {
-    Some(Arr(xs)) => xs.filter_map(x => text(Some(x))).filter(n => starts_with(n, "node-v"))
-    _ => return
+  let names = match (try Some(w.readdir(own_node_home(data), sync=true)) catch { _ => None }) {
+    Some(xs) => xs.filter(n => starts_with(n, "node-v"))
+    None => return
   }
   let sorted = js_sort(names)
   sorted.rev_in_place()
   for name in sorted {
     let bin = pjoin([own_node_home(data), name, text(get(Some(build), "bin")).unwrap_or("")])
-    let has = w.call("fs.existsSync", [js(pjoin([bin, text(get(Some(build), "npm")).unwrap_or("")]))])
-    if has is Bool(true) {
+    if w.exists(pjoin([bin, text(get(Some(build), "npm")).unwrap_or("")]), sync=true) {
       append_path(env, bin)
     }
   }
@@ -139,12 +138,12 @@ pub async fn remove_own_node_links(w : World, env : Env, data : String) -> Unit 
   let own = own_node_home(data) + path_sep.val
   for name in ["node", "npm", "npx"] + runtime_kinds.map(kind_command) {
     let link = pjoin([bin, name])
-    let st = (try Some(w.call("fs.lstatSync", [js(link)])) catch { _ => None })
+    let st = (try Some(w.lstat(link, sync=true)) catch { _ => None })
     match st {
-      Some(s) if stat_of(s).symlink => {
-        let target = (try text(Some(w.call("fs.readlinkSync", [js(link)]))) catch { _ => None })
+      Some(s) if s.symlink => {
+        let target = (try Some(w.readlink(link, sync=true)) catch { _ => None })
         match target {
-          Some(t) if starts_with(t, own) => ignore(w.call("fs.unlinkSync", [js(link)])) catch { _ => () }
+          Some(t) if starts_with(t, own) => w.rm(link, sync=true) catch { _ => () }
           _ => ()
         }
       }
@@ -539,7 +538,7 @@ pub async fn run_both(
     jo([("env", env_j(env)), ("cwd", tmp), ("stdio", jstrs(["ignore", "pipe", "pipe"]))]),
   ])
   let timed : @effect.Deferred[Unit] = @effect.Deferred::new()
-  let cancel = (w.wall_after)(timeout_ms, fn() { ignore(timed.succeed(())) })
+  let cancel = w.wall_after(timeout_ms, fn() { ignore(timed.succeed(())) })
   let mut said = ""
   let whole = ["", ""]
   let carry = ["", ""]

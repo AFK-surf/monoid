@@ -65,7 +65,7 @@ fn unverified(message : String) -> Error {
 ///|
 /// The words `signed` carries (`release`, base64), once its `signature` verifies by the key `key` names, one of
 /// `trusted`. Raises Unverified otherwise.
-pub async fn verify_signed(w : World, signed : J, trusted : Array[(String, String)]) -> J {
+pub fn verify_signed(w : World, signed : J, trusted : Array[(String, String)]) -> J raise {
   let (release, signature) = match (get(Some(signed), "release"), get(Some(signed), "signature")) {
     (Some(Str(r)), Some(Str(s))) => (@jsjson.sanitize_str(r), @jsjson.sanitize_str(s))
     _ => raise unverified("the release is not signed")
@@ -83,9 +83,7 @@ pub async fn verify_signed(w : World, signed : J, trusted : Array[(String, Strin
     raise unverified("the release is signed by a key this station does not take (\{js_string_opt(k)})")
   }
   let words = base64_bytes(release)
-  let good = (w.verify)(base64_bytes(key), base64_bytes(signature), words) catch {
-    _ => false
-  }
+  let good = w.verify(base64_bytes(key), base64_bytes(signature), words)
   if !good {
     raise unverified("the release's signature does not verify")
   }
@@ -117,7 +115,7 @@ fn entries(j : J) -> Array[(String, J)] {
 ///|
 /// The release a feed says, verified: its signature by one of the keys, its words well formed and the version they
 /// say the one the feed says. Raises Unverified otherwise.
-pub async fn verify_feed(w : World, feed_said : J, trusted : Array[(String, String)]) -> J {
+pub fn verify_feed(w : World, feed_said : J, trusted : Array[(String, String)]) -> J raise {
   let r = verify_signed(w, feed_said, trusted)
   let builds = get(Some(r), "builds")
   let well = (get(Some(r), "kind") is Some(Str(u)) && @jsjson.sanitize_str(u) == "stillfail-station-release") &&

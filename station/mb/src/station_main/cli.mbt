@@ -445,7 +445,7 @@ pub fn answer_heap_request(data : String, what : () -> Json) -> Bool {
 // ── channel and update ──
 
 ///|
-/// The updates' world on this machine with no Node (updates/host_io.mbt's, what it asks of Node answered here).
+/// The updates' world on this machine with no Node (updates/world.mbt's, what it asks of Node answered here).
 pub fn updates_world(host : @host.Host, data : String) -> @updates.World {
   let config_raw = () => read_json(config_path(data)).unwrap_or(Json::object({}))
   let config_update = async fn(next : Json) {
