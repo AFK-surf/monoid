@@ -169,3 +169,59 @@ test "a run of choices is drawn the same at 60, 120, 24 and 7 frames a second" {
     #|Overview false 6 399,12,482
   ))
 }
+
+///|
+/// The bottom dock in a window `w` by `h` (the gallery bare, as the home page's live hero shows it) as each scene is
+/// chosen in turn: where it is (left, top, width, height, to a hundredth of a point), how far its foot is from the
+/// window's, how much its tabs' widths differ, and whether each scene's buttons and sliders are clear of it (above its
+/// top).
+fn dock_through_scenes(w : Double, h : Double) -> Array[String] raise {
+  let t = @ui.Tester::new(fn(_c) {  }, w~, h~, platform=0)
+  @lg.set_dark(Some(false))
+  @ui.set_view_app(fn(root) { gallery(root, "overview", chrome=false) })
+  t.draw()
+  let r = fn(x : Double) { (x * 100.0).round() / 100.0 }
+  let out = []
+  for name in ["Optics", "Deck", "Loupe", "Optics"] {
+    let (x, y) = middle_of(t, Tab, name)
+    t.tap(x, y)
+    t.run_for(settled)
+    let dock = t.get(TabList, label="Stage scenes")
+    let (dx, dy, dw, dh) = dock.rect
+    let widths = t.all(Tab, within=dock).map(fn(n) { n.rect.2 })
+    let most = widths.fold(init=0.0, fn(a, b) { if b > a { b } else { a } })
+    let least = widths.fold(init=most, fn(a, b) { if b < a { b } else { a } })
+    let clear = t
+      .all(Button)
+      .iter()
+      .concat(t.all(Slider).iter())
+      .all(fn(n) { n.rect.1 + n.rect.3 <= dy })
+    let at = "\{r(dx)},\{r(dy)},\{r(dw)},\{r(dh)}"
+    let even = most - least < 0.5
+    out.push("\{name} \{at} foot \{r(h - dy - dh)} tabs \{widths.length()} even \{even} clear \{clear}")
+  }
+  out
+}
+
+///|
+test "the bottom dock stays where it is as each scene is chosen, 18 from the window's foot, its tabs alike" {
+  // (1120 by 637: the home page's live hero, its 690 less the bar over it; 690: its pictures; 1280 by 1040: the shots')
+  inspect(dock_through_scenes(1120.0, 637.0).join("\n"), content=(
+    #|Optics 362,555,396,64 foot 18 tabs 3 even true clear true
+    #|Deck 362,555,396,64 foot 18 tabs 3 even true clear true
+    #|Loupe 362,555,396,64 foot 18 tabs 3 even true clear true
+    #|Optics 362,555,396,64 foot 18 tabs 3 even true clear true
+  ))
+  inspect(dock_through_scenes(1120.0, 690.0).join("\n"), content=(
+    #|Optics 362,608,396,64 foot 18 tabs 3 even true clear true
+    #|Deck 362,608,396,64 foot 18 tabs 3 even true clear true
+    #|Loupe 362,608,396,64 foot 18 tabs 3 even true clear true
+    #|Optics 362,608,396,64 foot 18 tabs 3 even true clear true
+  ))
+  inspect(dock_through_scenes(1280.0, 1040.0).join("\n"), content=(
+    #|Optics 442,958,396,64 foot 18 tabs 3 even true clear true
+    #|Deck 442,958,396,64 foot 18 tabs 3 even true clear true
+    #|Loupe 442,958,396,64 foot 18 tabs 3 even true clear true
+    #|Optics 442,958,396,64 foot 18 tabs 3 even true clear true
+  ))
+}

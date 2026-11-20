@@ -74,7 +74,14 @@ pub fn liquid_bottom_tab_node(
   loc~ : SourceLoc,
 ) -> @view.View {
   rg.item(made_for=loc, g, fn() { index }, fn() { label }, fn(t, it) {
-    t.grow(Is(1.0)).radius(Is(tab_lens_h / 2.0)).lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
+    // (Modifier.weight(1f): its share of the row whatever it holds, so each is as wide as the lens over it)
+    t
+    .grow(Is(1.0))
+    .basis(Is(Some(0.0)))
+    .radius(Is(tab_lens_h / 2.0))
+    .lines_up(Is(Some(Middle)))
+    .lies_along(Is(Middle))
+    |> ignore
     // (what it holds grown about its middle, LiquidBottomTab's graphicsLayer: the tab's own box, where it is pressed,
     // as it is laid out)
     t.box(fn(f) {

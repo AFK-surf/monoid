@@ -469,6 +469,15 @@ fn param_slider(
 }
 
 ///|
+/// How tall the Optics stage is at the least and at the most: what it draws (the 236pt sun, the plate and wordmark under
+/// it, the 176pt prism) placed by the height it is given between them.
+let stage_least : Double = 340.0
+
+///|
+/// (stage_least's)
+let stage_most : Double = 480.0
+
+///|
 /// Scene 0 — `Optics`: left interactive optical stage (Monoid Vermilion sun + inverse-luminance architectural plate +
 /// oversized `ui.monoid` wordmark + draggable 268×176 live liquid glass prism) and right 348pt `Glass Inspector`.
 fn optics_scene(
@@ -484,13 +493,15 @@ fn optics_scene(
   let last_drag = Ref((0.0, 0.0))
   parent.box(fn(row) {
     row.row(Is(true)).grow(Is(1.0)).gap(Is(24.0)).lines_up(Is(Some(Middle))) |> ignore
-    // Left interactive optical stage: fixed 500pt optical canvas height, grows horizontally with viewport
+    // Left interactive optical stage: as tall as the scene leaves it (stage_least to stage_most, in its middle), grows
+    // horizontally with the viewport; what it draws is placed by the room it is given, so a shorter window (the home
+    // page's live hero, 637 tall) neither cuts it nor pushes the dock
     row.box(fn(stage_host) {
-      stage_host.grow(Is(1.0)).height(Is(Some(500.0))).clips(Is(true)) |> ignore
+      stage_host.grow(Is(1.0)).fills_across(Is(true)).lies_along(Is(Middle)).clips(Is(true)) |> ignore
       stage_host.by_room(fn(stage, room) {
-        stage.grow(Is(1.0)).height(Is(Some(500.0))).clips(Is(true)) |> ignore
+        stage.grow(Is(1.0)).clips(Is(true)) |> ignore
         let rw = fn() { room.width() }
-        let rh = fn() { 500.0 }
+        let rh = fn() { room.height().unwrap_or(stage_most) }
         let prism_w = 268.0
         let prism_h = 176.0
         // 1. Monoid Vermilion Sun (236pt solid circle, upper-middle of left stage)
@@ -688,6 +699,9 @@ fn optics_scene(
         })
         |> ignore
       })
+      .grow(Is(1.0))
+      .min_height(Is(Some(stage_least)))
+      .max_height(Is(Some(stage_most)))
       |> ignore
     })
     |> ignore
@@ -1225,8 +1239,17 @@ fn loupe_scene(parent : @view.View) -> Unit {
 }
 
 ///|
-/// Spatial Optical Stage: full-viewport three-tier Flex column (zero outer scroll) with top Studio Bar, reactive
-/// 3-scene stage (`Optics` / `Deck` / `Loupe`), and bottom centered floating glass Dock (`396 × 64`).
+/// How far the dock lies from the window's foot.
+let dock_gap : Double = 18.0
+
+///|
+/// What the stage keeps clear at its foot for the dock over it: the dock's gap, its 64 and the stage's 14 between.
+let dock_room : Double = dock_gap + 64.0 + 14.0
+
+///|
+/// Spatial Optical Stage: full-viewport two-tier Flex column (zero outer scroll) with top Studio Bar and reactive
+/// 3-scene stage (`Optics` / `Deck` / `Loupe`), and over it the bottom centered floating glass Dock (`396 × 64`),
+/// where it is whatever the scene.
 fn overview(
   root : @view.View,
   held : Held?,
@@ -1257,7 +1280,7 @@ fn overview(
     stage_col
     .grow(Is(1.0))
     .clips(Is(true))
-    .padding(Is((28.0, 18.0 + top, 28.0, 18.0)))
+    .padding(Is((28.0, 18.0 + top, 28.0, dock_room)))
     .gap(Is(14.0))
     |> ignore
     // 1. Top Studio Bar (height 36)
@@ -1285,27 +1308,34 @@ fn overview(
       })
     })
     |> ignore
-    // 3. Bottom Centered Floating Glass Dock (396 × 64, pinned cleanly to viewport bottom)
-    stage_col.box(fn(dock_row) {
-      dock_row.shrink(Is(0.0)).lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
-      dock_row.box(fn(dock_w) {
-        dock_w.width(Is(Some(396.0))).shrink(Is(0.0)) |> ignore
-        @lg.liquid_bottom_tabs_node(
-          dock_w,
-          ["Optics", "Deck", "Loupe"],
-          fn() { scene.get() },
-          fn(i) { scene.set(i) },
-          label="Stage scenes",
-          faces=[
-            studio_tab_face("Optics", icon_prism),
-            studio_tab_face("Deck", icon_sliders),
-            studio_tab_face("Loupe", icon_terminal),
-          ],
-          drag?=held.map(fn(h) { h.tabs }),
-          light?=held.map(fn(h) { h.tabs_light }),
-        )
-        |> ignore
-      })
+  })
+  |> ignore
+  // 3. Bottom Centered Floating Glass Dock (396 × 64): over the stage, `dock_gap` from the window's foot whatever the
+  // scene, so choosing one never moves it; the stage keeps `dock_room` clear under it
+  root.box(fn(dock_row) {
+    dock_row
+    .over(Is(true))
+    .points(Is(false))
+    .lies_along(Is(End))
+    .lines_up(Is(Some(Middle)))
+    .padding(Is((0.0, 0.0, 0.0, dock_gap)))
+    |> ignore
+    dock_row.box(fn(dock_w) {
+      dock_w.width(Is(Some(396.0))).shrink(Is(0.0)).points(Is(true)) |> ignore
+      @lg.liquid_bottom_tabs_node(
+        dock_w,
+        ["Optics", "Deck", "Loupe"],
+        fn() { scene.get() },
+        fn(i) { scene.set(i) },
+        label="Stage scenes",
+        faces=[
+          studio_tab_face("Optics", icon_prism),
+          studio_tab_face("Deck", icon_sliders),
+          studio_tab_face("Loupe", icon_terminal),
+        ],
+        drag?=held.map(fn(h) { h.tabs }),
+        light?=held.map(fn(h) { h.tabs_light }),
+      )
       |> ignore
     })
     |> ignore
