@@ -93,6 +93,12 @@ test("passive turns (nudge, title, refill) do not trigger automatic auth_retry",
   await r.close();
 });
 
+function lastFor(r: Rig, key: string) {
+  const found = r.claude.sessions.findLast((s) => s.options.route === key);
+  assert.ok(found, `expected a claude session for ${key}`);
+  return found;
+}
+
 test("auth_retry and spend failover respect maxConcurrentTurns when slots are over capacity", async () => {
   const time = testClock();
   const r = new Rig({ clock: time.clock, maxConcurrentTurns: 2 });
@@ -100,15 +106,18 @@ test("auth_retry and spend failover respect maxConcurrentTurns when slots are ov
     raw.profiles.push({ id: "cc2", runtime: "claude", home: "homes/cc2" });
   });
   r.hub.accounts.setHealth(() => ({ check: { state: "ok", detail: "", models: null, checkedAt: 0 } }));
-  // Start 2 concurrent turns (filling cap=2).
+  // Start 2 concurrent turns sequentially so ordering is deterministic, and look up sessions by route.
   const m1 = message({ ts: "1.1", threadTs: "1.1" });
   const m2 = message({ ts: "2.1", threadTs: "2.1" });
+  const k1 = sessionKey("cl", "C1", m1.threadTs);
+  const k2 = sessionKey("cl", "C1", m2.threadTs);
   await r.accept(m1);
+  await settle();
   await r.accept(m2);
   await settle();
   assert.equal(r.claude.count(), 2);
-  const s1 = r.claude.sessions[0]!;
-  const s2 = r.claude.sessions[1]!;
+  const s1 = lastFor(r, k1);
+  const s2 = lastFor(r, k2);
 
   // Lower cap to 1 while 2 turns are active (active_turn_slots = 2 > max = 1).
   r.edit((raw) => void (raw.maxConcurrentTurns = 1));
@@ -121,22 +130,23 @@ test("auth_retry and spend failover respect maxConcurrentTurns when slots are ov
   assert.equal(r.claude.count(), 2, "spend failover queued while active slots exceed maxConcurrentTurns=1");
 
   // Finish turn 2: slot frees up, queued spend failover wakes and starts!
-  const k2 = sessionKey("cl", "C1", m2.threadTs);
   await r.call(k2, "chat_state", { kind: "all_done", done: "answered the question" });
   s2.complete();
   await settle();
   assert.equal(r.claude.count(), 3, "queued spend failover started once slot became available");
+  const s1Retry = lastFor(r, k1);
+  assert.notEqual(s1Retry, s1, "session 1 reopened on fallback profile");
 
   // Now raise cap to 2, start turn 3 alongside turn 1's retry, then lower cap to 1 and trigger auth_retry.
   r.edit((raw) => void (raw.maxConcurrentTurns = 2));
   r.hub.setMaxConcurrentTurns(2);
   await settle();
   const m3 = message({ ts: "3.1", threadTs: "3.1" });
+  const k3 = sessionKey("cl", "C1", m3.threadTs);
   await r.accept(m3);
   await settle();
   assert.equal(r.claude.count(), 4);
-  const s1Retry = r.claude.sessions[2]!;
-  const s3 = r.claude.sessions[3]!;
+  const s3 = lastFor(r, k3);
 
   r.edit((raw) => void (raw.maxConcurrentTurns = 1));
   r.hub.setMaxConcurrentTurns(1);
@@ -146,11 +156,11 @@ test("auth_retry and spend failover respect maxConcurrentTurns when slots are ov
   await settle();
   assert.equal(r.claude.count(), 4, "auth_retry queued while active slots exceed maxConcurrentTurns=1");
 
-  const k3 = sessionKey("cl", "C1", m3.threadTs);
   await r.call(k3, "chat_state", { kind: "all_done", done: "answered the question" });
   s3.complete();
   await settle();
   assert.equal(r.claude.count(), 5, "queued auth_retry started once slot became available");
+  assert.notEqual(lastFor(r, k1), s1Retry, "session 1 reopened for auth_retry");
   await r.close();
 });
 
@@ -160,12 +170,15 @@ test("queued_retry is cleared when a new user turn begins so it never re-fires o
   r.hub.accounts.setHealth(() => ({ check: { state: "ok", detail: "", models: null, checkedAt: 0 } }));
   const m1 = message({ ts: "10.1", threadTs: "10.1" });
   const m2 = message({ ts: "20.1", threadTs: "20.1" });
+  const k1 = sessionKey("cl", "C1", m1.threadTs);
+  const k2 = sessionKey("cl", "C1", m2.threadTs);
   await r.accept(m1);
+  await settle();
   await r.accept(m2);
   await settle();
   assert.equal(r.claude.count(), 2);
-  const s1 = r.claude.sessions[0]!;
-  const s2 = r.claude.sessions[1]!;
+  const s1 = lastFor(r, k1);
+  const s2 = lastFor(r, k2);
 
   // Lower cap to 1 while 2 turns run, then fail s1 with auth so auth_retry is queued.
   r.edit((raw) => void (raw.maxConcurrentTurns = 1));
@@ -184,11 +197,11 @@ test("queued_retry is cleared when a new user turn begins so it never re-fires o
   r.hub.release("drain");
   await settle();
   assert.equal(r.claude.count(), 3, "new user message opened session 1");
-  const s1New = r.claude.sessions[2]!;
+  const s1New = lastFor(r, k1);
+  assert.notEqual(s1New, s1, "session 1 opened a new process for the fresh prompt");
   assert.ok(s1New.prompts[0]!.includes("fresh user prompt"), "new user prompt ran instead of stale auth_retry");
 
   // Complete s1New and trigger another hold/release cycle: stale queued_retry must not fire.
-  const k1 = sessionKey("cl", "C1", m1.threadTs);
   await r.call(k1, "chat_state", { kind: "all_done", done: "answered the fresh prompt" });
   s1New.complete();
   await settle();
@@ -198,7 +211,6 @@ test("queued_retry is cleared when a new user turn begins so it never re-fires o
   assert.equal(r.claude.count(), 3, "no stale queued_retry fired on subsequent release");
   assert.equal(s1New.prompts.length, 1, "no extra prompt sent to session 1");
 
-  const k2 = sessionKey("cl", "C1", m2.threadTs);
   await r.call(k2, "chat_state", { kind: "all_done", done: "finished second session" });
   s2.complete();
   await settle();
