@@ -882,6 +882,16 @@ jobs:
           node scripts/native.ts fetch shell win32-x64
           node scripts/native.ts fetch engine win32-x64
           node scripts/native.ts fetch ghostty-vt win32-x64
+      # collate, sealed and hello need only MSVC and the Windows natives above, nothing of the app's build (hello's
+      # WinRT UserConsentVerifier::CheckAvailabilityAsync alone took 41-72 s on cold windows-2025 runners, pushing the
+      # post-build checks past the 5 min cap: 44733105178, 44757376609). Start them here so they compile while the
+      # caches restore and finish while the app builds; the post-build check step collects their exit codes and logs.
+      - name: Host checks (collate, sealed, hello), started
+        run: |
+          L=$RUNNER_TEMP/win-checks; mkdir -p "$L"
+          for c in collate sealed hello; do
+            nohup bash -c 'bash apps/mbui/scripts/win.sh "$1" > "$0/$1.log" 2>&1; echo $? > "$0/$1.status"' "$L" "$c" > /dev/null 2>&1 &
+          done
       # The app's build as the last run on main left it (mbui's in libs/mbui: moon's _build, the split C and its objects, the .exe): of main's pushes that run this job, three in four leave the app's C
       # as it was (tests, docs, client/, media/; 96 of 129, 2026-10-18 to 20), and then moonc writes the same C again,
       # scripts/mbc finds every unit's object made of the same inputs (by content) and the same link made already:
@@ -1125,28 +1135,34 @@ jobs:
           export GITHUB_STEP_SUMMARY="$Z/summary"
           nohup bash -c 'bash apps/mbui/scripts/beta.sh win > "$0/log" 2>&1; echo $? > "$0/signed"' "$Z" > /dev/null 2>&1 &
       # the installer (apps/mbui/windows/setup.c) made of the app as built, put into a folder of this run's, put again
-      # over it, taken away (e2e/win/setup.sh: ~12 s); beside it, four checks that need nothing of the app's or the e2e
-      # flow's: the order of names the host gives the core (text.collate: src/host/win_collate.h, a C program), the
-      # synchronous answers across the engine DLL, and what still.fail's desktop app kept sealed, opened by the app
-      # built in its place (src/host/win_electron_sealed.h), and Windows Hello as secure.* asks it (src/host/win_hello.h).
+      # over it, taken away (e2e/win/setup.sh: ~12 s), and beside it the synchronous answers across the engine DLL
+      # (engine-sync); then the three host checks begun before the caches were restored (collate, sealed, hello: the
+      # step `Host checks (collate, sealed, hello), started`), each waited for by its status file and its log shown.
       # Each writes only its own directory (setup's in RUNNER_TEMP, out/collate, out/engine-sync, out/sealed, out/hello):
-      # one after another the first four were 21 s of the job's 300, which main's 44497568003 ran out of 1-2 s short of saving its caches; side by side, the installer's ~12.
-      - name: The installer, installed and taken away (e2e/win/setup.sh); collate, engine-sync, sealed and hello (win.sh hello) beside it
+      # one after another the first four were 21 s of the job's 300, which main's 44497568003 ran out of 1-2 s short of
+      # saving its caches; hello alone then grew to 41-72 s on cold runners (44733105178, 44757376609).
+      - name: The installer, installed and taken away (e2e/win/setup.sh) and engine-sync beside it; collate, sealed and hello collected
         run: |
           L=$RUNNER_TEMP/win-checks; mkdir -p "$L"
           t0=$SECONDS
           bash apps/mbui/e2e/win/setup.sh "$(ls apps/mbui/out/setup/stillfail-setup-*.exe)" > "$L/setup.log" 2>&1 & p_setup=$!
-          bash apps/mbui/scripts/win.sh collate > "$L/collate.log" 2>&1 & p_collate=$!
           bash apps/mbui/scripts/win.sh engine-sync > "$L/engine-sync.log" 2>&1 & p_engine=$!
-          bash apps/mbui/scripts/win.sh sealed > "$L/sealed.log" 2>&1 & p_sealed=$!
-          bash apps/mbui/scripts/win.sh hello > "$L/hello.log" 2>&1 & p_hello=$!
           bad=0
-          for c in setup:$p_setup collate:$p_collate engine-sync:$p_engine sealed:$p_sealed hello:$p_hello; do
+          for c in setup:$p_setup engine-sync:$p_engine; do
             s=0; wait "${c#*:}" || s=$?
             echo "::group::${c%%:*} (exit $s)"; cat "$L/${c%%:*}.log"; echo "::endgroup::"
             [ "$s" = 0 ] || { echo "::error::${c%%:*} failed (exit $s)"; bad=1; }
           done
-          echo "the five side by side: $((SECONDS - t0)) s"
+          echo "setup and engine-sync side by side: $((SECONDS - t0)) s"
+          for c in collate sealed hello; do
+            if [ ! -s "$L/$c.status" ]; then
+              node apps/mbui/scripts/waitfor.mjs --deadline 60 --what "win.sh $c" --exists "$(cygpath -w "$L/$c.status")" > /dev/null || true
+            fi
+            s=$(tr -d '\r\n' < "$L/$c.status" 2>/dev/null); s=${s:-none}
+            echo "::group::$c (exit $s)"; cat "$L/$c.log" 2>/dev/null; echo "::endgroup::"
+            [ "$s" = 0 ] || { echo "::error::$c failed (exit $s)"; bad=1; }
+          done
+          echo "the five collected: $((SECONDS - t0)) s"
           exit $bad
       # out before the e2e flow ends (its tests hold nothing back): put, checked, then its feed, once its signing (begun
       # after the build) is over, beside the caches' saves and the e2e flow (the put mostly waiting on the network)
