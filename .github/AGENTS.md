@@ -12,8 +12,10 @@
   「PR 上也跑改到文件的帧率检查」, after four pull requests' own changed tests went red at a rate on main). Red on main
   holds no one back and is mended forward by whoever brought it, never rolled back: the run's
   `rates-said` says what merged since the last run that went through, the likeliest first (`scripts/rates-said.sh`).
-- Every job says `timeout-minutes`, 5 at most (`scripts/ci-timeouts.py`; only its `LONGER`, runs of the day's or by
-  hand, 10). A job that needs longer is made faster, never finished over several pushes or reruns: a branch's
+- Every job says `timeout-minutes`, 5 at most, except the limits listed in `scripts/ci-timeouts.py`'s `LONGER`.
+  Those allow 10 minutes, except `prebuild.yml`'s `build` job, which allows 15. Cold Windows shell builds take around
+  540 seconds and can exceed 10 minutes with setup and packaging. Other jobs that need longer are made faster,
+  never finished over several pushes or reruns: a branch's
   mbui-check run cut before its programs were all built keeps none of the units it compiled (test.sh's
   `MBUI_BUILT_MARK`), and main's store keeps what its runs used for three hours. Minutes are whole (the runner cut a
   step's 3.8 at 3): a step that

@@ -3,7 +3,7 @@
 # minutes at most (2026-10-31, as asked: the aim is 3; 10 since 2026-10-22): a job stuck on something (a flow waiting on
 # what never comes, a simulator, a lock) fails within 5 minutes instead of holding its PR for 10, or for GitHub's
 # default of 6 hours. A job that needs longer is to be made faster, not given longer (2026-10-22: mbui-ios hung 25
-# minutes on a PR). Only those in LONGER may take 10: runs of the day's or by hand, which hold no push back, and two
+# minutes on a PR). Only those in LONGER may exceed 5, up to their listed limits: runs of the day's or by hand, which hold no push back, and two
 # not yet made faster. A job whose own runs differ says `${{ github.event_name == 'push' && A || B }}`: A for a push
 # (5 at most), B for the others (its LONGER); or `!= 'schedule'`: A for all but the day's run (a push's, the merge
 # queue's). A job that calls a workflow (`uses:`) is that workflow's jobs, checked
@@ -12,8 +12,9 @@ import glob, os, re, sys
 
 LIMIT = 5
 # (workflow, job): minutes. sfapp's pages in one process of the day's (mbui-check.yml native), the emulator's checks of the day's (2026-10-31: android-devices 430-575 s), the Windows
-# app's end to end of the day's (preview.yml windows' runs that are no push), prebuild's Windows shell (300-450 s) and
-# TestFlight's release (330-550 s), both to be made faster; the stable Windows app's, from a later commit's cached build
+# app's end to end of the day's (preview.yml windows' runs that are no push), prebuild's Windows shell (cold builds around
+# 540 s, repeatedly cancelled at 10 minutes across three branches on 2026-11-20; 15 minutes approved by the user), and
+# TestFlight's release (330-550 s), still to be made faster; the stable Windows app's, from a later commit's cached build
 # when the day before's main has none (2026-11-11: 3m44s, monoid's pack after it) and
 # its Android app's with monoid's after it (2026-11-11: cut at 5); the stable station's three platforms, built and signed
 # on a shared Mac (2026-11-13: cut at 5 twice on mini1-2, 3m48s on mini1-3); the stable Mac app's, its build and notary with no warm build
@@ -36,7 +37,7 @@ LONGER = {
     ("mbui-check.yml", "native"): 10,
     ("mbui-check.yml", "app"): 10,
     ("mbui-check.yml", "app-rates"): 10,
-    ("prebuild.yml", "build"): 10,
+    ("prebuild.yml", "build"): 15,
     ("rules.yml", "tools"): 10,
     ("prebuild.yml", "again"): 10,
     ("mbui-testflight.yml", "release"): 10,
