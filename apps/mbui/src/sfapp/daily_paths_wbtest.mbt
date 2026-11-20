@@ -59,9 +59,9 @@ fn daily_new_chat(s : Screen, scale : Double, words : String) -> Unit raise {
   if daily_has(t, "新建对话") {
     t.click(Button, label="新建对话")
   } else {
-    // (小屏: the bar's 令, at its middle, as newchat_send_wbtest's new_chat_sent)
+    // (小屏: the bar's ＋, the circle at its right, as newchat_send_wbtest's new_chat_sent)
     let (_, y) = bar_places_at()
-    t.tap(s.w / 2.0, y - 28.0 - 4.0)
+    t.tap(s.w - 22.0 - act_size / 2.0, y)
   }
   t.run_for(@ui.move_most_ms)
   t.tap_text("做任何事")

@@ -95,12 +95,14 @@ test "styles: how many values of each kind the app's screens use" {
   // One more once chatPage is on by default on beta: 大屏's new chat page is made by new_chat_node, whose column keeps
   // new_column_in (32) from the pane's sides as its padding (the old new_chat took twice that off its width, so it was
   // never counted): space 19 to 20, no new spacing token.
+  // Fewer once 小屏's bar is a glass capsule beside a glass circle (no notch, its disc and its ball's own colours gone):
+  // radius 22 to 20, color 83 to 81.
   inspect(counts.to_string(), content=(
     #|text 31
     #|weight 4
     #|space 20
-    #|radius 22
-    #|color 83
+    #|radius 20
+    #|color 81
     #|
 
 
