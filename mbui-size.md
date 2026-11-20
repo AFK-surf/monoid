@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ca6d4f62c](https://github.com/AFK-surf/monoid/commit/ca6d4f62ce14b2fa80e85f87fe7df78cda108a2e) fix(station/mb): use monotonic waits and non-block | 2.73 | 3.68 | 14.98 | 37.07 | 56.85 | 32.51 | 66.08 | 97.78 | 127.22 |
 | [9bffa471f](https://github.com/AFK-surf/monoid/commit/9bffa471f13206335e726b774f8d0bb5b7504e10) fix(station/mb): restore Slack Socket Mode WebSock | 2.73 | 3.68 | 14.98 | 37.07 | 56.85 | 32.5 | 66.06 | 97.73 | 121.51 |
 | [e7b99f518](https://github.com/AFK-surf/monoid/commit/e7b99f5185b11db29a0c92c4e1feee06b39f9fdb) fix(mbui): judge reused blocks and over boxes apar | 2.73 | 3.68 | 14.98 | 37.07 | 56.85 | 32.5 | 66.06 | 97.73 | 121.51 |
 | [1632007e3](https://github.com/AFK-surf/monoid/commit/1632007e36d2f29d608f794a9fdce94f2c0eeafd) refactor(motion): clean up 6 wild motions and comp | 2.73 | 3.68 | 14.98 | 37.07 | 56.85 | 32.5 | 66.06 | 97.73 | 121.51 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [13f8de006](https://github.com/AFK-surf/monoid/commit/13f8de0063c785ef1dba3cfb02a5a7417f414213) feat(mbui): link film on every host, film_none.c f | 2.66 | 3.57 | 14.59 | 36.85 | 56.18 | 32.31 | 65.48 | 97.39 | 118.67 |
 | [0a7668159](https://github.com/AFK-surf/monoid/commit/0a7668159a92f3431cf94e6c566f306af3a1a7de) refactor(station/mb): retire batch 1 TS parity har | 2.66 | 3.57 | 14.59 | 36.85 | 56.18 | 32.31 | 65.48 | 97.39 | 118.67 |
 | [1f5003692](https://github.com/AFK-surf/monoid/commit/1f5003692dee3df202d0f1e9e9e737d504182c37) perf(mbui): expand text fast paths, reuse shape_wi | 2.66 | 3.57 | 14.59 | 36.85 | 56.18 | 32.31 | 65.48 | 97.63 | 119.45 |
-| [b9717a798](https://github.com/AFK-surf/monoid/commit/b9717a7986e436479ab3981de509fdff6c0479a3) test(mb): add upstream SSE, zlib, HTTP, and FS sui | 2.66 | 3.57 | 14.59 | 36.85 | 56.18 | 32.31 | 65.48 | 97.63 | 119.45 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ca6d4f62c](https://github.com/AFK-surf/monoid/commit/ca6d4f62ce14b2fa80e85f87fe7df78cda108a2e) fix(station/mb): use monotonic waits and non-block | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 53.94 |
 | [9bffa471f](https://github.com/AFK-surf/monoid/commit/9bffa471f13206335e726b774f8d0bb5b7504e10) fix(station/mb): restore Slack Socket Mode WebSock | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 53.94 |
 | [e7b99f518](https://github.com/AFK-surf/monoid/commit/e7b99f5185b11db29a0c92c4e1feee06b39f9fdb) fix(mbui): judge reused blocks and over boxes apar | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 54.12 |
 | [1632007e3](https://github.com/AFK-surf/monoid/commit/1632007e36d2f29d608f794a9fdce94f2c0eeafd) refactor(motion): clean up 6 wild motions and comp | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.55 | 54.28 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [13f8de006](https://github.com/AFK-surf/monoid/commit/13f8de0063c785ef1dba3cfb02a5a7417f414213) feat(mbui): link film on every host, film_none.c f | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.2 |
 | [0a7668159](https://github.com/AFK-surf/monoid/commit/0a7668159a92f3431cf94e6c566f306af3a1a7de) refactor(station/mb): retire batch 1 TS parity har | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 53.84 |
 | [1f5003692](https://github.com/AFK-surf/monoid/commit/1f5003692dee3df202d0f1e9e9e737d504182c37) perf(mbui): expand text fast paths, reuse shape_wi | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 53.84 |
-| [b9717a798](https://github.com/AFK-surf/monoid/commit/b9717a7986e436479ab3981de509fdff6c0479a3) test(mb): add upstream SSE, zlib, HTTP, and FS sui | 0.45 | 0.59 | 2.27 | 3.36 | 5.46 | 1.67 | 4.5 | 54.43 |
