@@ -191,3 +191,20 @@ test("PUT /screen-service requires station manager role and validates payload", 
   assert.equal(busy.status, 409);
   await s.stop();
 });
+
+test("non-zero installer exit or post-install mismatch records error failure", async () => {
+  const failed = await setup();
+  await failed.s.change(true);
+  failed.shell.ran[0]!.child.emit("exit", 1);
+  await failed.s.settled();
+  assert.equal(failed.s.view(true).failed, "error");
+  assert.equal(failed.s.view(true).on, false);
+
+  const mismatch = await setup();
+  await mismatch.s.change(true);
+  // Exit 0 without actually installing leaves state false and records error.
+  mismatch.shell.ran[0]!.child.emit("exit", 0);
+  await mismatch.s.settled();
+  assert.equal(mismatch.s.view(true).failed, "error");
+  assert.equal(mismatch.s.view(true).on, false);
+});
