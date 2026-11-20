@@ -168,6 +168,12 @@ async fn DeviceTools::run_op(self : DeviceTools, op : String, a : Json, context 
       let proc = spawn(host, shell_program(), if is_windows() { ["/c", command] } else { ["-c", command] }, env=env_with(env), cwd~, stdout=Piped, stderr=Piped, group=true) catch {
         SysError(e) => raise ToolFailed("failed", e)
       }
+      let exited = Ref(false)
+      defer {
+        if !exited.val {
+          ignore(kill(proc.pid, "SIGKILL", group=true))
+        }
+      }
       let out = @buffer.new()
       let err = @buffer.new()
       let cut = Ref(false)
@@ -199,11 +205,13 @@ async fn DeviceTools::run_op(self : DeviceTools, op : String, a : Json, context 
         "truncated": Json::boolean(cut.val),
       }
       match ended {
-        Some(code) =>
+        Some(code) => {
+          exited.val = true
           result["exit_code"] = match code {
             Some(c) => Json::number(c.to_double())
             None => Json::null()
           }
+        }
         None => {
           ignore(kill(proc.pid, "SIGKILL", group=true))
           result["timed_out"] = Json::boolean(true)
@@ -528,6 +536,6 @@ fn P51::tools_deps(self : P51, plane : Plane) -> @mesh_runtime.ToolsDeps {
         Err(e) => Err(("failed", "\{e}"))
       }
     },
-    said: (op, id, fields) => p51_log("INFO", "tools", "device tool", fields=with_fields(fields, [("op", Json::string(op)), ("id", Json::string(id))])),
+    said: (level, msg, fields) => p51_log(level.to_upper(), "tools", msg, fields~),
   }
 }

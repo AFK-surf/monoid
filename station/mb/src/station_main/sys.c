@@ -17,6 +17,7 @@
 #include "moonbit.h"
 
 void sfh_push_sys(uint64_t id, const uint8_t *a, size_t al);
+void sfh_push_sys_bounded(uint64_t id, const uint8_t *a, size_t al);
 
 typedef struct {
   char *data;
@@ -545,9 +546,12 @@ typedef struct {
 
 static DWORD WINAPI pipe_thread(LPVOID arg) {
   pipe_job_t *job = arg;
-  char buf[65536];
+  uint8_t buf[1 + 65536];
+  buf[0] = (uint8_t)job->tag;
   DWORD n;
-  while (ReadFile(job->h, buf, sizeof buf, &n, NULL) && n > 0) sys_told(job->id, job->tag, buf, n);
+  while (ReadFile(job->h, buf + 1, 65536, &n, NULL) && n > 0) {
+    sfh_push_sys_bounded((uint64_t)job->id, buf, (size_t)n + 1);
+  }
   CloseHandle(job->h);
   sys_told(job->id, job->tag == 'o' ? 'O' : 'E', "", 0);
   free(job);
@@ -1512,7 +1516,7 @@ typedef struct {
 
 static void *pipes_thread(void *arg) {
   pipes_job_t *job = arg;
-  char buf[65536];
+  uint8_t buf[1 + 65536];
   int open_ = (job->fds[0] >= 0) + (job->fds[1] >= 0);
   while (open_ > 0) {
     struct pollfd p[2];
@@ -1532,7 +1536,7 @@ static void *pipes_thread(void *arg) {
     for (int k = 0; k < n; k++) {
       if (!p[k].revents) continue;
       int i = which[k];
-      ssize_t got = read(job->fds[i], buf, sizeof buf);
+      ssize_t got = read(job->fds[i], buf + 1, 65536);
       if (got < 0 && (errno == EINTR || errno == EAGAIN)) continue;
       if (got <= 0) {
         close(job->fds[i]);
@@ -1540,7 +1544,8 @@ static void *pipes_thread(void *arg) {
         open_--;
         sys_told(job->id, i == 0 ? 'O' : 'E', "", 0);
       } else {
-        sys_told(job->id, i == 0 ? 'o' : 'e', buf, (size_t)got);
+        buf[0] = (uint8_t)(i == 0 ? 'o' : 'e');
+        sfh_push_sys_bounded((uint64_t)job->id, buf, (size_t)got + 1);
       }
     }
   }

@@ -707,6 +707,17 @@ test("stdin writes are non-blocking, drain multi-chunk input, and kill stalled c
   assert.equal(r.lateWrite, false, "exited child without end_input cleans up stdin handle");
 });
 
+test("flooding child stdout stays backpressured and respects @effect.timeout", { skip }, async () => {
+  const r = await ok("stdoutBackpressure");
+  assert.equal(r.timedOut, true, `expected timeout, got ${JSON.stringify(r)}`);
+  assert.equal(r.truncated, true, `expected truncated output, got ${JSON.stringify(r)}`);
+  assert.equal(r.keptBytes, 1048576, `expected 1 MiB kept, got ${JSON.stringify(r)}`);
+  assert.ok(r.elapsedMs >= 1200 && r.elapsedMs < 5000, `expected timeout near 1500ms, took ${r.elapsedMs}ms`);
+  assert.ok(r.rssBefore > 0, `expected rssBefore > 0, got ${r.rssBefore}`);
+  assert.ok(r.rssPeak - r.rssBefore < 128 * 1024 * 1024, `RSS grew too much: before=${r.rssBefore} peak=${r.rssPeak} after=${r.rssAfter}`);
+  assert.equal(r.alive, false, "child process group must be killed and reaped");
+});
+
 // ── run, under a launcher of the test's ──
 
 type Launched = { child: ChildProcess; said: any[]; next: (what: string, ok: (m: any) => boolean) => Promise<any>; tell: (m: unknown) => void; ended: Promise<number | null>; heard: (what: string, text: string) => Promise<void>; stderr: () => string };

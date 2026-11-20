@@ -282,6 +282,90 @@ pub async fn harness(host : @host.Host) -> Unit {
           (Err(why), _, _) | (_, Err(why), _) | (_, _, Err(why)) => Err(why)
         }
       }
+      "stdoutBackpressure" => {
+        let res = try {
+          let rss_before = self_rss_bytes().unwrap_or(0.0)
+          let mut rss_peak = rss_before
+          let p = spawn(
+            host,
+            "/bin/sh",
+            ["-c", "exec yes flood"],
+            env=[("PATH", "/bin:/usr/bin")],
+            stdout=Piped,
+            stderr=Piped,
+            group=true,
+          )
+          let cap = 1048576
+          let kept = @buffer.Buffer()
+          let mut truncated = false
+          let mut chunks = 0
+          let start = @host.now()
+          let ended = @effect.timeout(1500, async fn() {
+            while true {
+              match p.events.take() {
+                Out(b) | Err(b) => {
+                  chunks += 1
+                  let room = cap - kept.length()
+                  if room <= 0 {
+                    truncated = true
+                  } else if b.length() > room {
+                    kept.write_bytesview(b[:room])
+                    truncated = true
+                  } else {
+                    kept.write_bytes(b)
+                  }
+                  if chunks % 64 == 0 {
+                    match self_rss_bytes() {
+                      Some(r) if r > rss_peak => rss_peak = r
+                      _ => ()
+                    }
+                  }
+                }
+                Exit(code, _) => return code
+              }
+            }
+            None
+          })
+          let elapsed_ms = @host.now() - start
+          match self_rss_bytes() {
+            Some(r) if r > rss_peak => rss_peak = r
+            _ => ()
+          }
+          let timed_out = ended is None
+          if timed_out {
+            ignore(kill(p.pid, "SIGKILL", group=true))
+            ignore(
+              @effect.timeout(2000, async fn() {
+                while true {
+                  match p.events.take() {
+                    Exit(_, _) => return ()
+                    _ => ()
+                  }
+                }
+              }),
+            )
+          }
+          let rss_after = self_rss_bytes().unwrap_or(0.0)
+          let alive = pid_alive(p.pid)
+          Ok(
+            Json::object({
+              "timedOut": Json::boolean(timed_out),
+              "elapsedMs": Json::number(elapsed_ms.to_double()),
+              "chunks": Json::number(chunks.to_double()),
+              "keptBytes": Json::number(kept.length().to_double()),
+              "truncated": Json::boolean(truncated),
+              "rssBefore": Json::number(rss_before),
+              "rssPeak": Json::number(rss_peak),
+              "rssAfter": Json::number(rss_after),
+              "alive": Json::boolean(alive),
+            }),
+          )
+        } catch {
+          SysError(why) => Err(why)
+          e => Err("\{e}")
+        }
+        res
+      }
       "kill" =>
         Ok(
           Json::boolean(
