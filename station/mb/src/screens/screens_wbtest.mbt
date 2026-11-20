@@ -392,3 +392,11 @@ test "Windows' agent-desktop, stillfail-screen and scrcpy-server beside the stat
   assert_eq(screen_binary(none, Env::new([("STILLFAIL_SCREEN", "C:\\none-4.exe")])), None)
   assert_eq(server_file(io), "C:\\repo\\station\\src\\screens\\scrcpy-server")
 }
+
+///|
+test "ViewOptions tracks agent views separately from human remote views" {
+  assert_false(ViewOptions::new(1280.0, 720.0, [H264]).agent)
+  assert_true(ViewOptions::new(1280.0, 720.0, [Jpeg], agent=true).agent)
+  assert_false(view_options_of(parse("{\"maxWidth\":1280,\"maxHeight\":720,\"codecs\":[\"h264\"]}")).agent)
+  assert_true(view_options_of(parse("{\"maxWidth\":1280,\"maxHeight\":720,\"codecs\":[\"jpeg\"],\"agent\":true}")).agent)
+}
