@@ -7,17 +7,33 @@ pub(all) struct WsHandle {
 }
 
 ///|
+/// How a WebSocket ended, as `ws.next`'s end says it: the Close frame's code and reason where the other side gave
+/// them (the plane's 4000, a presence socket replaced, 4004, its station removed), else 1005 (no status received).
+pub fn ws_close_of(frame : @json.Json) -> (Int, String) {
+  match frame {
+    { "code": Number(code, ..), "reason": String(reason), .. } => (code.to_int(), reason)
+    { "code": Number(code, ..), .. } => (code.to_int(), "")
+    _ => (1005, "")
+  }
+}
+
+///|
 /// Open a shell WebSocket (`ws.open`), pump incoming text frames on a fiber (`ws.next`), and return `send`/`close`.
-/// `on_close(errored)` is called once when the reader loop ends (`true` on read error, `false` on clean EOF).
+/// `timeout_ms`: how long its opening (TCP, TLS, Upgrade) may take at the shell (the shell's own 20 s where not
+/// given). Interrupted while it opens, the opening is given up at the shell too (`fetch.cancel`), its socket with it.
+/// `on_close(errored)` is called once when the reader loop ends (`true` on read error, `false` on clean EOF), and
+/// `on_closed(code, reason)` with it: the Close frame's (`ws_close_of`), 1006 on a read error.
 pub async fn ws_open(
   host : @host.Host,
   url : String,
   name : String,
   headers? : Array[(String, String)] = [],
   entry? : (String, Int)? = None,
+  timeout_ms? : Int,
   on_message~ : (String) -> Unit,
   on_error? : (String) -> Unit = _ => (),
   on_close~ : (Bool) -> Unit,
+  on_closed? : (Int, String) -> Unit = (_, _) => (),
 ) -> WsHandle {
   let args : Map[String, @json.Json] = {
     "url": @json.Json::string(url),
@@ -28,7 +44,15 @@ pub async fn ws_open(
   if entry is Some((h, port)) {
     args["entry"] = { "host": @json.Json::string(h), "port": @json.Json::number(port.to_double()) }
   }
-  let (answer, _) = host.shell("ws.open", @json.Json::object(args))
+  if timeout_ms is Some(ms) {
+    args["timeoutMs"] = @json.Json::number(ms.to_double())
+  }
+  let call : Ref[Int64?] = Ref(None)
+  let (answer, _) = {
+    // (a call the shell failed is gone there already: cancelling it then is a no-op)
+    errdefer (if call.val is Some(i) { host.cancel_fetch(i) })
+    host.shell("ws.open", @json.Json::object(args), called=i => call.val = Some(i))
+  }
   let id = match json_num(answer, "id") {
     Some(n) => n
     None => fail("websocket did not answer at \{url}")
@@ -39,6 +63,7 @@ pub async fn ws_open(
         e => {
           on_error(shell_error_msg(e))
           on_close(true)
+          on_closed(1006, "")
           return
         }
       }
@@ -46,6 +71,8 @@ pub async fn ws_open(
         Some(t) => on_message(t)
         None => {
           on_close(false)
+          let (code, reason) = ws_close_of(frame)
+          on_closed(code, reason)
           return
         }
       }

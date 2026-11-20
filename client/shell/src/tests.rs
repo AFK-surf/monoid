@@ -1678,3 +1678,178 @@ fn ws_without_control_skips_ping_and_pong_frames() {
     call(98_013, "ws.close", json!({ "id": ws_id }));
     shell.runtime.block_on(served).unwrap();
 }
+
+/// A test's server on 127.0.0.1, its listener taken by `serve` on the shell's runtime; its address.
+fn served<F, T>(shell: &Shell, serve: impl FnOnce(tokio::net::TcpListener) -> F) -> (std::net::SocketAddr, tokio::task::JoinHandle<T>)
+where
+    F: std::future::Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
+    let listener = shell.runtime.block_on(tokio::net::TcpListener::bind("127.0.0.1:0")).unwrap();
+    let addr = listener.local_addr().unwrap();
+    (addr, shell.runtime.spawn(serve(listener)))
+}
+
+/// What came of call `id` asked with `a`: its JSON, or its error.
+fn asked(shell: &Shell, id: u64, op: &str, a: Value) -> Result<Value, String> {
+    shell.call(id, op.into(), a.to_string().as_bytes(), None);
+    let (json, error, _) = answer(id);
+    if error.is_empty() { Ok(serde_json::from_str(&json).unwrap()) } else { Err(error) }
+}
+
+/// An HTTP request's head read off `socket`.
+async fn head_of(socket: &mut tokio::net::TcpStream) -> String {
+    let mut request = Vec::new();
+    while !request.ends_with(b"\r\n\r\n") {
+        request.push(socket.read_u8().await.unwrap());
+    }
+    String::from_utf8(request).unwrap()
+}
+
+/// The other side's Close frame reaches `ws.next` with its code and reason (the plane's 4000, a presence socket
+/// replaced, and 4004, its station removed); one with none, and the socket's end after it, say only its end.
+#[test]
+fn a_close_frames_code_and_reason_reach_ws_next() {
+    use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+    use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let (addr, server) = served(&shell, |listener| async move {
+        for frame in [Some((4000, "replaced")), Some((4004, "removed")), None] {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            ws.close(frame.map(|(code, reason)| CloseFrame { code: CloseCode::from(code), reason: reason.into() })).await.unwrap();
+        }
+    });
+    for (n, said) in [(0, json!({ "end": true, "code": 4000, "reason": "replaced" })), (1, json!({ "end": true, "code": 4004, "reason": "removed" })), (2, json!({ "end": true }))] {
+        let ws = asked(&shell, 96_000 + n * 10, "ws.open", json!({ "url": format!("ws://{addr}/v1/presence") })).unwrap()["id"].clone();
+        assert_eq!(asked(&shell, 96_001 + n * 10, "ws.next", json!({ "id": ws })), Ok(said));
+        assert_eq!(asked(&shell, 96_002 + n * 10, "ws.next", json!({ "id": ws })), Ok(json!({ "end": true })));
+        asked(&shell, 96_003 + n * 10, "ws.close", json!({ "id": ws })).unwrap();
+    }
+    shell.runtime.block_on(server).unwrap();
+}
+
+/// A WebSocket whose Upgrade is never answered fails once its `timeoutMs` passed, directly and through an entry; one
+/// cancelled while it waits (`fetch.cancel`) drops its socket, and nothing of it is kept.
+#[test]
+fn a_websocket_opening_ends_by_its_deadline_or_when_cancelled() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let (heard, mut hearing) = tokio::sync::mpsc::unbounded_channel();
+    let (addr, _server) = served(&shell, |listener| async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let heard = heard.clone();
+            tokio::spawn(async move {
+                head_of(&mut socket).await;
+                let _ = heard.send(());
+                // Never answered; what the read ends with is the client's socket closing.
+                let _ = socket.read_u8().await;
+                let _ = heard.send(());
+            });
+        }
+    });
+    let entry = json!({ "host": "127.0.0.1", "port": addr.port() });
+    for (id, a) in [(96_101, json!({ "url": format!("ws://{addr}/"), "timeoutMs": 150 })), (96_102, json!({ "url": "ws://cloud.invalid/", "entry": entry, "timeoutMs": 150 }))] {
+        assert_eq!(asked(&shell, id, "ws.open", a), Err("websocket: open timed out within 150 ms".to_string()));
+    }
+    let kept = shell.inner.handles.lock().unwrap().len();
+    shell.call(96_103, "ws.open".into(), json!({ "url": format!("ws://{addr}/") }).to_string().as_bytes(), None);
+    shell.runtime.block_on(async {
+        for _ in 0..5 {
+            hearing.recv().await.unwrap();
+        }
+    });
+    let cancel = || serde_json::from_slice::<Value>(&shell.call_sync("fetch.cancel", json!({ "id": 96_103 }).to_string().as_bytes())).unwrap();
+    assert_eq!(cancel(), json!({ "value": true }));
+    assert_eq!(answer(96_103).1, "cancelled");
+    shell.runtime.block_on(hearing.recv()).unwrap();
+    assert_eq!(cancel(), json!({ "value": false }));
+    assert_eq!(shell.inner.handles.lock().unwrap().len(), kept);
+}
+
+/// `stream.open` given `timeoutMs` fails once its head has not come by then; `stream.read` given `stallMs` (or
+/// `timeoutMs`) once its next piece has not.
+#[test]
+fn a_streams_head_and_pieces_end_by_their_deadlines() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let (addr, _server) = served(&shell, |listener| async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            tokio::spawn(async move {
+                if head_of(&mut socket).await.starts_with("GET /body") {
+                    socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\na").await.unwrap();
+                }
+                // Nothing more comes, and the socket stays open.
+                let _ = socket.read_u8().await;
+            });
+        }
+    });
+    let at = |path: &str, within: Value| {
+        let mut a = json!({ "url": format!("http://{addr}{path}"), "method": "GET", "headers": [] });
+        a.as_object_mut().unwrap().extend(within.as_object().unwrap().clone());
+        a
+    };
+    assert_eq!(asked(&shell, 96_201, "stream.open", at("/head", json!({ "timeoutMs": 150 }))), Err("no answer within 150 ms".to_string()));
+    let stream = asked(&shell, 96_202, "stream.open", at("/body", json!({ "timeoutMs": 5000 }))).unwrap();
+    assert_eq!((stream["status"].clone(), stream["redirected"].clone()), (json!(200), json!(false)));
+    shell.call(96_203, "stream.read".into(), json!({ "id": stream["id"] }).to_string().as_bytes(), None);
+    assert_eq!(answer(96_203).2.unwrap(), b"a");
+    for (id, within) in [(96_204, json!({ "stallMs": 150 })), (96_205, json!({ "timeoutMs": 150 }))] {
+        let mut a = json!({ "id": stream["id"] });
+        a.as_object_mut().unwrap().extend(within.as_object().unwrap().clone());
+        assert_eq!(asked(&shell, id, "stream.read", a), Err("nothing more came within 150 ms".to_string()));
+    }
+}
+
+/// A 302 is answered as it came where `redirect` is not `"follow"` (said or not: `"manual"`), `redirected` false;
+/// followed where it is, its target's answer `redirected`, for `fetch` and `stream.open` alike.
+#[test]
+fn redirects_are_followed_only_when_asked() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let (addr, _server) = served(&shell, |listener| async move {
+        loop {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            tokio::spawn(async move {
+                loop {
+                    let head = head_of(&mut socket).await;
+                    let answer: &[u8] = if head.starts_with("GET /from ") {
+                        b"HTTP/1.1 302 Found\r\nLocation: /to\r\nContent-Length: 0\r\n\r\n"
+                    } else {
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nthere"
+                    };
+                    if socket.write_all(answer).await.is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    let from = |redirect: Option<&str>| {
+        let mut a = json!({ "url": format!("http://{addr}/from"), "method": "GET", "headers": [] });
+        if let Some(r) = redirect {
+            a["redirect"] = json!(r);
+        }
+        a
+    };
+    for (n, redirect) in [None, Some("manual")].into_iter().enumerate() {
+        let n = n as u64 * 10;
+        shell.call(96_301 + n, "fetch".into(), from(redirect).to_string().as_bytes(), None);
+        let (said, error, body) = answer(96_301 + n);
+        assert_eq!(error, "");
+        let said: Value = serde_json::from_str(&said).unwrap();
+        assert_eq!((said["status"].clone(), said["redirected"].clone(), body.unwrap()), (json!(302), json!(false), Vec::new()));
+        let stream = asked(&shell, 96_302 + n, "stream.open", from(redirect)).unwrap();
+        assert_eq!((stream["status"].clone(), stream["redirected"].clone()), (json!(302), json!(false)));
+    }
+    shell.call(96_321, "fetch".into(), from(Some("follow")).to_string().as_bytes(), None);
+    let (said, error, body) = answer(96_321);
+    assert_eq!(error, "");
+    let said: Value = serde_json::from_str(&said).unwrap();
+    assert_eq!((said["status"].clone(), said["redirected"].clone(), body.unwrap()), (json!(200), json!(true), b"there".to_vec()));
+    let stream = asked(&shell, 96_322, "stream.open", from(Some("follow"))).unwrap();
+    assert_eq!((stream["status"].clone(), stream["redirected"].clone()), (json!(200), json!(true)));
+}
