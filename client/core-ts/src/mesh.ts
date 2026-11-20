@@ -46,8 +46,8 @@ export const REBIND_MS = 5_000;
 export const TICK_MS = 5_000;
 /// A ping not answered by then counts as having taken this long, and as missed.
 export const PING_TIMEOUT_MS = 3_000;
-/// The ways kept open to a station: the one its requests go on, and the best of the others.
-export const KEEP_WAYS = 2;
+/// The ways kept open to a station: the one its requests go on, and up to two others (best interactive and best bulk).
+export const KEEP_WAYS = 3;
 /// How often the ways not kept open are dialled again, to see whether one became better.
 export const EXPLORE_MS = 5 * 60_000;
 /// Pings a way needs answered before it is compared with another.
@@ -129,6 +129,14 @@ export const SPEED_FRESH_MS = 10 * 60_000;
 /// relay brings replies to devices, beside the network the device is on (the cloud adds it), is how
 /// the relays are compared; one a minute is enough for that, and a video's every part would be far too many.
 export const SPEED_SAID_MS = 60_000;
+/// Reference transfer size for comparing bulk ways (latency + transfer time).
+export const BULK_BYTES = 4 * 1024 * 1024;
+/// Throughput below which a bulk way is considered slow and triggers on-demand relay exploration.
+export const BULK_SLOW_BPS = 512 * 1024;
+/// Assumed throughput for an unmeasured way when scoring bulk candidates.
+export const BULK_PROBE_BPS = 1024 * 1024;
+/// Minimum interval between on-demand bulk relay explorations for the same peer.
+export const BULK_EXPLORE_MS = 60_000;
 /// A reply head is a line of JSON; anything longer is not a station talking.
 const MAX_HEAD = 64 * 1024;
 
@@ -699,6 +707,16 @@ export class Link {
     return this.#chosen()?.relay ?? null;
   }
 
+  /// Key under which this link's throughput is tracked, or null for LAN links and unknown paths.
+  speedKey(): string | null {
+    if (this.pinned === LAN) return null;
+    const via = this.via();
+    if (this.path() === "relay" && via !== null) return relayKey(via);
+    if (this.pinned === TAILNET) return TAILNET;
+    if (this.path() === "direct") return DIRECT;
+    return null;
+  }
+
   /// Every way iroh has for it, as a span says them: `*` the one chosen, then where it goes (a relay's host, or a direct
   /// way's address), its round trip, the packets sent and lost on it. What a phone's direct way was, and how it went,
   /// as requests moved off it (2026-10-17: gone 20–30 s after it was taken, on a phone alone).
@@ -886,6 +904,10 @@ export class Mesh {
   readonly #came = new Map<string, number>();
   /// When each station's way through each relay last had its speed told (`mesh.speed`), by `#came`'s keys.
   readonly #speedSaid = new Map<string, number>();
+  /// Last observed significant slowdown per station and way key, to distinguish sustained throttling from a single dip.
+  readonly #slowSeen = new Map<string, { bps: number; at: number }>();
+  /// By address: when on-demand bulk relay exploration last ran.
+  readonly #bulkExploredAt = new Map<string, number>();
 
   private constructor(env: MeshEnv, relays: string[], entries: string[], targets: Record<string, string>, endpoint: IrohEndpoint, secret: Uint8Array, days: Record<string, Day>, speeds: Record<string, Record<string, Speed>>, said: Record<string, Said>) {
     this.#env = env;
@@ -1024,74 +1046,112 @@ export class Mesh {
     const bps = (bytes / ms) * 1000;
     const now = this.#env.host.nowMs();
     this.#saySpeed(addr, relay, bytes, ms, now);
-    const of = (this.#speeds[endpointId(addr)] ??= {});
+    const id = endpointId(addr);
+    const of = (this.#speeds[id] ??= {});
     const key = relayKey(relay);
+    const sk = `${id} ${key}`;
     const was = of[key];
-    if (was !== undefined && now - was.at < SPEED_FRESH_MS && was.bps >= bps) return;
-    const slower = this.speed(addr, relay) === null || bps < this.speed(addr, relay)!;
-    of[key] = { bps, at: now };
-    for (const [id, relays] of Object.entries(this.#speeds)) {
+    const before = this.speed(addr, relay);
+    let nextBps = bps;
+    if (was !== undefined && now - was.at < SPEED_FRESH_MS && was.bps >= bps) {
+      if (bps <= was.bps * 0.5) {
+        const prev = this.#slowSeen.get(sk);
+        if (bytes >= 2 * SPEED_MIN_BYTES || ms >= 5_000 || (prev !== undefined && now - prev.at < SPEED_FRESH_MS)) {
+          nextBps = prev !== undefined ? Math.min(bps, Math.round(0.3 * was.bps + 0.7 * bps)) : Math.round(0.25 * was.bps + 0.75 * bps);
+          this.#slowSeen.set(sk, { bps, at: now });
+        } else {
+          this.#slowSeen.set(sk, { bps, at: now });
+          return;
+        }
+      } else {
+        return;
+      }
+    } else {
+      this.#slowSeen.delete(sk);
+    }
+    const slower = before === null || nextBps < before;
+    of[key] = { bps: nextBps, at: now };
+    for (const [sid, relays] of Object.entries(this.#speeds)) {
       for (const [r, s] of Object.entries(relays)) if (now - s.at >= SPEED_KEPT_MS) delete relays[r];
-      if (Object.keys(relays).length === 0) delete this.#speeds[id];
+      if (Object.keys(relays).length === 0) delete this.#speeds[sid];
     }
     this.#env.runner.fork(Effect.ignore(this.#env.host.storageSet(SPEED_KEY, toJsonBytes(this.#speeds)), { log: "Unhandled", message: "speeds kept" }));
     const via = this.current(addr)?.via() ?? null;
     if (slower && via !== null && relayKey(via) === key) this.#choose(addr, "slow");
+    if (nextBps < BULK_SLOW_BPS) this.#maybeExploreBulk(addr);
   }
 
-  /// A reply's speed through a relay, told to telemetry (`mesh.speed`), at most once every
-  /// SPEED_SAID_MS for each station and relay: every one seen, slower ones too, not only the fastest that `noteSpeed`
-  /// keeps, so the relays' speeds are seen as devices get them, network by network.
-  #saySpeed(addr: string, relay: string, bytes: number, ms: number, now: number): void {
-    const said = `${endpointId(addr)} ${relayKey(relay)}`;
+  /// A reply's speed on a way, told to telemetry (`mesh.speed`), at most once every
+  /// SPEED_SAID_MS for each station and way: every one seen, slower ones too, not only the fastest that `noteSpeed`
+  /// keeps, so the ways' speeds are seen as devices get them, network by network.
+  #saySpeed(addr: string, way: string, bytes: number, ms: number, now: number): void {
+    const key = relayKey(way);
+    const said = `${endpointId(addr)} ${key}`;
     if (now - (this.#speedSaid.get(said) ?? -Infinity) < SPEED_SAID_MS) return;
     this.#speedSaid.set(said, now);
-    const way = this.#live(addr).find((w) => w.key() === relayKey(relay));
+    const found = this.#live(addr).find((w) => w.link.speedKey() === key || w.key() === key);
     const span = this.#env.tracer.span("mesh.speed", Kind.Internal);
     span.own("station", endpointId(addr));
-    span.own("via", relayHost(relay));
+    span.own("via", relayHost(way));
     span.own("bytes", bytes);
     span.own("ms", Math.round(ms));
     span.own("bps", Math.round((bytes / ms) * 1000));
-    if (way !== undefined) {
-      span.own("current", way.link === this.current(addr));
-      span.own("paths", way.link.paths());
+    if (found !== undefined) {
+      span.own("current", found.link === this.current(addr));
+      span.own("paths", found.link.paths());
     }
     span.end();
   }
 
   /// The speeds seen on every way let go (the device on another network now).
   #forgetSpeeds(): void {
+    this.#slowSeen.clear();
+    this.#bulkExploredAt.clear();
     if (Object.keys(this.#speeds).length === 0) return;
     for (const id of Object.keys(this.#speeds)) delete this.#speeds[id];
     this.#env.runner.fork(Effect.ignore(this.#env.host.storageSet(SPEED_KEY, toJsonBytes(this.#speeds)), { log: "Unhandled", message: "speeds kept" }));
   }
 
-  /// A reply's body, timed as it is read: once it has brought SPEED_MIN_BYTES, and again as it ends, how fast its way
-  /// brought bytes meanwhile is noted for the relay it came through: all that came through it from the station since
-  /// this one began coming, not this one's alone. Replies side by side share the line, and each alone said a part of how
-  /// fast it is: a phone's way to a station through a relay, held at a third of its speed, lost to ways never tried,
-  /// each bringing its videos at 35 KB/s (2026-10-28). Told as it is under way, not after: a way found slow by a reply of
-  /// megabytes is left at once (`noteSpeed`), not after it took minutes to come.
-  timed(addr: string, relay: string, body: Pull<Uint8Array>): Pull<Uint8Array> {
-    const key = `${endpointId(addr)} ${relayKey(relay)}`;
+  /// A reply's body, timed as it is read: once it has brought SPEED_MIN_BYTES, periodically while reading large bodies,
+  /// and again as it ends, how fast its way brought bytes meanwhile is noted for the way it came through: all that came
+  /// through it from the station since this one began coming, not this one's alone. Replies side by side share the line,
+  /// and each alone said a part of how fast it is: a phone's way to a station through a relay, held at a third of its
+  /// speed, lost to ways never tried, each bringing its videos at 35 KB/s (2026-10-28). Told as it is under way, not
+  /// after: a way found slow by a reply of megabytes is left at once (`noteSpeed`), not after it took minutes to come.
+  timed(addr: string, way: string, body: Pull<Uint8Array>): Pull<Uint8Array> {
+    const key = `${endpointId(addr)} ${relayKey(way)}`;
     let first: number | null = null;
     let from = 0;
     let own = 0;
     let told = false;
+    let lastOwn = 0;
+    let lastCame = 0;
+    let lastAt = 0;
     return {
       take: Effect.flatMap(body.take, (chunk) =>
         Effect.map(Clock.currentTimeMillis, (now) => {
           const came = (this.#came.get(key) ?? 0) + (chunk?.length ?? 0);
           this.#came.set(key, came);
           if (first === null) {
-            if (chunk !== null) [first, from] = [now, came];
+            if (chunk !== null) [first, from, lastAt, lastCame] = [now, came, now, came];
             return chunk;
           }
           own += chunk?.length ?? 0;
-          if (own >= SPEED_MIN_BYTES && (chunk === null || !told)) {
+          if (own >= SPEED_MIN_BYTES && !told) {
             told = true;
-            this.noteSpeed(addr, relay, came - from, now - first);
+            lastOwn = own;
+            lastCame = came;
+            lastAt = now;
+            this.noteSpeed(addr, way, came - from, now - first);
+          } else if (chunk === null && own >= SPEED_MIN_BYTES) {
+            this.noteSpeed(addr, way, came - from, now - first);
+          } else if (told && chunk !== null && own - lastOwn >= SPEED_MIN_BYTES && now - lastAt >= 5_000) {
+            const bytes = came - lastCame;
+            const ms = now - lastAt;
+            lastOwn = own;
+            lastCame = came;
+            lastAt = now;
+            this.noteSpeed(addr, way, bytes, ms);
           }
           return chunk;
         }),
@@ -1688,6 +1748,15 @@ export class Mesh {
     return { score: cost(way.srtt, via !== null ? this.speed(addr, via) : null) + 2 * way.dev, dev: way.dev };
   }
 
+  /// Expected ms to transfer BULK_BYTES on `way` (lower is better).
+  #bulkScore(addr: string, way: Way): number {
+    if (way.link.pinned === LAN) return way.samples > 0 ? way.srtt : 0;
+    const rtt = way.samples > 0 ? way.srtt : (way.answeredMs ?? 200);
+    const sk = way.link.speedKey();
+    const bps = sk !== null ? this.speed(addr, sk) : null;
+    return rtt + (BULK_BYTES / (bps !== null && bps > 0 ? bps : BULK_PROBE_BPS)) * 1000;
+  }
+
   /// Of `ways`, the one scoring best (pinged at least once; none pinged yet: the first).
   #best(addr: string, ways: Way[]): Way | null {
     let best: Way | null = null;
@@ -2157,12 +2226,24 @@ export class Mesh {
       this.#retire(addr, keep === w ? other : w);
       byKey.set(k, keep);
     }
-    // Those the requests keep off last: the way kept beside theirs is one they would move to (a relay's, not the main
-    // endpoint's, while the LAN endpoint's is lost).
-    const others = this.#live(addr)
-      .filter((w) => w.link !== cur && w.samples >= MIN_SAMPLES)
-      .sort((a, b) => Number(this.#avoided(addr, a)) - Number(this.#avoided(addr, b)) || this.#score(addr, a).score - this.#score(addr, b).score);
-    for (const w of others.slice(Math.max(0, KEEP_WAYS - 1))) this.#retire(addr, w);
+    // Keep up to KEEP_WAYS - 1 backups besides current: the best interactive backup first, then best bulk backups.
+    const others = this.#live(addr).filter((w) => w.link !== cur && w.samples >= MIN_SAMPLES);
+    const budget = Math.max(0, KEEP_WAYS - 1);
+    if (others.length > budget) {
+      const kept = new Set<Way>();
+      const byInteractive = [...others].sort((a, b) => Number(this.#avoided(addr, a)) - Number(this.#avoided(addr, b)) || this.#score(addr, a).score - this.#score(addr, b).score);
+      if (budget > 0 && byInteractive[0] !== undefined) kept.add(byInteractive[0]);
+      if (kept.size < budget) {
+        const byBulk = others
+          .filter((w) => !kept.has(w))
+          .sort((a, b) => Number(this.#avoided(addr, a)) - Number(this.#avoided(addr, b)) || this.#bulkScore(addr, a) - this.#bulkScore(addr, b));
+        for (const w of byBulk) {
+          if (kept.size >= budget) break;
+          kept.add(w);
+        }
+      }
+      for (const w of others) if (!kept.has(w)) this.#retire(addr, w);
+    }
   }
 
   /// Dials the station on the ways not open to it (the main endpoint, each relay's own; `mainOnly`: the main endpoint
@@ -2281,6 +2362,83 @@ export class Mesh {
     const ways = this.#live(addr);
     const key = ways.find((w) => w.link === link)?.key() ?? null;
     return this.#best(addr, ways.filter((w) => w.link !== link && w.missed === 0 && w.key() !== key))?.link ?? null;
+  }
+
+  /// Open ways suitable for bulk transfers, deduplicated by way key and ordered by `#bulkScore` ascending.
+  bulkLinks(addr: string): Link[] {
+    const alive = this.#live(addr).filter((w) => w.missed < DEAD_PINGS && !this.#wayOff(addr, w.link));
+    const pool = this.#takeable(addr, alive);
+    const byKey = new Map<string, Way>();
+    for (const w of pool) {
+      const k = w.key();
+      const prev = byKey.get(k);
+      if (prev === undefined || this.#bulkScore(addr, w) < this.#bulkScore(addr, prev)) byKey.set(k, w);
+    }
+    return [...byKey.values()].sort((a, b) => this.#bulkScore(addr, a) - this.#bulkScore(addr, b)).map((w) => w.link);
+  }
+
+  /// Standby link for hedging a slow bulk transfer: never hedges onto a way already known to be below BULK_SLOW_BPS.
+  bulkStandby(addr: string, link: Link): Link | null {
+    const ways = this.#live(addr);
+    for (const l of this.bulkLinks(addr)) {
+      if (l === link) continue;
+      const w = ways.find((x) => x.link === l);
+      if (w === undefined || w.missed !== 0) continue;
+      const sk = l.speedKey();
+      const bps = sk !== null ? this.speed(addr, sk) : null;
+      if (bps !== null && bps < BULK_SLOW_BPS) continue;
+      return l;
+    }
+    return null;
+  }
+
+  /// Relays that may be dialled pinned for bulk transfers (allows the single relay when main is on direct).
+  #bulkRelays(addr: string): string[] {
+    const pinnable = this.#pinnable(addr);
+    if (pinnable.length > 0) return pinnable;
+    const ways = this.#waysFor(addr);
+    if (this.#mainOn(addr) && ways.length === 1 && this.current(addr)?.path() === "direct") return ways;
+    return [];
+  }
+
+  /// On-demand pinned relay exploration when the best bulk way is known to be below BULK_SLOW_BPS.
+  #maybeExploreBulk(addr: string, credentials?: CredentialSource): void {
+    if (this.#closed || this.#exploring.has(addr)) return;
+    const cur = this.current(addr);
+    if (cur?.pinned === LAN) return;
+    const now = this.now();
+    if (now - (this.#bulkExploredAt.get(addr) ?? -Infinity) < BULK_EXPLORE_MS) return;
+    const best = this.bulkLinks(addr)[0] ?? cur;
+    if (best === null) return;
+    const sk = best.speedKey();
+    const bps = sk !== null ? this.speed(addr, sk) : null;
+    if (bps === null || bps >= BULK_SLOW_BPS) return;
+    const live = this.#live(addr);
+    const missing = this.#bulkRelays(addr).filter((r) => !live.some((w) => (w.link.pinned !== null && sameRelay(w.link.pinned, r)) || w.key() === relayKey(r)));
+    if (missing.length === 0) return;
+    const creds = credentials ?? cur?.credentials;
+    if (creds === undefined) return;
+    this.#bulkExploredAt.set(addr, now);
+    this.#env.runner.fork(this.#exploreBulk(addr, creds, missing));
+  }
+
+  #exploreBulk(addr: string, credentials: CredentialSource, relays: string[]): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      if (this.#exploring.has(addr)) return;
+      this.#exploring.add(addr);
+      yield* Effect.all(
+        relays.map((r) => Effect.map(Effect.result(this.#dialPinned(addr, r, credentials, false, undefined)), (res) => (res._tag === "Success" ? this.#adopt(addr, res.success) : undefined))),
+        { concurrency: "unbounded" },
+      ).pipe(Effect.ensuring(Effect.sync(() => this.#exploring.delete(addr))));
+    });
+  }
+
+  /// Best link for a bulk transfer, opening the primary link first and exploring pinned relays on demand if slow.
+  bulkLink(addr: string, credentials: CredentialSource, theirs?: readonly string[], off?: readonly string[], asker?: string): Effect.Effect<Link, CoreError> {
+    return Effect.map(this.link(addr, credentials, theirs, off, asker), (cur) => {
+      this.#maybeExploreBulk(addr, credentials);
+      return this.bulkLinks(addr)[0] ?? cur;
+    });
   }
 
   /// How long a read on `link` waits for its answer before it is asked on another way as well: what its way is expected

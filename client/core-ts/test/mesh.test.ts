@@ -16,11 +16,11 @@ import { HEDGE } from "../src/host.ts";
 import { loadAddon, nodeIroh } from "../src/hosts/node-iroh.ts";
 import { holdLanguage, t } from "../src/i18n.ts";
 import type { BindOptions, Iroh, IrohConnection } from "../src/iroh.ts";
-import { ADDRESSES_KEY, clearlyBetter, CONNECT_TIMEOUT_MS, cost, DEVICE_KEY, DIRECT, DIRECT_HOLD_MAX_MS, EXPLORE_MS, fencedOf, HEDGE_FLOOR_MS, KEEP_WAYS, LAN, Mesh, MIN_STAY_MS, PING_TIMEOUT_MS, PROBE_MS, REDIAL_MAIN_MS, RENEW_MS, RETIRE_MS, SPEED_FRESH_MS, SPEED_MIN_BYTES, SPEED_SAID_MS, TAILNET, TICK_MS, type CredentialSource, type Link } from "../src/mesh.ts";
+import { ADDRESSES_KEY, BULK_SLOW_BPS, clearlyBetter, CONNECT_TIMEOUT_MS, cost, DEVICE_KEY, DIRECT, DIRECT_HOLD_MAX_MS, EXPLORE_MS, fencedOf, HEDGE_FLOOR_MS, KEEP_WAYS, LAN, Mesh, MIN_STAY_MS, PING_TIMEOUT_MS, PROBE_MS, REDIAL_MAIN_MS, RENEW_MS, RETIRE_MS, SPEED_FRESH_MS, SPEED_MIN_BYTES, SPEED_SAID_MS, TAILNET, TICK_MS, type CredentialSource, type Link } from "../src/mesh.ts";
 import { claimBy, lockClaim } from "../src/lock.ts";
 import { TRACES } from "../src/route.ts";
 import { ALPN, LockUnconfirmed, MeshWire, STATION_MESH, meshEnv, presented, refusedForLock } from "../src/station/mesh-wire.ts";
-import { NDJSON, NO_HEDGE, READS } from "../src/station/requests.ts";
+import { BULK, NDJSON, NO_HEDGE, READS } from "../src/station/requests.ts";
 import { Runner } from "../src/runtime.ts";
 import { StationAddr } from "../src/station/addr.ts";
 import { readAll, type RequestHead } from "../src/station/wire.ts";
@@ -2576,6 +2576,134 @@ test("reads_its_calls", () => {
   assert.throws(() => parseAdb("adb.share", {}));
   assert.deepEqual(parseAdb("adb.pair", { code: "123456" }), { kind: "pair", code: "123456" });
   assert.equal(parseAdb("job.stop", {}), null);
+});
+
+sim("bulk_transfers_take_a_faster_relay_while_interactive_stays_direct", async (s) => {
+  s.net.direct = { ms: 20, bps: 64 * 1024 };
+  s.net.lan = { punchMs: 500 };
+  const a = s.relay("https://a.relay.test/", { device: { ms: 80, bps: 2 * 1024 * 1024 }, station: { ms: 20 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 80, bps: 2 * 1024 * 1024 }, station: { ms: 20 } });
+  const station = await s.stationBound({ alpns: [Buffer.from(ALPN)], relayUrls: [a], discovery: false, bindAddr: "127.0.0.1:0" });
+  await s.settle(station.endpoint.online());
+  station.endpoint.keep([b]);
+  const e = env(s);
+  const mesh = await s.run(Mesh.make(e, [a, b]));
+  const spans = spansOf(e.tracer);
+  const id = `w/${station.id()}`;
+  await reach(s, mesh, id);
+  await s.until(() => direct(mesh, id));
+  const wire = wireOf(s, mesh);
+  const addr = StationAddr.parse(id);
+  const read = (path: string, headers: [string, string][]) =>
+    s.run(Effect.scoped(Effect.flatMap(wire.request(addr, { method: "GET", path, headers }, new Uint8Array()), (r) => Effect.map(readAll(r.body), (bytes) => ({ via: r.via, relay: r.relay, len: bytes.length })))));
+  const firstBulk = await read("/admin/api/big", [[BULK, "1"]]);
+  assert.equal(firstBulk.via, "direct");
+  assert.equal(firstBulk.relay, null);
+  assert.equal(firstBulk.len, 1024 * 1024);
+  e.tracer.flush();
+  await s.until(() => spans.some((x) => x.name === "mesh.speed" && x.at["stillfail.via"] === "direct"));
+  await s.until(() => mesh.ways(id).some((w) => w.link.path() === "relay"));
+  const nextBulk = await read("/admin/api/big", [[BULK, "1"]]);
+  assert.equal(nextBulk.via, "relay");
+  assert.notEqual(nextBulk.relay, null);
+  assert.equal(nextBulk.len, 1024 * 1024);
+  const interactive = await read("/admin/api/overview", []);
+  assert.equal(interactive.via, "direct");
+  assert.equal(mesh.current(id)?.path(), "direct");
+  await close(s, station, mesh);
+});
+
+sim("a_direct_way_throttled_after_a_burst_decays_and_moves_bulk_to_relay", async (s) => {
+  s.net.direct = { ms: 20, bps: 2 * 1024 * 1024 };
+  s.net.lan = { punchMs: 500 };
+  const a = s.relay("https://a.relay.test/", { device: { ms: 80, bps: 2 * 1024 * 1024 }, station: { ms: 20 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 80, bps: 2 * 1024 * 1024 }, station: { ms: 20 } });
+  const station = await s.stationBound({ alpns: [Buffer.from(ALPN)], relayUrls: [a], discovery: false, bindAddr: "127.0.0.1:0" });
+  await s.settle(station.endpoint.online());
+  station.endpoint.keep([b]);
+  const mesh = await s.run(Mesh.make(env(s), [a, b]));
+  const id = `w/${station.id()}`;
+  await reach(s, mesh, id);
+  await s.until(() => direct(mesh, id));
+  const wire = wireOf(s, mesh);
+  const addr = StationAddr.parse(id);
+  const bulkRead = (path: string) =>
+    s.run(Effect.scoped(Effect.flatMap(wire.request(addr, { method: "GET", path, headers: [[BULK, "1"]] }, new Uint8Array()), (r) => Effect.map(readAll(r.body), (bytes) => ({ via: r.via, len: bytes.length })))));
+  const burst = await bulkRead("/admin/api/big");
+  assert.equal(burst.via, "direct");
+  const peak = mesh.speed(id, DIRECT);
+  assert.ok(peak !== null && peak > 1024 * 1024, `expected high initial direct peak, got ${peak}`);
+  const burstAt = s.time.now();
+  // A single mild slow sample (75% of peak, < 5s) must not overwrite a fresh peak.
+  mesh.noteSpeed(id, DIRECT, SPEED_MIN_BYTES, Math.round((SPEED_MIN_BYTES / (peak * 0.75)) * 1000));
+  assert.equal(mesh.speed(id, DIRECT), peak);
+  // Throttle direct to 48 KiB/s well within SPEED_FRESH_MS.
+  s.net.direct = { ms: 20, bps: 48 * 1024 };
+  await bulkRead("/admin/api/big?mb=2");
+  assert.ok(s.time.now() - burstAt < SPEED_FRESH_MS, "must decay well before SPEED_FRESH_MS");
+  const decayed = mesh.speed(id, DIRECT);
+  assert.ok(decayed !== null && decayed < BULK_SLOW_BPS, `expected decayed direct speed < BULK_SLOW_BPS, got ${decayed}`);
+  await s.until(() => mesh.ways(id).some((w) => w.link.path() === "relay"));
+  const after = await bulkRead("/admin/api/big");
+  assert.equal(after.via, "relay");
+  await close(s, station, mesh);
+});
+
+sim("a_fast_direct_way_opens_no_extra_pinned_relay_for_bulk", async (s) => {
+  s.net.direct = { ms: 10, bps: 10 * 1024 * 1024 };
+  s.net.lan = { punchMs: 500 };
+  const a = s.relay("https://a.relay.test/", { device: { ms: 80, bps: 2 * 1024 * 1024 }, station: { ms: 20 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 80, bps: 2 * 1024 * 1024 }, station: { ms: 20 } });
+  const station = await s.stationBound({ alpns: [Buffer.from(ALPN)], relayUrls: [a], discovery: false, bindAddr: "127.0.0.1:0" });
+  await s.settle(station.endpoint.online());
+  station.endpoint.keep([b]);
+  const mesh = await s.run(Mesh.make(env(s), [a, b]));
+  const id = `w/${station.id()}`;
+  await reach(s, mesh, id);
+  await s.until(() => direct(mesh, id));
+  const wire = wireOf(s, mesh);
+  const addr = StationAddr.parse(id);
+  const bulkRead = () =>
+    s.run(Effect.scoped(Effect.flatMap(wire.request(addr, { method: "GET", path: "/admin/api/big", headers: [[BULK, "1"]] }, new Uint8Array()), (r) => Effect.map(readAll(r.body), (bytes) => ({ via: r.via, len: bytes.length })))));
+  assert.equal((await bulkRead()).via, "direct");
+  assert.equal((await bulkRead()).via, "direct");
+  await s.time.pass(TICK_MS * 2);
+  assert.equal(mesh.ways(id).length, 1);
+  assert.equal(mesh.current(id)?.path(), "direct");
+  await close(s, station, mesh);
+});
+
+sim("prune_keeps_the_fastest_bulk_relay_and_bulk_header_never_reaches_the_station", async (s) => {
+  s.net.direct = { ms: 15, bps: 64 * 1024 };
+  s.net.lan = { punchMs: 500 };
+  const a = s.relay("https://a.relay.test/", { device: { ms: 100, bps: 256 * 1024 }, station: { ms: 10 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 30, bps: 128 * 1024 }, station: { ms: 10 } });
+  const c = s.relay("https://c.relay.test/", { device: { ms: 60, bps: 256 * 1024 }, station: { ms: 10 } });
+  const d = s.relay("https://d.relay.test/", { device: { ms: 90, bps: 4 * 1024 * 1024 }, station: { ms: 10 } });
+  const station = await s.stationBound({ alpns: [Buffer.from(ALPN)], relayUrls: [a], discovery: false, bindAddr: "127.0.0.1:0" });
+  await s.settle(station.endpoint.online());
+  station.endpoint.keep([b, c, d]);
+  const mesh = await s.run(Mesh.make(env(s), [a, b, c, d]));
+  const id = `w/${station.id()}`;
+  await reach(s, mesh, id);
+  await s.until(() => direct(mesh, id));
+  mesh.noteSpeed(id, b, SPEED_MIN_BYTES, Math.round((SPEED_MIN_BYTES / (128 * 1024)) * 1000));
+  mesh.noteSpeed(id, c, SPEED_MIN_BYTES, Math.round((SPEED_MIN_BYTES / (256 * 1024)) * 1000));
+  mesh.noteSpeed(id, d, SPEED_MIN_BYTES, Math.round((SPEED_MIN_BYTES / (4 * 1024 * 1024)) * 1000));
+  const wire = wireOf(s, mesh);
+  const addr = StationAddr.parse(id);
+  await s.run(Effect.scoped(Effect.flatMap(wire.request(addr, { method: "GET", path: "/admin/api/big", headers: [[BULK, "1"]] }, new Uint8Array()), (r) => readAll(r.body))));
+  await s.until(() => mesh.ways(id).some((w) => w.link.via() === d));
+  await s.time.pass(TICK_MS * 6);
+  assert.ok(mesh.ways(id).length <= KEEP_WAYS, `${mesh.ways(id).length} ways open`);
+  assert.equal(mesh.current(id)?.path(), "direct");
+  assert.ok(mesh.ways(id).some((w) => w.link.via() === d), `fastest bulk relay d must survive prune: ${mesh.ways(id).map((w) => w.key()).join(", ")}`);
+  assert.ok(station.served.length > 0);
+  for (const req of station.served) {
+    const keys = Object.keys(req.headers ?? {}).map((k) => k.toLowerCase());
+    assert.ok(!keys.includes(BULK), `stillfail-bulk leaked to station: ${JSON.stringify(req.headers)}`);
+  }
+  await close(s, station, mesh);
 });
 
 // ── over the addon: what only it can show, never timed ──
