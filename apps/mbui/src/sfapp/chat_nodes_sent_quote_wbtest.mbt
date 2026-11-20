@@ -129,7 +129,7 @@ fn cnsq_crossed(t : @ui.Tester, over : (String) -> Bool, under : (String) -> Boo
 /// The chat's page made as nodes on 小屏, the fixture's station answering on the test's clock (`clock`).
 fn cnsq_fixture(clock : Ref[Double]) -> @ui.Tester {
   new_run()
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   fix_clock.val = Some(fn() { clock.val })
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })

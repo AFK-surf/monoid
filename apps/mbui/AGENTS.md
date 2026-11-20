@@ -44,6 +44,7 @@ Use these four terms in PR descriptions and user-facing text (never 电脑版, �
 - Build new and rewritten UI as tree nodes (`@sf.page_node`, `@sf.panel_nodes`, `View::each`, `View::scrolls_window`, `*_node.mbt`), acting in handlers (`on_press`, `on_pick`, `on_change`). Never wrap a node part back into `Ctx`.
 - To migrate or fix UI, read the logic, state, subscriptions, and git history first, then write it as nodes. Never diff `drawn_rects()`, pixel-fit the old view, or guess from screenshots.
 - Legacy detlint counts (`old-island`, `old-list`, `old-panel`, `click-read`, `key-read`, `submitted-read`, `build-motion`, `layout-read-back`, `ui-current`) only fall: migrate touched code.
+- See `apps/mbui/src/sfpages/AGENTS.md` for keyed chat nodes, block reuse, the `chatPage` migration flag, width bindings, and Farview.
 
 ## Motion
 

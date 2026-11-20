@@ -9,7 +9,7 @@
 /// fixture opens it, closed.
 fn swr_jobs_at(late : @signals.Signal[Bool], swr : Bool, w? : Double = 1280.0) -> @ui.Tester {
   new_run()
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   let base = fixture("chat-jobs-pop")
   let src : Source = {
     ..base,

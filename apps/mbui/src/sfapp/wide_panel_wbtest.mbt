@@ -210,9 +210,7 @@ test "wide: a new chat's Station 文件 beside it (NewChat.tsx): kept open, clos
   // (its page made either way: the old view's side_beside, or as nodes with its composer, new_side_node)
   both_pages(fn() raise {
     new_run()
-    if both_nodes.val {
-      both_way()
-    }
+    both_way()
     let calls : Array[Made] = []
     let base = fixture("newchat-files")
     let src : Source = {

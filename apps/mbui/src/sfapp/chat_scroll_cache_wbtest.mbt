@@ -1,6 +1,6 @@
 ///|
 test "a chat scroll within its visible messages keeps their layout and reports the new place" {
-  let t = chat_tester("chat")
+  let t = chat_tester("chat", old=true)
   t.check_looks(false)
   t.set_rows_on_pixels(true)
   t.scroll_to(8)

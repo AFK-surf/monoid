@@ -333,7 +333,10 @@ test "a message gone to is lit whole as a band: across the list from edge to edg
 test "a notice gone to lights a full-width band across the list behind its pill" {
   // (opened at still.fail's notice, its flash held at its peak)
   let t = screen("chat-flash-notice", @ui.move_most_ms)
-  assert_eq(@sfpages.flashing_now.val, ("ts1", 1.0))
+  // (the old list's flash as it says it; the page made as nodes draws its band by chat_body_bands, checked below)
+  if !@sfbase.chat_page_nodes.untracked() {
+    assert_eq(@sfpages.flashing_now.val, ("ts1", 1.0))
+  }
   let ground = @sf.theme().flash_bg()
   let rects = t.drawn_rect_corners()
   let band_at = rects.search_by(fn(r) { r.4 >> 8 == ground >> 8 && (r.4 & 0xFFL) != 0L })

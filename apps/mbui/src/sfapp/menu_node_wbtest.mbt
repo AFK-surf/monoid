@@ -165,6 +165,7 @@ test "大屏, touch: the chat's message field typed in, a menu presented over it
   t.type_text("改")
   t.run_for(@ui.move_most_ms)
   @sf.menu(menu_items_counting(["一项", "二项"], []), from=@sf.at_point(600.0, 300.0))
+  t.frame()
   t.run_for(@ui.move_most_ms)
   let (keyboard, words, _, _) = t.ime()
   let open = (said(), keyboard, words, @sf.presenting())

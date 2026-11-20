@@ -139,7 +139,7 @@ fn mf_open(screen : (String, Double, Double, Int)) -> (@ui.Tester, Source) {
   let (_, w, h, platform) = screen
   new_run()
   // (its composer made as nodes too: what these frames hold of it)
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)
@@ -329,7 +329,7 @@ test "a chat's page made as nodes, 小屏 and 大屏, every frame of a picture a
 /// (`nodes = true`), its rows on the host's pixels at 60 frames a second, at rest.
 fn mf_open_dual(nodes : Bool, mode? : String = "chat") -> (@ui.Tester, Source) {
   new_run()
-  @sfbase.chat_page_nodes.set(nodes)
+  @sfbase.hold_chat_page_nodes(Some(nodes))
   let src = fixture(mode)
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2, words_over_held=nodes)

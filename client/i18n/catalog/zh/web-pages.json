@@ -2267,8 +2267,6 @@
   "web-pages.experimental.title": "实验性功能",
   "web-pages.experimental.lead": "尚未打磨完成或仍在探索的新功能，默认关闭且仅在本机生效；遇到问题可随时关闭回退。",
   "web-pages.experimental.enabledCount": "已开 {n} 项",
-  "web-pages.experimental.chatPage.title": "试用新对话页",
-  "web-pages.experimental.chatPage.description": "新的对话页、新建对话页与输入框：往上读时内容不会被顶走，遇到问题可随时关掉切回旧版",
   "web-pages.experimental.farviewNative.title": "Farview 原生标签页渲染",
   "web-pages.experimental.farviewNative.description": "浏览器标签页由本机直接排版绘制，滚动和输入即时响应；遇到显示异常可随时关掉切回截图画面",
   "web-pages.experimental.board.title": "对话列表看板视图",

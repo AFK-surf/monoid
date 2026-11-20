@@ -18,7 +18,14 @@ fn board_at(mode : String, w : Double, h : Double, platform? : Int = 0, corners_
 /// The audit's faults made in the board's own files. (Not what is under the phone's bottom bar where its glass takes
 /// presses, as it does once the bar has been told again: Home's list's rows are so too, the bar's.)
 fn board_faults(t : @ui.Tester) -> Array[String] {
-  t.audit().filter(fn(f) { (f.contains("board_node") || f.contains("sfdesk/board")) && !f.contains("sfapp/bar.mbt") })
+  t
+  .audit()
+  .filter(fn(f) {
+    (f.contains("board_node") || f.contains("sfdesk/board")) &&
+    !f.contains("sfapp/bar.mbt") &&
+    // (the edge of the chat beside the board, half over each side as a side panel's is: board_beside_faults')
+    !f.contains("stillfail/sf/src/edge_node.mbt:37, in what was asked for at stillfail/src/sfpages/board_node.mbt:")
+  })
 }
 
 ///|
@@ -2026,7 +2033,7 @@ test "大屏, 试用新对话页 on: the chat beside the board made as nodes, it
     },
   }
   open_fixture_over("board", src)
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1440.0, h=900.0, platform=0)
   t.run_for(@ui.move_most_ms)
   t.click(Button, label="给设置页加一个深色模式开关")
@@ -2055,10 +2062,10 @@ test "大屏, 试用新对话页 on: the chat beside the board made as nodes, it
   assert_false(t.sources_of(c4_last).contains("sfpages/chat_body_node.mbt"), msg="the chat before let go")
   assert_eq(board_beside_faults(t), [])
   // 试用新对话页 turned off while it shows: its old page at once; on again, nodes
-  @sfbase.chat_page_nodes.set(false)
+  @sfbase.hold_chat_page_nodes(Some(false))
   t.run_for(@ui.move_most_ms)
   assert_false(board_beside_made_nodes(t, c7_last, "turned off"), msg="turned off: the old page")
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   t.run_for(@ui.move_most_ms)
   assert_true(board_beside_made_nodes(t, c7_last, "turned on"), msg="turned on: the page made as nodes")
   assert_eq(board_beside_faults(t), [])

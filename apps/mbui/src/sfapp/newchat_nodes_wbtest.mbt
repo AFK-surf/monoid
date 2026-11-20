@@ -10,7 +10,7 @@
 /// at rest: a phone's window, or a desk's (`wide`: 1280 by 800, a mouse).
 fn nodes_new_chat(mode : String, wide? : Bool = false) -> @ui.Tester {
   new_run()
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   let src = fixture(mode)
   let t = if wide {
     @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)

@@ -8,7 +8,7 @@
 /// built other than one; and whether what was typed went as it was sent. (The first word typed sets the send button
 /// going as the composer is built, which builds the frame again keeping none: not counted.)
 fn typed_builds(w : Double, h : Double, n : Int) -> Array[String] {
-  let t = kept_rows_open("chat-long", w, h)
+  let t = kept_rows_open("chat-long", w, h, old=true)
   t.tap_text(@sf.t("web-main.composer.placeholder"))
   t.run_for(@ui.move_most_ms)
   t.text_told("字", t.time())

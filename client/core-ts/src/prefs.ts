@@ -184,12 +184,9 @@ export function set(data: Data, patch: unknown, fill: boolean, now: number): voi
   const prefs = kept(data);
   // What an older build kept for 奏, or for experimental features since graduated, is not kept on.
   if ("listFilter" in prefs) prefs.listFilter = listFiltersOf(prefs.listFilter);
-  // 外观's 试用新对话页 of 0.1.9524-0.1.9625 (`chatPage: "nodes"`) is 实验性功能's switch from now on (features.ts
-  // experimentalOf reads it so till this writes it over; goes with that, 2026-11-24).
-  if ("chatPage" in prefs) {
-    if (prefs.chatPage === "nodes" && !(isObject(prefs.experimental) && "chatPage" in prefs.experimental)) prefs.experimental = { ...(isObject(prefs.experimental) ? prefs.experimental : {}), chatPage: true };
-    delete prefs.chatPage;
-  }
+  // 外观's 试用新对话页 of 0.1.9524-0.1.9625 (`chatPage: "nodes"`): the new chat page is the test channel's now, no
+  // choice (features.ts `chatPage`, beta); its switch in `experimental`, if kept, goes with experimentalOf below.
+  delete prefs.chatPage;
   if ("experimental" in prefs) {
     const cleaned = experimentalOf({ experimental: prefs.experimental });
     if (Object.keys(cleaned).length) prefs.experimental = cleaned;

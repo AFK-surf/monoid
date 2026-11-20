@@ -282,13 +282,30 @@ test "words with a mark leave the field as they stand: the same inks from the fr
     out.sort()
     out
   }
-  let field = inks()
-  assert_eq(field.length(), 3)
+  let typed = inks()
+  assert_eq(typed.length(), 3)
   tap_send(t)
   t.draw()
-  assert_eq(inks(), field)
-  let f = flight_of("ws1/st1:s-c1").unwrap()
-  assert_true(@sfbase.flight_said(f) == "@首页 吧")
+  assert_eq(inks(), typed)
+  // (the old page's words on their way (its SendFlight); the page made as nodes flies them as tree nodes
+  // (View::flies_in), what is on its way the list's: the words in pieces, the mark's its own)
+  match flight_of("ws1/st1:s-c1") {
+    Some(f) => assert_true(@sfbase.flight_said(f) == "@首页 吧")
+    None => {
+      match sending_of("ws1/st1\u{1}s-c1") {
+        [l] => {
+          let parts = match l.row.words {
+            Some(Array(a)) => a
+            _ => []
+          }
+          assert_eq(parts.map(fn(p) { text(Some(p), "text") }), ["首页", " 吧"])
+          assert_true(field(Some(parts[0]), "ref") is Some(True))
+        }
+        _ => fail("not in the list")
+      }
+      assert_true(t.run_rects("首页").length() >= 1)
+    }
+  }
   t.draw()
   assert_true(t.run_rects("吧").length() == 1)
 }

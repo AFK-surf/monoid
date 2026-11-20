@@ -20,9 +20,7 @@ fn wide_bar_at(
 ) -> @ui.Tester {
   new_run()
   // (the chat's page made with its inside nodes: sfbase's chat_page_nodes)
-  if nodes {
-    @sfbase.chat_page_nodes.set(true)
-  }
+  @sfbase.hold_chat_page_nodes(Some(nodes))
   let base = fixture(mode)
   let src : Source = {
     ..base,

@@ -13,9 +13,7 @@ fn image_in_chat(
 ) -> (@ui.Tester, Double, Double) {
   new_run()
   // (the chat's page made as nodes, its composer too, where `nodes` says so: sfbase's chat_page_nodes)
-  if nodes {
-    @sfbase.chat_page_nodes.set(true)
-  }
+  @sfbase.hold_chat_page_nodes(Some(nodes))
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h=844.0, platform~)
@@ -547,6 +545,8 @@ test "a quoted video cover keeps its identity when the core's row takes over dur
 ///|
 test "a quoted video cover that arrives during the flight is shown on that same flight" {
   new_run()
+  // (the old page's flight, send_flight's: the page made as nodes flies its row, quote_flight_wbtest's)
+  @sfbase.hold_chat_page_nodes(Some(false))
   let base = fixture("chat")
   let available = @signals.signal(false)
   let name = "late-quote.mp4"

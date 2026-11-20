@@ -6,7 +6,8 @@
 ///|
 /// What the chat's message field holds, as it is read out.
 fn composer_said(t : @ui.Tester) -> String {
-  t.semantics().iter().find_first(fn(s) { s.role == TextField && s.label == "发消息" }).map(fn(s) { s.value }).unwrap_or("?")
+  // (the field by its label: 发消息, or 按空格输入 as the page made as nodes names it on a keyboard while it has not the focus)
+  t.semantics().iter().find_first(fn(s) { s.role == TextField && (s.label == "发消息" || s.label == "按空格输入") }).map(fn(s) { s.value }).unwrap_or("?")
 }
 
 ///|

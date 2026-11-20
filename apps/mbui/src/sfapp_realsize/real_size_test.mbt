@@ -27,7 +27,9 @@
 // What is the same on every screen is given its changes on one: the shell's lists (`real_size_shell_ways`) on Home, or
 // where Home reads none of a way, the first screen that does; the chat page's own topics (`real_size_chat_ways`) on
 // the chat's modes about them (`real_size_chat_modes`), not under every sheet and panel over it: given everywhere they
-// were 12,398 rows, 10,336 of them zeros, and four times the sweep's time (2026-11-11).
+// were 12,398 rows, 10,336 of them zeros, and four times the sweep's time (2026-11-11). The new chat's own
+// (`newChat`), held beside the pages of a wide window as nodes, is given its changes on the new chat's modes alone
+// (`newchat…`), as the chat page's are on the chat's (2026-11-19).
 // Each row, "<window> <mode> <way>/<cause>", is held to its bar in real_size_change_known_wbtest.mbt, which only falls:
 // more than a tenth over it and by `real_size_change_floor` or more fails, as much under it asks for it to be brought
 // down, a row not there fails with the line to write, and one there no longer measured asks for it to be taken out. A
@@ -64,7 +66,9 @@ let real_size_board_ways : Array[String] = ["chats"]
 ///|
 /// The chat page's own ways: the same chat page under each of its other modes (a sheet, a panel over it), so their
 /// changes are given on the chat's modes about them alone (`real_size_chat_modes`).
-let real_size_chat_ways : Array[String] = ["chat compact", "live", "chatJobs compact summary", "agentCard", "history", "job"]
+let real_size_chat_ways : Array[String] = [
+  "chat compact", "live", "chatJobs compact summary", "agentCard", "history", "job", "chatOutline",
+]
 
 ///|
 /// The chat's modes the chat page's own ways are given their changes on: the chat, an agent at work, a job's sheet, an
@@ -207,6 +211,8 @@ fn real_size_given_here(mode : String, way : String, measured : Map[String, Bool
     mode == "home" || (!home.contains(way) && !measured.contains(way))
   } else if real_size_chat_ways.contains(way) {
     real_size_chat_modes.contains(mode)
+  } else if way == "newChat" {
+    mode.has_prefix("newchat")
   } else {
     true
   }

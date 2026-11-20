@@ -8,7 +8,7 @@
 /// laying out the app's tabs where `nav_able`, its page made as nodes where `nodes`, at rest.
 fn chat_pictures_open(w : Double, h : Double, width : String, nav_able : Bool, nodes : Bool) -> @ui.Tester {
   new_run()
-  @sfbase.chat_page_nodes.set(nodes)
+  @sfbase.hold_chat_page_nodes(Some(nodes))
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform=1, nav_able~)

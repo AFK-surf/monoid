@@ -11,7 +11,7 @@
 /// display's at 60 a second; the fixture's source as `over` makes it.
 fn ms_open(nodes : Bool, over? : (String, Map[String, Json], Topic) -> Topic = fn(_, _, t) { t }) -> @ui.Tester {
   new_run()
-  @sfbase.chat_page_nodes.set(nodes)
+  @sfbase.hold_chat_page_nodes(Some(nodes))
   let base = fixture("chat")
   let src : Source = {
     ..base,
