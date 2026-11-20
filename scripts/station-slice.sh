@@ -27,8 +27,9 @@ i=${s%/*} n=${s#*/}
 # (mb-fault-runtimes-and-lend: two MoonBit stations under the launcher, runtimes, lent logins and a refused hand-over,
 # 43 s and 84 core-seconds alone on Studio, 2026-11-20)
 # (mb-fault-replica-retire: two MoonBit stations over iroh three times, a 48 MiB hand-over cut by a kill, 111-127 s on
-# Studio, 2026-11-20)
-long="test/rules-fork.test.ts:168 test/mb-fault-replica-retire.test.ts:125 test/mb-fault-runtimes-and-lend.test.ts:84"
+# Studio but 180-208 s on CI's Linux runners (#7780's 44757732573: 208), counted at that: at 125 check-station (1)
+# ran past its 5 minutes twice, #7797's 44760635957, 2026-11-20)
+long="test/rules-fork.test.ts:168 test/mb-fault-replica-retire.test.ts:210 test/mb-fault-runtimes-and-lend.test.ts:84"
 long="$long test/memory-sync-random.test.ts:69"
 long="$long test/replica-heap-bounded.test.ts:57"
 long="$long test/move-accounts.test.ts:53 test/replica-retire.test.ts:44 test/lock-moved-model.test.ts:40"
@@ -36,6 +37,12 @@ long="$long test/lock-roster4.test.ts:39 test/updates.test.ts:36 test/chat-hando
 long="$long test/mb-reader-timeline.test.ts:22 test/chat-handover.test.ts:21 test/lock-world-1.test.ts:21"
 # (mb-twin-station: two stations under the launcher, then a chain of three handovers, 12-15 s on Studio, 2026-11-18)
 long="$long test/mb-twin-station.test.ts:15"
+# (the MoonBit station's fault files, each real stillfail-reader processes, mesh and fake runtimes: dealt at 2 they met in
+# one slice and check-station (5) ran past its 5 minutes, #7797, 2026-11-20; their seconds as measured then)
+long="$long test/mb-fault-adb-device-connects.test.ts:65 test/mb-fault-agents-and-pack.test.ts:55"
+long="$long test/mb-fault-storage-and-peer.test.ts:55 test/mb-fault-browser-share-rig.test.ts:45"
+long="$long test/mb-fault-move-and-connects.test.ts:45 test/mb-fault-lock-and-mesh.test.ts:45"
+long="$long test/mb-fault-connects-mesh.test.ts:35 test/mb-fault-lifecycle.test.ts:30 test/mb-fault-vault-concurrency.test.ts:25"
 long="$long test/chat-handover-back.test.ts:20 test/mb-replica.test.ts:20 test/chat-handover-moves.test.ts:19"
 long="$long test/lock-world-2.test.ts:19 test/lock-world-3.test.ts:19 test/hub.test.ts:18"
 long="$long test/move-plan-bounded.test.ts:15 test/replica-stations.test.ts:13 test/lock-forks.test.ts:12"
