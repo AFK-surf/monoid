@@ -270,6 +270,8 @@ pub struct CommaSurface {
   priv posting : Map[String, (String, Array[Attachment])]
   /// The files of the Messages being heard, by the id they are named by here, until they are fetched.
   priv shared : Map[String, Shared]
+  /// Per-connect handler supplied by `connects_hub` (overrides `store.handler` when set).
+  priv mut handler : (async (J) -> Unit)?
 }
 
 ///|
@@ -296,7 +298,14 @@ pub fn CommaSurface::new(options : SurfaceOptions, io : Io, runtime : @effect.Ru
     people: {},
     posting: {},
     shared: {},
+    handler: None,
   }
+}
+
+///|
+/// Sets the per-connect inbound message handler (e.g. from `connects_hub` / `WorkspaceConnects`).
+pub fn CommaSurface::set_handler(self : CommaSurface, handler : async (J) -> Unit) -> Unit {
+  self.handler = Some(handler)
 }
 
 // ── the connection ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -935,24 +944,26 @@ async fn CommaSurface::put(self : CommaSurface, params : J) -> J {
     }
     let user = self.learn(prop(mm, "author"))
     let model = if first { Some(self.choice(t.start)) } else { None }
-    (self.store.handler)(
-      jobj([
-        ("type", jstr("message")),
-        (
-          "message",
-          jo([
-            ("channel", Some(jstr(task_channel))),
-            ("threadTs", Some(jstr(t.thread_ts))),
-            ("ts", Some(jstr(seq_ts(seq)))),
-            ("user", Some(jstr(user))),
-            ("text", Some(jstr(said))),
-            ("addressed", Some(Bool(true))),
-            ("files", Some(Arr(files))),
-            ("model", model.bind(x => x)),
-          ]),
-        ),
-      ]),
-    )
+    let event = jobj([
+      ("type", jstr("message")),
+      (
+        "message",
+        jo([
+          ("channel", Some(jstr(task_channel))),
+          ("threadTs", Some(jstr(t.thread_ts))),
+          ("ts", Some(jstr(seq_ts(seq)))),
+          ("user", Some(jstr(user))),
+          ("text", Some(jstr(said))),
+          ("addressed", Some(Bool(true))),
+          ("files", Some(Arr(files))),
+          ("model", model.bind(x => x)),
+        ]),
+      ),
+    ])
+    match self.handler {
+      Some(h) => h(event)
+      None => (self.store.handler)(event)
+    }
     first = false
     for f in files {
       self.shared.remove(str_of(prop(Some(f), "id")).unwrap_or(""))

@@ -549,24 +549,56 @@ fn comma_connection(host : @host.Host, s : @comma.CommaSurface, id : String, boo
   // (Comma shows no status line: comma/surface.ts `Quiet`, each said taken as shown)
   base.set_status_line(_ => @connects_hub.StatusLine::new(f => base.run(f), base.clock, 1000.0, async fn(_, _, _) { true }))
   base.hooked(identify=async fn() { s.identify() }, address=async fn() { s.address() }, run_socket=async fn(url, handler) {
-    ignore(handler)
+    s.set_handler(handler)
     let next = Ref(0)
+    let close_cbs : Array[(Int, () -> Unit)] = []
+    let next_cb = Ref(0)
+    let fire_close = () => {
+      let cbs = close_cbs.copy()
+      close_cbs.clear()
+      for pair in cbs {
+        (pair.1)()
+      }
+      s.closed()
+    }
     let wrap = (sock : @connects_hub.Socket) => {
       next.val += 1
-      ({ id: next.val, send: t => (sock.send)(@utf8.encode(t)), on_close: _f => () => () } : @comma.Socket)
+      ({
+        id: next.val,
+        send: t => (sock.send)(@utf8.encode(t)),
+        on_close: f => {
+          next_cb.val += 1
+          let cid = next_cb.val
+          close_cbs.push((cid, f))
+          () => {
+            match close_cbs.search_by(p => p.0 == cid) {
+              Some(i) => ignore(close_cbs.remove(i))
+              None => ()
+            }
+          }
+        },
+      } : @comma.Socket)
     }
     let current : Ref[@comma.Socket?] = Ref(None)
-    base.socket_to(url, {
-      opened: sock => current.val = Some(wrap(sock)),
-      message: (sock, data, _binary, _at, end) => {
-        let cs = match current.val {
-          Some(c) => c
-          None => wrap(sock)
-        }
-        s.message(cs, @utf8.decode_lossy(data), () => end(None))
-      },
-      ping: _ => (),
-    }, headers=s.headers())
+    try {
+      base.socket_to(url, {
+        opened: sock => current.val = Some(wrap(sock)),
+        message: (sock, data, _binary, _at, end) => {
+          let cs = match current.val {
+            Some(c) => c
+            None => wrap(sock)
+          }
+          s.message(cs, @utf8.decode_lossy(data), () => end(None))
+        },
+        ping: _ => (),
+      }, headers=s.headers())
+    } catch {
+      e => {
+        fire_close()
+        raise e
+      }
+    }
+    fire_close()
   }, look_up=async fn(user) { Some(s.look_up(user)) }, look_up_email=async fn(user) { s.look_up_email(user) })
   let txt = (a : Array[@jsjson.JValue], i : Int) => match a.get(i) { Some(Str(u)) => @jsjson.sanitize_str(u); _ => "" }
   let get = fn(name : String, a : Array[@jsjson.JValue]) -> @jsjson.JValue? {
@@ -679,9 +711,22 @@ async fn P55::start_comma(self : P55, options : @connects_hub.ConnectsOptions) -
         deliver: async fn(thread, n, sessions, text, ws) {
           ignore(self.hub("hub.deliver", [Json::number(thread), Json::number(n), Json::array(sessions.map(Json::string(_))), Json::string(text), jopt(ws)]))
         },
-        complete_router_write: async fn(id) { self.hub("store.completeRouterWrite", [Json::string(id)]) is True },
-        say: async fn(thread, author, text, _hooks) {
-          as_num(self.hub("hub.say", [Json::number(thread), Json::string(author), Json::string(text)])).unwrap_or(0.0)
+        complete_router_write: async fn(id) {
+          ignore(db.all("UPDATE comma_router_once SET pending = 0 WHERE id = ? AND pending = 1", [Json::string(id)]))
+          ignore(db.all("DELETE FROM comma_router_once_targets WHERE id = ?", [Json::string(id)]))
+          db.all("SELECT 1 FROM comma_router_once WHERE id = ? AND pending = 0", [Json::string(id)]).length() > 0
+        },
+        say: async fn(thread, author, text, hooks) {
+          match hooks {
+            Some(h) => {
+              (h.before)()
+              let n = as_num(self.hub("hub.say", [Json::number(thread), Json::string(author), Json::string(text)])).unwrap_or(0.0)
+              (h.inserted)(n)
+              n
+            }
+            None =>
+              as_num(self.hub("hub.say", [Json::number(thread), Json::string(author), Json::string(text)])).unwrap_or(0.0)
+          }
         },
       },
       previous_exited: async fn() { (bus.previous_gone)() },
@@ -733,7 +778,7 @@ async fn P55::start_comma(self : P55, options : @connects_hub.ConnectsOptions) -
       book_person: None,
       book_known: None,
     },
-    _connect => [],
+    connect => (bus.hub_models_for.val)(connect).map(to_jv),
     async fn() {
       if connects_ref.val is Some(c) { c.reconcile() }
     },

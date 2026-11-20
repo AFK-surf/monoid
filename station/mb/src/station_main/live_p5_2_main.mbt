@@ -955,6 +955,12 @@ fn P52::wire_bus(self : P52) -> Unit {
   let bus = self.bus
   bus.mcp_handle.val = Some(async fn(r) { self.mcp(r) })
   bus.hub_ask.val = async fn(op, arg) { self.hub_op(op, arg) }
+  bus.hub_models_for.val = connect_id => {
+    match self.hub {
+      Some(h) => h.models_for(connect_id) catch { _ => [] }
+      None => []
+    }
+  }
   bus.status_agents.val = () => Some(self.status_agents())
   bus.handover_sessions.val = async fn() { self.hand_over() }
   bus.take_handover.val = async fn(handed) { self.take_handover(handed) }
