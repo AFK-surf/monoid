@@ -13,5 +13,7 @@ fn main {
     _ => ()
   }
   @hostapi.window_setup(360.0, 560.0, 1280.0, 820.0)
-  @ui.run_legacy_ctx("still.fail 组件", @sfstorybook.stories_view, tree=@sfstorybook.stories_tree(@ui.env("STORY")))
+  let brand = @ui.env("MBUI_BRAND")
+  let title = if brand == "" { "still.fail 组件" } else { "\{brand} Components" }
+  @ui.run_legacy_ctx(title, @sfstorybook.stories_view, tree=@sfstorybook.stories_tree(@ui.env("STORY")))
 }

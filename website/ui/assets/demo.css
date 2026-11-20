@@ -155,16 +155,11 @@
   100% { opacity: 1; transform: translate(var(--x3, 0), var(--y3, 0)); }
 }
 
-/* Section text reveal: rises once when scrolled into view */
+/* Section text reveal: always visible immediately to prevent blank bands before scroll */
 .reveal > * {
-  animation: m-rise 580ms var(--ease-out) both paused;
-  animation-delay: calc(var(--i, 0) * 70ms);
+  opacity: 1;
+  transform: none;
 }
-.reveal > :nth-child(2) { --i: 1; }
-.reveal > :nth-child(3) { --i: 2; }
-.reveal > :nth-child(4) { --i: 3; }
-.reveal > :nth-child(n+5) { --i: 4; }
-.reveal.in > * { animation-play-state: running; }
 
 /* Reduced motion & no-JS fallback: render final state immediately */
 @media (prefers-reduced-motion: reduce) {

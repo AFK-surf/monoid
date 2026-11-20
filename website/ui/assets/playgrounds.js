@@ -54,6 +54,12 @@
       }
     };
 
+    const withLang = (src) => {
+      if (!src || !src.startsWith("/components/app/")) return src;
+      const sep = src.includes("?") ? "&" : "?";
+      return `${src}${sep}MBUI_LANG=${isZh() ? "zh" : "en"}`;
+    };
+
     const loadScene = (key) => {
       const targetBtn = sceneBtns.find((b) => b.dataset.heroScene === key) || sceneBtns[0];
       if (!targetBtn) return;
@@ -66,7 +72,7 @@
         return;
       }
       if (fallback) fallback.hidden = true;
-      const src = targetBtn.dataset.src;
+      const src = withLang(targetBtn.dataset.src);
       if (!frame) {
         frame = document.createElement("iframe");
         frame.title = "ui.monoid Live WebGL 2";
@@ -89,6 +95,21 @@
         loadScene(btn.dataset.heroScene);
       });
     }
+    for (const tab of document.querySelectorAll('.hero-tabs [role="tab"]')) {
+      tab.addEventListener("click", () => {
+        if (layer.hidden) return;
+        const pane = document.getElementById(tab.getAttribute("aria-controls"));
+        const sceneKey = pane?.dataset.sceneKey;
+        if (sceneKey) loadScene(sceneKey);
+      });
+    }
+    onLangChange(() => {
+      if (layer.hidden) return;
+      const active = sceneBtns.find((b) => b.getAttribute("aria-pressed") === "true");
+      if (active?.dataset.src?.startsWith("/components/app/")) {
+        loadScene(active.dataset.heroScene);
+      }
+    });
     exitBtn?.addEventListener("click", () => {
       layer.hidden = true;
     });

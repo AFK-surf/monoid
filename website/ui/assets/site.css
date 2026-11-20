@@ -371,6 +371,7 @@ a.mega-card:hover { background: var(--card-2); }
   font: 500 12px/1 var(--text); cursor: pointer;
 }
 .live-stage.is-live .live-close { display: inline-flex; }
+.live-close-dock[hidden] { display: none !important; }
 .live-stage.is-live .live-bar { display: none; }
 .live-fallback {
   position: absolute; inset: 0; z-index: 7; display: grid; place-items: center;

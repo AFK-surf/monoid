@@ -10,7 +10,7 @@
     <p class="lede" data-en="Zero-coupling interaction state machines and live WebGL 2 controls." data-zh="零耦合交互状态机与实时 WebGL 2 组件。">Zero-coupling interaction state machines and live WebGL 2 controls.</p>
 
     <div class="stage" id="comp-stage">
-      <div class="live-stage" data-live-src="/components/app/?STORY=palette" data-live-title="ui.monoid Storybook">
+      <div class="live-stage" data-live-src="/components/app/?STORY=palette&amp;MBUI_BRAND=ui.monoid" data-live-title="ui.monoid Storybook">
         {{shot:comp-gallery-light:ui.monoid sf-ui palette and semantic tokens}}
         <div class="live-bar">
           <button type="button" class="live-launch" data-live-launch>
@@ -18,9 +18,6 @@
           </button>
         </div>
         <div class="live-frame-wrap"></div>
-        <button type="button" class="live-close" data-live-close>
-          {{i:close}}<span data-en="Return to Preview" data-zh="回到静态图">Return to Preview</span>
-        </button>
         <div class="live-fallback" hidden>
           <p data-en="WebGL 2 is unavailable in this browser." data-zh="当前浏览器不支持 WebGL 2。">WebGL 2 is unavailable in this browser.</p>
         </div>
@@ -29,25 +26,30 @@
 
     <div class="story-dock" role="toolbar" aria-label="Storybook scenes" data-en-aria="Storybook scenes" data-zh-aria="Storybook 场景切换">
       <div class="story-pills">
-        <button type="button" class="story-pill" data-story-src="/components/app/?STORY=palette" aria-pressed="false">
+        <button type="button" class="story-pill" data-story-src="/components/app/?STORY=palette&amp;MBUI_BRAND=ui.monoid" aria-pressed="false">
           {{i:palette}}<span data-en="Palette" data-zh="色阶">Palette</span>
         </button>
-        <button type="button" class="story-pill" data-story-src="/components/app/?STORY=button" aria-pressed="false">
+        <button type="button" class="story-pill" data-story-src="/components/app/?STORY=button&amp;MBUI_BRAND=ui.monoid" aria-pressed="false">
           {{i:sliders}}<span data-en="Buttons" data-zh="按钮">Buttons</span>
         </button>
-        <button type="button" class="story-pill" data-story-src="/components/app/?STORY=motion-controls" aria-pressed="false">
+        <button type="button" class="story-pill" data-story-src="/components/app/?STORY=motion-controls&amp;MBUI_BRAND=ui.monoid" aria-pressed="false">
           {{i:motion}}<span data-en="Controls" data-zh="控件">Controls</span>
         </button>
-        <button type="button" class="story-pill" data-story-src="/components/app/?STORY=popover" aria-pressed="false">
+        <button type="button" class="story-pill" data-story-src="/components/app/?STORY=popover&amp;MBUI_BRAND=ui.monoid" aria-pressed="false">
           {{i:layers}}<span data-en="Overlays" data-zh="浮层">Overlays</span>
         </button>
-        <button type="button" class="story-pill" data-story-src="/components/app/?MBUI_DARK=1" aria-pressed="false">
+        <button type="button" class="story-pill" data-story-src="/components/app/?MBUI_DARK=1&amp;MBUI_BRAND=ui.monoid" aria-pressed="false">
           {{i:sparkles}}<span data-en="Dark Mode" data-zh="深色模式">Dark Mode</span>
         </button>
       </div>
-      <a class="story-pill story-full" href="/components/app/" target="_blank" rel="noopener noreferrer">
-        <span data-en="Fullscreen" data-zh="全屏">Fullscreen</span>{{i:arrow-ne}}
-      </a>
+      <div class="story-pills">
+        <button type="button" class="story-pill live-close-dock" data-live-close="comp-stage" hidden>
+          {{i:close}}<span data-en="Return to Preview" data-zh="回到静态图">Return to Preview</span>
+        </button>
+        <a class="story-pill story-full" href="/components/app/?MBUI_BRAND=ui.monoid" target="_blank" rel="noopener noreferrer">
+          <span data-en="Fullscreen" data-zh="全屏">Fullscreen</span>{{i:arrow-ne}}
+        </a>
+      </div>
     </div>
   </div>
 </section>
@@ -253,7 +255,7 @@
   if (stage && pills.length) {
     const wrap = stage.querySelector(".live-frame-wrap");
     const fallback = stage.querySelector(".live-fallback");
-    const closeBtn = stage.querySelector("[data-live-close]");
+    const closeBtn = document.querySelector('[data-live-close="comp-stage"]');
 
     const setActive = (btn) => {
       for (const p of pills) {
@@ -263,9 +265,16 @@
       }
     };
 
+    const withLang = (base) => {
+      const lang = document.documentElement.dataset.lang === "zh" ? "zh" : "en";
+      const sep = base.includes("?") ? "&" : "?";
+      return `${base}${sep}MBUI_LANG=${lang}`;
+    };
+
     const loadStory = (btn) => {
-      const url = btn.dataset.storySrc;
-      if (!url || !wrap) return;
+      const base = btn.dataset.storySrc;
+      if (!base || !wrap) return;
+      const url = withLang(base);
       setActive(btn);
       stage.dataset.liveSrc = url;
       if (!hasWebGL2()) {

@@ -1,16 +1,16 @@
 <!-- title: Liquid Glass — ui.monoid -->
 <!-- title-zh: Liquid Glass — ui.monoid -->
-<!-- description: Real-time GPU refraction shaders, closed-form spring physics, and interactive optical controls ported 1:1 from Kyant0/AndroidLiquidGlass to mbui. -->
+<!-- description: Real-time iOS 27 UIGlassEffect optical shaders (Glass::liquid), quarter-circle bevel refraction, adaptive light/dark transmission, and closed-form springs on WebGL 2. -->
 <!-- page: liquid-glass -->
 
 <section class="hero dark lg-hero">
   <div class="wrap">
-    <div class="eyebrow" data-en="Apache-2.0 · Real-Time GPU Shaders" data-zh="Apache-2.0 · 实时 GPU 着色器">Apache-2.0 · Real-Time GPU Shaders</div>
+    <div class="eyebrow" data-en="Apache-2.0 · iOS 27 UIGlassEffect Model" data-zh="Apache-2.0 · iOS 27 UIGlassEffect 光学模型">Apache-2.0 · iOS 27 UIGlassEffect Model</div>
     <h1 data-en="Liquid Glass, refracted live." data-zh="实时折射的液态玻璃。">Liquid Glass, refracted live.</h1>
-    <p class="lede" data-en="1:1 port of AndroidLiquidGlass with closed-form springs on WebGL 2." data-zh="AndroidLiquidGlass 1:1 移植，闭式弹簧与实时 GPU 折射。">1:1 port of AndroidLiquidGlass with closed-form springs on WebGL 2.</p>
+    <p class="lede" data-en="Uniform blur, quarter-circle bevel refraction, adaptive ios27Light / ios27Dark / ios27Clear transmission, touch spots, and shared backdrop capture on WebGL 2." data-zh="对标 Apple iOS 27 UIGlassEffect（flutter_liquid_glass 光学模型）：均匀轻雾、四分之一圆倒角折射、明暗自适应传输、触摸光斑与共享捕获。">Uniform blur, quarter-circle bevel refraction, adaptive ios27Light / ios27Dark / ios27Clear transmission, touch spots, and shared backdrop capture on WebGL 2.</p>
 
     <div class="stage obsidian" id="lg-stage">
-      <div class="live-stage" id="lg-live" data-live-src="/liquid-glass/app/?MBUI_LG_PAGE=overview&amp;MBUI_DARK=1" data-live-title="ui.monoid Liquid Glass">
+      <div class="live-stage" id="lg-live" data-live-src="/liquid-glass/app/?MBUI_LG_PAGE=overview&amp;MBUI_DARK=1&amp;MBUI_LG_CHROME=0" data-live-title="ui.monoid Liquid Glass">
         <div class="lg-preview on" data-lg-preview="dark">
           {{shot:lg-hero-dark:Liquid Glass component gallery on dark surface}}
         </div>
@@ -23,9 +23,6 @@
           </button>
         </div>
         <div class="live-frame-wrap"></div>
-        <button type="button" class="live-close" data-live-close>
-          {{i:close}}<span data-en="Return to Preview" data-zh="回到静态图">Return to Preview</span>
-        </button>
         <div class="live-fallback" hidden>
           <p data-en="WebGL 2 is unavailable in this browser." data-zh="当前浏览器不支持 WebGL 2。">WebGL 2 is unavailable in this browser.</p>
         </div>
@@ -51,6 +48,9 @@
         </button>
         <button type="button" class="lg-pill" data-lg-page="dialog" aria-pressed="false">
           {{i:layers}}<span data-en="Dialog" data-zh="对话框">Dialog</span>
+        </button>
+        <button type="button" class="lg-pill live-close-dock" data-live-close="lg-stage" hidden>
+          {{i:close}}<span data-en="Return to Preview" data-zh="回到静态图">Return to Preview</span>
         </button>
         <a class="lg-pill lg-full" href="/liquid-glass/app/?MBUI_DARK=1" target="_blank" rel="noopener noreferrer">
           <span data-en="Fullscreen" data-zh="全屏">Fullscreen</span>{{i:arrow-ne}}
@@ -182,10 +182,13 @@ let tab = @signals.signal(0)
       <div class="card lg-attr-card">
         <div class="ic">{{i:shield}}</div>
         <h3 data-en="Apache-2.0 Attribution" data-zh="Apache-2.0 开源致谢">Apache-2.0 Attribution</h3>
-        <p data-en="1:1 port of Kyant0/AndroidLiquidGlass onto mbui's retained tree — every lens, spring, and highlight parameter traced to upstream." data-zh="Kyant0/AndroidLiquidGlass 在 mbui 保留树上的 1:1 移植，所有透镜、弹簧与高光参数均溯源上游。">1:1 port of Kyant0/AndroidLiquidGlass onto mbui's retained tree — every lens, spring, and highlight parameter traced to upstream.</p>
+        <p data-en="Glass::liquid unifies Apple iOS 27 UIGlassEffect optics (uniform blur, quarter-circle bevel refraction, ios27Light / ios27Dark / ios27Clear, inner bevel shadow &amp; outline, touch spot, and .sharing() capture) based on whynotmake-it/flutter_liquid_glass, with the interactive control catalog adapted from Kyant0/AndroidLiquidGlass." data-zh="Glass::liquid 统一对标 Apple iOS 27 UIGlassEffect 光学模型（均匀轻雾、四分之一圆倒角折射、ios27Light / ios27Dark / ios27Clear、内倒角阴影与外轮廓、触摸光斑及 .sharing() 共享捕获），光学模型致谢 whynotmake-it/flutter_liquid_glass，交互组件目录致谢 Kyant0/AndroidLiquidGlass。">Glass::liquid unifies Apple iOS 27 UIGlassEffect optics (uniform blur, quarter-circle bevel refraction, ios27Light / ios27Dark / ios27Clear, inner bevel shadow &amp; outline, touch spot, and .sharing() capture) based on whynotmake-it/flutter_liquid_glass, with the interactive control catalog adapted from Kyant0/AndroidLiquidGlass.</p>
         <div class="acts">
+          <a class="btn btn-line btn-s" href="https://github.com/whynotmake-it/flutter_liquid_glass" target="_blank" rel="noopener noreferrer">
+            {{i:github}}<span data-en="flutter_liquid_glass" data-zh="flutter_liquid_glass">flutter_liquid_glass</span>
+          </a>
           <a class="btn btn-line btn-s" href="https://github.com/Kyant0/AndroidLiquidGlass" target="_blank" rel="noopener noreferrer">
-            {{i:github}}<span data-en="Kyant0/AndroidLiquidGlass" data-zh="Kyant0/AndroidLiquidGlass">Kyant0/AndroidLiquidGlass</span>
+            {{i:github}}<span data-en="AndroidLiquidGlass" data-zh="AndroidLiquidGlass">AndroidLiquidGlass</span>
           </a>
           <a class="btn btn-ghost btn-s" href="{{repo}}" target="_blank" rel="noopener noreferrer">
             <span data-en="libs/liquid-glass Source" data-zh="libs/liquid-glass 源码">libs/liquid-glass Source</span>{{i:arrow-ne}}
@@ -224,7 +227,7 @@ let tab = @signals.signal(0)
 
   const wrap = stage.querySelector(".live-frame-wrap");
   const fallback = stage.querySelector(".live-fallback");
-  const closeBtn = stage.querySelector("[data-live-close]");
+  const closeBtn = document.querySelector('[data-live-close="lg-stage"]');
   const previews = [...stage.querySelectorAll("[data-lg-preview]")];
   const themeBtns = [...document.querySelectorAll("[data-lg-theme]")];
   const pageBtns = [...document.querySelectorAll("[data-lg-page]")];
@@ -234,7 +237,7 @@ let tab = @signals.signal(0)
 
   const buildUrl = () => {
     const darkParam = theme === "dark" ? "&MBUI_DARK=1" : "";
-    return `/liquid-glass/app/?MBUI_LG_PAGE=${encodeURIComponent(page)}${darkParam}`;
+    return `/liquid-glass/app/?MBUI_LG_PAGE=${encodeURIComponent(page)}${darkParam}&MBUI_LG_CHROME=0`;
   };
 
   const syncPreview = () => {

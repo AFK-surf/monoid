@@ -6,9 +6,9 @@
 // 5. Copy buttons ([data-copy])
 // 6. Lightweight EN / 中文 runtime i18n (data-en / data-zh)
 
-// 1. Single-play scroll reveals
+// 1. Single-play scroll triggers for .demo blocks (.reveal is visible by default)
 (() => {
-  const parts = document.querySelectorAll(".demo, .reveal");
+  const parts = document.querySelectorAll(".demo");
   if (!parts.length) return;
   if (!("IntersectionObserver" in window)) {
     for (const p of parts) p.classList.add("in");
@@ -22,7 +22,7 @@
         seen.unobserve(e.target);
       }
     },
-    { threshold: 0.33, rootMargin: "0px 0px -8% 0px" },
+    { threshold: 0.12, rootMargin: "0px 0px 40px 0px" },
   );
   for (const p of parts) seen.observe(p);
 })();
@@ -149,10 +149,19 @@
 
   for (const box of document.querySelectorAll("[data-live-src]")) {
     const launchBtn = box.querySelector("[data-live-launch]");
-    const closeBtn = box.querySelector("[data-live-close]");
+    const stageId = box.closest(".stage")?.id;
+    const closeBtn = box.querySelector("[data-live-close]") || (stageId ? document.querySelector(`[data-live-close="${stageId}"]`) : null);
     const wrap = box.querySelector(".live-frame-wrap");
     const fallback = box.querySelector(".live-fallback");
     if (!launchBtn || !wrap) continue;
+
+    if (closeBtn && closeBtn.classList.contains("live-close-dock")) {
+      const syncClose = () => {
+        closeBtn.hidden = !box.classList.contains("is-live");
+      };
+      new MutationObserver(syncClose).observe(box, { attributes: true, attributeFilter: ["class"] });
+      syncClose();
+    }
 
     launchBtn.addEventListener("click", () => {
       if (!hasWebGL2()) {
@@ -185,7 +194,11 @@
           { once: true },
         );
         frame.addEventListener("error", restoreBtn, { once: true });
-        frame.src = box.dataset.liveSrc;
+        let src = box.dataset.liveSrc;
+        if (src && src.startsWith("/components/app/") && !src.includes("MBUI_LANG=")) {
+          src += (src.includes("?") ? "&" : "?") + "MBUI_LANG=" + (isZh ? "zh" : "en");
+        }
+        frame.src = src;
         wrap.appendChild(frame);
       } else {
         box.classList.add("is-live");
