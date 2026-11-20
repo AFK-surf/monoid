@@ -1,7 +1,6 @@
 // A column's edge's look as nodes (edge_look_node): each of what it moves on its own way from the moment its state
 // changed, whatever frames are drawn (each moment looked at in a run of its own, frames all along or none before it);
-// as the old one (edge_look) is wherever nothing of either moves; made as its state is, still; turned back before its
-// end, on from where it was; at once where motion is reduced; asking for no frame once it is let go.
+// made as its state is, still; turned back before its end, on from where it was; at once where motion is reduced; asking for no frame once it is let go.
 
 ///|
 /// An edge's look's state from a moment on: over its column, on it, in hand.
@@ -34,30 +33,15 @@ fn edge_drawn(t : @ui.Tester, x0 : Double) -> EdgeDrawn {
 }
 
 ///|
-/// The node's look at 140 (and, `old`, the old one at 40, as the same states say), `start` its state as it is made,
-/// then `steps` at their moments (events, no frame), frames each 16 all along (`frames`) or none: what each draws at
-/// `at` (the node's, the old one's).
-fn looks_at(
-  start : (Bool, Bool, Bool),
-  steps : Array[EdgeState],
-  at : Double,
-  frames : Bool,
-  old? : Bool = false,
-) -> (EdgeDrawn, EdgeDrawn?, Double) {
+/// The node's look at 140, `start` its state as it is made, then `steps` at their moments (events, no frame), frames
+/// each 16 all along (`frames`) or none: what it draws at `at`, and the run's first moment.
+fn looks_at(start : (Bool, Bool, Bool), steps : Array[EdgeState], at : Double, frames : Bool) -> (EdgeDrawn, Double) {
   let t = @ui.Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=0)
   t.check_looks(false)
   let over = @signals.signal(start.0, same=fn(a, b) { a == b })
   let on = @signals.signal(start.1, same=fn(a, b) { a == b })
   let active = @signals.signal(start.2, same=fn(a, b) { a == b })
   @ui.set_view_app(fn(root) {
-    if old {
-      root.box(fn(o) {
-        o.over(Is(true)).offset(Is((40.0, 20.0))).width(Is(Some(handle_w))).height(Is(Some(200.0))) |> ignore
-        @ui.old(o, fn(c) { edge_look(c, "test", over=over.get(), on=on.get(), active=active.get()) }).grow(Is(1.0))
-        |> ignore
-      })
-      |> ignore
-    }
     root.box(fn(n) {
       n.over(Is(true)).offset(Is((140.0, 20.0))).width(Is(Some(handle_w))).height(Is(Some(200.0))) |> ignore
       edge_look_node(n, fn() { over.get() }, fn() { on.get() }, fn() { active.get() }) |> ignore
@@ -90,7 +74,7 @@ fn looks_at(
   }
   to(t0 + at)
   t.frame_at(t0 + at)
-  (edge_drawn(t, 140.0), if old { Some(edge_drawn(t, 40.0)) } else { None }, t0)
+  (edge_drawn(t, 140.0), t0)
 }
 
 ///|
@@ -121,21 +105,21 @@ test "an edge's look as nodes: at each moment of each of its moves the same, loo
     1290.0, 1400.0,
   ]
   for at in ats {
-    let (stepped, _, _) = looks_at((false, false, false), edge_steps, at, true)
-    let (jumped, _, _) = looks_at((false, false, false), edge_steps, at, false)
+    let (stepped, _) = looks_at((false, false, false), edge_steps, at, true)
+    let (jumped, _) = looks_at((false, false, false), edge_steps, at, false)
     assert_eq(jumped, stepped, msg="at \{at}: no frame before \{Repr(jumped)}, frames all along \{Repr(stepped)}")
     // (one bar at most; no more of its line than shows of it whole: fading, its faintest parts clear)
     assert_true(stepped.bar.length() <= 1 && stepped.parts <= line_parts_seen(), msg="at \{at}: \{Repr(stepped)}")
   }
   // (shown and its moves over at 250: its bar, no line; in hand at 800: its bar and the parts of its line that show)
-  let (shown, _, _) = looks_at((false, false, false), edge_steps, 250.0, false)
+  let (shown, _) = looks_at((false, false, false), edge_steps, 250.0, false)
   assert_eq((shown.bar.length(), shown.parts), (1, 0), msg="shown: \{Repr(shown)}")
-  let (held, _, _) = looks_at((false, false, false), edge_steps, 800.0, false)
+  let (held, _) = looks_at((false, false, false), edge_steps, 800.0, false)
   assert_eq((held.bar.length(), held.parts), (1, line_parts_seen()), msg="in hand: \{Repr(held)}")
 }
 
 ///|
-test "an edge's look as nodes, made as each state is (nothing of either moving): drawn as the old one is, hidden, shown, on it, in hand; what shows of each as that state has it" {
+test "an edge's look as nodes, made as each state is (nothing moving): hidden, shown, on it, in hand; what shows of each as that state has it, the same made then and later" {
   let seen = line_parts_seen()
   for s in [
     ((false, false, false), (0, 0)),
@@ -145,8 +129,7 @@ test "an edge's look as nodes, made as each state is (nothing of either moving):
   ] {
     let (start, (bars, parts)) = s
     for at in [0.0, 400.0] {
-      let (node, old, _) = looks_at(start, [], at, true, old=true)
-      assert_eq(Some(node), old, msg="\{Repr(start)} at \{at}: node \{Repr(node)}, old \{Repr(old)}")
+      let (node, _) = looks_at(start, [], at, true)
       assert_eq((node.bar.length(), node.parts), (bars, parts), msg="\{Repr(start)} at \{at}")
     }
   }
@@ -161,7 +144,7 @@ test "an edge's look as nodes, turned back before a move's end: on from where it
     { at: 30.0, over: true, on: false, active: false },
     { at: 60.0, over: true, on: true, active: false },
   ]
-  let (_, _, t0) = looks_at((false, false, false), [], 0.0, false)
+  let (_, t0) = looks_at((false, false, false), [], 0.0, false)
   let w = @motion.Way::new(0.0)
   let spec = @motion.tween(edge_bar_ms, ease=Out)
   w.go(1.0, spec, at=t0)
@@ -170,8 +153,8 @@ test "an edge's look as nodes, turned back before a move's end: on from where it
   let (s6, s12) = (@ui.Space::px(S6), @ui.Space::px(S12))
   // (before the first's end, just after it, before the last's end at 240, past it)
   for at in [100.0, 170.0, 190.0, 230.0, 300.0] {
-    let (seen, _, t1) = looks_at((false, false, false), steps, at, false)
-    let (stepped, _, _) = looks_at((false, false, false), steps, at, true)
+    let (seen, t1) = looks_at((false, false, false), steps, at, false)
+    let (stepped, _) = looks_at((false, false, false), steps, at, true)
     assert_eq(t1, t0)
     assert_eq(stepped, seen, msg="at \{at}: frames all along \{Repr(stepped)}, none \{Repr(seen)}")
     assert_eq(seen.bar.map(fn(b) { b.1 }), [s6 + (s12 - s6) * w.value_at(t0 + at)], msg="at \{at}: \{Repr(seen)}")
@@ -181,8 +164,8 @@ test "an edge's look as nodes, turned back before a move's end: on from where it
 ///|
 test "an edge's look as nodes made on it, or in hand: as it is then, at once, nothing coming in from hidden" {
   for start in [(true, true, false), (true, true, true)] {
-    let (made, _, _) = looks_at(start, [], 0.0, false)
-    let (later, _, _) = looks_at(start, [], 400.0, true)
+    let (made, _) = looks_at(start, [], 0.0, false)
+    let (later, _) = looks_at(start, [], 400.0, true)
     assert_eq(made, later, msg="\{Repr(start)}")
     assert_eq(made.bar.map(fn(b) { b.1 }), [@ui.Space::px(S12)], msg="\{Repr(start)}")
   }
@@ -191,8 +174,8 @@ test "an edge's look as nodes made on it, or in hand: as it is then, at once, no
 ///|
 test "an edge's look as nodes, motion reduced: where it goes at once" {
   @ui.set_motion_chosen(Some(true))
-  let (at_once, _, _) = looks_at((false, false, false), [{ at: 0.0, over: true, on: true, active: false }], 1.0, false)
-  let (later, _, _) = looks_at((false, false, false), [{ at: 0.0, over: true, on: true, active: false }], 400.0, false)
+  let (at_once, _) = looks_at((false, false, false), [{ at: 0.0, over: true, on: true, active: false }], 1.0, false)
+  let (later, _) = looks_at((false, false, false), [{ at: 0.0, over: true, on: true, active: false }], 400.0, false)
   @ui.set_motion_chosen(None)
   assert_eq(at_once, later)
 }
@@ -226,7 +209,7 @@ test "an edge's look as nodes let go as it moves: no frame asked after" {
 }
 
 ///|
-/// How many of a line's parts show (edge_look's: clear to 10% and from 90%, the rest some of its grey).
+/// How many of a line's parts show (edge_look_node's: clear to 10% and from 90%, the rest some of its grey).
 fn line_parts_seen() -> Int {
   let mut n = 0
   for i in 0..<edge_line_steps {

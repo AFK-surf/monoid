@@ -1,25 +1,29 @@
-// The stops (seg.mbt's `stops`): a few levels in order on one line, the one it is at named in its thumb.
+// The stops as nodes (stops_node): a few levels in order on one line, the one it is at named in its thumb.
 
 ///|
-/// A phone's window with the stops of `labels` in it, at `chosen` as its caller says; what was picked in it, in order.
-fn stops_run(labels : Array[String], chosen : Ref[Int], state : Stops, picks : Array[Int]) -> @ui.Tester {
-  let t = @ui.Tester::new(
-    fn(c) {
-      begin(c) |> ignore
-      c.with_theme(ui_theme(), fn() {
-        c.box(style=seg_test_room, fn() {
-          stops(c, "depth", labels, chosen.val, state, said="思考深度", on_pick=fn(i) { picks.push(i) }) |> ignore
-        })
-        |> ignore
-      })
-    },
-    w=360.0,
-    h=200.0,
-    platform=2,
-  )
+/// A phone's window with the stops of `labels` in it as nodes (stops_node), at `chosen` as its caller says; what was
+/// picked in it, in order.
+fn stops_run(labels : Array[String], chosen : @signals.Signal[Int], state : Stops, picks : Array[Int]) -> @ui.Tester {
+  let t = @ui.Tester::new(fn(_c) {  }, w=360.0, h=200.0, platform=2)
+  @ui.set_view_app(fn(root) {
+    root.padding(Is((20.0, 20.0, 20.0, 20.0))) |> ignore
+    // (in a row, as a page's row has it: across the rest of it)
+    root.box(fn(r) {
+      r.row(Is(true)) |> ignore
+      stops_node(r, fn() { labels }, fn() { chosen.get() }, state, said="思考深度", on_pick=fn(i) { picks.push(i) })
+      |> ignore
+    })
+    |> ignore
+  })
   t.draw()
   t.run_for(@ui.move_most_ms)
   t
+}
+
+///|
+/// What its caller does at the window's moment, as an event: says another level, or that a pick did not take.
+fn stops_told(t : @ui.Tester, f : () -> Unit) -> Unit {
+  @ui.view_tree().unwrap().event(t.time(), f)
 }
 
 ///|
@@ -31,7 +35,7 @@ fn stops_named(t : @ui.Tester, labels : Array[String]) -> Array[String] {
 ///|
 test "stops: every level a stop on one line, the one it is at alone named; a stop tapped is picked, said once, and stays shown while its caller still says the level before" {
   let labels = ["低", "中", "高", "最高"]
-  let (chosen, state, picks) = (Ref(2), Stops::new(), [])
+  let (chosen, state, picks) = (@signals.signal(2), Stops::new(), [])
   let t = stops_run(labels, chosen, state, picks)
   let s = t.get(@ui.Role::Slider, label="思考深度")
   assert_eq(s.value, "高")
@@ -51,9 +55,9 @@ test "stops: every level a stop on one line, the one it is at alone named; a sto
   t.run_for(@ui.move_most_ms)
   assert_eq(stops_named(t, labels), ["最高"], msg="taken back to what its caller still says")
   // said back, then another level from elsewhere: news, shown
-  chosen.val = 3
+  stops_told(t, fn() { chosen.set(3) })
   t.draw()
-  chosen.val = 1
+  stops_told(t, fn() { chosen.set(1) })
   t.draw()
   t.run_for(@ui.move_most_ms)
   assert_eq(stops_named(t, labels), ["中"])
@@ -64,7 +68,7 @@ test "stops: every level a stop on one line, the one it is at alone named; a sto
 ///|
 test "stops: a finger takes its thumb along the track, nothing picked on the way; let go, the level under the finger is picked" {
   let labels = ["低", "中", "高", "最高"]
-  let (chosen, state, picks) = (Ref(2), Stops::new(), [])
+  let (chosen, state, picks) = (@signals.signal(2), Stops::new(), [])
   let t = stops_run(labels, chosen, state, picks)
   let (x, y, w, h) = t.get(@ui.Role::Slider, label="思考深度").rect
   let at = fn(i : Int) { x + w * (i.to_double() + 0.5) / 4.0 }
@@ -89,7 +93,7 @@ test "stops: a finger takes its thumb along the track, nothing picked on the way
 ///|
 test "stops: at none of its levels, a stop tapped stays shown while its caller still says none; its caller's reset takes it back to none" {
   let labels = ["低", "中", "高", "最高"]
-  let (chosen, state, picks) = (Ref(-1), Stops::new(), [])
+  let (chosen, state, picks) = (@signals.signal(-1), Stops::new(), [])
   let t = stops_run(labels, chosen, state, picks)
   assert_eq(stops_named(t, labels), [])
   let (x, y, w, h) = t.get(@ui.Role::Slider, label="思考深度").rect
@@ -101,7 +105,7 @@ test "stops: at none of its levels, a stop tapped stays shown while its caller s
   t.run_for(@ui.move_most_ms)
   assert_eq(stops_named(t, labels), ["高"], msg="taken back to none while its save is on its way")
   // kept none of it
-  state.reset()
+  stops_told(t, fn() { state.reset() })
   t.draw()
   t.run_for(@ui.move_most_ms)
   assert_eq(stops_named(t, labels), [])
@@ -110,13 +114,13 @@ test "stops: at none of its levels, a stop tapped stays shown while its caller s
 ///|
 test "stops: a pick that did not take (its caller's reset) shows what its caller says again" {
   let labels = ["低", "中", "高", "最高"]
-  let (chosen, state, picks) = (Ref(1), Stops::new(), [])
+  let (chosen, state, picks) = (@signals.signal(1), Stops::new(), [])
   let t = stops_run(labels, chosen, state, picks)
   let (x, y, w, h) = t.get(@ui.Role::Slider, label="思考深度").rect
   t.tap(x + w - w / 8.0, y + h / 2.0)
   t.run_for(@ui.move_most_ms)
   assert_eq(stops_named(t, labels), ["最高"])
-  state.reset()
+  stops_told(t, fn() { state.reset() })
   t.draw()
   t.run_for(@ui.move_most_ms)
   assert_eq(stops_named(t, labels), ["中"])
@@ -125,7 +129,7 @@ test "stops: a pick that did not take (its caller's reset) shows what its caller
 ///|
 test "stops: seven levels with long names on a narrow phone: still one line, the one it is at whole in its thumb" {
   let labels = ["Minimal", "Low", "Medium", "High", "Very high", "Maximum", "Ultra"]
-  let (chosen, state, picks) = (Ref(4), Stops::new(), [])
+  let (chosen, state, picks) = (@signals.signal(4), Stops::new(), [])
   let t = stops_run(labels, chosen, state, picks)
   t.resize(320.0, 200.0)
   t.draw()

@@ -34,15 +34,29 @@ test "every match is stroked when a message has more than twelve" {
 ///|
 test "multiple matches on one search result line are each stroked under their own word" {
   let text = "hit hit hit"
-  let t = @ui.Tester::new(fn(c) {
-    @sf.found_line(c, "many", text, [(0, 3), (4, 7), (8, 11)], @sf.theme().chat_list.found.words, @sf.theme().p.text)
-  }, w=500.0, h=100.0)
+  let t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w=500.0, h=100.0)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(@sf.ui_theme_now)
+    @sf.found_words_node(root, fn() { text }, fn() { [(0, 3), (4, 7), (8, 11)] }, fn() {
+      @sf.theme().chat_list.found.words
+    }, fn() { @sf.theme().p.text })
+    |> ignore
+  })
+  t.draw()
   t.run_for(@sf.strokes_ms(3))
-  let words = t.ctx().words_of("search/found/many").unwrap()
-  let (x, y, w, h) = words.rects(8, 11)[0]
-  assert_true(t.drawn_lines().iter().any(fn(l) {
-    l.4 == @sf.line_stroke.width && l.0 >= x - 3.0 && l.0 <= x + w + 3.0 && l.1 >= y && l.1 <= y + h + 6.0
-  }), msg="the third match has no stroke underneath it")
+  t.draw()
+  // (the strokes drawn: each a run of pieces, one's end the next one's start; apart from each other, one under each)
+  let pieces = t.drawn_lines().filter(fn(l) { l.4 == @sf.line_stroke.width })
+  pieces.sort_by(fn(p, q) { p.0.compare(q.0) })
+  let mut strokes = if pieces.is_empty() { 0 } else { 1 }
+  for k in 1..<pieces.length() {
+    if pieces[k].0 > pieces[k - 1].2 + 1.0 {
+      strokes = strokes + 1
+    }
+  }
+  assert_eq(strokes, 3, msg="a stroke under each of the three matches: \{Repr(pieces)}")
+  // (under the words, the line's 20 high)
+  assert_true(pieces.iter().all(fn(l) { l.1 >= 10.0 && l.1 <= 26.0 }), msg="\{Repr(pieces)}")
 }
 
 ///|

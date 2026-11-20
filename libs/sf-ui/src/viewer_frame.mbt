@@ -10,38 +10,6 @@
 pub let viewer_small_w : Double = 640.0
 
 ///|
-/// The viewer's bar in its place in the viewer's layer (`shown`: as the viewer fades in or out): floating at the top
-/// in the Small tier, awake while `awake` (fading out over 320 ms and in over 120 ms, as the web's `data-awake`), at
-/// least `widest` wide (what it was laid out at before: the second of what this gives back); across the top
-/// otherwise, gone while `hidden`, back to `back` by name (`title`, where the file is, over its name while pointed at).
-/// `tools`: the file's own, then download. `on_close` as it is closed (its ×, or its way back). What it gives back:
-/// the width it was laid out at (the floating bar's; none across the top).
-pub fn viewer_frame_bar(
-  c : @ui.Ctx,
-  key : String,
-  back : String,
-  name : String,
-  meta : String,
-  hidden : Bool,
-  awake : Bool,
-  widest : Double,
-  shown : Double,
-  ink : ViewerInk,
-  tools : () -> Unit,
-  title? : String = "",
-  on_close~ : () -> Unit,
-) -> Double {
-  if layout(c.width) is Small {
-    return viewer_head(c, key, name, meta, awake, widest, shown, ink, tools, on_close~)
-  }
-  let n = c.box(style=vfr_layer, fn() {
-    viewer_bar(c, key + "/bar", back, name, meta, hidden, ink, tools, title~, on_back=on_close)
-  })
-  c.look(n, @ui.look(alpha=shown))
-  0.0
-}
-
-///|
 /// Whether a file opened `w` wide has the bar floating at its top (viewer_frame_bar's: the Small tier, a phone's or a
 /// fold half open wider than one, viewer_head_node's as nodes), not the bar across the top.
 pub fn viewer_bar_floats(w : Double) -> Bool {
@@ -63,67 +31,6 @@ pub fn viewer_bar_clear(w : Double) -> Double {
 ///|
 /// The floating bar's height (vfr_head_box's S11).
 let vfr_head_h : Double = 44.0
-
-///|
-/// The bar floating at the top (fpHead): page glass, its corner 14, 44 high, the room's top or 16 down (8 under 640),
-/// 16 in from the window's sides at most (8 under 640) and 1080 wide at most; the name first (its kind and size after
-/// it, not under 640), cut short before the tools give way, the tools and × at its end.
-fn viewer_head(
-  c : @ui.Ctx,
-  key : String,
-  name : String,
-  meta : String,
-  awake : Bool,
-  widest : Double,
-  shown : Double,
-  ink : ViewerInk,
-  tools : () -> Unit,
-  on_close~ : () -> Unit,
-) -> Double {
-  let small = c.width <= viewer_small_w
-  // (there and gone as it is drawn: told as it is built, read where it is painted)
-  let seen = @motion.told(c, key + "/head-seen", if awake { 1.0 } else { 0.0 }, spec=@motion.tween(
-      if awake {
-        wake_ms
-      } else {
-        sleep_ms
-      },
-      ease=Out,
-    ))
-  let (top, _) = (viewer_host().room)()
-  let down = dmax(top, if small { vfr_head_top_small } else { vfr_head_top })
-  let most = dmin(c.width - (if small { vfr_head_side_small } else { vfr_head_side }), vfr_head_most)
-  let head = c.id(key + "/head")
-  let n = c.box(style=vfr_head_room, fn() {
-    c.box(style=@ui.style(w=Full, h=Fixed(down)), fn() {  }) |> ignore
-    c.box(
-      style=(if small { vfr_head_box_small } else { vfr_head_box }).then(
-        @ui.style(max_w=Fixed(most), min_w=Fixed(dmin(widest, most))),
-      ),
-      glass=viewer_page_glass(),
-      id=head,
-      fn() {
-        c.box(style=vfr_head_title, fn() {
-          c.text(name, style=vfr_head_name) |> ignore
-          if !small && meta != "" {
-            c.text(meta, style=vfr_head_meta) |> ignore
-          }
-        })
-        |> ignore
-        c.box(style=vfr_head_gap, fn() {  }) |> ignore
-        // (short of room, the tools kept whole: the name gives way)
-        c.box(style=keys_row(), keep=true, fn() {
-          tools()
-          viewer_tool(c, key + "/close", "close", t("web-main.preview.closeKey"), ink, on_press=on_close)
-        })
-        |> ignore
-      },
-    )
-    |> ignore
-  })
-  c.look_by(n, fn() { @ui.look(alpha=seen.get(c) * shown) })
-  c.laid_size(head).map(fn(s) { s.0 }).unwrap_or(0.0)
-}
 
 ///|
 /// What is opened over the whole window to be done one way (a chat shared as a picture: sfpages' publish.mbt), in
@@ -369,41 +276,6 @@ let vfr_head_side_small : Double = 16.0
 
 ///|
 let vfr_head_most : Double = 1080.0
-
-///|
-// kept across runs: a value (no field of it changes)
-let vfr_layer : @ui.Style = @ui.css("w=Full")
-
-///|
-// kept across runs: a value (no field of it changes)
-let vfr_head_room : @ui.Style = @ui.css("w=Full align=ACenter")
-
-///|
-/// The floating bar (fpHead): 44 high, 12 between what it holds, 16 in at its start and 6 at its end (4 and 12 under
-/// 640), a capsule (its round tools in the middle of its end, 6 in, concentric with it: 外圆角 = 距离 + 半高).
-// kept across runs: a value (no field of it changes)
-let vfr_head_box : @ui.Style = @ui.css("row h=S11 gap=S3 pl=S4 pr=S1_5 radius=Full align=ACenter clip")
-
-///|
-// kept across runs: a value (no field of it changes)
-let vfr_head_box_small : @ui.Style = @ui.css("row h=S11 gap=S1 pl=S3 pr=S1_5 radius=Full align=ACenter clip")
-
-///|
-/// Its name and meta (fpTitle): the name first, its line's meta after it 10 on; the rest pushed to the end.
-// kept across runs: a value (no field of it changes)
-let vfr_head_title : @ui.Style = @ui.css("row gap=S2_5 pr=S3 align=AEnd clip")
-
-///|
-// kept across runs: a value (no field of it changes)
-let vfr_head_gap : @ui.Style = @ui.style(w=grow)
-
-///|
-// kept across runs: a value (no field of it changes)
-let vfr_head_name : @ui.TextStyle = @ui.text_style(size=Body, weight=Semibold, color=Fg, wrap=false, w=Cut)
-
-///|
-// kept across runs: a value (no field of it changes)
-let vfr_head_meta : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=false)
 
 ///|
 /// A file's extension, up to 12 letters, as capitals; "" for none (or a longer one).

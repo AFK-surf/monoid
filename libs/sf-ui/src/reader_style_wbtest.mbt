@@ -43,10 +43,11 @@ test "a Markdown document's line spacing follows the larger system text too" {
   let words = "第一行的小说正文\n第二行的小说正文"
   let nodes : Array[Json] = [["p", ["第一行的小说正文", ["br", []], "第二行的小说正文"]]]
   let style = reader_style_default
-  let t = @ui.Tester::new(fn(c) {
-    begin(c) |> ignore
-    markdown_part(c, words, nodes, "reader-system-text-md", size=style.size.to_double(), line=style.line, document=true)
-  }, w=390.0, h=200.0, platform=2)
+  let t = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=390.0, h=200.0, platform=2)
+  @ui.set_view_app(fn(root) {
+    markdown_node(root, fn() { words }, nodes=fn() { nodes }, size=fn() { style.size.to_double() }, line=fn() { style.line }, document=true)
+    |> ignore
+  })
   t.set_font_scale(1.5)
   t.draw()
   let lines = t.text_runs().filter(fn(line) { line.text.contains("小说正文") })

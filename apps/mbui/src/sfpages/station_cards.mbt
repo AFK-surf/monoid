@@ -87,12 +87,6 @@ fn quota_dials_of(windows : Array[Json]) -> Array[@sf.Dial] {
 }
 
 ///|
-/// A figure (Figure): bold in the words' ink, in its level's colour when off.
-pub fn figure(c : @ui.Ctx, f : Json?) -> Unit {
-  c.text(text(f, "text"), style=@sf.level_figure_style(text(f, "level"), nt_figure)) |> ignore
-}
-
-///|
 /// What is asked of a station's software (useSoftware): updating one, checking, its channel, updating by itself; what
 /// went wrong with it, by station ("" nothing).
 // kept across runs: said as an update fails or is asked again; station_cards_reset empties it
@@ -128,10 +122,6 @@ fn software_call(core : Core, station : String, name : String, params : Array[(S
 let st_logins_open : @sf.LiveMap[String, String] = @sf.LiveMap::new()
 
 // ── styles ──────────────────────────────────────────────────────────────
-
-///|
-// kept across runs: a value (no field of it changes)
-let nt_figure : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, weight=Medium, color=Fg, wrap=false)
 
 ///|
 /// The rest of a machine (hostDetails: its labels beside each, 14 apart, rows 8 apart, the meta's 12 muted).

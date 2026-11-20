@@ -141,45 +141,8 @@ fn glyph_layer(d : String, fill : Int64, stroke : Int64, width : Double, even_od
 let glyph_blink_period : Double = 2600.0
 
 ///|
-/// The steps of the resident clock in the blink's loop its eyes change at: shutting from 2288 ms, open again at its end.
-// kept across runs: a table, never written
-let glyph_blink_steps : Array[Double] = [2300.0, 2400.0, 2500.0]
-
-///|
 /// A link on its way: its arc's breath, 1.4 s, a declared endless decoration (resident).
 let glyph_breath_period : Double = 1400.0
-
-///|
-/// The stations' glyph `size` square in `tint` (failing ones' dots in `red`). It blinks while a station works and an
-/// arc breathes while a link is on its way (endless decorations, Ctx::cycle: resident, up as long as Home is, so on the
-/// one clock's steps); still with motion reduced.
-pub fn station_glyph(c : @ui.Ctx, g : GlyphCounts, size : Double, tint : Int64, red : Int64) -> Int {
-  let still = @ui.reduced_motion()
-  let blinking = if g.asleep { 0 } else { g.working }
-  // (on the resident clock's steps, a frame only at those of the blink: open, it is the same at every other)
-  let eye = if blinking > 0 && !still {
-    glyph_eye((c.loop_at(glyph_blink_period, glyph_blink_steps) / @ui.cycle_step_ms).floor() * @ui.cycle_step_ms)
-  } else {
-    1.0
-  }
-  // a link on its way: its arc breathes between the track and ink (1.4 s), held halfway with motion reduced; breathing,
-  // drawn apart over the rest in ink, its opacity a look by the clock (Ctx::cycle_look): what holds the glyph is not
-  // built again for each step of it (built each step, the stations' tab on the phone's bar built the whole frame ten
-  // times a second, and each frame after it again, for as long as a station could not be reached)
-  let (layers, breaths, breathing) = glyph_drawn(g, eye, still, tint, red)
-  let key = "glyph-state/\{g.online}/\{g.dim}/\{g.failing}/\{g.connecting}/\{g.asleep}/\{blinking > 0}/\{eye}/\{breathing}/\{red}/\{tint}"
-  if !breathing {
-    return draw_drawable(c, key, { w: 24.0, h: 24.0, layers }, size, None)
-  }
-  // (as big as the glyph: the breath laid over it whole)
-  c.box(fn() {
-    draw_drawable(c, key, { w: 24.0, h: 24.0, layers }, size, None) |> ignore
-    let breath = c.layer(fn() {
-      draw_drawable(c, "glyph-breath/" + key, { w: 24.0, h: 24.0, layers: breaths }, size, None) |> ignore
-    })
-    c.cycle_look(breath, glyph_breath_period, fn(f) { @ui.look(alpha=glyph_breath_at(f)) }, resident=true)
-  })
-}
 
 ///|
 /// How open the robot's eyes are `t` ms into the blink's loop (2.6 s, shut at 93%: down over 130 ms, up over 182), to a

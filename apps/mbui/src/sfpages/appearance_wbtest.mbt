@@ -127,12 +127,7 @@ test "外观: wide setting titles have the same weight as the rows in 自动决�
     decision.draw()
     let weight = decision.census().weight
     assert_eq(weight, ["500"])
-    let plain = @ui.Tester::new(fn(c) {
-      @sf.begin(c) |> ignore
-      @sf.setting(c, "主题", fn() {  })
-    }, w=900.0, platform~)
-    plain.draw()
-    assert_eq(plain.census().weight, weight)
+    assert_eq([setting_title_look("主题", 900.0, platform).0.to_string()], weight)
     // 外观's settings laid out wide (主题's choice, 字体's row going to its page): their titles as strong
     let page = setting_tester(Appearance, 1280.0, platform~)
     for title in ["主题", "字体", "震动"] {
@@ -162,14 +157,13 @@ test "setting rows keep their title prominent at every width and with either inp
         @sf.link_row(c, "custom", "Custom title", title_style=@sf.desk_list_title.then(@ui.text_style(weight=Normal))) |> ignore
         @sf.switch_row(c, "switch", "Switch title", false) |> ignore
         @sf.link_row(c, "strong", "Strong title", strong=true) |> ignore
-        @sf.setting(c, "Setting title", fn() {  })
       })
       @sf.switch_row(c, "outside", "Standalone switch", false) |> ignore
     }, w~, platform~)
     t.draw()
     let boxes = t.boxes()
     let at = "\{w} platform \{platform}"
-    for title in ["Plain title", "Title with value", "Title with note", "Summary title", "Custom title", "Switch title", "Setting title", "Standalone switch"] {
+    for title in ["Plain title", "Title with value", "Title with note", "Summary title", "Custom title", "Switch title", "Standalone switch"] {
       let found = boxes.filter(fn(b) { b.text == title })
       assert_eq(found.length(), 1, msg="\{at}: \{title}")
       assert_eq(found[0].weight, 500, msg="\{at}: \{title}")
@@ -177,7 +171,29 @@ test "setting rows keep their title prominent at every width and with either inp
     }
     assert_eq(boxes.filter(fn(b) { b.text == "Strong title" })[0].weight, 700, msg=at)
     assert_eq(boxes.filter(fn(b) { b.text == "Explanation" })[0].weight, 400, msg=at)
+    // (a setting's row as nodes: its title as strong, in the same ink)
+    let strong = boxes.filter(fn(b) { b.text == "Strong title" })[0].color
+    assert_eq(setting_title_look("Setting title", w, platform), (500, strong), msg="\{at}: Setting title")
   }
+}
+
+///|
+/// A setting's row as nodes (setting_node) titled `title`, alone in a window `w` wide started as `platform`, laid out as
+/// a wide page lays it out (the old `setting`'s look where none was said): its title's weight and ink.
+fn setting_title_look(title : String, w : Double, platform : Int) -> (Int, Int64) {
+  let t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w~, platform~)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(@sf.ui_theme_now)
+    root.box(fn(b) {
+      @sf.look_lent(b, Wide)
+      @sf.setting_node(b, fn() { title }, fn(_) {  })
+    })
+    |> ignore
+  })
+  t.draw()
+  let found = t.boxes_held().filter(fn(b) { b.text == title })
+  guard found.length() == 1 else { @halt.saying("\{title}: \{found.length()} drawn") }
+  (found[0].weight, found[0].color)
 }
 
 ///|

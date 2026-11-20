@@ -116,6 +116,24 @@ test "an account's windows and its models' own, five: where no line holds them t
 }
 
 ///|
+/// The quota line of a side column's row as nodes (nav_quota_chips_node) for `q`, in a row `w` wide (its provider's
+/// widest its own), started with keyboard and mouse, drawn once. The Tester.
+fn nav_quota_tester(q : Json, w : Double, h : Double) -> @ui.Tester {
+  let t = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=640.0, h~, platform=0)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(b) {
+      b.width(Is(Some(w))) |> ignore
+      let widest = nav_quota_room_node(b, Some(q))
+      nav_quota_chips_node(b, fn() { Some(q) }, Side, fn() { widest })
+    })
+    |> ignore
+  })
+  t.draw()
+  t
+}
+
+///|
 test "multi-window model pools group each pool with a left group column and aligned short [5h] [W] capsules" {
   let q = Json::object({
     "state": "ok",
@@ -127,25 +145,23 @@ test "multi-window model pools group each pool with a left group column and alig
     ],
   })
   for nav in [false, true] {
-    let t = @ui.Tester::new(
-      fn(c) {
-        begin(c) |> ignore
-        c.with_theme(ui_theme(), fn() {
-          c.box(w=Px(224.0), fn() {
-            if nav {
-              nav_quota_chips(c, Some(q))
-            } else {
-              quota_chips(c, Some(q), lines=true, small=true)
-            }
+    let t = if nav {
+      nav_quota_tester(q, 224.0, 200.0)
+    } else {
+      let t = @ui.Tester::new(
+        fn(c) {
+          begin(c) |> ignore
+          c.with_theme(ui_theme(), fn() {
+            c.box(w=Px(224.0), fn() { quota_chips(c, Some(q), lines=true, small=true) }) |> ignore
           })
-          |> ignore
-        })
-      },
-      w=640.0,
-      h=200.0,
-      platform=0,
-    )
-    t.draw()
+        },
+        w=640.0,
+        h=200.0,
+        platform=0,
+      )
+      t.draw()
+      t
+    }
     let shown = t.words().filter(fn(w) { w.5 > 0.5 })
     let find_all = fn(mark : String) { shown.filter(fn(w) { w.0 == mark }) }
     let gemini = find_all("Gemini")[0]
@@ -164,18 +180,7 @@ test "multi-window model pools group each pool with a left group column and alig
     assert_eq(t.squeeze_faults(), [])
   }
   // Narrowest 180pt sidebar (row width 164pt): stacks the group title above the pair of short capsules
-  let narrow = @ui.Tester::new(
-    fn(c) {
-      begin(c) |> ignore
-      c.with_theme(ui_theme(), fn() {
-        c.box(w=Px(164.0), fn() { nav_quota_chips(c, Some(q)) }) |> ignore
-      })
-    },
-    w=640.0,
-    h=200.0,
-    platform=0,
-  )
-  narrow.draw()
+  let narrow = nav_quota_tester(q, 164.0, 200.0)
   let nshown = narrow.words().filter(fn(w) { w.5 > 0.5 })
   let nfind = fn(mark : String) { nshown.filter(fn(w) { w.0 == mark }) }
   let ng = nfind("Gemini")[0]
@@ -197,25 +202,23 @@ test "multi-window model pools group each pool with a left group column and alig
     ],
   })
   for nav in [false, true] {
-    let pt = @ui.Tester::new(
-      fn(c) {
-        begin(c) |> ignore
-        c.with_theme(ui_theme(), fn() {
-          c.box(w=Px(224.0), fn() {
-            if nav {
-              nav_quota_chips(c, Some(pro_q))
-            } else {
-              quota_chips(c, Some(pro_q), lines=true, small=true)
-            }
+    let pt = if nav {
+      nav_quota_tester(pro_q, 224.0, 240.0)
+    } else {
+      let pt = @ui.Tester::new(
+        fn(c) {
+          begin(c) |> ignore
+          c.with_theme(ui_theme(), fn() {
+            c.box(w=Px(224.0), fn() { quota_chips(c, Some(pro_q), lines=true, small=true) }) |> ignore
           })
-          |> ignore
-        })
-      },
-      w=640.0,
-      h=240.0,
-      platform=0,
-    )
-    pt.draw()
+        },
+        w=640.0,
+        h=240.0,
+        platform=0,
+      )
+      pt.draw()
+      pt
+    }
     let pshown = pt.words().filter(fn(w) { w.5 > 0.5 })
     let pfind = fn(mark : String) { pshown.filter(fn(w) { w.0 == mark }) }
     let pgemini = pfind("Gemini")[0]
@@ -235,39 +238,42 @@ test "multi-window model pools group each pool with a left group column and alig
 }
 
 ///|
-test "fill_chip_wide is the width a fill chip is laid out at: small and marked, small and compact, normal, joined" {
-  let chips : Array[(String, String, Bool, Bool)] = [
-    ("Fable", "52%", true, false),
-    ("", "100%", true, true),
-    ("5H", "62%", false, false),
-    ("每周", "剩 95%", false, false),
+test "nav_quota_chip_w is the width a small fill chip as nodes is laid out at, to the whole point: marked, unmarked, spent; keyboard and mouse and touch" {
+  let chips : Array[(String, String, Bool)] = [
+    ("Fable", "52%", false),
+    ("", "100%", false),
+    ("5H", "62%", false),
+    ("每周", "95%", false),
+    ("5h", "42m", true),
+    ("每周", "2d", true),
   ]
   assert_true(chip_joined("每周", "剩 95%"))
   for platform in [0, 2] {
     let said : Array[Double] = chips.map(fn(_) { 0.0 })
-    let t = @ui.Tester::new(
-      fn(c) {
-        begin(c) |> ignore
-        c.with_theme(ui_theme(), fn() {
-          for i, chip in chips {
-            let (mark, words, small, compact) = chip
-            said[i] = fill_chip_wide(c, mark, words, small~, compact~)
-            // (each in a row of its own as wide as what it holds)
-            c.box(dir=@ui.Dir::Row, name="chip-\{i}", fn() { fill_chip(c, 52, "ok", mark, words, small~, compact~) }) |> ignore
-          }
+    let made : Array[@view.View?] = chips.map(fn(_) { None })
+    let t = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=640.0, h=300.0, platform~)
+    @ui.set_view_app(fn(root) {
+      @ui.set_tree_theme(ui_theme_now)
+      let wide = nav_quota_chip_w(root)
+      for i, chip in chips {
+        let (mark, words, refill) = chip
+        said[i] = wide(mark, words, refill)
+        // (each in a row of its own as wide as what it holds)
+        root.box(fn(r) {
+          r.row(Is(true)) |> ignore
+          made[i] = Some(
+            fill_chip_node(r, fn() { if refill { 0 } else { 52 } }, fn() { if refill { "red" } else { "ok" } }, fn() { mark }, fn() {
+              words
+            }, small=true, label_muted=true, refill=fn() { refill }),
+          )
         })
-      },
-      w=640.0,
-      h=300.0,
-      platform~,
-    )
+        |> ignore
+      }
+    })
     t.draw()
-    let boxes = t.boxes()
     for i, chip in chips {
-      let holder = boxes.search_by(fn(b) { b.name == "chip-\{i}" }).unwrap()
-      let laid = boxes.filter(fn(b) { b.parent == holder })
-      assert_eq(laid.length(), 1, msg="\{platform} \{Repr(chip)}")
-      assert_eq(said[i], laid[0].w, msg="\{platform} \{Repr(chip)}")
+      // (to the whole point past it: the room a line of them is laid out by)
+      assert_eq(said[i], made[i].unwrap().rect().2.ceil(), msg="\{platform} \{Repr(chip)}: \{said[i]} \{Repr(made[i].unwrap().rect())}")
     }
   }
 }
@@ -287,7 +293,7 @@ test "spent windows show their own refill, including in marked and worded chips"
 }
 
 ///|
-test "quota refill chips match fill_chip_wide and pass contrast and corner audits in light and dark" {
+test "quota refill chips pass contrast and corner audits in light and dark" {
   let cases : Array[(String, String, Bool, Bool, Bool)] = [
     ("5h", "42m", false, true, true),
     ("每周", "2d", false, true, true),
@@ -298,7 +304,6 @@ test "quota refill chips match fill_chip_wide and pass contrast and corner audit
   for dark in [false, true] {
     set_dark(Some(dark))
     for platform in [0, 2] {
-      let said : Array[Double] = cases.map(fn(_) { 0.0 })
       let t = @ui.Tester::new(
         fn(c) {
           begin(c) |> ignore
@@ -306,7 +311,6 @@ test "quota refill chips match fill_chip_wide and pass contrast and corner audit
             c.box(dir=@ui.Dir::Column, gap=8.0, fn() {
               for i, item in cases {
                 let (mark, words, small, label_muted, refill) = item
-                said[i] = fill_chip_wide(c, mark, words, small~, label_muted~, refill~)
                 c.box(dir=@ui.Dir::Row, name="qchip-\{i}", fn() {
                   fill_chip(c, if refill { 0 } else { 48 }, if refill { "red" } else { "ok" }, mark, words, small~, label_muted~, refill~)
                 })
@@ -322,13 +326,6 @@ test "quota refill chips match fill_chip_wide and pass contrast and corner audit
         dark~,
       )
       t.draw()
-      let boxes = t.boxes()
-      for i, item in cases {
-        let holder = boxes.search_by(fn(b) { b.name == "qchip-\{i}" }).unwrap()
-        let laid = boxes.filter(fn(b) { b.parent == holder })
-        assert_eq(laid.length(), 1, msg="\{dark} \{platform} \{Repr(item)}")
-        assert_eq(said[i], laid[0].w, msg="\{dark} \{platform} \{Repr(item)}")
-      }
       let faults = t.audit()
       assert_eq(faults, [], msg="audit failed dark=\{dark} platform=\{platform}: \{Repr(faults)}")
     }

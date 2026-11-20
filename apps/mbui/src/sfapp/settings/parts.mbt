@@ -80,26 +80,6 @@ pub fn avatar(c : @ui.Ctx, core : Core, id : String, name : String, size : Doubl
 }
 
 ///|
-/// A word in the accent's wash (本机), whole on its line: the words before it cut short instead.
-pub fn you(c : @ui.Ctx, words : String) -> Unit {
-  c.box(style=you_ground, keep=true, fn() {
-    // Settings.kt:294 (12sp)
-    c.text(words, style=you_words) |> ignore
-  })
-  |> ignore
-}
-
-///|
-/// You's wash: 6 in at its sides, 6 round.
-// kept across runs: a value (no field of it changes)
-let you_ground : @ui.Style = @ui.css("px=S1_5 radius=Md bg=AccentBg")
-
-///|
-/// Small words in the accent's ink.
-// kept across runs: a value (no field of it changes)
-let you_words : @ui.TextStyle = @sf.caption.then(@ui.text_style(color=AccentText))
-
-///|
 /// The turning ring: 14, or 12 in a line of small text.
 pub fn spinner(c : @ui.Ctx, inline? : Bool = false) -> Unit {
   @sf.spinner(c, size=if inline { 12.0 } else { 14.0 }) |> ignore

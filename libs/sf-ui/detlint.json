@@ -87,14 +87,14 @@
     "globals": {},
     "style-literal": {
       "src/markdown.mbt": 34,
-      "src/parts.mbt": 44,
+      "src/parts.mbt": 34,
       "src/picture.mbt": 1,
       "src/waiting.mbt": 10
     },
     "box-loose": {
       "src/avatar.mbt": 1,
       "src/markdown.mbt": 26,
-      "src/parts.mbt": 29,
+      "src/parts.mbt": 27,
       "src/picture.mbt": 2,
       "src/waiting.mbt": 6
     },
@@ -120,15 +120,12 @@
     "tier-outside-shell": {},
     "fixture-import": {},
     "motion-spring": {},
-    "built-by-hand": {
-      "src/parts.mbt": 2
-    },
+    "built-by-hand": {},
     "layout-read-back": {
       "src/markdown.mbt": 1,
       "src/parts.mbt": 1,
       "src/seg.mbt": 1,
-      "src/submenu.mbt": 1,
-      "src/viewer_frame.mbt": 1
+      "src/submenu.mbt": 1
     },
     "motion-length": {},
     "tester-branch": {},
@@ -139,7 +136,6 @@
     "build-clock": {},
     "build-motion": {
       "src/lift.mbt": 1,
-      "src/marked.mbt": 1,
       "src/parts.mbt": 1,
       "src/waiting.mbt": 1
     },

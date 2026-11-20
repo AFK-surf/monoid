@@ -1,6 +1,5 @@
-// A machine's CPU, memory and disk in brief as nodes (meter_chips_brief_node) drawn as the old line (meter_chips'
-// `brief`) is, each instance at the same moment: all of them where the line has the room, and short of it the ones
-// still plenty left out, the last of them first, one running low staying; in a line short even of those at their
+// A machine's CPU, memory and disk in brief as nodes (meter_chips_brief_node): all of them where the line has the room,
+// and short of it the ones still plenty left out, the last of them first, one running low staying; in a line short even of those at their
 // narrowest (meter_brief_wide), the last of them left out as well, nothing cut past knowing; with keyboard and mouse
 // and touch.
 
@@ -29,75 +28,35 @@ let mb_meters : Array[Json] = [
 ]
 
 ///|
-/// The line in a row `w` wide at the window's top left, started as `platform`: the old view's (`node` false) or the
-/// tree's; each instance drawn, rounded to a hundredth (a glyph's atlas place said as its kind), in order.
-fn mb_drawn(node : Bool, w : Double, platform : Int) -> Array[String] {
-  mb_instances(mb_tester(node, w, platform))
-}
-
-///|
-/// The line in a row `w` wide at the window's top left, started as `platform`: the old view's (`node` false) or the
-/// tree's, at rest. The Tester.
-fn mb_tester(node : Bool, w : Double, platform : Int) -> @ui.Tester {
-  let t = @ui.Tester::new(
-    fn(c) {
-      begin(c) |> ignore
-      if !node {
-        c.with_theme(ui_theme(), fn() {
-          c.box(w=Px(w), fn() { meter_chips(c, mb_meters, brief=true, key="mb") }) |> ignore
-        })
-      }
-    },
-    w=400.0,
-    h=200.0,
-    platform~,
-  )
-  if node {
-    @ui.set_view_app(fn(root) {
-      @ui.set_tree_theme(ui_theme_now)
-      root.box(fn(b) {
-        b.width(Is(Some(w))) |> ignore
-        meter_chips_brief_node(b, fn() { mb_meters })
-      })
-      |> ignore
+/// The line in a row `w` wide at the window's top left, started as `platform`, at rest. The Tester.
+fn mb_tester(w : Double, platform : Int) -> @ui.Tester {
+  let t = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=400.0, h=200.0, platform~)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(b) {
+      b.width(Is(Some(w))) |> ignore
+      meter_chips_brief_node(b, fn() { mb_meters })
     })
-  }
+    |> ignore
+  })
   t.run_for(@ui.move_most_ms)
   t
 }
 
 ///|
-/// Each instance drawn now, rounded to a hundredth (a glyph's atlas place said as its kind), in order.
-fn mb_instances(t : @ui.Tester) -> Array[String] {
-  let all = t.drawn_instances().map(fn(a) {
-    a
-    .mapi(fn(j, x) {
-      if a[5] == 1.0 && j == 12 {
-        if x >= 16384.0 { "colour" } else { "mono" }
-      } else if a[5] == 1.0 && j == 13 {
-        "-"
-      } else {
-        ((x * 100.0).round() / 100.0).to_string()
-      }
-    })
-    .join(",")
-  })
-  all.sort()
-  all
+/// Which of mb_meters' short names the line draws, in order.
+fn mb_shown(t : @ui.Tester) -> Array[String] {
+  let said = t.words().map(fn(w) { w.0 })
+  ["CPU", "内存", "磁盘", "交换"].filter(fn(s) { said.iter().any(fn(w) { w == s }) })
 }
 
 ///|
-test "meter_chips_brief_node drawn as meter_chips brief, each instance, in a line with the room for all and in one short of it (the plenty left out, the last first); keyboard and mouse and touch" {
+test "meter_chips_brief_node in a line with the room for all and in one short of it: all of them, then the plenty left out, the last first, the low ones staying; keyboard and mouse and touch" {
   for platform in [0, 2] {
-    let counts : Array[Int] = []
-    for w in [300.0, 150.0] {
-      let old = mb_drawn(false, w, platform)
-      let made = mb_drawn(true, w, platform)
-      seg_same(made, old, "platform \{platform} \{w} wide")
-      counts.push(made.length())
-    }
-    // (narrower, fewer drawn: what it is for is measured)
-    assert_true(counts[0] > counts[1], msg="platform \{platform}: \{Repr(counts)}")
+    let all = mb_shown(mb_tester(300.0, platform))
+    assert_eq(all, ["CPU", "内存", "磁盘", "交换"], msg="platform \{platform}: 300 wide")
+    let short = mb_shown(mb_tester(150.0, platform))
+    assert_eq(short, ["内存", "磁盘"], msg="platform \{platform}: 150 wide")
   }
 }
 
@@ -122,7 +81,7 @@ test "meter_chips_brief_node in a line short even of the low ones: those it has 
     let both = least[1] + @ui.Space::S1.px() + least[2]
     for w in [both, 110.0, 70.0] {
       let at = "platform \{platform} \{w} wide (least \{Repr(least)})"
-      let t = mb_tester(true, w, platform)
+      let t = mb_tester(w, platform)
       // (each chip's ground and fill: a rect as high as a small chip on the line's top; a chip, the widest at its start)
       let chips : Map[Int, (Double, Double)] = Map([])
       for r in t.drawn_rects() {

@@ -534,69 +534,6 @@ fn init {
 }
 
 ///|
-/// A part of a long Markdown text (a reader's block of it): `nodes`, some of the core's tree of `text` (the reader's
-/// `reader.book`), drawn as `markdown` draws a whole one, in a column as wide as it is given. `key` names the part
-/// (its blocks kept by it, the latest few); `apart`: a part after another, as far below it as its first block would
-/// be below a paragraph; `line`: the lines' height over the size (0: Markdown's own); `document`: its headings a
-/// document's (Md's `document`); `found`: words found, in bold wherever they are.
-pub fn markdown_part(
-  c : @ui.Ctx,
-  text : String,
-  nodes : Array[Json],
-  key : String,
-  apart? : Bool = false,
-  size? : Double = 0.0,
-  ink? : Int64 = 0L,
-  line? : Double = 0.0,
-  serif? : Bool = false,
-  document? : Bool = false,
-  found? : Array[String] = [],
-  on_link? : (String) -> Unit = fn(_) {  },
-) -> Unit {
-  let t = theme()
-  let md = {
-    c,
-    size: if size > 0.0 { size } else { t.t.body },
-    ink: if ink != 0L { ink } else { t.p.text },
-    on_link,
-    on_link_hold: None,
-    on_link_shown: None,
-    n: 0,
-    files: fn(_) { None },
-    found,
-    code: fn(_, _) { None },
-    screens: None,
-    chat_title: fn(_) { None },
-    paths: false,
-    line,
-    serif,
-    text_face: None,
-    code_face: None,
-    document,
-    bleed: 0.0,
-    copy: true,
-    fit_tables: false,
-  }
-  let blocks = match parts.get(key) {
-    Some(b) => b
-    None => {
-      if parts.length() >= 64 {
-        parts.clear()
-      }
-      let b = core_blocks(nodes, text)
-      parts[key] = b
-      b
-    }
-  }
-  let pieces = md.pieces(blocks, false)
-  // after another part: as far below it as after a paragraph, the larger of the two
-  if apart && pieces.length() > 0 {
-    pieces.insert(0, { top: 0.0, bottom: paragraph_after, draw: fn() {  } })
-  }
-  md.column("sf-md-part/" + key, pieces) |> ignore
-}
-
-///|
 /// Pieces one under another, as far apart as the larger margin between
 /// each two (the outer margins are the parent's).
 fn stack(c : @ui.Ctx, ps : Array[Piece], _outer : Bool) -> Unit {

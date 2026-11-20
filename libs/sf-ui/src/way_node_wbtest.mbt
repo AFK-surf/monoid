@@ -1,6 +1,5 @@
-// way_line_node beside the old view's way_line, in one window: the old at its left (hosted in a node: @ui.old), the
-// node at its right, each in a column as wide, the same steps; what each leaves out and where the rest stand, at a
-// width all fit in and at narrower ones.
+// way_line_node in a column 400 across a window, the same steps at each width: what it leaves out and where the rest
+// stand, at a width all fit in and at narrower ones.
 
 ///|
 /// The way's look in these (the narrow files' crumbs).
@@ -22,9 +21,8 @@ fn ways_steps() -> Array[String] {
 }
 
 ///|
-/// A window holding the old way_line at its left and way_line_node 400 further across, each in a column `w` wide; the
-/// steps gone to, by either. `menus`: 1000 by 600, both 100 further across (a menu beside either kept in the window by
-/// neither of its edges), what is presented (a …'s menu) drawn over it as the app's window draws it (presented, in an
+/// A window holding way_line_node 400 across, in a column `w` wide; the steps gone to. `menus`: 1000 by 600, it 100
+/// further across (a menu beside it kept in the window by neither of its edges), what is presented (a …'s menu) drawn over it as the app's window draws it (presented, in an
 /// old view over all of it; the tree's, presented_nodes).
 fn ways_tester(w : Double, went : Array[Int], menus? : Bool = false) -> @ui.Tester {
   presenters_reset()
@@ -32,16 +30,10 @@ fn ways_tester(w : Double, went : Array[Int], menus? : Bool = false) -> @ui.Test
   t.check_looks(false)
   @ui.set_view_app(fn(root) {
     root.row(Is(true)).padding(Is((if menus { 100.0 } else { 0.0 }, 0.0, 0.0, 0.0))) |> ignore
+    root.box(fn(g) { g.width(Is(Some(400.0))) |> ignore }) |> ignore
     root.box(fn(h) {
       h.width(Is(Some(w))).height(Is(Some(100.0))) |> ignore
-      @ui.old(h, fn(c) { way_line(c, "ways/old", ways_steps(), ways_look(), fn(i) { went.push(i) }) }).grow(Is(1.0))
-      |> ignore
-    })
-    |> ignore
-    root.box(fn(g) { g.width(Is(Some(400.0 - w))) |> ignore }) |> ignore
-    root.box(fn(h) {
-      h.width(Is(Some(w))).height(Is(Some(100.0))) |> ignore
-      way_line_node(h, ways_steps, ways_look, fn(i) { went.push(100 + i) }) |> ignore
+      way_line_node(h, ways_steps, ways_look, fn(i) { went.push(i) }) |> ignore
     })
     |> ignore
     if menus {
@@ -55,37 +47,45 @@ fn ways_tester(w : Double, went : Array[Int], menus? : Bool = false) -> @ui.Test
 }
 
 ///|
-/// The words drawn in the column from `x0`, each with where it stands in the column's terms, in order.
-fn ways_words(t : @ui.Tester, x0 : Double) -> Array[String] {
-  let out = t.words()
-    .filter(fn(w) { w.1 >= x0 - 0.5 && w.1 < x0 + 399.5 && w.5 > 0.0 })
-    .map(fn(w) { "\{w.0}@\{w.1 - x0},\{w.2} \{w.3}x\{w.4}" })
-  out.sort()
-  out
+/// Which of the steps (and the …, `way_more`) the column from `x0` draws, in the steps' order, the … where it stands.
+fn ways_shown(t : @ui.Tester, x0 : Double) -> Array[String] {
+  let drawn = t.words().filter(fn(w) { w.1 >= x0 - 0.5 && w.1 < x0 + 399.5 && w.5 > 0.0 })
+  drawn.sort_by(fn(a, b) { a.1.compare(b.1) })
+  drawn.map(fn(w) { if w.0 == way_more { way_more } else { w.0 } })
 }
 
 ///|
-test "way_line_node: at each width, the same steps left out and the rest where the old way's stand" {
+test "way_line_node: room for all, every step and no …; narrower, those between leave for a … from the one after the first, the last staying" {
+  let steps = ways_steps()
+  let mut was = steps.length() + 1
   for w in [360.0, 240.0, 170.0, 110.0] {
     let t = ways_tester(w, [])
-    let (old, new) = (ways_words(t, 0.0), ways_words(t, 400.0))
-    assert_eq(new, old, msg="\{w} wide: new \{Repr(new)} old \{Repr(old)}")
+    let shown = ways_shown(t, 400.0)
+    if w == 360.0 {
+      assert_eq(shown, steps, msg="room for all")
+    } else {
+      assert_true(shown.contains(way_more), msg="\{w} wide: \{Repr(shown)}")
+    }
+    assert_true(shown.contains(steps[steps.length() - 1]), msg="\{w} wide: the last \{Repr(shown)}")
+    assert_true(!shown.contains(steps[1]) || w == 360.0, msg="\{w} wide: the one after the first leaves first \{Repr(shown)}")
+    // (in their order)
+    let kept = shown.filter(fn(x) { x != way_more }).map(fn(x) { steps.search(x).unwrap() })
+    for k in 1..<kept.length() {
+      assert_true(kept[k - 1] < kept[k], msg="\{w} wide: \{Repr(shown)}")
+    }
+    // (narrower, no more drawn)
+    assert_true(shown.length() <= was, msg="\{w} wide: \{Repr(shown)}")
+    was = shown.length()
   }
 }
 
 ///|
-test "way_line_node: a step pressed goes to it, as the old way's" {
+test "way_line_node: a step pressed goes to it" {
   let went : Array[Int] = []
   let t = ways_tester(360.0, went)
-  let at = fn(x0 : Double, words : String) {
-    let w = t.words().filter(fn(w) { w.0 == words && w.1 >= x0 - 0.5 && w.1 < x0 + 399.5 })[0]
-    (w.1 + w.3 / 2.0, w.2 + w.4 / 2.0)
-  }
-  let (x, y) = at(0.0, "项目")
-  t.tap(x, y)
-  let (x, y) = at(400.0, "项目")
-  t.tap(x, y)
-  assert_eq(went, [2, 102])
+  let w = t.words().filter(fn(w) { w.0 == "项目" && w.1 >= 399.5 })[0]
+  t.tap(w.1 + w.3 / 2.0, w.2 + w.4 / 2.0)
+  assert_eq(went, [2])
 }
 
 ///|
@@ -102,23 +102,26 @@ fn ways_drawn(t : @ui.Tester, x0 : Double) -> Array[String] {
 }
 
 ///|
-test "way_line_node: at each width, its chevrons and all else drawn where the old way's are, as big" {
+test "way_line_node: at each width, its chevrons and all else drawn within its column" {
   for w in [360.0, 240.0, 170.0, 110.0] {
     let t = ways_tester(w, [])
-    let (old, new) = (ways_drawn(t, 0.0), ways_drawn(t, 400.0))
-    let (only_new, only_old) = (new.filter(fn(x) { !old.contains(x) }), old.filter(fn(x) { !new.contains(x) }))
-    assert_eq(new, old, msg="\{w} wide: new \{Repr(only_new)} old \{Repr(only_old)}")
+    let drawn = ways_drawn(t, 400.0)
+    assert_true(drawn.length() > 0, msg="\{w} wide")
+    let out = t
+      .drawn_instances()
+      .filter(fn(a) { a[5] != 12.0 && a[0] >= 399.5 && a[2] > 0.0 && a[3] > 0.0 && a[0] + a[2] > 400.0 + w + 0.5 })
+    assert_eq(out.length(), 0, msg="\{w} wide: past its column \{Repr(out)}")
   }
 }
 
 ///|
-test "way_line_node: its … offers the steps left out, in their order, where the old way's offers them; one pressed goes to it" {
+test "way_line_node: its … offers the steps left out, in their order, under it; one pressed goes to it" {
   for w in [170.0, 110.0] {
     let went : Array[Int] = []
     let t = ways_tester(w, went, menus=true)
     // (the menu the … in the column from `x0` opens: what is drawn that was not, each where it stands from the …; then
     // its last pressed)
-    let offered = fn(x0 : Double) {
+    let offered = fn(x0 : Double) raise {
       let in_col = fn(x : Double) { x >= x0 - 0.5 && x < x0 + 399.5 }
       let more = t.words().filter(fn(w) { w.0 == way_more && in_col(w.1) && w.5 > 0.0 })
       guard more.length() == 1 else { @halt.saying("\{w} wide, from \{x0}: no … (\{more.length()})") }
@@ -127,18 +130,25 @@ test "way_line_node: its … offers the steps left out, in their order, where th
       t.tap(mx + more[0].3 / 2.0, my + more[0].4 / 2.0)
       t.run_for(@ui.move_most_ms)
       let items = t.words().filter(fn(w) { w.5 > 0.0 && !before.contains("\{w.0}@\{w.1},\{w.2}") })
-      let said = items.map(fn(w) { "\{w.0}@\{w.1 - mx},\{w.2 - my} \{w.3}x\{w.4}" })
+      // (under the …, in the order they stand)
+      let under = items.copy()
+      under.sort_by(fn(a, b) { a.2.compare(b.2) })
+      assert_true(under.iter().all(fn(w) { w.2 > my }), msg="\{w} wide: under the …: \{Repr(under)}")
+      let said = under.map(fn(w) { w.0 })
       guard items.length() > 0 else { @halt.saying("\{w} wide, from \{x0}: nothing offered") }
       let last = items.iter().fold(init=items[0], fn(a, b) { if b.2 > a.2 { b } else { a } })
       t.tap(last.1 + last.3 / 2.0, last.2 + last.4 / 2.0)
       t.run_for(@ui.move_most_ms)
       said
     }
-    let old = offered(100.0)
     let new = offered(500.0)
-    assert_eq(new, old, msg="\{w} wide: new \{Repr(new)} old \{Repr(old)}")
-    assert_eq(went.length(), 2, msg="\{w} wide: \{Repr(went)}")
-    assert_eq(went[1], 100 + went[0], msg="\{w} wide: \{Repr(went)}")
+    // (steps before the last, in their order)
+    let steps = ways_steps()
+    let at = new.map(fn(x) { steps.search(x).unwrap_or(-1) })
+    for k in 0..<at.length() {
+      assert_true(at[k] >= 0 && at[k] < steps.length() - 1 && (k == 0 || at[k - 1] < at[k]), msg="\{w} wide: \{Repr(new)}")
+    }
+    assert_eq(went.length(), 1, msg="\{w} wide: \{Repr(went)}")
     // (the last offered is the last left out: the step before the last but one's, left out at either width)
     assert_true(went[0] >= 1 && went[0] <= 3, msg="\{w} wide: \{Repr(went)}")
   }

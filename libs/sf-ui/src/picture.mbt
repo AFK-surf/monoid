@@ -396,16 +396,6 @@ fn imin(a : Int, b : Int) -> Int {
 }
 
 ///|
-/// A station's mark (StationMark), or where it has none keyboard and mouse's: this machine's a monitor, another's a server.
-pub fn station_icon(c : @ui.Ctx, emoji : String, icon_name : String, size : Double, tint : Int64, here? : Bool = false) -> Unit {
-  if has_station_mark(emoji, icon_name) {
-    station_mark(c, emoji, icon_name, size, tint)
-  } else {
-    icon(c, if here { "monitor" } else { "server" }, size~, color=tint) |> ignore
-  }
-}
-
-///|
 /// Station glyph `name`'s lines and dots, from its text in drawable_data.mbt ("emoji|line;line|dot;dot"), read the
 /// first time it is asked for.
 fn glyph_paths(name : String) -> (Array[String], Array[String])? {
@@ -439,19 +429,6 @@ let opencode_h : Double = 0.6667
 ///|
 // kept across runs: a value (no field of it changes)
 let opencode_frame : @ui.Style = @ui.css("border=B1_5 border_color=Fg")
-
-///|
-/// Rings one inside another (Activity's), `side` across, with the room for `most` of them (as many as are ever drawn
-/// there: fewer stand where those would, the outer ones): each as wide as the hole they leave in their middle is round
-/// (ring_hole), ring_apart of that from the next, so the innermost is a ring still (2026-10-26 用户 of three in 88,
-/// each 12: 「最里面的那个圆点不对吧」, the third a disc, its share a dot), from the outside in: each its track all round in
-/// its colour at `track` (an alpha, 0-255), and as much of it as its share drawn round from its top in its colour, round
-/// at its ends; a share past 1 (two accounts' quota past one's) goes round again over it, each turn past the first
-/// deeper (ring_turn_keep), the last whole one under what is left of it.
-pub fn rings(c : @ui.Ctx, shares : Array[(Double, Int64)], side : Double, track : Int64, most~ : Int) -> Int {
-  let (key, d) = rings_drawn(shares, side, track, most)
-  vector(c, key, d, side)
-}
 
 ///|
 /// The rings (rings') as a node of the window's tree in `parent`, `side` across, of the shares `shares` says as it
@@ -518,52 +495,6 @@ fn rings_drawn(shares : Array[(Double, Int64)], side : Double, track : Int64, mo
   }
   ("rings/\{side}/\{width}/\{gap}/\{track}/" + keys.join(","), { w: side, h: side, layers })
 }
-
-///|
-/// A ring of parts one after another (a donut chart), `side` across and `width` wide, from its top round the way a
-/// clock goes: each as much of the turn as its share of all of them, in its colour, round at its ends, a gap of
-/// donut_apart between them beyond what their round ends take; a part too small for its ends a dot. Nothing to share:
-/// the ring's track alone, in `track`.
-pub fn donut(c : @ui.Ctx, parts : Array[(Double, Int64)], side : Double, width : Double, track : Int64) -> Int {
-  let mid = side / 2.0
-  let r = mid - width / 2.0
-  let total = parts.fold(init=0.0, fn(sum, p) { if p.0 > 0.0 { sum + p.0 } else { sum } })
-  let path = fn(d : String, stroke : Int64) -> @pixels.VectorPath {
-    { d, fill: 0L, stroke, width, even_odd: false, sx: 1.0, sy: 1.0, tx: 0.0, ty: 0.0 }
-  }
-  let circle = "M \{mid - r} \{mid} A \{r} \{r} 0 1 1 \{mid + r} \{mid} A \{r} \{r} 0 1 1 \{mid - r} \{mid}"
-  let layers : Array[@pixels.VectorPath] = []
-  let keys : Array[String] = []
-  let shown = parts.filter(fn(p) { p.0 > 0.0 })
-  if total <= 0.0 {
-    layers.push(path(circle, track))
-  } else if shown.length() == 1 {
-    layers.push(path(circle, shown[0].1))
-    keys.push("\{shown[0].1}")
-  } else {
-    // (the round ends reach width / 2 past each end: the gap is theirs and donut_apart more, as an angle on r)
-    let gap = (width + donut_apart) / r
-    let at = fn(a : Double) { (mid + r * @dmath.sin(a), mid - r * @dmath.cos(a)) }
-    let mut a = 0.0
-    for p in shown {
-      let (share, colour) = p
-      let sweep = share / total * 2.0 * @math.PI
-      let a0 = a + gap / 2.0
-      let a1 = if a + sweep - gap / 2.0 > a0 { a + sweep - gap / 2.0 } else { a0 + 0.001 }
-      let (x0, y0) = at(a0)
-      let (x1, y1) = at(a1)
-      let large = if a1 - a0 > @math.PI { 1 } else { 0 }
-      layers.push(path("M \{x0} \{y0} A \{r} \{r} 0 \{large} 1 \{x1} \{y1}", colour))
-      keys.push("\{share}/\{colour}")
-      a = a + sweep
-    }
-  }
-  vector(c, "donut/\{side}/\{width}/\{track}/" + keys.join(","), { w: side, h: side, layers }, side)
-}
-
-///|
-/// How far apart a donut's parts are past their round ends.
-let donut_apart : Double = 3.0
 
 ///|
 /// The hole in the middle of rings (rings): round as far as a ring is wide (Activity's: three rings, the hole as wide

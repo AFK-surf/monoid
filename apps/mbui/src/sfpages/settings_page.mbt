@@ -26,12 +26,6 @@ pub let desk_note : @ui.TextStyle = @sf.wide_list_note
 pub let desk_said_line : @ui.Style = @ui.css("row w=Full align=ACenter")
 
 ///|
-/// How the page being drawn is laid out, by the width of its box (a page still drawing one arrangement's pieces).
-pub fn look_of(c : @ui.Ctx) -> @sf.Look {
-  @sf.look_for(c.width)
-}
-
-///|
 // kept across runs: a value (no field of it changes)
 pub let narrow_note : @ui.TextStyle = @sf.pg_note
 
