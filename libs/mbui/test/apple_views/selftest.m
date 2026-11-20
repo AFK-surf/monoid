@@ -34,6 +34,7 @@ int32_t mb_host_view_info(int32_t, double *);
 int32_t mb_host_view_read_next(int32_t, double *);
 void mb_host_view_read_answer(int32_t, int32_t, moonbit_bytes_t, double, int32_t);
 double mb_host_video_test_rate(int32_t);
+int32_t mb_host_video_test_shown(int32_t, const char *);
 moonbit_string_t mb_host_view_text(int32_t, int32_t);
 moonbit_bytes_t mb_host_view_still(int32_t);
 int32_t mb_host_pdf_open(moonbit_bytes_t);
@@ -646,6 +647,151 @@ static void scrub_cache_steps(NSString *file) {
   }];
 }
 
+// An image's pixels at 64 × 36 (RGBA), for comparing two pictures of one frame at different sizes.
+static NSData *small_pixels(CGImageRef im) {
+  NSMutableData *d = [NSMutableData dataWithLength:64 * 36 * 4];
+  if (!im) return d;
+  CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+  CGContextRef c = CGBitmapContextCreate(d.mutableBytes, 64, 36, 8, 64 * 4, cs,
+                                         kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+  CGContextSetInterpolationQuality(c, kCGInterpolationMedium);
+  CGContextDrawImage(c, CGRectMake(0, 0, 64, 36), im);
+  CGContextRelease(c);
+  CGColorSpaceRelease(cs);
+  return d;
+}
+
+static double pixels_apart(NSData *a, NSData *b) {
+  const uint8_t *x = a.bytes, *y = b.bytes;
+  double sum = 0;
+  for (NSUInteger i = 0; i < a.length; i++) sum += abs((int)x[i] - (int)y[i]);
+  return sum / a.length;
+}
+
+static CGImageRef png_image(NSString *path) {
+  CGImageSourceRef s = CGImageSourceCreateWithURL((__bridge CFURLRef)[NSURL fileURLWithPath:path], NULL);
+  if (!s) return NULL;
+  CGImageRef im = CGImageSourceCreateImageAtIndex(s, 0, NULL);
+  CFRelease(s);
+  return im;
+}
+
+// A finger going back along the timeline of a film with one key frame in ten seconds (op 9 1, exact seeks a frame
+// back each tick, op 9 0): after the first few (the player's, as the stretch before is decoded), each shown at once
+// from the frames kept, the very frame asked (closer to the file's own frame there than to the one before or after),
+// and once let go the player there. `vw` × `vh`: its view (a film turned upright by its track: its frames kept as the
+// player shows them).
+static void scrub_back_steps(NSString *file, double vw, double vh) {
+  NSData *data = [NSData dataWithContentsOfFile:file];
+  __block int32_t vid = 0;
+  double *info = calloc(10, sizeof(double));
+  __block int state = 0;
+  NSString *tag = [@"scrub-back " stringByAppendingString:file.lastPathComponent];
+  const double frame = 1000.0 / 30;
+  __block int k = 0, served = 0, waited = 0, maxWait = 0, asked = 0;
+  __block double target = 0;
+  NSMutableArray<NSNumber *> *checkAt = [NSMutableArray new];
+  AVAssetImageGenerator *gen = [AVAssetImageGenerator assetImageGeneratorWithAsset:[AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:file] options:nil]];
+  gen.requestedTimeToleranceBefore = kCMTimeZero;
+  gen.requestedTimeToleranceAfter = kCMTimeZero;
+  gen.appliesPreferredTrackTransform = YES;
+  NSData *(^fileFrame)(double) = ^NSData *(double ms) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    CGImageRef im = [gen copyCGImageAtTime:CMTimeMake((int64_t)llround(ms * 1000), 1000000) actualTime:NULL error:NULL];
+#pragma clang diagnostic pop
+    NSData *d = small_pixels(im);
+    if (im) CGImageRelease(im);
+    return d;
+  };
+  void (^pump)(void) = ^{
+    double o[2];
+    int32_t rid;
+    while ((rid = mb_host_view_read_next(vid, o)) != 0) {
+      if (rid < 0) continue;
+      long long off = (long long)o[0], len = (long long)o[1];
+      long long n = MAX(0, MIN(len, (long long)data.length - off));
+      for (long long at = 0; at < n; at += 64 << 10) {
+        long long kk = MIN(n - at, 64 << 10);
+        mb_host_view_read_answer(vid, rid, mbytes((const uint8_t *)data.bytes + off + at, (size_t)kk), (double)data.length, 1);
+      }
+      mb_host_view_read_answer(vid, rid, mbytes((const uint8_t *)data.bytes, 0), (double)data.length, 0);
+    }
+    state = mb_host_view_info(vid, info);
+  };
+  [steps addObject:^BOOL(int t) {
+    vid = mb_host_view_open(1, mb_string_from_ns(@"video/mp4"));
+    mb_host_view_place(vid, 40, 30, vw, vh, 40, 30, 40 + vw, 30 + vh, 0, 0, 0, 0, 1);
+    return YES;
+  }];
+  [steps addObject:^BOOL(int t) {
+    pump();
+    if ((state == 0 || state == 2) && t < 20 * 60) return NO;
+    check(state == 1, [NSString stringWithFormat:@"%@: ready (state %d)", tag, state]);
+    mb_host_view_control(vid, 9, 1);
+    target = 240 * frame;
+    mb_host_view_control(vid, 3, target);
+    return YES;
+  }];
+  [steps addObject:^BOOL(int t) {
+    pump();
+    if ((fabs(info[1] - target) > 0.5 || info[6] == 0 || t < 2) && t < 10 * 60) return NO;
+    check(fabs(info[1] - target) <= 0.5, [NSString stringWithFormat:@"%@: at %.1f ms", tag, info[1]]);
+    return YES;
+  }];
+  // a frame back each tick it has shown the last (as a finger moving back as fast as it is shown)
+  [steps addObject:^BOOL(int t) {
+    pump();
+    if (asked > 0 && fabs(info[1] - target) > 0.5 && t < 10 * 60) {
+      waited++;
+      return NO;
+    }
+    if (asked > 0) {
+      NSString *p = [out_dir stringByAppendingPathComponent:[NSString stringWithFormat:@"scrub-back-%@-%d.png", file.lastPathComponent, k]];
+      int from = mb_host_video_test_shown(vid, p.fileSystemRepresentation);
+      if (from == 1) served++;
+      if (waited > maxWait && asked > 3) maxWait = waited;
+      if (k % 15 == 0 && from == 1) [checkAt addObject:@(k)];
+    }
+    if (k == 90) return YES;
+    k++;
+    asked++;
+    waited = 0;
+    target = (240 - k) * frame;
+    mb_host_view_control(vid, 3, target);
+    return NO;
+  }];
+  [steps addObject:^BOOL(int t) {
+    check(served >= 80, [NSString stringWithFormat:@"%@: %d of 90 frames back shown from the frames kept", tag, served]);
+    check(maxWait <= 1, [NSString stringWithFormat:@"%@: past the first few, each shown within %d ticks", tag, maxWait]);
+    for (NSNumber *n in checkAt) {
+      int kk = n.intValue;
+      double ms = (240 - kk) * frame;
+      NSString *p = [out_dir stringByAppendingPathComponent:[NSString stringWithFormat:@"scrub-back-%@-%d.png", file.lastPathComponent, kk]];
+      CGImageRef im = png_image(p);
+      NSData *shown = small_pixels(im);
+      if (im) CGImageRelease(im);
+      double here = pixels_apart(shown, fileFrame(ms + 1)), before = pixels_apart(shown, fileFrame(ms - frame + 1)),
+             after = pixels_apart(shown, fileFrame(ms + frame + 1));
+      check(here < before && here < after,
+            [NSString stringWithFormat:@"%@: at %.0f ms the very frame (%.2f apart; the one before %.2f, after %.2f)",
+                                       tag, ms, here, before, after]);
+    }
+    mb_host_view_control(vid, 9, 0);
+    return YES;
+  }];
+  [steps addObject:^BOOL(int t) {
+    pump();
+    NSString *p = [out_dir stringByAppendingPathComponent:[NSString stringWithFormat:@"scrub-back-%@-let-go.png", file.lastPathComponent]];
+    int from = mb_host_video_test_shown(vid, p.fileSystemRepresentation);
+    if ((from != 0 || fabs(info[1] - target) > 0.5) && t < 10 * 60) return NO;
+    check(from == 0 && fabs(info[1] - target) <= 0.5,
+          [NSString stringWithFormat:@"%@: let go, the player's own picture at %.1f ms", tag, info[1]]);
+    mb_host_view_close(vid);
+    return YES;
+  }];
+}
+
 // A video whose bytes come slower than it plays (as over a slow network): it plays what came (playWhatCame), stops
 // where that runs out and plays again once the next has come; while its picture moves on it is not buffering, though
 // the player reckons it will not keep up.
@@ -898,6 +1044,8 @@ int main(int argc, char **argv) {
     // test.mp4 is some 1.5 MB a second
     slow_steps([out_dir stringByAppendingPathComponent:@"test.mp4"], @"video/mp4", 0.75e6);
     scrub_cache_steps([out_dir stringByAppendingPathComponent:@"test.mp4"]);
+    scrub_back_steps([out_dir stringByAppendingPathComponent:@"test-gop.mp4"], 320, 180);
+    scrub_back_steps([out_dir stringByAppendingPathComponent:@"test-gop-turned.mp4"], 180, 320);
     for (int i = 3; i < argc; i++) {
       NSArray<NSString *> *a = [@(argv[i]) componentsSeparatedByString:@"|"];
       video_steps(a[0], a[1], a[2].doubleValue, a[3].doubleValue, a[4].doubleValue);

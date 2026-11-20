@@ -419,6 +419,13 @@ void mb_views_forget(int wid) {
 @implementation MBSiteReq
 @end
 
+// A stretch of a video's frames, decoded and kept for a finger going back along its timeline (apple_scrub.h).
+@interface MBScrubFrames : NSObject
+@property(nonatomic) double from, to;  // ms: the first one's start, the last one's end
+@property(nonatomic, strong) NSArray<NSNumber *> *times;  // each one's start (ms), in order
+@property(nonatomic, strong) NSArray *pictures;           // each one (CGImage), at the view's size
+@end
+
 @interface MBNative : NSObject <WKNavigationDelegate>
 @property(nonatomic) int32_t vid, kind;
 @property(nonatomic, strong) PView *box;      // clips: at the clip rect
@@ -457,6 +464,13 @@ void mb_views_forget(int wid) {
 @property(nonatomic) int seekGen;  // the seek on its way (one let go of for another: not this one's completion)
 @property(nonatomic) double seekMs, chaseMs;
 @property(nonatomic) BOOL chaseNear;  // the one asked meanwhile is to go about there (seekTo:near:)
+// a finger on its timeline (op 9) and the frames kept for it going back (apple_scrub.h)
+@property(nonatomic) BOOL scrubbing, scrubServed, scrubLanding, scrubDecoding;
+@property(nonatomic) double scrubLastMs, scrubShownMs, scrubWant;
+@property(atomic) int scrubGen;
+@property(nonatomic, strong) MBScrubFrames *scrubFrames;
+@property(nonatomic, strong) CALayer *scrubLayer;
+@property(nonatomic) CGImageRef scrubPicture;  // the one shown (its layer holds it)
 @property(nonatomic) BOOL observing, readyLogged, frameLogged;
 @property(nonatomic, strong) NSMutableArray<MBRead *> *pending;                  // not yet taken
 @property(nonatomic, strong) NSMutableDictionary<NSNumber *, MBRead *> *taken;  // taken, not answered to its end
@@ -511,6 +525,15 @@ void mb_views_forget(int wid) {
 - (CGImageRef)copyFrame;
 - (void)stood;
 - (void)tell:(int)state;
+@end
+
+@interface MBNative (Scrub)
+- (void)scrubOn:(BOOL)on;
+- (BOOL)scrubTo:(double)ms;
+- (BOOL)scrubShow:(double)ms;
+- (void)scrubLayout;
+- (void)scrubHide;
+- (void)scrubDecodeBefore:(double)ms;
 @end
 
 int32_t mb_host_view_info(int32_t vid, double *out);
@@ -647,6 +670,8 @@ static int32_t player_failure(NSError *error) {
 }
 
 - (void)seekTo:(double)ms near:(BOOL)near {
+  // (a finger on its timeline: shown from the frames kept for it where they have it, apple_scrub.h)
+  if (!near && self.scrubbing && self.item.status == AVPlayerItemStatusReadyToPlay && [self scrubTo:ms]) return;
   // (one on its way to what is here, or the item not ready for one yet: this one next, once it is; an exact seek
   // preempts an in-flight approximate scrub seek at once, and one waiting on the network is replaced at once)
   if (self.item.status != AVPlayerItemStatusReadyToPlay ||
@@ -680,6 +705,8 @@ static int32_t player_failure(NSError *error) {
               v.chasing = NO;
               [v seekTo:v.chaseMs near:v.chaseNear];
             }
+            // (the player's picture there now: the frames' over it gone, unless a finger is shown one of them)
+            if (!v.seeking && !v.chasing && !(v.scrubbing && v.scrubServed)) [v scrubHide];
             [v playWhatCame];
             [v stood];
             mb_host_request_frame();
@@ -1112,6 +1139,8 @@ static int32_t player_failure(NSError *error) {
 
 // The frame showing now, for snapshots (the last one copied when no new one came); retained, or NULL.
 - (CGImageRef)copyFrame {
+  // (a frame kept for a finger on its timeline over the player's: that one)
+  if ((self.scrubServed || self.scrubLanding) && self.scrubPicture) return CGImageRetain(self.scrubPicture);
   CMTime t = self.item.currentTime;
   CVPixelBufferRef pb = [self.output copyPixelBufferForItemTime:t itemTimeForDisplay:NULL];
   if (pb) {
@@ -1303,6 +1332,7 @@ static int32_t player_failure(NSError *error) {
 
 @end
 
+#import "apple_scrub.h"
 #import "apple_webm.h"
 
 #if TARGET_OS_OSX
@@ -1878,6 +1908,7 @@ void mb_host_view_place(int32_t vid, double x, double y, double w, double h, dou
   v.box.hidden = !s;
   v.box.frame = CGRectMake(cx0, cy0, fmax(0, cx1 - cx0), fmax(0, cy1 - cy0));
   v.content.frame = CGRectMake(x - cx0, y - cy0, fmax(0, w), fmax(0, h));
+  if (v.scrubLayer) [v scrubLayout];
   // (a stream's pointer on its layer where it points on it now)
   if (v.kind == 4) mb_stream_layout(v.streamSid, fmax(0, w), fmax(0, h));
   // its corners round (as the hole the app paints for it): its own layer cut to them, what it holds with it
@@ -1928,6 +1959,8 @@ void mb_host_view_close(int32_t vid) {
       v.playerLayer.player = nil;
       vlog(@"view %d: closed (%.0f bytes read)", vid, v.answered);
     }
+    v.scrubGen++;
+    v.scrubFrames = nil;
     [v.fileCache close];
   } else if (v.kind == 4) {
     mb_stream_attach_layer(v.streamSid, nil);
@@ -1995,6 +2028,9 @@ void mb_host_view_control(int32_t vid, int32_t op, double value) {
       break;
     case 3: [v seekTo:value]; break;
     case 11: [v seekTo:value near:YES]; break;
+    // a finger on its timeline, or let go (NativeView::scrub): its seeks one at a time as ever, going back shown
+    // from frames kept for it (apple_scrub.h)
+    case 9: [v scrubOn:value > 0]; break;
     case 4:
       if (value <= 0) break;
       v.speed = value;
@@ -2060,6 +2096,8 @@ int32_t mb_host_view_info(int32_t vid, double *out) {
   out[1] = CMTIME_IS_NUMERIC(t) ? CMTimeGetSeconds(t) * 1000.0 : 0;
   // seeking (or a seek waiting for it to be ready): where it was last asked to go
   if (v.seeking || v.chasing) out[1] = v.chasing ? v.chaseMs : v.seekMs;
+  // shown from the frames kept for a finger on its timeline: where they show
+  if (v.scrubServed) out[1] = v.scrubShownMs;
   out[2] = v.player.rate > 0 ? 1 : 0;
   CGSize s = it.presentationSize;
   out[3] = s.width;
@@ -2110,6 +2148,23 @@ int32_t mb_host_view_read_next(int32_t vid, double *out) {
 double mb_host_video_test_rate(int32_t vid) {
   MBNative *v = views[@(vid)];
   return v.webVideo ? [v.webVideo.state[@"rate"] doubleValue] : v.player.rate;
+}
+
+// The picture it shows now written as a PNG at `path`: 1 one of the frames kept for a finger on its timeline, 0 the
+// player's, -1 none (apple_scrub.h).
+int32_t mb_host_video_test_shown(int32_t vid, const char *path) {
+  MBNative *v = views[@(vid)];
+  CGImageRef img = [v copyFrame];
+  if (!img) return -1;
+  CGImageDestinationRef d = CGImageDestinationCreateWithURL(
+      (__bridge CFURLRef)[NSURL fileURLWithPath:[NSString stringWithUTF8String:path]], CFSTR("public.png"), 1, NULL);
+  if (d) {
+    CGImageDestinationAddImage(d, img, NULL);
+    CGImageDestinationFinalize(d);
+    CFRelease(d);
+  }
+  CGImageRelease(img);
+  return v.scrubServed ? 1 : 0;
 }
 #endif
 
