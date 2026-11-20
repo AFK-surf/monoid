@@ -200,3 +200,49 @@ test "a new chat made as nodes on an Android phone edge to edge, the keyboard up
     None => ()
   }
 }
+
+///|
+test "a new chat made as nodes, with dropFinder set to path: Finder drops over the page or on its field insert local paths as text, while drops without paths still upload" {
+  for here in [Some("ws1/st1"), Some("ws2/st9"), None] {
+    for wide in [false, true] {
+      let at = "\{here.unwrap_or("none")} wide=\{wide}"
+      new_run()
+      @sfbase.hold_chat_page_nodes(Some(true))
+      @sfbase.machine_here.val = here
+      let src = fixture("newchat")
+      (src.call)("prefs.set", { "dropFinder": "path" }, fn(_) {  })
+      let t = if wide {
+        @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+      } else {
+        @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+      }
+      open_mode("newchat")
+      t.draw()
+      t.run_for(@ui.move_most_ms)
+      let typed = fn() { @sfbase.writings.get("new:ws1").map(fn(d) { d.field.text() }).unwrap_or("") }
+      let files = fn() { @sfbase.writings.get("new:ws1").map(fn(d) { d.files.get().map(fn(f) { text(Some(f), "name") }) }).unwrap_or([]) }
+      guard node_words_at(t, "想让 agent 做什么？") is Some((tx, ty)) else { fail("\{at}: no heading") }
+      t.drop_files(tx + 10.0, ty + 10.0, [("报告.pdf", b"%PDF"), ("截图/", b"")], paths=[
+        "/Users/lin/报告.pdf", "/Users/lin/截图",
+      ])
+      t.run_for(@ui.move_most_ms)
+      assert_eq(typed(), "/Users/lin/报告.pdf\n/Users/lin/截图", msg="\{at}: over page")
+      assert_eq(files(), [], msg="\{at}: over page")
+      t.clear()
+      t.run_for(@ui.move_most_ms)
+      guard t.query(TextField) is Some(f) else { fail("\{at}: no field") }
+      let (fx, fy, fw, fh) = f.rect
+      t.drop_files(fx + fw / 2.0, fy + fh / 2.0, [("报告.pdf", b"%PDF"), ("截图/", b"")], paths=[
+        "/Users/lin/报告.pdf", "/Users/lin/截图",
+      ])
+      t.run_for(@ui.move_most_ms)
+      assert_eq(typed(), "/Users/lin/报告.pdf\n/Users/lin/截图", msg="\{at}: on field")
+      assert_eq(files(), [], msg="\{at}: on field")
+      // drops without paths still upload as files
+      t.drop_files(tx + 10.0, ty + 10.0, [("b.log", b"log")])
+      t.run_for(@ui.move_most_ms)
+      assert_eq(files(), ["b.log"], msg="\{at}: no paths still uploads")
+    }
+  }
+  @sfbase.machine_here.val = None
+}

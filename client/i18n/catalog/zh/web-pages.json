@@ -228,6 +228,8 @@
   "web-pages.appearance.drop.description": "发路径只告诉 agent 文件在哪；发文件会把文件放进 chat 所在的 station",
   "web-pages.appearance.drop.path": "发路径",
   "web-pages.appearance.drop.file": "发文件",
+  "web-pages.appearance.dropPath.title": "从外部拖入时插路径",
+  "web-pages.appearance.dropPath.description": "打开后，从访达或文件管理器拖入 chat 时不传文件、也不建引用卡片，直接把本地路径插进输入框",
   "web-pages.appearance.archive.title": "提示归档",
   "web-pages.appearance.archive.description": "做完的 chat 要不要提示你归档：侧栏里变淡。只对这台设备生效；顶栏的归档按钮、快捷键和右键菜单都不受影响。",
   "web-pages.appearance.archive.off": "不提示",

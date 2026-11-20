@@ -136,7 +136,7 @@ pub fn new_chat_page(c : @ui.Ctx, src : Source, w : Workspace, frame : NewChatFr
   if composes.val {
     let draft = new_chat_drafts + w.id
     if @sfbase.finder_by_station_in(w.id) {
-      match c.paths_into(room, composer_field_key) {
+      match c.paths_into(room, composer_field_key, takes=fn() { !@sfbase.finder_drops_text(src) }) {
         Some(paths) =>
           for d in @sfbase.finder_dragged(src, paths) {
             @sfbase.files_into(draft, d)
@@ -144,7 +144,12 @@ pub fn new_chat_page(c : @ui.Ctx, src : Source, w : Workspace, frame : NewChatFr
         None => ()
       }
     }
-    c.files_into(room, composer_field_key, fn(files) { @sfbase.picked_files_into(draft, files) })
+    c.files_into(
+      room,
+      composer_field_key,
+      fn(files) { @sfbase.picked_files_into(draft, files) },
+      with_paths=fn() { !@sfbase.finder_drops_text(src) },
+    )
     c.words_into(room, composer_field_key)
   }
   // the first words sent, where they were typed, while the chat is made (flight.mbt)

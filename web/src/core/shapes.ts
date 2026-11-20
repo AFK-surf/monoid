@@ -1829,6 +1829,8 @@ export interface PrefsView {
 	cpuDial?: string;
 	/** How files dragged into a chat go unless the chat says otherwise (`dropFiles`): file, or (none) path. */
 	dropAs?: string;
+	/** How files dragged into a chat from outside the app go on this device: `path` inserts their local paths as text in the composer instead of uploading files or creating station cards, or (none) the default behavior. */
+	dropFinder?: string;
 	/**
 	 * How the composer sends on this device (快捷键): `mod`, ⌘Enter (Ctrl+Enter elsewhere), Enter and ⇧Enter a new
 	 * line; or (none) Enter, ⇧Enter a new line. A screen's keyboard's Enter is a new line whatever this says.

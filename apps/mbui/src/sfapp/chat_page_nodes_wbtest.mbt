@@ -1238,6 +1238,86 @@ test "a chat's page and its composer made as nodes, on 小屏 and 大屏, where 
 }
 
 ///|
+test "a chat's page and its composer made as nodes, with dropFinder set to path: Finder drops insert local paths as text regardless of station, while drops without paths still upload as files and ⌘F's field takes paths" {
+  for here in [Some("ws1/st1"), Some("ws2/st9"), None] {
+    for screen in [("小屏", 390.0, 844.0, 2), ("大屏", 1280.0, 800.0, 0)] {
+      let (name, w, h, platform) = screen
+      let at = "\{name} \{here.unwrap_or("none")}"
+      let calls : Array[(String, Json)] = []
+      let (t, src) = chat_nodes_calling(w, h, platform, calls)
+      @sfbase.machine_here.val = here
+      (src.call)("prefs.set", { "dropFinder": "path" }, fn(_) {  })
+      t.run_for(@ui.move_most_ms)
+      let typed = fn() { @sfbase.writings.get("ws1/st1:s-c1").map(fn(d) { d.field.text() }).unwrap_or("") }
+      guard t.rect_of("做完了：列表、跳到最新的按钮") is Some((mx, my, mw, mh)) else { fail("\{at}: last message not drawn") }
+      // on a message: local paths inserted as text (one per line), no file upload or station ref card
+      t.drop_files(mx + mw / 2.0, my + mh / 2.0, [("报告.pdf", b"%PDF"), ("截图/", b"")], paths=[
+        "/Users/lin/报告.pdf", "/Users/lin/截图",
+      ])
+      t.run_for(@ui.move_most_ms)
+      assert_eq(typed(), "/Users/lin/报告.pdf\n/Users/lin/截图", msg="\{at}: on a message")
+      assert_eq(draft_files(), "", msg="\{at}: on a message")
+      assert_eq(calls.filter(fn(c) { c.0 == "composer.add" }).length(), 0, msg="\{at}: on a message")
+      // beside a message (on page ground)
+      t.clear()
+      t.run_for(@ui.move_most_ms)
+      t.drop_files(mx - 6.0, my + mh / 2.0, [("报告.pdf", b"%PDF"), ("截图/", b"")], paths=[
+        "/Users/lin/报告.pdf", "/Users/lin/截图",
+      ])
+      t.run_for(@ui.move_most_ms)
+      assert_eq(typed(), "/Users/lin/报告.pdf\n/Users/lin/截图", msg="\{at}: beside a message")
+      assert_eq(draft_files(), "", msg="\{at}: beside a message")
+      // on the composer capsule beside its field
+      t.clear()
+      t.run_for(@ui.move_most_ms)
+      guard composer_capsule(t) is Some((cx, cy, _, ch)) else { fail("\{at}: no composer capsule") }
+      t.drop_files(cx + 4.0, cy + ch / 2.0, [("报告.pdf", b"%PDF"), ("截图/", b"")], paths=[
+        "/Users/lin/报告.pdf", "/Users/lin/截图",
+      ])
+      t.run_for(@ui.move_most_ms)
+      assert_eq(typed(), "/Users/lin/报告.pdf\n/Users/lin/截图", msg="\{at}: on the capsule")
+      assert_eq(draft_files(), "", msg="\{at}: on the capsule")
+      // on the composer's field itself
+      t.clear()
+      t.run_for(@ui.move_most_ms)
+      guard composer_field(t) is Some((fx, fy, fw, fh)) else { fail("\{at}: no composer field") }
+      t.drop_files(fx + fw / 2.0, fy + fh / 2.0, [("报告.pdf", b"%PDF"), ("截图/", b"")], paths=[
+        "/Users/lin/报告.pdf", "/Users/lin/截图",
+      ])
+      t.run_for(@ui.move_most_ms)
+      assert_eq(typed(), "/Users/lin/报告.pdf\n/Users/lin/截图", msg="\{at}: on the field")
+      assert_eq(draft_files(), "", msg="\{at}: on the field")
+      // a drop without paths (Windows Explorer style) still uploads as a file
+      t.drop_files(mx + mw / 2.0, my + mh / 2.0, [("b.log", b"log")])
+      t.run_for(@ui.move_most_ms)
+      assert_eq(draft_files(), "b.log/", msg="\{at}: no paths still uploads")
+      assert_eq(typed(), "/Users/lin/报告.pdf\n/Users/lin/截图", msg="\{at}: no paths leaves text intact")
+    }
+  }
+  @sfbase.machine_here.val = None
+  // ⌘F's field still takes paths into itself when dropFinder is on
+  let calls : Array[(String, Json)] = []
+  let (t, src) = chat_nodes_calling(1280.0, 800.0, 0, calls)
+  @sfbase.machine_here.val = Some("ws1/st1")
+  (src.call)("prefs.set", { "dropFinder": "path" }, fn(_) {  })
+  t.run_for(@ui.move_most_ms)
+  t.key(@ui.key_of_char('f'), mods=@ui.mod_cmd)
+  t.run_for(@ui.move_most_ms)
+  let composer_label = @sf.t("web-main.composer.placeholder")
+  guard t.semantics().filter(fn(s) { s.role == @ui.Role::TextField && s.label != composer_label }) is [find] else {
+    fail("no ⌘F field")
+  }
+  let (sx, sy, sw, sh) = find.rect
+  t.drop_files(sx + sw - 4.0, sy + sh / 2.0, [("a.txt", b"a")], paths=["/Users/lin/a.txt"])
+  t.frame()
+  t.frame()
+  let now = t.semantics().filter(fn(s) { s.role == @ui.Role::TextField && s.rect.1 == sy })
+  assert_true(now.iter().any(fn(s) { s.value.contains("/Users/lin/a.txt") }), msg="⌘F's field: \{Repr(now.map(fn(s) { s.value }))}")
+  assert_eq(draft_files(), "")
+  @sfbase.machine_here.val = None
+}
+
+///|
 test "a chat's page made with its inside nodes, on 小屏: words sent read up the list take it to its end, their row there" {
   for screen in [("小屏", 390.0, 844.0, 2)] {
     let (name, w, h, platform) = screen

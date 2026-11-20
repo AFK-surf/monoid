@@ -349,3 +349,46 @@ test "a script's drop (drive 13) lets files go on the window with their paths, a
   t.frame()
   assert_eq((done, said, again, read, f.text(), paths), (true, "", true, ["esp32.log", "logs/", "esp32.log"], "", []))
 }
+
+///|
+test "files let go on a node with files_into(with_paths=false): drops with paths fall through to words_into unread, while drops without paths are still read" {
+  let f = @ui.Field::new(text="")
+  let read : Array[String] = []
+  let t = @ui.Tester::tree(fn(root) {
+    root.box(fn(cap) {
+      cap.width(Is(Some(300.0))).padding(Is((40.0, 40.0, 40.0, 40.0))).on_press(fn() { f.focus() }) |> ignore
+      @ui.field(cap, f, placeholder="the field", font_size=10.0, max_lines=1) |> ignore
+      @ui.files_into(
+        cap,
+        f,
+        fn(fs) {
+          for x in fs {
+            read.push(x.name)
+          }
+        },
+        with_paths=fn() { false },
+      )
+      |> @ui.words_into(f)
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  let (ex, ey, ew, eh) = t.rect_of("the field").unwrap()
+  // beside the field, with paths: inserted into field unread
+  t.drop_files(ex + 50.0, ey - 30.0, [("a.txt", b"a"), ("pics/", b"")], paths=["/Users/me/a.txt", "/Users/me/pics"])
+  t.frame()
+  t.frame()
+  assert_eq((read, f.text()), ([], "/Users/me/a.txt\n/Users/me/pics"))
+  // directly on the field, with paths: inserted at caret unread
+  t.drop_files(ex + ew - 2.0, ey + eh / 2.0, [("b.txt", b"b")], paths=["/Users/me/b.txt"])
+  t.frame()
+  t.frame()
+  assert_eq(read, [])
+  assert_true(f.text().contains("/Users/me/b.txt"))
+  // without paths (Windows): still read as files
+  t.drop_files(ex + 50.0, ey - 30.0, [("c.pdf", b"%PDF")])
+  t.frame()
+  t.frame()
+  assert_eq(read, ["c.pdf"])
+}

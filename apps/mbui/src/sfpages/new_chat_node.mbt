@@ -218,14 +218,23 @@ fn new_on_tree(v : @view.View, on : NewOn) -> Unit {
         @sfbase.files_into_many(draft, @sfbase.finder_dragged(on.src, paths))
       }
     },
-    takes=fn() { @signals.untracked(composes) && @sfbase.finder_by_station_in(on.w.id) },
+    takes=fn() {
+      @signals.untracked(composes) &&
+      !@sfbase.finder_drops_text(on.src) &&
+      @sfbase.finder_by_station_in(on.w.id)
+    },
   )
-  |> @ui.files_into(w_draft.field, fn(files) {
-    if @signals.untracked(composes) {
-      @sfbase.picked_files_into(draft, files)
-    }
-  })
-  |> @ui.words_into(w_draft.field)
+  |> @ui.files_into(
+    w_draft.field,
+    fn(files) {
+      if @signals.untracked(composes) {
+        @sfbase.picked_files_into(draft, files)
+      }
+    },
+    takes=fn() { @signals.untracked(composes) },
+    with_paths=fn() { !@sfbase.finder_drops_text(on.src) },
+  )
+  |> @ui.words_into(w_draft.field, takes=fn() { @signals.untracked(composes) })
   |> ignore
   v.box(fn(col) {
     col

@@ -1062,6 +1062,13 @@ pub fn finder_by_station_in(ws : String) -> Bool {
 }
 
 ///|
+/// Whether files from outside the app (Finder or a file manager that gives local paths) go into a chat's composer field
+/// as local path text instead of uploading or creating station cards (prefs `dropFinder`).
+pub fn finder_drops_text(src : Source) -> Bool {
+  @signals.untracked(fn() { @settings.pref_from(src.topic("prefs", {}).get().value, "dropFinder") == "path" })
+}
+
+///|
 /// Files from outside let go on a chat and read (@ui.files_into, @ui.Ctx::files_into), by the chat's draft's key: put
 /// into its message as files picked are, the folders they were in left out (each named with a "/" at its end, empty);
 /// taken by its composer (compose_given.mbt), which says where it takes no files.

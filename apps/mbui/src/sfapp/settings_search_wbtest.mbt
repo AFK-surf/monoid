@@ -111,6 +111,7 @@ test "settings search finds a setting by what people call it, and its station or
       ("设备", "已登录的设备"),
       ("深色", "主题"),
       ("动效", "动画"),
+      ("访达", "从外部拖入时插路径"),
       ("发送消息", "发送消息"),
       ("后台下载", "后台下载"),
       ("手机", "共享调试"),

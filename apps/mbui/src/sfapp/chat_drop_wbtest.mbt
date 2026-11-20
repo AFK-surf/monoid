@@ -77,3 +77,36 @@ test "a file from this machine's file manager dropped on the chat goes into its 
   assert_eq(text(field(Some(one), "ref"), "station"), "ws1/st1")
   @sfbase.machine_here.val = None
 }
+
+///|
+test "with dropFinder set to path, a 文件 tab's row dragged onto the chat still adds a station file ref card" {
+  let calls : Array[Made] = []
+  new_run()
+  let base = fixture("chat")
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      calls.push({ name, params, bytes: None, done })
+      (base.call)(name, params, done)
+    },
+  }
+  (src.call)("prefs.set", { "dropFinder": "path" }, fn(_) {  })
+  open_fixture_over("chat", src)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  t.run_for(@ui.move_most_ms)
+  let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+  @sfdesk.tab_place_set("ws1", Some({ station: "ws1/st1", root: Some(fix_docs), path: "" }))
+  @sfdesk.side_change(src, r, "open", Some("files"))
+  t.run_for(@ui.move_most_ms)
+  t.run_for(@ui.move_most_ms)
+  guard t.find("首页截图.png") is Some((x, y)) else { fail("no tab row") }
+  t.hold_drag(x, y, 420.0, 400.0)
+  assert_true(t.find("松开以添加到消息") is Some(_))
+  t.release(420.0, 400.0)
+  t.run_for(@ui.move_most_ms)
+  let added = named(calls, "composer.add")
+  assert_eq(added.length(), 1, msg="\{Repr(calls.map(fn(m) { m.name }))}")
+  let one = handed(added[0]).unwrap()
+  assert_eq(text(Some(one), "name"), "首页截图.png")
+  assert_eq(text(field(Some(one), "ref"), "mode"), "path")
+}

@@ -605,6 +605,16 @@ fn settings_children_of(
       if @ui.takes_drops() {
         a.push(("drop", @sf.t("web-pages.appearance.drop.title"), Appearance, "拖拽 拖放 发送文件 引用路径 drag drop file path"))
       }
+      if @ui.takes_drop_paths() {
+        a.push(
+          (
+            "drop-path",
+            @sf.t("web-pages.appearance.dropPath.title"),
+            Appearance,
+            "访达 拖拽 拖放 拖入 外部 路径 文本 输入框 finder drag drop path text",
+          ),
+        )
+      }
       // (the rail's own, beside the settings' sidebar alone, not an iPhone Duo's)
       if wide && !@sf.native_on() {
         a.push(("rail", @sf.t("web-main.rail.title"), Appearance, "侧栏 侧边栏 导航条 自定义侧边条 rail sidebar customize"))

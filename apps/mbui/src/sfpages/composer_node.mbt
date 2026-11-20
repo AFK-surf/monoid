@@ -1089,9 +1089,13 @@ fn composer_box_node(
       fn(paths) {
         @sfbase.files_into_many(w.key, @sfbase.finder_dragged(src, paths))
       },
-      takes=fn() { @sfbase.finder_by_station_in(@sfbase.workspace_of(r.station)) },
+      takes=fn() { !@sfbase.finder_drops_text(src) && @sfbase.finder_by_station_in(@sfbase.workspace_of(r.station)) },
     )
-    |> @ui.files_into(w.field, fn(files) { @sfbase.picked_files_into(w.key, files) })
+    |> @ui.files_into(
+      w.field,
+      fn(files) { @sfbase.picked_files_into(w.key, files) },
+      with_paths=fn() { !@sfbase.finder_drops_text(src) },
+    )
     |> @ui.words_into(w.field)
     |> ignore
     // (its ground the floating glass, the accent's over it while a file is dragged over: a 文件 tab's row, files from

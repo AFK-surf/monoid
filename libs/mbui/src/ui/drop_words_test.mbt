@@ -478,3 +478,50 @@ test "a box that takes files by their paths takes them so before it reads them (
   t.frame()
   assert_eq((took, read, f.text()), (["/Users/lin/a.txt"], ["b.txt"], ""))
 }
+
+///|
+test "a box with Ctx::files_into(with_paths=false) lets drops with paths fall through to Ctx::words_into unread, and still reads drops without paths" {
+  let f = @ui.Field::new(text="")
+  let read : Array[String] = []
+  let t = @ui.Tester::new(
+    fn(c) {
+      let cap = c.id("cap")
+      c.takes_presses(cap)
+      c.files_into(
+        cap,
+        "e",
+        fn(fs) {
+          for x in fs {
+            read.push(x.name)
+          }
+        },
+        with_paths=fn() { false },
+      )
+      c.words_into(cap, "e")
+      c.box(id=cap, w=Fill(1.0), pad=40.0, fn() {
+        c.editor("e", field=f, placeholder="the field", font_size=10.0, plain=true, enter_sends=false) |> ignore
+      })
+      |> ignore
+    },
+    w=300.0,
+    h=300.0,
+  )
+  t.draw()
+  let (ex, ey, ew, eh) = t.rect_of("the field").unwrap()
+  // beside the field, with paths: inserted unread
+  t.drop_files(ex + 50.0, ey - 36.0, [("a.txt", b"a"), ("dir/", b"")], paths=["/Users/lin/a.txt", "/Users/lin/dir"])
+  t.frame()
+  t.frame()
+  assert_eq((read, f.text()), ([], "/Users/lin/a.txt\n/Users/lin/dir"))
+  // on the field, with paths: inserted unread
+  t.drop_files(ex + ew - 2.0, ey + eh / 2.0, [("b.txt", b"b")], paths=["/Users/lin/b.txt"])
+  t.frame()
+  t.frame()
+  assert_eq(read, [])
+  assert_true(f.text().contains("/Users/lin/b.txt"))
+  // without paths: still read as files
+  t.drop_files(ex + 50.0, ey - 36.0, [("c.log", b"log")])
+  t.frame()
+  t.frame()
+  assert_eq(read, ["c.log"])
+}

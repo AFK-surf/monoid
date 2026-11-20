@@ -1173,6 +1173,8 @@ web-pages.appearance.drop.description
 web-pages.appearance.drop.file
 web-pages.appearance.drop.path
 web-pages.appearance.drop.title
+web-pages.appearance.dropPath.description
+web-pages.appearance.dropPath.title
 web-pages.appearance.fonts.code
 web-pages.appearance.fonts.default
 web-pages.appearance.fonts.description

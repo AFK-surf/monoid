@@ -64,9 +64,13 @@ pub fn chat_page_body_node(
     fn(paths) {
       @sfbase.files_into_many(draft, @sfbase.finder_dragged(src, paths))
     },
-    takes=fn() { @sfbase.finder_by_station_in(@sfbase.workspace_of(r.station)) },
+    takes=fn() { !@sfbase.finder_drops_text(src) && @sfbase.finder_by_station_in(@sfbase.workspace_of(r.station)) },
   )
-  |> @ui.files_into(w.field, fn(files) { @sfbase.picked_files_into(draft, files) })
+  |> @ui.files_into(
+    w.field,
+    fn(files) { @sfbase.picked_files_into(draft, files) },
+    with_paths=fn() { !@sfbase.finder_drops_text(src) },
+  )
   |> @ui.words_into(w.field)
   |> ignore
   // its words in pieces picked with the pointer (@ui.words_picked), as the old page's in its frame are (c.selectable):

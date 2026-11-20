@@ -237,6 +237,8 @@
   "web-pages.appearance.drop.description": "Path tells the agent where the file is; File puts it on the chat's station",
   "web-pages.appearance.drop.path": "Path",
   "web-pages.appearance.drop.file": "File",
+  "web-pages.appearance.dropPath.title": "Insert paths on external drop",
+  "web-pages.appearance.dropPath.description": "Insert local paths as text in the composer instead of uploading files or creating station cards",
   "web-pages.appearance.archive.title": "Archive suggestions",
   "web-pages.appearance.archive.description": "Whether a finished chat suggests archiving it: faded in the sidebar. Only on this device; the archive button in the bar, its shortcut and the context menu stay either way.",
   "web-pages.appearance.archive.off": "Off",

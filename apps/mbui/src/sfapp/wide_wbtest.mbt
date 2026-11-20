@@ -474,6 +474,62 @@ test "wide: where this machine is a station, files from the Finder let go on the
 }
 
 ///|
+test "wide: with dropFinder set to path, Finder drops on the chat, its field or a new chat always insert local paths as text, while drops without paths still upload as files" {
+  for here in [Some("ws1/st1"), Some("ws2/st9"), None] {
+    let said = here.unwrap_or("none")
+    let calls : Array[Made] = []
+    let t = wide_tester(calls, mode="chat", before=fn(src) {
+      (src.call)("prefs.set", { "dropFinder": "path" }, fn(_) {  })
+    })
+    @sfbase.machine_here.val = here
+    let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "", station_name: "" }
+    let files = fn() {
+      @sfbase.writings
+      .get(draft_key(r))
+      .map(fn(d) { d.files.get().map(fn(f) { text(Some(f), "name") }) })
+      .unwrap_or([])
+    }
+    // on a message
+    let (x, y) = t.find("做完了：").unwrap()
+    t.drop_files(x, y, [("报告.pdf", b"%PDF"), ("截图/", b"")], paths=["/Users/lin/报告.pdf", "/Users/lin/截图"])
+    t.run_for(@ui.move_most_ms)
+    assert_eq(t.ime().1, "/Users/lin/报告.pdf\n/Users/lin/截图", msg="\{said}: on a message")
+    assert_eq(files(), [], msg="\{said}: on a message")
+    assert_eq(named(calls, "composer.add").length(), 0, msg="\{said}: on a message")
+    // on the composer's field itself
+    t.clear()
+    t.run_for(@ui.move_most_ms)
+    let (fx, fy) = t.find("发消息").unwrap()
+    t.drop_files(fx, fy, [("报告.pdf", b"%PDF"), ("截图/", b"")], paths=["/Users/lin/报告.pdf", "/Users/lin/截图"])
+    t.run_for(@ui.move_most_ms)
+    assert_eq(t.ime().1, "/Users/lin/报告.pdf\n/Users/lin/截图", msg="\{said}: on its field")
+    assert_eq(files(), [], msg="\{said}: on its field")
+    // with no paths (Windows Explorer): still uploads as a file
+    let (x, y) = t.find("做完了：").unwrap()
+    t.drop_files(x, y, [("b.log", b"log")])
+    t.run_for(@ui.move_most_ms)
+    assert_eq(files(), ["b.log"], msg="\{said}: no paths")
+    assert_eq(t.ime().1, "/Users/lin/报告.pdf\n/Users/lin/截图", msg="\{said}: no paths leaves text intact")
+  }
+  // on a new chat's page (both same-workspace station and non-station)
+  for here in [Some("ws1/st1"), None] {
+    let said = here.unwrap_or("none")
+    let calls : Array[Made] = []
+    let t = wide_tester(calls, mode="newchat", before=fn(src) {
+      (src.call)("prefs.set", { "dropFinder": "path" }, fn(_) {  })
+    })
+    @sfbase.machine_here.val = here
+    guard t.find("做任何事") is Some((fx, fy)) else { fail("\{said}: no new chat composer") }
+    t.drop_files(fx, fy - 120.0, [("报告.pdf", b"%PDF"), ("截图/", b"")], paths=["/Users/lin/报告.pdf", "/Users/lin/截图"])
+    t.run_for(@ui.move_most_ms)
+    assert_eq(t.ime().1, "/Users/lin/报告.pdf\n/Users/lin/截图", msg="\{said}: newchat")
+    let names = @sfbase.writings.get("new:ws1").map(fn(d) { d.files.get().map(fn(f) { text(Some(f), "name") }) }).unwrap_or([])
+    assert_eq(names, [], msg="\{said}: newchat files")
+  }
+  @sfbase.machine_here.val = None
+}
+
+///|
 /// Where the chat's find colours its matches in, in the window (x, y, w, h): the highlighter's bands (a shape, the old
 /// page's) or a mark's ground under the words (View::runs_marks: a rect), in its colour on the light theme.
 fn find_coloured_in(t : @ui.Tester) -> Array[(Double, Double, Double, Double)] {

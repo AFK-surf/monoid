@@ -79,7 +79,7 @@ fn chat_page(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef, barred? : Bo
   // workspace: into the draft by their station and path, as a row of the 文件 tab put there (its composer takes them:
   // draft_give); elsewhere (or where the host says no paths, as Windows' does) read and put in as files picked are
   if @sfbase.finder_by_station_in(w.id) {
-    match c.paths_into(page, @sfpages.composer_field_key) {
+    match c.paths_into(page, @sfpages.composer_field_key, takes=fn() { !@sfbase.finder_drops_text(src) }) {
       Some(paths) =>
         for d in @sfbase.finder_dragged(src, paths) {
           @sfbase.files_into(draft_key(r), d)
@@ -87,7 +87,12 @@ fn chat_page(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef, barred? : Bo
       None => ()
     }
   }
-  c.files_into(page, @sfpages.composer_field_key, fn(files) { @sfbase.picked_files_into(draft_key(r), files) })
+  c.files_into(
+    page,
+    @sfpages.composer_field_key,
+    fn(files) { @sfbase.picked_files_into(draft_key(r), files) },
+    with_paths=fn() { !@sfbase.finder_drops_text(src) },
+  )
   c.words_into(page, @sfpages.composer_field_key)
   // over the navigation bar (ChatHost.kt: windowInsetsPadding(keyboard.union(navigationBars)))
   c.box(w=Fill(1.0), h=Fill(1.0), bg=t.p.bg, pb=nav_foot(), id=page, taps=false, points=true, fn() {

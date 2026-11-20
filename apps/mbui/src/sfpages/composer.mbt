@@ -475,7 +475,7 @@ pub fn composer(
   // its station and path, named so or sent as files as the chat takes what is dragged in; elsewhere (or where the host
   // says no paths, as Windows' does) read and put in as files picked are (take_in says why where none goes up now)
   if @sfbase.finder_by_station_in(ws.id) {
-    match c.paths_into(cap, composer_field_key) {
+    match c.paths_into(cap, composer_field_key, takes=fn() { !@sfbase.finder_drops_text(src) }) {
       Some(paths) =>
         if no_files {
           let why = if spec.offline {
@@ -490,7 +490,12 @@ pub fn composer(
       None => ()
     }
   }
-  c.files_into(cap, composer_field_key, fn(files) { @sfbase.picked_files_into(w.key, files) })
+  c.files_into(
+    cap,
+    composer_field_key,
+    fn(files) { @sfbase.picked_files_into(w.key, files) },
+    with_paths=fn() { !@sfbase.finder_drops_text(src) },
+  )
   if !spec.locked {
     c.words_into(cap, composer_field_key)
   }

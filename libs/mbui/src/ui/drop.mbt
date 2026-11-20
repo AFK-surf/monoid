@@ -32,6 +32,14 @@ pub fn takes_drops() -> Bool {
 }
 
 ///|
+/// Whether files dragged in from outside come with their local paths here: the hosts that say where they are (macOS's
+/// and Linux's: `mbui.drop` with `paths`), what a setting to insert those paths as text is shown for.
+pub fn takes_drop_paths() -> Bool {
+  let p = platform()
+  p == 0 || p == 5
+}
+
+///|
 /// A file or folder let go on the window from outside, where its host says where it is (the Finder's): its path,
 /// whether it is a folder, how many bytes it has (a folder: 0).
 #derive(Eq, Debug)
@@ -112,8 +120,8 @@ fn tree_words_at(c : Ctx, x : Double, y : Double, words : String) -> TreeDropped
       Took
     }
     Some((None, Some(at))) =>
-      match tree_drops_on(at, fn(d) { d.words is Some(_) }) {
-        Some({ words: Some(f), .. }) => {
+      match tree_drops_on(at, fn(d) { d.words is Some((_, takes)) && takes() }) {
+        Some({ words: Some((f, _)), .. }) => {
           tree_words_into(c, f.st, words)
           Took
         }
@@ -150,8 +158,11 @@ fn tree_paths_at(c : Ctx, x : Double, y : Double, paths : Array[DroppedPath], pi
           _ => ()
         }
       }
-      match tree_drops_on(at, fn(d) { d.picked is Some((f, _, takes)) && on_field(f) && takes() }) {
-        Some({ picked: Some((_, take, _)), .. }) => {
+      match
+        tree_drops_on(at, fn(d) {
+          d.picked is Some((f, _, takes, with_paths)) && on_field(f) && takes() && (paths.is_empty() || with_paths())
+        }) {
+        Some({ picked: Some((_, take, _, _)), .. }) => {
           Pick::waits([@hostapi.dropped_pick(pick)], "files dropped", on_got=take) |> ignore
           return Took
         }
@@ -179,8 +190,8 @@ fn tree_paths_at(c : Ctx, x : Double, y : Double, paths : Array[DroppedPath], pi
           Took
         }
         None =>
-          match tree_drops_on(at, fn(d) { d.words is Some(_) }) {
-            Some({ words: Some(f), .. }) => {
+          match tree_drops_on(at, fn(d) { d.words is Some((_, takes)) && takes() }) {
+            Some({ words: Some((f, _)), .. }) => {
               tree_words_into(c, f.st, paths_words(paths))
               forget_drop(pick)
               Took
@@ -237,9 +248,9 @@ fn paths_let_go(x : Double, y : Double, paths : Array[DroppedPath], pick : Int) 
 /// `words` (words_into), files with their paths for `paths`' field and its taker (paths_into), files read for
 /// `picked`'s field and its taker (files_into).
 priv struct TreeDrops {
-  mut words : Field?
+  mut words : (Field, () -> Bool)?
   mut paths : (Field, (Array[DroppedPath]) -> Unit, () -> Bool)?
-  mut picked : (Field, (Array[@hostapi.Picked]) -> Unit, () -> Bool)?
+  mut picked : (Field, (Array[@hostapi.Picked]) -> Unit, () -> Bool, () -> Bool)?
   mut files : FilesOn?
 }
 
@@ -308,10 +319,11 @@ fn tree_words_into(c : Ctx, st : EditorState, words : String) -> Unit {
 /// Words from outside let go on node `v` or what it holds beside any field (one let go on a field the field took, where
 /// it was let go): put in `field` at its caret, as a paste's, at the moment they are let go, the field taking the focus,
 /// as a press on `v` is its field's (a composer's capsule: its padding, its buttons); files let go there with their paths
-/// that nothing takes by their paths (paths_into), their paths so, a line each, not read. What holds a node of the tree's
-/// takes what it holds does not (the innermost first); an old view's box, Ctx::words_into. `v`.
-pub fn words_into(v : @view.View, field : Field) -> @view.View {
-  tree_drops_of(v).words = Some(field)
+/// that nothing takes by their paths (paths_into) or as files (files_into), their paths so, a line each, not read. Only
+/// while `takes` says so, asked as they are let go. What holds a node of the tree's takes what it holds does not (the
+/// innermost first); an old view's box, Ctx::words_into. `v`.
+pub fn words_into(v : @view.View, field : Field, takes? : () -> Bool = fn() { true }) -> @view.View {
+  tree_drops_of(v).words = Some((field, takes))
   v
 }
 
@@ -338,14 +350,16 @@ pub fn paths_into(
 /// it does not take them so, or the host says none, as Windows' does): read, and given to `take` as their reading
 /// comes (a folder's by their way down, each folder itself named with a "/" at its end; none: called off). The
 /// innermost of what takes them first; an old view's box, Ctx::files_into. Only while `takes` says so, asked as they
-/// are let go. `v`.
+/// are let go; when `with_paths` says false and the host gave paths, left to what holds it or its words (words_into:
+/// their paths, a line each) unread. `v`.
 pub fn files_into(
   v : @view.View,
   field : Field,
   take : (Array[@hostapi.Picked]) -> Unit,
   takes? : () -> Bool = fn() { true },
+  with_paths? : () -> Bool = fn() { true },
 ) -> @view.View {
-  tree_drops_of(v).picked = Some((field, take, takes))
+  tree_drops_of(v).picked = Some((field, take, takes, with_paths))
   v
 }
 
@@ -439,10 +453,16 @@ pub fn Ctx::words_into(self : Ctx, id : Int, key : String) -> Unit {
 ///|
 /// Files from outside let go this frame on box `id` (on it beside field `key`, its own, or on that field: one let go on
 /// another field is that one's) with their paths, taken by their paths: then not read. A box that names them by where
-/// they are (a chat's composer), asked before it takes words (Ctx::words_into). Each is taken once.
-pub fn Ctx::paths_into(self : Ctx, id : Int, key : String) -> Array[DroppedPath]? {
+/// they are (a chat's composer), asked before it takes words (Ctx::words_into). Only while `takes` says so, asked when
+/// a drop lands. Each is taken once.
+pub fn Ctx::paths_into(
+  self : Ctx,
+  id : Int,
+  key : String,
+  takes? : () -> Bool = fn() { true },
+) -> Array[DroppedPath]? {
   hand_events_read()
-  guard paths_on(self, id, self.id(key)) is Some(d) && !d.paths.is_empty() else { return None }
+  guard paths_on(self, id, self.id(key)) is Some(d) && !d.paths.is_empty() && takes() else { return None }
   dropping.paths = None
   forget_drop(d.pick)
   Some(d.paths)
@@ -452,10 +472,17 @@ pub fn Ctx::paths_into(self : Ctx, id : Int, key : String) -> Array[DroppedPath]
 /// Files from outside let go this frame on box `id` (on it beside field `key`, its own, or on that field: one let go on
 /// another field is that one's), none taking them by their paths (Ctx::paths_into, asked first) or the host saying none
 /// (Windows'): read, and given to `take` as their reading comes (a folder's by their way down, each folder itself named
-/// with a "/" at its end; none: called off). Asked before the box takes words (Ctx::words_into). Each is taken once.
-pub fn Ctx::files_into(self : Ctx, id : Int, key : String, take : (Array[@hostapi.Picked]) -> Unit) -> Unit {
+/// with a "/" at its end; none: called off). Asked before the box takes words (Ctx::words_into). When `with_paths`
+/// says false and the host gave paths, left for Ctx::words_into or drops_frame_end unread. Each is taken once.
+pub fn Ctx::files_into(
+  self : Ctx,
+  id : Int,
+  key : String,
+  take : (Array[@hostapi.Picked]) -> Unit,
+  with_paths? : () -> Bool = fn() { true },
+) -> Unit {
   hand_events_read()
-  guard paths_on(self, id, self.id(key)) is Some(d) && d.pick > 0 else { return }
+  guard paths_on(self, id, self.id(key)) is Some(d) && d.pick > 0 && (d.paths.is_empty() || with_paths()) else { return }
   dropping.paths = None
   Pick::waits([@hostapi.dropped_pick(d.pick)], "files dropped", on_got=take) |> ignore
 }

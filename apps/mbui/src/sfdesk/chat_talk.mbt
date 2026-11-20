@@ -64,7 +64,7 @@ pub fn chat_talk(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef, pane : I
   // workspace: into the draft by their station and path, as a row of the 文件 tab let go there (chat_drop); elsewhere
   // (or where the host says no paths, as Windows' does) read and put in as files picked are
   if @sfbase.finder_by_station_in(w.id) {
-    match c.paths_into(pane, @sfpages.composer_field_key) {
+    match c.paths_into(pane, @sfpages.composer_field_key, takes=fn() { !@sfbase.finder_drops_text(src) }) {
       Some(paths) => {
         let dragged = @sfbase.finder_dragged(src, paths)
         c.tell("chat-drop/" + draft, fn() {
@@ -74,7 +74,12 @@ pub fn chat_talk(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef, pane : I
       None => ()
     }
   }
-  c.files_into(pane, @sfpages.composer_field_key, fn(files) { @sfbase.picked_files_into(draft, files) })
+  c.files_into(
+    pane,
+    @sfpages.composer_field_key,
+    fn(files) { @sfbase.picked_files_into(draft, files) },
+    with_paths=fn() { !@sfbase.finder_drops_text(src) },
+  )
   c.words_into(pane, @sfpages.composer_field_key)
 }
 

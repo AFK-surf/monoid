@@ -32,6 +32,9 @@ pub fn appearance_node(
     if @ui.takes_drops() {
       k.push("drop")
     }
+    if @ui.takes_drop_paths() {
+      k.push("drop-path")
+    }
     // (not beside the system's bars, an iPhone Duo's: its places are the tab bar's, set in 下方栏)
     if wide() && !@sf.native_on() {
       k.push("rail")
@@ -185,6 +188,16 @@ fn appearance_setting(v : @view.View, core : Core, key : String) -> Unit {
         "web-pages.appearance.drop.description",
         [("", "web-pages.appearance.drop.path"), ("file", "web-pages.appearance.drop.file")],
         fn() { @settings.pref(core, "dropAs") },
+      )
+    // external files from Finder or a file manager giving local paths (@ui.takes_drop_paths): off keeps the default; on
+    // inserts their local paths into the composer field as text (prefs `dropFinder`)
+    "drop-path" =>
+      @sf.setting_switch_node(
+        v,
+        fn() { @sf.t("web-pages.appearance.dropPath.title") },
+        fn() { @settings.pref(core, "dropFinder") == "path" },
+        fn(on) { @settings.set_pref(core, "dropFinder", if on { "path" } else { "" }) },
+        note=fn() { @sf.t("web-pages.appearance.dropPath.description") },
       )
     // the rail, changed where it is (rail.mbt): laid out wide, where the rail is beside the page (the web's wideOnly)
     "rail" =>

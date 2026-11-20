@@ -18,6 +18,7 @@ test "外观, at each width on either screen: 主题, 字体, 动画, 语言; �
     t.run_for(@ui.move_most_ms)
     assert_true(t.find("语言") is Some(_), msg=at)
     assert_eq(t.find("拖入 chat 的文件") is Some(_), platform == 0, msg=at)
+    assert_eq(t.find("从外部拖入时插路径") is Some(_), platform == 0, msg=at)
     // the rail changed where it is: laid out wide alone, asked of the shell
     assert_eq(t.find("自定义侧边条") is Some(_), laid_wide(w), msg=at)
     if laid_wide(w) {
@@ -114,6 +115,37 @@ test "外观: files dragged into a chat can be sent as files or paths (prefs dro
     assert_eq(sets.length(), 2, msg=at)
     assert_eq(sets[1].stringify(), "{\"dropAs\":null}", msg=at)
     assert_eq(t.get(Radio, label="发路径").check, Some(On), msg=at)
+  }
+}
+
+///|
+test "外观: external drop path-text switch (prefs dropFinder) shows only on macOS and Linux, starts off, and toggles on and off" {
+  // Visibility across all platforms: macOS (0) and Linux (5) only; hidden on iOS (1), Android (2), Windows (3), Web (4).
+  for platform in [0, 1, 2, 3, 4, 5] {
+    let t = setting_tester(Appearance, 1280.0, platform~, h=2400.0)
+    let want = platform == 0 || platform == 5
+    assert_eq(t.find("从外部拖入时插路径") is Some(_), want, msg="platform \{platform}")
+    assert_eq(t.query(Switch, label="从外部拖入时插路径") is Some(_), want, msg="platform \{platform}")
+  }
+  for (w, platform) in [(390.0, 0), (720.0, 0), (1280.0, 0), (1280.0, 5)] {
+    let at = "\{w} platform \{platform}"
+    let sets : Array[Json] = []
+    let t = setting_tester(Appearance, w, platform~, h=2400.0, over=fn(s) {
+      { ..s, call: fn(name, params, done) { if name == "prefs.set" { sets.push(params) }; (s.call)(name, params, done) } }
+    })
+    assert_eq(t.get(Switch, label="从外部拖入时插路径").check, Some(Off), msg=at)
+    t.click(Switch, label="从外部拖入时插路径")
+    t.frame()
+    t.frame()
+    assert_eq(sets.length(), 1, msg=at)
+    assert_eq(sets[0].stringify(), "{\"dropFinder\":\"path\"}", msg=at)
+    assert_eq(t.get(Switch, label="从外部拖入时插路径").check, Some(On), msg=at)
+    t.click(Switch, label="从外部拖入时插路径")
+    t.frame()
+    t.frame()
+    assert_eq(sets.length(), 2, msg=at)
+    assert_eq(sets[1].stringify(), "{\"dropFinder\":null}", msg=at)
+    assert_eq(t.get(Switch, label="从外部拖入时插路径").check, Some(Off), msg=at)
   }
 }
 
