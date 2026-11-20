@@ -37,6 +37,9 @@
   let f32 = new Float32Array(INST * 4096);
   let pending = false, pendingRaf = 0;
   window.__logs = [];
+  // (what H.log keeps: all of it where a test drives the page, which reads it whole and by its lines' places; else the
+  // last LOGS_MOST lines, a page left open logging on for days not growing without end)
+  const LOGS_MOST = typeof navigator !== 'undefined' && navigator.webdriver ? Infinity : 2000;
 
   // ---- frames ----
   // A picture at a declared moment (?shot_at=MS, scripts/web-shot.mjs): the run's frames are on a clock of their own,
@@ -391,6 +394,11 @@
     queueMicrotask(() => outside(kind, id, state));
   }
   function resize() {
+    resizeOnly();
+    // (what text keeps forgotten between frames, never in one: textSweep)
+    textSweep();
+  }
+  function resizeOnly() {
     const scale = hostWin.devicePixelRatio || 1;
     if (scale !== dpr) {
       dpr = scale;
@@ -1340,6 +1348,29 @@
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
     return { t, fb, w: Math.max(1, w), h: Math.max(1, h) };
   }
+  // Glass's levels (the window in place's) given back: made again at the size the next capture needs (ensureLevels),
+  // its blur the same to the byte. As this many frames in a row draw no glass (a sheet closed, the composer gone), and
+  // as the page is hidden (trimRender): held on, they are tens of MB at a screen's size.
+  const GLASS_IDLE = 180;
+  let glassIdle = 0, glassDrawn = false;
+  function glassFree() {
+    if (lv && gl) for (const l of lv) { gl.deleteTexture(l.t); gl.deleteFramebuffer(l.fb); }
+    lv = null; lvW = 0; lvH = 0; bdTex = null; rTex = null;
+  }
+  function glassIdleTick() {
+    if (glassDrawn) glassIdle = 0;
+    else if (glassIdle < GLASS_IDLE && ++glassIdle === GLASS_IDLE && lv) glassFree();
+    glassDrawn = false;
+  }
+  // every open window's glass given back (the page hidden), the one in place as it was after
+  function trimRender() {
+    for (let i = 0; i < MB_WINS; i++) {
+      const s = wins[i];
+      if (!s || (i !== 0 && s.closed)) continue;
+      inWin(i, () => { glassFree(); glassIdle = 0; });
+    }
+  }
+  document.addEventListener('visibilitychange', () => { if (document.hidden) trimRender(); });
   function ensureLevels(w, h) {
     if (lv && lvW >= w && lvH >= h) return;
     if (lv) for (const l of lv) { gl.deleteTexture(l.t); gl.deleteFramebuffer(l.fb); }
@@ -1596,6 +1627,7 @@
     // the frame's instances and its shapes' pieces uploaded once, whether drawn whole or a part at a time (each part
     // uploaded them all again: a list scrolled spent a fifth of its frames in bufferData)
     frameUpload(n);
+    glassDrawn = false;
     if (!parts) {
       drawFrame(n, r, g, b, false);
       missing = drewMissing;
@@ -1608,6 +1640,7 @@
       }
       missing = any;
     }
+    glassIdleTick();
     cvOk = !!cv;
     target = null;
     if (cv) {
@@ -1672,6 +1705,7 @@
       let end = start + 1;
       while (end < n && (f32[end * INST + 20] | 0) === tid && hole(end) === h) end++;
       if (tid < 0) {
+        glassDrawn = true;
         if (tid !== bound) {
           shows = capture(start, end, n);
           bound = tid;
@@ -2180,6 +2214,8 @@
     if (more) return;
     if (r.got > 0 && (v.total < 0 || v.have < v.total)) return v.ask(v.have);
     v.url = URL.createObjectURL(new Blob(v.parts, { type: v.type }));
+    // (the Blob holds the bytes now: the parts let go of, not kept twice)
+    v.parts.length = 0;
     v.el.src = v.url;
   };
 
@@ -2588,6 +2624,8 @@
   // ---- text ----
   const seg = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
   const mctx = document.createElement('canvas').getContext('2d');
+  // widths the canvas measured (width), at most ADV_MOST of them: past it forgotten all at once and measured again
+  const ADV_MOST = 16384;
   const advCache = new Map();
   const keys = new Map();
   const entries = [];
@@ -2661,12 +2699,29 @@
   };
   // what was shaped and drawn before a face or the scale changed, forgotten (MoonBit drops its glyphs as the
   // generation moves on)
+  // (and the glyphs' keys with what they were of, as MoonBit drops what it shaped by them: not here, which a face going
+  // can reach in a frame whose text still holds keys, but before the next frame starts, textSweep)
+  let keysStale = false;
   const textChanged = () => {
     mctxFont = rctxFont = '';
     advCache.clear();
     held = null;
     generation++;
+    keysStale = true;
   };
+  // Between frames (each window's frame starts with it, resize): the glyphs' keys forgotten as text changed, or as
+  // there came to be more than KEYS_MOST of them (each a glyph of a size, weight and style ever shaped: a page left
+  // open on changing text grows them without end), the generation moved on so MoonBit shapes what it shows again
+  // (text.mbt text_arrive: the generation read as each frame starts).
+  const KEYS_MOST = 65536;
+  function textSweep() {
+    if (inFrame) return;
+    if (!keysStale && entries.length <= KEYS_MOST) return;
+    if (!keysStale) textChanged();
+    keys.clear();
+    entries.length = 0;
+    keysStale = false;
+  }
   // a face's descriptors: its weight (0: variable, all of them); the words' faces (1, 2) with Inter's single-storey a and
   // open digits, as the Mac's host sets them (apple_text.m face_font: cv11, ss01; a face without them is as it is)
   const faceDescriptors = (face, weight) => ({
@@ -2811,6 +2866,7 @@
     let w = advCache.get(ak);
     if (w === undefined) {
       w = mctx.measureText(s).width;
+      if (advCache.size >= ADV_MOST) advCache.clear();
       advCache.set(ak, w);
     }
     return w;
@@ -3396,7 +3452,12 @@
     window.open(u, '_blank', 'noopener');
     return true;
   };
-  H.log = (s) => { console.log(s); window.__logs.push(s); };
+  H.log = (s) => {
+    console.log(s);
+    const l = window.__logs;
+    l.push(s);
+    if (l.length > LOGS_MOST) l.splice(0, l.length - LOGS_MOST);
+  };
   H.benchMode = () => Number(params.get('bench') || 0);
   // the app's end: no frame after it (a page cannot close itself; whoever drives it reads __done)
   H.exit = (code) => { window.__done = code; document.title = 'DONE ' + code; };
@@ -4083,7 +4144,7 @@
       canvas, gl, prog, post, vao, instBuf, atlasTex, ta, U, PU, cssW, cssH, dpr, sizeDirty, sizeObserver,
       lv, lvW, lvH, bdTex, rTex, cv, cvOk, target, dirty, dirtyWhole, dirtyTold, missing, drewMissing, cutOn,
       segsTex, segsRows, segsHad, segsHadRows, uploadedFor, imeActive, composing, taHad, imeKind, viewLayer,
-      under, coverBoxes, takePresses, doc, hostWin,
+      under, coverBoxes, takePresses, doc, hostWin, glassIdle,
     });
   }
   function winLoad(s) {
@@ -4091,7 +4152,7 @@
       canvas, gl, prog, post, vao, instBuf, atlasTex, ta, U, PU, cssW, cssH, dpr, sizeDirty, sizeObserver,
       lv, lvW, lvH, bdTex, rTex, cv, cvOk, target, dirty, dirtyWhole, dirtyTold, missing, drewMissing, cutOn,
       segsTex, segsRows, segsHad, segsHadRows, uploadedFor, imeActive, composing, taHad, imeKind, viewLayer,
-      under, coverBoxes, takePresses, doc, hostWin,
+      under, coverBoxes, takePresses, doc, hostWin, glassIdle,
     } = s);
   }
   // window `wid` put in place; false where it is gone (nothing of it is handled)
@@ -4207,6 +4268,25 @@
     try { if (s.sizeObserver) s.sizeObserver.disconnect(); } catch (e) { /* gone already */ }
     for (const e of s.texs.values()) { try { s.gl.deleteTexture(e.tex); } catch (err) { /* its context gone */ } }
     s.texs.clear();
+    // (all else its context holds, then the context itself: a closed popup's is not let go of while the page holds it)
+    const sg = s.gl;
+    if (sg) {
+      try {
+        for (const t of [s.atlasTex, s.segsTex]) if (t) sg.deleteTexture(t);
+        for (const l of s.lv || []) { sg.deleteTexture(l.t); sg.deleteFramebuffer(l.fb); }
+        if (s.cv) { sg.deleteTexture(s.cv.t); sg.deleteFramebuffer(s.cv.fb); }
+        if (s.instBuf) sg.deleteBuffer(s.instBuf);
+        if (s.vao) sg.deleteVertexArray(s.vao);
+        if (s.prog) sg.deleteProgram(s.prog);
+        if (s.post) sg.deleteProgram(s.post);
+        const loser = sg.getExtension('WEBGL_lose_context');
+        if (loser) loser.loseContext();
+      } catch (err) { /* its context gone */ }
+    }
+    Object.assign(s, {
+      gl: null, prog: null, post: null, vao: null, instBuf: null, atlasTex: null, segsTex: null, segsHad: null,
+      lv: null, lvW: 0, lvH: 0, bdTex: null, rTex: null, cv: null, cvOk: false, target: null,
+    });
     // (the views it showed, the app's still where it keeps them: out of its document, placed again where it next shows
     // one, H.viewPlace)
     for (const v of views.values()) {
@@ -4323,6 +4403,7 @@
       dirtyWhole: false, dirtyTold: false, missing: false, drewMissing: false, cutOn: false, segsTex: null,
       segsRows: 0, segsHad: null, segsHadRows: 0, uploadedFor: -1, imeActive: false, composing: false, taHad: '',
       imeKind: 0, viewLayer: null, under: null, coverBoxes: [], takePresses: null, doc: cdoc, hostWin: child,
+      glassIdle: 0,
     };
     wins[wid] = s;
     winsOpen++;
@@ -4553,11 +4634,15 @@
     if (blob.type === 'image/png') return blob.size <= PNG_MAX ? [1, new Uint8Array(await blob.arrayBuffer())] : [2, null];
     if (blob.size > SOURCE_MAX) return [2, null];
     const bmp = await createImageBitmap(blob);
-    if (bmp.width * bmp.height > PIXELS_MAX) return [2, null];
     const c = document.createElement('canvas');
-    c.width = bmp.width;
-    c.height = bmp.height;
-    c.getContext('2d').drawImage(bmp, 0, 0);
+    try {
+      if (bmp.width * bmp.height > PIXELS_MAX) return [2, null];
+      c.width = bmp.width;
+      c.height = bmp.height;
+      c.getContext('2d').drawImage(bmp, 0, 0);
+    } finally {
+      bmp.close();
+    }
     const png = await new Promise((r) => c.toBlob(r, 'image/png'));
     if (!png) return [3, null];
     return png.size <= PNG_MAX ? [1, new Uint8Array(await png.arrayBuffer())] : [2, null];

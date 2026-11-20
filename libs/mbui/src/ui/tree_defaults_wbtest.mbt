@@ -1,5 +1,17 @@
-// Pure-tree defaults (app.mbt run_tree, tester.mbt Tester::tree): transitions_only=true by default so changes outside
-// @view.transition settle immediately (Δt=0, at_rest), while changes inside @view.transition animate across frame rates.
+// Pure-tree defaults (app.mbt run / run_tree, tester.mbt Tester::tree): transitions_only=true by default so changes
+// outside @view.transition settle immediately (Δt=0, at_rest), while changes inside @view.transition animate across
+// frame rates.
+
+///|
+test "tree defaults: @ui.run is pure-tree entry, run_tree aliases run, run_legacy_ctx is legacy" {
+  // Compile-time signature check without opening a host window.
+  let _pure : () -> Unit = fn() {
+    run("pure", fn(_root : @view.View) { () })
+    run_tree("pure-alias", fn(_root : @view.View) { () })
+    run_legacy_ctx("legacy", fn(_c : Ctx) { () })
+  }
+  assert_true(true)
+}
 
 ///|
 test "tree defaults: Tester::tree settles View::show and View::pick immediately outside @view.transition" {

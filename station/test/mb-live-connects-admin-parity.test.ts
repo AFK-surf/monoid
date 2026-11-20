@@ -412,6 +412,9 @@ test("connects (Slack & Feishu): overview state, inbound routing -> fake claude 
   assert.equal(typeof ov.archiving.slackDays, "number");
   assert.equal(typeof ov.archiving.reviewed, "boolean");
   assert.equal(typeof ov.archiving.canEdit, "boolean");
+  assert.equal(typeof ov.autoChats, "object");
+  assert.equal(ov.autoChats.enabled, false);
+  assert.equal(typeof ov.autoChats.canEdit, "boolean");
   assert.equal(typeof ov.automaticDecisions, "object");
   assert.ok(ov.automaticDecisions !== null, "automaticDecisions should be populated when accounts exist");
   assert.equal(typeof ov.automaticDecisions.canEditPolicy, "boolean");

@@ -4,5 +4,5 @@
 ///|
 fn main {
   let source = @sffilmscene.source(@film.arg)
-  @film.run(fn(c) { @sfapp.view(c, source()) }, tree=fn(root) { @sfapp.app_tree(source())(root) })
+  @film.run_legacy_ctx(fn(c) { @sfapp.view(c, source()) }, tree=fn(root) { @sfapp.app_tree(source())(root) })
 }

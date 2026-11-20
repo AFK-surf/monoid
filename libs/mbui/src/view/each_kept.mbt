@@ -108,6 +108,7 @@ fn[K : Hash + Eq, T] each_kept_settle(slot : View, kept : EachKept[K, T]?) -> Un
   }
   let wakes = e.wakes.copy()
   e.wakes.clear()
+  e.wakes.release_unused(placeholder=run_gone)
   for w in wakes {
     w()
   }

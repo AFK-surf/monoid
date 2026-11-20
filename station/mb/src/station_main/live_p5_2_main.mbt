@@ -192,6 +192,7 @@ async fn P52::refresh_config(self : P52) -> Unit {
     _ => 0
   }
   self.config = of_jv(worked)
+  self.apply_remote_connects()
   let next_max = match jfield(self.config, "maxConcurrentTurns") {
     Number(n, ..) if n > 0.0 => n.to_int()
     _ => 0
@@ -201,6 +202,26 @@ async fn P52::refresh_config(self : P52) -> Unit {
       p.set_max_concurrent_turns(next_max)
     }
   }
+}
+
+///|
+/// The connects of other stations a chat here runs on (`remoteConnects`, P5-5's) in the hub's config after
+/// config.json's (sessions/agents.ts `settings`, `moreConnects`): those it told before taken out, none over one of
+/// config.json's own.
+fn P52::apply_remote_connects(self : P52) -> Unit {
+  guard self.config is Object(m) else { return }
+  let own = jitems(jfield(self.config, "connects")).filter(c => !(jfield(c, "remote") is True))
+  let ids = own.map(c => jtext_or_empty(c, "id"))
+  for c in remote_connects.val {
+    let id = jtext_or_empty(c, "id")
+    if id != "" && !ids.contains(id) {
+      own.push(c)
+      ids.push(id)
+    }
+  }
+  let next = m.copy()
+  next["connects"] = Json::array(own)
+  self.config = Json::object(next)
 }
 
 ///|
@@ -414,12 +435,16 @@ fn P52::hub_told(self : P52, what : String, args : Json) -> Unit {
         match call {
           "detach" => (d.detach)()
           "thaw" => (d.thaw)()
-          "shutdown" =>
+          "shutdown" if again =>
             fork_bg(self.host, "driver shutdown", async fn() {
-              (d.shutdown)(again)
+              (d.shutdown)(true)
             })
           _ => ()
         }
+      }
+      // (for good: every driver's processes ended first, then the program they share let go)
+      if call == "shutdown" && !again {
+        fork_bg(self.host, "driver shutdown", async fn() { self.drivers_shut_down() })
       }
     }
     "actors.close" =>
@@ -1123,6 +1148,20 @@ async fn P52::peer_local(
 }
 
 ///|
+/// Every driver shut down for good, then the program they share let go (`AgentsHost::let_go`): a driver's own
+/// shutdown leaves it be, so one ended first never cuts the TERM of another's processes off.
+async fn P52::drivers_shut_down(self : P52) -> Unit {
+  for d in self.drivers.values() {
+    (d.shutdown)(false) catch {
+      _ => ()
+    }
+  }
+  ignore(self.pump.wait(self.agents.let_go())) catch {
+    _ => ()
+  }
+}
+
+///|
 /// What a part asks of the hub on the bus (`hub_ask`): a method of it by name (session_hub `hub_call`).
 async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
   let hub = self.the_hub()
@@ -1141,6 +1180,7 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
         return Json::null()
       }
       self.closed = true
+      self.close_helpers()
       hub.hold("drain")
       match self.actors_program {
         Some(p) =>
@@ -1151,11 +1191,7 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
           }
         None => ()
       }
-      for d in self.drivers.values() {
-        (d.shutdown)(false) catch {
-          _ => ()
-        }
-      }
+      self.drivers_shut_down()
       if self.actors_program is Some(p) { p.close() }
       self.program.kill_now()
       Json::null()
@@ -1200,6 +1236,13 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
           }
         _ => ()
       }
+      Json::null()
+    }
+    // (P5-5's connects of other stations a chat here runs on, told as they are learned, moved or kept: in the hub's
+    // config with config.json's, connects/workspace.ts `agents.connects`)
+    "remoteConnects" => {
+      remote_connects.val = jitems(arg)
+      self.apply_remote_connects()
       Json::null()
     }
     // ── what the other slices ask by an object of its fields ──
@@ -1555,6 +1598,7 @@ async fn P52::hand_over(self : P52) -> Array[Json] {
       }
       all_left(5_000)
       self.closed = true
+      self.close_helpers()
       self.program.release(false)
       return []
     }
@@ -1562,6 +1606,29 @@ async fn P52::hand_over(self : P52) -> Array[Json] {
   self.closed = true
   self.program.release(false)
   jitems(jfield(handed, "sessions"))
+}
+
+///|
+/// The station stops or hands over: the background programs of its own it started (the usage counter's and the
+/// retirement's, the live view's locator) ended at once, the counter stopped so none starts again, where the station
+/// after would otherwise find them still writing to its database.
+fn P52::close_helpers(self : P52) -> Unit {
+  if usage_counter_program.val is Some(p) {
+    p.close(force=true)
+    usage_counter_program.val = None
+  }
+  if usage_retire_program.val is Some(p) {
+    p.close(force=true)
+    usage_retire_program.val = None
+  }
+  // (after the programs: the counter's `usage.close` finds none left to end on SIGTERM alone)
+  if self.hub is Some(h) {
+    h.usage_stop()
+  }
+  if self.live_locator is Some(l) {
+    l.close()
+    self.live_locator = None
+  }
 }
 
 ///|
@@ -1657,6 +1724,11 @@ fn trace_on() -> Bool {
 ///|
 /// The connects' chat surfaces as the connects' part told them (`surfaces`), by connect.
 let connect_surfaces : Map[String, Json] = Map([])
+
+///|
+/// The connects of other stations a chat here runs on as the connects' part told them (`remoteConnects`), each as the
+/// hub reads a connect (connects_hub `connect_of`).
+let remote_connects : Ref[Array[Json]] = Ref([])
 
 ///|
 /// The hub's live view (hub.ts `live`, sessions/live.ts `LiveHub`): the shell of the program's `#live`, once made.

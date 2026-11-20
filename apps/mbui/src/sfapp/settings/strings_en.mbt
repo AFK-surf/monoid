@@ -2117,4 +2117,12 @@ let en : Map[String, String] = {
   "web-pages.security.pairGrantVaultWorkspace.one": "Shared workspace vault “{name}” · {n} secret",
   "web-pages.security.pairGrantVaultWorkspaceIn": "Shared workspace vault “{name}” ({workspace}) · {n} secrets",
   "web-pages.security.pairGrantVaultWorkspaceIn.one": "Shared workspace vault “{name}” ({workspace}) · {n} secret",
+  "web-pages.stations.autoChats.label": "Join automatic assignment allowlist",
+  "web-pages.stations.autoChats.line": "Allow Auto station in new chats and presets to route here by load; off means manual selection only",
+  "web-pages.stations.autoChats.what": "change automatic assignment allowlist",
+  "web-pages.workspace.autoChats.title": "Auto-assign allowlist",
+  "web-pages.workspace.autoChats.lead": "Used by Auto station in new chats, presets, and connects. Only workspace managers can change it; manual station selection is unaffected.",
+  "web-pages.workspace.autoChats.tasksOnly": "Tasks-only rig; does not run chats",
+  "web-pages.workspace.autoChats.offline": "Offline; editable when online",
+  "web-pages.workspace.autoChats.readOnly": "Managers only",
 }

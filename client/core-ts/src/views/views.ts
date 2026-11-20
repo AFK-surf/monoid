@@ -118,7 +118,7 @@ export const chatDerive: Derive = {
 };
 
 /// A station's overview and host reading as its row and its page show them (Views `#stationShownOf`).
-type StationShown = { full: Derived<J>; profile: Derived<J>; settings: Derived<J>; host: Derived<J>; row: Derived<J>; hostRow: Derived<J>; unreadable: Derived<boolean>; offered: Derived<J[]>; judge: (o: J) => boolean };
+type StationShown = { full: Derived<J>; profile: Derived<J>; settings: Derived<J>; host: Derived<J>; row: Derived<J>; acceptAutoChats: Derived<boolean>; hostRow: Derived<J>; unreadable: Derived<boolean>; offered: Derived<J[]>; judge: (o: J) => boolean };
 
 /// A station of a scope, as the workspace lists it.
 /// `joined`: the station's home is another workspace, this one it joined.
@@ -3612,6 +3612,7 @@ export class Views implements Owner {
         way: way === undefined ? null : present.way(way, (h) => this.relayName(h)),
         ...(s.joined ? { joined: true, home: this.#core.homeName?.(scope, s.id) ?? null } : {}),
         mine: mine(s.id),
+        ...((row ? !parts.unreadable.get() && parts.acceptAutoChats.get() : get(get(overview, "autoChats"), "enabled") === true) ? { acceptAutoChats: true } : {}),
       };
       if (row) return item;
       const serving = overview !== undefined ? servingIn(overview, scope, s.joined === true) : overview;
@@ -3713,6 +3714,7 @@ export class Views implements Owner {
         const o = this.#core.data.overviewRow(station);
         return isObject(o) ? asShaped("OverviewRow", rowOf(o)) : undefined;
       }),
+      acceptAutoChats: computed(() => get(get(this.#core.data.overviewRow(station), "autoChats"), "enabled") === true),
       hostRow: computed(() => {
         const h = kept!.host.get();
         return h === null ? null : asShaped("HostRow", { identity: h.identity, os: h.os, meters: h.meters });

@@ -186,7 +186,7 @@ fn events_view(
 
 ///|
 let account_re : Re = re(
-  "^\\/(profiles|logins|automatic-decisions|archiving|connects|slack|feishu|group|me\\/slack)(\\/|$)",
+  "^\\/(profiles|logins|automatic-decisions|archiving|auto-chats|connects|slack|feishu|group|me\\/slack)(\\/|$)",
 )
 
 ///|

@@ -365,6 +365,9 @@ void mb_views_use(int wid) {
 
 void mb_views_forget(int wid) {
   if (wid <= 0 || wid >= MB_WINS) return;
+  // (the one in place, the window gone: the first's put back, as mb_views_use would, not held on to; never none, which
+  // mb_views_root would take for the first's not made yet)
+  if (views_root == views_roots[wid]) views_root = views_roots[0];
   [views_roots[wid] removeFromSuperview];
   views_roots[wid] = nil;
 }

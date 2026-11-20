@@ -1209,6 +1209,44 @@ static void ensure_levels(int w, int h) {
   lv[4] = level_tex(DXGI_FORMAT_R10G10B10A2_UNORM, lv_w, lv_h);
 }
 
+// Glass's own textures let go of: the levels (made again at the size the next capture needs, ensure_levels, its blur
+// the same to the byte). Unbound first where a pass or the glass's draw left them (t0-t2): the context holds what is
+// bound till it is bound again.
+static void glass_free(void) {
+  if (!ctx) return;
+  ID3D11ShaderResourceView *none[3] = {NULL, NULL, NULL};
+  ctx->PSSetShaderResources(0, 3, none);
+  gsrv = NULL;
+  rsrv = NULL;
+  for (int j = 0; j < 5; j++)
+    if (lv[j].t) {
+      lv[j].srv->Release();
+      lv[j].rt->Release();
+      lv[j].t->Release();
+      lv[j] = level{};
+    }
+  lv_w = lv_h = 0;
+}
+
+// Glass's levels (as big as the largest capture yet) let go of once this many frames in a row drew no glass (a sheet
+// closed, the composer gone): held on, they are tens of MB at a window's size.
+#define MB_GLASS_IDLE 180
+static int glass_idle_frames;
+static int glass_drawn;  // a frame drawing now reached glass (encode)
+
+static void glass_idle_tick(void) {
+  if (glass_drawn) glass_idle_frames = 0;
+  else if (glass_idle_frames < MB_GLASS_IDLE && ++glass_idle_frames == MB_GLASS_IDLE && lv_w > 0) glass_free();
+  glass_drawn = 0;
+}
+
+// What drawing holds beyond the frames given back (a window minimized or hidden: win_app.c): glass's levels, made
+// again as a frame with glass is drawn.
+void mb_render_trim(void) {
+  glass_free();
+  glass_idle_frames = 0;
+}
+
 static void post_pass(level *src, int sw, int sh, level *dst, int w, int h, int mode, float sg, float dx, float dy) {
   ID3D11ShaderResourceView *none[3] = {NULL, NULL, NULL};
   ctx->PSSetShaderResources(0, 3, none);
@@ -1533,6 +1571,7 @@ static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count
     int32_t end = start + 1;
     while (end < count && (int)f[end * MB_INST + 20] == tid) end++;
     if (tid < 0) {
+      glass_drawn = 1;
       if (tid != bound) {
         shows = capture(target, pw, ph, f, start, end, count);
         bound = tid;
@@ -1693,7 +1732,10 @@ static int pace_owed;
 int mb_render_present(const double *inst, int32_t count, double r, double g, double b) {
   int n = -1;
   D3D11_RECT parts[MB_PARTS];
-  if (!submit(inst, count, r, g, b, &n, parts) || !chain) {
+  glass_drawn = 0;
+  int drawn = submit(inst, count, r, g, b, &n, parts);
+  glass_idle_tick();
+  if (!drawn || !chain) {
     commit_presented();
     return 0;
   }

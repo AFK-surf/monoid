@@ -547,7 +547,7 @@ pub fn context_menu(
       now = false
     }
   }
-  kit.val.opens[id] = now
+  opens_set(id, now)
   { open: now, chosen, shown: moved is Some(_) }
 }
 

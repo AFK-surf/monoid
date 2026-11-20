@@ -1495,6 +1495,35 @@ struct Bound {
 }
 
 ///|
+/// What a slot of the tree's queues of bindings past their end holds once they are emptied (Array::release_unused):
+/// none. An array emptied keeps what its slots held, counted as held, till they are written again (native's counting,
+/// moonbitlang/core's Array::clear): each would keep the binding, its run and all it holds (a page let go, its
+/// source, its drafts) till as many are queued again.
+let bound_gone : Bound = {
+  at: -1,
+  queued: false,
+  marked: false,
+  live: false,
+  told_at: -1.0,
+  by_clock: false,
+  answered: false,
+  moved: [],
+  watch: None,
+  run: fn() {  },
+}
+
+///|
+/// The same for its queues of what to run (Tree's `after_bindings`, `laid_waits`, `afters`, `old_built_waits`).
+let run_gone : () -> Unit = fn() {  }
+
+///|
+let waits_gone : (Bool) -> Unit = fn(_) {  }
+
+///|
+/// The same for the timeline (Tree::advance): one due of no node.
+let due_gone : Due = Leaves({ at: -1, gen: -1 }, -1)
+
+///|
 /// A handle on a node made once: the tree, its index, its making there.
 pub struct View {
   tree : Tree
@@ -1837,7 +1866,11 @@ pub fn Tree::new(
   // where the clock has it then: @signals.rest)
   t.clock.on_unwatched(fn() {  })
   let root = t.made(-1)
-  root.owning(fn() { make(root) })
+  if t.sources {
+    root.owning(fn() { root.make_with_effect_diagnostics(make) })
+  } else {
+    root.owning(fn() { make(root) })
+  }
   t
 }
 
@@ -2336,10 +2369,13 @@ fn View::owning(self : View, f : () -> Unit) -> Unit {
   let was = @signals.set_active_sub(None)
   let was_owner = @signals.set_owner(n.owner)
   let making = making_box.val
-  if making is Some(_) {
+  let making_v = making_view.val
+  if making is Some(_) || making_v is Some(_) {
     making_box.val = None
+    making_view.val = None
     f()
     making_box.val = making
+    making_view.val = making_v
   } else {
     f()
   }
@@ -2814,6 +2850,8 @@ pub fn View::box(
   // A structure runs its slot maker through box as a structural callback.
   if self.tree.sources && !n.slot {
     v.owning(fn() { v.make_with_read_diagnostics(make) })
+  } else if self.tree.sources {
+    v.owning(fn() { v.make_with_effect_diagnostics(make) })
   } else {
     v.owning(fn() { make(v) })
   }
@@ -2832,7 +2870,11 @@ fn View::structure_box(self : View, make : (View) -> Unit, loc~ : SourceLoc) -> 
     self.tree.top_last()
   }
   self.box_appended(v.at)
-  v.owning(fn() { make(v) })
+  if self.tree.sources {
+    v.owning(fn() { v.make_with_effect_diagnostics(make) })
+  } else {
+    v.owning(fn() { make(v) })
+  }
   self.tree.structure_row_sync_one(v.at)
   v
 }
@@ -3611,6 +3653,7 @@ fn Tree::pull(self : Tree) -> Unit {
   while self.pulls_marked.length() > 0 {
     let marked = self.pulls_marked.copy()
     self.pulls_marked.clear()
+    self.pulls_marked.release_unused(placeholder=bound_gone)
     for b in marked {
       match b.watch {
         Some(w) if b.live && b.marked => {
@@ -6612,6 +6655,7 @@ fn Tree::bound_at(self : Tree, ms : Double) -> Unit {
   }
   self.draining -= 1
   self.bindings_due.clear()
+  self.bindings_due.release_unused(placeholder=bound_gone)
   self.after_bindings_run()
 }
 
@@ -6620,6 +6664,7 @@ fn Tree::after_bindings_run(self : Tree) -> Unit {
   while !self.after_bindings.is_empty() {
     let batch = self.after_bindings.copy()
     self.after_bindings.clear()
+    self.after_bindings.release_unused(placeholder=run_gone)
     for f in batch {
       f()
     }
@@ -7430,17 +7475,24 @@ pub fn Tree::takes_presses(self : Tree, id : NodeId) -> Bool {
 
 ///|
 /// The words it shows: layout's (their size) and paint's, in `ink` (View::ink as it changes), set as `look` says.
+/// `one_line=true` forces `{ ..look, wrap: false }`; `optical=true` enables single-line vertical optical centering
+/// (`View::words_optical`).
 #callsite(autofill(loc))
 pub fn View::words(
   self : View,
   words : Live[String],
   ink? : Int64 = ink_theme,
   look? : WordsLook = words_plain,
+  one_line? : Bool = false,
+  optical? : Bool = false,
   loc~ : SourceLoc,
 ) -> View {
   guard self.live() is Some(n) else { return self }
   n.look.ink = ink
-  n.look.words_look = look
+  n.look.words_look = if one_line { { ..look, wrap: false } } else { look }
+  if optical {
+    n.look.words_optical = true
+  }
   let tree = self.tree
   let at = self.at
   // (cut short as said before its words were: what of them is kept, as they look now)
@@ -9051,6 +9103,64 @@ pub fn View::owned_count(self : View) -> Int {
 }
 
 ///|
+/// What a node let go of holds of its own (View::let_go's last step): what it draws and what it was given to read or
+/// call, each set as Tree::made sets it; never what a count of the tree's goes by (those put back by View::let_go).
+/// An array empty already left as it is (Tree::made's: each set anew, never changed in place).
+fn Node::let_go_held(self : Node) -> Unit {
+  let look = self.look
+  look.words = ""
+  look.words_drawn = None
+  if look.runs.length() > 0 {
+    look.runs = []
+  }
+  if look.runs_marks.length() > 0 {
+    look.runs_marks = []
+  }
+  if look.shapes.length() > 0 {
+    look.shapes = []
+  }
+  if look.lines.length() > 0 {
+    look.lines = []
+  }
+  look.image = None
+  look.picture = None
+  look.glass = None
+  look.drawn_as = ""
+  if self.shorter.length() > 0 {
+    self.shorter = []
+  }
+  if self.takes_units.length() > 0 {
+    self.takes_units = []
+  }
+  self.within_cell = None
+  self.said_cell = None
+  self.going = None
+  self.come_said = None
+  self.source = None
+  self.lift = None
+  self.share_flight = None
+  self.in_flight = None
+  self.content = None
+  self.scroll_shown = None
+  self.claims = None
+  self.claims_from = None
+  self.claims_for = None
+  self.shows = None
+  self.shows_room = None
+  self.hold_only = None
+  self.piece_cell = None
+  self.scroll_off = None
+  self.glyphs_fn = None
+  self.moved_by = None
+  self.moved_holds = None
+  self.moved_ends = None
+  self.fault_to = None
+  self.come_off = fn() {  }
+  self.come_wake = None
+  self.share_told = None
+}
+
+///|
 /// Lets it go: what it holds first, then its scope stopped (what it was made with: its bindings, its effects, their
 /// cleanups run), what goes with it run, its callback and measure dropped, its index free.
 fn View::let_go(self : View) -> Unit {
@@ -9102,6 +9212,7 @@ fn View::let_go(self : View) -> Unit {
   if !n.props.is_empty() {
     let props = n.props.copy()
     n.props.clear()
+    n.props.shrink_to_fit()
     for p in props {
       (p.1)()
     }
@@ -9109,12 +9220,16 @@ fn View::let_go(self : View) -> Unit {
   if !n.drops.is_empty() {
     let drops = n.drops.copy()
     n.drops.clear()
+    n.drops.shrink_to_fit()
     for d in drops {
       (d.1)()
     }
   }
+  // (a node let go is made another's (Tree's `free`): what these held let go of with it, not kept in their slots)
   n.leavings.clear()
+  n.leavings.shrink_to_fit()
   n.backs.clear()
+  n.backs.shrink_to_fit()
   n.leave_told = false
   n.on_press = None
   n.on_double_press = None
@@ -9205,7 +9320,7 @@ fn View::let_go(self : View) -> Unit {
   }
   n.flex.measure = None
   n.flex.room = false
-  n.flex.children.clear()
+  n.flex.children_cut(0)
   n.flex.holds_gone = false
   let parent = n.parent
   if parent >= 0 {
@@ -9218,6 +9333,11 @@ fn View::let_go(self : View) -> Unit {
   if self.tree.hosting == self.at {
     self.tree.hosting = -1
   }
+  // (what it holds of its own let go now, not when its index is next made: its words, runs, shapes, picture, the
+  // signals and the functions it was given, and all they hold. Nothing reads them of an index let go (a handle on it
+  // finds nothing), and Tree::made sets each again; what counts on how it was set (behind_set, bones_set…) put back
+  // above)
+  n.let_go_held()
   self.tree.removed.push({ at: self.at, gen: self.gen })
   self.tree.free.push(self.at)
   // (its run taken out of the order by itself, the rest as it was; one held by what is being let go, none: its run goes
@@ -9340,7 +9460,7 @@ fn Tree::boxes_put(self : Tree, at : Int) -> Unit {
   for k in n.kids {
     self.boxes(k, all)
   }
-  n.flex.children.clear()
+  n.flex.children_cut(0)
   n.flex.holds_gone = false
   for b in all {
     n.flex.add(b)
@@ -9503,7 +9623,7 @@ fn Tree::box_taken_out(self : Tree, h : Int, b : @flex.Node) -> Bool {
     None => return false
   }
   guard self.box_one_more() else { return false }
-  children.remove(i) |> ignore
+  self.nodes[h].flex.child_taken_out(i)
   self.layout_marked_at(h, within=true)
   self.modals_marked()
   true
@@ -10842,18 +10962,21 @@ fn Tree::list_inner_at(self : Tree, at : Int, at_ms : Double) -> Array[View] {
 /// The nodes laid out in column `col` in their turn: what it holds, through the slots holding them.
 fn Tree::column_items(self : Tree, col : Int) -> Array[Int] {
   let out = []
-  let walk : Ref[(Int) -> Unit] = Ref(fn(_) {  })
-  walk.val = fn(at : Int) {
-    for k in self.nodes[at].kids {
-      if self.nodes[k].slot {
-        (walk.val)(k)
-      } else {
-        out.push(k)
-      }
+  self.column_items_into(col, out)
+  out
+}
+
+///|
+/// (Tree::column_items' walk, a function of its own: a closure in a cell calling itself is a ring native's counting
+/// never frees, kept with the tree on every call)
+fn Tree::column_items_into(self : Tree, at : Int, out : Array[Int]) -> Unit {
+  for k in self.nodes[at].kids {
+    if self.nodes[k].slot {
+      self.column_items_into(k, out)
+    } else {
+      out.push(k)
     }
   }
-  (walk.val)(col)
-  out
 }
 
 ///|
@@ -11641,6 +11764,7 @@ pub fn Tree::event_said(self : Tree, at : Double, said : () -> Unit, f : () -> U
     self.committing -= 1
     self.modals_settled()
   }
+  self.afters.release_unused(placeholder=run_gone)
   // (what was let go of and made in it with one id paired, as it is committed whole: shared.mbt)
   if was < 0.0 {
     self.pairs_now()
@@ -11925,6 +12049,8 @@ fn Tree::advance_loop(self : Tree, upto : Double) -> Unit {
       i = i + 1
     }
     if next < 0 {
+      // (what came due taken out of it: let go of, not kept in its slots past its end)
+      self.timeline.release_unused(placeholder=due_gone)
       if owed >= 0.0 {
         self.withins_settled()
         self.settle_now(owed)
@@ -12275,10 +12401,12 @@ fn Tree::laid_out(self : Tree, upto : Double) -> Unit {
   }
   self.draining -= 1
   self.bindings_due.clear()
+  self.bindings_due.release_unused(placeholder=bound_gone)
   // (those marked that ran so, no longer to be pulled; one marked in a change not ended yet still is)
   let still = self.pulls_marked.filter(fn(b) { b.live && b.marked })
   self.pulls_marked.clear()
   self.pulls_marked.append(still)
+  self.pulls_marked.release_unused(placeholder=bound_gone)
   self.after_bindings_run()
   self.part_ended("tree bindings", t_bound)
   let t_laid = self.part_began()
@@ -12409,6 +12537,7 @@ fn Tree::laid_out(self : Tree, upto : Double) -> Unit {
   if self.laid_waits.length() > 0 {
     let waits = self.laid_waits.copy()
     self.laid_waits.clear()
+    self.laid_waits.release_unused(placeholder=run_gone)
     for f in waits {
       @signals.untracked(f)
     }
@@ -16218,6 +16347,7 @@ fn Tree::old_waits_run(self : Tree, settled : Bool) -> Unit {
   }
   let waits = self.old_built_waits.copy()
   self.old_built_waits.clear()
+  self.old_built_waits.release_unused(placeholder=waits_gone)
   for w in waits {
     w(settled)
   }

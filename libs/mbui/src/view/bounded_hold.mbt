@@ -126,7 +126,8 @@ pub fn hold_note(ready : () -> Bool, loc~ : SourceLoc) -> Unit {
           if run.sample is Some((log, sample)) && run.first is Some(first) {
             let at = run.node.tree.logic_said()
             if at > sample.start {
-              log.waterfalls.push(
+              hold_log_push(
+                log.waterfalls,
                 "[ASYNC_WATERFALL] Hold at \{source_place(gate.made)} started another async read at \{source_place(loc)} " +
                 "(\{at - sample.start}ms after \{source_place(first)}). " +
                 "Fix: issue independent reads together up front before the first answer so they resolve in parallel.",
@@ -400,7 +401,7 @@ fn HoldGate::finish(self : HoldGate, run : HoldRun, result : HoldRead) -> Unit {
       log.active.remove(i) |> ignore
     }
     if result == Ready && sample.fault(run.node.tree.logic_said()) is Some(fault) {
-      log.faults.push(fault)
+      hold_log_push(log.faults, fault)
     }
   }
   self.holding.set(false)
@@ -439,6 +440,20 @@ priv struct HoldLog {
   faults : Array[String]
   waterfalls : Array[String]
   mut unown : () -> Unit
+}
+
+///|
+/// The most faults (and the most serial reads) a tree's log keeps: the latest, the earliest let go as one more comes, so
+/// a window that runs long holds no more of them than this.
+let hold_log_max : Int = 256
+
+///|
+/// `said` put at the end of `list`, the earliest of it let go where that would make it more than hold_log_max.
+fn hold_log_push(list : Array[String], said : String) -> Unit {
+  list.push(said)
+  if list.length() > hold_log_max {
+    list.remove(0) |> ignore
+  }
 }
 
 ///|

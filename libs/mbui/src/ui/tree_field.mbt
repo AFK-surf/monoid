@@ -704,9 +704,8 @@ fn tree_field_gone(id : @view.NodeId) -> Unit {
       }
       if tf.st.tree_node == Some(id) {
         tf.st.tree_node = None
-        // (what it told of the person's edits let go with it)
-        tf.st.on_change = None
-        tf.st.on_edit = None
+        // (what it told of the person's edits, sends and looks let go with it)
+        tf.st.clear_handlers()
       }
       if tree_field_hovered.val == Some(id) {
         tree_field_hovered.val = None

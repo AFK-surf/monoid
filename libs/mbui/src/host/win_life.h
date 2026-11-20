@@ -31,6 +31,7 @@
 #include <netioapi.h>
 #include "mini_json.h"  // the menu the app gives (menu_setup)
 #include "hotkey_parse.h"
+#include "win_stack.h"
 
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "iphlpapi.lib")
@@ -474,26 +475,52 @@ static void life_perf_written(void) {
 
 // Each few seconds, whatever the window's thread is doing (the writer's thread): a line for the record of what the
 // process takes; and, record or none, the window no longer answering and answering again (the system's own test: its
-// messages unread for 5 s), so that a freeze has left its time in the log without anyone having caught it live.
+// messages unread for 5 s), with the UI thread's call stacks sampled when it hangs so a freeze leaves its frames in
+// the log without anyone having caught it live.
 static void life_logs_tick(void) {
   static double cpu_was = -1;
   static ULONGLONG at_was, hung_at;
+  static int hung_ticks;
   double cpu = mb_host_cpu_ms();
   ULONGLONG at = GetTickCount64();
   double share = cpu_was >= 0 && at > at_was ? (cpu - cpu_was) * 100.0 / (double)(at - at_was) : 0;
   cpu_was = cpu;
   at_was = at;
-  int hung = hwnd && IsHungAppWindow(hwnd);
+  HWND h = hwnd;
+  int hung = h && IsHungAppWindow(h);
   char line[160];
   int n = 0;
   if (hung && !hung_at) {
     hung_at = at;
+    hung_ticks = 1;
     n = snprintf(line, sizeof line, "win: the window is not answering: cpu=%.0f%% mem=%.0fMB", share, mb_host_mem_bytes() / 1048576.0);
+  } else if (hung && hung_at) {
+    hung_ticks++;
   } else if (!hung && hung_at) {
     n = snprintf(line, sizeof line, "win: the window answers again, %.0f s on", (double)(at - hung_at) / 1000.0);
     hung_at = 0;
+    hung_ticks = 0;
   }
   if (n > 0) logs_line(LOGS_LOG, line, (size_t)n);
+  if (hung && (hung_ticks == 1 || hung_ticks == 2)) {
+    DWORD tid = GetWindowThreadProcessId(h, NULL);
+    if (tid) {
+      char stack_line[2048];
+      if (hung_ticks == 1) {
+        int hn = win_stack_header(tid, stack_line, sizeof stack_line);
+        if (hn > 0) logs_line(LOGS_LOG, stack_line, (size_t)hn);
+        win_stack_refresh();
+        for (int s = 1; s <= 3; s++) {
+          if (s > 1) Sleep(50);
+          int sn = win_stack_sample(tid, s, stack_line, sizeof stack_line);
+          if (sn > 0) logs_line(LOGS_LOG, stack_line, (size_t)sn);
+        }
+      } else {
+        int sn = win_stack_sample(tid, 4, stack_line, sizeof stack_line);
+        if (sn > 0) logs_line(LOGS_LOG, stack_line, (size_t)sn);
+      }
+    }
+  }
   if (logs_perf_on) {
     n = snprintf(line, sizeof line, "win: cpu=%.0f%% mem=%.0fMB hung=%d", share, mb_host_mem_bytes() / 1048576.0, hung);
     logs_line(LOGS_PERF, line, (size_t)n);

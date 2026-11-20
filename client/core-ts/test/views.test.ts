@@ -1650,8 +1650,8 @@ test("a_list_of_stations_is_rows_one_station_its_page_and_the_models_are_the_cor
   await allUp(t);
   await t.readAll([[list, 1], [page, 2], [whole, 3]]);
   const a = (list.value as J[]).find((s) => s.station === "ws/a");
-  assert.deepEqual(Object.keys(a).sort(), ["face", "host", "id", "joined", "lastSeen", "line", "mine", "name", "online", "overview", "problems", "reconnecting", "stateBusy", "stateText", "station", "summary", "version"]);
-  const allowed = new Set(["station", "id", "name", "emoji", "icon", "summary", "face", "line", "online", "reconnecting", "blocked", "stateText", "stateBusy", "problems", "lastSeen", "version", "way", "joined", "home", "mine", "host", "overview"]);
+  assert.deepEqual(Object.keys(a).sort(), ["acceptAutoChats", "face", "host", "id", "joined", "lastSeen", "line", "mine", "name", "online", "overview", "problems", "reconnecting", "stateBusy", "stateText", "station", "summary", "version"]);
+  const allowed = new Set(["station", "id", "name", "emoji", "icon", "summary", "face", "line", "online", "reconnecting", "blocked", "stateText", "stateBusy", "problems", "lastSeen", "version", "way", "joined", "home", "mine", "acceptAutoChats", "host", "overview"]);
   for (const row of list.value as J[]) assert.deepEqual(Object.keys(row).filter((k) => !allowed.has(k)), [], row.station);
   assert.deepEqual(Object.keys(a.overview).sort(), ["counts", "disk", "drive", "viewer"]);
   assert.deepEqual(Object.keys(a.host).sort(), ["identity", "meters", "os"]);

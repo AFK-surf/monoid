@@ -315,6 +315,75 @@ int main(void) {
   CHECK(blurs_made == made + 1);
   CHECK(surface_as_fresh(surface));
 
+  // What drawing holds beyond its frames given back: a slot that kept liquid glass's sharp level lets it go as frosted
+  // glass is kept in it; the trim lets go of glass's textures and the read back's framebuffer; glass's textures go once
+  // MB_GLASS_IDLE frames in a row drew none. Each made again as it is next needed, the surface then the same to the byte
+  // as the frame drawn whole.
+  {
+    double g1[2 * MB_INST];
+    rect_at(g1, 10, 10, 40, 20, 0, 0.9, 0.1, 0.1, 0);
+    rect_at(g1 + MB_INST, 5, 5, 50, 25, 6, 1, 1, 1, -5);
+    g1[MB_INST + 4] = 6;
+    g1[MB_INST + 7] = 2;
+    g1[MB_INST + 11] = 0.3;
+    g1[MB_INST + 21] = 2;
+    g1[MB_INST + 23] = 1;
+    glass_forget();
+    gl_present(g1, 2, 0.1, 0.2, 0.3);
+    CHECK(lv[0].t != 0 && lv_w > 0);
+    CHECK(slots[0].bt != 0);
+    CHECK(slots[0].rt != 0);
+    CHECK(surface_as_fresh(surface));
+    // the same capture frosted (kind 5), kept in the same slot: its sharp level let go
+    g1[MB_INST + 5] = 5;
+    g1[0] = 11;
+    glass_forget();
+    gl_present(g1, 2, 0.1, 0.2, 0.3);
+    CHECK(slots[0].bt != 0);
+    CHECK(slots[0].rt == 0 && slots[0].rfb == 0);
+    CHECK(surface_as_fresh(surface));
+
+    CHECK(read_fb != 0);
+    mb_render_trim();
+    CHECK(read_fb == 0 && read_tex == 0);
+    CHECK(lv[0].t == 0 && lv[4].t == 0 && lv_w == 0 && lv_h == 0);
+    for (int i = 0; i < MB_GLASS_SLOTS; i++) CHECK(slots[i].bt == 0 && slots[i].rt == 0 && slots[i].under == NULL);
+    g1[0] = 12;
+    made = blurs_made;
+    gl_present(g1, 2, 0.1, 0.2, 0.3);
+    CHECK(blurs_made == made + 1);
+    CHECK(lv[0].t != 0);
+    CHECK(surface_as_fresh(surface));
+
+    // frames with no glass: glass's textures kept till the MB_GLASS_IDLE-th, then let go
+    double plain[MB_INST];
+    rect_at(plain, 10, 10, 40, 20, 0, 0.9, 0.1, 0.1, 0);
+    for (int i = 1; i <= MB_GLASS_IDLE; i++) {
+      plain[0] = 10 + i % 20;
+      gl_present(plain, 1, 0.1, 0.2, 0.3);
+      if (i == MB_GLASS_IDLE - 1) CHECK(lv[0].t != 0 && slots[0].bt != 0);
+    }
+    CHECK(lv[0].t == 0 && lv_w == 0);
+    for (int i = 0; i < MB_GLASS_SLOTS; i++) CHECK(slots[i].bt == 0 && slots[i].rt == 0);
+    g1[0] = 13;
+    made = blurs_made;
+    gl_present(g1, 2, 0.1, 0.2, 0.3);
+    CHECK(blurs_made == made + 1);
+    CHECK(surface_as_fresh(surface));
+    // a frame with glass among those without keeps them: the count starts again
+    for (int i = 1; i < MB_GLASS_IDLE; i++) {
+      plain[0] = 10 + i % 20;
+      gl_present(plain, 1, 0.1, 0.2, 0.3);
+    }
+    g1[0] = 14;
+    gl_present(g1, 2, 0.1, 0.2, 0.3);
+    for (int i = 1; i < MB_GLASS_IDLE; i++) {
+      plain[0] = 10 + i % 20;
+      gl_present(plain, 1, 0.1, 0.2, 0.3);
+    }
+    CHECK(lv[0].t != 0);
+  }
+
   // A group the host keeps drawn out by its header straight into the floats: each instance moved in doubles, then
   // made a float, as the app's own instance moved there would be.
   double kept[MB_INST];

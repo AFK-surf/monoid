@@ -141,6 +141,7 @@ pub async fn harness(host : @host.Host) -> Unit {
           )
         } catch {
           SysError(why) => Err(why)
+          e => Err("\{e}")
         }
         match spawned {
           Ok(p) => {
@@ -162,6 +163,116 @@ pub async fn harness(host : @host.Host) -> Unit {
             }
           }
           Err(why) => Err(why)
+        }
+      }
+      "stdinBackpressure" => {
+        // 1) multi-chunk write to cat drains cleanly and closes with EOF
+        let cat_res = try {
+          let cat_p = spawn(
+            host,
+            "cat",
+            [],
+            env=[("PATH", "/bin:/usr/bin")],
+            stdin_piped=true,
+            stdout=Piped,
+            stderr=Piped,
+          )
+          let expected = @buffer.Buffer()
+          let mut cat_writes_ok = true
+          for i = 0; i < 8; i = i + 1 {
+            let fill = (b'a'.to_int() + i).to_byte()
+            let chunk = Bytes::make(32 * 1024, fill)
+            expected.write_bytes(chunk)
+            if !cat_p.write(chunk) {
+              cat_writes_ok = false
+            }
+          }
+          cat_p.end_input()
+          let after_eof = cat_p.write(b"after-eof")
+          let (cat_code, cat_sig, cat_out, cat_err) = cat_p.finished()
+          Ok(
+            cat_writes_ok &&
+            !after_eof &&
+            cat_code == Some(0) &&
+            cat_sig == None &&
+            cat_err == b"" &&
+            cat_out == expected.to_bytes(),
+          )
+        } catch {
+          SysError(why) => Err(why)
+          e => Err("\{e}")
+        }
+
+        // 2) stalled child past STILLFAIL_STDIN_MOST does not block and is SIGKILLed
+        let prev_most = env_get("STILLFAIL_STDIN_MOST")
+        env_set("STILLFAIL_STDIN_MOST", "131072")
+        let stalled_res = try {
+          let sp = spawn(
+            host,
+            "sleep",
+            ["30"],
+            env=[("PATH", "/bin:/usr/bin")],
+            stdin_piped=true,
+            stdout=Piped,
+            stderr=Piped,
+          )
+          let start = @host.now()
+          let chunk = Bytes::make(32 * 1024, b'x')
+          let mut rejected = false
+          for _i = 0; _i < 64; _i = _i + 1 {
+            if !sp.write(chunk) {
+              rejected = true
+              break
+            }
+          }
+          let write_ms = @host.now() - start
+          let (sc, ss, _so, _se) = sp.finished()
+          let total_ms = @host.now() - start
+          let alive = pid_alive(sp.pid)
+          Ok((rejected, write_ms, total_ms, sc, ss, alive))
+        } catch {
+          SysError(why) => Err(why)
+          e => Err("\{e}")
+        }
+        match prev_most {
+          Some(pv) => env_set("STILLFAIL_STDIN_MOST", pv)
+          None => env_unset("STILLFAIL_STDIN_MOST")
+        }
+
+        // 3) child exiting without end_input cleans up stdin handle
+        let quick_res = try {
+          let qp = spawn(
+            host,
+            "true",
+            [],
+            env=[("PATH", "/bin:/usr/bin")],
+            stdin_piped=true,
+            stdout=Piped,
+            stderr=Piped,
+          )
+          let (qc, qs, _qo, _qe) = qp.finished()
+          let late = qp.write(b"late")
+          Ok((qc, qs, late))
+        } catch {
+          SysError(why) => Err(why)
+          e => Err("\{e}")
+        }
+
+        match (cat_res, stalled_res, quick_res) {
+          (Ok(cat_ok), Ok((rejected, write_ms, total_ms, sc, ss, alive)), Ok((qc, qs, late))) =>
+            Ok({
+              "catOk": Json::boolean(cat_ok),
+              "rejected": Json::boolean(rejected),
+              "writeMs": Json::number(write_ms.to_double()),
+              "totalMs": Json::number(total_ms.to_double()),
+              "stalledCode": match sc { Some(c) => Json::number(c.to_double()); None => Json::null() },
+              "stalledSignal": match ss { Some(g) => Json::string(g); None => Json::null() },
+              "stalledAlive": Json::boolean(alive),
+              "quickCode": match qc { Some(c) => Json::number(c.to_double()); None => Json::null() },
+              "quickSignal": match qs { Some(g) => Json::string(g); None => Json::null() },
+              "lateWrite": Json::boolean(late),
+            })
+          (Err(why), _, _) | (_, Err(why), _) | (_, _, Err(why)) => Err(why)
         }
       }
       "kill" =>

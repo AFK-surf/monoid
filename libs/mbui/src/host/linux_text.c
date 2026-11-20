@@ -141,7 +141,9 @@ static int face_id(int style) {
   return faces[1].has ? 1 : 0;
 }
 
+static int keys_stale;  // the keys made before forgotten as the next frame starts (keys_sweep)
 static void faces_changed(void) {
+  keys_stale = 1;
   pango_fc_font_map_config_changed(PANGO_FC_FONT_MAP(fontmap));
   g_object_unref(ctx);
   ctx = NULL;
@@ -184,16 +186,36 @@ int32_t mb_host_face_add(int32_t f, moonbit_string_t path, int32_t weight) {
   return ok;
 }
 
+// The files fonts given as bytes were written to, removed as the run ends (atexit): not before, fontconfig and FreeType
+// opening them again whenever they draw in them.
+static char **font_files;
+static int n_font_files;
+static void font_files_remove(void) {
+  for (int i = 0; i < n_font_files; i++) {
+    g_unlink(font_files[i]);
+    g_free(font_files[i]);
+  }
+  free(font_files);
+  font_files = NULL;
+  n_font_files = 0;
+}
+
 // A font as bytes: written to a file of this run's (fontconfig reads files), then as a file.
 int32_t mb_host_face_add_bytes(int32_t f, moonbit_bytes_t data, int32_t weight) {
   (void)weight;
   static int n;
+  if (!n) atexit(font_files_remove);
   char *dir = g_build_filename(g_get_user_runtime_dir(), "mbui-fonts", NULL);
   g_mkdir_with_parents(dir, 0700);
   char name[64];
   snprintf(name, sizeof name, "%d-%d.font", (int)getpid(), n++);
   char *path = g_build_filename(dir, name, NULL);
-  int ok = g_file_set_contents(path, (const char *)data, Moonbit_array_length(data), NULL) && face_take(f, path);
+  int written = g_file_set_contents(path, (const char *)data, Moonbit_array_length(data), NULL);
+  if (written) {
+    font_files = realloc(font_files, sizeof(char *) * (size_t)(n_font_files + 1));
+    font_files[n_font_files++] = g_strdup(path);
+  }
+  int ok = written && face_take(f, path);
   g_free(path);
   g_free(dir);
   return ok;
@@ -454,7 +476,38 @@ int32_t mb_host_text_key(moonbit_string_t text, double size, int32_t weight, int
   return intern((const uint16_t *)text, Moonbit_array_length(text), size, weight, style);
 }
 
-int32_t mb_host_atlas_generation(void) { return generation; }
+// The glyphs' keys and what each is of forgotten (the faces changed, or more than KEYS_MOST of them: each a cluster of a
+// size, weight and style ever shaped, a run left open on changing text growing them without end), the generation moved
+// on. Only where MoonBit reads the generation (text.mbt text_arrive, as a frame starts: what it shaped is dropped as it
+// sees it moved; faces.mbt words_forgotten, what it shaped dropped just before), never where it may still draw by a key
+// made before (a face given in a frame); a key past the table draws nothing (mb_host_glyph).
+#define KEYS_MOST 65536
+static void keys_sweep(void) {
+  if (!keys_stale && n_entries <= KEYS_MOST) return;
+  keys_stale = 0;
+  n_entries = 0;
+  pool_len = 0;
+  if (cap_entries > 1024) {
+    free(entries);
+    entries = NULL;
+    cap_entries = 0;
+    free(pool);
+    pool = NULL;
+    pool_cap = 0;
+  }
+  free(table);
+  table = NULL;
+  table_cap = 0;
+  free(held_px);
+  held_px = NULL;
+  held_key = -1;
+  generation++;
+}
+
+int32_t mb_host_atlas_generation(void) {
+  keys_sweep();
+  return generation;
+}
 
 int32_t mb_host_atlas_size(int32_t colour) { return colour ? MB_ATLAS_COLOR : MB_ATLAS; }
 

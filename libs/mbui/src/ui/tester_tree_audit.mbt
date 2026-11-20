@@ -14,6 +14,26 @@ let fanout_hold : Ref[Bool] = Ref(false)
 let unseen_press_hold : Ref[Bool] = Ref(false)
 
 ///|
+/// Whether untracked reactive reads during node construction fail the test at frame end (enabled by default on Tester::tree).
+// kept across runs: reset by reset_globals
+let untracked_read_hold : Ref[Bool] = Ref(false)
+
+///|
+/// Whether unnamed visible interactive targets at rest fail the test at frame end (enabled by default on Tester::tree).
+// kept across runs: reset by reset_globals
+let unnamed_press_hold : Ref[Bool] = Ref(false)
+
+///|
+/// Max live items allowed in a `View::each` inside a non-virtualized `View::scrolls` before failing at frame end (0 disables).
+// kept across runs: reset by reset_globals
+let scroll_each_hold_limit : Ref[Int] = Ref(0)
+
+///|
+/// Whether bare `@signals.effect` calls during node construction fail the test at frame end (enabled by default on Tester::tree).
+// kept across runs: reset by reset_globals
+let effect_in_view_hold : Ref[Bool] = Ref(false)
+
+///|
 fn is_blank_text(s : String) -> Bool {
   for ch in s {
     if ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r' {
@@ -125,6 +145,27 @@ pub fn Tester::unnamed_press_faults(self : Tester) -> Array[String] {
 }
 
 ///|
+/// Non-virtualized `View::scrolls` containers whose descendant `View::each` renders more than `limit` live items.
+/// Virtualized lists (`View::scrolls_window`, `View::scrolls_reused`, `View::list_reused`) are excluded.
+pub fn Tester::scroll_each_faults(self : Tester, limit? : Int = 50) -> Array[String] {
+  self.reads_own()
+  match view_tree() {
+    Some(tree) => tree.scroll_each_faults(limit~)
+    None => []
+  }
+}
+
+///|
+/// Bare `@signals.effect` calls made while constructing nodes in the current tree.
+pub fn Tester::effect_in_view_faults(self : Tester) -> Array[String] {
+  self.reads_own()
+  match view_tree() {
+    Some(tree) => tree.effect_in_view_faults()
+    None => []
+  }
+}
+
+///|
 /// Lightweight audit of the current frame with zero extra frames drawn (skips unasked_faults and contrast_faults).
 pub fn Tester::light_audit(self : Tester) -> Array[String] {
   self.tree_room_faults() +
@@ -134,6 +175,9 @@ pub fn Tester::light_audit(self : Tester) -> Array[String] {
   self.unseen_press_faults() +
   self.fixed_outgrown() +
   self.unnamed_press_faults() +
+  self.untracked_read_faults() +
+  self.scroll_each_faults() +
+  self.effect_in_view_faults() +
   self.fanout_faults() +
   self.hold_faults() +
   self.waterfall_faults()
@@ -203,6 +247,102 @@ fn Tester::hold_unseen_press_said(self : Tester) -> String? {
 ///|
 fn Tester::hold_unseen_press(self : Tester) -> Unit {
   match self.hold_unseen_press_said() {
+    Some(msg) => @halt.saying(msg)
+    None => ()
+  }
+}
+
+///|
+fn Tester::hold_untracked_read_said(self : Tester) -> String? {
+  if !untracked_read_hold.val {
+    return None
+  }
+  let faults = self.untracked_read_faults()
+  if faults.is_empty() {
+    None
+  } else {
+    Some(
+      "untracked reactive read during view construction on a frame drawn at \{self.fake.time}, the Tester made at \{looks_made_at.val}:\n" +
+      faults.join("\n"),
+    )
+  }
+}
+
+///|
+fn Tester::hold_untracked_read(self : Tester) -> Unit {
+  match self.hold_untracked_read_said() {
+    Some(msg) => @halt.saying(msg)
+    None => ()
+  }
+}
+
+///|
+fn Tester::hold_unnamed_press_said(self : Tester) -> String? {
+  if !unnamed_press_hold.val || !g().frame_rest || self.fake.wants || posted_left() != "" {
+    return None
+  }
+  let faults = self.unnamed_press_faults()
+  if faults.is_empty() {
+    None
+  } else {
+    Some(
+      "unnamed interactive node found at rest on a frame drawn at \{self.fake.time}, the Tester made at \{looks_made_at.val}:\n" +
+      faults.join("\n"),
+    )
+  }
+}
+
+///|
+fn Tester::hold_unnamed_press(self : Tester) -> Unit {
+  match self.hold_unnamed_press_said() {
+    Some(msg) => @halt.saying(msg)
+    None => ()
+  }
+}
+
+///|
+fn Tester::hold_scroll_each_said(self : Tester) -> String? {
+  if scroll_each_hold_limit.val <= 0 {
+    return None
+  }
+  let faults = self.scroll_each_faults(limit=scroll_each_hold_limit.val)
+  if faults.is_empty() {
+    None
+  } else {
+    Some(
+      "unvirtualized scroll-each limit exceeded on a frame drawn at \{self.fake.time}, the Tester made at \{looks_made_at.val}:\n" +
+      faults.join("\n"),
+    )
+  }
+}
+
+///|
+fn Tester::hold_scroll_each(self : Tester) -> Unit {
+  match self.hold_scroll_each_said() {
+    Some(msg) => @halt.saying(msg)
+    None => ()
+  }
+}
+
+///|
+fn Tester::hold_effect_in_view_said(self : Tester) -> String? {
+  if !effect_in_view_hold.val {
+    return None
+  }
+  let faults = self.effect_in_view_faults()
+  if faults.is_empty() {
+    None
+  } else {
+    Some(
+      "bare @signals.effect created while constructing a view node on a frame drawn at \{self.fake.time}, the Tester made at \{looks_made_at.val}:\n" +
+      faults.join("\n"),
+    )
+  }
+}
+
+///|
+fn Tester::hold_effect_in_view(self : Tester) -> Unit {
+  match self.hold_effect_in_view_said() {
     Some(msg) => @halt.saying(msg)
     None => ()
   }

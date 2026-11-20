@@ -2078,4 +2078,12 @@ let zh : Map[String, String] = {
   "web-pages.security.pairGrantVaultWorkspace.one": "团队共享密钥库「{name}」· {n} 条密钥",
   "web-pages.security.pairGrantVaultWorkspaceIn": "团队共享密钥库「{name}」（{workspace}）· {n} 条密钥",
   "web-pages.security.pairGrantVaultWorkspaceIn.one": "团队共享密钥库「{name}」（{workspace}）· {n} 条密钥",
+  "web-pages.stations.autoChats.label": "加入自动分配白名单",
+  "web-pages.stations.autoChats.line": "允许新对话和预设的「自动分配」按负载派到这台 station；关闭则仅手动指定",
+  "web-pages.stations.autoChats.what": "更改自动分配白名单",
+  "web-pages.workspace.autoChats.title": "自动分配白名单",
+  "web-pages.workspace.autoChats.lead": "用于新对话、预设和连接的「自动分配」，仅管理员可调整；手动选择 station 不受限制",
+  "web-pages.workspace.autoChats.tasksOnly": "仅任务机，不运行会话",
+  "web-pages.workspace.autoChats.offline": "离线，上线后可修改",
+  "web-pages.workspace.autoChats.readOnly": "仅管理员可修改",
 }

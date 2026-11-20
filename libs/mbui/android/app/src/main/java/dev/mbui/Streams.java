@@ -335,7 +335,11 @@ final class Streams {
     /** What stream `id`'s layer showed, its picture now (StreamLayer.grab, MBView.toRender), GL thread: the app draws it itself. */
     static void grabbed(int id, Bitmap b) {
         Stream s = streams.get(id);
-        if (s == null) return;
+        // (closed meanwhile: nothing holds the picture but this)
+        if (s == null) {
+            b.recycle();
+            return;
+        }
         s.upload(b);
         if (s.shownBitmap != null && s.shownBitmap != b) s.shownBitmap.recycle();
         s.shownBitmap = b;
@@ -461,9 +465,13 @@ final class Streams {
                 + "out vec4 o;\n"
                 + "void main() { o = vec4(texture(u_t, v_uv).rgb, 1.0); }\n";
         int p = GLES30.glCreateProgram();
-        GLES30.glAttachShader(p, shader(GLES30.GL_VERTEX_SHADER, vs));
-        GLES30.glAttachShader(p, shader(GLES30.GL_FRAGMENT_SHADER, fs));
+        int vsh = shader(GLES30.GL_VERTEX_SHADER, vs), fsh = shader(GLES30.GL_FRAGMENT_SHADER, fs);
+        GLES30.glAttachShader(p, vsh);
+        GLES30.glAttachShader(p, fsh);
         GLES30.glLinkProgram(p);
+        // (the program holds what it was linked from: the shaders go with it)
+        GLES30.glDeleteShader(vsh);
+        GLES30.glDeleteShader(fsh);
         int[] ok = {0};
         GLES30.glGetProgramiv(p, GLES30.GL_LINK_STATUS, ok, 0);
         if (ok[0] == 0) Host.log("stream: program: " + GLES30.glGetProgramInfoLog(p));
@@ -674,6 +682,8 @@ final class Streams {
             int[] t = {tex, ext};
             GLES30.glDeleteTextures(2, t, 0);
             texture(id, 0);
+            // (the picture shown is this stream's alone: neither among its JPEGs' spare ones nor decoded into, Jpeg)
+            if (shownBitmap != null) shownBitmap.recycle();
             shownBitmap = null;
         }
     }
@@ -1514,10 +1524,16 @@ final class Streams {
             if (!released && spare.size() < 2) spare.add(b);
         }
 
+        /**
+         * Let go of (GL thread, as take is): its thread decodes no more and what it kept recycled. One being decoded
+         * into now (`into`) was taken out of `spare` and is not put back once released.
+         */
         void release() {
             released = true;
             executor.shutdown();
             synchronized (this) {
+                for (Bitmap b : decoded.values()) b.recycle();
+                for (Bitmap b : spare) b.recycle();
                 decoded.clear();
                 spare.clear();
             }

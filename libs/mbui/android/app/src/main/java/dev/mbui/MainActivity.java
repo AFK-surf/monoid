@@ -312,6 +312,16 @@ public class MainActivity extends Activity {
         super.onStop();
     }
 
+    /**
+     * The system short of memory: what drawing holds beyond its frames given back (MBView.trim). Off the screen it was
+     * as the view paused (onStop); on it, a frame with glass makes its textures again as it is drawn.
+     */
+    @Override
+    public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        if (level >= TRIM_MEMORY_RUNNING_LOW && mbView != null) mbView.trim();
+    }
+
     @Override
     protected void onDestroy() {
         NetworkWatch.release();

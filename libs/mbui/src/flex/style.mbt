@@ -1265,6 +1265,32 @@ pub fn computes() -> Int {
 }
 
 ///|
+/// What a slot of a node's children past its end holds once cut (Node::children_cut): none of them. An array cut
+/// shorter keeps what its slots past the end held, counted as held, till they are written again or it goes (native's
+/// counting; moonbitlang/core's Array::truncate, clear, pop and remove), so a node cut from what held it, made
+/// another's since, held that one still: two that so held each other, rings native's counting never frees.
+let children_gone : Node = Node::new()
+
+///|
+/// Its children cut to their first `len`: those past that let go of (Array::release_unused).
+pub fn Node::children_cut(self : Node, len : Int) -> Unit {
+  let kids = self.children
+  if len < kids.length() {
+    kids.truncate(len)
+  }
+  kids.release_unused(placeholder=children_gone)
+}
+
+///|
+/// Its child at `i` taken out, those after it each one earlier, the slot past its end let go of (Node::children_cut).
+pub fn Node::child_taken_out(self : Node, i : Int) -> Unit {
+  let kids = self.children
+  guard i >= 0 && i < kids.length() else { return }
+  kids.remove(i) |> ignore
+  kids.release_unused(placeholder=children_gone)
+}
+
+///|
 pub fn Node::add(self : Node, child : Node) -> Unit {
   self.children.push(child)
   if child.style.gone_empty {

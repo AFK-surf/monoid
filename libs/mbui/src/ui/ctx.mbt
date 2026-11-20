@@ -986,6 +986,9 @@ fn Ctx::let_go(self : Ctx) -> Unit {
   self.layer_hook = None
   self.back_held = None
   // (not its corner_ladder: its theme's own, Ctx::set_theme)
+  for n in self.nodes {
+    n.unlinked()
+  }
   self.nodes.clear()
   self.nodes.shrink_to_fit()
   self.id_stack.clear()
@@ -1046,6 +1049,9 @@ fn Ctx::let_go(self : Ctx) -> Unit {
   self.press_chain.clear()
   self.press_chain.shrink_to_fit()
   self.lists.clear()
+  for id, st in self.editors {
+    editor_gone(st, id)
+  }
   self.editors.clear()
   self.springs.clear()
   self.movers.clear()
@@ -1381,6 +1387,13 @@ fn Ctx::node_known(self : Ctx, i : Int, kind : Int, key : Int) -> Unit {
       Some(o) if physical_equal(o, n) => known_nodes.remove(n.ident)
       _ => ()
     }
+  }
+  // (the one known as who this is till now, not among the frame's: known by none from here on, so let go of, and so of
+  // what its layout holds, Node::unlinked; held by a row or part kept as its nodes, it is laid out anew as it is built)
+  match known_nodes.get(ident) {
+    Some(o) if !physical_equal(o, n) &&
+      !(o.slot >= 0 && o.slot < self.nodes.length() && physical_equal(self.nodes[o.slot], o)) => o.unlinked()
+    _ => ()
   }
   known_nodes.set(ident, n)
   n.ident = ident

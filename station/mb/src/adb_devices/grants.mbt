@@ -1002,7 +1002,8 @@ async fn PhoneGrants::save_and_restate(
       ("close", jb(close)),
       ("outcome", outcome_of(r)),
     ])
-    let saved = (self.w.callback)(fn(_) {
+    // (written in the same transaction as the card's close and its queued outcome: neither without the other)
+    let saved = (self.w.write)(fn(_) raise {
       self.save(r)
       J::Null
     })

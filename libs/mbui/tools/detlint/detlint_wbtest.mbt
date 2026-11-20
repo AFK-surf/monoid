@@ -2487,22 +2487,22 @@ test "old-set-theme" {
 
 ///|
 test "old-empty-around" {
-  // a tree's window run with an empty old frame round it (`@ui.run(t, fn(_c) {  }, tree=w)`, a bare `run` too):
-  // counted (a call each); one whose frame builds, one passing its frame on (`view, tree?`), run_tree, one in a test,
-  // in the framework (src/host here) not
+  // a tree's window run with an empty old frame round it (`@ui.run_legacy_ctx(t, fn(_c) {  }, tree=w)`, a bare `run_legacy_ctx` too):
+  // counted (a call each); one whose frame builds, one passing its frame on (`view, tree?`), pure-tree run / run_tree,
+  // one in a test, in the framework (src/host here) not
   let fs = found(
     [
       (
         "src/sfpages/page.mbt",
-        "fn main {\n  @ui.run(\"title\", fn(_c) {  }, tree=window)\n  @ui.run(\"title\", fn(c) { @ui.old_views_here(c) }, tree=window)\n  @ui.run(\"title\", view, tree?)\n  @ui.run_tree(\"title\", window)\n  run(\"t\", fn(_ : @ui.Ctx) -> Unit { () }, tree=fn(root) { page(root) })\n  @ui.run(\"title\", fn(_c) {  })\n}\n",
+        "fn main {\n  @ui.run_legacy_ctx(\"title\", fn(_c) {  }, tree=window)\n  @ui.run_legacy_ctx(\"title\", fn(c) { @ui.old_views_here(c) }, tree=window)\n  @ui.run_legacy_ctx(\"title\", view, tree?)\n  @ui.run(\"title\", window)\n  @ui.run_tree(\"title\", window)\n  run_legacy_ctx(\"t\", fn(_ : @ui.Ctx) -> Unit { () }, tree=fn(root) { page(root) })\n  @ui.run_legacy_ctx(\"title\", fn(_c) {  })\n}\n",
       ),
-      ("src/kit/x_wbtest.mbt", "test \"t\" {\n  @ui.run(\"title\", fn(_c) {  }, tree=window)\n}\n"),
-      ("src/host/y.mbt", "fn y() -> Unit {\n  @ui.run(\"title\", fn(_c) {  }, tree=window)\n}\n"),
+      ("src/kit/x_wbtest.mbt", "test \"t\" {\n  @ui.run_legacy_ctx(\"title\", fn(_c) {  }, tree=window)\n}\n"),
+      ("src/host/y.mbt", "fn y() -> Unit {\n  @ui.run_legacy_ctx(\"title\", fn(_c) {  }, tree=window)\n}\n"),
     ],
     "old-empty-around",
     2,
   )
-  assert_eq(lines(fs), [2, 6])
+  assert_eq(lines(fs), [2, 7])
 }
 
 ///|
@@ -3673,10 +3673,10 @@ test "bare-on-press" {
 test "old-run-ctx" {
   let hits =
     #|fn main {
-    #|  @ui.run("app", fn(_c) {  })
-    #|  @film.run(fn(_c) {  })
-    #|  @film.picture(fn(_c) {  })
-    #|  @film.film(fn(_c) {  })
+    #|  @ui.run_legacy_ctx("app", fn(_c) {  })
+    #|  @film.run_legacy_ctx(fn(_c) {  })
+    #|  @film.picture_legacy_ctx(fn(_c) {  })
+    #|  @film.film_legacy_ctx(fn(_c) {  })
     #|}
     #|test "t" {
     #|  let _ = Tester::new(fn(_c) {  })
@@ -3685,14 +3685,18 @@ test "old-run-ctx" {
   let fs = found([("src/app/main.mbt", hits)], "old-run-ctx", 6)
   assert_eq(lines(fs), [2, 3, 4, 5, 8, 9])
   let misses =
-    #|fn run(s : String) -> Unit { ignore(s) }
+    #|fn run_legacy_ctx(s : String) -> Unit { ignore(s) }
     #|fn main {
+    #|  @ui.run("app", fn(_v) {  })
+    #|  @film.run(fn(_v) {  })
+    #|  @film.picture(fn(_v) {  })
+    #|  @film.film(fn(_v) {  })
     #|  @ui.run_tree("app", fn(_v) {  })
     #|  @film.run_tree(fn(_v) {  })
     #|  @film.picture_tree(fn(_v) {  })
     #|  @film.film_tree(fn(_v) {  })
-    #|  x.run("ok")
-    #|  run("ok")
+    #|  x.run_legacy_ctx("ok")
+    #|  run_legacy_ctx("ok")
     #|}
     #|test "t" {
     #|  let _ = Tester::tree(fn(_v) {  })
@@ -3733,19 +3737,19 @@ test "preset=tree: zero-config clean, hits, skip, det-ok, list orders, unknown p
   let clean_root = make_raw_tree([
     (
       "src/main.mbt",
-      "fn main {\n  @ui.run_tree(\"app\", fn(v) {\n    v.box(fn(b) { b.says(Is(Some(@view.said(Button, label=\"Go\")))).on_press(fn() {  }) |> ignore }) |> ignore\n  })\n}\n",
+      "fn main {\n  @ui.run(\"app\", fn(v) {\n    v.box(fn(b) { b.says(Is(Some(@view.said(Button, label=\"Go\")))).on_press(fn() {  }) |> ignore }) |> ignore\n  })\n}\n",
     ),
     (
       "libs/mbui/src/legacy.mbt",
-      "fn main {\n  @ui.run(\"ignored\", fn(_c) {  })\n}\n",
+      "fn main {\n  @ui.run_legacy_ctx(\"ignored\", fn(_c) {  })\n}\n",
     ),
     (
       "monoid/libs/mbui/src/legacy.mbt",
-      "fn main {\n  @ui.run(\"ignored\", fn(_c) {  })\n}\n",
+      "fn main {\n  @ui.run_legacy_ctx(\"ignored\", fn(_c) {  })\n}\n",
     ),
     (
       "vendor/dep/main.mbt",
-      "fn main {\n  @ui.run(\"ignored\", fn(_c) {  })\n}\n",
+      "fn main {\n  @ui.run_legacy_ctx(\"ignored\", fn(_c) {  })\n}\n",
     ),
   ])
   let (c1, o1, _) = run_cli(["--preset=tree", clean_root])
@@ -3760,7 +3764,7 @@ test "preset=tree: zero-config clean, hits, skip, det-ok, list orders, unknown p
       "src/app.mbt",
       (
         #|fn main {
-        #|  @ui.run("bad", fn(_c) {  })
+        #|  @ui.run_legacy_ctx("bad", fn(_c) {  })
         #|}
         #|fn page(v : @view.View, s : @view.Scroll, xs : () -> Array[String]) -> Unit {
         #|  v.scrolls(s, fn(body) {

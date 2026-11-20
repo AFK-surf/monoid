@@ -40,8 +40,7 @@ fn main {
       let path = "\{dir}/\{page}-\{if dark { "dark" } else { "light" }}.png"
       let (w, h) = if page == "film" { (600.0, 400.0) } else { (1280.0, 1040.0) }
       let ok = @film.picture(
-        fn(_c) {  },
-        tree=fn(root) { @pages.page(root, page) },
+        fn(root) { @pages.page(root, page) },
         path~,
         w~,
         h~,
@@ -60,8 +59,7 @@ fn main {
       @lg.set_dark(Some(dark))
       let out = "\{dir}/film-\{if dark { "dark" } else { "light" }}.mp4"
       let ok = @film.film(
-        fn(_c) {  },
-        tree=fn(root) { @pages.page(root, "film") },
+        fn(root) { @pages.page(root, "film") },
         script=film_script,
         out~,
         w=600.0,

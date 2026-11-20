@@ -292,6 +292,11 @@ fn Ctx::bar_owner(self : Ctx, id : Int) -> (Bar, Double, Theme)? {
 let bars_hand : Map[Int, @signals.Signal[(Bool, Bool)]] = Map([])
 
 ///|
+/// How many bars_hand held as it last let go of those read no more (Ctx::bar_hand).
+// kept across runs: only counts
+let bars_hand_kept : Ref[Int] = { val: 0 }
+
+///|
 /// How the hand has the bar of `id` (near, held), read: its signal made as it is first read.
 fn Ctx::bar_hand(self : Ctx, id : Int) -> (Bool, Bool) {
   let s = match bars_hand.get(id) {
@@ -301,8 +306,18 @@ fn Ctx::bar_hand(self : Ctx, id : Int) -> (Bool, Bool) {
         Some((b, _, _)) => (b.near, b.held)
         None => (false, false)
       }
+      // (those read once and read no more let go, as bars of views made anew each time come and go: once there are
+      // twice as many as were left the last time, so keeping n costs O(n) in all)
+      if bars_hand.length() >= 64 && bars_hand.length() >= 2 * bars_hand_kept.val {
+        let unread = bars_hand.iter().filter(fn(e) { !e.1.watched() }).map(fn(e) { e.0 }).collect()
+        for k in unread {
+          bars_hand.remove(k)
+        }
+        bars_hand_kept.val = bars_hand.length()
+      }
       let s = @signals.signal(now, same=fn(a, b) { a == b })
       bars_hand[id] = s
+      island_said_id(2, id)
       s
     }
   }

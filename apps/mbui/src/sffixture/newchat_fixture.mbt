@@ -10,6 +10,7 @@
 /// What is picked for a new chat in the made-up workspace, and in the model control's panel.
 pub(all) struct NewFix {
   mut station : String
+  mut auto_station : Bool
   mut model : String
   mut runtime : String
   mut effort : String
@@ -73,6 +74,7 @@ pub(all) struct NewFix {
 ///|
 pub let new_fix : NewFix = {
   station: "st1",
+  auto_station: false,
   model: "claude-opus-5-5",
   runtime: "claude",
   effort: "high",
@@ -528,6 +530,7 @@ pub fn fix_station(id : String) -> Json {
         "icon": "glyph:laptop",
         "summary": "空闲 · Apple M4 · 16 GB · macOS 26",
         "online": true,
+        "acceptAutoChats": true,
         "host": {
           "meters": [
             fix_meter("CPU", 91, "ok", "91", "%"),
@@ -545,6 +548,7 @@ pub fn fix_station(id : String) -> Json {
         "icon": if new_fix.unmarked { "" } else { "glyph:desktop" },
         "summary": "2 个 agent 正在运行 · Apple M1 Pro · 32 GB · macOS 26",
         "online": true,
+        "acceptAutoChats": true,
         "host": {
           "meters": [
             fix_meter("CPU", 72, "ok", "72", "%"),
@@ -1180,6 +1184,8 @@ fn fix_new_chat_of(f : Fixture) -> Json {
       Json::null()
     },
     "presetStations": Json::boolean(n.preset != "" && n.bound),
+    "autoStation": Json::boolean(n.auto_station),
+    "autoPoolCount": Json::number(2.0),
     "any": true,
     "station": lend(fix_station(n.station)),
     "model": fix_model(n.model),
@@ -1303,7 +1309,14 @@ pub fn fixture_new_call(f : Fixture, name : String, params : Json) -> Result[Jso
   }
   match name {
     "newChat.pick" => {
-      take("station", fn(s) { n.station = s })
+      if flag(p, "autoStation") {
+        n.auto_station = true
+      } else {
+        take("station", fn(s) {
+          n.auto_station = false
+          n.station = s
+        })
+      }
       take("model", fn(s) {
         n.model = s
         n.d_model = s

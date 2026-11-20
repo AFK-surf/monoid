@@ -597,6 +597,13 @@ fn board_wide(
         glide.put(1.0)
         across.put(0.0)
       }
+      // (both let go of with the area, as they were before it: reveal names `own`, which holds it, a ring native's
+      // counting never frees)
+      area.owns(fn() {
+        own.reveal = fn(_) {  }
+        own.to_start = fn() {  }
+      })
+      |> ignore
       // (the chat beside them opened or closed: its way starts at that moment)
       area.reacts(split, fn(open) {
         let at = area.cause_at()

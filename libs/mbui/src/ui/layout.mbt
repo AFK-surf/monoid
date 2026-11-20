@@ -784,7 +784,7 @@ fn Ctx::flex_tree(self : Ctx, i : Int, pdir : Int) -> Int {
       f.measure = Some(fn(w, wm, h, hm) { leaf_size(n, w, wm, h, hm) })
     }
     if f.children.length() > 0 {
-      f.children.clear()
+      f.children_cut(0)
       ch = true
     }
     if k == kind_text {
@@ -920,7 +920,7 @@ fn Ctx::flex_tree(self : Ctx, i : Int, pdir : Int) -> Int {
       c = cn.next
     }
     if j < kids.length() {
-      kids.truncate(j)
+      f.children_cut(j)
       ch = true
     }
   }

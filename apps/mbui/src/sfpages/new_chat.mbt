@@ -552,9 +552,48 @@ fn take_asked(what : String) -> Bool {
 /// changes); picked, the core has it (`newChat.pick`) and the panel closes, showing what it showed till it is gone.
 fn station_rows_node(n : @view.View, src : Source, w : Workspace, v : Json?, close : () -> Unit) -> Unit {
   let current = text(field(v, "station"), "station")
+  let is_auto = flag(v, "autoStation")
+  let pool = count(v, "autoPoolCount")
+  if pool > 0 && !flag(v, "presetStations") {
+    @sf.panel_content_row_node(
+      n,
+      fn() { @sf.t("web-main.newChat.autoStation") },
+      fn(_) {
+        @sfbase.pick_new(src, w.id, { "autoStation": Json::boolean(true) })
+        close()
+      },
+      fn(row) {
+        @sf.style_node(row, fn() { station_row.then(@sf.panel_row_in_node(row)) })
+        row.box(fn(m) {
+          @sf.style_node(m, fn() { station_row_mark_box }, in_row=true)
+          @sf.icon_node(m, "sparks", station_row_mark, By(fn() { @sf.theme().p.accent_text })) |> ignore
+        })
+        |> ignore
+        row.box(fn(col) {
+          @sf.style_node(col, fn() { station_row_words }, in_row=true)
+          col.min_width(Is(Some(0.0))) |> ignore
+          col.box(fn(head) {
+            @sf.style_node(head, fn() { station_row_head })
+            @sf.words_node(head, fn() { @sf.t("web-main.newChat.autoStation") }, fn() { station_row_name })
+            .grow(Is(1.0))
+            .shrink(Is(1.0))
+            .min_width(Is(Some(0.0)))
+            |> ignore
+            if is_auto {
+              @sf.icon_node(head, "check", new_mark, By(fn() { @sf.theme().p.accent })) |> ignore
+            }
+          })
+          |> ignore
+          @sf.words_node(col, fn() { @sf.t("web-main.newChat.autoStationHint", args=[("n", pool.to_string())]) }, fn() { new_status })
+          |> ignore
+        })
+        |> ignore
+      },
+    )
+  }
   for s in items(v, "stations") {
     let st = Some(s)
-    let here = text(st, "station") == current
+    let here = !is_auto && text(st, "station") == current
     n.box(fn(row) {
       // (its words on the panel's words' line wherever it is drawn: @sf.panel_row_in_node; its ground under a mouse, as
       // panel_row_in's `hovered`)

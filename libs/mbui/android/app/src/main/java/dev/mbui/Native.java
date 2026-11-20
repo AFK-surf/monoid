@@ -31,6 +31,8 @@ final class Native {
     static native void dropPending();
     /** The frame taken drawn (GL thread). */
     static native void draw();
+    /** What drawing holds beyond its frames given back (GL thread, its context current: MBView.trim). */
+    static native void trim();
     /** What the app's thread waits for of the GL context done (GL thread: MBView.glSync). */
     static native void glSync();
     static native void pointer(int kind, float x, float y, double time);

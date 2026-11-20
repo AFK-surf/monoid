@@ -87,7 +87,12 @@ pub fn workspace_node(
     fn() {
       match view() {
         None => ["waiting"]
-        w => ws_block_keys(people().0, manager() || strings(w, "relays").length() > 0 || number(ways(), "off") > 0.0)
+        w =>
+          ws_block_keys(
+            people().0,
+            manager() || strings(w, "relays").length() > 0 || number(ways(), "off") > 0.0,
+            auto_chats=items(w, "stations").length() > 0,
+          )
       }
     },
     fn(b, key) {
@@ -226,6 +231,22 @@ fn workspace_block_node(
         ws_people_row_node(card, core, here, view, ws, who, fn() { now().map(fn(n) { n.1 }) }, stint, tips)
       })
     }
+    // workspace-wide automatic assignment allowlist: one row; pressed, its stations in a panel (ws_auto_chats_panel),
+    // which subscribes to `stations` only while open so cold workspace open reads nothing extra
+    "autoChats" =>
+      @sf.group_node(b, fn(g) {
+        g.box(fn(at) {
+          @sf.link_row_node(
+            at,
+            fn() { @sf.t("web-pages.workspace.autoChats.title") },
+            fn() {
+              let (x, y, w, h) = at.placed_window_now()
+              ws_auto_chats_panel(core, @signals.untracked(here), At(x, y, w, h))
+            },
+          )
+        })
+        |> ignore
+      })
     // how its members' devices reach its stations: one row, how many ways are turned off at its end; pressed, its relays
     // and the ways in a panel (ws_ways_panel)
     "ways" =>
@@ -310,10 +331,13 @@ fn workspace_block_node(
 ///|
 /// The workspace's blocks (`people`: its people each by who they are, ws_people's; `ways`: its 中继 row shown): its
 /// name, its people's heading and each of them ("p/<who>"), its 中继, leaving it.
-fn ws_block_keys(people : Array[(String, Json)], ways : Bool) -> Array[String] {
+fn ws_block_keys(people : Array[(String, Json)], ways : Bool, auto_chats? : Bool = false) -> Array[String] {
   let out = ["name", "people"]
   for p in people {
     out.push("p/" + p.0)
+  }
+  if auto_chats {
+    out.push("autoChats")
   }
   if ways {
     out.push("ways")
@@ -837,6 +861,77 @@ fn ws_ways_panel(core : Core, here : Here, from : @sf.Anchor) -> Unit {
     })
     |> ignore
   })
+}
+
+///|
+/// Workspace-level automatic assignment allowlist panel: subscribes to `stations` only while open, lets workspace
+/// managers toggle `autoChats.save` per eligible online station, and keeps offline, tasks-only, and non-manager views
+/// read-only.
+fn ws_auto_chats_panel(core : Core, here : Here, from : @sf.Anchor) -> Unit {
+  @sf.panel_nodes(
+    @sf.t("web-pages.workspace.autoChats.title"),
+    from~,
+    form=true,
+    description=@sf.t("web-pages.workspace.autoChats.lead"),
+    fn(v, _close) {
+      let view = fn() { workspace_view(core, here).value }
+      let manager = fn() {
+        let role = text(view(), "role")
+        role == "owner" || role == "admin"
+      }
+      let ws = fn() { text(view(), "id") }
+      let stations = fn() {
+        let list = match (core.topic)("stations", { "scope": str(ws()) }).get().value {
+          Some(Array(a)) => a
+          _ => []
+        }
+        let n = list.length()
+        list.mapi(fn(i, s) { (i, i + 1 == n, s) })
+      }
+      v.box(fn(body) {
+        @sf.style_node(body, fn() { ws_way_body })
+        body.each(stations, fn(x) { text(Some(x.2), "station") }, fn(row, item) {
+          let st = fn() { Some(item.get().2) }
+          let addr = fn() { text(st(), "station") }
+          let title = fn() { text(st(), "name") }
+          let tasks_only = fn() { text(st(), "mode") == "tasks" }
+          let online = fn() { flag(st(), "online") }
+          let on = fn() { !tasks_only() && flag(st(), "acceptAutoChats") }
+          let busy = fn() { is_doing(core, ["autoChats.save"], [("station", addr())]) }
+          let note = fn() {
+            if tasks_only() {
+              @sf.t("web-pages.workspace.autoChats.tasksOnly")
+            } else if !online() {
+              @sf.t("web-pages.workspace.autoChats.offline")
+            } else if !manager() {
+              @sf.t("web-pages.workspace.autoChats.readOnly")
+            } else {
+              ""
+            }
+          }
+          let is_last = @signals.untracked(fn() { item.get().1 })
+          ws_way_row_node(row, title, note, last=is_last, fn(e) {
+            e.show(busy, fn(s) { @sf.spinner_node(s, size=@sf.spinner_size) |> ignore })
+            @sf.switch_node(
+              e,
+              on,
+              fn(next) {
+                @settings.act(
+                  core,
+                  @sf.t("web-pages.stations.autoChats.what"),
+                  "autoChats.save",
+                  obj([("station", str(@signals.untracked(addr))), ("enabled", Json::boolean(next))]),
+                )
+              },
+              title,
+              disabled=fn() { tasks_only() || !online() || !manager() || busy() },
+            )
+          })
+        })
+      })
+      |> ignore
+    },
+  )
 }
 
 ///|

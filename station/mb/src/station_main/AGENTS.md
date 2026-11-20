@@ -91,3 +91,7 @@
   `timer:` why. A command named bare is found on the PATH it is given, then in the system's own directories
   (sys.mbt `resolved_program`, the shell's `proc.run`), so a station whose PATH names none of them still runs `ps`,
   `lsof` or `git`.
+- A decided card's request (a phone's, a rig's) is written by the part's write callback inside
+  `@store_threads.Store::save_card_outcome`'s transaction with the card's close and its queued outcome
+  (live_dispatch.mbt `cardOutcomes.save`), as store.ts `saveCardOutcome` does: such a callback is synchronous
+  (adb_devices `World.write`, rigs_mode `World.callback`), never one that could wait inside the transaction.

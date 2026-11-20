@@ -205,7 +205,7 @@ test("a_preset_applies_its_optional_station_and_model_when_picked_or_leaves_them
   };
   const said: Record<string, unknown> = {
     ...base(),
-    "GET /overview": { ...overview, claudeTui: true, profiles: [p2] },
+    "GET /overview": { ...overview, claudeTui: true, autoChats: { enabled: true, canEdit: true }, profiles: [p2] },
     "GET /presets": { presets: [presetBound, presetFree], candidates: [candidate] },
   };
   const { host, core } = await started(said as never);

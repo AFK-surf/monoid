@@ -1094,18 +1094,27 @@ fn AgentsHost::procs(self : AgentsHost, runner : () -> String?, data : String, p
       let only = procs.filter_map(pr => self.sessions.values().find_first(p => physical_equal(p.info, pr.info)))
       self.thaw(only)
     },
-    close: () => pump.later("agents let go", async fn() {
-      if self.closed {
-        return
-      }
-      self.closed = true
-      self.settle()
-      if self.on {
-        self.on = false
-        self.program.release(false)
-      }
-    }),
+    // (one program under every driver: a driver's own shutdown leaves it be, `let_go` once all of them are shut down)
+    close: () => @agent_drivers.done(pump.lp),
   }
+}
+
+///|
+/// The agents let go for good: no process started after, the shared program released. The station's stop does it
+/// once every driver has ended its processes (live_p5_2_main `drivers_shut_down`): the drivers share this program, and one
+/// that let it go first would leave another's TERM unsent and its processes behind.
+fn AgentsHost::let_go(self : AgentsHost) -> @agent_drivers.Later[Unit] {
+  self.pump.later("agents let go", async fn() {
+    if self.closed {
+      return
+    }
+    self.closed = true
+    self.settle()
+    if self.on {
+      self.on = false
+      self.program.release(false)
+    }
+  })
 }
 
 ///|

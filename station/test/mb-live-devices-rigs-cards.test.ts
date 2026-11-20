@@ -2,7 +2,8 @@
 // src/station_main live_p5_1_rigs.mbt, live_p5_2_*.mbt, live_p5_4*.mbt), in `run` under a launcher of the test's with no
 // Node on its PATH: where an accepted socket comes from (`net.remotePort`, what the adb door and a chat's adb server
 // tell who asks by); a chat's station_use card posted in its chat, denied by the rig's person, closed and restated
-// with its outcome by the cards' outbox worker (agents.ts `cardOutcomes`) and told on the event stream; and a station
+// with its outcome by the cards' outbox worker (agents.ts `cardOutcomes`) and told on the event stream, or, where its
+// outcome cannot be queued, neither decided nor closed (store.ts `saveCardOutcome`'s one transaction); and a station
 // that only runs tasks running a command another station sends with a secret (rig/main.ts `Incoming`, `vault.`).
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
@@ -15,6 +16,7 @@ import { createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { installCardOutbox } from "../src/store/card-outbox.ts";
 import { Store } from "../src/store/store.ts";
 
 const binary = mbReaderBinary();
@@ -241,6 +243,67 @@ test("station_use: the card posted in the chat, denied by the rig's person, clos
   } finally {
     db.close();
     stream.close();
+  }
+  a.tell({ op: "stop" });
+  assert.equal(await a.ended, 0, a.err());
+});
+
+test("station_use: a decision whose outcome cannot be queued leaves the request pending and its card open, then goes through", { skip }, async () => {
+  const data = fresh("rigtx");
+  const app = fresh("app");
+  const work = fresh("work");
+  writeFileSync(join(app, "BUILD"), "9500\n");
+  const id = stationId(data);
+  const rig = "ef".repeat(32);
+  mkdirSync(join(data, "mesh"), { recursive: true });
+  writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify({
+    origin: "http://127.0.0.1:9", station: id, workspace: "w1", workspace_name: "W", name: "here", relay_url: "", relay_urls: [], grant_keys: {}, peers: [], revocations: [],
+    rigs: [{ id: rig, name: "box", owner: "local", owner_email: "o@example.com", owner_name: "O" }],
+  }));
+  const before = store(data);
+  before.insertSession({ key: "s1", connect: "ember", runtime: "claude", profile: "cc", workspace: work, token: "t1", createdAt: Date.now(), lastActiveAt: Date.now() });
+  const thread = before.openThread("ember", "local", "t1", "the chat", null).id;
+  before.joinThread(thread, "s1", "ember");
+  // (the outbox's tables made now, as its first queued outcome would, so the test's trigger has a table to refuse on)
+  installCardOutbox(before.db);
+  before.close();
+
+  const a = await launch(data, app, { STILLFAIL_LOCAL_ADMIN: "1" });
+  await a.next("ready", (m) => m.ready === true);
+  const door = (await a.next("the agents' door", (m) => m.serving === "mcp")).port as number;
+  const asked = await tool(door, "t1", "station_use", { station: "box", reason: "build the release there" });
+  assert.equal(asked.error, false, `${asked.text}\n${a.err()}`);
+  const db = new DatabaseSync(join(data, "stillfail.db"));
+  db.exec("PRAGMA busy_timeout = 5000");
+  try {
+    const row = await given("the request kept", () => db.prepare("SELECT id, body FROM rig_requests WHERE session = 's1'").get() as { id: string; body: string } | undefined);
+    const request = JSON.parse(row.body);
+    const card = db.prepare("SELECT n FROM entries WHERE thread = ? AND ts = ? AND kind = 'message' AND author_kind = 'agent'").get(thread, request.cardTs) as { n: number };
+    const status = () => (db.prepare("SELECT status FROM rig_requests WHERE id = ?").get(row.id) as { status: string }).status;
+    const closed = () => db.prepare("SELECT 1 FROM closed_cards WHERE thread = ? AND n = ?").get(thread, card.n) !== undefined;
+    const queued = () => (db.prepare("SELECT COUNT(*) AS n FROM card_outbox").get() as { n: number }).n;
+
+    // the outcome's queue refuses: the request's write, the card's close and the queue roll back together
+    db.exec("CREATE TRIGGER outbox_refuses BEFORE INSERT ON card_outbox BEGIN SELECT RAISE(ABORT, 'queue failed'); END");
+    const failed = await http(door, `/admin-api/rigs/requests/${row.id}/decide`, { body: JSON.stringify({ allow: false }) });
+    assert.notEqual(failed.status, 200, failed.body);
+    assert.equal(status(), "pending", "the request is not decided where its outcome was not queued");
+    assert.equal(closed(), false, "its card is not closed");
+    assert.equal(queued(), 0);
+
+    // the queue takes it again: the same decision goes through, closed and restated
+    db.exec("DROP TRIGGER outbox_refuses");
+    const decided = await http(door, `/admin-api/rigs/requests/${row.id}/decide`, { body: JSON.stringify({ allow: false }) });
+    assert.equal(decided.status, 200, `${decided.body}\n${a.err()}`);
+    assert.equal(status(), "denied");
+    assert.equal(closed(), true);
+    await given("the card restated with its outcome", () => {
+      const edit = db.prepare("SELECT card FROM entries WHERE thread = ? AND kind = 'edit' AND card IS NOT NULL ORDER BY n DESC LIMIT 1").get(thread) as { card: string } | undefined;
+      return edit !== undefined && JSON.parse(edit.card)?.rig?.outcome?.status === "denied";
+    });
+    await given("the outbox emptied", () => queued() === 0);
+  } finally {
+    db.close();
   }
   a.tell({ op: "stop" });
   assert.equal(await a.ended, 0, a.err());

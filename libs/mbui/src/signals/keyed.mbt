@@ -8,12 +8,14 @@ pub struct Keyed[K] {
   priv members : Map[K, Bool]
   /// a signal for each key read (whether it is in), made as it is first read
   priv said : Map[K, Signal[Bool]]
+  /// how many it said for when it last let go of those read no more (Keyed::has): read anew twice as many, it does again
+  priv mut said_kept : Int
 }
 
 ///|
 /// An empty one.
 pub fn[K : Hash + Eq] keyed() -> Keyed[K] {
-  { members: {}, said: {} }
+  { members: {}, said: {}, said_kept: 0 }
 }
 
 ///|
@@ -22,12 +24,28 @@ pub fn[K : Hash + Eq] Keyed::has(self : Keyed[K], k : K) -> Bool {
   let s = match self.said.get(k) {
     Some(s) => s
     None => {
+      // (keys read once each and never again, as each build of what reads them names its own (an old view's ids, made
+      // anew each time it is): let go of as they are read no more, not only as it is next set)
+      if self.said.length() >= 64 && self.said.length() >= 2 * self.said_kept {
+        self.unread_gone()
+      }
       let s = signal(self.members.contains(k))
       self.said[k] = s
       s
     }
   }
   s.get()
+}
+
+///|
+/// What was read once and is read no more, kept by none: let go.
+fn[K : Hash + Eq] Keyed::unread_gone(self : Keyed[K]) -> Unit {
+  let unread : Array[K] = []
+  self.said.each(fn(k, s) { if !s.watched() && !self.members.contains(k) { unread.push(k) } })
+  for k in unread {
+    self.said.remove(k)
+  }
+  self.said_kept = self.said.length()
 }
 
 ///|
@@ -79,11 +97,7 @@ pub fn[K : Hash + Eq] Keyed::set(self : Keyed[K], ks : Array[K]) -> Unit {
   end_batch()
   // (what was read once and is read no more, kept by none: let go)
   if self.said.length() > 64 && self.said.length() > 4 * (self.members.length() + 1) {
-    let unread : Array[K] = []
-    self.said.each(fn(k, s) { if !s.watched() && !self.members.contains(k) { unread.push(k) } })
-    for k in unread {
-      self.said.remove(k)
-    }
+    self.unread_gone()
   }
 }
 

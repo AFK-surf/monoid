@@ -78,6 +78,7 @@ fn ws_changing(
   calls : Array[(String, Json)],
   workspace? : (Json?) -> Json? = fn(v) { v },
   ways? : (Json?) -> Json? = fn(v) { v },
+  stations? : (Json?) -> Json? = fn(v) { v },
   doing? : () -> Json? = fn() { None },
 ) -> Source {
   {
@@ -91,6 +92,7 @@ fn ws_changing(
       match name {
         "workspace" => { ..got, value: workspace(got.value) }
         "workspaceWays" => { ..got, value: ways(got.value) }
+        "stations" => { ..got, value: stations(got.value) }
         "doing" =>
           match doing() {
             Some(d) => { ..got, value: Some(d) }
@@ -483,5 +485,62 @@ test "where the two panels' words stand on every screen: each under the one befo
     assert_true((mid - (title.1 + title.3 / 2.0)).abs() < 1.0, msg="\{at}: switch's middle \{mid}, \{Repr(title)}")
     @sf.presenters_reset()
     assert_eq(calls.length(), 0, msg=at)
+  }
+}
+
+///|
+test "workspace auto-assign allowlist panel: managers toggle online stations, offline/tasks-only/member switches stay disabled" {
+  let pool : Json = [
+    { "station": "ws1/st1", "id": "st1", "name": "Willow", "online": true, "acceptAutoChats": false },
+    { "station": "ws1/st2", "id": "st2", "name": "Maple", "online": false, "acceptAutoChats": true },
+    { "station": "ws1/rig1", "id": "rig1", "name": "Build Rig", "online": true, "mode": "tasks", "acceptAutoChats": true },
+  ]
+  for case in page_cases {
+    let (w, platform) = case
+    let at = "\{w} platform \{platform}"
+    let calls : Array[(String, Json)] = []
+    let t = setting_tester(Workspace, w, platform~, h=2400.0, over=fn(s) {
+      ws_changing(s, calls, stations=fn(_) { Some(pool) })
+    })
+    t.tap_text("自动分配白名单")
+    t.run_for(@ui.move_most_ms)
+    assert_true(@sf.presenting(), msg=at)
+    assert_true(t.find("离线，上线后可修改") is Some(_), msg=at)
+    assert_true(t.find("仅任务机，不运行会话") is Some(_), msg=at)
+    let sw_willow = t.get(Switch, label="Willow")
+    let sw_maple = t.get(Switch, label="Maple")
+    let sw_rig = t.get(Switch, label="Build Rig")
+    assert_false(sw_willow.disabled, msg=at)
+    assert_eq(sw_willow.check, Some(Off), msg=at)
+    assert_true(sw_maple.disabled, msg=at)
+    assert_eq(sw_maple.check, Some(On), msg=at)
+    assert_true(sw_rig.disabled, msg=at)
+    assert_eq(sw_rig.check, Some(Off), msg=at)
+    assert_eq(t.audit(), [], msg=at)
+    t.click(Switch, label="Willow")
+    t.draw()
+    assert_eq(calls.length(), 1, msg=at)
+    assert_eq(calls[0].0, "autoChats.save", msg=at)
+    assert_eq(text(Some(calls[0].1), "station"), "ws1/st1", msg=at)
+    assert_true(flag(Some(calls[0].1), "enabled"), msg=at)
+    @sf.presenters_reset()
+
+    // Non-manager sees all switches read-only (disabled)
+    let member_calls : Array[(String, Json)] = []
+    let tm = setting_tester(Workspace, w, platform~, h=2400.0, over=fn(s) {
+      ws_changing(
+        s,
+        member_calls,
+        workspace=fn(v) { ws_said(v, "role", Json::string("member")) },
+        stations=fn(_) { Some(pool) },
+      )
+    })
+    tm.tap_text("自动分配白名单")
+    tm.run_for(@ui.move_most_ms)
+    assert_true(@sf.presenting(), msg=at)
+    assert_true(tm.get(Switch, label="Willow").disabled, msg=at)
+    assert_true(tm.get(Switch, label="Maple").disabled, msg=at)
+    assert_true(tm.get(Switch, label="Build Rig").disabled, msg=at)
+    @sf.presenters_reset()
   }
 }

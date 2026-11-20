@@ -1643,6 +1643,14 @@ web-pages.stations.context.section
 web-pages.stations.context.what
 web-pages.stations.diagnostics.logs
 web-pages.stations.diagnostics.logsLine
+web-pages.stations.autoChats.label
+web-pages.stations.autoChats.line
+web-pages.stations.autoChats.what
+web-pages.workspace.autoChats.title
+web-pages.workspace.autoChats.lead
+web-pages.workspace.autoChats.tasksOnly
+web-pages.workspace.autoChats.offline
+web-pages.workspace.autoChats.readOnly
 web-pages.stations.diagnostics.section
 web-pages.stations.diagnostics.what
 web-pages.stations.elevation.admin

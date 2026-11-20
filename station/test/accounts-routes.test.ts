@@ -1379,6 +1379,17 @@ describe("the accounts routes", { concurrency: true }, () => {
     await t.close();
   });
 
+  test("automatic chat allowlist is opt-in and for a workspace manager to change", async () => {
+    const t = await rig();
+    assert.deepEqual(await t.call("PUT", "/auto-chats", { enabled: true }, member), [403, { error: "只有 workspace 管理员能修改自动分配白名单" }]);
+    assert.deepEqual(await t.call("PUT", "/auto-chats", { enabled: "yes" }), [400, { error: "自动分配白名单的设置不正确" }]);
+    assert.equal((await t.call("PUT", "/auto-chats", { enabled: true }))[0], 200);
+    assert.equal(t.config.raw().acceptAutoChats, true);
+    assert.equal((await t.call("PUT", "/auto-chats", { enabled: false }))[0], 200);
+    assert.equal(t.config.raw().acceptAutoChats, false);
+    await t.close();
+  });
+
   test("the archive policy page: its options with the chats last put there, who changed it, and edits by managers", async () => {
     const store = Store.open(":memory:", null);
     store.insertSession({ key: "titled", connect: "ds", runtime: "claude", profile: "cc", workspace: "/w/a", token: "t", createdAt: 1, lastActiveAt: 1 });

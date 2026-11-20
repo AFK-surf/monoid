@@ -1049,6 +1049,10 @@ fn View::scrolls_window_ids(
   // measured height forgotten and it was taken out of it, held by no node (View::park): so many at most of each, the
   // rest let go; all let go with the list)
   let spare : Map[Int, Array[(View, @signals.Signal[Int], () -> Unit, View?)]] = Map([])
+  // (what a slot past the end of one holds once a block is taken out of it: none of them. An array cut shorter keeps
+  // what its slots held, counted as held (native's counting, moonbitlang/core's Array::remove and pop): the block, and
+  // what wakes it, holding all it binds)
+  let spare_gone : (View, @signals.Signal[Int], () -> Unit, View?) = (self, @signals.signal(-1), run_gone, None)
   // (what the parts of those blocks keep of each key, kept by it as a block leaves it and given back as a block is
   // taken for it or made anew for it: reused_state.mbt)
   let kept : ReusedKept[Int] = ReusedKept::new()
@@ -1089,6 +1093,7 @@ fn View::scrolls_window_ids(
         b.0.let_go()
       }
       all.clear()
+      all.release_unused(placeholder=spare_gone)
     }
   }
   // (how wide what it holds is given to be, as it is laid out: View::scrolls' fill)
@@ -5990,9 +5995,13 @@ fn View::scrolls_window_ids(
                 // was; else the last put by)
                 let taken = match spare.get(kind) {
                   Some(all) if all.length() > 0 =>
-                    match all.search_by(fn(b) { b.1.untracked() == k }) {
-                      Some(i) => Some(all.remove(i))
-                      None => all.pop()
+                    {
+                      let t = match all.search_by(fn(b) { b.1.untracked() == k }) {
+                        Some(i) => Some(all.remove(i))
+                        None => all.pop()
+                      }
+                      all.release_unused(placeholder=spare_gone)
+                      t
                     }
                   _ => None
                 }
@@ -6083,7 +6092,10 @@ fn View::scrolls_window_ids(
             match spare.get(kind) {
               Some(all) =>
                 match all.search_by(fn(b) { b.3 is Some(w) && physical_equal(w, slot) }) {
-                  Some(i) => all.remove(i) |> ignore
+                  Some(i) => {
+                    all.remove(i) |> ignore
+                    all.release_unused(placeholder=spare_gone)
+                  }
                   None => ()
                 }
               None => ()
@@ -6174,6 +6186,29 @@ fn View::scrolls_window_ids(
   }
   // (those put by let go with the list: held by nothing, let go by nothing else)
   self.owns(spare_let_go) |> ignore
+  // (what each cell of a later-said step holds let go of last, once all the above ran: each holds a step that names
+  // its own cell, or one that names it back (ways_due's moment calls it again), a ring native's counting never frees,
+  // which would keep the whole list (its blocks' cells, its column, its tree) after it went)
+  self.owns(fn() {
+    floor_arm.val = fn(_, _) {  }
+    floor_end.val = fn() {  }
+    fade_go.val = fn(_) {  }
+    fade_undo.val = fn(_) {  }
+    anchor_again.val = fn(_) {  }
+    seen_before.val = fn(_) { [] }
+    anchor_moved.val = fn(_) {  }
+    ways_off.val = fn() {  }
+    unpin.val = fn() {  }
+    floor_off.val = fn() {  }
+    way_steady_fn.val = fn() { (-1.0, false, []) }
+    rest_flip.val = fn() {  }
+    ways_due.val = fn() {  }
+    flip_end_off.val = fn() {  }
+    flip_rebuild.val = fn() {  }
+    flip_inner_tell.val = fn(_) {  }
+    fade_off.val = fn() {  }
+  })
+  |> ignore
   out
 }
 

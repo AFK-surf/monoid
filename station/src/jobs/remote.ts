@@ -84,6 +84,8 @@ export type RemoteOptions = {
   version?: string;
   /// The last completed cleanup of files brought back. Tests can keep this across station restarts in memory.
   backTidy?: { read: () => Promise<number | null>; write: (at: number) => Promise<void> };
+  /// Whether this station is opted into automatic new-chat assignment (`acceptAutoChats` in config.json).
+  acceptAutoChats?: () => boolean;
 };
 
 /// A start that syncs a directory answers within this, synced or not (the sync goes on): an agent's tool call is given
@@ -307,6 +309,7 @@ export class Remote {
   private diskFree: (path: string) => number | Promise<number>;
   private removeMirror: (path: string) => Promise<void>;
   private described: ((peer: string, workspace: string) => Json) | null = null;
+  private acceptAutoChats: (() => boolean) | null = null;
   private version: string;
   private rigs: ((workspace: string, session: string, rig: Json, described: Json | null) => Promise<Json>) | null = null;
   /// This station's sandboxes (config.json's `sandboxes`, agents/sandbox.ts): stations of a kind of their own for
@@ -329,6 +332,7 @@ export class Remote {
   constructor(options: RemoteOptions) {
     this.data = options.data;
     this.version = options.version ?? runningVersion();
+    this.acceptAutoChats = options.acceptAutoChats ?? null;
     this.store = options.store;
     this.workspaceReader = new WorkspaceReader(() => this.store.now());
     this.jobs = options.jobs;
@@ -902,7 +906,7 @@ export class Remote {
 
   /// `describe`'s answer: what this station takes, and how busy it is (`load`, LOAD_WAIT_MS at most).
   private async describe(peer = "", workspace = ""): Promise<Json> {
-    const answer: Json = { protocol: 1, version: this.version, os: OS, arch: ARCH, tasks: true, sessions: true, messages: true, reads: true, files: true, chats: true, sync: 1, smallTasks: 1, fileChunkBytes: CHUNK, maxFileBytes: MAX_FILE };
+    const answer: Json = { protocol: 1, version: this.version, os: OS, arch: ARCH, tasks: true, sessions: true, messages: true, reads: true, files: true, chats: true, acceptAutoChats: this.acceptAutoChats?.() === true, sync: 1, smallTasks: 1, fileChunkBytes: CHUNK, maxFileBytes: MAX_FILE };
     if (this.load !== null) answer.load = await this.measuredLoad();
     return this.described === null ? answer : { ...answer, ...this.described(peer, workspace) };
   }

@@ -48,6 +48,51 @@ pub let letters_own : Spacing = Ems(0.0)
 pub let words_plain : WordsLook = { size: 15.0, weight: 400, line: 22.0, wrap: true, tracking: letters_own, balance: false, max_lines: 0 }
 
 ///|
+/// Construct a `WordsLook` from its size with defaults (`weight=400`, `line=0.0` for the font's own line height,
+/// `wrap=true`, `tracking=letters_own`, `balance=false`, `max_lines=0`).
+pub fn WordsLook::of(
+  size : Double,
+  weight? : Int = 400,
+  line? : Double = 0.0,
+  wrap? : Bool = true,
+  tracking? : Spacing = letters_own,
+  balance? : Bool = false,
+  max_lines? : Int = 0,
+) -> WordsLook {
+  { size, weight, line, wrap, tracking, balance, max_lines }
+}
+
+///|
+/// Derive a single-line look (`wrap: false`) from `self`.
+pub fn WordsLook::one_line(self : WordsLook) -> WordsLook {
+  { ..self, wrap: false }
+}
+
+///|
+/// Derive a look with a different line height (`0.0` for the font's own, negative for a multiple of `size`).
+pub fn WordsLook::with_line(self : WordsLook, line : Double) -> WordsLook {
+  { ..self, line }
+}
+
+///|
+/// Derive a look with a different font weight (100 .. 900).
+pub fn WordsLook::with_weight(self : WordsLook, weight : Int) -> WordsLook {
+  { ..self, weight }
+}
+
+///|
+/// Derive a look with a different font size (and optionally a new line height; keeps `self.line` when omitted).
+pub fn WordsLook::with_size(self : WordsLook, size : Double, line? : Double) -> WordsLook {
+  { ..self, size, line: line.unwrap_or(self.line) }
+}
+
+///|
+/// Derive a wrapped look clamped to at most `max_lines` lines (`0` for unlimited).
+pub fn WordsLook::with_max_lines(self : WordsLook, max_lines : Int) -> WordsLook {
+  { ..self, wrap: true, max_lines }
+}
+
+///|
 /// How a node's words in pieces (View::words_runs) are set where a piece says nothing of it itself, as an old view's
 /// paragraph is (Ctx::rich's): a link's ink and its ground while it is pressed, code's ink and ground and its share of
 /// the words' size, and whether they are a person's words (in the face chosen for those). What changes how big they

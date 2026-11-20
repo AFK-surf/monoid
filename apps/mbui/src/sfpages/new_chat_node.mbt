@@ -42,6 +42,7 @@ pub(all) struct NewChatNodeFrame {
 priv enum NewKind {
   On
   Blocked
+  AutoEmpty
   First
   NoneUp
 }
@@ -98,7 +99,7 @@ pub fn new_chat_node(v : @view.View, src : Source, w : Workspace, frame : NewCha
       Some(Array(_)) =>
         match field(now, "station") {
           Some(Object(_)) => if text(now, "blocked") != "" { Blocked } else { On }
-          _ => if flag(now, "any") { NoneUp } else { First }
+          _ => if text(now, "blocked") == "auto_empty" { AutoEmpty } else if flag(now, "any") { NoneUp } else { First }
         }
       // (its stations not read yet: the page as it will be on the station it last started on)
       _ => On
@@ -122,6 +123,7 @@ pub fn new_chat_node(v : @view.View, src : Source, w : Workspace, frame : NewCha
       match k {
         On => new_on_node(p, v, src, w, frame, tips, topic, view, going)
         Blocked => new_blocked_node(p, src, w, frame, tips, view)
+        AutoEmpty => new_auto_empty_node(p, src, w, frame, view)
         First =>
           new_alone_node(p, "illus_no_station", fn() { @sf.t("android-settings.station.first") }, fn() {
             @sf.t("android-settings.station.firstNote")
@@ -537,8 +539,16 @@ fn new_station_control_node(
     let v = @signals.untracked(view)
     @sf.panel_nodes(@sf.t("android-chat.new.station.pick"), fn(n, close) { station_rows_node(n, on.src, on.w, v, close) }, from=Node(b))
   }
+  let auto_on = fn() { flag(view(), "autoStation") }
+  let label = fn() {
+    if auto_on() {
+      @sf.t("web-main.newChat.autoStationShort")
+    } else {
+      text(station(), "name")
+    }
+  }
   let made : Ref[@view.View?] = Ref(None)
-  new_capsule_node(parent, fn() { text(station(), "name") }, floating, fn() { false }, fn(b) {
+  new_capsule_node(parent, label, floating, fn() { false }, fn(b) {
     if (on.going)() || b.in_bones() {
       ()
     } else if @signals.untracked(fixed) {
@@ -550,8 +560,10 @@ fn new_station_control_node(
   }, fn(b) {
     made.val = Some(b)
     // (a station of no mark of its own the server's, as in its pick: never a bare chevron)
-    b.pick(fn() { @sf.has_station_mark(text(station(), "emoji"), text(station(), "icon")) }, fn(m, has) {
-      if has {
+    b.pick(fn() { if auto_on() { 2 } else if @sf.has_station_mark(text(station(), "emoji"), text(station(), "icon")) { 1 } else { 0 } }, fn(m, kind) {
+      if kind == 2 {
+        @sf.icon_node(m, "sparks", new_mark, By(fn() { @sf.theme().p.accent_text })) |> ignore
+      } else if kind == 1 {
         @sf.station_mark_node(m, fn() { text(station(), "emoji") }, fn() { text(station(), "icon") }, new_mark, fn() {
           @sf.theme().p.text
         }, fn() { 0 })
@@ -564,7 +576,7 @@ fn new_station_control_node(
       // (cut short past 128: new_station_name)
       @sf.style_node(n, fn() { new_station_name }, in_row=true)
       n.row(Is(true)).min_width(Is(Some(0.0))).drops(Is(new_drop_station_name)) |> ignore
-      @sf.words_node(n, fn() { text(station(), "name") }, fn() { new_capsule_words }).cuts(Is(true)).min_width(Is(Some(0.0)))
+      @sf.words_node(n, label, fn() { new_capsule_words }).cuts(Is(true)).min_width(Is(Some(0.0)))
       |> ignore
     })
     |> ignore
@@ -844,6 +856,52 @@ fn new_alone_node(v : @view.View, art : String, title : () -> String, note : () 
     b.pick(fn() { @sf.theme().dark }, fn(a, dark) { @sf.drawable_node(a, if dark { art + "_dark" } else { art }, new_scene_narrow_w) |> ignore })
     @sf.words_node(b, title, fn() { new_alone_title }).words_centered(Is(true)) |> ignore
     @sf.words_node(b, note, fn() { new_sub }).words_centered(Is(true)) |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// Automatic assignment is active, but no online station is in the allowlist: offer picking a station manually or
+/// opening Station settings (never silently fall back to a non-allowlisted station).
+fn new_auto_empty_node(
+  v : @view.View,
+  src : Source,
+  w : Workspace,
+  frame : NewChatNodeFrame,
+  view : () -> Json?,
+) -> Unit {
+  v.lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
+  v.box(fn(o) {
+    o.width(By(fn() { Some(@sf.dmin(new_column_w, (frame.width)() - 2.0 * new_column_in)) })) |> ignore
+    @sf.first_one_node(
+      o,
+      fn() { @sf.t("web-main.newChat.autoEmptyTitle") },
+      lead=fn() { text(view(), "problem") },
+      art=fn(a) {
+        a.pick(fn() { @sf.theme().dark }, fn(x, dark) {
+          @sf.drawable_node(x, if dark { "illus_station_offline_dark" } else { "illus_station_offline" }, new_scene_narrow_w) |> ignore
+        })
+      },
+      fn(acts) {
+        let pick_btn : Ref[@view.View?] = Ref(None)
+        acts.show(fn() { items(view(), "stations").length() > 0 }, fn(s) {
+          pick_btn.val = Some(s)
+          @sf.button_node(s, fn() { @sf.t("web-main.newChat.pickStation") }, fn() {
+            let v = @signals.untracked(view)
+            let anchor = match pick_btn.val {
+              Some(b) if b.alive() => @sf.Anchor::Node(b)
+              _ => @sf.Anchor::Unanchored
+            }
+            @sf.panel_nodes(@sf.t("android-chat.new.station.pick"), fn(n, close) { station_rows_node(n, src, w, v, close) }, from=anchor)
+          }, tone=Primary)
+          |> ignore
+        })
+        @sf.button_node(acts, fn() { @sf.t("web-main.newChat.goStations") }, fn() {
+          open_page(Place("stations"))
+        }, tone=Ghost)
+        |> ignore
+      },
+    )
   })
   |> ignore
 }

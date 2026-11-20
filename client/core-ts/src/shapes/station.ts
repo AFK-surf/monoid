@@ -5,6 +5,7 @@ export const STATION_SHAPES: Record<string, Shape> = {
   Overview: struct([
     ["automaticDecisions", opt("AutomaticDecisionView")],
     ["archiving", opt("ArchivingView"), { doc: "How its chats go to the archive on their own (`archiving.save`). Absent from stations before it." }],
+    ["autoChats", opt("AutoChatsView"), { doc: "Whether this station accepts automatically assigned new chats and presets (`autoChats.save`). Absent from stations before it." }],
     ["viewer", "Viewer"],
     ["connects", vec("Connect")],
     ["profiles", vec("Profile")],
@@ -43,6 +44,7 @@ export const STATION_SHAPES: Record<string, Shape> = {
   StationOverview: struct([
     ["automaticDecisions", opt("StationDecisions")],
     ["archiving", opt("ArchivingView"), { doc: "As Overview's." }],
+    ["autoChats", opt("AutoChatsView"), { doc: "As Overview's." }],
     ["connects", vec("StationConnect")],
     ["profiles", vec("StationProfile")],
     ["processes", vec("AgentProcess")],
@@ -408,6 +410,7 @@ export const STATION_SHAPES: Record<string, Shape> = {
     ["joined", "bool", { default: true, doc: "As StationView's." }],
     ["home", opt("String"), { said: true, doc: "As StationView's." }],
     ["mine", "bool", { default: true, doc: "As StationView's." }],
+    ["acceptAutoChats", "bool", { default: true, doc: "Whether this station is opted into automatic assignment for new chats and presets (`autoChats.enabled`)." }],
     ["host", opt("HostRow")],
     ["overview", opt("OverviewRow"), { doc: "Once its overview is read." }],
   ], { doc: "A station as a list shows it (the `stations` topic: the bar's places, the files' sidebar, a chat's page naming\nits station): what its row draws and nothing else. Its page is the `station` topic's\n(StationView): each of a list's items had all of it, its models with each account's quota in words, and again on each\nchange (463 KB of a phone's list, 25-86 ms each on its frame thread, 2026-11-10)." }),
@@ -421,7 +424,11 @@ export const STATION_SHAPES: Record<string, Shape> = {
     ["counts", "Counts"],
     ["disk", opt("DiskRoom")],
     ["drive", opt("DriveRoots"), { doc: "As Overview's: a station without it lends no folders (the files' sidebar leaves it out)." }],
-  ], { doc: "A station's overview as its row reads it (StationRow): who the viewer is to it, its agents at work, its disk, the\nfolders it lends." }),
+  ], { doc: "A station's overview as its row reads it (StationRow): who the viewer is to it, its agents at work, its disk, and the\nfolders it lends." }),
+  AutoChatsView: struct([
+    ["enabled", "bool", { doc: "Whether this station accepts automatically assigned new chats and presets (opt-in, default false)." }],
+    ["canEdit", "bool", { doc: "The viewer manages the station: may change it (`autoChats.save`)." }],
+  ], { keepNone: true }),
   StationProfileGroup: struct([
     ["group", "String", { doc: "The account kind used by the workspace's profile list." }],
     ["title", "String", { doc: "The account kind in the viewer's language." }],
