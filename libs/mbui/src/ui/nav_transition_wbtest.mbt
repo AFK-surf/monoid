@@ -81,6 +81,53 @@ test "NavTransition::layered push/pop has under_parallax < 1, continuous scrim, 
 }
 
 ///|
+test "NavTransition::layered pop of a page still coming in turns it back from where it is, never put in place first" {
+  let (t, nav, _, left) = layered_stack(NavTransition::layered())
+  let dur = move_ms(390.0)
+  view_event(fn() { nav.push("detail") })
+  t.draw()
+  t.run_for(dur * 0.3)
+  let top_at_pop = t.rect_of("page:detail").unwrap().0
+  let under_at_pop = t.rect_of("page:tab0").unwrap().0
+  assert_true(top_at_pop > 40.0 && top_at_pop < 390.0, msg="still coming in: top x=\{top_at_pop}")
+  view_event(fn() { nav.pop() |> ignore })
+  t.draw()
+  // (where it was as it was told: not put in place and slid off from there)
+  assert_true((t.rect_of("page:detail").unwrap().0 - top_at_pop).abs() < 2.0, msg="top at pop")
+  assert_true((t.rect_of("page:tab0").unwrap().0 - under_at_pop).abs() < 2.0, msg="under at pop")
+  if !test_at_a_rate() {
+    // frame by frame: on from where it was, going on its way in as fast as it went a moment, then back out; the page
+    // under it with it, never a jump (a frame's step no more than one of its slide's fastest)
+    let tops = [top_at_pop]
+    let unders = [under_at_pop]
+    while t.time() < nav.rest() {
+      t.run_for_exact(8.0)
+      match t.rect_of("page:detail") {
+        Some(r2) => {
+          tops.push(r2.0)
+          unders.push(t.rect_of("page:tab0").unwrap().0)
+        }
+        None => ()
+      }
+    }
+    assert_true(tops.length() > 4, msg="\{tops.length()} frames")
+    for i in 1..<tops.length() {
+      // (never past its place: turned back before it gets there)
+      assert_true(tops[i] >= 0.0, msg="top past its place at \{i}: \{tops[i]}")
+      assert_true((tops[i] - tops[i - 1]).abs() < 30.0, msg="top jumps at \{i}: \{tops[i - 1]} -> \{tops[i]}")
+      assert_true((unders[i] - unders[i - 1]).abs() < 10.0, msg="under jumps at \{i}: \{unders[i - 1]} -> \{unders[i]}")
+    }
+    // (going in as it was told: its first step still to the left, turned back out after)
+    assert_true(tops[1] <= tops[0], msg="first step: \{tops[0]} -> \{tops[1]}")
+    assert_true(tops[tops.length() - 1] > top_at_pop, msg="back out: \{tops[tops.length() - 1]}")
+  }
+  t.run_for(move_most_ms)
+  assert_eq(t.rect_of("page:detail"), None)
+  assert_eq(t.rect_of("page:tab0").unwrap().0, 0.0)
+  assert_eq(left, ["detail"])
+}
+
+///|
 test "NavTransition::layered rise applies full-bleed scrim & top hairline, and custom rise_under_scale scales covered page" {
   // Default layered(): rise_under_scale = 1.0 (full-bleed scrim, no background gap) + 1px top hairline on rising page
   let (t, nav, _, _) = layered_stack(NavTransition::layered())

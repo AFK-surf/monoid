@@ -414,12 +414,12 @@ test "window tree: a page covered, an input as it takes none, uncovered: it take
     if frame {
       t.frame_at(t0 + 24.0)
     }
-    // (b gone back: a takes them again, where it is; b put in place by the pop at once, then sliding off from there: a
-    // nearly back by 300)
-    told_at(t, t0 + 26.0, fn() { nav.pop() |> ignore })
-    let ax = page_x_at(0, t0 + 300.0)
-    pressed_at(t, t0 + 300.0, ax + 50.0, 50.0)
-    t.frame_at(t0 + 310.0)
+    // (b gone back while still coming in: a takes them again, where it is; b turned back from where it was, sliding off
+    // from there: a nearly back 300 after)
+    told_at(t, t0 + 120.0, fn() { nav.pop() |> ignore })
+    let ax = page_x_at(0, t0 + 420.0)
+    pressed_at(t, t0 + 420.0, ax + 50.0, 50.0)
+    t.frame_at(t0 + 430.0)
     (ax, pressed.to_array())
   }
   let (ax, pressed) = run(false)
