@@ -99,7 +99,7 @@ async function uniqueBundleBase(dir: string, ms: number): Promise<string> {
     const [bSt, tSt] = await Promise.all([lstat(bundle).catch(() => null), lstat(txt).catch(() => null)]);
     if (bSt === null && tSt === null) return stem;
   }
-  return `${base}-${Date.now()}`;
+  return `${base}-${wall.now()}`;
 }
 
 async function branchLastChangedMs(repoPath: string, ref: string, git: RepoGitRun): Promise<number> {
