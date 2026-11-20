@@ -527,12 +527,6 @@ pub fn flight_up_of(c : @ui.Ctx, f : SendFlight) -> Double {
 }
 
 ///|
-/// How settled it is (its time and the rest of its row), and how much of its bubble's ground shows.
-pub fn flight_settled_of(c : @ui.Ctx, f : SendFlight) -> Double {
-  flight_settled(flight_p(c, f), flies_desk(f))
-}
-
-///|
 pub fn flight_ground_of(c : @ui.Ctx, f : SendFlight) -> Double {
   flight_ground(flight_p(c, f), flies_desk(f))
 }

@@ -577,7 +577,7 @@ let wh_details_box : @ui.Style = @ui.css("w=Full px=S4 pt=S0_5 pb=S3_5 gap=S2_5"
 let wh_quiet_box : @ui.Style = @ui.css("w=Full").then(@sf.outset_top(4.0))
 
 ///|
-/// The quiet line with the mark of its work past its turns after it (work_mark): one line, its words cut short only
+/// The quiet line with the mark of its work past its turns after it (work_mark_node): one line, its words cut short only
 /// once the mark has given way.
 // kept across runs: a value (no field of it changes)
 let wh_quiet_line : @ui.Style = wh_quiet_box.then(@ui.css("row align=ACenter"))

@@ -199,20 +199,33 @@ test "on a phone, its details' turns say its work after them, its head as it was
 
 ///|
 test "the mark of an agent's work: at work's spokes before it while something runs in the background, none for a checklist alone" {
-  let cycles = fn(running : Bool) -> Array[String] {
+  // (how many drawings it makes over a turn of its spokes, a step of the resident clock at a time)
+  let drawings = fn(running : Bool) -> Int {
     new_run()
     let src = work_source("chat-history-side", running~)
-    let t = @ui.Tester::new(
-      fn(c) { @sfpages.work_mark(c, src, "ws1/st1", "s-c1", @sfdesk.side_tab_words, @sfdesk.side_tab_words, lead=" · ") },
-      w=400.0,
-      h=40.0,
-    )
-    t.run_for(@sf.spoke_step_ms)
-    t.cycles()
+    let t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w=400.0, h=40.0)
+    @ui.set_view_app(fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.box(fn(row) {
+        row.row(Is(true)) |> ignore
+        @sfpages.work_mark_node(row, src, "ws1/st1", "s-c1", @sfdesk.side_tab_words, @sfdesk.side_tab_words, lead=" · ")
+      })
+      |> ignore
+    })
+    t.draw()
+    t.run_for(@ui.move_most_ms)
+    let seen : Set[String] = Set([])
+    let mut ms = 0.0
+    while ms < 8.0 * @sf.spoke_step_ms {
+      t.run_for(@view.resident_step_ms)
+      seen.add(t.drawlist())
+      ms = ms + @view.resident_step_ms
+    }
+    seen.length()
   }
-  // the spokes' step, on the resident clock (10 a second)
-  assert_true(cycles(true).iter().any(fn(c) { c.has_prefix("800 ms") }), msg="\{Repr(cycles(true))}")
-  assert_eq(cycles(false), [])
+  // the spokes turning, a step at a time on the resident clock (10 a second)
+  assert_true(drawings(true) > 1, msg="\{drawings(true)}")
+  assert_eq(drawings(false), 1)
 }
 
 ///|

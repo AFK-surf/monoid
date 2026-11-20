@@ -212,56 +212,6 @@ pub fn drive_fetch(
 }
 
 ///|
-/// A drive's file downloaded to the device: asked of the core (downloads.mbt), which
-/// fetches it whatever becomes of the page, how far on its row, kept once all of it is here. `listed`: the file as
-/// its folder lists it (its mtime, its size), what is fetched kept in the core as that.
-pub fn download_drive_file(
-  c : @ui.Ctx,
-  src : Source,
-  station : String,
-  root : String,
-  path : String,
-  name : String,
-  listed? : (Double, Double)?,
-) -> Unit {
-  let (mtime, size) = match listed {
-    Some(Some(l)) => l
-    _ => (0.0, 0.0)
-  }
-  // (told once the frame's builds are over: its pages call it under the press that asks for it)
-  c.tell("download/" + station + "/" + root + "/" + path, fn() {
-    download_start_drive(src, station, root, path, name, size, mtime)
-  })
-}
-
-///|
-/// Several files downloaded, each at once and each said.
-pub fn download_drive_files(
-  c : @ui.Ctx,
-  src : Source,
-  station : String,
-  root : String,
-  dir : String,
-  files : Array[DvEntry],
-) -> Unit {
-  for e in files {
-    download_drive_file(c, src, station, root, dv_join(dir, e.name), e.name, listed=Some((e.mtime, e.size)))
-  }
-}
-
-///|
-/// A folder zipped on the station and downloaded: asked of the core, which has the station zip
-/// it (`drive.zip`) and fetches the zip as any file; the folder's row shows how far meanwhile (正在打包 while the
-/// station zips it).
-pub fn download_drive_zip(c : @ui.Ctx, src : Source, station : String, root : String, path : String) -> Unit {
-  c.tell("download-zip/" + station + "/" + root + "/" + path, fn() {
-    download_start_zip(src, station, root, path, dv_name(path) + ".zip")
-  })
-}
-
-
-
-///|
 /// `bytes` kept as keep_bytes keeps them, asked of the host at once: from a press's handler outside any build (a node of
 /// the window's tree's), where there is no build to wait the end of.
 pub fn keep_now(name : String, mime : String, bytes : Bytes) -> Unit {

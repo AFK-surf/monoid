@@ -2,13 +2,11 @@
   "counts": {
     "style-literal": {
       "src/sfbase/flight.mbt": 1,
-      "src/sfbase/viewer.mbt": 6,
-      "src/sfbase/viewer_marks.mbt": 14
+      "src/sfbase/viewer.mbt": 6
     },
     "box-loose": {
       "src/sfbase/flight.mbt": 1,
-      "src/sfbase/viewer.mbt": 1,
-      "src/sfbase/viewer_marks.mbt": 7
+      "src/sfbase/viewer.mbt": 1
     },
     "tier-outside-shell": {
       "src/sfbase/bars.mbt": 1
@@ -27,7 +25,7 @@
       "src/sfbase/viewer_tree.mbt": 13
     },
     "build-motion": {
-      "src/sfbase/chat_list.mbt": 4,
+      "src/sfbase/chat_list.mbt": 1,
       "src/sfbase/emit.mbt": 3,
       "src/sfbase/flight.mbt": 2,
       "src/sfbase/fresh.mbt": 2,

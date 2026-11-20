@@ -134,20 +134,6 @@ pub fn doing(key : String) -> Bool {
 let failed_ms : Double = 6000.0
 
 ///|
-/// Whether `key` failed within the last 6 s (AppState.failedOf); a frame asked for when its mark is to go.
-pub fn failed_lately(c : @ui.Ctx, key : String) -> Bool {
-  match acting.failed.get(key) {
-    // (its going is not what is shown waits for: a screenshot of it failing shows the mark)
-    Some(n) if c.held("failed/\{key}/\{n}", true, failed_ms, later=true) => {
-      acting.failed.remove(key)
-      false
-    }
-    Some(_) => true
-    None => false
-  }
-}
-
-///|
 /// What the core's `doing` is asked by (a topic and its params): what core_doing and core_failed read by.
 pub fn doing_ask() -> (String, Map[String, Json]) {
   ("doing", {})

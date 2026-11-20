@@ -174,19 +174,10 @@ pub(all) struct Reading {
   mut acts_seen : Int
   /// told as one comes to linger or goes (what reads `linger` built again for it: it is said before any page is built)
   linger_said : @signals.Signal[Int]
-  /// the room agents' lines left as they went from the list: the list never gets shorter under the
-  /// reader. What comes in next takes it back (`floor_takers`: each row by key, as tall as the build last read it;
-  /// `floor_laid`: as the frame before laid it out). Each agent's line's room (its row, the gap over it with it) as last
-  /// read, by key; whether the floor was counted in the build begun last, from what the layout before it left (once a
-  /// build: let go as each begins, linger_tick)
+  /// the room agents' lines left as they went from the list (none left now: the list never gets shorter under the
+  /// reader, floor_wbtest); the rows laid out whole that would leave it, by key
   mut floor : Double
-  floor_takers : Map[String, Double]
-  floor_laid : Map[String, Double]
-  act_room : Map[String, Double]
   act_whole : Map[String, Bool]
-  mut floor_counted : Bool
-  /// the room as it was last counted (more since: what went new, the rows making way for it from where they stood)
-  mut floor_was : Double
   /// the agents running as last drawn
   running : Map[String, Agent]
   /// agents at work whose answer has come out of their avatars this turn, by their last turn then (Agent.last_turn):
@@ -314,12 +305,7 @@ pub fn reading_of(key : String) -> Reading {
         acts_seen: 0,
         linger_said: @signals.signal(0),
         floor: 0.0,
-        floor_takers: {},
-        floor_laid: {},
-        act_room: {},
         act_whole: {},
-        floor_counted: false,
-        floor_was: 0.0,
         running: {},
         answered: {},
         answered_unseen: {},
@@ -972,14 +958,13 @@ pub(all) struct Lingering {
 /// no longer: chat_tick); a chat under another page lets them go meanwhile. The chat's page draws what it says.
 /// `in_front`: the app shown (what is said then is watched). As each build begins (here, before any page): whether each
 /// chat's list was shown in the one before (Reading's `was_shown`), and not yet in this one; its data not taken in this
-/// one yet, nor its floor counted.
+/// one yet.
 pub fn linger_tick(c : @ui.Ctx, src : Source, in_front~ : Bool) -> Unit {
   for rk, rd in readings {
     rd.was_shown = rd.shown
     rd.shown = false
     rd.played = false
     rd.ticked = false
-    rd.floor_counted = false
     // every chat kept whose data the page read: its activities whose turn is over let go, its page shown or not
     // (not one a message of it drawn elsewhere keeps: its topic never asked for), read through the source of the page
     // that holds it, never the window's: a chat whose page has not read it yet (one made as nodes, its composer's old
@@ -1373,91 +1358,6 @@ fn acts_in_order(rd : Reading, list : Array[Entry]) -> Array[Entry] {
 }
 
 ///|
-/// The room of each agent's line in the list as it was last laid out whole (its own room open, not opening: read back,
-/// laid out otherwise the frame is built again), what it leaves as a floor when it goes (row_keys).
-pub fn act_rooms(c : @ui.Ctx, rd : Reading, key : String, keys : Array[String]) -> Unit {
-  for k, whole in rd.act_whole {
-    if !whole {
-      continue
-    }
-    // (looked for from the end, where the agents' lines are)
-    for i = keys.length() - 1; i >= 0; i = i - 1 {
-      if keys[i] == k {
-        match c.list_row_height(key, i) {
-          Some(h) => rd.act_room[k] = h
-          None => ()
-        }
-        break
-      }
-    }
-  }
-}
-
-///|
-/// How tall the floor agents' lines left is in this build (web's): what they left, less the rows that
-/// came in since, each as tall as last laid out (read back: laid out otherwise, the frame is built again). As each
-/// build first asks, from what the layout before it laid out: once they fill it, it is gone; one gone from the list
-/// (an outbox entry become its message, by another key), its height is taken for good.
-pub fn floor_of(c : @ui.Ctx, rd : Reading, key : String, keys : Array[String]) -> Double {
-  // (how much of it is still kept: the rows making way for the line gone, from the frame it went)
-  let out = @motion.anim(c, "floor/out/" + key, 0.0, global=true)
-  if rd.floor <= 0.0 {
-    rd.floor = 0.0
-    rd.floor_takers.clear()
-    rd.floor_laid.clear()
-    rd.floor_was = 0.0
-    out.snap(c, 0.0)
-    return 0.0
-  }
-  if !rd.floor_counted {
-    rd.floor_counted = true
-    rd.floor_laid.clear()
-    let mut took = 0.0
-    for k, h in rd.floor_takers {
-      rd.floor_laid[k] = h
-      took += h
-    }
-    if took >= rd.floor {
-      rd.floor = 0.0
-      rd.floor_takers.clear()
-      rd.floor_laid.clear()
-      return 0.0
-    }
-  }
-  let gone = rd.floor_takers.keys().filter(fn(k) { !keys.contains(k) }).collect()
-  for k in gone {
-    rd.floor = rd.floor - rd.floor_laid.get(k).unwrap_or(0.0)
-    rd.floor_takers.remove(k)
-    rd.floor_laid.remove(k)
-  }
-  let mut took = 0.0
-  for i, k in keys {
-    if rd.floor_takers.contains(k) {
-      let h = c.list_row_height(key, i).unwrap_or(0.0)
-      rd.floor_takers[k] = h
-      took += h
-    }
-  }
-  // the rows over it making way for the line gone (sf/motion.mbt kind 3, its cause the line's going): from where they
-  // stood, on the rows' spring, nothing dropped at once and no room left empty for good (whether rows came before
-  // the line went or after, the list at rest the same)
-  if rd.floor > rd.floor_was {
-    out.snap(c, out.get(c) + rd.floor - rd.floor_was)
-    out.animate(c, 0.0, @motion.move_damped)
-  }
-  rd.floor_was = rd.floor
-  // (made way: none left)
-  if out.target() == 0.0 && out.get(c) <= 0.0 {
-    rd.floor = 0.0
-    rd.floor_was = 0.0
-    rd.floor_takers.clear()
-    rd.floor_laid.clear()
-    return 0.0
-  }
-  dmax(0.0, dmin(out.get(c), rd.floor - took))
-}
-
-///|
 /// What the chat's page builds from where its list is (messages): whether it is laid out, near its top (the page
 /// before asked for) or its end (the page after), at its end, away from it (the way to the newest), and whether the
 /// asks waiting are all in view (the bell over the way to the end, jump_to_ask). A scroll changing none of that builds
@@ -1720,9 +1620,6 @@ pub fn row_keys(
   // there go on to it)
   let taken : Map[String, Bool] = Map([])
   let still : Array[LocalSent] = []
-  // (the core's rows taken for what was sent before its own row was ever in the list: new to the list's end, they take
-  // back the floor as what comes in does)
-  let came_new : Array[String] = []
   for l in sending {
     let mut came = ""
     for i, e in all {
@@ -1749,9 +1646,6 @@ pub fn row_keys(
     if came == "" {
       still.push(l)
       continue
-    }
-    if !rd.known.contains(came) && !rd.known.contains("o:" + l.row.id) {
-      came_new.push(came)
     }
     rd.known[came] = true
     match flight {
@@ -1816,7 +1710,6 @@ pub fn row_keys(
         rd.admitted.remove(k)
       }
       // (its room closes as it stays in the list going: Reading's `going`)
-      rd.act_room.remove(k) |> ignore
       rd.act_whole.remove(k) |> ignore
     }
   }
@@ -1849,11 +1742,6 @@ pub fn row_keys(
     list.push(e)
     keys.push(all_keys[i])
   }
-  if rd.drawn && following && rd.floor > 0.0 {
-    for k in came_new {
-      rd.floor_takers[k] = 0.0
-    }
-  }
   if rd.drawn && following {
     // (what came now, and the last row that was there before it: the end it comes in over, if under it)
     let mut came_last = -1
@@ -1884,10 +1772,6 @@ pub fn row_keys(
             came_last = i
           }
           None => ()
-        }
-        // what comes in takes back the room an agent's line left
-        if rd.floor > 0.0 {
-          rd.floor_takers[keys[i]] = 0.0
         }
       } else if !(e is (Top | Foot)) {
         was_last = i
