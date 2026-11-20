@@ -572,8 +572,6 @@ pub fn reset() -> Unit {
   profiles_narrow_overview.set(false)
   browser_tabs_seen.clear()
   tabs_made.val = 0
-  page_rows.clear()
-  page_keys.clear()
   vault_ask_reset()
   keymap_reset()
   login_marked.val = None
@@ -599,10 +597,6 @@ pub fn reset() -> Unit {
   nav_foot.val = 0.0
   bar_room.val = 0.0
   wide_deep.val = false
-  top_trailing.val = None
-  top_on_back.val = None
-  top_label.val = ""
-  on_card.val = false
   // the pages' own state (settings complete): drafts, fields filled once, what was being done, as a run starts
   login_state.copied.clear()
   login_state.manual.clear()

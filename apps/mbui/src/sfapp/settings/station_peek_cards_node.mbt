@@ -1,12 +1,11 @@
-// A station's card over where a chat names it, and its part under an agent's card (station_peek_card,
-// station_peek_part), as nodes of the window's tree made once in a hover card (@sf.hover_card_node, `padded` false):
-// what they say and how, the same as those; made of the station card's own parts (station_peek_node's: the machine in
-// brief, peek_figures_node; where to go on, its screens' and files' items). They read what those read, no more: the
-// workspace's stations (its name), the station (what it says of itself, whether it is up), its screens, and how this
-// device reaches it (`stationNet`) only while it is up and its machine shows, as peek_figures does.
+// A station's card over where a chat names it, and its part under an agent's card, as nodes of the window's tree made
+// once in a hover card (@sf.hover_card_node, `padded` false): made of the station card's own parts
+// (station_peek_node's: the machine in brief, peek_figures_node; where to go on, its screens' and files' items). They read no more than they
+// show: the workspace's stations (its name), the station (what it says of itself, whether it is up), its screens, and
+// how this device reaches it (`stationNet`) only while it is up and its machine shows.
 
 ///|
-/// The station card at `address` (`ws/station`) in `v` (station_peek_card's), with the frame's core as it is said
+/// The station card at `address` (`ws/station`) in `v`, with the frame's core as it is said
 /// (panels_core: none, nothing; another workspace's, made again with that one's): its dot, its mark and its name, what
 /// it says of itself and, up, its machine in brief (else why it is down); then where to go on, rows at the card's
 /// padding. `stint`: the page's time on top, what its mark's picture is asked for on.
@@ -55,7 +54,7 @@ pub fn station_peek_card_node(v : @view.View, address : String, stint : () -> In
 }
 
 ///|
-/// The station card's part under its agent's card in one (station_peek_part's) in `v`: its head as an agent card's (its
+/// The station card's part under its agent's card in one in `v`: its head as an agent card's (its
 /// mark on a square 28 of the neutral ground, or its name's first letter, its name beside it), under it a dot in its
 /// tone (up or not) and what it says of itself (down, why); up, its machine at a glance; then where to go on.
 pub fn station_peek_part_node(v : @view.View, address : String, stint : () -> Int) -> Unit {
@@ -127,8 +126,8 @@ pub fn station_peek_part_node(v : @view.View, address : String, stint : () -> In
 }
 
 ///|
-/// What a station's card in a hover card reads, each followed (station_peek_card's): its name as the workspace's
-/// stations say it (peek_name's), the station as its own page has it (peek_station's), its screens.
+/// What a station's card in a hover card reads, each followed: its name as the workspace's stations say it
+/// (peek_name's), the station as its own page has it, its screens.
 priv struct PeekTopics {
   name : () -> String
   s : () -> Json?
@@ -173,19 +172,19 @@ fn peek_mark_node(p : @view.View, st : PeekTopics, stint : () -> Int, ink : () -
 }
 
 ///|
-/// The machine in brief in `p` (peek_figures', as peek_figures_node draws it), how this device reaches it asked of the
-/// core here, while it shows (peek_figures' station_net: only while the station is up).
+/// The machine in brief in `p` (as peek_figures_node draws it), how this device reaches it asked of the core here,
+/// while it shows (only while the station is up).
 fn peek_figures_by(p : @view.View, core : Core, st : PeekTopics) -> Unit {
   let net = (core.topic)("stationNet", { "station": str(text((st.s)(), "station")) })
   peek_figures_node(p, core, st.s, fn() { station_net_of(net.get().value) })
 }
 
 ///|
-/// Where to go on from it in `p` (peek_ways', as rows of a small panel): its screens, its files where it has a drive,
-/// its page. Pressed, what each opens opened (the card left as it is: peek_ways' close is none).
+/// Where to go on from it in `p` (as rows of a small panel): its screens, its files where it has a drive, its page.
+/// Pressed, what each opens opened (the card left as it is: its close is none).
 fn peek_ways_node(p : @view.View, core : Core, address : String, st : PeekTopics) -> Unit {
   let close = fn() {  }
-  // (its screens asked while it shows, as peek_ways asks them as it is built: its 屏幕 opens on them)
+  // (its screens asked while it shows: its 屏幕 opens on them)
   p.reacts(fn() { (st.screens)() is Some(_) }, at_start=false, fn(_) {  })
   @sf.submenu_row_node(p, fn() { tr("android-misc.screen.section") }, fn() {
     peek_screen_items(core, address, (st.screens)(), close)

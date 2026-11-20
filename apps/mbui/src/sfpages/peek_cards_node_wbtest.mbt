@@ -1,8 +1,7 @@
 // A station's card over where a chat names it, and its part under an agent's card, as nodes in a hover card
-// (settings' station_peek_card_node, station_peek_part_node in @sf.hover_card_node), set beside the old view's
-// (station_peek_card, station_peek_part in hover) on the same fixture: the same words where they were, the same
-// rectangles drawn, up (by a relay, a way still chosen, coming back) and down, a mark of its own or none, its name
-// long, its screens' menu open (with screens and with none).
+// (settings' station_peek_card_node, station_peek_part_node in @sf.hover_card_node) on one fixture: what each says
+// and draws up (by a relay, a way still chosen, coming back) and down, a mark of its own or none, its name long, its
+// screens' menu open (with screens and with none), and the audit's faults of each.
 
 ///|
 /// The fixture's station.
@@ -134,40 +133,9 @@ fn peek_rest_on(t : @ui.Tester, menu : String) -> Unit {
 }
 
 ///|
-/// What the old view draws: the trigger, `body` in a hover card over it (`tile`, padded or not), the pointer resting on
-/// it; the fixture's station's states as `change` says; the card's row `menu` rested on too.
-fn peek_old(change : (String, Json?) -> Json?, body : (@ui.Ctx) -> Unit, padded? : Bool = false, menu? : String = "") -> @ui.Tester {
-  @sf.set_words(@sfbase.fill)
-  hover_reset()
-  let src = peek_src(change)
-  let t = @ui.Tester::new(
-    fn(c) {
-      @sf.begin(c) |> ignore
-      match @sfbase.workspace_in_view(src).0 {
-        Some(w) => @settings.panels_frame(@sfbase.settings_core(src, w), w.id)
-        None => ()
-      }
-      c.with_theme(@sf.ui_theme(), fn() {
-        let (x, y, w, h) = peek_trigger
-        let id = c.id("peek-trigger")
-        c.box(style=@ui.style(pl=@sf.room_of(x), pt=@sf.room_of(y)), fn() {
-          c.box(style=@ui.style(w=Fixed(w), h=Fixed(h)), id~, fn() {  }) |> ignore
-        })
-        |> ignore
-        hover(c, "peek", id, tile=true, padded~, fn() { body(c) }) |> ignore
-      })
-    },
-    w=1280.0,
-    h=800.0,
-    platform=0,
-  )
-  peek_rest_on(t, menu)
-  t
-}
-
-///|
 /// What the nodes draw: the trigger, `body` in a hover card over it (a tile, padded or not; a finger's tap its own, as
-/// the chat's bar's tag), the pointer resting on it; as peek_old.
+/// the chat's bar's tag), the pointer resting on it; the fixture's station's states as `change` says; the card's row
+/// `menu` rested on too.
 fn peek_new(change : (String, Json?) -> Json?, body : (@view.View) -> Unit, padded? : Bool = false, menu? : String = "") -> @ui.Tester {
   @sf.set_words(@sfbase.fill)
   let src = peek_src(change)
@@ -203,44 +171,10 @@ fn peek_new(change : (String, Json?) -> Json?, body : (@view.View) -> Unit, padd
 }
 
 ///|
-/// What a fault of t.audit() says, where it says it, without where it was made: what it names (its words), where it
-/// is (at x,y) and what is wrong (after its last "): "), so that one of the old view's and one of the nodes' compare.
-fn peek_fault_said(f : String) -> String {
-  let what = match f.find(" (") {
-    Some(i) => f.exact_view(end=i).to_owned()
-    None => f
-  }
-  let at = match f.find(" at ") {
-    Some(i) => {
-      let rest = f.exact_view(start=i + 4)
-      match rest.find(" ") {
-        Some(j) => rest.exact_view(end=j).to_owned()
-        None => rest.to_owned()
-      }
-    }
-    None => ""
-  }
-  let wrong = match f.rev_find("): ") {
-    Some(i) => f.exact_view(start=i + 3).to_owned()
-    None => ""
-  }
-  what + " at " + at + ": " + wrong
-}
-
-///|
-/// The nodes' faults (`new`) the old card's (`old`) did not have, as peek_fault_said says them: what the old card had
-/// (a machine faded while it is reconnecting, its figures' words fainter than the contrast asks: 2.55:1) kept as it
-/// was, nothing more.
-fn peek_faults_new(new : Array[String], old : Array[String]) -> Array[String] {
-  let was = old.map(peek_fault_said)
-  new.filter(fn(f) { !was.contains(peek_fault_said(f)) })
-}
-
-///|
-/// Of the nodes' faults the old card's had not, those of its machine faded while it is reconnecting (peek_faded,
-/// 0.45: its allowance's chips' words and its network's then fainter than the contrast asks, as the old card's are drawn the same, the
-/// old view not holding faded words to it), and the rest. Kept as it is, its colour the product's (BRIEF: contrast is
-/// how it looks): said exactly `peek_faded_faults` times where it is coming back, so that mended, this goes.
+/// Of the audit's faults, those of its machine faded while it is reconnecting (peek_faded, 0.45: its allowance's chips'
+/// words and its network's then fainter than the contrast asks), and the rest. Kept as it is, its colour the
+/// product's (BRIEF: contrast is how it looks): said exactly `peek_faded_faults` times where it is coming back, so that
+/// mended, this goes.
 fn peek_faded_apart(faults : Array[String], name : String) -> (Array[String], Array[String]) {
   let faded = faults.filter(fn(f) {
     name == "coming back" &&
@@ -257,34 +191,72 @@ fn peek_faded_apart(faults : Array[String], name : String) -> (Array[String], Ar
 let peek_faded_faults : Int = 12
 
 ///|
-test "a station's card as nodes: the same words where they were and the same rectangles as the old card's, in each state" {
+/// What a card or a part says in state `name`, words each that must be drawn (`part`: the part under an agent's card,
+/// whose head says no more of a station down than why), and words that must not be (its machine where it is down).
+fn peek_says(name : String, part : Bool) -> (Array[String], Array[String]) {
+  let said = "Apple M1 Pro · 2 个 agent 在工作"
+  let machine = ["CPU", "空闲 72%", "内存剩 5.8 G", "磁盘剩 420 G", "直连", "38 ms", "96 KB/s", "1.4 MB/s"]
+  let ways = ["屏幕", "文件", "机器详情"]
+  match name {
+    "down" =>
+      (
+        ["Willow", @sfbase.fill("android-settings.stations.offline", [("app", "still.fail")])] +
+        (if part { [] } else { [said] }) +
+        ways,
+        machine + (if part { [said] } else { [] }),
+      )
+    "down, updating" => (["Willow", "正在更新，马上回来"] + (if part { [] } else { [said] }) + ways, machine)
+    "no mark" => (["Willow", said] + (if part { ["W"] } else { [] }) + machine + ways, [])
+    "an emoji" => (["🌳", "Willow", said] + machine + ways, [])
+    "a long name" => (["Willow 的工作站，放在三楼机房最里面那排的第二台", said] + machine + ways, [])
+    _ => (["Willow", said] + machine + ways, [])
+  }
+}
+
+///|
+/// What is wrong of what Tester `t` draws in state `name` (a card, or a `part`): words it should say and does not, or
+/// should not and does; the audit's faults but those of its machine faded while it comes back, and those as many as
+/// they are said to be.
+fn peek_state_faults(t : @ui.Tester, name : String, part : Bool) -> Array[String] {
+  let faults = []
+  let drawn = t.words().filter(fn(w) { w.5 > 0.0 || w.3 > 0.0 }).map(fn(w) { w.0 })
+  let (must, never) = peek_says(name, part)
+  for w in must {
+    if !drawn.contains(w) {
+      faults.push("\{name}: \{w} not drawn: \{Repr(drawn)}")
+    }
+  }
+  for w in never {
+    if drawn.contains(w) {
+      faults.push("\{name}: \{w} drawn: \{Repr(drawn)}")
+    }
+  }
+  let (faded, a) = peek_faded_apart(t.audit(), name)
+  if a.length() > 0 {
+    faults.push("\{name}: audit: \{Repr(a)}")
+  }
+  if faded.length() != (if name == "coming back" { peek_faded_faults } else { 0 }) {
+    faults.push("\{name}: \{faded.length()} faded words fainter than the contrast asks: \{Repr(faded)}")
+  }
+  faults
+}
+
+///|
+test "a station's card as nodes: what it says in each state, each drawn otherwise than the fixture's, no fault of the audit's but its faded machine's" {
   let faults = []
   let mut first : Array[String] = []
   for case in peek_cases() {
     let (name, change) = case
-    let to = peek_old(change, fn(c) { @settings.station_peek_card(c, peek_at) })
-    let old = peek_drawn(to)
-    let old_faults = to.audit()
-    // (each state drawn otherwise than the fixture's, but its screens, which show only in its menu)
-    if first.length() == 0 {
-      first = old
-    } else if name != "with screens" && old == first {
-      faults.push("\{name}: drawn as the fixture is")
-    }
     let t = peek_new(change, fn(b) { @settings.station_peek_card_node(b, peek_at, fn() { 0 }) })
     let new = peek_drawn(t)
-    assert_true(old.length() > 4, msg="\{name}: the old card drawn: \{Repr(old)}")
-    let d = peek_differ(old, new)
-    if d.length() > 0 {
-      faults.push("\{name}:\n  " + d.join("\n  "))
+    assert_true(new.length() > 4, msg="\{name}: the card drawn: \{Repr(new)}")
+    // (each state drawn otherwise than the fixture's, but its screens, which show only in its menu)
+    if first.length() == 0 {
+      first = new
+    } else if name != "with screens" && new == first {
+      faults.push("\{name}: drawn as the fixture is")
     }
-    let (faded, a) = peek_faded_apart(peek_faults_new(t.audit(), old_faults), name)
-    if a.length() > 0 {
-      faults.push("\{name}: audit, the old card's not: \{Repr(a)}")
-    }
-    if faded.length() != (if name == "coming back" { peek_faded_faults } else { 0 }) {
-      faults.push("\{name}: \{faded.length()} faded words fainter than the contrast asks: \{Repr(faded)}")
-    }
+    faults.append(peek_state_faults(t, name, false))
   }
   assert_eq(faults, [], msg=faults.join("\n"))
 }
@@ -295,53 +267,60 @@ test "a station's card as nodes: the same words where they were and the same rec
 let peek_over_part : @ui.Style = @ui.css("w=Full h=S10")
 
 ///|
-test "a station's part as nodes (under its agent's, in one card): the same as the old part's, in each state" {
+test "a station's part as nodes (under its agent's, in one card): what it says in each state, each up or down drawn otherwise than the fixture's, no fault of the audit's but its faded machine's" {
   let faults = []
+  let mut first : Array[String] = []
   for case in peek_cases() {
     let (name, change) = case
     // (under something as its agent's card is, not in the card's corner: its square is round as a block within)
-    let to = peek_old(change, fn(c) {
-      c.box(style=peek_over_part, fn() {  }) |> ignore
-      @settings.station_peek_part(c, peek_at)
-    })
-    let old = peek_drawn(to)
-    let old_faults = to.audit()
     let t = peek_new(change, fn(b) {
       b.box(fn(o) { @sf.style_node(o, fn() { peek_over_part }) }) |> ignore
       @settings.station_peek_part_node(b, peek_at, fn() { 0 })
     })
     let new = peek_drawn(t)
-    assert_true(old.length() > 4, msg="\{name}: the old part drawn: \{Repr(old)}")
-    let d = peek_differ(old, new)
-    if d.length() > 0 {
-      faults.push("\{name}:\n  " + d.join("\n  "))
+    assert_true(new.length() > 4, msg="\{name}: the part drawn: \{Repr(new)}")
+    // (its dot says only whether it is up, not how it is reached: by a relay or a way still chosen, as the fixture)
+    if first.length() == 0 {
+      first = new
+    } else if !["with screens", "by a relay", "a way chosen"].contains(name) && new == first {
+      faults.push("\{name}: drawn as the fixture is")
     }
-    let (faded, a) = peek_faded_apart(peek_faults_new(t.audit(), old_faults), name)
-    if a.length() > 0 {
-      faults.push("\{name}: audit, the old card's not: \{Repr(a)}")
-    }
-    if faded.length() != (if name == "coming back" { peek_faded_faults } else { 0 }) {
-      faults.push("\{name}: \{faded.length()} faded words fainter than the contrast asks: \{Repr(faded)}")
-    }
+    faults.append(peek_state_faults(t, name, true))
   }
   assert_eq(faults, [], msg=faults.join("\n"))
 }
 
 ///|
-test "a station's card as nodes, its 屏幕 rested on: its menu beside it, the same as the old card's, with screens and with none" {
+test "a station's card as nodes, its 屏幕 rested on: its menu beside it, with the fixture's screens and with one" {
   let faults = []
   for case in peek_cases().filter(fn(c) { c.0 == "as the fixture" || c.0 == "with screens" }) {
     let (name, change) = case
     // (its 屏幕's words read once the run's Tester is made: peek_rest_on's)
     let menu = "android-misc.screen.section"
-    let old = peek_drawn(peek_old(change, fn(c) { @settings.station_peek_card(c, peek_at) }, menu~))
+    let shut = peek_drawn(peek_new(change, fn(b) { @settings.station_peek_card_node(b, peek_at, fn() { 0 }) }))
     let t = peek_new(change, fn(b) { @settings.station_peek_card_node(b, peek_at, fn() { 0 }) }, menu~)
-    let new = peek_drawn(t)
-    let d = peek_differ(old, new)
-    if d.length() > 0 {
-      faults.push("\{name}:\n  " + d.join("\n  "))
+    let open = peek_drawn(t)
+    // (its menu drawn over what the card drew)
+    if open.length() <= shut.length() {
+      faults.push("\{name}: no menu drawn")
+    }
+    // its items as the station's screens are: grouped where there are more kinds than one (screens, agents' pages)
+    let items = if name == "with screens" {
+      ["Willow 的屏幕"]
+    } else {
+      ["Willow 的屏幕", "Agent 页面", "发布清单 - 文档"]
+    }
+    let rows = t.words().filter(fn(w) { w.0 == "机器详情" })
+    for item in items {
+      match (t.words().filter(fn(w) { w.0 == item && w.5 > 0.0 }), rows) {
+        ([w, ..], [r, ..]) =>
+          // (beside the card: starting past where its rows' words do)
+          if w.1 <= r.1 {
+            faults.push("\{name}: \{item} at \{w.1}, not beside the card's rows at \{r.1}")
+          }
+        _ => faults.push("\{name}: \{item} not drawn")
+      }
     }
   }
   assert_eq(faults, [], msg=faults.join("\n"))
 }
-

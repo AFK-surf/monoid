@@ -31,101 +31,6 @@ pub fn open_station_peek(address : String, from~ : @sf.Anchor) -> Unit {
 }
 
 ///|
-/// The same card over where a chat names its station while the pointer rests there (ChatPage.tsx StationHover, its
-/// StationPeek in a small panel: the station's part of its agent's tile, the chat's station beside its title): how it
-/// is (its dot, its mark, its name) and what it says of itself, the machine in brief, then where to go on from it, rows
-/// at the card's padding (peekLink). Drawn in a hover card that pads nothing itself (@sfpages.hover `padded` false).
-/// The app draws it no more (a chat's bar is nodes: station_peek_card_node's); held by the node cards' comparison tests
-/// (sfpages' peek_cards_node_wbtest, agent_card_node_wbtest).
-pub fn station_peek_card(c : @ui.Ctx, address : String) -> Unit {
-  guard panels_core_as_is() is Some(core) else { return }
-  let s = peek_station(core, address)
-  let t = @sf.theme()
-  c.box(style=peek_card, fn() {
-    c.box(style=peek_card_words, fn() {
-      c.box(style=peek_card_head, fn() {
-        // the same dot as on its tile in the chat's bar: how this device reaches it, not only whether it is up
-        @sf.status_dot(c, match station_via(s) {
-          "direct" => "online"
-          "relay" => "busy"
-          "offline" => "error"
-          "waiting" => "waiting"
-          // up, how it is reached not read yet
-          _ => "online"
-        })
-        if @sf.has_station_mark(text(s, "emoji"), text(s, "icon")) {
-          @sf.station_mark(c, text(s, "emoji"), text(s, "icon"), peek_card_mark, t.p.muted)
-        }
-        c.text(peek_name(core, address), style=peek_card_name) |> ignore
-      })
-      |> ignore
-      if s is Some(_) {
-        c.text(text(s, "summary"), style=peek_said) |> ignore
-        if flag(s, "online") {
-          peek_figures(c, core, s)
-        } else {
-          c.text(peek_down(s), style=peek_said) |> ignore
-        }
-      }
-    })
-    |> ignore
-    peek_ways(c, core, address, s, fn() { })
-  })
-  |> ignore
-}
-
-///|
-/// The same card under another's in one card (a tablet's agent tile held: its agent's card over it), its head as an
-/// agent card's so the two start alike (the user, 2026-10-27: 最好有个一致的开头好视觉分割): its mark on a square 28 of
-/// the neutral ground, its name beside it; under them a dot in its tone (online or not) and what it says of itself;
-/// then its machine at a glance and where to go on, as the card has them.
-/// The app draws it no more (a chat's bar is nodes: station_peek_part_node's); held by the node cards' comparison tests
-/// (sfpages' peek_cards_node_wbtest, agent_card_node_wbtest).
-pub fn station_peek_part(c : @ui.Ctx, address : String) -> Unit {
-  guard panels_core_as_is() is Some(core) else { return }
-  let s = peek_station(core, address)
-  let t = @sf.theme()
-  let online = flag(s, "online")
-  c.box(style=peek_card, fn() {
-    c.box(style=peek_card_words, fn() {
-      c.box(style=peek_part_head, fn() {
-        c.box(style=peek_part_square.then(@ui.style(radius=@sf.small_radius)), fn() {
-          if @sf.has_station_mark(text(s, "emoji"), text(s, "icon")) {
-            @sf.station_mark(c, text(s, "emoji"), text(s, "icon"), peek_card_mark, t.p.text)
-          } else {
-            // (none of its own: its name's first letter)
-            let name = peek_name(core, address)
-            if name.length() > 0 {
-              c.text(name.clamped_view(end=1).to_owned(), style=peek_part_name) |> ignore
-            }
-          }
-        })
-        |> ignore
-        c.text(peek_name(core, address), style=peek_part_name) |> ignore
-      })
-      |> ignore
-      if s is Some(_) {
-        let said = if online { text(s, "summary") } else { peek_down(s) }
-        c.box(style=peek_part_status, fn() {
-          c.box(style=peek_part_dot_room, fn() {
-            c.box(style=peek_part_dot.then(@ui.style(bg=if online { Positive } else { Subtle })), fn() {  }) |> ignore
-          })
-          |> ignore
-          c.text(said, style=peek_part_words) |> ignore
-        })
-        |> ignore
-        if online {
-          peek_figures(c, core, s)
-        }
-      }
-    })
-    |> ignore
-    peek_ways(c, core, address, s, fn() { })
-  })
-  |> ignore
-}
-
-///|
 /// Its head as an agent card's: its mark's square and its name, 10 apart, in their middle.
 // kept across runs: a value (no field of it changes)
 let peek_part_head : @ui.Style = @ui.css("row w=Full gap=S2_5 align=ACenter")
@@ -226,32 +131,6 @@ fn peek_down(s : Json?) -> String {
     Some(Array([first, ..])) if text(Some(first), "key") == "updating" => text(Some(first), "text")
     _ => fill("android-settings.stations.offline", [("app", "still.fail")])
   }
-}
-
-///|
-/// The station of `address` as its own page has it (`station`, of that station alone), once it is read.
-fn peek_station(core : Core, address : String) -> Json? {
-  match station_read_in(core, workspace_of(address), address).value {
-    Some(Object(_)) as s => s
-    _ => None
-  }
-}
-
-///|
-/// Where to go on from it: its files, where it has a drive, a way there from where it is named; its page.
-fn peek_ways(c : @ui.Ctx, core : Core, address : String, s : Json?, close : () -> Unit) -> Unit {
-  let screens = (core.topic)("screens", { "station": str(address) }).get().value
-  @sf.submenu_row(c, "peek-screen/" + address, tr("android-misc.screen.section"), peek_screen_items(core, address, screens, close))
-  match field(field(s, "overview"), "drive") {
-    Some(Object(_)) as drive =>
-      @sf.submenu_row(c, "peek-drive/" + address, tr("android-misc.drive.title"), peek_file_items(core, address, drive, close))
-    _ => ()
-  }
-  @sf.menu_item(c, tr("android-chat.station.details"), key="peek-station/" + address, end="panel-open", on_press=fn() {
-    close()
-    (core.push)(Station(address))
-  })
-
 }
 
 ///|
@@ -459,10 +338,6 @@ fn peek_file_items(core : Core, address : String, drive : Json?, close : () -> U
 let peek_figures_box : @ui.Style = @ui.css("w=Full")
 
 ///|
-// kept across runs: a value (no field of it changes)
-let peek_figures_faded : @ui.Style = @ui.css("w=Full opacity=O45")
-
-///|
 /// What is left of it in the allowance's boxes: 4 over and under them.
 // kept across runs: a value (no field of it changes)
 let peek_meters_room : @ui.Style = @ui.css("w=Full py=S1")
@@ -479,57 +354,9 @@ fn unreadable(s : Json?) -> Bool {
 }
 
 ///|
-/// A machine's CPU, memory and disk made up, for what shows while they are read (their chips in their bones).
-fn sample_meters(c : @ui.Ctx, key : String) -> Unit {
-  @sf.bones(c, fn() {
-    c.box(style=peek_meters, fn() {
-      for i, n in [50, 60, 40] {
-        @sf.meter_chip(c, Some(obj([("short", str(@sf.sample_words(1))), ("remaining", str(@sf.sample_words(3))), ("left", Json::number(n.to_double()))])), key=key + "/sample" + i.to_string())
-      }
-    })
-    |> ignore
-  })
-}
-
-///|
 /// Its network 6 under the boxes.
 // kept across runs: a value (no field of it changes)
 let peek_net : @ui.Style = @ui.css("w=Full pt=S1_5")
-
-///|
-/// The machine in brief: what is left of it in the allowance's boxes (in their bones until it is read), its network
-/// under them (`peek`).
-fn peek_figures(c : @ui.Ctx, core : Core, s : Json?) -> Unit {
-  let host = field(s, "host")
-  let net = station_net(core, s)
-  c.box(style=if flag(s, "reconnecting") { peek_figures_faded } else { peek_figures_box }, fn() {
-    c.box(style=peek_meters_room, fn() {
-      match host {
-        Some(Object(_)) =>
-          c.box(style=peek_meters, fn() {
-            @sf.meter_line(c, meters_said(items(host, "meters"), cpu_busy(core)), key="station-peek/" + text(s, "station"))
-          })
-          |> ignore
-        _ => if !unreadable(s) { sample_meters(c, "station-peek/" + text(s, "station")) }
-      }
-    })
-    |> ignore
-    c.box(style=peek_net, fn() {
-      // the room under the 6, the bars laid over that alone (matchParentSize inside the Box's padding: a layer covers
-      // its parent's padding too)
-      c.box(style=@sf.full_width, fn() {
-        // (until it is read, a made-up one's in its bones)
-        match net {
-          Some(_) => net_line(c, net)
-          None => @sf.bones(c, fn() { net_line(c, None) })
-        }
-      })
-      |> ignore
-    })
-    |> ignore
-  })
-  |> ignore
-}
 
 ///|
 /// How this device reaches a station of the workspace's `stations`: `direct`,
@@ -630,7 +457,7 @@ fn station_net_of(v : Json?) -> Json? {
 }
 
 ///|
-/// The machine in brief (peek_figures', as nodes) in `p`, station `s` and its network `net` as they are now: what is
+/// The machine in brief in `p`, station `s` and its network `net` as they are now: what is
 /// left of it in the allowance's boxes (in their bones until it is read, none where it said what this core cannot
 /// read), its network under them (in its bones until it is read); faded while it is reconnecting.
 fn peek_figures_node(p : @view.View, core : Core, s : () -> Json?, net : () -> Json?) -> Unit {
@@ -686,11 +513,11 @@ fn peek_figures_node(p : @view.View, core : Core, s : () -> Json?, net : () -> J
 }
 
 ///|
-/// How faint the machine in brief is while it is reconnecting (peek_figures_faded's O45).
+/// How faint the machine in brief is while it is reconnecting.
 let peek_faded : Double = 0.45
 
 ///|
-/// A machine's CPU, memory and disk made up, in their bones (sample_meters', as nodes), in `p`.
+/// A machine's CPU, memory and disk made up, in their bones, in `p`.
 fn sample_meters_node(p : @view.View) -> Unit {
   @sf.waiting_node(p, fn(b) {
     b.box(fn(r) {

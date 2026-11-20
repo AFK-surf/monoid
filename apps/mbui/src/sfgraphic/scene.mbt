@@ -136,8 +136,9 @@ fn draw_graphic_nodes(c : @ui.Ctx, nodes : Array[GraphicNode]) -> Unit {
 
 ///|
 pub fn draw_graphic_scene(c : @ui.Ctx, scene : GraphicScene) -> Unit {
-  c.set_theme(@sf.ui_theme_now())
-  @figure.canvas(c, scene.width, scene.height, scene.background, fn() {
-    draw_graphic_nodes(c, scene.children)
+  c.with_theme(@sf.ui_theme_now(), fn() {
+    @figure.canvas(c, scene.width, scene.height, scene.background, fn() {
+      draw_graphic_nodes(c, scene.children)
+    })
   })
 }

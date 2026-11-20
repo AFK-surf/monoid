@@ -6,8 +6,9 @@ fn alignment_positions(text_aligned : Bool) -> (Double, Double, Double) {
       @sf.set_dark(Some(true))
       started.val = true
     }
-    c.set_theme(@sf.ui_theme_now())
-    alignment_example(c, 398.0, text_aligned, "example")
+    c.with_theme(@sf.ui_theme_now(), fn() {
+      alignment_example(c, 398.0, text_aligned, "example")
+    })
   }, w=398.0, h=240.0, corners_held=false)
   let (title_x, _, _, _) = t.rect_of("Quota check failed").unwrap()
   let (label_x, _, _, _) = t.rect_of("Try again").unwrap()

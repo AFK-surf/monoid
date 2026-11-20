@@ -1,8 +1,9 @@
 ///|
 fn example_positions(width : Double, reverse : Bool) -> (Double, Double, Double, Double) {
   let t = @ui.Tester::new(fn(c) {
-    c.set_theme(@sf.ui_theme_now())
-    sign_in_example(c, width, reverse, "example")
+    c.with_theme(@sf.ui_theme_now(), fn() {
+      sign_in_example(c, width, reverse, "example")
+    })
   }, w=width, h=250.0, words_over_held=false, corners_held=false)
   @sf.set_dark(Some(true))
   t.draw()

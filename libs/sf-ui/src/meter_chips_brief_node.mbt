@@ -1,12 +1,12 @@
-// A machine's CPU, memory and disk in brief, in one line that never goes on to another (meter_chips' `brief`, a
-// station's row's) as nodes of the window's tree: what each says followed as it changes.
+// A machine's CPU, memory and disk in brief, in one line that never goes on to another (a station's row's) as nodes
+// of the window's tree: what each says followed as it changes.
 
 ///|
-/// A machine's CPU, memory and disk (`meters`, as they are now) in `parent`, each in brief (meter_chip's `brief`: the
+/// A machine's CPU, memory and disk (`meters`, as they are now) in `parent`, each in brief (the
 /// figure alone with its unit's first letter, a small chip), 4 apart in a line as wide as what holds it that never goes
 /// on to another: short of room, only what is still plenty is left out (level ok: the last of them first), one running
 /// low (amber, red) staying while there is the room for it at its narrowest, each whole or not there; where even those
-/// left have not the room, they give way to it, their figures cut short (meter_chip's `keep`), never to fewer than two
+/// left have not the room, they give way to it, their figures cut short, never to fewer than two
 /// of its characters (meter_brief_wide); short even of that, the last of those running low left out as well, and
 /// so on to none: nothing cut past knowing. What each is over it while it is pointed at (its name, how much of how
 /// much, a note), in the layer of tips the panel it is in is lent (panel_tips_lent; none outside a panel).
@@ -134,7 +134,7 @@ pub fn meter_chips_brief_node(parent : @view.View, meters : () -> Array[Json], l
 }
 
 ///|
-/// A meter's figure in brief (meter_chip's `brief`): its figure with its unit's first letter, else what is left.
+/// A meter's figure in brief: its figure with its unit's first letter, else what is left.
 fn meter_brief_figure(m : Json?) -> String {
   let unit = chip_str(m, "unit")
   if chip_str(m, "big") != "" {

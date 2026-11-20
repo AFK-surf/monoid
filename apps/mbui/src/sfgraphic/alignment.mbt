@@ -62,15 +62,16 @@ fn alignment_panel(c : @ui.Ctx, x : Double, text_aligned : Bool) -> Unit {
 ///|
 /// A 960 × 540 comparison of aligning a button's edge or its words to the words above it.
 pub fn alignment_figure(c : @ui.Ctx) -> Unit {
-  c.set_theme(@sf.ui_theme_now())
-  @figure.canvas(c, 960.0, 540.0, paper, fn() {
-    @figure.words(c, 50.0, 19.0, "Same card. Different alignment.", 34.0, ink, weight=680)
-    @figure.words(c, 50.0, 65.0, "The button's edge and its text have different starting points.", 14.0, muted)
-    @figure.panel(c, 826.0, 31.0, 10.0, 10.0, ink, 3.0, fn() { })
-    @figure.words(c, 844.0, 24.0, "still.fail", 18.0, ink, weight=650)
-    alignment_panel(c, 50.0, false)
-    alignment_panel(c, 492.0, true)
-    @figure.words(c, 50.0, 449.0, "Button padding shifts its label.", 20.0, ink, weight=650)
-    @figure.words(c, 50.0, 480.0, "Align the words while the button follows the card's corner.", 14.0, muted)
+  c.with_theme(@sf.ui_theme_now(), fn() {
+    @figure.canvas(c, 960.0, 540.0, paper, fn() {
+      @figure.words(c, 50.0, 19.0, "Same card. Different alignment.", 34.0, ink, weight=680)
+      @figure.words(c, 50.0, 65.0, "The button's edge and its text have different starting points.", 14.0, muted)
+      @figure.panel(c, 826.0, 31.0, 10.0, 10.0, ink, 3.0, fn() { })
+      @figure.words(c, 844.0, 24.0, "still.fail", 18.0, ink, weight=650)
+      alignment_panel(c, 50.0, false)
+      alignment_panel(c, 492.0, true)
+      @figure.words(c, 50.0, 449.0, "Button padding shifts its label.", 20.0, ink, weight=650)
+      @figure.words(c, 50.0, 480.0, "Align the words while the button follows the card's corner.", 14.0, muted)
+    })
   })
 }

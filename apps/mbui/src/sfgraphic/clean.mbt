@@ -11,9 +11,10 @@ let clean_canvas_height : Double = 270.0
 
 ///|
 fn clean_card(c : @ui.Ctx, body : () -> Unit) -> Unit {
-  c.set_theme(@sf.ui_theme_now())
-  @figure.canvas(c, clean_canvas_width, clean_canvas_height, paper, fn() {
-    c.box(style=@ui.css("row w=Full h=Full align=ACenter justify=JCenter"), body) |> ignore
+  c.with_theme(@sf.ui_theme_now(), fn() {
+    @figure.canvas(c, clean_canvas_width, clean_canvas_height, paper, fn() {
+      c.box(style=@ui.css("row w=Full h=Full align=ACenter justify=JCenter"), body) |> ignore
+    })
   })
 }
 

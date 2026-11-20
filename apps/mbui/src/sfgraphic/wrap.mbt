@@ -82,24 +82,25 @@ fn comparison_panel(c : @ui.Ctx, x : Double, reverse : Bool) -> Unit {
 ///|
 /// The 960 × 540 wrapping figure, intended to be drawn at 2.5× for a 2400 × 1350 PNG.
 pub fn wrap_figure(c : @ui.Ctx) -> Unit {
-  c.set_theme(@sf.ui_theme_now())
-  let wide_panel_w = 860.0
-  let wide_card_x = 164.0
-  let wide_card_w = wide_panel_w - wide_card_x - @sf.panel_card_in
-  @figure.canvas(c, 960.0, 540.0, paper, fn() {
-    @figure.words(c, 50.0, 19.0, "Same buttons. Different wrap.", 34.0, ink, weight=680)
-    @figure.words(c, 50.0, 65.0, "Three actions fit on a wide row. When space runs out, the wrap direction matters.", 14.0, muted)
-    @figure.panel(c, 826.0, 31.0, 10.0, 10.0, ink, 3.0, fn() { })
-    @figure.words(c, 844.0, 24.0, "still.fail", 18.0, ink, weight=650)
-    @figure.auto_panel(c, 50.0, 96.0, wide_panel_w, white, @sf.pane_corner, fn() {
-      @figure.words(c, @sf.card_pad, 25.0, "Wide layout", 18.0, ink, weight=650)
-      @figure.words(c, @sf.card_pad, 59.0, "All three actions\nfit on one line.", 14.0, muted, width=135.0, line=20.0)
-      c.box(style=@ui.style(w=Fixed(wide_card_w), ml=@sf.room_of(wide_card_x), my=@sf.room_of(@sf.panel_card_in)), fn() {
-        sign_in_example(c, wide_card_w, true, "wide")
+  c.with_theme(@sf.ui_theme_now(), fn() {
+    let wide_panel_w = 860.0
+    let wide_card_x = 164.0
+    let wide_card_w = wide_panel_w - wide_card_x - @sf.panel_card_in
+    @figure.canvas(c, 960.0, 540.0, paper, fn() {
+      @figure.words(c, 50.0, 19.0, "Same buttons. Different wrap.", 34.0, ink, weight=680)
+      @figure.words(c, 50.0, 65.0, "Three actions fit on a wide row. When space runs out, the wrap direction matters.", 14.0, muted)
+      @figure.panel(c, 826.0, 31.0, 10.0, 10.0, ink, 3.0, fn() { })
+      @figure.words(c, 844.0, 24.0, "still.fail", 18.0, ink, weight=650)
+      @figure.auto_panel(c, 50.0, 96.0, wide_panel_w, white, @sf.pane_corner, fn() {
+        @figure.words(c, @sf.card_pad, 25.0, "Wide layout", 18.0, ink, weight=650)
+        @figure.words(c, @sf.card_pad, 59.0, "All three actions\nfit on one line.", 14.0, muted, width=135.0, line=20.0)
+        c.box(style=@ui.style(w=Fixed(wide_card_w), ml=@sf.room_of(wide_card_x), my=@sf.room_of(@sf.panel_card_in)), fn() {
+          sign_in_example(c, wide_card_w, true, "wide")
+        })
+        |> ignore
       })
-      |> ignore
+      comparison_panel(c, 50.0, false)
+      comparison_panel(c, 492.0, true)
     })
-    comparison_panel(c, 50.0, false)
-    comparison_panel(c, 492.0, true)
   })
 }

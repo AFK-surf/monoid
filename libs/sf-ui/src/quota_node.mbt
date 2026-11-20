@@ -385,7 +385,7 @@ fn dial_node(
 }
 
 ///|
-/// A machine's CPU, memory and disk (meter_line's, as nodes) in `parent`, as `meters` says them now: each a chip, what
+/// A machine's CPU, memory and disk in `parent`, as `meters` says them now: each a chip, what
 /// is left in it, filled as far as is used, its mark before it; 8 apart in a line; what it is (its name, how much of
 /// how much, a note) over it while it is pointed at, in `tips`.
 #callsite(autofill(loc))
