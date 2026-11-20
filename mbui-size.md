@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5cea23eb8](https://github.com/AFK-surf/monoid/commit/5cea23eb8370d3e034cf3ca338e7115e1492c05e) fix(vault): hand vaults over at pairing without wa | 2.76 | 3.73 | 15.18 | 37.27 | 57.54 | 32.67 | 66.53 | 98.14 | 120.72 |
 | [b2818f70e](https://github.com/AFK-surf/monoid/commit/b2818f70e9502a25b61a973c99504284f9a3d5a5) perf(station): bound MoonBit storage upkeep on lar | 2.76 | 3.73 | 15.18 | 37.27 | 57.54 | 32.67 | 66.53 | 98.22 | 123.74 |
 | [27dc5efa7](https://github.com/AFK-surf/monoid/commit/27dc5efa790632a00dd97784061b58f680d6355f) fix(station): treat an Antigravity account held fo | 2.76 | 3.73 | 15.18 | 37.27 | 57.54 | 32.67 | 66.53 | 98.21 | 122.88 |
 | [9b61589f6](https://github.com/AFK-surf/monoid/commit/9b61589f6a4a651103abc7b17fd0df268db3b21a) perf(mbui): drop dead sharp backdrop level and ena | 2.76 | 3.73 | 15.18 | 37.26 | 57.53 | 32.67 | 66.53 | 98.26 | 122.81 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [096c36f6c](https://github.com/AFK-surf/monoid/commit/096c36f6c1ca839906b6e667b6effd328810d704) fix(ci): leave room for preview ios to save mbui-i | 2.74 | 3.7 | 15.03 | 37.09 | 57.03 | 32.52 | 66.15 | 98.17 | 120.01 |
 | [a4e3eccff](https://github.com/AFK-surf/monoid/commit/a4e3eccff1674484b81b728d94c157d6a51072f4) feat(mbui): add workspace vault UI, member managem | 2.74 | 3.7 | 15.03 | 37.08 | 57.03 | 32.47 | 66.05 | 97.98 | 125.52 |
 | [a98651b19](https://github.com/AFK-surf/monoid/commit/a98651b196b8f2e9b609ca2de48cc74431a5d2ea) perf(mbui): optimize profiles overview rendering,  | 2.74 | 3.69 | 15.01 | 37.06 | 56.95 | 32.47 | 66.05 | 97.98 | 122.47 |
-| [edec068e2](https://github.com/AFK-surf/monoid/commit/edec068e2cf5070a445028717d83aaa624b7f12d) fix(station-mb): drive session_hub timers and defe | 2.73 | 3.69 | 15 | 37.03 | 56.91 | 32.47 | 66.05 | 97.98 | 122.89 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5cea23eb8](https://github.com/AFK-surf/monoid/commit/5cea23eb8370d3e034cf3ca338e7115e1492c05e) fix(vault): hand vaults over at pairing without wa | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.25 |
 | [b2818f70e](https://github.com/AFK-surf/monoid/commit/b2818f70e9502a25b61a973c99504284f9a3d5a5) perf(station): bound MoonBit storage upkeep on lar | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.25 |
 | [27dc5efa7](https://github.com/AFK-surf/monoid/commit/27dc5efa790632a00dd97784061b58f680d6355f) fix(station): treat an Antigravity account held fo | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.25 |
 | [9b61589f6](https://github.com/AFK-surf/monoid/commit/9b61589f6a4a651103abc7b17fd0df268db3b21a) perf(mbui): drop dead sharp backdrop level and ena | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.25 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [096c36f6c](https://github.com/AFK-surf/monoid/commit/096c36f6c1ca839906b6e667b6effd328810d704) fix(ci): leave room for preview ios to save mbui-i | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.57 | 53.97 |
 | [a4e3eccff](https://github.com/AFK-surf/monoid/commit/a4e3eccff1674484b81b728d94c157d6a51072f4) feat(mbui): add workspace vault UI, member managem | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.57 | 53.97 |
 | [a98651b19](https://github.com/AFK-surf/monoid/commit/a98651b196b8f2e9b609ca2de48cc74431a5d2ea) perf(mbui): optimize profiles overview rendering,  | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.57 | 53.97 |
-| [edec068e2](https://github.com/AFK-surf/monoid/commit/edec068e2cf5070a445028717d83aaa624b7f12d) fix(station-mb): drive session_hub timers and defe | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.57 | 53.97 |
