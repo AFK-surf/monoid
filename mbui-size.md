@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b7e9ad90b](https://github.com/AFK-surf/monoid/commit/b7e9ad90b94e4f4d15cfec864ecbc609620975e6) test(station/mb): presence closes, connect refusal | 2.74 | 3.7 | 15.03 | 37.09 | 57.03 | 32.52 | 66.15 | 98.39 | 113 |
 | [096c36f6c](https://github.com/AFK-surf/monoid/commit/096c36f6c1ca839906b6e667b6effd328810d704) fix(ci): leave room for preview ios to save mbui-i | 2.74 | 3.7 | 15.03 | 37.09 | 57.03 | 32.52 | 66.15 | 98.17 | 120.01 |
 | [a4e3eccff](https://github.com/AFK-surf/monoid/commit/a4e3eccff1674484b81b728d94c157d6a51072f4) feat(mbui): add workspace vault UI, member managem | 2.74 | 3.7 | 15.03 | 37.08 | 57.03 | 32.47 | 66.05 | 97.98 | 125.52 |
 | [a98651b19](https://github.com/AFK-surf/monoid/commit/a98651b196b8f2e9b609ca2de48cc74431a5d2ea) perf(mbui): optimize profiles overview rendering,  | 2.74 | 3.69 | 15.01 | 37.06 | 56.95 | 32.47 | 66.05 | 97.98 | 122.47 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [98f7a7579](https://github.com/AFK-surf/monoid/commit/98f7a757955982c78df3bed9081e2fb96d3ebca2) feat(sf-ui,sfbase): the node chat page's parts and | 2.67 | 3.59 | 14.64 | 36.94 | 56.32 | 32.4 | 65.68 | 97.72 | 122.32 |
 | [d0649076c](https://github.com/AFK-surf/monoid/commit/d0649076c8f3a09f020484d66458e121117cc92d) fix(mbui): fix three native motion and switch test | 2.67 | 3.59 | 14.64 | 36.94 | 56.35 | 32.4 | 65.68 | 98.01 | 127.95 |
 | [963a04cee](https://github.com/AFK-surf/monoid/commit/963a04cee0c02fd32efba2b514ef7263cf5d89f4) feat(mbui): show a chat's file in Finder from its  | 2.67 | 3.59 | 14.64 | 36.94 | 56.35 | 32.4 | 65.68 | 97.58 | 111.21 |
-| [1d75aef0d](https://github.com/AFK-surf/monoid/commit/1d75aef0d90882292a20ebb41a87aa703f812eb1) fix(station/mb): extract pure choose_run_on_profil | 2.67 | 3.58 | 14.64 | 36.94 | 56.33 | 32.39 | 65.67 | 97.62 | 154.51 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b7e9ad90b](https://github.com/AFK-surf/monoid/commit/b7e9ad90b94e4f4d15cfec864ecbc609620975e6) test(station/mb): presence closes, connect refusal | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.57 | 53.97 |
 | [096c36f6c](https://github.com/AFK-surf/monoid/commit/096c36f6c1ca839906b6e667b6effd328810d704) fix(ci): leave room for preview ios to save mbui-i | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.57 | 53.97 |
 | [a4e3eccff](https://github.com/AFK-surf/monoid/commit/a4e3eccff1674484b81b728d94c157d6a51072f4) feat(mbui): add workspace vault UI, member managem | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.57 | 53.97 |
 | [a98651b19](https://github.com/AFK-surf/monoid/commit/a98651b196b8f2e9b609ca2de48cc74431a5d2ea) perf(mbui): optimize profiles overview rendering,  | 0.46 | 0.6 | 2.33 | 3.37 | 5.5 | 1.68 | 4.57 | 53.97 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [98f7a7579](https://github.com/AFK-surf/monoid/commit/98f7a757955982c78df3bed9081e2fb96d3ebca2) feat(sf-ui,sfbase): the node chat page's parts and | 0.45 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.1 |
 | [d0649076c](https://github.com/AFK-surf/monoid/commit/d0649076c8f3a09f020484d66458e121117cc92d) fix(mbui): fix three native motion and switch test | 0.45 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.1 |
 | [963a04cee](https://github.com/AFK-surf/monoid/commit/963a04cee0c02fd32efba2b514ef7263cf5d89f4) feat(mbui): show a chat's file in Finder from its  | 0.45 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.13 |
-| [1d75aef0d](https://github.com/AFK-surf/monoid/commit/1d75aef0d90882292a20ebb41a87aa703f812eb1) fix(station/mb): extract pure choose_run_on_profil | 0.46 | 0.59 | 2.29 | 3.37 | 5.51 | 1.68 | 4.53 | 54.35 |
