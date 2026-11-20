@@ -1975,7 +1975,8 @@ fn composer_place_at(pane : Double, line : Double) -> ComposerPlace {
   let (l, r, b) = @sf.foot_capsule(h, d, d)
   {
     capsule_in: (l - d, r - d, b - d),
-    capsule_pad: (h - @sf.theme().round.side) / 2.0 - capsule_extra_at(line),
+    // (never under nothing: a padding below 0 stops the app, @ui.Space's Exact)
+    capsule_pad: dmax(0.0, (h - @sf.theme().round.side) / 2.0 - capsule_extra_at(line)),
     corner: @sf.pane_composer_corner(),
   }
 }

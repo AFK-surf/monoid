@@ -394,6 +394,22 @@ test "an iPhone Duo, folded or on its side: the cards as far from the screen's f
 }
 
 ///|
+test "an iPhone Duo: the system's action said lower than the composer's round buttons, the composer as high as it stands alone, never padded less than nothing" {
+  // (iOS 27.3 on the Duo's outer screen once said its action lower than the 36 the composer's buttons are across: the
+  // capsule made as high, its padding under nothing, the app stopped as it opened, 2026-11-20)
+  for a in [30.0, 20.0, 1.0] {
+    let (w, h, side) = (466.0, 678.0, 70.0)
+    let t = native_chat(w, h, true, side~, corner=59.0)
+    t.post(@hostapi.system_channel, "{\"bars\":{\"top\":0,\"bottom\":20,\"left\":0,\"right\":\{side}},\"nav_action\":{\"x\":\{w - 24.0 - a},\"y\":\{h - 24.0 - a},\"w\":\{a},\"h\":\{a}}}")
+    t.run_for(@ui.move_most_ms)
+    t.drag(400.0, 330.0, 140.0, 330.0)
+    t.run_for(@ui.move_most_ms * 2.0)
+    guard composer_and_page(t) is Some((b, _)) else { fail("\{a}: no composer in a page") }
+    assert_true(b.h >= @sf.theme().round.side + 2.0 * @sf.corner_fit.near - 0.5, msg="\{a}: the composer \{b.h} high")
+  }
+}
+
+///|
 test "an iPhone Duo: a chat's rows as wide as they were with the keyboard up, the composer alone widening" {
   // (narrow: the outer screen, the page brought over; beside the system's action, whose foot corner the keyboard ends)
   let (w, h, side, a) = (466.0, 678.0, 70.0, 48.67)

@@ -117,7 +117,7 @@ fn Stand::place(self : Stand) -> ComposerPlace {
       let side = @sf.theme().round.side
       let h = @sf.foot_capsule_h(side + 2.0 * (capsule_pad_alone + extra), side)
       let (l, r, b) = @sf.foot_capsule(h, d, d)
-      { capsule_in: (l - d, r - d, b - d), capsule_pad: (h - side) / 2.0 - extra, corner: @sf.pane_composer_corner() }
+      { capsule_in: (l - d, r - d, b - d), capsule_pad: dmax(0.0, (h - side) / 2.0 - extra), corner: @sf.pane_composer_corner() }
     }
   })
 }
