@@ -336,7 +336,7 @@ test("MoonBit station backfills unfinished archives, cleans idle unarchived rebu
     assert.ok(existsSync(newTx), "6d orphan UUID preserved");
     assert.ok(existsSync(freshChild), "standalone <uuid>/ with 1d child preserved");
   } finally {
-    launched.tell({ type: "stop" });
-    await Promise.race([launched.ended, new Promise((r) => setTimeout(r, 3_000).unref())]);
+    launched.tell({ op: "stop" });
+    await Promise.race([launched.ended, new Promise((r) => setTimeout(r, 10_000).unref())]);
   }
 });

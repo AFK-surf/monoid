@@ -336,7 +336,7 @@ test("MoonBit station reclaims worktrees, exclusive transcripts, and eligible cl
     assert.ok(existsSync(extUserFile), "MoonBit delete_session preserved workspace outside <data>/sessions");
     assert.ok(existsSync(userTranscript), "MoonBit delete_session preserved external user profile transcript");
   } finally {
-    launched.tell({ type: "stop" });
-    await Promise.race([launched.ended, new Promise((r) => setTimeout(r, 3_000).unref())]);
+    launched.tell({ op: "stop" });
+    await Promise.race([launched.ended, new Promise((r) => setTimeout(r, 10_000).unref())]);
   }
 });
