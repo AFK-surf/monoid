@@ -821,6 +821,8 @@ fn computed_afters_due() -> Unit {
   }
   let due = run.computed_afters.copy()
   run.computed_afters.clear()
+  // (an array emptied keeps what its slots held, counted as held: native's counting, moonbitlang/core's Array::clear)
+  run.computed_afters.release_unused(placeholder=after_gone)
   let was = set_active_sub(None)
   for f in due {
     f()
@@ -1595,3 +1597,7 @@ pub fn Watch::changed_now(self : Watch) -> Bool {
 pub fn Watch::on_marked(self : Watch, f : () -> Unit) -> Unit {
   self.own.marked = Some(f)
 }
+
+///|
+/// What a slot of `computed_afters` past its end holds once they are run (computed_afters_due): none.
+let after_gone : () -> Unit = fn() {  }

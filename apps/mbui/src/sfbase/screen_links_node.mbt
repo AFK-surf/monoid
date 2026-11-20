@@ -298,8 +298,10 @@ fn screen_peek_node(
     v.at_moment(at, send, later=true) |> ignore
   }
   v.reacts(fn() { p.told.get() |> ignore; (p.view, p.acked, p.waiting.length()) }, fn(_) { (ack_next.val)() })
-  // (let go: stopped, its pictures' bytes emptied (nothing draws them again), its Peek no longer the app's)
+  // (let go: stopped, its pictures' bytes emptied (nothing draws them again), its Peek no longer the app's; ack_next
+  // let go of, as it names itself, a ring native's counting never frees)
   v.owns(fn() {
+    ack_next.val = fn() {  }
     peek_stop(src, p)
     for k in p.pictures {
       @ui.add_image(k, b"")

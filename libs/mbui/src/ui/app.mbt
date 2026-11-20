@@ -674,14 +674,17 @@ fn frame_body(c : Ctx, w : Double, h : Double, scale : Double, t : Double, tell?
   // (those that follow where lists stand, kept: told again as a list moves with nothing built, list_scroll_fast.mbt)
   list_fast_tells.clear()
   list_fast_tells.append(tells_once(c.tells.filter(fn(t) { tells_follow_lists.contains(t.0) })))
+  list_fast_tells.release_unused(placeholder=tell_run_gone)
   let tell_ids = c.tells.map(fn(t) { t.0 })
   let tells = tells_once(c.tells)
   c.tells.clear()
+  c.tells.release_unused(placeholder=tell_gone)
   // (what is told changes what the next frame builds, though nothing came from outside: built again, frame_watch.mbt)
   looks_told(tell_ids, c.told.map(fn(t) { t.0 }))
   // what any of its builds said to tell, once each (Ctx::tell)
   let told = c.told.copy()
   c.told.clear()
+  c.told.release_unused(placeholder=tell_gone)
   if tell {
     // (each one change, as a press's handler is: what it writes told once all of it is written, never what reads it
     // run between two of its writes and seeing half of it; an after_build's (a host's notice tapped, opening its page)
@@ -877,7 +880,9 @@ pub fn Ctx::after_build(self : Ctx, key : String, f : () -> Unit) -> Unit {
 /// whose rows stay: list_scroll_fast.mbt): `f` reads where the lists stand as it is told (a ListReader), not as built.
 pub fn Ctx::after_build_or_scroll(self : Ctx, key : String, f : () -> Unit) -> Unit {
   if building.val {
-    tells_follow_lists[self.id("\u{2}after-build/" + key)] = true
+    let id = self.id("\u{2}after-build/" + key)
+    tells_follow_lists[id] = true
+    island_said_id(1, id)
   }
   self.after_build(key, f)
 }
@@ -932,6 +937,7 @@ fn frame_build(c : Ctx, w : Double, h : Double) -> Int {
   }
   // (what an earlier build of this frame said to tell outside is let go: this one says it again, or not)
   c.tells.clear()
+  c.tells.release_unused(placeholder=tell_gone)
   drawing_begin()
   desk_build_start()
   c.built_ids.clear()
@@ -3223,3 +3229,12 @@ fn probe_reset(t : Double) -> Unit {
   probe_channels.clear()
   probe_since.val = t
 }
+
+///|
+/// What a slot of a frame's tells past their end holds once they are told (Array::release_unused): none. An array
+/// emptied keeps what its slots held, counted as held (native's counting, moonbitlang/core's Array::clear): each tell,
+/// and what it holds (a page's, let go of since), till as many are said again.
+let tell_gone : (Int, () -> Unit) = (0, fn() {  })
+
+///|
+let tell_run_gone : () -> Unit = fn() {  }

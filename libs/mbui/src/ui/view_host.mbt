@@ -4367,6 +4367,7 @@ pub fn old(
       match old_islands.search_by(fn(o) { o.id == id }) {
         Some(i) => {
           let o = old_islands.remove(i)
+          old_presses_gone(o.id)
           // (what is made once of it among the old frame's let go; what it made, followed and kept went with its
           // scope, as its node did)
           let keys = made_roots.iter().filter(fn(e) { physical_equal(e.1, o.made) }).map(fn(e) { e.0 }).collect()
@@ -4375,6 +4376,15 @@ pub fn old(
           }
           o.made.let_go()
           if o.part >= 0 {
+            match kept_nodes.get((o.part, -1)) {
+              Some(rn) => {
+                row_nodes_unlinked(rn)
+                for k in rn.store {
+                  k.unlinked()
+                }
+              }
+              None => ()
+            }
             kept_nodes.remove((o.part, -1))
           }
         }

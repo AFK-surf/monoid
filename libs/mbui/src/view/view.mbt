@@ -1495,6 +1495,35 @@ struct Bound {
 }
 
 ///|
+/// What a slot of the tree's queues of bindings past their end holds once they are emptied (Array::release_unused):
+/// none. An array emptied keeps what its slots held, counted as held, till they are written again (native's counting,
+/// moonbitlang/core's Array::clear): each would keep the binding, its run and all it holds (a page let go, its
+/// source, its drafts) till as many are queued again.
+let bound_gone : Bound = {
+  at: -1,
+  queued: false,
+  marked: false,
+  live: false,
+  told_at: -1.0,
+  by_clock: false,
+  answered: false,
+  moved: [],
+  watch: None,
+  run: fn() {  },
+}
+
+///|
+/// The same for its queues of what to run (Tree's `after_bindings`, `laid_waits`, `afters`, `old_built_waits`).
+let run_gone : () -> Unit = fn() {  }
+
+///|
+let waits_gone : (Bool) -> Unit = fn(_) {  }
+
+///|
+/// The same for the timeline (Tree::advance): one due of no node.
+let due_gone : Due = Leaves({ at: -1, gen: -1 }, -1)
+
+///|
 /// A handle on a node made once: the tree, its index, its making there.
 pub struct View {
   tree : Tree
@@ -3624,6 +3653,7 @@ fn Tree::pull(self : Tree) -> Unit {
   while self.pulls_marked.length() > 0 {
     let marked = self.pulls_marked.copy()
     self.pulls_marked.clear()
+    self.pulls_marked.release_unused(placeholder=bound_gone)
     for b in marked {
       match b.watch {
         Some(w) if b.live && b.marked => {
@@ -6625,6 +6655,7 @@ fn Tree::bound_at(self : Tree, ms : Double) -> Unit {
   }
   self.draining -= 1
   self.bindings_due.clear()
+  self.bindings_due.release_unused(placeholder=bound_gone)
   self.after_bindings_run()
 }
 
@@ -6633,6 +6664,7 @@ fn Tree::after_bindings_run(self : Tree) -> Unit {
   while !self.after_bindings.is_empty() {
     let batch = self.after_bindings.copy()
     self.after_bindings.clear()
+    self.after_bindings.release_unused(placeholder=run_gone)
     for f in batch {
       f()
     }
@@ -9180,6 +9212,7 @@ fn View::let_go(self : View) -> Unit {
   if !n.props.is_empty() {
     let props = n.props.copy()
     n.props.clear()
+    n.props.shrink_to_fit()
     for p in props {
       (p.1)()
     }
@@ -9187,12 +9220,16 @@ fn View::let_go(self : View) -> Unit {
   if !n.drops.is_empty() {
     let drops = n.drops.copy()
     n.drops.clear()
+    n.drops.shrink_to_fit()
     for d in drops {
       (d.1)()
     }
   }
+  // (a node let go is made another's (Tree's `free`): what these held let go of with it, not kept in their slots)
   n.leavings.clear()
+  n.leavings.shrink_to_fit()
   n.backs.clear()
+  n.backs.shrink_to_fit()
   n.leave_told = false
   n.on_press = None
   n.on_double_press = None
@@ -9283,7 +9320,7 @@ fn View::let_go(self : View) -> Unit {
   }
   n.flex.measure = None
   n.flex.room = false
-  n.flex.children.clear()
+  n.flex.children_cut(0)
   n.flex.holds_gone = false
   let parent = n.parent
   if parent >= 0 {
@@ -9423,7 +9460,7 @@ fn Tree::boxes_put(self : Tree, at : Int) -> Unit {
   for k in n.kids {
     self.boxes(k, all)
   }
-  n.flex.children.clear()
+  n.flex.children_cut(0)
   n.flex.holds_gone = false
   for b in all {
     n.flex.add(b)
@@ -9586,7 +9623,7 @@ fn Tree::box_taken_out(self : Tree, h : Int, b : @flex.Node) -> Bool {
     None => return false
   }
   guard self.box_one_more() else { return false }
-  children.remove(i) |> ignore
+  self.nodes[h].flex.child_taken_out(i)
   self.layout_marked_at(h, within=true)
   self.modals_marked()
   true
@@ -10925,18 +10962,21 @@ fn Tree::list_inner_at(self : Tree, at : Int, at_ms : Double) -> Array[View] {
 /// The nodes laid out in column `col` in their turn: what it holds, through the slots holding them.
 fn Tree::column_items(self : Tree, col : Int) -> Array[Int] {
   let out = []
-  let walk : Ref[(Int) -> Unit] = Ref(fn(_) {  })
-  walk.val = fn(at : Int) {
-    for k in self.nodes[at].kids {
-      if self.nodes[k].slot {
-        (walk.val)(k)
-      } else {
-        out.push(k)
-      }
+  self.column_items_into(col, out)
+  out
+}
+
+///|
+/// (Tree::column_items' walk, a function of its own: a closure in a cell calling itself is a ring native's counting
+/// never frees, kept with the tree on every call)
+fn Tree::column_items_into(self : Tree, at : Int, out : Array[Int]) -> Unit {
+  for k in self.nodes[at].kids {
+    if self.nodes[k].slot {
+      self.column_items_into(k, out)
+    } else {
+      out.push(k)
     }
   }
-  (walk.val)(col)
-  out
 }
 
 ///|
@@ -11724,6 +11764,7 @@ pub fn Tree::event_said(self : Tree, at : Double, said : () -> Unit, f : () -> U
     self.committing -= 1
     self.modals_settled()
   }
+  self.afters.release_unused(placeholder=run_gone)
   // (what was let go of and made in it with one id paired, as it is committed whole: shared.mbt)
   if was < 0.0 {
     self.pairs_now()
@@ -12008,6 +12049,8 @@ fn Tree::advance_loop(self : Tree, upto : Double) -> Unit {
       i = i + 1
     }
     if next < 0 {
+      // (what came due taken out of it: let go of, not kept in its slots past its end)
+      self.timeline.release_unused(placeholder=due_gone)
       if owed >= 0.0 {
         self.withins_settled()
         self.settle_now(owed)
@@ -12358,10 +12401,12 @@ fn Tree::laid_out(self : Tree, upto : Double) -> Unit {
   }
   self.draining -= 1
   self.bindings_due.clear()
+  self.bindings_due.release_unused(placeholder=bound_gone)
   // (those marked that ran so, no longer to be pulled; one marked in a change not ended yet still is)
   let still = self.pulls_marked.filter(fn(b) { b.live && b.marked })
   self.pulls_marked.clear()
   self.pulls_marked.append(still)
+  self.pulls_marked.release_unused(placeholder=bound_gone)
   self.after_bindings_run()
   self.part_ended("tree bindings", t_bound)
   let t_laid = self.part_began()
@@ -12492,6 +12537,7 @@ fn Tree::laid_out(self : Tree, upto : Double) -> Unit {
   if self.laid_waits.length() > 0 {
     let waits = self.laid_waits.copy()
     self.laid_waits.clear()
+    self.laid_waits.release_unused(placeholder=run_gone)
     for f in waits {
       @signals.untracked(f)
     }
@@ -16301,6 +16347,7 @@ fn Tree::old_waits_run(self : Tree, settled : Bool) -> Unit {
   }
   let waits = self.old_built_waits.copy()
   self.old_built_waits.clear()
+  self.old_built_waits.release_unused(placeholder=waits_gone)
   for w in waits {
     w(settled)
   }

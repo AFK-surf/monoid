@@ -268,12 +268,14 @@ pub fn tip_node(
     hand.set(Free)
     set_open(false)
   }
-  // (its control let go: nothing of it left pending)
+  // (its control let go: nothing of it left pending; escaped let go of last, as it names itself through set_open's
+  // make, a ring native's counting never frees)
   anchor.owns(fn() {
     stop_rest()
     fade.stop()
     glide.gone()
     (lifted_end.val)()
+    escaped.val = fn() {  }
   })
   |> ignore
   {

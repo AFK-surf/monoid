@@ -398,6 +398,7 @@ fn window_kept_ui_4() -> Array[WindowKept] {
   built_read: 0,
   kept_at: [],
   built_at: [],
+  built_asked: false,
   on: true,
 }) }),
     kept_ref(aside_why, fn() { "" }),
@@ -416,6 +417,8 @@ fn window_kept_ui_4() -> Array[WindowKept] {
     kept_map(made_roots),
     kept_array(made_placed, fn() { [] }),
     kept_map(made_presses),
+    kept_map(island_presses),
+    kept_map(island_lists),
   ]
 }
 
@@ -888,6 +891,7 @@ fn NodesRun::window_put(self : NodesRun, o : NodesRun) -> Unit {
   self.built_read = o.built_read
   self.kept_at = o.kept_at
   self.built_at = o.built_at
+  self.built_asked = o.built_asked
   self.on = o.on
 }
 

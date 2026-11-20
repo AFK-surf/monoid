@@ -69,6 +69,10 @@ Subsystem rules live in narrower `AGENTS.md` files loaded when touching those di
 - Write build, CI, and check tools in MoonBit under `libs/mbui/tools` (built on demand by wrapper scripts like `libs/mbui/scripts/chk`) or in shell when only orchestrating commands.
 - In development, run tools on wasm-gc via `libs/mbui/scripts/wasmrun.mjs` without compiling C. In CI, build natively (`libs/mbui/scripts/tooltarget.sh`). Route OS calls through `libs/mbui/tools/sys`. Write no new Python. Rewrite existing Python scripts when they need changes.
 
+## Arrays let go of what they held
+
+- On native, `Array::clear`, `truncate`, `pop` and `remove` leave what they took out in the slots past the end, still counted as held. On a long-lived or pooled array of references or closures (a node's children or handlers, a tree's queues, a frame's tells, a reuse pool), follow them with `release_unused(placeholder=…)`, or `shrink_to_fit()` once it is empty, or what they held stays alive and two such arrays can hold each other in a ring.
+
 ## Before a PR
 
 - Keep generic tree/list functions as thin shells over non-generic bodies to prevent C monomorphization bloat (`libs/mbui/src/view/AGENTS.md`).

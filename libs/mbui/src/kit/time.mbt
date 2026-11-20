@@ -6,6 +6,18 @@
 // drawn: Ctx::look_by, bg_by).
 
 ///|
+/// Whether `id` opens by itself now (KitState's `opens`): kept only while it does, as each read takes none for shut, so
+/// that what opened once, its id made anew with each build of what holds it (a page opened again), is not kept for
+/// ever.
+fn opens_set(id : Int, open : Bool) -> Unit {
+  if open {
+    kit.val.opens[id] = true
+  } else {
+    kit.val.opens.remove(id)
+  }
+}
+
+///|
 /// What the components keep from frame to frame outside the Ctx, made anew when a Tester starts.
 priv struct KitState {
   /// what opens by itself (a tooltip, a hover card), by its id: open last frame
