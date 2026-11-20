@@ -627,3 +627,68 @@ test "wide: tab context menu supports close right, reopen, close others, and dra
   t.run_for(@ui.move_most_ms)
   assert_eq(side_now(r), (["jobs"], "jobs"))
 }
+
+///|
+test "wide: middle-clicking tabs closes inactive/active tabs, freezes width on rapid closes, cancels on drag-off, and coexists with context menu" {
+  new_run()
+  let src = fixture("chat")
+  let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+  open_chat(r)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  t.run_for(@ui.move_most_ms)
+  for tab in ["s-c1", "jobs", "files", "letters"] {
+    side_change(r, "open", Some(tab))
+    t.frame()
+  }
+  side_change(r, "front", Some("s-c1"))
+  t.run_for(@ui.move_most_ms)
+  assert_eq(side_now(r), (["s-c1", "jobs", "files", "letters"], "s-c1"))
+  let tabs0 = wide_tabs_said(t)
+  assert_eq(tabs0.length(), 4, msg="\{Repr(tabs0)}")
+  let w0 = tabs0[0].2.2
+  // 1. Middle-click drag-off cancels without closing
+  let (jx, jy, jw, jh) = tabs0[1].2
+  let (jcx, jcy) = (jx + jw / 2.0, jy + jh / 2.0)
+  t.move_to(jcx, jcy)
+  t.button_down(jcx, jcy, 3)
+  t.move_to(jcx, jcy + 120.0)
+  t.button_up(jcx, jcy + 120.0, 3)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(side_now(r), (["s-c1", "jobs", "files", "letters"], "s-c1"))
+  // 2. Right-click context menu still works on the same tab alongside on_middle
+  t.right_click(jcx, jcy)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find(@sf.t("web-pages.chat.closeRightTabs")) is Some(_), msg="context menu opens alongside on_middle")
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+  // 3. Middle-click inactive tab ("jobs") closes it without changing active tab ("s-c1") and freezes width
+  t.move_to(jcx, jcy)
+  t.button_down(jcx, jcy, 3)
+  t.button_up(jcx, jcy, 3)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(side_now(r), (["s-c1", "files", "letters"], "s-c1"))
+  let tabs1 = wide_tabs_said(t)
+  assert_eq(tabs1.length(), 3, msg="\{Repr(tabs1)}")
+  assert_true((tabs1[0].2.2 - w0).abs() < 2.0, msg="width stays frozen after middle-close: was \{w0}, now \{tabs1[0].2.2}")
+  // 4. Rapid second middle-click at the exact same (jcx, jcy) closes "files" while width remains frozen
+  t.button_down(jcx, jcy, 3)
+  t.button_up(jcx, jcy, 3)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(side_now(r), (["s-c1", "letters"], "s-c1"))
+  let tabs2 = wide_tabs_said(t)
+  assert_eq(tabs2.length(), 2, msg="\{Repr(tabs2)}")
+  assert_true((tabs2[0].2.2 - w0).abs() < 2.0, msg="width still frozen before leave: \{tabs2[0].2.2}")
+  // 5. Moving pointer out of tab strip smoothly expands remaining tabs
+  t.move_to(10.0, 500.0)
+  t.run_for(@ui.move_most_ms)
+  let tabs3 = wide_tabs_said(t)
+  assert_true(tabs3[0].2.2 > w0 + 4.0, msg="expanded after pointer leave: was \{w0}, now \{tabs3[0].2.2}")
+  // 6. Middle-click active tab ("s-c1") closes it and activates right neighbor ("letters")
+  let (sx, sy, sw, sh) = tabs3[0].2
+  let (scx, scy) = (sx + sw / 2.0, sy + sh / 2.0)
+  t.move_to(scx, scy)
+  t.button_down(scx, scy, 3)
+  t.button_up(scx, scy, 3)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(side_now(r), (["letters"], "letters"))
+}

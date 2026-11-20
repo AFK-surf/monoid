@@ -58,7 +58,7 @@ typedef struct WinSlot {
   char *ime_words;  // the field's words (UTF-8) and its selection's ends in them, for the input method
   int ime_sel_a, ime_sel_b;
   int marked_len;
-  int right_down, left_down;  // whether the right (left) button is down
+  int right_down, left_down, middle_down;  // whether the right (left, middle) button is down
   // the last press, for a move of the window it starts (mb_host_window_drag), in the surface's coordinates
   GdkDevice *press_device;
   double press_x, press_y;
@@ -764,6 +764,9 @@ static gboolean on_event_here(GtkEventControllerLegacy *c, GdkEvent *ev, gpointe
       if (b == 1) {
         ws->left_down = 1;
         mb_cb.pointer(0, x, y, 0);
+      } else if (b == 2) {
+        ws->middle_down = 1;
+        mb_cb.pointer(0, x, y, 3);
       } else if (b == 3) {
         ws->right_down = 1;
         mb_cb.pointer(0, x, y, 2);
@@ -776,6 +779,9 @@ static gboolean on_event_here(GtkEventControllerLegacy *c, GdkEvent *ev, gpointe
       if (b == 1 && ws->left_down) {
         ws->left_down = 0;
         mb_cb.pointer(2, x, y, 0);
+      } else if (b == 2 && ws->middle_down) {
+        ws->middle_down = 0;
+        mb_cb.pointer(2, x, y, 3);
       } else if (b == 3 && ws->right_down) {
         ws->right_down = 0;
         mb_cb.pointer(2, x, y, 2);
@@ -791,7 +797,7 @@ static gboolean on_event_here(GtkEventControllerLegacy *c, GdkEvent *ev, gpointe
       mb_cb.pointer(1, x, y, 0);
       return TRUE;
     case GDK_LEAVE_NOTIFY:
-      if (!ws->left_down) mb_cb.pointer(7, -1, -1, 0);
+      if (!ws->left_down && !ws->middle_down) mb_cb.pointer(7, -1, -1, 0);
       return FALSE;
     case GDK_SCROLL:
       area_point(ev, &x, &y);

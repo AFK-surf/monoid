@@ -108,3 +108,33 @@ test('a cover uses the persistent under layer for capture; after the last site c
   assert.deepEqual(b.captures, [[b.canvas, 42]]);
   assert.deepEqual(b.pointers, [[10, 120, 150, 42]]);
 });
+
+test('mouse buttons map left->0, middle->3, right->2 on down and up, ignore side buttons, and prevent middle auxclick', () => {
+  const b = browser(false);
+  const fire = (name, button) => {
+    let prevented = false;
+    b.canvas.dispatch(name, {
+      pointerType: 'mouse',
+      pointerId: 1,
+      button,
+      clientX: 80,
+      clientY: 90,
+      preventDefault() { prevented = true; },
+    });
+    return prevented;
+  };
+  for (const button of [0, 1, 2, 3, 4]) {
+    fire('pointerdown', button);
+    fire('pointerup', button);
+  }
+  assert.deepEqual(b.pointers, [
+    [0, 80, 90, 0],
+    [2, 80, 90, 0],
+    [0, 80, 90, 3],
+    [2, 80, 90, 3],
+    [0, 80, 90, 2],
+    [2, 80, 90, 2],
+  ]);
+  assert.equal(fire('auxclick', 1), true);
+  assert.equal(fire('auxclick', 2), false);
+});

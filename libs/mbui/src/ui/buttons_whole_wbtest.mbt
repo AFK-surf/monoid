@@ -103,3 +103,43 @@ test "what does not take the buttons whole keeps its menu; a middle button there
   t.button_up(80.0, 80.0, 3)
   assert_eq((menus.val, drags.val, said), (1, 0, []))
 }
+
+///|
+test "on_middle takes only the middle button and coexists with on_menu and on_press" {
+  let presses = Ref(0)
+  let menus = Ref(0)
+  let said : Array[String] = []
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=200.0)
+  set_view_app(fn(root) {
+    root.box(fn(p) {
+      p
+      .width(Is(Some(200.0)))
+      .height(Is(Some(100.0)))
+      .says(Is(Some(@view.said(Button, label="Tab"))))
+      .on_press(fn() { presses.val = presses.val + 1 })
+      .on_menu(fn(_) { menus.val = menus.val + 1 })
+      .on_middle(fn(b) { said.push("\{went_name(b.went)} \{b.button} \{b.held}") })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  // Right click opens menu without firing on_middle
+  t.right_click(40.0, 40.0)
+  assert_eq((menus.val, presses.val, said), (1, 0, []))
+  // Middle button down -> move -> up fires on_middle only
+  t.button_down(40.0, 40.0, 3)
+  t.move_to(60.0, 50.0)
+  t.button_up(60.0, 50.0, 3)
+  assert_eq(menus.val, 1)
+  assert_eq(presses.val, 0)
+  assert_eq(said, ["ButtonDown 3 4", "ButtonMoved 0 4", "ButtonUp 3 0"])
+  // While middle is held, a right click is not hijacked by on_middle and still triggers on_menu
+  said.clear()
+  t.button_down(40.0, 40.0, 3)
+  t.right_click(40.0, 40.0)
+  t.button_up(40.0, 40.0, 3)
+  assert_eq(menus.val, 2)
+  assert_eq(presses.val, 0)
+  assert_eq(said, ["ButtonDown 3 4", "ButtonUp 3 0"])
+}

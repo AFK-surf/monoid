@@ -37,12 +37,20 @@ pub fn button_bit(button : Int) -> Int {
 ///|
 /// What the pointer's secondary and middle buttons do on it, each from down to up with the moves between, in place of
 /// its menu (View::on_menu: none asked of it, nor of what holds it): what a node that drives something with a whole
-/// mouse needs (a button held to aim, the middle one dragged). Each runs as one change at its event's moment, outside any
-/// tracking; the primary button and a finger are its on_press's and on_drag's, as ever, held beside these.
-pub fn View::on_buttons(self : View, f : (Buttons) -> Unit) -> View {
+/// mouse needs (a button held to aim, the middle one dragged). `mask` says which button bits it takes (default `6`:
+/// secondary `2` and middle `4`). Each runs as one change at its event's moment, outside any tracking; the primary
+/// button and a finger are its on_press's and on_drag's, as ever, held beside these.
+pub fn View::on_buttons(self : View, f : (Buttons) -> Unit, mask? : Int = 6) -> View {
   guard self.live() is Some(n) else { return self }
-  self.tree.buttons_aux().on_buttons[self.at] = (n.gen, f)
+  self.tree.buttons_aux().on_buttons[self.at] = (n.gen, mask, f)
   self
+}
+
+///|
+/// What the pointer's middle button alone does on it (mask `4`, host button `3`), leaving the secondary button to its
+/// menu (View::on_menu).
+pub fn View::on_middle(self : View, f : (Buttons) -> Unit) -> View {
+  self.on_buttons(f, mask=4)
 }
 
 ///|
@@ -52,8 +60,8 @@ pub fn View::on_buttons(self : View, f : (Buttons) -> Unit) -> View {
 /// held (Tree::set_moves_held), a tree that has neither none.
 priv struct TreeButtonsAux {
   tree : Tree
-  /// what each node that takes them does (View::on_buttons), by its place: the node of that generation's alone
-  on_buttons : Map[Int, (Int, (Buttons) -> Unit)]
+  /// what each node that takes them does (View::on_buttons), by its place: the node of that generation's alone, with its button mask
+  on_buttons : Map[Int, (Int, Int, (Buttons) -> Unit)]
   /// the node the secondary or middle button went down on that takes them, and which of them are held on it
   /// (Buttons' `held`): what they do till the last is let go its
   mut held : (NodeId, Int)?
@@ -108,11 +116,14 @@ fn Tree::buttons_aux(self : Tree) -> TreeButtonsAux {
 }
 
 ///|
-/// What the node at `at` does with the secondary and middle buttons (View::on_buttons), where it is the one that asked.
-fn Tree::buttons_of(self : Tree, at : Int) -> ((Buttons) -> Unit)? {
+/// What the node at `at` does with the buttons matching `bit` (View::on_buttons), where it is the one that asked.
+fn Tree::buttons_of(self : Tree, at : Int, bit? : Int = 6) -> ((Buttons) -> Unit)? {
   guard self.buttons_aux_opt() is Some(aux) else { return None }
   match aux.on_buttons.get(at) {
-    Some((gen, f)) if at < self.nodes.length() && self.nodes[at].live && self.nodes[at].gen == gen => Some(f)
+    Some((gen, mask, f)) if at < self.nodes.length() &&
+      self.nodes[at].live &&
+      self.nodes[at].gen == gen &&
+      (mask & bit) != 0 => Some(f)
     _ => None
   }
 }
@@ -161,9 +172,10 @@ pub fn Tree::buttons_down(self : Tree, x : Double, y : Double, at : Double, butt
   guard bit != 0 else { return false }
   // (no node takes them: nothing asked, nothing made)
   guard self.buttons_aux_opt() is Some(aux) && !aux.on_buttons.is_empty() else { return false }
-  // (one held on a node already: that node's, wherever this one goes down)
+  // (one held on a node already: that node's if it takes this button too; otherwise let the button fall through)
   match aux.held {
     Some((id, held)) if self.alive_id(id) => {
+      guard self.buttons_of(id.at, bit~) is Some(_) else { return false }
       aux.held = Some((id, held | bit))
       self.buttons_tell(id, ButtonDown, button, held | bit, x, y, at)
       return true
@@ -180,14 +192,14 @@ pub fn Tree::buttons_down(self : Tree, x : Double, y : Double, at : Double, butt
       // (held from its down on, what it does as it goes down seeing it held)
       if took.val >= 0 {
         aux.held = Some(({ at: took.val, gen: n.gen }, bit))
-        match self.buttons_of(took.val) {
+        match self.buttons_of(took.val, bit~) {
           Some(f) => f({ went: ButtonDown, button, held: bit, x: lx, y: ly, wx: x, wy: y, at: t })
           None => ()
         }
       }
     },
     took~,
-    takes_at=Some(fn(i) { self.buttons_of(i) is Some(_) }),
+    takes_at=Some(fn(i) { self.buttons_of(i, bit~) is Some(_) }),
   )
   asked && aux.held is Some(_)
 }

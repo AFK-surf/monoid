@@ -331,6 +331,14 @@ pub fn tab_strip_node(parent : @view.View, spec : TabStripSpec, loc~ : SourceLoc
                 }
               }))
               .on_menu(fn(m) { (spec.on_menu)(key, m.wx, m.wy) })
+              .on_middle(fn(b) {
+                if b.went is ButtonUp && !slot.leaving() {
+                  let (sx, sy, sw, sh) = slot.placed_window_now()
+                  if b.wx >= sx && b.wx <= sx + sw && b.wy >= sy && b.wy <= sy + sh {
+                    close_tab(key)
+                  }
+                }
+              })
               |> ignore
 
               // Active pill handoff

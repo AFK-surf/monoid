@@ -3740,6 +3740,7 @@
     };
     // (the canvas's, and what takes them in its place while a site is seen)
     const presses = (el) => {
+      const btnOf = (e) => (e.button === 2 ? 2 : e.button === 1 ? 3 : 0);
       on(el, 'pointerdown', (e) => {
         e.preventDefault();
         // A key may have been held before the browser gained focus.
@@ -3748,7 +3749,7 @@
         // press, it stays too and can capture it itself)
         (el === canvas ? canvas : under || el).setPointerCapture(e.pointerId);
         if (touch(e)) { ptr(10, e, e.pointerId); if (isIOS()) frameInGesture(); }
-        else ptr(0, e, e.button);
+        else if (e.button === 0 || e.button === 1 || e.button === 2) ptr(0, e, btnOf(e));
         // keep the keyboard on the textarea while an editor has focus
         if (imeActive) ta.focus({ preventScroll: true });
       });
@@ -3766,7 +3767,7 @@
       });
       on(el, 'pointerup', (e) => {
         if (touch(e)) { ptr(12, e, e.pointerId); if (isIOS()) frameInGesture(); }
-        else ptr(2, e, e.button === 2 ? 2 : 0);
+        else if (e.button === 0 || e.button === 1 || e.button === 2) ptr(2, e, btnOf(e));
       });
       on(el, 'pointercancel', (e) => (touch(e) ? ptr(13, e, e.pointerId) : ptr(3, e, 0)));
       // A move or a capture transfer between the app's own input layers is not leaving the window. Leaving them for
@@ -3777,6 +3778,7 @@
         if (e.pointerType === 'mouse' && !appInput) cb.pointer(7, -1, -1, 0);
       });
       on(el, 'contextmenu', (e) => e.preventDefault());
+      on(el, 'auxclick', (e) => { if (e.button === 1) e.preventDefault(); });
       on(el, 'wheel', (e) => {
         const k = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? cssH : 1;
         const [x, y] = pos(e);
