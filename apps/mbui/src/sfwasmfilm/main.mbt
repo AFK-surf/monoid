@@ -236,6 +236,8 @@ pub fn draw() -> Int {
   current_tester.val = Some(t)
   t.set_frame_period(1000.0 / option_number(6))
   if option_number(10) == 1.0 { t.set_window_inset(true) }
+  // (a desktop's file manager shows a file in its folder, as the Finder, Explorer and a Linux desktop's do: none filmed)
+  if [0, 3, 5].contains(option_number(3).to_int()) { t.set_reveals(true) }
   if option_number(9) > 0.0 { t.set_font_scale(option_number(9)) }
   if option(8) != "" { t.set_app_said("local_station", option(8)) }
   // (the font families installed here, as a host lists them: MBUI_FILM_LOCAL_FONTS)

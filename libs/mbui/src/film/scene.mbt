@@ -64,6 +64,10 @@ fn scene_tester(
   if inset {
     t.set_window_inset(true)
   }
+  // (a desktop's file manager shows a file in its folder, as the Finder, Explorer and a Linux desktop's do: none filmed)
+  if platform == 0 || platform == 3 || platform == 5 {
+    t.set_reveals(true)
+  }
   // (MBUI_FILM_WINDOWS=1: the windows the app opens beside its first open in the run, each the scene's size, as on a
   // Mac; MBUI_FILM_WINDOW=N films window N of them: film.mbt's host_frame)
   // (MBUI_FILM_WINDOWS=run: they open as runs of their own, as on Windows and Linux: none filmed here)

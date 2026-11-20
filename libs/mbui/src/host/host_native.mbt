@@ -194,6 +194,10 @@ extern "C" fn ffi_perf_where() -> String = "mb_host_perf_where"
 ///|
 extern "C" fn ffi_perf_open(go : Int) -> Int = "mb_host_perf_open"
 
+///|
+#borrow(path)
+extern "C" fn ffi_reveal_file(path : String, go : Int) -> Int = "mb_host_reveal_file"
+
 extern "C" fn ffi_perf_size() -> Double = "mb_host_perf_size"
 
 extern "C" fn ffi_perf_read() -> Bytes = "mb_host_perf_read"
@@ -969,6 +973,12 @@ fn perf_where() -> String {
 ///|
 fn perf_open(go : Bool) -> Bool {
   ffi_perf_open(if go { 1 } else { 0 }) != 0
+}
+
+///|
+/// The file at `path` shown in its folder in the system's file manager (`go`), or whether that can be done here.
+fn reveal_file(path : String, go : Bool) -> Bool {
+  ffi_reveal_file(path, if go { 1 } else { 0 }) != 0
 }
 
 ///|

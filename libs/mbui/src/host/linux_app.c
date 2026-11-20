@@ -1645,6 +1645,44 @@ void mb_host_set_perf(int32_t on) { (void)on; }
 void mb_host_perf_line(moonbit_string_t line) { (void)line; }
 moonbit_string_t mb_host_perf_where(void) { return moonbit_make_string_raw(0); }
 int32_t mb_host_perf_open(int32_t go) { (void)go; return 0; }
+
+// A file shown chosen in its folder in the desktop's file manager (@hostapi.reveal_file: 在文件夹中显示), or whether
+// that can be done here (go 0): it can. Asked of the file manager over D-Bus (org.freedesktop.FileManager1's ShowItems,
+// which Nautilus, Dolphin, Nemo and others serve); where none answers, its folder opened as any folder is. Only a file
+// that is there.
+int32_t mb_host_reveal_file(moonbit_string_t s, int32_t go) {
+  if (!go) return 1;
+  char *path = utf8(s);
+  int ok = 0;
+  if (path[0] && g_file_test(path, G_FILE_TEST_EXISTS)) {
+    fprintf(stdout, "reveal-file: %s\n", path);
+    fflush(stdout);
+    char *uri = g_filename_to_uri(path, NULL, NULL);
+    GDBusConnection *bus = uri ? g_bus_get_sync(G_BUS_TYPE_SESSION, NULL, NULL) : NULL;
+    if (bus) {
+      const char *items[] = {uri, NULL};
+      GVariant *r = g_dbus_connection_call_sync(bus, "org.freedesktop.FileManager1", "/org/freedesktop/FileManager1",
+                                                "org.freedesktop.FileManager1", "ShowItems",
+                                                g_variant_new("(^ass)", items, ""), NULL, G_DBUS_CALL_FLAGS_NONE, 2000,
+                                                NULL, NULL);
+      if (r) {
+        ok = 1;
+        g_variant_unref(r);
+      }
+      g_object_unref(bus);
+    }
+    if (!ok) {
+      char *dir = g_path_get_dirname(path);
+      char *dir_uri = g_filename_to_uri(dir, NULL, NULL);
+      ok = dir_uri && g_app_info_launch_default_for_uri(dir_uri, NULL, NULL);
+      g_free(dir_uri);
+      g_free(dir);
+    }
+    g_free(uri);
+  }
+  g_free(path);
+  return ok;
+}
 double mb_host_perf_size(void) { return 0; }
 moonbit_bytes_t mb_host_perf_read(void) { return moonbit_make_bytes(0, 0); }
 

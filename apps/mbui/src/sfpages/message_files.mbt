@@ -433,6 +433,30 @@ fn download_option(src : Source, here : MessageHere, a : Attachment, owner : Str
 }
 
 ///|
+/// A message's file's menu opened (`open`, handed its 在访达中显示 where there is one: the file shown in its folder on
+/// this device, @sfbase.file_here): at once where this device shows no file in its folder or the file is its station's
+/// here; else once the core has said where it was downloaded to here, waited for as a press waits for the core
+/// (press_wait), no longer than a card waits for what it reads of the device. Made in a press's handler.
+fn with_reveal(src : Source, here : MessageHere, a : Attachment, owner : String, open : (@sf.MenuItem?) -> Unit) -> Unit {
+  if !@hostapi.reveals_files() {
+    open(None)
+    return
+  }
+  let item = fn(at : String) -> @sf.MenuItem? {
+    guard at != "" else { return None }
+    Some(@sf.menu_item_of(@sfbase.reveal_words(), fn() { @sfbase.reveal_here(at, a.name) }, icon="folder"))
+  }
+  let said : @signals.Signal[String?] = @signals.signal(None)
+  @sfbase.file_here(src, here.station, owner, stored_name(a.path), a.size, a.path, fn(at) { said.set(Some(at)) })
+  @sfbase.press_wait(
+    fn() { said.get() is Some(_) },
+    fn() { open(item(@signals.untracked(fn() { said.get() }).unwrap_or(""))) },
+    most=@sf.open_hold_ms,
+  )
+  |> ignore
+}
+
+///|
 /// A message's file as the chat draws it, by its kind.
 fn file_drawn(c : @ui.Ctx, src : Source, here : MessageHere, a : Attachment, w : Double, by~ : (String, String, String)?, landing_key? : String = "", media? : MediaPicture? = None, corner? : Double = @sf.message_file_corner, at? : String = "", said? : Bool = false) -> Unit {
   match file_kind(a.name) {
@@ -478,7 +502,7 @@ fn image_item(c : @ui.Ctx, src : Source, here : MessageHere, a : Attachment, w :
   })
   let thumb = @sfbase.thumb_place(here.station + "/" + owner + "/" + a.path, here.station, here.session, at)
   let downloading = download_of(src, here.station, owner, stored_name(a.path))
-  file_menu(c, open, key, quote=quote_of(here, a, owner, by), more=file_options([beside_option(here, a, at), download_option(src, here, a, owner)]), after=fn() {
+  file_menu(c, open, key, quote=quote_of(here, a, owner, by), more=file_options([beside_option(here, a, at), download_option(src, here, a, owner)]), reveal=fn(go) { with_reveal(src, here, a, owner, go) }, after=fn() {
     match file_message_of(here, by) {
       Some((link, thread, seq)) => @sfbase.message_items(link, "", fn() { open_publish(src, here_ref(here), thread, picked=Some(seq)) })
       None => []
@@ -689,7 +713,7 @@ fn video_item(c : @ui.Ctx, src : Source, here : MessageHere, a : Attachment, w :
   }
   let more = file_options([beside_option(here, a, at), download_option(src, here, a, owner)])
   more.append(load)
-  file_menu(c, open, "", quote=quote_of(here, a, owner, by), more~, after=fn() {
+  file_menu(c, open, "", quote=quote_of(here, a, owner, by), more~, reveal=fn(go) { with_reveal(src, here, a, owner, go) }, after=fn() {
     match file_message_of(here, by) {
       Some((link, thread, seq)) => @sfbase.message_items(link, "", fn() { open_publish(src, here_ref(here), thread, picked=Some(seq)) })
       None => []
@@ -770,7 +794,7 @@ fn card_item(c : @ui.Ctx, src : Source, here : MessageHere, a : Attachment, by~ 
   let failed = text(dl, "state") == "failed"
   let place = @sfbase.thumb_occurrence(here.station, here.session, at)
   let key = "msg-card/" + place + "/" + @sfbase.file_key(a)
-  file_menu(c, c.id(key), "", quote=quote_of(here, a, owner, by), more=file_options([beside_option(here, a, at), download_option(src, here, a, owner)]), after=fn() {
+  file_menu(c, c.id(key), "", quote=quote_of(here, a, owner, by), more=file_options([beside_option(here, a, at), download_option(src, here, a, owner)]), reveal=fn(go) { with_reveal(src, here, a, owner, go) }, after=fn() {
     match file_message_of(here, by) {
       Some((link, thread, seq)) => @sfbase.message_items(link, "", fn() { open_publish(src, here_ref(here), thread, picked=Some(seq)) })
       None => []

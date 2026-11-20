@@ -542,6 +542,14 @@ fn perf_open(go : Bool) -> Bool {
 }
 
 ///|
+/// A file of the device shown in its folder: a page reaches none.
+fn reveal_file(path : String, go : Bool) -> Bool {
+  ignore(path)
+  ignore(go)
+  false
+}
+
+///|
 fn perf_size() -> Double {
   0.0
 }

@@ -206,7 +206,7 @@ export type Call =
   /// with what each takes.
   | { kind: "browse"; name: string; params: Record<string, unknown> }
   /// A chat's file downloaded to this device (views/downloads.ts): its params read there.
-  | { kind: "download"; action: "start" | "retry" | "take" | "read" | "done" | "cancel"; params: Record<string, unknown> }
+  | { kind: "download"; action: "start" | "retry" | "take" | "read" | "done" | "cancel" | "saved"; params: Record<string, unknown> }
   /// What was opened and let go, brought after everything else, and what a person asked to load, before it (fill.ts): a
   /// chat's file to load (`fill.want {station, key, name, size, from?}`), one no longer brought (`fill.stop {id}`), or
   /// all (`fill.stopAll`), what was kept of each kept.
@@ -413,8 +413,8 @@ export function parseCall(name: string, params: unknown, bytes?: Uint8Array): Ca
   // A station's files as they are browsed (views/browse.ts): their params read there.
   if (BROWSE_CALLS.includes(name)) return { kind: "browse", name, params: isObject(params) ? (params as Record<string, unknown>) : {} };
   // A chat's file downloaded to this device (views/downloads.ts): its params read there.
-  if (name === "download.start" || name === "download.retry" || name === "download.take" || name === "download.read" || name === "download.done" || name === "download.cancel") {
-    return { kind: "download", action: name.slice(9) as "start" | "retry" | "take" | "read" | "done" | "cancel", params: isObject(params) ? (params as Record<string, unknown>) : {} };
+  if (name === "download.start" || name === "download.retry" || name === "download.take" || name === "download.read" || name === "download.done" || name === "download.cancel" || name === "download.saved") {
+    return { kind: "download", action: name.slice(9) as "start" | "retry" | "take" | "read" | "done" | "cancel" | "saved", params: isObject(params) ? (params as Record<string, unknown>) : {} };
   }
   if (name === "fill.want" || name === "fill.stop" || name === "fill.stopAll") return { kind: "fill", action: name === "fill.want" ? "want" : name === "fill.stop" ? "stop" : "stopAll", params: isObject(params) ? (params as Record<string, unknown>) : {} };
   if (name === "workspace.renameStation") {

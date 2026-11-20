@@ -2178,6 +2178,36 @@ int32_t mb_host_save_file(moonbit_string_t name, moonbit_bytes_t data);  // belo
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "uuid.lib")
 
+// A file shown chosen in its folder in Explorer (@hostapi.reveal_file: 在资源管理器中显示), or whether that can be
+// done here (go 0): it can. Only a file that is there; a scripted run (MBUI_SCRIPT) says it on the log alone.
+int32_t mb_host_reveal_file(moonbit_string_t s, int32_t go) {
+  if (!go) return 1;
+  int n = Moonbit_array_length(s);
+  if (n <= 0) return 0;
+  WCHAR *w = (WCHAR *)malloc(((size_t)n + 1) * sizeof(WCHAR));
+  memcpy(w, s, (size_t)n * sizeof(WCHAR));
+  w[n] = 0;
+  for (int i = 0; i < n; i++) if (w[i] == L'/') w[i] = L'\\';
+  int ok = 0;
+  if (GetFileAttributesW(w) != INVALID_FILE_ATTRIBUTES) {
+    mb_host_log(s);
+    if (getenv("MBUI_SCRIPT")) {
+      ok = 1;
+    } else {
+      PIDLIST_ABSOLUTE item = ILCreateFromPathW(w);
+      if (item) {
+        // (COM on this thread for the shell, as it may not be yet; a mode it already has is kept)
+        HRESULT com = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+        ok = SUCCEEDED(SHOpenFolderAndSelectItems(item, 0, NULL, 0));
+        if (SUCCEEDED(com)) CoUninitialize();
+        ILFree(item);
+      }
+    }
+  }
+  free(w);
+  return ok;
+}
+
 // where downloads go: MBUI_DOWNLOADS_DIR, else the Downloads known folder; made if it is not there
 static int keep_dir(wchar_t *dir) {
   const wchar_t *over = _wgetenv(L"MBUI_DOWNLOADS_DIR");
