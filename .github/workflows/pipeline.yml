@@ -2516,10 +2516,10 @@ jobs:
   deltas-station:
     needs: [plan, station]
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.station.result == 'success' }}
-    # (on ci-1, idle on main once natives is done: GitHub's ubuntu-24.04 kept these 2-4 minutes in its queue, and the
-    # six leave its runners to check-station and deltas-android, whose javac ubuntu-24.04's JDK 17 is; with
-    # vars.CI_1 == 'off', ubuntu-24.04)
-    runs-on: ${{ fromJSON(vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
+    # (linux-x64 and linux-arm64 on ci-1, filling its 2 runners; darwin-arm64 and win32-x64 on ubuntu-24.04 beside
+    # deltas-desktop, check-station nearly done by then: the four and deltas-desktop end in one wave, where the five on
+    # ci-1's 2 runners queued 2-4 minutes, main 44695551492; with vars.CI_1 == 'off', all on ubuntu-24.04)
+    runs-on: ${{ fromJSON((vars.CI_1 != 'off' && startsWith(matrix.platform, 'linux-')) && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
     environment: production
     timeout-minutes: 5
     continue-on-error: true
@@ -2599,8 +2599,9 @@ jobs:
   deltas-desktop:
     needs: [plan, desktop]
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.desktop.result == 'success' }}
-    # (on ci-1, as deltas-station)
-    runs-on: ${{ fromJSON(vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
+    # (on ubuntu-24.04, idle by then: it is let go with deltas-station, and on ci-1 the station's four held it 234 s,
+    # main 44695551492)
+    runs-on: ubuntu-24.04
     environment: production
     timeout-minutes: 5
     continue-on-error: true
@@ -2611,7 +2612,8 @@ jobs:
   deltas-desktop-win:
     needs: [plan, desktop-win]
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.desktop-win.result == 'success' }}
-    # (on ci-1, as deltas-station)
+    # (on ci-1, while check-station fills GitHub's runners: it is done before deltas-station starts; with
+    # vars.CI_1 == 'off', ubuntu-24.04)
     runs-on: ${{ fromJSON(vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
     environment: production
     timeout-minutes: 5
