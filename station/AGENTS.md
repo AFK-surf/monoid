@@ -44,7 +44,7 @@ Narrower rules:
 - Subagents never speak in a chat; agent plain text is never forwarded; turns end with a state; bug-report replies never reach agents by themselves (`station/src/agents/AGENTS.md`, `station/src/sessions/AGENTS.md`).
 - Workspace `MEMORY.md` and team skills sync to all stations by MoonBit 3-way merges; each person's devices carry presets and starred models (`station/src/share/AGENTS.md`).
 - Relays: kept on stations, added by agents without approval after a probe; disabled ones apply to stations too (`station/src/mesh/AGENTS.md`).
-- Rigs run tasks only under owner-signed grants; only its adding owner changes a station's mode (`station/src/rig/AGENTS.md`).
+- Rigs run tasks only under owner-signed grants; a whole station becomes a rig by its adder or a workspace owner/admin, who then owns it, and only that owner makes it whole again (`station/src/rig/AGENTS.md`).
 - Pinned locks are released only by `disable` or the local CLI, follow fork choice, enforce moved-workspace build floors (`station/src/cloud/AGENTS.md`).
 - Heavy work goes to l4es `sandboxes` via `station_task`; no station or agent runs in one (`station/src/agents/AGENTS.md`).
 

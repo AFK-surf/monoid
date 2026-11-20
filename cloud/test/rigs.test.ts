@@ -163,7 +163,7 @@ test("an unused rig token left by an older Directory cannot enroll for someone n
   }
 });
 
-test("a station's mode is its owner's, who added it: made one that only runs tasks, still theirs, and whole again", async () => {
+test("a whole station its adder or any owner or admin makes one that only runs tasks, theirs then; whole again only its owner's", async () => {
   const h = await harness();
   try {
     const alice = h.as(await h.login("alice"));
@@ -173,7 +173,7 @@ test("a station's mode is its owner's, who added it: made one that only runs tas
     assert.equal((await alice("POST", `/v1/workspaces/${home}/members`, { role: "member", emails: ["bob@example.test"] })).status, 200);
     assert.equal((await alice("POST", `/v1/workspaces/${home}/members`, { role: "admin", emails: ["carol@example.test"] })).status, 200);
     const subOf = async (email: string) => (await view(alice, home)).members.find((m: any) => m.email === email).sub as string;
-    const carolSub = await subOf("carol@example.test"), bobSub = await subOf("bob@example.test");
+    const aliceSub = await subOf("alice@example.test"), carolSub = await subOf("carol@example.test"), bobSub = await subOf("bob@example.test");
     // Alice (the workspace's owner) adds the first, Carol (an admin) the second.
     const first = await key(), second = await key();
     for (const [who, station, name] of [[alice, first, "willow"], [carol, second, "nas"]] as const) {
@@ -185,32 +185,40 @@ test("a station's mode is its owner's, who added it: made one that only runs tas
     await b.state();
     const mode = (who: As, station: Station, to: string) => who("PATCH", `/v1/workspaces/${home}/stations/${station.id}`, { mode: to });
 
-    // Its adder's alone: a member is refused, and so is the workspace's owner, who did not add it.
+    // A plain member may not make one another added a rig; the workspace's owner may, and it is theirs then.
     assert.equal((await mode(bob, second, "tasks")).status, 403);
-    assert.equal((await mode(alice, second, "tasks")).status, 403);
     assert.equal((await mode(carol, second, "sideways")).status, 400);
-    assert.equal((await mode(carol, second, "tasks")).status, 200);
-    // Still the adder's.
+    assert.equal((await mode(alice, second, "tasks")).status, 200);
     const seen = await view(alice, home);
     assert.deepEqual(seen.stations.map((s: any) => s.id), [first.id]);
-    assert.deepEqual(seen.rigs.map((r: any) => [r.id, r.name, r.owner]), [[second.id, "nas", carolSub]]);
+    assert.deepEqual(seen.rigs.map((r: any) => [r.id, r.name, r.owner]), [[second.id, "nas", aliceSub]]);
     // Both are told at once: the others that it is a rig now, itself whose.
     assert.deepEqual((await a.state()).rigs.map((r: any) => r.id), [second.id]);
     const told = await b.state();
-    assert.deepEqual(told.rig, { owner: carolSub });
+    assert.deepEqual(told.rig, { owner: aliceSub });
     assert.deepEqual(told.peers.map((p: any) => p.id), [first.id]);
-    // Said again, nothing changes; the workspace keeps one whole station.
+    // Said again, by its adder even, nothing changes: a rig is never taken over. The workspace keeps one whole station.
     assert.equal((await mode(carol, second, "tasks")).status, 200);
+    assert.deepEqual((await view(alice, home)).rigs.map((r: any) => [r.id, r.owner]), [[second.id, aliceSub]]);
     assert.deepEqual(await (await mode(alice, first, "tasks")).json(), { error: "last_station" });
 
-    // Whole again: its owner's, not another manager's; among the stations, told as one.
-    assert.equal((await mode(alice, second, "full")).status, 403);
+    // Whole again: its owner's, not another manager's (nor its adder's); among the stations, told as one.
+    assert.equal((await mode(carol, second, "full")).status, 403);
     assert.equal((await mode(bob, second, "full")).status, 403);
-    assert.equal((await mode(carol, second, "full")).status, 200);
+    assert.equal((await mode(alice, second, "full")).status, 200);
     assert.deepEqual((await view(alice, home)).stations.map((s: any) => s.id), [first.id, second.id]);
     assert.equal((await view(alice, home)).rigs, undefined);
     assert.equal((await b.state()).rig, undefined);
     assert.equal((await a.state()).rigs, undefined);
+
+    // An admin makes the one the owner added a rig, theirs then, and makes it whole again.
+    assert.equal((await mode(carol, first, "tasks")).status, 200);
+    assert.deepEqual((await view(alice, home)).rigs.map((r: any) => [r.id, r.owner]), [[first.id, carolSub]]);
+    assert.deepEqual((await a.state()).rig, { owner: carolSub });
+    assert.equal((await mode(alice, first, "full")).status, 403);
+    assert.equal((await mode(carol, first, "full")).status, 200);
+    assert.equal((await view(alice, home)).rigs, undefined);
+    assert.equal((await a.state()).rig, undefined);
 
     // One a plain member added stays one that only runs tasks: they add no whole station, and a manager may not make it one.
     const box = await key();
@@ -218,6 +226,8 @@ test("a station's mode is its owner's, who added it: made one that only runs tas
     assert.equal((await enroll(h, box, made.token, { rig: true })).status, 200);
     assert.equal((await mode(bob, box, "full")).status, 403);
     assert.equal((await mode(alice, box, "full")).status, 403);
+    // Nor take it over by asking it to run tasks.
+    assert.equal((await mode(alice, box, "tasks")).status, 200);
     assert.deepEqual((await view(alice, home)).rigs.map((r: any) => [r.id, r.owner]), [[box.id, bobSub]]);
 
     // A station in a second workspace stays a whole one.
@@ -230,31 +240,37 @@ test("a station's mode is its owner's, who added it: made one that only runs tas
   }
 });
 
-test("a station whose adder is no member any more: the workspace's owner makes it one that only runs tasks, and it is theirs; an admin does not", async () => {
+test("a station whose adder is no member any more: an owner or admin makes it one that only runs tasks, and it is theirs; a member does not", async () => {
   const h = await harness();
   try {
     const alice = h.as(await h.login("alice"));
     const carol = h.as(await h.login("carol"));
     const dave = h.as(await h.login("dave"));
+    const erin = h.as(await h.login("erin"));
     const home = ((await (await alice("POST", "/v1/workspaces", { name: "Home" })).json()) as any).id as string;
     assert.equal((await alice("POST", `/v1/workspaces/${home}/members`, { role: "admin", emails: ["carol@example.test", "dave@example.test"] })).status, 200);
+    assert.equal((await alice("POST", `/v1/workspaces/${home}/members`, { role: "member", emails: ["erin@example.test"] })).status, 200);
     const subOf = async (email: string) => (await view(alice, home)).members.find((m: any) => m.email === email).sub as string;
-    const aliceSub = await subOf("alice@example.test"), carolSub = await subOf("carol@example.test");
+    const aliceSub = await subOf("alice@example.test"), carolSub = await subOf("carol@example.test"), daveSub = await subOf("dave@example.test");
     const first = await key(), second = await key();
     for (const [who, station, name] of [[alice, first, "willow"], [carol, second, "nas"]] as const) {
       const token = ((await (await who("POST", `/v1/workspaces/${home}/enrollments`, { name })).json()) as any).token as string;
       assert.equal((await enroll(h, station, token)).status, 200);
     }
     const mode = (who: As, station: Station, to: string) => who("PATCH", `/v1/workspaces/${home}/stations/${station.id}`, { mode: to });
-    assert.equal((await mode(alice, second, "tasks")).status, 403, "its adder is a member: theirs");
 
-    // Its adder gone, the station stays, nobody's to change but the workspace's owner's.
+    // Its adder gone, the station stays; a plain member still may not make it a rig, an owner or admin may.
     assert.equal((await alice("DELETE", `/v1/workspaces/${home}/members/${carolSub}`)).status, 200);
     assert.deepEqual((await view(alice, home)).stations.map((s: any) => s.id), [first.id, second.id]);
-    assert.equal((await mode(dave, second, "tasks")).status, 403);
+    assert.equal((await mode(erin, second, "tasks")).status, 403);
+    assert.equal((await mode(dave, second, "tasks")).status, 200);
+    assert.deepEqual((await view(alice, home)).rigs.map((r: any) => [r.id, r.owner]), [[second.id, daveSub]]);
+    // Theirs now: whole again is theirs too, not the owner's.
+    assert.equal((await mode(alice, second, "full")).status, 403);
+    assert.equal((await mode(dave, second, "full")).status, 200);
+    // The owner may as well, and it is theirs then.
     assert.equal((await mode(alice, second, "tasks")).status, 200);
     assert.deepEqual((await view(alice, home)).rigs.map((r: any) => [r.id, r.owner]), [[second.id, aliceSub]]);
-    // Theirs now: whole again is theirs too, not the other admin's.
     assert.equal((await mode(dave, second, "full")).status, 403);
     assert.equal((await mode(alice, second, "full")).status, 200);
   } finally {

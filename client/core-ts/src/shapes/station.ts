@@ -386,7 +386,7 @@ export const STATION_SHAPES: Record<string, Shape> = {
     ["way", opt("StationWay"), { doc: "How this device reaches it; none for a station reached without a connection of its own (the page's own)\nor before one is open. Its figures are the `stationNet` view's." }],
     ["joined", "bool", { default: true, doc: "Its home is another workspace: this one it joined, and only the owners and\nadmins of that one manage the machine." }],
     ["home", opt("String"), { said: true, doc: "With `joined`: its home workspace's name, when the viewer is in that one too." }],
-    ["mine", "bool", { default: true, doc: "The viewer may change its mode: they added it, or no member of the workspace did and they own the workspace." }],
+    ["mine", "bool", { default: true, doc: "The viewer may change its mode: they own or administer the workspace, or they added it." }],
   ], { doc: "One station's page (the `station` topic): all of what it shows of it but the models it can run, which only a\nmodel's choice reads (`pick`, `newChat`). Its face and line under its name in a list, when it was last seen\n(`face`, `line`, `lastSeen`, its `time`) are the rows' (StationRow), the core's here." }),
   StationRow: struct([
     ["station", "String"],

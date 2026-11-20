@@ -86,8 +86,8 @@ export type CloudState = {
   /// `rig_due` below; never by the control plane's word alone).
   rig?: RigSelf;
   /// A whole station asked to run only tasks from now on, by a member's device that reached it itself (rigs/module.ts
-  /// `POST /mode`): whose it will be (who asked; the control plane lets only its owner list it so), and their own
-  /// lock to pin. Good for `MODE_PENDING_S` from `at`.
+  /// `POST /mode`): whose it will be (who asked; the control plane lets only its adder or a workspace owner or admin
+  /// list it so, as the asker's), and their own lock to pin. Good for `MODE_PENDING_S` from `at`.
   rig_pending?: RigSelf & { at: number };
   /// The control plane lists it as that person's rig now (cloud/presence.ts): it stops what it runs as a station and
   /// becomes one (sessions/agents.ts).

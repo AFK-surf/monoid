@@ -358,8 +358,8 @@ export class Rigs {
     });
   }
 
-  /// A whole station made one that only runs tasks by its owner, who added it (the cloud says who may: StationView
-  /// `mine`; the user, 2026-11-10): the station is asked first, by this device itself, and told their own lock to pin;
+  /// A whole station made one that only runs tasks by who added it, or by a workspace owner or admin, whose rig it then
+  /// is (the cloud says who may: StationView `mine`): the station is asked first, by this device itself, and told their own lock to pin;
   /// then the cloud lists it so, at which the station becomes one. Asked again, both are again: neither half alone
   /// changes what it is.
   #toTasks(workspace: string, station: string): Effect.Effect<unknown, CoreError> {

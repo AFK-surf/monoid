@@ -72,7 +72,7 @@ export { CLOUD_WRITE_MS };
 export const REREAD_WAIT_MS = 3_000;
 
 /// `reread` run to its end, waited on for `REREAD_WAIT_MS` at most; a span under the call's trace says how long it took.
-function rereadAfterWrite(inner: Inner, reread: Effect.Effect<void>, ctx: SpanContext): Effect.Effect<void> {
+export function rereadAfterWrite(inner: Inner, reread: Effect.Effect<void>, ctx: SpanContext | null): Effect.Effect<void> {
   const span = inner.tracer.child("cloud.reread", Kind.Internal, ctx);
   const done = Deferred.makeUnsafe<void>();
   inner.runner.fork(

@@ -1591,8 +1591,8 @@ test("stations_that_find_this_core_too_old_say_so_once_and_one_among_others_amis
   }
 });
 
-test("a station's mode is the viewer's to change where they added it, or no member did and they own the workspace", async () => {
-  // Its owner is who added it, whatever the viewer's role (the user, 2026-11-10; cloud/src/directory.ts setStationMode).
+test("a station's mode is the viewer's to change where they own or administer the workspace, or added it", async () => {
+  // As the cloud has it (cloud/src/directory/stations.ts setStationMode): an owner or admin any whole station, a member theirs.
   const t = setup();
   const list = ui();
   t.subscribe(1, { topic: "stations", scope: "ws" });
@@ -1609,13 +1609,13 @@ test("a station's mode is the viewer's to change where they added it, or no memb
   const mine = () => (list.value as J[]).map((s) => [s.id, s.mine]);
   t.set(workspace(), of("admin"));
   await t.read(list, 1);
-  assert.deepEqual(mine(), [["a", true], ["b", false], ["c", false]], "an admin: only what they added");
+  assert.deepEqual(mine(), [["a", true], ["b", true], ["c", true]], "an admin: any");
   t.set(workspace(), of("member"));
   await t.read(list, 1);
-  assert.deepEqual(mine(), [["a", true], ["b", false], ["c", false]], "a member: what they added too");
+  assert.deepEqual(mine(), [["a", true], ["b", false], ["c", false]], "a member: only what they added");
   t.set(workspace(), of("owner"));
   await t.read(list, 1);
-  assert.deepEqual(mine(), [["a", true], ["b", false], ["c", true]], "the owner: one no member added as well, never another member's");
+  assert.deepEqual(mine(), [["a", true], ["b", true], ["c", true]], "the owner: any");
 });
 
 /// A station's overview with what changes most and no row shows: each profile's quota by the minute, its decisions.

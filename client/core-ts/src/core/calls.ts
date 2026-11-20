@@ -247,6 +247,8 @@ export function callStation(call: Call): string | null {
     }
     case "adb":
       return call.call.kind === "share" ? call.call.offer.station : null;
+    case "rig":
+      return call.call.kind === "setMode" ? `${call.call.workspace}/${call.call.station}` : call.call.kind === "decide" ? call.call.station : null;
     case "screen":
       return call.call.kind === "view" ? call.call.station : null;
     case "terminal":
@@ -313,6 +315,8 @@ export function counts(call: Call, name: string): boolean {
       return name === "dev.signIn";
     case "adb":
       return call.call.kind === "pair" || call.call.kind === "grant";
+    case "rig":
+      return call.call.kind !== "log";
     case "lock":
       return call.name !== "state" && call.name !== "toggle" && call.name !== "dismiss" && call.name !== "pair" && call.name !== "pairCode" && call.name !== "pairCancel";
     case "lockPrompt":
