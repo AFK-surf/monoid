@@ -1215,17 +1215,23 @@ pub fn chat_opens(r : ChatRef, ask : (String, Map[String, Json]) -> TopicState, 
     match a {
       LinkAsk(to) =>
         match link_card_ask(to) {
-          Some((name, params)) => all = opens_answered(ask(name, params)) && all
+          Some((name, params)) => {
+            let s = ask(name, params)
+            all = (opens_answered(s) || s.waiting) && all
+          }
           None => ()
         }
       LoginAsk(station, id) => {
         let (name, params) = machine_login_ask(station, id)
         let l = ask(name, params)
         if !opens_answered(l) {
-          all = false
+          if !l.waiting {
+            all = false
+          }
         } else if flag(l.value, "active") {
           let (name, params) = machine_logins_ask(station)
-          all = opens_answered(ask(name, params)) && all
+          let s = ask(name, params)
+          all = (opens_answered(s) || s.waiting) && all
         }
       }
     }

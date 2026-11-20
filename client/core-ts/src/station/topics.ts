@@ -286,9 +286,28 @@ export class StationTopics implements Owner {
   }
 
   /// Whether a topic with no value yet waits on its station for what it shows (store.ts `waits`): a chat's messages
-  /// none of which it opens with are on the device.
+  /// none of which it opens with are on the device, or a login/job card whose station has not answered yet.
   waits(topic: Topic): boolean {
-    return topic.topic === "thread" && typeof topic.station === "string" && typeof topic.thread === "number" && this.#waits(topic);
+    if (topic.topic === "thread" && typeof topic.station === "string" && typeof topic.thread === "number") {
+      return this.#waits(topic);
+    }
+    if (topic.topic === "machineLogin" && typeof topic.station === "string") {
+      const link = this.#sync.link(topic.station);
+      const held = logins.held(link);
+      return held.supported === null && link !== undefined && !down(link.state) && !link.errors.has(logins.LIST_KEY);
+    }
+    if (topic.topic === "job" && typeof topic.station === "string" && typeof topic.id === "string") {
+      const link = this.#sync.link(topic.station);
+      return (
+        this.#core.data.shared(topic) === undefined &&
+        link !== undefined &&
+        !link.errors.has(topicKey(topic)) &&
+        !down(link.state) &&
+        !link.jobsRead &&
+        !(link.state.state !== "online" && this.#core.data.listed(topic.station, "jobs"))
+      );
+    }
+    return false;
   }
 
   compute(topic: Topic): Value | undefined {

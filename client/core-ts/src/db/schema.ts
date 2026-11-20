@@ -712,22 +712,34 @@ function dropSaidIndex(sql: Sql): void {
   }
 }
 
-/// The room the database's file holds and no longer uses given back to the device, at every open: what is let go (an
-/// earlier core's search index, transcripts past KEPT) left its pages free in the file, which stayed as large as it
-/// ever was (a phone's at 150 MB once the index was gone). A database made before is rewritten once (VACUUM) to keep
-/// its free pages at the end (auto_vacuum INCREMENTAL); then only those free are cut off. The log the rewrite went
-/// through is emptied too, or the room would only have moved there.
-export function giveBackRoom(sql: Sql): void {
+/// How many free pages `giveBackRoomStep` returns to the OS at once (about 1 MB at SQLite's 4 KB page size).
+export const ROOM_BACK_PAGES = 256;
+
+/// One step of giving unused pages back to the device: what is let go (an earlier core's search index, transcripts past
+/// KEPT) left its pages free in the file, which stayed as large as it ever was (a phone's at 150 MB once the index was
+/// gone). A database made before is rewritten once (VACUUM) to keep its free pages at the end (auto_vacuum
+/// INCREMENTAL); then only those free are cut off, `pages` at a time, and the WAL is truncated once no free pages
+/// remain. Answers whether more free pages remain for a following step.
+export function giveBackRoomStep(sql: Sql, pages = ROOM_BACK_PAGES): boolean {
   const one = (q: string) => Number(sql.all(q)[0]?.[0] ?? 0);
   if (one("PRAGMA auto_vacuum") !== 2) {
     sql.exec("PRAGMA auto_vacuum = INCREMENTAL");
     sql.exec("VACUUM");
-  } else if (one("PRAGMA freelist_count") > 0) {
-    sql.exec("PRAGMA incremental_vacuum");
-  } else {
-    return;
+    sql.all("PRAGMA wal_checkpoint(TRUNCATE)");
+    return false;
   }
-  sql.all("PRAGMA wal_checkpoint(TRUNCATE)");
+  const before = one("PRAGMA freelist_count");
+  if (before <= 0) return false;
+  sql.exec(`PRAGMA incremental_vacuum(${Math.max(1, Math.floor(pages))})`);
+  const after = one("PRAGMA freelist_count");
+  if (after > 0 && after < before) return true;
+  if (after < before) sql.all("PRAGMA wal_checkpoint(TRUNCATE)");
+  return false;
+}
+
+/// The room the database's file holds and no longer uses given back to the device whole.
+export function giveBackRoom(sql: Sql): void {
+  while (giveBackRoomStep(sql, 0x7fffffff)) {}
 }
 
 /// The database's version.

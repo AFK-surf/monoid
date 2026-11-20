@@ -5,7 +5,7 @@
 //
 // Topics of this data have no value of their own: their value is read from here (`shared`), by query, when it goes
 // out; each database's writer says which topics a burst changed, and the store pushes what changed (keyed deltas).
-import { Effect, Fiber, Queue } from "effect";
+import { Deferred, Effect, Fiber, Queue } from "effect";
 import { OVERVIEW_CHAT, OVERVIEW_PROFILED, OVERVIEW_SETTINGS } from "./db/schema.ts";
 import { AccountDb, LIST_OF, MD_SHOWN_EVERY, foundOf, type ChatFound, type Changes, type Derive, type HeadRow, type ListKind, type LogTable, type MdPut, type MovedTo, type RowChange, frozen } from "./db/account.ts";
 import { KEPT as BESIDE, type AnyKept, type Kept, type Maker, type Owner } from "./db/kept.ts";
@@ -354,6 +354,9 @@ export class Data {
   readonly #shown = new Map<string, number>();
   /// A room check already running for an account; writes during it do not start another one.
   readonly #keeping = new Set<AccountDb>();
+  /// Accounts currently giving unused pages back to the device (`#giveBackRoom`).
+  readonly #givingBack = new Set<AccountDb>();
+  #roomWaiters: Deferred.Deferred<void>[] = [];
   #keptAt = -Infinity;
 
   constructor(host: Host, runner: Runner, options: DataOptions) {
@@ -443,6 +446,7 @@ export class Data {
       if (note) this.#setNote(sub, note);
       yield* this.onOpened(db);
       this.#keepWithin(db);
+      this.#giveBackRoom(db);
       this.#tellAll();
     });
   }
@@ -1630,6 +1634,7 @@ export class Data {
     if (db.readOnly || this.#keeping.has(db)) return;
     this.#keeping.add(db);
     this.#runner.fork(Effect.gen({ self: this }, function* () {
+      let evicted = false;
       try {
         // Do not make the account's first values or a committed change wait for maintenance.
         yield* Effect.yieldNow;
@@ -1651,14 +1656,51 @@ export class Data {
             if (this.#shown.has(key)) continue;
             gone.add(key);
             db.evict(l.station, l.id);
+            evicted = true;
             if (db.used() <= to) return;
             yield* Effect.yieldNow;
           }
         }
       } finally {
         this.#keeping.delete(db);
+        if (evicted && this.#dbs.get(db.sub) === db) this.#giveBackRoom(db);
       }
     }));
+  }
+
+  /// Gives unused pages in `db` back to the device in bounded steps after the first views have been answered
+  /// (`mdTurn`), yielding between steps so startup reads and writes are never blocked.
+  #giveBackRoom(db: AccountDb): void {
+    if (db.readOnly || this.#givingBack.has(db)) return;
+    this.#givingBack.add(db);
+    this.#runner.fork(Effect.gen({ self: this }, function* () {
+      try {
+        // Yield first so Core.create finishes wiring `mdTurn = () => store.turn()` after `data.open()`.
+        yield* Effect.yieldNow;
+        yield* this.mdTurn();
+        while (this.#dbs.get(db.sub) === db && db.giveBackRoomStep()) {
+          yield* Effect.yieldNow;
+        }
+      } finally {
+        this.#givingBack.delete(db);
+        if (this.#givingBack.size === 0) {
+          const waiting = this.#roomWaiters;
+          this.#roomWaiters = [];
+          for (const d of waiting) Deferred.doneUnsafe(d, Effect.void);
+        }
+      }
+    }));
+  }
+
+  /// Resolves once background room reclamation (`#giveBackRoom`) has finished for all open databases.
+  get roomGivenBack(): Effect.Effect<void> {
+    return Effect.suspend(() => {
+      if (this.#givingBack.size === 0) return Effect.void;
+      return Effect.flatMap(Deferred.make<void>(), (d) => {
+        this.#roomWaiters.push(d);
+        return Deferred.await(d);
+      });
+    });
   }
 
   putSummary(station: string, summary: unknown): boolean {

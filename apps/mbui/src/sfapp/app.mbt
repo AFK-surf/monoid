@@ -1383,7 +1383,12 @@ fn splash_of_tree(v : @view.View, label : () -> String?, now : () -> Bool) -> Un
     o.box(fn(b) { b.height(By(fn() { Some(window_band_now()) })).moves_window(Is(true)) |> ignore }) |> ignore
   })
   match splash_owner.val {
-    Some(owner) if owner.alive() => splash_begin(owner, v.cause_at())
+    Some(owner) if owner.alive() =>
+      v.reacts(fn() { v.window().0 > 0.0 }, fn(sized) {
+        if sized && owner.alive() {
+          splash_begin(owner, v.cause_at())
+        }
+      })
     _ => ()
   }
   let mark = fn() { if @sf.theme().dark { "stillfail_mark_dark" } else { "stillfail_mark" } }
@@ -1608,7 +1613,15 @@ fn first_page_node(v : @view.View, src : Source) -> Unit {
     if ws is Some(_) && !first_shown.get() && first_from.val < 0.0 {
       first_from.val = v.cause_at()
       first_top.val = Some(app.nav.top())
-      expiry.val = v.at_moment(first_from.val + first_page_ms, fn() { first_expired.set(true) })
+      let at = first_from.val + first_page_ms
+      let due = if splash_from.val >= 0.0 && !@signals.untracked(fn() { splash_waited.get() }) {
+        let floor = first_from.val + @sf.local_ms * 3.0
+        let cap = splash_from.val + splash_label_ms - 1.0
+        dmax(floor, dmin(at, cap))
+      } else {
+        at
+      }
+      expiry.val = v.at_moment(due, fn() { first_expired.set(true) })
     }
   })
   v.reacts(fn() { first_shown.get() }, fn(shown) {

@@ -53,7 +53,7 @@ import { JobsStore } from "./jobs.ts";
 import { KEPT_ALL, KeptValues } from "./kept.ts";
 import { KeptCacheStore } from "./kept-cache.ts";
 import { LogsStore } from "./logs.ts";
-import { type ChatColumnsMade, ensureChatColumns, ensureLetters, giveBackRoom, migrate, versionOf } from "./schema.ts";
+import { type ChatColumnsMade, ensureChatColumns, ensureLetters, giveBackRoomStep, migrate, versionOf } from "./schema.ts";
 import { SessionsThreadsStore, counted, placeTurn, sameTurns } from "./sessions-threads.ts";
 import { SlackSaidStore } from "./slack-said.ts";
 
@@ -196,11 +196,6 @@ export class AccountDb {
       this.#slack.open();
       this.#logs.openEvicted();
       this.#keptCache.openLogBytes();
-      try {
-        giveBackRoom(sql);
-      } catch {
-        // No room to rewrite it in: the file stays as large this time.
-      }
       this.#keptCache.openMediaTables();
     } else {
       this.#logs.openSaid(true);
@@ -359,6 +354,18 @@ export class AccountDb {
   /// `put` null where that is not known (it changed otherwise, or long ago): all of it is to be read again.
   logPutSince(table: LogTable, station: string, id: string, since: number): { rev: number; put: number[] | null } {
     return this.#logs.logPutSince(table, station, id, since);
+  }
+
+  /// One step of giving unused pages back to the device (schema.ts `giveBackRoomStep`). Returns true while more steps
+  /// remain, including when a write transaction is open so the writer commits before vacuum runs.
+  giveBackRoomStep(pages?: number): boolean {
+    if (this.readOnly || this.#closed) return false;
+    if (this.#inTx) return true;
+    try {
+      return giveBackRoomStep(this.sql, pages);
+    } catch {
+      return false;
+    }
   }
 
   /// The burst under way committed now, not as its writer next runs: what a core closing wrote (Data.closing).
