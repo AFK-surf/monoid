@@ -386,7 +386,7 @@ fn codex_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers.
     host_skills: path([home, ".agents", "skills"]),
     ca_bundle: "/etc/ssl/cert.pem",
     fast: Some(thread => {
-      let v = ctx.store("codexSessionFast", [jstr(thread)]) catch { _ => Json::null() }
+      let v = ctx.bus.store.codex_session_fast(thread) catch { _ => Json::null() }
       match v {
         True => Some(true)
         False => Some(false)
@@ -394,7 +394,7 @@ fn codex_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers.
       }
     }),
     speed: Some(thread => {
-      let v = ctx.store("codexSessionSpeed", [jstr(thread)]) catch { _ => Json::null() }
+      let v = ctx.bus.store.codex_session_speed(thread) catch { _ => Json::null() }
       as_text(v)
     }),
     current_profile: Some(id => ctx.profiles().iter().find_first(p => jtext(p, "id") == Some(id)).map(to_jv)),

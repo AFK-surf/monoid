@@ -14,7 +14,7 @@ fn P52::locator(self : P52) -> LiveLocator {
         self.host,
         self.bus.argv0,
         self.data,
-        key => self.store("getSession", [Json::string(key)]) catch { _ => Json::null() },
+        key => self.bus.store.get_session(key) catch { _ => Json::null() },
         () => self.profiles().filter_map(p => match (jtext(p, "id"), jtext(p, "home")) {
           (Some(id), Some(home)) => Some((id, home))
           _ => None
@@ -396,7 +396,7 @@ fn P52::title_of(self : P52, thread : Json, first : String?, channel : String?) 
 /// overview.ts `chatTitleOf`: what a session's chat is called in the chat list; its title, else its key, where it has
 /// none.
 fn P52::chat_title_of(self : P52, session : String) -> String {
-  let chat = self.store("sessionChat", [Json::string(session)]) catch { _ => Json::null() }
+  let chat = self.with_threads(t => t.session_chat(Json::string(session))) catch { _ => Json::null() }
   match chat {
     Object(_) =>
       self.title_of(
@@ -405,7 +405,7 @@ fn P52::chat_title_of(self : P52, session : String) -> String {
         None,
       )
     _ =>
-      match (self.store("getSession", [Json::string(session)]) catch { _ => Json::null() }) {
+      match (self.bus.store.get_session(session) catch { _ => Json::null() }) {
         Object(_) as row => jtext(row, "title").unwrap_or(session)
         _ => session
       }
@@ -448,7 +448,7 @@ fn P52::on_closed(self : P52, key : String) -> Unit {
     ignore((bus.jobs_ask.val)("remote.closeSession", Json::array([Json::string(key)]))) catch {
       _ => ()
     }
-    let gone = (self.store("getSession", [Json::string(key)]) catch { _ => Json::null() }) is Null
+    let gone = (self.bus.store.get_session(key) catch { _ => Json::null() }) is Null
     if gone {
       ignore((bus.jobs_ask.val)("workspaceWatch.forget", Json::array([Json::string(key)]))) catch {
         _ => ()

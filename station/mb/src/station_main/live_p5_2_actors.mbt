@@ -754,7 +754,7 @@ async fn MbActor::hub_asked(
     }
     // (said to the program)
     "notify" => {
-      let row = self.program.ctx.store("getSession", [jstr(self.key)])
+      let row = self.program.ctx.bus.store.get_session(self.key)
       match jfield(row, "archivedAt") {
         Null => ignore(self.call("notify", args))
         _ => ()
@@ -889,7 +889,7 @@ async fn MbActor::adopt(
     None => []
   }
   self.adopting = None
-  let row = self.program.ctx.store("getSession", [jstr(self.key)])
+  let row = self.program.ctx.bus.store.get_session(self.key)
   // (its adopt said to the program before what came meanwhile: mb-actor.ts `adopt`)
   let answer = if self.closed { None } else { self.sent += 1; self.program.call_posted(self.key, "adopt", [bare, taken, jstr(profile), row]) }
   match agent {
@@ -1188,17 +1188,11 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
         where_=where_ => {
           match about {
             Some(turn) => {
-              ignore(
-                ctx.store("setAbout", [jstr(turn), where_]) catch {
-                  _ => Json::null()
-                },
-              )
+              ctx.bus.store.set_about(jstr(turn), where_) catch {
+                _ => ()
+              }
               if !quiet {
-                ignore(
-                  ctx.store("notify", [jstr(self.key)]) catch {
-                    _ => Json::null()
-                  },
-                )
+                ctx.bus.store.notify(self.key)
               }
             }
             None => ()
@@ -1234,23 +1228,21 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
         match words {
           Some(w) =>
             if jtext(state, "kind") == Some("waiting") {
-              ignore(ctx.store("setWaitFor", [id, jstr(w), jb(watch)]))
+              ctx.bus.store.set_wait_for(id, jstr(w), watch)
             } else {
-              ignore(ctx.store("setNeed", [id, jstr(w)]))
+              ctx.bus.store.set_need(id, jstr(w))
             }
           None => ()
         }
-        ignore(ctx.store("setAbout", [id, current]))
-        ignore(
-          ctx.store("declareTurn", [
-            id,
-            jfield(state, "kind"),
-            if jtext(state, "kind") == Some("waiting") {
-              jfield(state, "seconds")
-            } else {
-              Json::null()
-            },
-          ]),
+        ctx.bus.store.set_about(id, current)
+        ctx.bus.store.declare_turn(
+          id,
+          jfield(state, "kind"),
+          if jtext(state, "kind") == Some("waiting") {
+            jfield(state, "seconds")
+          } else {
+            Json::null()
+          },
         )
       }
       // (the conversations' record, where they gave one: it rereads what the state is about and calls `write` with it

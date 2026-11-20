@@ -374,7 +374,7 @@ priv struct P54Browser {
 
 ///|
 /// The browser and its part made (service.ts, module.ts), its tabs among the screens.
-async fn p54_browser_start(bus : LiveBus, screens : P54Screens, vault : P54Vault?) -> P54Browser {
+async fn p54_browser_start(bus : LiveBus, threads : @store_threads.Store, screens : P54Screens, vault : P54Vault?) -> P54Browser {
   let host = bus.host
   let clock = @browser.host_clock(host, wall_ms().to_double())
   let files = @browser.host_files(host)
@@ -440,10 +440,10 @@ async fn p54_browser_start(bus : LiveBus, screens : P54Screens, vault : P54Vault
     },
     session => {
       let mut title = ""
-      let home = bus.store.call("sessionHomeThread", [Json::string(session)]) catch { _ => Json::null() }
+      let home = threads.session_home_thread(Json::string(session)) catch { _ => Json::null() }
       if opt_field(Some(home), "thread") is Some(t) { title = jtext(t, "title").unwrap_or("").trim().to_owned() }
       if title == "" {
-        let recent = bus.store.call("recentSessionThreads", [Json::string(session), Json::number(1.0)]) catch { _ => Json::null() }
+        let recent = threads.recent_session_threads(Json::string(session), Json::number(1.0)) catch { _ => Json::null() }
         match opt_field(Some(recent), "threads") {
           Some(Array(ts)) if ts.length() > 0 =>
             title = opt_text(opt_field(Some(ts[0]), "thread"), "title").unwrap_or("").trim().to_owned()

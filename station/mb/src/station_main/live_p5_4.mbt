@@ -50,7 +50,7 @@ pub async fn start_live_p5_4(bus : LiveBus, rig? : Bool = false) -> Unit {
       None
     }
   }
-  let browser = match (try { Ok(p54_browser_start(bus, screens, vault)) } catch { e => Err(e) }) {
+  let browser = match (try { Ok(p54_browser_start(bus, threads, screens, vault)) } catch { e => Err(e) }) {
     Ok(b) => {
       asks.push(async fn(op, a) { p54_browser_ask(b, op, a) })
       Some(b)

@@ -1322,7 +1322,7 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
 async fn P52::runners_with_sessions(self : P52) -> Json {
   let infos = self.pump.wait(@agent_drivers.live_runners(self.pump.machine(), self.data))
   let whose : Map[String, String] = {}
-  let of = (into : Map[String, String], rows : Json) => for s in jitems(rows) {
+  let of = (into : Map[String, String], rows : Array[Json]) => for s in rows {
     match jtext(s, "key") {
       Some(k) =>
         for kind in @events.runtime_kinds {
@@ -1335,7 +1335,7 @@ async fn P52::runners_with_sessions(self : P52) -> Json {
     }
   }
   if infos.length() > 0 {
-    of(whose, self.store("liveSessions", [])) catch {
+    of(whose, self.bus.store.live_sessions()) catch {
       _ => ()
     }
     // (every session asked again only for a runner neither named nor known to have none: a runner shared by no
@@ -1349,7 +1349,7 @@ async fn P52::runners_with_sessions(self : P52) -> Json {
     if rest.iter().any(i => !known(i.id())) {
       let all : Map[String, String] = {}
       let read = try {
-        of(all, self.store("listSessions", []))
+        of(all, self.bus.store.list_sessions())
         true
       } catch {
         _ => false
@@ -1404,10 +1404,7 @@ fn P52::status_agents(self : P52) -> Json {
         "need": Json::null(),
       } : Json)
   })
-  let waiting = jnum_of(
-    Json::object({ "n": self.store("waitingCount", []) catch { _ => ji(0) } }),
-    "n",
-  ).unwrap_or(0.0)
+  let waiting = 0.0
   {
     "agents": {
       "busy": ji(if busy > running.length() { busy } else { running.length() }),

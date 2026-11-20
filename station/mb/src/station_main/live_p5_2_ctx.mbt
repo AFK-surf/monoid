@@ -81,6 +81,16 @@ fn P52::store(self : P52, name : String, args : Array[Json]) -> Json raise {
 }
 
 ///|
+/// Run a direct `@store_threads.Store` call with the station's wall clock and change notifications flushed on exit.
+fn[T] P52::with_threads(self : P52, f : (@store_threads.Store) -> T raise) -> T raise {
+  self.threads.set_now(wall_ms().to_double())
+  errdefer told_threads(self.bus, self.threads)
+  let v = f(self.threads)
+  told_threads(self.bus, self.threads)
+  v
+}
+
+///|
 /// One of a queued card's pages (read/pool.ts `cardEditPage`, `cardMessagePage`), read by the readers, behind what a
 /// person waits on.
 async fn P52::card_page(self : P52, op : String, thread : Json, target : String, before : String?) -> Json {
@@ -183,7 +193,7 @@ fn P52::workspaces(self : P52) -> Array[String] {
 
 ///|
 fn P52::ws_of(self : P52, key : String) -> String? {
-  let v = self.store("sessionWs", [jstr(key)]) catch { _ => return None }
+  let v = self.bus.store.session_ws(key) catch { _ => return None }
   as_text(v)
 }
 
@@ -322,7 +332,7 @@ async fn P52::run_on(self : P52, key : String, holding : Bool, across : Bool) ->
         "error": jstr(said_of(e)),
       })
   }
-  let row = self.store("getSession", [jstr(key)]) catch { _ => Json::null() }
+  let row = self.bus.store.get_session(key) catch { _ => Json::null() }
   let runtime = jtext(row, "runtime").unwrap_or("claude")
   let profiles = self.profiles()
   let own = jtext(row, "profile")
@@ -360,7 +370,7 @@ async fn P52::open_agent(
   listener : (Int) -> (@jsjson.JValue) -> Unit,
 ) -> (Agent, Json) {
   let hub = self.the_hub()
-  let initial = self.store("getSession", [jstr(key)])
+  let initial = self.bus.store.get_session(key)
   if initial == Json::null() {
     raise LiveError("session \{key} disappeared")
   }
@@ -369,7 +379,7 @@ async fn P52::open_agent(
   }
   set_runtime(was)
   let profile = self.run_on(key, false, true)
-  let row = self.store("getSession", [jstr(key)])
+  let row = self.bus.store.get_session(key)
   guard @session_hub.runtime_named(jtext(row, "runtime").unwrap_or("")) is Some(runtime) else {
     raise LiveError("session \{key} runs an unknown runtime")
   }
@@ -379,7 +389,7 @@ async fn P52::open_agent(
   guard self.drivers.get(runtime) is Some(driver) else { raise LiveError("no driver for \{runtime}") }
   let memory = self.link_skills(row)
   let base = self.open_options(row, profile, memory)
-  let runtime_sessions = jitems(self.store("runtimeSessions", [jstr(key)]) catch { _ => Json::array([]) })
+  let runtime_sessions = self.bus.store.runtime_sessions(key) catch { _ => [] }
   let cleared = jfield(row, "runtimeSessionId") == Json::null() && runtime_sessions.length() > 0
   let base = if cleared && jtext(row, "cwd") is Some(cwd) {
     match base {
@@ -407,7 +417,7 @@ async fn P52::open_agent(
   told["stoppedNote"] = Json::null()
   let prev_id = jtext(row, "runtimeSessionId")
   match prev_id {
-    Some(id) => ignore(self.store("ranIn", [jstr(key), jstr(id), Json::null()]) catch { _ => Json::null() })
+    Some(id) => self.bus.store.ran_in(key, jstr(id), Json::null()) catch { _ => () }
     None => ()
   }
   let profile_id = jtext(profile, "id").unwrap_or("")
@@ -457,9 +467,9 @@ async fn P52::open_agent(
     }
   }
   let id = (agent.id)()
-  ignore(self.store("ranIn", [jstr(key), jstr(id), jstr(profile_id)]) catch { _ => Json::null() })
+  self.bus.store.ran_in(key, jstr(id), jstr(profile_id)) catch { _ => () }
   if prev_id != Some(id) {
-    ignore(self.store("setRuntimeSessionId", [jstr(key), jstr(id)]))
+    self.bus.store.set_runtime_session_id(key, jstr(id))
   }
   if stopped.length() > 0 {
     told["stoppedNote"] = jstr(@agent_runtimes.background_stopped(stopped.map(to_jv), resumable))
@@ -486,12 +496,12 @@ fn non_session_open_error(e : Error) -> Bool {
 ///|
 /// Its process takes how its session runs now in place, where it runs on the same profile (actor.ts `retuneAgent`).
 async fn P52::retune_agent(self : P52, key : String, agent : Agent, runtime : String, profile_now : String?, restart : Bool, holding : Bool) -> Json {
-  let before = self.store("getSession", [jstr(key)])
+  let before = self.bus.store.get_session(key)
   if before == Json::null() {
     return Json::null()
   }
   let profile = self.run_on(key, holding, true)
-  let current = self.store("getSession", [jstr(key)])
+  let current = self.bus.store.get_session(key)
   guard jtext(current, "runtime") == Some(runtime) else { return Json::null() }
   if restart || jtext(profile, "id") != profile_now {
     return Json::null()
@@ -507,7 +517,7 @@ async fn P52::retune_agent(self : P52, key : String, agent : Agent, runtime : St
 ///|
 /// The station's own words posted to the thread people spoke in last, and recorded there (actor.ts `postNotice`).
 async fn P52::post_notice(self : P52, key : String, text : String, profile : Json, runtime : Json, change : Json, where_~ : (Json) -> Unit) -> Unit {
-  let latest = self.store("latestThread", [jstr(key)])
+  let latest = self.with_threads(t => t.latest_thread(jstr(key)))
   if latest == Json::null() {
     slice_log("warn", "session", "no thread to post a notice to", { "session": jstr(key), "text": jstr(text) })
     return
@@ -538,7 +548,7 @@ async fn P52::post_notice(self : P52, key : String, text : String, profile : Jso
   if change != Json::null() {
     message["change"] = change
   }
-  let inserted = self.store("insertMessage", [Json::object(message)])
+  let inserted = self.with_threads(t => t.insert_message(to_jv(Json::object(message))))
   let n = match inserted {
     Array([n, ..]) => n
     other => jfield(other, "n")
@@ -549,11 +559,11 @@ async fn P52::post_notice(self : P52, key : String, text : String, profile : Jso
 ///|
 /// What the thread people spoke in last ends with, where the station said it (actor.ts `lastStationSaid`).
 fn P52::last_station_said(self : P52, key : String) -> Json raise {
-  let latest = self.store("latestThread", [jstr(key)])
+  let latest = self.with_threads(t => t.latest_thread(jstr(key)))
   if latest == Json::null() {
     return Json::null()
   }
-  let entries = jitems(self.store("entriesBefore", [jfield(jfield(latest, "thread"), "id"), Json::null(), ji(1)]))
+  let entries = jitems(self.with_threads(t => t.entries_before(jfield(jfield(latest, "thread"), "id"), Json::null(), ji(1))))
   match entries.last() {
     Some(last) if jtext(last, "authorKind") is Some("station" | "ember" | "stillfail") => jfield(last, "text")
     _ => Json::null()
@@ -581,10 +591,10 @@ async fn P52::chat_post(self : P52, connect : String, channel : String, thread_t
 /// What a turn is prompted with (actor.ts `promptFor`).
 async fn P52::prompt_for(self : P52, key : String, now : Double, handed : Json, lost : Bool, stopped : Json, afresh : Json, compacted : Bool) -> String {
   let hub = self.the_hub()
-  let row = self.store("getSession", [jstr(key)])
+  let row = self.bus.store.get_session(key)
   let handed = as_text(handed).unwrap_or("")
   let continued = match jtext(row, "cwd") {
-    Some(cwd) if !(self.store("hasTurns", [jstr(key)]) is True) =>
+    Some(cwd) if !self.bus.store.has_turns(jstr(key)) =>
       Some(@agent_runtimes.continued_here(self.instructions(row, key, self.link_skills(row), Some(cwd))))
     _ => None
   }
@@ -603,7 +613,7 @@ async fn P52::prompt_for(self : P52, key : String, now : Double, handed : Json, 
   if afresh is Some(a) { prompt = a + "\n\n" + prompt }
   if continued is Some(c) { prompt = c + "\n\n" + prompt }
   let latest = @agent_runtimes.latest().to_double()
-  let told = as_num(self.store("toldNotes", [jstr(key)])).unwrap_or(latest)
+  let told = as_num(self.bus.store.told_notes(jstr(key))).unwrap_or(latest)
   if told < latest {
     let workspace = jtext(row, "workspace")
     let full = match workspace {
@@ -618,7 +628,7 @@ async fn P52::prompt_for(self : P52, key : String, now : Double, handed : Json, 
       }
       None => ()
     }
-    ignore(self.store("setToldNotes", [jstr(key), jn(latest)]))
+    self.bus.store.set_told_notes(jstr(key), jn(latest))
     prompt = @agent_runtimes.untold(told, full) + "\n\n" + prompt
   }
   @session_hub.timed(prompt, now)
@@ -674,7 +684,7 @@ fn handed_of(m : Json) -> Json {
 /// actor.ts `formatDelivery`.
 async fn P52::format_delivery(self : P52, key : String, said : Array[Json], cancelled : () -> Bool) -> (String, Json) {
   let threads = said.map(m => jfield(jfield(m, "message"), "thread"))
-  let heard = jitems(self.store("heardThreads", [jstr(key), Json::array(threads)]))
+  let heard = jitems(self.with_threads(t => t.heard_threads(jstr(key), Json::array(threads))))
   let new_threads = threads.filter(t => !heard.contains(t)).filter_map(t => match t { Number(n, ..) => Some(n); _ => None })
   let names : Array[(String, String)] = []
   for m in said {
@@ -720,8 +730,8 @@ async fn P52::format_delivery(self : P52, key : String, said : Array[Json], canc
       from_chat.push((i, m))
     }
   }
-  let positions = Json::array(from_chat.map(x => { "thread": jfield(jfield(x.1, "message"), "thread"), "n": jfield(jfield(x.1, "message"), "n") }))
-  let later = jitems(self.store("postsAfter", [jstr(key), positions]) catch { _ => Json::array([]) })
+  let positions : Array[Json] = from_chat.map(x => { "thread": jfield(jfield(x.1, "message"), "thread"), "n": jfield(jfield(x.1, "message"), "n") })
+  let later = jitems(self.bus.store.posts_after(key, positions) catch { _ => Json::array([]) })
   let posts : Map[Int, String] = Map([])
   for j, x in from_chat {
     match later.get(j) {
@@ -762,7 +772,7 @@ async fn P52::format_delivery(self : P52, key : String, said : Array[Json], canc
     }
   }
   let text = @agent_runtimes.format_inbound(said.map(to_jv), new_threads, names, selves, posts~, cards~, self_key=key)
-  let models = jitems(self.store("untoldWidgetModels", [jstr(key)]) catch { _ => Json::array([]) })
+  let models = self.bus.store.untold_widget_models(jstr(key)) catch { _ => [] }
   let widgets = Json::array(models.map(w => Json::array([jfield(w, "path"), jfield(w, "model")])))
   let told = @agent_runtimes.format_widget_models(models.map(to_jv))
   let all = if told == "" { text } else if text == "" { told } else { text + "\n\n" + told }
@@ -772,7 +782,7 @@ async fn P52::format_delivery(self : P52, key : String, said : Array[Json], canc
 ///|
 /// What another agent goes by in a thread (actor.ts `agentName`).
 fn P52::agent_name(self : P52, key : String, thread : Json) -> String {
-  let row = self.store("getSession", [jstr(key)]) catch { _ => Json::null() }
+  let row = self.bus.store.get_session(key) catch { _ => Json::null() }
   if row == Json::null() {
     return "another agent"
   }
@@ -798,9 +808,9 @@ async fn P52::user_name(self : P52, connect : String, user : String) -> String? 
 ///|
 /// `text` as the agent is handed it, after what people chose on its cards (actor.ts `handedWithChoices`).
 async fn P52::handed_with_choices(self : P52, key : String, text : String) -> (String, () -> Unit) {
-  let moved_said = self.store("untoldMovedNote", [jstr(key)]) catch { _ => Json::null() }
+  let moved_said = self.with_threads(t => t.untold_moved_note(jstr(key))) catch { _ => Json::null() }
   let moved = as_text(moved_said)
-  let chose = jitems(self.store("untoldCardChoices", [jstr(key)]))
+  let chose = jitems(self.with_threads(t => t.untold_card_choices(jstr(key), Json::null())))
   let (rest, told) = if chose.length() == 0 {
     (text, () => ())
   } else {
@@ -810,7 +820,7 @@ async fn P52::handed_with_choices(self : P52, key : String, text : String) -> (S
       if names.iter().any(x => x.0 == by) {
         continue
       }
-      let via = jitems(self.store("threadSessions", [jfield(c, "thread")])).iter().find_first(m => jtext(m, "session") == Some(key))
+      let via = jitems(self.with_threads(t => t.thread_sessions(jfield(c, "thread")))).iter().find_first(m => jtext(m, "session") == Some(key))
       match via {
         Some(m) =>
           if self.user_name(jtext(m, "connect").unwrap_or(""), by) is Some(n) { names.push((by, n)) }
@@ -818,13 +828,13 @@ async fn P52::handed_with_choices(self : P52, key : String, text : String) -> (S
       }
     }
     let said = @agent_runtimes.format_card_choices(chose.map(to_jv), names, wall_ms().to_double())
-    (if text == "" { said } else { said + "\n\n" + text }, () => ignore(self.store("markCardChoicesTold", [jstr(key), Json::array(chose)]) catch { _ => Json::null() }))
+    (if text == "" { said } else { said + "\n\n" + text }, () => ignore(self.with_threads(t => t.mark_card_choices_told(jstr(key), Json::array(chose))) catch { _ => Json::null() }))
   }
   match moved {
     Some(m) =>
       (if rest == "" { m } else { m + "\n\n" + rest }, () => {
         told()
-        ignore(self.store("markMovedNoteTold", [jstr(key)]) catch { _ => Json::null() })
+        ignore(self.with_threads(t => t.mark_moved_note_told(jstr(key))) catch { _ => Json::null() })
       })
     None => (rest, told)
   }
@@ -834,11 +844,11 @@ async fn P52::handed_with_choices(self : P52, key : String, text : String) -> (S
 /// A turn that ended with no state on a card it posted, still waiting: it ends need_human on it (mb-actor.ts
 /// `cardAsks`).
 fn P52::card_asks(self : P52, key : String, id : String, started : Double?) -> Json raise {
-  let recent = self.store("recentSessionThreads", [jstr(key)])
+  let recent = self.with_threads(t => t.recent_session_threads(jstr(key), Json::null()))
   let mut found : Json? = None
   for t in jitems(jfield(recent, "threads")) {
     let thread = jfield(jfield(t, "thread"), "id")
-    let card = match self.store("pendingCard", [thread]) {
+    let card = match self.with_threads(t => t.pending_card(thread)) {
       Array([c, ..]) => c
       _ => continue
     }
@@ -856,8 +866,8 @@ fn P52::card_asks(self : P52, key : String, id : String, started : Double?) -> J
     }
   }
   guard found is Some(card) else { return jb(false) }
-  ignore(self.store("setAbout", [jstr(id), Json::array([jfield(card, "thread"), jfield(card, "n"), jfield(card, "ts")])]))
-  ignore(self.store("declareTurn", [jstr(id), jstr("need_help"), Json::null()]))
+  self.bus.store.set_about(jstr(id), Json::array([jfield(card, "thread"), jfield(card, "n"), jfield(card, "ts")]))
+  self.bus.store.declare_turn(jstr(id), jstr("need_help"), Json::null())
   jb(true)
 }
 
@@ -865,9 +875,9 @@ fn P52::card_asks(self : P52, key : String, id : String, started : Double?) -> J
 /// A turn its background work woke, that waits on: what the turn before asked is asked still (mb-actor.ts `keepAsk`).
 fn P52::keep_ask(self : P52, key : String, id : String, before : Json) -> Json raise {
   guard jnum_of(before, "endedAt") is Some(since) else { return jb(false) }
-  let threads = jitems(jfield(self.store("recentSessionThreads", [jstr(key)]), "threads")).map(t => jfield(jfield(t, "thread"), "id"))
+  let threads = jitems(jfield(self.with_threads(t => t.recent_session_threads(jstr(key), Json::null())), "threads")).map(t => jfield(jfield(t, "thread"), "id"))
   for thread in threads {
-    if self.store("cardClosedSince", [thread, jn(since)]) is True {
+    if self.with_threads(t => t.card_closed_since(thread, jn(since))) is True {
       return jb(false)
     }
   }
@@ -879,7 +889,7 @@ fn P52::keep_ask(self : P52, key : String, id : String, before : Json) -> Json r
   if asked == Json::null() {
     let during = Json::array([jn(jnum_of(before, "startedAt").unwrap_or(0.0)), jn(since)])
     for thread in threads {
-      match self.store("askingMessage", [thread, Json::null(), during]) {
+      match self.with_threads(t => t.asking_message(thread, Json::null(), during)) {
         Array([m, ..]) => {
           asked = Json::array([jfield(m, "thread"), jfield(m, "n"), jfield(m, "ts")])
           break
@@ -889,18 +899,18 @@ fn P52::keep_ask(self : P52, key : String, id : String, before : Json) -> Json r
     }
   }
   match jtext(before, "need") {
-    Some(need) if need != "" => ignore(self.store("setNeed", [jstr(id), jstr(need)]))
+    Some(need) if need != "" => self.bus.store.set_need(jstr(id), jstr(need))
     _ => ()
   }
-  ignore(self.store("setAbout", [jstr(id), asked]))
-  ignore(self.store("declareTurn", [jstr(id), jstr("need_help"), Json::null()]))
+  self.bus.store.set_about(jstr(id), asked)
+  self.bus.store.declare_turn(jstr(id), jstr("need_help"), Json::null())
   jb(true)
 }
 
 ///|
 /// What its allowance, asked again, says it ran into (accounts.ts `limitAfter`): the accounts' answer.
 async fn P52::limit_after(self : P52, key : String, profile : Json) -> Json {
-  let row = self.store("getSession", [jstr(key)]) catch { _ => Json::null() }
+  let row = self.bus.store.get_session(key) catch { _ => Json::null() }
   match self.bus.jobs_accounts_limit_after(profile, jfield(row, "model")) {
     Object(m) if m.contains("limit") => Json::object(m)
     _ => Json::null()
@@ -1033,7 +1043,7 @@ async fn P52::deps(self : P52, _key : String, name : String, args : Array[Json])
       Json::null()
     }
     "backgroundOnMessage" => {
-      let row = self.store("getSession", [a(0)])
+      let row = self.bus.store.get_session(s(0))
       if row == Json::null() {
         return jb(true)
       }
@@ -1048,23 +1058,23 @@ async fn P52::deps(self : P52, _key : String, name : String, args : Array[Json])
       // there, and none of its other agents is at work. The session row has no title of the chat's: read there, every
       // chat was untitled however often it was named, and its agent was asked again at each turn's end.
       if jfield(self.config, "askToName") is True {
-        let thread = jfield(self.store("latestThread", [a(0)]), "thread")
+        let thread = jfield(self.with_threads(t => t.latest_thread(a(0))), "thread")
         let named = (k : String) => match jtext(thread, k) { Some(t) => t.trim() != ""; None => false }
         if !(thread is Object(_)) || !(jfield(thread, "hiddenAt") is Null) || named("title") || !(jfield(thread, "autoTitle") is Null) {
           return Json::null()
         }
         let id = jfield(thread, "id")
-        if self.store("firstText", [id]) is Null {
+        if self.bus.store.first_text(id) is Null {
           return Json::null()
         }
-        let at_work = jitems(self.store("threadSessions", [id])).iter().any(m => {
+        let at_work = jitems(self.with_threads(t => t.thread_sessions(id))).iter().any(m => {
           let session = jtext(m, "session").unwrap_or("")
           if session == "" || session == s(0) {
             return false
           }
-          let last = self.store("lastTurn", [jstr(session)])
+          let last = self.bus.store.last_turn(jstr(session))
           hub.process_state(session) == "running" ||
-          self.store("hasPending", [jstr(session)]) is True ||
+          self.with_threads(t => t.has_pending(jstr(session))) is True ||
           (last is Object(_) && (jfield(last, "endedAt") is Null || jtext(last, "declared") == Some("waiting")))
         })
         if at_work {
@@ -1077,7 +1087,10 @@ async fn P52::deps(self : P52, _key : String, name : String, args : Array[Json])
       }
     "coldAfresh" => jb(hub.goes_afresh(s(0), as_num(a(1)).unwrap_or(wall_ms().to_double())))
     "longChat" => jopt(hub.told_long_chat(s(0)))
-    "ranIn" => self.store("ranIn", args)
+    "ranIn" => {
+      self.bus.store.ran_in(s(0), a(1), a(2))
+      Json::null()
+    }
     "spend" => self.bus.jobs_accounts_spend(a(0), a(1), a(2))
     "refillsAt" =>
       match self.bus.jobs_accounts_refills_at(a(0)) {
@@ -1092,13 +1105,13 @@ async fn P52::deps(self : P52, _key : String, name : String, args : Array[Json])
     }
     "settled" => self.bus.hub_settled(a(0), a(1), a(2))
     "stopJobs" => {
-      for id in jitems(self.store("runningWaitJobIds", [a(0)]) catch { _ => Json::array([]) }) {
+      for id in (self.bus.store.running_wait_job_ids(a(0)) catch { _ => [] }) {
         self.bus.jobs_stop(id)
       }
       Json::null()
     }
     "endJobs" => {
-      for id in jitems(self.store("upJobIds", [a(0), jb(false)]) catch { _ => Json::array([]) }) {
+      for id in (self.bus.store.up_job_ids(a(0), false) catch { _ => [] }) {
         self.bus.jobs_stop(id)
       }
       Json::null()

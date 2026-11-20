@@ -350,7 +350,8 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
       "store.setSessionsWsRetired" => {
         let ws = arg_text(args, 0)
         let home = arg_opt_text(args, 1)
-        return self.store("setSessionsWs", [if home == Some(ws) { Json::null() } else { Json::string(ws) }, Json::string("retired:" + ws)])
+        self.bus.store.set_sessions_ws(if home == Some(ws) { Json::null() } else { Json::string(ws) }, Json::string("retired:" + ws))
+        return Json::null()
       }
       _ => ()
     }
@@ -527,10 +528,10 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
       // still waits there)
       "cards.post" => {
         let session = arg_text(args, 0)
-        let thread = match self.store("latestThreadIfReady", [Json::string(session)]) {
+        let thread = match self.with_threads(t => t.latest_thread_if_ready(Json::string(session))) {
           Object(m) if m.contains("$undef") => {
             ignore(self.bus.reader_latest_threads(Json::array([Json::string(session)])))
-            self.store("latestThread", [Json::string(session)])
+            self.with_threads(t => t.latest_thread(Json::string(session)))
           }
           t => t
         }
@@ -577,13 +578,13 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
         match arg_or_null(args, 0) {
           Object(m) =>
             for connect, session in m {
-              if self.store("binding", [Json::string(connect)]) is Null && !(self.store("getSession", [session]) is Null) {
-                ignore(self.store("setBinding", [Json::string(connect), session]))
+              if self.bus.store.binding(Json::string(connect)) is Null && !(self.bus.store.get_session(as_text(session).unwrap_or("")) is Null) {
+                self.bus.store.set_binding(Json::string(connect), session)
               }
             }
           _ => ()
         }
-        ignore(self.store("setMovedNotes", [arg_or_null(args, 1)]))
+        ignore(self.with_threads(t => t.set_moved_notes(arg_or_null(args, 1))))
         Json::null()
       }
       // ── agents.ts ──
@@ -836,7 +837,7 @@ fn P52::grant_chat_title(self : P52, r : Json) -> String? raise {
   let own = match chat.find("/") {
     Some(i) =>
       jfield(
-        self.store("sessionThread", [jstr(session), jstr(chat[:i].to_owned()), jstr(chat[i + 1:].to_owned())]),
+        self.with_threads(t => t.session_thread(jstr(session), jstr(chat[:i].to_owned()), jstr(chat[i + 1:].to_owned()))),
         "thread",
       )
     None => Json::null()
@@ -848,15 +849,15 @@ fn P52::grant_chat_title(self : P52, r : Json) -> String? raise {
     if @adb_devices.given_title(to_jv(own)) is Some(_) || surface == Some("chat") || surface == Some("ember") || surface == Some("stillfail") {
       return Some(without)
     }
-    let first = as_text(self.store("firstText", [jfield(own, "id")]))
+    let first = as_text(self.bus.store.first_text(jfield(own, "id")))
     let with_text = self.title_of(own, first, None)
     if with_text == without {
       return Some(without)
     }
-    let latest = jfield(jfield(self.store("sessionChat", [jstr(session)]), "thread"), "id")
+    let latest = jfield(jfield(self.with_threads(t => t.session_chat(jstr(session))), "thread"), "id")
     return Some(if latest == jfield(own, "id") { with_text } else { without })
   }
-  match self.store("sessionChat", [jstr(session)]) {
+  match self.with_threads(t => t.session_chat(jstr(session))) {
     Object(_) as latest => Some(self.title_of(jfield(latest, "thread"), jtext(latest, "firstText"), None))
     _ => None
   }
