@@ -1006,11 +1006,14 @@ fn sites_arrive() -> Unit {
   if open_views.length() == 0 {
     return
   }
+  // (all a frame takes told as one: a page's dozens of heights set once, not laid out a time each)
+  @signals.start_batch()
   for v in open_views.copy() {
     if !v.closed && (v.serve is Some(_) || v.said is Some(_)) {
       v.take_site()
     }
   }
+  @signals.end_batch()
 }
 
 ///|
@@ -1349,6 +1352,8 @@ fn rects_less(
 fn NativeView::take_site(self : NativeView) -> Unit {
   let v = self
   let mut heard = false
+  // (what it heard told as one, as stood tells it: sync_views' take_site too)
+  @signals.start_batch()
   for _ in 0..<64 {
     let said = h_view_site_next(v.id)
     if said == "" {
@@ -1507,6 +1512,7 @@ fn NativeView::take_site(self : NativeView) -> Unit {
       _ => ()
     }
   }
+  @signals.end_batch()
 }
 
 // ── PDFs ───────────────────────────────────────────────────────────────

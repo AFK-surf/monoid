@@ -120,6 +120,7 @@ fn window_kept_ui_0() -> Array[WindowKept] {
     kept_ref(modifiers_said, fn() { @signals.signal(0) }),
     kept_ref(g_view, fn() { fn(_c) { () } }),
     kept_ref(frame_afters, fn() { [] }),
+    kept_ref(drawn_frame_afters, fn() { [] }),
     kept_ref(window_title_said, fn() { "" }),
     kept_ref(building, fn() { false }),
     kept_ref(wheel_went, fn() { 0 }),

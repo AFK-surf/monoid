@@ -363,6 +363,9 @@ fn view_made_now(make : (@view.View) -> Unit) -> Unit {
     sources=@hostapi.keeps_sources(),
   )
   made.val = Some(t)
+  if tree_wid == 0 {
+    window_zero_tree.val = Some(t)
+  }
   // (what the old frame's topmost modal layer holds under it, as it is as an input asks: one dismissed by it, at once;
   // Tree::held_under_by)
   t.held_under_by(fn() { g().old_modal_stack() })
@@ -494,6 +497,10 @@ pub fn view_painted() -> ViewPaintWork {
 /// was said in): none takes back till a frame of the next says what does; nothing held of them.
 fn view_forget() -> Unit {
   view_shape_of.val = OfOld
+  // (the first window's tree forgotten only as the first window's run is: a window beside it let go leaves it)
+  if window_now.now == 0 {
+    window_zero_tree.val = None
+  }
   let c = g()
   targets_forget()
   // (each field of the tree's its editor no longer: tree_field_gone, as its node is let go)
@@ -2216,7 +2223,9 @@ fn Ctx::view_drawn(
   }
   // (a native view in it (ui's native): its hole where it is drawn and as big, each frame it is drawn, over what its
   // block draws, under what is drawn after it; drawn anew each time, as a field is (no row it is in kept, nor the list
-  // drawn whole as one it is in): where it went said by each frame that moved it. In its bones, none: hidden)
+  // drawn whole as one it is in): where it went said by each frame that moved it. In its bones, none: hidden. As big as
+  // it is drawn (View::ground_drawn: in a list that flips, opening to its new size with what is round it), not as laid
+  // out: its hole jumped to its new height at once, over what is under it, till 2026-11-19)
   match (if tree_natives.is_empty() { None } else { tree_natives.get(c.id) }) {
     Some(tn) if c.bones == 0L => {
       ride_spoil()
@@ -3785,6 +3794,17 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
       view_held.val = Some(Old(-1, None))
       view_input_went(-1)
       false
+    }
+    // (words of the tree's a finger picked stand over the page: a press anywhere else that does not keep them
+    // (keeps_picked) takes no control, gesture or link under them; scrolled, what holds it claims it as ever
+    // (view_claimed); lifted where it went down, a tap that lets go of what is picked and opens nothing)
+    (0, _) if button != 2 && tree_picking() && picked.finger && !tree_keeps_picked_at(tree, x, y) => {
+      // (its moment and place kept for what follows as any finger's press keeps them: a finger held still there
+      // picks anew, one that moves scrolls what holds it, tree_finger_down)
+      tree_finger_down(tree, x, y, at)
+      view_held.val = Some(Nowhere)
+      view_nothing_down.val = Some((x, y))
+      true
     }
     (0, _) => {
       // (a press of the primary button, wherever on the tree: words of its picked with the pointer let go, as an old

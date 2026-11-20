@@ -132,6 +132,8 @@ fn reset_globals() -> Unit {
   // A run can end with a frame's resource handover still queued. Finish it before resetting the next run.
   frame_afters_run()
   frame_afters.val = []
+  // (what waited for a frame drawn that never came: none of this run's)
+  drawn_frame_afters.val = []
   the_ctx.val.let_go()
   the_ctx.val = Ctx::new()
   looks_reset()

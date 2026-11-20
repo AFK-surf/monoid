@@ -1571,6 +1571,7 @@ pub fn View::flies_apart(Self, loc~ : SourceLoc) -> Self
 pub fn View::flies_in(Self, Flight, ((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?, up_late? : Double, bare_from? : Bool, look_late? : Double, far_of? : ((Double, Double, Double, Double), (Double, Double, Double, Double)) -> Double, lead? : Bool, in_list? : Bool, cut_from? : ((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?, loc~ : SourceLoc) -> Self
 pub fn View::flight_across_now(Self) -> Double
 pub fn View::flight_ends_now(Self) -> Double?
+pub fn View::flight_land(Self) -> Unit
 pub fn View::flying_now(Self) -> Bool
 pub fn View::focus_let_go(Self) -> Unit
 pub fn View::focus_opens(Self, Self) -> Self

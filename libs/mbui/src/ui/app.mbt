@@ -122,6 +122,26 @@ pub fn after_frame(f : () -> Unit) -> Unit {
 }
 
 ///|
+// What waits for a frame actually drawn to end (after_drawn_frame): never run between frames.
+let drawn_frame_afters : Ref[Array[() -> Unit]] = Ref([])
+
+///|
+/// Run at the end of the next frame drawn (or the one being drawn now): never at once, nor at the end of an outside
+/// event between frames (after_frame's), so what it does is of something a frame has drawn.
+pub fn after_drawn_frame(f : () -> Unit) -> Unit {
+  drawn_frame_afters.val.push(f)
+}
+
+///|
+fn drawn_frame_afters_run() -> Unit {
+  while !drawn_frame_afters.val.is_empty() {
+    let pending = drawn_frame_afters.val
+    drawn_frame_afters.val = []
+    for f in pending { f() }
+  }
+}
+
+///|
 fn frame_afters_run() -> Unit {
   while !frame_afters.val.is_empty() {
     let pending = frame_afters.val
@@ -269,6 +289,7 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
   // (what the window's tree has going: drawn as the clock goes; what ends at a moment, woken then: view_host.mbt)
   view_frame_end(c)
   frame_afters_run()
+  drawn_frame_afters_run()
   // what of the widgets changed, for a screen reader reading them, as the frame left them (its layers, its focus, where
   // what a page in the hand moved is: a11y.mbt)
   c.a11y_after_paint()
@@ -325,6 +346,7 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
     @hostapi.frame_awaiting(rt.awaiting(), what)
   }
   frame_afters_run()
+  drawn_frame_afters_run()
   journal_frame_ended(t4)
   // (as many as were set by its end: what is set after, a cause of the next: frame_quiet)
   frame_end_sets.val = @signals.sets_said()

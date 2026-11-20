@@ -194,17 +194,20 @@ pub fn field(
     // Given so, a fault (the boundary round it shows it), this field taking it over meanwhile. One that node no longer
     // shows (put by till its change is committed whole as what flies from it is (Tree::departs), leaving, laid out
     // nowhere) hands it over: let go of here, so that its letting go later takes nothing from this one)
-    match st.tree_node {
-      Some(other) if other != id && tree_fields.contains(other) => {
-        let root = f.tree.root().id()
-        if f.tree.holds(root, other) && !f.tree.leaving(other) && !f.tree.laid_out_nowhere(other) {
-          f.fault("field: one Field given to two fields of the tree's: a Field is one editor's")
-        } else {
-          tree_field_gone(other)
+    // (looked for and let go in the window its tree is drawn in: in_tree_window)
+    in_tree_window(f.tree, fn() {
+      match st.tree_node {
+        Some(other) if other != id && tree_fields.contains(other) => {
+          let root = f.tree.root().id()
+          if f.tree.holds(root, other) && !f.tree.leaving(other) && !f.tree.laid_out_nowhere(other) {
+            f.fault("field: one Field given to two fields of the tree's: a Field is one editor's")
+          } else {
+            tree_field_gone(other)
+          }
         }
+        _ => ()
       }
-      _ => ()
-    }
+    })
     st.tree_node = Some(id)
     st.color = color
     st.ph_color = placeholder_color
@@ -248,8 +251,8 @@ pub fn field(
     // as `on_change`)
     st.on_change = edited
     st.on_edit = edit
-    tree_fields_rev.val = tree_fields_rev.val + 1
-    tree_fields[id] = {
+    // (said in the window its tree is drawn in, whichever window is in place as it is made: in_tree_window)
+    let entry = {
       st,
       font_size: size,
       line,
@@ -276,13 +279,18 @@ pub fn field(
       handle: 0,
       last_tap: (-1.0e9, 0.0, 0.0),
     }
-    g().editors[tree_said_id(id)] = st
-    // (more lines than it shows: its words scroll in it as an old view's field's do, the wheel, a finger (Ctx::editor's
-    // scroll_state), how far the layout's (Ctx::lay_out_field))
-    if max_lines_by is Some(_) || max_lines > 1 {
-      let sw = @signals.untracked(fn() { g().scroll_state(tree_said_id(id), true) })
-      sw.field = true
-    }
+    // (its editor and the scroll of its words that window's too, g()'s there: in_tree_window)
+    in_tree_window(f.tree, fn() {
+      tree_fields_rev.val = tree_fields_rev.val + 1
+      tree_fields[id] = entry
+      g().editors[tree_said_id(id)] = st
+      // (more lines than it shows: its words scroll in it as an old view's field's do, the wheel, a finger
+      // (Ctx::editor's scroll_state), how far the layout's (Ctx::lay_out_field))
+      if max_lines_by is Some(_) || max_lines > 1 {
+        let sw = @signals.untracked(fn() { g().scroll_state(tree_said_id(id), true) })
+        sw.field = true
+      }
+    })
     f
     // (laid out as what it shows, a secret's dots, what its look makes of its words, worked out here anew as they or what
     // the look reads change: the one working out its layout and its drawing take (EditorState::look_of's, kept);
@@ -314,12 +322,12 @@ pub fn field(
     // (the wheel over it: its words scrolled while they can go that way, else what holds it's, sideways_wheel)
     .on_wheel_moves(fn(w) { tree_field_wheel(id, w) })
     // (its editor no longer the window's as it is let go, whatever lets it go)
-    .owns(fn() { tree_field_gone(id) })
+    .owns(fn() { in_tree_window(f.tree, fn() { tree_field_gone(id) }) })
     |> ignore
     // (the focus asked for it before it was held: given it now, it able to take it, Field::focus)
     if st.focus_asked {
       st.focus_asked = false
-      tree_field_focus(id)
+      in_tree_window(f.tree, fn() { tree_field_focus(id) })
     }
   })
 }
@@ -662,6 +670,17 @@ pub fn field_edit_now(id : Int, what : Int) -> Unit {
   } else {
     c.field_edit(id, what)
   }
+}
+
+///|
+/// field_has_focus, a field focused that is node `v`'s own to answer to: under no modal layer that does not hold `v`
+/// (Ctx::field_focused_here's for a node of the window's tree).
+pub fn field_focused_here_node(v : @view.View) -> Bool {
+  field_has_focus() &&
+  (match view_app.val {
+    Some(t) => @signals.untracked(fn() { t.allows_as_its_own(v.id()) })
+    None => true
+  })
 }
 
 ///|

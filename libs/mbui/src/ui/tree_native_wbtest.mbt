@@ -269,3 +269,58 @@ test "a rounded native view filling a box in a page's list's block said `flips`,
   assert_eq(hole_h(), [200.0])
   assert_eq(cover_h(), [200.0])
 }
+
+///|
+test "the heights a page says before a frame, dozens of them, laid out as one: the last one's, not a layout each" {
+  let tall = @signals.signal(120.0, same=fn(a, b) { a == b })
+  let t = Tester::new(fn(_) {  }, w=300.0, h=400.0, platform=2)
+  let page = NativeView::page("<p>a</p>", said=fn(words) {
+    if words == "taller" {
+      tall.set(tall.untracked() + 3.0)
+    }
+  })
+  set_view_app(fn(root) {
+    // (a block of a list that flips its rows: a resize there laid out now, list_window's, as a chat's is)
+    root.box(fn(col) {
+      col
+      .width(Is(Some(300.0)))
+      .height(Is(Some(400.0)))
+      .scrolls_window(@view.Scroll::list(), fn() { [0] }, est=120.0, flips=true, fn(b, _) {
+        b.box(fn(fr) {
+          fr.width(Is(Some(300.0))).height(By(fn() { Some(tall.get()) })) |> ignore
+          // (each height told, a move of its own round it, as a visualization's is)
+          fr.reacts(
+            fn() { tall.get() },
+            fn(_) { @view.transition(within=fr.transitions_root(), fn() { fr.resizes() |> ignore }) },
+            at_start=false,
+          )
+          native(fr, page).width(Is(Some(300.0))).grow(Is(1.0)) |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t.run_for(move_most_ms)
+  for _ in 0..<40 {
+    t.view_says(page.id(), "taller")
+  }
+  // (laid out more than layout_passes_most times in the frame that takes them, the Tester stops here)
+  t.frame()
+  // (its hole opening with its block, not at its new height at once, over what is under it: as it was in the frame
+  // that moves it, on its way a little after)
+  let hole_tall = fn() {
+    match t.view_stands(page) {
+      Some((_, y0, _, y1, _)) => y1 - y0
+      None => 0.0
+    }
+  }
+  assert_eq(hole_tall(), 120.0)
+  t.run_for(frame_period_default * 4.0)
+  let on_way = hole_tall()
+  assert_true(on_way > 120.0 && on_way < 240.0, msg="the hole as tall as its block is drawn, 120 to 240: \{on_way}")
+  t.run_for(move_most_ms)
+  inspect(stands(t, page), content="0 0 300 240")
+}

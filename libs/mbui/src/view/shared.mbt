@@ -2601,6 +2601,18 @@ fn View::flight_read(self : View) -> Flying? {
 }
 
 ///|
+/// Its flight as the new one (View::shared, View::flies_in), where it is on one, over now: drawn where it is laid out,
+/// in its place, its old copy let go of (Tree::flight_over), at the cause that says so (words sent after it while it
+/// still stands where it set out).
+pub fn View::flight_land(self : View) -> Unit {
+  guard self.live() is Some(_) else { return }
+  match self.tree.flying_of(self.at) {
+    Some(f) => self.tree.flight_over(f)
+    None => ()
+  }
+}
+
+///|
 /// Whether it is on its way as the new one of a flight (View::shared, View::flies_in) now, followed: true from the
 /// change that sets it out, false from the moment it is there (its end, as its flight says for how far it went),
 /// told at those two causes alone, never by the clock. What goes with what flies (a time under a bubble that flies in)

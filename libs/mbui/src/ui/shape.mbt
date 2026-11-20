@@ -617,7 +617,9 @@ pub fn Tester::shape_boxes(self : Tester) -> Array[(String, Double, Double, Doub
     Some(tree) =>
       for d in tree.drawn() {
         if d.alpha > 0.0 && (d.shapes.length() > 0 || d.picture is Some(_)) {
-          out.push((d.words, d.x, d.y, d.w, d.h))
+          // (named by its words, else by what it is drawn as: an icon's View::drawn_as)
+          let name = if d.words != "" { d.words } else { tree.drawn_name(d.id) }
+          out.push((name, d.x, d.y, d.w, d.h))
         }
       }
     None => ()

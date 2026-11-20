@@ -1040,10 +1040,14 @@ jobs:
           echo "realsize_files=$realsize_files" >> "$GITHUB_OUTPUT"
           echo "pages_test_files=$pages_test_files" >> "$GITHUB_OUTPUT"
           # (at 120 and 60 a second in two parts where the files' seconds at 120 by scripts/page-seconds.txt (90 for one it
-          # has not) are ten minutes or more, or 35+ pages_test files changed: one runner's five could not hold them)
+          # has not) are ten minutes or more, or 35+ pages_test files changed: one runner's five could not hold them; in
+          # four, and 24 in two, where they are twenty minutes or more, or 70+ pages_test files: #7620's part 2/2 at 120
+          # and at 60 were cut at their five minutes in two)
           secs=$(printf '%s\n' $files | awk -v tbl=apps/mbui/scripts/page-seconds.txt 'BEGIN { while ((getline < tbl) > 0) if ($1 !~ /^#/ && NF >= 5) t[$1] = ($4 ~ /^[0-9]+$/ ? ($4 == 0 ? 1 : $4) : 90) } NF { sub(/^src\/sfapp\//, ""); sum += ($1 in t ? t[$1] : 90) } END { print sum + 0 }')
           pt_count=$(printf '%s\n' $pages_test_files | awk 'NF { n++ } END { print n + 0 }')
-          if [ "$secs" -ge 600 ] || [ "$pt_count" -ge 35 ]; then
+          if [ "$secs" -ge 1200 ] || [ "$pt_count" -ge 70 ]; then
+            matrix='[{"fps":"120","part":"1/4"},{"fps":"120","part":"2/4"},{"fps":"120","part":"3/4"},{"fps":"120","part":"4/4"},{"fps":"60","part":"1/4"},{"fps":"60","part":"2/4"},{"fps":"60","part":"3/4"},{"fps":"60","part":"4/4"},{"fps":"24","part":"1/2"},{"fps":"24","part":"2/2"}]'
+          elif [ "$secs" -ge 600 ] || [ "$pt_count" -ge 35 ]; then
             matrix='[{"fps":"120","part":"1/2"},{"fps":"120","part":"2/2"},{"fps":"60","part":"1/2"},{"fps":"60","part":"2/2"},{"fps":"24","part":""}]'
           else
             matrix='[{"fps":"120","part":""},{"fps":"60","part":""},{"fps":"24","part":""}]'

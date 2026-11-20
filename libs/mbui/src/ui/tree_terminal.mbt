@@ -895,8 +895,8 @@ pub fn terminal_grid(
 ) -> @view.View {
   parent.box(made_for=loc, fn(b) {
     let id = b.id()
-    tree_terminals_rev.val = tree_terminals_rev.val + 1
-    tree_terminals[id] = {
+    // (said in the window its tree is drawn in, whichever window is in place as it is made: in_tree_window)
+    let entry = {
       term,
       rev,
       size,
@@ -926,7 +926,11 @@ pub fn terminal_grid(
       sb_changed_at: -1.0e9,
       rows: [],
     }
-    b.grow(Is(1.0)).min_height(Is(Some(0.0))).owns(fn() { tree_terminal_gone(id) }) |> ignore
+    in_tree_window(b.tree, fn() {
+      tree_terminals_rev.val = tree_terminals_rev.val + 1
+      tree_terminals[id] = entry
+    })
+    b.grow(Is(1.0)).min_height(Is(Some(0.0))).owns(fn() { in_tree_window(b.tree, fn() { tree_terminal_gone(id) }) }) |> ignore
   })
 }
 

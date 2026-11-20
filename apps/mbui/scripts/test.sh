@@ -609,8 +609,9 @@ for t in $targets; do
       case "$r" in
         @*) rest+=("$r") ;;
         *)
-          s=$(echo " $r " | sed 's| -p stillfail/sfapp_realsize | |')
-          [ -z "${s// /}" ] || rest+=("$s")
+          # (rr, not s: s is when the run began, read again as each run's time is said)
+          rr=$(echo " $r " | sed 's| -p stillfail/sfapp_realsize | |')
+          [ -z "${rr// /}" ] || rest+=("$rr")
           ;;
       esac
     done
@@ -656,7 +657,17 @@ for t in $targets; do
   # sfapp's whitebox C stays smaller and faster to compile.
   if [[ " $pkgs " = *" -p stillfail/sfapp_pages_test "* ]] && [ "${MBC_LTO:-0}" != thin ]; then
     rest=()
-    for r in "${runs[@]}"; do rest+=("$(echo " $r " | sed 's| -p stillfail/sfapp_pages_test | |')"); done
+    # (a run named by @ kept as it is, as the real-size package's above: "@pages …" padded with a blank matched no
+    # name of it below, APP_PART dealt none of its files and gave every one of them to its last part, #7620's)
+    for r in "${runs[@]}"; do
+      case "$r" in
+        @*) rest+=("$r") ;;
+        *)
+          rr=$(echo " $r " | sed 's| -p stillfail/sfapp_pages_test | |')
+          [ -z "${rr// /}" ] || rest+=("$rr")
+          ;;
+      esac
+    done
     runs=("${rest[@]}")
     px=${PAGES_TEST_EXE:-_build/native/release/test/stillfail/sfapp_pages_test/sfapp_pages_test.blackbox_test.exe}
     [ $t = wasm-gc ] && px=$(wasm_exe sfapp_pages_test blackbox)
@@ -876,6 +887,9 @@ for t in $targets; do
           fi
           while read -r g f; do [ "$g" = "${APP_PART%/*}" ] && kept+=("$f"); done < <(page_deal "$specs" "${words[@]:3}")
           [ ${#kept[@]} = 0 ] || mine+=("${words[0]} ${words[1]} ${words[2]} ${kept[*]}")
+        # (the pages_test files' share, PAGES_TEST_PART's already: kept whole, not dealt again)
+        elif [ "${r%% *}" = @pages_test_pages ] && [ -n "${PAGES_TEST_PART:-}" ]; then
+          mine+=("$r")
         else
           [ $((o % ${APP_PART#*/})) = $((${APP_PART%/*} - 1)) ] && mine+=("$r")
           o=$((o + 1))
