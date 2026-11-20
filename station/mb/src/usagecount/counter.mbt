@@ -241,6 +241,22 @@ fn Counter::turns(self : Counter, session : String, from : Double, until : Doubl
 }
 
 ///|
+/// Whether a put-away transcript was read to its end already, with nothing left to write of it: put away, it is not
+/// written again (only restored, and so no longer put away), so its last bytes are not decompressed again to be
+/// compared with its anchor (each read of a station's every archive did, its end segment unpacked each time). One
+/// still lacking its boundary, its anchor or its place, or of a runtime whose calls are not timed whose `,,,` is still
+/// to be written, goes on as before.
+fn read_out(archived : Bool, was : Counted?, sized : Double, path : String, time_from : Double?, runtime : String) -> Bool {
+  guard archived && was is Some(w) else { return false }
+  let to_mark = time_from is Some(_) &&
+    w.speed is None &&
+    w.offset > 0.0 &&
+    runtime != "claude" &&
+    runtime != "codex"
+  sized == w.offset && w.cutoff is Some(_) && w.anchor is Some(_) && w.path == path && !to_mark
+}
+
+///|
 /// counter.ts `#readFile`: one transcript of `session` read on from where it was left, its calls recorded a part at a
 /// time; how many were new.
 async fn Counter::read_file(
@@ -271,6 +287,9 @@ async fn Counter::read_file(
     }
   }
   let sized = size.to_double()
+  if read_out(archived, was, sized, path, self.time_from, runtime) {
+    return 0
+  }
   let mut anchor : Bytes = b""
   let shortened = match was {
     Some(w) => sized < w.offset

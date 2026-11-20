@@ -1,0 +1,153 @@
+// What an upkeep round asks of each session (`find_room`: its room, every path in use followed) found once, not again
+// for each session (cold.mbt `kept_real`, `find_kept`, `follow_kept`).
+
+///|
+/// `body` run to its end on a runtime of the test's.
+fn run_async(body : async () -> Unit) -> Unit raise {
+  let rt = @effect.Runtime::new()
+  let f = rt.fork(body)
+  rt.advance(10)
+  match f.poll() {
+    Some(Succeeded(_)) => ()
+    Some(Failed(e)) => raise e
+    _ => fail("not done")
+  }
+}
+
+///|
+test "the sessions directory followed once found, asked again while it is not there" {
+  let cell : Ref[String?] = Ref::new(None)
+  let mut asked = 0
+  let mut there = false
+  let find = async fn() -> String? {
+    asked += 1
+    if there {
+      Some("/real/sessions")
+    } else {
+      None
+    }
+  }
+  run_async(async fn() {
+    assert_eq(kept_real(cell, find), None)
+    assert_eq(kept_real(cell, find), None)
+    there = true
+    for _ in 0..<300 {
+      assert_eq(kept_real(cell, find), Some("/real/sessions"))
+    }
+  })
+  assert_eq(asked, 3)
+}
+
+///|
+test "a room found is kept for a round's sessions, none found asked again, found again once old" {
+  let rooms : Map[String, String?] = {}
+  let at : Map[String, Double] = {}
+  let mut now = 0.0
+  let asked : Map[String, Int] = {}
+  let find = async fn(w : String) -> String? {
+    asked[w] = asked.get(w).unwrap_or(0) + 1
+    if w.has_prefix("/gone") {
+      None
+    } else {
+      Some("room of " + w)
+    }
+  }
+  run_async(async fn() {
+    for _ in 0..<5 {
+      for i in 0..<256 {
+        find_kept(rooms, at, "/w\{i}", () => now, find)
+      }
+      find_kept(rooms, at, "/gone", () => now, find)
+      now += 1000.0
+    }
+    assert_eq(rooms.get("/w7"), Some(Some("room of /w7")))
+    assert_eq(rooms.get("/gone"), Some(None))
+    now += followed_ms
+    find_kept(rooms, at, "/w7", () => now, find)
+  })
+  assert_eq(asked.get("/w0"), Some(1))
+  assert_eq(asked.get("/w255"), Some(1))
+  assert_eq(asked.get("/w7"), Some(2))
+  // (a workspace made since is found the next time it is asked)
+  assert_eq(asked.get("/gone"), Some(5))
+}
+
+///|
+test "rooms kept at most 1024, their times let go with them" {
+  let rooms : Map[String, String?] = {}
+  let at : Map[String, Double] = {}
+  run_async(async fn() {
+    for i in 0..<1100 {
+      find_kept(rooms, at, "/w\{i}", () => 0.0, async fn(w) { Some(w) })
+    }
+  })
+  assert_eq(rooms.length(), 1024)
+  assert_eq(at.length(), 1024)
+  assert_eq(rooms.get("/w0"), None)
+  assert_eq(at.get("/w0"), None)
+}
+
+///|
+test "a path that fails to follow is not followed again for each session, and is taken as never followed" {
+  let followed : Map[String, (Double, String?)] = {}
+  let failed : Map[String, Double] = {}
+  let mut now = 0.0
+  let asked : Map[String, Int] = {}
+  let follow = async fn(p : String) -> String? {
+    asked[p] = asked.get(p).unwrap_or(0) + 1
+    if p == "/broken" {
+      fail("a link changed as it was followed")
+    }
+    Some("/real" + p)
+  }
+  run_async(async fn() {
+    for _ in 0..<256 {
+      assert_eq(follow_kept(followed, failed, "/broken", () => now, follow), None)
+      assert_eq(follow_kept(followed, failed, "/ok", () => now, follow), Some("/real/ok"))
+    }
+    // Not kept as followed (`in_room` takes it to be in use), nor followed again in the background meanwhile.
+    assert_eq(followed.get("/broken"), None)
+    assert_false(follow_due(followed, failed, "/broken", now))
+    now += followed_ms
+    assert_true(follow_due(followed, failed, "/broken", now))
+    assert_eq(follow_kept(followed, failed, "/broken", () => now, follow), None)
+  })
+  assert_eq(asked.get("/broken"), Some(2))
+  assert_eq(asked.get("/ok"), Some(1))
+}
+
+///|
+test "a path followed after it failed is kept as followed, its failure let go" {
+  let followed : Map[String, (Double, String?)] = {}
+  let failed : Map[String, Double] = {}
+  let mut now = 0.0
+  let mut broken = true
+  let follow = async fn(p : String) -> String? {
+    if broken {
+      fail("a link changed as it was followed")
+    }
+    Some("/real" + p)
+  }
+  run_async(async fn() {
+    assert_eq(follow_kept(followed, failed, "/p", () => now, follow), None)
+    broken = false
+    now += followed_ms
+    assert_eq(follow_kept(followed, failed, "/p", () => now, follow), Some("/real/p"))
+    assert_eq(follow_kept(followed, failed, "/p", () => now, follow), Some("/real/p"))
+  })
+  assert_eq(failed.get("/p"), None)
+  assert_eq(followed.get("/p"), Some((followed_ms, Some("/real/p"))))
+}
+
+///|
+test "a path last followed, failing when followed again, keeps what it was last followed to" {
+  let followed : Map[String, (Double, String?)] = { "/p": (0.0, Some("/old")) }
+  let failed : Map[String, Double] = {}
+  let now = followed_ms
+  run_async(async fn() {
+    assert_eq(follow_kept(followed, failed, "/p", () => now, async fn(_) { fail("changed") }), None)
+  })
+  // (`followed_now` answers it whatever its age, as before)
+  assert_eq(followed.get("/p"), Some((0.0, Some("/old"))))
+  assert_false(follow_due(followed, failed, "/p", now))
+}

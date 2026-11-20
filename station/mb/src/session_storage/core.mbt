@@ -11,6 +11,13 @@ pub struct Storage {
   /// cold.ts `followed`, `rooms`.
   followed : Map[String, (Double, String?)]
   rooms : Map[String, String?]
+  /// When each room in `rooms` was found: one found is kept for as long as a followed link (`followed_ms`).
+  priv rooms_at : Map[String, Double]
+  /// When following each path failed (cold.ts `canonical`'s rejection): not followed again for as long as a followed
+  /// link is kept, and taken meanwhile as never followed (in use).
+  priv follow_failed : Map[String, Double]
+  /// The station's sessions directory, followed: found once, as it is not moved while the station runs.
+  priv sessions_real : Ref[String?]
   /// clones.ts: by workspace (`""` for none), oldest first; and whether the leftovers were swept.
   clones : Map[String, Array[Clone]]
   mut swept : @effect.Deferred[Unit]?
@@ -28,6 +35,9 @@ pub fn Storage::new(st : Station, fs : Files) -> Storage {
     reads: Ref::new(0),
     followed: {},
     rooms: {},
+    rooms_at: {},
+    follow_failed: {},
+    sessions_real: Ref::new(None),
     clones: {},
     swept: None,
     left_alone: Set::new(),
