@@ -41,13 +41,6 @@ let act_size : Double = bar_track
 let act_gap : Double = 10.0
 
 ///|
-/// Capillary liquid bridge parameters between the bottom bar capsule and the `＋` action circle.
-let bar_bond_merge_max : Double = 18.0
-
-///|
-let bar_bond_break_gap : Double = 6.5
-
-///|
 /// How much taller than the capsule its lens is lifted (TabBarLens.kt LIFTED_HEIGHT_RATIO), and how wide for that
 /// height, no wider than a share of a place (LIFTED_ASPECT, LIFTED_TAB_SHARE).
 let lens_lift_h : Double = 1.17
@@ -813,6 +806,13 @@ fn BarModel::jump(self : BarModel) -> Unit {
   self.bond_recoil.put(0.0)
   self.swap = None
 }
+
+///|
+/// Capillary liquid bridge parameters between the bottom bar capsule and the `＋` action circle.
+let bar_bond_merge_max : Double = 18.0
+
+///|
+let bar_bond_break_gap : Double = 6.5
 
 ///|
 /// Schedules the closed-form capillary liquid bridge (`bond_merge` & `bond_recoil`) whenever the effective notch target
