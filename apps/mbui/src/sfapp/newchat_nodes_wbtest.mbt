@@ -155,7 +155,7 @@ test "a new chat made as nodes laid out narrow and wide again as its window chan
 }
 
 ///|
-/// A new chat made as nodes on an Android phone drawn edge to edge (its bars said: 36 over, 24 under), two lines typed
+/// A new chat made as nodes on an Android phone drawn edge to edge (its bars said: 36 over, 24 under), three lines typed
 /// in its field and the soft keyboard up, a Chinese input method's with its row of guesses (320 over the screen's
 /// foot: the window 509 high, its foot the navigation bar's 24 over the keyboard): where its send button and its field
 /// are, and where the window's foot over the keyboard is.
@@ -170,7 +170,7 @@ fn nodes_new_chat_keyboard_up() -> (@ui.Tester, (Double, Double, Double, Double)
   t.draw()
   t.run_for(@ui.move_most_ms)
   t.tap_text("做任何事")
-  t.type_text("看看 host2 和 tokyo，虽然延迟低，但下载视频很慢，为什么呢")
+  t.type_text("从上面发的这几句话要长一些，长到在输入框里折成好几行，发出去以后这一条消息也比列表先估计的高，输入框随后变矮。")
   t.set_ime_inset(kb)
   t.resize_next(w, h - (kb - bottom))
   t.run_for(@ui.move_most_ms)
@@ -186,7 +186,7 @@ fn nodes_new_chat_keyboard_up() -> (@ui.Tester, (Double, Double, Double, Double)
 }
 
 ///|
-test "a new chat made as nodes on an Android phone edge to edge, the keyboard up under two lines typed: its composer and send button over the keyboard, the scene over the band" {
+test "a new chat made as nodes on an Android phone edge to edge, the keyboard up under three lines typed: its composer and send button over the keyboard, the scene over the band" {
   let (t, send, field, foot) = nodes_new_chat_keyboard_up()
   let send_bottom = send.1 + send.3
   let field_bottom = field.1 + field.3
