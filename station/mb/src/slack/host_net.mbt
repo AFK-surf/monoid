@@ -108,6 +108,36 @@ fn decode_hex(hex : String) -> Bytes {
 }
 
 ///|
+/// Parses a shell `ws.open` refusal message (`"websocket refused (<code>)"` or `"websocket refused (<code>): <why>"`)
+/// into `(status, why)`.
+fn parse_ws_refusal(words : String) -> (Int, String)? {
+  match words.find("websocket refused (") {
+    Some(at) => {
+      let rest = words.unsafe_substring(start=at + 19, end=words.length())
+      let digits = rest.iter().take_while(c => c >= '0' && c <= '9').collect()
+      if digits.is_empty() || digits.length() > 6 {
+        return None
+      }
+      let mut n = 0
+      for c in digits {
+        n = n * 10 + (c.to_int() - '0'.to_int())
+      }
+      let tail = words.unsafe_substring(start=at + 19 + digits.length(), end=words.length())
+      if !tail.has_prefix(")") {
+        return None
+      }
+      let why = if tail.has_prefix("): ") {
+        trim(tail.unsafe_substring(start=3, end=tail.length()))
+      } else {
+        ""
+      }
+      Some((n, why))
+    }
+    None => None
+  }
+}
+
+///|
 /// Socket Mode on the shell: `ws.open` with `control: true`, its frames read by `ws.next`, and liveness pings sent by
 /// `ws.ping`.
 pub fn host_ws(host : @host.Host) -> WsIO {
@@ -123,13 +153,9 @@ pub fn host_ws(host : @host.Host) -> WsIO {
       ) catch {
         e => {
           let words = shell_words(e)
-          // "websocket refused (404)": an answer other than the Upgrade
-          if words.has_prefix("websocket refused (") {
-            let digits = words.unsafe_substring(start=19, end=words.length()).iter().take_while(c => c >= '0' && c <= '9').collect()
-            let n = String::from_array(digits)
-            if n != "" {
-              raise WsRefused(js_num(Some(js(n))).to_int(), "")
-            }
+          // "websocket refused (404)" or "websocket refused (403): too_many_websockets"
+          if parse_ws_refusal(words) is Some((n, why)) {
+            raise WsRefused(n, why)
           }
           raise Unanswered(words)
         }

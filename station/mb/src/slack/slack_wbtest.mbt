@@ -394,3 +394,40 @@ test "download refuses Slack's sign-in page, an .html file's too where a redirec
   // a file's bytes by its storage's 302: kept
   assert_eq(downloaded(rt, answering_slack_client(rt, "image/png", true), "a.png"), Ok(6))
 }
+
+///|
+test "parse_ws_refusal extracts handshake-msg and SlackSurface surfaces it in last_error" {
+  assert_eq(parse_ws_refusal("websocket refused (403): too_many_websockets"), Some((403, "too_many_websockets")))
+  assert_eq(parse_ws_refusal("websocket refused (502)"), Some((502, "")))
+  assert_eq(parse_ws_refusal("websocket: connection reset"), None)
+  assert_eq(Show::to_string(WsRefused(403, "too_many_websockets")), "slack refused the connection: HTTP 403 too_many_websockets")
+  assert_eq(Show::to_string(WsRefused(502, "")), "slack refused the connection: HTTP 502")
+  let rt = @effect.Runtime::new()
+  let ws : WsIO = {
+    open: async fn(_) {
+      let (n, why) = parse_ws_refusal("websocket refused (403): too_many_websockets").unwrap()
+      raise WsRefused(n, why)
+    },
+  }
+  let surface = SlackSurface::new(
+    SurfaceOptions::new(
+      "xapp-test",
+      "xoxb-test",
+      fake_slack_client(rt),
+      fake_clock(rt),
+      ws,
+      Words::empty(),
+      Ref("en"),
+      (_, _, _, _) => (),
+      async fn(_) { b"" },
+      ping_ms=5000,
+      stale_ms=20000,
+      backoff_ms=1000,
+    ),
+  )
+  ignore(rt.fork(async fn() { surface.start(async fn(_) { () }) }))
+  rt.advance(0)
+  assert_eq(surface.socket(), (false, Some("slack refused the connection: HTTP 403 too_many_websockets")))
+  surface.stop()
+  rt.advance(0)
+}

@@ -36,12 +36,8 @@ fn p55_shell_socket(host : @host.Host, binary? : Bool = false) -> (String, Array
       }) catch {
         e => {
           let words = "\{e}"
-          match words.find("websocket refused (") {
-            Some(at) => {
-              let digits = words.unsafe_substring(start=at + 19, end=words.length()).iter().take_while(c => c >= '0' && c <= '9').collect()
-              let n = attempt(() => @string.parse_int(String::from_array(digits))).unwrap_or(0)
-              ignore(events.try_offer(Refused(n, "")))
-            }
+          match @connects_hub.parse_ws_refusal(words) {
+            Some((n, why)) => ignore(events.try_offer(Refused(n, why)))
             None => ignore(events.try_offer(Failed(words)))
           }
           return
