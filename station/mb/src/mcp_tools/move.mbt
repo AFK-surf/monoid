@@ -171,7 +171,7 @@ async fn MoveAsks::soon(
   match @effect.timeout(ANSWER_SOON_MS, async fn() { run.wait() }) {
     Some(Succeeded(v)) => v
     Some(Failed(e)) => raise e
-    Some(Interrupted) => raise @effect.Interrupt
+    Some(Interrupted) => raise refusal_of("station_move \{what} was stopped")
     None => {
       self.running.push(
         @effect.runtime().fork(name="station_move told", async fn() {
