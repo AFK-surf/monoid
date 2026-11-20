@@ -717,8 +717,10 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
     |> ignore
     // (the window's height, what a chat list's and a chat's first window are worked out of wherever they are first
     // asked: sfbase's first_window, chat_first_window; said before any page of nodes is made, as it asks; none before
-    // the first frame gives it, what was known kept till then)
-    root.reacts(fn() { root.window_h() }, fn(h) { if h > 0.0 { @sfbase.window_tall.val = h } })
+    // the first frame gives it, what was known kept till then). Read as window().1, not window_h(): the first frame sets
+    // the width before the height, and the shell below (opens_ahead_node, the pick of shell_is) is woken by the width;
+    // read by the height alone this would run after them, and the chats they ask would find no height told yet.
+    root.reacts(fn() { root.window().1 }, fn(h) { if h > 0.0 { @sfbase.window_tall.val = h } })
     // (the window's size from the menu bar, in every state: sfdesk's window_zoom.mbt)
     @sfdesk.zoom_actions(root, src)
     // (pictures by their address as the core gives them, said before any page of nodes is made: what one shows on its
