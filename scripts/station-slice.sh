@@ -53,6 +53,8 @@ long="$long test/hermes.test.ts:5 test/lock-moved-pin.test.ts:5 test/lock-roster
 long="$long test/mb-packed.test.ts:5 test/mb-recent-chat.test.ts:5 test/mb-session-up-jobs.test.ts:5"
 long="$long test/restate-card-concurrent-write.test.ts:5 test/screens.test.ts:5 test/usage-counter.test.ts:5"
 long="$long test/usage-retire.test.ts:5"
+# (mb-fault-net-and-backpressure: three real stations, a restart and 64 MiB through a stalled pipe, 3-4 s on Studio, 2026-11-20)
+long="$long test/mb-fault-net-and-backpressure.test.ts:4"
 ls test/*.test.ts | awk -v i="$i" -v n="$n" -v long="$long" '
   function put(f, c,   g, b) { b = 0; for (g = 1; g < n; g++) if (load[g] < load[b]) b = g; load[b] += c; if (b == i) print f }
   BEGIN { k = split(long, l, " ") }
