@@ -1530,6 +1530,9 @@ moonbit_string_t mb_host_perf_where(void) { return mb_string_from_ns(@"Documents
 // Its folder shown (@hostapi.perf_open): shared through the share sheet here instead.
 int32_t mb_host_perf_open(int32_t go) { (void)go; return 0; }
 
+// A file shown in its folder (@hostapi.reveal_file): no file manager the app can point into here.
+int32_t mb_host_reveal_file(moonbit_string_t s, int32_t go) { (void)s; (void)go; return 0; }
+
 // The record's files' bytes (@hostapi.perf_size): counted once, then as lines are written.
 double mb_host_perf_size(void) {
   if (perf_total < 0) dispatch_sync(perf_queue(), ^{

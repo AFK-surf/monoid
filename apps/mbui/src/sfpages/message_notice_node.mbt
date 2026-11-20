@@ -349,6 +349,9 @@ fn notice_side_node(
     .ink(By(fn() { @ui.style_ink(style()) }))
     .allow_ellipsis(Is(true))
     .cuts(Is(cuts))
+    // (the side that cuts kept whole first: the one beside it given up where both have not the room, as the old
+    // view's notice kept it (message.mbt's `keep`), never this one cut to its least)
+    .fit_whole(Is(cuts))
     |> ignore
   })
   |> ignore

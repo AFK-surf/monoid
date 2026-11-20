@@ -406,6 +406,8 @@ fn new_frame_node(src : Source, w : Workspace, width : () -> Double) -> @sfpages
     core: settings_core(src, w),
     ground: fn(_) { @sf.theme().p.bg },
     width,
+    apart: fn() { false },
+    pane: fn() { None },
     bar: fn(b) {
       @sf.nav_bar_node(b, fn() { tr("common.cancel") }, fn() { tr("android-chat.new.title") }, fn() {
         @sfbase.close_page(NewChat) |> ignore
@@ -597,7 +599,7 @@ fn narrow_made_as(
               over=chat_bar_node,
               stint~,
               // (with chat_page_nodes on: its messages nodes, its composer made as nodes in their list's foot)
-              body=fn(col, s, r, composer, shows) {
+              body=fn(col, s, r, composer, shows, on_stack) {
                 if @sf.native_input() is Mouse {
                   @sfdesk.context_node(col)
                 }
@@ -609,6 +611,7 @@ fn narrow_made_as(
                   tips=@sf.TipLayer::new(fn() { Some(v) }),
                   stint~,
                   shows~,
+                  on_stack~,
                   cover=fn() { bar_foot_live(col, r) },
                   // (and what it comes to, its second row measured or pressed open: where the list was put, under it)
                   cover_to=fn() { bar_foot_coming(r) },
@@ -618,7 +621,7 @@ fn narrow_made_as(
                   lead=unread_lead(),
                 )
               },
-              foot_node=fn(n, s, r, shows, _) { chat_foot_node(n, s, r, shows, @sf.TipLayer::new(fn() { Some(v) })) },
+              foot_node=fn(n, s, r, shows, _) { chat_foot_node(n, s, r, shows, @sf.TipLayer::new(fn() { Some(v) }), stint) },
               leaving=fn(c, s, r) {
                 match workspace_in_view(s).0 {
                   Some(w) => new_chat_leaving(c, s, w, r)

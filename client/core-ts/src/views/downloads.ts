@@ -33,6 +33,9 @@
 //   download.done {id, at?}       saved (`at`: where the system put it), or the saving given up: out of the list (what
 //                                 was kept of it let go where it is read back from `at`; else kept)
 //   download.cancel {id}          stopped and out of the list, what was fetched for it kept
+//   download.saved {station, key, name, size}
+//                                 where a chat's file was saved on this device, while it is still there: {at} ("" none),
+//                                 for the app to show it where the person keeps files (在访达中显示)
 import { Effect, Fiber } from "effect";
 import type { Inner, Progress } from "../core.ts";
 import { handlers } from "../core/execute.ts";
@@ -450,6 +453,12 @@ export class Downloads {
         self.#go(d);
         return { download: shown(d) };
       });
+    }
+    if (c.action === "saved") {
+      const station = need(p.station, "station");
+      const size = typeof p.size === "number" ? p.size : 0;
+      const id = chatKeptId(station, need(p.key, "key"), need(p.name, "name"));
+      return Effect.map(this.#inner.driveKept.savedAt(id, size), (at) => ({ at }));
     }
     const id = need(p.id, "id");
     const d = held.get(id);

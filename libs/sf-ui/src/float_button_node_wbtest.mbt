@@ -28,3 +28,20 @@ test "float button: its ground under the hand stays opaque and visibly tinted in
     assert_true(lit != rest_bg, msg="dark=\{dark}: hover tint did not composite over Surface")
   }
 }
+
+///|
+test "float buttons stacked over a list on a touch screen: each pressed in its own room, the audit clean" {
+  let t = @ui.Tester::new(fn(_c) {  }, w=200.0, h=200.0, platform=2)
+  @ui.set_tree_theme(ui_theme_now)
+  @ui.set_view_app(fn(root) {
+    root.box(fn(page) {
+      page.pad(Is(24.0)).lines_up(Is(Some(Start))) |> ignore
+      float_button_node(page, "list", fn() { "对话目录" }, fn() {  }) |> ignore
+      float_button_node(page, "arrow-down", fn() { "回到底部" }, fn() {  }) |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  let faults = t.audit()
+  assert_true(faults.is_empty(), msg=faults.join("\n"))
+}

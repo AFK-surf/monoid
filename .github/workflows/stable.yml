@@ -153,7 +153,9 @@ jobs:
         uses: actions/setup-node@v5
         with: { node-version-file: .node-version, package-manager-cache: false }
       - uses: ./.github/actions/msvc
+      # (the tools win.sh runs: mbc, chk and its packager, pack; not detlint, apk or testexe)
       - uses: ./.github/actions/mbui-moonbit
+        with: { tools: 'mbc chk pack' }
       # (ghostty-vt's too where the release's checkout names it; win.sh gets it itself otherwise)
       - name: The Windows natives' keys
         id: native-keys

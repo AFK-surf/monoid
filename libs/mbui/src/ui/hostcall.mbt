@@ -301,6 +301,10 @@ struct FakeHost {
   /// (@hostapi.perf_open; Tester::perf_opened)
   mut perf_opens : Bool
   mut perf_opened : Int
+  /// whether a file can be shown in its folder (@hostapi.reveals_files; Tester::set_reveals), and those shown
+  /// (@hostapi.reveal_file; Tester::revealed), oldest first
+  mut reveals : Bool
+  revealed : Array[String]
   /// the record's files' bytes (@hostapi.perf_size; Tester::set_perf_size)
   mut perf_bytes : Double
   /// what a real host said of its views as a run recorded it (Tester::view_said): a video's frames' times, by (view,

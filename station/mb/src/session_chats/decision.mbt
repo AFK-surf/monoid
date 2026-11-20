@@ -256,7 +256,7 @@ pub async fn decide(w : World, config : J, question : J, state : J) -> J {
     headers.push(("authorization", js("Bearer \{key}")))
   }
   if at(Some(config), "sessionHeader") is Some(Bool(true)) {
-    headers.push(("x-opencode-session", w.ask("random.uuid", [])))
+    headers.push(("x-opencode-session", js(@drive.random_uuid())))
   }
   let response = try {
     w.ask("net.fetch", [
@@ -670,7 +670,7 @@ pub async fn discover(w : World, profile : J, check : J) -> J {
     try {
       let headers = [("authorization", js("Bearer \{str_of(at(Some(c), "key")).unwrap_or("")}"))]
       if at(Some(c), "sessionHeader") is Some(Bool(true)) {
-        headers.push(("x-opencode-session", w.ask("random.uuid", [])))
+        headers.push(("x-opencode-session", js(@drive.random_uuid())))
       }
       let mut base = str_of(at(Some(c), "base")).unwrap_or("")
       while ends(base, "/") {

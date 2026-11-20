@@ -13,13 +13,13 @@ let archive_review_bytes : Int = 80000
 
 ///|
 /// Whose archive policy a session's chat is under: its workspace's, None for the station's home one.
-pub async fn policy_ws(w : World, key : J) -> J {
-  let ws = w.hub("wsOf", [key])
+pub fn policy_ws(w : World, key : J) -> J raise {
+  let ws = jopt(w.with_hub(h => h.ws_of_arg(key.to_json())))
   if ws is Null {
     return Null
   }
-  let workspaces = arr_of(Some(w.hub("workspaces", []))).unwrap_or([])
-  if workspaces.length() > 0 && jeq(ws, workspaces[0]) {
+  let workspaces = w.with_hub(h => h.workspaces())
+  if workspaces.length() > 0 && jeq(ws, js(workspaces[0])) {
     Null
   } else {
     ws
@@ -29,7 +29,7 @@ pub async fn policy_ws(w : World, key : J) -> J {
 ///|
 /// Which policy a check of a session's chat was made under: its number as saved (0 for the default).
 pub async fn policy_stamp(w : World, key : String) -> J {
-  let saved = w.store("archivePolicy", [policy_ws(w, js(key))])
+  let saved = w.with_threads_j(t => t.archive_policy(policy_ws(w, js(key)).to_json()))
   match at(at(Some(saved), "change"), "id") {
     Some(Null) | None => ji(0)
     Some(id) => id
@@ -91,29 +91,29 @@ pub async fn review(w : World, key : String) -> Unit {
     return
   }
   let candidates = candidates_of(w)
-  let record = async fn(detail : J) {
+  let record = fn(detail : J) {
     try {
-      w.store("recordDecision", [js(key), detail]) |> ignore
+      ignore(w.with_threads_j(t => t.record_decision(Json::string(key), detail)))
     } catch {
       _ => ()
     }
   }
-  let saved = w.store("archivePolicy", [policy_ws(w, js(key))])
+  let saved = w.with_threads_j(t => t.archive_policy(policy_ws(w, js(key)).to_json()))
   let policy = @session_storage.policy_from(opt_json(Some(saved)))
   let policy_at = match at(at(Some(saved), "change"), "id") {
     Some(Null) | None => ji(0)
     Some(id) => id
   }
-  let verdict = async fn(versions : Array[(J, J)], v : J) {
+  let verdict = fn(versions : Array[(J, J)], v : J) {
     for p in versions {
       try {
-        w.store("setArchiveVerdict", [js(key), p.0, p.1, v]) |> ignore
+        ignore(w.with_threads_j(t => t.set_archive_verdict(Json::string(key), p.0.to_json(), p.1.to_json(), v)))
       } catch {
         _ => ()
       }
     }
   }
-  let threads = arr_of(at(Some(w.store("recentSessionThreads", [js(key)])), "threads")).unwrap_or([])
+  let threads = arr_of(at(Some(w.with_threads_j(t => t.recent_session_threads(Json::string(key), Json::null()))), "threads")).unwrap_or([])
   if candidates.length() == 0 {
     let error = "配置的模型在现有 Profile 中暂不可用"
     record(
@@ -129,7 +129,7 @@ pub async fn review(w : World, key : String) -> Unit {
     let standing = []
     for t in threads {
       let id = at(at(Some(t), "thread"), "id").unwrap_or(Null)
-      standing.push((id, w.store("lastEntry", [id])))
+      standing.push((id, w.with_threads_j(th => th.last_entry(id.to_json()))))
     }
     verdict(standing, jo([("error", js(error))]))
     return
@@ -141,16 +141,8 @@ pub async fn review(w : World, key : String) -> Unit {
     let conversations = []
     for thread in threads {
       let id = at(at(Some(thread), "thread"), "id").unwrap_or(Null)
-      let version = w.store("lastEntry", [id])
-      let messages = arr_of(
-          Some(
-            if w.has("latestMessages") {
-              w.hub("latestMessages", [id, ji(archive_review_messages + 1)])
-            } else {
-              w.store("messagesBefore", [id, Null, ji(archive_review_messages + 1)])
-            },
-          ),
-        )
+      let version = w.with_threads_j(t => t.last_entry(id.to_json()))
+      let messages = arr_of(Some(w.with_db_j(db => @readops.latest_messages(db, { "thread": id.to_json(), "limit": Json::number((archive_review_messages + 1).to_double()) }))))
         .unwrap_or([])
         .copy()
       let omitted = messages.length() > archive_review_messages
@@ -169,11 +161,7 @@ pub async fn review(w : World, key : String) -> Unit {
       }
       let older = messages.length() - kept.length()
       kept.rev_in_place()
-      let pending = if w.has("reviewPendingCard") {
-        w.hub("reviewPendingCard", [id])
-      } else {
-        w.store("pendingCard", [id])
-      }
+      let pending = w.with_db_j(db => @readops.review_pending_card(db, { "thread": id.to_json() }))
       let pending_j = if nullish(Some(pending)) {
         J::Null
       } else {
@@ -224,7 +212,7 @@ pub async fn review(w : World, key : String) -> Unit {
   let now_rule = at(at(Some(w.config()), "automaticDecisions"), "completion").unwrap_or(Null)
   let mut unchanged = true
   for p in versions {
-    if !jeq(w.store("lastEntry", [p.0]), p.1) {
+    if !jeq(w.with_threads_j(t => t.last_entry(p.0.to_json())), p.1) {
       unchanged = false
       break
     }
@@ -275,9 +263,9 @@ pub async fn review(w : World, key : String) -> Unit {
   for p in versions {
     try {
       if accepted {
-        w.store("suggestArchive", [js(key), p.0, p.1]) |> ignore
+        ignore(w.with_threads_j(t => t.suggest_archive(Json::string(key), p.0.to_json(), p.1.to_json())))
       } else {
-        w.store("clearArchiveSuggestion", [js(key), p.0]) |> ignore
+        ignore(w.with_threads_j(t => t.clear_archive_suggestion(Json::string(key), p.0.to_json())))
       }
     } catch {
       _ => ()
@@ -288,7 +276,7 @@ pub async fn review(w : World, key : String) -> Unit {
 ///|
 /// The done chats no decision has answered as they stand now.
 pub async fn undecided(w : World) -> Array[String] {
-  let live = arr_of(Some(w.store("liveSessions", []))).unwrap_or([])
+  let live = w.with_store(s => s.live_sessions()).map(of_json_j)
   let keys = []
   let policies : Array[(J, J)] = []
   for s in live {
@@ -296,18 +284,18 @@ pub async fn undecided(w : World) -> Array[String] {
       continue
     }
     let skey = str_of(at(Some(s), "key")).unwrap_or("")
-    let last = w.store("lastTurn", [js(skey)])
+    let last = w.with_store_j(st => st.last_turn(Json::string(skey)))
     if nullish(Some(last)) || nullish(at(Some(last), "endedAt")) || str_of(at(Some(last), "ending")) != Some("all_done") {
       continue
     }
-    if w.store("hasUndelivered", [js(skey)]) is Bool(true) {
+    if w.with_threads_j(t => t.has_undelivered(Json::string(skey))) is Bool(true) {
       continue
     }
     let ws = policy_ws(w, s)
     let policy = match policies.search_by(p => jeq(p.0, ws)) {
       Some(i) => policies[i].1
       None => {
-        let p = match at(at(Some(w.store("archivePolicy", [ws])), "change"), "id") {
+        let p = match at(at(Some(w.with_threads_j(t => t.archive_policy(ws.to_json()))), "change"), "id") {
           Some(Null) | None => ji(0)
           Some(id) => id
         }
@@ -315,10 +303,10 @@ pub async fn undecided(w : World) -> Array[String] {
         p
       }
     }
-    let threads = arr_of(at(Some(w.store("recentSessionThreads", [js(skey)])), "threads"))
+    let threads = arr_of(at(Some(w.with_threads_j(t => t.recent_session_threads(Json::string(skey), Json::null()))), "threads"))
       .unwrap_or([])
       .map(t => at(at(Some(t), "thread"), "id").unwrap_or(Null))
-    let decided = w.store("lastDecision", [js(skey)])
+    let decided = w.with_threads_j(t => t.last_decision(Json::string(skey)))
     let decided_at = match at(Some(decided), "policyAt") {
       Some(Null) | None => ji(0)
       Some(x) => x
@@ -330,7 +318,7 @@ pub async fn undecided(w : World) -> Array[String] {
     if same_policy {
       let mut all = true
       for id in threads {
-        if !(w.store("archiveSuggested", [id]) is Bool(true)) {
+        if !(w.with_threads_j(t => t.archive_suggested(id.to_json())) is Bool(true)) {
           all = false
           break
         }
@@ -349,7 +337,7 @@ pub async fn undecided(w : World) -> Array[String] {
           Some(p) => at_i(Some(p), 1)
           None => None
         }
-        let last_entry = w.store("lastEntry", [id])
+        let last_entry = w.with_threads_j(t => t.last_entry(id.to_json()))
         let same = match v {
           Some(x) => jeq(x, last_entry)
           None => false

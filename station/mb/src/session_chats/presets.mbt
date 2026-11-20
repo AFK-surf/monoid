@@ -177,7 +177,7 @@ pub async fn read_presets_file(w : World, home : String, me : String) -> Presets
 async fn write_presets(w : World, home : String, presets : Array[J], gone : Array[J]) -> Unit {
   w.ask("fs.mkdir", [js(home)]) |> ignore
   let path = join_path([home, presets_file])
-  let temp = "\{path}.\{js_string_of(Some(w.ask("random.hex", [ji(4)])))}"
+  let temp = "\{path}.\{@drive.hex(@drive.random_bytes(4))}"
   let body = @jsjson.stringify_indent(jo([("presets", ja(presets)), ("gone", ja(gone_kept(gone)))]), 2)
   w.ask("fs.writeFile", [js(temp), js(body + "\n")]) |> ignore
   w.ask("fs.rename", [js(temp), js(path)]) |> ignore
@@ -256,8 +256,8 @@ pub async fn preset_input(w : World, v : J) -> J {
 }
 
 ///|
-async fn homedir(w : World) -> String {
-  str_of(Some(w.ask("os.homedir", []))).unwrap_or("")
+fn homedir(_w : World) -> String {
+  @drive.homedir()
 }
 
 ///|
@@ -269,9 +269,9 @@ async fn expand(w : World, path : String) -> String {
     return join_path([homedir(w), slice(path, 2)])
   }
   if is_absolute(path) {
-    str_of(Some(w.ask("path.resolve", [js(path)]))).unwrap_or(path)
+    resolve_path([path])
   } else {
-    str_of(Some(w.ask("path.resolve", [js(homedir(w)), js(path)]))).unwrap_or(path)
+    resolve_path([homedir(w), path])
   }
 }
 
@@ -381,7 +381,7 @@ async fn git_dir(w : World, path : String) -> String? {
     }
     let text = str_of(Some(w.ask("fs.readText", [js(dot_git)]))).unwrap_or("")
     guard gitdir_line(text) is Some(named) && named != "" else { return None }
-    let dir = str_of(Some(w.ask("path.resolve", [js(path), js(named)]))).unwrap_or("")
+    let dir = resolve_path([path, named])
     let parts = split(dir, "/")
     let mut i = -1
     for k, p in parts {
@@ -554,7 +554,7 @@ pub async fn presets_add(w : World, ws : J, input : J, by : String, owner : Stri
   let given = preset_input(w, input)
   let file = presets_file_of(w, ws)
   let now = w.ask("presets.now", [])
-  let id = "p-\{js_string_of(Some(w.ask("random.hex", [ji(5)])))}"
+  let id = "p-\{@drive.hex(@drive.random_bytes(5))}"
   let preset = spread(
     spread(jo([("id", js(id))]), given),
     jo([("createdBy", js(by)), ("createdAt", now), ("updatedAt", now), ("owner", js(owner)), ("rev", ji(1)), ("home", js(presets_me(w)))]),
@@ -949,7 +949,7 @@ pub async fn keep_copy(w : World, workspace : String, copy : J) -> J {
   }
   let kept = set_field(copy, "dirs", ja(dirs))
   let path = join_path([workspace, copy_file])
-  let temp = "\{path}.\{js_string_of(Some(w.ask("random.hex", [ji(4)])))}"
+  let temp = "\{path}.\{@drive.hex(@drive.random_bytes(4))}"
   w.ask("fs.writeFile", [js(temp), js(@jsjson.stringify_indent(kept, 2) + "\n")]) |> ignore
   w.ask("fs.rename", [js(temp), js(path)]) |> ignore
   kept

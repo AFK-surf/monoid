@@ -334,7 +334,7 @@ fn pane_made(
                 src,
                 fn() { @sfbase.workspace_in_view(src).0.map_or(wid, fn(w) { w.id }) },
                 tips,
-                start_pad=fn() { dmax(12.0, (ends.start)()) },
+                start_pad=fn() { dmax(12.0, (ends.start)(true)) },
                 end_pad=fn() { (ends.end)(false, false) },
                 width~,
                 shown=pane_shows(k),
@@ -571,10 +571,10 @@ fn pane_made(
                   chat_bar_wide_node(o, src, page, pane_chat_bar_ends(src, o, page~), tips, stint)
                 },
                 // (with chat_page_nodes on: its messages nodes, its composer made as nodes in their list's foot)
-                body=fn(col, s, r, composer, shows) {
+                body=fn(col, s, r, composer, shows, on_stack) {
                   pane_made_chat(col, k)
                   context_node(col)
-                  chat_body_nodes(col, s, r, tips, stint, composer, shows)
+                  chat_body_nodes(col, s, r, tips, stint, composer, shows, on_stack~)
                 },
                 // (its composer made as nodes in the list's foot: sfpages' chat_composer_node)
                 foot_node=fn(n, s, r, shows, laid) {
@@ -609,6 +609,18 @@ fn pane_made(
                           new_files_open(s, w.id) &&
                           new_drive_station(s, w) is Some(_)
                         pane - (if beside { side_whole(s, n) } else { 0.0 })
+                      }, apart=fn() { wide.tape.get() },
+                      // (the window's top row it drags by, as pane_made_host puts over a page of its own: a new chat is
+                      // made under none, hidden with its bar as it becomes its chat)
+                      bar=fn(b) {
+                        b.show(fn() { @ui.window_inset() }, fn(t) {
+                          t
+                          .over(Is(true))
+                          .height(Is(Some(@sf.wide_bar_h)))
+                          .presses(Is(true))
+                          .moves_window(Is(true))
+                          |> ignore
+                        })
                       }), tips)
                     None => ()
                   }
@@ -654,7 +666,7 @@ fn pane_chat_bar_ends(
         None => (0.0, 0.0)
       }
     },
-    start: fn() {
+    start: fn(_) {
       match look() {
         Some(f) => f.bar_pl
         None => 0.0

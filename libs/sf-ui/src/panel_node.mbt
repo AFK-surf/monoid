@@ -73,6 +73,12 @@ fn panel_node(
       submenu_layer_lend(layer)
       // (what its fields offer made in it: offers_layer_lent)
       offers_layer_lend(layer)
+      // (the focus left where it is as it opens (not `focus`): what is typed still that field's, its keys the layer's
+      // (kit's popover with its initial focus prevented, as menu_node's keep_field); said before it is modal, the
+      // field's focus kept as the layer takes what is under it)
+      if !x.focus {
+        layer.leaves_typing() |> ignore
+      }
       layer
       .over(Is(true))
       // (modal while open: closing, what is under it its own again as it begins to go)
@@ -81,11 +87,6 @@ fn panel_node(
       .hides(By(fn() { layer.leaving() }))
       .held_back_goes_on()
       |> ignore
-      // (the focus left where it is as it opens (not `focus`): what is typed still that field's, its keys the layer's
-      // (kit's popover with its initial focus prevented, as menu_node's keep_field)
-      if !x.focus {
-        layer.leaves_typing() |> ignore
-      }
       layer
       // (a press outside its panel its own, nothing under it pressed: closing it as it goes down)
       .presses(Is(true))

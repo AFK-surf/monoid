@@ -377,6 +377,46 @@ fn chat_goes_to(
   shows : () -> Bool,
 ) -> Unit {
   let chat = r.station + "\u{1}" + r.session
+  // (where the reader is said to be, chat `r`'s reading (sfbase's), as what shows `s` has it: as it is placed, and as
+  // its page shows again with nothing of it moved (taken back from the stack's kept left, its reading let go of as it
+  // left: chat.mbt's), where the list's sight is not told again)
+  let sync_reading = fn(s : @view.Sight[String]) {
+    let cv = @signals.untracked(view)
+    let rs = @signals.untracked(fn() { rows.read() })
+    let at_foot = s.at_foot || s.from_foot <= 0.5
+    // (placed while it shows: sfbase's keep_place_of)
+    let rd = @sfbase.reading_of(chat)
+    rd.placed = @signals.untracked(shows)
+    match chat_reader_at(s, rs, place, @signals.untracked(cover), @signals.untracked(top)) {
+      Some(at) => {
+        rd.top_seq = at.seq
+        rd.top_off = at.off
+        rd.top_piece = at.piece
+        rd.top_piece_off = at.piece_off
+      }
+      None => ()
+    }
+    rd.bottom_seq = chat_bottom_in_sight(s, rs)
+    // (standing where a go-to put it: the reader at the message gone to, put under the bar, whatever of the one over
+    // it shows under the bar too: reader_top's)
+    match jump.went {
+      (seq, off) if jump.put.untracked() == 2 && seq >= 0.0 => {
+        rd.top_seq = seq
+        rd.top_off = off
+        rd.top_piece = -1
+        rd.top_piece_off = 0.0
+      }
+      _ => ()
+    }
+    rd.far = cv.newer || (!at_foot && s.from_foot > s.shows)
+    // (at the chat's end: what the steps to what a person said and 对话目录 take the reader to be at, outline_current)
+    rd.at_end = at_foot && !cv.newer
+    if at_foot && !cv.newer {
+      @sfbase.place_forget(chat)
+    }
+    // (where the reader is, told: the rail's long tick)
+    jump.reader.set((rd.top_seq, rd.at_end))
+  }
   place.on_sight(fn(s) {
     let cv = @signals.untracked(view)
     let rs = @signals.untracked(fn() { rows.read() })
@@ -431,38 +471,7 @@ fn chat_goes_to(
         }
       _ => ()
     }
-    // (placed while it shows: sfbase's keep_place_of)
-    let rd = @sfbase.reading_of(chat)
-    rd.placed = @signals.untracked(shows)
-    match chat_reader_at(s, rs, place, @signals.untracked(cover), @signals.untracked(top)) {
-      Some(at) => {
-        rd.top_seq = at.seq
-        rd.top_off = at.off
-        rd.top_piece = at.piece
-        rd.top_piece_off = at.piece_off
-      }
-      None => ()
-    }
-    rd.bottom_seq = chat_bottom_in_sight(s, rs)
-    // (standing where a go-to put it: the reader at the message gone to, put under the bar, whatever of the one over
-    // it shows under the bar too: reader_top's)
-    match jump.went {
-      (seq, off) if jump.put.untracked() == 2 && seq >= 0.0 => {
-        rd.top_seq = seq
-        rd.top_off = off
-        rd.top_piece = -1
-        rd.top_piece_off = 0.0
-      }
-      _ => ()
-    }
-    rd.far = cv.newer || (!at_foot && s.from_foot > s.shows)
-    // (at the chat's end: what the steps to what a person said and 对话目录 take the reader to be at, outline_current)
-    rd.at_end = at_foot && !cv.newer
-    if at_foot && !cv.newer {
-      @sfbase.place_forget(chat)
-    }
-    // (where the reader is, told: the rail's long tick)
-    jump.reader.set((rd.top_seq, rd.at_end))
+    sync_reading(s)
   })
   // (the hand on it: the reader's from then)
   v.reacts(
@@ -478,7 +487,27 @@ fn chat_goes_to(
     },
     at_start=false,
   )
-  v.reacts(shows, fn(on) { @sfbase.reading_of(chat).placed = on && place.sight_now() is Some(_) }, at_start=false)
+  v.reacts(
+    shows,
+    fn(on) {
+      match place.sight_now() {
+        Some(s) if on => sync_reading(s)
+        _ => @sfbase.reading_of(chat).placed = false
+      }
+    },
+    at_start=false,
+  )
+  // (put by on the stack's kept left and taken back (its reading let go of as it left: chat.mbt's), showing all along:
+  // said again as it wakes, nothing of it moved)
+  v.on_rest(fn() { @sfbase.reading_of(chat).placed = false }, wake=fn() {
+    if @signals.untracked(shows) {
+      match place.sight_now() {
+        Some(s) => sync_reading(s)
+        None => ()
+      }
+    }
+  })
+  |> ignore
   // (given up: nothing left to go to, said where the chat had messages and none is it)
   let give_up = fn(said : Bool) {
     @sfbase.go_tos.remove(chat)
@@ -1051,6 +1080,10 @@ fn chat_rail_node(
         guard @signals.untracked(fn() { said.get() }) is Some((_, seqs)) && seqs.get(t.at) is Some(seq) else { return }
         @sfbase.go_to(r, seq)
       }
+      // (the tick the pointer rests on, by its message's place among those said: its tip said over the rail's, as the
+      // old page's outline_rail had it)
+      let pointed_at : @signals.Signal[Int?] = @signals.signal(None)
+      let k = chat_key(r)
       // (the keys' or a screen reader's press: the outline beside it, at the message the reader is at)
       @sf.action_box_node(o, fn() { @sf.t("web-main.outline.title") }, fn(press) {
         let cv = @signals.untracked(view)
@@ -1098,12 +1131,50 @@ fn chat_rail_node(
           // comes on the column's one way, never a gap's height switched in a frame)
           fn(t) { (t.i, t.day) },
           fn(row, t) {
+            // (as wide as the press, its ticks at its end: the pointer rests on a tick's room anywhere across it)
+            row.width_share(Is(1.0)).lines_up(Is(Some(End))) |> ignore
             // (a day's gap over the first of a day after another)
             if t.untracked().day {
               row.box(fn(g) { g.height(Is(Some(tick_day_gap.px()))) |> ignore }) |> ignore
             }
             row.box(fn(room) {
               @sf.style_node(room, fn() { tick_room })
+              // (only pointed at, for its tip: a press there the rail's; its message asked for where not held as it
+              // is first pointed at, outline.mbt's rail_ask)
+              room.points(Is(true)).cursor(Is(Some(Hand))) |> ignore
+              room.reacts(fn() { room.pointed() }, fn(on) {
+                let at = @signals.untracked(fn() { t.get().at })
+                if on {
+                  pointed_at.set(Some(at))
+                  match (@signals.untracked(view).thread, @signals.untracked(fn() { said.get() })) {
+                    (Some(th), Some((_, seqs))) =>
+                      match seqs.get(at) {
+                        Some(seq) => if rail_tip_words(k, seq) == "" { rail_ask(src, r, th, seqs, at) }
+                        None => ()
+                      }
+                    _ => ()
+                  }
+                } else if @signals.untracked(fn() { pointed_at.get() }) == Some(at) {
+                  pointed_at.set(None)
+                }
+              }, at_start=false)
+              room.owns(fn() {
+                if @signals.untracked(fn() { pointed_at.get() }) == Some(@signals.untracked(fn() { t.get().at })) {
+                  pointed_at.set(None)
+                }
+              })
+              |> ignore
+              @sf.tip_node(tips, room, fn() {
+                match said.get() {
+                  Some((_, seqs)) =>
+                    match seqs.get(t.get().at) {
+                      Some(seq) => rail_tip_words(k, seq)
+                      None => ""
+                    }
+                  None => ""
+                }
+              }, side=Left)
+              |> ignore
               room.box(fn(line) {
                 line
                 .width(By(fn() { Some(if t.get().reader { tick_long } else { tick_w(t.get().turn) }) }))
@@ -1116,7 +1187,7 @@ fn chat_rail_node(
             |> ignore
           },
         )
-        @sf.tip_node(tips, press, fn() { @sf.t("web-main.keymap.chat.outline") }, side=Left, shortcut="chat.outline")
+        @sf.tip_node(tips, press, fn() { if pointed_at.get() is Some(_) { "" } else { @sf.t("web-main.keymap.chat.outline") } }, side=Left, shortcut="chat.outline")
         |> ignore
         jump.rail_at = Some(press)
         press.owns(fn() { if jump.rail_at.map(fn(b) { b.id() }) == Some(press.id()) { jump.rail_at = None } }) |> ignore
@@ -1294,8 +1365,15 @@ fn chat_flash_way(b : @view.View, key : () -> String, jump : ChatJump) -> @motio
       (due.val)()
       way.put(0.0)
     }
-    guard k == now && at >= 0.0 && b.cause_at() < at + @sfbase.flash_ms else { return }
+    // (held at its peak where it is asked so (sfbase's flash_held: a fixture's still of it, open_chat_at's `held`), as
+    // the old list's flash_of holds it: lit whole, never fading)
+    let held = @sfbase.flash_held.val
+    guard k == now && at >= 0.0 && (held || b.cause_at() < at + @sfbase.flash_ms) else { return }
     (due.val)()
+    if held {
+      way.put(1.0)
+      return
+    }
     way.go(1.0, @motion.tween(@sfbase.flash_in_ms, ease=Out), at~)
     let out = at + (if @ui.reduced_motion() { @sfbase.flash_ms } else { @sfbase.flash_held_ms })
     due.val = b.at_moment(out, fn() {

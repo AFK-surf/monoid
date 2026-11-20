@@ -16,7 +16,7 @@ import { type BodyRefused, LockBodies } from "./lock-bodies.ts";
 import { type Kept, type LogRules, type OffChain, hashOf, keep, rechoose } from "./log-keep.ts";
 import { PersonChains } from "../mesh/person-chains.ts";
 import { SeenDevices } from "../mesh/seen-devices.ts";
-import { type VaultsHeld, personalVaultLock } from "./vault-lock.ts";
+import { type VaultsHeld, personalVaultChains, personalVaultLock } from "./vault-lock.ts";
 import { type Provider, providerOf } from "./provider.ts";
 
 export type Revocation = { kind: string; id: string; at: number };
@@ -624,6 +624,14 @@ export class Cloud {
     const l = this.locked(at);
     if (l !== null) return l.state;
     return personalVaultLock(this, id, { chains: personChainsOf(this), members: seenDevicesOf(this) }, held);
+  }
+
+  /// The personal chains selected for each member outside security mode (GET /vault/boxes); empty in security mode.
+  vaultChains(ws?: string | null, held?: VaultsHeld): Record<string, unknown[]> {
+    const at = ws === undefined || ws === null || ws === this.home() ? null : ws;
+    const id = this.idOf(at);
+    if (id === "" || this.locked(at) !== null) return {};
+    return personalVaultChains(id, { chains: personChainsOf(this), members: seenDevicesOf(this) }, held);
   }
 
   /// What says which of the stations the control plane lists in `ws` are the workspace's: the lock in force, or, where

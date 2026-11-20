@@ -51,13 +51,21 @@ let new_chat_state : NewChatPage = { asked: "" }
 ///|
 fn new_chat_reset() -> Unit {
   new_chat_state.asked = ""
+  new_chat_asked_seq.set(0)
 }
+
+///|
+/// How many times one of the page's picks was asked open (new_chat_ask's): what is made already told by it, a page on
+/// screen opening it then as one made after it does.
+// kept across runs: put back by new_chat_reset
+let new_chat_asked_seq : @signals.Signal[Int] = @signals.signal(0)
 
 ///|
 /// One of the page's picks opened as it is next drawn narrow, as though its capsule were pressed: "station" where it
 /// runs, "model" what it runs on (a fixture's screen of it).
 pub fn new_chat_ask(what : String) -> Unit {
   new_chat_state.asked = what
+  new_chat_asked_seq.set(new_chat_asked_seq.untracked() + 1)
 }
 
 ///|

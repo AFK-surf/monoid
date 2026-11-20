@@ -288,3 +288,80 @@ test "NavTransition::layered clips occluded beside words and text_runs during ho
   let left_mid = t.words().filter(fn(w) { w.0 == "left:base" })
   assert_true(!left_mid.is_empty() && left_mid[0].1 < left_rest_x, msg="exposed left:base parallax: \{Repr(left_mid)}")
 }
+
+///|
+test "nav_flat_view with NavTransition::layered has 0.28x parallax, scrim, hairline, occluded clip, and stays static when stacks=false" {
+  let nav = Nav::new("base")
+  let stacked = @signals.signal(true)
+  let t = Tester::new(fn(_c) {  }, w=390.0, h=844.0, platform=1)
+  t.check_looks(false)
+  set_view_app(fn(root) {
+    nav_flat_view(
+      root,
+      nav,
+      fn(c, p) { c.text(p, size=14.0) |> ignore },
+      fn(_) { true },
+      0.0,
+      bg=fn() { 0xFFFFFFFFL },
+      stacks=fn() { stacked.get() },
+      transition=NavTransition::layered(),
+      made=fn(p) {
+        Some(
+          (
+            "flat/" + p,
+            fn(v, page, _under, _stint, _k) {
+              v.box(fn(row) {
+                row.row(Is(true)).height(Is(Some(60.0))) |> ignore
+                row.box(fn(left) {
+                  left.width(Is(Some(80.0))).words(By(fn() { "left:" + page() }), look={ ..@view.words_plain, size: 14.0 })
+                  |> ignore
+                })
+                |> ignore
+                row.box(fn(spacer) { spacer.grow(Is(1.0)) |> ignore }) |> ignore
+                row.box(fn(right) {
+                  right.width(Is(Some(80.0))).words(By(fn() { "right:" + page() }), look={ ..@view.words_plain, size: 14.0 })
+                  |> ignore
+                })
+                |> ignore
+              })
+              |> ignore
+            },
+          ),
+        )
+      },
+    )
+    |> ignore
+  })
+  t.draw()
+  let left_rest_x = t.rect_of("left:base").unwrap().0
+  let dur = move_ms(390.0)
+  view_event(fn() { nav.push_over("detail") })
+  t.draw()
+  t.run_for(dur * 0.4)
+  let x_top = t.rect_of("left:detail").unwrap().0
+  let x_under = t.rect_of("left:base").unwrap().0
+  let moved_top = 390.0 - x_top
+  assert_true(x_top > 10.0 && x_top < 360.0, msg="flat push_over top x=\{x_top}")
+  assert_true(x_under < left_rest_x, msg="flat push_over under parallax: \{x_under} < \{left_rest_x}")
+  let ratio = (left_rest_x - x_under) / moved_top
+  assert_true(ratio > 0.22 && ratio < 0.34, msg="flat parallax ratio=\{ratio}")
+  assert_true(!black_scrim_alphas(t).is_empty(), msg="expected under scrim during nav_flat_view push_over")
+  let edges = t
+    .drawn_rects()
+    .filter(fn(r) { (r.2 - 1.0).abs() < 0.1 && r.3 >= 800.0 && (r.4 >> 8) == 0L && (r.4 & 0xFFL) > 0L })
+  assert_true(!edges.is_empty(), msg="expected 1px leading-edge hairline during nav_flat_view push_over")
+  assert_false(
+    t.words().iter().any(fn(w) { w.0 == "right:base" }),
+    msg="occluded right:base must be clipped out of words()",
+  )
+  t.run_for(nav.rest() - t.time() + 16.0)
+  assert_eq(black_scrim_alphas(t), [])
+  assert_eq(t.rect_of("left:detail").unwrap().0, 0.0)
+  // stacks=false: switches in place with zero scrim and zero clipping
+  view_event(fn() { stacked.set(false) })
+  view_event(fn() { nav.push_over("flat2") })
+  t.draw()
+  assert_eq(black_scrim_alphas(t), [])
+  assert_eq(t.rect_of("left:flat2").unwrap().0, 0.0)
+  assert_true(t.words().iter().any(fn(w) { w.0 == "right:flat2" }))
+}

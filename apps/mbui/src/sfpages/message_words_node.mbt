@@ -231,6 +231,16 @@ fn mine_said_node(
     ),
     led: fn(b) {
       lead_view.set(Some(b))
+      // (said of its chat while it still stands in the field it set out from, flying from there: words sent after it
+      // in that while land it first, sent_in_field_land)
+      if flies_from is Some(_) {
+        let chat = here.station + "\u{1}" + here.session
+        let out_at = made_at + @sfbase.sent_out_away_ms()
+        let held = sent_in_field.get(chat).unwrap_or([])
+        held.push((out_at, b))
+        sent_in_field[chat] = held
+        b.owns(fn() { sent_in_field_drop(chat, b) }) |> ignore
+      }
       b.reacts(fn() { b.flight_ends_now() }, fn(ends) {
         flight_ends.set(ends)
         match ends {
@@ -725,5 +735,51 @@ fn sent_far_ms(far : Double) -> Double {
     0.0
   } else {
     @sf.dmin(@sfbase.flight_way_ms(true, far), @sfbase.flight_desk_ms)
+  }
+}
+
+///|
+/// The leads of words sent from each chat's composer (by its station and session) on their flight, each with when it
+/// is out of the field it set out from (sfbase's sent_out_away_ms after it was sent): mine_said_node's.
+// kept across runs: put back by sent_in_field_reset
+let sent_in_field : Map[String, Array[(Double, @view.View)]] = Map([])
+
+///|
+fn sent_in_field_reset() -> Unit {
+  sent_in_field.clear()
+}
+
+///|
+/// Lead `b` of chat `chat`'s words gone: none of them any more.
+fn sent_in_field_drop(chat : String, b : @view.View) -> Unit {
+  guard sent_in_field.get(chat) is Some(held) else { return }
+  let kept = held.filter(fn(e) { !physical_equal(e.1, b) && e.1.alive() })
+  if kept.is_empty() {
+    sent_in_field.remove(chat)
+  } else {
+    sent_in_field[chat] = kept
+  }
+}
+
+///|
+/// Words sent from chat `chat`'s composer now (the moment of the cause that sends them): those sent before them still
+/// in the field they set out from (out of it after now) landed in their row first, never left there under these
+/// (words_over); those out of it already go on on their way.
+fn sent_in_field_land(chat : String) -> Unit {
+  guard sent_in_field.get(chat) is Some(held) else { return }
+  let kept = []
+  for e in held {
+    let (out_at, b) = e
+    guard b.alive() else { continue }
+    if out_at > b.cause_at() {
+      b.flight_land()
+    } else {
+      kept.push(e)
+    }
+  }
+  if kept.is_empty() {
+    sent_in_field.remove(chat)
+  } else {
+    sent_in_field[chat] = kept
   }
 }

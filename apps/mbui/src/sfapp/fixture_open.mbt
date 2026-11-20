@@ -438,10 +438,10 @@ pub fn open_fixture_mode(mode : String) -> Unit {
 /// tree was let go (switches_still_wbtest's keys-dialog, on 中屏 and 大屏 after 小屏; run_begins_wbtest).
 pub fn fixture_app(mode : String, chat_nodes? : Bool = false) -> Source {
   new_run()
-  // (the chat's page made as nodes, as one who turned 实验性功能's 试用新对话页 on has it: said before the mode opens a chat,
-  // which is made as the choice stands then)
+  // (the chat's page made as nodes, as the test channel has it, whatever the mode's channel: held before the mode
+  // opens a chat, which is made as it stands then)
   if chat_nodes {
-    @sfbase.chat_page_nodes.set(true)
+    @sfbase.hold_chat_page_nodes(Some(true))
   }
   let src = @sffixture.fixture(mode)
   open_fixture_over(mode, src)

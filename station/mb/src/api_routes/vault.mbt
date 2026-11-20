@@ -109,6 +109,49 @@ fn lock_devices(l : JV) -> Array[JV] {
 }
 
 ///|
+/// The lock's members' roles as `(sub, role)` pairs, supporting both plain object `{sub: {role}}` and Map `$map`.
+fn lock_member_roles(l : JV) -> Array[(String, String)] {
+  let role_of = (v : JV) => match v {
+    Str(r) if r != "" => r
+    Obj(_) =>
+      match v.get("role") {
+        Some(Str(r)) if r != "" => r
+        _ => "member"
+      }
+    _ => "member"
+  }
+  let out = []
+  match l.get("members") {
+    Some(Obj(entries) as m) =>
+      match m.get("$map") {
+        Some(Arr(pairs)) =>
+          for p in pairs {
+            let ps = jitems(Some(p))
+            if ps.get(0) is Some(Str(sub)) {
+              out.push((sub, role_of(ps.get(1).unwrap_or(jundef))))
+            }
+          }
+        _ =>
+          for e in entries {
+            out.push((e.0, role_of(e.1)))
+          }
+      }
+    _ => ()
+  }
+  out
+}
+
+///|
+fn lock_member_role(l : JV, sub : String) -> String? {
+  for p in lock_member_roles(l) {
+    if p.0 == sub {
+      return Some(p.1)
+    }
+  }
+  None
+}
+
+///|
 fn admit_who(r : Request) -> JV {
   let device = r.who("lockDevice")
   jobj([
@@ -173,8 +216,21 @@ fn Admin::vault_routes(self : Admin) -> Array[Route] {
           l,
           field_of(h.get("sig"), "key").unwrap_or(jundef),
         ])
-        if field_of(Some(signer), "sub").unwrap_or(jundef) !=
-          h.get("owner").unwrap_or(jundef) {
+        let signer_sub = field_of(Some(signer), "sub").unwrap_or(jundef)
+        if nullish(signer_sub) {
+          continue
+        }
+        let is_ws = h.get("scope") == Some(Str("workspace"))
+        let signer_admin = match signer_sub {
+          Str(sub) =>
+            match lock_member_role(l, sub) {
+              Some("owner") | Some("admin") => true
+              _ => false
+            }
+          _ => false
+        }
+        if signer_sub != h.get("owner").unwrap_or(jundef) &&
+          !(is_ws && signer_admin) {
           continue
         }
         let found = v("vault", [
@@ -182,8 +238,9 @@ fn Admin::vault_routes(self : Admin) -> Array[Route] {
           h.get("id").unwrap(),
         ])
         if !(found is Null) &&
-          found.get("owner").unwrap_or(jundef) ==
-          h.get("owner").unwrap_or(jundef) {
+          (found.get("owner").unwrap_or(jundef) ==
+            h.get("owner").unwrap_or(jundef) ||
+            (is_ws && found.get("scope") == Some(Str("workspace")))) {
           latest.push(found)
         }
       }
@@ -251,9 +308,25 @@ fn Admin::vault_routes(self : Admin) -> Array[Route] {
         let why = if sibling {
           let w = crypto("vaultOk", [l, Null, next, jbool(true)])
           if nullish(w) {
-            if next.get("owner").unwrap_or(jundef) !=
+            let next_scope = next.get("scope").unwrap_or(Null)
+            let prev_scope = prev.get("scope").unwrap_or(Null)
+            if next_scope != prev_scope {
+              js("a vault's scope does not change")
+            } else if next.get("owner").unwrap_or(jundef) !=
               prev.get("owner").unwrap_or(jundef) {
-              js("a vault's owner does not change")
+              let signer = crypto("signerOf", [
+                l,
+                field_of(next.get("sig"), "key").unwrap_or(jundef),
+              ])
+              let takeover = next_scope == Str("workspace") &&
+                prev_scope == Str("workspace") &&
+                field_of(Some(signer), "sub").unwrap_or(jundef) ==
+                next.get("owner").unwrap_or(jundef)
+              if takeover {
+                Null
+              } else {
+                js("a vault's owner does not change")
+              }
             } else {
               Null
             }
@@ -487,6 +560,30 @@ fn Admin::vault_routes(self : Admin) -> Array[Route] {
         if crypto("certOk", [l, c]) is Null {
           kept.push(c)
         }
+      }
+      if l.get("genesis") == Some(Str("")) {
+        let member_roles = lock_member_roles(l)
+        let roles_fields = member_roles.map(p => (p.0, js(p.1)))
+        let member_subs : Map[String, Unit] = Map([])
+        for p in member_roles {
+          member_subs[p.0] = ()
+        }
+        let chains_fields = []
+        let raw_chains = self.backend.ask("vault.personalChains", [ws])
+        if raw_chains is Obj(entries) {
+          for e in entries {
+            if member_subs.contains(e.0) {
+              chains_fields.push((e.0, e.1))
+            }
+          }
+        }
+        return ok(
+          jobj([
+            ("boxes", jarr(kept)),
+            ("chains", jobj(chains_fields)),
+            ("roles", jobj(roles_fields)),
+          ]),
+        )
       }
       ok(jobj([("boxes", jarr(kept))]))
     }),

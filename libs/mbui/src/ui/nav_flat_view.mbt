@@ -121,6 +121,7 @@ pub fn[P] nav_flat_view(
   made? : (P) -> (String, (@view.View, () -> P, P?, () -> Int, Int) -> Unit)? = fn(_) { None },
   shown? : (Array[Int]) -> Unit = fn(_) {  },
   keeps_left? : (P) -> (String, String)?,
+  transition? : NavTransition = NavTransition::flat(),
 ) -> @view.View {
   // (what shows pushed over the page in place, where what is pushed over is so here)
   let stacked = fn() { stacks() && nav.stacked() }
@@ -287,13 +288,54 @@ pub fn[P] nav_flat_view(
         pv
           .over(Is(true))
           .shift(
-            By(fn() { if seen.get().stacked { nav.shift_of(k, fn() { pv.drawn_at() }) } else { (0.0, 0.0) } }),
+            By(fn() {
+              if seen.get().stacked {
+                nav.shift_of(k, fn() { pv.drawn_at() }, under_parallax=transition.under_parallax)
+              } else {
+                (0.0, 0.0)
+              }
+            }),
             ends=fn() { if @signals.untracked(fn() { seen.get().stacked }) { nav.shift_ends_of(k) } else { -1.0 } },
           )
           .presses(By(fn() { if seen.get().stacked { nav.takes(k) } else { shows() } }))
           |> ignore
+        if transition.rise_under_scale != 1.0 {
+          pv
+            .scale(
+              By(fn() {
+                if seen.get().stacked {
+                  nav.rise_scale_of(k, fn() { nav.slide_moment(pv) }, transition.rise_under_scale)
+                } else {
+                  1.0
+                }
+              }),
+              about=At(0.5, 0.5),
+            )
+            |> ignore
+        }
+        let pv_id = pv.id()
+        if transition.under_dim > 0.0 || transition.rise_dim > 0.0 || transition.edge_shadow {
+          nav_veils[pv_id] = fn(x, y, w, h, now) {
+            if @signals.untracked(fn() { seen.get().stacked }) {
+              nav.veil_of(k, transition, x, y, w, h, now)
+            } else {
+              None
+            }
+          }
+        }
+        if transition.under_parallax < 1.0 {
+          nav_clips[pv_id] = fn(x, w, now) {
+            if @signals.untracked(fn() { seen.get().stacked }) {
+              nav.clip_of(k, transition, x, w, now)
+            } else {
+              None
+            }
+          }
+        }
         // (let go as it leaves the stack, not kept shown: what it made forgotten, the app told)
         pv.owns(fn() {
+          nav_veils.remove(pv_id)
+          nav_clips.remove(pv_id)
           held.remove(k)
           let here = nav.pages.iter().any(fn(e) { e.serial == k }) ||
             (nav.leaving is Some(e) && e.serial == k) ||

@@ -3748,6 +3748,20 @@ void mb_host_set_perf(int32_t on) { (void)on; }
 void mb_host_perf_line(moonbit_string_t line) { (void)line; }
 moonbit_string_t mb_host_perf_where(void) { return moonbit_make_string_raw(0); }
 int32_t mb_host_perf_open(int32_t go) { (void)go; return 0; }
+
+// A file shown chosen in its folder in the Finder (@hostapi.reveal_file: 在访达中显示), or whether that can be done
+// here (go 0): it can. Only a file that is there; a scripted run (MBUI_SCRIPT, MBUI_DRIVE) says it on the log alone
+// (reveal-file: …), opening nothing on the machine it runs on.
+int32_t mb_host_reveal_file(moonbit_string_t s, int32_t go) {
+  if (!go) return 1;
+  NSString *path = mb_ns_from_string(s);
+  if (path.length == 0 || ![NSFileManager.defaultManager fileExistsAtPath:path]) return 0;
+  fprintf(stdout, "reveal-file: %s\n", path.UTF8String);
+  fflush(stdout);
+  if (getenv("MBUI_SCRIPT") || getenv("MBUI_DRIVE") || getenv("MBUI_DRIVE_B64")) return 1;
+  [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[ [NSURL fileURLWithPath:path] ]];
+  return 1;
+}
 double mb_host_perf_size(void) { return 0; }
 moonbit_bytes_t mb_host_perf_read(void) { return moonbit_make_bytes(0, 0); }
 

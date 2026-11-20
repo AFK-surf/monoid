@@ -25,7 +25,7 @@
 // scripts/delta-fast.c's, the same steps in C (ensureNativeDelta), where a C compiler with zlib is at hand.
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { accessSync, constants as fsConstants, existsSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -499,19 +499,27 @@ const END = Buffer.alloc(8);
 /** Below this share of the old blob found whole, the whole of it is sorted, as without `oldFiles`. */
 const WHOLE_ENOUGH = 1 / 8;
 
+function makeDeltaJs(old: Buffer, made: Buffer, files: string[], inflate: Range[], deflate: Range[], oldFiles?: Range[], oldHash = sha256(old)): Buffer {
+  const head = encodeHeader({ files, inflate, oldSize: old.length, oldSha256: oldHash, deflate, madeSize: made.length });
+  const runs = sameBlocks(old, made, oldFiles ? wholeFiles(old, oldFiles, made) : []);
+  const covered = old.length - outside(old.length, runs).m;
+  const body = covered > 0 && covered >= old.length * WHOLE_ENOUGH ? bsdiff(old, made, sparseSuffixArray(old, runs), runs) : bsdiff(old, made);
+  return Buffer.concat([head, ...body, END]);
+}
+
 /**
  * A delta's bytes; `oldFiles`, the ranges of the old blob's files, lets those found whole in `made` go unsorted.
  * `madeFile`: where `made` is on disk already, for delta-fast.c to read rather than a copy.
  */
 export function makeDelta(old: Buffer, made: Buffer, files: string[], inflate: Range[], deflate: Range[], oldFiles?: Range[], madeFile?: string): Buffer {
-  const head = encodeHeader({ files, inflate, oldSize: old.length, oldSha256: sha256(old), deflate, madeSize: made.length });
+  const oldHash = sha256(old);
   const native = old.length >= PREFIXED_FROM || process.env.STILLFAIL_DELTA_FAST_FORCE === "1" ? nativeChunksFiles(old, made, oldFiles, madeFile) : null;
   lastMaker = native ? "native" : "js";
-  if (native) return Buffer.concat([head, native, END]);
-  const runs = sameBlocks(old, made, oldFiles ? wholeFiles(old, oldFiles, made) : []);
-  const covered = old.length - outside(old.length, runs).m;
-  const body = covered > 0 && covered >= old.length * WHOLE_ENOUGH ? bsdiff(old, made, sparseSuffixArray(old, runs), runs) : bsdiff(old, made);
-  return Buffer.concat([head, ...body, END]);
+  if (native) {
+    const head = encodeHeader({ files, inflate, oldSize: old.length, oldSha256: oldHash, deflate, madeSize: made.length });
+    return Buffer.concat([head, native, END]);
+  }
+  return makeDeltaJs(old, made, files, inflate, deflate, oldFiles, oldHash);
 }
 
 /** Which made the last delta's chunks: delta-fast.c or this file's bsdiff (the tests see the native one was used). */
@@ -552,7 +560,7 @@ export function ensureNativeDelta(cacheDir?: string): string | null {
 }
 
 /** The chunks delta-fast.c makes of `old` to `made`, computing wholeFiles/sameBlocks in C (`--files`), or null. */
-function nativeChunksFiles(old: Buffer, made: Buffer, oldFiles?: Range[], madeFile?: string): Buffer | null {
+function nativeChunksFiles(old: Buffer, made: Buffer | null, oldFiles?: Range[], madeFile?: string, verify = false): Buffer | null {
   const bin = ensureNativeDelta();
   if (!bin) return null;
   const dir = mkdtempSync(join(tmpdir(), "delta-fast-"));
@@ -564,8 +572,12 @@ function nativeChunksFiles(old: Buffer, made: Buffer, oldFiles?: Range[], madeFi
     let madePath = madeFile;
     writeFileSync(oldPath, old);
     writeFileSync(filesPath, filesBin);
-    if (!madePath) writeFileSync((madePath = join(dir, "made")), made);
-    execFileSync(bin, ["--files", oldPath, madePath, filesPath, outPath], { stdio: ["ignore", "ignore", "pipe"] });
+    if (!madePath) {
+      if (!made) throw new Error("made buffer or madeFile is required");
+      writeFileSync((madePath = join(dir, "made")), made);
+    }
+    const args = verify ? ["--files", "--verify", oldPath, madePath, filesPath, outPath] : ["--files", oldPath, madePath, filesPath, outPath];
+    execFileSync(bin, args, { stdio: ["ignore", "ignore", "pipe"] });
     return readFileSync(outPath);
   } catch (e) {
     const err = e as { stderr?: Buffer; message: string };
@@ -580,15 +592,38 @@ let nativeFailed = false;
 
 /** A delta from an in-memory tree (`files`, `ranges`, `old`) to `newFile`, written to `out` once applying it gives that file. */
 export function makeTreeFromBuffer(files: string[], ranges: Range[], old: Buffer, newFile: string, out: string): void {
-  const neu = readFileSync(newFile);
-  writeFileSync(out, makeDelta(old, neu, files, [], [], ranges, newFile));
+  const oldHash = sha256(old);
+  const madeSize = statSync(newFile).size;
+  const tryNative = old.length >= PREFIXED_FROM || process.env.STILLFAIL_DELTA_FAST_FORCE === "1";
+  const native = tryNative ? nativeChunksFiles(old, null, ranges, newFile, true) : null;
+  let deltaBuf: Buffer;
+  let neu: Buffer | undefined;
+  if (native) {
+    lastMaker = "native";
+    const head = encodeHeader({ files, inflate: [], oldSize: old.length, oldSha256: oldHash, deflate: [], madeSize });
+    deltaBuf = Buffer.concat([head, native, END]);
+  } else {
+    neu = readFileSync(newFile);
+    deltaBuf = makeDeltaJs(old, neu, files, [], [], ranges, oldHash);
+    lastMaker = "js";
+  }
+  writeFileSync(out, deltaBuf);
   // Checked against the old blob already read, as readOld would (its reading of a folder: test/delta.test.ts, applyFile).
   verified(out, () => {
-    const d = readFileSync(out), h = parseHeader(d), want = expecting(neu);
+    const h = parseHeader(deltaBuf);
     if (h.files.join("\0") !== files.join("\0")) throw new Error("the delta's old files are not the folder's");
-    if (h.oldSize !== old.length || h.oldSha256 !== sha256(old)) throw new Error("the old blob's sha256 is not the delta's");
-    apply(h, old, d, want.sink);
-    want.done();
+    if (h.oldSize !== old.length || h.oldSha256 !== oldHash) throw new Error("the old blob's sha256 is not the delta's");
+    if (h.madeSize !== madeSize) throw new Error("the delta's made_size is not the package's");
+    if (h.deflate.length !== 0) throw new Error("a folder's delta has deflate ranges");
+    if (lastMaker === "native") {
+      if (deltaBuf.length < h.payload! + 8 || !deltaBuf.subarray(deltaBuf.length - 8).equals(END)) {
+        throw new Error("the delta has no end chunk");
+      }
+    } else {
+      const want = expecting(neu!);
+      apply(h, old, deltaBuf, want.sink);
+      want.done();
+    }
   });
 }
 

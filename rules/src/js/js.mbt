@@ -472,9 +472,19 @@ impl @vault.Crypto for JsCrypto with record_sig_valid(self, sig, tag, text) {
 /// The lock as the vault reads it, off a station/src/cloud/lock.ts `LockState` (its maps JS Maps).
 fn lock_view(lock : JsValue) -> @vault.LockView {
   let members : Map[String, Unit] = Map([])
+  let roles : Map[String, String] = Map([])
   let ms = js_entries(js_get(lock, "members"))
   for i in 0..<js_len(ms) {
-    members[js_str(js_at(js_at(ms, i), 0))] = ()
+    let pair = js_at(ms, i)
+    let sub = js_str(js_at(pair, 0))
+    let val = js_at(pair, 1)
+    members[sub] = ()
+    let role = match js_kind(val) {
+      3 => js_str(val)
+      5 => opt_str(js_get(val, "role")).unwrap_or("member")
+      _ => "member"
+    }
+    roles[sub] = role
   }
   let devices : Map[String, @vault.Device] = Map([])
   let ds = js_entries(js_get(lock, "devices"))
@@ -493,7 +503,7 @@ fn lock_view(lock : JsValue) -> @vault.LockView {
     let had = js_at(js_at(ks, i), 1)
     sign_keys[js_str(js_at(js_at(ks, i), 0))] = Array::makei(js_len(had), fn(j) { js_str(js_at(had, j)) })
   }
-  { ws: js_str(js_get(lock, "ws")), members, devices, sign_keys }
+  { ws: js_str(js_get(lock, "ws")), members, roles, devices, sign_keys }
 }
 
 ///|

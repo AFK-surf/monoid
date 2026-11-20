@@ -168,3 +168,115 @@ test "a device's newer box certificate written over the one held" {
   assert_eq(stringify(body), "{\"box\":\{stringify(cert)}}")
   assert_eq(stringify(jarr(parts.args_of("vaults.putBoxIf"))), "[\{stringify(cert)},\"bb\"]")
 }
+
+///|
+test "GET /vault/boxes outside security mode returns personal chains and member roles" {
+  let cert = jobj([("ws", js("w1")), ("device", js("d1")), ("at", jint(1))])
+  let personal_lock = jobj([
+    ("ws", js("w1")),
+    ("genesis", js("")),
+    (
+      "members",
+      jobj([
+        ("u1", jobj([("sub", js("u1")), ("email", js("u1@x")), ("role", js("owner"))])),
+        ("u2", jobj([("sub", js("u2")), ("email", js("u2@x")), ("role", js("admin"))])),
+      ]),
+    ),
+    ("devices", jobj([("d1", jobj([("id", js("d1")), ("sub", js("u1"))]))])),
+  ])
+  let chains = jobj([
+    ("u1", jarr([jobj([("seq", jint(0))])])),
+    ("stranger", jarr([jobj([("seq", jint(0))])])),
+  ])
+  let parts = vault_parts(personal_lock, [
+    ("vaults.boxesFor", _ => jarr([cert])),
+    ("vault.personalChains", _ => chains),
+  ])
+  let (status, body) = vault_ask(parts.admin(), "GET", "/vault/boxes", [], None)
+  assert_eq(status, 200)
+  assert_eq(
+    stringify(body),
+    "{\"boxes\":[{\"ws\":\"w1\",\"device\":\"d1\",\"at\":1}],\"chains\":{\"u1\":[{\"seq\":0}]},\"roles\":{\"u1\":\"owner\",\"u2\":\"admin\"}}",
+  )
+}
+
+///|
+test "POST /vault/vaults/latest and PUT /vault/vaults sibling support workspace vault admin signer and owner takeover" {
+  let ws_lock = jobj([
+    ("ws", js("w1")),
+    (
+      "members",
+      jobj([
+        ("u1", jobj([("sub", js("u1")), ("email", js("u1@x")), ("role", js("owner"))])),
+        ("u2", jobj([("sub", js("u2")), ("email", js("u2@x")), ("role", js("admin"))])),
+      ]),
+    ),
+    ("devices", jobj([("d1", jobj([("id", js("d1")), ("sub", js("u1"))]))])),
+  ])
+  let held = jobj([
+    ("id", js("v1")),
+    ("ws", js("w1")),
+    ("owner", js("u1")),
+    ("scope", js("workspace")),
+    ("members", jstrs(["u1", "u2"])),
+    ("seq", jint(0)),
+    ("sig", jobj([("key", js("k2"))])),
+  ])
+  let current = jobj([
+    ("id", js("v1")),
+    ("ws", js("w1")),
+    ("owner", js("u2")),
+    ("scope", js("workspace")),
+    ("members", jstrs(["u2"])),
+    ("seq", jint(1)),
+  ])
+  let latest_parts = vault_parts(ws_lock, [
+    ("vault/crypto.signedOk", _ => jbool(true)),
+    ("vault/crypto.signerOf", _ => jobj([("sub", js("u2")), ("device", js("d2"))])),
+    ("vaults.vault", _ => current),
+  ])
+  let (status, body) = vault_ask(latest_parts.admin(), "POST", "/vault/vaults/latest", [], Some(jobj([("held", jarr([held]))])))
+  assert_eq(status, 200)
+  assert_eq(stringify(body), "{\"vaults\":[\{stringify(current)}]}")
+
+  // Sibling copy of workspace vault allows owner takeover by signer; rejects third-party owner or scope change.
+  let sibling_parts = vault_parts(ws_lock, [
+    ("vaults.vaultSnapshot", _ => snapshot(held, "b0")),
+    ("vault/crypto.vaultSupersedes", _ => jbool(true)),
+    ("vault/crypto.signerOf", _ => jobj([("sub", js("u2")), ("device", js("d2"))])),
+    ("vaults.putVaultIf", _ => jbool(true)),
+  ])
+  let sibling_ws = jobj([
+    ("id", js("v1")),
+    ("ws", js("w1")),
+    ("owner", js("u2")),
+    ("scope", js("workspace")),
+    ("members", jstrs(["u2"])),
+    ("seq", jint(0)),
+    ("sig", jobj([("key", js("k2"))])),
+  ])
+  let (s_ok, _) = vault_ask(sibling_parts.admin(), "PUT", "/vault/vaults", [("copy", "1")], Some(sibling_ws))
+  assert_eq(s_ok, 200)
+
+  let sibling_third_party = jobj([
+    ("id", js("v1")),
+    ("ws", js("w1")),
+    ("owner", js("u3")),
+    ("scope", js("workspace")),
+    ("members", jstrs(["u2", "u3"])),
+    ("seq", jint(0)),
+    ("sig", jobj([("key", js("k2"))])),
+  ])
+  let (s_bad_owner, _) = vault_ask(sibling_parts.admin(), "PUT", "/vault/vaults", [("copy", "1")], Some(sibling_third_party))
+  assert_eq(s_bad_owner, 400)
+
+  let sibling_bad_scope = jobj([
+    ("id", js("v1")),
+    ("ws", js("w1")),
+    ("owner", js("u1")),
+    ("members", jstrs(["u1"])),
+    ("seq", jint(0)),
+  ])
+  let (s_bad, _) = vault_ask(sibling_parts.admin(), "PUT", "/vault/vaults", [("copy", "1")], Some(sibling_bad_scope))
+  assert_eq(s_bad, 400)
+}

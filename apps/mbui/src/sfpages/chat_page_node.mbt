@@ -25,6 +25,7 @@ pub fn chat_page_body_node(
   foot? : () -> Double = fn() { list_foot },
   composer? : (@view.View) -> Unit,
   lead? : Double = unread_lead,
+  on_stack? : () -> Bool = fn() { true },
 ) -> Unit {
   // (what changes on it moves only for a cause said (a press, a key, a live cause its list judges so): what the core
   // brings or a page coming to show is there at once, @view.transition)
@@ -61,9 +62,7 @@ pub fn chat_page_body_node(
     v,
     w.field,
     fn(paths) {
-      for d in @sfbase.finder_dragged(src, paths) {
-        @sfbase.files_into(draft, d)
-      }
+      @sfbase.files_into_many(draft, @sfbase.finder_dragged(src, paths))
     },
     takes=fn() { @sfbase.finder_by_station_in(@sfbase.workspace_of(r.station)) },
   )
@@ -147,6 +146,9 @@ pub fn chat_page_body_node(
     wake=fn() {
       at_rest.val = false
       woken.set(woken.untracked() + 1)
+      // (shown again from where it was put by, its `shows` the same as it rested so the reaction under tells nothing:
+      // its pictures that could not be had asked again, as it comes into view)
+      src.images.again(r.station)
     },
   )
   |> ignore
@@ -244,7 +246,7 @@ pub fn chat_page_body_node(
         composer?,
         lead~,
         read=fn(place, scroll, rows, reopening, on_reopened) {
-          chat_read_node(o, src, r, view, place, scroll, rows, shows, cover, fn() { cover() + room }, rest=read_rest, reopening~, on_reopened~)
+          chat_read_node(o, src, r, view, place, scroll, rows, shows, cover, fn() { cover() + room }, rest=read_rest, reopening~, on_reopened~, on_stack~)
         },
         to=r,
         shows~,

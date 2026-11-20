@@ -418,6 +418,8 @@ fn chat_body_comes(e : Entry) -> Bool {
     Said(m) => m.said
     Out(_) => true
     Working(a) => a.started
+    // (where the chat stands come as the agent's turn ends, as chat_live_causes takes it and the old list did)
+    State(_, _, _) => true
     _ => false
   }
 }
@@ -1014,6 +1016,20 @@ fn chat_body_node(
   }
   // (message `k`, `m`, held as its agent's picture at work `face` plans it, from `now`; the line it ends, `ak` as the list
   // stood (`ks`, and before: `was`), kept meanwhile)
+  // (a held message let in at `at`, a live cause (@view.transition): unless let in already (`flush`) or `still` says
+  // otherwise; `before` what is read as it is let in, `also` what it changes besides as it is, its holding told)
+  let let_in_at = fn(k : String, at : Double, still : () -> Bool, before : () -> Unit, also : () -> Unit) {
+    v.at_moment(at, fn() {
+      guard !flushed.contains(k) && still() else { return }
+      before()
+      @view.transition(within=v, fn() {
+        held.remove(k)
+        also()
+        held_told.set(held_told.untracked() + 1)
+      })
+    })
+    |> ignore
+  }
   let hold = fn(k : String, m : Message, face : AgentFace, ks : Array[String], was : Array[String]) {
     // (after another agent's still coming out: its line folding as that one is out (AgentOutQueue))
     let agent = @signals.untracked(fn() { message_agent_of(here, m.by.agent) })
@@ -1044,17 +1060,19 @@ fn chat_body_node(
         // det-ok(motion-length): emit.mbt's Fold, the line folding to its picture from the plan's start
         face.fold.go(0.0, @motion.tween(@sfbase.Pose::Fold.ms(), ease=Out, delay=plan.came - v.cause_at()), at=v.cause_at())
       }
-      v.at_moment(plan.float_at, fn() {
-        // (let in already, the reader gone from the list's foot meanwhile: `flush`)
-        guard !flushed.contains(k) else { return }
-        // (where the line's picture is as it lets the message out, before the line goes in this change)
-        if plan.folds {
-          plan.face_at.val = Some(agent_face_at(face))
-        }
-        // (the message let out of its agent's picture, a live cause: what it changes in the list goes its way,
-        // @view.transition)
-        @view.transition(within=v, fn() {
-          held.remove(k)
+      // (let in already, the reader gone from the list's foot meanwhile: `flush`; the message let out of its agent's
+      // picture, a live cause: what it changes in the list goes its way)
+      let_in_at(
+        k,
+        plan.float_at,
+        fn() { true },
+        fn() {
+          // (where the line's picture is as it lets the message out, before the line goes in this change)
+          if plan.folds {
+            plan.face_at.val = Some(agent_face_at(face))
+          }
+        },
+        fn() {
           held_by.remove(k)
           match ends {
             Some(a) => {
@@ -1064,10 +1082,8 @@ fn chat_body_node(
             None => ()
           }
           face.away.set(true)
-          held_told.set(held_told.untracked() + 1)
-        })
-      })
-      |> ignore
+        },
+      )
       v.at_moment(plan.spit_end, fn() {
         // (let in at once as the reader left the list's foot: its line unfolded then, nothing of its plan left)
         guard !flushed.contains(k) else { return }
@@ -1115,12 +1131,23 @@ fn chat_body_node(
           match keeps.faces.get(@signals.untracked(fn() { message_agent_of(here, m.by.agent) })) {
             Some(face) => hold(k, m, face, ks, was)
             // (no line of its agent's at work before it: in at once, its picture there, its head sliding out and its
-            // words revealed from now, after another agent's still coming out (AgentOutQueue))
+            // words revealed from now, after another agent's still coming out (AgentOutQueue); words sent from here
+            // still flying to their row go first (sfbase's emit.mbt, what is sent goes first): held till they land, let
+            // in then as a live cause)
             None => {
               let agent = @signals.untracked(fn() { message_agent_of(here, m.by.agent) })
-              let plan = agent_out_plan_faceless(queue.after(agent, v.cause_at(), 0.0))
+              let now = v.cause_at()
+              let start = queue.after(agent, @sf.dmax(now, sent_lands.val), 0.0)
+              let plan = agent_out_plan_faceless(start)
               queue.told(agent, plan)
               out_plans[k] = plan
+              if start > now {
+                // (nothing it comes out of: held_by has none of it, `flush` letting it in as it is)
+                held[k] = plan
+                @signals.after_computing(fn() {
+                  let_in_at(k, start, fn() { held.contains(k) }, fn() {  }, fn() {  })
+                })
+              }
             }
           }
         _ => ()
@@ -1369,7 +1396,33 @@ fn chat_body_node(
   // rows holding it as much lower)
   let stick_top = fn() { cover() + (avatar_held_at - bar_foot) }
   // (a row's block in `slot`, of the slice `slice` of the row whose key `key` says, each as it is now: chat_body_row's)
+  // (the keys its list has in sight, from the first to the last, as it last told them (ListPlace::on_sight): a row out of
+  // them shows not, though the page does, what it previews stopped then (page_shows_lent))
+  let sight_range : Ref[(Int, Int, Int, Int)?] = Ref(None)
+  let sight_ver = @signals.signal(0)
+  place.on_sight(fn(s) {
+    let ks = keys.untracked()
+    let a = ks.search(s.first).unwrap_or(-1)
+    let b = ks.search(s.last).unwrap_or(-1)
+    sight_range.val = if a >= 0 && b >= 0 { Some((a, s.slice, b, s.last_slice)) } else { None }
+    sight_ver.set(sight_ver.untracked() + 1)
+  })
   let row_of = fn(slot : @view.View, key : () -> String, slice : () -> Int) {
+    slot.lends(@sfbase.page_shows_lent, fn() {
+      sight_ver.get() |> ignore
+      guard shows() else { return false }
+      match sight_range.val {
+        Some((a, a_sl, b, b_sl)) => {
+          let sl = slice()
+          match keys.untracked().search(key()) {
+            Some(i) => (i > a || (i == a && sl >= a_sl)) && (i < b || (i == b && sl <= b_sl))
+            None => false
+          }
+        }
+        None => true
+      }
+    })
+    |> ignore
     chat_body_row(slot, src, here, key, slice, list, side, top, core, keeps, made, jump, fn() { came_at.get(key()) }, fn() {
       let k = @signals.untracked(key)
       // (its first slice takes the plan; those after it read it as taken, on its clock)
@@ -1533,7 +1586,9 @@ fn chat_body_node(
       holds=fn(k) { k != "older" },
       from_end=true,
       place~,
-      near_top=(1.0, wants_older, fn() { ask_older(true) }),
+      // (two screens of rows not yet measured over it, each guessed chat_row_est tall: the old list guessed them
+      // chat_row_least, far shorter, so a screen of them asked the page before sooner; at the foot no more asked)
+      near_top=(2.0, wants_older, fn() { ask_older(true) }),
       near_foot=(1.0, wants_newer, ask_newer),
       // (a message read before the chat showed it, as it no more shows put by for the next of its make to come to show,
       // its key that one's: what a hand scrolling through a chat's history comes to, nothing made or let go for it

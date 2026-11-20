@@ -11,14 +11,15 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { type Entry, LockRefusal, admit, endpointBytes, entryHash, memberWithEmail, signedBytes as lockBytes } from "../src/cloud/lock.ts";
-import { personalVaultLock } from "../src/cloud/vault-lock.ts";
+import { personalVaultChains, personalVaultLock } from "../src/cloud/vault-lock.ts";
 import { Cloud, personChainsOf, seenDevicesOf, writeState } from "../src/cloud/state.ts";
 import { routes as requestRoutes } from "../src/api/routes/vault-requests.ts";
 import { routes as vaultRoutes } from "../src/api/routes/vault.ts";
-import { type BoxCert, type Sig, type Vault, TAG, certOk, keyContext, newBoxPair, openSeal, saveContext, seal, signedBytes } from "../src/vault/crypto.ts";
+import { type BoxCert, type Grant, type Item, type Sig, type Vault, TAG, certOk, grantContext, keyContext, newBoxPair, openSeal, saveContext, seal, signedBytes } from "../src/vault/crypto.ts";
 import { PlainStore } from "../src/vault/plain.ts";
 import { Secrets } from "../src/vault/secrets.ts";
 import { VaultStore } from "../src/vault/store.ts";
+import { vaultTools } from "../src/vault/tool.ts";
 import { STILLFAIL_SURFACE } from "../src/store/store.ts";
 import { withoutUseReader } from "./vault-no-reader.ts";
 
@@ -230,4 +231,169 @@ test("GET /vault/requests where the lock is its members' own: a lock made again 
   const a = await answer;
   assert.equal(a.status, 200);
   assert.deepEqual(JSON.parse(String(a.body)).requests, [{ id: "theirs" }]);
+});
+
+test("non-security mode personalVaultLock preserves member roles and GET /vault/boxes returns chains and roles", async () => {
+  const data = mkdtempSync(join(tmpdir(), "vault-lock-roles-"));
+  try {
+    writeState(data, { origin: "https://stillfail.test", station: "st", workspace: WS, workspace_name: "W", name: "studio", relay_url: "", relay_urls: [], grant_keys: { keys: [] }, peers: [], revocations: [] } as never);
+    const c = new Cloud(data, false);
+    const alice = person("alice"), bob = person("bob");
+    personChainsOf(c).keep(alice.genesis, alice.chain, WS);
+    personChainsOf(c).keep(bob.genesis, bob.chain, WS);
+    seenDevicesOf(c).saw(1000, { workspace: WS, sub: "alice", email: "alice@x.com", role: "owner" }, alice.base.hex, alice.base.hex, { kind: "app" });
+    seenDevicesOf(c).remember(WS, "bob", "bob@x.com", "admin");
+    const lock = c.vaultLock(WS)!;
+    assert.equal(lock.members.get("alice")?.role, "owner");
+    assert.equal(lock.members.get("bob")?.role, "admin");
+
+    const db = new DatabaseSync(":memory:");
+    const vaults = new VaultStore(db);
+    vaults.putBox(alice.cert());
+    const getBoxes = vaultRoutes({ vaults, lock: () => c.vaultLock(WS), chains: (ws) => c.vaultChains(ws) })
+      .find((x) => x.method === "GET" && x.pattern.test("/vault/boxes"))!;
+    const ans = await getBoxes.handle({ method: "GET", path: "/vault/boxes", query: [], headers: {}, body: Buffer.alloc(0), viewer: { sub: "alice", workspace: WS, email: "alice@x.com", name: "Alice", role: "owner", device: alice.base.hex }, lang: "en" } as never, []);
+    assert.equal(ans.status, 200);
+    const parsed = JSON.parse(String(ans.body));
+    assert.equal(parsed.boxes.length, 1);
+    assert.deepEqual(parsed.roles, { alice: "owner", bob: "admin" });
+    assert.deepEqual(parsed.chains.alice, alice.chain);
+    assert.deepEqual(parsed.chains.bob, bob.chain);
+    assert.deepEqual(personalVaultChains(WS, { chains: personChainsOf(c), members: seenDevicesOf(c) }).alice, alice.chain);
+
+    // Role downgrade via mesh hello (`saw`) overrides stale `remember` role in `#viewers`.
+    seenDevicesOf(c).saw(2000, { workspace: WS, sub: "bob", email: "bob@x.com", role: "member" }, bob.base.hex, bob.base.hex, { kind: "app" });
+    assert.equal(seenDevicesOf(c).roles(WS).get("bob"), "member");
+    assert.equal(c.vaultLock(WS)!.members.get("bob")?.role, "member");
+    c.close();
+  } finally {
+    rmSync(data, { recursive: true, force: true });
+  }
+});
+
+test("workspace vault agent tools: secret_use assigns to chat starter member, secret_list reports scope/vaultName, and secret_save supports scope=workspace", async () => {
+  const alice = person("alice"), bob = person("bob");
+  const roles = new Map([["alice", "owner"], ["bob", "member"]]);
+  const s = {
+    ...sources([alice, bob], { alice: "alice@x.com", bob: "bob@x.com" }),
+  };
+  (s.members as any).roles = () => roles;
+  const owner = {};
+  const db = new DatabaseSync(":memory:");
+  const vaults = new VaultStore(db);
+  const plain = new PlainStore(db);
+  const cards: { text: string; card: any }[] = [];
+  const notified: [string, string][] = [];
+  const hub = {
+    store: {
+      getSession: (k: string) => (k === "s-bob" ? { key: "s-bob", ws: null, workspace: "/tmp", archivedAt: null } : null),
+      starter: () => "bob@x.com",
+      participants: (k: string) => new Map(k === "s-bob" ? [["s-bob", ["bob@x.com"]]] : []),
+      latestThread: () => ({ connect: "c", thread: { id: 1, channel: "CHAT", threadTs: "1.0", surface: STILLFAIL_SURFACE } }),
+      sessionThreadById: () => ({ connect: "c", thread: { id: 1, channel: "CHAT", threadTs: "1.0", surface: STILLFAIL_SURFACE } }),
+      withdrawCard: () => true,
+      restateCard: () => true,
+      insertMessage: (m: { text: string; card: unknown }) => (cards.push({ text: m.text, card: m.card }), [cards.length]),
+      pendingCardHeader: () => (cards.length === 0 ? null : [{ ts: String(cards.length) }, cards.at(-1)!.card]),
+      subscribe: () => () => {},
+    },
+    chat: () => ({ post: async () => String(cards.length + 1) }),
+    shared: () => {},
+    notify: (k: string, text: string) => notified.push([k, text]),
+  };
+  const dir = mkdtempSync(join(tmpdir(), "vault-ws-tools-"));
+  const getLock = () => personalVaultLock(owner, WS, s, heldBy(vaults));
+  const secrets = new Secrets({ db: withoutUseReader(db), vaults, plain, home: () => WS, hub: hub as never, data: dir, lock: () => getLock(), now: () => 1_000_000 });
+  const tools = vaultTools(secrets, () => dir);
+  const callTool = (name: string, args: Record<string, unknown>) => tools.find((t) => t.name === name)!.run("s-bob", args);
+  try {
+    vaults.putBox(alice.cert());
+    vaults.putBox(bob.cert());
+
+    // Without a workspace vault yet, secret_save { scope: "workspace" } fails clearly.
+    await assert.rejects(
+      () => callTool("secret_save", { name: "Shared Token", about: "CI token", kind: "token", reason: "shared", value: "tok_1", scope: "workspace" }),
+      /No workspace vault exists yet/,
+    );
+
+    // Create a workspace vault owned by Alice with members [Alice, Bob], plus Bob's personal vault.
+    const wsVaultId = "v_01HZZZZZZZZZZZZZZZZZZZZZZW";
+    const pVaultId = "v_01HZZZZZZZZZZZZZZZZZZZZZZP";
+    const wsVault: Vault = signed(
+      {
+        v: 1 as const, ws: WS, id: wsVaultId, seq: 0, owner: "alice", name: "Team Vault", scope: "workspace" as const,
+        members: ["alice", "bob"], epoch: 0,
+        keys: [
+          { cert: alice.cert(), wrapped: seal(alice.box.pub, fill(1), keyContext(WS, wsVaultId, 0)) },
+          { cert: bob.cert(), wrapped: seal(bob.box.pub, fill(1), keyContext(WS, wsVaultId, 0)) },
+        ],
+        at: 1000,
+      },
+      TAG.vault, alice.signer,
+    );
+    const pVault: Vault = signed(
+      {
+        v: 1 as const, ws: WS, id: pVaultId, seq: 0, owner: "bob", name: "Bob Personal",
+        members: ["bob"], epoch: 0,
+        keys: [{ cert: bob.cert(), wrapped: seal(bob.box.pub, fill(2), keyContext(WS, pVaultId, 0)) }],
+        at: 1000,
+      },
+      TAG.vault, bob.signer,
+    );
+    vaults.putVault(wsVault);
+    vaults.putVault(pVault);
+
+    const wsItemId = "i_01HZZZZZZZZZZZZZZZZZZZZZZW";
+    const pItemId = "i_01HZZZZZZZZZZZZZZZZZZZZZZP";
+    const wsItem: Item = signed(
+      { v: 1 as const, ws: WS, vault: wsVaultId, id: wsItemId, version: 0, epoch: 0, ct: "A".repeat(48), listing: { name: "Team API Key", kind: "token" as const, modes: ["env" as const], hosts: [] }, at: 1000 },
+      TAG.item, alice.signer,
+    );
+    const pItem: Item = signed(
+      { v: 1 as const, ws: WS, vault: pVaultId, id: pItemId, version: 0, epoch: 0, ct: "B".repeat(48), listing: { name: "My Key", kind: "token" as const, modes: ["env" as const], hosts: [] }, at: 1000 },
+      TAG.item, bob.signer,
+    );
+    vaults.putItem(wsItem);
+    vaults.putItem(pItem);
+
+    // 1. secret_list reports scope and vaultName.
+    const listed = JSON.parse(await callTool("secret_list", {}));
+    const teamRow = listed.secrets.find((x: any) => x.item === wsItemId);
+    const personalRow = listed.secrets.find((x: any) => x.item === pItemId);
+    assert.equal(teamRow.scope, "workspace");
+    assert.equal(teamRow.vaultName, "Team Vault");
+    assert.equal(personalRow.scope, "personal");
+    assert.equal(personalRow.vaultName, "Bob Personal");
+
+    // 2. secret_use from Bob's chat for Alice's workspace vault secret assigns the card to Bob (not Alice), and Bob can approve.
+    await callTool("secret_use", { item: "Team API Key", reason: "deploy" });
+    assert.equal(cards.at(-1)!.card.assignee, "bob@x.com");
+    const [useReq] = secrets.pending(WS, getLock(), { sub: "bob", email: "bob@x.com" });
+    assert.equal(useReq?.vault, wsVaultId);
+    const grant: Grant = signed(
+      {
+        v: 1 as const, ws: WS, request: useReq!.id, vault: wsVaultId, item: wsItemId, mode: "env" as const, hosts: [], scope: "once" as const, exp: 2000,
+        secret: seal(useReq!.box, Buffer.from(JSON.stringify({ kind: "token", name: "Team API Key", fields: { value: "sec_123" } })), grantContext(WS, useReq!.id)),
+        at: 1000,
+      },
+      TAG.grant, bob.signer,
+    );
+    assert.equal(secrets.grant(getLock(), "bob", grant), null);
+
+    // 3. secret_save { scope: "workspace" } prefills request.vault with wsVaultId and sets shared: true & vaultName on request.save and card.
+    await callTool("secret_save", { name: "Shared Token", about: "CI token", kind: "token", reason: "shared", value: "tok_shared", scope: "workspace" });
+    const [saveReq] = secrets.pending(WS, getLock(), { sub: "bob", email: "bob@x.com" });
+    assert.equal(saveReq?.vault, wsVaultId);
+    assert.equal(saveReq?.save?.shared, true);
+    assert.equal(saveReq?.save?.vaultName, "Team Vault");
+    assert.equal(cards.at(-1)!.card.vault.save.shared, true);
+    assert.equal(cards.at(-1)!.card.vault.save.vaultName, "Team Vault");
+    // Sealed to Bob's own device (so Bob can approve and write to the shared vault).
+    assert.deepEqual(
+      JSON.parse(Buffer.from(openSeal(bob.box.priv, saveReq!.sealed!.find((x) => x.box === bob.box.pub)!.secret, saveContext(WS, saveReq!.id))).toString()),
+      { value: "tok_shared" },
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

@@ -108,7 +108,7 @@ fn index_of_any(s : String, cs : String) -> Int {
 ///|
 /// What a state recorded with chat_state is about.
 async fn state_about(w : World, key : String, kind : J, args : J) -> J {
-  let threads = arr_of(at(Some(w.store("recentSessionThreads", [js(key)])), "threads")).unwrap_or([])
+  let threads = arr_of(at(Some(w.with_threads_j(t => t.recent_session_threads(Json::string(key), Json::null()))), "threads")).unwrap_or([])
   match about_ts(args) {
     Some(ts) => {
       for t in threads {
@@ -126,7 +126,7 @@ async fn state_about(w : World, key : String, kind : J, args : J) -> J {
   }
   let pending = []
   for t in threads {
-    let p = w.store("pendingCard", [at(at(Some(t), "thread"), "id").unwrap_or(Null)])
+    let p = w.with_threads_j(th => th.pending_card(at(at(Some(t), "thread"), "id").unwrap_or(Null).to_json()))
     match at_i(Some(p), 0) {
       Some(x) if !(x is Null) => pending.push(x)
       _ => ()
@@ -177,7 +177,7 @@ pub async fn chat_state(w : World, key : String, args : J) -> String {
       _ => raise fail_("watch must be true or false")
     }
     watch = at(Some(args), "watch") is Some(Bool(true))
-    if watch && !(w.store("hasSessionActiveWatch", [js(key)]) is Bool(true)) {
+    if watch && !(w.with_threads_j(t => t.has_session_active_watch(Json::string(key))) is Bool(true)) {
       raise fail_(
         "watch: true is for waiting on a watch of yours that runs (job_start with watch); none does: leave it out, or start the watch first",
       )
@@ -200,8 +200,8 @@ pub async fn chat_state(w : World, key : String, args : J) -> String {
   }
   let ts = about_ts(args)
   let need_help = kind_kind(kind) == "need_help"
-  let checking_question = need_help && ts is Some(_) && w.has("stateQuestion")
-  let checking_default = need_help && ts is None && w.has("statePendingCard")
+  let checking_question = need_help && ts is Some(_)
+  let checking_default = need_help && ts is None
   let question_actor = if checking_question || checking_default { actor_id(w, key) } else { J::Null }
   let question_turn = if !(question_actor is Null) { w.actor(key, "currentTurnId", []) } else { J::Null }
   let recent = async fn() { recent_thread_ids(w, key) }
@@ -280,7 +280,7 @@ pub async fn chat_leave(w : World, key : String, args : J) -> String {
   if str_of(at(row, "surface")) == Some(stillfail_surface) {
     raise fail_("\{to} is a still.fail chat: it cannot be left. Only Slack, Feishu and group threads can.")
   }
-  w.store("leaveThread", [at(row, "id").unwrap_or(Null), js(key)]) |> ignore
+  ignore(w.with_threads_j(t => t.leave_thread(at(row, "id").unwrap_or(Null).to_json(), Json::string(key))))
   "Left \{to}: its messages no longer reach you until someone mentions you there; chat_history still reads it and chat_post still posts there."
 }
 
@@ -327,22 +327,8 @@ pub async fn thread_history(
     _ => None
   }
   let tid = at(Some(thread), "id").unwrap_or(Null)
-  let messages = if w.has("historyMessages") {
-    w.hub("historyMessages", [tid, jopt(before), jn(limit)])
-  } else {
-    let mut from = J::Null
-    match before {
-      Some(b) => {
-        let m = w.store("messageAt", [tid, js(b)])
-        if nullish(Some(m)) {
-          raise fail_("no message \{b} in \{named}")
-        }
-        from = at(Some(m), "n").unwrap_or(Null)
-      }
-      None => ()
-    }
-    w.store("messagesBefore", [tid, from, jn(limit)])
-  }
+  let b_json = match before { Some(s) => Json::string(s); None => Json::null() }
+  let messages = w.with_db_j(db => @readops.chat_history_messages(db, { "thread": tid.to_json(), "before": b_json, "limit": Json::number(limit) }))
   guard messages is Arr(messages) else {
     raise fail_("no message \{match before { Some(b) => b; None => "null" }} in \{named}")
   }
@@ -370,7 +356,7 @@ pub async fn thread_history(
   let cards : Map[Double, @agent_runtimes.HistoryCard] = Map([])
   let card_ns : Array[J] = []
   let ns = messages.map(m => at(Some(m), "n").unwrap_or(Null))
-  for e in arr_of(Some(w.store("messagePageEntries", [tid, ja(ns)]))).unwrap_or([]) {
+  for e in arr_of(Some(w.with_threads_j(t => t.message_page_entries(tid.to_json(), ja(ns).to_json())))).unwrap_or([]) {
     if str_of(at(Some(e), "kind")) != Some("message") {
       continue
     }
@@ -391,19 +377,11 @@ pub async fn thread_history(
     }
   }
   if cards.length() > 0 {
-    let pending = if w.has("historyPendingCard") {
-      w.hub("historyPendingCard", [tid])
-    } else {
-      let p = w.store("pendingCard", [tid])
-      match at(at_i(Some(p), 0), "n") {
-        Some(n) => n
-        None => Null
-      }
-    }
+    let pending = w.with_db_j(db => @readops.pending_card_number(db, tid.to_json()))
     if num_of(Some(pending)) is Some(p) && cards.get(p) is Some(entry) {
       cards[p] = { ..entry, pending: true }
     }
-    for pair in arr_of(Some(w.store("cardChoices", [tid, ja(card_ns)]))).unwrap_or([]) {
+    for pair in arr_of(Some(w.with_threads_j(t => t.card_choices(tid.to_json(), ja(card_ns).to_json())))).unwrap_or([]) {
       let c = at_i(Some(pair), 1)
       let by = str_of(at(c, "by")).unwrap_or("")
       let name = str_of(Some(w.ask("chatOf.userName", [js(connect), js(by)])))
@@ -427,14 +405,14 @@ pub async fn thread_history(
 ///|
 /// The Slack connect a session calls as when it names none.
 pub async fn slack_connect_of(w : World, key : String, bot : String?) -> String {
-  let session = w.store("getSession", [js(key)])
+  let session = w.store_get_session(key)
   let own = str_of(at(Some(session), "connect"))
   if bot is None && own is Some(o) && o != internal_connect {
     return o
   }
-  let workspaces = arr_of(Some(w.hub("workspaces", []))).unwrap_or([])
+  let workspaces = w.with_hub(h => h.workspaces()).map(js)
   let home = if workspaces.length() > 0 { workspaces[0] } else { J::Null }
-  let ws = w.hub("wsOf", [if session is Null { js(key) } else { session }])
+  let ws = jopt(w.with_hub(h => h.ws_of_arg((if session is Null { js(key) } else { session }).to_json())))
   let bots = []
   for c in arr_of(at(Some(w.config()), "connects")).unwrap_or([]) {
     if str_of(at(Some(c), "kind")) != Some("slack") || !(at(Some(c), "enabled") is Some(Bool(true))) {
@@ -447,7 +425,8 @@ pub async fn slack_connect_of(w : World, key : String, bot : String?) -> String 
     if !jeq(cws, ws) {
       continue
     }
-    if !(w.ask("hub.chatOfExists", [at(Some(c), "id").unwrap_or(Null)]) is Bool(true)) {
+    let cid = str_of(at(Some(c), "id")).unwrap_or("")
+    if !(cid == @session_hub.internal_connect || (w.require_live().hub.world.chat)(cid) is Some(_)) {
       continue
     }
     bots.push(c)
@@ -515,7 +494,7 @@ pub async fn slack_api(
     Some(c) => Some(c)
     None => text_of("channel_id")
   }
-  let surface = w.hub("surface", [js(connect)])
+  let surface = w.with_hub(h => h.surface(connect))
   let write = @mcp_tools.is_slack_write(method)
   let named = text_of("thread_ts")
   let about = match text_of("ts") {
@@ -529,7 +508,7 @@ pub async fn slack_api(
       None =>
         match about {
           Some(a) =>
-            match str_of(at(Some(w.store("threadOfMessage", [surface, js(ch), js(a)])), "threadTs")) {
+            match str_of(at(Some(w.with_threads_j(t => t.thread_of_message(Json::string(surface), Json::string(ch), Json::string(a)))), "threadTs")) {
               Some(t) => Some(t)
               None => Some(a)
             }
@@ -537,11 +516,11 @@ pub async fn slack_api(
         }
     }
     let known = match thread_ts {
-      Some(t) => w.store("threadAt", [surface, js(ch), js(t)])
+      Some(t) => w.with_threads_j(th => th.thread_at(Json::string(surface), Json::string(ch), Json::string(t)))
       None => J::Null
     }
     if !nullish(Some(known)) {
-      let members = arr_of(Some(w.store("threadSessions", [at(Some(known), "id").unwrap_or(Null)]))).unwrap_or([])
+      let members = arr_of(Some(w.store_thread_sessions(at(Some(known), "id").unwrap_or(Null)))).unwrap_or([])
       if members.iter().any(m => str_of(at(Some(m), "session")) != Some(key) && str_of(at(Some(m), "connect")) == Some(connect)) {
         raise fail_("\{ch}/\{thread_ts.unwrap_or("")} is another session's conversation: this session cannot write there")
       }
@@ -556,9 +535,9 @@ pub async fn slack_api(
       None => result_ts
     }
     if root is Some(r) {
-      let thread = w.store("openThread", [surface, js(ch), js(r), Null, js(key)])
+      let thread = w.with_threads_j(t => t.open_thread(Json::string(surface), Json::string(ch), Json::string(r), Json::null(), Json::string(key)))
       let tid = at(Some(thread), "id").unwrap_or(Null)
-      if w.store("joinThread", [tid, js(key), js(connect)]) is Bool(true) {
+      if w.with_threads_j(t => t.join_thread(tid.to_json(), Json::string(key), Json::string(connect))) is Bool(true) {
         w.log(
           "info",
           "hub",
@@ -577,8 +556,8 @@ pub async fn slack_api(
         if identity is Some(i) {
           fields.push(("agentIdentity", i))
         }
-        let n = at_i(Some(w.store("insertMessage", [jo(fields)])), 0).unwrap_or(Null)
-        w.hub("shared", [tid, n, js(key), js(posted_text)]) |> ignore
+        let n = at_i(Some(w.store_insert_message(jo(fields))), 0).unwrap_or(Null)
+        w.hub_shared(tid, n, key, posted_text)
       }
     }
   }

@@ -7,7 +7,7 @@
 /// The fixture's chat s-c1 opened with its page's inside nodes, `w` by `h` on `platform`, at rest.
 fn chat_nodes_tester(w : Double, h : Double, platform : Int) -> (@ui.Tester, Source) {
   new_run()
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)
@@ -88,7 +88,7 @@ fn chat_nodes_calling(
 ) -> (@ui.Tester, Source) {
   new_run()
   @sf.presenters_reset()
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   let base = fixture(fixture_mode)
   let src : Source = {
     ..base,
@@ -371,7 +371,7 @@ test "the composer in the list's foot, on 小屏 and 大屏: at its foot the las
 fn foot_long_open(l : LongChat, s : (String, Double, Double, Int)) -> (@ui.Tester, Source) {
   let (_, w, h, platform) = s
   new_run()
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   let src = long_source(l)
   open_chat(long_ref)
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, begun=fn() {
@@ -515,7 +515,7 @@ fn place_long_open(
 ) -> @ui.Tester {
   let (_, w, h, platform) = s
   new_run()
-  @sfbase.chat_page_nodes.set(nodes)
+  @sfbase.hold_chat_page_nodes(Some(nodes))
   before()
   let base = long_source(l)
   let src : Source = {
@@ -742,13 +742,19 @@ test "a chat's page made with its inside nodes, on 小屏 and 大屏: the way ba
     t.wheel(w / 2.0, h / 2.0, -600.0)
     long_run(t, l, long_rest_ms)
     guard to_newest_shown(t) is Some(b) else { fail("\{name}: the way back to the newest not shown read up") }
-    let (_, by, bw, bh) = b.rect
+    let (bx, by, bw, bh) = b.rect
     let field = composer_top(t)
+    // (its round 32 across as drawn and said; pressed within 44 by 44 round it, Tree::press_least)
     assert_true(
-      bw >= 44.0 && bh >= 44.0 && by > h / 2.0 && field is Some(f) && by + bh <= f,
+      bw >= 32.0 && bh >= 32.0 && by > h / 2.0 && field is Some(f) && by + bh <= f,
       msg="\{name}: the way back to the newest at \{Repr(b.rect)}, the composer's field at \{Repr(field)}",
     )
-    t.click(Button, label="跳到最新")
+    // (a finger's press within 44 by 44 round its round, Tree::press_least; a mouse's on it)
+    if s.3 == 2 {
+      t.tap(bx - 4.0, by + bh / 2.0)
+    } else {
+      t.tap(bx + bw / 2.0, by + bh / 2.0)
+    }
     long_run(t, l, long_rest_ms)
     let now = t.rect_of(last).map(fn(r) { r.1 })
     assert_true(now is Some(y) && (y - end).abs() <= 1.0, msg="\{name}: pressed, its last message at \{Repr(now)}, its end \{end}")
@@ -886,7 +892,7 @@ test "大屏, a chat's page made with its inside nodes: ⌘↓ takes the list re
 fn viz_nodes_open(w : Double, h : Double, platform : Int, asked : Array[String], held? : Bool = true) -> @ui.Tester {
   new_run()
   @sf.presenters_reset()
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   let base = fixture("chat-viz")
   let src : Source = {
     ..base,
@@ -1299,7 +1305,7 @@ test "大屏, a chat's page made with its inside nodes: a 文件 tab's row carri
 fn find_nodes_open(calls : Array[(String, Json)], w : Double, h : Double, platform : Int) -> @ui.Tester {
   new_run()
   @sf.presenters_reset()
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   let base = fixture("chat")
   let src : Source = {
     ..base,
@@ -1776,7 +1782,7 @@ test "a chat's page made with its inside nodes, 大屏, its rows on the pixels: 
 /// meanwhile, its cursor, its keyboard and its words go on in the second (held so 2026-11-17, asked of a report).
 test "小屏, a chat's page made with its inside nodes, written in before its view comes: the cursor kept in the composer as it comes, the keyboard never told down, what was typed there" {
   new_run()
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   let answered = @signals.signal(false)
   let src = over_source(answered)
   open_chat(over_chat)
@@ -1830,7 +1836,7 @@ fn message_changed_open(
 ) -> @ui.Tester {
   new_run()
   @sf.presenters_reset()
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   let base = fixture("chat")
   let src : Source = {
     ..base,
@@ -2138,7 +2144,7 @@ fn reopen_long_open(
   agents? : Int = 3,
 ) -> @ui.Tester {
   new_run()
-  @sfbase.chat_page_nodes.set(true)
+  @sfbase.hold_chat_page_nodes(Some(true))
   let base = long_source(l)
   let src : Source = {
     ..base,

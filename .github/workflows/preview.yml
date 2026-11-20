@@ -855,8 +855,10 @@ jobs:
         uses: actions/setup-node@v5
         with: { node-version-file: .node-version, package-manager-cache: false }
       - uses: ./.github/actions/msvc
+      # (pack too: win.sh runs `scripts/mbui meta`, pack.exe, which uncached was built from nothing there, 36 tasks and
+      # ~35 s of the build: `the build not done after 105 s`, 44684094519)
       - uses: ./.github/actions/mbui-moonbit
-        with: { tools: 'mbc chk' }
+        with: { tools: 'mbc chk pack' }
       - name: Tools (MSVC's link.exe for cargo, which Git Bash's /usr/bin/link shadows)
         run: |
           echo "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$(cygpath -m "$(dirname "$(which cl)")/link.exe")" >> "$GITHUB_ENV"

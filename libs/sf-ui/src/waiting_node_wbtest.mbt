@@ -187,3 +187,42 @@ test "what waits as nodes, in its bones: none of it pressed, read out, found by 
   assert_eq(t.pending().length(), 0)
   assert_eq(t.image_loads().length(), 0)
 }
+
+///|
+/// A narrow row that fits what it holds (View::fits), 160 wide: a box 60 wide, then what waits on a model read (`fits`
+/// as said), made of a name and what it drops to fit; its faults, by the audit.
+fn fits_wait_faults(fits : Bool) -> Array[String] {
+  let t = @ui.Tester::new(fn(_c) {  }, w=240.0, h=120.0, platform=0)
+  @ui.set_tree_theme(ui_theme_now)
+  @ui.set_view_app(fn(root) {
+    root.box(fn(page) {
+      page.pad(Is(24.0)).lines_up(Is(Some(Start))) |> ignore
+      page.box(fn(r) {
+        r.row(Is(true)).fits(Is(true)).width(Is(Some(160.0))).clips(Is(true)) |> ignore
+        r.box(fn(a) { a.width(Is(Some(60.0))).height(Is(Some(20.0))).shrink(Is(0.0)) |> ignore }) |> ignore
+        waiting_node(
+          r,
+          fn(b) {
+            b.box(fn(s) {
+              s.row(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))).fits(Is(true)) |> ignore
+              words_node(s, fn() { "Opus 5.5" }, fn() { bones_words }) |> ignore
+              words_node(s, fn() { " · Default effort" }, fn() { bones_words }).drops(Is(1)) |> ignore
+            })
+            |> ignore
+          },
+          fits~,
+        )
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t.audit().filter(fn(f) { f.contains("cut off") || f.contains("squeezed") || f.contains("runs past") })
+}
+
+///|
+test "waiting_node fits: in a narrow row that fits what it holds, its sample drops what does not fit, nothing cut off" {
+  let faults = fits_wait_faults(true)
+  assert_true(faults.is_empty(), msg=faults.join("\n"))
+}

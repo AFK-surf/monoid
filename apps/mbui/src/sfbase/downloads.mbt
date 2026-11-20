@@ -294,3 +294,59 @@ fn save_download(src : Source, id : String, name : String, size : Double) -> Uni
   }
   next(0.0)
 }
+
+///|
+/// What showing a file in its folder is called where the app runs: the Finder's, Explorer's, any other file manager's.
+pub fn reveal_words() -> String {
+  match @ui.platform() {
+    0 => @sf.t("web-main.preview.revealFinder")
+    3 => @sf.t("web-main.preview.revealExplorer")
+    _ => @sf.t("web-main.preview.revealFolder")
+  }
+}
+
+///|
+/// Whether `path` names a file from the root of a machine's disk (`/…`, `C:\…`, `C:/…`), as a station says a file
+/// its agent attached.
+fn path_whole(path : String) -> Bool {
+  if path.has_prefix("/") {
+    return true
+  }
+  let cs = path.to_array()
+  cs.length() > 2 && cs[0].is_ascii_alphabetic() && cs[1] == ':' && (cs[2] == '\\' || cs[2] == '/')
+}
+
+///|
+/// Where a message's file (`station`, its session `key`, its `name` there, its `size`, its `path` as the message
+/// says) is on this device, for it to be shown in its folder (在访达中显示), handed to `then` ("" none): nothing asked
+/// where this device shows no file in its folder (a phone, the web); the file itself where its station is this
+/// machine; else where it was downloaded to here while it is still there (the core's `download.saved`). Made in a
+/// press's handler: `then` at once, or as the core answers.
+pub fn file_here(src : Source, station : String, key : String, name : String, size : Double, path : String, then : (String) -> Unit) -> Unit {
+  if !@hostapi.reveals_files() || name == "" {
+    then("")
+  } else if station != "" && station == this_machine() && path_whole(path) {
+    then(path)
+  } else {
+    let p : Map[String, Json] = {
+      "station": Json::string(station),
+      "key": Json::string(key),
+      "name": Json::string(name),
+      "size": Json::number(size),
+    }
+    (src.call)("download.saved", Json::object(p), fn(r) {
+      match r {
+        Ok(v) => then(text(Some(v), "at"))
+        Err(_) => then("")
+      }
+    })
+  }
+}
+
+///|
+/// The file at `at` on this device shown in its folder (reveal_words); gone from there since, said so (`name`).
+pub fn reveal_here(at : String, name : String) -> Unit {
+  if !@hostapi.reveal_file(at) {
+    toast_later(@sf.t("web-main.preview.revealGone", args=[("name", name)]))
+  }
+}

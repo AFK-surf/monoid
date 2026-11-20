@@ -128,10 +128,21 @@ pub fn stations_list_node(
           )
           b.each(fn() { shown_addresses.get() }, fn(k) { k }, fn(row, k) {
             let address = k.untracked()
-            // (its own station of the list, read by its address: told only as that one changes)
+            // (its own station of the list, read by its address: told only as that one changes; while the row leaves after
+            // its address is dropped, keep the last known station so the leaving card does not blank or snap its height)
+            let last_station : Ref[Json?] = Ref(None)
+            let station = fn() {
+              match stations_by.get(address) {
+                Some(v) => {
+                  last_station.val = Some(v)
+                  Some(v)
+                }
+                None => last_station.val
+              }
+            }
             row.box(fn(card) {
               card.transitions_only() |> ignore
-              sl_station_card_node(card, core, fn() { stations_by.get(address) }, fn() { (core.push)(Station(address)) }, shown~)
+              sl_station_card_node(card, core, station, fn() { (core.push)(Station(address)) }, shown~)
             })
             |> ignore
             // (its menu where the pointer's other button is pressed on it: opened, its name or its address copied)

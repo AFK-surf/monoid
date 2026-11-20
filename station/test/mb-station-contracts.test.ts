@@ -28,10 +28,9 @@ const repo = join(station, "..");
 const NOT_REACHED: { name: string; why: string; holds: () => boolean }[] = [];
 
 /// The parts a dispatcher answers whole, whatever the method (the conversations' world, live_p5_2_chats.mbt
-/// `chats_answer`: `match part { "files" => …, "path" => … }`): a package's call of one is answered there.
+/// `chats_answer`: `match part { "files" => … }`): a package's call of one is answered there.
 const ANSWERED_WHOLE: { pkg: string; part: string; file: string; arm: RegExp }[] = [
   { pkg: "session_chats", part: "files", file: "live_p5_2_chats.mbt", arm: /^    "files" => \{$/m },
-  { pkg: "session_chats", part: "path", file: "live_p5_2_chats.mbt", arm: /^    "path" => \{$/m },
 ];
 
 const read = (p: string) => readFileSync(p, "utf8");

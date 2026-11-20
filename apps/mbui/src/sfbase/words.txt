@@ -1155,6 +1155,10 @@ web-main.preview.loadingLabel
 web-main.preview.nextKey
 web-main.preview.openFailed
 web-main.preview.openFolder
+web-main.preview.revealExplorer
+web-main.preview.revealFinder
+web-main.preview.revealFolder
+web-main.preview.revealGone
 web-main.preview.path
 web-main.preview.run.actionRequired
 web-main.preview.run.allJobs

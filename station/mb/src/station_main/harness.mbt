@@ -561,7 +561,6 @@ async fn repo_walk_probed(host : @host.Host, root : String, file : String) -> Js
         "repoIndex.guarded" => to_jv(false)
         "repoIndex.file" => to_jv(Json::string(file))
         "repoIndex.now" => to_jv(0.0)
-        "path.resolve" => to_jv(Json::string(text(0)))
         "repoIndex.list" => {
           lists.val += 1
           let ran = Ref(false)
@@ -580,6 +579,7 @@ async fn repo_walk_probed(host : @host.Host, root : String, file : String) -> Js
     words: @session_chats.Words::empty(),
     lang: Ref("zh"),
     thrown: Ref(to_jv(Json::null())),
+    live: None,
   }
   let index = @session_chats.RepoIndex::new()
   index.walk(w)

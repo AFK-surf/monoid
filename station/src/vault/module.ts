@@ -39,8 +39,8 @@ export const VaultLive = Layer.effectDiscard(
     const held = { version: () => vaults.version(), vaults: (w: string) => vaults.vaults(w), boxes: (w: string) => vaults.boxes(w), certOk: (l: LockState, c: BoxCert) => certOk(l, c) === null };
     // The lock a workspace's vault goes by (Cloud `vaultLock`): its lock in force where it is in security mode, else its
     // members' own locks; the home workspace's by null. A member who asks (`viewer`) is known by it from then on.
-    const lock = (ws: string | null, viewer?: { workspace: string; sub: string; email: string }) => {
-      if (viewer !== undefined) seenDevicesOf(cloud).remember(viewer.workspace, viewer.sub, viewer.email.toLowerCase());
+    const lock = (ws: string | null, viewer?: { workspace: string; sub: string; email: string; role?: string }) => {
+      if (viewer !== undefined) seenDevicesOf(cloud).remember(viewer.workspace, viewer.sub, viewer.email.toLowerCase(), viewer.role);
       return cloud.vaultLock(ws, held);
     };
     // What the process before held may come until it is gone (it gives it as it begins to hand over).
@@ -145,7 +145,7 @@ export const VaultLive = Layer.effectDiscard(
     }
     void previous.gone.then(came, came);
     parts.routes([
-      ...vaultRoutes({ vaults, lock: (ws, viewer) => lock(ws, viewer), events, beforeWrite: () => writes.wait(), boxed: (l, cert) => secrets.boxed(l, cert) }),
+      ...vaultRoutes({ vaults, lock: (ws, viewer) => lock(ws, viewer), chains: (ws) => cloud.vaultChains(ws, held), events, beforeWrite: () => writes.wait(), boxed: (l, cert) => secrets.boxed(l, cert) }),
       ...requestRoutes({ secrets, plain: secrets.plain, lock: (ws, viewer) => lock(ws, viewer), events }),
       ...signInRoutes(signIns),
     ]);

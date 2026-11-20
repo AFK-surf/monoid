@@ -8,6 +8,7 @@
 priv struct VaultLog {
   genesis : String
   at : Double
+  chain : Array[Json]
   devices : Array[@lock.PersonDevice]
 }
 
@@ -98,18 +99,14 @@ fn vault_log_chosen(
 }
 
 ///|
-/// Workspace `ws`'s vault lock made of its members' own locks: `chains` the person logs kept (by genesis), `emails`
-/// who is known to be a member here (by sub), `vaults` and `boxes` the vault's own records of the workspace, `cert_ok`
-/// the vault's check of a box certificate against a lock as JSON.
-pub fn personal_vault_lock(
+fn vault_logs_picked(
   c : Crypto,
   ws : String,
   chains : Array[(String, Array[Json])],
-  emails : Map[String, String],
   vaults : Array[Json],
   boxes : Array[Json],
   cert_ok : (Json, Json) -> Bool,
-) -> Json {
+) -> (Array[String], Map[String, VaultLog]) {
   let logs : Map[String, Array[VaultLog]] = Map([])
   let order : Array[String] = []
   for p in chains {
@@ -122,16 +119,71 @@ pub fn personal_vault_lock(
     }
     let devices = person.devices.values().collect()
     match logs.get(sub) {
-      Some(a) => a.push({ genesis, at, devices })
+      Some(a) => a.push({ genesis, at, chain, devices })
       None => {
-        logs[sub] = [{ genesis, at, devices }]
+        logs[sub] = [{ genesis, at, chain, devices }]
         order.push(sub)
       }
     }
   }
+  let picked : Map[String, VaultLog] = Map([])
+  for sub in order {
+    let of = logs.get(sub).unwrap_or([])
+    let mine = boxes.filter(b => of.iter().any(l => l.devices.iter().any(d => Some(d.id) == text_at(b, "device"))))
+    picked[sub] = vault_log_chosen(ws, sub, of, vaults, mine, cert_ok)
+  }
+  (order, picked)
+}
+
+///|
+/// The personal chain selected for each member in `personal_vault_lock` (for GET /vault/boxes outside security mode).
+pub fn personal_vault_chains(
+  c : Crypto,
+  ws : String,
+  chains : Array[(String, Array[Json])],
+  vaults : Array[Json],
+  boxes : Array[Json],
+  cert_ok : (Json, Json) -> Bool,
+) -> Map[String, Array[Json]] {
+  let (order, picked) = vault_logs_picked(c, ws, chains, vaults, boxes, cert_ok)
+  let out : Map[String, Array[Json]] = Map([])
+  for sub in order {
+    if picked.get(sub) is Some(l) {
+      out[sub] = l.chain
+    }
+  }
+  out
+}
+
+///|
+/// Workspace `ws`'s vault lock made of its members' own locks: `chains` the person logs kept (by genesis), `emails`
+/// who is known to be a member here (by sub), `vaults` and `boxes` the vault's own records of the workspace, `cert_ok`
+/// the vault's check of a box certificate against a lock as JSON.
+pub fn personal_vault_lock(
+  c : Crypto,
+  ws : String,
+  chains : Array[(String, Array[Json])],
+  emails : Map[String, String],
+  vaults : Array[Json],
+  boxes : Array[Json],
+  cert_ok : (Json, Json) -> Bool,
+  roles? : Map[String, String],
+) -> Json {
+  let (order, picked) = vault_logs_picked(c, ws, chains, vaults, boxes, cert_ok)
+  let role_of = (sub : String) => match roles {
+    Some(rs) =>
+      match rs.get(sub) {
+        Some("owner") => "owner"
+        Some("admin") => "admin"
+        Some("member") => "member"
+        Some("viewer") => "viewer"
+        _ => "member"
+      }
+    None => "member"
+  }
   let members : Map[String, Json] = Map([])
   let name = (sub : String) => if !members.contains(sub) {
-    members[sub] = jobj([("sub", jstr(sub)), ("email", jstr(emails.get(sub).unwrap_or(""))), ("role", jstr("member"))])
+    members[sub] = jobj([("sub", jstr(sub)), ("email", jstr(emails.get(sub).unwrap_or(""))), ("role", jstr(role_of(sub)))])
   }
   for sub, _ in emails {
     name(sub)
@@ -153,9 +205,7 @@ pub fn personal_vault_lock(
   let keys : Map[String, Json] = Map([])
   let persons : Map[String, Json] = Map([])
   for sub in order {
-    let of = logs.get(sub).unwrap_or([])
-    let mine = boxes.filter(b => of.iter().any(l => l.devices.iter().any(d => Some(d.id) == text_at(b, "device"))))
-    let l = vault_log_chosen(ws, sub, of, vaults, mine, cert_ok)
+    guard picked.get(sub) is Some(l) else { continue }
     name(sub)
     persons[sub] = jstr(l.genesis)
     for d in l.devices {
@@ -187,6 +237,7 @@ pub fn Cloud::personal_vault_lock(
   vaults : Array[Json],
   boxes : Array[Json],
   cert_ok : (Json, Json) -> Bool,
+  roles? : Map[String, String],
 ) -> Json? {
   let at = match ws {
     Some(w) if Some(w) != self.home() => Some(w)
@@ -199,7 +250,7 @@ pub fn Cloud::personal_vault_lock(
   if id == "" || self.locked(ws=at) is Some(_) {
     return None
   }
-  Some(personal_vault_lock(self.crypto, id, self.person_chains().every(), emails, vaults, boxes, cert_ok))
+  Some(personal_vault_lock(self.crypto, id, self.person_chains().every(), emails, vaults, boxes, cert_ok, roles?))
 }
 
 ///|

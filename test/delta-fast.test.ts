@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { crc32, deflateRawSync, inflateRawSync } from "node:zlib";
-import { apply, ensureNativeDelta, makeApk, makeDelta, makeTree, makeTreeFromBuffer, parseHeader, readOld, sameBlocks, wholeFiles, type Range } from "../scripts/delta.ts";
+import { CHUNK, apply, applyFile, ensureNativeDelta, makeApk, makeDelta, makeTree, makeTreeFromBuffer, parseHeader, readOld, sameBlocks, wholeFiles, type Range } from "../scripts/delta.ts";
 import * as delta from "../scripts/delta.ts";
 
 // scripts/delta-fast.c makes what delta.ts's own search makes: the same bsdiff records byte for byte (only their
@@ -237,6 +237,170 @@ test("from PREFIXED_FROM old bytes delta-fast.c makes the delta by itself, the s
   gives(c.d, old, made);
   assert.ok(records(c.d).equals(records(js.d)), "the same records");
   assert.ok(Math.abs(c.d.length - js.d.length) <= js.d.length * 0.05 + 1024, `${c.d.length} bytes against ${js.d.length}`);
+});
+
+test("delta-fast --verify matches unverified output byte for byte, and makeTreeFromBuffer matches JS path", { skip }, (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "delta-fast-verify-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const bin = native!;
+  const rand = prng(5150);
+  const files: Record<string, Buffer> = {
+    "a/bin": texty(rand, 160_000),
+    "b/lib": random(rand, 50_000),
+    "c/cfg": Buffer.from("config-v1\n".repeat(400)),
+  };
+  for (const [p, b] of Object.entries(files)) {
+    mkdirSync(dirname(join(dir, "old", p)), { recursive: true });
+    writeFileSync(join(dir, "old", p), b);
+  }
+  const ordered = Object.keys(files).sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+  const bufs = ordered.map((k) => files[k]!);
+  const ranges: Range[] = [];
+  for (let at = 0, i = 0; i < bufs.length; at += bufs[i]!.length, i++) ranges.push({ at, len: bufs[i]!.length });
+  const oldBlob = Buffer.concat(bufs);
+  const madeBlob = Buffer.concat([files["c/cfg"]!, edited(rand, files["a/bin"]!, 4096), random(rand, 1024), files["b/lib"]!]);
+
+  const oldPath = join(dir, "old.blob"), madePath = join(dir, "made.blob");
+  const filesPath = join(dir, "files.bin"), runsPath = join(dir, "runs.bin");
+  writeFileSync(oldPath, oldBlob);
+  writeFileSync(madePath, madeBlob);
+  const filesBin = Buffer.alloc(ranges.length * 8);
+  ranges.forEach((f, i) => { filesBin.writeUInt32LE(f.at, i * 8); filesBin.writeUInt32LE(f.len, i * 8 + 4); });
+  writeFileSync(filesPath, filesBin);
+  const runs = sameBlocks(oldBlob, madeBlob, wholeFiles(oldBlob, ranges, madeBlob));
+  const runsBin = Buffer.alloc(runs.length * 12);
+  runs.forEach((r, i) => { runsBin.writeUInt32LE(r.made, i * 12); runsBin.writeUInt32LE(r.old, i * 12 + 4); runsBin.writeUInt32LE(r.len, i * 12 + 8); });
+  writeFileSync(runsPath, runsBin);
+
+  // 1) --files --verify vs --files, and --verify (4-arg) vs 4-arg
+  const outFiles = join(dir, "out-files"), outFilesVerify = join(dir, "out-files-verify");
+  const out4 = join(dir, "out-4"), out4Verify = join(dir, "out-4-verify");
+  execFileSync(bin, ["--files", oldPath, madePath, filesPath, outFiles], { stdio: ["ignore", "ignore", "pipe"] });
+  execFileSync(bin, ["--files", "--verify", oldPath, madePath, filesPath, outFilesVerify], { stdio: ["ignore", "ignore", "pipe"] });
+  execFileSync(bin, [oldPath, madePath, runsPath, out4], { stdio: ["ignore", "ignore", "pipe"] });
+  execFileSync(bin, ["--verify", oldPath, madePath, runsPath, out4Verify], { stdio: ["ignore", "ignore", "pipe"] });
+  assert.ok(readFileSync(outFilesVerify).equals(readFileSync(outFiles)), "--files --verify matches --files byte for byte");
+  assert.ok(readFileSync(out4Verify).equals(readFileSync(out4)), "--verify matches 4-arg byte for byte");
+
+  // 2) makeTreeFromBuffer: native --verify path vs JS path
+  const dNativePath = join(dir, "native.delta"), dJsPath = join(dir, "js.delta");
+  inC(() => makeTreeFromBuffer(ordered, ranges, oldBlob, madePath, dNativePath));
+  inJs(() => makeTreeFromBuffer(ordered, ranges, oldBlob, madePath, dJsPath));
+  const dNative = readFileSync(dNativePath), dJs = readFileSync(dJsPath);
+  assert.deepEqual(parseHeader(dNative), parseHeader(dJs), "headers match");
+  assert.ok(records(dNative).equals(records(dJs)), "native and JS bsdiff records match byte for byte");
+  // Independent applyFile verification on both
+  const outNative = join(dir, "applied-native"), outJs = join(dir, "applied-js");
+  applyFile({ dir: join(dir, "old") }, dNativePath, outNative);
+  applyFile({ dir: join(dir, "old") }, dJsPath, outJs);
+  assert.ok(readFileSync(outNative).equals(madeBlob), "applyFile restores made from native delta");
+  assert.ok(readFileSync(outJs).equals(madeBlob), "applyFile restores made from JS delta");
+});
+
+test("delta-fast --check-only adversarial and boundary verification", { skip }, (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "delta-fast-check-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const bin = native!;
+
+  const packChunks = (raw: Buffer, cut = CHUNK) => {
+    const parts: Buffer[] = [];
+    for (let at = 0; at < raw.length; at += cut) {
+      const piece = raw.subarray(at, at + cut);
+      const packed = deflateRawSync(piece, { level: 6 });
+      const head = Buffer.alloc(8);
+      head.writeUInt32LE(piece.length, 0);
+      head.writeUInt32LE(packed.length, 4);
+      parts.push(head, packed);
+    }
+    return Buffer.concat(parts);
+  };
+  const rec = (x: bigint, y: bigint, z: bigint, ...payload: Buffer[]) => {
+    const b = Buffer.alloc(24);
+    b.writeBigInt64LE(x, 0);
+    b.writeBigInt64LE(y, 8);
+    b.writeBigInt64LE(z, 16);
+    return Buffer.concat([b, ...payload]);
+  };
+  const check = (old: Buffer, made: Buffer, chunks: Buffer, name: string) => {
+    const op = join(dir, `${name}.old`), mp = join(dir, `${name}.made`), cp = join(dir, `${name}.chunks`);
+    writeFileSync(op, old);
+    writeFileSync(mp, made);
+    writeFileSync(cp, chunks);
+    const res = spawnSync(bin, ["--check-only", op, mp, cp], { encoding: "utf8" });
+    return { status: res.status, stderr: res.stderr, chunksPath: cp };
+  };
+
+  // Valid baseline: old = "abcdef", made = "bcdfXY" (diff 3 bytes +1, extra 2 bytes "XY", plus 1 byte past old? No, diff 4 bytes + extra 2)
+  const oldSmall = Buffer.from("abcdef");
+  const madeSmall = Buffer.from("bcdeXY");
+  const goodRaw = rec(4n, 2n, 0n, Buffer.from([1, 1, 1, 1]), Buffer.from("XY"));
+  const goodChunks = packChunks(goodRaw);
+  assert.equal(check(oldSmall, madeSmall, goodChunks, "good").status, 0);
+  // Record spanning tiny chunks (cut = 7 bytes)
+  assert.equal(check(oldSmall, madeSmall, packChunks(goodRaw, 7), "span-small").status, 0);
+  // Out-of-bounds old read (treated as 0, matching station/src/updates/delta.ts)
+  const oobMade = Buffer.from("abcdef\x00\x07");
+  assert.equal(check(oldSmall, oobMade, packChunks(rec(8n, 0n, 0n, Buffer.from([0, 0, 0, 0, 0, 0, 0, 7]))), "oob-old").status, 0);
+
+  // 1) Flip 1 bit in diff byte -> must fail and NOT delete chunks file
+  const badDiffRaw = Buffer.from(goodRaw);
+  badDiffRaw[25] = badDiffRaw[25]! ^ 0x01;
+  const rDiff = check(oldSmall, madeSmall, packChunks(badDiffRaw), "bad-diff");
+  assert.notEqual(rDiff.status, 0, "1-bit diff flip must fail");
+  assert.equal(existsSync(rDiff.chunksPath), true, "--check-only must not unlink chunks on failure");
+
+  // 2) Flip 1 bit in extra byte -> must fail
+  const badExtraRaw = Buffer.from(goodRaw);
+  badExtraRaw[29] = badExtraRaw[29]! ^ 0x01;
+  assert.notEqual(check(oldSmall, madeSmall, packChunks(badExtraRaw), "bad-extra").status, 0, "1-bit extra flip must fail");
+
+  // 3) Truncated chunk / corrupted deflate stream / wrong raw_len
+  assert.notEqual(check(oldSmall, madeSmall, goodChunks.subarray(0, goodChunks.length - 1), "trunc-payload").status, 0, "truncated payload must fail");
+  assert.notEqual(check(oldSmall, madeSmall, goodChunks.subarray(0, 5), "trunc-header").status, 0, "truncated chunk header must fail");
+  const corruptDeflate = Buffer.from(goodChunks);
+  corruptDeflate[corruptDeflate.length - 1] = corruptDeflate[corruptDeflate.length - 1]! ^ 0xff;
+  assert.notEqual(check(oldSmall, madeSmall, corruptDeflate, "corrupt-deflate").status, 0, "corrupted deflate must fail");
+  const badRawLen = Buffer.from(goodChunks);
+  badRawLen.writeUInt32LE(goodRaw.length + 1, 0);
+  assert.notEqual(check(oldSmall, madeSmall, badRawLen, "wrong-raw-len").status, 0, "raw_len mismatch must fail");
+  const zeroRawLen = Buffer.from(goodChunks);
+  zeroRawLen.writeUInt32LE(0, 0);
+  assert.notEqual(check(oldSmall, madeSmall, zeroRawLen, "zero-raw-len").status, 0, "raw_len == 0 must fail");
+  const hugeRawLen = Buffer.from(goodChunks);
+  hugeRawLen.writeUInt32LE(CHUNK + 1, 0);
+  assert.notEqual(check(oldSmall, madeSmall, hugeRawLen, "huge-raw-len").status, 0, "raw_len > CHUNK must fail");
+
+  // 4) Trailing garbage bytes / extra chunk / leftover bytes in same chunk
+  assert.notEqual(check(oldSmall, madeSmall, Buffer.concat([goodChunks, Buffer.from([0])]), "trailing-1b").status, 0, "trailing byte must fail");
+  assert.notEqual(check(oldSmall, madeSmall, Buffer.concat([goodChunks, Buffer.alloc(8)]), "trailing-end-chunk").status, 0, "trailing end chunk must fail");
+  assert.notEqual(check(oldSmall, madeSmall, Buffer.concat([goodChunks, packChunks(rec(0n, 0n, 0n))]), "extra-chunk").status, 0, "extra chunk must fail");
+  assert.notEqual(check(oldSmall, madeSmall, packChunks(Buffer.concat([goodRaw, Buffer.from([0])])), "trailing-in-chunk").status, 0, "trailing byte inside chunk must fail");
+
+  // 5) Malformed control records: negative x, negative y, x+y out of bounds, i64 overflow (> 2^53-1 or < -2^53), early EOF
+  assert.notEqual(check(oldSmall, madeSmall, packChunks(rec(-1n, 6n, 0n, madeSmall)), "neg-x").status, 0, "negative x must fail");
+  assert.notEqual(check(oldSmall, madeSmall, packChunks(rec(0n, -1n, 0n)), "neg-y").status, 0, "negative y must fail");
+  assert.notEqual(check(oldSmall, madeSmall, packChunks(rec(4n, 3n, 0n, Buffer.from([1, 1, 1, 1]), Buffer.from("XYZ"))), "oob-xy").status, 0, "x+y > madeSize must fail");
+  assert.notEqual(check(oldSmall, madeSmall, packChunks(rec(1n << 53n, 0n, 0n)), "i64-hi-pos").status, 0, "x >= 2^53 must fail");
+  assert.notEqual(check(oldSmall, madeSmall, packChunks(rec(0n, 0n, -(1n << 53n) - 1n)), "i64-hi-neg").status, 0, "z < -2^53 must fail");
+  assert.notEqual(check(oldSmall, madeSmall, packChunks(rec(3n, 2n, 0n, Buffer.from([1, 1, 1]), Buffer.from("XY"))), "early-eof").status, 0, "stream ending before madeSize must fail");
+
+  // 6) 0-byte made file: empty chunks passes, non-empty chunks rejected
+  assert.equal(check(oldSmall, Buffer.alloc(0), Buffer.alloc(0), "empty-ok").status, 0, "0-byte made with empty chunks must pass");
+  assert.notEqual(check(oldSmall, Buffer.alloc(0), goodChunks, "empty-nonempty").status, 0, "0-byte made with non-empty chunks must fail");
+  assert.notEqual(check(oldSmall, Buffer.alloc(0), Buffer.alloc(8), "empty-8zero").status, 0, "0-byte made with 8 zero bytes must fail");
+
+  // 7) Record spanning > 1 MiB chunk boundary (> 1.5 MiB blob) passes
+  const rand = prng(7777);
+  const bigOld = texty(rand, 1_600_000);
+  const bigMade = Buffer.concat([edited(rand, bigOld, 10_000), random(rand, 200_000)]);
+  const bigOldPath = join(dir, "big.old"), bigMadePath = join(dir, "big.made");
+  const bigFilesPath = join(dir, "big.files"), bigChunksPath = join(dir, "big.chunks");
+  writeFileSync(bigOldPath, bigOld);
+  writeFileSync(bigMadePath, bigMade);
+  writeFileSync(bigFilesPath, Buffer.alloc(0));
+  execFileSync(bin, ["--files", "--verify", bigOldPath, bigMadePath, bigFilesPath, bigChunksPath], { stdio: ["ignore", "ignore", "pipe"] });
+  const bigCheck = spawnSync(bin, ["--check-only", bigOldPath, bigMadePath, bigChunksPath], { encoding: "utf8" });
+  assert.equal(bigCheck.status, 0, `>1.5 MiB cross-chunk check failed: ${bigCheck.stderr}`);
 });
 
 /** A zip as a minimal writer makes one (node's deflate, level 6: what the delta's check makes again). */

@@ -102,7 +102,7 @@ pub fn[P] Nav::root_shows(self : Nav[P]) -> Bool {
 ///|
 /// Whether page `serial` takes presses: not as it goes back off the stack, nor under a page coming in over it, nor on
 /// the shelf (read: told as that changes).
-fn[P] Nav::takes(self : Nav[P], serial : Int) -> Bool {
+pub fn[P] Nav::takes(self : Nav[P], serial : Int) -> Bool {
   self.said.get() |> ignore
   self.shown.get() |> ignore
   let n = self.pages.length()

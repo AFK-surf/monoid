@@ -184,7 +184,7 @@ fn chat_page_kind_now() -> String {
 
 ///|
 /// The kind a chat's page is made as by a shell's `made` (nav_view's: a kind changed, the page made again in its
-/// place): its nodes' or its old view's as chat_page_nodes says now, so 实验性功能's 试用新对话页 turned either way makes
+/// place): its nodes' or its old view's as chat_page_nodes says now, so the feature turned either way makes
 /// an open chat's page the one chosen at once (chat_page_made reads it as it is made).
 pub fn chat_page_kind() -> String {
   if chat_page_nodes.get() {
@@ -342,7 +342,7 @@ pub fn chat_page_made(
   over? : (@view.View, Source, () -> Page?, () -> Int) -> Unit,
   stint? : () -> Int = fn() { 0 },
   drawn? : (Int) -> Bool = fn(serial) { app.nav.shows(serial) },
-  body? : (@view.View, Source, ChatRef, (@view.View) -> Unit, () -> Bool) -> Unit,
+  body? : (@view.View, Source, ChatRef, (@view.View) -> Unit, () -> Bool, () -> Bool) -> Unit,
   foot_node? : (@view.View, Source, ChatRef, () -> Bool, () -> Double?) -> Unit,
   leaving? : (@ui.Ctx, Source, ChatRef) -> Unit,
   narrower? : (Source, @view.View) -> ColumnLaid,
@@ -352,6 +352,9 @@ pub fn chat_page_made(
   new_node? : (@view.View, Source) -> Unit,
 ) -> Source {
   let retained = page_entry_source(src, v, serial)
+  // (the entry on top of its stack, not put by: what a page made for it reads and tells as drawn only then, never as it
+  // slides away popped, still made and drawn)
+  let on_stack = fn() { app.nav.top_stay().0 == serial && !app.nav.is_kept_left(serial) }
   // (what the shell says of its column read by the page's own source, what it holds the page's, let go with it: never
   // the window's)
   let narrower = narrower.map(fn(f) { fn(n : @view.View) { f(retained, n) } })
@@ -437,8 +440,20 @@ pub fn chat_page_made(
               ) {
                 match now {
                   (Some(page), _, false) => {
-                    page_entry_read(serial, retained, page)
+                    // (its reader and what was handed over at once, so a quick press hands its read over; said
+                    // rendered only once a frame has drawn it there, still its stack's: one made and gone before
+                    // that (pushed and popped in one go) leaves as one never shown)
+                    page_entry_wake(serial)
                     page_read(page)
+                    @ui.after_drawn_frame(fn() {
+                      if col.alive() &&
+                        on_stack() &&
+                        !app.nav.is_kept_left(serial) &&
+                        app.nav.page_of(serial) is Some((p, _)) &&
+                        p == page {
+                        page_entry_seen(serial, retained, page)
+                      }
+                    })
                   }
                   _ => ()
                 }
@@ -488,7 +503,7 @@ pub fn chat_page_made(
                   }
                   None => ()
                 }
-              }, fn() { drawn(serial) })
+              }, fn() { drawn(serial) }, on_stack)
             }
             // (a new chat: nothing here, its old view the scene's over it, below)
             _ => ()
@@ -613,7 +628,11 @@ pub fn chat_page_made(
                   |> ignore
                 None => ()
               }
-              make(o, src.owned_by(o))
+              // (what it reads put by as it leaves (the page its chat now, it fading where it was): its draft read no
+              // more from that moment; back as it was where it comes back, the send called off)
+              let (new_src, new_park) = src.owned_by_parkable(o)
+              o.reacts(fn() { o.leaving() }, fn(leaving) { new_park(leaving) }, at_start=false)
+              make(o, new_src)
             })
           })
         }
@@ -1033,6 +1052,14 @@ fn entry_last_source(serial : Int, page : Page) -> PageSource? {
 
 ///|
 pub fn page_entry_read(serial : Int, source : Source, page : Page) -> Unit {
+  page_entry_wake(serial)
+  page_entry_seen(serial, source, page)
+}
+
+///|
+/// What entry `serial` takes up as its page is made (page_entry_read's first half): taken back from the stack's kept
+/// left, and what the page before handed over let go of once this frame's build has read what it reads.
+fn page_entry_wake(serial : Int) -> Unit {
   // (taken back from the stack's kept left: its sources read again)
   match entries_kept.get(serial) {
     Some(done) => {
@@ -1053,6 +1080,12 @@ pub fn page_entry_read(serial : Int, source : Source, page : Page) -> Unit {
     }
     None => ()
   }
+}
+
+///|
+/// Entry `serial`'s page `page`, read through `source`, said to be the one its sources were last read for
+/// (page_entry_read's second half): what its leaving tells of as rendered.
+fn page_entry_seen(serial : Int, source : Source, page : Page) -> Unit {
   match page_sources.get(serial) {
     Some(sources) => for current in sources {
       if !physical_equal(current.source, source) { continue }
@@ -1411,6 +1444,8 @@ fn page_entry_parked(serial : Int, p : Page) -> Unit {
 fn page_entry_gone(serial : Int, _p : Page) -> Unit {
   entries_kept.remove(serial)
   page_sources.remove(serial)
+  // (its chat's reader let go by the entry it is bound to as that goes in the frame after (page_chat_reader's
+  // bind_to), never here: Nav tells it gone before then, the original read still asked till that frame)
   active_chat_readers.remove(serial)
   release_pending_chat(serial)
   match handed_readers.get(serial) {
@@ -1438,17 +1473,31 @@ fn page_entry_tells_left(serial : Int, p : Page, parked : Bool) -> Unit {
     }
     _ => None
   }
-  if parked {
-    // (its sources kept for it as it is put on again: what they had read of its chat read anew then)
-    match page_sources.get(serial) {
-      Some(sources) => for current in sources { current.chat_ready = "" }
-      None => ()
-    }
+  // (a chat's entry never drawn (no source it was last read through): nothing told of it leaving (no chat_left), what
+  // its sources made of the chat (its read, its head's) let go of all the same, telling the core nothing)
+  match (p, chat) {
+    (Chat(r), None) =>
+      match page_sources.get(serial) {
+        Some(sources) => for current in sources { chat_inputs_left_from(current.source, r) }
+        None => ()
+      }
+    _ => ()
+  }
+  // (its chat's reader let go at once only where nothing else lets go of it: put by (kept_left), or never drawn; one
+  // drawn and let go for good lets go of it as its entry goes in the frame after (page_chat_reader's bind_to))
+  if parked || chat is None {
     match active_chat_readers.get(serial) {
       Some(let_go) => {
         active_chat_readers.remove(serial)
         let_go()
       }
+      None => ()
+    }
+  }
+  if parked {
+    // (its sources kept for it as it is put on again: what they had read of its chat read anew then)
+    match page_sources.get(serial) {
+      Some(sources) => for current in sources { current.chat_ready = "" }
       None => ()
     }
     // (its sources put by once what it left is told (the frame's pages left, chat_left, reading through them), at the
@@ -1458,6 +1507,10 @@ fn page_entry_tells_left(serial : Int, p : Page, parked : Bool) -> Unit {
     }
     @ui.after_frame(entries_kept_park_due)
   } else {
+    // (a chat's entry never drawn: what its source reads put by with it, as one put by is)
+    if p is Chat(_) && chat is None {
+      entry_parked(serial, true)
+    }
     page_sources.remove(serial)
   }
   release_pending_chat(serial)

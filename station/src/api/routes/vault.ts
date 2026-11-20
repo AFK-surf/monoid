@@ -20,6 +20,8 @@ export type VaultDeps = {
   /// The lock a workspace's vault goes by (Cloud `vaultLock`): its lock in force in security mode, else its members'
   /// own; null when there is none (or it is broken: nobody is admitted then). `viewer`: who asks, known by it from then on.
   lock(workspace: string, viewer?: Viewer): LockState | null;
+  /// The personal chains selected for each member outside security mode (cloud/vault-lock.ts `personalVaultChains`).
+  chains?(workspace: string): Record<string, unknown[]>;
   events?: Events;
   /// Wait for an older station's writes to stop; undefined means the handover is already complete.
   beforeWrite?(): false | Promise<boolean> | undefined;
@@ -56,7 +58,7 @@ const sees = (vault: Vault, viewer: Viewer) => vault.ws === viewer.workspace && 
 /// Whom a vault's changes are told to: its members.
 const members = (vault: Vault): To => ({ workspace: vault.ws, subs: vault.members });
 
-export const routes = ({ vaults, lock, events, boxed, beforeWrite }: VaultDeps): Route[] => {
+export const routes = ({ vaults, lock, chains, events, boxed, beforeWrite }: VaultDeps): Route[] => {
   /// The lock of the viewer's workspace, or the refusal.
   const locked = (r: Request): LockState | Answer => lock(r.viewer.workspace, r.viewer) ?? NEEDS_LOCK();
   const isAnswer = (v: LockState | Answer): v is Answer => "status" in v;
@@ -85,9 +87,14 @@ export const routes = ({ vaults, lock, events, boxed, beforeWrite }: VaultDeps):
         const latest: Vault[] = [];
         for (const h of held as Vault[]) {
           if (h === null || typeof h !== "object" || typeof h.id !== "string" || h.ws !== r.viewer.workspace || !Array.isArray(h.members) || !h.members.includes(r.viewer.sub)) continue;
-          if (!signedOk(h, TAG.vault) || signerOf(l, h.sig.key)?.sub !== h.owner) continue;
+          if (!signedOk(h, TAG.vault)) continue;
+          const signer = signerOf(l, h.sig.key);
+          if (signer === null) continue;
+          const isWs = h.scope === "workspace";
+          const role = l.members.get(signer.sub)?.role;
+          if (signer.sub !== h.owner && !(isWs && (role === "owner" || role === "admin"))) continue;
           const v = vaults.vault(l.ws, h.id);
-          if (v !== null && v.owner === h.owner) latest.push(v);
+          if (v !== null && (v.owner === h.owner || (isWs && v.scope === "workspace"))) latest.push(v);
         }
         return json(200, JSON.stringify({ vaults: latest }));
       },
@@ -116,7 +123,12 @@ export const routes = ({ vaults, lock, events, boxed, beforeWrite }: VaultDeps):
           if (!copy && Number.isSafeInteger(next.seq) && next.seq !== (prev === null ? 0 : prev.seq + 1)) {
             return refuse(409, "vault_conflict", `seq ${prev === null ? 0 : prev.seq + 1} is the one that follows`, { vault: prev });
           }
-          const why = sibling ? vaultOk(l, null, next, true) ?? (next.owner !== prev!.owner ? "a vault's owner does not change" : null) : vaultOk(l, prev, next, copy);
+          const scopeChanged = (next.scope ?? null) !== (prev?.scope ?? null);
+          const ownerChanged = prev !== null && next.owner !== prev.owner &&
+            !(next.scope === "workspace" && prev.scope === "workspace" && signerOf(l, next.sig?.key)?.sub === next.owner);
+          const why = sibling
+            ? vaultOk(l, null, next, true) ?? (scopeChanged ? "a vault's scope does not change" : ownerChanged ? "a vault's owner does not change" : null)
+            : vaultOk(l, prev, next, copy);
           if (why !== null) return refuse(400, "vault_invalid", why);
           try {
             if (!vaults.putVaultIf(next, held?.body ?? null)) continue;
@@ -196,7 +208,16 @@ export const routes = ({ vaults, lock, events, boxed, beforeWrite }: VaultDeps):
         // A small lock can address its devices by the existing primary key, leaving removed devices' certificates
         // unread. For a larger lock the certificate table may be smaller than the device list, so scan it as before.
         const boxes = l.devices.size <= 32 ? vaults.boxesFor(l.ws, [...l.devices.keys()]) : vaults.boxes(l.ws);
-        return json(200, JSON.stringify({ boxes: boxes.filter((c) => certOk(l, c) === null) }));
+        const kept = boxes.filter((c) => certOk(l, c) === null);
+        if (l.genesis === "") {
+          const roles: Record<string, string> = {};
+          for (const [sub, m] of l.members) roles[sub] = m.role;
+          const rawChains = chains?.(l.ws) ?? {};
+          const memberChains: Record<string, unknown[]> = {};
+          for (const [sub, ch] of Object.entries(rawChains)) if (l.members.has(sub)) memberChains[sub] = ch;
+          return json(200, JSON.stringify({ boxes: kept, chains: memberChains, roles }));
+        }
+        return json(200, JSON.stringify({ boxes: kept }));
       },
     },
     {

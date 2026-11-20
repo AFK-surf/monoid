@@ -18,6 +18,8 @@ fn plain_listings(items : Array[Json]) -> Array[Listed] {
     if !truthy(get(Some(i), "deleted")) && truthy(get(Some(i), "listing")) {
       out.push({
         vault: @vault_crypto.plain_id,
+        vault_name: None,
+        scope: None,
         item: gtext(Some(i), "id"),
         owner: gs(Some(i), "owner"),
         listing: get(Some(i), "listing").unwrap(),
@@ -30,12 +32,16 @@ fn plain_listings(items : Array[Json]) -> Array[Listed] {
 ///|
 fn vault_listings(lock : Lock, vault : Json, items : Array[Json]) -> Array[Listed] {
   let out = []
+  let scope = Some(if gs(Some(vault), "scope") == Some("workspace") { "workspace" } else { "personal" })
+  let vault_name = gs(Some(vault), "name")
   for item in items {
     if !truthy(get(Some(item), "deleted")) &&
       has(Some(item), "listing") &&
       get(Some(item), "epoch") == get(Some(vault), "epoch") {
       out.push({
         vault: gtext(Some(vault), "id"),
+        vault_name,
+        scope,
         item: gtext(Some(item), "id"),
         owner: lock.email_of(gtext(Some(vault), "owner")),
         listing: get(Some(item), "listing").unwrap(),

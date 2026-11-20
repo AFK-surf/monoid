@@ -23,18 +23,24 @@ fn new_frame(src : Source, w : Workspace) -> @sfpages.NewChatFrame {
 /// becomes its chat, the files open beside it open beside the chat (new_sent). Its 文件 beside it is the tree's
 /// (side_panel_node's new_side_node; on the tape a panel of its own, tape_view's tape_new_side_node).
 /// `ground`: as node `n` draws it (the pane's; a tape's panel's: tape_page_ground); `width`: the page's, as the frame
-/// lays it out.
+/// lays it out; `apart` and `pane`: its composer's, as the chat's in the same place has them (chat_composer_node's);
+/// `bar`: what is over its top (a pane's: the window's top row it drags by, page_pane's new_node).
 fn new_frame_node(
   src : Source,
   w : Workspace,
   width : () -> Double,
   ground? : (@view.View) -> Int64 = fn(_) { @sf.theme().p.bg },
+  apart? : () -> Bool = fn() { false },
+  pane? : () -> FixedArray[@ui.CornerOf]? = fn() { None },
+  bar? : (@view.View) -> Unit = fn(_) {  },
 ) -> @sfpages.NewChatNodeFrame {
   {
     core: settings_core(src, w),
     ground,
     width,
-    bar: fn(_) {  },
+    apart,
+    pane,
+    bar,
     foot: fn() { 0.0 },
     // (what is let go going up to the station its 文件 tab starts on, as the page's own picks say it now)
     over: fn(v, shows) {

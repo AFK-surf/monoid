@@ -721,6 +721,17 @@ impl @hostapi.Host for FakeHost with perf_where(self) {
 }
 
 ///|
+impl @hostapi.Host for FakeHost with reveal_file(self, path, go) {
+  if !self.reveals {
+    return false
+  }
+  if go {
+    self.revealed.push(path)
+  }
+  true
+}
+
+///|
 impl @hostapi.Host for FakeHost with perf_open(self, go) {
   if !self.perf_opens {
     return false

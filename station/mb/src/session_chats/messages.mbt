@@ -66,7 +66,7 @@ pub fn message_header(
 }
 
 ///|
-async fn sender_title(w : World, row : J, thread : J) -> String {
+fn sender_title(w : World, row : J, thread : J) -> String raise {
   let named = if thread is Null { None } else { given_title(thread) }
   let own = match str_of(at(Some(row), "title")) {
     Some(t) if trim(t) != "" => Some(trim(t))
@@ -78,7 +78,7 @@ async fn sender_title(w : World, row : J, thread : J) -> String {
     str_of(at(Some(thread), "surface")) == Some(stillfail_surface) {
     J::Null
   } else {
-    w.store("firstText", [at(Some(thread), "id").unwrap_or(Null)])
+    w.with_store_j(s => s.first_text(at(Some(thread), "id").unwrap_or(Null).to_json()))
   }
   match named {
     Some(n) => n
@@ -98,14 +98,14 @@ async fn sender_title(w : World, row : J, thread : J) -> String {
 ///|
 /// A sender's title when its preferred conversation is ready: Some(Null) for no session, None to prepare first.
 pub async fn sender_title_if_ready(w : World, key : String) -> J? {
-  let row = w.store("getSession", [js(key)])
+  let row = w.store_get_session(key)
   if row is Null {
     return Some(Null)
   }
   let mut thread = J::Null
   try {
-    let home = w.store("sessionHomeThread", [js(key)])
-    let selected = if nullish(Some(home)) { w.store_u("latestThreadIfReady", [js(key)]) } else { Some(home) }
+    let home = w.with_threads_j(t => t.session_home_thread(Json::string(key)))
+    let selected = if nullish(Some(home)) { w.with_threads_opt(t => t.latest_thread_if_ready(Json::string(key))) } else { Some(home) }
     guard selected is Some(s) else { return None }
     thread = at(Some(s), "thread").unwrap_or(Null)
   } catch {
@@ -117,7 +117,7 @@ pub async fn sender_title_if_ready(w : World, key : String) -> J? {
 ///|
 /// The sender's chat as a message from it is headed: its title, and its link once the station is in a workspace.
 pub async fn sender(w : World, key : String) -> (String, String?) {
-  let row = w.store("getSession", [js(key)])
+  let row = w.store_get_session(key)
   if row is Null {
     raise fail_("unknown session")
   }
@@ -128,7 +128,7 @@ pub async fn sender(w : World, key : String) -> (String, String?) {
     _ => ()
   }
   let title = sender_title(w, row, thread)
-  (title, str_of(Some(w.hub("link", [js(key)]))))
+  (title, w.hub_link(key))
 }
 
 ///|
@@ -172,7 +172,7 @@ pub async fn session_send(w : World, key : String, args : J) -> String {
     Some((k, _)) => k
     None => to
   }
-  let handed = if linked_to is None || linked_to == here { w.store("handedTo", [js(named0)]) } else { J::Null }
+  let handed = if linked_to is None || linked_to == here { w.with_store_j(s => s.handed_to(named0)) } else { J::Null }
   let there = if handed is Null { linked_to } else { str_of(at(Some(handed), "station")) }
   if there is Some(st) && there != here {
     let target = if handed is Null { linked_session.map(p => p.0) } else { Some(named0) }
@@ -228,7 +228,7 @@ pub async fn session_send(w : World, key : String, args : J) -> String {
     }
     thread = w.dep("sessionThreadOf", [js(wkey)])
     let row = at(Some(thread), "thread")
-    targets = arr_of(Some(w.store("threadSessions", [at(row, "id").unwrap_or(Null)])))
+    targets = arr_of(Some(w.store_thread_sessions(at(row, "id").unwrap_or(Null))))
       .unwrap_or([])
       .map(m => str_of(at(Some(m), "session")).unwrap_or(""))
     if targets.contains(key) {
@@ -238,7 +238,7 @@ pub async fn session_send(w : World, key : String, args : J) -> String {
     }
   } else {
     let wthread = at(Some(what), "thread").unwrap_or(Null)
-    let members = arr_of(Some(w.store("threadSessions", [at(Some(wthread), "id").unwrap_or(Null)]))).unwrap_or([])
+    let members = arr_of(Some(w.store_thread_sessions(at(Some(wthread), "id").unwrap_or(Null)))).unwrap_or([])
     if members.iter().any(m => str_of(at(Some(m), "session")) == Some(key)) {
       raise fail_("\{to} is one of your conversations: use chat_post there")
     }
@@ -249,7 +249,7 @@ pub async fn session_send(w : World, key : String, args : J) -> String {
     targets = members.map(m => str_of(at(Some(m), "session")).unwrap_or(""))
   }
   let row = at(Some(thread), "thread")
-  if w.store("manuallyArchived", [at(row, "id").unwrap_or(Null)]) is Bool(true) {
+  if w.store_manually_archived(at(row, "id").unwrap_or(Null)) {
     raise fail_("not sent to \{to}: that chat was archived by hand: it takes no messages until someone restores it")
   }
   let files = if paths.length() > 0 {
@@ -279,7 +279,7 @@ pub async fn from_peer(w : World, peer : String, request : J, ws : String?) -> J
   if text == "" || target == "" || from == "" || char_count(text) > max_text {
     raise fail_("a message needs to, session and text (at most \{max_text} characters)")
   }
-  let handed = w.store("handedTo", [js(target)])
+  let handed = w.with_store_j(s => s.handed_to(target))
   if !(handed is Null) {
     let peers = w.hub("peers", [])
     if !(peers is Null) && str_of(at(Some(handed), "station")) != Some(peer) {
@@ -291,16 +291,16 @@ pub async fn from_peer(w : World, peer : String, request : J, ws : String?) -> J
       return w.call_fn(peers2, [at(Some(handed), "station").unwrap_or(Null), forwarded])
     }
   }
-  if w.store("getSession", [js(target)]) is Null || !(w.dep("reachable", [js(target), jopt(ws), jb(true)]) is Bool(true)) {
+  if w.store_get_session(target) is Null || !(w.dep("reachable", [js(target), jopt(ws), jb(true)]) is Bool(true)) {
     raise fail_("no session \{target} on this station (it may have been deleted)")
   }
   let thread = w.dep("sessionThreadOf", [js(target)])
   let row = at(Some(thread), "thread")
   let tid = at(row, "id").unwrap_or(Null)
-  if w.store("manuallyArchived", [tid]) is Bool(true) {
+  if w.store_manually_archived(tid) {
     raise fail_("that chat was archived by hand: it takes no messages until someone restores it")
   }
-  let targets = arr_of(Some(w.store("threadSessions", [tid]))).unwrap_or([]).map(m => str_of(at(Some(m), "session")).unwrap_or(""))
+  let targets = arr_of(Some(w.store_thread_sessions(tid))).unwrap_or([]).map(m => str_of(at(Some(m), "session")).unwrap_or(""))
   let files = w.dep("claim", [js(peer), js(from), js(if targets.length() > 0 { targets[0] } else { target }), at(Some(request), "files").unwrap_or(Null)])
   let title = match str_of(at(at(Some(request), "from"), "title")) {
     Some(t) if trim(t) != "" => t
@@ -310,7 +310,7 @@ pub async fn from_peer(w : World, peer : String, request : J, ws : String?) -> J
     Some(l) if l != "" => Some(l)
     _ => None
   }
-  let opener = w.store("openerOf", [js(target)])
+  let opener = w.with_store_j(s => s.opener_of(Json::string(target)))
   let opened = at(Some(request), "opened") is Some(Bool(true)) &&
     !(opener is Null) &&
     str_of(at(Some(opener), "parentStation")) == Some(peer) &&
@@ -342,7 +342,7 @@ pub async fn post_from(
   let identity = message_identity(w, author)
   let row = at(Some(thread), "thread")
   let led = if opened && targets.length() > 0 {
-    let opener = w.store("openerOf", [js(targets[0])])
+    let opener = w.with_store_j(s => s.opener_of(Json::string(targets[0])))
     if opener is Null {
       None
     } else {
@@ -359,13 +359,13 @@ pub async fn post_from(
   let tid = at(row, "id").unwrap_or(Null)
   let connect = str_of(at(Some(thread), "connect")).unwrap_or("")
   let ts = if !opened {
-    w.hub("nextTs", [])
+    js(w.with_hub(h => h.next_ts()))
   } else {
     try {
       w.chat(connect, "post", [here, js(said), files])
     } catch {
       e => {
-        let page = if targets.length() > 0 { str_of(Some(w.hub("link", [js(targets[0])]))) } else { None }
+        let page = if targets.length() > 0 { w.hub_link(targets[0]) } else { None }
         let none = arr_of(Some(files)).unwrap_or([]).length() == 0
         if none || page is None || !thrown_message(e).contains("missing_scope") {
           raise e
@@ -377,7 +377,7 @@ pub async fn post_from(
       }
     }
   }
-  let hearing = jsa(targets.filter(t => t != author))
+  let hearing = targets.filter(t => t != author)
   if opened {
     let fields = [
       ("thread", tid),
@@ -390,10 +390,10 @@ pub async fn post_from(
     if identity is Some(i) {
       fields.push(("agentIdentity", i))
     }
-    let n = at_i(Some(w.store("insertMessage", [jo(fields)])), 0).unwrap_or(Null)
-    w.hub("deliver", [tid, n, hearing, js(said)]) |> ignore
+    let n = at_i(Some(w.store_insert_message(jo(fields))), 0).unwrap_or(Null)
+    w.with_hub(h => h.deliver(tid.to_json(), n.to_json(), hearing, said))
   } else {
-    let n = w.store("insertLetter", [
+    let n = w.with_threads_j(t => t.insert_letter(
       jo([
         ("thread", tid),
         ("ts", ts),
@@ -403,8 +403,8 @@ pub async fn post_from(
         ("attachments", files),
         ("letter", jo([("way", js("in")), ("title", js(title)), ("link", link_j(link))])),
       ]),
-    ])
-    w.hub("deliverLetter", [tid, n, hearing]) |> ignore
+    ))
+    w.with_hub(h => h.deliver_letter(tid.to_json(), n.to_json(), hearing))
   }
   thread_address(str_of(at(row, "channel")).unwrap_or(""), str_of(at(row, "threadTs")).unwrap_or(""))
 }
@@ -420,8 +420,8 @@ async fn kept_out(w : World, key : String, title : String, link : String?, text 
   let row = at(Some(own), "thread")
   let surface = str_of(at(row, "surface")).unwrap_or("")
   let said = "\{w.tr("station.session.to", args=[("to", chat_named(surface, title, link))])}\n\n\{text}"
-  let ts = w.hub("nextTs", [])
-  w.store("insertLetter", [
+  let ts = js(w.with_hub(h => h.next_ts()))
+  ignore(w.with_threads_j(t => t.insert_letter(
     jo([
       ("thread", at(row, "id").unwrap_or(Null)),
       ("ts", ts),
@@ -430,6 +430,5 @@ async fn kept_out(w : World, key : String, title : String, link : String?, text 
       ("text", js(said)),
       ("letter", jo([("way", js("out")), ("title", js(title)), ("link", link_j(link))])),
     ]),
-  ])
-  |> ignore
+  )))
 }

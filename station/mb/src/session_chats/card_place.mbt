@@ -5,9 +5,9 @@
 /// A bounded card header (`[{ts}, ...]`), Some(Null) for none, None where an old thread must be prepared first.
 pub async fn card_header_if_ready(w : World, thread : J) -> J? {
   if w.store_has("pendingCardHeaderIfReady") {
-    w.store_u("pendingCardHeaderIfReady", [thread])
+    w.store_pending_card_header_if_ready(thread)
   } else {
-    Some(w.store("pendingCardHeader", [thread]))
+    Some(w.store_pending_card_header(thread))
   }
 }
 
@@ -18,7 +18,7 @@ pub async fn card_place(w : World, session : String, thread : J, ts : J) -> J? {
   if nullish(Some(thread)) || nullish(Some(ts)) {
     return Some(Null)
   }
-  let where_ = w.store("sessionThreadById", [js(session), thread])
+  let where_ = w.store_session_thread_by_id(session, thread)
   if where_ is Null {
     raise fail_("the original conversation is no longer available to this session")
   }
@@ -85,7 +85,7 @@ pub async fn record_posted_card(
     if needed is Some(f) && !f() {
       raise NoLongerNeeded
     }
-    if w.store("sessionThreadById", [js(session), tid]) is Null {
+    if w.store_session_thread_by_id(session, tid) is Null {
       raise (occupied.unwrap())("the original conversation is no longer available to this session")
     }
     match card_header_if_ready(w, tid) {
@@ -100,12 +100,12 @@ pub async fn record_posted_card(
       if occupied is Some(_) {
         check()
       }
-      let args = [message]
+      let extra = []
       if occupied is None {
-        args.push(undefined_j())
+        extra.push(undefined_j())
       }
       if occupied is Some(_) {
-        args.push(
+        extra.push(
           (w.callback)(async fn(_) {
             check() catch {
               NoLongerNeeded => raise Thrown("CardNoLongerNeeded", "")
@@ -116,7 +116,7 @@ pub async fn record_posted_card(
           }),
         )
       }
-      at_i(Some(w.store("insertMessage", args)), 0).unwrap_or(Null)
+      at_i(Some(w.store_insert_message(message, extra~)), 0).unwrap_or(Null)
     } catch {
       NoLongerNeeded | Thrown("CardNoLongerNeeded", _) => return Null
       PreparationNeeded | Thrown("CardPreparationNeeded", _) => {
@@ -133,7 +133,7 @@ pub async fn record_posted_card(
       }
       e => raise e
     }
-    w.hub("shared", [tid, n, js(session), js(text)]) |> ignore
+    w.hub_shared(tid, n, session, text)
     return if card is Null { Null } else { posted }
   }
   Null

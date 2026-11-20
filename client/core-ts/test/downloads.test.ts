@@ -622,6 +622,24 @@ test("saved where the app can read it back, that is the file's copy on the devic
   r.core.close();
 });
 
+test("where a chat's file was saved is said while it is still there (在访达中显示), and none once it is gone or was never saved", async () => {
+  const pic = bytesOf(3 * MB, 5);
+  const r = await rig(new Map([["shot.png", pic]]));
+  const asked = { station: ST, key: "k1", name: "shot.png", size: pic.length };
+  assert.deepEqual((await r.ask("download.saved", asked)).ok, { at: "" });
+  const id = (await r.ask("download.start", asked)).ok.download.id;
+  await r.view();
+  await r.ask("download.take", { id });
+  const at = "/Users/lin/Downloads/shot.png";
+  r.host.saved.set(at, pic);
+  await r.ask("download.done", { id, at });
+  assert.deepEqual((await r.ask("download.saved", asked)).ok, { at });
+  assert.deepEqual((await r.ask("download.saved", { ...asked, name: "other.png" })).ok, { at: "" });
+  r.host.saved.delete(at);
+  assert.deepEqual((await r.ask("download.saved", asked)).ok, { at: "" });
+  r.core.close();
+});
+
 test("saving an attachment sent from this device reads the uploaded bytes locally", async () => {
   const r = await rig(new Map());
   const name = "posted.apk";

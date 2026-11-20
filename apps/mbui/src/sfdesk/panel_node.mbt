@@ -519,43 +519,51 @@ fn side_terminal_node(q : @view.View, src : Source, r : ChatRef, tab : String) -
   let cur_tab = Ref(tab)
   q.box(fn(s) {
     s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))).clips(Is(true)) |> ignore
-    @sfpages.terminal_pane_node(
-      s,
-      src,
-      at,
-      back=fn() { @sf.t("common.back") },
-      on_back=fn() { side_change(src, r, "close", Some(cur_tab.val)) },
-      top=fn() { 0.0 },
-      width=fn() { side_whole(src, s) },
-      in_tab=true,
-      keep_open=fn() {
-        let open_tabs = @signals.untracked(fn() { side_now(src, r).0 })
-        open_tabs.contains(cur_tab.val) ||
-        (!at.terminal.has_prefix("new") &&
-        open_tabs.any(fn(t) { station_tab(t) == Some(("terminal", at.station, at.terminal)) }))
-      },
-      on_resolved=fn(real_id, real_cwd) {
-        let next_cwd = if real_cwd != "" { real_cwd } else { at.cwd }
-        let next_tab = station_tab_key("terminal", at.station, screen=real_id)
-        panel_terminal_pages[tabs_key(r) + "/" + next_tab] = {
-          ..at,
-          terminal: real_id,
-          cwd: next_cwd,
-        }
-        let prev = cur_tab.val
-        cur_tab.val = next_tab
-        if prev != next_tab {
-          panel_terminal_pages.remove(tabs_key(r) + "/" + prev)
-          side_ask(src, r, "open", Some(next_tab))
-          side_ask(src, r, "close", Some(prev))
-        }
-      },
-      on_switch_page=fn(next) {
-        if !station_page_beside(src, r, next) {
-          @sfbase.open_page(next)
-        }
-      },
-    )
+    // (its dark screen a line in from the panel's edge, on the panel's ground: never edge to edge with the chat's page
+    // beside it, whose ground is not its own (gaps.mbt's rule 9); the panel's edge drawn over that line)
+    s.ground(By(fn() { @sf.theme().p.bg })).padding(Is((1.0, 0.0, 0.0, 0.0))) |> ignore
+    // (in a box of its own: what the terminal's pane says of its own padding leaves that line where it is)
+    s.box(fn(t) {
+      t.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+      @sfpages.terminal_pane_node(
+        t,
+        src,
+        at,
+        back=fn() { @sf.t("common.back") },
+        on_back=fn() { side_change(src, r, "close", Some(cur_tab.val)) },
+        top=fn() { 0.0 },
+        width=fn() { side_whole(src, s) },
+        in_tab=true,
+        keep_open=fn() {
+          let open_tabs = @signals.untracked(fn() { side_now(src, r).0 })
+          open_tabs.contains(cur_tab.val) ||
+          (!at.terminal.has_prefix("new") &&
+          open_tabs.any(fn(t) { station_tab(t) == Some(("terminal", at.station, at.terminal)) }))
+        },
+        on_resolved=fn(real_id, real_cwd) {
+          let next_cwd = if real_cwd != "" { real_cwd } else { at.cwd }
+          let next_tab = station_tab_key("terminal", at.station, screen=real_id)
+          panel_terminal_pages[tabs_key(r) + "/" + next_tab] = {
+            ..at,
+            terminal: real_id,
+            cwd: next_cwd,
+          }
+          let prev = cur_tab.val
+          cur_tab.val = next_tab
+          if prev != next_tab {
+            panel_terminal_pages.remove(tabs_key(r) + "/" + prev)
+            side_ask(src, r, "open", Some(next_tab))
+            side_ask(src, r, "close", Some(prev))
+          }
+        },
+        on_switch_page=fn(next) {
+          if !station_page_beside(src, r, next) {
+            @sfbase.open_page(next)
+          }
+        },
+      )
+    })
+    |> ignore
   })
   |> ignore
 }

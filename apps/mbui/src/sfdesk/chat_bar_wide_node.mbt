@@ -13,13 +13,14 @@
 /// Where a chat's bar keeps clear at its ends and over its buttons, as the frame it is in says (chat_bar_wide_node's):
 /// how much taller it is over its buttons (`over`: the tape's line), how far it is moved in from its ends while the
 /// folded sidebar is shown a while (`margins`, before and after: less than none before, drawn moved back), its room
-/// at its start (`start`) and at its end (`end`, given whether the side panel is open beside it and ⌘F's bar is in it),
+/// at its start (`start`, given whether a title starts it: one that has none starts with its marks, round as they
+/// are) and at its end (`end`, given whether the side panel is open beside it and ⌘F's bar is in it),
 /// the corner its buttons share with the window's (`linked`: none on the tape), its ground as drawn in node `bar`
 /// (`ground`: the page's; on the tape, the page's panel's, a step darker while that is behind the one in use).
 pub(all) struct ChatBarEnds {
   over : () -> Double
   margins : () -> (Double, Double)
-  start : () -> Double
+  start : (Bool) -> Double
   end : (Bool, Bool) -> Double
   linked : () -> @ui.CornerOf?
   ground : (@view.View) -> Int64
@@ -83,6 +84,18 @@ pub fn chat_bar_wide_node(
 fn new_bar_of(b : @view.View, src : Source, w : Workspace, ends : ChatBarEnds, tips : @sf.TipLayer) -> Unit {
   let high = fn() { @sf.wide_bar_h + (ends.over)() }
   let beside = fn() { new_files_open(src, w.id) }
+  // (its 文件 in the system's bars where they are, among the page's actions as a chat's are there (newchat.mbt's
+  // bar_action), nothing of its own over the page then: handed as it comes on top, as chat_bar_handed_node hands a chat's)
+  b.reacts(fn() { (app.nav.top() == NewChat, @sf.native_on()) }, fn(st) {
+    guard st.0 && st.1 else { return }
+    @signals.untracked(fn() {
+      nav_page_for(NewChat)
+      bar_action("new/files", @sf.t("web-pages.chat.files"), "folder", fn() {
+        new_files_set(src, w.id, !new_files_open(src, w.id))
+      })
+      |> ignore
+    })
+  })
   b
   .row(Is(true))
   .height(By(fn() { Some(high()) }))
@@ -103,7 +116,8 @@ fn new_bar_of(b : @view.View, src : Source, w : Workspace, ends : ChatBarEnds, t
     .presses(Is(true))
     .moves_window(By(@ui.window_inset_now))
     |> ignore
-    bar.box(fn(e) {
+    // (none of its own where the system's bars hold it)
+    bar.show(fn() { !@sf.native_on() }, fn(e) {
       e.shrink(Is(0.0)) |> ignore
       @sf.icon_button_node(
         e,
@@ -115,7 +129,6 @@ fn new_bar_of(b : @view.View, src : Source, w : Workspace, ends : ChatBarEnds, t
       )
       |> ignore
     })
-    |> ignore
     bar_room_node(bar, fn() { (ends.end)(beside(), false) })
   })
   |> ignore
@@ -141,6 +154,13 @@ fn wide_bar_of(b : @view.View, src : Source, r : ChatRef, ends : ChatBarEnds, ti
     match view() {
       Some(v) => @sfpages.find_chat() == chat_key(r) && v.thread is Some(_)
       None => false
+    }
+  }
+  // (whether a title starts it: a chat with none starts with its marks)
+  let titled = fn() {
+    match view() {
+      Some(v) => v.title != ""
+      None => r.title != ""
     }
   }
   let beside = fn() {
@@ -177,7 +197,7 @@ fn wide_bar_of(b : @view.View, src : Source, r : ChatRef, ends : ChatBarEnds, ti
       .presses(Is(true))
       .moves_window(By(fn() { @ui.window_inset() }))
       |> ignore
-      bar_room_node(bar, ends.start)
+      bar_room_node(bar, fn() { (ends.start)(titled()) })
       bar.box(fn(inner) {
         @sf.style_node(inner, fn() { chat_bar_inner }, in_row=true)
         wide_bar_title_row(inner, src, r, view, fn() { room.width() }, tips, stint)

@@ -123,6 +123,7 @@ fn chat_body_nodes(
   composer : (@view.View) -> Unit,
   shows : () -> Bool,
   in_pane? : Bool = false,
+  on_stack? : () -> Bool = fn() { true },
 ) -> Unit {
   // (the composer's node: what is carried over it is its own to show, chat_drop_node)
   let held : Ref[@view.View?] = Ref(None)
@@ -134,6 +135,7 @@ fn chat_body_nodes(
     tips~,
     stint~,
     shows~,
+    on_stack~,
     cover=fn() { chat_bar_room(in_pane~) },
     room=list_head_gap,
     composer=fn(n) {

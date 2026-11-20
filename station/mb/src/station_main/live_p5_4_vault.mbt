@@ -19,6 +19,10 @@ priv struct P54Cloud {
   personal : Map[String, Json]
   /// Who asked the vault of each workspace here (vault/module.ts `lock`'s `viewer`), by sub: their email.
   viewers : Map[String, Map[String, String]]
+  /// Their workspace role from their credential, by workspace and sub: `(role, seen_secs)`.
+  viewer_roles : Map[String, Map[String, (String, Double)]]
+  /// The personal chains selected for each member outside security mode (GET /vault/boxes).
+  personal_chains : Map[String, Map[String, Array[Json]]]
   /// The vault's records of a workspace (its vaults, its box certificates) and its check of a box certificate against
   /// a lock: the vault's part's, once it is made.
   held : Ref[((String) -> (Array[Json], Array[Json]))?]
@@ -27,7 +31,7 @@ priv struct P54Cloud {
 
 ///|
 fn P54Cloud::new() -> P54Cloud {
-  { locks: Map([]), memberships: [], personal: Map([]), viewers: Map([]), held: Ref(None), cert_ok: Ref(None) }
+  { locks: Map([]), memberships: [], personal: Map([]), viewers: Map([]), viewer_roles: Map([]), personal_chains: Map([]), held: Ref(None), cert_ok: Ref(None) }
 }
 
 ///|
@@ -37,31 +41,40 @@ fn P54Cloud::has(self : P54Cloud, bus : LiveBus, ws : String) -> Bool {
 }
 
 ///|
-/// The members of `ws` whose devices came to this station (mesh/seen-devices.json, the gate's), by sub: their email,
-/// as they said it last.
-fn p54_seen_members(bus : LiveBus, ws : String) -> Map[String, String] {
+/// The members of `ws` whose devices came to this station (mesh/seen-devices.json, the gate's), by sub: their email
+/// and role, as they said them last.
+fn p54_seen_members(bus : LiveBus, ws : String) -> (Map[String, String], Map[String, (String, Double)]) {
   let out : Map[String, (String, Double)] = Map([])
+  let roles_at : Map[String, (String, Double)] = Map([])
   let rows = match read_text(path([bus.data, "mesh", "seen-devices.json"])).bind(@cloud_lock.parse) {
     Some(Array(a)) => a
     _ => []
   }
   for r in rows {
     guard jtext(r, "workspace") == Some(ws) else { continue }
-    guard jtext(r, "sub") is Some(sub) && jtext(r, "email") is Some(email) && email != "" else { continue }
+    guard jtext(r, "sub") is Some(sub) else { continue }
     let at = match r {
       { "last_seen": Number(n, ..), .. } => n
       _ => 0.0
     }
-    match out.get(sub) {
-      Some((_, had)) if had > at => ()
-      _ => out[sub] = (email, at)
+    if jtext(r, "email") is Some(email) && email != "" {
+      match out.get(sub) {
+        Some((_, had)) if had > at => ()
+        _ => out[sub] = (email, at)
+      }
+    }
+    if jtext(r, "role") is Some(role) && role != "" {
+      match roles_at.get(sub) {
+        Some((_, had)) if had > at => ()
+        _ => roles_at[sub] = (role, at)
+      }
     }
   }
   let said : Map[String, String] = Map([])
   for sub, v in out {
     said[sub] = v.0
   }
-  said
+  (said, roles_at)
 }
 
 ///|
@@ -71,6 +84,7 @@ fn p54_seen_members(bus : LiveBus, ws : String) -> Map[String, String] {
 async fn p54_personal_lock(bus : LiveBus, c : P54Cloud, ws : String) -> Json? {
   if c.locks.contains(ws) || !c.has(bus, ws) {
     c.personal.remove(ws)
+    c.personal_chains.remove(ws)
     return None
   }
   let chains : Array[(String, Array[Json])] = match (try { Ok((bus.cloud_call.val)("personChains", Json::null())) } catch { e => Err(e) }) {
@@ -81,17 +95,30 @@ async fn p54_personal_lock(bus : LiveBus, c : P54Cloud, ws : String) -> Json? {
       })
     _ => []
   }
-  let emails = p54_seen_members(bus, ws)
+  let (emails, roles_at) = p54_seen_members(bus, ws)
   for sub, e in c.viewers.get(ws).unwrap_or(Map([])) {
     emails[sub] = e
+  }
+  let roles : Map[String, String] = Map([])
+  for sub, v in roles_at {
+    roles[sub] = v.0
+  }
+  for sub, v in c.viewer_roles.get(ws).unwrap_or(Map([])) {
+    let (r, at) = v
+    match roles_at.get(sub) {
+      Some((_, seen_at)) if seen_at > at => ()
+      _ => roles[sub] = r
+    }
   }
   let (vaults, boxes) = match c.held.val {
     Some(f) => f(ws)
     None => ([], [])
   }
   let cert_ok = c.cert_ok.val.unwrap_or((_, _) => false)
-  let lock = @cloud_lock.personal_vault_lock(@cloud_lock.Crypto::of_host(bus.host), ws, chains, emails, vaults, boxes, cert_ok)
+  let crypto = @cloud_lock.Crypto::of_host(bus.host)
+  let lock = @cloud_lock.personal_vault_lock(crypto, ws, chains, emails, vaults, boxes, cert_ok, roles~)
   c.personal[ws] = lock
+  c.personal_chains[ws] = @cloud_lock.personal_vault_chains(crypto, ws, chains, vaults, boxes, cert_ok)
   Some(lock)
 }
 
@@ -666,6 +693,17 @@ async fn p54_vault_ask(v : P54Vault, op : String, a : Json) -> Json? {
                 }
               }
               of[sub] = email.to_lower()
+              if jtext(viewer, "role") is Some(role) && role != "" {
+                let rof = match v.cloud.viewer_roles.get(w) {
+                  Some(m) => m
+                  None => {
+                    let m = Map([])
+                    v.cloud.viewer_roles[w] = m
+                    m
+                  }
+                }
+                rof[sub] = (role, @host.epoch_ms().to_double() / 1000.0)
+              }
             }
             _ => ()
           }
@@ -683,6 +721,18 @@ async fn p54_vault_ask(v : P54Vault, op : String, a : Json) -> Json? {
         Some(l) => l.json
         None => Json::null()
       }
+    }
+    "vault.personalChains" => {
+      let ws = s(0)
+      let out : Map[String, Json] = Map([])
+      match v.cloud.personal_chains.get(ws) {
+        Some(chains) =>
+          for sub, ch in chains {
+            out[sub] = Json::array(ch)
+          }
+        None => ()
+      }
+      Json::object(out)
     }
     "vault.beforeWrite" =>
       match v.vault.writes.wait() {

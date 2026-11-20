@@ -234,7 +234,7 @@ fn test_access_profile(id : String, models : Array[String], access : JV) -> Prof
 }
 
 ///|
-test "SessionAccounts::run_on leaves billed-per-use immediately without cheap_to_leave, while crowded subscriptions still wait" {
+test "choose_run_on_profile leaves billed-per-use immediately without cheap_to_leave, while crowded subscriptions still wait" {
   let now = 1_800_000_000_000.0
   let p_or = test_access_profile(
     "or",
@@ -284,57 +284,59 @@ test "SessionAccounts::run_on leaves billed-per-use immediately without cheap_to
       spent: false,
     },
   }
-  let rt = @effect.Runtime::new()
-  let b = Backend::new(async fn(name, args) {
-    match name {
-      "store.getSession" =>
-        jobj([
-          ("key", js("s1")),
-          ("runtime", js("claude")),
-          ("profile", js(cur_profile)),
-          ("profilePinned", jbool(cur_pinned)),
-          ("model", js("claude-opus-5-5")),
-        ])
-      "store.setSessionProfile" => {
-        cur_profile = js_string(args.get(1))
-        Null
+  let contexts : Array[ContextCall] = [
+    { turn: js("t1"), profile: Some("or"), model: Some("claude-opus-5-5"), context: Some(60_000.0) },
+    { turn: js("t1"), profile: Some("or"), model: Some("claude-opus-5-5"), context: Some(90_000.0) },
+  ]
+  // `run_on` as the hub drives it: the session's row, its profiles' health, and the profile it is moved to.
+  let run_on = (holding : Bool) => accounts_ran(async fn() {
+    let row = Row::of_jv(
+      jobj([
+        ("key", js("s1")),
+        ("runtime", js("claude")),
+        ("profile", js(cur_profile)),
+        ("profilePinned", jbool(cur_pinned)),
+        ("model", js("claude-opus-5-5")),
+      ]),
+    )
+    let health = (id : String) => healths.get(id).unwrap_or(Health::empty())
+    let choice = choose_run_on_profile(
+      "s1",
+      row,
+      cur_profiles,
+      holding,
+      crowded=p => urgency(health(p.id).quota, now).crowded,
+      can=id => usable(health(id), now~),
+      health_of=health,
+      cheap_to_leave=() => recently_compacted || cheap_to_leave(contexts, {}),
+      elsewhere=() => None,
+      pick=among => pick_profile(
+        among,
+        row.model,
+        { health, load: _ => 0, last_picked: _ => 0.0, now: () => now },
+        false,
+      ),
+    )
+    match choice {
+      Stay(p) => p
+      Move(p) => {
+        cur_profile = p.id
+        p
       }
-      "store.recentlyCompacted" => jbool(recently_compacted)
-      "store.compactionsReady" => jbool(false)
-      "store.lastContexts" =>
-        jarr([
-          jobj([("turn", js("t1")), ("profile", js(cur_profile)), ("model", js("claude-opus-5-5")), ("context", jnum(60_000.0))]),
-          jobj([("turn", js("t1")), ("profile", js(cur_profile)), ("model", js("claude-opus-5-5")), ("context", jnum(90_000.0))]),
-        ])
-      "sessions.running" => jarr([])
-      _ => Null
     }
   })
-  let sa = SessionAccounts::new(
-    b,
-    Words::new(Obj([]), Obj([])),
-    "en",
-    async fn() {
-      { profiles: cur_profiles, connects: [], completion_enabled: false, completion_model: None }
-    },
-    () => now,
-    rt,
-    asks_allows=false,
-    tells_moved=false,
-  )
-  sa.set_health(id => healths.get(id).unwrap_or(Health::empty()))
   // 1. On OpenRouter, holding=true stays on OpenRouter.
-  let held = accounts_ran(async fn() { sa.run_on("s1", holding=true) })
+  let held = run_on(true)
   assert_eq(held.id, "or")
   assert_eq(cur_profile, "or")
   // 2. On OpenRouter, pinned=true stays on OpenRouter.
   cur_pinned = true
-  let pinned = accounts_ran(async fn() { sa.run_on("s1", holding=false) })
+  let pinned = run_on(false)
   assert_eq(pinned.id, "or")
   assert_eq(cur_profile, "or")
   // 3. On OpenRouter, unpinned & not holding & NOT cheap_to_leave: moves to sub1 immediately.
   cur_pinned = false
-  let moved = accounts_ran(async fn() { sa.run_on("s1", holding=false) })
+  let moved = run_on(false)
   assert_eq(moved.id, "sub1")
   assert_eq(cur_profile, "sub1")
   // 4. Crowded paid subscription (sub1 5h=90%) with uncrowded sub2: stays on sub1 when cheap_to_leave is false.
@@ -356,12 +358,12 @@ test "SessionAccounts::run_on leaves billed-per-use immediately without cheap_to
     account: None,
     spent: false,
   }
-  let stayed_crowded = accounts_ran(async fn() { sa.run_on("s1", holding=false) })
+  let stayed_crowded = run_on(false)
   assert_eq(stayed_crowded.id, "sub1")
   assert_eq(cur_profile, "sub1")
   // 5. Once cheap_to_leave is true, crowded subscription moves to sub2.
   recently_compacted = true
-  let left_crowded = accounts_ran(async fn() { sa.run_on("s1", holding=false) })
+  let left_crowded = run_on(false)
   assert_eq(left_crowded.id, "sub2")
   assert_eq(cur_profile, "sub2")
   // 6. Crowded billed-per-use profile moving to another billed-per-use profile still waits for cheap_to_leave.
@@ -407,7 +409,7 @@ test "SessionAccounts::run_on leaves billed-per-use immediately without cheap_to
     account: None,
     spent: false,
   }
-  let stayed_or = accounts_ran(async fn() { sa.run_on("s1", holding=false) })
+  let stayed_or = run_on(false)
   assert_eq(stayed_or.id, "or")
   assert_eq(cur_profile, "or")
 }

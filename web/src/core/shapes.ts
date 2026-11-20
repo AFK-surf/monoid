@@ -2179,6 +2179,10 @@ export interface VaultSave {
 	 * place of the field, `vault.oauthBegin` with the request, which approves it as the browser comes back.
 	 */
 	oauth?: string;
+	/** The vault it will be saved into (for shared workspace vaults). */
+	vaultName?: string;
+	/** Whether the secret will be saved into a shared workspace vault. */
+	shared?: boolean;
 }
 
 /**

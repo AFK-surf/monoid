@@ -548,6 +548,16 @@ export class DriveKept {
       : Effect.map(this.#savedRead(sql, id, mtime, size, Math.max(0, size - 1), 1), (part) => part !== null));
   }
 
+  /// Where the file `id` (at its `size`, a chat's: no version but its size) was saved, while it is still there (its last
+  /// byte read back); "" when it was not saved, or is no longer there (then no longer taken as saved).
+  savedAt(id: string, size: number): Effect.Effect<string> {
+    return Effect.flatMap(this.#db(), (sql) => {
+      const at = sql?.all("SELECT at FROM saved WHERE id = ?", [id])[0]?.[0];
+      if (sql === null || typeof at !== "string" || size <= 0) return Effect.succeed("");
+      return Effect.map(this.#savedRead(sql, id, 0, size, size - 1, 1), (part) => (part === null ? "" : at));
+    });
+  }
+
   /// The chat's file `id` saved where the person keeps files (`at`, as the system named it), its whole `size`: when it
   /// can be read back there (its last byte read), that is its copy on the device and what was kept of it goes (true);
   /// else nothing changes (false).
