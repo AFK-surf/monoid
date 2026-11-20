@@ -26,22 +26,22 @@
           </div>
         </div>
 
-        <div class="pane" id="pane-tokens" role="tabpanel" data-scene-key="palette">
+        <div class="pane" id="pane-std-light" role="tabpanel" data-scene-key="std-light">
           <div class="hero-shot-wrap">
-            {{shot:comp-gallery-light:ui.monoid sf-ui semantic color tokens and live accent palette}}
+            {{shot:std-hero-light:ui.monoid Standard UI light stage rendered offscreen on Metal}}
             <div class="live-bar">
-              <button type="button" class="live-launch" data-hero-launch="palette">
+              <button type="button" class="live-launch" data-hero-launch="std-light">
                 {{i:play}}<span data-en="Try Live WebGL 2" data-zh="体验实时 WebGL 2">Try Live WebGL 2</span>
               </button>
             </div>
           </div>
         </div>
 
-        <div class="pane" id="pane-glass-light" role="tabpanel" data-scene-key="glass-light">
+        <div class="pane" id="pane-std-dark" role="tabpanel" data-scene-key="std-dark">
           <div class="hero-shot-wrap">
-            {{shot:lg-hero-light:mbui Liquid Glass light gallery rendered offscreen on Metal}}
+            {{shot:std-hero-dark:ui.monoid Standard UI dark stage rendered offscreen on Metal}}
             <div class="live-bar">
-              <button type="button" class="live-launch" data-hero-launch="glass-light">
+              <button type="button" class="live-launch" data-hero-launch="std-dark">
                 {{i:play}}<span data-en="Try Live WebGL 2" data-zh="体验实时 WebGL 2">Try Live WebGL 2</span>
               </button>
             </div>
@@ -57,11 +57,11 @@
               <button type="button" class="hero-scene-btn" data-hero-scene="glass-light" data-src="/liquid-glass/app/?MBUI_LG_CHROME=0" aria-pressed="false">
                 <span data-en="Liquid Glass Light" data-zh="浅色 Liquid Glass">Liquid Glass Light</span>
               </button>
-              <button type="button" class="hero-scene-btn" data-hero-scene="palette" data-src="/components/app/?STORY=palette&amp;MBUI_BRAND=ui.monoid" aria-pressed="false">
-                <span data-en="Storybook Palette" data-zh="Storybook 色阶">Storybook Palette</span>
+              <button type="button" class="hero-scene-btn" data-hero-scene="std-light" data-src="/standard/app/" aria-pressed="false">
+                <span data-en="Standard UI Light" data-zh="浅色普通组件库">Standard UI Light</span>
               </button>
-              <button type="button" class="hero-scene-btn" data-hero-scene="buttons" data-src="/components/app/?STORY=button&amp;MBUI_BRAND=ui.monoid" aria-pressed="false">
-                <span data-en="Storybook Buttons" data-zh="Storybook 按钮">Storybook Buttons</span>
+              <button type="button" class="hero-scene-btn" data-hero-scene="std-dark" data-src="/standard/app/?MBUI_DARK=1" aria-pressed="false">
+                <span data-en="Standard UI Dark" data-zh="深色普通组件库">Standard UI Dark</span>
               </button>
             </div>
             <button type="button" class="hero-live-exit" data-hero-exit>
@@ -80,17 +80,17 @@
       <button type="button" role="tab" aria-selected="true" aria-controls="pane-glass-dark">
         {{i:glass}}
         <b data-en="Liquid Glass" data-zh="Liquid Glass">Liquid Glass</b>
-        <span data-en="Dark Metal & WebGL 2" data-zh="深色 Metal 与 WebGL 2">Dark Metal &amp; WebGL 2</span>
+        <span data-en="Optical Stage · Metal & WebGL 2" data-zh="光学舞台 · Metal 与 WebGL 2">Optical Stage · Metal &amp; WebGL 2</span>
       </button>
-      <button type="button" role="tab" aria-selected="false" aria-controls="pane-tokens">
+      <button type="button" role="tab" aria-selected="false" aria-controls="pane-std-light">
         {{i:palette}}
-        <b data-en="Design System" data-zh="设计体系">Design System</b>
-        <span data-en="OKLCH tokens & sf-ui" data-zh="OKLCH 色阶与 sf-ui">OKLCH tokens &amp; sf-ui</span>
+        <b data-en="Standard UI" data-zh="Standard UI">Standard UI</b>
+        <span data-en="Standard Stage · OKLCH & sf-ui" data-zh="通用组件舞台 · OKLCH 与 sf-ui">Standard Stage · OKLCH &amp; sf-ui</span>
       </button>
-      <button type="button" role="tab" aria-selected="false" aria-controls="pane-glass-light">
+      <button type="button" role="tab" aria-selected="false" aria-controls="pane-std-dark">
         {{i:sparkles}}
-        <b data-en="Light Glass" data-zh="浅色光学玻璃">Light Glass</b>
-        <span data-en="Adaptive backdrop luminance" data-zh="自适应背景亮度">Adaptive backdrop luminance</span>
+        <b data-en="Standard Dark" data-zh="深色标准组件">Standard Dark</b>
+        <span data-en="Adaptive dark surfaces & overlays" data-zh="深色表面色阶与浮层体系">Adaptive dark surfaces &amp; overlays</span>
       </button>
     </div>
   </div>

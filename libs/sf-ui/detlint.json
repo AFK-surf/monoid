@@ -31,7 +31,8 @@
     ],
     "imports": [
       "mbui/",
-      "moonbitlang/"
+      "moonbitlang/",
+      "stillfail/sf"
     ]
   },
   "build_effect": {

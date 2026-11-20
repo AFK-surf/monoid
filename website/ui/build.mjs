@@ -308,6 +308,68 @@ function renderLiquidGlassAppHtml(lgAppDir) {
 `;
 }
 
+function renderStandardAppHtml(stdAppDir) {
+  const hostSrc = withVersion("host.js", resolve(stdAppDir, "host.js"));
+  const appSrc = withVersion("app.js", resolve(stdAppDir, "app.js"));
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+<title>ui.monoid — Standard UI</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #F6F5F1; }
+  html[data-dark="1"], html[data-dark="1"] body { background: #191918; }
+  #c { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; display: block; }
+  #ime { position: fixed; left: 0; top: 0; width: 2px; height: 20px; opacity: 0; padding: 0; border: 0;
+         resize: none; overflow: hidden; font-size: 16px; caret-color: transparent; color: transparent;
+         background: transparent; outline: none; }
+  #nogl { position: fixed; inset: 0; display: grid; place-items: center; padding: 24px;
+          font: 400 14px/1.6 system-ui, sans-serif; color: #171717; background: #F6F5F1; }
+  #nogl[hidden] { display: none; }
+</style>
+<script>
+  if (new URLSearchParams(location.search).get("MBUI_DARK") === "1") {
+    document.documentElement.dataset.dark = "1";
+  }
+</script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<textarea id="ime" autocapitalize="off" autocomplete="off" spellcheck="false"></textarea>
+<div id="nogl" hidden>WebGL 2 is required to render the ui.monoid Standard UI stage.</div>
+<script>
+  (function () {
+    var ok = !!globalThis.__mbrender;
+    if (!ok) {
+      try {
+        var gl = document.createElement("canvas").getContext("webgl2");
+        if (gl) {
+          ok = true;
+          var lose = gl.getExtension("WEBGL_lose_context");
+          if (lose) lose.loseContext();
+        }
+      } catch (e) {}
+    }
+    if (!ok) {
+      document.getElementById("c").style.display = "none";
+      document.getElementById("nogl").hidden = false;
+      return;
+    }
+    [${JSON.stringify(hostSrc)}, ${JSON.stringify(appSrc)}].forEach(function (src) {
+      var s = document.createElement("script");
+      s.src = src;
+      s.async = false;
+      document.body.appendChild(s);
+    });
+  })();
+</script>
+</body>
+</html>
+`;
+}
+
 function renderStubAppHtml(title) {
   return `<!doctype html>
 <html lang="en">
@@ -330,12 +392,15 @@ function renderStubAppHtml(title) {
 function buildMbuiEmbeds(out, skipMbui) {
   const compAppDir = resolve(out, "components/app");
   const lgAppDir = resolve(out, "liquid-glass/app");
+  const stdAppDir = resolve(out, "standard/app");
   mkdirSync(compAppDir, { recursive: true });
   mkdirSync(lgAppDir, { recursive: true });
+  mkdirSync(stdAppDir, { recursive: true });
 
   if (skipMbui) {
     writeFileSync(resolve(compAppDir, "index.html"), renderStubAppHtml("ui.monoid — Components"));
     writeFileSync(resolve(lgAppDir, "index.html"), renderStubAppHtml("ui.monoid — Liquid Glass"));
+    writeFileSync(resolve(stdAppDir, "index.html"), renderStubAppHtml("ui.monoid — Standard UI"));
     return;
   }
 
@@ -389,6 +454,23 @@ function buildMbuiEmbeds(out, skipMbui) {
   if (existsSync(ghosttySrc) && !existsSync(ghosttyDst)) {
     cpSync(ghosttySrc, ghosttyDst);
   }
+
+  console.log("[ui.monoid] building Standard UI stage via libs/mbui/scripts/web.sh bundle ...");
+  execFileSync("bash", ["libs/mbui/scripts/web.sh", "bundle", stdAppDir], {
+    cwd: REPO,
+    env: {
+      ...env,
+      APP: "studio",
+      MBUI_APP_MOD: resolve(REPO, "libs/sf-ui"),
+      MBUI_WEB_BROTLI: "0",
+    },
+    stdio: "inherit",
+  });
+  writeFileSync(resolve(stdAppDir, "index.html"), renderStandardAppHtml(stdAppDir));
+  const stdGhosttyDst = resolve(stdAppDir, "ghostty-vt.wasm");
+  if (existsSync(ghosttySrc) && !existsSync(stdGhosttyDst)) {
+    cpSync(ghosttySrc, stdGhosttyDst);
+  }
 }
 
 function copyAssets(out) {
@@ -422,6 +504,9 @@ function writeMetadataFiles(out, routes) {
   Cache-Control: public, max-age=0, must-revalidate
 
 /liquid-glass/app/*.js
+  Cache-Control: public, max-age=0, must-revalidate
+
+/standard/app/*.js
   Cache-Control: public, max-age=0, must-revalidate
 
 /*.wasm

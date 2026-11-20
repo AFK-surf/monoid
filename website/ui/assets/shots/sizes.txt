@@ -1,5 +1,7 @@
 lg-hero-dark 1120 690
 lg-hero-light 1120 690
+std-hero-dark 1120 690
+std-hero-light 1120 690
 lg-crop-controls-dark 720 710
 lg-crop-interactive-light 720 710
 lg-crop-dialog-dark 720 345

@@ -10,11 +10,11 @@
     <p class="lede" data-en="Zero-coupling interaction state machines and live WebGL 2 controls." data-zh="零耦合交互状态机与实时 WebGL 2 组件。">Zero-coupling interaction state machines and live WebGL 2 controls.</p>
 
     <div class="stage" id="comp-stage">
-      <div class="live-stage" data-live-src="/components/app/?STORY=palette&amp;MBUI_BRAND=ui.monoid" data-live-title="ui.monoid Storybook">
-        {{shot:comp-gallery-light:ui.monoid sf-ui palette and semantic tokens}}
+      <div class="live-stage" data-live-src="/standard/app/" data-live-title="ui.monoid Standard UI Stage">
+        {{shot:std-hero-light:ui.monoid Standard UI stage rendered offscreen on Metal}}
         <div class="live-bar">
           <button type="button" class="live-launch" data-live-launch>
-            {{i:play}}<span data-en="Launch Live Storybook (WebGL 2)" data-zh="启动实时 Storybook (WebGL 2)">Launch Live Storybook (WebGL 2)</span>
+            {{i:play}}<span data-en="Launch Live Standard UI (WebGL 2)" data-zh="启动实时 Standard UI (WebGL 2)">Launch Live Standard UI (WebGL 2)</span>
           </button>
         </div>
         <div class="live-frame-wrap"></div>
@@ -24,21 +24,18 @@
       </div>
     </div>
 
-    <div class="story-dock" role="toolbar" aria-label="Storybook scenes" data-en-aria="Storybook scenes" data-zh-aria="Storybook 场景切换">
+    <div class="story-dock" role="toolbar" aria-label="Standard UI Stage scenes" data-en-aria="Standard UI Stage scenes" data-zh-aria="Standard UI 舞台场景切换">
       <div class="story-pills">
-        <button type="button" class="story-pill" data-story-src="/components/app/?STORY=palette&amp;MBUI_BRAND=ui.monoid" aria-pressed="false">
-          {{i:palette}}<span data-en="Palette" data-zh="色阶">Palette</span>
+        <button type="button" class="story-pill" data-story-src="/standard/app/?MBUI_STD_SCENE=0" aria-pressed="false">
+          {{i:sliders}}<span data-en="Controls" data-zh="控件台">Controls</span>
         </button>
-        <button type="button" class="story-pill" data-story-src="/components/app/?STORY=button&amp;MBUI_BRAND=ui.monoid" aria-pressed="false">
-          {{i:sliders}}<span data-en="Buttons" data-zh="按钮">Buttons</span>
+        <button type="button" class="story-pill" data-story-src="/standard/app/?MBUI_STD_SCENE=1" aria-pressed="false">
+          {{i:palette}}<span data-en="Tokens" data-zh="OKLCH 色阶">Tokens</span>
         </button>
-        <button type="button" class="story-pill" data-story-src="/components/app/?STORY=motion-controls&amp;MBUI_BRAND=ui.monoid" aria-pressed="false">
-          {{i:motion}}<span data-en="Controls" data-zh="控件">Controls</span>
-        </button>
-        <button type="button" class="story-pill" data-story-src="/components/app/?STORY=presenters&amp;MBUI_BRAND=ui.monoid" aria-pressed="false">
+        <button type="button" class="story-pill" data-story-src="/standard/app/?MBUI_STD_SCENE=2" aria-pressed="false">
           {{i:layers}}<span data-en="Overlays" data-zh="浮层">Overlays</span>
         </button>
-        <button type="button" class="story-pill" data-story-src="/components/app/?MBUI_DARK=1&amp;MBUI_BRAND=ui.monoid" aria-pressed="false">
+        <button type="button" class="story-pill" data-story-src="/standard/app/?MBUI_DARK=1" aria-pressed="false">
           {{i:sparkles}}<span data-en="Dark Mode" data-zh="深色模式">Dark Mode</span>
         </button>
       </div>
@@ -46,7 +43,10 @@
         <button type="button" class="story-pill live-close-dock" data-live-close="comp-stage" hidden>
           {{i:close}}<span data-en="Return to Preview" data-zh="回到静态图">Return to Preview</span>
         </button>
-        <a class="story-pill story-full" href="/components/app/?MBUI_BRAND=ui.monoid" target="_blank" rel="noopener noreferrer">
+        <a class="story-pill story-full" href="/components/app/?STORY=palette&amp;MBUI_BRAND=ui.monoid" target="_blank" rel="noopener noreferrer">
+          <span data-en="Open Full 27-Control Storybook" data-zh="打开完整 27 控件 Storybook">Open Full 27-Control Storybook</span>{{i:arrow-ne}}
+        </a>
+        <a class="story-pill story-full" href="/standard/app/" target="_blank" rel="noopener noreferrer">
           <span data-en="Fullscreen" data-zh="全屏">Fullscreen</span>{{i:arrow-ne}}
         </a>
       </div>
@@ -266,6 +266,7 @@
     };
 
     const withLang = (base) => {
+      if (!base.startsWith("/components/app/")) return base;
       const lang = document.documentElement.dataset.lang === "zh" ? "zh" : "en";
       const sep = base.includes("?") ? "&" : "?";
       return `${base}${sep}MBUI_LANG=${lang}`;
