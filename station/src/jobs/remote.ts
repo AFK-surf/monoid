@@ -907,6 +907,11 @@ export class Remote {
     return this.described === null ? answer : { ...answer, ...this.described(peer, workspace) };
   }
 
+  /// This station's own description (load, mode, sessions) without sending a peer RPC to itself.
+  selfDescribe(): Promise<Json> {
+    return this.describe();
+  }
+
   /// station_list: the stations of `workspace`, each asked how busy it is at once (this one answers itself); one that
   /// has not answered within LIST_WAIT_MS is listed unanswered, one that refused says why, one safe mode leaves out
   /// (the roster's `unprotected`) after them, not asked, saying why it cannot be called. Each says its version itself.

@@ -668,6 +668,12 @@ export interface Connect {
 	createdBy?: Owner;
 	sessions: number;
 	session?: string;
+	/** The station of its workspace its new conversations start on (null: this one). */
+	startsOn?: string;
+	/** The allowlisted stations of its workspace its new conversations balance across (null: this one). */
+	startsOnStations?: string[];
+	/** Whether this station lets the connect be moved to another station of its workspace. */
+	moves?: boolean;
 	statusText: string;
 	/** online | busy | error | offline */
 	presence: Presence;

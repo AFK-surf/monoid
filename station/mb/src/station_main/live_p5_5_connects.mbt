@@ -459,6 +459,9 @@ async fn P55::start_connects(self : P55) -> Unit {
     log,
     speech: { words, lang },
     uuid: () => @drive.random_uuid(),
+    self_load: Some(async fn() {
+      to_jv((bus.jobs_ask.val)("remote.describe", Json::object({})) catch { _ => Json::null() })
+    }),
   })
   workspace_ref.val = Some(wc)
   let live : ConnectsLive = { slack, kinds, workspace: wc }

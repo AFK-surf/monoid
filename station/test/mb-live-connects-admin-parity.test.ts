@@ -439,6 +439,31 @@ test("connects (Slack & Feishu): overview state, inbound routing -> fake claude 
   const ovRaw = JSON.stringify(ov);
   assert.doesNotMatch(ovRaw, /"station\.[a-z][a-zA-Z0-9._-]*"/, `untranslated i18n key leaked in overview: ${ovRaw}`);
 
+  // ── 2b. PUT /admin-api/connects/:id stations allowlist & overview startsOnStations parity ──
+  const putPool = await ask(door, "/admin-api/connects/c1", { method: "PUT", body: { stations: [" w1/s1 ", "w1/s2", "s1", ""] } });
+  assert.equal(putPool.status, 200, putPool.body);
+  const c1Pool = JSON.parse(putPool.body).connects.find((x: any) => x.id === "c1");
+  assert.equal(c1Pool.startsOn, "s1");
+  assert.deepEqual(c1Pool.startsOnStations, ["s1", "s2"]);
+
+  const putKeep = await ask(door, "/admin-api/connects/c1", { method: "PUT", body: { enabled: true } });
+  assert.equal(putKeep.status, 200, putKeep.body);
+  const c1Kept = JSON.parse(putKeep.body).connects.find((x: any) => x.id === "c1");
+  assert.equal(c1Kept.startsOn, "s1");
+  assert.deepEqual(c1Kept.startsOnStations, ["s1", "s2"]);
+
+  const putOne = await ask(door, "/admin-api/connects/c1", { method: "PUT", body: { stations: ["s2"] } });
+  assert.equal(putOne.status, 200, putOne.body);
+  const c1One = JSON.parse(putOne.body).connects.find((x: any) => x.id === "c1");
+  assert.equal(c1One.startsOn, "s2");
+  assert.deepEqual(c1One.startsOnStations, ["s2"]);
+
+  const putClear = await ask(door, "/admin-api/connects/c1", { method: "PUT", body: { stations: [] } });
+  assert.equal(putClear.status, 200, putClear.body);
+  const c1Clear = JSON.parse(putClear.body).connects.find((x: any) => x.id === "c1");
+  assert.equal(c1Clear.startsOn, null);
+  assert.equal(c1Clear.startsOnStations, null);
+
   // ── 1b. Slack inbound -> auto-route -> fake claude -> chat_post -> mock Slack + entries ──
   slack.pushEvent("env-slack-1", {
     type: "app_mention",

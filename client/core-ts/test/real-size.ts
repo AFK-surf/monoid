@@ -397,6 +397,7 @@ function connectsOf(station: number): J[] {
     connection: { state: "connected", botUserId: `U0BOT${n}${station}`, workspace: { team: "Acme", teamId: "T04ACME0001", url: "https://acme-dev.slack.com/", botUserId: `U0BOT${n}${station}`, botName: n === 1 ? "still.fail" : `${s.name.toLowerCase()}-bot-${n}`, botImage: `https://avatars.slack-edge.com/2026-02-0${n}/bot${n}_192.png` } },
     // (the first of each station's made by the viewer, the workspace's owner, who set up its Slack: `connects mine`)
     createdBy: n === 1 ? { id: PEOPLE[0].email, name: PEOPLE[0].name } : { id: pick(PEOPLE, station + n).email, name: pick(PEOPLE, station + n).name }, sessions: 30 + station * 7 + n * 3, session: n === 2 ? `k-${s.id}-3` : null,
+    ...(station === 0 && n === 1 ? { startsOnStations: [STATIONS[0]!.id, STATIONS[1]!.id] } : {}),
   });
   const feishu: J = {
     id: "c-feishu-1", name: "飞书助手", team: null, enabled: true, kind: "feishu", mode: "multi-session", requireMention: true, bind: { runtime: "claude", model: null, effort: null, profile: null },

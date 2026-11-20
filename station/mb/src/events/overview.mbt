@@ -525,6 +525,26 @@ fn connect_shown(d : OverviewDeps, c : J, sessions_of : (J?) -> Double) -> J {
     Some(by) if truthy(by.get("id")) => by
     _ => Null
   }
+  let starts_on = non_empty(c.get("station"))
+  let starts_on_stations_list : Array[String] = []
+  if c.get("stations") is Some(Arr(items)) {
+    for x in items {
+      if text_of(Some(x)) is Some(s) {
+        let t = @jscase.trim(s)
+        if t != "" && !starts_on_stations_list.contains(t) {
+          starts_on_stations_list.push(t)
+        }
+      }
+    }
+  }
+  let starts_on_stations : J = if starts_on_stations_list.length() > 0 {
+    ja(starts_on_stations_list.map(js))
+  } else {
+    match starts_on {
+      Some(s) => ja([s])
+      None => Null
+    }
+  }
   // (its properties as the object has them, one undefined holding its place: what a kind's own sets goes there)
   let shown : Array[(String, J?)] = [
     ("id", c.get("id")),
@@ -577,7 +597,8 @@ fn connect_shown(d : OverviewDeps, c : J, sessions_of : (J?) -> Double) -> J {
         },
       ),
     ),
-    ("startsOn", Some(non_empty(c.get("station")).unwrap_or(Null))),
+    ("startsOn", Some(starts_on.unwrap_or(Null))),
+    ("startsOnStations", Some(starts_on_stations)),
     ("moves", Some(Bool(true))),
   ]
   let put = (name : String, value : J?) => {

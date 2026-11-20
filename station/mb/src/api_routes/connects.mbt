@@ -130,6 +130,38 @@ fn Admin::owner_of(
 }
 
 ///|
+/// Bare station id from either a bare id ("st2") or a `<workspace>/<station_id>` address ("ws1/st2").
+fn bare_station_id(s : String) -> String {
+  let t = trim_js(s)
+  match t.rev_find("/") {
+    Some(i) => trim_js(t.unsafe_substring(start=i + 1, end=t.length()))
+    None => t
+  }
+}
+
+///|
+fn station_list_of(v : JV?) -> Array[String]? {
+  guard v is Some(Arr(items)) else { return None }
+  let out = []
+  for x in items {
+    match x {
+      Str(s) => {
+        let t = bare_station_id(s)
+        if t != "" && !out.contains(t) {
+          out.push(t)
+        }
+      }
+      _ => ()
+    }
+  }
+  if out.length() > 0 {
+    Some(out)
+  } else {
+    None
+  }
+}
+
+///|
 /// A list of profile ids: each once, trimmed, none empty; None where it is no list or comes to none.
 fn list_of(v : JV?) -> Array[String]? {
   guard v is Some(Arr(items)) else { return None }
@@ -598,11 +630,48 @@ async fn ConnectEdits::put_connect(
     if !(owner is Null) {
       next = jset(next, "createdBy", owner)
     }
-    // The station of its workspace a new conversation of it runs on; null: this one.
-    match (i.get("station"), field_of(existing, "station")) {
-      (Some(Str(s)), _) if s != "" => next = jset(next, "station", js(s))
-      (None, Some(Str(_) as s)) => next = jset(next, "station", s)
-      _ => ()
+    // The station(s) of its workspace a new conversation of it runs on; absent: this one.
+    // `stations` is an explicit manual allowlist: [] clears both; [s] writes `station` alone; >=2 writes `stations`
+    // and sets `station` to its first entry so older clients still read `startsOn`.
+    let raw_stations = i.get("stations")
+    match raw_stations {
+      None | Some(Null) => ()
+      Some(Arr(items)) if items.all(x => x is Str(_)) => ()
+      _ => raise Refused(400, "stations must be a list of station ids or null")
+    }
+    if raw_stations is Some(_) {
+      match station_list_of(raw_stations) {
+        Some([s]) => next = jset(next, "station", js(s))
+        Some(l) if l.length() > 1 => {
+          next = jset(next, "stations", jstrs(l))
+          next = jset(next, "station", js(l[0]))
+        }
+        _ => ()
+      }
+    } else if i.get("station") is Some(st) {
+      match st {
+        Str(s) if bare_station_id(s) != "" => next = jset(next, "station", js(bare_station_id(s)))
+        _ => ()
+      }
+    } else {
+      let mut has_station = false
+      match field_of(existing, "station") {
+        Some(Str(s)) if bare_station_id(s) != "" => {
+          next = jset(next, "station", js(bare_station_id(s)))
+          has_station = true
+        }
+        _ => ()
+      }
+      match station_list_of(field_of(existing, "stations")) {
+        Some(l) if l.length() > 1 => {
+          next = jset(next, "stations", jstrs(l))
+          if !has_station {
+            next = jset(next, "station", js(l[0]))
+          }
+        }
+        Some([s]) if !has_station => next = jset(next, "station", js(s))
+        _ => ()
+      }
     }
     // Added in a workspace the station joined: that workspace's.
     if existing is None {
@@ -692,7 +761,7 @@ async fn ConnectEdits::put_connect(
       _ => "slack"
     }
     let known = [
-      "id", "enabled", "kind", "mode", "requireMention", "createdBy", "bind", "station",
+      "id", "enabled", "kind", "mode", "requireMention", "createdBy", "bind", "station", "stations",
       kind, was_kind,
     ]
     for f in jfields(existing) {

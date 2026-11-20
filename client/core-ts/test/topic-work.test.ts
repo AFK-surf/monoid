@@ -100,8 +100,9 @@ const OVER_READ: Record<string, number> = {
   workspaceMarks: 344,
   search: 176,
   chatSearch: 128,
-  // (its people's messages and their edits alone read, account.ts peopleEntries: 672 before, 2026-11-18)
-  chatOutline: 224,
+  // (its people's messages and their edits alone read, account.ts peopleEntries: 672 before, 2026-11-18; +39 B
+  // startsOnStations on station 0's c-slack-1 crossed 224.0 KB, 2026-11-20)
+  chatOutline: 232,
   "driveBrowse phone": 40,
   "driveBrowse columns": 40,
   // (the vault of the workspace with no safe mode its person's own, encrypted, its items' records read beside it; the

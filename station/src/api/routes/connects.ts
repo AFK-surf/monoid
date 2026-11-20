@@ -191,9 +191,49 @@ export function connectEdits(deps: ConnectEditDeps) {
         if (own !== null) next[next.kind] = own;
       }
       if (owner !== null) next.createdBy = owner;
-      // The station of its workspace a new conversation of it runs on (connects/workspace.ts); null: this one.
-      if (typeof i.station === "string" && i.station !== "") next.station = i.station;
-      else if (i.station === undefined && typeof existing?.station === "string") next.station = existing.station;
+      // The station(s) of its workspace a new conversation of it runs on (connects/workspace.ts); absent: this one.
+      // `stations` is an explicit manual allowlist: [] clears both; [s] writes `station` alone; >=2 writes `stations`
+      // and sets `station` to its first entry so older clients still read `startsOn`.
+      // Normalize `<workspace>/<station_id>` addresses from older clients down to bare station ids.
+      const bareStationId = (s: string): string => {
+        const t = s.trim();
+        const slash = t.lastIndexOf("/");
+        return slash >= 0 ? t.slice(slash + 1).trim() : t;
+      };
+      const stationListOf = (v: unknown): string[] | null => {
+        if (!Array.isArray(v)) return null;
+        const out = [...new Set(v.filter((x): x is string => typeof x === "string").map(bareStationId).filter((x) => x !== ""))];
+        return out.length > 0 ? out : null;
+      };
+      if (i.stations !== undefined && i.stations !== null && (!Array.isArray(i.stations) || i.stations.some((x) => typeof x !== "string"))) {
+        throw new Refused(400, "stations must be a list of station ids or null");
+      }
+      if (i.stations !== undefined) {
+        const pickedStations = stationListOf(i.stations);
+        if (pickedStations !== null && pickedStations.length === 1) {
+          next.station = pickedStations[0]!;
+        } else if (pickedStations !== null && pickedStations.length > 1) {
+          next.stations = pickedStations;
+          next.station = pickedStations[0]!;
+        }
+      } else if (i.station !== undefined) {
+        if (typeof i.station === "string") {
+          const s = bareStationId(i.station);
+          if (s !== "") next.station = s;
+        }
+      } else {
+        if (typeof existing?.station === "string") {
+          const s = bareStationId(existing.station);
+          if (s !== "") next.station = s;
+        }
+        const keptStations = stationListOf(existing?.stations);
+        if (keptStations !== null && keptStations.length > 1) {
+          next.stations = keptStations;
+          if (next.station === undefined) next.station = keptStations[0]!;
+        } else if (keptStations !== null && keptStations.length === 1 && next.station === undefined) {
+          next.station = keptStations[0]!;
+        }
+      }
       // Added in a workspace the station joined: that workspace's (one of the home workspace says none, as before).
       if (existing === undefined && home() !== null && r.viewer.workspace !== home()) next.workspace = r.viewer.workspace;
       const b: Json = { runtime };
@@ -218,7 +258,7 @@ export function connectEdits(deps: ConnectEditDeps) {
         }
       }
       // What this station does not know of it is kept (but its kind's part, and the part of a kind it was).
-      const known = new Set(["id", "enabled", "kind", "mode", "requireMention", "createdBy", "bind", "station", next.kind, typeof existing?.kind === "string" ? existing.kind : "slack"]);
+      const known = new Set(["id", "enabled", "kind", "mode", "requireMention", "createdBy", "bind", "station", "stations", next.kind, typeof existing?.kind === "string" ? existing.kind : "slack"]);
       for (const [k, v] of Object.entries(existing ?? {})) if (!known.has(k)) next[k] = v;
       const at = connects.findIndex((c) => c?.id === id);
       if (at >= 0) connects[at] = next;

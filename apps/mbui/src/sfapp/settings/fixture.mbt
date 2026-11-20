@@ -387,9 +387,13 @@ let fx_station_back : Ref[String] = Ref("")
 let fx_unprotected : Ref[Bool] = Ref(false)
 
 ///|
+let fx_connect_stations : Map[String, Array[String]] = Map([])
+
+///|
 /// The made-up settings as a run starts (reset): none changed, no sheet or scroll to put up.
 fn fixture_reset() -> Unit {
   fx.names.clear()
+  fx_connect_stations.clear()
   rigs_fixture_reset()
   move_fixture_reset()
   devices_fixture_reset()
@@ -1918,7 +1922,20 @@ fn fx_connect(id : String, name : String, presence : String, status : String, mo
     ("createdBy", obj([("id", str("lin@example.com")), ("name", str("林")), ("shown", obj([("name", str("林")), ("display", str("你")), ("mine", Json::boolean(true))]))])),
     ("sessions", Json::number(4.0)),
     // (a station that runs its new conversations elsewhere and moves it: connects/workspace.ts)
-    ("startsOn", Json::null()),
+    (
+      "startsOn",
+      match fx_connect_stations.get(id) {
+        Some([first, ..]) => str(first)
+        _ => Json::null()
+      },
+    ),
+    (
+      "startsOnStations",
+      match fx_connect_stations.get(id) {
+        Some(list) if list.length() > 0 => Json::array(list.map(str))
+        _ => Json::null()
+      },
+    ),
     ("moves", Json::boolean(true)),
     ("statusText", str(status)),
     ("presence", str(presence)),
@@ -4201,6 +4218,28 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
       fx_connect_step.val = "groupDone"
       fx_changed()
       Some(Ok(obj([("id", str("k1"))])))
+    }
+    "connect.put" if has(field(p, "input"), "stations") => {
+      let id = text(p, "id")
+      let inp = field(p, "input")
+      let next : Array[String] = []
+      for s in strings(inp, "stations") {
+        let trimmed = s.trim(chars=" \t\n").to_owned()
+        let bare = match trimmed.rev_find("/") {
+          Some(i) => trimmed.clamped_view(start=i + 1, end=trimmed.length()).to_owned()
+          None => trimmed
+        }
+        if bare != "" && !next.contains(bare) {
+          next.push(bare)
+        }
+      }
+      if next.length() > 0 {
+        fx_connect_stations[id] = next
+      } else {
+        fx_connect_stations.remove(id)
+      }
+      fx_changed()
+      Some(Ok(obj([])))
     }
     "profile.flow.open" | "profile.flow.edit" | "profile.flow.drop" | "connect.flow.open" | "connect.flow.edit"
     | "connect.flow.drop" | "automaticDecisions.form.open" | "automaticDecisions.form.edit"

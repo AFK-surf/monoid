@@ -2097,6 +2097,9 @@ web-pages.connect.startsOn
 web-pages.connect.startsOnLead
 web-pages.connect.startsHere
 web-pages.connect.startsOnSaved
+web-pages.connect.startsOnPoolSaved
+web-pages.connect.startsOnSep
+web-pages.connect.startsOnMany
 web-pages.connect.station
 web-pages.connect.move
 web-pages.connect.moveLead
