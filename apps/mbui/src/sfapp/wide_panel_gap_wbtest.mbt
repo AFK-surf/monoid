@@ -92,7 +92,8 @@ test "wide: a web service's panel sliding in beside a chat, its tabs coming late
 }
 
 ///|
-/// The chat's list's rows (the widest list's) as drawn: (x, y, width, height) each, top to bottom.
+/// The chat's list's rows (the widest list's) as drawn: (x, y, width, height) each, top to bottom; none wholly behind
+/// the bar over it (the list's slots kept built past what shows).
 fn chat_rows_drawn(t : @ui.Tester) -> Array[(Double, Double, Double, Double)] {
   let mut best : Array[(Double, Double, Double, Double)] = []
   for rs in t.list_row_boxes() {
@@ -105,13 +106,13 @@ fn chat_rows_drawn(t : @ui.Tester) -> Array[(Double, Double, Double, Double)] {
 }
 
 ///|
-/// Where the composer's field is drawn from the top (the first editor of the draw list, as Tester::dump says it).
+/// Where the composer's field is drawn from the top (the lowest text field the semantics tree says: the side's search
+/// field over it is one too).
 fn composer_field_y(t : @ui.Tester) -> Double {
-  for line in t.dump().split("\n") {
-    let l = line.trim_start(chars=" ").to_owned()
-    if l.has_prefix("editor ") {
-      let xy = l.split(" ").collect()[1].split(",").collect()
-      return dump_number(xy[1].to_owned())
+  let mut best = -1.0
+  for s in t.semantics() {
+    if s.role == @ui.Role::TextField && s.rect.1 > best {
+      best = s.rect.1
     }
   }
   // (the page made as nodes: its field the window's tree's, the lowest text field read out)
@@ -127,7 +128,7 @@ fn composer_field_y(t : @ui.Tester) -> Double {
 ///|
 /// Held on every frame the Tester draws from now (Tester::each_frame) till `stop` is called: no row of the chat's list
 /// moves more than `most` from where it was the frame before (the rows still in view, matched from the list's end it
-/// follows), nor the composer's field more than 1.5 from where it was over the list's last row (its room); each frame's
+/// follows), nor the composer's field more than 1.6 from where it was over the list's last row (its room); each frame's
 /// column width kept (where the list is laid out narrower on the way, in its middle), to tell which widths the frames
 /// compared crossed. `stop` gives those, and
 /// the first row that went further ("" none).
@@ -155,9 +156,8 @@ fn rows_held(t : @ui.Tester, most : Double) -> (() -> (Array[(Double, Double)], 
         }
         crossed.push((pane(before[0]), pane(now[0])))
         let gap = composer_field_y(t) - now[now.length() - 1].1
-        // (the page made as nodes: the list's flips, an 8 point gap on a Move of 250 ms, peak 1.506 a frame)
-        let gap_most = if @sfbase.chat_page_nodes.untracked() { 1.6 } else { 1.5 }
-        if (gap - apart.val).abs() > gap_most && failed.val == "" {
+        // (the list's flips, an 8 point gap on a Move, peak 1.506 a frame against the foot's own Move)
+        if (gap - apart.val).abs() > 1.6 && failed.val == "" {
           failed.val = "at \{t.time()}: the composer's field went \{gap - apart.val} from the last row at once (\{apart.val} to \{gap})"
         }
         apart.val = gap

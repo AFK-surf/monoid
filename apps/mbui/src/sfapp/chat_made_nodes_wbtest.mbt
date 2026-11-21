@@ -1,12 +1,11 @@
-// A chat's page made with its inside nodes (sfbase's chat_page_nodes on) as what the page is, not as it was made: a
+// A chat's page made with its inside nodes as what the page is, not as it was made: a
 // new chat become its chat in place (its first words sent) the new page from then, its old view let go; an agent's
 // history, a service and a file asked as pages on 中屏 and 大屏 their chat's new page beside them, no old page built.
 
 ///|
-/// The fixture's Home with chat_page_nodes as `nodes` says, `w` by `h` on `platform`.
-fn made_tester(w : Double, h : Double, platform : Int, nodes : Bool) -> (@ui.Tester, Source) {
+/// The fixture's Home, `w` by `h` on `platform`.
+fn made_tester(w : Double, h : Double, platform : Int) -> (@ui.Tester, Source) {
   new_run()
-  @sfbase.hold_chat_page_nodes(Some(nodes))
   let src = fixture("home")
   (@ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~), src)
 }
@@ -74,7 +73,7 @@ fn made_composer_field(t : @ui.Tester) -> (Double, Double, Double, Double)? {
 test "a new chat become its chat, on 小屏 and 大屏, with its inside nodes: the new page from then, what was sent a message of its list, the composer empty and taking what is typed, no old list" {
   for screen in [("小屏", 390.0, 844.0, 2), ("大屏", 1280.0, 800.0, 0)] {
     let (name, w, h, platform) = screen
-    let (t, src) = made_tester(w, h, platform, true)
+    let (t, src) = made_tester(w, h, platform)
     let words = "看下进度"
     let r = made_new_chat_sent(t, name == "小屏", words)
     guard made_words_at(t, words) is Some((x, y)) else { fail("\{name}: what was sent not seen") }
@@ -108,21 +107,8 @@ test "a new chat become its chat, on 小屏 and 大屏, with its inside nodes: t
 }
 
 ///|
-test "a new chat become its chat, on 小屏 and 大屏, chat_page_nodes off: the old page, as before" {
-  for screen in [("小屏", 390.0, 844.0, 2), ("大屏", 1280.0, 800.0, 0)] {
-    let (name, w, h, platform) = screen
-    let (t, _) = made_tester(w, h, platform, false)
-    let words = "看下进度"
-    made_new_chat_sent(t, name == "小屏", words) |> ignore
-    assert_true(made_words_at(t, words) is Some(_), msg="\{name}: what was sent not seen")
-    assert_false(made_by_nodes(t, words), msg="\{name}: the new page's with the switch off")
-  }
-}
-
-///|
 test "大屏, an agent's history asked as a page with its inside nodes: its chat the new page" {
   new_run()
-  @sfbase.hold_chat_page_nodes(Some(true))
   let base = fixture("chat")
   let src : Source = {
     ..base,
@@ -148,10 +134,9 @@ test "大屏, an agent's history asked as a page with its inside nodes: its chat
 
 ///|
 /// `mode`'s fixture, the history its agent's read as `older_history(4)` (what the history beside it shows), its chat
-/// opened, `w` by `h`, chat_page_nodes as `nodes` says; after the chat's page has come. The chat.
-fn made_beside_tester(mode : String, w : Double, h : Double, nodes : Bool) -> (@ui.Tester, Source, ChatRef) {
+/// opened, `w` by `h`; after the chat's page has come. The chat.
+fn made_beside_tester(mode : String, w : Double, h : Double) -> (@ui.Tester, Source, ChatRef) {
   new_run()
-  @sfbase.hold_chat_page_nodes(Some(nodes))
   let base = fixture(mode)
   let src : Source = {
     ..base,
@@ -196,7 +181,7 @@ test "中屏 and 大屏, a chat's detail asked as a page (its agent's history, a
     let (name, w, h) = screen
     for case in cases {
       let (mode, p, tab, under) = case
-      let (t, src, r) = made_beside_tester(mode, w, h, true)
+      let (t, src, r) = made_beside_tester(mode, w, h)
       let before = app.nav.pages()
       let old = made_old_frames_opening(t, p)
       let what = name + " " + @sfbase.page_kind(p)
@@ -215,16 +200,13 @@ test "中屏 and 大屏, a chat's detail asked as a page (its agent's history, a
       assert_true(made_by_nodes(t, last), msg="\{what}: not the new page's: \{t.sources_of(last)}")
     }
   }
-  // (what is read sees an old chat page where one is built: the switch off, the chat's page the old one)
-  let (t, _, _) = made_beside_tester("chat", 1280.0, 800.0, false)
-  assert_true(made_old_frames_opening(t, History(r0, "s-c1", None)) > 0, msg="the old chat page not seen")
 }
 
 ///|
 test "a new chat become its chat with its inside nodes, on 小屏 and 大屏: its scene fades over new_leave_ms instead of vanishing in one frame, and the sent words fly smoothly from where they were typed" {
   for screen in [("小屏", 390.0, 844.0, 2), ("大屏", 1280.0, 800.0, 0)] {
     let (name, w, h, platform) = screen
-    let (t, _) = made_tester(w, h, platform, true)
+    let (t, _) = made_tester(w, h, platform)
     if name == "小屏" {
       let (_, y) = bar_places_at()
       t.tap(bar_action_x, y)

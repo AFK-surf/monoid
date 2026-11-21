@@ -16,11 +16,8 @@ fn wide_bar_at(
   able? : Bool = false,
   room? : String = "",
   inset? : Bool = false,
-  nodes? : Bool = false,
 ) -> @ui.Tester {
   new_run()
-  // (the chat's page made with its inside nodes: sfbase's chat_page_nodes)
-  @sfbase.hold_chat_page_nodes(Some(nodes))
   let base = fixture(mode)
   let src : Source = {
     ..base,
@@ -613,7 +610,6 @@ test "大屏, 中屏: the bar's popovers keep by their buttons as the window cha
       }
       guard wide_bar_button(t, label) is Some(b) else { fail("\{win.0}: no \{label}") }
       let focused = fn() { t.focused().map(fn(s) { s.label }) }
-      let had = focused()
       wide_bar_tap(t, b)
       assert_true(opened(), msg="\{win.0}: \{label} opened")
       guard wide_bar_dialog(t) is Some(d) else { fail("\{win.0}: \{label}'s popover") }
@@ -633,7 +629,7 @@ test "大屏, 中屏: the bar's popovers keep by their buttons as the window cha
       t.key(@ui.key_escape)
       t.run_for(@ui.move_most_ms)
       assert_true(!opened(), msg="\{win.0}: \{label} closed")
-      let back = if @sfbase.chat_page_nodes.get() { Some(label) } else { had }
+      let back = Some(label)
       assert_eq(focused(), back, msg="\{win.0}: the focus back where it was")
       // (opened by a key (a fixture's, the system's bars' item): by the button where it is, the window narrower again)
       if which == "info" {

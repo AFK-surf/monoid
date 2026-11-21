@@ -96,7 +96,7 @@ pub fn fresh_choreo_start(wide : Bool, at : Double) -> Unit {
   let ch = fresh_transition(wide)
   ch.start(at)
   fresh_choreo.val = ch
-  fresh_fly_after.set(if chat_page_nodes.untracked() { ch.track_delay("flight") } else { new_fade_ms })
+  fresh_fly_after.set(ch.track_delay("flight"))
   fresh_choreo_gen.set(fresh_choreo_gen.untracked() + 1)
 }
 
@@ -184,7 +184,7 @@ pub fn new_fade(c : @ui.Ctx) -> @motion.Anim {
 
 ///|
 /// The new chat's first words on their way to the chat it became (0 … 1), from fresh's `fly_after` after they were sent,
-/// for flight_desk_ms: on the old list the flight it carries (flight_carried), on the list made as nodes (`chat_page_nodes`)
+/// for flight_desk_ms: on the old list the flight it carries (flight_carried), on the list made as nodes
 /// their row's flight from where they stood in the field (View::flies_in), each setting out as long after.
 pub fn new_first_fly(c : @ui.Ctx) -> @motion.Anim {
   @motion.anim(c, "new/first-fly", 1.0, global=true)

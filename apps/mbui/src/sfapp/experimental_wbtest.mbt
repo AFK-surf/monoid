@@ -80,7 +80,7 @@ test "实验性功能's page: its switches, each off by default and on and off a
     for label in ["Farview 原生标签页渲染", "对话列表看板视图"] {
       assert_true(t.query(Switch, label~) is Some(_), msg="\{at}: \{label}")
     }
-    // (those two alone: the new chat page, its composer and the new chat are the test channel's, no switch of theirs)
+    // (those two alone: the new chat page, its composer and the new-chat page are the only ones, no switch of their own)
     assert_eq(t.all(Switch).length(), 2, msg="\{at}: \{Repr(t.all(Switch).map(fn(n) { n.label }))}")
     assert_true(t.query(Switch, label="试用新对话页") is None, msg="\{at}: no 试用新对话页")
     assert_true(t.query(Switch, label="试用新输入框") is None, msg="\{at}: no 试用新输入框")
@@ -99,7 +99,7 @@ test "实验性功能's page: its switches, each off by default and on and off a
 }
 
 ///|
-test "settings search finds each experimental switch by its words, on 实验性功能; neither 外观 nor 实验性功能 has 试用新对话页" {
+test "settings search finds each experimental switch by its words, on 实验性功能; 外观 no longer has 试用新对话页" {
   for words in ["对话列表看板视图", "Farview 原生标签页渲染"] {
     let t = settings_search_tester(390.0, 2)
     t.tap_text("搜索设置")
@@ -280,7 +280,7 @@ test "a station's terminals are as the station's channel says, never the app's, 
 }
 
 ///|
-test "a stable app's 实验性功能: 对话列表看板视图 alone, not what still replaces a working path (Farview 原生标签页渲染), nor 试用新对话页" {
+test "a stable app's 实验性功能: 对话列表看板视图 alone, not what still replaces a working path (Farview 原生标签页渲染)" {
   let (t, _) = exp_at("settings-experimental-stable", 390.0, 844.0, platform=2)
   assert_true(t.query(Switch, label="对话列表看板视图") is Some(_), msg="stable: " + t.words().map(fn(x) { x.0 }).join("|"))
   assert_true(t.query(Switch, label="试用新对话页") is None, msg="stable: no 试用新对话页")

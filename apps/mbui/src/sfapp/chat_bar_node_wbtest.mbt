@@ -20,7 +20,6 @@ fn chat_bar_node_tester(
   at? : Double,
 ) -> (@ui.Tester, @signals.Signal[String]) {
   new_run()
-  @sfbase.hold_chat_page_nodes(Some(true))
   let base = fixture("chat")
   let title_sig = @signals.signal(title, same=fn(a, b) { a == b })
   let src : Source = {

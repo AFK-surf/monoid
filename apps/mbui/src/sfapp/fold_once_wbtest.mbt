@@ -7,8 +7,7 @@
 ///|
 test "大屏: on the block's way each frame built once, the lists' rows kept" {
   let calls : Array[Made] = []
-  // (the old page, what stable keeps: its rows kept as built; the chat made as nodes lays out no old view to keep)
-  let t = wide_tester(calls, mode="chat", before=fn(_) { @sfbase.hold_chat_page_nodes(Some(false)) })
+  let t = wide_tester(calls, mode="chat")
   t.set_rows_on_pixels(true)
   t.run_for(kept_rows_still_ms)
   let t0 = t.time()
@@ -20,9 +19,6 @@ test "大屏: on the block's way each frame built once, the lists' rows kept" {
   let on_way : Array[Int] = []
   for at in [80.0, 100.0, 120.0] {
     t.frame_at(t0 + at)
-    // (where the frame lays the old view out, its rows kept; one that lays out nothing of it keeps none to say)
-    let (kept, _) = t.rows_as_nodes()
-    assert_true(kept > 0 || t.built_why() == "", msg="at \{at}: no rows kept")
     on_way.push(t.frame_perf().passes)
   }
   assert_eq(on_way, [1, 1, 1])
@@ -135,7 +131,6 @@ test "大屏窄宽节点对话页：折叠/展开左栏及对话↔Station切换
   new_run()
   let src = fixture("chat-long")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
-  @sfbase.hold_chat_page_nodes(Some(true))
   // (w=960: pane=960-48-240=672 < 840 when open, 960-48=912 > 840 when folded — crosses the 840px wrap threshold)
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=960.0, h=800.0)
   t.run_for(@ui.move_most_ms)

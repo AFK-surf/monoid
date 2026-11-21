@@ -1018,45 +1018,25 @@ fn new_send(
   let up = up_files(d)
   let going = going_files(d)
   let quotes = sent_quotes(d)
-  // (its references as the field's marks, which its flight takes off as; its row's runs as the core read its words)
-  let marks = @sfbase.refs_sent_marks(d.key, words)
+  // (its row's runs as the core read its words)
   let runs = @sfbase.refs_sent_runs(d.key, words)
-  let draft = station + ":" + key
   let rk = station + "\u{1}" + key
   // called what the page was (新对话) until someone names it, as the core calls it
   let r : ChatRef = { station, session: key, title: @sf.t("web-main.newChat.title"), station_name: name }
   // its words, its quotes and its files from where they were typed, their cards and their tiles, into their row in
   // the chat's list, in it from now (sent_local), the list coming up with them, the composer held as tall as it is
   // till they set out.
-  // Where the chat it becomes is a page made as nodes, none is carried, till the flights' step: the page becomes it in
-  // this change, nothing there lets a flight go (flight_placed, flight_frame), and the chat's composer was held as tall
-  // as they took in it for good; with none, its composer is at its one line from this change, in which its list takes
-  // their row. The flights' step carries them on nodes again, and must then either let go in the sent key's change or
-  // have the list keep the room till it lets go.
-  let carried = !@signals.untracked(fn() { @sfbase.chat_page_nodes.get() })
-  if carried {
-    @sfbase.flight_carry_start(
-      c,
-      d.key,
-      words,
-      flying_quotes(c, src, d, station) + flying_files(c, src, d),
-      field=d.field,
-      shaped=composer_shapes_sent(c, src, d, station),
-      // (the flight where the chat opens has: in this page's place, Android's; beside it, the web's)
-      desk=!frame.in_place,
-      marks~,
-      runs~,
-    )
-  }
-  // (the chat's page made as nodes: its row's bubble flies from where the words stand in this page's field, each
-  // quote's card from its card and each of its files from its tile, as the chat's own composer tells them
-  // (sent_from_composer, as send_in_chat's; mbui's View::flies_in), as the page becomes the chat in this change)
-  let from = if carried { None } else { sent_from_composer(c, src, d, station) }
+  // None is carried, till the flights' step: the page becomes the chat in this change, nothing there lets a flight go
+  // (flight_placed, flight_frame), and the chat's composer was held as tall as they took in it for good; with none, its
+  // composer is at its one line from this change, in which its list takes their row. The flights' step carries them on
+  // nodes again, and must then either let go in the sent key's change or have the list keep the room till it lets go.
+  // (its row's bubble flies from where the words stand in this page's field, each quote's card from its card and each
+  // of its files from its tile, as the chat's own composer tells them (sent_from_composer, as send_in_chat's; mbui's
+  // View::flies_in), as the page becomes the chat in this change)
+  let from = sent_from_composer(c, src, d, station)
   let row = sent_local(rk, None, words, up, going~, quotes~, runs~, from~, now=(src.now)())
   new_send_go(src, frame.sent, v, station, key, make, d, rk, row, r, fn() {
-    if carried {
-      @sfbase.flight_carry_into(c, d.key, draft, rk, row)
-    } else if from is Some(_) {
+    if from is Some(_) {
       // (and the chat's composer they leave, by its draft's key, going to its foot on their clock: composer's shape)
       @sfbase.sent_out_said(c, station + ":" + key)
     }

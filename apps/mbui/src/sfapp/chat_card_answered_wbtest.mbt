@@ -23,7 +23,6 @@ let ca_answer : String = "一起换"
 fn ca_open(screen : (String, Double, Double, Int), answered : @signals.Signal[Bool], key : Bool) -> @ui.Tester {
   let (_, w, h, platform) = screen
   new_run()
-  @sfbase.hold_chat_page_nodes(Some(true))
   let base = fixture("chat")
   let src : Source = {
     ..base,

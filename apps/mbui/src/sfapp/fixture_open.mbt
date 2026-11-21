@@ -436,13 +436,8 @@ pub fn open_fixture_mode(mode : String) -> Unit {
 /// The run before let go of first: its window's tree, still there till the next Tester is made, followed what this one
 /// opens (⌘/'s `keys_open`) and put up a panel of its own in this run's presenters, closed (open said false) as that
 /// tree was let go (switches_still_wbtest's keys-dialog, on 中屏 and 大屏 after 小屏; run_begins_wbtest).
-pub fn fixture_app(mode : String, chat_nodes? : Bool = false) -> Source {
+pub fn fixture_app(mode : String) -> Source {
   new_run()
-  // (the chat's page made as nodes, as the test channel has it, whatever the mode's channel: held before the mode
-  // opens a chat, which is made as it stands then)
-  if chat_nodes {
-    @sfbase.hold_chat_page_nodes(Some(true))
-  }
   let src = @sffixture.fixture(mode)
   open_fixture_over(mode, src)
   src

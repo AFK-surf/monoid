@@ -1,5 +1,5 @@
-// A new chat made once as nodes of the window's tree (new_chat.mbt's page, where the chat's page is made as nodes:
-// sfbase's chat_page_nodes, its composer too; the chat page made's `new_node`): the same page, said by
+// A new chat made once as nodes of the window's tree (new_chat.mbt's page, the chat's page made as nodes,
+// its composer too; the chat page made's `new_node`): the same page, said by
 // the tree's own mechanisms, one tree laid out by the width its frame gives it (its bindings; laid out anew at once as
 // that crosses page_narrow_most, View::lays_anew): narrow, the scene in a page's list (View::scrolls_window) over all that is
 // left, the foot pinned over its end a band of glass with what is wrong for now, the choices in glass capsules and the

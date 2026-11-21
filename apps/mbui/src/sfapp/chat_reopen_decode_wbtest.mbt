@@ -169,12 +169,11 @@ test "what opens waits on a chat, asked again and again with the chat's value th
 /// opened again (the core's first answer `same`, what came sent after as what changed). How many messages were read as
 /// Messages as it was first opened and as it was opened again, and whether what the page read opened again is the core's
 /// value read anew.
-fn rd_reopen(nodes : Bool, one_more : Bool, screen : (String, Double, Double, Int)) -> (Int, Int, Int) raise {
+fn rd_reopen(one_more : Bool, screen : (String, Double, Double, Int)) -> (Int, Int, Int) raise {
   let (name, w, h, platform) = screen
-  let label = "\{name} \{if nodes { "nodes" } else { "old" }}\{if one_more { " +1" } else { "" }}"
+  let label = "\{name} nodes\{if one_more { " +1" } else { "" }}"
   new_run()
   @sf.presenters_reset()
-  @sfbase.hold_chat_page_nodes(Some(nodes))
   let held : LsHeld = { value: None, version: 0, changes: @signals.signal(0), ops: None }
   let told : Array[(String, Json)] = []
   // (its unread line over a message in its middle, so its rows hold one)
@@ -206,9 +205,6 @@ fn rd_reopen(nodes : Bool, one_more : Bool, screen : (String, Double, Double, In
   let first = @sfbase.messages_decoded.val - first0
   let count = items(held.value, "messages").length()
   assert_true(opt_number(held.value, "unreadLine") is Some(_), msg="\{label}: no unread line")
-  let page = @sfbase.page_source_for_chat(src, ls_ref)
-  // (the page the app ships read whole as first opened; the page made as nodes reads it so nowhere)
-  let (view_was, list_was, _) = if nodes { (None, [], None) } else { @sfbase.view_of_chat(page, ls_ref) }
   // left for Home
   @ui.view_tree().unwrap().event(t.time(), fn() { home() })
   t.run_for(long_rest_ms * 2.0)
@@ -240,40 +236,20 @@ fn rd_reopen(nodes : Bool, one_more : Bool, screen : (String, Double, Double, In
   let page = @sfbase.page_source_for_chat(src, ls_ref)
   let wanted = items(held.value, "messages").map(@sfbase.message_of)
   assert_eq(wanted.length(), count + (if one_more { 1 } else { 0 }), msg="\{label}: the message come not in the core's value")
-  if nodes {
-    match @sfbase.chat_messages(page, ls_ref) {
-      Some(ms) => {
-        let keys = ms.peek_keys()
-        assert_eq(keys.length(), wanted.length(), msg="\{label}: its messages by key")
-        for i, k in keys {
-          assert_true(ms.peek(k) == Some(wanted[i]), msg="\{label}: message \{i} not as the core's value says it")
-        }
+  match @sfbase.chat_messages(page, ls_ref) {
+    Some(ms) => {
+      let keys = ms.peek_keys()
+      assert_eq(keys.length(), wanted.length(), msg="\{label}: its messages by key")
+      for i, k in keys {
+        assert_true(ms.peek(k) == Some(wanted[i]), msg="\{label}: message \{i} not as the core's value says it")
       }
-      None => fail("\{label}: its messages not kept by key")
     }
-    match @sfbase.chat_head(page, ls_ref).0 {
-      Some(v) =>
-        assert_eq(v.unread_line, opt_number(held.value, "unreadLine"), msg="\{label}: its unread line")
-      None => fail("\{label}: no head opened again")
-    }
-  } else {
-    let (view, list, _) = @sfbase.view_of_chat(page, ls_ref)
-    match view {
-      Some(v) => {
-        assert_true(v.messages == wanted, msg="\{label}: its messages not as the core's value says them")
-        assert_eq(v.unread_line, opt_number(held.value, "unreadLine"), msg="\{label}: its unread line")
-        if !one_more {
-          assert_true(view_was == view, msg="\{label}: its view opened again not as first opened")
-          assert_true(list_was == list, msg="\{label}: its rows opened again not as first opened")
-        } else {
-          let said = list.filter(fn(e) { e is Said(_) }).length()
-          let said_was = list_was.filter(fn(e) { e is Said(_) }).length()
-          assert_eq(said, said_was + 1, msg="\{label}: its rows opened again, a message come")
-          assert_true(list.iter().any(fn(e) { e is Line }) && list_was.iter().any(fn(e) { e is Line }), msg="\{label}: its unread line's row")
-        }
-      }
-      None => fail("\{label}: no view opened again")
-    }
+    None => fail("\{label}: its messages not kept by key")
+  }
+  match @sfbase.chat_head(page, ls_ref).0 {
+    Some(v) =>
+      assert_eq(v.unread_line, opt_number(held.value, "unreadLine"), msg="\{label}: its unread line")
+    None => fail("\{label}: no head opened again")
   }
   @core.client.keep(fn(_, _) { 0 })
   println("\{label}: \{count} messages, read as Messages first opened \{first}, opened again \{again}")
@@ -285,19 +261,17 @@ test "a chat's page opened again over the core's client keeping its value, on th
   // (every case run before any is judged, so a failure says all of them)
   let faults : Array[String] = []
   for screen in cr_screens {
-    for nodes in [false, true] {
-      let label = "\{screen.0} nodes=\{nodes}"
-      let (count, first, again) = rd_reopen(nodes, false, screen)
-      if count < 10 || first < count {
-        faults.push("\{label}: \{count} messages, \{first} read first")
-      }
-      if again != 0 {
-        faults.push("\{label}: \{again} messages read again opened again")
-      }
-      let (_, _, again) = rd_reopen(nodes, true, screen)
-      if again != 1 {
-        faults.push("\{label}: \{again} messages read opened again, one come")
-      }
+    let label = "\{screen.0}"
+    let (count, first, again) = rd_reopen(false, screen)
+    if count < 10 || first < count {
+      faults.push("\{label}: \{count} messages, \{first} read first")
+    }
+    if again != 0 {
+      faults.push("\{label}: \{again} messages read again opened again")
+    }
+    let (_, _, again) = rd_reopen(true, screen)
+    if again != 1 {
+      faults.push("\{label}: \{again} messages read opened again, one come")
     }
   }
   assert_eq(faults, [])

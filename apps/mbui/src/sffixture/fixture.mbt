@@ -2098,7 +2098,7 @@ let fixture_experimental_features : Array[(String, Bool)] = [
 ///|
 /// The core's `beta` features of the device's own (features.ts `FEATURES`, stage `beta`, not `station`), in its order:
 /// on as the made-up app is of the test channel, off on stable (scripts/features-check.ts holds it to the core's).
-let fixture_beta_features : Array[String] = ["chatPage"]
+let fixture_beta_features : Array[String] = []
 
 ///|
 /// The prefs' `experimental`: the switches on of those the core has.

@@ -9,12 +9,8 @@ fn image_in_chat(
   name : String,
   platform? : Int = 2,
   w? : Double = 390.0,
-  nodes? : Bool = false,
 ) -> (@ui.Tester, Double, Double) {
   new_run()
-  if nodes {
-    @sfbase.chat_page_nodes.set(true)
-  }
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h=844.0, platform~)

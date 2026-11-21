@@ -19,16 +19,10 @@ pub fn language_from_prefs(prefs : Json?) -> Unit {
 }
 
 ///|
-/// The device's own features as the core says them (the prefs' `features`: the test channel's `chatPage`, 实验性功能's
-/// `farviewNative` and `board`), told their signals as they change and as the app's tree is made, before any page of
-/// nodes; turning `board` off puts away any active board state and returns Home to the ordinary chat list. The chat's
-/// page as a test or a scene holds it (hold_chat_page_nodes), whatever the prefs say.
-pub fn chat_page_from_prefs(prefs : Json?) -> Unit {
-  let chat_page = chat_page_held.val.unwrap_or(true)
-  if chat_page != chat_page_told.val {
-    chat_page_told.val = chat_page
-    chat_page_nodes.set(chat_page)
-  }
+/// Experimental switches on this device (实验性功能: `farviewNative`, `board`), told their signals as the
+/// kept choices change and as the app's tree is made, before any page of nodes; turning `board` off puts away any
+/// active board state and returns Home to the ordinary chat list.
+pub fn features_from_prefs(prefs : Json?) -> Unit {
   let fv = @settings.feature_from(prefs, "farviewNative")
   if fv != farview_told.val {
     farview_told.val = fv
@@ -47,30 +41,7 @@ pub fn chat_page_from_prefs(prefs : Json?) -> Unit {
 }
 
 ///|
-/// The features last told from `prefs`: none on as a run begins.
-let chat_page_told : Ref[Bool] = Ref(true)
-
-///|
-/// The way a test or a scene (MBUI_CHAT_PAGE) holds the chat's page made (chat_page_nodes), over what the prefs say:
-/// none as a run begins (app_frame_reset).
-let chat_page_held : Ref[Bool?] = Ref(None)
-
-///|
-/// The chat's page made one way whatever the prefs say (`Some(true)`: as nodes, `Some(false)`: its old view), from now
-/// on in this run, a page made next made so; `None` lets the prefs say again as they are next told. For tests and
-/// scenes that hold one way: the test channel's app has it as nodes, stable's as its old view.
-pub fn hold_chat_page_nodes(v : Bool?) -> Unit {
-  chat_page_held.val = v
-  match v {
-    Some(on) => {
-      chat_page_told.val = on
-      chat_page_nodes.set(on)
-    }
-    None => ()
-  }
-}
-
-///|
+/// The experimental switches last told from `prefs`: none on as a run begins.
 let farview_told : Ref[Bool] = Ref(false)
 
 ///|
@@ -121,8 +92,8 @@ pub fn appearance_from_prefs(prefs : Json?, system_dark : Bool) -> Bool {
   })
   // haptics as this device is set (the prefs' `haptics`: off), else on
   @ui.set_haptics(text(prefs, "haptics") != "off")
-  // the chat page as the channel has it (the prefs' `features.chatPage`), the experimental switches as chosen here
-  chat_page_from_prefs(prefs)
+  // the experimental switches as chosen here (the prefs' `features`)
+  features_from_prefs(prefs)
   let dark = @settings.dark(prefs, system_dark)
   @sf.set_dark(Some(dark))
   // the accent as this device is set (the prefs' `accent`, as chosen here a moment ago), else still.fail's orange; one
@@ -409,8 +380,6 @@ fn app_frame_reset() -> Unit {
   badge_told.set(-1)
   told_bars.val = None
   told_dark.val = None
-  chat_page_told.val = true
-  chat_page_held.val = None
   farview_told.val = false
   board_told.val = false
   attention.told = false

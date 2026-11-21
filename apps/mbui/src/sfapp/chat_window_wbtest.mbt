@@ -634,26 +634,20 @@ test "a chat read back a step at a time inside the rows it shows, a screen above
     long_answered(l)
     let asked = l.asked.length()
     let mut laid = 0
-    let mut painted = ""
     let mut y = 323.0
     for _ in 0..<3 {
       y += 3.0
       t.hold_move(x, y)
       long_answered(l)
       laid += t.frame_perf().laid
-      painted = t.painted_why()
     }
     t.release(x, y)
     long_run(t, l, long_rest_ms)
-    said.push("\{name}: away \{l.first.get() < long_count - 30}, laid \{laid}, asked \{l.asked.length() - asked}, \{painted}")
+    // (what is painted for it the window's tree's own: the old list's fast path, Tester::painted_why's "a list scrolled
+    // without changing its rows", is the old view's alone)
+    said.push("\{name}: away \{l.first.get() < long_count - 30}, laid \{laid}, asked \{l.asked.length() - asked}")
   }
-  // (the old page paints its list scrolled as such; the page made as nodes builds no old view at all for it, nothing
-  // said of why it was painted)
-  assert_true(
-    said == ["小屏: away true, laid 0, asked 0, a list scrolled without changing its rows"] ||
-    said == ["小屏: away true, laid 0, asked 0, "],
-    msg=said.join("\n"),
-  )
+  assert_eq(said, ["小屏: away true, laid 0, asked 0"])
 }
 
 ///|
@@ -717,11 +711,9 @@ test "a chat gone to a message with less than a screen above it and more in the 
   }
   assert_eq(faults, [])
   // (nothing asked from where the app put it; the reader's first step from there asks, and again each time less than a
-  // screen is above what shows: 小屏's first stroke of 40 points twice, the first page leaving less than a screen still)
-  // (the page made as nodes asks as many rows at once as cover two of 小屏's screens: its first stroke asks once)
-  let small_first = if @sfbase.chat_page_nodes.untracked() { 1 } else { 2 }
+  // screen is above what shows: 小屏's first stroke once, as 大屏's wheel)
   assert_eq(said, [
-    "小屏: 173 reached true, the page before asked 0 while it stands, \{small_first} at the first step back, 2 read back",
+    "小屏: 173 reached true, the page before asked 0 while it stands, 1 at the first step back, 2 read back",
     "大屏: 173 reached true, the page before asked 0 while it stands, 1 at the first step back, 1 read back",
   ])
 }
@@ -732,7 +724,6 @@ test "a quote's card naming a message before a chat's told window, on a chat's p
     let l = long_chat()
     let (name, w, h, platform) = s
     new_run()
-    @sfbase.hold_chat_page_nodes(Some(true))
     let src = long_source(l)
     open_chat(long_ref)
     let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, begun=fn() {
@@ -765,7 +756,6 @@ test "a chat's page made as nodes gone to a message before its told window, 小�
     let l = long_chat()
     let (name, w, h, platform) = s
     new_run()
-    @sfbase.hold_chat_page_nodes(Some(true))
     let src = long_source(l)
     open_chat(long_ref)
     let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, begun=fn() {

@@ -10,7 +10,6 @@
 fn rail_nodes_tester(w : Double, h : Double, calls : Array[String]) -> @ui.Tester {
   new_run()
   @sf.presenters_reset()
-  @sfbase.hold_chat_page_nodes(Some(true))
   let base = fixture("chat-outline-away")
   let src : Source = {
     ..base,

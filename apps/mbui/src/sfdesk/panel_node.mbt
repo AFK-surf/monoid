@@ -267,7 +267,7 @@ fn laid_across(now : Double, laid : Double, wide : Double) -> @sfbase.ColumnLaid
 /// The side panel of the chat page `serial` of the stack (a chat's, or the new chat's once it becomes one) in node `v`,
 /// the row its page is in, after it, read by `src` (the page's, chat_page_made's: what it reads let go with the page): its column (side_col), moved aside with the page; in it, while it shows anything,
 /// the panel as wide as it is at rest (cut to the column while it slides beside the page) and its edge. The new chat's,
-/// while the page is that, made as nodes with it (its new_node's: sfbase's chat_page_nodes), its Station 文件 alone:
+/// while the page is that, made as nodes with it (its new_node's), its Station 文件 alone:
 /// new_side_node.
 fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLayer) -> Unit {
   let chat = fn() {
@@ -276,11 +276,10 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
       _ => None
     }
   }
-  // (the new chat's, made as nodes as the page was: its old view has its own beside it, side_beside)
-  let composed = @signals.untracked(fn() { @sfbase.chat_page_nodes.get() })
+  // (the new chat's, made as nodes as the page was)
   let new_of = fn() {
     match app.nav.page_of(serial) {
-      Some((NewChat, _)) if composed => @sfbase.workspace_in_view(src).0
+      Some((NewChat, _)) => @sfbase.workspace_in_view(src).0
       _ => None
     }
   }

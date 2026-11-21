@@ -22,14 +22,9 @@ fn fake_core(
   made? : Ref[Source?] = Ref(None),
   ups? : Map[String, Json] = Map([]),
   platform? : Int = 2,
-  nodes? : Bool = false,
-  composed? : Bool = false,
   on_call? : (String, Json) -> Unit = fn(_, _) {  },
 ) -> @ui.Tester {
   new_run()
-  if nodes || composed {
-    @sfbase.chat_page_nodes.set(true)
-  }
   // the drafts the fake core has named (its `draft.put`)
   let drafts_named = Ref(0)
   let base = fixture("chat")

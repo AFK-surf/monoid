@@ -173,9 +173,7 @@ pub fn topic_value_held(Source, String, Map[String, @json.Json]) -> @signals.Com
 
 pub fn station_mark_held(Source, String) -> @signals.Computed[Station?]
 
-pub fn chat_page_made(@view.View, Source, Int32, (@ui.Ctx, Source, Page) -> Unit, key? : () -> String, over? : (@view.View, Source, () -> Page?, () -> Int32) -> Unit, stint? : () -> Int32, drawn? : (Int32) -> Bool, body? : (@view.View, Source, ChatRef, (@view.View) -> Unit, () -> Bool) -> Unit, foot? : (@ui.Ctx, Source, ChatRef) -> Unit) -> Source
-
-pub let chat_page_nodes : @signals.Signal[Bool]
+pub fn chat_page_made(@view.View, Source, Int32, over? : (@view.View, Source, () -> Page?, () -> Int32) -> Unit, stint? : () -> Int32, drawn? : (Int32) -> Bool, body~ : (@view.View, Source, ChatRef, (@view.View) -> Unit, () -> Bool, () -> Bool) -> Unit, foot_node~ : (@view.View, Source, ChatRef, () -> Bool, () -> Double?) -> Unit, narrower? : (Source, @view.View) -> ColumnLaid, aside? : (@view.View) -> Double, new_node~ : (@view.View, Source) -> Unit) -> Source
 
 pub fn chat_params(ChatRef) -> Map[String, @json.Json]
 

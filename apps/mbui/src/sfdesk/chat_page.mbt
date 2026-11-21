@@ -324,7 +324,7 @@ fn chat_bar_handed(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef, v : Ch
 }
 
 ///|
-/// What chat_bar_handed hands where the chat's page is made as nodes (sfbase's chat_page_nodes: its messages'
+/// What chat_bar_handed hands where the chat's page is made as nodes (its messages'
 /// chat_body_nodes), said at node `v`: as the page comes on top, and again as what the actions show changes while it
 /// is (its view, its row, its services, ⌘F's bar in it, the column's room), not each frame; the actions handed for
 /// another page let go first, as a frame lets them go as the page on top changes (nav_page_for). What opens from them

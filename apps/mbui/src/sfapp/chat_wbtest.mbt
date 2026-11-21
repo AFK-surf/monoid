@@ -1,11 +1,7 @@
 ///|
 /// The made-up chat open over Home (chat_fixture.mbt), from its start: pushed in.
-fn chat_tester(mode : String, w? : Double = 390.0, old? : Bool = false) -> @ui.Tester {
+fn chat_tester(mode : String, w? : Double = 390.0) -> @ui.Tester {
   new_run()
-  // (the old page's own, its list's (sfbase's chat_list.mbt): held so whatever the fixture's channel)
-  if old {
-    @sfbase.hold_chat_page_nodes(Some(false))
-  }
   let src = fixture(mode)
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h=844.0, platform=2)
@@ -47,13 +43,8 @@ test "scrolled up, the way to the newest shows; tapped, the list glides back to 
     t.semantics().iter().any(fn(s) { s.role == Button && s.label == @sf.t("web-main.chat.toLatest") })
   }
   assert_true(jumps(t))
-  // (out of sight: the list made as nodes keeps what is under it laid out, the old view's none)
-  assert_true(
-    match t.find("做完了：列表、跳到最新的按钮") {
-      None => true
-      Some((_, y)) => y > 844.0
-    },
-  )
+  // (a reusable row left resting in its off-screen slot within slots_margin is still in tree.drawn(), below the window)
+  assert_true(match t.find("做完了：列表、跳到最新的按钮") { None => true; Some((_, y)) => y > 844.0 })
   // it comes up growing: tapped once it is there, as a person can only tap what shows
   t.run_for(@ui.move_most_ms)
   // over the send button, the composer's room under it
@@ -66,7 +57,7 @@ test "scrolled up, the way to the newest shows; tapped, the list glides back to 
     t.run_for(rest - t.time())
   }
   t.run_for(@ui.move_most_ms)
-  assert_true(t.find("做完了：列表、跳到最新的按钮") is Some(_))
+  assert_true(match t.find("做完了：列表、跳到最新的按钮") { Some((_, y)) => y > 0.0 && y < 844.0; None => false })
   assert_true(!jumps(t))
   // (the chat's pictures brushed in once decoded: sfpages message_files.mbt)
   t.run_for(@sfpages.reveal_ms)

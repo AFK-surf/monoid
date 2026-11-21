@@ -1,4 +1,4 @@
-// A chat's page made with its inside nodes (sfbase's chat_page_nodes on; chat_page_made's `body`): its messages the
+// A chat's page made with its inside nodes (chat_page_made's `body`): its messages the
 // page's list (chat_body_node), the composer in the list's foot the page's old view as yet, what floats over it there
 // (the way to the newest, the bell, 对话目录's button and rail: chat_body_node's foot), a passage picked in a message
 // quoted by its pill or the bar over a finger's pick (chat_quote_node).

@@ -683,24 +683,21 @@ fn tape_made(
       made("station-move/" + st, fn(p, core, here, _stint, told, _acts) {
         @sfpages.station_move_node(p, core, here, st, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
       })
-    // (a chat, and the new chat that becomes one in place: the same page, a node of the tree's, its old view in it as
-    // yet, built as the stack's island built it (tape_page_one), its bar what that says (tape_bar_collected))
+    // (a chat, and the new chat that becomes one in place: the same page, a node of the tree's)
     page if pane_makes.val && @sfbase.chat_page_is(page) =>
       Some(
         (
           @sfbase.chat_page_kind(),
           fn(v, _page, _under, stint, k) {
-            // (its bar the tree's, over the page's old view: chat_bar_wide_node, keeping clear of the panel's corners as a
+            // (its bar the tree's, over the page: chat_bar_wide_node, keeping clear of the panel's corners as a
             // page's bar on the tape does; the tape's head over it none, tape_bar_head)
             let page_src = @sfbase.chat_page_made(
               v,
               src,
               k,
-              tape_page_one,
-              key=tape_island_key,
               drawn=fn(serial) { tape_page_wait.draws(serial) },
               over=fn(o, src, page, stint) { chat_bar_wide_node(o, src, page, tape_chat_bar_ends(o), tips, stint) },
-              // (with chat_page_nodes on: its messages nodes, its composer made as nodes in their list's foot)
+              // (its messages nodes, its composer made as nodes in their list's foot)
               // (built in the page's panel, as tape_page_one builds the page: what stands in its corners concentric with them)
               body=fn(col, s, r, composer, shows, on_stack) {
                 // (on the panel's ground, a step darker while it is behind the one in use, going with the tape's move:
@@ -727,12 +724,6 @@ fn tape_made(
                   pane=fn() { Some(tape_page_round()) },
                 )
               },
-              leaving=fn(c, s, r) {
-                match @sfbase.workspace_in_view(s).0 {
-                  Some(w) => new_chat_after(c, s, w, r, tape=wide.tape.get())
-                  None => ()
-                }
-              },
               // (its column on the page's way as the tape takes its panel to another width: laid out as at its narrower end)
               narrower=fn(_s, n) { tape_page_narrower(n) },
               // (the new chat it is till it becomes one, made as nodes in the page's panel: sfpages' new_chat_node, on the
@@ -747,22 +738,20 @@ fn tape_made(
                 }
               },
             )
-            // (its chat's side panel its own as the page is a chat's made as nodes whole: kept with it on the stack's kept
-            // left, at rest with it, taken back with it (tape_side_node's each); the old page's as ever)
-            if @sfbase.chat_page_nodes.untracked() {
-              v.reacts(fn() { app.nav.page_of(k).map(fn(e) { e.0 }) }, fn(po) {
-                match po {
-                  Some(Chat(r)) => tape_chat_entries[k] = (r, page_src)
-                  _ => tape_chat_entries.remove(k)
-                }
-                tape_chat_entries_rev.set(tape_chat_entries_rev.untracked() + 1)
-              })
-              v.owns(fn() {
-                tape_chat_entries.remove(k)
-                tape_chat_entries_rev.set(tape_chat_entries_rev.untracked() + 1)
-              })
-              |> ignore
-            }
+            // (its chat's side panel its own as the page is a chat's: kept with it on the stack's kept left, at rest with
+            // it, taken back with it (tape_side_node's each))
+            v.reacts(fn() { app.nav.page_of(k).map(fn(e) { e.0 }) }, fn(po) {
+              match po {
+                Some(Chat(r)) => tape_chat_entries[k] = (r, page_src)
+                _ => tape_chat_entries.remove(k)
+              }
+              tape_chat_entries_rev.set(tape_chat_entries_rev.untracked() + 1)
+            })
+            v.owns(fn() {
+              tape_chat_entries.remove(k)
+              tape_chat_entries_rev.set(tape_chat_entries_rev.untracked() + 1)
+            })
+            |> ignore
           },
         ),
       )

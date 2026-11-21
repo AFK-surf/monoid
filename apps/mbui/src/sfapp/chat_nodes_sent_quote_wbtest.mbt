@@ -12,7 +12,7 @@
 fn cnsq_core(has : @signals.Signal[Bool], name : String, file : Json, w : Double, platform : Int) -> (@ui.Tester, Source) {
   let made : Ref[Source?] = Ref(None)
   let calls : Array[Made] = []
-  let t = fake_core(calls, made~, platform~, nodes=true, over=fn(topic, tp) {
+  let t = fake_core(calls, made~, platform~, over=fn(topic, tp) {
     match (topic, tp.value) {
       ("chat", Some(Object(m))) if has.get() => {
         let v = m.copy()
@@ -125,7 +125,6 @@ fn cnsq_crossed(t : @ui.Tester, over : (String) -> Bool, under : (String) -> Boo
 /// The chat's page made as nodes on 小屏, the fixture's station answering on the test's clock (`clock`).
 fn cnsq_fixture(clock : Ref[Double]) -> @ui.Tester {
   new_run()
-  @sfbase.hold_chat_page_nodes(Some(true))
   fix_clock.val = Some(fn() { clock.val })
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })

@@ -110,7 +110,7 @@ fn chat_bar_room(in_pane? : Bool = @sf.in_pane()) -> Double {
 let list_head_gap : Double = 24.0
 
 ///|
-/// Chat `r`'s messages where its page is made with its inside nodes (sfbase's chat_page_nodes: chat_page_made's
+/// Chat `r`'s messages where its page is made with its inside nodes (chat_page_made's
 /// `body`, `shows` whether it is drawn), in `v`, as wide as it is given: under the bar's room, `in_pane` the page a
 /// panel of its own (chat_bar_room); its composer made by `composer` in the list's foot. What the page's old view
 /// hands the system's bars said here as nodes (chat_bar_handed_node); ⌘F its find, in its bar.

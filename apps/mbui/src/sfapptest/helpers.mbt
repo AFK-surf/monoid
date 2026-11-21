@@ -424,15 +424,10 @@ pub fn fake_core(
   made? : Ref[@sfbase.Source?] = Ref(None),
   ups? : Map[String, Json] = Map([]),
   platform? : Int = 2,
-  nodes? : Bool = false,
-  composed? : Bool = false,
   on_call? : (String, Json) -> Unit = fn(_, _) {  },
   loc~ : SourceLoc,
 ) -> @ui.Tester {
   @sfapp.new_run()
-  if nodes || composed {
-    @sfbase.chat_page_nodes.set(true)
-  }
   let drafts_named = Ref(0)
   let base = @sffixture.fixture("chat")
   let src : @sfbase.Source = {

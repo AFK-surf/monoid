@@ -943,26 +943,18 @@ test "wide: a newer build of the desktop app ready: 重启更新 the update key 
   t.run_for(@ui.move_most_ms)
   let (fx, _, _, _) = t.query(Button, label="重启更新").unwrap().rect
   assert_eq(fx, @sfdesk.update_closed_in)
-  // (the old page's bar says its start in wide.bar_pl; the chat's bar made as nodes keeps it as it lays out: its
-  // title drawn from there)
-  if @sfbase.chat_page_nodes.untracked() {
-    guard t.rect_of("整理发布清单") is Some((tx, _, _, _)) else { fail("no title") }
-    assert_true(tx >= @sfdesk.bar_update_in, msg="the title from \{tx}")
-  } else {
-    assert_eq(@sfdesk.wide.bar_pl, @sfdesk.bar_update_in)
-  }
+  // (the page bar made as nodes: its title drawn clear of the update key)
+  let folded_title = t.rect_of("整理发布清单").unwrap()
+  assert_true(folded_title.0 >= @sfdesk.bar_update_in, msg="\{Repr(folded_title)}")
   // shown a while: 更新 back in the sidebar's first row, the bar starting past the sidebar with its own 12
   let (rx, ry, rw, rh) = t.query(Button, label="文件").unwrap().rect
   t.move_to(rx + rw / 2.0, ry + rh / 2.0)
   t.run_for(@ui.move_most_ms)
   assert_true(@sfdesk.wide.peeking.get())
-  if @sfbase.chat_page_nodes.untracked() {
-    let (sx, _, sw, _) = t.query(Button, label="筛选会话：全部").unwrap().rect
-    guard t.rect_of("整理发布清单") is Some((tx, _, _, _)) else { fail("no title") }
-    assert_true(tx >= sx + sw + @sfdesk.bar_in, msg="the title from \{tx}, the sidebar's filter to \{sx + sw}")
-  } else {
-    assert_eq(@sfdesk.wide.bar_pl, @sfdesk.bar_in)
-  }
+  // (its title clear of the sidebar peeking over the page, its own 12 past it)
+  let peeked_title = t.rect_of("整理发布清单").unwrap()
+  let side = @sfdesk.wide.side_w.get()
+  assert_true(peeked_title.0 >= side + @sfdesk.bar_in, msg="\{Repr(peeked_title)} \{side}")
 }
 
 ///|

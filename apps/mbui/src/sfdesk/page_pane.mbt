@@ -547,8 +547,7 @@ fn pane_made(
       made("usage-prices/" + days.to_string(), fn(a, core, here, _stint, frame, width) {
         @sfpages.usage_prices_node(a, core, here, days, on_back=core.pop, frame~, width~)
       })
-    // (a chat, and the new chat that becomes one in place: the same page, a node of the tree's, its old view in it as
-    // yet, built as the stack's island built it: pane_page_one)
+    // (a chat, and the new chat that becomes one in place: the same page, a node of the tree's)
     page if @sfbase.chat_page_is(page) =>
       Some(
         (
@@ -559,18 +558,16 @@ fn pane_made(
             let page_src : Ref[Source] = Ref(src)
             v.box(fn(p) {
               p.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))) |> ignore
-              // (its bar the tree's, over the page's old view: chat_bar_wide_node, keeping clear of the window's corner)
+              // (its bar the tree's, over the page: chat_bar_wide_node, keeping clear of the window's corner)
               page_src.val = @sfbase.chat_page_made(
                 p,
                 src,
                 k,
-                fn(c, s, page) { pane_page_one(c, s, page, held=page is Chat(_)) },
-                key=tape_island_key,
                 drawn=fn(serial) { pane_page_wait.draws(serial) },
                 over=fn(o, src, page, stint) {
                   chat_bar_wide_node(o, src, page, pane_chat_bar_ends(src, o, page~), tips, stint)
                 },
-                // (with chat_page_nodes on: its messages nodes, its composer made as nodes in their list's foot)
+                // (its messages nodes, its composer made as nodes in their list's foot)
                 body=fn(col, s, r, composer, shows, on_stack) {
                   pane_made_chat(col, k)
                   context_node(col)
@@ -580,22 +577,10 @@ fn pane_made(
                 foot_node=fn(n, s, r, shows, laid) {
                   @sfpages.chat_composer_node(n, s, r, shows~, laid~, tips~, apart=fn() { wide.tape.get() })
                 },
-                leaving=fn(c, s, r) {
-                  match @sfbase.workspace_in_view(s).0 {
-                    Some(w) => new_chat_after(c, s, w, r, tape=wide.tape.get())
-                    None => ()
-                  }
-                },
                 // (its column on the page's way as the side panel or left sidebar slides beside it: laid out as at its target end)
                 narrower=fn(s, n) { pane_chat_narrower(s, n, k) },
-                // (moved aside with the folded block over it, in the same offset as the way across: chat_page_made's;
-                // a new chat's old view, not held, moved aside inside itself as before, pane_page_one's)
+                // (moved aside with the folded block over it, in the same offset as the way across: chat_page_made's)
                 aside=fn(n) { if app.nav.page_of(k) is Some((Chat(_), _)) { pane_aside_at(src, n) } else { 0.0 } },
-                // (a chat's old view held at the width the block's move ends at all the way, moved across by its node)
-                held=fn(n) { pane_fold_held(src, n, k) },
-                // (bound once the block's move has first set off with a chat on the page: nothing of it at rest before,
-                // nor while a new chat, whose old view is laid out anew at each width of the move as before)
-                held_from=fn() { pane_fold_set_off() && app.nav.page_of(k) is Some((Chat(_), _)) },
                 // (the new chat it is till it becomes one, made as nodes: sfpages' new_chat_node)
                 new_node=fn(n, s) {
                   match @signals.untracked(fn() { @sfbase.workspace_in_view(s).0 }) {

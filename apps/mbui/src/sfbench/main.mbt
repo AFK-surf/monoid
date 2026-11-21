@@ -24,8 +24,6 @@ fn main {
     return
   }
   let dark = @film.arg("MBUI_DARK") == "1"
-  // MBUI_CHAT_PAGE=nodes: the chat's page made as nodes whatever the mode's channel (the test channel has it so)
-  let chat_nodes = @film.arg("MBUI_CHAT_PAGE") == "nodes"
   // (the app made as sffix makes it, at the Tester's first frame: the code face it carries given then, to the
   // Tester's text, which is this Mac's)
   let src : Ref[@sfapp.Source?] = Ref(None)
@@ -39,9 +37,9 @@ fn main {
         let s = if mode.has_prefix("switch-real") {
           switch_real_source(mode)
         } else if mode == "chat-real" {
-          chat_real_source(chat_nodes)
+          chat_real_source()
         } else {
-          @sfapp.fixture_app(mode, chat_nodes~)
+          @sfapp.fixture_app(mode)
         }
         // MBUI_FIX_PACE, MBUI_FIX_CORE: the made-up station's pace (@sffixture.fix_pace_said), said in APPBENCH below
         @sffixture.fix_pace_said(@film.arg("MBUI_FIX_PACE"), @film.arg("MBUI_FIX_CORE"))

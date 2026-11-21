@@ -1,5 +1,4 @@
-// What a chat's bar on 中屏 and 大屏 opens under it where the chat's page is made as nodes (sfbase's chat_page_nodes on;
-// off, the old page's bar_popovers draws them, chat_page.mbt), presented by the
+// What a chat's bar on 中屏 and 大屏 opens under it, the chat's page made as nodes, presented by the
 // library's presenters as the signals its buttons set say so (chat_own's `info_open`, `jobs_open`): its info
 // (chat_info_node) and its services (jobs_pop_node), each a panel of nodes beside its button in the bar, or beside the
 // mark of the system's bars where it was chosen there and the bar has no buttons of its own (rail_native.mbt). Each is

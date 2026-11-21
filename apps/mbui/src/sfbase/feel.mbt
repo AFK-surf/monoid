@@ -44,7 +44,7 @@ pub fn feel_needed(c : @ui.Ctx, r : ChatRef, v : ChatView) -> Unit {
 }
 
 ///|
-/// feel_needed's where chat `r`'s page is made as nodes (chat_page_made's, chat_page_nodes on), in node `n`: its view
+/// feel_needed's where chat `r`'s page is made as nodes (chat_page_made's), in node `n`: its view
 /// as source `src` reads it. Till the view is read nothing is seen of it: what it first comes to is seen, not felt, as
 /// feel_needed sees the view first read (a chat opened while it needs its viewer is no change; felt as it came on
 /// opening it till 2026-11-15).

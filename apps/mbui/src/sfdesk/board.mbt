@@ -187,7 +187,7 @@ fn board_beside(s : @view.View, src : Source, r : ChatRef, tips : @sf.TipLayer, 
     col.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
     col.box(fn(page) {
       page.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-      // (the chat's page as the pane draws it: made as nodes or its old view, as chat_page_nodes says now)
+      // (the chat's page as the pane draws it, made as nodes)
       board_beside_page(page, src, r, tips, serial)
     })
     |> ignore

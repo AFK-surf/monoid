@@ -1735,7 +1735,7 @@ export interface RailView {
 
 /** One experimental feature shown in 设置 › 实验性功能. */
 export interface ExperimentalItem {
-	/** The feature's id in `FEATURES` (`chatPage`, `farviewNative`, `board`, …). */
+	/** The feature's id in `FEATURES` (`farviewNative`, `board`, …). */
 	id: string;
 	/** Whether this feature is currently turned on on this device. */
 	enabled: boolean;

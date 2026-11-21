@@ -12,7 +12,7 @@ fn composed_field_made(t : @ui.Tester) -> Bool {
 ///|
 test "made as nodes: words typed go with send, by the chat's thread, the field emptied; on a touch screen Enter is a new line" {
   let calls : Array[Made] = []
-  let t = fake_core(calls, composed=true)
+  let t = fake_core(calls)
   assert_true(composed_field_made(t))
   t.tap_text("发消息")
   let (active, _, _, _) = t.ime()
@@ -46,7 +46,7 @@ test "made as nodes: words typed go with send, by the chat's thread, the field e
 ///|
 test "made as nodes, keyboard and mouse: Enter sends what is written, ⇧Enter a new line" {
   let calls : Array[Made] = []
-  let t = fake_core(calls, composed=true, platform=0)
+  let t = fake_core(calls, platform=0)
   // (the cursor in it as the chat comes, with keyboard and mouse)
   let (active, _, _, _) = t.ime()
   assert_true(active)
@@ -63,7 +63,7 @@ test "made as nodes, keyboard and mouse: Enter sends what is written, ⇧Enter a
 ///|
 test "made as nodes: opened as its field takes the focus, the same field all along, let go a moment after it goes" {
   let calls : Array[Made] = []
-  let t = fake_core(calls, composed=true, platform=0)
+  let t = fake_core(calls, platform=0)
   // (the cursor in it as the chat comes: opened; let go of, a capsule a moment later)
   let open = t.query(Button, label=@sf.t("web-main.composer.send")).unwrap().rect
   t.ctx().blur()
@@ -90,7 +90,7 @@ test "made as nodes: opened as its field takes the focus, the same field all alo
 ///|
 test "made as nodes: words a visualization asks to send go into its draft at once, after what is written, the field focused" {
   let calls : Array[Made] = []
-  let t = fake_core(calls, composed=true, platform=0)
+  let t = fake_core(calls, platform=0)
   t.type_text("先写的")
   @sfbase.draft_give("ws1/st1:s-c1", Followed("追问"))
   t.draw()
@@ -105,7 +105,6 @@ test "made as nodes: words a visualization asks to send go into its draft at onc
 ///|
 test "made as nodes, keyboard and mouse: 抄送, named with what it copies to, opens a menu of the chat's Slack and Feishu threads; each ticked or not asks the core (chat.cc), the menu kept open to tick the next" {
   new_run()
-  @sfbase.hold_chat_page_nodes(Some(true))
   let asked : Array[Json] = []
   let base = fixture("chat-cc")
   let src : Source = {
@@ -171,7 +170,6 @@ test "made as nodes, on a touch screen under what is said over it: opened and le
     return
   }
   new_run()
-  @sfbase.hold_chat_page_nodes(Some(true))
   // (its prompt cache over and its station down: two lines said over it, the foot taller than its least)
   let src = fixture("chat-cold-offline")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
@@ -200,7 +198,6 @@ test "made as nodes, on a touch screen under what is said over it: opened and le
 ///|
 test "made as nodes, keyboard and mouse: 抄送's menu has each thread's platform mark before its place, none of a check's column, a ticked one's check at its end alone, ticked at once" {
   new_run()
-  @sfbase.hold_chat_page_nodes(Some(true))
   let src = fixture("chat-cc")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0, pointing=Mouse)
@@ -247,7 +244,6 @@ test "made as nodes, keyboard and mouse: 抄送's menu has each thread's platfor
 ///|
 test "made as nodes, keyboard and mouse: right click on composer field and its I-beam area opens edit menu (Select All, Cut, Copy, Paste text & PNG); right click on +/Send does not; clicking beside Send keeps focus" {
   new_run()
-  @sfbase.chat_page_nodes.set(true)
   let src = fixture("chat")
   let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
   open_chat(r)
@@ -308,7 +304,6 @@ test "made as nodes, keyboard and mouse: right click on composer field and its I
 ///|
 test "made as nodes, keyboard and mouse: right click on composer while a message menu is open switches cleanly to the composer's edit menu (menu_behind)" {
   new_run()
-  @sfbase.chat_page_nodes.set(true)
   let src = fixture("chat")
   let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
   open_chat(r)
@@ -329,7 +324,6 @@ test "made as nodes, keyboard and mouse: right click on composer while a message
 ///|
 test "made as nodes, offline chat: pasting a file or image into composer is refused with offline toast and adds no attachment" {
   new_run()
-  @sfbase.chat_page_nodes.set(true)
   let src = fixture("chat-cold-offline")
   let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
   open_chat(r)

@@ -283,7 +283,6 @@ test "a chat's page made as nodes, 小屏 and 大屏: three lines sent, the comp
 fn ss_quoting(screen : (String, Double, Double, Int), file? : Json) -> (@ui.Tester, Source) {
   let (_, w, h, platform) = screen
   new_run()
-  @sfbase.hold_chat_page_nodes(Some(true))
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)

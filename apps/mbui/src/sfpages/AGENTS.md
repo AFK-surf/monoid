@@ -11,9 +11,9 @@
 - Store per-block UI state (code wrap/copy flags, horizontal scroll offsets for tables, code, and formulas) in mbui's key-scoped reuse store (`View::reused_bool`, `View::on_reused`, `libs/mbui/src/view/reused_state.mbt`), never rebuilding parts per key.
 - Include creation-only structure (message paths, agent cards, chat thread) in the block make key. Detlint `reused-untracked-key` counts untracked key reads inside `make_reused` and only falls.
 
-## Chat and composer migration flag
+## Chat page and composer
 
-- The node-based chat page, its composer (`composer_node`), and the new-chat page (`new_chat_node`) are the chat page on every channel (`chat_page_nodes`, read as a page is made, `chat_page_nodes_at_start` `true`; `chat_page_from_prefs` no longer reads the `beta` feature `chatPage`, removed with the old pages and old composer). Do not host the old composer inside a node-based page. Tests and scenes that need one way regardless of the fixture's channel use `@sfbase.hold_chat_page_nodes` (`MBUI_CHAT_PAGE=nodes|old`), since a plain `chat_page_nodes.set` is overwritten when the prefs are next told.
+- The node-based chat page, its composer (`composer_node`), and the new-chat page (`new_chat_node`) are the only chat page on every screen (`chat_page_made`). Do not host the old composer inside a node-based page.
 - Share all non-rendering composer logic between both views (`composer_state.mbt`, `apps/mbui/src/sfbase/compose_given.mbt`, `composer_send.mbt`) without duplicating it.
 - Express width-responsive layout changes as property bindings (`By` on gap, margin, size), never structural `pick`/`show` branches on `width()` (detlint `width-structure` only falls).
 

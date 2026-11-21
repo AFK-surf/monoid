@@ -29,11 +29,8 @@ fn film_in_chat(
   platform? : Int = 2,
   w? : Double = 390.0,
   answer? : ((@ui.Tester) -> Unit)? = None,
-  nodes? : Bool = false,
 ) -> (@ui.Tester, Double, Double) {
   new_run()
-  // (the chat's page made as nodes, its composer too, where `nodes` says so: sfbase's chat_page_nodes)
-  @sfbase.hold_chat_page_nodes(Some(nodes))
   let src = fixture("chat-download-on")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let made : Ref[@ui.Tester?] = Ref(None)
@@ -86,8 +83,8 @@ fn film_frame_answered(t : @ui.Tester) -> Unit {
 /// till its top is `top` (under the chat's bar), pressed and let go a little over its foot: what went wrong in the
 /// frames while it went out from under the bar, and back in under it as it is closed (none, as it should be); on a
 /// chat's page made as nodes where `nodes` says so (its thumbnail the end of View::shared's flight that stays).
-fn picture_under_bar_faults(top : Double, platform : Int, w : Double, film? : Bool = false, nodes? : Bool = false) -> Array[String] {
-  let (t, x, y) = if film { film_in_chat(platform~, w~, nodes~) } else { image_in_chat("compare.png", platform~, w~, nodes~) }
+fn picture_under_bar_faults(top : Double, platform : Int, w : Double, film? : Bool = false) -> Array[String] {
+  let (t, x, y) = if film { film_in_chat(platform~, w~) } else { image_in_chat("compare.png", platform~, w~) }
   // opened once and closed: its whole read and kept, as a picture seen before is (the frame it sets out in again asks
   // the core nothing, built once)
   t.tap(x, y)
@@ -180,24 +177,20 @@ fn picture_under_bar_faults(top : Double, platform : Int, w : Double, film? : Bo
 ///|
 test "a picture under a chat's bar, the old page's and one made as nodes: the bar over it every frame till it is out from under it" {
   // a wide window, the tape's, and a phone's; its top a little under the bar's, and half of it over the window's top
-  for nodes in [false, true] {
-    for screen in [(0, 1280.0), (0, 820.0), (2, 390.0)] {
-      for top in [10.0, -100.0] {
-        let faults = picture_under_bar_faults(top, screen.0, screen.1, nodes~)
-        assert_true(faults.is_empty(), msg="\{if nodes { "nodes" } else { "old" }}, \{screen.1} wide, its top at \{top}: \{Repr(faults)}")
-      }
+  for screen in [(0, 1280.0), (0, 820.0), (2, 390.0)] {
+    for top in [10.0, -100.0] {
+      let faults = picture_under_bar_faults(top, screen.0, screen.1)
+      assert_true(faults.is_empty(), msg="\{screen.1} wide, its top at \{top}: \{Repr(faults)}")
     }
   }
 }
 
 ///|
 test "a film under a chat's bar, the old page's and one made as nodes: the bar over it every frame till it is out from under it" {
-  for nodes in [false, true] {
-    for screen in [(0, 1280.0), (0, 820.0), (2, 390.0)] {
-      for top in [10.0, -100.0] {
-        let faults = picture_under_bar_faults(top, screen.0, screen.1, film=true, nodes~)
-        assert_true(faults.is_empty(), msg="\{if nodes { "nodes" } else { "old" }}, \{screen.1} wide, its top at \{top}: \{Repr(faults)}")
-      }
+  for screen in [(0, 1280.0), (0, 820.0), (2, 390.0)] {
+    for top in [10.0, -100.0] {
+      let faults = picture_under_bar_faults(top, screen.0, screen.1, film=true)
+      assert_true(faults.is_empty(), msg="\{screen.1} wide, its top at \{top}: \{Repr(faults)}")
     }
   }
 }
@@ -222,9 +215,9 @@ fn film_at(t : @ui.Tester) -> Array[(Double, Double)] {
 /// thumbnail where it was.
 fn tree_flight_faults(film : Bool, platform : Int, w : Double) -> Array[String] {
   let (t, x, y) = if film {
-    film_in_chat(platform~, w~, nodes=true)
+    film_in_chat(platform~, w~)
   } else {
-    image_in_chat("compare.png", platform~, w~, nodes=true)
+    image_in_chat("compare.png", platform~, w~)
   }
   let faults : Array[String] = []
   guard pic_at(t, x, y) is Some((thumb, _)) else { return ["no thumbnail drawn"] }
@@ -374,9 +367,9 @@ fn ground_over_flight(t : @ui.Tester, w0 : Double) -> Double? {
 /// the composer's words are is never it then.
 fn picture_under_composer_faults(platform : Int, w : Double, film? : Bool = false) -> Array[String] {
   let (t, x, y) = if film {
-    film_in_chat(platform~, w~, nodes=true)
+    film_in_chat(platform~, w~)
   } else {
-    image_in_chat("compare.png", platform~, w~, nodes=true)
+    image_in_chat("compare.png", platform~, w~)
   }
   t.tap(x, y)
   t.run_for(@ui.move_most_ms)

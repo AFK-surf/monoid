@@ -236,6 +236,7 @@ let composing : Composing = {
 
 ///|
 fn composing_reset() -> Unit {
+  comment_rows_live.clear()
   composer_foot_way.val = None
   composer_width_last.val = ("", "", 0.0, 0.0)
   composing.let_go.clear()
@@ -906,17 +907,6 @@ fn composer_shapes(w : Writing, quote_pictures : Array[(MediaPicture, Json?)?], 
     text(Some(f), "id") + (if file_pictures[i] is Some(_) { "|picture" } else { "|card" })
   }).join("\u{2}")
   "\{file_shapes}|\{quote_shapes}|" + w.field.text()
-}
-
-///|
-/// What draft `w`'s composer is shaped for as it is sent (composer_shapes, its pictures as it builds them): what words
-/// sent from it hold it shaped for (sfbase's SendFlight `shaped`).
-fn composer_shapes_sent(c : @ui.Ctx, src : Source, w : Writing, station : String) -> String {
-  composer_shapes(
-    w,
-    w.quotes.get().map(fn(q) { quote_picture(c, src, w, station, Some(q)) }),
-    w.files.get().map(fn(f) { waiting_picture(src, w, Some(f)) }),
-  )
 }
 
 ///|
@@ -2491,44 +2481,18 @@ pub fn send_in_chat(c : @ui.Ctx, src : Source, r : ChatRef, v : ChatView, w : Wr
   let words = w.text.get().trim(chars=" \n\t").to_owned()
   let rk = r.station + "\u{1}" + r.session
   remember_sent_pictures(src, w, r.station)
-  // (its references as the field's marks, which its flight takes off as; its row's runs as the core read its words)
-  let marks = @sfbase.refs_sent_marks(w.key, words)
+  // (its row's runs as the core read its words)
   let runs = @sfbase.refs_sent_runs(w.key, words)
   // (what is in it now whole: its head and its messages by key where it holds them so, what the core's row taking
   // these over is told apart from: sent_before, `newest`)
-  // (where its words, cards and files stood, as part of what is sent: on a chat's page made as nodes its row flies from
-  // there, sent_from_composer)
-  let nodes = @signals.untracked(fn() { @sfbase.chat_page_nodes.get() })
-  let from = if nodes { sent_from_composer(c, src, w, r.station) } else { None }
+  // (where its words, cards and files stood, as part of what is sent: its row flies from there, sent_from_composer)
+  let from = sent_from_composer(c, src, w, r.station)
   let row = sent_local(rk, Some(chat_whole(src, r, v)), words, up_files(w), going=going_files(w), quotes=sent_quotes(w), runs~, from~, now=(src.now)())
-  // its words take off from the field as they are (before it is emptied), the composer held as it is laid out for them
-  // till they let go of it (theirs: composer_held_lines); on its way to another shape (a line more just typed), it
-  // slows to rest from as fast as it went as they are sent (composer_view's @motion.stop_for), its room with it.
-  // On a chat's page made as nodes no old flight is started (nothing there lets one go: its list is no old list,
-  // flight_placed, flight_frame): the composer is back at its one line in the press's frame, which its list takes as its
-  // foot giving back room in the change its sent key comes, and the row's bubble flies from where the words stood
-  // (sent_local's `from`, message_words_node's mine_bubble_node: mbui's View::flies_in).
-  if !nodes {
-    let room = composer_room(c, w.key)
-    // its quotes fly too, each from its card, and its files that are up, each from its tile
-    let flying = flying_quotes(c, src, w, r.station) + flying_files(c, src, w)
-    @sfbase.flight_start(
-      c,
-      w.key,
-      rk,
-      row,
-      words,
-      room,
-      flying,
-      field=w.field,
-      shaped=composer_shapes_sent(c, src, w, r.station),
-      // (the list's foot drawn over where it comes to stand: the composer's ground on its way, its room at its target)
-      foot_lift=fn(c) { composer_room(c, w.key) - composer_room(c, w.key, settled=true) },
-      desk=true,
-      marks~,
-      runs~,
-    )
-  } else if from is Some(_) {
+  // No old flight is started (nothing lets one go: its list is no old list, flight_placed, flight_frame): the composer
+  // is back at its one line in the press's frame, which its list takes as its foot giving back room in the change its
+  // sent key comes, and the row's bubble flies from where the words stood (sent_local's `from`, message_words_node's
+  // mine_bubble_node: mbui's View::flies_in).
+  if from is Some(_) {
     // (its field's hint and caret away till they are out of it, as the old flight's: flight_hint_away)
     @sfbase.sent_out_said(c, w.key)
   }

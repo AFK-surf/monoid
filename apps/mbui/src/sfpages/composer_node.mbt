@@ -1,5 +1,5 @@
-// A chat's composer made as nodes of the window's tree (composer.mbt's chat_composer, made once): where its page is
-// made as nodes (sfbase's chat_page_nodes), in its messages' list's foot (chat_page_made's `foot_node`). What it holds
+// A chat's composer made as nodes of the window's tree (composer.mbt's chat_composer, made once): its page made
+// as nodes, in its messages' list's foot (chat_page_made's `foot_node`). What it holds
 // and how it answers is the old composer's, said here by the tree's own mechanisms: a frosted capsule that grows into
 // a box with its text, ＋ and send at its ends; opened (focused, written in, a file or a quote waiting) its words over
 // its row of ＋, what is said before send and send, the quotes and files waiting over the words. One field all along

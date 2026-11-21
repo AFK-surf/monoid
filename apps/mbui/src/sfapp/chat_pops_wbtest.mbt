@@ -30,7 +30,7 @@ fn pops_open(t : @ui.Tester, label : String) -> (Double, Double, Double, Double)
 /// button once the chat's panel is brought into use (the fixture's, open as the tape came, took the press that brings it,
 /// a panel of the presenters' taking a press outside it whole).
 fn pops_jobs_at(calls : Array[Made], w : Double) -> @ui.Tester raise {
-  let t = wide_bar_at(calls, nodes=true, w~, mode="chat-jobs-pop")
+  let t = wide_bar_at(calls, w~, mode="chat-jobs-pop")
   if @sfdesk.wide.tape.get() {
     if @sfdesk.chat_pops_open().1 {
       t.key(@ui.key_escape)
@@ -75,7 +75,7 @@ test "大屏, 中屏: each row of the chat's info does what it says and closes i
     // nothing, the chat still on top; so the info opened again is the one a Tester made anew opens, and each row's
     // press is held as one made there)
     let calls : Array[Made] = []
-    let t = wide_bar_at(calls, nodes=true, w=win.1)
+    let t = wide_bar_at(calls, w=win.1)
     let was = app.nav.top()
     for row in rows {
       let b = pops_open(t, @sf.t("web-pages.chat.info"))
@@ -102,7 +102,7 @@ test "大屏, 中屏: each row of the chat's info does what it says and closes i
 test "大屏: the info of a chat another's agent made says that chat, pressed it opens; of one whose agent made chats, their menu beside it; its letters beside the chat" {
   // (who made it: 由「…」创建, a link to that chat)
   let calls : Array[Made] = []
-  let t = wide_bar_at(calls, nodes=true, mode="chat-opener-pop")
+  let t = wide_bar_at(calls, mode="chat-opener-pop")
   t.click(Link, label="由「和 Ana 一起看新版的引导页」创建")
   t.run_for(@ui.move_most_ms)
   assert_true(
@@ -113,7 +113,7 @@ test "大屏: the info of a chat another's agent made says that chat, pressed it
   )
   assert_eq(@sfdesk.chat_pops_open(), (false, false))
   // (what its agent made: 创建了 3 个对话, their menu beside it, the info still open under it)
-  let t = wide_bar_at(calls, nodes=true, mode="chat-opened-pop")
+  let t = wide_bar_at(calls, mode="chat-opened-pop")
   t.click(Button, label="创建了 3 个对话")
   t.run_for(@ui.move_most_ms)
   assert_true(t.all(Menu).length() > 0, msg="its menu")
@@ -124,7 +124,7 @@ test "大屏: the info of a chat another's agent made says that chat, pressed it
   t.run_for(@ui.move_most_ms)
   assert_eq(@sfdesk.chat_pops_open(), (false, false))
   // (what its agents and other chats' wrote each other: agent 往来, beside the chat)
-  let t = wide_bar_at(calls, nodes=true, mode="chat-letters-pop")
+  let t = wide_bar_at(calls, mode="chat-letters-pop")
   t.click(Button, label="agent 往来")
   t.run_for(@ui.move_most_ms)
   assert_true(calls.iter().any(fn(c) { c.name == "chat.tabs.open" && text(Some(c.params), "tab") == "letters" }))
@@ -153,7 +153,7 @@ test "大屏, 中屏: the bar's popovers close by Escape, a press outside and th
       // the popover opened again by its button is the one a Tester made anew opens; Escape first, the focus coming
       // back to the button from where Tab left it)
       let calls : Array[Made] = []
-      let t = wide_bar_at(calls, nodes=true, w=win.1, over=wide_bar_jobs("fail"))
+      let t = wide_bar_at(calls, w=win.1, over=wide_bar_jobs("fail"))
       for way in ways {
         let label = @sf.t(which)
         let b = pops_open(t, label)
@@ -237,7 +237,7 @@ test "大屏: the services' popover opened on a job, the job closed from outside
   // (the old view's popover, on main 2026-11-12, painted a few frames at the height it had with the job open (356)
   // after the job was closed, its old view not built again for a field no signal: rc11-4, frame_watch)
   let calls : Array[Made] = []
-  let t = wide_bar_at(calls, nodes=true, mode="chat-jobs-pop")
+  let t = wide_bar_at(calls, mode="chat-jobs-pop")
   guard wide_bar_dialog(t) is Some(d) else { fail("no popover") }
   @sfdesk.open_job_pop("")
   t.run_for(@ui.move_most_ms)
@@ -255,7 +255,6 @@ test "大屏, 中屏: 归档 on a chat keeping watch asks first, in the core's w
     let calls : Array[Made] = []
     let t = wide_bar_at(
       calls,
-      nodes=true,
       w=win.1,
       over=wide_bar_both(
         wide_bar_chat_field("archivable", fn(_) { Json::boolean(true) }),
@@ -283,7 +282,7 @@ test "大屏, 中屏: 归档 on a chat keeping watch asks first, in the core's w
 ///|
 test "大屏 beside the system's bars: the chat's info opens at their mark and closes as the window turns" {
   let calls : Array[Made] = []
-  let t = wide_bar_at(calls, nodes=true, w=951.0, h=669.0, platform=1, able=true)
+  let t = wide_bar_at(calls, w=951.0, h=669.0, platform=1, able=true)
   t.post(@hostapi.system_channel, "{\"nav\":\"page/chat/info\",\"at\":[867,40,84,44]}")
   t.frames_owed()
   assert_eq(@sfdesk.chat_pops_open(), (true, false))
@@ -302,7 +301,7 @@ test "大屏, 中屏: the chat's info and its services' popover at the system's 
   for win in pops_windows {
     for which in ["web-pages.chat.info", "web-pages.chat.services"] {
       let calls : Array[Made] = []
-      let t = if which == "web-pages.chat.services" { pops_jobs_at(calls, win.1) } else { wide_bar_at(calls, nodes=true, w=win.1) }
+      let t = if which == "web-pages.chat.services" { pops_jobs_at(calls, win.1) } else { wide_bar_at(calls, w=win.1) }
       t.set_font_scale(1.3)
       t.run_for(@ui.move_most_ms)
       if !(@sfdesk.chat_pops_open().0 || @sfdesk.chat_pops_open().1) {
@@ -319,7 +318,7 @@ test "大屏, 中屏: the chat's info and its services' popover at the system's 
 test "中屏 beside the system's bars (an iPhone's): 对话信息 chosen there opens the chat's info, drawn at their mark" {
   // (its bar has no buttons of its own here: what it stands beside is the mark; the old view's popover stood there too)
   let calls : Array[Made] = []
-  let t = wide_bar_at(calls, nodes=true, w=820.0, h=1180.0, platform=1, able=true)
+  let t = wide_bar_at(calls, w=820.0, h=1180.0, platform=1, able=true)
   t.post(@hostapi.system_channel, "{\"nav\":\"page/chat/info\",\"at\":[736,40,84,44]}")
   t.frames_owed()
   t.run_for(@ui.move_most_ms)
@@ -338,7 +337,7 @@ test "大屏, 中屏: a popover of the bar's is the presenters' panel, modal: wh
   // them, left the page under them read out, its button lit under the pointer and ⌥↓ to the next chat)
   for win in pops_windows {
     let calls : Array[Made] = []
-    let t = wide_bar_at(calls, nodes=true, w=win.1, over=wide_bar_jobs("fail"))
+    let t = wide_bar_at(calls, w=win.1, over=wide_bar_jobs("fail"))
     guard wide_bar_button(t, @sf.t("web-pages.chat.services")) is Some(jobs) else { fail("\{win.0}: no services") }
     let b = pops_open(t, @sf.t("web-pages.chat.info"))
     assert_eq(@sfdesk.chat_pops_open(), (true, false), msg=win.0)

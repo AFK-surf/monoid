@@ -207,13 +207,9 @@ fn chat_left(src : Source, r : ChatRef, saved? : ChatView? = None) -> Unit {
   readings.remove(k)
   // (its bar made as nodes keeps its state while the page's nodes are kept, put by on the stack's kept left: only
   // closed again, let go as that bar is, chat_bar_of)
-  if @sfbase.chat_page_nodes.untracked() {
-    match chat_bar_states.get(k) {
-      Some(state) => state.manual_expanded.set(false)
-      None => ()
-    }
-  } else {
-    chat_bar_states.remove(k)
+  match chat_bar_states.get(k) {
+    Some(state) => state.manual_expanded.set(false)
+    None => ()
   }
   // what holds the chat's thread at the core with it (its jobs in the bar and their sheets, the images beside one
   // opened from it): while any is held the core keeps the thread's window as first read, and the chat opened again

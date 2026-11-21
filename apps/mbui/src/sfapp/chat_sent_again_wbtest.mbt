@@ -22,7 +22,6 @@ test "a chat's page made as nodes, 小屏 and 大屏: words sent and taken by th
   for screen in ss_screens {
     let (name, w, h, platform) = screen
     new_run()
-    @sfbase.hold_chat_page_nodes(Some(true))
     fix_pace.val = (100.0, 30000.0, fix_turn_end_ms)
     fix_sent_for.val = -1.0
     fix_core_for.val = 0.0
@@ -60,7 +59,6 @@ test "a chat's page made as nodes, 小屏: more words sent than its window holds
   // row of the core's to match there (the user's screenshot of 2026-11-15, 「这他妈又是什么 bug」, three sent drawn again
   // under the rest with 正在发送). The made-up chat is given only its window, as the core gives it.
   new_run()
-  @sfbase.hold_chat_page_nodes(Some(true))
   fix_pace.val = (100.0, 30000.0, fix_turn_end_ms)
   fix_sent_for.val = -1.0
   fix_core_for.val = 0.0

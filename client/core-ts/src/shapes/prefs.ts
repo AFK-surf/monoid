@@ -110,7 +110,7 @@ export const PREF_SHAPES: Record<string, Shape> = {
     ["experimentalItems", vec("ExperimentalItem"), { default: true, doc: "Experimental features visible in 设置 › 实验性功能 on this channel, in registry order." }],
   ], { doc: "What this device keeps of how its person likes it (the `prefs` topic, `prefs.set`), and what it is." }),
   ExperimentalItem: struct([
-    ["id", "String", { doc: "The feature's id in `FEATURES` (`chatPage`, `farviewNative`, `board`, …)." }],
+    ["id", "String", { doc: "The feature's id in `FEATURES` (`farviewNative`, `board`, …)." }],
     ["enabled", "bool", { doc: "Whether this feature is currently turned on on this device." }],
   ], { doc: "One experimental feature shown in 设置 › 实验性功能." }),
   KeymapView: struct([

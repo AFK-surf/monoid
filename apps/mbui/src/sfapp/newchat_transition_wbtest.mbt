@@ -44,7 +44,7 @@ fn trans_composer_glass_rect(t : @ui.Tester, min_x : Double, min_w : Double) -> 
 
 ///|
 test "小屏 NewChat -> Chat: 顶栏取消平滑淡出、胶囊平滑淡出、欢迎场景平滑淡出、发送文字 40ms 后立即起飞" {
-  let (t, _) = made_tester(390.0, 844.0, 2, true)
+  let (t, _) = made_tester(390.0, 844.0, 2)
   let (_, y) = bar_places_at()
   t.tap(bar_action_x, y)
   t.run_for(@ui.move_most_ms)
@@ -103,7 +103,7 @@ test "小屏 NewChat -> Chat: 顶栏取消平滑淡出、胶囊平滑淡出、�
 
 ///|
 test "小屏 NewChat 3 行文本发送: 首帧输入框高度连续不塌陷，随后平滑回落至单行高度" {
-  let (t, _) = made_tester(390.0, 844.0, 2, true)
+  let (t, _) = made_tester(390.0, 844.0, 2)
   let (_, y) = bar_places_at()
   t.tap(bar_action_x, y)
   t.run_for(@ui.move_most_ms)
@@ -160,7 +160,7 @@ test "小屏 NewChat 3 行文本发送: 首帧输入框高度连续不塌陷，�
 
 ///|
 test "大屏 NewChat -> Chat 发送: 输入框首帧保持 roomy 真实高度无砍顶、前 40ms 即开始平滑下落" {
-  let (t, _) = made_tester(1280.0, 800.0, 0, true)
+  let (t, _) = made_tester(1280.0, 800.0, 0)
   t.run_for(@ui.move_most_ms)
   assert_true(app.nav.top() is NewChat)
 
@@ -199,7 +199,7 @@ test "大屏 NewChat -> Chat 发送: 输入框首帧保持 roomy 真实高度无
 
 ///|
 test "大屏侧栏 NewChat <-> Chat 双向切换: 输入框平滑往返变形无瞬移" {
-  let (t, _) = made_tester(1280.0, 800.0, 0, true)
+  let (t, _) = made_tester(1280.0, 800.0, 0)
   t.run_for(@ui.move_most_ms)
   assert_true(app.nav.top() is NewChat)
 
@@ -248,7 +248,6 @@ test "大屏侧栏 NewChat <-> Chat 双向切换: 输入框平滑往返变形无
 ///|
 test "小屏 newChat.create 失败中途倒带: 场景与胶囊平滑恢复无跳变" {
   new_run()
-  @sfbase.chat_page_nodes.set(true)
   let base = fixture("home")
   let fail_create : Ref[(() -> Unit)?] = Ref(None)
   let src : Source = {

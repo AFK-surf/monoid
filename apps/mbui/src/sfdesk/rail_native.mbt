@@ -393,7 +393,7 @@ fn bar_anchor(side : @ui.Side, along : @ui.Along) -> (@view.View?, @ui.Side, @ui
 }
 
 ///|
-/// bar_anchor's for a popover of nodes (chat_pops_node's, chat_page_nodes on): the mark where it was chosen; where the
+/// bar_anchor's for a popover of nodes (chat_pops_node's): the mark where it was chosen; where the
 /// page has its own, beside its own button (`own`, a node: as it is drawn) on `side`, lined up `along` it; none where
 /// that is not made.
 fn bar_anchor_node(own : @view.View?, side : @ui.Side, along : @ui.Along) -> (@sf.Anchor, @ui.Side, @ui.Along)? {

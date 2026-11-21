@@ -154,44 +154,19 @@ fn entry_parked(serial : Int, on : Bool) -> Unit {
 let active_chat_readers : Map[Int, () -> Unit] = Map([])
 
 ///|
-/// Whether a chat's page is made with its inside nodes (chat_page_made's `body` and `foot`): a bridge while the page
-/// is moved off its old view, deleted at the switch-over; off, the page is as it was. Read as a page is made.
-// kept across runs: chat_page_nodes_at_start as a run begins (reset)
-pub let chat_page_nodes : @signals.Signal[Bool] = @signals.signal(chat_page_nodes_at_start, same=fn(a, b) { a == b })
-
-///|
-/// What chat_page_nodes is as a run begins.
-// kept across runs: a value
-let chat_page_nodes_at_start : Bool = true
-
-///|
-/// What a stack keeps of a page that left it (nav_view's and nav_flat_view's `keeps_left`): a chat's page made as nodes
-/// whole, its composer too (one an old view draws, the old composer's island, is never kept: built each frame it
-/// would read its chat at rest), by its station and session and the kind it is made as (chat_page_kind); none other.
+/// What a stack keeps of a page that left it (nav_view's and nav_flat_view's `keeps_left`): a chat's page whole, its
+/// composer too, by its station and session and the kind it is made as (chat_page_kind); none other.
 pub fn chat_page_left_key(p : Page) -> (String, String)? {
   match p {
-    Chat(r) if chat_page_nodes.untracked() =>
-      Some((r.station + "\u{1}" + r.session, chat_page_kind_now()))
+    Chat(r) => Some((r.station + "\u{1}" + r.session, chat_page_kind()))
     _ => None
   }
 }
 
 ///|
-/// chat_page_kind, read untracked (at a cause of the stack's, outside what is made).
-fn chat_page_kind_now() -> String {
-  @signals.untracked(chat_page_kind)
-}
-
-///|
-/// The kind a chat's page is made as by a shell's `made` (nav_view's: a kind changed, the page made again in its
-/// place): its nodes' or its old view's as chat_page_nodes says now, so the feature turned either way makes
-/// an open chat's page the one chosen at once (chat_page_made reads it as it is made).
+/// The kind a chat's page is made as by a shell's `made` (nav_view's: a kind changed, the page made again in its place).
 pub fn chat_page_kind() -> String {
-  if chat_page_nodes.get() {
-    "chat"
-  } else {
-    "chat-old"
-  }
+  "chat"
 }
 
 ///|
@@ -330,17 +305,14 @@ pub fn column_laid(chat : String, n : @view.View) -> ColumnLaid {
 
 ///|
 /// A chat's page made once in node `v` of a stack's (entry `serial`'s: nav_view's and nav_flat_view's `made`), and the
-/// new chat that becomes it in place, the same page: what it holds its old view as yet, its island (Nav::page_island),
-/// built by `build` as the stack built it before (a chat from the source it keeps while its entry is on the stack, its
-/// reader held: page_entry_source, page_chat_reader; a new chat from the node's own), again as `key` changes. Over it
-/// a picture flying from its list while under its bar (viewer_flight_slot), and over that what of it is nodes already (`over`: given a node over the island, the chat's source, what the page is now and its
-/// time on top, `stint`; made while `drawn` says its entry is drawn: shown, or kept shown in place while the one on top
-/// waits, as its island is). What it reads by, the source it keeps (its reads the page's, let go with it), given back:
-/// what is beside it reads by it too. With chat_page_nodes on as the page is made, its inside as what the page is,
-/// one in the other's place at once as it changes: a new chat its nodes (`new_node`), or its old view where the shell
-/// makes none (what that reads let go as it goes); a chat,
-/// one made so or a new chat become it in place (Nav::become), its inside nodes, chat `r`'s messages made by `body` in
-/// a column, given what makes its composer as nodes (by `foot_node`) in the node it is put in, the foot of the
+/// new chat that becomes it in place, the same page (a chat from the source it keeps while its entry is on the stack,
+/// its reader held: page_entry_source, page_chat_reader). Over it a picture flying from its list while under its bar
+/// (viewer_flight_slot), and over that its bar (`over`: given a node over the page, the chat's source, what the page
+/// is now and its time on top, `stint`; made while `drawn` says its entry is drawn: shown, or kept shown in place
+/// while the one on top waits). What it reads by, the source it keeps (its reads the page's, let go with it), given
+/// back: what is beside it reads by it too. Its inside is what the page is, one in the other's place at once as it
+/// changes: a new chat its nodes (`new_node`); a chat, one made so or a new chat become it in place (Nav::become),
+/// chat `r`'s messages made by `body` in a column, given what makes its composer as nodes (by `foot_node`) in the node it is put in, the foot of the
 /// messages' list, and whether its entry is drawn (as `drawn` says). On the
 /// page's way to another width (a side panel sliding in or out beside it), its column laid out as at the narrower of
 /// where the way set off and where it goes, from the frame it sets off till the one it is there, so that its rows are
@@ -349,25 +321,20 @@ pub fn column_laid(chat : String, n : @view.View) -> ColumnLaid {
 /// the page, never stepping where it is laid out anew: both the shell's to say, at a node's moment (`narrower`: how much
 /// narrower, how far across; none at rest), and moved aside with all of it (`aside`, as a node is drawn: the pane's page
 /// moved off what is folded over it), in the one offset of its column. Its composer, in the list's foot, is laid out at
-/// the width the column is drawn at all the way. A new chat, where the shell makes it so (`new_node`), is made as nodes
-/// too, over the column, leaving over the chat it becomes.
+/// the width the column is drawn at all the way. A new chat (`new_node`) is made over the column, leaving over the chat
+/// it becomes.
 pub fn chat_page_made(
   v : @view.View,
   src : Source,
   serial : Int,
-  build : (@ui.Ctx, Source, Page) -> Unit,
-  key? : () -> String = fn() { "" },
   over? : (@view.View, Source, () -> Page?, () -> Int) -> Unit,
   stint? : () -> Int = fn() { 0 },
   drawn? : (Int) -> Bool = fn(serial) { app.nav.shows(serial) },
-  body? : (@view.View, Source, ChatRef, (@view.View) -> Unit, () -> Bool, () -> Bool) -> Unit,
-  foot_node? : (@view.View, Source, ChatRef, () -> Bool, () -> Double?) -> Unit,
-  leaving? : (@ui.Ctx, Source, ChatRef) -> Unit,
+  body~ : (@view.View, Source, ChatRef, (@view.View) -> Unit, () -> Bool, () -> Bool) -> Unit,
+  foot_node~ : (@view.View, Source, ChatRef, () -> Bool, () -> Double?) -> Unit,
   narrower? : (Source, @view.View) -> ColumnLaid,
   aside? : (@view.View) -> Double,
-  held? : (@view.View) -> ColumnLaid,
-  held_from? : () -> Bool = fn() { true },
-  new_node? : (@view.View, Source) -> Unit,
+  new_node~ : (@view.View, Source) -> Unit,
 ) -> Source {
   let retained = page_entry_source(src, v, serial)
   // (the entry on top of its stack, not put by: what a page made for it reads and tells as drawn only then, never as it
@@ -377,7 +344,7 @@ pub fn chat_page_made(
   // the window's)
   let narrower = narrower.map(fn(f) { fn(n : @view.View) { f(retained, n) } })
   let page_read = page_chat_reader(retained, v, serial)
-  let (shown, shown_park) = src.owned_by_parkable(v)
+  let (_, shown_park) = src.owned_by_parkable(v)
   entry_park_said(serial, v, shown_park)
   let aside_of = fn(n : @view.View) {
     match aside {
@@ -386,325 +353,177 @@ pub fn chat_page_made(
     }
   }
   v.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-  // (with chat_page_nodes on as the page is made, a chat's made as nodes inside, as what the page is: a new chat its old
-  // view, a chat once it has become one in place, Nav::become, its nodes, at once, the one in the other's place)
-  let nodes = match body {
-    Some(b) if @signals.untracked(fn() { chat_page_nodes.get() }) => Some(b)
-    _ => None
-  }
-  match nodes {
-    Some(b) => {
-      // (which chat the page is, by its station and session, "" while a new chat; as it was once its entry is gone)
-      let was = Ref("")
-      v.pick(
-        fn() {
-          match app.nav.page_of(serial) {
-            Some((Chat(r), _)) => was.val = r.station + "\u{1}" + r.session
-            Some(_) => was.val = ""
-            None => ()
-          }
-          was.val
-        },
-        fn(col, chat) {
-          col.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-          let made = if chat == "" { None } else { @signals.untracked(fn() { app.nav.page_of(serial) }) }
-          match made {
-            Some((Chat(r), _)) => {
-              // a column: the chat's messages growing to all of it, the composer in their list's foot at its own
-              // height, its old view in a node of its own as yet (built as the stack's island is, what the page reads
-              // read there)
-              col.ground(By(fn() { @sf.theme().p.bg })) |> ignore
-              // (on the page's way to another width, laid out as at the narrower end the whole way, at its left, and
-              // moved across as its rows' words would be: the shell's to say, `narrower`, read as it is drawn; none at
-              // rest)
-              match narrower {
-                Some(by) => {
-                  // (what of it stands at its right, or by the width it is drawn at, read by its parts: column_laid)
-                  let chat = r.station + "\u{1}" + r.session
-                  columns_laid[chat] = by
-                  col.owns(fn() { if columns_laid.get(chat) is Some(f) && physical_equal(f, by) { columns_laid.remove(chat) } })
-                  |> ignore
-                  // (laid out narrower than drawn: room at its right; wider (on its way to where the panel is gone):
-                  // past its right, cut there by what holds it)
-                  // (none of that at rest, by none: bound once a column has first set off on such a way, at that cause)
+  // (a chat's made as nodes inside, as what the page is: a new chat its own, a chat once it has become one in place,
+  // Nav::become, its nodes, at once, the one in the other's place)
+  // (which chat the page is, by its station and session, "" while a new chat; as it was once its entry is gone)
+  let was = Ref("")
+  v.pick(
+    fn() {
+      match app.nav.page_of(serial) {
+        Some((Chat(r), _)) => was.val = r.station + "\u{1}" + r.session
+        Some(_) => was.val = ""
+        None => ()
+      }
+      was.val
+    },
+    fn(col, chat) {
+      col.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      let made = if chat == "" { None } else { @signals.untracked(fn() { app.nav.page_of(serial) }) }
+      match made {
+        Some((Chat(r), _)) => {
+          // a column: the chat's messages growing to all of it, the composer in their list's foot at its own
+          // height, its old view in a node of its own as yet (built as the stack's island is, what the page reads
+          // read there)
+          col.ground(By(fn() { @sf.theme().p.bg })) |> ignore
+          // (on the page's way to another width, laid out as at the narrower end the whole way, at its left, and
+          // moved across as its rows' words would be: the shell's to say, `narrower`, read as it is drawn; none at
+          // rest)
+          match narrower {
+            Some(by) => {
+              // (what of it stands at its right, or by the width it is drawn at, read by its parts: column_laid)
+              let chat = r.station + "\u{1}" + r.session
+              columns_laid[chat] = by
+              col.owns(fn() { if columns_laid.get(chat) is Some(f) && physical_equal(f, by) { columns_laid.remove(chat) } })
+              |> ignore
+              // (laid out narrower than drawn: room at its right; wider (on its way to where the panel is gone):
+              // past its right, cut there by what holds it)
+              // (none of that at rest, by none: bound once a column has first set off on such a way, at that cause)
+              col
+              .offset(By(fn() { (by(col).across + aside_of(col), 0.0) }))
+              .lays_anew(By(fn() { by(col).laid }))
+              |> ignore
+              let bound = Ref(false)
+              col.reacts(fn() { column_set_off_count() > 0 }, fn(going) {
+                if going && !bound.val && col.alive() {
+                  bound.val = true
                   col
-                  .offset(By(fn() { (by(col).across + aside_of(col), 0.0) }))
-                  .lays_anew(By(fn() { by(col).laid }))
+                  .padding(By(fn() { (0.0, 0.0, @sf.dmax(0.0, by(col).by), 0.0) }))
+                  .margin(By(fn() { (0.0, 0.0, @sf.dmin(0.0, by(col).by), 0.0) }))
                   |> ignore
-                  let bound = Ref(false)
-                  col.reacts(fn() { column_set_off_count() > 0 }, fn(going) {
-                    if going && !bound.val && col.alive() {
-                      bound.val = true
-                      col
-                      .padding(By(fn() { (0.0, 0.0, @sf.dmax(0.0, by(col).by), 0.0) }))
-                      .margin(By(fn() { (0.0, 0.0, @sf.dmin(0.0, by(col).by), 0.0) }))
-                      |> ignore
-                      v.clips(By(fn() { by(v).by < -0.5 })) |> ignore
-                    }
-                  })
-                }
-                // (moved aside alone, where something moves it: its one offset, a node's one binding of it, not one a
-                // later one let go of)
-                None =>
-                  if aside is Some(_) {
-                    col.offset(By(fn() { (aside_of(col), 0.0) })) |> ignore
-                  }
-              }
-              // (what the page reads as its entry, read as its old view's build read it: its source's page, its chat's
-              // subscription held by the entry; read again as the page it is changes, and as it is put on again from
-              // the stack's kept left (its time on top anew), where its chat was let go of, page_entry_parked)
-              col.reacts(fn() { (app.nav.page_of(serial).map(fn(e) { e.0 }), app.nav.stint_of(serial), app.nav.is_kept_left(serial)) }, fn(
-                now,
-              ) {
-                match now {
-                  (Some(page), _, false) => {
-                    // (its reader and what was handed over at once, so a quick press hands its read over; said
-                    // rendered only once a frame has drawn it there, still its stack's: one made and gone before
-                    // that (pushed and popped in one go) leaves as one never shown)
-                    page_entry_wake(serial)
-                    page_read(page)
-                    @ui.after_drawn_frame(fn() {
-                      if col.alive() &&
-                        on_stack() &&
-                        !app.nav.is_kept_left(serial) &&
-                        app.nav.page_of(serial) is Some((p, _)) &&
-                        p == page {
-                        page_entry_seen(serial, retained, page)
-                      }
-                    })
-                  }
-                  _ => ()
+                  v.clips(By(fn() { by(v).by < -0.5 })) |> ignore
                 }
               })
-              // (coming to need the viewer while open, felt, as its old view felt it)
-              feel_needed_node(col, retained, r)
-              b(col, retained, r, fn(n) {
-                // (its composer made as nodes in the list's foot, its height going its own way, View::resizes)
-                match foot_node {
-                  Some(make) => {
-                    n
-                    .box(fn(at) {
-                      // (and the width its column is laid out at on the page's way, the narrower end: none at rest)
-                      make(at, retained, r, fn() { drawn(serial) }, fn() {
-                        match narrower {
-                          Some(by) => {
-                            let c = by(n)
-                            if c.by == 0.0 && c.across == 0.0 {
-                              None
-                            } else {
-                              Some(c.laid)
-                            }
-                          }
-                          None => None
-                        }
-                      })
-                    })
-                    |> ignore
+            }
+            // (moved aside alone, where something moves it: its one offset, a node's one binding of it, not one a
+            // later one let go of)
+            None =>
+              if aside is Some(_) {
+                col.offset(By(fn() { (aside_of(col), 0.0) })) |> ignore
+              }
+          }
+          // (what the page reads as its entry, read as its old view's build read it: its source's page, its chat's
+          // subscription held by the entry; read again as the page it is changes, and as it is put on again from
+          // the stack's kept left (its time on top anew), where its chat was let go of, page_entry_parked)
+          col.reacts(fn() { (app.nav.page_of(serial).map(fn(e) { e.0 }), app.nav.stint_of(serial), app.nav.is_kept_left(serial)) }, fn(
+            now,
+          ) {
+            match now {
+              (Some(page), _, false) => {
+                // (its reader and what was handed over at once, so a quick press hands its read over; said
+                // rendered only once a frame has drawn it there, still its stack's: one made and gone before
+                // that (pushed and popped in one go) leaves as one never shown)
+                page_entry_wake(serial)
+                page_read(page)
+                @ui.after_drawn_frame(fn() {
+                  if col.alive() &&
+                    on_stack() &&
+                    !app.nav.is_kept_left(serial) &&
+                    app.nav.page_of(serial) is Some((p, _)) &&
+                    p == page {
+                    page_entry_seen(serial, retained, page)
                   }
-                  None => ()
-                }
-                // (the composer as wide as the column is drawn, where it is drawn, whatever the column is laid out
-                // at: its own way to another width with_side's)
-                // (none of it at rest: bound once a column has first set off on such a way, at that cause)
+                })
+              }
+              _ => ()
+            }
+          })
+          // (coming to need the viewer while open, felt, as its old view felt it)
+          feel_needed_node(col, retained, r)
+          body(col, retained, r, fn(n) {
+            // (its composer made as nodes in the list's foot, its height going its own way, View::resizes)
+            n
+            .box(fn(at) {
+              // (and the width its column is laid out at on the page's way, the narrower end: none at rest)
+              foot_node(at, retained, r, fn() { drawn(serial) }, fn() {
                 match narrower {
                   Some(by) => {
-                    let bound = Ref(false)
-                    n.reacts(fn() { column_set_off_count() > 0 }, fn(going) {
-                      if going && !bound.val && n.alive() {
-                        bound.val = true
-                        n
-                        .margin(By(fn() { (0.0, 0.0, -by(n).by, 0.0) }))
-                        .offset(By(fn() { (-by(n).across, 0.0) }))
-                        |> ignore
-                      }
-                    })
-                  }
-                  None => ()
-                }
-              }, fn() { drawn(serial) }, on_stack)
-            }
-            // (a new chat: nothing here, its old view the scene's over it, below)
-            _ => ()
-          }
-        },
-        at_once=true,
-      )
-      // the new chat's scene: its old view while the page is the new chat, and the same view, the same node, drawing it
-      // leaving over the chat it becomes for new_leave_ms from its first words sent (its scene fading where it is, its
-      // composer the chat's now: new_chat_left), then let go: never let go as the page becomes the chat and made again
-      // to draw it leaving, an old view drawing nothing in the frame it is made (the frame the words were sent in drawn
-      // with neither the scene nor a composer); what it reads as the new chat let go with it
-      // (what the scene is: none; the new chat; leaving over the chat it became; only mounted when the entry begins as
-      // NewChat or just became Chat from NewChat, never adding an unused show slot to normal Chat pages; none where the
-      // new chat is made as nodes, `new_node`'s below)
-      let has_scene = new_node is None && @signals.untracked(fn() {
-        match app.nav.page_of(serial) {
-          Some((NewChat, _)) => true
-          Some((Chat(r), _)) => leaving is Some(_) && fresh.became.get() == Some(r)
-          _ => false
-        }
-      })
-      if has_scene {
-        let scene = fn() {
-          match app.nav.page_of(serial) {
-            Some((NewChat, _)) => 1
-            Some((Chat(r), _)) if leaving is Some(_) && fresh.became.get() == Some(r) => 2
-            _ => 0
-          }
-        }
-        // (its way over: told at new_leave_ms from the moment the page became the chat; none while it is the new chat)
-        let scene_left = @signals.signal(false, same=fn(a, b) { a == b })
-        let leave_end = Ref(-1.0)
-        v.show(
-          fn() {
-            match scene() {
-              1 => true
-              2 => !scene_left.get() && drawn(serial)
-              _ => false
-            }
-          },
-          fn(o) {
-            // (over the chat's column, as the page is; drawn only as it leaves, read out by nothing then; moved aside with
-            // the chat's column as it leaves, where something moves that)
-            o.over(Is(true)).hides(By(fn() { scene() == 2 })).carries_until(fn() { leave_end.val }) |> ignore
-            if aside is Some(_) {
-              o.offset(By(fn() { (if scene() == 2 { aside_of(o) } else { 0.0 }, 0.0) })) |> ignore
-            }
-            // (leaving from the change the page becomes the chat in, at its cause, or from its making where it is made so;
-            // back as the new chat again, its scene whole: the chat not made, leaving_back)
-            let going = Ref(0)
-            o.reacts(fn() { scene() == 2 }, fn(leaves) {
-              going.val += 1
-              if leaves {
-                let now = going.val
-                leave_end.val = o.cause_at() + new_leave_ms
-                o.at_moment(leave_end.val, fn() { if going.val == now { scene_left.set(true) } }) |> ignore
-              } else {
-                leave_end.val = -1.0
-                scene_left.set(false)
-              }
-            })
-            let here = src.owned_by(o)
-            app.nav.page_island(
-              o,
-              serial,
-              fn(c, page) {
-                match page {
-                  Chat(r) =>
-                    match leaving {
-                      Some(leave_fn) => leave_fn(c, retained, r)
-                      None => ()
+                    let c = by(n)
+                    if c.by == 0.0 && c.across == 0.0 {
+                      None
+                    } else {
+                      Some(c.laid)
                     }
-                  _ => {
-                    page_entry_read(serial, retained, page)
-                    page_read(page)
-                    build(c, here, page)
                   }
+                  None => None
                 }
-              },
-              key~,
-            )
-            .grow(Is(1.0))
-            // (the page's to the hand all over while it is the new chat, as ever; as it leaves, drawn only, none of it: the
-            // chat under it takes what is pressed there)
-            .hosted_takes(fn(_, _, _) { @signals.untracked(fn() { scene() != 2 }) })
-            |> ignore
-          },
-          at_once=true,
-        )
-      }
-      // (a new chat made as nodes where the shell makes it so (`new_node`): over the column, the page while it is the
-      // new chat; become its chat (its first words sent: Nav::become), leaving over it as its scene does (new_leave_ms:
-      // View::show's `leave`, how far it has left its View::going), nothing of it pressed, focused or read out as it
-      // leaves, the chat's own under it; come back as it was where its chat was not made; what it reads let go with it)
-      // (none on a page made as a chat: only a new chat becomes one, and comes back as itself where its chat is not made)
-      let made_new = @signals.untracked(fn() { app.nav.page_of(serial) is Some((NewChat, _)) })
-      match new_node {
-        Some(make) if made_new => {
-          // (held while it is the new chat, and while it leaves over the chat it becomes in place (Nav::become); let go
-          // at once as the page becomes anything else: another chat, a place, 设置)
-          let keeps_new = fn() {
-            match app.nav.page_of(serial) {
-              Some((NewChat, _)) => true
-              Some((Chat(r), _)) => fresh.became.get() == Some(r)
-              _ => false
-            }
-          }
-          v.show(at_once=true, keeps_new, fn(hold) {
-            hold.over(Is(true)) |> ignore
-            // (the new chat itself, leaving over the chat it became for new_leave_ms; come back to where it was asked
-            // back before it is gone)
-            hold.show(at_once=true, leave=new_leave_ms, fn() { app.nav.page_of(serial) is Some((NewChat, _)) }, fn(o) {
-              o.over(Is(true)) |> ignore
-              // (on the page's way to another width as what is beside it slides, laid out at the width it goes to all
-              // the way, drawn as the frame says: `narrower`, as a chat's column)
-              match narrower {
-                Some(by) =>
-                  o
-                  .width(By(fn() { Some(by(o).laid) }))
-                  .offset(By(fn() { (-by(o).across, 0.0) }))
-                  |> ignore
-                None => ()
-              }
-              // (what it reads put by as it leaves (the page its chat now, it fading where it was): its draft read no
-              // more from that moment; back as it was where it comes back, the send called off)
-              let (new_src, new_park) = src.owned_by_parkable(o)
-              o.reacts(fn() { o.leaving() }, fn(leaving) { new_park(leaving) }, at_start=false)
-              make(o, new_src)
+              })
             })
-          })
+            |> ignore
+            // (the composer as wide as the column is drawn, where it is drawn, whatever the column is laid out
+            // at: its own way to another width with_side's)
+            // (none of it at rest: bound once a column has first set off on such a way, at that cause)
+            match narrower {
+              Some(by) => {
+                let bound = Ref(false)
+                n.reacts(fn() { column_set_off_count() > 0 }, fn(going) {
+                  if going && !bound.val && n.alive() {
+                    bound.val = true
+                    n
+                    .margin(By(fn() { (0.0, 0.0, -by(n).by, 0.0) }))
+                    .offset(By(fn() { (-by(n).across, 0.0) }))
+                    |> ignore
+                  }
+                })
+              }
+              None => ()
+            }
+          }, fn() { drawn(serial) }, on_stack)
         }
+        // (a new chat: nothing here, its own nodes over it, below)
         _ => ()
       }
-    }
-    None => {
-      // (its old view, on the block's way laid out where and as wide as it is where the way ends (`held`, the
-      // shell's: its start as far from where it is now as the page is narrower there, `by`), drawn where the page is
-      // by its offset, moved across and aside: an old view laid out elsewhere is built again, one moved by its offset
-      // is not, so it is built as the way sets off and not at each frame of it)
-      let host = match held {
-        Some(by) => {
-          let h = v.box(fn(h) { h.grow(Is(1.0)).shrink(Is(0.0)).min_height(Is(Some(0.0))) |> ignore })
-          // (none of it at rest, nothing read as the chat changes: bound once the shell's way has first set off
-          // (`held_from`), at that cause)
-          let bound = Ref(false)
-          h.reacts(held_from, fn(going) {
-            if going && !bound.val && h.alive() {
-              bound.val = true
-              h
-              // (as wide as what holds it leaves it at rest, nothing of its own said there)
-              .width(By(fn() {
-                let c = by(h)
-                if c.by.abs() < 0.5 && c.across == 0.0 {
-                  None
-                } else {
-                  Some(c.laid)
-                }
-              }))
-              .margin(By(fn() { (by(h).by, 0.0, 0.0, 0.0) }))
-              .offset(By(fn() { (by(h).across - by(h).by + aside_of(h), 0.0) }))
-              .lays_anew(By(fn() { by(h).laid }))
-              |> ignore
-              v.clips(By(fn() { by(h).by.abs() > 0.5 })) |> ignore
-            }
-          })
-          h
-        }
-        None => v
+    },
+    at_once=true,
+  )
+  // (a new chat made as nodes (`new_node`): over the column, the page while it is the
+  // new chat; become its chat (its first words sent: Nav::become), leaving over it as its scene does (new_leave_ms:
+  // View::show's `leave`, how far it has left its View::going), nothing of it pressed, focused or read out as it
+  // leaves, the chat's own under it; come back as it was where its chat was not made; what it reads let go with it)
+  // (none on a page made as a chat: only a new chat becomes one, and comes back as itself where its chat is not made)
+  let made_new = @signals.untracked(fn() { app.nav.page_of(serial) is Some((NewChat, _)) })
+  if made_new {
+    // (held while it is the new chat, and while it leaves over the chat it becomes in place (Nav::become); let go
+    // at once as the page becomes anything else: another chat, a place, 设置)
+    let keeps_new = fn() {
+      match app.nav.page_of(serial) {
+        Some((NewChat, _)) => true
+        Some((Chat(r), _)) => fresh.became.get() == Some(r)
+        _ => false
       }
-      app.nav.page_island(
-        host,
-        serial,
-        fn(c, page) {
-          page_entry_read(serial, retained, page)
-          page_read(page)
-          build(c, if page is Chat(_) { retained } else { shown }, page)
-        },
-        key~,
-      )
-      .grow(Is(1.0))
-      |> ignore
     }
+    v.show(at_once=true, keeps_new, fn(hold) {
+      hold.over(Is(true)) |> ignore
+      // (the new chat itself, leaving over the chat it became for new_leave_ms; come back to where it was asked
+      // back before it is gone)
+      hold.show(at_once=true, leave=new_leave_ms, fn() { app.nav.page_of(serial) is Some((NewChat, _)) }, fn(o) {
+        o.over(Is(true)) |> ignore
+        // (on the page's way to another width as what is beside it slides, laid out at the width it goes to all
+        // the way, drawn as the frame says: `narrower`, as a chat's column)
+        match narrower {
+          Some(by) =>
+            o
+            .width(By(fn() { Some(by(o).laid) }))
+            .offset(By(fn() { (-by(o).across, 0.0) }))
+            |> ignore
+          None => ()
+        }
+        // (what it reads put by as it leaves (the page its chat now, it fading where it was): its draft read no
+        // more from that moment; back as it was where it comes back, the send called off)
+        let (new_src, new_park) = src.owned_by_parkable(o)
+        o.reacts(fn() { o.leaving() }, fn(leaving) { new_park(leaving) }, at_start=false)
+        new_node(o, new_src)
+      })
+    })
   }
   // (a picture flying from its list drawn here while under its bar, the bar over it: viewer_flight_slot)
   v.box(fn(slot) { viewer_flight_slot(slot, retained, serial, fn() { slot.window() }) }) |> ignore
@@ -1824,8 +1643,7 @@ pub fn reset() -> Unit {
   fresh_reset()
   // how times are said (message_words.mbt)
   absolute_times.set(false)
-  // whether a chat's page is made as nodes inside (chat_page_nodes), Farview tabs native, or the board enabled
-  chat_page_nodes.set(chat_page_nodes_at_start)
+  // whether Farview tabs are native, or the board enabled
   farview_native.set(false)
   board_feature.set(false)
   // a chat's list's turns and its messages out of avatars (list_turns.mbt, emit.mbt)

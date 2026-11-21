@@ -693,20 +693,18 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
       @sfbase.language_from_prefs(p)
       @sfbase.stale_build_from_prefs(p)
     })
-    // (the device's features (the test channel's new chat page, 实验性功能's Farview 原生标签页渲染 and 看板), told
-    // before any page of nodes is made and in the frame a switch is pressed: what is chosen here before the core
-    // answers is read with the prefs)
+    // (the experimental switches of 实验性功能 (Farview 原生标签页渲染, 看板), told before any page of nodes
+    // is made and in the frame a switch is pressed: what is chosen here before the core answers is read with the prefs)
     root.reacts(
       fn() {
         let p = src.topic("prefs", {}).get().value
         (
           p,
-          @settings.feature_from(p, "chatPage"),
           @settings.feature_from(p, "farviewNative"),
           @settings.feature_from(p, "board"),
         )
       },
-      fn(t) { @sfbase.chat_page_from_prefs(t.0) },
+      fn(t) { @sfbase.features_from_prefs(t.0) },
     )
     // (the window's keys as the core's prefs keep them on this device, changed as they are: settings' keymap.mbt)
     // (and a Farview tab's page's caret's keys, where it has the keyboard: fvclient's stage)

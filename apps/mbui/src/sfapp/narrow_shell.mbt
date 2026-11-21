@@ -577,8 +577,7 @@ fn narrow_made_as(
     made_at(kind, place, fn(p, core, here, frame, stint, acts, _serial) { f(p, core, here, frame, stint, acts) })
   }
   match page {
-    // (a chat, and the new chat that becomes one in place: the same page, a node of the tree's, its old view in it as
-    // yet, built as the stack's island built it: narrow_page_held)
+    // (a chat, and the new chat that becomes one in place: the same page, a node of the tree's)
     page if @sfbase.chat_page_is(page) && !place =>
       Some(
         (
@@ -588,17 +587,10 @@ fn narrow_made_as(
               v,
               src,
               k,
-              fn(c, s, p) {
-                match workspace_in_view(s).0 {
-                  Some(w) => narrow_page_held(c, s, w, p, barred=true)
-                  None => ()
-                }
-              },
-              key=fn() { narrow_island_key(src) },
-              // (its bar the page's node's, over its old view: chat_bar_node)
+              // (its bar the page's node's: chat_bar_node)
               over=chat_bar_node,
               stint~,
-              // (with chat_page_nodes on: its messages nodes, its composer made as nodes in their list's foot)
+              // (its messages nodes, its composer made as nodes in their list's foot)
               body=fn(col, s, r, composer, shows, on_stack) {
                 if @sf.native_input() is Mouse {
                   @sfdesk.context_node(col)
@@ -622,12 +614,6 @@ fn narrow_made_as(
                 )
               },
               foot_node=fn(n, s, r, shows, _) { chat_foot_node(n, s, r, shows, @sf.TipLayer::new(fn() { Some(v) }), stint) },
-              leaving=fn(c, s, r) {
-                match workspace_in_view(s).0 {
-                  Some(w) => new_chat_leaving(c, s, w, r)
-                  None => ()
-                }
-              },
               // (the new chat it is till it becomes one, made as nodes: sfpages' new_chat_node, under its bar of 取消)
               new_node=fn(n, s) {
                 match @signals.untracked(fn() { workspace_in_view(s).0 }) {

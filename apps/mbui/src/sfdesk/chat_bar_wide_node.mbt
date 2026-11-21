@@ -44,16 +44,11 @@ pub fn chat_bar_wide_node(
       _ => None
     }
   }
-  // (the new chat made as nodes with the page (its new_node's: sfbase's chat_page_nodes), where a station lends its
-  // files: its 文件 alone, new_bar_of; its old view has its own over it, new_chat_page's)
-  let composed = @signals.untracked(fn() { @sfbase.chat_page_nodes.get() })
+  // (the new chat made as nodes with the page (its new_node's): its bar, dragging the window whatever it holds; its 文件
+  // where a station lends its files, new_bar_of)
   let new_of = fn() {
     match page() {
-      Some(NewChat) if composed =>
-        match @sfbase.workspace_in_view(src).0 {
-          Some(w) if new_drive_station(src, w) is Some(_) => Some(w)
-          _ => None
-        }
+      Some(NewChat) => @sfbase.workspace_in_view(src).0
       _ => None
     }
   }
@@ -84,16 +79,22 @@ pub fn chat_bar_wide_node(
 fn new_bar_of(b : @view.View, src : Source, w : Workspace, ends : ChatBarEnds, tips : @sf.TipLayer) -> Unit {
   let high = fn() { @sf.wide_bar_h + (ends.over)() }
   let beside = fn() { new_files_open(src, w.id) }
-  // (its 文件 in the system's bars where they are, among the page's actions as a chat's are there (newchat.mbt's
-  // bar_action), nothing of its own over the page then: handed as it comes on top, as chat_bar_handed_node hands a chat's)
-  b.reacts(fn() { (app.nav.top() == NewChat, @sf.native_on()) }, fn(st) {
-    guard st.0 && st.1 else { return }
+  // (its 文件 handed the system's bars where they are the app's, as a chat's actions are (chat_page.mbt's
+  // chat_bar_handed_node): as the page comes on top, as the bars come or the column grows short, as a station to look in
+  // comes or goes; the actions handed for another page let go first)
+  b.reacts(fn() { (app.nav.top() is NewChat, @sf.native_on(), column_short.get(), new_drive_station(src, w) is Some(_)) }, fn(
+    said,
+  ) {
+    guard said.0 else { return }
     @signals.untracked(fn() {
       nav_page_for(NewChat)
-      bar_action("new/files", @sf.t("web-pages.chat.files"), "folder", fn() {
-        new_files_set(src, w.id, !new_files_open(src, w.id))
-      })
-      |> ignore
+      nav_page.retain(fn(p) { p.0.id != "page/new/files" })
+      if said.3 {
+        bar_action("new/files", @sf.t("web-pages.chat.files"), "folder", fn() {
+          new_files_set(src, w.id, !new_files_open(src, w.id))
+        })
+        |> ignore
+      }
     })
   })
   b
@@ -117,8 +118,8 @@ fn new_bar_of(b : @view.View, src : Source, w : Workspace, ends : ChatBarEnds, t
     .presses(Is(true))
     .moves_window(By(@ui.window_inset_now))
     |> ignore
-    // (none of its own where the system's bars hold it)
-    bar.show(fn() { !@sf.native_on() }, fn(e) {
+    // (drawn in the page where the system's bars are not the app's: there, handed them, above)
+    bar.show(fn() { !@sf.native_on() && new_drive_station(src, w) is Some(_) }, fn(e) {
       e.shrink(Is(0.0)) |> ignore
       @sf.icon_button_node(
         e,
@@ -145,12 +146,8 @@ fn new_bar_of(b : @view.View, src : Source, w : Workspace, ends : ChatBarEnds, t
 /// page's ground; its empty part dragging the window where the window's buttons are the app's), its rooms at its ends.
 fn wide_bar_of(b : @view.View, src : Source, r : ChatRef, ends : ChatBarEnds, tips : @sf.TipLayer, stint : () -> Int) -> Unit {
   let view = fn() { @sfbase.chat_view_now(src, r) }
-  // (what opens under it where the chat's page is made as nodes, as the bar is made: chat_pops_node; else the old
-  // page's, beside its buttons as chat_bar_from says)
-  let pops = @signals.untracked(fn() { @sfbase.chat_page_nodes.get() })
-  if pops {
-    chat_pops_node(b, src, r, view, stint)
-  }
+  // (what opens under it, as the bar is made: chat_pops_node)
+  chat_pops_node(b, src, r, view, stint)
   let finding = fn() {
     match view() {
       Some(v) => @sfpages.find_chat() == chat_key(r) && v.thread is Some(_)
@@ -230,7 +227,7 @@ fn wide_bar_of(b : @view.View, src : Source, r : ChatRef, ends : ChatBarEnds, ti
                 let seen = @motion.presence_in(e, @motion.tween(@sfpages.find_in_ms, ease=Out))
                 e.alpha(By(seen)) |> ignore
               }
-              wide_bar_keys(e, src, r, view, ends, tips, pops, stint)
+              wide_bar_keys(e, src, r, view, ends, tips, stint)
             }
           },
         )
@@ -767,7 +764,6 @@ fn wide_bar_keys(
   view : () -> ChatView?,
   ends : ChatBarEnds,
   tips : @sf.TipLayer,
-  pops : Bool,
   stint : () -> Int,
 ) -> Unit {
   e.box(fn(k) {
@@ -807,12 +803,9 @@ fn wide_bar_keys(
     let has_jobs = fn() { flag(jobs(), "hasJobs") || items(jobs(), "jobs").length() > 0 }
     k.show(fn() { own() && has_jobs() }, along_row=true, fn(b) {
       let button = @sf.icon_button_node(b, "web", fn() { @sf.t("web-pages.chat.services") }, fn() { jobs_pressed(src, r) }, tips~, linked=ends.linked, shortcut="chat.jobs")
-      // (its popover beside it, where it is as that is drawn: the nodes' (chat_pops_node), or the old page's
-      // (chat_page's chat_bar_by))
+      // (its popover beside it, where it is as that is drawn: chat_pops_node's)
       chat_bar_from.jobs_node = Some(button)
-      if pops {
-        chat_jobs_pop_node(b, src, r, Some(button))
-      }
+      chat_jobs_pop_node(b, src, r, Some(button))
     })
     // (a dot on the row's first button, as the old bar's layer stood, drawn after its services' button: red while a
     // job died lately, amber while a service restarts)
@@ -860,16 +853,13 @@ fn wide_bar_keys(
         |> ignore
       },
     )
-    // what it is (its info's popover beside it: the nodes' (chat_pops_node), or the old view's, opened or closed as it is
-    // let go), what is done with it ("…": the menu a row of the sidebar has)
+    // what it is (its info's popover beside it: chat_pops_node's), what is done with it ("…": the menu a row of the sidebar has)
     k.show(own, at_once=true, fn(b) {
       let button = @sf.icon_button_node(b, "info", fn() { @sf.t("web-pages.chat.info") }, fn() {
         chat_own.info_open.set(!chat_own.info_open.untracked())
       }, tips~, linked=ends.linked)
       chat_bar_from.info_node = Some(button)
-      if pops {
-        chat_info_pop_node(b, src, r, view, stint, Some(button))
-      }
+      chat_info_pop_node(b, src, r, view, stint, Some(button))
     })
     k.show(own, at_once=true, fn(b) {
       let me : Ref[@view.View?] = Ref(None)

@@ -5,7 +5,6 @@
 ///|
 test "chat as nodes: an agent's line come by data: its first words arrive a glyph at a time, then whole" {
   new_run()
-  @sfbase.hold_chat_page_nodes(Some(true))
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
@@ -25,7 +24,6 @@ test "chat as nodes: an agent's line come by data: its first words arrive a glyp
 ///|
 test "chat as nodes: an agent's line there as the chat opened: its words whole from the first frame they are drawn" {
   let src = fixture_app("chat-working")
-  @sfbase.hold_chat_page_nodes(Some(true))
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
   let words = @sffixture.working_step
   let mut seen = false
