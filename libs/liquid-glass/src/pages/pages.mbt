@@ -1274,14 +1274,10 @@ fn merge_law_row(parent : @view.View, title : String, formula : String) -> Unit 
 }
 
 ///|
-/// Scene 3 — `Merge`: two-column iOS 27 capillary liquid bridge workbench (left responsive optical stage with free
-/// drag and programmatic `GlassEffectContainer` specimens over high-contrast non-glass targets; right 348pt
-/// `Capillary Hysteresis` telemetry & control island).
-fn merge_scene(
-  parent : @view.View,
-  drag_ctrl : @lg.LiquidMerge,
-  toggle_ctrl : @lg.LiquidMerge,
-) -> Unit {
+/// Scene 3 — `Merge`: two-column iOS 27 360° 2D capillary liquid bridge arena (left full-stage responsive 2D free-drag
+/// arena over high-contrast non-glass targets; right 348pt `Capillary Hysteresis` telemetry & control island driving
+/// the same droplet).
+fn merge_scene(parent : @view.View, merge_ctrl : @lg.LiquidMerge) -> Unit {
   let insp_ref : Ref[@view.View?] = Ref(None)
   let cause_at = fn() -> Double {
     match insp_ref.val {
@@ -1291,7 +1287,7 @@ fn merge_scene(
   }
   parent.box(fn(row) {
     row.row(Is(true)).grow(Is(1.0)).gap(Is(24.0)).lines_up(Is(Some(Middle))) |> ignore
-    // Left interactive capillary optical stage (same responsive height contract as `optics_scene`: zero clipping and
+    // Left interactive 360° 2D capillary arena (same responsive height contract as `optics_scene`: zero clipping and
     // zero dock collision across 1120×637, 1120×690, and 1280×1040)
     row.box(fn(stage_host) {
       stage_host.grow(Is(1.0)).fills_across(Is(true)).lies_along(Is(Middle)).clips(Is(true)) |> ignore
@@ -1344,7 +1340,7 @@ fn merge_scene(
           |> ignore
         })
         |> ignore
-        // 4. Top-left HUD pill (`DRAG TO SPLIT · TOUCH TO FUSE`)
+        // 4. Top-left HUD pill (`DRAG 360° FREELY · TOUCH ANY EDGE TO FUSE`)
         stage.box(fn(hud_wrap) {
           hud_wrap
           .over(Is(true))
@@ -1375,7 +1371,7 @@ fn merge_scene(
             pill.box(fn(lbl) {
               lbl
               .words(
-                Is("DRAG TO SPLIT · TOUCH TO FUSE"),
+                Is("DRAG 360° FREELY · TOUCH ANY EDGE TO FUSE"),
                 look={ ..@lg.words_at(10.5, weight=600), tracking: Points(0.8) },
               )
               .ink(By(fn() { @lg.colors().content }))
@@ -1386,89 +1382,20 @@ fn merge_scene(
           |> ignore
         })
         |> ignore
-        // 5. Centered two-specimen capillary stack (22pt vertical gap)
-        stage.box(fn(center_stack) {
-          center_stack
-          .over(Is(true))
-          .lines_up(Is(Some(Middle)))
-          .lies_along(Is(Middle))
-          .padding(Is((0.0, 24.0, 0.0, 0.0)))
-          |> ignore
-          center_stack.box(fn(samples) {
-            samples.width(Is(Some(348.0))).gap(Is(22.0)).lines_up(Is(Some(Start))) |> ignore
-            samples.box(fn(s1) {
-              s1.gap(Is(6.0)).lines_up(Is(Some(Start))) |> ignore
-              s1.box(fn(lbl_pill) {
-                lbl_pill
-                .row(Is(true))
-                .height(Is(Some(22.0)))
-                .padding(Is((9.0, 0.0, 9.0, 0.0)))
-                .radius(Is(11.0))
-                .lines_up(Is(Some(Middle)))
-                .ground(By(fn() { if @lg.is_dark() { 0x0B0C10A8L } else { 0xFFFFFFCCL } }))
-                |> ignore
-                lbl_pill.box(fn(lbl) {
-                  lbl
-                  .words(
-                    Is("01 / FREE DRAG · PINCH-OFF & CONTACT FUSE"),
-                    look={ ..@lg.words_at(10.5, weight=600), tracking: Points(0.8) },
-                  )
-                  .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.86) }))
-                  |> ignore
-                })
-                |> ignore
-              })
-              |> ignore
-              @lg.liquid_merge_node(
-                s1,
-                controller=drag_ctrl,
-                main_w=200.0,
-                main_h=60.0,
-                sat_size=60.0,
-                main_label=fn() { "Liquid Capsule" },
-                sat_label=fn() { "+" },
-                label=fn() { "Drag Droplet" },
-              )
-              |> ignore
-            })
-            |> ignore
-            samples.box(fn(s2) {
-              s2.gap(Is(6.0)).lines_up(Is(Some(Start))) |> ignore
-              s2.box(fn(lbl_pill) {
-                lbl_pill
-                .row(Is(true))
-                .height(Is(Some(22.0)))
-                .padding(Is((9.0, 0.0, 9.0, 0.0)))
-                .radius(Is(11.0))
-                .lines_up(Is(Some(Middle)))
-                .ground(By(fn() { if @lg.is_dark() { 0x0B0C10A8L } else { 0xFFFFFFCCL } }))
-                |> ignore
-                lbl_pill.box(fn(lbl) {
-                  lbl
-                  .words(
-                    Is("02 / PROGRAMMATIC · GLASSEFFECTCONTAINER"),
-                    look={ ..@lg.words_at(10.5, weight=600), tracking: Points(0.8) },
-                  )
-                  .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.86) }))
-                  |> ignore
-                })
-                |> ignore
-              })
-              |> ignore
-              @lg.liquid_merge_node(
-                s2,
-                controller=toggle_ctrl,
-                main_w=172.0,
-                main_h=50.0,
-                sat_size=50.0,
-                main_label=fn() { "Container" },
-                sat_label=fn() { "+" },
-                label=fn() { "Container Droplet" },
-              )
-              |> ignore
-            })
-            |> ignore
-          })
+        // 5. Full-stage hero 360° 2D liquid merge arena
+        stage.box(fn(arena_wrap) {
+          arena_wrap.over(Is(true)) |> ignore
+          @lg.liquid_merge_node(
+            arena_wrap,
+            controller=merge_ctrl,
+            main_w=192.0,
+            main_h=60.0,
+            sat_size=64.0,
+            arena=fn() { (rw(), rh()) },
+            main_label=fn() { "Liquid Capsule" },
+            sat_label=fn() { "+" },
+            label=fn() { "Drag Droplet" },
+          )
           |> ignore
         })
         |> ignore
@@ -1534,9 +1461,9 @@ fn merge_scene(
               .radius(Is(3.5))
               .shrink(Is(0.0))
               .ground(By(fn() {
-                let _ = drag_ctrl.merge_on(dot)
-                let _ = drag_ctrl.is_separated()
-                if drag_ctrl.is_bonded() {
+                let _ = merge_ctrl.merge_on(dot)
+                let _ = merge_ctrl.is_separated()
+                if merge_ctrl.is_bonded() {
                   monoid_vermilion
                 } else {
                   @lg.alpha(@lg.colors().content, 0.42)
@@ -1549,9 +1476,9 @@ fn merge_scene(
               lbl
               .words(
                 By(fn() {
-                  let _ = drag_ctrl.merge_on(lbl)
-                  let _ = drag_ctrl.is_separated()
-                  if drag_ctrl.is_bonded() { "BONDED" } else { "SEPARATED" }
+                  let _ = merge_ctrl.merge_on(lbl)
+                  let _ = merge_ctrl.is_separated()
+                  if merge_ctrl.is_bonded() { "BONDED" } else { "SEPARATED" }
                 }),
                 look={ ..@lg.words_at(10.5, weight=600), tracking: Points(0.9) },
               )
@@ -1584,7 +1511,7 @@ fn merge_scene(
             r1.box(fn(v) {
               v
               .words(
-                By(fn() { "\{fmt_signed_tenth(drag_ctrl.gap_on(v))} pt" }),
+                By(fn() { "\{fmt_signed_tenth(merge_ctrl.gap_on(v))} pt" }),
                 look=@lg.words_at(12.5, weight=600),
               )
               .ink(By(fn() { @lg.colors().content }))
@@ -1605,7 +1532,7 @@ fn merge_scene(
             r2.box(fn(v) {
               v
               .words(
-                By(fn() { "\{fmt_tenth(@lg.clamp(drag_ctrl.merge_on(v), 0.0, 99.9))} pt" }),
+                By(fn() { "\{fmt_tenth(@lg.clamp(merge_ctrl.merge_on(v), 0.0, 99.9))} pt" }),
                 look=@lg.words_at(12.5, weight=600),
               )
               .ink(By(fn() { @lg.colors().content }))
@@ -1628,15 +1555,15 @@ fn merge_scene(
           merge_law_row(laws, "Coalesce", "gap <= 0 pt -> liquid bloom")
         })
         |> ignore
-        // Action row: primary programmatic Split/Fuse + Reset pill
+        // Action row: primary programmatic Split/Fuse + concentric Reset pill
         insp.box(fn(acts) {
           acts.row(Is(true)).gap(Is(10.0)).lines_up(Is(Some(Middle))) |> ignore
           acts.box(fn(b1) {
             b1.grow(Is(1.0)) |> ignore
             @lg.liquid_button_node(
               b1,
-              fn() { if toggle_ctrl.is_separated() { "Fuse Droplet" } else { "Split Droplet" } },
-              fn() { toggle_ctrl.set_separated(!toggle_ctrl.is_separated(), at=cause_at()) },
+              fn() { if merge_ctrl.is_separated() { "Fuse Droplet" } else { "Split Droplet" } },
+              fn() { merge_ctrl.set_separated(!merge_ctrl.is_separated(), at=cause_at()) },
               tint=monoid_vermilion,
             )
             |> ignore
@@ -1645,11 +1572,7 @@ fn merge_scene(
           @headless.button(
             acts,
             fn() { "Reset" },
-            fn(_) {
-              let at = cause_at()
-              drag_ctrl.set_separated(false, at~)
-              toggle_ctrl.set_separated(false, at~)
-            },
+            fn(_) { merge_ctrl.set_separated(false, at=cause_at()) },
             fn(b, btn) {
               b
               .row(Is(true))
@@ -1725,7 +1648,6 @@ fn overview(
   let build_count = @signals.signal(0)
   let last_action = @signals.signal("60 fps · SDF Glass")
   let drag_ctrl = @lg.LiquidMerge::new(separated=false)
-  let toggle_ctrl = @lg.LiquidMerge::new(separated=false)
   let reset_all = fn() {
     prism_pos.set((0.0, 0.0))
     refraction_val.set(28.0)
@@ -1753,7 +1675,7 @@ fn overview(
         match idx {
           1 => deck_scene(scene_host, held, grid_on, boost, live_lum, build_count, last_action, reset_all)
           2 => loupe_scene(scene_host)
-          3 => merge_scene(scene_host, drag_ctrl, toggle_ctrl)
+          3 => merge_scene(scene_host, drag_ctrl)
           _ =>
             optics_scene(
               scene_host,
@@ -1870,7 +1792,8 @@ fn merge_page(root : @view.View, top : Double) -> Unit {
         |> ignore
       })
       |> ignore
-      @lg.liquid_merge_node(s, controller=drag_ctrl, label=fn() { "Drag Droplet" }) |> ignore
+      @lg.liquid_merge_node(s, controller=drag_ctrl, arena_w=640.0, arena_h=280.0, label=fn() { "Drag Droplet" })
+      |> ignore
     })
     |> ignore
     page.box(fn(s) {

@@ -432,6 +432,41 @@ test "liquid merge: programmatic set_separated obeys hysteresis and passes audit
 }
 
 ///|
+test "liquid merge: 360-degree 2D continuous free drag never locks pointer across repeated split and fuse" {
+  let ctrl = LiquidMerge::new(separated=false)
+  let t = lg_case(fn(p) {
+    liquid_merge_node(p, controller=ctrl, arena_w=560.0, arena_h=360.0, label=fn() { "Droplet" }) |> ignore
+  })
+  let (x0, y0) = middle(t, Group, "Droplet")
+  // 1. Hold and drag right past break_gap -> triggers Split without releasing pointer
+  t.hold_drag(x0, y0, x0 + 36.0, y0)
+  t.run_for(springs_out)
+  let split_1 = (!ctrl.is_bonded(), ctrl.is_separated(), ctrl.merge_at(t.time()) == 0.0)
+  // 2. Without releasing, drag up (-90pt) and left (-180pt) to directly above the capsule
+  t.hold_move(x0 + 36.0, y0 - 90.0)
+  t.hold_move(x0 - 144.0, y0 - 90.0)
+  let (ax, ay) = ctrl.pos_at(t.time())
+  let above_ok = (ax < -100.0, ay < -70.0, !ctrl.is_bonded(), ctrl.merge_at(t.time()) == 0.0)
+  // 3. Still holding, approach capsule top edge to gap ~3pt -> strictly zero magnetic attraction from above
+  t.hold_move(x0 - 144.0, y0 - 59.0)
+  let near_top_gap = ctrl.gap_at(t.time())
+  let near_top_ok = (near_top_gap > 1.5 && near_top_gap < 4.5, !ctrl.is_bonded(), ctrl.merge_at(t.time()) == 0.0)
+  // 4. Still holding, push into top edge (gap <= 0) -> instant capillary fusion while still held
+  t.hold_move(x0 - 144.0, y0 - 50.0)
+  t.run_for(dragged_ms)
+  let fused_top_ok = (ctrl.is_bonded(), !ctrl.is_separated(), ctrl.merge_at(t.time()) > 20.0)
+  // 5. Still holding in the same gesture, pull upward past break_gap -> splits a second time
+  t.hold_move(x0 - 144.0, y0 - 80.0)
+  let split_2 = (!ctrl.is_bonded(), ctrl.is_separated())
+  t.release(x0 - 144.0, y0 - 80.0)
+  t.run_for(springs_out)
+  assert_eq(
+    (split_1, above_ok, near_top_ok, fused_top_ok, split_2),
+    ((true, true, true), (true, true, true, true), (true, true, true), (true, true, true), (true, true)),
+  )
+}
+
+///|
 /// Long past every spring of the parts' (the softest, InteractiveHighlight's 0.5 at 300, is within its threshold in
 /// well under a second): what a step waits before what it asserts of a part at rest.
 let springs_out : Double = 1000.0

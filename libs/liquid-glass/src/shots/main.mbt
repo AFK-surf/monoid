@@ -100,26 +100,29 @@ let merge_script : String =
   #|wait 850
 
 ///|
-/// Interactive 60 fps demo of the 1120×690 Spatial Optical Stage `Merge` scene:
-/// Optics -> tap Dock `Merge` (0.00px dock stability) -> drag `Drag Droplet` past pinch-off -> drag back to ~3pt
-/// hover (zero magnetic attraction) -> drag past contact (instant capillary fusion) -> tap `Split Droplet` /
-/// `Fuse Droplet` -> return to `Optics`.
+/// Interactive 60 fps 2D free-drag demo of the 1120×690 Spatial Optical Stage `Merge` scene:
+/// Optics -> tap Dock `Merge` (0.00px dock stability) -> drag `Drag Droplet` freely right & up past pinch-off ->
+/// orbit across the top of the capsule -> hover ~3pt above the top edge (zero magnetic pull) -> press into the top
+/// edge (instant 2D capillary fusion) -> pull upward past pinch-off and release (auto-separate) -> tap `Fuse Droplet`
+/// (zero-pull 2D approach and contact fusion) -> return to `Optics`.
 let stage_merge_script : String =
-  #|wait 350
+  #|wait 300
   #|tapxy 735 640
-  #|wait 550
-  #|drag 422 295 36 0 550
+  #|wait 500
+  #|drag 470 331 110 -120 650
+  #|wait 350
+  #|drag 580 211 -240 0 650
+  #|wait 350
+  #|drag 340 211 0 55 450
+  #|wait 600
+  #|drag 340 266 0 14 300
   #|wait 650
-  #|drag 478 295 -45 0 650
+  #|drag 340 277 -10 -34 450
   #|wait 650
-  #|drag 433 295 -16 0 350
-  #|wait 650
-  #|tap Split Droplet
-  #|wait 800
   #|tap Fuse Droplet
-  #|wait 800
+  #|wait 850
   #|tapxy 384 640
-  #|wait 550
+  #|wait 450
 
 ///|
 /// The gallery's pictures: each its name, the page first shown, and what is done before it is drawn.

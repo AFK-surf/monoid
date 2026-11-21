@@ -149,24 +149,23 @@ test "the bottom dock switches between Optics, Deck, Loupe and Merge, and Publis
   t.run_for(settled)
   let on_merge = (
     t.all(Group, label="Drag Droplet").length(),
-    t.all(Group, label="Container Droplet").length(),
     t.all(Button, label="Split Droplet").length(),
   )
-  let before_x = t.get(Group, label="Container Droplet").rect.0
+  let before_x = t.get(Group, label="Drag Droplet").rect.0
   let (sx, sy) = middle_of(t, Button, "Split Droplet")
   t.tap(sx, sy)
   t.run_for(settled)
   let after_split = (
     t.all(Button, label="Fuse Droplet").length(),
     t.all(Button, label="Split Droplet").length(),
-    t.get(Group, label="Container Droplet").rect.0 - before_x > 40.0,
+    t.get(Group, label="Drag Droplet").rect.0 - before_x > 40.0,
   )
   let (fx, fy) = middle_of(t, Button, "Fuse Droplet")
   t.tap(fx, fy)
   t.run_for(settled)
   let after_fuse = (
     t.all(Button, label="Split Droplet").length(),
-    (t.get(Group, label="Container Droplet").rect.0 - before_x).abs() < 0.5,
+    (t.get(Group, label="Drag Droplet").rect.0 - before_x).abs() < 0.5,
   )
   let (ox, oy) = middle_of(t, Tab, "Optics")
   t.tap(ox, oy)
@@ -180,7 +179,7 @@ test "the bottom dock switches between Optics, Deck, Loupe and Merge, and Publis
   let dialog_closed = t.all(Dialog, label="Publish ui.monoid").length()
   assert_eq(
     (on_deck, on_loupe, on_merge, after_split, after_fuse, dialog_shown, dialog_closed),
-    ((1, 1), 1, (1, 1, 1), (1, 0, true), (1, true), 1, 0),
+    ((1, 1), 1, (1, 1), (1, 0, true), (1, true), 1, 0),
   )
 }
 
