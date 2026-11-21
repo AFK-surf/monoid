@@ -28,22 +28,22 @@ test "a panel's words, controls and surface fade out together" {
   let t = menu_tester(1280.0, 800.0, 0)
   @sf.panel_nodes("面板", from=At(600.0, 300.0, 0.0, 0.0), fade_out_together=true, panel_marked_body())
   t.run_for(@ui.move_most_ms)
-  let original = t.drawn_rects().filter(fn(r) { r.0 == 600.0 && r.1 == 306.0 && r.2 > 200.0 })[0]
+  let original = t.drawn_instances().filter(fn(a) { a.length() > 15 && a[5] == 6.0 && a[0] == 600.0 && a[1] == 306.0 && a[2] > 200.0 })[0]
   t.key(@ui.key_escape)
   let mut previous = 255L
   for _ in 0..<5 {
     t.run_for(@motion.pop_out_ms / 6.0)
-    let surface = t.drawn_rects().filter(fn(r) {
-      r.4 >> 8 == original.4 >> 8 &&
-      (r.0 - original.0).abs() < 10.0 && (r.1 - original.1).abs() < 10.0 &&
-      r.2 > original.2 * 0.96 && r.3 > original.3 * 0.96
+    let surface = t.drawn_instances().filter(fn(a) {
+      a.length() > 15 && a[5] == 6.0 &&
+      (a[0] - original[0]).abs() < 10.0 && (a[1] - original[1]).abs() < 10.0 &&
+      a[2] > original[2] * 0.96 && a[3] > original[3] * 0.96
     })
     let mark = t.drawn_rects().filter(fn(r) { r.4 >> 8 == 0x23A1DFL })
     let glyphs = t.drawn_glyphs().filter(fn(g) { g.2 >> 8 == 0xB45A29L })
     assert_eq(surface.length(), 1, msg="the surface remains during its fade")
     assert_eq(mark.length(), 1, msg="the control remains during its fade")
     assert_true(!glyphs.is_empty(), msg="the words remain during their fade")
-    let alpha = surface[0].4 & 0xFFL
+    let alpha = (surface[0][15] * 255.0).round().to_int64()
     assert_true(alpha > 0L && alpha < previous, msg="the panel fades continuously")
     assert_eq(mark[0].4 & 0xFFL, alpha, msg="the control and surface fade together")
     assert_true(glyphs.iter().all(fn(g) { (g.2 & 0xFFL) == alpha }), msg="the words and surface fade together")
@@ -264,7 +264,10 @@ fn panel_out_drawn(t : @ui.Tester) -> String {
   }
   let fading = glyphs.filter(fn(g) { (g.2 & 0xFF) != 0xFF }).map(fn(g) { (f(g.0), f(g.1)) })
   let rects = t.drawn_rects().filter(fn(q) { inside(q.0, q.1) })
-  let ground = rects.filter(fn(q) { q.0 == x && q.1 == y && (q.4 & 0xFF) != 0 }).map(fn(q) { (q.4 & 0xFF).to_int() })
+  let ground = t
+    .drawn_instances()
+    .filter(fn(a) { a.length() > 15 && a[5] == 6.0 && a[0] == x && a[1] == y && a[15] > 0.0 })
+    .map(fn(a) { (a[15] * 255.0).round().to_int() })
   let button = rects.filter(fn(q) { q.0 > 800.0 && q.2 > 40.0 && q.2 < 50.0 }).map(fn(q) { (f(q.0), f(q.1), f(q.2), f(q.3)) })
   "alphas {\{alphas.to_array().map(fn(e) { "\{e.0}: \{e.1}" }).join(", ")}} ground \{@ui.list_text(ground)} button \{@ui.list_text(button.map(@ui.rect_text))} fading \{@ui.some_text(fading.get(0).map(fn(p) { "(\{p.0}, \{p.1})" }))}..\{@ui.some_text(fading.last().map(fn(p) { "(\{p.0}, \{p.1})" }))}"
 }
