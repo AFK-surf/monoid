@@ -513,15 +513,6 @@ fn view_in(c : @ui.Ctx, src : Source) -> Unit {
     window_shown.val = true
     @hostapi.window_show()
   }
-  // the window's own buttons where they are the app's (Windows'), over all of it as a title bar's are: on the bar's
-  // line of a page over all the window (a window of its own, a chat's tab or a file over the whole window) at any
-  // width, as in a window's whole
-  if @ui.window_keys_own() {
-    let whole = shell_is(src, c.window_size().0) is Lone ||
-      @sfbase.tab_full.untracked() is Some(_) ||
-      @sfbase.preview_open()
-    c.layer(fn() { @sf.window_keys(c, whole~) }) |> ignore
-  }
 }
 
 ///|
@@ -779,6 +770,17 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
     // what a finger hides as it drags a field's caret or what is picked, shown larger over all of it, signed in (the
     // library's loupe_node: a switch's knob held's glass)
     @sf.loupe_node(root, fn() { !share_over.get() && app_is(src) is SignedIn })
+    // the window's own buttons where they are the app's (Windows', Linux's), over all of it as a title bar's are: on
+    // the bar's line of a page over all the window (a window of its own, a chat's tab or a file over the whole window)
+    // at any width, as in a window's whole
+    @sf.window_keys_node(
+      root,
+      whole=fn() {
+        shell_is(src, root.window().0) is Lone ||
+          @sfbase.tab_full.get() is Some(_) ||
+          @sfbase.preview_open()
+      },
+    )
   }
 }
 
@@ -1043,6 +1045,7 @@ pub fn lone_window_tree(src : Source, wid : Int) -> (@view.View) -> Unit {
     @sf.presented_nodes(root)
     @sfdesk.context_menu_node(root)
     @sfbase.toasts_node(root, fn() { toast_bottom_now(root) }) |> ignore
+    @sf.window_keys_node(root, whole=fn() { true })
   }
 }
 
@@ -1064,11 +1067,6 @@ pub fn lone_view(c : @ui.Ctx, src : Source) -> Unit {
   c.set_clear((t.p.bg >> 8) & 0xFFFFFFL)
   c.with_theme(@sf.ui_theme(), fn() {
     entry_said()
-    // the window's own buttons where they are the app's (Windows', Linux's), over all of it as a title bar's are, on
-    // its page's bar's line: its page alone over all of it (window_keys' whole)
-    if @ui.window_keys_own() {
-      c.layer(fn() { @sf.window_keys(c, whole=true) }) |> ignore
-    }
   })
 }
 
