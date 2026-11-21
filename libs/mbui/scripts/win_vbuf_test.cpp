@@ -9,6 +9,9 @@
 #ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS
 #endif
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <d3d11.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,6 +22,18 @@ typedef const wchar_t *moonbit_string_t;
 typedef uint8_t *moonbit_bytes_t;
 static size_t test_out_bytes_len = 0;
 static size_t Moonbit_array_length(moonbit_bytes_t) { return test_out_bytes_len; }
+
+static int fail_create_buffer_count = 0;
+static HRESULT test_create_buffer(ID3D11Device *d, const D3D11_BUFFER_DESC *desc,
+                                  const D3D11_SUBRESOURCE_DATA *init, ID3D11Buffer **out) {
+  if (fail_create_buffer_count > 0) {
+    fail_create_buffer_count--;
+    *out = NULL;
+    return E_OUTOFMEMORY;
+  }
+  return d->CreateBuffer(desc, init, out);
+}
+#define MB_WIN_CREATE_BUFFER(d, desc, init, out) test_create_buffer((d), (desc), (init), (out))
 
 extern "C" {
 const wchar_t *mb_win_env(const wchar_t *) { return NULL; }
@@ -48,10 +63,10 @@ static void fill_rect_instances(double *inst, int count) {
   memset(inst, 0, (size_t)count * MB_INST * sizeof(double));
   for (int i = 0; i < count; i++) {
     double *p = inst + (size_t)i * MB_INST;
-    p[0] = (double)(i * 4);
-    p[1] = (double)(i * 4);
-    p[2] = 16.0;
-    p[3] = 16.0;
+    p[0] = (double)(i % 32);
+    p[1] = (double)(i / 32);
+    p[2] = 8.0;
+    p[3] = 8.0;
     p[8] = 0.2;
     p[9] = 0.4;
     p[10] = 0.8;
@@ -68,10 +83,10 @@ int main(void) {
   CHECK(dev != NULL && ctx != NULL && rtv != NULL);
   if (!dev || !ctx || !rtv) return 1;
 
-  double inst[16 * MB_INST];
-  float finst[16 * MB_INST];
-  fill_rect_instances(inst, 16);
-  for (int i = 0; i < 16 * MB_INST; i++) finst[i] = (float)inst[i];
+  static double inst[128 * MB_INST];
+  static float finst[128 * MB_INST];
+  fill_rect_instances(inst, 128);
+  for (int i = 0; i < 128 * MB_INST; i++) finst[i] = (float)inst[i];
 
   // 1. Normal frame succeeds and allocates vbuf.
   CHECK(submit(inst, 16, 1.0, 1.0, 1.0) == 1);
@@ -84,15 +99,25 @@ int main(void) {
   CHECK(fill_vbuf(finst, 20000000) == 0);
   CHECK(mb_render_pixels_of(inst, 20000000, 1.0, 1.0, 1.0, 1.0, 16, 16, px) == 0);
 
-  // 3. Oversized CreateBuffer request (under UINT_MAX, over D3D11 resource limit) returns 0 and clears vbuf.
-  CHECK(ensure_vbuf(0xF0000000u) == 0);
+  // 3. When 2x CreateBuffer fails with E_OUTOFMEMORY, ensure_vbuf falls back to exact `room` and succeeds.
+  fail_create_buffer_count = 1;
+  CHECK(submit(inst, 64, 1.0, 1.0, 1.0) == 1);
+  CHECK(fail_create_buffer_count == 0);
+  CHECK(vbuf != NULL && vbuf_cap == 65u * MB_INST * sizeof(float));
+
+  // 4. When both 2x and exact-size CreateBuffer fail, submit() returns 0 with vbuf cleared (no Map(NULL) crash).
+  fail_create_buffer_count = 2;
+  CHECK(submit(inst, 128, 1.0, 1.0, 1.0) == 0);
+  CHECK(fail_create_buffer_count == 0);
   CHECK(vbuf == NULL && vbuf_cap == 0);
 
-  // 4. fill_vbuf with oversized count also fails cleanly and leaves vbuf NULL.
-  CHECK(fill_vbuf(finst, 16000000) == 0);
+  // 5. Same for fill_vbuf() when CreateBuffer fails.
+  fail_create_buffer_count = 2;
+  CHECK(fill_vbuf(finst, 128) == 0);
+  CHECK(fail_create_buffer_count == 0);
   CHECK(vbuf == NULL && vbuf_cap == 0);
 
-  // 5. Next normal frame and offscreen pixel read recover cleanly after the failure.
+  // 6. Next normal frame and offscreen pixel read recover cleanly after the failure.
   CHECK(submit(inst, 16, 1.0, 1.0, 1.0) == 1);
   CHECK(vbuf != NULL && vbuf_cap >= 17u * MB_INST * sizeof(float));
   CHECK(mb_render_pixels_of(inst, 16, 1.0, 1.0, 1.0, 1.0, 16, 16, px) == 1);

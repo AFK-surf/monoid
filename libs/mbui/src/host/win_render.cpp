@@ -6,7 +6,9 @@
 // the holes the app paints (kind 9, written transparent without blending), as
 // on the other hosts. Where DirectComposition cannot be had, the swap chain is
 // the window's own and there are no native views.
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
 #include <objbase.h>
 #include <d3d11.h>
@@ -1575,6 +1577,10 @@ static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count
   cut_on = 0;
 }
 
+#ifndef MB_WIN_CREATE_BUFFER
+#define MB_WIN_CREATE_BUFFER(d, desc, init, out) ((d)->CreateBuffer((desc), (init), (out)))
+#endif
+
 // Ensures `vbuf` can hold at least `room` bytes: doubles when possible, falls back to exact `room`, and always clears
 // `vbuf`/`vbuf_cap` on failure so callers never dereference a stale or NULL buffer.
 static int ensure_vbuf(size_t room) {
@@ -1588,12 +1594,12 @@ static int ensure_vbuf(size_t room) {
   size_t cap = room <= ((size_t)UINT_MAX / 2) ? room * 2 : room;
   D3D11_BUFFER_DESC bd = {(UINT)cap, D3D11_USAGE_DYNAMIC, D3D11_BIND_VERTEX_BUFFER,
                           D3D11_CPU_ACCESS_WRITE, 0, 0};
-  if (FAILED(dev->CreateBuffer(&bd, NULL, &vbuf)) || !vbuf) {
+  if (FAILED(MB_WIN_CREATE_BUFFER(dev, &bd, NULL, &vbuf)) || !vbuf) {
     vbuf = NULL;
     if (cap != room) {
       cap = room;
       bd.ByteWidth = (UINT)cap;
-      if (FAILED(dev->CreateBuffer(&bd, NULL, &vbuf)) || !vbuf) {
+      if (FAILED(MB_WIN_CREATE_BUFFER(dev, &bd, NULL, &vbuf)) || !vbuf) {
         vbuf = NULL;
         return 0;
       }
