@@ -314,14 +314,24 @@ const MOUNTS_FRESH_MS = 2_000;
 
 /// `/sbin/mount` read off the thread, one read at a time however many ask.
 function readMounts(): Promise<string[]> {
-  mounting ??= new Promise<string[]>((resolve) => {
-    execFile("/sbin/mount", { encoding: "utf8" }, (error, out) => {
-      mounting = null;
-      mounted = { at: wall.now(), points: error ? (mounted?.points ?? []) : parseMounts(out) };
+  if (mounting) return mounting;
+  let thrown = false;
+  const read = new Promise<string[]>((resolve) => {
+    try {
+      execFile("/sbin/mount", { encoding: "utf8" }, (error, out) => {
+        mounting = null;
+        mounted = { at: wall.now(), points: error ? (mounted?.points ?? []) : parseMounts(out) };
+        resolve(mounted.points);
+      });
+    } catch {
+      // Spawning threw before execFile returned: a failed read, kept as one (asked again once stale), none left out.
+      thrown = true;
+      mounted = { at: wall.now(), points: mounted?.points ?? [] };
       resolve(mounted.points);
-    });
+    }
   });
-  return mounting;
+  if (!thrown) mounting = read;
+  return read;
 }
 
 /// Platform.mounts: as last read, none before the first read is in (which this starts); read again in the background
