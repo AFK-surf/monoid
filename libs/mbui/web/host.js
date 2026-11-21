@@ -2709,8 +2709,11 @@
     }
     else if (op === 3 || op === 11) {
       const near = op === 11;
-      if (v.scrubbing && near && v.el.seeking) {
-        v.pendingSeek = { ms: value, near: true };
+      // while a finger is on it every seek waits for the one going, the last asked taken up once it is there: one
+      // asked while another is going restarts the browser's from its key frame, and a finger never still would show
+      // none (#7875 sent a finger's seeks exact)
+      if (v.scrubbing && v.el.seeking) {
+        v.pendingSeek = { ms: value, near };
       } else {
         v.pendingSeek = null;
         doSeek(value, near);

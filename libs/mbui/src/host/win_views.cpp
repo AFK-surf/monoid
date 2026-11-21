@@ -70,15 +70,22 @@ static std::wstring site_host = L"https://preview.mbui.invalid", page_host = L"h
 // nothing of its own controls; mbuiPlayer what the host tells it (view_control), how it stands said to the host as it
 // changes ({"t":"s",...}: view_info's; each frame of its picture as it plays, its clock's where it has none), a frame
 // at a time grabbed by a second <video> of the same file, so the one
-// playing is left as it is ({"t":"g","png":...}); the frame it shows drawn off the one playing (shown: grab_shown's).
-static const char kPlayerPage[] = R"(<!doctype html><meta charset=utf-8><style>
+// playing is left as it is ({"t":"g","png":...}); the frame it shows drawn off the one playing (shown: grab_shown's);
+// its frames' times read from an MP4 or MOV's sample table ({"t":"f","f":"0.000,33.333,..."}: frames, op 20); while a
+// finger is on its time, its seeks one at a time (the last asked taken up as the one going gets there) and frames
+// decoded ahead (WebCodecs) drawn over the <video> as the finger comes to them, as apple_scrub.h has Apple's. In three
+// literals: MSVC takes none longer than 16 KB.
+static const char kPlayerPage[] =
+    R"JS(<!doctype html><meta charset=utf-8><style>
 html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000}
-video{width:100%;height:100%;object-fit:fill;display:block;background:#000}
-</style><video id=v preload=auto playsinline disablepictureinpicture disableremoteplayback></video><script>
-const v=document.getElementById('v');let want=false,scrubbing=false,pending=null;
+video,canvas{position:absolute;left:0;top:0;width:100%;height:100%;display:block}
+video{object-fit:fill;background:#000}canvas{visibility:hidden;pointer-events:none}
+</style><video id=v preload=auto playsinline disablepictureinpicture disableremoteplayback></video><canvas id=k></canvas><script>
+const v=document.getElementById('v'),k=document.getElementById('k');
+let want=false,scrubbing=false,pending=null,wantMs=-1,shownAt=-1,lastAsked=-1,dir=0;
 const post=o=>window.chrome.webview.postMessage(JSON.stringify(o));
 const doSeek=(ms,near)=>{if(near&&v.fastSeek)v.fastSeek(ms/1000);else v.currentTime=ms/1000};
-const say=at=>{const b=v.buffered,t=typeof at==='number'?at:v.currentTime;let ahead=0;
+const say=at=>{const b=v.buffered,t=shownAt>=0?shownAt/1000:typeof at==='number'?at:v.currentTime;let ahead=0;
 for(let i=0;i<b.length;i++)if(b.start(i)<=t+0.05&&b.end(i)>ahead)ahead=b.end(i);
 post({t:'s',d:isFinite(v.duration)?v.duration*1000:-1,p:t*1000,r:v.playbackRate,
 playing:!v.paused&&!v.ended?1:0,w:v.videoWidth,h:v.videoHeight,drawn:v.readyState>=2?1:0,
@@ -87,17 +94,149 @@ ready:v.readyState>=1?1:0,err:v.error?v.error.code:0});};
 for(const e of['loadedmetadata','loadeddata','durationchange','timeupdate','play','playing','pause','waiting',
 'canplay','canplaythrough','seeking','progress','ended','error','ratechange','stalled','suspend'])
 v.addEventListener(e,say);
-v.addEventListener('seeked',()=>{if(pending!==null){const p=pending;pending=null;doSeek(p.ms,p.near)}say()});
+// The frame kept over it (kept below) let go of once the <video> shows the one it went to, drawn.
+const unkeep=()=>{if(shownAt<0)return;shownAt=-1;k.style.visibility='hidden';say()};
+const landed=()=>{if(shownAt<0||scrubbing||v.seeking||pending)return;
+if(Math.abs(v.currentTime*1000-wantMs)>1){doSeek(wantMs,false);return}
+if(v.requestVideoFrameCallback)v.requestVideoFrameCallback(unkeep);else unkeep()};
+v.addEventListener('seeked',()=>{if(pending!==null){const p=pending;pending=null;doSeek(p.ms,p.near)}else landed();say()});
 let going=false;const frame=(now,m)=>{say(m?m.mediaTime:undefined);if(!v.paused&&!v.ended)go();else going=false};
 const go=()=>{if(v.videoWidth&&v.requestVideoFrameCallback)v.requestVideoFrameCallback(frame);else requestAnimationFrame(frame)};
 v.addEventListener('playing',()=>{if(!going){going=true;go()}});
+</script><script>)JS"
+    R"JS(
+// The file's own frames (an MP4 or MOV's sample table, its moov read by ranges of /media as the <video> reads it): when
+// each shows, in the <video>'s time (its edit list taken as the browser takes it), its bytes and whether it is a key
+// frame; what decodes them (WebCodecs). None for a file of another kind or fragmented.
+let total=-1,table=null,tabling=null;
+const range=async(a,b)=>{const out=new Uint8Array(b-a);let got=0;
+while(got<b-a){const r=await fetch('/media',{headers:{Range:'bytes='+(a+got)+'-'+(b-1)}});
+if(r.status!==206&&r.status!==200)break;const cr=r.headers.get('Content-Range');const m=cr&&/\/(\d+)/.exec(cr);if(m)total=+m[1];
+const u=new Uint8Array(await r.arrayBuffer());if(!u.length)break;out.set(u.subarray(0,b-a-got),got);got+=u.length}
+return got<b-a?out.subarray(0,got):out};
+const u32=(d,o)=>d.getUint32(o),u64=(d,o)=>d.getUint32(o)*4294967296+d.getUint32(o+4),
+tag=(d,o)=>String.fromCharCode(d.getUint8(o),d.getUint8(o+1),d.getUint8(o+2),d.getUint8(o+3));
+function*boxes(d,s,e){while(s+8<=e){let n=u32(d,s),h=8;const t=tag(d,s+4);if(n===1){n=u64(d,s+8);h=16}else if(n===0)n=e-s;
+if(n<h||s+n>e)return;yield{t,s:s+h,e:s+n};s+=n}}
+const box=(d,s,e,t)=>{for(const b of boxes(d,s,e))if(b.t===t)return b;return null};
+const path=(d,b,...ts)=>{for(const t of ts){if(!b)return null;b=box(d,b.s,b.e,t)}return b};
+const hex=n=>n.toString(16).padStart(2,'0');
+const codecOf=(d,ent,c)=>{const p=new Uint8Array(d.buffer,d.byteOffset+c.s,c.e-c.s);
+if(c.t==='avcC')return{codec:'avc1.'+hex(p[1])+hex(p[2])+hex(p[3]),description:p.slice()};
+if(c.t==='hvcC'){let f=u32(d,c.s+2),r=0;for(let i=0;i<32;i++){r=(r<<1)|(f&1);f>>>=1}
+const cs=[...p.slice(6,12)];while(cs.length&&!cs[cs.length-1])cs.pop();
+return{codec:ent+'.'+['','A','B','C'][p[1]>>6]+(p[1]&31)+'.'+(r>>>0).toString(16)+'.'+((p[1]>>5)&1?'H':'L')+p[12]+
+cs.map(x=>'.'+x.toString(16).toUpperCase()).join(''),description:p.slice()}}
+return null};
+async function readTable(){
+let off=0,moov=null;
+for(let i=0;i<64&&(total<0||off<total);i++){const h=await range(off,off+16);if(h.length<8)break;const d=new DataView(h.buffer);
+let n=u32(d,0),hd=8;if(n===1&&h.length>=16){n=u64(d,8);hd=16}else if(n===0)n=total-off;if(n<hd)break;
+if(tag(d,4)==='moov'){if(n>64<<20)break;moov=await range(off+hd,off+n);break}off+=n}
+if(!moov)return null;const d=new DataView(moov.buffer),all={s:0,e:moov.length};
+if(box(d,0,moov.length,'mvex'))return null;
+const mv=box(d,0,moov.length,'mvhd');const mts=mv?u32(d,mv.s+(d.getUint8(mv.s)?20:12)):1000;
+for(const tr of boxes(d,0,moov.length)){if(tr.t!=='trak')continue;
+const hd=path(d,tr,'mdia','hdlr');if(!hd||tag(d,hd.s+8)!=='vide')continue;
+const md=path(d,tr,'mdia','mdhd'),ts=u32(d,md.s+(d.getUint8(md.s)?20:12));
+const st=path(d,tr,'mdia','minf','stbl');if(!st)return null;
+const sb=t=>box(d,st.s,st.e,t);
+// the edit list: an empty edit first puts it later, the first other where its media starts
+let shift=0,empty=0;const el=path(d,tr,'edts','elst');
+if(el){const v1=d.getUint8(el.s),cnt=u32(d,el.s+4);let o=el.s+8;for(let i=0;i<cnt;i++){
+const dur=v1?u64(d,o):u32(d,o),mt=v1?Number(d.getBigInt64(o+8)):d.getInt32(o+4);o+=v1?20:12;
+if(mt===-1){empty+=dur/mts;continue}shift=mt;break}}
+const tk=box(d,tr.s,tr.e,'tkhd');let rot=0;if(tk){const m=tk.s+(d.getUint8(tk.s)?52:40),a=d.getInt32(m),b=d.getInt32(m+4);
+rot=a===0&&b>0?90:a===0&&b<0?270:a<0?180:0}
+const sz=sb('stsz'),tt=sb('stts');if(!sz||!tt)return null;
+const n=u32(d,sz.s+8),one=u32(d,sz.s+4);if(!n)return null;
+const s=new Array(n);let i=0,t=0;
+for(let e=0,c=u32(d,tt.s+4);e<c;e++){const cnt=u32(d,tt.s+8+e*8),dl=u32(d,tt.s+12+e*8);
+for(let j=0;j<cnt&&i<n;j++,i++){s[i]={dts:t,cto:0,size:one||u32(d,sz.s+12+i*4),off:0,key:false};t+=dl}}
+for(;i<n;i++)s[i]={dts:t,cto:0,size:one||u32(d,sz.s+12+i*4),off:0,key:false};
+const ct=sb('ctts');if(ct){i=0;for(let e=0,c=u32(d,ct.s+4);e<c;e++){const cnt=u32(d,ct.s+8+e*8),o=d.getInt32(ct.s+12+e*8);
+for(let j=0;j<cnt&&i<n;j++,i++)s[i].cto=o}}
+const ss=sb('stss');if(ss){for(let e=0,c=u32(d,ss.s+4);e<c;e++){const x=u32(d,ss.s+8+e*4)-1;if(x>=0&&x<n)s[x].key=true}}
+else for(const x of s)x.key=true;
+const sc=sb('stsc'),co=sb('stco')||sb('co64'),wide=co&&co.t==='co64';
+if(sc&&co){const nc=u32(d,co.s+4),ce=u32(d,sc.s+4);i=0;
+for(let c=0;c<nc&&i<n;c++){let per=0;for(let e=0;e<ce;e++){if(u32(d,sc.s+8+e*12)-1<=c)per=u32(d,sc.s+12+e*12);else break}
+let o=wide?u64(d,co.s+8+c*8):u32(d,co.s+8+c*4);for(let j=0;j<per&&i<n;j++,i++){s[i].off=o;o+=s[i].size}}}
+s.forEach((x,j)=>{x.di=j;x.ms=((x.dts+x.cto-shift)/ts+empty)*1000});
+const shown=s.slice().sort((a,b)=>a.ms-b.ms);shown.forEach((x,j)=>x.si=j);
+let dec=null;const sd=sb('stsd');if(sd){const en=boxes(d,sd.s+8,sd.e).next().value;
+if(en&&en.e-en.s>78){const ed=en.s+78;for(const c of boxes(d,ed,en.e)){const cf=codecOf(d,en.t,c);
+if(cf){dec={...cf,codedWidth:d.getUint16(en.s+24),codedHeight:d.getUint16(en.s+26)};break}}}}
+return{s,shown,rot,dec,ms:shown.map(x=>x.ms)}}
+return null}
+const tableOf=()=>tabling||(tabling=readTable().catch(()=>null).then(t=>(table=t)));
+// Which of the frames shows at `ms` (by index in when they show): the last to start by then.
+const frameIdx=ms=>{const a=table.ms;let lo=0,hi=a.length-1;while(lo<hi){const m=(lo+hi+1)>>1;if(a[m]<=ms+0.5)lo=m;else hi=m-1}return lo};
+</script><script>)JS"
+    R"JS(
+// Frames kept for a finger along its time (apple_scrub.h's, as Mac and iPhone keep theirs): seeking the browser's
+// <video> decodes from the key frame before each time asked, a film whose key frames are far apart slow at each, so
+// a stretch of frames around where the finger goes is decoded once in order (WebCodecs, the GPU's decoder) and kept at
+// the view's size, each drawn over the <video> at once as the finger comes to it; the next stretch decoded as the finger
+// nears the end of one; the <video> sent there once let go, the frame kept over it till it shows that one.
+const budget=256<<20;let kept=new Map(),stretches=[],decoding=false,decoder=null,gen=0,outs=null;
+const sizeFor=()=>{const r=devicePixelRatio||1;let w=Math.max(1,Math.round(innerWidth*r)),h=Math.max(1,Math.round(innerHeight*r));
+if(table.rot%180)[w,h]=[h,w];return[w,h]};
+const keepMax=()=>{const[w,h]=sizeFor();return Math.max(8,Math.min(300,Math.floor(budget/(w*h*4))))};
+const draw=bm=>{const r=devicePixelRatio||1,w=Math.max(1,Math.round(innerWidth*r)),h=Math.max(1,Math.round(innerHeight*r));
+if(k.width!==w||k.height!==h){k.width=w;k.height=h}const g=k.getContext('2d');g.setTransform(1,0,0,1,0,0);
+const q=table.rot;if(q===90)g.setTransform(0,1,-1,0,w,0);else if(q===180)g.setTransform(-1,0,0,-1,w,h);else if(q===270)g.setTransform(0,-1,1,0,0,h);
+g.drawImage(bm,0,0,q%180?h:w,q%180?w:h);k.style.visibility='visible'};
+const serve=ms=>{if(!table)return false;const i=frameIdx(ms),bm=kept.get(i);if(!bm)return false;
+draw(bm);shownAt=table.ms[i];return true};
+const forget=near=>{const max=keepMax();while(kept.size>max&&stretches.length>1){
+stretches.sort((a,b)=>Math.abs(b.mid-near)-Math.abs(a.mid-near));const st=stretches.shift();
+for(let i=st.a;i<=st.b;i++){const bm=kept.get(i);if(bm){bm.close();kept.delete(i)}}}};
+async function decodeStretch(a,b){
+const t=table,n=t.shown.length;a=Math.max(0,a);b=Math.min(n-1,b);if(a>b)return;
+let lo=Infinity,hi=-1;for(let i=a;i<=b;i++){const x=t.shown[i];if(x.di<lo)lo=x.di;if(x.di>hi)hi=x.di}
+while(lo>0&&!t.s[lo].key)lo--;
+let o0=Infinity,o1=0;for(let i=lo;i<=hi;i++){const x=t.s[i];if(x.off<o0)o0=x.off;if(x.off+x.size>o1)o1=x.off+x.size}
+if(o1-o0>96<<20)return;
+const bytes=await range(o0,o1);if(bytes.length<o1-o0)return;
+if(!decoder||decoder.state==='closed'){decoder=new VideoDecoder({output:f=>{const o=outs;if(!o){f.close();return}o(f)},error:()=>{decoder=null}});
+decoder.configure({...t.dec,hardwareAcceleration:'prefer-hardware',optimizeForLatency:true})}
+const[w,h]=sizeFor(),my=gen,made=[];
+outs=f=>{const x=t.byUs.get(f.timestamp);if(x===undefined||x<a||x>b||kept.has(x)){f.close();return}
+made.push(createImageBitmap(f,{resizeWidth:w,resizeHeight:h,resizeQuality:'medium'}).then(bm=>{f.close();
+if(my!==gen||kept.has(x)){bm.close();return}kept.set(x,bm)},()=>f.close()))};
+for(let i=lo;i<=hi;i++){const x=t.s[i];decoder.decode(new EncodedVideoChunk({type:x.key&&i===lo?'key':'delta',
+timestamp:Math.round(x.ms*1000),data:bytes.subarray(x.off-o0,x.off-o0+x.size)}))}
+await decoder.flush();outs=null;await Promise.all(made);
+if(my!==gen)return;stretches.push({a,b,mid:(a+b)/2});forget((a+b)/2)}
+const fill=async(i,way)=>{if(decoding||!table||!table.dec)return;const n=keepMax();decoding=true;
+try{await decodeStretch(way<0?i-n+1:way>0?i:i-(n>>1),way<0?i:way>0?i+n-1:i+n-1-(n>>1))}catch(e){decoder=null}decoding=false;
+if(scrubbing&&wantMs>=0&&shownAt!==table.ms[frameIdx(wantMs)]&&serve(wantMs)){pending=null;say()}near(wantMs)};
+// the finger at `ms`: what is kept there shown, the stretch it goes into decoded (back: the frames before it)
+const near=ms=>{if(!scrubbing||!table||!table.dec||ms<0)return;const i=frameIdx(ms),back=dir<0;
+const st=stretches.find(s=>i>=s.a&&i<=s.b);
+if(!st){fill(i,dir);return}const third=Math.max(1,Math.floor((st.b-st.a+1)/3));
+if(back&&i-st.a<third&&st.a>0&&!kept.has(st.a-1))fill(st.a-1,-1);
+else if(!back&&st.b-i<third&&st.b<table.ms.length-1&&!kept.has(st.b+1))fill(st.b+1,1)};
+const keepable=async()=>{const t=await tableOf();if(!t||!t.dec||!window.VideoDecoder)return;
+try{if(!(await VideoDecoder.isConfigSupported(t.dec)).supported)t.dec=null}catch(e){t.dec=null}
+if(t.dec){t.byUs=new Map(t.shown.map((x,i)=>[Math.round(x.ms*1000),i]))}};
 window.mbuiPlayer={
-play(){want=true;pending=null;v.play().catch(()=>{});say()},
+play(){want=true;pending=null;if(shownAt>=0){doSeek(wantMs,false);unkeep()}v.play().catch(()=>{});say()},
 pause(){want=false;pending=null;v.pause();say()},
-scrub(on){scrubbing=!!on;if(!scrubbing&&pending!==null&&!v.seeking){const p=pending;pending=null;doSeek(p.ms,p.near)}say()},
-seek(ms,near){if(scrubbing&&near&&v.seeking){pending={ms,near:true};say();return}pending=null;doSeek(ms,!!near);say()},
+scrub(on){scrubbing=!!on;if(scrubbing){dir=0;lastAsked=-1;keepable();say();return}
+if(shownAt>=0){if(v.seeking)pending={ms:wantMs,near:false};else landed()}
+else if(pending!==null&&!v.seeking){const p=pending;pending=null;doSeek(p.ms,p.near)}say()},
+// while a finger is on it every seek waits for the one going (the last asked taken up once it is there), as the
+// other hosts' players chase theirs: one asked while another is going restarts the browser's from its key frame
+seek(ms,near_){wantMs=ms;if(lastAsked>=0&&ms!==lastAsked)dir=ms<lastAsked?-1:1;lastAsked=ms;
+if(scrubbing)near(ms);
+if(scrubbing&&!near_&&serve(ms)){pending=null;say();return}
+if(scrubbing&&v.seeking){pending={ms,near:!!near_};say();return}
+pending=null;doSeek(ms,!!near_);say()},
 rate(r){if(r>0)v.playbackRate=r;say()},
 volume(n){v.volume=Math.max(0,Math.min(1,n))},
+frames(){tableOf().then(t=>post({t:'f',f:t?t.ms.map(x=>x.toFixed(3)).join(','):''}))},
 grab(ms){const g=document.createElement('video');g.muted=true;g.preload='auto';
 const done=png=>{post({t:'g',png});g.removeAttribute('src');g.load()};
 g.addEventListener('error',()=>done(''),{once:true});
@@ -105,12 +244,14 @@ g.addEventListener('loadeddata',()=>{g.currentTime=ms/1000},{once:true});
 g.addEventListener('seeked',()=>{try{const c=document.createElement('canvas');c.width=g.videoWidth;c.height=g.videoHeight;
 c.getContext('2d').drawImage(g,0,0);const u=c.toDataURL('image/png');done(u.slice(u.indexOf(',')+1))}catch(e){done('')}},
 {once:true});g.src='/media'},
-shown(side){let u='';try{const k=Math.min(1,side/Math.max(v.videoWidth,v.videoHeight));const c=document.createElement('canvas');
-c.width=Math.max(1,Math.round(v.videoWidth*k));c.height=Math.max(1,Math.round(v.videoHeight*k));
-c.getContext('2d').drawImage(v,0,0,c.width,c.height);u=c.toDataURL('image/jpeg',0.9);u=u.slice(u.indexOf(',')+1)}catch(e){u=''}
+shown(side){let u='';try{const src=shownAt>=0?k:v,sw=shownAt>=0?k.width:v.videoWidth,sh=shownAt>=0?k.height:v.videoHeight;
+const q=Math.min(1,side/Math.max(sw,sh));const c=document.createElement('canvas');
+c.width=Math.max(1,Math.round(sw*q));c.height=Math.max(1,Math.round(sh*q));
+c.getContext('2d').drawImage(src,0,0,c.width,c.height);u=c.toDataURL('image/jpeg',0.9);u=u.slice(u.indexOf(',')+1)}catch(e){u=''}
 post({t:'g',png:u})}};
 v.src='/media';
-</script>)";
+</script>
+)JS";
 
 // "view N: …" lines on stdout, as the other hosts log theirs
 static void vlog(const char *fmt, ...) {
@@ -290,6 +431,9 @@ struct View {
   std::vector<double> covers;
   std::vector<uint8_t> still;
   int still_state = 0;
+  // a player's frames' times as its page read them (view_text 1: ms, comma between; empty, none read), once it said
+  std::wstring frames;
+  bool frames_said = false;
   // a player's (kind 1): its file's type; the ranges its page asked of it, by id, and those not handed to the app yet,
   // in order; its file's size (the app's, -1 not known yet) and how much of it the app has given; how it stands as its
   // page last said (each frame of its picture as it plays, its clock's where it has none)
@@ -800,6 +944,15 @@ static double jnum(const wchar_t *t, const wchar_t *key, double none) {
 
 // What a player's page says: how it stands ({"t":"s"}: ready, then failed or not), or a frame grabbed ({"t":"g"}).
 static void player_said(View *v, const wchar_t *t) {
+  if (wcsstr(t, L"\"t\":\"f\"")) {
+    const wchar_t *f = wcsstr(t, L"\"f\":\"");
+    const wchar_t *end = f ? wcschr(f + 5, L'"') : NULL;
+    v->frames = f && end ? std::wstring(f + 5, end) : std::wstring();
+    v->frames_said = true;
+    vlog("view %d: frames read (%d characters)", v->vid, (int)v->frames.size());
+    mb_host_request_frame();
+    return;
+  }
   if (wcsstr(t, L"\"t\":\"g\"")) {
     const wchar_t *png = wcsstr(t, L"\"png\":\"");
     v->still.clear();
@@ -1260,6 +1413,8 @@ extern "C" void mb_host_view_control(int32_t vid, int32_t op, double value) {
       case 4: swprintf(js, 128, L"mbuiPlayer.rate(%.4f)", value); page_script(v, js); break;
       // how loud, 0 to 1 (NativeView::volume)
       case 10: swprintf(js, 128, L"mbuiPlayer.volume(%.4f)", value); page_script(v, js); break;
+      // its frames' times, read by its page from the file's sample table (view_text 1 once said)
+      case 20: page_script(v, L"mbuiPlayer.frames()"); break;
       // a frame at `value` ms, grabbed (its page's second <video>): told as a grab
       case 21:
         v->still_state = 1;
@@ -1365,14 +1520,18 @@ extern "C" void mb_host_view_read_answer(int32_t vid, int32_t req, moonbit_bytes
   player_answer(v, m);
   delete m;
 }
-// a page's grab: how it stands (what 2), the PNG
+// a player's frames' times (what 1), a page's grab: how it stands (what 2), the PNG
 extern "C" moonbit_string_t mb_host_view_text(int32_t vid, int32_t what) {
   View *v = find(vid);
+  if (v && what == 1 && v->kind == 1) return mstr(v->frames);
   if (!v || what != 2) return moonbit_make_string_raw(0);
   return mstr(std::to_wstring(v->still_state));
 }
-// (a player's frames' times, what 1: not known here)
-extern "C" int32_t mb_host_view_text_known(int32_t vid, int32_t what) { return find(vid) && what == 2 ? 1 : 0; }
+extern "C" int32_t mb_host_view_text_known(int32_t vid, int32_t what) {
+  View *v = find(vid);
+  if (!v) return 0;
+  return what == 2 || (what == 1 && v->kind == 1 && v->frames_said) ? 1 : 0;
+}
 extern "C" moonbit_bytes_t mb_host_view_still(int32_t vid) {
   View *v = find(vid);
   size_t n = v ? v->still.size() : 0;

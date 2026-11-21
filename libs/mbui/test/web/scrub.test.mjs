@@ -58,7 +58,7 @@ function browser(withFastSeek = true) {
   return { H, videos };
 }
 
-test('web host scrub uses fastSeek, coalesces in-flight near seeks, and preempts on exact seek', () => {
+test('web host scrub uses fastSeek, coalesces in-flight seeks, near or exact, and lands on the last asked', () => {
   const b = browser(true);
   const id = b.H.viewOpen(1, 'video/mp4');
   const v = b.videos[0];
@@ -79,18 +79,27 @@ test('web host scrub uses fastSeek, coalesces in-flight near seeks, and preempts
   assert.equal(v.fastSeeks, 2);
   assert.equal(v.currentTime, 3.5);
   assert.equal(v.seeking, true);
-  // Queue another near seek, then preempt immediately with exact seek (op 3) and end scrub (op 9 0).
+  // Exact seeks (a finger's, #7875) wait for the one going too, the last asked replacing a near one waiting; the scrub
+  // ends (op 9 0) with it still waiting.
   b.H.viewControl(id, 11, 4200);
   assert.equal(v.fastSeeks, 2);
+  b.H.viewControl(id, 3, 4400);
   b.H.viewControl(id, 3, 4500);
   b.H.viewControl(id, 9, 0);
+  assert.equal(v.exactSeeks, 0);
+  assert.equal(v.fastSeeks, 2);
+  assert.equal(v.currentTime, 3.5);
+  // Once the one going is there, the last asked is sought exactly, and nothing after it.
+  v.finishSeek();
+  assert.equal(v.exactSeeks, 1);
+  assert.equal(v.currentTime, 4.5);
+  v.finishSeek();
   assert.equal(v.exactSeeks, 1);
   assert.equal(v.fastSeeks, 2);
-  assert.equal(v.currentTime, 4.5);
-  // Finishing the exact seek does not replay the preempted near seek.
-  v.finishSeek();
-  assert.equal(v.currentTime, 4.5);
-  assert.equal(v.fastSeeks, 2);
+  // Not scrubbing, an exact seek goes at once.
+  b.H.viewControl(id, 3, 5000);
+  assert.equal(v.exactSeeks, 2);
+  assert.equal(v.currentTime, 5);
 });
 
 test('web host near seek falls back to currentTime when fastSeek is unavailable', () => {
