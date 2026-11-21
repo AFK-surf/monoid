@@ -1044,8 +1044,12 @@
         contourStr = 0.88; contourDirAmt = 1.0; bevelShadowStr = 0.036;
         glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;
       } else {
-        emission = vec3(253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0) * 0.4032;
-        transmittance = 0.5994; lift = 0.216; chromaGain = 1.169;
+        float lightDens = (col.a > 0.41) ? col.a : 0.4032;
+        float extra = clamp((lightDens - 0.4032) / (1.0 - 0.4032), 0.0, 1.0);
+        emission = vec3(253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0) * lightDens;
+        transmittance = mix(0.5994, 0.0, extra);
+        lift = mix(0.216, 0.0, extra);
+        chromaGain = mix(1.169, 0.0, extra);
         contourStr = 0.43; contourDirAmt = 0.77; bevelShadowStr = 0.036;
         glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;
       }

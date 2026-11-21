@@ -721,6 +721,48 @@ int main(void) {
       CHECK(memcmp(px_la0, px_la0_again, (size_t)aw * (size_t)ah * 4) == 0);
       free(px_la0);
       free(px_la0_again);
+
+      // Neutral light liquid glass density (kind 6, !is_clear && !is_dark): alpha <= 0.41 keeps the 0.4032 baseline to
+      // the byte (0xFDFCFD50 and 0xFDFCFD67 draw the same), while a dense veil (0xFDFCFDD9 ~ 0.851) emits its own alpha
+      // and fades transmittance, lift and chroma to 0, so over black it is far brighter and over saturated blue it
+      // stays neutral.
+      double ld[2 * MB_INST];
+      uint8_t *px_ld[4];
+      // (alpha byte, backdrop r, g, b)
+      static const double ld_case[4][4] = {
+          {0x50, 0, 0, 0}, {0x67, 0, 0, 0}, {0xD9, 0, 0, 0}, {0xD9, 0.0, 0.4, 1.0}};
+      for (int i = 0; i < 4; i++) {
+        rect_at(ld, 0, 0, 400, 300, 0, ld_case[i][1], ld_case[i][2], ld_case[i][3], 0);
+        rect_at(ld + MB_INST, 100, 80, 200, 140, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -17);
+        ld[MB_INST + 4] = 28;
+        ld[MB_INST + 6] = 1;
+        ld[MB_INST + 7] = 1.0;
+        ld[MB_INST + 11] = ld_case[i][0] / 255.0;
+        ld[MB_INST + 12] = 0.0;
+        ld[MB_INST + 13] = 12;
+        ld[MB_INST + 15] = 1;
+        ld[MB_INST + 21] = 0;
+        ld[MB_INST + 22] = 0;
+        ld[MB_INST + 23] = 0;
+        glass_forget();
+        mb_host_render_dirty(0, 0, 400, 300);
+        mb_render_present(ld, 2, ld_case[i][1], ld_case[i][2], ld_case[i][3]);
+        present_drain();
+        px_ld[i] = read_texture(canvas, &aw, &ah);
+      }
+      // centre (200, 150) -> (400, 300) at 2x; the canvas is BGRA
+      double ld_lum[4];
+      for (int i = 0; i < 4; i++) {
+        uint8_t *c = px_ld[i] + (300 * aw + 400) * 4;
+        ld_lum[i] = (0.2126 * c[2] + 0.7152 * c[1] + 0.0722 * c[0]) / 255.0;
+        printf("apple_render: light glass 0x%02X over (%.1f, %.1f, %.1f): rgb %d %d %d, luma %.4f\n",
+               (int)ld_case[i][0], ld_case[i][1], ld_case[i][2], ld_case[i][3], c[2], c[1], c[0], ld_lum[i]);
+      }
+      CHECK(memcmp(px_ld[0], px_ld[1], (size_t)aw * (size_t)ah * 4) == 0);
+      CHECK(ld_lum[1] >= 0.35 && ld_lum[1] <= 0.46);
+      CHECK(ld_lum[2] >= 0.80 && ld_lum[2] > ld_lum[1] + 0.3);
+      CHECK(px_ld[3][(300 * aw + 400) * 4 + 2] >= (int)(0.72 * 255.0 + 0.5));
+      for (int i = 0; i < 4; i++) free(px_ld[i]);
     }
 
     // A group kept by the host (groups.h) drawn out by a header, straight into the floats: each instance moved in
