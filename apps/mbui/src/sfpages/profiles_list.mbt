@@ -507,7 +507,11 @@ fn pl_station_row_node(r : @view.View, core : Core, station : String, pv : () ->
     },
     lead=LeadLine(fn(l) { @sf.state_dot_node(l, fn() { pl_tone_dot(text(pv(), "checkTone")) }) }),
     title_cut=true,
-    title_after=fn(a) { @sf.row_tag_node(a, fn() { text(pv(), "planText") }) },
+    // (its tier left out before its name is cut short: the name says which account it is, the tier is only about it)
+    title_after=fn(a) {
+      a.drops(Is(1)) |> ignore
+      @sf.row_tag_node(a, fn() { text(pv(), "planText") })
+    },
     title_after_shown=fn() { text(pv(), "planText") != "" },
     // (why its provider refuses it, quiet as the line over it, and where that is the station's trouble, how to mend it
     // in the link's ink: profile_row's)
