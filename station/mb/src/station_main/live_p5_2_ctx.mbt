@@ -383,6 +383,7 @@ async fn P52::open_agent(
   generation : () -> Int,
   listener : (Int) -> (@jsjson.JValue) -> Unit,
   force_cap? : Bool = false,
+  cancelled? : () -> Bool = () => false,
 ) -> (Agent, Json) {
   let hub = self.the_hub()
   let initial = self.bus.store.get_session(key)
@@ -442,6 +443,10 @@ async fn P52::open_agent(
   }
   let subagents = stopped.filter(t => jtext(t, "kind") == Some("agent")).map(t => jtext(t, "id").unwrap_or(""))
   let mut resumable : Array[String] = []
+  // (given up (mb-actor.ts `cancelOpen`): no process started, the session's row untouched)
+  if cancelled() {
+    raise LiveError(open_aborted + ": cancelled")
+  }
   let agent = match (afresh, prev_id) {
     (Some(note), Some(_)) => {
       let a = (driver.open)(base, events)
@@ -463,7 +468,8 @@ async fn P52::open_agent(
           a
         }
         Err(e) => {
-          if non_session_open_error(e) {
+          // (given up, or timed out: nothing said of the conversation, which stays the session's)
+          if cancelled() || non_session_open_error(e) {
             raise e
           }
           slice_log("warn", "session", "resume failed; starting a new runtime session", { "session": jstr(key), "id": jstr(id), "error": jstr(said_of(e)) })
@@ -480,6 +486,13 @@ async fn P52::open_agent(
       told["readBackTold"] = jb(true)
       a
     }
+  }
+  // (given up while it opened: ended, the session's row left as it was)
+  if cancelled() {
+    (agent.dispose)() catch {
+      _ => ()
+    }
+    raise LiveError(open_aborted + ": cancelled")
   }
   let id = (agent.id)()
   self.bus.store.ran_in(key, jstr(id), jstr(profile_id)) catch { _ => () }
@@ -502,7 +515,12 @@ fn non_session_open_error(e : Error) -> Bool {
   match e {
     @agent_drivers.Said(_) | CommandMissing(_) => true
     other => {
-      let reason = @agent_drivers.failure_of(said_of(other))
+      let said = said_of(other)
+      // (given up, or its process not starting in time: nothing of the conversation)
+      if said.has_prefix(open_aborted) || said.to_lower().contains("timed out") || said.to_lower().contains("did not start within") {
+        return true
+      }
+      let reason = @agent_drivers.failure_of(said)
       ["network", "auth", "refused", "blocked", "rate_limit", "overloaded"].contains(reason)
     }
   }

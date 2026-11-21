@@ -69,6 +69,11 @@ priv struct MbActor {
   codex : Map[Int32, String?]
   mut read_at : Int32
   mut format_cancelled : Bool
+  /// its runtime sessions being opened that the program gave up (`node.cancelOpen`), by the program's number for the
+  /// ask; and how many times every one being opened was given up (a stop, a suspension, a close: mb-actor.ts
+  /// `#openAborts`)
+  cancelled_opens : Map[Int32, Bool]
+  mut open_epoch : Int32
   /// while it is taken up (mb-actor.ts `#adopting`): its generation and what came for it meanwhile, given once it is
   mut adopting : (Int32, Array[() -> Unit])?
 }
@@ -366,6 +371,10 @@ let actor_errors : Map[Int32, Error] = Map([])
 let actor_errors_next : Ref[Int32] = Ref(0)
 
 ///|
+/// What a runtime session's start given up fails with (mb-actor.ts `OpenAborted`), its reason after.
+let open_aborted : String = "open aborted"
+
+///|
 /// An error of the station's as the program is told it (mb-actor.ts `errorOf`): its words, whether they are the
 /// station's own (`Said`), whether its runtime is not installed.
 fn error_of(e : Error, runtime : String) -> Json {
@@ -400,6 +409,10 @@ fn error_of(e : Error, runtime : String) -> Json {
         _ => "Error"
       },
     ),
+  }
+  // (its runtime's start given up, and why: the program's own `openAbort`, actor_run.mbt `open_abort_reason`)
+  if message.has_prefix(open_aborted) {
+    out["openAbort"] = jstr(if message == open_aborted + ": closed" { "closed" } else { "cancelled" })
   }
   if e is @accounts_pool.Thrown("AccountCapError", said) {
     out["sessionCap"] = jb(true)
@@ -450,6 +463,8 @@ fn ActorsProgram::actor(
     codex: Map([]),
     read_at: 0,
     format_cancelled: false,
+    cancelled_opens: Map([]),
+    open_epoch: 0,
     adopting: None,
   }
   self.actors[key] = a
@@ -581,6 +596,7 @@ fn MbActor::holds_state(self : MbActor) -> Bool {
 fn MbActor::closing(self : MbActor) -> Unit {
   self.closed = true
   self.format_cancelled = true
+  self.open_epoch += 1
   self.program.forget(self.key, self)
 }
 
@@ -791,6 +807,8 @@ async fn MbActor::hub_asked(
       Json::null()
     }
     "stop" | "suspend" => {
+      // (its runtime's start given up by the program alone, `node.cancelOpen`: here first, it would fail as a start
+      // that could not open before the program heard the stop, mb-actor.ts `#openAborts`)
       self.format_cancelled = true
       ignore(self.call(meth, args))
       Json::null()
@@ -984,6 +1002,12 @@ fn MbActor::told_(self : MbActor, f : String, args : Array[Json]) -> Unit {
     }
     "node.working" => ctx.working(self.key, jitems(a(0)), a(1))
     "chat.standsAt" => ctx.stands_at(a(0), a(1), a(2), a(3))
+    // (given up by the program: its stop, suspension, close or deadline; `open` ends what comes of it)
+    "node.cancelOpen" =>
+      match as_num(a(0)) {
+        Some(id) => self.cancelled_opens[id.to_int()] = true
+        None => self.open_epoch += 1
+      }
     _ =>
       slice_log(
         "warn",
@@ -1176,6 +1200,17 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
     "open" => {
       let gen = Ref(0)
       let heard = ctx.mcp_heard_of(self.key)
+      // (the program's number for this ask, what it gives it up by: `node.cancelOpen`)
+      let open_id = as_num(a(4)).map(n => n.to_int())
+      let epoch = self.open_epoch
+      let cancelled = () => self.closed ||
+        self.open_epoch != epoch ||
+        (open_id is Some(id) && self.cancelled_opens.contains(id))
+      defer {
+        if open_id is Some(id) {
+          self.cancelled_opens.remove(id)
+        }
+      }
       let opened = ctx.open_agent(
         self.key,
         jitems(a(0)),
@@ -1188,7 +1223,19 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
         },
         g => self.listener(g),
         force_cap=a(3) is True,
-      )
+        cancelled~,
+      ) catch {
+        // (given up as it closed: the program's `openAbort`, whichever it hears first, mb-actor.ts `errorOf`)
+        _ if self.closed => raise LiveError(open_aborted + ": closed")
+        e => raise e
+      }
+      // (given up as it came: never its actor's, ended at once)
+      if cancelled() {
+        (opened.0.dispose)() catch {
+          _ => ()
+        }
+        raise LiveError(open_aborted + (if self.closed { ": closed" } else { ": cancelled" }))
+      }
       self.next += 1
       let handle = self.next
       self.agents[handle] = (gen.val, opened.0, Some(heard))

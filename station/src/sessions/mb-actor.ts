@@ -20,7 +20,7 @@ import { handedOf, type MessageRow, type PendingMessage, type RunChange } from "
 import { runChangeWords } from "./run-change.ts";
 import {
   FALLBACK_MOST, SPENT_BEFORE, cannotStartWords, codexTooOld, compactFailed, compactFailedNotice, failureNotice, formatDelivery,
-  handedWithChoices, lastStationSaid, limitShownNotice, openAgent, personRef, postNotice, promptFor, retuneAgent, shownLimitOf,
+  OpenAborted, handedWithChoices, lastStationSaid, limitShownNotice, openAgent, personRef, postNotice, promptFor, retuneAgent, shownLimitOf,
   t, timed, withSaid, type DeclaredState, type SessionDeps, type Snapshot,
 } from "./actor.ts";
 
@@ -324,6 +324,8 @@ function errorOf(error: unknown, runtime: RuntimeKind): Json {
     runtime,
     // (what it is, for the program to tell apart a peer's refusal from a request that did not get through: bus.ts)
     kind: (error as Error)?.constructor?.name ?? "Error",
+    // (given up, and why: the program's own `openAbort`, actor_run.mbt `open_abort_reason`)
+    ...(error instanceof OpenAborted ? { openAbort: error.why } : {}),
     ...cap,
   };
 }
@@ -356,6 +358,10 @@ export class MbActor {
   #closed = false;
   /// What is being read and formatted for it (`pendingAndFormat`): given up at once on a stop or a suspension.
   #formatAbort: AbortController | null = null;
+  /// Its runtime sessions being opened (`open`), by the program's number for the ask: each given up as the program gives
+  /// it up (`node.cancelOpen`: a stop, a suspension, a close, its deadline), never here before it has (a stop's failure
+  /// read there before its stop, as a start that failed), but for its close (`#closing`).
+  readonly #openAborts = new Map<number, AbortController>();
   /// What marks what people chose told, once what it was handed with is (`withChoices`); a state's write, by its turn's
   /// tool (`stateForTurn`); what its live view reads as a turn ends (`turnEnded`); a Codex update's, as it began.
   readonly #told = new Map<number, () => void>();
@@ -568,7 +574,15 @@ export class MbActor {
   #closing() {
     this.#closed = true;
     this.#formatAbort?.abort();
+    this.#abortOpens();
     this.#program.forget(this.key, this);
+  }
+
+  /// Gives up every runtime session being opened for it (`open`), as `why` (the program's `openAbort`).
+  #abortOpens(why = "closed") {
+    const opening = [...this.#openAborts.values()];
+    this.#openAborts.clear();
+    for (const abort of opening) abort.abort(why);
   }
 
   async dispose() {
@@ -670,6 +684,14 @@ export class MbActor {
         const text = status === "" ? "" : status === "thinking" ? t("station.status.thinking") : deps.toolStatus(status.tool);
         const page = deps.pageOf?.(this.key) ?? null;
         for (const w of working) deps.chat(w.connect)?.working?.({ channel: w.channel, threadTs: w.threadTs }, w.ts, text, page);
+        return;
+      }
+      case "node.cancelOpen": {
+        // (given up by the program: its stop, suspension, close or deadline; `open` ends what comes of it)
+        const id = args[0];
+        if (typeof id !== "number") return this.#abortOpens("cancelled");
+        this.#openAborts.get(id)?.abort("cancelled");
+        this.#openAborts.delete(id);
         return;
       }
       case "chat.standsAt": {
@@ -781,18 +803,34 @@ export class MbActor {
       }
       case "pendingAndFormat": return this.#pendingAndFormat(args[0] === true);
       case "open": {
-        const [stopped, readBack, profile, forceCap] = args;
+        const [stopped, readBack, profile, forceCap, asked] = args;
         let generation = 0;
         const heard = deps.toolsHeard?.(this.key);
-        const opened = await openAgent(deps, this.key, {
-          stopped,
-          readBack,
-          profile: profile ?? null,
-          forceCap: forceCap === true,
-          runtime: (runtime) => { this.runtime = runtime; },
-          generation: () => (generation = this.nextGeneration()),
-          listener: (g) => this.listener(g),
-        });
+        // (the program's number for this ask: what it gives it up by, `node.cancelOpen`)
+        const id = typeof asked === "number" ? asked : -(++this.#next);
+        const abort = new AbortController();
+        if (this.#closed) abort.abort("closed");
+        this.#openAborts.set(id, abort);
+        let opened: Awaited<ReturnType<typeof openAgent>>;
+        try {
+          opened = await openAgent(deps, this.key, {
+            stopped,
+            readBack,
+            profile: profile ?? null,
+            forceCap: forceCap === true,
+            signal: abort.signal,
+            runtime: (runtime) => { this.runtime = runtime; },
+            generation: () => (generation = this.nextGeneration()),
+            listener: (g) => this.listener(g),
+          });
+        } finally {
+          if (this.#openAborts.get(id) === abort) this.#openAborts.delete(id);
+        }
+        // (given up as it came: never its actor's, ended at once)
+        if (abort.signal.aborted || this.#closed) {
+          await opened.session.dispose().catch(() => {});
+          throw new OpenAborted(typeof abort.signal.reason === "string" ? abort.signal.reason : "closed");
+        }
         const handle = ++this.#next;
         this.#agents.set(handle, { generation, session: opened.session, ...(heard === undefined ? {} : { heard }) });
         this.#route(opened.session, generation);

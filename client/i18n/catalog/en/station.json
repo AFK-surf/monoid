@@ -736,6 +736,7 @@
   "station.notice.model": "The model failed; reply to retry",
   "station.notice.modelWhy": "The model failed: {why}",
   "station.notice.cannotStartWhy": "Couldn't start the agent: {why}",
+  "station.notice.openTimedOut": "Startup timed out; reply to retry",
   "station.notice.accountCapPaused": "⏳ Queued: available account “{profile}” is at its concurrency limit ({active}/{cap} running sessions) and will start automatically when a slot opens. Tap Retry or reply to jump the queue and start now, or adjust the limit in account settings.",
   "station.notice.accountCapProtectionPaused": "⏳ Queued: available account “{profile}” is in new-account protection ({active}/{cap} running sessions). Newly added subscriptions limit concurrency by default to avoid triggering provider risk controls or bans from sudden spikes; this chat will start automatically when a slot opens. Tap Retry or reply to jump the queue and start now, or turn off protection in account settings.",
   "station.failure.auth": "Account authentication failed",

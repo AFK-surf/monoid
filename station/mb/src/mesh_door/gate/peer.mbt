@@ -501,8 +501,19 @@ pub fn peer_call(
     if closed_stopping(conn) {
       return true
     }
-    if conn.close_reason is None || (!(conn.is_closed)() && there(conn)) {
+    if conn.close_reason is None {
       return false
+    }
+    if !(conn.is_closed)() {
+      if there(conn) {
+        return false
+      }
+      // (not there and not closed: waited on to close `heard_wait` at most, never forever, peer.ts `stoppedThere`)
+      // timer: a deadline (a close told a moment after the connection was found not there)
+      if !(conn.is_closed)() {
+        ignore(@effect.timeout(heard_wait, async fn() { ignore((conn.closed)()) catch { _ => () } }))
+      }
+      return closed_stopping(conn)
     }
     ignore((conn.closed)()) catch {
       _ => ()

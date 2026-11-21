@@ -337,6 +337,9 @@ export type OpenHow = {
   profile: string | null;
   /// bypasses account concurrency caps (manual jump-the-queue start)
   forceCap?: boolean;
+  /// given up (a stop, a suspension, a close, its deadline: mb-actor.ts `cancelOpen`): it fails at once, a process that
+  /// comes of it later ended, the session's row untouched
+  signal?: AbortSignal;
   /// its runtime, once the session's row says it (before it is opened: what failing to start it is about)
   runtime(runtime: RuntimeKind): void;
   generation(): number;
@@ -354,6 +357,47 @@ export type Opened = {
   readBackTold: boolean;
   stoppedNote: string | null;
 };
+
+/// Opening a runtime session given up (`OpenHow.signal`).
+export class OpenAborted extends Error {
+  /// why (its signal's reason): "closed", "cancelled" (by the sessions' program), …
+  readonly why: string;
+  constructor(why = "cancelled") {
+    super("open aborted");
+    this.why = why;
+  }
+}
+
+const abortedBy = (signal: AbortSignal) => new OpenAborted(typeof signal.reason === "string" ? signal.reason : "cancelled");
+
+/// `opening`, a runtime session's process being opened, given up with `signal`: failing at once as it is, the process
+/// that comes of it later ended.
+function unlessAborted(opening: Promise<AgentSession>, signal: AbortSignal | undefined): Promise<AgentSession> {
+  if (signal === undefined) return opening;
+  const end = () => void opening.then((agent) => agent.dispose(), () => {}).catch(() => {});
+  if (signal.aborted) {
+    end();
+    return Promise.reject(abortedBy(signal));
+  }
+  return new Promise((resolve, reject) => {
+    const aborted = () => {
+      end();
+      reject(abortedBy(signal));
+    };
+    signal.addEventListener("abort", aborted, { once: true });
+    opening.then(
+      (agent) => {
+        signal.removeEventListener("abort", aborted);
+        // (given up meanwhile: `aborted` ends it)
+        if (!signal.aborted) resolve(agent);
+      },
+      (error) => {
+        signal.removeEventListener("abort", aborted);
+        reject(signal.aborted ? abortedBy(signal) : error);
+      },
+    );
+  });
+}
 
 /// Opens session `key`'s runtime session, as `how` has it (actor.ts `ensureAgent`).
 export async function openAgent(deps: SessionDeps, key: string, how: OpenHow): Promise<Opened> {
@@ -388,6 +432,7 @@ export async function openAgent(deps: SessionDeps, key: string, how: OpenHow): P
   else if (await unreadableDirAsync(base.cwd)) throw new Said(unreadableDirMessage(stationLang(), base.cwd));
   const generation = how.generation();
   let agent: AgentSession;
+  const open = (options: OpenOptions) => how.signal?.aborted ? Promise.reject(abortedBy(how.signal)) : unlessAborted(driver.open(options, how.listener(generation)), how.signal);
   // Recorded before it may be left, so the history reads on from it.
   if (row.runtimeSessionId) deps.ranIn?.(key, row.runtimeSessionId, null);
   const afresh = row.runtimeSessionId ? (deps.startsAfresh?.(key, row.runtimeSessionId, profile, how.profile) ?? null) : null;
@@ -398,28 +443,35 @@ export async function openAgent(deps: SessionDeps, key: string, how: OpenHow): P
   let resumable: string[] = [];
   if (afresh !== null) {
     log.info("session", "going on in a new runtime session on another account", { session: key, left: row.runtimeSessionId, profile: profile.id });
-    agent = await driver.open(base, how.listener(generation));
+    agent = await open(base);
     told.afresh = afresh;
     const from = store.runtimeSessionSource ? store.runtimeSessionSource(key, row.runtimeSessionId!) ?? undefined
       : store.runtimeSessionSources?.(key).find((s) => s.id === row.runtimeSessionId);
     if (from === undefined || from.runtime === row.runtime) resumable = (await deps.carrySubagents?.(row.runtimeSessionId!, agent.id(), profile, subagents)) ?? [];
   } else if (row.runtimeSessionId) {
     try {
-      agent = await driver.open({ ...base, resume: row.runtimeSessionId }, how.listener(generation));
+      agent = await open({ ...base, resume: row.runtimeSessionId });
       resumable = subagents;
     } catch (error) {
+      // (given up, or timed out: nothing said of the conversation, which stays the session's)
+      if (error instanceof OpenAborted || how.signal?.aborted) throw error;
       // Nothing wrong with the conversation (the network, the account, a borrowing): it stays the session's, opened
       // again with its next turn. Left for a new one, a long chat lost its whole conversation to a process that could
       // not reach its provider once (tokyo-mac-studio-0, 2026-11-16, as the machine came up).
       if (isNonSessionOpenError(error)) throw error;
       log.warn("session", "resume failed; starting a new runtime session", { session: key, id: row.runtimeSessionId, error: (error as Error).message });
-      agent = await driver.open(base, how.listener(generation));
+      agent = await open(base);
       told.resumeLost = true;
     }
   } else {
-    agent = await driver.open(base, how.listener(generation));
+    agent = await open(base);
     if (wasCleared) told.afresh = deps.cleared?.(key, how.readBack) ?? (how.readBack ? afreshNote(key, []) : cleared(key, []));
     told.readBackTold = true;
+  }
+  // (given up while its subagents were carried: ended, the session's row left as it was)
+  if (how.signal?.aborted) {
+    await agent.dispose().catch(() => {});
+    throw abortedBy(how.signal);
   }
   // Recorded before it is the one gone on with: its conversation's calls are those from then (store.ts `conversationSince`).
   deps.ranIn?.(key, agent.id(), profile.id);
@@ -436,8 +488,10 @@ export async function openAgent(deps: SessionDeps, key: string, how: OpenHow): P
 /// failure says is the network, the account, the provider or a limit. Resuming again later may well work, so the
 /// conversation is kept rather than left for a new one.
 export function isNonSessionOpenError(error: unknown): boolean {
-  if (error instanceof Said || error instanceof CommandMissing) return true;
+  if (error instanceof Said || error instanceof CommandMissing || error instanceof OpenAborted) return true;
   if ((error as { missing?: unknown } | null)?.missing === true) return true;
+  // (its process not starting in time, the runner's or the runtime's own: nothing of the conversation)
+  if (/timed out|did not start within/i.test((error as Error | null)?.message ?? String(error))) return true;
   const reason = failureOf((error as Error | null)?.message ?? String(error));
   return reason === "network" || reason === "auth" || reason === "refused" || reason === "blocked" || reason === "rate_limit" || reason === "overloaded";
 }

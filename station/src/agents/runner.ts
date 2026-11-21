@@ -14,6 +14,7 @@ import { withShellCommand } from "../ops/shell-path.ts";
 import { platform } from "../platform/index.ts";
 import { runnerBinary } from "../platform/processes.ts";
 import { log } from "../ops/log.ts";
+import { wall } from "../ops/fibers.ts";
 
 export type RunnerInfo = {
   id: string;
@@ -57,6 +58,9 @@ export class CommandMissing extends Error {
   }
 }
 
+/// How long a runner has to say it is ready (`startRunner`).
+const RUNNER_READY_MS = 30_000;
+
 /// Starts `program` under a runner, its environment `env` (the agent's whole environment), in `cwd`.
 /// `pty`: the program on a pseudo-terminal of that size (a person's terminal, terminals/), not on pipes.
 export async function startRunner(data: string, id: string, program: string, args: string[], env: NodeJS.ProcessEnv, cwd: string, pty?: { cols: number; rows: number }): Promise<RunnerInfo> {
@@ -73,18 +77,34 @@ export async function startRunner(data: string, id: string, program: string, arg
     });
     let out = "";
     let err = "";
+    let settled = false;
+    const settle = (then: () => void) => {
+      if (settled) return;
+      settled = true;
+      stop();
+      then();
+    };
+    // A runner that never says it is ready nor lets go of its stdout (stuck as it starts, or its output held by what it
+    // started) is given up: a session's start waited on one forever (FB-34).
+    // timer: deadline for stillfail-runner to report ready
+    const stop = wall.after(RUNNER_READY_MS, () => settle(() => {
+      try { child.kill("SIGKILL"); } catch {}
+      child.stdout.destroy();
+      child.stderr.destroy();
+      reject(new Error(`the runner did not start within ${RUNNER_READY_MS / 1000}s`));
+    }));
     child.stdout.on("data", (b) => (out += b));
     child.stderr.on("data", (b) => (err += b));
-    child.on("error", reject);
+    child.on("error", (error) => settle(() => reject(error)));
     // The ready line comes before the runner lets go of its stdout; a runner that fails says why and exits non-zero.
-    child.stdout.on("end", () => {
+    child.stdout.on("end", () => settle(() => {
       const line = out.split("\n").find((l) => l.startsWith("{"));
       if (line) {
         const ready = JSON.parse(line);
         if (ready.ready) return resolve(ready as RunnerInfo);
       }
       reject(new Error(`the runner did not start: ${err.trim() || out.trim()}`));
-    });
+    }));
     child.unref();
   });
 }

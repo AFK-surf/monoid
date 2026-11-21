@@ -400,10 +400,18 @@ export function peerCall(
   };
   /// After a request failed on `conn`: whether its other end's process closed it stopping. Its close may be told a moment
   /// after the stream failed (a front's connection hears it from the front): a connection not closed yet is asked
-  /// whether its other end is there (`there`, at once for one that is), and one that is not is waited for to close.
+  /// whether its other end is there (`there`, at once for one that is), and one that is not is waited for to close, at
+  /// most `heardMs` more: a connection whose other end is stuck, never answering nor closing, held the request (and
+  /// what waited on it, a borrowed account's turn) forever (FB-34); it is let go instead (`letGo`).
   const stoppedThere = async (conn: Connection): Promise<boolean> => {
     if (closedStopping(conn)) return true;
-    if (conn.closeReason === undefined || (!conn.isClosed() && (await there(conn)))) return false;
+    if (conn.closeReason === undefined) return false;
+    if (!conn.isClosed()) {
+      if (await there(conn)) return false;
+      // timer: a deadline (a close told a moment after the connection was found not there)
+      if (!conn.isClosed()) await within(heardMs, conn.closed(), "not closed").catch(() => {});
+      return closedStopping(conn);
+    }
     await conn.closed().catch(() => {});
     return closedStopping(conn);
   };

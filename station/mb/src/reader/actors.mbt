@@ -146,6 +146,9 @@ priv struct Actor {
   mut force_session_cap : Bool
   /// whether the queued notice was already posted for the current wait
   mut cap_wait_notified : Bool
+  /// the `node.open` asked of Node and not answered yet (actor_run.mbt `rpc_open`): what a stop, a suspension, a close or
+  /// its deadline gives up at once, never waited on behind it (FB-34)
+  mut opening_rpc : Int?
   /// its waits on Node's clock, by name
   timers : Map[String, () -> Unit]
   /// what it last told Node of itself
@@ -243,6 +246,21 @@ async fn Actors::rpc(self : Actors, key : String, f : String, args : Array[Json]
   match answer {
     { "error": err, .. } => raise Asked(err)
     _ => answer.value("value").unwrap_or(Json::null())
+  }
+}
+
+///|
+/// Gives up `id` asked of Node (`rpc`): what waits on it goes on at once with `err` as its error, counted active again
+/// as an answer would be (`heard`); its answer, come later, is dropped there. Whether it was still waiting.
+fn Actors::cancel_rpc(self : Actors, id : Int, err : Json) -> Bool {
+  match self.asked.get(id) {
+    Some(d) => {
+      self.asked.remove(id)
+      self.active += 1
+      ignore(d.succeed({ "error": err }))
+      true
+    }
+    None => false
   }
 }
 
@@ -363,6 +381,7 @@ fn Actors::actor(self : Actors, key : String, runtime : String) -> Actor {
         paused_cap: false,
         force_session_cap: false,
         cap_wait_notified: false,
+        opening_rpc: None,
         timers: Map([]),
         mirrored: "",
       }

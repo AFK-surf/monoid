@@ -724,6 +724,7 @@
   "station.notice.model": "模型服务出错，回复即可重试",
   "station.notice.modelWhy": "模型服务出错：{why}",
   "station.notice.cannotStartWhy": "无法启动 agent：{why}",
+  "station.notice.openTimedOut": "启动超时，回复即可重试",
   "station.notice.accountCapPaused": "⏳ 已进入排队：当前可用账号「{profile}」已达并发上限（{active}/{cap} 个运行中会话），有空位后将自动启动。点击「重试」或直接回复即可插队立即启动，也可在账号设置中调整并发上限。",
   "station.notice.accountCapProtectionPaused": "⏳ 已进入排队：当前可用账号「{profile}」处于新号保护期（{active}/{cap} 个运行中会话）。为避免新接入的订阅账号初期高并发触发风控或封号，系统默认限制并发，有空位后将自动启动。点击「重试」或直接回复即可插队立即启动，也可在账号设置页一键关闭新号保护或调整上限。",
   "station.failure.auth": "账号认证失败",

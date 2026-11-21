@@ -903,7 +903,13 @@ async fn start_runner_proc(
     (runner, given)
   }
   let child = spawn(host, command, all_args, env?, stdout=Piped, stderr=Piped, group=true)
-  let (_, _, out, err) = child.finished()
+  // (a runner that never says it is ready nor lets go of its output is given up: a session's start waited on one
+  // forever, FB-34; runner.ts `RUNNER_READY_MS`)
+  // timer: deadline for stillfail-runner to report ready
+  guard @effect.timeout(30000, async fn() { child.finished() }) is Some((_, _, out, err)) else {
+    ignore(kill(child.pid, "SIGKILL", group=true))
+    raise LiveError("the runner did not start within 30s")
+  }
   let text = @utf8.decode_lossy(out)
   for line in text.split("\n") {
     let l = line.to_owned()
