@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d68c56649](https://github.com/AFK-surf/monoid/commit/d68c56649313d1f3fa921cc65d84b291f8b3c809) fix(core): show a wait in history only when the ag | 2.64 | 3.55 | 14.4 | 36.43 | 54.97 | 31.92 | 64.42 | 98.67 | 129.43 |
 | [5d23b1d3c](https://github.com/AFK-surf/monoid/commit/5d23b1d3c6325b138ae7233bc8131cc76cf95e88) feat(sf-ui,sfdesk): upgrade floating controls to l | 2.64 | 3.55 | 14.4 | 36.43 | 54.97 | 31.92 | 64.42 | 98.45 | 128.25 |
 | [7518002f5](https://github.com/AFK-surf/monoid/commit/7518002f53d978e3d43b44eb3ac3fadd81445b5b) feat(mbui): add glass_pop_in and glass_pop_out mot | 2.64 | 3.55 | 14.4 | 36.43 | 54.97 | 31.92 | 64.42 | 98.44 | 122.33 |
 | [0a1a91c9f](https://github.com/AFK-surf/monoid/commit/0a1a91c9fe56cda87a795d64986aab7344bba06f) feat(sf-ui): unify anchored popovers onto liquid g | 2.64 | 3.55 | 14.4 | 36.43 | 54.97 | 31.92 | 64.42 | 98.52 | 123.44 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [fd06d1a0d](https://github.com/AFK-surf/monoid/commit/fd06d1a0dafdd5115fc793ed996865e74656c7ff) fix(mbui): ring letter workspaces in the rail inst | 2.65 | 3.56 | 14.47 | 36.47 | 55.14 | 31.94 | 64.51 | 98.14 | 113.74 |
 | [ec882d99f](https://github.com/AFK-surf/monoid/commit/ec882d99fa0c2e5def567b132dd43055f9f9ed26) fix(mbui): keep hyphen spacing steady on chatlist  | 2.65 | 3.56 | 14.47 | 36.47 | 55.14 | 31.94 | 64.5 | 98.19 | 126.89 |
 | [3298ca4ca](https://github.com/AFK-surf/monoid/commit/3298ca4ca4c0e7d05639f996a69a4a3331d809ee) feat(history): mark posts a new message held back  | 2.65 | 3.56 | 14.47 | 36.47 | 55.14 | 31.94 | 64.5 | 98.19 | 126.89 |
-| [613afa337](https://github.com/AFK-surf/monoid/commit/613afa3377dc160232b7f99142e64fe24c346a0b) feat(core): trace how each station link recovers w | 2.65 | 3.56 | 14.47 | 36.47 | 55.14 | 31.94 | 64.5 | 98.42 | 123.38 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d68c56649](https://github.com/AFK-surf/monoid/commit/d68c56649313d1f3fa921cc65d84b291f8b3c809) fix(core): show a wait in history only when the ag | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.1 |
 | [5d23b1d3c](https://github.com/AFK-surf/monoid/commit/5d23b1d3c6325b138ae7233bc8131cc76cf95e88) feat(sf-ui,sfdesk): upgrade floating controls to l | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.1 |
 | [7518002f5](https://github.com/AFK-surf/monoid/commit/7518002f53d978e3d43b44eb3ac3fadd81445b5b) feat(mbui): add glass_pop_in and glass_pop_out mot | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.1 |
 | [0a1a91c9f](https://github.com/AFK-surf/monoid/commit/0a1a91c9fe56cda87a795d64986aab7344bba06f) feat(sf-ui): unify anchored popovers onto liquid g | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.22 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [fd06d1a0d](https://github.com/AFK-surf/monoid/commit/fd06d1a0dafdd5115fc793ed996865e74656c7ff) fix(mbui): ring letter workspaces in the rail inst | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.17 |
 | [ec882d99f](https://github.com/AFK-surf/monoid/commit/ec882d99fa0c2e5def567b132dd43055f9f9ed26) fix(mbui): keep hyphen spacing steady on chatlist  | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.17 |
 | [3298ca4ca](https://github.com/AFK-surf/monoid/commit/3298ca4ca4c0e7d05639f996a69a4a3331d809ee) feat(history): mark posts a new message held back  | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.15 |
-| [613afa337](https://github.com/AFK-surf/monoid/commit/613afa3377dc160232b7f99142e64fe24c346a0b) feat(core): trace how each station link recovers w | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.15 |
