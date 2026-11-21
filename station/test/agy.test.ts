@@ -60,7 +60,13 @@ async function until(f: () => boolean | Promise<boolean>) {
   }
 }
 const ended = (events: RuntimeEvent[]) => events.filter((e) => e.type === "turnEnded");
-const rpc = (dump: string) => readFileSync(dump + ".rpc", "utf8").trim().split("\n").map((s) => JSON.parse(s));
+// (only complete newline-terminated lines: until() reads .rpc while fake/agy.mjs appends to it)
+const rpc = (dump: string) => {
+  const raw = readFileSync(dump + ".rpc", "utf8");
+  const nl = raw.lastIndexOf("\n");
+  if (nl < 0) return [];
+  return raw.slice(0, nl).split("\n").filter(Boolean).map((s) => JSON.parse(s));
+};
 
 test("a Gemini key runs the Antigravity CLI in its profile's files, with the station's tools and instructions", async () => {
   const { options, events, driver, dump } = setup();
