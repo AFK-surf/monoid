@@ -1,5 +1,5 @@
 // Tests for `bar_pill_group_node`: single-layer iOS 26 / macOS 26 liquid glass (`kind == 6`, zero nested glass),
-// outside-only `float_shadow()` (`shadow_outside == true`), exact concentric corners for both 34pt `round_key_node`
+// tight outside-only `bar_pill_shadow()` (`shadow_outside == true`), exact concentric corners for both 34pt `round_key_node`
 // (`height=40, pad=3`) and 32pt `icon_button_node` (`height=38, pad=3`), 40pt standalone circle (`height=40, pad=0`),
 // `MBUI_GLASS=solid` degradation (`panel_ground()` + `control_edge_w` `panel_edge()`, 0 glass instances), and clean
 // `Tester::audit()` in both Light and Dark themes.
