@@ -965,6 +965,7 @@ priv struct PresetEditing {
   clone_error : @signals.Signal[String]
   clone_busy : @signals.Signal[Bool]
   then : @signals.Signal[String]
+  mut depth : Int
 }
 
 ///|
@@ -1008,6 +1009,7 @@ fn preset_dialog(
     clone_error: @signals.signal("", same=fn(a, b) { a == b }),
     clone_busy: @signals.signal(false, same=fn(a, b) { a == b }),
     then: @signals.signal(then, same=fn(a, b) { a == b }),
+    depth: 1,
   }
   let title = if id == "" { @sf.t("web-main.preset.new") } else { @sf.t("web-main.preset.edit") }
   @sf.panel_nodes(
@@ -1019,6 +1021,10 @@ fn preset_dialog(
     from=Unanchored,
     foot=fn(v, close) { preset_foot(v, src, w, address, id, e, close) },
   )
+  let d = @sf.panel_depth()
+  if d > 0 {
+    e.depth = d
+  }
 }
 
 ///|
@@ -1782,7 +1788,7 @@ fn preset_browse(src : Source, address : String, stations : Array[Json], e : Pre
       if !e.dirs.untracked().iter().any(fn(x) { dir_key(Some(x)) == dir_key(Some(d)) }) {
         e.dirs.set([..e.dirs.untracked(), d])
       }
-      @sf.panel_back(to=1) |> ignore
+      @sf.panel_back(to=e.depth) |> ignore
     },
   })
 }
@@ -1822,7 +1828,7 @@ fn preset_clone_open(src : Source, address : String, stations : Array[Json], e :
             e.clones.set([..e.clones.untracked(), { station, id: text(one, "id"), repo: text(one, "repo"), name: text(one, "name") }])
           }
           e.browse_station.set(station)
-          @sf.panel_back(to=1) |> ignore
+          @sf.panel_back(to=e.depth) |> ignore
         }
         Err(err) => e.clone_error.set(text(Some(err), "message"))
       }
