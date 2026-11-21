@@ -399,6 +399,10 @@ pub struct Updates {
   mut launcher_installer : ((String, Env) -> Unit)?
   priv fibers : Fibers
   priv mut closed : Bool
+  /// updates.ts `progressTold` / `progressLater`: when a download's progress was last told, and the telling of a later
+  /// one held back till then.
+  priv mut progress_told : Double
+  priv mut progress_later : (() -> Unit)?
   priv mut started : Bool
   priv mut tick : @effect.Fiber[Unit]?
   priv mut unlisten : (() -> Unit)?
@@ -437,6 +441,17 @@ fn station_note(app : String, real : String?, installed : String?, origin : Stri
 ///|
 /// updates.ts `FIRST_RETRY_MS`: how long the first reading waits to be tried again after it failed.
 let first_retry_ms : Double = 60000.0
+
+///|
+/// updates.ts `PROGRESS_NOTIFY_MS`: how often a download's progress is told at most. Every `changed` reaches the
+/// overview pushed to each connected stream whole; a download's start, end and every other change are told at once.
+let progress_notify_ms : Double = 2000.0
+
+///|
+/// updates.ts `isDownloadWords`: words saying how much of a download is in (`downloading`).
+fn is_download_words(w : Words?) -> Bool {
+  w is Some(Key("station.updates.downloadingSized" | "station.updates.downloadingSoFar", _))
+}
 
 ///|
 fn origin_given(origin : () -> String?) -> String? {
@@ -513,6 +528,8 @@ pub async fn Updates::new(w : World, o : UpdatesOptions) -> Updates {
     launcher_installer: None,
     fibers: Fibers::new(w, "updates"),
     closed: false,
+    progress_told: -@double.infinity,
+    progress_later: None,
     started: false,
     tick: None,
     unlisten: None,
@@ -689,6 +706,7 @@ pub async fn Updates::close(self : Updates) -> Unit {
     None => ()
   }
   self.following = None
+  self.cancel_progress()
   ignore(self.w.call("CloudTransport.close", []))
   self.fibers.close()
 }
@@ -785,9 +803,64 @@ async fn Updates::look(self : Updates) -> Unit {
 
 ///|
 fn Updates::changed(self : Updates) -> Unit {
+  // (what it tells includes any progress held back)
+  self.cancel_progress()
   for l in self.listeners.copy() {
     (l.1)()
   }
+}
+
+///|
+/// The telling of a download's progress held back, called off.
+fn Updates::cancel_progress(self : Updates) -> Unit {
+  match self.progress_later {
+    Some(cancel) => {
+      self.progress_later = None
+      cancel()
+    }
+    None => ()
+  }
+}
+
+///|
+/// updates.ts `notifyProgress`: tells a download's progress, already kept in `items`: at once when `immediate`, else at
+/// most every `progress_notify_ms`, the latest told when that much has passed.
+fn Updates::notify_progress(self : Updates, immediate? : Bool = false) -> Unit {
+  if immediate {
+    self.progress_told = self.fibers.now()
+    self.changed()
+    return
+  }
+  let wait = self.progress_told + progress_notify_ms - self.fibers.now()
+  if wait <= 0.0 {
+    self.progress_told = self.fibers.now()
+    self.changed()
+  } else if self.progress_later is None {
+    // timer: a debounce of a download's progress.
+    self.progress_later = Some(
+      self.later(wait, async fn() {
+        // (none held back before `changed`, which would call this one off)
+        self.progress_later = None
+        if self.closed {
+          return
+        }
+        self.progress_told = self.fibers.now()
+        self.changed()
+      }),
+    )
+  }
+}
+
+///|
+/// updates.ts `sayStationPercent`: how much of the station's own download (a delta, or a release gone back to) is in.
+fn Updates::say_station_percent(self : Updates, percent : Int) -> Unit {
+  let item = self.item("station")
+  if item.updating is None || item.percent == Some(percent) {
+    return
+  }
+  let first = item.percent is None
+  item.percent = Some(percent)
+  self.notify_progress(immediate=first || percent == 0 || percent == 100)
 }
 
 ///|
@@ -2034,9 +2107,13 @@ fn Updates::say(self : Updates, kind : String, progress : Words, percent : Int?)
   if item.updating is None || (same_words(item.progress, Some(progress)) && item.percent == percent) {
     return
   }
+  let was_download = is_download_words(item.progress)
   item.progress = Some(progress)
   item.percent = percent
-  self.changed()
+  // A download's ticks paced; its first, its end and any other words told at once.
+  self.notify_progress(
+    immediate=!(was_download && is_download_words(Some(progress)) && percent != Some(0) && percent != Some(100)),
+  )
 }
 
 ///|
@@ -2285,6 +2362,8 @@ async fn Updates::update_station_rest(self : Updates, lang : String, begun : Beg
     i.step = Some("download")
     i.percent = Some(0)
   })
+  // (told now: the next percent waits progress_notify_ms)
+  self.progress_told = self.fibers.now()
   self.spawn(async fn() {
     if self.start_planned(plan, self.from_delta(plan)) {
       return
@@ -2330,6 +2409,8 @@ async fn Updates::back_station(self : Updates, to : String, lang : String, begun
     i.failed = None
     i.done = None
   })
+  // (told now: the next percent waits progress_notify_ms)
+  self.progress_told = self.fibers.now()
   self.spawn(async fn() {
     let handed = self.archive_for(plan) catch {
       e => {
@@ -2401,7 +2482,7 @@ async fn Updates::archive_for(self : Updates, back : Plan) -> Array[(String, Str
         self.w,
         back,
         over,
-        progress=fn(percent) { self.set("station", i => i.percent = Some(percent)) },
+        progress=fn(percent) { self.say_station_percent(percent) },
         self.cloud_request(),
         wait=async fn(ms) { self.fibers.sleep(ms) },
       ),
@@ -2428,7 +2509,7 @@ async fn Updates::from_delta(self : Updates, plan : Plan) -> Array[(String, Stri
         self.app,
         apply_apart(self.w),
         over,
-        progress=fn(percent) { self.set("station", i => i.percent = Some(percent)) },
+        progress=fn(percent) { self.say_station_percent(percent) },
         self.cloud_request(),
         wait=async fn(ms) { self.fibers.sleep(ms) },
       ),
@@ -2630,13 +2711,26 @@ async fn Updates::follow(self : Updates, started : Started) -> Unit {
           let item = self.item("station")
           let running = (self.running)()
           let now_step = if step == "" { None } else { Some(step) }
-          if item.step != now_step ||
-            item.percent != percent ||
-            (step == "drain" && running != last_running.val) {
+          let step_changed = item.step != now_step
+          let drain_changed = step == "drain" && running != last_running.val
+          if step_changed || item.percent != percent || drain_changed {
+            let percent_only = !step_changed && !drain_changed
+            let immediate = !percent_only ||
+              item.percent is None ||
+              percent is None ||
+              percent == Some(0) ||
+              percent == Some(100)
             item.step = now_step
             item.percent = percent
             last_running.val = running
-            self.changed()
+            if percent_only {
+              self.notify_progress(immediate~)
+            } else {
+              if step == "download" && percent is Some(_) {
+                self.progress_told = self.fibers.now()
+              }
+              self.changed()
+            }
           }
           return
         }

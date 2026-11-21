@@ -267,6 +267,13 @@ function stationNote(app: string, real: string | null, installed: string | null,
 
 /// How long the first reading waits to be tried again after it failed (a later one waits `every`).
 const FIRST_RETRY_MS = 60_000;
+/// How often a download's progress is told at most: every `changed` reaches `events.overviewChanged`, which sends each
+/// connected stream its whole overview again, so a download told at every percent sent a hundred overviews to every
+/// viewer within seconds. Its start, its end and every other change are told at once.
+const PROGRESS_NOTIFY_MS = 2_000;
+
+/// Words saying how much of a download is in (versions.ts `downloading`).
+const isDownloadWords = (w: Words | null): boolean => w !== null && "key" in w && (w.key === "station.updates.downloadingSized" || w.key === "station.updates.downloadingSoFar");
 
 export class Updates {
   readonly app: string;
@@ -318,6 +325,9 @@ export class Updates {
   // Long-lived work, and time: fibers in this part's scope on its clock, ended with it.
   private fibers: Fibers;
   private closed = false;
+  /// When a download's progress was last told (`notifyProgress`), and the telling of a later one held back till then.
+  private progressTold = -Infinity;
+  private progressLater: (() => void) | null = null;
   /// Started: it reads on its own (made but not started, as in tests, it reads only when asked).
   private started = false;
   private tick: Fiber.Fiber<unknown, unknown> | null = null;
@@ -447,6 +457,8 @@ export class Updates {
     this.unhold?.();
     this.following?.();
     this.following = null;
+    this.progressLater?.();
+    this.progressLater = null;
     await this.cloudTransport.close();
     await this.fibers.close();
   }
@@ -499,11 +511,46 @@ export class Updates {
   }
 
   private changed() {
+    // (what it tells includes any progress held back)
+    this.progressLater?.();
+    this.progressLater = null;
     for (const f of this.listeners) {
       try {
         f();
       } catch {}
     }
+  }
+
+  /// Tells a download's progress, already kept in `items`: at once when `immediate`, else at most every
+  /// PROGRESS_NOTIFY_MS, the latest told when that much has passed.
+  private notifyProgress(immediate = false) {
+    if (immediate) {
+      this.progressTold = this.fibers.now();
+      this.changed();
+      return;
+    }
+    const wait = this.progressTold + PROGRESS_NOTIFY_MS - this.fibers.now();
+    if (wait <= 0) {
+      this.progressTold = this.fibers.now();
+      this.changed();
+    } else if (this.progressLater === null) {
+      // timer: a debounce of a download's progress.
+      this.progressLater = this.later(wait, () => {
+        this.progressLater = null;
+        if (this.closed) return;
+        this.progressTold = this.fibers.now();
+        this.changed();
+      });
+    }
+  }
+
+  /// How much of the station's own download (a delta, or a release gone back to) is in.
+  private sayStationPercent(percent: number) {
+    const item = this.items.station;
+    if (item.updating === null || item.percent === percent) return;
+    const first = item.percent === null;
+    item.percent = percent;
+    this.notifyProgress(first || percent === 0 || percent === 100);
   }
 
   private set(kind: Kind, f: (i: Item) => void) {
@@ -1124,9 +1171,11 @@ export class Updates {
   private say(kind: Kind, progress: Words, percent: number | null) {
     const item = this.items[kind];
     if (item.updating === null || (sameWords(item.progress, progress) && item.percent === percent)) return;
+    const wasDownload = isDownloadWords(item.progress);
     item.progress = progress;
     item.percent = percent;
-    this.changed();
+    // A download's ticks paced; its first, its end and any other words told at once.
+    this.notifyProgress(!(wasDownload && isDownloadWords(progress) && percent !== 0 && percent !== 100));
   }
 
   private sayDownloading(kind: Kind, version: string, got: number, total: number | null) {
@@ -1295,6 +1344,8 @@ export class Updates {
       i.step = "download";
       i.percent = 0;
     });
+    // (told now: the next percent waits PROGRESS_NOTIFY_MS)
+    this.progressTold = this.fibers.now();
     this.spawn(async () => {
       if (await this.startPlanned(plan, await this.fromDelta(plan))) return;
       log.warn("updates", "the station's installer not started");
@@ -1330,6 +1381,8 @@ export class Updates {
       i.failed = null;
       i.done = null;
     });
+    // (told now: the next percent waits PROGRESS_NOTIFY_MS)
+    this.progressTold = this.fibers.now();
     this.spawn(async () => {
       let handed: Record<string, string>;
       try {
@@ -1375,7 +1428,7 @@ export class Updates {
       return await takeArchive(back, {
         request: this.cloudRequest,
         signal: over.signal,
-        progress: (percent) => this.set("station", (i) => (i.percent = percent)),
+        progress: (percent) => this.sayStationPercent(percent),
         wait: (ms) => this.fibers.sleep(ms),
       });
     } finally {
@@ -1396,7 +1449,7 @@ export class Updates {
         apply: applyApart,
         request: this.cloudRequest,
         signal: over.signal,
-        progress: (percent) => this.set("station", (i) => (i.percent = percent)),
+        progress: (percent) => this.sayStationPercent(percent),
         // (downloaded again after a failure on the way, on this part's clock, within the deadline above)
         wait: (ms) => this.fibers.sleep(ms),
       });
@@ -1519,11 +1572,19 @@ export class Updates {
         if (over) return;
         const item = this.items.station;
         const running = this.running();
-        if (item.step !== (step || null) || item.percent !== percent || (step === "drain" && running !== lastRunning)) {
+        const stepChanged = item.step !== (step || null);
+        const drainChanged = step === "drain" && running !== lastRunning;
+        if (stepChanged || item.percent !== percent || drainChanged) {
+          const percentOnly = !stepChanged && !drainChanged;
+          const immediate = !percentOnly || item.percent === null || percent === null || percent === 0 || percent === 100;
           item.step = step || null;
           item.percent = percent;
           lastRunning = running;
-          this.changed();
+          if (percentOnly) this.notifyProgress(immediate);
+          else {
+            if (step === "download" && percent !== null) this.progressTold = this.fibers.now();
+            this.changed();
+          }
         }
         return;
       }

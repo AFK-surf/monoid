@@ -1530,3 +1530,82 @@ describe("going back to a release before the one the station runs", { skip: WIND
     }
   });
 });
+
+// Every tell reaches `events.overviewChanged`, which sends each connected stream its whole overview: a download is told
+// at its start, its end and at most every PROGRESS_NOTIFY_MS (2 s) between, while what is read has its latest percent.
+describe("a download's progress told at most every two seconds", () => {
+  type Internal = {
+    items: Record<string, { updating: number | null; step: string | null; percent: number | null }>;
+    set(kind: string, f: (i: { step: string | null; percent: number | null }) => void): void;
+    sayStationPercent(percent: number): void;
+    sayDownloading(kind: string, version: string, got: number, total: number | null): void;
+    say(kind: string, progress: unknown, percent: number | null): void;
+  };
+  const paced = (t: { after: (f: () => unknown) => void }, line: number) => {
+    const time = testClock();
+    const updates = installed(temp(), "1300", null, { clock: time.clock });
+    t.after(() => updates.close());
+    const told: (number | undefined)[] = [];
+    updates.changes(() => told.push(updates.get("zh")[line]!.percent));
+    return { time, updates, told, internal: updates as unknown as Internal };
+  };
+  const pass = async (time: ReturnType<typeof testClock>, ms: number) => {
+    await time.adjust(ms);
+    await settle(5);
+  };
+
+  test("the station's delta: 0% and 100% at once, the percents between once each two seconds, a step at once", async (t) => {
+    const { time, updates, told, internal } = paced(t, 0);
+    internal.items.station!.updating = 0;
+    internal.items.station!.step = "download";
+    internal.sayStationPercent(0);
+    assert.deepEqual(told, [0], "its start at once");
+    for (let p = 1; p < 100; p++) internal.sayStationPercent(p);
+    assert.deepEqual(told, [0], "the percents between held back");
+    assert.equal(station(updates).percent, 99, "what is read has the latest");
+    internal.sayStationPercent(100);
+    assert.deepEqual(told, [0, 100], "its end at once");
+    await pass(time, 2_000);
+    assert.deepEqual(told, [0, 100], "nothing held back left after the end");
+
+    told.length = 0;
+    internal.sayStationPercent(0);
+    for (let p = 1; p <= 40; p++) internal.sayStationPercent(p);
+    assert.deepEqual(told, [0]);
+    await pass(time, 1_999);
+    assert.deepEqual(told, [0], "not before two seconds");
+    await pass(time, 1);
+    assert.deepEqual(told, [0, 40], "the latest, two seconds after the one before");
+    for (let p = 41; p <= 60; p++) internal.sayStationPercent(p);
+    assert.deepEqual(told, [0, 40]);
+    internal.set("station", (i) => {
+      i.step = "handoff";
+      i.percent = null;
+    });
+    assert.deepEqual(told, [0, 40, undefined], "the next step at once");
+    await pass(time, 2_000);
+    assert.deepEqual(told, [0, 40, undefined], "the percent held back is not told after the step");
+  });
+
+  test("a runtime's download: its start, 100% and installing at once, the sizes between once each two seconds", async (t) => {
+    const { time, updates, told, internal } = paced(t, 2);
+    internal.items.codex!.updating = 0;
+    const mb = 1024 * 1024;
+    internal.sayDownloading("codex", "0.47.0", 0, 100 * mb);
+    assert.deepEqual(told, [0], "its start at once");
+    for (let got = 1; got < 50; got++) internal.sayDownloading("codex", "0.47.0", got * mb, 100 * mb);
+    assert.deepEqual(told, [0]);
+    assert.equal(updates.get("zh")[2]!.percent, 49, "what is read has the latest");
+    await pass(time, 2_000);
+    assert.deepEqual(told, [0, 49], "the latest, two seconds after its start");
+    for (let got = 50; got < 100; got++) internal.sayDownloading("codex", "0.47.0", got * mb, 100 * mb);
+    assert.deepEqual(told, [0, 49]);
+    internal.sayDownloading("codex", "0.47.0", 100 * mb, 100 * mb);
+    assert.deepEqual(told, [0, 49, 100], "its end at once");
+    internal.say("codex", INSTALLING, null);
+    assert.deepEqual(told, [0, 49, 100, undefined], "installing at once");
+    assert.equal(updates.get("zh")[2]!.progress, say(INSTALLING, "zh"));
+    await pass(time, 2_000);
+    assert.equal(told.length, 4, "nothing held back left");
+  });
+});

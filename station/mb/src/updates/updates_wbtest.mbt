@@ -263,3 +263,14 @@ test "the applier apart: a checkout's delta.ts, a release's main.js, or the stat
     "update", "--apply-delta", "--app", "/a", "--delta", "/d", "--out", "/o",
   ])
 }
+
+///|
+test "a download's words are paced, other words told at once" {
+  let (sized, _) = downloading("2.1.0", 1500000.0, Some(3000000.0))
+  let (so_far, _) = downloading("2.1.0", 1500000.0, None)
+  assert_true(is_download_words(Some(sized)))
+  assert_true(is_download_words(Some(so_far)))
+  assert_true(!is_download_words(Some(Key("station.updates.installing", None))))
+  assert_true(!is_download_words(Some(Text("x"))))
+  assert_true(!is_download_words(None))
+}
