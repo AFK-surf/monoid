@@ -561,13 +561,14 @@ async fn P53Accounts::ask(self : P53Accounts, m : String, arg : Json) -> Json {
       "spend" =>
         match sessions().spend(text(0, "key"), str(1, "ranOn"), model?=str(2, "model")) {
           Moved(left, taken) => Json::array([jstr(left), jstr(taken)])
-          PausedSessionCap(profile, profile_id, active, cap) =>
+          PausedSessionCap(profile, profile_id, active, cap, protection) =>
             jobj_of([
               ("paused", jstr("session_cap")),
               ("profile", jstr(profile)),
               ("profileId", jstr(profile_id)),
               ("active", ji(active)),
               ("cap", ji(cap)),
+              ("protection", jb(protection)),
             ])
           Unchanged => Json::null()
         }

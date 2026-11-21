@@ -599,7 +599,7 @@ export class Accounts {
       const existing: Json | undefined = list.find((p) => p?.id === id);
       const machine = existing?.machine === true;
       // One on the machine's login is the machine's: only which of its models are used, and how it runs, are chosen.
-      const get = (key: string): unknown => (machine && !["model", "models", "backgroundOnMessage", "fast", "maxConcurrentSessions"].includes(key) ? undefined : given[key]);
+      const get = (key: string): unknown => (machine && !["model", "models", "backgroundOnMessage", "fast", "maxConcurrentSessions", "newAccountProtection"].includes(key) ? undefined : given[key]);
       // env: a string sets the value; null removes the key; an omitted key keeps it (so masked secrets survive edits).
       const env: Record<string, string> = isObject(existing?.env) ? { ...existing.env } : {};
       const givenEnv = get("env");
@@ -672,6 +672,17 @@ export class Accounts {
       } else {
         throw new Refusal(400, "maxConcurrentSessions must be a positive integer or null");
       }
+      const givenProtection = get("newAccountProtection");
+      let newAccountProtection: boolean | undefined;
+      if (givenMaxSessions !== undefined || givenProtection === false) {
+        newAccountProtection = undefined;
+      } else if (givenProtection === true) {
+        newAccountProtection = maxConcurrentSessions !== undefined ? true : undefined;
+      } else if (givenProtection !== undefined) {
+        throw new Refusal(400, "newAccountProtection must be a boolean");
+      } else {
+        newAccountProtection = maxConcurrentSessions !== undefined && existing?.newAccountProtection === true ? true : undefined;
+      }
       const joined = this.joined();
       const withheld: string[] = Array.isArray(givenWorkspaces) ? joined.filter((w) => !givenWorkspaces.includes(w)) : givenWorkspaces === null ? joined : Array.isArray(existing?.withheld) ? existing.withheld : [];
       const givenHome = get("home");
@@ -702,6 +713,7 @@ export class Accounts {
       // Only the default's opposite is written.
       if (background === false) next.backgroundOnMessage = false;
       if (maxConcurrentSessions !== undefined) next.maxConcurrentSessions = maxConcurrentSessions;
+      if (newAccountProtection === true && maxConcurrentSessions !== undefined) next.newAccountProtection = true;
       if (fast === true) next.fast = true;
       if ((given.enabled ?? existing?.enabled) === false) next.enabled = false;
       if (withheld.length > 0) next.withheld = withheld;
@@ -1065,12 +1077,12 @@ export class Accounts {
         // A Kimi Code one runs Claude Code, its token read from its home (kimi.ts), never kept here.
         const maxConcurrentSessions = DEFAULT_NEW_SUBSCRIPTION_MAX_CONCURRENT_SESSIONS;
         const made = signedIn
-          ? { id: profileId, name, access: { kind: "opencode-go", key: signedIn.access, login: true }, home: `homes/${profileId}`, env: {}, maxConcurrentSessions }
+          ? { id: profileId, name, access: { kind: "opencode-go", key: signedIn.access, login: true }, home: `homes/${profileId}`, env: {}, maxConcurrentSessions, newAccountProtection: true }
           : kimi
-            ? { id: profileId, name, access: { kind: "api-provider", provider: KIMI_CODE, login: true }, home: `homes/${profileId}`, env: {}, maxConcurrentSessions }
+            ? { id: profileId, name, access: { kind: "api-provider", provider: KIMI_CODE, login: true }, home: `homes/${profileId}`, env: {}, maxConcurrentSessions, newAccountProtection: true }
             : p.service !== undefined
               ? { id: profileId, name, access: { kind: "service", service: p.service }, home: `homes/${profileId}`, env: {} }
-              : { id: profileId, name, ...(p.runtime !== undefined ? { runtime: p.runtime } : {}), access: enterprise ? { kind: "subscription", enterprise: true } : { kind: "subscription" }, home: `homes/${profileId}`, env: {}, maxConcurrentSessions };
+              : { id: profileId, name, ...(p.runtime !== undefined ? { runtime: p.runtime } : {}), access: enterprise ? { kind: "subscription", enterprise: true } : { kind: "subscription" }, home: `homes/${profileId}`, env: {}, maxConcurrentSessions, newAccountProtection: true };
         raw.profiles = [...(Array.isArray(raw.profiles) ? raw.profiles : []), made];
       });
     } catch (e) {
@@ -1975,6 +1987,7 @@ export class Accounts {
         enabled: p.enabled !== false,
         backgroundOnMessage: p.backgroundOnMessage,
         ...(p.maxConcurrentSessions !== undefined ? { maxConcurrentSessions: p.maxConcurrentSessions } : {}),
+        ...(p.newAccountProtection === true && p.maxConcurrentSessions !== undefined ? { newAccountProtection: true } : {}),
         fast: takesFast(p) && (!fastNeedsCredits(p) || this.quotas.get(p.id)?.extraUsage === true) ? p.fast === true : null,
         check: checkView,
         login: this.logins.get(p.id),

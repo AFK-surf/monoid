@@ -1069,6 +1069,9 @@ pub async fn Accounts::profiles_view(self : Accounts, viewer : JV?) -> JV {
         ])
     if p.max_concurrent_sessions is Some(n) {
       view = jset(view, "maxConcurrentSessions", jint(n))
+      if p.new_account_protection {
+        view = jset(view, "newAccountProtection", jbool(true))
+      }
     }
     views.push((view, used_by))
   }

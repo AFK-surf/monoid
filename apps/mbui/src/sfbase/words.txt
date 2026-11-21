@@ -2392,6 +2392,7 @@ web-pages.profiles.maxConcurrentSessions
 web-pages.profiles.maxConcurrentSessionsHint
 web-pages.profiles.maxConcurrentSessionsInvalid
 web-pages.profiles.maxConcurrentSessionsNote
+web-pages.profiles.maxConcurrentSessionsProtectionNote
 web-pages.profiles.maxConcurrentSessionsSaved
 web-pages.profiles.maxConcurrentSessionsUnlimited
 web-pages.profiles.checkedAt
@@ -2459,6 +2460,11 @@ web-pages.profiles.pasteCode
 web-pages.profiles.pasteKey
 web-pages.profiles.projectPlaceholder
 web-pages.profiles.projectStep
+web-pages.profiles.protectionAdjust
+web-pages.profiles.protectionBody
+web-pages.profiles.protectionTitle
+web-pages.profiles.protectionTurnOff
+web-pages.profiles.protectionTurnedOff
 web-pages.profiles.quota
 web-pages.profiles.quotaAbout
 web-pages.profiles.quotaReset

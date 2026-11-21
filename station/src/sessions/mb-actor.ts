@@ -313,6 +313,7 @@ function errorOf(error: unknown, runtime: RuntimeKind): Json {
         profileId: (error as any).profileId,
         active: (error as any).active,
         cap: (error as any).cap,
+        protection: Boolean((error as any).protection),
       }
     : {};
   return {

@@ -459,28 +459,35 @@ test("accounts: madeOfLogin defaults maxConcurrentSessions=8, putProfile sets/cl
     );
     const rawAuto = config.raw().profiles.find((p: any) => p.id === "sub-auto");
     assert.equal(rawAuto?.maxConcurrentSessions, 8);
-    assert.equal(accounts.profilesView(viewer).find((p: any) => p.id === "sub-auto")?.maxConcurrentSessions, 8);
+    assert.equal(rawAuto?.newAccountProtection, true);
+    const viewAuto = accounts.profilesView(viewer).find((p: any) => p.id === "sub-auto") as any;
+    assert.equal(viewAuto?.maxConcurrentSessions, 8);
+    assert.equal(viewAuto?.newAccountProtection, true);
 
-    // putProfile edits other fields -> preserves maxConcurrentSessions: 8.
+    // putProfile edits other fields -> preserves maxConcurrentSessions: 8 and newAccountProtection: true.
     await accounts.putProfile("sub-auto", { name: "Renamed" }, viewer);
     assert.equal(config.raw().profiles.find((p: any) => p.id === "sub-auto")?.maxConcurrentSessions, 8);
+    assert.equal(config.raw().profiles.find((p: any) => p.id === "sub-auto")?.newAccountProtection, true);
 
-    // putProfile sets custom cap -> updates to 3.
+    // putProfile sets custom cap -> updates to 3 and exits new-account protection.
     await accounts.putProfile("sub-auto", { maxConcurrentSessions: 3 }, viewer);
     assert.equal(config.raw().profiles.find((p: any) => p.id === "sub-auto")?.maxConcurrentSessions, 3);
+    assert.equal(config.raw().profiles.find((p: any) => p.id === "sub-auto")?.newAccountProtection, undefined);
+    assert.equal((accounts.profilesView(viewer).find((p: any) => p.id === "sub-auto") as any)?.newAccountProtection, undefined);
 
     // putProfile rejects invalid values (negative, float, string).
     await assert.rejects(() => accounts.putProfile("sub-auto", { maxConcurrentSessions: -1 }, viewer), /positive integer or null/);
     await assert.rejects(() => accounts.putProfile("sub-auto", { maxConcurrentSessions: 2.5 }, viewer), /positive integer or null/);
     await assert.rejects(() => accounts.putProfile("sub-auto", { maxConcurrentSessions: "4" }, viewer), /positive integer or null/);
 
-    // putProfile clears cap with null or 0.
+    // putProfile clears cap with null or 0 (and one-click disable clears both).
     await accounts.putProfile("sub-auto", { maxConcurrentSessions: 0 }, viewer);
     assert.equal(config.raw().profiles.find((p: any) => p.id === "sub-auto")?.maxConcurrentSessions, undefined);
     assert.equal(accounts.profilesView(viewer).find((p: any) => p.id === "sub-auto")?.maxConcurrentSessions, undefined);
     await accounts.putProfile("sub-auto", { maxConcurrentSessions: 5 }, viewer);
-    await accounts.putProfile("sub-auto", { maxConcurrentSessions: null }, viewer);
+    await accounts.putProfile("sub-auto", { maxConcurrentSessions: null, newAccountProtection: false }, viewer);
     assert.equal(config.raw().profiles.find((p: any) => p.id === "sub-auto")?.maxConcurrentSessions, undefined);
+    assert.equal(config.raw().profiles.find((p: any) => p.id === "sub-auto")?.newAccountProtection, undefined);
 
     // machine profile also allows editing maxConcurrentSessions.
     await config.updateSoon((raw) => {
@@ -489,18 +496,21 @@ test("accounts: madeOfLogin defaults maxConcurrentSessions=8, putProfile sets/cl
     await accounts.putProfile("machine-claude", { maxConcurrentSessions: 6 }, viewer);
     assert.equal(config.raw().profiles.find((p: any) => p.id === "machine-claude")?.maxConcurrentSessions, 6);
 
-    // checkConfig validates non-negative integer.
-    assert.doesNotThrow(() => checkConfig({ profiles: [{ id: "p1", runtime: "claude", access: { kind: "subscription" }, home: "h/p1", maxConcurrentSessions: 0 }] }, dir));
+    // checkConfig validates non-negative integer and boolean newAccountProtection.
+    assert.doesNotThrow(() => checkConfig({ profiles: [{ id: "p1", runtime: "claude", access: { kind: "subscription" }, home: "h/p1", maxConcurrentSessions: 0, newAccountProtection: false }] }, dir));
     assert.throws(() => checkConfig({ profiles: [{ id: "p1", runtime: "claude", access: { kind: "subscription" }, home: "h/p1", maxConcurrentSessions: -1 }] }, dir), /non-negative integer/);
     assert.throws(() => checkConfig({ profiles: [{ id: "p1", runtime: "claude", access: { kind: "subscription" }, home: "h/p1", maxConcurrentSessions: 1.5 }] }, dir), /non-negative integer/);
+    assert.throws(() => checkConfig({ profiles: [{ id: "p1", runtime: "claude", access: { kind: "subscription" }, home: "h/p1", newAccountProtection: "yes" }] }, dir), /boolean/);
 
-    // portable() preserves maxConcurrentSessions.
-    assert.equal(portable({ id: "p1", home: "h/p1", name: "N", maxConcurrentSessions: 4 }).maxConcurrentSessions, 4);
+    // portable() preserves maxConcurrentSessions and newAccountProtection.
+    const port = portable({ id: "p1", home: "h/p1", name: "N", maxConcurrentSessions: 4, newAccountProtection: true });
+    assert.equal(port.maxConcurrentSessions, 4);
+    assert.equal(port.newAccountProtection, true);
 
-    // Direct runOn throws AccountCapError with structured fields.
+    // Direct runOn throws AccountCapError with structured fields including protection.
     assert.throws(() => {
-      throw new AccountCapError("Sub", "sub1", 2, 2);
-    }, (e: any) => e instanceof AccountCapError && e.sessionCap === true && e.active === 2 && e.cap === 2);
+      throw new AccountCapError("Sub", "sub1", 2, 2, true);
+    }, (e: any) => e instanceof AccountCapError && e.sessionCap === true && e.active === 2 && e.cap === 2 && e.protection === true);
   } finally {
     await accounts.close();
     store.close();

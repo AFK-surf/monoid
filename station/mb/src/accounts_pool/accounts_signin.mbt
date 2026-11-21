@@ -717,6 +717,7 @@ async fn Accounts::made_of_login(
             ("home", js("homes/\{profile_id}")),
             ("env", Obj([])),
             ("maxConcurrentSessions", max_sessions),
+            ("newAccountProtection", jbool(true)),
           ])
         None =>
           if kimi {
@@ -734,6 +735,7 @@ async fn Accounts::made_of_login(
               ("home", js("homes/\{profile_id}")),
               ("env", Obj([])),
               ("maxConcurrentSessions", max_sessions),
+              ("newAccountProtection", jbool(true)),
             ])
           } else {
             jobj([
@@ -751,6 +753,7 @@ async fn Accounts::made_of_login(
               ("home", js("homes/\{profile_id}")),
               ("env", Obj([])),
               ("maxConcurrentSessions", max_sessions),
+              ("newAccountProtection", jbool(true)),
             ])
           }
       }

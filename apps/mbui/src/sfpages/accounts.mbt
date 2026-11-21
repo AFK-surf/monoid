@@ -182,7 +182,7 @@ fn profile_found_node(
     // (every block it may have, in their order, each in a room that opens as profile_keys comes to name it and closes
     // as it stops naming it, on its way, as the old page's `keys` did: none come or gone at once over what is under them)
     fn() {
-      ["sign-in", "trouble", "quota", "station", "settings"]
+      ["sign-in", "trouble", "protection", "quota", "station", "settings"]
     },
     fn(b, key) {
       b.show(fn() { profile_keys(core, here, o, p, entry).contains(key) }, fn(r) {
@@ -266,6 +266,9 @@ fn profile_keys(core : Core, here : () -> Here, o : () -> Json?, p : () -> Json?
   } else if field(pv, "trouble") is Some(Object(_)) && text(field(pv, "trouble"), "action") != "login" {
     out.push("trouble")
   }
+  if profile_in_protection(pv) {
+    out.push("protection")
+  }
   if shows_quota(pv) || profile_users(o(), pv).length() > 0 {
     out.push("quota")
   }
@@ -305,6 +308,17 @@ fn profile_max_sessions(p : Json?) -> Bool {
 }
 
 ///|
+/// Whether this subscription/membership profile is currently in default new-account protection.
+fn profile_in_protection(p : Json?) -> Bool {
+  !profile_copy(p) &&
+  flag(p, "newAccountProtection") &&
+  (match field(p, "maxConcurrentSessions") {
+    Some(Number(n, ..)) if n >= 1.0 => true
+    _ => false
+  })
+}
+
+///|
 /// The connects bound to it, as the station's overview lists them.
 fn profile_users(o : Json?, p : Json?) -> Array[Json] {
   strings(p, "usedBy").filter_map(fn(uid) {
@@ -335,6 +349,7 @@ fn profile_block_node(
   match key {
     "sign-in" => profile_sign_in_node(b, core, address, id, s, p, open)
     "trouble" => profile_trouble_node(b, core, address, id, s, p, open)
+    "protection" => profile_protection_node(b, core, address, id, p)
     "quota" => profile_quota_node(b, core, address, id, o, p, tips)
     "station" => profile_station_node(b, core, address, id, s, o, p, entry)
     "settings" => profile_settings_node(b, core, here, address, id, s, o, p, entry, open, stint, tips)
@@ -643,6 +658,114 @@ fn profile_menu(core : Core, here : Here, address : String, p : Json?, from : @s
 }
 
 // ── what to do first ────────────────────────────────────────────────────
+
+///|
+/// Opens the dialog to edit `maxConcurrentSessions` (blank or 0 clears to unlimited).
+fn ask_max_sessions(core : Core, address : String, id : String, p : () -> Json?) -> Unit {
+  let current = match field(@signals.untracked(p), "maxConcurrentSessions") {
+    Some(Number(n, ..)) if n >= 1.0 => n.to_int().to_string()
+    _ => ""
+  }
+  @sf.ask(
+    @sf.t("web-pages.profiles.maxConcurrentSessions"),
+    @sf.t("common.save"),
+    fn(raw) {
+      let trimmed = raw.trim(chars=" \t\n").to_owned()
+      if trimmed == "" || trimmed == "0" {
+        @settings.act(
+          core,
+          @sf.t("web-pages.profiles.maxConcurrentSessions"),
+          "profile.put",
+          obj([("station", str(address)), ("id", str(id)), ("input", obj([("maxConcurrentSessions", Json::null())]))]),
+          done=@sf.t("web-pages.profiles.maxConcurrentSessionsSaved"),
+        )
+      } else {
+        let mut n = 0
+        let mut ok = trimmed.length() > 0 && trimmed.length() <= 9
+        for c in trimmed {
+          if c >= '0' && c <= '9' {
+            n = n * 10 + (c.to_int() - '0'.to_int())
+          } else {
+            ok = false
+          }
+        }
+        if ok && n > 0 {
+          @settings.act(
+            core,
+            @sf.t("web-pages.profiles.maxConcurrentSessions"),
+            "profile.put",
+            obj([("station", str(address)), ("id", str(id)), ("input", obj([("maxConcurrentSessions", Json::number(n.to_double()))]))]),
+            done=@sf.t("web-pages.profiles.maxConcurrentSessionsSaved"),
+          )
+        } else {
+          @sfbase.toast_later(@sf.t("web-pages.profiles.maxConcurrentSessionsInvalid"))
+        }
+      }
+    },
+    value=current,
+    placeholder=@sf.t("web-pages.profiles.maxConcurrentSessionsUnlimited"),
+    hint=@sf.t("web-pages.profiles.maxConcurrentSessionsHint"),
+    empty=true,
+  )
+}
+
+///|
+/// New-account protection notice card in node `b`: explains why the default concurrency limit exists
+/// and offers one-click disable (`maxConcurrentSessions: null, newAccountProtection: false`) or limit adjustment.
+fn profile_protection_node(
+  b : @view.View,
+  core : Core,
+  address : String,
+  id : String,
+  p : () -> Json?,
+) -> Unit {
+  let on = [("station", address), ("id", id)]
+  let cap_text = fn() -> String {
+    match field(p(), "maxConcurrentSessions") {
+      Some(Number(n, ..)) if n >= 1.0 => n.to_int().to_string()
+      _ => "8"
+    }
+  }
+  @sf.page_card_node(b, footed=true, fn(k) {
+    k.gap(Is(pf_card_gap)) |> ignore
+    @sf.card_lines_node(
+      k,
+      fn() { @sf.t("web-pages.profiles.protectionTitle", args=[("cap", cap_text())]) },
+      note=fn() { @sf.t("web-pages.profiles.protectionBody", args=[("cap", cap_text())]) },
+    )
+    @sf.card_foot_node(k, fn(f) {
+      f.lies_along(Is(Between)).wraps(Is(Some(pf_foot_lines)), reverse=true) |> ignore
+      @sf.button_node(
+        f,
+        fn() { @sf.t("web-pages.profiles.protectionTurnOff") },
+        fn() {
+          @settings.act(
+            core,
+            @sf.t("web-pages.profiles.protectionTurnOff"),
+            "profile.put",
+            obj([
+              ("station", str(address)),
+              ("id", str(id)),
+              ("input", obj([("maxConcurrentSessions", Json::null()), ("newAccountProtection", Json::boolean(false))])),
+            ]),
+            done=@sf.t("web-pages.profiles.protectionTurnedOff"),
+          )
+        },
+        tone=Primary,
+        busy=fn() { is_doing(core, ["profile.put"], on) },
+      )
+      |> ignore
+      @sf.button_node(
+        f,
+        fn() { @sf.t("web-pages.profiles.protectionAdjust") },
+        fn() { ask_max_sessions(core, address, id, p) },
+        tone=Ghost,
+        card_words=true,
+      )
+      |> ignore
+    })
+  })
+}
 
 ///|
 /// Signing a subscription in without a terminal (SignIn), on a card in node `b`: still.fail runs the runtime's login on
@@ -2023,54 +2146,14 @@ fn profile_settings_node(
                 @sf.link_row_node(
                   r,
                   fn() { @sf.t("web-pages.profiles.maxConcurrentSessions") },
-                  fn() {
-                    let current = match field(@signals.untracked(p), "maxConcurrentSessions") {
-                      Some(Number(n, ..)) if n >= 1.0 => n.to_int().to_string()
-                      _ => ""
+                  fn() { ask_max_sessions(core, address, id, p) },
+                  note=fn() {
+                    if profile_in_protection(p()) {
+                      @sf.t("web-pages.profiles.maxConcurrentSessionsProtectionNote")
+                    } else {
+                      @sf.t("web-pages.profiles.maxConcurrentSessionsNote")
                     }
-                    @sf.ask(
-                      @sf.t("web-pages.profiles.maxConcurrentSessions"),
-                      @sf.t("common.save"),
-                      fn(raw) {
-                        let trimmed = raw.trim(chars=" \t\n").to_owned()
-                        if trimmed == "" || trimmed == "0" {
-                          @settings.act(
-                            core,
-                            @sf.t("web-pages.profiles.maxConcurrentSessions"),
-                            "profile.put",
-                            obj([("station", str(address)), ("id", str(id)), ("input", obj([("maxConcurrentSessions", Json::null())]))]),
-                            done=@sf.t("web-pages.profiles.maxConcurrentSessionsSaved"),
-                          )
-                        } else {
-                          let mut n = 0
-                          let mut ok = trimmed.length() > 0 && trimmed.length() <= 9
-                          for c in trimmed {
-                            if c >= '0' && c <= '9' {
-                              n = n * 10 + (c.to_int() - '0'.to_int())
-                            } else {
-                              ok = false
-                            }
-                          }
-                          if ok && n > 0 {
-                            @settings.act(
-                              core,
-                              @sf.t("web-pages.profiles.maxConcurrentSessions"),
-                              "profile.put",
-                              obj([("station", str(address)), ("id", str(id)), ("input", obj([("maxConcurrentSessions", Json::number(n.to_double()))]))]),
-                              done=@sf.t("web-pages.profiles.maxConcurrentSessionsSaved"),
-                            )
-                          } else {
-                            @sfbase.toast_later(@sf.t("web-pages.profiles.maxConcurrentSessionsInvalid"))
-                          }
-                        }
-                      },
-                      value=current,
-                      placeholder=@sf.t("web-pages.profiles.maxConcurrentSessionsUnlimited"),
-                      hint=@sf.t("web-pages.profiles.maxConcurrentSessionsHint"),
-                      empty=true,
-                    )
                   },
-                  note=fn() { @sf.t("web-pages.profiles.maxConcurrentSessionsNote") },
                   value=fn() {
                     match field(p(), "maxConcurrentSessions") {
                       Some(Number(n, ..)) if n >= 1.0 => n.to_int().to_string()

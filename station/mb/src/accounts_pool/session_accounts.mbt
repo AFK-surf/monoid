@@ -689,7 +689,7 @@ fn SessionAccounts::model_spent_at(
 /// What `spend` returned: moved to another profile, paused due to account concurrency cap, or unchanged.
 pub(all) enum SpendResult {
   Moved(String, String)
-  PausedSessionCap(String, String, Int, Int)
+  PausedSessionCap(String, String, Int, Int, Bool)
   Unchanged
 } derive(Eq, Show)
 
@@ -717,6 +717,26 @@ pub fn SessionAccounts::account_max_sessions(
     }
   }
   min_cap
+}
+
+///|
+/// Whether the effective concurrency cap on the underlying account of `id` comes from new-account protection.
+pub fn SessionAccounts::account_in_protection(
+  self : SessionAccounts,
+  cfg : HubConfig,
+  id : String,
+) -> Bool {
+  guard self.account_max_sessions(cfg, id) is Some(min_cap) else { return false }
+  let key = self.account_key(id)
+  for p in cfg.profiles {
+    if self.account_key(p.id) != key {
+      continue
+    }
+    if p.max_concurrent_sessions == Some(min_cap) && p.new_account_protection {
+      return true
+    }
+  }
+  false
 }
 
 ///|
@@ -919,6 +939,7 @@ pub async fn SessionAccounts::run_on(
       force_cap~,
       active_of~,
       cap_of~,
+      protection_of=p => self.account_in_protection(cfg, p.id),
       crowded=p => urgency(self.health_for(cfg, p.id, row.model).quota, now).crowded,
       can=id => self.can(cfg, id, row.model),
       health_of=id => self.health_of(cfg, id),
@@ -978,6 +999,7 @@ async fn choose_run_on_profile(
   force_cap? : Bool = false,
   active_of? : (Profile) -> Int = _ => 0,
   cap_of? : (Profile) -> Int? = _ => None,
+  protection_of? : (Profile) -> Bool = _ => false,
   crowded~ : (Profile) -> Bool,
   can~ : (String) -> Bool,
   health_of~ : (String) -> Health,
@@ -1027,6 +1049,7 @@ async fn choose_run_on_profile(
                 c.id,
                 active_of(c),
                 cap_of(c).unwrap_or(0),
+                protection=protection_of(c),
               )
           }
         }
@@ -1090,6 +1113,7 @@ async fn choose_run_on_profile(
                 chosen.id,
                 active_of(chosen),
                 cap_of(chosen).unwrap_or(0),
+                protection=protection_of(chosen),
               )
             }
           }
@@ -1306,6 +1330,7 @@ pub async fn SessionAccounts::spend(
       chosen.id,
       active_of(chosen),
       cap_of(chosen).unwrap_or(0),
+      self.account_in_protection(cfg, chosen.id),
     )
   }
   if candidates.length() == 0 {

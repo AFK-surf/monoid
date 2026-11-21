@@ -904,6 +904,8 @@ export interface Profile {
 	backgroundOnMessage?: boolean;
 	/** Optional active-session concurrency cap for this profile; None when unlimited or from an older station. */
 	maxConcurrentSessions?: number;
+	/** True while the default new-account protection cap is active; absent otherwise. */
+	newAccountProtection?: boolean;
 	/** Whether this profile may be used; absent on stations from before disabling profiles. */
 	enabled?: boolean;
 	fast?: boolean;

@@ -85,8 +85,9 @@ priv struct SettingsFixture {
   models_added : Array[String]
   /// Whether the example API key is enabled.
   mut key_enabled : Bool
-  /// Claude 主账号's configured maxConcurrentSessions (null = unlimited).
+  /// Claude 主账号's configured maxConcurrentSessions (null = unlimited) and new-account protection flag.
   mut cc_max_sessions : Json
+  mut cc_protection : Bool
   /// A copy of Maple's Claude subscription among Willow's profiles (settings-profile-copy), and whether Willow uses it.
   mut copy_shown : Bool
   mut copy_enabled : Bool
@@ -231,6 +232,7 @@ let fx : SettingsFixture = {
   models_added: [],
   key_enabled: true,
   cc_max_sessions: Json::number(8.0),
+  cc_protection: true,
   copy_shown: false,
   copy_enabled: true,
   pairing: false,
@@ -548,6 +550,7 @@ fn fixture_reset() -> Unit {
   fx.models_added.clear()
   fx.key_enabled = true
   fx.cc_max_sessions = Json::number(8.0)
+  fx.cc_protection = true
   fx.copy_shown = false
   fx.copy_enabled = true
   fx.version = 0
@@ -1497,6 +1500,7 @@ fn fx_profiles() -> Array[Json] {
       ("fast", Json::boolean(false)),
       ("backgroundOnMessage", Json::boolean(true)),
       ("maxConcurrentSessions", fx.cc_max_sessions),
+      ("newAccountProtection", Json::boolean(fx.cc_protection)),
       ("workspaces", ["ws2"]),
       ("loginCommand", str("claude setup-token")),
       (
@@ -4451,11 +4455,13 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
       fx_changed()
       Some(Ok(obj([])))
     }
-    "profile.put" if text(p, "id") == "cc" && has(field(p, "input"), "maxConcurrentSessions") => {
-      fx.cc_max_sessions = match field(field(p, "input"), "maxConcurrentSessions") {
-        Some(v) => v
-        None => Json::null()
+    "profile.put" if text(p, "id") == "cc" &&
+      (field(field(p, "input"), "maxConcurrentSessions") is Some(_) || field(field(p, "input"), "newAccountProtection") is Some(_)) => {
+      match field(field(p, "input"), "maxConcurrentSessions") {
+        Some(v) => fx.cc_max_sessions = v
+        None => ()
       }
+      fx.cc_protection = false
       fx_changed()
       Some(Ok(obj([])))
     }

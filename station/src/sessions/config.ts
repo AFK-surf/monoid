@@ -34,6 +34,8 @@ export type Profile = RuntimeProfile & {
   withheld?: string[];
   /// Optional active-session concurrency cap for this profile (positive integer; absent/0: unlimited).
   maxConcurrentSessions?: number;
+  /// Whether this profile is currently in new-account protection (auto-set on new subscription sign-in).
+  newAccountProtection?: boolean;
 };
 
 export type ConnectMode = "multi-session" | "single-session";
@@ -145,6 +147,7 @@ export function hubConfig(raw: any, dataDir: string, found: (id: string) => read
       enabled: p.enabled !== false,
       ...(Array.isArray(p.withheld) ? { withheld: p.withheld.filter((w: unknown): w is string => typeof w === "string" && w !== "") } : {}),
       ...(maxConcurrentSessions !== undefined ? { maxConcurrentSessions } : {}),
+      ...(p.newAccountProtection === true && maxConcurrentSessions !== undefined ? { newAccountProtection: true } : {}),
     };
   });
   const connects: Connect[] = (Array.isArray(raw?.connects) ? raw.connects : []).map((c: any): Connect => {

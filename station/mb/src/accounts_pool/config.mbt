@@ -21,6 +21,7 @@ pub(all) struct Profile {
   background_on_message : Bool
   withheld : Array[String]?
   max_concurrent_sessions : Int?
+  new_account_protection : Bool
 }
 
 ///|
@@ -189,6 +190,13 @@ pub fn profile_of(
     Some(n) => jset(o, "maxConcurrentSessions", jint(n))
     None => jdel(o, "maxConcurrentSessions")
   }
+  let new_account_protection = p.get("newAccountProtection") == Some(Bool(true)) &&
+    max_concurrent_sessions is Some(_)
+  o = if new_account_protection {
+    jset(o, "newAccountProtection", jbool(true))
+  } else {
+    jdel(o, "newAccountProtection")
+  }
   if is_undef(o.get("id").unwrap_or(Null)) {
     o = jdel(o, "id")
   }
@@ -211,6 +219,7 @@ pub fn profile_of(
     background_on_message: bg,
     withheld,
     max_concurrent_sessions,
+    new_account_protection,
   }
 }
 
@@ -345,6 +354,11 @@ pub fn Profile::of_hub(v : JV) -> Profile {
       Some(Num(n)) if is_integer(n) && n > 0.0 => Some(n.to_int())
       _ => None
     },
+    new_account_protection: v.get("newAccountProtection") == Some(Bool(true)) &&
+      (match v.get("maxConcurrentSessions") {
+        Some(Num(n)) if is_integer(n) && n > 0.0 => true
+        _ => false
+      }),
   }
 }
 

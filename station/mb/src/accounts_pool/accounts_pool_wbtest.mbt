@@ -103,6 +103,7 @@ fn test_profile(
   models : Array[String],
   billed? : Bool = false,
   max_concurrent_sessions? : Int? = None,
+  new_account_protection? : Bool = false,
 ) -> Profile {
   let raw_fields = [
     ("id", js(id)),
@@ -115,7 +116,12 @@ fn test_profile(
     raw_fields.push(("kind", js("api")))
   }
   match max_concurrent_sessions {
-    Some(n) => raw_fields.push(("maxConcurrentSessions", jint(n)))
+    Some(n) => {
+      raw_fields.push(("maxConcurrentSessions", jint(n)))
+      if new_account_protection {
+        raw_fields.push(("newAccountProtection", jbool(true)))
+      }
+    }
     None => ()
   }
   {
@@ -134,6 +140,7 @@ fn test_profile(
     background_on_message: false,
     withheld: None,
     max_concurrent_sessions,
+    new_account_protection: new_account_protection && max_concurrent_sessions is Some(_),
   }
 }
 
@@ -225,6 +232,7 @@ fn test_access_profile(
   models : Array[String],
   access : JV,
   max_concurrent_sessions? : Int? = None,
+  new_account_protection? : Bool = false,
 ) -> Profile {
   let fields = [
     ("id", js(id)),
@@ -235,7 +243,12 @@ fn test_access_profile(
     ("access", access),
   ]
   match max_concurrent_sessions {
-    Some(n) => fields.push(("maxConcurrentSessions", jint(n)))
+    Some(n) => {
+      fields.push(("maxConcurrentSessions", jint(n)))
+      if new_account_protection {
+        fields.push(("newAccountProtection", jbool(true)))
+      }
+    }
     None => ()
   }
   let raw = jobj(fields)
@@ -255,6 +268,7 @@ fn test_access_profile(
     background_on_message: false,
     withheld: None,
     max_concurrent_sessions,
+    new_account_protection: new_account_protection && max_concurrent_sessions is Some(_),
   }
 }
 
@@ -730,19 +744,21 @@ test "maxConcurrentSessions: validation, parsing, is_session_capped, pick_profil
   assert_false(passes(Some(jnum(2.5))))
   assert_false(passes(Some(js("4"))))
 
-  // profile_of parses positive integers only; 0 / absent -> None.
+  // profile_of parses positive integers only; 0 / absent -> None; newAccountProtection only when capped.
   let parsed_zero = profile_of(
-    jobj([("id", js("p0")), ("runtime", js("claude")), ("home", js("h/p0")), ("maxConcurrentSessions", jint(0))]),
+    jobj([("id", js("p0")), ("runtime", js("claude")), ("home", js("h/p0")), ("maxConcurrentSessions", jint(0)), ("newAccountProtection", jbool(true))]),
     "/data",
     _ => None,
   )
   assert_eq(parsed_zero.max_concurrent_sessions, None)
+  assert_false(parsed_zero.new_account_protection)
   let parsed_pos = profile_of(
-    jobj([("id", js("p8")), ("runtime", js("claude")), ("home", js("h/p8")), ("maxConcurrentSessions", jint(8))]),
+    jobj([("id", js("p8")), ("runtime", js("claude")), ("home", js("h/p8")), ("maxConcurrentSessions", jint(8)), ("newAccountProtection", jbool(true))]),
     "/data",
     _ => None,
   )
   assert_eq(parsed_pos.max_concurrent_sessions, Some(8))
+  assert_true(parsed_pos.new_account_protection)
 
   // is_session_capped: billed-per-use is never capped; subscription respects active >= cap.
   let p_legacy = test_access_profile("legacy", ["opus"], jobj([("kind", js("subscription"))]))
@@ -751,6 +767,7 @@ test "maxConcurrentSessions: validation, parsing, is_session_capped, pick_profil
     ["opus"],
     jobj([("kind", js("subscription"))]),
     max_concurrent_sessions=Some(2),
+    new_account_protection=true,
   )
   let p_api = test_access_profile(
     "or",
@@ -818,6 +835,7 @@ test "choose_run_on_profile throws AccountCapError when only capped subscription
     ["opus"],
     jobj([("kind", js("subscription"))]),
     max_concurrent_sessions=Some(2),
+    new_account_protection=true,
   )
   let p_or = test_access_profile(
     "or",
@@ -840,6 +858,7 @@ test "choose_run_on_profile throws AccountCapError when only capped subscription
           force_cap=false,
           active_of=p => if p.id == "capped" { 2 } else { 0 },
           cap_of=p => p.max_concurrent_sessions,
+          protection_of=p => p.new_account_protection,
           crowded=_ => false,
           can=_ => true,
           health_of=_ => ok_h,
@@ -851,7 +870,7 @@ test "choose_run_on_profile throws AccountCapError when only capped subscription
       )
       false
     } catch {
-      Thrown("AccountCapError", _) => true
+      Thrown("AccountCapError", said) => said.get("protection") == Some(Bool(true))
       _ => false
     }
   })

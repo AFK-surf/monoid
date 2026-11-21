@@ -38,6 +38,7 @@ pub fn account_cap_error(
   profile_id : String,
   active : Int,
   cap : Int,
+  protection? : Bool = false,
 ) -> Thrown {
   Thrown(
     "AccountCapError",
@@ -47,6 +48,7 @@ pub fn account_cap_error(
       ("profileId", js(profile_id)),
       ("active", jint(active)),
       ("cap", jint(cap)),
+      ("protection", jbool(protection)),
       ("message", js("account \{profile} reached concurrency cap (\{active}/\{cap})")),
     ]),
   )

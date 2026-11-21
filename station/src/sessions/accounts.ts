@@ -39,19 +39,21 @@ export class AccountCapError extends Error {
   readonly profileId: string;
   readonly active: number;
   readonly cap: number;
+  readonly protection: boolean;
 
-  constructor(profile: string, profileId: string, active: number, cap: number) {
+  constructor(profile: string, profileId: string, active: number, cap: number, protection = false) {
     super(`account ${profile} reached concurrency cap (${active}/${cap})`);
     this.name = "AccountCapError";
     this.profile = profile;
     this.profileId = profileId;
     this.active = active;
     this.cap = cap;
+    this.protection = protection;
   }
 }
 
 /// Returned by `spend` when failover only has subscription accounts at their concurrency cap.
-export type SpendPaused = { paused: "session_cap"; profile: string; profileId: string; active: number; cap: number };
+export type SpendPaused = { paused: "session_cap"; profile: string; profileId: string; active: number; cap: number; protection: boolean };
 
 const withSpelling = (p: Profile): RunOn => ({ ...p, spelling: (model: string) => spelling(p, model) });
 
@@ -323,6 +325,18 @@ export class Accounts {
     return minCap;
   }
 
+  /// Whether the effective concurrency cap for `id` (or its shared underlying account) comes from a profile in new-account protection.
+  accountInProtection(id: string): boolean {
+    const minCap = this.accountMaxSessions(id);
+    if (minCap === undefined) return false;
+    const key = this.accountKey(id);
+    for (const p of this.deps.config().profiles) {
+      if (this.accountKey(p.id) !== key) continue;
+      if (p.maxConcurrentSessions === minCap && p.newAccountProtection === true) return true;
+    }
+    return false;
+  }
+
   private countByAccount(profiles: string[]): Map<string, number> {
     const counts = new Map<string, number>();
     for (const id of profiles) {
@@ -430,7 +444,7 @@ export class Accounts {
         } else {
           const moved = elsewhere(keptProfiles, true);
           if (moved) return moved;
-          throw new AccountCapError(current.name, current.id, activeOf(current), capOf(current)!);
+          throw new AccountCapError(current.name, current.id, activeOf(current), capOf(current)!, this.accountInProtection(current.id));
         }
       } else {
         // It moves from one billed per use to one paid for already on the next turn without waiting for `cheapToLeave`,
@@ -469,7 +483,7 @@ export class Accounts {
           const moved = elsewhere(keptProfiles, true);
           if (moved) return moved;
           const chosen = this.pick(usablePaid, row.model, false, key);
-          throw new AccountCapError(chosen.name, chosen.id, activeOf(chosen), capOf(chosen)!);
+          throw new AccountCapError(chosen.name, chosen.id, activeOf(chosen), capOf(chosen)!, this.accountInProtection(chosen.id));
         }
       }
     }
@@ -578,7 +592,7 @@ export class Accounts {
         if (across) return [name(left), across.name];
       }
       const chosen = this.pick(paidCandidates, row.model, false, key);
-      return { paused: "session_cap", profile: chosen.name, profileId: chosen.id, active: activeOf(chosen), cap: capOf(chosen)! };
+      return { paused: "session_cap", profile: chosen.name, profileId: chosen.id, active: activeOf(chosen), cap: capOf(chosen)!, protection: this.accountInProtection(chosen.id) };
     }
     if (candidates.length === 0) {
       if (keptProfiles !== null) return null;

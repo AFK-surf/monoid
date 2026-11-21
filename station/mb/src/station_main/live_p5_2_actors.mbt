@@ -407,6 +407,7 @@ fn error_of(e : Error, runtime : String) -> Json {
     if said.get("profileId") is Some(Str(pid)) { out["profileId"] = jstr(pid) }
     if said.get("active") is Some(Num(n)) { out["active"] = jn(n) }
     if said.get("cap") is Some(Num(n)) { out["cap"] = jn(n) }
+    if said.get("protection") is Some(Bool(b)) { out["protection"] = jb(b) }
   }
   Json::object(out)
 }

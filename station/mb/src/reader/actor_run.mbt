@@ -546,6 +546,7 @@ async fn Actors::reassign(self : Actors, a : Actor, thread : Json, seq : Json) -
       str_of(o.get("profile")).unwrap_or(""),
       num_of(o.get("active")).unwrap_or(0.0).to_int(),
       num_of(o.get("cap")).unwrap_or(0.0).to_int(),
+      o.get("protection") is Some(True),
       "resume",
       turn_for_nobody(),
       None,
@@ -1586,13 +1587,14 @@ async fn Actors::pending_and_format(self : Actors, a : Actor, allow_empty : Bool
 }
 
 ///|
-fn session_cap_info(e : Error) -> (String, Int, Int)? {
+fn session_cap_info(e : Error) -> (String, Int, Int, Bool)? {
   match e {
     Asked(j) if j.value("sessionCap") is Some(True) => {
       let profile = str_of(j.value("profile")).unwrap_or("")
       let active = num_of(j.value("active")).unwrap_or(0.0).to_int()
       let cap = num_of(j.value("cap")).unwrap_or(0.0).to_int()
-      Some((profile, active, cap))
+      let protection = j.value("protection") is Some(True)
+      Some((profile, active, cap, protection))
     }
     _ => None
   }
@@ -1606,6 +1608,7 @@ async fn Actors::pause_for_session_cap(
   profile : String,
   active : Int,
   cap : Int,
+  protection : Bool,
   kind : String,
   by : Json,
   turn : Turn?,
@@ -1623,7 +1626,12 @@ async fn Actors::pause_for_session_cap(
       }
     }
     ignore(self.store(a, "endTurn", [jstr(tid), jstr("failed"), jstr("other: session_cap"), Json::null(), Json::null()]))
-    let said = self.t(a, "station.notice.accountCapPaused", args={
+    let notice_key = if protection {
+      "station.notice.accountCapProtectionPaused"
+    } else {
+      "station.notice.accountCapPaused"
+    }
+    let said = self.t(a, notice_key, args={
       "profile": jstr(profile),
       "active": jnum(active.to_double()),
       "cap": jnum(cap.to_double()),
@@ -1676,9 +1684,9 @@ async fn Actors::start_turn(
       let turn = a.turn
       a.turn = None
       a.phase = "idle"
-      if session_cap_info(e) is Some((profile, active, cap)) {
+      if session_cap_info(e) is Some((profile, active, cap, protection)) {
         paused_by_cap = true
-        self.pause_for_session_cap(a, profile, active, cap, kind, by, turn)
+        self.pause_for_session_cap(a, profile, active, cap, protection, kind, by, turn)
         raise e
       }
       let message = match e {
@@ -2465,6 +2473,7 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
         str_of(o.get("profile")).unwrap_or(""),
         num_of(o.get("active")).unwrap_or(0.0).to_int(),
         num_of(o.get("cap")).unwrap_or(0.0).to_int(),
+        o.get("protection") is Some(True),
         "resume",
         turn_for_nobody(),
         None,

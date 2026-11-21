@@ -1021,7 +1021,7 @@ pub async fn Accounts::put_profile(
     let existing = list.iter().find_first(p => p.get("id") == Some(Str(id)))
     let machine = jget(existing, "machine") == Some(Bool(true))
     let get = (key : String) => if machine &&
-      !["model", "models", "backgroundOnMessage", "fast", "maxConcurrentSessions"].contains(key) {
+      !["model", "models", "backgroundOnMessage", "fast", "maxConcurrentSessions", "newAccountProtection"].contains(key) {
       None
     } else {
       match given.get(key) {
@@ -1150,7 +1150,8 @@ pub async fn Accounts::put_profile(
           _ => None
         }
     }
-    let max_concurrent_sessions : Int? = match get("maxConcurrentSessions") {
+    let given_max_sessions = get("maxConcurrentSessions")
+    let max_concurrent_sessions : Int? = match given_max_sessions {
       None =>
         match jget(existing, "maxConcurrentSessions") {
           Some(Num(n)) if is_integer(n) && n > 0.0 => Some(n.to_int())
@@ -1161,6 +1162,16 @@ pub async fn Accounts::put_profile(
       Some(Num(n)) if is_integer(n) && n > 0.0 => Some(n.to_int())
       Some(_) =>
         raise refusal(400, "maxConcurrentSessions must be a positive integer or null")
+    }
+    let given_protection = get("newAccountProtection")
+    let new_account_protection = match given_protection {
+      Some(Bool(false)) | Some(Null) => false
+      Some(Bool(true)) => given_max_sessions is None && max_concurrent_sessions is Some(_)
+      Some(_) => raise refusal(400, "newAccountProtection must be a boolean")
+      None =>
+        given_max_sessions is None &&
+        max_concurrent_sessions is Some(_) &&
+        jget(existing, "newAccountProtection") == Some(Bool(true))
     }
     let withheld : Array[String] = match given_workspaces {
       Some(Arr(ws)) => joined.filter(w => !ws.contains(Str(w)))
@@ -1226,7 +1237,12 @@ pub async fn Accounts::put_profile(
       fields.push(("backgroundOnMessage", jbool(false)))
     }
     match max_concurrent_sessions {
-      Some(n) => fields.push(("maxConcurrentSessions", jint(n)))
+      Some(n) => {
+        fields.push(("maxConcurrentSessions", jint(n)))
+        if new_account_protection {
+          fields.push(("newAccountProtection", jbool(true)))
+        }
+      }
       None => ()
     }
     if fast == Some(true) {
