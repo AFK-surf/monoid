@@ -192,7 +192,7 @@ fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> 
         Some(v) => v.agents
         None => []
       }
-      let avail = dmax(0.0, mid_w - 16.0 - bar_trailing_width(g, agents, station_now()))
+      let avail = dmax(0.0, mid_w - 12.0 - bar_trailing_width(g, agents, station_now()))
       let overflows = title_w > avail
       let must_expand = overflows && avail < three_w
       let can_toggle = overflows && !must_expand
@@ -533,8 +533,8 @@ fn bar_middle_node(
       mid
       .row(Is(true))
       .min_width(Is(Some(0.0)))
-      .padding(Is((8.0, 0.0, 8.0, 0.0)))
-      .gap(Is(8.0))
+      .padding(Is((6.0, 0.0, 6.0, 0.0)))
+      .gap(Is(6.0))
       .lines_up(Is(Some(Middle)))
       .fits(Is(true))
       |> ignore

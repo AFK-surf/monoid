@@ -781,7 +781,7 @@ fn wide_bar_keys(
   let has_jobs = fn() { flag(jobs(), "hasJobs") || items(jobs(), "jobs").length() > 0 }
   let alarm = fn() { if has_jobs() { text(jobs(), "alarm") } else { "" } }
   e.show(own, at_once=true, fn(slot) {
-    slot.row(Is(true)).gap(Is(8.0)).lines_up(Is(Some(Middle))) |> ignore
+    slot.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))) |> ignore
     let scope = fn() {
       match @sfbase.workspace_in_view(src).0 {
         Some(w) => w.id
