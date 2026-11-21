@@ -88,6 +88,9 @@ pub struct Stream {
   /// whether a frame of `ts` decoded may be shown as it comes, nothing of the app's built for it (Stream::new's
   /// `quiet`: the app's say, where what it draws around the picture follows the frame shown); None: any of its size
   priv quiet : ((Double) -> Bool)?
+  /// told the frame of `ts` it shows from this frame on, as the frame begins, before it is built (Stream::new's
+  /// `latched`)
+  priv latched : ((Double) -> Unit)?
   /// the route last asked of the host (Stream::route): its key, and whether its frames and its sound
   priv mut routed : (Int, Bool, Bool)
   /// the frames that came by a route (its "D" events), and their bytes
@@ -128,11 +131,15 @@ fn streams_reset() -> Unit {
 /// `layer`: shown by the host's own video layer where it has one (@hostapi.stream_layers), drawn as it is
 /// (Ctx::stream's `layer`); `quiet(ts)`: whether its frame of `ts` may then be shown as it comes, nothing built for it
 /// (false: what the app draws around it changes with it, as a part of a screen over the whole: the frame built).
+/// `latched(ts)`: the frame it shows from now on, told as the frame that shows it begins, before it is built (`shown`
+/// comes once it is painted): what the app places by the frame shown (a part of a screen over the whole) placed in
+/// that same frame, so a frame is never drawn where the one before it was.
 pub fn Stream::new(
   shown~ : (Double) -> Unit,
   broken~ : () -> Unit,
   layer? : Bool = false,
   quiet? : ((Double) -> Bool)? = None,
+  latched? : ((Double) -> Unit)? = None,
 ) -> Stream {
   let s = {
     id: 0,
@@ -157,6 +164,7 @@ pub fn Stream::new(
     layer,
     view: None,
     quiet,
+    latched,
     routed: (0, false, false),
     direct_frames: 0,
     direct_bytes: 0,
@@ -796,7 +804,7 @@ fn streams_frame_start() -> Unit {
       }
     }
     match latch.val {
-      Some(ts) if s.id != 0 && !s.closed =>
+      Some(ts) if s.id != 0 && !s.closed => {
         match s.feed {
           Some(f) => {
             f.latch(ts)
@@ -805,6 +813,11 @@ fn streams_frame_start() -> Unit {
           }
           None => h_stream_show(s.id, ts)
         }
+        match s.latched {
+          Some(f) => f(ts)
+          None => ()
+        }
+      }
       _ => ()
     }
   }

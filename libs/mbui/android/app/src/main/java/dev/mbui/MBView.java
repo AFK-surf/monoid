@@ -495,6 +495,8 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         pacedRate = 0;
         boolean more = Native.frame(w, h, density, b.now, b.late);
         buildingFor = -1;
+        // (a stream's frame shown in it whose view did not move: put on its layer now, StreamLayer.show)
+        StreamLayer.frameEnded();
         showAt(b.shows);
         pacer.ended(more, later, b.following, pacedRate);
         // (the native views moved in it: their frames follow once they rest)
@@ -532,6 +534,8 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         pacedRate = 0;
         boolean more = Native.frame(w, h, density, b.now, b.late);
         buildingFor = -1;
+        // (a stream's frame shown in it whose view did not move: put on its layer now, StreamLayer.show)
+        StreamLayer.frameEnded();
         handOver(b.shows);
         pacer.ended(more, later, b.following, pacedRate);
         NativeViews.framed(more || later);

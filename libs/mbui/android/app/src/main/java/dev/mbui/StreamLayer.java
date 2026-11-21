@@ -8,6 +8,8 @@ import android.graphics.PixelFormat;
 import android.graphics.PorterDuff;
 import android.graphics.Rect;
 import android.graphics.RectF;
+import android.hardware.HardwareBuffer;
+import android.media.Image;
 import android.media.MediaCodecInfo;
 import android.media.MediaCodecList;
 import android.media.MediaFormat;
@@ -17,6 +19,9 @@ import android.view.Surface;
 import android.view.SurfaceControl;
 
 import java.util.HashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -30,6 +35,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * the decoder's releaseOutputBuffer, nothing of the app's built or drawn for it; the compositor scales it to where the
  * view is placed. Where it is placed, cut by its clip, is set as the app paints the view, in the transaction of the
  * canvas's frame that paints its hole (SurfaceView.applyTransactionToFrame, API 34; at once before that).
+ *
+ * <p>A frame the app shows as a frame of it is built (one that may move it: another part of a remote screen, the view's
+ * place moved for it in the same frame) is not put there by its decoder: the decoder draws into an ImageReader, and the
+ * frame's buffer is set on the layer in the transaction that places it (show, then place), so the picture and where it
+ * is change in one refresh, as Apple's layer takes its contents and its frame in one CATransaction. Shown on a layer
+ * whose decoder put it there itself, the new part's picture showed a refresh or two at the old part's place first: the
+ * remote screen jumped as a pinch's zoom came to rest. A frame shown between frames (nothing of the app's moves for it)
+ * is set at once, after any such frame's transaction the system has not taken yet.
  *
  * <p>The station's pointer over it (@hostapi.stream_pointer) is a layer of its own over the picture's: the station's
  * shape drawn into it once, moved by the compositor as it moves (pointerAt), nothing of the app's drawn for it.
@@ -80,6 +93,15 @@ final class StreamLayer {
         SurfaceControl video;
         Surface surface;
         int bw, bh;
+        /** its surface is the decoder's own (made here, let go here), not an ImageReader's whose frames are set on it
+         * (show); the frame's crop's corner within its buffer, for one set */
+        boolean ownSurface = true;
+        int cropX, cropY;
+        /** a frame shown in the frame being built, set as the view is placed (place) or as the frame ends (frameEnded);
+         * a frame shown between frames waiting for the transaction of one set in a frame (`pending`, its number, 0
+         * none) to be taken by the system */
+        Held framed, deferred;
+        long pending;
         /** whether a frame was put on it since it was made (a picture to grab) */
         volatile boolean rendered;
         /** the pointer's layer and surface, its picture's size in pixels; its size and hot spot in points; where it
@@ -99,6 +121,32 @@ final class StreamLayer {
             this.sid = sid;
         }
     }
+
+    /** A decoded frame set on a layer: its image given back to its reader once the system let go of its buffer. */
+    static final class Held {
+        final Image image;
+
+        Held(Image image) {
+            this.image = image;
+        }
+
+        void close() {
+            try {
+                image.close();
+            } catch (RuntimeException ignored) {
+            }
+        }
+    }
+
+    /** Where buffers the system let go of are given back (waiting on their fences), and late transactions looked at. */
+    private static final ScheduledExecutorService released = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "mbui-stream-layers");
+        t.setDaemon(true);
+        return t;
+    });
+    private static long pendings;
+    /** How long a frame shown between frames waits at most for a frame's transaction the system has not said it took. */
+    private static final long PENDING_MOST_MS = 200;
 
     private static final Object lock = new Object();
     private static final HashMap<Integer, Layer> layers = new HashMap<>();
@@ -161,7 +209,11 @@ final class StreamLayer {
             if (l.shown && !shown && l.rendered) grab = l;
             l.at = to;
             l.shown = shown;
+            // the frame shown as this frame was built: its picture set with where it goes, in one transaction
+            boolean framed = l.framed != null && set(l, l.framed, t);
+            l.framed = null;
             put(l, t);
+            if (framed) pend(l, t);
         }
         commit(t, true);
         if (grab != null) grab(grab);
@@ -216,14 +268,18 @@ final class StreamLayer {
         synchronized (lock) {
             Layer l = layers.get(sid);
             if (l == null) layers.put(sid, l = new Layer(sid));
-            if (l.video != null && l.bw == w && l.bh == h) return l.surface;
+            if (l.video != null && l.ownSurface && l.bw == w && l.bh == h) return l.surface;
             oldVideo = l.video;
-            oldSurface = l.surface;
+            oldSurface = l.ownSurface ? l.surface : null;
+            dropHeld(l);
             SurfaceControl.Builder b = new SurfaceControl.Builder().setName("mbui stream " + sid).setBufferSize(w, h)
                     .setOpaque(true).setHidden(true);
             if (parent != null) b.setParent(parent);
             l.video = b.build();
             l.surface = made = new Surface(l.video);
+            l.ownSurface = true;
+            l.cropX = 0;
+            l.cropY = 0;
             l.bw = w;
             l.bh = h;
             l.rendered = false;
@@ -244,18 +300,182 @@ final class StreamLayer {
         }
     }
 
+    /**
+     * Stream `sid`'s frames handed it as images its decoder drew into `drawn` (an ImageReader's surface: what grab
+     * copies), each set on its picture's layer as it is shown (show): that layer made, one the decoder drew on itself
+     * let go (its decoder has stopped).
+     */
+    static void imagesFrom(int sid, Surface drawn) {
+        SurfaceControl.Transaction t = new SurfaceControl.Transaction();
+        SurfaceControl oldVideo = null;
+        Surface oldSurface = null;
+        synchronized (lock) {
+            Layer l = layers.get(sid);
+            if (l == null) layers.put(sid, l = new Layer(sid));
+            if (l.video == null || l.ownSurface) {
+                oldVideo = l.video;
+                oldSurface = l.ownSurface ? l.surface : null;
+                SurfaceControl.Builder b = new SurfaceControl.Builder().setName("mbui stream " + sid).setOpaque(true)
+                        .setHidden(true);
+                if (parent != null) b.setParent(parent);
+                l.video = b.build();
+                l.ownSurface = false;
+                l.bw = 0;
+                l.bh = 0;
+                l.rendered = false;
+                put(l, t);
+                if (oldVideo != null) t.reparent(oldVideo, null);
+            }
+            l.surface = drawn;
+        }
+        t.apply();
+        if (oldSurface != null) oldSurface.release();
+        if (oldVideo != null) oldVideo.release();
+    }
+
+    /** Whether what is shown now is shown as a frame of the app's is built (its thread, MBView's frame). */
+    static boolean framing() {
+        MBView v = Host.view;
+        return v != null && v.buildingFor >= 0;
+    }
+
+    /**
+     * Frame `image` of stream `sid` shown (taken from here on, given back to its reader once the system lets go of it):
+     * in the frame being built (`inFrame`), set with where the view goes in it (place) or as it ends; between frames,
+     * set at once, or once the system took the transaction of the last frame set in a frame.
+     */
+    static void show(int sid, Image image, boolean inFrame) {
+        Held h = new Held(image);
+        SurfaceControl.Transaction t = new SurfaceControl.Transaction();
+        synchronized (lock) {
+            Layer l = layers.get(sid);
+            if (l == null || l.video == null || l.ownSurface) {
+                h.close();
+                return;
+            }
+            if (inFrame) {
+                if (l.framed != null) l.framed.close();
+                l.framed = h;
+                return;
+            }
+            if (l.pending != 0) {
+                if (l.deferred != null) l.deferred.close();
+                l.deferred = h;
+                return;
+            }
+            if (!set(l, h, t)) return;
+            put(l, t);
+        }
+        t.apply();
+    }
+
+    /** The frame being built ended (its thread): a frame shown in it whose view did not move set now, as it is. */
+    static void frameEnded() {
+        SurfaceControl.Transaction t = null;
+        synchronized (lock) {
+            for (Layer l : layers.values()) {
+                if (l.framed == null) continue;
+                Held h = l.framed;
+                l.framed = null;
+                if (l.video == null || l.ownSurface) {
+                    h.close();
+                    continue;
+                }
+                if (t == null) t = new SurfaceControl.Transaction();
+                if (set(l, h, t)) put(l, t);
+            }
+        }
+        if (t != null) t.apply();
+    }
+
+    /** Held frame `h` set on `l`'s picture's layer in `t` (its size and crop now `l`'s), false where it cannot be. */
+    private static boolean set(Layer l, Held h, SurfaceControl.Transaction t) {
+        HardwareBuffer hb;
+        Rect crop;
+        int dataSpace;
+        try {
+            hb = h.image.getHardwareBuffer();
+            crop = h.image.getCropRect();
+            dataSpace = h.image.getDataSpace();
+        } catch (RuntimeException e) {
+            // (its reader closed meanwhile: a decoder made anew)
+            h.close();
+            return false;
+        }
+        if (hb == null || crop.width() <= 0 || crop.height() <= 0) {
+            if (hb != null) hb.close();
+            h.close();
+            return false;
+        }
+        t.setBuffer(l.video, hb, null, fence -> released.execute(() -> {
+            try {
+                if (fence != null && fence.isValid()) fence.awaitForever();
+            } finally {
+                if (fence != null) fence.close();
+                h.close();
+            }
+        }));
+        t.setDataSpace(l.video, dataSpace);
+        hb.close();
+        l.bw = crop.width();
+        l.bh = crop.height();
+        l.cropX = crop.left;
+        l.cropY = crop.top;
+        l.rendered = true;
+        return true;
+    }
+
+    /** `t`, carrying a frame set on `l` in a frame, waited for by frames shown between frames until the system takes it. */
+    private static void pend(Layer l, SurfaceControl.Transaction t) {
+        long n = ++pendings;
+        l.pending = n;
+        int sid = l.sid;
+        t.addTransactionCommittedListener(released, () -> taken(sid, n));
+        // (one never taken, its surface gone: those waiting set after a while all the same)
+        released.schedule(() -> taken(sid, n), PENDING_MOST_MS, TimeUnit.MILLISECONDS);
+    }
+
+    /** The transaction numbered `n` taken by the system (or waited for long enough): the frame shown since set now. */
+    private static void taken(int sid, long n) {
+        SurfaceControl.Transaction t = new SurfaceControl.Transaction();
+        synchronized (lock) {
+            Layer l = layers.get(sid);
+            if (l == null || l.pending != n) return;
+            l.pending = 0;
+            Held h = l.deferred;
+            l.deferred = null;
+            if (h == null) return;
+            if (l.video == null || l.ownSurface || !set(l, h, t)) {
+                h.close();
+                return;
+            }
+            put(l, t);
+        }
+        t.apply();
+    }
+
+    /** Frames `l` holds not yet set let go (under `lock`). */
+    private static void dropHeld(Layer l) {
+        if (l.framed != null) l.framed.close();
+        if (l.deferred != null) l.deferred.close();
+        l.framed = null;
+        l.deferred = null;
+        l.pending = 0;
+    }
+
     /** Stream `sid` closed, its decoder stopped (its thread): its layers let go. */
     static void drop(int sid) {
         Layer l;
         synchronized (lock) {
             l = layers.remove(sid);
+            if (l != null) dropHeld(l);
         }
         if (l == null) return;
         SurfaceControl.Transaction t = new SurfaceControl.Transaction();
         if (l.video != null) t.reparent(l.video, null);
         if (l.pointer != null) t.reparent(l.pointer, null);
         t.apply();
-        if (l.surface != null) l.surface.release();
+        if (l.surface != null && l.ownSurface) l.surface.release();
         if (l.video != null) l.video.release();
         if (l.pointerSurface != null) l.pointerSurface.release();
         if (l.pointer != null) l.pointer.release();
@@ -338,7 +558,8 @@ final class StreamLayer {
     /** Layer `l` (its picture's and its pointer's) put where its view is, cut by its clip, or hidden, into `t`. */
     private static void put(Layer l, SurfaceControl.Transaction t) {
         float[] a = l.at;
-        boolean shows = parent != null && l.vid != 0 && l.shown && a != null && l.video != null && a[2] > 0 && a[3] > 0;
+        boolean shows = parent != null && l.vid != 0 && l.shown && a != null && l.video != null && a[2] > 0 && a[3] > 0
+                && l.bw > 0 && l.bh > 0;
         float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
         if (shows) {
             x0 = Math.max(a[0], a[4]);
@@ -350,11 +571,13 @@ final class StreamLayer {
         if (l.video != null) {
             if (shows) {
                 float sx = a[2] / l.bw, sy = a[3] / l.bh;
-                t.setPosition(l.video, a[0], a[1]);
+                // (a buffer set on it: its crop's corner where the view's is)
+                t.setPosition(l.video, a[0] - l.cropX * sx, a[1] - l.cropY * sy);
                 t.setScale(l.video, sx, sy);
                 // (the part within the clip, in the picture's own pixels: a pixel more round it is under the canvas)
-                t.setCrop(l.video, new Rect((int) Math.floor((x0 - a[0]) / sx), (int) Math.floor((y0 - a[1]) / sy),
-                        (int) Math.ceil((x1 - a[0]) / sx), (int) Math.ceil((y1 - a[1]) / sy)));
+                t.setCrop(l.video, new Rect(l.cropX + (int) Math.floor((x0 - a[0]) / sx),
+                        l.cropY + (int) Math.floor((y0 - a[1]) / sy), l.cropX + (int) Math.ceil((x1 - a[0]) / sx),
+                        l.cropY + (int) Math.ceil((y1 - a[1]) / sy)));
                 t.setLayer(l.video, BASE + 2 * l.z);
             }
             t.setVisibility(l.video, shows);

@@ -2885,7 +2885,7 @@ pub fn Stream::hevc(Self, Bytes, Int32, Int32) -> Unit
 pub fn Stream::id(Self) -> Int32
 pub fn Stream::jpeg(Self, Bytes, Double) -> Unit
 pub fn Stream::layered(Self) -> Bool
-pub fn Stream::new(shown~ : (Double) -> Unit, broken~ : () -> Unit, layer? : Bool, quiet? : ((Double) -> Bool)?) -> Self
+pub fn Stream::new(shown~ : (Double) -> Unit, broken~ : () -> Unit, layer? : Bool, quiet? : ((Double) -> Bool)?, latched? : ((Double) -> Unit)?) -> Self
 pub fn Stream::pointer_at(Self, (Double, Double)?) -> Unit
 pub fn Stream::pointer_image(Self, String, () -> Bytes, Double, Double, Double, Double) -> Unit
 pub fn Stream::route(Self, Int32, Double, video~ : Bool, audio~ : Bool) -> Unit

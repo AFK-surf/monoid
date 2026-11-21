@@ -2,7 +2,11 @@ package dev.mbui;
 
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.ImageFormat;
 import android.graphics.SurfaceTexture;
+import android.hardware.HardwareBuffer;
+import android.media.Image;
+import android.media.ImageReader;
 import android.media.MediaCodec;
 import android.media.MediaCodecList;
 import android.media.MediaFormat;
@@ -1086,8 +1090,14 @@ final class Streams {
      * decoder that failed made anew from the next key frame ("b"); each frame decoded told ("f TS W H") and held until
      * the app shows it (`show`: put on the layer, those before it passed over), or one that came by a route put on the
      * layer at once and acknowledged to its sender. All on a thread of its own, its callbacks there too.
+     *
+     * <p>Its frames are drawn into an ImageReader and held there as images, each set on the layer as the app shows it,
+     * on the app's thread (StreamLayer.show): one shown as a frame of the app's is built goes on the layer with where
+     * that frame places it. Where no ImageReader is made, the decoder draws on the layer itself as the app shows a frame.
      */
     static final class Own {
+        /** the images its reader has, and how many of them are held for the app to show at most */
+        private static final int IMAGES = 6, IMAGES_HELD = 3;
         private final Stream stream;
         private final int sid;
         private final HandlerThread thread;
@@ -1104,6 +1114,13 @@ final class Streams {
         private final ArrayDeque<Double> inside = new ArrayDeque<>();
         /** decoded and held for the app to show, by time: their output buffers */
         private final TreeMap<Double, Integer> decoded = new TreeMap<>();
+        /** the reader its frames are drawn into (its thread; none: drawn on the layer itself), whether there is one
+         * (read on the app's thread), the frames given it not yet come out of it, by time (put on the layer at once, the
+         * route to acknowledge), and those come out held for the app to show, by time (under `images`) */
+        private ImageReader reader;
+        private volatile boolean imaging;
+        private final TreeMap<Double, Object[]> drawing = new TreeMap<>();
+        private final TreeMap<Double, Image> images = new TreeMap<>();
         /** the frames fed it from a route, by time: their bytes, -1 once let go (acknowledged); their route */
         private final HashMap<Double, Long> direct = new HashMap<>();
         private long directRoute;
@@ -1179,6 +1196,16 @@ final class Streams {
 
         /** Frame `ts` shown by the app (its thread): put on the layer, those decoded before it passed over. */
         void show(double ts) {
+            if (imaging) {
+                Image shown;
+                synchronized (images) {
+                    // (one older than a frame of its route shown since: passed over)
+                    shown = ts < directAt ? null : images.remove(ts);
+                    letImagesGo(ts);
+                }
+                if (shown != null) StreamLayer.show(sid, shown, StreamLayer.framing());
+                return;
+            }
             handler.post(() -> {
                 if (codec == null) return;
                 Integer at = decoded.get(ts);
@@ -1231,8 +1258,58 @@ final class Streams {
             }
         }
 
+        /** The images held up to `ts` given back, not shown (under `images`). */
+        private void letImagesGo(double ts) {
+            while (!images.isEmpty() && images.firstKey() <= ts) images.pollFirstEntry().getValue().close();
+        }
+
+        /** The frames given the reader come out of it (its thread): held for the app, or one of a route put on the layer. */
+        private void drawn(ImageReader r, int g) {
+            while (true) {
+                Image im;
+                try {
+                    im = r.acquireNextImage();
+                } catch (IllegalStateException e) {
+                    // (as many taken as it has: the oldest held let go, it taken next time)
+                    synchronized (images) {
+                        if (images.isEmpty()) return;
+                        images.pollFirstEntry().getValue().close();
+                    }
+                    continue;
+                }
+                if (im == null) return;
+                // (its time the frame's, as the decoder had it: those given before it and not come out let go there)
+                double ts = im.getTimestamp() / 1000.0;
+                Object[] f = drawing.remove(ts);
+                drawing.headMap(ts).clear();
+                if (g != gen || r != reader || f == null) {
+                    if (g == gen && r == reader) Host.log("stream " + sid + ": an image of no frame given (" + ts + ")");
+                    im.close();
+                    continue;
+                }
+                if ((Boolean) f[0]) {
+                    // a route's: shown at once (nothing of the app's moves for it), acknowledged
+                    StreamLayer.show(sid, im, false);
+                    routeAck((Long) f[1], ts);
+                    continue;
+                }
+                synchronized (images) {
+                    images.put(ts, im);
+                    // (no more held than leaves the reader room for the one shown and those the system lets go of)
+                    while (images.size() > IMAGES_HELD) images.pollFirstEntry().getValue().close();
+                }
+                stream.say("f " + num(ts) + " " + width + " " + height);
+            }
+        }
+
         /** The frames held before `ts` (and it, `with`) given back, not shown. */
         private void passOver(double ts, boolean with) {
+            if (imaging) {
+                synchronized (images) {
+                    letImagesGo(with ? ts : Math.nextDown(ts));
+                }
+                return;
+            }
             for (java.util.Iterator<Map.Entry<Double, Integer>> i = decoded.entrySet().iterator(); i.hasNext(); ) {
                 Map.Entry<Double, Integer> e = i.next();
                 if (e.getKey() > ts || (!with && e.getKey() == ts)) break;
@@ -1317,10 +1394,26 @@ final class Streams {
                 }
                 final int g = gen;
                 made.setCallback(callback(g), handler);
-                made.configure(format, StreamLayer.surface(sid, width, height), null, 0);
+                Surface out = null;
+                try {
+                    ImageReader r = ImageReader.newInstance(Math.max(width, 16), Math.max(height, 16), ImageFormat.PRIVATE,
+                            IMAGES, HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE | HardwareBuffer.USAGE_COMPOSER_OVERLAY);
+                    r.setOnImageAvailableListener(ir -> drawn(ir, g), handler);
+                    reader = r;
+                    out = r.getSurface();
+                    StreamLayer.imagesFrom(sid, out);
+                    imaging = true;
+                } catch (RuntimeException e) {
+                    Host.log("stream " + sid + ": no ImageReader, drawn on its layer itself: " + e);
+                    closeReader();
+                    out = null;
+                }
+                if (out == null) out = StreamLayer.surface(sid, width, height);
+                made.configure(format, out, null, 0);
                 made.start();
                 codec = made;
-                Host.log("stream " + sid + ": " + named + " onto its layer, " + width + "x" + height);
+                Host.log("stream " + sid + ": " + named + " onto its layer" + (imaging ? " by its images, " : ", ") + width
+                        + "x" + height);
             } catch (Exception e) {
                 Host.log("stream " + sid + ": no " + mime + " decoder: " + e);
                 if (made != null) {
@@ -1347,6 +1440,7 @@ final class Streams {
             }
             codec = null;
             gen++;
+            closeReader();
             double max = Double.NEGATIVE_INFINITY, routedMax = Double.NEGATIVE_INFINITY;
             for (Double t : inside) {
                 Long d = direct.get(t);
@@ -1361,6 +1455,23 @@ final class Streams {
             if (max != Double.NEGATIVE_INFINITY) stream.say("d " + num(max));
             if (routedMax != Double.NEGATIVE_INFINITY) routeAck(directRoute, routedMax);
             needKey = true;
+        }
+
+        /** Its reader let go, with the images it holds (the one on the layer stays there: the system holds its buffer). */
+        private void closeReader() {
+            imaging = false;
+            drawing.clear();
+            synchronized (images) {
+                for (Image im : images.values()) im.close();
+                images.clear();
+            }
+            if (reader != null) {
+                try {
+                    reader.close();
+                } catch (RuntimeException ignored) {
+                }
+                reader = null;
+            }
         }
 
         private MediaCodec.Callback callback(int g) {
@@ -1384,6 +1495,33 @@ final class Streams {
                     }
                     double ts = info.presentationTimeUs;
                     while (!inside.isEmpty() && inside.peek() <= ts) inside.poll();
+                    if (reader != null) {
+                        // drawn into the reader now, held as its image (drawn): one of a route put on the layer at once
+                        Long d = direct.get(ts);
+                        boolean now = false;
+                        long route = 0;
+                        if (d != null) {
+                            direct.keySet().removeIf(t -> t <= ts);
+                            if (d < 0) {
+                                c.releaseOutputBuffer(index, false);
+                                return;
+                            }
+                            route = directRoute;
+                            if (routed(route, sid)) {
+                                passOver(ts, true);
+                                directAt = ts;
+                                now = true;
+                            }
+                        }
+                        try {
+                            c.releaseOutputBuffer(index, true);
+                        } catch (RuntimeException e) {
+                            Host.log("stream " + sid + ": a frame not drawn into its reader: " + e);
+                            return;
+                        }
+                        drawing.put(ts, new Object[] {now, route});
+                        return;
+                    }
                     Long d = direct.get(ts);
                     if (d != null) {
                         // one fed from a route: those before it done with

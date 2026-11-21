@@ -327,6 +327,9 @@ fn ScreenSess::part_stream(self : ScreenSess) -> @ui.Stream {
             None => false
           }
         }),
+        // (another part's first frame placed where that part is in the frame that shows it, not after it is painted:
+        // it would be drawn a frame at the last part's place, the picture jumping as a pinch comes to rest)
+        latched=Some(fn(_) { self.shown_told() }),
       )
       self.part = Some(st)
       self.streams_told.set(self.streams_told.untracked() + 1)
@@ -435,6 +438,8 @@ fn ScreenSess::own_stream(self : ScreenSess) -> Unit {
       // part's puts the part away)
       layer=true,
       quiet=Some(fn(_) { self.part_shown() is None }),
+      // (a frame of the whole newer than the part's puts the part away in the frame that shows it)
+      latched=Some(fn(_) { self.shown_told() }),
     ),
   )
   self.streams_told.set(self.streams_told.untracked() + 1)

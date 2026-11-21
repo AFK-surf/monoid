@@ -614,6 +614,46 @@ test "zoomed in, the part in sight is asked for, as sharp as it is shown; its fr
 }
 
 ///|
+test "zoomed in again: the first frame of the new part is drawn where that part is in the frame that shows it, never at the last part's place" {
+  let r = screen_rig()
+  r.live()
+  let u = r.ui()
+  u.zoom.zoom_to(u.zoom.fit() * 4.0, u.box_w.get() / 2.0, u.box_h.get() / 2.0, false, at=r.t.ctx().moment())
+  r.t.draw()
+  r.t.draw()
+  let rh = number(field(Some(r.told("screen.look")[0]), "region"), "h")
+  let y = number(field(Some(r.told("screen.look")[0]), "region"), "y")
+  // the first part (the middle quarter) shown
+  let a : Json = { "x": 0.375, "y": y, "w": 0.25, "h": rh }
+  r.say({ "config": { "codec": "jpeg", "width": 1170.0, "height": 1000.0, "region": a } })
+  r.say({ "frame": { "key": true, "ts": 2000.0 } }, bytes=b"\xFF\xD8\xFF\xE0jpeg")
+  let pst = r.sess().part.unwrap()
+  r.t.stream_shows(pst.id(), 2000.0, 1170, 1000)
+  r.t.draw()
+  r.t.draw()
+  // the next part (the quarter left of it, as a pinch at rest there asks), its first frame decoded: the frame that
+  // shows it draws it at its own place, not the first part's
+  let b : Json = { "x": 0.125, "y": y, "w": 0.25, "h": rh }
+  r.say({ "config": { "codec": "jpeg", "width": 1170.0, "height": 1000.0, "region": b } })
+  r.say({ "frame": { "key": true, "ts": 3000.0 } }, bytes=b"\xFF\xD8\xFF\xE0jpeg")
+  r.t.stream_shows(pst.id(), 3000.0, 1170, 1000)
+  // (one frame: the one that takes it, as a host draws it)
+  r.t.frame()
+  let shown = u.shown(r.t.ctx())
+  let streams = drawn_streams(r.t)
+  let part = streams.filter(fn(s) { s.4 == "stream 1170x1000 ts=3000" })
+  assert_eq(part.length(), 1, msg=streams.map(fn(s) { s.4 }).join(", "))
+  let (px, _, pw, _, _) = part[0]
+  let whole = streams.filter(fn(s) { s.4 != "stream 1170x1000 ts=3000" })
+  assert_true(close_to(pw, 0.25 * shown.w))
+  assert_true(
+    close_to(px - whole[0].0, 0.125 * shown.w),
+    msg="the new part's first frame at \{px - whole[0].0}, its place \{0.125 * shown.w}, the last part's \{0.375 * shown.w}",
+  )
+  screen_done(r.t)
+}
+
+///|
 test "a trackpad moves the pointer and clicks where it points; two fingers tapped right-click; the keys row" {
   let r = screen_rig()
   // a desktop's screen (a page of the station's browser is laid out for the phone, and tapped where it is)
