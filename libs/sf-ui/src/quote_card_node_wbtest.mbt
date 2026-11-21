@@ -107,3 +107,104 @@ test "quote_pin: 1.0x keeps exact 16pt; 2.0x stays clean with zero fixed_outgrow
   assert_eq(tr.fixed_outgrown(), [], msg="2.0x fixed_outgrown")
   assert_eq(tr.squeeze_faults(), [], msg="2.0x squeeze_faults")
 }
+
+///|
+test "quote_preview_words: collapses blank lines while keeping single-line and single-newline text unchanged" {
+  assert_eq(quote_preview_words("先把签名核对一遍"), "先把签名核对一遍")
+  assert_eq(quote_preview_words("  行首尾空格保留  "), "  行首尾空格保留  ")
+  assert_eq(quote_preview_words("第一行\n第二行"), "第一行\n第二行")
+  assert_eq(quote_preview_words("第一段：\n\n• 列表项一\n• 列表项二"), "第一段：\n• 列表项一\n• 列表项二")
+  assert_eq(quote_preview_words("第一段：\n   \t \n• 列表项一"), "第一段：\n• 列表项一")
+  assert_eq(quote_preview_words("第一段：\r\n\r\n• 列表项一\r\n• 列表项二"), "第一段：\n• 列表项一\n• 列表项二")
+  assert_eq(quote_preview_words("第一段：\r\r• 列表项一"), "第一段：\n• 列表项一")
+  assert_eq(quote_preview_words("\n\n  \n第一段\n\n第二段\n  \n"), "第一段\n第二段")
+  assert_eq(quote_preview_words(""), "")
+  assert_eq(quote_preview_words("   \t \n\n \r\n "), "")
+}
+
+///|
+test "quote_card_node and composer_quote_card_node: blank line between paragraphs collapses so line 2 draws next paragraph with clean audit" {
+  let sample = "第一段：\n\n• 列表项一\n• 列表项二"
+  let comment = @ui.Field::new()
+  let tr = @ui.Tester::new(
+    fn(c) { begin(c) |> ignore },
+    tree=fn(root) {
+      @ui.set_tree_theme(ui_theme_now)
+      let tips = TipLayer::new(fn() { Some(root) })
+      root.box(fn(page) {
+        page.width(Is(Some(360.0))).padding(Is((16.0, 24.0, 16.0, 24.0))).gap(Is(16.0)) |> ignore
+        quote_card_node(
+          page,
+          tips,
+          fn() { "Claude" },
+          fn() { sample },
+          fn() { "agent" },
+          fn() { "" },
+          fn() { true },
+          fn() {  },
+        )
+        |> ignore
+        composer_quote_card_node(
+          page,
+          tips,
+          fn() { "Claude" },
+          fn() { sample },
+          fn() { "agent" },
+          fn(b) { @ui.field(b, comment, placeholder="说点什么", max_lines=1, enter_sends=true) |> ignore },
+          fn() {  },
+          fn() { "移除引用" },
+        )
+        |> ignore
+      })
+      |> ignore
+    },
+    w=400.0,
+    h=360.0,
+    platform=0,
+  )
+  tr.run_for(@ui.move_most_ms)
+  let previews = tr.words().filter(fn(w) { w.0.contains("第一段：") })
+  assert_eq(previews.length(), 2, msg="both cards draw line 1: \{Repr(tr.words())}")
+  for preview in previews {
+    assert_true(
+      preview.0.contains("第一段：\n• 列表项一"),
+      msg="line 2 draws next paragraph without blank line: \{Repr(preview.0)}",
+    )
+    assert_false(preview.0.contains("\n\n"), msg="no consecutive blank line in preview: \{Repr(preview.0)}")
+  }
+  assert_eq(tr.audit(), [], msg="audit clean")
+}
+
+///|
+test "quote_card_node pinned: skips leading blank lines when picking the first preview line" {
+  let tr = @ui.Tester::new(
+    fn(c) { begin(c) |> ignore },
+    tree=fn(root) {
+      @ui.set_tree_theme(ui_theme_now)
+      let tips = TipLayer::new(fn() { Some(root) })
+      root.box(fn(page) {
+        page.width(Is(Some(360.0))).padding(Is((16.0, 24.0, 16.0, 24.0))) |> ignore
+        quote_card_node(
+          page,
+          tips,
+          fn() { "标记 1" },
+          fn() { "\n\n  \n首行正文\n第二行" },
+          fn() { "page" },
+          fn() { "" },
+          fn() { false },
+          fn() {  },
+        )
+        |> ignore
+      })
+      |> ignore
+    },
+    w=400.0,
+    h=200.0,
+    platform=0,
+  )
+  tr.run_for(@ui.move_most_ms)
+  assert_true(
+    tr.words().iter().any(fn(w) { w.0.contains("首行正文") }),
+    msg="pinned quote skips leading blank lines: \{Repr(tr.words())}",
+  )
+}

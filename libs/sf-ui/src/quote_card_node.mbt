@@ -48,6 +48,27 @@ pub fn quote_card_node(
 }
 
 ///|
+/// Collapses consecutive and leading/trailing blank lines for a quote card's two-line preview so Markdown paragraph
+/// breaks (`\n\n`) do not leave the second line empty. Preserves each non-empty line's content and single `\n` breaks;
+/// display-only (never alters the underlying quoted text).
+fn quote_preview_words(raw : String) -> String {
+  let normalized = raw.replace_all(old="\r\n", new="\n").replace_all(old="\r", new="\n")
+  let out = StringBuilder()
+  let mut first = true
+  for line in normalized.split("\n") {
+    if line.trim().is_empty() {
+      continue
+    }
+    if !first {
+      out.write_char('\n')
+    }
+    out.write_string(line.to_owned())
+    first = false
+  }
+  out.to_string()
+}
+
+///|
 /// A quote card's head (its source) in `card`: its mark and whose it is (a pin's number and first line instead), laid
 /// out by `look` (a message's or the composer's room round it); where it `jumps`, pressed it does `jump`, its tip says
 /// so and its words take the text's ink under the pointer; a pin's that does not, its tip its words whole.
@@ -104,7 +125,7 @@ fn quote_source_node(
           mark_words_node(mark, pin, fn() { quote_pin_words }) |> ignore
         })
         |> ignore
-        words_node(p, fn() { words().split("\n").next().map(fn(s) { s.to_owned() }).unwrap_or("") }, fn() {
+        words_node(p, fn() { quote_preview_words(words()).split("\n").next().map(fn(s) { s.to_owned() }).unwrap_or("") }, fn() {
           quote_text
         })
         |> ignore
@@ -129,7 +150,7 @@ fn quote_source_node(
           .words_runs(By(fn() {
             [
               @ui.span(t("web-main.quote.author", args=[("author", author())]), weight=500, color=theme().p.text),
-              @ui.span(words()),
+              @ui.span(quote_preview_words(words())),
             ]
           }))
           .words_look(By(fn() { @ui.style_words(quote_text) }))
