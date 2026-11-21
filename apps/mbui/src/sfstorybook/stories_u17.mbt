@@ -18,10 +18,10 @@ fn stories_u17() -> Array[Story] {
         ("workspace_row_node.mbt", "invitation_line_node"),
       ],
       play: None,
-      about: "切换工作区的列表：当前工作区在卡片上、打勾；其他工作区一行一个，前面是它的标记（没有就用名字首字母），后面是它待处理的数；邀请一行一个，带加入和忽略：文案折成多行时按钮对齐第一行，窄到放不下时整组折到文案下面。卡片上的行与其他行的标记和文字落在同一条线上。",
+      about: "切换工作区的列表：工作区按固定顺序一行一个，当前的在原位打勾、垫底色（切换后不挪位置），前面是它的标记（没有就用名字首字母），后面是它待处理的数；邀请一行一个，带加入和忽略：文案折成多行时按钮对齐第一行，窄到放不下时整组折到文案下面。各行的标记和文字落在同一条线上。",
       cases: [
         (
-          "当前、其他与操作",
+          "工作区与操作",
           fn(card) {
             let in_use = kept("Acme")
             let row = fn(parent : @view.View, name : String, emoji : String, sub : String) {
@@ -30,22 +30,11 @@ fn stories_u17() -> Array[Story] {
                 fn() { name },
                 fn() { sub },
                 fn() { in_use.set(name) },
+                checked=fn() { in_use.get() == name },
                 lead=fn(l) { @sf.workspace_mark_node(l, fn() { emoji }, fn() { "" }, fn() { name }) },
               )
             }
-            @sf.workspace_label_node(card, fn() { "当前" })
-            @sf.workspace_card_node(card, fn(c) {
-              @sf.workspace_row_node(
-                c,
-                fn() { in_use.get() },
-                fn() { "zuozijian@cue.surf" },
-                fn() {  },
-                checked=true,
-                lead=fn(l) { @sf.workspace_mark_node(l, fn() { "" }, fn() { "" }, fn() { in_use.get() }) },
-                on_card=true,
-              )
-            })
-            @sf.workspace_label_node(card, fn() { "其他" })
+            row(card, "Acme", "", "zuozijian@cue.surf")
             row(card, "Globex", "🚀", "")
             row(card, "Initech Research Lab", "", "admin@initech.example")
             @sf.workspace_row_node(card, fn() { "登录其他账号" }, fn() { "用另一个账号的工作区" }, icon="log-in", fn() {  })

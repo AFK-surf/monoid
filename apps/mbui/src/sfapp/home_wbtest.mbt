@@ -148,8 +148,6 @@ test "the workspaces' sheet: another workspace tapped is the one in view" {
   t.tap_text("星火工作室")
   assert_true(@sf.presenting())
   assert_true(t.find("切换 workspace") is Some(_))
-  assert_true(t.find("当前使用") is Some(_))
-  assert_true(t.find("其他 workspace") is Some(_))
   t.tap_text("个人")
   assert_true(!@sf.presenting())
   assert_true(t.find("个人") is Some(_))

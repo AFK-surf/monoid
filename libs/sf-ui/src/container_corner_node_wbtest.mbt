@@ -133,19 +133,3 @@ test "past the theme's ranges or none lent, a corner as it is alone" {
   t.draw()
   assert_eq(got, [7.0, card_corner - 4.0, -1.0, 5.0])
 }
-
-///|
-test "the workspace in use's card lends its corner: its row's ripple concentric with it, the ladder's row corner" {
-  let got : Array[Double] = []
-  let t = @ui.Tester::new(fn(_c) {  }, w=390.0, h=300.0, platform=0)
-  @ui.set_view_app(fn(root) {
-    @ui.set_tree_theme(ui_theme_now)
-    workspace_card_node(root, fn(card) {
-      card.box(fn(o) { got.push(concentric_now(o)) }) |> ignore
-      workspace_row_node(card, fn() { "Acme" }, fn() { "" }, fn() {  }, on_card=true)
-    })
-  })
-  t.draw()
-  assert_eq(got, [row_corner])
-  assert_eq(t.corner_faults(), [])
-}

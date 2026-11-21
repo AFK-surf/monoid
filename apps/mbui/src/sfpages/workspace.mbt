@@ -76,6 +76,8 @@ pub fn open_workspaces(src : Source, from : @sf.Anchor, compact? : Bool = false)
     fn(v, close) { workspaces_list(v, src, close, compact~) },
     from~,
     tall=if compact { 0.0 } else { workspaces_tall },
+    // (as tall as what it holds up to its share: a few workspaces leave no room empty under them)
+    hugs=true,
     grows=true,
   )
 }
@@ -84,21 +86,14 @@ pub fn open_workspaces(src : Source, from : @sf.Anchor, compact? : Bool = false)
 let workspaces_tall : Double = 0.7
 
 ///|
-/// What the list holds, top to bottom: the one in use (its label, its card, the invitations under it), the others'
-/// label, the others by their ids.
-#derive(Eq, Hash)
-priv enum WsBlock {
-  InUse
-  OthersLabel
-  Other(String)
-}
-
-///|
-/// The list in node `v` (the panel's body's): the one in use (checked) on a card, the invitations waiting, the others
-/// to switch to, then signing in another account and a new one; each block made as the core lists it and let go as it
-/// lists it no more, what it says bound to what the core says of it now. Filling a share of the window, the list
-/// scrolls in it (@sf.panel_list_node), its foot staying under it: more workspaces than the share holds are reached by
-/// scrolling, not cut off. Nothing while none is in view (the prefs not read yet).
+/// The list in node `v` (the panel's body's): the invitations waiting over it (not scrolled with it: what asks for an
+/// answer stays in sight), then the workspaces in the core's order, the one
+/// in use checked where it stands (never lifted to the top: which is in use changes nothing of where
+/// each row is, the owner, 2026-11-21: 「workspace 会到处跑」), then signing in another account and a new one; each
+/// block made as the core lists it and let go as it lists it no more, what it says bound to what the core says of it
+/// now. As tall as what it holds up to a share of the window, the list scrolls in it (@sf.panel_list_node), its foot
+/// staying under it: more workspaces than the share holds are reached by scrolling, not cut off. Nothing while none is in view (the prefs not
+/// read yet).
 fn workspaces_list(v : @view.View, src : Source, close : () -> Unit, compact~ : Bool) -> Unit {
   // (what each workspace has waiting, as the one in use's marks say it)
   let marks_now = fn() {
@@ -108,8 +103,9 @@ fn workspaces_list(v : @view.View, src : Source, close : () -> Unit, compact~ : 
     }
   }
   // (a workspace pressed to switch to: the list as it was at the press held from then till the sheet is gone, the one
-  // in use, the others in their order and what they have waiting, however the switch changes them meanwhile: what the
-  // press put up is part of the screen as it was, sfbase's switch_workspace_to. Opened again, made anew: as it is then)
+  // in use, the workspaces in their order and what they have waiting, however the switch changes them meanwhile: what
+  // the press put up is part of the screen as it was, sfbase's switch_workspace_to. Opened again, made anew: as it is
+  // then)
   let held : @signals.Signal[(Workspace?, Array[Workspace], Json?)?] = @signals.signal(None)
   let hold = fn() {
     if held.untracked() is None {
@@ -126,10 +122,10 @@ fn workspaces_list(v : @view.View, src : Source, close : () -> Unit, compact~ : 
       }
     }
   }
-  let others = fn() {
-    match in_view() {
-      (Some(w), all) => all.filter(fn(x) { x.id != w.id })
-      _ => []
+  let in_use_id = fn() {
+    match in_view().0 {
+      Some(w) => w.id
+      None => ""
     }
   }
   let marks = fn() {
@@ -138,54 +134,52 @@ fn workspaces_list(v : @view.View, src : Source, close : () -> Unit, compact~ : 
       None => marks_now()
     }
   }
-  let blocks = fn() -> Array[WsBlock] {
-    guard in_view().0 is Some(_) else { return [] }
-    let out = [InUse]
-    let o = others()
-    if o.length() > 0 {
-      out.push(OthersLabel)
-    }
-    for x in o {
-      out.push(Other(x.id))
-    }
-    out
+  let blocks = fn() -> Array[String] {
+    let (now, all) = in_view()
+    guard now is Some(_) else { return [] }
+    all.map(fn(x) { x.id })
   }
-  let block = fn(b : @view.View, k : WsBlock) {
-    match k {
-      InUse => ws_in_use_node(b, src, fn() { in_view().0 }, close)
-      OthersLabel => @sf.workspace_label_node(b, fn() { @sf.t("android-misc.workspace.others") })
-      Other(id) => {
-        let find = fn() { others().iter().find_first(fn(x) { x.id == id }) }
-        // (listed no more, it closes its way down the list showing what it showed last, not a blank row: as the
-        // transfers' list keeps its last as it goes (#5160's `last`), a row's own)
-        let seen : Ref[Workspace] = Ref(
-          @signals.untracked(find).unwrap_or({ id, name: "", emoji: "", icon: "", email: "" }),
-        )
-        let w = fn() {
-          match find() {
-            Some(x) => {
-              seen.val = x
-              x
-            }
-            None => seen.val
-          }
+  let block = fn(b : @view.View, id : String) {
+    let find = fn() { in_view().1.iter().find_first(fn(x) { x.id == id }) }
+    // (listed no more, it closes its way down the list showing what it showed last, not a blank row: as the
+    // transfers' list keeps its last as it goes (#5160's `last`), a row's own)
+    let seen : Ref[Workspace] = Ref(
+      @signals.untracked(find).unwrap_or({ id, name: "", emoji: "", icon: "", email: "" }),
+    )
+    let w = fn() {
+      match find() {
+        Some(x) => {
+          seen.val = x
+          x
         }
-        @sf.workspace_row_node(
-          b,
-          fn() { w().name },
-          fn() { w().email },
-          lead=fn(l) { ws_mark_node(l, w) },
-          after=fn(r) { ws_mark_counts_node(r, fn() { field(marks(), id).unwrap_or(Json::null()) }) },
-          // (the sheet closed as the switch is done, with it, showing till then what it showed at the press:
-          // sfbase's switch_workspace_to)
-          fn() {
-            hold()
-            switch_workspace(src, id, closes=close)
-          },
-        )
+        None => seen.val
       }
     }
+    let in_use = fn() { in_use_id() == id }
+    @sf.workspace_row_node(
+      b,
+      fn() { w().name },
+      fn() { w().email },
+      checked=in_use,
+      lead=fn(l) { ws_mark_node(l, w) },
+      // (what the one in use has waiting is on its own screen: the others' alone)
+      after=fn(r) { ws_mark_counts_node(r, fn() { if in_use() { Json::null() } else { field(marks(), id).unwrap_or(Json::null()) } }) },
+      // (the one in use pressed: the list closed, it is in view already; another: the sheet closed as the switch is
+      // done, with it, showing till then what it showed at the press: sfbase's switch_workspace_to)
+      fn() {
+        if @signals.untracked(in_use) {
+          close()
+        } else {
+          hold()
+          switch_workspace(src, id, closes=close)
+        }
+      },
+    )
   }
+  v.show(fn() { in_view().0 is Some(_) }, fn(h) {
+    @sf.style_node(h, fn() { ws_list_row })
+    ws_invitations_node(h, src, close)
+  })
   if compact {
     v.box(fn(list) {
       @sf.style_node(list, fn() { ws_list_compact })
@@ -195,9 +189,11 @@ fn workspaces_list(v : @view.View, src : Source, close : () -> Unit, compact~ : 
     })
     |> ignore
   } else {
-    // (the panel its share whatever the list holds, as when the list did not scroll: fills)
+    // (as tall as its rows where the panel's share has the room for them, scrolling past that)
     v.box(fn(room) {
       @sf.style_node(room, fn() { ws_list })
+      // (giving way to its foot where the panel's share has not the room for all its rows: it scrolls then)
+      room.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
       @sf.panel_list_node(
         room,
         blocks,
@@ -209,7 +205,6 @@ fn workspaces_list(v : @view.View, src : Source, close : () -> Unit, compact~ : 
           |> ignore
         },
         est=ws_block_est,
-        fills=true,
       )
       |> ignore
     })
@@ -248,31 +243,6 @@ fn workspaces_list(v : @view.View, src : Source, close : () -> Unit, compact~ : 
 let ws_block_est : Double = 64.0
 
 ///|
-/// The one in use in node `b`: its label, the card it is on (pressed, what showed the list closed: it is in view
-/// already), then the invitations waiting. `now`: the one in use now (as it was last, while there is none).
-fn ws_in_use_node(b : @view.View, src : Source, now : () -> Workspace?, close : () -> Unit) -> Unit {
-  // (none in view any more, the block closes its way showing the card as it was last, not a blank one: as the
-  // transfers' list keeps its last as it goes, #5160's `last`)
-  let seen : Ref[Workspace] = Ref(
-    @signals.untracked(now).unwrap_or({ id: "", name: "", emoji: "", icon: "", email: "" }),
-  )
-  let w = fn() {
-    match now() {
-      Some(x) => {
-        seen.val = x
-        x
-      }
-      None => seen.val
-    }
-  }
-  @sf.workspace_label_node(b, fn() { @sf.t("android-misc.workspace.current") })
-  @sf.workspace_card_node(b, fn(card) {
-    @sf.workspace_row_node(card, fn() { w().name }, fn() { w().email }, checked=true, lead=fn(l) { ws_mark_node(l, w) }, on_card=true, close)
-  })
-  ws_invitations_node(b, src, close)
-}
-
-///|
 /// A workspace's mark (`w`'s, as it is now) in `parent`: the library's (@sf.workspace_mark_node), its mark else its
 /// first letter.
 fn ws_mark_node(parent : @view.View, w : () -> Workspace) -> Unit {
@@ -309,7 +279,7 @@ fn ws_mark_counts_node(parent : @view.View, mark : () -> Json) -> Unit {
 /// The list: the room it scrolls in, down to the line over its foot (what it holds past that faded out towards it,
 /// @sf.panel_list_node: a row there half shown says there is more).
 // kept across runs: a value (no field of it changes)
-let ws_list : @ui.Style = @ui.css("w=Full h=Full")
+let ws_list : @ui.Style = @ui.css("w=Full")
 
 ///|
 /// A row of the list, across it.

@@ -417,7 +417,7 @@ test "a workspace picked in the sheet on 小屏 at real size: from the press til
     for f in sd_sheet_faults("list \{list_ms}", frames, at_press, "ws2") {
       faults.push(f)
     }
-    // (opened again: the one in use the new one, first, on its card, at once)
+    // (opened again: the one in use the new one, checked where it stood, at once)
     guard t.semantics().iter().find_first(fn(s) { !s.hidden && s.role == @ui.Role::Button && s.label == "个人" }) is Some(sw) else {
       faults.push("list \{list_ms}: no switcher saying 个人")
       continue
@@ -426,11 +426,19 @@ test "a workspace picked in the sheet on 小屏 at real size: from the press til
     t.tap(sx + sw_ / 2.0, sy + sh / 2.0)
     t.run_for(sd_sheet_up_ms)
     match sd_sheet_seen(t) {
-      Some(held) =>
-        match held.iter().find_first(fn(h) { h.1 == "个人" || h.1 == "星火工作室" }) {
-          Some(h) if h.1 == "个人" => ()
-          _ => faults.push("list \{list_ms}: opened again, it shows \{Repr(held)}")
+      Some(held) => {
+        // (its rows where they were at the press: which is in use moves none of them)
+        let rows = fn(h : Array[(String, String, Double)]) { h.filter(fn(x) { x.1 == "个人" || x.1 == "星火工作室" }) }
+        if rows(held) != rows(at_press) {
+          faults.push("list \{list_ms}: opened again, it shows \{Repr(held)}, at the press \{Repr(at_press)}")
         }
+        let selected = fn(name : String) {
+          t.semantics().iter().any(fn(s) { !s.hidden && s.role == @ui.Role::Button && s.label == name && s.selected == Some(true) })
+        }
+        if !selected("个人") || selected("星火工作室") {
+          faults.push("list \{list_ms}: opened again, 个人 not the one checked")
+        }
+      }
       None => faults.push("list \{list_ms}: not opened again")
     }
   }
