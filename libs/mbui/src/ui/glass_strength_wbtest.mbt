@@ -61,6 +61,11 @@ test "Glass::at_strength interpolates optical parameters, preserves bezel, and c
 
   let over = base.at_strength(1.3)
   assert_eq(over, base)
+
+  // Constructor clamping and Glass::clear strength passthrough.
+  assert_true(gs_approx(Glass::frosted(blur=8.0, tint=0xFFFFFF40L, solid=0xEEEEEEFFL, strength=1.5).strength, 1.0))
+  assert_true(gs_approx(Glass::liquid(strength=-0.4).strength, 0.0))
+  assert_true(gs_approx(Glass::clear(strength=0.4).strength, 0.4))
 }
 
 ///|

@@ -75,7 +75,7 @@ pub fn Glass::frosted(
     contained,
     spot: None,
     zoom: 1.0,
-    strength,
+    strength: dclamp(strength, 0.0, 1.0),
   }
 }
 
@@ -127,7 +127,7 @@ pub fn Glass::liquid(
     contained: false,
     spot,
     zoom,
-    strength,
+    strength: dclamp(strength, 0.0, 1.0),
   }
 }
 
@@ -172,6 +172,7 @@ pub fn Glass::clear(
   adaptive? : Bool = true,
   spot? : (Double, Double)? = None,
   zoom? : Double = 1.0,
+  strength? : Double = 1.0,
 ) -> Glass {
   Glass::liquid(
     blur~,
@@ -186,5 +187,6 @@ pub fn Glass::clear(
     adaptive~,
     spot~,
     zoom~,
+    strength~,
   )
 }
