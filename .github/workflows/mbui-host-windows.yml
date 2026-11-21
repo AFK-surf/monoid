@@ -19,6 +19,7 @@ on:
       - "libs/mbui/scripts/win_logs_test.c"
       - "libs/mbui/scripts/win_stack_test.c"
       - "libs/mbui/scripts/win_a11y_test.cpp"
+      - "libs/mbui/scripts/win_vbuf_test.cpp"
       - "libs/mbui/scripts/win_keys_test.c"
       - "libs/mbui/scripts/win_clip_test.c"
       - "libs/mbui/scripts/win_sound_test.c"
@@ -115,6 +116,11 @@ jobs:
           mkdir -p out/a11y
           cl.exe -nologo -EHsc -W4 -WX -Isrc/host scripts/win_a11y_test.cpp -Foout/a11y/ -Feout/a11y/win_a11y_test.exe -link user32.lib oleaut32.lib uiautomationcore.lib runtimeobject.lib
           out/a11y/win_a11y_test.exe
+      - name: "D3D11 dynamic vertex buffer handles overflow and CreateBuffer failure without crashing and recovers (src/host/win_render.cpp)"
+        run: |
+          mkdir -p out/vbuf
+          cl.exe -nologo -EHsc -W3 -WX -D_CRT_SECURE_NO_WARNINGS -Isrc/host scripts/win_vbuf_test.cpp -Foout/vbuf/ -Feout/vbuf/win_vbuf_test.exe -link d3d11.lib d3dcompiler.lib dcomp.lib dwmapi.lib gdi32.lib user32.lib windowscodecs.lib ole32.lib
+          out/vbuf/win_vbuf_test.exe
 
   kitdemo:
     runs-on: windows-latest
