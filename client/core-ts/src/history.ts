@@ -35,6 +35,8 @@ export type Context = {
   stations?: ReadonlyMap<string, string>;
   /// Where the trees of its Markdown are kept on the device (markdown.ts); absent: read here only.
   md?: MdStore;
+  /// Its latest turn has not ended: a waiting state it said may still be taken back.
+  turnOpen?: boolean;
 };
 
 /// An entry in this device's words: a call's result that is in its script's output, which its station leaves the
@@ -782,7 +784,11 @@ function made(live: J, cx: Context, keep: boolean): J {
       if (pages.length > PAGES_KEPT) pages.pop();
     }
   }
-  const { shown, base } = page;
+  const { base } = page;
+  // A wait said in a turn still running is not one yet: the agent may read what just came and go on.
+  const tail = page.shown[page.shown.length - 1];
+  const unsettled = cx.turnOpen === true && tail?.body?.kind === "mark" && isOpenWait(tail.body.content);
+  const shown = unsettled ? page.shown.slice(0, -1) : page.shown;
 
   const pushedNow = pushed(live, cx.runtime);
   const liveSteps = pushedNow.liveSteps.map(({ id, text }) => ({ id, text }));
@@ -802,6 +808,11 @@ function made(live: J, cx: Context, keep: boolean): J {
   else if (base > 0) [edge, empty] = [t("core-logic.history.edge.earlier"), false];
   else [edge, empty] = [t("core-logic.history.edge.start"), false];
   return { items: shown, live: liveSteps, phase, usage, usageLine, edge, empty, loaded, more: base > 0, ...(failed !== null && !loaded && shown.length === 0 ? { failed } : {}), ...(base > 0 && older !== null ? { older } : {}) };
+}
+
+function isOpenWait(mark: J): boolean {
+  const wait = mark?.wait;
+  return wait !== null && typeof wait === "object" && typeof wait.until !== "number";
 }
 
 /// Where a waiting mark's wait is over: what moves the agent on, a prompt bringing it back or a call of its own after
@@ -916,7 +927,10 @@ function itemsOf(held: J[], from: number, cx: Context, sig: Sig | null, day: num
         const sec = a?.seconds;
         const what = arg("for")?.trim() || null;
         const why = (arg("done") ?? arg("need"))?.trim() || null;
-        items.push([{ kind: "mark", mark: arg("kind") ?? "", seconds: typeof sec === "number" ? Math.trunc(Math.max(sec, 0)) : null, what, why }, i, i]);
+        // A wait its agent went on working past (its next call, no prompt between) was never waited: no row says it was.
+        const end = arg("kind") === "waiting" ? waitEnd(timeline, i) : -1;
+        if (end >= 0 && s(timeline[end], "kind") === "tool_call") cover(i);
+        else items.push([{ kind: "mark", mark: arg("kind") ?? "", seconds: typeof sec === "number" ? Math.trunc(Math.max(sec, 0)) : null, what, why }, i, i]);
         grouping = false;
         groupSteps = 0;
         groupPhase = null;

@@ -4953,6 +4953,7 @@ export class Views implements Owner {
         offsetMin: this.#core.host.utcOffsetMin(now),
         now,
         stations: this.stationNames(ofAddress(station)),
+        turnOpen: isObject(get(session, "lastTurn")) && typeof get(get(session, "lastTurn"), "endedAt") !== "number",
         ...(md !== undefined ? { md } : {}),
       }),
     };
