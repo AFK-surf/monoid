@@ -428,14 +428,13 @@ jobs:
   # the day before's main, found in neither, were built one after another on Mini1 and the job cut at its 10 minutes
   # every run (2026-11-19). Seconds when all are there. The release's checkout is older than this workflow, its
   # native.ts maybe one that asks the release alone: what is in either is asked here, and only what neither has is
-  # given to its `ensure --publish`. Linux's and Windows' on ci-1 (the readers' C, one job after the other: a
-  # concurrency group, as the pipeline's natives and natives-win-reader-main), the Apple ones on Mini1.
+  # given to its `ensure --publish`. Linux's and Windows' on ci-1 (the readers' C, one job after the other: `needs:`
+  # chains station-natives-linux -> station-natives-win -> station-natives-linux-arm64), the Apple ones on Mini1. Not a
+  # shared concurrency group, which holds one running and one pending: in 44922872509 station-natives-win finished
+  # first while station-natives-linux was pending, station-natives-linux-arm64 entered the group and cancelled it.
   station-natives-linux:
     needs: plan
     runs-on: ${{ fromJSON(vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '["ubuntu-24.04"]') }}
-    concurrency:
-      group: ${{ vars.CI_1 != 'off' && format('ci1-readers-stable-{0}', github.run_id) || format('station-natives-linux-{0}', github.run_id) }}
-      cancel-in-progress: false
     timeout-minutes: 5
     permissions:
       contents: write # the release native-artifacts' assets
@@ -504,15 +503,12 @@ jobs:
 
   # The arm64 parts apart, as Windows' reader: a release's readers are in main's store only where main built the same
   # revision's, never for one with fixes picked onto it, and two cold readers in one job were more than its 5 minutes.
-  # After station-natives-win, whatever it came to: a concurrency group keeps one job pending and cancels the one
-  # pending before it, so the readers' group takes no third queued at once.
+  # Last of the `needs:` chain station-natives-linux -> station-natives-win -> station-natives-linux-arm64, whatever
+  # the one before came to (the chain's reason is above station-natives-linux).
   station-natives-linux-arm64:
     needs: [plan, station-natives-win]
     if: ${{ !cancelled() && needs.plan.result == 'success' }}
     runs-on: ${{ fromJSON(vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '["ubuntu-24.04"]') }}
-    concurrency:
-      group: ${{ vars.CI_1 != 'off' && format('ci1-readers-stable-{0}', github.run_id) || format('station-natives-linux-arm64-{0}', github.run_id) }}
-      cancel-in-progress: false
     timeout-minutes: 5
     permissions:
       contents: write # the release native-artifacts' assets
@@ -521,11 +517,9 @@ jobs:
     steps: *station-natives-linux-steps
 
   station-natives-win:
-    needs: plan
+    needs: [plan, station-natives-linux]
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
     runs-on: ${{ fromJSON(vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '["ubuntu-24.04"]') }}
-    concurrency:
-      group: ${{ vars.CI_1 != 'off' && format('ci1-readers-stable-{0}', github.run_id) || format('station-natives-win-{0}', github.run_id) }}
-      cancel-in-progress: false
     timeout-minutes: 5
     permissions:
       contents: write # the release native-artifacts' assets
