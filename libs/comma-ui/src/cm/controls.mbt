@@ -264,6 +264,7 @@ pub fn slider_node(
     fn(s, sl) {
       s
       .width(Is(Some(width)))
+      .max_width(Is(Some(width)), within=true)
       .height(Is(Some(20.0)))
       .padding(Is((10.0, 0.0, 10.0, 0.0)))
       .lines_up(Is(Some(Middle)))
