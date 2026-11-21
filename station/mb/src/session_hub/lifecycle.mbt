@@ -523,7 +523,10 @@ pub async fn Hub::archive_by(self : Hub, key : String, archived : Bool, by : Str
   }
   self.store.set_archived(key, archived, by)
   for m in members {
-    self.idle_measured.remove(m)
+    if self.idle_measured.contains(m) {
+      self.idle_measured.remove(m)
+      self.idle_measured_dirty = true
+    }
     (self.world.tell)("closed", Json::string(m))
     let m_row = if m == key { Some(row) } else { self.get_session(m) }
     match m_row {
@@ -578,7 +581,10 @@ pub async fn Hub::delete_session(self : Hub, key : String) -> Unit {
     None => ()
   }
   (self.world.tell)("live.forget", Json::string(key))
-  self.idle_measured.remove(key)
+  if self.idle_measured.contains(key) {
+    self.idle_measured.remove(key)
+    self.idle_measured_dirty = true
+  }
   let transcripts = (self.world.ask)("transcripts.of", { "key": Json::string(key), "row": row })
   let sources = self.store.runtime_session_sources(key, None)
   let exclusive_sources = []
@@ -1161,6 +1167,11 @@ let idle_unarchived_batch : Int = 64
 pub let archive_upkeep_every_ms : Double = 10.0 * 60000.0
 
 ///|
+/// Short startup grace (60 seconds) before `run_archive_upkeep_if_due` may run after hub startup: avoids a startup
+/// burst while allowing persisted `last_archive_upkeep_at` to run promptly after frequent restarts.
+pub let archive_upkeep_startup_grace_ms : Double = 60000.0
+
+///|
 /// Max unfinished archived sessions packed per periodic round.
 pub let pack_backfill_max_per_round : Int = 16
 
@@ -1192,6 +1203,90 @@ fn Hub::record_idle_measured(self : Hub, key : String, last_active_at : Double) 
     match self.idle_measured.keys().head() {
       Some(k) => self.idle_measured.remove(k)
       None => ()
+    }
+  }
+  self.idle_measured_dirty = true
+}
+
+///|
+async fn Hub::ensure_upkeep_state_loaded(self : Hub) -> Unit {
+  if self.upkeep_state_loaded {
+    return
+  }
+  self.upkeep_state_loaded = true
+  let saved = (self.world.ask)("upkeepState.read", Json::null()) catch { _ => Json::null() }
+  guard saved is Object(m) else { return }
+  match m.get("idleMeasured") {
+    Some(Object(im)) => {
+      let existing : Array[(String, Double)] = []
+      for k, v in self.idle_measured {
+        existing.push((k, v))
+      }
+      self.idle_measured.clear()
+      for k, v in im {
+        match v {
+          Number(ts, ..) => self.idle_measured[k] = ts
+          _ => ()
+        }
+      }
+      for kv in existing {
+        self.idle_measured.remove(kv.0)
+        self.idle_measured[kv.0] = kv.1
+      }
+      while self.idle_measured.length() > idle_measured_max {
+        match self.idle_measured.keys().head() {
+          Some(k) => self.idle_measured.remove(k)
+          None => break
+        }
+      }
+    }
+    _ => ()
+  }
+  if self.last_archive_upkeep_at is None {
+    match m.get("lastArchiveUpkeepAt") {
+      Some(Number(ts, ..)) => self.last_archive_upkeep_at = Some(ts)
+      _ => ()
+    }
+  }
+}
+
+///|
+async fn Hub::persist_upkeep_state(self : Hub, include_idle : Bool, include_archive_ts : Bool) -> Unit {
+  let patch : Map[String, Json] = Map([])
+  let mut any = false
+  if include_idle && self.idle_measured_dirty {
+    let im : Map[String, Json] = Map([])
+    for k, v in self.idle_measured {
+      im[k] = num(v)
+    }
+    patch["idleMeasured"] = Json::object(im)
+    any = true
+  }
+  if include_archive_ts {
+    patch["lastArchiveUpkeepAt"] = match self.last_archive_upkeep_at {
+      Some(ts) => num(ts)
+      None => Json::null()
+    }
+    any = true
+  }
+  if !any {
+    return
+  }
+  ignore((self.world.ask)("upkeepState.patch", Json::object(patch)) catch { _ => Json::null() })
+  if include_idle {
+    self.idle_measured_dirty = false
+  }
+}
+
+///|
+/// Earliest timestamp when `run_archive_upkeep_if_due` will next be eligible to run.
+pub fn Hub::next_archive_upkeep_at(self : Hub, every_ms? : Double = archive_upkeep_every_ms) -> Double {
+  let grace = self.started_at + archive_upkeep_startup_grace_ms
+  match self.last_archive_upkeep_at {
+    None => grace
+    Some(last) => {
+      let due = last + every_ms
+      if due > grace { due } else { grace }
     }
   }
 }
@@ -1252,29 +1347,36 @@ pub async fn Hub::expire_archived(self : Hub, now : Double) -> Double? {
 
 ///|
 /// Runs `pack_unfinished_archived` and `clean_idle_rebuildable` on their own cadence (`archive_upkeep_every_ms`),
-/// independent of how frequently `P52::lifecycle` wakes. `last_archive_upkeep_at` is initialized to hub startup time
-/// so startup never runs an immediate burst. Returns whether a round ran.
+/// independent of how frequently `P52::lifecycle` wakes. Respects a short startup grace
+/// (`archive_upkeep_startup_grace_ms`) so startup never runs an immediate burst, then uses persisted
+/// `last_archive_upkeep_at` so frequent restarts do not starve upkeep. Returns whether a round ran.
 pub async fn Hub::run_archive_upkeep_if_due(
   self : Hub,
   now : Double,
   every_ms? : Double = archive_upkeep_every_ms,
 ) -> Bool {
-  if now - self.last_archive_upkeep_at < every_ms {
+  self.ensure_upkeep_state_loaded()
+  if now - self.started_at < archive_upkeep_startup_grace_ms {
     return false
   }
-  self.last_archive_upkeep_at = now
+  match self.last_archive_upkeep_at {
+    Some(last) if now - last < every_ms => return false
+    _ => ()
+  }
+  self.last_archive_upkeep_at = Some(now)
   ignore(self.pack_unfinished_archived(now) catch {
     e => {
       (self.world.tell)("log", { "warn": Json::string("backfilling unfinished archived workspaces failed"), "error": Json::string(e.to_string()) })
       0
     }
   })
-  ignore(self.clean_idle_rebuildable(now) catch {
+  ignore(self.clean_idle_rebuildable(now, persist=false) catch {
     e => {
       (self.world.tell)("log", { "warn": Json::string("cleaning rebuildable files of idle sessions failed"), "error": Json::string(e.to_string()) })
       0
     }
   })
+  self.persist_upkeep_state(true, true)
   true
 }
 
@@ -1365,10 +1467,12 @@ pub async fn Hub::clean_idle_rebuildable(
   now : Double,
   idle_ms? : Double = idle_rebuild_ms,
   limit? : Int = idle_rebuild_max_per_round,
+  persist? : Bool = true,
 ) -> Int {
   if limit <= 0 || (self.world.ask)("cold.expires", Json::null()) != Json::boolean(true) {
     return 0
   }
+  self.ensure_upkeep_state_loaded()
   let through = num(now - idle_ms)
   let mut after = Json::null()
   let mut measured = 0
@@ -1376,7 +1480,7 @@ pub async fn Hub::clean_idle_rebuildable(
     let page = self.store.idle_unarchived_sessions(after, through, idle_unarchived_batch)
     for s in page {
       if measured >= limit {
-        return measured
+        break
       }
       let key_j = field(s, "key").unwrap_or(Json::null())
       let key = match key_j {
@@ -1399,10 +1503,13 @@ pub async fn Hub::clean_idle_rebuildable(
         e => (self.world.tell)("log", { "warn": Json::string("rebuildable files of an idle session not cleaned"), "session": key_j, "error": Json::string(e.to_string()) })
       }
     }
-    if page.length() < idle_unarchived_batch {
+    if measured >= limit || page.length() < idle_unarchived_batch {
       break
     }
     after = page[page.length() - 1]
+  }
+  if persist {
+    self.persist_upkeep_state(true, false)
   }
   measured
 }
@@ -1416,18 +1523,22 @@ pub async fn Hub::relieve_idle_rebuildable(
   now : Double,
   idle_ms? : Double = idle_rebuild_low_ms,
   full? : Bool = false,
+  persist? : Bool = true,
 ) -> Int {
   if (self.world.ask)("cold.expires", Json::null()) != Json::boolean(true) || (!full && !self.disk_free_low()) {
     return 0
   }
+  self.ensure_upkeep_state_loaded()
   let through = num(now - idle_ms)
   let mut after = Json::null()
   let mut measured = 0
-  while full || self.disk_free_low() {
+  let mut done = false
+  while !done && (full || self.disk_free_low()) {
     let page = self.store.idle_unarchived_sessions(after, through, idle_unarchived_batch)
     for s in page {
       if !full && !self.disk_free_low() {
-        return measured
+        done = true
+        break
       }
       let key_j = field(s, "key").unwrap_or(Json::null())
       let key = match key_j {
@@ -1450,10 +1561,13 @@ pub async fn Hub::relieve_idle_rebuildable(
         e => (self.world.tell)("log", { "warn": Json::string("rebuildable files of an idle session not cleaned"), "session": key_j, "error": Json::string(e.to_string()) })
       }
     }
-    if page.length() < idle_unarchived_batch {
+    if done || page.length() < idle_unarchived_batch {
       break
     }
     after = page[page.length() - 1]
+  }
+  if persist {
+    self.persist_upkeep_state(true, false)
   }
   measured
 }

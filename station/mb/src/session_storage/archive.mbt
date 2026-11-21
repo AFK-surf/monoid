@@ -280,8 +280,11 @@ async fn Files::lock_worktrees(self : Files, dir : String, marker : String, lock
 }
 
 ///|
+pub let archive_worktree_lock_prefix : String = "still.fail archived workspace: "
+
+///|
 fn marker_of(room : String) -> String {
-  "still.fail archived workspace: \{room}\n"
+  "\{archive_worktree_lock_prefix}\{room}\n"
 }
 
 ///|

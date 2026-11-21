@@ -947,6 +947,8 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
         Some(freed) => jn(freed)
         None => Json::null()
       }
+    "upkeepState.read" => p53_read_upkeep_state_json(self.bus.host, self.data)
+    "upkeepState.patch" => jb(p53_patch_upkeep_state_json(self.bus.host, self.data, args))
     "cold.holdsMore" =>
       jb(
         self
@@ -1681,7 +1683,13 @@ async fn P52::lifecycle(self : P52) -> Unit {
           }
         }
         ignore(hub.run_archive_upkeep_if_due(wall_ms().to_double()))
-        match (a, b) {
+        let c = Some(hub.next_archive_upkeep_at())
+        let ab = match (a, b) {
+          (Some(x), Some(y)) => Some(if x < y { x } else { y })
+          (Some(x), None) | (None, Some(x)) => Some(x)
+          _ => None
+        }
+        match (ab, c) {
           (Some(x), Some(y)) => Some(if x < y { x } else { y })
           (Some(x), None) | (None, Some(x)) => Some(x)
           _ => None

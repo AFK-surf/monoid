@@ -91,12 +91,130 @@ let p53_orphan_walk_max_entries : Int = 10000
 let p53_orphan_transcript_full_max_ms : Double = 2.0 * 60000.0
 
 ///|
+let p53_upkeep_state_file : String = "upkeep-state.json"
+
+///|
+let p53_idle_measured_max : Int = 4096
+
+///|
+fn p53_empty_upkeep_state_map() -> Map[String, Json] {
+  Map([
+    ("idleMeasured", Json::object(Map([]))),
+    ("lastRepoBranchesAt", Json::null()),
+    ("lastOrphanRoomsAt", Json::null()),
+    ("lastFullRelieveAt", Json::null()),
+    ("lastArchiveUpkeepAt", Json::null()),
+  ])
+}
+
+///|
+fn p53_num_or_null(v : Json?) -> Json {
+  match v {
+    Some(Number(n, ..)) =>
+      if n - n == 0.0 {
+        jn(n)
+      } else {
+        Json::null()
+      }
+    _ => Json::null()
+  }
+}
+
+///|
+fn p53_normalize_idle_measured(raw : Json?) -> Map[String, Json] {
+  let out : Map[String, Json] = Map([])
+  guard raw is Some(Object(m)) else { return out }
+  let entries : Array[(String, Double)] = []
+  for k, v in m {
+    match v {
+      Number(n, ..) if n - n == 0.0 => entries.push((k, n))
+      _ => ()
+    }
+  }
+  let start = if entries.length() > p53_idle_measured_max {
+    entries.length() - p53_idle_measured_max
+  } else {
+    0
+  }
+  for i in start..<entries.length() {
+    let (k, n) = entries[i]
+    out[k] = jn(n)
+  }
+  out
+}
+
+///|
+fn p53_parse_upkeep_state_map(text : String) -> Map[String, Json] {
+  let parsed = @json.parse(text) catch { _ => return p53_empty_upkeep_state_map() }
+  guard parsed is Object(m) else { return p53_empty_upkeep_state_map() }
+  Map([
+    ("idleMeasured", Json::object(p53_normalize_idle_measured(m.get("idleMeasured")))),
+    ("lastRepoBranchesAt", p53_num_or_null(m.get("lastRepoBranchesAt"))),
+    ("lastOrphanRoomsAt", p53_num_or_null(m.get("lastOrphanRoomsAt"))),
+    ("lastFullRelieveAt", p53_num_or_null(m.get("lastFullRelieveAt"))),
+    ("lastArchiveUpkeepAt", p53_num_or_null(m.get("lastArchiveUpkeepAt"))),
+  ])
+}
+
+///|
+async fn p53_read_upkeep_state_json(host : @host.Host, data : String) -> Json {
+  let path = @nodepath.join(sep(), [data, p53_upkeep_state_file])
+  match (host.read_text(path) catch { _ => None }) {
+    Some(text) => Json::object(p53_parse_upkeep_state_map(text))
+    None => Json::object(p53_empty_upkeep_state_map())
+  }
+}
+
+///|
+/// Merges `patch` into `<data>/upkeep-state.json` atomically (temp file + rename), writing only when changed.
+async fn p53_patch_upkeep_state_json(host : @host.Host, data : String, patch : Json) -> Bool {
+  guard patch is Object(pm) else { return false }
+  let path = @nodepath.join(sep(), [data, p53_upkeep_state_file])
+  let current = match (host.read_text(path) catch { _ => None }) {
+    Some(text) => p53_parse_upkeep_state_map(text)
+    None => p53_empty_upkeep_state_map()
+  }
+  let next = current.copy()
+  match pm.get("idleMeasured") {
+    Some(im) => next["idleMeasured"] = Json::object(p53_normalize_idle_measured(Some(im)))
+    None => ()
+  }
+  for key in ["lastRepoBranchesAt", "lastOrphanRoomsAt", "lastFullRelieveAt", "lastArchiveUpkeepAt"] {
+    match pm.get(key) {
+      Some(v) => next[key] = p53_num_or_null(Some(v))
+      None => ()
+    }
+  }
+  let prev_text = Json::object(current).stringify()
+  let next_text = Json::object(next).stringify()
+  if prev_text == next_text {
+    return false
+  }
+  let tmp = path + ".tmp"
+  if !write_text_mode(tmp, next_text, 0o600) {
+    p53_remove(host, tmp)
+    return false
+  }
+  let ok = (try {
+    ignore(host.shell("fs.rename", { "from": jstr(tmp), "to": jstr(path) }))
+    true
+  } catch {
+    _ => false
+  })
+  if !ok {
+    p53_remove(host, tmp)
+  }
+  ok
+}
+
+///|
 priv struct P53Upkeep {
   bus : LiveBus
   jobs : P53Jobs
   remote : P53Remote
   mut tier : String
   mut running : Bool
+  mut state_loaded : Bool
   mut last_orphan_rooms_at : Double?
   mut last_repo_branches_at : Double?
   mut last_full_relieve_at : Double?
@@ -104,7 +222,25 @@ priv struct P53Upkeep {
 
 ///|
 fn P53Upkeep::new(bus : LiveBus, jobs : P53Jobs, remote : P53Remote) -> P53Upkeep {
-  { bus, jobs, remote, tier: "ok", running: false, last_orphan_rooms_at: None, last_repo_branches_at: None, last_full_relieve_at: None }
+  { bus, jobs, remote, tier: "ok", running: false, state_loaded: false, last_orphan_rooms_at: None, last_repo_branches_at: None, last_full_relieve_at: None }
+}
+
+///|
+async fn P53Upkeep::ensure_state_loaded(self : P53Upkeep) -> Unit {
+  if self.state_loaded {
+    return
+  }
+  self.state_loaded = true
+  let saved = p53_read_upkeep_state_json(self.bus.host, self.bus.data)
+  if self.last_repo_branches_at is None {
+    self.last_repo_branches_at = jnum_of(saved, "lastRepoBranchesAt")
+  }
+  if self.last_orphan_rooms_at is None {
+    self.last_orphan_rooms_at = jnum_of(saved, "lastOrphanRoomsAt")
+  }
+  if self.last_full_relieve_at is None {
+    self.last_full_relieve_at = jnum_of(saved, "lastFullRelieveAt")
+  }
 }
 
 ///|
@@ -184,7 +320,7 @@ async fn P53Upkeep::step(self : P53Upkeep, what : String, did : Json, f : async 
 
 ///|
 /// One round (ops/storage.ts `Upkeep.#round`): what it held to its bound, by step.
-async fn P53Upkeep::pass(self : P53Upkeep) -> Json {
+async fn P53Upkeep::pass(self : P53Upkeep, now? : Double) -> Json {
   if self.running {
     return jobj_of([("running", jb(true))])
   }
@@ -192,10 +328,11 @@ async fn P53Upkeep::pass(self : P53Upkeep) -> Json {
   defer {
     self.running = false
   }
+  self.ensure_state_loaded()
   let bus = self.bus
   let host = bus.host
   let data = bus.data
-  let now = wall_ms().to_double()
+  let now = now.unwrap_or(wall_ms().to_double())
   let out : Map[String, Json] = Map([])
   let at = (parts : Array[String]) => @nodepath.join(sep(), [data] + parts)
   let note = async fn(what : String, f : async () -> Json) {
@@ -241,12 +378,14 @@ async fn P53Upkeep::pass(self : P53Upkeep) -> Json {
   note("repo bundles", async fn() {
     Json::array(p53_prune_expired_repo_bundles(host, data, now).map(jstr))
   })
+  let state_patch : Map[String, Json] = Map([])
   let run_repo_branches = match self.last_repo_branches_at {
     None => true
     Some(last) => now - last >= p53_repo_branches_every_ms
   }
   if run_repo_branches {
     self.last_repo_branches_at = Some(now)
+    state_patch["lastRepoBranchesAt"] = jn(now)
     note("repo branches", async fn() {
       Json::array(self.prune_all_repo_branches(now))
     })
@@ -257,9 +396,13 @@ async fn P53Upkeep::pass(self : P53Upkeep) -> Json {
   }
   if run_orphan_rooms {
     self.last_orphan_rooms_at = Some(now)
+    state_patch["lastOrphanRoomsAt"] = jn(now)
     note("orphan session rooms", async fn() {
       Json::array(self.prune_orphan_rooms(now).map(jstr))
     })
+  }
+  if state_patch.length() > 0 {
+    ignore(p53_patch_upkeep_state_json(host, data, Json::object(state_patch)))
   }
   let (free, total) = disk_of(data).unwrap_or((-1.0, -1.0))
   out["free"] = jn(free)
@@ -290,6 +433,7 @@ async fn P53Upkeep::renewables(
 /// The disk looked at (sessions/agents.ts `relieving`): under its soft mark what is made again goes sooner and the
 /// mirrors of other stations' tasks not in use; under DISK_LOW_BYTES the archived chats' workspaces, by the hub.
 async fn P53Upkeep::relieving(self : P53Upkeep) -> Json {
+  self.ensure_state_loaded()
   let bus = self.bus
   let now = wall_ms().to_double()
   let (free, total) = match disk_of(bus.data) {
@@ -334,7 +478,9 @@ async fn P53Upkeep::relieving(self : P53Upkeep) -> Json {
             []
           }
         })
-        self.last_full_relieve_at = Some(wall_ms().to_double())
+        let done_at = wall_ms().to_double()
+        self.last_full_relieve_at = Some(done_at)
+        ignore(p53_patch_upkeep_state_json(bus.host, bus.data, jobj_of([("lastFullRelieveAt", jn(done_at))])))
       }
     }
     _ => ()
@@ -376,12 +522,38 @@ fn p53_safe_url(url : String) -> String {
 }
 
 ///|
-/// Removes stale, unlocked git worktree registrations in `<data>/repos/*/.git/worktrees/*`
-/// whose literal `gitdir` target lies under `<data>/sessions` and no longer exists (ops/storage.ts `pruneRepoWorktrees`).
+/// Removes stale git worktree registrations in `<data>/repos/*/.git/worktrees/*` whose `gitdir` target no longer exists:
+/// - unlocked registrations whose `gitdir` target lies under this station's `<data>/sessions`;
+/// - locked registrations whose `locked` file starts with `@session_storage.archive_worktree_lock_prefix` where BOTH
+///   the archived room path in `locked` and the `gitdir` target lie outside this station's `<data>/sessions`
+///   (foreign registrations from a clone migrated from another machine).
 async fn p53_prune_repo_worktrees(host : @host.Host, data : String) -> Array[String] {
   guard p53_realpath(host, @nodepath.join(sep(), [data, "repos"])) is Some(real_repos) else { return [] }
   let raw_sessions = @nodepath.join(sep(), [data, "sessions"])
   let real_sessions = p53_realpath(host, raw_sessions)
+  let within_local_sessions = async fn(raw_path : String) -> Bool {
+    let norm = @nodepath.join(sep(), [raw_path])
+    if p53_within(raw_sessions, norm) {
+      return true
+    }
+    match real_sessions {
+      Some(rs) if p53_within(rs, norm) => return true
+      _ => ()
+    }
+    match p53_realpath(host, norm) {
+      Some(real) => {
+        if p53_within(raw_sessions, real) {
+          return true
+        }
+        match real_sessions {
+          Some(rs) => p53_within(rs, real)
+          None => false
+        }
+      }
+      None => false
+    }
+  }
+  let prefix = @session_storage.archive_worktree_lock_prefix
   let gone : Array[String] = []
   for repo_name in p53_names(host, real_repos) {
     if repo_name.has_prefix(".") {
@@ -400,9 +572,6 @@ async fn p53_prune_repo_worktrees(host : @host.Host, data : String) -> Array[Str
       if jtext(p53_lstat(host, admin_dir), "kind") != Some("dir") {
         continue
       }
-      if jtext(p53_lstat(host, @nodepath.join(sep(), [admin_dir, "locked"])), "kind") is Some(_) {
-        continue
-      }
       let raw_target = (host.read_text(@nodepath.join(sep(), [admin_dir, "gitdir"])) catch { _ => None })
         .unwrap_or("")
         .trim()
@@ -411,13 +580,33 @@ async fn p53_prune_repo_worktrees(host : @host.Host, data : String) -> Array[Str
         continue
       }
       let target = @nodepath.join(sep(), [raw_target])
-      let under = p53_inside(target, raw_sessions) ||
-        (match real_sessions {
-          Some(rs) => p53_inside(target, rs)
-          None => false
-        })
-      if !under {
-        continue
+      let locked_path = @nodepath.join(sep(), [admin_dir, "locked"])
+      let locked_kind = jtext(p53_lstat(host, locked_path), "kind")
+      match locked_kind {
+        None => {
+          let under = p53_inside(target, raw_sessions) ||
+            (match real_sessions {
+              Some(rs) => p53_inside(target, rs)
+              None => false
+            })
+          if !under {
+            continue
+          }
+        }
+        Some("file") => {
+          guard (host.read_text(locked_path) catch { _ => None }) is Some(locked_text) else { continue }
+          if !locked_text.has_prefix(prefix) {
+            continue
+          }
+          let locked_room = locked_text[prefix.length():].to_owned().trim().to_string()
+          if locked_room == "" || !@nodepath.is_absolute(sep(), locked_room) {
+            continue
+          }
+          if within_local_sessions(locked_room) || within_local_sessions(raw_target) {
+            continue
+          }
+        }
+        Some(_) => continue
       }
       if jtext(p53_lstat(host, target), "kind") is Some(_) {
         continue

@@ -13,6 +13,7 @@ import { log } from "../ops/log.ts";
 import { tr, type Lang, stationLang } from "../ops/i18n.ts";
 import { clean, inside, samePath, within } from "../ops/paths.ts";
 import { RELIEVE_FULL_EVERY_MS, pruneRepoWorktrees, relieveOrphanTranscripts, treeBytes } from "../ops/storage.ts";
+import { IDLE_MEASURED_MAX, patchUpkeepState, readUpkeepState } from "../ops/upkeep-state.ts";
 import { REPO_GIT_TIMEOUT_MS, type RepoGitRun, isProcessFile, pruneRepoBranchesIn, runRepoGit } from "../ops/repo-branches.ts";
 import { checkContext } from "./context-cap.ts";
 import { type MachineSession, type Roots, ROLLOUT_DEPTH, ROLLOUT_ENTRIES, extension, rolloutOf } from "../read/machine.ts";
@@ -454,6 +455,11 @@ async function* archivedWorkspaces(
 /// hundred sessions within a few hours without contending with the main lifecycle loop.
 export const ARCHIVE_UPKEEP_EVERY_MS = 10 * 60_000;
 
+/// Short startup grace (60 seconds) before `runArchiveUpkeepIfDue` may run after a hub starts: prevents a burst
+/// at the exact moment of startup while allowing persisted `lastArchiveUpkeepAt` to run promptly after a restart
+/// instead of waiting another full 10 minutes.
+export const ARCHIVE_UPKEEP_STARTUP_GRACE_MS = 60_000;
+
 /// Max unfinished archived sessions packed per periodic round to prevent a startup/timer storm.
 export const PACK_BACKFILL_MAX_PER_ROUND = 16;
 
@@ -470,9 +476,6 @@ export const IDLE_REBUILD_LOW_MS = 3_600_000;
 /// Max idle unarchived sessions measured per periodic round.
 export const IDLE_REBUILD_MAX_PER_ROUND = 16;
 
-/// Upper bound on cached `key -> lastActiveAt` entries for idle rebuildable measurements.
-const IDLE_MEASURED_MAX = 4096;
-
 function recordIdleMeasured(hub: Hub, key: string, lastActiveAt: number): void {
   const map = hub.idleMeasured;
   map.delete(key);
@@ -481,6 +484,71 @@ function recordIdleMeasured(hub: Hub, key: string, lastActiveAt: number): void {
     const oldest = map.keys().next().value;
     if (oldest !== undefined) map.delete(oldest);
   }
+  hub.idleMeasuredDirty = true;
+}
+
+function idleMeasuredRecord(hub: Hub): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [k, v] of hub.idleMeasured) out[k] = v;
+  return out;
+}
+
+async function ensureUpkeepStateLoaded(hub: Hub): Promise<void> {
+  if (hub.upkeepStateLoaded) return;
+  hub.upkeepStateLoaded = true;
+  const saved = await readUpkeepState(hub.config().dataDir);
+  // Preserve any entries already recorded in memory in this process (newer than disk), while restoring prior entries.
+  const existing = [...hub.idleMeasured.entries()];
+  hub.idleMeasured.clear();
+  for (const [k, v] of Object.entries(saved.idleMeasured)) {
+    hub.idleMeasured.set(k, v);
+  }
+  for (const [k, v] of existing) {
+    hub.idleMeasured.delete(k);
+    hub.idleMeasured.set(k, v);
+  }
+  while (hub.idleMeasured.size > IDLE_MEASURED_MAX) {
+    const oldest = hub.idleMeasured.keys().next().value;
+    if (oldest === undefined) break;
+    hub.idleMeasured.delete(oldest);
+  }
+  if (hub.lastArchiveUpkeepAt === null) hub.lastArchiveUpkeepAt = saved.lastArchiveUpkeepAt;
+  if (hub.lastFullRelieveAt === null) hub.lastFullRelieveAt = saved.lastFullRelieveAt;
+}
+
+async function persistHubUpkeepState(
+  hub: Hub,
+  opts: { idleMeasured?: boolean; lastArchiveUpkeepAt?: boolean; lastFullRelieveAt?: boolean },
+): Promise<void> {
+  const patch: {
+    idleMeasured?: Record<string, number>;
+    lastArchiveUpkeepAt?: number | null;
+    lastFullRelieveAt?: number | null;
+  } = {};
+  let any = false;
+  if (opts.idleMeasured && hub.idleMeasuredDirty) {
+    patch.idleMeasured = idleMeasuredRecord(hub);
+    any = true;
+  }
+  if (opts.lastArchiveUpkeepAt) {
+    patch.lastArchiveUpkeepAt = hub.lastArchiveUpkeepAt;
+    any = true;
+  }
+  if (opts.lastFullRelieveAt) {
+    patch.lastFullRelieveAt = hub.lastFullRelieveAt;
+    any = true;
+  }
+  if (!any) return;
+  await patchUpkeepState(hub.config().dataDir, patch);
+  if (opts.idleMeasured) hub.idleMeasuredDirty = false;
+}
+
+/// Earliest timestamp when `runArchiveUpkeepIfDue` will next be eligible to run (respecting both the startup grace
+/// and the persisted `lastArchiveUpkeepAt` cadence).
+export function nextArchiveUpkeepAt(hub: Hub, everyMs = ARCHIVE_UPKEEP_EVERY_MS): number {
+  const grace = hub.startedAt + ARCHIVE_UPKEEP_STARTUP_GRACE_MS;
+  if (hub.lastArchiveUpkeepAt === null) return grace;
+  return Math.max(grace, hub.lastArchiveUpkeepAt + everyMs);
 }
 
 /// Empties the workspaces of sessions archived past archivedWorkspaceMs, one after another: each keeps the files sent in
@@ -567,13 +635,14 @@ export async function packUnfinishedArchived(
 export async function cleanIdleRebuildable(
   hub: Hub,
   now: number,
-  options?: { idleMs?: number; limit?: number },
+  options?: { idleMs?: number; limit?: number; persist?: boolean },
 ): Promise<number> {
   const { cold } = hub;
   if (!cold.cleanIdleRebuildable) return 0;
   const idleMs = options?.idleMs ?? IDLE_REBUILD_MS;
   const limit = options?.limit ?? IDLE_REBUILD_MAX_PER_ROUND;
   if (limit <= 0) return 0;
+  await ensureUpkeepStateLoaded(hub);
   const measuredMap = hub.idleMeasured;
   const through = now - idleMs;
   let after: { lastActiveAt: number; key: string } | null = null;
@@ -599,18 +668,24 @@ export async function cleanIdleRebuildable(
     const last = page[page.length - 1]!;
     after = { lastActiveAt: last.lastActiveAt, key: last.key };
   }
+  if (options?.persist !== false) {
+    await persistHubUpkeepState(hub, { idleMeasured: true });
+  }
   return measured;
 }
 
 /// Runs `packUnfinishedArchived` and `cleanIdleRebuildable` on their own cadence (`ARCHIVE_UPKEEP_EVERY_MS`),
-/// independent of how frequently `expireArchived` wakes. `hub.lastArchiveUpkeepAt` is initialized to hub startup time
-/// so startup never runs an immediate burst. Returns whether a round ran.
+/// independent of how frequently `expireArchived` wakes. Respects a short startup grace (`ARCHIVE_UPKEEP_STARTUP_GRACE_MS`)
+/// so startup never runs an immediate burst, then uses the persisted `lastArchiveUpkeepAt` so frequent restarts do not
+/// starve upkeep. Returns whether a round ran.
 export async function runArchiveUpkeepIfDue(
   hub: Hub,
   now: number,
   everyMs = ARCHIVE_UPKEEP_EVERY_MS,
 ): Promise<boolean> {
-  if (now - hub.lastArchiveUpkeepAt < everyMs) return false;
+  await ensureUpkeepStateLoaded(hub);
+  if (now - hub.startedAt < ARCHIVE_UPKEEP_STARTUP_GRACE_MS) return false;
+  if (hub.lastArchiveUpkeepAt !== null && now - hub.lastArchiveUpkeepAt < everyMs) return false;
   hub.lastArchiveUpkeepAt = now;
   try {
     await packUnfinishedArchived(hub, now);
@@ -618,10 +693,11 @@ export async function runArchiveUpkeepIfDue(
     log.warn("hub", "backfilling unfinished archived workspaces failed", { error: (error as Error).message });
   }
   try {
-    await cleanIdleRebuildable(hub, now);
+    await cleanIdleRebuildable(hub, now, { persist: false });
   } catch (error) {
     log.warn("hub", "cleaning rebuildable files of idle sessions failed", { error: (error as Error).message });
   }
+  await persistHubUpkeepState(hub, { idleMeasured: true, lastArchiveUpkeepAt: true });
   return true;
 }
 
@@ -634,38 +710,45 @@ export async function relieveIdleRebuildable(
   free: () => number | Promise<number>,
   low = DISK_LOW_BYTES,
   idleMs = IDLE_REBUILD_LOW_MS,
-  options?: { full?: boolean },
+  options?: { full?: boolean; persist?: boolean },
 ): Promise<number> {
   const { cold } = hub;
   const full = options?.full === true;
   if (!cold.cleanIdleRebuildable) return 0;
   if (!full && (await free()) >= low) return 0;
+  await ensureUpkeepStateLoaded(hub);
   const measuredMap = hub.idleMeasured;
   const through = hub.now() - idleMs;
   let after: { lastActiveAt: number; key: string } | null = null;
   let measured = 0;
-  for (;;) {
-    if (!full && (await free()) >= low) break;
-    const page = hub.store.idleUnarchivedSessions(after, through, IDLE_UNARCHIVED_BATCH);
-    for (const s of page) {
-      if (!full && (await free()) >= low) return measured;
-      if (measuredMap.get(s.key) === s.lastActiveAt) continue;
-      try {
-        const freed = await cold.cleanIdleRebuildable(s.key);
-        if (freed !== null) {
-          recordIdleMeasured(hub, s.key, s.lastActiveAt);
-          measured++;
+  try {
+    for (;;) {
+      if (!full && (await free()) >= low) break;
+      const page = hub.store.idleUnarchivedSessions(after, through, IDLE_UNARCHIVED_BATCH);
+      for (const s of page) {
+        if (!full && (await free()) >= low) return measured;
+        if (measuredMap.get(s.key) === s.lastActiveAt) continue;
+        try {
+          const freed = await cold.cleanIdleRebuildable(s.key);
+          if (freed !== null) {
+            recordIdleMeasured(hub, s.key, s.lastActiveAt);
+            measured++;
+          }
+        } catch (error) {
+          log.warn("hub", "rebuildable files of an idle session not cleaned", { session: s.key, error: (error as Error).message });
         }
-      } catch (error) {
-        log.warn("hub", "rebuildable files of an idle session not cleaned", { session: s.key, error: (error as Error).message });
+        await yieldLoop();
       }
-      await yieldLoop();
+      if (page.length < IDLE_UNARCHIVED_BATCH) break;
+      const last = page[page.length - 1]!;
+      after = { lastActiveAt: last.lastActiveAt, key: last.key };
     }
-    if (page.length < IDLE_UNARCHIVED_BATCH) break;
-    const last = page[page.length - 1]!;
-    after = { lastActiveAt: last.lastActiveAt, key: last.key };
+    return measured;
+  } finally {
+    if (options?.persist !== false) {
+      await persistHubUpkeepState(hub, { idleMeasured: true });
+    }
   }
-  return measured;
 }
 
 /// The disk of the station's data is low (ops/disk.ts): archived workspaces are emptied before archivedWorkspaceMs, the
@@ -707,12 +790,13 @@ export async function relieveLowDiskFull(
   options?: { git?: RepoGitRun; cooldownMs?: number },
 ): Promise<boolean> {
   if ((await free()) >= low) return false;
+  await ensureUpkeepStateLoaded(hub);
   const now = hub.now();
   const cooldownMs = options?.cooldownMs ?? RELIEVE_FULL_EVERY_MS;
   const prev = hub.lastFullRelieveAt;
   if (prev !== null && now - prev < cooldownMs) return false;
   try {
-    await relieveIdleRebuildable(hub, free, low, IDLE_REBUILD_LOW_MS, { full: true });
+    await relieveIdleRebuildable(hub, free, low, IDLE_REBUILD_LOW_MS, { full: true, persist: false });
   } catch (error) {
     log.warn("hub", "cleaning rebuildable files of idle sessions failed", { error: (error as Error).message });
   }
@@ -732,6 +816,7 @@ export async function relieveLowDiskFull(
     log.warn("hub", "reclaiming unused shared clones failed", { error: (error as Error).message });
   }
   hub.lastFullRelieveAt = hub.now();
+  await persistHubUpkeepState(hub, { idleMeasured: true, lastFullRelieveAt: true });
   return true;
 }
 

@@ -44,7 +44,8 @@ import {
   pruneRepoBranchesIn,
   runRepoGit,
 } from "./repo-branches.ts";
-import { collectWorktreeRegistrations, removeWorktreeRegistrations, unlockWorktrees } from "../sessions/archive.ts";
+import { ARCHIVE_WORKTREE_LOCK_PREFIX, collectWorktreeRegistrations, removeWorktreeRegistrations, unlockWorktrees } from "../sessions/archive.ts";
+import { UPKEEP_STATE_FILE, patchUpkeepState, readUpkeepState } from "./upkeep-state.ts";
 
 export {
   BRANCH_MIN_AGE_MS,
@@ -135,6 +136,7 @@ export const STORAGE_MANIFEST: readonly StorageEntry[] = [
   { name: "presence.json", class: "bounded-ephemeral", what: "whether the station is online (older stations)", maxBytes: MiB },
   { name: "model-catalog.json", class: "bounded-ephemeral", what: "the models' catalog as last read", maxBytes: 16 * MiB },
   { name: "repo-index.json", class: "bounded-ephemeral", what: "the repositories found on the machine", maxBytes: 64 * MiB },
+  { name: UPKEEP_STATE_FILE, class: "bounded-ephemeral", what: "persistent timestamps and idle-rebuildable memo for periodic upkeep", maxBytes: MiB, reclaim: "Upkeep / Hub: rewritten in place, idleMeasured capped at 4096" },
   { name: "remote-connects.json", class: "authoritative", what: "connects of other stations (connects/keys.ts)" },
   { name: "comma-tasks.json", class: "authoritative", what: "Comma's tasks" },
   { name: "comma-stats.db", class: "authoritative", what: "Comma's statistics" },
@@ -355,13 +357,22 @@ export async function orphanMarks(dir: string): Promise<string[]> {
   return gone;
 }
 
-/// Removes stale, unlocked git worktree registrations in `<data>/repos/*/.git/worktrees/*`
-/// whose literal `gitdir` target lies under `<data>/sessions` and no longer exists.
+/// Removes stale git worktree registrations in `<data>/repos/*/.git/worktrees/*` whose `gitdir` target no longer exists:
+/// - unlocked registrations whose `gitdir` target lies under this station's `<data>/sessions`;
+/// - locked registrations whose `locked` file carries this station's archive lock prefix (`ARCHIVE_WORKTREE_LOCK_PREFIX`),
+///   where BOTH the archived room path in `locked` and the `gitdir` target lie outside this station's `<data>/sessions`
+///   (foreign registrations from a clone migrated from another machine).
 export async function pruneRepoWorktrees(data: string): Promise<string[]> {
   const realRepos = await realpath(join(data, "repos")).catch(() => null);
   if (realRepos === null) return [];
   const rawSessions = clean(join(data, "sessions"));
   const realSessions = await realpath(join(data, "sessions")).catch(() => null);
+  const withinLocalSessions = async (rawPath: string): Promise<boolean> => {
+    const norm = clean(rawPath);
+    if (within(norm, rawSessions) || (realSessions !== null && within(norm, realSessions))) return true;
+    const real = await realpath(norm).catch(() => null);
+    return real !== null && (within(real, rawSessions) || (realSessions !== null && within(real, realSessions)));
+  };
   const gone: string[] = [];
   for (const repoName of await readdir(realRepos).catch(() => [] as string[])) {
     if (repoName.startsWith(".")) continue;
@@ -375,12 +386,23 @@ export async function pruneRepoWorktrees(data: string): Promise<string[]> {
       const adminDir = join(wtRoot, wtName);
       const adminSt = await lstat(adminDir).catch(() => null);
       if (adminSt === null || !adminSt.isDirectory() || adminSt.isSymbolicLink()) continue;
-      if (await lstat(join(adminDir, "locked")).then(() => true, () => false)) continue;
       const rawTarget = (await readFile(join(adminDir, "gitdir"), "utf8").catch(() => "")).trim();
       if (rawTarget === "" || !isAbsolute(rawTarget)) continue;
       const target = clean(rawTarget);
-      const underSessions = inside(target, rawSessions) || (realSessions !== null && inside(target, realSessions));
-      if (!underSessions) continue;
+      const lockedPath = join(adminDir, "locked");
+      const lockedSt = await lstat(lockedPath).catch(() => null);
+      if (lockedSt === null) {
+        const underSessions = inside(target, rawSessions) || (realSessions !== null && inside(target, realSessions));
+        if (!underSessions) continue;
+      } else {
+        if (!lockedSt.isFile()) continue;
+        const lockedText = await readFile(lockedPath, "utf8").catch(() => null);
+        if (lockedText === null || !lockedText.startsWith(ARCHIVE_WORKTREE_LOCK_PREFIX)) continue;
+        const lockedRoom = lockedText.slice(ARCHIVE_WORKTREE_LOCK_PREFIX.length).trim();
+        if (lockedRoom === "" || !isAbsolute(lockedRoom)) continue;
+        if (await withinLocalSessions(lockedRoom)) continue;
+        if (await withinLocalSessions(rawTarget)) continue;
+      }
       if (await lstat(target).then(() => true, () => false)) continue;
       const removed = await rm(adminDir, { recursive: true, force: true }).then(() => true, () => false);
       if (removed) gone.push(`${repoName}/${wtName}`);
@@ -785,6 +807,7 @@ export class Upkeep {
   readonly #parts: UpkeepParts;
   readonly #time: Fibers;
   #running: Promise<void> | null = null;
+  #stateLoaded = false;
   #lastOrphanRoomsAt: number | null = null;
   #lastRepoBranchesAt: number | null = null;
 
@@ -824,6 +847,12 @@ export class Upkeep {
   async #round(): Promise<void> {
     const { data, runners, jobs, remote, checkpoint } = this.#parts;
     const now = this.#time.now();
+    if (!this.#stateLoaded) {
+      const saved = await readUpkeepState(data);
+      if (this.#lastRepoBranchesAt === null) this.#lastRepoBranchesAt = saved.lastRepoBranchesAt;
+      if (this.#lastOrphanRoomsAt === null) this.#lastOrphanRoomsAt = saved.lastOrphanRoomsAt;
+      this.#stateLoaded = true;
+    }
     await this.#step("station log", () => rotateInPlace(join(data, "stillfail.log"), STATION_LOG_CAP));
     await this.#step("update log", () => rotateInPlace(join(data, "run", "update.log"), UPDATE_LOG_CAP));
     if (runners) await this.#step("runners", () => runners(now));
@@ -840,8 +869,12 @@ export class Upkeep {
     await this.#step("board files", () => goneBoardFiles(join(data, "board-files"), BOARD_FILES_GONE_MS, now));
     await this.#step("repo worktrees", () => pruneRepoWorktrees(data));
     await this.#step("repo bundles", () => pruneExpiredRepoBundles(data, now));
+    let stateChanged = false;
+    const statePatch: { lastRepoBranchesAt?: number; lastOrphanRoomsAt?: number } = {};
     if (this.#lastRepoBranchesAt === null || now - this.#lastRepoBranchesAt >= REPO_BRANCHES_EVERY_MS) {
       this.#lastRepoBranchesAt = now;
+      statePatch.lastRepoBranchesAt = now;
+      stateChanged = true;
       await this.#step("repo branches", () =>
         pruneAllRepoBranches(data, now, {
           clonesActive: this.#parts.clonesActive,
@@ -852,9 +885,12 @@ export class Upkeep {
     }
     if (this.#parts.orphans && (this.#lastOrphanRoomsAt === null || now - this.#lastOrphanRoomsAt >= ORPHAN_ROOM_EVERY_MS)) {
       this.#lastOrphanRoomsAt = now;
+      statePatch.lastOrphanRoomsAt = now;
+      stateChanged = true;
       const store = this.#parts.orphans;
       await this.#step("orphan session rooms", () => pruneOrphanRooms(data, now, store));
     }
+    if (stateChanged) await patchUpkeepState(data, statePatch);
   }
 
   async #step(what: string, f: () => Promise<unknown>): Promise<void> {

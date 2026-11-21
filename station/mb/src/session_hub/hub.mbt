@@ -164,11 +164,18 @@ pub struct Hub {
   mut keeps_counted : Bool
   /// Cross-round cursor for `pack_unfinished_archived` (`{archivedAt, key}` or Null).
   mut pack_cursor : Json
+  /// When this Hub instance started (used for startup grace before periodic archive upkeep).
+  started_at : Double
   /// Last time periodic archive backfill & idle rebuildable cleanup ran (`run_archive_upkeep_if_due`),
-  /// initialized to hub startup time so startup never triggers an immediate burst.
-  mut last_archive_upkeep_at : Double
-  /// Bounded cache of `key -> lastActiveAt` for idle rebuildable measurements (shared by periodic and low-disk paths).
+  /// persisted in `<data>/upkeep-state.json`.
+  mut last_archive_upkeep_at : Double?
+  /// Bounded cache of `key -> lastActiveAt` for idle rebuildable measurements (shared by periodic and low-disk paths),
+  /// persisted in `<data>/upkeep-state.json`.
   idle_measured : Map[String, Double]
+  /// Whether `<data>/upkeep-state.json` has been loaded into this Hub instance.
+  mut upkeep_state_loaded : Bool
+  /// Whether `idle_measured` has unpersisted mutations since the last write.
+  mut idle_measured_dirty : Bool
 }
 
 ///|
@@ -204,8 +211,11 @@ pub fn Hub::new(world : World, store : @store_sessions.Store, threads : @store_t
     counter: None,
     keeps_counted: false,
     pack_cursor: Json::null(),
-    last_archive_upkeep_at: (world.now)(),
+    started_at: (world.now)(),
+    last_archive_upkeep_at: None,
     idle_measured: {},
+    upkeep_state_loaded: false,
+    idle_measured_dirty: false,
   }
   // The sessions at work are followed by the station itself (live.ts `running`): as the store says each starts and
   // stops. Each transcript's length goes where its summary reads it (`noteLength`).

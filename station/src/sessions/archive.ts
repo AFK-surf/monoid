@@ -304,7 +304,9 @@ async function lockWorktrees(dir: string, marker: string, locks: string[]): Prom
   }
 }
 
-const markerOf = (room: string) => `still.fail archived workspace: ${room}\n`;
+export const ARCHIVE_WORKTREE_LOCK_PREFIX = "still.fail archived workspace: ";
+
+const markerOf = (room: string) => `${ARCHIVE_WORKTREE_LOCK_PREFIX}${room}\n`;
 
 export async function unlockWorktrees(room: string): Promise<void> {
   const path = join(room, "workspace-locks.json");

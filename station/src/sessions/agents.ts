@@ -91,7 +91,7 @@ import { buildSessionCounts } from "./session-count-builder.ts";
 import { PostBlockBuilder } from "./post-block-builder.ts";
 import { roomOfSoon } from "./footprint.ts";
 import { InternalChat } from "./internal.ts";
-import { expireArchived, relieveLowDiskFull, runArchiveUpkeepIfDue, startAutoArchiveTimer } from "./lifecycle.ts";
+import { ARCHIVE_UPKEEP_STARTUP_GRACE_MS, expireArchived, nextArchiveUpkeepAt, relieveLowDiskFull, runArchiveUpkeepIfDue, startAutoArchiveTimer } from "./lifecycle.ts";
 import { fromPeer, sender } from "./messages.ts";
 import { CREATE, CREATE_PRESET, CREATE_SPEED, CREATE_PRESET_SPEED, CREATE_PRESET_TUI, NOTICE, createForPeer, noticeForPeer } from "./opened.ts";
 import { ARCHIVE, archiveForPeer } from "./chat-archive.ts";
@@ -960,9 +960,12 @@ export const AgentsLive = (control: Control) =>
           log.warn("hub", "emptying long-archived workspaces failed", { error: (error as Error).message });
         }
         await runArchiveUpkeepIfDue(hub, hub.now());
-        time.after(Math.min(3_600_000, next === null ? Infinity : next - hub.now()), emptying);
+        const nowAfter = hub.now();
+        const nextExpire = next === null ? Infinity : next - nowAfter;
+        const nextUpkeep = Math.max(1_000, nextArchiveUpkeepAt(hub) - nowAfter);
+        time.after(Math.min(3_600_000, nextExpire, nextUpkeep), emptying);
       };
-      time.after(300_000, emptying);
+      time.after(ARCHIVE_UPKEEP_STARTUP_GRACE_MS, emptying);
 
       // The station's own files held to their bounds (ops/storage.ts): its logs, runners gone, jobs' logs, other
       // stations' rooms, the database's log, caches.

@@ -446,7 +446,9 @@ async fn P53::ask(self : P53, op : String, arg : Json) -> Json {
       }
       Json::null()
     }
-    "upkeep" => self.upkeep.pass()
+    "upkeep" => self.upkeep.pass(now?=num(0, "now"))
+    "upkeep.pruneRepoWorktrees" =>
+      Json::array(p53_prune_repo_worktrees(self.bus.host, self.bus.data).map(jstr))
     "relieve" => self.upkeep.relieving()
     "hub.packUnfinishedArchived" =>
       self.bus.hub_pack_unfinished_archived(

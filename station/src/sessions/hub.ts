@@ -262,17 +262,25 @@ export class Hub {
   prepareLatestThreads: ((sessions: readonly string[], signal?: AbortSignal) => Promise<void>) | null = null;
   /// Cross-round cursor for `packUnfinishedArchived` (`lifecycle.ts`).
   packBackfillCursor: ArchivedWorkspace | null = null;
+  /// When this Hub instance started (by its clock), used for the short startup grace before periodic archive upkeep.
+  readonly startedAt: number;
   /// Last time periodic archive backfill & idle rebuildable cleanup ran (`lifecycle.ts` `runArchiveUpkeepIfDue`),
-  /// initialized to hub startup time so startup never triggers an immediate burst.
-  lastArchiveUpkeepAt: number;
-  /// Bounded `sessionKey -> lastActiveAt` memo for idle rebuildable cleanup (`lifecycle.ts`), cleared on archive/delete.
+  /// loaded lazily from `<data>/upkeep-state.json`.
+  lastArchiveUpkeepAt: number | null = null;
+  /// Bounded `sessionKey -> lastActiveAt` memo for idle rebuildable cleanup (`lifecycle.ts`), persisted in
+  /// `<data>/upkeep-state.json` and cleared on archive/delete.
   readonly idleMeasured = new Map<string, number>();
-  /// Last time a full low-disk reclamation pass completed (`lifecycle.ts` `relieveLowDiskFull`).
+  /// Whether `<data>/upkeep-state.json` has been loaded into this Hub instance.
+  upkeepStateLoaded = false;
+  /// Whether `idleMeasured` has unpersisted mutations since the last write to `<data>/upkeep-state.json`.
+  idleMeasuredDirty = false;
+  /// Last time a full low-disk reclamation pass completed (`lifecycle.ts` `relieveLowDiskFull`), persisted in
+  /// `<data>/upkeep-state.json`.
   lastFullRelieveAt: number | null = null;
 
   /// Drops a session's cached idle-rebuildable measurement (called on archive or delete).
   forgetIdleMeasured(key: string): void {
-    this.idleMeasured.delete(key);
+    if (this.idleMeasured.delete(key)) this.idleMeasuredDirty = true;
   }
   private awaitingWorkspaceActivity = new Set<string>();
   private sandboxNames: SandboxNameBuilder | null = null;
@@ -337,7 +345,7 @@ export class Hub {
   constructor(options: HubOptions) {
     this.options = options;
     this.clock = options.clock ?? liveClock;
-    this.lastArchiveUpkeepAt = this.now();
+    this.startedAt = this.now();
     this.store = options.store;
     this.internal = options.internal ?? null;
     this.drivers = new Map(options.drivers.map((d) => [d.runtime(), d]));

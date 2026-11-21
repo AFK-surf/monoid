@@ -94,6 +94,7 @@ pub let storage_manifest : Array[StorageEntry] = [
   se("presence.json", "bounded-ephemeral", "whether the station is online (older stations)", max_bytes=mib),
   se("model-catalog.json", "bounded-ephemeral", "the models' catalog as last read", max_bytes=16.0 * mib),
   se("repo-index.json", "bounded-ephemeral", "the repositories found on the machine", max_bytes=64.0 * mib),
+  se("upkeep-state.json", "bounded-ephemeral", "persistent timestamps and idle-rebuildable memo for periodic upkeep", max_bytes=mib, reclaim="Upkeep / Hub: rewritten in place, idleMeasured capped at 4096"),
   se("remote-connects.json", "authoritative", "connects of other stations (connects/keys.ts)"),
   se("comma-tasks.json", "authoritative", "Comma's tasks"),
   se("comma-stats.db", "authoritative", "Comma's statistics"),
