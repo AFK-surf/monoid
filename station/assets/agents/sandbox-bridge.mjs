@@ -19,6 +19,8 @@
 //                                            `dirs`: directories made there. `sync`: what is copied (below).
 //                                            No `program`: only the copying, then it ends (a session's new uploads).
 //                                            `gh`: the station's GitHub login lent to the program (`lendGh`).
+//                                            `own`: "all" keeps every variable the sandbox has over the station's
+//                                            (a Colab VM's GPU libraries); by default only OWN's.
 //   node … -e '<this file>' remote            in the sandbox, started by the host side through ssh
 //
 // `sync`: [{path, to?, mode, skip?, push?, back?}]: a file or directory here (`path`) and there (`to`, the same path by
@@ -317,7 +319,7 @@ function connect(spec) {
       for (const path of asked) send(T.want, 0, JSON.stringify({ path, have: e.mode === "append" ? (mine.get(unmap(path))?.[1] ?? 0) : 0 }));
     }
     if (run) {
-      send(T.init, 0, JSON.stringify({ program: spec.program, args: spec.args, cwd: spec.cwd, env, ports: spec.ports, agent: spec.agent === true, silentMs: silent }));
+      send(T.init, 0, JSON.stringify({ program: spec.program, args: spec.args, cwd: spec.cwd, env, ports: spec.ports, agent: spec.agent === true, silentMs: silent, ...(spec.own === "all" ? { own: "all" } : {}) }));
     } else send(T.synced, 0);
   };
   /// A file copied back: to its place here.
@@ -615,7 +617,9 @@ function remote() {
   async function start(spec) {
     silent = spec.silentMs ?? SILENT_MS;
     if (spec.agent) await endEarlier();
-    const env = { ...spec.env };
+    // `own: "all"`: every variable the sandbox has wins (a Colab VM's: its GPU's libraries, LD_LIBRARY_PATH), the
+    // station's filling in the rest (its tools' and a job's); else only OWN's are the sandbox's.
+    const env = spec.own === "all" ? { ...spec.env, ...process.env } : { ...spec.env };
     for (const name of OWN) {
       if (process.env[name] === undefined) delete env[name];
       else env[name] = process.env[name];

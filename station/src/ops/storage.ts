@@ -167,6 +167,7 @@ export const STORAGE_MANIFEST: readonly StorageEntry[] = [
   { name: "uploads", class: "authoritative", what: "files sent in chats" },
   { name: "board-files", class: "authoritative", what: "the files of people's drafts of 待派发 (sessions/board-drafts.ts; those of a draft started or deleted, .gone, a day more, held by Upkeep)", maxAgeMs: BOARD_FILES_GONE_MS, reclaim: "Upkeep goneBoardFiles" },
   { name: "homes", class: "authoritative", what: "the runtimes' homes (accounts' sign-ins, their settings)", reclaim: "sessions/lifecycle.ts deleteSession (exclusive transcripts), ops/storage.ts relieveOrphanTranscripts (low disk only)" },
+  { name: "colab", class: "bounded-ephemeral", what: "the Colab sandboxes' CLI venv, synced CLI homes, SSH key and VM records (agents/sandbox.ts colabPool; no authoritative credentials)", reclaim: "agents/sandbox.ts reapColab" },
   { name: "repos", class: "session-bound", what: "the repositories' shared clones", reclaim: "Upkeep pruneAllRepoBranches (daily), sessions/lifecycle.ts relieveRepos (low disk only)" },
   { name: "repo-bundles", class: "bounded-ephemeral", what: "git bundles of stale unpushed branches pruned from shared clones", maxAgeMs: REPO_BUNDLE_MS, reclaim: "Upkeep pruneExpiredRepoBundles" },
   { name: "agent", class: "authoritative", what: "the agents' memory and skills" },

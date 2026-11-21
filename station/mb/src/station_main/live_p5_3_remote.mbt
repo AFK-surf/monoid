@@ -42,6 +42,8 @@ priv struct P53Remote {
   /// none), and whether it told every one it read as it started (`usedReady`).
   used : Map[String, Json]
   mut used_ready : Bool
+  /// Remote Colab sandboxes discovered from peers' `describe` answers, cached per workspace.
+  remote_sandboxes : Map[String, Array[Json]]
 }
 
 ///|
@@ -87,6 +89,7 @@ async fn P53Remote::new(bus : LiveBus, program : P53Program, jobs : P53Jobs) -> 
     used: Map([]),
     used_ready: false,
     gpus: make_gpus(host),
+    remote_sandboxes: Map([]),
   }
   program.shell(p53_remote_key, { asked: async fn(f, args) { r.asked(f, args) }, told: (f, args) => r.told(f, args) })
   ignore(program.call(p53_remote_key, "start", [jstr(root)])) catch { _ => () }
@@ -176,10 +179,38 @@ async fn P53Remote::tidy_back_hourly(self : P53Remote) -> Unit {
 }
 
 ///|
+/// Methods a remote peer may still invoke on a host's Colab sandbox after the profile is withheld or disabled.
+let p53_remote_sandbox_read_or_cleanup : Array[String] = [
+  "task.get", "task.gets", "task.log", "task.stop", "task.files", "task.collected",
+  "task.list", "task.mirrors", "task.clean", "sync.changes", "file.get", "session.close", "session.size",
+]
+
+///|
 /// A request of another station's taken in (remote.ts `answer`): its bytes, if any, kept for the program to have
 /// written where it says (`bytes`); a sync's packed pieces landed in a file first (`landed`); an answer's bytes (a file
 /// asked for whole) sent after it. A refusal is the program's answered refusal (`Refused`).
 async fn P53Remote::answer(self : P53Remote, workspace : String, peer : String, request : Json, bytes : Bytes?) -> (Json, Bytes?) {
+  let sb_name = jtext_or_empty(request, "sandbox")
+  if sb_name != "" {
+    if !@agent_runtimes.sandbox_name_ok(sb_name) {
+      raise @jobs_host.Refused("invalid sandbox name")
+    }
+    let ws : String? = if workspace == "" { None } else { Some(workspace) }
+    let local_boxes = p53_sandboxes(self.bus, workspace=ws)
+    let lower_sb = sb_name.to_lower()
+    let matched = local_boxes.iter().find_first(d => d.name.to_lower() == lower_sb)
+    if matched is Some(d) && !@agent_runtimes.is_colab(d) {
+      raise @jobs_host.Refused("sandbox \{sb_name} cannot be called from another station")
+    }
+    let meth = jtext_or_empty(request, "method")
+    if !p53_remote_sandbox_read_or_cleanup.contains(meth) {
+      let accts = p53_colab_accounts(self.bus, workspace=ws)
+      match matched {
+        Some(d) if @agent_runtimes.is_colab(d) && accts.length() > 0 => ()
+        _ => raise @jobs_host.Refused("Colab sandbox \{sb_name} is not available for this workspace on this station")
+      }
+    }
+  }
   let host = self.bus.host
   let mut asked = match request {
     Object(m) => {
@@ -255,21 +286,56 @@ async fn P53Remote::answer(self : P53Remote, workspace : String, peer : String, 
 /// from one that did not get through.
 async fn P53Remote::ask(self : P53Remote, station : String, request : Json, bytes? : Bytes) -> (Json, Bytes?) {
   let meth = jtext_or_empty(request, "method")
+  let ws_str = jtext_or_empty(request, "workspace")
+  let ws : String? = if ws_str == "" { None } else { Some(ws_str) }
+  // (cross-station sandbox `sandbox:<hostId>:<name>`: forwarded to `hostId` with `sandbox: name`)
+  if @agent_runtimes.parse_remote_sandbox(station) is Some((host_id, sb_name)) {
+    if host_id == bus_station_id(self.bus) {
+      return self.ask(@agent_runtimes.sandbox_prefix + sb_name, request, bytes?)
+    }
+    if meth == "describe" {
+      let (described, _) = self.bus.call_peer(host_id, Some(ws_str), "describe", jobj_of([("method", jstr("describe")), ("workspace", jstr(ws_str))])) catch {
+        @jobs_host.Refused(m) => raise @jobs_host.Refused(m)
+        @gate.PeerRefused(m) | @gate.Refused(m) | @gate.LockRefusal(m) | @gate.WaysRefusal(m) | @gate.MarkRefusal(m) =>
+          raise @jobs_host.Refused(m)
+        BusError(m) => raise @jobs_host.Unreached(m)
+        e => raise @jobs_host.Unreached(p53_words(e))
+      }
+      let found = p53_advertised_sandboxes(host_id, host_id, described).iter().find_first(s => jtext_or_empty(s, "name") == sb_name)
+      guard found is Some(s) else {
+        raise @jobs_host.Refused("Colab sandbox \{sb_name} is not available on station \{host_id}")
+      }
+      let d : @agent_runtimes.Sandbox = { name: sb_name, kind: "colab", target: "", size: None, identity: None, gpu: Some(jtext_or_empty(s, "gpu")) }
+      let accounts = jnum_of(s, "accounts").map(n => n.to_int()).unwrap_or(0)
+      return (jwith(of_jv(@agent_runtimes.sandbox_described(d, accounts~)), "hostId", jstr(host_id)), None)
+    }
+    let forwarded = jwith(request, "sandbox", jstr(sb_name))
+    return self.bus.call_peer(host_id, Some(ws_str), meth, forwarded, bytes?) catch {
+      @jobs_host.Refused(m) => raise @jobs_host.Refused(m)
+      @jobs_host.NoBytes(m) => raise @jobs_host.NoBytes(m)
+      @gate.PeerRefused(m) | @gate.Refused(m) | @gate.LockRefusal(m) | @gate.WaysRefusal(m) | @gate.MarkRefusal(m) =>
+        raise @jobs_host.Refused(m)
+      @gate.NoBytes(m) => raise @jobs_host.NoBytes(m)
+      BusError(m) => raise @jobs_host.Unreached(m)
+      e => raise @jobs_host.Unreached(p53_words(e))
+    }
+  }
   // (one to a sandbox is this station's own: answered here as a station's would be, its tasks run in the sandbox)
   if station.has_prefix(@agent_runtimes.sandbox_prefix) {
-    guard self.sandboxes().iter().find_first(d => @agent_runtimes.sandbox_prefix + d.name == station) is Some(d) else {
+    guard self.sandboxes(workspace=ws).iter().find_first(d => @agent_runtimes.sandbox_prefix + d.name == station) is Some(d) else {
       raise @jobs_host.Refused("no such sandbox on this station (config.json's sandboxes)")
     }
     if meth == "describe" {
-      return (of_jv(@agent_runtimes.sandbox_described(d)), None)
+      let accounts = if @agent_runtimes.is_colab(d) { p53_colab_accounts(self.bus, workspace=ws).length() } else { 0 }
+      return (of_jv(@agent_runtimes.sandbox_described(d, accounts~)), None)
     }
     // (as a peer's request is handled: by its method, `task.changed` its own)
-    return self.bus.dispatch_peer(station, Some(jtext_or_empty(request, "workspace")), meth, request, bytes) catch {
+    return self.bus.dispatch_peer(station, Some(ws_str), meth, request, bytes) catch {
       BusError(m) => raise @jobs_host.Refused(m)
       e => raise e
     }
   }
-  self.bus.call_peer(station, Some(jtext_or_empty(request, "workspace")), meth, request, bytes?) catch {
+  self.bus.call_peer(station, Some(ws_str), meth, request, bytes?) catch {
     @jobs_host.Refused(m) => raise @jobs_host.Refused(m)
     @jobs_host.NoBytes(m) => raise @jobs_host.NoBytes(m)
     // (the mesh's own: the other station answered with an error, or its transport carries no bytes)
@@ -401,7 +467,14 @@ async fn P53Remote::asked(self : P53Remote, f : String, args : Array[Json]) -> J
     "node.jobJson" => @jobs_host.job_json(a(0))
     "node.tail" => jstr(@jobs_host.tail(host, s(0), arg_int(args, 1)))
     "node.ensureIdentity" => {
-      @agent_runtimes.ensure_identity(host, bus.data)
+      let sb_name = s(0)
+      let ws_str = s(1)
+      let ws : String? = if ws_str == "" { None } else { Some(ws_str) }
+      let is_colab_box = sb_name != "" &&
+        self.sandboxes(workspace=ws).iter().any(d => d.name == sb_name && @agent_runtimes.is_colab(d))
+      if !is_colab_box {
+        @agent_runtimes.ensure_identity(host, bus.data)
+      }
       Json::null()
     }
     "node.filePut" => {
@@ -446,7 +519,12 @@ async fn P53Remote::asked(self : P53Remote, f : String, args : Array[Json]) -> J
       Json::null()
     }
     "node.cloudState" => bus_cloud(bus)
-    "node.sandboxes" => Json::array(self.sandboxes().map(d => jobj_of([("name", jstr(d.name))])))
+    "node.sandboxes" => {
+      let ws_str = s(0)
+      let ws : String? = if ws_str == "" { None } else { Some(ws_str) }
+      Json::array(self.sandboxes(workspace=ws).map(d => jobj_of([("name", jstr(d.name))])))
+    }
+    "node.remoteSandboxes" => Json::array(self.remote_sandboxes_for(s(0)))
     "node.listStations" => self.station_list(s(0), s(1), s(2))
     "node.stationFile" => @jobs_host.station_file(host, self.bulk, self.asker(), s(0), a(1), a(2), s(3))
     "node.directory" => {
@@ -511,7 +589,7 @@ fn P53Remote::accept_auto_chats(self : P53Remote) -> Bool {
 ///|
 /// What this station is and runs, for another of the workspace (remote.ts `describe`).
 async fn P53Remote::describe(self : P53Remote, peer : String, ws : String) -> Json {
-  let answer = jobj_of([
+  let fields : Array[(String, Json)] = [
     ("protocol", ji(1)),
     ("version", jstr(self.bus.version)),
     ("os", jstr(match platform() { "darwin" => "macos"; "win32" => "windows"; p => p })),
@@ -528,7 +606,28 @@ async fn P53Remote::describe(self : P53Remote, peer : String, ws : String) -> Js
     ("fileChunkBytes", ji(@jobs_host.chunk)),
     ("maxFileBytes", jn(@jobs_host.max_file)),
     ("load", self.measured_load()),
-  ])
+  ]
+  let ws_opt : String? = if ws == "" { None } else { Some(ws) }
+  let colab_accts = p53_colab_accounts(self.bus, workspace=ws_opt)
+  if colab_accts.length() > 0 {
+    let colab_boxes = p53_sandboxes(self.bus, workspace=ws_opt).filter(@agent_runtimes.is_colab)
+    if colab_boxes.length() > 0 {
+      fields.push(
+        (
+          "sandboxes",
+          Json::array(
+            colab_boxes.map(d => jobj_of([
+              ("name", jstr(d.name)),
+              ("kind", jstr("colab")),
+              ("gpu", jstr(d.gpu.unwrap_or("T4"))),
+              ("accounts", ji(colab_accts.length())),
+            ])),
+          ),
+        ),
+      )
+    }
+  }
+  let answer = jobj_of(fields)
   // (a station that only runs tasks: none of a station's sessions, messages, reads or chats, and who may use it, as its
   // rig part says it: rig/module.ts `described`)
   guard !(jfield(bus_cloud(self.bus), "rig") is Null) else { return answer }
@@ -619,31 +718,171 @@ async fn P53Remote::station_list(self : P53Remote, workspace : String, session :
     }
   }
   let roster = self.roster(workspace)
-  @jobs_host.list_stations(
+  let ws_opt : String? = if workspace == "" { None } else { Some(workspace) }
+  let colab_count = p53_colab_accounts(self.bus, workspace=ws_opt).length()
+  let discovered : Array[Json] = []
+  let out = @jobs_host.list_stations(
     roster,
     me,
     self.bus.version,
     async fn() { self.measured_load() },
     async fn(id) {
       let (d, _) = self.ask(id, jobj_of([("method", jstr("describe")), ("workspace", jstr(workspace))]))
+      let host_name = p53_roster_name(roster, id)
+      discovered.push_iter(p53_advertised_sandboxes(id, host_name, d).iter())
       d
     },
-    self.sandboxes().map(d => @jobs_host.Sandbox::{ name: d.name, described: of_jv(@agent_runtimes.sandbox_described(d)) }),
+    self.sandboxes(workspace=ws_opt).map(d => {
+      let accounts = if @agent_runtimes.is_colab(d) { colab_count } else { 0 }
+      @jobs_host.Sandbox::{ name: d.name, described: of_jv(@agent_runtimes.sandbox_described(d, accounts~)) }
+    }),
     Some(async fn(rig, answer) {
       self.bus.rigs_call("rigs.stationListed", [jstr(workspace), jstr(session), rig, answer.unwrap_or(Json::null())])
     }),
   )
+  self.remote_sandboxes[workspace] = discovered
+  out
 }
 
 ///|
-/// This station's sandboxes (config.json's `sandboxes`, agents/sandbox.ts `sandboxesOf`).
-fn P53Remote::sandboxes(self : P53Remote) -> Array[@agent_runtimes.Sandbox] {
-  p53_sandboxes(self.bus)
+fn p53_roster_name(roster : Json, id : String) -> String {
+  for key in ["stations", "rigs"] {
+    match jfield(roster, key) {
+      Array(xs) =>
+        for entry in xs {
+          if jtext_or_empty(entry, "id") == id {
+            let n = jtext_or_empty(entry, "name")
+            return if n != "" { n } else { id }
+          }
+        }
+      _ => ()
+    }
+  }
+  id
 }
 
 ///|
-fn p53_sandboxes(bus : LiveBus) -> Array[@agent_runtimes.Sandbox] {
-  @agent_runtimes.sandboxes_of(Some(to_jv((bus.config_raw.val)())))
+fn p53_advertised_sandboxes(peer_id : String, host_name : String, described : Json) -> Array[Json] {
+  let out : Array[Json] = []
+  guard jfield(described, "sandboxes") is Array(xs) else { return out }
+  for s in xs {
+    let kind = jtext_or_empty(s, "kind")
+    let name = jtext_or_empty(s, "name")
+    let gpu = jtext_or_empty(s, "gpu")
+    let accounts = jnum_of(s, "accounts").map(n => n.to_int()).unwrap_or(0)
+    if kind != "colab" || !@agent_runtimes.sandbox_name_ok(name) || !@agent_runtimes.colab_gpus.contains(gpu) || accounts <= 0 {
+      continue
+    }
+    out.push(
+      jobj_of([
+        ("id", jstr("\{@agent_runtimes.sandbox_prefix}\{peer_id}:\{name}")),
+        ("name", jstr(name)),
+        ("host", jstr(host_name)),
+        ("hostId", jstr(peer_id)),
+        ("gpu", jstr(gpu)),
+        ("accounts", ji(accounts)),
+      ]),
+    )
+  }
+  out
+}
+
+///|
+async fn P53Remote::remote_sandboxes_for(self : P53Remote, workspace : String) -> Array[Json] {
+  if self.remote_sandboxes.get(workspace) is Some(cached) {
+    return cached
+  }
+  let roster = self.roster(workspace)
+  let me = bus_station_id(self.bus)
+  let peers : Array[(String, String)] = []
+  for key in ["stations", "rigs"] {
+    match jfield(roster, key) {
+      Array(xs) =>
+        for entry in xs {
+          let id = jtext_or_empty(entry, "id")
+          if id != "" && id != me {
+            let n = jtext_or_empty(entry, "name")
+            peers.push((id, if n != "" { n } else { id }))
+          }
+        }
+      _ => ()
+    }
+  }
+  let found : Array[Json] = []
+  ignore(
+    @effect.all(
+      peers.map(p => async fn() -> Unit {
+        let got = @effect.timeout(@jobs_host.list_wait_ms, async fn() {
+          let (d, _) = self.ask(p.0, jobj_of([("method", jstr("describe")), ("workspace", jstr(workspace))]))
+          d
+        }) catch {
+          _ => None
+        }
+        if got is Some(d) {
+          found.push_iter(p53_advertised_sandboxes(p.0, p.1, d).iter())
+        }
+      }),
+    ),
+  )
+  self.remote_sandboxes[workspace] = found
+  found
+}
+
+///|
+/// Usable Google Colab accounts for `workspace`: enabled `service: "colab"` profiles serving `workspace` whose
+/// `colab-auth.json` exists on disk, sorted by id.
+async fn p53_colab_accounts(bus : LiveBus, workspace? : String? = None) -> Array[(String, String)] {
+  let cfg = @accounts_pool.hub_config(to_jv((bus.config_raw.val)()), bus.data)
+  let home = bus_home(bus)
+  let out : Array[(String, String)] = []
+  for p in cfg.profiles {
+    if p.service != Some("colab") || !p.enabled {
+      continue
+    }
+    let serves = match (workspace, home) {
+      (_, Some(_)) => @accounts_pool.allowed_in(p, workspace, home)
+      (Some(w), None) => @accounts_pool.allowed_in(p, workspace, None) && !p.withheld.unwrap_or([]).contains(w)
+      (None, None) => true
+    }
+    if !serves {
+      continue
+    }
+    let auth = @nodepath.join(sep(), [p.home, "colab-auth.json"])
+    if p53_file_is(bus.host, auth) {
+      out.push((p.id, auth))
+    }
+  }
+  out.sort_by((a, b) => a.0.compare(b.0))
+  out
+}
+
+///|
+/// All Google Colab accounts on disk (ignoring `enabled` and `withheld`), for periodic idle VM reaping.
+async fn p53_all_colab_accounts(bus : LiveBus) -> Array[(String, String)] {
+  let cfg = @accounts_pool.hub_config(to_jv((bus.config_raw.val)()), bus.data)
+  let out : Array[(String, String)] = []
+  for p in cfg.profiles {
+    if p.service != Some("colab") {
+      continue
+    }
+    let auth = @nodepath.join(sep(), [p.home, "colab-auth.json"])
+    if p53_file_is(bus.host, auth) {
+      out.push((p.id, auth))
+    }
+  }
+  out.sort_by((a, b) => a.0.compare(b.0))
+  out
+}
+
+///|
+/// This station's sandboxes (config.json's `sandboxes` + default Colab sandboxes when usable Colab accounts exist).
+async fn P53Remote::sandboxes(self : P53Remote, workspace? : String? = None) -> Array[@agent_runtimes.Sandbox] {
+  p53_sandboxes(self.bus, workspace~)
+}
+
+///|
+async fn p53_sandboxes(bus : LiveBus, workspace? : String? = None) -> Array[@agent_runtimes.Sandbox] {
+  @agent_runtimes.effective_sandboxes(Some(to_jv((bus.config_raw.val)())), p53_colab_accounts(bus, workspace~).length())
 }
 
 ///|

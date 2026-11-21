@@ -536,20 +536,22 @@ async fn p53_bridge_connect(host : @host.Host, bridge : String, spec : Json) -> 
               for k, v in env {
                 env_json[k] = jstr(v)
               }
+              let init_fields : Array[(String, Json)] = [
+                ("program", jfield(spec, "program")),
+                ("args", jfield(spec, "args")),
+                ("cwd", jfield(spec, "cwd")),
+                ("env", Json::object(env_json)),
+                ("ports", jfield(spec, "ports")),
+                ("agent", jb(jtrue(spec, "agent"))),
+                ("silentMs", ji(silent)),
+              ]
+              if jtext(spec, "own") == Some("all") {
+                init_fields.push(("own", jstr("all")))
+              }
               send(
                 p53_t_init,
                 0,
-                @utf8.encode(
-                  jobj_of([
-                    ("program", jfield(spec, "program")),
-                    ("args", jfield(spec, "args")),
-                    ("cwd", jfield(spec, "cwd")),
-                    ("env", Json::object(env_json)),
-                    ("ports", jfield(spec, "ports")),
-                    ("agent", jb(jtrue(spec, "agent"))),
-                    ("silentMs", ji(silent)),
-                  ]).stringify(),
-                ),
+                @utf8.encode(jobj_of(init_fields).stringify()),
               )
             } else {
               send(p53_t_synced, 0, b"")

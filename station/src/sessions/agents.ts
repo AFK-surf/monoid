@@ -8,7 +8,7 @@ import { stationAddr } from "../mesh/relays.ts";
 // over (run/handover.json) and the next takes them up, runtimes and all, from their runners. Under the launcher the
 // next process is up before the previous one hands over: it takes up only once that one is gone (run/hub.json says
 // which process holds the sessions), and opens the agents' door only then, so no call reaches a hub without its session.
-import { sandboxesOf } from "../agents/sandbox.ts";
+import { COLAB_REAP_MS, allColabAccounts, colabAccountsFor, effectiveSandboxes, reapColab } from "../agents/sandbox.ts";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { rm } from "node:fs/promises";
@@ -375,9 +375,7 @@ export const AgentsLive = (control: Control) =>
       });
       const meshBus = yield* Peers;
       const remote = new Remote({ data, store, jobs, notify: (session, text) => hub.notify(session, text), places: hub.places, bus: meshBus, acceptAutoChats: () => config.raw()?.acceptAutoChats === true });
-      // Its sandboxes (config.json's `sandboxes`): targets of station_task whose tasks run there as this station's jobs.
-      remote.setSandboxes(() => sandboxesOf(config.raw()));
-      jobs.setSandboxes((name) => sandboxesOf(config.raw()).find((s) => s.name === name) ?? null);
+      // Its sandboxes (config.json's `sandboxes` + default Colab sandboxes when Colab profiles exist): wired once `accounts` is created below.
       // Measure only working chats, and only station-owned workspaces. A chat's remote workspaces are measured on the
       // machines that hold them; an offline or older station supplies no reading until it can answer.
       const working = (key: string): boolean => workspaceWorking(store, (session) => hub.processState(session), key);
@@ -642,6 +640,13 @@ export const AgentsLive = (control: Control) =>
       });
       found = accounts.found;
       accounts.start();
+      const homeWorkspace = () => cloud.state?.workspace ?? null;
+      const colabFor = (workspace?: string) => colabAccountsFor(accounts.profiles(), workspace ?? null, homeWorkspace());
+      const sandboxesFor = (workspace?: string) => effectiveSandboxes(config.raw(), colabFor(workspace).length);
+      remote.setColabAccounts(colabFor);
+      remote.setSandboxes(sandboxesFor);
+      jobs.setColabAccounts(colabFor);
+      jobs.setSandboxes((name, workspace) => sandboxesFor(workspace).find((s) => s.name === name) ?? null);
       sharing = new Sharing({
         data, config, cloud,
         ask: (station, workspace, request) => remote.ask(station, workspace === null ? request : { workspace, ...request }),
@@ -857,6 +862,12 @@ export const AgentsLive = (control: Control) =>
       };
       yield* plane.changes.pipe(
         Stream.runForEach(() => Effect.promise(follow)),
+        Effect.forkScoped,
+      );
+
+      // Its Colab sandboxes' VMs no task holds, stopped once kept warm long enough (agents/sandbox.ts).
+      yield* Effect.promise(() => reapColab(data, allColabAccounts(accounts.profiles())).catch(() => {})).pipe(
+        Effect.repeat(Schedule.spaced(COLAB_REAP_MS)), // timer: a deadline (an idle Colab VM is stopped 3 minutes after its last task; Colab tells nothing and never takes one back)
         Effect.forkScoped,
       );
 

@@ -197,6 +197,27 @@ pub async fn start_live_p5_3(bus : LiveBus) -> Unit {
     let url = bus.door_ready.wait()
     p.jobs.door_open(url)
   })
+  // (Colab sandboxes' idle VMs stopped once kept warm long enough: agents/sandbox.ts `reapColab`)
+  fork_bg(bus.host, "colab reap", async fn() {
+    while !bus.stopped.is_done() {
+      let accts = p53_all_colab_accounts(bus)
+      let pool = @agent_runtimes.colab_pool(bus.data)
+      let has_vms = host_exists(bus.host, @nodepath.join(sep(), [pool, "vms"]))
+      if accts.length() > 0 || has_vms {
+        if p53_colab_file(bus) is Some(script) {
+          let payload = jobj_of([
+            ("pool", jstr(pool)),
+            ("accounts", Json::array(accts.map(a => jobj_of([("id", jstr(a.0)), ("authFile", jstr(a.1))])))),
+          ]).stringify()
+          match (try { Ok(spawn(bus.host, "node", [script, "reap", payload], stdout=Ignored, stderr=Ignored)) } catch { e => Err(e) }) {
+            Ok(proc) => ignore(proc.finished()) catch { _ => () }
+            Err(_) => ()
+          }
+        }
+      }
+      @effect.sleep(@agent_runtimes.colab_reap_ms) // timer: a deadline (an idle Colab VM is stopped 3 minutes after its last task; Colab tells nothing and never takes one back)
+    }
+  })
 }
 
 ///|

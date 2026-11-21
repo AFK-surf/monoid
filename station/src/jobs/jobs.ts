@@ -20,7 +20,7 @@ import { JOB_LOG_CAP, rotateInPlace } from "../ops/storage.ts";
 import { niced } from "../ops/nice.ts";
 import { startLasting } from "../ops/processes.ts";
 import { platform } from "../platform/index.ts";
-import { type Sandbox, type SandboxPlace, sandboxCommand } from "../agents/sandbox.ts";
+import { type ColabAccount, type Sandbox, type SandboxPlace, isColab, sandboxCommand } from "../agents/sandbox.ts";
 import { outputAt, tail } from "../read/jobs.ts";
 import { ActorsProgram } from "../sessions/mb-actor.ts";
 import { type JobRow, type Json, type ProcessRow, type Store } from "../store/store.ts";
@@ -253,8 +253,10 @@ export class Jobs {
   private link: Link;
   /// Where `stillfail-job notify` posts (the MCP endpoint's /jobs/notify).
   private notifyUrl = "";
-  /// This station's sandboxes, by name (config.json's, sessions/agents.ts): where a sandbox's task runs.
-  private sandboxes: (name: string) => Sandbox | null = () => null;
+  /// This station's sandboxes, by name and optional workspace (config.json's + default Colab sandboxes): where a sandbox's task runs.
+  private sandboxes: (name: string, workspace?: string) => Sandbox | null = () => null;
+  /// Usable Google Colab accounts for a workspace (profiles with `colab-auth.json` on disk).
+  private colabAccounts: (workspace?: string) => ColabAccount[] = () => [];
   private running = new Map<string, Running>();
   private closing = false;
   private scope: Scope.Closeable;
@@ -271,8 +273,13 @@ export class Jobs {
   private own: boolean;
 
   /// Where this station's sandboxes are found (sessions/agents.ts).
-  setSandboxes(find: (name: string) => Sandbox | null): void {
+  setSandboxes(find: (name: string, workspace?: string) => Sandbox | null): void {
     this.sandboxes = find;
+  }
+
+  /// Where this station's usable Google Colab accounts are found per workspace (sessions/agents.ts).
+  setColabAccounts(list: (workspace?: string) => ColabAccount[]): void {
+    this.colabAccounts = list;
   }
 
   constructor(options: JobsOptions) {
@@ -657,10 +664,12 @@ export class Jobs {
     // A sandbox's task (agents/sandbox.ts): its command runs there through the bridge, which the shell here runs
     // in its place: its output comes back to the log here, its exit code to the exit file here.
     if (job.sandbox !== undefined) {
-      const sandbox = this.sandboxes(job.sandbox.sandbox);
+      const ws = job.sandbox.workspace;
+      const sandbox = this.sandboxes(job.sandbox.sandbox, ws);
       if (sandbox === null) throw new Error(`no sandbox ${job.sandbox.sandbox} in this station's config.json any more`);
       const door = Number(new URL(this.notifyUrl || "http://127.0.0.1:0").port);
-      shell[1][3] = sandboxCommand(this.data, sandbox, job.sandbox, job.command, job.cwd, door > 0 ? [door] : [], this.lostFile(job.id));
+      const accounts = isColab(sandbox) ? this.colabAccounts(ws) : [];
+      shell[1][3] = sandboxCommand(this.data, sandbox, job.sandbox, job.command, job.cwd, door > 0 ? [door] : [], this.lostFile(job.id), process.execPath, accounts);
     }
     // Where `stillfail-job screen` asks for the screen: this machine's, which a sandbox's commands do not have (and
     // their processes are not this machine's to look at).

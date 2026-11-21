@@ -272,12 +272,13 @@ async fn Actors::remote_called(self : Actors, method : String, args : Array[Json
       let peer = str_of(Some(arg(1))).unwrap_or("")
       let request = arg(2)
       let method = text_of(request, "method")
+      let room_peer = room_peer_of(peer, request)
       if method == "task.clean" {
         self.clean_request(workspace, peer, request)
       } else if reads.contains(method) {
         self.task(workspace, peer, method, request, None)
       } else {
-        self.in_lane(self.room(workspace, peer, text_of(request, "session")), () => self.task(workspace, peer, method, request, None))
+        self.in_lane(self.room(workspace, room_peer, text_of(request, "session")), () => self.task(workspace, peer, method, request, None))
       }
     }
     "changed" => self.changed_there(str_of(Some(arg(0))).unwrap_or(""), arg(1))
@@ -346,11 +347,19 @@ fn Actors::again(self : Actors, once : async () -> Bool, ended : (Bool) -> Unit,
 // ── the target: a source's requests ──
 
 ///|
+/// Room/lane peer key: isolates remote sandbox tasks (`<peer>:sandbox:<name>`) from ordinary remote shell tasks.
+fn room_peer_of(peer : String, request : Json) -> String {
+  let sb = text_of(request, "sandbox")
+  if sb != "" { "\{peer}:sandbox:\{sb}" } else { peer }
+}
+
+///|
 /// A removal holds the session's lane while it runs; the transport answers early and a retry joins the same work.
 async fn Actors::clean_request(self : Actors, workspace : String, peer : String, request : Json) -> Json raise {
   let session = text_of(request, "session")
   let mirror = text_of(request, "mirror")
-  let id = rhash(Json::array([jstr(workspace), jstr(peer), jstr(session), jstr(mirror)]))
+  let room_peer = room_peer_of(peer, request)
+  let id = rhash(Json::array([jstr(workspace), jstr(room_peer), jstr(session), jstr(mirror)]))
   let now = self.remote_now()
   let gone = self.remote.cleans.to_array().filter(e => e.1.ended_at is Some(at) && now - at >= clean_kept_ms).map(e => e.0)
   for k in gone {
@@ -363,7 +372,7 @@ async fn Actors::clean_request(self : Actors, workspace : String, peer : String,
       self.remote.cleans[id] = c
       self.spawn(() => {
         let got : Json = try {
-          { "ok": self.in_lane(self.room(workspace, peer, session), () => self.task(workspace, peer, "task.clean", request, None)) }
+          { "ok": self.in_lane(self.room(workspace, room_peer, session), () => self.task(workspace, peer, "task.clean", request, None)) }
         } catch {
           e => ({ "error": jstr(FsError::of(e)) } : Json)
         }

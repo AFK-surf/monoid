@@ -289,9 +289,52 @@ fn merged(a : Map[String, Json], b : Json) -> Json {
 }
 
 ///|
+/// Extracts advertised Colab sandboxes from a peer's `describe` answer.
+fn advertised_colab_sandboxes(peer_id : String, host_name : String, described : Json) -> Array[Json] {
+  let out : Array[Json] = []
+  guard field(described, "sandboxes") is Some(Array(xs)) else { return out }
+  for s in xs {
+    let kind = text(s, "kind")
+    let name = text(s, "name")
+    let gpu = text(s, "gpu")
+    let accounts = num(field(s, "accounts")).map(n => n.to_int()).unwrap_or(0)
+    if kind != "colab" || name == "" || !["T4", "L4", "G4", "A100", "H100"].contains(gpu) || accounts <= 0 {
+      continue
+    }
+    let plural = if accounts == 1 { "" } else { "s" }
+    out.push(
+      obj([
+        ("id", jstr("\{sandbox_prefix}\{peer_id}:\{name}")),
+        ("name", jstr(name)),
+        ("host", jstr(host_name)),
+        ("hostId", jstr(peer_id)),
+        ("kind", jstr("sandbox")),
+        ("sandboxKind", jstr("colab")),
+        ("gpu", jstr(gpu)),
+        ("accounts", jint(accounts)),
+        ("tasks", jbool(true)),
+        ("files", jbool(true)),
+        ("sync", jint(1)),
+        ("sessions", jbool(false)),
+        ("messages", jbool(false)),
+        ("reads", jbool(false)),
+        ("chats", jbool(false)),
+        (
+          "note",
+          jstr(
+            "A Google Colab VM with a \{gpu} GPU (Linux, root, x86-64), from station \{host_name}'s Google Colab profile pool (\{accounts} account\{plural}): started for this chat's first task (about 10 s; tasks wait in turn while every account holds its 3 of this GPU), kept 3 minutes after a task for the next, then stopped. Run GPU work there with station_task (dir to sync, back to bring results here); no screen. Manage Colab accounts in Settings → Profiles → Add Account → Google → Google Colab.",
+          ),
+        ),
+      ]),
+    )
+  }
+  out
+}
+
+///|
 /// station_list (remote.ts `listStations`): the stations of `workspace` from its roster, each asked how busy it is at
 /// once (this one answers itself, `own_load`), one not answered within LIST_WAIT_MS listed unanswered; its rigs after
-/// (what `rig_said` says of each), its sandboxes, then those safe mode leaves out, not asked.
+/// (what `rig_said` says of each), its sandboxes (local and peer-advertised Colab), then those safe mode leaves out, not asked.
 pub async fn list_stations(
   roster_answer : Json,
   own : String,
@@ -312,6 +355,7 @@ pub async fn list_stations(
       a.map(entry => merged(without(entry, []), obj([("unprotected", jstr(unprotected_words))])))
     _ => []
   }
+  let remote_sandboxes : Array[Json] = []
   let jobs = stations.map(entry => async fn() -> Json {
     let id = text(entry, "id")
     if id == "" {
@@ -324,31 +368,32 @@ pub async fn list_stations(
       return merged(rest, obj([("here", jbool(true)), ("version", jstr(version)), ("load", jstr(summary(l)))]))
     }
     let got = bounded(list_wait_ms, async fn() { ask(id) })
+    if got is Some(Answered(ok)) {
+      let host_name = { let n = text(entry, "name"); if n != "" { n } else { id } }
+      remote_sandboxes.push_iter(advertised_colab_sandboxes(id, host_name, ok).iter())
+    }
     merged(rest, heard(got, seen))
   })
   let listed = @effect.all(jobs)
-  for d in sandboxes {
-    listed.push(merged({ "id": jstr(sandbox_prefix + d.name), "name": jstr(d.name) }, d.described))
-  }
   let rigs = match roster.get("rigs") {
     Some(Array(a)) => a
     _ => []
   }
-  match (rigs.length(), rig_said) {
-    (0, _) | (_, None) => {
-      let out = roster.copy()
-      out["stations"] = Json::array(listed + left)
-      out.remove("rigs")
-      out.remove("rigsWaiting")
-      Json::object(out)
-    }
-    (_, Some(said)) => {
-      let listed_rigs = @effect.all(
+  let listed_rigs = match (rigs.length(), rig_said) {
+    (0, _) | (_, None) => []
+    (_, Some(said)) =>
+      @effect.all(
         rigs.map(rig => async fn() -> Json {
-          let entry = { "id": jstr(text(rig, "id")), "name": jstr(text(rig, "name")) }
-          let got = bounded(list_wait_ms, async fn() { ask(text(rig, "id")) })
+          let id = text(rig, "id")
+          let name = text(rig, "name")
+          let entry = { "id": jstr(id), "name": jstr(name) }
+          let got = bounded(list_wait_ms, async fn() { ask(id) })
           let described = match got {
-            Some(Answered(v)) => Some(v)
+            Some(Answered(v)) => {
+              let host_name = if name != "" { name } else { id }
+              remote_sandboxes.push_iter(advertised_colab_sandboxes(id, host_name, v).iter())
+              Some(v)
+            }
             _ => None
           }
           let first = merged(entry, said(rig, described))
@@ -358,11 +403,16 @@ pub async fn list_stations(
           }
         }),
       )
-      let out = without(Json::object(roster), ["rigs", "rigsWaiting"])
-      out["stations"] = Json::array(listed + listed_rigs + left)
-      Json::object(out)
-    }
   }
+  for d in sandboxes {
+    listed.push(merged({ "id": jstr(sandbox_prefix + d.name), "name": jstr(d.name) }, d.described))
+  }
+  for r in remote_sandboxes {
+    listed.push(r)
+  }
+  let out = without(Json::object(roster), ["rigs", "rigsWaiting"])
+  out["stations"] = Json::array(listed + listed_rigs + left)
+  Json::object(out)
 }
 
 ///|

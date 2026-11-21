@@ -279,7 +279,8 @@ async fn P53Jobs::spawn_job(self : P53Jobs, job : Json, restarted : Bool, extra 
 /// log here, its exit code to the exit file here.
 async fn P53Jobs::launch_in_sandbox(self : P53Jobs, job : @jobs_host.JobStart, place : Json) -> Int {
   let name = jtext_or_empty(place, "sandbox")
-  guard p53_sandboxes(self.bus).iter().find_first(d => d.name == name) is Some(sandbox) else {
+  let workspace = jtext(place, "workspace")
+  guard p53_sandboxes(self.bus, workspace~).iter().find_first(d => d.name == name) is Some(sandbox) else {
     raise P53Error("no sandbox \{name} in this station's config.json any more")
   }
   guard p53_bridge_file(self.bus) is Some(bridge) else {
@@ -291,16 +292,26 @@ async fn P53Jobs::launch_in_sandbox(self : P53Jobs, job : @jobs_host.JobStart, p
     Array(xs) => xs.filter_map(x => if x is String(b) { Some(b) } else { None })
     _ => []
   }
+  let (node, colab_script, accounts) = if @agent_runtimes.is_colab(sandbox) {
+    guard p53_colab_file(self.bus) is Some(script) else {
+      raise P53Error("sandbox \{name}: colab-sandbox.mjs is not beside this station's program")
+    }
+    ("node", script, p53_colab_accounts(self.bus, workspace~))
+  } else {
+    (reader_program(self.bus), "", [])
+  }
   let command = @agent_runtimes.sandbox_command(
     self.bus.data,
     sandbox,
-    { sandbox: name, session: jtext_or_empty(place, "session"), back },
+    { sandbox: name, session: jtext_or_empty(place, "session"), back, workspace },
     job.command,
     job.cwd,
     if door > 0 { [door.to_double()] } else { [] },
     self.machine.lost_file(job.id),
-    reader_program(self.bus),
+    node,
     bridge,
+    colab_script~,
+    accounts~,
   )
   self.launch(job, Map([]), command~, sandboxed=true)
 }
@@ -334,6 +345,26 @@ fn p53_bridge_file(bus : LiveBus) -> String? {
     @nodepath.join(sep(), [bus.app, "station", "assets", "agents", "sandbox-bridge.mjs"]),
   ]
   candidates.iter().find_first(f => (try { Ok(@drive.stat(f)) } catch { e => Err(e) }) is Ok({ file: true, .. }))
+}
+
+///|
+/// The Colab sandboxes' runner (`colab-sandbox.mjs`), beside this program as a release has it or in a checkout.
+async fn p53_colab_file(bus : LiveBus) -> String? {
+  let program = reader_program(bus)
+  let here = @nodepath.dirname(sep(), program)
+  let candidates = [
+    @nodepath.join(sep(), [here, "colab-sandbox.mjs"]),
+    @nodepath.join(sep(), [bus.app, "station", "colab-sandbox.mjs"]),
+    @nodepath.join(sep(), [bus.app, "station", "dist", "colab-sandbox.mjs"]),
+    @nodepath.join(sep(), [here, "..", "..", "assets", "agents", "colab-sandbox.mjs"]),
+    @nodepath.join(sep(), [bus.app, "station", "assets", "agents", "colab-sandbox.mjs"]),
+  ]
+  for f in candidates {
+    if p53_file_is(bus.host, f) {
+      return Some(f)
+    }
+  }
+  None
 }
 
 ///|

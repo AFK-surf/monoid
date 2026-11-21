@@ -35,7 +35,7 @@ import { version as runningVersion } from "../ops/version.ts";
 import { fileBytes, readBytes, stopBytes, writeBytes } from "../mesh/files.ts";
 import { Bulk, LINK, PACKED, patchOf } from "./dirsync.ts";
 import { DEFAULT_LIMIT, WorkspaceReader } from "./workspace-size.ts";
-import { SANDBOX, type Sandbox, ensureIdentity, sandboxDescribed } from "../agents/sandbox.ts";
+import { COLAB_GPUS, type ColabAccount, type ColabGpu, SANDBOX, SANDBOX_NAME_RE, type Sandbox, ensureIdentity, isColab, parseRemoteSandbox, sandboxDescribed } from "../agents/sandbox.ts";
 
 // The requests between stations are the platform's bus (mesh/bus.ts); its types, here as they always were.
 export { type Inbox, MESH_WAIT_MS, type PeerCall, Refused } from "../mesh/bus.ts";
@@ -261,6 +261,15 @@ function fromBase64(data: string): Buffer {
 const OS = platform.os;
 const ARCH = ({ arm64: "aarch64", x64: "x86_64", ia32: "x86", arm: "arm" } as Record<string, string>)[process.arch] ?? process.arch;
 
+/// Methods a remote peer may still invoke on a host's Colab sandbox after the profile is withheld or disabled
+/// (stopping in-flight tasks, fetching results, or cleaning up on session close).
+const REMOTE_SANDBOX_READ_OR_CLEANUP = new Set([
+  "task.get", "task.gets", "task.log", "task.stop", "task.files", "task.collected",
+  "task.list", "task.mirrors", "task.clean", "sync.changes", "file.get", "session.close", "session.size",
+]);
+
+type RemoteSandboxEntry = { id: string; name: string; host: string; hostId: string; gpu: ColabGpu; accounts: number };
+
 /// What the program knows the remote tasks' shell by.
 const REMOTE_KEY = "#remote";
 
@@ -312,9 +321,13 @@ export class Remote {
   private acceptAutoChats: (() => boolean) | null = null;
   private version: string;
   private rigs: ((workspace: string, session: string, rig: Json, described: Json | null) => Promise<Json>) | null = null;
-  /// This station's sandboxes (config.json's `sandboxes`, agents/sandbox.ts): stations of a kind of their own for
-  /// station_task, named `sandbox:<name>`, whose tasks this station takes itself and runs there.
-  private sandboxes: (() => Sandbox[]) | null = null;
+  /// This station's sandboxes (config.json's `sandboxes` + default Colab sandboxes, agents/sandbox.ts): stations of a
+  /// kind of their own for station_task, named `sandbox:<name>`, whose tasks this station takes itself and runs there.
+  private sandboxes: ((workspace?: string) => Sandbox[]) | null = null;
+  /// Usable Google Colab accounts per workspace (profiles with `colab-auth.json` on disk).
+  private colabAccounts: ((workspace?: string) => ColabAccount[]) | null = null;
+  /// Remote Colab sandboxes discovered from peers' `describe` answers, cached per workspace for name resolution.
+  private remoteSandboxesCache = new Map<string, RemoteSandboxEntry[]>();
   private removeTask: (path: string) => Promise<void>;
   /// Under how many bytes free the disk is low to the program's `relieve` (`relieve`'s `below`).
   private lowBelow = DISK_LOW_BYTES;
@@ -383,6 +396,22 @@ export class Remote {
   /// them itself (station/mb src/reader/dirsync.mbt `put_blobs`): its thousands of small files' writes, stats and renames
   /// held this thread for seconds when they were Node's (2026-11-15: 6.0 s and 4.2 s on a station short of memory).
   private async answer(workspace: string, peer: string, request: Json): Promise<Json> {
+    const sbName = typeof request?.sandbox === "string" ? request.sandbox : "";
+    if (sbName !== "") {
+      if (!SANDBOX_NAME_RE.test(sbName)) throw new Refused("invalid sandbox name");
+      const ws = workspace || undefined;
+      const localBoxes = this.sandboxes?.(ws) ?? [];
+      const matched = localBoxes.find((d) => d.name.toLowerCase() === sbName.toLowerCase());
+      if (matched !== undefined && !isColab(matched)) {
+        throw new Refused(`sandbox ${sbName} cannot be called from another station`);
+      }
+      if (!REMOTE_SANDBOX_READ_OR_CLEANUP.has(text(request, "method"))) {
+        const accts = this.colabAccounts?.(ws) ?? [];
+        if (matched === undefined || !isColab(matched) || accts.length === 0) {
+          throw new Refused(`Colab sandbox ${sbName} is not available for this workspace on this station`);
+        }
+      }
+    }
     const bytes = bytesOf(request);
     // (`landed` is only ever this station's own: never a path another station names)
     const { landed: _, ...asked0 } = request ?? {};
@@ -470,9 +499,16 @@ export class Remote {
         return jobJson(a);
       case "node.tail":
         return await tail(a, b);
-      case "node.ensureIdentity":
+      case "node.ensureIdentity": {
+        const name = typeof a === "string" ? a : "";
+        const ws = typeof b === "string" && b !== "" ? b : undefined;
+        if (name !== "") {
+          const box = (this.sandboxes?.(ws) ?? []).find((d) => d.name === name);
+          if (box !== undefined && isColab(box)) return null;
+        }
         await ensureIdentity(this.data);
         return null;
+      }
       case "node.filePut":
         return await this.filePut(a, b);
       case "node.fileGet":
@@ -489,8 +525,12 @@ export class Remote {
         return null;
       case "node.cloudState":
         return this.cloudState();
-      case "node.sandboxes":
-        return (this.sandboxes?.() ?? []).map((s) => ({ name: s.name }));
+      case "node.sandboxes": {
+        const ws = typeof a === "string" && a !== "" ? a : undefined;
+        return (this.sandboxes?.(ws) ?? []).map((s) => ({ name: s.name }));
+      }
+      case "node.remoteSandboxes":
+        return await this.remoteSandboxesFor(typeof a === "string" ? a : "");
       case "node.listStations":
         return await this.stationList(a, b, c);
       case "node.stationFile":
@@ -908,12 +948,68 @@ export class Remote {
   private async describe(peer = "", workspace = ""): Promise<Json> {
     const answer: Json = { protocol: 1, version: this.version, os: OS, arch: ARCH, tasks: true, sessions: true, messages: true, reads: true, files: true, chats: true, acceptAutoChats: this.acceptAutoChats?.() === true, sync: 1, smallTasks: 1, fileChunkBytes: CHUNK, maxFileBytes: MAX_FILE };
     if (this.load !== null) answer.load = await this.measuredLoad();
+    const ws = workspace || undefined;
+    const colabAccts = this.colabAccounts?.(ws) ?? [];
+    if (colabAccts.length > 0) {
+      const colabBoxes = (this.sandboxes?.(ws) ?? []).filter(isColab);
+      if (colabBoxes.length > 0) {
+        answer.sandboxes = colabBoxes.map((d) => ({ name: d.name, kind: "colab", gpu: d.gpu, accounts: colabAccts.length }));
+      }
+    }
     return this.described === null ? answer : { ...answer, ...this.described(peer, workspace) };
   }
 
   /// This station's own description (load, mode, sessions) without sending a peer RPC to itself.
   selfDescribe(): Promise<Json> {
     return this.describe();
+  }
+
+  /// Extracts valid advertised Colab sandboxes from a peer's `describe` answer.
+  private advertisedSandboxes(peerId: string, hostName: string, described: Json | null): RemoteSandboxEntry[] {
+    if (!described || !Array.isArray(described.sandboxes)) return [];
+    const out: RemoteSandboxEntry[] = [];
+    for (const s of described.sandboxes) {
+      if (
+        s &&
+        s.kind === "colab" &&
+        typeof s.name === "string" &&
+        SANDBOX_NAME_RE.test(s.name) &&
+        typeof s.gpu === "string" &&
+        (COLAB_GPUS as readonly string[]).includes(s.gpu) &&
+        typeof s.accounts === "number" &&
+        s.accounts > 0
+      ) {
+        out.push({ id: `${SANDBOX}${peerId}:${s.name}`, name: s.name, host: hostName, hostId: peerId, gpu: s.gpu as ColabGpu, accounts: s.accounts });
+      }
+    }
+    return out;
+  }
+
+  /// Remote Colab sandboxes advertised by peers in `workspace` (from cache, or fetched once from workspace peers).
+  private async remoteSandboxesFor(workspace: string): Promise<RemoteSandboxEntry[]> {
+    const cached = this.remoteSandboxesCache.get(workspace);
+    if (cached !== undefined) return cached;
+    let roster: Json;
+    try {
+      roster = await this.ask("", { method: "peers", workspace });
+    } catch {
+      return [];
+    }
+    const own = this.ownId();
+    const peers = [roster?.stations, roster?.rigs].flatMap((list) => (Array.isArray(list) ? list : []));
+    const found: RemoteSandboxEntry[] = [];
+    await Promise.all(
+      peers.map(async (entry: Json) => {
+        const id = text(entry, "id");
+        if (id === "" || id === own) return;
+        const got = await this.bounded(this.ask(id, { method: "describe", workspace }), LIST_WAIT_MS);
+        if (got !== null && "ok" in got) {
+          found.push(...this.advertisedSandboxes(id, text(entry, "name") || id, got.ok));
+        }
+      }),
+    );
+    this.remoteSandboxesCache.set(workspace, found);
+    return found;
   }
 
   /// station_list: the stations of `workspace`, each asked how busy it is at once (this one answers itself); one that
@@ -924,13 +1020,17 @@ export class Remote {
     const own = this.ownId();
     const stations = Array.isArray(roster?.stations) ? roster.stations : [];
     const left = (Array.isArray(unprotected) ? unprotected : []).map((entry: Json) => ({ ...entry, unprotected: UNPROTECTED }));
+    const remoteSandboxes: RemoteSandboxEntry[] = [];
     const listed = await Promise.all(
       stations.map(async (entry: Json) => {
         const id = text(entry, "id");
         if (id === "") return entry;
         const { version: seen, ...rest } = entry;
-        if (id === own) return { ...rest, here: true, version: this.version, load: summary((await this.describe()).load ?? null) };
+        if (id === own) return { ...rest, here: true, version: this.version, load: summary((await this.describe("", workspace)).load ?? null) };
         const got = await this.bounded(this.ask(id, { method: "describe", workspace }), LIST_WAIT_MS);
+        if (got !== null && "ok" in got) {
+          remoteSandboxes.push(...this.advertisedSandboxes(id, text(entry, "name") || id, got.ok));
+        }
         return { ...rest, ...heard(got, seen) };
       }),
     );
@@ -938,17 +1038,35 @@ export class Remote {
     // ones, in the same list, `mode: "tasks"`: asked the same way, at once.
     const rigs = Array.isArray(roster?.rigs) ? (roster.rigs as Json[]) : [];
     const said = this.rigs;
-    // Its sandboxes too (agents/sandbox.ts), by `sandbox:<name>`: nothing to ask, they are this station's.
-    const sandboxes = (this.sandboxes?.() ?? []).map((d) => ({ id: SANDBOX + d.name, name: d.name, ...sandboxDescribed(d) }));
-    listed.push(...sandboxes);
-    if (rigs.length === 0 || said === null) return { ...roster, stations: [...listed, ...left], rigs: undefined, rigsWaiting: undefined };
-    const listedRigs = await Promise.all(
+    const listedRigs = rigs.length === 0 || said === null ? [] : await Promise.all(
       rigs.map(async (rig: Json) => {
         const entry = { id: text(rig, "id"), name: text(rig, "name") };
         const got = await this.bounded(this.ask(entry.id, { method: "describe", workspace }), LIST_WAIT_MS);
-        return { ...entry, ...(await said(workspace, session, rig, got !== null && "ok" in got ? got.ok : null)), ...heard(got, field(rig, "version")) };
+        const described = got !== null && "ok" in got ? got.ok : null;
+        if (described !== null) {
+          remoteSandboxes.push(...this.advertisedSandboxes(entry.id, entry.name || entry.id, described));
+        }
+        return { ...entry, ...(await said(workspace, session, rig, described)), ...heard(got, field(rig, "version")) };
       }),
     );
+    this.remoteSandboxesCache.set(workspace, remoteSandboxes);
+    // Its sandboxes too (agents/sandbox.ts), by `sandbox:<name>`: nothing to ask, they are this station's;
+    // then remote Colab sandboxes advertised by peers in the workspace (`sandbox:<hostId>:<name>`).
+    const colabAccts = this.colabAccounts?.(workspace) ?? [];
+    const sandboxes = (this.sandboxes?.(workspace) ?? []).map((d) => ({
+      id: SANDBOX + d.name,
+      name: d.name,
+      ...sandboxDescribed(d, isColab(d) ? { accounts: colabAccts.length } : undefined),
+    }));
+    const remoteListed = remoteSandboxes.map((r) => ({
+      id: r.id,
+      name: r.name,
+      host: r.host,
+      hostId: r.hostId,
+      ...sandboxDescribed({ name: r.name, kind: "colab", gpu: r.gpu }, { accounts: r.accounts, host: r.host }),
+    }));
+    listed.push(...sandboxes, ...remoteListed);
+    if (rigs.length === 0 || said === null) return { ...roster, stations: [...listed, ...left], rigs: undefined, rigsWaiting: undefined };
     const { rigs: _, rigsWaiting: __, ...rest } = roster as Record<string, Json>;
     return { ...rest, stations: [...listed, ...listedRigs, ...left] };
   }
@@ -1010,21 +1128,46 @@ export class Remote {
   }
 
   /// A request to another station of the workspace (session_send's messages, and this module's own). One to a sandbox
-  /// is this station's own: answered here as a station's would be, its tasks run in the sandbox.
-  ask(station: string, request: Json): Promise<Json> {
+  /// is this station's own: answered here as a station's would be, its tasks run in the sandbox. One to a remote
+  /// sandbox (`sandbox:<hostId>:<name>`) forwards to `hostId` with `sandbox: name` attached.
+  async ask(station: string, request: Json): Promise<Json> {
+    const remote = parseRemoteSandbox(station);
+    if (remote !== null) {
+      if (remote.hostId === this.ownId()) {
+        return this.ask(SANDBOX + remote.name, request);
+      }
+      const workspace = text(request, "workspace");
+      if (text(request, "method") === "describe") {
+        const described = await this.bus.ask(remote.hostId, { method: "describe", workspace });
+        const found = this.advertisedSandboxes(remote.hostId, remote.hostId, described).find((s) => s.name === remote.name);
+        if (found === undefined) throw new Refused(`Colab sandbox ${remote.name} is not available on station ${remote.hostId}`);
+        return { hostId: remote.hostId, ...sandboxDescribed({ name: found.name, kind: "colab", gpu: found.gpu }, { accounts: found.accounts }) };
+      }
+      const bytes = bytesOf(request);
+      const forwarded = { ...(request ?? {}), sandbox: remote.name };
+      return this.bus.ask(remote.hostId, bytes === null ? forwarded : withBytes(forwarded, bytes));
+    }
     if (station.startsWith(SANDBOX)) {
       const workspace = text(request, "workspace");
-      const sandbox = this.sandboxes?.().find((d) => SANDBOX + d.name === station);
-      if (sandbox === undefined) return Promise.reject(new Refused("no such sandbox on this station (config.json's sandboxes)"));
-      if (text(request, "method") === "describe") return Promise.resolve(sandboxDescribed(sandbox));
+      const ws = workspace || undefined;
+      const sandbox = (this.sandboxes?.(ws) ?? []).find((d) => SANDBOX + d.name === station);
+      if (sandbox === undefined) throw new Refused("no such sandbox on this station (config.json's sandboxes)");
+      if (text(request, "method") === "describe") {
+        return sandboxDescribed(sandbox, isColab(sandbox) ? { accounts: (this.colabAccounts?.(ws) ?? []).length } : undefined);
+      }
       return this.bus.handle(workspace, station, request);
     }
     return this.bus.ask(station, request);
   }
 
-  /// Where this station's sandboxes come from (config.json's, sessions/agents.ts).
-  setSandboxes(list: () => Sandbox[]): void {
+  /// Where this station's sandboxes come from (config.json's + default Colab sandboxes, sessions/agents.ts).
+  setSandboxes(list: (workspace?: string) => Sandbox[]): void {
     this.sandboxes = list;
+  }
+
+  /// Where this station's usable Google Colab accounts come from per workspace (sessions/agents.ts).
+  setColabAccounts(list: (workspace?: string) => ColabAccount[]): void {
+    this.colabAccounts = list;
   }
 
   /// Called only after the transport authenticates the source station and checks current workspace membership.
@@ -1061,7 +1204,7 @@ export class Remote {
   /// station_list (the program's tool asks it here): the stations of the workspace, or one in detail.
   private async stationList(workspace: string, session: string, station: string): Promise<Json> {
     if (station === "") return this.listStations(workspace, session);
-    if (station === this.ownId()) return detailed(await this.describe());
+    if (station === this.ownId()) return detailed(await this.describe("", workspace));
     // Waited for longer than in the list: one starting or updating itself has its time to answer.
     const got = await this.bounded(this.ask(station, { method: "describe", workspace }), LIST_ALONE_WAIT_MS);
     if (got === null) return { id: station, unanswered: `did not answer within ${LIST_ALONE_WAIT_MS / 1000} s; not known to be offline (it may be starting or updating): ask again in a minute` };

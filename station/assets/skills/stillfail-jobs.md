@@ -120,7 +120,15 @@ Prepare `station_task` with a stable `key`, upload inputs with `station_file`, t
 run as the target OS user, not a sandbox. A sandbox of this station's (`station_list`: kind `sandbox`, by its name;
 config.json's `sandboxes`) takes `station_task` the same way: a Linux sandbox of this chat's, made for its first task
 and deleted once idle, with nothing installed there; give `dir` to sync what it builds and `back` for what comes back.
-It has no screen. All tasks of this session share one directory on the target (the working
+It has no screen. One with `sandboxKind: "colab"` (and a `gpu`) is a Google Colab VM with that GPU (G4: RTX PRO 6000,
+96 GB; L4; T4), backed by the host station's Google Colab profiles (`Settings → Profiles → Add Account → Google → Google
+Colab` / `设置 → Profiles → 添加账号 → Google → Google Colab`): use it for GPU work (rendering, CUDA, inference), not
+builds. Any station in the same workspace with at least one enabled Colab profile automatically exposes `colab-g4`,
+`colab-l4` and `colab-t4` (unless `config.json` configures explicit `kind: "colab"` sandboxes) and advertises them over
+the workspace mesh, so other stations in the workspace discover them in `station_list` (as `sandbox:<hostId>:<name>`)
+and can dispatch `station_task` / `station_file` by name or full id while credentials and per-account 3-VM limits stay
+on the host station. The chat's next task gets the same VM while it is kept (3 minutes after a task), with what earlier
+tasks left in it; tasks wait in turn when every account holds its 3 of that GPU. All tasks of this session share one directory on the target (the working
 directory of each task), so a later task can build in what an earlier one cloned. Keep checkouts, worktrees and build
 output inside it rather than elsewhere on that machine (or over ssh): it is removed with anything still running when
 this chat is archived or deleted, or after 14 days unused, which is what keeps the target's disk free. Pin inputs and
