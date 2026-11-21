@@ -783,12 +783,26 @@ test "zero glass-on-glass across NavBar, Toolbar, List, Disclosure, Sheet, Dialo
         fn() { sheet_open.set(false) },
         fn() { "Export Sheet" },
         fn(b) {
+          b.gap(Is(8.0)) |> ignore
           liquid_checkbox_node(b, fn() { true }, fn(_) {  }, fn() { "Include Alpha" }) |> ignore
           liquid_radio_group_node(b, fn() { ["PNG", "WebP"] }, fn() { 0 }, fn(_) {  }, horizontal=true) |> ignore
+          liquid_button_node(b, fn() { "Apply" }, fn() {  }, tint=0xA62908FFL, flat=true) |> ignore
         },
         footer=fn(f) {
           f.row(Is(true)).lies_along(Is(End)) |> ignore
-          liquid_button_node(f, fn() { "Done" }, fn() { sheet_open.set(false) }, tint=0xA62908FFL, flat=true) |> ignore
+          @headless.button(f, fn() { "Done" }, fn(_) { sheet_open.set(false) }, fn(bv, _btn) {
+            bv
+            .height(Is(Some(32.0)))
+            .padding(Is((16.0, 0.0, 16.0, 0.0)))
+            .radius(Is(16.0))
+            .lines_up(Is(Some(Middle)))
+            .lies_along(Is(Middle))
+            .ground(Is(0xA62908FFL))
+            |> ignore
+            bv.box(fn(w) { w.words(Is("Done"), look=words_at(13.5, weight=weight_medium)).ink(Is(white)) |> ignore })
+            |> ignore
+          })
+          |> ignore
         },
       )
       |> ignore
@@ -1291,4 +1305,214 @@ test "liquid_progress_bar_node and liquid_progress_ring_node animate determinate
   }
   let laid_ind = tree.work().laid - laid1
   assert_eq(laid_ind, 0, msg="expected 0 Flex layouts during indeterminate progress sweep/spin, got \{laid_ind}")
+}
+
+///|
+let ovl_drawer_drag_ms : Double = 240.0
+
+///|
+test "liquid_drawer_node floats with 10pt inset, rubber-bands on over-pull, dismisses on drag > 32%, and passes audit + zero glass-on-glass" {
+  for dark in [false, true] {
+    for side in [DrawerSide::Leading, DrawerSide::Trailing] {
+      let open = @signals.signal(true)
+      let t = ovl_case(dark~, w=900.0, h=700.0, fn(_page, host) {
+        liquid_drawer_node(
+          host,
+          fn() { open.get() },
+          fn() { open.set(false) },
+          fn() { "Inspector Drawer" },
+          fn(b) {
+            liquid_list_node(
+              b,
+              fn() {
+                [
+                  LiquidListRow::new(title="Dense Glass", value="85%"),
+                  LiquidListRow::new(title="Spring Settle", value="60 fps"),
+                ]
+              },
+              dividers=false,
+              flat=true,
+            )
+            |> ignore
+          },
+          side~,
+          width=320.0,
+          subtitle=fn() { "Floating Island" },
+        )
+        |> ignore
+      })
+      t.run_for(springs_out)
+      let rect = t.get(Dialog, label="Inspector Drawer").rect
+      let expected_x = match side {
+        Leading => ovl_drawer_inset
+        Trailing => 900.0 - 320.0 - ovl_drawer_inset
+      }
+      assert_true((rect.0 - expected_x).abs() < 1.0, msg="drawer x=\{rect.0}, expected \{expected_x}")
+      assert_true((rect.1 - ovl_drawer_inset).abs() < 1.0, msg="drawer y=\{rect.1}, expected \{ovl_drawer_inset}")
+      assert_true((rect.3 - (700.0 - 2.0 * ovl_drawer_inset)).abs() < 1.0, msg="drawer h=\{rect.3}")
+      assert_eq(t.drawn_glass().length(), 1)
+      assert_no_nested_glass(t, "liquid_drawer dark=\{dark}")
+      assert_eq(t.audit(), [])
+      assert_eq(t.corner_faults(), [])
+
+      // 1. Over-pull toward expand direction -> rubber-band <= 16pt and stays open on release
+      let cx = rect.0 + rect.2 / 2.0
+      let cy = rect.1 + rect.3 / 2.0
+      let expand_dx = match side {
+        Leading => 120.0
+        Trailing => -120.0
+      }
+      t.touch(0, cx, cy)
+      t.run_for(ovl_morph_step_ms)
+      t.touch(1, cx + expand_dx, cy)
+      t.run_for(ovl_morph_step_ms)
+      let pulled_x = t.get(Dialog, label="Inspector Drawer").rect.0
+      let delta_over = (pulled_x - rect.0).abs()
+      assert_true(delta_over > 2.0 && delta_over <= ovl_drawer_overpull_max + 0.5, msg="rubber-band delta=\{delta_over}")
+      t.touch(2, cx + expand_dx, cy)
+      t.run_for(springs_out)
+      assert_eq(open.get(), true)
+      assert_true((t.get(Dialog, label="Inspector Drawer").rect.0 - expected_x).abs() < 1.0)
+
+      // 2. Drag toward dismiss past 32% width (140pt > 102.4pt) -> closes cleanly
+      let dismiss_dx = match side {
+        Leading => -140.0
+        Trailing => 140.0
+      }
+      t.touch(0, cx, cy)
+      t.run_for(ovl_morph_step_ms)
+      t.touch(1, cx + dismiss_dx, cy)
+      t.run_for(ovl_drawer_drag_ms)
+      t.touch(2, cx + dismiss_dx, cy)
+      t.run_for(springs_out)
+      assert_eq(open.get(), false)
+      assert_eq(t.drawn_glass().length(), 0)
+    }
+  }
+}
+
+///|
+test "liquid_sheet_node with detents=true keeps floating corners on wide desktop, docks all 3 edges on narrow phone, keeps X symmetric, and dismisses on drag" {
+  // 1. Wide desktop (900x700 > 520): stays floating (12pt inset) even at Large detent
+  for dark in [false, true] {
+    let open = @signals.signal(true)
+    let exp = @signals.signal(false)
+    let t = ovl_case(dark~, w=900.0, h=700.0, fn(_page, host) {
+      liquid_sheet_node(
+        host,
+        fn() { open.get() },
+        fn() { open.set(false) },
+        fn() { "Detent Sheet" },
+        fn(b) {
+          b.box(fn(w) {
+            w.words(Is("Morphing detent body"), look=words_at(ovl_type_body)).ink(By(fn() { colors().content }))
+            |> ignore
+          })
+          |> ignore
+        },
+        subtitle=fn() { "Medium to Large" },
+        detents=true,
+        expanded=fn() { exp.get() },
+        on_expanded=fn(v) { exp.set(v) },
+      )
+      |> ignore
+    })
+    t.run_for(springs_out)
+    let r_med = t.get(Dialog, label="Detent Sheet").rect
+    let close_r = t.get(Button, label="Close").rect
+    let close_top_gap = close_r.1 - r_med.1
+    let close_right_gap = r_med.0 + r_med.2 - (close_r.0 + close_r.2)
+    assert_true((close_top_gap - close_right_gap).abs() < 0.5, msg="close button asymmetric: top=\{close_top_gap}, right=\{close_right_gap}")
+    assert_true((close_top_gap - 12.0).abs() < 0.5, msg="close top gap expected 12pt, got \{close_top_gap}")
+    assert_eq(t.drawn_glass().length(), 1)
+    assert_no_nested_glass(t, "sheet-detent-wide-medium dark=\{dark}")
+    assert_eq(t.audit(), [])
+    assert_eq(t.corner_faults(), [])
+    assert_true((700.0 - (r_med.1 + r_med.3) - ovl_sheet_wide_inset).abs() < 1.5, msg="wide medium bottom inset: y=\{r_med.1}, h=\{r_med.3}")
+
+    // Expand on wide desktop -> grows taller while staying floating (12pt bottom inset, never flat-bottomed)
+    t.act(Button, Activate, label="Expand Sheet")
+    t.run_for(springs_out)
+    let r_large = t.get(Dialog, label="Detent Sheet").rect
+    assert_eq(exp.get(), true)
+    assert_true(r_large.3 > r_med.3 + 120.0, msg="expected Large height > Medium + 120, got \{r_large.3} vs \{r_med.3}")
+    assert_true((700.0 - (r_large.1 + r_large.3) - ovl_sheet_wide_inset).abs() < 1.5, msg="wide large stays floating: y=\{r_large.1}, h=\{r_large.3}")
+    assert_no_nested_glass(t, "sheet-detent-wide-large dark=\{dark}")
+    assert_eq(t.audit(), [])
+    assert_eq(t.corner_faults(), [])
+
+    // Collapse back to Medium
+    t.act(Button, Activate, label="Collapse Sheet")
+    t.run_for(springs_out)
+    assert_eq(exp.get(), false)
+    let r_back = t.get(Dialog, label="Detent Sheet").rect
+    assert_true((r_back.3 - r_med.3).abs() < 1.5)
+
+    // Drag header downward > 80pt (120pt) -> dismisses sheet
+    let hx = r_back.0 + r_back.2 / 2.0
+    let hy = r_back.1 + 40.0
+    t.touch(0, hx, hy)
+    t.run_for(ovl_morph_step_ms)
+    t.touch(1, hx, hy + 120.0)
+    t.run_for(ovl_drawer_drag_ms)
+    t.touch(2, hx, hy + 120.0)
+    t.run_for(springs_out)
+    assert_eq(open.get(), false)
+    assert_eq(t.drawn_glass().length(), 0)
+  }
+
+  // 2. Narrow phone (390x720): Medium floats with 10pt inset, Large docks flush on left, right, and bottom (0pt)
+  let open_m = @signals.signal(true)
+  let exp_m = @signals.signal(false)
+  let tm = ovl_case(dark=false, w=390.0, h=720.0, fn(_page, host) {
+    liquid_sheet_node(
+      host,
+      fn() { open_m.get() },
+      fn() { open_m.set(false) },
+      fn() { "Phone Sheet" },
+      fn(b) {
+        b.box(fn(w) { w.words(Is("Phone sheet body"), look=words_at(ovl_type_body)).ink(By(fn() { colors().content })) |> ignore })
+        |> ignore
+      },
+      width=390.0,
+      detents=true,
+      expanded=fn() { exp_m.get() },
+      on_expanded=fn(v) { exp_m.set(v) },
+    )
+    |> ignore
+  })
+  tm.run_for(springs_out)
+  let rm_med = tm.get(Dialog, label="Phone Sheet").rect
+  assert_true((rm_med.0 - ovl_sheet_inset).abs() < 1.0, msg="phone medium left inset=\{rm_med.0}")
+  assert_true((390.0 - (rm_med.0 + rm_med.2) - ovl_sheet_inset).abs() < 1.0, msg="phone medium right inset")
+  assert_true((720.0 - (rm_med.1 + rm_med.3) - ovl_sheet_inset).abs() < 1.5, msg="phone medium bottom inset")
+  tm.act(Button, Activate, label="Expand Sheet")
+  tm.run_for(springs_out)
+  let rm_large = tm.get(Dialog, label="Phone Sheet").rect
+  assert_true(rm_large.0.abs() < 1.0, msg="phone large left docked expected 0, got \{rm_large.0}")
+  assert_true((390.0 - (rm_large.0 + rm_large.2)).abs() < 1.0, msg="phone large right docked expected 0")
+  assert_true((720.0 - (rm_large.1 + rm_large.3)).abs() < 1.5, msg="phone large bottom docked expected 0")
+  let c_lg = tm.get(Button, label="Close").rect
+  assert_true(((c_lg.1 - rm_large.1) - (rm_large.0 + rm_large.2 - (c_lg.0 + c_lg.2))).abs() < 0.5)
+  assert_eq(tm.audit(), [])
+  assert_eq(tm.corner_faults(), [])
+}
+
+///|
+test "ovl_sheet_glass and ovl_drawer_glass use symmetric 80% floating tint (0xCC) and morph symmetrically to 86% (0xDC)" {
+  for dark in [false, true] {
+    set_dark(Some(dark))
+    let expected_rest = if dark { 0x202020CCL } else { 0xFDFCFDCCL }
+    let expected_full = if dark { 0x202020DCL } else { 0xFDFCFDDCL }
+    let sg = ovl_sheet_glass()
+    let dg = ovl_drawer_glass()
+    assert_eq(sg.tint, expected_rest)
+    assert_eq(dg.tint, expected_rest)
+    let sg_exp = ovl_sheet_glass_at(1.0)
+    assert_eq(sg_exp.tint, expected_full)
+    assert_true((sg_exp.tint & 0xFFL) > (sg.tint & 0xFFL))
+    assert_true(sg_exp.blur > sg.blur)
+    assert_true(sg_exp.refraction < sg.refraction)
+    assert_true((sg_exp.rim - 0.45).abs() < 0.01)
+  }
 }
