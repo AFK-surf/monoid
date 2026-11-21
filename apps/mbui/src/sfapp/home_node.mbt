@@ -155,12 +155,11 @@ fn home_top_bar_node(
 ) -> Unit {
   v.box(fn(g) {
     // (soft GPU bottom-fade scrim behind the floating liquid glass pills: stays 100% opaque through status_top + 44pt
-    // to completely cover the tucked pull-to-search field, then feathers smoothly over the lower 20pt)
+    // to completely cover the tucked pull-to-search field, then feathers smoothly over the lower 6pt to base_h)
     narrow_bar_scrim_node(
       g,
       fn(s) { status_top_now(s.window_w()) + bar_h },
-      tail=14.0,
-      fade_h=20.0,
+      fade_h=6.0,
     )
     g.box(fn(row) {
       row
