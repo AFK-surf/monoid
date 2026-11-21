@@ -64,6 +64,23 @@ fn fmt_unit(v : Double) -> String {
 }
 
 ///|
+/// Format a signed angle in degrees (e.g. `0°`, `+45°`, `-30°`).
+fn fmt_deg(v : Double) -> String {
+  let n = v.round().to_int()
+  if n == 0 {
+    "0°"
+  } else if n > 0 {
+    "+\{n}°"
+  } else {
+    "\{n}°"
+  }
+}
+
+///|
+/// Degrees to radians for `@ui.set_glass_light_angle`.
+let deg_to_rad : Double = 3.141592653589793 / 180.0
+
+///|
 /// Format a signed integer coordinate with explicit sign and 2-digit pad (e.g. `+00`, `-18`).
 fn fmt_signed(v : Double) -> String {
   let n = v.round().to_int()
@@ -516,6 +533,7 @@ fn optics_inspector(
   refraction_val : @signals.Signal[Double],
   chroma_val : @signals.Signal[Double],
   blur_val : @signals.Signal[Double],
+  light_angle_val : @signals.Signal[Double],
   prism_pos : @signals.Signal[(Double, Double)],
   dialog_open : @signals.Signal[Bool],
   stacked : Bool,
@@ -525,9 +543,9 @@ fn optics_inspector(
       insp.width(Is(Some(348.0))).shrink(Is(0.0)) |> ignore
     }
     insp
-    .radius(Is(if stacked { 32.0 } else { 44.0 }))
+    .radius(Is(if stacked { 40.0 } else { 44.0 }))
     .padding(Is(if stacked { (16.0, 16.0, 16.0, 16.0) } else { (20.0, 18.0, 20.0, 20.0) }))
-    .gap(Is(12.0))
+    .gap(Is(if stacked { 12.0 } else { 9.0 }))
     .shadow(Is(@lg.shadow_default))
     .shadow_outside(Is(true))
     .glass(By(fn() { Some(inspector_glass()) }))
@@ -551,7 +569,7 @@ fn optics_inspector(
       |> ignore
     })
     |> ignore
-    // Three live optical parameter sliders
+    // Four live optical parameter sliders
     param_slider(
       insp,
       "Refraction",
@@ -580,6 +598,90 @@ fn optics_inspector(
       0.0,
       12.0,
     )
+    // Ambient Light Angle (-90°..+90°, live global @ui.set_glass_light_angle + one-tap 0° reset)
+    insp.box(fn(la_box) {
+      la_box.gap(Is(4.0)) |> ignore
+      la_box.box(fn(sh) {
+        sh.row(Is(true)).lies_along(Is(Between)).lines_up(Is(Some(Middle))) |> ignore
+        sh.box(fn(l) {
+          l
+          .words(Is("Light Angle"), look=@lg.words_at(12.5, weight=500))
+          .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.82) }))
+          |> ignore
+        })
+        |> ignore
+        sh.box(fn(rhs) {
+          rhs.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))) |> ignore
+          rhs.box(fn(v) {
+            v
+            .words(By(fn() { fmt_deg(light_angle_val.get()) }), look=@lg.words_at(12.5, weight=600))
+            .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.72) }))
+            |> ignore
+          })
+          |> ignore
+          rhs.show(fn() { light_angle_val.get().abs() > 0.5 }, fn(rst_slot) {
+            @headless.button(
+              rst_slot,
+              fn() { "Reset Light Angle" },
+              fn(_) {
+                light_angle_val.set(0.0)
+                @ui.set_glass_light_angle(0.0)
+              },
+              fn(btn, b) {
+                btn
+                .row(Is(true))
+                .height(Is(Some(20.0)))
+                .shrink(Is(0.0))
+                .padding(Is((7.0, 0.0, 7.0, 0.0)))
+                .radius(Is(10.0))
+                .lines_up(Is(Some(Middle)))
+                .lies_along(Is(Middle))
+                .ground(By(fn() {
+                  let c = @lg.colors()
+                  if b.pressed() || b.hovered() {
+                    @lg.alpha(c.accent, 0.24)
+                  } else {
+                    @lg.alpha(c.content, 0.10)
+                  }
+                }))
+                |> ignore
+                btn.box(fn(w) {
+                  w
+                  .words(Is("0°"), look=@lg.words_at(11.0, weight=600))
+                  .ink(By(fn() { @lg.colors().content }))
+                  |> ignore
+                })
+                |> ignore
+                btn.show(fn() { b.focus_shown() }, fn(ring) {
+                  ring
+                  .over(Is(true))
+                  .points(Is(false))
+                  .radius(Is(10.0))
+                  .edge(By(fn() { (1.5, @lg.colors().accent) }))
+                  |> ignore
+                })
+              },
+            )
+            |> ignore
+          })
+        })
+        |> ignore
+      })
+      |> ignore
+      @lg.liquid_slider_node(
+        la_box,
+        fn() { light_angle_val.get() },
+        fn(v) {
+          light_angle_val.set(v)
+          @ui.set_glass_light_angle(v * deg_to_rad)
+        },
+        fn() { "Light Angle" },
+        least=-90.0,
+        most=90.0,
+      )
+      |> ignore
+    })
+    |> ignore
     // Toggles row: Dark + Grid
     insp.box(fn(toggles) {
       toggles.row(Is(true)).wraps(Is(Some(8.0))).gap(Is(20.0)).lines_up(Is(Some(Middle))).padding(Is((0.0, 2.0, 0.0, 2.0)))
@@ -649,6 +751,8 @@ fn optics_inspector(
             refraction_val.set(28.0)
             chroma_val.set(6.0)
             blur_val.set(1.8)
+            light_angle_val.set(0.0)
+            @ui.set_glass_light_angle(0.0)
             grid_on.set(true)
           },
           flat=true,
@@ -774,17 +878,20 @@ fn optics_stage(
       |> ignore
       // 3. Oversized architectural wordmark `ui.monoid`
       stage.box(fn(wm) {
+        if stacked {
+          wm.width(Is(Some(250.0))).height(Is(Some(60.0))).lines_up(Is(Some(Middle))) |> ignore
+        }
         wm
         .over(Is(true))
         .points(Is(false))
         .offset(By(fn() {
           if stacked {
-            (rw() * 0.5 - 116.0, rh() * 0.72 - 22.0)
+            ((rw() - 250.0) * 0.5, rh() * 0.72 - 22.0)
           } else {
             (rw() * 0.5 - 264.0, rh() * 0.67 - 42.0)
           }
         }))
-        .words(Is("ui.monoid"), look=@lg.words_at(if stacked { 50.0 } else { 116.0 }, weight=700))
+        .words(Is("ui.monoid"), look=@lg.words_at(if stacked { 48.0 } else { 116.0 }, weight=700))
         .ink(By(fn() { if @lg.is_dark() { 0xFFFFFF26L } else { 0x1417201FL } }))
         |> ignore
       })
@@ -940,11 +1047,14 @@ fn optics_scene(
   refraction_val : @signals.Signal[Double],
   chroma_val : @signals.Signal[Double],
   blur_val : @signals.Signal[Double],
+  light_angle_val : @signals.Signal[Double],
   prism_pos : @signals.Signal[(Double, Double)],
   dialog_open : @signals.Signal[Bool],
 ) -> Unit {
   let last_drag = Ref((0.0, 0.0))
   let scroll_state = @view.Scroll::new()
+  // Reset global glass light axis angle when leaving/unmounting the Optics stage.
+  parent.owns(fn() { @ui.set_glass_light_angle(0.0) }) |> ignore
   let is_stacked = fn() {
     let w = parent.window_w()
     w > 0.0 && w < 740.0
@@ -955,7 +1065,7 @@ fn optics_scene(
       let sc = slot.scrolls(scroll_state, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(col) {
         col.padding(Is((4.0, 4.0, 4.0, 20.0))).gap(Is(14.0)) |> ignore
         optics_stage(col, refraction_val, chroma_val, blur_val, prism_pos, last_drag, true)
-        optics_inspector(col, held, grid_on, refraction_val, chroma_val, blur_val, prism_pos, dialog_open, true)
+        optics_inspector(col, held, grid_on, refraction_val, chroma_val, blur_val, light_angle_val, prism_pos, dialog_open, true)
       })
       sc.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
     } else {
@@ -964,7 +1074,7 @@ fn optics_scene(
         optics_stage(row, refraction_val, chroma_val, blur_val, prism_pos, last_drag, false)
         row.box(fn(insp_col) {
           insp_col.shrink(Is(0.0)).lies_along(Is(Middle)) |> ignore
-          optics_inspector(insp_col, held, grid_on, refraction_val, chroma_val, blur_val, prism_pos, dialog_open, false)
+          optics_inspector(insp_col, held, grid_on, refraction_val, chroma_val, blur_val, light_angle_val, prism_pos, dialog_open, false)
         })
         |> ignore
       })
@@ -1423,7 +1533,7 @@ fn merge_inspector(
       insp.width(Is(Some(348.0))).shrink(Is(0.0)) |> ignore
     }
     insp
-    .radius(Is(if stacked { 32.0 } else { 44.0 }))
+    .radius(Is(if stacked { 40.0 } else { 44.0 }))
     .padding(Is(if stacked { (16.0, 16.0, 16.0, 16.0) } else { (20.0, 18.0, 20.0, 20.0) }))
     .gap(Is(12.0))
     .shadow(Is(@lg.shadow_default))
@@ -1832,6 +1942,7 @@ fn overview(
   let refraction_val = @signals.signal(28.0)
   let chroma_val = @signals.signal(6.0)
   let blur_val = @signals.signal(1.8)
+  let light_angle_val = @signals.signal(0.0)
   let prism_pos = @signals.signal(if held is Some(_) { (36.0, -18.0) } else { (0.0, 0.0) })
   let live_lum = @signals.signal(88.0)
   let build_count = @signals.signal(0)
@@ -1842,6 +1953,8 @@ fn overview(
     refraction_val.set(28.0)
     chroma_val.set(6.0)
     blur_val.set(1.8)
+    light_angle_val.set(0.0)
+    @ui.set_glass_light_angle(0.0)
     live_lum.set(88.0)
     grid_on.set(true)
     boost.set(false)
@@ -1873,6 +1986,7 @@ fn overview(
               refraction_val,
               chroma_val,
               blur_val,
+              light_angle_val,
               prism_pos,
               dialog_open,
             )

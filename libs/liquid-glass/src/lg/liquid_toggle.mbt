@@ -10,7 +10,7 @@
 // under it, the track as it is.
 
 ///|
-/// The thumb's glass, held `p` (iOS 27 clear loupe).
+/// The thumb's glass, held `p` (iOS 27 clear loupe with 1.22× optical magnification).
 fn toggle_glass(p : Double) -> @paint.Glass {
   let p = clamp(p, 0.0, 1.0)
   @paint.Glass::liquid(
@@ -24,6 +24,7 @@ fn toggle_glass(p : Double) -> @paint.Glass {
     chroma=-0.06 * p,
     merge=0.0,
     adaptive=false,
+    zoom=1.0 + 0.22 * p,
   )
 }
 

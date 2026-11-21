@@ -774,3 +774,47 @@ test "library Inputs (liquid_search_morph) and Navigation (liquid_collapsible_ta
     }
   }
 }
+
+///|
+test "Wave 4A: Optics Light Angle slider updates global glass_light_angle, resets via 0° button, and cleans up on leave" {
+  for cfg in [(1280.0, 800.0, true), (390.0, 844.0, false)] {
+    let (w, h, dark) = cfg
+    let t = @ui.Tester::new(fn(_c) {  }, w~, h~, platform=0)
+    @lg.set_dark(Some(dark))
+    @ui.set_view_app(fn(root) { gallery(root, "library", chrome=true) })
+    t.draw()
+    // `library` starts on Controls; switch to Optics tab first
+    let (ox, oy) = middle_of(t, Tab, "Optics")
+    t.tap(ox, oy)
+    t.run_for(settled)
+    assert_true(@ui.glass_light_angle().abs() < 1.0e-6, msg="initial light_angle should be 0")
+    let sl = t.get(Slider, label="Light Angle").rect
+    assert_true(sl.0 >= 0.0 && sl.0 + sl.2 <= w + 0.5, msg="Light Angle slider overflow on \{w}x\{h}")
+    assert_eq(t.all(Button, label="Reset Light Angle").length(), 0)
+    // Tap at 75% along [-90, +90] -> +45 deg (~0.7854 rad)
+    t.tap(sl.0 + sl.2 * 0.75, sl.1 + sl.3 / 2.0)
+    t.run_for(settled)
+    let ang = @ui.glass_light_angle()
+    assert_true(ang > 0.65 && ang < 0.92, msg="expected ~+45 deg rad, got \{ang}")
+    assert_eq(t.all(Button, label="Reset Light Angle").length(), 1)
+    let cf = t.corner_faults()
+    let sf = t.squeeze_faults()
+    let cf_s = cf.join("; ")
+    let sf_s = sf.join("; ")
+    assert_eq(cf, [], msg="optics light angle corner_faults on \{w}x\{h}: \{cf_s}")
+    assert_eq(sf, [], msg="optics light angle squeeze_faults on \{w}x\{h}: \{sf_s}")
+    // One-tap 0° reset pill
+    t.act(Button, Activate, label="Reset Light Angle")
+    t.run_for(settled)
+    assert_true(@ui.glass_light_angle().abs() < 1.0e-6, msg="reset button should restore 0 rad")
+    assert_eq(t.all(Button, label="Reset Light Angle").length(), 0)
+    // Set non-zero again, then navigate away -> owns() must reset to 0.0
+    t.tap(sl.0 + sl.2 * 0.75, sl.1 + sl.3 / 2.0)
+    t.run_for(settled)
+    assert_true(@ui.glass_light_angle().abs() > 0.5)
+    let (cx, cy) = middle_of(t, Tab, "Controls")
+    t.tap(cx, cy)
+    t.run_for(settled)
+    assert_true(@ui.glass_light_angle().abs() < 1.0e-6, msg="leaving Optics must reset light_angle to 0")
+  }
+}

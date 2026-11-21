@@ -567,6 +567,59 @@ test "liquid magnifier: caret snaps strictly to glyph_cells character gaps and p
 }
 
 ///|
+test "Wave 4A: clear lenses encode zoom (1.10x tabs, 1.22x controls) at full lift and 1.0 at rest" {
+  let near = fn(a : Double, b : Double) { (a - b).abs() < 1.0e-9 }
+  assert_eq(
+    (
+      near(tab_lens_glass(0.0).zoom, 1.0),
+      near(tab_lens_glass(1.0).zoom, 1.10),
+      near(toggle_glass(0.0).zoom, 1.0),
+      near(toggle_glass(1.0).zoom, 1.22),
+      near(slider_glass(0.0).zoom, 1.0),
+      near(slider_glass(1.0).zoom, 1.22),
+      near(ctrl_segmented_lens_glass(0.0).zoom, 1.0),
+      near(ctrl_segmented_lens_glass(1.0).zoom, 1.22),
+    ),
+    (true, true, true, true, true, true, true, true),
+  )
+}
+
+///|
+test "Wave 4A: bottom tabs dual-layer clipped accent row appears only while held and hides in solid glass" {
+  let chosen = @signals.signal(0)
+  let t = lg_case(fn(p) {
+    p.box(fn(b) {
+      b.width(Is(Some(408.0))) |> ignore
+      liquid_bottom_tabs_node(b, ["Home", "Search", "Me"], fn() { chosen.get() }, fn(i) { chosen.set(i) }, label="Tabs")
+      |> ignore
+    })
+    |> ignore
+  })
+  // At rest: only the 3 base tab labels are drawn; zero duplicate a11y Tab nodes
+  let rest_glyphs = t.drawn_glyphs().length()
+  let rest_tabs = t.all(Tab).length()
+  let (x, y) = middle(t, Tab, "Search")
+  t.touch(0, x, y)
+  t.run_for(held_ms)
+  // While held: clipped accent layer adds drawn glyphs inside the lens, still only 2 glass instances (bar + lens)
+  let held_glyphs = t.drawn_glyphs().length()
+  let held_glass = t.drawn_glass().length()
+  let held_tabs = t.all(Tab).length()
+  // Solid glass mode hides the dual-layer clipped accent overlay
+  @ui.set_glass_solid(Some(true))
+  t.draw()
+  let solid_glyphs = t.drawn_glyphs().length()
+  @ui.set_glass_solid(None)
+  t.touch(2, x, y)
+  t.run_for(springs_out)
+  let after_glyphs = t.drawn_glyphs().length()
+  assert_eq(
+    (rest_glyphs > 0, rest_tabs, held_glyphs > rest_glyphs, held_glass, held_tabs, solid_glyphs == rest_glyphs, after_glyphs == rest_glyphs),
+    (true, 3, true, 2, 3, true, true),
+  )
+}
+
+///|
 /// Long past every spring of the parts' (the softest, InteractiveHighlight's 0.5 at 300, is within its threshold in
 /// well under a second): what a step waits before what it asserts of a part at rest.
 let springs_out : Double = 1000.0

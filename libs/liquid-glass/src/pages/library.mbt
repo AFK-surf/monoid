@@ -1546,6 +1546,7 @@ fn library_page(
   let refraction_val = @signals.signal(28.0)
   let chroma_val = @signals.signal(6.0)
   let blur_val = @signals.signal(1.8)
+  let light_angle_val = @signals.signal(0.0)
   let prism_pos = @signals.signal((0.0, 0.0))
 
   // Controls state
@@ -1606,6 +1607,8 @@ fn library_page(
     refraction_val.set(28.0)
     chroma_val.set(6.0)
     blur_val.set(1.8)
+    light_angle_val.set(0.0)
+    @ui.set_glass_light_angle(0.0)
     prism_pos.set((0.0, 0.0))
     seg_idx.set(0)
     icon_active.set(true)
@@ -1963,6 +1966,7 @@ fn library_page(
                   refraction_val,
                   chroma_val,
                   blur_val,
+                  light_angle_val,
                   prism_pos,
                   dialog_open,
                 )

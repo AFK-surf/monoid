@@ -8,8 +8,10 @@
 // lights the bar where the lens is. What the bar is to the keys and a screen reader is mbui's headless radio group's, a
 // tab list: a tab pressed is chosen, the arrow keys move among them.
 //
-// Under the catalog's lens are the tabs again in the accent (a second row, drawn into the lens's backdrop alone); here
-// each tab is drawn in a colour going from its words' to the accent as far as the lens is over it.
+// Under the catalog's lens are the tabs again in the accent (a second row, drawn into the lens's backdrop alone): while
+// the lens is lifted (pressed > 0.01 and glass is not solid), the base row transitions smoothly to neutral content ink
+// and a lens-clipped middle viewport draws the tabs in `colors().accent` at inverse offset so the clear zoom=1.22
+// lens above captures, magnifies and refracts only the accented region inside the lens capsule.
 
 ///|
 /// The bar's glass (iOS 27 regular liquid glass calibrated for 56–64pt controls).
@@ -31,7 +33,7 @@ fn tabs_glass() -> @paint.Glass {
 }
 
 ///|
-/// The lens's glass over the chosen tab (iOS 27 clear loupe), held `p`.
+/// The lens's glass over the chosen tab (iOS 27 clear loupe with 1.10× optical magnification), held `p`.
 fn tab_lens_glass(p : Double) -> @paint.Glass {
   let p = clamp(p, 0.0, 1.0)
   let c = colors()
@@ -46,6 +48,7 @@ fn tab_lens_glass(p : Double) -> @paint.Glass {
     chroma=-0.06 * p,
     merge=0.0,
     adaptive=false,
+    zoom=1.0 + 0.10 * p,
   )
 }
 
@@ -248,7 +251,14 @@ pub fn liquid_bottom_tabs_node(
             i,
             name,
             face,
-            fn(n) { lit(n, i) },
+            fn(n) {
+              let l = lit(n, i)
+              if n.glass_solid() {
+                l
+              } else {
+                l * (1.0 - clamp(dd.pressed(n) / 0.25, 0.0, 1.0))
+              }
+            },
             grown,
             press=fn(d) {
               last_x.val = d.wx
@@ -293,6 +303,66 @@ pub fn liquid_bottom_tabs_node(
           .radius(By(fn() { size().1 / 2.0 }))
           .ground(By(fn() { colors().lens_idle }))
           .alpha(By(fn() { 1.0 - clamp(dd.pressed(pill), 0.0, 1.0) }))
+          |> ignore
+        })
+        |> ignore
+        // True iOS 26 dual-layer clipped accent row: zero Glass, tracks lens bounds & inverse offset so the clear
+        // zoom=1.10 lens above captures and magnifies accented icons/labels strictly inside the lens capsule.
+        lens.box(fn(accent_clip) {
+          accent_clip
+          .over(Is(true))
+          .points(Is(false))
+          .clips(Is(true))
+          .width(By(fn() { Some(size().0) }))
+          .height(By(fn() { Some(size().1) }))
+          .radius(By(fn() { size().1 / 2.0 }))
+          .alpha(By(fn() {
+            if accent_clip.glass_solid() {
+              0.0
+            } else {
+              let p = dd.pressed(accent_clip)
+              if p > 0.01 {
+                clamp(p / 0.25, 0.0, 1.0)
+              } else {
+                0.0
+              }
+            }
+          }))
+          |> ignore
+          accent_clip.box(fn(accent_row) {
+            accent_row
+            .over(Is(true))
+            .points(Is(false))
+            .row(Is(true))
+            .width(By(fn() { Some(tab_w() * count.to_double()) }))
+            .height(Is(Some(tab_lens_h)))
+            .offset(By(fn() {
+              let (lw, lh) = size()
+              (-(dd.value(accent_row) * tab_w() + (tab_w() - lw) / 2.0), -(tab_lens_h - lh) / 2.0)
+            }))
+            |> ignore
+            for i, name in labels {
+              let face = match faces {
+                Some(fs) => fs.get(i).unwrap_or(tab_face(name))
+                None => tab_face(name)
+              }
+              accent_row.box(fn(atab) {
+                atab
+                .width(By(fn() { Some(tab_w()) }))
+                .height(Is(Some(tab_lens_h)))
+                .shrink(Is(0.0))
+                .lines_up(Is(Some(Middle)))
+                .lies_along(Is(Middle))
+                |> ignore
+                atab.box(fn(af) {
+                  af.lines_up(Is(Some(Middle))).gap(Is(2.0)).scale(By(fn() { grown(af) })) |> ignore
+                  face(af, fn() { colors().accent })
+                })
+                |> ignore
+              })
+              |> ignore
+            }
+          })
           |> ignore
         })
         |> ignore

@@ -438,6 +438,7 @@ fn ctrl_segmented_lens_glass(p : Double) -> @paint.Glass {
     merge=0.0,
     adaptive=false,
     spot=None,
+    zoom=1.0 + 0.22 * p,
   )
 }
 
