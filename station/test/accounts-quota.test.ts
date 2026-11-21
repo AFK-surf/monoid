@@ -381,10 +381,8 @@ describe("allowances and renewing", { concurrency: true }, () => {
   test("a provider the station cannot reach is said so, not as Node says it", async () => {
     const dir = temp("codex-unreached");
     writeFileSync(join(dir, "auth.json"), JSON.stringify({ tokens: { access_token: "at" } }));
-    // (a port nothing listens on any more: the connection is refused)
-    const p = await provider(() => ({ status: 200, body: {} }));
-    await p.close();
-    const quota = await machineUsage("codex", { CODEX_HOME: dir }, { ...URLS, chatgpt: p.base }, "zh");
+    // (port 1 is never bound by a test server: connection refused with no ephemeral-port reuse race)
+    const quota = await machineUsage("codex", { CODEX_HOME: dir }, { ...URLS, chatgpt: "http://127.0.0.1:1" }, "zh");
     assert.deepEqual([quota!.state, quota!.detail], ["unavailable", "无法连接服务商，请检查此 station 的网络或代理"]);
     assert.equal(quota!.unanswered, true);
   });
