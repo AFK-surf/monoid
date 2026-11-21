@@ -283,3 +283,76 @@ test "sizes_steady: a box that steps in its first frame and stands, while someth
     )
   }
 }
+
+///|
+test "sizes_steady: a box shown while a finger is held, stepping in its first frame after it is let go and standing, not said; one never seen before so, said" {
+  // (frames it walks itself, judged by the default run alone: test_at_a_rate)
+  if test_at_a_rate() {
+    return
+  }
+  for held in [true, false] {
+    let on = @signals.signal(false)
+    let t = Tester::tree(
+      fn(root) {
+        // (something moving all the while: no frame at rest to look at)
+        root.box(fn(n) {
+          n
+          .over(Is(true))
+          .offset(Is((200.0, 10.0)))
+          .width(Is(Some(20.0)))
+          .height(Is(Some(20.0)))
+          .ground(Is(0x884422FFL))
+          .moved_by(fn(_w, _h, at) { (0.0, (at / 10.0).floor() % 40.0) }, fn(_w, _h) { 1.0e7 })
+          |> ignore
+        })
+        |> ignore
+        root.show(fn() { on.get() }, fn(v) {
+          v.box(fn(n) {
+            n
+            .over(Is(true))
+            .offset(By(fn() { (if tree_theme().focus == 0x224466FFL { 16.0 } else { 10.0 }, 10.0) }))
+            .width(Is(Some(60.0)))
+            .height(Is(Some(40.0)))
+            .ground(Is(0x3366CCFFL))
+            |> ignore
+          })
+          |> ignore
+        })
+      },
+      w=300.0,
+      h=200.0,
+      // (what it finds said here, not stopped on)
+      words_over_held=false,
+      transitions_only=false,
+    )
+    let found : Array[String] = []
+    let judged = fn() {
+      for f in g().sizes_faults(t.time(), t.period) {
+        found.push(f.1)
+      }
+    }
+    t.set_frame_period(1000.0 / 60.0)
+    g().sizes_faults(t.time(), t.period) |> ignore
+    if held {
+      // (a finger down on nothing, the box shown and drawn while it is held, then let go)
+      t.touch(0, 250.0, 150.0)
+      on.set(true)
+      t.frame()
+      judged()
+      t.frame()
+      judged()
+      t.touch(2, 250.0, 150.0)
+    } else {
+      on.set(true)
+    }
+    t.frame()
+    judged()
+    t.ctx().set_theme(phase_theme)
+    t.frame()
+    judged()
+    t.frame()
+    judged()
+    let said = found.iter().any(fn(f) { f.contains("stepped") && f.contains("in its first frame then stood") })
+    assert_eq(said, !held, msg="held \{held}: " + found.join("\n"))
+  }
+}

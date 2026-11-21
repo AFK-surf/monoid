@@ -938,6 +938,10 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
         // (what the hand's scroll moves by its offset alone, in the frame it did: as far as the hand took it; and in the
         // frame its column was put at once, or its list's keys changed by data, as far as that took it)
         if gap || resized || !shows || self.down || view_holds() || (hand_now && by_scroll[i]) || put_now[i] {
+          // (shown while a hand holds it: seen, not new, as it is let go)
+          if shows && (self.down || view_holds()) {
+            ns.ever = ns.ever | (1 << slot)
+          }
           seen.clear()
           ns.first_unasked[slot] = false
           continue

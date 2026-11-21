@@ -658,3 +658,69 @@ test "window tree: covered made page parks at rest, keeps layout cache on pop, a
   assert_eq(focus_named(t), "Button 首页按钮")
   t.assert_idle()
 }
+
+///|
+/// A finger down at `xs[0]` (a page's height down) moved through the rest of `xs` a gesture's step apart, each drawn
+/// as it comes, and let go at the last.
+fn swept(t : Tester, xs : Array[Double]) -> Unit {
+  finger(0, xs[0], 400.0)
+  for i in 1..<xs.length() {
+    let at = t.fake.time + input_step_ms
+    t.fake.time = at
+    finger(1, xs[i], 400.0)
+    t.frame_at(at)
+  }
+  finger(2, xs[xs.length() - 1], 400.0)
+  t.draw()
+}
+
+///|
+/// Where its slide has the top page from now to its end and a little past (each ms): none off its way (0 in place, 1
+/// gone), said where it is.
+fn slid_off(t : Tester, nav : Nav[String]) -> Array[Double] {
+  let off : Array[Double] = []
+  if nav.t0 < 0.0 {
+    return off
+  }
+  let from = t.time()
+  let mut at = from
+  while at <= nav.t0 + nav.dur + 50.0 {
+    let p = nav.slid_at(at)
+    if p < 0.0 || p > 1.0 {
+      off.push(p)
+    }
+    at += 1.0
+  }
+  off
+}
+
+///|
+test "window tree: a made page swiped off its left edge and brought back there, let go going left: at rest in its place at once, not sent on past it" {
+  let (t, nav, _, _) = made_stack()
+  pushed(t, nav, "m1")
+  let place = t.find("m1 0").unwrap()
+  swept(t, [4.0, 36.0, 68.0, 100.0, 132.0, 164.0, 200.0, 164.0, 132.0, 100.0, 68.0, 36.0, 4.0])
+  assert_eq((nav.mode, nav.p), (0, 0.0))
+  assert_eq(slid_off(t, nav), [])
+  t.run_for(a_second_ms)
+  assert_eq(nav.depth(), 2)
+  assert_eq((nav.mode, nav.p), (0, 0.0))
+  assert_eq(t.find("m1 0"), Some(place))
+}
+
+///|
+test "window tree: a made page let go fast toward where it goes, close to it (its place, or gone): its slide there never past it" {
+  let (t, nav, _, _) = made_stack()
+  pushed(t, nav, "m1")
+  // (near its place, flung back toward it: back to rest, never left of it)
+  swept(t, [4.0, 40.0, 80.0, 120.0, 160.0, 200.0, 140.0, 80.0, 24.0])
+  assert_eq(nav.depth(), 2)
+  assert_eq(slid_off(t, nav), [])
+  t.run_for(a_second_ms)
+  assert_eq((nav.depth(), nav.mode, nav.p), (2, 0, 0.0))
+  // (near the other side, flung on across: gone back, never past it)
+  swept(t, [4.0, 66.0, 128.0, 190.0, 252.0, 316.0, 380.0])
+  assert_eq(slid_off(t, nav), [])
+  t.run_for(nav.rest() - t.time() + 16.0)
+  assert_eq(nav.depth(), 1)
+}

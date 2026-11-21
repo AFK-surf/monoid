@@ -1389,12 +1389,22 @@ fn[P] Nav::gesture(
         self.vel = self.track.velocity_at(t)
         if back_goes(dx, w, self.vel) {
           self.let_go(dmax(self.vel, 0.0) / w)
+        } else if self.p <= 0.0 {
+          // (brought back to its place by the finger: at rest there, not sent on past it at the finger's speed)
+          self.rest_from_finger()
         } else {
           // back to rest, as fast as the finger let it go (its widths per ms)
           self.go(4, 0.0, v=self.vel / w)
         }
       }
-    3 => if self.mode == 3 { self.go(4, 0.0) }
+    3 =>
+      if self.mode == 3 {
+        if self.p <= 0.0 {
+          self.rest_from_finger()
+        } else {
+          self.go(4, 0.0)
+        }
+      }
     _ =>
       if self.mode == 3 {
         self.let_go(0.0)
@@ -1404,6 +1414,15 @@ fn[P] Nav::gesture(
           (self.went_back)(e.page, e.over, e.rise, self.pages())
         }
       }
+  }
+}
+
+///|
+/// Let go where it rests (in its place): at rest at once, what lay under it put away (Ctx::nav told, as Nav::go tells).
+fn[P] Nav::rest_from_finger(self : Nav[P]) -> Unit {
+  self.settle()
+  if self.hosted is None {
+    wake()
   }
 }
 
@@ -1702,7 +1721,18 @@ fn[P] Nav::slid_motion_at(self : Nav[P], now : Double) -> (Double, Double) {
     )
     (pos / room, vel / room)
   } else {
-    let (x, v) = move_path(self.p0 - self.p1, self.v0, t, self.dur)
+    // (no faster toward its end than a Move brings it to rest there without going past: move_k / dur of how far,
+    // as @flex.ComeGroup's)
+    let d = self.p0 - self.p1
+    let most = if self.dur > 0.0 { move_k / self.dur * d.abs() } else { 0.0 }
+    let v0 = if d > 0.0 {
+      dmax(self.v0, -most)
+    } else if d < 0.0 {
+      dmin(self.v0, most)
+    } else {
+      0.0
+    }
+    let (x, v) = move_path(d, v0, t, self.dur)
     (self.p1 + x, v)
   }
 }
