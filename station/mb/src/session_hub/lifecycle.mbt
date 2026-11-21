@@ -1210,42 +1210,48 @@ fn Hub::record_idle_measured(self : Hub, key : String, last_active_at : Double) 
 
 ///|
 async fn Hub::ensure_upkeep_state_loaded(self : Hub) -> Unit {
-  if self.upkeep_state_loaded {
-    return
-  }
-  self.upkeep_state_loaded = true
-  let saved = (self.world.ask)("upkeepState.read", Json::null()) catch { _ => Json::null() }
-  guard saved is Object(m) else { return }
-  match m.get("idleMeasured") {
-    Some(Object(im)) => {
-      let existing : Array[(String, Double)] = []
-      for k, v in self.idle_measured {
-        existing.push((k, v))
+  match self.upkeep_state_load {
+    Some(d) => d.wait() catch { _ => () }
+    None => {
+      let d : @effect.Deferred[Unit] = @effect.Deferred::new()
+      self.upkeep_state_load = Some(d)
+      defer {
+        ignore(d.succeed(()))
       }
-      self.idle_measured.clear()
-      for k, v in im {
-        match v {
-          Number(ts, ..) => self.idle_measured[k] = ts
+      let saved = (self.world.ask)("upkeepState.read", Json::null()) catch { _ => Json::null() }
+      guard saved is Object(m) else { return }
+      match m.get("idleMeasured") {
+        Some(Object(im)) => {
+          let existing : Array[(String, Double)] = []
+          for k, v in self.idle_measured {
+            existing.push((k, v))
+          }
+          self.idle_measured.clear()
+          for k, v in im {
+            match v {
+              Number(ts, ..) => self.idle_measured[k] = ts
+              _ => ()
+            }
+          }
+          for kv in existing {
+            self.idle_measured.remove(kv.0)
+            self.idle_measured[kv.0] = kv.1
+          }
+          while self.idle_measured.length() > idle_measured_max {
+            match self.idle_measured.keys().head() {
+              Some(k) => self.idle_measured.remove(k)
+              None => break
+            }
+          }
+        }
+        _ => ()
+      }
+      if self.last_archive_upkeep_at is None {
+        match m.get("lastArchiveUpkeepAt") {
+          Some(Number(ts, ..)) => self.last_archive_upkeep_at = Some(ts)
           _ => ()
         }
       }
-      for kv in existing {
-        self.idle_measured.remove(kv.0)
-        self.idle_measured[kv.0] = kv.1
-      }
-      while self.idle_measured.length() > idle_measured_max {
-        match self.idle_measured.keys().head() {
-          Some(k) => self.idle_measured.remove(k)
-          None => break
-        }
-      }
-    }
-    _ => ()
-  }
-  if self.last_archive_upkeep_at is None {
-    match m.get("lastArchiveUpkeepAt") {
-      Some(Number(ts, ..)) => self.last_archive_upkeep_at = Some(ts)
-      _ => ()
     }
   }
 }

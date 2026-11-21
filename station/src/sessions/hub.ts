@@ -29,6 +29,7 @@ import { RUNTIME_KINDS, type AgentDriver, type AgentSession, type RuntimeKind } 
 import { endRunner, runnerId } from "../agents/process.ts";
 import { RUNNER_LEFT_MS, allLeft, isTerminalRunner, liveRunners, type RunnerInfo } from "../agents/runner.ts";
 import { log } from "../ops/log.ts";
+import { type UpkeepState, readUpkeepState as defaultReadUpkeepState } from "../ops/upkeep-state.ts";
 import { tr, stationLang } from "../ops/i18n.ts";
 import { iso, sessionPlaces } from "../read/transcript.ts";
 import { transcriptSourcesSoon } from "../read/transcript-soon.ts";
@@ -164,6 +165,8 @@ export type HubOptions = {
   siteInstructions?: string;
   /// Whether moving to another station is on here (every station's; a test's may say not); on where none is said.
   moveOn?: () => boolean;
+  /// Reader for `<data>/upkeep-state.json` (default: `ops/upkeep-state.ts` `readUpkeepState`).
+  readUpkeepState?: (dataDir: string) => Promise<UpkeepState>;
 };
 
 /// The handover file, in the data directory.
@@ -190,6 +193,7 @@ export class Hub {
   readonly workspaces: () => string[];
   readonly station: () => string | null;
   readonly cold: ColdStorage;
+  readonly readUpkeepState: (dataDir: string) => Promise<UpkeepState>;
   readonly accounts: Accounts;
   readonly clock: Clock.Clock;
   readonly places: Places;
@@ -270,8 +274,8 @@ export class Hub {
   /// Bounded `sessionKey -> lastActiveAt` memo for idle rebuildable cleanup (`lifecycle.ts`), persisted in
   /// `<data>/upkeep-state.json` and cleared on archive/delete.
   readonly idleMeasured = new Map<string, number>();
-  /// Whether `<data>/upkeep-state.json` has been loaded into this Hub instance.
-  upkeepStateLoaded = false;
+  /// Single-flight loader promise for `<data>/upkeep-state.json` into this Hub instance.
+  upkeepStateLoad: Promise<void> | null = null;
   /// Whether `idleMeasured` has unpersisted mutations since the last write to `<data>/upkeep-state.json`.
   idleMeasuredDirty = false;
   /// Last time a full low-disk reclamation pass completed (`lifecycle.ts` `relieveLowDiskFull`), persisted in
@@ -353,6 +357,7 @@ export class Hub {
     this.workspaces = options.workspaces ?? (() => []);
     this.station = options.station ?? (() => null);
     this.cold = options.cold ?? NOTHING_COLD;
+    this.readUpkeepState = options.readUpkeepState ?? defaultReadUpkeepState;
     this.machineRoots = options.machineRoots ?? machineRoots;
     this.places = options.places ?? new Places();
     this.accounts = new Accounts({

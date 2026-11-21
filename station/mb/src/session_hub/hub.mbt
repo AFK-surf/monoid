@@ -172,8 +172,8 @@ pub struct Hub {
   /// Bounded cache of `key -> lastActiveAt` for idle rebuildable measurements (shared by periodic and low-disk paths),
   /// persisted in `<data>/upkeep-state.json`.
   idle_measured : Map[String, Double]
-  /// Whether `<data>/upkeep-state.json` has been loaded into this Hub instance.
-  mut upkeep_state_loaded : Bool
+  /// Single-flight loader for `<data>/upkeep-state.json` into this Hub instance.
+  mut upkeep_state_load : @effect.Deferred[Unit]?
   /// Whether `idle_measured` has unpersisted mutations since the last write.
   mut idle_measured_dirty : Bool
 }
@@ -214,7 +214,7 @@ pub fn Hub::new(world : World, store : @store_sessions.Store, threads : @store_t
     started_at: (world.now)(),
     last_archive_upkeep_at: None,
     idle_measured: {},
-    upkeep_state_loaded: false,
+    upkeep_state_load: None,
     idle_measured_dirty: false,
   }
   // The sessions at work are followed by the station itself (live.ts `running`): as the store says each starts and
