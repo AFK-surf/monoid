@@ -287,11 +287,12 @@ test "a station's card as nodes, its 屏幕 rested on: its menu beside it, with 
     if open.length() <= shut.length() {
       faults.push("\{name}: no menu drawn")
     }
-    // its items as the station's screens are: grouped where there are more kinds than one (screens, agents' pages)
+    // its items as the station's screens are: grouped where there are more kinds than one (screens, its browser: the
+    // pages agents drive in it)
     let items = if name == "with screens" {
       ["Willow 的屏幕"]
     } else {
-      ["Willow 的屏幕", "Agent 页面", "发布清单 - 文档"]
+      ["Willow 的屏幕", "浏览器", "发布清单 - 文档"]
     }
     let rows = t.words().filter(fn(w) { w.0 == "机器详情" })
     for item in items {
