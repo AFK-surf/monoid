@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [7e35129e0](https://github.com/AFK-surf/monoid/commit/7e35129e06ff434b18e6e79e781e053fd4b1f303) fix(mbui,sf-ui): restore clear optical refraction  | 2.79 | 3.77 | 15.38 | 37.48 | 58.11 | 32.85 | 67.1 | 98.42 | 119.73 |
 | [cc5a6f395](https://github.com/AFK-surf/monoid/commit/cc5a6f3953af40f1ec641df1cef8688ea8c08732) refactor(sf-ui): clear width-structure and pick-lo | 2.79 | 3.77 | 15.38 | 37.48 | 58.11 | 32.85 | 67.1 | 98.42 | 119.73 |
 | [fca1d04f9](https://github.com/AFK-surf/monoid/commit/fca1d04f95bc33b63b3f0c520d631b9a7da214df) fix(mbui): let auto-sized column items animate thr | 2.79 | 3.77 | 15.36 | 37.48 | 58.06 | 32.84 | 67.06 | 98.42 | 123.57 |
 | [bb906ebb3](https://github.com/AFK-surf/monoid/commit/bb906ebb34bffe02aeccdd1bed4824393f7dfae0) refactor(mbui): clear remaining page-headless and  | 2.79 | 3.77 | 15.36 | 37.47 | 58.06 | 32.84 | 67.06 | 98.22 | 125.05 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [65c250355](https://github.com/AFK-surf/monoid/commit/65c2503556894227c8ec23525eec03eba66017e2) refactor(mbui): remove legacy backdrop_lens and un | 2.77 | 3.74 | 15.24 | 37.3 | 57.72 | 32.69 | 66.65 | 98.5 | 126.42 |
 | [72e6bdf52](https://github.com/AFK-surf/monoid/commit/72e6bdf52a4c4f3204622e8fcb12739567fdcfde) feat(station): Farview Stage 13A release, farview. | 2.77 | 3.74 | 15.24 | 37.3 | 57.73 | 32.7 | 66.66 | 98.58 | 127.7 |
 | [394d28e5f](https://github.com/AFK-surf/monoid/commit/394d28e5f1c0a32101335be75e593477604cd43f) feat(sf-ui): add built-in zh/en fallback words, op | 2.77 | 3.74 | 15.22 | 37.28 | 57.63 | 32.68 | 66.6 | 98.34 | 121.28 |
-| [3ae3dd86c](https://github.com/AFK-surf/monoid/commit/3ae3dd86ca419e0f5dd102be2ecd23062b941450) fix(station): answer a chat's station_move soon, t | 2.76 | 3.73 | 15.2 | 37.27 | 57.57 | 32.68 | 66.56 | 98.8 | 124.6 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [7e35129e0](https://github.com/AFK-surf/monoid/commit/7e35129e06ff434b18e6e79e781e053fd4b1f303) fix(mbui,sf-ui): restore clear optical refraction  | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.07 |
 | [cc5a6f395](https://github.com/AFK-surf/monoid/commit/cc5a6f3953af40f1ec641df1cef8688ea8c08732) refactor(sf-ui): clear width-structure and pick-lo | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.4 |
 | [fca1d04f9](https://github.com/AFK-surf/monoid/commit/fca1d04f95bc33b63b3f0c520d631b9a7da214df) fix(mbui): let auto-sized column items animate thr | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.4 |
 | [bb906ebb3](https://github.com/AFK-surf/monoid/commit/bb906ebb34bffe02aeccdd1bed4824393f7dfae0) refactor(mbui): clear remaining page-headless and  | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.4 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [65c250355](https://github.com/AFK-surf/monoid/commit/65c2503556894227c8ec23525eec03eba66017e2) refactor(mbui): remove legacy backdrop_lens and un | 0.46 | 0.61 | 2.36 | 3.4 | 5.58 | 1.7 | 4.6 | 54.1 |
 | [72e6bdf52](https://github.com/AFK-surf/monoid/commit/72e6bdf52a4c4f3204622e8fcb12739567fdcfde) feat(station): Farview Stage 13A release, farview. | 0.46 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.12 |
 | [394d28e5f](https://github.com/AFK-surf/monoid/commit/394d28e5f1c0a32101335be75e593477604cd43f) feat(sf-ui): add built-in zh/en fallback words, op | 0.46 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.12 |
-| [3ae3dd86c](https://github.com/AFK-surf/monoid/commit/3ae3dd86ca419e0f5dd102be2ecd23062b941450) fix(station): answer a chat's station_move soon, t | 0.46 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.12 |
