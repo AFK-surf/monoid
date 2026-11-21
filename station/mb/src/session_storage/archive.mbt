@@ -120,7 +120,7 @@ pub async fn Files::pack_file_if(self : Files, path : String, ready : async () -
     if !ready() {
       return
     }
-    self.rename(temp, dest)
+    self.rename_retrying(temp, dest)
     self.unlink(path)
   }, async fn() { self.gone(temp) })
 }
@@ -140,7 +140,7 @@ pub async fn Files::segment_file(self : Files, path : String) -> Bool {
     if !(get(said, "segmented") is Some(True)) {
       return false
     }
-    self.rename(temp, source)
+    self.rename_retrying(temp, source)
     true
   }, async fn() { self.gone(temp) })
 }
@@ -156,7 +156,7 @@ pub async fn Files::restore_file(self : Files, path : String) -> Unit {
   let temp = self.with_extension(path, "jsonl.restoring")
   ensure(async fn() {
     ignore(self.packed("restore", [("source", js(source)), ("temp", js(temp))]))
-    self.rename(temp, path)
+    self.rename_retrying(temp, path)
     self.unlink(source)
   }, async fn() { self.gone(temp) })
 }
@@ -407,6 +407,29 @@ pub async fn Files::remove_worktree_registrations(
 // ── workspaces ─────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ///|
+/// Moves `workspace` aside after the archive is in place; on failure removes the archive and unlocks worktrees so the
+/// next round does not treat the unretired workspace as already packed.
+async fn retire_workspace_by(
+  rename : async () -> Unit,
+  rm_archive : async () -> Unit,
+  unlock : async () -> Unit,
+) -> Unit {
+  rename() catch {
+    e => {
+      // The workspace is still whole where it was: the archive goes again, or the next round would find it, take the
+      // workspace for packed (the first line here) and never retire it.
+      rm_archive() catch {
+        _ => ()
+      }
+      unlock() catch {
+        _ => ()
+      }
+      raise e
+    }
+  }
+}
+
+///|
 pub async fn Files::pack_workspace(self : Files, room : String) -> Unit {
   self.pack_workspace_if(room, () => true)
 }
@@ -439,12 +462,16 @@ pub async fn Files::pack_workspace_if(self : Files, room : String, ready : async
       self.unlock_worktrees(room)
       return
     }
-    self.rename(temp, archive)
+    self.rename_retrying(temp, archive)
     let retiring = self.join([room, "workspace.retiring"])
     if self.there(retiring) {
       raise failed("an earlier workspace retirement needs restoration")
     }
-    self.rename(workspace, retiring)
+    retire_workspace_by(
+      async fn() { self.rename_retrying(workspace, retiring, backoff=workspace_rename_backoff) },
+      async fn() { self.gone(archive) },
+      async fn() { self.unlock_worktrees(room) },
+    )
     self.mkdir(workspace)
     match self.lstat(retiring) {
       Some(s) => self.chmod(workspace, s.mode & 0o7777)
@@ -531,9 +558,9 @@ pub async fn Files::restore_workspace(self : Files, room : String) -> Unit {
     self.remove_tree(old)
   }
   if self.there(workspace) {
-    self.rename(workspace, old)
+    self.rename_retrying(workspace, old, backoff=workspace_rename_backoff)
   }
-  self.rename(stage, workspace)
+  self.rename_retrying(stage, workspace, backoff=workspace_rename_backoff)
   for path, target in refused {
     let rel = if path.has_prefix(stage + self.sep) { cut(path, stage.length() + 1) } else { path }
     let at = self.join([workspace, rel])
@@ -601,7 +628,7 @@ async fn Files::take_uploads(self : Files, from : String, workspace : String) ->
   self.mkdirs(into)
   for entry in self.readdir_strict(self.join([from, "uploads"])) {
     if self.lkind(self.join([into, entry])) is None {
-      self.rename(self.join([from, "uploads", entry]), self.join([into, entry]))
+      self.rename_retrying(self.join([from, "uploads", entry]), self.join([into, entry]))
     }
   }
 }

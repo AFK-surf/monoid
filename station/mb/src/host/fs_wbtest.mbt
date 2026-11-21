@@ -138,7 +138,7 @@ test "write_atomic: a rename that fails lets go of what was written beside, and 
   let f = rt.fork(async fn() {
     write_atomic_by(disk.call(), p => tmp_beside(p, 7), "/d/a.json", b"x", 0o600, true, false, "/")
   })
-  rt.advance(100)
+  rt.advance(500)
   match f.poll() {
     Some(Failed(e)) => assert_true("\{e}".contains("Permission denied"))
     _ => fail("the write did not fail")
@@ -188,4 +188,79 @@ test "write_atomic: a write given up halfway still lets go of what it wrote besi
   rt.advance(100)
   assert_true(f.poll() is Some(Interrupted))
   assert_eq(disk.asked, ["fs.mkdir /d", "fs.remove /d/a.json.1.1.tmp"])
+}
+
+///|
+test "rename_retrying_by retries EPERM/EBUSY/EACCES until success, throws when exhausted, and fails ENOENT at once" {
+  let rt = @effect.Runtime::new()
+  // Transient EPERM, EBUSY, EACCES succeed after retries with recorded backoff delays.
+  for err_msg in [
+    "Operation not permitted (os error 1)",
+    "Device or resource busy (os error 16)",
+    "Permission denied (os error 13)",
+    "Access is denied. (os error 5)",
+    "The process cannot access the file because it is being used by another process. (os error 32)",
+  ] {
+    let attempts = Ref::new(0)
+    let waited : Array[Int] = []
+    let f = rt.fork(async fn() {
+      rename_retrying_by(
+        async fn(_a, _b) {
+          attempts.val += 1
+          if attempts.val <= 2 {
+            fail(err_msg)
+          }
+        },
+        "/a",
+        "/b",
+        wait=async fn(ms) { waited.push(ms) },
+      )
+    })
+    rt.advance(1)
+    assert_true(f.poll() is Some(Succeeded(_)))
+    assert_eq(attempts.val, 3)
+    assert_eq(waited, [20, 40])
+  }
+  // Exhausted backoff raises the last error after all waits.
+  let exhausted_attempts = Ref::new(0)
+  let exhausted_waits : Array[Int] = []
+  let f2 = rt.fork(async fn() {
+    rename_retrying_by(
+      async fn(_a, _b) {
+        exhausted_attempts.val += 1
+        fail("EPERM: operation not permitted")
+      },
+      "/a",
+      "/b",
+      wait=async fn(ms) { exhausted_waits.push(ms) },
+    )
+  })
+  rt.advance(1)
+  match f2.poll() {
+    Some(Failed(e)) => assert_true("\{e}".contains("EPERM"))
+    _ => fail("expected failure when backoff exhausted")
+  }
+  assert_eq(exhausted_attempts.val, 5)
+  assert_eq(exhausted_waits, [20, 40, 80, 160])
+  // Non-transient ENOENT fails immediately without retrying.
+  let enoent_attempts = Ref::new(0)
+  let enoent_waits : Array[Int] = []
+  let f3 = rt.fork(async fn() {
+    rename_retrying_by(
+      async fn(_a, _b) {
+        enoent_attempts.val += 1
+        fail("No such file or directory (os error 2)")
+      },
+      "/a",
+      "/b",
+      wait=async fn(ms) { enoent_waits.push(ms) },
+    )
+  })
+  rt.advance(1)
+  match f3.poll() {
+    Some(Failed(e)) => assert_true("\{e}".contains("No such file"))
+    _ => fail("expected ENOENT failure")
+  }
+  assert_eq(enoent_attempts.val, 1)
+  assert_eq(enoent_waits, [])
 }

@@ -653,3 +653,23 @@ test "put_profile_runtime_and_access preserves access.service and omits runtime 
   assert_eq(rt2, None)
   assert_eq(jstr(jget(acc2, "service")), Some("other-svc"))
 }
+
+///|
+test "clip_keeping_links clips plain text at most while keeping an http(s) link crossing the cut whole" {
+  let plain = String::make(350, 'a')
+  assert_eq(clip_keeping_links(plain, 300).length(), 300)
+  assert_eq(clip_keeping_links("short", 300), "short")
+
+  let prefix = String::make(270, 'x') + " "
+  let https_url = "https://accounts.google.com/v3/signin/continue?plt=abc1234567890xyz&flow=verify"
+  let msg = prefix + https_url + " trailing words after space"
+  assert_eq(clip_keeping_links(msg, 300), prefix + https_url)
+
+  let http_url = "http://example.com/verify/token-that-crosses-the-300-char-boundary"
+  let msg_http = prefix + http_url + "\nnext line"
+  assert_eq(clip_keeping_links(msg_http, 300), prefix + http_url)
+
+  // A link already ended before the cut: normal 300-char clip applies.
+  let early = "see https://example.com/ok " + String::make(320, 'b')
+  assert_eq(clip_keeping_links(early, 300).length(), 300)
+}

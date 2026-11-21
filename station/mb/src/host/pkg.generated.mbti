@@ -70,6 +70,7 @@ pub fn Host::listener_of(Self, @json.Json, retry_ms? : Int32) -> @net.Listener[C
 pub fn Host::out(Self, Bytes) -> Unit
 pub async fn Host::read_bytes(Self, String, from? : Int32, length? : Int32) -> Bytes?
 pub async fn Host::read_text(Self, String, strict? : Bool) -> String?
+pub async fn Host::rename_retrying(Self, String, String, backoff? : Array[Int32]) -> Unit
 pub fn Host::say(Self, String) -> Unit
 pub fn Host::say_bytes(Self, Bytes) -> Unit
 pub async fn Host::shell(Self, String, @json.Json, bytes? : Bytes, called? : (Int64) -> Unit) -> (@json.Json, Bytes?)
