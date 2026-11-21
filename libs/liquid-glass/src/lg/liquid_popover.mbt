@@ -19,10 +19,12 @@ pub fn liquid_popover_node(
   trigger_face? : (@view.View) -> Unit,
   loc~ : SourceLoc,
 ) -> @view.View {
-  let pop = @headless.Popover::new(open, set_open)
+  let shown_open = ovl_transitioned_bool(host, open)
+  let set_open_tx = fn(v : Bool) { @view.transition(within=host, fn() { set_open(v) }) }
+  let pop = @headless.Popover::new(shown_open, set_open_tx)
   let (side, along) = ovl_beside_of(placement)
   let trigger = pop.trigger(parent, trigger_label, trigger_look, made_for=loc)
-  let handoff = ovl_setup_trigger_handoff(trigger, open, side, anchor_size, trigger_face)
+  let handoff = ovl_setup_trigger_handoff(trigger, shown_open, side, anchor_size, trigger_face)
   pop.layer(
     host,
     content_label,
@@ -98,8 +100,9 @@ pub fn liquid_tooltip_node(
     )
     t.owns(cancel_pending) |> ignore
   })
+  let tip_open = ovl_transitioned_bool(host, fn() { group.is_open(0) && tip() != "" })
   host.show(
-    fn() { group.is_open(0) && tip() != "" },
+    tip_open,
     leave=@motion.tip_out_ms,
     fn(s) {
       @headless.tooltip_bubble(s, tip, made_for=loc, fn(b) {

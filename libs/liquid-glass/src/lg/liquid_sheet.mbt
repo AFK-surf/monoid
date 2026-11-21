@@ -22,7 +22,8 @@ pub fn liquid_sheet_node(
 ) -> @view.View {
   parent.box(made_for=loc, fn(h) {
     h.over(Is(true)) |> ignore
-    h.show(open, leave=@motion.dialog_out_ms, fn(s) {
+    let shown_open = ovl_transitioned_bool(h, open)
+    h.show(shown_open, leave=@motion.dialog_out_ms, fn(s) {
       let (look, _) = @motion.overlay_presence(s, enter=@motion.dialog_in, exit=@motion.dialog_out)
       s.over(Is(true)).lines_up(Is(Some(Middle))).lies_along(Is(End)) |> ignore
       // Dimmed backdrop scrim; clicking outside the sheet card closes via @headless.dialog.
@@ -205,7 +206,8 @@ pub fn liquid_action_sheet_node(
 ) -> @view.View {
   parent.box(made_for=loc, fn(h) {
     h.over(Is(true)) |> ignore
-    h.show(open, leave=@motion.dialog_out_ms, fn(s) {
+    let shown_open = ovl_transitioned_bool(h, open)
+    h.show(shown_open, leave=@motion.dialog_out_ms, fn(s) {
       let (look, _) = @motion.overlay_presence(s, enter=@motion.dialog_in, exit=@motion.dialog_out)
       s.over(Is(true)).lines_up(Is(Some(Middle))).lies_along(Is(End)) |> ignore
       s.box(fn(scrim) {

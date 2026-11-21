@@ -28,7 +28,8 @@ pub fn liquid_toast_node(
   loc~ : SourceLoc,
 ) -> @view.View {
   parent.box(made_for=loc, fn(h) {
-    h.show(visible, leave=@motion.pop_out_ms, fn(s) {
+    let shown_visible = ovl_transitioned_bool(h, visible)
+    h.show(shown_visible, leave=@motion.pop_out_ms, fn(s) {
       let (look, _) = @motion.overlay_presence(s, enter=@motion.pop_in, exit=@motion.pop_out)
       s
       .row(Is(true))

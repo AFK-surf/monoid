@@ -15,8 +15,8 @@
 
 ///|
 /// Leave duration (ms) passed to `pop.layer(..., leave=ovl_morph_leave_ms)` so the closing capillary
-/// re-absorption completes cleanly before unmount.
-let ovl_morph_leave_ms : Double = 300.0
+/// re-absorption (`snappy_damped` from 1.0 to < 0.01 takes ~324ms) completes cleanly before unmount.
+let ovl_morph_leave_ms : Double = 340.0
 
 ///|
 /// Peak GPU smooth-min metaball merge radius (pt) between `trigger_ghost` and `shell` while bonded.
@@ -32,14 +32,14 @@ let ovl_morph_ghost_gone_gap : Double = 7.6
 
 ///|
 /// Independent content reveal timing (ms): delayed so text fades in softly over ~10 frames once the shell opens,
-/// and fades out first over 70ms when closing.
+/// and fades out first over 65ms when closing.
 let ovl_morph_reveal_open_ms : Double = 160.0
 
 ///|
 let ovl_morph_reveal_delay_ms : Double = 170.0
 
 ///|
-let ovl_morph_reveal_close_ms : Double = 70.0
+let ovl_morph_reveal_close_ms : Double = 65.0
 
 ///|
 /// Post-pinch material transition timing (ms): `shell` glides from trigger-matched clear glass to `ovl_panel_glass()`.
@@ -49,7 +49,7 @@ let ovl_morph_mat_open_ms : Double = 150.0
 let ovl_morph_mat_delay_ms : Double = 190.0
 
 ///|
-let ovl_morph_mat_close_ms : Double = 90.0
+let ovl_morph_mat_close_ms : Double = 45.0
 
 ///|
 /// GLSL-style cubic Hermite smoothstep supporting both rising (`edge0 < edge1`) and falling (`edge0 > edge1`) ramps.
@@ -100,7 +100,7 @@ fn ovl_morph_gap(side : @view.Side, anchor_size : (Double, Double), p : Double) 
 /// - `gap <= 0.0`: ramps smoothly via `onset = ovl_smoothstep(0.0, 0.22, p)` (so `p=0.01` already batches in SDF).
 /// - `0.0 < gap < ovl_morph_break_gap`: decays continuously from `28.0` to `0.0` with zero cliff.
 fn ovl_morph_bridge_merge_for_gap(p : Double, gap : Double) -> Double {
-  if gap >= ovl_morph_break_gap || p <= 0.005 {
+  if gap >= ovl_morph_break_gap || p <= 0.01 {
     return 0.0
   }
   let onset = ovl_smoothstep(0.0, 0.22, p)
@@ -134,12 +134,15 @@ fn ovl_morph_bridge_glass(merge~ : Double) -> @paint.Glass {
 ///|
 /// Panel shell glass recipe: returns bit-identical `ovl_morph_bridge_glass(merge~)` while `merge > 0.01`
 /// (guaranteeing GPU `merged_liquid` batching & 0-diff handoff at pinch-off), then glides smoothly along
-/// `mat_t in [0, 1]` to `ovl_panel_glass()` (`blur 2.1->8.0, bezel 14->20, refraction 18->36`).
-fn ovl_morph_shell_glass(mat_t : Double, merge~ : Double) -> @paint.Glass {
+/// `min(mat_t, smoothstep(break_gap, float_gap - 0.1, gap))` to `ovl_panel_glass()` (`blur 2.1->8.0,
+/// bezel 14->20, refraction 18->36`) so both opening and closing re-bonding have zero blur pop.
+fn ovl_morph_shell_glass(mat_t : Double, gap : Double, merge~ : Double) -> @paint.Glass {
   if merge > 0.01 {
     return ovl_morph_bridge_glass(merge~)
   }
-  let t = clamp(mat_t, 0.0, 1.0)
+  let mt = clamp(mat_t, 0.0, 1.0)
+  let gt = ovl_smoothstep(ovl_morph_break_gap, ovl_float_gap - 0.1, gap)
+  let t = if mt < gt { mt } else { gt }
   if t >= 0.999 {
     return ovl_panel_glass()
   }
@@ -387,7 +390,7 @@ fn ovl_attach_liquid_morph(
     } else {
       sx_way.go(layer, 1.0, @motion.backdrop_scale_x_spring)
       sy_way.go(layer, 1.0, @motion.backdrop_scale_y_spring)
-      p_way.go_from(layer, 0.0, 1.0, @motion.backdrop_scale_y_spring)
+      p_way.go(layer, 1.0, @motion.backdrop_scale_y_spring)
       reveal_way.go(
         layer,
         1.0,
@@ -550,7 +553,7 @@ fn ovl_attach_liquid_morph(
         By(fn() {
           let p = p_way.shown(shell)
           if has_face {
-            if p <= 0.005 { 0.0 } else { 1.0 }
+            if p <= 0.01 { 0.0 } else { 1.0 }
           } else {
             ovl_smoothstep(0.0, 0.16, p)
           }
@@ -559,7 +562,7 @@ fn ovl_attach_liquid_morph(
       .glass(
         By(fn() {
           let p = p_way.shown(shell)
-          if has_face && p <= 0.005 {
+          if has_face && p <= 0.01 {
             return None
           }
           let ga = if has_face { 1.0 } else { ovl_smoothstep(0.0, 0.16, p) }
@@ -567,7 +570,7 @@ fn ovl_attach_liquid_morph(
             let gap = ovl_morph_gap(side, anchor_size, p)
             let m = ovl_morph_bridge_merge_for_gap(p, gap)
             let mat_t = material_way.shown(shell)
-            Some(ovl_morph_shell_glass(mat_t, merge=m))
+            Some(ovl_morph_shell_glass(mat_t, gap, merge=m))
           } else {
             None
           }

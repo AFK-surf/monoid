@@ -82,7 +82,8 @@ pub fn liquid_dialog_node(
 ) -> @view.View {
   parent.box(made_for=loc, fn(h) {
     h.over(Is(true)) |> ignore
-    h.show(open, leave=@motion.dialog_out_ms, fn(s) {
+    let shown_open = ovl_transitioned_bool(h, open)
+    h.show(shown_open, leave=@motion.dialog_out_ms, fn(s) {
       let (look, live) = @motion.overlay_presence(s, enter=@motion.dialog_in, exit=@motion.dialog_out)
       s.over(Is(true)).points(By(live)).lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
       // (the scrim: the page dimmed; a press on it is outside the dialog, which closes it)

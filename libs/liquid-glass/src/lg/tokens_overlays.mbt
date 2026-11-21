@@ -613,3 +613,17 @@ fn ovl_ring_shapes(
   }
   shapes
 }
+
+///|
+/// Mirrors a reactive boolean `open` onto a transition-scoped signal within `scope`, so `View::show(..., leave=...)`
+/// always runs its full closing animation inside `@ui.run_tree` (`transitions_only=true`) apps regardless of whether
+/// callers wrap `set_open(false)` in `@view.transition`.
+fn ovl_transitioned_bool(scope : @view.View, open : () -> Bool) -> () -> Bool {
+  let shown = @signals.signal(@signals.untracked(open))
+  scope.reacts(
+    open,
+    fn(on) { @view.transition(within=scope, fn() { shown.set(on) }) },
+    at_start=false,
+  )
+  fn() { shown.get() }
+}

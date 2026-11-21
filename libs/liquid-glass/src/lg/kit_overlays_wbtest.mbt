@@ -10,11 +10,15 @@ fn ovl_case(
   dark? : Bool = false,
   w? : Double = 900.0,
   h? : Double = 700.0,
+  transitions_only? : Bool = true,
 ) -> @ui.Tester {
   let t = @ui.Tester::new(fn(_c) {  }, w~, h~, platform=0)
   set_dark(Some(dark))
   @ui.set_view_app(fn(root) {
     @ui.set_tree_theme(ui_theme)
+    if transitions_only {
+      root.transitions_only() |> ignore
+    }
     let page_ref : Ref[@view.View?] = Ref(None)
     root.box(fn(page) {
       page
@@ -1037,7 +1041,66 @@ test "liquid_menu_node gap-driven morph has zero truncation jump, bridges across
 }
 
 ///|
-test "liquid_menu_node with trigger_face hands off trigger cleanly with <= 2 glass instances on every 16ms frame" {
+let ovl_morph_close_steps : Int = 22
+
+///|
+let ovl_close_probe_ms : Double = 60.0
+
+///|
+let ovl_dialog_leave_done_ms : Double = 260.0
+
+///|
+fn ovl_assert_menu_close_morph(
+  t : @ui.Tester,
+  trigger_bottom : Double,
+  trigger_close : () -> Unit raise,
+  label : String,
+) -> Unit raise {
+  trigger_close()
+  let mut max_glass = 0
+  let mut saw_air_gap_bridge = false
+  let mut top_48 = -1.0
+  let mut top_96 = -1.0
+  let mut top_144 = -1.0
+  for step in 1..<=ovl_morph_close_steps {
+    t.run_for(ovl_morph_step_ms)
+    let gs = t.drawn_glass()
+    if gs.length() > max_glass {
+      max_glass = gs.length()
+    }
+    if gs.length() == 2 {
+      let shell_top = gs[1].1
+      if step == 3 {
+        top_48 = shell_top
+      } else if step == 6 {
+        top_96 = shell_top
+      } else if step == 9 {
+        top_144 = shell_top
+      }
+      if shell_top > trigger_bottom + 0.5 && shell_top < trigger_bottom + ovl_morph_break_gap {
+        saw_air_gap_bridge = true
+      }
+    }
+  }
+  t.run_for(a_frame)
+  assert_true(
+    max_glass <= 2,
+    msg="\{label}: expected <= 2 glass rects during close, got \{max_glass}",
+  )
+  assert_true(
+    top_48 > top_96 && top_96 > top_144 && top_144 > 0.0,
+    msg="\{label}: expected monotonic contraction top(48)=\{top_48} > top(96)=\{top_96} > top(144)=\{top_144}",
+  )
+  assert_true(
+    saw_air_gap_bridge,
+    msg="\{label}: expected reverse air-gap capillary bridge during close",
+  )
+  assert_eq(t.drawn_glass().length(), 1)
+  assert_eq(t.all(Menu).length(), 0)
+}
+
+///|
+test "liquid_menu_node with trigger_face hands off trigger cleanly on open and all 3 close paths under transitions_only" {
   let open = @signals.signal(false)
   let t = ovl_case(fn(page, host) {
     liquid_menu_node(
@@ -1082,14 +1145,117 @@ test "liquid_menu_node with trigger_face hands off trigger cleanly with <= 2 gla
     }
   }
   t.run_for(springs_out)
-  let rest_glass = t.drawn_glass().length()
-  assert_no_nested_glass(t, "liquid_menu_handoff rest")
-  assert_eq(t.audit(), [])
-  t.key(@ui.key_escape)
-  t.run_for(ovl_morph_leave_ms + a_frame)
-  let closed_glass = t.drawn_glass().length()
   assert_true(max_glass_count <= 2, msg="expected zero double-glass stacking (<= 2 glass rects), got \{max_glass_count}")
   assert_true(saw_air_gap_bridge, msg="expected air-gap capillary bridge frame with trigger_face handoff")
-  assert_eq(rest_glass, 2)
-  assert_eq(closed_glass, 1)
+  assert_eq(t.drawn_glass().length(), 2)
+  assert_no_nested_glass(t, "liquid_menu_handoff rest")
+  assert_eq(t.audit(), [])
+  // Close path 1: Escape key
+  ovl_assert_menu_close_morph(t, trigger_bottom, fn() { t.key(@ui.key_escape) }, "close-escape")
+  // Re-open & Close path 2: Outside click
+  t.act(Button, Activate, label="Actions")
+  t.run_for(springs_out)
+  assert_eq(t.drawn_glass().length(), 2)
+  ovl_assert_menu_close_morph(t, trigger_bottom, fn() { t.tap(800.0, 600.0) }, "close-outside")
+  // Re-open & Close path 3: Trigger toggle click
+  t.act(Button, Activate, label="Actions")
+  t.run_for(springs_out)
+  assert_eq(t.drawn_glass().length(), 2)
+  ovl_assert_menu_close_morph(t, trigger_bottom, fn() raise { t.act(Button, Activate, label="Actions") }, "close-trigger")
+  // Re-open once more to confirm zero stuck trigger state
+  t.act(Button, Activate, label="Actions")
+  t.run_for(springs_out)
+  assert_eq(t.drawn_glass().length(), 2)
+  assert_eq(t.audit(), [])
+}
+
+///|
+test "Select, Popover, Sheet and Dialog keep closing leave transitions alive at 60ms under transitions_only" {
+  // 1. Select
+  let sel = @signals.signal(0)
+  let t_sel = ovl_case(fn(page, host) {
+    liquid_select_node(
+      page,
+      host,
+      fn() { [LiquidSelectOption::new(label="Alpha"), LiquidSelectOption::new(label="Beta")] },
+      fn() { sel.get() },
+      fn(i) { sel.set(i) },
+      label=fn() { "Mode" },
+    )
+    |> ignore
+  })
+  t_sel.act(Button, Activate, label="Mode: Alpha")
+  t_sel.run_for(springs_out)
+  assert_eq(t_sel.drawn_glass().length(), 2)
+  t_sel.key(@ui.key_escape)
+  t_sel.run_for(ovl_close_probe_ms)
+  assert_eq(t_sel.drawn_glass().length(), 2)
+  t_sel.run_for(ovl_morph_leave_ms + a_frame)
+  assert_eq(t_sel.drawn_glass().length(), 1)
+
+  // 2. Popover
+  let pop_open = @signals.signal(false)
+  let t_pop = ovl_case(fn(page, host) {
+    liquid_popover_node(
+      page,
+      host,
+      fn() { pop_open.get() },
+      fn(v) { pop_open.set(v) },
+      fn() { "Info" },
+      ovl_test_trigger("Info"),
+      fn() { "Details" },
+      fn(c) { c.box(fn(w) { w.words(Is("Hello"), look=words_at(ovl_type_body)) |> ignore }) |> ignore },
+    )
+    |> ignore
+  })
+  t_pop.act(Button, Activate, label="Info")
+  t_pop.run_for(springs_out)
+  assert_eq(t_pop.drawn_glass().length(), 2)
+  t_pop.key(@ui.key_escape)
+  t_pop.run_for(ovl_close_probe_ms)
+  assert_true(t_pop.drawn_glass().length() >= 2)
+  t_pop.run_for(ovl_morph_leave_ms + a_frame)
+  assert_eq(t_pop.drawn_glass().length(), 1)
+
+  // 3. Sheet
+  let sheet_open = @signals.signal(false)
+  let t_sheet = ovl_case(fn(_page, host) {
+    liquid_sheet_node(
+      host,
+      fn() { sheet_open.get() },
+      fn() { sheet_open.set(false) },
+      fn() { "Sheet" },
+      fn(b) { b.box(fn(w) { w.words(Is("Body"), look=words_at(ovl_type_body)) |> ignore }) |> ignore },
+    )
+    |> ignore
+  })
+  sheet_open.set(true)
+  t_sheet.run_for(springs_out)
+  assert_eq(t_sheet.drawn_glass().length(), 1)
+  sheet_open.set(false)
+  t_sheet.run_for(ovl_close_probe_ms)
+  assert_eq(t_sheet.drawn_glass().length(), 1)
+  t_sheet.run_for(ovl_dialog_leave_done_ms)
+  assert_eq(t_sheet.drawn_glass().length(), 0)
+
+  // 4. Dialog
+  let dlg_open = @signals.signal(false)
+  let t_dlg = ovl_case(fn(_page, host) {
+    liquid_dialog_node(
+      host,
+      fn() { dlg_open.get() },
+      fn() { dlg_open.set(false) },
+      fn() { "Confirm" },
+      fn() { "Proceed?" },
+    )
+    |> ignore
+  })
+  dlg_open.set(true)
+  t_dlg.run_for(springs_out)
+  assert_eq(t_dlg.drawn_glass().length(), 1)
+  dlg_open.set(false)
+  t_dlg.run_for(ovl_close_probe_ms)
+  assert_eq(t_dlg.drawn_glass().length(), 1)
+  t_dlg.run_for(ovl_dialog_leave_done_ms)
+  assert_eq(t_dlg.drawn_glass().length(), 0)
 }

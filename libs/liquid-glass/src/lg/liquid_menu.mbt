@@ -124,11 +124,13 @@ pub fn liquid_menu_node(
   trigger_face? : (@view.View) -> Unit,
   loc~ : SourceLoc,
 ) -> @view.View {
-  let pop = @headless.Popover::new(open, set_open)
+  let shown_open = ovl_transitioned_bool(host, open)
+  let set_open_tx = fn(v : Bool) { @view.transition(within=host, fn() { set_open(v) }) }
+  let pop = @headless.Popover::new(shown_open, set_open_tx)
   let cleaned = fn() { ovl_clean_menu_entries(entries()) }
   let (side, along) = ovl_beside_of(placement)
   let trigger = pop.trigger(parent, trigger_label, trigger_look, made_for=loc)
-  let handoff = ovl_setup_trigger_handoff(trigger, open, side, anchor_size, trigger_face)
+  let handoff = ovl_setup_trigger_handoff(trigger, shown_open, side, anchor_size, trigger_face)
   pop.layer(
     host,
     menu_label,
@@ -145,7 +147,7 @@ pub fn liquid_menu_node(
         label=menu_label,
         on_close=fn() {
           if @signals.untracked(live) {
-            set_open(false)
+            set_open_tx(false)
           }
         },
         takes_focus=true,
@@ -183,7 +185,7 @@ pub fn liquid_menu_node(
                     fn() { label },
                     fn(_) {
                       if !disabled {
-                        set_open(false)
+                        set_open_tx(false)
                         on_select()
                       }
                     },
@@ -344,7 +346,9 @@ pub fn liquid_select_node(
   loc~ : SourceLoc,
 ) -> @view.View {
   let open = @signals.signal(false)
-  let pop = @headless.Popover::new(fn() { open.get() }, fn(v) { open.set(v) })
+  let open_fn = ovl_transitioned_bool(host, fn() { open.get() })
+  let set_open_tx = fn(v : Bool) { @view.transition(within=host, fn() { open.set(v) }) }
+  let pop = @headless.Popover::new(open_fn, set_open_tx)
   let current_text = fn() {
     let opts = options()
     let i = selected()
@@ -354,7 +358,6 @@ pub fn liquid_select_node(
       placeholder
     }
   }
-  let open_fn = fn() { open.get() }
   let chev_way = @motion.NodeWay::new(if @signals.untracked(open_fn) { ovl_turn_half } else { 0.0 })
   let draw_select_face = fn(box : @view.View) {
     box
@@ -461,7 +464,7 @@ pub fn liquid_select_node(
         label~,
         on_close=fn() {
           if @signals.untracked(live) {
-            open.set(false)
+            set_open_tx(false)
           }
         },
         takes_focus=true,
@@ -485,7 +488,7 @@ pub fn liquid_select_node(
                 fn(_) {
                   if !opt_val.disabled {
                     on_select(opt_idx)
-                    open.set(false)
+                    set_open_tx(false)
                   }
                 },
                 disabled=fn() { opt_val.disabled },
