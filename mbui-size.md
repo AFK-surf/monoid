@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [227b29f65](https://github.com/AFK-surf/monoid/commit/227b29f65575eff4550e83cc108361cffb751e92) fix(mbui): open a message link's menu under the po | 2.63 | 3.55 | 14.39 | 36.42 | 54.95 | 31.91 | 64.4 | 98.52 | 121.65 |
 | [030773d6b](https://github.com/AFK-surf/monoid/commit/030773d6b6864a99900aad9f8814b538c34d8133) feat(mbui): add clear-lens optical zoom and global | 2.63 | 3.55 | 14.39 | 36.42 | 54.95 | 31.91 | 64.4 | 98.52 | 121.65 |
 | [81011eb56](https://github.com/AFK-surf/monoid/commit/81011eb56dc0b439e79152f5105416acaa05c404) docs(releases): ship stable 0.1.10686 from main wi | 2.63 | 3.55 | 14.39 | 36.42 | 54.95 | 31.9 | 64.38 | 98.21 | 121.65 |
 | [edf729375](https://github.com/AFK-surf/monoid/commit/edf7293759cd0320d44e5ed6645ecea5deaa255f) refactor(mbui): remove legacy @ui.current() calls  | 2.63 | 3.55 | 14.39 | 36.42 | 54.95 | 31.9 | 64.38 | 98.21 | 121.65 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f8026edbe](https://github.com/AFK-surf/monoid/commit/f8026edbe8ce06e0560b6606a431eb443664f79b) fix(mbui): show a film's frames and follow a finge | 2.65 | 3.57 | 14.5 | 36.5 | 55.29 | 31.97 | 64.61 | 98.19 | 133.98 |
 | [c707e8561](https://github.com/AFK-surf/monoid/commit/c707e856185c5b5f392ac0dfbf6170c796297c32) fix(ci): build unpublished natives without probing | 2.65 | 3.57 | 14.5 | 36.5 | 55.29 | 31.97 | 64.61 | 98.19 | 133.98 |
 | [e357b7d47](https://github.com/AFK-surf/monoid/commit/e357b7d473fa0efb4d73a89732af582dae5cdb3e) perf(station): wire 2x --serve child pool into Moo | 2.65 | 3.57 | 14.49 | 36.49 | 55.24 | 31.96 | 64.58 | 98.27 | 114.59 |
-| [7cd3bff10](https://github.com/AFK-surf/monoid/commit/7cd3bff105d44ab717b311d9a2187dcb722cab5d) fix(sf-ui,mbui,web): clear remaining visual whitel | 2.65 | 3.57 | 14.49 | 36.49 | 55.23 | 31.95 | 64.58 | 98.39 | 128.2 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [227b29f65](https://github.com/AFK-surf/monoid/commit/227b29f65575eff4550e83cc108361cffb751e92) fix(mbui): open a message link's menu under the po | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 53.92 |
 | [030773d6b](https://github.com/AFK-surf/monoid/commit/030773d6b6864a99900aad9f8814b538c34d8133) feat(mbui): add clear-lens optical zoom and global | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.25 |
 | [81011eb56](https://github.com/AFK-surf/monoid/commit/81011eb56dc0b439e79152f5105416acaa05c404) docs(releases): ship stable 0.1.10686 from main wi | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.25 |
 | [edf729375](https://github.com/AFK-surf/monoid/commit/edf7293759cd0320d44e5ed6645ecea5deaa255f) refactor(mbui): remove legacy @ui.current() calls  | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.02 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f8026edbe](https://github.com/AFK-surf/monoid/commit/f8026edbe8ce06e0560b6606a431eb443664f79b) fix(mbui): show a film's frames and follow a finge | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.28 |
 | [c707e8561](https://github.com/AFK-surf/monoid/commit/c707e856185c5b5f392ac0dfbf6170c796297c32) fix(ci): build unpublished natives without probing | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.23 |
 | [e357b7d47](https://github.com/AFK-surf/monoid/commit/e357b7d473fa0efb4d73a89732af582dae5cdb3e) perf(station): wire 2x --serve child pool into Moo | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.23 |
-| [7cd3bff10](https://github.com/AFK-surf/monoid/commit/7cd3bff105d44ab717b311d9a2187dcb722cab5d) fix(sf-ui,mbui,web): clear remaining visual whitel | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.23 |
