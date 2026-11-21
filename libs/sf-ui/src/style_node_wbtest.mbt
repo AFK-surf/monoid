@@ -263,3 +263,167 @@ test "style_node: a row, padding, gap and how it lines up and lies along said be
     [(0.0, 0.0, 20.0, 10.0), (0.0, 10.0, 20.0, 10.0)],
   ])
 }
+
+///|
+test "style_node: w=Full in a row grows along it without passing in_row" {
+  let at : Array[@view.View] = []
+  let t = @ui.Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=0)
+  @ui.set_view_app(fn(root) {
+    root.lines_up(Is(Some(Start))) |> ignore
+    root.box(fn(r) {
+      style_node(r, fn() { @ui.style(row=true, w=Fixed(300.0), h=Fixed(40.0)) })
+      r.box(fn(a) {
+        at.push(a)
+        style_node(a, fn() { @ui.style(w=Fixed(80.0), h=Fixed(20.0)) })
+      })
+      |> ignore
+      r.box(fn(b) {
+        at.push(b)
+        style_node(b, fn() { @ui.style(w=Full, h=Fixed(20.0)) })
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  assert_eq(at.map(fn(b) { b.placed_window_now() }), [
+    (0.0, 0.0, 80.0, 20.0),
+    (80.0, 0.0, 220.0, 20.0),
+  ])
+}
+
+///|
+test "style_node: w=Full follows a trailing .row(Is(true)) chained after the child is made" {
+  let at : Array[@view.View] = []
+  let t = @ui.Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=0)
+  @ui.set_view_app(fn(root) {
+    root.lines_up(Is(Some(Start))) |> ignore
+    root.box(fn(r) {
+      r.width(Is(Some(300.0))).height(Is(Some(40.0))) |> ignore
+      r.box(fn(a) {
+        at.push(a)
+        style_node(a, fn() { @ui.style(w=Fixed(60.0), h=Fixed(20.0)) })
+      })
+      |> ignore
+      r.box(fn(b) {
+        at.push(b)
+        style_node(b, fn() { @ui.style(w=Full, h=Fixed(20.0)) })
+      })
+      |> ignore
+    })
+    .row(Is(true))
+    |> ignore
+  })
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  assert_eq(at.map(fn(b) { b.placed_window_now() }), [
+    (0.0, 0.0, 60.0, 20.0),
+    (60.0, 0.0, 240.0, 20.0),
+  ])
+}
+
+///|
+test "style_node: w=Full sees its row through show, pick and each slots" {
+  let at : Array[@view.View] = []
+  let t = @ui.Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=0)
+  @ui.set_view_app(fn(root) {
+    root.lines_up(Is(Some(Start))) |> ignore
+    root.box(fn(r) {
+      style_node(r, fn() { @ui.style(row=true, w=Fixed(300.0), h=Fixed(40.0)) })
+      r.show(at_once=true, fn() { true }, fn(s) {
+        at.push(s)
+        style_node(s, fn() { @ui.style(w=Full, h=Fixed(20.0)) })
+      })
+      r.pick(at_once=true, fn() { 1 }, fn(p, _) {
+        at.push(p)
+        style_node(p, fn() { @ui.style(w=Full, h=Fixed(20.0)) })
+      })
+      r.each(at_once=true, fn() { [1] }, fn(k) { k }, fn(e, _) {
+        at.push(e)
+        style_node(e, fn() { @ui.style(w=Full, h=Fixed(20.0)) })
+      })
+    })
+    |> ignore
+  })
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  assert_eq(at.map(fn(b) { b.placed_window_now() }), [
+    (0.0, 0.0, 100.0, 20.0),
+    (100.0, 0.0, 100.0, 20.0),
+    (200.0, 0.0, 100.0, 20.0),
+  ])
+}
+
+///|
+test "style_node: w=Full and h=Full switch between grow and fills_across as the parent flips row and column" {
+  let is_row = @signals.signal(false, same=fn(a, b) { a == b })
+  let wide : Ref[@view.View?] = Ref(None)
+  let tall : Ref[@view.View?] = Ref(None)
+  let t = @ui.Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=0)
+  @ui.set_view_app(fn(root) {
+    root.lines_up(Is(Some(Start))) |> ignore
+    root.box(fn(r) {
+      r.width(Is(Some(300.0))).height(Is(Some(120.0))).lines_up(Is(Some(Start))) |> ignore
+      // (a fixed sibling: 80 wide in a row, 20 tall in a column)
+      r.box(fn(fixed) { fixed.width(Is(Some(80.0))).height(Is(Some(20.0))) |> ignore }) |> ignore
+      // (w=Full: fills 300 across in a column with its own 15 height; grows along to 180 in a row)
+      r.box(fn(c) {
+        wide.val = Some(c)
+        style_node(c, fn() { @ui.css("w=Full") })
+        c.box(fn(i) { i.width(Is(Some(30.0))).height(Is(Some(15.0))) |> ignore }) |> ignore
+      })
+      |> ignore
+      // (h=Full: grows down the remaining 85 in a column with its own 40 width; fills 120 across in a row)
+      r.box(fn(c) {
+        tall.val = Some(c)
+        style_node(c, fn() { @ui.css("h=Full") })
+        c.box(fn(i) { i.width(Is(Some(40.0))).height(Is(Some(10.0))) |> ignore }) |> ignore
+      })
+      |> ignore
+    })
+    .row(By(fn() { is_row.get() }))
+    |> ignore
+  })
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  let snap = fn() { (wide.val.unwrap().placed_window_now(), tall.val.unwrap().placed_window_now()) }
+  let seen = [snap()]
+  is_row.set(true)
+  t.run_for(@ui.move_most_ms)
+  seen.push(snap())
+  is_row.set(false)
+  t.run_for(@ui.move_most_ms)
+  seen.push(snap())
+  // Column (300x120): fixed(80x20), wide fills 300 across & keeps 15 tall, tall grows down 85 & keeps 40 wide.
+  // Row (300x120): fixed(80x20), wide grows along 180 (300-80-40) & keeps 15 tall, tall fills 120 across & keeps 40 wide.
+  assert_eq(seen, [
+    ((0.0, 20.0, 300.0, 15.0), (0.0, 35.0, 40.0, 85.0)),
+    ((80.0, 0.0, 180.0, 15.0), (260.0, 0.0, 40.0, 120.0)),
+    ((0.0, 20.0, 300.0, 15.0), (0.0, 35.0, 40.0, 85.0)),
+  ])
+}
+
+///|
+test "style_node: explicit in_row=false overrides auto-detection inside a row" {
+  let at : Ref[@view.View?] = Ref(None)
+  let t = @ui.Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=0)
+  @ui.set_view_app(fn(root) {
+    root.lines_up(Is(Some(Start))) |> ignore
+    root.box(fn(r) {
+      style_node(r, fn() { @ui.style(row=true, w=Fixed(300.0), h=Fixed(40.0)) })
+      r.box(fn(a) { style_node(a, fn() { @ui.style(w=Fixed(80.0), h=Fixed(20.0)) }) }) |> ignore
+      // (explicit in_row=false: w=Full fills across instead of growing along, so it keeps its 50 intrinsic width)
+      r.box(fn(b) {
+        at.val = Some(b)
+        style_node(b, fn() { @ui.style(w=Full, h=Fixed(20.0)) }, in_row=false)
+        b.box(fn(i) { i.width(Is(Some(50.0))).height(Is(Some(20.0))) |> ignore }) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  assert_eq(at.val.unwrap().placed_window_now(), (80.0, 0.0, 50.0, 20.0))
+}
