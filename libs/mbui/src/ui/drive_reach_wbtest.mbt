@@ -89,3 +89,110 @@ test "a picture all under a scrim: not reached, and the failure says what lies o
   )
   assert_eq(pressed.val, 0)
 }
+
+///|
+test "words over what takes the press under them (a sheet's title over the top that drags it): reached there, a scripted drag from them drags what is under them" {
+  let dragged = Ref(0.0)
+  let t = Tester::new(fn(_c) {  }, w=390.0, h=844.0, platform=0)
+  set_view_app(fn(root) {
+    root.box(fn(sheet) {
+      sheet.over(Is(true), edges=(Some(0.0), Some(500.0), Some(0.0), None)).height(Is(Some(300.0))) |> ignore
+      // (its top: what drags it, under its title)
+      sheet.box(fn(top) {
+        top
+        .over(Is(true), edges=(Some(0.0), Some(0.0), Some(0.0), None))
+        .height(Is(Some(64.0)))
+        .as_ground()
+        .on_drag(fn(d) { dragged.val = d.wy })
+        |> ignore
+      })
+      |> ignore
+      sheet.box(fn(head) {
+        head.padding(Is((24.0, 28.0, 24.0, 0.0))) |> ignore
+        head.box(fn(w) { w.words(Is("标题")) |> ignore }) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  let at = t.reachable("标题")
+  assert_eq(at.length(), 1, msg=Repr(at).to_string())
+  t.fake.logs.clear()
+  drive_start("timeout 1000\ndragon 0 -100 200 标题\nexit", "")
+  let mut n = 0
+  while driver.val is Some(_) && n < 300 {
+    t.frame()
+    n = n + 1
+  }
+  let log = t.fake.logs.copy()
+  assert_true(log.iter().any(fn(l) { l.contains("DRIVE PASS") }), msg=log.join("\n"))
+  assert_true(dragged.val > 0.0 && dragged.val < at[0].1, msg="dragged to \{dragged.val}")
+}
+
+///|
+test "words over what takes the press under them: not reached where a small button's finger room past its box takes the press, nor under a button drawn over them" {
+  let words : Ref[@view.NodeId?] = Ref(None)
+  let t = Tester::new(fn(_c) {  }, w=390.0, h=844.0, platform=2)
+  set_view_app(fn(root) {
+    root.box(fn(sheet) {
+      sheet.over(Is(true), edges=(Some(0.0), Some(500.0), Some(0.0), None)).height(Is(Some(300.0))) |> ignore
+      sheet.box(fn(top) {
+        top
+        .over(Is(true), edges=(Some(0.0), Some(0.0), Some(0.0), None))
+        .height(Is(Some(64.0)))
+        .as_ground()
+        .on_drag(fn(_) {  })
+        |> ignore
+      })
+      |> ignore
+      // (a button 24 across ending 6 before the words, at 30 to 54: its finger room, 44 across, reaches past 60)
+      sheet.box(fn(b) {
+        b
+        .over(Is(true), edges=(Some(30.0), Some(24.0), None, None))
+        .width(Is(Some(24.0)))
+        .height(Is(Some(24.0)))
+        .ground(Is(0xFF0000FFL))
+        .says(Is(Some(@view.said(Button, label="小"))))
+        .presses(Is(true))
+        .on_press(fn() {  })
+        |> ignore
+      })
+      |> ignore
+      sheet.box(fn(head) {
+        head.padding(Is((60.0, 24.0, 24.0, 0.0))) |> ignore
+        head.box(fn(l) {
+          l.words(Is("标题标题标题标题")) |> ignore
+          words.val = Some(l.id())
+        })
+        |> ignore
+      })
+      |> ignore
+      // (a button over the words' middle, at 100 to 124 across, drawn after them)
+      sheet.box(fn(x) {
+        x
+        .over(Is(true), edges=(Some(100.0), Some(24.0), None, None))
+        .width(Is(Some(24.0)))
+        .height(Is(Some(24.0)))
+        .ground(Is(0x00FF00FFL))
+        .says(Is(Some(@view.said(Button, label="关"))))
+        .presses(Is(true))
+        .on_press(fn() {  })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  let tree = view_app.val.unwrap()
+  let target = words.val.unwrap()
+  let y = 500.0 + 24.0 + 6.0
+  // (on the words, clear of both buttons: the top that drags under them takes it)
+  assert_true(tree_reaches_at(g(), tree, target, 80.0, y), msg="clear of both")
+  // (on the words, in the small button's finger room past its box: a finger's, 44 across)
+  assert_true(view_presses_at(62.0, y) is Some(_), msg="the room taken")
+  assert_false(tree_reaches_at(g(), tree, target, 62.0, y), msg="in the small button's room")
+  // (on the words, under the button drawn over them)
+  assert_false(tree_reaches_at(g(), tree, target, 112.0, y), msg="under the button over them")
+}

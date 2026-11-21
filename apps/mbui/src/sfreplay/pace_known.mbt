@@ -156,7 +156,6 @@ let frames_unrecorded_known : Array[String] = [
   "settings-station-settings",
   "settings-vault-item",
   "settings-workspace-people",
-  "sheet-drag",
   "station-file-sent",
   "station-rename",
   "workspace-members",

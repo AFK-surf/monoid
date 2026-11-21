@@ -531,14 +531,34 @@ fn reachable(c : Ctx, what : String) -> Array[(Double, Double)] {
 ///|
 /// Whether a finger at (x, y) reaches node `target` of the window's tree: what a press there goes to is it, or holds it;
 /// or, where a press goes to nothing (words that take no press of their own, nothing that does over them), what is
-/// found there first is it, what holds it, or what it holds, nothing lying over it.
+/// found there first is it, what holds it, or what it holds, nothing lying over it. Or words that take no press of
+/// their own over what takes it under them (a sheet's title over the top that drags the sheet): what takes the press
+/// drawn before them, there in its own box (not a small button's finger room grown past its box), and what is drawn
+/// first there them; never a press of something they hold (a card's own ✕) nor of what lies over them.
 fn tree_reaches_at(c : Ctx, tree : @view.Tree, target : @view.NodeId, x : Double, y : Double) -> Bool {
   match view_presses_at(x, y) {
-    Some(id) => tree.holds(id, target)
+    Some(id) =>
+      tree.holds(id, target) ||
+      (
+        !tree.holds(target, id) &&
+        tree_point_in(tree, id, x, y) &&
+        (tree.drop_at(x, y) is Some(OnNode(d)) && (tree.holds(d, target) || tree.holds(target, d))) &&
+        tree.drawn_later(target, id)
+      )
     None =>
       !old_root_hit(c, x, y, pressed=true) &&
       tree.drop_at(x, y) is Some(OnNode(id)) &&
       (tree.holds(id, target) || tree.holds(target, id))
+  }
+}
+
+///|
+/// Whether (x, y) is in what node `id` of the window's tree takes a finger in, its own (Tree::finger_areas: not the
+/// room a small part's press is given past it).
+fn tree_point_in(tree : @view.Tree, id : @view.NodeId, x : Double, y : Double) -> Bool {
+  match tree.finger_areas(id) {
+    InWindow(rs) => rs.iter().any(fn(r) { x >= r.0 && y >= r.1 && x < r.2 && y < r.3 })
+    AsItHosts => false
   }
 }
 
