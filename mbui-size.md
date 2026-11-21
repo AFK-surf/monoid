@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [1e571376a](https://github.com/AFK-surf/monoid/commit/1e571376ade551adb1357cd54b8123c7effc638e) fix(mbui): resolve pointer coordinates for GTK 4 s | 2.65 | 3.57 | 14.49 | 36.47 | 55.21 | 31.94 | 64.55 | 98.29 | 130.34 |
 | [96e07d52b](https://github.com/AFK-surf/monoid/commit/96e07d52be5de4878aad57afeb1535bf636e96e5) fix(sf-ui,mbui): align icons, marks, and chevrons  | 2.65 | 3.57 | 14.49 | 36.47 | 55.21 | 31.94 | 64.55 | 98.32 | 123.59 |
 | [0dca5d031](https://github.com/AFK-surf/monoid/commit/0dca5d031982fd2e56f3326852a5223a5420b6c3) fix(mbui): keep each workspace in its place in the | 2.65 | 3.57 | 14.49 | 36.47 | 55.21 | 31.94 | 64.55 | 98.32 | 123.59 |
 | [2e5f2a432](https://github.com/AFK-surf/monoid/commit/2e5f2a432b88771aba1cd8b8cf9cc5de010fa277) chore(mbui): delete non-message legacy @ui.Ctx vie | 2.65 | 3.57 | 14.51 | 36.48 | 55.29 | 31.95 | 64.6 | 98.31 | 127.53 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d80265b89](https://github.com/AFK-surf/monoid/commit/d80265b89d03e34b98135083a05a17d83f2fd73b) fix(mbui): show the exact frame under the finger w | 2.78 | 3.75 | 15.28 | 37.34 | 57.86 | 32.73 | 66.74 | 98.22 | 135.54 |
 | [7888eeafc](https://github.com/AFK-surf/monoid/commit/7888eeafcdba3b36d80f7b00c28b6b88d9a7fac9) perf(mbui): migrate single-axis window reads to Vi | 2.78 | 3.75 | 15.28 | 37.35 | 57.86 | 32.73 | 66.74 | 98.24 | 124.79 |
 | [2051eb306](https://github.com/AFK-surf/monoid/commit/2051eb306ffd45d7741ff9c52dafc1720240213c) fix(mbui): keep near seeks within a second of the  | 2.78 | 3.75 | 15.28 | 37.35 | 57.86 | 32.73 | 66.74 | 98.24 | 124.79 |
-| [f00bc6da4](https://github.com/AFK-surf/monoid/commit/f00bc6da4a5d39ce05f875db5181d95e2b9b6a38) chore(mbui): delete dead sfbase and sfpages Ctx vi | 2.78 | 3.75 | 15.28 | 37.34 | 57.86 | 32.73 | 66.74 | 98.16 | 133.91 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [1e571376a](https://github.com/AFK-surf/monoid/commit/1e571376ade551adb1357cd54b8123c7effc638e) fix(mbui): resolve pointer coordinates for GTK 4 s | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54 |
 | [96e07d52b](https://github.com/AFK-surf/monoid/commit/96e07d52be5de4878aad57afeb1535bf636e96e5) fix(sf-ui,mbui): align icons, marks, and chevrons  | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54 |
 | [0dca5d031](https://github.com/AFK-surf/monoid/commit/0dca5d031982fd2e56f3326852a5223a5420b6c3) fix(mbui): keep each workspace in its place in the | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.04 |
 | [2e5f2a432](https://github.com/AFK-surf/monoid/commit/2e5f2a432b88771aba1cd8b8cf9cc5de010fa277) chore(mbui): delete non-message legacy @ui.Ctx vie | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 53.86 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d80265b89](https://github.com/AFK-surf/monoid/commit/d80265b89d03e34b98135083a05a17d83f2fd73b) fix(mbui): show the exact frame under the finger w | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.6 | 54.15 |
 | [7888eeafc](https://github.com/AFK-surf/monoid/commit/7888eeafcdba3b36d80f7b00c28b6b88d9a7fac9) perf(mbui): migrate single-axis window reads to Vi | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.6 | 54.15 |
 | [2051eb306](https://github.com/AFK-surf/monoid/commit/2051eb306ffd45d7741ff9c52dafc1720240213c) fix(mbui): keep near seeks within a second of the  | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.6 | 54.07 |
-| [f00bc6da4](https://github.com/AFK-surf/monoid/commit/f00bc6da4a5d39ce05f875db5181d95e2b9b6a38) chore(mbui): delete dead sfbase and sfpages Ctx vi | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.6 | 54.02 |
