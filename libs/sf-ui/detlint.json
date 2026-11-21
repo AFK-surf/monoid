@@ -88,16 +88,11 @@
     "globals": {},
     "style-literal": {
       "src/markdown.mbt": 34,
-      "src/parts.mbt": 34,
-      "src/picture.mbt": 1,
-      "src/waiting.mbt": 10
+      "src/parts.mbt": 13
     },
     "box-loose": {
-      "src/avatar.mbt": 1,
       "src/markdown.mbt": 26,
-      "src/parts.mbt": 27,
-      "src/picture.mbt": 2,
-      "src/waiting.mbt": 6
+      "src/parts.mbt": 6
     },
     "style-exact": {
       "src/tokens.mbt": 25
@@ -123,10 +118,7 @@
     "motion-spring": {},
     "built-by-hand": {},
     "layout-read-back": {
-      "src/markdown.mbt": 1,
-      "src/parts.mbt": 1,
-      "src/seg.mbt": 1,
-      "src/submenu.mbt": 1
+      "src/markdown.mbt": 1
     },
     "motion-length": {},
     "tester-branch": {},
@@ -136,17 +128,11 @@
     },
     "build-clock": {},
     "build-motion": {
-      "src/lift.mbt": 1,
-      "src/parts.mbt": 1,
-      "src/waiting.mbt": 1
+      "src/parts.mbt": 1
     },
-    "old-list": {
-      "src/page.mbt": 1
-    },
+    "old-list": {},
     "list-comes-off": {},
-    "old-island": {
-      "src/presented_node.mbt": 1
-    },
+    "old-island": {},
     "old-panel": {},
     "old-set-theme": {},
     "old-empty-around": {},
@@ -203,14 +189,8 @@
     "builtin-hash": {},
     "hash-order": {},
     "globals": {},
-    "style-literal": {
-      "src/seg.mbt": 2
-    },
-    "box-loose": {
-      "src/files.mbt": 1,
-      "src/nav_bar.mbt": 1,
-      "src/seg.mbt": 2
-    },
+    "style-literal": {},
+    "box-loose": {},
     "style-exact": {},
     "style-text": {},
     "build-effect": {},

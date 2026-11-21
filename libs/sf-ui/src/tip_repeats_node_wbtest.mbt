@@ -46,22 +46,9 @@ test "a tip saying what its control shows: shown where that shows cut short as i
 }
 
 ///|
-test "a file's card's name cut short is said so as the old card's is (Ctx::shows_cut), in a column too narrow for it; with the room, not" {
+test "a file's card's name cut short is reported in a column too narrow for it; with the room, not" {
   let name = "季度报告.pdf"
   for w in [400.0, 100.0] {
-    // (the old card's)
-    let old = Ref(false)
-    let o = @ui.Tester::new(fn(c) {
-      begin(c) |> ignore
-      c.with_theme(ui_theme(), fn() {
-        c.box(w=Px(w), fn() { file_card(c, "file", name, 12345.0, open=true) }) |> ignore
-        old.val = c.shows_cut(c.id("file"))
-      })
-    })
-    o.draw()
-    o.frame()
-    let old_cut = old.val
-    // (the card's nodes)
     let card : Ref[@view.View?] = Ref(None)
     let t = @ui.Tester::new(fn(_c) {  }, w=480.0, h=200.0, platform=0)
     t.check_looks(false)
@@ -80,6 +67,6 @@ test "a file's card's name cut short is said so as the old card's is (Ctx::shows
       |> ignore
     })
     t.draw()
-    assert_eq((w, old_cut, card.val.unwrap().words_cut_now()), (w, w < 200.0, w < 200.0))
+    assert_eq((w, card.val.unwrap().words_cut_now()), (w, w < 200.0))
   }
 }

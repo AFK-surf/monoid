@@ -30,6 +30,16 @@ test "an anchored panel animates both entering and leaving before its presenter 
 }
 
 ///|
+/// A test host that wraps an old-view page under `presented_nodes` in the window's tree.
+fn presented_tree(view : (@ui.Ctx) -> Unit) -> (@view.View) -> Unit {
+  fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    @ui.old(root, view).grow(Is(1.0)) |> ignore
+    presented_nodes(root)
+  }
+}
+
+///|
 /// A page with one button, 打开 (`at` its top, its middle, or its foot as a composer's choices are), that opens what
 /// `open` presents (given what opened it), and the host over it.
 fn presenting_view(open : (Anchor) -> Unit, at? : @ui.Justify = JStart) -> (@ui.Ctx) -> Unit {

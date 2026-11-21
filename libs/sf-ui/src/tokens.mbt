@@ -1493,26 +1493,10 @@ fn theme_of(dark : Bool, more : Bool) -> Theme {
 let themes_made : Map[(Bool, Bool, String, Bool), Theme] = Map([])
 
 ///|
-/// Whether a ground is drawn on in place of the page's now (with_ground): the theme is current's, as it says, till then.
-let ground_over : Ref[Int] = Ref(0)
-
-///|
 /// A link's ink: the accent's ink (its darker one on paper, its lighter one in the dark), which reads in words; the
 /// accent itself in the dark was 4.3 to 1 on a raised ground (mbui ui/contrast.mbt).
 pub fn link_ink() -> Int64 {
   theme().p.accent_text
-}
-
-///|
-/// What `body` draws on ground `bg` in place of the page's: the palette's and the styles' `Bg` both (a panel behind
-/// the one in use on the tape: behind_ground).
-pub fn with_ground(c : @ui.Ctx, bg : Int64, body : () -> Unit) -> Unit {
-  let was = current.val
-  current.val = { ..theme(), p: { ..theme().p, bg, } }
-  ground_over.val += 1
-  c.with_theme({ ..c.theme(), bg, }, body)
-  ground_over.val -= 1
-  current.val = was
 }
 
 ///|
@@ -1535,18 +1519,14 @@ let behind_dark : Int64 = 0x00000059L
 
 ///|
 /// The theme now: light or dark as set (read as a signal: what is made once of it follows it, at the moment it is
-/// set), its sizes by the native input; on a ground in place of the page's, that one (with_ground).
+/// set), its sizes by the native input.
 pub fn theme() -> Theme {
   let dark = dark_set.get().unwrap_or(false)
   // (read as a signal too: what is made once of the accent follows it)
   accent_set.get() |> ignore
   // (and the system asking for more contrast: @ui.more_contrast, followed as it changes)
   let more = @ui.more_contrast()
-  if ground_over.val > 0 {
-    current.val
-  } else {
-    theme_of(dark, more)
-  }
+  theme_of(dark, more)
 }
 
 ///|
@@ -2661,7 +2641,7 @@ pub let menu_row_end : @ui.Style = @ui.style(
 )
 
 ///|
-/// A line between a small panel's parts (@sf.menu_rule): 1 high, as wide as where it is, the words' ink faintly (in
+/// A line between a small panel's parts: 1 high, as wide as where it is, the words' ink faintly (in
 /// dark the panel is lighter than the page: its line a groove; kit's menu_rule_look).
 pub let rule_line : @ui.Style = @ui.css("w=Full h=SPx")
 

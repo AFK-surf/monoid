@@ -730,25 +730,6 @@ let sheet_column_box : @ui.Style = @ui.css("w=Full")
 let column_given : Ref[Bool] = { val: false }
 
 ///|
-/// How far in from its padding the column a dialog's body stands in is (its words' line: panel_centred), 0 elsewhere:
-/// what reaches out to the dialog's sides and corners from it reaches across this too (dialog_rows, dialog_foot_rows).
-// kept across runs: said by panel_centred round what a dialog holds
-let column_in_now : Ref[Double] = { val: 0.0 }
-
-///|
-/// How far a row's ground reaches out of the column it stands in, its words on the column's line: as far as its own
-/// words are in from its ground (`own`), no further than the room the panel leaves at its sides (none outside a panel;
-/// none beside what opened it, where the panel's padding is where its rows' grounds stand: rows_out).
-fn row_reach(own : Double) -> Double {
-  dmin(rows_out.val, own)
-}
-
-///|
-/// The room at a panel's sides its rows' grounds reach out across while its body is drawn: a sheet's (its column's
-/// sides), none in a small panel (its rows at its padding, as a menu's are).
-let rows_out : Ref[Double] = { val: 0.0 }
-
-///|
 /// Whether the panel whose body is drawn now is a small panel beside what opened it (a popover's): its rows stand as
 /// a menu's do, at its padding, their words a row's padding in (text_in), concentric with it.
 pub fn in_small_panel() -> Bool {
@@ -799,18 +780,6 @@ pub fn panel_card_last() -> @ui.Style {
 ///|
 // kept across runs: a value (no field of it changes)
 let no_card_out : @ui.Style = @ui.css("")
-
-///|
-/// What a row of a panel's body reaching `out` past its column takes of a corner: row_corner where it still stands in
-/// from the panel's sides (panel_sides_in), never a square patch there (the corner rule's lit square, 2026-11-13);
-/// nothing where it reaches them, or outside a panel.
-fn panel_row_rounds(out : Double) -> @ui.Style {
-  if panel_sides_in.val - out > 0.5 {
-    panel_row_round
-  } else {
-    no_reach
-  }
-}
 
 ///|
 /// A row of a panel's body, its words so (panel_words_in), concentric with a small panel where it is in one; one to

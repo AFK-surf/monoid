@@ -42,30 +42,6 @@ pub fn BarOnScroll::new() -> BarOnScroll {
 }
 
 ///|
-/// Told how the list `list` stands this frame (onScroll) and where the pointer is (onPointerMove): near its top
-/// always there; on down, gone; back up, back; the pointer near the window's top, back.
-pub fn BarOnScroll::heard(self : BarOnScroll, c : @ui.Ctx, list : String) -> Unit {
-  match c.list_place(list) {
-    Some((first, off, _)) => {
-      let (was_first, was_off) = self.seen
-      if first == 0 && off < viewer_top_kept {
-        self.hidden = false
-      } else if first > was_first || (first == was_first && off - was_off > viewer_moved) {
-        self.hidden = true
-      } else if first < was_first || (first == was_first && was_off - off > viewer_moved) {
-        self.hidden = false
-      }
-      self.seen = (first, off)
-    }
-    None => ()
-  }
-  let (_, py, _) = c.pointer()
-  if py >= 0.0 && py < viewer_bar_reach {
-    self.hidden = false
-  }
-}
-
-///|
 /// Read down this far before the bar goes (TOP_KEPT); this much of a scroll at once says which way (MOVED).
 let viewer_top_kept : Double = 48.0
 

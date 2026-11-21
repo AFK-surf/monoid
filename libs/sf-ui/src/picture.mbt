@@ -3,38 +3,6 @@
 // CPU (@pixels.Vector::rgba) for a picture to hand on.
 
 ///|
-/// `d` drawn `w` wide (its height as its viewport's) by the GPU (mbui's Ctx::shapes), its shapes kept by `key`, its
-/// curves cut fine enough for the screen's pixels.
-fn draw_drawable(c : @ui.Ctx, key : String, d : @pixels.Vector, w : Double, tint : Int64?) -> Int {
-  let h = w * d.h / d.w
-  // (its curves cut as fine as it is drawn: a shot's own pixels a point where it is in one)
-  let sc = c.drawn_scale()
-  let drawn = match pictures_made.get((key, w, sc, tint)) {
-    Some(m) => m
-    None => {
-      let tk = match tint {
-        Some(t) => t.to_string()
-        None => "-"
-      }
-      let m = {
-        shapes: @ui.vector_shapes(d, w, sc, tint?=tint),
-        name: "sf/pic/\{key}/\{w}/\{sc}/\{tk}",
-      }
-      pictures_made[(key, w, sc, tint)] = m
-      m
-    }
-  }
-  c.shapes(drawn.shapes, w=Px(w), h=Px(h), name=drawn.name)
-}
-
-///|
-/// A picture made by the app (`d`: its viewport and its paths, each in its own colours) drawn `w` wide by the GPU, its
-/// shapes kept by `key`, which says what it is made of (the same picture each time it is asked for by it).
-pub fn vector(c : @ui.Ctx, key : String, d : @pixels.Vector, w : Double) -> Int {
-  draw_drawable(c, "made/" + key, d, w, None)
-}
-
-///|
 /// The picture `name` drawn `px` pixels wide (as tall as it is for that), in its own colours or all in `tint`: its
 /// width, height and pixels (RGBA, straight, rows from the top), to make another picture with; None when there is no
 /// such picture.
@@ -75,20 +43,6 @@ pub fn drawable_vector(name : String) -> @pixels.Vector? {
 }
 
 ///|
-pub fn drawable(c : @ui.Ctx, name : String, w : Double, tint? : Int64) -> Int {
-  match drawables.get(name) {
-    Some(d) => {
-      let b = draw_drawable(c, name, d, w, tint)
-      if tint is None {
-        c.own_colours(b)
-      }
-      b
-    }
-    None => c.box(w=Px(w), h=Px(w), fn() {  })
-  }
-}
-
-///|
 /// Marks drawn in one colour, the page's ink; the others in
 /// their own.
 let mono_makers : Array[String] = [
@@ -99,30 +53,8 @@ let mono_makers : Array[String] = [
 ]
 
 ///|
-/// The mark of the company that made a model: the core's
-/// `maker` id when there is a mark for it, else its runtime's maker's
-/// (codex: OpenAI's, dsh its own, grok xAI's, Cursor's, Devin's, Hermes Agent's, the Antigravity CLI's and Pi's their own,
-/// else Anthropic's).
-pub fn maker_mark(
-  c : @ui.Ctx,
-  maker : String,
-  runtime : String,
-  size : Double,
-) -> Int {
-  let id = maker_of(maker, runtime)
-  let tint = if mono_makers.contains(id) { Some(theme().p.text) } else { None }
-  drawable(c, "maker_" + id.replace_all(old="-", new="_"), size, tint?=tint)
-}
-
-///|
 /// The tools' marks drawn in the page's ink (black ones: white in the dark).
 let ink_tools : Array[String] = ["github", "cursor", "vercel", "openai", "devin"]
-
-///|
-/// Slack's mark (a chat that came from Slack).
-pub fn slack_mark(c : @ui.Ctx, size : Double) -> Int {
-  drawable(c, "slack", size)
-}
 
 ///|
 /// The mark of where a chat came from, by the core's originKind: Feishu's, Comma's for a Comma
@@ -134,12 +66,6 @@ pub fn origin_mark_name(kind : String) -> String {
     "group" => "group"
     _ => "slack"
   }
-}
-
-///|
-/// Feishu's mark (a Feishu connect, SlackMark's "feishu").
-pub fn feishu_mark(c : @ui.Ctx, size : Double) -> Int {
-  drawable(c, "feishu", size)
 }
 
 ///|
@@ -207,171 +133,21 @@ fn init {
 }
 
 ///|
-/// Whether a station has anything to be shown by (`station_mark` draws
+/// Whether a station has anything to be shown by (`station_mark_node` draws
 /// nothing for it otherwise).
 pub fn has_station_mark(emoji : String, icon : String) -> Bool {
   emoji != "" || icon != ""
 }
 
 ///|
-/// Whether a station mark has something to draw now. Ask for a picture's decode even while it is not ready, so a row
-/// that leaves its empty mark out of layout can put it in as soon as the picture arrives.
-pub fn station_mark_visible(c : @ui.Ctx, emoji : String, icon : String, size : Double) -> Bool {
-  if emoji != "" {
-    return true
-  }
-  if icon.has_prefix("glyph:") {
-    let rest = icon.exact_view(start=6).to_owned()
-    let name = match rest.find(":") { Some(i) => rest.exact_view(end=i).to_owned(); None => rest }
-    return glyph_paths(name) is Some(_)
-  }
-  let key = if icon.has_prefix("https://") || icon.has_prefix("http://") {
-    (picture_of.val)(icon, c.page_stint())
-  } else {
-    data_image(icon)
-  }
-  key != "" && c.image_ready(key, size * c.scale)
-}
-
-///|
-/// A station where it is named: its `icon` first, a
-/// glyph (glyph:<name>, glyph:<name>:<colour>, in that colour, else `tint`)
-/// or a picture put up (its address, or a data URL); else its emoji.
-pub fn station_mark(
-  c : @ui.Ctx,
-  emoji : String,
-  icon : String,
-  size : Double,
-  tint : Int64,
-  none? : String,
-  still? : Bool = false,
-  visible_only? : Bool = false,
-) -> Unit {
-  if icon.has_prefix("glyph:") {
-    let rest = icon.exact_view(start=6).to_owned()
-    let (name, colour) = match rest.find(":") {
-      Some(i) =>
-        (
-          rest.exact_view(end=i).to_owned(),
-          rest.exact_view(start=i + 1).to_owned(),
-        )
-      None => (rest, "")
-    }
-    match glyph_paths(name) {
-      Some((lines, dots)) => {
-        let layers : Array[@pixels.VectorPath] = []
-        for d in lines {
-          layers.push({
-            d,
-            fill: 0L,
-            stroke: 0x000000FFL,
-            width: 1.75,
-            even_odd: false,
-            sx: 1.0,
-            sy: 1.0,
-            tx: 0.0,
-            ty: 0.0,
-          })
-        }
-        for d in dots {
-          layers.push({
-            d,
-            fill: 0x000000FFL,
-            stroke: 0L,
-            width: 0.0,
-            even_odd: false,
-            sx: 1.0,
-            sy: 1.0,
-            tx: 0.0,
-            ty: 0.0,
-          })
-        }
-        let color = glyph_color(colour, theme().dark).unwrap_or(tint)
-        draw_drawable(c, "glyph/" + name, { w: 24.0, h: 24.0, layers }, size, Some(color))
-        |> ignore
-        return
-      }
-      None => ()
-    }
-  }
-  // a picture still.fail cloud keeps (cloud/src/icons.ts), by its address: its bytes the core's (`picture`, as
-  // Parts.kt rememberStationPicture), so a GIF among them moves (mbui's gif.mbt); its emoji (below) while it comes
-  if icon.has_prefix("https://") || icon.has_prefix("http://") {
-    let key = (picture_of.val)(icon, c.page_stint())
-    if key != "" && (!visible_only || c.image_ready(key, size * c.scale)) {
-      c.image(key, w=Px(size), h=Px(size), fit=FitCover, radius=size * 0.24, bg=0L, still~, fade=!visible_only) |> ignore
-      return
-    }
-  }
-  match data_image(icon) {
-    "" => ()
-    key if !visible_only || c.image_ready(key, size * c.scale) => {
-      c.image(key, w=Px(size), h=Px(size), radius=size * 0.24, bg=0L, still~, fade=!visible_only) |> ignore
-      return
-    }
-    _ => ()
-  }
-  if emoji != "" {
-    // A mark keeps its natural width, including Windows' wider emoji. A column's
-    // one-line text is otherwise capped to its slot and replaced by an ellipsis.
-    let width = @ui.text_advance(emoji, size=c.sp(size * 0.9))
-    // On the baseline the app's own face gives it, whatever face its words are in: a taller one chosen (思源黑体's
-    // ascent 1.16) set it lower in its line, under the marks beside it.
-    let ty = if @ui.web_lines_on() {
-      let (line, words) = (c.sp(size), c.sp(size * 0.9))
-      @ui.line_baseline(line, size=words, em=mark_em) - @ui.line_baseline(line, size=words)
-    } else {
-      0.0
-    }
-    let draw = fn() { c.text(emoji, size=size * 0.9, wrap=false, line=size, w=Px(width)) |> ignore }
-    if ty == 0.0 {
-      draw()
-    } else {
-      c.box(ty~, draw) |> ignore
-    }
-    return
-  }
-  // none of its own: `none`'s icon, if given
-  match none {
-    Some(n) => icon_named(c, n, size, tint) |> ignore
-    None => ()
-  }
-}
-
-///|
 /// How far the app's own face (Inter 4.001, the wide frame's words with none chosen: sfbase's inter_face.mbt) reaches
 /// above and below its baseline, shares of its size (its 1984 and 494 of 2048): where a station's emoji stands in its
-/// line (station_mark).
+/// line.
 // kept across runs: a value (no field of it changes)
 let mark_em : (Double, Double) = (1984.0 / 2048.0, 494.0 / 2048.0)
 
 ///|
-/// A workspace before its name where it is named among other words (a list's row, a chip, a heading; the web's
-/// WorkspaceMark.tsx WorkspaceBadge): its mark `size` across (station_mark), else its first letter, semibold and muted
-/// in a meta's size, in a square as large (no ground of its own, as the workspaces' rows have it: in a rounded row's
-/// corner a tile would have to be concentric with it). A GIF holds its first frame unless `still` is false (the
-/// workspace in use).
-pub fn workspace_badge(
-  c : @ui.Ctx,
-  name : String,
-  emoji : String,
-  icon : String,
-  size : Double,
-  still? : Bool = true,
-) -> Unit {
-  if has_station_mark(emoji, icon) {
-    station_mark(c, emoji, icon, size, theme().p.text, still~)
-    return
-  }
-  let tile = workspace_badge_tile.then(@ui.style(w=Fixed(size), h=Fixed(size)))
-  c.box(style=tile, fn() {
-    c.text(initial(name), style=workspace_badge_letter) |> ignore
-  })
-  |> ignore
-}
-
-///|
-/// A workspace's letter's square (workspace_badge): what it holds in its middle.
+/// A workspace's letter's square: what it holds in its middle.
 // kept across runs: a value (no field of it changes)
 let workspace_badge_tile : @ui.Style = @ui.css("align=ACenter justify=JCenter")
 
@@ -379,12 +155,6 @@ let workspace_badge_tile : @ui.Style = @ui.css("align=ACenter justify=JCenter")
 /// Its letter: a meta's size, semibold, muted, on one line.
 // kept across runs: a value (no field of it changes)
 let workspace_badge_letter : @ui.TextStyle = @ui.text_style(size=Meta, leading=Font, weight=Semibold, color=Muted, wrap=false)
-
-///|
-/// Icon `name` (`icon`, where a parameter of that name hides it).
-fn icon_named(c : @ui.Ctx, name : String, size : Double, color : Int64) -> Int {
-  icon(c, name, size~, color~)
-}
 
 ///|
 fn imin(a : Int, b : Int) -> Int {

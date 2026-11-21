@@ -391,18 +391,6 @@ fn menu_anchor_now(from : Anchor) -> ((@view.View) -> @view.View, Bool, Double, 
 }
 
 ///|
-/// A window's tree of `page` (an old view, the whole window) with what of the presented the tree draws over it
-/// (presented_nodes), in still.fail's theme: as the app's tree has them (sfapp's app_tree), for a page shown without
-/// the app's shell. The Tester's or a host's `tree`, its old frame `@ui.old_views_here`.
-pub fn presented_tree(page : (@ui.Ctx) -> Unit) -> (@view.View) -> Unit {
-  fn(root) {
-    @ui.set_tree_theme(ui_theme_now)
-    @ui.old(root, page).grow(Is(1.0)) |> ignore
-    presented_nodes(root)
-  }
-}
-
-///|
 /// How far in from the column a panel's body is given node `v`'s words go (panel_words_in's, where the body is nodes:
 /// panel_nodes); none outside a panel.
 pub fn panel_words_in_node(v : @view.View) -> @ui.Style {

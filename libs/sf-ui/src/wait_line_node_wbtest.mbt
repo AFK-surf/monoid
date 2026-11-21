@@ -3,13 +3,10 @@
 // and made larger.
 
 ///|
-/// Where the words of a wait are drawn a moment and a half on (x, y, w, h): the old one's (`old`) or the node's, at the
-/// window's top left, the system's size of words `fs`.
-fn wait_words_at(old : Bool, fs : Double) -> Array[(Double, Double, Double, Double)] {
-  let t = @ui.Tester::new(fn(c) { if old { wait_line(c, "正在打开", key="w") } }, w=300.0, h=200.0, platform=0)
-  if !old {
-    @ui.set_view_app(fn(root) { wait_line_node(root, fn() { "正在打开" }) |> ignore })
-  }
+/// Where the words of a wait are drawn a moment and a half on (x, y, w, h), at the system's size of words `fs`.
+fn wait_words_at(fs : Double) -> Array[(Double, Double, Double, Double)] {
+  let t = @ui.Tester::new(fn(_c) {  }, w=300.0, h=200.0, platform=0)
+  @ui.set_view_app(fn(root) { wait_line_node(root, fn() { "正在打开" }) |> ignore })
   t.set_font_scale(fs)
   t.draw()
   t.run_for(later_ms * 1.5)
@@ -17,11 +14,11 @@ fn wait_words_at(old : Bool, fs : Double) -> Array[(Double, Double, Double, Doub
 }
 
 ///|
-test "a wait as nodes, its moment come: its words where wait_line's are, as wide and as high, at the system's size of words 1 and 2" {
-  for fs in [1.0, 2.0] {
-    let node = wait_words_at(false, fs)
-    let line = wait_words_at(true, fs)
-    assert_true(node.length() == 1, msg="the node's words, at \{fs}: \{Repr(node)}")
-    assert_eq(node, line, msg="at \{fs}: the node's \{Repr(node)}, wait_line's \{Repr(line)}")
-  }
+test "a wait as nodes, its moment come: its words drawn after spinner and gap, scaling at 1 and 2" {
+  let at1 = wait_words_at(1.0)
+  let at2 = wait_words_at(2.0)
+  assert_eq(at1.length(), 1, msg="at 1.0: \{Repr(at1)}")
+  assert_eq(at2.length(), 1, msg="at 2.0: \{Repr(at2)}")
+  assert_true(at1[0].0 > 14.0 && at1[0].2 > 0.0 && at1[0].3 > 0.0)
+  assert_true(at2[0].2 > at1[0].2 && at2[0].3 > at1[0].3)
 }

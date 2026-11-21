@@ -14,7 +14,7 @@ pub fn pointer_rests() -> Bool {
 /// What a pointer over a thing shows (a row's time, its ✕, a dismiss): while `pointed` (it is pointed at, or what it
 /// belongs to is: Ctx::hand_lit, so a test's frame with all of it shown shows it), and always to a finger, which hovers
 /// over nothing.
-pub fn pointed_or_finger(c : @ui.Ctx, pointed : Bool) -> Bool {
+fn pointed_or_finger(c : @ui.Ctx, pointed : Bool) -> Bool {
   c.hand_lit(pointed) || @ui.pointing() is Finger
 }
 
@@ -85,43 +85,10 @@ pub fn edge_reach(gap : Double) -> (Double, Double) {
 }
 
 ///|
-/// A press on `id` rippling from where a finger pressed it, its corner `corner` (a mouse's press shows as its ground).
-pub fn press_ripple(c : @ui.Ctx, id : Int, corner : Double) -> Unit {
-  if @ui.pointing() is Finger {
-    @motion.ripple(c, id, corner)
-  }
-}
-
-///|
-/// A menu asked by a hold (`key`: what it is of): with a finger the press is the menu's (lifting it opens nothing)
-/// and it is felt as it opens, once for the press. Whether a finger held it (its menu from what was held, not at a
-/// pointer).
-pub fn menu_held(c : @ui.Ctx, key : String) -> Bool {
-  if !(@ui.pointing() is Finger) {
-    return false
-  }
-  c.take_press()
-  let at = c.press().frame
-  // (told once the frame's builds are over, whichever build took the hold: one built again sees the press taken)
-  c.tell("haptic/hold/" + key, fn() {
-    if held_felt.get(key) != Some(at) {
-      held_felt[key] = at
-      @ui.haptic(LongPress)
-    }
-  })
-  true
-}
-
-///|
-/// A menu asked by a node's hold (presses_held_node's `held`), as menu_held's is: felt as it opens where a finger held
+/// A menu asked by a node's hold (presses_held_node's `held`): felt as it opens where a finger held
 /// it (the press already the hold's: lifting it opens nothing).
 pub fn menu_held_node() -> Unit {
   if @ui.pointing() is Finger {
     @ui.haptic(LongPress)
   }
 }
-
-///|
-/// The press each menu held was last felt for (menu_held), by what it is of.
-// kept across runs: let go by parts_reset, as a run begins (run_begin)
-let held_felt : Map[String, Int] = Map([])

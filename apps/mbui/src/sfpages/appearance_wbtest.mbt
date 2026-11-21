@@ -120,10 +120,10 @@ test "外观: files dragged into a chat can be sent as files or paths (prefs dro
 ///|
 test "外观: wide setting titles have the same weight as the rows in 自动决策" {
   for platform in [0, 2] {
-    let decision = @ui.Tester::new(fn(c) {
-      @sf.begin(c) |> ignore
-      @sf.link_row(c, "decision", "结束时") |> ignore
-    }, w=900.0, platform~)
+    let decision = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w=900.0, platform~, tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      @sf.link_row_node(root, fn() { "结束时" }, fn() {  })
+    })
     decision.draw()
     let weight = decision.census().weight
     assert_eq(weight, ["500"])
@@ -135,10 +135,10 @@ test "外观: wide setting titles have the same weight as the rows in 自动决�
       assert_eq(found.map(fn(b) { b.weight }), [500], msg="\{platform}: \{title} \{Repr(found.map(fn(b) { (b.x, b.y, b.w, b.h) }))}")
     }
     // a switch's row in a group (分享给其他 station over 可用的 station): its title no lighter than the rows by it
-    let switch = @ui.Tester::new(fn(c) {
-      @sf.begin(c) |> ignore
-      @sf.group(c, fn() { @sf.switch_row(c, "share", "分享给其他 station", true) |> ignore })
-    }, w=900.0, platform~)
+    let switch = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w=900.0, platform~, tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      @sf.group_node(root, fn(g) { @sf.switch_row_node(g, fn() { "分享给其他 station" }, fn() { true }, fn(_) {  }) })
+    })
     switch.draw()
     assert_eq(switch.census().weight, weight)
   }
@@ -147,23 +147,22 @@ test "外观: wide setting titles have the same weight as the rows in 自动决�
 ///|
 test "setting rows keep their title prominent at every width and with either input" {
   for (w, platform) in page_cases {
-    let t = @ui.Tester::new(fn(c) {
-      @sf.begin(c) |> ignore
-      @sf.group(c, fn() {
-        @sf.link_row(c, "plain", "Plain title") |> ignore
-        @sf.link_row(c, "value", "Title with value", value="Current") |> ignore
-        @sf.link_row(c, "note", "Title with note", note="More detail") |> ignore
-        @sf.link_row(c, "summary", "Summary title", value="Selected", note="Explanation") |> ignore
-        @sf.link_row(c, "custom", "Custom title", title_style=@sf.desk_list_title.then(@ui.text_style(weight=Normal))) |> ignore
-        @sf.switch_row(c, "switch", "Switch title", false) |> ignore
-        @sf.link_row(c, "strong", "Strong title", strong=true) |> ignore
+    let t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w~, platform~, tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      @sf.group_node(root, fn(g) {
+        @sf.link_row_node(g, fn() { "Plain title" }, fn() {  })
+        @sf.link_row_node(g, fn() { "Title with value" }, fn() {  }, value=fn() { "Current" })
+        @sf.link_row_node(g, fn() { "Title with note" }, fn() {  }, note=fn() { "More detail" })
+        @sf.link_row_node(g, fn() { "Summary title" }, fn() {  }, value=fn() { "Selected" }, note=fn() { "Explanation" })
+        @sf.switch_row_node(g, fn() { "Switch title" }, fn() { false }, fn(_) {  })
+        @sf.link_row_node(g, fn() { "Strong title" }, fn() {  }, strong=true)
       })
-      @sf.switch_row(c, "outside", "Standalone switch", false) |> ignore
-    }, w~, platform~)
+      @sf.switch_row_node(root, fn() { "Standalone switch" }, fn() { false }, fn(_) {  })
+    })
     t.draw()
-    let boxes = t.boxes()
+    let boxes = t.boxes_held()
     let at = "\{w} platform \{platform}"
-    for title in ["Plain title", "Title with value", "Title with note", "Summary title", "Custom title", "Switch title", "Standalone switch"] {
+    for title in ["Plain title", "Title with value", "Title with note", "Summary title", "Switch title", "Standalone switch"] {
       let found = boxes.filter(fn(b) { b.text == title })
       assert_eq(found.length(), 1, msg="\{at}: \{title}")
       assert_eq(found[0].weight, 500, msg="\{at}: \{title}")

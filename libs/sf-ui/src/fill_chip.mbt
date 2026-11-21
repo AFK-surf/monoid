@@ -25,105 +25,6 @@ pub fn level_color(level : String) -> Int64 {
 }
 
 ///|
-/// The chip (FillChip): its ground the neutral one, filled from the left as far as `fill` (0–100), grey while the
-/// level is ok, faintly the level's colour once it is not (the accent's ink for `progress`: chip_fill_share); its figure
-/// and its `mark` before it in the text's colour, whatever the level: the fill says the level, and over it the level's
-/// ink, or a grey a step quieter, read too faint (amber 3.3 to 1, the mark 3.9 to 1 in the dark; sf/align.mbt
-/// 对比度). Its words are the caption's, a screen's own (11 with keyboard and mouse, 12 with touch), 600, tabular.
-/// `compact`: less horizontal padding around a small chip's figure when its mark stands separately above it.
-/// `said`: what it is, over it while it is pointed at (QuotaBars', MeterChips' tips: what is left of what and when it
-/// fills again, what is used of how much), the chip `key`'s (none: no tip).
-pub fn fill_chip(
-  c : @ui.Ctx,
-  fill : Int,
-  level : String,
-  mark : String,
-  words : String,
-  small? : Bool = false,
-  compact? : Bool = false,
-  label_muted? : Bool = false,
-  refill? : Bool = false,
-  drop? : Int = 0,
-  keep? : Bool = false,
-  key? : String = "",
-  said? : String = "",
-) -> Unit {
-  let t = theme()
-  let tone = level_color(level)
-  let low = level == "amber" || level == "red"
-  let ground = if low {
-    alpha(tone, chip_fill_share)
-  } else if level == "progress" {
-    alpha(t.p.accent_text, chip_fill_share)
-  } else {
-    alpha(t.p.muted, chip_fill_share)
-  }
-  let fill = if fill < 0 { 0 } else if fill > 100 { 100 } else { fill }
-  let rest = 100 - fill
-  // (pointed at for its tip, never pressed: what holds it takes the press, a row's)
-  let id = if key == "" || said == "" { 0 } else { c.id("fill-chip/" + key) }
-  let base_box = if small { chip_box_small } else { chip_box }
-  let box_style = if refill { base_box.then(@ui.style(bg=DangerBg)) } else { base_box }
-  // (its fill a plain rectangle its layer cuts along the chip's corners, its end square where it stops; the chip
-  // itself cuts nothing: a box that cuts what it holds gives way to its row, which would cut its figure to an ellipsis
-  // beside anything wider: mbui's ui/squeeze.mbt)
-  let b = c.box(style=box_style, drop~, keep~, id~, taps=false, points=true, fn() {
-    if !refill && fill > 0 {
-      c.layer(fn() {
-        c.box(style=chip_fill_row, fn() {
-          c.box(style=chip_fill_part.then(@ui.style(w=Grow(fill.to_double()), bg=Data(ground))), fn() {  }) |> ignore
-          if rest > 0 {
-            c.box(style=chip_fill_part.then(@ui.style(w=Grow(rest.to_double()))), fn() {  }) |> ignore
-          }
-        })
-        |> ignore
-      })
-      |> ignore
-    }
-    if refill {
-      let style = if small && compact {
-        chip_refill_words_compact
-      } else if small {
-        chip_refill_words_small
-      } else {
-        chip_refill_words
-      }
-      let icon_sz = if small { 9.0 } else { 10.5 }
-      c.box(style~, fn() {
-        if mark != "" {
-          c.text(mark, style=chip_refill_label_text) |> ignore
-        }
-        icon(c, "refresh", size=icon_sz, color=t.p.red) |> ignore
-        c.text(words, style=chip_refill_text) |> ignore
-      })
-      |> ignore
-    } else {
-      // A figure on its own in a narrow column needs less room around it than a mark and figure in one chip.
-      let words_style = if small && compact {
-        chip_words_small.then(@ui.style(px=S1))
-      } else if small {
-        chip_words_small
-      } else {
-        chip_words
-      }
-      // (a mark run on into its words, 磁盘剩 420 G, one line of words, as fill_chip_node has it)
-      let joined = !label_muted && chip_joined(mark, words)
-      let style = if joined { words_style.then(chip_joined_gap) } else { words_style }
-      c.box(style~, fn() {
-        if mark != "" && !joined {
-          c.text(mark, style=if label_muted { chip_label_text } else { chip_text }) |> ignore
-        }
-        c.text(if joined { mark + words } else { words }, style=chip_text) |> ignore
-      })
-      |> ignore
-    }
-  })
-  // (in a page's bones, one piece: how full it is not known yet)
-  c.bone_whole(b)
-  tip(c, "fill-chip/" + key, id, said)
-}
-
-///|
 /// Whether its mark and figure read as one phrase in Chinese, the mark ending in a Han character and the figure
 /// beginning with one (内存剩 12.3 G, 每周剩 95%): none of chip_words' 5 between them, as Chinese sets no space between
 /// its characters; that only beside Latin and figures (CPU 空闲 72%, 5H 62%, 每周 95%), the space Chinese leaves there.
@@ -193,10 +94,6 @@ let chip_refill_words_small : @ui.Style = @ui.css("row px=S1_25 gap=S1 align=ACe
 ///|
 // kept across runs: a value (no field of it changes)
 let chip_refill_words_small_unmarked : @ui.Style = @ui.css("row pl=S0_5 pr=S1_25 gap=S1 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let chip_refill_words_compact : @ui.Style = @ui.css("row px=S1 gap=S1 align=ACenter")
 
 ///|
 /// Its label: regular weight in Fg so window type reads distinctly beside semibold figures while keeping >= 4.5:1 contrast over progress fills.

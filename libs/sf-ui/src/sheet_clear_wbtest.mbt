@@ -37,27 +37,3 @@ test "a sheet from the foot, the old frame's (a confirm) and the window's tree's
     }
   }
 }
-
-///|
-test "a dialog of the old frame's (one that goes in steps, a page's own): in the middle of the room the system's bars leave, no wider than it" {
-  // (2026-11-17 「也看一下还有没有漏掉的」: @kit.dialog stood in the middle of the whole window, as wide as it less 32)
-  let long = "这个对话框里的字很长，长到它会占满对话框的宽度，好看出对话框站在哪里、有多宽，是不是让开了系统栏。"
-  // (window, then the bars: top, right, foot, left)
-  for case in [((800.0, 600.0), (24.0, 84.0, 20.0, 0.0)), ((420.0, 600.0), (0.0, 60.0, 0.0, 60.0))] {
-    let ((w, h), (top, right, foot, left)) = case
-    let t = @ui.Tester::new(
-      fn(c) { dialog(c, "d", true, "标题", fn() { c.text(long, style=paragraph) |> ignore }) |> ignore },
-      w~,
-      h~,
-    )
-    t.post(@hostapi.system_channel, "{\"bars\":{\"top\":\{top},\"bottom\":\{foot},\"left\":\{left},\"right\":\{right}}}")
-    t.draw()
-    t.run_for(t.rest_of("dialog/") - t.time())
-    let (l, r) = sides_of(t, long)
-    let msg = "\{Repr(case)}: words at \{Repr((l, r))}"
-    assert_true(l >= left - 0.5 && r <= w - right + 0.5, msg~)
-    assert_true(((l + r) / 2.0 - (left + (w - left - right) / 2.0)).abs() < 1.0, msg~)
-    let (_, y, _, _) = t.rect_of("标题").unwrap()
-    assert_true(y >= top, msg~)
-  }
-}

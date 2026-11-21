@@ -7,12 +7,7 @@
 ///|
 /// For parts whose own parameter is called `icon`.
 fn draw_icon(c : @ui.Ctx, name : String, size : Double, color : Int64, by_ink? : Bool = false) -> Unit {
-  // (a runtime's mark by its runtime, `runtime:<runtime>`: its maker's, as maker_mark draws it)
-  if name.has_prefix("runtime:") {
-    maker_mark(c, "", name.exact_view(start=8).to_owned(), size) |> ignore
-  } else {
-    icon(c, name, size~, color~, by_ink~) |> ignore
-  }
+  icon(c, name, size~, color~, by_ink~) |> ignore
 }
 
 ///|
@@ -55,7 +50,7 @@ pub fn button(
 ///|
 /// What pressing `id` does (`on_press`), where it takes presses now (`live`): done as the press is let go on it (a tap,
 /// a click, Enter or Space, Activate), outside any build, at its moment (Ctx::on_press), not read by the build after.
-pub fn press_does(c : @ui.Ctx, id : Int, live : Bool, on_press : (() -> Unit)?) -> Unit {
+fn press_does(c : @ui.Ctx, id : Int, live : Bool, on_press : (() -> Unit)?) -> Unit {
   match on_press {
     Some(f) if live => c.on_press(id, f)
     _ => ()
@@ -393,211 +388,8 @@ let segmented_pad : Double = 3.0
 let segmented_gap : Double = 2.0
 
 ///|
-/// In a bar (`bar`): its track 2 round its options, as a bar's other tracks (Seg's), and an option's words 10 in from
-/// its sides (seg_option's px=S2_5).
+/// In a bar (`bar`): its track 2 round its options, as a bar's other tracks (Seg's).
 let segmented_bar_pad : Double = @ui.Space::px(S0_5)
-
-///|
-let segmented_bar_in : Double = @ui.Space::px(S2_5)
-
-///|
-/// Its options in a line, 2 apart.
-// kept across runs: a value (no field of it changes)
-let segmented_strip : @ui.Style = @ui.css("row gap=S0_5")
-
-///|
-/// A choice of a few (Segmented; the kit's sliding toggle group): a quiet pill track, the chosen lifted out of it (the
-/// theme's lifted) and sliding to it; its options equal columns, as wide as the widest in the chosen weight with 12 either side
-/// (segmented, segmentedOption, segmentedSizer), `item_w` at least, the track never wider than where it is. Where those
-/// columns need more room than there is, the track takes what there is and its options share it as option_widths has
-/// them: as alike as their words let them, their sides narrower, else their words smaller alike (to the system's own
-/// size of words), else the chosen one alone in the track, the others in a pick (choice_pick). Always one line, each
-/// one's words whole: nothing wrapped, cut or scrolled. `icons`: each option its icon in place of its words (its
-/// label its tip and what a screen reader says), as wide as a press's room. `bar`: among a bar's buttons, as high as
-/// they are and round as they are, on every page. `said`: what a screen reader calls it. `tips`: what each option says
-/// on hover besides its words ("" nothing; a model's speed what Fast costs). `fill`: as a narrow page's is, as wide as
-/// where it is, each option an equal share (choices one under another, their tracks' ends lined up). `on_pick`: what
-/// choosing another option does, given its index, as it is chosen (a press let go on it, a pick from its menu), outside
-/// any build. Returns the chosen index.
-pub fn segmented(
-  c : @ui.Ctx,
-  key : String,
-  labels : Array[String],
-  chosen : Int,
-  item_w? : Double = 0.0,
-  ink? : Int64,
-  thumb? : Int64,
-  icons? : Array[String] = [],
-  bar? : Bool = false,
-  said? : String = "",
-  tips? : Array[String] = [],
-  fill? : Bool = false,
-  on_pick? : (Int) -> Unit,
-) -> Int {
-  // (a narrow page's: as wide as where it is, each option an equal share, Seg's look (seg.mbt), but at a head's end
-  // (head_end), as wide as its options beside the title; a wide page's: the web's Segmented, as wide as its options,
-  // its track round them alone; in a bar or of icons, the wide page's, round as a bar's buttons)
-  if (look() is Narrow || fill) && !bar && icons.is_empty() {
-    if at_head_end() && !fill {
-      // (as wide as its options where its line has the room, as narrow as the chosen one with the chevron where it has
-      // less: filling what that leaves it)
-      let (whole, least) = seg_room(c, labels)
-      let mut now = chosen
-      c.box(style=@ui.style(w=Fixed(whole), min_w=Fixed(least)), fn() {
-        now = seg(c, key, labels, chosen, fill=true, height=segmented_narrow_h, on_pick?)
-      })
-      |> ignore
-      return now
-    }
-    let now = seg(c, key, labels, chosen, fill=true, height=segmented_narrow_h, on_pick?)
-    segmented_tips(c, key, tips)
-    return now
-  }
-  let t = theme()
-  let ink = ink.unwrap_or(t.p.text)
-  let thumb = thumb.unwrap_or(c.theme().lifted)
-  // its words as drawn (the system's size of words applied), in the chosen weight (as wide unchosen as chosen: no
-  // column changes as the choice does)
-  // (in a bar, as its buttons are: as high as they are, its track 2 round its options, the bar's smaller words, each
-  // option as wide as its own: a bar's room is short)
-  let words_size = if bar { t.t.meta } else { t.t.ui }
-  let size = c.sp(words_size)
-  let pad = if bar { segmented_bar_pad } else { segmented_pad }
-  let side = if bar { segmented_bar_in } else { segmented_in }
-  let high = if bar { icon_button_side - 2.0 * pad } else { segmented_h }
-  let corner = if bar { high / 2.0 } else { segmented_corner }
-  let n = labels.length()
-  let cols = if icons.is_empty() {
-    let words = labels.map(fn(l) { choice_words_w(c, l, size, weight=500) + 2.0 * side })
-    if bar {
-      words.map(fn(w) { dmax(item_w, w) })
-    } else {
-      Array::make(n, dmax(item_w, words.fold(init=0.0, fn(m, w) { dmax(m, w) })))
-    }
-  } else {
-    // (an icon each: square)
-    Array::make(n, dmax(item_w, high))
-  }
-  let gaps = segmented_gap * (n - 1).to_double()
-  let whole = cols.fold(init=0.0, fn(s, w) { s + w }) + gaps + 2.0 * pad
-  // the room the track had as last laid out (cut to where it is: read back, built again in the frame it is laid out
-  // otherwise): less than its columns need, its options give way from them to what option_widths has them in it
-  // (their columns as wide where the room is, the track then laid out as wide as they need)
-  let track = c.id(key + "/track")
-  let fit = match c.laid_size(track) {
-    // (in a bar, or of icons, never: a bar gives what it has not the room for to its ⋯, not squeezed)
-    Some((w, _)) if w < whole - 0.5 && !bar && icons.is_empty() =>
-      Some(fitted(c, labels, w - 2.0 * pad - gaps, words_size, 500, side, segmented_least))
-    _ => None
-  }
-  // its track: round its options (as wide as they are, cut to where it is), or round the chosen one where they do not
-  // fit side by side (as wide as where it is)
-  let track_box = fn(wide : Bool, inner : () -> Unit) -> Int {
-    c.box(
-      style=if wide {
-        segmented_track_wide
-      } else if bar || !icons.is_empty() {
-        segmented_track_whole
-      } else {
-        segmented_track
-      },
-      id=track,
-      pad~,
-      bg=alpha(ink, 0.06),
-      radius=corner + pad,
-      inner,
-    )
-  }
-  // an option: its words in its middle, in the chosen weight and the ink where chosen (`on`), in the ink pointed at
-  // (`lit`); short of room, their least in from its sides
-  // (with icons, its icon in their place)
-  let option = fn(label : String, on : Bool, lit : Bool) {
-    c.box(h=Px(high), padx?=fit.map(fn(_) { segmented_least }), align=ACenter, justify=JCenter, fn() {
-      match labels.search(label).bind(fn(i) { icons.get(i) }) {
-        Some(name) => icon(c, name, color=if on || lit { ink } else { t.p.muted }) |> ignore
-        None =>
-          c.text(
-            label,
-            size=words_size,
-            weight=if on { 500 } else { 400 },
-            color=if on || lit { ink } else { t.p.muted },
-            wrap=false,
-          )
-          |> ignore
-      }
-    })
-    |> ignore
-  }
-  // (not side by side: the chosen one in its track, as wide as where it is, a chevron at its end; all of them in a
-  // pick)
-  if fit is Some({ fit: Menu, .. }) {
-    return choice_pick(c, key, track, labels, chosen, on_pick?, fn(_, _, words) {
-      track_box(true, fn() {
-        c.box(style=segmented_menu, fn() {
-          option(words, true, false)
-          icon(c, "chevron-down", size=segmented_chevron, color=t.p.muted) |> ignore
-        })
-        |> ignore
-      })
-    })
-  }
-  let items = labels.mapi(fn(i, l) { @kit.item(i.to_string(), label=l) })
-  // (made smaller to fit: their words drawn that much smaller)
-  let smaller = match fit {
-    Some({ fit: Smaller(k), .. }) => k
-    _ => 1.0
-  }
-  let now = c.words_smaller(smaller, fn() {
-    @kit.toggle_group(
-      c,
-      key,
-      items,
-      [chosen.to_string()],
-      slide=true,
-      label=said,
-      widths=match fit {
-        Some(f) => f.widths.mapi(fn(i, w) { (cols[i], w) })
-        None => cols.map(fn(w) { (w, w) })
-      },
-      look=fn(_, s) { option(s.label, s.on, s.hovered) },
-      thumb=fn(c, w, h) {
-        c.box(
-          w=Px(w),
-          h=Px(h),
-          bg=thumb,
-          radius=corner,
-          border=0.5,
-          border_color=t.p.line,
-          shadow=1.0,
-          shadow_color=t.p.shadow,
-          shadow_y=0.0,
-          fn() {  },
-        )
-        |> ignore
-      },
-      ground=fn(c, _, items) { track_box(false, fn() { c.box(style=segmented_strip, items) |> ignore }) |> ignore },
-      on_change?=on_pick.map(fn(f) { fn(now : Array[String]) { picked_of(now, labels, chosen, f) } }),
-    ).value
-  })
-  // (icons: each one's words its tip; else what `tips` gives one)
-  segmented_tips(c, key, if icons.is_empty() { tips } else { labels })
-  // the chosen one tapped again stays chosen
-  match now {
-    [v] => items.search_by(fn(it) { it.value == v }).unwrap_or(chosen)
-    _ => chosen
-  }
-}
-
-///|
-/// What each of segmented `key`'s options says on hover (`said`, by its place; "" nothing).
-fn segmented_tips(c : @ui.Ctx, key : String, said : Array[String]) -> Unit {
-  let group = c.id(key)
-  for i, words in said {
-    if words != "" {
-      tip(c, key + "/" + i.to_string(), @kit.part_id(group, i), words)
-    }
-  }
-}
 
 ///|
 /// How wide each of `n` options is for a segmented choice's track to be `room` across (its `item_w`): one that spans
@@ -610,33 +402,10 @@ pub fn segmented_item_w(room : Double, n : Int) -> Double {
 }
 
 ///|
-/// Its track: its options in a line, as wide as they are, cut to where it is; where they do not fit side by side, as
-/// wide as where it is.
-// kept across runs: a value (no field of it changes)
-let segmented_track : @ui.Style = @ui.css("row w=Cut")
-
-///|
-// kept across runs: a value (no field of it changes)
-let segmented_track_wide : @ui.Style = @ui.css("row w=Full")
-
-///|
-/// In a bar, or of icons: as wide as its options, never cut (what has not the room goes into the bar's ⋯).
-// kept across runs: a value (no field of it changes)
-let segmented_track_whole : @ui.Style = @ui.css("row")
-
-///|
-/// A segmented choice whose options do not fit side by side (choice_pick), in its track: the chosen one as its option
-/// is at its start (its words as far in, cut short where they must be), a chevron at its end; a press on the track
-/// opens the pick.
-// kept across runs: a value (no field of it changes)
-let segmented_menu : @ui.Style = @ui.css("row w=Full pr=S2 gap=S2 align=ACenter justify=JBetween")
-
-///|
 let segmented_chevron : Double = 16.0
 
 ///|
-/// An option's height on one line (segmentedOption: 30), and the thumb's corner, a pill's (the track's concentric
-/// round it).
+/// An option's height on one line (segmentedOption: 30).
 let segmented_h : Double = 30.0
 
 ///|
@@ -644,7 +413,7 @@ let segmented_h : Double = 30.0
 let segmented_narrow_h : Double = 34.0
 
 ///|
-/// How high a segmented control stands where it is drawn now (segmented: a narrow page's 34, a wide page's track round
+/// How high a segmented control stands where it is drawn now (a narrow page's 34, a wide page's track round
 /// its options, 36).
 pub fn segmented_height() -> Double {
   if look() is Narrow {
@@ -654,9 +423,6 @@ pub fn segmented_height() -> Double {
   }
 }
 
-///|
-let segmented_corner : Double = 15.0
-
 // ---------------------------------------------------------------------------
 // Small panels
 
@@ -665,7 +431,7 @@ let segmented_corner : Double = 15.0
 /// grey in dark), a line round it, its shadow; padded panel_pad, its corner
 /// the menu's. `min_w`: as wide as what it holds, at least that (a menu's,
 /// controls.css.ts menuList); `max_w`: at most that.
-pub fn small_panel(
+fn small_panel(
   c : @ui.Ctx,
   w? : @ui.Size = Auto,
   h? : @ui.Size = Auto,
@@ -693,136 +459,6 @@ pub fn small_panel(
   // (the panel: the surface of the look it comes in by, coming first, all on it after: Ctx::surface)
   c.surface(panel)
   panel
-}
-
-///|
-/// A small panel's look beside what opened it (@kit.popover's, @kit.hover_card's), `w` wide: what it holds kept within
-/// the room the panel has (@kit.in_room: scrolling out to its sides past the window's height, and past `most`), in
-/// `inner` where said (its own room round what it holds and between).
-pub fn beside_look(
-  w : @ui.Size,
-  inner? : @ui.Style,
-  most? : Double = 1.0e9,
-) -> (@ui.Ctx, @kit.PopState, () -> Unit) -> Unit {
-  fn(c, s, body) {
-    small_panel(c, w~, fn() { within_room(c, s, body, inner?, most~) }) |> ignore
-  }
-}
-
-///|
-/// What a small panel beside what opened it (`s`, as its look is given it) holds, kept within the room it has
-/// (beside_look's), in `inner` where said.
-pub fn within_room(c : @ui.Ctx, s : @kit.PopState, body : () -> Unit, inner? : @ui.Style, most? : Double = 1.0e9) -> Unit {
-  @kit.in_room(c, s, most~, reach=held_reach(), style=held_in(), fn() {
-    match inner {
-      Some(st) => c.box(style=st, body) |> ignore
-      None => body()
-    }
-  })
-  |> ignore
-}
-
-///|
-/// A row of a small panel (menuItem): at its padding, words text_in in, its
-/// ground under the pointer, concentric with the panel. `panel`: a panel's
-/// row (parts.tsx PanelRow): its icon 18 in a column 20 wide, 10 from its words, `end` an icon at its
-/// end, quiet. `note`: what it is at now (a word or two) at its end; `under`: what it is, a line under its words.
-pub fn menu_item(
-  c : @ui.Ctx,
-  label : String,
-  key? : String = "",
-  icon? : String = "",
-  mark? : (@ui.Ctx, Double) -> Unit,
-  danger? : Bool = false,
-  on? : Bool = false,
-  note? : String = "",
-  under? : String = "",
-  panel? : Bool = false,
-  end? : String = "",
-  at_top? : Bool = false,
-  at_foot? : Bool = false,
-  on_press? : () -> Unit,
-) -> Unit {
-  let t = theme()
-  let id = c.id(if key == "" { "sf-mi/" + label } else { key })
-  press_does(c, id, true, on_press)
-  let ink = if danger { t.p.red } else if on { t.p.accent_text } else { t.p.text }
-  // (a capsule in the panel's corners: past its padding to where it is concentric with them, at its sides, and at its
-  // top or foot where it is the first (`at_top`) or the last (`at_foot`) in it: menu_row_reach)
-  let reach = menu_row_reach(t.rows.pick)
-  let (over, under_by) = ends_reach(reach, at_top, at_foot)
-  // (in a large panel's column (a sheet's, a dialog's) as its rows are: its ground out across the room the panel
-  // leaves (rows_out, `panel_card_in` from its sides), its words on the panel's line, a card's corner there; a menu's
-  // row in a small panel, as above)
-  // (at a dialog's foot (dialog_foot_rows) as its rows there: a capsule out to where it is concentric with its foot
-  // corners, its words on the dialog's line: row_line)
-  let (out, words_at, corner) = if foot_rows_now.val {
-    (foot_rows_out(), foot_rows_out(), None)
-  } else if !in_small_panel() && rows_out.val > 0.0 {
-    (rows_out.val, rows_out.val, Some(card_corner))
-  } else {
-    (reach, text_in + reach, Some(small_panel_inner(r_menu)))
-  }
-  c.box(
-    dir=Row,
-    min_h=t.rows.pick,
-    mx=-out,
-    mt=over,
-    mb=under_by,
-    padx=words_at,
-    pady=menu_row_over,
-    gap=if panel { panel_row_gap } else { menu_row_gap },
-    align=ACenter,
-    bg=if c.lit(id) { t.p.hover } else { 0L },
-    style?=if corner is None { Some(menu_row_capsule) } else { None },
-    radius?=corner,
-    id~,
-    fn() {
-      let paneled = panel && (icon != "" || mark is Some(_))
-      let leads = fn() {
-        if paneled {
-          c.box(style=panel_row_icon, fn() {
-            match mark {
-              Some(m) => m(c, panel_icon)
-              None => draw_icon(c, icon, panel_icon, t.p.muted)
-            }
-          })
-          |> ignore
-        } else if icon != "" {
-          draw_icon(c, icon, menu_item_icon, if danger { t.p.red } else { t.p.muted })
-        }
-      }
-      let first = fn() {
-        c.text(
-          label,
-          size=t.t.ui,
-          weight=if on { 500 } else { 400 },
-          color=ink,
-          wrap=false,
-          w=Fill(1.0),
-          line=20.0,
-        )
-        |> ignore
-        if note != "" {
-          c.text(note, size=t.t.meta, color=t.p.muted, wrap=false) |> ignore
-        }
-        if end != "" {
-          draw_icon(c, end, panel_end_icon, t.p.subtle)
-        }
-      }
-      if under == "" {
-        leads()
-        first()
-      } else {
-        // what it is under its words, what leads it by its first line (lead_by_first_line)
-        let lead_w = if paneled { panel_icon_col } else if icon != "" { menu_item_icon } else { 0.0 }
-        lead_by_first_line(c, lead_w, if panel { panel_row_gap } else { menu_row_gap }, leads, first, fn() {
-          c.text(under, style=menu_note) |> ignore
-        })
-      }
-    },
-  )
-  |> ignore
 }
 
 ///|
@@ -901,7 +537,7 @@ pub let tip_delay_ms : Double = 400.0
 /// (Android's tooltips: @kit.tooltip). With no label, none. `key` names it where it is asked. `repeats`: it says
 /// words the control shows itself (a file's name on its card, a tab's), whole: said only while they show cut short
 /// there (@ui.Ctx::shows_cut); shown whole, a tip saying them again says nothing.
-pub fn tip(
+fn tip(
   c : @ui.Ctx,
   key : String,
   id : Int,
@@ -927,7 +563,7 @@ pub fn tip(
 /// glare of a block) but the raised grey lifted a step toward the words, a faint line round it. Its keys, where it says
 /// any, each a cap of its own after its words (key_caps), the tip then 4 over, under and after them (concentric with
 /// them, 6 round), its words 10 from its start.
-pub fn tip_look(c : @ui.Ctx, words : String, keys : String) -> Unit {
+fn tip_look(c : @ui.Ctx, words : String, keys : String) -> Unit {
   let caps = key_caps(keys)
   // (the tip: the surface of the look it comes in by: Ctx::surface)
   let tip = c.box(style=if caps.is_empty() { tip_box } else { tip_key_box }, fn() {
@@ -1035,7 +671,7 @@ pub fn panel_edge() -> Int64 {
 /// pointer's or the keyboard's ground on it; one not to be chosen now (its entry disabled: never lit) in the subtle
 /// ink (menuItem[data-disabled]). `note`: what it is, a line under its words (a pick's choice's: its icon, its name and
 /// that, as a sheet's row has them).
-pub fn menu_row(
+fn menu_row(
   c : @ui.Ctx,
   s : @kit.MenuItemState,
   icon_name : String,
@@ -1128,7 +764,7 @@ let menu_note : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Mute
 /// wide, `gap` from its words) standing by its first line's middle, not the whole's, and what is under it as far in
 /// as its first line's words (the user, 2026-10-27: 「图标不要上下居中，跟第一行居中」): every row of a menu, a pick and
 /// a sheet so made. `first`: its first line (its words, what is at their end); `under`: the lines under it.
-pub fn lead_by_first_line(
+fn lead_by_first_line(
   c : @ui.Ctx,
   lead_w : Double,
   gap : Double,
@@ -1214,7 +850,7 @@ let menu_heading_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, 
 /// menu's; a press outside closes it. `check_end`: its choices' checks are drawn at their rows' ends (`row_end`:
 /// parts.tsx ChooserItem checkEnd), no column of them before their words. `show_exit` false yields at once to a panel
 /// replacing it. `on_pick`: what choosing an entry does, given its value, as it is chosen (@kit.dropdown_menu's).
-pub fn dropdown(
+fn dropdown(
   c : @ui.Ctx,
   key : String,
   open : Bool,
@@ -1287,7 +923,7 @@ pub fn dropdown(
 /// panel's padding), so a row pointed at beside it ends where it does.
 /// Rules are for menus alone; elsewhere room, a heading or a ground groups things (the user, 2026-10-25: 「除了菜单感
 /// 觉都应该去掉」).
-pub fn menu_rule(c : @ui.Ctx) -> Unit {
+fn menu_rule(c : @ui.Ctx) -> Unit {
   c.box(style=menu_rule_at, fn() { c.box(style=rule_line.then(@ui.style(bg=Data(rule_ink(c)))), fn() {  }) |> ignore })
   |> ignore
 }
@@ -1386,46 +1022,12 @@ fn menu_set(key : String) -> Unit {
 }
 
 ///|
-/// The menu `key` going out (its exit playing), or not.
-fn menu_going_set(key : String, going : Bool) -> Unit {
-  if going {
-    menu_going.add(key)
-  } else {
-    menu_going.remove(key)
-  }
-}
-
-///|
 /// No menu open, no mark's words (as a run begins: run_begin).
 pub fn parts_reset() -> Unit {
-  submenu_hover.val = ""
-  held_felt.clear()
   presenters_reset()
   menu_set("")
-  about_open.val = ""
   menu_open_at.val = (0.0, 0.0)
   menu_going.set([])
-}
-
-///|
-/// The menu `key` closed now, by whatever closes it as it is pressed (a dismissal, its button pressed again): no longer
-/// the one open (unless another is by then), and going out from now, so what shows its button only under the pointer
-/// still builds it as its exit plays.
-fn menu_close(key : String) -> Unit {
-  if menu_open_peek() == key {
-    menu_set("")
-  }
-  menu_going_set(key, true)
-}
-
-///|
-/// The menu `key` opened, or closed where it is the one open: its button pressed.
-fn menu_flip(key : String) -> Unit {
-  if menu_open_peek() == key {
-    menu_close(key)
-  } else {
-    menu_set(key)
-  }
 }
 
 ///|
@@ -1448,99 +1050,6 @@ pub fn menu_clean_items(items : Array[MenuItem?]) -> Array[MenuItem?] {
     }
   }
   out
-}
-
-///|
-/// `items` drawn as a menu (None: a line between), open while `key` is the one open; chosen, closed and what it does
-/// done once the frame is built. Whether it is open.
-fn menu_items(
-  c : @ui.Ctx,
-  key : String,
-  trigger : Int,
-  items : Array[MenuItem?],
-  submenu? : Bool = false,
-  side? : @ui.Side = Bottom,
-  along? : @ui.Along = Start,
-  offset? : Double = 6.0,
-  at? : (Double, Double, Double, Double),
-) -> Bool {
-  let open = menu_is(key)
-  let items = menu_clean_items(items)
-  let entries : Array[@kit.Entry] = []
-  let icons : Map[String, String] = Map([])
-  let danger : Array[String] = []
-  let further : Array[String] = []
-  for i, x in items {
-    match x {
-      None => entries.push(@kit.menu_separator())
-      Some(item) => {
-        let v = i.to_string()
-        entries.push(
-          if item.heading { @kit.menu_label(item.label) } else { match item.chosen {
-            Some(on) => @kit.menu_radio(v, on, label=item.label, disabled=item.disabled)
-            None => @kit.menu_item(v, label=item.label, disabled=item.disabled)
-          } },
-        )
-        if item.icon != "" {
-          icons[v] = item.icon
-        }
-        if item.danger {
-          danger.push(v)
-        }
-        if item.further {
-          further.push(v)
-        }
-      }
-    }
-  }
-  // (one that asks more first: its chevron at its end)
-  let row_end = if further.is_empty() {
-    None
-  } else {
-    Some(fn(c : @ui.Ctx, s : @kit.MenuItemState) {
-      if further.contains(s.entry.value) {
-        draw_icon(c, "chevron-right", panel_end_icon, theme().p.subtle)
-      }
-    })
-  }
-  // (dismissed, closed at the moment of what dismissed it: Escape, a press beside it)
-  let menu : Ref[@kit.Menu?] = Ref(None)
-  // (an item chosen: the menu closed and what it does done, as it is chosen)
-  let picked = fn(v : String) {
-    menu_set("")
-    match items.get(entry_index(v)) {
-      Some(Some(item)) => (item.select)()
-      _ => ()
-    }
-  }
-  c.with_dismissed(fn(_) { menu_close(key) }, fn() {
-    menu.val = Some(dropdown(c, key, open, trigger, entries, icons, menu_w, submenu~, side~, along~, offset~, at?, row_end?, danger~, on_pick=picked))
-  })
-  let m = menu.val.unwrap()
-  // (a submenu's Left, its own back, is a key taken as it is built)
-  if submenu && open && !m.open && menu_open_peek() == key {
-    menu_set("")
-  }
-  menu_going_set(key, m.shown && !m.open)
-  m.open
-}
-
-///|
-/// The index an entry's value says (menu_items, the presenters' menus: an item's place among the items, in digits).
-fn entry_index(v : String) -> Int {
-  v.iter().fold(init=0, fn(n, ch) { n * 10 + (ch.to_int() - 48) })
-}
-
-///|
-/// A menu behind ⋯ (parts.tsx Menu): an icon button (`label`, the app's word for 更多; shaped as a bar's tools are:
-/// tool_button) that opens `items` under it, along its end, 4 below. Whether it is open.
-pub fn menu_of(c : @ui.Ctx, key : String, items : Array[MenuItem?], label~ : String, size? : Double = 32.0) -> Bool {
-  let open = menu_is(key)
-  let id = c.id(key + "/more")
-  icon_button(c, "more", key=key + "/more", size~, on=open, round=true, linked?=bar_keys_link(), label~) |> ignore
-  // (pressed as it is let go: open or not as it is then)
-  c.on_press(id, fn() { menu_flip(key) })
-  menu_items(c, key, id, items, along=End, offset=4.0)
 }
 
 ///|
@@ -1592,61 +1101,7 @@ pub let menu_w : Double = 180.0
 pub let chooser_menu_w : Double = 220.0
 
 ///|
-/// What a thing is, said when the pointer rests on a quiet mark beside it (parts.tsx About, own.css.ts about: a 20
-/// circle, its ⓘ 14 in the subtle ink, the words' under the pointer; what it says in a tip under it, or on `side`); to
-/// a finger, which rests on nothing, once it is tapped, until a tap anywhere. `label`: what a screen reader calls the
-/// mark (the app's word for 关于).
-pub fn about(c : @ui.Ctx, key : String, words : String, label~ : String, side? : @ui.Side = Bottom) -> Unit {
-  let t = theme()
-  let id = c.id(key)
-  let finger = @ui.pointing() is Finger
-  if finger {
-    c.on_press(id, fn() { about_open.val = if about_open.val == key { "" } else { key } })
-  }
-  // (a tap elsewhere lets it go: its own is its press's, as its tip sees it, Ctx::watch_press)
-  if about_open.val == key && c.tapped_anywhere() is Some(_) && !c.watch_press(id) {
-    about_open.val = ""
-  }
-  let b = c.box(style=about_box, id~, fn() {
-    icon(c, "info", size=about_icon, color=if c.lit(id) { t.p.text } else { t.p.subtle }) |> ignore
-  })
-  c.semantics(b, Button, id~, label~)
-  tip(c, key + "/tip", id, words, side~, shown=finger && about_open.val == key)
-}
-
-///|
-/// The mark a finger tapped open (`about`'s key), "" none.
-// kept across runs: put back by parts_reset, as a run begins (run_begin)
-let about_open : Ref[String] = Ref("")
-
-///|
 let about_icon : Double = 14.0
-
-///|
-// kept across runs: a value (no field of it changes)
-let about_box : @ui.Style = @ui.css("w=S5 h=S5 radius=Full align=ACenter justify=JCenter")
-
-// ---------------------------------------------------------------------------
-// Switches, sections, pills, dots, the empty and the first one (parts.tsx Switch, SwitchRow, Section, Pill,
-// StatusDot, Empty, FirstOne; parts.css.ts, own.css.ts)
-
-///|
-/// A switch's look (parts.css.ts switch_, switchThumb): 36 by 22, its thumb 18 white 2 in with a faint shadow, the
-/// strong line's grey off, the accent on, the thumb sliding between; `small` (switchSmall: in a line of small text) 26
-/// by 16, its thumb 12.
-fn switch_look_for(small : Bool) -> (@ui.Ctx, @kit.SwitchState) -> Unit {
-  let t = theme()
-  let (w, h) = switch_size(small)
-  @kit.switch_look_of(
-    w~,
-    h~,
-    inset=switch_in,
-    on_color=t.p.accent,
-    off_color=t.p.line_strong,
-    knob=0xFFFFFFFFL,
-    lens=glass_knob(),
-  )
-}
 
 ///|
 /// A switch's size by the screen, the theme's rows' (Rows: a finger's 44 by 26 with touch, the web's 36 by 22 on
@@ -1661,116 +1116,6 @@ fn switch_size(small : Bool) -> (Double, Double) {
 }
 
 ///|
-/// A switch (parts.tsx Switch: mbui's, @kit.switch: a tap, Space or Enter turn it), `on` or not, named `label` for a
-/// screen reader, in the web's look (switch_look_for). `busy`: what it set is on its way, a small ring before it, and it
-/// is not turned again meanwhile. What it is now (the other, turned this frame).
-pub fn switch(
-  c : @ui.Ctx,
-  key : String,
-  on : Bool,
-  label? : String = "",
-  disabled? : Bool = false,
-  small? : Bool = false,
-  busy? : Bool = false,
-  on_change? : (Bool) -> Unit,
-) -> Bool {
-  if busy {
-    spinner(c, size=if small { spinner_inline } else { spinner_size }) |> ignore
-  }
-  // its own height wherever it is (in a row, in its middle: switchSmall's alignSelf), not stretched
-  let mut now = on
-  let b = c.box(style=switch_at, fn() {
-    let look = switch_look_for(small)
-    // (pressed within a finger's least round it, however small it is drawn: the room it takes is its press's)
-    let reach = fn(c : @ui.Ctx, st : @kit.SwitchState) {
-      c.box(style=switch_reach.then(@ui.style(min_h=Fixed(theme().items.least))), fn() { look(c, st) }) |> ignore
-    }
-    now = @kit.switch(c, key, on, label~, disabled=disabled || busy, look=reach, on_change?).value
-  })
-  // (in a page's bones, one piece: on or off is not known yet)
-  c.bone_whole(b)
-  now
-}
-
-///|
-// kept across runs: a value (no field of it changes)
-let switch_at : @ui.Style = @ui.css("justify=JCenter align=AStart")
-
-///|
-/// A switch's press round it: its look in the middle of it, up and down.
-// kept across runs: a value (no field of it changes)
-let switch_reach : @ui.Style = @ui.css("justify=JCenter")
-
-
-///|
-/// A setting's row (parts.tsx SwitchRow, switchRow): what it is on the left, `note` quieter under it, its switch on the
-/// right, 16 apart; its words press the switch too. What it is now. (A page's switch_row, wide: page.mbt.)
-fn wide_switch_row(
-  c : @ui.Ctx,
-  key : String,
-  title : String,
-  on : Bool,
-  note? : String = "",
-  disabled? : Bool = false,
-  busy? : Bool = false,
-  title_style? : @ui.TextStyle = theme().rows.title,
-  note_style? : @ui.TextStyle = theme().rows.note,
-  lead? : (@ui.Ctx) -> Unit,
-  on_change? : (Bool) -> Unit,
-) -> Bool {
-  let mut now = on
-  // (the switch alone answers, not its words: 2026-10-27 用户「只有开关响应」)
-  control_row(c, title, fn() { now = switch(c, key, on, label=title, disabled~, busy~, on_change?) }, note~, title_style~, note_style~, lead?)
-  now
-}
-
-///|
-/// A row's title, with `lead` before it on its line where given (a workspace's mark: workspace_badge), 6 apart.
-fn led_title(c : @ui.Ctx, title : String, style : @ui.TextStyle, lead : ((@ui.Ctx) -> Unit)?) -> Unit {
-  match lead {
-    Some(draw) =>
-      c.box(style=led_title_line, fn() {
-        draw(c)
-        c.text(title, style~) |> ignore
-      })
-      |> ignore
-    None => c.text(title, style~) |> ignore
-  }
-}
-
-///|
-// kept across runs: a value (no field of it changes)
-let led_title_line : @ui.Style = @ui.css("row gap=S1_5 align=ACenter")
-
-///|
-/// A row of a setting (a switch's, a choice's: switch_row, setting): its title with its note under it at its start,
-/// taking what the control leaves, `control` at its end across their middle, 16 apart; its words pressed where
-/// `words_id` is given (a switch's: they turn it).
-fn control_row(
-  c : @ui.Ctx,
-  title : String,
-  control : () -> Unit,
-  note? : String = "",
-  title_style? : @ui.TextStyle = theme().rows.title,
-  note_style? : @ui.TextStyle = theme().rows.note,
-  words_id? : Int = 0,
-  lead? : (@ui.Ctx) -> Unit,
-) -> Unit {
-  c.box(style=switch_row_box, fn() {
-    c.box(style=switch_row_words, id=words_id, fn() {
-      led_title(c, title, title_style, lead)
-      if note != "" {
-        c.text(note, style=note_style) |> ignore
-      }
-    })
-    |> ignore
-    control()
-  })
-  |> ignore
-}
-
-
-///|
 /// A tick row's room (check_row): 12 by 10 in, its box 12 before its words, a row's corner, the hover grey under the
 /// hand; as high at least, its words and its box as the theme's rows (Rows). Its box stands clear of the row's corners,
 /// as far in from its start as the row is round: in the row's middle, as high as both its corners reach, no box of a
@@ -1783,58 +1128,10 @@ let check_row_box : @ui.Style = @ui.css("row w=Full px=S3 py=S2_5 gap=S3 align=A
 
 ///|
 // kept across runs: a value (no field of it changes)
-let switch_row_box : @ui.Style = @ui.css("row w=Full align=ACenter gap=S4")
-
-///|
-// kept across runs: a value (no field of it changes)
 let switch_row_words : @ui.Style = @ui.css("w=Grow(1.0) gap=S0_5")
 
 ///|
-/// A titled block of a page (parts.tsx Section, page.css.ts section, parts.css.ts sectionHead): its title (14 on 22,
-/// 600) and `note` under it (12, muted, 3 under, 52em at most), its `actions` at the head's end on the title's centre
-/// line, 10 over what it holds; 28 under it all. (A page's section, wide: page.mbt.)
-fn wide_section(
-  c : @ui.Ctx,
-  title : String,
-  body : () -> Unit,
-  note? : String = "",
-  actions? : () -> Unit,
-  title_after? : () -> Unit,
-) -> Unit {
-  c.box(style=section_box, fn() {
-    c.box(style=section_head.then(section_head_in_pane()), fn() {
-      c.box(style=section_words, fn() {
-        // what the title holds after its words (its title a node: a count, a mark), 8 after them in a line
-        match title_after {
-          Some(f) =>
-            c.box(style=section_title_line, fn() {
-              c.text(title, style=section_title) |> ignore
-              f()
-            })
-            |> ignore
-          None => c.text(title, style=section_title) |> ignore
-        }
-        if note != "" {
-          c.box(style=section_note_box, pt=section_note_gap, fn() { c.text(note, style=section_note) |> ignore })
-          |> ignore
-        }
-      })
-      |> ignore
-      match actions {
-        Some(f) => c.box(style=section_actions, f) |> ignore
-        None => ()
-      }
-    })
-    |> ignore
-    in_section.val += 1
-    body()
-    in_section.val -= 1
-  })
-  |> ignore
-}
-
-///|
-/// How many wide sections what is drawn is in (wide_section): a page's part in none stands as one of them does
+/// How many wide sections what is drawn is in: a page's part in none stands as one of them does
 /// (wide_alone).
 // kept across runs: counted up and down round a section's body (0 between them)
 let in_section : Ref[Int] = Ref(0)
@@ -1856,52 +1153,11 @@ let section_box : @ui.Style = @ui.css("w=Full mb=S7")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let section_head : @ui.Style = @ui.css("row w=Full justify=JBetween align=ACenter gap=S3").then(
-  @ui.style(mb=room(title_card_wide)),
-)
-
-///|
-/// A section's head in a panel of its own (the tape's): its words on the panel's words' line, its cards' 16 and the
-/// rest in (the user, 2026-11-03: 面板自己的字在 24); none elsewhere.
-fn section_head_in_pane() -> @ui.Style {
-  if in_pane() {
-    section_head_pane
-  } else {
-    no_section_head
-  }
-}
-
-///|
-// kept across runs: a value (no field of it changes)
-let section_head_pane : @ui.Style = @ui.style(px=room(panel_words - panel_card_in))
-
-///|
-// kept across runs: a value (no field of it changes)
-let no_section_head : @ui.Style = @ui.css("")
-
-///|
-// kept across runs: a value (no field of it changes)
-let section_words : @ui.Style = @ui.css("w=Grow(1.0)")
-
-///|
-// kept across runs: a value (no field of it changes)
-let section_title_line : @ui.Style = @ui.css("row gap=S2 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
 let section_title : @ui.TextStyle = @ui.text_style(size=Body, leading=L7, weight=Semibold, color=Fg)
 
 ///|
 // kept across runs: a value (no field of it changes)
 let section_note : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted)
-
-///|
-// kept across runs: a value (no field of it changes)
-let section_note_box : @ui.Style = @ui.style(max_w=section_note_most)
-
-///|
-// kept across runs: a value (no field of it changes)
-let section_actions : @ui.Style = @ui.css("row gap=S2 align=ACenter")
 
 ///|
 /// A pill's tone (parts.tsx Tone): its ground and its words' ink.
@@ -1913,32 +1169,6 @@ pub(all) enum PillTone {
   Amber
   Red
   Accented
-}
-
-///|
-/// A status pill (parts.tsx Pill, parts.css.ts pill): words 12, 500, on one line, 22 high, 9 in, 4px rounded tag
-/// (Radius::Base) keeping full capsules for clickable controls; on the quiet grey in the muted ink, or in a tone
-/// (its pale ground, its ink). `icon`: what leads it, 14, in its ink (a status's check or wait: ui.tsx StatusText),
-/// 4 before its words.
-pub fn pill(c : @ui.Ctx, words : String, tone? : PillTone = Neutral, icon? : String = "") -> Unit {
-  let p = theme().p
-  let (ground, ink) = match tone {
-    Neutral => (p.neutral_bg, p.muted)
-    Green => (p.green_bg, p.green_ink)
-    Blue => (p.blue_bg, p.blue)
-    Amber => (p.amber_bg, p.warn_ink)
-    Red => (p.red_bg, p.red)
-    Accented => (p.accent_bg, p.accent_text)
-  }
-  let b = c.box(style=pill_box, padx=pill_in, bg=ground, fn() {
-    if icon != "" {
-      draw_icon(c, icon, pill_icon, ink)
-    }
-    if words != "" {
-      c.text(words, style=pill_words, color=ink, allow_ellipsis=true) |> ignore
-    }
-  })
-  c.bone_whole(b)
 }
 
 ///|
@@ -1982,33 +1212,7 @@ let verify_words : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, color=Pos
 
 ///|
 // kept across runs: a value (no field of it changes)
-let pill_box : @ui.Style = @ui.style(row=true, h=Fixed(pill_h), gap=S1, radius=Base, align=ACenter)
-
-///|
-// kept across runs: a value (no field of it changes)
 let pill_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, weight=Medium, wrap=false)
-
-///|
-/// How something stands, at a glance (parts.tsx StatusDot, parts.css.ts statusDot): a dot 7 round, online the online
-/// green, busy amber, error red, waiting (coming back) the muted ink, else (offline) a ring 1.5 in it. `state`:
-/// "online", "busy", "error", "waiting", or anything else for offline (the web's Presence).
-pub fn status_dot(c : @ui.Ctx, state : String) -> Unit {
-  let p = theme().p
-  let (ground, ring) = match state {
-    "online" => (p.online, no_ground)
-    "busy" => (p.warn_ink, no_ground)
-    "error" => (p.red, no_ground)
-    // coming back: a grey dot, filled (a ring is away)
-    "waiting" => (p.muted, no_ground)
-    _ => (no_ground, p.muted)
-  }
-  c.box(style=status_dot_box, bg=ground, border=if ring == no_ground { no_ring } else { status_ring }, border_color=ring, fn() {  })
-  |> ignore
-}
-
-///|
-// kept across runs: a value (no field of it changes)
-let status_dot_box : @ui.Style = @ui.style(w=dot_size, h=dot_size, radius=Full)
 
 ///|
 /// Nothing here (parts.tsx Empty, parts.css.ts empty): what `body` says in the middle of the room it has, 40 in, its
@@ -2032,35 +1236,6 @@ pub fn empty_node(parent : @view.View, body : (@view.View) -> Unit, loc~ : Sourc
 ///|
 // kept across runs: a value (no field of it changes)
 let empty_box : @ui.Style = @ui.css("w=Full h=Grow(1.0) p=S10 gap=S1_5 align=ACenter justify=JCenter")
-
-///|
-/// The first one to make (parts.tsx FirstOne, own.css.ts firstOne): a list with nothing in it yet, or a page whose first
-/// step is still to take. Its scene (`art`), what that first one is (16, 600, 12 under the scene), a line about it (13,
-/// muted, 34em at most), and the one thing to do (12 under it, its buttons 8 apart, centred); 480 at most, in the
-/// middle, 24 over and under.
-pub fn first_one(
-  c : @ui.Ctx,
-  title : String,
-  actions : () -> Unit,
-  art? : () -> Unit,
-  lead? : String = "",
-) -> Unit {
-  c.box(style=first_room, fn() {
-    c.box(style=first_box, fn() {
-      match art {
-        Some(f) => f()
-        None => ()
-      }
-      c.box(style=first_title_at, fn() { c.text(title, style=first_title) |> ignore }) |> ignore
-      if lead != "" {
-        c.box(style=first_lead_box, fn() { c.text(lead, style=first_lead) |> ignore }) |> ignore
-      }
-      c.box(style=first_actions, actions) |> ignore
-    })
-    |> ignore
-  })
-  |> ignore
-}
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -2094,182 +1269,8 @@ let first_actions : @ui.Style = @ui.css("row w=Full gap=S2 align=ACenter justify
 // Dialogs (parts.tsx Dialog; parts.css.ts dialog, dialogHead, dialogLead, dialogBody, dialogFoot, overlay)
 
 ///|
-/// A dialog (parts.tsx Dialog: mbui's, @kit.dialog: the page under it dimmed and taking no press, the focus kept in
-/// it, Escape, the back and a press outside closing it) in the web's look: `w` wide (520; `wide` 640), 32 short of the
-/// window at most; its corner 42 (its padding 24 and a pill's half height, so a pill in its corner and the close
-/// button follow its edge: DIALOG_PAD), a small panel's ground and line, a deep shadow. Its title (22, 600) 25 under
-/// its top beside the close button (round, 32: `close_label`, none when ""), `description` 6 under it (13, muted),
-/// what `body` holds 18 under that (its parts 16 apart; none of that room where it holds nothing), and `footer`'s
-/// buttons at its end 24 under it, 8 apart; what it holds `column_in` in from its padding (a panel's dialog's: on its
-/// words' line, panel_centred). `bare`: what it holds has its head and its buttons of its own (a step of a panel that
-/// goes in steps, each sliding in whole: panel_centred), untitled, none of the room round a body (its close button in
-/// its corner, over it: untitled_clear). An Escape `on_escape` says it took is a step back within it, not closing it.
-/// `scrim`: what the page under it is dimmed with (the theme's where not said; none, 0, where what is under it is
-/// dimmed already: presenters' scrim_owner); `veil`: how far another over it dims it over itself (0 … 1, read as it is
-/// drawn: dialog_veil).
-/// Whether it is open now; `on_close`: what its close button does, as it is pressed (its owner's open let go).
-pub fn dialog(
-  c : @ui.Ctx,
-  key : String,
-  open : Bool,
-  title : String,
-  body : () -> Unit,
-  description? : String = "",
-  footer? : () -> Unit,
-  wide? : Bool = false,
-  w? : Double,
-  close_label? : String = "",
-  step? : String = "",
-  column_in? : Double = 0.0,
-  bare? : Bool = false,
-  on_escape? : () -> Bool,
-  scrim? : Int64,
-  veil? : @motion.Anim,
-  on_close? : () -> Unit = fn() {  },
-) -> Bool {
-  let w = w.unwrap_or(if wide { dialog_wide_w } else { dialog_w })
-  let d = @kit.dialog(
-    c,
-    key,
-    open,
-    title,
-    description~,
-    w=dmin(w, room_across(c) - dialog_margin),
-    close_label="",
-    on_escape?,
-    scrim?,
-    look=fn(c, s, inner) {
-      // (the dialog: the surface of the look it comes in by, coming first, all on it after: Ctx::surface)
-      let panel = c.box(
-        style=dialog_box,
-        id=c.id(key + "/frame"),
-        w=Px(s.w),
-        max_h=c.height - @ui.system_bars().top - @ui.system_bars().bottom - dialog_room,
-        radius=dialog_r,
-        bg=panel_ground(),
-        shadow=dialog_shadow,
-        shadow_y=dialog_shadow_y,
-        shadow_color=theme().p.shadow,
-        fn() {
-        // (its title and what it says on the line of its words: a panel's dialog's are a row's padding in, words_in_now)
-        let words_at = @ui.style(pl=room(words_in_now.val))
-        // untitled (what it holds has a head of its own: a chat's sheet, an agent's card): no row of its own, its close
-        // button in its top right corner, concentric with it, over what it holds (which keeps clear of it:
-        // untitled_clear)
-        let untitled = s.title == "" && step == ""
-        if !untitled {
-        c.box(style=dialog_head.then(words_at), fn() {
-          // a step's count beside the title (8 after it)
-          if step != "" {
-            c.box(style=dialog_title_line, fn() {
-              c.text(s.title, style=dialog_title_one) |> ignore
-              c.text(step, style=dialog_step) |> ignore
-            })
-            |> ignore
-          } else {
-            c.text(s.title, style=dialog_title) |> ignore
-          }
-          if close_label != "" {
-            c.box(style=dialog_close_at(), fn() {
-              icon_button(c, "close", key=key + "/close", size=dialog_close, round=true, label=close_label, on_press=on_close) |> ignore
-            })
-            |> ignore
-          }
-        })
-        |> ignore
-        }
-        if s.description != "" {
-          c.box(style=dialog_lead_at.then(words_at), fn() { c.text(s.description, style=dialog_lead) |> ignore }) |> ignore
-        }
-        // what it holds scrolls in itself when the dialog would be taller than the window leaves it (dialogBody's
-        // overflow: auto, its minimum 0): its title and its buttons stay. Out to the dialog's sides, what it holds back
-        // on its words' line, and with no buttons down to its foot, 24 under what it holds: what reaches out to its
-        // corners on purpose (dialog_rows, dialog_foot_rows) is not cut short of them.
-        c.capped(key + "/body", c.height, shrinks=true, mx=-dialog_pad, padx=dialog_pad, fn() {
-          // (holding nothing this time, none of its room: its title and what it says straight over its buttons)
-          // (what it holds `column_in` in from its padding: a panel's dialog's, on its words' line)
-          let column = @ui.style(px=room(column_in))
-          // (untitled: from its padding's top, its head its own)
-          let top = if untitled { dialog_untitled_top() } else { no_style }
-          let held = if bare { full_width } else if footer is None { dialog_body_end } else { dialog_body }
-          c.box(style=held.then(column).then(top), id=c.id(key + "/held"), gone_empty=true, fn() {
-            // (its rows told they are in a dialog: dialog_rows; untitled, its close button over its corner)
-            let (was, clear_was) = (in_dialog.val, untitled_clear_now.val)
-            in_dialog.val = true
-            untitled_clear_now.val = if untitled && close_label != "" { dialog_close_clear() } else { 0.0 }
-            inner()
-            in_dialog.val = was
-            untitled_clear_now.val = clear_was
-          })
-          |> ignore
-        })
-        |> ignore
-        match footer {
-          Some(f) => c.box(style=dialog_foot.then(dialog_corner_foot(dialog_pad)), f) |> ignore
-          None => ()
-        }
-        // (laid over what it holds, after it: over a step sliding in or away (a bare one's, its own layers) too)
-        if untitled && close_label != "" {
-          c.layer(fn() {
-            c.box(style=dialog_close_row, fn() {
-              c.box(style=dialog_close_corner(), fn() {
-                icon_button(c, "close", key=key + "/close", size=dialog_close, round=true, label=close_label, on_press=on_close) |> ignore
-              })
-              |> ignore
-            })
-            |> ignore
-          })
-          |> ignore
-        }
-        match veil {
-          Some(v) => dialog_veil(c, v)
-          None => ()
-        }
-        },
-      )
-      c.surface(panel)
-    },
-    body,
-  )
-  d.value
-}
-
-///|
-/// A dialog dimmed over all of itself `f` of the way (0 … 1) as the window under it is (the theme's scrim), another over
-/// it (it takes nothing then): over what it holds, its corners its own; nothing where `f` is not going from 0. Dimmed
-/// as it is drawn (Ctx::bg_by), not built again as it goes; built while it dims or comes back, till its declared end.
-fn dialog_veil(c : @ui.Ctx, f : @motion.Anim) -> Unit {
-  if f.target() <= 0.0 && f.over(c) {
-    return
-  }
-  let scrim = c.theme().scrim
-  c.layer(fn() {
-    let v = c.box(style=dialog_veil_at, fn() {  })
-    c.bg_by(v, fn() { @ui.alpha(scrim, dmax(0.0, f.get(c))) })
-  })
-  |> ignore
-}
-
-///|
-// kept across runs: a value (no field of it changes)
-let dialog_veil_at : @ui.Style = @ui.css("w=Full h=Full").then(@ui.style(radius=rounded(dialog_r)))
-
-///|
 /// What the window keeps round a dialog up and down (parts.css.ts dialog: at most 100dvh - 48 tall).
 let dialog_room : Double = 48.0
-
-///|
-/// How wide the room the system's bars leave across the window is (over_room's, for the old frame's dialogs).
-fn room_across(c : @ui.Ctx) -> Double {
-  let bars = @ui.system_bars()
-  dmax(0.0, c.window_size().0 - bars.left - bars.right)
-}
-
-///|
-/// A dialog's frame: 24 in at its sides and over its title, a line round it (its corner, ground and shadow: dialog_r,
-/// panel_ground, dialog_shadow).
-// kept across runs: a value (no field of it changes)
-let dialog_box : @ui.Style = @ui.css("px=S6 pt=S6 border=B1 border_color=Line")
 
 ///|
 /// Its title's row (dialogHead: 25 under the top, 26 from the right): the close button at its end, its middle on the
@@ -2371,12 +1372,6 @@ let dialog_foot : @ui.Style = @ui.css("row w=Full justify=JEnd align=ACenter gap
 let dialog_pad : Double = 24.0
 
 ///|
-/// Whether a dialog's body is being drawn (dialog), what its rows reach out by (dialog_rows).
-// kept across runs: said by dialog round the body it draws, false between
-let in_dialog : Ref[Bool] = { val: false }
-
-
-///|
 // kept across runs: a value (no field of it changes)
 let no_style : @ui.Style = @ui.css("")
 
@@ -2417,128 +1412,10 @@ let field_error : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Da
 let field_hint : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted)
 
 ///|
-/// A line to type in (controls.css.ts input, a one-line one: a pill as the buttons beside it are, 36 high at least,
-/// 16 in, a hairline of the line, the border's pointed at or written in (control_edge), on the canvas, its words 14, the
-/// placeholder subtle): mbui's field (@kit.text_field), its editor `key`'s; `field`: what it holds, the view's own;
-/// `small`: 34 high (a small panel's, as its rows: input_box_small); `high`: as high as what is pressed beside it in
-/// its row, where that is not a field's height (a browser's round ← → ⟳ beside its address); `solid`: on a card's ground in a chat (field_solid);
-/// `shorter`: other ways to say the placeholder where the field has less room (Ctx::editor's); `leaves`: the keys it
-/// leaves to a menu it offers as it is typed in (text_field's); `on_submit`: what Enter giving its words up does, given
-/// them, as the key is taken (text_field's); `on_change`: what typing in it does, given its words, as they are typed.
-/// What is in it now, and whether Enter was pressed in it.
-pub fn input(
-  c : @ui.Ctx,
-  key : String,
-  placeholder? : String = "",
-  shorter? : Array[String] = [],
-  secret? : Bool = false,
-  disabled? : Bool = false,
-  small? : Bool = false,
-  high? : Double,
-  solid? : Bool = false,
-  leaves? : Array[Int] = [],
-  field? : @ui.Field,
-  on_submit? : (String) -> Unit,
-  on_change? : (String) -> Unit,
-) -> @kit.Field {
-  // (its words the body's, as tall as the theme's controls: the web's with keyboard and mouse, a finger's with touch)
-  let t = theme()
-  @kit.text_field(c, key, placeholder~, shorter~, secret~, disabled~, size=t.t.body, line=t.t.body_line, leaves~, field?, on_submit?, on_change?, look=fn(c, s, editor) {
-    let hot = s.hovered || s.focused
-    let look = match (small, hot) {
-      (false, false) => input_box.then(control_height()).then(field_corner())
-      (false, true) => input_box_hot.then(control_height()).then(field_corner())
-      (true, false) => input_box_small
-      (true, true) => input_box_small_hot
-    }
-    let look = match high {
-      Some(h) => look.then(@ui.style(h=Fixed(h)))
-      None => look
-    }
-    let look = if card_foot_words_now.val { look.then(@ui.style(px=room(card_foot_words_in(button_height())))) } else { look }
-    c.box(
-      id=s.id,
-      style=if solid {
-        look.then(if hot { field_solid_hot } else { field_solid })
-      } else {
-        look
-      },
-      editor,
-    )
-    |> ignore
-  })
-}
-
-///|
-/// As tall as the theme's controls at least (Theme::control_h: a field's, a select's).
-fn control_height() -> @ui.Style {
-  @ui.style(min_h=Fixed(theme().control_h))
-}
-
-///|
 /// A field's corner, one for all of them: half its controls' height (Theme::control_h), so a one-line field is a
 /// capsule and lines to type in (textarea) are one grown taller, its corners its ends'.
 pub fn field_round() -> Double {
   theme().control_h / 2.0
-}
-
-///|
-/// A field's corner as a style (field_round).
-fn field_corner() -> @ui.Style {
-  @ui.style(radius=rounded(field_round()))
-}
-
-///|
-/// Lines to type in (controls.css.ts input as a textarea): a one-line field grown taller, round as its ends are
-/// (field_round, not the web's --r-field: its first line clears that round), its words as far in as its (16) and 8
-/// under its top; a hairline of the line, the border's pointed at or written in (control_edge), on the canvas; its words 14
-/// on lines 1.6 of them, at least
-/// `rows` lines high and growing to `most`; `field`: what it holds, the view's own; `corner`, the ladder's where it
-/// stands (first in a card, on its words' inset in its corners: the small block's 10); `solid`: on a card's ground in a
-/// chat (field_solid); `on_change`: what typing in it does, given its words, as they are typed (Ctx::editor's). What
-/// is in it now.
-pub fn textarea(
-  c : @ui.Ctx,
-  key : String,
-  rows? : Int = 3,
-  most? : Int = 16,
-  placeholder? : String = "",
-  field? : @ui.Field,
-  corner? : Double,
-  solid? : Bool = false,
-  on_change? : (String) -> Unit,
-) -> String {
-  let t = theme()
-  let box_id = c.id(key + "/frame")
-  let hot = c.lit(box_id) || c.has_focus(c.id(key))
-  let mut words = ""
-  let tall = match corner {
-    Some(k) => @ui.style(min_h=Fixed(rows.to_double() * textarea_line + textarea_in), radius=rounded(k))
-    // (a field's corner, as a one-line field's ends: field_round)
-    None => field_corner().then(@ui.style(min_h=Fixed(rows.to_double() * textarea_line + textarea_in)))
-  }
-  let look = if hot { textarea_box_hot } else { textarea_box }
-  let look = if card_foot_words_now.val { look.then(@ui.style(px=room(card_foot_words_in(button_height())))) } else { look }
-  let look = if solid { look.then(if hot { field_solid_hot } else { field_solid }) } else { look }
-  c.box(id=box_id, style=look.then(tall), fn() {
-    words = c.editor(
-      key,
-      field?,
-      placeholder~,
-      font_size=input_size,
-      min_lines=rows,
-      max_lines=most,
-      plain=true,
-      line=textarea_line,
-      color=t.p.text,
-      placeholder_color=t.p.subtle,
-      caret_color=t.p.accent,
-      enter_sends=false,
-      on_change?,
-    ).text
-  })
-  |> ignore
-  words
 }
 
 ///|
@@ -2550,50 +1427,8 @@ let textarea_line : Double = 22.4
 let textarea_in : Double = 16.0
 
 ///|
-// kept across runs: a value (no field of it changes)
-let textarea_box : @ui.Style = @ui.css("w=Full px=S4 py=S2 bg=Surface border=B0_5 border_color=Line")
-
-///|
-// kept across runs: a value (no field of it changes)
-let textarea_box_hot : @ui.Style = textarea_box.then(@ui.css("border_color=Border"))
-
-///|
 /// What is typed in: as what is read (global.css.ts --text-input), on the line of a list's words.
 let input_size : Double = 14.0
-
-///|
-// kept across runs: a value (no field of it changes)
-let input_box : @ui.Style = @ui.css((
-  #|row w=Full px=S4 py=S1_5 radius=Full bg=Surface border=B0_5 border_color=Line align=ACenter
-  #|disabled{opacity=O55}
-))
-
-///|
-/// Pointed at or written in: its hairline in the border (control_edge).
-// kept across runs: a value (no field of it changes)
-let input_box_hot : @ui.Style = input_box.then(@ui.css("border_color=Border"))
-
-///|
-/// A field on a card's ground in a chat (a key typed in for an agent's request, as a login's code is: sfpages
-/// login_card.mbt lc_paste; MachineLogins.css.ts cardPaste, controls.css.ts inputSolid): solid, the page's own ground,
-/// no line of its own; pointed at or written in, the border's hairline round it as any field's (`_hot`).
-// kept across runs: a value (no field of it changes)
-let field_solid : @ui.Style = @ui.css("bg=Bg border_color=Bg")
-
-///|
-// kept across runs: a value (no field of it changes)
-let field_solid_hot : @ui.Style = @ui.css("bg=Bg")
-
-///|
-/// `small`: a small panel's (its search), as high as its rows (menu_row_min), so a capsule its padding in from its
-/// corner, concentric with it (@ui.capsule_in(r_menu, 34) = panel_pad), as its rows are; its words' line (the body's 22, not
-/// a row's 20: menu_row_over would make it 36) in its middle.
-// kept across runs: a value (no field of it changes)
-let input_box_small : @ui.Style = input_box.then(@ui.style(h=Fixed(menu_row_min)))
-
-///|
-// kept across runs: a value (no field of it changes)
-let input_box_small_hot : @ui.Style = input_box_small.then(@ui.css("border_color=Border"))
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -2720,41 +1555,6 @@ pub(all) enum PanelTone {
   Quiet
   Filled
 }
-
-///|
-/// Words to press in a small panel (PanelButton): a small pill, 24 high, 10 in, its words 12 and 500; a ground only
-/// while pointed at (`Filled`: the accent's pale ground always, the accent at 20% pointed at: the web's 22%, the scale's
-/// nearest). `on_press`: what pressing it does, as it is let go (press_does).
-pub fn panel_button(
-  c : @ui.Ctx,
-  key : String,
-  words : String,
-  tone? : PanelTone = Plainly,
-  disabled? : Bool = false,
-  on_press? : () -> Unit,
-) -> Unit {
-  let id = c.id(key)
-  press_does(c, id, !disabled, on_press)
-  let hot = !disabled && c.lit(id)
-  let mut words_at = -1
-  let b = c.box(
-    style=if tone == Filled { panel_button_filled } else { panel_button_box },
-    disabled~,
-    id=if disabled { 0 } else { id },
-    fn() {
-      words_at = c.text(words, style=match tone {
-        Accent | Filled => panel_button_accent
-        Quiet => if hot { panel_button_words } else { panel_button_quiet }
-        Plainly => panel_button_words
-      })
-    },
-  )
-  // (its words changed, 复制链接 to 已复制: to its new width as a button does)
-  @motion.reshape(c, b, "sf-pbtn/shape/" + key, by=words, spec=button_reshape)
-  @motion.layout(c, words_at, "sf-pbtn/words/" + key, by=words, spec=button_reshape)
-  c.semantics(b, Button, id~, label=words, disabled~)
-}
-
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -3045,19 +1845,6 @@ fn options_most(options : Array[(String, String, Bool)], ot : OptionType, wide :
 let options_card_radius : Double = list_card_corner
 
 ///|
-/// One line asked of the viewer on an option's ground (what the chat needs, at its end, with 忽略): one row laid as an
-/// option's, alone (pad_in in on every side, its corner an option row's, so its words sit as far in from every side
-/// and its corner's concentric with them), on the text at 5% as an options card under a post. No card round it: an
-/// options card's list_pad is room for its rows' grounds lit under the hand, and nothing in this row lights up;
-/// framed so (#2543) its words stood twice as far in and one line was a fat capsule. `body` the row's (a row;
-/// `column` lays it a column instead).
-pub fn ask_line_card(c : @ui.Ctx, column? : Bool = false, body : () -> Unit) -> Int {
-  // (the row's room round its words an option's, the theme's for the screen: option_type)
-  let inside = @ui.style(p=room(option_type().pad_in))
-  c.box(style=(if column { ask_line_column } else { ask_line_row }).then(ask_line_ground).then(inside), body)
-}
-
-///|
 /// What leads ask_line_card's words (what the chat needs: its bell), where an option's number is: in the middle of a
 /// column as wide and as high as its disc, so it stands as far in from the row's corner as the disc, concentric.
 pub fn ask_line_mark() -> @ui.Style {
@@ -3066,16 +1853,16 @@ pub fn ask_line_mark() -> @ui.Style {
 }
 
 ///|
-/// How big the check in a picked option's disc is, of the disc (options_card).
+/// How big the check in a picked option's disc is, of the disc.
 pub let option_check_share : Double = 0.6
 
 ///|
-/// Where the check stands in a picked option's disc, over its number: its middle (options_card).
+/// Where the check stands in a picked option's disc, over its number: its middle.
 // kept across runs: a value (no field of it changes)
 let option_check_room : @ui.Style = @ui.css("w=Full h=Full align=ACenter justify=JCenter")
 
 ///|
-/// How far an option's row keeps its words from its end, where the one being sent turns (options_card).
+/// How far an option's row keeps its words from its end, where the one being sent turns.
 let option_row_end : Double = 12.0
 
 ///|
@@ -3084,66 +1871,6 @@ let option_row_end : Double = 12.0
 pub fn ask_line_start(icon : Double) -> @ui.Style {
   let side = (ask_line_disc() - icon) / 2.0
   @ui.style(pl=room(side))
-}
-
-///|
-/// Words to press ending ask_line_card's row (忽略 ending what a chat needs): quiet, the line's own words (not a
-/// button's: the user, 2026-10-31, 太明显了), in its ink under the hand; their room a button's (as tall, round as it,
-/// the press's room as least as the native input's), its ground under the hand or the finger concentric with the row's
-/// end corner (capsule_in), its words where they stood, as far in as the row's start mark `mark` wide is from its start; on the
-/// first of the row's lines, however many the words before it take. `disabled`: there and faded, taking no press.
-/// `on_press` as it is pressed.
-pub fn ask_line_button(
-  c : @ui.Ctx,
-  label : String,
-  key~ : String,
-  mark~ : Double,
-  disabled? : Bool = false,
-  on_press? : () -> Unit,
-) -> Unit {
-  let h = button_height()
-  let pad = option_type().pad_in
-  let inset = @ui.capsule_in(option_row_corner, h)
-  let out = pad - inset
-  let id = c.id(key)
-  let live = !disabled
-  // (its ground and its words' ink eased, and it faded, as it is painted: told as it is built, read where it is drawn)
-  let ease = @motion.tween(dur_ms, ease=Out)
-  let lit = @motion.told(c, "sf-ask-line-btn/\{id}", if live && (c.lit(id) || c.pressed(id)) { 1.0 } else { 0.0 }, spec=ease)
-  let seen = @motion.told(c, "sf-ask-line-btn-seen/\{id}", if disabled { 0.45 } else { 1.0 }, spec=ease)
-  let look = theme().chat_list
-  // (its words as far in from its end as the bell's from the row's start: the bell's room in its disc's column)
-  let side = (ask_line_disc() - mark) / 2.0
-  let room_of = @ui.style(
-    row=true,
-    h=Fixed(h),
-    px=room(out + side),
-    mt=room(-out),
-    mb=room(-out),
-    mr=room(-out),
-    radius=Full,
-    align=ACenter,
-  )
-  let hover = theme().p.hover
-  let b = c.box(
-    style=room_of,
-    id=if live { id } else { 0 },
-    fn() {
-      // (its ink the quiet one's, the line's own under the hand, over dur_ms, as it is painted)
-      let (text, muted) = (theme().p.text, theme().p.muted)
-      let ink = mix(text, lit.target(), muted)
-      let words = look.state_quiet.then(ask_line_button_words).then(@ui.text_style(color=Data(ink)))
-      let w = c.text(label, style=ask_line_words(words))
-      c.ink_by(w, fn() { mix(text, lit.get(c), muted) })
-    },
-  )
-  c.bg_by(b, fn() { alpha(hover, lit.get(c)) })
-  c.look_by(b, fn() { @ui.look(alpha=seen.get(c)) })
-  c.semantics(b, Button, id=if live { id } else { 0 }, label~, disabled=!live)
-  match on_press {
-    Some(f) if live => c.on_press(id, f)
-    _ => ()
-  }
 }
 
 ///|
@@ -3165,7 +1892,7 @@ fn ask_line_disc() -> Double {
 }
 
 ///|
-/// ask_line_card's ground: an option row's corner, on the text at 5% (options_card `wide`).
+/// ask_line_card's ground: an option row's corner, on the text at 5%.
 // kept across runs: a value (no field of it changes)
 let ask_line_ground : @ui.Style = @ui.css("bg=A(Fg,O5)").then(@ui.style(radius=rounded(option_row_corner)))
 
@@ -3177,136 +1904,6 @@ let ask_line_row : @ui.Style = @ui.css("row w=Full gap=S3 align=AStart")
 ///|
 // kept across runs: a value (no field of it changes)
 let ask_line_column : @ui.Style = @ui.css("w=Full align=AStart")
-
-///|
-/// A card of options: each a row to be pressed (its ground under the finger list_pad
-/// in from the card's edge, as a list card's, rounded 18), its number in a disc (the one recommended in the accent), its label and what it
-/// leads to (`options`: each its label, its detail, whether recommended); half there when not `enabled`, a spinner on
-/// the one being answered (`busy`, none pressed meanwhile; `chosen` stays whole); its measures the theme's for the
-/// screen (option_type). Under a post as the web's (`wide`: as wide as what it says, where it is at most, on the
-/// text at 5%); its row's ground under the pointer. `history` keeps the original choices fully legible and read-only,
-/// with a check beside the chosen one; its presenter supplies the only ground and padding. `on_pick`: what an option
-/// pressed does, given its index, as it is pressed.
-pub fn options_card(
-  c : @ui.Ctx,
-  key : String,
-  options : Array[(String, String, Bool)],
-  enabled : Bool,
-  busy : Int?,
-  chosen? : Int? = None,
-  wide? : Bool = false,
-  history? : Bool = false,
-  on_pick? : (Int) -> Unit,
-) -> Unit {
-  let t = theme()
-  let free = enabled && busy is None && !history
-  let ot = option_type()
-  let ground = if history { 0L } else if wide { alpha(t.p.text, 0.05) } else { t.p.chip }
-  let padding = if history { 0.0 } else { options_card_pad }
-  // (in the wide frame as wide as what it says and 460 at least)
-  c.box(w=Fill(1.0), align=if wide { AStart } else { AStretch }, fn() {
-    let across = @ui.style(w=Full, max_w=Fixed(options_most(options, ot, wide)))
-    c.box(style=across, radius=options_card_radius, bg=ground, pad=padding, fn() {
-      // 
-      for i, o in options {
-        let id = c.id(key + "/" + i.to_string())
-        match on_pick {
-          Some(f) if free => c.on_press(id, fn() { f(i) })
-          _ => ()
-        }
-        // under a mouse's pointer its row's ground, in any layout
-        let mouse = @ui.pointing() is Mouse
-        let hot = mouse && free && c.lit(id)
-        // (the one picked, answered: a check in its disc where its number was, on the accent; the rest half there, the
-        // one being sent turning at its end: each over dur_ms, as a control answers, never at once)
-        let picked_here = !history && chosen == Some(i)
-        let ease = @motion.tween(dur_ms, ease=Out)
-        let k = key + "/" + i.to_string()
-        // (faded as it is drawn)
-        let there = @motion.told(c, "options-seen/" + k, if history || enabled || chosen == Some(i) { 1.0 } else { 0.5 }, spec=ease)
-        // (told as they are built, read where they are painted: the check and the spinner built while they are there
-        // or on their way, up to their declared ends)
-        let ticked = @motion.told(c, "options-ticked/" + k, if picked_here { 1.0 } else { 0.0 }, spec=ease)
-        let turning = @motion.told(c, "options-turning/" + k, if busy == Some(i) { 1.0 } else { 0.0 }, spec=ease)
-        let disc_off = alpha(t.p.text, 0.09)
-        let row = c.box(
-          dir=Row,
-          w=Fill(1.0),
-          pl=ot.pad_in,
-          pr=option_row_end,
-          pt=ot.pad_in,
-          pb=ot.pad_in,
-          gap=12.0,
-          align=AStart,
-          radius=option_row_corner,
-          bg=if hot { t.p.hover } else { 0L },
-          id~,
-          fn() {
-            let disc = c.box(
-              w=Px(ot.disc),
-              h=Px(ot.disc),
-              radius=ot.disc / 2.0,
-              bg=if o.2 { t.p.accent } else { mix_seen(t.p.accent, ticked.target(), disc_off) },
-              align=ACenter,
-              justify=JCenter,
-              fn() {
-                let color = if o.2 { 0xFFFFFFFFL } else { t.p.muted }
-                let number = if i < 6 {
-                  icon(c, "option-\{i + 1}", size=ot.disc, color~)
-                } else {
-                  c.text("\{i + 1}", size=theme().t.caption, weight=600, color~, wrap=false)
-                }
-                if picked_here || !ticked.over(c) {
-                  c.look_by(number, fn() { @ui.look(alpha=1.0 - ticked.get(c)) })
-                  c.layer(fn() {
-                    let mark = c.box(style=option_check_room, fn() {
-                      icon(c, "check", size=ot.disc * option_check_share, color=0xFFFFFFFFL) |> ignore
-                    })
-                    c.look_by(mark, fn() { @ui.look(alpha=ticked.get(c)) })
-                  })
-                  |> ignore
-                }
-              },
-            )
-            if !o.2 {
-              c.bg_by(disc, fn() { mix_seen(t.p.accent, ticked.get(c), disc_off) })
-            }
-            c.box(w=Fill(1.0), fn() {
-              c.text(o.0, size=ot.label, weight=500, color=t.p.text, line=ot.label_line) |> ignore
-              if o.1 != "" {
-                c.text(o.1, size=ot.detail, color=t.p.muted, line=ot.detail_line) |> ignore
-              }
-            })
-            |> ignore
-            // (turning over the row's end, in what it leaves at the end of the words: never narrowing them)
-            if busy == Some(i) || !turning.over(c) {
-              c.layer(fn() {
-                let s = c.box(style=@ui.style(w=Full, align=AEnd, pt=room_of(ot.pad_in), pr=room_of(option_row_end)), fn() {
-                  c.box(h=Px(ot.label_line), justify=JCenter, fn() { spinner(c, size=12.0) |> ignore }) |> ignore
-                })
-                c.look_by(s, fn() { @ui.look(alpha=turning.get(c)) })
-              })
-              |> ignore
-            }
-            if history && chosen == Some(i) {
-              let check_room = @ui.style(h=Fixed(ot.label_line), justify=JCenter)
-              c.box(style=check_room, fn() {
-                icon(c, "check", size=14.0, color=t.p.accent) |> ignore
-              }) |> ignore
-            }
-            // SettingParts.kt options: clickable while free, its ripple in the ink (ripple(color = C.ink))
-            if free {
-              @motion.ripple(c, id, option_row_corner, ink=alpha(t.p.text, 0.1))
-            }
-          },
-        )
-        c.look_by(row, fn() { @ui.look(alpha=there.get(c)) })
-      }
-    })
-    |> ignore
-  })
-  |> ignore
-}
 
 ///|
 // kept across runs: a value (no field of it changes)

@@ -65,18 +65,3 @@ fn stroke_points(s : StrokeShape, w : Double) -> Array[(Double, Double)] {
   }
   pts
 }
-
-///|
-/// A stroke under words `w` long, drawn `part` of its length in from its left (0 none: nothing to draw), in `color`:
-/// a box `w + width` wide of the line itself (mbui's Ctx::lines: drawn as it is every frame, only how far changing);
-/// place it with its top left `stroke_corner` up and left of where the stroke starts.
-pub fn hand_stroke(c : @ui.Ctx, s : StrokeShape, w : Double, part : Double, color : Int64) -> Int {
-  let (left, top) = stroke_corner(s)
-  let bottom = dmax(dmax(0.0, s.up), dmax(s.down, s.end)) + s.width / 2.0
-  let pts = stroke_points(s, w).map(fn(p) { (p.0 + left, p.1 + top) })
-  c.lines(
-    [@ui.line(pts, width=s.width, color~, upto=dmax(0.0, dmin(part, 1.0)))],
-    w=Px(w + s.width),
-    h=Px(top + bottom),
-  )
-}

@@ -1172,7 +1172,7 @@ fn code_key(c : @ui.Ctx, id : Int, icon_name : String, words : String) -> Unit {
 /// language and a copy button (with a mouse, icons in a tray over its top right corner while pointed at); the code in the code face, 12 on 18 lines,
 /// in its colours as the core said them (ink.mbt), scrolled sideways, or wrapped at
 /// its width once its wrap key (before the copy key) is pressed, till it is pressed again.
-pub fn code_block(
+fn code_block(
   c : @ui.Ctx,
   code : String,
   lang : String,
