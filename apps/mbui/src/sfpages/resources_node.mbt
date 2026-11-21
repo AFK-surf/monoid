@@ -866,14 +866,11 @@ fn station_uses_node(p : @view.View, uv : () -> Json?, processes : () -> Unit) -
       }
       figure(fn() { "CPU" }, fn() { shown.get().0 })
       figure(fn() { @sf.t("web-main.resources.column.memory") }, fn() { shown.get().1 })
-      f.show(fn() { shown.get().3 }, fn(x) {
-        x.box(fn(w) {
-          w
-          .words_runs(By(fn() { [@ui.span(@sf.t("web-main.resources.column.net") + " "), @ui.span(shown.get().2, weight=500, color=@sf.theme().p.text)] }))
-          .words_look(Is(@ui.style_words(rs_uses_words)))
-          .ink(By(fn() { @ui.style_ink(rs_uses_words) }))
-          |> ignore
-        })
+      f.show(fn() { shown.get().3 }, fn(w) {
+        w
+        .words_runs(By(fn() { [@ui.span(@sf.t("web-main.resources.column.net") + " "), @ui.span(shown.get().2, weight=500, color=@sf.theme().p.text)] }))
+        .words_look(Is(@ui.style_words(rs_uses_words)))
+        .ink(By(fn() { @ui.style_ink(rs_uses_words) }))
         |> ignore
       })
     }

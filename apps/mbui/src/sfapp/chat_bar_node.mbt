@@ -367,23 +367,22 @@ fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> 
       )
     })
     |> ignore
-    g.show(fn() { expanded() || state.open_way.shown(g) > 0.0 }, fn(row2_host) {
-      row2_host.box(fn(row2_room) {
-        let p = fn() { state.open_way.shown(row2_room) }
-        row2_room
-        .opens(
-          By(fn() {
-            let v = p()
-            if v >= 1.0 && expanded() {
-              None
-            } else {
-              Some(bar_clamp01(v))
-            }
-          }),
-          from_foot=true,
-        )
-        .clips(By(fn() { p() < 1.0 }))
-        |> ignore
+    g.show(fn() { expanded() || state.open_way.shown(g) > 0.0 }, fn(row2_room) {
+      let p = fn() { state.open_way.shown(row2_room) }
+      row2_room
+      .opens(
+        By(fn() {
+          let v = p()
+          if v >= 1.0 && expanded() {
+            None
+          } else {
+            Some(bar_clamp01(v))
+          }
+        }),
+        from_foot=true,
+      )
+      .clips(By(fn() { p() < 1.0 }))
+      |> ignore
       row2_room.box(fn(row2_pad) {
         row2_pad.padding(Is((0.0, 8.0, 0.0, 0.0))) |> ignore
         row2_pad.box(fn(row2_box) {
@@ -426,8 +425,6 @@ fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> 
           |> ignore
         })
         |> ignore
-      })
-      |> ignore
       })
       |> ignore
     })

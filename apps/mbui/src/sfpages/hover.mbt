@@ -1141,72 +1141,69 @@ pub fn usage_tiles_node(
   }
   // (each tile's share of the row: what shows it takes it)
   let across = fn(t : @view.View) { t.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore }
-  parent.show(at_once=true, fn() { cost() != "" || cache() is Some(Object(_)) || ctx() is Some(Object(_)) }, fn(o) {
-    o.box(fn(r) {
-      @sf.style_node(r, fn() { if roomy { usage_tiles_roomy.then(@ui.style(pt=@sf.room_of(top))) } else { agent_card_tiles_row } })
-      r.show(at_once=true, fn() { cost() != "" }, fn(t) {
-        across(t)
-        tile(t, cost, fn() { @sf.t("web-main.chat.agentCard.cost") }, fn() { "" }, None, None) |> ignore
-      })
-      r.show(at_once=true, fn() { cache() is Some(Object(_)) }, fn(t) {
-        across(t)
-        tile(t, fn() { text(cache(), "text") }, fn() { @sf.t("web-main.chat.agentCard.cache") }, fn() { "" }, None, None)
-        |> ignore
-      })
-      let figure = fn() {
-        if unknown() {
-          text(ctx(), "text")
-        } else {
-          number(ctx(), "percent").round().to_int().to_string() + "%"
-        }
-      }
-      r.show(at_once=true, fn() { ctx() is Some(Object(_)) }, fn(t) {
-        across(t)
-        match context {
-          Some(open) =>
-            tile(
-              t,
-              figure,
-              fn() {
-                if compacts() && (level() == "amber" || level() == "red") {
-                  @sf.t("web-mobile.agent.contextCompactable")
-                } else {
-                  @sf.t("web-main.chat.agentCard.context")
-                }
-              },
-              level,
-              Some(fn(b) {
-                if !@signals.untracked(busy) {
-                  let (x, y, w, h) = b.placed_window_now()
-                  open(At(x, y, w, h))
-                }
-              }),
-              Some(fn(m) {
-                // (what can be done to it: ›; under way, turning; failed lately, its mark)
-                m.pick(at_once=true, fn() { if busy() { 1 } else if failed() { 2 } else { 0 } }, fn(i, now) {
-                  match now {
-                    1 => @sf.spinner_node(i, size=usage_more_icon) |> ignore
-                    2 => doing_mark_node(i, fn() { false }, fn() { Some("") })
-                    _ => @sf.icon_node(i, "chevron-right", usage_more_icon, By(fn() { @sf.theme().p.muted })) |> ignore
-                  }
-                })
-              }),
-            )
-            |> ignore
-          None =>
-            t.pick(at_once=true, unknown, fn(k, unknown_now) {
-              if roomy {
-                k.grow(Is(1.0)) |> ignore
-              }
-              let shown = tile(k, figure, fn() { @sf.t("web-main.chat.agentCard.context") }, level, None, None)
-              if !unknown_now {
-                @sf.tip_node(tips, shown, fn() { text(ctx(), "text") }) |> ignore
-              }
-            })
-        }
-      })
+  parent.show(at_once=true, fn() { cost() != "" || cache() is Some(Object(_)) || ctx() is Some(Object(_)) }, fn(r) {
+    @sf.style_node(r, fn() { if roomy { usage_tiles_roomy.then(@ui.style(pt=@sf.room_of(top))) } else { agent_card_tiles_row } })
+    r.show(at_once=true, fn() { cost() != "" }, fn(t) {
+      across(t)
+      tile(t, cost, fn() { @sf.t("web-main.chat.agentCard.cost") }, fn() { "" }, None, None) |> ignore
     })
-    |> ignore
+    r.show(at_once=true, fn() { cache() is Some(Object(_)) }, fn(t) {
+      across(t)
+      tile(t, fn() { text(cache(), "text") }, fn() { @sf.t("web-main.chat.agentCard.cache") }, fn() { "" }, None, None)
+      |> ignore
+    })
+    let figure = fn() {
+      if unknown() {
+        text(ctx(), "text")
+      } else {
+        number(ctx(), "percent").round().to_int().to_string() + "%"
+      }
+    }
+    r.show(at_once=true, fn() { ctx() is Some(Object(_)) }, fn(t) {
+      across(t)
+      match context {
+        Some(open) =>
+          tile(
+            t,
+            figure,
+            fn() {
+              if compacts() && (level() == "amber" || level() == "red") {
+                @sf.t("web-mobile.agent.contextCompactable")
+              } else {
+                @sf.t("web-main.chat.agentCard.context")
+              }
+            },
+            level,
+            Some(fn(b) {
+              if !@signals.untracked(busy) {
+                let (x, y, w, h) = b.placed_window_now()
+                open(At(x, y, w, h))
+              }
+            }),
+            Some(fn(m) {
+              // (what can be done to it: ›; under way, turning; failed lately, its mark)
+              m.pick(at_once=true, fn() { if busy() { 1 } else if failed() { 2 } else { 0 } }, fn(i, now) {
+                match now {
+                  1 => @sf.spinner_node(i, size=usage_more_icon) |> ignore
+                  2 => doing_mark_node(i, fn() { false }, fn() { Some("") })
+                  _ => @sf.icon_node(i, "chevron-right", usage_more_icon, By(fn() { @sf.theme().p.muted })) |> ignore
+                }
+              })
+            }),
+          )
+          |> ignore
+        None =>
+          t.pick(at_once=true, unknown, fn(k, unknown_now) {
+            if roomy {
+              k.grow(Is(1.0)) |> ignore
+            }
+            let shown = tile(k, figure, fn() { @sf.t("web-main.chat.agentCard.context") }, level, None, None)
+            if !unknown_now {
+              @sf.tip_node(tips, shown, fn() { text(ctx(), "text") }) |> ignore
+            }
+          })
+      }
+    })
   })
 }
 

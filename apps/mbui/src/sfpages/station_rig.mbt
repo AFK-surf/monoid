@@ -331,20 +331,17 @@ fn rig_more_node(b : @view.View, core : Core, here : () -> Here, rig : () -> Jso
           },
         )
         // a device attached to it: its person's, as they sign it (settings devices.mbt)
-        g.show(fn() { mine() && vouched() }, fn(o) {
-          o.box(fn(holder) {
-            @sf.link_row_node(
-              holder,
-              fn() { @sf.t("web-pages.devices.add") },
-              fn() {
-                let (x, y, w, h) = holder.placed_window_now()
-                @settings.add_device(core, @signals.untracked(here), id, true, At(x, y, w, h))
-              },
-              note=fn() { @sf.t("web-pages.devices.rigNote") },
-              chevron=false,
-            )
-          })
-          |> ignore
+        g.show(fn() { mine() && vouched() }, fn(holder) {
+          @sf.link_row_node(
+            holder,
+            fn() { @sf.t("web-pages.devices.add") },
+            fn() {
+              let (x, y, w, h) = holder.placed_window_now()
+              @settings.add_device(core, @signals.untracked(here), id, true, At(x, y, w, h))
+            },
+            note=fn() { @sf.t("web-pages.devices.rigNote") },
+            chevron=false,
+          )
         })
         // taking it out: its person's, and the workspace's managers'
         g.show(fn() { mine() || manager() }, fn(o) {

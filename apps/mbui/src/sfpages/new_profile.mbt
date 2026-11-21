@@ -502,23 +502,20 @@ fn install_step_node(b : @view.View, core : Core, station : String, install : ()
         },
         bad=fn() { opt_text(install(), "detail").unwrap_or("") },
       )
-      k.show(fn() { text(install(), "state") == "installing" }, fn(x) {
-        x.box(fn(bar) {
-          @sf.style_node(bar, fn() { ap_bar })
-          @sf.progress_node(
-            bar,
-            fn() {
-              if has(install(), "percent") && !(field(install(), "percent") is Some(Null)) {
-                Some(number(install(), "percent") / 100.0)
-              } else {
-                None
-              }
-            },
-            fn() { @ui.tree_theme().line },
-            fn() { @sf.theme().p.accent },
-          )
-          |> ignore
-        })
+      k.show(fn() { text(install(), "state") == "installing" }, fn(bar) {
+        @sf.style_node(bar, fn() { ap_bar })
+        @sf.progress_node(
+          bar,
+          fn() {
+            if has(install(), "percent") && !(field(install(), "percent") is Some(Null)) {
+              Some(number(install(), "percent") / 100.0)
+            } else {
+              None
+            }
+          },
+          fn() { @ui.tree_theme().line },
+          fn() { @sf.theme().p.accent },
+        )
         |> ignore
       })
       if footed {

@@ -782,32 +782,29 @@ fn ws_ways_panel(core : Core, here : Here, from : @sf.Anchor) -> Unit {
     v.box(fn(body) {
       @sf.style_node(body, fn() { ws_way_body })
       // add a custom relay at the top of the panel
-      body.show(fn() { manager() && relays().length() < 4 }, fn(a) {
-        a.box(fn(row) {
-          @sf.style_node(row, fn() { @sf.panel_words_in_node(row).then(ws_way_add_row) })
-          row.box(fn(f) {
-            @sf.style_node(f, fn() { ws_way_add_input }, in_row=true)
-            @sf.input_node(
-              f,
-              new_relay,
-              placeholder="https://relay.example.com",
-              label=@sf.t("android-settings.relays.add"),
-              disabled=setting,
-              submitted=fn(_) { add_relay() },
-            )
-            |> ignore
-          })
-          |> ignore
-          @sf.button_node(
-            row,
-            fn() { @sf.t("android-settings.relays.addAction") },
-            add_relay,
-            tone=Primary,
-            busy=setting,
-            disabled=fn() { !can_add() },
+      body.show(fn() { manager() && relays().length() < 4 }, fn(row) {
+        @sf.style_node(row, fn() { @sf.panel_words_in_node(row).then(ws_way_add_row) })
+        row.box(fn(f) {
+          @sf.style_node(f, fn() { ws_way_add_input }, in_row=true)
+          @sf.input_node(
+            f,
+            new_relay,
+            placeholder="https://relay.example.com",
+            label=@sf.t("android-settings.relays.add"),
+            disabled=setting,
+            submitted=fn(_) { add_relay() },
           )
           |> ignore
         })
+        |> ignore
+        @sf.button_node(
+          row,
+          fn() { @sf.t("android-settings.relays.addAction") },
+          add_relay,
+          tone=Primary,
+          busy=setting,
+          disabled=fn() { !can_add() },
+        )
         |> ignore
       })
       // its own relays: each removed right in the panel (one not wanted is taken away, not turned off)

@@ -1312,12 +1312,9 @@ fn splash_of_tree(v : @view.View, label : () -> String?, now : () -> Bool) -> Un
         |> ignore
       })
       |> ignore
-      m.show(fn() { !now() }, fn(p) {
-        p.box(fn(b) {
-          b.width(Is(Some(splash_bar_w))) |> ignore
-          @sf.progress_node(b, fn() { None }, fn() { @ui.tree_theme().line }, fn() { @sf.theme().p.accent }) |> ignore
-        })
-        |> ignore
+      m.show(fn() { !now() }, fn(b) {
+        b.width(Is(Some(splash_bar_w))) |> ignore
+        @sf.progress_node(b, fn() { None }, fn() { @ui.tree_theme().line }, fn() { @sf.theme().p.accent }) |> ignore
       })
       m.show(fn() { label() is Some(_) }, fn(w) {
         w

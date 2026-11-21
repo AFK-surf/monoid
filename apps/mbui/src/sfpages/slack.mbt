@@ -204,14 +204,11 @@ fn token_fields_node(
       }
     }
     f.show(fn() { verified() != "" }, fn(o) { @sf.verify_ok_node(o, verified) })
-    f.show(fn() { strings(view(), "errors").length() > 0 }, fn(e) {
-      e.box(fn(l) {
-        @sf.style_node(l, fn() { sk_errors })
-        l.each(fn() { strings(view(), "errors").mapi(fn(i, w) { (i, w) }) }, fn(x) { x.0 }, fn(w, x) {
-          @sf.words_node(w, fn() { "• " + x.get().1 }, fn() { sk_error }) |> ignore
-        })
+    f.show(fn() { strings(view(), "errors").length() > 0 }, fn(l) {
+      @sf.style_node(l, fn() { sk_errors })
+      l.each(fn() { strings(view(), "errors").mapi(fn(i, w) { (i, w) }) }, fn(x) { x.0 }, fn(w, x) {
+        @sf.words_node(w, fn() { "• " + x.get().1 }, fn() { sk_error }) |> ignore
       })
-      |> ignore
     })
     f.show(fn() { tk.error.get() != "" }, fn(e) { @sf.words_node(e, fn() { tk.error.get() }, fn() { sk_error }) |> ignore })
   })

@@ -1529,7 +1529,7 @@ fn board_files_node(
       })
     }) |> ignore
   }
-  parent.show(fn() { !files().is_empty() }, at_once=true, fn(p) { p.box(strip) |> ignore })
+  parent.show(fn() { !files().is_empty() }, at_once=true, fn(p) { strip(p) })
 }
 
 

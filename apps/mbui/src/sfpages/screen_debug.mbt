@@ -107,12 +107,9 @@ fn screen_content_node(fill : @view.View, pg : ScreenPage, pair? : () -> Bool = 
         })
         |> ignore
         // (a row of its own: with the buttons there is no room for all of them on a narrow page)
-        n.show(at_once=true, fn() { s.driving_now() && flag(s.state_now(), "poses") }, fn(k) {
-          k.box(fn(bar) {
-            @sf.style_node(bar, fn() { debug_tools_bar })
-            debug_poses_node(bar, pg, icons=false)
-          })
-          |> ignore
+        n.show(at_once=true, fn() { s.driving_now() && flag(s.state_now(), "poses") }, fn(bar) {
+          @sf.style_node(bar, fn() { debug_tools_bar })
+          debug_poses_node(bar, pg, icons=false)
         })
         n.box(fn(bar) {
           @sf.style_node(bar, fn() { debug_tools_bar })

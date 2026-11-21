@@ -317,36 +317,33 @@ fn image_coming_node(
         coming_room.then(@ui.style(p=@sf.capsule_fit_room(corner, h, coming_alone_in)))
       }
     })
-    room.show(at_once=true, fn() { shown.get() && how_far() is Some(_) }, fn(s) {
-      s.box(fn(pill) {
-        @sf.style_node(pill, fn() {
-          let h = coming_pill_high(pill.words_scale())
-          if h == coming_pill_h {
-            coming_pill
-          } else {
-            coming_pill.then(@ui.style(h=Fixed(h)))
-          }
-        })
-        pill.alpha(By(fn() { fade.shown(pill) })) |> ignore
-        pill.pick(at_once=true, fn() { how_far().map_or(false, fn(c) { c.1 is Some(_) }) }, fn(q, known) {
-          // (its ring and its words along the pill, as the pill lays them)
-          @sf.style_node(q, fn() { coming_pill_row })
-          if known {
-            let part = fn() {
-              match how_far() {
-                Some((n, Some(total))) => dmin(1.0, n / total)
-                _ => 0.0
-              }
+    room.show(at_once=true, fn() { shown.get() && how_far() is Some(_) }, fn(pill) {
+      @sf.style_node(pill, fn() {
+        let h = coming_pill_high(pill.words_scale())
+        if h == coming_pill_h {
+          coming_pill
+        } else {
+          coming_pill.then(@ui.style(h=Fixed(h)))
+        }
+      })
+      pill.alpha(By(fn() { fade.shown(pill) })) |> ignore
+      pill.pick(at_once=true, fn() { how_far().map_or(false, fn(c) { c.1 is Some(_) }) }, fn(q, known) {
+        // (its ring and its words along the pill, as the pill lays them)
+        @sf.style_node(q, fn() { coming_pill_row })
+        if known {
+          let part = fn() {
+            match how_far() {
+              Some((n, Some(total))) => dmin(1.0, n / total)
+              _ => 0.0
             }
-            @sf.progress_ring_node(q, coming_ring, part, fn() { @sf.white }) |> ignore
-            @sf.words_node(q, fn() { "\{(part() * 100.0).floor().to_int()}%" }, fn() { coming_words }) |> ignore
-          } else {
-            @sf.spinner_node(q, size=coming_ring, ring=fn() { coming_track }, arc=fn() { @sf.white }) |> ignore
-            @sf.words_node(q, fn() { @sf.file_size(how_far().map_or(0.0, fn(c) { c.0 })) }, fn() { coming_words })
-            |> ignore
           }
-        })
-        |> ignore
+          @sf.progress_ring_node(q, coming_ring, part, fn() { @sf.white }) |> ignore
+          @sf.words_node(q, fn() { "\{(part() * 100.0).floor().to_int()}%" }, fn() { coming_words }) |> ignore
+        } else {
+          @sf.spinner_node(q, size=coming_ring, ring=fn() { coming_track }, arc=fn() { @sf.white }) |> ignore
+          @sf.words_node(q, fn() { @sf.file_size(how_far().map_or(0.0, fn(c) { c.0 })) }, fn() { coming_words })
+          |> ignore
+        }
       })
       |> ignore
     })

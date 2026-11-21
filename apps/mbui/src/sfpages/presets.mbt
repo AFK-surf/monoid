@@ -535,12 +535,9 @@ fn preset_panel(
             }
           }
         })
-        list.show(at_once=true, fn() { searching() && rows().is_empty() }, fn(e) {
-          e.box(fn(eb) {
-            @sf.style_node(eb, fn() { preset_empty_box })
-            @sf.words_node(eb, fn() { @sf.t("web-main.preset.noMatch") }, fn() { preset_empty_hint }) |> ignore
-          })
-          |> ignore
+        list.show(at_once=true, fn() { searching() && rows().is_empty() }, fn(eb) {
+          @sf.style_node(eb, fn() { preset_empty_box })
+          @sf.words_node(eb, fn() { @sf.t("web-main.preset.noMatch") }, fn() { preset_empty_hint }) |> ignore
         })
       })
       |> ignore
@@ -740,12 +737,9 @@ fn preset_others_content(
               ),
             )
           })
-          list.show(at_once=true, fn() { searching() && matched_rows().is_empty() }, fn(e) {
-            e.box(fn(eb) {
-              @sf.style_node(eb, fn() { preset_empty_box })
-              @sf.words_node(eb, fn() { @sf.t("web-main.preset.noMatch") }, fn() { preset_empty_hint }) |> ignore
-            })
-            |> ignore
+          list.show(at_once=true, fn() { searching() && matched_rows().is_empty() }, fn(eb) {
+            @sf.style_node(eb, fn() { preset_empty_box })
+            @sf.words_node(eb, fn() { @sf.t("web-main.preset.noMatch") }, fn() { preset_empty_hint }) |> ignore
           })
         })
         |> ignore

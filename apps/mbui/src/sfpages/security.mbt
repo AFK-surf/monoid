@@ -614,12 +614,9 @@ fn sec_said_line_node(
       t.show(fn() { note() != "" }, fn(w) {
         @sf.words_node(w, note, fn() { if wide { sec_said_why } else { @sf.pg_link_note } }) |> ignore
       })
-      t.show(acts_shown, fn(a) {
-        a.box(fn(ab) {
-          @sf.style_node(ab, fn() { sec_acts_under })
-          acts(ab)
-        })
-        |> ignore
+      t.show(acts_shown, fn(ab) {
+        @sf.style_node(ab, fn() { sec_acts_under })
+        acts(ab)
       })
     })
     |> ignore

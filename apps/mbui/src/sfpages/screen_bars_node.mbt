@@ -337,68 +337,65 @@ fn screen_tab_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
       None => false
     }
   }
-  p.show(at_once=true, fn() { s.open_said() || closing_gone() || pg.own_bar is Some(_) || pg.tab_pads is Some(_) }, fn(slot) {
-    slot.box(fn(bar) {
-      match (pg.own_bar, pg.tab_pads) {
-        (Some(own), _) => @sf.style_node(bar, fn() { own })
-        // (the pane's own bar (远程's): a page's height, its line's room under it, its keys as far in as the pane says,
-        // its empty part dragging the window)
-        (None, Some(pads)) => {
-          @sf.style_node(bar, fn() { screen_pane_bar })
-          bar
-          .padding(By(fn() {
-            let (start, end) = pads()
-            (start, 0.0, end, 1.0)
-          }))
-          .moves_window(By(@ui.window_inset_now))
-          |> ignore
-        }
-        (None, None) =>
-          @sf.style_node(bar, fn() { if browser_shown_now(s) { screen_tab_browser_bar } else { screen_tab_status_bar } })
+  p.show(at_once=true, fn() { s.open_said() || closing_gone() || pg.own_bar is Some(_) || pg.tab_pads is Some(_) }, fn(bar) {
+    match (pg.own_bar, pg.tab_pads) {
+      (Some(own), _) => @sf.style_node(bar, fn() { own })
+      // (the pane's own bar (远程's): a page's height, its line's room under it, its keys as far in as the pane says,
+      // its empty part dragging the window)
+      (None, Some(pads)) => {
+        @sf.style_node(bar, fn() { screen_pane_bar })
+        bar
+        .padding(By(fn() {
+          let (start, end) = pads()
+          (start, 0.0, end, 1.0)
+        }))
+        .moves_window(By(@ui.window_inset_now))
+        |> ignore
       }
-      bar.pick(at_once=true, fn() { browser_shown_now(s) }, fn(m, browser) {
-        m.row(Is(true)).lines_up(Is(Some(Middle))).grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).gap(Is(@ui.Space::S2.px())) |> ignore
-        if browser {
-          browser_seen(s)
-          m.box(fn(t) {
-            @sf.style_node(t, fn() { screen_bar_tools }, in_row=true)
-            browser_tools_node(t, pg, narrow~)
+      (None, None) =>
+        @sf.style_node(bar, fn() { if browser_shown_now(s) { screen_tab_browser_bar } else { screen_tab_status_bar } })
+    }
+    bar.pick(at_once=true, fn() { browser_shown_now(s) }, fn(m, browser) {
+      m.row(Is(true)).lines_up(Is(Some(Middle))).grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).gap(Is(@ui.Space::S2.px())) |> ignore
+      if browser {
+        browser_seen(s)
+        m.box(fn(t) {
+          @sf.style_node(t, fn() { screen_bar_tools }, in_row=true)
+          browser_tools_node(t, pg, narrow~)
+        })
+        |> ignore
+      } else {
+        screen_bar_words_node(m, pg, pg.own_bar is Some(_))
+        tabs_count_node(m, pg)
+        // 组合键 while driving a desktop
+        m.show(at_once=true, fn() { s.driving_now() && !s.simulator() }, fn(k) {
+          let b = screen_round_node(k, pg, fn() { "keycap" }, fn() { @sf.t("web-pages.screen.combos") }, fn(b) {
+            keys_open(s, u, Node(b), combos_only=true)
+          }, lit=fn() {
+            screen_panel_on_now(u, "keys")
           })
-          |> ignore
-        } else {
-          screen_bar_words_node(m, pg, pg.own_bar is Some(_))
-          tabs_count_node(m, pg)
-          // 组合键 while driving a desktop
-          m.show(at_once=true, fn() { s.driving_now() && !s.simulator() }, fn(k) {
-            let b = screen_round_node(k, pg, fn() { "keycap" }, fn() { @sf.t("web-pages.screen.combos") }, fn(b) {
-              keys_open(s, u, Node(b), combos_only=true)
-            }, lit=fn() {
-              screen_panel_on_now(u, "keys")
-            })
-            ignore(b)
-          })
-        }
-      })
-      mic_button_node(bar, pg, along_row=true)
-      // (a window of its own, where one takes it: beside 控制中心, as a chat's bar has it)
-      if pg.on_window is Some(handed) {
-        let page = fn() -> @sfbase.Page? { u.at.map(fn(at) { Screen(at) }) }
-        bar.show(at_once=true, fn() { page().map_or(false, @sfbase.window_opens_for) }, fn(k) {
-          screen_round_node(k, pg, fn() { "external" }, fn() { @sf.t("web-pages.chat.openInWindow") }, fn(_) {
-            match page() {
-              Some(p) => if @sfbase.open_window(p) { handed() }
-              None => ()
-            }
-          })
-          |> ignore
+          ignore(b)
         })
       }
-      bar.show(at_once=true, fn() { s.open_said() }, fn(k) { center_button_node(k, pg) })
-      if pg.own_bar is Some(_) {
-        close_button_node(bar, pg)
-      }
     })
-    |> ignore
+    mic_button_node(bar, pg, along_row=true)
+    // (a window of its own, where one takes it: beside 控制中心, as a chat's bar has it)
+    if pg.on_window is Some(handed) {
+      let page = fn() -> @sfbase.Page? { u.at.map(fn(at) { Screen(at) }) }
+      bar.show(at_once=true, fn() { page().map_or(false, @sfbase.window_opens_for) }, fn(k) {
+        screen_round_node(k, pg, fn() { "external" }, fn() { @sf.t("web-pages.chat.openInWindow") }, fn(_) {
+          match page() {
+            Some(p) => if @sfbase.open_window(p) { handed() }
+            None => ()
+          }
+        })
+        |> ignore
+      })
+    }
+    bar.show(at_once=true, fn() { s.open_said() }, fn(k) { center_button_node(k, pg) })
+    if pg.own_bar is Some(_) {
+      close_button_node(bar, pg)
+    }
   })
 }
 
@@ -624,20 +621,17 @@ fn screen_rail_node(p : @view.View, pg : ScreenPage) -> (() -> Unit, () -> Bool)
     }
     rail.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
     let others = fn() { items(s.state_now(), "others").length() }
-    rail.show(at_once=true, fn() { text(s.state_now(), "line") != "" && s.open_said() && others() > 0 }, fn(k) {
-      k.box(fn(people) {
-        let b = screen_round_node(people, pg, fn() { "users" }, fn() { @sf.t("android-misc.screen.people") }, fn(_) { say() }, lit=saying)
-        ignore(b)
-        // the count of the others on it: over the button's top right, 4 out and 2 up
-        people.box(fn(place) {
-          @sf.style_node(place, fn() { rail_badge_place })
-          place.over(Is(true)) |> ignore
-          place.box(fn(badge) {
-            @sf.style_node(badge, fn() { rail_badge }, in_row=true)
-            badge.offset(Is((rail_badge_out, -rail_badge_up))) |> ignore
-            @sf.mark_words_node(badge, fn() { "\{others()}" }, fn() { rail_badge_words }) |> ignore
-          })
-          |> ignore
+    rail.show(at_once=true, fn() { text(s.state_now(), "line") != "" && s.open_said() && others() > 0 }, fn(people) {
+      let b = screen_round_node(people, pg, fn() { "users" }, fn() { @sf.t("android-misc.screen.people") }, fn(_) { say() }, lit=saying)
+      ignore(b)
+      // the count of the others on it: over the button's top right, 4 out and 2 up
+      people.box(fn(place) {
+        @sf.style_node(place, fn() { rail_badge_place })
+        place.over(Is(true)) |> ignore
+        place.box(fn(badge) {
+          @sf.style_node(badge, fn() { rail_badge }, in_row=true)
+          badge.offset(Is((rail_badge_out, -rail_badge_up))) |> ignore
+          @sf.mark_words_node(badge, fn() { "\{others()}" }, fn() { rail_badge_words }) |> ignore
         })
         |> ignore
       })

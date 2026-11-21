@@ -645,24 +645,18 @@ fn vault_asked_node(v : @view.View, ask : () -> Asked, full_command : Bool, requ
       |> ignore
     })
     // (one to rename: what changes, a part each, in place of how it is given)
-    w.show(fn() { ask().renames() }, fn(s) {
-      s.box(fn(p) {
-        @sf.style_node(p, fn() { ask_describe_part })
-        @sf.words_node(p, fn() { tr("android-settings.vault.ask.describe.nameLabel") }, fn() { @sf.ask_note }) |> ignore
-        vault_runs_node(p, fn() { describe_name_lines(ask())[0] }, ask_describe_words) |> ignore
-        vault_runs_node(p, fn() { describe_name_lines(ask())[1] }, ask_describe_words) |> ignore
-      })
-      |> ignore
+    w.show(fn() { ask().renames() }, fn(p) {
+      @sf.style_node(p, fn() { ask_describe_part })
+      @sf.words_node(p, fn() { tr("android-settings.vault.ask.describe.nameLabel") }, fn() { @sf.ask_note }) |> ignore
+      vault_runs_node(p, fn() { describe_name_lines(ask())[0] }, ask_describe_words) |> ignore
+      vault_runs_node(p, fn() { describe_name_lines(ask())[1] }, ask_describe_words) |> ignore
     })
-    w.show(fn() { ask().reabouts() }, fn(s) {
-      s.box(fn(p) {
-        @sf.style_node(p, fn() { ask_describe_part })
-        @sf.words_node(p, fn() { tr("android-settings.vault.ask.describe.aboutLabel") }, fn() { @sf.ask_note }) |> ignore
-        // (as it was where it said one, then as it would be)
-        p.show(fn() { ask().was_about != "" }, fn(w) { vault_runs_node(w, fn() { describe_about_lines(ask())[0] }, ask_describe_words) |> ignore })
-        vault_runs_node(p, fn() { describe_about_lines(ask()).last().unwrap_or([]) }, ask_describe_words) |> ignore
-      })
-      |> ignore
+    w.show(fn() { ask().reabouts() }, fn(p) {
+      @sf.style_node(p, fn() { ask_describe_part })
+      @sf.words_node(p, fn() { tr("android-settings.vault.ask.describe.aboutLabel") }, fn() { @sf.ask_note }) |> ignore
+      // (as it was where it said one, then as it would be)
+      p.show(fn() { ask().was_about != "" }, fn(w) { vault_runs_node(w, fn() { describe_about_lines(ask())[0] }, ask_describe_words) |> ignore })
+      vault_runs_node(p, fn() { describe_about_lines(ask()).last().unwrap_or([]) }, ask_describe_words) |> ignore
     })
     w.show(fn() { ask().how_text != "" && !ask().describe && !ask().remove && ask().oauth == "" }, fn(s) {
       @sf.words_node(s, fn() { ask().how_text }, fn() { @sf.ask_note }) |> ignore

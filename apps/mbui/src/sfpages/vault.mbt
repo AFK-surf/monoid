@@ -758,22 +758,19 @@ pub fn vault_items_node(
     width?,
     tips?,
     actions=fn(a) {
-      a.show(usable, fn(s) {
-        s.box(fn(k) {
-          let add = fn() {
-            let (x, y, w, h) = k.placed_window_now()
-            vault_add(core, @signals.untracked(here), from=At(x, y, w, h))
-          }
-          @sf.page_action_node(k, "plus", fn() { @sf.t("web-pages.vault.add") }, add) |> ignore
-          // (a fixture's mode's 添加, from this one, at the moment the page is made: laid out by then, so it stands beside
-          // it as when it is pressed)
-          if fx_vault_add_up.val {
-            fx_vault_add_up.val = false
-            k.laid_before_causes()
-            k.at_moment(k.logic_at(), add) |> ignore
-          }
-        })
-        |> ignore
+      a.show(usable, fn(k) {
+        let add = fn() {
+          let (x, y, w, h) = k.placed_window_now()
+          vault_add(core, @signals.untracked(here), from=At(x, y, w, h))
+        }
+        @sf.page_action_node(k, "plus", fn() { @sf.t("web-pages.vault.add") }, add) |> ignore
+        // (a fixture's mode's 添加, from this one, at the moment the page is made: laid out by then, so it stands beside
+        // it as when it is pressed)
+        if fx_vault_add_up.val {
+          fx_vault_add_up.val = false
+          k.laid_before_causes()
+          k.at_moment(k.logic_at(), add) |> ignore
+        }
       })
     },
     fn() { blocks.get() },

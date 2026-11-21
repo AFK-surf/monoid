@@ -284,12 +284,9 @@ pub fn open_machine_sessions(core : Core, station : String, name : String) -> Un
       })
       |> ignore
       // where none is left by the filters: said in the middle
-      v.show(at_once=true, fn() { rows.get().is_empty() }, fn(n) {
-        n.box(fn(b) {
-          @sf.style_node(b, fn() { @sf.panel_words_in_node(b).then(machine_none) })
-          @sf.words_node(b, fn() { tr("android-chat.new.machine.none") }, fn() { machine_none_words }) |> ignore
-        })
-        |> ignore
+      v.show(at_once=true, fn() { rows.get().is_empty() }, fn(b) {
+        @sf.style_node(b, fn() { @sf.panel_words_in_node(b).then(machine_none) })
+        @sf.words_node(b, fn() { tr("android-chat.new.machine.none") }, fn() { machine_none_words }) |> ignore
       })
       let tips = @sf.panel_tips_of(v)
       v.show(at_once=true, fn() { !rows.get().is_empty() }, fn(l) {
@@ -436,12 +433,9 @@ fn look_at_machine_session(core : Core, station : String, s : Json) -> Unit {
         @sf.style_node(main, fn() { @sf.panel_words_in_node(main).then(machine_said_box) })
         main.pick(fn() { said.get() is Some(_) }, fn(p, read) {
           if !read {
-            p.show(at_once=true, fn() { error.get() == "" }, fn(w) {
-              w.box(fn(b) {
-                @sf.style_node(b, fn() { machine_said_wait })
-                @sf.wait_line_node(b, fn() { tr("common.reading") }) |> ignore
-              })
-              |> ignore
+            p.show(at_once=true, fn() { error.get() == "" }, fn(b) {
+              @sf.style_node(b, fn() { machine_said_wait })
+              @sf.wait_line_node(b, fn() { tr("common.reading") }) |> ignore
             })
           } else {
             @sf.style_node(p, fn() { machine_said_box })
@@ -466,12 +460,9 @@ fn look_at_machine_session(core : Core, station : String, s : Json) -> Unit {
         })
       })
       |> ignore
-      v.show(at_once=true, fn() { error.get() != "" }, fn(e) {
-        e.box(fn(b) {
-          @sf.style_node(b, fn() { @sf.panel_words_in_node(b).then(machine_error_box) })
-          @sf.words_node(b, fn() { error.get() }, machine_error_words) |> ignore
-        })
-        |> ignore
+      v.show(at_once=true, fn() { error.get() != "" }, fn(b) {
+        @sf.style_node(b, fn() { @sf.panel_words_in_node(b).then(machine_error_box) })
+        @sf.words_node(b, fn() { error.get() }, machine_error_words) |> ignore
       })
       v.box(fn(row) {
         @sf.style_node(row, fn() { @sf.panel_words_in_node(row).then(machine_go_row) })
@@ -811,12 +802,9 @@ fn add_people_body(v : @view.View, core : Core, here : Here, st : AddPeople) -> 
         )
       })
     })
-    b.show(fn() { st.error.get() != "" }, fn(e) {
-      e.box(fn(n) {
-        @sf.style_node(n, fn() { @sf.panel_words_in_node(n).then(add_people_block) })
-        @sf.words_node(n, fn() { st.error.get() }, fn() { add_error_words }) |> ignore
-      })
-      |> ignore
+    b.show(fn() { st.error.get() != "" }, fn(n) {
+      @sf.style_node(n, fn() { @sf.panel_words_in_node(n).then(add_people_block) })
+      @sf.words_node(n, fn() { st.error.get() }, fn() { add_error_words }) |> ignore
     })
   })
 }
@@ -888,12 +876,9 @@ fn add_people_slack_node(p : @view.View, core : Core, st : AddPeople) -> Unit {
       |> ignore
     })
   })
-  p.show(fn() { st.problems.get().length() > 0 }, fn(s) {
-    s.box(fn(n) {
-      @sf.style_node(n, fn() { @sf.panel_words_in_node(n).then(add_people_block) })
-      @sf.words_node(n, fn() { join(st.problems.get(), tr("android-settings.add.problemSep")) }, fn() { add_error_words }) |> ignore
-    })
-    |> ignore
+  p.show(fn() { st.problems.get().length() > 0 }, fn(n) {
+    @sf.style_node(n, fn() { @sf.panel_words_in_node(n).then(add_people_block) })
+    @sf.words_node(n, fn() { join(st.problems.get(), tr("android-settings.add.problemSep")) }, fn() { add_error_words }) |> ignore
   })
 }
 

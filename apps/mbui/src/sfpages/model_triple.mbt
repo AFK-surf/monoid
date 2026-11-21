@@ -1530,12 +1530,9 @@ fn triple_body_node(
           h.box(fn(c) { @sf.style_node(c, fn() { triple_scope_choice }, in_row=true); scope_node(c) }) |> ignore
         })
         |> ignore
-        y.show(fn() { options().length() > 8 }, fn(e) {
-          e.box(fn(f) {
-            @sf.style_node(f, fn() { triple_search })
-            triple_find_node(f, contents, on_enter=search_enter, on_step=search_step)
-          })
-          |> ignore
+        y.show(fn() { options().length() > 8 }, fn(f) {
+          @sf.style_node(f, fn() { triple_search })
+          triple_find_node(f, contents, on_enter=search_enter, on_step=search_step)
         })
         return
       }
@@ -1617,55 +1614,46 @@ fn triple_body_node(
       if sheet {
         // (the search, where the panel's head has none: a sheet's, its head its own)
         if at == "" {
-          body.show(fn() { options().length() > 8 }, fn(s) {
-            s.box(fn(sb) {
-              @sf.style_node(sb, fn() { triple_search })
-              triple_find_node(sb, contents, on_enter=search_enter, on_step=search_step)
-            })
-            |> ignore
+          body.show(fn() { options().length() > 8 }, fn(sb) {
+            @sf.style_node(sb, fn() { triple_search })
+            triple_find_node(sb, contents, on_enter=search_enter, on_step=search_step)
           })
         }
         // (whose models it lists, over them, where another station could lend some: models_head's choice)
-        body.show(fn() { triple_other_stations(v()) }, fn(sh) {
-          sh.box(fn(h) {
-            @sf.style_node(h, fn() { triple_scope_head })
-            scope_node(h)
-          })
-          |> ignore
+        body.show(fn() { triple_other_stations(v()) }, fn(h) {
+          @sf.style_node(h, fn() { triple_scope_head })
+          scope_node(h)
         })
         models(body)
         // its name and a stop for each level on one row across the sheet, the one it is at said in the thumb (stops):
         // as many levels as a model has on one line in any language, nothing opened over the sheet to pick one
-        body.show(fn() { all_efforts().length() > 0 }, fn(eb) {
-          eb.box(fn(row) {
-            @sf.style_node(row, fn() { triple_effort_block })
-            @sf.words_node(row, fn() { h_effort }, fn() { triple_head }) |> ignore
-            let stops = match contents.effort_stops.get(at) {
-              Some(st) => st
-              None => {
-                let st = @sf.Stops::new()
-                contents.effort_stops[at] = st
-                st
-              }
+        body.show(fn() { all_efforts().length() > 0 }, fn(row) {
+          @sf.style_node(row, fn() { triple_effort_block })
+          @sf.words_node(row, fn() { h_effort }, fn() { triple_head }) |> ignore
+          let stops = match contents.effort_stops.get(at) {
+            Some(st) => st
+            None => {
+              let st = @sf.Stops::new()
+              contents.effort_stops[at] = st
+              st
             }
-            @sf.stops_node(
-              row,
-              fn() { all_efforts().map(fn(e) { e.1 }) },
-              fn() {
-                let now = effort_now()
-                all_efforts().search_by(fn(e) { e.0 == now }).unwrap_or(-1)
-              },
-              stops,
-              said=h_effort,
-              on_pick=fn(i) {
-                match @signals.untracked(all_efforts).get(i) {
-                  Some(e) => pick_effort(e.0)
-                  None => ()
-                }
-              },
-            )
-            |> ignore
-          })
+          }
+          @sf.stops_node(
+            row,
+            fn() { all_efforts().map(fn(e) { e.1 }) },
+            fn() {
+              let now = effort_now()
+              all_efforts().search_by(fn(e) { e.0 == now }).unwrap_or(-1)
+            },
+            stops,
+            said=h_effort,
+            on_pick=fn(i) {
+              match @signals.untracked(all_efforts).get(i) {
+                Some(e) => pick_effort(e.0)
+                None => ()
+              }
+            },
+          )
           |> ignore
         })
       } else {
@@ -1696,91 +1684,88 @@ fn triple_body_node(
             models(mc)
           })
           |> ignore
-          side.show(has_params, fn(ec) {
-            ec.box(fn(col) {
-              @sf.style_node(col, fn() { triple_effort_column }, in_row=true)
-              let pw : @view.Live[Double?] = By(fn() { Some(param_w()) })
-              col.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).width(pw).max_width(pw) |> ignore
-              // (the line between them out of their flow, in the middle of the room between them, from the panel's top
-              // down to the line over its foot, meeting it: 「竖的那根怎么没跟横的接起来呢」)
-              col.box(fn(rule) {
-                @sf.style_node(rule, fn() { triple_rule_v })
-                rule
-                .over(Is(true))
-                .width(Is(Some(triple_rule_thick)))
-                .margin(Is((-triple_between_rule, -@sf.panel_pad, 0.0, -@sf.panel_pad)))
-                |> ignore
-              })
-              |> ignore
-              // (a section: its line over it where one is over it, from the line between the columns to the panel's right
-              // edge, meeting both; its title and choices where the column's are, in by as much as the line is out)
-              let param_section = fn(
-                parent : @view.View,
-                title : String,
-                first : () -> Bool,
-                choices : (@view.View) -> Unit,
-              ) {
-                parent.show(at_once=true, fn() { !first() }, fn(d) {
-                  @sf.style_node(d, fn() { triple_param_rule })
-                  d.box(fn(l) { @sf.style_node(l, fn() { triple_panel_rule_h }) }) |> ignore
-                })
-                parent.box(fn(sec) {
-                  sec.padding(Is((triple_rule_side, 0.0, @sf.panel_pad, 0.0))) |> ignore
-                  sec.pick(at_once=true, first, fn(h, is_first) {
-                    if is_first {
-                      @sf.panel_head_node(h, fn() { title }) |> ignore
-                    } else {
-                      h.box(fn(b) {
-                        @sf.style_node(b, fn() { triple_param_head_box })
-                        @sf.words_node(b, fn() { title }, fn() { triple_param_title }) |> ignore
-                      })
-                      |> ignore
-                    }
-                  })
-                  choices(sec)
-                })
-                |> ignore
-              }
-              // (as wide as the column and as far past it as the lines across it reach: to the line between the columns
-              // and to the panel's right edge, what it holds in as far)
-              // (its sections end to end: the room round each line its box's own, as far over it as under it)
-              @sf.capped_node(col, fn() { triple_list_h + 44.0 }, bleed=false, fn(sc) {
-                sc.show(at_once=true, fn() { !all_efforts().is_empty() }, fn(sec) {
-                  param_section(sec, h_effort, fn() { true }, fn(sec) {
-                    triple_choices_node(sec, h_effort, all_efforts, effort_now, pick_effort)
-                  })
-                })
-                sc.show(at_once=true, has_speed, fn(sec) {
-                  param_section(sec, h_speed, fn() { all_efforts().is_empty() }, fn(sec) {
-                    triple_choices_node(
-                      sec,
-                      h_speed,
-                      all_speeds,
-                      speed_now,
-                      pick_speed,
-                      icon_of=fn(w) { if w == "Fast" || w == "Ultrafast" { "zap" } else { "" } },
-                      tip_of=fn(w) {
-                        match w {
-                          "Fast" => @sf.t("web-main.model.fastNote")
-                          "Ultrafast" => @sf.t("web-main.model.ultrafastNote")
-                          _ => ""
-                        }
-                      },
-                      tips?,
-                    )
-                  })
-                })
-                sc.show(at_once=true, fn() { !all_contexts().is_empty() }, fn(sec) {
-                  param_section(sec, h_context, fn() { all_efforts().is_empty() && !has_speed() }, fn(sec) {
-                    triple_choices_node(sec, h_context, all_contexts, context_now, pick_context)
-                  })
-                })
-              })
-              .shrink(Is(1.0))
-              .min_height(Is(Some(0.0)))
-              .margin(Is((-triple_rule_side, 0.0, -@sf.panel_pad, 0.0)))
+          side.show(has_params, fn(col) {
+            @sf.style_node(col, fn() { triple_effort_column }, in_row=true)
+            let pw : @view.Live[Double?] = By(fn() { Some(param_w()) })
+            col.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).width(pw).max_width(pw) |> ignore
+            // (the line between them out of their flow, in the middle of the room between them, from the panel's top
+            // down to the line over its foot, meeting it: 「竖的那根怎么没跟横的接起来呢」)
+            col.box(fn(rule) {
+              @sf.style_node(rule, fn() { triple_rule_v })
+              rule
+              .over(Is(true))
+              .width(Is(Some(triple_rule_thick)))
+              .margin(Is((-triple_between_rule, -@sf.panel_pad, 0.0, -@sf.panel_pad)))
               |> ignore
             })
+            |> ignore
+            // (a section: its line over it where one is over it, from the line between the columns to the panel's right
+            // edge, meeting both; its title and choices where the column's are, in by as much as the line is out)
+            let param_section = fn(
+              parent : @view.View,
+              title : String,
+              first : () -> Bool,
+              choices : (@view.View) -> Unit,
+            ) {
+              parent.show(at_once=true, fn() { !first() }, fn(d) {
+                @sf.style_node(d, fn() { triple_param_rule })
+                d.box(fn(l) { @sf.style_node(l, fn() { triple_panel_rule_h }) }) |> ignore
+              })
+              parent.box(fn(sec) {
+                sec.padding(Is((triple_rule_side, 0.0, @sf.panel_pad, 0.0))) |> ignore
+                sec.pick(at_once=true, first, fn(h, is_first) {
+                  if is_first {
+                    @sf.panel_head_node(h, fn() { title }) |> ignore
+                  } else {
+                    h.box(fn(b) {
+                      @sf.style_node(b, fn() { triple_param_head_box })
+                      @sf.words_node(b, fn() { title }, fn() { triple_param_title }) |> ignore
+                    })
+                    |> ignore
+                  }
+                })
+                choices(sec)
+              })
+              |> ignore
+            }
+            // (as wide as the column and as far past it as the lines across it reach: to the line between the columns
+            // and to the panel's right edge, what it holds in as far)
+            // (its sections end to end: the room round each line its box's own, as far over it as under it)
+            @sf.capped_node(col, fn() { triple_list_h + 44.0 }, bleed=false, fn(sc) {
+              sc.show(at_once=true, fn() { !all_efforts().is_empty() }, fn(sec) {
+                param_section(sec, h_effort, fn() { true }, fn(sec) {
+                  triple_choices_node(sec, h_effort, all_efforts, effort_now, pick_effort)
+                })
+              })
+              sc.show(at_once=true, has_speed, fn(sec) {
+                param_section(sec, h_speed, fn() { all_efforts().is_empty() }, fn(sec) {
+                  triple_choices_node(
+                    sec,
+                    h_speed,
+                    all_speeds,
+                    speed_now,
+                    pick_speed,
+                    icon_of=fn(w) { if w == "Fast" || w == "Ultrafast" { "zap" } else { "" } },
+                    tip_of=fn(w) {
+                      match w {
+                        "Fast" => @sf.t("web-main.model.fastNote")
+                        "Ultrafast" => @sf.t("web-main.model.ultrafastNote")
+                        _ => ""
+                      }
+                    },
+                    tips?,
+                  )
+                })
+              })
+              sc.show(at_once=true, fn() { !all_contexts().is_empty() }, fn(sec) {
+                param_section(sec, h_context, fn() { all_efforts().is_empty() && !has_speed() }, fn(sec) {
+                  triple_choices_node(sec, h_context, all_contexts, context_now, pick_context)
+                })
+              })
+            })
+            .shrink(Is(1.0))
+            .min_height(Is(Some(0.0)))
+            .margin(Is((-triple_rule_side, 0.0, -@sf.panel_pad, 0.0)))
             |> ignore
           })
         })
@@ -1788,19 +1773,16 @@ fn triple_body_node(
       }
     })
     // the model picked is another station's: said over the foot, which borrows it rather than confirming
-    all_of.show(fn() { field(v(), "borrow") is Some(Object(_)) }, fn(bw) {
-      bw.box(fn(n) {
-        @sf.style_node(n, fn() { triple_borrow })
-        @sf.words_node(n, fn() {
-          let borrow = field(v(), "borrow")
-          if flag(borrow, "allowed") {
-            text(borrow, "note")
-          } else {
-            text(borrow, "why")
-          }
-        }, fn() { triple_note })
-        |> ignore
-      })
+    all_of.show(fn() { field(v(), "borrow") is Some(Object(_)) }, fn(n) {
+      @sf.style_node(n, fn() { triple_borrow })
+      @sf.words_node(n, fn() {
+        let borrow = field(v(), "borrow")
+        if flag(borrow, "allowed") {
+          text(borrow, "note")
+        } else {
+          text(borrow, "why")
+        }
+      }, fn() { triple_note })
       |> ignore
     })
   })
@@ -2482,17 +2464,13 @@ fn triple_model_row_node(
               .min_width(Is(Some(0.0)))
               |> ignore
               // (giving way to the name where the row is short: what the name leaves of it, cut short)
-              nl.show(fn() { usual() != "" }, fn(u) {
-                u.box(fn(ur) {
-                  @sf.style_node(ur, fn() { triple_usual_room }, in_row=true)
-                  @sf.on_baseline(ur, Ui, Meta)
-                  .shrink(Is(1.0))
-                  .min_width(Is(Some(0.0)))
-                  .clips(Is(true))
-                  |> ignore
-                  @sf.words_node(ur, usual, fn() { triple_usual }).cuts(Is(true)).min_width(Is(Some(0.0))).allow_ellipsis(Is(true)) |> ignore
-                })
+              nl.show(fn() { usual() != "" }, fn(ur) {
+                @sf.style_node(ur, fn() { triple_usual_room }, in_row=true)
+                @sf.on_baseline(ur, Ui, Meta)
+                .min_width(Is(Some(0.0)))
+                .clips(Is(true))
                 |> ignore
+                @sf.words_node(ur, usual, fn() { triple_usual }).cuts(Is(true)).min_width(Is(Some(0.0))).allow_ellipsis(Is(true)) |> ignore
               }, along_row=true)
             })
             |> ignore
@@ -2640,16 +2618,13 @@ fn triple_combo_row_node(
               |> ignore
               // (giving way to the name where the row is short: cut short, all of it where the name leaves no room; its
               // capsule's sides too, which would else stand over what is at the row's end)
-              nl.show(fn() { how() != "" }, fn(h) {
-                h.box(fn(cr) {
-                  @sf.style_node(cr, fn() { triple_combo_room }, in_row=true)
-                  cr.shrink(Is(1.0)).min_width(Is(Some(0.0))).clips(Is(true)) |> ignore
-                  cr.box(fn(cap) {
-                    @sf.style_node(cap, fn() { triple_combo }, in_row=true)
-                    cap.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-                    @sf.words_node(cap, how, fn() { triple_combo_words }).cuts(Is(true)).min_width(Is(Some(0.0))).allow_ellipsis(Is(true)) |> ignore
-                  })
-                  |> ignore
+              nl.show(fn() { how() != "" }, fn(cr) {
+                @sf.style_node(cr, fn() { triple_combo_room }, in_row=true)
+                cr.min_width(Is(Some(0.0))).clips(Is(true)) |> ignore
+                cr.box(fn(cap) {
+                  @sf.style_node(cap, fn() { triple_combo }, in_row=true)
+                  cap.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+                  @sf.words_node(cap, how, fn() { triple_combo_words }).cuts(Is(true)).min_width(Is(Some(0.0))).allow_ellipsis(Is(true)) |> ignore
                 })
                 |> ignore
               }, along_row=true)
@@ -3274,7 +3249,7 @@ let triple_combo_room : @ui.Style = triple_usual_room.then(@ui.css("min_w=S0 cli
 ///|
 /// Its room: right after the name, what the name leaves of the row.
 // kept across runs: a value (no field of it changes)
-let triple_usual_room : @ui.Style = @ui.style(row=true, w=@sf.grow)
+let triple_usual_room : @ui.Style = @ui.css("row")
 
 ///|
 /// A model's name with its `usualText` right after it, aligned from the top so `usualText` sits on the first line's

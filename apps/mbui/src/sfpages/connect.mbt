@@ -1192,8 +1192,7 @@ pub fn cd_mode_dialog(core : Core, station : String, item : Json?) -> Unit {
       // (what switching does, one notice for the way chosen: another way's comes in its place whole, none when it does
       // nothing)
       v.show(fn() { effects().length() > 0 }, fn(sh) {
-        sh.pick(effects, fn(s, list) {
-        s.box(fn(a) {
+        sh.pick(effects, fn(a, list) {
           @sf.style_node(a, fn() { cd_amber.then(@ui.style(bg=Data(@sf.theme().p.amber_bg))) })
           @sf.words_node(a, fn() { @sf.t("web-pages.connect.afterChange") }, fn() { cd_amber_title }) |> ignore
           a.box(fn(l) {
@@ -1210,8 +1209,6 @@ pub fn cd_mode_dialog(core : Core, station : String, item : Json?) -> Unit {
             })
           })
           |> ignore
-        })
-        |> ignore
         })
       })
     },

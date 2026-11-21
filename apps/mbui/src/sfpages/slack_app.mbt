@@ -447,28 +447,25 @@ fn sa_form_node(
     d.icon.get() != ""
   }
   @sf.page_card_node(p, footed=true, fn(k) {
-    k.show(fn() { sa_approve.get(me) is Some(_) }, fn(a) {
-      a.box(fn(b) {
-        @sf.style_node(b, fn() { sa_blue })
-        b.ground(By(fn() { @sf.theme().p.blue_bg })) |> ignore
-        @sf.icon_node(b, "shield-check", cd_icon, By(fn() { @sf.theme().p.blue })) |> ignore
-        b.box(fn(w) {
-          @sf.style_node(w, fn() { cd_effect_words }, in_row=true)
-          @sf.words_node(w, fn() { @sf.t("web-pages.slackApp.approveNote") }, fn() { sa_blue_words }) |> ignore
-        })
-        |> ignore
-        @sf.button_node(
-          b,
-          fn() { @sf.t("web-pages.slackApp.approve") },
-          fn() {
-            let install = sa_approve.get(me).unwrap_or("")
-            sa_approve.remove(me)
-            (core.open_link)(install)
-          },
-          tone=Primary,
-        )
-        |> ignore
+    k.show(fn() { sa_approve.get(me) is Some(_) }, fn(b) {
+      @sf.style_node(b, fn() { sa_blue })
+      b.ground(By(fn() { @sf.theme().p.blue_bg })) |> ignore
+      @sf.icon_node(b, "shield-check", cd_icon, By(fn() { @sf.theme().p.blue })) |> ignore
+      b.box(fn(w) {
+        @sf.style_node(w, fn() { cd_effect_words }, in_row=true)
+        @sf.words_node(w, fn() { @sf.t("web-pages.slackApp.approveNote") }, fn() { sa_blue_words }) |> ignore
       })
+      |> ignore
+      @sf.button_node(
+        b,
+        fn() { @sf.t("web-pages.slackApp.approve") },
+        fn() {
+          let install = sa_approve.get(me).unwrap_or("")
+          sa_approve.remove(me)
+          (core.open_link)(install)
+        },
+        tone=Primary,
+      )
       |> ignore
     })
     app_fields_node(k, core, d, sections, fn() { sa_column(page_w()) - 2.0 * sa_card_in }, tips)

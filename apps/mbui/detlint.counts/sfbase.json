@@ -40,9 +40,6 @@
       "src/sfbase/viewer.mbt": 2,
       "src/sfbase/viewer_tree.mbt": 5,
       "src/sfbase/workspace_switch.mbt": 2
-    },
-    "structure-box": {
-      "src/sfbase/viewer_tree.mbt": 1
     }
   },
   "excused": {

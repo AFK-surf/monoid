@@ -576,56 +576,50 @@ fn place_side_node(
     side_top_node(q, fn() { at().brand })
     // the band (NavAction): 添加 where the viewer may add one, the update at its end where one is offered; none where
     // neither is
-    q.show(fn() { action() is Some(_) || update_shown() }, fn(k) {
-      k.box(fn(band) {
-        // (on the tape, as the settings' band: in the panel's top corner, its row kept off that corner by the update's
-        // room, which the update's round key, where one is offered, is concentric with)
-        let tape = list_at is Tape
-        @sf.style_node(band, fn() { if tape { band_new_tape(at=band_at()) } else { update_band(at=band_at()) } })
-        band.box(fn(main) {
-          @sf.style_node(main, fn() { side_full }, in_row=true)
-          if tape {
-            main.margin(By(fn() { (0.0, 0.0, if update_shown() { 0.0 } else { update_key_side }, 0.0) })) |> ignore
-          }
-          main.show(fn() { action() is Some(_) }, fn(a) {
-            // (what it puts up beside the row pressed: the row's box)
-            a.box(fn(o) {
-              o.row(Is(true)).grow(Is(1.0)) |> ignore
-              @sf.band_row_node(o, fn() { false }, label, fn() {
-                match @signals.untracked(action) {
-                  Some(go) => go(Node(o))
-                  None => ()
-                }
-              }, list_at, fn(b) {
-                @sf.icon_node(b, "plus", @sf.theme().chat_list.band_icon, By(fn() { @sf.theme().p.muted })) |> ignore
-                @sf.nav_words_node(b, label)
-              })
-            })
-            |> ignore
+    q.show(fn() { action() is Some(_) || update_shown() }, fn(band) {
+      // (on the tape, as the settings' band: in the panel's top corner, its row kept off that corner by the update's
+      // room, which the update's round key, where one is offered, is concentric with)
+      let tape = list_at is Tape
+      @sf.style_node(band, fn() { if tape { band_new_tape(at=band_at()) } else { update_band(at=band_at()) } })
+      band.box(fn(main) {
+        @sf.style_node(main, fn() { side_full }, in_row=true)
+        if tape {
+          main.margin(By(fn() { (0.0, 0.0, if update_shown() { 0.0 } else { update_key_side }, 0.0) })) |> ignore
+        }
+        main.show(fn() { action() is Some(_) }, fn(o) {
+          // (what it puts up beside the row pressed: the row's box)
+          o.row(Is(true)).grow(Is(1.0)) |> ignore
+          @sf.band_row_node(o, fn() { false }, label, fn() {
+            match @signals.untracked(action) {
+              Some(go) => go(Node(o))
+              None => ()
+            }
+          }, list_at, fn(b) {
+            @sf.icon_node(b, "plus", @sf.theme().chat_list.band_icon, By(fn() { @sf.theme().p.muted })) |> ignore
+            @sf.nav_words_node(b, label)
           })
-        })
-        |> ignore
-        band.show(update_shown, fn(u) {
-          @sf.update_key_node(
-            u,
-            tips,
-            update_key_side,
-            update_key_mark,
-            fn() { update_said().0 },
-            fn() { update_said().1 },
-            fn() { update_said().2 },
-            fn() {
-              match update_now() {
-                Coming(_, part) => Some(part)
-                _ => None
-              }
-            },
-            fn() { update_pressed(src) },
-            offered=fn() { update_now() is Offered(_, ..) },
-          )
         })
       })
       |> ignore
+      band.show(update_shown, fn(u) {
+        @sf.update_key_node(
+          u,
+          tips,
+          update_key_side,
+          update_key_mark,
+          fn() { update_said().0 },
+          fn() { update_said().1 },
+          fn() { update_said().2 },
+          fn() {
+            match update_now() {
+              Coming(_, part) => Some(part)
+              _ => None
+            }
+          },
+          fn() { update_pressed(src) },
+          offered=fn() { update_now() is Offered(_, ..) },
+        )
+      })
     })
     // the list under the band (side_scroll's): what scrolls, and takes the hand, starts at the rail's edge: the
     // sidebar's first 8 reach over the rail's empty side, which its places' keys take; its rows where they were, in from

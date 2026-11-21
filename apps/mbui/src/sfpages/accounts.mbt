@@ -674,8 +674,8 @@ fn profile_sign_in_node(
           },
           bad=fn() { if state() == "failed" { @sf.t("web-pages.profiles.lastFailed", args=[("error", text(job(), "error"))]) } else { "" } },
         )
-        q.show(fn() { open.command.get() && command() != "" }, fn(x) {
-          x.box(fn(b) { @sf.code_block_node(b, command, fn() { "" }, fn() { None }, command=true) }) |> ignore
+        q.show(fn() { open.command.get() && command() != "" }, fn(b) {
+          @sf.code_block_node(b, command, fn() { "" }, fn() { None }, command=true)
         })
         @sf.card_foot_node(q, fn(f) {
           // (登录 at the foot's start, the way on the machine at its end; where the two have not the room on one line,
@@ -930,15 +930,12 @@ pub fn login_steps_node(
         let filled = fn() { provider() == "OpenCode" || provider() == "Kimi" || code() == "" }
         q.box(fn(d) {
           @sf.style_node(d, fn() { pf_device })
-          d.show(at_once=true, fn() { code() != "" }, fn(x) {
-            x.box(fn(c) {
-              @sf.style_node(c, fn() { pf_device_code })
-              c.box(fn(w) {
-                w
-                .words_runs(By(fn() { [@ui.span(code(), mono=true)] }), look=@ui.style_words(pf_device_code_words))
-                .ink(By(fn() { @ui.style_ink(pf_device_code_words) }))
-                |> ignore
-              })
+          d.show(at_once=true, fn() { code() != "" }, fn(c) {
+            @sf.style_node(c, fn() { pf_device_code })
+            c.box(fn(w) {
+              w
+              .words_runs(By(fn() { [@ui.span(code(), mono=true)] }), look=@ui.style_words(pf_device_code_words))
+              .ink(By(fn() { @ui.style_ink(pf_device_code_words) }))
               |> ignore
             })
             |> ignore
@@ -1035,8 +1032,8 @@ fn profile_trouble_node(
       note=fn() { if link() == "" { next() } else { "" } },
       bad=fn() { if link() == "" { bad() } else { "" } },
     )
-    k.show(at_once=true, fn() { action() == "command" }, fn(x) {
-      x.box(fn(b) { @sf.code_block_node(b, fn() { text(p(), "loginCommand") }, fn() { "" }, fn() { None }, command=true) }) |> ignore
+    k.show(at_once=true, fn() { action() == "command" }, fn(b) {
+      @sf.code_block_node(b, fn() { text(p(), "loginCommand") }, fn() { "" }, fn() { None }, command=true)
     })
     // (the link its words give to open, on its one line with its copy key: the page's words cannot be selected)
     k.show(at_once=true, fn() { link() != "" }, fn(x) {
@@ -1838,16 +1835,13 @@ fn profile_settings_node(
     if only {
       @sf.section_node(x, fn() { @sf.t("web-pages.profiles.decisionModels") }, fn(sec) {
         @sf.loose_node(sec, fn(l) {
-          l.show(at_once=true, fn() { strings(p(), "decisionModels").length() > 0 }, fn(c) {
-            c.box(fn(chips) {
-              @sf.style_node(chips, fn() { pf_chips })
-              chips.wraps(Is(Some(0.0))) |> ignore
-              chips.each(fn() { strings(p(), "decisionModels") }, fn(m) { m }, fn(chip, m) {
-                @sf.style_node(chip, fn() { pf_chip })
-                @sf.words_node(chip, fn() { m.get() }, fn() { pf_chip_words }) |> ignore
-              })
+          l.show(at_once=true, fn() { strings(p(), "decisionModels").length() > 0 }, fn(chips) {
+            @sf.style_node(chips, fn() { pf_chips })
+            chips.wraps(Is(Some(0.0))) |> ignore
+            chips.each(fn() { strings(p(), "decisionModels") }, fn(m) { m }, fn(chip, m) {
+              @sf.style_node(chip, fn() { pf_chip })
+              @sf.words_node(chip, fn() { m.get() }, fn() { pf_chip_words }) |> ignore
             })
-            |> ignore
           })
           l.show(at_once=true, fn() { text(p(), "decisionText") != "" }, fn(w) { @sf.words_node(w, fn() { text(p(), "decisionText") }, fn() { pf_muted }) |> ignore })
         })
@@ -2267,24 +2261,18 @@ fn profile_models_node(
   v.box(fn(body) {
     @sf.style_node(body, fn() { pf_models_body.then(@sf.panel_words_in_node(body)) })
     body.gap(Is(@sf.panel_parts_gap_node(body))).shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-    body.show(at_once=true, fn() { flag(p(), "canAddModel") }, fn(a) {
-      a.box(fn(b) {
-        @sf.style_node(b, fn() { pf_models_add })
-        add_model_node(b, core, address, id)
-      })
-      |> ignore
+    body.show(at_once=true, fn() { flag(p(), "canAddModel") }, fn(b) {
+      @sf.style_node(b, fn() { pf_models_add })
+      add_model_node(b, core, address, id)
     })
     @sf.capped_node(body, fn() { pf_models_most }, fn(col) {
       @sf.style_node(col, fn() { pf_model_rows.then(pf_models_foot()) })
       col.each(shown_series, fn(s) { s.0 }, fn(sb, s) {
         // (each row as wide as what it holds, cut short where the panel has not the room: its id's tip just past it)
         @sf.style_node(sb, fn() { pf_model_series })
-        sb.show(at_once=true, fn() { shown_series().length() > 1 }, fn(h) {
-          h.box(fn(r) {
-            @sf.style_node(r, fn() { pf_series_room })
-            @sf.words_node(r, fn() { s.get().0 }, fn() { pf_series_words }) |> ignore
-          })
-          |> ignore
+        sb.show(at_once=true, fn() { shown_series().length() > 1 }, fn(r) {
+          @sf.style_node(r, fn() { pf_series_room })
+          @sf.words_node(r, fn() { s.get().0 }, fn() { pf_series_words }) |> ignore
         })
         sb.each(fn() { s.get().1 }, fn(m) { m }, fn(row, m) {
           let m = m.untracked()

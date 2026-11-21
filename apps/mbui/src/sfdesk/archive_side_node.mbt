@@ -388,12 +388,9 @@ fn archive_row_side_node(
           })
           |> ignore
           // (its clock while pointed at; always to a finger, which hovers over nothing; how it was archived on its tip)
-          m.show(fn() { !@sf.pointer_rests() || @sf.lit_in_node(holder) }, fn(e) {
-            e.box(fn(clock) {
-              @sf.words_node(clock, fn() { text(v(), "clock") }, fn() { arch_clock }) |> ignore
-              @sf.tip_node(tips, clock, fn() { text(v(), "how") }, within=true) |> ignore
-            })
-            |> ignore
+          m.show(fn() { !@sf.pointer_rests() || @sf.lit_in_node(holder) }, fn(clock) {
+            @sf.words_node(clock, fn() { text(v(), "clock") }, fn() { arch_clock }) |> ignore
+            @sf.tip_node(tips, clock, fn() { text(v(), "how") }, within=true) |> ignore
           })
         })
       },

@@ -1940,17 +1940,14 @@ fn viewer_note_node(
   note.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
   note.show(fn() { stage() == Facts }, fn(f) { viewer_facts_node(f, src, vw) })
   note.show(fn() { stage() == Coming }, fn(f) { viewer_coming_node(f, vw) })
-  note.show(fn() { stage() == Failed }, fn(f) {
-    f.box(fn(w) {
-      w
-      .words(By(fn() { pv_fill("android-chat.file.loadFailed", [("error", vw.error.get().unwrap_or(""))]) }))
-      .words_look(By(fn() {
-        let size = @sf.theme().t.body
-        { size, weight: 400, line: @ui.tree_theme().text_line * size, wrap: true, tracking: @view.letters_own, balance: false, max_lines: 0 }
-      }))
-      .ink(By(fn() { @sf.theme().p.muted }))
-      |> ignore
-    })
+  note.show(fn() { stage() == Failed }, fn(w) {
+    w
+    .words(By(fn() { pv_fill("android-chat.file.loadFailed", [("error", vw.error.get().unwrap_or(""))]) }))
+    .words_look(By(fn() {
+      let size = @sf.theme().t.body
+      { size, weight: 400, line: @ui.tree_theme().text_line * size, wrap: true, tracking: @view.letters_own, balance: false, max_lines: 0 }
+    }))
+    .ink(By(fn() { @sf.theme().p.muted }))
     |> ignore
   })
   note.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore

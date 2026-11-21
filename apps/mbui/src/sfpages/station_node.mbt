@@ -1563,14 +1563,11 @@ fn station_logins_node(b : @view.View, core : Core, station : String, online : (
   let tools = fn() { items(view(), "tools") }
   b.show(fn() { flag(view(), "supported") && active().length() + tools().length() > 0 }, fn(p) {
     st_section_node(p, fn() { @sf.t("web-main.logins.title") }, note=fn() { @sf.t("web-main.logins.lead") }, fn(sec) {
-      sec.show(fn() { active().length() > 0 }, fn(k) {
-        k.box(fn(cards) {
-          @sf.style_node(cards, fn() { lg_cards })
-          cards.each(active, fn(id) { id }, fn(c, id) {
-            login_card_node(c, core, station, id.untracked(), place="station")
-          })
+      sec.show(fn() { active().length() > 0 }, fn(cards) {
+        @sf.style_node(cards, fn() { lg_cards })
+        cards.each(active, fn(id) { id }, fn(c, id) {
+          login_card_node(c, core, station, id.untracked(), place="station")
         })
-        |> ignore
       })
       sec.show(fn() { tools().length() > 0 }, fn(gp) {
         @sf.group_node(gp, fn(g) {
@@ -1895,17 +1892,14 @@ fn station_env_editor_node(k : @view.View, core : Core, address : String, field_
       }
       out
     }
-    e.show(fn() { problems().length() > 0 }, fn(w) {
-      w.box(fn(ps) {
-        @sf.style_node(ps, fn() { st_env_problems })
-        ps.each(problems, fn(x) { x.0 }, fn(l, x) {
-          @sf.words_node(l, fn() {
-            @sf.t("web-pages.stations.agentEnvLine", args=[("line", x.get().0.to_string()), ("problem", x.get().1)])
-          }, fn() { if x.get().2 { st_problem_bad } else { st_problem } })
-          |> ignore
-        })
+    e.show(fn() { problems().length() > 0 }, fn(ps) {
+      @sf.style_node(ps, fn() { st_env_problems })
+      ps.each(problems, fn(x) { x.0 }, fn(l, x) {
+        @sf.words_node(l, fn() {
+          @sf.t("web-pages.stations.agentEnvLine", args=[("line", x.get().0.to_string()), ("problem", x.get().1)])
+        }, fn() { if x.get().2 { st_problem_bad } else { st_problem } })
+        |> ignore
       })
-      |> ignore
     })
     // (its buttons at its foot's end, reaching its foot corners: card_foot's at_end)
     e.box(fn(a) {
@@ -2281,12 +2275,9 @@ fn software_row_node(
         @sf.style_node(n, fn() { sw_name_line }, in_row=true)
         n.shrink(Is(0.0)) |> ignore
         @sf.words_node(n, fn() { text(v(), "name") }, fn() { sw_name }) |> ignore
-        n.show(fn() { text(v(), "channel") == "beta" && !switches() }, fn(t) {
-          t.box(fn(tag) {
-            @sf.style_node(tag, fn() { sw_beta })
-            @sf.words_node(tag, fn() { @sf.t("web-main.versions.beta") }, fn() { sw_beta_words }) |> ignore
-          })
-          |> ignore
+        n.show(fn() { text(v(), "channel") == "beta" && !switches() }, fn(tag) {
+          @sf.style_node(tag, fn() { sw_beta })
+          @sf.words_node(tag, fn() { @sf.t("web-main.versions.beta") }, fn() { sw_beta_words }) |> ignore
         })
       })
       |> ignore
@@ -2320,53 +2311,50 @@ fn software_row_node(
         @sf.words_node(w, fn() { text(v(), "message") }, fn() { sw_note }) |> ignore
       })
       // the station's own: which releases it takes, and whether it takes them by itself
-      u.show(switches, fn(w) {
-        w.box(fn(sw) {
-          @sf.style_node(sw, fn() { sw_switches })
-          sw.show(fn() { beta() && has(v(), "channel") }, fn(l) {
-            software_switch_node(
-              l,
-              tips,
-              fn() { @sf.t("web-main.versions.beta") },
-              fn() { @sf.t("web-main.versions.betaStation") },
-              fn() { text(v(), "channel") == "beta" },
-              fn(now) { call("software.channel", [("channel", str(if now { "beta" } else { "stable" }))]) },
-              fn() { is_doing(core, ["software.channel"], [("station", station)]) },
-              busy,
-              fn() { @sf.t("web-main.versions.betaNote") },
-            )
-          })
-          sw.show(fn() { has(v(), "auto") }, fn(l) {
-            software_switch_node(
-              l,
-              tips,
-              fn() { @sf.t("web-main.versions.auto") },
-              fn() { @sf.t("web-main.versions.auto") },
-              fn() { flag(v(), "auto") },
-              fn(now) { call("software.auto", [("on", Json::boolean(now))]) },
-              fn() { is_doing(core, ["software.auto"], [("station", station)]) },
-              busy,
-              fn() { @sf.t(if flag(v(), "idleOnly") { "web-main.versions.autoIdleTip" } else { "web-main.versions.autoTip" }) },
-            )
-          })
-          // back to a release before (the ones its channel's feed names): which one picked in a menu, then asked
-          sw.show(fn() { software_earlier(v()).length() > 0 }, fn(l) {
-            // (its chevron in the words' own ink: the link's default, the theme's blue, is not the Link words' colour here)
-            @sf.link_opens_node(l, fn() { @sf.t("web-main.versions.back") }, chevron=true, ink=fn() { @ui.style_ink(@sf.link) }, on=fn() { !busy() }, fn(b) {
-              let (x, y, w, h) = b.placed_window_now()
-              let now = @signals.untracked(v)
-              @sf.menu(
-                software_earlier(now).map(fn(version) {
-                  Some(@sf.menu_item_of(version, further=true, fn() { software_back_ask(now, version, call) }))
-                }),
-                from=At(x, y, w, h),
-                title=@sf.t("web-main.versions.backTo"),
-              )
-            })
-            |> ignore
-          })
+      u.show(switches, fn(sw) {
+        @sf.style_node(sw, fn() { sw_switches })
+        sw.show(fn() { beta() && has(v(), "channel") }, fn(l) {
+          software_switch_node(
+            l,
+            tips,
+            fn() { @sf.t("web-main.versions.beta") },
+            fn() { @sf.t("web-main.versions.betaStation") },
+            fn() { text(v(), "channel") == "beta" },
+            fn(now) { call("software.channel", [("channel", str(if now { "beta" } else { "stable" }))]) },
+            fn() { is_doing(core, ["software.channel"], [("station", station)]) },
+            busy,
+            fn() { @sf.t("web-main.versions.betaNote") },
+          )
         })
-        |> ignore
+        sw.show(fn() { has(v(), "auto") }, fn(l) {
+          software_switch_node(
+            l,
+            tips,
+            fn() { @sf.t("web-main.versions.auto") },
+            fn() { @sf.t("web-main.versions.auto") },
+            fn() { flag(v(), "auto") },
+            fn(now) { call("software.auto", [("on", Json::boolean(now))]) },
+            fn() { is_doing(core, ["software.auto"], [("station", station)]) },
+            busy,
+            fn() { @sf.t(if flag(v(), "idleOnly") { "web-main.versions.autoIdleTip" } else { "web-main.versions.autoTip" }) },
+          )
+        })
+        // back to a release before (the ones its channel's feed names): which one picked in a menu, then asked
+        sw.show(fn() { software_earlier(v()).length() > 0 }, fn(l) {
+          // (its chevron in the words' own ink: the link's default, the theme's blue, is not the Link words' colour here)
+          @sf.link_opens_node(l, fn() { @sf.t("web-main.versions.back") }, chevron=true, ink=fn() { @ui.style_ink(@sf.link) }, on=fn() { !busy() }, fn(b) {
+            let (x, y, w, h) = b.placed_window_now()
+            let now = @signals.untracked(v)
+            @sf.menu(
+              software_earlier(now).map(fn(version) {
+                Some(@sf.menu_item_of(version, further=true, fn() { software_back_ask(now, version, call) }))
+              }),
+              from=At(x, y, w, h),
+              title=@sf.t("web-main.versions.backTo"),
+            )
+          })
+          |> ignore
+        })
       })
     })
   })
@@ -2459,13 +2447,10 @@ fn software_end_node(
   let words = fn(said : () -> String, look : @ui.TextStyle) { @sf.words_node(e, said, fn() { look }) |> ignore }
   match end {
     "updating" => {
-      e.show(fn() { field(v(), "percent") is Some(Number(_, ..)) }, fn(b) {
-        b.box(fn(bar) {
-          bar.width(Is(Some(sw_progress_w))) |> ignore
-          @sf.progress_node(bar, fn() { Some(number(v(), "percent") / 100.0) }, fn() { @ui.tree_theme().line }, fn() {
-            @sf.theme().p.accent
-          })
-          |> ignore
+      e.show(fn() { field(v(), "percent") is Some(Number(_, ..)) }, fn(bar) {
+        bar.width(Is(Some(sw_progress_w))) |> ignore
+        @sf.progress_node(bar, fn() { Some(number(v(), "percent") / 100.0) }, fn() { @ui.tree_theme().line }, fn() {
+          @sf.theme().p.accent
         })
         |> ignore
       })

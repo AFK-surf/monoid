@@ -28,71 +28,68 @@ fn message_quotes_node(
   fly? : SentFly = sent_fly_alone,
 ) -> Unit {
   let place = message_files_at(here, said)
-  v.show(fn() { quotes().length() > 0 }, fn(s) {
-    s.box(fn(cards) {
-      @sf.style_node(cards, fn() {
-        if mine {
-          quote_cards_end.then(@ui.style(max_w=Fixed(mine_most_of((here.width)()))))
-        } else {
-          quote_cards
-        }
-      })
-      let keys = fn() {
-        let place = at()
-        quotes().mapi(fn(i, q) { place + "|" + q.ts + "/" + i.to_string() })
+  v.show(fn() { quotes().length() > 0 }, fn(cards) {
+    @sf.style_node(cards, fn() {
+      if mine {
+        quote_cards_end.then(@ui.style(max_w=Fixed(mine_most_of((here.width)()))))
+      } else {
+        quote_cards
       }
-      cards.each(keys, fn(k) { k }, fn(slot, k) {
-        // (its row as wide as the cards' column, as the old card is, w=Full in it: quote_box)
-        @sf.style_node(slot, fn() { quote_card_row })
-        // (sent from here a moment ago: the id its card in the composer was shared by, taken once as it is made)
-        let made_i = @signals.untracked(fn() { keys().search(k.get()).unwrap_or(0) })
-        let shared_id = shared_ids.get(made_i).unwrap_or("")
-        // (read through its key, never kept: its place among the message's quotes)
-        let i = fn() { keys().search(k.get()).unwrap_or(0) }
-        let q = fn() -> Quote {
-          match quotes().get(i()) {
-            Some(q) => q
-            None => { author: "", text: "", comment: "", ts: "", role: "", file: "" }
-          }
+    })
+    let keys = fn() {
+      let place = at()
+      quotes().mapi(fn(i, q) { place + "|" + q.ts + "/" + i.to_string() })
+    }
+    cards.each(keys, fn(k) { k }, fn(slot, k) {
+      // (its row as wide as the cards' column, as the old card is, w=Full in it: quote_box)
+      @sf.style_node(slot, fn() { quote_card_row })
+      // (sent from here a moment ago: the id its card in the composer was shared by, taken once as it is made)
+      let made_i = @signals.untracked(fn() { keys().search(k.get()).unwrap_or(0) })
+      let shared_id = shared_ids.get(made_i).unwrap_or("")
+      // (read through its key, never kept: its place among the message's quotes)
+      let i = fn() { keys().search(k.get()).unwrap_or(0) }
+      let q = fn() -> Quote {
+        match quotes().get(i()) {
+          Some(q) => q
+          None => { author: "", text: "", comment: "", ts: "", role: "", file: "" }
         }
-        let own = fn() { quote_file(q(), files()) }
-        let jumps = fn() { here.jump is Some(_) && q().ts != "" }
-        let card = @sf.quote_card_node(
-          slot,
-          here.tips,
-          fn() { q().author },
-          fn() { q().text },
-          fn() { q().role },
-          fn() { q().comment },
-          jumps,
-          fn() {
-            match here.jump {
-              Some(go) => {
-                let now = q()
-                if now.ts != "" {
-                  go(now.ts, now.text)
-                }
+      }
+      let own = fn() { quote_file(q(), files()) }
+      let jumps = fn() { here.jump is Some(_) && q().ts != "" }
+      let card = @sf.quote_card_node(
+        slot,
+        here.tips,
+        fn() { q().author },
+        fn() { q().text },
+        fn() { q().role },
+        fn() { q().comment },
+        jumps,
+        fn() {
+          match here.jump {
+            Some(go) => {
+              let now = q()
+              if now.ts != "" {
+                go(now.ts, now.text)
               }
-              None => ()
             }
-          },
-          pictured=fn() { own() is Some(_) },
-          picture=fn(b) {
-            let n = @signals.untracked(i)
-            quote_picture_node(b, src, here, place, own, fn() { at() + "/q:" + n.to_string() }, fly~, part=@sfbase.quote_picture_key(n), flies_of=fn() {
-              flies_of(@sfbase.quote_picture_key(n))
-            })
-          },
-        )
-        // (the card itself from the composer's it was sent from, on its words' bubble's way (mine_bubble_node: the same
-        // flight, as long as it is far, its rise as late): one box from that card's (its ✕ and all) to this one's, what
-        // each holds at its own size in it, the composer's going as this one's comes (View::shared's `container`;
-        // sf/motion.mbt's kind 4))
-        if shared_id != "" {
-          fly.shares(card, sent_quote_part(made_i), shared_id)
-        }
-      })
-      |> ignore
+            None => ()
+          }
+        },
+        pictured=fn() { own() is Some(_) },
+        picture=fn(b) {
+          let n = @signals.untracked(i)
+          quote_picture_node(b, src, here, place, own, fn() { at() + "/q:" + n.to_string() }, fly~, part=@sfbase.quote_picture_key(n), flies_of=fn() {
+            flies_of(@sfbase.quote_picture_key(n))
+          })
+        },
+      )
+      // (the card itself from the composer's it was sent from, on its words' bubble's way (mine_bubble_node: the same
+      // flight, as long as it is far, its rise as late): one box from that card's (its ✕ and all) to this one's, what
+      // each holds at its own size in it, the composer's going as this one's comes (View::shared's `container`;
+      // sf/motion.mbt's kind 4))
+      if shared_id != "" {
+        fly.shares(card, sent_quote_part(made_i), shared_id)
+      }
     })
     |> ignore
   })

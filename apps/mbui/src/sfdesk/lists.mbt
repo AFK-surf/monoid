@@ -54,56 +54,53 @@ fn lists_foot_h(src : Source, workspace : () -> Workspace?) -> Double {
 fn lists_foot_node(o : @view.View, src : Source, workspace : () -> Workspace?, at : () -> SideAt) -> Unit {
   let trouble = fn() { foot_trouble_of(src, workspace) }
   let jobs = fn() { foot_jobs_of(src, workspace) }
-  o.show(at_once=true, fn() { trouble() is Some(_) || jobs() > 0 }, fn(f) {
-    f.box(fn(band) {
-      @sf.style_node(band, fn() { foot_band })
-      band.ground(By(fn() { @sf.mix(apart_ground(), at().band, @sf.theme().p.sidebar) })) |> ignore
-      band.show(at_once=true, fn() { trouble() is Some(_) }, fn(k) {
-        // (what the band's row leaves to the chip at its end is the trouble's: its row w=Full in it, as the old foot's)
-        k.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-        let words = fn() { text(trouble(), "text") }
-        // (@sf.count_chip_node's Row: the stations' glyph and the words, red while one fails, the pointer's ground under
-        // the hand)
-        @sf.count_chip_node(
-          k,
-          words,
-          fn(_) { @sfbase.go_place("stations") |> ignore },
-          lead=fn(r) {
-            @sf.station_glyph_node(
-              r,
-              fn() {
-                match workspace() {
-                  Some(w) => @sfbase.stations_at_glance(src, w.id).0
-                  None => { online: 0, dim: 0, failing: 0, working: 0, asleep: false, connecting: 0 }
-                }
-              },
-              foot_glyph,
-              fn() { @sf.theme().p.text },
-              fn() { @sf.theme().p.red },
-            )
-            |> ignore
-          },
-          alarm=fn() { text(trouble(), "state") == "error" },
-          look=Row,
-        )
-        |> ignore
-      })
-      band.show(at_once=true, fn() { jobs() > 0 }, fn(k) {
-        // (@sf.count_chip_node's Small, a plain button: its press opens or closes the 运行中 list beside it, presented
-        // over it; its dot the online green)
-        let chip = @sf.count_chip_node(
-          k,
-          fn() { @sf.t("web-main.jobs.chip", args=[("n", jobs().to_string())]) },
-          fn(_) { wide.jobs_open.set(!wide.jobs_open.untracked()) },
-          dot=fn() { "online" },
-          look=Small,
-          // (read out as what it opens, as it was: the long-running services and jobs)
-          named=fn() { @sf.t("web-main.jobs.long") },
-        )
-        open_jobs_pop_node(chip, src, workspace)
-      })
+  o.show(at_once=true, fn() { trouble() is Some(_) || jobs() > 0 }, fn(band) {
+    @sf.style_node(band, fn() { foot_band })
+    band.ground(By(fn() { @sf.mix(apart_ground(), at().band, @sf.theme().p.sidebar) })) |> ignore
+    band.show(at_once=true, fn() { trouble() is Some(_) }, fn(k) {
+      // (what the band's row leaves to the chip at its end is the trouble's: its row w=Full in it, as the old foot's)
+      k.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+      let words = fn() { text(trouble(), "text") }
+      // (@sf.count_chip_node's Row: the stations' glyph and the words, red while one fails, the pointer's ground under
+      // the hand)
+      @sf.count_chip_node(
+        k,
+        words,
+        fn(_) { @sfbase.go_place("stations") |> ignore },
+        lead=fn(r) {
+          @sf.station_glyph_node(
+            r,
+            fn() {
+              match workspace() {
+                Some(w) => @sfbase.stations_at_glance(src, w.id).0
+                None => { online: 0, dim: 0, failing: 0, working: 0, asleep: false, connecting: 0 }
+              }
+            },
+            foot_glyph,
+            fn() { @sf.theme().p.text },
+            fn() { @sf.theme().p.red },
+          )
+          |> ignore
+        },
+        alarm=fn() { text(trouble(), "state") == "error" },
+        look=Row,
+      )
+      |> ignore
     })
-    |> ignore
+    band.show(at_once=true, fn() { jobs() > 0 }, fn(k) {
+      // (@sf.count_chip_node's Small, a plain button: its press opens or closes the 运行中 list beside it, presented
+      // over it; its dot the online green)
+      let chip = @sf.count_chip_node(
+        k,
+        fn() { @sf.t("web-main.jobs.chip", args=[("n", jobs().to_string())]) },
+        fn(_) { wide.jobs_open.set(!wide.jobs_open.untracked()) },
+        dot=fn() { "online" },
+        look=Small,
+        // (read out as what it opens, as it was: the long-running services and jobs)
+        named=fn() { @sf.t("web-main.jobs.long") },
+      )
+      open_jobs_pop_node(chip, src, workspace)
+    })
   })
 }
 

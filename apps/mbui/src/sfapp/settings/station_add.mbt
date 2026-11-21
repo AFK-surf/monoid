@@ -173,37 +173,31 @@ fn add_station_body(
   )
   let made = fn() { adding.made.get() is Some(_) }
   // the choice stays at the top
-  v.show(fn() { (now.offered)() && !made() }, fn(s) {
-    s.box(fn(b) {
-      @sf.style_node(b, fn() { @sf.panel_words_in_node(b).then(add_kind_room) })
-      add_choice_node(
-        b,
-        fn() { [tr("web-pages.settings.stations.kindNew"), tr("web-pages.settings.stations.kindExisting")] },
-        fn() { if adding.existing.get() { 1 } else { 0 } },
-        fn(i) { adding.existing.set(i == 1) },
-      )
-    })
-    |> ignore
+  v.show(fn() { (now.offered)() && !made() }, fn(b) {
+    @sf.style_node(b, fn() { @sf.panel_words_in_node(b).then(add_kind_room) })
+    add_choice_node(
+      b,
+      fn() { [tr("web-pages.settings.stations.kindNew"), tr("web-pages.settings.stations.kindExisting")] },
+      fn() { if adding.existing.get() { 1 } else { 0 } },
+      fn(i) { adding.existing.set(i == 1) },
+    )
   })
   // what the new machine will be, its managers' to choose (a member's is one that only runs tasks)
   if manager {
-    v.show(fn() { !made() && !((now.offered)() && adding.existing.get()) }, fn(s) {
-      s.box(fn(b) {
-        @sf.style_node(b, fn() { @sf.panel_words_in_node(b).then(add_mode_room) })
-        add_choice_node(
-          b,
-          fn() { [tr("web-pages.rigs.add.kind.full"), tr("web-pages.rigs.add.kind.tasks")] },
-          fn() { if adding.tasks.get() { 1 } else { 0 } },
-          fn(i) {
-            if (i == 1) != adding.tasks.untracked() {
-              adding.error.set("")
-              adding.here_error.set("")
-            }
-            adding.tasks.set(i == 1)
-          },
-        )
-      })
-      |> ignore
+    v.show(fn() { !made() && !((now.offered)() && adding.existing.get()) }, fn(b) {
+      @sf.style_node(b, fn() { @sf.panel_words_in_node(b).then(add_mode_room) })
+      add_choice_node(
+        b,
+        fn() { [tr("web-pages.rigs.add.kind.full"), tr("web-pages.rigs.add.kind.tasks")] },
+        fn() { if adding.tasks.get() { 1 } else { 0 } },
+        fn(i) {
+          if (i == 1) != adding.tasks.untracked() {
+            adding.error.set("")
+            adding.here_error.set("")
+          }
+          adding.tasks.set(i == 1)
+        },
+      )
     })
   }
   v.pick(now.joining, fn(b, joining) {
@@ -212,12 +206,9 @@ fn add_station_body(
     } else {
       // this machine, where it has none: added here, no command to run (before a command is made)
       if here_addable {
-        b.show(fn() { !made() && !adding.tasks.get() }, fn(s) {
-          s.box(fn(h) {
-            @sf.style_node(h, fn() { @sf.panel_words_in_node(h).then(here_room) })
-            add_this_machine_node(h, core, here, close)
-          })
-          |> ignore
+        b.show(fn() { !made() && !adding.tasks.get() }, fn(h) {
+          @sf.style_node(h, fn() { @sf.panel_words_in_node(h).then(here_room) })
+          add_this_machine_node(h, core, here, close)
         })
       }
       b.box(fn(n) {

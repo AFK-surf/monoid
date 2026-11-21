@@ -441,38 +441,32 @@ fn lists_band_node(
     })
     |> ignore
     // 待处理 under 新建对话 where the rail has no bell
-    band.show(at_once=true, fn() { workspace().map(fn(w) { todo_shown(src, w) }).unwrap_or(false) }, fn(k) {
-      k.box(fn(t) {
-        @sf.style_node(t, fn() { todo_box })
-        // (what 待处理's panel opens under: attention_node.mbt)
-        side_attention.val = Some(t)
-        t.owns(fn() {
-          match side_attention.val {
-            Some(v) if physical_equal(v, t) => side_attention.val = None
-            _ => ()
-          }
-        })
-        |> ignore
-        let n = fn() { workspace().map(fn(w) { todo_all(src, w) }).unwrap_or(0) }
-        @sf.band_row_node(t, fn() { wide.attention_open.get() }, fn() { @sf.t("web-main.attention.entry") }, fn() {
-          attention_set(!wide.attention_open.untracked())
-        }, list_at, fn(r) {
-          @sf.icon_node(r, "bell", @sf.theme().chat_list.band_icon, By(fn() { @sf.theme().p.muted })) |> ignore
-          @sf.nav_words_node(r, fn() { @sf.t("web-main.attention.entry") })
-          r.box(fn(slot) {
-            @sf.style_node(slot, fn() { todo_slot })
-            slot.show(at_once=true, fn() { n() > 0 }, fn(c) {
-              c.box(fn(count) {
-                @sf.style_node(count, fn() { todo_count })
-                @sf.words_node(count, fn() { n().to_string() }, fn() { todo_count_words }) |> ignore
-              })
-              |> ignore
-            })
-          })
-          |> ignore
-        })
+    band.show(at_once=true, fn() { workspace().map(fn(w) { todo_shown(src, w) }).unwrap_or(false) }, fn(t) {
+      @sf.style_node(t, fn() { todo_box })
+      // (what 待处理's panel opens under: attention_node.mbt)
+      side_attention.val = Some(t)
+      t.owns(fn() {
+        match side_attention.val {
+          Some(v) if physical_equal(v, t) => side_attention.val = None
+          _ => ()
+        }
       })
       |> ignore
+      let n = fn() { workspace().map(fn(w) { todo_all(src, w) }).unwrap_or(0) }
+      @sf.band_row_node(t, fn() { wide.attention_open.get() }, fn() { @sf.t("web-main.attention.entry") }, fn() {
+        attention_set(!wide.attention_open.untracked())
+      }, list_at, fn(r) {
+        @sf.icon_node(r, "bell", @sf.theme().chat_list.band_icon, By(fn() { @sf.theme().p.muted })) |> ignore
+        @sf.nav_words_node(r, fn() { @sf.t("web-main.attention.entry") })
+        r.box(fn(slot) {
+          @sf.style_node(slot, fn() { todo_slot })
+          slot.show(at_once=true, fn() { n() > 0 }, fn(count) {
+            @sf.style_node(count, fn() { todo_count })
+            @sf.words_node(count, fn() { n().to_string() }, fn() { todo_count_words }) |> ignore
+          })
+        })
+        |> ignore
+      })
     })
   })
   |> ignore

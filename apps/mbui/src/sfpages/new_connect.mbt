@@ -528,13 +528,10 @@ fn nc_team_node(k : @view.View, core : Core, f : NcFlow, view : () -> Json?, clo
           fn() { nc_act(core, f, "config") },
           fn(token) { nc_edit(core, f, obj([("config", str(token))])) },
         ))
-        s.show(fn() { teams().length() == 0 }, fn(m) {
-          m.box(fn(l) {
-            @sf.style_node(l, fn() { nc_manual_line })
-            @sf.words_node(l, fn() { @sf.t("web-pages.connect.noToken") }, fn() { nc_meta }) |> ignore
-            @sf.quiet_action_node(l, fn() { @sf.t("web-pages.connect.manualApp") }, fn() { nc_go(core, f, "manual", close) }) |> ignore
-          })
-          |> ignore
+        s.show(fn() { teams().length() == 0 }, fn(l) {
+          @sf.style_node(l, fn() { nc_manual_line })
+          @sf.words_node(l, fn() { @sf.t("web-pages.connect.noToken") }, fn() { nc_meta }) |> ignore
+          @sf.quiet_action_node(l, fn() { @sf.t("web-pages.connect.manualApp") }, fn() { nc_go(core, f, "manual", close) }) |> ignore
         })
       })
       |> ignore
@@ -594,27 +591,24 @@ fn nc_team_icon_node(m : @view.View, core : Core, f : NcFlow, owner : () -> Json
 /// Whose configuration token it is there (TokenOwner: their picture 16, their name and email, the workspace's address
 /// muted, 6 apart), `owner` as it is now, in the words' box `m` of its choice.
 fn nc_token_owner_node(m : @view.View, core : Core, f : NcFlow, owner : () -> Json?) -> Unit {
-  m.show(fn() { owner() is Some(Object(_)) }, fn(s) {
-    s.box(fn(l) {
-      @sf.style_node(l, fn() { nc_owner_line })
-      // (the workspace's address on a line of its own where the name and email leave it no room: the old row's flow)
-      l.wraps(Is(Some(0.0))) |> ignore
-      l.show(fn() { opt_text(owner(), "image").unwrap_or("") != "" }, fn(a) {
-        @sf.avatar_node(a, fn() { text(owner(), "image") }, fn() { text(owner(), "user") }, fn() {
-          (core.picture)(text(owner(), "image"), f.stint)
-        }, nc_owner_size)
-      })
-      @sf.words_node(l, fn() {
-        let o = owner()
-        let email = text(o, "email")
-        text(o, "user") + (if email != "" { "（" + email + "）" } else { "" })
-      }, fn() { nc_meta_ink })
-      |> ignore
-      l.show(fn() { opt_text(owner(), "teamDomain").unwrap_or("") != "" }, fn(d) {
-        @sf.words_node(d, fn() { text(owner(), "teamDomain") + ".slack.com" }, fn() { nc_meta }) |> ignore
-      })
+  m.show(fn() { owner() is Some(Object(_)) }, fn(l) {
+    @sf.style_node(l, fn() { nc_owner_line })
+    // (the workspace's address on a line of its own where the name and email leave it no room: the old row's flow)
+    l.wraps(Is(Some(0.0))) |> ignore
+    l.show(fn() { opt_text(owner(), "image").unwrap_or("") != "" }, fn(a) {
+      @sf.avatar_node(a, fn() { text(owner(), "image") }, fn() { text(owner(), "user") }, fn() {
+        (core.picture)(text(owner(), "image"), f.stint)
+      }, nc_owner_size)
     })
+    @sf.words_node(l, fn() {
+      let o = owner()
+      let email = text(o, "email")
+      text(o, "user") + (if email != "" { "（" + email + "）" } else { "" })
+    }, fn() { nc_meta_ink })
     |> ignore
+    l.show(fn() { opt_text(owner(), "teamDomain").unwrap_or("") != "" }, fn(d) {
+      @sf.words_node(d, fn() { text(owner(), "teamDomain") + ".slack.com" }, fn() { nc_meta }) |> ignore
+    })
   })
 }
 

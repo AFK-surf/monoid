@@ -70,21 +70,18 @@ fn local_add_foot_node(
   pc : Bool,
   asked : () -> Unit,
 ) -> Unit {
-  k.show(adds, fn(f) {
-    f.box(fn(a) {
-      @sf.style_node(a, fn() { vt_actions.then(@sf.foot_across(@sf.button_height())) })
-      @sf.button_node(
-        a,
-        fn() { @sf.t(if pc { "web-pages.settings.thisPc.add" } else { "web-pages.settings.thisMac.add" }) },
-        fn() {
-          (core.local_install)(true)
-          asked()
-        },
-        tone=Primary,
-        card_words=true,
-      )
-      |> ignore
-    })
+  k.show(adds, fn(a) {
+    @sf.style_node(a, fn() { vt_actions.then(@sf.foot_across(@sf.button_height())) })
+    @sf.button_node(
+      a,
+      fn() { @sf.t(if pc { "web-pages.settings.thisPc.add" } else { "web-pages.settings.thisMac.add" }) },
+      fn() {
+        (core.local_install)(true)
+        asked()
+      },
+      tone=Primary,
+      card_words=true,
+    )
     |> ignore
   })
 }

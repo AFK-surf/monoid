@@ -645,18 +645,15 @@ fn info_title_node(h : @view.View, src : Source, r : ChatRef, title : () -> Stri
       @sf.words_node(w, title, fn() { info_title }) |> ignore
     })
     |> ignore
-    line.show(at_once=true, open, fn(k) {
-      k.box(fn(b) {
-        @sf.style_node(b, fn() { info_rename.then(@ui.style(bg=Data(@sf.alpha(@sf.theme().p.text, 0.05)))) })
-        @sf.rippled_node(
-          b,
-          fn() { open_rename(src, r, @signals.untracked(thread), @signals.untracked(title), from=Node(b)) },
-          info_rename_side / 2.0,
-          fn() { tr("android-chat.rename.title") },
-        )
-        @sf.icon_node(b, "edit", info_icon, By(fn() { @sf.theme().p.text })) |> ignore
-      })
-      |> ignore
+    line.show(at_once=true, open, fn(b) {
+      @sf.style_node(b, fn() { info_rename.then(@ui.style(bg=Data(@sf.alpha(@sf.theme().p.text, 0.05)))) })
+      @sf.rippled_node(
+        b,
+        fn() { open_rename(src, r, @signals.untracked(thread), @signals.untracked(title), from=Node(b)) },
+        info_rename_side / 2.0,
+        fn() { tr("android-chat.rename.title") },
+      )
+      @sf.icon_node(b, "edit", info_icon, By(fn() { @sf.theme().p.text })) |> ignore
     })
   })
   |> ignore
@@ -1058,13 +1055,10 @@ fn agent_title_node(h : @view.View, src : Source, r : ChatRef, key : String, a :
       @sfpages.agent_status_node(w, src, a)
     })
     |> ignore
-    line.show(at_once=true, fn() { text(a(), "status") == "running" || text(a(), "status") == "queued" }, fn(b) {
+    line.show(at_once=true, fn() { text(a(), "status") == "running" || text(a(), "status") == "queued" }, fn(at) {
       // (its stop on its name's line too)
-      b.box(fn(at) {
-        agent_name_line(at)
-        stop_button_node(at, src, r.station, key)
-      })
-      |> ignore
+      agent_name_line(at)
+      stop_button_node(at, src, r.station, key)
     })
   })
   |> ignore

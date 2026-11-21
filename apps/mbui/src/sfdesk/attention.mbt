@@ -381,12 +381,9 @@ fn attention_rows_node(v : @view.View, src : Source, w : Workspace, railed : Boo
     gs.length() > 1 || gs.iter().any(fn(g) { g.0 != w.id })
   }
   let next = fn(before : Bool) { if before { @ui.Space::S1_5.px() } else { 0.0 } }
-  v.show(at_once=true, fn() { groups().length() == 0 && trouble() == "" && !jobs() }, fn(e) {
-    e.box(fn(b) {
-      @sf.style_node(b, fn() { att_empty })
-      @sf.words_node(b, fn() { @sf.t("web-main.attention.empty") }, fn() { att_empty_words }) |> ignore
-    })
-    |> ignore
+  v.show(at_once=true, fn() { groups().length() == 0 && trouble() == "" && !jobs() }, fn(b) {
+    @sf.style_node(b, fn() { att_empty })
+    @sf.words_node(b, fn() { @sf.t("web-main.attention.empty") }, fn() { att_empty_words }) |> ignore
   })
   v.show(at_once=true, fn() { trouble() != "" }, fn(t) {
     @sf.panel_group_node(t, fn() { "Station" }, fn(rows) {
@@ -425,12 +422,9 @@ fn attention_rows_node(v : @view.View, src : Source, w : Workspace, railed : Boo
   })
   |> ignore
   // (what is left up long under what waits on the viewer, 6 under it)
-  v.show(at_once=true, jobs, fn(j) {
-    j.box(fn(b) {
-      b.padding(By(fn() { (0.0, next(trouble() != "" || groups().length() > 0), 0.0, 0.0) })) |> ignore
-      open_jobs_node(b, src, w, close)
-    })
-    |> ignore
+  v.show(at_once=true, jobs, fn(b) {
+    b.padding(By(fn() { (0.0, next(trouble() != "" || groups().length() > 0), 0.0, 0.0) })) |> ignore
+    open_jobs_node(b, src, w, close)
   })
 }
 
@@ -509,16 +503,13 @@ fn attention_item_node(row : @view.View, src : Source, i : () -> Json, go : () -
       )
     })
     |> ignore
-    r.show(at_once=true, fn() { attention_line(v(), now()) != "" }, fn(l) {
-      l.box(fn(u) {
-        @sf.style_node(u, fn() { att_under })
-        // (the dot's column, empty: the line starts where the title does)
-        u.box(fn(m) { @sf.style_node(m, fn() { att_mark }) }) |> ignore
-        u.box(fn(words) {
-          @sf.style_node(words, fn() { att_text }, in_row=true)
-          @sf.words_node(words, fn() { attention_line(v(), now()) }, fn() { att_line }) |> ignore
-        })
-        |> ignore
+    r.show(at_once=true, fn() { attention_line(v(), now()) != "" }, fn(u) {
+      @sf.style_node(u, fn() { att_under })
+      // (the dot's column, empty: the line starts where the title does)
+      u.box(fn(m) { @sf.style_node(m, fn() { att_mark }) }) |> ignore
+      u.box(fn(words) {
+        @sf.style_node(words, fn() { att_text }, in_row=true)
+        @sf.words_node(words, fn() { attention_line(v(), now()) }, fn() { att_line }) |> ignore
       })
       |> ignore
     })

@@ -317,12 +317,9 @@ fn about_station_node(g : @view.View, core : Core, host : () -> Json?, tips : @s
     },
   )
   // (why an update asked here failed, under it: as under its page's software)
-  g.show(fn() { software_failed.get(address) is Some(_) }, fn(f) {
-    f.box(fn(foot) {
-      @sf.style_node(foot, fn() { sw_foot })
-      @sf.words_node(foot, fn() { software_failed.get(address).unwrap_or("") }, fn() { sw_failed_line }) |> ignore
-    })
-    |> ignore
+  g.show(fn() { software_failed.get(address) is Some(_) }, fn(foot) {
+    @sf.style_node(foot, fn() { sw_foot })
+    @sf.words_node(foot, fn() { software_failed.get(address).unwrap_or("") }, fn() { sw_failed_line }) |> ignore
   })
 }
 
