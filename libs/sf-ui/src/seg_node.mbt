@@ -71,7 +71,7 @@ pub fn seg_node(
     line.box(fn(track) {
       let opt_h = fn() {
         track.words_redone() |> ignore
-        dmax(segmented_h, node_sp(track, theme().t.ui * @ui.tree_theme().text_line).ceil() + 2.0 * 4.0)
+        dmax(segmented_h, node_sp(track, theme().t.ui * @ui.tree_theme().text_line).ceil() + 2.0 * 2.0)
       }
       // (its pad round its options inside what it holds: what is said of it as a group (View::by_room's) out to its edges)
       track

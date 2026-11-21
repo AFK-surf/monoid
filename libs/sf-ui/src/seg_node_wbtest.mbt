@@ -304,6 +304,10 @@ test "seg_node: 1.0x keeps exact 30pt option / 36pt track; 2.0x scales height wi
   assert_eq(seg_shown(t, Radio).map(fn(s) { s.rect.3 }), [30.0, 30.0, 30.0], msg="1.0x option height exact 30pt")
   assert_eq(t.fixed_outgrown(), [], msg="1.0x fixed_outgrown")
   assert_eq(t.squeeze_faults(), [], msg="1.0x squeeze_faults")
+  t.set_font_scale(1.3)
+  t.draw()
+  assert_eq(seg_shown(t, RadioGroup).map(fn(s) { s.rect.3 }), [36.0], msg="1.3x keeps 36pt track concentric with r_menu")
+  assert_eq(t.fixed_outgrown(), [], msg="1.3x fixed_outgrown")
   t.set_font_scale(2.0)
   t.draw()
   let track_h = seg_shown(t, RadioGroup)[0].rect.3
