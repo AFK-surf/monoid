@@ -248,10 +248,10 @@ let open_job_box : @ui.Style = @ui.css("w=Full")
 let open_job_row : @ui.Style = @ui.css("row w=Full px=S2_5 py=S1_25 gap=S2_5 radius=Inner align=AStart")
 
 ///|
-/// Its row in a list of them alone (the sidebar foot's 运行中): its dot's column 6 in, so the dot stands where its
-/// group's heading's words start.
+/// Its row in a list of them alone (the sidebar foot's 运行中): its dot's column 12 in, so the dot stands where its
+/// group's heading's words start (panel_label_at's S4, 16: 12 + 4).
 // kept across runs: a value (no field of it changes)
-let open_job_row_alone : @ui.Style = @ui.css("row w=Full pl=S1_5 pr=S2_5 py=S1_25 gap=S2_5 radius=Inner align=AStart")
+let open_job_row_alone : @ui.Style = @ui.css("row w=Full pl=S3 pr=S4 py=S1_25 gap=S2_5 radius=Inner align=AStart")
 
 ///|
 /// The dot, in the 16 column the icons of the rows under it take (openJobMark), across its name's line's middle (the
