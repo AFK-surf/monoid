@@ -242,53 +242,50 @@ pub fn check_groups_node(
       })
     })
     |> ignore
-    b.show(open, fn(o) {
-      o.box(fn(ss) {
-        style_node(loc~, ss, fn() { check_sections })
-        ss.each(fn() { sections().mapi(fn(i, s) { (i, s) }) }, fn(x) { x.1.title + "\u{1}" + x.0.to_string() }, fn(sec, x) {
-          let section = @signals.untracked(fn() { x.get().1 })
-          let groups = section.groups
-          let all = fn() { groups.iter().all(fn(g) { on(g.id) }) }
-          sec.box(fn(s) {
-            style_node(loc~, s, fn() { check_section })
-            s.box(fn(h) {
-              style_node(loc~, h, fn() { check_section_head })
-              words_node(loc~, h, fn() { section.title }, fn() { check_section_title }) |> ignore
-              quiet_action_node(loc~, h, fn() { if all() { (said.select_none)() } else { (said.select_all)() } }, fn() {
-                let was = @signals.untracked(all)
-                for g in groups {
-                  set(g.id, g.fixed || !was)
-                }
-              })
-              |> ignore
-            })
-            |> ignore
-            // (as many to a line as the room has for each, three at most, a line's last ones as wide as the others
-            // and where they would be under them: a width each, bound to the room, never a structure by it)
-            s.by_room(fn(grid, room) {
-              style_node(loc~, grid, fn() { check_grid })
-              grid.wraps(Is(Some(check_grid_lines))) |> ignore
-              let each_w = fn() {
-                let w = room.width()
-                if w <= 0.0 {
-                  None
-                } else {
-                  let least = (if admin_any() { check_col_admin } else { check_col }) * grid.words_scale()
-                  let n = check_columns(w, least)
-                  // (in 64ths of a point: n of them and their gaps never more than the line, which would wrap)
-                  Some(((w - check_grid_gap * (n - 1).to_double()) / n.to_double() * 64.0).floor() / 64.0)
-                }
-              }
+    b.show(open, fn(ss) {
+      style_node(loc~, ss, fn() { check_sections })
+      ss.each(fn() { sections().mapi(fn(i, s) { (i, s) }) }, fn(x) { x.1.title + "\u{1}" + x.0.to_string() }, fn(sec, x) {
+        let section = @signals.untracked(fn() { x.get().1 })
+        let groups = section.groups
+        let all = fn() { groups.iter().all(fn(g) { on(g.id) }) }
+        sec.box(fn(s) {
+          style_node(loc~, s, fn() { check_section })
+          s.box(fn(h) {
+            style_node(loc~, h, fn() { check_section_head })
+            words_node(loc~, h, fn() { section.title }, fn() { check_section_title }) |> ignore
+            quiet_action_node(loc~, h, fn() { if all() { (said.select_none)() } else { (said.select_all)() } }, fn() {
+              let was = @signals.untracked(all)
               for g in groups {
-                check_group_node(loc~, grid, g, on, set, said, tips, each_w)
+                set(g.id, g.fixed || !was)
               }
             })
             |> ignore
           })
           |> ignore
+          // (as many to a line as the room has for each, three at most, a line's last ones as wide as the others
+          // and where they would be under them: a width each, bound to the room, never a structure by it)
+          s.by_room(fn(grid, room) {
+            style_node(loc~, grid, fn() { check_grid })
+            grid.wraps(Is(Some(check_grid_lines))) |> ignore
+            let each_w = fn() {
+              let w = room.width()
+              if w <= 0.0 {
+                None
+              } else {
+                let least = (if admin_any() { check_col_admin } else { check_col }) * grid.words_scale()
+                let n = check_columns(w, least)
+                // (in 64ths of a point: n of them and their gaps never more than the line, which would wrap)
+                Some(((w - check_grid_gap * (n - 1).to_double()) / n.to_double() * 64.0).floor() / 64.0)
+              }
+            }
+            for g in groups {
+              check_group_node(loc~, grid, g, on, set, said, tips, each_w)
+            }
+          })
+          |> ignore
         })
+        |> ignore
       })
-      |> ignore
     })
   })
 }

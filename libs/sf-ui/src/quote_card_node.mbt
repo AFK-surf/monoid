@@ -36,12 +36,9 @@ pub fn quote_card_node(
         quote_source
       }
     })
-    card.show(pictured, fn(s) {
-      s.box(fn(b) {
-        style_node(b, fn() { quote_picture })
-        picture(b)
-      })
-      |> ignore
+    card.show(pictured, fn(b) {
+      style_node(b, fn() { quote_picture })
+      picture(b)
     })
     card.show(fn() { comment() != "" }, fn(b) {
       style_node(b, fn() { quote_comment })
@@ -184,12 +181,9 @@ pub fn composer_quote_card_node(
           quote_source_hung
         }
       })
-      card.show(pictured, fn(s) {
-        s.box(fn(b) {
-          style_node(b, fn() { quote_picture_composer })
-          picture(b)
-        })
-        |> ignore
+      card.show(pictured, fn(b) {
+        style_node(b, fn() { quote_picture_composer })
+        picture(b)
       })
       card.box(fn(b) {
         style_node(b, fn() { quote_comment_composer })

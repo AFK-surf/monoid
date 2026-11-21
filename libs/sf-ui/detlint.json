@@ -179,12 +179,7 @@
     "headless-on-drag": {},
     "page-headless": {},
     "page-control-by-hand": {},
-    "structure-box": {
-      "src/form_swatch_node.mbt": 1,
-      "src/notify_node.mbt": 1,
-      "src/page_wide_node.mbt": 2,
-      "src/quote_card_node.mbt": 2
-    }
+    "structure-box": {}
   },
   "excused": {
     "frame-request": {},
