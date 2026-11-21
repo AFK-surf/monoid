@@ -23,7 +23,7 @@ import type { MeshRelay } from "./mesh-relay-registry";
 import type { Shows } from "./noticeText";
 import type { RelayListed, RelayTokenInput } from "./relay-registry";
 import type { Listed, Relays, relays } from "./relays";
-import type { AccountEvent, AdminAuditEntry, AdminFeedback, AdminKeyView, AdminPending, AdminUser, AdminWorkspace, DeviceView, FeedbackStatus, InviteCodeView, LockHead, LockRequestView, MeView, PendingInvitation, Role, StationEvent, WorkspaceFeedback, WorkspaceSummary, WorkspaceView } from "./types";
+import type { AccountEvent, AdminAuditEntry, AdminFeedback, AdminKeyView, AdminPending, AdminUser, AdminWorkspace, DeviceView, FeedbackStatus, InviteCodeView, LockHead, LockRequestView, MeView, PendingInvitation, ProvisionKeyView, Role, StationEvent, WorkspaceFeedback, WorkspaceSummary, WorkspaceView } from "./types";
 import { DirectoryAdmin } from "./directory/admin";
 import { DirectoryDb, type DirectoryHost } from "./directory/db";
 import { DirectoryFeedback } from "./directory/feedback";
@@ -347,6 +347,26 @@ export class Directory extends DurableObject<Env> {
 
   createRigEnrollment(sub: string, workspace: string, name: string): Promise<{ token: string; expires_at: number }> {
     return this.#stations.createRigEnrollment(sub, workspace, name);
+  }
+
+  provisionKeys(sub: string, workspace: string): ProvisionKeyView[] {
+    return this.#stations.provisionKeys(sub, workspace);
+  }
+
+  createProvisionKey(sub: string, workspace: string, name: unknown, days?: unknown): Promise<ProvisionKeyView & { key: string }> {
+    return this.#stations.createProvisionKey(sub, workspace, name, days);
+  }
+
+  revokeProvisionKey(sub: string, workspace: string, keyId: unknown): { id: string; name: string; prefix: string; ok: true } {
+    return this.#stations.revokeProvisionKey(sub, workspace, keyId);
+  }
+
+  verifyProvisionKey(keyHash: string): { key_id: string; name: string; prefix: string; workspace: string; workspace_name: string; expires_at: number | null } | null {
+    return this.#stations.verifyProvisionKey(keyHash);
+  }
+
+  createProvisionedEnrollment(keyHash: string, name: unknown): Promise<{ workspace: string; token: string; expires_at: number } | null> {
+    return this.#stations.createProvisionedEnrollment(keyHash, name);
   }
 
   enroll(token: string, station: string, version: string | null, join = false, locks = false, rig = false): Promise<{ workspace: string; workspace_name: string; name: string; home: string; rig?: { owner: string; owner_email: string; owner_name: string } }> {

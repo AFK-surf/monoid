@@ -447,6 +447,7 @@ test("a locked workspace's roster changes answer within the stations' wait and t
     if (req.method === "POST" && path === "/v1/workspaces/ws/enrollments") {
       return json({ token: "tok", install: "curl x | sh -s -- tok", installWindows: "& (irm x) tok", installDocker: "docker run x tok", command: "stillfail station enroll https://x tok" });
     }
+    if (req.method === "POST" && path === "/v1/workspaces/ws/provision-keys") return json({ id: "pk_1", workspace: "ws", name: "fleet", prefix: "sfpk_abcdefgh", key: "sfpk_key" });
     return undefined;
   });
   // The station, which served the lock until now, answers nothing more: neither a read nor what it is brought.
@@ -483,6 +484,10 @@ test("a locked workspace's roster changes answer within the stations' wait and t
   const enrolled = await timed("workspace.enroll", { name: "mini" });
   assert.ok(enrolled.command.endsWith(` --lock ${st.head().hash}`), enrolled.command);
   assert.equal(enrolled.installDocker, `docker run x tok ${st.head().hash}`);
+  // A console's provisioning key carries the same head, for the console to give each station it enrolls: this device's
+  // word, never the cloud's (cloud/src/directory/stations.ts names no lock).
+  const provision = await timed("workspace.createProvisionKey", { name: "fleet" });
+  assert.deepEqual(provision, { id: "pk_1", workspace: "ws", name: "fleet", prefix: "sfpk_abcdefgh", key: "sfpk_key", lock: st.head().hash });
   assert.equal(st.chain.length, 1);
   await pends("workspace.removeMember", { member: "s2" }, "member.remove", { sub: "s2" });
   // Its one station taken out: the lock names none after that, which is the cloud's to keep from it on, as a lock that

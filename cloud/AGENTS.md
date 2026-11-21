@@ -3,7 +3,9 @@
 - It keeps only what is about people: accounts and sign-in, workspaces, members and roles, invitations, the list of a
   workspace's stations, each whole or one that only runs tasks (a rig, listed with the member whose it is; who may
   use it is that member's signature, checked by the machine, never the cloud's to say; listing it as the other kind
-  changes nothing on the machine by itself, `station/AGENTS.md`), members' credentials and their revocation,
+  changes nothing on the machine by itself, `station/AGENTS.md`), members' credentials and their revocation, the
+  provisioning keys a workspace's managers give a console to enroll whole stations with (`src/directory/stations.ts`:
+  each works only while its maker manages the workspace, and opens `/v1/provision/*` alone),
   still.fail's relays: its own (`RELAY_URL`) and a list its operator keeps as it runs, never a deploy's config (the
   user, 2026-11-17: 「env 不保留，外部要用让他们自己配」), a relay putting itself on it only with a token the operator
   made for it (`src/relay-registry.ts`), so deploying a relay puts it on no cloud's list. A workspace's own relays and the ways it turned off are its stations'

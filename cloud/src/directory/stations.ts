@@ -1,12 +1,21 @@
 import { ulid } from "ulid";
 import { STATIONS_PER_WORKSPACE } from "../../../client/limits.ts";
-import { digest, nowSeconds, pastedSecret } from "../auth";
+import { b64url, digest, nowSeconds, pastedSecret } from "../auth";
 import { publicOrigins } from "../compat";
 import { langOf, type Lang } from "../i18n.ts";
 import { showsOf, type Shows } from "../noticeText";
-import type { Role, WorkspaceView } from "../types";
+import type { ProvisionKeyView, Role, WorkspaceView } from "../types";
 import type { DirectoryDb, DirectoryHost } from "./db";
-import { ENROLLMENT_TTL_SEC, LIMITS, MANAGERS, REVOCATION_DAYS, cleanEmoji, cleanIcon, cleanName, fail, type PushDevice, type PushRegistration } from "./types";
+import { ENROLLMENT_TTL_SEC, LIMITS, MANAGERS, REVOCATION_DAYS, cleanEmoji, cleanIcon, cleanName, fail, type PushDevice, type PushRegistration, type Row } from "./types";
+
+/** A provisioning key's beginning, which only `/v1/provision/*` takes (api.ts). */
+export const PROVISION_KEY_PREFIX = "sfpk_";
+/** Keys a workspace may have working at once (neither revoked nor expired). */
+const PROVISION_KEYS_MAX = 20;
+/** How often using a key is noted (`last_used_at`): a console enrolling many machines writes the row once a while. */
+const PROVISION_USED_EVERY_S = 300;
+/** A key's columns as ProvisionKeyView names them. */
+const PROVISION_COLUMNS = "k.id, k.workspace, k.name, k.prefix, k.created_by, k.created_at, k.expires_at, k.last_used_at, k.revoked_at";
 
 // ── stations, revocations, and push registrations ───────────────────────
 
@@ -56,6 +65,76 @@ export class DirectoryStations {
     this.#db.run("DELETE FROM enrollments WHERE expires_at <= ?", nowSeconds());
     this.#db.run("INSERT INTO enrollments (token_hash, workspace, name, created_by, expires_at, rig) VALUES (?, ?, ?, ?, ?, ?)", hash, workspace, clean, sub, expires, rig ? 1 : null);
     return { token, expires_at: expires };
+  }
+
+  // ── provisioning keys ───────────────────────────────────────────────────
+  // A console that makes machines for a workspace on its own (Monoid Machine's auto-provisioning) holds a key of the
+  // workspace's, which an owner or admin made for it by Connect (`/connect/station?mode=provision`, web). With it the
+  // console asks for one station enrollment at a time (`/v1/provision/enrollments`), each the same one-hour, one-use
+  // token an owner's 添加 station makes, of a whole station (never a rig: a rig is its person's, which no console
+  // is). The key is the maker's say: it works while they still manage the workspace, and the station limit holds.
+
+  provisionKeys(sub: string, workspace: string): ProvisionKeyView[] {
+    this.#db.role(sub, workspace, MANAGERS);
+    return this.#db.rows(`SELECT ${PROVISION_COLUMNS} FROM provision_keys k WHERE k.workspace = ? ORDER BY k.created_at DESC, k.id DESC`, workspace).map(provisionView);
+  }
+
+  async createProvisionKey(sub: string, workspace: string, name: unknown, days?: unknown): Promise<ProvisionKeyView & { key: string }> {
+    this.#db.role(sub, workspace, MANAGERS);
+    const clean = cleanName(name) ?? fail(400, "invalid_name");
+    const now = nowSeconds();
+    let expiresAt: number | null = null;
+    if (days !== undefined && days !== null) {
+      if (typeof days !== "number" || !Number.isInteger(days) || days < 1 || days > 3650) fail(400, "invalid_days");
+      expiresAt = now + (days as number) * 24 * 60 * 60;
+    }
+    const active = this.#db.one("SELECT COUNT(*) AS n FROM provision_keys WHERE workspace = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)", workspace, now)!.n as number;
+    if (active >= PROVISION_KEYS_MAX) fail(409, "too_many_keys");
+    const id = `pk_${ulid()}`;
+    const key = `${PROVISION_KEY_PREFIX}${b64url(crypto.getRandomValues(new Uint8Array(32)))}`;
+    const prefix = key.slice(0, 13);
+    const keyHash = await digest(key);
+    // (its maker may have left while the hash was made)
+    this.#db.role(sub, workspace, MANAGERS);
+    this.#db.run("INSERT INTO provision_keys (id, workspace, name, prefix, key_hash, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", id, workspace, clean, prefix, keyHash, sub, now, expiresAt);
+    return { id, workspace, name: clean, prefix, created_by: sub, created_at: now, expires_at: expiresAt, last_used_at: null, revoked_at: null, key };
+  }
+
+  revokeProvisionKey(sub: string, workspace: string, keyId: unknown): { id: string; name: string; prefix: string; ok: true } {
+    this.#db.role(sub, workspace, MANAGERS);
+    const row = typeof keyId === "string" && keyId ? this.#db.one("SELECT id, name, prefix, revoked_at FROM provision_keys WHERE id = ? AND workspace = ?", keyId, workspace) : undefined;
+    if (!row) fail(404, "key_not_found");
+    if (row!.revoked_at === null) this.#db.run("UPDATE provision_keys SET revoked_at = ? WHERE id = ?", nowSeconds(), row!.id);
+    return { id: row!.id as string, name: row!.name as string, prefix: row!.prefix as string, ok: true };
+  }
+
+  /** The working key of this hash: neither revoked nor expired, its workspace there, its maker managing it still. */
+  #provisionKey(keyHash: string): Row | null {
+    const now = nowSeconds();
+    const row = this.#db.one(
+      `SELECT ${PROVISION_COLUMNS}, w.name AS workspace_name FROM provision_keys k JOIN workspaces w ON w.id = k.workspace
+       JOIN members m ON m.workspace = k.workspace AND m.sub = k.created_by AND m.role IN ('owner', 'admin')
+       WHERE k.key_hash = ? AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at > ?)`,
+      keyHash, now,
+    );
+    if (!row) return null;
+    const last = row.last_used_at as number | null;
+    if (last === null || now - last >= PROVISION_USED_EVERY_S) this.#db.run("UPDATE provision_keys SET last_used_at = ? WHERE id = ?", now, row.id);
+    return row;
+  }
+
+  verifyProvisionKey(keyHash: string): { key_id: string; name: string; prefix: string; workspace: string; workspace_name: string; expires_at: number | null } | null {
+    const row = this.#provisionKey(keyHash);
+    if (!row) return null;
+    return { key_id: row.id as string, name: row.name as string, prefix: row.prefix as string, workspace: row.workspace as string, workspace_name: row.workspace_name as string, expires_at: (row.expires_at as number | null) ?? null };
+  }
+
+  /** One station's enrollment by a key (null: no working key), as its maker's 添加 station would make it. */
+  async createProvisionedEnrollment(keyHash: string, name: unknown): Promise<{ workspace: string; token: string; expires_at: number } | null> {
+    const row = this.#provisionKey(keyHash);
+    if (!row) return null;
+    const made = await this.enrollment(row.created_by as string, row.workspace as string, name, false);
+    return { workspace: row.workspace as string, ...made };
   }
 
   #stationsFull(workspace: string): boolean {
@@ -353,4 +432,18 @@ export class DirectoryStations {
       : undefined;
     return { workspace, devices, ...(includeManagers ? { managers } : {}) };
   }
+}
+
+function provisionView(r: Row): ProvisionKeyView {
+  return {
+    id: r.id as string,
+    workspace: r.workspace as string,
+    name: r.name as string,
+    prefix: r.prefix as string,
+    created_by: r.created_by as string,
+    created_at: r.created_at as number,
+    expires_at: (r.expires_at as number | null) ?? null,
+    last_used_at: (r.last_used_at as number | null) ?? null,
+    revoked_at: (r.revoked_at as number | null) ?? null,
+  };
 }
