@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [52699920d](https://github.com/AFK-surf/monoid/commit/52699920d48767767ed6f51e7f43dfd81c2623fb) feat(core-ts): add harness-leaf and migrate browse | 2.65 | 3.57 | 14.51 | 36.51 | 55.29 | 31.97 | 64.61 | 98.09 | 126.26 |
 | [e82fc8b5a](https://github.com/AFK-surf/monoid/commit/e82fc8b5a725f6ecaca0f0c629dccaad3887695a) fix(agents): guard agy session/load ghost replay a | 2.65 | 3.57 | 14.51 | 36.5 | 55.28 | 31.97 | 64.61 | 98.17 | 124.49 |
 | [f8026edbe](https://github.com/AFK-surf/monoid/commit/f8026edbe8ce06e0560b6606a431eb443664f79b) fix(mbui): show a film's frames and follow a finge | 2.65 | 3.57 | 14.5 | 36.5 | 55.29 | 31.97 | 64.61 | 98.19 | 133.98 |
 | [c707e8561](https://github.com/AFK-surf/monoid/commit/c707e856185c5b5f392ac0dfbf6170c796297c32) fix(ci): build unpublished natives without probing | 2.65 | 3.57 | 14.5 | 36.5 | 55.29 | 31.97 | 64.61 | 98.19 | 133.98 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [b89ddeaad](https://github.com/AFK-surf/monoid/commit/b89ddeaad217518f930ab8441d0130592e687121) test(chat): run node chat page by default and migr | 2.79 | 3.77 | 15.35 | 37.46 | 58.02 | 32.84 | 67.01 | 98.24 | 131.52 |
 | [6fb98cd18](https://github.com/AFK-surf/monoid/commit/6fb98cd188bd3465881e2f904bcb20df372b76ca) fix(mbui): virtualize publish list and guard Windo | 2.79 | 3.77 | 15.35 | 37.47 | 58.02 | 32.84 | 67.01 | 98.47 | 111.98 |
 | [e57ccf433](https://github.com/AFK-surf/monoid/commit/e57ccf43373f7bddf1014965b483083a1097c7dc) fix(mbui): catch capsules and circles reaching acr | 2.79 | 3.77 | 15.34 | 37.47 | 58.01 | 32.83 | 67.01 | 98.49 | 129.8 |
-| [92d4cfda6](https://github.com/AFK-surf/monoid/commit/92d4cfda68a4b0937c5f5916af59ae47ff30b60f) fix(mbui): trigger liquid glass fuse and split whe | 2.79 | 3.77 | 15.34 | 37.46 | 58.01 | 32.83 | 67.01 | 98.35 | 117.4 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [52699920d](https://github.com/AFK-surf/monoid/commit/52699920d48767767ed6f51e7f43dfd81c2623fb) feat(core-ts): add harness-leaf and migrate browse | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.28 |
 | [e82fc8b5a](https://github.com/AFK-surf/monoid/commit/e82fc8b5a725f6ecaca0f0c629dccaad3887695a) fix(agents): guard agy session/load ghost replay a | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.28 |
 | [f8026edbe](https://github.com/AFK-surf/monoid/commit/f8026edbe8ce06e0560b6606a431eb443664f79b) fix(mbui): show a film's frames and follow a finge | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.28 |
 | [c707e8561](https://github.com/AFK-surf/monoid/commit/c707e856185c5b5f392ac0dfbf6170c796297c32) fix(ci): build unpublished natives without probing | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.23 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [b89ddeaad](https://github.com/AFK-surf/monoid/commit/b89ddeaad217518f930ab8441d0130592e687121) test(chat): run node chat page by default and migr | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.18 |
 | [6fb98cd18](https://github.com/AFK-surf/monoid/commit/6fb98cd188bd3465881e2f904bcb20df372b76ca) fix(mbui): virtualize publish list and guard Windo | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.18 |
 | [e57ccf433](https://github.com/AFK-surf/monoid/commit/e57ccf43373f7bddf1014965b483083a1097c7dc) fix(mbui): catch capsules and circles reaching acr | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.17 |
-| [92d4cfda6](https://github.com/AFK-surf/monoid/commit/92d4cfda68a4b0937c5f5916af59ae47ff30b60f) fix(mbui): trigger liquid glass fuse and split whe | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.71 | 4.62 | 54.08 |
