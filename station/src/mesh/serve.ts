@@ -1052,7 +1052,7 @@ async function answerRequest(m: Members, stream: Stream, reader: Reader, head: a
 const readsOf = (method: string, path: string) => {
   const rest = path.slice("/admin/api".length);
   const at = rest.indexOf("?");
-  return method === "GET" || (method === "POST" && /^\/*(batch|changed\/(chats|threads|sessions))$/.test(at < 0 ? rest : rest.slice(0, at)));
+  return method === "GET" || (method === "POST" && /^\/*(batch|changed\/(chats|threads|sessions|shared))$/.test(at < 0 ? rest : rest.slice(0, at)));
 };
 
 /// A request's answer once its body is in, as the admin API and the station's own routes give it (not compressed), with

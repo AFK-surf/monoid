@@ -27,7 +27,7 @@ export const SERVED_ROUTES = [
   // whole batch, and a person's read waited behind it)
   "GET /admin/api/jobs", "GET /admin/api/jobs/*", "GET /admin/api/jobs/*/log",
   // (a list read again as what changed of it: routes/changed.ts)
-  "POST /admin/api/changed/chats", "POST /admin/api/changed/sessions", "POST /admin/api/changed/threads",
+  "POST /admin/api/changed/chats", "POST /admin/api/changed/shared", "POST /admin/api/changed/sessions", "POST /admin/api/changed/threads",
   // (what changes, as it changes: made by Node's events, carried and compressed by the program, `relay`)
   "GET /admin/api/events",
   // (a member's own marks, written there: api/routes/marks.ts; what changed told the store's followers)

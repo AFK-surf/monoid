@@ -6,6 +6,7 @@
 // opens either afresh (nothing says what the device missed: the station is read again) or going on from where the
 // device was in the station's log of events (cursor.ts: what changed meanwhile is told first).
 import { type OwnHeld, type RowsMemo, rowsMemo } from "./rows-made.ts";
+import type { SharedMarkKind } from "../db/chats.ts";
 import { record, said, stationTag } from "../record.ts";
 import { Deferred, Effect, type Fiber } from "effect";
 import type { Inner } from "../core.ts";
@@ -21,6 +22,7 @@ import { Back, BACK_AWAY_MS, BACK_WATCH_MS } from "./back.ts";
 import { Cursor, upTo } from "./cursor.ts";
 import { type Keeper, Memory } from "./memory.ts";
 import { LIVE_RATES, HEAD, RESUMED, type Requests } from "./requests.ts";
+import { BUILD_HEADER } from "./oldest.ts";
 import { SseParser } from "../sse.ts";
 import { replyHeader } from "./wire.ts";
 
@@ -192,6 +194,14 @@ export class Link {
   usageFrom: number | null | undefined = undefined;
   /// The chat list the station makes once for everyone (`GET /chats?shared=1`, chat-row.ts), by row id (null till read).
   sharedRows: Map<string, Record<string, any>> | null = null;
+  /// All row ids currently in the station's shared list (including unchanged rows backed by persisted `chat` + `shared_sidecar`).
+  sidecarIds: Set<string> = new Set();
+  /// Pending delta from `POST /changed/shared` waiting to be committed by `#made`.
+  sharedDelta: { changed: Set<string>; gone: Set<string> } | null = null;
+  /// Monotonic sequence for `#sharedWhole` reads so stale in-flight answers (after disconnect/switch/newer snapshot) are discarded.
+  sharedReadSeq = 0;
+  /// True while a full `GET /chats?marks=1&own=1` reconciliation is pending so a delta cannot commit under unconfirmed identity.
+  marksPending = false;
   /// What its sidebar's rows were last made of (rows-made.ts RowsMemo), so a remake makes again only those that changed.
   readonly rows: RowsMemo = rowsMemo();
   /// Of that list, which row is each thread's, kept as its rows are read and told; and the viewer's own of the marks
@@ -204,6 +214,10 @@ export class Link {
   readonly rowsWanted = { ids: new Set<string>(), threads: new Set<number>(), whole: false };
   /// The marks to read again: those of some chats, or all of them (`whole`).
   readonly marksWanted = { sessions: new Set<string>(), threads: new Set<number>(), whole: false };
+  /// Pending single-key / scoped mark updates held in memory until `#made` commits them in the same SQLite transaction
+  /// as the re-projected `chat` row(s).
+  readonly pendingMarks = new Map<string, { kind: SharedMarkKind; k: string; v: string | null }>();
+  readonly pendingScopedMarks = { sessions: new Set<string>(), threads: new Set<number>() };
   /// Whether the archived chats held are as the station has them: read since anything could have changed them.
   archivedCurrent = false;
   /// The archive's pages are being read: what it holds is not all of it yet.
@@ -212,6 +226,10 @@ export class Link {
   archiveFailed: string | null = null;
   /// When the station said it has no POST /changed/<list> (one from before): its lists are read whole a while.
   changesRefused: number | null = null;
+  /// Independent no-route flag for POST /changed/shared (only set on 404 "no route ").
+  sharedChangesRefused: number | null = null;
+  /// Verified station build from the open stream's `stillfail-build` header (null if unknown).
+  build: string | null = null;
   /// When the station said it has no POST /batch (one from before): its history is read a request a read a while.
   batchRefused: number | null = null;
   /// What is left of the sweep of its history under way (#history), and what the sweep asked (each read once).
@@ -221,8 +239,10 @@ export class Link {
   historySweep = 0;
   /// Catching up on what changed while the device was away (sync.ts `#catching`): from its stream's opening after it
   /// was, until the threads it found behind have their latest on the device. Before it has looked (`tallied`), what is
-  /// behind is not known; null once caught up, or while it is not reached.
-  catching: { tallied: boolean; behind: Set<number> } | null = null;
+  /// behind is not known; null once caught up, or while it is not reached. `epoch` and `boosted` deduplicate
+  /// opened-thread priority refreshes within one catching period.
+  catching: { epoch: number; tallied: boolean; behind: Set<number>; boosted: Set<number> } | null = null;
+  catchingEpoch = 0;
   /// Whether its open jobs' list was answered on this link (sync.ts `#read` of `jobs`): only then is a job it has not
   /// one it has none of (topics.ts `job`: gone), not one still to come.
   jobsRead = false;
@@ -686,6 +706,8 @@ export class Links {
             misses = 0;
             reached = true;
             link.heard = core.host.nowMs();
+            const streamBuild = replyHeader(opened.success, BUILD_HEADER);
+            if (typeof streamBuild === "string" && streamBuild !== "") link.build = streamBuild;
             // Live events are not in the event log. Even a resumed stream gives a new snapshot of running sessions.
             self.#told.ratesOpened(address, replyHeader(opened.success, LIVE_RATES) === "1");
             self.#setDiag(link, { misses: 0, slowBackoff: false, retryAt: null, retryWaitMs: null, downAt: null, cloudDown: core.status.cloudDown() }, false);

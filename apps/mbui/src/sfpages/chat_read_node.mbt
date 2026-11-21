@@ -28,6 +28,7 @@ priv struct ChatRead {
   mut top : ChatReaderAt?
   mut scale : Double
   mut last : Double
+  mut sight_end_seq : Double
   mut told_focus : String
   mut src : Source
   chat : ChatRef
@@ -76,6 +77,7 @@ fn chat_read_node(
         top: None,
         scale: 1.0,
         last: -1.0,
+        sight_end_seq: -1.0,
         told_focus: "",
         src,
         chat: r,
@@ -114,6 +116,26 @@ fn chat_read_node(
         _ => j = j - 1
       }
     }
+    // (the last message laid out in this Sight `s` itself — anchored at `s.last`, never `rs.keys`'s tail — so a newer
+    // ChatView arriving before a stale `on_sight` callback never advances `endSeq` past what was actually laid out;
+    // folded notices carry `notice_last_seq`)
+    let mut end_seq = -1.0
+    match rs.keys.search(s.last) {
+      Some(idx) => {
+        let mut k = idx
+        while k >= 0 {
+          match rs.get(rs.keys[k]).map(fn(row) { row.entry }) {
+            Some(Said(m)) => {
+              end_seq = m.notice_last_seq
+              break
+            }
+            _ => k = k - 1
+          }
+        }
+      }
+      None => ()
+    }
+    a.sight_end_seq = end_seq
     // the message at the top, its top under the list's: where the reader is (chat_reader_at: what is read under the bar,
     // not a tail of what was over it, nor a row of no message), as a go-to and the outline take it (else as it was)
     match chat_reader_at(s, rs, place, @signals.untracked(cover), @signals.untracked(top)) {
@@ -417,12 +439,28 @@ fn chat_nodes_find_list(r : ChatRef) -> FindList {
 }
 
 ///|
-/// The core told chat `r` (view `v`) shows, its end seen or not, and the last message seen whole, as either changes.
+/// The core told chat `r` (view `v`) shows, its end seen or not (with `endSeq` from the laid-out Sight), and the last
+/// message seen whole, as any changes.
 fn chat_read_focus(src : Source, r : ChatRef, v : ChatView, a : ChatRead, end : Bool) -> Unit {
-  let said = "\{end} \{a.whole}"
+  let end_seq = if end {
+    if a.sight_end_seq >= 0.0 {
+      a.sight_end_seq
+    } else {
+      0.0
+    }
+  } else {
+    -1.0
+  }
+  let said = "\{end} \{end_seq} \{a.whole}"
   guard !src.read_only && a.told_focus != said else { return }
   a.told_focus = said
   let chat = @sfbase.focus_chat(r, v, Some(end))
+  if end {
+    match chat {
+      Object(o) => o["endSeq"] = Json::number(end_seq)
+      _ => ()
+    }
+  }
   if a.whole >= 0.0 {
     match chat {
       Object(o) => o["seen"] = Json::number(a.whole)

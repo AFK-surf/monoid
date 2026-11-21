@@ -18,7 +18,7 @@ import { Deferred, Effect, Exit, Scope, type Fiber } from "effect";
 import type { Inner } from "../core.ts";
 import { join } from "../data.ts";
 import { CoreError, asCoreError } from "../error.ts";
-import { t } from "../i18n.ts";
+import { current as currentLang, t } from "../i18n.ts";
 import { encode, type Effect as OpEffect, type Request } from "../ops.ts";
 import { topicKey, type Topic } from "../protocol.ts";
 import { Kind, type SpanContext } from "../trace.ts";
@@ -41,6 +41,9 @@ import { Retold } from "./retold.ts";
 import { Seen } from "./seen.ts";
 import { dayOf, holdsWhole, sameDetailCoverage, usageHistoryRange, withPart } from "./usage-part.ts";
 import { threadAfter, threadAfterLetters } from "./thread-after.ts";
+import { reprojectChatRow, sidecarOf, type SharedSidecar } from "../chat-row.ts";
+import type { SharedMeta } from "../db/chats.ts";
+import { work } from "../work.ts";
 import { OwnHeld, marksOf, rowShared, rowWords, rowsShared, sharedPlace, sharedWhole } from "./rows-made.ts";
 import { timed } from "../spent.ts";
 import { MOVE_PAGE, moveLimit } from "../move.ts";
@@ -333,6 +336,15 @@ export class StationsSync {
         else if (part.resume) this.#enqueue(address, `also/${i}`, Priority.background, part.read(address));
       }
     }
+    if (how.restored && link) {
+      if (link.own === null && !this.#core.scheduler.queued(address, `${address} chats`)) {
+        link.marksPending = true;
+        this.#enqueue(address, "chats", Priority.shown, this.#marksWhole(address));
+      }
+      if (link.sharedRows === null && !this.#core.scheduler.queued(address, `${address} shared`)) {
+        this.#enqueue(address, "shared", Priority.shown, this.#sharedWhole(address));
+      }
+    }
     if (how.restored) this.#historyStart(address);
   }
 
@@ -349,6 +361,7 @@ export class StationsSync {
     const link = this.#links.get(address);
     if (link) {
       link.cursor.reading();
+      link.marksPending = true;
       this.#core.data.forgetRecord("heard", address);
     }
     this.#catchingFrom(address);
@@ -359,18 +372,17 @@ export class StationsSync {
     // lists and the history behind them take a slow link a minute, and what an agent said while the stream was away
     // waited on them.
     this.#catchUpShown(address);
-    // What the sidebar shows first (the station, the marks, the jobs), then every session and thread, whose reads are
-    // the largest and the history's start (once both are read, the history is swept once), then the list a station
-    // makes for everyone: asked after them, so that what its stream tells meanwhile of a row is not told again over
-    // what the list answers.
+    // What the sidebar shows first (the station, the viewer's own marks, the shared chat list — via POST /changed/shared
+    // when a matching baseline is held, with stream events replayed over its answer — and open jobs), then every session
+    // and thread, whose reads are the largest and start the history sweep once both arrive.
     const first = [
       this.#enqueue(address, "overview", p, read({ topic: "overview", station: address }, "/overview")),
       this.#enqueue(address, "chats", p, Effect.andThen(this.#chats(address, ctx, unread), Effect.sync(() => this.openEvents(address, false)))),
+      this.#enqueue(address, "shared", p, this.#sharedWhole(address, ctx, unread)),
       this.#enqueue(address, "jobs", p, read({ topic: "jobs", station: address }, JOBS)),
     ];
     const sessions = this.#enqueue(address, "sessions", p, read({ topic: "sessions", station: address }, "/sessions"));
     const threads = this.#enqueue(address, "threads", p, read({ topic: "threads", station: address }, "/threads"));
-    first.push(this.#enqueue(address, "shared", p, this.#sharedWhole(address, ctx, unread)));
     const lists = Effect.flatMap(Effect.all([Deferred.await(sessions), Deferred.await(threads)], { mode: "result" }), (read) =>
       Effect.sync(() => {
         if (read.some((r) => r._tag === "Success") && link !== undefined && this.#links.get(address) === link) this.#historyStart(address);
@@ -401,7 +413,8 @@ export class StationsSync {
   #catchingFrom(address: string): void {
     const link = this.#links.get(address);
     if (!link) return;
-    link.catching = { tallied: false, behind: new Set() };
+    link.catchingEpoch++;
+    link.catching = { epoch: link.catchingEpoch, tallied: false, behind: new Set(), boosted: new Set() };
     this.onChange(address, "link");
   }
 
@@ -412,8 +425,23 @@ export class StationsSync {
     if (!link?.catching || link.catching.tallied) return;
     const data = this.#core.data;
     const behind = data.threadsBehind(address).filter((id) => !data.evicted("entry", address, String(id)));
-    link.catching = behind.length === 0 || !this.#core.scheduler.busy(address) ? null : { tallied: true, behind: new Set(behind) };
+    link.catching = behind.length === 0 || !this.#core.scheduler.busy(address)
+      ? null
+      : { epoch: link.catching.epoch, tallied: true, behind: new Set(behind), boosted: link.catching.boosted };
     this.onChange(address, "link");
+  }
+
+  /// A thread opened while the station is catching up (before `/threads` has tallied what is behind): prioritize its
+  /// summary and (when not already reading an opening range) bounded continuation pages on the existing lane,
+  /// deduplicated per catching epoch and thread.
+  prioritizeOpenedThread(address: string, id: number, catchUpEntries: boolean): void {
+    const link = this.#links.get(address);
+    if (!link?.catching || link.catching.tallied || link.catching.boosted.has(id)) return;
+    link.catching.boosted.add(id);
+    this.summaryOf(address, id);
+    if (catchUpEntries && !this.#core.data.evicted("entry", address, String(id))) {
+      this.channels.catchUp(entriesOf(address, id), Priority.shown);
+    }
   }
 
   /// A station's lane with nothing left to run: done catching up, whatever is still behind.
@@ -1952,6 +1980,7 @@ export class StationsSync {
         const link = this.#links.get(address);
         if (link?.own) {
           const whole = link.own.threadMark("hidden", thread, hidden);
+          link.pendingMarks.set(`hidden\0${thread}`, { kind: "hidden", k: String(thread), v: hidden ? "1" : null });
           return this.#remake(address, whole ? { whole: true } : { threads: [thread] });
         }
         for (const row of core.data.chatsOf(address, { thread })) if (isObject(row)) core.data.putChat(address, { ...row, hidden });
@@ -1964,6 +1993,7 @@ export class StationsSync {
         const link = this.#links.get(address);
         if (link?.own) {
           const whole = link.own.threadMark("muted", thread, muted);
+          link.pendingMarks.set(`muted\0${thread}`, { kind: "muted", k: String(thread), v: muted ? "1" : null });
           return this.#remake(address, whole ? { whole: true } : { threads: [thread] });
         }
         for (const row of core.data.chatsOf(address, { thread })) if (isObject(row)) core.data.putChat(address, { ...row, muted });
@@ -1976,6 +2006,7 @@ export class StationsSync {
         const link = this.#links.get(address);
         if (link?.own && session !== null) {
           link.own.pin(session, at);
+          link.pendingMarks.set(`pin\0${session}`, { kind: "pin", k: session, v: at === null ? null : String(at) });
           // (a row of the list its station makes is its agent's, by its key)
           return this.#remake(address, { ids: [session] });
         }
@@ -1989,6 +2020,7 @@ export class StationsSync {
         const link = this.#links.get(address);
         if (link?.own) {
           link.own.letGo(thread, n);
+          link.pendingMarks.set(`dismissed\0${thread}:${n}`, { kind: "dismissed", k: `${thread}:${n}`, v: "1" });
           return this.#remake(address, { threads: [thread] });
         }
         return;
@@ -1999,7 +2031,9 @@ export class StationsSync {
         if (thread === null || typeof get(data, "kept") !== "boolean") return;
         const link = this.#links.get(address);
         if (link?.own) {
-          link.own.threadMark("kept", thread, get(data, "kept") === true);
+          const kept = get(data, "kept") === true;
+          link.own.threadMark("kept", thread, kept);
+          link.pendingMarks.set(`kept\0${thread}`, { kind: "kept", k: String(thread), v: kept ? "1" : null });
           return this.#remake(address, { threads: [thread] });
         }
         return;
@@ -2151,7 +2185,7 @@ export class StationsSync {
         if (present) {
           // If the row is not held yet, keep the optimistic copy until its shared-row tell arrives. If it is held,
           // the station has confirmed it: leave a quiet guard for an older removal still on its way.
-          if (!l.sharedRows?.has(rowId)) return;
+          if (!l.sharedRows?.has(rowId) && !l.sidecarIds.has(rowId)) return;
           this.#made(address, { ids: [rowId] });
           const listed = current.thread === null ? this.#core.data.chatForSession(address, current.session) : this.#core.data.chatOfThread(address, current.thread);
           if (listed !== undefined) this.#core.views.local.guardRestore(address, current.id);
@@ -2159,7 +2193,7 @@ export class StationsSync {
         }
         // A full shared-list read may have started before this scoped answer: replay this removal over its result.
         this.#retold.told(address, "chat-shared-removed", { id: rowId });
-        if (l.sharedRows?.has(rowId)) this.#sharedPut(l, rowId, undefined);
+        if (l.sharedRows?.has(rowId) || l.sidecarIds.has(rowId)) this.#sharedPut(l, rowId, undefined);
         l.rows.rows.delete(rowId);
         this.#core.data.dropChat(address, rowId);
         this.#core.views.local.restoreSettled(address, current.id);
@@ -2167,46 +2201,165 @@ export class StationsSync {
     }
   }
 
-  /// The chat list as the station makes it for everyone (GET /chats?shared=1), what the viewer sees of it; the sidebar
-  /// made of it.
-  #sharedWhole(address: string, ctx: SpanContext | null = null, unread?: () => void, attempt = 0): Effect.Effect<void, CoreError> {
+  /// The chat list as the station makes it for everyone (`POST /changed/shared` when a matching persisted baseline
+  /// exists, else `GET /chats?shared=1`), what the viewer sees of it; the sidebar made of it.
+  #sharedWhole(address: string, ctx: SpanContext | null = null, unread?: () => void, attempt = 0, forceWhole = false): Effect.Effect<void, CoreError> {
     return this.#asked((asked) => Effect.gen({ self: this }, function* () {
       const link = this.#links.get(address);
-      if (!link || !this.reachable(address)) return unread?.();
-      const answer = yield* Effect.result(this.requests.call(link.addr, "GET", "/chats?shared=1", null, { quiet: true, ctx }));
-      if (answer._tag === "Failure") {
-        unread?.();
-        if ((answer.failure.status === undefined || answer.failure.status >= 500) && attempt < READ_RETRIES) {
+      if (!link || !this.reachable(address) || this.#core.data.of(address) === undefined) return unread?.();
+      const seq = ++link.sharedReadSeq;
+      const stale = () => this.#links.get(address) !== link || link.sharedReadSeq !== seq || this.#core.data.of(address) === undefined;
+      const sameStrings = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((v, i) => v === b[i]);
+      const me = this.#me(address);
+      const meta = this.#core.data.sharedMeta(address);
+      const confirmedSelvesMatch = (m: SharedMeta): boolean =>
+        link.own === null || link.marksPending || sameStrings(link.own.selves, m.selves);
+      const identityValid = (m: SharedMeta | null): boolean =>
+        m !== null && me !== null && m.me === me && confirmedSelvesMatch(m);
+      // Skip POST /changed/shared when this verified station build already returned 404 "no route " (re-probes on build
+      // change), or while bounded in-memory refusal is active for an unknown-build station.
+      const refusedByBuild = link.build !== null && meta?.noRouteBuild === link.build;
+      const refusedInMemory = link.sharedChangesRefused !== null && this.#core.host.nowMs() - link.sharedChangesRefused < CHANGES_RETRY_MS;
+      const refused = refusedByBuild || (link.build === null && refusedInMemory) || (link.build !== null && meta?.noRouteBuild === null && refusedInMemory);
+      const scheduleRetry = () => {
+        if (stale()) return;
+        if (attempt < READ_RETRIES) {
           const again = Effect.sleep(READ_RETRY_MS * 2 ** attempt).pipe(
-            Effect.andThen(Effect.sync(() => void this.#enqueue(address, "shared", Priority.background, this.#sharedWhole(address, null, undefined, attempt + 1)))),
+            Effect.andThen(Effect.sync(() => void this.#enqueue(address, "shared", Priority.background, this.#sharedWhole(address, null, undefined, attempt + 1, forceWhole)))),
           );
           this.#core.runner.fork(again, link.scoped);
         }
+      };
+
+      if (!forceWhole && !refused && identityValid(meta)) {
+        const digests = this.#core.data.sharedDigests(address);
+        if (link.sharedRows !== null) {
+          for (const id of link.rowsWanted.ids) {
+            const row = link.sharedRows.get(id);
+            if (row !== undefined) digests.set(id, digest(row));
+            else if (!link.sidecarIds.has(id)) digests.delete(id);
+          }
+        }
+        if (digests.size > 0) {
+          const changed = yield* Effect.result(this.requests.call(link.addr, "POST", "/changed/shared", { held: Object.fromEntries(digests) }, { quiet: true, ctx, headers: [[READS, "1"]] }));
+          if (stale()) return;
+          if (changed._tag === "Failure") {
+            const status = changed.failure.status;
+            if (status === 404 && changed.failure.message.startsWith("no route ")) {
+              link.sharedChangesRefused = this.#core.host.nowMs();
+              if (link.build !== null) this.#core.data.setSharedNoRouteBuild(address, link.build);
+              // Fall through to whole GET /chats?shared=1.
+            } else if (status === 413) {
+              // Payload too large: fall back to a single whole GET /chats?shared=1 without setting sharedChangesRefused.
+            } else if (status === undefined || status >= 500) {
+              unread?.();
+              scheduleRetry();
+              return;
+            } else {
+              // Auth / permission / other 4xx: never degrade to whole GET /chats?shared=1.
+              unread?.();
+              return;
+            }
+          } else {
+            link.sharedChangesRefused = null;
+            if (meta?.noRouteBuild != null) this.#core.data.setSharedNoRouteBuild(address, null);
+            const order = get(changed.success, "order");
+            const rows = get(changed.success, "rows");
+            const stillSameIdentity = this.#me(address) === me && confirmedSelvesMatch(meta!);
+            if (!stillSameIdentity) {
+              this.#core.data.clearSharedBaseline(address);
+              link.sidecarIds.clear();
+              link.sharedDelta = null;
+              // Fall through to whole GET /chats?shared=1.
+            } else if (Array.isArray(order) && Array.isArray(rows)) {
+              const changedMap = new Map<string, Record<string, any>>();
+              for (const r of rows) {
+                const key = str(get(r, "id"));
+                if (isObject(r) && key !== null) changedMap.set(key, r as Record<string, any>);
+              }
+              const orderIds: string[] = [];
+              let complete = true;
+              for (const k of order) {
+                const key = idText(k);
+                if (key === null || (!changedMap.has(key) && !digests.has(key))) {
+                  complete = false;
+                  break;
+                }
+                orderIds.push(key);
+              }
+              if (complete) {
+                const orderSet = new Set(orderIds);
+                const gone = new Set<string>();
+                for (const id of digests.keys()) if (!orderSet.has(id)) gone.add(id);
+                link.sharedRows = new Map();
+                link.sharedThreads.clear();
+                link.sidecarIds = orderSet;
+                link.sharedDelta = { changed: new Set(changedMap.keys()), gone };
+                for (const [id, r] of changedMap) this.#sharedPut(link, id, r);
+                this.#retell(address, asked, true);
+                this.#made(address, { whole: true });
+                return;
+              }
+            }
+          }
+        }
+      } else if (meta !== null && !identityValid(meta)) {
+        this.#core.data.clearSharedBaseline(address);
+        link.sidecarIds.clear();
+        link.sharedDelta = null;
+      }
+
+      const answer = yield* Effect.result(this.requests.call(link.addr, "GET", "/chats?shared=1", null, { quiet: true, ctx }));
+      if (stale()) return;
+      if (answer._tag === "Failure") {
+        unread?.();
+        if (answer.failure.status === undefined || answer.failure.status >= 500) scheduleRetry();
         return;
       }
       if (!Array.isArray(answer.success)) return unread?.();
       link.sharedRows = new Map();
       link.sharedThreads.clear();
+      link.sidecarIds = new Set();
+      link.sharedDelta = null;
       for (const r of answer.success) if (isObject(r) && typeof get(r, "id") === "string") this.#sharedPut(link, get(r, "id") as string, r as Record<string, any>);
       this.#retell(address, asked, true);
       this.#made(address, { whole: true });
     }));
   }
 
-  #marksWhole(address: string, ctx: SpanContext | null = null, unread?: () => void): Effect.Effect<void, CoreError> {
+  #marksWhole(address: string, ctx: SpanContext | null = null, unread?: () => void, attempt = 0): Effect.Effect<void, CoreError> {
     return this.#asked((asked) => Effect.gen({ self: this }, function* () {
       const link = this.#links.get(address);
       if (!link || !this.reachable(address)) return unread?.();
-      const answer = yield* Effect.result(this.requests.call(link.addr, "GET", "/chats?marks=1", null, { quiet: true, ctx }));
+      const gen = link.generation;
+      const answer = yield* Effect.result(this.requests.call(link.addr, "GET", "/chats?marks=1&own=1", null, { quiet: true, ctx }));
+      if (this.#links.get(address) !== link || this.#core.data.of(address) === undefined) return;
       if (answer._tag === "Failure") {
-        if (answer.failure.status === undefined || answer.failure.status >= 500) unread?.();
+        const status = answer.failure.status;
+        if (status === undefined || status >= 500) {
+          unread?.();
+          if (attempt < READ_RETRIES && link.generation === gen) {
+            const again = Effect.sleep(READ_RETRY_MS * 2 ** attempt).pipe(
+              Effect.andThen(Effect.sync(() => {
+                if (this.#links.get(address) === link && link.generation === gen && link.marksPending) {
+                  this.#enqueue(address, "chats", Priority.background, this.#marksWhole(address, null, undefined, attempt + 1));
+                }
+              })),
+            );
+            this.#core.runner.fork(again, link.scoped);
+          }
+        } else {
+          // Auth/permission failure: never commit a staged delta under a previously cached identity.
+          link.sharedDelta = null;
+        }
         return yield* Effect.fail(answer.failure);
       }
       const marks = marksOf(answer.success);
       if (marks === null) return yield* Effect.fail(new CoreError("bad_response", t("station.core.invalidReply")));
+      link.marksPending = false;
       link.own = new OwnHeld(marks, this.#me(address) ?? "");
-      this.#made(address, { whole: true });
       this.#retell(address, asked, false, false);
+      this.#made(address, { whole: true });
     }));
   }
 
@@ -2228,13 +2381,19 @@ export class StationsSync {
       link.marksWanted.whole = false;
       if (!whole && scope.sessions.length === 0 && scope.threads.length === 0) return;
       const query = whole ? "" : [...scope.sessions.map((k) => `&session=${encode(k)}`), ...scope.threads.map((id) => `&thread=${id}`)].join("");
-      const read = marksOf(yield* this.requests.call(link.addr, "GET", `/chats?marks=1${query}`, null, { quiet: true }));
-      if (read === null || !link.own) return;
+      const read = marksOf(yield* this.requests.call(link.addr, "GET", `/chats?marks=1&own=1${query}`, null, { quiet: true }));
+      if (read === null || !link.own || this.#links.get(address) !== link || this.#core.data.of(address) === undefined) return;
       let remakeWhole = whole;
-      if (whole) link.own = new OwnHeld(read, this.#me(address) ?? "");
-      else if (!link.own.scoped(read, scope)) remakeWhole = true;
-      this.#made(address, remakeWhole ? { whole: true } : { ids: scope.sessions, threads: scope.threads });
+      if (whole) {
+        link.marksPending = false;
+        link.own = new OwnHeld(read, this.#me(address) ?? "");
+      } else {
+        if (!link.own.scoped(read, scope)) remakeWhole = true;
+        for (const s of scope.sessions) link.pendingScopedMarks.sessions.add(s);
+        for (const t of scope.threads) link.pendingScopedMarks.threads.add(t);
+      }
       this.#retell(address, asked, false, false);
+      this.#made(address, remakeWhole ? { whole: true } : { ids: scope.sessions, threads: scope.threads });
     })));
   }
 
@@ -2259,8 +2418,21 @@ export class StationsSync {
   #sharedPut(link: Link, id: string, row: Record<string, any> | undefined): void {
     const was = u64(link.sharedRows!.get(id)?.thread);
     if (was !== null && link.sharedThreads.get(was) === id) link.sharedThreads.delete(was);
-    if (row === undefined) link.sharedRows!.delete(id);
-    else link.sharedRows!.set(id, row);
+    if (row === undefined) {
+      link.sharedRows!.delete(id);
+      link.sidecarIds.delete(id);
+      if (link.sharedDelta !== null) {
+        link.sharedDelta.changed.delete(id);
+        link.sharedDelta.gone.add(id);
+      }
+    } else {
+      link.sharedRows!.set(id, row);
+      link.sidecarIds.add(id);
+      if (link.sharedDelta !== null) {
+        link.sharedDelta.gone.delete(id);
+        link.sharedDelta.changed.add(id);
+      }
+    }
     const thread = u64(row?.thread);
     if (thread !== null) link.sharedThreads.set(thread, id);
   }
@@ -2273,34 +2445,136 @@ export class StationsSync {
     // Of the chat list the station makes for everyone, once it is read: till then the rows held stand.
     this.#wanted(link, rows);
     if (link.sharedRows === null) return;
+    // Never commit or publish a delta before the current reconciliation's marks have confirmed identity (`selves`).
+    if (link.sharedDelta !== null && link.marksPending) return;
+    const sameStrings = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((v, i) => v === b[i]);
+    const hasSidecarOnly = link.sharedDelta !== null || link.sidecarIds.size > link.sharedRows.size;
+    const meta = data.sharedMeta(address);
+    if (hasSidecarOnly && (meta === null || meta.me !== me || !sameStrings(meta.selves, link.own.selves))) {
+      // Viewer identity (`me` or `selves`) changed while some rows are only backed by the minimal sidecar:
+      // discard the baseline and fetch whole `GET /chats?shared=1`.
+      data.clearSharedBaseline(address);
+      link.sharedRows = null;
+      link.sharedThreads.clear();
+      link.sidecarIds.clear();
+      link.sharedDelta = null;
+      link.rows.whole = "";
+      link.rows.rows.clear();
+      this.#enqueue(address, "shared", Priority.shown, this.#sharedWhole(address, null, undefined, 0, true));
+      return;
+    }
     const w = link.rowsWanted;
+    const wantedThreads = new Set(w.threads);
     const ids = new Set(w.ids);
-    for (const thread of w.threads) {
-      const id = link.sharedThreads.get(thread);
+    for (const thread of wantedThreads) {
+      let id = link.sharedThreads.get(thread);
+      if (id === undefined && hasSidecarOnly) {
+        const existing = data.chatOfThread(address, thread);
+        const found = str(get(existing, "id"));
+        if (found !== null) id = found;
+      }
       if (id !== undefined) ids.add(id);
     }
+    const extraReproject = { ids, threads: wantedThreads };
     const whole = w.whole;
     w.ids.clear();
     w.threads.clear();
     w.whole = false;
     link.own.forViewer(me);
+    const lang = currentLang();
     const words = rowWords();
+    const wholeKey = sharedWhole(me, link.own.selves, words);
+    const noRouteBuild = link.sharedChangesRefused !== null && link.build !== null ? link.build : (meta?.noRouteBuild ?? null);
+    const nextMeta: SharedMeta = {
+      me,
+      selves: [...link.own.selves],
+      lang,
+      hiddenKnown: link.own.hidden !== undefined,
+      mutedKnown: link.own.muted !== undefined,
+      noRouteBuild,
+    };
+    const own = link.own;
+    const reprojectRow = (existing: Record<string, any>, sc: SharedSidecar) => {
+      work.chatRowsMade++;
+      const next = Object.freeze(reprojectChatRow(existing, sc, own, words));
+      return { row: next, place: sharedPlace(next) };
+    };
+    const clearPendingMarks = () => {
+      link.pendingMarks.clear();
+      link.pendingScopedMarks.sessions.clear();
+      link.pendingScopedMarks.threads.clear();
+    };
+
+    if (link.sharedDelta !== null) {
+      const delta = link.sharedDelta;
+      link.sharedDelta = null;
+      const reprojectAll = meta === null || meta.lang !== lang || meta.hiddenKnown !== nextMeta.hiddenKnown || meta.mutedKnown !== nextMeta.mutedKnown;
+      const changed: { row: Record<string, any>; place: number; sidecar: SharedSidecar }[] = [];
+      for (const id of delta.changed) {
+        const shared = link.sharedRows.get(id);
+        if (shared === undefined) continue;
+        const row = rowShared(shared, link.own, words, link.rows);
+        changed.push({ row, place: sharedPlace(row), sidecar: sidecarOf(shared, digest(shared)) });
+      }
+      link.rows.whole = wholeKey;
+      data.applySharedChanged(address, changed, [...delta.gone], reprojectAll, reprojectRow, link.own, nextMeta, extraReproject);
+      clearPendingMarks();
+      return;
+    }
+
     // Whole where what every row reads changed (the marks read whole, whose rows they are, the words) or the list was
     // read; else each row by its key, at its place (sharedPlace), nothing else looked at.
-    if (whole || link.rows.whole !== sharedWhole(me, link.own.selves, words)) {
-      const list = rowsShared(link.sharedRows.values(), link.own, me, words, link.rows);
-      return data.setChatsAt(address, list, list.map(sharedPlace));
+    if (whole || link.rows.whole !== wholeKey) {
+      if (!hasSidecarOnly) {
+        const list = rowsShared(link.sharedRows.values(), link.own, me, words, link.rows);
+        const sidecars = new Map<string, SharedSidecar>();
+        for (const [id, shared] of link.sharedRows) sidecars.set(id, sidecarOf(shared, digest(shared)));
+        data.setSharedChats(address, list, list.map(sharedPlace), sidecars, link.own, nextMeta);
+        clearPendingMarks();
+        return;
+      }
+      const changed: { row: Record<string, any>; place: number; sidecar: SharedSidecar }[] = [];
+      for (const shared of link.sharedRows.values()) {
+        const row = rowShared(shared, link.own, words, link.rows);
+        changed.push({ row, place: sharedPlace(row), sidecar: sidecarOf(shared, digest(shared)) });
+      }
+      const reprojectAll = meta === null || meta.lang !== lang || meta.hiddenKnown !== nextMeta.hiddenKnown || meta.mutedKnown !== nextMeta.mutedKnown || link.rows.whole !== wholeKey;
+      link.rows.whole = wholeKey;
+      data.applySharedChanged(address, changed, [], reprojectAll, reprojectRow, link.own, nextMeta, extraReproject);
+      clearPendingMarks();
+      return;
     }
+
+    const updates: { row: Record<string, any>; place: number; sidecar: SharedSidecar | null }[] = [];
+    const drops: string[] = [];
     for (const id of ids) {
       const shared = link.sharedRows.get(id);
-      if (shared === undefined) {
-        link.rows.rows.delete(id);
-        data.dropChat(address, id);
+      if (shared !== undefined) {
+        const row = rowShared(shared, link.own, words, link.rows);
+        updates.push({ row, place: sharedPlace(row), sidecar: sidecarOf(shared, digest(shared)) });
         continue;
       }
-      const row = rowShared(shared, link.own, words, link.rows);
-      data.putChat(address, row, sharedPlace(row));
+      if (link.sidecarIds.has(id)) {
+        const existing = data.chat(address, id);
+        const sc = data.sharedSidecar(address, id);
+        if (isObject(existing) && sc !== null) {
+          work.chatRowsMade++;
+          const row = Object.freeze(reprojectChatRow(existing, sc, link.own, words));
+          updates.push({ row, place: sharedPlace(row), sidecar: null });
+        }
+        continue;
+      }
+      link.rows.rows.delete(id);
+      drops.push(id);
     }
+    const markUpdates = [...link.pendingMarks.values()];
+    const scopedMarks = link.pendingScopedMarks.sessions.size > 0 || link.pendingScopedMarks.threads.size > 0
+      ? { scope: { sessions: [...link.pendingScopedMarks.sessions], threads: [...link.pendingScopedMarks.threads] }, marks: link.own }
+      : null;
+    if (updates.length > 0 || drops.length > 0 || markUpdates.length > 0 || scopedMarks !== null) {
+      data.putSharedBatch(address, updates, drops, markUpdates, scopedMarks);
+    }
+    clearPendingMarks();
   }
 
   /// A chat's row of a station made again of what is held of it (views/moved.ts: one it may list again, its chat back on
@@ -2372,7 +2646,10 @@ export class StationsSync {
     // Where the viewer read to, theirs on the chat list's rows: as it is read here, not only once the station's stream
     // says it again (a read whose event never came left its row unread, 2026-11-10).
     const link = this.#links.get(address);
-    if (link?.own) link.own.read(thread, n);
+    if (link?.own) {
+      link.own.read(thread, n);
+      link.pendingMarks.set(`read\0${thread}`, { kind: "read", k: String(thread), v: String(link.own.reads.get(thread) ?? n) });
+    }
     this.#remake(address, { threads: [thread] });
   }
 
@@ -2790,7 +3067,8 @@ export class StationsSync {
   readPosition(address: string, thread: number): number | null {
     const position = this.#core.data.readPosition(address, thread);
     const link = this.#links.get(address);
-    if (position === null || !link?.sharedThreads.has(thread) || link.own === null) return position;
+    const hasShared = link?.sharedThreads.has(thread) || (link !== undefined && link.sidecarIds.size > 0 && this.#core.data.chatOfThread(address, thread) !== undefined);
+    if (position === null || !hasShared || link?.own == null) return position;
     return Math.min(position, link.own.reads.get(thread) ?? 0);
   }
 

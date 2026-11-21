@@ -9,7 +9,7 @@ import { worded } from "../src/chat-row.ts";
 import { rowWords, sharedPlace } from "../src/station/rows-made.ts";
 import type { Topic } from "../src/protocol.ts";
 import { CAUSES, held } from "./real-size-asked.ts";
-import { type Did, SHARED_KINDS, SHARED_PROBES, SHARED_WHOLE, Station, settled, anySharedChange, differences, madeAnew, seeded, startedOn, stored } from "./rows-changed-run.ts";
+import { type Did, SHARED_KINDS, SHARED_PROBES, SHARED_WHOLE, Station, settled, anySharedChange, differences, madeAnew, madeFromStation, seeded, startedOn, stored } from "./rows-changed-run.ts";
 
 // deno-lint-ignore no-explicit-any
 type J = any;
@@ -18,15 +18,17 @@ type J = any;
 const SHARED_CHANGES = 150;
 const SEED = 46;
 
-/// The first place what is stored differs from what is made anew, after `what`.
-const differ = (s: Parameters<typeof stored>[0], what: string) => differences(stored(s), madeAnew(s)).slice(0, 8).map((d) => `after ${what}: ${d}`);
+/// The first place what is stored differs from what is made anew (using independent station ground truth on converged
+/// whole/reconnect steps, and in-process viewer marks otherwise), after `what`.
+const differ = (s: Parameters<typeof stored>[0], station: Station, what: string, converged = false) =>
+  differences(stored(s), converged ? madeFromStation(station) : madeAnew(s, station)).slice(0, 8).map((d) => `after ${what}: ${d}`);
 
 test("a chat list made of the one its station makes for everyone is what a core started anew makes of it, change after change", async () => {
   const station = new Station();
   const s = await startedOn(station);
   try {
     assert.equal(stored(s).length, station.shared.size);
-    assert.deepEqual(differ(s, "everything was read"), []);
+    assert.deepEqual(differ(s, station, "everything was read", true), []);
     const r = seeded(SEED + 1);
     const told = new Map<string, number>();
     // (each kind in turn, in an order of its own each round: every kind, by key and whole, after every other)
@@ -36,7 +38,7 @@ test("a chat list made of the one its station makes for everyone is what a core 
       const kind = anySharedChange(station, s, r, round.pop());
       told.set(kind, (told.get(kind) ?? 0) + 1);
       await s.host.time.pass(settled(kind), 100);
-      assert.deepEqual(differ(s, `change ${i} (${kind})`), []);
+      assert.deepEqual(differ(s, station, `change ${i} (${kind})`, SHARED_WHOLE.has(kind)), []);
     }
     // (every kind told, more than once: those by key between the whole reads)
     assert.ok([...told.values()].every((n) => n > 1) && told.size === new Set(SHARED_KINDS).size, JSON.stringify(Object.fromEntries(told)));
@@ -71,7 +73,7 @@ test("a chat list written as given is what was given, after each change of the r
       set(topic, value);
     };
     const data = h.t.data;
-    const { setChatsAt, putChat, dropChat } = data;
+    const { setChatsAt, putChat, dropChat, putSharedBatch, applySharedChanged } = data;
     data.setChatsAt = (station, rows, places) => {
       whole(keyOf(station, false), rows as J[], true);
       setChatsAt.call(data, station, rows, places);
@@ -83,6 +85,18 @@ test("a chat list written as given is what was given, after each change of the r
     data.dropChat = (station, id) => {
       given.get(keyOf(station, false))?.rows.delete(id);
       dropChat.call(data, station, id);
+    };
+    data.putSharedBatch = (station, updates, drops, markUpdates, scopedMarks) => {
+      const m = given.get(keyOf(station, false))?.rows;
+      for (const u of updates) m?.set((u.row as J).id, u.row);
+      for (const id of drops) m?.delete(id);
+      putSharedBatch.call(data, station, updates, drops, markUpdates, scopedMarks);
+    };
+    data.applySharedChanged = (station, changed, gone, reprojectAll, reproject, newMarks, meta, extraReproject) => {
+      const m = given.get(keyOf(station, false))?.rows;
+      for (const id of gone) m?.delete(id);
+      for (const item of changed) m?.set((item.row as J).id, item.row);
+      applySharedChanged.call(data, station, changed, gone, reprojectAll, reproject, newMarks, meta, extraReproject);
     };
     // (as the rig was made: the fixture's)
     const { fixture } = await import("./real-size.ts");
@@ -170,4 +184,49 @@ test("a list held in the places of before takes its places of each row once, eac
   }
   assert.ok(one.placed > 0, "the places of before moved");
   assert.ok(three.placed <= 3 * one.placed + 3, `only the rows moved grow with the chats: ${one.placed} → ${three.placed}`);
+});
+
+test("a cold restart with baseline and one changed row reconciles via POST /changed/shared in O(1)", async () => {
+  type ColdDelta = {
+    chats: number;
+    changedSharedCalls: number;
+    wholeSharedCalls: number;
+    marksOwnCalls: number;
+    made: number;
+    serialised: number;
+    put: number;
+    chatJson: number;
+    glanced: Record<string, number>;
+    differ: string[];
+  };
+  const [one, three] = await Promise.all([inWorker<ColdDelta>({}, { coldDelta: true }), inWorker<ColdDelta>({ chats: 3 }, { coldDelta: true })]);
+  console.log(`Cold restart with baseline and 1 changed row: ${JSON.stringify(one)} | ${JSON.stringify(three)}`);
+  assert.ok(three.chats >= 2.5 * one.chats, `three times the chats: ${one.chats} → ${three.chats}`);
+  for (const m of [one, three]) {
+    assert.deepEqual(m.differ, [], "converged to independent station ground truth");
+    assert.equal(m.changedSharedCalls, 1, "POST /changed/shared called once");
+    assert.equal(m.wholeSharedCalls, 0, "GET /chats?shared=1 not called");
+    assert.equal(m.marksOwnCalls, 1, "GET /chats?marks=1&own=1 called once");
+    assert.equal(m.made, 1, "only the 1 changed row was projected");
+    assert.equal(m.serialised, 1, "only the 1 changed row was serialised");
+    assert.equal(m.put, 1, "only the 1 changed row was written to SQLite chat table");
+    assert.ok(m.chatJson <= 1, `at most 1 chat json read, got ${m.chatJson}`);
+    assert.equal(m.glanced.chatRowsWalked ?? 0, 0, "no full chat list walk");
+    assert.equal(m.glanced.chatRowsMapped ?? 0, 0, "no full chat list map");
+    assert.equal(m.glanced.chatRowsSame ?? 0, 0, "no full chat list equality scan");
+    assert.equal(m.glanced.chatRowsWorded ?? 0, 1, "only the 1 changed row was worded");
+  }
+  const budget = (m: ColdDelta) => ({
+    changedSharedCalls: m.changedSharedCalls,
+    wholeSharedCalls: m.wholeSharedCalls,
+    marksOwnCalls: m.marksOwnCalls,
+    made: m.made,
+    serialised: m.serialised,
+    put: m.put,
+    chatJson: m.chatJson,
+    chatRowsWalked: m.glanced.chatRowsWalked ?? 0,
+    chatRowsMapped: m.glanced.chatRowsMapped ?? 0,
+    chatRowsWorded: m.glanced.chatRowsWorded ?? 0,
+  });
+  assert.deepEqual(budget(three), budget(one), "O(1) cold-start 1-row delta budget independent of total chats");
 });

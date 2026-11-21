@@ -105,9 +105,9 @@ fn is_mine(viewer_email : String, slack : Array[String], p : Json) -> Bool {
 /// views.ts `chatMarks`.
 pub fn chat_marks(db : @sql.Db, host : @host.Host, data : String, sep : String, ask : Json) -> Json raise {
   let args = ask.value("args").unwrap_or(Json::null())
-  let known = Known::of(host, data, sep, ask)
   let viewer = args.value("viewer").unwrap_or(Json::null())
   let email = match viewer.value("email") { Some(String(e)) => e; _ => "" }
+  let own_only = args.value("own") == Some(Json::boolean(true))
   let scope = match args.value("scope") {
     Some(Object(_) as sc) =>
       Some((
@@ -116,8 +116,17 @@ pub fn chat_marks(db : @sql.Db, host : @host.Host, data : String, sep : String, 
       ))
     _ => None
   }
-  let (connects, reviews) = known.config()
   let session_of = (k : String) => one(db, "SELECT * FROM sessions WHERE key = ?", [Json::string(k)])
+  let sees_pin = (raw_key : String, anchor : String) => {
+    let row = match session_of(anchor) {
+      Some(s) => Some(s)
+      None => if raw_key != anchor { session_of(raw_key) } else { None }
+    }
+    match row {
+      Some(s) => sees(viewer, field(s, "ws"))
+      None => sees_missing(viewer, anchor)
+    }
+  }
   let found : Array[Map[String, Json]] = match scope {
     None => db.all(shown_sessions_sql, [])
     Some((sessions, _)) => {
@@ -132,15 +141,121 @@ pub fn chat_marks(db : @sql.Db, host : @host.Host, data : String, sep : String, 
   }
   let shown = found.filter(x => sees(viewer, field(x, "ws")))
   let keys = shown.map(x => js_text(field(x, "key")))
-  let thread_ids = unique_ids([match scope { Some((_, t)) => t; None => [] }, threads_of_sessions(db, keys)])
-  // The chats themselves and who is in them, by their keys alone.
+  let scoped_threads : Array[Json] = []
+  if scope is Some((_, t)) {
+    for id in t {
+      if sees_thread_of(db, viewer, id) {
+        scoped_threads.push(id)
+      }
+    }
+  }
+  let thread_ids = unique_ids([scoped_threads, threads_of_sessions(db, keys)])
+  let ids : Array[Json] = []
   let own : Array[(Map[String, Json], Array[Map[String, Json]])] = []
   for id in thread_ids {
     guard one(db, "SELECT * FROM threads WHERE id = ?", [id]) is Some(t) else { continue }
     if field(t, "surface") == Json::string("chat") && field(t, "hidden_at") is Null {
-      own.push((t, db.all("SELECT * FROM thread_sessions WHERE thread = ? ORDER BY joined_at, rowid", [id])))
+      ids.push(field(t, "id"))
+      if !own_only {
+        own.push((t, db.all("SELECT * FROM thread_sessions WHERE thread = ? ORDER BY joined_at, rowid", [id])))
+      }
     }
   }
+  // store.ts `dismissed` of these chats: the viewer's, "thread:n".
+  let dismissed : Set[String] = Set::new()
+  let dismissed_list : Array[Json] = []
+  let seen_ids : Set[String] = Set::new()
+  for id in ids {
+    if seen_ids.contains(js_text(id)) {
+      continue
+    }
+    seen_ids.add(js_text(id))
+    for r in db.all("SELECT thread, n FROM dismissed WHERE viewer = ? AND thread = ?", [Json::string(email), id]) {
+      let k = "\{js_text(field(r, "thread"))}:\{js_text(field(r, "n"))}"
+      if !dismissed.contains(k) {
+        dismissed.add(k)
+        dismissed_list.push(Json::string(k))
+      }
+    }
+  }
+  let selves = db.all("SELECT slack_user FROM identities WHERE viewer = ? ORDER BY at", [Json::string(email)]).map(r => js_text(field(r, "slack_user")))
+  // store.ts `keptChats` of these chats, the viewer's.
+  let kept_list : Array[Json] = []
+  let kept_seen : Set[String] = Set::new()
+  for id in ids {
+    for r in db.all("SELECT thread FROM kept_chats WHERE viewer = ? AND thread = ?", [Json::string(email), id]) {
+      let k = js_text(field(r, "thread"))
+      if !kept_seen.contains(k) {
+        kept_seen.add(k)
+        kept_list.push(field(r, "thread"))
+      }
+    }
+  }
+  let pins : Map[String, Json] = Map([])
+  let pin_rows = match scope {
+    None => db.all("SELECT session, at FROM pins WHERE viewer = ?", [Json::string(email)])
+    Some(_) =>
+      if keys.is_empty() {
+        []
+      } else {
+        let pin_keys = keys.copy()
+        for r in db.all("SELECT key FROM sessions INDEXED BY sessions_conv_grouped WHERE conv IS NOT NULL AND conv != key AND conv IN (SELECT value FROM json_each(?))", [ids_json(keys.map(Json::string))]) {
+          let mk = js_text(field(r, "key"))
+          if !pin_keys.contains(mk) {
+            pin_keys.push(mk)
+          }
+        }
+        db.all("SELECT session, at FROM pins WHERE viewer = ?1 AND session IN (SELECT value FROM json_each(?2))", [Json::string(email), ids_json(pin_keys.map(Json::string))])
+      }
+  }
+  for r in pin_rows {
+    let raw_key = js_text(field(r, "session"))
+    let anchor = @sql.conversation_of(db, raw_key)
+    if !sees_pin(raw_key, anchor) {
+      continue
+    }
+    let at = field(r, "at")
+    match pins.get(anchor) {
+      None => pins[anchor] = at
+      Some(prev) =>
+        if num(at) < num(prev) {
+          pins[anchor] = at
+        }
+    }
+  }
+  let reads : Map[String, Json] = Map([])
+  let hidden : Array[Json] = []
+  let muted : Array[Json] = []
+  if ids.length() > 0 {
+    for r in db.all("SELECT thread, n FROM reads WHERE viewer = ?1 AND thread IN (SELECT value FROM json_each(?2))", [Json::string(email), ids_json(ids)]) {
+      reads[js_text(field(r, "thread"))] = field(r, "n")
+    }
+    let unique = (rows : Array[Map[String, Json]], out : Array[Json]) => {
+      let seen : Set[String] = Set::new()
+      for r in rows {
+        let k = js_text(field(r, "thread"))
+        if !seen.contains(k) {
+          seen.add(k)
+          out.push(field(r, "thread"))
+        }
+      }
+    }
+    unique(db.all("SELECT thread FROM hidden_chats WHERE viewer = ?1 AND thread IN (SELECT value FROM json_each(?2))", [Json::string(email), ids_json(ids)]), hidden)
+    unique(db.all("SELECT thread FROM muted_chats WHERE viewer = ?1 AND thread IN (SELECT value FROM json_each(?2))", [Json::string(@jscase.lower(email)), ids_json(ids)]), muted)
+  }
+  if own_only {
+    return {
+      "kept": Json::array(kept_list),
+      "hidden": Json::array(hidden),
+      "muted": Json::array(muted),
+      "pins": Json::object(pins),
+      "selves": Json::array(selves.map(Json::string)),
+      "dismissed": Json::array(dismissed_list),
+      "reads": by_thread(reads),
+    }
+  }
+  let known = Known::of(host, data, sep, ask)
+  let (connects, reviews) = known.config()
   let listed : Set[String] = Set::new()
   for k in keys {
     listed.add(k)
@@ -162,25 +277,6 @@ pub fn chat_marks(db : @sql.Db, host : @host.Host, data : String, sep : String, 
       t
     }
   }
-  let ids = own.map(t => field(t.0, "id"))
-  // store.ts `dismissed` of these chats: the viewer's, "thread:n".
-  let dismissed : Set[String] = Set::new()
-  let dismissed_list : Array[Json] = []
-  let seen_ids : Set[String] = Set::new()
-  for id in ids {
-    if seen_ids.contains(js_text(id)) {
-      continue
-    }
-    seen_ids.add(js_text(id))
-    for r in db.all("SELECT thread, n FROM dismissed WHERE viewer = ? AND thread = ?", [Json::string(email), id]) {
-      let k = "\{js_text(field(r, "thread"))}:\{js_text(field(r, "n"))}"
-      if !dismissed.contains(k) {
-        dismissed.add(k)
-        dismissed_list.push(Json::string(k))
-      }
-    }
-  }
-  let selves = db.all("SELECT slack_user FROM identities WHERE viewer = ? ORDER BY at", [Json::string(email)]).map(r => js_text(field(r, "slack_user")))
   let card : Map[String, Json] = Map([])
   let need : Map[String, Json] = Map([])
   let suggested : Array[Json] = []
@@ -246,47 +342,6 @@ pub fn chat_marks(db : @sql.Db, host : @host.Host, data : String, sep : String, 
   for k, l in answered {
     answered_out[k] = Json::array(l)
   }
-  // store.ts `keptChats` of these chats, the viewer's.
-  let kept_list : Array[Json] = []
-  let kept_seen : Set[String] = Set::new()
-  for id in ids {
-    for r in db.all("SELECT thread FROM kept_chats WHERE viewer = ? AND thread = ?", [Json::string(email), id]) {
-      let k = js_text(field(r, "thread"))
-      if !kept_seen.contains(k) {
-        kept_seen.add(k)
-        kept_list.push(field(r, "thread"))
-      }
-    }
-  }
-  let pins : Map[String, Json] = Map([])
-  let pin_rows = match scope {
-    None => db.all("SELECT session, at FROM pins WHERE viewer = ?", [Json::string(email)])
-    Some(_) =>
-      if keys.is_empty() {
-        []
-      } else {
-        let pin_keys = keys.copy()
-        for r in db.all("SELECT key FROM sessions INDEXED BY sessions_conv_grouped WHERE conv IS NOT NULL AND conv != key AND conv IN (SELECT value FROM json_each(?))", [ids_json(keys.map(Json::string))]) {
-          let mk = js_text(field(r, "key"))
-          if !pin_keys.contains(mk) {
-            pin_keys.push(mk)
-          }
-        }
-        db.all("SELECT session, at FROM pins WHERE viewer = ?1 AND session IN (SELECT value FROM json_each(?2))", [Json::string(email), ids_json(pin_keys.map(Json::string))])
-      }
-  }
-  for r in pin_rows {
-    let raw_key = js_text(field(r, "session"))
-    let anchor = @sql.conversation_of(db, raw_key)
-    let at = field(r, "at")
-    match pins.get(anchor) {
-      None => pins[anchor] = at
-      Some(prev) =>
-        if num(at) < num(prev) {
-          pins[anchor] = at
-        }
-    }
-  }
   let (openers, opened_by) = openers_opened(db, Some(keys))
   let opened : Map[String, Json] = Map([])
   for k, l in opened_by {
@@ -305,26 +360,6 @@ pub fn chat_marks(db : @sql.Db, host : @host.Host, data : String, sep : String, 
     if !(name is Null) {
       teams[c.0] = name
     }
-  }
-  let reads : Map[String, Json] = Map([])
-  let hidden : Array[Json] = []
-  let muted : Array[Json] = []
-  if ids.length() > 0 {
-    for r in db.all("SELECT thread, n FROM reads WHERE viewer = ?1 AND thread IN (SELECT value FROM json_each(?2))", [Json::string(email), ids_json(ids)]) {
-      reads[js_text(field(r, "thread"))] = field(r, "n")
-    }
-    let unique = (rows : Array[Map[String, Json]], out : Array[Json]) => {
-      let seen : Set[String] = Set::new()
-      for r in rows {
-        let k = js_text(field(r, "thread"))
-        if !seen.contains(k) {
-          seen.add(k)
-          out.push(field(r, "thread"))
-        }
-      }
-    }
-    unique(db.all("SELECT thread FROM hidden_chats WHERE viewer = ?1 AND thread IN (SELECT value FROM json_each(?2))", [Json::string(email), ids_json(ids)]), hidden)
-    unique(db.all("SELECT thread FROM muted_chats WHERE viewer = ?1 AND thread IN (SELECT value FROM json_each(?2))", [Json::string(@jscase.lower(email)), ids_json(ids)]), muted)
   }
   {
     "card": by_thread(card),

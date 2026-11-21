@@ -5,9 +5,9 @@ import { CoreError } from "./error.ts";
 import { t } from "./i18n.ts";
 import { isObject } from "./util.ts";
 
-/// A chat as a UI names it: its thread, or its key before it has one (or both); whether its end shows, and the newest
-/// message shown whole (`seen`, its seq).
-export type ChatOf = { station: string; thread: number | null; session: string | null; end: boolean; seen: number | null };
+/// A chat as a UI names it: its thread, or its key before it has one (or both); whether its end shows, the last seq
+/// laid out when `end` was reported (`endSeq`, null from older clients), and the newest message shown whole (`seen`).
+export type ChatOf = { station: string; thread: number | null; session: string | null; end: boolean; endSeq: number | null; seen: number | null };
 
 /// What a UI said: each field given changes, the rest stays. `chat` undefined: not said; null: shows none. `newChat`: the
 /// workspace whose new chat it shows now (what that workspace goes back to).
@@ -32,6 +32,7 @@ function chatOf(v: unknown): ChatOf {
     ["thread", "u64", "opt"],
     ["session", "string", "opt"],
     ["end", "bool", "default"],
+    ["endSeq", "u64", "opt"],
     ["seen", "u64", "opt"],
   ]);
   return p as unknown as ChatOf;

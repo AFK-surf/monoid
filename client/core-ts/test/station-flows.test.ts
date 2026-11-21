@@ -1054,7 +1054,7 @@ test("writes_bring_what_they_touch_up_to_date", async () => {
   // The threads and sessions are not read again for it. (The station's marks of the chats are, which say what only it
   // can of the new chat; and the sync brings the new chat's entries onto the device.)
   assert.deepEqual(
-    host.requests.slice(reads).map((r) => `${r.method} ${r.url.replace("https://stillfail.test/admin/api", "")}`).filter((r) => !r.includes("/threads/9/entries") && r !== "GET /chats?marks=1"),
+    host.requests.slice(reads).map((r) => `${r.method} ${r.url.replace("https://stillfail.test/admin/api", "")}`).filter((r) => !r.includes("/threads/9/entries") && r !== "GET /chats?marks=1&own=1"),
     ["POST /threads"],
   );
   // A read changes nothing.
@@ -1341,7 +1341,7 @@ test("requests_carry_the_trace_they_are_made_in", async () => {
   for (const [url, parent] of parents) {
     assert.ok(parent.startsWith("00-") && parent.endsWith("-01") && parent.length === 55, `${url}: ${parent}`);
   }
-  const snapshot = ["/events?running=1&views=1&rows=1&shared=1", "/overview", "/sessions", "/threads", "/chats?marks=1", "/jobs?chats=0"].map((p) => parents.find(([u]) => u === `https://stillfail.test/admin/api${p}`)![1]);
+  const snapshot = ["/events?running=1&views=1&rows=1&shared=1", "/overview", "/sessions", "/threads", "/chats?marks=1&own=1", "/jobs?chats=0"].map((p) => parents.find(([u]) => u === `https://stillfail.test/admin/api${p}`)![1]);
   assert.ok(snapshot.every((p) => p.slice(3, 35) === trace), JSON.stringify(snapshot));
   // Each request is a span of its own.
   assert.equal(new Set(snapshot.map((p) => p.slice(36, 52))).size, snapshot.length);
@@ -1669,20 +1669,20 @@ test("an_unrelated_read_does_not_reapply_an_older_shared_chat", async () => {
   push("made", { rows: true, marks: true, shared: true });
   await coalesce(host);
   let finishOverview: (() => void) | undefined;
-  let finishSessions: (() => void) | undefined;
+  let finishMarks: (() => void) | undefined;
   stationLater(host, (req) => {
     if (req.url.endsWith("/overview")) return new Promise((resolve) => { finishOverview = () => resolve(jsonResponse(200, answers["GET /overview"])); });
-    if (req.url.endsWith("/sessions")) return new Promise((resolve) => { finishSessions = () => resolve(jsonResponse(200, [])); });
+    if (req.url.endsWith("/chats?marks=1&own=1")) return new Promise((resolve) => { finishMarks = () => resolve(jsonResponse(200, answers["GET /chats?marks=1"])); });
     return undefined;
   });
   answers["GET /chats?shared=1"] = [row("newer")];
   core.inner.stations.snapshot(ST);
   await host.time.pass(300, 20);
   assert.ok(finishOverview);
-  assert.ok(finishSessions);
+  assert.ok(finishMarks);
   push("chat-shared", row("older"));
   await coalesce(host);
-  finishSessions();
+  finishMarks();
   await host.time.pass(500, 20);
   assert.equal((core.inner.data.chat(ST, "k1") as J)?.title, "newer");
   finishOverview();
@@ -2041,7 +2041,7 @@ test("a_stream_taking_over_asks_for_what_came_after_the_last_event_its_predecess
 
 test("a_stream_coming_back_after_its_link_went_is_told_what_it_missed_and_reads_nothing_again", async () => {
   const { host, core, push, streams, end, gate } = await started();
-  const reads = () => ["/admin/api/overview", "/admin/api/sessions", "/admin/api/threads", "/admin/api/chats?marks=1"].map((p) => gets(host, p));
+  const reads = () => ["/admin/api/overview", "/admin/api/sessions", "/admin/api/threads", "/admin/api/chats?marks=1&own=1"].map((p) => gets(host, p));
   const said = (id: string, name: string, data: unknown) =>
     Queue.offerUnsafe(streams.at(-1)!.queue, new TextEncoder().encode(`id: ${id}\nevent: ${name}\ndata: ${JSON.stringify(data)}\n\n`));
   said("1f2e3d4c.9", "overview", { connects: [1] });
@@ -2145,7 +2145,7 @@ test("a_chat_open_is_asked_what_was_said_since_though_its_stream_came_back_told_
 test("a_stream_taking_over_told_it_missed_what_came_since_reads_the_station_again", async () => {
   const { host, core, push, streams } = await started();
   const ui = core.connect();
-  const reads = () => ["/admin/api/overview", "/admin/api/sessions", "/admin/api/threads", "/admin/api/chats?marks=1"].map((p) => gets(host, p));
+  const reads = () => ["/admin/api/overview", "/admin/api/sessions", "/admin/api/threads", "/admin/api/chats?marks=1&own=1"].map((p) => gets(host, p));
   Queue.offerUnsafe(streams.at(-1)!.queue, new TextEncoder().encode(`id: 1f2e3d4c.9\nevent: overview\ndata: {}\n\n`));
   await host.settle();
   const before = reads();
@@ -2860,9 +2860,9 @@ test("chat_rows_come_from_the_station_and_follow_what_is_read_and_written", asyn
   assert.ok((core.inner.data.get({ topic: "threads", station: ST }) as J[]).some((t) => t.id === 9));
   // So is saying who one is on Slack: what the station keeps beside the chats read again.
   answers["PUT /me/slack/U7"] = { ...overview, slackUsers: ["U7"] };
-  const before = gets(host, "/admin/api/chats?marks=1");
+  const before = gets(host, "/admin/api/chats?marks=1&own=1");
   await run(core.inner.stations.perform(op("slack.identity", { user: "U7", bound: true }), null));
-  assert.equal(gets(host, "/admin/api/chats?marks=1"), before + 1);
+  assert.equal(gets(host, "/admin/api/chats?marks=1&own=1"), before + 1);
   core.close();
 });
 
@@ -3753,11 +3753,14 @@ test("a_core_started_again_takes_its_stations_up_from_the_last_event_kept_and_re
     await host.settle();
     const asked = host.requests.slice(before).map((r) => r.url.replace("https://stillfail.test/admin/api", "")).filter((u) => !u.startsWith("http"));
     assert.ok(asked.some((u) => u.startsWith("/events") && u.includes("since=1a.7")), JSON.stringify(asked));
-    const lists = asked.filter((u) => ["/overview", "/chats", "/sessions", "/threads", "/jobs?chats=0"].includes(u) || u.startsWith("/changed/"));
-    // Told what came after it: nothing read again. Not told so (more than an hour later, the station started again):
-    // everything is, as before.
-    if (resumes) assert.deepEqual(lists, [], JSON.stringify(asked));
-    else assert.ok(lists.includes("/overview"), JSON.stringify(asked));
+    const lists = asked.filter((u) => ["/overview", "/chats", "/sessions", "/threads", "/jobs?chats=0"].includes(u) || (u.startsWith("/changed/") && u !== "/changed/shared"));
+    // Told what came after it: only cold-start sidebar reconciliation (`marks=1&own=1` + `/changed/shared`), none of
+    // overview/sessions/threads/jobs. Not told so (more than an hour later): everything is read again.
+    if (resumes) {
+      assert.deepEqual(lists, [], JSON.stringify(asked));
+      assert.ok(asked.includes("/chats?marks=1&own=1"), JSON.stringify(asked));
+      assert.ok(asked.includes("/changed/shared"), JSON.stringify(asked));
+    } else assert.ok(lists.includes("/overview"), JSON.stringify(asked));
     again.close();
   }
 });

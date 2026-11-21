@@ -10,7 +10,7 @@ export { runtimeView };
 
 export function runtimeList(op: string, value: unknown, runtimes?: string[]): unknown {
   if (!runtimes) return value;
-  const types: Record<string,string> = {sessions:"Session",chats:"ChatItem",threads:"ChatThread"};
+  const types: Record<string,string> = {sessions:"Session",chats:"ChatItem",sharedChats:"ChatItem",threads:"ChatThread"};
   const type = types[op];
   return type ? runtimeView({vec:type},value,new Set(runtimes)) : value;
 }

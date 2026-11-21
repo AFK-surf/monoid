@@ -198,9 +198,24 @@ let reads_worded : Array[String] = [
 
 ///|
 let reads_interactive : Array[String] = [
-  "thread", "chats", "chatMarks", "session", "summary", "latestMessages", "openedChatSaid", "chatHistoryMessages",
+  "thread", "chats", "sharedChats", "chatMarks", "session", "summary", "latestMessages", "openedChatSaid", "chatHistoryMessages",
   "historyPendingCard", "stateQuestion", "statePendingCard", "deliveryCardState", "job",
 ]
+
+///|
+fn is_interactive_read(op : String, ask : Json) -> Bool {
+  if reads_interactive.contains(op) || op == "checkpoint" {
+    return true
+  }
+  if op == "changed" {
+    match ask {
+      { "args": { "op": String("sharedChats"), .. }, .. } => true
+      _ => false
+    }
+  } else {
+    false
+  }
+}
 
 ///|
 fn words_in(op : String, lang : String) -> Json {
@@ -366,7 +381,7 @@ fn Readers::pump(self : Readers, line : Line) -> Unit {
     return
   }
   while line.waiting.length() > 0 {
-    let first = line.waiting.search_by(a => !a.background && (reads_interactive.contains(a.op) || a.op == "checkpoint"))
+    let first = line.waiting.search_by(a => !a.background && is_interactive_read(a.op, a.ask))
     let fore = line.waiting.search_by(a => !a.background)
     let at = match (first, fore) {
       (Some(i), _) => i

@@ -207,7 +207,7 @@ fn Reader::answer_in(self : Reader, db : @sql.Db, op : String, ask : Json) -> Js
     // (what of a list a client does not hold as it is: the list read as its own op reads it, its args those given)
     "changed" =>
       match args.value("op") {
-        Some(String("chats" | "sessions" | "threads" as list)) => {
+        Some(String("chats" | "sharedChats" | "sessions" | "threads" as list)) => {
           let inner = Map::from_iter(ask.as_object().unwrap().iter())
           inner["args"] = args.value("args").unwrap_or(Json::null())
           @readops.changed_of(list, self.answer_in(db, list, Json::object(inner)), args)
