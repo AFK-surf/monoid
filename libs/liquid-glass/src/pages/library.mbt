@@ -144,7 +144,7 @@ fn lib_dock_catalog_orb(parent : @view.View, is_open : () -> Bool, on_open : () 
       Some(
         @paint.Glass::liquid(
           blur=2.1,
-          tint=if dark { 0x202020FFL } else { 0xFDFCFD67L },
+          tint=if dark { 0x20202067L } else { 0xFDFCFD67L },
           solid=if dark { 0x1E1F24FFL } else { 0xFAFAFAFFL },
           saturation=1.0,
           rim=0.6,
@@ -237,7 +237,7 @@ fn lib_nav_catalog_button(parent : @view.View, on_open : () -> Unit) -> Unit {
       Some(
         @paint.Glass::liquid(
           blur=2.1,
-          tint=if dark { 0x202020FFL } else { 0xFDFCFD67L },
+          tint=if dark { 0x20202067L } else { 0xFDFCFD67L },
           solid=if dark { 0x1E1F24FFL } else { 0xFAFAFAFFL },
           saturation=1.0,
           rim=0.6,
@@ -282,7 +282,7 @@ fn lib_nav_menu_trigger(v : @view.View, d : @headless.Disclosure) -> Unit {
     Some(
       @paint.Glass::liquid(
         blur=2.1,
-        tint=if dark { 0x202020FFL } else { 0xFDFCFD67L },
+        tint=if dark { 0x20202067L } else { 0xFDFCFD67L },
         solid=if dark { 0x1E1F24FFL } else { 0xFAFAFAFFL },
         saturation=1.0,
         rim=0.6,
@@ -331,7 +331,7 @@ fn lib_glass_trigger(
       let g_tint = if has_tint {
         @lg.alpha(tint, if dark { 0.72 } else { 0.84 })
       } else if dark {
-        0x202020FFL
+        0x20202067L
       } else {
         0xFDFCFD67L
       }

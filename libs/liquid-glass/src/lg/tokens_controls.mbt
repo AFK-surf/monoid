@@ -376,7 +376,7 @@ fn ctrl_surface_glass(tint : Int64, surface : Int64, bezel? : Double = 18.0, ref
   let glass_tint = if tinted {
     alpha(tint, 0.78)
   } else if d {
-    0x202020FFL
+    0x20202067L
   } else {
     0xFDFCFD67L
   }
@@ -409,7 +409,7 @@ fn ctrl_segmented_track_glass() -> @paint.Glass {
   let d = is_dark()
   @paint.Glass::liquid(
     blur=2.1,
-    tint=if d { 0x202020FFL } else { 0xFDFCFD67L },
+    tint=if d { 0x20202067L } else { 0xFDFCFD67L },
     solid=if d { 0x1E1F24FFL } else { 0xFAFAFAFFL },
     saturation=1.0,
     rim=0.6,
@@ -447,7 +447,7 @@ fn ctrl_input_glass() -> @paint.Glass {
   let d = is_dark()
   @paint.Glass::liquid(
     blur=2.1,
-    tint=if d { 0x202020FFL } else { 0xFDFCFD67L },
+    tint=if d { 0x20202067L } else { 0xFDFCFD67L },
     solid=if d { 0x1E1F24FFL } else { 0xFAFAFAFFL },
     saturation=1.0,
     rim=0.6,

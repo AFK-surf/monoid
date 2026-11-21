@@ -13,7 +13,7 @@ fn button_glass(tint : Int64, surface : Int64) -> @paint.Glass {
   let glass_tint = if tinted {
     alpha(tint, 0.75)
   } else if d {
-    0x202020FFL
+    0x20202067L
   } else {
     0xFDFCFD67L
   }
