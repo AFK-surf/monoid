@@ -1295,9 +1295,11 @@ fn bar_key_held(x : Double, y : Double) -> @view.NodeId? {
 test "a phone's chat: each key of its bar, over the messages scrolled under the bar's glass, holds a finger down past its foot in its room; past the bar, a message's words held long are picked" {
   let t = screen_in("chat", corner_windows[0], "zh")
   let tree = @ui.view_tree().unwrap()
-  // (the bar: frosted glass over the messages from the window's top)
-  let bars = tree.drawn().filter(fn(d) { d.glass is Some(_) && d.y <= 0.0 && d.w >= 300.0 })
-  assert_true(bars.length() == 1, msg="the bar's glass: \{bars.length()}")
+  // (the bar: page ground spanning from the window's top with floating liquid glass pills for its keys)
+  let bars = tree.drawn().filter(fn(d) { d.ground != 0L && d.y <= 0.0 && d.w >= 300.0 && d.h >= bar_h && d.h < 120.0 })
+  assert_true(bars.length() >= 1, msg="the bar's ground: \{bars.length()}")
+  let pills = tree.drawn().filter(fn(d) { d.glass is Some(_) && d.y < bar_h })
+  assert_true(pills.length() >= 2, msg="the bar's glass pills: \{pills.length()}")
   let foot = bars[0].y + bars[0].h
   // (its keys: back, 40 across, and the three round ones, 34)
   let keys = tree

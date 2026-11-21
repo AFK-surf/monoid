@@ -4015,7 +4015,7 @@ fn viewer_glass(t : @ui.Tester, s : String) -> Int {
 fn chat_glass(t : @ui.Tester) -> Int {
   let mut at = -1
   for k, i in t.drawn_instances() {
-    if at < 0 && i[5] == 5.0 && i[0] <= 0.0 && i[1] <= 0.0 && i[2] >= 390.0 {
+    if at < 0 && (i[5] == 5.0 || i[5] == 6.0) && i[1] < 100.0 && i[2] >= 40.0 {
       at = k
     }
   }

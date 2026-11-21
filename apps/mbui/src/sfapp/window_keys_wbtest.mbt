@@ -190,7 +190,8 @@ test "a Windows window laid out Medium: a settings page's bar made as nodes ends
   // (the window's corner its tree's as the bar's node binds its end, not the old views' read where none builds: its
   // last stood against their rule)
   for w in [720.0, 600.0] {
-    let chat = tape_bar_short_of_keys("chat", "打开侧栏", w)
+    // (打开侧栏 sits inside a 2pt-padded liquid glass capsule, so compare the capsule's outer right edge)
+    let chat = tape_bar_short_of_keys("chat", "打开侧栏", w) - 2.0
     for page in [("settings-connects", "添加连接"), ("settings-usage", "7 天 30 天 累计"), ("settings-completion", "重新发现模型")] {
       let short = tape_bar_short_of_keys(page.0, page.1, w)
       assert_true(

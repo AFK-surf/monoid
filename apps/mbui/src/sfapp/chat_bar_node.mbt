@@ -192,7 +192,7 @@ fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> 
         Some(v) => v.agents
         None => []
       }
-      let avail = dmax(0.0, mid_w - 16.0 - bar_trailing_width(g, agents, station_now()))
+      let avail = dmax(0.0, mid_w - 12.0 - bar_trailing_width(g, agents, station_now()))
       let overflows = title_w > avail
       let must_expand = overflows && avail < three_w
       let can_toggle = overflows && !must_expand
@@ -256,8 +256,13 @@ fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> 
         }
       }
     })
-    // (frosted over the messages once they are read, as chat_bar's glass; on the page's ground till then)
-    g.glass(By(fn() { if read() { Some(@sf.glass_bar()) } else { None } })) |> ignore
+    // (soft GPU bottom-fade scrim behind floating liquid glass pills: protects title legibility while dissolving
+    // scrolled messages smoothly at the bar's bottom edge without a hard clip or glass-on-glass nesting)
+    narrow_bar_scrim_node(
+      g,
+      fn(s) { status_top_now(s.window_w()) + bar_h + state.open_way.shown(s) * state.row2_h.get() },
+      fn(s) { if state.open_way.shown(s) > 0.0 { 6.0 } else { 18.0 } },
+    )
     g.reacts(can_toggle, fn(ok) {
       if !ok && state.manual_expanded.get() {
         state.manual_expanded.set(false)
@@ -266,11 +271,11 @@ fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> 
     g.box(fn(row) {
       row
       .row(Is(true))
-      .padding(By(fn() { (4.0, status_top_now(row.window_w()), 16.0, 0.0) }))
+      .padding(By(fn() { (12.0, status_top_now(row.window_w()), 12.0, 0.0) }))
       .min_height(By(fn() { Some(status_top_now(row.window_w()) + bar_h) }))
       .lines_up(Is(Some(Middle)))
       |> ignore
-      // (newly created from NewChat: keep outer glass stable while inner bar row crossfades in along bar_in)
+      // (newly created from NewChat: keep outer bar stable while inner bar row crossfades in along bar_in)
       if from_fresh {
         row
         .alpha(By(fn() {
@@ -295,22 +300,25 @@ fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> 
         (@sfpages.chat_find_list(r).forget)()
         @sfpages.find_close()
       }
-      // back (Chat.kt BarFrame: 40 round, its chevron 22 in the accent's ink): the find closed first while it is open
-      @sf.round_key_node(
-        row,
-        "chevron-left",
-        fn() { tr("common.back") },
-        fn() {
-          if @signals.untracked(finding) {
-            find_close()
-          } else {
-            @sfbase.go_back() |> ignore
-          }
-        },
-        side=40.0,
-        icon_size=22.0,
-        ink=fn() { @sf.theme().p.accent_text },
-      )
+      // back (40pt standalone liquid glass circle, its chevron 22 in the accent's ink): the find closed first while it is open
+      @sf.bar_pill_group_node(row, height=40.0, pad=0.0, gap=0.0, fn(back_pill) {
+        @sf.round_key_node(
+          back_pill,
+          "chevron-left",
+          fn() { tr("common.back") },
+          fn() {
+            if @signals.untracked(finding) {
+              find_close()
+            } else {
+              @sfbase.go_back() |> ignore
+            }
+          },
+          side=40.0,
+          icon_size=22.0,
+          ink=fn() { @sf.theme().p.accent_text },
+        )
+      })
+      |> ignore
       // the title and what follows it, in one row; ⌘F's bar in their place while the find is open and, once it
       // closes, while it fades out as it was (sfdesk's chat_bar_wide_node: the pick's `leave_of`, its way out its
       // own), then they come back faded in over as long
@@ -529,8 +537,8 @@ fn bar_middle_node(
       mid
       .row(Is(true))
       .min_width(Is(Some(0.0)))
-      .padding(Is((8.0, 0.0, 8.0, 0.0)))
-      .gap(Is(8.0))
+      .padding(Is((6.0, 0.0, 6.0, 0.0)))
+      .gap(Is(6.0))
       .lines_up(Is(Some(Middle)))
       .fits(Is(true))
       |> ignore
@@ -736,11 +744,8 @@ fn bar_end_node(
   @signals.untracked(fn() { @sfbase.chat_whole_held(src, r) }) |> ignore
   let archivable = fn() { bar_archivable(view) }
   let doing_key = "archive/" + r.station + "/" + r.session
+  // standalone 40×40 liquid glass circle for archive: toggling `archivable` never steps the right pill's width
   e.box(fn(k) {
-    // (there as it is made where it is so; set off as it becomes so or stops, at that cause's moment: reacts' first
-    // run, as it is made, goes nowhere, the way already there). Its room laid out at once as it becomes so or stops
-    // (what is beside it drawn on its way there: `slides`); its button at its room's end, so where it stood as the room
-    // goes, fading out there over what comes into it, fading in where it comes
     let share = @motion.NodeWay::new(if @signals.untracked(archivable) { 1.0 } else { 0.0 })
     k.reacts(archivable, fn(on) {
       if @view.answering_now() {
@@ -753,149 +758,163 @@ fn bar_end_node(
     let s = fn() { share.shown(k) }
     k
     .row(Is(true))
-    .width(By(fn() { Some(if archivable() { nav_key_side + bar_keys_apart() } else { 0.0 }) }))
-    .lies_along(Is(End))
+    .width(By(fn() { Some(if archivable() { 40.0 + 6.0 } else { 0.0 }) }))
+    .lies_along(Is(Start))
     .laid_nowhere(By(fn() { s() <= 0.0 && !archivable() }))
     |> ignore
     k.box(fn(b) {
       b
-      .width(Is(Some(nav_key_side)))
-      .min_width(Is(Some(nav_key_side)))
-      .height(Is(Some(nav_key_side)))
+      .row(Is(true))
       .lines_up(Is(Some(Middle)))
       .lies_along(Is(Middle))
       .alpha(By(s))
       .presses(By(archivable))
       |> ignore
-      b.show(fn() { @sfbase.doing(doing_key) }, fn(sp) { @sf.spinner_node(sp) |> ignore })
-      b.show(fn() { !@sfbase.doing(doing_key) }, fn(key) {
+      @sf.bar_pill_group_node(b, height=40.0, pad=3.0, gap=0.0, fn(arch_pill) {
+        arch_pill.box(fn(inner) {
+          inner
+          .width(Is(Some(nav_key_side)))
+          .min_width(Is(Some(nav_key_side)))
+          .height(Is(Some(nav_key_side)))
+          .lines_up(Is(Some(Middle)))
+          .lies_along(Is(Middle))
+          |> ignore
+          inner.show(fn() { @sfbase.doing(doing_key) }, fn(sp) { @sf.spinner_node(sp) |> ignore })
+          inner.show(fn() { !@sfbase.doing(doing_key) }, fn(key) {
+            @sf.round_key_node(
+              key,
+              "archive",
+              fn() { tr("android-chat.archive") },
+              // (the chat's view as it is at the press)
+              fn() {
+                match view() {
+                  Some(v) if v.archivable && !v.archived => archive_chat(src, r, v)
+                  _ => ()
+                }
+              },
+              icon_size=20.0,
+            )
+          })
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
+  @sf.bar_pill_group_node(e, height=40.0, pad=3.0, gap=2.0, fn(pill) {
+    // its services and jobs, while it has any
+    let has_jobs = fn() { bar_has_jobs(jobs) }
+    pill.show(has_jobs, at_once=true, fn(k) {
+      slides(k)
+      k.row(Is(true)) |> ignore
+      @sf.round_key_node(k, "web", fn() { tr("android-misc.jobs.title") }, fn() { open_chat_jobs(src, r) }, icon_size=20.0)
+      let alarm = fn() { text(jobs(), "alarm") }
+      k.show(fn() { alarm() == "fail" || alarm() == "restart" }, fn(d) {
+        d
+        .over(Is(true))
+        .lines_up(Is(Some(End)))
+        .padding(Is((0.0, 6.0, 6.0, 0.0)))
+        |> ignore
+        d.box(fn(ring) {
+          ring
+          .width(Is(Some(11.0)))
+          .height(Is(Some(11.0)))
+          .radius(Is(5.5))
+          .padding(Is((2.0, 2.0, 2.0, 2.0)))
+          .ground(By(fn() { @sf.theme().p.bg }))
+          |> ignore
+          ring.box(fn(dot) {
+            dot
+            .grow(Is(1.0))
+            .radius(Is(3.5))
+            .ground(By(fn() { if alarm() == "fail" { @sf.theme().p.red } else { 0xD9962BFFL } }))
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+      })
+    })
+    // the unified remote button (screens, browser, the chat's own terminal) on Small's chat bar, only while an agent
+    // drives one of its station's screens (marked so): the bar's keys are tight at 390 and the chat's own sheet (its
+    // Agent · Station card, sheets.mbt) always holds the same way in; 中屏 and 大屏's bar keeps it always
+    let driven = fn() {
+      match view() {
+        Some(v) => chat_screens_driven(v.screens)
+        None => false
+      }
+    }
+    pill.show(driven, fn(k) {
+      k.row(Is(true)) |> ignore
+      @sf.round_key_node(
+        k,
+        "monitor",
+        fn() { @sf.t("web-pages.chat.screen") },
+        fn() {
+          match @signals.untracked(view) {
+            Some(v) => chat_remote_open(src, r, v, from=Node(k), along=End)
+            None => ()
+          }
+        },
+        icon_size=20.0,
+      )
+      k.box(fn(d) {
+        d
+        .over(Is(true))
+        .lines_up(Is(Some(End)))
+        .padding(Is((0.0, 6.0, 6.0, 0.0)))
+        |> ignore
+        d.box(fn(ring) {
+          ring
+          .width(Is(Some(11.0)))
+          .height(Is(Some(11.0)))
+          .radius(Is(5.5))
+          .padding(Is((2.0, 2.0, 2.0, 2.0)))
+          .ground(By(fn() { @sf.theme().p.bg }))
+          |> ignore
+          ring.box(fn(dot) {
+            dot
+            .grow(Is(1.0))
+            .radius(Is(3.5))
+            .ground(By(fn() { @sf.theme().p.primary }))
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    // what it is (its info's sheet), then what is done with it ("…": the menu a row of the list has)
+    pill.box(fn(k) {
+      slides(k)
+      k.row(Is(true)) |> ignore
+      @sf.round_key_node(k, "info", fn() { tr("android-chat.info.title") }, fn() { open_info(src, r) }, icon_size=20.0)
+    })
+    |> ignore
+    pill.box(fn(k) {
+      slides(k)
+      k.row(Is(true)) |> ignore
+      k.box(fn(more) {
         @sf.round_key_node(
-          key,
-          "archive",
-          fn() { tr("android-chat.archive") },
-          // (the chat's view as it is at the press)
+          more,
+          "more",
+          fn() { tr("common.more") },
           fn() {
-            match view() {
-              Some(v) if v.archivable && !v.archived => archive_chat(src, r, v)
-              _ => ()
+            let w = match workspace_in_view(src).0 {
+              Some(w) => w.id
+              None => ""
             }
+            let chat = src.topic("chat", chat_params(r)).get().value
+            let (x, y, mw, mh) = more.placed_window_now()
+            @sfpages.open_chat_menu(src, w, r, @sfpages.chat_extra_items(src, r, chat), from=At(x, y, mw, mh))
           },
-          icon_size=20.0,
+          icon_size=18.0,
         )
       })
-    })
-    |> ignore
-  })
-  |> ignore
-  // its services and jobs, while it has any
-  let has_jobs = fn() { bar_has_jobs(jobs) }
-  e.show(has_jobs, at_once=true, fn(k) {
-    slides(k)
-    k.row(Is(true)).padding(By(fn() { (bar_keys_apart(), 0.0, 0.0, 0.0) })) |> ignore
-    @sf.round_key_node(k, "web", fn() { tr("android-misc.jobs.title") }, fn() { open_chat_jobs(src, r) }, icon_size=20.0)
-    let alarm = fn() { text(jobs(), "alarm") }
-    k.show(fn() { alarm() == "fail" || alarm() == "restart" }, fn(d) {
-      d
-      .over(Is(true))
-      .lines_up(Is(Some(End)))
-      .padding(Is((0.0, 6.0, 6.0, 0.0)))
       |> ignore
-      d.box(fn(ring) {
-        ring
-        .width(Is(Some(11.0)))
-        .height(Is(Some(11.0)))
-        .radius(Is(5.5))
-        .padding(Is((2.0, 2.0, 2.0, 2.0)))
-        .ground(By(fn() { @sf.theme().p.bg }))
-        |> ignore
-        ring.box(fn(dot) {
-          dot
-          .grow(Is(1.0))
-          .radius(Is(3.5))
-          .ground(By(fn() { if alarm() == "fail" { @sf.theme().p.red } else { 0xD9962BFFL } }))
-          |> ignore
-        })
-        |> ignore
-      })
-      |> ignore
-    })
-  })
-  // the unified remote button (screens, browser, the chat's own terminal) on Small's chat bar, only while an agent
-  // drives one of its station's screens (marked so): the bar's keys are tight at 390 and the chat's own sheet (its
-  // Agent · Station card, sheets.mbt) always holds the same way in; 中屏 and 大屏's bar keeps it always
-  let driven = fn() {
-    match view() {
-      Some(v) => chat_screens_driven(v.screens)
-      None => false
-    }
-  }
-  e.show(driven, fn(k) {
-    k.row(Is(true)).padding(By(fn() { (bar_keys_apart(), 0.0, 0.0, 0.0) })) |> ignore
-    @sf.round_key_node(
-      k,
-      "monitor",
-      fn() { @sf.t("web-pages.chat.screen") },
-      fn() {
-        match @signals.untracked(view) {
-          Some(v) => chat_remote_open(src, r, v, from=Node(k), along=End)
-          None => ()
-        }
-      },
-      icon_size=20.0,
-    )
-    k.box(fn(d) {
-      d
-      .over(Is(true))
-      .lines_up(Is(Some(End)))
-      .padding(Is((0.0, 6.0, 6.0, 0.0)))
-      |> ignore
-      d.box(fn(ring) {
-        ring
-        .width(Is(Some(11.0)))
-        .height(Is(Some(11.0)))
-        .radius(Is(5.5))
-        .padding(Is((2.0, 2.0, 2.0, 2.0)))
-        .ground(By(fn() { @sf.theme().p.bg }))
-        |> ignore
-        ring.box(fn(dot) {
-          dot
-          .grow(Is(1.0))
-          .radius(Is(3.5))
-          .ground(By(fn() { @sf.theme().p.primary }))
-          |> ignore
-        })
-        |> ignore
-      })
-      |> ignore
-    })
-    |> ignore
-  })
-  // what it is (its info's sheet), then what is done with it ("…": the menu a row of the list has)
-  e.box(fn(k) {
-    slides(k)
-    k.row(Is(true)).padding(By(fn() { (bar_keys_apart(), 0.0, 0.0, 0.0) })) |> ignore
-    @sf.round_key_node(k, "info", fn() { tr("android-chat.info.title") }, fn() { open_info(src, r) }, icon_size=20.0)
-  })
-  |> ignore
-  e.box(fn(k) {
-    slides(k)
-    k.row(Is(true)).padding(By(fn() { (bar_keys_apart(), 0.0, 0.0, 0.0) })) |> ignore
-    k.box(fn(more) {
-      @sf.round_key_node(
-        more,
-        "more",
-        fn() { tr("common.more") },
-        fn() {
-          let w = match workspace_in_view(src).0 {
-            Some(w) => w.id
-            None => ""
-          }
-          let chat = src.topic("chat", chat_params(r)).get().value
-          let (x, y, mw, mh) = more.placed_window_now()
-          @sfpages.open_chat_menu(src, w, r, @sfpages.chat_extra_items(src, r, chat), from=At(x, y, mw, mh))
-        },
-        icon_size=18.0,
-      )
     })
     |> ignore
   })

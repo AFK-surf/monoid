@@ -882,7 +882,36 @@ fn place_top_bar_node(
 }
 
 ///|
-/// place_top_bar_node's bar on its glass, in `v`.
+/// Soft GPU bottom-fade backdrop for floating-pill narrow top bars (iOS 26 UIScrollEdgeEffect.soft):
+/// stays 100% opaque `p.bg` across the status bar & title area, then feathers smoothly to transparent
+/// over the lower `fade_h` pt down to `base_h` so scrolled content dissolves cleanly at the bar's
+/// bottom edge without a hard clip or extending past the bar's interactive height.
+fn narrow_bar_scrim_node(
+  parent : @view.View,
+  base_h : (@view.View) -> Double,
+  fade_h : (@view.View) -> Double,
+) -> Unit {
+  parent.box(fn(scrim) {
+    scrim
+    .over(Is(true))
+    .width_share(Is(1.0))
+    .height(By(fn() { Some(base_h(scrim)) }))
+    .fades(By(fn() { (0.0, 0.0, 0.0, fade_h(scrim)) }))
+    |> ignore
+    scrim.box(fn(fill) {
+      // (register fill in inputs_in via pointed() while keeping points=false so Tree::target_at visits fill and
+      // applies Node::covers to block click-through onto scrolled content behind the top bar without affecting hover)
+      fill.width_share(Is(1.0)).height_share(Is(1.0)).ground(By(fn() { @sf.theme().p.bg })).points(Is(false)) |> ignore
+      fill.pointed() |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// place_top_bar_node's bar in `v`: soft bottom-fade scrim behind the title (no full-width `glass_bar()` to avoid
+/// glass-on-glass) with the right-side settings action inside a floating liquid glass circle.
 fn place_top_bar_glass(
   v : @view.View,
   place : () -> String,
@@ -890,13 +919,13 @@ fn place_top_bar_glass(
   title_alpha? : (@view.View) -> Double = fn(_) { 1.0 },
 ) -> Unit {
   v.box(fn(g) {
-    g.glass(By(fn() { Some(@sf.glass_bar()) })) |> ignore
+    narrow_bar_scrim_node(g, fn(s) { top_bar_h_at(s.window_w()) }, fn(_) { 18.0 })
     g.box(fn(row) {
       row
       .row(Is(true))
-      .padding(By(fn() { (16.0, status_top_now(row.window_w()), 16.0, 0.0) }))
+      .padding(By(fn() { (16.0, status_top_now(row.window_w()), 12.0, 0.0) }))
       .min_height(By(fn() { Some(top_bar_h_at(row.window_w())) }))
-      .gap(Is(10.0))
+      .gap(Is(8.0))
       .lines_up(Is(Some(Middle)))
       |> ignore
       // (its words whole: what the page does at its end gives way where the bar has not the room)
@@ -925,7 +954,7 @@ fn place_top_bar_glass(
           },
           fn(k, _) {
             @sf.top_bar_actions_lent(k)
-            k.row(Is(true)).gap(Is(10.0)).lines_up(Is(Some(Middle))).shrink(Is(1.0)) |> ignore
+            k.row(Is(true)).gap(Is(8.0)).lines_up(Is(Some(Middle))).shrink(Is(1.0)) |> ignore
             match @signals.untracked(actions) {
               Some((make, _)) => make(k)
               None => ()
@@ -933,11 +962,14 @@ fn place_top_bar_glass(
           },
         )
       })
-      // settings at the right edge, as at Home's
-      @sf.round_key_node(row, "settings", fn() { tr("android-chat.home.settings") }, fn() {
-        @sfbase.history_push()
-        app.nav.push(Settings)
+      // settings at the right edge, as at Home's: standalone 40pt liquid glass circle
+      @sf.bar_pill_group_node(row, height=40.0, pad=3.0, gap=0.0, fn(set_pill) {
+        @sf.round_key_node(set_pill, "settings", fn() { tr("android-chat.home.settings") }, fn() {
+          @sfbase.history_push()
+          app.nav.push(Settings)
+        })
       })
+      |> ignore
     })
     |> ignore
   })

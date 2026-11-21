@@ -101,7 +101,9 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // composer held behind what is presented over it (composer_node's held_behind) and the chat's list told what is in
   // sight (chat_body_node's sight_ver); the most of the default rate: before it (1027, 31, 659, 80, 967), (4, 3, 62, 0,
   // 182), (2473, 503, 1914, 217, 2472))
-  "phone cold": (1029, 31, 659, 80, 970),
+  // (+8 made, +7 laid, +11 bindings, 2026-11-22: narrow Home and Chat top bar action groups use floating
+  // bar_pill_group_node liquid glass capsules, standalone archive circle, and soft GPU bottom-fade narrow_bar_scrim_node; before it (1029, 31, 659, 80, 970))
+  "phone cold": (1037, 31, 666, 80, 981),
   // (2026-11-18: a chat's page made as nodes kept as it is left (ui's Nav kept_left, sfbase's page_entry_parked) and
   // taken back as it is opened again, holding no chat meanwhile and waiting for none of it as it comes back; the same at
   // 60, 120, 24 and 7: before it (341, 19, 227, 28, 346) and wide again (897, 132, 853, 121, 1062))

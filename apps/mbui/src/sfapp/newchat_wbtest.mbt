@@ -14,8 +14,9 @@ let bar_action_x : Double = 22.0 + (390.0 - 44.0) - act_size / 2.0
 test "the bar: a finger held still on it a moment has the ball a lens of liquid glass; a tap none; let go, the ball" {
   let t = tester("home")
   let (xs, y) = bar_places_at()
-  // (the lens: liquid glass neither as high as the bar, as the capsule and 令's circle are, nor as tall as its panel)
-  let lensed = fn() { t.drawn_glass().iter().any(fn(g) { g.4 == 6 && (g.3 - bar_track).abs() > 1.0 && g.3 < 80.0 }) }
+  // (the lens: liquid glass in the bottom bar neither as high as the bar, as the capsule and 令's circle are, nor as tall as its panel)
+  let (_, h) = t.size()
+  let lensed = fn() { t.drawn_glass().iter().any(fn(g) { g.4 == 6 && g.1 >= h / 2.0 && (g.3 - bar_track).abs() > 1.0 && g.3 < 80.0 }) }
   t.tap(xs[0], y)
   t.run_for(bar_hold_ms)
   assert_false(lensed())

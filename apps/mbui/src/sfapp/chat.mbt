@@ -169,10 +169,3 @@ fn station_part_type() -> (Double, Double, Double) {
 /// messages or no more (a minute at most); then from its end it is scrolled up 600 frames at 40 a frame, and the
 /// frames' times are said (CHATBENCH …) and the app ends.
 let bench_on : Ref[Int] = { val: -1 }
-
-///|
-/// The bar's keys at its end (its archive, its jobs, its "…") as far apart as makes each a press's room across
-/// (@sf.keys_apart: 2 with keyboard and mouse, 10 with touch), the room before each.
-fn bar_keys_apart() -> Double {
-  @sf.keys_apart(size=nav_key_side)
-}
