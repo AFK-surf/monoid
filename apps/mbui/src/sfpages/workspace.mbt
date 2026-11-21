@@ -76,9 +76,9 @@ pub fn open_workspaces(src : Source, from : @sf.Anchor, compact? : Bool = false)
     fn(v, close) { workspaces_list(v, src, close, compact~) },
     from~,
     tall=if compact { 0.0 } else { workspaces_tall },
-    // (as tall as what it holds up to its share: a few workspaces leave no room empty under them)
+    // (as tall as what it holds up to its share: a few workspaces leave no room empty under them; not drawn taller by
+    // its top, which would open that room again: more than its share holds scroll in it)
     hugs=true,
-    grows=true,
   )
 }
 

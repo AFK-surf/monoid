@@ -199,20 +199,17 @@ test "the bar: hidden under a page pushed, back as it comes back" {
 }
 
 ///|
-test "the workspaces' sheet: drawn up to 94%, dragged down past 30% it closes" {
+test "the workspaces' sheet: as tall as what it holds, not drawn taller by its top, dragged down past 30% it closes" {
   let t = tester("home")
   t.tap_text("星火工作室")
   presented_rested(t)
-  assert_true((t.get(@ui.Role::Dialog).rect.3 - 844.0 * 0.7).abs() < 1.0)
+  // (two workspaces: shorter than its share of the window, 70%)
+  let h = t.get(@ui.Role::Dialog).rect.3
+  assert_true(h < 844.0 * 0.7 - 100.0, msg="\{h} tall")
   let (x, y) = t.find("切换 workspace").unwrap()
   t.drag(x, y, x, y - 200.0)
   presented_rested(t)
-  assert_true((t.get(@ui.Role::Dialog).rect.3 - 844.0 * 0.94).abs() < 1.0)
-  // a tap on the grabber: half
-  let (x, y) = t.find("切换 workspace").unwrap()
-  t.tap(x, y - 30.0)
-  presented_rested(t)
-  assert_true((t.get(@ui.Role::Dialog).rect.3 - 844.0 * 0.55).abs() < 1.0)
+  assert_eq(t.get(@ui.Role::Dialog).rect.3, h)
   let (x, y) = t.find("切换 workspace").unwrap()
   t.drag(x, y, x, y + 300.0)
   presented_rested(t)

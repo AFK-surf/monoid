@@ -1,5 +1,5 @@
 // 32-sheet-drag (e2e/traces/sheet-drag.trace): a sheet dragged by its top: the workspaces' sheet opened from the
-// name (70%), drawn up to nearly all the screen (94%), dragged down past 30%: closed. Then a new chat's station sheet
+// name (as tall as what it holds), drawn up (it does not grow: it comes back), dragged down past 30%: closed. Then a new chat's station sheet
 // (as tall as its stations, not draggable): dragged down a little it comes back, flicked down 100 (to the window's
 // foot: a Mac's drag ends there) it closes; opened again, its station tapped (newChat.pick).
 
