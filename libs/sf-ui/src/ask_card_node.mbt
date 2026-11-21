@@ -37,6 +37,7 @@ pub fn ask_words_node(
 ) -> @view.View {
   parent.box(made_for=loc, fn(w) {
     style_node(w, fn() { ask_what })
+    w.words_selectable() |> ignore
     w.box(fn(t) {
       t
       .words_runs(By(fn() { [@ui.span(title(), weight=600, color=theme().p.text)] }))

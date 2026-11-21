@@ -116,6 +116,7 @@ fn dialog_layer_node(
       let live = fn() { !layer.leaving() }
       // (a submenu row's menu in what it holds made in it: submenu_layer_lent)
       submenu_layer_lend(layer)
+      presented_surface_wire(layer)
       layer
       .over(Is(true))
       // (modal while open: closing, what is under it its own again as it begins to go)
@@ -262,6 +263,7 @@ fn confirm_panel(
     .scale(By(fn() { look().sx }))
     .offset(By(fn() { (look().dx, look().dy) }))
     .says(By(fn() { Some(@view.said(Dialog, label=title(), description=if warning == "" { words() } else { words() + "\n" + warning })) }))
+    |> ground_node
     |> ignore
     // (all it holds as far in as its look says, past its own ground, edge and shadow: each part of it, its title, its
     // words, its foot and its buttons, the same, Look's `words` as a surface's are)
@@ -271,6 +273,7 @@ fn confirm_panel(
       .words(By(title), look=toast_words_look(Heading, Font, 600, true))
       .ink(By(fn() { theme().color(Fg) }))
       .alpha(By(words_in))
+      .words_selectable()
       |> ignore
     })
     |> ignore
@@ -279,6 +282,7 @@ fn confirm_panel(
       .words(By(words), look=toast_words_look(Meta, L6, 400, true))
       .ink(By(fn() { theme().color(Muted) }))
       .alpha(By(words_in))
+      .words_selectable()
       |> ignore
     })
     |> ignore
@@ -288,6 +292,7 @@ fn confirm_panel(
         .words(Is(warning), look=toast_words_look(Meta, L6, 400, true))
         .ink(By(fn() { theme().color(Danger) }))
         .alpha(By(words_in))
+        .words_selectable()
         |> ignore
       })
       |> ignore

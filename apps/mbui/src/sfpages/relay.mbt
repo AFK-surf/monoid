@@ -151,7 +151,7 @@ fn relay_picking(col : @view.View, src : Source, shown : () -> RelayShown) -> Un
             relay_via(l, src, fn() { text(shown().view, "bot") })
           })
         Reading => @sf.wait_line_node(p, fn() { @sf.t("web-main.relay.reading") }) |> ignore
-        Failed => @sf.words_node(p, fn() { shown().error }, fn() { relay_failed }) |> ignore
+        Failed => @sf.words_node(p, fn() { shown().error }, fn() { relay_failed }).words_selectable() |> ignore
         NoConnects => relay_said(p, fn() { @sf.t("web-main.relay.noConnects") }, relay_empty)
         Places => relay_places(p, shown)
       }

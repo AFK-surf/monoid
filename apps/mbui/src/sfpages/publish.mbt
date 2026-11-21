@@ -592,7 +592,7 @@ fn publish_node(n : @view.View, src : Source, look : () -> @ui.Look) -> Unit {
             @sf.style_node(o, fn() { publish_note })
             match state {
               0 => @sf.wait_line_node(o, fn() { @sf.t("web-pages.chat.publish.reading") }) |> ignore
-              2 => @sf.words_node(o, fn() { publishing.error.get() }, fn() { publish_problem }) |> ignore
+              2 => @sf.words_node(o, fn() { publishing.error.get() }, fn() { publish_problem }).words_selectable() |> ignore
               _ => @sf.words_node(o, fn() { @sf.t("web-pages.chat.publish.empty") }, fn() { publish_note_words }) |> ignore
             }
           }

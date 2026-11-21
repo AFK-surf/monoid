@@ -371,13 +371,13 @@ fn local_progress_node(v : @view.View, s : () -> Json?, doing : () -> String) ->
     |> ignore
   })
   |> ignore
-  v.show(fn() { text(s(), "said") != "" }, fn(w) { @sf.words_node(w, fn() { text(s(), "said") }, fn() { desk_note }) |> ignore })
+  v.show(fn() { text(s(), "said") != "" }, fn(w) { @sf.words_node(w, fn() { text(s(), "said") }, fn() { desk_note }).words_selectable() |> ignore })
 }
 
 ///|
 /// What went wrong with the last act (warn: red), where something did.
 fn local_failed_node(v : @view.View, s : () -> Json?) -> Unit {
-  v.show(fn() { local_failed_words(s()) != "" }, fn(w) { @sf.words_node(w, fn() { local_failed_words(s()) }, fn() { ls_warn }) |> ignore })
+  v.show(fn() { local_failed_words(s()) != "" }, fn(w) { @sf.words_node(w, fn() { local_failed_words(s()) }, fn() { ls_warn }).words_selectable() |> ignore })
 }
 
 ///|

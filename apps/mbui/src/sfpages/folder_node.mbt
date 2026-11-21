@@ -795,6 +795,7 @@ fn upload_state_node(
         })
         .cuts(Is(true))
         .min_width(Is(Some(0.0)))
+        .words_selectable()
         |> ignore
       _ =>
         s.box(fn(p) {

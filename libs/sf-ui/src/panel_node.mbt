@@ -73,6 +73,7 @@ fn panel_node(
       submenu_layer_lend(layer)
       // (what its fields offer made in it: offers_layer_lent)
       offers_layer_lend(layer)
+      presented_surface_wire(layer)
       // (the focus left where it is as it opens (not `focus`): what is typed still that field's, its keys the layer's
       // (kit's popover with its initial focus prevented, as menu_node's keep_field); said before it is modal, the
       // field's focus kept as the layer takes what is under it)

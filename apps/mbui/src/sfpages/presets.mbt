@@ -654,7 +654,7 @@ fn preset_others_content(
     Some({ error: Some(e), .. }) =>
       b.box(fn(eb) {
         @sf.style_node(eb, fn() { preset_empty_box })
-        @sf.words_node(eb, fn() { error_words(e) }, fn() { preset_empty_hint }) |> ignore
+        @sf.words_node(eb, fn() { error_words(e) }, fn() { preset_empty_hint }).words_selectable() |> ignore
       })
       |> ignore
     Some({ value: _, .. }) =>

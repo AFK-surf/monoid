@@ -780,7 +780,7 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
     })
     // the library's confirms in the middle of the window, each at its place in the window's stack of layers among what
     // else is presented (src/sf presented_node.mbt)
-    @sf.presented_nodes(root)
+    @sf.presented_nodes(root, on_surface=@sfdesk.context_node)
     // what a right click offers, over every shell, switcher, viewer and presented modal (sfdesk context_menu.mbt)
     @sfdesk.context_menu_node(root)
     // what a write said, over all of it, in every state and shell (sfbase's toasts_node)
@@ -1049,7 +1049,7 @@ pub fn lone_window_tree(src : Source, wid : Int) -> (@view.View) -> Unit {
       lone_tree(v, src)
     })
     |> ignore
-    @sf.presented_nodes(root)
+    @sf.presented_nodes(root, on_surface=@sfdesk.context_node)
     @sfdesk.context_menu_node(root)
     @sfbase.toasts_node(root, fn() { toast_bottom_now(root) }) |> ignore
   }

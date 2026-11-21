@@ -320,7 +320,7 @@ fn about_station_node(g : @view.View, core : Core, host : () -> Json?, tips : @s
   g.show(fn() { software_failed.get(address) is Some(_) }, fn(f) {
     f.box(fn(foot) {
       @sf.style_node(foot, fn() { sw_foot })
-      @sf.words_node(foot, fn() { software_failed.get(address).unwrap_or("") }, fn() { sw_failed_line }) |> ignore
+      @sf.words_node(foot, fn() { software_failed.get(address).unwrap_or("") }, fn() { sw_failed_line }).words_selectable() |> ignore
     })
     |> ignore
   })

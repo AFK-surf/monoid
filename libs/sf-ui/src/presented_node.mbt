@@ -38,11 +38,33 @@ fn pick_menu_of(choices : Array[Choice], search : Bool) -> Bool {
 }
 
 ///|
+/// What `presented_nodes` lends each presented surface (`on_surface`, e.g. desktop right-click Copy context menu) so
+/// modal overlays wire it inside their modal layer.
+// kept across runs: what each node lends (View::lends), let go with it
+let presented_surface_lent : @view.Lent[(@view.View) -> Unit] = @view.Lent::new()
+
+///|
+/// Enable pointer text selection (`@ui.words_picked`) and any host surface hook (such as desktop right-click Copy) on
+/// a presented modal layer.
+fn presented_surface_wire(layer : @view.View) -> Unit {
+  @ui.words_picked(layer)
+  match layer.lent(presented_surface_lent) {
+    Some(f) => f(layer)
+    None => ()
+  }
+}
+
+///|
 /// What of the presented the window's tree draws, in `root` (over all of it the root holds: each at its place in the
 /// window's stack of layers), made as one is presented and let go once it has gone; and under them the reader's
-/// layout's panel while one is open (reader_layout_nodes).
+/// layout's panel while one is open (reader_layout_nodes). `on_surface`, when given, runs on each presented modal
+/// layer so hosts can attach context menus inside modal boundaries.
 #callsite(autofill(loc))
-pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
+pub fn presented_nodes(
+  root : @view.View,
+  on_surface? : (@view.View) -> Unit,
+  loc~ : SourceLoc,
+) -> Unit {
   // (when the tree moves only for explicit causes, each presented overlay is its own transition boundary so a
   // dialog/sheet's internal transitions stay within it without turning standalone sf-ui tests static)
   let isolated = !root.transition_gate()
@@ -87,6 +109,10 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
       }
       // (the tips of what its body and its foot are made of: the window's layer of them, panel_tips_lent)
       row.lends(panel_tips_lent, tips) |> ignore
+      match on_surface {
+        Some(f) => row.lends(presented_surface_lent, f) |> ignore
+        None => ()
+      }
       // (which of its submenu rows has its menu open, one at a time, its own: panel_submenus_lent)
       panel_submenus_lend(row)
       let open = fn() {

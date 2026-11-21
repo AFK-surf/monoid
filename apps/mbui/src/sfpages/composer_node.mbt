@@ -476,7 +476,7 @@ fn composer_node_of(
     // (what went wrong, under it)
     foot.show(at_once=true, fn() { w.error.get() != "" }, fn(e) {
       @sf.style_node(e, fn() { error_box })
-      @sf.words_node(e, fn() { w.error.get() }, fn() { composer_error_words }) |> ignore
+      @sf.words_node(e, fn() { w.error.get() }, fn() { composer_error_words }).words_selectable() |> ignore
     })
   })
   |> ignore

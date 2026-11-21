@@ -217,6 +217,36 @@ pub fn View::runs_marks(self : View, marks : Live[Array[RunsMark]], loc~ : Sourc
 pub let runs_picker : Lent[(View) -> Live[(Int, Int)]] = Lent::new()
 
 ///|
+/// What a node lends what it holds: its plain words (`View::words`) can be selected with the pointer where an ancestor
+/// enables selection (`@ui.words_picked`). Plain words default to non-selectable; opting in lets cards, error notices,
+/// details, and dialogs make their non-interactive words selectable without affecting buttons or other controls inside.
+// kept across runs: what each node lends (View::lends), let go with it
+pub let words_pickable : Lent[Bool] = Lent::new()
+
+///|
+/// What lends what holds it the initial picked span for a newly mounted plain `View::words` node when a selection is
+/// already active (for example when a virtualized list row scrolls back into view), without attaching a signal binding.
+// kept across runs: what each node lends (View::lends), let go with it
+pub let words_picker_init : Lent[(View) -> (Int, Int)] = Lent::new()
+
+///|
+/// Opt this node and its descendants in (or out when `on=false`) of pointer text selection for plain `View::words`
+/// nodes inside a `@ui.words_picked` ancestor. Interactive controls inside stay non-selectable.
+pub fn View::words_selectable(self : View, on? : Bool = true) -> View {
+  self.lends(words_pickable, on) |> ignore
+  if on &&
+    self.live() is Some(n) &&
+    n.look.runs.is_empty() &&
+    (n.look.words != "" || n.look.words_drawn is Some(_)) {
+    match self.lent(words_picker_init) {
+      Some(init) => n.look.runs_picked = init(self)
+      None => ()
+    }
+  }
+  self
+}
+
+///|
 /// Which row of a list made by its key (View::each) it is in, nearest it, and where it is in that row (its place among
 /// what holds it, each from the row down): the same while the row's key is there, whatever is made in it anew where it
 /// was; a page's list's row (View::scrolls_window) by its list and its key's number there, whichever node it is made
@@ -340,6 +370,14 @@ fn View::words_told(self : View) -> Unit {
 pub fn View::runs_set_now(self : View) -> (Array[@text.Run], WordsLook, RunsLook) {
   guard self.live() is Some(n) else { return ([], words_plain, runs_plain) }
   (n.look.runs, n.look.words_look, n.look.runs_look)
+}
+
+///|
+/// Its plain words and how they are set as they are said now (what lays them out: its own, the same it is drawn from
+/// as it is laid out next), not as the frame before drew them.
+pub fn View::words_set_now(self : View) -> (String, WordsLook) {
+  guard self.live() is Some(n) else { return ("", words_plain) }
+  (n.look.words_drawn.unwrap_or(n.look.words), n.look.words_look)
 }
 
 ///|

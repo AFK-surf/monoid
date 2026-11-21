@@ -204,7 +204,7 @@ fn cd_block(
     "trouble" =>
       b.box(fn(k) {
         @sf.style_node(k, fn() { cd_amber })
-        k.ground(By(fn() { @sf.theme().p.amber_bg })) |> ignore
+        k.ground(By(fn() { @sf.theme().p.amber_bg })).words_selectable() |> ignore
         @sf.words_node(k, fn() { cd_trouble(cv()) }, fn() { cd_words }) |> ignore
       })
       |> ignore
@@ -1195,6 +1195,7 @@ pub fn cd_mode_dialog(core : Core, station : String, item : Json?) -> Unit {
         sh.pick(effects, fn(s, list) {
         s.box(fn(a) {
           @sf.style_node(a, fn() { cd_amber.then(@ui.style(bg=Data(@sf.theme().p.amber_bg))) })
+          a.words_selectable() |> ignore
           @sf.words_node(a, fn() { @sf.t("web-pages.connect.afterChange") }, fn() { cd_amber_title }) |> ignore
           a.box(fn(l) {
             @sf.style_node(l, fn() { cd_effects })

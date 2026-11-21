@@ -423,6 +423,7 @@ fn nc_body_node(
             @sf.words_node(e, fn() { @sf.t("web-pages.connect.iconFailed", args=[("error", text(view(), "iconError"))]) }, fn() {
               desk_note_bad
             })
+            .words_selectable()
             |> ignore
           })
           let tk = nc_tokens(core, f, text(@signals.untracked(made), "state"))
@@ -442,7 +443,7 @@ fn nc_body_node(
 ///|
 /// What went wrong (`error`, as it is now), in red, while it says something.
 fn nc_bad_node(k : @view.View, error : () -> String) -> Unit {
-  k.show(fn() { error() != "" }, fn(e) { @sf.words_node(e, error, fn() { desk_note_bad }) |> ignore })
+  k.show(fn() { error() != "" }, fn(e) { @sf.words_node(e, error, fn() { desk_note_bad }).words_selectable() |> ignore })
 }
 
 ///|
@@ -732,7 +733,7 @@ fn nc_scan_node(k : @view.View, core : Core, fe : () -> Json?) -> Unit {
         ) {
           @sf.spinner_node(s, size=cd_icon) |> ignore
         })
-        @sf.words_node(l, fn() { text(fe(), "stateText") }, fn() { if failing() { nc_scan_bad } else { desk_words } }) |> ignore
+        @sf.words_node(l, fn() { text(fe(), "stateText") }, fn() { if failing() { nc_scan_bad } else { desk_words } }).words_selectable() |> ignore
       })
       |> ignore
       nc_bad_node(w, fn() { opt_text(fe(), "error").unwrap_or("") })

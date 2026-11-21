@@ -315,6 +315,7 @@ fn none_said_node(
   loc~ : SourceLoc,
 ) -> Unit {
   parent.box(made_for=loc, fn(n) {
+    n.words_selectable() |> ignore
     match look_node(n) {
       Narrow => {
         n.padding(Is((x, 0.0, x, foot))) |> ignore
@@ -837,9 +838,10 @@ fn wide_link_row_node(
       })
       |> ignore
       words.show(fn() { note() != "" }, fn(n) {
-        styled_words(n, note, fn() { note_look(if note_cut() { wide_list_note.then(cut_words) } else { wide_list_note }) }) |> ignore
+        styled_words(n, note, fn() { note_look(if note_cut() { wide_list_note.then(cut_words) } else { wide_list_note }) }).words_selectable(on=!goes)
+        |> ignore
       })
-      words.show(fn() { trouble() != "" }, fn(n) { styled_words(n, trouble, fn() { desk_note_bad }) |> ignore })
+      words.show(fn() { trouble() != "" }, fn(n) { styled_words(n, trouble, fn() { desk_note_bad }).words_selectable() |> ignore })
       match below {
         Some(f) => row_below_node(words, f, below_open)
         None => ()

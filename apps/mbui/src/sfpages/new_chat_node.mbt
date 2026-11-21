@@ -319,12 +319,12 @@ fn new_on_tree(v : @view.View, on : NewOn) -> Unit {
           wd.pick(fn() { if (on.held)() { if (on.error)() != "" { 2 } else { 1 } } else { 0 } }, at_once=true, fn(w, k) {
             w.lines_up(Is(Some(Middle))).gap(Is(@ui.Space::px(S2_5))) |> ignore
             match k {
-              2 => @sf.words_node(w, on.error, fn() { new_error }).words_centered(Is(true)) |> ignore
+              2 => @sf.words_node(w, on.error, fn() { new_error }).words_centered(Is(true)).words_selectable() |> ignore
               1 => @sf.wait_line_node(w, fn() { @sf.t("common.readingStations") }) |> ignore
               _ => {
                 // what it waits for, in a line of its own under the composer
                 w.show(fn() { text((on.view)(), "problem") != "" }, fn(p) {
-                  @sf.words_node(p, fn() { text((on.view)(), "problem") }, fn() { new_status }).words_centered(Is(true))
+                  @sf.words_node(p, fn() { text((on.view)(), "problem") }, fn() { new_status }).words_centered(Is(true)).words_selectable()
                   |> ignore
                 })
                 new_offer_node(w, on, new_offer_under)
@@ -372,7 +372,7 @@ fn new_scene_node(s : @view.View, on : NewOn, wide : () -> Bool) -> Unit {
       nw.lines_up(Is(Some(Middle))) |> ignore
       nw.show(fn() { problem() != "" }, fn(b) {
         @sf.style_node(b, fn() { new_problem_box })
-        @sf.words_node(b, problem, fn() { if (on.held)() { new_error } else { new_status } }).words_centered(Is(true)) |> ignore
+        @sf.words_node(b, problem, fn() { if (on.held)() { new_error } else { new_status } }).words_centered(Is(true)).words_selectable() |> ignore
       })
       new_offer_node(nw, on, new_offer_box)
     })

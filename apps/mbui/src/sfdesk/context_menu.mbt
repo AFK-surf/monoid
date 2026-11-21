@@ -286,8 +286,8 @@ pub fn context_menu_node(v : @view.View) -> Unit {
 /// The context menu's each-slot and image-copy slot in `v` for window `wid`, mounted on first use (context_menu_node).
 fn context_menu_slots(v : @view.View, wid : Int) -> Unit {
   v.each(fn() { if context.window == wid { context_menus.get() } else { [] } }, fn(n) { n }, fn(cell, k) {
-    // (over the window, as what it holds is)
-    cell.over(Is(true)) |> ignore
+    // (over the window and presented modals, so right-clicking in a dialog opens above it)
+    cell.over(Is(true)).over_all(Is(true)) |> ignore
     let n = k.untracked()
     let (x, y) = (context.x, context.y)
     let open = fn() { context_now.get() == n && context.window == wid }

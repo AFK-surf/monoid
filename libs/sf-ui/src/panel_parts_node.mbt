@@ -263,7 +263,7 @@ fn panel_label_in(l : @view.View, label : () -> String, lead? : (@view.View) -> 
 pub fn panel_note_node(parent : @view.View, words : () -> String, loc~ : SourceLoc) -> Unit {
   parent.box(made_for=loc, fn(n) {
     style_node(n, fn() { panel_text_box })
-    words_node(n, words, fn() { panel_note_words }) |> ignore
+    words_node(n, words, fn() { panel_note_words }).words_selectable() |> ignore
   })
   |> ignore
 }
