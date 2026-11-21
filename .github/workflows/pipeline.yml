@@ -1238,10 +1238,47 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: { contents: read }
+    env:
+      MBC_STORE: ${{ github.workspace }}/libs/comma-ui/_build/native/release/mbc-store
     steps:
+      # (the runner's compiler, reckoned as mbui-check.yml's IMG, whose app-pkgs store it takes when it has none of its own)
+      - name: The runner's compiler
+        id: img
+        run: |
+          if [ -z "${ImageVersion:-}" ]; then
+            img=own
+          else
+            cc_bin=$(command -v clang || true)
+            img="cc$({
+              [ -n "$cc_bin" ] && sha256sum "$cc_bin" && "$cc_bin" --version &&
+                printf '#include <stdio.h>\n#include <stdlib.h>\n#include <stdint.h>\n#include <string.h>\n#include <math.h>\n#include <limits.h>\n' | "$cc_bin" -E -x c - 2>/dev/null || true
+            } | sha256sum | cut -c1-12)"
+          fi
+          echo "img=$img" >> "$GITHUB_OUTPUT"
+          echo "img=$img (image=${ImageVersion:-own}, cc=$(${cc_bin:-clang} --version 2>/dev/null | head -1))"
       - uses: actions/checkout@v5
       - uses: ./.github/actions/mbui-moonbit
+      - uses: actions/cache/restore@v4
+        id: store
+        with:
+          path: ${{ env.MBC_STORE }}
+          key: comma-ui-linux-store-${{ steps.img.outputs.img }}-${{ github.sha }}
+          restore-keys: |
+            comma-ui-linux-store-${{ steps.img.outputs.img }}-
+            comma-ui-linux-store-
+            mbui-linux-store-app-pkgs-m-${{ steps.img.outputs.img }}-
+            mbui-linux-store-app-pkgs-m-
+      - run: touch "$RUNNER_TEMP/start"
       - run: bash libs/comma-ui/scripts/check.sh
+      - if: github.ref == 'refs/heads/main' && steps.store.outputs.cache-hit != 'true'
+        run: |
+          sh apps/mbui/scripts/used.sh "$RUNNER_TEMP/start" "$MBC_STORE"
+          find "$MBC_STORE" -name '*.lock' -delete 2>/dev/null || true
+      - uses: actions/cache/save@v4
+        if: github.ref == 'refs/heads/main' && steps.store.outputs.cache-hit != 'true'
+        with:
+          path: ${{ env.MBC_STORE }}
+          key: comma-ui-linux-store-${{ steps.img.outputs.img }}-${{ github.sha }}
 
   # The liquid glass library (libs/liquid-glass), on its own beside mbui: detlint, type-checked on native and js, its
   # tests.
@@ -1251,10 +1288,47 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: { contents: read }
+    env:
+      MBC_STORE: ${{ github.workspace }}/libs/liquid-glass/_build/native/release/mbc-store
     steps:
+      # (the runner's compiler, reckoned as mbui-check.yml's IMG, whose app-pkgs store it takes when it has none of its own)
+      - name: The runner's compiler
+        id: img
+        run: |
+          if [ -z "${ImageVersion:-}" ]; then
+            img=own
+          else
+            cc_bin=$(command -v clang || true)
+            img="cc$({
+              [ -n "$cc_bin" ] && sha256sum "$cc_bin" && "$cc_bin" --version &&
+                printf '#include <stdio.h>\n#include <stdlib.h>\n#include <stdint.h>\n#include <string.h>\n#include <math.h>\n#include <limits.h>\n' | "$cc_bin" -E -x c - 2>/dev/null || true
+            } | sha256sum | cut -c1-12)"
+          fi
+          echo "img=$img" >> "$GITHUB_OUTPUT"
+          echo "img=$img (image=${ImageVersion:-own}, cc=$(${cc_bin:-clang} --version 2>/dev/null | head -1))"
       - uses: actions/checkout@v5
       - uses: ./.github/actions/mbui-moonbit
+      - uses: actions/cache/restore@v4
+        id: store
+        with:
+          path: ${{ env.MBC_STORE }}
+          key: liquid-glass-linux-store-${{ steps.img.outputs.img }}-${{ github.sha }}
+          restore-keys: |
+            liquid-glass-linux-store-${{ steps.img.outputs.img }}-
+            liquid-glass-linux-store-
+            mbui-linux-store-app-pkgs-m-${{ steps.img.outputs.img }}-
+            mbui-linux-store-app-pkgs-m-
+      - run: touch "$RUNNER_TEMP/start"
       - run: bash libs/liquid-glass/scripts/check.sh
+      - if: github.ref == 'refs/heads/main' && steps.store.outputs.cache-hit != 'true'
+        run: |
+          sh apps/mbui/scripts/used.sh "$RUNNER_TEMP/start" "$MBC_STORE"
+          find "$MBC_STORE" -name '*.lock' -delete 2>/dev/null || true
+      - uses: actions/cache/save@v4
+        if: github.ref == 'refs/heads/main' && steps.store.outputs.cache-hit != 'true'
+        with:
+          path: ${{ env.MBC_STORE }}
+          key: liquid-glass-linux-store-${{ steps.img.outputs.img }}-${{ github.sha }}
 
   # still.fail's component library (libs/sf-ui), on its own beside mbui: detlint, type-checked on native and js, its
   # tests. On main too: nothing runs it after the merge.
