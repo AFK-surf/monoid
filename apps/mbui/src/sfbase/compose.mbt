@@ -120,40 +120,8 @@ let writing_went : Map[String, (String, String, Bytes)] = Map([])
 let writing_unseen : Set[String] = Set([])
 
 ///|
-/// The stills of the videos waiting here the host has no picture of, made from their bytes (bytes_first_frame), each
-/// its tile's picture and its message's once made: called as a composer is built.
-pub fn writing_stills(c : @ui.Ctx) -> Unit {
-  for id in writing_unseen.to_array() {
-    guard writing_went.get(id) is Some((station, name, bytes)) else {
-      writing_unseen.remove(id)
-      continue
-    }
-    match bytes_first_frame(c, "draft/" + id, name, bytes) {
-      "" => ()
-      "!" => writing_unseen.remove(id)
-      still => {
-        writing_unseen.remove(id)
-        writing_picture_put(id, still)
-        sent_picture_kept("upload\u{1}" + id, still)
-        for _, w in writings {
-          for f in writing_files(w) {
-            let o = Some(f)
-            if text(o, "id") == id {
-              let path = text(field(o, "done"), "path")
-              if path != "" {
-                sent_picture_kept(sent_key(station, path), still)
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-}
-
-///|
 /// The still of video `id` waiting here that the host has no picture of, made from its bytes for a node of the window's
-/// tree `v` (writing_stills', a composer's tile made as nodes): its tile's picture and its message's once made, as it
+/// tree `v` (a composer's tile made as nodes): its tile's picture and its message's once made, as it
 /// comes ("" while it does, none to be had: "!").
 pub fn writing_still_node(v : @view.View, id : String) -> () -> String {
   guard writing_unseen.contains(id) && writing_went.get(id) is Some((station, name, bytes)) else {

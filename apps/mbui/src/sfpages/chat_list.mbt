@@ -9,36 +9,6 @@
 // (⌘↓) and to what waits to be decided.
 
 ///|
-/// Where a row of chat `r`'s list is, and how it moves there; a quote's card pressed in it goes to what it quotes
-/// (`src` asked where the window holds it not: sfbase's go_to_quoted).
-pub fn here_of(
-  src : Source,
-  r : ChatRef,
-  v : ChatView,
-  rk : String,
-  turns : Turns,
-  em : Emits,
-  flight : SendFlight?,
-  core : Core,
-  inline? : Bool = false,
-  gutter? : Double = 0.0,
-) -> MessageHere {
-  {
-    station: r.station,
-    session: r.session,
-    view: v,
-    go: Some(fn(ts, passage) {
-      let shown = v.messages.iter().find_first(fn(m) { m.ts == ts }).map(fn(m) { m.seq })
-      @sfbase.go_to_quoted(src, r, v.thread, shown, ts, passage)
-    }),
-    inline: inline,
-    gutter: gutter,
-    list: Some({ rk, turns, emits: em, flight }),
-    core: Some(core),
-  }
-}
-
-///|
 /// Chat `r`'s list's key (the composer sends it to its end: the same as the phone's).
 pub fn list_key(r : ChatRef) -> String {
   "chat/" + r.station + "/" + r.session

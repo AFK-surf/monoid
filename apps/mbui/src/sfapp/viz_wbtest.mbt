@@ -40,10 +40,29 @@ fn viz_views(t : @ui.Tester) -> (Int, Int) {
 }
 
 ///|
-/// A fragment's page in a message, for what all pages do.
-fn a_page(c : @ui.Ctx) -> Unit {
-  c.box(style=@sfbase.viz_mermaid_box, fn() {
-    @sfbase.viz_frame(c, "chat/ws1/st1:s-c1/message/page.html", "<p>图</p>", None, { keep: None, failed: None, follow_up: None })
+/// A fragment's page in a message, for what all pages do (as nodes).
+fn a_page_node(parent : @view.View) -> Unit {
+  parent.box(fn(b) {
+    @sf.style_node(b, fn() { @sfbase.viz_mermaid_box })
+    let owner = -(b.id().at + 1)
+    let f = @sfbase.viz_frame_of(
+      "chat/ws1/st1:s-c1/message/page.html",
+      "<p>图</p>",
+      None,
+      { keep: None, failed: None, follow_up: None },
+      owner,
+      ground=@signals.untracked(fn() { @sf.theme().p.bg }),
+    )
+    f.owner = Some(owner)
+    b.owns(fn() {
+      if f.owner == Some(owner) {
+        f.owner = None
+      }
+    })
+    |> ignore
+    let view = @ui.native(b, f.view, kept=true)
+    @sf.style_node(view, fn() { @sfbase.viz_mermaid_box })
+    view.height(Is(Some(@sfbase.viz_first_height.to_double()))) |> ignore
   })
   |> ignore
 }
@@ -83,16 +102,21 @@ fn viz_full_at(t : @ui.Tester, id : Int) -> (Double, Double)? {
 ///|
 test "two scoped copies of a visualization each own their native view" {
   new_run()
-  let t = @ui.Tester::new(fn(c) {
-    @sf.begin(c) |> ignore
-    c.with_theme(@sf.ui_theme(), fn() {
-      for page in [1, 2] {
-        c.scope(page, fn() {
-          a_page(c)
-        })
-      }
-    })
-  }, w=390.0, h=700.0, platform=1)
+  let t = @ui.Tester::new(
+    fn(c) { @sf.begin(c) |> ignore },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.box(fn(col) {
+        @sf.style_node(col, fn() { @sfbase.viz_mermaid_box })
+        for _ in [1, 2] {
+          a_page_node(col)
+        }
+      }) |> ignore
+    },
+    w=390.0,
+    h=700.0,
+    platform=1,
+  )
   t.set_rows_on_pixels(true)
   t.check_looks(false)
   t.draw()
@@ -104,20 +128,33 @@ test "two scoped copies of a visualization each own their native view" {
 ///|
 test "two copies of a visualization move with their rows while scrolling" {
   new_run()
-  let t = @ui.Tester::new(fn(c) {
-    @sf.begin(c) |> ignore
-    c.with_theme(@sf.ui_theme(), fn() {
-      c.list("rows", 6, 160.0, fn(i) {
-        c.column(h=Px(160.0), fn() {
-          if i == 1 || i == 2 {
-            a_page(c)
-          } else {
-            c.text("row \{i}") |> ignore
+  let t = @ui.Tester::new(
+    fn(c) { @sf.begin(c) |> ignore },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.box(fn(s) {
+        @sf.style_node(s, fn() { @sfbase.viz_mermaid_box })
+        s.height(Is(Some(340.0))) |> ignore
+        s.scrolls(@view.Scroll::new(), fn(held) {
+          @sf.style_node(held, fn() { @sfbase.viz_mermaid_box })
+          for i in 0..<6 {
+            held.box(fn(row) {
+              @sf.style_node(row, fn() { @sfbase.viz_mermaid_box })
+              row.height(Is(Some(160.0))) |> ignore
+              if i == 1 || i == 2 {
+                a_page_node(row)
+              } else {
+                row.words(Is("row \{i}")) |> ignore
+              }
+            }) |> ignore
           }
         }) |> ignore
-      }, h=Px(340.0)) |> ignore
-    })
-  }, w=390.0, h=340.0, platform=1)
+      }) |> ignore
+    },
+    w=390.0,
+    h=340.0,
+    platform=1,
+  )
   t.set_rows_on_pixels(true)
   t.check_looks(false)
   t.draw()
@@ -136,14 +173,18 @@ test "two copies of a visualization move with their rows while scrolling" {
 test "a visualization view is reused after its page leaves and all its copies close together" {
   new_run()
   let nav = @ui.Nav::new(0)
-  let t = @ui.Tester::new(fn(c) {
-    @sf.begin(c) |> ignore
-    c.with_theme(@sf.ui_theme(), fn() {
-      c.nav(nav, fn(_) {
-        a_page(c)
-      }) |> ignore
-    })
-  }, w=390.0, h=700.0, platform=1)
+  let t = @ui.Tester::new(
+    fn(c) { @sf.begin(c) |> ignore },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      @ui.nav_tree_view(root, nav, fn(p) { "p-\{p}" }, fn(page, _, _, _, _) {
+        a_page_node(page)
+      }, keeps_made=false) |> ignore
+    },
+    w=390.0,
+    h=700.0,
+    platform=1,
+  )
   t.set_rows_on_pixels(true)
   t.check_looks(false)
   t.draw()

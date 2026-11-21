@@ -286,37 +286,3 @@ test "sharing a chat with a placed .mbui widget draws it synchronously in the ex
   assert_true(words.contains("0.25.0 发布与性能看板"), msg=words)
   assert_eq(t.kept().length(), 1)
 }
-
-///|
-test "mbui widget charts (line, donut, scatter), svg, details and controls audit cleanly across frame rates" {
-  let raw =
-    #|{
-    #|  "title": "全组件验证",
-    #|  "state": { "checked": true },
-    #|  "body": [
-    #|    { "type": "chart", "chart": "line", "title": "趋势", "labels": ["T1", "T2", "T3"], "values": [10, 24, 18] },
-    #|    { "type": "chart", "chart": "donut", "title": "占比", "center": "100%", "items": [{"label": "A", "value": 60, "tone": "green"}, {"label": "B", "value": 40, "tone": "blue"}] },
-    #|    { "type": "chart", "chart": "scatter", "title": "分布", "x_unit": "ms", "unit": "MB", "series": [{"name": "S1", "tone": "purple", "points": [[1.0, 2.0, "P1"], [3.5, 4.2, "P2"]]}] },
-    #|    { "type": "svg", "viewBox": "0 0 120 40", "height": 40, "svg": "<rect x=\"4\" y=\"4\" width=\"112\" height=\"32\" rx=\"6\" fill=\"var(--blue-bg)\" stroke=\"var(--blue)\" stroke-width=\"1.5\"/><circle cx=\"24\" cy=\"20\" r=\"8\" fill=\"var(--green)\"/><path d=\"M 44 26 L 64 14 L 84 22 L 104 12\" fill=\"none\" stroke=\"var(--primary)\" stroke-width=\"2\"/>" },
-    #|    { "type": "progress", "label": "迁移完成度", "value": 85, "max": 100, "tone": "green" },
-    #|    { "type": "check", "key": "checked", "label": "已核对回归结果", "note": "零闪烁" },
-    #|    { "type": "details", "id": "d1", "title": "展开详情", "open": true, "body": [{ "type": "callout", "title": "提示", "text": "全部通过", "tone": "blue" }, { "type": "code", "text": "moon test" }] }
-    #|  ]
-    #|}
-  let widget = @sfbase.viz_mbui_parse("test.mbui", raw).unwrap()
-  for fps in [60, 120, 24, 7] {
-    new_run()
-    let t = @ui.Tester::new(fn(c) {
-      @sf.begin(c) |> ignore
-      c.with_theme(@sf.ui_theme(), fn() {
-        @sfbase.viz_mbui_ctx(c, "test:all:\{fps}", widget, Json::null(), { keep: None, failed: None, follow_up: None })
-      })
-    }, w=420.0, h=1400.0)
-    t.set_frame_period(1000.0 / fps.to_double())
-    t.draw()
-    assert_true(t.find("全组件验证") is Some(_))
-    assert_true(t.find("100%") is Some(_))
-    assert_true(t.find("全部通过") is Some(_))
-    assert_eq(mbui_viz_faults(t), [], msg="fps=\{fps}")
-  }
-}

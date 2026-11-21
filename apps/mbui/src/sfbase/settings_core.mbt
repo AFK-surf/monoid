@@ -4,22 +4,16 @@
 
 ///|
 /// What the settings' pages read and call, and how they move: the core as the app has it (Source), the app's stack,
-/// the shell's way home (what is over the pages put down too), a station's login as the pages' card (`login_card_of`)
+/// the shell's way home (what is over the pages put down too)
 /// and the pages' card to share of the workspace's agents at work (`share_card_of`). One for every frame.
 pub fn settings_core(src : Source, w : Workspace) -> @settings.Core {
   settings_core_of(
     src,
     w,
     home=fn() { (shell.val.home)() },
-    login_card=fn(c, station, id, marked) { (login_card_of.val)(c, settings_core(src, w), station, id, marked) },
     share_card=fn() { (share_card_of.val)(src, w) },
   )
 }
-
-///|
-/// A station's login as the pages draw its card (sfpages' login_card), given as the app starts.
-// kept across runs: what the app says once as it starts
-pub let login_card_of : Ref[(@ui.Ctx, @settings.Core, String, String, Bool) -> Unit] = Ref(fn(_, _, _, _, _) {  })
 
 ///|
 /// A sign-in to a service as the person, its token kept in their vault (@settings.Core's vault_oauth: sfcore's
@@ -42,13 +36,12 @@ pub let vault_oauth_of : Ref[(String, String, String, String, (Result[String, St
 pub let share_card_of : Ref[(Source, Workspace) -> Unit] = Ref(fn(_, _) {  })
 
 ///|
-/// settings_core's, its way home (`home`), a station's login card (by station and id, marked) and the card to share
+/// settings_core's, its way home (`home`) and the card to share
 /// (`share_card`) given.
 fn settings_core_of(
   src : Source,
   w : Workspace,
   home~ : () -> Unit,
-  login_card~ : (@ui.Ctx, String, String, Bool) -> Unit,
   share_card~ : () -> Unit,
 ) -> @settings.Core {
   // (a station's terminal from its page: the page it is)
@@ -162,7 +155,6 @@ fn settings_core_of(
           )
       }
     },
-    login_card,
     share_card,
     face_preview: fn(id, index, variable) { face_preview(src, id, index, variable) },
     face_here: face_here,

@@ -209,7 +209,6 @@ test "a quote sent alone is in the list at once, its card flying there from the 
     t.run_for(@sf.hint_back_ms)
     assert_eq(focused_field(t), "发消息")
     assert_false(hint_seen(t))
-    assert_true(send_flight.get() is None)
     // landed in its message, over the composer, as wide as it needs
     let (_, y) = quote_once(t)
     assert_true(y < was.1 - 40.0, msg="landed at \{y}, its words were at \{was.1}")
@@ -269,7 +268,6 @@ test "words sent with a quote land under its card, which is in their row from th
     tap_send(t)
     assert_eq(sending_of("ws1/st1\u{1}s-c1")[0].row.quotes.length(), 1)
     t.run_for(flight_ms + 50.0)
-    assert_true(send_flight.get() is None)
     let (_, qy) = quote_once(t)
     match t.drawn_of("先上屏") {
       Some((_, wy)) => assert_true(qy < wy, msg="the quote at \{qy}, the words at \{wy}")

@@ -3,23 +3,7 @@
 // sidebar beside these pages on a wider one) is sfpages' (settings_list.mbt), drawn by the frame's setting_route.
 
 ///|
-/// A page of the settings, by its route, as the app's stack shows it: every route's page is made once as nodes (each
-/// frame's setting_route draws it), so what is left here is what it is drawn in, `frame`'s (its core, where it stands,
-/// the sheet a fixture's mode puts up over it). `root`: a place of the bottom bar's at the stack's root, under the app's
-/// own top bar. `top`: where that bar is over the page rather than above it, how far down what it shows starts.
-pub fn page(
-  _c : @ui.Ctx,
-  core : Core,
-  here : Here,
-  _route : Route,
-  root? : Bool = false,
-  top? : Double = 0.0,
-) -> Unit {
-  frame(core, here, root~, top~)
-}
-
-///|
-/// What a page of the settings is drawn in (`page`'s, and the desktop's own pages', src/sfdesk): its core, where it
+/// What a page of the settings is drawn in (and the desktop's own pages', src/sfdesk): its core, where it
 /// stands, the sheet a fixture's mode puts up over it.
 pub fn frame(core : Core, here : Here, root? : Bool = false, top? : Double = 0.0) -> Unit {
   frame_core.val = Some(core)

@@ -169,7 +169,7 @@ pub fn coming_of(src : Source, ws : String) -> (Array[Json], Array[Json]) {
 pub fn downloads_frame(c : @ui.Ctx, src : Source) -> Unit {
   if downloads.unread > 0 {
     downloads.unread = 0
-    say(c, @sf.t("android-chat.file.saveFailed"))
+    toast_later(@sf.t("android-chat.file.saveFailed"))
   }
   let listed = items(src.topic("downloads", {}).get().value, "downloads")
   // (taken once the frame's builds are over: every build works it out alike from the list)

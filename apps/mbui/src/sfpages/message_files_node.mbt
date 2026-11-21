@@ -47,7 +47,6 @@ fn MessageFilesAt::here(self : MessageFilesAt) -> MessageHere {
     go: None,
     inline: false,
     gutter: 0.0,
-    list: None,
     core: None,
   }
 }

@@ -68,5 +68,4 @@ test "words sent are seen every frame from the field to their bubble: not gone t
     t.frame()
     seen_once(t, "先上屏") |> ignore
   }
-  assert_true(send_flight.get() is None)
 }

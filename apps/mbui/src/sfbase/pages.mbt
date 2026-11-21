@@ -1547,7 +1547,6 @@ pub fn reset() -> Unit {
   app.picked.set("")
   @ui.set_motion_chosen(None)
   @ui.set_haptics(true)
-  felt_reset()
   awake_reset()
   board_reset()
   app.filters.clear()
@@ -1583,7 +1582,6 @@ pub fn reset() -> Unit {
   page_source_seen.val = 0
   // the topics read for what has not ended yet (held.mbt)
   held_reset()
-  felt_holds.clear()
   nav_tapped.set([])
   // the drive's files going up and being fetched (drive_upload.mbt, drive_keep.mbt)
   ups_reset()
@@ -1605,8 +1603,6 @@ pub fn reset() -> Unit {
   service_pages_reset()
   // a file open over the pages, what it flew from and kept (viewer.mbt, viewer_marks.mbt)
   file_viewer_reset()
-  // what comes and goes under the posts (under_post.mbt)
-  under_reset()
   machine_here.val = None
   // a station's screens' cards live in a chat (screen_links.mbt)
   peeks_reset()
@@ -1646,18 +1642,14 @@ pub fn reset() -> Unit {
   // whether Farview tabs are native, or the board enabled
   farview_native.set(false)
   board_feature.set(false)
-  // a chat's list's turns and its messages out of avatars (list_turns.mbt, emit.mbt)
-  turns_by.clear()
+  // a chat's messages out of avatars (emit.mbt)
   emits.clear()
-  // words sent flying (flight.mbt)
-  flights_reset()
   chat_foot_dropped.set(None)
   sent_from_at.clear()
   sent_words_room_at.clear()
   sent_quote_ids_at.clear()
   // the chats' lists as kept while they show and where they were left (chat_list.mbt)
   readings.clear()
-  foot_vers.clear()
   kept_places.clear()
   flash_held.val = false
   at_end_env.val = -1
@@ -1682,24 +1674,6 @@ pub fn reset() -> Unit {
   windows_open.clear()
   windows_here_show.clear()
   tab_windows.clear()
-}
-
-///|
-/// Each hold's press as last felt (`what` held: a message's words picked, a link's menu, a page's bar folded): once a
-/// press, whichever of a frame's builds saw it.
-let felt_holds : Map[String, Int] = Map([])
-
-///|
-/// Felt as the hold `what` takes the press it is,
-/// once.
-pub fn feel_hold(c : @ui.Ctx, what : String) -> Unit {
-  let at = c.press().frame
-  c.after_build("haptic/hold/" + what, fn() {
-    if felt_holds.get(what) != Some(at) {
-      felt_holds[what] = at
-      @ui.haptic(LongPress)
-    }
-  })
 }
 
 ///|

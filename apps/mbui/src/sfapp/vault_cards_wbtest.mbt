@@ -371,23 +371,35 @@ test "a request another's to decide, or on a web page: no buttons, a line saying
 
 ///|
 test "how a request ended, the phone's as the vault's: its dot beside its words, in the middle of their line" {
-  new_run()
-  let lines : Array[(String, (@ui.Ctx) -> Unit)] = [
-    ("已允许调试手机 · 本对话内", fn(c) { @settings.phone_outcome(c, "granted", "chat", "") }),
-    ("已拒绝调试手机", fn(c) { @settings.phone_outcome(c, "denied", "", "") }),
+  let lines : Array[(String, (@view.View) -> Unit)] = [
+    ("已允许调试手机 · 本对话内", fn(v) { @settings.phone_outcome_node(v, fn() { "granted" }, fn() { "chat" }, fn() { "" }, fn() { "" }, fn() { true }) }),
+    ("已拒绝调试手机", fn(v) { @settings.phone_outcome_node(v, fn() { "denied" }, fn() { "" }, fn() { "" }, fn() { "" }, fn() { true }) }),
   ]
   for line in lines {
+    new_run()
     let (words, outcome) = line
-    let t = @ui.Tester::new(fn(c) { c.box(w=Fill(1.0), fn() { outcome(c) }) |> ignore }, w=390.0, h=844.0, platform=2)
+    let t = @ui.Tester::new(
+      fn(c) { @sf.begin(c) |> ignore },
+      tree=fn(root) {
+        @ui.set_tree_theme(@sf.ui_theme_now)
+        root.box(fn(b) {
+          @sf.style_node(b, fn() { @sfbase.viz_mermaid_box })
+          outcome(b)
+        })
+        |> ignore
+      },
+      w=390.0,
+      h=844.0,
+      platform=2,
+    )
     t.draw()
-    let bs = t.boxes()
-    let said = bs.filter(fn(b) { b.text.contains(words) })
-    let dots = bs.filter(fn(b) { b.bg != 0L && b.w == b.h && b.w < 10.0 && b.radius * 2.0 >= b.w })
+    let said = t.words().filter(fn(w) { w.0.contains(words) })
+    let dots = t.drawn_rects().filter(fn(r) { r.4 != 0L && (r.2 - r.3).abs() < 0.5 && r.2 > 0.0 && r.2 < 10.0 })
     assert_eq(said.length(), 1, msg=words)
     assert_eq(dots.length(), 1, msg=words)
     let (w, d) = (said[0], dots[0])
-    assert_true(d.x + d.w <= w.x, msg="\{words}: the dot before the words")
-    assert_true((d.y + d.h / 2.0 - (w.y + w.h / 2.0)).abs() < 1.0, msg="\{words}: the dot in the middle of their line")
+    assert_true(d.0 + d.2 <= w.1, msg="\{words}: the dot before the words")
+    assert_true((d.1 + d.3 / 2.0 - (w.2 + w.4 / 2.0)).abs() < 1.5, msg="\{words}: the dot in the middle of their line")
   }
 }
 

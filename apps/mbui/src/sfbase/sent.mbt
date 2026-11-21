@@ -319,24 +319,6 @@ fn sent_joins(rk : String, v : ChatView?, now : Double) -> Bool {
 }
 
 ///|
-/// The rows `all` with what was sent from here and is not among them yet (`still`) put in at `at`, each as its row
-/// will be: one going close under the row before it (LocalSent's `joined`) has that row `followed`, its time under
-/// the new one, from the frame it is sent.
-fn sent_among(all : Array[Entry], keys : Array[String], at : Int, still : Array[LocalSent]) -> Unit {
-  for j, l in still {
-    all.insert(at + j, Out(l.row))
-    keys.insert(at + j, "o:" + l.row.id)
-    if l.row.joined && at + j > 0 {
-      match all[at + j - 1] {
-        Said(m) if !m.followed => all[at + j - 1] = Said({ ..m, followed: true })
-        Out(o) if !o.followed => all[at + j - 1] = Out({ ..o, followed: true })
-        _ => ()
-      }
-    }
-  }
-}
-
-///|
 /// What was sent from chat `rk` that its list made as nodes took a core's row for (`sent_as`: each core's row's key to
 /// the key, sent_local's, of what it took over) leaves what is on its way, as the old list's row_keys lets it go: the row
 /// goes on by that key in the list that took it. Kept, every word sent from a chat stayed on its way for the rest of the

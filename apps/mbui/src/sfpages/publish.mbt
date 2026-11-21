@@ -1204,7 +1204,7 @@ fn publish_viz_node(parent : @view.View, r : ChatRef, ts : String, a : Attachmen
 fn publish_viz_live(parent : @view.View, r : ChatRef, k : String, a : Attachment, card : (@view.View) -> Unit, taking : Bool) -> Unit {
   guard publishing_src.val is Some(src) else { return card(parent) }
   let owner = owner_of(
-    { station: r.station, session: r.session, view: publish_view(r), go: None, inline: false, gutter: 0.0, list: None, core: None },
+    { station: r.station, session: r.session, view: publish_view(r), go: None, inline: false, gutter: 0.0, core: None },
     a,
   )
   let load = @sfbase.viz_load_node(parent, src, r.station, owner, a.path, size=a.size)

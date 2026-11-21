@@ -430,19 +430,15 @@ fn fx_workspace_vault_row() -> Json {
 let fx_drive_kept : Double = 40370176.0
 
 ///|
-/// A sheet a fixture's mode puts up over its page once it is drawn (mark, add, add-existing, add-command, env), and a
-/// page's list to scroll to a block ("" none).
+/// A sheet a fixture's mode puts up over its page once it is drawn (mark, add, add-existing, add-command, env).
 priv struct FixtureOpen {
   mut sheet : String
-  mut list : String
-  mut block : Int
-  mut frames : Int
   /// a dialog of the desktop's pages to put up (src/sfdesk: fixture_desk), "" none
   mut desk : String
 }
 
 ///|
-let fixture_open : FixtureOpen = { sheet: "", list: "", block: 0, frames: 0, desk: "" }
+let fixture_open : FixtureOpen = { sheet: "", desk: "" }
 
 ///|
 /// The new connect's step its fixture shows (MBUI_FIXTURE=settings-new-connect: team; -platform, -scan: Feishu's).
@@ -622,9 +618,6 @@ fn fixture_reset() -> Unit {
   fx.profile_cut_off = false
   fx.motion = 0
   fixture_open.sheet = ""
-  fixture_open.list = ""
-  fixture_open.block = 0
-  fixture_open.frames = 0
   fixture_open.desk = ""
   fx_connect_step.val = "team"
   fx_group_typed.clear()
@@ -917,13 +910,9 @@ pub fn fixture_page(mode : String) -> String {
   // station's: sffixture's fixture_stable_mode)
   fx_station_beta.val = !m.has_suffix("-stable")
   let m = if m.has_suffix("-stable") { m.unsafe_substring(start=0, end=m.length() - 7) } else { m }
-  // a sheet up over the page, or the page scrolled down (fixture_open; the library's pages too)
-  @sf.page_list_opened.val = fn(c, key, rows) { fixture_scroll(c, key, rows~) }
-  let up = fn(sheet : String, list : String, block : Int) {
+  // a sheet up over the page (fixture_open)
+  let up = fn(sheet : String, _list : String, _block : Int) {
     fixture_open.sheet = sheet
-    fixture_open.list = list
-    fixture_open.block = block
-    fixture_open.frames = 0
   }
   // 共享调试 as it stands with the phone (fx_adb_share), its host's word on the phone said already (settings-adb-desk: a
   // computer's host, no adb of its own)
@@ -4859,17 +4848,6 @@ fn fixture_sheet(core : Core, here : Here) -> Unit {
       }
     }
     _ => ()
-  }
-}
-
-///|
-/// A page's list scrolled as a fixture's mode asks (its first frames), by its key: to its block, or (a block under 0,
-/// the list's `rows` known) its last.
-fn fixture_scroll(c : @ui.Ctx, key : String, rows? : Int = 0) -> Unit {
-  if fixture_open.list == key && fixture_open.frames < 4 {
-    fixture_open.frames += 1
-    // (the list asks for the frames its scroll takes)
-    c.list_scroll_to(key, if fixture_open.block < 0 { rows - 1 } else { fixture_open.block })
   }
 }
 
