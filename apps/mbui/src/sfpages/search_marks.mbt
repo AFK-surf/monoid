@@ -13,47 +13,6 @@ let found_last_step : Int = 12
 pub let found_draw_ms : Double = @sf.strokes_ms(found_last_step)
 
 ///|
-/// The strokes start being drawn in (the message gone to).
-fn found_start(c : @ui.Ctx, rd : @sfbase.Reading, finding : Bool) -> Unit {
-  rd.found_centre = true
-  rd.found_drawn.snap(c, 0.0)
-  let duration = if finding { @sf.stroke_ms } else { found_draw_ms }
-  rd.found_drawn.animate(c, duration, @motion.tween(duration, ease=Linear))
-}
-
-///|
-/// Once the message gone to is laid out: its first word low in it (past 80% of the list's height) comes to the list's
-/// middle, once.
-fn found_centre(c : @ui.Ctx, rd : @sfbase.Reading, list : String, pane : Int, pick : String, finding : Bool) -> Unit {
-  if !rd.found_centre || rd.found_at == "" {
-    return
-  }
-  // det-ok(layout-read-back): the match is in window coordinates; compare it with its pane before scrolling once
-  match (c.words_of("pick/" + pick), c.laid_rect(pane)) {
-    (Some(w), Some((_, py, _, ph))) => {
-      rd.found_centre = false
-      let ranges = @sf.find_words(w.text, rd.found_words)
-      // (⌘F's: the time the reader is at in it)
-      let k = if finding { find_k() } else { 0 }
-      match ranges.get(if k < ranges.length() { k } else { 0 }) {
-        Some((a, b)) =>
-          match w.rects(a, b).get(0) {
-            Some((_, y, _, h)) => {
-              let mid = y + h / 2.0 - py
-              if mid > ph * 0.8 {
-                c.list_scroll_by(list, mid - ph / 2.0)
-              }
-            }
-            None => ()
-          }
-        None => ()
-      }
-    }
-    _ => ()
-  }
-}
-
-///|
 /// The strokes under the words a search opened the chat at in message `ts`'s words (box `key`, as laid out), drawn
 /// in a layer of the box at `(bx, by)` in the window, behind its words: each of its paragraphs' own, one a line of a
 /// word that wraps, 4 under the baseline, 2 past the word's ends, 2.5 wide. `faint`: drawn whole and lighter (a

@@ -832,11 +832,11 @@ test "lines typed while words sent let go of the composer: the list's foot goes 
     // every frame the rows steady (rows_steady.mbt: the foot's room opening at once, as the words' flight was over, put
     // every row over it up by it in one frame), and the foot where the composer comes to stand
     t.run_for(@ui.move_most_ms)
-    let over = foot() - @sfpages.composer_room(t.ctx(), "ws1/st1:s-c1")
+    let over = foot() - @sfpages.composer_node_room("ws1/st1:s-c1", t.time()).unwrap()
     t.run_for(draft_keep_ms)
     // (the list's way and the composer's ground's to the same end, a hair apart on their last frames: a hundredth of a
     // point; the composer stopped where it was going as the words were sent, @motion.stop_for)
-    let now = foot() - @sfpages.composer_room(t.ctx(), "ws1/st1:s-c1")
+    let now = foot() - @sfpages.composer_node_room("ws1/st1:s-c1", t.time()).unwrap()
     assert_true((now - over).abs() < 0.01, msg="\{now} after \{over}")
     // (its row under way: said so once it has been a while, sfpages chat_rows.mbt)
     t.run_for(@sfpages.sending_shows_ms)

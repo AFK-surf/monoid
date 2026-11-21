@@ -19,12 +19,6 @@ priv struct MediaPicture {
 }
 
 ///|
-/// A picture picked here, before there is a message's attachment for it.
-fn local_media(key : String, kind : String) -> MediaPicture {
-  { kind, key, hash: "", sent: true, held: true, comes: false, unreached: false }
-}
-
-///|
 /// Resolve a message's picture or video still once, in the same order for its message and for a quote of it; `said`:
 /// its message's `said` (only a picture of a message new while the chat shows is brushed in).
 fn message_media(c : @ui.Ctx, src : Source, station : String, owner : String, a : Attachment, said? : Bool = false) -> MediaPicture {

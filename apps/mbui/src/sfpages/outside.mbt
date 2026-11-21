@@ -6,15 +6,7 @@
 // holds and its buttons are nodes of the window's tree, made once as it opens (@sf.panel_nodes).
 
 ///|
-/// The asking for draft `key`'s send, while it asks (and as it goes): the presenters' panel (a sheet with a finger short
-/// of Large, else a dialog in the middle), put up once as it opens, what it says bound to what it asks;
-/// taken down once it is decided.
-fn outside_dialog(_c : @ui.Ctx, src : Source, key : String) -> Unit {
-  outside_shown(src, key)
-}
-
-///|
-/// outside_dialog's, as what it asks changes (a composer made as nodes: what watches its asking, outside any build).
+/// The asking for draft `key`'s send, as what it asks changes (a composer made as nodes: what watches its asking, outside any build).
 fn outside_shown(src : Source, key : String) -> Unit {
   guard @sfbase.outside_asking(key) is Some(s) else { return }
   match outside_up.get(key) {

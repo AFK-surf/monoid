@@ -9,7 +9,6 @@ fn init {
   @sfbase.login_card_of.val = fn(c, core, station, id, marked) { login_card(c, core, station, id, marked~) }
   @sfbase.share_card_of.val = share_card_open
   @sfbase.screen_made_stream.val = screen_fixture_stream
-  @sf.picture_out_by.val = fn(c, png, said) { picture_out(c, png, copy_said=said) }
   @sf.picture_out_now_by.val = fn(png, said) { picture_out_now(png, copy_said=said) }
   // (a part of a page whose build faulted, in its place: as a list with nothing in it says so; a page's own bar and
   // back went with it, so back is under the words where there is somewhere to go)

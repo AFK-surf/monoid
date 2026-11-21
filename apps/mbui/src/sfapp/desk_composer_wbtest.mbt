@@ -60,29 +60,6 @@ fn desk_composer_tester(
 }
 
 ///|
-priv struct ComposerFor {
-  station : String
-  key : String
-}
-
-///|
-fn default_spec(f : ComposerFor) -> @sfpages.ComposerSpec {
-  {
-    station: f.station,
-    draft: f.key,
-    session: "",
-    placeholder: "发消息",
-    toolbar: None,
-    note: [],
-    tail: None,
-    roomy: false,
-    locked: false,
-    offline: false,
-    warm_agent: true,
-  }
-}
-
-///|
 test "desk composer: typed words are the core's draft (composer.text); Enter sends them, in the list and empty at once (sent_local, composer.take, chat.send)" {
   both_pages(fn() raise {
     let calls : Array[Made] = []

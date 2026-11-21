@@ -46,10 +46,7 @@ test "a chat's rows made again from what came at its end are the rows made anew"
   @sfbase.reset()
   reset()
   let src = @sffixture.fixture("chat-working")
-  let s = body_screens()[0]
-  let seen : Ref[(ChatView, Array[Entry])?] = Ref(None)
-  body_old(src, s.1, s.2, s.3, seen~) |> ignore
-  let (v0, read0) = seen.val.unwrap()
+  let (v0, read0) = body_read(src).unwrap()
   let at = rows_tail_end(read0)
   guard at > 0 && read0[at - 1] is Said(last) else { fail("the chat has no message") }
   // (one in pieces, as an agent's long answer is, where the chat has one: made again as such)

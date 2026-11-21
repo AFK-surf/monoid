@@ -6,13 +6,6 @@
 // computer ＋ is the system's picker at once (composer.mbt attach).
 
 ///|
-/// ＋'s panel for draft `key`, opened by ＋ (`plus`): the gallery's recent photos read again as it opens.
-fn attach_open(plus : @sf.Anchor, src : Source, key : String) -> Unit {
-  @sf.panel_nodes("", fn(v, close) { attach_body_node(v, src, key, close) }, from=plus, w=attach_w)
-  recent_opened()
-}
-
-///|
 /// What the panel holds, in its body's node `v`: the strip, then the three tiles (添加 n 个 in their place while photos
 /// are chosen in the strip), each pressed shutting it (`close`) for what it asks.
 fn attach_body_node(v : @view.View, src : Source, key : String, close : () -> Unit) -> Unit {

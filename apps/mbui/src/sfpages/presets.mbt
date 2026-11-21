@@ -11,90 +11,6 @@
 // there), its name (the first folder's till one is typed), what people want of its chats.
 
 ///|
-/// What a new chat is opened with (the presets' Chooser, beside the station's): its mark, the preset's name (预设 while
-/// none is picked), a chevron; pressed, the menu of the station's presets.
-fn new_preset_control(c : @ui.Ctx, src : Source, w : Workspace, v : Json?, station : Json?, floating : Bool, going : Bool) -> Unit {
-  let address = text(station, "station")
-  if address == "" || c.in_bones() {
-    return
-  }
-  let t = @sf.theme()
-  let picked = text(v, "preset")
-  // (its name as the core says it with the page)
-  let name = if picked == "" { "" } else { text(v, "presetName") }
-  let label = if name == "" { @sf.t("web-main.preset.label") } else { name }
-  if take_asked("preset-new") {
-    preset_dialog(src, w, address, "", items(v, "stations"))
-  }
-  if take_asked("preset-edit") {
-    preset_dialog(src, w, address, text(items(v, "presets").get(0), "id"), items(v, "stations"))
-  }
-  if take_asked("preset-add") {
-    preset_dialog(src, w, address, text(items(v, "presets").get(0), "id"), items(v, "stations"), then="add")
-  }
-  if take_asked("preset-new-add") {
-    preset_dialog(src, w, address, "", items(v, "stations"), then="add")
-  }
-  if take_asked("preset-new-browse") {
-    preset_dialog(src, w, address, "", items(v, "stations"), then="browse")
-  }
-  if take_asked("preset-new-clone") {
-    preset_dialog(src, w, address, "", items(v, "stations"), then="clone")
-  }
-  // (its folder picker in a folder of repositories)
-  if take_asked("preset-new-browse-repos") {
-    preset_dialog(src, w, address, "", items(v, "stations"), then="browse:/Users/lin/项目")
-  }
-  // (a new one's dialog with a clone under way and one failed, as the made-up station tells them: fix_clones)
-  if take_asked("preset-new-clones") {
-    preset_dialog(src, w, address, "", items(v, "stations"), clones=[
-      { station: address, id: "c-web", repo: "github.com/acme/shop", name: "shop" },
-      { station: address, id: "c-bad", repo: "github.com/acme/private", name: "private" },
-    ])
-  }
-  let from = c.id("new/preset")
-  // (none of one's own yet: still a menu, its 新预设 and 其他成员的预设, never one whose one choice is 不用预设)
-  let open = fn() { preset_menu_open(src, w, address, v, @sf.Of(from)) }
-  // (the other members' presets, a fixture's screen: their menu, as a press on 其他成员的预设 opens it; and the menu
-  // with someone else's picked, opened once whose it is is answered: neither opened as a view builds, press_wait)
-  // (said again by each build of the frame, taken by the last: what an earlier build said is let go, Ctx::after_build)
-  if new_chat_state.asked == "preset-others" {
-    c.after_build("preset-others", fn() { if take_asked("preset-others") { preset_others_open(src, w, v, @sf.Of(from)) } })
-  }
-  // (picked: its folders' marks, as they are shown where they are picked; none: a quiet mark of what it adds)
-  let marks = items(v, "presetMarks")
-  new_capsule(c, "new/preset", label, floating, marked=name != "" && marks.length() > 0, fn() {
-    if name != "" && marks.length() > 0 {
-      c.box(style=preset_marks_row, fn() {
-        for m in marks {
-          repo_mark(c, text(Some(m), "name"), text(Some(m), "repo"), text(Some(m), "icon"), new_mark)
-        }
-      })
-      |> ignore
-    } else if name != "" {
-      @sf.icon(c, "sparks", size=new_mark, color=t.p.accent_text) |> ignore
-    } else {
-      @sf.icon(c, "folder-plus", size=new_mark, color=t.p.muted) |> ignore
-    }
-    // (its words left out first, short of room: its mark says what it is, the station's name and the model's matter more)
-    c.box(style=new_station_name, drop=preset_drop_words, fn() {
-      c.text(label, style=if name == "" { preset_capsule_quiet } else { new_capsule_words }) |> ignore
-    })
-    |> ignore
-    // (its chevron last, after the station's name: its mark alone, a round, on the narrowest)
-    c.box(drop=preset_drop_chevron, fn() { @sf.icon(c, "chevron-down", size=new_chevron, color=t.p.muted) |> ignore }) |> ignore
-  }, on_press=fn() {
-    if !going {
-      open()
-    }
-  })
-  // (asked from elsewhere: opened as it is seen, once the frame is built)
-  if new_chat_state.asked == "preset" {
-    c.after_build("preset-open", fn() { if take_asked("preset") { open() } })
-  }
-}
-
-///|
 /// Whether the preset picked (`v`'s `preset`) is the person's own: none picked, or among their own (`presets`). One
 /// that is not is someone else's, picked from 其他成员的预设.
 fn preset_picked_own(v : Json?) -> Bool {
@@ -2004,12 +1920,6 @@ fn dir_note(o : Json?, chats : Bool) -> String {
     if chats && n > 0 { @sf.t("web-main.preset.chats", args=[("n", n.to_string())]) } else { "" },
   ]
   join(parts.filter(fn(x) { x != "" }), " · ")
-}
-
-///|
-/// A folder's mark: its own picture where the station found one, else its first letter on its repository's colour.
-fn repo_mark(c : @ui.Ctx, name : String, repo : String, icon : String, size : Double) -> Unit {
-  @sf.tile_avatar(c, if repo != "" { repo } else { name }, name, icon, size, corner=@sf.small_corner)
 }
 
 ///|

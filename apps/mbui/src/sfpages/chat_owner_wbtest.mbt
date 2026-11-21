@@ -24,7 +24,7 @@ fn row_client_source(client : @core.Client) -> Source {
 }
 
 ///|
-fn owned_row_test(node : Bool) -> (@ui.Tester, @core.Client, Array[String], ChatItem, Ref[Source?], @signals.Signal[Bool], Ref[Bool], Ref[Int], Ref[Source?], Ref[@view.View?]) {
+fn owned_row_test() -> (@ui.Tester, @core.Client, Array[String], ChatItem, Ref[Source?], @signals.Signal[Bool], Ref[Int], Ref[Source?], Ref[@view.View?]) {
   @sfbase.reset()
   @sf.set_words(@sfbase.fill)
   let sent : Array[String] = []
@@ -36,23 +36,14 @@ fn owned_row_test(node : Bool) -> (@ui.Tester, @core.Client, Array[String], Chat
   let row_source : Ref[Source?] = Ref(None)
   let page_shows = @signals.signal(true)
   let page_disposed = Ref(0)
-  let opened = Ref(false)
   let t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w=320.0, h=240.0, platform=2, pointing=Finger, native=Finger)
   @ui.set_view_app(fn(root) {
     @ui.set_tree_theme(@sf.ui_theme_now)
     let row_src = src.owned_by(root)
     row_source.val = Some(row_src)
-    if node {
-      let popup = root.box(fn(v) { v.over(Is(true)) |> ignore })
-      let tips = @sf.TipLayer::new(fn() { Some(popup) })
-      chat_row_node(root, row_src, tips, fn() { item }, "agents", fn() { false }, Whole, fn() { 0 }) |> ignore
-    } else {
-      @ui.old(root, fn(c) {
-        chat_row(c, row_src, item, "agents", at=Whole, opened=fn(r) { opened.val = true; @sfbase.open_page(Chat(r)) }) |> ignore
-      })
-      .height(Is(Some(100.0)))
-      |> ignore
-    }
+    let popup = root.box(fn(v) { v.over(Is(true)) |> ignore })
+    let tips = @sf.TipLayer::new(fn() { Some(popup) })
+    chat_row_node(root, row_src, tips, fn() { item }, "agents", fn() { false }, Whole, fn() { 0 }) |> ignore
     root.show(fn() { page_shows.get() }, fn(page) {
       page.laid_nowhere(Is(true)) |> ignore
       page_entry.val = Some(page)
@@ -61,54 +52,40 @@ fn owned_row_test(node : Bool) -> (@ui.Tester, @core.Client, Array[String], Chat
     })
   })
   t.draw()
-  (t, client, sent, item, page_source, page_shows, opened, page_disposed, row_source, page_entry)
+  (t, client, sent, item, page_source, page_shows, page_disposed, row_source, page_entry)
 }
 
 ///|
-fn cancelled_owned_row(node : Bool) -> Unit raise {
-    let (t, client, sent, item, _, _, _, _, _, _) = owned_row_test(node)
+test "a retained chat row releases its cancelled prefetch" {
+    let (t, client, sent, item, _, _, _, _, _) = owned_row_test()
     let params = @sfbase.core_topic_params("chat", chat_params(row_ref(item)))
     let (x, y) = t.find(item.title).unwrap()
     t.press_at(x, y)
-    if node {
-      assert_true(client.peek_topic("chat", params~) is None, msg="the retained row waits for its press to show")
-      t.run_for(@ui.tap_indication_ms)
-    }
-    assert_true(client.peek_topic("chat", params~) is Some(_), msg="the row prefetched, node=\{node}")
+    assert_true(client.peek_topic("chat", params~) is None, msg="the retained row waits for its press to show")
+    t.run_for(@ui.tap_indication_ms)
+    assert_true(client.peek_topic("chat", params~) is Some(_), msg="the row prefetched")
     t.touch(3, x, y)
     t.draw()
-    assert_true(client.peek_topic("chat", params~) is None, msg="cancel released, node=\{node}")
+    assert_true(client.peek_topic("chat", params~) is None, msg="cancel released")
     assert_eq(sent.filter(fn(s) { s.contains("\"subscribe\":") }).length(), 1)
     assert_eq(sent.filter(fn(s) { s.contains("\"unsubscribe\":true") }).length(), 1)
     @ui.run_let_go()
 }
 
 ///|
-test "an old chat row releases its cancelled prefetch" {
-  cancelled_owned_row(false)
-}
-
-///|
-test "a retained chat row releases its cancelled prefetch" {
-  cancelled_owned_row(true)
-}
-
-///|
-fn opening_owned_row(node : Bool, release_row : Bool) -> Unit raise {
-    let (t, client, sent, item, page_source, page_shows, opened, page_disposed, row_source, page_entry) = owned_row_test(node)
+fn opening_owned_row(release_row : Bool) -> Unit raise {
+    let (t, client, sent, item, page_source, page_shows, page_disposed, row_source, page_entry) = owned_row_test()
     let raw = chat_params(row_ref(item))
     let params = @sfbase.core_topic_params("chat", raw)
     let (x, y) = t.find(item.title).unwrap()
     t.press_at(x, y)
-    if node {
-      assert_true(client.peek_topic("chat", params~) is None, msg="the retained row waits for its press to show")
-      t.run_for(@ui.tap_indication_ms)
-    }
+    assert_true(client.peek_topic("chat", params~) is None, msg="the retained row waits for its press to show")
+    t.run_for(@ui.tap_indication_ms)
     let sub = client.peek_topic("chat", params~).unwrap()
     page_source.val.unwrap().topic("chat", raw).get() |> ignore
     assert_true(physical_equal(sub, client.peek_topic("chat", params~).unwrap()))
     t.release(x, y)
-    assert_true(if node { app.nav.top() is Chat(_) } else { opened.val }, msg="the row opened, node=\{node}")
+    assert_true(app.nav.top() is Chat(_), msg="the row opened")
     assert_eq(sent.filter(fn(s) { s.contains("\"unsubscribe\":true") }).length(), 0)
     let (serial, _) = app.nav.top_stay()
     let page_reads = @sfbase.page_chat_reader(page_source.val.unwrap(), page_entry.val.unwrap(), serial)
@@ -125,7 +102,7 @@ fn opening_owned_row(node : Bool, release_row : Bool) -> Unit raise {
       assert_true(physical_equal(sub, client.peek_topic("chat", params~).unwrap()), msg="the row still has the same subscription")
       (row_source.val.unwrap().leave)("chat", raw, @sfbase.TopicLeave::Legacy)
     }
-    assert_true(client.peek_topic("chat", params~) is None, msg="the page left and no view reads it, node=\{node}")
+    assert_true(client.peek_topic("chat", params~) is None, msg="the page left and no view reads it")
     assert_eq(sent.filter(fn(s) { s.contains("\"subscribe\":") }).length(), 1)
     assert_eq(sent.filter(fn(s) { s.contains("\"unsubscribe\":true") }).length(), 1)
     let ended = sent.filter(fn(s) {
@@ -137,28 +114,18 @@ fn opening_owned_row(node : Bool, release_row : Bool) -> Unit raise {
 }
 
 ///|
-test "an old chat row hands prefetch to a page that later leaves" {
-  opening_owned_row(false, false)
-}
-
-///|
 test "a retained chat row hands prefetch to a page that later leaves" {
-  opening_owned_row(true, false)
-}
-
-///|
-test "the old row's independent read remains until its explicit leave" {
-  opening_owned_row(false, true)
+  opening_owned_row(false)
 }
 
 ///|
 test "the retained row's independent read remains until its explicit leave" {
-  opening_owned_row(true, true)
+  opening_owned_row(true)
 }
 
 ///|
 test "a quick tap keeps a chat read until the page takes over" {
-  let (t, client, sent, item, page_source, page_shows, _, _, row_source, page_entry) = owned_row_test(true)
+  let (t, client, sent, item, page_source, page_shows, _, row_source, page_entry) = owned_row_test()
   let raw = chat_params(row_ref(item))
   let params = @sfbase.core_topic_params("chat", raw)
   // A graph reading the chat can be invalidated by a core reply after the tap, before the page's first frame.

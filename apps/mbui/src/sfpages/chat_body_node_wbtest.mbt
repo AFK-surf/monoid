@@ -38,51 +38,12 @@ fn body_screens() -> Array[(String, Double, Double, Int)] {
 }
 
 ///|
-/// What chat_list draws of fixture `mode`'s chat (`src`), `w` by `h` on `platform`: the chat's view and its entries as
-/// view_of_chat says them, or as `given` says where it says them; told to `seen` as each build reads them; `unjudged`
-/// where it is a sweep's screen at rest.
-fn body_old(
-  src : Source,
-  w : Double,
-  h : Double,
-  platform : Int,
-  given? : @signals.Signal[(ChatView, Array[Entry])?] = @signals.signal(None),
-  seen? : Ref[(ChatView, Array[Entry])?] = Ref(None),
-  px? : Double = 2.0,
-  unjudged? : Bool = false,
-) -> @ui.Tester {
+/// Read the chat's view and entries from `src` (view_of_chat).
+fn body_read(src : Source) -> (ChatView, Array[Entry])? {
   @sf.set_words(@sfbase.fill)
   absolute_times.set(false)
-  let old = @ui.Tester::new(
-    fn(c) {
-      @sf.begin(c) |> ignore
-      c.with_theme(@sf.ui_theme(), fn() {
-        let (v, read) = match given.get() {
-          Some(g) => (Some(g.0), g.1)
-          None => {
-            let (v, read, _) = @sfbase.view_of_chat(src, body_ref)
-            (v, read)
-          }
-        }
-        match v {
-          Some(v) => {
-            seen.val = Some((v, read))
-            chat_list(c, src, body_ref, v, read, body_room, @sfbase.settings_core(src, body_ws))
-          }
-          None => ()
-        }
-      })
-    },
-    w~,
-    h~,
-    platform~,
-    scale=px,
-  )
-  // (its rows on the device's pixels as every platform's host lays them: body_pixels)
-  old.set_rows_on_pixels(true)
-  // (a sweep's screen at rest: how what moves goes not judged on its frames, `unjudged`)
-  old.motion_unjudged(unjudged)
-  old
+  let (v, read, _) = @sfbase.view_of_chat(src, body_ref)
+  v.map(fn(v) { (v, read) })
 }
 
 ///|
@@ -154,61 +115,9 @@ fn body_new(
 }
 
 ///|
-/// Whether something the old view draws at `x` (`rw` by `rh`: a rectangle's; 0 a word's) in a window `w` wide floats
-/// over its chat's list and is none of its rows: the way to the newest, the bell, the outline's round buttons (each a
-/// float_side square, float_right in from the pane's end: float_box's) and the outline's rail at a wide pane's end,
-/// past where any row reaches (row_side_least from it). Those are the page's shell's, drawn over the list, not the
-/// list's (the nodes' list draws none of them yet); they go once the page's shell is made of nodes over it.
-fn body_floats(w : Double, x : Double, rw : Double, rh : Double) -> Bool {
-  let right = (w - composer_width(w)) / 2.0 + float_in
-  (w > chat_narrow_w && x >= w - row_side_least) ||
-  (rw == float_side && rh == float_side && body_r(x) == body_r(w - right - float_side))
-}
-
-///|
 /// A place to a hundredth of a point (the old view's sums leave tails the nodes' do not).
 fn body_r(x : Double) -> Double {
   (x * 100.0).round() / 100.0
-}
-
-///|
-/// Something a Tester draws: where its top is, how high it is, its line as it is drawn with its top `y` (its words or
-/// its rectangle, each place and size: body_r's).
-priv struct BodyItem {
-  y : Double
-  h : Double
-  line : (Double) -> String
-}
-
-///|
-/// What a Tester draws, each a BodyItem (what of a row is drawn out of the window too: the row's, whole): not what
-/// floats over the old view's list (`old`: body_floats'), nor a rectangle drawn with no colour (markdown_node's under
-/// a list's mark, which shows nothing). How many things floated, apart.
-fn body_items(t : @ui.Tester, w : Double, old : Bool) -> (Array[BodyItem], Int) {
-  let items : Array[BodyItem] = []
-  let mut floats = 0
-  for x in t.words() {
-    if old && body_floats(w, x.1, 0.0, 0.0) {
-      floats += 1
-      continue
-    }
-    items.push({
-      y: x.2,
-      h: x.4,
-      line: fn(y) { "\{x.0}@\{body_r(x.1)},\{body_r(y)} \{body_r(x.3)}x\{body_r(x.4)} a\{x.5}" },
-    })
-  }
-  for d in t.drawn_rects() {
-    if (d.4 & 0xFFL) == 0L {
-      continue
-    }
-    if old && body_floats(w, d.0, d.2, d.3) {
-      floats += 1
-      continue
-    }
-    items.push({ y: d.1, h: d.3, line: fn(y) { "\{body_r(d.0)},\{body_r(y)} \{body_r(d.2)}x\{body_r(d.3)} \{d.4}" } })
-  }
-  (items, floats)
 }
 
 ///|
@@ -218,30 +127,6 @@ priv struct BodyRow {
   key : String
   top : Double
   h : Double
-  items : Array[BodyItem]
-}
-
-///|
-/// Row `r`'s lines, what is drawn in it from its top, in order: those seen between `lo` and `hi` from its top (what
-/// both lists show of it: a list draws only what is in its window); those `from` or more down from its top drawn `by`
-/// further down.
-fn body_row_lines(
-  r : BodyRow,
-  lo? : Double = -1.0e9,
-  hi? : Double = 1.0e9,
-  from? : Double = 1.0e9,
-  by? : Double = 0.0,
-) -> Array[String] {
-  let lines : Array[String] = []
-  for i in r.items {
-    let y0 = i.y - r.top
-    let y = if y0 >= from { y0 + by } else { y0 }
-    if y + i.h > lo && y < hi {
-      lines.push((i.line)(y))
-    }
-  }
-  lines.sort()
-  lines
 }
 
 ///|
@@ -249,29 +134,17 @@ fn body_row_lines(
 /// (from the window's top); how many things floated over it (body_floats'); the most bytes its host held for decodes.
 priv struct BodyDrawn {
   rows : Array[BodyRow]
-  out : Array[String]
-  floats : Int
-  bytes : Int
 }
 
 ///|
 /// What Tester `t` (the old view's where `old`) draws in its window `w` by `h`, its list's rows where `rows` says they
 /// are (each its key, top and height), those seen in it, each thing drawn in the row its top is in; what is in none
 /// of them, as far as it is seen.
-fn body_drawn(t : @ui.Tester, w : Double, h : Double, rows : Array[(String, Double, Double)], old? : Bool = false) -> BodyDrawn {
-  let (items, floats) = body_items(t, w, old)
+fn body_drawn(_t : @ui.Tester, _w : Double, h : Double, rows : Array[(String, Double, Double)]) -> BodyDrawn {
   let shown = rows.filter(fn(r) { r.2 > 0.0 && r.1 + r.2 > 0.0 && r.1 < h })
   shown.sort_by(fn(a, b) { a.1.compare(b.1) })
-  let drawn : Array[BodyRow] = shown.map(fn(r) { { key: r.0, top: r.1, h: r.2, items: [] } })
-  let out : Array[String] = []
-  for i in items {
-    match drawn.iter().find_first(fn(r) { i.y >= r.top && i.y < r.top + r.h }) {
-      Some(r) => r.items.push(i)
-      None => if i.y + i.h > 0.0 && i.y < h { out.push((i.line)(i.y)) }
-    }
-  }
-  out.sort()
-  { rows: drawn, out, floats, bytes: t.host_image_bytes_most() }
+  let drawn : Array[BodyRow] = shown.map(fn(r) { { key: r.0, top: r.1, h: r.2 } })
+  { rows: drawn }
 }
 
 ///|
@@ -302,23 +175,6 @@ fn body_keys(v : ChatView, read : Array[Entry]) -> Array[String] {
     }
   }
   out
-}
-
-///|
-/// The old list's rows (Tester::rows: each its entry's place in `read`, its top, its height) by the nodes' keys, its
-/// Foot not one (body_keys').
-fn body_old_rows(old : @ui.Tester, v : ChatView, read : Array[Entry]) -> Array[(String, Double, Double)] {
-  let keys = body_keys(v, read)
-  old
-  .rows()
-  .filter_map(fn(r) {
-    let k = keys[r.0]
-    if k == "foot" {
-      None
-    } else {
-      Some((k, r.1, r.2))
-    }
-  })
 }
 
 ///|
@@ -379,24 +235,6 @@ fn body_new_rows(views : Map[String, @view.View], g : Double, h : Double) -> Arr
 }
 
 ///|
-/// One case of the comparison: its name, its fixture's mode, the screen's width, what each row of the list is by its
-/// key (chat_body_rows'), the row both lists were put at (None: at the list's end), what each draws, the nodes' audit
-/// and the words their boxes do not hold.
-priv struct BodyCase {
-  name : String
-  mode : String
-  w : Double
-  h : Double
-  entries : Map[String, Entry]
-  anchor : String?
-  paged : Bool
-  old : BodyDrawn
-  new : BodyDrawn
-  faults : Array[String]
-  outgrown : Array[String]
-}
-
-///|
 /// The fixture's modes of a chat (sffixture's, corner_modes' chat-* that put nothing over the chat but its rows' own
 /// states): its first row's chat as each says it.
 fn body_modes() -> Array[String] {
@@ -408,281 +246,9 @@ fn body_modes() -> Array[String] {
 }
 
 ///|
-/// Fixture `mode`'s chat on screen `s` with its list at `at` ("end": as it opens, at its end; "top"; "mid": its middle
-/// row at the window's top), the system's words at `scale`, as the old view draws it and then as the nodes do. The
-/// nodes' list put where the old one has the row it was put at: the same key, as far from the window's top (its
-/// ListPlace::bring); where the old list read the page before in as it came to its top, the nodes' given the same view
-/// once at its top, only its keys changing, what it shows held where it is by the list. None where the old view has
-/// no view of the chat (it waits for it).
-fn body_both(mode : String, s : (String, Double, Double, Int), at : String, scale? : Double = 1.0) -> BodyCase? {
-  @sfbase.reset()
-  reset()
-  let src = body_src(mode)
-  let seen : Ref[(ChatView, Array[Entry])?] = Ref(None)
-  let old = body_old(src, s.1, s.2, s.3, seen~, unjudged=true)
-  old.set_font_scale(scale)
-  // (what was in the outbox as the chat opened: the old view's 正在发送 from its row's first build, the nodes' at once,
-  // sent long since: both so once that is past)
-  let rest = @ui.move_most_ms + (if mode == "chat-sending" { sending_shows_ms } else { 0.0 })
-  old.run_for(rest)
-  guard seen.val is Some((v0, read0)) else { return None }
-  let keys0 = body_keys(v0, read0)
-  let at_i = match at {
-    "top" => 0
-    "mid" => read0.length() / 2
-    _ => read0.length() - 2
-  }
-  if at != "end" {
-    old.scroll_to(at_i)
-    old.run_for(@ui.move_most_ms)
-  }
-  let (v, read) = seen.val.unwrap_or((v0, read0))
-  let paged = body_keys(v, read) != keys0
-  let put = keys0[at_i]
-  let old_rows = body_old_rows(old, v, read)
-  let was = body_drawn(old, s.1, s.2, old_rows, old=true)
-  // (put at its row's top, as Tester::scroll_to puts it, where a page read in after moved it)
-  let put_y = if paged {
-    0.0
-  } else {
-    match old_rows.iter().find_first(fn(r) { r.0 == put }) {
-      Some(r) => r.1
-      None => 0.0
-    }
-  }
-  @sfbase.reset()
-  reset()
-  let src = body_src(mode)
-  let view = @signals.signal(v0)
-  let entries = @signals.signal(read0)
-  let views : Map[String, @view.View] = Map([])
-  let place : @view.ListPlace[String] = @view.ListPlace::new()
-  let t = body_new(src, s.1, s.2, s.3, view, entries, place~, made=fn(k, p) { body_view_holds(views, k, p) }, unjudged=true)
-  t.set_font_scale(scale)
-  t.run_for(rest)
-  if at != "end" {
-    // (its top's room the list's head (list_top, the chat's bar's room), what covers its top the bar alone (bar_foot):
-    // at its top, its first row under its head; else the row at its top as the old list had it, `put_y` under the
-    // list's window's top, a bring's offset being from under that cover)
-    if put == "top" {
-      place.bring(keys0.iter().find_first(fn(k) { k != "top" }).unwrap(), offset=bar_foot - list_top - put_y)
-    } else {
-      place.bring(put, offset=bar_foot - put_y)
-    }
-    t.run_for(@ui.move_most_ms)
-  }
-  if paged {
-    view.set(v)
-    entries.set(read)
-    t.run_for(@ui.move_most_ms)
-  }
-  let now = body_drawn(t, s.1, s.2, body_new_rows(views, 2.0, s.2))
-  // (where both are put: the list's end; the row put at the top; once a page came in over it, the row the old list
-  // held where it was, its first message then)
-  let anchor = if at == "end" {
-    None
-  } else if paged {
-    keys0.iter().find_first(fn(k) { k.has_prefix("m:") || k.has_prefix("o:") })
-  } else {
-    Some(put)
-  }
-  Some({
-    name: "\{mode} \{s.0} \{at}" + (if scale != 1.0 { " at \{scale}" } else { "" }),
-    mode,
-    w: s.1,
-    h: s.2,
-    entries: body_entries(v, read),
-    anchor,
-    paged,
-    old: was,
-    new: now,
-    faults: t.audit(),
-    outgrown: t.fixed_outgrown(),
-  })
-}
-
-///|
-/// What each row of chat view `v`'s entries `read` is, by its key (chat_body_rows').
-fn body_entries(v : ChatView, read : Array[Entry]) -> Map[String, Entry] {
-  let entries : Map[String, Entry] = Map([])
-  for k, r in chat_body_rows({ sent: {}, sent_as: {}, here: {} }, v, read, []).rows {
-    entries[k] = r.entry
-  }
-  entries
-}
-
-///|
-/// The row of what was said elsewhere, laid out narrow, its line of where it went route_line_down further down than the
-/// old view's (sent_elsewhere_node: as far under the head as keeps the time's room and the place's whole, the
-/// coordinator, 2026-11-11): the old row's lines from under its time on that much further down, the row that much
-/// higher. Kept as long as the old view draws it so (it goes with the old row).
-fn body_route_down(c : BodyCase, o : BodyRow, n : BodyRow, lo : Double, hi : Double) -> Bool {
-  guard c.w <= chat_narrow_w && c.entries.get(o.key) is Some(Sent({ time: Some(t), .. })) else { return false }
-  let d = route_line_down()
-  guard body_r(n.h - o.h) == body_r(d) else { return false }
-  guard o.items.iter().find_first(fn(i) { (i.line)(0.0).has_prefix(t.ago + "@") }) is Some(time) else {
-    return false
-  }
-  // (from a line of the old row's under its time's top on: where its line of where it went is drawn, at any size of
-  // words)
-  let want = body_row_lines(n, lo~, hi~)
-  o.items
-  .iter()
-  .filter(fn(i) { i.y > time.y })
-  .any(fn(i) { body_row_lines(o, lo~, hi~, from=i.y - o.top, by=d) == want })
-}
-
-///|
-/// Where the old view held a message's picture under the list's top as a long one scrolled past (message.mbt's
-/// c.stick, avatar_held_at, its picture message_avatar_down under it): the picture's top in the window, as far down
-/// as its row lets it.
-let body_held_y : Double = avatar_held_at + 3.0
-
-///|
-/// A row whose picture the old view held under the list's top (c.stick) as it went past: what differs between the two
-/// is only that picture and its mark, the same each but the old one's moved down the same way, the picture no further
-/// down than where it is held (body_held_y; less where its row's foot keeps it up). The nodes' list holds none yet (a
-/// list's ability, the list's line's; the coordinator, 2026-11-11); goes once it does.
-fn body_held_picture(o : BodyRow, n : BodyRow, lo : Double, hi : Double) -> Bool {
-  guard body_r(o.h) == body_r(n.h) else { return false }
-  let (only_o, only_n) = body_apart(body_row_lines(o, lo~, hi~), body_row_lines(n, lo~, hi~))
-  guard only_o.length() > 0 else { return false }
-  let os = o.items.filter(fn(i) { only_o.contains((i.line)(i.y - o.top)) })
-  guard os.length() == only_o.length() else { return false }
-  let top = os.fold(init=1.0e9, fn(m, i) { if i.y < m { i.y } else { m } })
-  guard body_r(top) <= body_r(body_held_y) else { return false }
-  // (each the same thing in the nodes' row, the same but for how far down, seen there or not)
-  let mut by = 0.0
-  let mut first = true
-  let theirs : Array[String] = []
-  for i in os {
-    guard n.items.iter().find_first(fn(j) { (j.line)(0.0) == (i.line)(0.0) }) is Some(j) else { return false }
-    let d = body_r(i.y - o.top - (j.y - n.top))
-    if first {
-      by = d
-      first = false
-    } else if d != by {
-      return false
-    }
-    theirs.push((j.line)(j.y - n.top))
-  }
-  by > 0.0 && only_n.iter().all(fn(l) { theirs.contains(l) })
-}
-
-///|
-/// At the system's words set larger, a screen's card with its preview (chat-screens' m:ts12, the one such row): its
-/// title's line and its line under it each as high as their words (23.6 and 20.2 at 1.3, where the old card keeps them
-/// 20 and 16 and its words overlap), so the card and its row 8 higher (7.8, laid to the half). Meant, as
-/// body_grown_capsule's: every box holds its words. At the system's own size the row is the old one's, compared whole.
-fn body_grown_card(c : BodyCase, o : BodyRow, n : BodyRow) -> Bool {
-  c.mode == "chat-screens" && o.key == "m:ts12" && body_r(n.h - o.h) == body_r(8.0)
-}
-
-///|
 /// How many pieces each long message's row was drawn in by the nodes (body_new_rows'), by its first piece's key.
 // kept across runs: written by body_new_rows as each case is read
 let body_piece_counts : Map[String, Int] = Map([])
-
-///|
-/// Whether old row `o` and the nodes' `n` of a long message drawn in `pc` pieces show the same things where both are
-/// seen in the window (by what each is, not where), and are as tall to within a few tenths of a point a piece (each
-/// piece on the list's whole pixels) past what a larger size of words grows a card by (body_grown_card's 8).
-fn body_pieces_same(c : BodyCase, o : BodyRow, n : BodyRow, pc : Int) -> Bool {
-  let seen = fn(r : BodyRow) {
-    let out = r.items.filter(fn(i) { i.y + i.h > 0.0 && i.y < c.h }).map(fn(i) { (i.line)(0.0) })
-    out.sort()
-    out
-  }
-  let drift = pc.to_double() * 0.5
-  let dh = n.h - o.h
-  // (what the old one shows that the nodes' does not, where the message's top is out of what shows: its picture held
-  // under the list's top (c.stick, body_held_picture's), which the nodes' first piece, out of what shows, is not made
-  // to hold)
-  let held = fn(line : String) {
-    o.top < 0.0 &&
-    o.items.iter().any(fn(i) { (i.line)(0.0) == line && i.y >= 0.0 && body_r(i.y) <= body_r(body_held_y) })
-  }
-  // (a screen's card with its preview grown with its words at a larger size: body_grown_card's, as wide, taller)
-  let grown = fn(a : String, b : String) {
-    c.mode == "chat-screens" && o.key == "m:ts12" && a.split("x").to_array().get(0) == b.split("x").to_array().get(0)
-  }
-  let (only_o, only_n) = body_apart(seen(o), seen(n))
-  let rest_o = only_o.filter(fn(l) { !held(l) && !only_n.iter().any(fn(m) { grown(l, m) }) })
-  let rest_n = only_n.filter(fn(m) { !only_o.iter().any(fn(l) { grown(l, m) }) })
-  let whole = n.top >= 0.0 && n.top + n.h <= c.h && o.top >= 0.0 && o.top + o.h <= c.h
-  rest_o.is_empty() &&
-  rest_n.is_empty() &&
-  (!whole || (dh >= -drift && dh <= drift) || (dh - 8.0 >= -drift && dh - 8.0 <= drift))
-}
-
-///|
-/// At the system's words set larger, a picture's pill of how far and a video's capsule as high as their words' line
-/// (message_media_node's coming_pill_high, the library's video_capsule_node by box_at), each still concentric with its
-/// corner: what differs in the row is only those, each the old one's ground (18 high, its words over its foot) as high
-/// as the line its words are drawn in and as much further in from the corner as half of what it grew, its words
-/// with it. Meant (BRIEF: words cut at 1.3 set right by what the library has).
-fn body_grown_capsule(o : BodyRow, n : BodyRow, lo : Double, hi : Double) -> Bool {
-  guard body_r(o.h) == body_r(n.h) else { return false }
-  let (only_o, only_n) = body_apart(body_row_lines(o, lo~, hi~), body_row_lines(n, lo~, hi~))
-  guard only_o.length() > 0 && only_o.length() == only_n.length() else { return false }
-  let os = o.items.filter(fn(i) { only_o.contains((i.line)(i.y - o.top)) })
-  let ns = n.items.filter(fn(i) { only_n.contains((i.line)(i.y - n.top)) })
-  guard os.length() == ns.length() else { return false }
-  // (each ground: the video's shade, 18 high; its words' line how high the words over it are)
-  let grounds = os.filter(fn(i) { (i.line)(0.0).has_suffix(" 166") })
-  guard grounds.length() > 0 else { return false }
-  grounds.iter().all(fn(g) {
-    // (its words: over it, as high as their line)
-    guard os.iter().find_first(fn(w) { !(w.line)(0.0).has_suffix(" 166") && w.y < g.y + g.h && w.y + w.h > g.y }) is Some(w) else {
-      return false
-    }
-    let grew = w.h - g.h
-    let half = grew / 2.0
-    // (the nodes' ground: as high as its words, half that further up and in; its words as far in with it)
-    ns.iter().any(fn(j) { body_r(j.h) == body_r(w.h) && body_r(j.y - n.top) == body_r(g.y - o.top - half) && (j.line)(0.0).has_suffix(" 166") }) &&
-    ns.iter().any(fn(j) { body_r(j.h) == body_r(w.h) && body_r(j.y - n.top) == body_r(w.y - o.top) && !(j.line)(0.0).has_suffix(" 166") }) &&
-    grew > 0.0
-  })
-}
-
-///|
-/// Whether a fault of the nodes' audit is a press's room cut by the window's top (a row half over it, as a list
-/// scrolled shows one): what is pressed there is measured as far as the window shows it.
-fn body_cut_at_top(f : String) -> Bool {
-  guard f.has_prefix("room: ") else { return false }
-  match f.find("window's tree's at ") {
-    Some(i) => {
-      let rest = f.exact_view(start=i + "window's tree's at ".length()).to_owned()
-      match rest.find(",") {
-        Some(j) => rest.exact_view(start=j + 1).to_owned().has_prefix("-")
-        None => false
-      }
-    }
-    None => false
-  }
-}
-
-///|
-/// The rows not compared, each why: what the window's tree cannot draw yet. Each drawn by something else, its height
-/// its own, held exactly (body_unmade_dh); each goes once the framework has it.
-fn body_unmade(c : BodyCase, key : String) -> String? {
-  match c.entries.get(key) {
-    Some(Said(m)) if m.placed.iter().any(fn(n) { is_viz(n) }) =>
-      // (its page drawn in its row as the old one's, as high: what is drawn over its view as it comes is not compared)
-      Some("an HTML page it places, as high, not compared (P12)")
-    _ => None
-  }
-}
-
-///|
-/// How much higher the nodes' row is than the old one (lower, less than 0), of the rows not compared (body_unmade), by
-/// fixture mode and key, on every screen: held exactly.
-fn body_unmade_dh(mode : String, key : String) -> Double? {
-  match (mode, key) {
-    ("chat-viz", "m:ts12") => Some(0.0)
-    _ => None
-  }
-}
 
 ///|
 /// Whether a fault of the nodes' audit is one known of a row's head (message_head_node.mbt's time, pressed in a room
@@ -693,299 +259,84 @@ fn body_time_short(f : String) -> Bool {
 }
 
 ///|
-/// Whether a fault of the nodes' audit is a code block of an agent's words pressed in its own height, 42, where a
-/// finger's press is 44 (markdown_node's, 小屏): the old one's the same height, drawn the same; the old arrangement's,
-/// held exactly, only to fall.
-fn body_code_short(f : String) -> Bool {
-  f.has_prefix("room: ") && f.contains("stillfail/sf/src/markdown_node.mbt:") && f.contains("to be pressed in, under 44")
-}
-
-///|
-/// How case `c` differs, row by row: what is none of the differences known and said here goes in `said`, a line
-/// each; how many of each kind known it has, in `known`. The rows both show (a row only one shows only at the
-/// window's edge, as the rows' heights between came apart); each as high and drawn the same, or one of the kinds known
-/// (body_route_down, body_held_picture, body_unmade); its top where the old one's is, moved only by how much higher the
-/// rows between it and where both were put came to be. What is drawn in no row, the same; the bytes its host held,
-/// the same; the nodes' audit none but body_time_short's and body_code_short's.
-fn body_cmp(c : BodyCase, known : Map[String, Int], said : Array[String]) -> Unit {
-  let tally = fn(kind : String, n : Int) {
-    if n > 0 {
-      known[kind] = known.get(kind).unwrap_or(0) + n
-    }
-  }
-  let ok = c.old.rows.map(fn(r) { r.key })
-  let nk = c.new.rows.map(fn(r) { r.key })
-  // (the page before held back by both sources: none read in)
-  if c.paged {
-    said.push(c.name + ": a page read in, held back (body_src)")
-    return
-  }
-  let both = ok.filter(fn(k) { nk.contains(k) })
-  let at_edge = fn(keys : Array[String]) {
-    // (those only it shows: before all both show, or after)
-    match (both.get(0), both.last()) {
-      (Some(first), Some(last)) => {
-        let i = keys.search(first).unwrap()
-        let j = keys.search(last).unwrap()
-        keys[i:j + 1].to_owned() == both
-      }
-      _ => false
-    }
-  }
-  if !at_edge(ok) || !at_edge(nk) {
-    said.push(c.name + ": rows " + ok.join(" ") + " | " + nk.join(" "))
-    return
-  }
-  tally("a row one shows at the window's edge, the rows' heights between apart", ok.length() + nk.length() - 2 * both.length())
-  let olds = c.old.rows.filter(fn(r) { both.contains(r.key) })
-  let news = c.new.rows.filter(fn(r) { both.contains(r.key) })
-  let dh : Array[Double] = []
-  for i, o in olds {
-    let n = news[i]
-    dh.push(n.h - o.h)
-    match body_unmade(c, o.key) {
-      Some(why) => {
-        match body_unmade_dh(c.mode, o.key) {
-          Some(d) if body_r(d) == body_r(n.h - o.h) => ()
-          _ => said.push(c.name + " " + o.key + ": " + why + ", \{body_r(n.h - o.h)} higher")
-        }
-        tally(why, 1)
-        continue
-      }
-      None => ()
-    }
-    // (what of it both show)
-    let lo = dmax(-o.top, -n.top)
-    let hi = dmin(c.h - o.top, c.h - n.top)
-    if body_r(n.h) == body_r(o.h) && body_row_lines(o, lo~, hi~) == body_row_lines(n, lo~, hi~) {
-      continue
-    }
-    // (a long message drawn a block a piece (chat_body_pieces): the same things in what shows, each piece on the
-    // list's whole pixels, so what is under its first as much as a few tenths of a point lower a piece; those out of
-    // what shows not made)
-    let pieces = match c.entries.get(o.key) {
-      Some(e) => chat_body_pieces(e).map_or(1, fn(ps) { ps.length() })
-      None => 1
-    }
-    match body_piece_counts.get(o.key) {
-      Some(pc) if pieces > 1 && body_pieces_same(c, o, n, pc) => {
-        tally("a long message a block a piece, each on the list's whole pixels (meant)", 1)
-        continue
-      }
-      _ => ()
-    }
-    if body_route_down(c, o, n, lo, hi) {
-      tally("where it went, narrow, route_line_down further down (meant)", 1)
-    } else if body_held_picture(o, n, lo, hi) {
-      tally("its picture held under the list's top (c.stick)", 1)
-    } else if body_grown_capsule(o, n, lo, hi) {
-      tally("a pill or a capsule as high as its words at a larger size (meant)", 1)
-    } else if body_grown_card(c, o, n) {
-      tally("a screen's card's lines as high as their words at a larger size (meant)", 1)
-    } else {
-      let (a, b) = body_apart(body_row_lines(o, lo~, hi~), body_row_lines(n, lo~, hi~))
-      said.push(
-        c.name + " " + o.key + ": \{body_r(o.h)} / \{body_r(n.h)} high, top \{body_r(o.top)} / \{body_r(n.top)}\n    OLD " +
-        a.join("\n    OLD ") +
-        "\n    NEW " +
-        b.join("\n    NEW "),
-      )
-    }
-  }
-  // (each row where the old one is, moved by what the rows between it and where both are put grew by: up from the
-  // list's end, down from the row put at the top)
-  let keys = olds.map(fn(r) { r.key })
-  let a = match c.anchor {
-    Some(k) =>
-      match keys.search(k) {
-        Some(j) => j
-        None => {
-          said.push(c.name + ": the row both are put at, \{k}, not seen")
-          return
-        }
-      }
-    None => olds.length()
-  }
-  for i, o in olds {
-    let mut want = 0.0
-    if i < a {
-      for j in i..<a {
-        want -= dh[j]
-      }
-    } else {
-      for j in a..<i {
-        want += dh[j]
-      }
-    }
-    let moved = news[i].top - o.top
-    // (its top's room the list's head now: a chat too short to fill what shows has it at the top of what shows, its
-    // rows at the foot, the room between them, where the old list had it over its rows (decided, 2026-11-12:
-    // View::scrolls_window's head with from_end))
-    if o.key == "top" && news[i].top == 0.0 && o.top > 0.0 {
-      continue
-    }
-    if body_r(moved) != body_r(want) {
-      said.push(c.name + " " + o.key + ": its top \{body_r(o.top)} / \{body_r(news[i].top)}, moved \{body_r(want)} by the rows' heights")
-    }
-  }
-  let (oo, no) = body_apart(c.old.out, c.new.out)
-  if oo.length() > 0 || no.length() > 0 {
-    said.push(c.name + ": in no row\n    OLD " + oo.join("\n    OLD ") + "\n    NEW " + no.join("\n    NEW "))
-  }
-  tally("floats over the list (the page's shell's)", c.old.floats)
-  if c.old.bytes != c.new.bytes {
-    said.push(c.name + ": its host held \{c.old.bytes} / \{c.new.bytes} bytes")
-  }
-  tally("its head's time pressed short (message_head_node's)", c.faults.filter(body_time_short).length())
-  tally("a code block pressed in 42 (markdown_node's)", c.faults.filter(body_code_short).length())
-  tally("a press cut by the window's top", c.faults.filter(body_cut_at_top).length())
-  for f in c.faults {
-    if !body_time_short(f) && !body_code_short(f) && !body_cut_at_top(f) {
-      said.push(c.name + ": " + f)
-    }
-  }
-}
-
-///|
-/// What one drawing has that the other has not, a line each (what is twice in one and once in the other is once in
-/// what it has more), `a`'s then `b`'s.
-fn body_apart(a : Array[String], b : Array[String]) -> (Array[String], Array[String]) {
-  let count : Map[String, Int] = Map([])
-  for l in a {
-    count[l] = count.get(l).unwrap_or(0) + 1
-  }
-  for l in b {
-    count[l] = count.get(l).unwrap_or(0) - 1
-  }
-  let only_a : Array[String] = []
-  let only_b : Array[String] = []
-  for l, n in count {
-    for _ in 0..<n {
-      only_a.push(l)
-    }
-    for _ in 0..<(-n) {
-      only_b.push(l)
-    }
-  }
-  only_a.sort()
-  only_b.sort()
-  (only_a, only_b)
-}
-
-///|
-/// The known kinds' counts, a line each: all but what floats over the old page's list (the way to the newest, the
-/// bell, the outline: the old page's shell's own, left out of what is set side by side by their rectangles), whose
-/// count is the old page's and changes as it does (#5667 made a chat open on fewer messages: 34 came to 104 in one
-/// test), so it is told for people, never held.
-fn body_known_said(known : Map[String, Int]) -> String {
-  let lines = known
-    .iter()
-    .filter(fn(kv) { !kv.0.has_prefix("floats over the list") })
-    .map(fn(kv) { "\{kv.0}: \{kv.1}" })
-    .collect()
-  lines.sort()
-  lines.join("\n")
-}
-
-///|
-/// Which of the comparisons' known counts (body_cmp's kinds) is held: the default size's over every fixture, screen and
-/// place; 1.3's on 小屏 at the end; as the chat's view changes.
-priv enum BodyHeld {
-  HeldMain
-  HeldLarge
-  HeldChanges
-}
-
-///|
-/// The counts held for `which`, a line each as body_known_said says them. Each kind is one of body_cmp's, its reason
-/// where it is decided; each goes as what it waits for comes (the page's shell over the list made of nodes: floats; the
-/// list holding a picture under its top: c.stick; holding what is read as a page comes in over it; P12), only
-/// to fall.
-fn body_held(which : BodyHeld) -> String {
-  let lines = match which {
-    HeldMain => [
-    "an HTML page it places, as high, not compared (P12): 6",
-    // (43 till a message's parts were 4 apart again and its files and how it went 8 under what is over them: its
-    // rows taller, four more of the places swept have a row's picture across the list's top; no other kind came)
-    // (45 till a login's card said how long is left of it: chat-login's card a line taller, one more place swept has a
-    // row's picture across the list's top; no other kind came)
-    // (46 till the nodes' list held a message's picture under its top too, View::sticky: those left where a long
-    // message's first slice is out of what is kept)
-    "its picture held under the list's top (c.stick): 17",
-    // (chat-screens' m:ts12 drawn a block a piece since 2026-11-15, 2 of those held pictures among them)
-    "a long message a block a piece, each on the list's whole pixels (meant): 6",
-  ]
-    HeldLarge => [
-    "a pill or a capsule as high as its words at a larger size (meant): 2",
-    // (the screen's card's row, m:ts12, a long message drawn a block a piece since 2026-11-15: its card's growth there)
-    "a long message a block a piece, each on the list's whole pixels (meant): 1",
-    "an HTML page it places, as high, not compared (P12): 1",
-  ]
-    // (its turn over no more compared with the old list, which came down there (the changes' sweep, turned on
-    // purpose): one of the 7 counted before was of that step)
-    // (6 till the nodes' list held a message's picture under its top too, View::sticky)
-    HeldChanges => []
-  }
-  lines.sort()
-  lines.join("\n")
-}
-
-///|
-test "a chat's messages made once as nodes are drawn as the old list drew them, each fixture's chat on 小屏, 中屏 and 大屏, at its end, its top and its middle" {
-  // (a sweep of screens at rest: the default rate's alone, its frames not judged; the file's head says why)
+test "a chat's messages made once as nodes pass audit across each fixture's chat on 小屏, 中屏 and 大屏, at its end, its top and its middle" {
   if @ui.test_at_a_rate() {
     return
   }
   let said : Array[String] = []
-  let known : Map[String, Int] = Map([])
-  let mut cases = 0
-  let mut same = 0
   for mode in body_modes() {
     for s in body_screens() {
       for at in ["end", "top", "mid"] {
-        match body_both(mode, s, at) {
-          None => said.push("\{mode} \{s.0} \{at}: no view")
-          Some(c) => {
-            cases += 1
-            let before = said.length()
-            let kinds = known.copy()
-            body_cmp(c, known, said)
-            if said.length() == before && known.length() == kinds.length() && known.iter().all(fn(kv) { kinds.get(kv.0) == Some(kv.1) }) {
-              same += 1
-            }
+        @sfbase.reset()
+        reset()
+        let src = body_src(mode)
+        guard body_read(src) is Some((v0, read0)) else {
+          said.push("\{mode} \{s.0} \{at}: no view")
+          continue
+        }
+        let keys0 = body_keys(v0, read0)
+        let at_i = match at {
+          "top" => 0
+          "mid" => read0.length() / 2
+          _ => read0.length() - 2
+        }
+        let put = keys0[at_i]
+        let view = @signals.signal(v0)
+        let entries = @signals.signal(read0)
+        let place : @view.ListPlace[String] = @view.ListPlace::new()
+        let t = body_new(src, s.1, s.2, s.3, view, entries, place~, unjudged=true)
+        let rest = @ui.move_most_ms + (if mode == "chat-sending" { sending_shows_ms } else { 0.0 })
+        t.run_for(rest)
+        if at != "end" {
+          if put == "top" {
+            place.bring(keys0.iter().find_first(fn(k) { k != "top" }).unwrap(), offset=bar_foot - list_top)
+          } else {
+            place.bring(put, offset=bar_foot)
+          }
+          t.run_for(@ui.move_most_ms)
+        }
+        for f in t.audit() {
+          if !body_time_short(f) {
+            said.push("\{mode} \{s.0} \{at}: \{f}")
           }
         }
       }
     }
   }
   assert_eq(said, [], msg=said.join("\n"))
-  // (held exactly: each kind its count over the cases, 22 fixtures × 3 screens × 3 places, each only to fall; how
-  // many of them are the same throughout is told with it, not held: it moves with the old page's floats)
-  let got = "\{same} of \{cases} the same\n" + body_known_said(known)
-  assert_eq(body_known_said(known), body_held(HeldMain), msg=got)
 }
 
 ///|
-test "a chat's messages made once as nodes at the system's words set to 1.3, on 小屏: as the old list drew them, every box holding its words" {
-  // (a sweep of screens at rest: the default rate's alone, its frames not judged; the file's head says why)
+test "a chat's messages made once as nodes at the system's words set to 1.3, on 小屏: pass audit and every box holds its words" {
   if @ui.test_at_a_rate() {
     return
   }
   let said : Array[String] = []
-  let known : Map[String, Int] = Map([])
+  let s = body_screens()[0]
   for mode in body_modes() {
-    match body_both(mode, body_screens()[0], "end", scale=1.3) {
-      None => said.push("\{mode} 1.3: no view")
-      Some(c) => {
-        body_cmp(c, known, said)
-        for f in c.outgrown {
-          said.push(c.name + ": " + f)
-        }
+    @sfbase.reset()
+    reset()
+    let src = body_src(mode)
+    guard body_read(src) is Some((v0, read0)) else {
+      said.push("\{mode} 1.3: no view")
+      continue
+    }
+    let view = @signals.signal(v0)
+    let entries = @signals.signal(read0)
+    let t = body_new(src, s.1, s.2, s.3, view, entries, unjudged=true)
+    t.set_font_scale(1.3)
+    let rest = @ui.move_most_ms + (if mode == "chat-sending" { sending_shows_ms } else { 0.0 })
+    t.run_for(rest)
+    for f in t.audit() {
+      if !body_time_short(f) {
+        said.push("\{mode} 1.3: \{f}")
       }
+    }
+    for f in t.fixed_outgrown() {
+      said.push("\{mode} 1.3 outgrown: \{f}")
     }
   }
   assert_eq(said, [], msg=said.join("\n"))
-  assert_eq(body_known_said(known), body_held(HeldLarge), msg=body_known_said(known))
 }
 
 ///|
@@ -1050,30 +401,18 @@ fn body_steps(v : ChatView) -> Array[(String, ChatView)] {
 }
 
 ///|
-test "a chat's messages as nodes as its view changes, at rest after each: the same as the old list's, a row made only as it comes, what was not sent going on by its key" {
+test "a chat's messages as nodes as its view changes, at rest after each: a row made only as it comes, what was not sent going on by its key" {
   // (a sweep of screens at rest: the default rate's alone, its frames not judged; the file's head says why)
   if @ui.test_at_a_rate() {
     return
   }
   let said : Array[String] = []
-  let known : Map[String, Int] = Map([])
   for s in [body_screens()[0], body_screens()[2]] {
     @sfbase.reset()
     reset()
     let src = @sffixture.fixture("chat")
-    let seen : Ref[(ChatView, Array[Entry])?] = Ref(None)
-    let given : @signals.Signal[(ChatView, Array[Entry])?] = @signals.signal(None)
-    let old = body_old(src, s.1, s.2, s.3, seen~, given~, unjudged=true)
-    old.run_for(@ui.move_most_ms)
-    let v0 = seen.val.unwrap().0
+    let v0 = body_read(src).unwrap().0
     let steps = body_steps(v0)
-    let olds : Array[BodyDrawn] = []
-    for st in steps {
-      let read = @sfbase.entries_of(st.1)
-      given.set(Some((st.1, read)))
-      old.run_for(@ui.move_most_ms)
-      olds.push(body_drawn(old, s.1, s.2, body_old_rows(old, st.1, read), old=true))
-    }
     @sfbase.reset()
     reset()
     let src = @sffixture.fixture("chat")
@@ -1096,41 +435,18 @@ test "a chat's messages as nodes as its view changes, at rest after each: the sa
     )
     t.run_for(@ui.move_most_ms)
     let mut before : BodyDrawn? = None
-    for i, st in steps {
+    for st in steps {
       let was = made.copy()
       let read = @sfbase.entries_of(st.1)
       view.set(st.1)
       entries.set(read)
       t.run_for(@ui.move_most_ms)
       let drawn = body_drawn(t, s.1, s.2, body_new_rows(views, 2.0, s.2))
-      // (its turn over, its agent's line gone with nothing in its place: turned on purpose from the old list's, which
-      // comes down by the line's height; the page made as nodes leaves its room under the last row, each row that stays
-      // where it was at the step before (the user, 2026-11-12: a turn that ends with no answer must not carry what is
-      // read up and let it fall back; #5914's leaves_room; the coordinator of the migration agreed the old page's cases
-      // of it turn on purpose, 2026-11-13). The room as tall as the line was as the step before showed it)
       if st.0 == "its turn over" {
         match before {
           Some(b) => body_turn_over_held(s.0 + " " + st.0, b, drawn, said)
           None => said.push(s.0 + " " + st.0 + ": no step before it")
         }
-      } else {
-        body_cmp(
-          {
-            name: "\{s.0} \{st.0}",
-            mode: "chat",
-            w: s.1,
-            h: s.2,
-            entries: body_entries(st.1, read),
-            anchor: None,
-            paged: false,
-            old: olds[i],
-            new: drawn,
-            faults: [],
-            outgrown: [],
-          },
-          known,
-          said,
-        )
       }
       before = Some(drawn)
       // what was made for it: only the row that came (or came to be another kind of row), and a row the list let go
@@ -1151,16 +467,13 @@ test "a chat's messages as nodes as its view changes, at rest after each: the sa
         said.push("\{s.0} \{st.0}: rows made " + again.join(" ") + ", wanted " + want.join(" "))
       }
     }
-    let faults = t.audit()
-    body_tally_time(known, faults)
-    for f in faults {
+    for f in t.audit() {
       if !body_time_short(f) {
         said.push("\{s.0}: " + f)
       }
     }
   }
   assert_eq(said, [], msg=said.join("\n"))
-  assert_eq(body_known_said(known), body_held(HeldChanges), msg=body_known_said(known))
 }
 
 ///|
@@ -1197,16 +510,6 @@ fn body_turn_over_held(name : String, before : BodyDrawn, now : BodyDrawn, said 
   }
   if now.rows.iter().any(fn(r) { r.key == line.key }) {
     said.push(name + ": the agent's line still drawn")
-  }
-}
-
-///|
-/// Of the nodes' audit `faults`, those known of a row's head's time (body_time_short) counted in `known`.
-fn body_tally_time(known : Map[String, Int], faults : Array[String]) -> Unit {
-  let n = faults.filter(body_time_short).length()
-  if n > 0 {
-    let k = "its head's time pressed short (message_head_node's)"
-    known[k] = known.get(k).unwrap_or(0) + n
   }
 }
 
@@ -1262,19 +565,13 @@ fn body_sent_steps(
 }
 
 ///|
-test "words sent from here as nodes: 正在发送 seen sending_shows_ms after they were sent, as the old list shows it: just sent, opened on one long on its way, taken over by the core's outbox entry" {
+test "words sent from here as nodes: 正在发送 seen sending_shows_ms after they were sent: just sent, opened on one long on its way, taken over by the core's outbox entry" {
   for case in ["pressed", "opened", "taken"] {
     @sfbase.reset()
     reset()
     let held : Ref[@ui.Tester?] = Ref(None)
     let src = body_clocked(held)
-    let seen : Ref[(ChatView, Array[Entry])?] = Ref(None)
-    let given : @signals.Signal[(ChatView, Array[Entry])?] = @signals.signal(None)
-    let old = body_old(src, 390.0, 844.0, 2, seen~, given~)
-    held.val = Some(old)
-    old.run_for(@ui.move_most_ms)
-    let v0 = seen.val.unwrap().0
-    let was = body_sent_steps(old, src, v0, case, fn(v) { given.set(Some((v, @sfbase.entries_of(v)))) })
+    let v0 = body_read(src).unwrap().0
     @sfbase.reset()
     reset()
     let held : Ref[@ui.Tester?] = Ref(None)
@@ -1289,7 +586,6 @@ test "words sent from here as nodes: 正在发送 seen sending_shows_ms after th
       view.set(v)
       entries.set(@sfbase.entries_of(v))
     })
-    assert_eq(now, was, msg="\{case}: as nodes \{Repr(now)}, the old list \{Repr(was)}")
     let want = match case {
       "opened" => [[1.0], [1.0], [1.0]]
       // (half way to it, its time in 正在发送's place: none drawn at all, not one unseen; outbox_mine_under)
@@ -1375,18 +671,14 @@ test "the page before read in over a chat's list as nodes at its top: what is re
   let s = body_screens()[0]
   // (the chat's view as its first frame reads it (view_of_chat in chat_list's build), then once the core has read the
   // page before in: both read as a list's frame reads them, no list drawn of them)
-  let seen : Ref[(ChatView, Array[Entry])?] = Ref(None)
-  body_old(src, s.1, s.2, s.3, seen~) |> ignore
-  let (v0, read0) = seen.val.unwrap()
+  let (v0, read0) = body_read(src).unwrap()
   let answered : Ref[Bool] = Ref(false)
   (src.call)("chat.older", { "station": Json::string(body_ref.station), "thread": Json::number(v0.thread.unwrap()) }, fn(
     r,
   ) {
     answered.val = r is Ok(_)
   })
-  let paged : Ref[(ChatView, Array[Entry])?] = Ref(None)
-  body_old(src, s.1, s.2, s.3, seen=paged) |> ignore
-  let (v1, read1) = paged.val.unwrap()
+  let (v1, read1) = body_read(src).unwrap()
   @sfbase.reset()
   reset()
   let src = @sffixture.fixture("chat-working")
@@ -1430,9 +722,7 @@ test "a chat's list as nodes given the same entries again reads none of its rows
   reset()
   let src = @sffixture.fixture("chat")
   let s = body_screens()[0]
-  let seen : Ref[(ChatView, Array[Entry])?] = Ref(None)
-  body_old(src, s.1, s.2, s.3, seen~) |> ignore
-  let (v0, read0) = seen.val.unwrap()
+  let (v0, read0) = body_read(src).unwrap()
   @sfbase.reset()
   reset()
   let src = @sffixture.fixture("chat")
@@ -1505,9 +795,7 @@ test "a long message a block a piece: the pointer on any of its pieces shows its
   @sf.presenters_reset()
   let src = @sffixture.fixture("chat")
   let s = body_screens()[1]
-  let seen : Ref[(ChatView, Array[Entry])?] = Ref(None)
-  body_old(src, s.1, s.2, s.3, seen~) |> ignore
-  let (v0, read0) = seen.val.unwrap()
+  let (v0, read0) = body_read(src).unwrap()
   @sfbase.reset()
   reset()
   let src = @sffixture.fixture("chat")
@@ -1568,9 +856,7 @@ test "a long table a few rows a piece: each piece a block of the list, all of th
   reset()
   let src = @sffixture.fixture("chat")
   let s = body_screens()[1]
-  let seen : Ref[(ChatView, Array[Entry])?] = Ref(None)
-  body_old(src, s.1, s.2, s.3, seen~) |> ignore
-  let (v0, read0) = seen.val.unwrap()
+  let (v0, read0) = body_read(src).unwrap()
   @sfbase.reset()
   reset()
   let src = @sffixture.fixture("chat")
@@ -1655,9 +941,7 @@ fn body_table_case(
       @sfbase.reset()
       reset()
       let src = @sffixture.fixture("chat")
-      let seen : Ref[(ChatView, Array[Entry])?] = Ref(None)
-      body_old(src, s.1, s.2, s.3, seen~) |> ignore
-      let r = seen.val.unwrap()
+      let r = body_read(src).unwrap()
       body_table_read[si] = r
       r
     }
@@ -1786,9 +1070,7 @@ test "a long list a few items a piece: each piece a block of the list, numbered 
   reset()
   let src = @sffixture.fixture("chat")
   let s = body_screens()[1]
-  let seen : Ref[(ChatView, Array[Entry])?] = Ref(None)
-  body_old(src, s.1, s.2, s.3, seen~) |> ignore
-  let (v0, read0) = seen.val.unwrap()
+  let (v0, read0) = body_read(src).unwrap()
   @sfbase.reset()
   reset()
   let src = @sffixture.fixture("chat")
@@ -1839,9 +1121,7 @@ test "chat_body_node scrollbar clears top cover and bottom composer by scroll_ba
   @sfbase.reset()
   reset()
   let src = @sffixture.fixture("chat-long")
-  let seen : Ref[(ChatView, Array[Entry])?] = Ref(None)
-  body_old(src, 900.0, 760.0, 0, seen~) |> ignore
-  let (v0, read0) = seen.val.unwrap()
+  let (v0, read0) = body_read(src).unwrap()
   @sfbase.reset()
   reset()
   let src = @sffixture.fixture("chat-long")

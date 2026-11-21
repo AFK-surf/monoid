@@ -6,6 +6,7 @@
 
 ///|
 /// Over the first message unread when the chat opened (chatUnreadLine): its words in the accent, a rule each side.
+#warnings("-unused_value") // kept for Wave 8B-2B *_wbtest.mbt
 fn unread_line(c : @ui.Ctx) -> Unit {
   c.box(style=unread_row, fn() {
     c.box(style=unread_rule, fn() {  }) |> ignore
@@ -17,12 +18,14 @@ fn unread_line(c : @ui.Ctx) -> Unit {
 
 ///|
 /// The page before or after being brought in (chatOlder, chatNewer): a spinner in the middle.
+#warnings("-unused_value") // kept for Wave 8B-2B *_wbtest.mbt
 fn pages_coming(c : @ui.Ctx, older : Bool) -> Unit {
   c.box(style=if older { older_row } else { newer_row }, fn() { @sf.spinner(c) |> ignore }) |> ignore
 }
 
 ///|
 /// The page before that could not be read, in its place: why, the core asking for it again a while after.
+#warnings("-unused_value") // kept for Wave 8B-2B *_wbtest.mbt
 fn older_failed(c : @ui.Ctx, why : String) -> Unit {
   c.box(style=older_row, fn() {
     c.text(@sf.t("web-main.chat.olderFailed", args=[("why", why)]), style=older_failed_words) |> ignore
@@ -32,6 +35,7 @@ fn older_failed(c : @ui.Ctx, why : String) -> Unit {
 
 ///|
 /// A chat with nothing in it yet (chatEmpty).
+#warnings("-unused_value") // kept for Wave 8B-2B *_wbtest.mbt
 fn chat_empty(c : @ui.Ctx) -> Unit {
   c.box(style=empty_row, fn() { c.text(@sf.t("web-main.chat.empty"), style=chat_empty_words) |> ignore }) |> ignore
 }
@@ -41,6 +45,7 @@ fn chat_empty(c : @ui.Ctx) -> Unit {
 /// out as it is in the chat): led as the row's is (chat_mark.mbt: a bell, a check, the waiting arc, the radar) but
 /// whole, its words wrapping where the row cuts them to a line; done with nothing said, its word (已完成) after the
 /// check. What it needs of a person in ink, the rest quiet, and let go right under it (the core's `stateAsk`).
+#warnings("-unused_value") // kept for Wave 8B-2B *_wbtest.mbt
 fn chat_state(c : @ui.Ctx, src : Source, here : MessageHere, words : String, lead : String, rest : String) -> Unit {
   let p = @sf.theme().p
   // (the row's words, the theme's lists', on their line: the icon's column, the theme's too, as high as it)
@@ -182,6 +187,7 @@ fn said_in_place(c : @ui.Ctx, key : String, answered : Bool) -> (@ui.Look?, @ui.
 /// once it has been on its way a while (800 ms from when it was sent) until the station takes it, then its time; not
 /// sent, said briefly (why in its tip), with sending it again (or, refused as it is, its words back in the composer:
 /// 编辑) and dropping it right beside.
+#warnings("-unused_value") // kept for Wave 8B-2B *_wbtest.mbt
 fn outbox_row(c : @ui.Ctx, src : Source, here : MessageHere, o : Outgoing) -> Unit {
   let failed = o.state == "failed"
   c.box(style=mine_column, fn() {
@@ -398,6 +404,7 @@ fn unsent_button(
 /// long its turn has run; pressed, its history beside the chat. One of several agents: its own stop under the pointer.
 /// For a message to come out of its picture the line folds to the picture, which is away while its copy flies
 /// (sfbase's emit.mbt).
+#warnings("-unused_value") // kept for Wave 8B-2B *_wbtest.mbt
 fn activity_row(c : @ui.Ctx, src : Source, here : MessageHere, a : Agent, em : Emits, rk : String, leaving : Bool, came : Double?) -> Unit {
   let p = @sf.theme().p
   let folded = emit_folded(em, a.key)

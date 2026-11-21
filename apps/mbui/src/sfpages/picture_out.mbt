@@ -4,38 +4,8 @@
 
 ///|
 /// The picture `png` handed out as its button says (@sf.picture_out_way; `copy`: copied whatever it says, a phone's
-/// 复制图片 beside its 保存到相册), what came of it said (that it was copied, not where the button says so itself:
-/// `copy_said`); None: it could not be made. True once it is out.
-pub fn picture_out(c : @ui.Ctx, png : Bytes?, copy_said? : Bool = false, copy? : Bool = false) -> Bool {
-  let album = !copy && @sf.picture_to_album()
-  match png {
-    None => {
-      say(c, @sf.t(if album { "web-main.stations.saveToPhotosFailed" } else { "web-main.stations.shareFailed" }))
-      false
-    }
-    Some(png) if album => {
-      @sfbase.keep_bytes(
-        c,
-        "still.fail.png",
-        "image/png",
-        png,
-        way=Photos,
-      )
-      true
-    }
-    Some(png) => {
-      @ui.clipboard_set_png(png, label="still.fail")
-      if !@ui.copy_shown() && !copy_said {
-        say(c, @sf.t("common.copied"))
-      }
-      true
-    }
-  }
-}
-
-///|
-/// picture_out's at a cause (a press's handler, a picture taken: @ui.take_picture's `done`), no frame's: what it keeps
-/// asked of the host then, what came of it said as it says.
+/// 复制图片 beside its 保存到相册), at a cause (a press's handler, a picture taken: @ui.take_picture's `done`), no
+/// frame's: what it keeps asked of the host then, what came of it said as it says.
 pub fn picture_out_now(png : Bytes?, copy_said? : Bool = false, copy? : Bool = false) -> Bool {
   let album = !copy && @sf.picture_to_album()
   match png {

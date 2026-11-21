@@ -19,13 +19,12 @@
 priv struct Triple {
   mut open : String
   mut shown : Int
-  mut asked : String
   mut accounts_asked : Bool
   mut borrow_asking : String
 }
 
 ///|
-let triple : Triple = { open: "", shown: 0, asked: "", accounts_asked: false, borrow_asking: "" }
+let triple : Triple = { open: "", shown: 0, accounts_asked: false, borrow_asking: "" }
 
 ///|
 /// One panel's filter, what it shows and its pick: what is typed in its search (`field`), whether all the models are
@@ -80,7 +79,6 @@ fn TriplePanel::pick_now(self : TriplePanel, src : Source, station : String, of 
 fn triple_reset() -> Unit {
   triple.open = ""
   triple.shown = 0
-  triple.asked = ""
   triple.accounts_asked = false
   triple.borrow_asking = ""
   triple_ahead_stop()
@@ -136,14 +134,6 @@ fn triple_ask(src : Source, station : String, of : String) -> Unit {
   }
   triple_ahead.of = me
   triple_ahead.lease = Some(src.lease_topic("pick", pick_params(station, of)))
-}
-
-///|
-/// What was asked ahead of the panel of the pick `of` on `station` as it stands, read through what holds it (holding
-/// nothing more: a page's own read of it would hold it while the page is there); None while it is not held.
-fn triple_ahead_read(station : String, of : String) -> @sfbase.TopicState? {
-  guard triple_ahead.of == station + "\u{1}" + of && triple_ahead.lease is Some(l) && l.alive() else { return None }
-  @signals.untracked(fn() { l.read() })
 }
 
 ///|
@@ -349,207 +339,6 @@ pub fn open_triple_panel(
 }
 
 ///|
-/// The control of the pick `of` on `station` (ModelTriple): its line, and its panel under it while open (above it
-/// where the presenters flip it up). `face`: the control as a page draws it closed with itself (a new chat's: its
-/// `pick`, NewChatPick, only where it runs on a model), not read on its own: its panel's own pick is asked as the hand
-/// comes to it and the panel opens once that is answered (open_triple_whole); `small`: in a composer's row (its words
-/// 12). `saved`: what is said once a model picked
-/// (onConfirm's toast: a chat's, from its next turn; a connect's, its model bound; nothing where nothing runs on it yet,
-/// a new chat's or a new connect's). `floating`: over a page rather than in a row (a new chat's over its
-/// composer, narrow): a capsule of the composer's glass. `bound`: what it runs is another's to say (a preset's), its
-/// panel never opened; `on_bound` what a press on it opens instead, beside it.
-pub fn model_triple(
-  c : @ui.Ctx,
-  src : Source,
-  station : String,
-  of : String,
-  face? : Json? = None,
-  small? : Bool = false,
-  floating? : Bool = false,
-  saved? : String = "",
-  bound? : Bool = false,
-  on_bound? : (@sf.Beside) -> Unit,
-) -> Unit {
-  let t = @sf.theme()
-  let v = match face {
-    Some(_) => face
-    None => src.topic("pick", pick_params(station, of)).get().value
-  }
-  guard v is Some(Object(_)) else { return }
-  let value = field(v, "value")
-  // (a face is drawn only of a control that runs on a model: there are models to pick)
-  let offers = face is Some(_) || items(v, "options").length() > 0 || triple_other_stations(v)
-  let vo = field(v, "valueOption")
-  let account = field(v, "account")
-  let me = station + "\u{1}" + of
-  let dkey = "pick.save/" + station + "/" + of
-  let saving = doing(dkey)
-  let id = c.id("triple/" + me)
-  // (`bound`: what it runs is another's to say, a preset's: shown, not opened, no chevron)
-  let can = offers && !saving && !bound
-  let open = triple.open == me
-  let go = fn() {
-    triple.asked = ""
-    // (in a composer's row, at the window's foot: its panel gone up from it)
-    match face {
-      Some(_) => open_triple_whole(src, station, of, Of(id), saved, up=small)
-      None => open_triple_panel(src, station, of, Of(id), saved~, up=small)
-    }
-  }
-  // (drawn of its face: its panel's pick asked as the hand comes to it, ahead of the press it opens at: a pointer come
-  // to rest over it, a finger or a pointer gone down on it; let go as it leaves, where nothing else holds it)
-  if face is Some(_) && !src.read_only && !c.in_bones() {
-    let hand = can && (c.hovered(id) || (c.press().down && c.press_within(id)))
-    if hand {
-      triple_ask(src, station, of)
-    } else {
-      triple_let_go(me)
-    }
-    // (pressed before it was answered: looked at again once the frame's builds are over, where opening it tells
-    // outside)
-    match triple_ahead.wait {
-      Some(w) => c.after_build("triple-open/" + me, fn() { w.check() })
-      None => ()
-    }
-  }
-  if can && !open {
-    c.on_press(id, fn() {
-      go()
-    })
-  }
-  // (`bound`, pressed: what holds it says so, `on_bound` beside it)
-  match on_bound {
-    Some(f) if bound && offers => c.on_press(id, fn() { f(Of(id)) })
-    _ => ()
-  }
-  // (asked from elsewhere: opened as it is seen)
-  if can && !open && triple.asked == me {
-    go()
-  }
-  let runtime = text(value, "runtime")
-  let (words, muted) = if small { (triple_words_xs, triple_muted_xs) } else { (triple_words, triple_muted) }
-  c.box(
-    style=match (floating, open, small) {
-      // (over the page, not in a row: on the composer's glass, as the page's other choice)
-      (true, _, _) => glass_chooser_box
-      (false, true, false) => triple_on
-      (false, false, false) => triple_style
-      (false, true, true) => triple_small_on
-      (false, false, true) => triple_small
-    },
-    glass?=if floating { Some(@sf.glass_floating()) } else { None },
-    id~,
-    fn() {
-    if !offers {
-      c.text(@sf.t("web-main.model.none"), style=muted) |> ignore
-    } else {
-      let model = text(value, "model")
-      @sf.maker_mark(c, text(field(vo, "maker"), "id"), runtime, 14.0) |> ignore
-      let name = if model == "" {
-        @sf.t("web-main.model.pick")
-      } else {
-        // (a model not among those listed here: the name the core knows it by, never its id)
-        match (text(vo, "name"), text(v, "modelText")) {
-          ("", "") => model
-          ("", n) => n
-          (n, _) => n
-        }
-      }
-      // (within the room it has, the most it can say: what matters least left out first, as the web's DROPS: who
-      // runs it by name, then who runs it, then the runtime, then how hard it thinks; the model never: its name cut
-      // short once all of them have gone)
-      c.text(name, style=if small { triple_name_xs } else { triple_name }, keep=true) |> ignore
-      if !flag(v, "runtimeFixed") && (flag(v, "showRuntime") || items(vo, "runtimes").length() > 1) {
-        c.box(style=triple_part, drop=triple_drop_runtime, fn() {
-          c.text("·", style=muted) |> ignore
-          c.text(@settings.runtime_short(runtime), style=words) |> ignore
-        })
-        |> ignore
-      }
-      let effort = text(value, "effort")
-      if effort != "" || items(v, "efforts").length() > 0 {
-        c.box(style=triple_part, drop=triple_drop_effort, fn() {
-          c.text("·", style=muted) |> ignore
-          c.text(if effort == "" { @sf.t("web-main.model.defaultEffort") } else { effort_text(effort) }, style=words)
-          |> ignore
-        })
-        |> ignore
-      }
-      match text(v, "fastText") {
-        "" => ()
-        f =>
-          c.box(style=triple_part, drop=triple_drop_effort, fn() {
-            c.text("·", style=muted) |> ignore
-            c.text(f, style=words) |> ignore
-          })
-          |> ignore
-      }
-      match text(v, "subagentText") {
-        "" => ()
-        sub =>
-          c.box(style=triple_part, fn() {
-            c.text(sub, style=words) |> ignore
-          })
-          |> ignore
-      }
-      if account is Some(Object(_)) {
-        // (each of its pieces in the control's row: its name the first to go, then the rest of it)
-        let profile = field(account, "profile")
-        let marked = profile is Some(Object(_))
-        // (the dot before it goes with what follows it: its mark where it has one, else its name, never left alone)
-        if marked {
-          c.box(style=triple_part, drop=triple_drop_account, fn() {
-            c.text("·", style=muted) |> ignore
-            @sf.maker_mark(c, text(profile, "mark"), runtime, 14.0) |> ignore
-          })
-          |> ignore
-        }
-        let level = text(account, "level")
-        c.box(style=if marked { triple_alone } else { triple_part }, drop=triple_drop_name, fn() {
-          if !marked {
-            c.text("·", style=muted) |> ignore
-          }
-          c.text(
-            text(account, "text"),
-            style=if level == "amber" {
-              triple_amber
-            } else if level == "red" {
-              triple_red
-            } else {
-              words
-            },
-          )
-          |> ignore
-        })
-        |> ignore
-        if profile is Some(Object(_)) {
-          c.box(style=triple_part, drop=triple_drop_account, fn() {
-            @sf.quota_chips(c, field(profile, "quota"), small=true)
-          })
-          |> ignore
-        }
-      }
-    }
-    // what was picked on its way: a ring in place of the chevron
-    if saving {
-      @sf.spinner(c, size=12.0) |> ignore
-    } else if !bound {
-      @sf.icon(c, "chevron-down", size=12.0, color=t.p.muted) |> ignore
-    }
-    },
-  )
-  |> ignore
-  // (a borrowing asked from its panel: what its own pick says of it, as what the panel asked holds it while it is
-  // asked: triple_let_go)
-  let asking = match face {
-    Some(_) if triple.borrow_asking == me => triple_ahead_read(station, of).bind(fn(s) { s.value })
-    Some(_) => None
-    None => v
-  }
-  borrow_dialog(c, src, station, of, asking)
-}
-
-///|
 /// The control of the pick `of` on `station` (model_triple's, as nodes, made once) in `parent`, its words as the core's
 /// pick says them now: the model's mark and name, then (each left out where the line has not the room, what matters
 /// least first) its runtime, how hard it thinks, how fast, who runs it (its mark, its name, its allowance's chips); a
@@ -652,7 +441,6 @@ pub fn model_triple_node(
           return
         }
         guard @signals.untracked(can) && triple.open != me else { return }
-        triple.asked = ""
         opened.set(true)
         match face {
           Some(_) => open_triple_whole(src, station, of, At(x, y, w, h), saved, up~)
@@ -3189,35 +2977,6 @@ fn triple_accounts_node(n : @view.View, src : Source, station : String, of : Str
 }
 
 ///|
-/// Borrowing the picked model's account from another station, asked first: what it does,
-/// 取消 and its action.
-fn borrow_dialog(c : @ui.Ctx, src : Source, station : String, of : String, v : Json?) -> Unit {
-  let me = station + "\u{1}" + of
-  let borrow = field(v, "borrow")
-  let dkey = "pick.borrow/" + station + "/" + of
-  let open = triple.borrow_asking == me && borrow is Some(Object(_))
-  let lines = items(borrow, "lines").map(fn(l) {
-    match l {
-      String(s) => s
-      _ => ""
-    }
-  })
-  wide_confirm(c, "borrow/" + me, open, text(borrow, "title"), lines, text(borrow, "action"), doing(dkey), flag(borrow, "allowed"), fn(
-    yes,
-  ) {
-    if yes {
-      act(src, text(borrow, "action"), dkey, "pick.borrow", Json::object(pick_params(station, of)), done=@sf.t("web-main.model.borrowed"), ok=fn(_) {
-        triple.borrow_asking = ""
-        triple_let_go(me)
-      })
-    } else {
-      triple.borrow_asking = ""
-      triple_let_go(me)
-    }
-  })
-}
-
-///|
 /// Borrowing a model of another station's asked first (borrow_dialog's), put up by the presenters as its panel's 借用 is
 /// pressed (open_triple_panel's `asks`), what it holds nodes: its title, its lines, 取消 and its action at its foot (a
 /// ring before them while it borrows), closed once it has borrowed it.
@@ -3265,70 +3024,6 @@ fn borrow_ask(src : Source, station : String, of : String, borrow : Json?) -> Un
 }
 
 ///|
-/// A dialog that asks before something is done (the web's Confirm, Dialog): its title, its lines, 取消 and `action`
-/// (`danger`: in red). `said` told true as the action is pressed, false as 取消 is, or as Esc or a press outside closes
-/// it.
-fn wide_confirm(
-  c : @ui.Ctx,
-  key : String,
-  open : Bool,
-  title : String,
-  lines : Array[String],
-  action : String,
-  busy : Bool,
-  allowed : Bool,
-  said : (Bool) -> Unit,
-) -> Unit {
-  let d = @sf.dialog(
-    c,
-    key,
-    open,
-    title,
-    w=dmin(confirm_w, c.width - 32.0),
-    close_label=@sf.t("common.close"),
-    on_close=fn() { said(false) },
-    fn() {
-      for l in lines {
-        c.text(l, style=confirm_line) |> ignore
-      }
-      c.box(style=confirm_foot, fn() {
-        small_button(c, key + "/cancel", @sf.t("common.cancel"), false, true, on_press=fn() { said(false) })
-        if busy {
-          @sf.spinner(c, size=14.0) |> ignore
-        }
-        small_button(c, key + "/ok", action, true, allowed && !busy, on_press=fn() { said(true) })
-      })
-      |> ignore
-    },
-  )
-  // (closed by Esc or a press outside: what the dialog says as it is built)
-  if open && !d {
-    said(false)
-  }
-}
-
-///|
-/// A small panel's small pill: 24 high, 10 in, its words in 12; `primary` dark with light
-/// words, else quiet with the ground on hover; not pressed while `on` is false. `on_press` as it is pressed.
-fn small_button(c : @ui.Ctx, key : String, words : String, primary : Bool, on : Bool, on_press? : () -> Unit) -> Unit {
-  let id = c.id(key)
-  let b = c.box(
-    style=match (primary, on) {
-      (true, true) => small_primary
-      (true, false) => small_primary_off
-      (false, _) => small_quiet
-    },
-    id~,
-    fn() { c.text(words, style=if primary { small_primary_words } else { small_quiet_words }) |> ignore },
-  )
-  c.semantics(b, Button, id~, label=words)
-  match on_press {
-    Some(f) if on => c.on_press(id, f)
-    _ => ()
-  }
-}
-
-///|
 /// How wide a dialog that asks is (Dialog: 420).
 let confirm_w : Double = 420.0
 
@@ -3366,10 +3061,6 @@ let triple_style : @ui.Style = @ui.css("row h=S7 px=S2_5 gap=S1_5 align=ACenter 
 ///|
 /// The room between a model control's parts (triple_style's gap=S1_5), as nodes: the row of them in the capsule.
 let triple_gap : Double = 6.0
-
-///|
-// kept across runs: a value (no field of it changes)
-let triple_on : @ui.Style = @ui.css("row h=S7 px=S2_5 gap=S1_5 align=ACenter radius=Full bg=Hover")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -3688,28 +3379,6 @@ let triple_dropped_box : @ui.Style = @ui.css("w=Full pb=S1_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let small_primary : @ui.Style = @ui.css("h=S6 px=S2_5 align=ACenter justify=JCenter radius=Full bg=Primary")
-
-///|
-// kept across runs: a value (no field of it changes)
-let small_primary_off : @ui.Style = @ui.css((
-  #|h=S6 px=S2_5 align=ACenter justify=JCenter radius=Full bg=Primary opacity=O50
-))
-
-///|
-// kept across runs: a value (no field of it changes)
-let small_quiet : @ui.Style = @ui.css("h=S6 px=S2_5 align=ACenter justify=JCenter radius=Full hovered{bg=Hover}")
-
-///|
-// kept across runs: a value (no field of it changes)
-let small_primary_words : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, color=OnPrimary, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
-let small_quiet_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
 let confirm_line : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted)
 
 ///|
@@ -3781,10 +3450,6 @@ let triple_small : @ui.Style = @ui.css("row h=S7 px=S2 gap=S1_5 align=ACenter ra
 
 ///|
 // kept across runs: a value (no field of it changes)
-let triple_small_on : @ui.Style = @ui.css("row h=S7 px=S2 gap=S1_5 align=ACenter radius=Lg bg=Hover")
-
-///|
-// kept across runs: a value (no field of it changes)
 pub let triple_words_xs : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg, wrap=false)
 
 ///|
@@ -3803,7 +3468,8 @@ pub let triple_muted_xs : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted,
 ///|
 /// The control of the pick `of` on `station` with its panel open (a screen's fixture).
 pub fn open_triple(station : String, of : String) -> Unit {
-  triple.asked = station + "\u{1}" + of
+  ignore(station)
+  ignore(of)
 }
 
 ///|

@@ -143,37 +143,6 @@ fn file_menu(
 }
 
 ///|
-/// What a menu's choice left, done: a link opened by the system once the frame is built, words copied, a picture read
-/// whole and put on the clipboard (as Electron's copyImage: decoded, as PNG) once it is read.
-fn menus_frame(c : @ui.Ctx) -> Unit {
-  // (taken when it is opened, not while the frame is built: a frame built again lets go of what its earlier builds
-  // said, Ctx::after_build)
-  if menu_doing.open.get() != "" {
-    let href = menu_doing.open.get()
-    c.after_build("menu-open", fn() {
-      menu_doing.open.set("")
-      @ui.open_url(href) |> ignore
-    })
-  }
-  if menu_doing.copy.get() != "" {
-    c.copy_text(menu_doing.copy.get())
-    menu_doing.copy.set("")
-    say(c, @sf.t("common.link.copied"))
-  }
-  if menu_doing.image.get() != "" {
-    match c.image_pixels(menu_doing.image.get(), image_copy_px) {
-      @ui.PixelsRead(w, h, rgba) =>
-        c.after_build("menu-copy-image", fn() {
-          menu_doing.image.set("")
-          @ui.clipboard_set_png(@pixels.png(w, h, unpremultiplied(rgba)))
-        })
-      @ui.PixelsFailed => menu_doing.image.set("")
-      @ui.PixelsComing => ()
-    }
-  }
-}
-
-///|
 /// What a menu's 复制图片 left (`image`), done on a page made as nodes, in `v`: the picture read whole while it is
 /// read (tree_image_pixels, as menus_frame reads it for an old view's list), then put on the clipboard as a PNG, or let
 /// go where it cannot be read.

@@ -51,12 +51,6 @@ fn open_chat() -> ChatRef? {
 }
 
 ///|
-/// Room in a list, `h` high (for the bar over it, at its foot).
-fn list_space(c : @ui.Ctx, h : Double) -> Unit {
-  c.box(style=@ui.style(h=Fixed(h)), fn() {  }) |> ignore
-}
-
-///|
 let illustration_w : Double = 240.0
 
 ///|

@@ -14,8 +14,6 @@
       "src/sfpages/vault_item.mbt": 3
     },
     "layout-read-back": {
-      "src/sfpages/chat_ref.mbt": 1,
-      "src/sfpages/composer.mbt": 1,
       "src/sfpages/hover.mbt": 4,
       "src/sfpages/message.mbt": 1,
       "src/sfpages/message_files.mbt": 1
@@ -25,19 +23,12 @@
     },
     "build-motion": {
       "src/sfpages/chat_mark.mbt": 1,
-      "src/sfpages/chat_row.mbt": 4,
       "src/sfpages/chat_rows.mbt": 3,
-      "src/sfpages/composer.mbt": 4,
       "src/sfpages/hover.mbt": 4,
       "src/sfpages/message.mbt": 3,
       "src/sfpages/message_files.mbt": 2
     },
-    "old-list": {
-      "src/sfpages/chat_list.mbt": 1,
-      "src/sfpages/new_chat.mbt": 1
-    },
     "submitted-read": {
-      "src/sfpages/chat_row.mbt": 1,
       "src/sfpages/login_card.mbt": 1
     },
     "pick-loop": {
@@ -130,14 +121,6 @@
       "src/sfpages/usage_node.mbt": 1,
       "src/sfpages/vault.mbt": 1,
       "src/sfpages/workspace_page.mbt": 1
-    }
-  },
-  "excused": {
-    "layout-read-back": {
-      "src/sfpages/search_marks.mbt": 1
-    },
-    "motion-length": {
-      "src/sfpages/composer.mbt": 2
     }
   }
 }

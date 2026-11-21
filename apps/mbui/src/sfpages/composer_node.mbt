@@ -1930,11 +1930,15 @@ fn cc_chooser_node(parent : @view.View, src : Source, r : ChatRef, head : () -> 
     }
   }
   let open = @signals.signal(false, same=fn(a, b) { a == b })
+  let set_open = fn(v : Bool) {
+    composing.cc_open = v
+    open.set(v)
+  }
   let label = fn() { @sf.t("web-main.composer.ccLabel") }
   let b = @sf.action_box_node(
     parent,
     fn() { ([label()] + to().0.filter(fn(o) { o.on }).map(fn(o) { o.place })).join(" ") },
-    fn(_) { open.set(!open.untracked()) },
+    fn(_) { set_open(!open.untracked()) },
     expanded=fn() { open.get() },
     fn(v) {
       let lit = fn() { @sf.lit_node(v) || open.get() }
@@ -1950,7 +1954,7 @@ fn cc_chooser_node(parent : @view.View, src : Source, r : ChatRef, head : () -> 
       @sf.words_node(v, label, fn() { if lit() { cc_words_lit } else { cc_words } }) |> ignore
       @sf.icon_node(v, "chevron-down", 12.0, By(fn() { if lit() { @sf.theme().p.text } else { @sf.theme().p.muted } }))
       |> ignore
-      v.on_leaving(fn() { open.set(false) }) |> ignore
+      v.on_leaving(fn() { set_open(false) }) |> ignore
     },
   )
   // (its menu made over the window, living as long as 抄送 does: not in the composer, which cuts what it holds)
@@ -1987,10 +1991,10 @@ fn cc_chooser_node(parent : @view.View, src : Source, r : ChatRef, head : () -> 
       (item.select)()
       // (one: done once ticked; several: left open to tick the next)
       if to().0.length() <= 1 {
-        open.set(false)
+        set_open(false)
       }
     },
-    fn() { open.set(false) },
+    fn() { set_open(false) },
     side=Top,
     min_w=@sf.chooser_menu_w,
     // (each ticked one's check at its row's end, none before its mark: the old one's, 左子健's)

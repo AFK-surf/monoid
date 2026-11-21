@@ -76,19 +76,6 @@ pub fn things_now(src : Source, station : String, thread : Double) -> (Int, Arra
 }
 
 ///|
-/// A pull request's mark (GitHub's octicon for how it stands, peeks.mbt pr_glyph), `side` square, in its state's
-/// colour as its card's pill has it (state_colours: open green, merged purple, closed red, a draft grey; the user,
-/// 2026-10-29: 为啥没颜色), grey until its card is read.
-pub fn pull_mark(c : @ui.Ctx, pull : Json?, side : Double) -> Unit {
-  let state = text(pull, "state")
-  let (ink, _) = state_colours(state)
-  match pr_glyph(state) {
-    Some(d) => @sf.vector(c, "thing-pull/" + state, glyph_of(d, ink), side) |> ignore
-    None => ()
-  }
-}
-
-///|
 /// What a pull request is called: its title once its card is read, else its repository and number.
 pub fn pull_title(pull : Json?) -> String {
   match text(pull, "title") {
@@ -119,19 +106,6 @@ fn pull_meta(pull : Json?) -> String {
     parts.push(ago)
   }
   parts.join(" · ")
-}
-
-///|
-/// A thing held or right clicked (box `id`, said in message `seq`): its menu at the pointer, 在对话中查看 first (`away`),
-/// then a link's copy (`url`: none for a file). The chat's info's pull requests have it too.
-pub fn thing_menu(c : @ui.Ctx, id : Int, seq : Double, url : String, away : (Double) -> Unit, beside? : (() -> Unit)? = None) -> Unit {
-  match c.menu_asked(id) {
-    Some((x, y)) => {
-      @sf.menu_held(c, "thing") |> ignore
-      thing_menu_at(x, y, seq, url, away, beside~)
-    }
-    None => ()
-  }
 }
 
 ///|

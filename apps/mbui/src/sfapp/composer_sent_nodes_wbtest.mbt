@@ -88,10 +88,9 @@ fn sent_nodes_foot(t : @ui.Tester, w : String, at : String) -> Double {
 ///|
 /// The composer's room under the list (what the list leaves it at its foot).
 fn sent_nodes_room(t : @ui.Tester, draft : String) -> Double {
-  // (made as nodes: its foot as the tree lays it out; an old view's, as it says it)
   match @sfpages.composer_node_room(draft, t.time()) {
     Some(room) => room
-    None => @sfpages.composer_room(t.ctx(), draft)
+    None => @halt.saying("composer_node_room not measured for \{draft}")
   }
 }
 

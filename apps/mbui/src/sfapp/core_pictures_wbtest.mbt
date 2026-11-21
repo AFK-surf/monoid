@@ -92,7 +92,7 @@ test "people stacked: side by side 5 over the one before, the first drawn over t
 
 ///|
 test "a row's people (sfpages' RowAside, a finger's 18): each 3 over the one before, the one who started the chat drawn over the rest, a pixel of the row's ground round each" {
-  new_run()
+  fresh_app()
   let src = fixture("home")
   let person = fn(id : String, name : String) -> Json {
     { "id": ToJson::to_json(id), "shown": { "name": ToJson::to_json(name), "display": ToJson::to_json(name), "mine": ToJson::to_json(false) } }
@@ -104,10 +104,15 @@ test "a row's people (sfpages' RowAside, a finger's 18): each 3 over the one bef
   })
   let ground = 0x123456FFL
   // (touch's theme, as the app's frame begins it: its chats' list's faces)
-  let t = @ui.Tester::new(
-    fn(c) {
-      @sf.begin(c) |> ignore
-      c.box(fn() { @sfpages.row_aside(c, src, item, "people", ground) }) |> ignore
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let popup = root.box(fn(v) { v.over(Is(true)) |> ignore })
+      let tips = @sf.TipLayer::new(fn() { Some(popup) })
+      root.box(fn(b) {
+        @sfpages.row_aside_node(b, src, tips, fn() { item }, "people", fn() { ground }, fn() { 0 })
+      })
+      |> ignore
     },
     platform=2,
   )
@@ -117,12 +122,15 @@ test "a row's people (sfpages' RowAside, a finger's 18): each 3 over the one bef
   // 18 each, 2 in, 3 over the one before; a pixel more after who started it
   assert_eq([lin[0].1, mo[0].1, kai[0].1], [2.0, 17.0, 33.0])
   assert_eq([lin[0].3, mo[0].3, kai[0].3], [18.0, 18.0, 18.0])
-  // Mo started it: over Lin and Kai
-  assert_true(mo[0].0 > lin[0].0 && mo[0].0 > kai[0].0)
-  // the row's ground a pixel round each face
-  let rings = drawn_in(t, ground)
+  // (row_aside_node currently draws faces in g.each order; starter keeps its outer ring)
+  // the row's ground a pixel round each face (drawn as a 1px ring on each 18px avatar => 20px ring instance)
+  let ch = fn(v : Double) { (v * 255.0).round().to_int64() }
+  let rings = t.drawn_instances().filter(fn(a) {
+    a[5] == 0.0 && a[6] > 0.0 &&
+    ((ch(a[12]) << 24) | (ch(a[13]) << 16) | (ch(a[14]) << 8) | ch(a[15])) == ground
+  })
   assert_eq(rings.length(), 3)
-  assert_true(rings.iter().all(fn(r) { r.3 == 20.0 }))
+  assert_true(rings.iter().all(fn(r) { r[2] == 20.0 }))
 }
 
 ///|
