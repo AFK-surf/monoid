@@ -389,3 +389,30 @@ test "a tap anywhere else lets go of it, as back does" {
 ///|
 /// How long a finger is held still for a long press (ViewConfiguration's long press timeout, as Compose has it).
 let long_press_ms : Double = @ui.long_press_ms
+
+///|
+test "小屏, a chat only in Feishu: a finger held on what was said there offers 引用, 复制 and 全选 (no message to share or link); 引用 quotes it" {
+  new_run()
+  let calls : Array[Made] = []
+  let base = fixture("chat-feishu")
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      calls.push({ name, params, bytes: None, done })
+      (base.call)(name, params, done)
+    },
+  }
+  open_chat({ station: "ws1/st1", session: "s-c1", title: "飞书群消息排查", station_name: "Willow" })
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.run_for(@ui.move_most_ms)
+  hold_on(t, "已经定位到飞书接入会话") |> ignore
+  let one = picking_now(t).text
+  assert_eq(["引用", "复制", "全选", "多选", "复制链接"].filter(fn(i) { bar_offers(t, i) }), ["引用", "复制", "全选"])
+  bar_choose(t, "引用")
+  t.frame()
+  let quoted = named(calls, "composer.quote")
+  assert_eq(quoted.length(), 1)
+  let q = field(Some(quoted[0].params), "quote")
+  assert_eq((text(q, "text"), text(q, "ts"), text(q, "role"), text(q, "author")), (one, "", "agent", "Claude"))
+  assert_true(t.picking() is None, msg="still picked: \{Repr(t.picking())}")
+}

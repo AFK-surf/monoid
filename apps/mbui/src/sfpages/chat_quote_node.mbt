@@ -3,7 +3,8 @@
 // pick wholly within one message, a small dark pill 引用 with its mark 8 over the end it let go (mbui's picked_now,
 // picked_end_piece); pressed, what is picked kept (keeps_picked), quoted as the old page quoted it (whose words, the
 // words, the message, as what: chat_layers'), let go, and gone. A pick across messages, or in a row that is no message
-// with an id to quote by (what is on its way from here, a notice's line, the list's own rows), gives none. A finger's
+// (a notice's line, the list's own rows), gives none; what is on its way from here and what was said in Slack or Feishu
+// are quoted with no id (`ts` ""). A finger's
 // pick has no pill: the page's own bar over it, as the old page's (sfbase's pick_bar; @sf.pick_bar_node), never the
 // system's text menu (mbui's picked_bar; the user, 2026-11-15: 「为什么要用系统的」): 引用, 复制, 全选 (but after it), and
 // what that message offers of itself where it offers it (多选, its turn shared from the chat's picture; 复制链接, its
@@ -27,15 +28,25 @@ fn chat_finger_picked(rows : ChatBodyList) -> (@ui.WordsPicked, Message)? {
 
 ///|
 /// The message of chat `rows` whose words what is picked lies wholly within, once let go, with the mouse or a finger
-/// (one the viewer sent not yet the chat's too: outgoing_said): what is picked and the message; none otherwise.
+/// (one the viewer sent not yet the chat's too: outgoing_said; one said in Slack or Feishu: elsewhere_said): what is
+/// picked and the message; none otherwise.
 fn chat_picked_message(rows : ChatBodyList) -> (@ui.WordsPicked, Message)? {
   guard @ui.picked_now() is Some(p) && p.of.length() == 1 else { return None }
   match rows.read().get(p.of[0]) {
     Some({ entry: Said(m), .. }) if m.ts != "" => Some((p, m))
     // (one of the viewer's not the chat's yet, on its way or failed: theirs, of no message, as the old rows quote it)
     Some({ entry: Out(o), .. }) => Some((p, outgoing_said(o)))
+    // (one said in Slack or Feishu, the chat's only words where it has been nowhere else: whose there, of no message)
+    Some({ entry: Sent(s), .. }) => Some((p, elsewhere_said(s)))
     _ => None
   }
+}
+
+///|
+/// What was said in Slack or Feishu (`s`) as a message to quote: its words, whose they are there (a person's where it
+/// was heard there, its agent's where it was sent), of no message in the chat (`ts` "", as outgoing_said's).
+fn elsewhere_said(s : Elsewhere) -> Message {
+  { ..@sfbase.message_of({}), author_kind: if s.received { "person" } else { "agent" }, text: s.text, by: s.by }
 }
 
 ///|

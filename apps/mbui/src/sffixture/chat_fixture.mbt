@@ -291,6 +291,59 @@ pub fn rich_chat(older : Int) -> Json {
 }
 
 ///|
+/// "chat-feishu": a chat that has only been in a Feishu group (the core's `#unchatted`): no message of its own, what
+/// was said there all it shows (`elsewhere`), a person's ask and its agent's reply with a list in it (FB-37).
+pub fn feishu_chat() -> Json {
+  let claude = by_agent("anthropic", "claude", "s-c1")
+  let place : Json = { "name": "研发协作群", "surface": "feishu" }
+  {
+    "me": { "email": "lin@example.com" },
+    "thread": Json::null(),
+    "title": "飞书群消息排查",
+    "people": [],
+    "agents": [
+      {
+        "session": {
+          "key": "s-c1",
+          "runtime": "claude",
+          "maker": { "id": "anthropic", "name": "Anthropic" },
+          "agentText": "Claude",
+          // (where it stands in words and its tone, as the core says an idle one: present.ts session, format.ts)
+          "statusText": "未开始",
+          "tone": "neutral",
+        },
+        "status": "idle",
+      },
+    ],
+    "messages": [],
+    "elsewhere": [
+      {
+        "key": "in-1",
+        "after": 0,
+        "text": "飞书接入的对话里选中回复里的列表项文字没有弹出浮层，帮忙排查一下。",
+        "place": place,
+        "failed": false,
+        "received": true,
+        "by": { "name": "林知夏" },
+        "time": ago("6 分钟前", "10/19 05:20:00"),
+      },
+      {
+        "key": "out-1",
+        "after": 0,
+        "text": "已经定位到飞书接入会话的选词链路：\n\n- 飞书消息在会话列表里作为外部同步条目渲染，已挂载文本选区标记。\n- 选词浮层读取当前选中行时补齐外部消息映射后，浮层即可正常出现。",
+        "place": place,
+        "failed": false,
+        "by": claude,
+        "time": ago("5 分钟前", "10/19 05:21:00"),
+      },
+    ],
+    "more": false,
+    "outbox": [],
+    "offline": false,
+  }
+}
+
+///|
 /// Any other row's chat: what was asked, and the answer.
 pub fn small_chat(title : String, session : String) -> Json {
   let claude = by_agent("anthropic", "claude", session)
@@ -498,6 +551,8 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
             with_run_change(rich_chat(f.older))
           } else if f.mode == "chat-md" {
             with_md_message(rich_chat(f.older))
+          } else if f.mode == "chat-feishu" {
+            feishu_chat()
           } else if f.mode == "chat-pieces" {
             with_long_pieces(rich_chat(f.older))
           } else if f.mode == "chat-viz" {

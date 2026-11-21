@@ -241,7 +241,7 @@ fn body_modes() -> Array[String] {
   [
     "chat", "chat-ask-end", "chat-working", "chat-done", "chat-cards", "chat-quote", "chat-image-coming", "chat-download",
     "chat-sending", "chat-failed", "chat-need", "chat-login", "chat-rig", "chat-vault", "chat-phone", "chat-md", "chat-long",
-    "chat-letters", "chat-viz", "chat-screens", "chat-update", "chat-agent",
+    "chat-letters", "chat-viz", "chat-screens", "chat-update", "chat-agent", "chat-feishu",
   ]
 }
 

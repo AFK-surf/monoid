@@ -224,3 +224,96 @@ test "中屏's tape, built as a host builds: words a mouse picked in a message h
   assert_eq(t.ctx().selected_text(), "")
   assert_true(t.words().filter(fn(w) { w.0 == "引用" }).is_empty(), msg="引用 still there after a press")
 }
+
+///|
+/// The fixture's chat that has only been in a Feishu group (sffixture's chat-feishu: what was said there, all it shows),
+/// on 大屏, built as a host builds (FB-37).
+fn feishu_tester(calls : Array[Made]) -> @ui.Tester {
+  let t = wide_tester(calls, mode="chat-feishu")
+  t.check_looks(false)
+  t.run_for(@ui.move_most_ms)
+  t
+}
+
+///|
+/// The quote the last composer.quote asked for: its words, its message, as what and whose.
+fn last_quote(calls : Array[Made]) -> (String, String, String, String) raise {
+  let quoted = named(calls, "composer.quote")
+  guard quoted.last() is Some(m) else { fail("no composer.quote: \{Repr(calls.map(fn(c) { c.name }))}") }
+  let q = field(Some(m.params), "quote")
+  (text(q, "text"), text(q, "ts"), text(q, "role"), text(q, "author"))
+}
+
+///|
+/// 引用 over line `y` pressed, as a mouse clicks it.
+fn pill_pressed(t : @ui.Tester, y : Double) -> Unit raise {
+  t.run_for(@ui.double_click_ms)
+  guard t.words().filter(fn(w) { w.0 == "引用" && w.2 < y && w.2 > y - 60.0 }) is [(_, qx, qy, qw, qh, _), ..] else {
+    fail("no 引用 to press over \{y}")
+  }
+  mouse_clicked(t, qx + qw / 2.0, qy + qh / 2.0)
+  t.run_for(@ui.move_most_ms)
+}
+
+///|
+test "大屏, a chat only in Feishu, built as a host builds: words a mouse picked in a list item of its agent's reply there have 引用 over them; pressed, quoted as the agent's, of no message" {
+  let calls : Array[Made] = []
+  let t = feishu_tester(calls)
+  let (ax, ay, _, ah) = words_rect(t, "已挂载文本选区标记")
+  let (bx, by, bw, bh) = words_rect(t, "浮层即可正常出现")
+  mouse_dragged(t, ax + 1.0, ay + ah / 2.0, bx + bw - 1.0, by + bh / 2.0)
+  let picked = t.ctx().selected_text()
+  assert_true(picked.has_prefix("已挂载文本选区标记") && picked.has_suffix("浮层即可正常出现"), msg=picked)
+  guard pill_over(t, by) is Some((qx, _)) else {
+    fail("no 引用 over words picked in a Feishu reply: picked=\{Repr(@ui.picked_now())}")
+  }
+  assert_true((qx - (bx + bw)).abs() < 40.0, msg="引用 at \{qx}")
+  pill_pressed(t, by)
+  let (qt, ts, role, author) = last_quote(calls)
+  assert_true(qt != "" && qt == picked.trim(chars=" \n\t").to_owned(), msg=qt)
+  assert_eq((ts, role, author), ("", "agent", "Claude"))
+  assert_true(@ui.picked_now() is None)
+  assert_eq(t.ctx().selected_text(), "")
+  assert_true(t.words().filter(fn(w) { w.0 == "引用" }).is_empty(), msg="引用 still there after a press")
+  // (the draft shows what it quotes over its field, whose words they are before them)
+  let seen = t.words().filter(fn(w) { w.0.contains("已挂载文本选区标记") && w.5 > 0.5 })
+  assert_true(seen.iter().any(fn(w) { w.0.has_prefix("Claude：已挂载文本选区标记") }), msg="no quote shown in the draft: \{Repr(seen)}")
+}
+
+///|
+test "大屏, a chat only in Feishu: words a mouse picked in a person's message there are quoted as theirs; picked across two of its messages, no 引用" {
+  let calls : Array[Made] = []
+  let t = feishu_tester(calls)
+  let (ax, ay, aw, ah) = words_rect(t, "选中回复里的列表项文字")
+  mouse_dragged(t, ax + 1.0, ay + ah / 2.0, ax + aw - 1.0, ay + ah / 2.0)
+  assert_eq(t.ctx().selected_text(), "选中回复里的列表项文字")
+  guard pill_over(t, ay) is Some(_) else { fail("no 引用 over words picked in a Feishu person's message") }
+  pill_pressed(t, ay)
+  assert_eq(last_quote(calls), ("选中回复里的列表项文字", "", "person", "林知夏"))
+  // across the person's and the agent's: two messages, none to quote (where they are now, the draft holding a quote)
+  let (ax, ay, _, ah) = words_rect(t, "选中回复里的列表项文字")
+  let (bx, by, bw, bh) = words_rect(t, "已经定位到飞书接入会话")
+  t.run_for(@ui.double_click_ms)
+  mouse_dragged(t, ax + 1.0, ay + ah / 2.0, bx + bw - 1.0, by + bh / 2.0)
+  guard @ui.picked_now() is Some(p) else { fail("nothing picked across the two") }
+  assert_eq(p.of.length(), 2, msg="picked of \{@ui.list_text(p.of)}")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.words().filter(fn(w) { w.0 == "引用" }).is_empty(), msg="引用 over a pick across two messages")
+  assert_eq(named(calls, "composer.quote").length(), 1)
+}
+
+///|
+test "大屏, a chat only in Feishu, built as a host builds: words a mouse picked within one list item of its agent's reply have 引用 over them; pressed, quoted as the agent's" {
+  let calls : Array[Made] = []
+  let t = feishu_tester(calls)
+  let (ax, ay, aw, ah) = words_rect(t, "已挂载文本选区标记")
+  mouse_dragged(t, ax + 1.0, ay + ah / 2.0, ax + aw - 1.0, ay + ah / 2.0)
+  guard @ui.picked_now() is Some(p) else { fail("nothing picked") }
+  assert_eq(p.text, "已挂载文本选区标记")
+  assert_true(!p.text.contains("\n"), msg=p.text)
+  guard pill_over(t, ay) is Some((qx, _)) else { fail("no 引用 over words picked within one list item") }
+  assert_true((qx - (ax + aw)).abs() < 40.0, msg="引用 at \{qx}")
+  pill_pressed(t, ay)
+  assert_eq(last_quote(calls), ("已挂载文本选区标记", "", "agent", "Claude"))
+  assert_true(@ui.picked_now() is None)
+}
