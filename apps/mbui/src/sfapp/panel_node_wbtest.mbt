@@ -181,7 +181,7 @@ test "panel, 大屏 keyboard and mouse: at a point, where it was beside the old 
     content=(
       #|(
       #|  (600, 306, 296, 100),
-      #|  [(616, 318, 264, 20)],
+      #|  [(622, 318, 252, 20)],
       #|  [(606, 342, 284, 22)],
       #|  (606, 364, 284, 36),
       #|  None,
@@ -297,8 +297,8 @@ test "panel, 大屏 keyboard and mouse: at a point, its way out drawn as it was 
   debug_inspect(out[0], content=(
     #|[
     #|  "alphas {255: 45} ground [255] button [] fading None..None",
-    #|  "alphas {255: 24, 205: 21} ground [255] button [] fading Some((615.957, 320.96))..Some((747.605, 374.816))",
-    #|  "alphas {255: 24, 89: 21} ground [255] button [] fading Some((615.86, 320.868))..Some((746.701, 374.394))",
+    #|  "alphas {255: 24, 205: 21} ground [255] button [] fading Some((621.941, 320.96))..Some((747.605, 374.816))",
+    #|  "alphas {255: 24, 89: 21} ground [255] button [] fading Some((621.807, 320.868))..Some((746.701, 374.394))",
     #|  "alphas {255: 24} ground [189] button [] fading None..None",
     #|  "alphas {255: 24} ground [] button [] fading None..None",
     #|]
@@ -495,7 +495,7 @@ test "panel, 大屏 keyboard and mouse: at a point, held short of what it holds 
   let top = at()
   let said = "\{first} || wheel middle \{middle} || wheel side \{side} || wheel top padding \{top}"
   inspect(said, content=(
-    #|dialog (600, 8, 296, 484) title [(616, 20, 264, 20)] row0 [(606, 44, 284, 22)] row10 [(606, 264, 284, 22)] button Some((606, 924, 284, 36)) || wheel middle title [(616, 20, 264, 20)] row0 [(606, -76, 284, 22)] row10 [(606, 144, 284, 22)] button Some((606, 804, 284, 36)) || wheel side title [(616, 20, 264, 20)] row0 [(606, -196, 284, 22)] row10 [(606, 24, 284, 22)] button Some((606, 684, 284, 36)) || wheel top padding title [(616, 20, 264, 20)] row0 [(606, -196, 284, 22)] row10 [(606, 24, 284, 22)] button Some((606, 684, 284, 36))
+    #|dialog (600, 8, 296, 484) title [(622, 20, 252, 20)] row0 [(606, 44, 284, 22)] row10 [(606, 264, 284, 22)] button Some((606, 924, 284, 36)) || wheel middle title [(622, 20, 252, 20)] row0 [(606, -76, 284, 22)] row10 [(606, 144, 284, 22)] button Some((606, 804, 284, 36)) || wheel side title [(622, 20, 252, 20)] row0 [(606, -196, 284, 22)] row10 [(606, 24, 284, 22)] button Some((606, 684, 284, 36)) || wheel top padding title [(622, 20, 252, 20)] row0 [(606, -196, 284, 22)] row10 [(606, 24, 284, 22)] button Some((606, 684, 284, 36))
   ))
 }
 
@@ -602,7 +602,7 @@ test "panel, 大屏 keyboard and mouse: tall 0.5, at a point: its title, words a
   t.run_for(@ui.move_most_ms)
   assert_true(tree_said(Dialog, "面板") is Some(_))
   inspect(panel_said(t), content=(
-    #|dialog Some((600, 106, 296, 400)) title [(616, 118, 264, 20)] words [(606, 142, 284, 22)] button Some((606, 164, 284, 36)) focus None
+    #|dialog Some((600, 106, 296, 400)) title [(622, 118, 252, 20)] words [(606, 142, 284, 22)] button Some((606, 164, 284, 36)) focus None
   ))
 }
 

@@ -162,7 +162,7 @@ pub fn picked_end_piece(p : WordsPicked) -> (Double, Double) -> (Double, Double,
     guard picked_in_order() is Some((_, end)) && base == end else { return None }
     let (rs, look, set) = v.runs_set_now()
     guard !rs.is_empty() else { return None }
-    let (_, lay, _) = view_runs_laid(rs, look, set, w, tree.words_scale_of(v.id()), kept=v.words_breaks_now())
+    let (_, lay, _) = view_runs_laid(rs, look, set, w, tree.words_scale_of(v.id()), kept=v.words_breaks_now(), tabular=v.words_tabular_now())
     let rects = selected_rects(base, lay)
     guard !rects.is_empty() else { return None }
     let down = spot_cmp(picked.from, picked.to) <= 0

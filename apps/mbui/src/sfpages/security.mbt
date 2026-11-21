@@ -1410,7 +1410,7 @@ let sec_station_lead_row : @ui.Style = @ui.css("row gap=S2 align=ACenter")
 ///|
 /// A card's words (the web's sub: the ui's 13, muted).
 // kept across runs: a value (no field of it changes)
-let sec_said : @ui.TextStyle = desk_muted
+let sec_said : @ui.TextStyle = @sf.card_muted
 
 ///|
 /// A note beside a button, as wide as it is (the row goes on under where it has not the room).

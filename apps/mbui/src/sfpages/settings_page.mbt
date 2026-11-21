@@ -9,17 +9,7 @@ using @sf {
   desk_lane_in,
   desk_column_most,
   desk_column_in,
-  desk_card_row,
-  desk_card_text,
-  desk_strong,
-  desk_words,
-  desk_muted,
-  desk_note_bad,
 }
-
-///|
-// kept across runs: a value (no field of it changes)
-pub let desk_note : @ui.TextStyle = @sf.wide_list_note
 
 ///|
 // kept across runs: a value (no field of it changes)

@@ -135,3 +135,29 @@ test "toggle group, both shapes and sizes, words and icons alone, in a phone's w
     }
   }
 }
+
+///|
+test "toggle_group_node: 1.0x keeps exact height, Regular keeps 28pt at 1.3x, 2.0x scales with zero fixed_outgrown or squeeze_faults" {
+  for shape in [Rounded, Pill] {
+    for size in [Compact, Regular] {
+      let base_h = if size is Compact { toggle_group_compact_h } else { toggle_group_h }
+      let k = tog2(shape~, size~)
+      assert_eq(k.t.get(Button, label="列表").rect.3, base_h, msg="1.0x \{Repr(shape)} \{Repr(size)}")
+      assert_eq(k.t.fixed_outgrown(), [], msg="1.0x fixed_outgrown \{Repr(shape)} \{Repr(size)}")
+      assert_eq(k.t.squeeze_faults(), [], msg="1.0x squeeze_faults \{Repr(shape)} \{Repr(size)}")
+      k.t.set_font_scale(1.3)
+      k.t.draw()
+      if size is Regular {
+        assert_eq(k.t.get(Button, label="列表").rect.3, base_h, msg="1.3x Regular keeps 28pt \{Repr(shape)}")
+      }
+      assert_eq(k.t.fixed_outgrown(), [], msg="1.3x fixed_outgrown \{Repr(shape)} \{Repr(size)}")
+      assert_eq(k.t.squeeze_faults(), [], msg="1.3x squeeze_faults \{Repr(shape)} \{Repr(size)}")
+      k.t.set_font_scale(2.0)
+      k.t.draw()
+      let h2 = k.t.get(Button, label="列表").rect.3
+      assert_true(h2 > base_h, msg="2.0x height grew \{Repr(shape)} \{Repr(size)}: \{h2}")
+      assert_eq(k.t.fixed_outgrown(), [], msg="2.0x fixed_outgrown \{Repr(shape)} \{Repr(size)}")
+      assert_eq(k.t.squeeze_faults(), [], msg="2.0x squeeze_faults \{Repr(shape)} \{Repr(size)}")
+    }
+  }
+}

@@ -16,7 +16,7 @@ import { HEDGE } from "../src/host.ts";
 import { loadAddon, nodeIroh } from "../src/hosts/node-iroh.ts";
 import { holdLanguage, t } from "../src/i18n.ts";
 import type { BindOptions, Iroh, IrohConnection } from "../src/iroh.ts";
-import { ADDRESSES_KEY, BULK_SLOW_BPS, clearlyBetter, CONNECT_TIMEOUT_MS, cost, DEVICE_KEY, DIRECT, DIRECT_HOLD_MAX_MS, EXPLORE_MS, fencedOf, HEDGE_FLOOR_MS, HOT_RELAYS, HOT_SETTLE_MS, KEEP_WAYS, LAN, Mesh, MIN_STAY_MS, PING_TIMEOUT_MS, PROBE_MS, RACE_GRACE_MS, REDIAL_MAIN_MS, RENEW_MS, RETIRE_MS, SPEED_FRESH_MS, SPEED_MIN_BYTES, SPEED_SAID_MS, SPEED_SLOW_MIN_BYTES, SPEED_SLOW_MIN_MS, TAILNET, TICK_MS, type CredentialSource, type Link } from "../src/mesh.ts";
+import { onARelay, ONTO_MAX_MS, ADDRESSES_KEY, BULK_SLOW_BPS, clearlyBetter, CONNECT_TIMEOUT_MS, cost, DEVICE_KEY, DIRECT, DIRECT_HOLD_MAX_MS, EXPLORE_MS, fencedOf, HEDGE_FLOOR_MS, HOT_RELAYS, HOT_SETTLE_MS, KEEP_WAYS, LAN, Mesh, MIN_STAY_MS, PING_TIMEOUT_MS, PROBE_MS, RACE_GRACE_MS, REDIAL_MAIN_MS, RENEW_MS, RETIRE_MS, SPEED_FRESH_MS, SPEED_MIN_BYTES, SPEED_SAID_MS, SPEED_SLOW_MIN_BYTES, SPEED_SLOW_MIN_MS, TAILNET, TICK_MS, type CredentialSource, type Link } from "../src/mesh.ts";
 import { claimBy, lockClaim } from "../src/lock.ts";
 import { TRACES } from "../src/route.ts";
 import { ALPN, LockUnconfirmed, MeshWire, STATION_MESH, meshEnv, presented, refusedForLock } from "../src/station/mesh-wire.ts";
@@ -1770,6 +1770,21 @@ sim("a_device_off_the_lan_it_kept_addresses_of_waits_for_its_relays_before_its_d
   assert.equal(s.net.tries.slice(tries).filter((t) => t.to === id && t.ips).length, 1, "dialled once at them");
   assert.equal((await request(s, link, head("/admin/api/overview"))).status, 200);
   await close(s, station, mesh);
+});
+
+/// A dial goes on as its endpoint gets onto a relay: a fixed 250 ms between looks held nine of a phone's eleven first
+/// dials for all of it. With no relay to be had it still looks rarely, and stops at ONTO_MAX_MS.
+sim("a_dial_goes_on_soon_after_its_endpoint_is_on_a_relay_and_looks_rarely_while_none_answers", async (s) => {
+  const started = s.time.now();
+  const on = started + 30;
+  await s.run(onARelay({ relayStatus: () => [{ url: "relay", connected: s.time.now() >= on }] }, false));
+  assert.ok(s.time.now() - on <= 40, `went on ${s.time.now() - on} ms after it was on a relay`);
+
+  let looks = 0;
+  const from = s.time.now();
+  await s.run(onARelay({ relayStatus: () => (looks++, [{ url: "relay", connected: false }]) }, false), ONTO_MAX_MS + 1_000);
+  assert.ok(s.time.now() - from >= ONTO_MAX_MS && s.time.now() - from <= ONTO_MAX_MS + 250, `gave up after ${s.time.now() - from} ms`);
+  assert.ok(looks <= 126, `looked ${looks} times`);
 });
 
 /// The same device back on that LAN, no relay reached yet: the addresses it kept answer, and nothing waits for a relay.
@@ -3910,6 +3925,41 @@ sim("a_missed_ping_race_cleans_up_when_the_new_link_closes_or_the_place_is_dropp
   assert.equal(mesh.current(id), null);
   await close(s, station, mesh);
 });
+
+/// Back from a short while away (`Wake.checksConnections`), the app's keepalives frozen meanwhile: a link that no longer
+/// answers is replaced now, not at its next ping, and one that answers is kept with nothing dialled.
+for (const [net, ms, within] of [["good", 40, 1_000], ["weak", 200, 2_000]] as const) for (const phase of [0, 1_000, 2_500, 4_000]) {
+  const shortlyAway = async (s: Sim, dead: boolean) => {
+    const a = s.relay("https://a.relay.test/", { device: { ms: ms / 2 }, station: { ms: ms / 2 } });
+    const b = s.relay("https://b.relay.test/", { device: { ms: ms / 2 + 10 }, station: { ms: ms / 2 + 10 } });
+    const { station, mesh, id } = await onRelays(s, [a, b]);
+    const wire = wireOf(s, mesh);
+    const addr = StationAddr.parse(`w/${id}`);
+    const get: RequestHead = { method: "GET", path: "/admin/api/overview", headers: [] };
+    const ask = () => s.runner.run(Effect.scoped(Effect.flatMap(wire.request(addr, get, new Uint8Array()), (r) => Effect.map(readAll(r.body), () => r.status))));
+    assert.equal(await s.settle(ask(), 60_000), 200);
+    await s.time.pass(2 * TICK_MS + phase);
+    const dialled = station.conns.length;
+    if (dead) station.deadBelow = dialled;
+    const woken = s.time.now();
+    s.wakes.wake(new Wake(woken, 10_000, false, false));
+    assert.equal(await s.settle(ask(), 60_000), 200);
+    const took = s.time.now() - woken;
+    const more = station.conns.length - dialled;
+    await close(s, station, mesh);
+    return { took, more };
+  };
+  sim(`a_link_gone_while_the_app_was_away_a_short_while_is_replaced_as_it_comes_back_on_a_${net}_network_${phase}ms_into_its_pings`, async (s) => {
+    const { took, more } = await shortlyAway(s, true);
+    assert.ok(took < within, `answered ${took} ms after the wake`);
+    assert.equal(more, 1);
+  });
+  sim(`a_link_that_still_answers_as_the_app_comes_back_is_kept_on_a_${net}_network_${phase}ms_into_its_pings`, async (s) => {
+    const { took, more } = await shortlyAway(s, false);
+    assert.ok(took < within, `answered ${took} ms after the wake`);
+    assert.equal(more, 0);
+  });
+}
 
 suite("mesh", { concurrency: true }, () => {
   for (const [name, options, body] of tests) register(name, options, body);

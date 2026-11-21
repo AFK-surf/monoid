@@ -1175,7 +1175,7 @@ let desk_find_place : @ui.Style = @ui.css("w=Full px=S4 pt=S1_5 pb=S2")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let desk_find_field : @ui.Style = @ui.style(w=Full, h=Fixed(desk_field_h), px=S4, justify=JCenter, radius=Full, border=B1)
+let desk_find_field : @ui.Style = @ui.style(w=Full, h=Fixed(desk_field_h), px=S4, justify=JCenter, radius=Full, border=B0_5)
 
 ///|
 let desk_field_h : Double = 38.0
@@ -1244,7 +1244,7 @@ let desk_layout_half : @ui.Style = @ui.css("gap=S2")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let desk_swatch_off : @ui.Style = @ui.css("w=Full h=S11 radius=Xl align=ACenter justify=JCenter border=B1")
+let desk_swatch_off : @ui.Style = @ui.css("w=Full h=S11 radius=Xl align=ACenter justify=JCenter border=B0_5")
 
 ///|
 // kept across runs: a value (no field of it changes)

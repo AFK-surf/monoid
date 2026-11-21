@@ -511,6 +511,7 @@ async fn P53Accounts::ask(self : P53Accounts, m : String, arg : Json) -> Json {
             holding=at(1, "holding") is True,
             quiet=(if positional { at(3, "") } else { jfield(arg, "quiet") }) is True,
             across=(if positional { at(2, "") } else { jfield(arg, "across") }) is True,
+            force_cap=(if positional { at(4, "") } else { jfield(arg, "forceCap") }) is True,
           ).raw,
         )
       "goesOnWith" =>
@@ -559,8 +560,17 @@ async fn P53Accounts::ask(self : P53Accounts, m : String, arg : Json) -> Json {
       }
       "spend" =>
         match sessions().spend(text(0, "key"), str(1, "ranOn"), model?=str(2, "model")) {
-          Some((left, taken)) => Json::array([jstr(left), jstr(taken)])
-          None => Json::null()
+          Moved(left, taken) => Json::array([jstr(left), jstr(taken)])
+          PausedSessionCap(profile, profile_id, active, cap, protection) =>
+            jobj_of([
+              ("paused", jstr("session_cap")),
+              ("profile", jstr(profile)),
+              ("profileId", jstr(profile_id)),
+              ("active", ji(active)),
+              ("cap", ji(cap)),
+              ("protection", jb(protection)),
+            ])
+          Unchanged => Json::null()
         }
       "refillsAt" => jn(sessions().refills_at(text(0, "key")))
       "profile" =>

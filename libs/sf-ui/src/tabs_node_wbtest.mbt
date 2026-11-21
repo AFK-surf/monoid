@@ -221,3 +221,38 @@ test "tabs_node: panel content enters in sync with indicator direction and settl
     assert_eq(k.t.audit(), [])
   }
 }
+
+///|
+test "tabs_node: 1.0x and 1.3x keep exact tab height; 2.0x scales tabs and indicator with zero fixed_outgrown or squeeze_faults" {
+  for look in [Underline, Pill] {
+    let base_h = match look {
+      Underline => tabs_line_h
+      Pill => tabs_pill_h
+    }
+    let k = tabs2(look~)
+    assert_eq(k.t.get(Tab, label="对话").rect.3, base_h, msg="1.0x tab height \{Repr(look)}")
+    assert_eq(k.t.fixed_outgrown(), [], msg="1.0x fixed_outgrown \{Repr(look)}")
+    assert_eq(k.t.squeeze_faults(), [], msg="1.0x squeeze_faults \{Repr(look)}")
+    k.t.set_font_scale(1.3)
+    k.t.draw()
+    assert_eq(k.t.get(Tab, label="对话").rect.3, base_h, msg="1.3x tab height \{Repr(look)}")
+    assert_eq(k.t.fixed_outgrown(), [], msg="1.3x fixed_outgrown \{Repr(look)}")
+    assert_eq(k.t.squeeze_faults(), [], msg="1.3x squeeze_faults \{Repr(look)}")
+    k.t.set_font_scale(2.0)
+    k.t.draw()
+    let h2 = k.t.get(Tab, label="对话").rect.3
+    if look is Pill {
+      assert_true(h2 > base_h, msg="2.0x pill tab height grew: \{h2}")
+    } else {
+      assert_true(h2 >= base_h, msg="2.0x underline tab height: \{h2}")
+    }
+    assert_eq(k.t.fixed_outgrown(), [], msg="2.0x fixed_outgrown \{Repr(look)}")
+    assert_eq(k.t.squeeze_faults(), [], msg="2.0x squeeze_faults \{Repr(look)}")
+    k.t.set_font_scale(3.0)
+    k.t.draw()
+    let h3 = k.t.get(Tab, label="对话").rect.3
+    assert_true(h3 > base_h, msg="3.0x tab height grew \{Repr(look)}: \{h3}")
+    assert_eq(k.t.fixed_outgrown(), [], msg="3.0x fixed_outgrown \{Repr(look)}")
+    assert_eq(k.t.squeeze_faults(), [], msg="3.0x squeeze_faults \{Repr(look)}")
+  }
+}

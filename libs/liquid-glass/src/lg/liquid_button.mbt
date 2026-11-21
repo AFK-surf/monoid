@@ -141,6 +141,7 @@ pub fn liquid_button_node(
     } else {
       b
       .shadow(Is(shadow_default))
+      .shadow_outside(Is(true))
       .glass(By(fn() { Some(button_glass(tint, surface)) }))
       |> ignore
     }

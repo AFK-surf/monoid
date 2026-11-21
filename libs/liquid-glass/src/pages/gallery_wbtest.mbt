@@ -305,13 +305,13 @@ test "library app self-hosts all 6 categories, sidebar search, dark/light switch
 }
 
 ///|
-/// Hard zero glass-on-glass gate: verifies no two drawn `Glass::liquid` (`kind == 6`) rectangles
-/// overlap by more than `1.0 pt²` (allowing at most `allowed_pairs` intentional capillary pairs).
+/// Hard zero glass-on-glass gate: verifies no two visible (clip-cut) drawn `Glass::liquid`
+/// rectangles overlap by more than `1.0 pt²` (allowing at most `allowed_pairs` intentional capillary pairs).
 fn assert_no_nested_glass(t : @ui.Tester, ctx : String, allowed_pairs? : Int = 0) -> Unit raise {
   let rects : Array[(Double, Double, Double, Double)] = []
-  for g in t.drawn_glass() {
-    if g.4 == 6 && g.2 > 0.0 && g.3 > 0.0 {
-      rects.push((g.0, g.1, g.2, g.3))
+  for g in t.drawn_glass_cut() {
+    if g.2 > 0.0 && g.3 > 0.0 {
+      rects.push(g)
     }
   }
   let overlaps : Array[String] = []
@@ -444,5 +444,333 @@ test "hard zero glass-on-glass gate across all 6 library categories (light & dar
     assert_overlay_panel_clean(t, "library/Popover dark=\{dark}", t.get(Dialog, label="Shader Telemetry").rect)
     t.key(@ui.key_escape)
     t.run_for(settled)
+  }
+}
+
+///|
+test "library app mobile responsive layout at 390x844 and 360x800: iOS 26 4-tab split dock + detached 64x64 search orb, 0 audit faults" {
+  // Desktop 1280x800 keeps inline sidebar open and full 6-tab dock by default
+  let desk = @ui.Tester::new(fn(_c) {  }, w=1280.0, h=800.0, platform=0)
+  @lg.set_dark(Some(false))
+  @ui.set_view_app(fn(root) { gallery(root, "library", chrome=true) })
+  desk.draw()
+  desk.run_for(settled)
+  assert_eq(desk.all(Group, label="CATEGORIES · 34 PARTS").length(), 1)
+  assert_eq(desk.all(Button, label="Search & Catalog").length(), 0)
+  assert_eq(desk.all(Tab, within=desk.get(TabList, label="Library sections")).length(), 6)
+
+  // Narrow viewports: 390x844 (iPhone portrait) & 360x800 (narrow Android) across Light & Dark
+  let faults : Array[(Double, Bool, String, String)] = []
+  for dims in [(390.0, 844.0), (360.0, 800.0)] {
+    let (w, h) = dims
+    for dark in [false, true] {
+      let t = @ui.Tester::new(fn(_c) {  }, w~, h~, platform=0)
+      @lg.set_dark(Some(dark))
+      @ui.set_view_app(fn(root) { gallery(root, "library", chrome=true) })
+      t.draw()
+      t.run_for(settled)
+      // Inline sidebar auto-collapsed; exactly one detached 64x64 Search & Catalog orb beside the 4-tab dock
+      assert_eq(t.all(Group, label="CATEGORIES · 34 PARTS").length(), 0)
+      assert_eq(t.all(Button, label="Search & Catalog").length(), 1)
+
+      let dock = t.get(TabList, label="Library sections")
+      let (dx0, dy0, dw0, dh0) = dock.rect
+      assert_true(dx0 >= 0.0 && dx0 + dw0 <= w + 0.5)
+      let tabs0 = t.all(Tab, within=dock)
+      assert_eq(tabs0.length(), 4)
+      let orb = t.get(Button, label="Search & Catalog").rect
+      assert_true((orb.2 - 64.0).abs() < 0.5 && (orb.3 - 64.0).abs() < 0.5)
+      assert_true(dx0 + dw0 + 8.0 <= orb.0 && orb.0 + orb.2 <= w + 0.5)
+      let nav = t.get(Navigation, label="Liquid Glass")
+      let (nx, _ny, nw, _nh) = nav.rect
+      assert_true(nx >= 0.0 && nx + nw <= w + 0.5)
+
+      // Tap all 4 primary dock slots directly (`Controls`, `Overlays`, `More`/Physics, `Optics`)
+      for tab in ["Controls", "Overlays", "More", "Optics"] {
+        let (tx, ty) = middle_of(t, Tab, tab)
+        t.tap(tx, ty)
+        t.run_for(settled)
+        let d_now = t.get(TabList, label="Library sections").rect
+        assert_eq((tab, w, d_now.0, d_now.1, d_now.2, d_now.3), (tab, w, dx0, dy0, dw0, dh0))
+        for tb in t.all(Tab, within=t.get(TabList, label="Library sections")) {
+          assert_true(tb.rect.0 >= -0.5 && tb.rect.0 + tb.rect.2 <= w + 0.5)
+        }
+        assert_no_nested_glass(t, "mobile/\{w}/\{tab} dark=\{dark}")
+        for f in t.audit() {
+          if f.contains("pages/library.mbt") {
+            faults.push((w, dark, tab, f))
+          }
+        }
+      }
+
+      // Open detached orb -> Catalog Sheet -> select overflow categories `Inputs` and `Nav`
+      for overflow in [("Inputs", "Inputs"), ("Navigation", "Nav")] {
+        let (sheet_label, dock_word) = overflow
+        let (ox, oy) = middle_of(t, Button, "Search & Catalog")
+        t.tap(ox, oy)
+        t.run_for(settled)
+        let sheet_rect = t.get(Dialog, label="Components · 34 Parts").rect
+        assert_true(sheet_rect.0 >= 0.0 && sheet_rect.0 + sheet_rect.2 <= w + 0.5)
+        assert_overlay_panel_clean(t, "mobile/\{w}/CatalogSheet/\{sheet_label} dark=\{dark}", sheet_rect)
+        for f in t.audit() {
+          if f.contains("pages/library.mbt") {
+            faults.push((w, dark, "CatalogSheet", f))
+          }
+        }
+        t.act(Button, Activate, label=sheet_label)
+        t.run_for(settled)
+        assert_eq(t.all(Dialog, label="Components · 34 Parts").length(), 0)
+        // 4th slot dynamically adopts the selected overflow category and stays selected
+        assert_eq(t.get(Tab, label="More").selected, Some(true))
+        assert_true(t.words_said().iter().any(fn(ws) { ws.0 == dock_word }))
+        assert_no_nested_glass(t, "mobile/\{w}/\{sheet_label} dark=\{dark}")
+        for f in t.audit() {
+          if f.contains("pages/library.mbt") {
+            faults.push((w, dark, sheet_label, f))
+          }
+        }
+      }
+
+      // Toggle Light/Dark via compact top segmented control
+      let target_theme = if dark { "Light" } else { "Dark" }
+      let (lx, ly) = middle_of(t, Tab, target_theme)
+      t.tap(lx, ly)
+      t.run_for(settled)
+      assert_eq(@lg.is_dark(), !dark)
+    }
+  }
+  assert_eq(faults, [])
+}
+
+///|
+let overlays_close_step_ms : Double = 16.0
+
+///|
+let overlays_close_steps : Int = 27
+
+///|
+let overlays_drag_steps : Int = 18
+
+///|
+let overlays_settle_steps : Int = 15
+
+///|
+test "Overlays anchored Menu, Select and Popover close with 0.00px trigger/label jitter and zero rebound" {
+  let t = @ui.Tester::new(fn(_c) {  }, w=1280.0, h=800.0, platform=0)
+  @lg.set_dark(Some(true))
+  @ui.set_view_app(fn(root) { gallery(root, "library", chrome=true) })
+  t.draw()
+  let (ox, oy) = middle_of(t, Tab, "Overlays")
+  t.tap(ox, oy)
+  t.run_for(settled)
+
+  let check_close = fn(
+    name : String,
+    btn_label : String,
+    word_match : String,
+    close_action : () -> Unit raise,
+  ) raise {
+    let rest_r = t.get(Button, label=btn_label).rect
+    let rest_words = t.words_said().filter(fn(w) { w.0 == word_match })
+    assert_eq(rest_words.length(), 1, msg="\{name}: expected 1 rest word for \{word_match}")
+    let (rx, ry) = (rest_words[0].1, rest_words[0].2)
+    // Open and settle
+    t.tap(rest_r.0 + rest_r.2 / 2.0, rest_r.1 + rest_r.3 / 2.0)
+    t.run_for(settled)
+    // Verify trigger_face_box (when open) aligns 0.00px with resting trigger label
+    let in_trigger_row = fn(w : (String, Double, Double, Double, Double, Double)) -> Bool {
+      w.0 == word_match && w.2 >= rest_r.1 - 4.0 && w.2 <= rest_r.1 + rest_r.3 + 4.0
+    }
+    let open_words = t.words_said().filter(in_trigger_row)
+    for ow in open_words {
+      assert_true(
+        (ow.1 - rx).abs() < 0.01 && (ow.2 - ry).abs() < 0.01,
+        msg="\{name}: open word offset (\{ow.1},\{ow.2}) != rest (\{rx},\{ry})",
+      )
+    }
+    // Close and step every 16ms across 0..432ms
+    close_action()
+    for step in 1..<=overlays_close_steps {
+      t.run_for(overlays_close_step_ms)
+      let ws = t.words_said().filter(in_trigger_row)
+      for w in ws {
+        assert_true(
+          (w.1 - rx).abs() < 0.01 && (w.2 - ry).abs() < 0.01,
+          msg="\{name} step=\{step}: word drifted (\{w.1},\{w.2}) != rest (\{rx},\{ry})",
+        )
+      }
+      // Trigger glass at resting row must match exact trigger width/height (zero 142/144pt mismatch)
+      let at_trigger = t
+        .drawn_glass()
+        .filter(fn(g) {
+          g.4 == 6 && (g.0 - rest_r.0).abs() < 0.5 && (g.1 - rest_r.1).abs() < 0.5
+        })
+      for g in at_trigger {
+        assert_true(
+          (g.2 - rest_r.2).abs() < 0.5 && (g.3 - rest_r.3).abs() < 0.5,
+          msg="\{name} step=\{step}: trigger glass (\{g.2}x\{g.3}) != rest (\{rest_r.2}x\{rest_r.3})",
+        )
+      }
+      // After handoff (step >= 18 -> t >= 288ms): exactly 1 glass rect at trigger (zero rebound, zero double glass)
+      if step >= 18 {
+        assert_eq(
+          at_trigger.length(),
+          1,
+          msg="\{name} step=\{step}: expected 1 glass rect at trigger after handoff, got \{at_trigger.length()}",
+        )
+      }
+    }
+    assert_no_nested_glass(t, "overlays_close_rest/\{name}")
+  }
+
+  // Test all 3 overlays across outside tap, item/option selection, and trigger re-tap
+  check_close("OpenMenu-outside", "Open Menu", "Open Menu", fn() { t.tap(1000.0, 400.0) })
+  check_close("OpenMenu-item", "Open Menu", "Open Menu", fn() raise {
+    t.act(MenuItem, Activate, label="Duplicate Preset")
+  })
+  check_close("OpenMenu-trigger", "Open Menu", "Open Menu", fn() raise {
+    let r = t.get(Button, label="Open Menu").rect
+    t.tap(r.0 + r.2 / 2.0, r.1 + r.3 / 2.0)
+  })
+  check_close("Select-outside", "Material: iOS 27 Regular", "iOS 27 Regular", fn() {
+    t.tap(1000.0, 400.0)
+  })
+  check_close("Select-trigger", "Material: iOS 27 Regular", "iOS 27 Regular", fn() raise {
+    let r = t.get(Button, label="Material: iOS 27 Regular").rect
+    t.tap(r.0 + r.2 / 2.0, r.1 + r.3 / 2.0)
+  })
+  check_close("Popover-outside", "Open Popover", "Popover", fn() { t.tap(1000.0, 400.0) })
+  check_close("Popover-trigger", "Open Popover", "Popover", fn() raise {
+    let r = t.get(Button, label="Open Popover").rect
+    t.tap(r.0 + r.2 / 2.0, r.1 + r.3 / 2.0)
+  })
+}
+
+///|
+test "GPU Pipeline slider, progress bar and progress ring animate with zero per-frame Flex relayout" {
+  let t = @ui.Tester::new(fn(_c) {  }, w=1280.0, h=800.0, platform=0)
+  @lg.set_dark(Some(true))
+  @ui.set_view_app(fn(root) { gallery(root, "library", chrome=true) })
+  t.draw()
+  let (ox, oy) = middle_of(t, Tab, "Overlays")
+  t.tap(ox, oy)
+  t.run_for(settled)
+  let tree = @ui.view_tree().unwrap()
+  let slider_r = t.get(Slider, label="Progress Value").rect
+  let sx = slider_r.0 + slider_r.2 * 0.68
+  let sy = slider_r.1 + slider_r.3 / 2.0
+  // Drag slider smoothly across 18 steps, then release and step 15 frames through jelly + progress settle
+  t.touch(0, sx, sy)
+  t.run_for(overlays_close_step_ms)
+  for i in 1..<=overlays_drag_steps {
+    t.touch(1, sx - i.to_double() * 5.0, sy)
+    t.run_for(overlays_close_step_ms)
+  }
+  t.touch(2, sx - 90.0, sy)
+  t.run_for(overlays_close_step_ms)
+  let laid_before_settle = tree.work().laid
+  for _ in 0..<overlays_settle_steps {
+    t.run_for(overlays_close_step_ms)
+  }
+  let laid_during_settle = tree.work().laid - laid_before_settle
+  assert_eq(
+    laid_during_settle,
+    0,
+    msg="expected 0 Flex layouts during post-drag slider/progress spring settle, got \{laid_during_settle}",
+  )
+  // Toggle Indeterminate ON and verify continuous sweep + ring spin causes 0 Flex layouts
+  let (ix, iy) = middle_of(t, Switch, "Indeterminate")
+  t.tap(ix, iy)
+  t.run_for(settled)
+  let laid_before_indet = tree.work().laid
+  for _ in 0..<overlays_settle_steps {
+    t.run_for(overlays_close_step_ms)
+  }
+  let laid_during_indet = tree.work().laid - laid_before_indet
+  assert_eq(
+    laid_during_indet,
+    0,
+    msg="expected 0 Flex layouts during indeterminate progress sweep, got \{laid_during_indet}",
+  )
+}
+
+///|
+test "library Inputs (liquid_search_morph) and Navigation (liquid_collapsible_tabs) pass zero nested glass, corner_faults and squeeze_faults at 1280pt and 390pt" {
+  for dims in [(1280.0, 800.0), (390.0, 844.0)] {
+    let (w, h) = dims
+    let is_narrow = w < 640.0
+    for dark in [false, true] {
+      let t = @ui.Tester::new(fn(_c) {  }, w~, h~, platform=0)
+      @lg.set_dark(Some(dark))
+      @ui.set_view_app(fn(root) { gallery(root, "library", chrome=true) })
+      t.draw()
+      t.run_for(settled)
+
+      // 1. Navigate to Inputs section
+      if is_narrow {
+        let (ox, oy) = middle_of(t, Button, "Search & Catalog")
+        t.tap(ox, oy)
+        t.run_for(settled)
+        t.act(Button, Activate, label="Inputs")
+        t.run_for(settled)
+      } else {
+        let (ix, iy) = middle_of(t, Tab, "Inputs")
+        t.tap(ix, iy)
+        t.run_for(settled)
+      }
+      assert_no_nested_glass(t, "inputs-rest/\{w} dark=\{dark}")
+      assert_eq(t.corner_faults(), [], msg="inputs-rest/\{w} dark=\{dark} corner_faults")
+      assert_eq(t.squeeze_faults(), [], msg="inputs-rest/\{w} dark=\{dark} squeeze_faults")
+      // Tap Morph Search orb -> expands search bar + cancel orb cleanly inside viewport
+      t.act(Button, Activate, label="Morph Search")
+      t.run_for(settled)
+      let cancel_r = t.get(Button, label="Cancel Morph Search").rect
+      assert_true(
+        cancel_r.0 >= 0.0 && cancel_r.0 + cancel_r.2 <= w + 0.5,
+        msg="inputs-expanded/\{w}: cancel orb overflowed (\{cancel_r.0}, \{cancel_r.2}) > \{w}",
+      )
+      assert_no_nested_glass(t, "inputs-expanded/\{w} dark=\{dark}")
+      assert_eq(t.corner_faults(), [], msg="inputs-expanded/\{w} dark=\{dark} corner_faults")
+      assert_eq(t.squeeze_faults(), [], msg="inputs-expanded/\{w} dark=\{dark} squeeze_faults")
+      // Tap Cancel Morph Search -> collapses back to single orb
+      t.act(Button, Activate, label="Cancel Morph Search")
+      t.run_for(settled)
+      assert_eq(t.all(Button, label="Cancel Morph Search").length(), 0)
+      assert_no_nested_glass(t, "inputs-collapsed/\{w} dark=\{dark}")
+
+      // 2. Navigate to Navigation section
+      if is_narrow {
+        let (ox, oy) = middle_of(t, Button, "Search & Catalog")
+        t.tap(ox, oy)
+        t.run_for(settled)
+        t.act(Button, Activate, label="Navigation")
+        t.run_for(settled)
+      } else {
+        let (nx, ny) = middle_of(t, Tab, "Nav")
+        t.tap(nx, ny)
+        t.run_for(settled)
+      }
+      let ctab_list = t.get(TabList, label="Collapsible Tabs").rect
+      let ctab_act = t.get(Button, label="Collapsible Search").rect
+      assert_true(
+        ctab_list.0 >= 0.0 && ctab_act.0 + ctab_act.2 <= w + 0.5,
+        msg="nav-expanded/\{w}: collapsible tabs overflowed (\{ctab_act.0} + \{ctab_act.2} > \{w})",
+      )
+      assert_no_nested_glass(t, "nav-expanded/\{w} dark=\{dark}")
+      assert_eq(t.corner_faults(), [], msg="nav-expanded/\{w} dark=\{dark} corner_faults")
+      assert_eq(t.squeeze_faults(), [], msg="nav-expanded/\{w} dark=\{dark} squeeze_faults")
+      // Tap Minimize -> collapses to active orb + search orb
+      t.act(Button, Activate, label="Minimize")
+      t.run_for(settled)
+      assert_eq(t.all(Button, label="Expand Home").length(), 1)
+      assert_no_nested_glass(t, "nav-minimized/\{w} dark=\{dark}")
+      assert_eq(t.corner_faults(), [], msg="nav-minimized/\{w} dark=\{dark} corner_faults")
+      assert_eq(t.squeeze_faults(), [], msg="nav-minimized/\{w} dark=\{dark} squeeze_faults")
+      // Tap Expand -> restores full tab bar
+      t.act(Button, Activate, label="Expand")
+      t.run_for(settled)
+      assert_eq(t.all(TabList, label="Collapsible Tabs").length(), 1)
+      assert_no_nested_glass(t, "nav-restored/\{w} dark=\{dark}")
+    }
   }
 }

@@ -92,10 +92,10 @@ pub fn hold_button_node(
     v
     .focus_ring_theme()
     .row(Is(true))
-    .height(Is(Some(height)))
-    .padding(Is((button_padx, 0.0, button_padx, 0.0)))
+    .min_height(Is(Some(height)))
+    .padding(Is((button_padx, 2.0, button_padx, 2.0)))
     .lines_up(Is(Some(Middle)))
-    .radius(Is(height / 2.0))
+    .radius(Is(1.0e6))
     .clips(Is(true))
     .ground(By(fn() {
       let p = theme().p
@@ -122,7 +122,7 @@ pub fn hold_button_node(
         inner
         .over(Is(true))
         .row(Is(true))
-        .padding(Is((button_padx, 0.0, button_padx, 0.0)))
+        .padding(Is((button_padx, 2.0, button_padx, 2.0)))
         .lines_up(Is(Some(Middle)))
         .moved_by(fn(w, _h, at) { (w * (1.0 - dmin(1.0, dmax(0.0, hold.at(at)))), 0.0) }, fn(_w, _h) { hold.end() })
         |> ignore

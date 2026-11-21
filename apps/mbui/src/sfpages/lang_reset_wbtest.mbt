@@ -4,10 +4,10 @@
 
 ///|
 fn lang_reset_tester() -> @ui.Tester {
-  @ui.Tester::new(fn(c) {
-    @sf.begin(c) |> ignore
-    @sf.link_row(c, "lang", @sf.t("web-main.history.reminder", args=[("name", @sf.product())])) |> ignore
-  }, w=360.0, platform=2)
+  @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w=360.0, platform=2, tree=fn(root) {
+    @ui.set_tree_theme(@sf.ui_theme_now)
+    @sf.link_row_node(root, fn() { @sf.t("web-main.history.reminder", args=[("name", @sf.product())]) }, fn() {  })
+  })
 }
 
 ///|

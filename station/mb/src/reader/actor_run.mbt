@@ -63,6 +63,10 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
       self.enqueue(a, async fn() {
         a.notices.clear()
         a.queued_retry = None
+        a.paused_cap = false
+        a.cap_wait_notified = false
+        a.force_session_cap = false
+        self.remove_cap_wait(a.key)
         if a.codex_update is Some(_) {
           a.codex_update = None
           self.set_running(a, false)
@@ -147,12 +151,30 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
     "retryFailed" => {
       let (thread, seq) = (arg(0), arg(1))
       self.enqueue(a, async fn() {
-        if self.blocked(a) || self.has_pending(a) {
+        let last = self.last_turn(a)
+        let cap_paused = !(last is Null) &&
+          str_of(last.value("outcome")) == Some("failed") &&
+          str_of(last.value("detail")) == Some("other: session_cap")
+        if self.blocked(a) || (!cap_paused && self.has_pending(a)) {
           return
         }
-        let last = self.last_turn(a)
         if last is Null || !retryable(last) || !about_is(last, thread, seq) {
           return
+        }
+        if cap_paused {
+          self.remove_cap_wait(a.key)
+          a.paused_cap = false
+          a.cap_wait_notified = false
+          a.force_session_cap = true
+          self.log(a, "info", "manually starting a turn queued by account concurrency cap, as asked")
+          if self.has_pending(a) {
+            return self.pump(a)
+          }
+          if a.queued_retry is Some(r) {
+            a.queued_retry = None
+            return self.start_turn(a, r.kind, r.text, by=r.by)
+          }
+          return self.start_turn(a, "resume", self.words(a, "GO_ON_AFTER_FAILED"))
         }
         self.log(a, "info", "trying again a failed turn, as asked")
         let words_key = if cut_off_by_restart(last) {
@@ -244,6 +266,10 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
       })
     "changed" => {
       let restart = truthy(arg(0))
+      let was_paused_cap = a.paused_cap
+      a.paused_cap = false
+      a.cap_wait_notified = false
+      self.remove_cap_wait(a.key)
       // (counted with no process too: one being opened, or taking an earlier change in place, takes it after)
       a.change_seq += 1
       if restart {
@@ -255,7 +281,17 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
           a.restart = true
         }
       }
-      self.enqueue(a, async fn() { self.catch_up(a, a.turn is None && a.waiting is None) })
+      self.enqueue(a, async fn() {
+        self.catch_up(a, a.turn is None && a.waiting is None)
+        if was_paused_cap && a.turn is None && !self.busy(a) {
+          if self.has_pending(a) {
+            self.pump(a)
+          } else if a.queued_retry is Some(r) {
+            a.queued_retry = None
+            self.start_turn(a, r.kind, r.text, by=r.by)
+          }
+        }
+      })
     }
     "evict" => {
       // (`force`: its session archived, its process ends once its turn is over, what it left in the background too:
@@ -428,8 +464,12 @@ async fn Actors::stop(self : Actors, a : Actor) -> Json raise {
   let had_deferred = a.deferred_end is Some(_) || a.warm
   a.deferred_end = None
   a.warm = false
+  a.paused_cap = false
+  a.cap_wait_notified = false
+  a.force_session_cap = false
   self.mirror(a)
   self.remove_turn_wait(a.key)
+  self.remove_cap_wait(a.key)
   a.delivery_interruptions += 1
   // (what is being read and formatted for it: Node's, given up at once there, mb-actor.ts)
   self.enqueue(a, async fn() {
@@ -494,6 +534,24 @@ async fn Actors::reassign(self : Actors, a : Actor, thread : Json, seq : Json) -
     self.log(a, "info", "its allowance showed a limit; going on on another profile, as asked", fields={ "from": m[0], "to": m[1] })
     a.refill = None
     return self.start_turn(a, "resume", self.words(a, "GO_ON_AFTER_SPENT"))
+  }
+  if moved is Object(o) && str_of(o.get("paused")) == Some("session_cap") {
+    let agent = a.agent
+    self.set_agent(a, None)
+    self.end_process(a, agent)
+    a.refill = None
+    a.queued_retry = Some({ kind: "resume", text: self.words(a, "GO_ON_AFTER_SPENT"), by: turn_for_nobody(), codex_retried: false })
+    self.pause_for_session_cap(
+      a,
+      str_of(o.get("profile")).unwrap_or(""),
+      num_of(o.get("active")).unwrap_or(0.0).to_int(),
+      num_of(o.get("cap")).unwrap_or(0.0).to_int(),
+      o.get("protection") is Some(True),
+      "resume",
+      turn_for_nobody(),
+      None,
+    )
+    return
   }
   let pinned = truthy(row.value("profilePinned").unwrap_or(Json::null()))
   self.notice(a, "⚠️ " + self.t(a, if pinned { "station.notice.reassignPinned" } else { "station.notice.reassignNone" }), profile=ran_on)
@@ -741,6 +799,41 @@ async fn Actors::wake_queued(self : Actors, a : Actor) -> Unit raise {
     self.pump(a, before_failures=before)
     if a.turn is None && a.notices.length() > 0 {
       self.give_notices(a)
+    }
+  })
+}
+
+///|
+/// Serially wakes a single actor waiting in `cap_wait_queue` until it either starts a turn
+/// (occupying a running slot) or hits `sessionCap` again.
+async fn Actors::wake_cap_queued(self : Actors, a : Actor) -> Unit raise {
+  self.enqueue(a, async fn() {
+    if a.phase == "closed" || self.archived(a) || a.turn is Some(_) || self.busy(a) {
+      return
+    }
+    if self.held(a) {
+      a.paused_cap = true
+      return
+    }
+    if a.queued_retry is Some(r) {
+      if !self.has_pending(a) {
+        a.queued_retry = None
+        self.start_turn(a, r.kind, r.text, by=r.by) catch {
+          e => {
+            if session_cap_info(e) is Some(_) {
+              a.queued_retry = Some(r)
+            }
+            raise e
+          }
+        }
+        if a.turn is Some(nt) && r.codex_retried {
+          nt.codex_retried = true
+        }
+        return
+      }
+    }
+    if self.has_pending(a) {
+      self.pump(a)
     }
   })
 }
@@ -1136,7 +1229,11 @@ fn Actors::close(self : Actors, a : Actor) -> Unit {
   a.deferred_end = None
   a.starting_turn = false
   a.queued_retry = None
+  a.paused_cap = false
+  a.cap_wait_notified = false
+  a.force_session_cap = false
   self.remove_turn_wait(a.key)
+  self.remove_cap_wait(a.key)
   for cancel in a.timers.values() {
     cancel()
   }
@@ -1229,7 +1326,7 @@ async fn Actors::give_notices(self : Actors, a : Actor) -> Unit raise {
     if reserved {
       a.starting_turn = false
       if a.turn is None {
-        self.drain_turn_queue()
+        self.drain_turn_queue(drain_cap=!a.paused_cap)
       }
     }
   }
@@ -1299,7 +1396,7 @@ async fn Actors::pump(self : Actors, a : Actor, before_failures? : Int = -1) -> 
     if reserved {
       a.starting_turn = false
       if a.turn is None {
-        self.drain_turn_queue()
+        self.drain_turn_queue(drain_cap=!a.paused_cap)
       }
     }
   }
@@ -1311,6 +1408,16 @@ async fn Actors::pump(self : Actors, a : Actor, before_failures? : Int = -1) -> 
   let was = a.agent
   let busy = self.busy_of(a, was)
   let hkey = handed_ids(d.pending)
+  if !busy && a.paused_cap {
+    if hkey != "" && hkey == a.failed_handed {
+      return
+    }
+    // New user reply arrived while queued: jump the queue and bypass the concurrency cap.
+    self.remove_cap_wait(a.key)
+    a.paused_cap = false
+    a.cap_wait_notified = false
+    a.force_session_cap = true
+  }
   if !busy &&
     before_failures >= 0 &&
     before_failures < a.start_failures &&
@@ -1480,6 +1587,66 @@ async fn Actors::pending_and_format(self : Actors, a : Actor, allow_empty : Bool
 }
 
 ///|
+fn session_cap_info(e : Error) -> (String, Int, Int, Bool)? {
+  match e {
+    Asked(j) if j.value("sessionCap") is Some(True) => {
+      let profile = str_of(j.value("profile")).unwrap_or("")
+      let active = num_of(j.value("active")).unwrap_or(0.0).to_int()
+      let cap = num_of(j.value("cap")).unwrap_or(0.0).to_int()
+      let protection = j.value("protection") is Some(True)
+      Some((profile, active, cap, protection))
+    }
+    _ => None
+  }
+}
+
+///|
+/// Enqueues `a` in `cap_wait_queue` and posts a retryable queued notice once per wait.
+async fn Actors::pause_for_session_cap(
+  self : Actors,
+  a : Actor,
+  profile : String,
+  active : Int,
+  cap : Int,
+  protection : Bool,
+  kind : String,
+  by : Json,
+  turn : Turn?,
+) -> Unit raise {
+  self.enqueue_cap_wait(a)
+  a.paused_cap = true
+  a.force_session_cap = false
+  if !a.cap_wait_notified {
+    let tid = match turn {
+      Some(t) => t.id
+      None => {
+        let id = str_of(Some(self.rpc(a.key, "node.uuid", []))).unwrap_or("")
+        ignore(self.store(a, "startTurnFor", [jstr(id), jstr(a.key), jstr(kind), by]))
+        id
+      }
+    }
+    ignore(self.store(a, "endTurn", [jstr(tid), jstr("failed"), jstr("other: session_cap"), Json::null(), Json::null()]))
+    let notice_key = if protection {
+      "station.notice.accountCapProtectionPaused"
+    } else {
+      "station.notice.accountCapPaused"
+    }
+    let said = self.t(a, notice_key, args={
+      "profile": jstr(profile),
+      "active": jnum(active.to_double()),
+      "cap": jnum(cap.to_double()),
+    })
+    self.notice(a, said, about=Some(tid))
+    a.cap_wait_notified = true
+  } else if turn is Some(t) {
+    ignore(self.store(a, "endTurn", [jstr(t.id), jstr("failed"), jstr("other: session_cap"), Json::null(), Json::null()]))
+  }
+  self.set_running(a, false)
+  self.live_turn_ended(a)
+  self.done_working(a)
+}
+
+///|
 /// actor.ts `startTurn`.
 async fn Actors::start_turn(
   self : Actors,
@@ -1494,11 +1661,12 @@ async fn Actors::start_turn(
   if own_slot {
     a.starting_turn = true
   }
+  let mut paused_by_cap = false
   defer {
     if own_slot {
       a.starting_turn = false
       if a.turn is None {
-        self.drain_turn_queue()
+        self.drain_turn_queue(drain_cap=!paused_by_cap)
       }
     }
   }
@@ -1516,6 +1684,11 @@ async fn Actors::start_turn(
       let turn = a.turn
       a.turn = None
       a.phase = "idle"
+      if session_cap_info(e) is Some((profile, active, cap, protection)) {
+        paused_by_cap = true
+        self.pause_for_session_cap(a, profile, active, cap, protection, kind, by, turn)
+        raise e
+      }
       let message = match e {
         Asked(j) => str_of(j.value("message")).unwrap_or("")
         _ => e.to_string()
@@ -1703,6 +1876,7 @@ async fn Actors::begin_turn(self : Actors, a : Actor, kind : String, by : Json, 
   a.warm = false
   a.phase = "running"
   a.waiting = None
+  self.mirror(a)
   let for_ = match by {
     Object(o) => {
       let o = Map::from_iter(o.iter())
@@ -1773,7 +1947,14 @@ async fn Actors::end_process(self : Actors, a : Actor, agent : Agent?) -> Unit r
 async fn Actors::ensure_agent(self : Actors, a : Actor) -> Agent raise {
   while true {
     if a.agent is Some(g) && !a.stale && !self.busy(a) {
-      let on = self.rpc(a.key, "node.profileId", [jbool(self.holding(a))]) catch { _ => Json::null() }
+      let on = self.rpc(a.key, "node.profileId", [jbool(self.holding(a)), jbool(a.force_session_cap)]) catch {
+        e => {
+          if session_cap_info(e) is Some(_) {
+            raise e
+          }
+          Json::null()
+        }
+      }
       if !(on is Null) && on != a.profile {
         a.stale = true
       }
@@ -1788,11 +1969,17 @@ async fn Actors::ensure_agent(self : Actors, a : Actor) -> Agent raise {
     }
     self.catch_up(a, true)
     if a.agent is Some(g) {
+      a.force_session_cap = false
+      a.paused_cap = false
+      a.cap_wait_notified = false
       return g
     }
     // (what it is changed in while it opens is taken once it is open: `changed` counts it with no process to mark)
     let seq = a.change_seq
-    let opened = self.rpc(a.key, "node.open", [Json::array(a.stopped), jbool(a.read_back), a.profile])
+    let opened = self.rpc(a.key, "node.open", [Json::array(a.stopped), jbool(a.read_back), a.profile, jbool(a.force_session_cap)])
+    a.force_session_cap = false
+    a.paused_cap = false
+    a.cap_wait_notified = false
     let handle = num_of(opened.value("handle")).unwrap_or(0.0).to_int()
     let generation = num_of(opened.value("generation")).unwrap_or(0.0).to_int()
     a.runtime = str_of(opened.value("runtime")).unwrap_or(a.runtime)
@@ -2275,6 +2462,24 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
       }
       return self.start_turn(a, "resume", self.words(a, "GO_ON_AFTER_SPENT"))
     }
+    if moved is Object(o) && str_of(o.get("paused")) == Some("session_cap") {
+      let agent = a.agent
+      self.set_agent(a, None)
+      self.end_process(a, agent)
+      a.refill = None
+      a.queued_retry = Some({ kind: "resume", text: self.words(a, "GO_ON_AFTER_SPENT"), by: turn_for_nobody(), codex_retried: false })
+      self.pause_for_session_cap(
+        a,
+        str_of(o.get("profile")).unwrap_or(""),
+        num_of(o.get("active")).unwrap_or(0.0).to_int(),
+        num_of(o.get("cap")).unwrap_or(0.0).to_int(),
+        o.get("protection") is Some(True),
+        "resume",
+        turn_for_nobody(),
+        None,
+      )
+      return
+    }
     let notice = self.failure_notice(a, outcome)
     let spent_before = match self.rpc(a.key, "node.words", [jstr("spentBefore")]) {
       Array(s) => s.filter_map(x => str_of(Some(x)))
@@ -2646,7 +2851,7 @@ async fn Actors::fire_wait(self : Actors, a : Actor, wait : Int, seconds : Doubl
     if reserved {
       a.starting_turn = false
       if a.turn is None {
-        self.drain_turn_queue()
+        self.drain_turn_queue(drain_cap=!a.paused_cap)
       }
     }
   }
@@ -2707,7 +2912,7 @@ async fn Actors::fire_refill(self : Actors, a : Actor, refill : Int) -> Unit rai
     if reserved {
       a.starting_turn = false
       if a.turn is None {
-        self.drain_turn_queue()
+        self.drain_turn_queue(drain_cap=!a.paused_cap)
       }
     }
   }

@@ -32,6 +32,29 @@ pub fn plain_error(message : String) -> Thrown {
 }
 
 ///|
+/// A subscription account has reached its configured active-session concurrency cap.
+pub fn account_cap_error(
+  profile : String,
+  profile_id : String,
+  active : Int,
+  cap : Int,
+  protection? : Bool = false,
+) -> Thrown {
+  Thrown(
+    "AccountCapError",
+    jobj([
+      ("sessionCap", jbool(true)),
+      ("profile", js(profile)),
+      ("profileId", js(profile_id)),
+      ("active", jint(active)),
+      ("cap", jint(cap)),
+      ("protection", jbool(protection)),
+      ("message", js("account \{profile} reached concurrency cap (\{active}/\{cap})")),
+    ]),
+  )
+}
+
+///|
 /// The words of a failure, as `(e as Error).message` says them.
 pub fn message_of(e : Error) -> String {
   match e {

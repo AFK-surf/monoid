@@ -46,31 +46,23 @@ let choice_plain : ChoiceSaid = {
 }
 
 ///|
-/// The old rows (an old view's, its left column) and the node's (its right) side by side, laid out `look`, on a window
-/// of `platform`; how many times each was pressed, by side and label, in `pressed`.
+/// The words drawn within `rect`, each where it is in the rect's own terms, how big, how opaque.
+fn words_within(t : @ui.Tester, rect : (Double, Double, Double, Double)) -> Array[String] {
+  let (rx, ry, rw, rh) = rect
+  t
+  .words()
+  .filter(fn(w) { w.1 >= rx - 0.5 && w.2 >= ry - 0.5 && w.1 <= rx + rw + 0.5 && w.2 <= ry + rh + 0.5 })
+  .map(fn(w) { "\{w.0}@\{w.1 - rx},\{w.2 - ry} \{w.3}x\{w.4} a\{w.5}" })
+}
+
+///|
+/// The node rows (choice_row_node's) laid out `look`, on a window of `platform`; how many times each was pressed, by
+/// label, in `pressed`.
 fn choice_rows_tester(look : Look, platform : Int, pressed : Map[String, Int], card? : Bool = false) -> @ui.Tester {
-  let t = @ui.Tester::new(fn(_c) {  }, w=800.0, h=600.0, platform~)
+  let t = @ui.Tester::new(fn(_c) {  }, w=400.0, h=600.0, platform~)
   t.check_looks(false)
   let count = fn(k : String) { pressed[k] = pressed.get(k).unwrap_or(0) + 1 }
   @ui.set_view_app(fn(root) {
-    root.row(Is(true)) |> ignore
-    root.box(fn(h) {
-      h.width(Is(Some(360.0))) |> ignore
-      @ui.old(h, fn(c) {
-        with_look(look, fn() {
-          let rows = fn() { old_choice_rows(c, count) }
-          // (on a card: a group's, its rows on it)
-          if card {
-            group(c, rows)
-          } else {
-            c.box(w=Fill(1.0), rows) |> ignore
-          }
-        })
-      }).grow(Is(1.0))
-      |> ignore
-    })
-    |> ignore
-    root.box(fn(g) { g.width(Is(Some(40.0))) |> ignore }) |> ignore
     root.box(fn(col) {
       col.width(Is(Some(360.0))) |> ignore
       look_lent(col, look)
@@ -88,128 +80,34 @@ fn choice_rows_tester(look : Look, platform : Int, pressed : Map[String, Int], c
 }
 
 ///|
-/// The old row (left) and the node's (right) read out as `label`.
-fn choice_pair(t : @ui.Tester, label : String) -> (@ui.SemNode, @ui.SemNode) {
-  let all = t.all(Button, label~)
-  guard all.length() == 2 else { @halt.saying("\{label}: \{all.length()} rows") }
-  if all[0].rect.0 < all[1].rect.0 { (all[0], all[1]) } else { (all[1], all[0]) }
-}
-
-///|
-/// The words drawn within `rect`, each where it is in the rect's own terms, how big, how opaque.
-fn words_within(t : @ui.Tester, rect : (Double, Double, Double, Double)) -> Array[String] {
-  let (rx, ry, rw, rh) = rect
-  t
-  .words()
-  .filter(fn(w) { w.1 >= rx - 0.5 && w.2 >= ry - 0.5 && w.1 <= rx + rw + 0.5 && w.2 <= ry + rh + 0.5 })
-  .map(fn(w) { "\{w.0}@\{w.1 - rx},\{w.2 - ry} \{w.3}x\{w.4} a\{w.5}" })
-}
-
-///|
-/// Each row of the two sides, as it stands, pointed at and pressed (a finger's, held a while), drawn the same in its
-/// own terms, its words where the old one's are; read out the same; each pressed alone where it can be.
-fn choice_rows_same(look : Look, platform : Int, card? : Bool = false) -> Unit raise {
+/// Each node row read out, drawn at rest, and pressed once where able.
+fn choice_rows_check(look : Look, platform : Int, card? : Bool = false) -> Unit raise {
   let about = "\{Repr(look)} on \{platform}, card \{card}"
   let pressed : Map[String, Int] = Map([])
   let t = choice_rows_tester(look, platform, pressed, card~)
   for s in choice_rows {
-    let (o, n) = choice_pair(t, s.label)
-    let at = "\{about}, \{s.label}"
-    assert_eq((o.rect.1, o.rect.2, o.rect.3), (n.rect.1, n.rect.2, n.rect.3), msg="\{at}: where and how big")
-    assert_eq((o.selected, o.disabled), (n.selected, n.disabled), msg="\{at}: read out")
-    t.leave()
-    t.draw()
-    assert_eq(drawn_within(t, o.rect), drawn_within(t, n.rect), msg="\{at}: at rest")
-    assert_eq(words_within(t, o.rect), words_within(t, n.rect), msg="\{at}: its words")
-    // pointed at: the old one, then the node
-    t.move_to(o.rect.0 + 30.0, o.rect.1 + o.rect.3 / 2.0)
-    t.draw()
-    let old_lit = drawn_within(t, o.rect)
-    t.move_to(n.rect.0 + 30.0, n.rect.1 + n.rect.3 / 2.0)
-    t.run_for(dur_ms)
-    assert_eq(old_lit, drawn_within(t, n.rect), msg="\{at}: pointed at")
-    t.leave()
-    t.run_for(dur_ms)
-    // pressed and held (a ripple under a finger), then let go: done once, where it can be
-    for side in [(o, "old"), (n, "new")] {
-      let (r, name) = side
-      let (x, y) = (r.rect.0 + 30.0, r.rect.1 + r.rect.3 / 2.0)
-      t.press_at(x, y)
-      t.run_for(@motion.ripple_tap_ms)
-      let held = drawn_within(t, r.rect)
-      t.release(x, y)
-      t.run_for(@ui.move_most_ms)
-      if name == "old" {
-        held_drawn.val = held
-      } else {
-        assert_eq(held_drawn.val, held, msg="\{at}: held")
-      }
-    }
+    let all = t.all(Button, label=s.label)
+    assert_eq(all.length(), 1, msg="\{about}, \{s.label}: one row")
+    let n = all[0]
+    assert_eq((n.selected, n.disabled), (Some(s.chosen), s.disabled), msg="\{about}, \{s.label}: read out")
+    let (x, y) = (n.rect.0 + 30.0, n.rect.1 + n.rect.3 / 2.0)
+    t.press_at(x, y)
+    t.run_for(@motion.ripple_tap_ms)
+    t.release(x, y)
+    t.run_for(@ui.move_most_ms)
     let want = if s.disabled { 0 } else { 1 }
-    assert_eq((pressed.get("old " + s.label).unwrap_or(0), pressed.get("new " + s.label).unwrap_or(0)), (want, want), msg="\{at}: pressed")
+    assert_eq(pressed.get("new " + s.label).unwrap_or(0), want, msg="\{about}, \{s.label}: pressed")
   }
 }
 
 ///|
-/// What the old row drew held, for its node to be set beside.
-// kept across runs: written by each pair's old row before its node's is read
-let held_drawn : Ref[Array[String]] = Ref([])
-
-///|
-test "a choice's row as a node beside the old one, narrow, with touch: drawn the same at rest, pointed at and held; read out the same; pressed alone" {
-  choice_rows_same(Narrow, 2)
-}
-
-///|
-test "a choice's row as a node beside the old one, narrow, with keyboard and mouse" {
-  choice_rows_same(Narrow, 0)
-}
-
-///|
-test "a choice's row as a node beside the old one, wide, with keyboard and mouse" {
-  choice_rows_same(Wide, 0)
-}
-
-///|
-test "a choice's row as a node beside the old one, wide, with touch" {
-  choice_rows_same(Wide, 2)
-}
-
-///|
-test "a choice's row as a node beside the old one, narrow, on a card (a group's), with touch and with keyboard and mouse" {
-  choice_rows_same(Narrow, 2, card=true)
-  choice_rows_same(Narrow, 0, card=true)
-}
-
-///|
-/// The old rows (choice_row's) in an old view `c`, each pressed told `count` as "old " and its label.
-fn old_choice_rows(c : @ui.Ctx, count : (String) -> Unit) -> Unit {
-  for i in 0..<choice_rows.length() {
-    old_choice_row(c, i, count)
-  }
-}
-
-///|
-/// The old row (choice_row's) of `choice_rows[i]` in an old view `c`, pressed told `count` as "old " and its label.
-fn old_choice_row(c : @ui.Ctx, i : Int, count : (String) -> Unit) -> Unit {
-  let s = choice_rows[i]
-  {
-    choice_row(
-      c,
-      "choice/\{i}",
-      s.chosen,
-      s.label,
-      note=s.note,
-      lead?=if s.lead { Some(fn() { icon(c, "folder", size=18.0, color=theme().p.muted) |> ignore }) } else { None },
-      ink?=if s.red { Some(theme().p.red) } else { None },
-      disabled=s.disabled,
-      tag?=if s.tag != "" { Some(fn() { c.text(s.tag, style=secondary) |> ignore }) } else { None },
-      trail?=if s.trail != "" { Some(fn() { c.text(s.trail, style=secondary) |> ignore }) } else { None },
-      body?=if s.body != "" { Some(fn() { c.text(s.body, style=body) |> ignore }) } else { None },
-      on_press=fn() { count("old " + s.label) },
-    )
-    |> ignore
-  }
+test "a choice's row as a node, narrow and wide, with touch and with keyboard and mouse, plain and on a card" {
+  choice_rows_check(Narrow, 2)
+  choice_rows_check(Narrow, 0)
+  choice_rows_check(Wide, 0)
+  choice_rows_check(Wide, 2)
+  choice_rows_check(Narrow, 2, card=true)
+  choice_rows_check(Narrow, 0, card=true)
 }
 
 ///|

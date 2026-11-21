@@ -43,24 +43,6 @@ fn kept_rows_inst(line : String) -> String {
 }
 
 ///|
-/// The two runs drew the same at each moment: the first line apart said where it is.
-fn kept_rows_same(kept : Array[Array[String]], built : Array[Array[String]]) -> Unit raise {
-  assert_eq(kept.length(), built.length())
-  for i in 0..<kept.length() {
-    let a = kept[i]
-    let b = built[i]
-    for j in 0..<(if a.length() < b.length() { a.length() } else { b.length() }) {
-      if kept_rows_inst(a[j]) != kept_rows_inst(b[j]) {
-        fail("moment \{i}, instance \{j} of \{a.length()} drawn again, \{b.length()} built:\n  again \{a[j]}\n  built \{b[j]}")
-      }
-    }
-    if a.length() != b.length() {
-      fail("moment \{i}: \{a.length()} instances drawn again, \{b.length()} built")
-    }
-  }
-}
-
-///|
 /// How far apart the moments are that a chat left still is looked at (no step of a clock's falls on one).
 let kept_rows_still_ms : Double = 70.0
 

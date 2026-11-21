@@ -11,7 +11,7 @@ import type { Store } from "../store/store.ts";
 import type { SessionRow } from "../store/rows.ts";
 import { type HubConfig, noProfileHere, type Profile, runs, runtimeNamed, runtimeTitle, sameModel, spelling } from "./config.ts";
 import { modelKey } from "../read/usage.ts";
-import { availableEfforts, cheapToLeave, commonEfforts, type ProfileHealth, pickProfile, quotaUnavailable, reportedEfforts, serves, signsIn, urgency, usable, windowsOf } from "./pool.ts";
+import { availableEfforts, cheapToLeave, commonEfforts, isSessionCapped, type ProfileHealth, pickProfile, quotaUnavailable, reportedEfforts, serves, signsIn, urgency, usable, windowsOf } from "./pool.ts";
 import { agyScopeForModel } from "../accounts/agy-quota.ts";
 import type { RuntimeKind } from "../agents/runtime.ts";
 import { accessKind, billedPerUse, FAST_RUNTIMES } from "../agents/profiles.ts";
@@ -32,13 +32,39 @@ export type SessionChange = { runtime?: string; profile?: string | null; profile
 /// A profile as a session's runtime starts on it, with its spelling of the session's model.
 export type RunOn = Profile & { spelling(model: string): string | null };
 
+/// Thrown when every available subscription account is at its configured active-session concurrency cap.
+export class AccountCapError extends Error {
+  readonly sessionCap = true;
+  readonly profile: string;
+  readonly profileId: string;
+  readonly active: number;
+  readonly cap: number;
+  readonly protection: boolean;
+
+  constructor(profile: string, profileId: string, active: number, cap: number, protection = false) {
+    super(`account ${profile} reached concurrency cap (${active}/${cap})`);
+    this.name = "AccountCapError";
+    this.profile = profile;
+    this.profileId = profileId;
+    this.active = active;
+    this.cap = cap;
+    this.protection = protection;
+  }
+}
+
+/// Returned by `spend` when failover only has subscription accounts at their concurrency cap.
+export type SpendPaused = { paused: "session_cap"; profile: string; profileId: string; active: number; cap: number; protection: boolean };
+
 const withSpelling = (p: Profile): RunOn => ({ ...p, spelling: (model: string) => spelling(p, model) });
 
 export type AccountsDeps = {
   config(): HubConfig;
   store: Store;
-  /// The profiles of sessions with a process now (their load), `except`'s left out.
+  /// The profiles of sessions with a process now (running + warm, their load), `except`'s left out.
   running(except?: string): string[];
+  /// The profiles of sessions actively running a turn now (`processState() === "running"`), `except`'s left out.
+  /// Falls back to `running(except)` when omitted.
+  active?(except?: string): string[];
   /// Its time.
   clock: Clock.Clock;
   /// Whether session `key` may run on a profile: one allowed in its workspace; absent: any.
@@ -284,16 +310,69 @@ export class Accounts {
     return kept.filter(named).at(-1)?.at;
   }
 
+  /// Effective configured concurrency cap across all profiles sharing the same underlying account as `id`:
+  /// the minimum configured positive integer cap, or undefined if none is configured (unlimited).
+  accountMaxSessions(id: string): number | undefined {
+    const key = this.accountKey(id);
+    let minCap: number | undefined;
+    for (const p of this.deps.config().profiles) {
+      if (this.accountKey(p.id) !== key) continue;
+      const cap = p.maxConcurrentSessions;
+      if (typeof cap === "number" && Number.isInteger(cap) && cap > 0) {
+        if (minCap === undefined || cap < minCap) minCap = cap;
+      }
+    }
+    return minCap;
+  }
+
+  /// Whether the effective concurrency cap for `id` (or its shared underlying account) comes from a profile in new-account protection.
+  accountInProtection(id: string): boolean {
+    const minCap = this.accountMaxSessions(id);
+    if (minCap === undefined) return false;
+    const key = this.accountKey(id);
+    for (const p of this.deps.config().profiles) {
+      if (this.accountKey(p.id) !== key) continue;
+      if (p.maxConcurrentSessions === minCap && p.newAccountProtection === true) return true;
+    }
+    return false;
+  }
+
+  private countByAccount(profiles: string[]): Map<string, number> {
+    const counts = new Map<string, number>();
+    for (const id of profiles) {
+      const key = this.accountKey(id);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return counts;
+  }
+
+  private loadMap(except?: string): Map<string, number> {
+    return this.countByAccount(this.deps.running(except));
+  }
+
+  private activeMap(except?: string): Map<string, number> {
+    const list = this.deps.active ? this.deps.active(except) : this.deps.running(except);
+    return this.countByAccount(list);
+  }
+
   /// Chooses the profile a session runs on (pool.ts); `except`: the session it is chosen for, whose own process is not
   /// counted.
   pick(candidates: Profile[], model: string | null | undefined, strict: boolean, except?: string): Profile {
-    const running = this.deps.running(except);
-    const load = new Map<string, number>();
-    for (const id of running) {
-      const key = this.accountKey(id);
-      load.set(key, (load.get(key) ?? 0) + 1);
-    }
-    const profile = pickProfile(candidates, model, { health: (id) => this.healthFor(id, model), load: (id) => load.get(this.accountKey(id)) ?? 0, lastPicked: (id) => this.picked.get(this.accountKey(id)) ?? 0, now: () => this.deps.clock.currentTimeMillisUnsafe() }, strict);
+    const load = this.loadMap(except);
+    const active = this.activeMap(except);
+    const profile = pickProfile(
+      candidates,
+      model,
+      {
+        health: (id) => this.healthFor(id, model),
+        load: (id) => load.get(this.accountKey(id)) ?? 0,
+        active: (id) => active.get(this.accountKey(id)) ?? 0,
+        lastPicked: (id) => this.picked.get(this.accountKey(id)) ?? 0,
+        now: () => this.deps.clock.currentTimeMillisUnsafe(),
+        maxSessions: (id) => this.accountMaxSessions(id),
+      },
+      strict,
+    );
     this.picked.set(this.accountKey(profile.id), this.deps.clock.currentTimeMillisUnsafe());
     return profile;
   }
@@ -313,8 +392,9 @@ export class Accounts {
   /// own unable even to sign in, it moves once to one that signs in. A move is told (`moved`, said in its chat) unless
   /// `quiet`: a change by hand says its own. `across` (before a turn): none of its runtime's able to run it now, it
   /// goes on on another runtime's that runs its model and can, as `spend` moves it when a turn ran into the allowance
-  /// (`takeAcross`), rather than first running a turn into a limit it knows of.
-  runOn(key: string, holding = false, quiet = false, across = false): RunOn {
+  /// (`takeAcross`), rather than first running a turn into a limit it knows of. `forceCap`: bypasses account
+  /// concurrency caps after the user explicitly starts a queued chat.
+  runOn(key: string, holding = false, quiet = false, across = false, forceCap = false): RunOn {
     const { store } = this.deps;
     const row = store.getSession(key);
     if (!row) throw new Error(`unknown session ${key}`);
@@ -323,9 +403,9 @@ export class Accounts {
     const all = this.deps.config().profiles.filter((p) => p.runtimes.includes(runtime));
     const workspaceCandidates = all.filter((p) => this.allows(key, p));
     // Left to the station, none of its runtime's able to run its model now: one of another runtime's that can.
-    const elsewhere = (kept: string[] | null): RunOn | null => {
+    const elsewhere = (kept: string[] | null, onlyPaid = false): RunOn | null => {
       if (!across || row.profilePinned || kept !== null || row.model === null) return null;
-      const next = this.takeAcross(key, row, null, "session taken on by another runtime's profile", quiet);
+      const next = this.takeAcross(key, row, null, "session taken on by another runtime's profile", quiet, onlyPaid, forceCap);
       return next ? withSpelling(next) : null;
     };
     if (workspaceCandidates.length === 0) {
@@ -342,6 +422,10 @@ export class Accounts {
     // enabled.
     const current = candidates.find((p) => p.id === row.profile);
     const now = this.deps.clock.currentTimeMillisUnsafe();
+    const active = this.activeMap(key);
+    const activeOf = (p: Profile) => active.get(this.accountKey(p.id)) ?? 0;
+    const capOf = (p: Profile) => (billedPerUse(p) ? undefined : this.accountMaxSessions(p.id));
+    const capped = (p: Profile) => isSessionCapped(p, capOf(p), activeOf(p));
     // Of the windows that weigh on its model alone (an Antigravity account's Claude / GPT ones do not on Gemini).
     const crowded = (p: Profile) => urgency(this.healthFor(p.id, row.model).quota, now).crowded;
     // (Its model counts only where one of them has it enabled, as in `spend` and the pool: else each call would move it
@@ -352,21 +436,32 @@ export class Accounts {
     let among = candidates;
     if (current && keeps) {
       if (row.profilePinned) return withSpelling(current);
-      // It moves from one billed per use to one paid for already on the next turn without waiting for `cheapToLeave`,
-      // and from a crowded paid-for account to an uncrowded one (the pool puts those last) only when that loses little
-      // (`cheapToLeave`); never from one paid for already to one billed per use.
       const paid = (p: Profile) => !billedPerUse(p);
-      const unavailable = (p: Profile) => quotaUnavailable(this.healthOf(p.id));
-      const better = (p: Profile) =>
-        p.id !== current.id &&
-        fits(p) &&
-        this.can(p.id, row.model) &&
-        (paid(p) === paid(current)
-          ? (unavailable(current) && !unavailable(p)) || (!unavailable(p) && crowded(current) && !crowded(p))
-          : paid(p));
-      among = candidates.filter(better);
-      const upgrading = (!paid(current) && among.some(paid)) || (unavailable(current) && among.some((p) => !unavailable(p)));
-      if (among.length === 0 || holding || (!upgrading && !this.cheapToLeave(key))) return withSpelling(current);
+      if (!forceCap && !holding && capped(current)) {
+        const uncappedPaid = candidates.filter((p) => p.id !== current.id && fits(p) && this.can(p.id, row.model) && paid(p) && !capped(p));
+        if (uncappedPaid.length > 0) {
+          among = uncappedPaid;
+        } else {
+          const moved = elsewhere(keptProfiles, true);
+          if (moved) return moved;
+          throw new AccountCapError(current.name, current.id, activeOf(current), capOf(current)!, this.accountInProtection(current.id));
+        }
+      } else {
+        // It moves from one billed per use to one paid for already on the next turn without waiting for `cheapToLeave`,
+        // and from a crowded paid-for account to an uncrowded one (the pool puts those last) only when that loses little
+        // (`cheapToLeave`); never from one paid for already to one billed per use.
+        const unavailable = (p: Profile) => quotaUnavailable(this.healthOf(p.id));
+        const better = (p: Profile) =>
+          p.id !== current.id &&
+          fits(p) &&
+          this.can(p.id, row.model) &&
+          (paid(p) === paid(current)
+            ? ((unavailable(current) && !unavailable(p)) || (!unavailable(p) && crowded(current) && !crowded(p))) && (forceCap || !capped(p))
+            : paid(p) && (capOf(p) === undefined || (!capped(p) && !crowded(p))));
+        among = candidates.filter(better);
+        const upgrading = (!paid(current) && among.some(paid)) || (unavailable(current) && among.some((p) => !unavailable(p)));
+        if (among.length === 0 || holding || (!upgrading && !this.cheapToLeave(key))) return withSpelling(current);
+      }
     } else {
       // It goes to those that can run it now; none can: to those that at least sign in (it waits for their refill).
       // When its own is as good as any, it stays. The pool, given none that can run, picks the one picked least
@@ -382,9 +477,18 @@ export class Accounts {
       }
       if (current && fits(current) && standing(current) >= best) return withSpelling(current);
       if (fit.length > 0) among = fit.filter((p) => standing(p) === best);
+      if (best === 2 && !row.profilePinned && !forceCap) {
+        const usablePaid = among.filter((p) => !billedPerUse(p));
+        if (usablePaid.length > 0 && usablePaid.every(capped)) {
+          const moved = elsewhere(keptProfiles, true);
+          if (moved) return moved;
+          const chosen = this.pick(usablePaid, row.model, false, key);
+          throw new AccountCapError(chosen.name, chosen.id, activeOf(chosen), capOf(chosen)!, this.accountInProtection(chosen.id));
+        }
+      }
     }
     if (candidates.length === 0) throw new Error(`session ${key}: no profile runs ${row.runtime}`);
-    const next = this.pick(among, row.model, false);
+    const next = this.pick(among, row.model, false, key);
     if (next.id !== row.profile || keptProfiles !== (row.profiles ?? null)) {
       store.setSessionProfile(key, next.id, false, keptProfiles);
       if (next.id !== row.profile) {
@@ -443,7 +547,7 @@ export class Accounts {
   /// where it was moved. `model`: the model whose own limit it was, as the runtime named it (runtime.ts `modelLimitOf`),
   /// which alone is passed over on that account, its other models still run there (#4643). The names of the one left and
   /// the one taken when it moved; null when it is kept to its profile or none other can.
-  spend(key: string, ranOn: string | null, model: string | null = null): [string, string] | null {
+  spend(key: string, ranOn: string | null, model: string | null = null): [string, string] | SpendPaused | null {
     const { store } = this.deps;
     const row = store.getSession(key);
     if (!row) throw new Error(`unknown session ${key}`);
@@ -476,12 +580,27 @@ export class Accounts {
     const [all, keptProfiles] = this.poolFor(row, workspaceAll);
     const strict = all.some((p) => serves(p, row.model));
     const candidates = all.filter((p) => p.id !== left && (!strict || serves(p, row.model)) && this.can(p.id, row.model));
+    const active = this.activeMap(key);
+    const activeOf = (p: Profile) => active.get(this.accountKey(p.id)) ?? 0;
+    const capOf = (p: Profile) => (billedPerUse(p) ? undefined : this.accountMaxSessions(p.id));
+    const capped = (p: Profile) => isSessionCapped(p, capOf(p), activeOf(p));
+    const paidCandidates = candidates.filter((p) => !billedPerUse(p));
+    const uncappedPaid = paidCandidates.filter((p) => !capped(p));
+    if (paidCandidates.length > 0 && uncappedPaid.length === 0) {
+      if (keptProfiles === null) {
+        const across = this.takeAcross(key, row, left, "allowance ran out; session taken on by another runtime's profile", false, true, false);
+        if (across) return [name(left), across.name];
+      }
+      const chosen = this.pick(paidCandidates, row.model, false, key);
+      return { paused: "session_cap", profile: chosen.name, profileId: chosen.id, active: activeOf(chosen), cap: capOf(chosen)!, protection: this.accountInProtection(chosen.id) };
+    }
     if (candidates.length === 0) {
       if (keptProfiles !== null) return null;
-      const next = this.takeAcross(key, row, left, "allowance ran out; session taken on by another runtime's profile", false);
+      const next = this.takeAcross(key, row, left, "allowance ran out; session taken on by another runtime's profile", false, false, false);
       return next ? [name(left), next.name] : null;
     }
-    const next = this.pick(candidates, row.model, false);
+    const pickPool = uncappedPaid.length > 0 ? candidates.filter((p) => !capped(p)) : candidates;
+    const next = this.pick(pickPool, row.model, false, key);
     store.setSessionProfile(key, next.id, false, keptProfiles);
     log.info("hub", "allowance ran out; session taken on by another profile", { session: key, from: left, to: next.id });
     this.deps.moved?.(key, row);
@@ -498,12 +617,16 @@ export class Accounts {
   /// (lifecycle.ts `configure`): its runtime session kept as one it ran in, the new one started afresh (afresh.ts). Its
   /// effort, speed and most context go along only where the new runtime takes them. Told (`moved`) unless `quiet`. The
   /// profile taken; null when none can.
-  private takeAcross(key: string, row: SessionRow, left: string | null, said: string, quiet: boolean): Profile | null {
+  private takeAcross(key: string, row: SessionRow, left: string | null, said: string, quiet: boolean, onlyPaid = false, forceCap = false): Profile | null {
     const runtime = runtimeNamed(row.runtime);
     const model = row.model;
     if (!runtime || model === null || row.speed === "ultrafast") return null;
     const config = this.deps.config();
-    const candidates = config.profiles.filter((p) => !p.runtimes.includes(runtime) && this.allows(key, p) && runs(p, model) && this.can(p.id, model));
+    const active = forceCap ? null : this.activeMap(key);
+    const capped = (p: Profile) => active !== null && isSessionCapped(p, this.accountMaxSessions(p.id), active.get(this.accountKey(p.id)) ?? 0);
+    const candidates = config.profiles.filter(
+      (p) => !p.runtimes.includes(runtime) && this.allows(key, p) && runs(p, model) && this.can(p.id, model) && (!onlyPaid || !billedPerUse(p)) && !capped(p),
+    );
     if (candidates.length === 0) return null;
     const next = this.pick(candidates, model, true, key);
     const target = next.runtimes.find((r) => r !== runtime && runs(next, model));

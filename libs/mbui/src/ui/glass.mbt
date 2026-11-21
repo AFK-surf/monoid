@@ -146,11 +146,8 @@ fn rects_meet_by(a : Int, b : Int, inst : FixedArray[Double], pad : Double) -> B
 /// The glass instance of node `n` (its frame), at `alpha`.
 fn Ctx::emit_glass(self : Ctx, n : Node, gl : Glass, alpha : Double) -> Unit {
   self.glass_inst(n.x, n.y, n.fw, n.fh, n.radius, gl, alpha)
-  // (frosted: its corners each its own; merged liquid merges shapes of one corner each, the renderers' groups: its
-  // roundest; unmerged liquid (merge <= 0), never merged, its corners each its own)
-  if !gl.liquid || gl.merge <= 0.0 {
-    self.corners_last(n)
-  }
+  // (frosted, unmerged liquid, and merged liquid all keep each shape's 4 independent corner radii in 36..39)
+  self.corners_last(n)
   self.glass_capture(self.ninst - 1, gl.liquid, gl.shares_capture)
 }
 

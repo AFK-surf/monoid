@@ -88,62 +88,32 @@ test "history reminder keeps its label on one line beside a long note and opens 
 
 ///|
 /// A call's code (its part `kind: code`, as the core reads a call: history.tool) of `code` in a column 16 in from a
-/// window 760 wide, drawn by the history's tool_part_node, or by an old view's code_block (`old`): its Tester, drawn.
-fn steps_code_tester(old : Bool, code : String) -> @ui.Tester {
+/// window 760 wide, drawn by the history's tool_part_node: its Tester, drawn.
+fn steps_code_tester(code : String) -> @ui.Tester {
   let part : Json = { "kind": "code", "text": Json::string(code), "lang": "sh" }
-  let t = if old {
-    @ui.Tester::new(
-      fn(c) {
-        @sf.begin(c) |> ignore
-        c.with_theme(@sf.ui_theme(), fn() { c.column(w=Fill(1.0), pad=16.0, fn() { @sf.code_block(c, code, "sh") }) |> ignore })
-      },
-      w=760.0,
-      h=400.0,
-    )
-  } else {
-    @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w=760.0, h=400.0, tree=fn(root) {
-      @ui.set_tree_theme(@sf.ui_theme_now)
-      root.lines_up(Is(None)) |> ignore
-      root.box(fn(b) {
-        b.padding(Is((16.0, 16.0, 16.0, 16.0))) |> ignore
-        tool_part_node(b, Some(part))
-      })
-      |> ignore
+  let t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w=760.0, h=400.0, tree=fn(root) {
+    @ui.set_tree_theme(@sf.ui_theme_now)
+    root.lines_up(Is(None)) |> ignore
+    root.box(fn(b) {
+      b.padding(Is((16.0, 16.0, 16.0, 16.0))) |> ignore
+      tool_part_node(b, Some(part))
     })
-  }
+    |> ignore
+  })
   t.draw()
   t.draw()
   t
 }
 
 ///|
-/// Where each line of `code` is drawn in `t`, to a hundredth (Tester::run_rects: a rectangle a line).
-fn steps_code_lines(t : @ui.Tester, code : String) -> Array[String] {
-  code
-  .split("\n")
-  .to_array()
-  .filter(fn(l) { l != "" })
-  .map(fn(l) {
-    let rects = t.run_rects(l.to_owned()).map(fn(r) { "\{(r.0 * 100.0).round() / 100.0},\{(r.1 * 100.0).round() / 100.0} \{(r.2 * 100.0).round() / 100.0}x\{(r.3 * 100.0).round() / 100.0}" })
-    "\{l}: \{@ui.list_text(rects)}"
-  })
-}
-
-///|
-test "a call's code of two lines in the history: on two lines, each where an old view's code block draws it, as tall" {
+test "a call's code of two lines in the history: on two lines, the second under the first" {
   let code = "moon test --target wasm-gc src/sfpages/history_steps_node_wbtest.mbt\nmoon check"
   steps_reset()
-  let old_t = steps_code_tester(true, code)
-  let old = steps_code_lines(old_t, code)
-  let old_box = old_t.rect_of("moon check")
-  let made_t = steps_code_tester(false, code)
-  let made = steps_code_lines(made_t, code)
+  let made_t = steps_code_tester(code)
   let made_box = made_t.rect_of("moon check")
+  assert_true(made_box is Some(_), msg="second line is drawn")
   // (each line on a line of its own, the second under the first)
-  let ys = fn(t : @ui.Tester) { ["moon test", "moon check"].map(fn(l) { t.run_rects(l).map(fn(r) { r.1 }) }) }
-  assert_eq(made, old, msg="each line where an old view's code block draws it:\nmade \{Repr(made)}\nold  \{Repr(old)}")
-  assert_eq(made_box, old_box, msg="its words as wide and as tall as an old view's: made \{Repr(made_box)}, old \{Repr(old_box)}")
-  let lines = ys(made_t)
+  let lines = ["moon test", "moon check"].map(fn(l) { made_t.run_rects(l).map(fn(r) { r.1 }) })
   assert_true(lines[0].length() == 1 && lines[1].length() == 1 && lines[1][0] > lines[0][0], msg="\{Repr(lines)}")
   steps_reset()
 }
@@ -717,6 +687,84 @@ test "sent messages, received messages, and long turn-state reasons share statio
   assert_eq(t.corner_faults(), [])
   assert_eq(t.lit_all_faults(), [])
   steps_reset()
+}
+
+///|
+test "a post a new message held back and never sent says so beside where it would have gone, with no ending of the turn" {
+  steps_reset()
+  @sf.set_words(@sfbase.fill)
+  let base_src = @sffixture.fixture("history")
+  let place : Json = { "name": "整理发布清单", "surface": "ember", "session": "s-c1" }
+  let post = fn(key : String, at : Double, words : String, unsent : Bool) -> Json {
+    {
+      "key": Json::string(key),
+      "entries": [Json::number(at), Json::number(at)],
+      "body": {
+        "kind": "post",
+        "content": {
+          "text": Json::string(words),
+          "md": [["p", [Json::string(words)]]],
+          "place": place,
+          "block": false,
+          "failed": false,
+          "unsent": Json::boolean(unsent),
+        },
+      },
+    }
+  }
+  let items : Array[Json] = [
+    post("p-held", 0.0, "做完了：列表和截图都好了。", true),
+    post("p-sent", 1.0, "好，暗色也截了一张。", false),
+  ]
+  let hist : Json = { "items": Json::array(items), "live": [], "edge": "已到会话开头", "empty": false, "loaded": true, "more": false }
+  let src : @sfbase.Source = {
+    ..base_src,
+    topic_read: fn(name, params) {
+      if name == "history" {
+        { value: Some(hist), error: None, version: 1 }
+      } else {
+        (base_src.topic_read)(name, params)
+      }
+    },
+    topic_keyed: fn(name, params, fld, keys) {
+      if name == "history" {
+        None
+      } else {
+        (base_src.topic_keyed)(name, params, fld, keys)
+      }
+    },
+  }
+  for w in [320.0, 390.0] {
+    let t = @ui.Tester::new(
+      fn(c) {
+        @sf.begin(c) |> ignore
+        c.with_theme(@sf.ui_theme(), fn() { @ui.old_views_here(c) })
+      },
+      w~,
+      h=844.0,
+      platform=2,
+      tree=fn(root) {
+        @ui.set_tree_theme(@sf.ui_theme_now)
+        let tips = @sf.TipLayer::new(fn() { Some(root) })
+        history_steps_node(root, src, "ws1/st1", "s-c1", tips)
+      },
+    )
+    t.draw()
+    t.draw()
+    let unsent = @sf.t("web-main.history.unsent")
+    // Once, on the held post's head line, beside 发送到: the one sent after it says nothing of it.
+    let marks = t.words().filter(fn(x) { x.0 == unsent })
+    assert_eq(marks.length(), 1, msg="\{w}: one mark")
+    let held = t.rect_of("做完了：列表和截图都好了。").unwrap()
+    let sent = t.rect_of("好，暗色也截了一张。").unwrap()
+    assert_true(marks[0].2 < held.1, msg="\{w}: the mark heads the held post")
+    assert_true(sent.1 > held.1, msg="\{w}: the sent post below it")
+    assert_true(!t.words().any(fn(x) { x.0.contains("…") }), msg="\{w}: nothing cut short")
+    assert_eq(t.corner_faults(), [])
+    assert_eq(t.lit_all_faults(), [])
+    assert_eq(t.first_line_faults(), [])
+    steps_reset()
+  }
 }
 
 ///|

@@ -117,6 +117,7 @@ fn own_agent(
   outlived : () -> Bool,
   sign_in_expired? : () -> Bool = () => false,
   lent_expired? : () -> Bool = () => false,
+  background_tools? : (() -> @agent_drivers.Later[Unit])? = None,
 ) -> Agent {
   {
     id: () => own.session_id,
@@ -149,6 +150,10 @@ fn own_agent(
     prompt: text => pump.wait(prompt(text)),
     steer: text => pump.wait(steer(text)),
     abort: () => pump.wait(abort()),
+    background_tools: () => match background_tools {
+      Some(b) => pump.wait(b())
+      None => ()
+    },
     compact: () => match compact {
       Some(c) => pump.wait(c())
       None => ()
@@ -274,6 +279,7 @@ fn claude_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers
     () => s.snapshot(),
     () => of_jv(s.background()),
     () => s.outlived(),
+    background_tools=Some(() => s.background_tools()),
   )
   {
     kind: "claude",
@@ -459,6 +465,7 @@ fn codex_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers.
     prompt: t => pump.wait(s.prompt(t)),
     steer: t => pump.wait(s.steer(t)),
     abort: () => pump.wait(s.abort()),
+    background_tools: () => (),
     compact: () => pump.wait(s.compact()),
     dispose: () => pump.wait(s.dispose()),
     retune: o => s.retune(to_jv(o)),

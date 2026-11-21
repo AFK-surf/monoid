@@ -697,7 +697,7 @@ export class Events {
           if (key === this.lastHost) return;
           this.lastHost = key;
           for (const c of this.clients) if (c.host) c.send("host", info);
-        });
+        }, () => {});
       }),
     );
   }

@@ -56,12 +56,28 @@ pub fn code_of(e : Error) -> String {
   match n {
     1 => "EPERM"
     2 => "ENOENT"
+    5 if m.contains("Access is denied") => "EACCES"
     13 => "EACCES"
+    16 | 32 | 33 => "EBUSY"
     17 => "EEXIST"
     20 => "ENOTDIR"
     21 => "EISDIR"
     39 | 66 => "ENOTEMPTY"
-    _ => if m.contains("No such file") { "ENOENT" } else { "EIO" }
+    _ =>
+      if m.contains("No such file") {
+        "ENOENT"
+      } else if m.contains("Access is denied") || m.contains("Permission denied") {
+        "EACCES"
+      } else if m.contains("Operation not permitted") {
+        "EPERM"
+      } else if m.contains("resource busy") ||
+        m.contains("Resource busy") ||
+        m.contains("being used by another process") ||
+        m.contains("locked a portion") {
+        "EBUSY"
+      } else {
+        "EIO"
+      }
   }
 }
 
@@ -265,6 +281,54 @@ pub async fn Files::mkdir(self : Files, path : String) -> Unit {
 ///|
 pub async fn Files::rename(self : Files, from : String, to : String) -> Unit {
   ignore(self.sh("fs.rename", jo([("from", js(from)), ("to", js(to))])))
+}
+
+///|
+/// How long a rename waits, attempt by attempt, for a Windows transient file or directory lock (`rename_retrying`).
+let rename_backoff : Array[Int] = [20, 40, 80, 160]
+
+///|
+/// How long moving a whole workspace directory aside waits for a lock to clear (1.55 s in all): on Windows an agent's
+/// process just stopped (`evict`), a scanner or the indexer keeps a handle in it a moment after.
+let workspace_rename_backoff : Array[Int] = [50, 100, 200, 400, 800]
+
+///|
+/// Renames `from` to `to`, waiting briefly on Windows transient file or directory locks (`EPERM`, `EBUSY`, `EACCES`).
+async fn rename_retrying_by(
+  rename : async (String, String) -> Unit,
+  from : String,
+  to : String,
+  backoff? : Array[Int] = rename_backoff,
+  wait? : async (Int) -> Unit = async fn(ms) {
+    // timer: retry backoff for Windows transient file/directory locks on rename
+    @effect.sleep(ms)
+  },
+) -> Unit {
+  for attempt = 0; ; attempt = attempt + 1 {
+    try {
+      rename(from, to)
+      return
+    } catch {
+      e => {
+        let code = code_of(e)
+        if attempt >= backoff.length() || (code != "EPERM" && code != "EBUSY" && code != "EACCES") {
+          raise e
+        }
+        wait(backoff[attempt])
+      }
+    }
+  }
+}
+
+///|
+/// `rename`, waiting out Windows transient file or directory locks (`EPERM`, `EBUSY`, `EACCES`).
+async fn Files::rename_retrying(
+  self : Files,
+  from : String,
+  to : String,
+  backoff? : Array[Int] = rename_backoff,
+) -> Unit {
+  rename_retrying_by(async fn(a, b) { self.rename(a, b) }, from, to, backoff~)
 }
 
 ///|

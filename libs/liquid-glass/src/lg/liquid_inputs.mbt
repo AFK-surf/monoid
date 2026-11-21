@@ -136,6 +136,7 @@ pub fn liquid_text_field_node(
       .gap(Is(ctrl_input_gap))
       .radius(Is(ctrl_input_r))
       .shadow(Is(shadow_default))
+      .shadow_outside(Is(true))
       .glass(By(fn() { Some(ctrl_input_glass()) }))
       .edge(By(fn() {
         if tf.invalid() {
@@ -243,6 +244,7 @@ pub fn liquid_search_bar_node(
   edited? : (String) -> Unit,
   on_clear? : () -> Unit,
   trailing? : (@view.View) -> Unit,
+  flat? : Bool = false,
   loc~ : SourceLoc,
 ) -> @view.View {
   let tf = @headless.TextField::new(label, disabled~)
@@ -262,8 +264,6 @@ pub fn liquid_search_bar_node(
       .padding(Is((ctrl_input_px, 0.0, ctrl_input_px, 0.0)))
       .gap(Is(ctrl_input_gap))
       .radius(Is(ctrl_input_r))
-      .shadow(Is(shadow_default))
-      .glass(By(fn() { Some(ctrl_input_glass()) }))
       .edge(By(fn() {
         let t = clamp(focus_way.shown(cap), 0.0, 1.0)
         (
@@ -273,6 +273,11 @@ pub fn liquid_search_bar_node(
       }))
       .alpha(By(fn() { if tf.disabled() { ctrl_disabled_alpha } else { 1.0 } }))
       |> ignore
+      if flat {
+        cap.ground(By(fn() { if is_dark() { 0xFFFFFF18L } else { 0x0000000DL } })) |> ignore
+      } else {
+        cap.shadow(Is(shadow_default)).shadow_outside(Is(true)).glass(By(fn() { Some(ctrl_input_glass()) })) |> ignore
+      }
       cap.box(fn(ic) {
         ic
         .width(Is(Some(ctrl_search_icon_size)))

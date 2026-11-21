@@ -549,7 +549,7 @@ fn rename_box(at : @sf.ListAt) -> @ui.Style {
 
 ///|
 // kept across runs: a value (no field of it changes)
-let rename_look : @ui.Style = @ui.css("w=Full h=S6 radius=Full bg=Bg border=B1 justify=JCenter")
+let rename_look : @ui.Style = @ui.css("w=Full h=S6 radius=Full bg=Bg border=B0_5 justify=JCenter")
 
 ///|
 /// Its height (h=S6).

@@ -686,16 +686,77 @@ fn SessionAccounts::model_spent_at(
 }
 
 ///|
-/// `pick`: chooses the profile a session runs on (pool.mbt); `except`: the session it is chosen for, whose own process
-/// is not counted.
-pub async fn SessionAccounts::pick(
+/// What `spend` returned: moved to another profile, paused due to account concurrency cap, or unchanged.
+pub(all) enum SpendResult {
+  Moved(String, String)
+  PausedSessionCap(String, String, Int, Int, Bool)
+  Unchanged
+} derive(Eq, Show)
+
+///|
+/// Effective configured concurrency cap across all profiles sharing the same underlying account as `id`:
+/// the minimum configured positive integer cap, or None if none is configured (unlimited).
+pub fn SessionAccounts::account_max_sessions(
   self : SessionAccounts,
   cfg : HubConfig,
-  candidates : Array[Profile],
-  model : String?,
-  strict : Bool,
+  id : String,
+) -> Int? {
+  let key = self.account_key(id)
+  let mut min_cap : Int? = None
+  for p in cfg.profiles {
+    if self.account_key(p.id) != key {
+      continue
+    }
+    match p.max_concurrent_sessions {
+      Some(cap) if cap > 0 =>
+        min_cap = match min_cap {
+          Some(cur) if cur <= cap => Some(cur)
+          _ => Some(cap)
+        }
+      _ => ()
+    }
+  }
+  min_cap
+}
+
+///|
+/// Whether the effective concurrency cap on the underlying account of `id` comes from new-account protection.
+pub fn SessionAccounts::account_in_protection(
+  self : SessionAccounts,
+  cfg : HubConfig,
+  id : String,
+) -> Bool {
+  guard self.account_max_sessions(cfg, id) is Some(min_cap) else { return false }
+  let key = self.account_key(id)
+  for p in cfg.profiles {
+    if self.account_key(p.id) != key {
+      continue
+    }
+    if p.max_concurrent_sessions == Some(min_cap) && p.new_account_protection {
+      return true
+    }
+  }
+  false
+}
+
+///|
+fn SessionAccounts::count_by_account(
+  self : SessionAccounts,
+  profiles : Array[String],
+) -> Map[String, Int] {
+  let counts : Map[String, Int] = Map::new()
+  for id in profiles {
+    let k = self.account_key(id)
+    counts[k] = counts.get(k).unwrap_or(0) + 1
+  }
+  counts
+}
+
+///|
+async fn SessionAccounts::load_map(
+  self : SessionAccounts,
   except? : String,
-) -> Profile {
+) -> Map[String, Int] {
   let running = jitems(
     Some(
       self.b.ask("sessions.running", [
@@ -706,19 +767,48 @@ pub async fn SessionAccounts::pick(
       ]),
     ),
   ).map(x => js_string(Some(x)))
-  let load : Map[String, Int] = Map::new()
-  for id in running {
-    let k = self.account_key(id)
-    load[k] = load.get(k).unwrap_or(0) + 1
+  self.count_by_account(running)
+}
+
+///|
+async fn SessionAccounts::active_map(
+  self : SessionAccounts,
+  except? : String,
+) -> Map[String, Int] {
+  let arg = match except {
+    Some(e) => js(e)
+    None => jundef
   }
+  let res = self.b.ask("sessions.active", [arg]) catch {
+    _ => self.b.ask("sessions.running", [arg])
+  }
+  let active = jitems(Some(res)).map(x => js_string(Some(x)))
+  self.count_by_account(active)
+}
+
+///|
+/// `pick`: chooses the profile a session runs on (pool.mbt); `except`: the session it is chosen for, whose own process
+/// is not counted.
+pub async fn SessionAccounts::pick(
+  self : SessionAccounts,
+  cfg : HubConfig,
+  candidates : Array[Profile],
+  model : String?,
+  strict : Bool,
+  except? : String,
+) -> Profile {
+  let load = self.load_map(except?)
+  let active = self.active_map(except?)
   let profile = pick_profile(
     candidates,
     model,
     {
       health: id => self.health_for(cfg, id, model),
       load: id => load.get(self.account_key(id)).unwrap_or(0),
+      active: Some(id => active.get(self.account_key(id)).unwrap_or(0)),
       last_picked: id => self.picked.get(self.account_key(id)).unwrap_or(0.0),
       now: self.now,
+      max_sessions: Some(id => self.account_max_sessions(cfg, id)),
     },
     strict,
   )
@@ -789,6 +879,7 @@ pub async fn SessionAccounts::run_on(
   holding? : Bool = false,
   quiet? : Bool = false,
   across? : Bool = false,
+  force_cap? : Bool = false,
 ) -> Profile {
   guard self.row(key) is Some(row) else { raise plain_error("unknown session \{key}") }
   guard runtime_kind(Some(Str(row.runtime))) is Some(runtime) else {
@@ -798,7 +889,7 @@ pub async fn SessionAccounts::run_on(
   let allows = self.allowed(key, cfg)
   let all = cfg.profiles.filter(p => p.runtimes.contains(runtime))
   let workspace_candidates = all.filter(allows)
-  let elsewhere = async fn(kept : Array[String]?) -> Profile? {
+  let elsewhere = async fn(kept : Array[String]?, only_paid : Bool) -> Profile? {
     if !across || row.pinned || kept is Some(_) || row.model is None {
       return None
     }
@@ -810,10 +901,12 @@ pub async fn SessionAccounts::run_on(
       "session taken on by another runtime's profile",
       quiet,
       allows,
+      only_paid~,
+      force_cap~,
     )
   }
   if workspace_candidates.length() == 0 {
-    match elsewhere(None) {
+    match elsewhere(None, false) {
       Some(p) => return p
       None => ()
     }
@@ -830,18 +923,30 @@ pub async fn SessionAccounts::run_on(
     raise plain_error(self.tr(self.station_lang, "station.speed.ultrafast_unavailable"))
   }
   let now = (self.now)()
+  let active = self.active_map(except=key)
+  let active_of = (p : Profile) => active.get(self.account_key(p.id)).unwrap_or(0)
+  let cap_of = (p : Profile) => if billed_per_use(p.raw) {
+    None
+  } else {
+    self.account_max_sessions(cfg, p.id)
+  }
   let next = match
     choose_run_on_profile(
       key,
       row,
       candidates,
       holding,
+      force_cap~,
+      active_of~,
+      cap_of~,
+      protection_of=p => self.account_in_protection(cfg, p.id),
       crowded=p => urgency(self.health_for(cfg, p.id, row.model).quota, now).crowded,
       can=id => self.can(cfg, id, row.model),
       health_of=id => self.health_of(cfg, id),
       cheap_to_leave=async fn() { self.cheap_to_leave(key) },
-      elsewhere=async fn() { elsewhere(kept_profiles) },
-      pick=async fn(among) { self.pick(cfg, among, row.model, false) },
+      elsewhere=async fn() { elsewhere(kept_profiles, false) },
+      elsewhere_paid=Some(async fn() { elsewhere(kept_profiles, true) }),
+      pick=async fn(among) { self.pick(cfg, among, row.model, false, except=key) },
     ) {
     Stay(p) => return p
     Move(p) => p
@@ -891,16 +996,31 @@ async fn choose_run_on_profile(
   row : Row,
   candidates : Array[Profile],
   holding : Bool,
+  force_cap? : Bool = false,
+  active_of? : (Profile) -> Int = _ => 0,
+  cap_of? : (Profile) -> Int? = _ => None,
+  protection_of? : (Profile) -> Bool = _ => false,
   crowded~ : (Profile) -> Bool,
   can~ : (String) -> Bool,
   health_of~ : (String) -> Health,
   cheap_to_leave~ : async () -> Bool,
   elsewhere~ : async () -> Profile?,
+  elsewhere_paid? : (async () -> Profile?)? = None,
   pick~ : async (Array[Profile]) -> Profile,
 ) -> RunOnChoice {
   let current = candidates.iter().find_first(p => p.id == row.profile)
   let strict = candidates.iter().any(p => serves(p, row.model))
   let fits = (p : Profile) => !strict || serves(p, row.model)
+  let capped = (p : Profile) => match cap_of(p) {
+    Some(cap) if cap > 0 => active_of(p) >= cap
+    _ => false
+  }
+  let try_elsewhere_paid = async fn() -> Profile? {
+    match elsewhere_paid {
+      Some(f) => f()
+      None => None
+    }
+  }
   let keeps = match current {
     Some(c) => row.pinned || (can(c.id) && fits(c))
     None => false
@@ -912,24 +1032,50 @@ async fn choose_run_on_profile(
         return Stay(c)
       }
       let paid = (p : Profile) => !billed_per_use(p.raw)
-      let unavailable = (p : Profile) => quota_unavailable(health_of(p.id))
-      let better = (p : Profile) => p.id != c.id &&
-        fits(p) &&
-        can(p.id) &&
-        (if paid(p) == paid(c) {
-          (unavailable(c) && !unavailable(p)) ||
-          (!unavailable(p) && crowded(c) && !crowded(p))
+      if !force_cap && !holding && capped(c) {
+        let uncapped_paid = candidates.filter(p => p.id != c.id &&
+          fits(p) &&
+          can(p.id) &&
+          paid(p) &&
+          !capped(p))
+        if uncapped_paid.length() > 0 {
+          among = uncapped_paid
         } else {
-          paid(p)
-        })
-      among = candidates.filter(better)
-      // Leaving a billed-per-use profile for a paid subscription or leaving a quota-unavailable profile for a healthy
-      // one happens on the next turn without waiting for `cheap_to_leave`; moving off a crowded profile to an uncrowded
-      // one of the same tier still waits for `cheap_to_leave`.
-      let upgrading = (!paid(c) && among.iter().any(paid)) ||
-        (unavailable(c) && among.iter().any(p => !unavailable(p)))
-      if among.length() == 0 || holding || (!upgrading && !cheap_to_leave()) {
-        return Stay(c)
+          match try_elsewhere_paid() {
+            Some(p) => return Stay(p)
+            None =>
+              raise account_cap_error(
+                c.name,
+                c.id,
+                active_of(c),
+                cap_of(c).unwrap_or(0),
+                protection=protection_of(c),
+              )
+          }
+        }
+      } else {
+        let unavailable = (p : Profile) => quota_unavailable(health_of(p.id))
+        let better = (p : Profile) => p.id != c.id &&
+          fits(p) &&
+          can(p.id) &&
+          (if paid(p) == paid(c) {
+            (
+              (unavailable(c) && !unavailable(p)) ||
+              (!unavailable(p) && crowded(c) && !crowded(p))
+            ) &&
+            (force_cap || !capped(p))
+          } else {
+            paid(p) && (cap_of(p) is None || (!capped(p) && !crowded(p)))
+          })
+        among = candidates.filter(better)
+        // Leaving a billed-per-use profile for a paid subscription or leaving a quota-unavailable profile for a healthy
+        // one happens on the next turn without waiting for `cheap_to_leave`; moving off a crowded profile to an uncrowded
+        // one of the same tier still waits for `cheap_to_leave`.
+        let upgrading = (!paid(c) && among.iter().any(paid)) ||
+          (unavailable(c) && among.iter().any(p => !unavailable(p)))
+        if among.length() == 0 || holding || (!upgrading && !cheap_to_leave()) {
+          return Stay(c)
+        }
       }
     }
     _ => {
@@ -954,6 +1100,24 @@ async fn choose_run_on_profile(
       }
       if fit.length() > 0 {
         among = fit.filter(p => standing(p).to_double() == best)
+      }
+      if best == 2.0 && !row.pinned && !force_cap {
+        let usable_paid = among.filter(p => !billed_per_use(p.raw))
+        if usable_paid.length() > 0 && usable_paid.iter().all(capped) {
+          match try_elsewhere_paid() {
+            Some(p) => return Stay(p)
+            None => {
+              let chosen = pick(usable_paid)
+              raise account_cap_error(
+                chosen.name,
+                chosen.id,
+                active_of(chosen),
+                cap_of(chosen).unwrap_or(0),
+                protection=protection_of(chosen),
+              )
+            }
+          }
+        }
       }
     }
   }
@@ -1056,7 +1220,7 @@ pub async fn SessionAccounts::spend(
   key : String,
   ran_on : String?,
   model? : String,
-) -> (String, String)? {
+) -> SpendResult {
   guard self.row(key) is Some(row) else { raise plain_error("unknown session \{key}") }
   let left = ran_on.unwrap_or(row.profile)
   let cfg = (self.config)()
@@ -1116,12 +1280,12 @@ pub async fn SessionAccounts::spend(
     None => id
   }
   if row.profile != left {
-    return Some((name(left), name(row.profile)))
+    return Moved(name(left), name(row.profile))
   }
   if row.pinned {
-    return None
+    return Unchanged
   }
-  guard runtime_kind(Some(Str(row.runtime))) is Some(runtime) else { return None }
+  guard runtime_kind(Some(Str(row.runtime))) is Some(runtime) else { return Unchanged }
   let allows = self.allowed(key, cfg)
   let workspace_all = cfg.profiles.filter(p => p.runtimes.contains(runtime) && allows(p))
   let (all, kept_profiles) = self.pool_for(row, workspace_all)
@@ -1129,9 +1293,49 @@ pub async fn SessionAccounts::spend(
   let candidates = all.filter(p => p.id != left &&
     (!strict || serves(p, row.model)) &&
     self.can(cfg, p.id, row.model))
+  let active = self.active_map(except=key)
+  let active_of = (p : Profile) => active.get(self.account_key(p.id)).unwrap_or(0)
+  let cap_of = (p : Profile) => if billed_per_use(p.raw) {
+    None
+  } else {
+    self.account_max_sessions(cfg, p.id)
+  }
+  let capped = (p : Profile) => match cap_of(p) {
+    Some(cap) if cap > 0 => active_of(p) >= cap
+    _ => false
+  }
+  let paid_candidates = candidates.filter(p => !billed_per_use(p.raw))
+  let uncapped_paid = paid_candidates.filter(p => !capped(p))
+  if paid_candidates.length() > 0 && uncapped_paid.length() == 0 {
+    if kept_profiles is None {
+      match
+        self.take_across(
+          cfg,
+          key,
+          row,
+          Some(left),
+          "allowance ran out; session taken on by another runtime's profile",
+          false,
+          allows,
+          only_paid=true,
+          force_cap=false,
+        ) {
+        Some(n) => return Moved(name(left), n.name)
+        None => ()
+      }
+    }
+    let chosen = self.pick(cfg, paid_candidates, row.model, false, except=key)
+    return PausedSessionCap(
+      chosen.name,
+      chosen.id,
+      active_of(chosen),
+      cap_of(chosen).unwrap_or(0),
+      self.account_in_protection(cfg, chosen.id),
+    )
+  }
   if candidates.length() == 0 {
     if kept_profiles is Some(_) {
-      return None
+      return Unchanged
     }
     let next = self.take_across(
       cfg,
@@ -1141,13 +1345,20 @@ pub async fn SessionAccounts::spend(
       "allowance ran out; session taken on by another runtime's profile",
       false,
       allows,
+      only_paid=false,
+      force_cap=false,
     )
     return match next {
-      Some(n) => Some((name(left), n.name))
-      None => None
+      Some(n) => Moved(name(left), n.name)
+      None => Unchanged
     }
   }
-  let next = self.pick(cfg, candidates, row.model, false)
+  let pick_pool = if uncapped_paid.length() > 0 {
+    candidates.filter(p => !capped(p))
+  } else {
+    candidates
+  }
+  let next = self.pick(cfg, pick_pool, row.model, false, except=key)
   self.set_profile(key, next.id, kept_profiles)
   self.log(
     "allowance ran out; session taken on by another profile",
@@ -1163,7 +1374,7 @@ pub async fn SessionAccounts::spend(
     all.iter().any(p => !billed_per_use(p.raw)) {
     self.billed_fallback(key, row, runtime, next)
   }
-  Some((name(left), next.name))
+  Moved(name(left), next.name)
 }
 
 ///|
@@ -1181,14 +1392,28 @@ async fn SessionAccounts::take_across(
   said : String,
   quiet : Bool,
   allows : (Profile) -> Bool,
+  only_paid? : Bool = false,
+  force_cap? : Bool = false,
 ) -> Profile? {
   guard runtime_kind(Some(Str(row.runtime))) is Some(runtime) else { return None }
   if row.ultrafast() { return None }
   guard row.model is Some(model) else { return None }
+  let active = if force_cap { None } else { Some(self.active_map(except=key)) }
+  let capped = (p : Profile) => match active {
+    Some(m) =>
+      is_session_capped(
+        p,
+        self.account_max_sessions(cfg, p.id),
+        m.get(self.account_key(p.id)).unwrap_or(0),
+      )
+    None => false
+  }
   let candidates = cfg.profiles.filter(p => !p.runtimes.contains(runtime) &&
     allows(p) &&
     runs(p, model) &&
-    self.can(cfg, p.id, Some(model)))
+    self.can(cfg, p.id, Some(model)) &&
+    (!only_paid || !billed_per_use(p.raw)) &&
+    !capped(p))
   if candidates.length() == 0 {
     return None
   }

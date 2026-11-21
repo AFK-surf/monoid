@@ -732,7 +732,7 @@ test "添加到收藏's stations: under what it says, one under another, 离线 
 }
 
 ///|
-test "前往文件夹's Tab, drawn after the row it puts in, on a key's cap: edged 1 in the line's colour" {
+test "前往文件夹's Tab, drawn after the row it puts in, on a key's cap: edged 0.5 in the line's colour" {
   let t = files_page_tester(1280.0, 800.0, 0)
   t.key(@ui.key_of_char('g'), mods=@ui.mod_cmd + @ui.mod_shift_key)
   t.run_for(@ui.move_most_ms)
@@ -740,7 +740,7 @@ test "前往文件夹's Tab, drawn after the row it puts in, on a key's cap: edg
   t.run_for(@ui.move_most_ms)
   guard t.words().search_by(fn(w) { w.0 == "Tab" }) is Some(i) else { fail("no Tab drawn") }
   let (_, x, y, w, h, _) = t.words()[i]
-  assert_eq(edge_round(t, x + w / 2.0, y + h / 2.0), (1.0, @ui.tree_theme().color(Line)))
+  assert_eq(edge_round(t, x + w / 2.0, y + h / 2.0), (0.5, @ui.tree_theme().color(Line)))
   t.key(@ui.key_escape)
   t.run_for(@ui.move_most_ms)
 }

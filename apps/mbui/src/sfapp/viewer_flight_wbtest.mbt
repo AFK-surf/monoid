@@ -75,9 +75,9 @@ test "a film flying in: its capsule goes with the still as it leaves its thumbna
   assert_false(words_show(t, "0:00"))
   let v = viewer.get().unwrap()
   // nearly in, its ground whole: the player's controls coming with it (their clock showing), not after it lands
-  let nearly = v.fly.end() - @ui.move_most_ms / 8.0
+  let nearly = v.tree_way_end.get() - @ui.move_most_ms / 8.0
   t.run_for(nearly - t.time())
-  assert_true(v.flies && v.flying(t.ctx()) > @sfbase.bars_from)
+  assert_true(v.tree_way.get() && v.fade.value_at(t.time()) > @sfbase.bars_from)
   assert_true(words_show(t, "0:00"))
   t.run_for(@ui.move_most_ms)
   assert_true(words_show(t, "0:00"))
@@ -94,7 +94,7 @@ test "a film closed back into its thumbnail: the player's bars go with it as it 
   assert_true(t.view_said("{\"still\":{\"view\":1},\"b\":\"\{hex_bytes(fixture_file_png("演示录屏.mp4"))}\"}"))
   t.draw()
   let v = pv_leaving.get().unwrap()
-  assert_true(v.flies && v.fly_back)
+  assert_true(v.tree_back.get() && v.tree_way.get())
   // flying back: the controls still there, going as it shrinks
   t.frame()
   assert_true(words_show(t, "0:04"))
@@ -115,9 +115,9 @@ test "a film not come yet, no still of it either, closed: it flies back from whe
   t.back()
   t.draw()
   let v = pv_leaving.get().unwrap()
-  assert_true(v.flies && v.fly_back)
+  assert_true(v.tree_back.get() && v.tree_way.get())
   // from the 16:9 box across the screen it landed as (its size as its message says it)
-  let (_, _, w, h) = v.fly_to.unwrap()
+  guard t.flight_of(v.thumb_id()) is Some(((_, _, w, h), _)) else { fail("no flight back") }
   assert_true((w - 390.0).abs() < 1.0 && (h - 219.375).abs() < 1.0)
 }
 

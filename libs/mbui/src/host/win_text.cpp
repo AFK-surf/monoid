@@ -509,7 +509,10 @@ static IDWriteTypography *typography_for(int style) {
       t->AddFontFeature({DWRITE_FONT_FEATURE_TAG_STANDARD_LIGATURES, 0});
       t->AddFontFeature({DWRITE_FONT_FEATURE_TAG_CONTEXTUAL_LIGATURES, 0});
     }
-    if (k & 2) t->AddFontFeature({DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES, 1});
+    if (k & 2) {
+      t->AddFontFeature({DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES, 1});
+      t->AddFontFeature({DWRITE_FONT_FEATURE_TAG_KERNING, 1});
+    }
     // (kern said again: DirectWrite sets a range with pwid unkerned otherwise, quotes round "Wo" 3 pt wider at 20)
     if (k & 4) {
       t->AddFontFeature({DWRITE_FONT_FEATURE_TAG_PROPORTIONAL_WIDTHS, 1});

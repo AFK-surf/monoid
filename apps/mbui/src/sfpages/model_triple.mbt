@@ -1556,7 +1556,7 @@ fn triple_body_node(
     guard has_params() else { return 0.0 }
     b.words_redone() |> ignore
     let size = @sf.node_sp(b, @sf.theme().t.ui)
-    let padding = 2.0 * @ui.Space::px(S2_5)
+    let padding = 2.0 * @ui.Space::px(S4)
     let check_room = @ui.Space::px(S1_5) + @ui.Space::px(S3_5)
     let mut w = 0.0
     if !all_efforts().is_empty() {
@@ -3294,7 +3294,7 @@ let triple_param_rule : @ui.Style = @ui.css("w=Full py=S1_5")
 /// Subsequent section heading in the wide right parameter column (`速度`, `上下文`): as far under its line as the first
 /// one's (`panel_head_box`) is under the panel's top.
 // kept across runs: a value (no field of it changes)
-let triple_param_head_box : @ui.Style = @ui.css("w=Full px=S2_5 pt=S1_5 pb=S1")
+let triple_param_head_box : @ui.Style = @ui.css("w=Full px=S4 pt=S1_5 pb=S1")
 
 ///|
 /// A line's box `d` across the models' column, reaching out to meet what is round it: beside what opened it from the

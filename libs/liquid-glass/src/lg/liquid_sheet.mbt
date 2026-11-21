@@ -53,6 +53,7 @@ pub fn liquid_sheet_node(
             .max_height(Is(Some(max_height)))
             .radius(Is(ovl_sheet_radius))
             .shadow(Is(shadow_default))
+            .shadow_outside(Is(true))
             .glass(By(fn() { Some(ovl_sheet_glass()) }))
             .alpha(By(fn() { look().alpha }))
             .offset(By(fn() { (0.0, look().dy) }))
@@ -246,6 +247,7 @@ pub fn liquid_action_sheet_node(
               .padding(Is((ovl_action_pad, ovl_action_pad, ovl_action_pad, ovl_action_pad)))
               .radius(Is(ovl_action_radius))
               .shadow(Is(shadow_default))
+              .shadow_outside(Is(true))
               .glass(By(fn() { Some(ovl_sheet_glass()) }))
               |> ignore
               let has_header = title() != "" || message() != ""
@@ -356,6 +358,7 @@ pub fn liquid_action_sheet_node(
                 .padding(Is((ovl_action_hdr_px, 0.0, ovl_action_hdr_px, 0.0)))
                 .radius(Is(ovl_action_radius))
                 .shadow(Is(shadow_default))
+                .shadow_outside(Is(true))
                 .glass(By(fn() { Some(ovl_sheet_glass()) }))
                 |> ignore
                 ovl_focus_ring(cancel_v, fn() { btn.focus_shown() }, ovl_action_radius)

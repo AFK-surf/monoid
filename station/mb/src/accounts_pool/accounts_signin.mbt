@@ -7,6 +7,9 @@
 pub let login_browser_file : String = ".stillfail-login-state.json"
 
 ///|
+pub let default_new_subscription_max_concurrent_sessions : Int = 8
+
+///|
 /// `EMAIL_RE`: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.
 pub fn email_ok(s : String) -> Bool {
   if has_space(s) {
@@ -766,6 +769,7 @@ async fn Accounts::made_of_login(
   }
   let save = async fn() {
     self.save(p.by, "profile \{profile_id} from a sign-in", raw => {
+      let max_sessions = jint(default_new_subscription_max_concurrent_sessions)
       let made = match signed_in {
         Some(s) =>
           jobj([
@@ -781,6 +785,8 @@ async fn Accounts::made_of_login(
             ),
             ("home", js("homes/\{profile_id}")),
             ("env", Obj([])),
+            ("maxConcurrentSessions", max_sessions),
+            ("newAccountProtection", jbool(true)),
           ])
         None =>
           if kimi {
@@ -797,6 +803,8 @@ async fn Accounts::made_of_login(
               ),
               ("home", js("homes/\{profile_id}")),
               ("env", Obj([])),
+              ("maxConcurrentSessions", max_sessions),
+              ("newAccountProtection", jbool(true)),
             ])
           } else {
             match p.service {
@@ -829,6 +837,8 @@ async fn Accounts::made_of_login(
                   ),
                   ("home", js("homes/\{profile_id}")),
                   ("env", Obj([])),
+                  ("maxConcurrentSessions", max_sessions),
+                  ("newAccountProtection", jbool(true)),
                 ])
             }
           }

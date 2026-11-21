@@ -156,7 +156,7 @@ fn tree_text_runs() -> Array[TextRun] {
     guard a > 0.0 && c.bones == 0L else { return }
     let mine : Array[TextRun] = []
     if !c.runs.is_empty() {
-      let (_, lay, _) = view_runs_laid(c.runs, c.words_look, c.runs_look, c.w, tree.words_scale_of(c.id), kept=c.words_breaks)
+      let (_, lay, _) = view_runs_laid(c.runs, c.words_look, c.runs_look, c.w, tree.words_scale_of(c.id), kept=c.words_breaks, tabular=c.words_tabular)
       let shifted = lay.line_start.length() > 0 && c.words_center
       rich_runs_into(mine, lay, 0.0, 0.0, -1.0e9, 1.0e9)
       if shifted {
@@ -180,7 +180,7 @@ fn tree_text_runs() -> Array[TextRun] {
         balance=look.balance,
         line=view_line(scale, look),
         spacing=view_spacing(scale, look),
-        style=view_words_style(),
+        style=view_words_style(tabular=c.words_tabular),
         max_lines=look.max_lines,
       )
       text_runs_into(mine, tl, 0.0, 0.0, fn(l) { if c.words_center && l < tl.line_w.length() { dmax((c.w - tl.line_w[l]) / 2.0, 0.0) } else { 0.0 } }, -1.0e9, 1.0e9)

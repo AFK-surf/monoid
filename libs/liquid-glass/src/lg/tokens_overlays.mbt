@@ -608,8 +608,7 @@ fn ovl_ring_shapes(
   if clamped > 0.001 {
     let from = -0.5 * pi + start_turn * 2.0 * pi
     let to = from + clamped * 2.0 * pi
-    let steps = (48.0 * clamped).ceil().to_int()
-    shapes.push(@paint.shape_of([(ovl_arc_pts(mid, mid, r, from, to, steps), false)], stroke=color, width=stroke))
+    shapes.push(@paint.shape_of([(ovl_arc_pts(mid, mid, r, from, to, 48), false)], stroke=color, width=stroke))
   }
   shapes
 }

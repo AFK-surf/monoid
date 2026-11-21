@@ -131,6 +131,11 @@ export class ActorsProgram {
     this.post({ maxConcurrentTurns: limit });
   }
 
+  /// Wakes queued sessions waiting on per-account concurrency caps (e.g. after config or quota changes).
+  drainCapQueue() {
+    this.post({ drainCapQueue: true });
+  }
+
   now() {
     return this.#clock.currentTimeMillisUnsafe();
   }
@@ -301,6 +306,16 @@ function errorOf(error: unknown, runtime: RuntimeKind): Json {
   errors.set(id, error);
   // (those never given back: the oldest let go)
   if (errors.size > 256) errors.delete(errors.keys().next().value!);
+  const cap = (error as any)?.sessionCap === true
+    ? {
+        sessionCap: true,
+        profile: (error as any).profile,
+        profileId: (error as any).profileId,
+        active: (error as any).active,
+        cap: (error as any).cap,
+        protection: Boolean((error as any).protection),
+      }
+    : {};
   return {
     id,
     message,
@@ -309,6 +324,7 @@ function errorOf(error: unknown, runtime: RuntimeKind): Json {
     runtime,
     // (what it is, for the program to tell apart a peer's refusal from a request that did not get through: bus.ts)
     kind: (error as Error)?.constructor?.name ?? "Error",
+    ...cap,
   };
 }
 
@@ -765,13 +781,14 @@ export class MbActor {
       }
       case "pendingAndFormat": return this.#pendingAndFormat(args[0] === true);
       case "open": {
-        const [stopped, readBack, profile] = args;
+        const [stopped, readBack, profile, forceCap] = args;
         let generation = 0;
         const heard = deps.toolsHeard?.(this.key);
         const opened = await openAgent(deps, this.key, {
           stopped,
           readBack,
           profile: profile ?? null,
+          forceCap: forceCap === true,
           runtime: (runtime) => { this.runtime = runtime; },
           generation: () => (generation = this.nextGeneration()),
           listener: (g) => this.listener(g),
@@ -788,7 +805,7 @@ export class MbActor {
         if (!session) return null;
         return retuneAgent(deps, this.key, session, this.runtime, profile, restart, holding);
       }
-      case "profileId": return deps.runOn(this.key, args[0] === true, true).id;
+      case "profileId": return deps.runOn(this.key, args[0] === true, true, args[1] === true).id;
       // A process this station opened whose turn ended saying nothing, that never once reached the station's tools
       // (not even to list them: its MCP connection failed as it opened, 2026-11-19 with the station out of file
       // handles), is one that lost them: why, else null. Not a Codex app-server's, shared by sessions and opened before.

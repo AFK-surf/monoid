@@ -696,6 +696,13 @@ fn steps_in_now() -> Int {
 }
 
 ///|
+/// How many steps deep the topmost open panel of nodes stands (1 its first, 0 when none is open): pass to
+/// `panel_back(to=...)` to return to a panel opened as a step inside another without unwinding past it.
+pub fn panel_depth() -> Int {
+  steps_in_now()
+}
+
+///|
 /// The room a panel leaves at its sides while its body is drawn (the presenters set it): what panel_bleed reaches across,
 /// and what a row's ground reaches out across, its words on the column's line (choice_row).
 let panel_sides_in : Ref[Double] = { val: 0.0 }
@@ -721,25 +728,6 @@ let sheet_column_box : @ui.Style = @ui.css("w=Full")
 /// so a sheet's column in it is that one.
 // kept across runs: said by panel_centred round what a dialog holds
 let column_given : Ref[Bool] = { val: false }
-
-///|
-/// How far in from its padding the column a dialog's body stands in is (its words' line: panel_centred), 0 elsewhere:
-/// what reaches out to the dialog's sides and corners from it reaches across this too (dialog_rows, dialog_foot_rows).
-// kept across runs: said by panel_centred round what a dialog holds
-let column_in_now : Ref[Double] = { val: 0.0 }
-
-///|
-/// How far a row's ground reaches out of the column it stands in, its words on the column's line: as far as its own
-/// words are in from its ground (`own`), no further than the room the panel leaves at its sides (none outside a panel;
-/// none beside what opened it, where the panel's padding is where its rows' grounds stand: rows_out).
-fn row_reach(own : Double) -> Double {
-  dmin(rows_out.val, own)
-}
-
-///|
-/// The room at a panel's sides its rows' grounds reach out across while its body is drawn: a sheet's (its column's
-/// sides), none in a small panel (its rows at its padding, as a menu's are).
-let rows_out : Ref[Double] = { val: 0.0 }
 
 ///|
 /// Whether the panel whose body is drawn now is a small panel beside what opened it (a popover's): its rows stand as
@@ -792,18 +780,6 @@ pub fn panel_card_last() -> @ui.Style {
 ///|
 // kept across runs: a value (no field of it changes)
 let no_card_out : @ui.Style = @ui.css("")
-
-///|
-/// What a row of a panel's body reaching `out` past its column takes of a corner: row_corner where it still stands in
-/// from the panel's sides (panel_sides_in), never a square patch there (the corner rule's lit square, 2026-11-13);
-/// nothing where it reaches them, or outside a panel.
-fn panel_row_rounds(out : Double) -> @ui.Style {
-  if panel_sides_in.val - out > 0.5 {
-    panel_row_round
-  } else {
-    no_reach
-  }
-}
 
 ///|
 /// A row of a panel's body, its words so (panel_words_in), concentric with a small panel where it is in one; one to
@@ -1560,9 +1536,13 @@ let step_back_side : Double = dialog_close
 let step_back_in : Double = (dialog_close - 16.0) / 2.0
 
 ///|
-/// A step's back key before a title's row of its own: as far out of the words' line as before a title (step_head).
+/// A step's back key offset from the small panel's title line (panel_pad + text_in) to keep it concentric with r_menu.
+let step_back_out_px : Double = r_menu - step_back_side / 2.0 - panel_pad - text_in
+
+///|
+/// A step's back key before a title's row of its own: concentric with the small panel's top-left corner (`r_menu`).
 // kept across runs: a value (no field of it changes)
-let step_back_out : @ui.Style = @ui.style(ml=room(-step_back_in))
+let step_back_out : @ui.Style = @ui.style(ml=room(step_back_out_px))
 
 ///|
 /// A step's back key before a dialog's title in its head's row (dialog_head, its parts S3 apart): as far out of the

@@ -80,8 +80,10 @@ pub fn pick_profile(candidates : Array[Json], model : String?, signals : PoolSig
   let ps : @accounts_pool.PoolSignals = {
     health: id => health_of((signals.health)(id)),
     load: signals.load,
+    active: None,
     last_picked: signals.last_picked,
     now: signals.now,
+    max_sessions: None,
   }
   let chosen = @accounts_pool.pick_profile(profiles, model, ps, strict) catch {
     e => raise Refused(@accounts_pool.message_of(e))

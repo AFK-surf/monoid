@@ -217,7 +217,7 @@ static const char *shader_src =
     "  int n = int(gmisc.x + 0.5);\n"
     "  [loop] for (int i = 0; i < 8; i++) {\n"
     "    if (i >= n) break;\n"
-    "    d = smin_k(d, sd_rr(p, gshape[i], grad[i].xxxx), k);\n"
+    "    d = smin_k(d, sd_rr(p, gshape[i], grad[i]), k);\n"
     "  }\n"
     "  return d;\n"
     "}\n"
@@ -343,7 +343,7 @@ static const char *shader_src =
     "      int n_sh = int(gmisc.x + 0.5);\n"
     "      [loop] for (int i = 0; i < 8; i++) {\n"
     "        if (i >= n_sh) break;\n"
-    "        float di = sd_rr(p, gshape[i], grad[i].xxxx);\n"
+    "        float di = sd_rr(p, gshape[i], grad[i]);\n"
     "        float hi = min(gshape[i].z, gshape[i].w) * 0.5;\n"
     "        if (i == 0) {\n"
     "          d = di;\n"
@@ -422,12 +422,20 @@ static const char *shader_src =
     "    float glintFaceGain;\n"
     "    float glintVib;\n"
     "    if (is_clear) {\n"
-    "      // Pure crystal-clear refractive optical lens (lifted tab-bar / toggle / slider thumb & loupe):\n"
-    "      // zero milky emission veil so light bars never clip to opaque white and dark bars stay crisp.\n"
-    "      emission = float3(0.0, 0.0, 0.0);\n"
-    "      transmittance = 1.0; lift = 0.0; chromaGain = 1.06;\n"
-    "      contourStr = 0.24; contourDirAmt = 0.85; bevelShadowStr = 0.045;\n"
-    "      glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;\n"
+    "      // iOS 27 clear liquid glass: col.a == 0.0 keeps crystal-clear zero-veil optical lens\n"
+    "      // (lifted tab-bar / toggle / slider thumb & loupe), while Glass::clear() (col.a ~ 0.102)\n"
+    "      // blends smoothly into the +0.126 translucent micro-veil over media.\n"
+    "      float clearVeil = smoothstep(0.005, 0.102, col.a);\n"
+    "      emission = float3(1.0, 1.0, 1.0) * (0.126 * clearVeil);\n"
+    "      transmittance = lerp(1.0, 0.90, clearVeil);\n"
+    "      lift = lerp(0.0, 0.10, clearVeil);\n"
+    "      chromaGain = lerp(1.06, 1.0, clearVeil);\n"
+    "      contourStr = lerp(0.24, 0.25, clearVeil);\n"
+    "      contourDirAmt = lerp(0.85, 0.77, clearVeil);\n"
+    "      bevelShadowStr = lerp(0.045, 0.04, clearVeil);\n"
+    "      glintLum = lerp(1.6, 1.2, clearVeil);\n"
+    "      glintFaceGain = lerp(0.0, 0.25, clearVeil);\n"
+    "      glintVib = lerp(2.85, 1.5, clearVeil);\n"
     "    } else if (is_dark) {\n"
     "      emission = float3(32.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0);\n"
     "      transmittance = 0.52625; lift = 0.583; chromaGain = 1.005;\n"
@@ -1300,11 +1308,15 @@ static int capture(ID3D11RenderTargetView *target, int pw, int ph, const float *
       bx0 = b[0] - m23; by0 = b[1] - m23; bx1 = b[0] + b[2] + m23; by1 = b[1] + b[3] + m23;
       if (merged_liquid && n < 8) {
         for (int k = 0; k < 4; k++) gu.shape[n][k] = b[k];
-        gu.rad[n][0] = b[4];
+        if (fmaxf(fmaxf(b[36], b[37]), fmaxf(b[38], b[39])) > 0.0f) {
+          for (int k = 0; k < 4; k++) gu.rad[n][k] = b[36 + k];
+        } else {
+          for (int k = 0; k < 4; k++) gu.rad[n][k] = b[4];
+        }
         n++;
       }
       if (unmerged_liquid && a[7] >= 0.0f) {
-        float bm = 3.0f * blur + b[21] * (1.0f + b[22]) + m23 + 2.0f;
+        float bm = 3.0f * blur + b[21] * (1.0f + fabsf(b[22])) + m23 + 2.0f;
         if (bm > margin) margin = bm;
       }
     }
@@ -1321,7 +1333,7 @@ static int capture(ID3D11RenderTargetView *target, int pw, int ph, const float *
       float m23 = fmaxf(b[23], 0.0f);
       bx0 = b[0] - m23; by0 = b[1] - m23; bx1 = b[0] + b[2] + m23; by1 = b[1] + b[3] + m23;
       if (a[7] >= 0.0f) {
-        float bm = 3.0f * blur + b[21] * (1.0f + b[22]) + m23 + 2.0f;
+        float bm = 3.0f * blur + b[21] * (1.0f + fabsf(b[22])) + m23 + 2.0f;
         if (bm > margin) margin = bm;
       }
     } else {

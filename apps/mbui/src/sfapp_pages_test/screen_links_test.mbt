@@ -257,9 +257,20 @@ test "a tall browser picture fills its preview from the top of the page" {
   let frame_w = @sf.peek_frame_px
   let frame_h = frame_w / 1.6
   let t = @ui.Tester::new(
-    fn(c) {
-      c.box(style=@ui.style(w=Fixed(frame_w), h=Fixed(frame_h), clip=true), fn() {
-        @sfbase.peek_picture(c, "screen.png")
+    fn(_) { () },
+    tree=fn(root) {
+      root.box(fn(b) {
+        b.width(Is(Some(frame_w))).height(Is(Some(frame_h))).clips(Is(true)) |> ignore
+        b.box(fn(pic) {
+          pic
+          .over(Is(true))
+          .fills_across(Is(true))
+          .height_share(Is(1.0))
+          .image(Is(Some(("screen.png", "", 0))))
+          .image_covers_at(Is(Some((0.5, 0.0))))
+          |> ignore
+        })
+        |> ignore
       })
       |> ignore
     },

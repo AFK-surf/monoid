@@ -140,6 +140,12 @@ priv struct Actor {
   mut start_failures : Int
   /// what was handed to the last of those (`handed_ids`); "" once one started
   mut failed_handed : String
+  /// waiting in `cap_wait_queue` for an account concurrency slot to open
+  mut paused_cap : Bool
+  /// bypasses per-account concurrency caps on the next open (manual jump-the-queue start)
+  mut force_session_cap : Bool
+  /// whether the queued notice was already posted for the current wait
+  mut cap_wait_notified : Bool
   /// its waits on Node's clock, by name
   timers : Map[String, () -> Unit]
   /// what it last told Node of itself
@@ -174,11 +180,17 @@ priv struct Actors {
   mut max_concurrent_turns : Int
   /// deduplicated FIFO queue of session keys waiting for a turn slot
   turn_wait_queue : Array[String]
+  /// deduplicated FIFO queue of session keys waiting for an account concurrency cap slot
+  cap_wait_queue : Array[String]
+  /// serial lock preventing thundering-herd concurrent drains of `cap_wait_queue`
+  mut draining_cap : Bool
+  /// set when another drain is requested while a drain pass is already running
+  mut drain_cap_again : Bool
 }
 
 ///|
 fn Actors::new(host : @host.Host, sep : String) -> Actors {
-  { host, actors: Map([]), asked: Map([]), timers: Map([]), next: 0, now: 0.0, active: 0, seen: 0, db: None, jobs: JobsState::new(), remote: RemoteState::new(), agents: None, live: LiveState::new(), sep, max_concurrent_turns: 0, turn_wait_queue: [] }
+  { host, actors: Map([]), asked: Map([]), timers: Map([]), next: 0, now: 0.0, active: 0, seen: 0, db: None, jobs: JobsState::new(), remote: RemoteState::new(), agents: None, live: LiveState::new(), sep, max_concurrent_turns: 0, turn_wait_queue: [], cap_wait_queue: [], draining_cap: false, drain_cap_again: false }
 }
 
 ///|
@@ -348,6 +360,9 @@ fn Actors::actor(self : Actors, key : String, runtime : String) -> Actor {
         recovery_deferred: false,
         start_failures: 0,
         failed_handed: "",
+        paused_cap: false,
+        force_session_cap: false,
+        cap_wait_notified: false,
         timers: Map([]),
         mirrored: "",
       }
@@ -570,6 +585,83 @@ fn Actors::remove_turn_wait(self : Actors, key : String) -> Unit {
 }
 
 ///|
+fn Actors::enqueue_cap_wait(self : Actors, a : Actor) -> Unit {
+  if a.phase == "closed" {
+    return
+  }
+  if !self.cap_wait_queue.contains(a.key) {
+    self.cap_wait_queue.push(a.key)
+  }
+}
+
+///|
+fn Actors::remove_cap_wait(self : Actors, key : String) -> Unit {
+  if self.cap_wait_queue.search_by(k => k == key) is Some(i) {
+    ignore(self.cap_wait_queue.remove(i))
+  }
+}
+
+///|
+/// Serially drains `cap_wait_queue` in strict FIFO order, skipping runtimes already known to be full
+/// in this pass so a capped Claude account never head-of-line blocks Codex sessions.
+fn Actors::drain_cap_queue(self : Actors) -> Unit {
+  if self.cap_wait_queue.length() == 0 {
+    return
+  }
+  if self.draining_cap {
+    self.drain_cap_again = true
+    return
+  }
+  self.draining_cap = true
+  self.spawn(() => {
+    defer {
+      self.draining_cap = false
+      if self.drain_cap_again {
+        self.drain_cap_again = false
+        self.drain_cap_queue()
+      }
+    }
+    let blocked_runtimes : Array[String] = []
+    let mut i = 0
+    while i < self.cap_wait_queue.length() {
+      let key = self.cap_wait_queue[i]
+      match self.actors.get(key) {
+        None => {
+          ignore(self.cap_wait_queue.remove(i))
+          continue
+        }
+        Some(actor) => {
+          if actor.phase == "closed" || holds_turn_slot(actor) || !actor.paused_cap {
+            ignore(self.cap_wait_queue.remove(i))
+            continue
+          }
+          if blocked_runtimes.contains(actor.runtime) {
+            i += 1
+            continue
+          }
+          actor.paused_cap = false
+          self.wake_cap_queued(actor) catch {
+            _ => ()
+          }
+          if actor.paused_cap {
+            if !blocked_runtimes.contains(actor.runtime) {
+              blocked_runtimes.push(actor.runtime)
+            }
+            match self.cap_wait_queue.search_by(k => k == key) {
+              Some(pos) => i = pos + 1
+              None => ()
+            }
+          } else {
+            self.remove_cap_wait(key)
+            actor.cap_wait_notified = false
+          }
+        }
+      }
+    }
+  })
+}
+
+///|
 fn Actors::set_max_concurrent_turns(self : Actors, next : Int) -> Unit {
   let prev = self.max_concurrent_turns
   self.max_concurrent_turns = if next > 0 { next } else { 0 }
@@ -583,7 +675,7 @@ fn Actors::set_max_concurrent_turns(self : Actors, next : Int) -> Unit {
 /// Each popped actor synchronously reserves `starting_turn = true` before spawning
 /// `wake_queued`, so `active_turn_slots()` reflects the reservation immediately and
 /// never cascades across the rest of the queue.
-fn Actors::drain_turn_queue(self : Actors) -> Unit {
+fn Actors::drain_turn_queue(self : Actors, drain_cap? : Bool = true) -> Unit {
   let mut budget = if self.max_concurrent_turns <= 0 {
     self.turn_wait_queue.length()
   } else {
@@ -613,12 +705,15 @@ fn Actors::drain_turn_queue(self : Actors) -> Unit {
       None => ()
     }
   }
+  if drain_cap {
+    self.drain_cap_queue()
+  }
 }
 
 ///|
 /// Whether a line of Node's is for the actors: what Node says them begins so (mb-actor.ts `post`, its keys first).
 fn actors_line(line : String) -> Bool {
-  ["{\"call\":", "{\"answer\":", "{\"due\":", "{\"db\":", "{\"maxConcurrentTurns\":", "{\"runtime\":", "{\"event\":", "{\"routed\":", "{\"codexUpdated\":"].iter().any(p => line.has_prefix(p))
+  ["{\"call\":", "{\"answer\":", "{\"due\":", "{\"db\":", "{\"maxConcurrentTurns\":", "{\"drainCapQueue\":", "{\"runtime\":", "{\"event\":", "{\"routed\":", "{\"codexUpdated\":"].iter().any(p => line.has_prefix(p))
 }
 
 ///|
@@ -636,6 +731,9 @@ fn Actors::heard(self : Actors, line : String) -> Unit {
       self.asked.clear()
       self.timers.clear()
       self.turn_wait_queue.clear()
+      self.cap_wait_queue.clear()
+      self.draining_cap = false
+      self.drain_cap_again = false
       self.max_concurrent_turns = 0
       self.seen = 1
       self.active = 0
@@ -660,6 +758,10 @@ fn Actors::heard(self : Actors, line : String) -> Unit {
     { "maxConcurrentTurns": Number(n, ..), .. } => {
       let next = if n.is_nan() || n.is_inf() || n <= 0.0 { 0 } else { n.to_int() }
       self.set_max_concurrent_turns(next)
+      return
+    }
+    { "drainCapQueue": True, .. } => {
+      self.drain_cap_queue()
       return
     }
     { "answer": Number(id, ..), .. } => {

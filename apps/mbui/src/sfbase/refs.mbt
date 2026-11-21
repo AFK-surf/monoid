@@ -518,31 +518,7 @@ pub fn refs_closed(key : String, start : Int) -> Bool {
 }
 
 ///|
-/// A chat picked in the menu of draft `key` for the `@` at `start` (as the menu showed it; its station, its id, its
-/// title) put in as the mark the core makes of it (`chat.ref`, which keeps its link until it is sent; one of another
-/// workspace's keeps it for this one, `into`, too) in the `@words`' place if they are still there, a space and the
-/// caret after it; the menu closed for this `@`. Failing, `failed` is told why.
-pub fn refs_pick(
-  c : @ui.Ctx,
-  src : Source,
-  key : String,
-  input : @ui.Field,
-  start : Int,
-  into : String,
-  station : String,
-  id : String,
-  title : String,
-  failed : (String) -> Unit,
-) -> Unit {
-  let f = ref_field(key)
-  // (the caret as it is now: the words typed after the `@` since its menu was built are the `@`'s too)
-  let caret = input.selection().1
-  f.closed.set(start)
-  c.tell("refs/pick/" + key, fn() { refs_put_picked(src, key, input, start, caret, into, station, id, title, failed) })
-}
-
-///|
-/// refs_pick's, taken in a handler (a menu's row picked, made as nodes): asked of the core at once.
+/// A chat picked in the menu of draft `key` for the `@` at `start`, taken in a handler (a menu's row picked, made as nodes): asked of the core at once.
 pub fn refs_pick_now(
   src : Source,
   key : String,
@@ -731,17 +707,7 @@ pub fn paste_threshold_now(src : Source) -> Int {
 }
 
 ///|
-/// paste_threshold_now's, asked as the frame that asks it is over (`c`'s tell).
-pub fn paste_threshold(c : @ui.Ctx, src : Source) -> Int {
-  if !paste_bound_asked.val {
-    paste_bound_asked.val = true
-    c.tell("refs/paste-bound", fn() { paste_bound_call(src) })
-  }
-  paste_bound.get()
-}
-
-///|
-/// paste_threshold's ask, made now where it was not made yet (a composer made as nodes, as it is made): what reads
+/// Ask the core for the paste threshold now where it was not made yet (a composer made as nodes, as it is made): what reads
 /// paste_bound told as the core answers.
 pub fn paste_bound_ask(src : Source) -> Unit {
   if !paste_bound_asked.val {

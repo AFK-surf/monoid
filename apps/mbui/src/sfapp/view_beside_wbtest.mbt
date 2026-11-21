@@ -1455,7 +1455,7 @@ test "大屏: a plain press on a message's picture opens it in the whole window'
   t.frame()
   match @sfbase.viewer.get() {
     // (flown by the window's tree from its thumbnail in the chat made as nodes: View::shared, Viewer::tree_way)
-    Some(v) => assert_true(v.flies || v.tree_way.get(), msg="flown from its thumbnail")
+    Some(v) => assert_true(v.tree_way.get(), msg="flown from its thumbnail")
     None => fail("not in the whole window's viewer")
   }
   t.run_for(@ui.move_most_ms)
@@ -1465,7 +1465,7 @@ test "大屏: a plain press on a message's picture opens it in the whole window'
   t.back()
   t.frame()
   match @sfbase.viewer.get() {
-    Some(v) => assert_true(v.flies || v.tree_back.get(), msg="flown back into its thumbnail")
+    Some(v) => assert_true(v.tree_back.get(), msg="flown back into its thumbnail")
     None => ()
   }
   t.run_for(@ui.move_most_ms)

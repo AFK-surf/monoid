@@ -357,11 +357,20 @@ pub fn check_config(
         optional(a.get(f), "string", "a string")
       }
     }
-    for f in ["machine", "backgroundOnMessage", "fast", "enabled"] {
+    for f in ["machine", "backgroundOnMessage", "fast", "enabled", "newAccountProtection"] {
       optional(p.get(f), "boolean", "a boolean")
     }
     optional(p.get("name"), "string", "a string")
     optional(p.get("model"), "string", "a string")
+    if present(p.get("maxConcurrentSessions")) {
+      match p.get("maxConcurrentSessions") {
+        Some(Num(n)) if is_integer(n) && n >= 0.0 => ()
+        _ =>
+          raise check_fail(
+            "profile \{id}: maxConcurrentSessions must be a non-negative integer",
+          )
+      }
+    }
     if present(p.get("models")) && !strings_only(p.get("models")) {
       raise check_fail("invalid type: expected a sequence of strings")
     }

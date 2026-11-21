@@ -13,7 +13,7 @@ async fn[T] wrap_failed(f : async () -> T) -> T {
 pub fn host_disk(host : @host.Host) -> Disk {
   {
     read: path => @host_world.fs_read_text_sync(host, path),
-    write: async fn(path, text) { wrap_failed(async fn() { @host_world.fs_write(host, path, text, sync=true) }) },
+    write: async fn(path, text) { wrap_failed(async fn() { host.write_atomic(path, @utf8.encode(text)) }) },
     append: async fn(path, text) {
       wrap_failed(async fn() { @host_world.fs_mkdir(host, @nodepath.dirname("/", path), sync=true) })
       @host_world.fs_put(host, path, @utf8.encode(text))
@@ -33,7 +33,7 @@ pub fn host_fs(host : @host.Host) -> Fs {
     size: async fn(path) { (@host_world.fs_meta(host, path, sync=true) catch { _ => None }).map(m => m.size) },
     realpath: async fn(path) { @host_world.fs_realpath(host, path, sync=true) catch { _ => None } },
     mkdir: async fn(path) { wrap_failed(async fn() { @host_world.fs_mkdir(host, path, sync=true) }) },
-    rename: async fn(from, to) { wrap_failed(async fn() { @host_world.fs_rename(host, from, to, sync=true) }) },
+    rename: async fn(from, to) { wrap_failed(async fn() { @host_world.fs_rename(host, from, to) }) },
     remove: async fn(path, recursive) {
       wrap_failed(async fn() { @host_world.fs_remove(host, path, recursive~, sync=true) })
     },

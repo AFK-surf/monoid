@@ -96,8 +96,6 @@ fn spinning_page() -> @ui.Tester {
         c.box(dir=Column, gap=8.0, fn() {
           c.text("正在读取会话", style=wait_words) |> ignore
           spinner(c) |> ignore
-          progress_spinner(c, "spinning/transfer", None) |> ignore
-          progress(c, "spinning/bar", None, w=Px(120.0))
         })
         |> ignore
       }).grow(Is(1.0))

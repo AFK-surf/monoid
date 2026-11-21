@@ -44,12 +44,10 @@ fn setting_tester(
   let made = @settings.made_once(route)
   let t = @ui.Tester::new(
     @ui.old_views_here,
-    tree=@sf.presented_tree(fn(c) {
-      // (made once: the presenters around the tree's page, set_view_app's)
-      guard !made else { return }
-      @sf.begin(c) |> ignore
-      c.with_theme(@sf.ui_theme(), fn() { @sf.presented(c) })
-    }),
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      @sf.presented_nodes(root)
+    },
     w~,
     h~,
     platform~,

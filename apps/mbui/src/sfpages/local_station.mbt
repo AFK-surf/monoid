@@ -98,7 +98,7 @@ fn local_none_node(b : @view.View, core : Core, s : () -> Json?, pc : Bool, aske
       if d != "" {
         local_progress_node(w, s, fn() { d })
       } else {
-        @sf.words_node(w, fn() { @sf.t("desktop.local.noService") }, fn() { desk_muted }) |> ignore
+        @sf.words_node(w, fn() { @sf.t("desktop.local.noService") }, fn() { @sf.card_muted }) |> ignore
       }
     })
     local_failed_node(k, s)
@@ -358,7 +358,7 @@ fn local_progress_node(v : @view.View, s : () -> Json?, doing : () -> String) ->
   let percent = fn() { number(s(), "percent") }
   @sf.words_node(v, fn() {
     @sf.t("web-pages.localStation.doing." + doing()) + (if known() { " · \{percent().to_int()}%" } else { "" })
-  }, fn() { desk_muted })
+  }, fn() { @sf.card_muted })
   |> ignore
   v.box(fn(b) {
     @sf.style_node(b, fn() { ls_bar })
@@ -368,7 +368,7 @@ fn local_progress_node(v : @view.View, s : () -> Json?, doing : () -> String) ->
     |> ignore
   })
   |> ignore
-  v.show(fn() { text(s(), "said") != "" }, fn(w) { @sf.words_node(w, fn() { text(s(), "said") }, fn() { desk_note }) |> ignore })
+  v.show(fn() { text(s(), "said") != "" }, fn(w) { @sf.words_node(w, fn() { text(s(), "said") }, fn() { @sf.list_note }) |> ignore })
 }
 
 ///|
@@ -472,7 +472,7 @@ pub fn local_menu_open() -> Bool {
 ///|
 /// (card: its parts 10 apart, the card's padding and ground)
 // kept across runs: a value (no field of it changes)
-let ls_card : @ui.Style = @sf.desk_card.then(@ui.css("gap=S2_5"))
+let ls_card : @ui.Style = @sf.card_surface.then(@ui.css("gap=S2_5"))
 
 ///|
 /// (cardHead: its dot, its title, its buttons, 10 apart)

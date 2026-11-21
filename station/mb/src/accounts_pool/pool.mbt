@@ -59,10 +59,29 @@ pub fn Health::of_jv(v : JV) -> Health {
 let day_ms : Double = 86_400_000.0
 
 ///|
+pub let capped_account_max_pace : Double = 1.0
+
+///|
 let crowded_percent : Double = 80.0
 
 ///|
 let min_weight : Double = 0.01
+
+///|
+/// `isSessionCapped`: whether a subscription profile has a configured concurrency cap and has reached it.
+pub fn is_session_capped(
+  profile : Profile,
+  cap : Int?,
+  active_count : Int,
+) -> Bool {
+  if billed_per_use(profile.raw) {
+    return false
+  }
+  match cap {
+    Some(c) if c > 0 => active_count >= c
+    _ => false
+  }
+}
 
 ///|
 /// JavaScript's `Number(v)`.
@@ -339,12 +358,33 @@ pub fn serves(p : Profile, model : String?) -> Bool {
 }
 
 ///|
+fn short_room(quota : JV?, now : Double) -> Double {
+  let windows = fresh_windows(quota, Some(now)).filter(w => match num_field(w, "minutes") {
+    Some(m) => m > 0.0
+    None => false
+  })
+  let minutes = (w : JV) => num_field(w, "minutes").unwrap_or(0.0)
+  let long = windows.filter(w => minutes(w) * 60000.0 > day_ms)
+  if long.length() == 0 {
+    return 1.0
+  }
+  let short = windows.filter(w => minutes(w) * 60000.0 <= day_ms)
+  let mut m = 1.0
+  for w in short {
+    m = js_min(m, js_max(0.0, 100.0 - to_number(w.get("usedPercent"))) / 100.0)
+  }
+  m
+}
+
+///|
 /// What the pool is told of the profiles (`PoolSignals`).
 pub(all) struct PoolSignals {
   health : (String) -> Health
   load : (String) -> Int
+  active : ((String) -> Int)?
   last_picked : (String) -> Double
   now : () -> Double
+  max_sessions : ((String) -> Int?)?
 }
 
 ///|
@@ -404,14 +444,32 @@ pub fn pick_profile(
     serving = Array::makei(rank.length(), i => i)
   }
   let now = (signals.now)()
+  let cap_of = (p : Profile) => match signals.max_sessions {
+    Some(f) => f(p.id)
+    None => p.max_concurrent_sessions
+  }
+  let active_of = (id : String) => match signals.active {
+    Some(f) => f(id)
+    None => (signals.load)(id)
+  }
   let fit = serving.filter(i => usable(rank[i].1, now~))
   let paid = fit.filter(i => !billed_per_use(rank[i].0.raw))
   let signed_in = serving.filter(i => signs_in(rank[i].1))
   let healthy = (list : Array[Int]) => list.filter(i => !quota_unavailable(rank[i].1))
+  let uncapped = (list : Array[Int]) => list.filter(i => {
+    let p = rank[i].0
+    !is_session_capped(p, cap_of(p), active_of(p.id))
+  })
   let paid_healthy = healthy(paid)
+  let paid_healthy_uncapped = uncapped(paid_healthy)
+  let paid_uncapped = uncapped(paid)
   let fit_healthy = healthy(fit)
   let signed_in_healthy = healthy(signed_in)
-  let pool = if paid_healthy.length() > 0 {
+  let pool = if paid_healthy_uncapped.length() > 0 {
+    paid_healthy_uncapped
+  } else if paid_uncapped.length() > 0 {
+    paid_uncapped
+  } else if paid_healthy.length() > 0 {
     paid_healthy
   } else if paid.length() > 0 {
     paid
@@ -428,7 +486,20 @@ pub fn pick_profile(
   }
   let urgencies : Map[Int, Urgency] = Map::new()
   for i in pool {
-    urgencies[i] = urgency(rank[i].1.quota, now)
+    let p = rank[i].0
+    let quota = rank[i].1.quota
+    let u = urgency(quota, now)
+    let has_cap = match cap_of(p) {
+      Some(c) if c > 0 => true
+      _ => false
+    }
+    if !billed_per_use(p.raw) && has_cap {
+      let pace = js_min(u.pace, capped_account_max_pace)
+      let room = short_room(quota, now)
+      urgencies[i] = { crowded: u.crowded, pace, weight: js_max(pace * room, min_weight) }
+    } else {
+      urgencies[i] = u
+    }
   }
   let share = (i : Int) => ((signals.load)(rank[i].0.id) + 1).to_double() /
     urgencies[i].weight

@@ -296,7 +296,7 @@ function profileOf(now: number, station: number, n: number, kind: string, k: num
   const home = `/Users/${owner.email.split("@")[0]}/.stillfail/profiles/${id}`;
   const used = Array.from({ length: (n * 3) % 5 }, (_, j) => `k-${STATIONS[station]!.id}-${(n * 7 + j * 11) % ROWS_UP}`);
   const base = {
-    id, home, homeExists: true, named: [] as string[], env: [] as J[], usedBy: used, machine: false, enabled: n !== 19, fast: false, backgroundOnMessage: true, login: null,
+    id, home, homeExists: true, named: [] as string[], env: [] as J[], usedBy: used, machine: false, enabled: n !== 19, fast: false, backgroundOnMessage: true, ...(k === 1 ? { maxConcurrentSessions: 8 } : {}), login: null,
     workspaces: [] as string[], serves: true,
   };
   // (one Claude subscription of the workspace's signed out: its check says so, it has no allowance)

@@ -165,8 +165,6 @@ pub fn decisions_node(@view.View, @settings.Core, () -> @settings.Here, on_back~
 
 pub let desk_dialogs : @ref.Ref[Int32]
 
-pub let desk_note : @ui.TextStyle
-
 pub let desk_said_line : @ui.Style
 
 pub let dismissed : @signals.Keyed[String]

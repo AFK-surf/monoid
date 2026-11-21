@@ -42,19 +42,9 @@ pub(all) struct MessageHere {
   go : ((String, String) -> Unit)?
   inline : Bool
   gutter : Double
-  list : ListMotion?
   /// the core as the settings' pages have it, over the chat's workspace (a login's card, a vault request's answer);
   /// None where nothing is answered (a letter's)
   core : Core?
-}
-
-///|
-/// How a row moves in its chat's list (MessageHere's `list`).
-pub(all) struct ListMotion {
-  rk : String
-  turns : Turns
-  emits : Emits
-  flight : SendFlight?
 }
 
 ///|

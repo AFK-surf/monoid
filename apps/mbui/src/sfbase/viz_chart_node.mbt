@@ -176,17 +176,6 @@ fn viz_register_svg(prefix : String, svg : String, max_px? : Int = 640) -> Strin
 }
 
 ///|
-fn viz_svg_ctx(c : @ui.Ctx, key_prefix : String, svg : String, w : Double, h : Double) -> Unit {
-  let w_safe = if w > 1.0 { w } else { 400.0 }
-  let h_safe = if h > 1.0 { h } else { 180.0 }
-  let pic = viz_register_svg(key_prefix, svg, max_px=640)
-  c.box(style=@ui.style(w=Full, max_w=viz_fixed_len(w_safe)), aspect=w_safe / h_safe, fn() {
-    c.image(pic, w=Fill(1.0), h=Fill(1.0), fit=FitContain, bg=0L, fade=false) |> ignore
-  })
-  |> ignore
-}
-
-///|
 fn viz_svg_node(parent : @view.View, key_prefix : String, svg : () -> (String, Double, Double), in_row? : Bool = false) -> Unit {
   parent.box(fn(b) {
     @sf.style_node(
@@ -254,32 +243,6 @@ fn viz_spark_bars(values : Array[Double], h : Double) -> Array[Double] {
     }
   }
   out
-}
-
-///|
-fn viz_spark_ctx(c : @ui.Ctx, key_prefix : String, values : Array[Double], color : String, w : Double, h : Double) -> Unit {
-  ignore(key_prefix)
-  let w_safe = if w > 8.0 { w } else { 72.0 }
-  let h_safe = if h > 8.0 { h } else { 22.0 }
-  let bars = viz_spark_bars(values, h_safe)
-  let n = bars.length()
-  c.box(
-    style=@ui.style(row=true, w=viz_fixed_len(w_safe), h=viz_fixed_len(h_safe), align=AEnd, gap=S0_5),
-    fn() {
-      for i = 0; i < n; i = i + 1 {
-        let bh = bars[i]
-        let is_last = i == n - 1
-        let col = viz_tone_color(color, 0)
-        let bar_bg = if is_last { col } else { @sf.alpha(col, 0.48) }
-        c.box(
-          style=@ui.style(w=@sf.grow, h=viz_fixed_len(bh), radius=Sm, bg=Data(bar_bg)),
-          fn() {  },
-        )
-        |> ignore
-      }
-    },
-  )
-  |> ignore
 }
 
 ///|
@@ -389,86 +352,6 @@ fn viz_chart_bounds(chart : VizChart, kind : String) -> (Double, Double, Int) {
 }
 
 ///|
-fn viz_cartesian_ctx(c : @ui.Ctx, chart : VizChart, kind : String) -> Unit {
-  let (lo, hi, n_cats) = viz_chart_bounds(chart, kind)
-  let span = @sf.dmax(0.000001, hi - lo)
-  let plot_h = if chart.height > 72.0 { chart.height - 32.0 } else { 132.0 }
-  let bar_max_h = @sf.dmax(32.0, plot_h - 24.0)
-  let s_count = chart.series.length()
-  let show_vals = n_cats * (if s_count > 1 { s_count } else { 1 }) <= 10
-  let bar_w_len = if s_count > 1 { viz_bar_col_w } else { viz_bar_single_w }
-  c.box(style=viz_col_s1, fn() {
-    c.box(style=viz_plot_row.then(@ui.style(h=viz_fixed_len(plot_h))), fn() {
-      for i = 0; i < n_cats; i = i + 1 {
-        c.box(style=viz_cat_col, fn() {
-          if chart.stacked && s_count > 1 {
-            let mut sum = 0.0
-            for s in chart.series {
-              if i < s.values.length() {
-                sum = sum + @sf.dmax(0.0, s.values[i])
-              }
-            }
-            if show_vals && sum > 0.0 {
-              c.text(viz_fmt_num(sum, ""), style=@sf.caption) |> ignore
-            }
-            let total_h = @sf.dmax(4.0, bar_max_h * @sf.dclamp((sum - lo) / span, 0.0, 1.0))
-            c.box(
-              style=@ui.style(w=viz_bar_single_w, h=viz_fixed_len(total_h), radius=Sm, clip=true),
-              fn() {
-                for s_idx = s_count - 1; s_idx >= 0; s_idx = s_idx - 1 {
-                  let s = chart.series[s_idx]
-                  let v = if i < s.values.length() { @sf.dmax(0.0, s.values[i]) } else { 0.0 }
-                  if v > 0.0 && sum > 0.0 {
-                    let seg_h = @sf.dmax(2.0, total_h * (v / sum))
-                    let col = viz_tone_color(s.color, s_idx)
-                    c.box(
-                      style=@ui.style(w=Full, h=viz_fixed_len(seg_h), bg=Data(col)),
-                      fn() {  },
-                    )
-                    |> ignore
-                  }
-                }
-              },
-            )
-            |> ignore
-          } else {
-            c.box(style=viz_bar_group_row, fn() {
-              for s_idx = 0; s_idx < s_count; s_idx = s_idx + 1 {
-                let s = chart.series[s_idx]
-                if i < s.values.length() {
-                  let v = s.values[i]
-                  let bh = @sf.dmax(4.0, bar_max_h * @sf.dclamp((v - lo) / span, 0.0, 1.0))
-                  let col = viz_tone_color(s.color, s_idx)
-                  let bar_bg = if kind == "area" || kind == "line" { @sf.alpha(col, 0.72) } else { col }
-                  c.box(style=viz_bar_item_col, fn() {
-                    if show_vals {
-                      c.text(viz_fmt_num(v, ""), style=@sf.caption) |> ignore
-                    }
-                    c.box(
-                      style=@ui.style(w=bar_w_len, h=viz_fixed_len(bh), radius=Sm, bg=Data(bar_bg)),
-                      fn() {  },
-                    )
-                    |> ignore
-                  })
-                  |> ignore
-                }
-              }
-            })
-            |> ignore
-          }
-        })
-        |> ignore
-      }
-    })
-    |> ignore
-    if chart.show_grid {
-      c.box(style=@ui.style(w=Full, h=viz_line_Line_h, bg=Line), fn() {  }) |> ignore
-    }
-  })
-  |> ignore
-}
-
-///|
 fn viz_cartesian_node(parent : @view.View, chart : VizChart, kind : String) -> Unit {
   let (lo, hi, n_cats) = viz_chart_bounds(chart, kind)
   let span = @sf.dmax(0.000001, hi - lo)
@@ -564,35 +447,6 @@ fn viz_cartesian_node(parent : @view.View, chart : VizChart, kind : String) -> U
 }
 
 ///|
-fn viz_pie_ctx(c : @ui.Ctx, chart : VizChart) -> Unit {
-  let mut total = 0.0
-  for s in chart.slices {
-    if s.value > 0.0 {
-      total = total + s.value
-    }
-  }
-  let denom = if total <= 0.0 { 1.0 } else { total }
-  c.box(
-    style=@ui.style(row=true, w=Full, h=viz_pie_track_h, radius=Full, clip=true, bg=Data(@sf.theme().p.card2)),
-    fn() {
-      for idx = 0; idx < chart.slices.length(); idx = idx + 1 {
-        let s = chart.slices[idx]
-        if s.value > 0.0 {
-          let share = @sf.dmax(0.02, s.value / denom)
-          let col = viz_tone_color(s.color, idx)
-          c.box(
-            style=@ui.style(w=Grow(share), h=Full, bg=Data(col)),
-            fn() {  },
-          )
-          |> ignore
-        }
-      }
-    },
-  )
-  |> ignore
-}
-
-///|
 fn viz_pie_node(parent : @view.View, chart : VizChart) -> Unit {
   let mut total = 0.0
   for s in chart.slices {
@@ -621,149 +475,6 @@ fn viz_pie_node(parent : @view.View, chart : VizChart) -> Unit {
     }
   })
   |> ignore
-}
-
-///|
-fn viz_chart_ctx(c : @ui.Ctx, key_prefix : String, chart : VizChart) -> Unit {
-  let kind = @sf.lower(chart.kind)
-  let sub = if chart.subtitle != "" && chart.reference_label != "" {
-    chart.subtitle + " · " + chart.reference_label
-  } else if chart.subtitle != "" {
-    chart.subtitle
-  } else {
-    chart.reference_label
-  }
-  c.box(style=viz_col_s2, fn() {
-    if chart.title != "" || sub != "" || chart.center != "" {
-      c.box(style=viz_col_s0_5, fn() {
-        if chart.title != "" || chart.center != "" {
-          c.box(style=viz_row_between_s2, fn() {
-            if chart.title != "" {
-              c.text(chart.title, style=@sf.card_title) |> ignore
-            }
-            if chart.center != "" {
-              c.text(chart.center, style=@sf.code) |> ignore
-            }
-          })
-          |> ignore
-        }
-        if sub != "" {
-          c.text(sub, style=@sf.caption) |> ignore
-        }
-      })
-      |> ignore
-    }
-    if kind == "hbar" {
-      viz_hbar_ctx(c, chart)
-    } else if kind == "donut" || kind == "pie" {
-      viz_pie_ctx(c, chart)
-      if chart.show_legend {
-        viz_legend_ctx(c, chart, kind)
-      }
-    } else if kind == "spark" || kind == "sparkline" {
-      let vals = if chart.series.length() > 0 { chart.series[0].values } else { [] }
-      let color = if chart.series.length() > 0 { chart.series[0].color } else { "" }
-      let h = if chart.height > 12.0 { chart.height } else { 28.0 }
-      viz_spark_ctx(c, key_prefix, vals, color, 160.0, h)
-    } else {
-      viz_cartesian_ctx(c, chart, kind)
-      if chart.labels.length() > 0 {
-        viz_axis_ctx(c, chart)
-      }
-      if chart.show_legend {
-        viz_legend_ctx(c, chart, kind)
-      }
-    }
-  })
-  |> ignore
-}
-
-///|
-fn viz_axis_ctx(c : @ui.Ctx, chart : VizChart) -> Unit {
-  let n = chart.labels.length()
-  let stride = if n > 8 { (n + 5) / 6 } else { 1 }
-  c.box(style=viz_axis_row, fn() {
-    for i = 0; i < n; i = i + 1 {
-      if i % stride == 0 || i == n - 1 {
-        let lbl = chart.labels[i]
-        c.box(style=viz_axis_cell, fn() {
-          c.text(lbl, style=@sf.caption) |> ignore
-        })
-        |> ignore
-      }
-    }
-  })
-  |> ignore
-}
-
-///|
-fn viz_hbar_ctx(c : @ui.Ctx, chart : VizChart) -> Unit {
-  let mut max_v = match chart.max {
-    Some(m) => m
-    None => 0.0
-  }
-  for item in chart.items {
-    if item.value > max_v {
-      max_v = item.value
-    }
-  }
-  if max_v <= 0.0 {
-    max_v = 1.0
-  }
-  c.box(style=viz_col_s2, fn() {
-    for idx = 0; idx < chart.items.length(); idx = idx + 1 {
-      let item = chart.items[idx]
-      let frac = @sf.dclamp(item.value / max_v, 0.0, 1.0)
-      let color = viz_tone_color(item.color, idx)
-      let val_str = if item.text != "" { item.text } else { viz_fmt_num(item.value, chart.unit) }
-      c.box(style=viz_col_s1, fn() {
-        c.box(style=viz_row_between_s2, fn() {
-          c.text(item.label, style=@sf.body) |> ignore
-          c.text(val_str, style=@sf.code) |> ignore
-        })
-        |> ignore
-        @sf.progress(c, "hbar/\{idx}/\{item.label}", Some(frac), w=Fill(1.0), color~)
-      })
-      |> ignore
-    }
-  })
-  |> ignore
-}
-
-///|
-fn viz_legend_ctx(c : @ui.Ctx, chart : VizChart, kind : String) -> Unit {
-  if kind == "donut" || kind == "pie" {
-    if chart.slices.length() == 0 {
-      return
-    }
-    c.box(style=viz_legend_row, flow=true, fn() {
-      for idx = 0; idx < chart.slices.length(); idx = idx + 1 {
-        let s = chart.slices[idx]
-        let col = viz_tone_color(s.color, idx)
-        c.box(style=viz_legend_item, fn() {
-          c.box(style=@ui.style(w=viz_legend_dot_side, h=viz_legend_dot_side, radius=Full, bg=Data(col)), fn() {  }) |> ignore
-          c.text(s.label + " (" + viz_fmt_num(s.value, chart.unit) + ")", style=@sf.caption) |> ignore
-        })
-        |> ignore
-      }
-    })
-    |> ignore
-  } else if chart.series.length() > 1 {
-    c.box(style=viz_legend_row, flow=true, fn() {
-      for idx = 0; idx < chart.series.length(); idx = idx + 1 {
-        let s = chart.series[idx]
-        if s.name != "" {
-          let col = viz_tone_color(s.color, idx)
-          c.box(style=viz_legend_item, fn() {
-            c.box(style=@ui.style(w=viz_legend_dot_side, h=viz_legend_dot_side, radius=Full, bg=Data(col)), fn() {  }) |> ignore
-            c.text(s.name, style=@sf.caption) |> ignore
-          })
-          |> ignore
-        }
-      }
-    })
-    |> ignore
-  }
 }
 
 ///|

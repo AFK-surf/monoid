@@ -236,6 +236,8 @@ pub fn card(@ui.Ctx, gap? : Double, fill? : Bool, ground? : Int64, () -> Unit) -
 
 pub let card_across : @ui.Size
 
+pub let card_body : @ui.TextStyle
+
 pub let card_corner : Double
 
 pub fn card_foot(@ui.Ctx, () -> Unit, at_end? : Bool) -> Unit
@@ -248,6 +250,8 @@ pub let card_line : @ui.TextStyle
 
 pub fn card_lines(@ui.Ctx, String, words? : String, note? : String, bad? : String, title_after? : () -> Unit) -> Unit
 
+pub let card_muted : @ui.TextStyle
+
 pub let card_pad : Double
 
 pub fn card_piece_node(@view.View, () -> CardPiece, (@view.View) -> Unit) -> Unit
@@ -255,6 +259,14 @@ pub fn card_piece_node(@view.View, () -> CardPiece, (@view.View) -> Unit) -> Uni
 pub fn card_piece_of(Int32, Int32) -> CardPiece
 
 pub let card_radius : @ui.Radius
+
+pub let card_row : @ui.Style
+
+pub let card_strong : @ui.TextStyle
+
+pub let card_surface : @ui.Style
+
+pub let card_text : @ui.Style
 
 pub let card_title : @ui.TextStyle
 
@@ -1056,6 +1068,10 @@ pub fn list_line(ListAt) -> @ui.Style
 pub fn list_line_in(ListAt) -> Double
 
 pub fn list_more(ListAt) -> @ui.Style
+
+pub let list_note : @ui.TextStyle
+
+pub let list_note_bad : @ui.TextStyle
 
 pub let list_pad : Double
 

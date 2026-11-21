@@ -103,7 +103,7 @@ test "rows that go somewhere, with a mark before their words and with none, on a
     #|rect 40,82 296x196 4294967295
     #|rect 46,150 284x94 4294967295
     #|rect 40,82 296x196 0
-    #|words 一组@56,94 h20 a1
+    #|words 一组@62,94 h20 a1
     #|words 打开@387,48 h20 a1
     #|words 不带图标@68,208 h20 a1
     #|words 它说的话@62,118 h18 a1

@@ -53,19 +53,19 @@ test "panel fits, 大屏 keyboard and mouse: as wide as its words as they change
   assert_eq(drawn, Array::make(drawn.length(), true))
   debug_inspect(out, content=(
     #|[
-    #|  "plain 3: dialog Some((600, 106, 58, 64)) title [(616, 118, 26, 20)] words [(606, 142, 46, 22)] button None end None",
-    #|  "plain 38: dialog Some((600, 106, 400, 86)) title [(616, 118, 368, 20)] words [(606, 142, 388, 44)] button None end None",
-    #|  "plain 8: dialog Some((600, 106, 124, 64)) title [(616, 118, 92, 20)] words [(606, 142, 112, 22)] button None end None",
-    #|  "plain 3: dialog Some((600, 106, 58, 64)) title [(616, 118, 26, 20)] words [(606, 142, 46, 22)] button None end None",
-    #|  "foot 3: dialog Some((600, 106, 70, 108)) title [(616, 118, 38, 20)] words [(606, 142, 58, 22)] button Some((606, 172, 58, 36)) end None",
-    #|  "foot 38: dialog Some((600, 106, 400, 130)) title [(616, 118, 368, 20)] words [(606, 142, 388, 44)] button Some((936, 194, 58, 36)) end None",
-    #|  "foot 8: dialog Some((600, 106, 124, 108)) title [(616, 118, 92, 20)] words [(606, 142, 112, 22)] button Some((660, 172, 58, 36)) end None",
-    #|  "foot 3: dialog Some((600, 106, 70, 108)) title [(616, 118, 38, 20)] words [(606, 142, 58, 22)] button Some((606, 172, 58, 36)) end None",
-    #|  "narrow 3: dialog Some((600, 106, 58, 64)) title [(616, 118, 26, 20)] words [(606, 142, 46, 22)] button None end None",
-    #|  "narrow 38: dialog Some((600, 106, 200, 108)) title [(616, 118, 168, 20)] words [(606, 142, 188, 66)] button None end None",
-    #|  "narrow 8: dialog Some((600, 106, 124, 64)) title [(616, 118, 92, 20)] words [(606, 142, 112, 22)] button None end None",
-    #|  "narrow 3: dialog Some((600, 106, 58, 64)) title [(616, 118, 26, 20)] words [(606, 142, 46, 22)] button None end None",
-    #|  "column: dialog (600, 90, 58, 402) row0 [(606, 126, 46, 22)] | wheel: [(606, 6, 46, 22)]",
+    #|  "plain 3: dialog Some((600, 106, 70, 64)) title [(622, 118, 26, 20)] words [(606, 142, 58, 22)] button None end None",
+    #|  "plain 38: dialog Some((600, 106, 400, 86)) title [(622, 118, 356, 20)] words [(606, 142, 388, 44)] button None end None",
+    #|  "plain 8: dialog Some((600, 106, 124, 64)) title [(622, 118, 80, 20)] words [(606, 142, 112, 22)] button None end None",
+    #|  "plain 3: dialog Some((600, 106, 70, 64)) title [(622, 118, 26, 20)] words [(606, 142, 58, 22)] button None end None",
+    #|  "foot 3: dialog Some((600, 106, 70, 108)) title [(622, 118, 26, 20)] words [(606, 142, 58, 22)] button Some((606, 172, 58, 36)) end None",
+    #|  "foot 38: dialog Some((600, 106, 400, 130)) title [(622, 118, 356, 20)] words [(606, 142, 388, 44)] button Some((936, 194, 58, 36)) end None",
+    #|  "foot 8: dialog Some((600, 106, 124, 108)) title [(622, 118, 80, 20)] words [(606, 142, 112, 22)] button Some((660, 172, 58, 36)) end None",
+    #|  "foot 3: dialog Some((600, 106, 70, 108)) title [(622, 118, 26, 20)] words [(606, 142, 58, 22)] button Some((606, 172, 58, 36)) end None",
+    #|  "narrow 3: dialog Some((600, 106, 70, 64)) title [(622, 118, 26, 20)] words [(606, 142, 58, 22)] button None end None",
+    #|  "narrow 38: dialog Some((600, 106, 200, 108)) title [(622, 118, 156, 20)] words [(606, 142, 188, 66)] button None end None",
+    #|  "narrow 8: dialog Some((600, 106, 124, 64)) title [(622, 118, 80, 20)] words [(606, 142, 112, 22)] button None end None",
+    #|  "narrow 3: dialog Some((600, 106, 70, 64)) title [(622, 118, 26, 20)] words [(606, 142, 58, 22)] button None end None",
+    #|  "column: dialog (600, 90, 70, 402) row0 [(606, 126, 58, 22)] | wheel: [(606, 6, 58, 22)]",
     #|]
   ))
 }
@@ -94,11 +94,11 @@ test "panel fits, the model's (model_pop): where it is, its models and how hard 
   }
   debug_inspect(out, content=(
     #|[
-    #|  "newchat-model: dialog Some((650, 136, 340, 390)) opus Some((656, 172, 188, 36)) high Some((885, 246, 99, 36))",
-    #|  "newchat-tall-model: dialog Some((650, 62, 520, 464)) opus Some((656, -50, 381, 36)) high Some((1078, 209, 86, 36))",
-    #|  "newchat-crowded-model: dialog Some((650, 75.5, 379, 450.5)) opus Some((656, 27.5, 254, 36)) high Some((951, 185.5, 72, 36))",
-    #|  "newchat-crowded-model 低: dialog Some((650, 75.5, 379, 450.5)) high Some((951, 185.5, 72, 36))",
-    #|  "newchat-crowded-model 最高: dialog Some((650, 75.5, 379, 450.5)) high Some((951, 185.5, 72, 36))",
+    #|  "newchat-model: dialog Some((650, 136, 352, 390)) opus Some((656, 172, 188, 36)) high Some((885, 246, 111, 36))",
+    #|  "newchat-tall-model: dialog Some((650, 62, 520, 464)) opus Some((656, -50, 369, 36)) high Some((1066, 209, 98, 36))",
+    #|  "newchat-crowded-model: dialog Some((650, 75.5, 391, 450.5)) opus Some((656, 27.5, 254, 36)) high Some((951, 185.5, 84, 36))",
+    #|  "newchat-crowded-model 低: dialog Some((650, 75.5, 391, 450.5)) high Some((951, 185.5, 84, 36))",
+    #|  "newchat-crowded-model 最高: dialog Some((650, 75.5, 391, 450.5)) high Some((951, 185.5, 84, 36))",
     #|]
   ))
   assert_eq(drawn, [true, true, true])

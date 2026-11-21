@@ -171,6 +171,7 @@ export interface OperationParams {
   "workspace.setRole": { workspace: string; member: string; role?: string | null | undefined };
   "workspace.removeMember": { workspace: string; member: string };
   "workspace.enroll": { workspace: string; name?: string | null | undefined };
+  "workspace.createProvisionKey": { workspace: string; name?: string | null | undefined; days?: number | null | undefined };
   "workspace.renameStation": { workspace: string; station: string; name?: string | null | undefined; emoji?: string | null | undefined; icon?: string | null | undefined };
   "workspace.removeStation": { workspace: string; station: string };
   "workspace.feedbackReply": { workspace: string; id: string; text: string };
@@ -386,6 +387,7 @@ export function bindCloudOperations(call: Call) {
     workspaceSetRole: <T = unknown>(params: OperationParams["workspace.setRole"]) => call("workspace.setRole", params) as Promise<T>,
     workspaceRemoveMember: <T = unknown>(params: OperationParams["workspace.removeMember"]) => call("workspace.removeMember", params) as Promise<T>,
     workspaceEnroll: <T = unknown>(params: OperationParams["workspace.enroll"]) => call("workspace.enroll", params) as Promise<T>,
+    workspaceCreateProvisionKey: <T = unknown>(params: OperationParams["workspace.createProvisionKey"]) => call("workspace.createProvisionKey", params) as Promise<T>,
     workspaceRenameStation: <T = unknown>(params: OperationParams["workspace.renameStation"]) => call("workspace.renameStation", params) as Promise<T>,
     workspaceRemoveStation: <T = unknown>(params: OperationParams["workspace.removeStation"]) => call("workspace.removeStation", params) as Promise<T>,
     workspaceFeedbackReply: <T = unknown>(params: OperationParams["workspace.feedbackReply"]) => call("workspace.feedbackReply", params) as Promise<T>,

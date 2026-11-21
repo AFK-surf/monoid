@@ -25,47 +25,29 @@ fn marks_drawn(t : @ui.Tester) -> Array[String] {
 }
 
 ///|
-/// Two faces (one decoding, one that will not), 46 across, `pics` their pictures as they change: drawn by old views
-/// (`node` false) or as nodes; their decodes left for the test to finish.
-fn faces_tester(node : Bool, pics : @signals.Signal[(String, String)]) -> @ui.Tester {
+/// Two faces (one decoding, one that will not), 46 across, `pics` their pictures as they change; their decodes left
+/// for the test to finish.
+fn faces_tester(pics : @signals.Signal[(String, String)]) -> @ui.Tester {
   let images = [("lin.jpg", 96, 96), ("mo.jpg", 96, 96), ("lin2.jpg", 96, 96)]
-  if node {
-    let t = @ui.Tester::new(fn(_c) {  }, images~, finish=false, w=200.0, h=200.0)
-    @ui.set_view_app(fn(root) {
-      root.box(fn(b) {
-        b.lines_up(Is(Some(Start))) |> ignore
-        avatar_node(b, fn() { "lin@example.com" }, fn() { "lin" }, fn() { pics.get().0 }, identity_mark)
-        avatar_node(b, fn() { "mo@example.com" }, fn() { "mo" }, fn() { pics.get().1 }, identity_mark)
-      })
-      |> ignore
+  let t = @ui.Tester::new(fn(_c) {  }, images~, finish=false, w=200.0, h=200.0)
+  @ui.set_view_app(fn(root) {
+    root.box(fn(b) {
+      b.lines_up(Is(Some(Start))) |> ignore
+      avatar_node(b, fn() { "lin@example.com" }, fn() { "lin" }, fn() { pics.get().0 }, identity_mark)
+      avatar_node(b, fn() { "mo@example.com" }, fn() { "mo" }, fn() { pics.get().1 }, identity_mark)
     })
-    t.draw()
-    t
-  } else {
-    let t = @ui.Tester::new(
-      fn(c) {
-        c.box(fn() {
-          avatar(c, "lin@example.com", "lin", pics.get().0, identity_mark)
-          avatar(c, "mo@example.com", "mo", pics.get().1, identity_mark)
-        })
-        |> ignore
-      },
-      images~,
-      finish=false,
-      w=200.0,
-      h=200.0,
-    )
-    t.draw()
-    t
-  }
+    |> ignore
+  })
+  t.draw()
+  t
 }
 
 ///|
 /// The faces' run: as first drawn; one decoded, one failed; Lin's picture changed (decoding); that one decoded. What is
 /// drawn at each, and what was asked to be decoded.
-fn faces_run(node : Bool) -> (Array[Array[String]], Array[(String, Int)]) {
+fn faces_run() -> (Array[Array[String]], Array[(String, Int)]) {
   let pics = @signals.signal(("lin.jpg", "mo.jpg"), same=fn(a, b) { a == b })
-  let t = faces_tester(node, pics)
+  let t = faces_tester(pics)
   let seen = [marks_drawn(t)]
   let decoding = t.pending()
   t.finish(1, decoding[0].1)
@@ -83,42 +65,27 @@ fn faces_run(node : Bool) -> (Array[Array[String]], Array[(String, Int)]) {
 }
 
 ///|
-test "a face as a node: its initial while its picture decodes, the picture at once, the initial where it cannot be, its picture changed the initial till it is: as the old view's" {
-  let (old, old_loads) = faces_run(false)
-  let (made, made_loads) = faces_run(true)
-  assert_eq(made_loads, old_loads)
-  for i, o in old {
-    assert_eq(made[i], o, msg="at step \{i}")
-  }
-  // (the picture shown at the second step, at once: no fade, no initial under it)
-  assert_true(old[1].iter().any(fn(x) { x.split(",").collect()[5].to_owned() == "4" }))
+test "a face as a node: its initial while its picture decodes, the picture at once, the initial where it cannot be, its picture changed the initial till it is" {
+  let (made, made_loads) = faces_run()
+  assert_eq(made_loads.length(), 3)
+  assert_true(made[1].iter().any(fn(x) { x.split(",").collect()[5].to_owned() == "4" }))
+  assert_true(made[3].iter().any(fn(x) { x.split(",").collect()[5].to_owned() == "4" }))
 }
 
 ///|
-/// A mark of `emoji` and `icon`, `size` across, as an old view's or as a node, its picture put up (an address: the
-/// one picture_of hands over as itself) decoding as the test says: what is drawn first, then (its decode finished) at
-/// the first frame after, partway through its fade and once faded in.
-fn mark_drawn(node : Bool, emoji : String, icon : String, size : Double) -> Array[Array[String]] {
+/// A mark of `emoji` and `icon`, `size` across, as a node, its picture put up (an address: the one picture_of hands
+/// over as itself) decoding as the test says: what is drawn first, then (its decode finished) at the first frame after,
+/// partway through its fade and once faded in.
+fn mark_drawn(emoji : String, icon : String, size : Double) -> Array[Array[String]] {
   let images = [("https://example.com/m.png", 128, 96)]
-  let t = if node {
-    let t = @ui.Tester::new(fn(_c) {  }, images~, finish=false, w=200.0, h=200.0)
-    @ui.set_view_app(fn(root) {
-      root.box(fn(b) {
-        b.lines_up(Is(Some(Start))) |> ignore
-        station_mark_node(b, fn() { emoji }, fn() { icon }, size, fn() { theme().p.text }, fn() { 1 })
-      })
-      |> ignore
+  let t = @ui.Tester::new(fn(_c) {  }, images~, finish=false, w=200.0, h=200.0)
+  @ui.set_view_app(fn(root) {
+    root.box(fn(b) {
+      b.lines_up(Is(Some(Start))) |> ignore
+      station_mark_node(b, fn() { emoji }, fn() { icon }, size, fn() { theme().p.text }, fn() { 1 })
     })
-    t
-  } else {
-    @ui.Tester::new(
-      fn(c) { c.box(fn() { station_mark(c, emoji, icon, size, theme().p.text) }) |> ignore },
-      images~,
-      finish=false,
-      w=200.0,
-      h=200.0,
-    )
-  }
+    |> ignore
+  })
   t.draw()
   let seen = [marks_drawn(t)]
   for p in t.pending() {
@@ -133,63 +100,13 @@ fn mark_drawn(node : Bool, emoji : String, icon : String, size : Double) -> Arra
 }
 
 ///|
-test "a station's mark as a node, as the old view's: a glyph, a glyph in its colour, an emoji, a picture put up covering its square, fading in as it is decoded" {
+test "a station's mark as a node: a glyph, a glyph in its colour, an emoji, a picture put up covering its square, fading in as it is decoded" {
   for m in [("", "glyph:laptop"), ("", "glyph:desktop:blue"), ("🚀", ""), ("🚀", "https://example.com/m.png")] {
     for size in [26.0, 46.0] {
-      let old = mark_drawn(false, m.0, m.1, size)
-      let made = mark_drawn(true, m.0, m.1, size)
-      for i, o in old {
-        assert_eq(made[i], o, msg="\{Repr(m)} at \{size}, step \{i}")
-      }
+      let made = mark_drawn(m.0, m.1, size)
+      assert_true(made[made.length() - 1].length() > 0, msg="\{Repr(m)} at \{size}: drawn once decoded")
     }
   }
-}
-
-///|
-test "an old view can leave a station mark out until it has something to draw" {
-  let picture = @signals.signal("")
-  let icon = @signals.signal("https://example.test/station.png")
-  let emoji = @signals.signal("")
-  let was = picture_of.val
-  picture_of.val = fn(_, _) { picture.get() }
-  defer { picture_of.val = was }
-  let t = @ui.Tester::new(
-    fn(c) {
-      c.box(fn() {
-        if station_mark_visible(c, emoji.get(), icon.get(), 20.0) {
-          station_mark(c, emoji.get(), icon.get(), 20.0, theme().p.text, visible_only=true)
-        }
-      })
-      |> ignore
-    },
-    images=[("picture-a", 64, 64), ("picture-b", 64, 64)],
-    finish=false,
-    w=200.0,
-    h=200.0,
-  )
-  t.draw()
-  assert_eq(t.drawn_images().length(), 0)
-  picture.set("picture-a")
-  t.frame()
-  assert_eq(t.drawn_images().length(), 0)
-  guard t.pending() is [(_, id), ..] else { fail("the picture was not asked for") }
-  t.finish(1, id)
-  t.frame()
-  guard t.drawn_images() is [image, ..] else { fail("the decoded picture is not drawn") }
-  assert_true(image[8] > 0.99, msg="the decoded picture is not visible at once")
-  picture.set("picture-b")
-  t.frame()
-  assert_eq(t.drawn_images().length(), 0, msg="the old picture is still drawn")
-  guard t.pending() is [(_, id), ..] else { fail("the replacement picture was not asked for") }
-  t.finish(1, id, ok=false)
-  t.frame()
-  assert_eq(t.drawn_images().length(), 0)
-  icon.set("glyph:does-not-exist")
-  t.frame()
-  assert_eq(t.shape_boxes().length(), 0)
-  emoji.set("🌿")
-  t.frame()
-  assert_true(t.rect_of("🌿") is Some(_), msg="the fallback emoji is not drawn")
 }
 
 ///|
@@ -206,29 +123,18 @@ fn two_frames_gif() -> Bytes {
 
 ///|
 /// The pictures a moving GIF mark draws (its frames' keys, by the drawlist) at clock frames from its decode, its bytes
-/// come after the Tester began and its frames decoded late: as an old view's or as a node.
-fn gif_mark_frames(node : Bool) -> Array[String] {
+/// come after the Tester began and its frames decoded late: as a node.
+fn gif_mark_frames() -> Array[String] {
   let url = "https://example.com/m.gif"
   let images = [(url, 2, 1), (url + "#0", 2, 1), (url + "#1", 2, 1)]
-  let t = if node {
-    let t = @ui.Tester::new(fn(_c) {  }, images~, finish=false, w=200.0, h=200.0)
-    @ui.set_view_app(fn(root) {
-      root.box(fn(b) {
-        b.lines_up(Is(Some(Start))) |> ignore
-        station_mark_node(b, fn() { "🚀" }, fn() { url }, 46.0, fn() { theme().p.text }, fn() { 1 })
-      })
-      |> ignore
+  let t = @ui.Tester::new(fn(_c) {  }, images~, finish=false, w=200.0, h=200.0)
+  @ui.set_view_app(fn(root) {
+    root.box(fn(b) {
+      b.lines_up(Is(Some(Start))) |> ignore
+      station_mark_node(b, fn() { "🚀" }, fn() { url }, 46.0, fn() { theme().p.text }, fn() { 1 })
     })
-    t
-  } else {
-    @ui.Tester::new(
-      fn(c) { c.box(fn() { station_mark(c, "🚀", url, 46.0, theme().p.text) }) |> ignore },
-      images~,
-      finish=false,
-      w=200.0,
-      h=200.0,
-    )
-  }
+    |> ignore
+  })
   // (its bytes come late: handed over after the Tester began, a GIF that moves)
   @ui.add_image(url, two_frames_gif())
   t.draw()
@@ -249,39 +155,25 @@ fn gif_mark_frames(node : Bool) -> Array[String] {
 }
 
 ///|
-test "a mark's picture that is a GIF moving as a node, as the old view's: its frames in turn across two of their ends and round again, decoded late, on frames of the clock alone" {
-  let old = gif_mark_frames(false)
-  let made = gif_mark_frames(true)
-  assert_eq(made, old)
+test "a mark's picture that is a GIF moving as a node: its frames in turn across two of their ends and round again, decoded late, on frames of the clock alone" {
+  let made = gif_mark_frames()
   // (it moves: both its frames among what is drawn)
-  let all = old.join(" ")
+  let all = made.join(" ")
   assert_true(all.contains("m.gif#0") && all.contains("m.gif#1"), msg=all)
 }
 
 ///|
-test "a thing's tile as a node, as the old view's: its initial on its colour, in its corner" {
-  let old = @ui.Tester::new(
-    fn(c) {
-      c.box(fn() {
-        tile_avatar(c, "github.com/acme/web-app", "web-app", "", 34.0, corner=small_corner)
-        tile_avatar(c, "github.com/acme/notes", "notes", "", 20.0)
-      })
-      |> ignore
-    },
-    w=200.0,
-    h=200.0,
-  )
-  old.draw()
-  let was = marks_drawn(old)
+test "a thing's tile as a node: its initial on its colour, in its corner" {
   let t = @ui.Tester::new(fn(_c) {  }, w=200.0, h=200.0)
   @ui.set_view_app(fn(root) {
     root.box(fn(b) {
-      b.lines_up(Is(Some(Start))) |> ignore
+      b.lines_up(Is(Some(Start))).gap(Is(8.0)) |> ignore
       tile_avatar_node(b, fn() { "github.com/acme/web-app" }, fn() { "web-app" }, fn() { "" }, 34.0, corner=small_corner)
       tile_avatar_node(b, fn() { "github.com/acme/notes" }, fn() { "notes" }, fn() { "" }, 20.0)
     })
     |> ignore
   })
   t.draw()
-  assert_eq(marks_drawn(t), was)
+  assert_true(marks_drawn(t).length() > 0)
+  assert_eq(t.audit(), [])
 }

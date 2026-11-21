@@ -502,6 +502,10 @@ if part ts; then
   if touches '^station/mb/|^scripts/mb-station\.ts$'; then
     step "the station in MoonBit: errors shown, raw shell sockets and main-thread disk waits only fall, no bare fork, no monotonic wall, no shared .tmp, no reparsed JSON, no raw shell fetch, no SHA-256, SHA-1, CRC-32, base64, civil calendar or flate/adler of its own" node scripts/mb-station.ts
   fi
+  # Every RPC and tell that reader/ makes of the station is answered in station_main and Node's mb-actor.ts.
+  if touches '^station/(src|mb)/|^station/test/mb-station-contracts\.test\.ts$'; then
+    step "station MoonBit contracts" node --test station/test/mb-station-contracts.test.ts
+  fi
   # Core tests also run for Rust-only client changes. A fresh CI checkout needs both
   # their JS dependencies and the real wasm package even when no TS file changed.
   core_tests=0
@@ -514,6 +518,13 @@ if part ts; then
     step "mbui budgets only fall" node scripts/mbui-budgets.ts "$range"
   fi
   if touches '^scripts/mbui-budgets\.ts$|^test/mbui-budgets\.test\.ts$'; then step "mbui budgets test" node --test test/mbui-budgets.test.ts; fi
+  # Changes to station/src/ production code also update station/mb/ or explain why (`Station-parity: <why>`).
+  if { [ "$mode" = push ] || [ "$mode" = full ]; } && touches '^station/src/|^scripts/station-parity\.ts$'; then
+    step "station dual-track parity" node scripts/station-parity.ts "$range"
+  fi
+  if touches '^scripts/station-parity\.ts$|^test/station-parity\.test\.ts$'; then
+    step "station parity test" node --test test/station-parity.test.ts
+  fi
   # The stable channel's release notes (scripts/changelog.ts): each one read as CI will.
   if touches '^docs/releases/|^scripts/changelog\.ts$'; then step "release notes" sh -c 'node scripts/changelog.ts --stable > /dev/null'; fi
   # Root tests also import the core's Markdown reader. Wait for its packages on a cold checkout, as the web does.

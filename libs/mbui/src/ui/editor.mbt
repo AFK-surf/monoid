@@ -1501,7 +1501,7 @@ fn Node::hint_shown(self : Node) -> TextLayout {
 /// What the field placed as `b` shows while nothing is typed in it (Node::hint_shown's).
 fn FieldBox::hint_shown(self : FieldBox) -> TextLayout {
   let lay = self.hint_lay()
-  said_in(self.hint, lay(self.hint), self.shorter, self.w - self.pad_l - self.pad_r, lay)
+  said_in(self.hint, lay(self.hint), self.shorter, self.w - self.pad_l - self.pad_r, fn(s, _) { lay(s) })
 }
 
 ///|

@@ -1393,6 +1393,24 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
       }
       Json::array(out)
     }
+    "sessions.active" => {
+      let except = opt_str(jitems(arg).get(0))
+      let out = []
+      for key, _ in hub.actors {
+        if Some(key) == except || hub.process_state(key) != "running" {
+          continue
+        }
+        match hub.get_session(key) {
+          Some(row) =>
+            match jfield(row, "profile") {
+              String(p) => out.push(Json::string(p))
+              _ => ()
+            }
+          None => ()
+        }
+      }
+      Json::array(out)
+    }
     "sessions.moved" => {
       let a = jitems(arg)
       let key = opt_str(a.get(0)).unwrap_or("")

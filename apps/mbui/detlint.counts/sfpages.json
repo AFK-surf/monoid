@@ -3,15 +3,9 @@
     "page-look": {
       "src/sfpages/appearance.mbt": 1,
       "src/sfpages/connects.mbt": 8,
-      "src/sfpages/local_station.mbt": 4,
-      "src/sfpages/memory_doc.mbt": 2,
-      "src/sfpages/new_connect.mbt": 6,
+      "src/sfpages/memory_doc.mbt": 1,
       "src/sfpages/notifications.mbt": 2,
-      "src/sfpages/permissions.mbt": 8,
-      "src/sfpages/security.mbt": 6,
-      "src/sfpages/slack_app.mbt": 3,
-      "src/sfpages/vault_dialogs.mbt": 6,
-      "src/sfpages/vault_item.mbt": 3
+      "src/sfpages/security.mbt": 5
     },
     "ui-current": {
       "src/sfpages/search.mbt": 2

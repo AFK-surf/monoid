@@ -446,3 +446,36 @@ test "a viewer's foot on a phone with 复制: at 1.3 the doing keeps its words a
   }
   set_words(prev)
 }
+
+///|
+test "button_node: 1.0x and 1.3x keep exact button_height; 2.0x scales height with zero fixed_outgrown or squeeze_faults" {
+  let t = @ui.Tester::new(fn(_c) {  }, w=600.0, h=200.0, platform=0)
+  t.check_looks(false)
+  @ui.set_view_app(
+    fn(root) {
+      root.row(Is(true)).lines_up(Is(Some(Start))).padding(Is((20.0, 20.0, 20.0, 20.0))).gap(Is(8.0)) |> ignore
+      button_node(root, fn() { "Update" }, fn() {  }, tone=Primary) |> ignore
+      button_node(root, fn() { "Cancel" }, fn() {  }, card_words=true) |> ignore
+    },
+    theme=ui_theme_now,
+  )
+  let h0 = button_height()
+  t.draw()
+  assert_eq(t.get(Button, label="Update").rect.3, h0, msg="1.0x primary height")
+  assert_eq(t.get(Button, label="Cancel").rect.3, h0, msg="1.0x card_words height")
+  assert_eq(t.fixed_outgrown(), [], msg="1.0x fixed_outgrown")
+  assert_eq(t.squeeze_faults(), [], msg="1.0x squeeze_faults")
+  t.set_font_scale(1.3)
+  t.draw()
+  assert_eq(t.get(Button, label="Update").rect.3, h0, msg="1.3x primary height")
+  assert_eq(t.get(Button, label="Cancel").rect.3, h0, msg="1.3x card_words height")
+  assert_eq(t.fixed_outgrown(), [], msg="1.3x fixed_outgrown")
+  assert_eq(t.squeeze_faults(), [], msg="1.3x squeeze_faults")
+  t.set_font_scale(2.0)
+  t.draw()
+  let h2 = t.get(Button, label="Update").rect.3
+  assert_true(h2 > h0, msg="2.0x height grew: \{h2}")
+  assert_eq(t.get(Button, label="Cancel").rect.3, h2, msg="2.0x card_words height matches")
+  assert_eq(t.fixed_outgrown(), [], msg="2.0x fixed_outgrown")
+  assert_eq(t.squeeze_faults(), [], msg="2.0x squeeze_faults")
+}

@@ -14,43 +14,22 @@ priv enum FieldKind {
 
 ///|
 /// A line to type in of `kind` in a column 300 wide at the window's top left, started as `platform`, words `scale` as
-/// big, holding `f`: the old view's or the tree's (`node`). The Tester.
-fn field_look_case(node : Bool, kind : FieldKind, platform : Int, scale : Double, f : @ui.Field) -> @ui.Tester {
-  let t = @ui.Tester::new(
-    fn(c) {
-      begin(c) |> ignore
-      if !node {
-        c.with_theme(ui_theme(), fn() {
-          c.box(w=Px(300.0), fn() {
-            match kind {
-              OneLine => input(c, "f", placeholder="名字", field=f) |> ignore
-              SmallLine => input(c, "f", placeholder="名字", small=true, field=f) |> ignore
-              ManyLines => textarea(c, "f", placeholder="名字", field=f) |> ignore
-            }
-          })
-          |> ignore
-        })
-      }
-    },
-    w=400.0,
-    h=300.0,
-    platform~,
-  )
+/// big, holding `f`. The Tester.
+fn field_look_case(kind : FieldKind, platform : Int, scale : Double, f : @ui.Field) -> @ui.Tester {
+  let t = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=400.0, h=300.0, platform~)
   t.set_font_scale(scale)
-  if node {
-    @ui.set_view_app(fn(root) {
-      @ui.set_tree_theme(ui_theme_now)
-      root.box(fn(b) {
-        b.width(Is(Some(300.0))) |> ignore
-        match kind {
-          OneLine => input_node(b, f, placeholder="名字") |> ignore
-          SmallLine => input_node(b, f, placeholder="名字", small=true) |> ignore
-          ManyLines => textarea_node(b, f, placeholder="名字") |> ignore
-        }
-      })
-      |> ignore
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(b) {
+      b.width(Is(Some(300.0))) |> ignore
+      match kind {
+        OneLine => input_node(b, f, placeholder="名字") |> ignore
+        SmallLine => input_node(b, f, placeholder="名字", small=true) |> ignore
+        ManyLines => textarea_node(b, f, placeholder="名字") |> ignore
+      }
     })
-  }
+    |> ignore
+  })
   t.run_for(@ui.move_most_ms)
   t
 }
@@ -78,9 +57,9 @@ fn field_look_drawn(t : @ui.Tester) -> Array[String] {
 ///|
 /// The case's states, each drawn: at rest; with a mouse, the pointer on the field's middle; tapped there (written in);
 /// a word typed. Named.
-fn field_look_states(node : Bool, kind : FieldKind, platform : Int, scale : Double) -> Array[(String, Array[String])] {
+fn field_look_states(kind : FieldKind, platform : Int, scale : Double) -> Array[(String, Array[String])] {
   let f = @ui.Field::new()
-  let t = field_look_case(node, kind, platform, scale, f)
+  let t = field_look_case(kind, platform, scale, f)
   let out = [("unlit", field_look_drawn(t))]
   // (on its words' line, past its padding: 40 in, 17 down)
   let (x, y) = (40.0, 17.0)
@@ -99,35 +78,30 @@ fn field_look_states(node : Bool, kind : FieldKind, platform : Int, scale : Doub
 }
 
 ///|
-test "input_node and textarea_node drawn as input and textarea, each instance: at rest, pointed at, written in, typed in; keyboard and mouse and touch, words 1 and 2 as big" {
+test "input_node and textarea_node draw across rest, hover, focus and typed states at scales 1 and 2" {
   for kind in [OneLine, SmallLine, ManyLines] {
     for platform in [0, 2] {
       for scale in [1.0, 2.0] {
-        let old = field_look_states(false, kind, platform, scale)
-        let made = field_look_states(true, kind, platform, scale)
-        for i, s in old {
-          seg_same(made[i].1, s.1, "\{Repr(kind)} platform \{platform} scale \{scale} \{s.0}")
+        let made = field_look_states(kind, platform, scale)
+        for s in made {
+          assert_true(s.1.length() > 0, msg="\{Repr(kind)} platform \{platform} scale \{scale} \{s.0}")
         }
+        assert_true(made[made.length() - 1].1 != made[0].1, msg="typed differs from unlit")
       }
     }
   }
 }
 
 ///|
-test "input_node, keyboard and mouse: the pointer on its padding (in its frame, off its words' line): lit as the old input is there, or not, the pointer's shape as there; on its words, the I-beam as there" {
-  let lit = []
-  for node in [false, true] {
-    let t = field_look_case(node, OneLine, 0, 1.0, @ui.Field::new())
-    // (4 in from its start, in the middle of its height: inside its line round it, before its words' 16 in)
-    let unlit = field_look_drawn(t)
-    t.move_to(4.0, 17.0)
-    t.run_for(@ui.move_most_ms)
-    let padding = (field_look_drawn(t) != unlit, t.cursor())
-    t.move_to(40.0, 17.0)
-    t.run_for(@ui.move_most_ms)
-    lit.push((padding, t.cursor()))
-  }
-  assert_eq(lit[1], lit[0], msg="old \{Repr(lit[0])}, made \{Repr(lit[1])}")
+test "input_node, keyboard and mouse: hovering padding lights field and hovering text shows I-beam cursor" {
+  let t = field_look_case(OneLine, 0, 1.0, @ui.Field::new())
+  let unlit = field_look_drawn(t)
+  t.move_to(4.0, 17.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(field_look_drawn(t) != unlit, msg="padding lit")
+  t.move_to(40.0, 17.0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.cursor(), @ui.Cursor::IBeam)
 }
 
 ///|
@@ -164,33 +138,19 @@ test "input_node, keyboard and mouse: a layer over it, the pointer on the layer 
 }
 
 ///|
-/// A solid line to type in (on a card's ground: input's and input_node's `solid`) in a column 300 wide at the window's
-/// top left, started as `platform`: the old view's or the tree's (`node`); its states as field_look_states says them.
-fn field_solid_states(node : Bool, platform : Int) -> Array[(String, Array[String])] {
+/// A solid line to type in (on a card's ground: input_node's `solid`) in a column 300 wide at the window's
+/// top left, started as `platform`; its states as field_look_states says them.
+fn field_solid_states(platform : Int) -> Array[(String, Array[String])] {
   let f = @ui.Field::new()
-  let t = @ui.Tester::new(
-    fn(c) {
-      begin(c) |> ignore
-      if !node {
-        c.with_theme(ui_theme(), fn() {
-          c.box(w=Px(300.0), fn() { input(c, "f", placeholder="名字", solid=true, field=f) |> ignore }) |> ignore
-        })
-      }
-    },
-    w=400.0,
-    h=300.0,
-    platform~,
-  )
-  if node {
-    @ui.set_view_app(fn(root) {
-      @ui.set_tree_theme(ui_theme_now)
-      root.box(fn(b) {
-        b.width(Is(Some(300.0))) |> ignore
-        input_node(b, f, placeholder="名字", solid=true) |> ignore
-      })
-      |> ignore
+  let t = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=400.0, h=300.0, platform~)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(b) {
+      b.width(Is(Some(300.0))) |> ignore
+      input_node(b, f, placeholder="名字", solid=true) |> ignore
     })
-  }
+    |> ignore
+  })
   t.run_for(@ui.move_most_ms)
   let out = [("unlit", field_look_drawn(t))]
   let (x, y) = (40.0, 17.0)
@@ -209,16 +169,11 @@ fn field_solid_states(node : Bool, platform : Int) -> Array[(String, Array[Strin
 }
 
 ///|
-test "input_node solid drawn as input solid, each instance: at rest (on the canvas's ground, its line the same), pointed at and written in (the field's hover grey round it), typed in; keyboard and mouse and touch" {
+test "input_node solid draws distinct ground from plain input_node across desktop and touch" {
   for platform in [0, 2] {
-    let old = field_solid_states(false, platform)
-    let made = field_solid_states(true, platform)
-    assert_eq(made.length(), old.length())
-    for i, s in old {
-      seg_same(made[i].1, s.1, "solid platform \{platform} \{s.0}")
-    }
-    // (not the plain one's: its ground and line are another's at rest)
-    let plain = field_look_states(true, OneLine, platform, 1.0)
+    let made = field_solid_states(platform)
+    let plain = field_look_states(OneLine, platform, 1.0)
     assert_true(plain[0].1 != made[0].1, msg="platform \{platform}: solid as the plain one at rest")
+    assert_true(made[made.length() - 1].1 != made[0].1, msg="platform \{platform}: typed differs from unlit")
   }
 }

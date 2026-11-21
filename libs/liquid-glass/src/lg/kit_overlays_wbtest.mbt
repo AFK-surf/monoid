@@ -1259,3 +1259,36 @@ test "Select, Popover, Sheet and Dialog keep closing leave transitions alive at 
   t_dlg.run_for(ovl_dialog_leave_done_ms)
   assert_eq(t_dlg.drawn_glass().length(), 0)
 }
+
+///|
+let ovl_progress_anim_steps : Int = 16
+
+///|
+test "liquid_progress_bar_node and liquid_progress_ring_node animate determinate and indeterminate with zero Flex relayout" {
+  let val : @signals.Signal[Double?] = @signals.signal(Some(0.2))
+  let t = ovl_case(fn(page, _host) {
+    page.box(fn(col) {
+      col.width(Is(Some(320.0))).gap(Is(16.0)) |> ignore
+      liquid_progress_bar_node(col, fn() { val.get() }, label=fn() { "GPU Pipeline" }, show_value=false) |> ignore
+      liquid_progress_ring_node(col, fn() { val.get() }, label=fn() { "Pipeline Ring" }) |> ignore
+    })
+    |> ignore
+  })
+  t.run_for(springs_out)
+  let tree = @ui.view_tree().unwrap()
+  let laid0 = tree.work().laid
+  val.set(Some(0.85))
+  for _ in 0..<ovl_progress_anim_steps {
+    t.run_for(ovl_morph_step_ms)
+  }
+  let laid_det = tree.work().laid - laid0
+  assert_eq(laid_det, 0, msg="expected 0 Flex layouts during determinate progress bar/ring spring, got \{laid_det}")
+  val.set(None)
+  t.run_for(ovl_morph_step_ms)
+  let laid1 = tree.work().laid
+  for _ in 0..<ovl_progress_anim_steps {
+    t.run_for(ovl_morph_step_ms)
+  }
+  let laid_ind = tree.work().laid - laid1
+  assert_eq(laid_ind, 0, msg="expected 0 Flex layouts during indeterminate progress sweep/spin, got \{laid_ind}")
+}

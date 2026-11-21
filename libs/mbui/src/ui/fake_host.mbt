@@ -505,6 +505,8 @@ impl @hostapi.Host for FakeHost with shape(self, text, size, weight, style, out)
       -1.0
     } else if c == 0xE000 && k > 0 && (style & @hostapi.style_no_ligatures) == 0 {
       -2.0
+    } else if text_table.val is Some(_) {
+      (c | fake_fallback_glyph_bit).to_double()
     } else {
       c.to_double()
     }
@@ -513,6 +515,11 @@ impl @hostapi.Host for FakeHost with shape(self, text, size, weight, style, out)
   }
   k
 }
+
+///|
+/// Tag bit (bit 25, inside 0x03FFFFFF, above Unicode 0x10FFFF and KEYS_MOST=65536, below subpixel phase bits 26..27)
+/// isolating FakeHost fallback glyph keys from recorded textrec glyph IDs.
+let fake_fallback_glyph_bit : Int = 0x02000000
 
 ///|
 /// Whether words in `style` are set in the app's words' face (face_ui) as a host sets them: one is given and the style
@@ -530,7 +537,12 @@ impl @hostapi.Host for FakeHost with text_key(self, text, size, weight, style) {
   }
   match kept_key(text, size, weight, style) {
     Some(k) => k
-    None => text.at(0).to_int()
+    None =>
+      if text_table.val is Some(_) {
+        text.at(0).to_int() | fake_fallback_glyph_bit
+      } else {
+        text.at(0).to_int()
+      }
   }
 }
 
@@ -558,7 +570,7 @@ impl @hostapi.Host for FakeHost with glyph(self, key, out) {
     l.host.glyph(key, out)
     return
   }
-  if kept_glyph(key, out) {
+  if (key & fake_fallback_glyph_bit) == 0 && kept_glyph(key, out) {
     return
   }
   // a glyph box per cluster, so painting is exercised
@@ -568,7 +580,7 @@ impl @hostapi.Host for FakeHost with glyph(self, key, out) {
   out[3] = self.glyph_box.1
   out[4] = 0.0
   out[5] = -10.0
-  out[6] = if (key & 0x03FFFFFF) >= 0x1F000 { 1.0 } else { 0.0 }
+  out[6] = if (key & 0x01FFFFFF) >= 0x1F000 { 1.0 } else { 0.0 }
 }
 
 ///|

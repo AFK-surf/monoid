@@ -820,8 +820,19 @@ async fn LiveBus::jobs_stop_all(self : LiveBus, args : Json) -> Json {
 
 ///|
 /// The account a session `key` runs on now (`holding` the one it had, `across` workspaces): its token, home and env.
-async fn LiveBus::jobs_accounts_run_on(self : LiveBus, key : String, holding : Bool, across : Bool) -> Json {
-  (self.jobs_ask.val)("accounts.runOn", { "key": Json::string(key), "holding": Json::boolean(holding), "across": Json::boolean(across) })
+async fn LiveBus::jobs_accounts_run_on(
+  self : LiveBus,
+  key : String,
+  holding : Bool,
+  across : Bool,
+  force_cap? : Bool = false,
+) -> Json {
+  (self.jobs_ask.val)("accounts.runOn", {
+    "key": Json::string(key),
+    "holding": Json::boolean(holding),
+    "across": Json::boolean(across),
+    "forceCap": Json::boolean(force_cap),
+  })
 }
 
 ///|

@@ -97,3 +97,26 @@ test("a host sample of this machine says how busy its CPUs are", async () => {
   assert.equal(typeof info.hostname, "string");
   assert.ok(info.cpuBusy === null || (info.cpuBusy >= 0 && info.cpuBusy <= 1));
 });
+
+test("CPU ticks that cannot be read are no rejection, and are read again on the next beat", async () => {
+  const unhandled: unknown[] = [];
+  const heard = (reason: unknown) => void unhandled.push(reason);
+  process.on("unhandledRejection", heard);
+  let beat: (() => void) | null = null;
+  const every = mock.method(wall, "every", (_ms: number, f: () => void) => ((beat = f), () => {}));
+  let reads = 0;
+  const ticks = mock.method(platform.host, "cpuTicks", () => (++reads === 1 ? Promise.reject(new Error("spawn UNKNOWN")) : Promise.resolve([10, 20] as [number, number])));
+  try {
+    const stop = new Host(tmpdir(), { read: async () => null }).follow();
+    await new Promise((r) => setImmediate(r));
+    beat!();
+    assert.equal(reads, 2, "the failed read is not still out");
+    await new Promise((r) => setImmediate(r));
+    stop();
+  } finally {
+    ticks.mock.restore();
+    every.mock.restore();
+    process.off("unhandledRejection", heard);
+  }
+  assert.deepEqual(unhandled, []);
+});

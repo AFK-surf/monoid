@@ -32,6 +32,10 @@ export type Profile = RuntimeProfile & {
   enabled?: boolean;
   /// The joined workspaces kept from it: every workspace the station is in runs on it but these.
   withheld?: string[];
+  /// Optional active-session concurrency cap for this profile (positive integer; absent/0: unlimited).
+  maxConcurrentSessions?: number;
+  /// Whether this profile is currently in new-account protection (auto-set on new subscription sign-in).
+  newAccountProtection?: boolean;
 };
 
 export type ConnectMode = "multi-session" | "single-session";
@@ -112,6 +116,11 @@ export function hubConfig(raw: any, dataDir: string, found: (id: string) => read
       .map((m: unknown) => String(m).trim())
       .filter((m: string) => m !== "" && !seen.has(m) && (seen.add(m), true));
     const base: RuntimeProfile = { ...p, home: under(dataDir, String(p.home ?? "")) };
+    delete (base as any).maxConcurrentSessions;
+    const maxConcurrentSessions =
+      typeof p.maxConcurrentSessions === "number" && Number.isInteger(p.maxConcurrentSessions) && p.maxConcurrentSessions > 0
+        ? p.maxConcurrentSessions
+        : undefined;
     const runtimes = profileRuntimes(base);
     const service = profileService(base);
     if (runtimes[0] === undefined) delete base.runtime;
@@ -137,6 +146,8 @@ export function hubConfig(raw: any, dataDir: string, found: (id: string) => read
       backgroundOnMessage: p.backgroundOnMessage !== false,
       enabled: p.enabled !== false,
       ...(Array.isArray(p.withheld) ? { withheld: p.withheld.filter((w: unknown): w is string => typeof w === "string" && w !== "") } : {}),
+      ...(maxConcurrentSessions !== undefined ? { maxConcurrentSessions } : {}),
+      ...(p.newAccountProtection === true && maxConcurrentSessions !== undefined ? { newAccountProtection: true } : {}),
     };
   });
   const connects: Connect[] = (Array.isArray(raw?.connects) ? raw.connects : []).map((c: any): Connect => {

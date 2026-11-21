@@ -465,7 +465,7 @@ fn tree_words_box(
     if at is Some(_) || c.id != id || c.runs.is_empty() || a <= 0.0 {
       return
     }
-    let (_, lay, _) = view_runs_laid(c.runs, c.words_look, c.runs_look, c.w, tree.words_scale_of(c.id), kept=c.words_breaks)
+    let (_, lay, _) = view_runs_laid(c.runs, c.words_look, c.runs_look, c.w, tree.words_scale_of(c.id), kept=c.words_breaks, tabular=c.words_tabular)
     let (from, to) = if what.has_prefix("=") {
       (0, lay.text.length())
     } else {

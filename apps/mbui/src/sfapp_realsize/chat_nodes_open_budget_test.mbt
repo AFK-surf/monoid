@@ -117,7 +117,10 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // (+5 made, +44 laid, +4 bindings, -19 measured, 2026-11-20: #7833's desktop side tab strip (sf.tab_strip_node) holds
   // a persistent Scroll::across viewport so 1<->2 tab transitions keep Handoff and focus, plus overlays_node's closed
   // side_tab_menu_node slot; before it (2444, 501, 1880, 206, 2487))
-  "wide cold": (2449, 501, 1924, 187, 2491),
+  // (+6 bindings, 1 let go fewer, 2026-11-21: a hairline ring of its own under each rail workspace shown by its letter
+  // (sfdesk rail_workspaces_node), in place of the pointer's ground it rested on; the same at 60, 120, 24 and 7; before
+  // it (2449, 501, 1924, 187, 2491))
+  "wide cold": (2449, 500, 1924, 187, 2497),
   // (2026-11-18: a chat's list's keys worked out of each message's JSON, its pieces of the core's tree's shape (sfpages
   // chat_said_keys_raw, sf core_pieces), each message read as a Message only as a row of it shows: wide again 2 made, 2
   // let go, 17 laid and 18 bindings fewer, the same at 60, 120, 24 and 7; before it (899, 134, 870, 121, 1080))

@@ -458,6 +458,26 @@ test("a_post_read_from_the_transcript_stands_where_it_was_made", () => {
   assert.equal(items[1].body.content.text, "done");
 });
 
+test("a_post_held_back_by_a_new_message_is_marked_unsent_until_sent_by_its_id", () => {
+  const held = "Not posted: a message you had not read came in CHAT/1.0 (ts 1.5), and it comes to you next; no state was recorded. Held as held-3. After reading it, …";
+  const timeline: J[] = [
+    { kind: "tool_call", tool: "mcp__stillfail__chat_post", text: '{"to":"CHAT/1.0","text":"done","kind":"all_done"}', callId: "p" },
+    { kind: "tool_result", callId: "p", ok: true, text: held },
+    { kind: "user", text: '<message via="web" from="Ada (a@x.com)" ts="1.5" thread="CHAT/1.0">\nwait\n</message>' },
+  ];
+  const posts = (t: J[]) => presentHistory({ loaded: true, timeline: t }, cx([], [], [])).items.filter((i: J) => i.body.kind === "post").map((i: J) => i.body.content);
+  const [dropped] = posts(timeline);
+  assert.equal(dropped.unsent, true);
+  assert.equal(dropped.ends, undefined, "its state was not recorded");
+  // Another post in its place: the held one stays unsent.
+  const other = [...timeline, { kind: "tool_call", tool: "mcp__stillfail__chat_post", text: '{"to":"CHAT/1.0","text":"ok, waiting","kind":"all_done"}', callId: "q" }, { kind: "tool_result", callId: "q", ok: true, text: "Posted to CHAT/1.0." }];
+  assert.deepEqual(posts(other).map((p: J) => p.unsent), [true, false]);
+  // Sent as written by its id: it went out.
+  const sent = [...timeline, { kind: "tool_call", tool: "mcp__stillfail__chat_post", text: '{"to":"CHAT/1.0","send":"held-3","kind":"all_done"}', callId: "s" }, { kind: "tool_result", callId: "s", ok: true, text: "Posted to CHAT/1.0." }];
+  const [went] = posts(sent);
+  assert.equal(went.unsent, false);
+});
+
 test("each_prompt_that_woke_the_agent_begins_a_turn_and_merges_times_within_five_minutes", () => {
   const timeline = [
     { kind: "tool_call", tool: "Bash", text: '{"command":"ls"}', callId: "z" },

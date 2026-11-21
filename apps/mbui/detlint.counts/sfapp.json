@@ -17,9 +17,6 @@
       "src/sfapp/app.mbt": 5,
       "src/sfapp/bars.mbt": 2
     },
-    "submitted-read": {
-      "src/sfapp/settings/vault_ask.mbt": 1
-    },
     "frame-walk": {
       "src/sfapp/bar_places_today_wbtest.mbt": 1,
       "src/sfapp/cards_order_wbtest.mbt": 1,

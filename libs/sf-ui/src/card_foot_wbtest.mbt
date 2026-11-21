@@ -2,6 +2,14 @@
 // button at the other end of the card.
 
 ///|
+fn wide_view(body : (@ui.Ctx) -> Unit) -> (@ui.Ctx) -> Unit {
+  fn(c) {
+    begin(c) |> ignore
+    c.with_theme(ui_theme(), fn() { with_look(Wide, fn() { body(c) }) })
+  }
+}
+
+///|
 test "card foot alignment leaves other buttons' room alone" {
   let t = @ui.Tester::new(
     wide_view(fn(c) {

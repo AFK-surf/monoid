@@ -97,23 +97,25 @@ test "the bottom bar: the 震动 setting turns holding and switching off and on"
 ///|
 test "what comes to be is felt as it comes: not as it is first seen, nor while it stays" {
   @sfbase.reset()
-  let now = Ref(false)
-  let first = Ref(true)
-  let t = @ui.Tester::new(fn(c) {
-    @sfbase.felt_change(c, "needed", now.val, Confirm)
-    @sfbase.felt_change(c, "there", first.val, Reject)
-    c.text("x", wrap=false) |> ignore
-  })
+  let now = @signals.signal(false)
+  let first = @signals.signal(true)
+  let t = @ui.Tester::new(
+    fn(_) { () },
+    tree=fn(root) {
+      @sfbase.felt_change_node(root, fn() { now.get() }, Confirm)
+      @sfbase.felt_change_node(root, fn() { first.get() }, Reject)
+    },
+  )
   t.draw()
   assert_eq(t.haptics(), [])
-  now.val = true
+  now.set(true)
   t.draw()
   assert_eq(t.haptics(), [@ui.Confirm])
   t.draw()
   assert_eq(t.haptics(), [@ui.Confirm])
-  now.val = false
+  now.set(false)
   t.draw()
-  now.val = true
+  now.set(true)
   t.draw()
   assert_eq(t.haptics(), [@ui.Confirm, @ui.Confirm])
 }

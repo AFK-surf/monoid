@@ -152,6 +152,13 @@ export class Directory extends ProductionDirectory {
   expireAdminKey(id: string) {
     this.ctx.storage.sql.exec("UPDATE admin_keys SET expires_at = ? WHERE id = ?", nowSeconds() - 1, id);
   }
+  expireProvisionKey(id: string) {
+    this.ctx.storage.sql.exec("UPDATE provision_keys SET expires_at = ? WHERE id = ?", nowSeconds() - 1, id);
+  }
+  /** `n` stations more listed in a workspace (none of them a machine), to reach its limit without enrolling each. */
+  fillStations(workspace: string, n: number) {
+    for (let i = 0; i < n; i++) this.ctx.storage.sql.exec("INSERT INTO station_members (workspace, station, name, enrolled_at, enrolled_by) VALUES (?, ?, ?, ?, ?)", workspace, String(i).padStart(64, "f"), `filler ${i}`, nowSeconds(), "test");
+  }
   /** A member-mail reservation made `secs` ago, against the fixed test clock. */
   ageAddedMail(workspace: string, email: string, secs: number) {
     this.ctx.storage.sql.exec("UPDATE added_mails SET at = ? WHERE workspace = ? AND email = ?", nowSeconds() - secs, workspace, email);

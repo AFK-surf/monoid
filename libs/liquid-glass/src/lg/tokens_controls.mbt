@@ -278,11 +278,7 @@ fn ctrl_danger_ink() -> Int64 {
 
 ///|
 fn ctrl_seg_thumb_idle() -> Int64 {
-  if is_dark() {
-    0x38383EFFL
-  } else {
-    0xFFFFFFFFL
-  }
+  colors().lens_idle
 }
 
 ///|
@@ -413,10 +409,10 @@ fn ctrl_segmented_track_glass() -> @paint.Glass {
   let d = is_dark()
   @paint.Glass::liquid(
     blur=2.1,
-    tint=if d { 0x1C1C20E0L } else { 0xF2F2F580L },
-    solid=if d { 0x1E1F24FFL } else { 0xEEEEF2FFL },
+    tint=if d { 0x202020FFL } else { 0xFDFCFD67L },
+    solid=if d { 0x1E1F24FFL } else { 0xFAFAFAFFL },
     saturation=1.0,
-    rim=0.55,
+    rim=0.6,
     bezel=16.0,
     refraction=20.0,
     chroma=0.0,
@@ -450,10 +446,10 @@ fn ctrl_input_glass() -> @paint.Glass {
   let d = is_dark()
   @paint.Glass::liquid(
     blur=2.1,
-    tint=if d { 0x1E1E24D8L } else { 0xFFFFFF99L },
+    tint=if d { 0x202020FFL } else { 0xFDFCFD67L },
     solid=if d { 0x1E1F24FFL } else { 0xFAFAFAFFL },
     saturation=1.0,
-    rim=0.5,
+    rim=0.6,
     bezel=16.0,
     refraction=18.0,
     chroma=0.0,

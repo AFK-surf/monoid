@@ -9,14 +9,6 @@
 let gradient_px : Int = 64
 
 ///|
-/// A ground of the gradient from `from` to `to` at `angle` degrees (CSS's: 0 to the top, 90 to the right), for a box
-/// about `w` by `h` (its proportion sets the gradient's line, as CSS's does), with corners of `radius`; as wide as its
-/// parent and `h` high. Put behind what the box holds (first, in a box that lays what follows over it).
-pub fn gradient(c : @ui.Ctx, w : Double, h : Double, angle : Double, from : Int64, to : Int64, radius? : Double = 0.0) -> Unit {
-  c.image(gradient_key(w, h, angle, from, to), w=Fill(1.0), h=Px(h), fit=FitFill, radius~, bg=0L, fade=false) |> ignore
-}
-
-///|
 /// The picture of the gradient for a box `w` by `h` (as `gradient`'s), by the key the host keeps it at: made the first
 /// time it is asked for, its key saying it all (a tree's node shows it by View::image).
 pub fn gradient_key(w : Double, h : Double, angle : Double, from : Int64, to : Int64) -> String {

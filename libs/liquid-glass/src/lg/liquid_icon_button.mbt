@@ -68,6 +68,7 @@ pub fn liquid_icon_button_node(
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
     .shadow(Is(shadow_default))
+    .shadow_outside(Is(true))
     .glass(By(fn() { Some(ctrl_surface_glass(eff_tint(), surface)) }))
     .ground_drawn(By(fn() {
       if !interactive {
@@ -219,6 +220,7 @@ pub fn liquid_button_group_node(
     .padding(Is((ctrl_group_pad, ctrl_group_pad, ctrl_group_pad, ctrl_group_pad)))
     .radius(Is(r_outer))
     .shadow(Is(shadow_default))
+    .shadow_outside(Is(true))
     .glass(By(fn() { Some(ctrl_surface_glass(clear, surface)) }))
     .says(Is(Some(@view.said(Group, label="Action Group"))))
     |> ignore

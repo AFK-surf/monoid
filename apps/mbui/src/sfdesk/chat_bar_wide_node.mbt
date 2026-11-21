@@ -826,30 +826,27 @@ fn wide_bar_keys(
       },
       along_row=true,
       fn(b) {
-        b.box(fn(sb) {
-          let me : Ref[@view.View?] = Ref(None)
-          let button = @sf.icon_button_node(sb, "monitor", fn() { @sf.t("web-pages.chat.screen") }, fn() {
-            match (@signals.untracked(view), me.val) {
-              (Some(v), Some(at)) => chat_remote_open(src, r, v, from=Node(at))
-              _ => ()
-            }
-          }, tips~, linked=ends.linked, shortcut="chat.screen")
-          me.val = Some(button)
-          // (no count on it: how many there are is its menu's; the user, 2026-11-13: a count on the icon's corner hid it)
-          let driven = fn() {
-            match view() {
-              Some(v) => chat_screens_driven(v.screens)
-              None => false
-            }
+        let me : Ref[@view.View?] = Ref(None)
+        let button = @sf.icon_button_node(b, "monitor", fn() { @sf.t("web-pages.chat.screen") }, fn() {
+          match (@signals.untracked(view), me.val) {
+            (Some(v), Some(at)) => chat_remote_open(src, r, v, from=Node(at))
+            _ => ()
           }
-          sb.show(driven, at_once=true, fn(o) {
-            // (over the button, not after it: the old view's layer)
-            o.over(Is(true)) |> ignore
-            @sf.style_node(o, fn() { screen_driven_room })
-            o.box(fn(d) { @sf.style_node(d, fn() { screen_driven_dot }) }) |> ignore
-          })
+        }, tips~, linked=ends.linked, shortcut="chat.screen")
+        me.val = Some(button)
+        // (no count on it: how many there are is its menu's; the user, 2026-11-13: a count on the icon's corner hid it)
+        let driven = fn() {
+          match view() {
+            Some(v) => chat_screens_driven(v.screens)
+            None => false
+          }
+        }
+        b.show(driven, at_once=true, fn(o) {
+          // (over the button, not after it: the old view's layer)
+          o.over(Is(true)) |> ignore
+          @sf.style_node(o, fn() { screen_driven_room })
+          o.box(fn(d) { @sf.style_node(d, fn() { screen_driven_dot }) }) |> ignore
         })
-        |> ignore
       },
     )
     // what it is (its info's popover beside it: chat_pops_node's), what is done with it ("…": the menu a row of the sidebar has)

@@ -5,6 +5,10 @@
 // (OpenID's form_post), so the token is in no address, history or Referer. Only a console CONNECT_CONSOLES lists is
 // sent anything: the web's Worker lets that one alone in the page's form-action, and answers any other with
 // `?refused=1` (cloud/src/web.ts connectConsole). Cancelling posts `error=access_denied`, so the console says so.
+// With `&mode=provision` the console asks for no one machine but for a provisioning key of the workspace picked
+// (`workspace.createProvisionKey`), with which it enrolls the stations of the machines it makes from then on, until an
+// owner or admin revokes it; posted back as `provision_key`, `workspace`, `workspace_name`, and in a locked workspace
+// `lock`, its head as this device holds it, which the console gives each station it enrolls.
 import { render } from "preact";
 import { useEffect, useMemo, useState } from "preact/hooks";
 import { addWords, I18nRoot, t, type Words } from "@stillfail/ui/i18n.ts";
@@ -66,6 +70,9 @@ function Connect() {
   const back = query.get("return") ?? "";
   const state = query.get("state") ?? "";
   const asked = (query.get("name") ?? "").trim().slice(0, 64);
+  const provision = query.get("mode") === "provision";
+  /** The catalog's key for this mode's words: the provisioning key's where it has its own. */
+  const k = (key: string) => `web-pages.cloud.connect.${provision ? `provision.${key}` : key}`;
   const consoleHost = useMemo(() => {
     try {
       return new URL(back).host;
@@ -112,6 +119,13 @@ function Connect() {
     setBusy("adding");
     setError(null);
     try {
+      if (provision) {
+        const made = (await core().call("workspace.createProvisionKey", { workspace, name: name.trim(), account: chosen.account })) as { key?: unknown; lock?: unknown };
+        if (typeof made?.key !== "string") throw new Error(t("web-pages.cloud.connect.provision.noKey"));
+        setBusy("handing");
+        postBack(back, { state, provision_key: made.key, workspace: chosen.id, workspace_name: chosen.name, ...(typeof made.lock === "string" ? { lock: made.lock } : {}) });
+        return;
+      }
       const made = (await core().call("workspace.enroll", { workspace, name: name.trim(), account: chosen.account })) as { command?: unknown };
       if (typeof made?.command !== "string") throw new Error(t("web-pages.cloud.connect.noCommand"));
       setBusy("handing");
@@ -122,23 +136,23 @@ function Connect() {
     }
   };
   return (
-    <StandPage title={t("web-pages.cloud.connect.title")} lead={t("web-pages.cloud.connect.lead", { host: consoleHost, machine: asked || t("web-pages.cloud.connect.aMachine") })}>
+    <StandPage title={t(k("title"))} lead={provision ? t(k("lead"), { host: consoleHost }) : t("web-pages.cloud.connect.lead", { host: consoleHost, machine: asked || t("web-pages.cloud.connect.aMachine") })}>
       <form className={own.form} onSubmit={join}>
         <Field label={t("web-pages.cloud.connect.workspace")}>
           <RadioChoices name="workspace" label={t("web-pages.cloud.connect.workspace")} value={workspace} onChange={setWorkspace} disabled={busy !== null}
             options={listed.managed.map((w) => ({ value: w.id, label: w.name, ...(several ? { meta: w.email } : {}) }))} />
         </Field>
-        <Field label={t("web-pages.cloud.connect.name")} htmlFor="connect-name">
+        <Field label={t(k("name"))} htmlFor="connect-name">
           <TextInput id="connect-name" value={name} maxLength={64} disabled={busy !== null} onInput={(e) => setName(e.currentTarget.value)} />
         </Field>
-        <p className={own.note}>{t("web-pages.cloud.connect.note", { host: consoleHost })}</p>
-        {error && <ErrorLine>{t("web-pages.cloud.connect.failed", { error })}</ErrorLine>}
+        <p className={own.note}>{t(k("note"), { host: consoleHost })}</p>
+        {error && <ErrorLine>{t(k("failed"), { error })}</ErrorLine>}
         <StandActions>
           <Button disabled={busy !== null} onClick={() => { setBusy("handing"); postBack(back, { state, error: "access_denied" }); }}>
             {t("web-pages.cloud.connect.cancel")}
           </Button>
           <Button type="submit" variant="primary" busy={busy === "adding"} disabled={!workspace || !name.trim() || busy !== null}>
-            {busy === "adding" ? t("web-pages.cloud.connect.adding") : t("web-pages.cloud.connect.add")}
+            {busy === "adding" ? t(k("adding")) : t(k("add"))}
           </Button>
         </StandActions>
       </form>

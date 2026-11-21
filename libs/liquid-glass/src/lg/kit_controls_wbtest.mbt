@@ -569,3 +569,38 @@ test "Track A glass drag is deterministic across 60, 120, 24 and 7 fps" {
   assert_eq(got[got.length() - 1], "2")
   assert_eq(got.length(), 5)
 }
+
+///|
+let ctrl_slider_drag_steps : Int = 16
+
+///|
+test "liquid_slider_node continuous drag and jelly release cause zero per-frame Flex relayout" {
+  let val = @signals.signal(50.0)
+  let t = lg_case(fn(p) {
+    p.box(fn(b) {
+      b.width(Is(Some(320.0))) |> ignore
+      liquid_slider_node(b, fn() { val.get() }, fn(v) { val.set(v) }, fn() { "Volume" }, least=0.0, most=100.0)
+      |> ignore
+    })
+    |> ignore
+  })
+  t.run_for(springs_out)
+  let tree = @ui.view_tree().unwrap()
+  let sr = t.get(Slider, label="Volume").rect
+  let sx = sr.0 + sr.2 * 0.5
+  let sy = sr.1 + sr.3 / 2.0
+  t.touch(0, sx, sy)
+  t.run_for(a_frame)
+  let laid0 = tree.work().laid
+  for i in 1..<=ctrl_slider_drag_steps {
+    t.touch(1, sx + i.to_double() * 6.0, sy)
+    t.run_for(a_frame)
+  }
+  t.touch(2, sx + 96.0, sy)
+  for _ in 0..<ctrl_slider_drag_steps {
+    t.run_for(a_frame)
+  }
+  let laid_delta = tree.work().laid - laid0
+  assert_eq(laid_delta, 0, msg="expected 0 Flex layouts during slider drag and jelly settle, got \{laid_delta}")
+  assert_true(val.get() > 70.0, msg="expected slider value > 70 after right drag, got \{val.get()}")
+}

@@ -118,3 +118,35 @@ pub fn Glass::liquid(
     spot,
   }
 }
+
+///|
+/// Clear liquid glass (iOS 27 standalone translucent variant over media/photos): zero backdrop blur with a subtle
+/// +0.126 white micro-veil (`tint` alpha ≈ 0.102) and pronounced edge refraction (`refraction=16.0`), distinct from
+/// pure zero-veil optical lenses (`tint=0xFFFFFF00L`).
+pub fn Glass::clear(
+  blur? : Double = 0.0,
+  tint? : Int64 = 0xFFFFFF1AL,
+  solid? : Int64 = 0xECECF0FFL,
+  saturation? : Double = 1.0,
+  rim? : Double = 0.6,
+  bezel? : Double = 14.0,
+  refraction? : Double = 16.0,
+  chroma? : Double = 0.0,
+  merge? : Double = 16.0,
+  adaptive? : Bool = true,
+  spot? : (Double, Double)? = None,
+) -> Glass {
+  Glass::liquid(
+    blur~,
+    tint~,
+    solid~,
+    saturation~,
+    rim~,
+    bezel~,
+    refraction~,
+    chroma~,
+    merge~,
+    adaptive~,
+    spot~,
+  )
+}

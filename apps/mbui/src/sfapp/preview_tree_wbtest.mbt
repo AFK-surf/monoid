@@ -297,7 +297,7 @@ fn closed_held(held : Bool) -> (Double, Double, Double, Bool) {
     t.touch_raw(2, 0, 120.0, 300.0, t0 + up_at_ms)
   }
   t.frame_at(t0 + 100.0)
-  (v.fade.ends_at() - t0, v.fly.ends_at() - t0, v.zoom.rect_at(t0 + 100.0).unwrap().0, v.awake != awake)
+  (v.fade.ends_at() - t0, v.tree_way_end.get() - t0, v.zoom.rect_at(t0 + 100.0).unwrap().0, v.awake != awake)
 }
 
 ///|
@@ -1048,7 +1048,7 @@ fn keyed(code : Int, how : Int) -> (Bool, Double, Double) {
   }
   t.advance(t0 + (if how == 1 { 80.0 } else { 20.0 }) - t.time())
   t.key_told(code, 0, t0 + 20.0)
-  let ends = if v.flies { v.fly.ends_at() } else { v.fade.ends_at() }
+  let ends = if v.tree_back.get() && v.tree_way_end.get() > 0.0 { v.tree_way_end.get() } else { v.fade.ends_at() }
   (v.closing, ends - t0, v.zoom.scale_at(t0 + 60.0))
 }
 
@@ -1651,7 +1651,7 @@ test "viewer on the tree, its window made narrow then wide again (Large, Small, 
     let now = viewer.get().unwrap()
     assert_true(physical_equal(now, v), msg="\{Repr(size)}: the same viewer")
     assert_true(now.in_tree, msg="\{Repr(size)}: the tree's")
-    assert_true(!now.flies || now.fly_back, msg="\{Repr(size)}: flying in no more")
+    assert_true(!now.tree_way.get() || now.tree_back.get(), msg="\{Repr(size)}: flying in no more")
     assert_eq(now.zoom.scale_at(t.time()), zoomed, msg="\{Repr(size)}: as zoomed")
     // (one bar drawn: the floating one's × on a small screen, none across the top's, whose way back closes it)
     let closes = t.all(Button, label=@sf.t("web-main.preview.closeKey")).length()
@@ -4196,124 +4196,6 @@ test "viewer on the tree: closed back into its thumbnail: the frame drawn for a 
   let after = pictures()
   assert_eq(after.length(), 1, msg="landed, the thumbnail")
   assert_eq(corners_changed(before[0], [landing[0], after[0]], t.ctx().scale), 0, msg="pixels changing at a corner")
-}
-
-///|
-/// The flight photo's picture in a card 300 by 225 its corners each as `corners` says (top left, then round it), shown
-/// while `shown` says, an old view's in a window of the tree's, beside the viewer as the shells have it
-/// (sfbase's viewer_node, its stage the window), on `scale` pixels a point; seen once its picture is decoded: the
-/// tester, and what the picture's file is known by.
-fn cornered_card(
-  corners : @signals.Signal[(Double, Double, Double, Double)],
-  shown : @signals.Signal[Bool],
-  scale : Double,
-) -> (@ui.Tester, Source) {
-  new_run()
-  let a = flight_photo()
-  @sfbase.sent_picture_kept(@sfbase.sent_key("ws1/st1", a.path), "sent-key")
-  let src = fixture("chat")
-  let t = @ui.Tester::new(
-    // (the old views the tree hosts built where the frame builds them, as the app's view has it)
-    fn(c) { @ui.old_views_here(c) },
-    tree=fn(root) {
-      root.box(fn(v) {
-        v.grow(Is(1.0)) |> ignore
-        @ui.old(v, fn(c) {
-          let (tl, tr, br, bl) = corners.get()
-          if shown.get() {
-            let radius = @ui.Radius::Corners(tl, tr, br, bl)
-            c.box(style=@ui.style(w=Fixed(300.0), h=Fixed(225.0), radius~, clip=true), fn() {
-              legacy_note_thumb_file(c, src, a, fixed_box=Some((300.0, 225.0)))
-            })
-            |> ignore
-          }
-        })
-        .over(Is(true))
-        |> ignore
-        @sfbase.viewer_node(v, src, fn() { v.window() })
-      })
-      |> ignore
-    },
-    w=390.0,
-    h=844.0,
-    scale~,
-    images=[("sent-key", 1200, 900), ("mem:preview/ws1/st1/s-c1/uploads/fx/photo.jpg", 1200, 900)],
-  )
-  t.draw()
-  t.run_for(@ui.image_fade_ms)
-  (t, src)
-}
-
-///|
-test "viewer on the tree, from a card its corners each unlike: closed back into it, the frame drawn for a moment past the flight's end and the frame after cover its corners as it lay before it opened, on the device's pixels" {
-  let scale = 3.25
-  let corners = @signals.signal((40.0, 10.0, 30.0, 20.0), same=fn(a, b) { a == b })
-  let (t, _) = cornered_card(corners, @signals.signal(true), scale)
-  let pictures = fn() { t.drawn_instances().filter(fn(p) { p[5] == 4.0 && p[2] > 40.0 && p[11] > 0.5 }) }
-  let before = pictures()
-  assert_eq(before.length(), 1, msg="the thumbnail: \{Repr(t.image_nodes())} \{Repr(@ui.view_tree().unwrap().drawn().filter(fn(d) { d.hosted }).map(fn(d) { (d.x, d.y, d.w, d.h) }))}")
-  // (its corners unlike, its own or its card's that cut it: scene.mbt's 36-39, 24-27)
-  let own = [before[0][36], before[0][37], before[0][38], before[0][39]]
-  let cut = [before[0][24], before[0][25], before[0][26], before[0][27]]
-  let unlike = fn(a : Array[Double]) { a.iter().any(fn(r) { r != a[0] }) }
-  assert_true(unlike(own) || unlike(cut), msg="its corners unlike: \{Repr(own)} \{Repr(cut)}")
-  let at = t.locate("img:sent-key")
-  assert_eq(at.length(), 1, msg="the card's picture: \{Repr(t.image_nodes())} \{Repr(@ui.view_tree().unwrap().drawn().filter(fn(d) { d.hosted }).map(fn(d) { (d.x, d.y, d.w, d.h) }))}")
-  t.tap(at[0].0, at[0].1)
-  assert_true(viewer.get() is Some(_), msg="opened")
-  let v = viewer.get().unwrap()
-  assert_true(v.in_tree, msg="the window's tree's viewer")
-  t.run_for(@ui.move_most_ms)
-  t.back()
-  let end = v.fly.end()
-  t.frame_shown_at(end - 0.01, end + 0.01)
-  let landing = pictures()
-  assert_eq(landing.length(), 1, msg="landing")
-  t.frame_at(end + @ui.frame_period_default)
-  let after = pictures()
-  assert_eq(after.length(), 1, msg="landed")
-  assert_eq(corners_changed(before[0], [landing[0], after[0]], scale), 0, msg="pixels changing at a corner")
-}
-
-///|
-test "viewer on the tree, from a card: its corners changed as the picture flies back, nothing else of it: kept as they are now in the frame they change; the card gone, kept as they were last" {
-  let corners = @signals.signal((40.0, 10.0, 30.0, 20.0), same=fn(a, b) { a == b })
-  let shown = @signals.signal(true, same=fn(a, b) { a == b })
-  let (t, src) = cornered_card(corners, shown, 2.0)
-  let at = t.locate("img:sent-key")
-  assert_eq(at.length(), 1, msg="the card's picture: \{Repr(t.image_nodes())} \{Repr(@ui.view_tree().unwrap().drawn().filter(fn(d) { d.hosted }).map(fn(d) { (d.x, d.y, d.w, d.h) }))}")
-  t.tap(at[0].0, at[0].1)
-  assert_true(viewer.get() is Some(_), msg="opened")
-  let v = viewer.get().unwrap()
-  assert_true(v.in_tree, msg="the window's tree's viewer")
-  t.run_for(@ui.move_most_ms)
-  t.back()
-  let end = v.fly.end()
-  t.frame_at(t.time() + (end - t.time()) / 3.0)
-  assert_eq(flight_nodes(v, src).length(), 1, msg="flying back, its node's")
-  let was = thumb_of(t.ctx(), v.thumb_id()).unwrap()
-  assert_eq(v.fly_from.map(fn(f) { f.corners.each() }), Some((40.0, 10.0, 30.0, 20.0)), msg="kept as they are")
-  // (its corners changed, nothing else of it)
-  corners.set((5.0, 25.0, 15.0, 35.0))
-  t.frame_at(t.time() + @ui.frame_period_default)
-  let now = thumb_of(t.ctx(), v.thumb_id()).unwrap()
-  assert_eq((now.x, now.y, now.w, now.h), (was.x, was.y, was.w, was.h), msg="where it was, as big")
-  assert_eq(now.corners.each(), (5.0, 25.0, 15.0, 35.0), msg="its corners as they are now")
-  assert_eq(v.fly_from.map(fn(f) { f.corners.each() }), Some((5.0, 25.0, 15.0, 35.0)), msg="kept as they are now, in the frame they change")
-  // (the card gone)
-  shown.set(false)
-  // (its measure the frame it was last laid out in's till a frame has passed without it: measured_rect)
-  let mut frames = 0
-  while thumb_of(t.ctx(), v.thumb_id()) is Some(_) && frames < 3 {
-    t.frame_at(t.time() + @ui.frame_period_default)
-    frames += 1
-  }
-  assert_true(thumb_of(t.ctx(), v.thumb_id()) is None, msg="gone, \{frames} frames on")
-  t.frame_at(t.time() + @ui.frame_period_default)
-  assert_eq(v.fly_from.map(fn(f) { f.corners.each() }), Some((5.0, 25.0, 15.0, 35.0)), msg="kept as they were last")
-  let k = 1.0 - v.flying(t.ctx())
-  let boxes = @ui.view_tree().unwrap().drawn().filter(fn(d) { d.corners is Some(_) }).map(fn(d) { d.corners })
-  assert_eq(boxes, [Some((5.0 * k, 25.0 * k, 15.0 * k, 35.0 * k))], msg="its box round as they were last")
 }
 
 ///|

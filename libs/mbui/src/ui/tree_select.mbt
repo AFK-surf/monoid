@@ -122,7 +122,7 @@ fn tree_sels(finger? : Bool = false) -> Array[SelTarget] {
           // (where its words are picked, by the picker that picks them: not where a block in it was lent another)
           Some(v) if v.lent(words_picks) == Some(true) &&
             v.lent(@view.runs_picker).map(fn(f) { physical_equal(f, words_picker) }) == Some(true) => {
-            let (r, lay, _) = view_runs_laid(c.runs, c.words_look, c.runs_look, c.w, tree.words_scale_of(c.id), kept=c.words_breaks)
+            let (r, lay, _) = view_runs_laid(c.runs, c.words_look, c.runs_look, c.w, tree.words_scale_of(c.id), kept=c.words_breaks, tabular=c.words_tabular)
             let (bx0, by0, bx1, by1) = tree.seen_bounds(c.id)
             let place = tree_place(v)
             let base = tree_key(v)
