@@ -647,7 +647,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   // (raised once, 2026-11-17: the stations' and profiles' sidebars made as nodes, sfdesk places_side_node.mbt: what
   // their old views built as they opened, rows, figures, allowances' chips and marks, made and laid out by the tree)
   "wide place-stations": (1026, 816, 149),
-  "wide place-profiles": (1150, 947, 257),
+  "wide place-profiles": (1069, 846, 257),
   "wide place-remote": (531, 454, 37),
   "wide place-remote-tabs": (485, 399, 33),
   "wide chat-remote": (1962, 1415, 154),
