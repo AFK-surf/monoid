@@ -435,7 +435,7 @@ let agent_prose_piece : @ui.Style = @ui.css("w=Full")
 
 ///|
 /// A file a message names by its path (`path`, its agent `agent`'s on `station`) held (or right clicked: path_held's),
-/// its menu by the piece of line under the hand (`at`, in the window): 在侧边打开 where it is offered (beside_offered: a
+/// its menu under its line where the hand is on it (`at`, in the window): 在侧边打开 where it is offered (beside_offered: a
 /// side panel for the chat, a file, a kind that opens there); else nothing.
 fn message_path_held(src : Source, station : String, agent : String, path : String, at : (Double, Double, Double, Double)) -> Unit {
   if is_dir_path(path) || !@sfbase.beside_offered(path, stored_name(path)) {
