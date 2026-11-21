@@ -904,15 +904,16 @@ test "小屏: 筛选 and 看板 their own keys on Home's bar, at 390 and at 360 
 ///|
 test "小屏 360: Home's bar crowded: the stations' releases leave first, then 看板 beside catching up; 筛选 and catching up stay, nothing over anything" {
   for scale in [1.0, 1.3] {
-    // (the stations' releases alone beside them: they leave, 看板 stays)
-    let (t, _) = board_bar_at("home-station-updates", 360.0, 740.0, scale~)
+    // (the stations' releases alone beside them: they leave, 看板 stays; 320px exercises crowded dropping now that
+    // buttons sit 2pt apart inside the liquid glass pill instead of 10pt bare)
+    let (t, _) = board_bar_at("home-station-updates", 320.0, 740.0, scale~)
     assert_true(t.query(Button, label="看板") is Some(_))
     assert_true(t.query(Button, label="2 台 station 有新版本") is None)
     assert_eq(t.squeeze_faults(), [])
     assert_eq(t.words_over_now(), [])
     assert_eq(board_bar_faults(t), [])
     // (catching up as well: 看板 leaves too, catching up stays)
-    let (t, _) = board_bar_at("home-station-updates", 360.0, 740.0, scale~, syncing=true)
+    let (t, _) = board_bar_at("home-station-updates", 320.0, 740.0, scale~, syncing=true)
     assert_true(t.query(Button, label="筛选会话：全部") is Some(_))
     assert_true(t.query(Button, label="看板") is None)
     assert_true(t.query(Button, label="2 台 station 有新版本") is None)
