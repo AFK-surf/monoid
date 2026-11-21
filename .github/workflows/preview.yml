@@ -1017,8 +1017,20 @@ jobs:
           missing=$(node scripts/native.ts missing mesh:win32-x64 runner:win32-x64 reader:win32-x64)
           [ -n "$missing" ] || exit 0
           echo "not in the release yet: $(echo $missing); the pipeline's natives job is waited for"
+          need_natives=0 need_win_reader=0
+          for p in $missing; do
+            if [ "$p" = reader:win32-x64 ]; then need_win_reader=1; else need_natives=1; fi
+          done
           api() { gh api "repos/$GITHUB_REPOSITORY/$1" --jq "$2"; }
-          t0=$SECONDS run="" wait_min=${{ github.event_name == 'push' && 3 || 6 }}
+          t0=$SECONDS run="" natives_state="" win_reader_state=""
+          # (3 minutes: inside a push's 5; inside a run's of the day or by hand (its 10), up to JOB_END - 85 s so the
+          # e2e flow and checks still fit after)
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            deadline=$(( $(date +%s) + 180 ))
+          else
+            deadline=$(( JOB_END - 85 ))
+            [ $(( deadline - $(date +%s) )) -ge 60 ] || deadline=$(( $(date +%s) + 60 ))
+          fi
           # (main's: in the release, whichever run's natives job put them there. A run of main's still waiting to start
           # is cancelled by the next push's, which builds and publishes the same natives: 91434fca's was, and this step
           # waited for it until its 6 minutes ran out, the next one's in the release 2 minutes before, 40642483751.)
@@ -1026,28 +1038,72 @@ jobs:
           while :; do
             ! main || [ -n "$(node scripts/native.ts missing mesh:win32-x64 runner:win32-x64 reader:win32-x64)" ] || { echo "(in the release after $((SECONDS - t0)) s)"; break; }
             [ -n "$run" ] || run=$(api "actions/workflows/pipeline.yml/runs?head_sha=$GITHUB_SHA&per_page=1" '.workflow_runs[0].id // empty' || true)
-            state=$([ -z "$run" ] || api "actions/runs/$run/jobs?per_page=100" '.jobs[] | select(.name == "natives") | "\(.status) \(.conclusion // "")"' || true)
-            case "$state" in
-              "completed success") break ;;
-              completed*) main || { echo "::error::the pipeline's natives job ended $state (run $run)"; exit 1; } ;;
-            esac
-            # (main's run of this commit cancelled before its natives were published, a newer push's in its place, the
-            # natives not in the release: this commit's release is the newer one's to make, as the pipeline's was. This
-            # run is cancelled as that one was, not failed: 3a22a53f's waited its 6 minutes and failed, the next run's
-            # natives job begun 1 minute after, 40837737154, 2026-10-29)
-            if main && [ -n "$run" ] && [ "$(api "actions/runs/$run" '.status + " " + (.conclusion // "")' || true)" = "completed cancelled" ]; then
-              echo "main's pipeline run of this commit was cancelled (run $run), a newer push's in its place: this run is cancelled too"
-              gh run cancel "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY"
-              sleep 120; exit 1
+            if [ -n "$run" ]; then
+              jobs=$(api "actions/runs/$run/jobs?per_page=100" '[.jobs[] | select(.name == "natives" or .name == "natives-win-reader" or .name == "natives-win-reader-main") | "\(.name)=\(.status) \(.conclusion // "")"] | join("\n")' || true)
+              natives_state=$(printf '%s\n' "$jobs" | sed -n 's/^natives=//p' | head -1)
+              if main; then
+                win_reader_state=$(printf '%s\n' "$jobs" | sed -n 's/^natives-win-reader-main=//p' | head -1)
+                # (on main, native.ts missing above is the only success exit: reader:win32-x64 is published by
+                # natives-win-reader-main after natives finishes, so natives succeeding must not break out early;
+                # fail fast only if a needed job itself failed)
+                if [ "$need_natives" = 1 ] && [ "$natives_state" = "completed failure" ]; then
+                  echo "::error::the pipeline's natives job ended $natives_state (run $run)"; exit 1
+                fi
+                if [ "$need_win_reader" = 1 ]; then
+                  if [ "$win_reader_state" = "completed failure" ]; then
+                    echo "::error::the pipeline's natives-win-reader-main job ended $win_reader_state (run $run)"; exit 1
+                  elif [ "$win_reader_state" = "completed skipped" ] && [ "$natives_state" = "completed failure" ]; then
+                    echo "::error::the pipeline's natives job ended $natives_state (run $run)"; exit 1
+                  fi
+                fi
+              else
+                win_reader_state=$(printf '%s\n' "$jobs" | sed -n 's/^natives-win-reader=//p' | head -1)
+                natives_ok=1 win_ok=1
+                if [ "$need_natives" = 1 ]; then
+                  case "$natives_state" in
+                    "completed success") ;;
+                    completed*) echo "::error::the pipeline's natives job ended $natives_state (run $run)"; exit 1 ;;
+                    *) natives_ok=0 ;;
+                  esac
+                fi
+                if [ "$need_win_reader" = 1 ]; then
+                  case "$win_reader_state" in
+                    "completed success") ;;
+                    "completed skipped")
+                      # (with vars.CI_1 == 'off', natives builds reader:win32-x64 itself)
+                      case "$natives_state" in
+                        "completed success") ;;
+                        completed*) echo "::error::the pipeline's natives job ended $natives_state (run $run)"; exit 1 ;;
+                        *) win_ok=0 ;;
+                      esac ;;
+                    completed*) echo "::error::the pipeline's natives-win-reader job ended $win_reader_state (run $run)"; exit 1 ;;
+                    *) win_ok=0 ;;
+                  esac
+                fi
+                [ "$natives_ok" = 1 ] && [ "$win_ok" = 1 ] && break
+              fi
+              # (main's run of this commit cancelled before its natives were published, a newer push's in its place, the
+              # natives not in the release: this commit's release is the newer one's to make, as the pipeline's was. This
+              # run is cancelled as that one was, not failed: 3a22a53f's waited its 6 minutes and failed, the next run's
+              # natives job begun 1 minute after, 40837737154, 2026-10-29)
+              if main && [ "$(api "actions/runs/$run" '.status + " " + (.conclusion // "")' || true)" = "completed cancelled" ]; then
+                echo "main's pipeline run of this commit was cancelled (run $run), a newer push's in its place: this run is cancelled too"
+                gh run cancel "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY"
+                sleep 120; exit 1
+              fi
             fi
-            # (3 minutes: inside a push's 5, said before the job is stopped; 6 inside a run's of the day or by hand, its 10:
-            # 3 gave up on main's queue, 44017173538)
-            [ $((SECONDS - t0)) -lt $((wait_min * 60)) ] || { echo "::error::the pipeline's natives job not done after $wait_min minutes (run ${run:-not found})"; exit 1; }
+            [ "$(date +%s)" -lt "$deadline" ] || { echo "::error::the pipeline's natives jobs not done after $((SECONDS - t0)) s (run ${run:-not found}; natives=${natives_state:-none}, win-reader=${win_reader_state:-none})"; exit 1; }
             sleep 5
           done
           echo "(its natives job done after $((SECONDS - t0)) s: run $run)"
           if [ "$GITHUB_REF" != refs/heads/main ]; then
-            gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$GITHUB_SHA" -D "$RUNNER_TEMP/natives"
+            mkdir -p "$RUNNER_TEMP/natives"
+            if [ "$need_natives" = 1 ] || [ "$win_reader_state" = "completed skipped" ]; then
+              gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$GITHUB_SHA" -D "$RUNNER_TEMP/natives"
+            fi
+            if [ "$need_win_reader" = 1 ] && [ "$win_reader_state" = "completed success" ]; then
+              gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-win-reader-$GITHUB_SHA" -D "$RUNNER_TEMP/natives"
+            fi
             node scripts/native-handoff.mjs get "$RUNNER_TEMP/natives" "$GITHUB_SHA"
             echo "STILLFAIL_NATIVE_INBOX=$RUNNER_TEMP/natives" >> "$GITHUB_ENV"
           fi
