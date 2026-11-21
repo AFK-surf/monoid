@@ -201,12 +201,21 @@ fn agent_card_head_node(
           @sf.style_node(ways, fn() { agent_card_account_ways })
           ways.one_of(Is(true)) |> ignore
           let identity = fn(n : @view.View, cut : Bool) {
-            n.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))) |> ignore
+            // (a row only with a tier: alone, the name keeps the old card's box, the room's width or, cut, its words')
+            let tiered = fn() { plan() != "" }
+            n
+            .row(By(tiered))
+            .gap(By(fn() { if tiered() { 6.0 } else { 0.0 } }))
+            .lines_up(By(fn() { if tiered() { Some(Middle) } else if cut { Some(Start) } else { None } }))
+            |> ignore
             let name = @sf.words_node(n, fn() { text(account(), "name") }, fn() { if cut { agent_card_line_cut } else { agent_card_line } })
             if cut {
-              name.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+              name
+              .shrink(By(fn() { if tiered() { 1.0 } else { 0.0 } }))
+              .min_width(By(fn() { if tiered() { Some(0.0) } else { None } }))
+              |> ignore
             }
-            n.show(fn() { plan() != "" }, fn(t) { @sf.row_tag_node(t, plan) })
+            n.show(tiered, fn(t) { @sf.row_tag_node(t, plan) })
           }
           let chips = fn(c : @view.View) {
             c.show(fn() { windows().length() > 0 }, fn(q) {
