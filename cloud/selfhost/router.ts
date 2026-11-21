@@ -3,12 +3,13 @@
 // (Caddy, which ends TLS: workerd takes its X-Forwarded-Proto for the URL's scheme), and says who asked as Cloudflare
 // says it, cf-connecting-ip, from the proxy's X-Forwarded-For (the login limits count by it).
 import type { Role, Route } from "./config.ts";
+import { originList } from "../src/compat.ts";
 
-export type RouterEnv = { PUBLIC_ORIGIN: string; ADMIN_ORIGIN: string; PREVIEW_ORIGIN: string | null; ROUTES: Route[] } & Record<"API" | "WEB" | "ADMIN" | "PREVIEW", Fetcher>;
+export type RouterEnv = { PUBLIC_ORIGIN: string; PUBLIC_ORIGIN_ALIASES?: string | null; ADMIN_ORIGIN: string; ADMIN_ORIGIN_ALIASES?: string | null; PREVIEW_ORIGIN: string | null; ROUTES: Route[] } & Record<"API" | "WEB" | "ADMIN" | "PREVIEW", Fetcher>;
 
 /** The Worker that answers a request to `url`, or null for a host that is none of the cloud's. */
 export function routeOf(env: Omit<RouterEnv, "API" | "WEB" | "ADMIN" | "PREVIEW">, url: URL): Route["to"] | null {
-  const role: Role | null = url.origin === env.PUBLIC_ORIGIN ? "public" : url.origin === env.ADMIN_ORIGIN ? "admin" : env.PREVIEW_ORIGIN && url.origin === env.PREVIEW_ORIGIN ? "preview" : null;
+  const role: Role | null = originList(env.PUBLIC_ORIGIN, env.PUBLIC_ORIGIN_ALIASES ?? undefined).includes(url.origin) ? "public" : originList(env.ADMIN_ORIGIN, env.ADMIN_ORIGIN_ALIASES ?? undefined).includes(url.origin) ? "admin" : env.PREVIEW_ORIGIN && url.origin === env.PREVIEW_ORIGIN ? "preview" : null;
   if (!role) return null;
   const path = url.pathname;
   return env.ROUTES.find((r) => r.role === role && (r.path === "*" || (r.path.endsWith("*") ? path.startsWith(r.path.slice(0, -1)) : path === r.path)))?.to ?? null;
