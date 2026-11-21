@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d306b52f5](https://github.com/AFK-surf/monoid/commit/d306b52f5d0a69b1ca9520e69f56481d338693ce) chore(mbui): delete legacy viewer @ui.Ctx flight p | 2.64 | 3.56 | 14.45 | 36.45 | 55.07 | 31.92 | 64.47 | 98.32 | 128.32 |
 | [fd06d1a0d](https://github.com/AFK-surf/monoid/commit/fd06d1a0dafdd5115fc793ed996865e74656c7ff) fix(mbui): ring letter workspaces in the rail inst | 2.65 | 3.56 | 14.47 | 36.47 | 55.14 | 31.94 | 64.51 | 98.14 | 113.74 |
 | [ec882d99f](https://github.com/AFK-surf/monoid/commit/ec882d99fa0c2e5def567b132dd43055f9f9ed26) fix(mbui): keep hyphen spacing steady on chatlist  | 2.65 | 3.56 | 14.47 | 36.47 | 55.14 | 31.94 | 64.5 | 98.19 | 126.89 |
 | [3298ca4ca](https://github.com/AFK-surf/monoid/commit/3298ca4ca4c0e7d05639f996a69a4a3331d809ee) feat(history): mark posts a new message held back  | 2.65 | 3.56 | 14.47 | 36.47 | 55.14 | 31.94 | 64.5 | 98.19 | 126.89 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f39855bf5](https://github.com/AFK-surf/monoid/commit/f39855bf5363691b4b521cd1e9afbe7257d76dd7) feat(mesh): request bounded single-path pings when | 2.79 | 3.77 | 15.37 | 37.5 | 58.1 | 32.87 | 67.1 | 98.57 | 121.97 |
 | [98f640ad0](https://github.com/AFK-surf/monoid/commit/98f640ad064f17f3f3b20920419e4aa7c182686e) fix(mbui): keep a swiped page inside its way when  | 2.79 | 3.77 | 15.37 | 37.49 | 58.1 | 32.86 | 67.08 | 98.47 | 125.93 |
 | [9be3cdd0e](https://github.com/AFK-surf/monoid/commit/9be3cdd0ed61303b1507a6be02c9e89f81352837) fix(mbui): a press on a gliding column catches it  | 2.79 | 3.77 | 15.37 | 37.49 | 58.1 | 32.86 | 67.08 | 98.47 | 125.93 |
-| [d8f593dbc](https://github.com/AFK-surf/monoid/commit/d8f593dbc0021b52cab100be94fd7f36eb492ac6) refactor(sf-ui): remove all 20 redundant structure | 2.79 | 3.77 | 15.37 | 37.49 | 58.1 | 32.86 | 67.08 | 98.47 | 125.93 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d306b52f5](https://github.com/AFK-surf/monoid/commit/d306b52f5d0a69b1ca9520e69f56481d338693ce) chore(mbui): delete legacy viewer @ui.Ctx flight p | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.17 |
 | [fd06d1a0d](https://github.com/AFK-surf/monoid/commit/fd06d1a0dafdd5115fc793ed996865e74656c7ff) fix(mbui): ring letter workspaces in the rail inst | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.17 |
 | [ec882d99f](https://github.com/AFK-surf/monoid/commit/ec882d99fa0c2e5def567b132dd43055f9f9ed26) fix(mbui): keep hyphen spacing steady on chatlist  | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.17 |
 | [3298ca4ca](https://github.com/AFK-surf/monoid/commit/3298ca4ca4c0e7d05639f996a69a4a3331d809ee) feat(history): mark posts a new message held back  | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.15 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f39855bf5](https://github.com/AFK-surf/monoid/commit/f39855bf5363691b4b521cd1e9afbe7257d76dd7) feat(mesh): request bounded single-path pings when | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 53.86 |
 | [98f640ad0](https://github.com/AFK-surf/monoid/commit/98f640ad064f17f3f3b20920419e4aa7c182686e) fix(mbui): keep a swiped page inside its way when  | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 53.86 |
 | [9be3cdd0e](https://github.com/AFK-surf/monoid/commit/9be3cdd0ed61303b1507a6be02c9e89f81352837) fix(mbui): a press on a gliding column catches it  | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.3 |
-| [d8f593dbc](https://github.com/AFK-surf/monoid/commit/d8f593dbc0021b52cab100be94fd7f36eb492ac6) refactor(sf-ui): remove all 20 redundant structure | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.07 |
