@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c18c4ece1](https://github.com/AFK-surf/monoid/commit/c18c4ece1389c01679b0f1aa0ca755980009c116) feat(mbui): fill a by_room box down by structure a | 2.65 | 3.57 | 14.49 | 36.48 | 55.22 | 31.95 | 64.56 | 98.16 | 128.14 |
 | [614c97001](https://github.com/AFK-surf/monoid/commit/614c9700169bc54d9dd93a7952017db5fbdfcd45) feat(core-ts): add harness-lock and migrate lock/v | 2.65 | 3.57 | 14.49 | 36.48 | 55.22 | 31.95 | 64.56 | 98.16 | 128.14 |
 | [172f7d8cd](https://github.com/AFK-surf/monoid/commit/172f7d8cda1538cbcc1cd7c5b71514b228e9a4d5) feat(liquid-glass): add liquid glass menu morph an | 2.65 | 3.57 | 14.49 | 36.48 | 55.22 | 31.95 | 64.56 | 98.14 | 133.78 |
 | [4a929f079](https://github.com/AFK-surf/monoid/commit/4a929f079832867d0926378a8b9e37ed16290704) feat(core-ts): add harness-core-routes and migrate | 2.65 | 3.57 | 14.49 | 36.48 | 55.22 | 31.95 | 64.56 | 98.37 | 127.86 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [89726c415](https://github.com/AFK-surf/monoid/commit/89726c41509afc0ff2adf754e620c93dab37b48c) chore(mesh): pin noq last-open-path idle cleanup ( | 2.79 | 3.77 | 15.33 | 37.45 | 57.98 | 32.82 | 66.98 | 98.29 | 122.42 |
 | [f82607a79](https://github.com/AFK-surf/monoid/commit/f82607a7983e2ac0e09c37d49cf61ced5a9c43f1) fix(mesh): yield stale transport paths and bound m | 2.79 | 3.77 | 15.33 | 37.45 | 57.97 | 32.82 | 66.96 | 98.29 | 127.37 |
 | [f82c45e91](https://github.com/AFK-surf/monoid/commit/f82c45e914c82f87b0e406e054a53248e31d1a53) chore(farview): sync Stage 19A release a00124db8f5 | 2.78 | 3.76 | 15.31 | 37.42 | 57.92 | 32.8 | 66.93 | 98.27 | 124.63 |
-| [298439eb4](https://github.com/AFK-surf/monoid/commit/298439eb46de043778d2cbe142ed7e3764903354) fix(mesh): prefer validated direct paths with dire | 2.78 | 3.76 | 15.29 | 37.36 | 57.87 | 32.74 | 66.8 | 98.31 | 122.73 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c18c4ece1](https://github.com/AFK-surf/monoid/commit/c18c4ece1389c01679b0f1aa0ca755980009c116) feat(mbui): fill a by_room box down by structure a | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.23 |
 | [614c97001](https://github.com/AFK-surf/monoid/commit/614c9700169bc54d9dd93a7952017db5fbdfcd45) feat(core-ts): add harness-lock and migrate lock/v | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54 |
 | [172f7d8cd](https://github.com/AFK-surf/monoid/commit/172f7d8cda1538cbcc1cd7c5b71514b228e9a4d5) feat(liquid-glass): add liquid glass menu morph an | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54 |
 | [4a929f079](https://github.com/AFK-surf/monoid/commit/4a929f079832867d0926378a8b9e37ed16290704) feat(core-ts): add harness-core-routes and migrate | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [89726c415](https://github.com/AFK-surf/monoid/commit/89726c41509afc0ff2adf754e620c93dab37b48c) chore(mesh): pin noq last-open-path idle cleanup ( | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.71 | 4.62 | 54.08 |
 | [f82607a79](https://github.com/AFK-surf/monoid/commit/f82607a7983e2ac0e09c37d49cf61ced5a9c43f1) fix(mesh): yield stale transport paths and bound m | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.71 | 4.62 | 54.08 |
 | [f82c45e91](https://github.com/AFK-surf/monoid/commit/f82c45e914c82f87b0e406e054a53248e31d1a53) chore(farview): sync Stage 19A release a00124db8f5 | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.71 | 4.62 | 54.08 |
-| [298439eb4](https://github.com/AFK-surf/monoid/commit/298439eb46de043778d2cbe142ed7e3764903354) fix(mesh): prefer validated direct paths with dire | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.71 | 4.62 | 54.08 |
