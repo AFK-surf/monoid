@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [dbbb80feb](https://github.com/AFK-surf/monoid/commit/dbbb80feb70e77476b5486c4a4f6a68937ab897a) perf(mbui): pass room_w to profiles sidebar and li | 2.64 | 3.55 | 14.43 | 36.47 | 55.07 | 31.96 | 64.48 | 98.52 | 115.44 |
 | [d49869538](https://github.com/AFK-surf/monoid/commit/d49869538f2e2052b6ec776e20bad2eb40bd3d22) perf(mbui): park wide and medium rail root places  | 2.64 | 3.55 | 14.43 | 36.47 | 55.07 | 31.96 | 64.48 | 98.52 | 126.72 |
 | [e45da35ec](https://github.com/AFK-surf/monoid/commit/e45da35ec1e054ea394aa6d692de2c30c5175a8b) feat(mbui,sf-ui,liquid-glass): align dark liquid g | 2.64 | 3.55 | 14.43 | 36.47 | 55.06 | 31.96 | 64.47 | 98.58 | 123.22 |
 | [dcc0e30c5](https://github.com/AFK-surf/monoid/commit/dcc0e30c52ae14fd1619133294a2ca5065c602ae) feat(sfpages): make the mouse quote pill single-la | 2.64 | 3.55 | 14.42 | 36.47 | 55.06 | 31.96 | 64.47 | 98.47 | 122.73 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [98740f8c3](https://github.com/AFK-surf/monoid/commit/98740f8c3889a118b00a1fe13b5f976afb824e3b) fix(mbui): hide closing overlays from semantics an | 2.65 | 3.56 | 14.46 | 36.47 | 55.1 | 31.94 | 64.5 | 98.31 | 119.53 |
 | [faf605199](https://github.com/AFK-surf/monoid/commit/faf605199178e1f65849aed176b11507580f1a16) feat(station,mbui): configurable per-account concu | 2.65 | 3.56 | 14.46 | 36.46 | 55.09 | 31.93 | 64.48 | 98.16 | 116.77 |
 | [5a4092b7e](https://github.com/AFK-surf/monoid/commit/5a4092b7e85121be38f4de74e0f05840c8ef261f) fix(mbui): hide leaving nodes from the semantics t | 2.65 | 3.56 | 14.45 | 36.45 | 55.07 | 31.92 | 64.47 | 97.98 | 120.66 |
-| [73d4b2a2d](https://github.com/AFK-surf/monoid/commit/73d4b2a2db7accd7dc5e79edcb52dcfdfb9ba0c2) chore(sf-ui): delete dead legacy @ui.Ctx component | 2.65 | 3.56 | 14.45 | 36.45 | 55.07 | 31.92 | 64.47 | 97.98 | 120.66 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [dbbb80feb](https://github.com/AFK-surf/monoid/commit/dbbb80feb70e77476b5486c4a4f6a68937ab897a) perf(mbui): pass room_w to profiles sidebar and li | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54 |
 | [d49869538](https://github.com/AFK-surf/monoid/commit/d49869538f2e2052b6ec776e20bad2eb40bd3d22) perf(mbui): park wide and medium rail root places  | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54 |
 | [e45da35ec](https://github.com/AFK-surf/monoid/commit/e45da35ec1e054ea394aa6d692de2c30c5175a8b) feat(mbui,sf-ui,liquid-glass): align dark liquid g | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54 |
 | [dcc0e30c5](https://github.com/AFK-surf/monoid/commit/dcc0e30c52ae14fd1619133294a2ca5065c602ae) feat(sfpages): make the mouse quote pill single-la | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.07 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [98740f8c3](https://github.com/AFK-surf/monoid/commit/98740f8c3889a118b00a1fe13b5f976afb824e3b) fix(mbui): hide closing overlays from semantics an | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.31 |
 | [faf605199](https://github.com/AFK-surf/monoid/commit/faf605199178e1f65849aed176b11507580f1a16) feat(station,mbui): configurable per-account concu | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.31 |
 | [5a4092b7e](https://github.com/AFK-surf/monoid/commit/5a4092b7e85121be38f4de74e0f05840c8ef261f) fix(mbui): hide leaving nodes from the semantics t | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.31 |
-| [73d4b2a2d](https://github.com/AFK-surf/monoid/commit/73d4b2a2db7accd7dc5e79edcb52dcfdfb9ba0c2) chore(sf-ui): delete dead legacy @ui.Ctx component | 0.47 | 0.61 | 2.37 | 3.42 | 5.61 | 1.72 | 4.63 | 54.2 |
