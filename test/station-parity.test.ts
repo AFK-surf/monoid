@@ -21,13 +21,21 @@ test("isStationProdTs identifies production station/src/*.ts and excludes tests 
   }
 });
 
-test("hasParityTrailer requires a standalone line with non-empty reason", () => {
+test("hasParityTrailer requires a standalone line with a meaningful non-placeholder reason", () => {
   assert.equal(hasParityTrailer("fix(station): foo\n\nStation-parity: node-only (Effect fiber glue)\n"), true);
   assert.equal(hasParityTrailer("Station-parity: already in station/mb (#7968)"), true);
   assert.equal(hasParityTrailer("fix(station): foo\n\nStation-parity:\n"), false);
   assert.equal(hasParityTrailer("fix(station): foo\n\nStation-parity:   \t \n"), false);
   assert.equal(hasParityTrailer("fix(station): see Station-parity: node-only"), false);
   assert.equal(hasParityTrailer("fix(station): foo\n"), false);
+  for (const vague of ["none", "n/a", "NA", "ok", "wip", "TODO", "tbd", "short", "12345"]) {
+    assert.equal(hasParityTrailer(`fix(station): foo\n\nStation-parity: ${vague}\n`), false, `should reject "${vague}"`);
+  }
+  // One meaningful trailer among multiple commits passes even if an earlier commit had a placeholder
+  assert.equal(
+    hasParityTrailer("Station-parity: todo\n\nStation-parity: already in station/mb/src/session_hub\n"),
+    true,
+  );
 });
 
 test("checkStationParity enforces station/mb/ sync or Station-parity trailer", () => {
@@ -99,6 +107,22 @@ test("CLI integration in a temporary git repository (HEAD index, base..head, bas
     write("README.md", "init\n");
     git(["add", "README.md"]);
     git(["commit", "-m", "chore: init"]);
+    const preScriptBase = git(["rev-parse", "HEAD"]).trim();
+
+    // 0. Historical guard: base predates scripts/station-parity.ts -> exit 0 even without trailer
+    git(["checkout", "-b", "legacy"]);
+    write("station/src/sessions/hub.ts", "export const legacy = 1;\n");
+    git(["add", "station/src/sessions/hub.ts"]);
+    git(["commit", "-m", "fix(station): legacy change before gate"]);
+    const legacyHead = git(["rev-parse", "HEAD"]).trim();
+    assert.equal(run([`${preScriptBase}..${legacyHead}`]).status, 0);
+    assert.equal(run([`${preScriptBase}...${legacyHead}`]).status, 0);
+
+    // Add scripts/station-parity.ts on main so subsequent range checks enforce the rule
+    git(["checkout", "main"]);
+    write("scripts/station-parity.ts", "// parity gate\n");
+    git(["add", "scripts/station-parity.ts"]);
+    git(["commit", "-m", "ci(station): add parity gate"]);
     const base = git(["rev-parse", "HEAD"]).trim();
 
     // 1. HEAD index <msg-file>: staged station/src/ without station/mb/ or trailer -> fail

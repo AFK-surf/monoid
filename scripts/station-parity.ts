@@ -41,9 +41,27 @@ export function isStationProdTs(path: string): boolean {
   return !NODE_ONLY_FILES.has(path);
 }
 
-/** Whether `messages` contains a standalone `Station-parity: <non-empty why>` trailer line. */
+/** Placeholder reasons that explain nothing and are rejected in `Station-parity:`. */
+const PLACEHOLDER_REASONS: ReadonlySet<string> = new Set([
+  "none",
+  "n/a",
+  "na",
+  "ok",
+  "wip",
+  "todo",
+  "tbd",
+  "skip",
+  "later",
+  "pass",
+]);
+
+/** Whether `messages` contains a standalone `Station-parity: <non-placeholder why>` trailer line. */
 export function hasParityTrailer(messages: string): boolean {
-  return /^Station-parity:[ \t]*(\S.*)$/m.test(messages);
+  for (const m of messages.matchAll(/^Station-parity:[ \t]*(.*)$/gm)) {
+    const why = m[1]!.trim();
+    if (why.length >= 6 && !PLACEHOLDER_REASONS.has(why.toLowerCase())) return true;
+  }
+  return false;
 }
 
 export interface ParityResult {
@@ -106,6 +124,10 @@ if (import.meta.main) {
   } catch (e) {
     console.error(`station parity: ${(e as Error).message}`);
     process.exit(2);
+  }
+  if (p.head !== "index" && gitMaybe(["cat-file", "-e", `${p.base}:scripts/station-parity.ts`]) === undefined) {
+    console.log(`station dual-track parity: ${p.base} is from before scripts/station-parity.ts; not checked`);
+    process.exit(0);
   }
   const changed = changedFiles(p.base, p.head);
   const res = checkStationParity(changed, p.messages);
