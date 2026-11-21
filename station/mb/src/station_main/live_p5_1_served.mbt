@@ -238,6 +238,9 @@ fn P51::served_live(
 /// Returns the socket paths that are listening; raises if none listen in time.
 async fn Served::start(self : Served) -> Array[String] {
   for i = 0; i < served_servers; i = i + 1 {
+    if self.closed {
+      break
+    }
     if self.spawn_one(i) is Some(s) {
       self.servers.push(s)
     }
@@ -255,6 +258,9 @@ async fn Served::start(self : Served) -> Array[String] {
       })
     }
     ignore(@effect.timeout(served_listen_ms, async fn() { done.wait() })) // timer: a deadline on child processes starting
+  }
+  if self.closed {
+    return []
   }
   self.started = true
   for s in self.servers {
@@ -296,11 +302,21 @@ async fn Served::spawn_one(self : Served, i : Int) -> ServedServer? {
   ignore(self.host.shell("fs.remove", { "path": Json::string(sock) })) catch {
     _ => ()
   }
+  if self.closed {
+    return None
+  }
   let proc = mb_spawn(self.host, self.binary, ["--data", self.data, "--sep", sep(), "--serve", sock]) catch {
     SysError(e) => {
       p51_log("WARN", "served", "a serving program failed to start", fields={ "error": Json::string(e), "path": Json::string(sock) })
       return None
     }
+  }
+  if self.closed {
+    proc.stop()
+    ignore(self.host.shell("fs.remove", { "path": Json::string(sock) })) catch {
+      _ => ()
+    }
+    return None
   }
   let server : ServedServer = {
     proc,

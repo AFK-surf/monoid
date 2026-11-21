@@ -1145,7 +1145,7 @@ async fn P51::mesh_run(self : P51, m : MeshLive, rig : Bool) -> Unit {
         e => Err(e)
       }
       match started {
-        Ok(paths) => {
+        Ok(paths) if paths.length() > 0 => {
           let routed = route_fn(@utf8.encode(@gate.alpn), paths, served_routes) catch { _ => false }
           if !routed {
             p51_log("INFO", "mesh", "the front routes nothing (one from before); every request is this process's")
@@ -1153,6 +1153,7 @@ async fn P51::mesh_run(self : P51, m : MeshLive, rig : Bool) -> Unit {
             p51_log("INFO", "mesh", "requests routed to the MoonBit program", fields={ "routes": Json::array(served_routes.map(Json::string)) })
           }
         }
+        Ok(_) => ()
         Err(e) =>
           p51_log("WARN", "mesh", "the MoonBit program that answers requests did not start", fields={ "error": Json::string(said_of(e)) })
       }
