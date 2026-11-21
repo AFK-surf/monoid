@@ -525,15 +525,15 @@ test "多选: 500 messages virtualizes mounted rows and brings the picked messag
     let list : Array[Json] = []
     for i in 1..<=500 {
       let m = tmpl.copy()
+      let body = if i == 480 {
+        "第 480 条目标消息"
+      } else {
+        "第 \{i} 条测试消息，用于验证多选分享图片长对话虚拟化"
+      }
       m["seq"] = Json::number(i.to_double())
       m["ts"] = Json::string("ts-\{i}")
-      m["text"] = Json::string(
-        if i == 480 {
-          "第 480 条目标消息"
-        } else {
-          "第 \{i} 条测试消息，用于验证多选分享图片长对话虚拟化"
-        },
-      )
+      m["text"] = Json::string(body)
+      m["md"] = [["p", [Json::string(body)]]]
       list.push(Json::object(m))
     }
     { "upto": 500, "title": "长对话压测", "list": Json::array(list), "messages": [], "files": [], "hidden": 0 }
@@ -570,9 +570,11 @@ test "分享图片: an off-viewport HTML page mounts only when scrolled into sig
     let list : Array[Json] = []
     for i in 1..<=40 {
       let m = tmpl.copy()
+      let body = "第 \{i} 条前置消息，用于把 HTML 可视化推到首屏视口之外"
       m["seq"] = Json::number(i.to_double())
       m["ts"] = Json::string("ts-\{i}")
-      m["text"] = Json::string("第 \{i} 条前置消息，用于把 HTML 可视化推到首屏视口之外")
+      m["text"] = Json::string(body)
+      m["md"] = [["p", [Json::string(body)]]]
       list.push(Json::object(m))
     }
     let vm = viz_tmpl.copy()
