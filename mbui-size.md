@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3298ca4ca](https://github.com/AFK-surf/monoid/commit/3298ca4ca4c0e7d05639f996a69a4a3331d809ee) feat(history): mark posts a new message held back  | 2.65 | 3.56 | 14.47 | 36.47 | 55.14 | 31.94 | 64.5 | 98.19 | 126.89 |
 | [613afa337](https://github.com/AFK-surf/monoid/commit/613afa3377dc160232b7f99142e64fe24c346a0b) feat(core): trace how each station link recovers w | 2.65 | 3.56 | 14.47 | 36.47 | 55.14 | 31.94 | 64.5 | 98.42 | 123.38 |
 | [71cb5782a](https://github.com/AFK-surf/monoid/commit/71cb5782a514e20dd973f53b050a9a600c586735) fix(core): check open links when the app comes bac | 2.65 | 3.56 | 14.47 | 36.47 | 55.14 | 31.93 | 64.5 | 98.52 | 116.07 |
 | [49eba0456](https://github.com/AFK-surf/monoid/commit/49eba0456e4f1f5b18bb57d6aa60e44351aa6009) ci(station): add MoonBit dual-track parity and rea | 2.65 | 3.56 | 14.47 | 36.47 | 55.14 | 31.93 | 64.5 | 98.26 | 122.4 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d8f593dbc](https://github.com/AFK-surf/monoid/commit/d8f593dbc0021b52cab100be94fd7f36eb492ac6) refactor(sf-ui): remove all 20 redundant structure | 2.79 | 3.77 | 15.37 | 37.49 | 58.1 | 32.86 | 67.08 | 98.47 | 125.93 |
 | [8ec5271cd](https://github.com/AFK-surf/monoid/commit/8ec5271cd62610c409e1c3ba79a6fc42f84c879c) fix(liquid-glass,website): add DESIGN.md, eliminat | 2.79 | 3.77 | 15.38 | 37.49 | 58.11 | 32.86 | 67.1 | 99.01 | 122.62 |
 | [d1b1e80e5](https://github.com/AFK-surf/monoid/commit/d1b1e80e5853abef5d6a66bece87c55ec04f4583) refactor(shared): extract 6 shared TS modules out  | 2.79 | 3.77 | 15.38 | 37.48 | 58.11 | 32.85 | 67.1 | 98.37 | 131.39 |
-| [7e35129e0](https://github.com/AFK-surf/monoid/commit/7e35129e06ff434b18e6e79e781e053fd4b1f303) fix(mbui,sf-ui): restore clear optical refraction  | 2.79 | 3.77 | 15.38 | 37.48 | 58.11 | 32.85 | 67.1 | 98.42 | 119.73 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3298ca4ca](https://github.com/AFK-surf/monoid/commit/3298ca4ca4c0e7d05639f996a69a4a3331d809ee) feat(history): mark posts a new message held back  | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.15 |
 | [613afa337](https://github.com/AFK-surf/monoid/commit/613afa3377dc160232b7f99142e64fe24c346a0b) feat(core): trace how each station link recovers w | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.15 |
 | [71cb5782a](https://github.com/AFK-surf/monoid/commit/71cb5782a514e20dd973f53b050a9a600c586735) fix(core): check open links when the app comes bac | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.15 |
 | [49eba0456](https://github.com/AFK-surf/monoid/commit/49eba0456e4f1f5b18bb57d6aa60e44351aa6009) ci(station): add MoonBit dual-track parity and rea | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.15 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d8f593dbc](https://github.com/AFK-surf/monoid/commit/d8f593dbc0021b52cab100be94fd7f36eb492ac6) refactor(sf-ui): remove all 20 redundant structure | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.07 |
 | [8ec5271cd](https://github.com/AFK-surf/monoid/commit/8ec5271cd62610c409e1c3ba79a6fc42f84c879c) fix(liquid-glass,website): add DESIGN.md, eliminat | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.07 |
 | [d1b1e80e5](https://github.com/AFK-surf/monoid/commit/d1b1e80e5853abef5d6a66bece87c55ec04f4583) refactor(shared): extract 6 shared TS modules out  | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.07 |
-| [7e35129e0](https://github.com/AFK-surf/monoid/commit/7e35129e06ff434b18e6e79e781e053fd4b1f303) fix(mbui,sf-ui): restore clear optical refraction  | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.07 |
