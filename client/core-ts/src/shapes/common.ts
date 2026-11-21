@@ -4,7 +4,7 @@ import { map, opt, struct, vec, words, type Shape } from "./dsl.ts";
 export const COMMON_SHAPES: Record<string, Shape> = {
   BoardStage: words(["wait","watch","run","done"], { doc: "A chat's column on the board for its viewer (chat-stage.ts): 等你处理, 监控中, 进行中, 待收口." }),
   RuntimeKind: words(["claude","codex","dsh","grok","cursor","devin","hermes","agy","pi"], { doc: "A runtime: Claude Code, Codex, DeepSeek Harness, Grok Build, Cursor, Devin, Hermes Agent, Antigravity CLI or Pi." }),
-  AccessKind: words(["subscription","opencode-go","anthropic-api","env","api-provider"], { doc: "Whose account a profile runs on." }),
+  AccessKind: words(["subscription","opencode-go","anthropic-api","env","api-provider","service"], { doc: "Whose account a profile runs on." }),
   ConnectMode: words(["multi-session","single-session"], { doc: "How a connect's conversations become sessions." }),
   Tone: words(["accent","green","blue","red","amber","neutral"], { doc: "A colour of meaning." }),
   Presence: words(["online","busy","error","offline"], { doc: "A link's dot." }),

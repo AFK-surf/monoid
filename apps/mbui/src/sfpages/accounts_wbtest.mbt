@@ -1057,3 +1057,79 @@ test "a wide profile head aligns its 32 mark with the name's first line and star
     msg="state_x=\{state_word.1} name_x=\{name_word.1}",
   )
 }
+
+///|
+test "service profile hides model, fast, and env rows while keeping station controls and clean layout" {
+  let svc : Json = {
+    "id": "svc-gpu",
+    "name": "GPU 节点账号",
+    "email": "gpu@example.com",
+    "runtime": null,
+    "service": "fake-gpu",
+    "runtimes": [],
+    "access": { "kind": "service", "key": "", "service": "fake-gpu", "login": false },
+    "usedBy": [],
+    "loginCommand": "",
+    "machine": false,
+    "enabled": true,
+    "fast": null,
+    "check": { "state": "ok", "time": { "checkedAt": { "ago": "5 分钟前" } } },
+    "login": null,
+    "quota": null,
+    "checkText": "可用",
+    "checkTone": "green",
+    "trouble": null,
+    "makers": {},
+    "names": {},
+    "series": [],
+    "modelsText": "尚未列出模型",
+    "available": [],
+    "added": [],
+    "modelsReading": false,
+    "uses": [],
+    "canAddModel": false,
+    "decisionOnly": false,
+    "decisionModels": [],
+    "share": null,
+    "shareable": false,
+    "workspaces": [],
+    "kindText": "服务账号",
+    "planText": "",
+    "signInProvider": "",
+    "checkLine": "连接正常",
+  }
+  let t = setting_tester(Profile("ws1/st1", "svc-gpu"), 1280.0, over=fn(s) {
+    fn inject(v : Json) -> Json {
+      match v {
+        Object(o) => {
+          let copy = o.copy()
+          for k, val in o {
+            copy[k] = if k == "profiles" && val is Array(arr) {
+              Json::array(arr + [svc])
+            } else {
+              inject(val)
+            }
+          }
+          Json::object(copy)
+        }
+        Array(a) => Json::array(a.map(inject))
+        _ => v
+      }
+    }
+    {
+      ..s,
+      topic_read: fn(name, params) {
+        let r = s.topic(name, params).get().snapshot()
+        { ..r, value: r.value.map(inject) }
+      },
+    }
+  })
+  assert_true(t.find("GPU 节点账号") is Some(_))
+  assert_true(t.find("服务账号") is Some(_))
+  assert_true(t.find("可用模型") is None, msg="service profile must not show availableModels")
+  assert_true(t.find("默认 Fast") is None, msg="service profile must not show fast toggle")
+  assert_true(t.find("编辑环境变量") is None, msg="service profile must not show env editor")
+  scrolled_to(t, 1280.0, "分享给其他 station")
+  assert_true(t.find("分享给其他 station") is Some(_), msg="service profile keeps sharing row")
+  assert_eq(t.audit(), [])
+}

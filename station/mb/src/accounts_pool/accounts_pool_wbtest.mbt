@@ -113,7 +113,8 @@ fn test_profile(id : String, models : Array[String], billed? : Bool = false) -> 
     raw: jobj(raw_fields),
     id,
     name: id,
-    runtime: "claude",
+    runtime: Some("claude"),
+    service: None,
     runtimes: ["claude"],
     models,
     named: models,
@@ -220,7 +221,8 @@ fn test_access_profile(id : String, models : Array[String], access : JV) -> Prof
     raw,
     id,
     name: id,
-    runtime: "claude",
+    runtime: Some("claude"),
+    service: None,
     runtimes: ["claude"],
     models,
     named: models,
@@ -568,4 +570,86 @@ test "pace_view adds each spend row to its profile's (hour, scope) as the linear
       #|{"c":{"quotas":[{"hour":1,"at":2,"windows":[]}],"spend":[]},"a":{"quotas":[],"spend":[{"hour":1,"scope":"","weight":0.000024},{"hour":3,"scope":"","weight":0.03418},{"hour":5,"scope":"","weight":8.00056},{"hour":5,"scope":"Fable","weight":8.00056}]},"b":{"quotas":[],"spend":[{"hour":null,"scope":"3p","weight":0.00003},{"hour":null,"scope":"3p","weight":0.00004},{"hour":0,"scope":"gemini","weight":0.00003},{"hour":4,"scope":"3p","weight":0.000096}]}}
     ),
   )
+}
+
+///|
+test "service and non-runtime profiles keep runtime=None and validate against services registry" {
+  let svc_raw = @jsjson.parse(
+    "{\"id\":\"gpu-1\",\"home\":\"homes/gpu-1\",\"access\":{\"kind\":\"service\",\"service\":\"fake-gpu\"}}",
+  )
+  let svc = profile_of(svc_raw, "/data", _ => None)
+  assert_eq(svc.runtime, None)
+  assert_eq(svc.service, Some("fake-gpu"))
+  assert_eq(svc.runtimes, [])
+  assert_true(svc.raw.get("runtime") is None)
+
+  let jev_raw = @jsjson.parse(
+    "{\"id\":\"jev-1\",\"home\":\"homes/jev-1\",\"access\":{\"kind\":\"api-provider\",\"provider\":\"jev\",\"key\":\"k\"}}",
+  )
+  let jev = profile_of(jev_raw, "/data", _ => None)
+  assert_eq(jev.runtime, None)
+  assert_eq(jev.runtimes, [])
+  assert_true(jev.raw.get("runtime") is None)
+
+  let cfg = @jsjson.parse(
+    "{\"profiles\":[{\"id\":\"gpu-1\",\"home\":\"homes/gpu-1\",\"access\":{\"kind\":\"service\",\"service\":\"fake-gpu\"}}]}",
+  )
+  check_config(Some(cfg), "/data", services=["fake-gpu"])
+  let unregistered = try {
+    check_config(Some(cfg), "/data", services=[])
+    false
+  } catch {
+    _ => true
+  }
+  assert_true(unregistered)
+  let with_rt = @jsjson.parse(
+    "{\"profiles\":[{\"id\":\"gpu-1\",\"home\":\"homes/gpu-1\",\"runtime\":\"claude\",\"access\":{\"kind\":\"service\",\"service\":\"fake-gpu\"}}]}",
+  )
+  let rejected_rt = try {
+    check_config(Some(with_rt), "/data", services=["fake-gpu"])
+    false
+  } catch {
+    _ => true
+  }
+  assert_true(rejected_rt)
+}
+
+///|
+test "put_profile_runtime_and_access preserves access.service and omits runtime when editing a service profile" {
+  let existing = @jsjson.parse(
+    "{\"id\":\"gpu-1\",\"name\":\"GPU 1\",\"runtime\":\"claude\",\"access\":{\"kind\":\"service\",\"service\":\"fake-gpu\"}}",
+  )
+  let keep = existing.get("access")
+  // Editing name/enabled/workspaces without re-sending access keeps access.service and strips runtime.
+  let (rt, acc) = put_profile_runtime_and_access(
+    Some(existing),
+    None,
+    None,
+    keep,
+    Some("service"),
+    None,
+    None,
+    None,
+    None,
+    None,
+  )
+  assert_eq(rt, None)
+  assert_eq(jstr(jget(acc, "kind")), Some("service"))
+  assert_eq(jstr(jget(acc, "service")), Some("fake-gpu"))
+  // Explicit access.service overrides kept service and still omits runtime.
+  let new_access = @jsjson.parse("{\"kind\":\"service\",\"service\":\"other-svc\"}")
+  let (rt2, acc2) = put_profile_runtime_and_access(
+    Some(existing),
+    Some(js("claude")),
+    Some(new_access),
+    keep,
+    Some("service"),
+    None,
+    None,
+    None,
+    None,
+    None,
+  )
+  assert_eq(rt2, None)
+  assert_eq(jstr(jget(acc2, "service")), Some("other-svc"))
 }

@@ -64,6 +64,18 @@ priv struct P52 {
   mut in_flight_mcp : Int
   mut mcp_draining : Bool
   mut mcp_drained : @effect.Deferred[Unit]?
+  /// How many `tools/list` or `tools/call` requests each session's token made of `/mcp` (mcp.ts `heardBy`).
+  mcp_heard : Map[String, Int]
+}
+
+///|
+fn P52::mcp_heard_of(self : P52, key : String) -> Int {
+  self.mcp_heard.get(key).unwrap_or(0)
+}
+
+///|
+fn P52::note_mcp_heard(self : P52, key : String) -> Unit {
+  self.mcp_heard[key] = self.mcp_heard_of(key) + 1
 }
 
 ///|

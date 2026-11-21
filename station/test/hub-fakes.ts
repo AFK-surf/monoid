@@ -426,14 +426,15 @@ export class Rig {
   toolsHeard: Map<string, number> | undefined;
 
   /// A hub over this rig's store and config (another station's, after a restart: given its own drivers).
-  newHub(o: { chats: (id: string) => ChatSurface | undefined; link?: boolean; cold?: ColdStorage; drivers?: AgentDriver[]; internal?: boolean; mcpUrl?: string; runners?: string[]; endRunner?: (info: RunnerInfo) => Promise<unknown> }) {
+  newHub(o: { chats: (id: string) => ChatSurface | undefined; link?: boolean; cold?: ColdStorage; drivers?: AgentDriver[]; internal?: boolean; mcpUrl?: string; runners?: string[]; endRunner?: (info: RunnerInfo) => Promise<unknown>; toolsHeard?: Map<string, number> }) {
+    const heard = o.toolsHeard ?? this.toolsHeard;
     const hub = new Hub({
       config: () => this.config,
       store: this.store,
       chats: o.chats,
       drivers: o.drivers ?? [this.claude, this.codex],
       mcpUrl: o.mcpUrl ?? "http://127.0.0.1:1/mcp",
-      ...(this.toolsHeard ? { toolsHeard: (session: string) => this.toolsHeard!.get(session) ?? 0 } : {}),
+      ...(heard ? { toolsHeard: (session: string) => heard.get(session) ?? 0 } : {}),
       internal: o.internal === false ? null : new InternalChat(),
       link: o.link ? (key) => `https://ember.test/o/${this.hub?.wsOf(key) ?? this.place.workspace}/${this.place.station}/${key.replaceAll(":", "%3A")}` : undefined,
       workspaces: this.workspaces ? () => this.workspaces! : undefined,

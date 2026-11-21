@@ -139,6 +139,38 @@ while IFS= read -r line; do
   to=$(printf '%s' "$line" | /usr/bin/sed -n 's/.*thread=\\\\"\\([^\\\\]*\\)\\\\".*/\\1/p')
   # (a prompt that names no thread, as a resume's: the one it was last asked in, as its conversation would know)
   if [ -n "$to" ]; then printf '%s' "$to" > "$FAKE_OUT/to"; else to=$(/bin/cat "$FAKE_OUT/to" 2>/dev/null); fi
+  # (asked to simulate an agent that only sent initialize/notifications/ping and never called tools/list or tools/call:
+  # the first process ends without posting so the MoonBit station's toolsUnheard self-heals and restarts it with TOOLS_LOST)
+  case "$line" in *UNHEARD-ONCE*)
+    if [ ! -f "$FAKE_OUT/unheard-once-done" ]; then
+      : > "$FAKE_OUT/unheard-once-done"
+      printf '%s\n' "$$" > "$FAKE_OUT/unheard-pid-1"
+      /usr/bin/curl -s -X POST "$url" -H 'content-type: application/json' -H "authorization: Bearer $STILLFAIL_MCP_TOKEN" \\
+        -d '{"jsonrpc":"2.0","id":10,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' > "$FAKE_OUT/unheard-init.json"
+      /usr/bin/curl -s -X POST "$url" -H 'content-type: application/json' -H "authorization: Bearer $STILLFAIL_MCP_TOKEN" \\
+        -d '{"jsonrpc":"2.0","method":"notifications/initialized"}' > /dev/null
+      /usr/bin/curl -s -X POST "$url" -H 'content-type: application/json' -H "authorization: Bearer $STILLFAIL_MCP_TOKEN" \\
+        -d '{"jsonrpc":"2.0","id":11,"method":"ping"}' > "$FAKE_OUT/unheard-ping.json"
+      say '{"type":"result","subtype":"success","is_error":false,"duration_ms":1,"num_turns":1,"session_id":"'"$sid"'","result":"no tools"}'
+      continue
+    fi ;;
+  esac
+  # (asked to hold unheard across a station handover: signals running, waits for unheard-go, sends only initialize/ping
+  # and ends without posting so the adopting station still catches toolsUnheard and restarts with TOOLS_LOST)
+  case "$line" in *HOLD-UNHEARD*)
+    if [ ! -f "$FAKE_OUT/hold-unheard-done" ]; then
+      : > "$FAKE_OUT/hold-unheard-done"
+      printf '%s\n' "$$" > "$FAKE_OUT/hold-unheard-pid-1"
+      : > "$FAKE_OUT/unheard-running"
+      while [ ! -f "$FAKE_OUT/unheard-go" ]; do /bin/sleep 0.05; done
+      /usr/bin/curl -s -X POST "$url" -H 'content-type: application/json' -H "authorization: Bearer $STILLFAIL_MCP_TOKEN" \\
+        -d '{"jsonrpc":"2.0","id":12,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' > /dev/null
+      /usr/bin/curl -s -X POST "$url" -H 'content-type: application/json' -H "authorization: Bearer $STILLFAIL_MCP_TOKEN" \\
+        -d '{"jsonrpc":"2.0","id":13,"method":"ping"}' > /dev/null
+      say '{"type":"result","subtype":"success","is_error":false,"duration_ms":1,"num_turns":1,"session_id":"'"$sid"'","result":"no tools across handover"}'
+      continue
+    fi ;;
+  esac
   # (asked to hold across a station handover: signals running, waits for the test's go file, then posts all_done and
   # chat_state through the shared MCP door before ending its turn)
   case "$line" in *HOLD-HANDOVER*)
@@ -1018,6 +1050,69 @@ test("a cold session woken by its job's stillfail-job notify: the hub makes its 
   }
   a.tell({ op: "stop" });
   assert.equal(await a.ended, 0, a.err());
+});
+
+test("MoonBit station toolsUnheard: initialize/ping do not count as heard, and toolsUnheard restarts the process directly and across handover", { skip }, async () => {
+  const data = fresh("u");
+  const app = fresh("a");
+  const bin = fresh("p");
+  const out = fresh("o");
+  writeFileSync(join(app, "BUILD"), "9400\n");
+  fakes(bin);
+  mkdirSync(join(data, "homes", "cc"), { recursive: true });
+  writeFileSync(join(data, "homes", "cc", ".credentials.json"), "{}");
+  writeFileSync(join(data, "config.json"), JSON.stringify({
+    profiles: [{ id: "cc", runtime: "claude", home: "homes/cc" }],
+    maxNudges: 2,
+  }));
+  mkdirSync(join(data, "mesh"), { recursive: true });
+  writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify({ origin: "https://app.example", workspace: "w1", workspace_name: "W", station: "st1" }));
+  const a = await launch(data, app, bin, out);
+  await a.next("ready", (m) => m.ready === true);
+  const door = await a.next("the agents' door", (m) => m.serving === "mcp");
+  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
+  try {
+    session(store, data, "chat:c-from", "claude", "t0", "1790000000.000001");
+    session(store, data, "chat:c-unheard", "claude", "t1", "1790000000.000002");
+    session(store, data, "chat:c-unheard-ho", "claude", "t2", "1790000000.000003");
+
+    // 1) Direct toolsUnheard: first process only calls initialize/notifications/ping and ends without posting ->
+    //    MoonBit station kills it and restarts a new process with TOOLS_LOST, which then calls tools/list and posts all_done.
+    const sent1 = await tool(door.port, "t0", "session_send", { to: "chat:c-unheard", text: "UNHEARD-ONCE please" });
+    assert.equal(sent1.error, false, `${sent1.text}\n${a.err()}`);
+    await until("unheard session healed after restart", () => store.listTurns("chat:c-unheard").some((t) => t.summary.ending === "all_done"), () => a.err());
+    const prompts1 = readFileSync(join(out, "prompts"), "utf8");
+    assert.match(prompts1, /Your last turn could not reach the station's tools/, prompts1);
+
+    // 2) Across handover: process never reached tools before handover -> snapshot carries toolsUnheard: true ->
+    //    adopting MoonBit station still catches toolsUnheard and restarts with TOOLS_LOST.
+    const sent2 = await tool(door.port, "t0", "session_send", { to: "chat:c-unheard-ho", text: "HOLD-UNHEARD please" });
+    assert.equal(sent2.error, false, `${sent2.text}\n${a.err()}`);
+    await until("hold-unheard running", () => existsSync(join(out, "unheard-running")) && store.getSession("chat:c-unheard-ho")?.running === true, () => a.err());
+
+    a.tell({ op: "handover" });
+    const carry = await a.next("carry", (m) => m.carry !== undefined);
+    assert.equal(await a.ended, 0, a.err());
+    const handoverFile = JSON.parse(readFileSync(join(data, "run", "handover.json"), "utf8"));
+    const hoSnap = (handoverFile.sessions ?? []).find((s: any) => s.key === "chat:c-unheard-ho");
+    assert.equal(hoSnap?.toolsUnheard, true, JSON.stringify(handoverFile));
+
+    const b = await launch(data, app, bin, out, [await listener(door.port), await listener()]);
+    await b.next("ready", (m) => m.ready === true);
+    b.tell({ op: "carried", carried: carry.carry });
+    await b.next("b's door", (m) => m.serving === "mcp");
+    writeFileSync(join(out, "unheard-go"), "");
+
+    await until("handed-over unheard session healed after restart", () => store.listTurns("chat:c-unheard-ho").some((t) => t.summary.ending === "all_done"), () => b.err());
+    const turnsHo = store.listTurns("chat:c-unheard-ho");
+    assert.equal(turnsHo.length, 2, `${JSON.stringify(turnsHo.map((t) => t.summary))}\n${b.err()}`);
+    assert.equal(turnsHo[1]!.summary.ending, "all_done", b.err());
+
+    b.tell({ op: "stop" });
+    assert.equal(await b.ended, 0, b.err());
+  } finally {
+    store.close();
+  }
 });
 
 /// The runners' info files there.

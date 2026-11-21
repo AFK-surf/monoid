@@ -485,11 +485,14 @@ export class MbActor {
   /// Where it stands, for the next station: its runtime session's own snapshot said in it, that session let go of.
   async snapshot(): Promise<Snapshot> {
     const snap = await this.#call("snapshot");
-    const held = typeof snap.agent === "number" ? this.#agents.get(snap.agent)?.session ?? null : null;
+    const entry = typeof snap.agent === "number" ? this.#agents.get(snap.agent) : undefined;
+    const held = entry?.session ?? null;
+    const deps = this.#deps;
+    const toolsUnheard = entry?.heard !== undefined && this.runtime !== "codex" && deps.toolsHeard !== undefined && deps.toolsHeard(this.key) === entry.heard;
     this.#closing();
     const agent = held?.snapshot() ?? null;
     held?.detach();
-    return { ...snap, agent } as Snapshot;
+    return { ...snap, agent, ...(toolsUnheard ? { toolsUnheard: true } : {}) } as Snapshot;
   }
 
   /// Takes up `snap` with its runtime session `agent`; done once the program has. What the hub reads at once (its
@@ -510,8 +513,11 @@ export class MbActor {
     let taken: Json = null;
     const hasDeferred = snap.deferredEnd != null;
     if (agent) {
+      this.runtime = snap.runtime;
+      const deps = this.#deps;
+      const heard = snap?.toolsUnheard === true && this.runtime !== "codex" && deps.toolsHeard !== undefined ? deps.toolsHeard(this.key) : undefined;
       const handle = ++this.#next;
-      this.#agents.set(handle, { generation: this.#generation, session: agent });
+      this.#agents.set(handle, { generation: this.#generation, session: agent, ...(heard === undefined ? {} : { heard }) });
       taken = { handle, generation: this.#generation };
       this.#mirror = {
         ...this.#mirror,
@@ -522,7 +528,6 @@ export class MbActor {
         idleSince: this.#program.now() - (snap.idleMs ?? 0),
         runtime: snap.runtime,
       };
-      this.runtime = snap.runtime;
     } else if (hasDeferred) {
       this.#mirror = {
         ...this.#mirror,

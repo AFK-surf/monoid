@@ -21,6 +21,7 @@ export type ShareStation = { id: string; station: string; name: string; online: 
 function account(p: J): string | null {
   const a = isObject(p.access) ? p.access : {};
   const email = typeof p.email === "string" && p.email !== "" ? p.email.toLowerCase() : null;
+  if (a.kind === "service") return email === null || typeof a.service !== "string" || a.service === "" ? null : `service:${a.service}:${email}`;
   if (a.kind === "subscription") return email === null ? null : `sub:${p.runtime}:${email}`;
   // Signed in to an account (OpenCode Go's, Kimi Code's): its key is that sign-in's token, each station's its own, so
   // the account is told by the address signed in, as a subscription is.
@@ -31,11 +32,12 @@ function account(p: J): string | null {
 }
 
 /// The kinds of account the list is grouped by, in their order: a vendor's subscription (Claude's, ChatGPT's, SuperGrok's,
-/// Kimi Code's, OpenCode Go's, Cursor's, Devin's, a Google account's), then keys and the rest. A profile signed in to an account rather than
+/// Kimi Code's, OpenCode Go's, Cursor's, Devin's, a Google account's), then keys and service accounts. A profile signed in to an account rather than
 /// given a key (`access.login`: Kimi Code's, OpenCode Go's) is its vendor's subscription.
-export const GROUPS = ["claude", "chatgpt", "grok", "kimi", "opencode", "cursor", "devin", "agy", "key"] as const;
+export const GROUPS = ["claude", "chatgpt", "grok", "kimi", "opencode", "cursor", "devin", "agy", "key", "service"] as const;
 
 export function group(p: J): (typeof GROUPS)[number] {
+  if (p.access?.kind === "service") return "service";
   if (p.access?.login === true) return p.access?.provider === "kimi-code" ? "kimi" : "opencode";
   if (p.access?.kind !== "subscription") return "key";
   return p.runtime === "codex" ? "chatgpt" : p.runtime === "grok" ? "grok" : p.runtime === "cursor" ? "cursor" : p.runtime === "devin" ? "devin" : p.runtime === "agy" ? "agy" : "claude";
@@ -189,9 +191,9 @@ export function workspaceProfiles(stations: J[]): J {
       stationId: String(s.id),
       stationName: String(s.name),
       profile: p,
-      // What it is called: a subscription or a sign-in by the account signed in (what makes it one row: each station's
+      // What it is called: a subscription, sign-in, or service account by the account signed in (what makes it one row: each station's
       // copy may be named otherwise), a key by its profile's name.
-      title: subscription && typeof p.email === "string" && p.email !== "" ? p.email : String(p.name ?? ""),
+      title: (subscription || p.access?.kind === "service") && typeof p.email === "string" && p.email !== "" ? p.email : String(p.name ?? ""),
       shared: share !== null,
       host,
       hostName: name(host),
@@ -299,7 +301,7 @@ function member(s: J, p: J, name: (id: string) => string, byId: Map<string, J>):
   let about: string;
   if (role === "user") about = t(subscription ? "core-views.profiles.borrows" : "core-views.profiles.copyOf", { station: name(String(share.host)) });
   else if (role === "host") about = users.length > 0 ? t(subscription ? "core-views.profiles.lends" : "core-views.profiles.sharedWith", { stations: users.join(t("core-views.list_separator")) }) : t("core-views.profiles.sharedNone");
-  else about = t(subscription || p.access?.login === true ? "core-views.profiles.ownLogin" : "core-views.profiles.ownKey");
+  else about = t(subscription || p.access?.login === true || p.access?.kind === "service" ? "core-views.profiles.ownLogin" : "core-views.profiles.ownKey");
   return {
     station: String(s.station),
     stationId: String(s.id),

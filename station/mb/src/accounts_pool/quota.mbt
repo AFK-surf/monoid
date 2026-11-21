@@ -908,19 +908,22 @@ async fn check_quota_inner(
   if kind == "anthropic-api" || kind == "api-provider" {
     return quota("unsupported", [], Some(ctx.tr(lang, "station.quota.payAsYouGo")))
   }
+  if kind == "service" {
+    return quota("unsupported", [], None)
+  }
   if kind == "env" {
     return quota("unsupported", [], Some(ctx.tr(lang, "station.quota.envUnsupported")))
   }
-  if profile.runtime == "grok" {
+  if kind == "subscription" && profile.runtime == Some("grok") {
     return grok_quota(ctx, profile, lang)
   }
-  if profile.runtime == "cursor" {
+  if kind == "subscription" && profile.runtime == Some("cursor") {
     return quota("unsupported", [], Some(ctx.tr(lang, "station.quota.cursorUnsupported")))
   }
-  if profile.runtime == "devin" {
+  if kind == "subscription" && profile.runtime == Some("devin") {
     return quota("unsupported", [], Some(ctx.tr(lang, "station.quota.devinUnsupported")))
   }
-  if profile.runtime == "agy" {
+  if kind == "subscription" && profile.runtime == Some("agy") {
     let env = station_env(ctx)
     let source = match p.get("env") {
       Some(Obj(_) as e) => jspread(env, e)
@@ -928,7 +931,7 @@ async fn check_quota_inner(
     }
     return agy_quota(ctx, profile.home, source, lang)
   }
-  if profile.runtime == "claude" {
+  if kind == "subscription" && profile.runtime == Some("claude") {
     return claude_with_refresh(
       ctx,
       if profile.machine {
@@ -950,9 +953,12 @@ async fn check_quota_inner(
       }
     }
   }
-  codex_quota_of(ctx, profile, codex, lang) catch {
-    e => codex_failed(ctx, e, lang)
+  if kind == "subscription" && profile.runtime == Some("codex") {
+    return codex_quota_of(ctx, profile, codex, lang) catch {
+      e => codex_failed(ctx, e, lang)
+    }
   }
+  quota("unsupported", [], None)
 }
 
 ///|

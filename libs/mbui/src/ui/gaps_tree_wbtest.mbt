@@ -271,3 +271,153 @@ test "spacing on the window's tree: a row opened in place with a ground at rest 
     msg=(short + tag).join("\n"),
   )
 }
+
+///|
+/// A window 800 by 200 whose corners the system rounds `window_corner`: a side pane 200 wide (no ground of its own),
+/// then a bar 600 by 44 at the window's top, its own ground and no corner of its own, its left end on the pane's
+/// square edge, its right in the window's top right corner. What it holds: `left` from its left end (laid by its
+/// padding), `end` at its right end `end_in` from it (its padding), each in a row in its middle.
+fn corner_bar(
+  window_corner : Double,
+  left : (@view.View) -> Unit,
+  end : (@view.View) -> Unit,
+  left_in? : Double = 12.0,
+  end_in? : Double = 6.0,
+) -> Tester {
+  let t = Tester::new(
+    fn(c) { c.with_theme({ ..Theme::light(), corner_fit: Some(fit_ranges) }, fn() {  }) },
+    w=800.0,
+    h=200.0,
+    corners_held=false,
+    window_corner~,
+    tree=fn(root) {
+      root.box(fn(w) {
+        w.width(Is(Some(800.0))).height(Is(Some(200.0))).row(Is(true)) |> ignore
+        w.box(fn(pane) { pane.width(Is(Some(200.0))).height(Is(Some(200.0))) |> ignore }) |> ignore
+        w.box(fn(bar) {
+          bar
+          .width(Is(Some(600.0)))
+          .height(Is(Some(44.0)))
+          .row(Is(true))
+          .ground(Is(0xFFFFFFFFL))
+          .lines_up(Is(Some(Middle)))
+          .padding(Is((left_in, 0.0, end_in, 0.0)))
+          |> ignore
+          left(bar)
+          end(bar)
+        })
+        |> ignore
+      })
+      |> ignore
+    },
+  )
+  t.draw()
+  t
+}
+
+///|
+/// A row that grows, words 8 in from its start (its padding), as a bar's title.
+fn bar_title(v : @view.View) -> Unit {
+  v.box(fn(r) {
+    r.grow(Is(1.0)).row(Is(true)).padding(Is((8.0, 0.0, 0.0, 0.0))) |> ignore
+    r.box(fn(w) { w.words(Is("A title")) |> ignore }) |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// A button 32 by 32, 10 round, its ground shown only under the hand, its icon (16) in its middle.
+fn bar_button(v : @view.View) -> Unit {
+  v.box(fn(k) {
+    k
+    .width(Is(Some(32.0)))
+    .height(Is(Some(32.0)))
+    .radius(Is(10.0))
+    .lines_up(Is(Some(Middle)))
+    .lies_along(Is(Middle))
+    .on_press(fn() {  })
+    .says(Is(Some(@view.said(Button, label="end"))))
+    .ground(By(fn() { if k.pointed() || k.pressed() { 0xEEEEEEFFL } else { 0L } }))
+    |> ignore
+    panel_mark(k)
+  })
+  |> ignore
+}
+
+///|
+test "spacing on the window's tree: a bar's last button concentric with the window's round corner it stands in, the other end square, nothing (rule 4); a corner too small for it, or the button off concentric, said" {
+  // (title 20 in, the button 6 from the end and 6 from the top in a 16 corner: 10 round left it, as round as a corner
+  // in a corner may be; in Windows 11's 8, 2 left; 8 from its end and 6 from its top, not concentric)
+  let mac = tree_rule(corner_bar(16.0, bar_title, bar_button), "rule 4")
+  let small = tree_rule(corner_bar(8.0, bar_title, bar_button), "rule 4")
+  let off = tree_rule(corner_bar(16.0, bar_title, bar_button, end_in=8.0), "rule 4")
+  assert_eq((mac, small.length(), off.length()), ([], 1, 1), msg=(mac + small + off).join("\n"))
+}
+
+///|
+/// Words at the bar's left (its padding), a row that grows holding them.
+fn bar_words(v : @view.View) -> Unit {
+  v.box(fn(r) {
+    r.grow(Is(1.0)).row(Is(true)) |> ignore
+    r.box(fn(w) { w.words(Is("A title")) |> ignore }) |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// A capsule 140 by 32, its own ground.
+fn bar_capsule(v : @view.View) -> Unit {
+  v.box(fn(k) {
+    k.width(Is(Some(140.0))).height(Is(Some(32.0))).radius(Is(16.0)).ground(Is(0xE4E4E8FFL)) |> ignore
+  })
+  |> ignore
+}
+
+///|
+test "spacing on the window's tree: a capsule at a bar's end past the window's round corner by as much as the bar's other end is in, nothing (rule 4); less, said" {
+  // (the words 12 in; the capsule 28 from the end in a 16 corner: 12 past it; 22: 6 past it)
+  let past = tree_rule(corner_bar(16.0, bar_words, bar_capsule, end_in=28.0), "rule 4")
+  let short = tree_rule(corner_bar(16.0, bar_words, bar_capsule, end_in=22.0), "rule 4")
+  assert_eq((past, short.length()), ([], 1), msg=(past + short).join("\n"))
+}
+
+///|
+/// A bar 600 by 44, its own ground, holding a row that grows, `left_in` from its left and 6 from its right (its
+/// padding), with a short title at its start alone; `split`: an empty box that grows (a field, nothing typed in it)
+/// and a button at its end instead.
+fn half_bar(left_in : Double, split? : Bool = false) -> Tester {
+  let t = Tester::new(fn(_c) {  }, w=600.0, h=100.0, platform=0)
+  set_view_app(fn(root) {
+    root.box(fn(bar) {
+      bar
+      .width(Is(Some(600.0)))
+      .height(Is(Some(44.0)))
+      .row(Is(true))
+      .ground(Is(0xFFFFFFFFL))
+      .lines_up(Is(Some(Middle)))
+      .padding(Is((left_in, 0.0, 6.0, 0.0)))
+      |> ignore
+      if split {
+        bar.box(fn(f) { f.grow(Is(1.0)).height(Is(Some(32.0))) |> ignore }) |> ignore
+        bar_button(bar)
+      } else {
+        bar_words(bar)
+      }
+    })
+    |> ignore
+  })
+  t.draw()
+  t
+}
+
+///|
+test "spacing on the window's tree: a bar holding a row across it with words at its start alone, nothing seen near its other end, nothing (rule 4); the words at its edge, or an empty field and a button at its two ends, said" {
+  let half = tree_rule(half_bar(12.0), "rule 4")
+  let edge = tree_rule(half_bar(0.0), "rule 4")
+  let ends = tree_rule(half_bar(12.0, split=true), "rule 4")
+  assert_eq(
+    (half, edge.length(), edge.all(fn(f) { f.contains("0 from its left") }), ends.length()),
+    ([], 1, true, 1),
+    msg=(half + edge + ends).join("\n"),
+  )
+}

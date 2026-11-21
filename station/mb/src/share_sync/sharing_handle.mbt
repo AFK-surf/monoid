@@ -295,11 +295,13 @@ async fn Sharing::email_of(self : Sharing, p : Json) -> String? {
     }
     return str_of(email)
   }
-  for file in [self.files.join([home, ".claude.json"]), self.files.join([home, "claude.json"])] {
-    guard self.files.read_text(file) is Some(text) else { continue }
-    let parsed = js_parse(text) catch { _ => continue }
-    if gets(Some(parsed), ["oauthAccount", "emailAddress"]) is Some(String(e)) {
-      return Some(e)
+  if runtime is Some(String("claude")) {
+    for file in [self.files.join([home, ".claude.json"]), self.files.join([home, "claude.json"])] {
+      guard self.files.read_text(file) is Some(text) else { continue }
+      let parsed = js_parse(text) catch { _ => continue }
+      if gets(Some(parsed), ["oauthAccount", "emailAddress"]) is Some(String(e)) {
+        return Some(e)
+      }
     }
   }
   None

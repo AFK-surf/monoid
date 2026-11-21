@@ -416,3 +416,53 @@ test("Hermes profiles can name models and expose a selected model to new chats",
   const selected = {...base,models:["openrouter:model-a"]};
   assert.deepEqual(runtimes({profiles:[selected]}),[{runtime:"hermes",models:["openrouter:model-a"]}]);
 });
+
+test("service profiles decorate without agent runtime, dedup by (service, email), and stay out of model pickers", () => {
+  const raw = {
+    id: "gpu-1",
+    name: "GPU 1",
+    email: "alice@example.com",
+    runtime: null,
+    service: "fake-gpu",
+    runtimes: [],
+    access: { kind: "service", key: "", service: "fake-gpu" },
+    models: [],
+    env: [],
+  };
+  const decorated = shownProfile(raw);
+  assert.equal(decorated.group, "service");
+  assert.equal(decorated.modelsReading, false);
+  assert.equal(decorated.canAddModel, false);
+  assert.equal(decorated.signInProvider, "");
+  assert.deepEqual(decorated.uses, []);
+  assert.deepEqual(runtimes({ profiles: [decorated] }), []);
+
+  // Same service + same email across two stations merge into one account row;
+  // an agy subscription with the same email stays separate; service without email never merges.
+  const svcA = shownProfile({ ...raw, id: "gpu-a" });
+  const svcB = shownProfile({ ...raw, id: "gpu-b" });
+  const agySameEmail = shownProfile({
+    id: "agy-1",
+    name: "AGY",
+    email: "alice@example.com",
+    runtime: "agy",
+    runtimes: ["agy"],
+    access: { kind: "subscription", key: "" },
+    models: [],
+    env: [],
+  });
+  const anonA = shownProfile({ ...raw, id: "gpu-anon-a", email: null });
+  const anonB = shownProfile({ ...raw, id: "gpu-anon-b", email: null });
+  const view = workspaceProfiles([
+    station(A, "office", true, [svcA, agySameEmail, anonA]),
+    station(B, "mini", true, [svcB, anonB]),
+  ]);
+  assert.equal(view.items.length, 4);
+  const merged = view.items.find((i: any) => i.group === "service" && i.members.length === 2);
+  assert.ok(merged, "same (service, email) across stations should merge");
+  assert.equal(merged.title, "alice@example.com");
+  const anon = view.items.find((i: any) => i.group === "service" && i.members.length === 1);
+  assert.ok(anon);
+  assert.equal(anon.title, "GPU 1");
+  assert.ok(view.items.some((i: any) => i.group === "agy" && i.members.length === 1), "agy subscription must not merge with service profile");
+});

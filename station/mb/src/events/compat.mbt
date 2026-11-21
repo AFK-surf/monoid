@@ -7,6 +7,10 @@
 pub let runtimes_header : String = "stillfail-runtimes"
 
 ///|
+/// runtime-compat.ts PROFILE_SERVICES_HEADER.
+pub let profile_services_header : String = "stillfail-profile-services"
+
+///|
 /// The runtimes a core from before the header takes.
 let legacy_runtimes : Array[String] = [
   "claude", "codex", "dsh", "grok", "cursor", "devin",
@@ -69,9 +73,21 @@ pub fn client_runtimes(headers : Array[(String, String)]) -> Map[String, Unit] {
 }
 
 ///|
-/// Whether a core takes every runtime (it is answered as it is).
-pub fn takes_every(supported : Map[String, Unit]) -> Bool {
-  runtime_kinds.iter().all(k => supported.contains(k))
+/// runtime-compat.ts `clientProfileServices`: whether the client decodes `access.kind === "service"` and `runtime: null`.
+pub fn client_profile_services(headers : Array[(String, String)]) -> Bool {
+  match header_of(headers, profile_services_header) {
+    Some(v) => @jscase.trim(v) == "1"
+    None => false
+  }
+}
+
+///|
+/// Whether a core takes every runtime (and profile services when required).
+pub fn takes_every(
+  supported : Map[String, Unit],
+  services? : Bool = true,
+) -> Bool {
+  services && runtime_kinds.iter().all(k => supported.contains(k))
 }
 
 ///|
@@ -91,7 +107,12 @@ fn view_or_null(v : View) -> J? {
 
 ///|
 /// read/runtime-view.ts `runtimeView`: `value` of type `ty` (a Ty as data) for a core that takes `supported`.
-pub fn runtime_view(ty : J, value : J?, supported : Map[String, Unit]) -> View {
+pub fn runtime_view(
+  ty : J,
+  value : J?,
+  supported : Map[String, Unit],
+  services? : Bool = false,
+) -> View {
   guard value is Some(v) && !(v is Null) else { return Value(value) }
   match ty {
     Str(_) => {
@@ -114,13 +135,51 @@ pub fn runtime_view(ty : J, value : J?, supported : Map[String, Unit]) -> View {
             None => None
           }
           guard variant is Some(variant) else { return Value(value) }
-          match runtime_view(variant, v.get(content), supported) {
+          match runtime_view(variant, v.get(content), supported, services~) {
             Omit => Omit
             Value(c) => Value(Some(set_or_undefined(v, content, c)))
           }
         }
         Some("s") => {
+          let is_profile = name == "Profile" ||
+            name == "StationProfile" ||
+            name == "ListedProfile" ||
+            name == "RowProfile"
+          let is_login = name == "LoginJob" || name == "PendingLogin"
+          if is_profile || is_login {
+            if text_of(v.get("runtime")) is Some(rt) && !supported.contains(rt) {
+              return Omit
+            }
+          }
+          if !services {
+            if is_profile {
+              let access_kind = match v.get("access") {
+                Some(Obj(_) as a) => text_of(a.get("kind"))
+                _ => None
+              }
+              let svc = text_of(v.get("service"))
+              if access_kind == Some("service") ||
+                (svc is Some(s) && s != "") {
+                return Omit
+              }
+            }
+            if is_login {
+              let svc = text_of(v.get("service"))
+              let job_svc = match v.get("job") {
+                Some(Obj(_) as job) if name == "PendingLogin" => text_of(job.get("service"))
+                _ => None
+              }
+              if (svc is Some(s) && s != "") || (job_svc is Some(js) && js != "") {
+                return Omit
+              }
+            }
+          }
           let mut out : J = v
+          if !services &&
+            (is_profile || is_login) &&
+            (v.get("runtime") is None || v.get("runtime") is Some(Null)) {
+            out = with_prop(out, "runtime", js("claude"))
+          }
           if name == "Message" &&
             text_of(v.get("authorRuntime")) is Some(r) &&
             !supported.contains(r) {
@@ -131,7 +190,12 @@ pub fn runtime_view(ty : J, value : J?, supported : Map[String, Unit]) -> View {
               let field = text_of(at(f, 0)).unwrap_or("")
               guard has(out, field) else { continue }
               match
-                runtime_view(at(f, 1).unwrap_or(Null), v.get(field), supported) {
+                runtime_view(
+                  at(f, 1).unwrap_or(Null),
+                  out.get(field),
+                  supported,
+                  services~,
+                ) {
                 Omit => return Omit
                 Value(fv) => out = set_or_undefined(out, field, fv)
               }
@@ -144,13 +208,13 @@ pub fn runtime_view(ty : J, value : J?, supported : Map[String, Unit]) -> View {
     }
     Obj(_) =>
       if ty.get("opt") is Some(inner) {
-        Value(view_or_null(runtime_view(inner, value, supported)))
+        Value(view_or_null(runtime_view(inner, value, supported, services~)))
       } else if ty.get("vec") is Some(inner) {
         match v {
           Arr(items) => {
             let out = []
             for item in items {
-              match runtime_view(inner, Some(item), supported) {
+              match runtime_view(inner, Some(item), supported, services~) {
                 Omit => ()
                 Value(Some(x)) => out.push(x)
                 // (an item undefined: JSON's null)
@@ -166,7 +230,7 @@ pub fn runtime_view(ty : J, value : J?, supported : Map[String, Unit]) -> View {
           Obj(entries) => {
             let out = []
             for e in entries {
-              match runtime_view(inner, Some(e.1), supported) {
+              match runtime_view(inner, Some(e.1), supported, services~) {
                 Omit => ()
                 Value(Some(x)) => out.push((e.0, x))
                 Value(None) => ()
@@ -182,7 +246,7 @@ pub fn runtime_view(ty : J, value : J?, supported : Map[String, Unit]) -> View {
             let out = []
             for i, item in items {
               if i < types.length() {
-                match runtime_view(types[i], Some(item), supported) {
+                match runtime_view(types[i], Some(item), supported, services~) {
                   Omit => return Omit
                   Value(Some(x)) => out.push(x)
                   Value(None) => out.push(Null)
@@ -254,7 +318,11 @@ fn event_type(event : String) -> String? {
 
 ///|
 /// runtime-compat.ts `frame`: one SSE block (without its blank line) for such a core.
-pub fn compat_frame(text : String, supported : Map[String, Unit]) -> String {
+pub fn compat_frame(
+  text : String,
+  supported : Map[String, Unit],
+  services? : Bool = false,
+) -> String {
   let lines = text.split("\n").map(l => l.to_string()).to_array()
   let event = lines
     .iter()
@@ -280,7 +348,7 @@ pub fn compat_frame(text : String, supported : Map[String, Unit]) -> String {
   let view = if event == Some("thread") {
     Value(Some(entries_view(value, supported)))
   } else {
-    runtime_view(js(ty.unwrap()), Some(value), supported)
+    runtime_view(js(ty.unwrap()), Some(value), supported, services~)
   }
   if view is Omit && event == Some("session") {
     for k, l in lines {
@@ -305,12 +373,16 @@ pub fn compat_frame(text : String, supported : Map[String, Unit]) -> String {
 /// runtime-compat.ts `events`: a stream's pieces for such a core, each block shaped as it is whole.
 pub struct CompatStream {
   supported : Map[String, Unit]
+  services : Bool
   mut pending : String
 }
 
 ///|
-pub fn CompatStream::new(supported : Map[String, Unit]) -> CompatStream {
-  { supported, pending: "", }
+pub fn CompatStream::new(
+  supported : Map[String, Unit],
+  services? : Bool = false,
+) -> CompatStream {
+  { supported, services, pending: "", }
 }
 
 ///|
@@ -323,6 +395,7 @@ pub fn CompatStream::push(self : CompatStream, piece : String) -> Array[String] 
       compat_frame(
         self.pending.view(end_offset=end).to_string(),
         self.supported,
+        services=self.services,
       ) +
       "\n\n",
     )
@@ -337,7 +410,7 @@ pub fn CompatStream::end(self : CompatStream) -> String? {
   if self.pending == "" {
     None
   } else {
-    Some(compat_frame(self.pending, self.supported))
+    Some(compat_frame(self.pending, self.supported, services=self.services))
   }
 }
 
@@ -434,7 +507,8 @@ pub fn runtime_compatible(
     return answer
   }
   let supported = client_runtimes(headers)
-  if takes_every(supported) {
+  let services = client_profile_services(headers)
+  if takes_every(supported, services~) {
     return answer
   }
   let path = trim_slashes(path)
@@ -498,16 +572,16 @@ pub fn runtime_compatible(
     Value(Some(entries_view(raw, supported)))
   } else if account && raw is Obj(_) {
     if has(raw, "overview") {
-      match runtime_view(js("Overview"), raw.get("overview"), supported) {
+      match runtime_view(js("Overview"), raw.get("overview"), supported, services~) {
         // (`{ ...raw, overview: OMIT }`: a symbol JSON leaves out)
         Omit => Value(Some(without(raw, "overview")))
         Value(v) => Value(Some(set_or_undefined(raw, "overview", v)))
       }
     } else {
-      runtime_view(js("Overview"), Some(raw), supported)
+      runtime_view(js("Overview"), Some(raw), supported, services~)
     }
   } else {
-    runtime_view(ty.unwrap(), Some(raw), supported)
+    runtime_view(ty.unwrap(), Some(raw), supported, services~)
   }
   match view {
     Omit =>

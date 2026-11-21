@@ -542,7 +542,7 @@ pub async fn Accounts::put_archive_policy(
 
 ///|
 /// `homeAsked`: what a profile's home is read for: the home, and what in it says whose account it is.
-fn home_asked(p : Profile) -> (String, String, String?) {
+fn home_asked(p : Profile) -> (String, String?, String?) {
   let files = if access_kind(p.raw) == "subscription" {
     if borrowed(p.raw) {
       None
@@ -559,7 +559,7 @@ fn home_asked(p : Profile) -> (String, String, String?) {
     None | Some(Null) => ""
     h => js_string(h)
   }
-  (home, js_string(p.get("runtime")), files)
+  (home, p.runtime, files)
 }
 
 ///|
@@ -726,7 +726,11 @@ pub async fn Accounts::account_email(
 async fn Accounts::home_says_soon(self : Accounts, p : Profile) -> HomeSays {
   let (home, runtime, files) = home_asked(p)
   let email = match files {
-    Some("account") => self.account_email(runtime, home)
+    Some("account") =>
+      match runtime {
+        Some(r) => self.account_email(r, home)
+        None => None
+      }
     Some(_) =>
       self.email_in([
         {
@@ -856,11 +860,15 @@ async fn Accounts::email(self : Accounts, p : Profile, says : HomeSays) -> JV {
   }
   if p.machine {
     let logins = jitems(Some(self.machine_logins()))
-    match logins.iter().find_first(l => l.get("runtime") == Some(Str(p.runtime))) {
-      Some(l) =>
-        match l.get("email") {
-          None | Some(Null) => ()
-          Some(e) => return e
+    match p.runtime {
+      Some(r) =>
+        match logins.iter().find_first(l => l.get("runtime") == Some(Str(r))) {
+          Some(l) =>
+            match l.get("email") {
+              None | Some(Null) => ()
+              Some(e) => return e
+            }
+          None => ()
         }
       None => ()
     }
@@ -963,7 +971,7 @@ pub async fn Accounts::profiles_view(self : Accounts, viewer : JV?) -> JV {
     }
     let email = if kind == "subscription" {
       self.email(p, says)
-    } else if a.get("login") == Some(Bool(true)) {
+    } else if kind == "service" || a.get("login") == Some(Bool(true)) {
       jopt(says.email)
     } else {
       Null
@@ -984,17 +992,18 @@ pub async fn Accounts::profiles_view(self : Accounts, viewer : JV?) -> JV {
       .filter(c => p.runtimes.contains(c.runtime) && serves(p, c.model))
       .map(c => c.id)
     }
-    let login_command = if kind == "subscription" {
-      self.ask("profiles.loginCommand", [js(p.runtime), js(p.home), jbool(p.machine)])
-    } else {
-      js("")
+    let login_command = match (kind, p.runtime) {
+      ("subscription", Some(r)) =>
+        self.ask("profiles.loginCommand", [js(r), js(p.home), jbool(p.machine)])
+      _ => js("")
     }
     views.push(
       (
         jobj([
           ("id", p.get("id").unwrap_or(jundef)),
           ("name", js(p.name)),
-          ("runtime", js(p.runtime)),
+          ("runtime", jopt(p.runtime)),
+          ("service", jopt(p.service)),
           ("runtimes", jstrs(p.runtimes)),
           ("email", email),
           (
@@ -1015,6 +1024,7 @@ pub async fn Accounts::profiles_view(self : Accounts, viewer : JV?) -> JV {
                 ),
               ),
               ("provider", jopt(via.provider)),
+              ("service", jopt(p.service)),
               ("endpoint", jopt(via.endpoint)),
               ("protocol", jopt(via.protocol)),
               (
@@ -1126,7 +1136,7 @@ pub async fn Accounts::logins_view(self : Accounts) -> JV {
     out.push(
       jobj([
         ("id", js(e.0)),
-        ("runtime", js(e.1.runtime)),
+        ("runtime", jopt(e.1.runtime)),
         ("job", self.ask("logins.get", [js(e.0)])),
         ("created", jopt(e.1.created)),
         ("error", jopt(e.1.error)),
@@ -1178,7 +1188,7 @@ pub fn Accounts::state(self : Accounts) -> JV {
       pending,
       e.0,
       jobj([
-        ("runtime", js(e.1.runtime)),
+        ("runtime", jopt(e.1.runtime)),
         ("access", jopt(e.1.access)),
         ("home", js(e.1.home)),
         ("created", jopt(e.1.created)),

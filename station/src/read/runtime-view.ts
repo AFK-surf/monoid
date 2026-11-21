@@ -5,27 +5,45 @@ import type { Ty } from "../../../client/core-ts/src/shapes/dsl.ts";
 
 export const OMIT = Symbol("runtime unavailable to this client");
 const object = (v: unknown): v is Record<string, any> => v !== null && typeof v === "object" && !Array.isArray(v);
+const isNonEmptyString = (v: unknown): v is string => typeof v === "string" && v !== "";
+const isServiceProfile = (v: Record<string, any>): boolean =>
+  (object(v.access) && (v.access.kind === "service" || isNonEmptyString(v.access.service))) || isNonEmptyString(v.service);
+const isServiceLogin = (type: string, v: Record<string, any>): boolean =>
+  isNonEmptyString(v.service) || (type === "PendingLogin" && object(v.job) && isNonEmptyString(v.job.service));
+
 // Unsupported required metadata removes its containing list item; optional metadata becomes null. A runtime
 // is never relabelled as Claude/Codex, which would offer the wrong controls and silently change configuration.
-export function runtimeView(type: Ty, value: unknown, supported: Set<string>): unknown | typeof OMIT {
+// Clients that do not advertise profile-services support (`supportsServices = false`) cannot decode `access.kind: "service"`
+// or null `runtime`: omit service profiles and runtime-less/service logins, and backfill `"claude"` on legacy non-service
+// profiles without a runtime (e.g. Jev) so older apps' `conform("Overview")` continues to pass.
+export function runtimeView(type: Ty, value: unknown, supported: Set<string>, supportsServices = true): unknown | typeof OMIT {
   if (value === null || value === undefined) return value;
   if (type === "RuntimeKind") return typeof value === "string" && !supported.has(value) ? OMIT : value;
   if (typeof type === "object") {
-    if ("opt" in type) { const v = runtimeView(type.opt, value, supported); return v === OMIT ? null : v; }
-    if ("vec" in type && Array.isArray(value)) return value.map(v => runtimeView(type.vec, v, supported)).filter(v => v !== OMIT);
-    if ("map" in type && object(value)) return Object.fromEntries(Object.entries(value).map(([k,v]) => [k,runtimeView(type.map,v,supported)]).filter(([,v]) => v !== OMIT));
+    if ("opt" in type) { const v = runtimeView(type.opt, value, supported, supportsServices); return v === OMIT ? null : v; }
+    if ("vec" in type && Array.isArray(value)) return value.map(v => runtimeView(type.vec, v, supported, supportsServices)).filter(v => v !== OMIT);
+    if ("map" in type && object(value)) return Object.fromEntries(Object.entries(value).map(([k,v]) => [k,runtimeView(type.map,v,supported,supportsServices)]).filter(([,v]) => v !== OMIT));
     if ("tuple" in type && Array.isArray(value)) {
-      const out = value.map((v,i) => type.tuple[i] ? runtimeView(type.tuple[i],v,supported) : v);
+      const out = value.map((v,i) => type.tuple[i] ? runtimeView(type.tuple[i],v,supported,supportsServices) : v);
       return out.includes(OMIT) ? OMIT : out;
     }
     return value;
   }
   const shape = SHAPES[type];
   if (!object(value)) return value;
+  const isProfile = type === "Profile" || type === "StationProfile" || type === "ListedProfile" || type === "RowProfile";
+  const isLogin = type === "LoginJob" || type === "PendingLogin";
+  if ((isProfile || isLogin) && typeof value.runtime === "string" && !supported.has(value.runtime)) {
+    return OMIT;
+  }
+  if (!supportsServices) {
+    if (isProfile && isServiceProfile(value)) return OMIT;
+    if (isLogin && isServiceLogin(type, value)) return OMIT;
+  }
   if (shape?.kind === "tagged") {
     const variant = shape.variants[String(value[shape.tag])];
     if (!variant) return value;
-    const content = runtimeView(variant,value[shape.content],supported);
+    const content = runtimeView(variant, value[shape.content], supported, supportsServices);
     return content === OMIT ? OMIT : {...value,[shape.content]:content};
   }
   if (shape?.kind !== "struct") return value;
@@ -33,9 +51,12 @@ export function runtimeView(type: Ty, value: unknown, supported: Set<string>): u
   if (type === "Message" && typeof out.authorRuntime === "string" && !supported.has(out.authorRuntime)) delete out.authorRuntime;
   for (const field of shape.fields) {
     if (!(field.name in out)) continue;
-    const v = runtimeView(field.ty, value[field.name], supported);
+    const v = runtimeView(field.ty, value[field.name], supported, supportsServices);
     if (v === OMIT) return OMIT;
     out[field.name] = v;
+  }
+  if (!supportsServices && (isProfile || isLogin)) {
+    if (out.runtime == null) out.runtime = "claude";
   }
   return out;
 }

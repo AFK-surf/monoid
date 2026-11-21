@@ -44,10 +44,11 @@
 /// Their counts add up to the earlier counts for all odd windows. 2026-11-19, rule 8 counting the tree's marks among
 /// the rows' words (Ctx::tree_draws) and taking a row with a ground at rest as wide and as far in as the rows (the one
 /// chosen, one opened in place) for one of them, its words held to their line: one fewer in zh 0/4, zh 1/2 and both
-/// English halves. 2026-11-21, small panel titles, labels and notes aligned to text_in (S4, 16) with panel_row_icon
-/// left-aligned (rule 8 all 0), find_bar_node using symmetric capsule padding + field_in (chat-find rule 4 all 0), and
-/// screen-keys tile_box padded S1 (rule 4 all 0): only the 160 macOS rounded-window wide chat bar rule 4 entries
-/// (chat_bar_wide_node, page-ground bar with 12 left vs 6/28 corner-constrained right) remain (80 zh 1/2, 80 en 1/2).
+/// English halves. 2026-11-21, rule 4 taking a bar's end in the window's round corner as that corner has it (its last
+/// button concentric with it, or a capsule past its curve) and asking only where what is seen spans the box (not a
+/// loading chat's half row): the wide chats' heads, 80 fewer in each 1/2. The same day, small-panel titles, labels,
+/// notes and icon columns aligned to text_in (S4=16, panel_row_icon AStart), find_bar_node using symmetric capsule px +
+/// field_in, and screen-keys tile_box padded S1: all 45 entries now 0.
 let gaps_known : Map[String, Int] = {
   "zh 0/4 rule 1": 0,
   "zh 0/4 rule 2": 0,
@@ -70,7 +71,7 @@ let gaps_known : Map[String, Int] = {
   "zh 1/2 rule 1": 0,
   "zh 1/2 rule 2": 0,
   "zh 1/2 rule 3": 0,
-  "zh 1/2 rule 4": 80,
+  "zh 1/2 rule 4": 0,
   "zh 1/2 rule 5": 0,
   "zh 1/2 rule 6": 0,
   "zh 1/2 rule 7": 0,
@@ -88,7 +89,7 @@ let gaps_known : Map[String, Int] = {
   "en 1/2 rule 1": 0,
   "en 1/2 rule 2": 0,
   "en 1/2 rule 3": 0,
-  "en 1/2 rule 4": 80,
+  "en 1/2 rule 4": 0,
   "en 1/2 rule 5": 0,
   "en 1/2 rule 6": 0,
   "en 1/2 rule 7": 0,

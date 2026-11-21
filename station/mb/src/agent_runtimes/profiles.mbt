@@ -50,13 +50,22 @@ pub let kimi_token_file : String = "kimi-code.token"
 pub let kimi_code : String = "kimi-code"
 
 ///|
-/// `accessKind`: "subscription", "opencode-go", "anthropic-api", "env" or "api-provider" (another value as it is).
+/// `accessKind`: "subscription", "opencode-go", "anthropic-api", "env", "api-provider" or "service" (another value as it is).
 pub fn access_kind(p : J) -> String {
   match get(access(p), "kind") {
     None | Some(Null) => "env"
     Some(Str(s)) => t(s)
     Some(other) => @jsjson.jv_js_string(Some(other))
   }
+}
+
+///|
+/// `profileService`: the service id of a `service` profile (None for non-service profiles).
+pub fn profile_service(p : J) -> String? {
+  if access_kind(p) != "service" {
+    return None
+  }
+  nonempty(get(access(p), "service"))
 }
 
 ///|
@@ -417,6 +426,9 @@ pub fn pi_route(p : J) -> PiRoute? {
 /// `profileRuntimes`: the runtimes an account runs.
 pub fn profile_runtimes(p : J) -> Array[String] {
   let kind = access_kind(p)
+  if kind == "service" {
+    return []
+  }
   if kind == "api-provider" {
     guard api_source(profile_via(p)) is Some((source, at)) else { return [] }
     if kimi_signed_in(p) {
@@ -505,6 +517,7 @@ pub fn keyed(kind : String) -> Bool {
 /// accounts/profiles.ts `runtimesOf`: the runtimes an access kind runs without its provider.
 pub fn runtimes_of_kind(kind : String, runtime : String?) -> Array[String] {
   match kind {
+    "service" => []
     "opencode-go" => ["claude", "codex", "dsh", "pi"]
     "anthropic-api" => ["claude", "dsh", "pi"]
     "api-provider" => []

@@ -1854,67 +1854,69 @@ fn profile_settings_node(
         fn(sec) {
           @sf.group_node(sec, fn(g) {
             profile_station_rows_node(g, core, address, id, s, o, p, entry)
-            @sf.link_row_node(
-              g,
-              fn() { @sf.t("web-pages.profiles.availableModels") },
-              fn() {
-                let fusion : @signals.Signal[Json?] = @signals.signal(None)
-                let fusion_lead : @signals.Signal[String] = @signals.signal("", same=fn(a, b) { a == b })
-                let p0 = @signals.untracked(p)
-                if text(p0, "runtime") == "devin" && text(field(p0, "share"), "role") != "user" {
-                  (core.call)(
-                    "profile.fusion",
-                    obj([("station", str(address)), ("id", str(id))]),
-                    fn(r) {
-                      if r is Ok(v) && field(Some(v), "fusion") is (Some(Object(_)) as f) {
-                        fusion.set(f)
-                      }
-                    },
-                  )
-                }
-                @sf.panel_nodes(
-                  @sf.t("web-pages.profiles.availableModels"),
-                  fn(v, _) {
-                    // (the profile as the station's overview lists it now, else as its page has it now)
-                    let now = fn() {
-                      let listed = items(field(@settings.station_of(core, here(), address), "overview"), "profiles")
-                      match listed.search_by(fn(y) { text(Some(y), "id") == id }) {
-                        Some(i) => Some(listed[i])
-                        None => p()
-                      }
-                    }
-                    profile_models_node(v, core, address, id, now, fn() { fusion.get() }, fusion_lead)
-                  },
-                  from=Unanchored,
-                  // (as tall as what it holds up to its share, its models giving way and scrolling in themselves where
-                  // that is short of them, what is named by hand staying in view: the old panel's `lists`)
-                  tall=pf_models_share,
-                  hugs=true,
-                )
-              },
-              note=fn() {
-                if flag(p(), "canAddModel") {
-                  @sf.t("web-pages.profiles.modelsNoteAdd")
-                } else if text(p(), "runtime") == "devin" && text(field(p(), "share"), "role") != "user" {
-                  @sf.t("web-pages.profiles.modelsNoteFusion")
-                } else {
-                  @sf.t("web-pages.profiles.modelsNote")
-                }
-              },
-              value=fn() {
-                if !(field(p(), "modelsSaving") is (None | Some(Null))) || is_doing(core, ["profile.addModel"], on) {
-                  @sf.t("common.saving")
-                } else if all().length() == 0 {
-                  if flag(p(), "modelsReading") || is_doing(core, ["profile.check"], on) {
-                    @sf.t("common.reading")
-                  } else {
-                    @sf.t("web-pages.profiles.noModels")
+            g.show(at_once=true, fn() { items(p(), "runtimes").length() > 0 || flag(p(), "canAddModel") }, fn(models_row) {
+              @sf.link_row_node(
+                models_row,
+                fn() { @sf.t("web-pages.profiles.availableModels") },
+                fn() {
+                  let fusion : @signals.Signal[Json?] = @signals.signal(None)
+                  let fusion_lead : @signals.Signal[String] = @signals.signal("", same=fn(a, b) { a == b })
+                  let p0 = @signals.untracked(p)
+                  if text(p0, "runtime") == "devin" && text(field(p0, "share"), "role") != "user" {
+                    (core.call)(
+                      "profile.fusion",
+                      obj([("station", str(address)), ("id", str(id))]),
+                      fn(r) {
+                        if r is Ok(v) && field(Some(v), "fusion") is (Some(Object(_)) as f) {
+                          fusion.set(f)
+                        }
+                      },
+                    )
                   }
-                } else {
-                  text(p(), "modelsText")
-                }
-              },
-            )
+                  @sf.panel_nodes(
+                    @sf.t("web-pages.profiles.availableModels"),
+                    fn(v, _) {
+                      // (the profile as the station's overview lists it now, else as its page has it now)
+                      let now = fn() {
+                        let listed = items(field(@settings.station_of(core, here(), address), "overview"), "profiles")
+                        match listed.search_by(fn(y) { text(Some(y), "id") == id }) {
+                          Some(i) => Some(listed[i])
+                          None => p()
+                        }
+                      }
+                      profile_models_node(v, core, address, id, now, fn() { fusion.get() }, fusion_lead)
+                    },
+                    from=Unanchored,
+                    // (as tall as what it holds up to its share, its models giving way and scrolling in themselves where
+                    // that is short of them, what is named by hand staying in view: the old panel's `lists`)
+                    tall=pf_models_share,
+                    hugs=true,
+                  )
+                },
+                note=fn() {
+                  if flag(p(), "canAddModel") {
+                    @sf.t("web-pages.profiles.modelsNoteAdd")
+                  } else if text(p(), "runtime") == "devin" && text(field(p(), "share"), "role") != "user" {
+                    @sf.t("web-pages.profiles.modelsNoteFusion")
+                  } else {
+                    @sf.t("web-pages.profiles.modelsNote")
+                  }
+                },
+                value=fn() {
+                  if !(field(p(), "modelsSaving") is (None | Some(Null))) || is_doing(core, ["profile.addModel"], on) {
+                    @sf.t("common.saving")
+                  } else if all().length() == 0 {
+                    if flag(p(), "modelsReading") || is_doing(core, ["profile.check"], on) {
+                      @sf.t("common.reading")
+                    } else {
+                      @sf.t("web-pages.profiles.noModels")
+                    }
+                  } else {
+                    text(p(), "modelsText")
+                  }
+                },
+              )
+            })
             g.show(at_once=true, machine, fn(m_row) {
               let runtime = fn() { @settings.runtime_label(text(p(), "runtime")) }
               said_row_node(

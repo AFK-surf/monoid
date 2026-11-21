@@ -796,6 +796,7 @@ async fn Sharing::take_own(self : Sharing, peer : String, request : Json) -> Jso
         !(is_obj(get(xj, "share")) && gets(xj, ["share", "borrowed"]) is Some(True)) &&
         strict_eq(get(xj, "runtime"), get(Some(given), "runtime")) &&
         strict_eq(gets(xj, ["access", "kind"]), gets(Some(given), ["access", "kind"])) &&
+        strict_eq(gets(xj, ["access", "service"]), gets(Some(given), ["access", "service"])) &&
         self.email_of(x) == email {
         return jobj([("taken", jbool(true)), ("id", get(xj, "id").unwrap_or(jnull())), ("had", jbool(true))])
       }

@@ -597,6 +597,32 @@ pub fn Moves::new(d : MovesDeps) -> Moves raise MoveError {
           }
         }
       }
+      // Include own, non-machine, non-borrowed non-runtime profiles (e.g. service accounts) allowed in ws.
+      let home = moves().home()
+      for p in (d.profiles)() {
+        if is_true(get(Some(p), "machine")) {
+          continue
+        }
+        if is_map(get(Some(p), "share")) &&
+          is_true(get(get(Some(p), "share"), "borrowed")) {
+          continue
+        }
+        match get(Some(p), "runtimes") {
+          Some(Arr(rs)) if rs.length() == 0 => ()
+          _ => continue
+        }
+        let withheld = match get(Some(p), "withheld") {
+          Some(Arr(ws_list)) => ws_list.iter().any(w => text(Some(w)) == Some(ws))
+          _ => false
+        }
+        if ws != home && withheld {
+          continue
+        }
+        guard text(get(Some(p), "id")) is Some(pid) else { continue }
+        if out.search_by(x => x.0 == pid) is None {
+          out.push((pid, account_of(Some(p), here())))
+        }
+      }
       out
     },
     shared: async fn(id) {

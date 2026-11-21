@@ -9,7 +9,8 @@ pub(all) struct Profile {
   raw : JV
   id : String
   name : String
-  runtime : String
+  runtime : String?
+  service : String?
   runtimes : Array[String]
   models : Array[String]
   named : Array[String]
@@ -140,7 +141,8 @@ pub fn profile_of(
     Some(n) if trim_js(n) != "" => Str(trim_js(n))
     _ => p.get("id").unwrap_or(jundef)
   }
-  let runtime = if runtimes.length() > 0 { runtimes[0] } else { "claude" }
+  let runtime : String? = if runtimes.length() > 0 { Some(runtimes[0]) } else { None }
+  let service = profile_service(base)
   let model = nonempty_str(p.get("model"))
   let withheld = match p.get("withheld") {
     Some(Arr(a)) =>
@@ -155,7 +157,14 @@ pub fn profile_of(
   let mut o = base
   o = jset(o, "id", p.get("id").unwrap_or(jundef))
   o = if is_undef(name_v) { jdel(o, "name") } else { jset(o, "name", name_v) }
-  o = jset(o, "runtime", js(runtime))
+  o = match runtime {
+    Some(r) => jset(o, "runtime", js(r))
+    None => jdel(o, "runtime")
+  }
+  o = match service {
+    Some(s) => jset(o, "service", js(s))
+    None => jdel(o, "service")
+  }
   o = jset(o, "runtimes", jstrs(runtimes))
   o = jset(o, "models", jstrs(runs))
   o = jset(o, "named", jstrs(models))
@@ -182,6 +191,7 @@ pub fn profile_of(
       other => js_string(defined(other))
     },
     runtime,
+    service,
     runtimes,
     models: runs,
     named: models,
@@ -304,7 +314,11 @@ pub fn Profile::of_hub(v : JV) -> Profile {
       Some(Str(n)) => n
       other => js_string(other)
     },
-    runtime: js_string(v.get("runtime")),
+    runtime: runtime_kind(v.get("runtime")),
+    service: match nonempty_str(v.get("service")) {
+      Some(s) => Some(s)
+      None => profile_service(v)
+    },
     runtimes: strings("runtimes"),
     models: strings("models"),
     named: strings("named"),

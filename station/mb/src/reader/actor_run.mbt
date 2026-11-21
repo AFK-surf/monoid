@@ -2138,7 +2138,12 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
   // nothing of an MCP server it could not connect, so no call of one failed; Node keeps what its token made, `toolsUnheard`)
   if a.tools_lost is None && kind == "completed" && !stop_requested && !a.posted && turn is Some({ declared: None, .. }) &&
     a.agent is Some(g) {
-    let unheard = self.rpc(a.key, "node.toolsUnheard", [jnum(g.handle.to_double())]) catch { _ => Json::null() }
+    let unheard = self.rpc(a.key, "node.toolsUnheard", [jnum(g.handle.to_double())]) catch {
+      e => {
+        self.log(a, "warn", "toolsUnheard check failed", fields={ "error": jstr(e.to_string()) })
+        Json::null()
+      }
+    }
     match unheard {
       String(why) => {
         self.log(a, "warn", "the agent cannot reach the station's tools", fields={ "why": jstr(why) })

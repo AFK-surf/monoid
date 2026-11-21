@@ -204,7 +204,10 @@ export class Requests {
     const h: [string, string][] = [...headers, ["traceparent", span.context.traceparent()], [LANG_HEADER, current()]];
     // (a host that says none, a test's, a scripted run's: an unnumbered build, held to no floor)
     h.push([BUILD_HEADER, ownBuild() || "0.1.0"]);
-    if (!path.startsWith("/preview/")) h.push(["stillfail-runtimes", RUNTIMES.join(",")]);
+    if (!path.startsWith("/preview/")) {
+      h.push(["stillfail-runtimes", RUNTIMES.join(",")]);
+      h.push(["stillfail-profile-services", "1"]);
+    }
     if (!path.startsWith("/preview/") && !headers.some(([k]) => k.toLowerCase() === "accept-encoding")) h.push(["accept-encoding", ZSTD]);
     // A write carries a key of its own: a station that keeps writes to once does it once however often it arrives. A
     // request that only reads (READS) is none.

@@ -6,7 +6,7 @@ import { KIMI_TOKEN_FILE } from "../accounts/kimi.ts";
 import { runtimeKind, type Profile, type RuntimeKind } from "./runtime.ts";
 import { cleanEndpoint, endpoints, find, runtimesOf, type Endpoints, type Source } from "./providers.ts";
 
-export type AccessKind = "subscription" | "opencode-go" | "anthropic-api" | "env" | "api-provider";
+export type AccessKind = "subscription" | "opencode-go" | "anthropic-api" | "env" | "api-provider" | "service";
 export type Runtime = RuntimeKind;
 
 /// Which provider an API-provider profile is on, and where.
@@ -14,12 +14,14 @@ export type Via = { provider?: string; endpoint?: string; protocol?: string };
 
 /// A profile's fields as the drivers read them (config.json's names).
 /// `login`: its key is a sign-in's token (an OpenCode Go one's in `key`; a Kimi Code one's in its home, kimiSignedIn).
-export type ProfileAccess = { kind?: AccessKind; key?: string; provider?: string; endpoint?: string; protocol?: string; login?: boolean };
+export type ProfileAccess = { kind?: AccessKind; key?: string; provider?: string; endpoint?: string; protocol?: string; service?: string; login?: boolean };
 
 const str = (v: unknown): string | undefined => (typeof v === "string" && v !== "" ? v : undefined);
 const access = (p: Profile): ProfileAccess => (p.access && typeof p.access === "object" ? (p.access as ProfileAccess) : {});
 
 export const accessKind = (p: Profile): AccessKind => access(p).kind ?? "env";
+/// The service id of a service profile (`access.kind === "service"`).
+export const profileService = (p: Profile): string | undefined => (accessKind(p) === "service" ? str(access(p).service) : undefined);
 /// The provider of Kimi Code's membership (providers.ts).
 export const KIMI_CODE = "kimi-code";
 /// Whether a profile's account is billed for what it uses, not paid for already: an Anthropic key, a provider's key
@@ -223,6 +225,7 @@ export function piRoute(p: Profile): PiRoute | null {
 /// it was made for.
 export function profileRuntimes(p: Profile): Runtime[] {
   const kind = accessKind(p);
+  if (kind === "service") return [];
   if (kind === "api-provider") {
     const found = apiSource(profileVia(p));
     if (!found) return [];

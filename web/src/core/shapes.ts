@@ -3,7 +3,7 @@
 */
 
 /** Whose account a profile runs on. */
-export type AccessKind = "subscription" | "opencode-go" | "anthropic-api" | "env" | "api-provider";
+export type AccessKind = "subscription" | "opencode-go" | "anthropic-api" | "env" | "api-provider" | "service";
 
 /** How the pages look: as the system does (the default), or always light, or always dark. */
 export type Appearance = "system" | "light" | "dark";
@@ -390,7 +390,8 @@ export type RuntimeKind = "claude" | "codex" | "dsh" | "grok" | "cursor" | "devi
 
 export interface LoginJob {
 	profile: string;
-	runtime: RuntimeKind;
+	runtime?: RuntimeKind;
+	service?: string;
 	/**
 	 * opencode: a sign-in to the OpenCode Console (an OpenCode Go profile); kimi: to Kimi (a Kimi Code profile); none: the
 	 * runtime's subscription.
@@ -703,11 +704,13 @@ export interface Connect {
 }
 
 export interface Access {
-	/** subscription | opencode-go | anthropic-api | env | api-provider */
+	/** subscription | opencode-go | anthropic-api | env | api-provider | service */
 	kind: AccessKind;
 	key: string;
 	/** The provider of an `api-provider` (shapes/providers.ts); an older core reads such a profile as `env` and drops this. */
 	provider?: string;
+	/** The service id of a `service` profile (e.g. a non-agent service account). */
+	service?: string;
 	/** Its address, where the provider has none of its own (Azure, Cloudflare, custom). */
 	endpoint?: string;
 	/** At such an address, the protocol it speaks there: chat_completions, responses or anthropic. */
@@ -873,7 +876,8 @@ export interface Profile {
 	name: string;
 	/** The signed-in subscription identity; independent of the editable display name. */
 	email?: string;
-	runtime: RuntimeKind;
+	runtime?: RuntimeKind;
+	service?: string;
 	runtimes: RuntimeKind[];
 	access: Access;
 	home: string;
@@ -1068,7 +1072,8 @@ export interface DiskRoom {
 
 export interface PendingLogin {
 	id: string;
-	runtime: RuntimeKind;
+	runtime?: RuntimeKind;
+	service?: string;
 	job?: LoginJob;
 	created?: string;
 	/** Why a sign-in that succeeded made no profile. */
