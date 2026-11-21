@@ -147,7 +147,7 @@ fn icon_button_by(
         } else if on() {
           alpha(lit_ink(), 0.08)
         } else {
-          alpha(theme().p.text, 0.065 * tint())
+          alpha(lit_ink(), 0.065 * tint())
         }
       }))
       |> ignore
