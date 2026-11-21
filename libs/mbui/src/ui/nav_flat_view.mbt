@@ -105,7 +105,9 @@ fn[P] Nav::flat_entries(self : Nav[P]) -> Array[Int] {
 /// its flow over it, the page in the room left under it). `shown`: told the entries that show (by their numbers) as
 /// the stack stands whole after a change (never the half between a change and its owner's keeping), and as it is made.
 /// `keeps_left`: as nav_view's, an entry that left put by as the stack stands whole once none keeps it shown in place
-/// (Nav::flat_keep), never let go and made again between.
+/// (Nav::flat_keep), never let go and made again between. `keeps_made`: as nav_view's, a root made once that a root is
+/// put in the place of (Nav::replace_kept) put on the shelf once none keeps it shown in place, its nodes put by at rest
+/// and taken in again as it is put back; the shelf emptied, each on it left for good, as this node is let go.
 pub fn[P] nav_flat_view(
   v : @view.View,
   nav : Nav[P],
@@ -121,6 +123,7 @@ pub fn[P] nav_flat_view(
   head? : (@view.View, Int, Bool) -> Unit,
   gone? : (Int) -> Unit = fn(_) {  },
   made? : (P) -> (String, (@view.View, () -> P, P?, () -> Int, Int) -> Unit)? = fn(_) { None },
+  keeps_made? : Bool = false,
   shown? : (Array[Int]) -> Unit = fn(_) {  },
   keeps_left? : (P) -> (String, String)?,
   transition? : NavTransition = NavTransition::flat(),
@@ -135,6 +138,17 @@ pub fn[P] nav_flat_view(
       s.owns(fn() {
         nav.keeps_left = None
         nav.kept_left.clear()
+        nav.kept_left.shrink_to_fit()
+      })
+      |> ignore
+    }
+    if keeps_made {
+      nav.shelves = Some(fn(p) { made(p) is Some(_) })
+      // (its shelf this node's: let go with it, what it put by let go by the each below, each left for good)
+      s.owns(fn() {
+        nav.shelves = None
+        nav.shelf.clear()
+        nav.shelf.shrink_to_fit()
       })
       |> ignore
     }
@@ -200,7 +214,21 @@ pub fn[P] nav_flat_view(
           }
         }
         let keys = all.filter(fn(k) { shown.contains(k) || (!is_made(k) && !nav.waiting_taken_back(k)) })
-        let kept = nav.kept_left.map(fn(x) { x.2.serial })
+        // (those on the shelf, on the kept left, and covered on the stack, put by at rest: none of them while it shows,
+        // one kept shown in place as it goes on the shelf put by once its owner lets it go)
+        let kept : Array[Int] = []
+        if keeps_made {
+          for e in nav.shelf {
+            if !keys.contains(e.serial) && !kept.contains(e.serial) {
+              kept.push(e.serial)
+            }
+          }
+        }
+        for x in nav.kept_left {
+          if !keys.contains(x.2.serial) && !kept.contains(x.2.serial) {
+            kept.push(x.2.serial)
+          }
+        }
         for k in all {
           if !keys.contains(k) && !kept.contains(k) {
             kept.push(k)
@@ -285,7 +313,7 @@ pub fn[P] nav_flat_view(
       fn() { seen.get().keys },
       fn(k) { k },
       keeps=fn() { seen.get().kept },
-      keeps_holds=fn(k) { !nav.is_kept_left(k) && !nav.waiting_taken_back(k) },
+      keeps_holds=fn(k) { nav.pages.iter().any(fn(e) { e.serial == k }) && !nav.waiting_taken_back(k) },
       fn(pv, serial) {
         let k = serial.untracked()
         held[k] = true

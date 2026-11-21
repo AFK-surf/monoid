@@ -299,3 +299,284 @@ test "a flat stack's covered made page on push_over parks at rest and keeps layo
   assert_true(laid_delta <= 15, msg="expected parked layout cache reuse on flat stack, got laid_delta=\{laid_delta}")
   assert_true(t.find("flat_count=2") is Some(_), msg="woken flat page should reflect updated signal")
 }
+
+///|
+/// What a flat stack's roots made once and put on its shelf (nav_flat_view's `keeps_made`) did and hold: the pages made,
+/// those let go, the heads made and let go, the leavings told, the entries let go (`gone`), and of each root by its
+/// name its button, scroll, time on top, and how many times its count was read and its hold let go.
+priv struct ShelfLog {
+  made : Array[String]
+  dropped : Array[String]
+  heads : Array[Int]
+  heads_dropped : Array[Int]
+  left : Array[String]
+  gone : Array[Int]
+  buttons : Map[String, @view.NodeId]
+  scrolls : Map[String, @view.Scroll]
+  stints : Map[String, () -> Int]
+  runs : Map[String, Ref[Int]]
+}
+
+///|
+fn shelf_log() -> ShelfLog {
+  {
+    made: [],
+    dropped: [],
+    heads: [],
+    heads_dropped: [],
+    left: [],
+    gone: [],
+    buttons: Map([]),
+    scrolls: Map([]),
+    stints: Map([]),
+    runs: Map([]),
+  }
+}
+
+///|
+/// A flat stack of roots made once kept on its shelf (`keeps_made`) as one is put in the place of another
+/// (Nav::replace_kept); "m…" pages made once over a root kept on its kept left (`keeps_left`). Each root: a button, its
+/// count (`count`) read, "a" a hold (`res`, let go of as its last reader leaves) too, and 50 rows that scroll; with an owner
+/// as the panes' (page_wait.mbt) keeping the one shown while the one put in its place waits for `ready` (`owned`).
+fn shelf_stack(
+  owned : Bool,
+  count : @signals.Signal[Int],
+  res : @signals.Signal[Int],
+  ready : @signals.Signal[Bool],
+) -> (Tester, Nav[String], ShelfLog) {
+  let log = shelf_log()
+  let nav = Nav::new("a", on_leave=fn(p) { log.left.push(p) })
+  let t = Tester::new(fn(_c) {  }, w=390.0, h=600.0)
+  t.check_looks(false)
+  set_view_app(fn(root) {
+    if owned {
+      nav.flat_owned(true)
+      let shown = Ref(@signals.untracked(fn() { nav.top_stay() }))
+      root.reacts(fn() { (nav.top_stay(), ready.get()) }, fn(now) {
+        if now.0 == shown.val {
+          return
+        }
+        if now.1 {
+          shown.val = now.0
+          nav.flat_keep(None)
+        } else {
+          nav.flat_keep(Some(shown.val))
+        }
+      })
+    }
+    nav_flat_view(
+      root,
+      nav,
+      fn(c, p) { c.text(p, size=12.0) |> ignore },
+      fn(_) { true },
+      0.0,
+      keeps_made=true,
+      keeps_left=fn(p) { if p.has_prefix("m") { Some((p, "m")) } else { None } },
+      head=fn(b, k, _) {
+        log.heads.push(k)
+        b.box(fn(h) { h.height(Is(Some(30.0))) |> ignore }) |> ignore
+        b.owns(fn() { log.heads_dropped.push(k) }) |> ignore
+      },
+      gone=fn(k) { log.gone.push(k) },
+      made=fn(p) {
+        if p.has_prefix("m") {
+          return Some(
+            (
+              "m",
+              fn(v, page, _under, _stint, _k) {
+                let name = @signals.untracked(page)
+                log.made.push(name)
+                v.box(fn(w) { w.height(Is(Some(24.0))).words(By(fn() { "page " + page() })) |> ignore }) |> ignore
+                v.owns(fn() { log.dropped.push(name) }) |> ignore
+              },
+            ),
+          )
+        }
+        Some(
+          (
+            "root",
+            fn(v, page, _under, stint, _k) {
+              let name = @signals.untracked(page)
+              log.made.push(name)
+              let runs = Ref(0)
+              let scroll = @view.Scroll::plain()
+              log.runs[name] = runs
+              log.scrolls[name] = scroll
+              log.stints[name] = stint
+              v.owns(fn() { log.dropped.push(name) }) |> ignore
+              v.box(fn(btn) {
+                log.buttons[name] = btn.id()
+                btn
+                .width(Is(Some(100.0)))
+                .height(Is(Some(40.0)))
+                .presses(Is(true))
+                .focusable(Is(true))
+                .says(Is(Some(@view.said(Button, label="按钮 " + name))))
+                .on_press(fn() {  })
+                |> ignore
+              })
+              |> ignore
+              v.box(fn(w) {
+                w
+                .height(Is(Some(24.0)))
+                .words(By(fn() {
+                  runs.val += 1
+                  "page \{page()} count=\{count.get()}"
+                }))
+                |> ignore
+              })
+              |> ignore
+              // (the hold a's alone: what another root reads of it keeps it not)
+              v.box(fn(w) {
+                w.height(Is(Some(24.0))).words(By(fn() { if name == "a" { "held \{res.get()}" } else { "held" } })) |> ignore
+              })
+              |> ignore
+              v.box(fn(s) {
+                s.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+                s.scrolls(scroll, fn(body) {
+                  for i in 0..<50 {
+                    body.box(fn(row) { row.height(Is(Some(20.0))).words(Is("\{name} row \{i}")) |> ignore }) |> ignore
+                  }
+                })
+                |> ignore
+              })
+              |> ignore
+            },
+          ),
+        )
+      },
+    )
+    |> ignore
+  })
+  t.draw()
+  (t, nav, log)
+}
+
+///|
+test "a flat stack's root made once put in another's place kept on its shelf (keeps_made): at rest there, its hold and focus let go; put back the same nodes, its layout and scroll as they were, what it reads read anew" {
+  let count = @signals.signal(0)
+  let res = @signals.signal(0)
+  let released = Ref(0)
+  res.on_unwatched(fn() { released.val += 1 })
+  let (t, nav, log) = shelf_stack(false, count, res, @signals.signal(true))
+  assert_eq(log.made, ["a"])
+  assert_true(res.watched())
+  // (its button focused, its rows scrolled down)
+  t.key(key_tab)
+  t.draw()
+  assert_eq(focus_named(t), "Button 按钮 a")
+  t.drag(200.0, 500.0, 200.0, 200.0)
+  t.run_for(long_after_ms)
+  let scrolled = log.scrolls["a"].at(view_tree().unwrap())
+  assert_true(scrolled > 100.0, msg="scrolled \{scrolled}")
+  let stint = (log.stints["a"])()
+  // (b in its place: a on the shelf, at rest, nothing of it let go)
+  view_event(fn() { nav.replace_kept("b") })
+  t.draw()
+  assert_true(nav.shelved("a") is Some(_))
+  assert_true(t.find("page b count=0") is Some(_))
+  assert_true(t.find("page a count=0") is None)
+  assert_eq((log.made, log.dropped, log.heads_dropped, log.left, log.gone), (["a", "b"], [], [], [], []))
+  // (its focus given up, its button taking no keys, its hold let go, what it reads told nothing)
+  assert_eq(focus_named(t), "none")
+  assert_false(view_tree().unwrap().takes_keys(log.buttons["a"]))
+  assert_eq(released.val, 1)
+  let runs = log.runs["a"].val
+  count.set(1)
+  t.draw()
+  count.set(2)
+  t.draw()
+  assert_eq(log.runs["a"].val, runs, msg="a on the shelf at rest")
+  // (put back: the same nodes, laid out as they were, scrolled as they were, what it reads as it is now)
+  let laid_before = view_tree().unwrap().work().laid
+  view_event(fn() { nav.replace_kept("a") })
+  t.draw()
+  let laid_delta = view_tree().unwrap().work().laid - laid_before
+  assert_eq((log.made, log.dropped, log.left, log.gone), (["a", "b"], [], [], []))
+  assert_true(laid_delta <= 15, msg="expected the shelf's layout kept, got laid_delta=\{laid_delta}")
+  assert_eq(log.scrolls["a"].at(view_tree().unwrap()), scrolled)
+  assert_true(t.find("page a count=2") is Some(_))
+  assert_true((log.stints["a"])() > stint)
+  assert_true(res.watched())
+  assert_true(nav.shelved("b") is Some(_))
+}
+
+///|
+test "a flat stack's roots on its shelf with an owner keeping one shown while another waits, a kept left over the root: kept shown, then put by; neither the shelf nor the kept left emptied by the other's change; each let go once as they are emptied" {
+  let ready = @signals.signal(true)
+  let (t, nav, log) = shelf_stack(true, @signals.signal(0), @signals.signal(0), ready)
+  let a = nav.top_stay().0
+  // (b in its place waiting: a on the shelf and still shown, the same nodes, nothing made of b yet)
+  ready.set(false)
+  view_event(fn() { nav.replace_kept("b") })
+  t.draw()
+  assert_true(nav.shelved("a") is Some(_))
+  assert_true(t.find("page a count=0") is Some(_), msg="kept shown")
+  assert_true(t.find("page b count=0") is None)
+  assert_eq((log.made, log.dropped, log.left, log.gone), (["a"], [], [], []))
+  t.draw()
+  assert_true(t.find("page a count=0") is Some(_), msg="kept shown")
+  // (b shows: a put by on the shelf, made once, let go never)
+  ready.set(true)
+  t.draw()
+  assert_true(t.find("page b count=0") is Some(_))
+  assert_true(t.find("page a count=0") is None)
+  assert_true(nav.shelved("a") is Some(_))
+  assert_eq((log.made, log.dropped, log.heads_dropped, log.left, log.gone), (["a", "b"], [], [], [], []))
+  // (a again: taken back, b on the shelf)
+  view_event(fn() { nav.replace_kept("a") })
+  t.draw()
+  assert_true(t.find("page a count=0") is Some(_))
+  assert_eq(nav.top_stay().0, a)
+  assert_true(nav.shelved("b") is Some(_))
+  // (a page over the root put in place: the shelf kept)
+  view_event(fn() { nav.replace_above(1, ["mChat"]) })
+  t.draw()
+  assert_true(t.find("page mChat") is Some(_))
+  let chat = nav.top_stay().0
+  assert_true(nav.shelved("b") is Some(_), msg="replace_above(1, …) keeps the shelf")
+  // (back off it: put by on the kept left; another root put in place: the kept left kept)
+  view_event(fn() { nav.pop() |> ignore })
+  let left_ms = nav.rest() - t.time()
+  t.run_for((if left_ms > 0.0 { left_ms } else { 0.0 }) + 16.0)
+  assert_true(nav.is_kept_left(chat))
+  assert_eq(log.left, ["mChat"])
+  view_event(fn() { nav.replace_kept("b") })
+  t.draw()
+  assert_true(t.find("page b count=0") is Some(_))
+  assert_true(nav.is_kept_left(chat), msg="replace_kept keeps the kept left")
+  assert_true(nav.shelved("a") is Some(_))
+  assert_eq((log.made, log.dropped, log.gone), (["a", "b", "mChat"], [], []))
+  // (the shelf emptied: a and mChat let go once each, a's leaving told, mChat's told already)
+  let b = nav.top_stay().0
+  view_event(fn() { nav.shelf_empty() })
+  t.draw()
+  t.draw()
+  assert_true(nav.shelved("a") is None)
+  assert_false(nav.is_kept_left(chat))
+  log.dropped.sort()
+  log.gone.sort()
+  log.heads_dropped.sort()
+  let both = [a, chat]
+  both.sort()
+  assert_eq((log.dropped, log.gone, log.heads_dropped, log.left), (["a", "mChat"], both, both, ["mChat", "a"]))
+  assert_true(t.find("page b count=0") is Some(_))
+  // (a put in b's place anew, b on the shelf; another root in place of both: each let go once)
+  view_event(fn() { nav.replace_kept("a") })
+  t.draw()
+  assert_true(nav.shelved("b") is Some(_))
+  let a2 = nav.top_stay().0
+  view_event(fn() { nav.replace_above(0, ["c"]) })
+  t.draw()
+  t.draw()
+  assert_true(t.find("page c count=0") is Some(_))
+  assert_true(nav.shelved("b") is None)
+  assert_eq(log.made, ["a", "b", "mChat", "a", "c"])
+  log.dropped.sort()
+  log.gone.sort()
+  log.heads_dropped.sort()
+  let all = [a, chat, b, a2]
+  all.sort()
+  assert_eq((log.dropped, log.gone, log.heads_dropped), (["a", "a", "b", "mChat"], all, all))
+  assert_eq(log.left.length(), 4)
+}

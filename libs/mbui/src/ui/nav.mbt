@@ -427,6 +427,27 @@ fn[P] Nav::kept_left_empty(self : Nav[P]) -> Unit {
     self.gone.push(x.2)
   }
   self.kept_left.clear()
+  self.kept_left.shrink_to_fit()
+}
+
+///|
+/// Every entry put by on the shelf let go for good (at the next frame, or as what holds the stack lets its place go):
+/// never put by on the kept left on the way out (`shown_once` cleared, as `replace_above(0, …)` does).
+fn[P] Nav::shelf_clear_gone(self : Nav[P]) -> Unit {
+  for e in self.shelf {
+    e.shown_once = false
+    self.gone.push(e)
+  }
+  self.shelf.clear()
+  self.shelf.shrink_to_fit()
+}
+
+///|
+/// Whether entry `serial` is on the shelf (Nav::replace_kept) and not kept shown in place meanwhile (Nav::flat_keep):
+/// at rest there, building nothing.
+fn[P] Nav::is_parked_shelf(self : Nav[P], serial : Int) -> Bool {
+  self.shelf.iter().any(fn(e) { e.serial == serial }) &&
+  !(self.flat_kept_entry() is Some(kept) && kept.serial == serial)
 }
 
 ///|
@@ -833,7 +854,12 @@ fn[P] Nav::flat_kept_entry(self : Nav[P]) -> NavPage[P]? {
   }
   match find(self.pages) {
     Some(e) => Some(e)
-    None => find(self.gone)
+    None =>
+      match find(self.gone) {
+        Some(e) => Some(e)
+        // (put on the shelf as the one put in its place waits: kept shown till its owner lets it go)
+        None => find(self.shelf)
+      }
   }
 }
 
@@ -1142,6 +1168,8 @@ fn[P : Eq] Nav::replace_kept_now(self : Nav[P], page : P) -> Unit {
     was.focus_kept = 0
     self.shelf.push(was)
   } else {
+    // (a root left for good: never put by on the kept left, as replace_above's of the root)
+    was.shown_once = false
     self.gone.push(was)
   }
   let e = match self.shelf.search_by(fn(e) { e.page == page }) {
@@ -1255,7 +1283,7 @@ pub fn[P] Nav::shelf_empty(self : Nav[P]) -> Unit {
     None => false
   }
   if had_swap || self.shelf.length() > 0 || self.kept_left.length() > 0 {
-    self.shelf.clear()
+    self.shelf_clear_gone()
     // (and what left over the root, kept: Nav's `kept_left`, let go for good the same way)
     self.kept_left_empty()
     self.told()
@@ -1290,9 +1318,10 @@ fn[P] Nav::replace_above_now(self : Nav[P], keep : Int, pages : Array[P]) -> Uni
       self.leaves(e)
     }
   }
-  // (another workspace's pages, or a page in place of a place: none put by is taken back, Nav::replace_kept)
-  self.shelf.clear()
+  // (another workspace's pages, or a page in place of a place: none put by is taken back, Nav::replace_kept; over a
+  // root kept, what is on its shelf and kept left stays)
   if keep == 0 {
+    self.shelf_clear_gone()
     self.kept_left_empty()
   }
   for page in pages {

@@ -514,7 +514,7 @@ pub fn native_pointing() -> Pointing
 
 pub let native_unsupported : String
 
-pub fn[P] nav_flat_view(@view.View, Nav[P], (Ctx, P) -> Unit, (P) -> Bool, Double, bg? : () -> Int64, edge? : Double, takes_back? : () -> Bool, stacks? : () -> Bool, page_key? : (P) -> String, page_for? : (@view.View, Int32) -> (@view.View) -> (Ctx, P) -> Unit, head? : (@view.View, Int32, Bool) -> Unit, gone? : (Int32) -> Unit, made? : (P) -> (String, (@view.View, () -> P, P?, () -> Int32, Int32) -> Unit)?, shown? : (Array[Int32]) -> Unit, keeps_left? : (P) -> (String, String)?, transition? : NavTransition) -> @view.View
+pub fn[P] nav_flat_view(@view.View, Nav[P], (Ctx, P) -> Unit, (P) -> Bool, Double, bg? : () -> Int64, edge? : Double, takes_back? : () -> Bool, stacks? : () -> Bool, page_key? : (P) -> String, page_for? : (@view.View, Int32) -> (@view.View) -> (Ctx, P) -> Unit, head? : (@view.View, Int32, Bool) -> Unit, gone? : (Int32) -> Unit, made? : (P) -> (String, (@view.View, () -> P, P?, () -> Int32, Int32) -> Unit)?, keeps_made? : Bool, shown? : (Array[Int32]) -> Unit, keeps_left? : (P) -> (String, String)?, transition? : NavTransition) -> @view.View
 
 pub let nav_late_most : Double
 

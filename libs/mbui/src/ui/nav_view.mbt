@@ -222,6 +222,7 @@ pub fn[P] nav_view(
       s.owns(fn() {
         nav.keeps_left = None
         nav.kept_left.clear()
+        nav.kept_left.shrink_to_fit()
       })
       |> ignore
     }
@@ -231,6 +232,7 @@ pub fn[P] nav_view(
       s.owns(fn() {
         nav.shelves = None
         nav.shelf.clear()
+        nav.shelf.shrink_to_fit()
       })
       |> ignore
     }
@@ -675,7 +677,7 @@ pub fn[P] Nav::page_island(
       nav.shown.get() |> ignore
       match nav.flat_entry(serial) {
         // (none built of one put by on the kept left: at rest, it reads nothing)
-        Some(e) if !nav.is_kept_left(serial) => {
+        Some(e) if !nav.is_kept_left(serial) && !nav.is_parked_shelf(serial) => {
           let (owner, stint) = (c.owner, c.stint)
           c.owner = e.serial
           c.stint = e.stint
