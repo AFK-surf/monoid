@@ -234,10 +234,19 @@ test "a waiting video is a picture tile from the first frame, its composer stead
   @sfbase.writing_add(src, w, "ws1/st1", "日志.txt", b"log")
   t.draw()
   let id = text(Some(w.files.get()[0]), "id")
-  // (its tile in the node composer: a 56 square, where the viewer's flight would end, waiting_tile_at)
-  assert_eq(waiting_tile_at(t, "ws1/st1//draft:" + id).map(fn(tile) { (tile.2, tile.3) }), Some((56.0, 56.0)))
   assert_true(t.query(Group, label="视频.mov") is None)
+  t.run_for(composer_sample_ms)
+  match waiting_tile_at(t, "ws1/st1//draft:" + id) {
+    Some(tile) =>
+      assert_true(
+        (tile.2 - tile.3).abs() < 0.5 && tile.2 > 20.0 && tile.2 < 56.0,
+        msg="expected smoothly scaling square tile at \{composer_sample_ms}ms, got \{Repr(tile)}",
+      )
+    None => fail("waiting video tile not drawn at \{composer_sample_ms}ms")
+  }
   t.run_for(@ui.move_most_ms)
+  // (its tile in the node composer: a 56 square, where the viewer's flight would end, waiting_tile_at; still before its video still arrives)
+  assert_eq(waiting_tile_at(t, "ws1/st1//draft:" + id).map(fn(tile) { (tile.2, tile.3) }), Some((56.0, 56.0)))
   let ground = fn() {
     let glasses = t.drawn_glass_corners()
     glasses.sort_by(fn(a, b) { a.1.compare(b.1) })
@@ -264,4 +273,158 @@ test "a quote appears in place when motion is reduced" {
   @sfbase.writing_quote(src, w, { "author": "Ana", "text": quote_passage, "ts": "ts8" })
   t.draw()
   assert_true(quote_ground(t).1 >= composer_glass(t).1, msg="the quote did not appear in the composer")
+}
+
+///|
+/// Check that no visible glyph or attachment card/tile inside the composer's extras region is clipped vertically.
+fn assert_no_extras_clip(
+  t : @ui.Tester,
+  min_x : Double,
+  max_x : Double,
+  min_y : Double,
+  max_y : Double,
+  label : String,
+) -> Unit raise {
+  for g in t.glyph_clips() {
+    let ((gx, gy, gw, gh), (_, cy0, _, cy1)) = g
+    if gh <= 0.5 || gw <= 0.5 || gx + gw <= min_x || gx >= max_x || gy + gh <= min_y || gy >= max_y {
+      continue
+    }
+    // Skip tall non-composer text blocks if any overlap
+    if gh > 40.0 {
+      continue
+    }
+    assert_true(
+      cy0 <= gy + 0.5 && cy1 >= gy + gh - 0.5,
+      msg="\{label}: glyph at (\{gx},\{gy} \{gw}x\{gh}) was clipped to \{cy0}–\{cy1}",
+    )
+  }
+  for a in t.drawn_instances() {
+    if a[11] <= 0.01 || a[3] <= 0.5 {
+      continue
+    }
+    let (left, right, top, bottom) = (a[0], a[0] + a[2], a[1], a[1] + a[3])
+    if right <= min_x || left >= max_x || bottom <= min_y || top >= max_y {
+      continue
+    }
+    // Check image tiles (kind 4) and file/quote cards & close buttons (kind 0, height <= 72)
+    if a[5] == 4.0 || (a[5] == 0.0 && a[3] <= 72.0 && a[2] <= 260.0) {
+      assert_true(
+        a[17] <= top + 0.5 && a[19] >= bottom - 0.5,
+        msg="\{label}: instance kind=\{a[5]} at (\{left},\{top} \{a[2]}x\{a[3]}) was clipped to \{a[17]}–\{a[19]}",
+      )
+    }
+  }
+}
+
+///|
+test "adding a first picture smoothly grows composer height without clipping" {
+  new_run()
+  let src = fixture("chat")
+  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  t.tap_text("发消息")
+  t.run_for(@ui.move_most_ms)
+  let h0 = composer_glass(t).3
+  let w = @sfbase.writing(src, "ws1/st1:s-c1")
+  @sfbase.writing_add(src, w, "ws1/st1", "新图片.png", png_head())
+  let mut saw_mid = false
+  let mut ms = 0.0
+  while ms < @ui.move_most_ms {
+    t.run_for(@ui.frame_period_default)
+    ms = ms + @ui.frame_period_default
+    let (gx, gy, gw, gh) = composer_glass(t)
+    if gh > h0 + 2.0 && gh < h0 + 50.0 {
+      saw_mid = true
+    }
+    assert_no_extras_clip(t, gx, gx + gw, gy - 12.0, gy + gh - 44.0, "pic 0->1 at \{ms}ms")
+  }
+  let h1 = composer_glass(t).3
+  assert_true(h1 > h0 + 40.0, msg="composer did not grow for picture: \{h0} -> \{h1}")
+  assert_true(saw_mid, msg="composer jumped instantly instead of smoothly growing for picture: \{h0} -> \{h1}")
+}
+
+///|
+test "adding files, wrapping to row 2, stacking quote, and removing all never clips" {
+  new_run()
+  let src = fixture("chat")
+  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  t.tap_text("发消息")
+  t.run_for(@ui.move_most_ms)
+  let w = @sfbase.writing(src, "ws1/st1:s-c1")
+  let check_window = fn(tag : String) raise {
+    let mut ms = 0.0
+    while ms < @ui.move_most_ms {
+      t.run_for(@ui.frame_period_default)
+      ms = ms + @ui.frame_period_default
+      let (gx, gy, gw, gh) = composer_glass(t)
+      assert_no_extras_clip(t, gx, gx + gw, gy - 12.0, gy + gh - 44.0, "\{tag} at \{ms}ms")
+    }
+  }
+  // 0 -> 1 file
+  @sfbase.writing_add(src, w, "ws1/st1", "发布变更清单说明.md", b"abc")
+  check_window("file 0->1")
+  // same row 2nd attachment (image)
+  @sfbase.writing_add(src, w, "ws1/st1", "截图.png", png_head())
+  check_window("same row pic")
+  // wrap to row 2
+  @sfbase.writing_add(src, w, "ws1/st1", "性能压测结果报告.pdf", b"def")
+  check_window("file 3")
+  @sfbase.writing_add(src, w, "ws1/st1", "线上告警排查记录.log", b"ghi")
+  check_window("file 4 row2")
+  // stack quote on files
+  @sfbase.writing_quote(src, w, { "author": "Ana", "text": quote_passage, "ts": "ts8" })
+  check_window("quote on files")
+  // remove quote and files one by one
+  let qid = text(Some(w.quotes.get()[0]), "id")
+  @sfbase.writing_unquote(src, w, qid)
+  check_window("remove quote")
+  while w.files.get().length() > 0 {
+    let files = w.files.get()
+    let fid = text(Some(files[files.length() - 1]), "id")
+    @sfbase.writing_remove(src, w, fid)
+    check_window("remove file left=\{w.files.get().length()}")
+  }
+}
+
+///|
+test "small screen unfocused capsule adding attachments expands smoothly without clipping" {
+  let calls : Array[Made] = []
+  let made : Ref[Source?] = Ref(None)
+  let t = fake_core(calls, made~)
+  let src = made.val.unwrap()
+  let w = @sfbase.writing(src, "ws1/st1:s-c1")
+  let ground = fn() {
+    let glasses = t.drawn_glass_corners()
+    glasses.sort_by(fn(a, b) { a.1.compare(b.1) })
+    glasses[glasses.length() - 1]
+  }
+  let h0 = ground().3
+  @sfbase.writing_add(src, w, "ws1/st1", "构建日志.log", b"log")
+  let mut saw_mid = false
+  let mut ms = 0.0
+  while ms < @ui.move_most_ms {
+    t.run_for(@ui.frame_period_default)
+    ms = ms + @ui.frame_period_default
+    let (gx, gy, gw, gh, _) = ground()
+    if gh > h0 + 2.0 && gh < h0 + 90.0 {
+      saw_mid = true
+    }
+    assert_no_extras_clip(t, gx, gx + gw, gy - 12.0, gy + gh - 44.0, "phone capsule 0->1 at \{ms}ms")
+    match t.drawn_of("构建日志") {
+      Some((_, wy)) => assert_true(wy >= gy - 1.0, msg="at \{ms}ms file text \{wy} above glass \{gy}")
+      None => ()
+    }
+  }
+  assert_true(saw_mid, msg="phone capsule did not expand smoothly")
+  let fid = text(Some(w.files.get()[0]), "id")
+  @sfbase.writing_remove(src, w, fid)
+  ms = 0.0
+  while ms < @ui.move_most_ms {
+    t.run_for(@ui.frame_period_default)
+    ms = ms + @ui.frame_period_default
+    let (gx, gy, gw, gh, _) = ground()
+    assert_no_extras_clip(t, gx, gx + gw, gy - 12.0, gy + gh - 44.0, "phone remove at \{ms}ms")
+  }
 }
