@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [7bc5afc43](https://github.com/AFK-surf/monoid/commit/7bc5afc43ee385ba2b72a960421fb7cdd68fddff) fix(mbui): open file links in the execution histor | 2.64 | 3.55 | 14.42 | 36.44 | 55.04 | 31.93 | 64.45 | 98.24 | 120.63 |
 | [4b8bd08a2](https://github.com/AFK-surf/monoid/commit/4b8bd08a2fc920995ab0db535cf4d2b0715744dc) feat(mbui): support keeps_made shelf parking in na | 2.64 | 3.55 | 14.42 | 36.44 | 55.04 | 31.93 | 64.45 | 98.24 | 120.63 |
 | [e38d63d7e](https://github.com/AFK-surf/monoid/commit/e38d63d7e5639f9ac79b61d818c250adef66842d) feat(sf-ui): lift clear liquid glass lens on segme | 2.64 | 3.55 | 14.4 | 36.43 | 54.98 | 31.92 | 64.42 | 98.68 | 134 |
 | [45690a1a0](https://github.com/AFK-surf/monoid/commit/45690a1a001d810573eb14cc4f6c6db886dfde91) fix(sf-ui,sfdesk): fade liquid-glass popovers and  | 2.64 | 3.55 | 14.4 | 36.43 | 54.98 | 31.92 | 64.42 | 98.68 | 134 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a0fe5061d](https://github.com/AFK-surf/monoid/commit/a0fe5061d00685af6f9b2f98f4c63265e36ea2f9) fix(mbui): keep ancestor clip corners on shared fl | 2.65 | 3.56 | 14.45 | 36.45 | 55.09 | 31.93 | 64.47 | 98.01 | 111.15 |
 | [b9e664ad5](https://github.com/AFK-surf/monoid/commit/b9e664ad5da6da530485de35c49951e3c2e410e0) feat(mbui): support per-corner radii in merged liq | 2.64 | 3.56 | 14.45 | 36.45 | 55.07 | 31.92 | 64.47 | 98.13 | 128.7 |
 | [7acc576f2](https://github.com/AFK-surf/monoid/commit/7acc576f2af1a41cde1f3bed8fbadb3b78d2df15) fix(sf-ui,mbui): scale remaining fixed-height cont | 2.64 | 3.56 | 14.45 | 36.45 | 55.07 | 31.92 | 64.47 | 98.13 | 128.7 |
-| [d306b52f5](https://github.com/AFK-surf/monoid/commit/d306b52f5d0a69b1ca9520e69f56481d338693ce) chore(mbui): delete legacy viewer @ui.Ctx flight p | 2.64 | 3.56 | 14.45 | 36.45 | 55.07 | 31.92 | 64.47 | 98.32 | 128.32 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [7bc5afc43](https://github.com/AFK-surf/monoid/commit/7bc5afc43ee385ba2b72a960421fb7cdd68fddff) fix(mbui): open file links in the execution histor | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.07 |
 | [4b8bd08a2](https://github.com/AFK-surf/monoid/commit/4b8bd08a2fc920995ab0db535cf4d2b0715744dc) feat(mbui): support keeps_made shelf parking in na | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.43 |
 | [e38d63d7e](https://github.com/AFK-surf/monoid/commit/e38d63d7e5639f9ac79b61d818c250adef66842d) feat(sf-ui): lift clear liquid glass lens on segme | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.43 |
 | [45690a1a0](https://github.com/AFK-surf/monoid/commit/45690a1a001d810573eb14cc4f6c6db886dfde91) fix(sf-ui,sfdesk): fade liquid-glass popovers and  | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.1 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a0fe5061d](https://github.com/AFK-surf/monoid/commit/a0fe5061d00685af6f9b2f98f4c63265e36ea2f9) fix(mbui): keep ancestor clip corners on shared fl | 0.47 | 0.61 | 2.37 | 3.42 | 5.61 | 1.72 | 4.63 | 54.2 |
 | [b9e664ad5](https://github.com/AFK-surf/monoid/commit/b9e664ad5da6da530485de35c49951e3c2e410e0) feat(mbui): support per-corner radii in merged liq | 0.47 | 0.61 | 2.37 | 3.42 | 5.61 | 1.72 | 4.63 | 54.2 |
 | [7acc576f2](https://github.com/AFK-surf/monoid/commit/7acc576f2af1a41cde1f3bed8fbadb3b78d2df15) fix(sf-ui,mbui): scale remaining fixed-height cont | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.17 |
-| [d306b52f5](https://github.com/AFK-surf/monoid/commit/d306b52f5d0a69b1ca9520e69f56481d338693ce) chore(mbui): delete legacy viewer @ui.Ctx flight p | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.17 |
