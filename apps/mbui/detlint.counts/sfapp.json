@@ -43,11 +43,6 @@
       "src/sfapp/sent_first_wbtest.mbt": 1,
       "src/sfapp/viewer_flight_wbtest.mbt": 1
     },
-    "pick-loop": {
-      "src/sfapp/chat_bar_node.mbt": 1,
-      "src/sfapp/settings/run_more.mbt": 1,
-      "src/sfapp/settings/vault_ask.mbt": 1
-    },
     "page-at-moment": {
       "src/sfapp/app.mbt": 3,
       "src/sfapp/bar_timing.mbt": 1,

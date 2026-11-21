@@ -20,9 +20,6 @@
       "src/sfdesk/pane_view.mbt": 1,
       "src/sfdesk/tape_view.mbt": 3
     },
-    "reused-untracked-key": {
-      "src/sfdesk/archive_side_node.mbt": 1
-    },
     "page-at-moment": {
       "src/sfdesk/page_wait.mbt": 1,
       "src/sfdesk/panel_node.mbt": 1,

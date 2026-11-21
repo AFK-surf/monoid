@@ -693,7 +693,7 @@ fn board_wide(
       // there, its edge reaching out over the board)
       p.show(fn() { shown.get() is Some(_) }, fn(s) {
         s
-        .width(By(fn() { Some(beside_w() * opened.shown_on(s)) }))
+        .width(By(fn() { Some(beside_w()) }))
         .shrink(Is(0.0))
         .min_height(Is(Some(0.0)))
         .clips(By(fn() { opened.shown_on(s) < 1.0 }))
@@ -701,7 +701,12 @@ fn board_wide(
         s.box(fn(inner) {
           // (laid out anew at once at each width its edge drags it to, as the window made another size is: its chat's
           // words broken again in that frame, no move of its rows: View::lays_anew)
-          inner.width(By(fn() { Some(beside_w()) })).lays_anew(By(fn() { beside_w() })).grow(Is(1.0)).min_height(Is(Some(0.0)))
+          inner
+          .width(By(fn() { Some(beside_w()) }))
+          .lays_anew(By(fn() { beside_w() }))
+          .grow(Is(1.0))
+          .min_height(Is(Some(0.0)))
+          .offset(By(fn() { (beside_w() * (1.0 - opened.shown_on(s)), 0.0) }))
           |> ignore
           inner.pick(fn() { shown.get() }, fn(b, r) {
             b.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore

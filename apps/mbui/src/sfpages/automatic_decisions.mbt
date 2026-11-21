@@ -141,13 +141,15 @@ pub fn completion_node(
               @sf.waiting_node(
                 p,
                 fn(s) {
-                  for n in [4, 6] {
+                  let sample_sec = fn(n : Int) {
                     @sf.section_node(s, fn() { @sf.sample_words(n) }, fn(sec) {
                       form_rows_node(sec, core.quiet(), "sample", "sample", fn() { Some(form_view_sample()) }, fn() {
                         Some({ "enabled": true })
                       })
                     })
                   }
+                  sample_sec(4)
+                  sample_sec(6)
                 },
                 note=fn() { { reading: true, text: @sf.t("common.readingStations"), failing: [] } },
               )
@@ -774,19 +776,22 @@ fn policy_dialog(core : Core, station : String, form : String, policy : Json?, i
             pol_group_name
           })
           |> ignore
-          for ch in items(ov, "chats") {
-            let chv = Some(ch)
-            p.box(fn(b) {
+          p.each(
+            at_once=true,
+            fn() { items(ov, "chats") },
+            fn(ch) { text(Some(ch), "session") },
+            fn(b, ch) {
+              let chv = fn() { Some(ch.get()) }
               @sf.style_node(b, fn() { pol_chat_box })
               @sf.presses_node(b, fn() {
+                let c = Some(ch.untracked())
                 shut()
                 edit([("reset", Json::boolean(true))])
-                (core.open_chat)(station, text(chv, "session"), text(chv, "title"))
+                (core.open_chat)(station, text(c, "session"), text(c, "title"))
               })
-              @sf.words_node(b, fn() { text(chv, "title") }, fn() { pol_chat }) |> ignore
-            })
-            |> ignore
-          }
+              @sf.words_node(b, fn() { text(chv(), "title") }, fn() { pol_chat }) |> ignore
+            },
+          )
           let more = count(ov, "count") - items(ov, "chats").length()
           if more > 0 {
             @sf.words_node(p, fn() { @sf.t("web-pages.archivePolicy.more", args=[("n", more.to_string())]) }, fn() { pol_more })

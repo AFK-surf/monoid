@@ -264,14 +264,16 @@ fn ws_mark_counts_node(parent : @view.View, mark : () -> Json) -> Unit {
     }))
     |> ignore
     box.says(By(fn() { Some(@view.said(Text, label=text(m(), "label"))) })) |> ignore
-    for k in [("alert", ["alert"]), ("done", ["wait", "unread"])] {
-      let n = fn() { k.1.fold(init=0, fn(n, x) { n + @sfbase.count(m(), x) }) }
+    let mark_count = fn(tone : String, keys : Array[String]) {
+      let n = fn() { keys.fold(init=0, fn(n, x) { n + @sfbase.count(m(), x) }) }
       box.show(fn() { n() > 0 }, fn(c) {
         @sf.style_node(c, fn() { ws_count }, in_row=true)
-        chat_mark_node(c, fn() { k.0 })
+        chat_mark_node(c, fn() { tone })
         @sf.words_node(c, fn() { "\{n()}" }, fn() { ws_count_words }) |> ignore
       })
     }
+    mark_count("alert", ["alert"])
+    mark_count("done", ["wait", "unread"])
   })
 }
 

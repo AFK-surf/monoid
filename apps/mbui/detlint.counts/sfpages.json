@@ -31,26 +31,6 @@
     "submitted-read": {
       "src/sfpages/login_card.mbt": 1
     },
-    "pick-loop": {
-      "src/sfpages/accounts.mbt": 1,
-      "src/sfpages/attach.mbt": 1,
-      "src/sfpages/automatic_decisions.mbt": 2,
-      "src/sfpages/history_steps_node.mbt": 2,
-      "src/sfpages/resources_node.mbt": 1,
-      "src/sfpages/sidebar_node.mbt": 1,
-      "src/sfpages/usage_node.mbt": 2,
-      "src/sfpages/workspace.mbt": 1
-    },
-    "each-min-height": {
-      "src/sfpages/usage_node.mbt": 1
-    },
-    "layout-drawn-while": {
-      "src/sfpages/board_node.mbt": 1
-    },
-    "reused-untracked-key": {
-      "src/sfpages/sidebar_node.mbt": 1,
-      "src/sfpages/things.mbt": 1
-    },
     "page-at-moment": {
       "src/sfpages/about.mbt": 1,
       "src/sfpages/activity_steady_node.mbt": 1,

@@ -143,40 +143,38 @@ pub fn chats_lists_node(
         }
       },
     )
-    for i in 0..<all {
-      p.box(fn(lane) {
-        lane
-        .over(Is(true))
-        .shift(By(fn() { (i.to_double() - at.shown(lane), 0.0) }))
-        // (out of view: no taller than nothing, so its list makes none of its rows; its height back as it comes)
-        .max_height(By(fn() {
-          let (a, b) = ((frame.shown)(), rest.get())
-          if i < (if a < b { a } else { b }) || i > (if a < b { b } else { a }) {
-            Some(0.0)
-          } else {
-            None
-          }
-        }))
-        .clips(Is(true))
-        // (read out only while it is the list shown: one slid off to a side, or on its way off, is out of view, its rows
-        // none a screen reader is to read, and none of what changes as the filter does)
-        .hides(By(fn() { (frame.shown)() != i }))
-        |> ignore
-        // (made once it is shown, or as the filter's menu opens (what it would show read by the time one is picked),
-        // kept from then while the workspace is: each row only while it is in view; where it is scrolled to its list's
-        // own, kept by the list's key: list_scroll)
-        // (at once: a list made as it is first shown, or as the filter's menu opens, takes no way down the lane)
-        lane.show(fn() { shown_once[i].get() }, at_once=true, fn(l) {
-          l.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-          if i < list_filters.length() {
-            chats_pane_node(l, src, id, list_filters[i], frame, fn() { (frame.shown)() == i }, tips, stint)
-          } else {
-            (frame.others[i - list_filters.length()])(l)
-          }
-        })
-      })
+    p.each(at_once=true, fn() { Array::makei(all, fn(i) { i }) }, fn(i) { i }, fn(lane, idx) {
+      let i = idx.untracked()
+      lane
+      .over(Is(true))
+      .shift(By(fn() { (i.to_double() - at.shown(lane), 0.0) }))
+      // (out of view: no taller than nothing, so its list makes none of its rows; its height back as it comes)
+      .max_height(By(fn() {
+        let (a, b) = ((frame.shown)(), rest.get())
+        if i < (if a < b { a } else { b }) || i > (if a < b { b } else { a }) {
+          Some(0.0)
+        } else {
+          None
+        }
+      }))
+      .clips(Is(true))
+      // (read out only while it is the list shown: one slid off to a side, or on its way off, is out of view, its rows
+      // none a screen reader is to read, and none of what changes as the filter does)
+      .hides(By(fn() { (frame.shown)() != i }))
       |> ignore
-    }
+      // (made once it is shown, or as the filter's menu opens (what it would show read by the time one is picked),
+      // kept from then while the workspace is: each row only while it is in view; where it is scrolled to its list's
+      // own, kept by the list's key: list_scroll)
+      // (at once: a list made as it is first shown, or as the filter's menu opens, takes no way down the lane)
+      lane.show(fn() { shown_once[i].get() }, at_once=true, fn(l) {
+        l.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        if i < list_filters.length() {
+          chats_pane_node(l, src, id, list_filters[i], frame, fn() { (frame.shown)() == i }, tips, stint)
+        } else {
+          (frame.others[i - list_filters.length()])(l)
+        }
+      })
+    })
   })
 }
 
@@ -487,7 +485,7 @@ fn chats_pane_node(
     make_reused=fn(b, key) {
       b.box(fn(line) {
         @sf.style_node(line, fn() { @sf.list_line(frame.at) })
-        if @signals.untracked(key).has_prefix("h/") {
+        if b.reused_kind() == Some(1) {
           @sf.list_heading_node(line, fn() { key().exact_view(start=2).to_owned() }, frame.at)
         } else {
           row_line(line, key)

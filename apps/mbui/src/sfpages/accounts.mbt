@@ -110,9 +110,14 @@ pub fn profile_node(
               let ov = fn() { so }
               let entry = fn() -> Json? { None }
               profile_head_node(w, quiet, here, "sample", "sample", sv, ps, entry, tips)
-              for key in @signals.untracked(fn() { profile_keys(quiet, here, ov, ps, entry) }) {
-                profile_block_node(w, quiet, here, "sample", "sample", sv, ov, ps, entry, open, stint, tips, key)
-              }
+              w.each(
+                at_once=true,
+                fn() { profile_keys(quiet, here, ov, ps, entry) },
+                fn(key) { key },
+                fn(slot, key) {
+                  profile_block_node(slot, quiet, here, "sample", "sample", sv, ov, ps, entry, open, stint, tips, key.untracked())
+                },
+              )
             },
             note=fn() { { reading: true, text: @sf.t("web-pages.profiles.loading"), failing: [] } },
           )

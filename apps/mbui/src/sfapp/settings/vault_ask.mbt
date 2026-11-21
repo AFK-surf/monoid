@@ -1036,7 +1036,7 @@ fn vault_timeout_open(request : String, minutes : Int, max_minutes : Int, scope 
         })
         b.show(fn() { duration.get() != "once" }, fn(s) {
           @sf.field_node(s, fn() { tr("android-settings.vault.timeout.method") }, fn(f) {
-            for k in ["idle", "fixed"] {
+            let method_row = fn(k : String) {
               @sf.choice_row_node(
                 f,
                 fn() { tr("android-settings.vault.timeout." + k) },
@@ -1045,6 +1045,8 @@ fn vault_timeout_open(request : String, minutes : Int, max_minutes : Int, scope 
                 press=fn() { chosen.set(k) },
               )
             }
+            method_row("idle")
+            method_row("fixed")
           })
         })
       })

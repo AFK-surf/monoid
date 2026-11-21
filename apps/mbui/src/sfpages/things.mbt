@@ -637,8 +637,7 @@ fn things_list_node(
       },
       make_reused=fn(row, name) {
         // (what its key is now, the last it was where it is gone from the list: what it shows as it goes)
-        let first = @signals.untracked(fn() { table.get().1.get(name()) })
-        let last : Ref[ThingsRow?] = Ref(first)
+        let last : Ref[ThingsRow?] = Ref(None)
         let now = fn() {
           match table.get().1.get(name()) {
             Some(r) => {
@@ -648,15 +647,16 @@ fn things_list_node(
             None => last.val
           }
         }
-        match first {
-          Some(RowDay(_)) =>
+        match row.reused_kind() {
+          Some(kind_idx) if kind_idx == thing_kinds.length() =>
             things_day_node(row, side, fn() {
               match now() {
                 Some(RowDay(day)) => day
                 _ => ""
               }
             })
-          Some(RowThing(k, _)) => {
+          Some(kind_idx) if kind_idx >= 0 && kind_idx < thing_kinds.length() => {
+            let k = thing_kinds[kind_idx]
             @sf.style_node(row, fn() { things_line.then(side()) })
             thing_row_node(row, src, r, k, fn() {
               match now() {

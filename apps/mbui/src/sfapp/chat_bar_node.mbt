@@ -437,24 +437,34 @@ fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> 
 }
 
 ///|
-/// What the middle of a chat's bar shows, once its view is read (`shown`: the view, the station it is on, its first
-/// five people), and what tells one such from another (`key`: what of them the bar draws), each as `key` says.
-priv struct BarMarks {
-  key : String
-  shown : (ChatView, Station?, Array[Person])?
+/// One trailing item in the middle of a chat's bar (`bar_middle_node`): its station tag (when no agent is in the chat),
+/// its people's avatars, or one agent mark. Keyed by what the bar draws so unchanged items stay in place.
+priv enum BarMarkItem {
+  BarStation(String, Station)
+  BarPeople(String, Array[Person])
+  BarAgent(String, Int, Agent, Station?, Bool)
 }
 
 ///|
-impl Eq for BarMarks with equal(a, b) {
-  a.key == b.key
+fn bar_mark_key(item : BarMarkItem) -> String {
+  match item {
+    BarStation(k, _) => k
+    BarPeople(k, _) => k
+    BarAgent(k, _, _, _, _) => k
+  }
+}
+
+///|
+impl Eq for BarMarkItem with equal(a, b) {
+  bar_mark_key(a) == bar_mark_key(b)
 }
 
 ///|
 /// The middle of the bar of chat `r` (its view `view`), in row `row`: its title, kept whole while what follows it may
 /// leave the row for it, cut short only once nothing more may; then, once the view is read, its station's tag while no
 /// agent is in it, its people (the first to leave the row short of room), its agents' marks, the first's with the
-/// station it runs on: all in the one row, as bar_frame's, made again as any of them changes. What follows the title is
-/// drawn on its way from where it was as the bar's end changes (`slides`).
+/// station it runs on: all in the one row, as bar_frame's. What follows the title is drawn on its way from where it
+/// was as the bar's end changes (`slides`).
 fn bar_middle_node(
   row : @view.View,
   src : Source,
@@ -470,22 +480,6 @@ fn bar_middle_node(
 ) -> Unit {
   // (its station as the workspace's marks have it, what it last was while they are asked again: asked_again.mbt)
   let station_held = @sfbase.station_mark_held(src, r.station)
-  let marks = fn() {
-    match view() {
-      Some(v) => {
-        let station = station_held.get()
-        let people = if v.people.length() > 5 { v.people[:5].to_owned() } else { v.people }
-        let s = match station {
-          Some(s) => "\{s.name}\u{1}\{s.emoji}\u{1}\{s.icon}"
-          None => ""
-        }
-        let ps = people.map(fn(p) { "\{p.id}\u{1}\{p.display}\u{1}\{p.picture}" }).join("\u{2}")
-        let ag = v.agents.map(fn(x) { "\{x.key}\u{1}\{x.maker}\u{1}\{x.runtime}\u{1}\{x.who}" }).join("\u{2}")
-        { key: "read\u{3}" + s + "\u{3}" + ps + "\u{3}" + ag, shown: Some((v, station, people)) }
-      }
-      None => { key: "", shown: None }
-    }
-  }
   // (how its station is reached and each agent's state, read where they show: no part of the key, so a change of
   // either redraws its mark in place, not the whole middle)
   let via = fn() {
@@ -520,111 +514,136 @@ fn bar_middle_node(
       }
     }),
   )
-  // (made again as what it shows changes, given what it shows)
-  row.pick(marks, fn(mid_outer, marks) {
-    mid_outer
-    .grow(Is(1.0))
-    .basis(Is(Some(0.0)))
+  let mark_items = fn() -> Array[BarMarkItem] {
+    guard view() is Some(v) else { return [] }
+    let station = station_held.get()
+    let people = if v.people.length() > 5 { v.people[:5].to_owned() } else { v.people }
+    let s_key = match station {
+      Some(s) => "\{s.name}\u{1}\{s.emoji}\u{1}\{s.icon}"
+      None => ""
+    }
+    let out : Array[BarMarkItem] = []
+    if v.agents.length() == 0 {
+      match station {
+        Some(s) => out.push(BarStation("s\u{3}" + s_key, s))
+        None => ()
+      }
+    }
+    if people.length() > 0 {
+      let ps = people.map(fn(p) { "\{p.id}\u{1}\{p.display}\u{1}\{p.picture}" }).join("\u{2}")
+      out.push(BarPeople("p\u{3}" + ps, people))
+    }
+    let fade_agents = had_empty_agents.val && v.agents.length() > 0
+    if v.agents.length() > 0 {
+      had_empty_agents.val = false
+    }
+    for i, ag in v.agents {
+      let ak = "a\u{3}\{i}\u{1}\{ag.key}\u{1}\{ag.maker}\u{1}\{ag.runtime}\u{1}\{ag.who}" +
+        (if i == 0 { "\u{1}" + s_key } else { "" })
+      out.push(BarAgent(ak, i, ag, station, fade_agents))
+    }
+    out
+  }
+  row.by_room(fn(mid, mid_room) {
+    // (giving way before the title, what follows it leaving the row first: View::drops)
+    mid
+    .row(Is(true))
     .min_width(Is(Some(0.0)))
+    .padding(Is((8.0, 0.0, 8.0, 0.0)))
+    .gap(Is(8.0))
+    .lines_up(Is(Some(Middle)))
+    .fits(Is(true))
     |> ignore
-    mid_outer.by_room(fn(mid, mid_room) {
-      // (giving way before the title, what follows it leaving the row first: View::drops)
-      mid
-      .row(Is(true))
-      .min_width(Is(Some(0.0)))
-      .padding(Is((8.0, 0.0, 8.0, 0.0)))
-      .gap(Is(8.0))
-      .lines_up(Is(Some(Middle)))
-      .fits(Is(true))
-      |> ignore
-      mid.reacts(fn() { mid_room.width() }, fn(w) {
-        if marks.shown is Some(_) && w > 0.0 && mid_w_sig.get() != w {
-          mid_w_sig.set(w)
-        }
-      })
-      mid.box(fn(t_box) {
-        let tp = fn() { state.open_way.shown(t_box) }
-        @sf.presses_node(
-          t_box,
-          fn() {
-            if !expanded() && can_toggle() && tp() <= 0.0 {
-              state.manual_expanded.set(true)
-            }
-          },
-          on=fn() { !expanded() && can_toggle() && tp() <= 0.0 },
-        )
-        t_box
-        .lies_along(Is(Middle))
-        .fit_whole(By(fn() { !expanded() }))
-        .grow(By(fn() { if expanded() { 1.0 } else { 0.0 } }))
-        .basis(By(fn() { if expanded() { Some(0.0) } else { None } }))
-        .cuts(Is(true))
-        .min_width(Is(Some(0.0)))
-        .min_height(By(fn() { if !expanded() && can_toggle() && tp() <= 0.0 { Some(44.0) } else { None } }))
-        .alpha(By(fn() { bar_clamp01(1.0 - tp() / 0.45) }))
-        .offset(By(fn() { (0.0, 5.0 * bar_clamp01(tp() / 0.5)) }))
-        |> ignore
-        t_box.box(fn(t) {
-          t
-          .words(By(fn() {
-            match view() {
-              Some(v) => v.title
-              None => r.title
-            }
-          }))
-          .words_look(By(fn() {
-            let th = @sf.theme()
-            { size: th.t.title, weight: 600, line: chat_title_line, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
-          }))
-          .ink(By(fn() { @sf.theme().p.text }))
-          .fit_whole(By(fn() { !expanded() }))
-          .cuts(Is(true))
-          .allow_ellipsis(Is(true))
-          .min_width(Is(Some(0.0)))
-          |> ignore
-        })
-        |> ignore
-      })
-      |> ignore
-      guard marks.shown is Some((v, station, people)) else { return }
-      if v.agents.length() == 0 {
-        match station {
-          Some(s) => station_chip_node(mid, r.station, s, via, stint, slides)
-          None => ()
-        }
-      }
-      if people.length() > 0 {
-        let p = @sf.avatar_stack_node(mid, stack_faces(src, people, stint), 16.0, fn() { @sf.theme().p.bg })
-        p.drops(Is(bar_drop_people)).laid_nowhere(By(expanded)) |> ignore
-        slides(p)
-      }
-      let fade_agents = had_empty_agents.val && v.agents.length() > 0
-      if v.agents.length() > 0 {
-        had_empty_agents.val = false
-      }
-      for i, ag in v.agents {
-        let key = ag.key
-        // each opens its card, said as the agent (with the station it runs on, the first's): its name said once
-        let label = match station {
-          Some(s) if i == 0 => ag.who + " · " + s.name
-          _ => ag.who
-        }
-        @sf.action_box_node(mid, fn() { label }, label_is=label, fn(_) { open_agent(src, r, key) }, fn(k) {
-          slides(k)
-          if fade_agents {
-            k.alpha(By(@motion.presence_in(k, @motion.tween(140.0, ease=Out)))) |> ignore
-          }
-          if i == 0 {
-            agent_station_node(k, ag, badge_of(key), station, via, stint)
-          } else {
-            model_mark_node(k, ag, badge_of(key), mark_side())
-          }
-        })
-        |> ignore
+    mid.reacts(fn() { (view() is Some(_), mid_room.width()) }, fn(p) {
+      let (shown, w) = p
+      if shown && w > 0.0 && mid_w_sig.get() != w {
+        mid_w_sig.set(w)
       }
     })
+    mid.box(fn(t_box) {
+      let tp = fn() { state.open_way.shown(t_box) }
+      @sf.presses_node(
+        t_box,
+        fn() {
+          if !expanded() && can_toggle() && tp() <= 0.0 {
+            state.manual_expanded.set(true)
+          }
+        },
+        on=fn() { !expanded() && can_toggle() && tp() <= 0.0 },
+      )
+      t_box
+      .lies_along(Is(Middle))
+      .fit_whole(By(fn() { !expanded() }))
+      .grow(By(fn() { if expanded() { 1.0 } else { 0.0 } }))
+      .basis(By(fn() { if expanded() { Some(0.0) } else { None } }))
+      .cuts(Is(true))
+      .min_width(Is(Some(0.0)))
+      .min_height(By(fn() { if !expanded() && can_toggle() && tp() <= 0.0 { Some(44.0) } else { None } }))
+      .alpha(By(fn() { bar_clamp01(1.0 - tp() / 0.45) }))
+      .offset(By(fn() { (0.0, 5.0 * bar_clamp01(tp() / 0.5)) }))
+      |> ignore
+      t_box.box(fn(t) {
+        t
+        .words(By(fn() {
+          match view() {
+            Some(v) => v.title
+            None => r.title
+          }
+        }))
+        .words_look(By(fn() {
+          let th = @sf.theme()
+          { size: th.t.title, weight: 600, line: chat_title_line, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
+        }))
+        .ink(By(fn() { @sf.theme().p.text }))
+        .fit_whole(By(fn() { !expanded() }))
+        .cuts(Is(true))
+        .allow_ellipsis(Is(true))
+        .min_width(Is(Some(0.0)))
+        |> ignore
+      })
+      |> ignore
+    })
     |> ignore
+    mid.each(
+      at_once=true,
+      mark_items,
+      bar_mark_key,
+      fn(slot, item) {
+        match item.untracked() {
+          BarStation(_, s) => station_chip_node(slot, r.station, s, via, stint, slides)
+          BarPeople(_, people) => {
+            slot.drops(Is(bar_drop_people)).laid_nowhere(By(expanded)) |> ignore
+            slides(slot)
+            @sf.avatar_stack_node(slot, stack_faces(src, people, stint), 16.0, fn() { @sf.theme().p.bg }) |> ignore
+          }
+          BarAgent(_, i, ag, station, fade_agents) => {
+            let key = ag.key
+            // each opens its card, said as the agent (with the station it runs on, the first's): its name said once
+            let label = match station {
+              Some(s) if i == 0 => ag.who + " · " + s.name
+              _ => ag.who
+            }
+            slides(slot)
+            if fade_agents {
+              slot.alpha(By(@motion.presence_in(slot, @motion.tween(140.0, ease=Out)))) |> ignore
+            }
+            @sf.action_box_node(slot, fn() { label }, label_is=label, fn(_) { open_agent(src, r, key) }, fn(k) {
+              if i == 0 {
+                agent_station_node(k, ag, badge_of(key), station, via, stint)
+              } else {
+                model_mark_node(k, ag, badge_of(key), mark_side())
+              }
+            })
+            |> ignore
+          }
+        }
+      },
+    )
   })
+  .grow(Is(1.0))
+  .basis(Is(Some(0.0)))
+  .min_width(Is(Some(0.0)))
+  |> ignore
 }
 
 ///|
@@ -1048,63 +1067,61 @@ fn agent_station_node(
   let m = mark_side()
   match station {
     None => model_mark_node(v, a, badge, m)
-    Some(s) =>
-      v.box(fn(o) {
-        o.box(fn(tile) {
-          tile
-          .row(Is(true))
-          .height(Is(Some(m)))
-          .radius(Is(6.0))
-          .ground(By(fn() { mark_ground().0 }))
-          .edge(By(fn() { (mark_ground().1, @sf.theme().p.line) }))
-          .lines_up(Is(Some(Middle)))
+    Some(s) => {
+      v.box(fn(tile) {
+        tile
+        .row(Is(true))
+        .height(Is(Some(m)))
+        .radius(Is(6.0))
+        .ground(By(fn() { mark_ground().0 }))
+        .edge(By(fn() { (mark_ground().1, @sf.theme().p.line) }))
+        .lines_up(Is(Some(Middle)))
+        |> ignore
+        tile.box(fn(mk) {
+          mk.width(Is(Some(m))).height(Is(Some(m))).row(Is(true)).lines_up(Is(Some(Middle))).lies_along(Is(Middle))
           |> ignore
-          tile.box(fn(mk) {
-            mk.width(Is(Some(m))).height(Is(Some(m))).row(Is(true)).lines_up(Is(Some(Middle))).lies_along(Is(Middle))
-            |> ignore
-            @sf.maker_mark_node(mk, a.maker, a.runtime, mark_logo(m)) |> ignore
-          })
-          |> ignore
-          // the station's part: its mark, or its name kept short
-          let (most, inside, said_line) = station_part_type()
-          tile.box(fn(sp) {
-            sp.max_width(Is(Some(most))).padding(Is((inside, 0.0, inside, 0.0))).row(Is(true)).lines_up(Is(Some(Middle)))
-            |> ignore
-            if @sf.has_station_mark(s.emoji, s.icon) {
-              @sf.station_mark_node(sp, fn() { s.emoji }, fn() { s.icon }, mark_station(), fn() { @sf.theme().p.muted }, stint)
-            } else {
-              sp.box(fn(t) {
-                t
-                .words(Is(s.name))
-                .words_look(By(fn() {
-                  { size: @sf.theme().t.caption, weight: 400, line: said_line, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
-                }))
-                .ink(By(fn() { @sf.theme().p.muted }))
-                .cuts(Is(true))
-                .min_width(Is(Some(0.0)))
-                |> ignore
-              })
-              |> ignore
-            }
-          })
-          |> ignore
+          @sf.maker_mark_node(mk, a.maker, a.runtime, mark_logo(m)) |> ignore
         })
         |> ignore
-        // the agent's state on the maker's corner, how the station is reached on the tile's: each 3 past it
-        o.box(fn(over) {
-          over.over(Is(true)) |> ignore
-          badge_slot_node(over, badge, m)
-          over.show(at_once=true, fn() { via() != "" }, fn(d) {
-            d.over(Is(true)).lines_up(Is(Some(End))) |> ignore
-            d.box(fn(at) {
-              at.offset(Is((3.0, m - 7.0))) |> ignore
-              via_dot_in(at, via, 10.0, 2.0)
+        // the station's part: its mark, or its name kept short
+        let (most, inside, said_line) = station_part_type()
+        tile.box(fn(sp) {
+          sp.max_width(Is(Some(most))).padding(Is((inside, 0.0, inside, 0.0))).row(Is(true)).lines_up(Is(Some(Middle)))
+          |> ignore
+          if @sf.has_station_mark(s.emoji, s.icon) {
+            @sf.station_mark_node(sp, fn() { s.emoji }, fn() { s.icon }, mark_station(), fn() { @sf.theme().p.muted }, stint)
+          } else {
+            sp.box(fn(t) {
+              t
+              .words(Is(s.name))
+              .words_look(By(fn() {
+                { size: @sf.theme().t.caption, weight: 400, line: said_line, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
+              }))
+              .ink(By(fn() { @sf.theme().p.muted }))
+              .cuts(Is(true))
+              .min_width(Is(Some(0.0)))
+              |> ignore
             })
             |> ignore
-          })
+          }
         })
         |> ignore
       })
       |> ignore
+      // the agent's state on the maker's corner, how the station is reached on the tile's: each 3 past it
+      v.box(fn(over) {
+        over.over(Is(true)) |> ignore
+        badge_slot_node(over, badge, m)
+        over.show(at_once=true, fn() { via() != "" }, fn(d) {
+          d.over(Is(true)).lines_up(Is(Some(End))) |> ignore
+          d.box(fn(at) {
+            at.offset(Is((3.0, m - 7.0))) |> ignore
+            via_dot_in(at, via, 10.0, 2.0)
+          })
+          |> ignore
+        })
+      })
+      |> ignore
+    }
   }
 }

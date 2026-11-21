@@ -3449,9 +3449,15 @@ fn tool_body_node(v : @view.View, src : Source, station : String, key : String, 
     steps_box_node(p, body_style, fn(b) {
       if call_parts.length() > 0 {
         steps_box_node(b, if in_card { tool_section_card } else { tool_section }, fn(s) {
-          for idx, part in call_parts {
-            tool_part_node(s, Some(part), rk=rk + "/c" + idx.to_string(), src~, station~, key~, in_card~)
-          }
+          s.each(
+            at_once=true,
+            fn() { call_parts.mapi(fn(idx, part) { (idx, part) }) },
+            fn(x) { x.0 },
+            fn(slot, x) {
+              let (idx, part) = x.untracked()
+              tool_part_node(slot, Some(part), rk=rk + "/c" + idx.to_string(), src~, station~, key~, in_card~)
+            },
+          )
         })
       }
       if result_parts.length() > 0 {
@@ -3472,18 +3478,24 @@ fn tool_body_node(v : @view.View, src : Source, station : String, key : String, 
               tool_copy_btn_node(h, result_copy)
             })
           }
-          for idx, part in result_parts {
-            tool_part_node(
-              s,
-              Some(part),
-              rk=rk + "/r" + idx.to_string(),
-              src~,
-              station~,
-              key~,
-              in_card~,
-              has_bar=has_result_head,
-            )
-          }
+          s.each(
+            at_once=true,
+            fn() { result_parts.mapi(fn(idx, part) { (idx, part) }) },
+            fn(x) { x.0 },
+            fn(slot, x) {
+              let (idx, part) = x.untracked()
+              tool_part_node(
+                slot,
+                Some(part),
+                rk=rk + "/r" + idx.to_string(),
+                src~,
+                station~,
+                key~,
+                in_card~,
+                has_bar=has_result_head,
+              )
+            },
+          )
         })
       }
     })

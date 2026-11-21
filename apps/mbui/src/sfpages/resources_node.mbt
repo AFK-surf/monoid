@@ -658,20 +658,21 @@ fn rs_heads_node(
     @sf.style_node(h, fn() { (if lay().stacked { rs_head_row_stacked } else { rs_head_row }).then(@sf.row_least_h()) })
     h.show(fn() { !lay().stacked }, fn(first) {
       first.row(Is(true)).grow(Is(1.0)).basis(Is(Some(0.0))) |> ignore
-      let heads = if flat {
-        ["web-main.resources.column.process", "web-main.resources.column.whose"]
-      } else {
-        ["web-main.resources.column.name"]
-      }
-      for i, key in heads {
+      let head_cell = fn(key : String, style : @ui.Style) {
         let look = fn(cell : @view.View) {
-          @sf.style_node(cell, fn() { if i == 0 { rs_name_cell } else { rs_whose_cell } }, in_row=true)
+          @sf.style_node(cell, fn() { style }, in_row=true)
           @sf.words_node(cell, fn() { @sf.t(key) }, fn() { rs_head }) |> ignore
         }
         match tr {
           Some(tr) => tr.head(first, look) |> ignore
           None => first.box(look) |> ignore
         }
+      }
+      if flat {
+        head_cell("web-main.resources.column.process", rs_name_cell)
+        head_cell("web-main.resources.column.whose", rs_whose_cell)
+      } else {
+        head_cell("web-main.resources.column.name", rs_name_cell)
       }
     })
     h.each(fn() { columns().mapi(fn(k, col) { (k, col.0) }) }, fn(c) { c.1 }, fn(cell, c) {

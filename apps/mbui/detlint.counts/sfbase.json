@@ -33,9 +33,6 @@
       "src/sfbase/viewer.mbt": 1,
       "src/sfbase/viz_page.mbt": 2
     },
-    "pick-loop": {
-      "src/sfbase/viz_mbui_node.mbt": 3
-    },
     "page-at-moment": {
       "src/sfbase/act.mbt": 1,
       "src/sfbase/bars.mbt": 1,

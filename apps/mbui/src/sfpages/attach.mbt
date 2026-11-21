@@ -48,19 +48,7 @@ fn attach_body_node(v : @view.View, src : Source, key : String, close : () -> Un
     let corner = attach_block_corner(small)
     p.box(fn(row) {
       @sf.style_node(row, fn() { attach_tiles.then(@ui.style(pb=@sf.room_of(attach_foot(small)))) })
-      for item in [
-        ("android-chat.attach.photos", "photo", fn() { ask(Photos) }),
-        ("android-chat.attach.files", "file", fn() { ask(Files) }),
-        (
-          "web-pages.chat.files",
-          "server",
-          fn() {
-            close()
-            (@sfbase.station_files_asked.val)(src, key)
-          },
-        ),
-      ] {
-        let (words, icon, press) = item
+      let tile_node = fn(words : String, icon : String, press : () -> Unit) {
         let label = fn() { @sf.t(words) }
         row.box(fn(tile) {
           @sf.style_node(tile, fn() { attach_tile.then(@ui.style(radius=attach_block_radius(small))) }, in_row=true)
@@ -71,6 +59,12 @@ fn attach_body_node(v : @view.View, src : Source, key : String, close : () -> Un
         })
         |> ignore
       }
+      tile_node("android-chat.attach.photos", "photo", fn() { ask(Photos) })
+      tile_node("android-chat.attach.files", "file", fn() { ask(Files) })
+      tile_node("web-pages.chat.files", "server", fn() {
+        close()
+        (@sfbase.station_files_asked.val)(src, key)
+      })
     })
     |> ignore
   })

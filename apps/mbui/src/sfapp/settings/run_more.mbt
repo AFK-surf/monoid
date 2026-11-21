@@ -800,15 +800,16 @@ fn add_people_body(v : @view.View, core : Core, here : Here, st : AddPeople) -> 
     })
     |> ignore
     @sf.sheet_column_node(b, fn(col) {
-      for r in st.roles {
+      col.each(at_once=true, fn() { st.roles }, fn(r) { r }, fn(slot, rv) {
+        let r = rv.untracked()
         @sf.choice_row_node(
-          col,
+          slot,
           fn() { role_label(r) },
           fn() { st.role.get() == r },
           press=fn() { st.role.set(r) },
           note=fn() { role_hint(r) },
         )
-      }
+      })
     })
     b.show(fn() { st.error.get() != "" }, fn(e) {
       e.box(fn(n) {

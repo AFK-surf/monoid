@@ -317,7 +317,7 @@ fn usage_overview_node(parent : @view.View, core : Core, v : () -> Json?, chart 
         |> ignore
         f.show(fn() { items(shown_v(), "tiles").length() >= 4 }, fn(right) {
           right.row(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))).gap(Is(16.0)).padding(Is((0.0, 0.0, 0.0, 2.0))).lines_up(Is(Some(Start))).wraps(Is(Some(10.0))) |> ignore
-          for idx in [2, 3, 1] {
+          let tile_box = fn(idx : Int) {
             right.box(fn(m) {
               let tile = fn() { items(shown_v(), "tiles").get(idx) }
               m.shrink(Is(1.0)).min_width(Is(Some(0.0))).gap(Is(2.0)) |> ignore
@@ -339,6 +339,9 @@ fn usage_overview_node(parent : @view.View, core : Core, v : () -> Json?, chart 
             })
             |> ignore
           }
+          tile_box(2)
+          tile_box(3)
+          tile_box(1)
         })
       })
       |> ignore
@@ -1046,9 +1049,14 @@ fn usage_year_node(parent : @view.View, av : () -> Json?, weeks : () -> Int, tip
           },
           fn(m) { m.0 },
           fn(b, m) {
-            // (14 high, or as its name's line where the system's size of words draws it higher: a least, which its
-            // words push open)
-            b.grow(By(fn() { m.get().1.to_double() })).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).min_height(Is(Some(14.0))).clips(Is(true)) |> ignore
+            // (14 high, or as its name's line where the system's size of words draws it higher: fixed height per row)
+            b
+            .grow(By(fn() { m.get().1.to_double() }))
+            .basis(Is(Some(0.0)))
+            .min_width(Is(Some(0.0)))
+            .height(By(fn() { Some(@cmp.maximum(14.0, @ui.tree_theme().leading(L3).unwrap_or(14.0) * parent.words_scale())) }))
+            .clips(Is(true))
+            |> ignore
             b.show(fn() { m.get().2 != "" }, fn(w) {
               // (none where its weeks have not the room for it: the year's last month, its first week only)
               w.words(By(fn() { m.get().2 })).words_look(Is(@ui.style_words(ug_grid_label))).ink(By(fn() { @ui.style_ink(ug_grid_label) })).shorter(Is([""]))
@@ -1118,17 +1126,15 @@ fn usage_year_node(parent : @view.View, av : () -> Json?, weeks : () -> Int, tip
         p.box(fn(leg) {
           leg.row(Is(true)).gap(Is(2.0)).lines_up(Is(Some(Middle))) |> ignore
           @sf.words_node(leg, fn() { text(av(), "less") }, fn() { ug_grid_label }) |> ignore
-          for l in 0..<5 {
-            leg.box(fn(c) {
-              c
-              .width(Is(Some(10.0)))
-              .height(Is(Some(10.0)))
-              .radius(By(fn() { @ui.tree_theme().corner(Sm) }))
-              .ground(By(fn() { ink(l) }))
-              |> ignore
-            })
+          leg.each(at_once=true, fn() { [0, 1, 2, 3, 4] }, fn(l) { l }, fn(c, lv) {
+            let l = lv.untracked()
+            c
+            .width(Is(Some(10.0)))
+            .height(Is(Some(10.0)))
+            .radius(By(fn() { @ui.tree_theme().corner(Sm) }))
+            .ground(By(fn() { ink(l) }))
             |> ignore
-          }
+          })
           @sf.words_node(leg, fn() { text(av(), "more") }, fn() { ug_grid_label }) |> ignore
         })
         |> ignore

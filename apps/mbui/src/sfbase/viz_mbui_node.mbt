@@ -1640,9 +1640,15 @@ fn viz_render_node(
             fn() { viz_eval_cond(store, cond_json) },
             fn(s) {
               @sf.style_node(s, fn() { @ui.style(w=Full, gap=@sf.room_of(gap)) }, in_row~)
-              for i = 0; i < children.length(); i = i + 1 {
-                viz_render_node(s, store, hears, children[i], path + "/s\{i}", depth + 1, in_card~)
-              }
+              s.each(
+                at_once=true,
+                fn() { children.mapi(fn(i, c) { (i, c) }) },
+                fn(p) { p.0 },
+                fn(slot, p) {
+                  let (i, child) = p.untracked()
+                  viz_render_node(slot, store, hears, child, path + "/s\{i}", depth + 1, in_card~)
+                },
+              )
             },
           )
         }
@@ -2214,9 +2220,15 @@ fn viz_render_node(
                   @sf.style_node(panel, fn() { tb_style })
                   if tab_idx >= 0 && tab_idx < bodies.length() {
                     let tab_body = bodies[tab_idx]
-                    for j = 0; j < tab_body.length(); j = j + 1 {
-                      viz_render_node(panel, store, hears, tab_body[j], path + "/tb\{tab_idx}_\{j}", depth + 1, in_card~)
-                    }
+                    panel.each(
+                      at_once=true,
+                      fn() { tab_body.mapi(fn(j, c) { (j, c) }) },
+                      fn(p) { p.0 },
+                      fn(slot, p) {
+                        let (j, child) = p.untracked()
+                        viz_render_node(slot, store, hears, child, path + "/tb\{tab_idx}_\{j}", depth + 1, in_card~)
+                      },
+                    )
                   }
                 },
               )
@@ -2293,9 +2305,15 @@ fn viz_render_node(
               fn(body) {
                 body.fills_across(Is(true)).cuts_softly(Is(true)) |> ignore
                 @sf.style_node(body, fn() { viz_details_body })
-                for i = 0; i < children.length(); i = i + 1 {
-                  viz_render_node(body, store, hears, children[i], path + "/d\{i}", depth + 1, in_card~)
-                }
+                body.each(
+                  at_once=true,
+                  fn() { children.mapi(fn(i, c) { (i, c) }) },
+                  fn(p) { p.0 },
+                  fn(slot, p) {
+                    let (i, child) = p.untracked()
+                    viz_render_node(slot, store, hears, child, path + "/d\{i}", depth + 1, in_card~)
+                  },
+                )
               },
             )
           })

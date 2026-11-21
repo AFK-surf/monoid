@@ -151,19 +151,18 @@ fn archive_pane_node(
     },
     make_reused=fn(b, key) {
       // (what its key is now, the last it was where it is gone from the list: told only as that changes)
-      let first = @signals.untracked(fn() { line_of(key()) })
       let mine = @signals.computed(fn(was) {
         match line_of(key()) {
           Some(_) as l => l
-          None => was.unwrap_or(first)
+          None => was.unwrap_or(None)
         }
       })
       let now = fn() { mine.get() }
       b.box(fn(line) {
         @sf.style_node(line, fn() { @sf.list_line(at) })
-        match first {
-          Some(Day(_)) => archive_day_side_node(line, at, now)
-          Some(Row(first, _)) => archive_row_line_node(line, src, tips, at, stint, first, now, key)
+        match b.reused_kind() {
+          Some(1) => archive_day_side_node(line, at, now)
+          Some(0) => archive_row_line_node(line, src, tips, at, stint, Json::null(), now, key)
           _ => ()
         }
       })
