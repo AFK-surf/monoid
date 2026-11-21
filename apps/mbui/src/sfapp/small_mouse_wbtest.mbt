@@ -46,7 +46,7 @@ test "small with a mouse: Enter sends what is typed (a keyboard at hand), as in 
 ///|
 test "small with a mouse: node composer right click opens edit menu and edits words" {
   let calls : Array[Made] = []
-  let t = fake_core(calls, composed=true, platform=0)
+  let t = fake_core(calls, platform=0)
   assert_false(@sfdesk.is_wide(t.ctx()))
   t.type_text("第一行")
   t.frame()

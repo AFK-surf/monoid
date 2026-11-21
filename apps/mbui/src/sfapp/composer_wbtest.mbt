@@ -23,12 +23,13 @@ fn fake_core(
   ups? : Map[String, Json] = Map([]),
   platform? : Int = 2,
   nodes? : Bool = false,
-  composed? : Bool = both_nodes.val,
+  composed? : Bool = false,
   on_call? : (String, Json) -> Unit = fn(_, _) {  },
 ) -> @ui.Tester {
   new_run()
-  // (the chat's page made as nodes, its composer too, where `nodes` or `composed` says so: sfbase's chat_page_nodes)
-  @sfbase.hold_chat_page_nodes(Some(nodes || composed))
+  if nodes || composed {
+    @sfbase.chat_page_nodes.set(true)
+  }
   // the drafts the fake core has named (its `draft.put`)
   let drafts_named = Ref(0)
   let base = fixture("chat")
@@ -282,9 +283,7 @@ test "a message held: its words quoted into the draft, with a line for a comment
     assert_true(t.find("添加说明（可选）") is Some(_))
     // (made as nodes, the message's menu a sheet of the window's tree, the input method put away till it has gone, as
     // a sheet sinking over a field holds it, Ctx::ime_held_by_sheet)
-    if both_nodes.val {
-      t.run_for(@ui.move_most_ms)
-    }
+    t.run_for(@ui.move_most_ms)
     // the comment's field has the focus
     let (active, _, _, _) = t.ime()
     assert_true(active)
@@ -317,7 +316,6 @@ test "a message held: its words quoted into the draft, with a line for a comment
 test "a message going up says how far it has gone" {
   both_pages(fn() raise {
     new_run()
-    both_way()
     let src = fixture("chat-uploading")
     open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
     let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
@@ -335,7 +333,6 @@ test "a message going up says how far it has gone" {
 test "a video waiting is told apart from a picture waiting by its play mark" {
   both_pages(fn() raise {
     new_run()
-    both_way()
     let src = fixture("chat-attach-video")
     open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
     let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
@@ -369,7 +366,6 @@ test "a video waiting is told apart from a picture waiting by its play mark" {
 test "the fixture's station: sending, then the message, then an answer; a failure, then 重试" {
   both_pages(fn() raise {
     new_run()
-    both_way()
     let clock : Ref[Double] = { val: 0.0 }
     fix_clock.val = Some(fn() { clock.val })
     let src = fixture("chat")
@@ -529,14 +525,10 @@ test "a video picked or pasted that the host has no picture of shows its first f
       match waiting_tile_at(t, seen) {
         Some((x, y, w, h, _)) => {
           assert_eq((w, h), (56.0, 56.0))
-          if both_nodes.val {
-            let drawn = t.drawn_images().iter().any(fn(i) {
-              i[8] > 0.0 && (i[0] - x).abs() < 1.0 && (i[1] - y).abs() < 1.0 && (i[2] - w).abs() < 1.0
-            })
-            assert_eq(drawn, picture != "", msg="a picture drawn in its tile")
-          } else {
-            assert_eq(thumb_of(t.ctx(), seen).map(fn(tile) { tile.picture }), Some(picture))
-          }
+          let drawn = t.drawn_images().iter().any(fn(i) {
+            i[8] > 0.0 && (i[0] - x).abs() < 1.0 && (i[1] - y).abs() < 1.0 && (i[2] - w).abs() < 1.0
+          })
+          assert_eq(drawn, picture != "", msg="a picture drawn in its tile")
         }
         None => fail("no tile")
       }
@@ -547,9 +539,7 @@ test "a video picked or pasted that the host has no picture of shows its first f
     assert_true(t.query(Group, label="录屏.mov") is None)
     // (made as nodes, its tile seen once the composer has grown to hold it: View::resizes' way, the box cutting what it
     // holds to itself as it goes)
-    if both_nodes.val {
-      t.run_for(@ui.move_most_ms)
-    }
+    t.run_for(@ui.move_most_ms)
     tile_is("")
     assert_true(t.query(Group, label="录屏.mov") is None)
     // (a player's open: "open <id> 1 <its type's length>", video/quicktime)
@@ -637,98 +627,9 @@ test "the app tells the core it is shown and in front, in which workspace, and w
 }
 
 ///|
-test "words sent as the composer grows a line: it slows to rest from as fast as it went, over the list's foot by no more than was left, then down with it" {
-  both_pages(fn() raise {
-    let calls : Array[Made] = []
-    let t = fake_core(calls)
-    t.tap_text("发消息")
-    t.type_text("第一行")
-    let foot = fn() {
-      let rows = t.rows()
-      rows[rows.length() - 1].2
-    }
-    let room = fn() { @sfpages.composer_room(t.ctx(), "ws1/st1:s-c1") }
-    let before = room()
-    let over = foot() - before
-    for line in ["第二行", "第三行", "第四行"] {
-      t.enter()
-      t.type_text(line)
-    }
-    // half way through its growing, sent: the composer slows to rest from as fast as it went (@motion.stop_for); the
-    // list's room under the rows held as it was till the words let go of it, the composer over it by what was left to
-    // grow at most, and down with it from then. Meant, till the composer is a node (send_hold_wbtest's hold_cover)
-    t.run_for(@ui.row_size_ms / 2.0)
-    let growing = room()
-    assert_true(growing > before)
-    assert_eq(foot(), growing + over)
-    let left = @sfpages.composer_room(t.ctx(), "ws1/st1:s-c1", settled=true) - growing
-    tap_send(t)
-    assert_eq(named(calls, "chat.send").length(), 1)
-    let mut most = growing
-    let mut was = @double.infinity
-    let end = t.time() + @sfbase.flight_most_ms + @ui.move_most_ms
-    while t.time() < end {
-      let cover = room() + over - foot()
-      // (the composer's way and the list's two curves to the same end, half a point apart at most, send_hold_wbtest's
-      // hold_cover_slack)
-      assert_true(cover <= left + 0.5, msg="at \{t.time()}: covers \{cover} of \{left}")
-      match @sfbase.flight_lets_go("ws1/st1:s-c1") {
-        // (let go of: less at every frame on, the list's room and the composer down to the same)
-        Some((go, _)) if t.time() >= go => {
-          assert_true(cover <= was + 0.5, msg="at \{t.time()}: covers \{cover} after \{was}")
-          was = cover
-        }
-        _ => ()
-      }
-      most = if room() > most { room() } else { most }
-      t.frame()
-    }
-    assert_true(was <= 0.5, msg="still over it by \{was} once down")
-    // (carried on past where it was as it was sent, and down since)
-    assert_true(most > growing && room() < most, msg="\{growing} \{most} \{room()}")
-    t.run_for(draft_keep_ms)
-    t.assert_idle()
-  }, old_only="the old composer's room as its old view measures it (composer_room) under the old page's rows (Tester::rows): made as nodes, what is sent as it grows is send_hold_wbtest's (hold_cover) and the list over it chat_motion_frames_wbtest's, every frame")
-}
-
-///|
-test "the list keeps clear the room the composer takes in the very frame it grows, each frame of its morph" {
-  both_pages(fn() raise {
-    let calls : Array[Made] = []
-    let t = fake_core(calls)
-    t.tap_text("发消息")
-    t.type_text("第一行")
-    let foot = fn() {
-      let rows = t.rows()
-      rows[rows.length() - 1].2
-    }
-    let before = @sfpages.composer_room(t.ctx(), "ws1/st1:s-c1")
-    // (what the foot keeps over the composer's room: its 10, and the bell's room, the chat's cards waiting to be decided)
-    let over = foot() - before
-    // lines enough that it outgrows the least room the list keeps (composer_room): in the frame that takes each, the
-    // list's foot is already the room the composer takes then (not the one it took a frame before)
-    for line in ["第二行", "第三行", "第四行", "第五行", "第六行"] {
-      t.enter()
-      t.type_text(line)
-      assert_eq(foot(), @sfpages.composer_room(t.ctx(), "ws1/st1:s-c1") + over)
-    }
-    // and each frame of its morph, as the display draws them, to its end
-    let end = t.time() + @ui.move_most_ms
-    while t.time() < end {
-      t.frame()
-      assert_eq(foot(), @sfpages.composer_room(t.ctx(), "ws1/st1:s-c1") + over)
-    }
-    assert_true(@sfpages.composer_room(t.ctx(), "ws1/st1:s-c1") > before)
-    t.run_for(draft_keep_ms)
-    t.assert_idle()
-  }, old_only="the old composer's room as its old view measures it (composer_room) under the old page's rows (Tester::rows): made as nodes, what is sent as it grows is send_hold_wbtest's (hold_cover) and the list over it chat_motion_frames_wbtest's, every frame")
-}
-
-///|
 test "at its end, a row that comes at it: the core told the end is not in view while the list glides to it, then that it is" {
   both_pages(fn() raise {
     new_run()
-    both_way()
     let clock : Ref[Double] = { val: 0.0 }
     fix_clock.val = Some(fn() { clock.val })
     let base = fixture("chat")
@@ -874,7 +775,6 @@ test "a swipe from the left edge with ＋'s sheet up does not take the chat away
 test "words sent fly to their own row though an older page with the viewer's messages comes in before the core has them" {
   both_pages(fn() raise {
     new_run()
-    both_way()
     let clock : Ref[Double] = { val: 0.0 }
     fix_clock.val = Some(fn() { clock.val })
     let base = fixture("chat")
@@ -902,12 +802,6 @@ test "words sent fly to their own row though an older page with the viewer's mes
     t.draw()
     t.draw()
     // (the old page's flight; made as nodes, its row flies from the composer by itself: its SentFrom, View::flies_in)
-    if !both_nodes.val {
-      match send_flight.get() {
-        Some(f) => assert_true(f.placed, msg="flying to \{f.key}")
-        None => fail("nothing flies")
-      }
-    }
     assert_true(t.find("刚发的这一句") is Some(_))
     // the core has it now: still its row
     for h in held {
@@ -978,9 +872,9 @@ test "send pressed before a frame has shown the words typed: they go all the sam
 ///|
 test "the core's marks for words typed, answered between frames: the field draws them as marks at once" {
   both_pages(fn() raise {
-    outside_each(fn(wide, looks, nodes, at) raise {
+    outside_each(fn(wide, looks, at) raise {
       let heard : Array[String] = []
-      let t = outside_round_trip(heard, new_chat=false, wide~, looks~, nodes~, late=["ref.marks"])
+      let t = outside_round_trip(heard, new_chat=false, wide~, looks~, late=["ref.marks"])
       outside_tap_field(t, "发消息")
       t.type_text("同一个工作区的 @[发布清单]")
       t.run_for(outside_enter_ms)
@@ -994,9 +888,9 @@ test "the core's marks for words typed, answered between frames: the field draws
 ///|
 test "the core's bound for words pasted, answered between frames: words pasted past it at once go as a file" {
   both_pages(fn() raise {
-    outside_each(fn(wide, looks, nodes, at) raise {
+    outside_each(fn(wide, looks, at) raise {
       let heard : Array[String] = []
-      let t = outside_round_trip(heard, new_chat=false, wide~, looks~, nodes~, late=["paste.info"])
+      let t = outside_round_trip(heard, new_chat=false, wide~, looks~, late=["paste.info"])
       outside_tap_field(t, "发消息")
       t.run_for(outside_enter_ms)
       assert_true(outside_called(heard, "paste.info") > 0, msg=at)
@@ -1013,33 +907,30 @@ test "the core's bound for words pasted, answered between frames: words pasted p
 ///|
 /// Files put into a chat's draft while its station is not reached (a 文件 tab's row added to it, files let go on it)
 /// were taken and let go of with nothing said (2026-11-17): every refusal says what to do next.
-test "files put into the draft of a chat whose station is not reached: none goes up, and a toast says why and what to do, with either composer" {
-  // (the old one, and the one made as nodes: sfbase's chat_page_nodes)
-  for composed in [false, true] {
-    let calls : Array[Made] = []
-    let t = fake_core(calls, composed~, over=fn(name, tp) {
-      guard name == "chat" && tp.value is Some(Object(m)) else { return tp }
-      let o = m.copy()
-      o["offline"] = Json::boolean(true)
-      { ..tp, value: Some(Json::object(o)) }
+test "files put into the draft of a chat whose station is not reached: none goes up, and a toast says why and what to do" {
+  let calls : Array[Made] = []
+  let t = fake_core(calls, over=fn(name, tp) {
+    guard name == "chat" && tp.value is Some(Object(m)) else { return tp }
+    let o = m.copy()
+    o["offline"] = Json::boolean(true)
+    { ..tp, value: Some(Json::object(o)) }
+  })
+  t.run_for(@ui.move_most_ms)
+  @ui.view_tree().unwrap().event(t.time(), fn() {
+    @sfbase.files_into("ws1/st1:s-c1", {
+      station: "ws1/st1",
+      station_name: "Willow",
+      root: "/w",
+      path: "a.txt",
+      abs: "/w/a.txt",
+      name: "a.txt",
+      size: 12.0,
+      dir: false,
     })
-    t.run_for(@ui.move_most_ms)
-    @ui.view_tree().unwrap().event(t.time(), fn() {
-      @sfbase.files_into("ws1/st1:s-c1", {
-        station: "ws1/st1",
-        station_name: "Willow",
-        root: "/w",
-        path: "a.txt",
-        abs: "/w/a.txt",
-        name: "a.txt",
-        size: 12.0,
-        dir: false,
-      })
-    })
-    t.run_for(@ui.move_most_ms)
-    assert_eq(named(calls, "composer.drop").length() + named(calls, "composer.add").length(), 0, msg="composed=\{composed}")
-    assert_true(t.find("无法连接此 station，文件没有添加。连上后再添加一次") is Some(_), msg="composed=\{composed}")
-  }
+  })
+  t.run_for(@ui.move_most_ms)
+  assert_eq(named(calls, "composer.drop").length() + named(calls, "composer.add").length(), 0)
+  assert_true(t.find("无法连接此 station，文件没有添加。连上后再添加一次") is Some(_))
 }
 
 ///|
@@ -1063,7 +954,7 @@ test "the composer made as nodes sends a quote and a file with its words: each f
     let (w, platform) = screen
     let calls : Array[Made] = []
     let made : Ref[Source?] = Ref(None)
-    let t = fake_core(calls, made~, platform~, composed=true)
+    let t = fake_core(calls, made~, platform~)
     if w != 390.0 {
       t.resize(w, 844.0)
       t.run_for(@ui.move_most_ms)
@@ -1123,7 +1014,7 @@ fn cw_word(t : @ui.Tester, part : String) -> (Double, Double)? {
 test "the composer made as nodes: what a hand puts in or takes out goes its way; a tile taken out fades where it stood as those after it slide over; sent, all of it goes at once" {
   let calls : Array[Made] = []
   let made : Ref[Source?] = Ref(None)
-  let t = fake_core(calls, made~, platform=0, composed=true)
+  let t = fake_core(calls, made~, platform=0)
   t.resize(1280.0, 844.0)
   t.run_for(@ui.move_most_ms)
   let src = made.val.unwrap()

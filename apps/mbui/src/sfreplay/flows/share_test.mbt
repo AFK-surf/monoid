@@ -11,9 +11,9 @@ test "48-share" {
   @sfreplay.orders(fn(seed) {
     let f = @sfreplay.Flow::start(@sfreplay.trace("share"), seed~)
     f.share_in("https://www.youtube.com/watch?v=e2e105609", title="列表视频105609")
-    // the sheet of chats raised
-    f.run_to(@sf.presented_rest)
+    // the sheet of chats raised (seen first: run to its rest once it rises, as share_new_chat's)
     f.see("发到")
+    f.run_to(@sf.presented_rest)
     f.see("列表视频105609")
     f.see("新建对话")
     f.tap("端到端测试")

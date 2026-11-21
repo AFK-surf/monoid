@@ -5,11 +5,9 @@
 
 ///|
 /// The fixture's chat on 大屏 with a Mac's keys, its calls kept in `calls` and answered as the made-up core answers them;
-/// `found`: what chat.find answers instead (None: the made-up core's own finding); `nodes`: its page made as nodes
-/// (sfbase's chat_page_nodes).
-fn find_chat_tester(calls : Array[Made], found? : Json? = None, nodes? : Bool = false) -> @ui.Tester {
+/// `found`: what chat.find answers instead (None: the made-up core's own finding).
+fn find_chat_tester(calls : Array[Made], found? : Json? = None) -> @ui.Tester {
   new_run()
-  @sfbase.hold_chat_page_nodes(Some(nodes))
   let base = fixture("chat")
   let src : Source = {
     ..base,
@@ -148,7 +146,7 @@ test "⌘F: a message found out of the chat's window has the window moved about 
 ///|
 test "⌘F on a chat's page made as nodes: Enter goes to the time found, nothing flashing nor kept as lit where the reader is; each step tells the core how many times each message the list holds marks the words" {
   let calls : Array[Made] = []
-  let t = find_chat_tester(calls, nodes=true)
+  let t = find_chat_tester(calls)
   find_typed(t, "截图")
   t.run_for(@sfpages.find_typing_ms)
   t.run_for(@ui.move_most_ms)
@@ -274,6 +272,14 @@ fn outline_buttons(t : @ui.Tester) -> Array[(Double, Double, Double, Double)] {
 }
 
 ///|
+/// Whether `b`, one of outline_buttons, is the rail's press: at the list's right edge, clear of the scroll bar, in the
+/// middle of the list (the round button is as wide, 44, its press a finger's, over the way to the newest at the list's
+/// foot, over the composer).
+fn is_outline_rail(t : @ui.Tester, b : (Double, Double, Double, Double)) -> Bool {
+  b.0 + b.2 >= t.ctx().width - 20.0 && b.1 + b.3 / 2.0 < t.ctx().height * 0.65
+}
+
+///|
 fn outline_panel(t : @ui.Tester) -> (Double, Double, Double, Double)? {
   t.semantics().iter().find_first(fn(s) { s.role == Dialog && s.label == "对话目录" }).map(fn(s) { s.rect })
 }
@@ -329,8 +335,8 @@ test "对话目录: a wide page's rail at the list's right, 44 wide, clear of th
   let calls : Array[Made] = []
   let t = outline_tester(calls)
   let buttons = outline_buttons(t)
-  let rail = buttons.filter(fn(b) { b.2 >= 44.0 })
-  let floats = buttons.filter(fn(b) { b.2 < 44.0 })
+  let rail = buttons.filter(fn(b) { is_outline_rail(t, b) })
+  let floats = buttons.filter(fn(b) { !is_outline_rail(t, b) })
   assert_eq(rail.length(), 1, msg="\{Repr(buttons)}")
   assert_eq(floats.length(), 1, msg="\{Repr(buttons)}")
   let (x, _, w, _) = rail[0]
@@ -356,8 +362,8 @@ test "对话目录: a wide page's rail at the list's right, 44 wide, clear of th
     "whole": true,
   }
   let t = outline_tester(calls, outline=@signals.signal(Some(few)))
-  assert_eq(outline_buttons(t).filter(fn(b) { b.2 >= 44.0 }), [])
-  assert_eq(outline_buttons(t).filter(fn(b) { b.2 < 44.0 }).length(), 1)
+  assert_eq(outline_buttons(t).filter(fn(b) { is_outline_rail(t, b) }), [])
+  assert_eq(outline_buttons(t).filter(fn(b) { !is_outline_rail(t, b) }).length(), 1)
   // a phone's window: the round button over the way to the newest, 32 round, no rail
   let t = outline_tester(calls, w=390.0, h=844.0, platform=2)
   let floats = outline_buttons(t)
@@ -644,7 +650,7 @@ test "对话目录: the rail's ticks, one for each said, the reader's (the 16th:
     "whole": true,
   }
   let t = outline_tester(calls, outline=@signals.signal(Some(three)))
-  let rails = outline_buttons(t).filter(fn(b) { b.2 >= 44.0 })
+  let rails = outline_buttons(t).filter(fn(b) { is_outline_rail(t, b) })
   assert_eq(rails.length(), 1)
   let (_, ry, rw, rh) = rails[0]
   assert_true(rw >= 44.0 && rh >= 44.0, msg="\{Repr(rails)}")
@@ -667,8 +673,9 @@ fn outline_rail_from(from : Int, to : Int) -> Int {
   let mut hi = to
   while hi - lo > 1 {
     let mid = (lo + hi) / 2
-    // (the rail's press, 44 wide; not the round button, 32)
-    if outline_buttons(outline_tester(calls, w=mid.to_double())).iter().any(fn(b) { b.2 >= 44.0 }) {
+    // (the rail's press, at the list's right edge; not the round button)
+    let at = outline_tester(calls, w=mid.to_double())
+    if outline_buttons(at).iter().any(fn(b) { is_outline_rail(at, b) }) {
       hi = mid
     } else {
       lo = mid
@@ -854,7 +861,7 @@ test "对话目录: in the sheet to a finger no row has a ground at rest, the re
 test "对话目录: the rail and the steps from the outline's index alone: no row asked for while only the rail shows" {
   let calls : Array[Made] = []
   let t = outline_tester(calls)
-  assert_eq(outline_buttons(t).filter(fn(b) { b.2 >= 44.0 }).length(), 1)
+  assert_eq(outline_buttons(t).filter(fn(b) { is_outline_rail(t, b) }).length(), 1)
   t.key(@ui.key_code_up, mods=@ui.mod_alt | @ui.mod_shift_key)
   t.run_for(@ui.move_most_ms)
   assert_true(gone_lit(t, said_20), msg="ts20 flashing")
@@ -1079,7 +1086,7 @@ test "对话目录: a go-to to a message of an older page, read first: the longe
 ///|
 /// The rail's ticks (in its press `rail`), top to bottom: where each stands and whether it is the long one.
 fn outline_tick_places(t : @ui.Tester) -> Array[(Double, Bool)] {
-  let rail = outline_buttons(t).filter(fn(b) { b.2 >= 44.0 })
+  let rail = outline_buttons(t).filter(fn(b) { is_outline_rail(t, b) })
   guard rail.length() == 1 else { return [] }
   let (rx, ry, rw, rh) = rail[0]
   let ticks = outline_drawn(t, "rect").filter(fn(r) {
@@ -1322,25 +1329,17 @@ test "a phone's chat: each key of its bar, over the messages scrolled under the 
   u.run_for(@ui.long_press_ms)
   u.release(x, y)
   u.run_for(@sfbase.pick_bar_in_ms)
-  if @sfbase.chat_page_nodes.get() {
-    let p = @ui.picked_now()
-    assert_true(
-      p is Some(tp) && !tp.of.is_empty() && tp.text != "",
-      msg="held long on \{past.text} at (\{x}, \{y}): \{Repr(p.map(fn(tp) { (tp.text, tp.of) }))}",
-    )
-  } else {
-    let p = @sfbase.picked.get()
-    assert_true(p.ts != "" && p.b > p.a, msg="held long on \{past.text} at (\{x}, \{y}): \{Repr(p)}")
-  }
+  // (what the chat's page made as nodes picks: the tree's own, @ui.picked_now)
+  guard @ui.picked_now() is Some(p) else { fail("held long on \{past.text} at (\{x}, \{y}): nothing picked") }
+  assert_true(p.finger && p.text != "" && p.of.length() == 1, msg="held long on \{past.text} at (\{x}, \{y}): \{p.text}")
 }
 
 ///|
 /// The fixture's chat on 小屏 (a phone's touch), its calls kept in `calls` and answered as the made-up core answers
-/// them; `nodes`: its page made as nodes (sfbase's chat_page_nodes).
-fn find_small_tester(calls : Array[Made], nodes? : Bool = false) -> @ui.Tester {
+/// them.
+fn find_small_tester(calls : Array[Made]) -> @ui.Tester {
   new_run()
   @sf.presenters_reset()
-  @sfbase.hold_chat_page_nodes(Some(nodes))
   let base = fixture("chat")
   let src : Source = {
     ..base,
@@ -1357,36 +1356,34 @@ fn find_small_tester(calls : Array[Made], nodes? : Bool = false) -> @ui.Tester {
 
 ///|
 test "小屏: 在对话中查找 from the chat's sheet: the find's bar in the chat's bar, what is typed looked for in its thread, where the reader is among what was found counted, the words marked; Enter the next; its close button closes it" {
-  for nodes in [false, true] {
-    let calls : Array[Made] = []
-    let t = find_small_tester(calls, nodes~)
-    let key = "ws1/st1\u{1}s-c1"
-    t.click(Button, label=@sf.t("android-chat.info.title"))
-    t.run_for(@sf.presented_rest() - t.time())
-    t.tap_text(@sf.t("web-main.keymap.chat.find"))
-    t.run_for(@sf.presented_rest() - t.time())
-    t.run_for(@ui.move_most_ms)
-    assert_eq(@sfpages.find_chat(), key, msg="nodes \{nodes}")
-    t.type_text("截图")
-    t.draw()
-    t.run_for(@sfpages.find_typing_ms)
-    t.run_for(@ui.move_most_ms)
-    let asked = named(calls, "chat.find").filter(fn(c) { !flag(Some(c.params), "bring") })
-    assert_true(asked.length() >= 1, msg="nodes \{nodes}: not asked")
-    assert_eq(text(Some(asked[0].params), "query"), "截图")
-    assert_eq(number(Some(asked[0].params), "thread"), 7.0)
-    assert_true(t.find("1/3") is Some(_), msg="nodes \{nodes}: \{Repr(t.words().map(fn(w) { w.0 }))}")
-    assert_eq(@sfpages.find_words_in(key), ["截图"])
-    t.key(@ui.key_code_enter)
-    t.run_for(@ui.move_most_ms)
-    assert_true(t.find("2/3") is Some(_), msg="nodes \{nodes}: Enter")
-    // (its own close button, at the bar's end: in the window's width)
-    let (cx, _, cw, _) = t.get(Button, label=@sf.t("web-main.find.close")).rect
-    assert_true(cx >= 0.0 && cx + cw <= 390.0, msg="nodes \{nodes}: its close button at \{cx}+\{cw}")
-    t.click(Button, label=@sf.t("web-main.find.close"))
-    t.run_for(@ui.move_most_ms)
-    assert_eq(@sfpages.find_chat(), "")
-    assert_eq(@sfpages.find_words_in(key), [])
-    assert_true(app.nav.top() is Chat(_))
-  }
+  let calls : Array[Made] = []
+  let t = find_small_tester(calls)
+  let key = "ws1/st1\u{1}s-c1"
+  t.click(Button, label=@sf.t("android-chat.info.title"))
+  t.run_for(@sf.presented_rest() - t.time())
+  t.tap_text(@sf.t("web-main.keymap.chat.find"))
+  t.run_for(@sf.presented_rest() - t.time())
+  t.run_for(@ui.move_most_ms)
+  assert_eq(@sfpages.find_chat(), key)
+  t.type_text("截图")
+  t.draw()
+  t.run_for(@sfpages.find_typing_ms)
+  t.run_for(@ui.move_most_ms)
+  let asked = named(calls, "chat.find").filter(fn(c) { !flag(Some(c.params), "bring") })
+  assert_true(asked.length() >= 1, msg="not asked")
+  assert_eq(text(Some(asked[0].params), "query"), "截图")
+  assert_eq(number(Some(asked[0].params), "thread"), 7.0)
+  assert_true(t.find("1/3") is Some(_), msg="\{Repr(t.words().map(fn(w) { w.0 }))}")
+  assert_eq(@sfpages.find_words_in(key), ["截图"])
+  t.key(@ui.key_code_enter)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("2/3") is Some(_), msg="Enter")
+  // (its own close button, at the bar's end: in the window's width)
+  let (cx, _, cw, _) = t.get(Button, label=@sf.t("web-main.find.close")).rect
+  assert_true(cx >= 0.0 && cx + cw <= 390.0, msg="its close button at \{cx}+\{cw}")
+  t.click(Button, label=@sf.t("web-main.find.close"))
+  t.run_for(@ui.move_most_ms)
+  assert_eq(@sfpages.find_chat(), "")
+  assert_eq(@sfpages.find_words_in(key), [])
+  assert_true(app.nav.top() is Chat(_))
 }

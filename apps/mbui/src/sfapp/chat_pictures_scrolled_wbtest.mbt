@@ -32,7 +32,7 @@ fn pictures_asked(t : @ui.Tester, bytes : Int) -> Int {
 test "a picture of a chat's page made as nodes, out of sight at its foot on a phone, scrolled into sight: nothing asked of it till then, its decode asked once, the picture whole as it first shows, never brushed in" {
   // (home-after.png, its bytes as the fixture hands them over)
   let (src, bytes) = ("mem:fixture/home-after.png", 31398)
-  let t = chat_pictures_open(390.0, 844.0, "compact", false, true)
+  let t = chat_pictures_open(390.0, 844.0, "compact", false)
   assert_eq(picture_drawn(t, src), None)
   assert_eq(pictures_asked(t, bytes), 0)
   // (notch by notch, each looked at once its glide is over)
@@ -59,4 +59,19 @@ test "a picture of a chat's page made as nodes, out of sight at its foot on a ph
   t.run_for(@sf.reveal_ms)
   guard picture_drawn(t, src) is Some((_, _, rw, rh, _)) else { fail("\{src} gone from sight") }
   assert_true(w == rw && h == rh, msg="as it first shows \{Repr((w, h))}, at rest \{Repr((rw, rh))}")
+}
+
+///|
+/// The fixture's chat open on platform 1 in a window `w` × `h`, its size classes `width` ("" none said), the system
+/// laying out the app's tabs where `nav_able`, at rest.
+fn chat_pictures_open(w : Double, h : Double, width : String, nav_able : Bool) -> @ui.Tester {
+  new_run()
+  let src = fixture("chat")
+  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform=1, nav_able~)
+  if width != "" {
+    t.post(@hostapi.system_channel, "{\"size_class\":{\"width\":\"\{width}\",\"height\":\"regular\"}}")
+  }
+  t.run_for(@ui.move_most_ms)
+  t
 }

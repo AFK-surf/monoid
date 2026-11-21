@@ -343,7 +343,16 @@ pub fn cards_core(
   }
   @sfbase.open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   @sfapp.open_cards_fixture(mode)
-  let t = @ui.Tester::new(fn(c) { @sfapp.view(c, src) }, tree=@sfapp.app_tree(src), w=390.0, h=844.0, platform~, loc~)
+  // a host's password manager is fixed when it starts: set as the run begins, before the cards are made, not after
+  let t = @ui.Tester::new(
+    fn(c) { @sfapp.view(c, src) },
+    tree=@sfapp.app_tree(src),
+    w=390.0,
+    h=844.0,
+    platform~,
+    begun=fn() { if autofill { @ui.fake_autofill.val = true } },
+    loc~,
+  )
   t.run_for(@ui.move_most_ms)
   // (a password manager here, or the host's own filling: the host's from the start, as on a device; the Tester's host
   // given it once made, the chat opened again to be made with it)

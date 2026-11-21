@@ -121,6 +121,7 @@ test "大屏: a panel beside what opened it whose body and foot are nodes: each 
     #|  "None",
     #|)
 
+
   ))
 }
 
@@ -195,6 +196,7 @@ test "大屏: an untitled panel beside what opened it whose body is nodes, ruled
     #|  ],
     #|  "None",
     #|)
+
 
   ))
 }
@@ -273,6 +275,7 @@ test "大屏: a panel in the middle of the window whose body and foot are nodes,
     #|  "Some((842, 315.5, 32, 32))",
     #|)
 
+
   ))
 }
 
@@ -347,6 +350,7 @@ test "大屏: an untitled form whose body and foot are nodes: each where it was 
     #|  ],
     #|  "None",
     #|)
+
 
   ))
 }
@@ -445,6 +449,7 @@ test "大屏: an untitled panel in the middle of the window whose body and foot 
     #|  ],
     #|  "Some((842, 337, 32, 32))",
     #|)
+
 
   ))
 }

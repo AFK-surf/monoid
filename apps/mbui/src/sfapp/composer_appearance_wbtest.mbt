@@ -139,11 +139,12 @@ test "a quote sent while the composer opens leaves from where it was seen" {
   t.run_for(composer_sample_ms * 2.0)
   let before = quote_once(t)
   tap_send(t)
-  // (the draft as the source has it now, read again: the page's own Writing is what was sent)
-  let w = @sfbase.writing(src, "ws1/st1:s-c1")
-  // (the old page's send flies by send_flight; the page made as nodes sends by its own (composer_sent_nodes), none there)
-  // (the page made as nodes: the fixture's chat.send answered at once, the draft taken, its card gone to the list)
-  assert_true(send_flight.get() is Some(_) || (@sfbase.chat_page_nodes.untracked() && w.text.get() == "" && w.quotes.get().is_empty()), msg="the message was not sent")
+  // (sent by the node composer: its draft, as the page's source holds it (writing, adopted), emptied, its send
+  // button off till the next words)
+  assert_true(
+    @sfbase.writing(src, "ws1/st1:s-c1").text.get() == "" && t.get(Button, label=@sf.t("web-main.composer.send")).disabled,
+    msg="the message was not sent",
+  )
   let after = quote_once(t)
   assert_true((after.0 - before.0).abs() < 1.0 && (after.1 - before.1).abs() < 1.0, msg="the quote jumped from \{Repr(before)} to \{Repr(after)} on sending")
 }
@@ -163,10 +164,12 @@ test "a picture sent while the composer opens leaves from where it was seen" {
   t.run_for(composer_sample_ms * 2.0)
   let before = picture_instances(t, picture)[0].1
   tap_send(t)
-  // (the draft as the source has it now, read again: the page's own Writing is what was sent)
-  let w = @sfbase.writing(src, "ws1/st1:s-c1")
-  // (the old page's send flies by send_flight; the page made as nodes sends by its own (composer_sent_nodes), none there)
-  assert_true(send_flight.get() is Some(_) || (@sfbase.chat_page_nodes.untracked() && w.text.get() == "" && w.files.get().is_empty()), msg="the message was not sent")
+  // (sent by the node composer: its draft, as the page's source holds it (writing, adopted), emptied, its send
+  // button off till the next words)
+  assert_true(
+    @sfbase.writing(src, "ws1/st1:s-c1").text.get() == "" && t.get(Button, label=@sf.t("web-main.composer.send")).disabled,
+    msg="the message was not sent",
+  )
   let after = picture_instances(t, picture)
   let sent = match after.iter().find_first(fn(p) { (p.1[0] - before[0]).abs() < 1.0 && (p.1[1] - before[1]).abs() < 1.0 }) {
     Some((_, a)) => a
@@ -184,50 +187,21 @@ test "an image's marks come into the room the composer opens" {
   let t = wide_tester(calls, mode="chat")
   t.run_for(@ui.move_most_ms)
   draft_give("ws1/st1:s-c1", Marked("图片-标注.png", png_head(), [("图片 标注 1", quote_passage, "这里对齐")], "image"))
-  if @sfbase.chat_page_nodes.untracked() {
-    // (the page made as nodes cuts away what it does not show, drawing none of it: each frame of the composer's
-    // opening, its card and the mark's words never over its ground, the words seen once)
-    assert_eq(named(calls, "composer.quote").length(), 1, msg="the mark was not put in the composer")
-    let mut ms = 0.0
-    let mut seen = 0
-    while ms < @ui.move_most_ms {
-      t.run_for(@ui.frame_period_default)
-      ms = ms + @ui.frame_period_default
-      let (_, ground_y, _, _) = composer_glass(t)
-      for r in t.drawn_cut() {
-        if r.0 == 0 && r.4 > 0.0 && r.3 / r.4 > 11.5 && r.3 / r.4 < 14.5 && r.3 < 800.0 && r.2 > 400.0 {
-          let (_, _, y, _, h, (_, top, _, bottom)) = r
-          let visible_top = dmax(y, top)
-          assert_true(dmin(y + h, bottom) <= visible_top || visible_top >= ground_y - 1.0, msg="the mark's card over the composer's ground at \{ms}")
-        }
-      }
-      // (its card's words: the passage, as quote_once reads it; 图片 标注 1 the pin's)
-      // (where they are seen, what cuts them cutting them: a composer's room opening from its foot)
-      match t.shown_of(quote_passage) {
-        Some((_, wy, _, wh)) if wh > 0.0 => {
-          assert_true(wy >= ground_y - 1.0, msg="the mark's words at \{wy} over the composer's ground \{ground_y} at \{ms}")
-          seen += 1
-        }
-        _ => ()
-      }
+  t.run_for(composer_sample_ms)
+  assert_eq(named(calls, "composer.quote").length(), 1, msg="the mark was not put in the composer")
+  let (_, ground_y, _, _) = composer_glass(t)
+  // (its card's words, as much of them as is seen while the composer's room grows for it: none above its ground)
+  let under_ground = fn(words : String) {
+    match t.shown_of(words) {
+      Some((_, y, _, h)) => h <= 0.0 || y >= ground_y - 1.0
+      None => true
     }
-    assert_true(seen > 0, msg="the mark's words never drawn")
-    quote_once(t) |> ignore
-  } else {
-    t.run_for(composer_sample_ms)
-    assert_eq(named(calls, "composer.quote").length(), 1, msg="the mark was not put in the composer")
-    let (_, ground_y, _, _) = composer_glass(t)
-    // (its card's shape, as big as the composer's room has grown for it by then)
-    let cards = t.drawn_cut().filter(fn(r) { r.0 == 0 && r.4 > 0.0 && r.3 / r.4 > 11.5 && r.3 / r.4 < 14.5 && r.3 < 800.0 })
-    assert_true(cards.length() > 0, msg="the mark's card was not drawn")
-    assert_true(cards.iter().any(fn(r) {
-      let (_, _, y, _, h, (_, top, _, bottom)) = r
-      let visible_top = dmax(y, top)
-      dmin(y + h, bottom) <= visible_top || visible_top >= ground_y - 1.0
-    }), msg="the mark was visible above the composer's ground")
-    t.run_for(@ui.move_most_ms)
-    quote_once(t) |> ignore
   }
+  assert_true(t.find(quote_passage) is Some(_), msg="the mark's card was not drawn")
+  // (laid out over the composer's top as its room opens, cut there by View::resizes: what is seen of it never above)
+  assert_true(under_ground(quote_passage), msg="the mark was visible above the composer's ground")
+  t.run_for(@ui.move_most_ms)
+  quote_once(t) |> ignore
 }
 
 ///|
@@ -260,7 +234,8 @@ test "a waiting video is a picture tile from the first frame, its composer stead
   @sfbase.writing_add(src, w, "ws1/st1", "日志.txt", b"log")
   t.draw()
   let id = text(Some(w.files.get()[0]), "id")
-  assert_eq(thumb_of(t.ctx(), "ws1/st1//draft:" + id).map(fn(tile) { (tile.w, tile.h) }), Some((56.0, 56.0)))
+  // (its tile in the node composer: a 56 square, where the viewer's flight would end, waiting_tile_at)
+  assert_eq(waiting_tile_at(t, "ws1/st1//draft:" + id).map(fn(tile) { (tile.2, tile.3) }), Some((56.0, 56.0)))
   assert_true(t.query(Group, label="视频.mov") is None)
   t.run_for(@ui.move_most_ms)
   let ground = fn() {

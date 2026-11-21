@@ -12,17 +12,21 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { after, test } from "node:test";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbHarnessBinary } from "./mb-harness.ts";
 import { ARCHIVE_WORKTREE_LOCK_PREFIX } from "../src/sessions/archive.ts";
 import { UPKEEP_STATE_FILE } from "../src/ops/upkeep-state.ts";
 import { Store } from "../src/store/store.ts";
 
 const binary = mbReaderBinary();
+const harness = mbHarnessBinary();
 const skip =
   binary === null
     ? "the MoonBit program (stillfail-reader) is not built here"
     : process.platform === "win32"
       ? "the launcher's descriptors are Unix's"
       : false;
+const skipHarness =
+  harness === null ? "the tests' MoonBit program (stillfail-reader-harness) is not built here" : false;
 
 const dirs: string[] = [];
 const fresh = (what: string) => {
@@ -343,4 +347,182 @@ test("MoonBit station persists idle_measured & daily branch cleanup timestamps a
   } finally {
     await l3.stop();
   }
+});
+
+test("MoonBit station single-flight upkeep state load prevents concurrent startup race on Hub and P53Upkeep", { skip }, async () => {
+  const data = fresh("conc-data");
+  const app = fresh("conc-app");
+  mkdirSync(join(data, "repos"), { recursive: true });
+  mkdirSync(join(data, "sessions", "cl"), { recursive: true });
+  mkdirSync(join(data, "homes", "cc"), { recursive: true });
+  mkdirSync(join(data, "mesh"), { recursive: true });
+  writeFileSync(
+    join(data, "mesh", "cloud.json"),
+    JSON.stringify({
+      origin: "http://127.0.0.1:1",
+      workspace: "ws-1",
+      station: "st-1",
+      name: "mb-upkeep-conc",
+      memberships: [{ workspace: "ws-1", home: true }],
+    }),
+  );
+  writeFileSync(
+    join(data, "config.json"),
+    JSON.stringify({
+      autoArchiveDays: 30,
+      archivedWorkspaceDays: 7,
+      profiles: [{ id: "cc", name: "CC", runtime: "claude", runtimes: ["claude"], home: join(data, "homes", "cc") }],
+      connects: [{ id: "cl", kind: "slack", mode: "multi-session", bind: { runtime: "claude", profile: "cc" } }],
+    }),
+  );
+
+  const HOUR = 3_600_000;
+  const DAY = 24 * HOUR;
+  const t0 = Date.now();
+
+  const store = Store.open(join(data, "stillfail.db"));
+  const workspaces: string[] = [];
+  const idleMeasured: Record<string, number> = {};
+  for (let i = 0; i < 40; i++) {
+    const key = `s-${String(i).padStart(2, "0")}`;
+    const ws = join(data, "sessions", "cl", key, "workspace");
+    mkdirSync(join(ws, "node_modules", "dep"), { recursive: true });
+    writeFileSync(join(ws, "node_modules", "dep", "index.js"), "x\n");
+    writeFileSync(join(ws, "src.ts"), `export const i = ${i};\n`);
+    const activeAt = t0 - 48 * HOUR + i * 1_000;
+    store.insertSession({
+      key,
+      connect: "cl",
+      runtime: "claude",
+      profile: "cc",
+      workspace: ws,
+      runtimeSessionId: null,
+      token: `tok-${key}`,
+      createdAt: activeAt,
+      lastActiveAt: activeAt,
+    });
+    if (i < 16) idleMeasured[key] = activeAt;
+    workspaces.push(ws);
+  }
+  store.close();
+
+  // Seed a repo with a merged branch that must NOT be pruned within 24h of persisted lastRepoBranchesAt.
+  const remote = join(fresh("conc-remote"), "origin.git");
+  mkdirSync(remote, { recursive: true });
+  git(remote, ["init", "--bare", "-b", "main"]);
+  const repo = join(data, "repos", "demo");
+  mkdirSync(repo, { recursive: true });
+  const oldSec = Math.floor((t0 - 5 * DAY) / 1000);
+  const oldEnv = { GIT_AUTHOR_DATE: `${oldSec} +0000`, GIT_COMMITTER_DATE: `${oldSec} +0000` };
+  git(repo, ["init", "-b", "main"]);
+  git(repo, ["remote", "add", "origin", remote]);
+  writeFileSync(join(repo, "README.md"), "hi\n");
+  git(repo, ["add", "README.md"]);
+  git(repo, ["commit", "-m", "init"], oldEnv);
+  git(repo, ["push", "-u", "origin", "main"]);
+  git(repo, ["branch", "b-conc", "main"]);
+  rmSync(join(repo, ".git", "logs", "refs", "heads", "b-conc"), { force: true });
+  execFileSync("touch", ["-t", "202001010000", join(repo, ".git", "refs", "heads", "b-conc")]);
+
+  const stateFile = join(data, UPKEEP_STATE_FILE);
+  writeFileSync(
+    stateFile,
+    JSON.stringify({
+      idleMeasured,
+      lastRepoBranchesAt: t0,
+      lastOrphanRoomsAt: t0,
+      lastFullRelieveAt: null,
+      lastArchiveUpkeepAt: t0 - 20 * 60_000,
+    }),
+  );
+
+  const l = await launch(data, app);
+  try {
+    const port = (await l.next("mcp serving", (m) => m.serving === "mcp")).port as number;
+
+    // Fire concurrent Hub & P53Upkeep requests immediately after startup with no delay (no real-disk `relieve`).
+    const [dueRes, cleanRes, upkeepRes1, upkeepRes2] = await Promise.all([
+      httpJson(port, "POST", "/parts/ask/hub.runArchiveUpkeepIfDue", [t0]),
+      httpJson(port, "POST", "/parts/ask/hub.cleanIdleRebuildable", [t0]),
+      httpJson(port, "POST", "/parts/ask/upkeep", [t0 + HOUR]),
+      httpJson(port, "POST", "/parts/ask/upkeep", [t0 + HOUR]),
+    ]);
+    assert.equal(dueRes.status, 200, JSON.stringify(dueRes));
+    assert.equal(cleanRes.status, 200, JSON.stringify(cleanRes));
+    assert.equal(upkeepRes1.status, 200, JSON.stringify(upkeepRes1));
+    assert.equal(upkeepRes2.status, 200, JSON.stringify(upkeepRes2));
+
+    assert.equal(cleanRes.body, 16);
+    for (let i = 16; i < 32; i++) {
+      assert.ok(!existsSync(join(workspaces[i]!, "node_modules")), `concurrent round cleaned s-${i}`);
+    }
+    for (let i = 32; i < 40; i++) {
+      assert.ok(existsSync(join(workspaces[i]!, "node_modules")), `concurrent round deferred s-${i}`);
+    }
+    const persisted = JSON.parse(readFileSync(stateFile, "utf8"));
+    assert.equal(Object.keys(persisted.idleMeasured).length, 32, "upkeep-state.json holds 32 keys");
+    assert.ok(branchExists(repo, "b-conc"), "concurrent upkeep calls respected persisted lastRepoBranchesAt within 24h");
+
+    await l.stop();
+  } finally {
+    await l.stop();
+  }
+});
+
+test("MoonBit session_hub harness deterministically blocks upkeepState.read and verifies single-flight load", { skip: skipHarness }, async () => {
+  const data = fresh("harness-data");
+  const dbPath = join(data, "stillfail.db");
+  const HOUR = 3_600_000;
+  const now = 1_800_000_000_000;
+
+  const store = Store.open(dbPath);
+  const idleMeasured: Record<string, number> = {};
+  for (let i = 0; i < 40; i++) {
+    const key = `s-${String(i).padStart(2, "0")}`;
+    const activeAt = now - 48 * HOUR + i * 1_000;
+    store.insertSession({
+      key,
+      connect: "cl",
+      runtime: "claude",
+      profile: "cc",
+      workspace: join(data, "sessions", "cl", key, "workspace"),
+      runtimeSessionId: null,
+      token: `tok-${key}`,
+      createdAt: activeAt,
+      lastActiveAt: activeAt,
+    });
+    if (i < 16) idleMeasured[key] = activeAt;
+  }
+  store.close();
+
+  const req = JSON.stringify({
+    id: 1,
+    op: "race.upkeepStateLoad",
+    db: dbPath,
+    now,
+    upkeepState: {
+      idleMeasured,
+      lastRepoBranchesAt: null,
+      lastOrphanRoomsAt: null,
+      lastFullRelieveAt: null,
+      lastArchiveUpkeepAt: now - 20 * 60_000,
+    },
+  });
+  const out = execFileSync(harness!, ["--builder", "harness-session-hub"], {
+    input: `${req}\n`,
+    encoding: "utf8",
+  }).trim();
+  const parsed = JSON.parse(out.split("\n")[0]!);
+  assert.equal(parsed.error, undefined, JSON.stringify(parsed));
+  const res = parsed.ok;
+  assert.equal(res.readCount, 1, "upkeepState.read called exactly once");
+  assert.equal(res.f2DoneBeforeRelease, false, "clean_idle_rebuildable must remain suspended before read gate opens");
+  assert.equal(res.measuredBeforeRelease, 0, "clean_idle_rebuildable waited on single-flight Deferred before measuring");
+  assert.equal(res.dueRan, false, "run_archive_upkeep_if_due respected 60s startup grace");
+  assert.equal(res.cleanedCount, 16);
+  assert.deepEqual(
+    res.measured,
+    Array.from({ length: 16 }, (_, i) => `s-${String(i + 16).padStart(2, "0")}`),
+    "measured strictly s-16..s-31 and zero of s-00..s-15",
+  );
 });

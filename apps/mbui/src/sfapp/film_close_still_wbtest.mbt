@@ -51,7 +51,7 @@ struct FcRun {
 /// The chat's 演示录屏.mp4 in a window `w` wide (`platform`'s), its viewer opened and at rest; what the host does for the
 /// app done at each frame's start as a Tester's own host does it, but the decode of a frame grabbed as it closes, done as
 /// `decode` says.
-fn fc_opened(platform : Int, w : Double, decode : FcDecode, nodes? : Bool = false) -> FcRun raise {
+fn fc_opened(platform : Int, w : Double, decode : FcDecode) -> FcRun raise {
   let close = Ref(1.0e300)
   let seen : Map[Int, Int] = Map([])
   let answer = fn(t : @ui.Tester) {
@@ -70,7 +70,7 @@ fn fc_opened(platform : Int, w : Double, decode : FcDecode, nodes? : Bool = fals
   }
   // (made in flight_under_bar_wbtest.mbt's helper: its Testers' bar of the bytes handed over for decodes, a film's
   // frames grabbed among them)
-  let (t, x, y) = film_in_chat(platform~, w~, answer=Some(answer), nodes~)
+  let (t, x, y) = film_in_chat(platform~, w~, answer=Some(answer))
   guard pic_at(t, x, y) is Some((thumb, _)) else { fail("no thumbnail drawn at \{Repr((x, y))}") }
   // (each frame as a device's host draws it: not built once more to check its looks)
   t.check_looks(false)
@@ -226,13 +226,13 @@ fn fc_back(r : FcRun) -> Unit {
 /// The film's viewer, opened in a window `w` wide (`platform`'s), closed the way `how` says (back, a drag down let go,
 /// zoomed, playing), its grabbed frame's picture decoded as `decode` says: what was wrong in its frames till it was
 /// gone, and how it ended.
-fn fc_closed(platform : Int, w : Double, how : String, decode : FcDecode, nodes? : Bool = false) -> Unit raise {
-  let r = fc_opened(platform, w, decode, nodes~)
+fn fc_closed(platform : Int, w : Double, how : String, decode : FcDecode) -> Unit raise {
+  let r = fc_opened(platform, w, decode)
   let t = r.t
   // (its thumbnail's id: on a chat's page made as nodes, the window's tree flies the thumbnail back as the viewer fades,
   // landing after it is gone: View::shared's end that stays)
   let id = viewer.get().map(fn(v) { v.thumb_id() }).unwrap_or("")
-  let name = "\{if nodes { "nodes" } else { "old" }}, \{if r.wide { "大屏 mouse" } else { "小屏 touch" }}, \{how}, \{decode.name}"
+  let name = "nodes, \{if r.wide { "大屏 mouse" } else { "小屏 touch" }}, \{how}, \{decode.name}"
   match how {
     "drag down" => {
       // (a finger down in the middle, moved down 300 in 8 moves a frame apart, let go moving)
@@ -287,23 +287,19 @@ fn fc_closed(platform : Int, w : Double, how : String, decode : FcDecode, nodes?
 
 ///|
 test "a film closed shows its player or a picture where it is in every frame till it is gone: 小屏, a finger; the old page's and one made as nodes" {
-  for nodes in [false, true] {
-    for how in ["back", "drag down", "zoomed", "playing"] {
-      for decode in fc_decodes() {
-        fc_closed(2, 390.0, how, decode, nodes~)
-      }
+  for how in ["back", "drag down", "zoomed", "playing"] {
+    for decode in fc_decodes() {
+      fc_closed(2, 390.0, how, decode)
     }
   }
 }
 
 ///|
-test "a film closed shows its player or a picture where it is in every frame till it is gone: a window 小屏 wide, a mouse; the old page's and one made as nodes" {
+test "a film closed shows its player or a picture where it is in every frame till it is gone: a window 小屏 wide, a mouse" {
   // (on 中屏 and 大屏 a film opens in a tab beside the chat: view_beside_wbtest.mbt)
-  for nodes in [false, true] {
-    for how in ["back", "zoomed", "playing"] {
-      for decode in fc_decodes() {
-        fc_closed(0, 560.0, how, decode, nodes~)
-      }
+  for how in ["back", "zoomed", "playing"] {
+    for decode in fc_decodes() {
+      fc_closed(0, 560.0, how, decode)
     }
   }
 }

@@ -1,37 +1,4 @@
 ///|
-test "a chat scroll within its visible messages keeps their layout and reports the new place" {
-  let t = chat_tester("chat", old=true)
-  t.check_looks(false)
-  t.set_rows_on_pixels(true)
-  t.scroll_to(8)
-  t.frame()
-  // (row 8 at the top, the list moved off its end with less than a screen above it: the page before is asked and comes
-  // in, and the way to the newest fades in, chat_list.mbt chat_short_above; let come to rest before the measured step)
-  t.run_for(@ui.move_most_ms * 2.0)
-  let start = t.time()
-  // First put the list between row boundaries. The measured input moves it only a little farther.
-  t.wheel_told(195.0, 400.0, 0.0, 20.0, 0, start + 1.0)
-  t.frame_at(start + 16.0)
-  t.frame_at(start + 16.0)
-  let visible = t.visible()
-  let row = t.row(visible.0).unwrap()
-  let reading = readings.get("ws1/st1\u{1}s-c1").unwrap()
-  let place = reading.top_off
-  t.wheel_told(195.0, 400.0, 0.0, 5.0, 0, start + 17.0)
-  t.frame_at(start + 32.0)
-  let next_visible = t.visible()
-  let next_row = t.row(visible.0).unwrap()
-  let next_place = reading.top_off
-  let perf = t.frame_perf()
-  let detail = "visible \{Repr(visible)} -> \{Repr(next_visible)}, row \{Repr(row)} -> \{Repr(next_row)}, reported \{place} -> \{next_place}, perf \{Repr(perf)}, build \{t.built_why()}, paint \{t.painted_why()}"
-  assert_eq(next_visible, visible, msg="the measured scroll must keep the same visible rows: \{detail}")
-  assert_true(next_row.1 < row.1, msg="the visible message must move: \{detail}")
-  assert_true(next_place < place, msg="the chat must report its new reading place: \{detail}")
-  assert_eq(perf.laid, 0, msg="existing chat rows should not be laid out for this scroll: \{detail}")
-  assert_eq(t.painted_why(), "a list scrolled without changing its rows", msg="the chat must take the scroll-only path: \{detail}")
-}
-
-///|
 fn chat_scrolled_reference(keep : Bool) -> (Double, Double, String) raise {
   let t = chat_tester("chat")
   t.check_looks(false)

@@ -92,12 +92,8 @@ test "中屏, a window with keyboard and mouse: the composer opened with one lin
 ///|
 /// The chat open on 小屏 with a finger (390x844), the system's words `scale`, its composer pressed and "第一行" typed in
 /// it, at rest (send_hold_wbtest's hold_chat: words the core's answers are kept for).
-fn least_words_small(scale : Double, old? : Bool = false) -> @ui.Tester {
+fn least_words_small(scale : Double) -> @ui.Tester {
   new_run()
-  // (`old`: the old page's composer, what stable keeps, its hold under words on their way (its SendFlight))
-  if old {
-    @sfbase.hold_chat_page_nodes(Some(false))
-  }
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
@@ -123,27 +119,26 @@ fn least_words_field_h(t : @ui.Tester) -> Double {
 test "小屏, a finger's: words of three lines sent hold the composer as tall as they took in it till they let go of it, the system's words 1 and 1.3" {
   let draft = "ws1/st1:s-c1"
   for scale in [1.0, 1.3] {
-    let t = least_words_small(scale, old=true)
+    let t = least_words_small(scale)
+    // (the composer made as nodes: its room as the tree lays it out, sent_nodes_room)
+    let room_one = sent_nodes_room(t, draft)
     t.type_text("\n第二行\n第三行")
     t.run_for(@ui.move_most_ms)
-    let room = @sfpages.composer_room(t.ctx(), draft)
-    let box = @motion.measured(t.ctx(), "composer/content")
+    let room_three = sent_nodes_room(t, draft)
+    assert_true(room_three > room_one + 1.0, msg="words \{scale}: three lines \{room_three}, one \{room_one}")
     tap_send(t)
     let press = t.time()
-    let go = match @sfbase.flight_lets_go(draft) {
-      Some((go, _)) => go
-      None => @halt.saying("words \{scale}: what holds the composer not said at the press")
-    }
-    assert_true(go > press, msg="words \{scale}: let go of at \{go}, pressed at \{press}")
-    // (at the press, and half way from it to their letting go of it)
+    let hold = @sfbase.sent_out_hold_ms
+    // (at the press, and half way through what holds it: as tall as the words took in it)
     for k in [0.0, 0.5] {
-      t.run_for(press + (go - press) * k - t.time())
-      let at = "words \{scale}, \{k} of the way to their letting go of it"
-      let now_box = @motion.measured(t.ctx(), "composer/content")
-      let now_room = @sfpages.composer_room(t.ctx(), draft)
-      assert_eq(now_box, box, msg="\{at}: its box \{Repr(now_box)}, \{Repr(box)} before the press")
-      assert_eq(now_room, room, msg="\{at}: its room \{now_room}, \{room} before the press")
+      t.run_for(press + hold * k - t.time())
+      let now_room = sent_nodes_room(t, draft)
+      assert_true(now_room >= room_three - 0.5, msg="words \{scale}, \{k} of its hold: its room \{now_room}, \{room_three} before the press")
     }
+    // (let go of: back to its one line)
+    t.run_for(press + @ui.move_most_ms - t.time())
+    let after = sent_nodes_room(t, draft)
+    assert_true((after - room_one).abs() <= 0.5, msg="words \{scale}: its room \{after} once let go of, \{room_one} with one line")
   }
 }
 

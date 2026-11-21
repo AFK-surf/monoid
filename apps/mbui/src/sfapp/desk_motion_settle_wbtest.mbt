@@ -7,11 +7,10 @@
 // as the station answers it (sfbase's chat_list, paged_in).
 
 ///|
-/// The fixture's chat s-c1 on 大屏 at rest, its page made as nodes where `nodes` says, its frames a
+/// The fixture's chat s-c1 on 大屏 at rest, its frames a
 /// display's at 60 a second; the fixture's source as `over` makes it.
-fn ms_open(nodes : Bool, over? : (String, Map[String, Json], Topic) -> Topic = fn(_, _, t) { t }) -> @ui.Tester {
+fn ms_open(over? : (String, Map[String, Json], Topic) -> Topic = fn(_, _, t) { t }) -> @ui.Tester {
   new_run()
-  @sfbase.hold_chat_page_nodes(Some(nodes))
   let base = fixture("chat")
   let src : Source = {
     ..base,
@@ -63,42 +62,40 @@ fn ms_top() -> String {
 
 ///|
 test "大屏, either chat's page: a chat switched to from the sidebar while its search keeps the cursor has its composer as it rests from its first frame, the list's last row still; the chat left's composer, the cursor gone from it a moment before, lets go of none of it there" {
-  for nodes in [false, true] {
-    let at = if nodes { "新对话页" } else { "旧对话页" }
-    let t = ms_open(nodes)
-    guard composer_field(t) is Some((x, y, w, h)) else { fail("\{at}: no composer's field") }
-    t.tap(x + w / 2.0, y + h / 2.0)
-    t.run_for(@ui.move_most_ms)
-    assert_true(composer_focused(), msg="\{at}: the cursor in s-c1's composer")
-    // (the list's search pulled into view over its first row and pressed: the cursor in it)
-    let logs = t.drive("wheelat -400 夜里的构建又失败了\nwait 600\ntap 搜索\nwait 600\ntype 首页的列表\nwait 200\nexit\n")
-    guard !logs.iter().any(fn(l) { l.has_prefix("DRIVE") && l.contains("FAIL") }) else {
-      fail("\{at}: the search not pressed: \{ms_drive_said(logs)}")
-    }
-    let search = t.focused().map(fn(f) { f.label }).unwrap_or("")
-    assert_true(search.contains("搜索"), msg="\{at}: the cursor in the search, not \{search}")
-    // every frame from the press on the row of s-c2 till its composer would have let go of a box and closed it
-    let seen : Array[(Double, String, (Double, Double, Double, Double)?, Double)] = []
-    let look = fn(t : @ui.Tester) { seen.push((t.time(), ms_top(), ms_composer_field(t), ms_list_low(t))) }
-    let script = "tap 首页的列表改成按天分组\nwait \{(@sfpages.let_go_ms + @ui.move_most_ms + 100.0).to_int()}\nexit\n"
-    let logs = t.drive(script, each=look)
-    guard !logs.iter().any(fn(l) { l.has_prefix("DRIVE") && l.contains("FAIL") }) else {
-      fail("\{at}: s-c2 not pressed: \{ms_drive_said(logs)}")
-    }
-    let on = seen.filter(fn(s) { s.1 == "s-c2" && s.2 is Some(_) })
-    guard on is [first, ..] else { fail("\{at}: s-c2's composer never drawn") }
-    let report = on.map(fn(s) { "\{(s.0 * 10.0).round() / 10.0}: \{Repr(s.2)} \{s.3}" }).join("\n")
-    for s in on {
-      assert_eq(s.2, first.2, msg="\{at}: s-c2's composer moved at \{s.0} after it was first drawn\n\{report}")
-      assert_eq(s.3, first.3, msg="\{at}: s-c2's last row moved at \{s.0}\n\{report}")
-    }
-    assert_true(
-      on[on.length() - 1].0 - first.0 >= @sfpages.let_go_ms + @ui.move_most_ms,
-      msg="\{at}: looked at past its let go\n\{report}",
-    )
-    let still = t.focused().map(fn(f) { f.label }).unwrap_or("")
-    assert_true(still.contains("搜索"), msg="\{at}: the search kept the cursor, not \{still}")
+  let at = "新对话页"
+  let t = ms_open()
+  guard composer_field(t) is Some((x, y, w, h)) else { fail("\{at}: no composer's field") }
+  t.tap(x + w / 2.0, y + h / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(composer_focused(), msg="\{at}: the cursor in s-c1's composer")
+  // (the list's search pulled into view over its first row and pressed: the cursor in it)
+  let logs = t.drive("wheelat -400 夜里的构建又失败了\nwait 600\ntap 搜索\nwait 600\ntype 首页的列表\nwait 200\nexit\n")
+  guard !logs.iter().any(fn(l) { l.has_prefix("DRIVE") && l.contains("FAIL") }) else {
+    fail("\{at}: the search not pressed: \{ms_drive_said(logs)}")
   }
+  let search = t.focused().map(fn(f) { f.label }).unwrap_or("")
+  assert_true(search.contains("搜索"), msg="\{at}: the cursor in the search, not \{search}")
+  // every frame from the press on the row of s-c2 till its composer would have let go of a box and closed it
+  let seen : Array[(Double, String, (Double, Double, Double, Double)?, Double)] = []
+  let look = fn(t : @ui.Tester) { seen.push((t.time(), ms_top(), ms_composer_field(t), ms_list_low(t))) }
+  let script = "tap 首页的列表改成按天分组\nwait \{(@sfpages.let_go_ms + @ui.move_most_ms + 100.0).to_int()}\nexit\n"
+  let logs = t.drive(script, each=look)
+  guard !logs.iter().any(fn(l) { l.has_prefix("DRIVE") && l.contains("FAIL") }) else {
+    fail("\{at}: s-c2 not pressed: \{ms_drive_said(logs)}")
+  }
+  let on = seen.filter(fn(s) { s.1 == "s-c2" && s.2 is Some(_) })
+  guard on is [first, ..] else { fail("\{at}: s-c2's composer never drawn") }
+  let report = on.map(fn(s) { "\{(s.0 * 10.0).round() / 10.0}: \{Repr(s.2)} \{s.3}" }).join("\n")
+  for s in on {
+    assert_eq(s.2, first.2, msg="\{at}: s-c2's composer moved at \{s.0} after it was first drawn\n\{report}")
+    assert_eq(s.3, first.3, msg="\{at}: s-c2's last row moved at \{s.0}\n\{report}")
+  }
+  assert_true(
+    on[on.length() - 1].0 - first.0 >= @sfpages.let_go_ms + @ui.move_most_ms,
+    msg="\{at}: looked at past its let go\n\{report}",
+  )
+  let still = t.focused().map(fn(f) { f.label }).unwrap_or("")
+  assert_true(still.contains("搜索"), msg="\{at}: the search kept the cursor, not \{still}")
 }
 
 ///|
@@ -116,39 +113,37 @@ fn ms_bar_gap(t : @ui.Tester) -> Double? {
 
 ///|
 test "大屏, either chat's page: the side panel opened and closed by its switch, the bar's buttons go with it along their row as its switch comes and goes, never 8 in a frame against it, never squeezed" {
-  for nodes in [false, true] {
-    let at = if nodes { "新对话页" } else { "旧对话页" }
-    let t = ms_open(nodes)
-    let info = @sf.t("web-pages.chat.info")
-    let more = @sf.t("common.more")
-    for open in [true, false] {
-      let way = if open { "opening" } else { "closing" }
-      let seen : Array[(Double, Double?, Double, Double)] = []
-      let look = fn(t : @ui.Tester) {
-        let h = fn(label) {
-          match wide_bar_button(t, label) {
-            Some(r) => r.3
-            None => -1.0
-          }
+  let at = "新对话页"
+  let t = ms_open()
+  let info = @sf.t("web-pages.chat.info")
+  let more = @sf.t("common.more")
+  for open in [true, false] {
+    let way = if open { "opening" } else { "closing" }
+    let seen : Array[(Double, Double?, Double, Double)] = []
+    let look = fn(t : @ui.Tester) {
+      let h = fn(label) {
+        match wide_bar_button(t, label) {
+          Some(r) => r.3
+          None => -1.0
         }
-        seen.push((t.time(), ms_bar_gap(t), h(info), h(more)))
       }
-      look(t)
-      let script = if open { "tap icon:panel-open\nwait 700\nexit\n" } else { "tap icon:panel-close\nwait 700\nexit\n" }
-      let logs = t.drive(script, each=look)
-      guard !logs.iter().any(fn(l) { l.has_prefix("DRIVE") && l.contains("FAIL") }) else {
-        fail("\{at}, \{way}: the switch not pressed: \{ms_drive_said(logs)}")
-      }
-      let report = seen.map(fn(s) { "\{(s.0 * 10.0).round() / 10.0}: \{Repr(s.1)} \{s.2} \{s.3}" }).join("\n")
-      let gaps = seen.filter_map(fn(s) { s.1 })
-      assert_true(gaps.length() > 10, msg="\{at}, \{way}: the panel drawn on its way\n\{report}")
-      for i in 1..<gaps.length() {
-        let d = gaps[i] - gaps[i - 1]
-        assert_true(d.abs() <= 8.0, msg="\{at}, \{way}: 更多 stepped \{d} against the panel in a frame\n\{report}")
-      }
-      for s in seen {
-        assert_true(s.2 == 32.0 && s.3 == 32.0, msg="\{at}, \{way}: 对话信息 \{s.2} and 更多 \{s.3} high at \{s.0}\n\{report}")
-      }
+      seen.push((t.time(), ms_bar_gap(t), h(info), h(more)))
+    }
+    look(t)
+    let script = if open { "tap icon:panel-open\nwait 700\nexit\n" } else { "tap icon:panel-close\nwait 700\nexit\n" }
+    let logs = t.drive(script, each=look)
+    guard !logs.iter().any(fn(l) { l.has_prefix("DRIVE") && l.contains("FAIL") }) else {
+      fail("\{at}, \{way}: the switch not pressed: \{ms_drive_said(logs)}")
+    }
+    let report = seen.map(fn(s) { "\{(s.0 * 10.0).round() / 10.0}: \{Repr(s.1)} \{s.2} \{s.3}" }).join("\n")
+    let gaps = seen.filter_map(fn(s) { s.1 })
+    assert_true(gaps.length() > 10, msg="\{at}, \{way}: the panel drawn on its way\n\{report}")
+    for i in 1..<gaps.length() {
+      let d = gaps[i] - gaps[i - 1]
+      assert_true(d.abs() <= 8.0, msg="\{at}, \{way}: 更多 stepped \{d} against the panel in a frame\n\{report}")
+    }
+    for s in seen {
+      assert_true(s.2 == 32.0 && s.3 == 32.0, msg="\{at}, \{way}: 对话信息 \{s.2} and 更多 \{s.3} high at \{s.0}\n\{report}")
     }
   }
 }
@@ -194,7 +189,7 @@ fn ms_chats(v : Json, new : Array[(String, String)], swap : Bool, syncing : Bool
 ///|
 test "大屏: the sidebar while what changed since the app was last with the stations is still coming (syncing): chats come and move there at once, the batch that ends it too; a chat that comes after it comes on its way" {
   let stage = @signals.signal(0)
-  let t = ms_open(false, over=fn(name, _, tp) {
+  let t = ms_open(over=fn(name, _, tp) {
     guard name == "chats" && tp.value is Some(v) else { return tp }
     let n1 = ("s-n1", "离线时新开的对话")
     let n2 = ("s-n2", "同步最后一批")
@@ -228,7 +223,7 @@ test "大屏: the sidebar while what changed since the app was last with the sta
 ///|
 test "大屏, the old chat's page: a chat the device kept nothing of, drawn empty, its first page there at once as the station answers, what is at work in it too" {
   let stage = @signals.signal(0)
-  let t = ms_open(false, over=fn(name, params, tp) {
+  let t = ms_open(over=fn(name, params, tp) {
     guard name == "chat" && params.get("session") is Some(String("s-c1")) && tp.value is Some(Object(o)) else {
       return tp
     }
@@ -267,7 +262,7 @@ test "大屏, the old chat's page: a chat the device kept nothing of, drawn empt
 test "大屏: chat_bar_wide_node settles at once when station, people, agents and chatJobs arrive late outside a transition" {
   let stage = @signals.signal(0)
   let jobs = wide_bar_jobs("")
-  let t = ms_open(true, over=fn(name, params, tp) {
+  let t = ms_open(over=fn(name, params, tp) {
     if name == "chatJobs" {
       if stage.get() > 0 {
         return jobs(name, tp)
@@ -300,7 +295,7 @@ test "大屏: chat_bar_wide_node settles at once when station, people, agents an
 ///|
 test "大屏: sidebar chat_row_node background status, tone and unread updates settle at once with zero ways" {
   let stage = @signals.signal(0)
-  let t = ms_open(true, over=fn(name, _, tp) {
+  let t = ms_open(over=fn(name, _, tp) {
     guard name == "chats" && tp.value is Some(Object(o)) && o.get("days") is Some(Array(days)) && days.length() > 0 else {
       return tp
     }
@@ -338,7 +333,7 @@ test "大屏: sidebar chat_row_node background status, tone and unread updates s
 ///|
 test "大屏, 新对话页: unread line disappearing from chat_body_node sets out zero ways (structural placeholder is not a live cause)" {
   let stage = @signals.signal(0)
-  let t = ms_open(true, over=fn(name, params, tp) {
+  let t = ms_open(over=fn(name, params, tp) {
     guard name == "chat" && params.get("session") is Some(String("s-c1")) && tp.value is Some(Object(o)) else {
       return tp
     }

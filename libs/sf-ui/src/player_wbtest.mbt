@@ -466,3 +466,59 @@ test "what it waits on is said in its bar beside its name, a phone's and a deskt
     }
   }
 }
+
+///|
+/// What the audit finds of a phone's bar along the top: the faults whose first box stands in its 100 points (its
+/// controls at the foot have their own).
+fn top_bar_faults(t : @ui.Tester) -> Array[String] {
+  t
+  .audit()
+  .filter(fn(f) {
+    match f.find("(at ") {
+      Some(i) => {
+        let at = f.unsafe_substring(start=i + 4, end=f.length())
+        let xy = at.unsafe_substring(start=0, end=at.find(" ").unwrap_or(at.length()))
+        match xy.find(",") {
+          Some(j) => {
+            // (under 100: two digits at most before its point, if it has one)
+            let y = xy.unsafe_substring(start=j + 1, end=xy.length())
+            y.find(".").unwrap_or(y.length()) <= 2
+          }
+          None => false
+        }
+      }
+      None => false
+    }
+  })
+}
+
+///|
+test "a phone's bar along the top is a capsule its round keys stand concentric in: pressed, lit, the audit clean" {
+  let t = player_tester(true, "E2.mp4", ["E1.mp4", "E2.mp4", "E3.mp4"], [], [])
+  t.draw()
+  // (the bar: 48 high across the top, its keys 40 round, 4 in from its ends)
+  let bars = t
+    .drawn_rect_corners()
+    .filter(fn(r) { r.2 > 200.0 && (r.3 - 48.0).abs() < 0.5 && r.1 < 200.0 && r.4 == media_dark_ground })
+  assert_eq(bars.length(), 1, msg="\{Repr(bars)}")
+  let half = @ui.Space::S12.px() / 2.0
+  assert_eq(bars[0].5, (half, half, half, half))
+  assert_eq(top_bar_faults(t), [])
+  // the back key and 下载 held down, each drawing its press's round ground and ripple in the bar's ends
+  for icon in ["icon:chevron-left", "icon:download"] {
+    let (x, y) = t.locate(icon).filter(fn(p) { p.1 < 100.0 })[0]
+    t.press_at(x, y)
+    t.run_for(press_whole_ms)
+    let faults = top_bar_faults(t)
+    assert_true(faults.is_empty(), msg="\{icon} held: " + faults.join("\n"))
+    // (let go off it, nothing done)
+    t.release(x, y + 300.0)
+    t.run_for(feel_past_ms)
+  }
+  // 选集 lit, its list open
+  let (x, y) = t.locate("icon:list").filter(fn(p) { p.1 < 100.0 })[0]
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  let faults = top_bar_faults(t)
+  assert_true(faults.is_empty(), msg="选集 lit: " + faults.join("\n"))
+}

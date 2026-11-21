@@ -32,7 +32,7 @@ test "a picture waiting in the composer, tapped, opens in the viewer from the by
     }
     // (its tile drawn whole, the viewer flying from it: the old composer's by thumb_shows, the one made as nodes the end
     // of View::shared's flight that stays, drawn nowhere while it flies)
-    let tile_shows = fn() { if both_nodes.val { t.flight_of(seen) is None } else { thumb_shows(seen) == 1.0 } }
+    let tile_shows = fn() { t.flight_of(seen) is None }
     assert_true(tile_shows(), msg="its tile before")
     t.tap(tx + tw / 2.0, ty + th / 2.0)
     match viewer.get() {
@@ -49,7 +49,7 @@ test "a picture waiting in the composer, tapped, opens in the viewer from the by
     // (flying out of its tile: one picture on the screen, never two)
     t.run_for(@ui.move_most_ms / 4.0)
     // (the old composer's flown by the viewer by hand, the one made as nodes by the window's tree: View::shared)
-    let flies = if both_nodes.val { t.flight_of(seen) is Some(_) } else { viewer.get().map(fn(v) { v.flies }).unwrap_or(false) }
+    let flies = t.flight_of(seen) is Some(_)
     assert_true(flies, msg="not flown out of its tile")
     assert_false(tile_shows(), msg="its tile while the picture flies out of it")
     assert_eq(named(calls, "station.file").length(), 0)
@@ -70,7 +70,6 @@ test "a picture waiting in the composer, tapped, opens in the viewer from the by
 /// A picture waiting in an existing chat or a new one's composer, opened and closed as a host takes a pointer's events.
 fn waiting_picture_return(new_chat : Bool) -> Unit raise {
   new_run()
-  both_way()
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
@@ -89,24 +88,30 @@ fn waiting_picture_return(new_chat : Bool) -> Unit raise {
   t.run_for(@ui.move_most_ms)
   let id = text(Some(w.files.get()[0]), "id")
   let picture = @sfbase.writing_pictures[id]
-  let tile = thumb_of(t.ctx(), "ws1/st1//draft:" + id).unwrap()
+  // (its tile where the node composer draws it: the picture drawn whole, as the frame has it)
+  let drawn_whole = fn(a : Array[Double]) { a[5] == 4.0 && t.image_src(a[20].to_int()) == picture && a[11] > 0.99 }
+  let tile = match t.drawn_instances().iter().find_first(drawn_whole) {
+    Some(a) => (a[0], a[1], a[2], a[3])
+    None => fail("the picture waiting is not drawn")
+  }
   let visible = fn() {
     t.drawn_instances().iter().any(fn(a) {
       a[5] == 4.0 && t.image_src(a[20].to_int()) == picture && a[11] > 0.99 &&
-      (a[0] - tile.x).abs() < 1.0 && (a[1] - tile.y).abs() < 1.0
+      (a[0] - tile.0).abs() < 1.0 && (a[1] - tile.1).abs() < 1.0
     })
   }
   assert_true(visible(), msg="the picture is visible before opening")
-  let (x, y) = (tile.x + tile.w / 2.0, tile.y + tile.h / 2.0)
+  let (x, y) = (tile.0 + tile.2 / 2.0, tile.1 + tile.3 / 2.0)
   t.touch(0, x, y)
   t.touch(2, x, y)
   t.frames_owed()
   let v = viewer.get().unwrap()
-  assert_true(v.flies, msg="the preview opens from the tile")
-  while t.time() + @ui.frame_period_default < v.fly.end() {
+  assert_true(pic_flies(t, v), msg="the preview opens from the tile")
+  let opened = pic_flight_end(t, v)
+  while t.time() + @ui.frame_period_default < opened {
     t.frame_at(t.time() + @ui.frame_period_default)
   }
-  t.frame_at(v.fly.end() + @ui.frame_period_default)
+  t.frame_at(opened + @ui.frame_period_default)
   let (cx, cy, cw, ch) = t.get(Button, label=@sf.t("common.close")).rect
   let (cx, cy) = (cx + cw / 2.0, cy + ch / 2.0)
   t.move_to(cx, cy)
@@ -114,8 +119,8 @@ fn waiting_picture_return(new_chat : Bool) -> Unit raise {
   t.touch(2, cx, cy)
   t.frames_owed()
   let closing = pv_leaving.get().unwrap()
-  assert_true(closing.flies && closing.fly_back, msg="the preview returns to the tile")
-  let end = closing.fly.end()
+  assert_true(pic_flies(t, closing) && (closing.fly_back || closing.tree_back.get()), msg="the preview returns to the tile")
+  let end = pic_flight_end(t, closing)
   t.frame_at((t.time() + end) / 2.0)
   assert_false(visible(), msg="the tile is hidden while the picture returns")
   while t.time() + @ui.frame_period_default < end {
@@ -129,18 +134,12 @@ fn waiting_picture_return(new_chat : Bool) -> Unit raise {
 
 ///|
 test "a picture waiting in an existing chat is visible as soon as its preview returns" {
-  both_pages(
-    fn() raise { waiting_picture_return(false) },
-    old_only="the old composer's tile it reads (thumb_of), as it ran before the page made as nodes was the test channel's",
-  )
+  waiting_picture_return(false)
 }
 
 ///|
 test "a picture waiting in a new chat is visible as soon as its preview returns" {
-  both_pages(
-    fn() raise { waiting_picture_return(true) },
-    old_only="the old composer's tile it reads (thumb_of), as it ran before the page made as nodes was the test channel's",
-  )
+  waiting_picture_return(true)
 }
 
 ///|
@@ -495,9 +494,6 @@ test "choosing how to continue an expired cache keeps the draft's keyboard" {
       t.click(Button, label="接着聊")
       // (the old composer's choices a menu over the field; made as nodes, on 小屏 a sheet of the window's tree
       // (sheet_shows_node), which takes the keys while it is up, the field's focus given back as it goes)
-      if !both_nodes.val {
-        assert_true(t.ime().0, msg="the keyboard stays while the choices are shown")
-      }
       t.click(MenuItemRadio, label="换新上下文")
       assert_eq(named(calls, "session.settings").length(), 1)
       assert_true(t.ime().0, msg="the keyboard stays after choosing")
@@ -753,7 +749,6 @@ test "a long press or tap on a message leaves the keyboard up" {
 test "a picture restored in the composer remains visible in the sending message" {
   both_pages(fn() raise {
     new_run()
-    both_way()
     let base = fixture("chat")
     let in_draft = Ref(true)
     let src : Source = {
@@ -790,10 +785,6 @@ test "a picture restored in the composer remains visible in the sending message"
     tap_send(t)
     // (the old page's flight, send_flight: made as nodes, its row flies from the composer by itself, View::flies_in,
     // the picture its message draws held below)
-    if !both_nodes.val {
-      let flying = send_flight.get().unwrap().files
-      assert_eq(flying.map(fn(f) { (f.key, f.picture) }), [("upload:kept-1", Some("mem:test/restored"))])
-    }
     t.run_for(@sfbase.flight_most_ms)
     let points = t.locate("img:mem:test/restored")
     assert_true(points.length() > 0, msg="the sending message has no picture")
@@ -807,7 +798,6 @@ test "a picture restored in the composer remains visible in the sending message"
 test "a freshly picked picture remains visible throughout sending" {
   both_pages(fn() raise {
     new_run()
-    both_way()
     let src = fixture("chat")
     open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
     let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
@@ -823,48 +813,6 @@ test "a freshly picked picture remains visible throughout sending" {
     t.run_for(@sfbase.flight_len(true) + @sf.hint_back_ms)
     assert_true(t.drawn_images().iter().any(fn(i) { i[2] > 56.5 && i[8] > 0.9 }), msg="in the message: \{Repr(t.drawn_images())}")
   })
-}
-
-///|
-test "files sent fly from their tiles to their places in the message, then are its own" {
-  both_pages(fn() raise {
-    new_run()
-    both_way()
-    let clock : Ref[Double] = { val: 0.0 }
-    fix_clock.val = Some(fn() { clock.val })
-    let src = fixture("chat")
-    open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
-    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
-    t.run_for(@ui.move_most_ms)
-    // a picture up at once (the fixture's station takes it), its tile in the composer
-    @sfbase.writing_add(src, @sfbase.writing(src, "ws1/st1:s-c1"), "ws1/st1", "截图.png", png_head())
-    t.draw()
-    t.run_for(@ui.move_most_ms)
-    t.tap_text("发消息")
-    t.type_text("看这张")
-    tap_send(t)
-    let f = match send_flight.get() {
-      Some(f) => f
-      None => fail("nothing flies")
-    }
-    assert_eq(f.files.length(), 1)
-    let ff = f.files[0]
-    // (put up from here: its upload, as its message has it, file_key)
-    assert_true(ff.key.has_prefix("upload:"))
-    assert_true(ff.picture is Some(_))
-    // from its tile: 56 across
-    assert_eq(ff.from.2, 56.0)
-    // its row in the list (the outbox's, at once): the picture goes to where the message has it
-    t.draw()
-    t.draw()
-    match @motion.measured_rect(t.ctx(), @sfbase.flight_to_key(f, ff.key)) {
-      Some((_, _, w, _)) => assert_true(w > 56.0)
-      None => fail("the message's picture is not where the flight can see it")
-    }
-    t.run_for(@sfbase.flight_most_ms)
-    assert_true(send_flight.get() is None)
-    fix_clock.val = None
-  }, old_only="the old flight (send_flight) and its measured ends: made as nodes, a file's tile flies to its place in its message by View::flies_in, every frame held by chat_motion_frames_wbtest's picture and file sent (drawn as laid out, the picture in every frame, never flown again)")
 }
 
 ///|
@@ -894,9 +842,7 @@ test "a chat linked to one Slack thread: 抄送 while writing opens it to tick, 
     assert_eq(asked[0].params, { "station": "ws1/st1", "thread": 7, "to": 21, "on": true })
     t.draw()
     // (made as nodes, the menu going out on its way: pop_out_ms, menu_node's)
-    if both_nodes.val {
-      t.run_for(@motion.pop_out_ms)
-    }
+    t.run_for(@motion.pop_out_ms)
     // one: closed once ticked
     assert_true(t.find("#still-fail") is None, msg=t.words().map(fn(x) { x.0 }).join("|"))
   })
@@ -906,7 +852,6 @@ test "a chat linked to one Slack thread: 抄送 while writing opens it to tick, 
 test "a picture restored in the composer opens in the viewer when tapped" {
   both_pages(fn() raise {
     new_run()
-    both_way()
     let base = fixture("chat")
     let src : Source = {
       ..base,
@@ -951,7 +896,7 @@ test "a video waiting in the composer made as nodes stands on a video's black in
   for dark in [false, true] {
     let calls : Array[Made] = []
     let made : Ref[Source?] = Ref(None)
-    let t = fake_core(calls, made~, composed=true)
+    let t = fake_core(calls, made~)
     t.set_dark(dark)
     t.draw()
     let src = made.val.unwrap()
@@ -973,7 +918,6 @@ test "a video waiting in the composer made as nodes stands on a video's black in
 ///|
 test "a picture restored in the composer made as nodes shows as the device reads it, and the viewer opens on it" {
   new_run()
-  @sfbase.hold_chat_page_nodes(Some(true))
   let base = fixture("chat")
   let answer : Ref[((Result[(Json, Bytes?), Json]) -> Unit)?] = Ref(None)
   let src : Source = {
@@ -1013,13 +957,11 @@ test "a picture restored in the composer made as nodes shows as the device reads
     }
     None => fail("the viewer did not open")
   }
-  @sfbase.hold_chat_page_nodes(Some(false))
 }
 
 ///|
 test "a message's picture quoted in the composer made as nodes shows as its station's comes, never a grey square for good" {
   new_run()
-  @sfbase.hold_chat_page_nodes(Some(true))
   let base = fixture("chat")
   let answer : Ref[((Result[(Json, Bytes?), Json]) -> Unit)?] = Ref(None)
   let src : Source = {
@@ -1052,7 +994,6 @@ test "a message's picture quoted in the composer made as nodes shows as its stat
   (answer.val.unwrap())(Ok((Json::object({}), Some(png_head()))))
   t.run_for(@ui.move_most_ms + @ui.image_fade_ms)
   assert_true(t.locate("img:mem:test/quoted").length() > 0, msg="the quoted picture did not come to its tile")
-  @sfbase.hold_chat_page_nodes(Some(false))
 }
 
 ///|

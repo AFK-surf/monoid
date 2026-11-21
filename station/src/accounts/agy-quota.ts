@@ -173,10 +173,16 @@ export function agyModelWindows(body: Json): QuotaWindow[] {
     if (modelId.toLowerCase().startsWith("tab_") || !isObject(entry)) continue;
     const qi = isObject(entry.quotaInfo) ? entry.quotaInfo : null;
     if (qi === null) continue;
-    const frac = typeof qi.remainingFraction === "number" ? qi.remainingFraction : typeof qi.remaining_fraction === "number" ? qi.remaining_fraction : null;
-    if (frac === null) continue;
-    const scope = agyScopeForModel(modelId);
     const resetsAt = at(qi.resetTime ?? qi.reset_time);
+    const camelFrac = qi.remainingFraction;
+    const snakeFrac = qi.remaining_fraction;
+    let frac = typeof camelFrac === "number" ? camelFrac : snakeFrac;
+    // Google omits the zero fraction for an exhausted model pool and still gives its reset time.
+    if (typeof frac !== "number") {
+      if (camelFrac != null || snakeFrac != null || resetsAt === null) continue;
+      frac = 0;
+    }
+    const scope = agyScopeForModel(modelId);
     const prev = pools[scope];
     if (prev === null) {
       pools[scope] = { frac, resetsAt };

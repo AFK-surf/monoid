@@ -214,7 +214,7 @@ priv struct P53Upkeep {
   remote : P53Remote
   mut tier : String
   mut running : Bool
-  mut state_loaded : Bool
+  mut state_load : @effect.Deferred[Unit]?
   mut last_orphan_rooms_at : Double?
   mut last_repo_branches_at : Double?
   mut last_full_relieve_at : Double?
@@ -222,24 +222,30 @@ priv struct P53Upkeep {
 
 ///|
 fn P53Upkeep::new(bus : LiveBus, jobs : P53Jobs, remote : P53Remote) -> P53Upkeep {
-  { bus, jobs, remote, tier: "ok", running: false, state_loaded: false, last_orphan_rooms_at: None, last_repo_branches_at: None, last_full_relieve_at: None }
+  { bus, jobs, remote, tier: "ok", running: false, state_load: None, last_orphan_rooms_at: None, last_repo_branches_at: None, last_full_relieve_at: None }
 }
 
 ///|
 async fn P53Upkeep::ensure_state_loaded(self : P53Upkeep) -> Unit {
-  if self.state_loaded {
-    return
-  }
-  self.state_loaded = true
-  let saved = p53_read_upkeep_state_json(self.bus.host, self.bus.data)
-  if self.last_repo_branches_at is None {
-    self.last_repo_branches_at = jnum_of(saved, "lastRepoBranchesAt")
-  }
-  if self.last_orphan_rooms_at is None {
-    self.last_orphan_rooms_at = jnum_of(saved, "lastOrphanRoomsAt")
-  }
-  if self.last_full_relieve_at is None {
-    self.last_full_relieve_at = jnum_of(saved, "lastFullRelieveAt")
+  match self.state_load {
+    Some(d) => d.wait() catch { _ => () }
+    None => {
+      let d : @effect.Deferred[Unit] = @effect.Deferred::new()
+      self.state_load = Some(d)
+      defer {
+        ignore(d.succeed(()))
+      }
+      let saved = p53_read_upkeep_state_json(self.bus.host, self.bus.data)
+      if self.last_repo_branches_at is None {
+        self.last_repo_branches_at = jnum_of(saved, "lastRepoBranchesAt")
+      }
+      if self.last_orphan_rooms_at is None {
+        self.last_orphan_rooms_at = jnum_of(saved, "lastOrphanRoomsAt")
+      }
+      if self.last_full_relieve_at is None {
+        self.last_full_relieve_at = jnum_of(saved, "lastFullRelieveAt")
+      }
+    }
   }
 }
 

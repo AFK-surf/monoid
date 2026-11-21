@@ -21,7 +21,6 @@ using @sfapp {
   chat_view_made,
   cloud_updates,
   core_pictures,
-  draft_waiting,
   face_here,
   field,
   fill,

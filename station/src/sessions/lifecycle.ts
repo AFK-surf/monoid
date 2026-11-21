@@ -13,7 +13,7 @@ import { log } from "../ops/log.ts";
 import { tr, type Lang, stationLang } from "../ops/i18n.ts";
 import { clean, inside, samePath, within } from "../ops/paths.ts";
 import { RELIEVE_FULL_EVERY_MS, pruneRepoWorktrees, relieveOrphanTranscripts, treeBytes } from "../ops/storage.ts";
-import { IDLE_MEASURED_MAX, patchUpkeepState, readUpkeepState } from "../ops/upkeep-state.ts";
+import { IDLE_MEASURED_MAX, emptyUpkeepState, patchUpkeepState } from "../ops/upkeep-state.ts";
 import { REPO_GIT_TIMEOUT_MS, type RepoGitRun, isProcessFile, pruneRepoBranchesIn, runRepoGit } from "../ops/repo-branches.ts";
 import { checkContext } from "./context-cap.ts";
 import { type MachineSession, type Roots, ROLLOUT_DEPTH, ROLLOUT_ENTRIES, extension, rolloutOf } from "../read/machine.ts";
@@ -493,27 +493,33 @@ function idleMeasuredRecord(hub: Hub): Record<string, number> {
   return out;
 }
 
-async function ensureUpkeepStateLoaded(hub: Hub): Promise<void> {
-  if (hub.upkeepStateLoaded) return;
-  hub.upkeepStateLoaded = true;
-  const saved = await readUpkeepState(hub.config().dataDir);
-  // Preserve any entries already recorded in memory in this process (newer than disk), while restoring prior entries.
-  const existing = [...hub.idleMeasured.entries()];
-  hub.idleMeasured.clear();
-  for (const [k, v] of Object.entries(saved.idleMeasured)) {
-    hub.idleMeasured.set(k, v);
-  }
-  for (const [k, v] of existing) {
-    hub.idleMeasured.delete(k);
-    hub.idleMeasured.set(k, v);
-  }
-  while (hub.idleMeasured.size > IDLE_MEASURED_MAX) {
-    const oldest = hub.idleMeasured.keys().next().value;
-    if (oldest === undefined) break;
-    hub.idleMeasured.delete(oldest);
-  }
-  if (hub.lastArchiveUpkeepAt === null) hub.lastArchiveUpkeepAt = saved.lastArchiveUpkeepAt;
-  if (hub.lastFullRelieveAt === null) hub.lastFullRelieveAt = saved.lastFullRelieveAt;
+function ensureUpkeepStateLoaded(hub: Hub): Promise<void> {
+  hub.upkeepStateLoad ??= (async () => {
+    let saved;
+    try {
+      saved = await hub.readUpkeepState(hub.config().dataDir);
+    } catch {
+      saved = emptyUpkeepState();
+    }
+    // Preserve any entries already recorded in memory in this process (newer than disk), while restoring prior entries.
+    const existing = [...hub.idleMeasured.entries()];
+    hub.idleMeasured.clear();
+    for (const [k, v] of Object.entries(saved.idleMeasured)) {
+      hub.idleMeasured.set(k, v);
+    }
+    for (const [k, v] of existing) {
+      hub.idleMeasured.delete(k);
+      hub.idleMeasured.set(k, v);
+    }
+    while (hub.idleMeasured.size > IDLE_MEASURED_MAX) {
+      const oldest = hub.idleMeasured.keys().next().value;
+      if (oldest === undefined) break;
+      hub.idleMeasured.delete(oldest);
+    }
+    if (hub.lastArchiveUpkeepAt === null) hub.lastArchiveUpkeepAt = saved.lastArchiveUpkeepAt;
+    if (hub.lastFullRelieveAt === null) hub.lastFullRelieveAt = saved.lastFullRelieveAt;
+  })();
+  return hub.upkeepStateLoad;
 }
 
 async function persistHubUpkeepState(

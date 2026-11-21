@@ -24,7 +24,7 @@ pub fn language_from_prefs(prefs : Json?) -> Unit {
 /// nodes; turning `board` off puts away any active board state and returns Home to the ordinary chat list. The chat's
 /// page as a test or a scene holds it (hold_chat_page_nodes), whatever the prefs say.
 pub fn chat_page_from_prefs(prefs : Json?) -> Unit {
-  let chat_page = chat_page_held.val.unwrap_or(@settings.feature_from(prefs, "chatPage"))
+  let chat_page = chat_page_held.val.unwrap_or(true)
   if chat_page != chat_page_told.val {
     chat_page_told.val = chat_page
     chat_page_nodes.set(chat_page)
@@ -48,7 +48,7 @@ pub fn chat_page_from_prefs(prefs : Json?) -> Unit {
 
 ///|
 /// The features last told from `prefs`: none on as a run begins.
-let chat_page_told : Ref[Bool] = Ref(false)
+let chat_page_told : Ref[Bool] = Ref(true)
 
 ///|
 /// The way a test or a scene (MBUI_CHAT_PAGE) holds the chat's page made (chat_page_nodes), over what the prefs say:
@@ -409,7 +409,7 @@ fn app_frame_reset() -> Unit {
   badge_told.set(-1)
   told_bars.val = None
   told_dark.val = None
-  chat_page_told.val = false
+  chat_page_told.val = true
   chat_page_held.val = None
   farview_told.val = false
   board_told.val = false

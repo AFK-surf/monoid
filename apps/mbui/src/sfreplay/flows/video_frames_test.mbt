@@ -14,9 +14,12 @@ test "97-video-frames" {
     // (its chat to the top of the list as the video comes, there where it goes: tapped once its room is open)
     f.run_for(@ui.row_size_ms)
     f.tap("收到视频 201493")
-    f.run_for(@ui.move_most_ms)
+    f.run_to(@ui.nav_rest)
     f.see("=willow")
     f.see("e2e-clip.mp4")
+    // (the player's reads of the file as its host takes them: how many parts of it a host asks for its own (AVPlayer
+    // two where the run had three), what is read checked whole below (read_whole, its frames))
+    f.incidental_calls(["station.file.part"])
     f.tap("e2e-clip.mp4")
     // flown open, its bars on once it is in
     f.run_to(@sfapp.preview_rest)
@@ -25,6 +28,7 @@ test "97-video-frames" {
     player_opened(f, v)
     player_told(f)
     f.see("/ 0:04")
+    f.incidental_calls([])
     read_whole(f, v, 423168)
     // paused, as the player says (its button 播放 again): the frame showing of how many
     f.tap("icon:pause")

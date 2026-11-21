@@ -8,7 +8,12 @@ test "51-sheets-sinking" {
   @sfreplay.orders(fn(seed) {
     let f = @sfreplay.Flow::start(@sfreplay.trace("sheets-sinking"), seed~)
     f.see("端到端测试")
+    // (the first screen's cover gone at every rate before its workspace is pressed)
+    f.run_for(@ui.move_most_ms)
     f.tap("=Dev")
+    // (its sheet seen first: run to its rest once it rises)
+    f.see("切换 workspace")
+    f.run_for(@ui.move_most_ms)
     f.run_to(@sf.presented_rest)
     // its scrim tapped: it sinks, only drawn; the bar's 文件 tapped under it as it goes
     f.tap_at(195.0, 120.0)
@@ -33,9 +38,10 @@ test "51-sheets-sinking" {
     f.run_to(@sf.presented_rest)
     f.see("穿过下去的面板 082939")
     f.gone("正在发送")
-    // the test station's agent answers with a failure (no model there), its notice offering 上报: looked for, so the run
-    // ends once it is in, as the replay does (else whether its row was built before the end is the run's luck)
-    f.see("上报")
+    // the test station's agent answers with a failure (no model there), its notice offering 重试 (its session to go
+    // again: message.mbt's notice_after, before 上报): looked for, so the run ends once it is in, as the replay does
+    // (else whether its row was built before the end is the run's luck)
+    f.see("重试")
     f.end()
   })
 }

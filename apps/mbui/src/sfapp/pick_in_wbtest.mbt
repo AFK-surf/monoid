@@ -36,47 +36,44 @@ fn pick_test_png() -> Bytes {
 
 ///|
 test "small touch ＋ → recent photo in the strip: what Picks.photo reads goes into the chat's composer as the host's event tells it" {
-  for nodes in [false, true] {
-    new_run()
-    @sfbase.hold_chat_page_nodes(Some(nodes))
-    let calls : Array[Made] = []
-    let src = pick_test_source(calls)
-    open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
-    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
-    t.check_looks(false)
-    let shot : @hostapi.GalleryPhoto = {
-      id: 1L,
-      src: "content://media/external/images/media/1",
-      added: 1_792_200_000L,
-      modified: 1_792_200_000L,
-      taken: -1L,
-      video: false,
-    }
-    t.add_image(shot.src, 1080, 2400)
-    t.gallery([shot])
-    t.run_for(@ui.move_most_ms)
-    t.picks_by_hand()
-    let (rx, ry, rw, rh) = t.get(Button, label=@sf.t("web-main.composer.attach")).rect
-    t.tap(rx + rw / 2.0, ry + rh / 2.0)
-    t.run_for(@ui.move_most_ms)
-    // first gallery photo tile after the camera tile (24 + 98..214), below its selection ring
-    let (_, py) = t.locate("=照片和视频")[0]
-    t.tap(150.0, py - 80.0)
-    t.run_for(@ui.move_most_ms)
-    assert_true(t.pick_asks() == [Photos], msg="nodes=\{nodes}")
-    assert_eq(named(calls, "composer.add").length(), 0, msg="nodes=\{nodes}")
-    t.picks([("recent.png", pick_test_png())])
-    t.pick_answer(1)
-    t.run_for(@ui.move_most_ms)
-    let added = named(calls, "composer.add")
-    assert_eq(added.length(), 1, msg="nodes=\{nodes}")
-    assert_eq(text(handed(added[0]), "name"), "recent.png", msg="nodes=\{nodes}")
-    let remove = @sf.t("web-main.file.remove", args=[("name", "recent.png")])
-    assert_true(
-      t.query(Button, label=remove) is Some(_),
-      msg="nodes=\{nodes}, sems=\{Repr(t.semantics().map(fn(s) { (s.role, s.label, s.hidden) }))}",
-    )
+  new_run()
+  let calls : Array[Made] = []
+  let src = pick_test_source(calls)
+  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.check_looks(false)
+  let shot : @hostapi.GalleryPhoto = {
+    id: 1L,
+    src: "content://media/external/images/media/1",
+    added: 1_792_200_000L,
+    modified: 1_792_200_000L,
+    taken: -1L,
+    video: false,
   }
+  t.add_image(shot.src, 1080, 2400)
+  t.gallery([shot])
+  t.run_for(@ui.move_most_ms)
+  t.picks_by_hand()
+  let (rx, ry, rw, rh) = t.get(Button, label=@sf.t("web-main.composer.attach")).rect
+  t.tap(rx + rw / 2.0, ry + rh / 2.0)
+  t.run_for(@ui.move_most_ms)
+  // first gallery photo tile after the camera tile (24 + 98..214), below its selection ring
+  let (_, py) = t.locate("=照片和视频")[0]
+  t.tap(150.0, py - 80.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.pick_asks() == [Photos])
+  assert_eq(named(calls, "composer.add").length(), 0)
+  t.picks([("recent.png", pick_test_png())])
+  t.pick_answer(1)
+  t.run_for(@ui.move_most_ms)
+  let added = named(calls, "composer.add")
+  assert_eq(added.length(), 1)
+  assert_eq(text(handed(added[0]), "name"), "recent.png")
+  let remove = @sf.t("web-main.file.remove", args=[("name", "recent.png")])
+  assert_true(
+    t.query(Button, label=remove) is Some(_),
+    msg="sems=\{Repr(t.semantics().map(fn(s) { (s.role, s.label, s.hidden) }))}",
+  )
 }
 
 ///|
@@ -98,34 +95,31 @@ test "large touch ＋ → 照片 (an unfolded phone or tablet's panel beside ＋
     // ipma (version 0, flags 0, 1 item, item 1 -> 1 assoc: index 1 = 13 bytes)
     0, 0, 0, 13, 0x69, 0x70, 0x6d, 0x61, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 0x81,
   ].map(fn(x) { x.to_byte() }))
-  for nodes in [false, true] {
-    new_run()
-    @sfbase.hold_chat_page_nodes(Some(nodes))
-    let calls : Array[Made] = []
-    let src = pick_test_source(calls)
-    open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
-    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=960.0, h=844.0, platform=2)
-    t.check_looks(false)
-    t.run_for(@ui.move_most_ms)
-    t.picks_by_hand()
-    let (rx, ry, rw, rh) = t.get(Button, label=@sf.t("web-main.composer.attach")).rect
-    t.tap(rx + rw / 2.0, ry + rh / 2.0)
-    t.run_for(@ui.move_most_ms)
-    let (x, y) = t.locate("=照片和视频")[0]
-    t.tap(x, y)
-    t.run_for(@ui.move_most_ms)
-    assert_true(t.pick_asks() == [Photos], msg="nodes=\{nodes}")
-    assert_eq(named(calls, "composer.add").length(), 0, msg="nodes=\{nodes}")
-    t.picks([("IMG_0001.HEIC", heic)])
-    t.pick_answer(1)
-    t.run_for(@ui.move_most_ms)
-    let added = named(calls, "composer.add")
-    assert_eq(added.length(), 1, msg="nodes=\{nodes}")
-    let one = handed(added[0])
-    assert_eq(text(one, "name"), "IMG_0001.HEIC", msg="nodes=\{nodes}")
-    let pic = @sfbase.writing_pictures.get(text(one, "id")).unwrap_or("")
-    assert_true(pic.has_prefix("mem:writing/"), msg="nodes=\{nodes}, pic=\{pic}")
-  }
+  new_run()
+  let calls : Array[Made] = []
+  let src = pick_test_source(calls)
+  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=960.0, h=844.0, platform=2)
+  t.check_looks(false)
+  t.run_for(@ui.move_most_ms)
+  t.picks_by_hand()
+  let (rx, ry, rw, rh) = t.get(Button, label=@sf.t("web-main.composer.attach")).rect
+  t.tap(rx + rw / 2.0, ry + rh / 2.0)
+  t.run_for(@ui.move_most_ms)
+  let (x, y) = t.locate("=照片和视频")[0]
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.pick_asks() == [Photos])
+  assert_eq(named(calls, "composer.add").length(), 0)
+  t.picks([("IMG_0001.HEIC", heic)])
+  t.pick_answer(1)
+  t.run_for(@ui.move_most_ms)
+  let added = named(calls, "composer.add")
+  assert_eq(added.length(), 1)
+  let one = handed(added[0])
+  assert_eq(text(one, "name"), "IMG_0001.HEIC")
+  let pic = @sfbase.writing_pictures.get(text(one, "id")).unwrap_or("")
+  assert_true(pic.has_prefix("mem:writing/"), msg="pic=\{pic}")
 }
 
 ///|

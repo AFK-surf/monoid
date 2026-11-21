@@ -62,7 +62,6 @@ let rp_screens : Array[(String, Double, Double, Int)] = [("小屏", 390.0, 844.0
 fn rp_open(screen : (String, Double, Double, Int), clock : Ref[Double]) -> @ui.Tester raise {
   let (_, w, h, platform) = screen
   new_run()
-  @sfbase.hold_chat_page_nodes(Some(true))
   fix_clock.val = Some(fn() { clock.val })
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
@@ -448,48 +447,6 @@ test "chat as nodes: the viewer's own words sent while an answer's top holds the
     assert_true(y > bar_foot() && y < rp_field_top(t), msg="\{screen.0}: what was sent at \{y}")
     let top = t.drawn_of(rp_first).map(fn(d) { d.1 }).unwrap_or(-1.0e9)
     assert_true(top < bar_foot(), msg="\{screen.0}: the answer's top still in sight at \{top}")
-  }
-  fix_clock.val = None
-}
-
-///|
-test "chat list: held by an answer's top, the next message moves nothing; the viewer's own words sent set the list gliding to its foot with the row placed" {
-  if @ui.test_at_a_rate() {
-    return
-  }
-  for screen in rp_screens {
-    let (_, w, h, platform) = screen
-    let clock = Ref(0.0)
-    new_run()
-    // (the old page's list and its hold (hold_placed): held on it)
-    @sfbase.hold_chat_page_nodes(Some(false))
-    fix_clock.val = Some(fn() { clock.val })
-    let src = fixture("chat")
-    open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
-    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)
-    t.set_rows_on_pixels(true)
-    t.run_for(@ui.move_most_ms)
-    t.tap_text("发消息")
-    t.type_text("收到，我先看")
-    t.run_for(@ui.move_most_ms)
-    fix_later(1.0, fn() { rp_said(170, long_reply + "\n\n" + rp_paras(30)) })
-    fix_clock_set(clock, clock.val + 1.0)
-    t.draw()
-    t.run_for(rp_rest_ms)
-    let rest = t.drawn_of(rp_first).map(fn(d) { d.1 }).unwrap_or(-1.0e9)
-    assert_true((rest - rp_held_at(screen.0)).abs() < rp_half_px, msg="\{screen.0}: held at \{rest}")
-    fix_later(1.0, fn() { rp_said(171, rp_next) })
-    fix_clock_set(clock, clock.val + 1.0)
-    t.draw()
-    t.run_for(rp_rest_ms)
-    let held = t.drawn_of(rp_first).map(fn(d) { d.1 }).unwrap_or(-1.0e9)
-    assert_true((held - rest).abs() < 0.01, msg="\{screen.0}: \{held}, held at \{rest}")
-    if platform == 2 {
-      tap_send(t)
-    } else {
-      t.key(@ui.key_code_enter)
-    }
-    assert_eq(hold_placed(), Some(true))
   }
   fix_clock.val = None
 }

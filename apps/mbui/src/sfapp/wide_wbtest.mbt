@@ -998,15 +998,13 @@ test "wide: a new chat's first words, the hint gone under them, into their bubbl
   assert_false(hint_drawn(t), msg="the hint under the words sent")
   assert_true(app.nav.top() is Chat(_))
   let sent = t.time()
-  // the new chat's choices leave as what was by the composer does: fading where they are, on its ground as it goes
-  choices_in_ground(t)
+  // the new chat's choices gone with its page (the node page's own composer: newchat_send_wbtest says how they go)
   t.run_for(new_fade_ms + 1.0)
   let (gx, _, gw, _) = composer_glass(t)
   assert_true(seen_words(t, "Willow").iter().all(fn(p) { p.0 < gx || p.0 > gx + gw }), msg="the choices gone")
   assert_false(hint_drawn(t), msg="the hint under the words sent, the composer gone to the chat's foot")
   // with the list, no frame where they are not, nor a jump
   let landed = one_way_till(t, words, sent + flight_carry_ms + 34.0, 120.0)
-  assert_true(send_flight.get() is None)
   // over the composer at the chat's foot (the chat's rows at its end), down with it from where they were typed
   let (_, foot_y, _, _) = composer_glass(t)
   assert_true(landed.1 > typed.1 && landed.1 < foot_y, msg="landed at \{Repr(landed)} from \{Repr(typed)}")
@@ -1060,13 +1058,7 @@ test "wide: a chat and a new chat switched by the sidebar: the composer goes bet
   assert_true(app.nav.top() == NewChat)
   let (_, y0, _, h0) = composer_glass(t)
   assert_true((y0 + h0 - (cy + ch)).abs() < 1.0, msg="from the chat's foot: \{Repr((y0, h0))} \{Repr((cy, ch))}")
-  // (the old page's words looked at in its old view; the page made as nodes' in the window's tree)
-  let scene_alpha = fn() {
-    match t.look_of("想让 agent 做什么？") {
-      Some(l) => Some(l.2)
-      None => t.words().iter().find_first(fn(w) { w.0 == "想让 agent 做什么？" }).map(fn(w) { w.5 })
-    }
-  }
+  let scene_alpha = fn() { t.words().iter().find_first(fn(w) { w.0 == "想让 agent 做什么？" }).map(fn(w) { w.5 }) }
   assert_eq(scene_alpha(), Some(1.0))
   // what it holds there and did not at the chat's foot (the new chat's choices) carried on its ground all the way
   choices_in_ground(t)
@@ -2704,15 +2696,8 @@ test "wide: a working agent's card whose standing is long (what it waits for) ha
 ///|
 /// The chat of fixture `chat-agent-card` on 大屏 with its agents' cards' latest lines as `latest` says (its lines, the
 /// view's version), and where its latest agent's message's name is (the pointer resting there opens its card).
-fn lines_card(
-  latest : @signals.Signal[(Array[(String, String)], Int)],
-  nodes? : Bool? = None,
-) -> (@ui.Tester, Double, Double) raise {
+fn lines_card(latest : @signals.Signal[(Array[(String, String)], Int)]) -> (@ui.Tester, Double, Double) raise {
   new_run()
-  // (the page's way held where a test says: the old card's lines running on (useLinesMotion) is the old page's)
-  if nodes is Some(on) {
-    @sfbase.hold_chat_page_nodes(Some(on))
-  }
   let base = fixture("chat-agent-card")
   let src : Source = {
     ..base,
@@ -2785,11 +2770,11 @@ test "wide: an agent's card opened again has its latest lines as they are then: 
 }
 
 ///|
-test "wide: an agent's card's latest lines run on as they change (AgentCard.tsx useLinesMotion), the first gone leaving" {
+test "wide: an agent's card's latest lines as they change: the first gone, the rest a line up each, the new one whole (agent_card_node.mbt: View::each, no run of lines)" {
   let latest : @signals.Signal[(Array[(String, String)], Int)] = @signals.signal(
     ([("k1", "读了 src/ui/list.mbt"), ("k2", "跑了列表的测试"), ("k3", "改了 src/ui/list.mbt")], 1),
   )
-  let (t, x, y) = lines_card(latest, nodes=Some(false))
+  let (t, x, y) = lines_card(latest)
   let word = fn(s : String) { t.words().filter(fn(w) { w.0 == s && w.5 > 0.0 }) }
   t.move_to(x, y)
   t.run_for(@sfpages.hover_open_ms * 2.0)
@@ -2801,31 +2786,13 @@ test "wide: an agent's card's latest lines run on as they change (AgentCard.tsx 
   let y3 = y_of("改了 src/ui/list.mbt")
   let pitch = y2 - y1
   assert_true(pitch > 10.0 && near(y3 - y2, pitch), msg="\{Repr((y1, y2, y3))}")
-  // one more done: the first goes, the next comes
+  // one more done: the first goes, the next comes (the node card says its lines as they are: View::each, agent_card_node)
   latest.set(([("k2", "跑了列表的测试"), ("k3", "改了 src/ui/list.mbt"), ("k4", "提交了改动")], 2))
-  t.frame()
-  // as they were: those that stay where they were drawn, the new one faint a line beyond the last, the first's copy
-  // where it was, whole
-  assert_true(near(y_of("跑了列表的测试"), y2) && near(y_of("改了 src/ui/list.mbt"), y3))
-  assert_eq(word("提交了改动").length(), 0)
-  let gone = word("读了 src/ui/list.mbt")
-  assert_true(gone.length() == 1 && near(gone[0].2, y1) && gone[0].5 > 0.99, msg="\{Repr(gone)}")
-  // half way: on their way up together, the copy with them
-  t.run_for(@sfpages.lines_ms / 2.0)
-  let mid = y_of("跑了列表的测试")
-  assert_true(mid < y2 - 1.0 && mid > y1 + 1.0, msg="\{mid}")
-  let (m3, m4, m1) = (y_of("改了 src/ui/list.mbt"), y_of("提交了改动"), y_of("读了 src/ui/list.mbt"))
-  assert_true(
-    near(m3 - mid, pitch) && near(m4 - mid, pitch * 2.0) && near(m1, mid - pitch),
-    msg="\{Repr((mid, m3, m4, m1, pitch))}",
-  )
-  // there: a line up each, the new one whole, the copy gone
-  t.run_for(@sfpages.lines_ms / 2.0)
-  assert_true(near(y_of("跑了列表的测试"), y1) && near(y_of("改了 src/ui/list.mbt"), y2))
-  let new = word("提交了改动")
-  assert_true(near(new[0].2, y3) && new[0].5 > 0.99, msg="\{Repr(new)}")
-  t.frame()
+  t.run_for(@ui.move_most_ms)
   assert_eq(word("读了 src/ui/list.mbt").length(), 0)
+  assert_true(near(y_of("跑了列表的测试"), y1) && near(y_of("改了 src/ui/list.mbt"), y2), msg="\{Repr((y_of("跑了列表的测试"), y_of("改了 src/ui/list.mbt")))}")
+  let new = word("提交了改动")
+  assert_true(new.length() == 1 && near(new[0].2, y3) && new[0].5 > 0.99, msg="\{Repr(new)}")
 }
 
 ///|

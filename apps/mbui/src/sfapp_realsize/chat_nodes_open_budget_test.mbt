@@ -297,7 +297,6 @@ fn chat_nodes_open_measured(
       None => {
         @sfapp.reset()
         // (its composer made as nodes too: what the bars below were raised for)
-        @sfbase.hold_chat_page_nodes(Some(true))
         let c = @sfrealsize.RealSizeChanging::new()
         // (through the app's own client as a phone's core is, so its messages come by key as a device's do:
         // sfbench's chat-real)
@@ -465,7 +464,6 @@ fn field_or_null(m : Json, name : String) -> Json {
 fn chat_nodes_window_read(n : Int, s : (String, Double, Double, Int)) -> (Int, Int, Bool, @ui.Tester, @sfbase.Source) raise {
   let (_, w, h, platform) = s
   @sfapp.new_run()
-  @sfbase.hold_chat_page_nodes(Some(true))
   let src = chat_nodes_window_source(n)
   let read0 = @sfbase.chat_messages_read.val
   @sfbase.open_chat(budget_long_ref)
@@ -595,7 +593,6 @@ test "a chat's page made as nodes left kept at rest, holding no chat meanwhile, 
   for win in [("phone", 360.0, 740.0, 2), ("wide", 1280.0, 800.0, 0)] {
     let (name, w, h, platform) = win
     @sfapp.new_run()
-    @sfbase.hold_chat_page_nodes(Some(true))
     let client = @core.Client::new(fn(_) {  })
     let called : Array[String] = []
     let src = chat_kept_left_source(client, called)

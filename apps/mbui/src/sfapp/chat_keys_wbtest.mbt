@@ -215,19 +215,17 @@ test "Escape in a chat with its side panel open closes all of its tabs (chat.tab
 
 ///|
 test "⌘W closes the visible side panel, including a file and several tabs, without closing the window" {
-  for nodes in [false, true] {
-    for mode in ["chat-history-side", "chat-tabs-side", "chat-view-side"] {
-      let calls : Array[Made] = []
-      let t = wide_tester(calls, mode~, before=fn(_) { @sfbase.hold_chat_page_nodes(Some(nodes)) })
-      t.run_for(@ui.move_most_ms)
-      // The composer may have focus when the shortcut is pressed.
-      t.click(TextField, label="发消息")
-      t.key(@ui.key_of_char('w'), mods=@ui.mod_cmd)
-      assert_eq(named(calls, "chat.tabs.clear").length(), 1, msg="\{mode}, nodes=\{nodes}")
-      assert_true(t.window_acts().is_empty(), msg="\{mode}, nodes=\{nodes}")
-      // Once the core has closed the tabs, the panel action declines the next close, for the window to take it.
-      assert_false(@ui.view_action("window.close_panel"), msg="\{mode}, nodes=\{nodes}")
-    }
+  for mode in ["chat-history-side", "chat-tabs-side", "chat-view-side"] {
+    let calls : Array[Made] = []
+    let t = wide_tester(calls, mode~)
+    t.run_for(@ui.move_most_ms)
+    // The composer may have focus when the shortcut is pressed.
+    t.click(TextField, label="发消息")
+    t.key(@ui.key_of_char('w'), mods=@ui.mod_cmd)
+    assert_eq(named(calls, "chat.tabs.clear").length(), 1, msg="\{mode}")
+    assert_true(t.window_acts().is_empty(), msg="\{mode}")
+    // Once the core has closed the tabs, the panel action declines the next close, for the window to take it.
+    assert_false(@ui.view_action("window.close_panel"), msg="\{mode}")
   }
 }
 

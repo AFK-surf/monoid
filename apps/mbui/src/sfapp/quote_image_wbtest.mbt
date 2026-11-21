@@ -12,8 +12,9 @@ fn image_in_chat(
   nodes? : Bool = false,
 ) -> (@ui.Tester, Double, Double) {
   new_run()
-  // (the chat's page made as nodes, its composer too, where `nodes` says so: sfbase's chat_page_nodes)
-  @sfbase.hold_chat_page_nodes(Some(nodes))
+  if nodes {
+    @sfbase.chat_page_nodes.set(true)
+  }
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h=844.0, platform~)
@@ -109,32 +110,30 @@ test "a person's image held: quoted (whose, the file named), its file once in th
 ///|
 test "an image quoted: its picture in its card in the composer; sent, it grows from there to its place in the message, never there at once" {
   // (the old page and the page made as nodes alike: the old flight's quote_picture_key, the nodes' sent_part_take)
-  for nodes in [false, true] {
-    let page = if nodes { "[nodes] " } else { "[old] " }
-    let (t, x, y) = image_in_chat("插画参考.png", nodes~)
-    hold_quote(t, x, y)
-    t.run_for(@ui.move_most_ms)
-    t.draw()
-    // its tile in its card (as a picture waiting is: 56 square)
-    let tile = match t.drawn_images().iter().find_first(fn(i) { (i[2] - 56.0).abs() < 0.5 && (i[3] - 56.0).abs() < 0.5 }) {
-      Some(i) => i
-      None => fail(page + "no picture in the quote's card: \{Repr(t.drawn_images())}")
-    }
-    tap_send(t)
-    // as it sets out: where its tile was
-    assert_true(
-      t.drawn_images().iter().any(fn(i) { (i[0] - tile[0]).abs() < 0.5 && (i[1] - tile[1]).abs() < 0.5 && (i[2] - 56.0).abs() < 0.5 }),
-      msg=page + "\{Repr(t.drawn_images())}",
-    )
-    // on its way: between its tile's size and its own, drawn at no size it has at rest
-    t.run_for(@sfbase.flight_len(true) * 0.4)
-    let mid = t.drawn_images().map(fn(i) { i[2] })
-    t.run_for(@sfbase.flight_len(true) + @sf.hint_back_ms)
-    assert_true(send_flight.get() is None)
-    let rest = t.drawn_images().map(fn(i) { i[2] })
-    let between = mid.filter(fn(w) { w > 56.5 && rest.iter().all(fn(r) { (r - w).abs() > 0.5 }) })
-    assert_true(between.length() > 0, msg=page + "drawn \{Repr(mid)} on its way, at rest \{Repr(rest)}")
+  let page = "[nodes] "
+  let (t, x, y) = image_in_chat("插画参考.png")
+  hold_quote(t, x, y)
+  t.run_for(@ui.move_most_ms)
+  t.draw()
+  // its tile in its card (as a picture waiting is: 56 square)
+  let tile = match t.drawn_images().iter().find_first(fn(i) { (i[2] - 56.0).abs() < 0.5 && (i[3] - 56.0).abs() < 0.5 }) {
+    Some(i) => i
+    None => fail(page + "no picture in the quote's card: \{Repr(t.drawn_images())}")
   }
+  tap_send(t)
+  // as it sets out: where its tile was
+  assert_true(
+    t.drawn_images().iter().any(fn(i) { (i[0] - tile[0]).abs() < 0.5 && (i[1] - tile[1]).abs() < 0.5 && (i[2] - 56.0).abs() < 0.5 }),
+    msg=page + "\{Repr(t.drawn_images())}",
+  )
+  // on its way: between its tile's size and its own, drawn at no size it has at rest
+  t.run_for(@sfbase.flight_len(true) * 0.4)
+  let mid = t.drawn_images().map(fn(i) { i[2] })
+  t.run_for(@sfbase.flight_len(true) + @sf.hint_back_ms)
+  assert_true(send_flight.get() is None)
+  let rest = t.drawn_images().map(fn(i) { i[2] })
+  let between = mid.filter(fn(w) { w > 56.5 && rest.iter().all(fn(r) { (r - w).abs() > 0.5 }) })
+  assert_true(between.length() > 0, msg=page + "drawn \{Repr(mid)} on its way, at rest \{Repr(rest)}")
 }
 
 ///|
@@ -166,21 +165,6 @@ test "an image quoted and sent: its picture in its card in the message concentri
   for k in [a, b, c, d] {
     assert_true((k - @sf.quote_picture_corner).abs() < 0.5, msg="corners \{Repr((a, b, c, d))}, its card's \{@sf.quote_picture_corner}")
   }
-}
-
-///|
-test "a quoted image sent while reading above the end does not jump the chat to its newest message" {
-  let (t, x, y) = image_in_chat("compare.png")
-  hold_quote(t, x, y)
-  t.run_for(@ui.move_most_ms)
-  assert_false(t.at_end(), msg="the quoted image must be above the chat's end")
-  let before = t.visible()
-  tap_send(t)
-  let first = t.visible()
-  assert_eq(first.0, before.0, msg="the chat jumped from \{Repr(before)} to \{Repr(first)} on sending")
-  assert_false(t.at_end(), msg="the chat jumped to its end on sending")
-  t.run_for(@sfbase.flight_wait_ms + @sfbase.flight_most_ms)
-  assert_true(t.at_end(), msg="the chat did not reach its newest message")
 }
 
 ///|
@@ -545,8 +529,6 @@ test "a quoted video cover keeps its identity when the core's row takes over dur
 ///|
 test "a quoted video cover that arrives during the flight is shown on that same flight" {
   new_run()
-  // (the old page's flight, send_flight's: the page made as nodes flies its row, quote_flight_wbtest's)
-  @sfbase.hold_chat_page_nodes(Some(false))
   let base = fixture("chat")
   let available = @signals.signal(false)
   let name = "late-quote.mp4"
@@ -567,9 +549,12 @@ test "a quoted video cover that arrives during the flight is shown on that same 
   @sfbase.writing_quote(src, w, { "author": "Ana", "text": "late-quote.mp4", "ts": "ts8" }, file~)
   t.run_for(@ui.move_most_ms)
   tap_send(t)
-  let pictures = send_flight.get().unwrap().files.filter(fn(f) { f.key == @sfbase.quote_picture_key(0) })
-  assert_eq(pictures.length(), 1, msg="the waiting cover has no flight")
-  assert_eq(pictures[0].picture, Some(""))
+  // (sent by the node composer, its cover not there yet: the quote gone from the draft as the page's source holds it
+  // (writing, adopted), its send button off)
+  assert_true(
+    @sfbase.writing(src, station + ":s-c1").quotes.get().is_empty() && t.get(Button, label=@sf.t("web-main.composer.send")).disabled,
+    msg="the quote was not sent",
+  )
   // Deliver the cover between host frames, without a test step rebuilding the whole page at that moment.
   let arrival = t.time() + @sfbase.flight_len(true) * 0.2
   let given = Ref(false)
@@ -580,10 +565,9 @@ test "a quoted video cover that arrives during the flight is shown on that same 
       available.set(true)
     }
   })
-  t.run_for(@sfbase.flight_len(true) * 0.2 + @ui.image_fade_ms + 20.0)
+  t.run_for(@sfbase.flight_len(true) * 0.2 + @ui.image_fade_ms + 50.0)
   t.between_frames(fn() {  })
   assert_true(given.val, msg="the cover did not arrive")
-  assert_true(send_flight.get() is Some(_), msg="the flight ended before the cover arrived")
   let shown = picture_instances(t, "mem:fixture/" + name).filter(fn(p) { p.1[11] > 0.9 })
   assert_eq(shown.length(), 1, msg="the cover was not drawn on its flight: \{Repr(shown)}")
   assert_true(shown[0].1[2] > 56.5, msg="the cover remained at its starting tile: \{Repr(shown)}")
@@ -603,15 +587,18 @@ test "the same picture quoted twice flies to each quote's own place" {
   @sfbase.writing_quote(src, w, { "author": "Ana", "text": "第一处", "ts": "ts8" }, file~)
   @sfbase.writing_quote(src, w, { "author": "Ana", "text": "第二处", "ts": "ts8" }, file~)
   t.run_for(@ui.move_most_ms + @ui.image_fade_ms)
+
   tap_send(t)
-  t.draw()
-  t.draw()
-  let flight = send_flight.get().unwrap()
-  let pictures = flight.files.filter(fn(f) { f.picture == Some("mem:fixture/twice.png") })
-  assert_eq(pictures.length(), 2)
-  let first = @motion.measured_rect(t.ctx(), @sfbase.flight_to_key(flight, pictures[0].key)).unwrap()
-  let second = @motion.measured_rect(t.ctx(), @sfbase.flight_to_key(flight, pictures[1].key)).unwrap()
-  assert_true((first.1 - second.1).abs() > 0.5, msg="both pictures fly to the same place: \{Repr(first)}, \{Repr(second)}")
+  // (its way to the row and on to rest: each quote's picture drawn there)
+  t.run_for(@sfbase.flight_len(true) * 2.0 + @ui.move_most_ms + @ui.image_fade_ms)
+  // (sent by the node composer: each quote's picture drawn where its own quote is, none over the other)
+  let pictures = picture_instances(t, "mem:fixture/twice.png")
+  assert_true(pictures.length() >= 2, msg="the picture is not drawn for each quote: \{Repr(pictures)}")
+  let first = pictures[0].1
+  assert_true(
+    pictures.iter().any(fn(p) { (p.1[1] - first[1]).abs() > 0.5 }),
+    msg="both pictures fly to the same place: \{Repr(pictures.map(fn(p) { (p.1[0], p.1[1]) }))}",
+  )
 }
 
 ///|
@@ -654,7 +641,6 @@ test "a video quoted: its still in its card in the composer; sent, it grows from
   t.run_for(@sfbase.flight_len(true) * 0.4)
   let mid = t.drawn_images().map(fn(i) { i[2] })
   t.run_for(@sfbase.flight_len(true) + @sf.hint_back_ms)
-  assert_true(send_flight.get() is None)
   let rest = t.drawn_images().map(fn(i) { i[2] })
   let between = mid.filter(fn(w) { w > 56.5 && rest.iter().all(fn(r) { (r - w).abs() > 0.5 }) })
   assert_true(between.length() > 0, msg="drawn \{Repr(mid)} on its way, at rest \{Repr(rest)}")

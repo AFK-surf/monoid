@@ -22,9 +22,9 @@ import {
   pruneRepoWorktrees,
   storageEntry,
 } from "../src/ops/storage.ts";
-import { UPKEEP_STATE_FILE } from "../src/ops/upkeep-state.ts";
+import { UPKEEP_STATE_FILE, readUpkeepState } from "../src/ops/upkeep-state.ts";
 import { Store } from "../src/store/store.ts";
-import { testClock } from "./hub-fakes.ts";
+import { settle, testClock } from "./hub-fakes.ts";
 
 const dirs: string[] = [];
 const fresh = (what: string) => {
@@ -228,6 +228,121 @@ describe("Item 1: persistent idleMeasured & lastArchiveUpkeepAt in <data>/upkeep
     assert.ok(!existsSync(join(ws, "node_modules")));
     const repaired = JSON.parse(readFileSync(stateFile, "utf8"));
     assert.equal(repaired.idleMeasured["s-corrupt"], now - 30 * 3_600_000);
+    await hub.shutdown();
+    store.close();
+  });
+
+  test("concurrent runArchiveUpkeepIfDue and cleanIdleRebuildable after restart wait on single-flight load and measure s-16..s-31", async () => {
+    const tc = testClock();
+    await tc.adjust(1_800_000_000_000);
+    const data = fresh("idle-concurrent");
+    const dbPath = join(data, "stillfail.db");
+    const HOUR = 3_600_000;
+
+    const measured: string[] = [];
+    const store = Store.open(dbPath, null, tc.clock);
+    const cfg = hubConfig(
+      {
+        profiles: [{ id: "cc", runtime: "claude", home: "homes/cc" }],
+        connects: [{ id: "cl", slack: { botName: "Claude bot" }, bind: { runtime: "claude" } }],
+      },
+      data,
+    );
+    const t0 = tc.clock.currentTimeMillisUnsafe();
+    const idleMeasured: Record<string, number> = {};
+    const workspaces: string[] = [];
+    for (let i = 0; i < 40; i++) {
+      const key = `s-${String(i).padStart(2, "0")}`;
+      const ws = join(data, "sessions", "cl", key, "workspace");
+      mkdirSync(join(ws, "node_modules", "pkg"), { recursive: true });
+      writeFileSync(join(ws, "node_modules", "pkg", "index.js"), "module.exports = 1;\n");
+      const activeAt = t0 - 48 * HOUR + i * 1_000;
+      store.insertSession({
+        key, connect: "cl", runtime: "claude", profile: "cc",
+        workspace: ws, runtimeSessionId: null, token: `tok-${key}`, createdAt: activeAt, lastActiveAt: activeAt,
+      });
+      if (i < 16) idleMeasured[key] = activeAt;
+      workspaces.push(ws);
+    }
+    const stateFile = join(data, UPKEEP_STATE_FILE);
+    writeFileSync(
+      stateFile,
+      JSON.stringify({
+        idleMeasured,
+        lastRepoBranchesAt: null,
+        lastOrphanRoomsAt: null,
+        lastFullRelieveAt: null,
+        lastArchiveUpkeepAt: t0 - ARCHIVE_UPKEEP_EVERY_MS,
+      }),
+    );
+
+    let readCount = 0;
+    let readReleased = false;
+    const measuredBeforeRelease: string[] = [];
+    let markReadStarted!: () => void;
+    const readStarted = new Promise<void>((resolve) => (markReadStarted = resolve));
+    let releaseRead!: () => void;
+    const readGate = new Promise<void>((resolve) => (releaseRead = resolve));
+
+    let coldRooms!: ColdRooms;
+    const hub = new Hub({
+      config: () => cfg,
+      store,
+      chats: () => undefined,
+      drivers: [],
+      mcpUrl: "http://127.0.0.1:0/mcp",
+      clock: tc.clock,
+      readUpkeepState: async (dir) => {
+        readCount++;
+        markReadStarted();
+        await readGate;
+        return readUpkeepState(dir);
+      },
+      cold: {
+        isCold: (key) => coldRooms.isCold(key),
+        restore: (key) => coldRooms.restore(key),
+        pack: (key) => coldRooms.pack(key),
+        needsPack: (key) => coldRooms.needsPack(key),
+        cleanIdleRebuildable: async (key) => {
+          if (!readReleased) measuredBeforeRelease.push(key);
+          const res = await coldRooms.cleanIdleRebuildable(key);
+          if (res !== null) measured.push(key);
+          return res;
+        },
+      },
+    });
+    coldRooms = new ColdRooms(() => hub);
+
+    // Deterministic race sequence:
+    // 1. Start entrypoint A (runArchiveUpkeepIfDue) and confirm readUpkeepState is suspended.
+    const pDue = runArchiveUpkeepIfDue(hub, hub.now());
+    await readStarted;
+    // 2. Start entrypoint B (cleanIdleRebuildable) while A's read is suspended, then drain all non-blocked work via
+    //    `settle()` so that unfixed code deterministically measures s-00..s-15 before the read gate opens.
+    const pClean = cleanIdleRebuildable(hub, hub.now());
+    await settle(20);
+    assert.deepEqual(
+      measuredBeforeRelease,
+      [],
+      "entrypoint B must wait for single-flight state load before measuring",
+    );
+    // 3. Release the read and await both.
+    readReleased = true;
+    releaseRead();
+    const [dueRan, cleanedCount] = await Promise.all([pDue, pClean]);
+    assert.equal(readCount, 1, "upkeep-state.json read exactly once");
+    assert.equal(dueRan, false, "runArchiveUpkeepIfDue respects 60s startup grace");
+    assert.equal(cleanedCount, 16);
+    assert.deepEqual(
+      measured,
+      Array.from({ length: 16 }, (_, i) => `s-${String(i + 16).padStart(2, "0")}`),
+      "concurrent cleanIdleRebuildable waited for single-flight state load and measured s-16..s-31",
+    );
+    for (let i = 16; i < 32; i++) assert.ok(!existsSync(join(workspaces[i]!, "node_modules")), `s-${i} cleaned`);
+    for (let i = 32; i < 40; i++) assert.ok(existsSync(join(workspaces[i]!, "node_modules")), `s-${i} untouched`);
+    const persisted = JSON.parse(readFileSync(stateFile, "utf8"));
+    assert.equal(Object.keys(persisted.idleMeasured).length, 32);
+
     await hub.shutdown();
     store.close();
   });

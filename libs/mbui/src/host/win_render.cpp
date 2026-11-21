@@ -6,7 +6,9 @@
 // the holes the app paints (kind 9, written transparent without blending), as
 // on the other hosts. Where DirectComposition cannot be had, the swap chain is
 // the window's own and there are no native views.
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
 #include <objbase.h>
 #include <d3d11.h>
@@ -15,6 +17,7 @@
 #include <dwmapi.h>
 #include <d3dcompiler.h>
 #include <wincodec.h>
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1098,26 +1101,45 @@ static level level_tex(DXGI_FORMAT format, int w, int h) {
   td.SampleDesc.Count = 1;
   td.Usage = D3D11_USAGE_DEFAULT;
   td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-  dev->CreateTexture2D(&td, NULL, &l.t);
-  dev->CreateRenderTargetView(l.t, NULL, &l.rt);
-  dev->CreateShaderResourceView(l.t, NULL, &l.srv);
+  if (FAILED(dev->CreateTexture2D(&td, NULL, &l.t)) || !l.t) return level{};
+  if (FAILED(dev->CreateRenderTargetView(l.t, NULL, &l.rt)) || !l.rt) {
+    l.t->Release();
+    return level{};
+  }
+  if (FAILED(dev->CreateShaderResourceView(l.t, NULL, &l.srv)) || !l.srv) {
+    l.rt->Release();
+    l.t->Release();
+    return level{};
+  }
   return l;
 }
 
-static void ensure_levels(int w, int h) {
-  if (lv[0].t && lv_w >= w && lv_h >= h) return;
-  for (int j = 0; j < 5; j++)
-    if (lv[j].t) {
-      lv[j].srv->Release();
-      lv[j].rt->Release();
-      lv[j].t->Release();
-    }
+static void glass_free(void);
+
+static int ensure_levels(int w, int h) {
+  if (lv[0].t && lv_w >= w && lv_h >= h) return 1;
+  for (int j = 0; j < 5; j++) {
+    if (lv[j].srv) lv[j].srv->Release();
+    if (lv[j].rt) lv[j].rt->Release();
+    if (lv[j].t) lv[j].t->Release();
+    lv[j] = level{};
+  }
   lv_w = w > lv_w ? w : lv_w;
   lv_h = h > lv_h ? h : lv_h;
-  for (int j = 0; j < 4; j++)
+  for (int j = 0; j < 4; j++) {
     lv[j] = level_tex(j == 0 ? DXGI_FORMAT_B8G8R8A8_UNORM : DXGI_FORMAT_R10G10B10A2_UNORM, (lv_w + (1 << j) - 1) >> j,
                       (lv_h + (1 << j) - 1) >> j);
+    if (!lv[j].t || !lv[j].rt || !lv[j].srv) {
+      glass_free();
+      return 0;
+    }
+  }
   lv[4] = level_tex(DXGI_FORMAT_R10G10B10A2_UNORM, lv_w, lv_h);
+  if (!lv[4].t || !lv[4].rt || !lv[4].srv) {
+    glass_free();
+    return 0;
+  }
+  return 1;
 }
 
 // Glass's own textures let go of: the levels (made again at the size the next capture needs, ensure_levels, its blur
@@ -1128,13 +1150,12 @@ static void glass_free(void) {
   ID3D11ShaderResourceView *none[3] = {NULL, NULL, NULL};
   ctx->PSSetShaderResources(0, 3, none);
   gsrv = NULL;
-  for (int j = 0; j < 5; j++)
-    if (lv[j].t) {
-      lv[j].srv->Release();
-      lv[j].rt->Release();
-      lv[j].t->Release();
-      lv[j] = level{};
-    }
+  for (int j = 0; j < 5; j++) {
+    if (lv[j].srv) lv[j].srv->Release();
+    if (lv[j].rt) lv[j].rt->Release();
+    if (lv[j].t) lv[j].t->Release();
+    lv[j] = level{};
+  }
   lv_w = lv_h = 0;
 }
 
@@ -1323,7 +1344,7 @@ static int capture(ID3D11RenderTargetView *target, int pw, int ph, const float *
   // (a capture outside the part drawn: neither copied nor drawn. One that meets it is in it whole: @damage)
   if (cut_on && (px1 <= cut.left || cut.right <= px0 || py1 <= cut.top || cut.bottom <= py0)) return 0;
   int w = px1 - px0, h = py1 - py0;
-  ensure_levels(w, h);
+  if (!ensure_levels(w, h)) return 0;
   ID3D11Resource *res = NULL;
   target->GetResource(&res);
   D3D11_BOX box = {(UINT)px0, (UINT)py0, 0, (UINT)px1, (UINT)py1, 1};
@@ -1378,28 +1399,52 @@ static ID3D11ShaderResourceView *segs_srv;
 static size_t segs_cap;
 
 static void segs_upload(const float *f, int32_t count) {
+  if (!dev || !ctx || count <= 0) return;
   int32_t d = count;
-  while (d > 0 && (int)(f[(d - 1) * MB_INST + 5] + 0.5f) == 12) d--;
+  while (d > 0 && (int)(f[(size_t)(d - 1) * MB_INST + 5] + 0.5f) == 12) d--;
   if (d == count) return;
-  size_t need = (size_t)(count - d) * MB_INST * sizeof(float);
-  if (segs_cap < need) {
-    if (segs_srv) segs_srv->Release();
-    if (segs_buf) segs_buf->Release();
-    segs_srv = NULL;
-    segs_cap = need * 2;
-    D3D11_BUFFER_DESC bd = {(UINT)segs_cap, D3D11_USAGE_DYNAMIC, D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_WRITE, 0, 0};
-    if (FAILED(dev->CreateBuffer(&bd, NULL, &segs_buf))) {
+  size_t n_seg = (size_t)(count - d);
+  if (n_seg > (size_t)UINT_MAX / ((size_t)MB_INST * sizeof(float))) return;
+  size_t need = n_seg * MB_INST * sizeof(float);
+  if (!segs_buf || !segs_srv || segs_cap < need) {
+    if (segs_srv) {
+      segs_srv->Release();
+      segs_srv = NULL;
+    }
+    if (segs_buf) {
+      segs_buf->Release();
       segs_buf = NULL;
-      segs_cap = 0;
-      return;
+    }
+    segs_cap = 0;
+    size_t cap = need <= ((size_t)UINT_MAX / 2) ? need * 2 : need;
+    D3D11_BUFFER_DESC bd = {(UINT)cap, D3D11_USAGE_DYNAMIC, D3D11_BIND_SHADER_RESOURCE, D3D11_CPU_ACCESS_WRITE, 0, 0};
+    if (FAILED(dev->CreateBuffer(&bd, NULL, &segs_buf)) || !segs_buf) {
+      segs_buf = NULL;
+      if (cap != need) {
+        cap = need;
+        bd.ByteWidth = (UINT)cap;
+        if (FAILED(dev->CreateBuffer(&bd, NULL, &segs_buf)) || !segs_buf) {
+          segs_buf = NULL;
+          return;
+        }
+      } else {
+        return;
+      }
     }
     D3D11_SHADER_RESOURCE_VIEW_DESC sd = {};
     sd.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
     sd.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
     sd.Buffer.FirstElement = 0;
-    sd.Buffer.NumElements = (UINT)(segs_cap / 16);
-    dev->CreateShaderResourceView(segs_buf, &sd, &segs_srv);
+    sd.Buffer.NumElements = (UINT)(cap / 16);
+    if (FAILED(dev->CreateShaderResourceView(segs_buf, &sd, &segs_srv)) || !segs_srv) {
+      segs_srv = NULL;
+      segs_buf->Release();
+      segs_buf = NULL;
+      return;
+    }
+    segs_cap = cap;
   }
+  if (!segs_buf || !segs_srv) return;
   D3D11_MAPPED_SUBRESOURCE m;
   if (FAILED(ctx->Map(segs_buf, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return;
   memcpy(m.pData, f + (size_t)d * MB_INST, need);
@@ -1532,33 +1577,71 @@ static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count
   cut_on = 0;
 }
 
+#ifndef MB_WIN_CREATE_BUFFER
+#define MB_WIN_CREATE_BUFFER(d, desc, init, out) ((d)->CreateBuffer((desc), (init), (out)))
+#endif
+
+// Ensures `vbuf` can hold at least `room` bytes: doubles when possible, falls back to exact `room`, and always clears
+// `vbuf`/`vbuf_cap` on failure so callers never dereference a stale or NULL buffer.
+static int ensure_vbuf(size_t room) {
+  if (!dev || room == 0 || room > (size_t)UINT_MAX) return 0;
+  if (vbuf && vbuf_cap >= room) return 1;
+  if (vbuf) {
+    vbuf->Release();
+    vbuf = NULL;
+  }
+  vbuf_cap = 0;
+  size_t cap = room <= ((size_t)UINT_MAX / 2) ? room * 2 : room;
+  D3D11_BUFFER_DESC bd = {(UINT)cap, D3D11_USAGE_DYNAMIC, D3D11_BIND_VERTEX_BUFFER,
+                          D3D11_CPU_ACCESS_WRITE, 0, 0};
+  if (FAILED(MB_WIN_CREATE_BUFFER(dev, &bd, NULL, &vbuf)) || !vbuf) {
+    vbuf = NULL;
+    if (cap != room) {
+      cap = room;
+      bd.ByteWidth = (UINT)cap;
+      if (FAILED(MB_WIN_CREATE_BUFFER(dev, &bd, NULL, &vbuf)) || !vbuf) {
+        vbuf = NULL;
+        return 0;
+      }
+    } else {
+      return 0;
+    }
+  }
+  vbuf_cap = cap;
+  return 1;
+}
+
 // The frame's instances into the vertex buffer and kept (a snapshot draws them again), as floats with its groups'
 // headers drawn out (groups.h: one pass, into what is kept), then drawn into the target: a window's (`chain`) into the
 // canvas, only the parts that differ where it holds the frame before; how many in `parts_out` (-1 all of it, 0 none),
 // the parts in `cuts`.
 static int submit(const double *inst, int32_t count, double r, double g, double b, int *parts_out = NULL,
                   D3D11_RECT *cuts = NULL) {
-  if (!rtv) return 0;
-  size_t need = (size_t)(count > 0 ? count : 1) * MB_INST * sizeof(float);
+  if (!rtv || !dev || !ctx || count < 0) return 0;
+  size_t slots = (size_t)(count > 0 ? count : 1);
+  const size_t stride_bytes = (size_t)MB_INST * sizeof(float);
+  if (slots > ((size_t)UINT_MAX - stride_bytes) / stride_bytes) return 0;
+  size_t need = slots * stride_bytes;
   // (and the frame's ground after its instances: a rect over all the window, opaque, a part drawn again first)
-  size_t room = need + MB_INST * sizeof(float);
-  if (vbuf_cap < room) {
-    if (vbuf) vbuf->Release();
-    vbuf_cap = room * 2;
-    D3D11_BUFFER_DESC bd = {(UINT)vbuf_cap, D3D11_USAGE_DYNAMIC, D3D11_BIND_VERTEX_BUFFER,
-                            D3D11_CPU_ACCESS_WRITE, 0, 0};
-    dev->CreateBuffer(&bd, NULL, &vbuf);
+  size_t room = need + stride_bytes;
+  size_t n = (size_t)count * MB_INST;
+  if (last_cap < need || !last_inst) {
+    size_t cap = need <= (SIZE_MAX / 2) ? need * 2 : need;
+    float *grown = (float *)realloc(last_inst, cap);
+    if (!grown && cap != need) {
+      cap = need;
+      grown = (float *)realloc(last_inst, cap);
+    }
+    if (!grown) return 0;
+    last_inst = grown;
+    last_cap = cap;
   }
+  if (!ensure_vbuf(room)) return 0;
   D3D11_MAPPED_SUBRESOURCE m;
   if (FAILED(ctx->Map(vbuf, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return 0;
   float *f = (float *)m.pData;
-  int32_t n = count * MB_INST;
-  if (last_cap < need) {
-    last_cap = need * 2;
-    last_inst = (float *)realloc(last_inst, last_cap);
-  }
   mb_groups_floats(last_inst, inst, count);
-  memcpy(f, last_inst, (size_t)n * sizeof(float));
+  if (n > 0) memcpy(f, last_inst, n * sizeof(float));
   float *gr = f + n;
   memset(gr, 0, MB_INST * sizeof(float));
   gr[0] = -16.0f; gr[1] = -16.0f; gr[2] = (float)vw + 32.0f; gr[3] = (float)vh + 32.0f;
@@ -1824,17 +1907,15 @@ static ID3D11Texture2D *redrawn(int w, int h) {
 
 // `count` instances of `f` into the vertex buffer, grown to hold them: 0 where it could not be written.
 static int fill_vbuf(const float *f, int32_t count) {
-  size_t need = (size_t)(count > 0 ? count : 1) * MB_INST * sizeof(float);
-  if (vbuf_cap < need) {
-    if (vbuf) vbuf->Release();
-    vbuf_cap = need * 2;
-    D3D11_BUFFER_DESC bd = {(UINT)vbuf_cap, D3D11_USAGE_DYNAMIC, D3D11_BIND_VERTEX_BUFFER,
-                            D3D11_CPU_ACCESS_WRITE, 0, 0};
-    dev->CreateBuffer(&bd, NULL, &vbuf);
-  }
+  if (!dev || !ctx || count < 0) return 0;
+  size_t slots = (size_t)(count > 0 ? count : 1);
+  const size_t stride_bytes = (size_t)MB_INST * sizeof(float);
+  if (slots > (size_t)UINT_MAX / stride_bytes) return 0;
+  size_t need = slots * stride_bytes;
+  if (!ensure_vbuf(need)) return 0;
   D3D11_MAPPED_SUBRESOURCE m;
-  if (!vbuf || FAILED(ctx->Map(vbuf, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return 0;
-  if (count > 0) memcpy(m.pData, f, (size_t)count * MB_INST * sizeof(float));
+  if (FAILED(ctx->Map(vbuf, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return 0;
+  if (count > 0) memcpy(m.pData, f, (size_t)count * stride_bytes);
   ctx->Unmap(vbuf, 0);
   return 1;
 }
@@ -1845,10 +1926,13 @@ static int fill_vbuf(const float *f, int32_t count) {
 // back the frame's (a snapshot draws it again). 1 when read.
 extern "C" int32_t mb_render_pixels_of(const double *inst, int32_t count, double r, double g, double b, double scale,
                                        int32_t w, int32_t h, moonbit_bytes_t out) {
-  if (!dev || count <= 0 || !(scale > 0) || w <= 0 || h <= 0) return 0;
-  if ((size_t)Moonbit_array_length(out) < (size_t)w * h * 4) return 0;
+  if (!dev || !ctx || count <= 0 || !(scale > 0) || w <= 0 || h <= 0) return 0;
+  if ((size_t)w > SIZE_MAX / 4 / (size_t)h) return 0;
+  if ((size_t)Moonbit_array_length(out) < (size_t)w * (size_t)h * 4) return 0;
+  if ((size_t)count > (size_t)UINT_MAX / ((size_t)MB_INST * sizeof(float))) return 0;
   size_t n = (size_t)count * MB_INST;
   float *f = (float *)malloc(n * sizeof(float));
+  if (!f) return 0;
   for (size_t i = 0; i < n; i++) f[i] = (float)inst[i];
   float bg[3] = {(float)r, (float)g, (float)b};
   double kw = vw, kh = vh, ks = vscale;

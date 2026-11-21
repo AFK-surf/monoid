@@ -4,8 +4,8 @@
 ///|
 fn init {
   @ui.host_image_bytes_known([
-    // (the chat's page made as nodes by default on the test channel since 2026-11-19, chatPage moved to beta: one picture
-    // more, 38548, of the rows round what shows, as chat_page_nodes_wbtest's)
+    // (the chat's page made as nodes: what its list builds a screen beyond what shows (View::scrolls_window) decoding
+    // with it, compare.png's 38548 more)
     ("src/sfapp_pages_test/downloads_test.mbt", 127704),
     // (a picture's preview, then the image itself put in its place as it is zoomed into: both decoding at once)
     ("src/sfapp_pages_test/viewer_preview_test.mbt", 1921076),

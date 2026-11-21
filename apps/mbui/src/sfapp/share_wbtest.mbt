@@ -112,3 +112,20 @@ test "over another app, the view under the bars: the toasts kept above the navig
   assert_eq(@ui.system_bars().bottom, 48.0)
   assert_eq(bare - under, 48.0)
 }
+
+///|
+test "files given a new chat whose station is not known yet (newChat not answered): left waiting, not dropped" {
+  new_run()
+  let src = @sffixture.held_topics(fixture("home"), ["newChat"])
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  nav_rested(t)
+  // (as share_opened gives them: to the workspace's new chat's draft, its composer to put them up once it has a station)
+  @sfbase.draft_give("new:ws1", Shared([{ name: "e2e-doc.txt", bytes: b"hi", held: 0, size: 2.0, src: "" }]))
+  let (_, y) = bar_places_at()
+  // (the bar's ＋ beside its capsule raises a new chat)
+  t.tap(bar_action_x, y)
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_true(app.nav.top() is NewChat)
+  // (its composer held with no station: nothing taken in, nothing refused as offline)
+  assert_eq(@sfbase.draft_waiting("new:ws1").length(), 1)
+}

@@ -1564,14 +1564,15 @@ pub fn fixture_chat_call(f : Fixture, name : String, params : Json) -> Result[Js
     "chat.around" => {
       let ts = text(p, "ts")
       if ts == "" {
-        // (a message older than those held: the pages before it held as the core would read them in)
+        // (by its number: the window brought back as far as it holds it, a page before at a time, the chat's earliest
+        // page at most)
         let target = number(p, "seq")
-        if target < 0.0 {
-          let need = ((-target).to_int() + 99) / 100
-          if need > f.older {
-            f.older = need
-            f.changed()
+        let holds = fn() { items(Some(rich_chat(f.older)), "messages").iter().any(fn(m) { number(Some(m), "seq") == target }) }
+        if !holds() && f.older < rich_chat_pages {
+          while !holds() && f.older < rich_chat_pages {
+            f.older += 1
           }
+          f.changed()
         }
         return Some(Ok({ "seq": Json::number(target) }))
       }

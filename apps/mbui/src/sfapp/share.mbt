@@ -446,7 +446,8 @@ fn share_opened(
     }
     open_page(NewChat)
   } else {
-    app.nav.push(Chat({ station, session, title, station_name: "" }))
+    // (as any chat is opened: the one page of it, its composer once)
+    open_chat({ station, session, title, station_name: "" })
   }
 }
 

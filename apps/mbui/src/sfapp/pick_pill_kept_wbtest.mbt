@@ -49,6 +49,15 @@ fn pill_mark(t : @ui.Tester, y : Double) -> String {
       return name
     }
   }
+  // (the pill made as nodes: its mark as the tree draws it)
+  if @ui.view_tree() is Some(tree) {
+    for d in tree.drawn() {
+      let name = tree.drawn_name(d.id)
+      if name.has_prefix("/icon/quote") && d.x < qx && qx - d.x < 40.0 && d.y < y && d.y > y - 60.0 {
+        return "sf" + name
+      }
+    }
+  }
   ""
 }
 

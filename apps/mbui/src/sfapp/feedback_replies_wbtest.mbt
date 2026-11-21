@@ -40,7 +40,9 @@ fn feedback_core(calls : Array[Made], replied? : Bool = true, value? : Json = fe
 test "a chat whose report the team replied on says so over its composer; one with none says nothing" {
   let calls : Array[Made] = []
   let t = feedback_core(calls)
-  assert_true(t.find("still.fail 团队回复了 FB-12：能再说一下出错时在跑什么吗？") is Some(_))
+  // (its heading and the latest reply on two lines of their own, composer_notice_node's)
+  assert_true(t.find("still.fail 团队回复了 FB-12") is Some(_))
+  assert_true(t.find("能再说一下出错时在跑什么吗？") is Some(_))
   assert_true(t.find("查看") is Some(_))
   // nothing of it is sent anywhere by being shown: no call names it
   assert_eq(calls.filter(fn(m) { m.name.contains("feedback") || m.name == "chat.send" }).length(), 0)
@@ -102,7 +104,9 @@ test "关闭 lets the notice go (feedback.dismiss), still reachable from the cha
       tp
     }
   })
-  assert_true(t.find("still.fail 团队回复了 FB-12：能再说一下出错时在跑什么吗？") is Some(_))
+  // (its heading and the latest reply on two lines of their own, composer_notice_node's)
+  assert_true(t.find("still.fail 团队回复了 FB-12") is Some(_))
+  assert_true(t.find("能再说一下出错时在跑什么吗？") is Some(_))
   // 查看 and 关闭 keep to the room, corner, gap, contrast and hand rules
   let notice_faults = t.room_faults().filter(fn(f) { f.contains("composer/feedback") || f.contains("查看") || f.contains("关闭") })
   assert_eq(notice_faults, [])
@@ -132,7 +136,8 @@ test "关闭 lets the notice go (feedback.dismiss), still reachable from the cha
   // a newer reply from the team brings the notice back over the composer
   reply_val.set(feedback_value(latest_id="r2", latest_text="查到了，下个版本修。"))
   t.run_for(@ui.move_most_ms)
-  assert_true(t.find("still.fail 团队回复了 FB-12：查到了，下个版本修。") is Some(_))
+  assert_true(t.find("still.fail 团队回复了 FB-12") is Some(_))
+  assert_true(t.find("查到了，下个版本修。") is Some(_))
 
   // already dismissed in the core: does not show on opening
   let already = feedback_core([], value=feedback_value(dismissed=true))

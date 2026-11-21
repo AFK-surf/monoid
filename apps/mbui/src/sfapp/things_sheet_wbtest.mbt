@@ -86,6 +86,7 @@ test "小屏: the chat's things, a sheet whose body is nodes: each of its words 
     #|  ("22:40 · Ana", 24, 766, 71.5, 18),
     #|  ("发消息", 53, 797.5, 276, 25),
     #|]
+
   ))
   assert_true(files.iter().any(fn(w) { w.0 == "build.log" }), msg="its files")
   assert_false(files.iter().any(fn(w) { w.0 == "列表高度改前改后" }), msg="its pictures' words gone")
@@ -119,6 +120,7 @@ test "小屏: the chat's things, a sheet whose body is nodes: each of its words 
     #|  ("做完了：列表、跳到最新的按钮、加载更早的消息都好了，截图也换了。", 16, 629, 358, 46),
     #|  ("发消息", 53, 797.5, 276, 25),
     #|]
+
   ))
 }
 

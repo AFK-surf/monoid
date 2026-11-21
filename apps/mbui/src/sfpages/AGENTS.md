@@ -13,7 +13,7 @@
 
 ## Chat and composer migration flag
 
-- The node-based chat page, its composer (`composer_node`), and the new-chat page (`new_chat_node`) all sit behind one `beta` feature `chatPage` (`chat_page_from_prefs`, `chat_page_nodes`, read as a page is made, with `chat_page_nodes_at_start` staying `false`): on for the test channel with no switch, off on stable, which keeps the old pages and old composer until it graduates. Do not host the old composer inside a node-based page. Tests and scenes that need one way regardless of the fixture's channel use `@sfbase.hold_chat_page_nodes` (`MBUI_CHAT_PAGE=nodes|old`), since a plain `chat_page_nodes.set` is overwritten when the prefs are next told.
+- The node-based chat page, its composer (`composer_node`), and the new-chat page (`new_chat_node`) are the chat page on every channel (`chat_page_nodes`, read as a page is made, `chat_page_nodes_at_start` `true`; `chat_page_from_prefs` no longer reads the `beta` feature `chatPage`, removed with the old pages and old composer). Do not host the old composer inside a node-based page. Tests and scenes that need one way regardless of the fixture's channel use `@sfbase.hold_chat_page_nodes` (`MBUI_CHAT_PAGE=nodes|old`), since a plain `chat_page_nodes.set` is overwritten when the prefs are next told.
 - Share all non-rendering composer logic between both views (`composer_state.mbt`, `apps/mbui/src/sfbase/compose_given.mbt`, `composer_send.mbt`) without duplicating it.
 - Express width-responsive layout changes as property bindings (`By` on gap, margin, size), never structural `pick`/`show` branches on `width()` (detlint `width-structure` only falls).
 

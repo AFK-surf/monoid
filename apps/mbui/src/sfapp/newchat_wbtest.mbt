@@ -559,10 +559,7 @@ let ns_screens : Array[(Int, Bool)] = [(2, false), (0, false), (0, true)]
 /// `calls`.
 fn ns_open(calls : Array[String], platform~ : Int, wide~ : Bool) -> @ui.Tester {
   new_run()
-  // (the chat's page made as both_pages runs it now, its new chat too; outside one, as the fixture's channel has it)
-  if both_running.val {
-    both_way()
-  }
+  // (the chat's page made as both_pages runs it now, its new chat too: none outside one)
   @sf.presenters_reset()
   let base = fixture("newchat")
   let src : Source = {

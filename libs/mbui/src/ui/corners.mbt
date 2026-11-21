@@ -647,9 +647,11 @@ fn Ctx::corner_faults(self : Ctx) -> Array[String] {
       // capsule long along that axis reaches across it, its ends in the corners at its two ends (a composer's capsule
       // across a panel's foot: the user, 2026-10-26, a finger's not concentric with the page's corners, not found)
       let round = rb >= dmin(b.fw, b.fh) / 2.0 - 0.5
+      let spans_across = round_spans_across(l, t, r, d, ra, b.fw, b.fh)
       if round {
-        if ((t - d).abs() <= 0.5 && b.fh < a.fh - 1.0 && ra < a.fh / 2.0 - 0.5 && b.fh <= b.fw + 0.5) ||
-          ((l - r).abs() <= 0.5 && b.fw < a.fw - 1.0 && ra < a.fw / 2.0 - 0.5 && b.fw <= b.fh + 0.5) {
+        if !spans_across &&
+          (((t - d).abs() <= 0.5 && b.fh < a.fh - 1.0 && ra < a.fh / 2.0 - 0.5 && b.fh <= b.fw + 0.5) ||
+          ((l - r).abs() <= 0.5 && b.fw < a.fw - 1.0 && ra < a.fw / 2.0 - 0.5 && b.fw <= b.fh + 0.5)) {
           continue
         }
         // a mark smaller than the gap it would leave round it standing concentric (the corner's radius less its own
@@ -740,7 +742,23 @@ fn Ctx::corner_faults(self : Ctx) -> Array[String] {
         )
         continue
       }
-      if !in_step && !c.fit_there(ra / u, rb / u, round, room=room_a / u) {
+      // (unless it is a circle or a capsule reaching across the container into its corners at both ends: it asks the
+      // container to be as round as its distance and its half there, though the container's corner now is squarer than
+      // the ranges let what follows it stand; not where that corner is the window's, follows an outer corner or is
+      // linked, round as that has it; nor where the container is a capsule already, as round as it can be: a switch's
+      // knob in its track)
+      let wants_rounder = round &&
+        spans_across &&
+        !ct.window &&
+        ra < room_a - 0.5 &&
+        !c.follows_corner(ct, k, grounds) &&
+        c.nodes[ct.ground].links is None &&
+        dmin(ra, room_a) < dmax(dx, dy) + rb - 0.5 &&
+        (match c.corner_fit {
+          Some(f) => dmax(dx, dy) / u <= f.far + 0.5
+          None => true
+        })
+      if !in_step && !wants_rounder && !c.fit_there(ra / u, rb / u, round, room=room_a / u) {
         continue
       }
       // nor a smooth one standing in it (not flush with it) whose own corner is rounder than any it could have
@@ -839,6 +857,17 @@ fn Ctx::corner_faults(self : Ctx) -> Array[String] {
 }
 
 ///|
+/// Whether a circle or a capsule (`fw` by `fh`, `l`, `t`, `r`, `d` in from a container's edges) reaches across an axis
+/// of the container into its corners `ra` round at both ends: a capsule long along that axis, or a circle filling the
+/// container into all four of its corners. In the middle of the container along the other axis, it is in those
+/// corners all the same.
+fn round_spans_across(l : Double, t : Double, r : Double, d : Double, ra : Double, fw : Double, fh : Double) -> Bool {
+  let span_x = l >= -0.5 && l < ra - 0.5 && r >= -0.5 && r < ra - 0.5
+  let span_y = t >= -0.5 && t < ra - 0.5 && d >= -0.5 && d < ra - 0.5
+  (span_x && fw > fh + 0.5) || (span_y && fh > fw + 0.5) || (span_x && span_y)
+}
+
+///|
 /// Whether a corner `ra` round is too square for a circle or a capsule `rb` round
 /// (its half) to follow it: concentric
 /// there, it would stand nearer its edges than the theme lets what follows a corner stand (Theme::corner_fit near).
@@ -883,7 +912,9 @@ fn Ctx::round_held(self : Ctx, grounds : Map[Int, Int], pictures : Set[Int]) -> 
       // (as the rule has them: one in the middle of the box along an axis it is not round all along is in none of its
       // corners, an avatar in the middle of a row taller than its corners are round; a mark smaller than the gap it
       // would leave reads as a point)
-      if ((t - d).abs() <= 0.5 && ra < a.fh / 2.0 - 0.5) || ((l - r).abs() <= 0.5 && ra < a.fw / 2.0 - 0.5) {
+      // (one reaching across the box into its corners at both ends is in them: round_spans_across)
+      if !round_spans_across(l, t, r, d, ra, b.fw, b.fh) &&
+        (((t - d).abs() <= 0.5 && ra < a.fh / 2.0 - 0.5) || ((l - r).abs() <= 0.5 && ra < a.fw / 2.0 - 0.5)) {
         continue
       }
       let side = dmax(b.fw, b.fh)

@@ -1240,7 +1240,7 @@ fn loupe_scene(parent : @view.View) -> Unit {
           |> ignore
         })
         |> ignore
-        @lg.liquid_magnifier_node(sec2, fn() { loupe_source_copy }, label=fn() { "Optical Loupe" }, at=(72.0, 28.0))
+        @lg.liquid_magnifier_node(sec2, fn() { loupe_source_copy }, label=fn() { "Optical Loupe" }, at=(192.0, 108.0))
         |> ignore
       })
       |> ignore
@@ -1550,7 +1550,7 @@ fn merge_scene(parent : @view.View, merge_ctrl : @lg.LiquidMerge) -> Unit {
         |> ignore
         insp.box(fn(laws) {
           laws.gap(Is(6.0)) |> ignore
-          merge_law_row(laws, "Pinch-Off", "gap >= 11.7 pt -> snap 0")
+          merge_law_row(laws, "Pinch-Off", "gap >= 9.5 pt -> snap 0")
           merge_law_row(laws, "Approach", "gap > 0 pt -> zero pull")
           merge_law_row(laws, "Coalesce", "gap <= 0 pt -> liquid bloom")
         })

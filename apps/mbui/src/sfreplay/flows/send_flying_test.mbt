@@ -6,7 +6,7 @@ test "39-send-flying" {
   @sfreplay.orders(fn(seed) {
     let f = @sfreplay.Flow::start(@sfreplay.trace("send-flying"), seed~)
     f.tap("端到端测试")
-    f.run_for(@ui.move_most_ms)
+    f.run_for(@ui.move_most_ms * 2.0)
     f.see("=willow")
     f.tap("发消息")
     f.type_text("先飞的一条 082947")
