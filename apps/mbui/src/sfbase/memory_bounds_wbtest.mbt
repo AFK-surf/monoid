@@ -143,10 +143,10 @@ test "a thumbnail's frame kept in place of another: the one before let go of onc
   let id = v.id()
   @ui.add_image("mem:pv-frame/1/v.mp4", bounds_bytes(10))
   pv_frame_keep(id, "mem:pv-frame/1/v.mp4", 1000.0)
-  // (opened from it: what it flies out with)
-  v.fly_pic = "mem:pv-frame/1/v.mp4"
+  // (opened from it: what it leaves with)
+  v.leaving_pic = "mem:pv-frame/1/v.mp4"
   viewer.set(Some(v))
-  // (closed at a later place: its frame there none yet, the one before kept while it flies with it)
+  // (closed at a later place: its frame there none yet, the one before kept while a viewer holds it)
   pv_frame_keep(id, "", 2000.0)
   assert_true(@ui.has_image("mem:pv-frame/1/v.mp4"))
   @ui.add_image("mem:pv-frame/2/v.mp4", bounds_bytes(10))
@@ -156,7 +156,7 @@ test "a thumbnail's frame kept in place of another: the one before let go of onc
   // (gone back into its thumbnail: let go of)
   viewer.set(None)
   pv_leaving.set(Some(v))
-  v.fly_pic = "mem:pv-frame/2/v.mp4"
+  v.leaving_pic = "mem:pv-frame/2/v.mp4"
   leaving_done()
   assert_false(@ui.has_image("mem:pv-frame/1/v.mp4"))
   assert_true(@ui.has_image("mem:pv-frame/2/v.mp4"), msg="its thumbnail's frame kept")
