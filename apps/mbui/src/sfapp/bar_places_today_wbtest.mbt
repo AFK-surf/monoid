@@ -269,10 +269,10 @@ test "bar places today: each switch's nodes made and let go, the stack's entry, 
   // (what each switch made and let go of the tree: the first visit of a place made as nodes makes it, a place come back
   // to makes and lets go of nothing but a node of Home's (made while it was away, let go as it is back); 用量 made once,
   // whole, its answer come by the core's channel before the frame that builds it; 额度 too, made once as nodes since
-  // the profiles' list was, kept as the others; its list or 概览 one page, the pick between them two nodes more; 用量's
-  // controls that are a button only while they filter, its rank rows and its legend, each over action_box_while_node's
-  // pick)
-  let works = [(131, 0), (0, 1), (447, 0), (0, 0), (0, 0), (0, 1), (230, 0), (0, 0), (0, 0), (0, 0), (0, 1)]
+  // the profiles' list was, kept as the others, slimmed fill_chip_node + single-branch pooled quota lowering it to 224;
+  // 用量's controls that are a button only while they filter, its rank rows and its legend, each over
+  // action_box_while_node's pick)
+  let works = [(131, 0), (0, 1), (447, 0), (0, 0), (0, 0), (0, 1), (224, 0), (0, 0), (0, 0), (0, 0), (0, 1)]
   let mut from_place = "chats"
   for k, place in walk {
     let i = today_bar.search(place).unwrap()

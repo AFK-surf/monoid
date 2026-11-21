@@ -64,10 +64,6 @@ let chip_box_small : @ui.Style = chip_box.then(@ui.style(h=Fixed(fill_chip_small
 
 ///|
 // kept across runs: a value (no field of it changes)
-let chip_fill_row : @ui.Style = @ui.style(row=true, w=Full, h=Full, radius=rounded(fill_chip_corner), clip=true)
-
-///|
-// kept across runs: a value (no field of it changes)
 let chip_fill_part : @ui.Style = @ui.css("h=Full")
 
 ///|

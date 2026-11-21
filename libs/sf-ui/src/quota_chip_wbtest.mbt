@@ -223,3 +223,263 @@ test "quota_worded_node renders refill countdown icon and switches from full lab
   }
   set_dark(None)
 }
+
+///|
+fn count_subtree_nodes(v : @view.View) -> Int {
+  v.kids().fold(init=1, fn(acc, k) { acc + count_subtree_nodes(k) })
+}
+
+///|
+test "pooled nav_quota_chips_node and quota_worded_node mount only active branch and match room_w=Some" {
+  let pooled_q = Json::object({
+    "state": "ok",
+    "windows": [
+      { "label": "5 小时 · Gemini", "mark": "Gemini 5H", "scope": "gemini", "left": 56.0, "level": "ok" },
+      { "label": "每周 · Gemini", "mark": "Gemini W", "scope": "gemini", "left": 58.0, "level": "ok" },
+      { "label": "5 小时 · Claude / GPT", "mark": "Claude / GPT 5H", "scope": "3p", "left": 100.0, "level": "ok" },
+      { "label": "每周 · Claude / GPT", "mark": "Claude / GPT W", "scope": "3p", "left": 79.0, "level": "ok" },
+    ],
+  })
+  // 1. nav_quota_chips_node: room_w=None vs room_w=Some at both wide (single-line) and narrow (multi-line)
+  for w in [224.0, 164.0] {
+    let mut nodes_by_room = 0
+    let mut nodes_room_w = 0
+    let t1 = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=640.0, h=200.0, platform=0)
+    let mut b1 : @view.View? = None
+    @ui.set_view_app(fn(root) {
+      @ui.set_tree_theme(ui_theme_now)
+      root.box(fn(b) {
+        b.width(Is(Some(w))) |> ignore
+        let widest = nav_quota_room_node(b, Some(pooled_q))
+        nav_quota_chips_node(b, fn() { Some(pooled_q) }, Side, fn() { widest })
+        b1 = Some(b)
+      })
+      |> ignore
+    })
+    t1.draw()
+    nodes_by_room = count_subtree_nodes(b1.unwrap())
+    let words1 = t1.words().filter(fn(x) { x.5 > 0.5 }).map(fn(x) { (x.0, x.1, x.2) })
+    assert_eq(t1.audit(), [], msg="nav_quota by_room audit failed at \{w}")
+
+    let t2 = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=640.0, h=200.0, platform=0)
+    let mut b2 : @view.View? = None
+    @ui.set_view_app(fn(root) {
+      @ui.set_tree_theme(ui_theme_now)
+      root.box(fn(b) {
+        b.width(Is(Some(w))) |> ignore
+        let widest = nav_quota_room_node(b, Some(pooled_q))
+        nav_quota_chips_node(b, fn() { Some(pooled_q) }, Side, fn() { widest }, room_w=fn() { w })
+        b2 = Some(b)
+      })
+      |> ignore
+    })
+    t2.draw()
+    nodes_room_w = count_subtree_nodes(b2.unwrap())
+    let words2 = t2.words().filter(fn(x) { x.5 > 0.5 }).map(fn(x) { (x.0, x.1, x.2) })
+    assert_eq(t2.audit(), [], msg="nav_quota room_w audit failed at \{w}")
+    assert_eq(words1, words2, msg="nav_quota words mismatch at \{w}")
+    // Single active branch only: <= 55 nodes (before double-mount + unslimmed fill_chip was > 110)
+    assert_true(nodes_by_room <= 55, msg="nav_quota by_room too many nodes at \{w}: \{nodes_by_room}")
+    assert_true(nodes_room_w < nodes_by_room, msg="nav_quota room_w should skip by_room wrapper: \{nodes_room_w} vs \{nodes_by_room}")
+  }
+
+  // 2. quota_worded_node: room_w=None vs room_w=Some at wide (flat row) and narrow (grouped lines)
+  for w in [600.0, 200.0] {
+    let t1 = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=640.0, h=200.0, platform=0)
+    let mut b1 : @view.View? = None
+    @ui.set_view_app(fn(root) {
+      @ui.set_tree_theme(ui_theme_now)
+      root.box(fn(b) {
+        b.width(Is(Some(w))) |> ignore
+        quota_worded_node(b, fn() { Some(pooled_q) })
+        b1 = Some(b)
+      })
+      |> ignore
+    })
+    t1.draw()
+    let nodes_by_room = count_subtree_nodes(b1.unwrap())
+    let words1 = t1.words().filter(fn(x) { x.5 > 0.5 }).map(fn(x) { (x.0, x.1, x.2) })
+    assert_eq(t1.audit(), [], msg="quota_worded by_room audit failed at \{w}")
+
+    let t2 = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=640.0, h=200.0, platform=0)
+    let mut b2 : @view.View? = None
+    @ui.set_view_app(fn(root) {
+      @ui.set_tree_theme(ui_theme_now)
+      root.box(fn(b) {
+        b.width(Is(Some(w))) |> ignore
+        quota_worded_node(b, fn() { Some(pooled_q) }, room_w=fn() { w })
+        b2 = Some(b)
+      })
+      |> ignore
+    })
+    t2.draw()
+    let nodes_room_w = count_subtree_nodes(b2.unwrap())
+    let words2 = t2.words().filter(fn(x) { x.5 > 0.5 }).map(fn(x) { (x.0, x.1, x.2) })
+    assert_eq(t2.audit(), [], msg="quota_worded room_w audit failed at \{w}")
+    assert_eq(words1, words2, msg="quota_worded words mismatch at \{w}")
+    // Single active branch only: <= 55 nodes (before double-mount + unslimmed fill_chip was > 110)
+    assert_true(nodes_by_room <= 55, msg="quota_worded by_room too many nodes at \{w}: \{nodes_by_room}")
+    assert_true(nodes_room_w < nodes_by_room, msg="quota_worded room_w should skip by_room wrapper: \{nodes_room_w} vs \{nodes_by_room}")
+  }
+}
+
+///|
+test "fill_chip_node mounts refresh icon on demand and layout recomputes on font scale change" {
+  let refill_sig = @signals.signal(false)
+  let left_sig = @signals.signal(50)
+  let words_sig = @signals.signal("50%")
+  let mut chip_v : @view.View? = None
+  let t = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=640.0, h=200.0, platform=0)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(r) {
+      r.row(Is(true)) |> ignore
+      chip_v = Some(
+        fill_chip_node(
+          r,
+          fn() { left_sig.get() },
+          fn() { if refill_sig.get() { "red" } else { "ok" } },
+          fn() { "5h" },
+          fn() { words_sig.get() },
+          label_muted=true,
+          refill=fn() { refill_sig.get() },
+        ),
+      )
+    })
+    |> ignore
+  })
+  t.draw()
+  let nodes_normal = count_subtree_nodes(chip_v.unwrap())
+  assert_eq(t.drawn_shapes().length(), 0)
+  assert_eq(t.audit(), [])
+
+  // Switching to refill mounts the refresh icon
+  refill_sig.set(true)
+  left_sig.set(0)
+  words_sig.set("42m")
+  t.draw()
+  let nodes_refill = count_subtree_nodes(chip_v.unwrap())
+  assert_true(t.drawn_shapes().length() > 0)
+  assert_true(nodes_refill > nodes_normal, msg="expected refresh icon nodes: \{nodes_refill} vs \{nodes_normal}")
+  assert_eq(t.audit(), [])
+
+  // Switching back unmounts the refresh icon
+  refill_sig.set(false)
+  left_sig.set(50)
+  words_sig.set("50%")
+  t.draw()
+  assert_eq(t.drawn_shapes().length(), 0)
+  assert_eq(count_subtree_nodes(chip_v.unwrap()), nodes_normal)
+
+  // Font scale 1.0x -> 1.3x recomputes memoized form in quota_worded_node
+  let q_worded = Json::object({
+    "state": "ok",
+    "windows": [
+      { "label": "5 小时", "mark": "5H", "left": 60.0, "level": "ok" },
+      { "label": "每周", "mark": "W", "left": 40.0, "level": "ok" },
+      { "label": "每周 · Fable", "mark": "Fable", "scope": "Fable", "left": 80.0, "level": "ok" },
+    ],
+  })
+  let tw = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=640.0, h=200.0, platform=0)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(b) {
+      b.width(Is(Some(235.0))) |> ignore
+      quota_worded_node(b, fn() { Some(q_worded) })
+    })
+    |> ignore
+  })
+  tw.draw()
+  let shown_1x = tw.words().filter(fn(x) { x.5 > 0.5 }).map(fn(x) { x.0 })
+  assert_true(shown_1x.contains("每周 Fable"), msg="1.0x should fit full label: \{Repr(shown_1x)}")
+  tw.set_font_scale(1.3)
+  tw.draw()
+  let shown_13x = tw.words().filter(fn(x) { x.5 > 0.5 }).map(fn(x) { x.0 })
+  assert_true(shown_13x.contains("Fable"), msg="1.3x should recompute to compact mark: \{Repr(shown_13x)}")
+  assert_false(shown_13x.contains("每周 Fable"), msg="1.3x should no longer show full label: \{Repr(shown_13x)}")
+
+  // Font scale 1.0x -> 1.3x recomputes memoized one/label_w in nav_quota_chips_node
+  let pooled_q = Json::object({
+    "state": "ok",
+    "windows": [
+      { "label": "5 小时 · Gemini", "mark": "Gemini 5H", "scope": "gemini", "left": 56.0, "level": "ok" },
+      { "label": "每周 · Gemini", "mark": "Gemini W", "scope": "gemini", "left": 58.0, "level": "ok" },
+      { "label": "5 小时 · Claude / GPT", "mark": "Claude / GPT 5H", "scope": "3p", "left": 100.0, "level": "ok" },
+      { "label": "每周 · Claude / GPT", "mark": "Claude / GPT W", "scope": "3p", "left": 79.0, "level": "ok" },
+    ],
+  })
+  let tn = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=640.0, h=240.0, platform=0)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(b) {
+      b.width(Is(Some(190.0))) |> ignore
+      nav_quota_chips_node(b, fn() { Some(pooled_q) }, Side, fn() { nav_quota_room_node(b, Some(pooled_q)) })
+    })
+    |> ignore
+  })
+  tn.draw()
+  let w1 = tn.words().filter(fn(x) { x.5 > 0.5 })
+  let g1 = w1.filter(fn(x) { x.0 == "Gemini" })[0]
+  let f1 = w1.filter(fn(x) { x.0 == "5h" })[0]
+  assert_eq(g1.2, f1.2, msg="1.0x should lay out single line per pool")
+  tn.set_font_scale(1.3)
+  tn.draw()
+  let w13 = tn.words().filter(fn(x) { x.5 > 0.5 })
+  let g13 = w13.filter(fn(x) { x.0 == "Gemini" })[0]
+  let f13 = w13.filter(fn(x) { x.0 == "5h" })[0]
+  assert_true(f13.2 > g13.2, msg="1.3x should stack pool title above capsules: g=\{g13.2} f=\{f13.2}")
+}
+
+///|
+test "nav_quota_room_node matches nav_quota_line_node and per-chip widths" {
+  let flat_q = Json::object({
+    "state": "ok",
+    "windows": [
+      { "label": "5 小时", "mark": "5H", "left": 100.0, "level": "ok" },
+      { "label": "每周", "mark": "W", "left": 100.0, "level": "ok" },
+      { "label": "每周 · Fable", "mark": "Fable", "scope": "Fable", "left": 0.0, "level": "red", "refillShort": "42m" },
+    ],
+  })
+  let pooled_q = Json::object({
+    "state": "ok",
+    "windows": [
+      { "label": "5 小时 · Gemini", "mark": "Gemini 5H", "scope": "gemini", "left": 56.0, "level": "ok" },
+      { "label": "每周 · Gemini", "mark": "Gemini W", "scope": "gemini", "left": 100.0, "level": "ok" },
+      { "label": "5 小时 · Claude / GPT", "mark": "Claude / GPT 5H", "scope": "3p", "left": 100.0, "level": "ok" },
+      { "label": "每周 · Claude / GPT", "mark": "Claude / GPT W", "scope": "3p", "left": 79.0, "level": "ok" },
+    ],
+  })
+  let bad_q = Json::object({
+    "state": "error",
+    "windows": [{ "label": "5 小时", "mark": "5H", "left": 50.0, "level": "ok" }],
+  })
+  let t = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=640.0, h=200.0, platform=0)
+  let mut none_res : (Double, Array[Double]) = (-1.0, [])
+  let mut bad_res : (Double, Array[Double]) = (-1.0, [])
+  let results : Array[((Double, Array[Double]), Double, Array[Double])] = []
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    none_res = nav_quota_room_node(root, None)
+    bad_res = nav_quota_room_node(root, Some(bad_q))
+    let chip = nav_quota_chip_w(root)
+    for q in [flat_q, pooled_q] {
+      let room = nav_quota_room_node(root, Some(q))
+      let line_w = nav_quota_line_node(root, Some(q))
+      let ws = match chip_field(Some(q), "windows") {
+        Some(Array(a)) => a
+        _ => []
+      }
+      let expect = ws.map(fn(w) { chip(quota_mark(Some(w)), quota_figure(Some(w)), quota_is_refill(Some(w))) })
+      results.push((room, line_w, expect))
+    }
+  })
+  t.draw()
+  assert_eq(none_res, (0.0, []))
+  assert_eq(bad_res, (0.0, []))
+  assert_eq(results.length(), 2)
+  for item in results {
+    let ((line_w, widths), expect_line, expect_widths) = item
+    assert_eq(line_w, expect_line)
+    assert_eq(widths, expect_widths)
+  }
+}
