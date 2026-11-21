@@ -10,7 +10,7 @@
 // as the app reads it (whole, as a thumbnail, a part), and the drive's grant key is read back across the handover.
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { type AddressInfo, createServer as netServer } from "node:net";
 import { createServer as httpServer, request } from "node:http";
 import { createSocket } from "node:dgram";
@@ -265,11 +265,21 @@ while IFS= read -r line; do
     call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"job_start","arguments":{"name":"hello","command":"echo hi"}}}' > "$FAKE_OUT/$sid-job-$n.json"
   fi
   call '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"device_list","arguments":{}}}' > "$FAKE_OUT/$sid-devices-$n.json"
-  # (a tool call of the test's, where it gives one: $FAKE_OUT/extra as the turn begins, else $FAKE_EXTRA, a
-  # tools/call's params)
-  extra=$(/bin/cat "$FAKE_OUT/extra" 2>/dev/null); [ -n "$extra" ] || extra="$FAKE_EXTRA"
-  if [ -n "$extra" ]; then call '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":'"$extra"'}' > "$FAKE_OUT/$sid-extra-$n.json"; fi
-  call '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"chat_post","arguments":{"to":"'"$to"'","text":"posted by the fake","kind":"all_done","done":"answered what it was sent"}}}' > "$FAKE_OUT/$sid-post-$n.json"
+  # (a tool call of the test's, where it gives one: $FAKE_OUT/extra atomically claimed by one turn, else $FAKE_EXTRA,
+  # a tools/call's params; outputs published via atomic rename so the test never observes half-written files)
+  mv_bin=/bin/mv; [ -x "$mv_bin" ] || mv_bin=/usr/bin/mv
+  extra=""
+  if "$mv_bin" "$FAKE_OUT/extra" "$FAKE_OUT/extra.$sid.$n" 2>/dev/null; then
+    extra=$(/bin/cat "$FAKE_OUT/extra.$sid.$n" 2>/dev/null)
+  elif [ -n "$FAKE_EXTRA" ]; then
+    extra="$FAKE_EXTRA"
+  fi
+  if [ -n "$extra" ]; then
+    call '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":'"$extra"'}' > "$FAKE_OUT/$sid-extra-$n.tmp"
+    "$mv_bin" "$FAKE_OUT/$sid-extra-$n.tmp" "$FAKE_OUT/$sid-extra-$n.json"
+  fi
+  call '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"chat_post","arguments":{"to":"'"$to"'","text":"posted by the fake","kind":"all_done","done":"answered what it was sent"}}}' > "$FAKE_OUT/$sid-post-$n.tmp"
+  "$mv_bin" "$FAKE_OUT/$sid-post-$n.tmp" "$FAKE_OUT/$sid-post-$n.json"
   say '{"type":"assistant","message":{"id":"m'$n'","role":"assistant","content":[{"type":"text","text":"posted"}]},"session_id":"'"$sid"'"}'
   say '{"type":"result","subtype":"success","is_error":false,"duration_ms":1,"num_turns":1,"session_id":"'"$sid"'","result":"posted"}'
 done
@@ -669,20 +679,25 @@ test("a release with no Node: a relay enrolled by an agent's token on the statio
   // A turn whose agent calls the relays tool as `params` says: what the tool answered.
   let turns = 0;
   const relays = async (params: unknown) => {
-    // (what the turn before answered taken away: the fake numbers its turns by its own process)
+    // (what the turn before answered taken away: the fake numbers its turns by its own process and atomically claims
+    // `extra` once, so no extra turn or title nudge can replay a previous call)
     for (const f of readdirSync(out).filter((f) => f.includes("-extra-"))) rmSync(join(out, f));
-    writeFileSync(join(out, "extra"), JSON.stringify({ name: "relays", arguments: params }));
+    writeFileSync(join(out, "extra.tmp"), JSON.stringify({ name: "relays", arguments: params }));
+    renameSync(join(out, "extra.tmp"), join(out, "extra"));
     turns++;
     const sent = await ask(here.mcpPort, `/admin-api/threads/${threadId}/messages`, { body: { text: `relays ${turns}` } });
     assert.ok(sent.status >= 200 && sent.status < 300, sent.body);
-    // (the turn that read this call is the one that answered it: a turn the station began of itself meanwhile, a
-    // nudge's, read no call and is no sign this one ended, so its end is waited for by what it wrote, the call and
-    // then its post)
+    // Wait until both the claimed tool call's post finished AND the station recorded turn `n` ended in `store`,
+    // so the next `relays()` message never races with this turn's `chat_post` or `result`.
     const done = () => {
-      const file = readdirSync(out).find((f) => f.includes("-extra-"));
-      return file !== undefined && existsSync(join(out, file.replace(/-extra-(\d+)\.json$/, "-post-$1.json"))) ? file : undefined;
+      const file = readdirSync(out).find((f) => f.endsWith(".json") && f.includes("-extra-"));
+      if (file === undefined) return undefined;
+      const m = /-extra-(\d+)\.json$/.exec(file);
+      if (m === null) return undefined;
+      const n = Number(m[1]);
+      return existsSync(join(out, file.replace(/-extra-(\d+)\.json$/, "-post-$1.json"))) && store.listTurns(key).length >= n ? file : undefined;
     };
-    await until(`turn ${turns} answered its call`, done, () => `${readdirSync(out).join(",")}; ${here.tail()}`);
+    await until(`turn ${turns} answered its call`, done, () => `${readdirSync(out).join(",")}; turns=${store.listTurns(key).length}; ${here.tail()}`);
     const file = done();
     const said = JSON.parse(readFileSync(join(out, file!), "utf8"));
     assert.notEqual(said.result?.isError, true, `${JSON.stringify(said)}; ${here.tail()}`);
