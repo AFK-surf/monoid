@@ -1634,6 +1634,7 @@ pub fn View::image_for(Self, Live[(Double, Double)], loc~ : SourceLoc) -> Self
 pub fn View::image_in(Self, Live[((Double, Double, Double, Double), Int64)?], loc~ : SourceLoc) -> Self
 pub fn View::image_ready(Self, String, Double) -> Bool
 pub fn View::in_bones(Self) -> Bool
+pub fn View::in_row(Self) -> Bool
 pub fn View::in_use(Self, Live[Bool]) -> Self
 #callsite(autofill(loc))
 pub fn View::ink(Self, Live[Int64], loc~ : SourceLoc) -> Self

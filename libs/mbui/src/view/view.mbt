@@ -544,6 +544,8 @@ struct Node {
   /// whether Tab's stop on it is said by View::tab_stop (the last saying of it), not by View::focusable's `tab`
   mut tab_by_stop : Bool
   mut focused_cell : @signals.Signal[Bool]?
+  /// whether it lays what it holds across, told as View::row changes it (View::in_row); made as first read
+  mut row_cell : @signals.Signal[Bool]?
   /// how big it was laid out, told once all of the layout is done (View::laid_size_told: none till then); made as
   /// first read
   mut size_cell : @signals.Signal[(Double, Double)?]?
@@ -2071,6 +2073,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.beside_point = None
       n.beside_piece = None
       n.focused_cell = None
+      n.row_cell = None
       n.size_cell = None
       n.size_seen = false
       n.bounds_input = false
@@ -2219,6 +2222,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         focus_tab: true,
         tab_by_stop: false,
         focused_cell: None,
+        row_cell: None,
         size_cell: None,
         size_seen: false,
         bounds_input: false,
@@ -4656,11 +4660,38 @@ pub fn View::sides(self : View, lr : Live[(Double, Double)], loc~ : SourceLoc) -
 #callsite(autofill(loc))
 pub fn View::row(self : View, across : Live[Bool], loc~ : SourceLoc) -> View {
   self.bind(loc~, Row, across, Layout, fn(a) {
-    self.tree.nodes[self.at].flex.style.direction = if a { Row } else { Column }
+    let n = self.tree.nodes[self.at]
+    n.flex.style.direction = if a { Row } else { Column }
+    // (what reads whether what it holds is in a row told: View::in_row)
+    match n.row_cell {
+      Some(s) => s.set(a)
+      None => ()
+    }
     // (what it holds cut short gives way along it only where it is a row: View::cuts)
     self.tree.cuts_under(self.at)
   })
   self
+}
+
+///|
+/// Whether the box that lays this node out (the first holding it that is no slot: View::show, View::pick, View::each
+/// skipped) lays what it holds across, followed: what reads it (a binding, View::sets_together) worked out again as
+/// that box's View::row says otherwise, said after what it holds was made or changing later. False at the root and
+/// once let go.
+pub fn View::in_row(self : View) -> Bool {
+  guard self.live() is Some(_) else { return false }
+  let h = self.tree.box_holder(self.at)
+  guard h >= 0 else { return false }
+  let hn = self.tree.nodes[h]
+  let s = match hn.row_cell {
+    Some(s) => s
+    None => {
+      let s = @signals.signal(hn.flex.style.direction is (Row | RowReverse), same=fn(a, b) { a == b })
+      hn.row_cell = Some(s)
+      s
+    }
+  }
+  s.get()
 }
 
 ///|
@@ -9402,6 +9433,7 @@ fn View::let_go(self : View) -> Unit {
   n.beside_point = None
   n.beside_piece = None
   n.focused_cell = None
+  n.row_cell = None
   n.focus_shown_cell = None
   n.size_cell = None
   n.size_seen = false
@@ -12149,6 +12181,7 @@ fn Tree::drain_parked_garbage(self : Tree) -> Unit {
     n.beside_point = None
     n.beside_piece = None
     n.focused_cell = None
+    n.row_cell = None
     n.focus_shown_cell = None
     n.size_cell = None
     n.size_seen = false

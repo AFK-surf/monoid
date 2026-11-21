@@ -227,3 +227,70 @@ test "Room::height: how tall it is given to be under what is over it, as the win
   assert_eq(given.val, Some(660.0))
   assert_eq(t.drawn_of(fill.val.unwrap()).map(fn(d) { d.h }), Some(660.0))
 }
+
+///|
+/// A row of two boxes made by their room, sharing it evenly: the first holding 80 tall, the second 30 tall with its
+/// ground on what it holds (`held`), `right` saying more of that `held` as it is made; the id of that `held`.
+fn room_row_tree(right : (@view.View) -> Unit) -> (@view.Tree, Ref[@view.NodeId?]) {
+  let held_right : Ref[@view.NodeId?] = Ref(None)
+  let t = @view.Tree::new(
+    fn(root) {
+      root.box(fn(r) {
+        r.row(Is(true)) |> ignore
+        r.by_room(fn(held, _) {
+          held.box(fn(b) { b.height(Is(Some(80.0))) |> ignore }) |> ignore
+        })
+        .grow(Is(1.0))
+        .basis(Is(Some(0.0)))
+        |> ignore
+        r.by_room(fn(held, _) {
+          held_right.val = Some(held.id())
+          held.ground(Is(0x0000FFFFL)) |> ignore
+          right(held)
+          held.box(fn(b) { b.height(Is(Some(30.0))) |> ignore }) |> ignore
+        })
+        .grow(Is(1.0))
+        .basis(Is(Some(0.0)))
+        |> ignore
+      })
+      |> ignore
+    },
+    time=fn() { 0.0 },
+  )
+  (t, held_right)
+}
+
+///|
+test "by_room: what it holds fills its box stretched taller across a row, beside one taller, in the first layout" {
+  let (t, held) = room_row_tree(fn(_) {  })
+  t.frame(300.0, 200.0) |> ignore
+  let d = t.drawn_of(held.val.unwrap())
+  assert_eq(d.map(fn(d) { d.h }), Some(80.0), msg="as tall as the one beside it")
+  assert_eq(d.map(fn(d) { d.w }), Some(150.0))
+}
+
+///|
+test "by_room: what it holds kept as tall as what it holds where it says it grows no more" {
+  let (t, held) = room_row_tree(fn(h) { h.grow(Is(0.0)) |> ignore })
+  t.frame(300.0, 200.0) |> ignore
+  assert_eq(t.drawn_of(held.val.unwrap()).map(fn(d) { d.h }), Some(30.0))
+}
+
+///|
+test "by_room: how much what it holds grows still taken by sets_together the first time it sets it, later" {
+  let tight = @signals.signal(false, same=fn(a, b) { a == b })
+  let (t, held) = room_row_tree(fn(h) {
+    h.sets_together(fn() { tight.get() }, fn(k) {
+      h.ground(Is(0x00FF00FFL)) |> ignore
+      if k {
+        h.grow(Is(0.0)) |> ignore
+      }
+    })
+    |> ignore
+  })
+  t.frame(300.0, 200.0) |> ignore
+  assert_eq(t.drawn_of(held.val.unwrap()).map(fn(d) { d.h }), Some(80.0))
+  tight.set(true)
+  t.frame(300.0, 200.0) |> ignore
+  assert_eq(t.drawn_of(held.val.unwrap()).map(fn(d) { d.h }), Some(30.0), msg="set by it, nothing else binding it")
+}

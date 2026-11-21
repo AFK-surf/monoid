@@ -24,7 +24,8 @@ pub struct Room {
 /// told as the layout comes to it, what `make` made reading it (what shows, which rows, how wide each is, what it draws)
 /// made and said again by it there and laid out in that same layout, nothing laid out again afterwards. `make` is done
 /// once, as it is first laid out (its width known then). Its width is what holds it gives it (stretched across a
-/// column, its share of a row), never what it holds: `held` is as wide as its room, as tall as what it holds. What is
+/// column, its share of a row), never what it holds: `held` is as wide as its room and as tall as what it holds, or as tall as its box where what
+/// holds it gives that more (stretched across a row, grown down a column, its height said). What is
 /// made in it never says its own box by its room (a fault where it does); what reads it outside it (none should) is
 /// laid out after, as a change of its own. Where it is given
 /// another room in the same layout (measured in a row before its share is known), made by each in turn, laid out by
@@ -43,6 +44,12 @@ pub fn View::by_room(self : View, make : (View, Room) -> Unit, loc~ : SourceLoc)
     }
     let made = Ref(false)
     let held = x.box(loc~, fn(_) {  })
+    // (grown down its box: as tall as what it holds where that box is too, filling it where what holds by_room
+    // stretches or grows it taller; set on its layout alone, not said, so View::sets_together or held's own
+    // View::grow still takes it as one never set)
+    if held.live() is Some(h) {
+      h.flex.style.grow = 1.0
+    }
     n.flex.room = true
     n.flex.measure = Some(fn(w, wm, h, hm) {
       if wm is Undefined || !held.alive() {
