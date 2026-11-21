@@ -194,6 +194,15 @@ let grok_usage : Bytes = b"{\"type\":\"stillfail/usage\""
 let type_usage : Bytes = b"\"type\":\"usage\""
 
 ///|
+let type_user : Bytes = b"\"type\":\"user\""
+
+///|
+let type_tool : Bytes = b"\"type\":\"tool\""
+
+///|
+let type_end : Bytes = b"\"type\":\"end\""
+
+///|
 let token_count : Bytes = b"token_count"
 
 ///|
@@ -210,7 +219,8 @@ fn wanted(runtime : String, line : BytesView) -> Bool {
     "dsh" => (begins(line, dsh_message) && holds(line, usage_word)) || begins(line, dsh_context)
     "grok" => begins(line, grok_usage)
     "pi" => begins(line, pi_message) && holds(line, usage_word)
-    "cursor" | "devin" | "hermes" | "agy" => holds(line, type_usage)
+    "cursor" | "devin" | "hermes" => holds(line, type_usage)
+    "agy" => holds(line, type_usage) || holds(line, type_user) || holds(line, type_tool) || holds(line, type_end)
     _ => holds(line, token_count) || holds(line, turn_context) || holds(line, session_meta)
   }
 }
@@ -265,7 +275,7 @@ pub fn calls_of(runtime : String, text : BytesView, subagent : Bool, state : Cal
           gen_ms: 0.0,
         })
       }
-      "cursor" | "devin" | "hermes" | "agy" => {
+      "cursor" | "devin" | "hermes" => {
         let usage = get(rec, "usage")
         let id = str(get(rec, "run"))
         guard str(get(rec, "type")) == Some("usage") && usage is Some(u) && !(u is Null) && id is Some(id) else {
@@ -287,6 +297,113 @@ pub fn calls_of(runtime : String, text : BytesView, subagent : Bool, state : Cal
           window: told(get(rec, "window")),
           gen_ms: 0.0,
         })
+      }
+      "agy" => {
+        let kind = str(get(rec, "type"))
+        if kind == Some("user") {
+          if get(rec, "steered") is Some(True) {
+            continue
+          }
+          match valid_time(get(rec, "time")) {
+            Some(t) => state.speed.agy = Some({ turn_start: Some(t), invalid: false, usages: [], tools: [] })
+            None => state.speed.agy = Some({ turn_start: None, invalid: true, usages: [], tools: [] })
+          }
+        } else if kind == Some("tool") {
+          if state.speed.agy is Some(agy) && !agy.invalid && agy.turn_start is Some(_) {
+            match (valid_time(get(rec, "startedAt")), valid_time(get(rec, "time"))) {
+              (Some(s), Some(e)) if e >= s => agy_add_tool(agy, s, e)
+              (Some(s), Some(e)) if s - e <= agy_tool_skew_ms => ()
+              _ => agy_invalidate(agy)
+            }
+          }
+        } else if kind == Some("usage") {
+          let usage = get(rec, "usage")
+          let id = str(get(rec, "run"))
+          guard usage is Some(u) && !(u is Null) && id is Some(id) else { continue }
+          let call_id = "agy:" + id
+          let at_opt = valid_time(get(rec, "time"))
+          let at_val = number(get(rec, "time")).unwrap_or(0.0)
+          let out_tokens = n(get(usage, "outputTokens"))
+          let out_opt = match get(usage, "outputTokens") {
+            None => Some(0.0)
+            v => valid_safe_int(v)
+          }
+          if !at_index.contains(call_id) {
+            at_index[call_id] = out.length()
+          }
+          out.push({
+            id: call_id,
+            at: at_val,
+            model: str(get(rec, "model")),
+            subagent,
+            fast: false,
+            input: n(get(usage, "inputTokens")),
+            cache_read: n(get(usage, "cacheReadTokens")),
+            cache_write: n(get(usage, "cacheWriteTokens")),
+            cache_write_long: 0.0,
+            output: out_tokens,
+            calls: max_d(1.0, n(get(rec, "calls"))),
+            context: told(get(rec, "context")),
+            window: told(get(rec, "window")),
+            gen_ms: 0.0,
+          })
+          if state.speed.agy is Some(agy) && !agy.invalid && agy.turn_start is Some(_) {
+            match at_opt {
+              None => agy_invalidate(agy)
+              Some(ut) => agy_add_usage(agy, call_id, ut, out_opt)
+            }
+          }
+        } else if kind == Some("end") {
+          let end_opt = valid_time(get(rec, "time"))
+          if state.speed.agy is Some(agy) {
+            if !agy.invalid && agy.turn_start is Some(ts) && end_opt is Some(et) && agy.usages.length() > 0 {
+              let mut valid = et >= ts
+              if valid && agy.tools.length() > 0 && agy.tools[agy.tools.length() - 1].end > et {
+                valid = false
+              }
+              let mut check_prev = ts
+              if valid {
+                for u in agy.usages {
+                  if u.at < check_prev || u.at > et {
+                    valid = false
+                    break
+                  }
+                  check_prev = u.at
+                }
+              }
+              if valid {
+                let mut prev = ts
+                for u in agy.usages {
+                  let net = agy_segment_gen_ms(agy.tools, prev, u.at)
+                  if net > 0.0 && u.output is Some(out_tok) && out_tok * 1000.0 <= net * agy_max_tps {
+                    match at_index.get(u.id) {
+                      Some(i) => out[i].gen_ms = max_d(out[i].gen_ms, net)
+                      None =>
+                        out.push({
+                          id: u.id,
+                          at: u.at,
+                          model: None,
+                          subagent,
+                          fast: false,
+                          input: 0.0,
+                          cache_read: 0.0,
+                          cache_write: 0.0,
+                          cache_write_long: 0.0,
+                          output: 0.0,
+                          calls: 0.0,
+                          context: None,
+                          window: None,
+                          gen_ms: net,
+                        })
+                    }
+                  }
+                  prev = u.at
+                }
+              }
+            }
+            state.speed.agy = None
+          }
+        }
       }
       "pi" => {
         // Each answer of the model's as Pi kept it in the session (agents/pi.ts): its usage pi-ai's, input apart from

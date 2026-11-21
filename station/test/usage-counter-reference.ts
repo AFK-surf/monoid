@@ -28,13 +28,65 @@ const ANCHOR = 256;
 /// How many calls are recorded in one transaction before the event loop is let through.
 const WRITE_BATCH = 64;
 /// The sessions run since `?` with a transcript read before its calls were timed, of those that ran a runtime whose
-/// calls are timed (counter.mbt `untimed_sessions`).
+/// calls are timed (counter.mbt `untimed_sessions`). Kept scoped to `claude`/`codex` legacy NULL rows; `agy` timing
+/// backfill uses the separate bounded `recentTimingCandidates` path below.
 export const UNTIMED_SESSIONS = `SELECT DISTINCT u.session AS session_key FROM usage_files u JOIN sessions s ON s.key = u.session
   WHERE u.speed IS NULL AND u.offset > 0
     AND (s.runtime IN ('claude', 'codex') OR s.original_runtime IN ('claude', 'codex')
       OR EXISTS (SELECT 1 FROM runtime_sessions r WHERE r.session_key = s.key AND r.runtime IN ('claude', 'codex')))
     AND EXISTS (SELECT 1 FROM turns t INDEXED BY turns_by_session
       WHERE t.session_key = u.session AND (t.ended_at IS NULL OR t.ended_at >= ?))`;
+
+/// Recent timing candidates (counter.mbt `recent_timing_candidates`): distinct sessions with a running turn or a turn
+/// ended since `timeFrom`, paged over `turns_ended` for the `agy`-only startup backfill path.
+export const RECENT_TIMING_PAGE = 256;
+export const RECENT_RUNNING_TURNS_SQL = `SELECT rowid, session_key FROM turns INDEXED BY turns_ended
+  WHERE ended_at IS NULL AND rowid > ? ORDER BY rowid LIMIT 256`;
+export const RECENT_ENDED_FIRST_SQL = `SELECT rowid, session_key, ended_at FROM turns INDEXED BY turns_ended
+  WHERE ended_at >= ? ORDER BY ended_at, rowid LIMIT 256`;
+export const RECENT_ENDED_SAME_SQL = `SELECT rowid, session_key, ended_at FROM turns INDEXED BY turns_ended
+  WHERE ended_at = ? AND rowid > ? ORDER BY rowid LIMIT 256`;
+export const RECENT_ENDED_AFTER_SQL = `SELECT rowid, session_key, ended_at FROM turns INDEXED BY turns_ended
+  WHERE ended_at > ? ORDER BY ended_at, rowid LIMIT 256`;
+
+export function recentTimingCandidates(db: Store["db"], timeFrom: number): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const add = (rows: { session_key: string }[]) => {
+    for (const r of rows) {
+      if (!seen.has(r.session_key)) { seen.add(r.session_key); out.push(r.session_key); }
+    }
+  };
+  const runningStmt = db.prepare(RECENT_RUNNING_TURNS_SQL);
+  let runRowid = 0;
+  while (true) {
+    const rows = runningStmt.all(runRowid) as { rowid: number; session_key: string }[];
+    add(rows);
+    if (rows.length < RECENT_TIMING_PAGE) break;
+    runRowid = rows[rows.length - 1]!.rowid;
+  }
+  const first = db.prepare(RECENT_ENDED_FIRST_SQL).all(timeFrom) as { rowid: number; session_key: string; ended_at: number }[];
+  add(first);
+  if (first.length < RECENT_TIMING_PAGE) return out;
+  const sameStmt = db.prepare(RECENT_ENDED_SAME_SQL);
+  const afterStmt = db.prepare(RECENT_ENDED_AFTER_SQL);
+  let cursorAt = first[first.length - 1]!.ended_at;
+  let cursorRowid = first[first.length - 1]!.rowid;
+  while (true) {
+    const same = sameStmt.all(cursorAt, cursorRowid) as { rowid: number; session_key: string; ended_at: number }[];
+    add(same);
+    if (same.length === RECENT_TIMING_PAGE) {
+      cursorRowid = same[same.length - 1]!.rowid;
+      continue;
+    }
+    const next = afterStmt.all(cursorAt) as { rowid: number; session_key: string; ended_at: number }[];
+    add(next);
+    if (next.length < RECENT_TIMING_PAGE) break;
+    cursorAt = next[next.length - 1]!.ended_at;
+    cursorRowid = next[next.length - 1]!.rowid;
+  }
+  return out;
+}
 
 type Runtime = RuntimeKind;
 
@@ -44,15 +96,159 @@ type Runtime = RuntimeKind;
 /// session's id (Codex's first line), and the model's window as last told (dsh's request/context, before its calls).
 export type CallState = { model: string | null; codexId: string | null; window?: number | null; speed?: Speed };
 
+export type AgyPendingUsage = { id: string; at: number; output: number | null };
+export type AgyToolInterval = { start: number; end: number };
+export type AgySpeed = { turnStart: number | null; invalid: boolean; usages: AgyPendingUsage[]; tools: AgyToolInterval[] };
+
 /// Where a transcript's reading stands of its model's time (mb/src/usagecount/speed.mbt, which the program reads with):
 /// when it was last asked (`since`: a person's message, a tool's result, a request sent), and of the response under
 /// way when it was asked (`openStart`), which (`openId`, Claude Code's message) and when it last wrote (`ended`, Codex).
-export type Speed = { since: number | null; openStart: number | null; openId: string | null; ended: number | null };
+export type Speed = { since: number | null; openStart: number | null; openId: string | null; ended: number | null; agy?: AgySpeed | null };
 /// The longest a call is taken to have run: one longer is no call's alone (a pause the transcript does not tell).
 export const GEN_MOST = 1_800_000;
-export const noSpeed = (): Speed => ({ since: null, openStart: null, openId: null, ended: null });
+export const AGY_SPEED_PREFIX = "v1:";
+/// Outlier sample guard for Antigravity speed settlement (tok/s): filters corrupted segments from `session/load`
+/// history replays or concurrent subagent/steer overlap (not a physical model speed limit).
+export const AGY_MAX_TPS = 500;
+/// Tolerance (ms) for cross-process millisecond quantization jitter (`startedAt > time`) on instant tools.
+export const AGY_TOOL_SKEW_MS = 5;
+export const AGY_MAX_USAGES = 64;
+export const AGY_MAX_TOOLS = 2048;
+export const AGY_MAX_ID_BYTES = 256;
+/// Hard byte ceiling for serialized `usage_files.speed` (256 KiB), strictly above the worst-case structural bound:
+/// - wrapper `v1:{"s":<16d>,"u":[...],"t":[...]}`: < 40 B
+/// - 64 usages * (256 B id * 6x worst-case JSON \u00xx escaping + quotes/brackets + 16d time + 16d output) ~= 100,736 B (~98.4 KiB)
+/// - 2048 tools * (`[` + 16d + `,` + 16d + `],` = 36 B) = 73,728 B (~72.0 KiB)
+/// Total worst-case ~= 174,504 B (~170.4 KiB) < 262,144 B, so any valid in-memory state is chunk-split invariant.
+export const AGY_MAX_SPEED_BYTES = 262_144;
+export const noSpeed = (): Speed => ({ since: null, openStart: null, openId: null, ended: null, agy: null });
+
+const isTimedRuntime = (runtime: Runtime) => runtime === "claude" || runtime === "codex" || runtime === "agy";
+const needsTiming = (runtime: Runtime, speed: string | null | undefined) =>
+  runtime === "claude" || runtime === "codex" ? (speed ?? null) === null
+  : runtime === "agy" ? speed == null || !speed.startsWith(AGY_SPEED_PREFIX)
+  : false;
+const validSafeInt = (v: unknown): number | null => (typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : null);
+const validTime = (v: unknown): number | null => validSafeInt(v);
+
+function agyInvalidate(agy: AgySpeed): void {
+  agy.turnStart = null;
+  agy.invalid = true;
+  agy.usages.length = 0;
+  agy.tools.length = 0;
+}
+
+function agyAddTool(agy: AgySpeed, start: number, end: number): void {
+  if (end <= start) return;
+  let s = start;
+  let e = end;
+  const out: AgyToolInterval[] = [];
+  let inserted = false;
+  for (const iv of agy.tools) {
+    if (iv.end < s) out.push(iv);
+    else if (e < iv.start) {
+      if (!inserted) { out.push({ start: s, end: e }); inserted = true; }
+      out.push(iv);
+    } else {
+      if (iv.start < s) s = iv.start;
+      if (iv.end > e) e = iv.end;
+    }
+  }
+  if (!inserted) out.push({ start: s, end: e });
+  if (out.length > AGY_MAX_TOOLS) agyInvalidate(agy);
+  else agy.tools = out;
+}
+
+function agyAddUsage(agy: AgySpeed, id: string, at: number, output: number | null): void {
+  if (agy.usages.some((p) => p.id === id)) return;
+  if (Buffer.byteLength(id, "utf8") > AGY_MAX_ID_BYTES || agy.usages.length >= AGY_MAX_USAGES) {
+    agyInvalidate(agy);
+    return;
+  }
+  agy.usages.push({ id, at, output });
+}
+
+function agySegmentGenMs(tools: readonly AgyToolInterval[], from: number, to: number): number {
+  if (to <= from) return 0;
+  let cursor = from;
+  let net = 0;
+  for (const iv of tools) {
+    if (iv.end <= from) continue;
+    if (iv.start >= to) break;
+    if (iv.start > cursor) {
+      const gap = iv.start - cursor;
+      if (gap > GEN_MOST) return 0;
+      net += gap;
+    }
+    if (iv.end > cursor) cursor = Math.min(iv.end, to);
+  }
+  if (to > cursor) {
+    const gap = to - cursor;
+    if (gap > GEN_MOST) return 0;
+    net += gap;
+  }
+  return net;
+}
+
+function agySpeedText(agy: AgySpeed): string {
+  if (agy.invalid) return "v1:!";
+  if (agy.turnStart === null) return AGY_SPEED_PREFIX;
+  const u = agy.usages.map((x) => `[${JSON.stringify(x.id)},${x.at},${x.output === null ? "null" : x.output}]`).join(",");
+  const t = agy.tools.map((iv) => `[${iv.start},${iv.end}]`).join(",");
+  const text = `v1:{"s":${agy.turnStart},"u":[${u}],"t":[${t}]}`;
+  if (Buffer.byteLength(text, "utf8") > AGY_MAX_SPEED_BYTES) {
+    agyInvalidate(agy);
+    return "v1:!";
+  }
+  return text;
+}
+
+function agySpeedOf(body: string): AgySpeed | null {
+  if (body === "") return null;
+  if (body === "!") return { turnStart: null, invalid: true, usages: [], tools: [] };
+  const invalid = (): AgySpeed => ({ turnStart: null, invalid: true, usages: [], tools: [] });
+  const r = parsed(body);
+  const ts = validTime(get(r, "s"));
+  if (ts === null) return invalid();
+  const agy: AgySpeed = { turnStart: ts, invalid: false, usages: [], tools: [] };
+  const u = get(r, "u");
+  if (u !== undefined) {
+    if (!Array.isArray(u) || u.length > AGY_MAX_USAGES) return invalid();
+    for (const item of u) {
+      if (!Array.isArray(item) || (item.length !== 2 && item.length !== 3)) return invalid();
+      const id = str(item[0]);
+      const at = validTime(item[1]);
+      if (id === null || at === null || Buffer.byteLength(id, "utf8") > AGY_MAX_ID_BYTES) return invalid();
+      let output: number | null = null;
+      if (item.length === 3 && item[2] !== null) {
+        output = validSafeInt(item[2]);
+        if (output === null) return invalid();
+      }
+      agy.usages.push({ id, at, output });
+    }
+  }
+  const t = get(r, "t");
+  if (t !== undefined) {
+    if (!Array.isArray(t) || t.length > AGY_MAX_TOOLS) return invalid();
+    let prevEnd: number | null = null;
+    for (const item of t) {
+      if (!Array.isArray(item) || item.length !== 2) return invalid();
+      const s = validTime(item[0]);
+      const e = validTime(item[1]);
+      if (s === null || e === null || e <= s) return invalid();
+      if (prevEnd !== null && !(prevEnd < s)) return invalid();
+      agy.tools.push({ start: s, end: e });
+      prevEnd = e;
+    }
+  }
+  return agy;
+}
+
 /// usage_files.speed: the four, comma-separated, empty for none; null where none is known.
 export function speedText(s: Speed): string | null {
+  if (s.agy !== undefined && s.agy !== null) {
+    return s.agy.invalid || s.agy.turnStart !== null ? agySpeedText(s.agy) : null;
+  }
   if (s.since === null && s.openStart === null && s.openId === null && s.ended === null) return null;
   const n = (v: number | null) => (v === null ? "" : String(v));
   return `${n(s.since)},${n(s.openStart)},${n(s.ended)},${s.openId ?? ""}`;
@@ -60,12 +256,20 @@ export function speedText(s: Speed): string | null {
 /// usage_files.speed as the counter keeps it (speed.mbt `kept_speed`): none known kept as ",,," (speedOf: none), so that
 /// null is only ever a transcript read before calls were timed, timed again as a counter starts.
 export const keptSpeed = (s: Speed): string => speedText(s) ?? ",,,";
+export const keptSpeedFor = (runtime: Runtime, s: Speed): string =>
+  runtime === "agy" ? (s.agy != null ? agySpeedText(s.agy) : AGY_SPEED_PREFIX) : keptSpeed(s);
 export function speedOf(text: string | null | undefined): Speed {
   if (text == null) return noSpeed();
+  if (text.startsWith(AGY_SPEED_PREFIX)) {
+    if (Buffer.byteLength(text, "utf8") > AGY_MAX_SPEED_BYTES) {
+      return { since: null, openStart: null, openId: null, ended: null, agy: { turnStart: null, invalid: true, usages: [], tools: [] } };
+    }
+    return { since: null, openStart: null, openId: null, ended: null, agy: agySpeedOf(text.slice(AGY_SPEED_PREFIX.length)) };
+  }
   const [a = "", b = "", c = "", ...d] = text.split(",");
   const n = (v: string) => (/^-?[0-9]+$/.test(v) ? Number(v) : null);
   const id = d.join(",");
-  return { since: n(a), openStart: n(b), ended: n(c), openId: id === "" ? null : id };
+  return { since: n(a), openStart: n(b), ended: n(c), openId: id === "" ? null : id, agy: null };
 }
 /// A line's own time (its first "timestamp"), where it says one.
 function stampOf(line: string): number | null {
@@ -132,7 +336,8 @@ export function callsOf(runtime: Runtime, text: string, subagent: boolean, state
       runtime === "claude" ? line.includes('"usage"')
       : runtime === "dsh" ? (line.startsWith('{"type":"assistant/message"') && line.includes('"usage"')) || line.startsWith('{"type":"request/context"')
       : runtime === "grok" ? line.startsWith('{"type":"stillfail/usage"')
-      : runtime === "cursor" || runtime === "devin" || runtime === "hermes" || runtime === "agy" ? line.includes('"type":"usage"')
+      : runtime === "cursor" || runtime === "devin" || runtime === "hermes" ? line.includes('"type":"usage"')
+      : runtime === "agy" ? line.includes('"type":"usage"') || line.includes('"type":"user"') || line.includes('"type":"tool"') || line.includes('"type":"end"')
       : line.includes("token_count") || line.includes("turn_context") || line.includes("session_meta");
     if (!wanted) continue;
     let r: unknown;
@@ -154,7 +359,7 @@ export function callsOf(runtime: Runtime, text: string, subagent: boolean, state
         input: n(get(usage, "input")), cacheRead: n(get(usage, "cacheRead")), cacheWrite: n(get(usage, "cacheWrite")), cacheWriteLong: 0,
         output: n(get(usage, "output")), calls: Math.max(1, n(get(usage, "calls"))), context: told(get(r, "context")), window: told(get(r, "window")),
       });
-    } else if (runtime === "cursor" || runtime === "devin" || runtime === "hermes" || runtime === "agy") {
+    } else if (runtime === "cursor" || runtime === "devin" || runtime === "hermes") {
       // What the station's driver kept of each Cursor turn (agents/cursor-bridge.mjs): the SDK's counts, input apart
       // from the cache's, the whole run's (no context); of each Devin call (or an earlier turn told at once,
       // agents/devin.ts), with how many calls it counts, the context it left and the model's window where Devin said them.
@@ -167,6 +372,84 @@ export function callsOf(runtime: Runtime, text: string, subagent: boolean, state
         input: n(get(usage, "inputTokens")), cacheRead: n(get(usage, "cacheReadTokens")), cacheWrite: n(get(usage, "cacheWriteTokens")), cacheWriteLong: 0,
         output: n(get(usage, "outputTokens")), calls: Math.max(1, n(get(r, "calls"))), context: told(get(r, "context")), window: told(get(r, "window")),
       });
+    } else if (runtime === "agy") {
+      const kind = str(get(r, "type"));
+      if (kind === "user") {
+        if (get(r, "steered") === true) continue;
+        const t = validTime(get(r, "time"));
+        speed.agy = t !== null
+          ? { turnStart: t, invalid: false, usages: [], tools: [] }
+          : { turnStart: null, invalid: true, usages: [], tools: [] };
+      } else if (kind === "tool") {
+        const agy = speed.agy;
+        if (agy != null && !agy.invalid && agy.turnStart !== null) {
+          const s = validTime(get(r, "startedAt"));
+          const e = validTime(get(r, "time"));
+          if (s !== null && e !== null && e >= s) agyAddTool(agy, s, e);
+          else if (s !== null && e !== null && s - e <= AGY_TOOL_SKEW_MS) { /* tolerate tiny cross-process clock jitter as 0ms */ }
+          else agyInvalidate(agy);
+        }
+      } else if (kind === "usage") {
+        const usage = get(r, "usage");
+        const id = str(get(r, "run"));
+        if (usage === undefined || usage === null || id === null) continue;
+        const callId = `agy:${id}`;
+        const rawTime = get(r, "time");
+        const atOpt = validTime(rawTime);
+        const rawOut = get(usage, "outputTokens");
+        const outTokens = n(rawOut);
+        const outOpt = rawOut === undefined ? 0 : validSafeInt(rawOut);
+        if (!atIndex.has(callId)) atIndex.set(callId, out.length);
+        out.push({
+          id: callId, at: typeof rawTime === "number" ? rawTime : 0, model: str(get(r, "model")), subagent, fast: false,
+          input: n(get(usage, "inputTokens")), cacheRead: n(get(usage, "cacheReadTokens")), cacheWrite: n(get(usage, "cacheWriteTokens")), cacheWriteLong: 0,
+          output: outTokens, calls: Math.max(1, n(get(r, "calls"))), context: told(get(r, "context")), window: told(get(r, "window")),
+          genMs: 0,
+        });
+        const agy = speed.agy;
+        if (agy != null && !agy.invalid && agy.turnStart !== null) {
+          if (atOpt === null) agyInvalidate(agy);
+          else agyAddUsage(agy, callId, atOpt, outOpt);
+        }
+      } else if (kind === "end") {
+        const endOpt = validTime(get(r, "time"));
+        const agy = speed.agy;
+        if (agy != null) {
+          if (!agy.invalid && agy.turnStart !== null && endOpt !== null && agy.usages.length > 0) {
+            let valid = endOpt >= agy.turnStart;
+            if (valid && agy.tools.length > 0 && agy.tools[agy.tools.length - 1]!.end > endOpt) valid = false;
+            let checkPrev = agy.turnStart;
+            if (valid) {
+              for (const u of agy.usages) {
+                if (u.at < checkPrev || u.at > endOpt) {
+                  valid = false;
+                  break;
+                }
+                checkPrev = u.at;
+              }
+            }
+            if (valid) {
+              let prev = agy.turnStart;
+              for (const u of agy.usages) {
+                const net = agySegmentGenMs(agy.tools, prev, u.at);
+                if (net > 0 && u.output !== null && u.output * 1000 <= net * AGY_MAX_TPS) {
+                  const i = atIndex.get(u.id);
+                  if (i !== undefined) out[i]!.genMs = Math.max(out[i]!.genMs ?? 0, net);
+                  else {
+                    out.push({
+                      id: u.id, at: u.at, model: null, subagent, fast: false,
+                      input: 0, cacheRead: 0, cacheWrite: 0, cacheWriteLong: 0, output: 0, calls: 0, context: null, window: null,
+                      genMs: net,
+                    });
+                  }
+                }
+                prev = u.at;
+              }
+            }
+          }
+          speed.agy = null;
+        }
+      }
     } else if (runtime === "dsh") {
       // dsh's counts are apart: input is what was not cached. The model's window comes before a request's calls.
       const data = get(r, "data");
@@ -688,8 +971,8 @@ export class ReferenceUsageCounter {
         }
       }
     }
-    // (none found to time, kept as ",,,": read as none (speedOf), and not timed again at the next start)
-    const savedSpeed = keptSpeed(state.speed!);
+    // (none found to time, kept as ",,," or "v1:": read as none (speedOf), and not timed again at the next start)
+    const savedSpeed = keptSpeedFor(runtime, state.speed!);
     const db = this.#store.db;
     let earliest = Infinity;
     for (let i = 0; i < Math.max(1, timed.length); i += WRITE_BATCH) {
@@ -723,12 +1006,19 @@ export class ReferenceUsageCounter {
     const recent = only !== null ? [] : store.usageActiveSessions(Math.max(cursor.since, (last || cursor.through) - MARGIN_MS));
     const recentAny = recent.length > 0;
     const wanted = only !== null ? new Set(only) : new Set(recent);
-    // Timing back, of all: the sessions run since then whose transcripts were read before calls were timed too, though
-    // none ran since the last sweep.
+    // Timing back, of all:
+    // 1. Legacy `claude`/`codex` NULL rows via `UNTIMED_SESSIONS` (normal `wanted`).
+    // 2. Bounded recent/running turn candidates via `turns_ended` for `agy`-only backfill, kept separate from `wanted`
+    //    so non-agy sessions (e.g. Codex) never trigger transcript directory walks on startup.
+    const agyOnlyWanted: string[] = [];
     if (only === null && this.#timeFrom !== null) {
       for (const r of store.db.prepare(UNTIMED_SESSIONS).all(this.#timeFrom) as { session_key: string }[]) wanted.add(r.session_key);
+      for (const key of recentTimingCandidates(store.db, this.#timeFrom)) {
+        if (!wanted.has(key)) agyOnlyWanted.push(key);
+      }
     }
     const sessions: SessionRow[] = store.sessionsOf([...wanted]);
+    const agyOnlySessions: SessionRow[] = agyOnlyWanted.length === 0 ? [] : store.sessionsOf(agyOnlyWanted);
     const known = (this.#files ??= new Map<string, CountedFile>());
     const config = this.#config();
     const homes = config.profiles.map((p) => p.home);
@@ -848,6 +1138,19 @@ export class ReferenceUsageCounter {
         added += await this.#readFile(path, runtime, false, s, readBefore(path, runtime), cursor.since);
       }
     }
+    // Antigravity startup timing backfill: only locate and read `agy` sources for `agyOnlySessions` so non-agy
+    // sessions (including mixed codex+agy sessions) never trigger Codex/Claude transcript directory walks.
+    for (const s of agyOnlySessions) {
+      for (const source of store.runtimeSessionSources(s.key, s)) {
+        if (source.runtime !== "agy") continue;
+        const path = transcriptPaths("agy", config.dataDir, homes, [source.id]).paths[0];
+        if (path === undefined) continue;
+        const real = await canonical(path);
+        if (seenFiles.has(real)) continue;
+        seenFiles.add(real);
+        added += await this.#readFile(path, "agy", false, s, readBefore(path, "agy"), cursor.since);
+      }
+    }
     added += this.#flush();
     if (only === null) {
       if (recentAny) store.advanceUsageCounter(started);
@@ -901,8 +1204,9 @@ export class ReferenceUsageCounter {
     }
     // Put away and read to its end already, nothing left to write of it: its end is not decompressed again
     // (usagecount/counter.mbt `read_out`).
-    if (archived && was !== undefined && size === was.offset && was.cutoff !== null && was.anchor !== null && was.path === path
-      && !(this.#timeFrom !== null && (was.speed ?? null) === null && was.offset > 0 && runtime !== "claude" && runtime !== "codex")) return 0;
+    const toTime = this.#timeFrom !== null && was !== undefined && was.offset > 0
+      && (((was.speed ?? null) === null && !isTimedRuntime(runtime)) || (isTimedRuntime(runtime) && needsTiming(runtime, was.speed)));
+    if (archived && was !== undefined && size === was.offset && was.cutoff !== null && was.anchor !== null && was.path === path && !toTime) return 0;
     let anchor = "";
     const shortened = was !== undefined && size < was.offset;
     if (!shortened && was !== undefined) {
@@ -918,10 +1222,10 @@ export class ReferenceUsageCounter {
       cutoff = this.#store.beginUsageCounterFile(path, before, { cutoff: replaced ? size : (cutoff ?? size), anchor }, replaced).cutoff;
     }
     this.#files?.set(path, { ...before, cutoff, anchor, path });
-    // Read before calls were timed, of a runtime whose calls are not timed (a chat that left Claude Code or Codex):
+    // Read before calls were timed, of a runtime whose calls are not timed (a chat that left Claude Code, Codex or Antigravity):
     // nothing to time, kept so, its reading on as it is.
     if (this.#timeFrom !== null && was !== undefined && (was.speed ?? null) === null && !replaced && before.offset > 0 && size === before.offset
-      && runtime !== "claude" && runtime !== "codex") {
+      && !isTimedRuntime(runtime)) {
       const db = this.#store.db;
       db.exec("BEGIN IMMEDIATE");
       try {
@@ -933,17 +1237,17 @@ export class ReferenceUsageCounter {
         if (kept !== undefined) this.#files!.set(name, { ...kept, speed: ",,," });
       }
     }
-    if (archived && !replaced && size === before.offset) return 0;
     const state: CallState = { model: before.model, codexId: null, speed: speedOf(before.speed) };
     // Read before its calls were timed: those from `timeFrom` on timed now, its reading on from where that left.
-    if (this.#timeFrom !== null && was !== undefined && (was.speed ?? null) === null && !replaced && before.offset > 0 && (runtime === "claude" || runtime === "codex")) {
+    if (this.#timeFrom !== null && was !== undefined && isTimedRuntime(runtime) && needsTiming(runtime, was.speed) && !replaced && before.offset > 0) {
       state.speed = await this.#timedAgain(path, was.path, runtime, subagent, session.key, before.offset, cutoff, this.#timeFrom);
-      const savedSpeed = keptSpeed(state.speed);
+      const savedSpeed = keptSpeedFor(runtime, state.speed);
       for (const name of new Set([path, was.path])) {
         const kept = this.#files?.get(name);
         if (kept !== undefined) this.#files!.set(name, { ...kept, speed: savedSpeed });
       }
     }
+    if (archived && !replaced && size === before.offset) return 0;
     // A session created after the counter began can have its first call timestamped just before that boundary when
     // the runtime's clock is behind. Use the same clock-skew allowance already used to attribute calls to a session.
     const firstNewAt = session.createdAt >= since ? Math.min(since, session.createdAt - SKEW_MS) : since;
@@ -961,7 +1265,7 @@ export class ReferenceUsageCounter {
           : Buffer.concat([Buffer.from(anchor, "hex"), section.bytes]).subarray(-ANCHOR)).toString("hex");
         // What ran before the station had the session (a terminal's, continued here) is not the station's.
         const modelBefore = state.model;
-        const speedBefore = keptSpeed(state.speed!);
+        const speedBefore = keptSpeedFor(runtime, state.speed!);
         const fromKnownSuffix = was !== undefined && !replaced && section.from >= before.offset;
         const calls = callsOf(runtime, section.text, subagent, state).filter((c) => c.at >= session.createdAt - SKEW_MS && (section.followed || c.at >= firstNewAt || fromKnownSuffix));
         // The turns they were made in, those alone (store/usage.ts usageTurns).
@@ -986,7 +1290,7 @@ export class ReferenceUsageCounter {
           if (this.#abort.signal.aborted) throw new Stopped();
           const complete = i + WRITE_BATCH >= withFor.length;
           const file = { session: session.key, offset: complete ? section.offset : section.from, model: complete ? state.model : modelBefore,
-            speed: complete ? keptSpeed(state.speed!) : speedBefore };
+            speed: complete ? keptSpeedFor(runtime, state.speed!) : speedBefore };
           const batch = withFor.slice(i, i + WRITE_BATCH);
           const changed = { from: Infinity };
           const savedAnchor = complete ? nextAnchor : anchor;

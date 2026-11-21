@@ -553,8 +553,8 @@ pub fn record_calls(
         Some(r) => Some((num_of(field(r, "output")).unwrap_or(0.0), num_of(field(r, "gen_ms")).unwrap_or(0.0)))
         None => None
       }
-      // An old call may grow after the cutover, but an unseen old call is not historical work to fill in.
-      if was is None && min_new_at is Some(min) && c.at < min {
+      // An old call may grow after the cutover, and a timing-only update (calls <= 0) only updates an already recorded call.
+      if was is None && (c.calls <= 0.0 || (min_new_at is Some(min) && c.at < min)) {
         continue
       }
       // The same response can occur in several lines or be replayed after an interrupted read.

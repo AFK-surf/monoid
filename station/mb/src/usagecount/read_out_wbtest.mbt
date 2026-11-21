@@ -18,12 +18,19 @@ fn counted_at(offset : Double, speed? : String? = Some("1,2,3,4")) -> Counted {
 test "a put-away transcript read to its end is not read again" {
   let w = counted_at(100.0)
   assert_true(read_out(true, Some(w), 100.0, "/t/r.jsonl", None, "claude"))
-  // Timed already, or its runtime's calls timed by `timed_again` (only on a transcript not put away).
+  // Timed already: not read again even when time_from is set.
   assert_true(read_out(true, Some(w), 100.0, "/t/r.jsonl", Some(5.0), "pi"))
+  assert_true(read_out(true, Some(w), 100.0, "/t/r.jsonl", Some(5.0), "claude"))
+  assert_true(read_out(true, Some(w), 100.0, "/t/r.jsonl", Some(5.0), "codex"))
+  assert_true(read_out(true, Some(counted_at(100.0, speed=Some("v1:"))), 100.0, "/t/r.jsonl", Some(5.0), "agy"))
   let untimed = counted_at(100.0, speed=None)
   assert_true(read_out(true, Some(untimed), 100.0, "/t/r.jsonl", None, "pi"))
-  assert_true(read_out(true, Some(untimed), 100.0, "/t/r.jsonl", Some(5.0), "claude"))
-  assert_true(read_out(true, Some(untimed), 100.0, "/t/r.jsonl", Some(5.0), "codex"))
+  assert_true(read_out(true, Some(untimed), 100.0, "/t/r.jsonl", None, "agy"))
+  // Untimed with time_from set: must be read once to backfill (including legacy agy `,,,`).
+  assert_false(read_out(true, Some(untimed), 100.0, "/t/r.jsonl", Some(5.0), "claude"))
+  assert_false(read_out(true, Some(untimed), 100.0, "/t/r.jsonl", Some(5.0), "codex"))
+  assert_false(read_out(true, Some(untimed), 100.0, "/t/r.jsonl", Some(5.0), "agy"))
+  assert_false(read_out(true, Some(counted_at(100.0, speed=Some(",,,"))), 100.0, "/t/r.jsonl", Some(5.0), "agy"))
 }
 
 ///|
