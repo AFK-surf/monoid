@@ -553,6 +553,12 @@ test("a warm Antigravity session whose CLI lacks its trajectory recovers across 
     return h;
   };
   const d1 = new AgyDriver({ data: hubDir });
+  let completed = 0;
+  const open = d1.open.bind(d1);
+  d1.open = (options, events) => open(options, (event) => {
+    if (event.type === "turnEnded") completed++;
+    events(event);
+  });
   let hub = makeHub(d1);
   let d2: AgyDriver | null = null;
   try {
@@ -560,7 +566,9 @@ test("a warm Antigravity session whose CLI lacks its trajectory recovers across 
     cfg.maxNudges = 0;
     const m1 = message({ text: "first ask" });
     await hub.accept("cl", m1);
-    await until(() => store.listSessions().length === 1 && !store.listSessions()[0]!.running && store.listSessions()[0]!.runtimeSessionId !== null);
+    // The runtime id is saved before begin_turn sets running. Wait for the first turn's end before deleting its DB.
+    // settle() drains actor work, but the fake process can still be waiting to read its prompt.
+    await until(() => completed >= 1 && store.listSessions().length === 1 && !store.listSessions()[0]!.running && store.listSessions()[0]!.runtimeSessionId !== null);
     await settle();
     const key = store.listSessions()[0]!.key;
     const id1 = store.getSession(key)!.runtimeSessionId!;
