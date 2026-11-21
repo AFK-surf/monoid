@@ -313,7 +313,7 @@ test "the bar going down under a page pushed takes no tap: the field tapped wher
   let vis = bar.vis.at(t.time()).0
   assert_true(vis > 0.01 && vis < 0.5, msg="\{vis}")
   let (x, y, w, h) = t.rect_of("发消息").unwrap()
-  assert_true(y + h > 844.0 - 22.0 - 56.0)
+  assert_true(y + h > 844.0 - 22.0 - bar_track)
   t.tap_once(x + w / 2.0, y + h / 2.0)
   let (active, _, _, _) = t.ime()
   assert_true(active)

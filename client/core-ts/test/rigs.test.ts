@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 import { Effect, Result } from "effect";
 import { CoreError, HostError } from "../src/error.ts";
+import { t } from "../src/i18n.ts";
 import type { Entry } from "../src/lock.ts";
 import { shortCode } from "../src/lock.ts";
 import { PersonalLock } from "../src/personal-lock.ts";
@@ -43,6 +44,8 @@ async function createRigGrants(opts: {
       harness.call("revoke", { handle, signed, chain }),
     full: (signed: unknown, chain?: unknown) =>
       harness.call<{ body: any }>("full", { handle, signed, chain }),
+    added: (signed: unknown, pin?: unknown, chain?: unknown) =>
+      harness.call<string | null>("added", { handle, signed, pin: pin ?? null, chain: chain ?? null }),
     device: (signed: unknown, chain?: unknown) =>
       harness.call("device", { handle, signed, chain }),
     devices: () => harness.call<any[]>("devices", { handle }),
@@ -88,7 +91,7 @@ function world() {
   /// How each station answers: its `GET /rigs`, and whether it is reached at all.
   const stations = new Map<string, { up: boolean; rigs: any[] }>([[ST1, { up: true, rigs: [] }], [ST2, { up: true, rigs: [] }]]);
   const invalidated: string[] = [];
-  const lock = { locked: false, as: null as "lock" | "person" | null };
+  const lock = { locked: false, as: null as "lock" | "person" | null, pin: null as string | null };
   const rigs = new Rigs({
     host,
     store: { invalidate: (topic: any) => void invalidated.push(`${topic.topic} ${topic.workspace}`) } as any,
@@ -109,6 +112,7 @@ function world() {
       enrolled: (_sub, _ws, made: any) => Effect.succeed(lock.locked ? { ...made, install: `${made.install} LOCKHASH`, installWindows: `${made.installWindows} LOCKHASH`, installDocker: `${made.installDocker} LOCKHASH`, command: `${made.command} --lock LOCKHASH` } : made),
       signsAs: () => lock.as,
       signAdd: () => Effect.succeed({ key: "ed25519:lockkey", sig: "00" }),
+      pinHash: () => lock.pin,
     },
     sha256,
   });
@@ -319,6 +323,62 @@ test("security mode: the rig's code compared, then signed for with the key the w
     assert.notEqual(w.asked.at(-1)!.body.signed.sig.key, "ed25519:lockkey");
   } finally {
     w.runner.shutdown();
+  }
+});
+
+test("security mode: the add names the workspace lock's entry, which the rig takes from what its person's own lock signed (FB-45)", async () => {
+  const w = world();
+  const dir = mkdtempSync(join(tmpdir(), "core-rig-pin-"));
+  let rig: Awaited<ReturnType<typeof createRigGrants>> | undefined;
+  try {
+    await w.run(w.personal.open(SUB, "turn it on"));
+    const root = w.personal.root(SUB)!;
+    w.lock.locked = true;
+    w.lock.pin = "ab".repeat(32);
+    rig = await createRigGrants({ path: join(dir, "grants.json"), self: { id: RIG, workspace: WS, owner: SUB, person: root }, nowMs: w.host.nowMs() });
+    const vouch = () => w.runner.run(Effect.result(w.rigs.run(call("rig.vouch", { workspace: WS, rig: RIG, code: shortCode(RIG) }))));
+    const sent = () => JSON.parse(JSON.stringify(w.asked.filter((a) => a.path === `/rigs/${RIG}/add`).at(-1)!.body));
+    // Bound to their own lock: the add a key on it signed, naming the entry, their lock with it; the rig names it.
+    w.lock.as = "person";
+    assert.ok(Result.isSuccess(await vouch()));
+    const person = sent();
+    assert.equal(person.signed.body.lock, w.lock.pin);
+    assert.ok(Array.isArray(person.chain) && person.chain.length > 0, "their own lock with it");
+    assert.equal(person.pin, undefined);
+    assert.equal(await rig.added(person.signed, person.pin, person.chain), w.lock.pin);
+    // Signing in the workspace's lock (its lock key, which the rig does not judge): their own lock's `pin` beside it,
+    // the person asked for that once; the add alone names nothing to the rig.
+    w.lock.as = "lock";
+    const before = w.asks.n;
+    assert.ok(Result.isSuccess(await vouch()));
+    const viaLock = sent();
+    assert.equal(viaLock.signed.sig.key, "ed25519:lockkey");
+    assert.equal(viaLock.signed.body.lock, w.lock.pin);
+    assert.deepEqual(viaLock.pin.body, viaLock.signed.body, "the same statement, signed on their own lock");
+    assert.notEqual(viaLock.pin.sig.key, "ed25519:lockkey");
+    assert.equal(w.asks.n, before + 1);
+    assert.equal(await rig.added(viaLock.pin, null, viaLock.chain), w.lock.pin, "their own lock's statement names it");
+    // Not on its person's own lock (a lock begun on another device of theirs): refused before anything is sent, saying
+    // where on this device it joins it, so the rig is not marked checked without what it pins by; on it again, sent.
+    const adds = () => w.asked.filter((a) => a.path === `/rigs/${RIG}/add`).length;
+    const sentBefore = adds();
+    (w.personal as any).standing = () => "outside";
+    const outside = await vouch();
+    assert.ok(Result.isFailure(outside) && outside.failure.code === "personal_outside" && outside.failure.message === t("core-misc.personal.outsideSafe"), JSON.stringify(outside));
+    assert.equal(adds(), sentBefore, "nothing sent while it is not on its own lock");
+    delete (w.personal as any).standing;
+    assert.ok(Result.isSuccess(await vouch()));
+    assert.equal(adds(), sentBefore + 2, "sent to both stations once on it again");
+    assert.ok(sent().pin !== undefined && Array.isArray(sent().chain), JSON.stringify(sent()));
+    // None held on here: no entry named, nothing more asked.
+    w.lock.pin = null;
+    const none = w.asks.n;
+    assert.ok(Result.isSuccess(await vouch()));
+    assert.deepEqual([sent().signed.body.lock, sent().pin, w.asks.n], [undefined, undefined, none]);
+  } finally {
+    await rig?.close();
+    w.runner.shutdown();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

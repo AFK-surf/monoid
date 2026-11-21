@@ -138,6 +138,15 @@ pub(all) struct CheckOptions {
   machine_token : (async (Env) -> String)?
   urls : Urls?
   lang : String
+  /// Asked again because a runtime on it was refused (Accounts `recheck_profile`): a Claude subscription's login is
+  /// renewed even when not due, so a refresh token revoked with its access token still listing models is found over.
+  recheck : Bool
+}
+
+///|
+/// Whether Anthropic's answer refuses a Claude subscription's OAuth token: a revoked one is answered 401 or 403.
+pub fn claude_auth_status(status : Int?) -> Bool {
+  status == Some(401) || status == Some(403)
 }
 
 ///|
@@ -289,31 +298,60 @@ async fn check_inner(
       Some(tk) => claude_models(io, at, tk)
     }
     let mut models = first_models
+    // (its login renewed against the token just refused: a refresh token refused too is a login over)
+    let renew = async fn(tk : String) -> String raise {
+      auth.token(o.env, if o.machine { None } else { Some(o.home) }, Some(tk), at.claude_token, lang).0
+    }
+    let mut renewed_here = false
     match renew_error {
       Some(err) =>
         if models is None {
           return check("failed", err, None)
         }
       None =>
-        if models_status == Some(401) {
+        if claude_auth_status(models_status) {
           if token is Some(tk) {
-            let renewed = auth.token(
-              o.env,
-              if o.machine { None } else { Some(o.home) },
-              Some(tk),
-              at.claude_token,
-              lang,
-            ) catch {
+            let renewed = renew(tk) catch {
               RenewRefused(_, _) as e => raise e
               e => return check("failed", message_of(e), None)
             }
-            let (retry_models, retry_status) = claude_models(io, at, renewed.0)
-            if retry_status == Some(401) {
+            renewed_here = true
+            let (retry_models, retry_status) = claude_models(io, at, renewed)
+            if claude_auth_status(retry_status) {
               return check("login", t("station.quota.signInExpired", []), None)
             }
             models = retry_models
           }
         }
+    }
+    // Asked again after a runtime on it was refused: Anthropic can go on listing models for an access token whose login
+    // was revoked (FB-44), so its refresh token is what is asked. One refused is over; one not reached now leaves a
+    // listing that worked standing, and one that did not a failed check.
+    if o.recheck && !renewed_here && renew_error is None && token is Some(tk) {
+      let renewed : String? = try {
+        Some(renew(tk))
+      } catch {
+        RenewRefused(status, _) =>
+          // (none to renew with: a token that still lists models is not taken for one revoked)
+          if !(status is None && models_status == Some(200)) {
+            return check("login", t("station.quota.signInExpired", []), None)
+          } else {
+            None
+          }
+        e =>
+          if models_status != Some(200) {
+            return check("failed", message_of(e), None)
+          } else {
+            None
+          }
+      }
+      if renewed is Some(r) && models is None {
+        let (retry_models, retry_status) = claude_models(io, at, r)
+        if claude_auth_status(retry_status) {
+          return check("login", t("station.quota.signInExpired", []), None)
+        }
+        models = retry_models
+      }
     }
     // For a profile in its own home Claude keeps the more specific tier beside its token.
     let credentials = if o.machine {

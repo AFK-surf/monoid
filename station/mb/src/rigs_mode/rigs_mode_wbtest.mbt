@@ -143,6 +143,10 @@ test "well_formed validates rig statement shapes and rejects malformed bounds" {
   ]
   let wrap = (fields : Array[(String, Json)]) => Some(jobj([("body", jobj(base + fields)), ("sig", sig)]))
   assert_true(well_formed("add", wrap([])))
+  // (the workspace lock's entry a rig pins: an entry's hash, nothing else, rig-form.ts `AddBody`, FB-45)
+  assert_true(well_formed("add", wrap([("lock", jstr(hex64))])))
+  assert_true(!well_formed("add", wrap([("lock", jstr("ABC"))])))
+  assert_true(!well_formed("add", wrap([("lock", Json::null())])))
   assert_true(well_formed("full", wrap([])))
   assert_true(!well_formed("unknown", wrap([])))
   assert_true(well_formed("revoke", wrap([("request", jstr("r_1"))])))

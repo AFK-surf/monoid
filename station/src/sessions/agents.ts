@@ -40,7 +40,7 @@ import { AdminHost, ControlPlane, Events, Grants, HelperFolders, Key, Own, Parts
 import { claudeCredentialsFile, codexAuthFile } from "../agents/machine-logins.ts";
 import { permissionsView } from "../api/routes/permissions.ts";
 import { Net, measure } from "../jobs/load.ts";
-import { BilledCooldown, Notifier } from "../cloud/notify.ts";
+import { BilledCooldown, Notifier, ProfileLoginCooldown } from "../cloud/notify.ts";
 import { type Cloud as CloudState, rigGrantsPath } from "../cloud/state.ts";
 import { screenTools } from "../tools/screen.ts";
 import { permissionTools } from "../tools/permissions.ts";
@@ -62,7 +62,7 @@ import { workspaceSizeTools } from "../tools/workspace-size.ts";
 import { relayTools } from "../tools/relays.ts";
 import { versionTools } from "../tools/version.ts";
 import { waysOf } from "../mesh/ways.ts";
-import { type Accounts, checkConfig, makeAccounts } from "../accounts/index.ts";
+import { type Accounts, checkConfig, type LoginLost, makeAccounts } from "../accounts/index.ts";
 import { Sharing } from "../share/index.ts";
 import { MemorySync } from "../share/memory.ts";
 import { ChatShares } from "../xshare/index.ts";
@@ -78,7 +78,7 @@ import type { Viewer } from "../mesh/credential.ts";
 import { stationLang, tr, type Lang } from "../ops/i18n.ts";
 import { type Updates, makeUpdates } from "../updates/updates.ts";
 import { channelOf } from "../updates/versions.ts";
-import { type Connect, hubConfig, runtimeTitle } from "./config.ts";
+import { allowedIn, type Connect, hubConfig, runtimeTitle } from "./config.ts";
 import type { TailState } from "../read/transcript.ts";
 import { followLatestThreadRequests } from "../read/latest-thread-requests.ts";
 import { ColdRooms } from "./cold.ts";
@@ -632,11 +632,16 @@ export const AgentsLive = (control: Control) =>
         const host = p?.share?.host;
         return cloud.memberships().flatMap((m) => m.peers).find((x) => x?.id === host)?.name ?? host ?? null;
       };
+      // (told once the notifier is made, below)
+      let loginLost: ((lost: LoginLost) => void) | null = null;
+      let loginBack: ((id: string) => void) | null = null;
       const accounts: Accounts = makeAccounts({
         data, store, config, hub, reviewUndecided: () => startReview(hub), codex: () => codex as any, hermes: () => hermes, agy: () => agy, following: () => events.inUse() || hub.anyRunning(), checkOnStart: true,
         workspaces: () => hub.workspaces(),
         claudeVersion: () => updates.get().find((v) => v.id === "claude")?.version ?? null,
-        shared: { status: (p) => sharing!.status(p), lendCodex: (p, rejected) => sharing!.lendCodex(p, rejected), lendAgy: (p, rejected) => sharing!.lendAgy(p, rejected), lendClaude: (p, rejected) => sharing!.lendClaude(p, rejected), quotaReset: (p, key) => sharing!.quotaReset(p.id, key), loginUpdated: (id) => { sharing?.loginUpdated(id); }, view: (p, ws) => sharing?.profileView(p, ws) ?? null, hostName },
+        loginLost: (lost) => loginLost?.(lost),
+        loginBack: (id) => loginBack?.(id),
+        shared: { status: (p, recheck) => sharing!.status(p, recheck === true), lendCodex: (p, rejected) => sharing!.lendCodex(p, rejected), lendAgy: (p, rejected) => sharing!.lendAgy(p, rejected), lendClaude: (p, rejected) => sharing!.lendClaude(p, rejected), quotaReset: (p, key) => sharing!.quotaReset(p.id, key), loginUpdated: (id) => { sharing?.loginUpdated(id); }, view: (p, ws) => sharing?.profileView(p, ws) ?? null, hostName },
       });
       found = accounts.found;
       accounts.start();
@@ -658,7 +663,8 @@ export const AgentsLive = (control: Control) =>
         // In sandboxes no Codex here holds the refresh token: it is renewed here whenever it runs out.
         codexRenewRunning: async (id) => await codex.renewLogin(id),
         agyRenew: (home) => agyRenew(home),
-        status: async (id) => { const h = await accounts.lentHealth(id); return { check: h.check ?? null, quota: h.quota ?? null }; },
+        status: async (id, recheck) => { const h = await accounts.lentHealth(id, recheck === true); return { check: h.check ?? null, quota: h.quota ?? null }; },
+        loginExpired: (id) => accounts.markLoginExpired(id),
         changed: () => events.overviewChanged(),
         recheck: () => accounts.recheckBorrowed(),
         profileChanged: (id, reset) => accounts.sharedChanged(id, reset),
@@ -953,6 +959,17 @@ export const AgentsLive = (control: Control) =>
       // What the chats' people hear about while no client of theirs runs: pushed by the control plane.
       const notifier = new Notifier(store, readers, cloud, (notices, ws) => Effect.runPromise(plane.notify(notices, ws)), { now: () => hub.clock.currentTimeMillisUnsafe(), deadline: (login) => hub.logins?.deadline?.(login) ?? null });
       const billedCooldown = new BilledCooldown();
+      // A profile's login over: the managers of each workspace it serves are told whose it is, to sign it in again.
+      const profileLoginCooldown = new ProfileLoginCooldown();
+      loginLost = ({ id, profile, station }) => {
+        if (cloud.provider() !== "stillfail") return;
+        const home = cloud.home();
+        const workspaces = cloud.memberships().map((m) => m.workspace).filter((ws) => allowedIn(profile, ws, home));
+        const runtime = profile.runtime;
+        const stationName = station ?? cloud.state?.name ?? "still.fail";
+        notifier.notifyProfileLogin({ workspaces, profileId: id, profile: profile.name, runtimeTitle: runtime === undefined ? "" : runtimeTitle(runtime), stationName, at: hub.now() }, profileLoginCooldown);
+      };
+      loginBack = (id) => profileLoginCooldown.clear(id);
       hub.onBilledFallback = (info) => {
         const ws = info.workspace ?? cloud.home();
         if (ws === null || cloud.membership(ws) === null) return;

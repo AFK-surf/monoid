@@ -1122,6 +1122,9 @@ pub async fn Rigs::route(
   if meth == "POST" && n == 4 && parts[1] == "rigs" && hex64(parts[2]) && parts[3] == "add" {
     let id = parts[2]
     let op = Some(body_of(body))
+    if size > signed_max {
+      return Some(error_answer(413, "too large"))
+    }
     let rigs = self.d.cloud.rigs_named(ws)
     guard rigs.search_by(x => str_at(Some(x), "id") == Some(id)) is Some(i) else {
       return Some(error_answer(404, "no such rig in this workspace"))
@@ -1134,7 +1137,17 @@ pub async fn Rigs::route(
       return Some(error_answer(422, why))
     }
     let signed = get(op, "signed").unwrap_or(Json::null())
-    self.queue(ws, id, "added", jobj([("signed", signed)]))
+    // (with what the rig pins the workspace's lock by where it pins none, FB-45: rigs/module.ts)
+    let carried = [("signed", signed)]
+    match get(op, "pin") {
+      None | Some(Null) => ()
+      Some(p) => carried.push(("pin", p))
+    }
+    match get(op, "chain") {
+      None | Some(Null) => ()
+      Some(c) => carried.push(("chain", c))
+    }
+    self.queue(ws, id, "added", jobj(carried))
     self.vouched_elsewhere(ws, id, signed)
     self.forget(rig_key(ws, id))
     self.look()

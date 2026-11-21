@@ -18,7 +18,7 @@
 // ── geometry (dp) ──────────────────────────────────────────────
 
 ///|
-let bar_track : Double = 56.0
+let bar_track : Double = 50.0
 
 ///|
 /// How far the pill under the place shown is in from the capsule's edge (ShellTabBar.kt PILL_INSET_DP): its corner the
@@ -59,7 +59,7 @@ fn bar_raise(height : Double, foot : Double, panel : Double, top : Double) -> Do
 }
 
 ///|
-let bar_row : Double = 56.0
+let bar_row : Double = 50.0
 
 ///|
 let over : Double = 20.0
@@ -87,7 +87,7 @@ let bar_hold_ms : Double = 200.0
 ///|
 /// What a place's top page keeps clear at its foot for the bar (Places.kt BAR_ROOM: the bar, its 22 from the foot, a
 /// little air, and the action standing 32 over it).
-let bar_room : Double = 56.0 + 22.0 + 16.0 + 32.0
+let bar_room : Double = 50.0 + 22.0 + 16.0 + 32.0
 
 ///|
 /// The chats' family of places, whose pages have 令 in the notch.
@@ -634,6 +634,13 @@ priv struct BarModel {
   bond_merge : @motion.Way
   bond_recoil : @motion.Way
   mut bond_bonded : Bool
+  /// iOS 26 scroll-to-collapse state (0.0 expanded -> 1.0 collapsed into left 56x56 orb)
+  mut collapsed : Bool
+  collapse : @motion.Way
+  /// scroll direction hysteresis tracking for root-page lists
+  mut scroll_last_y : Double
+  mut scroll_acc : Double
+  mut scroll_page_key : String
   /// what it was last told by the app's state (bar_tell, at its cause's moment): told the same again, nothing new
   mut told : BarTold?
 }
@@ -687,6 +694,11 @@ let bar : BarModel = {
   bond_merge: @motion.Way::new(0.0),
   bond_recoil: @motion.Way::new(0.0),
   bond_bonded: false,
+  collapsed: false,
+  collapse: @motion.Way::new(0.0),
+  scroll_last_y: 0.0,
+  scroll_acc: 0.0,
+  scroll_page_key: "",
   told: None,
   icon_swap: glide(1.0),
 }
@@ -728,6 +740,11 @@ fn bar_reset() -> Unit {
   bar.bond_merge.put(0.0)
   bar.bond_recoil.put(0.0)
   bar.bond_bonded = false
+  bar.collapsed = false
+  bar.collapse.put(0.0)
+  bar.scroll_last_y = 0.0
+  bar.scroll_acc = 0.0
+  bar.scroll_page_key = ""
   m_face.val = ""
   bar.told = None
   bar_told_now.set(None)
@@ -742,6 +759,15 @@ fn bar_reset() -> Unit {
 /// The panel opened or closed from the moment `at` (its cause's; none: now).
 fn BarModel::open_panel(self : BarModel, open : Bool, at~ : Double) -> Unit {
   let prev_k_end = self.k_end()
+  if open && self.collapsed {
+    self.collapsed = false
+    self.scroll_acc = 0.0
+    if @ui.reduced_motion() {
+      self.collapse.put(0.0)
+    } else {
+      self.collapse.go(0.0, @motion.snappy_damped, at~)
+    }
+  }
   self.mode.set(open)
   if open {
     self.o.go(1.0, 260.0, 17.0, at~)
@@ -768,6 +794,7 @@ fn BarModel::rest(self : BarModel) -> Double {
     e = dmax(e, g.end())
   }
   e = dmax(e, dmax(self.bond_merge.ends_at(), self.bond_recoil.ends_at()))
+  e = dmax(e, self.collapse.ends_at())
   e
 }
 
@@ -804,6 +831,7 @@ fn BarModel::jump(self : BarModel) -> Unit {
   }
   self.bond_merge.put(self.bond_merge.target())
   self.bond_recoil.put(0.0)
+  self.collapse.put(self.collapse.target())
   self.swap = None
 }
 
@@ -827,8 +855,18 @@ let bar_bond_merge_ms : Double = 40.0
 /// `gap_at(t)` and hysteresis band `[bar_bond_contact_gap, bar_bond_break_gap]`, handling tab switches, panel
 /// open/close, and slow manual drags that touch `gap <= bar_bond_contact_gap` before `m.open` flips.
 fn BarModel::schedule_bond(self : BarModel, _prev_k_end : Double, at~ : Double) -> Unit {
-  let end = dmax(at, dmax(self.k.end(), self.o.end()))
-  let gap_at = fn(t : Double) { (act_size + act_gap) * self.k_at(t) - act_size }
+  let end = dmax(at, dmax(dmax(self.k.end(), self.o.end()), self.collapse.ends_at()))
+  let w = self.width
+  let gap_at = fn(t : Double) {
+    let k = self.k_at(t)
+    let c = self.collapse_at(t)
+    let extra = if w > 0.0 && c > 0.0 {
+      dmax(0.0, bar_capsule_w(w, k) - bar_track) * c
+    } else {
+      0.0
+    }
+    (act_size + act_gap) * k - act_size + extra
+  }
   let cur_gap = gap_at(at)
   let cur_merge = self.bond_merge.value_at(at)
   let merge_spec = @motion.tween(bar_bond_merge_ms, ease=Out)
@@ -889,7 +927,7 @@ fn BarModel::schedule_bond(self : BarModel, _prev_k_end : Double, at~ : Double) 
 ///|
 /// Capillary liquid bridge merge radius between the capsule and `＋` circle at moment `t` (ms).
 fn bar_merge_at(t : Double) -> Double {
-  if bar.k_at(t) <= 0.002 {
+  if bar.k_at(t) <= 0.002 || bar.collapse_at(t) > 0.05 {
     return 0.0
   }
   let m = bar.bond_merge.value_at(t)
@@ -897,6 +935,117 @@ fn bar_merge_at(t : Double) -> Double {
     0.0
   } else {
     dmax(0.0, m)
+  }
+}
+
+///|
+/// Scroll hysteresis thresholds for iOS 26 bottom bar scroll-to-collapse (dp).
+let bar_collapse_down_acc : Double = 36.0
+
+///|
+let bar_collapse_down_min_y : Double = 48.0
+
+///|
+let bar_collapse_up_acc : Double = 24.0
+
+///|
+let bar_collapse_top_y : Double = 24.0
+
+///|
+/// Effective scroll-to-collapse progress at moment `t` (0.0 expanded -> 1.0 collapsed left orb), suppressed when the
+/// multi-bar panel is open.
+fn BarModel::collapse_at(self : BarModel, t : Double) -> Double {
+  if self.o.value_at(t) > 0.01 {
+    0.0
+  } else {
+    dclamp(self.collapse.value_at(t), 0.0, 1.0)
+  }
+}
+
+///|
+/// Capsule width on a bar `w` wide with notch `k` and scroll-collapse progress `c`: shrinks smoothly from
+/// `bar_capsule_w(w, k)` down to `bar_track` (56pt circular orb anchored at `x = 0`).
+fn bar_cur_capsule_w(w : Double, k : Double, c : Double) -> Double {
+  let full_w = bar_capsule_w(w, k)
+  full_w + (bar_track - full_w) * dclamp(c, 0.0, 1.0)
+}
+
+///|
+/// Transitions the bottom bar between expanded (`false`) and scroll-collapsed (`true`) at moment `at`.
+fn bar_set_collapsed(collapsed : Bool, at : Double) -> Unit {
+  let m = bar
+  if m.collapsed == collapsed {
+    return
+  }
+  if collapsed {
+    if m.mode.untracked() || m.holds || m.drag >= 0.0 || m.o.value_at(at) > 0.01 {
+      return
+    }
+    match m.told {
+      Some(t) if t.shown => ()
+      _ => return
+    }
+  }
+  m.collapsed = collapsed
+  m.scroll_acc = 0.0
+  let target = if collapsed { 1.0 } else { 0.0 }
+  if @ui.reduced_motion() {
+    m.collapse.put(target)
+  } else {
+    m.collapse.go(target, @motion.snappy_damped, at~)
+  }
+  let prev_k_end = m.k_end()
+  m.schedule_bond(prev_k_end, at~)
+  bar_said_again()
+}
+
+///|
+/// Feeds a root-page list's scroll offset `y` (within `[0, most]`, ignoring rubber-band overscroll) into the
+/// scroll-to-collapse hysteresis controller.
+fn bar_scroll_note(page_key : String, y : Double, most : Double, at : Double) -> Unit {
+  let m = bar
+  if most <= 0.0 || y < 0.0 || y > most {
+    return
+  }
+  if page_key != m.scroll_page_key {
+    m.scroll_page_key = page_key
+    m.scroll_last_y = y
+    m.scroll_acc = 0.0
+    if y <= bar_collapse_top_y && m.collapsed {
+      bar_set_collapsed(false, at)
+    }
+    return
+  }
+  let dy = y - m.scroll_last_y
+  m.scroll_last_y = y
+  if dy.abs() < 0.01 {
+    return
+  }
+  if y <= bar_collapse_top_y {
+    m.scroll_acc = 0.0
+    if m.collapsed {
+      bar_set_collapsed(false, at)
+    }
+    return
+  }
+  if dy > 0.0 {
+    if m.scroll_acc < 0.0 {
+      m.scroll_acc = dy
+    } else {
+      m.scroll_acc = m.scroll_acc + dy
+    }
+    if !m.collapsed && y > bar_collapse_down_min_y && m.scroll_acc >= bar_collapse_down_acc {
+      bar_set_collapsed(true, at)
+    }
+  } else {
+    if m.scroll_acc > 0.0 {
+      m.scroll_acc = dy
+    } else {
+      m.scroll_acc = m.scroll_acc + dy
+    }
+    if m.collapsed && -m.scroll_acc >= bar_collapse_up_acc {
+      bar_set_collapsed(false, at)
+    }
   }
 }
 
@@ -1053,11 +1202,27 @@ fn bar_tell(told : BarTold, at : Double) -> Unit {
   if m.told == Some(told) {
     return
   }
+  let prev_told = m.told
   m.told = Some(told)
   bar_told_now.set(Some(told))
   bar_laid_told.set(bar_laid(told))
   let shown = told.shown
   let notched = told.action != ""
+  // Force expand whenever leaving a root page, switching tabs, or switching bars
+  let tab_changed = match prev_told {
+    Some(p) => p.active != told.active || p.cur != told.cur
+    None => false
+  }
+  if (!shown || tab_changed) && (m.collapsed || m.collapse.target() > 0.0) {
+    m.collapsed = false
+    m.scroll_acc = 0.0
+    m.scroll_page_key = ""
+    if @ui.reduced_motion() {
+      m.collapse.put(0.0)
+    } else {
+      m.collapse.go(0.0, @motion.snappy_damped, at~)
+    }
+  }
   // shown or not
   let p_now = if shown && app.nav.root_shows() { app.nav.root_progress(fn() { at }) } else { 0.0 }
   if shown && m.vis.target < 0.5 && m.vis.at(at).0 <= 0.01 && p_now > 0.01 && p_now < 0.99 {
@@ -1364,6 +1529,21 @@ fn bar_finger_at(src : Source, ws : Workspace, d : @view.Drag, how : BarFingerIs
   let px = d.x
   let py = d.y
   let o_at = m.o.value_at(t)
+  // Collapsed state: tapping or interacting with the left 56x56 orb expands the bar cleanly without triggering
+  // another tab; empty space to its right is already excluded by `bar_glass_node`'s `.takes`.
+  if m.collapsed || m.collapse_at(t) > 0.5 {
+    if how is (Tapped | Ended) {
+      @sfbase.place_press_lifted(t)
+    }
+    match how {
+      Pressed => ()
+      Tapped | Held | Dragging | Ended =>
+        if px >= 0.0 && px <= bar_track && py >= l.row_top - 4.0 {
+          bar_set_collapsed(false, t)
+        }
+    }
+    return
+  }
   // another place chosen is felt, unless the finger already felt it getting there (a drag let go on it); the place shown
   // tapped again (`again`: a tap, not a slide let go on it), its list back to its top where it is away from it (the bar
   // shows only over a place's root: sfdesk's list_back_to_top)
@@ -1697,10 +1877,20 @@ fn bar_glass_node(v : @view.View, src : Source, ws : () -> Workspace?) -> Unit {
         }
       }))
       // (a finger taken where the glass is drawn at its moment: under the panel's top as far open as it is then; above it,
-      // what is under the bar's)
+      // what is under the bar's; while scroll-collapsed, only the shrinking left capsule intercepts so the middle gap
+      // passes through to the scrollable list underneath)
       .takes(fn(w, h, at) {
         match told() {
-          Some(t) => [(0.0, bar_glass_top(bar_laid(t).reach, bar.o.value_at(at)), w, h)]
+          Some(t) => {
+            let top = bar_glass_top(bar_laid(t).reach, bar.o.value_at(at))
+            let c = bar.collapse_at(at)
+            if c > 0.01 {
+              let cur_w = bar_cur_capsule_w(w, bar.k_at(at), c)
+              [(0.0, top, cur_w, h)]
+            } else {
+              [(0.0, top, w, h)]
+            }
+          }
           None => []
         }
       })

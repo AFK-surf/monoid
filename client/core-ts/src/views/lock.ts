@@ -1626,6 +1626,15 @@ export function signsAs(inner: Inner, ws: string): { locked: boolean; as: "lock"
   return { locked, as: mine !== undefined && mine.sub === sub && signer !== null && mine.sign_key === signer && mine.own !== false ? "lock" : null };
 }
 
+/// The entry of workspace `ws`'s lock a rig that pins none yet is to pin, as `enrolled` names one to a new station: its
+/// head as held here, where it is on (or moved: the chain is pinned all the same); null where none is (rigs.ts
+/// `#vouch`, FB-45: a rig that joined before safe mode was turned on takes no lock the control plane alone brings).
+export function pinHash(inner: Inner, ws: string): string | null {
+  const h = held(inner, ws);
+  const on = !!h?.head && (movedHere(inner, ws) || !fold(h.entries).disabled);
+  return on ? h!.head!.hash : null;
+}
+
 /// Whether this app device's person bound a lock of their own in the workspace's, and this device is not on it.
 export function offOwnLock(inner: Inner, ws: string): boolean {
   const sub = inner.workspaces.owner(ws);
@@ -2834,11 +2843,20 @@ export function lockView(inner: Inner, ws: string): J {
   const rebound = reboundHere && !needsApp;
   // Its person's own lock begun anew elsewhere (`replaced`): said so, and the press that says it was them
   // (`lock.forgetOwn`), before it asks anything.
-  const replaced = own && standing === "replaced";
-  const pair = locked && !waits && !needsApp && !rebound && !replaced && (mine === undefined || unsigned) ? pairs.mine(inner, own && sub !== null ? personOf(sub) : ws) : null;
+  // Trusted here by the workspace's lock (it signs), while its person's own lock, begun or begun anew on another device
+  // since, does not name it (`confirmedOffOwn`): it stays confirmed and signing here, and is offered what joins it to
+  // that lock, which what is signed for its person alone needs (a rig's mode, grants: rigs.ts `#person`). Without it
+  // the page said 受信任 and offered nothing, and 改为只执行任务 sent it there to ask (FB-45).
+  const confirmedOffOwn = locked && !waits && !needsApp && !rebound && base !== null && inner.host.appKeys === true && sub !== null
+    && mine !== undefined && !unsigned && !confirmSigner && (standing === "outside" || standing === "replaced");
+  const replaced = (own || (locked && !waits && !needsApp && !rebound && base !== null && inner.host.appKeys === true && sub !== null && mine !== undefined && !confirmSigner))
+    && standing === "replaced";
+  const pair = locked && !waits && !needsApp && !rebound && !replaced && (mine === undefined || unsigned || confirmedOffOwn)
+    ? pairs.mine(inner, (own || confirmedOffOwn) && sub !== null ? personOf(sub) : ws)
+    : null;
   // None of its person's devices on their own lock answered (or there are none to dial): it may begin their lock anew,
   // this device their only trusted one (`lock.restartOwn`).
-  const canRestart = own && standing === "outside" && pair !== null && (pair.state === "none" || pair.state === "failed");
+  const canRestart = (own || confirmedOffOwn) && standing === "outside" && pair !== null && (pair.state === "none" || pair.state === "failed");
   // The devices its try dials here, as people know them (which machine, a phone or a computer), the most lately used
   // first, those showing a code before them: the person opens still.fail on one of those (2026-11-05: "到底是哪个设备会
   // 弹出来呀？", a web page of theirs, or an app not approved, shows nothing). Each a row of the page's list, its name
@@ -2895,7 +2913,7 @@ export function lockView(inner: Inner, ws: string): J {
       waiting: locked && !waits && !needsApp && base !== null && mine === undefined,
       ...(unsigned ? { unsigned: true } : {}),
       // (its person's own lock is what it joins: the pair below is that one's)
-      ...(own && (mine === undefined || unsigned) ? { ownLock: true } : {}),
+      ...(!needsApp && !rebound && !replaced && ((own && (mine === undefined || unsigned)) || confirmedOffOwn) ? { ownLock: true } : {}),
       // Its try to be approved face to face (views/pair.ts), once it began.
       pair,
       // Its person taken out of a moved workspace: by whom and when, and whom to ask (`outText`).
@@ -3140,16 +3158,23 @@ function run(inner: Inner, c: Of, ctx: SpanContext | null): Effect.Effect<unknow
         // of f6cfdf7af1: asked a moment after the first refusal, "this device waits in no workspace").
         // So are the person's other workspaces whose lock is not held yet while the cloud says one is: what one code is
         // to let this device into, each by what lets it in there, is known before it is asked (below).
+        // (trusted here, its person's own lock not naming it as last read, `confirmedOffOwn`: that lock read again first,
+        // which may name it by now; FB-45)
+        const wasOffOwn = inner.host.appKeys === true && inner.adb.personal().standing(sub) === "outside";
         {
           const unread = [...inner.workspaces.owned()].filter(([w, o]) => o === sub && w !== c.workspace && !held(inner, w)?.head && cloudSays(view(inner, w)) !== undefined).map(([w]) => w);
           const here = !offOwnLock(inner, c.workspace) && (!held(inner, c.workspace)?.head || inner.adb.personal().standing(sub) === "none");
-          const reads = [...(here ? [read(inner, c.workspace), inner.adb.personal().refresh(sub)] : []), ...unread.map((w) => read(inner, w))];
+          const reads = [...(here ? [read(inner, c.workspace), inner.adb.personal().refresh(sub)] : wasOffOwn ? [inner.adb.personal().refresh(sub)] : []), ...unread.map((w) => read(inner, w))];
           if (reads.length > 0) yield* within.wait(Effect.ignore(Effect.all(reads, { concurrency: "unbounded", discard: true }), { log: "Unhandled", message: "lock read before asking" }));
         }
         // One code for all of it (2026-11-18: a person whose upgraded workspace lets their devices in by their own lock,
         // beside one whose chain still lets each in by its own entry, typed two codes and was asked twice): their own
         // lock alone where nothing else waits, else the workspaces' exchange carrying it too (views/pair.ts `begin`).
-        if (offOwnLock(inner, c.workspace) && !pairs.waiting(inner)) return yield* inner.adb.run({ kind: "personalJoin", sub });
+        if ((offOwnLock(inner, c.workspace) || (inner.host.appKeys === true && inner.adb.personal().standing(sub) === "outside")) && !pairs.waiting(inner)) {
+          return yield* inner.adb.run({ kind: "personalJoin", sub });
+        }
+        // (its person's own lock, read again, names it already: nothing left to ask)
+        if (wasOffOwn && inner.adb.personal().standing(sub) === "member" && !pairs.waiting(inner)) return null;
         // (its person's only trusted device since it began their lock anew, the workspace binding the one of before: no
         // approval lets it in until they are taken out, `reboundIn`; its page says whom to ask)
         if (reboundIn(inner, c.workspace)) return yield* Effect.fail(new CoreError("lock_rebound", t(get(view(inner, c.workspace), "role") === "owner" ? "core-misc.lock.reboundOwner" : "core-misc.lock.reboundMember")));

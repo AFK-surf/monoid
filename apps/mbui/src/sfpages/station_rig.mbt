@@ -121,17 +121,70 @@ fn rig_mode_node(b : @view.View, core : Core, here : () -> Here, rig : () -> Jso
       @sf.link_row_node(
         o,
         fn() { @sf.t("web-pages.rigs.vouch.title") },
-        fn() {
-          let at = @signals.untracked(ws)
-          ask(@sf.t("web-pages.rigs.vouch.title"), "", @sf.t("web-pages.rigs.vouch.code"), @sf.t("web-pages.rigs.vouch.confirm"), hint=@sf.t("web-pages.rigs.vouch.note"), fn(code) {
-            @settings.act(core, @sf.t("web-pages.rigs.vouch.title"), "rig.vouch", obj([("workspace", str(at)), ("rig", str(id)), ("code", str(code))]))
-          })
-        },
+        fn() { open_rig_vouch(core, @signals.untracked(ws), id, from=Node(o)) },
         note=fn() { @sf.t("web-pages.rigs.vouch.note") },
       )
     })
   })
 }
+
+///|
+/// 核对安全码 (FB-45): the library's panel opened `from` the row pressed (a form: a sheet on 小屏, a dialog on 中屏 and
+/// 大屏), saying where the code is read on that machine (本机 Station there, or the command, copied from here: its
+/// code is never shown from what came over the network), the code's field, 取消 and 确认; 确认 or Enter with words in
+/// it sends them to its person's check (`rig.vouch`) and closes it.
+fn open_rig_vouch(core : Core, workspace : String, id : String, from~ : @sf.Anchor) -> Unit {
+  let field = @ui.Field::new()
+  let code = fn() { field.text().trim(chars=" \t\n").to_owned() }
+  let vouch = fn(close : () -> Unit) {
+    let c = @signals.untracked(code)
+    if c == "" {
+      return
+    }
+    close()
+    @settings.act(core, @sf.t("web-pages.rigs.vouch.title"), "rig.vouch", obj([("workspace", str(workspace)), ("rig", str(id)), ("code", str(c))]))
+  }
+  @sf.panel_nodes(
+    @sf.t("web-pages.rigs.vouch.title"),
+    fn(v, close) { rig_vouch_body(v, field, fn() { vouch(close) }) },
+    from~,
+    form=true,
+    description=@sf.t("web-pages.rigs.vouch.panelNote"),
+    foot=fn(v, close) {
+      @sf.button_node(v, fn() { @sf.t("common.cancel") }, fn() { close() }, tone=Ghost) |> ignore
+      @sf.button_node(
+        v,
+        fn() { @sf.t("web-pages.rigs.vouch.confirm") },
+        fn() { vouch(close) },
+        tone=Primary,
+        disabled=fn() { code() == "" },
+      )
+      |> ignore
+    },
+  )
+}
+
+///|
+/// 核对安全码's body in node `v`: the command that shows the code on that machine, copied from here, then the code's
+/// field (the keys as it opens), Enter in it `said`.
+fn rig_vouch_body(v : @view.View, field : @ui.Field, said : () -> Unit) -> Unit {
+  // (in from the panel's sides as its words are, on a sheet as in a dialog: lined up under its title and its words)
+  v.box(fn(c) {
+    @sf.style_node(c, fn() { @sf.panel_words_in_node(c).then(rig_vouch_column) })
+    c.box(fn(b) { @sf.code_block_node(b, fn() { @sf.branded("stillfail lock status") }, fn() { "" }, fn() { None }, command=true) })
+    |> ignore
+    @sf.field_node(c, fn() { @sf.t("web-pages.rigs.vouch.code") }, fn(b) {
+      let f = @sf.input_node(b, field, placeholder="XXX-XXX", submitted=fn(_) { said() })
+      @sf.panel_opens_in_node(f)
+    })
+  })
+  |> ignore
+}
+
+///|
+/// 核对安全码's command over its field, 12 apart.
+// kept across runs: a value (no field of it changes)
+let rig_vouch_column : @ui.Style = @ui.css("w=Full gap=S3")
 
 ///|
 /// Who may use it: 免批准 (its person's switch; anyone else told when it is on), the chats asking for it (answered by

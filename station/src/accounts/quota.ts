@@ -21,7 +21,7 @@ import { readKimi } from "./kimi.ts";
 import { type Lang, stationLang, tr } from "../ops/i18n.ts";
 import { claudeOAuthToken } from "./oauth.ts";
 import { RenewRefused } from "./console.ts";
-import { type ProfileQuota, type QuotaWindow, URLS, type Urls } from "./profiles.ts";
+import { claudeAuthStatus, type ProfileQuota, type QuotaWindow, URLS, type Urls } from "./profiles.ts";
 import { profileFetch } from "../ops/agent-env.ts";
 import { codexQuotaFailure } from "../../../client/core-ts/src/codex-quota.ts";
 import { claudeHeaders, claudeResets, type QuotaReset, USAGE_PATH } from "./claude-reset.ts";
@@ -100,11 +100,19 @@ function message(text: string): string | undefined {
 
 /// A provider's refusal as a quota: the account refused (blocked), or its sign-in no longer good.
 export async function refused(provider: string, response: Response, lang: Lang): Promise<ProfileQuota> {
-  const status = response.status;
-  let text = "";
+  return refusedSaying(provider, response.status, await refusalText(response), lang);
+}
+
+/// The first of what a refusal says (500 characters at most).
+async function refusalText(response: Response): Promise<string> {
   try {
-    text = [...(await response.text())].slice(0, 500).join("");
-  } catch {}
+    return [...(await response.text())].slice(0, 500).join("");
+  } catch {
+    return "";
+  }
+}
+
+function refusedSaying(provider: string, status: number, text: string, lang: Lang): ProfileQuota {
   if (blocked(text) || status === 403) {
     const said = message(text);
     const detail = said !== undefined ? tr(lang, "station.quota.refusedSaying", { provider, status, said }) : tr(lang, "station.quota.refused", { provider, status });
@@ -156,7 +164,13 @@ export async function claudeUsage(base: string, token: string, lang: Lang = stat
 
 async function claudeUsageResponse(base: string, token: string, lang: Lang, version: string | null): Promise<[ProfileQuota, boolean]> {
   const response = await get(`${base}${version !== null ? USAGE_PATH : "/api/oauth/usage"}`, claudeHeaders(token, version));
-  if (!response.ok) return [await refused("Anthropic ", response, lang), response.status === 401];
+  if (!response.ok) {
+    const text = await refusalText(response);
+    // An account the provider refuses stays blocked; otherwise a 401 or a 403 is the OAuth token refused (one revoked is
+    // answered 403, FB-44): renewed and asked again, then the login is over.
+    if (!blocked(text) && claudeAuthStatus(response.status)) return [quota("unavailable", [], tr(lang, "station.quota.signInExpired")), true];
+    return [refusedSaying("Anthropic ", response.status, text, lang), false];
+  }
   const body: Json = await response.json();
   const labels: Record<string, string> = { five_hour: "5 小时", seven_day: "每周", seven_day_opus: "每周 · Opus", seven_day_sonnet: "每周 · Sonnet" };
   const windows: QuotaWindow[] =

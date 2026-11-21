@@ -1947,6 +1947,7 @@ pub fn switch_node(
             .glass(By(fn() { Some(glass_toggle_lens(lens())) }))
             .alpha(By(fn() { dclamp(lens(), 0.0, 1.0) }))
             .shadow(Is((4.0, 4.0 / 6.0, 0x0000000DL)))
+            .shadow_outside(Is(true))
             .offset(By(fn() { (switch_in + travel() * k(), switch_in) }))
             .ground_drawn(By(fn() {
               let w = thumb_w()

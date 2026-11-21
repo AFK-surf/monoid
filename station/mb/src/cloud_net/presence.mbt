@@ -889,9 +889,20 @@ fn take_from_plane(
 
 ///|
 /// The joined workspaces whose lock, named by joining, is to be asked for now: not pinned yet, the plane having one
-/// there, not asked for on this connection (`asked`).
-pub fn pending_asks(p : PlaneCloud, asked : Map[String, Bool]) -> Array[String] {
-  let out = []
+/// there, not asked for on this connection (`asked`); the home workspace's (None) too, where a lock to pin was named
+/// there since the plane's last frame (a rig its person took in naming the workspace's lock, FB-45).
+pub fn pending_asks(p : PlaneCloud, asked : Map[String, Bool]) -> Array[String?] {
+  let out : Array[String?] = []
+  let plane_home = p.plane_lock_seq.unwrap_or(-1)
+  if !(p.lock.pinned)(None) && plane_home >= 0 {
+    match (p.lock.pending)(None) {
+      Some(home) if !asked.contains("/\{home}") => {
+        asked["/\{home}"] = true
+        out.push(None)
+      }
+      _ => ()
+    }
+  }
   let joined = match p.cloud.state {
     Some(st) => array_of(st.get("joined")).unwrap_or([])
     None => []
@@ -911,7 +922,7 @@ pub fn pending_asks(p : PlaneCloud, asked : Map[String, Bool]) -> Array[String] 
       continue
     }
     asked[key] = true
-    out.push(ws)
+    out.push(Some(ws))
   }
   out
 }
@@ -931,7 +942,10 @@ pub fn plane_teller(
       return
     }
     for ws in pending_asks(p, asked) {
-      send({ "type": "lock.get", "after": -1, "workspace": Json::string(ws) })
+      match ws {
+        Some(w) => send({ "type": "lock.get", "after": -1, "workspace": Json::string(w) })
+        None => send({ "type": "lock.get", "after": -1 })
+      }
     }
   }
   let tell = fn() {

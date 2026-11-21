@@ -189,12 +189,10 @@ fn vfr_act_side_at(corner : Double, bottom : Double) -> Double {
 }
 
 ///|
-/// Frosted glass over a page of the theme's colours: the surface at 72% (dark, the
-/// raised one's) over a 20 blur, over the viewer's canvas.
+/// Liquid glass for floating viewer capsules (`viewer_head_node`, `viz_page`): neutral single-layer iOS 27 liquid
+/// glass over the viewer's canvas.
 pub fn viewer_page_glass() -> @ui.Glass {
-  let th = theme()
-  let tint = alpha(if th.dark { th.p.card2 } else { th.p.card }, viewer_page_share)
-  @ui.Glass::frosted(blur=viewer_page_blur, tint~, solid=over(th.p.canvas, tint))
+  { ..glass_viewer_clear(), solid: theme().p.canvas }
 }
 
 ///|
@@ -228,24 +226,12 @@ pub fn viewer_zoom_key(z : @motion.Zoom, code : Int, mods : Int, at : Double) ->
 }
 
 ///|
-let viewer_page_share : Double = 0.72
-
-///|
-let viewer_page_blur : Double = 20.0 * 0.57735 + 0.5
-
-///|
 /// The zoom's steps by the keys (a quarter more or less each).
 pub let viewer_zoom_step : Double = 1.25
 
 ///|
-/// The ways beside: 22 chevrons; their glass (the canvas at 80% over a 12 blur).
+/// The ways beside: 22 chevrons.
 let viewer_step_icon : Double = 22.0
-
-///|
-let viewer_step_blur : Double = 12.0
-
-///|
-let viewer_step_share : Double = 0.8
 
 ///|
 /// A file told of: its mark (44) where it has no extension, an extension said up to 12 letters.

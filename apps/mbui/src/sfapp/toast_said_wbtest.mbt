@@ -115,11 +115,24 @@ test "a toast with its 撤销 coming in: its 撤销's ground faded as the toast'
   }
   // (its capsule: as wide and tall as it is read out, where it is drawn on its way up)
   let (sx, _, sw, sh) = t.query(Status, label="已归档「夜里的构建又失败了」").unwrap().rect
-  let toast = t.drawn_rects().iter().find_first(fn(d) { (d.0 - sx).abs() < 0.5 && (d.2 - sw).abs() < 0.5 && (d.3 - sh).abs() < 0.5 }).map(fn(d) { (d.4 & 0xFFL).to_int() })
+  let toast = t
+    .drawn_instances()
+    .iter()
+    .find_first(fn(d) {
+      let kind = d[5].to_int()
+      (kind == 0 || kind == 5 || kind == 6) &&
+      (d[0] - sx).abs() < 0.5 &&
+      (d[2] - sw).abs() < 0.5 &&
+      (d[3] - sh).abs() < 0.5
+    })
+    .map(fn(d) {
+      let a = if d[5].to_int() == 0 { d[11] } else { d[15] }
+      (a * 255.0 + 0.5).to_int()
+    })
   let undo = alpha_of(t.query(Button, label="撤销").unwrap().rect)
-  // (its capsule's ground the toast's ink at 15%, as the toast's ground is: toast_button's)
+  // (its capsule's ground the toast's ink at 9%, as the toast's ground is: toast_node's)
   let as_faded = match (toast, undo) {
-    (Some(g), Some(u)) => (u.to_double() - g.to_double() * 0.15).abs() <= 1.0
+    (Some(g), Some(u)) => (u.to_double() - g.to_double() * 0.09).abs() <= 1.0
     _ => false
   }
   assert_true(as_faded, msg="\{Repr(toast)} \{Repr(undo)}")

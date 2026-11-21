@@ -83,14 +83,12 @@ fn step_disc(
     .height(By(fn() { Some(disc()) }))
     .radius(By(fn() { disc() / 2.0 }))
     .lines_up(Is(Some(Middle)))
-    .glass(By(fn() {
-      let p = theme().p
-      Some(@ui.Glass::frosted(blur=viewer_step_blur, tint=alpha(p.canvas, viewer_step_share), solid=p.canvas))
-    }))
+    .glass(By(fn() { Some(glass_viewer_clear()) }))
     .shadow(By(fn() {
       let (blur, dy) = @ui.Shadow::blur_y(Base)
       (blur, dy, @ui.tree_theme().shadow)
     }))
+    .shadow_outside(Is(true))
     .ground(By(fn() { if hot() { @ui.tree_theme().color(Hover) } else { 0L } }))
     .alpha(By(fn() { seen.shown(b) * shown(b) }))
     |> ignore

@@ -1254,6 +1254,9 @@ pub fn fixture_page(mode : String) -> String {
     "settings-security-root" => fx.lock_case = "root"
     "settings-security-root-off" => fx.lock_case = "root-off"
     "settings-security-again" => fx.lock_case = "again"
+    // trusted here by the workspace's lock, its person's own lock begun on another device not naming it: 完成此设备的批准
+    // offered on its security page, nothing waiting in front of the app (views/lock.ts `confirmedOffOwn`, FB-45)
+    "settings-security-own-outside" => fx.lock_case = "own-outside"
     // what the upgrade of safe mode waits for (security.mbt upgrade_keys): a station this person may update, one they
     // may not, a member, a device, more than six, a station of another workspace, a station updating
     m if m.has_prefix("settings-security-upgrade-") => fx.upgrade = m.unsafe_substring(start=26, end=m.length())
@@ -1324,7 +1327,8 @@ pub fn fixture_page(mode : String) -> String {
     "settings-vault-motion" => "vault-items"
     "settings-local-fonts" => "fonts"
     "settings-security-join" | "settings-security-off" | "settings-security-protecting" | "settings-security-pending"
-    | "settings-security-confirm" | "settings-security-root" | "settings-security-root-off" | "settings-security-again" => "security"
+    | "settings-security-confirm" | "settings-security-root" | "settings-security-root-off" | "settings-security-again"
+    | "settings-security-own-outside" => "security"
     m if m.has_prefix("settings-security-upgrade-") => "security"
     "settings-stations-tasks" | "settings-stations-tasks-outside" | "settings-stations-tasks-theirs" | "settings-stations-tasks-doing" | "settings-stations-devices" => "stations"
     "settings-station-devices" => "station:ws1/st1"
@@ -6114,6 +6118,32 @@ fn fx_lock_case_fields() -> Array[(String, Json)] {
     "confirm" => [("me", obj([("stateText", str("此设备需完成一次验证后才能成为受信任设备")), ("confirmText", str("验证"))]))]
     "root" | "root-off" => [("rootText", str(root))]
     "again" => [("onAgainText", str("重新开启安全模式"))]
+    // (confirmed and signing here; its own lock to join, the ask as the page that waits has it, a code typed as the
+    // made-up core takes it: fixture_pair_typed)
+    "own-outside" => {
+      let pair = match fx.pair_flow {
+        "checking" => obj([("state", str("checking")), ("left", Json::number(3.0))])
+        "confirming" => obj([("state", str("checking")), ("left", Json::number(3.0)), ("checkingText", str("请在显示安全码的设备上完成身份验证"))])
+        "retry" => obj([("state", str("wrong")), ("left", Json::number(3.0)), ("error", str(fixture_pair_retry)), ("untilText", str("14:05 前有效"))])
+        "done" => obj([("state", str("done"))])
+        _ => Json::null()
+      }
+      let me : Array[(String, Json)] = [
+        ("device", str("d1")),
+        ("code", str("Q4K-7PM")),
+        ("kind", str("app")),
+        ("confirmed", Json::boolean(true)),
+        ("waiting", Json::boolean(false)),
+        ("unsigned", Json::boolean(false)),
+        ("pair", pair),
+      ]
+      if fx.pair_flow != "done" {
+        me.push(("ownLock", Json::boolean(true)))
+        me.push(("restartText", str("我的其它设备都不在了")))
+        me.push(("restartNoteText", str("选「我的其它设备都不在了」后，这台设备会成为你唯一的受信任设备；已开启安全模式的 workspace 需先将你移出再重新添加，你的其它设备也需重新获批。")))
+      }
+      [("me", obj(me))]
+    }
     _ => []
   }
 }

@@ -437,7 +437,12 @@ async fn claude_usage_response(
     quota_timeout_ms,
   )
   if !response.ok() {
-    return (refused(ctx, "Anthropic ", response, lang), response.status == 401)
+    // An account the provider refuses stays blocked; otherwise a 401 or a 403 is the OAuth token refused (one revoked
+    // is answered 403, FB-44): renewed and asked again, then the login is over.
+    if !blocked(chars(response.text, 500)) && (response.status == 401 || response.status == 403) {
+      return (quota("unavailable", [], Some(ctx.tr(lang, "station.quota.signInExpired"))), true)
+    }
+    return (refused(ctx, "Anthropic ", response, lang), false)
   }
   let body = response.json()
   let windows = match body {

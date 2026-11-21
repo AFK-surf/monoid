@@ -302,7 +302,7 @@ export function planeTeller(s: CloudState, send: (frame: unknown) => void, open:
   const asked = new Set<string>();
   const askPending = () => {
     if (!open()) return;
-    for (const ws of pendingAsks(s, asked)) send({ type: "lock.get", after: -1, workspace: ws });
+    for (const ws of pendingAsks(s, asked)) send(ws === null ? { type: "lock.get", after: -1 } : { type: "lock.get", after: -1, workspace: ws });
   };
   const tell = () => {
     for (const m of s.memberships()) {
@@ -502,8 +502,17 @@ function applyFrame(s: CloudState, body: any, send: (frame: unknown) => unknown)
 /// there, not asked for on this connection (`asked`, kept by it). The plane tells the station it joined (a `state`
 /// frame) before it answers the join, so that frame came before joining wrote which lock to pin and asked for nothing:
 /// the station took none of that workspace's members until a later frame, which may not come for days (2026-10-23).
-export function pendingAsks(s: CloudState, asked: Set<string>): string[] {
-  const out: string[] = [];
+///
+/// The home workspace's (null) too, where a lock to pin was named there since the plane's last frame (a rig its
+/// person took in naming the workspace's lock, rig/module.ts `#added`, FB-45): asked for at once, not at the next
+/// frame, which may not come for days.
+export function pendingAsks(s: CloudState, asked: Set<string>): (string | null)[] {
+  const out: (string | null)[] = [];
+  const home = s.chain(null) === null && (s.planeLockSeq ?? -1) >= 0 ? pendingLock(s.data) : null;
+  if (home !== null && !asked.has(`/${home}`)) {
+    asked.add(`/${home}`);
+    out.push(null);
+  }
   for (const j of s.state?.joined ?? []) {
     if (s.leftOut(j.workspace) !== "pending" || (s.planeLockSeqs.get(j.workspace) ?? -1) < 0) continue;
     const key = `${j.workspace}/${s.pendingLock(j.workspace)}`;

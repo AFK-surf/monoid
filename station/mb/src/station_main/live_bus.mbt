@@ -860,15 +860,19 @@ async fn LiveBus::jobs_accounts_refills_at(self : LiveBus, key : Json) -> Json {
 }
 
 ///|
-/// A profile's limits checked again.
-async fn LiveBus::jobs_accounts_recheck(self : LiveBus, profile : Json) -> Json {
-  (self.jobs_ask.val)("accounts.recheck", { "profile": profile })
+/// A profile's limits checked again (`force`: refused on it again in the same turn, its login taken as over).
+async fn LiveBus::jobs_accounts_recheck(self : LiveBus, profile : Json, force : Json) -> Json {
+  (self.jobs_ask.val)("accounts.recheck", { "profile": profile, "force": Json::boolean(force is True) })
 }
 
 ///|
 /// Whether a turn that failed with auth on `failed_profile` should automatically reopen and retry.
-async fn LiveBus::jobs_accounts_can_auth_retry(self : LiveBus, key : Json, failed_profile : Json) -> Json {
-  (self.jobs_ask.val)("accounts.canAuthRetry", { "key": key, "failedProfile": failed_profile })
+async fn LiveBus::jobs_accounts_can_auth_retry(self : LiveBus, key : Json, failed_profile : Json, tried : Json) -> Json {
+  let tried = match tried {
+    Array(_) => tried
+    _ => Json::array([])
+  }
+  (self.jobs_ask.val)("accounts.canAuthRetry", { "key": key, "failedProfile": failed_profile, "tried": tried })
 }
 
 ///|

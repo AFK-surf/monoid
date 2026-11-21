@@ -564,7 +564,13 @@ test("a phone's request granted, taken back, denied and run out: each closes its
   const three = await askPhone(env, door, "s2", "run the tests");
   const [st4] = await phone.adb({ op: "decide", request: three.request, scope: "hour" });
   assert.equal(st4, 200);
-  await given("the second grant said", () => outcomesOf(env.data, three.thread, three.n).length >= 1 && queued(env.data) === 0, () => st.err());
+  // Deciding it reconnects the phone in the background (`regrant`), whose link then rewrites the request's row: wait
+  // for that to be written, or it can put back the `exp` read before the update below.
+  await given(
+    "the second grant and its link said",
+    () => requestRow(env.data, three.request)?.body.link === "connected" && outcomesOf(env.data, three.thread, three.n).length >= 1 && queued(env.data) === 0,
+    () => st.err(),
+  );
   withDb(env.data, (db) => {
     const row = db.prepare("SELECT body FROM adb_requests WHERE id = ?").get(three.request) as { body: string };
     db.prepare("UPDATE adb_requests SET body = ? WHERE id = ?").run(JSON.stringify({ ...JSON.parse(row.body), exp: 1 }), three.request);

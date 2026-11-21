@@ -186,7 +186,6 @@ fn toast_look(
     from_foot=true,
   )
   |> ignore
-  let theme = fn() { @ui.tree_theme() }
   let action = fn() { s.toast().action }
   // (its action while it is there: going out, none)
   let acting = fn() { action() != "" && s.live() }
@@ -208,8 +207,10 @@ fn toast_look(
     .padding(By(fn() { (toast_px, toast_action_in, if acting() { toast_action_in } else { toast_px }, toast_action_in) }))
     .max_width(Is(Some(toast_max)))
     .radius(Is(toast_r))
-    .ground(By(fn() { theme().color(Primary) }))
-    .shadow(By(fn() { (toast_shadow, toast_shadow_y, library_theme().p.shadow) }))
+    .glass(By(fn() { Some(glass_toast()) }))
+    .edge(By(fn() { if tb.glass_solid() { (1.0, panel_edge()) } else { (0.0, 0L) } }))
+    .shadow(By(float_shadow))
+    .shadow_outside(Is(true))
     .alpha(By(ground))
     // (in from below as it comes, moved across as it is swiped and put away: where it is, pressed and read out there
     // too)
@@ -220,7 +221,7 @@ fn toast_look(
       w.box(fn(x) {
         x
         .words(By(fn() { s.toast().title }), look=toast_words_look(Ui, L6, 400, true))
-        .ink(By(fn() { theme().color(OnPrimary) }))
+        .ink(By(fn() { library_theme().p.text }))
         .alpha(By(words))
         |> ignore
       })
@@ -236,14 +237,14 @@ fn toast_look(
       .padding(Is((toast_px - toast_action_in, 1.0, toast_px - toast_action_in, 1.0)))
       .radius(Is(toast_action_h / 2.0))
       .lines_up(Is(Some(Middle)))
-      .ground(By(fn() { theme().color(A(OnPrimary, if lit() { O5 } else { O15 })) }))
+      .ground(By(fn() { alpha(library_theme().p.text, if lit() { 0.16 } else { 0.09 }) }))
       |> ignore
       s.action(a, action) |> ignore
       a.box(fn(w) {
         // (its words faded in after the ground, as the toast's are)
         w
         .words(By(action), look=toast_words_look(Ui, L5, 600, false))
-        .ink(By(fn() { theme().color(OnPrimary) }))
+        .ink(By(fn() { library_theme().p.text }))
         .alpha(By(words))
         |> ignore
       })

@@ -14,6 +14,7 @@ import { stationLang, tr } from "./ops/i18n.ts";
 import { version } from "./ops/version.ts";
 import { wall } from "./ops/fibers.ts";
 import { healthOf, healthPath, workingOf } from "./ops/health.ts";
+import { pendingLock } from "./cloud/presence.ts";
 
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((s): s is string => typeof s === "string") : []);
 
@@ -185,13 +186,25 @@ export function lockCommand(data: string, what: "status" | "reset", workspace?: 
   }
   if (what === "reset") return say(Cloud.resetLock(data) ? "station.cli.lock.reset" : "station.cli.lock.none");
   const lock = readLock(data);
-  if (lock === null) return say("station.cli.lock.none");
+  if (lock === null) return unpinned(data, say);
   if (lock.state === null) return say("station.cli.lock.broken");
   const s = lock.state;
   const status = say("station.cli.lock.status", { seq: s.seq, hash: s.head.slice(0, 16), members: s.members.size, devices: s.devices.size, stations: s.stations.size });
   // (the entries kept off the chain it goes by: cloud/log-keep.ts)
   const aside = lock.aside?.length ?? 0;
   return aside === 0 ? status : `${status}${say("station.cli.lock.aside", { n: aside })}`;
+}
+
+/// `lock status` with no lock pinned: waiting for the one `enroll --lock` or its owner's check named (with the code to
+/// check), else off, with this machine's security code where it is in a workspace, so the person checking a rig in the
+/// app reads it here (FB-45).
+function unpinned(data: string, say: (key: string, args?: Record<string, unknown>) => string): string {
+  const state = readState(data);
+  if (state === null || !state.station) return say("station.cli.lock.none");
+  const code = shortCode(state.station);
+  if (pendingLock(data) !== null) return say(state.rig !== undefined ? "station.cli.rig.pending" : "station.cli.lock.pending", { code });
+  if (!state.workspace || state.removed_at !== undefined) return say("station.cli.lock.none");
+  return `${say("station.cli.lock.none")}\n${say("station.cli.lock.code", { code })}`;
 }
 
 /// A joined workspace's lock taken away on this machine, kept beside as <file>.reset-<time>, and the lock joining named
@@ -234,7 +247,8 @@ export function status(data: string, now = wall.now()): string {
   out.push(say("station.cli.status.name", { name: state.name, id: state.station.slice(0, 12) }));
   if (state.rig !== undefined) out.push(say("station.cli.rig.status", { owner: state.rig.owner_email || state.rig.owner, person: state.rig.person.slice(0, 16) }));
   out.push(say("station.cli.status.cloud", { origin: state.origin }));
-  if (readLock(data) !== null) out.push(lockCommand(data, "status"));
+  if (readLock(data) !== null || pendingLock(data) !== null) out.push(lockCommand(data, "status"));
+  else if (state.station && state.removed_at === undefined) out.push(say("station.cli.lock.code", { code: shortCode(state.station) }));
   if (state.removed_at !== undefined) {
     const how = state.removed_code === 4004 ? say("station.cli.status.removedOnClose")
       : state.removed_code === 404 ? say("station.cli.status.removedOn404")

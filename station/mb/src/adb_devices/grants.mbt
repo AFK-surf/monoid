@@ -920,7 +920,13 @@ pub async fn PhoneGrants::linked(
   if !links.contains(link) {
     return
   }
-  for r in self.granted_of_owner(owner) {
+  // Each grant read again as its turn comes: one taken back or run out while an earlier one was told (an `await`)
+  // is not written back as granted from a row read before.
+  let ids = self.granted_of_owner(owner).map(r => r.id())
+  for id in ids {
+    guard self.get(id) is Some(r) && r.status() == "granted" && self.live(r) else {
+      continue
+    }
     if r.get("link") is Some(Str(_)) && r.text("link") == link {
       continue
     }

@@ -131,6 +131,16 @@ async fn harness_rigs(host : @host.Host) -> Unit {
           let inst = get_inst(ask)
           Ok(inst.grants.full(rig_opt_json(ask, "signed"), rig_opt_json(ask, "chain")))
         }
+        "added" => {
+          let inst = get_inst(ask)
+          let lock = inst.grants.added(rig_opt_json(ask, "signed"), pin=rig_opt_json(ask, "pin"), chain=rig_opt_json(ask, "chain"))
+          Ok(
+            match lock {
+              Some(l) => Json::string(l)
+              None => Json::null()
+            },
+          )
+        }
         "device" => {
           let inst = get_inst(ask)
           inst.grants.device(rig_opt_json(ask, "signed"), rig_opt_json(ask, "chain"))

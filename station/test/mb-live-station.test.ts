@@ -887,7 +887,8 @@ test("a release with no Node: --serve children answer routed reads, marks, idemp
   await until("killed --serve child exited", () => !alive(victim), tail);
   const recoveredServe = await until("killed --serve child automatically restarted", () => {
     const pids = serveChildrenOf(stationPid);
-    return pids.length === 2 && !pids.includes(victim) ? pids : null;
+    // (its socket is made as the new child starts listening, after its pid is there to see)
+    return pids.length === 2 && !pids.includes(victim) && serveSocks().length === 2 ? pids : null;
   }, tail);
   assert.deepEqual(serveSocks(), [`serve-${stationPid}-0.sock`, `serve-${stationPid}-1.sock`]);
 

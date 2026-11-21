@@ -735,7 +735,7 @@ describe("remote", { concurrency: true }, () => {
   /// A source station "A" and a target "B" in one workspace; each one's calls reach the other as the transport would
   /// carry them (errors come back as Refused). `reach`: whether B's calls get through to A. `roster`: the stations the
   /// workspace has, as the cloud names them.
-  function pair(roster: Json[] = [{ id: "A" }, { id: "B" }], target: Parameters<typeof station>[0] = {}) {
+  function pair(roster: Json[] = [{ id: "A" }, { id: "B" }], target: Parameters<typeof station>[0] = {}, peers: Json = {}) {
     const clock = testClock();
     const a = station({ clock });
     const b = station({ ...target, clock });
@@ -747,7 +747,7 @@ describe("remote", { concurrency: true }, () => {
     const asked: Json[] = [];
     const transport: PeerCall = async (target, workspace, request) => {
       asked.push(request);
-      if (target === "" && request.method === "peers") return { workspace: "ws", stations: roster, current: true };
+      if (target === "" && request.method === "peers") return { workspace: "ws", stations: roster, current: true, ...peers };
       if (target !== "B") throw new Error("peer is not another station in this workspace");
       const answer = await answerPeer(b.remote, workspace ?? "ws", "A", overWire(request));
       if ("error" in answer) throw new Refused(answer.error);
@@ -1222,6 +1222,21 @@ describe("remote", { concurrency: true }, () => {
     assert.equal((await use("station_task", { station: "B", key: "k", action: "get" })).key, "k");
     await assert.rejects(use("station_task", { station: "Laptop", key: "k", action: "get" }), /2 stations are named Laptop/);
     await assert.rejects(use("station_task", { station: "Nowhere", key: "k", action: "get" }), /peer is not another station/);
+  });
+
+  test("station_list lists a rig safe mode has not taken yet, not asked, saying whose security code is to be checked (FB-45)", async () => {
+    const waiting = { id: "R", name: "build-box", owner: "pat", owner_email: "pat@example.com", owner_name: "Pat", version: "0.1.0" };
+    const { use, asked } = pair([{ id: "A" }, { id: "B" }], {}, { rigsWaiting: [waiting] });
+    const listed = await use("station_list", {});
+    assert.deepEqual(listed.stations.map((s: Json) => s.id), ["A", "B", "R"]);
+    assert.equal(listed.rigsWaiting, undefined);
+    const rig = listed.stations[2];
+    assert.deepEqual(rig, {
+      id: "R", name: "build-box", mode: "tasks", owner: "pat@example.com", version_seen: "0.1.0",
+      unprotected: "not taken into this workspace yet: its owner pat@example.com has to check its security code in still.fail first",
+    });
+    assert.equal(asked.filter((r) => r.method === "describe").length, 1, "only B was asked how busy it is, never the rig");
+    await assert.rejects(use("station_task", { station: "build-box", key: "k", action: "get" }), /not taken into this workspace yet: its owner pat@example.com has to check its security code/);
   });
 
   test("a task's station tells of it: nothing asks about it while nothing happens to it", async () => {

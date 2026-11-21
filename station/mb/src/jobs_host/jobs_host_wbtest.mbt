@@ -151,3 +151,30 @@ test "a job's shell starts without the launcher's front" {
   assert_true(script.has_prefix("unset STILLFAIL_MESH_FRONT; "))
   assert_true(spawn_script(0).has_prefix("unset STILLFAIL_MESH_FRONT; "))
 }
+
+///|
+test "station_list's line for a rig safe mode has not taken yet: not asked, whose, why (remote.ts `rigWaiting`, FB-45)" {
+  let rig : Json = {
+    "id": "r1",
+    "name": "build-box",
+    "owner": "u1",
+    "owner_email": "pat@example.com",
+    "owner_name": "Pat",
+    "version": "0.1.0",
+  }
+  assert_eq(rig_waiting(rig), {
+    "id": "r1",
+    "name": "build-box",
+    "mode": "tasks",
+    "owner": "pat@example.com",
+    "version_seen": "0.1.0",
+    "unprotected": "not taken into this workspace yet: its owner pat@example.com has to check its security code in still.fail first",
+  })
+  let bare : Json = { "id": "r2", "name": "box" }
+  assert_eq(rig_waiting(bare), {
+    "id": "r2",
+    "name": "box",
+    "mode": "tasks",
+    "unprotected": "not taken into this workspace yet: its owner has to check its security code in still.fail first",
+  })
+}

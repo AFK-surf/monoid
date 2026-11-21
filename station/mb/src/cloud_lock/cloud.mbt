@@ -1462,6 +1462,13 @@ pub fn Cloud::rigs_changed(self : Cloud) -> Unit {
 }
 
 ///|
+/// A lock to pin named on this machine since it started: those who follow the state told, so the control plane is
+/// asked for it at once (state.ts `lockNamed`).
+pub fn Cloud::lock_named(self : Cloud) -> Unit {
+  self.tell()
+}
+
+///|
 /// The plane brought `ws`'s chain, moved: kept as offered and those who follow the state told (state.ts `offerMoved`).
 pub fn Cloud::offer_moved(self : Cloud, ws : String, entries : Array[Json]) -> Unit {
   self.moved_offered[ws] = entries

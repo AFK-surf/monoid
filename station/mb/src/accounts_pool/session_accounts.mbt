@@ -49,7 +49,7 @@ pub struct SessionAccounts {
   /// Whether `billedFallback` tells the station.
   tells_billed_fallback : Bool
   mut health : (String) -> Health
-  mut check_again : async (String) -> Unit
+  mut check_again : async (String, Bool) -> Unit
   mut quota_again : async (String) -> Unit
   rechecking : Map[String, @effect.Deferred[Unit]]
   picked : Map[String, Double]
@@ -82,7 +82,7 @@ pub fn SessionAccounts::new(
     tells_moved,
     tells_billed_fallback,
     health: _ => Health::empty(),
-    check_again: async fn(_) { () },
+    check_again: async fn(_, _) { () },
     quota_again: async fn(_) { () },
     rechecking: Map::new(),
     picked: Map::new(),
@@ -107,7 +107,7 @@ pub fn SessionAccounts::set_health(
 /// `setRecheck`.
 pub fn SessionAccounts::set_recheck(
   self : SessionAccounts,
-  recheck : async (String) -> Unit,
+  recheck : async (String, Bool) -> Unit,
 ) -> Unit {
   self.check_again = recheck
 }
@@ -215,38 +215,48 @@ pub async fn SessionAccounts::limit_after(
 }
 
 ///|
-/// `recheck`: profile `id` checked again, a runtime on it having failed to sign in (once at a time).
-pub async fn SessionAccounts::recheck(self : SessionAccounts, id : String) -> Unit {
+/// `recheck`: profile `id` checked again, a runtime on it having failed to sign in (once at a time); `force`: refused
+/// on it again in the same turn, its login taken as over (after the one on its way).
+pub async fn SessionAccounts::recheck(self : SessionAccounts, id : String, force? : Bool = false) -> Unit {
   match self.rechecking.get(id) {
     Some(busy) => {
       busy.wait()
-      return
+      if !force {
+        return
+      }
     }
     None => ()
   }
   let done : @effect.Deferred[Unit] = @effect.Deferred::new()
   self.rechecking[id] = done
-  (self.check_again)(id) catch {
+  (self.check_again)(id, force) catch {
     _ => ()
   }
-  self.rechecking.remove(id)
+  if self.rechecking.get(id) is Some(d) && physical_equal(d, done) {
+    self.rechecking.remove(id)
+  }
   ignore(done.succeed(()))
 }
 
 ///|
-/// `canAuthRetry`: read-only check whether a turn that failed with `auth` on `failed_profile` should auto-retry.
+/// `canAuthRetry`: read-only check whether a turn that failed with `auth` on `failed_profile` should auto-retry;
+/// `tried`, the profiles its chain of retries was refused on before (FB-44): once more on `failed_profile` while it is
+/// not found over and not tried yet, else on a profile not tried yet that can run it.
 pub async fn SessionAccounts::can_auth_retry(
   self : SessionAccounts,
   key : String,
   failed_profile : String,
+  tried? : Array[String] = [],
 ) -> Bool {
   let cfg = (self.config)()
+  let already = tried.contains(failed_profile)
+  let excluded = fn(id : String) { id == failed_profile || tried.contains(id) }
   let state = jget(self.health_of(cfg, failed_profile).check, "state")
-  if state != Some(Str("login")) && state != Some(Str("failed")) {
+  if state != Some(Str("login")) && state != Some(Str("failed")) && !already {
     return true
   }
   guard self.row(key) is Some(row) else { return false }
-  if row.profile != failed_profile && self.can(cfg, row.profile, row.model) {
+  if !excluded(row.profile) && self.can(cfg, row.profile, row.model) {
     return true
   }
   if row.pinned {
@@ -255,7 +265,7 @@ pub async fn SessionAccounts::can_auth_retry(
   let allows = self.allowed(key, cfg)
   let fallbacks = self.others(cfg, row, allows)
   fallbacks.push_iter(self.across_others(cfg, row, allows).iter())
-  fallbacks.iter().any(p => p.id != failed_profile && self.can(cfg, p.id, row.model))
+  fallbacks.iter().any(p => !excluded(p.id) && self.can(cfg, p.id, row.model))
 }
 
 ///|

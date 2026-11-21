@@ -1361,6 +1361,7 @@ web-pages.localStation.moveConfirmBody
 web-pages.localStation.moveAction
 web-pages.localStation.doing.move
 web-pages.localStation.at
+web-pages.thisDevice.securityCode
 web-pages.localStation.away
 web-pages.localStation.awayLine
 web-pages.localStation.update
@@ -1565,6 +1566,8 @@ web-pages.security.viewer
 web-pages.security.waiting
 web-pages.security.waitingLead
 web-pages.security.waitingTitle
+web-pages.security.ownOutsideTitle
+web-pages.security.ownOutsideNotAsked
 web-pages.security.web
 web-pages.security.webCannotSign
 web-pages.security.webDevice
@@ -1937,6 +1940,7 @@ web-pages.rigs.removeAsk
 web-pages.rigs.removeNote
 web-pages.rigs.vouch.title
 web-pages.rigs.vouch.note
+web-pages.rigs.vouch.panelNote
 web-pages.rigs.vouch.code
 web-pages.rigs.vouch.confirm
 web-pages.rigs.ask.title

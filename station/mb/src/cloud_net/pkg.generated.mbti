@@ -105,7 +105,7 @@ pub fn parse_url(String) -> Url?
 
 pub fn peer_disabled(Ways, String) -> PeerDisabled?
 
-pub fn pending_asks(PlaneCloud, Map[String, Bool]) -> Array[String]
+pub fn pending_asks(PlaneCloud, Map[String, Bool]) -> Array[String?]
 
 pub let ping_ms : Int32
 

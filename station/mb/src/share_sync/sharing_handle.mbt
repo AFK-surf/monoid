@@ -108,7 +108,7 @@ pub async fn Sharing::handle(self : Sharing, peer : String, request : Json, work
       })
     }
     if asked == "share.status" {
-      return (self.deps.status)(js_string(get(Some(p), "id")))
+      return (self.deps.status)(js_string(get(Some(p), "id")), get(rq, "recheck") is Some(True))
     }
     if asked == "share.quotaReset" {
       let key = match get(rq, "key") {
@@ -362,8 +362,21 @@ async fn Sharing::take_edit_now(self : Sharing, peer : String, id : String, name
 }
 
 ///|
-/// A short-lived access token of a shared subscription, renewed here when needed.
+/// A short-lived access token of a shared subscription, renewed here when needed. Its login over here, it is checked
+/// again (its borrowers, older ones too, read that in `share.status`) and the borrower told so (LOGIN_OVER).
 async fn Sharing::lend(self : Sharing, p : Json, rejected : String?) -> Json {
+  self.lend_of(p, rejected) catch {
+    e if over_here(e) => {
+      let id = js_string(get(Some(p), "id"))
+      self.tasks.spawn(async fn() { ignore((self.deps.status)(id, true)) catch { _ => () } })
+      raise Failed(login_over + error_words(e))
+    }
+    e => raise e
+  }
+}
+
+///|
+async fn Sharing::lend_of(self : Sharing, p : Json, rejected : String?) -> Json {
   let pj = Some(p)
   if !(gets(pj, ["access", "kind"]) is Some(String("subscription"))) {
     raise Failed("only a subscription is lent")
@@ -379,6 +392,7 @@ async fn Sharing::lend(self : Sharing, p : Json, rejected : String?) -> Json {
   let mut auth = js_parse(self.files.need_text(file))
   let mut expires_at = jwt_expiry(gets(Some(auth), ["tokens", "access_token"])).unwrap_or(0.0)
   let now = () => (self.deps.clock.now)()
+  let mut over : Error? = None
   if expires_at - now() < codex_lend_ms {
     // By the Codex running on it, asked to, or here where none runs.
     let auth_then = auth
@@ -388,7 +402,7 @@ async fn Sharing::lend(self : Sharing, p : Json, rejected : String?) -> Json {
       }
     })
     // One that still lasts CODEX_MIN_MS waits for its renewal LEND_BOUND_MS at most, then is lent as it is.
-    if expires_at - now() >= codex_min_ms {
+    over = if expires_at - now() >= codex_min_ms {
       self.within_bound(p, "Codex", expires_at, renewed)
     } else {
       renewed.wait()
@@ -397,7 +411,11 @@ async fn Sharing::lend(self : Sharing, p : Json, rejected : String?) -> Json {
     auth = js_parse(self.files.need_text(file))
     expires_at = jwt_expiry(gets(Some(auth), ["tokens", "access_token"])).unwrap_or(0.0)
   }
+  // (its renewal refused for good: the login here is over, LOGIN_OVER; failed for now: refused as before)
   if expires_at - now() < codex_min_ms {
+    if over is Some(err) {
+      raise err
+    }
     raise Failed("the Codex login here runs out soon and cannot be renewed now")
   }
   let tokens = match get(Some(auth), "tokens") {
@@ -471,6 +489,7 @@ async fn Sharing::lend_agy_here(self : Sharing, p : Json) -> Json {
   let mut text = self.files.need_text(file)
   let mut expires_at = agy_expiry_in(text)
   let now = () => (self.deps.clock.now)()
+  let mut over : Error? = None
   if expires_at - now() < agy_lend_ms {
     let renewed = self.renew_once(p, "Antigravity CLI", expires_at, async fn() {
       match self.deps.agy_renew {
@@ -478,7 +497,7 @@ async fn Sharing::lend_agy_here(self : Sharing, p : Json) -> Json {
         None => raise Failed("this station renews no Antigravity CLI sign-in")
       }
     })
-    if expires_at - now() >= agy_min_ms {
+    over = if expires_at - now() >= agy_min_ms {
       self.within_bound(p, "Antigravity CLI", expires_at, renewed)
     } else {
       renewed.wait()
@@ -487,6 +506,9 @@ async fn Sharing::lend_agy_here(self : Sharing, p : Json) -> Json {
     expires_at = agy_expiry_in(text)
   }
   if expires_at - now() < agy_min_ms {
+    if over is Some(err) {
+      raise err
+    }
     raise Failed("the Antigravity CLI sign-in here runs out soon and cannot be renewed now")
   }
   let had = js_parse(text)
@@ -510,14 +532,15 @@ async fn Sharing::lend_agy_here(self : Sharing, p : Json) -> Json {
 }
 
 ///|
-/// `renewed` waited for LEND_BOUND_MS at most: past it, what is lent is the login as it is, which is said.
+/// `renewed` waited for LEND_BOUND_MS at most: past it, what is lent is the login as it is, which is said. What came of
+/// it in time: its login found over (`renew_once`), else none.
 async fn Sharing::within_bound(
   self : Sharing,
   p : Json,
   what : String,
   expires_at : Double,
-  renewed : @effect.Deferred[Unit],
-) -> Unit {
+  renewed : @effect.Deferred[Error?],
+) -> Error? {
   let began = (self.deps.clock.now)()
   let first : @effect.Deferred[Bool] = @effect.Deferred::new()
   let stop = (self.deps.clock.after)(lend_bound_ms, () => ignore(first.succeed(false)))
@@ -525,7 +548,7 @@ async fn Sharing::within_bound(
     ignore(first.succeed(true))
   } else {
     self.tasks.spawn(async fn() {
-      renewed.wait() catch {
+      ignore(renewed.wait()) catch {
         _ => ()
       }
       ignore(first.succeed(true))
@@ -533,7 +556,9 @@ async fn Sharing::within_bound(
   }
   let in_time = first.wait()
   stop()
-  if !in_time {
+  if in_time {
+    return renewed.wait()
+  } else {
     let now = (self.deps.clock.now)()
     self.deps.log.warn(
       "share",
@@ -544,32 +569,38 @@ async fn Sharing::within_bound(
         ("lastsMin", jnum(((expires_at - now) / 60000.0).round())),
       ]),
     )
+    None
   }
 }
 
 ///|
-/// One renewal of a profile's login at a time, what is lent meanwhile waiting on it; a failure is said.
+/// One renewal of a profile's login at a time, what is lent meanwhile waiting on it; a failure is said. What came of it:
+/// the failure where it says the login is over (`over_here`), else none.
 fn Sharing::renew_once(
   self : Sharing,
   p : Json,
   what : String,
   expires_at : Double,
   renew : async () -> Unit,
-) -> @effect.Deferred[Unit] {
+) -> @effect.Deferred[Error?] {
   let id = js_string(get(Some(p), "id"))
   if self.renewing.get(id) is Some(going) {
     return going
   }
   let began = (self.deps.clock.now)()
-  let done : @effect.Deferred[Unit] = @effect.Deferred::new()
+  let done : @effect.Deferred[Error?] = @effect.Deferred::new()
   self.renewing[id] = done
   self.tasks.spawn(async fn() {
+    let over : Ref[Error?] = Ref(None)
     defer {
       self.renewing.remove(id)
-      ignore(done.succeed(()))
+      ignore(done.succeed(over.val))
     }
     renew() catch {
       e => {
+        if over_here(e) {
+          over.val = Some(e)
+        }
         let now = (self.deps.clock.now)()
         self.deps.log.warn("share", "renewing a shared \{what} login failed", jobj([
           ("profile", get(Some(p), "id").unwrap_or(jnull())),
@@ -587,7 +618,7 @@ fn Sharing::renew_once(
 /// Once a renewal of profile `id` going on, if any, is over (tests).
 pub async fn Sharing::renewed_behind(self : Sharing, id : String) -> Unit {
   if self.renewing.get(id) is Some(d) {
-    d.wait()
+    ignore(d.wait())
   }
 }
 
@@ -595,7 +626,7 @@ pub async fn Sharing::renewed_behind(self : Sharing, id : String) -> Unit {
 /// Codex's own renewal of its ChatGPT login, done here while no Codex runs on it.
 async fn Sharing::renew_codex(self : Sharing, file : String, auth : Json) -> Json {
   let refresh = gets(Some(auth), ["tokens", "refresh_token"])
-  guard refresh is Some(String(r)) && r != "" else { raise Failed("no refresh token") }
+  guard refresh is Some(String(r)) && r != "" else { raise Over("no refresh token") }
   let body = js_stringify(jobj([
     ("client_id", jstr(codex_client_id)),
     ("grant_type", jstr("refresh_token")),
@@ -603,6 +634,10 @@ async fn Sharing::renew_codex(self : Sharing, file : String, auth : Json) -> Jso
     ("scope", jstr("openid profile email")),
   ]))
   let (status, text) = (self.deps.fetch)(self.deps.codex_token_url, body)
+  // (refused: the login is over; any other answer is the provider's trouble, for now)
+  if status == 400 || status == 401 || status == 403 {
+    raise Over("the token endpoint answered \{status}")
+  }
   if status < 200 || status > 299 {
     raise Failed("the token endpoint answered \{status}")
   }
@@ -702,6 +737,10 @@ pub async fn Sharing::lend_claude(self : Sharing, profile : Json, rejected? : St
     self.lent_claude[pid] = lent
     lent
   } catch {
+    e if is_login_over(e) => {
+      self.lent_claude.remove(pid)
+      raise self.over_there(profile, e)
+    }
     e => {
       // Left out by who may use it (`not_ours`): nothing lent before is used, and the copy is asked of again, which
       // takes it away. Any other refusal is the host not answering, as before.
@@ -754,6 +793,7 @@ pub async fn Sharing::lend_codex(self : Sharing, profile : Json, rejected? : Boo
     self.silent_hosts.remove(host)
     got
   } catch {
+    e if is_login_over(e) => raise self.over_there(profile, e)
     e => {
       // Left out by who may use it (`not_ours`): as lend_claude.
       let ours = !not_ours(e)
@@ -855,6 +895,7 @@ pub async fn Sharing::lend_agy(self : Sharing, profile : Json, rejected? : Bool 
     self.silent_hosts.remove(host)
     got
   } catch {
+    e if is_login_over(e) => raise self.over_there(profile, e)
     e => {
       // Left out by who may use it (`not_ours`): as lend_claude.
       let ours = !not_ours(e)
@@ -889,11 +930,30 @@ pub async fn Sharing::lend_agy(self : Sharing, profile : Json, rejected? : Bool 
 }
 
 ///|
-/// A borrowed profile's check and allowance, as its host has them.
-pub async fn Sharing::status(self : Sharing, profile : Json) -> Json {
+/// A borrowed profile's login over on its host (LOGIN_OVER): the host answered, so it is not one that did not; its check
+/// here says to sign in again, and a session that could not start on it goes on on another (`LoginOver`).
+fn Sharing::over_there(self : Sharing, profile : Json, e : Error) -> ShareError raise {
+  let pid = js_string(get(Some(profile), "id"))
+  self.silent_hosts.remove(host_of(profile))
+  if self.deps.login_expired is Some(f) {
+    f(pid)
+  }
+  (self.deps.changed)()
+  self.deps.log.warn("share", "the host's login of a borrowed profile is over", jobj([("profile", jstr(pid)), ("error", jstr(error_words(e)))]))
+  LoginOver(pid, tr((self.deps.lang)(), "station.quota.signInExpired"))
+}
+
+///|
+/// A borrowed profile's check and allowance, as its host has them; `recheck`: its login asked of its provider again
+/// there first (a host from before asks nothing again: its answer is what it had).
+pub async fn Sharing::status(self : Sharing, profile : Json, recheck? : Bool = false) -> Json {
   let host = host_of(profile)
   try {
-    let got = self.ask(host, None, jobj([("method", jstr("share.status")), ("id", gets(Some(profile), ["share", "id"]).unwrap_or(jnull()))]))
+    let request = jobj([("method", jstr("share.status")), ("id", gets(Some(profile), ["share", "id"]).unwrap_or(jnull()))])
+    if recheck && request is Object(m) {
+      m["recheck"] = jbool(true)
+    }
+    let got = self.ask(host, None, request)
     self.silent_hosts.remove(host)
     let or_null = (v : Json?) => match v {
       None | Some(Null) => jnull()

@@ -194,7 +194,13 @@ export type CheckOptions = {
   machineToken?: (env: Env, rejected?: string) => Promise<{ token: string }>;
   urls?: Urls;
   lang?: Lang;
+  /// Asked again because a runtime on it was refused (Accounts.recheckProfile): a Claude subscription's login is renewed
+  /// even when not due, so a refresh token revoked with its access token still cached as good is found over now.
+  recheck?: boolean;
 };
+
+/// Whether Anthropic's answer refuses a Claude subscription's OAuth token: a revoked one is answered 401 or 403.
+export const claudeAuthStatus = (status: number | null): boolean => status === 401 || status === 403;
 
 /// `checkedAt`: stamped by whoever keeps it, on its clock (Accounts).
 const check = (state: string, detail: string, models: string[] | null): ProfileCheck => ({ state, detail, models, checkedAt: 0 });
@@ -304,21 +310,42 @@ async function checkInner(o: CheckOptions, lang: Lang): Promise<ProfileCheck> {
     // What the subscription runs, as Anthropic lists it for the account's own token.
     const { token, renewError } = machineToken !== undefined ? { token: machineToken, renewError: null } : await profileToken(o, urls, lang);
     let { models, status: modelsStatus } = token === undefined ? { models: null, status: null } : await claudeModels(urls, token);
+    // Its login renewed against the token just refused (`rejected`): a refresh token refused too is a login over.
+    const renew = (rejected: string) =>
+      o.machine ? o.machineToken!(o.env, rejected).then((got) => got.token) : claudeOAuthToken(o.env, o.home, rejected, urls.claudeToken, lang).then((got) => got[0]);
+    let renewedHere = false;
     if (renewError !== null) {
       if (models === null) return check("failed", renewError.message, null);
-    } else if (modelsStatus === 401 && token !== undefined) {
+    } else if (claudeAuthStatus(modelsStatus) && token !== undefined) {
       let renewed: string;
       try {
-        renewed = o.machine
-          ? (await o.machineToken!(o.env, token)).token
-          : (await claudeOAuthToken(o.env, o.home, token, urls.claudeToken, lang))[0];
+        renewed = await renew(token);
       } catch (e) {
         if (e instanceof RenewRefused) throw e;
         return check("failed", e instanceof Error ? e.message : String(e), null);
       }
+      renewedHere = true;
       const retry = await claudeModels(urls, renewed);
-      if (retry.status === 401) return check("login", t("station.quota.signInExpired"), null);
+      if (claudeAuthStatus(retry.status)) return check("login", t("station.quota.signInExpired"), null);
       models = retry.models;
+    }
+    // Asked again after a runtime on it was refused: Anthropic can go on listing models for an access token whose login
+    // was revoked (FB-44), so its refresh token is what is asked. One refused is over; one not reached now leaves a
+    // listing that worked standing, and one that did not a failed check.
+    if (o.recheck === true && !renewedHere && renewError === null && token !== undefined) {
+      let renewed: string | null = null;
+      try {
+        renewed = await renew(token);
+      } catch (e) {
+        // (none to renew with: a token that still lists models is not taken for one revoked)
+        if (e instanceof RenewRefused && !(e.status === null && modelsStatus === 200)) return check("login", t("station.quota.signInExpired"), null);
+        if (modelsStatus !== 200) return check("failed", e instanceof Error ? e.message : String(e), null);
+      }
+      if (renewed !== null && models === null) {
+        const retry = await claudeModels(urls, renewed);
+        if (claudeAuthStatus(retry.status)) return check("login", t("station.quota.signInExpired"), null);
+        models = retry.models;
+      }
     }
     // For a profile in its own home Claude keeps the more specific tier beside its token. Read only that metadata
     // into the check; the token itself stays in the home. A machine login's keychain is handled by MachineLogins.

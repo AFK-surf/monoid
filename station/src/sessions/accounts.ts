@@ -78,7 +78,7 @@ export type AccountsDeps = {
 export class Accounts {
   private deps: AccountsDeps;
   private health: (id: string) => ProfileHealth = () => ({});
-  private checkAgain: (id: string) => Promise<unknown> = async () => {};
+  private checkAgain: (id: string, force?: boolean) => Promise<unknown> = async () => {};
   private quotaAgain: (id: string) => Promise<unknown> = async () => {};
   private rechecking = new Map<string, Promise<void>>();
   private picked = new Map<string, number>();
@@ -107,8 +107,8 @@ export class Accounts {
     this.health = health;
   }
 
-  /// Lets the pool have a profile checked again (accounts/index.ts `check`).
-  setRecheck(recheck: (id: string) => Promise<unknown>) {
+  /// Lets the pool have a profile checked again after a runtime on it was refused (accounts/index.ts `recheckProfile`).
+  setRecheck(recheck: (id: string, force?: boolean) => Promise<unknown>) {
     this.checkAgain = recheck;
   }
 
@@ -138,32 +138,39 @@ export class Accounts {
   }
 
   /// Profile `id` checked again, a runtime on it having failed to sign in (once at a time): one whose login is over is
-  /// passed over from then on, and a session left to the station goes on on another (`runOn`).
-  recheck(id: string): Promise<void> {
+  /// passed over from then on, and a session left to the station goes on on another (`runOn`). `force`: refused again
+  /// on it after it was checked and tried again in the same turn, so its login is taken as over whatever a check says.
+  recheck(id: string, force = false): Promise<void> {
     const busy = this.rechecking.get(id);
-    if (busy) return busy;
-    const run = this.checkAgain(id)
+    if (busy && !force) return busy;
+    const run: Promise<void> = (busy ?? Promise.resolve())
+      .then(() => this.checkAgain(id, force))
       .then(
         () => {},
         () => {},
       )
-      .finally(() => this.rechecking.delete(id));
+      .finally(() => {
+        if (this.rechecking.get(id) === run) this.rechecking.delete(id);
+      });
     this.rechecking.set(id, run);
     return run;
   }
 
-  /// Read-only check whether a turn that failed with `auth` on `failedProfile` should automatically reopen and retry:
-  /// allowed when `recheck` did not mark `failedProfile` as `"login"` / `"failed"`, or when another healthy profile is
-  /// available for `key`; false when `failedProfile` is confirmed unusable and no healthy fallback exists.
-  canAuthRetry(key: string, failedProfile: string): boolean {
+  /// Read-only check whether a turn that failed with `auth` on `failedProfile` should automatically reopen and retry.
+  /// `tried`: the profiles this turn was already refused on before (the session's chain of retries, FB-44: several
+  /// revoked logins in one pool). Allowed once more on `failedProfile` itself while `recheck` did not mark it `"login"` /
+  /// `"failed"` and it was not tried already; else when a profile not tried yet can run it; false when none is left.
+  canAuthRetry(key: string, failedProfile: string, tried: readonly string[] = []): boolean {
+    const alreadyTried = tried.includes(failedProfile);
+    const excluded = new Set([...tried, failedProfile]);
     const state = this.healthOf(failedProfile).check?.state;
-    if (state !== "login" && state !== "failed") return true;
+    if (state !== "login" && state !== "failed" && !alreadyTried) return true;
     const row = this.deps.store.getSession(key);
     if (!row) return false;
-    if (row.profile !== failedProfile && this.can(row.profile, row.model)) return true;
+    if (row.profile !== failedProfile && !excluded.has(row.profile) && this.can(row.profile, row.model)) return true;
     if (row.profilePinned) return false;
     const fallbacks = [...this.others(row), ...this.acrossOthers(row)];
-    return fallbacks.some((p) => p.id !== failedProfile && this.can(p.id, row.model));
+    return fallbacks.some((p) => !excluded.has(p.id) && this.can(p.id, row.model));
   }
 
   /// Several profiles can spend the same account's allowance. An unknown account keeps its own profile's identity.

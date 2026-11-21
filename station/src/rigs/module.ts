@@ -457,17 +457,20 @@ export const RigsLive = Layer.effectDiscard(
         }),
       },
       {
-        // Security mode: the rig taken into the workspace by its person, who compared its code: `{signed}`.
+        // Security mode: the rig taken into the workspace by its person, who compared its code: `{signed}`, with what
+        // the rig pins the workspace's lock by where it pins none (FB-45: `pin`, their own lock's statement where the
+        // add is the workspace lock's, and `chain`, their own lock), carried to the rig as they came.
         method: "POST", pattern: /^\/rigs\/([0-9a-f]{64})\/add$/,
         handle: async (r, [id]) => {
           const op = body(r);
           const ws = r.viewer.workspace;
+          if (r.body.length > SIGNED_MAX) return error(413, "too large");
           const rig = cloud.rigsNamed(ws).find((x) => x.id === id);
           if (rig === undefined) return error(404, "no such rig in this workspace");
           if (rig.owner !== r.viewer.sub) return error(403, "only the rig's owner takes it into the workspace");
           const why = adds.take(ws, rig, op.signed);
           if (why !== null) return error(422, why);
-          queue(ws, rig.id, "added", { signed: op.signed });
+          queue(ws, rig.id, "added", { signed: op.signed, ...(op.pin != null ? { pin: op.pin } : {}), ...(op.chain != null ? { chain: op.chain } : {}) });
           vouchedElsewhere(ws, rig.id, op.signed);
           asked.delete(key(ws, rig.id));
           look();
