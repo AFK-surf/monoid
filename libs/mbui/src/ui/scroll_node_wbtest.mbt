@@ -1132,3 +1132,57 @@ test "scroll_bar on padded scroll nodes: thumb hugs padding box edge, bar_near m
     msg="horizontal drag to end: at=\{h_scroll.at(view_tree().unwrap())} most=\{h_scroll.most()}",
   )
 }
+
+///|
+/// A column 300 high of 40 rows 40 high, each pressed as it is tapped (a finger's: Android's): its scroll and how many
+/// times a row was pressed.
+fn pressed_rows_case() -> (Tester, @view.Scroll, Ref[Int]) {
+  let s = @view.Scroll::new()
+  let pressed = Ref(0)
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=2)
+  set_view_app(fn(root) {
+    root
+    .width(Is(Some(400.0)))
+    .height(Is(Some(300.0)))
+    .scrolls(s, slop=touch_slop(), fn(held) {
+      for i in 0..<40 {
+        held.box(fn(r) {
+          r
+          .width(Is(Some(400.0)))
+          .height(Is(Some(40.0)))
+          .on_press(fn() { pressed.val += 1 })
+          .says(Is(Some(@view.said(Button, label="第\{i}行"))))
+          .words(Is("第\{i}行"))
+          |> ignore
+        })
+        |> ignore
+      }
+    })
+    |> ignore
+  })
+  t.draw()
+  (t, s, pressed)
+}
+
+///|
+test "a column of the tree's that scrolls, flung: a tap on a row in it as it glides on stops it there and presses nothing; at rest, the same tap presses the row" {
+  let (t, s, pressed) = pressed_rows_case()
+  let at = fn() { s.at(view_tree().unwrap()) }
+  t.touch(0, 80.0, 250.0)
+  for i in 1..=3 {
+    t.run_for(hand_step_ms)
+    t.touch(1, 80.0, 250.0 - 30.0 * i.to_double())
+  }
+  t.run_for(hand_half_step_ms)
+  t.touch(2, 80.0, 145.0)
+  t.run_for(hand_step_ms)
+  assert_true(s.glides_till() is Some(end) && end > t.time(), msg="not gliding after the fling")
+  // (tapped as it glides: caught where it is, no row pressed)
+  t.tap(80.0, 150.0)
+  let caught = at()
+  t.run_for(bar_long_gone_ms)
+  assert_eq((pressed.val, s.glides_till(), at()), (0, None, caught))
+  // (at rest: the same tap presses the row under it)
+  t.tap(80.0, 150.0)
+  assert_eq(pressed.val, 1)
+}

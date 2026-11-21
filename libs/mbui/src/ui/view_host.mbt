@@ -3684,6 +3684,24 @@ fn old_wheel_there(id : @view.NodeId, x : Double, y : Double) -> Bool {
 let view_down_most : Int = 20
 
 ///|
+/// A finger setting off scrolling with node `id` (it took the hold over, or caught it gliding: view_caught) lets go of
+/// the keyboard, as an old view's list does: Ctx::scroll_lets_go; one taking it over for anything else, not.
+fn view_scroll_lets_go(tree : @view.Tree, id : @view.NodeId) -> Unit {
+  guard tree.claims_scroll(id) else { return }
+  let c = g()
+  // (one scrolling choices for the focused field, or in a layer leaving what is typed to a field outside it, keeps
+  // its keyboard: Tree::scroll_keeps_typing)
+  let focus = if c.editor_layer.get(c.focus).unwrap_or(0) == 0 {
+    editor_node_of(c, c.focus)
+  } else {
+    None
+  }
+  if !tree.scroll_keeps_typing(id, focus) {
+    c.scroll_lets_go(-1)
+  }
+}
+
+///|
 /// The hold now (a press of a node's, a gesture's not its own yet, an old view's, nobody's) taken over at
 /// (x, y) at `at` by what holds what it went down on, where one says it takes it as it has moved so far
 /// (Tree::claimer_of): what had it called off (a node's press let go unpressed; a gesture's told Off; the old view's told
@@ -3693,21 +3711,7 @@ fn view_claimed(tree : @view.Tree, x : Double, y : Double, at : Double) -> Bool 
   guard view_down.val is Some((x0, y0, chain, events)) else { return false }
   guard tree.claimer_of(chain, x - x0, y - y0) is Some(id) else { return false }
   view_down.val = None
-  // (a finger setting off scrolling lets go of the keyboard, as an old view's list does: Ctx::scroll_lets_go; one
-  // taking it over for anything else, not)
-  if tree.claims_scroll(id) {
-    let c = g()
-    // (one scrolling choices for the focused field, or in a layer leaving what is typed to a field outside it, keeps
-    // its keyboard: Tree::scroll_keeps_typing)
-    let focus = if c.editor_layer.get(c.focus).unwrap_or(0) == 0 {
-      editor_node_of(c, c.focus)
-    } else {
-      None
-    }
-    if !tree.scroll_keeps_typing(id, focus) {
-      c.scroll_lets_go(-1)
-    }
-  }
+  view_scroll_lets_go(tree, id)
   match view_held.val {
     Some(Node(n)) => {
       tree.press_held(n) |> ignore
@@ -3733,6 +3737,47 @@ fn view_claimed(tree : @view.Tree, x : Double, y : Double, at : Double) -> Bool 
   }
   tree.drag_at(id, Down, x0, y0, at, finger=0, track=before) |> ignore
   tree.drag_at(id, Moved, x, y, at, finger=0) |> ignore
+  h_frame_owed()
+  true
+}
+
+///|
+/// A press going down at (x, y) at `at` on a column of the tree's gliding on by itself there (a fling, what shows past
+/// an end going back: Tree::glide_end_of), as an old view's list moving on its own is caught (app.mbt's `caught`): the
+/// press presses nothing (no tap, no hold, no press shown) and stops it. Where it is the innermost of what may take the
+/// hold over (view_down's chain), the hold is its own at once, dragging it from there as the finger moves; else (a row
+/// swiped across, a code block scrolled sideways in it) it stops where it is and the hold waits as ever for what takes
+/// it. Not where the pointer drags nothing that scrolls (a desktop's mouse: Tree::pointer_drags_scroll), as its own
+/// claims are not. Whether it was caught.
+fn view_caught(tree : @view.Tree, x : Double, y : Double, at : Double) -> Bool {
+  guard (tree.drags_scroll)() else { return false }
+  guard view_down.val is Some((_, _, chain, _)) else { return false }
+  let mut k = 0
+  while k < chain.length() {
+    let (id, _) = chain[k]
+    if tree.claims_scroll(id) && tree.glide_end_of(id.at) is Some(end) && end > at {
+      break
+    }
+    k = k + 1
+  }
+  guard k < chain.length() else { return false }
+  let (id, _) = chain[k]
+  view_press_unfocused(g())
+  view_nothing_down.val = None
+  if k == 0 {
+    view_down.val = None
+    view_scroll_lets_go(tree, id)
+    view_held.val = Some(Dragging(id))
+    view_fingers[0] = 0
+    view_fingers[1] = -1
+    view_fingers[2] = 1
+    tree.drag_at(id, Down, x, y, at, finger=0) |> ignore
+  } else {
+    // (stopped where it is, as a hold set going on it and called off at once does: Scroll's Down, then its Off)
+    tree.drag_at(id, Down, x, y, at, finger=0) |> ignore
+    tree.drag_at(id, Off, x, y, at, finger=0) |> ignore
+    view_held.val = Some(Nowhere)
+  }
   h_frame_owed()
   true
 }
@@ -3927,6 +3972,9 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
       view_input_went(-1)
       false
     }
+    // (a column under it gliding on by itself (flung, going back from past an end): the press catches it and presses
+    // nothing, view_caught)
+    (0, _) if button != 2 && view_caught(tree, x, y, at) => true
     // (words of the tree's a finger picked stand over the page: a press anywhere else that does not keep them
     // (keeps_picked) takes no control, gesture or link under them; scrolled, what holds it claims it as ever
     // (view_claimed); lifted where it went down, a tap that lets go of what is picked and opens nothing)
