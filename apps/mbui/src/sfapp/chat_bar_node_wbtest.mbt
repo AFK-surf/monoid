@@ -301,7 +301,7 @@ test "小屏顶栏：放不下而直接展开到第 2 行的对话，打开在�
   t.run_for(@ui.move_most_ms)
   let extra = bar_extra_target(bar_ref)
   assert_true(extra > 30.0, msg="must auto-expand on mount")
-  let foot = bar_foot() + extra
+  let foot = bar_foot_at(290.0) + extra
   let at = t.words().filter(fn(w) { w.0.has_prefix("第4条：") && w.5 > 0.5 }).map(fn(w) { w.2 })
   assert_true(at.length() > 0, msg="the message left at not drawn: \{Repr(t.words().map(fn(w) { (w.0, w.2) }))}")
   assert_true(at[0] >= foot, msg="its first line at \{at[0]}, the bar's foot at \{foot}")

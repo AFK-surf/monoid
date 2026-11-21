@@ -124,14 +124,27 @@ export class WorkspaceConnects {
       this.remote.moved(localOf(known, d.here()), request.station);
       return { ok: true };
     });
-    d.bus.on(
-      CALL,
-      answerCall((known: Known, workspace: string | undefined) => {
-        const id = localOf(known, d.here());
+    const answer = answerCall((known: Known, workspace: string | undefined) => {
+      const id = localOf(known, d.here());
+      const entry = this.entryOf(id);
+      return entry !== undefined && this.workspaceOf(entry) === workspace ? this.own(id) : undefined;
+    }, this.uploads, this.#uploadsCleared);
+    d.bus.on(CALL, async (peer, request, workspace) => {
+      const answered = await answer(peer, request, workspace);
+      // A conversation another station's chat began here (chat_post to a Feishu chat): what is said in its thread goes
+      // to that station from now on, as a thread whose first message came here and was handed there does.
+      if (request?.op === "begin" && peer !== "self" && peer !== d.here()) {
+        const known = knownIn(request?.connect);
+        const id = known === null ? "" : localOf(known, d.here());
         const entry = this.entryOf(id);
-        return entry !== undefined && this.workspaceOf(entry) === workspace ? this.own(id) : undefined;
-      }, this.uploads, this.#uploadsCleared),
-    );
+        const thread = answered?.result?.thread;
+        if (entry !== undefined && ROUTED.includes(kindOf(entry) as never) && entry.mode !== "single-session" &&
+          typeof thread?.channel === "string" && thread.channel !== "" && typeof thread?.threadTs === "string" && thread.threadTs !== "") {
+          this.routeHere(id, thread.channel, thread.threadTs, peer);
+        }
+      }
+      return answered;
+    });
     // Whether one of this station's connects of that workspace has that secret.
     d.bus.on(LIST, async (_peer, request, workspace) => {
       const print = typeof request?.fingerprint === "string" ? request.fingerprint : "";

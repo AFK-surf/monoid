@@ -78,6 +78,11 @@ let glass_paint : GlassPaint = {
 let glass_forced_said : Ref[@signals.Signal[Int]] = Ref(@signals.signal(-1, same=fn(a, b) { a == b }))
 
 ///|
+/// Global ambient light axis angle (radians, default `0.0`: top-down light axis) for liquid glass specular glint,
+/// inner bevel shadow, and external contour rotation. Per-window kept (`window_kept.mbt`), reset by `reset_glass`.
+let glass_light_angle_said : Ref[@signals.Signal[Double]] = Ref(@signals.signal(0.0, same=fn(a, b) { a == b }))
+
+///|
 fn reset_glass() -> Unit {
   glass_paint.run = 0
   glass_paint.frost_run = 0
@@ -88,8 +93,21 @@ fn reset_glass() -> Unit {
   glass_paint.solid = false
   glass_paint.forced = -1
   @signals.untracked(fn() { glass_forced_said.val.set(-1) })
+  @signals.untracked(fn() { glass_light_angle_said.val.set(0.0) })
   glass_paint.in_group = 0
   glass_paint.ink_r = 0.0
+}
+
+///|
+/// Set the global ambient light axis angle (in radians, `0.0` = default top-down) for liquid glass surfaces.
+pub fn set_glass_light_angle(radians : Double) -> Unit {
+  glass_light_angle_said.val.set(radians)
+}
+
+///|
+/// Read the current global ambient light axis angle (in radians) for liquid glass surfaces.
+pub fn glass_light_angle() -> Double {
+  glass_light_angle_said.val.get()
 }
 
 ///|
@@ -165,6 +183,13 @@ fn Ctx::glass_inst(
   alpha : Double,
 ) -> Unit {
   let kind = if gl.liquid { 6.0 } else { 5.0 }
+  let blur_slot = if !gl.liquid {
+    if gl.contained { -gl.blur } else { gl.blur }
+  } else if gl.blur <= 0.0 && gl.zoom > 1.0001 {
+    -(dmin(gl.zoom, 3.0) - 1.0)
+  } else {
+    dmax(gl.blur, 0.0)
+  }
   self.push_inst(
     x,
     y,
@@ -173,7 +198,7 @@ fn Ctx::glass_inst(
     radius,
     kind,
     gl.saturation,
-    if gl.contained && !gl.liquid { -gl.blur } else { gl.blur },
+    blur_slot,
     gl.tint,
     1.0,
     if gl.liquid { gl.rim } else { gl.rim_edge },
@@ -221,26 +246,34 @@ fn Ctx::glass_capture(self : Ctx, k : Int, liquid : Bool, shares : Bool) -> Unit
   let a = self.inst
   let kind = a[b + 5]
   let blur = a[b + 7]
+  // For liquid glass (kind 6), a negative slot 7 encodes clear-lens optical zoom (-(zoom - 1.0)) with effective blur 0.0.
+  let eff_blur = if liquid && blur < 0.0 { 0.0 } else { blur }
   let is_single_liquid = liquid && a[b + 23] <= 0.0
   if shares && !liquid && glass_paint.frost_run != 0 {
     // the last frosted capture's (liquid glass's is no frost, and only of what is under its shapes), the run as it was
     a[b + 20] = -glass_paint.frost_run.to_double()
     return
   }
-  if shares && is_single_liquid && blur >= 0.0 && glass_paint.liquid_run != 0 && glass_paint.liquid_blur == blur {
+  if shares && is_single_liquid && eff_blur >= 0.0 && glass_paint.liquid_run != 0 && glass_paint.liquid_blur == eff_blur {
     a[b + 20] = -glass_paint.liquid_run.to_double()
     return
   }
   // one capture with the glass just before it: right after it, as it is,
-  // the same blur, not over it, and (merged liquid) a group of fewer than 8; glass
+  // the same blur, not over it, and (merged liquid) a group of fewer than 8; frosted glass
   // contained (blur below 0) a capture of its own box alone
   let prev = glass_paint.run_start + glass_paint.run_len
   let prev_is_single = liquid && k > 0 && a[(k - 1) * inst_size + 23] <= 0.0
+  let prev_eff_blur = if k > 0 {
+    let pb = a[(k - 1) * inst_size + 7]
+    if liquid && pb < 0.0 { 0.0 } else { pb }
+  } else {
+    0.0
+  }
   let mut same = glass_paint.run != 0 &&
     prev == k &&
-    blur >= 0.0 &&
+    eff_blur >= 0.0 &&
     a[(k - 1) * inst_size + 5] == kind &&
-    a[(k - 1) * inst_size + 7] == blur &&
+    prev_eff_blur == eff_blur &&
     (!liquid ||
       (is_single_liquid && prev_is_single) ||
       (!is_single_liquid && !prev_is_single && glass_paint.run_len < 8))
@@ -261,9 +294,9 @@ fn Ctx::glass_capture(self : Ctx, k : Int, liquid : Bool, shares : Bool) -> Unit
     glass_paint.run_len = 1
     if !liquid {
       glass_paint.frost_run = glass_paint.run
-    } else if is_single_liquid && blur >= 0.0 {
+    } else if is_single_liquid && eff_blur >= 0.0 {
       glass_paint.liquid_run = glass_paint.run
-      glass_paint.liquid_blur = blur
+      glass_paint.liquid_blur = eff_blur
     }
   }
   a[b + 20] = -glass_paint.run.to_double()

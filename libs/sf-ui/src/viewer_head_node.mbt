@@ -54,13 +54,14 @@ pub fn viewer_head_node(
       h
       .row(Is(true))
       .lines_up(Is(Some(Middle)))
-      .height(Is(Some(@ui.Space::px(S11))))
+      .min_height(Is(Some(@ui.Space::px(S11))))
       .gap(By(fn() { @ui.Space::px(if small() { S1 } else { S3 }) }))
       .padding(By(fn() {
         let start = @ui.Space::px(if small() { S3 } else { S4 })
-        (start, 0.0, @ui.Space::px(S1_5), 0.0)
+        let v = @ui.Space::px(S1)
+        (start, v, @ui.Space::px(S1_5), v)
       }))
-      .radius(Is(@ui.Space::px(S11) / 2.0))
+      .radius(Is(1.0e6))
       .glass(By(fn() { Some(glass()) }))
       .max_width(By(fn() { Some(most()) }))
       |> ignore

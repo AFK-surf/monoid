@@ -445,6 +445,10 @@ void mb_host_render_dirty(double x, double y, double w, double h) {
   else fm_said(x, y, w, h);
 }
 
+void mb_host_glass_light_angle(double rad) {
+  gl_set_glass_light_angle(rad);
+}
+
 // (the frame as the app gave it, its groups' headers drawn out as it is taken: groups.h)
 void mb_host_present(double *buf, int32_t count, double r, double g, double b) {
   JNIEnv *env = env_();

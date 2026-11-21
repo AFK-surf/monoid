@@ -221,7 +221,26 @@ pub async fn WorkspaceConnects::new(d : WorkspaceDeps) -> WorkspaceConnects {
     fs,
     uuid: d.uuid,
   }
-  (bus.on)(call_method, async fn(_, request, workspace, body) { answerer.answer(request, body, workspace) })
+  (bus.on)(call_method, async fn(peer, request, workspace, body) {
+    let answered = answerer.answer(request, body, workspace)
+    // A conversation another station's chat began here (chat_post to a Feishu chat): what is said in its thread goes
+    // to that station from now on, as a thread whose first message came here and was handed there does.
+    if str_of(at(Some(request), "op")) == Some("begin") && peer != "self" && peer != (d.here)() {
+      let id = match known_in(at(Some(request), "connect")) {
+        Some(k) => local_of(k, (d.here)())
+        None => ""
+      }
+      let thread = at(at(Some(answered.json), "result"), "thread")
+      match (w.entry_of(id), str_of(at(thread, "channel")), str_of(at(thread, "threadTs"))) {
+        (Some(entry), Some(channel), Some(thread_ts)) if routed.contains(kind_of(Some(entry))) &&
+          !single_session(Some(entry)) &&
+          channel != "" &&
+          thread_ts != "" => w.route_here(id, channel, thread_ts, Some(peer))
+        _ => ()
+      }
+    }
+    answered
+  })
   // Whether one of this station's connects of that workspace has that secret.
   (bus.on)(list_method, async fn(_, request, workspace, _) {
     let print = str_of(at(Some(request), "fingerprint")).unwrap_or("")

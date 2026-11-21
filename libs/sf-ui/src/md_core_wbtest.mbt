@@ -45,11 +45,12 @@ test "a core link first appears with its working hit region" {
   let answer : Ref[((Json?) -> Unit)?] = Ref(None)
   let opened : Array[String] = []
   let source = "详见 https://example.com/e2e"
-  let t = @ui.Tester::new(fn(c) {
-    begin(c) |> ignore
-    markdown(c, source, on_link=fn(href) { opened.push(href) }) |> ignore
-  }, w=390.0, h=200.0)
+  let t = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=390.0, h=200.0)
   markdown_read.val = Some(fn(_, done) { answer.val = Some(done) })
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    markdown_node(root, fn() { source }, on_link=fn(href) { opened.push(href) }) |> ignore
+  })
   t.draw()
   assert_true(t.find("example.com") is None)
   // meanwhile said to be laid out, as Markdown.kt's 正在排版
@@ -59,6 +60,7 @@ test "a core link first appears with its working hit region" {
   t.draw()
   assert_true(t.find("正在排版") is None)
   t.tap_run("example.com")
+  markdown_read.val = None
   assert_eq(opened,["https://example.com/e2e"])
 }
 

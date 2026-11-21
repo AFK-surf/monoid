@@ -13,7 +13,7 @@ import { stationLang } from "../ops/i18n.ts";
 import { Agents } from "../sessions/agents.ts";
 import { ControlPlane, Parts, Paths, Peers, Previous, Readers, StationConfig, Store } from "../services.ts";
 import { makeComma } from "./index.ts";
-import { type CommaChats, quantizeOwnerActiveAt, workspaceMetaOf } from "./surface.ts";
+import { type CommaChats, OwnerActivity, workspaceMetaOf } from "./surface.ts";
 import { CHANGED, READ, SAY, type WorkspaceReads, answerText, peerRead, workspaceRead } from "./peer.ts";
 import { routerReads, routerSaysAfter } from "./chats.ts";
 import { CommaStats, FAST_SETTLE_MS, RevIndex, chatOf } from "./stats.ts";
@@ -98,17 +98,42 @@ export const CommaLive = Layer.effectDiscard(
       Effect.sync(() => new Map<string, { indexes: ReturnType<typeof workspaceIndex>["indexes"]; stats: CommaStats; chats: CommaChats }>()),
       (all) => Effect.sync(() => { for (const scope of all.values()) scope.stats.close(); }),
     );
-    // Another station telling that one of its chats moved, so any Comma connect here rebuilds its Task index within a second.
-    bus.on(CHANGED, async (peer: string, _request: Json, workspace?: string) => {
+    // Tracks quantized 30s buckets of when each viewer last read a chat on this station or a workspace peer so Comma
+    // can suppress redundant ordinary notifications while the owner is actively using still.fail on any station.
+    const activity = new OwnerActivity();
+    const activeListeners = new Set<() => void>();
+    const notifyActiveListeners = () => {
+      for (const cb of [...activeListeners]) cb();
+    };
+    const workspaceViewers = (ws: string): Set<string> | null => {
+      const state = cloud.rosterOf(ws)?.state;
+      if (!state || state.members.size === 0) return null;
+      const emails = new Set<string>();
+      for (const m of state.members.values()) {
+        if (typeof m?.email === "string" && m.email.trim() !== "") {
+          emails.add(m.email.trim().toLowerCase());
+        }
+      }
+      return emails.size > 0 ? emails : null;
+    };
+    // Another station telling that one of its chats moved, so any Comma connect here rebuilds its Task index within a
+    // second and refreshes cross-station owner activity.
+    bus.on(CHANGED, async (peer: string, request: Json, workspace?: string) => {
       if (typeof workspace !== "string" || !within(workspace)) throw new Error("not this workspace");
       member(cloud, peer, workspace);
       scopes.get(workspace)?.stats.nudge();
+      if (activity.mergePeer(request?.active, store.now())) {
+        notifyActiveListeners();
+      }
       return { ok: true };
     });
     yield* Effect.acquireRelease(
       Effect.sync(() => {
         let notifyPeers: (() => void) | null = null;
         const stopStore = store.subscribe((change) => {
+          if (change.type === "read" && activity.recordLocal(change.viewer, store.now())) {
+            notifyActiveListeners();
+          }
           if (change.type !== "session" && change.type !== "thread" && change.type !== "read") return;
           if (notifyPeers !== null) return;
           notifyPeers = wall.after(FAST_SETTLE_MS, () => { // timer: burst debouncing
@@ -117,9 +142,11 @@ export const CommaLive = Layer.effectDiscard(
             for (const ws of [cloud.home(), ...cloud.memberships().map((m) => m.workspace).sort()]) {
               if (typeof ws !== "string" || ws === "" || seen.has(ws) || !within(ws)) continue;
               seen.add(ws);
+              const active = activity.localPayload(workspaceViewers(ws));
+              const message = active === null ? { method: CHANGED, workspace: ws } : { method: CHANGED, workspace: ws, active };
               void readsFor(ws).others()
                 .then((peers) => {
-                  for (const peer of peers) void bus.ask(peer, { method: CHANGED, workspace: ws }).catch(() => {});
+                  for (const peer of peers) void bus.ask(peer, message).catch(() => {});
                 })
                 .catch(() => {});
             }
@@ -154,34 +181,6 @@ export const CommaLive = Layer.effectDiscard(
       scopes.set(workspace, created);
       return created;
     };
-    // Tracks quantized 30s buckets of when each viewer last read a chat on this station so Comma can suppress
-    // redundant ordinary notifications while the owner is actively using still.fail.
-    const activeByViewer = new Map<string, number>();
-    let latestActiveAt: number | null = null;
-    const activeListeners = new Set<() => void>();
-    yield* Effect.acquireRelease(
-      Effect.sync(() =>
-        store.subscribe((change) => {
-          if (change.type !== "read") return;
-          const bucket = quantizeOwnerActiveAt(store.now());
-          if (bucket === null) return;
-          const viewer = typeof change.viewer === "string" ? change.viewer.trim().toLowerCase() : "";
-          let moved = false;
-          if (viewer !== "" && activeByViewer.get(viewer) !== bucket) {
-            activeByViewer.set(viewer, bucket);
-            moved = true;
-          }
-          if (latestActiveAt !== bucket) {
-            latestActiveAt = bucket;
-            moved = true;
-          }
-          if (moved) {
-            for (const cb of [...activeListeners]) cb();
-          }
-        }),
-      ),
-      (stop) => Effect.sync(stop),
-    );
     const onOwnerActiveChange = (changed: () => void) => {
       activeListeners.add(changed);
       return () => { activeListeners.delete(changed); };
@@ -209,7 +208,7 @@ export const CommaLive = Layer.effectDiscard(
         return m === null ? null : workspaceMetaOf(m, cloud.state?.station ?? "");
       },
       onWorkspaceMetaChange: (changed) => cloud.listen(() => changed()),
-      ownerActiveAt: (_ws, owner) => (owner ? activeByViewer.get(owner) ?? null : latestActiveAt),
+      ownerActiveAt: (_ws, owner) => activity.get(owner),
       onOwnerActiveChange }), { kind: "comma", shown: (c, raw) => c.shown(raw), entry: commaEntry });
     // (what offers Comma as a platform in the connect wizard: a station from before says nothing)
     parts.overview("comma", () => true);

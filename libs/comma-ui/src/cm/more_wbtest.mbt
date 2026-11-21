@@ -5,8 +5,13 @@
 
 ///|
 /// A Tester of a 1000 × 700 window in Comma's theme, its layer made first, `make` making the page; drawn.
-fn floating_case(make : (@view.View, Layer) -> Unit, dark? : Bool = false) -> @ui.Tester {
-  let t = @ui.Tester::new(fn(_c) {  }, w=1000.0, h=700.0, platform=0)
+fn floating_case(
+  make : (@view.View, Layer) -> Unit,
+  dark? : Bool = false,
+  w? : Double = 1000.0,
+  h? : Double = 700.0,
+) -> @ui.Tester {
+  let t = @ui.Tester::new(fn(_c) {  }, w~, h~, platform=0)
   set_dark(Some(dark))
   @ui.set_view_app(fn(root) {
     @ui.set_tree_theme(ui_theme)
@@ -504,4 +509,115 @@ test "radio_group_node and check_group_node align controls with first-line label
   t.draw()
   t.run_for(floating_ms)
   check_aligned(2.0)
+}
+
+///|
+test "menu_node hides from the semantics tree immediately on close before exit animation finishes" {
+  let open = @signals.signal(false)
+  let t = floating_case(fn(p, layer) {
+    let a = button_node(p, fn() { "Options" }, fn() { open.set(true) }, hierarchy=SecondaryGray)
+    menu_node(layer, a, open, fn() {
+      [menu_item("Profile", fn() {  }), menu_item("Settings", fn() {  })]
+    })
+  })
+  t.act(Button, Activate, label="Options")
+  t.run_for(floating_ms)
+  assert_eq(t.all(Menu, label="Menu").length(), 1)
+  open.set(false)
+  t.draw()
+  let at_once = t.all(Menu, label="Menu").length()
+  t.run_for(ms_menu_exit / 2.0)
+  let mid_exit = t.all(Menu, label="Menu").length()
+  assert_eq((at_once, mid_exit), (0, 0))
+}
+
+///|
+test "narrow viewports keep toast_card, popup_node, menu_node, and slider_node within bounds with zero audit faults" {
+  // 1. toast_card in 390x700 (24pt padding on each side => 342pt available, card default 356pt)
+  let toaster = Toaster::new()
+  let t_toast = floating_case(w=390.0, h=700.0, fn(p, layer) {
+    button_node(p, fn() { "Notify" }, fn() {
+      toaster.show(
+        "Workspace synchronization completed with warnings",
+        description="design-system-tokens.fig is larger than 100 MB and was skipped.",
+        intent=Warning,
+      )
+    })
+    |> ignore
+    toaster_node(layer, toaster)
+  })
+  t_toast.act(Button, Activate, label="Notify")
+  t_toast.run_for(floating_ms)
+  let (tx, _, tw, _) = t_toast.get(Status, label="Workspace synchronization completed with warnings").rect
+  assert_true(
+    tx >= 0.0 && tx + tw <= 390.0 && tw <= 342.0,
+    msg="toast overflow in 390px window: x=\{tx}, w=\{tw}",
+  )
+  // (Comma's toast_text_secondary is #7f8286 on #ffffff, 3.86:1, same known token as dialog description)
+  let toast_faults = t_toast.audit().filter(fn(f) { !f.contains("3.86:1, under 4.5") })
+  assert_eq(toast_faults, [])
+
+  // 2. popup_node (default width 360pt) in 340x700
+  let t_popup = floating_case(w=340.0, h=700.0, fn(p, layer) {
+    let a = button_node(p, fn() { "Share" }, fn() {  }, hierarchy=SecondaryGray)
+    popup_node(layer, a, @signals.signal(true), label="Share popup", fn(body) {
+      body.gap(Is(space_md)) |> ignore
+      body.box(fn(w) {
+        w
+        .words(Is("Share this workspace with collaborators"), look=words_in(type_regular, weight=weight_semibold, wrap=true))
+        .ink(By(fn() { colors().text_primary }))
+        |> ignore
+      })
+      |> ignore
+      input_node(body, @ui.Field::new(text="comma.surf/w/design"), label="Link") |> ignore
+    })
+  })
+  t_popup.run_for(floating_ms)
+  let (px, _, pw, _) = t_popup.get(Dialog, label="Share popup").rect
+  assert_true(
+    px >= 0.0 && px + pw <= 340.0,
+    msg="popup overflow in 340px window: x=\{px}, w=\{pw}",
+  )
+  assert_eq(t_popup.audit(), [])
+
+  // 3. menu_node (width 360pt) in 340x700
+  let t_menu = floating_case(w=340.0, h=700.0, fn(p, layer) {
+    let a = button_node(p, fn() { "Options" }, fn() {  }, hierarchy=SecondaryGray)
+    menu_node(
+      layer,
+      a,
+      @signals.signal(true),
+      width=360.0,
+      fn() { [menu_item("Profile", fn() {  }), menu_item("Settings", fn() {  }, checked=true)] },
+    )
+  })
+  t_menu.run_for(floating_ms)
+  let (mx, _, mw, _) = t_menu.get(Menu, label="Menu").rect
+  assert_true(
+    mx >= 0.0 && mx + mw <= 340.0,
+    msg="menu overflow in 340px window: x=\{mx}, w=\{mw}",
+  )
+  assert_eq(t_menu.audit(), [])
+
+  // 4. slider_node (default width 320pt) inside a 240pt container
+  let vol = @signals.signal(40.0)
+  let t_slider = floating_case(w=390.0, h=700.0, fn(p, _) {
+    p.box(fn(box) {
+      box.width(Is(Some(240.0))).says(Is(Some(@view.said(Group, label="Slider box")))) |> ignore
+      slider_node(box, vol, fn() { "Volume" }) |> ignore
+    })
+    |> ignore
+  })
+  t_slider.run_for(floating_ms)
+  let (bx, _, bw, _) = t_slider.get(Group, label="Slider box").rect
+  let (sx, sy, sw, sh) = t_slider.get(Slider, label="Volume").rect
+  assert_true(
+    sx >= bx && sx + sw <= bx + bw && sw <= 240.0,
+    msg="slider overflow in 240px container: box=(\{bx},\{bw}), slider=(\{sx},\{sw})",
+  )
+  // verify drag still works when clamped
+  t_slider.drag(sx + sw * 0.4, sy + sh / 2.0, sx + sw * 0.8, sy + sh / 2.0)
+  t_slider.draw()
+  assert_true(vol.get() > 50.0, msg="slider drag in narrow container should update value: vol=\{vol.get()}")
+  assert_eq(t_slider.audit(), [])
 }

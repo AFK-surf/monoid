@@ -35,6 +35,9 @@ pub(all) struct Glass {
   // liquid: where the pointer is over it, in points from its own top left (View::pointer_here's), a light drawn
   // there along its rim and over its face; None: none
   spot : (Double, Double)?
+  // liquid: optical magnification factor of the backdrop inside a clear lens (1.0: none, up to 3.0; active when
+  // `liquid` is true and `blur <= 0.0`)
+  zoom : Double
 }
 
 ///|
@@ -68,6 +71,7 @@ pub fn Glass::frosted(
     shares_capture,
     contained,
     spot: None,
+    zoom: 1.0,
   }
 }
 
@@ -97,6 +101,7 @@ pub fn Glass::liquid(
   merge? : Double = 16.0,
   adaptive? : Bool = true,
   spot? : (Double, Double)? = None,
+  zoom? : Double = 1.0,
 ) -> Glass {
   {
     blur,
@@ -116,6 +121,7 @@ pub fn Glass::liquid(
     shares_capture: false,
     contained: false,
     spot,
+    zoom,
   }
 }
 
@@ -135,6 +141,7 @@ pub fn Glass::clear(
   merge? : Double = 16.0,
   adaptive? : Bool = true,
   spot? : (Double, Double)? = None,
+  zoom? : Double = 1.0,
 ) -> Glass {
   Glass::liquid(
     blur~,
@@ -148,5 +155,6 @@ pub fn Glass::clear(
     merge~,
     adaptive~,
     spot~,
+    zoom~,
   )
 }

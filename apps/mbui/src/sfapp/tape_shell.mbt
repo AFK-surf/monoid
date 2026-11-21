@@ -108,7 +108,7 @@ fn wide_page(v : @view.View, src : Source) -> Unit {
         Some(Scr(at)) => {
           // (back as the page has it: in 全屏 out of it first, its own back key's; else closed, as the stack's)
           n.over(Is(true)).modal(Is(true)).takes_back(fn() { @sfbase.close_page(Screen(at)) |> ignore }) |> ignore
-          @sfpages.screen_node(n, src, at, fn() { system_frame() })
+          @sfpages.screen_node(n, src, at, fn() { system_frame_at(n.window_w()) })
         }
         Some(Far(at)) => {
           let close = fn() { @sfbase.close_page(Screen(at)) |> ignore }

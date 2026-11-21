@@ -272,3 +272,27 @@ test "a file's card's picture told as it comes: its bones till then, asked once 
   assert_eq(pf_pictures.val, 1, msg="asked no more")
   assert_eq(pf_audit(t), [])
 }
+
+///|
+test "a file's card handles Windows drive paths, relative backslash paths, and trailing backslash directories" {
+  let win_refused : (Json?, Json?) = (None, Some({ "message": "没有这个文件" }))
+  let t1 = pf_new("D:\\work\\proj\\", None, fn() { win_refused }, NoCore)
+  assert_true(t1.find("proj") is Some(_), msg="Windows directory basename in refused card")
+  assert_eq(pf_audit(t1), [])
+  let t2 = pf_new(".\\scripts\\deploy.ps1", None, fn() { win_refused }, NoCore)
+  assert_true(t2.find("deploy.ps1") is Some(_), msg="Windows relative path basename in refused card")
+  assert_eq(pf_audit(t2), [])
+  let win_text : Json = {
+    "kind": "text",
+    "name": "report.md",
+    "path": "D:\\work\\proj\\report.md",
+    "size": 120,
+    "lines": { "start": 41, "at": 42, "text": ["line 41", "line 42", "line 43"] },
+    "time": { "mtime": { "at": 0, "ago": "2 分钟前", "full": "11/21 23:00", "until": "", "past": true } },
+  }
+  let t3 = pf_new("D:\\work\\proj\\report.md", Some(42), fn() { (Some(win_text), None) }, NoCore)
+  assert_true(t3.find("report.md:42") is Some(_))
+  assert_true(t3.find("D:\\work\\proj\\report.md") is Some(_))
+  let faults = pf_audit(t3).filter(fn(f) { !(f.contains("42 ") && (f.has_suffix(" meet") || f.contains("stands 0 in from its left"))) })
+  assert_eq(faults, [])
+}

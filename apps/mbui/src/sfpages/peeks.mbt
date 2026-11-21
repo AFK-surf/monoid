@@ -122,12 +122,18 @@ fn file_peek_params(station : String, session : String, path : String, line : In
 }
 
 ///|
-/// The last part of a path (a directory's without its `/`).
+/// Whether a path names a directory (trailing `/` or Windows trailing `\`).
+fn is_dir_path(path : String) -> Bool {
+  path.has_suffix("/") || (@sfbase.dv_windows_path(path) && path.has_suffix("\\"))
+}
+
+///|
+/// The last part of a path (a directory's without its trailing separator).
 fn base_of(path : String) -> String {
-  let parts = path.split("/").filter(fn(x) { x != "" }).to_array()
-  match parts.last() {
-    Some(x) => x.to_owned()
-    None => path
+  let trimmed = @sfbase.dv_trim_root(path)
+  match @sfbase.base_name(trimmed) {
+    "" => path
+    n => n
   }
 }
 

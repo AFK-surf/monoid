@@ -6,13 +6,13 @@
 let decl_chat_post : String =
   #|{
   #|  "name": "chat_post",
-  #|  "description": "Post a message to one of your conversations, in Markdown (Slack and Feishu draw it too; Formatting in your instructions says what differs). kind ends your turn with it; card carries what people answer by choosing or typing (skill stillfail-chats: cards, held posts). With only to and title it names the conversation, nothing posted or ended.",
+  #|  "description": "Post a message to one of your conversations, in Markdown (Formatting in your instructions says what differs by platform). kind ends your turn with it; card carries what people answer by choosing or typing (skill stillfail-chats: cards, held posts). With only to and title it names the conversation, nothing posted or ended.",
   #|  "inputSchema": {
   #|    "type": "object",
   #|    "properties": {
   #|      "to": {
   #|        "type": "string",
-  #|        "description": "CHANNEL/THREAD_TS: the thread attribute of the message you are answering."
+  #|        "description": "CHANNEL/THREAD_TS: the thread attribute of the message you are answering; or a Feishu chat_id (oc_…) to begin a conversation there."
   #|      },
   #|      "send": {
   #|        "type": "string",
@@ -59,7 +59,7 @@ let decl_chat_post : String =
   #|      },
   #|      "card": {
   #|        "type": "object",
-  #|        "description": "What people answer this message with, in the chat and in their 待处理: options, text (a value they type) or login (one the login tool started). It does not end your turn: end need_human. A newer card replaces the previous one. A person's next message closes it, a decision or not: ask again with a new card if it is still needed.",
+  #|        "description": "What people answer this message with, in the chat and in their 待处理: options, text (a value they type) or login (one the login tool started). It does not end your turn: end need_human. A newer card replaces the previous one. A person's next message closes it, a decision or not: ask again with a new card if still needed.",
   #|        "properties": {
   #|          "type": {
   #|            "type": "string",

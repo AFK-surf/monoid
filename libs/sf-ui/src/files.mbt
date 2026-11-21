@@ -410,7 +410,7 @@ let quote_text_hot : @ui.TextStyle = quote_text.then(@ui.text_style(color=Fg))
 /// quoteCardPin: a page mark's number as its pin, 16 high, the accent's ground, white; a capsule (a circle for one
 /// figure), so in its quote's corner it stands where its shape is concentric with it (the web's corner 8 8 8 2).
 // kept across runs: a value (no field of it changes)
-let quote_pin : @ui.Style = @ui.css("h=S4 min_w=S4 px=S1 radius=Full bg=Accent align=ACenter justify=JCenter")
+let quote_pin : @ui.Style = @ui.css("min_h=S4 min_w=S4 px=S1 radius=Full bg=Accent align=ACenter justify=JCenter")
 
 ///|
 // kept across runs: a value (no field of it changes)

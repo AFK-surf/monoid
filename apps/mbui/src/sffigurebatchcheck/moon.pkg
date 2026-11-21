@@ -3,6 +3,7 @@ import {
   "mbui/host",
   "mbui/hostapi",
   "mbui/ui",
+  "mbui/view",
   "stillfail/sf",
   "stillfail/sfbase",
   "stillfail/sfgraphic",

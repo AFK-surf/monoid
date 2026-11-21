@@ -542,3 +542,38 @@ test "CommaSurface quantizes stillfail_owner_active_at to 30s buckets and pushes
   assert_eq(unsubscribed.val, 1)
   assert_true(notify.val is None)
 }
+
+///|
+test "OwnerActivity merges cross-station peer reads monotonically without re-gossiping" {
+  let peer = OwnerActivity::new()
+  let host = OwnerActivity::new()
+
+  assert_true(peer.local_payload() is None)
+  assert_eq(peer.record_local(Some("Peng@Example.com"), Some(1_795_200_012_345.0)), true)
+  let wire = peer.local_payload()
+  assert_true(wire is Some(_))
+
+  assert_eq(host.merge_peer(wire, now=Some(1_795_200_020_000.0)), true)
+  assert_eq(host.get(Some("peng@example.com")), Some(1_795_200_000_000.0))
+  assert_eq(host.get(Some("other@example.com")), None)
+  assert_eq(host.get(None), Some(1_795_200_000_000.0))
+  assert_true(host.local_payload() is None)
+
+  // Duplicate, older, or wildly future peer timestamps do not advance state.
+  assert_eq(host.merge_peer(wire, now=Some(1_795_200_025_000.0)), false)
+  assert_eq(
+    host.merge_peer(
+      Some(jobj([("at", Num(1_795_201_000_000.0)), ("byViewer", jobj([("peng@example.com", Num(1_795_201_000_000.0))]))])),
+      now=Some(1_795_200_025_000.0),
+    ),
+    false,
+  )
+  assert_eq(host.get(Some("peng@example.com")), Some(1_795_200_000_000.0))
+
+  // Unattributed peer activity (MoonBit station without viewer email) still advances owner lookup.
+  assert_eq(
+    host.merge_peer(Some(jobj([("at", Num(1_795_200_065_000.0))])), now=Some(1_795_200_070_000.0)),
+    true,
+  )
+  assert_eq(host.get(Some("peng@example.com")), Some(1_795_200_060_000.0))
+}

@@ -82,7 +82,6 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
       // it, not to what had the focus as it opened: View::opened_by)
       match p.from {
         Node(v) => row.opened_by(@view.ByNode(v.id())) |> ignore
-        Of(id) => row.opened_by(@view.ByOld(id)) |> ignore
         At(_, _, _, _) | Unanchored => ()
       }
       // (the tips of what its body and its foot are made of: the window's layer of them, panel_tips_lent)
@@ -364,10 +363,6 @@ fn menu_anchor_now(from : Anchor) -> ((@view.View) -> @view.View, Bool, Double, 
   let (ww, wh) = c.window_size()
   let middle = (ww / 2.0, wh / 3.0, 0.0, 0.0)
   match from {
-    Of(id) => {
-      let by_key = c.focus_shown(id)
-      (fn(layer) { @ui.old_anchor(layer, id, (0.0, 0.0, 0.0, 0.0)) }, by_key, panel_offset, keep && !by_key)
-    }
     // (a node of the window's tree: beside it where it is drawn)
     Node(v) => {
       let by_key = v.focus_shown()

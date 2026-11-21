@@ -64,7 +64,7 @@ fn stories_made(root : @view.View, first : String) -> Unit {
   // (the workbench's size of words, input and language, as MBUI_FONT_SCALE, MBUI_POINTING and MBUI_LANG say: matrix.mbt)
   let env = env_started()
   let tips = @sf.TipLayer::new(fn() { Some(root) })
-  let all = foundations() + motion_stories(tips) + stories(tips) + workbench_stories(env)
+  let all = foundations() + motion_stories(tips) + stories(tips, layer=fn() { Some(root) }) + workbench_stories(env)
   let chosen = @signals.signal(all.search_by(fn(s) { s.key == first }).unwrap_or(-1))
   let width = @signals.signal(2)
   let query = @signals.signal("")
@@ -477,7 +477,7 @@ fn overview_node(page : @view.View, all : Array[Story], chosen : @signals.Signal
         .on_press(fn() { chosen.set(i) })
         |> ignore
         card.box(fn(thumb) {
-          thumb.height(Is(Some(132.0))).pad(Is(16.0)).clips(Is(true)) |> ignore
+          thumb.height(Is(Some(132.0))).pad(Is(16.0)).clips(Is(true)).bounds_input(Is(true)) |> ignore
           match s.cases.get(0) {
             Some((_, make)) => still_box(thumb, make)
             None => ()

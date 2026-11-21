@@ -575,6 +575,83 @@ int main(void) {
     CHECK((int)cl_veil[1] >= 44 && (int)cl_veil[1] <= 62);
     CHECK(abs((int)cl_lens[0] - (int)cl_bg[0]) <= 2 && abs((int)cl_lens[1] - (int)cl_bg[1]) <= 2);
     free(px_cl);
+
+    // Wave 3A (1): clear-lens optical zoom (slot 7 = -(zoom - 1.0)) magnifies centered backdrop
+    double zm[3 * MB_INST];
+    rect_at(zm, 0, 0, W, H, 0, 0.05, 0.05, 0.08, 0);
+    // Red square centered at (50, 35), half-width 8pt -> x in [42, 58]
+    rect_at(zm + 1 * MB_INST, 42, 27, 16, 16, 0, 0.95, 0.10, 0.10, 0);
+    // Clear liquid lens (10, 10, 80, 50), center (50, 35), refraction = 0
+    rect_at(zm + 2 * MB_INST, 10, 10, 80, 50, 6, 1, 1, 1, -15);
+    zm[2 * MB_INST + 4] = 12;
+    zm[2 * MB_INST + 6] = 1;
+    zm[2 * MB_INST + 7] = 0.0;  // zoom = 1.0
+    zm[2 * MB_INST + 11] = 0.0;
+    zm[2 * MB_INST + 12] = 0.0;
+    zm[2 * MB_INST + 13] = 4;
+    zm[2 * MB_INST + 15] = 1;
+    zm[2 * MB_INST + 21] = 0;
+    zm[2 * MB_INST + 22] = 0;
+    zm[2 * MB_INST + 23] = 0;
+
+    glass_forget();
+    gl_present(zm, 3, 0.05, 0.05, 0.08);
+    unsigned char *px_z1 = pixels_of_fb(surface);
+    // Probe (59, 35) -> (118, 70) at 2x: outside [42, 58] at zoom=1.0 -> dark background
+    unsigned char *z1_p = px_z1 + ((fb_h - 1 - 70) * fb_w + 118) * 4;
+    CHECK((int)z1_p[0] < 40);
+    free(px_z1);
+
+    zm[2 * MB_INST + 7] = -0.25;  // zoom = 1.25 -> sampleBase.x = 50 + 9/1.25 = 57.2 (inside red square!)
+    glass_forget();
+    gl_present(zm, 3, 0.05, 0.05, 0.08);
+    unsigned char *px_z2 = pixels_of_fb(surface);
+    unsigned char *z2_p = px_z2 + ((fb_h - 1 - 70) * fb_w + 118) * 4;
+    CHECK((int)z2_p[0] > 200);
+    free(px_z2);
+
+    // Wave 3A (2): global ambient light_angle rotates specular glint by 90 deg and restores bit-exact at 0.0
+    double la_inst[2 * MB_INST];
+    rect_at(la_inst, 0, 0, W, H, 0, 0.10, 0.10, 0.12, 0);
+    rect_at(la_inst + 1 * MB_INST, 25, 10, 50, 50, 6, 0.12, 0.12, 0.12, -16);
+    la_inst[1 * MB_INST + 4] = 12;
+    la_inst[1 * MB_INST + 6] = 1;
+    la_inst[1 * MB_INST + 7] = 1.0;
+    la_inst[1 * MB_INST + 11] = 0.5;
+    la_inst[1 * MB_INST + 12] = 1.0;
+    la_inst[1 * MB_INST + 13] = 8;
+    la_inst[1 * MB_INST + 15] = 1;
+    la_inst[1 * MB_INST + 21] = 0;
+    la_inst[1 * MB_INST + 22] = 0;
+    la_inst[1 * MB_INST + 23] = 0;
+
+    mb_host_glass_light_angle(0.0);
+    glass_forget();
+    gl_present(la_inst, 2, 0.10, 0.10, 0.12);
+    unsigned char *px_la0 = pixels_of_fb(surface);
+    // Top edge (50, 10.5) -> (100, 21); Left edge (25.5, 35) -> (51, 70)
+    int top0 = (int)px_la0[((fb_h - 1 - 21) * fb_w + 100) * 4 + 1];
+    int left0 = (int)px_la0[((fb_h - 1 - 70) * fb_w + 51) * 4 + 1];
+    CHECK(top0 > left0 + 30);
+
+    mb_host_glass_light_angle(1.5707963267948966);  // PI / 2
+    glass_forget();
+    gl_present(la_inst, 2, 0.10, 0.10, 0.12);
+    unsigned char *px_la90 = pixels_of_fb(surface);
+    int top90 = (int)px_la90[((fb_h - 1 - 21) * fb_w + 100) * 4 + 1];
+    int left90 = (int)px_la90[((fb_h - 1 - 70) * fb_w + 51) * 4 + 1];
+    int right90 = (int)px_la90[((fb_h - 1 - 70) * fb_w + 149) * 4 + 1];
+    CHECK(left90 > top90 + 30);
+    CHECK(right90 > top90 + 30);
+    free(px_la90);
+
+    mb_host_glass_light_angle(0.0);
+    glass_forget();
+    gl_present(la_inst, 2, 0.10, 0.10, 0.12);
+    unsigned char *px_la0_again = pixels_of_fb(surface);
+    CHECK(memcmp(px_la0, px_la0_again, (size_t)fb_w * (size_t)fb_h * 4) == 0);
+    free(px_la0);
+    free(px_la0_again);
   }
 
   // A group the host keeps drawn out by its header straight into the floats: each instance moved in doubles, then

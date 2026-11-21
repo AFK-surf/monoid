@@ -1088,7 +1088,7 @@ let desk_found_gap : Double = 10.0
 
 ///|
 // kept across runs: a value (no field of it changes)
-let desk_found_box : @ui.Style = @ui.css("row h=S10 pl=S3_5 pr=S1_25 gap=S1 align=ACenter radius=Xl1_5")
+let desk_found_box : @ui.Style = @ui.css("row min_h=S10 pl=S3_5 pr=S1_25 py=S1 gap=S1 align=ACenter radius=Xl1_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -1175,7 +1175,7 @@ let desk_find_place : @ui.Style = @ui.css("w=Full px=S4 pt=S1_5 pb=S2")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let desk_find_field : @ui.Style = @ui.style(w=Full, h=Fixed(desk_field_h), px=S4, justify=JCenter, radius=Full, border=B0_5)
+let desk_find_field : @ui.Style = @ui.style(w=Full, min_h=Fixed(desk_field_h), px=S4, py=S1, justify=JCenter, radius=Full, border=B0_5)
 
 ///|
 let desk_field_h : Double = 38.0
@@ -1244,7 +1244,7 @@ let desk_layout_half : @ui.Style = @ui.css("gap=S2")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let desk_swatch_off : @ui.Style = @ui.css("w=Full h=S11 radius=Xl align=ACenter justify=JCenter border=B0_5")
+let desk_swatch_off : @ui.Style = @ui.css("w=Full min_h=S11 py=S1 radius=Xl align=ACenter justify=JCenter border=B0_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -1263,7 +1263,7 @@ let desk_swatch_name : @ui.TextStyle = @ui.text_style(size=Caption, wrap=false, 
 /// round by its next step (Inner: 18 less 8, 10), so as high as they are and that twice.
 // kept across runs: a value (no field of it changes)
 let desk_size_row : @ui.Style = @ui.css("row w=Full align=ACenter radius=Xl2").then(
-  @ui.style(h=Fixed(desk_size_row_h), px=room(corner_inset)),
+  @ui.style(min_h=Fixed(desk_size_row_h), px=room(corner_inset), py=room(corner_inset)),
 )
 
 ///|
@@ -1274,7 +1274,7 @@ let desk_size_row_h : Double = 32.0 + 2.0 * corner_inset
 /// A size's key (sizeKey): its corner its row's next step in, concentric with the row's (desk_size_key_corner).
 // kept across runs: a value (no field of it changes)
 let desk_size_key_box : @ui.Style = @ui.css((
-  #|h=S8 min_w=S11 px=S2_5 align=ACenter justify=JCenter hovered{bg=Tint} disabled{opacity=O35}
+  #|min_h=S8 min_w=S11 px=S2_5 py=S1 align=ACenter justify=JCenter hovered{bg=Tint} disabled{opacity=O35}
 ))
 
 ///|

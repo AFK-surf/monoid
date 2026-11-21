@@ -61,60 +61,42 @@ fn mn_instances(t : @ui.Tester) -> Array[String] {
 }
 
 ///|
-/// mn_tree's words in a column 16 in from a window `w` wide, drawn by an old view's markdown or as nodes (`node`).
-fn mn_tester(node : Bool, w : Double, platform : Int) -> @ui.Tester {
+/// mn_tree's words in a column 16 in from a window `w` wide, drawn as nodes.
+fn mn_tester(w : Double, platform : Int) -> @ui.Tester {
   let tree = mn_tree()
-  let t = if node {
-    @ui.Tester::new(fn(c) { begin(c) |> ignore }, w~, h=900.0, platform~)
-  } else {
-    @ui.Tester::new(
-      fn(c) {
-        begin(c) |> ignore
-        c.with_theme(ui_theme(), fn() {
-          c.column(w=Fill(1.0), pad=16.0, fn() { markdown(c, mn_text, tree=Some(tree)) |> ignore }) |> ignore
-        })
-      },
-      w~,
-      h=900.0,
-      platform~,
-    )
-  }
-  if node {
-    @ui.set_view_app(fn(root) {
-      @ui.set_tree_theme(ui_theme_now)
-      root.lines_up(Is(None)) |> ignore
-      root.box(fn(b) {
-        b.padding(Is((16.0, 16.0, 16.0, 16.0))) |> ignore
-        markdown_node(b, fn() { mn_text }, tree=fn() { Some(tree) }) |> ignore
-      })
-      |> ignore
+  let t = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w~, h=900.0, platform~)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.lines_up(Is(None)) |> ignore
+    root.box(fn(b) {
+      b.padding(Is((16.0, 16.0, 16.0, 16.0))) |> ignore
+      markdown_node(b, fn() { mn_text }, tree=fn() { Some(tree) }) |> ignore
     })
-  }
+    |> ignore
+  })
   t.draw()
   t.draw()
   t
 }
 
 ///|
-test "Markdown as nodes: its blocks' words where an old view's markdown draws them, with a finger and with a mouse" {
+test "Markdown as nodes: its blocks' words drawn in order, with a finger and with a mouse" {
   for case in [(390.0, 2), (800.0, 0)] {
     let (w, platform) = case
-    let old_t = mn_tester(false, w, platform)
-    let old = mn_words(old_t)
-    let old_drawn = mn_instances(old_t)
-    let made_t = mn_tester(true, w, platform)
+    let made_t = mn_tester(w, platform)
     let made = mn_words(made_t)
-    let made_drawn = mn_instances(made_t)
     // (each block's words drawn, the heading's to the last paragraph's)
-    assert_true(old.iter().any(fn(w) { w.has_prefix("今天的进度") }) && old.iter().any(fn(w) { w.has_prefix("最后一段。") }), msg="\{Repr(case)}: \{Repr(old)}")
-    assert_eq(made, old, msg="\{Repr(case)}:\nmade \{Repr(made)}\nold  \{Repr(old)}")
-    // (and every instance the window draws: grounds, bars, keys, glyphs, where each is cut)
-    let only_made = made_drawn.filter(fn(x) { !old_drawn.contains(x) })
-    let only_old = old_drawn.filter(fn(x) { !made_drawn.contains(x) })
-    assert_true(
-      made_drawn == old_drawn,
-      msg="\{Repr(case)}: \{made_drawn.length()} drawn, \{old_drawn.length()} old;\nonly made \{Repr(only_made.iter().take(8).collect())}\nonly old  \{Repr(only_old.iter().take(8).collect())}",
-    )
+    assert_true(made.iter().any(fn(x) { x.has_prefix("今天的进度") }), msg="\{Repr(case)}: \{Repr(made)}")
+    assert_true(made.iter().any(fn(x) { x.has_prefix("改好了") }), msg="\{Repr(case)}: \{Repr(made)}")
+    assert_true(made.iter().any(fn(x) { x.has_prefix("第一项") }), msg="\{Repr(case)}: \{Repr(made)}")
+    assert_true(made.iter().any(fn(x) { x.has_prefix("nested one") }), msg="\{Repr(case)}: \{Repr(made)}")
+    assert_true(made.iter().any(fn(x) { x.has_prefix("做完的事") }), msg="\{Repr(case)}: \{Repr(made)}")
+    assert_true(made.iter().any(fn(x) { x.has_prefix("引用里的一句话") }), msg="\{Repr(case)}: \{Repr(made)}")
+    assert_true(made.iter().any(fn(x) { x.has_prefix("最后一段。") }), msg="\{Repr(case)}: \{Repr(made)}")
+    let (_, y_head, _, _) = made_t.rect_of("今天的进度").unwrap()
+    let (_, y_quote, _, _) = made_t.rect_of("引用里的一句话").unwrap()
+    let (_, y_last, _, _) = made_t.rect_of("最后一段。").unwrap()
+    assert_true(y_head < y_quote && y_quote < y_last, msg="\{Repr(case)}: \{y_head} < \{y_quote} < \{y_last}")
   }
 }
 
@@ -260,35 +242,19 @@ test "Markdown as nodes: a row of images, one of them twice, each drawn at the w
 ///|
 /// `code` in a code block in a column 16 in from a window `w` wide (a finger's at 390, a mouse's wider), in the colours
 /// `ink` says where it says them, the system's words at `scale`, wrapped at its width where `wrapped` (its wrap key
-/// pressed), drawn by an old view's code_block or as nodes (`node`, code_block_node): its Tester, drawn.
-fn mlines_tester(node : Bool, code : String, ink : String?, w : Double, scale : Double, wrapped : Bool) -> @ui.Tester raise {
-  // (an old view's block wrapped by its id: none so till its key is pressed here)
-  code_wrapped.clear()
+/// pressed), drawn as nodes (`code_block_node`): its Tester, drawn.
+fn mlines_tester(code : String, ink : String?, w : Double, scale : Double, wrapped : Bool) -> @ui.Tester raise {
   let platform = if w < 500.0 { 2 } else { 0 }
-  let t = if node {
-    @ui.Tester::new(fn(c) { begin(c) |> ignore }, w~, h=900.0, platform~)
-  } else {
-    @ui.Tester::new(
-      fn(c) {
-        begin(c) |> ignore
-        c.with_theme(ui_theme(), fn() { c.column(w=Fill(1.0), pad=16.0, fn() { code_block(c, code, "sh", colours=ink) }) |> ignore })
-      },
-      w~,
-      h=900.0,
-      platform~,
-    )
-  }
-  if node {
-    @ui.set_view_app(fn(root) {
-      @ui.set_tree_theme(ui_theme_now)
-      root.lines_up(Is(None)) |> ignore
-      root.box(fn(b) {
-        b.padding(Is((16.0, 16.0, 16.0, 16.0))) |> ignore
-        b.box(fn(k) { code_block_node(k, fn() { code }, fn() { "sh" }, fn() { ink }) }) |> ignore
-      })
-      |> ignore
+  let t = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w~, h=900.0, platform~)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.lines_up(Is(None)) |> ignore
+    root.box(fn(b) {
+      b.padding(Is((16.0, 16.0, 16.0, 16.0))) |> ignore
+      b.box(fn(k) { code_block_node(k, fn() { code }, fn() { "sh" }, fn() { ink }) }) |> ignore
     })
-  }
+    |> ignore
+  })
   t.set_font_scale(scale)
   t.draw()
   t.draw()
@@ -311,22 +277,8 @@ fn mlines_tester(node : Bool, code : String, ink : String?, w : Double, scale : 
 }
 
 ///|
-/// Where each line of `code` is drawn in `t` (Tester::run_rects: a rectangle a line), to a hundredth, and the box of
-/// the words holding its first line.
-fn mlines_at(t : @ui.Tester, code : String) -> (Array[String], String) {
-  let r2 = fn(x : Double) { (x * 100.0).round() / 100.0 }
-  let lines = code.split("\n").to_array().filter(fn(l) { l != "" }).map(fn(l) { l.to_owned() })
-  let at = lines.map(fn(l) { "\{l}: \{@ui.list_text(t.run_rects(l).map(fn(r) { @ui.rect_text((r2(r.0), r2(r.1), r2(r.2), r2(r.3))) }))}" })
-  let first = match t.rect_of(lines[0]) {
-    Some(r) => @ui.rect_text((r2(r.0), r2(r.1), r2(r.2), r2(r.3)))
-    None => "none"
-  }
-  (at, first)
-}
-
-///|
-/// Code of more lines in a code block, wrapped at its width (`wrapped`) or on its lines as written, drawn as nodes as an old
-/// view's code block draws it: each case at 760 and 390, words at 1 and 1.3.
+/// Code of more lines in a code block, wrapped at its width (`wrapped`) or on its lines as written, drawn as nodes:
+/// each case at 760 and 390, words at 1 and 1.3.
 fn mlines_alike(wrapped : Bool) -> Unit raise {
   let long = "printf '%s\\n' \"a line of a script long enough to run past a phone's width and past a desktop's at its size, on and on\""
   let cases : Array[(String, String, String?)] = [
@@ -341,44 +293,38 @@ fn mlines_alike(wrapped : Bool) -> Unit raise {
     for w in [760.0, 390.0] {
       for scale in [1.0, 1.3] {
         let at = "\{name}, \{w} wide, words at \{scale}\{if wrapped { ", wrapped" } else { "" }}"
-        let old_t = mlines_tester(false, code, ink, w, scale, wrapped)
-        let old = mn_words(old_t)
-        let old_lines = mlines_at(old_t, code)
-        let old_drawn = mn_instances(old_t)
-        let made_t = mlines_tester(true, code, ink, w, scale, wrapped)
-        let made = mn_words(made_t)
-        let made_lines = mlines_at(made_t, code)
-        let made_drawn = mn_instances(made_t)
-        assert_eq(made_lines, old_lines, msg="\{at}:\nmade \{Repr(made_lines)}\nold  \{Repr(old_lines)}")
-        assert_eq(made, old, msg="\{at}:\nmade \{Repr(made)}\nold  \{Repr(old)}")
+        let made_t = mlines_tester(code, ink, w, scale, wrapped)
+        let lines = code.split("\n").to_array().filter(fn(l) { l != "" }).map(fn(l) { l.to_owned() })
+        let rows = lines.map(fn(l) { made_t.run_rects(l) })
         if !wrapped {
-          // (every instance the window draws, at rest on its lines as written: grounds, keys, glyphs, where each is cut)
-          let only_made = made_drawn.filter(fn(x) { !old_drawn.contains(x) })
-          let only_old = old_drawn.filter(fn(x) { !made_drawn.contains(x) })
-          assert_true(
-            made_drawn == old_drawn,
-            msg="\{at}: \{made_drawn.length()} drawn, \{old_drawn.length()} old;\nonly made \{Repr(only_made.iter().take(8).collect())}\nonly old  \{Repr(only_old.iter().take(8).collect())}",
-          )
           // (each a line of its own, one under the other)
-          let rows = code.split("\n").to_array().filter(fn(l) { l != "" }).map(fn(l) { made_t.run_rects(l.to_owned()) })
           assert_true(rows.iter().all(fn(r) { r.length() == 1 }), msg="\{at}: \{Repr(rows)}")
           for k in 1..<rows.length() {
             assert_true(rows[k][0].1 > rows[k - 1][0].1, msg="\{at}: \{Repr(rows)}")
+          }
+        } else {
+          // (each line starts below the previous line's end; long lines wrap onto multiple lines within the block)
+          assert_true(rows.iter().all(fn(r) { r.length() >= 1 }), msg="\{at}: \{Repr(rows)}")
+          for k in 1..<rows.length() {
+            let prev = rows[k - 1]
+            assert_true(rows[k][0].1 > prev[prev.length() - 1].1, msg="\{at}: \{Repr(rows)}")
+          }
+          if name == "a long line among short ones" {
+            assert_true(rows[1].length() > 1, msg="\{at}: long line wrapped \{Repr(rows[1])}")
           }
         }
       }
     }
   }
-  code_wrapped.clear()
 }
 
 ///|
-test "a code block of more lines as nodes, on its lines as written: each line on a line of its own where an old view's code block draws it, at 760 and 390, words at 1 and 1.3" {
+test "a code block of more lines as nodes, on its lines as written: each line on a line of its own, at 760 and 390, words at 1 and 1.3" {
   mlines_alike(false)
 }
 
 ///|
-test "a code block of more lines as nodes, wrapped once its key is pressed: each line from a line of its own where an old view's code block draws it, at 760 and 390, words at 1 and 1.3" {
+test "a code block of more lines as nodes, wrapped once its key is pressed: each line starts on a line of its own and long lines wrap, at 760 and 390, words at 1 and 1.3" {
   mlines_alike(true)
 }
 

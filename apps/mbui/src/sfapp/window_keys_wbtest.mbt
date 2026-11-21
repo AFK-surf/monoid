@@ -447,3 +447,55 @@ test "a Windows window laid out Medium: chat side panel open and close keep bar 
   assert_eq(faults, [])
   assert_eq(past_rule(t, limit), None)
 }
+
+///|
+test "window_keys_node: inset toggle, window resize, and lone_window_tree update window_snap_rect and window_acts cleanly" {
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, mode="chat", platform=3, window_corner=8.0, window_inset=true)
+  t.run_for(@ui.move_most_ms)
+  guard named_at(t, "最大化") is Some((zx0, zy0, _, _)) else { fail("no maximize button at 1280") }
+  assert_eq(t.window_snap_rect(), (zx0, zy0, 32.0, 32.0))
+
+  // Resize window: buttons and window_snap_rect follow immediately
+  t.resize(960.0, 800.0)
+  t.frame()
+  guard named_at(t, "最大化") is Some((zx1, zy1, _, _)) else { fail("no maximize button at 960") }
+  assert_true((zx1 - (zx0 - 320.0)).abs() < 1.0e-9, msg="expected zx1=\{zx0 - 320.0}, got \{zx1}")
+  assert_eq(t.window_snap_rect(), (zx1, zy1, 32.0, 32.0))
+
+  // Toggle window_keys_own_now off via set_window_inset(false): buttons vanish and snap rect clears
+  t.set_window_inset(false)
+  t.frame()
+  assert_eq(named_at(t, "最小化"), None)
+  assert_eq(named_at(t, "最大化"), None)
+  assert_eq(named_at(t, "关闭窗口"), None)
+  assert_eq(t.window_snap_rect(), (0.0, 0.0, 0.0, 0.0))
+
+  // Toggle back on: buttons return and snap rect is restored
+  t.set_window_inset(true)
+  t.frame()
+  guard named_at(t, "最大化") is Some((zx2, zy2, _, _)) else { fail("no maximize button after inset restored") }
+  assert_eq(t.window_snap_rect(), (zx2, zy2, 32.0, 32.0))
+
+  // Standalone lone_window_tree on narrow width: whole=true keeps buttons on bar_keys_top and reports snap rect + acts
+  let src = fixture_app("chat")
+  let t2 = @ui.Tester::new(
+    fn(c) { lone_view(c, src) },
+    tree=lone_window_tree(src, 1),
+    w=600.0,
+    h=700.0,
+    platform=3,
+    window_corner=8.0,
+    window_inset=true,
+  )
+  t2.run_for(@ui.move_most_ms)
+  guard named_at(t2, "关闭窗口") is Some((cx, cy, cw, ch)) else { fail("lone: no close button") }
+  assert_eq((cx + cw, cy, cw, ch), (588.0, 6.0, 32.0, 32.0))
+  guard named_at(t2, "最大化") is Some((zx, zy, zw, zh)) else { fail("lone: no maximize button") }
+  assert_eq(t2.window_snap_rect(), (zx, zy, 32.0, 32.0))
+  guard named_at(t2, "最小化") is Some((mx, my, mw, mh)) else { fail("lone: no minimize button") }
+  t2.tap(mx + mw / 2.0, my + mh / 2.0)
+  t2.tap(zx + zw / 2.0, zy + zh / 2.0)
+  t2.tap(cx + cw / 2.0, cy + ch / 2.0)
+  assert_eq(t2.window_acts(), [1, 2, 3])
+}

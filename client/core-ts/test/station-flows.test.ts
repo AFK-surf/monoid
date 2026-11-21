@@ -374,7 +374,7 @@ test("a_video_a_message_names_is_played_from_what_was_kept_and_let_go_of_once_it
 
 test("a_windows_file_an_agent_names_in_code_can_be_peeked_and_opened_by_its_marked_path", async () => {
   const { host, core } = await started(base());
-  const paths = ["C:/work/report.md", "C:\\work\\报告.md"];
+  const paths = ["C:/work/report.md", "C:\\work\\报告.md", "D:\\work\\proj\\report.md", ".\\scripts\\deploy.ps1", "src\\main.dart", "analysis.ipynb", "cases.xlsx"];
   const asked: string[] = [];
   stationReplies(host, (req) => {
     const url = new URL(req.url);

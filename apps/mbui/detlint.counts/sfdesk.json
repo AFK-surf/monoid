@@ -12,9 +12,7 @@
       "src/sfdesk/settings_frame.mbt": 1
     },
     "ui-current": {
-      "src/sfdesk/chats.mbt": 1,
-      "src/sfdesk/pane_view.mbt": 1,
-      "src/sfdesk/tape_view.mbt": 3
+      "src/sfdesk/pane_view.mbt": 1
     },
     "page-at-moment": {
       "src/sfdesk/page_wait.mbt": 1,

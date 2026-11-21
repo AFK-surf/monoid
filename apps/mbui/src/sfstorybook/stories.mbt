@@ -48,7 +48,7 @@ let code_sample : String =
 
 ///|
 /// Every part shown, in the order of the list: `tips` the layer an icon button's name is shown in.
-fn stories(tips : @sf.TipLayer) -> Array[Story] {
+fn stories(tips : @sf.TipLayer, layer? : () -> @view.View? = fn() { None }) -> Array[Story] {
   [
     {
       key: "button",
@@ -1126,5 +1126,6 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
   stories_u13(tips) +
   stories_u19(tips) +
   stories_wave1(tips) +
-  stories_wave2(tips)
+  stories_wave2(tips) +
+  stories_wave3(tips, layer~)
 }

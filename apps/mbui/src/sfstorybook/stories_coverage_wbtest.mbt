@@ -6,7 +6,7 @@
 /// The keys of the parts these stories add, in their order.
 fn coverage_keys() -> Array[String] {
   let tips = @sf.TipLayer::new(fn() { None })
-  (stories_wave1(tips) + stories_wave2(tips)).map(fn(s) { s.key })
+  (stories_wave1(tips) + stories_wave2(tips) + stories_wave3(tips)).map(fn(s) { s.key })
 }
 
 ///|
@@ -109,5 +109,116 @@ test "wave2 chip-tabs, steps and segmented interactions stay clean at 390 and 12
     assert_true(tg.find("当前筛选：未读") is Some(_), msg="segmented switched at \{w}")
     let seg_faults = page_faults(tg)
     assert_true(seg_faults.is_empty(), msg="segmented at \{w}: " + seg_faults.join("\n"))
+  }
+}
+
+///|
+test "wave3 overlays (hover-panel, beside-panel, confirm-dialog, ask-dialog) open, act, close and stay clean at 390 and 1280" {
+  for w in [390.0, 1280.0] {
+    // 1. hover-panel: open -> audit -> close -> audit
+    let th = coverage_tester("hover-panel", w)
+    th.click(Button, label="查看工作站队列")
+    th.run_for(@ui.move_most_ms)
+    assert_true(th.find("队列状态") is Some(_), msg="hover-panel opened at \{w}")
+    let th_open = page_faults(th)
+    assert_true(th_open.is_empty(), msg="hover-panel open at \{w}: " + th_open.join("\n"))
+    th.click(Button, label="关闭面板")
+    th.run_for(@ui.move_most_ms)
+    assert_true(th.find("队列状态") is None, msg="hover-panel closed at \{w}")
+    assert_true(th.find("已关闭悬停面板") is Some(_), msg="hover-panel status updated at \{w}")
+    let th_closed = page_faults(th)
+    assert_true(th_closed.is_empty(), msg="hover-panel closed at \{w}: " + th_closed.join("\n"))
+
+    // 2. beside-panel: open -> audit -> close -> audit
+    let tb = coverage_tester("beside-panel", w)
+    tb.click(Button, label="自定义侧边栏")
+    tb.run_for(@ui.move_most_ms)
+    assert_true(tb.find("紧凑列表密度") is Some(_), msg="beside-panel opened at \{w}")
+    let tb_open = page_faults(tb)
+    assert_true(tb_open.is_empty(), msg="beside-panel open at \{w}: " + tb_open.join("\n"))
+    tb.click(Button, label="完成设置")
+    tb.run_for(@ui.move_most_ms)
+    assert_true(tb.find("紧凑列表密度") is None, msg="beside-panel closed at \{w}")
+    assert_true(tb.find("已保存侧边栏设置") is Some(_), msg="beside-panel status updated at \{w}")
+    let tb_closed = page_faults(tb)
+    assert_true(tb_closed.is_empty(), msg="beside-panel closed at \{w}: " + tb_closed.join("\n"))
+
+    // 3. confirm-dialog: standard confirm & danger confirm with warning
+    let tc = coverage_tester("confirm-dialog", w)
+    tc.click(Button, label="打开普通确认")
+    tc.run_for(@ui.move_most_ms)
+    assert_true(tc.find("归档选中对话？") is Some(_), msg="confirm-dialog standard opened at \{w}")
+    let tc_std = page_faults(tc)
+    assert_true(tc_std.is_empty(), msg="confirm-dialog standard at \{w}: " + tc_std.join("\n"))
+    tc.click(Button, label="确认归档")
+    tc.run_for(@ui.move_most_ms)
+    assert_true(tc.find("归档选中对话？") is None, msg="confirm-dialog standard closed at \{w}")
+    assert_true(tc.find("状态：已归档对话") is Some(_), msg="confirm-dialog standard confirmed at \{w}")
+    tc.click(Button, label="打开危险确认")
+    tc.run_for(@ui.move_most_ms)
+    assert_true(tc.find("清除本地构建缓存？") is Some(_), msg="confirm-dialog danger opened at \{w}")
+    assert_true(tc.find("此操作不可撤销，请确认没有进行中的任务。") is Some(_), msg="confirm-dialog warning shown at \{w}")
+    let tc_danger = page_faults(tc)
+    assert_true(tc_danger.is_empty(), msg="confirm-dialog danger at \{w}: " + tc_danger.join("\n"))
+    tc.click(Button, label="取消")
+    tc.run_for(@ui.move_most_ms)
+    assert_true(tc.find("清除本地构建缓存？") is None, msg="confirm-dialog danger closed at \{w}")
+    assert_true(tc.find("状态：已取消清除") is Some(_), msg="confirm-dialog danger cancelled at \{w}")
+    let tc_after = page_faults(tc)
+    assert_true(tc_after.is_empty(), msg="confirm-dialog after close at \{w}: " + tc_after.join("\n"))
+
+    // 4. ask-dialog: open -> audit -> type -> submit -> audit
+    let ta = coverage_tester("ask-dialog", w)
+    ta.click(Button, label="修改工作区名")
+    ta.run_for(@ui.move_most_ms)
+    assert_true(ta.find("修改工作区名称") is Some(_), msg="ask-dialog opened at \{w}")
+    let ta_open = page_faults(ta)
+    assert_true(ta_open.is_empty(), msg="ask-dialog open at \{w}: " + ta_open.join("\n"))
+    ta.type_text("-v3")
+    ta.run_for(@ui.move_most_ms)
+    ta.click(Button, label="保存名称")
+    ta.run_for(@ui.move_most_ms)
+    assert_true(ta.find("修改工作区名称") is None, msg="ask-dialog closed at \{w}")
+    assert_true(ta.find("当前名称：sfstorybook-v3 · 令牌：未配置") is Some(_), msg="ask-dialog submitted at \{w}")
+    let ta_after = page_faults(ta)
+    assert_true(ta_after.is_empty(), msg="ask-dialog after submit at \{w}: " + ta_after.join("\n"))
+  }
+}
+
+///|
+test "wave3 detail-page, count-section, capsule-words-button and quota-chips-actions interactions stay clean at 390 and 1280" {
+  for w in [390.0, 1280.0] {
+    let td = coverage_tester("detail-page", w)
+    td.click(Button, label="切换加载骨架")
+    td.run_for(@ui.move_most_ms)
+    assert_true(td.find("显示正文") is Some(_), msg="detail-page toggled loading at \{w}")
+    let td_load = page_faults(td)
+    assert_true(td_load.is_empty(), msg="detail-page loading at \{w}: " + td_load.join("\n"))
+    td.click(Button, label="显示正文")
+    td.run_for(@ui.move_most_ms)
+    assert_true(td.find("pvg-office-2 · x64 Linux · 8 核") is Some(_), msg="detail-page body restored at \{w}")
+    let td_body = page_faults(td)
+    assert_true(td_body.is_empty(), msg="detail-page body at \{w}: " + td_body.join("\n"))
+
+    let tcs = coverage_tester("count-section", w)
+    tcs.click(Button, label="新增一项")
+    tcs.run_for(@ui.move_most_ms)
+    assert_true(tcs.find("当前有 4 项来自工作站的待确认操作。") is Some(_), msg="count-section incremented at \{w}")
+    let tcs_faults = page_faults(tcs)
+    assert_true(tcs_faults.is_empty(), msg="count-section at \{w}: " + tcs_faults.join("\n"))
+
+    let tcw = coverage_tester("capsule-words-button", w)
+    tcw.click(Button, label="切换缩放比例")
+    tcw.run_for(@ui.move_most_ms)
+    assert_true(tcw.find("当前：125% · 60 fps") is Some(_), msg="capsule-words-button cycled zoom at \{w}")
+    let tcw_faults = page_faults(tcw)
+    assert_true(tcw_faults.is_empty(), msg="capsule-words-button at \{w}: " + tcw_faults.join("\n"))
+
+    let tq = coverage_tester("quota-chips-actions", w)
+    tq.click(Button, label="更多动作")
+    tq.run_for(@ui.move_most_ms)
+    assert_true(tq.find("复制工作站 ID") is Some(_), msg="quota-chips-actions menu opened at \{w}")
+    let tq_faults = page_faults(tq)
+    assert_true(tq_faults.is_empty(), msg="quota-chips-actions menu at \{w}: " + tq_faults.join("\n"))
   }
 }

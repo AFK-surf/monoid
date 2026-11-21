@@ -352,3 +352,57 @@ test "the floating head as nodes: its meta on its name's baseline (a Body line a
   }
   @ui.set_web_lines(false)
 }
+
+///|
+test "viewer_head_node: 1.0x keeps exact 44pt; 2.0x scales height with zero fixed_outgrown or squeeze_faults" {
+  let t = @ui.Tester::new(fn(_c) {  }, w=390.0, h=300.0, platform=2)
+  t.check_looks(false)
+  let mut head : @view.View? = None
+  @ui.set_view_app(
+    fn(root) {
+      head = Some(
+        viewer_head_node(
+          root,
+          fn() { "界面草图.png" },
+          fn() { "" },
+          fn() { true },
+          fn(_) { 1.0 },
+          fn() { 0.0 },
+          fn() { 390.0 },
+          fn() { page_viewer_ink() },
+          fn() { viewer_page_glass() },
+          fn(_) {  },
+          fn() { "" },
+          fn() {  },
+        ),
+      )
+    },
+    theme=ui_theme_now,
+  )
+  t.draw()
+  let bar_h = fn() {
+    let id = head.unwrap().id()
+    match @ui.view_tree().unwrap().drawn().iter().find_first(fn(d) { d.id == id }) {
+      Some(d) => d.h
+      None => 0.0
+    }
+  }
+  let h0 = bar_h()
+  assert_eq(h0, @ui.Space::px(S11), msg="1.0x bar height")
+  assert_eq(t.fixed_outgrown(), [], msg="1.0x fixed_outgrown")
+  assert_eq(t.squeeze_faults(), [], msg="1.0x squeeze_faults")
+  assert_eq(t.audit(), [], msg="1.0x audit")
+  t.set_font_scale(2.0)
+  t.draw()
+  let h2 = bar_h()
+  assert_true(h2 >= @ui.Space::px(S11), msg="2.0x bar height: \{h2}")
+  assert_eq(t.fixed_outgrown(), [], msg="2.0x fixed_outgrown")
+  assert_eq(t.squeeze_faults(), [], msg="2.0x squeeze_faults")
+  assert_eq(t.audit(), [], msg="2.0x audit")
+  t.set_font_scale(3.0)
+  t.draw()
+  let h3 = bar_h()
+  assert_true(h3 > @ui.Space::px(S11), msg="3.0x bar height grew: \{h3}")
+  assert_eq(t.fixed_outgrown(), [], msg="3.0x fixed_outgrown")
+  assert_eq(t.squeeze_faults(), [], msg="3.0x squeeze_faults")
+}

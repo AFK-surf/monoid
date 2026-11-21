@@ -22,6 +22,7 @@ pub fn add_image(String, Bytes) -> Unit
 pub fn add_vector_image(String, Bytes, (Bytes, Int32) -> (Int32, Int32, FixedArray[Byte])?) -> Unit
 
 pub fn after_drawn_frame(() -> Unit) -> Unit
+
 pub fn after_frame(() -> Unit) -> Unit
 
 pub fn alpha(Int64, Double) -> Int64
@@ -37,6 +38,8 @@ pub fn app_version() -> Int32
 pub fn app_visible() -> Bool
 
 pub fn arc(Double, Double, Double, from~ : Double, sweep~ : Double) -> Array[(Double, Double)]
+
+pub fn as_window(Int32, () -> Unit) -> Unit
 
 pub fn av1_here() -> Bool
 
@@ -68,7 +71,15 @@ pub let caret_blink_ms : Double
 
 pub let caret_blinks_for_ms : Double
 
+pub fn check_no_stall(Array[(Double, Double)], delay_ms~ : Double, start_window_ms? : Double, min_delta? : Double) -> Result[Unit, String]
+
+pub fn check_rect_continuity(Array[(Double, (Double, Double, Double, Double))], start_rect~ : (Double, Double, Double, Double), max_frame0_jump? : Double, max_step_jump? : Double) -> Result[Unit, String]
+
+pub fn check_smooth_fade(Array[(Double, Double)], from~ : Double, to~ : Double, max_step? : Double, min_mid_frames? : Int32) -> Result[Unit, String]
+
 pub fn clipboard_read() -> ClipboardRead?
+
+pub fn clipboard_secret(String, clear_ms~ : Double) -> Unit
 
 pub fn clipboard_set(String, label? : String) -> Unit
 
@@ -181,6 +192,8 @@ pub let fake_autofill_asks : Array[String]
 
 pub fn fake_autofill_picks(String, String, String) -> Unit
 
+pub let fake_decode_bytes_after : @ref.Ref[Array[(Bytes, Double)]]
+
 pub let fake_op : @ref.Ref[((Array[String]) -> (Int32, String, String))?]
 
 pub let fake_op_pending : @ref.Ref[Bool]
@@ -193,11 +206,27 @@ pub let fake_passkey_asks : Array[(String, String, String, String)]
 
 pub fn feel_as(Int32) -> Unit
 
-pub fn field(@view.View, Field, placeholder? : String, font_size? : Double, line? : Double, min_lines? : Int32, max_lines? : Int32, color? : Int64, placeholder_color? : Int64, caret_color? : Int64, enter_sends? : Bool, shorter? : Array[String], trim? : Bool, leaves? : Array[Int32], ime_action? : Int32, paste_limit? : Int32, secret? : Bool, words? : Bool, look? : (String) -> (String, Array[(Int32, Int32, Int64)]), submitted? : (String) -> Unit, pasted? : (String) -> Unit, edited? : (String) -> Unit, files? : (Array[(String, Bytes)]) -> Unit, size_by? : () -> Double, colors_by? : () -> (Int64, Int64, Int64), placeholder_by? : () -> String, label? : String) -> @view.View
+pub fn field(@view.View, Field, placeholder? : String, font_size? : Double, line? : Double, min_lines? : Int32, max_lines? : Int32, color? : Int64, placeholder_color? : Int64, caret_color? : Int64, enter_sends? : Bool, command_sends? : Bool, shorter? : Array[String], trim? : Bool, leaves? : Array[Int32], ime_action? : Int32, paste_limit? : Int32, secret? : Bool, words? : Bool, look? : (String) -> (String, Array[(Int32, Int32, Int64)]), submitted? : (String) -> Unit, pasted? : (String) -> Unit, edited? : (String) -> Unit, edit? : (FieldEdit) -> Unit, max_lines_by? : () -> Int32, paste_limit_by? : () -> Int32, files? : (Array[(String, Bytes)]) -> Unit, size_by? : () -> Double, colors_by? : () -> (Int64, Int64, Int64), placeholder_by? : () -> String, label? : String) -> @view.View
+
+pub fn field_edit_now(Int32, Int32) -> Unit
+
+pub fn field_focus_told(@view.View, (Bool) -> Unit) -> Unit
 
 pub fn field_focused_here_node(@view.View) -> Bool
 
+pub fn field_has_focus() -> Bool
+
+pub fn field_has_keys() -> Bool
+
+pub fn field_menu_on(@view.View, Field, enabled? : () -> Bool) -> Unit
+
+pub fn field_sends_by(@view.View, () -> (Bool, Bool)) -> Unit
+
 pub fn files_into(@view.View, Field, (Array[@hostapi.Picked]) -> Unit, takes? : () -> Bool) -> @view.View
+
+pub fn files_onto(@view.View, held~ : ((Double, Double)?) -> Unit, take~ : (Double, Double) -> ((Pick) -> Unit)?) -> @view.View
+
+pub fn finger_reads() -> (Double, Double)?
 
 pub fn finger_target() -> Double
 
@@ -219,17 +248,25 @@ pub let frame_period_default : Double
 
 pub fn full_screen() -> Bool
 
-pub fn gallery_changes() -> Int
+pub fn gallery_changes() -> Int32
 
 pub fn gallery_read() -> GalleryRead?
 
-pub fn gallery_reads_told() -> Int
+pub fn gallery_reads_told() -> Int32
+
+pub let gamepad_ms : Double
+
+pub fn gamepads_follow(@view.View, () -> Bool, (Int32, @hostapi.Gamepad?) -> Unit) -> Unit
+
+pub let gamepads_looked_ms : Double
 
 pub fn gaps_steady_known(Array[(String, Int32)]) -> Unit
 
 pub fn gif_frame_count(Bytes) -> Int32
 
 pub fn gif_frames(Bytes) -> GifFrames?
+
+pub fn glass_light_angle() -> Double
 
 pub fn glyph_cells(String, @view.WordsLook, Double, mono? : Bool) -> Array[(Double, Double)]
 
@@ -265,6 +302,10 @@ pub fn host_let_go() -> Unit
 
 pub fn image_any_ready(String) -> Bool
 
+pub fn image_decode_ahead(String, Double) -> Unit
+
+pub fn image_decoding(String) -> Bool
+
 pub let image_fade_ms : Double
 
 pub fn image_natural(String) -> (Double, Double)?
@@ -299,12 +340,16 @@ pub fn keep_zoom_wheel() -> Unit
 
 pub fn keeps_picked(@view.View) -> @view.View
 
+pub fn key_catcher_composing(@view.View) -> String
+
 pub fn key_catcher_focus_set(@view.View, Bool) -> Unit
 
 pub fn key_catcher_focused(@view.View) -> Bool
 
 #callsite(autofill(loc))
-pub fn key_catcher_node(@view.View, String, (KeyIn) -> Unit, (@view.View) -> Unit, on? : @view.Live[Bool], loc~ : SourceLoc) -> @view.View
+pub fn key_catcher_node(@view.View, String, (KeyIn) -> Unit, (@view.View) -> Unit, on? : @view.Live[Bool], paste? : (String) -> Unit, loc~ : SourceLoc) -> @view.View
+
+pub fn key_catcher_place(@view.View, Double, Double, Double) -> Unit
 
 pub let key_code_backspace : Int32
 
@@ -398,6 +443,8 @@ pub fn later_between_frames(Double, String, () -> Unit) -> Unit
 
 pub let layer_ground : Int32
 
+pub let layout_passes_most : Int32
+
 pub fn line(Array[(Double, Double)], width~ : Double, color~ : Int64, upto? : Double) -> @paint.Line
 
 pub fn line_baseline(Double, size? : Double, weight? : Int32, em? : (Double, Double)) -> Double
@@ -420,7 +467,7 @@ pub let loupe_reach : Double
 
 pub fn made_box((Ctx) -> Unit, kids? : Array[Made]) -> Made
 
-pub fn[T, K : Hash + Eq] made_each(() -> Array[T], (T) -> K, (@signals.Signal[T]) -> Made) -> () -> Array[Made]
+pub fn[T : Eq, K : Hash + Eq] made_each(() -> Array[T], (T) -> K, (@signals.Signal[T]) -> Made) -> () -> Array[Made]
 
 pub fn made_holding((Ctx) -> Unit, () -> Array[Made]) -> Made
 
@@ -467,13 +514,15 @@ pub fn native_pointing() -> Pointing
 
 pub let native_unsupported : String
 
-pub fn[P] nav_flat_view(@view.View, Nav[P], (Ctx, P) -> Unit, (P) -> Bool, Double, bg? : () -> Int64, edge? : Double, takes_back? : () -> Bool, stacks? : () -> Bool, page_key? : (P) -> String, page_for? : (@view.View, Int32) -> (@view.View) -> (Ctx, P) -> Unit, head? : (@view.View, Int32, Bool) -> Unit, gone? : (Int32) -> Unit, made? : (P) -> (String, (@view.View, () -> P, P?, () -> Int32, Int32) -> Unit)?, shown? : (Array[Int32]) -> Unit, keeps_left? : (P) -> (String, String)?) -> @view.View
+pub fn[P] nav_flat_view(@view.View, Nav[P], (Ctx, P) -> Unit, (P) -> Bool, Double, bg? : () -> Int64, edge? : Double, takes_back? : () -> Bool, stacks? : () -> Bool, page_key? : (P) -> String, page_for? : (@view.View, Int32) -> (@view.View) -> (Ctx, P) -> Unit, head? : (@view.View, Int32, Bool) -> Unit, gone? : (Int32) -> Unit, made? : (P) -> (String, (@view.View, () -> P, P?, () -> Int32, Int32) -> Unit)?, shown? : (Array[Int32]) -> Unit, keeps_left? : (P) -> (String, String)?, transition? : NavTransition) -> @view.View
 
 pub let nav_late_most : Double
 
 pub fn nav_rest() -> Double
 
-pub fn[P] nav_view(@view.View, Nav[P], (Ctx, P) -> Unit, bg? : () -> Int64, edge? : Double, ready? : (P) -> Bool, most? : Double, page_key? : (P) -> String, page_for? : (@view.View, Int32) -> (@view.View) -> (Ctx, P) -> Unit, made? : (P) -> (String, (@view.View, () -> P, P?, () -> Int32, Int32) -> Unit)?, keeps_made? : Bool, keeps_left? : (P) -> (String, String)?) -> @view.View
+pub fn[P] nav_tree_view(@view.View, Nav[P], (P) -> String, (@view.View, () -> P, P?, () -> Int32, Int32) -> Unit, bg? : () -> Int64, edge? : Double, ready? : (P) -> Bool, most? : Double, keeps_made? : Bool, keeps_left? : (P) -> String?, transition? : NavTransition, tab_moves_slot? : Bool) -> @view.View
+
+pub fn[P] nav_view(@view.View, Nav[P], (Ctx, P) -> Unit, bg? : () -> Int64, edge? : Double, ready? : (P) -> Bool, most? : Double, page_key? : (P) -> String, page_for? : (@view.View, Int32) -> (@view.View) -> (Ctx, P) -> Unit, made? : (P) -> (String, (@view.View, () -> P, P?, () -> Int32, Int32) -> Unit)?, keeps_made? : Bool, keeps_left? : (P) -> (String, String)?, transition? : NavTransition, tab_moves_slot? : Bool) -> @view.View
 
 pub fn notice_answer() -> Bool?
 
@@ -492,7 +541,7 @@ pub fn notice_show(channel~ : String, tag~ : String, title~ : String, body~ : St
 pub fn oklch(Double, Double, Double, alpha? : Double) -> Int64
 
 #callsite(autofill(loc))
-pub fn old(@view.View, (Ctx) -> Unit, key? : () -> String, natural? : Bool, gives? : Bool, fits? : (Double, @signals.Signal[Double?]), unlaid? : () -> Double, reshaped? : (Double) -> Unit, over? : Bool, loc~ : SourceLoc) -> @view.View
+pub fn old(@view.View, (Ctx) -> Unit, key? : () -> String, natural? : Bool, gives? : Bool, fits? : (Double, @signals.Signal[Double?]), unlaid? : () -> Double, reshaped? : (Double, Double) -> Unit, over? : Bool, loc~ : SourceLoc) -> @view.View
 
 pub fn old_anchor(@view.View, Int32, (Double, Double, Double, Double)) -> @view.View
 
@@ -515,6 +564,8 @@ pub fn old_went() -> @view.Side?
 pub fn on_after_layout((Ctx) -> Unit) -> Unit
 
 pub fn on_app_change((Bool, Bool) -> Unit) -> Unit
+
+pub fn on_field_menu(@view.View, (Int32, Double, Double, Int32) -> Unit) -> Unit
 
 pub fn on_frame_built((Ctx) -> Unit) -> Unit
 
@@ -578,6 +629,8 @@ pub fn picked_of(@view.View, String, whole? : Bool) -> @view.View
 
 pub fn picked_select_all() -> Unit
 
+pub fn picked_words() -> String
+
 pub fn picking_painted(String, (Double, Double), (Double, Double)) -> Unit
 
 pub fn plain(String) -> @text.Run
@@ -593,6 +646,10 @@ pub fn press_rules_now() -> PressRules
 pub let press_slop : Double
 
 pub let press_space : Int32
+
+pub fn rect(Double, Double, Double, Double, color~ : Int64, corners? : (Double, Double, Double, Double)) -> @paint.Rect
+
+pub fn rect_of(Double, Double, Double, Double, color~ : Int64, corners? : (Double, Double, Double, Double)) -> @paint.Rect
 
 pub fn rect_text((Double, Double, Double, Double)) -> String
 
@@ -622,11 +679,13 @@ pub fn rows_steady_known(Array[(String, Int32)]) -> Unit
 
 pub fn rows_unkept() -> Array[(String, Int32)]
 
-pub fn run(String, (Ctx) -> Unit, tree? : (@view.View) -> Unit, theme? : () -> Theme) -> Unit
+pub fn run(String, (@view.View) -> Unit, theme? : () -> Theme, transitions_only? : Bool) -> Unit
+
+pub fn run_legacy_ctx(String, (Ctx) -> Unit, tree? : (@view.View) -> Unit, theme? : () -> Theme, transitions_only? : Bool) -> Unit
 
 pub fn run_let_go() -> Unit
 
-pub fn run_tree(String, (@view.View) -> Unit, theme? : () -> Theme) -> Unit
+pub fn run_tree(String, (@view.View) -> Unit, theme? : () -> Theme, transitions_only? : Bool) -> Unit
 
 pub fn runs_link_piece(@view.View, Int32, String) -> (Double, Double) -> (Double, Double, Double, Double)?
 
@@ -663,6 +722,8 @@ pub fn sd_corner(Double, Double, Double, Double, Double, Double, band? : Double)
 pub fn set_badge(Int32) -> Unit
 
 pub fn set_font_scale(Double?) -> Unit
+
+pub fn set_glass_light_angle(Double) -> Unit
 
 pub fn set_glass_solid(Bool?) -> Unit
 
@@ -714,6 +775,8 @@ pub let site_backlog_max : Int32
 
 pub let site_head_wait_ms : Double
 
+pub fn sizes_across_known(Array[(String, Int32)]) -> Unit
+
 pub fn sizes_steady_known(Array[(String, Int32)]) -> Unit
 
 pub let smooth_exponent : Double
@@ -759,6 +822,8 @@ pub fn style_fills(TextStyle) -> Bool
 
 pub fn style_ink(TextStyle) -> Int64
 
+pub fn style_tabular(TextStyle) -> Bool?
+
 pub fn style_words(TextStyle) -> @view.WordsLook
 
 pub fn system_bars() -> SystemBars
@@ -778,6 +843,13 @@ pub fn take_picture(String, Double, (@view.View) -> Unit, (Bytes?) -> Unit, scal
 pub fn takes_drops() -> Bool
 
 pub let tap_indication_ms : Double
+
+#callsite(autofill(loc))
+pub fn terminal_grid(@view.View, () -> @hostapi.Terminal?, () -> Int32, () -> Double, () -> Double, () -> (Double, Double), () -> Bool, () -> String, default_fg? : Int64, default_bg? : Int64, cursor_color? : Int64, selection_bg? : Int64, on_cursor? : (Double, Double, Double) -> Unit, loc~ : SourceLoc) -> @view.View
+
+pub fn terminal_grid_gesture(@view.View, () -> @hostapi.Terminal?, () -> Int32, () -> Bool, (Double, Double) -> (Int32, Int32), (Int32, Int32, Double, Double, Int32) -> Unit, (Double, Int32) -> Bool, () -> Unit, (Double, Double) -> Unit, () -> Unit, () -> Unit, () -> Unit, () -> Unit) -> @view.View
+
+pub fn terminal_grid_metrics(Double) -> (Double, Double, Double)
 
 pub fn test_at_a_rate() -> Bool
 
@@ -810,6 +882,8 @@ pub fn tree_corner_roots_now() -> @paint.CornerRoots
 pub fn tree_corners_linked(@view.View, () -> FixedArray[@paint.CornerOf]?) -> Unit
 
 pub fn tree_image_pixels(@view.View, String, Int32) -> () -> ImagePixels?
+
+pub fn tree_read_out_id(@view.View) -> Int32
 
 pub fn tree_scroll_bar() -> @view.ScrollBar
 
@@ -953,6 +1027,8 @@ pub(all) enum Align {
   ACenter
   AEnd
   AStretch
+  AFirstLine
+  ABaseline
 }
 
 type BackHeld
@@ -1285,6 +1361,7 @@ pub struct Ctx {
   dismissals : Map[Int32, Dismiss]
   layer_return : Map[Int32, Int32]
   editor_layer : Map[Int32, Int32]
+  focus_island : Map[Int32, @view.NodeId]
   mut focus_returned : Bool
   mut press_down : (Double, Double)?
   mut press_down_tree : Bool
@@ -1317,7 +1394,6 @@ pub fn Ctx::blur(Self) -> Unit
 pub fn Ctx::bone_whole(Self, Int32) -> Unit
 pub fn Ctx::bones(Self, Int64, () -> Unit) -> Unit
 pub fn Ctx::box(Self, style? : Style, selected? : Bool, disabled? : Bool, dir? : Dir, w? : Size, h? : Size, pad? : Double, padx? : Double, pady? : Double, pl? : Double, pr? : Double, pt? : Double, pb? : Double, m? : Double, mx? : Double, my? : Double, ml? : Double, mr? : Double, mt? : Double, mb? : Double, left? : Double, top? : Double, right? : Double, bottom? : Double, moves? : String, gap? : Double, align? : Align, justify? : Justify, bg? : Int64, radius? : Double, border? : Double, border_color? : Int64, shadow? : Double, shadow_color? : Int64, shadow_y? : Double, min_w? : Double, max_w? : Double, min_h? : Double, max_h? : Double, clip? : Bool, tx? : Double, ty? : Double, opacity? : Double, glass? : @paint.Glass, glass_group? : Bool, notch_y? : Double, notch_r? : Double, notch_fillet? : Double, aspect? : Double, keep? : Bool, drop? : Int32, more? : Bool, one_of? : Bool, tallest? : Bool, shadow_out? : Bool, flow? : Bool, flow_reverse? : Bool, line_gap? : Double, gone_empty? : Bool, label? : String, name? : String, id? : Int32, taps? : Bool, points? : Bool, () -> Unit) -> Int32
-pub fn Ctx::build_number(Self) -> Int32
 pub fn Ctx::building(Self) -> Int32
 #callsite(autofill(loc))
 pub fn Ctx::built_from_changed(Self, String, loc~ : SourceLoc) -> Unit
@@ -1373,7 +1449,6 @@ pub fn Ctx::field_focused_here(Self) -> Bool
 pub fn Ctx::field_paste(Self, Int32) -> Unit
 pub fn Ctx::field_right_clicked(Self) -> (Int32, Double, Double)?
 pub fn Ctx::files_into(Self, Int32, String, (Array[@hostapi.Picked]) -> Unit) -> Unit
-pub fn Ctx::finger_reads(Self) -> (Double, Double)?
 pub fn Ctx::fitting_width(Self, Double, Array[Double]) -> Double
 pub fn Ctx::floats_over(Self, Int32) -> Unit
 pub fn Ctx::focus_editor(Self, String) -> Unit
@@ -1432,7 +1507,6 @@ pub fn Ctx::kept_part(Self, Int32, String, () -> Unit, read_out? : Bool, own? : 
 pub fn Ctx::key_catcher(Self, String) -> KeyCatch
 pub fn Ctx::key_catcher_place(Self, String, Double, Double, Double) -> Unit
 pub fn Ctx::key_context(Self, String) -> Unit
-pub fn Ctx::key_pressed(Self, Int32, mods? : Int32, in_field? : Bool) -> Bool
 pub fn Ctx::keyboard_in_overlay(Self, Int32) -> Bool
 pub fn Ctx::keyboard_in_overlay_since(Self, Int32) -> Double
 pub fn Ctx::keyboard_up(Self) -> Bool
@@ -1475,7 +1549,6 @@ pub fn Ctx::look_of(Self, Int32) -> Look
 #callsite(autofill(loc))
 pub fn Ctx::loop_at(Self, Double, Array[Double], loc~ : SourceLoc) -> Double
 pub fn Ctx::made(Self, String, () -> Made) -> Unit
-pub fn Ctx::magnified(Self, Double, Double, Double, Double, Double, round? : Radius) -> Int32
 pub fn Ctx::mark(Self, Int32) -> Unit
 pub fn Ctx::menu_asked(Self, Int32) -> (Double, Double)?
 pub fn Ctx::messages_taken(Self) -> Int32
@@ -1498,6 +1571,7 @@ pub fn Ctx::node_drawn_across(Self, Int32) -> (Double, Double)
 pub fn Ctx::node_held(Self, Int32) -> NodeHeld
 pub fn Ctx::node_id(Self, Int32) -> Int32
 pub fn Ctx::node_is_list(Self, Int32) -> Bool
+pub fn Ctx::node_moved_since(Self, Int32, Int32, Double, Double) -> (Double, Double)?
 pub fn Ctx::node_pad(Self, Int32) -> (Double, Double, Double, Double)
 pub fn Ctx::node_parent(Self, Int32) -> Int32
 pub fn Ctx::node_radii(Self, Int32) -> (Double, Double, Double, Double)
@@ -1551,6 +1625,7 @@ pub fn Ctx::rect_of(Self, Int32, loc~ : SourceLoc) -> (Double, Double, Double, D
 pub fn Ctx::reduced_motion(Self) -> Bool
 pub fn Ctx::rich(Self, Array[@text.Run], key? : String, style? : TextStyle, size? : Double, weight? : Int32, color? : Int64, line? : Double, line_em? : Double, trim? : Bool, wrap? : Bool, w? : Size, link_color? : Int64, pressed_bg? : Int64, code_color? : Int64, code_bg? : Int64, code_scale? : Double, tracking? : Double, max_lines? : Int32, on_link? : (String) -> Unit, on_link_hold? : ((String, (Double, Double, Double, Double)) -> Unit)?, on_link_shown? : ((String, String, Int32) -> Unit)?, words? : Bool, face? : Int32, tabular? : Bool, breaks? : Bool, allow_ellipsis? : Bool) -> Int32
 pub fn Ctx::right_clicked(Self, Int32) -> (Double, Double)?
+pub fn Ctx::right_clicked_own(Self, Int32) -> (Double, Double)?
 pub fn Ctx::roving(Self, String, orientation? : Orientation, wrap? : Bool, current? : Int32, () -> Unit) -> Unit
 pub fn Ctx::roving_prefer(Self, Int32) -> Unit
 pub fn Ctx::row(Self, w? : Size, h? : Size, pad? : Double, padx? : Double, pady? : Double, gap? : Double, align? : Align, justify? : Justify, bg? : Int64, radius? : Double, () -> Unit) -> Int32
@@ -1771,6 +1846,7 @@ pub fn Field::laid(Self, font_size? : Double, line? : Double, min_lines? : Int32
 pub fn Field::let_go(Self) -> Unit
 pub fn Field::lines(Self) -> FieldLines?
 pub fn Field::new(text? : String) -> Self
+pub fn Field::open_menu(Self, Double, Double) -> Unit
 pub fn Field::parked(Self) -> Bool
 pub fn Field::pick(Self, Int32, Int32) -> Unit
 pub fn Field::selection(Self) -> (Int32, Int32)
@@ -1870,6 +1946,7 @@ pub(all) struct FrameDone {
   measured : Int32
   passes : Int32
   again : String
+  bindings : Int32
   why : String
 }
 
@@ -2287,11 +2364,15 @@ pub fn[P] Nav::depth(Self[P]) -> Int32
 pub fn[P] Nav::flat_keep(Self[P], (Int32, Int32)?) -> Unit
 pub fn[P] Nav::flat_owned(Self[P], Bool) -> Unit
 pub fn[P] Nav::held_over(Self[P], @view.View, (P) -> Bool, Double) -> Unit
+pub fn[P] Nav::in_gesture(Self[P]) -> Bool
 pub fn[P] Nav::is_kept_left(Self[P], Int32) -> Bool
+pub fn[P : Eq] Nav::is_root_place(Self[P], P) -> Bool
+pub fn[P] Nav::is_swapping_in(Self[P], Int32) -> Bool
+pub fn[P] Nav::is_swapping_out(Self[P], Int32) -> Bool
 pub fn[P] Nav::moving(Self[P]) -> Bool
 pub fn[P] Nav::new(P, on_leave? : (P) -> Unit, on_entry_leave? : (Int32, P) -> Unit, went_back? : (P, Bool, Bool, Array[P]) -> Unit, from_left? : (P, P?) -> Bool, on_entry_park? : (Int32, P) -> Unit, on_entry_gone? : (Int32, P) -> Unit) -> Self[P]
 pub fn[P] Nav::offset(Self[P]) -> Double
-pub fn[P] Nav::page_island(Self[P], @view.View, Int32, (Ctx, P) -> Unit, key? : () -> String, natural? : Bool, gives? : Bool, over? : Bool, reshaped? : (Double) -> Unit) -> @view.View
+pub fn[P] Nav::page_island(Self[P], @view.View, Int32, (Ctx, P) -> Unit, key? : () -> String, natural? : Bool, gives? : Bool, over? : Bool, reshaped? : (Double, Double) -> Unit) -> @view.View
 pub fn[P] Nav::page_of(Self[P], Int32) -> (P, P?)?
 pub fn[P] Nav::pages(Self[P]) -> Array[P]
 pub fn[P] Nav::pop(Self[P]) -> Bool
@@ -2301,15 +2382,24 @@ pub fn[P] Nav::push_over(Self[P], P) -> Unit
 pub fn[P] Nav::replace(Self[P], P) -> Unit
 pub fn[P] Nav::replace_above(Self[P], Int32, Array[P]) -> Unit
 pub fn[P : Eq] Nav::replace_kept(Self[P], P) -> Unit
+pub fn[P : Eq] Nav::replace_tab(Self[P], P, way? : Int32, dur? : Double, kept? : Bool) -> Unit
 pub fn[P] Nav::rest(Self[P]) -> Double
 pub fn[P] Nav::rise(Self[P], P) -> Unit
 pub fn[P] Nav::risen(Self[P]) -> Bool
+pub fn[P] Nav::root_progress(Self[P], () -> Double) -> Double
 pub fn[P] Nav::root_shows(Self[P]) -> Bool
 pub fn[P] Nav::shelf_empty(Self[P]) -> Unit
 pub fn[P : Eq] Nav::shelved(Self[P], P) -> Int32?
 pub fn[P] Nav::shows(Self[P], Int32) -> Bool
 pub fn[P] Nav::shows_when(Self[P], () -> Bool, Double) -> Unit
+pub fn[P] Nav::slide_moment(Self[P], @view.View) -> Double
 pub fn[P] Nav::stint_of(Self[P], Int32) -> Int32?
+pub fn[P] Nav::swap_state(Self[P], Int32, () -> Double) -> (Bool, Bool, Double)
+pub fn[P] Nav::tab_body_motion(Self[P], Int32, () -> Double, slide? : Double) -> (Double, Double)
+pub fn[P] Nav::tab_ends_at(Self[P]) -> Double
+pub fn[P] Nav::tab_moment(Self[P], @view.View) -> Double
+pub fn[P] Nav::tab_title_alpha(Self[P], Int32, () -> Double, ms? : Double) -> Double
+pub fn[P] Nav::takes(Self[P], Int32) -> Bool
 pub fn[P] Nav::top(Self[P]) -> P
 pub fn[P] Nav::top_over(Self[P]) -> Bool
 pub fn[P] Nav::top_shows(Self[P]) -> Bool
@@ -2317,6 +2407,19 @@ pub fn[P] Nav::top_stay(Self[P]) -> (Int32, Int32)
 pub fn[P] Nav::top_waits(Self[P]) -> Bool
 pub fn[P] Nav::under(Self[P]) -> P?
 pub fn[P] Nav::waiting_taken_back(Self[P], Int32) -> Bool
+
+#derive(Eq)
+pub(all) struct NavTransition {
+  under_parallax : Double
+  under_dim : Double
+  rise_dim : Double
+  rise_under_scale : Double
+  edge_shadow : Bool
+  tab_slide : Double
+  tab_ms : Double
+}
+pub fn NavTransition::flat() -> Self
+pub fn NavTransition::layered() -> Self
 
 type Node
 
@@ -2789,6 +2892,7 @@ pub fn Stream::route(Self, Int32, Double, video~ : Bool, audio~ : Bool) -> Unit
 pub fn Stream::shown_any(Self) -> Bool
 pub fn Stream::shown_at(Self) -> Double?
 pub fn Stream::size(Self) -> (Int32, Int32)?
+pub fn Stream::wait_us(Self) -> Double
 
 #derive(Eq, @debug.Debug)
 pub(all) enum Stroke {
@@ -2856,6 +2960,7 @@ pub struct Tester {
 pub fn Tester::a11y_dump(Self) -> String
 pub fn Tester::a11y_said(Self) -> String
 pub fn Tester::a11y_update(Self) -> String
+pub fn Tester::across_shown(Self) -> Array[(Double, Double, Double, Double)]
 pub fn Tester::act(Self, @view.Role, @view.Action, label? : String, has? : String, within? : SemNode) -> Unit raise
 pub fn Tester::act_on(Self, SemNode, @view.Action) -> Unit raise
 pub fn Tester::adaptive_glyphs(Self) -> Int32
@@ -2866,6 +2971,8 @@ pub fn Tester::all(Self, @view.Role, label? : String, has? : String, checked? : 
 pub fn Tester::answer_native(Self, Int32, @json.Json) -> Unit
 pub fn Tester::app_state(Self, Bool, Bool, awake? : Bool) -> Unit
 pub fn Tester::app_told(Self, String) -> Array[String]
+#callsite(autofill(loc))
+pub fn Tester::assert_clean(Self, loc~ : SourceLoc) -> Unit
 pub fn Tester::assert_idle(Self) -> Unit
 pub fn Tester::at_end(Self) -> Bool
 pub fn Tester::at_rest(Self) -> Bool
@@ -2886,6 +2993,8 @@ pub fn Tester::bones_drawn(Self) -> Int32
 pub fn Tester::boxes(Self) -> Array[Laid]
 pub fn Tester::boxes_held(Self) -> Array[Laid]
 pub fn Tester::built_why(Self) -> String
+pub fn Tester::button_down(Self, Double, Double, Int32) -> Unit
+pub fn Tester::button_up(Self, Double, Double, Int32) -> Unit
 pub fn Tester::by_hand(Self, () -> Unit) -> Unit
 pub fn Tester::census(Self) -> Census
 pub fn Tester::check_looks(Self, Bool) -> Unit
@@ -2917,6 +3026,7 @@ pub fn Tester::ctx(Self) -> Ctx
 pub fn Tester::cursor(Self) -> @view.Cursor
 pub fn Tester::cycles(Self) -> Array[String]
 pub fn Tester::decode_after(Self, String, Double) -> Unit
+pub fn Tester::decode_bytes_after(Self, Bytes, Double) -> Unit
 pub fn Tester::display_frame(Self, Double) -> Double
 pub fn Tester::drag(Self, Double, Double, Double, Double, steps? : Int32) -> Unit
 pub fn Tester::drags_window_at(Self, Double, Double) -> Bool
@@ -2935,6 +3045,7 @@ pub fn Tester::drawn_glass_corners(Self) -> Array[(Double, Double, Double, Doubl
 pub fn Tester::drawn_glass_cut(Self) -> Array[(Double, Double, Double, Double)]
 pub fn Tester::drawn_glyphs(Self) -> Array[(Double, Double, Int64)]
 pub fn Tester::drawn_image_clips(Self) -> Array[((Double, Double, Double, Double), (Double, Double, Double, Double))]
+pub fn Tester::drawn_image_rounds(Self) -> Array[((Double, Double, Double, Double), (Double, Double, Double, Double), (Double, Double, Double, Double))]
 pub fn Tester::drawn_images(Self) -> Array[Array[Double]]
 pub fn Tester::drawn_instances(Self) -> Array[Array[Double]]
 pub fn Tester::drawn_instances_keyed(Self) -> Array[Array[Double]]
@@ -2955,6 +3066,7 @@ pub fn Tester::drop_words(Self, Double, Double, String, wid? : Int32) -> Unit
 pub fn Tester::dump(Self) -> String
 pub fn Tester::each_frame(Self, (() -> Unit)?) -> Unit
 pub fn Tester::edit_can(Self) -> Int32
+pub fn Tester::effect_in_view_faults(Self) -> Array[String]
 pub fn Tester::end_run(Self, &@hostapi.Host) -> Unit
 pub fn Tester::enter(Self) -> Unit
 pub fn Tester::export_frames(Self) -> Unit
@@ -2980,6 +3092,7 @@ pub fn Tester::focus_off_left(Self) -> Array[String]
 pub fn Tester::focus_off_said(Self, judged? : String) -> String?
 pub fn Tester::focus_off_unheld(Self) -> Unit
 pub fn Tester::focus_said(Self) -> String
+pub fn Tester::focus_visible_faults(Self) -> Array[String]
 pub fn Tester::focused(Self) -> SemNode?
 pub fn Tester::frame(Self, ms? : Double) -> Unit
 pub fn Tester::frame_as_host(Self) -> Bool
@@ -3053,6 +3166,7 @@ pub fn Tester::key_told(Self, Int32, Int32, Double) -> Unit
 pub fn Tester::keyboard_gone(Self) -> Unit
 pub fn Tester::latin_advances(Self, FixedArray[Double], FixedArray[Double]) -> Unit
 pub fn Tester::leave(Self) -> Unit
+pub fn Tester::light_audit(Self) -> Array[String]
 pub fn Tester::line_start_faults(Self) -> Array[String]
 pub fn Tester::lines_of(Self, String) -> Array[String]
 pub fn Tester::list_moving(Self) -> Bool
@@ -3062,6 +3176,7 @@ pub fn Tester::list_row_boxes(Self) -> Array[Array[(Double, Double, Double, Doub
 pub fn Tester::lit_all_faults(Self) -> Array[String]
 pub fn Tester::live_image(Self, Int32) -> Int32?
 pub fn Tester::locate(Self, String) -> Array[(Double, Double)]
+pub fn Tester::locked_move(Self, Double, Double, Double, Double) -> Unit
 pub fn Tester::look_of(Self, String) -> (Double, Double, Double)?
 pub fn Tester::looks_alone(Self) -> Int32
 pub fn Tester::marks_answer(Self, Int32) -> Unit
@@ -3076,9 +3191,10 @@ pub fn Tester::moving(Self) -> Array[String]
 pub fn Tester::native_answers(Self, String, (@json.Json) -> @json.Json) -> Unit
 pub fn Tester::native_asked(Self) -> Array[(String, @json.Json)]
 pub fn Tester::native_calls(Self) -> Array[(Int32, String, @json.Json)]
+pub fn Tester::native_nodes(Self) -> Array[@view.NodeId]
 pub fn Tester::nav_said(Self) -> String
 #callsite(autofill(loc))
-pub fn Tester::new((Ctx) -> Unit, w? : Double, h? : Double, dark? : Bool, window_inset? : Bool, env? : Array[(String, String)], app_version? : Int32, images? : Array[(String, Int32, Int32)], platform? : Int32, keys? : Int32, pointing? : Pointing, native? : Pointing, keyboard? : Bool, seed? : Int32, text? : String, scale? : Double, time? : Double, stable? : Bool, finish? : Bool, run? : String, h264? : Bool, copy_shown? : Bool, live? : Live, corners_held? : Bool, presses_held? : Bool, window_corner? : Double, window_corners? : FixedArray[Double], words_over_held? : Bool, nav_able? : Bool, tree? : (@view.View) -> Unit, before? : () -> Unit, begun? : () -> Unit, keeps_sources? : Bool, windows_beside? : Bool, theme? : () -> Theme, loc~ : SourceLoc) -> Self
+pub fn Tester::new((Ctx) -> Unit, w? : Double, h? : Double, dark? : Bool, window_inset? : Bool, env? : Array[(String, String)], app_version? : Int32, images? : Array[(String, Int32, Int32)], platform? : Int32, keys? : Int32, pointing? : Pointing, native? : Pointing, keyboard? : Bool, seed? : Int32, text? : String, scale? : Double, time? : Double, stable? : Bool, finish? : Bool, run? : String, h264? : Bool, copy_shown? : Bool, live? : Live, corners_held? : Bool, presses_held? : Bool, window_corner? : Double, window_corners? : FixedArray[Double], words_over_held? : Bool, nav_able? : Bool, tree? : (@view.View) -> Unit, before? : () -> Unit, begun? : () -> Unit, keeps_sources? : Bool, windows_beside? : Bool, theme? : () -> Theme, transitions_only? : Bool, loc~ : SourceLoc) -> Self
 pub fn Tester::next_frame_time(Self) -> Double
 pub fn Tester::next_wake(Self) -> (Double, String)?
 pub fn Tester::notice_asks(Self) -> Int32
@@ -3100,7 +3216,10 @@ pub fn Tester::pick_asks(Self) -> Array[@hostapi.PickKind]
 pub fn Tester::picking(Self) -> Picking?
 pub fn Tester::picks(Self, Array[(String, Bytes)]) -> Unit
 pub fn Tester::picks_by_hand(Self) -> Unit
+pub fn Tester::picture_images(Self) -> Array[(String, Double, Double)]
 pub fn Tester::placed_faults(Self) -> Array[String]
+pub fn Tester::pointer_lock_lost(Self) -> Unit
+pub fn Tester::pointer_locked(Self) -> (Bool, Int32)
 pub fn Tester::post(Self, String, String, bytes? : Bytes) -> Unit
 pub fn Tester::post_wakes(Self) -> Int32
 pub fn Tester::posted(Self) -> Int32
@@ -3121,6 +3240,7 @@ pub fn Tester::resize(Self, Double, Double) -> Unit
 pub fn Tester::resize_next(Self, Double, Double) -> Unit
 pub fn Tester::rest_of(Self, String) -> Double
 pub fn Tester::rest_why(Self) -> String
+pub fn Tester::revealed(Self) -> Array[String]
 pub fn Tester::rich_of(Self, String) -> (RichLayout, Double, Double)?
 pub fn Tester::right_click(Self, Double, Double) -> Unit
 pub fn Tester::room_faults(Self) -> Array[String]
@@ -3133,11 +3253,13 @@ pub fn Tester::rows_read_built(Self) -> Int32
 pub fn Tester::run_as_host(Self, Double, skip_unasked? : Bool) -> Unit
 pub fn Tester::run_for(Self, Double) -> Unit
 pub fn Tester::run_for_exact(Self, Double) -> Unit
-pub fn Tester::run_rects(Self, String) -> Array[(Double, Double, Double, Double)]
 pub fn Tester::run_past_glides(Self) -> Unit
+pub fn Tester::run_rects(Self, String) -> Array[(Double, Double, Double, Double)]
 pub fn Tester::run_shown(Self, Double) -> Unit
 pub fn Tester::said(Self) -> String
+pub fn[T] Tester::sample_frames(Self, Double, step? : Double, (Self, Double) -> T) -> Array[(Double, T)]
 pub fn Tester::scroll_all_to_end(Self) -> Int32
+pub fn Tester::scroll_each_faults(Self, limit? : Int32) -> Array[String]
 pub fn Tester::scroll_to(Self, Int32) -> Unit
 pub fn Tester::scroll_to_end(Self) -> Unit
 pub fn Tester::seen_bounds_of(Self, SemNode) -> (Double, Double, Double, Double)
@@ -3152,10 +3274,11 @@ pub fn Tester::set_fanout_limit(Self, Int32) -> Unit
 pub fn Tester::set_font_scale(Self, Double) -> Unit
 pub fn Tester::set_frame_period(Self, Double) -> Unit
 pub fn Tester::set_frame_times(Self, Array[Double]) -> Unit
+pub fn Tester::set_gamepads(Self, Array[@hostapi.Gamepad]) -> Unit
 pub fn Tester::set_groups(Self, Bool) -> Unit
 pub fn Tester::set_h265(Self, Bool) -> Unit
-pub fn Tester::set_increase_contrast(Self, Bool) -> Unit
 pub fn Tester::set_ime_inset(Self, Double) -> Unit
+pub fn Tester::set_increase_contrast(Self, Bool) -> Unit
 pub fn Tester::set_keyboard(Self, Bool) -> Unit
 pub fn Tester::set_local_fonts(Self, String) -> Unit
 pub fn Tester::set_nav_able(Self, Bool) -> Unit
@@ -3167,6 +3290,7 @@ pub fn Tester::set_perf_size(Self, Double) -> Unit
 pub fn Tester::set_player(Self, Int32, duration? : Double, position? : Double, playing? : Bool, natural? : (Double, Double), shown? : Bool, buffering? : Bool, buffered? : Double, ended? : Bool) -> Unit
 pub fn Tester::set_reduce_motion(Self, Bool) -> Unit
 pub fn Tester::set_reduce_transparency(Self, Bool) -> Unit
+pub fn Tester::set_reveals(Self, Bool) -> Unit
 pub fn Tester::set_rows_on_pixels(Self, Bool) -> Unit
 pub fn Tester::set_stream_audio(Self, Bool) -> Unit
 pub fn Tester::set_stream_audio_clock(Self, Int32, Double, Double) -> Unit
@@ -3175,6 +3299,7 @@ pub fn Tester::set_stream_feeds(Self, Bool) -> Unit
 pub fn Tester::set_stream_hides(Self, Bool) -> Unit
 pub fn Tester::set_stream_layers(Self, Bool) -> Unit
 pub fn Tester::set_stream_layers_srgb(Self, Bool) -> Unit
+pub fn Tester::set_thermal_throttled(Self, Bool) -> Unit
 pub fn Tester::set_unreadable_font(Self, String) -> Unit
 pub fn Tester::set_utc_offset(Self, Int32) -> Unit
 pub fn Tester::set_wall(Self, Double) -> Unit
@@ -3202,6 +3327,7 @@ pub fn Tester::sources_at(Self, Double, Double) -> String
 pub fn Tester::sources_of(Self, String) -> String
 pub fn Tester::squeeze_faults(Self) -> Array[String]
 pub fn Tester::start_tape(Self) -> Unit
+pub fn Tester::stays_of(Self, String) -> ((Double, Double, Double, Double), (Double, Double, Double, Double))?
 pub fn Tester::stepped(Self) -> Unit
 pub fn Tester::stream_broken(Self, Int32) -> Unit
 pub fn Tester::stream_codec_said(Self, Int32, String) -> Unit
@@ -3230,7 +3356,7 @@ pub fn Tester::touch(Self, Int32, Double, Double) -> Unit
 pub fn Tester::touch_at(Self, Int32, Double, Double, Double) -> Unit
 pub fn Tester::touch_raw(Self, Int32, Int32, Double, Double, Double) -> Unit
 #callsite(autofill(loc))
-pub fn Tester::tree((@view.View) -> Unit, w? : Double, h? : Double, dark? : Bool, window_inset? : Bool, env? : Array[(String, String)], app_version? : Int32, images? : Array[(String, Int32, Int32)], platform? : Int32, keys? : Int32, pointing? : Pointing, native? : Pointing, keyboard? : Bool, seed? : Int32, text? : String, scale? : Double, time? : Double, stable? : Bool, finish? : Bool, run? : String, h264? : Bool, copy_shown? : Bool, live? : Live, corners_held? : Bool, presses_held? : Bool, window_corner? : Double, window_corners? : FixedArray[Double], words_over_held? : Bool, nav_able? : Bool, before? : () -> Unit, begun? : () -> Unit, keeps_sources? : Bool, windows_beside? : Bool, theme? : () -> Theme, loc~ : SourceLoc) -> Self
+pub fn Tester::tree((@view.View) -> Unit, w? : Double, h? : Double, dark? : Bool, window_inset? : Bool, env? : Array[(String, String)], app_version? : Int32, images? : Array[(String, Int32, Int32)], platform? : Int32, keys? : Int32, pointing? : Pointing, native? : Pointing, keyboard? : Bool, seed? : Int32, text? : String, scale? : Double, time? : Double, stable? : Bool, finish? : Bool, run? : String, h264? : Bool, copy_shown? : Bool, live? : Live, corners_held? : Bool, presses_held? : Bool, window_corner? : Double, window_corners? : FixedArray[Double], words_over_held? : Bool, nav_able? : Bool, before? : () -> Unit, begun? : () -> Unit, keeps_sources? : Bool, windows_beside? : Bool, theme? : () -> Theme, transitions_only? : Bool, fanout_limit? : Int32, unseen_press_held? : Bool, untracked_read_held? : Bool, unnamed_press_held? : Bool, scroll_each_limit? : Int32, effect_in_view_held? : Bool, loc~ : SourceLoc) -> Self
 pub fn Tester::tree_frames(Self) -> Array[TreeFrame]
 pub fn Tester::tree_frames_from_now(Self) -> Unit
 pub fn Tester::tree_room_faults(Self) -> Array[String]
@@ -3238,6 +3364,7 @@ pub fn Tester::turn_of(Self, String) -> Double?
 pub fn Tester::type_text(Self, String) -> Unit
 pub fn Tester::ui_face_wider(Self, Double) -> Unit
 pub fn Tester::unasked_faults(Self) -> Array[String]
+pub fn Tester::unnamed_press_faults(Self) -> Array[String]
 pub fn Tester::unseen_press_faults(Self) -> Array[String]
 pub fn Tester::untracked_read_faults(Self) -> Array[String]
 pub fn Tester::update_asked(Self) -> Array[String]
@@ -3258,7 +3385,7 @@ pub fn Tester::waterfall_faults(Self) -> Array[String]
 pub fn Tester::ways_set_out(Self) -> Array[@view.WaySet]
 pub fn Tester::wheel(Self, Double, Double, Double) -> Unit
 pub fn Tester::wheel_kept(Self) -> Bool
-pub fn Tester::wheel_phase(Self, Double, Double, Double, Int32) -> Unit
+pub fn Tester::wheel_phase(Self, Double, Double, Double, Int32, dx? : Double) -> Unit
 pub fn Tester::wheel_told(Self, Double, Double, Double, Double, Int32, Double) -> Unit
 pub fn Tester::wheel_with(Self, Double, Double, Double, Double, Int32) -> Unit
 pub fn Tester::window_acts(Self) -> Array[Int32]
@@ -3472,6 +3599,7 @@ pub(all) struct TreeFrame {
   let_go : Int32
   laid : Int32
   measured : Int32
+  bindings : Int32
 }
 
 pub struct Velocity {
@@ -3591,6 +3719,8 @@ pub using @text {type Ground}
 pub using @text {type InlineDrawing}
 
 pub using @paint {type Line}
+
+pub using @paint {type Rect}
 
 pub using @view {type Role}
 

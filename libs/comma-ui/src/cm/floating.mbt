@@ -76,7 +76,7 @@ pub fn tooltip_node(
     .shadow(By(fn() { cast(shadow_xs, shadow_dark_xs) }))
     .scale(By(fn() { 0.97 + 0.03 * e.shown(t) }))
     .alpha(By(fn() { e.shown(t) }))
-    .hides(By(fn() { !open.get() }))
+    // (leaving nodes with left_at >= 0.0 are hidden from semantics by the framework)
     .says(By(fn() { Some(@view.said(Tooltip, label=label())) }))
     |> ignore
     t.box(fn(w) {
@@ -216,13 +216,23 @@ pub fn menu_node(
   let h = layer.holder(anchor)
   escape_closes(h, fn() { open.get() }, close)
   h.show(fn() { open.get() }, fn(c) { closes_outside(c, close, "Close " + label) })
-  h.show(fn() { open.get() }, leave=ms_menu_exit, fn(m) {
-    let e = opening(m, fn() { open.get() }, ms_menu_enter, ms_menu_exit)
-    m.beside(anchor.id(), side~, along=Start, offset=space_xs) |> ignore
-    m.width(Is(Some(width))).padding(Is((0.0, space_sm, 0.0, space_sm))).hides(By(fn() { !open.get() })) |> ignore
-    panel_look(m, e, radius_xl, fn() { colors().bg_popup_secondary }, fn() { cast(shadow_lg, shadow_dark_lg) })
-    menu_rows(m, items, label, close)
+  h.box(fn(room) {
+    // (inset 8pt horizontally to match View::beside's default window padding so max_width(..., within=true) fits)
+    room.over(Is(true)).margin(Is((space_md, 0.0, space_md, 0.0))) |> ignore
+    room.show(fn() { open.get() }, leave=ms_menu_exit, fn(m) {
+      let e = opening(m, fn() { open.get() }, ms_menu_enter, ms_menu_exit)
+      m.beside(anchor.id(), side~, along=Start, offset=space_xs) |> ignore
+      // (leaving nodes with left_at >= 0.0 are hidden from semantics by the framework)
+      m
+      .width(Is(Some(width)))
+      .max_width(Is(Some(width)), within=true)
+      .padding(Is((0.0, space_sm, 0.0, space_sm)))
+      |> ignore
+      panel_look(m, e, radius_xl, fn() { colors().bg_popup_secondary }, fn() { cast(shadow_lg, shadow_dark_lg) })
+      menu_rows(m, items, label, close)
+    })
   })
+  |> ignore
 }
 
 ///|
@@ -317,7 +327,8 @@ pub fn dropdown_node(
   h.show(fn() { open.get() }, leave=ms_menu_exit, fn(m) {
     let e = opening(m, fn() { open.get() }, ms_menu_enter, ms_menu_exit)
     m.beside(trigger.id(), side=Bottom, along=Start, offset=space_xs, width=Anchor) |> ignore
-    m.padding(Is((0.0, space_sm, 0.0, space_sm))).hides(By(fn() { !open.get() })) |> ignore
+    // (leaving nodes with left_at >= 0.0 are hidden from semantics by the framework)
+    m.padding(Is((0.0, space_sm, 0.0, space_sm))) |> ignore
     panel_look(m, e, radius_xl, fn() { colors().bg_popup_secondary }, fn() { cast(shadow_lg, shadow_dark_lg) })
     let items = fn() {
       let i = chosen.get()
@@ -344,15 +355,24 @@ pub fn popup_node(
   let h = layer.holder(anchor)
   escape_closes(h, fn() { open.get() }, close)
   h.show(fn() { open.get() }, fn(c) { closes_outside(c, close, "Close " + label) })
-  h.show(fn() { open.get() }, leave=ms_hover_card_exit, fn(p) {
-    let e = opening(p, fn() { open.get() }, ms_hover_card_enter, ms_hover_card_exit)
-    p.beside(anchor.id(), side=Bottom, along=Start, offset=space_md) |> ignore
-    p.width(Is(Some(width))).padding(Is((space_xl, space_xl, space_xl, space_xl))).hides(By(fn() { !open.get() }))
-    |> ignore
-    panel_look(p, e, radius_2xl, fn() { colors().bg_popup_primary }, fn() { cast(shadow_sm, shadow_dark_sm) })
-    p.says(Is(Some(@view.said(Dialog, label~)))) |> ignore
-    body(p)
+  h.box(fn(room) {
+    // (inset 8pt horizontally to match View::beside's default window padding so max_width(..., within=true) fits)
+    room.over(Is(true)).margin(Is((space_md, 0.0, space_md, 0.0))) |> ignore
+    room.show(fn() { open.get() }, leave=ms_hover_card_exit, fn(p) {
+      let e = opening(p, fn() { open.get() }, ms_hover_card_enter, ms_hover_card_exit)
+      p.beside(anchor.id(), side=Bottom, along=Start, offset=space_md) |> ignore
+      // (leaving nodes with left_at >= 0.0 are hidden from semantics by the framework)
+      p
+      .width(Is(Some(width)))
+      .max_width(Is(Some(width)), within=true)
+      .padding(Is((space_xl, space_xl, space_xl, space_xl)))
+      |> ignore
+      panel_look(p, e, radius_2xl, fn() { colors().bg_popup_primary }, fn() { cast(shadow_sm, shadow_dark_sm) })
+      p.says(Is(Some(@view.said(Dialog, label~)))) |> ignore
+      body(p)
+    })
   })
+  |> ignore
 }
 
 ///|
@@ -386,7 +406,8 @@ pub fn dialog_node(
           .lies_along(Is(Middle))
           .padding(Is((space_xl, space_xl, space_xl, space_xl)))
           |> ignore
-          s.modal(By(fn() { open.get() })).hides(By(fn() { !open.get() })) |> ignore
+          // (leaving nodes with left_at >= 0.0 are hidden from semantics by the framework)
+          s.modal(By(fn() { open.get() })) |> ignore
           // (the scrim: a press on it closes the dialog)
           @headless.button(s, fn() { "Close dialog" }, fn(_) { close() }, fn(c, _) {
             c

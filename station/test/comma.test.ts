@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { WebSocketServer, type WebSocket } from "ws";
 import { commaConnects, commaLine } from "../src/comma/index.ts";
-import { type CommaWorkspaceMeta, CommaSurface, connectUrl, questionOf, workspaceMetaOf } from "../src/comma/surface.ts";
+import { type CommaWorkspaceMeta, CommaSurface, OwnerActivity, connectUrl, questionOf, workspaceMetaOf } from "../src/comma/surface.ts";
 import { CommaTasks, threadTsOf } from "../src/comma/tasks.ts";
 import { Rig, settle } from "./hub-fakes.ts";
 
@@ -380,4 +380,43 @@ test("CommaSurface quantizes capabilities.stillfail_owner_active_at to 30s bucke
     await fake.close();
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("OwnerActivity merges cross-station peer reads monotonically without re-gossiping or leaking other workspaces", () => {
+  const peer = new OwnerActivity();
+  const host = new OwnerActivity();
+
+  // No local reads yet: nothing to attach to comma.changed.
+  assert.equal(peer.localPayload(), null);
+
+  // Local read on peer station (e.g. Windows desktop) quantizes to 30s and exports only allowed workspace viewers.
+  assert.equal(peer.recordLocal("Peng@Example.com", 1_795_200_012_345), true);
+  assert.equal(peer.recordLocal("other@workspace.test", 1_795_200_045_000), true);
+  assert.deepEqual(peer.localPayload(new Set(["peng@example.com"])), {
+    at: 1_795_200_000_000,
+    byViewer: { "peng@example.com": 1_795_200_000_000 },
+  });
+
+  // Host station (holding the Comma socket) merges peer activity and reports it for the owner without re-exporting it.
+  const wire = peer.localPayload(new Set(["peng@example.com"]));
+  assert.equal(host.mergePeer(wire, 1_795_200_020_000), true);
+  assert.equal(host.get("peng@example.com"), 1_795_200_000_000);
+  assert.equal(host.get("someone-else@example.com"), null);
+  assert.equal(host.get(null), 1_795_200_000_000);
+  assert.equal(host.localPayload(), null);
+
+  // Duplicate or older peer buckets do not advance state or regress newer timestamps.
+  assert.equal(host.mergePeer(wire, 1_795_200_025_000), false);
+  assert.equal(host.mergePeer({ at: 1_795_199_970_000, byViewer: { "peng@example.com": 1_795_199_970_000 } }, 1_795_200_025_000), false);
+  assert.equal(host.get("peng@example.com"), 1_795_200_000_000);
+
+  // Wildly future peer clocks (>5m ahead) and malformed payloads are ignored.
+  assert.equal(host.mergePeer({ at: 1_795_201_000_000, byViewer: { "peng@example.com": 1_795_201_000_000 } }, 1_795_200_025_000), false);
+  assert.equal(host.mergePeer(null, 1_795_200_025_000), false);
+  assert.equal(host.mergePeer("bad", 1_795_200_025_000), false);
+  assert.equal(host.get("peng@example.com"), 1_795_200_000_000);
+
+  // Unattributed peer payload (e.g. MoonBit station without per-viewer read info) advances single-owner lookups.
+  assert.equal(host.mergePeer({ at: 1_795_200_065_000 }, 1_795_200_070_000), true);
+  assert.equal(host.get("peng@example.com"), 1_795_200_060_000);
 });

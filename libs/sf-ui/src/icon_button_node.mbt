@@ -66,6 +66,7 @@ fn icon_button_by(
   ink? : () -> Int64,
   grounded? : Bool = true,
   on? : () -> Bool = fn() { false },
+  lit? : () -> Bool = fn() { false },
   loc~ : SourceLoc,
 ) -> @view.View {
   // (what it is to the hand, the keyboard and a screen reader is mbui's headless button's: read out a button called by
@@ -93,9 +94,9 @@ fn icon_button_by(
       // (the hand on it: a pointer over it, a finger or the pointer held on it; the keyboard's focus shown on it. Pressed,
       // sunk a little and springing back as it is let go (@motion.press_feel); pressed where it was lit already (a
       // mouse's click under the pointer), its tint a step deeper too, where the hover alone had nothing left to show)
-      let lit = fn() { b.focus_shown() || b.hovered() || b.pressed() }
+      let is_lit = fn() { b.focus_shown() || b.hovered() || b.pressed() || (!disabled() && lit()) }
       let hand = @motion.NodeWay::new(0.0)
-      v.reacts(lit, fn(on) { hand.go_ms(v, if on { 1.0 } else { 0.0 }, dur_ms) })
+      v.reacts(is_lit, fn(on) { hand.go_ms(v, if on { 1.0 } else { 0.0 }, dur_ms) })
       let feel = @motion.press_feel(v, live=fn() { !disabled() }, hovers=false)
       feel_of.val = Some(feel)
       let deeper = lit_before_press(v, b, hand)
@@ -146,7 +147,7 @@ fn icon_button_by(
         } else if on() {
           alpha(lit_ink(), 0.08)
         } else {
-          alpha(theme().p.text, 0.065 * tint())
+          alpha(lit_ink(), 0.065 * tint())
         }
       }))
       |> ignore

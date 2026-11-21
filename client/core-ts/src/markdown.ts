@@ -39,7 +39,7 @@ export type MdStore = { has(key: string): boolean; get(key: string): string | nu
 
 /// How the trees kept are read: another number whenever what `parse` makes of a text changes (a test holds it to the
 /// trees of a set of texts: markdown.test.ts). A drawable older tree can be shown while it is read again in the background.
-export const MD_READING = 13;
+export const MD_READING = 14;
 
 /// Earlier readings whose tree format this core can still draw while they are read again. Raise this independently of
 /// MD_READING if a future change makes an old tree impossible to draw; a change in interpretation alone need not.
@@ -374,7 +374,7 @@ function inline(n: Node, cx: Cx): MdNode[] {
 /// does (paths.ts). `bare`: its words are its address (as written, or decoded), so a client may say it as what it names
 /// (a chat's or a screen's title).
 function link(href: string, title: string | null | undefined, children: MdNode[], words: string): MdNode {
-  const file = /^[a-z][\w+.-]*:/i.test(href) ? {} : pathAttrs(decoded(href), (path) => path);
+  const file = /^[a-z][\w+.-]*:/i.test(href) && !/^[a-z]:[\\/]/i.test(href) ? {} : pathAttrs(decoded(href), (path) => path);
   const to = linkTo(href);
   const plain = words.trim();
   const bare = plain === href || plain === decoded(href);

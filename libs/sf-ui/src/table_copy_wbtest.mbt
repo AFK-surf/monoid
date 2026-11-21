@@ -10,19 +10,24 @@ let copy_table : String = "| 模型 | 输入 | 输出 | 缓存读 |\n| --- | ---
 /// is more), the presenters over it.
 fn table_tester(platform : Int, w : Double, h : Double, text? : String = copy_table, margin? : Double = 0.0) -> @ui.Tester {
   presenters_reset()
-  @ui.Tester::new(
-    @ui.old_views_here,
-    tree=presented_tree(fn(c) {
+  let pad = dmax(16.0, margin)
+  let t = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w~, h~, platform~)
+  t.check_looks(false)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.lines_up(Is(None)) |> ignore
+    root.box(fn(col) {
+      col.padding(Is((pad, pad, pad, pad))) |> ignore
+      markdown_node(col, fn() { text }, bleed=fn() { margin }) |> ignore
+    })
+    |> ignore
+    @ui.old(root, fn(c) {
       begin(c) |> ignore
-      c.with_theme(ui_theme(), fn() {
-        c.column(w=Fill(1.0), pad=dmax(16.0, margin), fn() { markdown(c, text, bleed=margin) |> ignore }) |> ignore
-        presented(c)
-      })
-    }),
-    w~,
-    h~,
-    platform~,
-  )
+      c.with_theme(ui_theme(), fn() { presented(c) })
+    }).over(Is(true)) |> @ui.old_takes_own |> ignore
+    presented_nodes(root)
+  })
+  t
 }
 
 ///|
@@ -69,10 +74,10 @@ test "a table as wide as a phone's message: its key over nothing of it, past its
     t.drag(370.0, ky + 40.0, 20.0, ky + 40.0)
     t.draw()
   }
-  t.frame()
+  t.run_for(@ui.move_most_ms)
   let (kx, _, kw, _) = table_key_of(t)
   let (lx, _, lw, _) = t.rect_of("three a long").unwrap()
-  assert_true(kx > lx + lw && kx + kw == 390.0 - 16.0 - table_key_gap, msg="\{Repr((kx, kw, lx, lw))}")
+  assert_true(kx > lx + lw && (kx + kw - (390.0 - 16.0 - table_key_gap)).abs() < 0.01, msg="\{Repr((kx, kw, lx, lw))}")
 }
 
 ///|
@@ -187,23 +192,23 @@ test "two messages' tables: the picture copied is of the table whose key was pre
   let long = "a long cell of words that would wrap to a word or two if squeezed into the message"
   let other = "| 一 | 二 | 三 |\n|---|---|---|\n| one \{long} | two \{long} | three \{long} |\n"
   presenters_reset()
-  let tt = @ui.Tester::new(
-    @ui.old_views_here,
-    tree=presented_tree(fn(c) {
+  let tt = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=1280.0, h=800.0, platform=0)
+  tt.check_looks(false)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.lines_up(Is(None)) |> ignore
+    root.box(fn(col) {
+      col.padding(Is((16.0, 16.0, 16.0, 16.0))) |> ignore
+      markdown_node(col, fn() { copy_table }) |> ignore
+      markdown_node(col, fn() { other }) |> ignore
+    })
+    |> ignore
+    @ui.old(root, fn(c) {
       begin(c) |> ignore
-      c.with_theme(ui_theme(), fn() {
-        c.column(w=Fill(1.0), pad=16.0, fn() {
-          markdown(c, copy_table, key="message/1") |> ignore
-          markdown(c, other, key="message/2") |> ignore
-        })
-        |> ignore
-        presented(c)
-      })
-    }),
-    w=1280.0,
-    h=800.0,
-    platform=0,
-  )
+      c.with_theme(ui_theme(), fn() { presented(c) })
+    }).over(Is(true)) |> @ui.old_takes_own |> ignore
+    presented_nodes(root)
+  })
   tt.draw()
   tt.draw()
   let (lx, ly, _, _) = tt.rect_of("缓存读").unwrap()

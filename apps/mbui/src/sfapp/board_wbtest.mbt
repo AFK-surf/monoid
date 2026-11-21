@@ -1268,7 +1268,7 @@ fn board_rect_of(t : @ui.Tester, role : @ui.Role, label : String) -> (Double, Do
 test "小屏: the board reaches the window's foot, its cards passing under the bottom bar; scrolled to its end, its last card at rest over that bar" {
   let (t, _) = board_many_at()
   let h = 844.0
-  let foot = nav_foot() + bar_room_now()
+  let foot = nav_foot() + bar_room_at(390.0)
   assert_true(foot > 40.0, msg="the bottom bar covers \{foot}")
   // (a card's words drawn under the bottom bar's top, cut by nothing short of the window's foot: the column not cut
   // in the air over that bar)

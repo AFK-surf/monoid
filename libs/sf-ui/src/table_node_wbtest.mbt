@@ -86,33 +86,25 @@ test "two tables of the same words, the core answering at once: both told, asked
 }
 
 ///|
-test "an old view's markdown asking first for the same words, a table of the tree reading them after, the core answering late: the table told" {
+test "markdown_node asking first for the same words, a table_node reading them after, the core answering late: the table told" {
   let asked = []
-  let t = @ui.Tester::new(
-    fn(c) {
-      begin(c) |> ignore
-      // (read once the core is said: the Tester's start puts it back to none, and a build before then reads what is
-      // kept of the core's answers)
-      if markdown_read.val is Some(_) {
-        markdown(c, tn_text) |> ignore
-      }
-    },
-    w=390.0,
-    h=400.0,
-  )
+  let show_table = @signals.signal(false)
+  let t = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=390.0, h=400.0)
   markdown_read.val = Some(fn(text, done) { asked.push((text, done)) })
-  t.draw()
   @ui.set_view_app(fn(root) {
     @ui.set_tree_theme(ui_theme_now)
-    root.box(fn(b) { table_node(b, fn() { tn_text }) }) |> ignore
+    root.box(fn(a) { markdown_node(a, fn() { tn_text }) |> ignore }) |> ignore
+    root.show(at_once=true, fn() { show_table.get() }, fn(b) { table_node(b, fn() { tn_text }) })
   })
+  t.draw()
+  show_table.set(true)
   t.draw()
   let before = (asked.length(), tn_drawn("Opus 5.5"))
   (asked[0].1)(Some(tn_tree()))
   t.draw()
   t.draw()
   markdown_read.val = None
-  assert_eq((before, asked.length(), tn_drawn("Opus 5.5")), ((1, 0), 1, 1))
+  assert_eq((before, asked.length(), tn_drawn("Opus 5.5")), ((1, 0), 1, 2))
 }
 
 ///|
@@ -136,42 +128,19 @@ fn tn_wide_tree() -> Json {
 }
 
 ///|
-/// tn_wide's table 300 wide with keyboard and mouse, an old view's (`tree` false) or a node's, the pointer over it, its
+/// tn_wide's table 300 wide with keyboard and mouse, the pointer over it, its
 /// key pressed and each of its menu's in turn: what each put on the clipboard (Markdown, CSV), the picture's bytes and
 /// the words its shot drew.
-fn tn_copied(tree : Bool) -> (String, String, Int?, Array[Array[String]], Array[((Int, Int), Array[String])]) raise {
-  let tt = if tree {
-    @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=300.0, h=400.0, platform=0)
-  } else {
-    @ui.Tester::new(
-      @ui.old_views_here,
-      // (its menu, on 小屏 a sheet of the window's tree: presented_tree)
-      tree=presented_tree(fn(c) {
-        begin(c) |> ignore
-        c.with_theme(ui_theme(), fn() {
-          // (once the core is said: a build before then reads what is kept of its answers)
-          if markdown_read.val is Some(_) {
-            markdown(c, tn_wide) |> ignore
-          }
-          // (its menu, as what presents it draws it)
-          presented(c)
-        })
-      }),
-      w=300.0,
-      h=400.0,
-      platform=0,
-    )
-  }
+fn tn_copied() -> (String, String, Int?, Array[Array[String]], Array[((Int, Int), Array[String])]) raise {
+  let tt = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=300.0, h=400.0, platform=0)
   markdown_read.val = Some(fn(_, done) { done(Some(tn_wide_tree())) })
-  if tree {
-    @ui.set_view_app(fn(root) {
-      @ui.set_tree_theme(ui_theme_now)
-      root.box(fn(b) { table_node(b, fn() { tn_wide }) }) |> ignore
-      // (its menu, as what presents it draws it)
-      @ui.old(root, fn(c) { presented(c) }).over(Is(true)) |> @ui.old_takes_own |> ignore
-      presented_nodes(root)
-    })
-  }
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(b) { table_node(b, fn() { tn_wide }) }) |> ignore
+    // (its menu, as what presents it draws it)
+    @ui.old(root, fn(c) { presented(c) }).over(Is(true)) |> @ui.old_takes_own |> ignore
+    presented_nodes(root)
+  })
   tt.draw()
   tt.draw()
   tt.move_to(20.0, 15.0)
@@ -195,16 +164,15 @@ fn tn_copied(tree : Bool) -> (String, String, Int?, Array[Array[String]], Array[
 }
 
 ///|
-test "a table's copy key as nodes: its menu's Markdown, CSV and picture as an old view's table's, the picture of all of it, past what shows" {
-  let old = tn_copied(false)
-  let made = tn_copied(true)
-  assert_eq(made, old)
-  // (each said: Markdown and CSV words; the picture of some size, all of it drawn, past what shows of it: its PNG none,
-  // the Tester's host reading nothing drawn back, as for the old view)
+test "a table's copy key as nodes: its menu's Markdown, CSV and picture, the picture of all of it, past what shows" {
+  let made = tn_copied()
+  assert_eq(made.0, tn_wide)
+  assert_eq(made.1, "模型,输入,输出,缓存读,缓存写\nOpus 5.5,$15,$75,$1.5,$18.75")
+  // (each said: Markdown and CSV words; the picture of some size, all of it drawn, past what shows of it)
   let ((w, h), drawn) = made.4[0]
   assert_true(
-    old.0 != "" && old.1 != "" && made.4.length() == 1 && w > 300 && h > 0 && drawn.length() > 10,
-    msg="\{old.0} \{old.1} \{Repr(old.2)} \{w}x\{h} \{drawn.length()}",
+    made.4.length() == 1 && w > 300 && h > 0 && drawn.length() > 10,
+    msg="\{made.0} \{made.1} \{Repr(made.2)} \{w}x\{h} \{drawn.length()}",
   )
   assert_true(made.3.length() == 1 && made.3[0].contains("$18.75"), msg="\{Repr(made.3)}")
 }
@@ -302,32 +270,15 @@ fn tn_rich_tree() -> Json {
 }
 
 ///|
-/// tn_rich's table 300 wide, an old view's (`tree` false) or a node's: the glyphs drawn (where, in what ink), from
+/// tn_rich's table 300 wide as nodes: the glyphs drawn (where, in what ink), from
 /// the corner of all of them.
-fn tn_rich_drawn(tree : Bool) -> Array[(Double, Double, Int64)] {
-  let tt = if tree {
-    @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=300.0, h=400.0, platform=0)
-  } else {
-    @ui.Tester::new(
-      fn(c) {
-        begin(c) |> ignore
-        // (once the core is said: a build before then reads what is kept of its answers)
-        if markdown_read.val is Some(_) {
-          c.with_theme(ui_theme(), fn() { markdown(c, tn_rich) |> ignore })
-        }
-      },
-      w=300.0,
-      h=400.0,
-      platform=0,
-    )
-  }
+fn tn_rich_drawn() -> Array[(Double, Double, Int64)] {
+  let tt = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=300.0, h=400.0, platform=0)
   markdown_read.val = Some(fn(_, done) { done(Some(tn_rich_tree())) })
-  if tree {
-    @ui.set_view_app(fn(root) {
-      @ui.set_tree_theme(ui_theme_now)
-      root.box(fn(b) { table_node(b, fn() { tn_rich }, copy=false) }) |> ignore
-    })
-  }
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(b) { table_node(b, fn() { tn_rich }, copy=false) }) |> ignore
+  })
   tt.draw()
   tt.draw()
   markdown_read.val = None
@@ -338,13 +289,14 @@ fn tn_rich_drawn(tree : Bool) -> Array[(Double, Double, Int64)] {
 }
 
 ///|
-test "a table's cells in pieces as nodes (italic, code, struck through, bold beside italic, a link): each glyph where an old view's table draws it, in its ink" {
-  let old = tn_rich_drawn(false)
-  let made = tn_rich_drawn(true)
-  assert_true(old.length() > 12, msg="the old one drawn: \{old.length()}")
-  assert_eq(made, old)
-  // (none of it an old view's: no old view in the window but what the table is made of)
+test "a table's cells in pieces as nodes (italic, code, struck through, bold beside italic, a link): drawn purely as nodes in their inks" {
+  let made = tn_rich_drawn()
+  assert_true(made.length() > 12, msg="drawn: \{made.length()}")
+  // (none of it an old view's: no old view in the window)
   assert_eq(@ui.view_tree().unwrap().drawn().filter(fn(d) { d.words == "斜体" }).length(), 1)
+  assert_eq(@ui.view_tree().unwrap().drawn().filter(fn(d) { d.words == "code" }).length(), 1)
+  assert_eq(@ui.view_tree().unwrap().drawn().filter(fn(d) { d.words == "删去" }).length(), 1)
+  assert_eq(@ui.view_tree().unwrap().drawn().filter(fn(d) { d.words == "链接" }).length(), 1)
   assert_eq(@ui.view_tree().unwrap().drawn().filter(fn(d) { d.hosted }).length(), 0)
 }
 
@@ -529,71 +481,39 @@ fn tn_cells_tree() -> Json {
 }
 
 ///|
-/// tn_cells_tree's table in a message 390 wide, its paths marked and its chat's title said, drawn by an old view's
-/// markdown or as nodes (`tree`): the window's Tester and what its links told.
-fn tn_cells_tester(tree : Bool, led : Array[String]) -> @ui.Tester {
+/// tn_cells_tree's table in a message 390 wide, its paths marked and its chat's title said, drawn as nodes:
+/// the window's Tester and what its links told.
+fn tn_cells_tester(led : Array[String]) -> @ui.Tester {
   let text = "（tn_cells_tree 的原文）"
   let title = fn(href : String) { if href == tn_cells_href { Some("新架构 chat 表格问题") } else { None } }
   let on_link = fn(href : String) { led.push(href) }
-  let tt = if tree {
-    @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=390.0, h=400.0, platform=2)
-  } else {
-    @ui.Tester::new(
-      fn(c) {
-        begin(c) |> ignore
-        c.with_theme(ui_theme(), fn() {
-          markdown(c, text, tree=Some(tn_cells_tree()), paths=true, chat_title=title, copy=false, on_link~) |> ignore
-        })
-      },
-      w=390.0,
-      h=400.0,
-      platform=2,
-    )
-  }
-  if tree {
-    @ui.set_view_app(fn(root) {
-      @ui.set_tree_theme(ui_theme_now)
-      root.box(fn(b) {
-        markdown_node(b, fn() { text }, tree=fn() { Some(tn_cells_tree()) }, paths=true, chat_title=title, copy=false, on_link~)
-        |> ignore
-      })
+  let tt = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=390.0, h=400.0, platform=2)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(b) {
+      markdown_node(b, fn() { text }, tree=fn() { Some(tn_cells_tree()) }, paths=true, chat_title=title, copy=false, on_link~)
       |> ignore
     })
-  }
+    |> ignore
+  })
   tt.draw()
   tt.draw()
   tt
 }
 
 ///|
-test "a table's cells as a message's words, old view and nodes alike: a file's chip whole on one line, a bare chat link its title, columns as wide as what they draw" {
-  let drawn = fn(tree : Bool) raise {
-    let led = []
-    let tt = tn_cells_tester(tree, led)
-    let words = tt.words()
-    let glyphs = tt.drawn_glyphs()
-    // (the chip: drawn on one line, its path and line whole; pressed, where it leads told)
-    let chip = words.filter(fn(w) { w.0 == "libs/sf-ui/src/table_node.mbt:152" })
-    guard chip is [(_, x, y, w, h, _)] else { fail("the chip drawn once whole: \{Repr(words.map(fn(w) { w.0 }))}") }
-    tt.tap(x + w / 2.0, y + h / 2.0)
-    tt.run_for(@ui.move_most_ms)
-    let x0 = glyphs.fold(init=1.0e9, fn(m, g) { if g.0 < m { g.0 } else { m } })
-    let y0 = glyphs.fold(init=1.0e9, fn(m, g) { if g.1 < m { g.1 } else { m } })
-    (
-      h,
-      words.filter(fn(w) { w.0.contains("新架构") || w.0.contains("whole") }).map(fn(w) { w.0 }),
-      led,
-      glyphs.map(fn(g) { (g.0 - x0, g.1 - y0, g.2) }),
-    )
-  }
-  let (old_h, old_words, old_led, old_glyphs) = drawn(false)
-  let (made_h, made_words, made_led, made_glyphs) = drawn(true)
+test "a table's cells as a message's words as nodes: a file's chip whole on one line, a bare chat link its title" {
+  let led = []
+  let tt = tn_cells_tester(led)
+  let words = tt.words()
+  // (the chip: drawn on one line, its path and line whole; pressed, where it leads told)
+  let chip = words.filter(fn(w) { w.0 == "libs/sf-ui/src/table_node.mbt:152" })
+  guard chip is [(_, x, y, w, h, _)] else { fail("the chip drawn once whole: \{Repr(words.map(fn(w) { w.0 }))}") }
+  tt.tap(x + w / 2.0, y + h / 2.0)
+  tt.run_for(@ui.move_most_ms)
+  let made_words = words.filter(fn(w) { w.0.contains("新架构") || w.0.contains("whole") }).map(fn(w) { w.0 })
   // (one line of 13's words: under two)
-  assert_true(old_h < 13.0 * 1.65 * 1.5 && made_h < 13.0 * 1.65 * 1.5, msg="chip \{old_h} old, \{made_h} made")
-  assert_eq(old_words, ["@新架构 chat 表格问题", "\"whole\" | \"tasks\""])
-  assert_eq(made_words, old_words)
-  assert_eq(old_led, [path_link("libs/sf-ui/src/table_node.mbt", Some(152))])
-  assert_eq(made_led, old_led)
-  // (and every glyph where the other draws it: the same columns)
-  assert_eq(made_glyphs, old_glyphs)
+  assert_true(h < 13.0 * 1.65 * 1.5, msg="chip \{h} made")
+  assert_eq(made_words, ["@新架构 chat 表格问题", "\"whole\" | \"tasks\""])
+  assert_eq(led, [path_link("libs/sf-ui/src/table_node.mbt", Some(152))])
 }

@@ -262,7 +262,7 @@ test "chat as nodes: held by an answer's top, not moved by the reader, it follow
     // the next message, short: followed to the foot, the answer gone up
     let _ = rp_frames(t, clock, fn() { rp_said(171, rp_next) }, rp_first, rp_rest_ms)
     let foot = t.drawn_of(rp_next).map(fn(d) { d.1 }).unwrap_or(-1.0e9)
-    assert_true(foot > bar_foot() && foot < rp_field_top(t), msg="\{screen.0}: the next message not in sight at the foot: \{foot}")
+    assert_true(foot > bar_foot_at(screen.1) && foot < rp_field_top(t), msg="\{screen.0}: the next message not in sight at the foot: \{foot}")
     let first = t.drawn_of(rp_first).map(fn(d) { d.1 }).unwrap_or(-1.0e9)
     assert_true(first < rest - 20.0, msg="\{screen.0}: the answer held at \{rest}, now \{first}")
     // a tall one after: read from its top, never over the margin's line
@@ -444,9 +444,9 @@ test "chat as nodes: the viewer's own words sent while an answer's top holds the
     rp_send(t, mine)
     t.run_for(rp_rest_ms)
     let y = t.drawn_of(mine).map(fn(d) { d.1 }).unwrap_or(-1.0e9)
-    assert_true(y > bar_foot() && y < rp_field_top(t), msg="\{screen.0}: what was sent at \{y}")
+    assert_true(y > bar_foot_at(screen.1) && y < rp_field_top(t), msg="\{screen.0}: what was sent at \{y}")
     let top = t.drawn_of(rp_first).map(fn(d) { d.1 }).unwrap_or(-1.0e9)
-    assert_true(top < bar_foot(), msg="\{screen.0}: the answer's top still in sight at \{top}")
+    assert_true(top < bar_foot_at(screen.1), msg="\{screen.0}: the answer's top still in sight at \{top}")
   }
   fix_clock.val = None
 }

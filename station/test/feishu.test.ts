@@ -20,7 +20,8 @@ import { FeishuClient } from "../src/feishu/web.ts";
 import type { ChatEvent } from "../src/sessions/chat.ts";
 import { hubConfig } from "../src/sessions/config.ts";
 import { FakeFeishu } from "./feishu-fake.ts";
-import { Rig, settle } from "./hub-fakes.ts";
+import { Rig, message, settle } from "./hub-fakes.ts";
+import { sessionKey } from "../src/sessions/hub.ts";
 
 type Json = any;
 
@@ -584,6 +585,138 @@ test("hub: a Feishu connect's chat is one session, its threads on the connect's 
     assert.deepEqual(rig.store.cardAt(thread.id, rig.store.messagesBefore(thread.id, null, 1)[0]!.ts), { type: "login", login: "abc" });
   } finally {
     await r.close();
+    await rig.close();
+  }
+});
+
+/// A hub whose Feishu connect `fs` is `r`'s surface, and a session of it (a chat its first message began in oc_g).
+async function feishuHub(r: Awaited<ReturnType<typeof surfaceRig>>) {
+  const rig = new Rig();
+  rig.edit((raw) => raw.connects.push({ id: "fs", kind: "feishu", feishu: { appId: "cli_test", appSecret: "s" }, bind: { runtime: "claude" } }));
+  await rig.hub.shutdown();
+  rig.hub = rig.newHub({ chats: (id) => (id === "fs" ? r.surface : undefined) });
+  await rig.accept({ channel: "oc_g", threadTs: "om_a", ts: "om_a", user: "ou_ada", text: "@Bot 建个群", addressed: true }, "fs");
+  await settle();
+  rig.claude.last().reads();
+  return { rig, key: "fs:oc_g:om_a" };
+}
+
+/// What the surface heard last, given to the hub as the connect gives it.
+async function heardLast(rig: Rig, r: Awaited<ReturnType<typeof surfaceRig>>, count: number) {
+  await r.fake.until("heard", () => r.events.length === count);
+  const e = r.events.at(-1)!;
+  assert.equal(e.type, "message");
+  if (e.type === "message") await rig.accept(e.message, "fs");
+  await settle();
+  return e.type === "message" ? e.message : null;
+}
+
+test("hub: chat_post to a Feishu chat with no conversation yet (oc_…, a group its bot made) begins one there, the session's: what is said in it comes to that session, which posts on there (FB-43)", async () => {
+  const r = await surfaceRig({ topics: true });
+  const { rig, key } = await feishuHub(r);
+  try {
+    let n = 0;
+    r.fake.answer("POST /open-apis/im/v1/messages", (seen: Json) => ({ code: 0, data: { message_id: `om_n${++n}`, ...(seen.body.receive_id === "oc_t" ? { thread_id: "omt_1" } : {}) } }));
+    // A group: the chat's conversation from now on, followed without @.
+    const answer = await rig.call(key, "chat_post", { to: "oc_new", text: "大家好", title: "项目同步", kind: "all_done", done: "已在新建群发出首条消息" });
+    assert.ok(answer.startsWith("Posted to oc_new/om_n1 (now one of your conversations), and recorded state all_done."), answer);
+    assert.ok(answer.includes('Titled the chat "项目同步".'), answer);
+    const first = r.fake.calls("POST", "/open-apis/im/v1/messages").at(-1)!;
+    assert.deepEqual([first.query.receive_id_type, first.body.receive_id, first.body.msg_type], ["chat_id", "oc_new", "post"]);
+    const thread = rig.store.threadAt("feishu:fs", "oc_new", "om_n1")!;
+    assert.equal(rig.store.sessionThread(key, "oc_new", "om_n1")?.connect, "fs");
+    assert.equal(rig.store.autoTitle(thread.id).title, "项目同步");
+    assert.deepEqual(rig.said(thread.id).map((m) => [m.authorKind, m.text]), [["agent", "大家好"]]);
+    // Said in the group without @, and a quote of the first message: the same session's.
+    r.fake.message({ id: "om_p1", chat: "oc_new", text: "收到" });
+    await heardLast(rig, r, 1);
+    r.fake.message({ id: "om_p2", chat: "oc_new", text: "引用一下", parent: "om_n1" });
+    await heardLast(rig, r, 2);
+    assert.deepEqual(rig.said(thread.id).map((m) => m.text), ["大家好", "收到", "引用一下"]);
+    assert.deepEqual(rig.store.threadSessions(thread.id).map((m) => m.session), [key]);
+    rig.claude.last().reads();
+    const on = await rig.call(key, "chat_post", { to: "oc_new/om_n1", text: "好的" });
+    assert.ok(on.startsWith("Posted to oc_new/om_n1."), on);
+    assert.equal(r.fake.calls("POST", "/open-apis/im/v1/messages").at(-1)!.body.receive_id, "oc_new");
+    // A topic group (and `oc_…/`): the message is a topic, answered in it; a reply in the topic is the session's.
+    const topic = await rig.call(key, "chat_post", { to: "oc_t/", text: "开个话题" });
+    assert.ok(topic.startsWith("Posted to oc_t/omt_1 (now one of your conversations)."), topic);
+    const inTopic = rig.store.threadAt("feishu:fs", "oc_t", "omt_1")!;
+    r.fake.message({ id: "om_p3", chat: "oc_t", text: "话题里回复", thread: "omt_1", root: "om_n3" });
+    assert.equal((await heardLast(rig, r, 3))?.threadTs, "omt_1");
+    assert.deepEqual(rig.said(inTopic.id).map((m) => m.text), ["开个话题", "话题里回复"]);
+    rig.claude.last().reads();
+    await rig.call(key, "chat_post", { to: "oc_t/omt_1", text: "话题里接着说" });
+    assert.equal(r.fake.calls("POST", "/open-apis/im/v1/messages/om_n3/reply").length, 1);
+    // What only an existing conversation takes is refused, saying so.
+    assert.equal(await rig.refused(key, "chat_post", { to: "oc_x", text: "hi", kind: "all_done", done: "已在新建群发出首条消息，群里已有人回复", about: "om_a" }), "about must be the ts of a message in an existing conversation (leave about out when starting a new Feishu chat)");
+    assert.equal(await rig.refused(key, "chat_post", { to: "oc_x", withdraw: "om_1" }), "withdraw needs an existing CHANNEL/THREAD_TS conversation");
+    assert.equal(await rig.refused(key, "chat_post", { to: "oc_x", title: "群名" }), "cannot set title before starting the Feishu conversation: give text or files with chat_post");
+    assert.equal(r.fake.calls("POST", "/open-apis/im/v1/messages").filter((c) => c.body.receive_id === "oc_x").length, 0);
+  } finally {
+    await r.close();
+    await rig.close();
+  }
+});
+
+test("hub: chat_post to a Feishu chat_id with files and an options card (thread mode): files uploaded first, the card's buttons answer in the thread it began, its press the session's; a file that fails sends nothing and keeps no thread (FB-43)", async () => {
+  const r = await surfaceRig({ threadMode: true });
+  const { rig, key } = await feishuHub(r);
+  const dir = mkdtempSync(join(tmpdir(), "fsb-"));
+  try {
+    writeFileSync(join(dir, "shot.png"), "png");
+    writeFileSync(join(dir, "report.pdf"), "pdf");
+    const answer = await rig.call(key, "chat_post", {
+      to: "oc_card", text: "选哪个", files: [join(dir, "shot.png"), join(dir, "report.pdf")],
+      card: { type: "options", options: [{ label: "A" }, { label: "B" }] }, kind: "need_human", need: "选 A 或 B",
+    });
+    const id = /^Posted to oc_card\/(om_bot\d+) \(now one of your conversations\), and recorded state need_human\./.exec(answer)?.[1];
+    assert.ok(id, answer);
+    // Uploaded before anything is sent; the card first, the files in its thread after it.
+    const order = r.fake.calls("POST", /^\/open-apis\/im\/v1\/(images|files|messages(\/[^/]+\/reply)?)$/).map((c) => c.path.replace(/om_bot\d+/, "ID"));
+    assert.deepEqual(order, ["/open-apis/im/v1/images", "/open-apis/im/v1/files", "/open-apis/im/v1/messages", "/open-apis/im/v1/messages/ID/reply", "/open-apis/im/v1/messages/ID/reply"]);
+    const first = r.fake.calls("POST", "/open-apis/im/v1/messages").at(-1)!;
+    assert.deepEqual([first.body.receive_id, first.body.msg_type], ["oc_card", "interactive"]);
+    assert.deepEqual(r.fake.calls("POST", `/open-apis/im/v1/messages/${id}/reply`).map((c) => c.body.msg_type), ["image", "file"]);
+    const buttons = (content: string) => JSON.parse(content).body.elements.filter((e: Json) => e.tag === "button");
+    assert.deepEqual(buttons(first.body.content).map((b: Json) => b.behaviors[0].value.t), ["", ""], "its thread not known yet");
+    // Changed once its thread is: the buttons answer there.
+    const patched = r.fake.calls("PATCH", `/open-apis/im/v1/messages/${id}`);
+    assert.equal(patched.length, 1);
+    const pressed = buttons(patched[0]!.body.content);
+    assert.deepEqual(pressed.map((b: Json) => [b.text.content, b.behaviors[0].value.t]), [["A", id], ["B", id]]);
+    const thread = rig.store.threadAt("feishu:fs", "oc_card", id!)!;
+    assert.equal((rig.store.cardAt(thread.id, id!) as Json)?.type, "options");
+    assert.deepEqual(rig.said(thread.id)[0]!.attachments.map((a) => a.name), ["shot.png", "report.pdf"]);
+    // Its button pressed: the person's answer in that thread, the same session's.
+    const frame = r.fake.event("card.action.trigger", { operator: { open_id: "ou_ada" }, action: { tag: "button", value: pressed[0].behaviors[0].value }, context: { open_message_id: id, open_chat_id: "oc_card" } }, "ev-b");
+    await r.fake.until("acked", () => r.fake.ack(frame) !== undefined);
+    const said = await heardLast(rig, r, 1);
+    assert.deepEqual([said?.threadTs, said?.text], [id, "A"]);
+    assert.deepEqual(rig.said(thread.id).map((m) => m.text), ["选哪个", "A"]);
+    assert.deepEqual(rig.store.threadSessions(thread.id).map((m) => m.session), [key]);
+    // A file Feishu refuses: nothing is sent there, and no conversation is kept for it.
+    r.fake.answer("POST /open-apis/im/v1/files", { code: 234001, msg: "Invalid request param." });
+    const before = r.fake.calls("POST", /^\/open-apis\/im\/v1\/messages/).length;
+    await assert.rejects(rig.call(key, "chat_post", { to: "oc_fail", text: "附件", files: [join(dir, "report.pdf")] }));
+    assert.equal(r.fake.calls("POST", /^\/open-apis\/im\/v1\/messages/).length, before);
+    assert.equal(rig.store.db.prepare("SELECT count(*) AS n FROM threads WHERE channel = 'oc_fail'").get()!.n, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    await r.close();
+    await rig.close();
+  }
+});
+
+test("hub: chat_post to a Feishu chat_id from a chat with no Feishu bot is refused, saying so (FB-43)", async () => {
+  const rig = new Rig();
+  try {
+    const first = message({ text: "<@UBOT> hi" });
+    await rig.accept(first);
+    await settle();
+    const key = sessionKey("cl", first.channel, first.threadTs);
+    assert.equal(await rig.refused(key, "chat_post", { to: "oc_new", text: "大家好" }), "this station has no Feishu bot in this chat's workspace");
+  } finally {
     await rig.close();
   }
 });

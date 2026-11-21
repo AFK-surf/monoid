@@ -11,14 +11,6 @@ pub fn pointer_rests() -> Bool {
 }
 
 ///|
-/// What a pointer over a thing shows (a row's time, its ✕, a dismiss): while `pointed` (it is pointed at, or what it
-/// belongs to is: Ctx::hand_lit, so a test's frame with all of it shown shows it), and always to a finger, which hovers
-/// over nothing.
-fn pointed_or_finger(c : @ui.Ctx, pointed : Bool) -> Bool {
-  c.hand_lit(pointed) || @ui.pointing() is Finger
-}
-
-///|
 /// Whether what a row's ⋯ would offer is had by holding the row, its ⋯ not drawn (touch's: the native input,
 /// what only a pointer's hover would show), else by its ⋯ under the pointer or a right click.
 /// The same for either hand on one screen: the boxes never follow the hand (hand_layout_wbtest).

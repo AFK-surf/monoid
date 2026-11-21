@@ -1193,7 +1193,7 @@ fn stop_button_node(v : @view.View, src : Source, station : String, key : String
 ///|
 /// Its stop: a capsule 32 high, 14 in, its mark and words 6 apart on its middle, on red at 14%.
 // kept across runs: a value (no field of it changes)
-let agent_stop : @ui.Style = @ui.css("row h=S8 px=S3_5 gap=S1_5 radius=Full align=ACenter")
+let agent_stop : @ui.Style = @ui.css("row min_h=S8 px=S3_5 py=S1 gap=S1_5 radius=Full align=ACenter")
 
 ///|
 let agent_stop_h : Double = 32.0
@@ -1991,7 +1991,7 @@ let job_stop_h : Double = 46.0
 ///|
 /// Stopping it: a capsule across, 46 high, its mark and words 6 apart in its middle, on red at 12%.
 // kept across runs: a value (no field of it changes)
-let job_stop : @ui.Style = @ui.css("row w=Full radius=Full gap=S1_5 align=ACenter justify=JCenter").then(@ui.style(h=Fixed(job_stop_h)))
+let job_stop : @ui.Style = @ui.css("row w=Full radius=Full py=S2 gap=S1_5 align=ACenter justify=JCenter").then(@ui.style(min_h=Fixed(job_stop_h)))
 
 ///|
 let job_stop_ink : Double = 0.12

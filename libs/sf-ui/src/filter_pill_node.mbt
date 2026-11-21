@@ -336,7 +336,7 @@ let count_chip_fill : @ui.Style = @ui.style(row=true, w=grow, gap=S1_5, align=AC
 ///|
 /// Small: 24 high, 8 in, on the hover's ground, round.
 // kept across runs: a value (no field of it changes)
-let count_chip_small : @ui.Style = @ui.css("row h=S6 px=S2 gap=S1_5 align=ACenter bg=Hover radius=Full")
+let count_chip_small : @ui.Style = @ui.css("row min_h=S6 px=S2 py=S0_5 gap=S1_5 align=ACenter bg=Hover radius=Full")
 
 ///|
 /// Row: across the band, 32 high at least, 10 in, a side row's corner.

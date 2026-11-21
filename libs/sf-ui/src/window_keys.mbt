@@ -35,16 +35,6 @@ let window_rule_w : Double = 1.0
 let window_keys_gap : Double = 2.0
 
 ///|
-// kept across runs: a value (no field of it changes)
-let window_rule : @ui.Style = @ui.style(
-  w=Fixed(window_rule_w),
-  h=Fixed(window_rule_h),
-  ml=room(window_rule_before),
-  mr=room(window_rule_after),
-  bg=Line,
-)
-
-///|
 /// Across, from what is before the rule to the last button's side.
 pub fn window_keys_w() -> Double {
   window_rule_before + window_rule_w + window_rule_after + window_keys_gap + 3.0 * bar_key_side +
@@ -107,59 +97,4 @@ pub fn window_keys_room_tape(roots? : @ui.CornerRoots = @ui.corner_roots()) -> D
   } else {
     0.0
   }
-}
-
-///|
-/// The window's buttons over all the app shows, where they are the app's to draw: pressed, what they do
-/// (@ui.window_act); the maximize one's place told the host each frame (@ui.window_snap). `whole`: over a page alone
-/// over all the window (window_keys_at's).
-pub fn window_keys(c : @ui.Ctx, whole? : Bool = false) -> Unit {
-  if !@ui.window_keys_own() {
-    return
-  }
-  let p = theme().p
-  let (top, side) = window_keys_at(c.width, whole~)
-  let zoomed = @ui.window_zoomed()
-  let snap = @ui.window_snap_state()
-  // (its corner a bar's last key's at the window's corner, the others' the same: one corner for the row)
-  let link = window_corner_key()
-  c.box(style=@ui.style(row=true, w=Full, pt=room(top), pr=room(side), justify=JEnd, align=AStart), fn() {
-    c.box(style=@ui.style(row=true, align=ACenter, gap=room(window_keys_gap)), fn() {
-      c.box(style=window_rule, fn() {  }) |> ignore
-      icon_button(c, "minus", key="window/minimize", round=true, linked=link, label=t("desktop.menu.minimize"), on_press=fn() {
-        @ui.window_act(1)
-      }) |> ignore
-      // (pressed with the keys alone: the pointer's press on it is the host's)
-      icon_button(
-        c,
-        if zoomed { "copy" } else { "square" },
-        key="window/zoom",
-        round=true,
-        linked=link,
-        on=snap == 2,
-        lit=snap == 1,
-        label=t(if zoomed { "desktop.window.restore" } else { "desktop.window.maximize" }),
-        on_press=fn() {
-          @ui.window_act(2)
-        },
-      ) |> ignore
-      icon_button(
-        c,
-        "close",
-        key="window/close",
-        round=true,
-        linked=link,
-        ink=p.red,
-        label=t("desktop.menu.close"),
-        on_press=fn() {
-          @ui.window_act(3)
-        },
-      ) |> ignore
-    })
-    |> ignore
-  })
-  |> ignore
-  // (the maximize one second from the side: the close one and the gap between them past it)
-  let x = c.width - side - bar_key_side - window_keys_gap - bar_key_side
-  @ui.window_snap(x, top, bar_key_side, bar_key_side)
 }

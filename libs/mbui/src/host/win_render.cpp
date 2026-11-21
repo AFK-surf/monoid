@@ -400,15 +400,21 @@ static const char *shader_src =
     "      float mag = amount * (1.0 - sqrt(max(1.0 - bevelX * bevelX, 0.0))) * shortening;\n"
     "      disp = surfaceNormal * (-mag);\n"
     "    }\n"
+    "    float lensZoom = (I.prm.w < 0.0) ? clamp(1.0 - I.prm.w, 1.0, 3.0) : 1.0;\n"
+    "    float2 sampleBase = p;\n"
+    "    if (lensZoom > 1.0001) {\n"
+    "      float2 zoomC = (k <= 0.0) ? (I.rect.xy + I.rect.zw * 0.5) : ((ggb.xy + ggb.zw) * 0.5);\n"
+    "      sampleBase = zoomC + (p - zoomC) / lensZoom;\n"
+    "    }\n"
     "    float3 refractColor;\n"
     "    if (abs(I.pd.z) * amount * scale <= 0.25) {\n"
-    "      refractColor = backdrop(p + disp);\n"
+    "      refractColor = backdrop(sampleBase + disp);\n"
     "    } else {\n"
     "      float ds = I.pd.z * 0.5;\n"
     "      refractColor = float3(\n"
-    "        backdrop(p + disp * (1.0 + ds)).r,\n"
-    "        backdrop(p + disp).g,\n"
-    "        backdrop(p + disp * (1.0 - ds)).b\n"
+    "        backdrop(sampleBase + disp * (1.0 + ds)).r,\n"
+    "        backdrop(sampleBase + disp).g,\n"
+    "        backdrop(sampleBase + disp * (1.0 - ds)).b\n"
     "      );\n"
     "    }\n"
     "    float3 emission;\n"
@@ -466,11 +472,16 @@ static const char *shader_src =
     "      spot = 1.0 - smoothstep(gr * 0.1, gr, length(p - gp));\n"
     "      baseColor = saturate(baseColor + (0.08 * spot).xxx);\n"
     "    }\n"
-    "    float tangency = abs(surfaceNormal.x);\n"
+    "    float2 la = gmisc.zw;\n"
+    "    float2 rn = float2(\n"
+    "      surfaceNormal.x * la.x + surfaceNormal.y * la.y,\n"
+    "      -surfaceNormal.x * la.y + surfaceNormal.y * la.x\n"
+    "    );\n"
+    "    float tangency = abs(rn.x);\n"
     "    float3 result = baseColor;\n"
-    "    // (a) Inner bevel shadow (subtracts only transmittedColor; lightFacing = -surfaceNormal.y)\n"
+    "    // (a) Inner bevel shadow (subtracts only transmittedColor; lightFacing = -rn.y)\n"
     "    if (bevelShadowStr >= 0.001 && inward < 23.0) {\n"
-    "      float lightFacing = -surfaceNormal.y;\n"
+    "      float lightFacing = -rn.y;\n"
     "      float shadowShift = 6.0 * lightFacing;\n"
     "      float penumbra = 2.0 * shadowShift;\n"
     "      float bevelLeading = penumbra > 0.001 ? smoothstep(0.0, penumbra, inward) : 1.0;\n"
@@ -1216,6 +1227,12 @@ static int encode_missing;
 static int cut_on;
 static D3D11_RECT cut;
 
+static float g_light_angle = 0.0f;
+
+extern "C" void mb_host_glass_light_angle(double rad) {
+  g_light_angle = (float)rad;
+}
+
 extern "C" void mb_host_render_dirty(double x, double y, double w, double h) {
   dirty_told = 1;
   if (w < 0 || h < 0) {
@@ -1291,12 +1308,13 @@ static void ensure_canvas(int tw, int th) {
 static int capture(ID3D11RenderTargetView *target, int pw, int ph, const float *f, int32_t start, int32_t end,
                    int32_t count) {
   const float *a = f + start * MB_INST;
-  // A negative blur is contained: its straight edges are the capture's edges, its curved ones extended separately.
-  float blur = fabsf(a[7]);
+  // For frosted glass (kind 5), negative slot 7 is contained; for liquid glass (kind 6), negative slot 7 encodes clear-lens zoom.
   int kind = (int)(a[5] + 0.5f);
+  int is_contained = (kind == 5 && a[7] < 0.0f);
+  float blur = (kind == 6 && a[7] < 0.0f) ? 0.0f : fabsf(a[7]);
   int merged_liquid = (kind == 6 && a[23] > 0.0f);
   int unmerged_liquid = (kind == 6 && !merged_liquid);
-  float margin = a[7] < 0.0f ? 0.0f : 3.0f * blur + (kind == 6 ? a[21] * (1.0f + fabsf(a[22])) + fmaxf(a[23], 0.0f) : 0.0f) + 2.0f;
+  float margin = is_contained ? 0.0f : 3.0f * blur + (kind == 6 ? a[21] * (1.0f + fabsf(a[22])) + fmaxf(a[23], 0.0f) : 0.0f) + 2.0f;
   float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
   int n = 0;
   for (int32_t i = start; i < end; i++) {
@@ -1315,7 +1333,7 @@ static int capture(ID3D11RenderTargetView *target, int pw, int ph, const float *
         }
         n++;
       }
-      if (unmerged_liquid && a[7] >= 0.0f) {
+      if (unmerged_liquid) {
         float bm = 3.0f * blur + b[21] * (1.0f + fabsf(b[22])) + m23 + 2.0f;
         if (bm > margin) margin = bm;
       }
@@ -1332,7 +1350,7 @@ static int capture(ID3D11RenderTargetView *target, int pw, int ph, const float *
     if (unmerged_liquid) {
       float m23 = fmaxf(b[23], 0.0f);
       bx0 = b[0] - m23; by0 = b[1] - m23; bx1 = b[0] + b[2] + m23; by1 = b[1] + b[3] + m23;
-      if (a[7] >= 0.0f) {
+      {
         float bm = 3.0f * blur + b[21] * (1.0f + fabsf(b[22])) + m23 + 2.0f;
         if (bm > margin) margin = bm;
       }
@@ -1346,6 +1364,9 @@ static int capture(ID3D11RenderTargetView *target, int pw, int ph, const float *
     if (by1 > y1) y1 = by1;
   }
   gu.misc[0] = (float)n;
+  gu.misc[1] = 0.0f;
+  gu.misc[2] = cosf(g_light_angle);
+  gu.misc[3] = sinf(g_light_angle);
   gu.gb[0] = x0 - 2; gu.gb[1] = y0 - 2; gu.gb[2] = x1 + 2; gu.gb[3] = y1 + 2;
   float sc = (float)vscale;
   int px0 = (int)floorf((x0 - margin) * sc), py0 = (int)floorf((y0 - margin) * sc);
@@ -1370,7 +1391,7 @@ static int capture(ID3D11RenderTargetView *target, int pw, int ph, const float *
   ctx->OMSetBlendState(NULL, NULL, 0xffffffff);
   // (the passes over the levels whole, not cut to the part)
   ctx->RSSetState(raster);
-  int contained = mb_contained_make(&post_edge, a, px0 / sc, py0 / sc, 1.0f / sc, 1.0f / sc);
+  int contained = is_contained ? mb_contained_make(&post_edge, a, px0 / sc, py0 / sc, 1.0f / sc, 1.0f / sc) : 0;
   if (contained) {
     ctx->PSSetShader(edge_ps, NULL, 0);
     post_pass(&lv[0], w, h, &lv[4], w, h, 3, 0, 0, 0);

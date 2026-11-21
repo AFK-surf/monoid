@@ -221,6 +221,7 @@ pub(open) trait Host {
   mk_png(Self, Int) -> Bytes = _
   nt_show(Self, String, String, String, String, String) -> Unit = _
   rn_dirty(Self, Double, Double, Double, Double) -> Unit = _
+  rn_glass_light_angle(Self, Double) -> Unit = _
   nv_bar(Self, String) -> Int = _
   nv_able(Self) -> Bool = _
   nt_cancel(Self, String) -> Unit = _
@@ -1393,6 +1394,11 @@ impl Host with nt_show(_, _, _, _, _, _) {
 
 ///|
 impl Host with rn_dirty(_, _, _, _, _) {
+  ()
+}
+
+///|
+impl Host with rn_glass_light_angle(_, _) {
   ()
 }
 
@@ -3579,6 +3585,12 @@ fn ncall_end(id : Int) -> Unit {
 /// `present`; `w` < 0, all of it; once with `w` 0, none. A frame nothing was said for is drawn whole.
 pub fn render_dirty(x : Double, y : Double, w : Double, h : Double) -> Unit {
   current.val.rn_dirty(x, y, w, h)
+}
+
+///|
+/// Set the global ambient light axis angle (radians) for liquid glass surfaces on the active renderer.
+pub fn set_glass_light_angle(radians : Double) -> Unit {
+  current.val.rn_glass_light_angle(radians)
 }
 
 ///|

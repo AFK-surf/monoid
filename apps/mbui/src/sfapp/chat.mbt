@@ -24,15 +24,15 @@ let chat_title_line : Double = 16.0 * 1.4
 ///|
 /// Where the chat's bar ends, from the list's top (the list runs on under it), and what the list keeps over its first
 /// row: 14 under the bar.
-fn bar_foot() -> Double {
-  status_top() + chat_bar_h
+fn bar_foot_at(width : Double) -> Double {
+  status_top_now(width) + chat_bar_h
 }
 
 ///|
 /// Where the chat's bar is drawn to now (its second row as far as it shows): what covers the list's top, its room under
 /// it the list's (list_room).
 fn bar_foot_live(v : @view.View, r : ChatRef) -> Double {
-  bar_foot() + bar_extra_shown(v, r)
+  bar_foot_at(v.window_w()) + bar_extra_shown(v, r)
 }
 
 ///|

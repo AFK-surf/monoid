@@ -522,3 +522,42 @@ test "a phone's bar along the top is a capsule its round keys stand concentric i
   let faults = top_bar_faults(t)
   assert_true(faults.is_empty(), msg="选集 lit: " + faults.join("\n"))
 }
+
+///|
+test "player_node speed capsule: 1.0x keeps exact media_rate_h / phone_key_side; 2.0x scales without fixed_outgrown or squeeze_faults" {
+  // Desktop (non-phone) speed capsule
+  let td = player_tester(false, "E1.mp4", ["E1.mp4"], [], [])
+  td.draw()
+  let hd0 = td.get(Button, label="web-pages.drive.player.rate").rect.3
+  assert_eq(hd0, media_rate_h, msg="desktop 1.0x speed height")
+  assert_eq(td.fixed_outgrown(), [], msg="desktop 1.0x fixed_outgrown")
+  assert_eq(td.squeeze_faults(), [], msg="desktop 1.0x squeeze_faults")
+  td.set_font_scale(2.0)
+  td.draw()
+  let hd2 = td.get(Button, label="web-pages.drive.player.rate").rect.3
+  let player_outgrown = fn(t : @ui.Tester) {
+    t.fixed_outgrown().filter(fn(f) { !f.contains("viewer_bar_node.mbt") })
+  }
+  assert_true(hd2 > media_rate_h, msg="desktop 2.0x speed height grew: \{hd2}")
+  assert_eq(player_outgrown(td), [], msg="desktop 2.0x fixed_outgrown: \{Repr(player_outgrown(td))}")
+  assert_eq(td.squeeze_faults(), [], msg="desktop 2.0x squeeze_faults: \{Repr(td.squeeze_faults())}")
+  // Phone speed capsule
+  let tp = player_tester(true, "E1.mp4", ["E1.mp4"], [], [])
+  tp.draw()
+  let hp0 = tp.get(Button, label="android-misc.drive.player.speed").rect.3
+  assert_eq(hp0, phone_key_side, msg="phone 1.0x speed height")
+  assert_eq(tp.fixed_outgrown(), [], msg="phone 1.0x fixed_outgrown")
+  assert_eq(tp.squeeze_faults(), [], msg="phone 1.0x squeeze_faults")
+  tp.set_font_scale(2.0)
+  tp.draw()
+  let hp2 = tp.get(Button, label="android-misc.drive.player.speed").rect.3
+  assert_true(hp2 >= phone_key_side, msg="phone 2.0x speed height: \{hp2}")
+  assert_eq(tp.fixed_outgrown(), [], msg="phone 2.0x fixed_outgrown")
+  assert_eq(tp.squeeze_faults(), [], msg="phone 2.0x squeeze_faults")
+  tp.set_font_scale(3.0)
+  tp.draw()
+  let hp3 = tp.get(Button, label="android-misc.drive.player.speed").rect.3
+  assert_true(hp3 > phone_key_side, msg="phone 3.0x speed height grew: \{hp3}")
+  assert_eq(tp.fixed_outgrown().filter(fn(f) { f.contains("1×") }), [], msg="phone 3.0x speed fixed_outgrown")
+  assert_eq(tp.squeeze_faults().filter(fn(f) { f.contains("1×") }), [], msg="phone 3.0x speed squeeze_faults")
+}

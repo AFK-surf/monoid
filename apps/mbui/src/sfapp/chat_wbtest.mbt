@@ -780,7 +780,7 @@ test "what was said while the app was away, brought after its chat opened at its
   t.run_for(@ui.move_most_ms)
   // the first of them from its top, under the line: not the list at the end of the newest
   guard t.drawn_of(first) is Some((_, y)) else { fail("the first of what came is not in view") }
-  assert_true(y > bar_foot() && y < 844.0 / 2.0, msg="the first of what came, from its top: at \{y}")
+  assert_true(y > bar_foot_at(390.0) && y < 844.0 / 2.0, msg="the first of what came, from its top: at \{y}")
   fix_clock.val = None
 }
 

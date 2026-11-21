@@ -31,14 +31,15 @@ fn[T : Eq] painted_until(t : @ui.Tester, until : Double, seen : () -> T) -> (Arr
 
 ///|
 test "a button the pointer comes onto: its ground eases to the hover's as each frame is painted, nothing built for it" {
-  let t = @ui.Tester::new(
-    fn(c) {
-      c.box(w=Px(300.0), h=Px(200.0), align=AStart, fn() { button(c, "Join", key="b") |> ignore }) |> ignore
-    },
-    w=400.0,
-    h=300.0,
-  )
+  let t = @ui.Tester::new(fn(_c) {  }, w=400.0, h=300.0)
   t.check_looks(false)
+  @ui.set_view_app(fn(root) {
+    root.box(fn(col) {
+      col.width(Is(Some(300.0))).height(Is(Some(200.0))).lines_up(Is(Some(Start))) |> ignore
+      button_node(col, fn() { "Join" }, fn() {  }) |> ignore
+    })
+    |> ignore
+  })
   t.draw()
   let ground = fn() { t.drawn_rects()[0].4 }
   let (x, y) = {

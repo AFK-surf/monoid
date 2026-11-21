@@ -169,7 +169,7 @@ test "a tree not kept is drawn from an older reading's in one more statement, or
   db.md.remove("s1 \{key_last}")
   db.md.remove("s1 \{key_before}")
   let old_key = older_md_keys(key_last)[0]
-  assert_true(old_key.has_prefix("10."))
+  assert_true(old_key.has_prefix("13."))
   db.put_tree(station, old_key, "[\"old\"]", now)
   let store = MdStore::new(@sql.Sql::open(db.shell, "acct"), station)
   let (view, all, w, md) = opened(db, store, 3)
@@ -218,14 +218,14 @@ test "after a flush the same store reads back what it wrote: no statement for a 
 
 ///|
 test "a text's key is the TypeScript core's (markdown.ts mdKey)" {
-  // (each printed by markdown.ts's mdKey in Node, 2026-11-18)
-  assert_eq(md_key(""), "11.0.ztntfp.9zloz")
-  assert_eq(md_key("hello"), "11.5.m3bicr.1nhy8oo")
-  assert_eq(md_key("中文 **粗体**\n```js\nx\n```"), "11.21.1g3pc5c.13brcon")
-  assert_eq(md_key("😀 emoji"), "11.8.vhhzna.4gxozi")
-  assert_eq(older_md_keys("11.5.a.b"), [
-    "10.5.a.b", "9.5.a.b", "8.5.a.b", "7.5.a.b", "6.5.a.b", "5.5.a.b", "4.5.a.b", "3.5.a.b",
-    "2.5.a.b", "1.5.a.b",
+  // (each printed by markdown.ts's mdKey in Node, 2026-11-18; MD_READING=14)
+  assert_eq(md_key(""), "14.0.ztntfp.9zloz")
+  assert_eq(md_key("hello"), "14.5.m3bicr.1nhy8oo")
+  assert_eq(md_key("中文 **粗体**\n```js\nx\n```"), "14.21.1g3pc5c.13brcon")
+  assert_eq(md_key("😀 emoji"), "14.8.vhhzna.4gxozi")
+  assert_eq(older_md_keys("14.5.a.b"), [
+    "13.5.a.b", "12.5.a.b", "11.5.a.b", "10.5.a.b", "9.5.a.b", "8.5.a.b", "7.5.a.b", "6.5.a.b",
+    "5.5.a.b", "4.5.a.b", "3.5.a.b", "2.5.a.b", "1.5.a.b",
   ])
 }
 

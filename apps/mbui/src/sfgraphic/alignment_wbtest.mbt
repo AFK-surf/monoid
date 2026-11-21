@@ -1,15 +1,15 @@
 ///|
 fn alignment_positions(text_aligned : Bool) -> (Double, Double, Double) {
-  let started = Ref(false)
-  let t = @ui.Tester::new(fn(c) {
-    if !started.val {
+  let t = @ui.Tester::tree(
+    fn(root) {
       @sf.set_dark(Some(true))
-      started.val = true
-    }
-    c.with_theme(@sf.ui_theme_now(), fn() {
-      alignment_example(c, 398.0, text_aligned, "example")
-    })
-  }, w=398.0, h=240.0, corners_held=false)
+      alignment_example(root, 398.0, text_aligned)
+    },
+    w=398.0,
+    h=240.0,
+    corners_held=false,
+    theme=@sf.ui_theme_now,
+  )
   let (title_x, _, _, _) = t.rect_of("Quota check failed").unwrap()
   let (label_x, _, _, _) = t.rect_of("Try again").unwrap()
   let button = t.drawn_rects().iter().find_first(fn(r) { (r.3 - @sf.button_height()).abs() < 0.01 }).unwrap()
@@ -31,15 +31,18 @@ test "edge alignment lines up the button, text alignment lines up its label" {
 test "the white panels keep their corners and padding, with only the illustrated corner exception" {
   let edge_positions = alignment_positions(false)
   let words_positions = alignment_positions(true)
-  let started = Ref(false)
-  let t = @ui.Tester::new(fn(c) {
-    if !started.val {
+  let t = @ui.Tester::tree(
+    fn(root) {
       @sf.set_dark(Some(true))
-      started.val = true
-    }
-    alignment_figure(c)
-  }, w=960.0, h=540.0, corners_held=false, words_over_held=false)
-  let boxes = t.boxes()
+      alignment_figure(root)
+    },
+    w=960.0,
+    h=540.0,
+    corners_held=false,
+    words_over_held=false,
+    theme=@sf.ui_theme_now,
+  )
+  let boxes = t.boxes_held()
   let panels = boxes.filter(fn(b) { b.bg == white && b.w == 418.0 })
   assert_eq(panels.length(), 2)
   let card_ground = @sf.theme().p.card

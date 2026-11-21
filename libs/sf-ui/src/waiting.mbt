@@ -116,30 +116,6 @@ fn spin_part(k : Double) -> Double {
 }
 
 ///|
-/// Private spinner for the retained legacy `button` helper.
-fn spinner(
-  c : @ui.Ctx,
-  size? : Double = 14.0,
-  stroke? : Double = spin_stroke,
-  ring? : Int64,
-  arc? : Int64,
-  sweep? : Double = 0.25,
-  period? : Double = spinner_turn_ms,
-) -> Int {
-  let t = theme()
-  let ring = ring.unwrap_or(t.p.line_strong)
-  let arc = arc.unwrap_or(t.p.accent)
-  let at = SpinRing::new(size, stroke)
-  let node = c.lines(
-    [@ui.line(at.round(), width=stroke, color=ring), @ui.line(at.turning(sweep), width=stroke, color=arc)],
-    w=Px(size),
-    h=Px(size),
-  )
-  c.cycle_look(node, period, fn(f) { @ui.look(rot=f * 2.0 * spin_pi) })
-  node
-}
-
-///|
 /// The spinner as a node of the window's tree in `parent`: the same ring and arc, their lines said once
 /// (View::lines, in the theme's colours as they change, or `ring` and `arc`'s), turned by the clock about the middle of
 /// what its pieces cover as each frame is drawn (View::cycle, View::turn): nothing made again for it while it turns; its turning let go with it.

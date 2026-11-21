@@ -100,6 +100,8 @@ pub let manual : String
 
 pub fn mask_token(String) -> String
 
+pub let max_peer_active_skew_ms : Double
+
 pub fn message_of(Error) -> String
 
 pub fn next_page(RevIndex, Held, wire? : Wire, reset_if? : ((Double, Double, String) -> Bool)?) -> Page? raise
@@ -251,7 +253,7 @@ pub struct CommaLive {
   empty : CommaIndexes
   // private fields
 }
-pub fn CommaLive::changed_handler(Self, String, String?) -> @jsjson.JValue raise
+pub fn CommaLive::changed_handler(Self, String, @jsjson.JValue, String?) -> @jsjson.JValue raise
 pub fn CommaLive::close(Self) -> Unit
 pub fn CommaLive::make_comma(Self, String, () -> @jsjson.JValue, ((@jsjson.JValue) -> Unit) -> () -> Unit, ((String?) -> Bool)?, SurfaceStore, (String) -> Array[@jsjson.JValue], async () -> Unit, async () -> Unit) -> CommaParts
 pub fn CommaLive::name(Self, String?) -> String
@@ -431,6 +433,15 @@ pub(all) struct LiveDeps {
   hub : RouterHub
   previous_exited : async () -> Unit
 }
+
+pub struct OwnerActivity {
+  // private fields
+}
+pub fn OwnerActivity::get(Self, String?) -> Double?
+pub fn OwnerActivity::local_payload(Self) -> @jsjson.JValue?
+pub fn OwnerActivity::merge_peer(Self, @jsjson.JValue?, now? : Double?) -> Bool
+pub fn OwnerActivity::new() -> Self
+pub fn OwnerActivity::record_local(Self, String?, Double?) -> Bool
 
 pub(all) struct Page {
   epoch : String

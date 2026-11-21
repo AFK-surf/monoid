@@ -35,42 +35,9 @@ pub fn ask_foot_lines() -> Double {
 }
 
 ///|
-/// An ask's title and under it the one line the answer turns on ("" none), 12 and quiet: in the theme's words, on the
-/// night the night's.
-/// `centred`: each line in the card's middle (a card alone in the middle of what it is over).
-pub fn ask_words(c : @ui.Ctx, title : String, note : String, centred? : Bool = false) -> Unit {
-  let night = on_night.val
-  let ink = if night { media_dark_text } else { theme().p.text }
-  let title_style = if centred { ask_title.then(ask_in_middle) } else { ask_title }
-  let note_style = if night { ask_note.then(@ui.text_style(color=Data(media_dark_muted))) } else { ask_note }
-  c.box(style=ask_what, fn() {
-    if centred {
-      c.text(title, style=title_style.then(@ui.text_style(weight=Semibold, color=Data(ink)))) |> ignore
-    } else {
-      c.rich([@ui.span(title, weight=600, color=ink)], style=title_style) |> ignore
-    }
-    if note != "" {
-      c.text(note, style=if centred { note_style.then(ask_in_middle) } else { note_style }) |> ignore
-    }
-  })
-  |> ignore
-}
-
-///|
 // kept across runs: a value (no field of it changes)
 let ask_history_line : @ui.Style = @ui.css("row gap=S1 align=AStart")
 
 ///|
 // kept across runs: a value (no field of it changes)
 let ask_history_mark : @ui.Style = @ui.css("justify=JCenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let ask_in_middle : @ui.TextStyle = @ui.text_style(center=true)
-
-///|
-/// Its answer's buttons, out in the card's foot corners. What does not fit goes onto a line above, leaving the first
-/// action in the card's bottom left.
-pub fn ask_buttons(c : @ui.Ctx, body : () -> Unit) -> Unit {
-  c.box(style=ask_foot.then(foot_reach(button_height())), flow_reverse=true, line_gap=ask_foot_lines(), fn() { card_foot_words(body) }) |> ignore
-}

@@ -1608,6 +1608,10 @@ extern "js" fn rn_dirty(x : Double, y : Double, w : Double, h : Double) -> Unit 
   #|(x, y, w, h) => { if (globalThis.__mbhost.renderDirty) globalThis.__mbhost.renderDirty(x, y, w, h) }
 
 ///|
+extern "js" fn rn_glass_light_angle(rad : Double) -> Unit =
+  #|(rad) => { if (globalThis.__mbhost && globalThis.__mbhost.glassLightAngle) globalThis.__mbhost.glassLightAngle(rad) }
+
+///|
 extern "js" fn js_auto_launch() -> Bool =
   #|() => (globalThis.__mbhost && globalThis.__mbhost.autoLaunch) ? !!globalThis.__mbhost.autoLaunch() : false
 

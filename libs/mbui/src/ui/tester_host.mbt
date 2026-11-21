@@ -67,7 +67,17 @@ fn host_presented_now(buf : FixedArray[Double], count : Int) -> Unit {
   }
   let c = g()
   let (r, gg, b) = c.clear
-  host_parts_last.val = host_presented.val.next(buf, count, c.window_w, c.window_h, c.scale, r, gg, b)
+  host_parts_last.val = host_presented.val.next(
+    buf,
+    count,
+    c.window_w,
+    c.window_h,
+    c.scale,
+    r,
+    gg,
+    b,
+    light_angle=@signals.untracked(glass_light_angle),
+  )
 }
 
 ///|

@@ -29,6 +29,8 @@ pub fn atlas_put(Int32, Int32, Int32, Int32, FixedArray[Byte]) -> Bool
 
 pub fn atlas_size(Bool) -> Int32
 
+pub fn auto_launch() -> Bool
+
 pub fn autofill() -> Bool
 
 pub fn autofill_ask(String) -> Bool
@@ -159,6 +161,16 @@ pub fn gallery_ask() -> Unit
 
 pub fn gallery_read() -> GalleryRead?
 
+pub fn gamepad_axis(Double) -> Double
+
+pub let gamepad_dead_zone : Double
+
+pub let gamepad_fields : Int32
+
+pub fn gamepads() -> Array[Gamepad]
+
+pub let gamepads_most : Int32
+
 pub fn glyph(Int32, FixedArray[Double]) -> Unit
 
 pub fn glyph_picture(Int32, FixedArray[Byte]) -> Bool
@@ -198,6 +210,10 @@ pub fn hex_of_b64url(String) -> String
 pub fn hold_words(channel~ : String, title~ : String, body~ : String) -> Unit
 
 pub fn host() -> &Host
+
+pub fn hotkey_clear(String) -> Unit
+
+pub fn hotkey_set(String, String) -> Bool
 
 pub fn image_free(Int32) -> Unit
 
@@ -355,6 +371,10 @@ pub fn pick_photo(String) -> Pick?
 
 pub fn platform() -> Int32
 
+pub fn pointer_delta_take() -> (Double, Double)
+
+pub fn pointer_locked() -> Bool
+
 pub fn pointing() -> Int32
 
 pub let polled : @ref.Ref[() -> Unit]
@@ -387,6 +407,10 @@ pub fn request_frame() -> Unit
 
 pub fn request_frame_on() -> Unit
 
+pub fn reveal_file(String) -> Bool
+
+pub fn reveals_files() -> Bool
+
 pub fn rows_on_pixels() -> Bool
 
 pub fn run(String, FuncRef[(Double, Double, Double, Double) -> Unit], FuncRef[(Int32, Double, Double, Int32) -> Unit], FuncRef[(Double, Double, Double, Double, Int32) -> Unit], FuncRef[(Int32, Int32) -> Unit], FuncRef[(Int32, String, Int32, Int32) -> Unit]) -> Unit
@@ -396,6 +420,8 @@ pub fn save_file(String, Bytes) -> Bool
 pub fn script_step(String, String) -> String
 
 pub fn set_app_state(FuncRef[(Int32) -> Unit]) -> Unit
+
+pub fn set_auto_launch(Bool) -> Bool
 
 pub fn set_back(FuncRef[(Int32, Double, Double, Int32) -> Unit]) -> Unit
 
@@ -407,6 +433,8 @@ pub fn set_dark(Bool) -> Unit
 
 pub fn set_full_screen(Bool) -> Unit
 
+pub fn set_glass_light_angle(Double) -> Unit
+
 pub fn set_host(&Host) -> Unit
 
 pub fn set_ime(Bool, Double, Double, Double, Double, String, Int32, Int32) -> Unit
@@ -414,6 +442,8 @@ pub fn set_ime(Bool, Double, Double, Double, Double, String, Int32, Int32) -> Un
 pub fn set_outside(FuncRef[(Int32, Int32, Int32) -> Unit]) -> Bool
 
 pub fn set_perf(Bool) -> Unit
+
+pub fn set_pointer_lock(Bool) -> Unit
 
 pub fn set_sideways(Bool) -> Unit
 
@@ -507,6 +537,22 @@ pub fn system_dark() -> Bool
 
 pub fn system_said(String) -> Array[SystemSaid]
 
+pub let term_mode_alt_screen : Int32
+
+pub let term_mode_alt_scroll : Int32
+
+pub let term_mode_bracketed_paste : Int32
+
+pub let term_mode_decckm : Int32
+
+pub let term_mode_focus_event : Int32
+
+pub let term_mode_has_selection : Int32
+
+pub let term_mode_mouse_tracking : Int32
+
+pub let term_mode_viewport_active : Int32
+
 pub fn text_key(String, Double, Int32, Int32) -> Int32
 
 pub fn text_menu(Bool, Double, Double, Double, Double, Int32) -> Unit
@@ -528,6 +574,10 @@ pub let text_menu_redo : Int32
 pub let text_menu_select_all : Int32
 
 pub let text_menu_undo : Int32
+
+pub fn thermal_throttled() -> Bool
+
+pub fn thread_cpu_ms() -> Double
 
 pub fn turned_sideways() -> Bool
 
@@ -677,6 +727,7 @@ pub struct ClipRead {
 pub fn ClipRead::got(Self) -> ClipGot?
 pub fn ClipRead::id(Self) -> Int32
 
+#derive(Eq)
 pub(all) enum GalleryAccess {
   Whole
   Chosen
@@ -698,6 +749,18 @@ pub struct GalleryRead {
 }
 pub fn GalleryRead::id(Self) -> Int32
 pub fn GalleryRead::photos(Self) -> Array[GalleryPhoto]?
+
+#derive(Eq, @debug.Debug)
+pub(all) struct Gamepad {
+  index : Int32
+  buttons : Int32
+  lx : Double
+  ly : Double
+  rx : Double
+  ry : Double
+  lt : Double
+  rt : Double
+}
 
 #derive(Eq, @debug.Debug)
 pub(all) enum Hinge {
@@ -784,6 +847,7 @@ pub(all) struct NavItem {
   menu : Array[(String, String, Bool, String)]
 }
 
+#derive(Eq)
 pub(all) struct OpDone {
   code : Int32
   out : String
@@ -842,6 +906,7 @@ pub(all) enum PickKind {
   Camera
 }
 
+#derive(Eq)
 pub(all) struct Picked {
   name : String
   bytes : Bytes
@@ -877,9 +942,14 @@ pub struct Terminal {
   id : Int32
 }
 pub fn Terminal::close(Self) -> Unit
-pub fn Terminal::lines(Self) -> String
+pub fn Terminal::frame(Self, full? : Bool) -> Bytes
+pub fn Terminal::modes(Self) -> Int32
+pub fn Terminal::mouse(Self, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32) -> Bytes
 pub fn Terminal::open(Int32, Int32) -> Self?
-pub fn Terminal::resize(Self, Int32, Int32) -> Unit
+pub fn Terminal::resize(Self, Int32, Int32, cell_w? : Int32, cell_h? : Int32) -> Unit
+pub fn Terminal::scroll(Self, Int32, Int32) -> Unit
+pub fn Terminal::select(Self, Int32, Int32, Int32, Int32, Int32) -> Bool
+pub fn Terminal::text(Self, selection_only? : Bool) -> String
 pub fn Terminal::write(Self, Bytes) -> Unit
 
 // Type aliases
@@ -976,9 +1046,11 @@ pub(open) trait Host {
   fn back_enabled(Self, Bool) -> Unit = _
   fn reduce_transparency(Self) -> Bool = _
   fn increase_contrast(Self) -> Bool = _
+  fn thermal_throttled(Self) -> Bool = _
   fn gpu_ms(Self) -> Double = _
   fn frames_dropped(Self) -> Int32 = _
   fn cpu_ms(Self) -> Double = _
+  fn thread_cpu_ms(Self) -> Double = _
   fn env(Self, String) -> String = _
   fn set_app_state(Self, FuncRef[(Int32) -> Unit]) -> Unit = _
   fn system_dark(Self) -> Bool = _
@@ -999,6 +1071,7 @@ pub(open) trait Host {
   fn perf_size(Self) -> Double = _
   fn perf_read(Self) -> Bytes = _
   fn perf_open(Self, Bool) -> Bool = _
+  fn reveal_file(Self, String, Bool) -> Bool = _
   fn shared_in(Self) -> String = _
   fn shared_in_file(Self, Int32) -> Bytes = _
   fn app_version(Self) -> Int32 = _
@@ -1093,6 +1166,7 @@ pub(open) trait Host {
   fn mk_png(Self, Int32) -> Bytes = _
   fn nt_show(Self, String, String, String, String, String) -> Unit = _
   fn rn_dirty(Self, Double, Double, Double, Double) -> Unit = _
+  fn rn_glass_light_angle(Self, Double) -> Unit = _
   fn nv_bar(Self, String) -> Int32 = _
   fn nv_able(Self) -> Bool = _
   fn nt_cancel(Self, String) -> Unit = _
@@ -1130,8 +1204,13 @@ pub(open) trait Host {
   fn cl_picture(Self, Int32) -> Int32 = _
   fn tm_open(Self, Int32, Int32) -> Int32 = _
   fn tm_write(Self, Int32, Bytes) -> Unit = _
-  fn tm_resize(Self, Int32, Int32, Int32) -> Unit = _
-  fn tm_lines(Self, Int32) -> String = _
+  fn tm_resize(Self, Int32, Int32, Int32, Int32, Int32) -> Unit = _
+  fn tm_frame(Self, Int32, Int32) -> Bytes = _
+  fn tm_modes(Self, Int32) -> Int32 = _
+  fn tm_scroll(Self, Int32, Int32, Int32) -> Unit = _
+  fn tm_select(Self, Int32, Int32, Int32, Int32, Int32, Int32) -> Int32 = _
+  fn tm_text(Self, Int32, Int32) -> String = _
+  fn tm_mouse(Self, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32, Int32) -> Bytes = _
   fn tm_close(Self, Int32) -> Unit = _
   fn cl_text(Self, Int32) -> String = _
   fn cl_png(Self, Int32) -> Bytes = _
@@ -1152,4 +1231,12 @@ pub(open) trait Host {
   fn ncall_end(Self, Int32) -> Unit = _
   fn words_spaced(Self) -> Int32 = _
   fn window_set_title(Self, Int32, String) -> Unit = _
+  fn auto_launch(Self) -> Bool = _
+  fn set_auto_launch(Self, Bool) -> Bool = _
+  fn hotkey_set(Self, String, String) -> Bool = _
+  fn hotkey_clear(Self, String) -> Unit = _
+  fn pointer_lock(Self, Bool) -> Unit = _
+  fn pointer_locked(Self) -> Bool = _
+  fn pointer_delta(Self, FixedArray[Double]) -> Unit = _
+  fn gamepads(Self, FixedArray[Double]) -> Int32 = _
 }
