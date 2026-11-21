@@ -33,6 +33,9 @@
 // accounts (profiles/down) runs the bindings of 账号's row (Profile, its count) alone, 6, where they ran 82 as the old
 // view's sidebar was not counted; 账号's page in reading's words, the rows of its card a change reaches, 1 each.
 
+// Raised 2026-11-21: 概览's 需处理 rows say each account's tier after its name (profiles_overview.mbt ov_alert_block,
+// #7908), newly shown: profiles/down mounts those rows with their tags (104 to 117).
+
 // Raised once, 2026-11-17: the wide profiles' place's sidebar made as nodes (sfdesk places_side_node.mbt): the rows of the
 // accounts gone down that it shows tell their state, their red line, their allowance and 概览's 需处理 there, 30 more
 // (186), where its old view's were not counted.
@@ -697,7 +700,7 @@ let real_size_bindings_known : Map[String, Int] = {
   "wide place-stations screens/screen": 67,
   "wide place-stations stationNet/sample": 6,
   "wide place-stations resources/sample": 6,
-  "wide place-profiles profiles/down": 104,
+  "wide place-profiles profiles/down": 117,
   "wide place-profiles profilesOverview/down": 8,
   "wide newchat-station stationNet/sample": 1,
   "wide newchat-preset-many newChat/host": 28,
