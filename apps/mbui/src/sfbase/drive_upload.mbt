@@ -254,12 +254,6 @@ pub fn held_seed(station : String, f : @hostapi.Picked) -> String {
 pub let read_only_words : String = "只读运行：不发送，不上传，不保存草稿"
 
 ///|
-pub fn say(c : @ui.Ctx, words : String) -> Unit {
-  ignore(c)
-  toast_later(words)
-}
-
-///|
 pub fn dv_error(e : Json) -> String {
   match text(Some(e), "message") {
     "" => @sf.t("android-misc.failed")

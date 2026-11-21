@@ -17,6 +17,9 @@ export { DROPPED, GONE, NETWORK };
 export const REQUEST_AWAY_MS = 10_000;
 export const QUIET_MS = 3_000;
 export const STREAM_AWAY_MS = 30_000;
+/// Away this long, a frozen app sent no keepalive for as long as a path may stay silent (3 s on both sides): its
+/// connections may have lost their ways, though not long enough to take them for gone.
+export const CHECK_AWAY_MS = 3_000;
 
 export class Wake {
   readonly at: number;
@@ -47,6 +50,11 @@ export class Wake {
   /// Long enough away that the connections under the core are taken for gone.
   suspectsConnections(): boolean {
     return this.network || this.retry || this.away >= STREAM_AWAY_MS;
+  }
+  /// Away long enough that the connections are worth asking whether they still answer, and not so long they are taken
+  /// for gone.
+  checksConnections(): boolean {
+    return !this.suspectsConnections() && this.away >= CHECK_AWAY_MS;
   }
   reason(): string {
     return this.network ? NETWORK : GONE;

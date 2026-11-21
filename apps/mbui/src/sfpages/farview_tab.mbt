@@ -660,24 +660,22 @@ pub fn farview_pane_node(
           at.padding(Is((8.0, 0.0, 8.0, 8.0))) |> ignore
           at.box(fn(line) {
             // (the words on one line, cut short where the row has not the room for them and 接管, never wrapped beside
-            // it; 接管's middle on that line's: each stands down from the top by half of what the other is taller)
+            // it; 接管's middle on that line's, concentric capsule round it at any size of words)
             line
             .row(Is(true))
             .gap(Is(8.0))
             .padding(Is((6.0, 6.0, 6.0, 6.0)))
-            .lines_up(Is(Some(Start)))
+            .lines_up(Is(Some(Middle)))
             .ground(By(fn() { @sf.theme().p.neutral_bg }))
             .radius(Is(@sf.button_height() / 2.0 + 6.0))
             |> ignore
-            let first_line = fn() { @sf.node_sp(line, @sf.ui_theme().text_size(Body).1) }
-            let past = fn() { (@sf.button_height() - first_line()) / 2.0 }
             line.box(fn(w) {
               // (its start off the capsule's round end, S3 in as the address's words in theirs: the line's 6 and the rest)
               w
               .grow(Is(1.0))
               .shrink(Is(1.0))
               .min_width(Is(Some(0.0)))
-              .padding(By(fn() { (farview_words_in - 6.0, past().max(0.0), 0.0, 0.0) }))
+              .padding(Is((farview_words_in - 6.0, 0.0, 0.0, 0.0)))
               |> ignore
               @sf.words_node(w, fn() { @sf.t("web-pages.chat.screenAgent") }, fn() { farview_agent_words })
               .cuts(Is(true))
@@ -687,7 +685,6 @@ pub fn farview_pane_node(
             })
             |> ignore
             line.box(fn(b) {
-              b.padding(By(fn() { (0.0, (-past()).max(0.0), 0.0, 0.0) })) |> ignore
               @sf.button_node(b, fn() { @sf.t("android-misc.screen.takeOver") }, fn() { tab.stage.take_over() }, tone=Primary) |> ignore
             })
             |> ignore

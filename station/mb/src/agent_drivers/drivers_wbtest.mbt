@@ -171,3 +171,221 @@ test "Codex's CA file: the first of the system's there, each looked at only afte
   lp.run()
   assert_eq(got.val, None)
 }
+
+///|
+fn fake_codex_machine(
+  lp : Loop,
+  files : Map[String, String],
+  alive_pids : Set[Int],
+) -> Machine {
+  {
+    lp,
+    sep: "/",
+    socket_visible: false,
+    says_leave: false,
+    read_dir: dir => {
+      let prefix = dir + "/"
+      let out : Array[String] = []
+      for k, _ in files {
+        if k.has_prefix(prefix) {
+          let name = k.substring(start=prefix.length())
+          if !name.contains("/") {
+            out.push(name)
+          }
+        }
+      }
+      Later::ok(lp, out)
+    },
+    read_file: path => match files.get(path) {
+      Some(t) => Later::ok(lp, t)
+      None => Later::fail(lp, Failed("ENOENT"))
+    },
+    mtime: _ => Later::ok(lp, None),
+    size: _ => Later::ok(lp, None),
+    read_at: (_, _, _) => Later::ok(lp, b""),
+    remove: _ => done(lp),
+    there: _ => Later::ok(lp, true),
+    is_file: _ => Later::ok(lp, false),
+    realpath: p => Later::ok(lp, Some(p)),
+    make_dir: _ => done(lp),
+    link: (_, _) => done(lp),
+    stat: (_, _) => Later::ok(lp, None),
+    write_file: (_, _, _) => done(lp),
+    append_file: (_, _) => done(lp),
+    remove_tree: _ => done(lp),
+    rename: (_, _) => done(lp),
+    copy: (_, _) => done(lp),
+    copy_file: (_, _) => done(lp),
+    hard_link: (_, _) => done(lp),
+    link_path: (_, _) => done(lp),
+    pid_alive: pid => alive_pids.contains(pid),
+    group_alive: _ => false,
+    start_time: _ => Later::ok(lp, None),
+    connect: (_, _) => {
+      write: _ => (),
+      end: () => (),
+      destroy: () => (),
+      writable: () => false,
+      destroyed: () => true,
+    },
+    sleep: ms => {
+      let out = Later::new(lp)
+      lp.after(ms, () => out.resolve(())) |> ignore
+      out
+    },
+    now: () => lp.now,
+    log: (_, _, _, _) => (),
+  }
+}
+
+///|
+fn fake_codex_proc(lp : Loop, id : String, runner_pid : Int, alive : Ref[Bool], killed : Ref[Int]) -> Proc {
+  let info : RunnerInfo = {
+    json: obj([
+      ("id", s(id)),
+      ("runner", n(runner_pid)),
+      ("pgid", n(runner_pid)),
+      ("startedAt", d(1000.0)),
+      ("socket", s("/tmp/\{id}.sock")),
+      ("keeps", b(true)),
+    ]),
+  }
+  {
+    info,
+    write: _ => (),
+    tell: _ => (),
+    say: (_, _) => (),
+    keep_from: _ => (),
+    freeze: () => (),
+    frozen_state: () => None,
+    detach: () => (),
+    kill: _ => {
+      killed.val += 1
+      alive.val = false
+      done(lp)
+    },
+    released: () => done(lp),
+    has_exited: () => !alive.val,
+    handed: () => false,
+    thread: (_, _, _) => (),
+    drop_thread: _ => (),
+    route_thread: (_, _, _) => false,
+    route: _ => (),
+    orphans_off: () => (),
+  }
+}
+
+///|
+fn fake_codex_driver(m : Machine) -> CodexDriver {
+  let lp = m.lp
+  let procs : Procs = {
+    start: (_, _, _, _, _, _, _) => Later::fail(lp, Failed("unused")),
+    adopt: (_, _, _, _) => abort("unused"),
+    replay_own: (_, _, _, _) => Later::ok(lp, Null),
+    replay: _ => Later::ok(lp, obj([])),
+    freeze: _ => done(lp),
+    thaw: _ => (),
+    close: () => done(lp),
+  }
+  let world : CodexWorld = {
+    raw_env: Env::new([]),
+    agent_env: () => [],
+    walk_skills: _ => Later::ok(lp, []),
+    host_skills: "",
+    ca_bundles: [],
+    fast: None,
+    speed: None,
+    current_profile: None,
+    lent_borrowed: None,
+    lent_write: None,
+    installed_version: () => Later::ok(lp, None),
+    missing_host: (_, _) => Later::ok(lp, false),
+    incomplete_installation: () => (),
+    link_auth: _ => done(lp),
+    remember_rollout: (_, _, _) => (),
+    update_matches: _ => Later::ok(lp, false),
+    taken_up: None,
+    taking: () => (),
+    output_limit: 1_000_000,
+    take_up_bytes: 1_000_000,
+    warm_ms: 60_000.0,
+  }
+  let profiles : ProfileSays = { env: (_, _) => [], codex_overrides: _ => [] }
+  let words : Words = {
+    repo_rules_command: "",
+    agy_repo_rules_command: "",
+    subagent_hook_command: "",
+    speaks: [],
+    speaks_writing: "",
+  }
+  CodexDriver::new(m, "/data", procs, world, profiles, words)
+}
+
+///|
+test "codex #7503: ensure_ready refuses dead ready host, ended skips left_runners, opening guards retire/drain until let_go" {
+  let lp = Loop::new()
+  let files : Map[String, String] = {}
+  let alive_pids : Set[Int] = Set::from_array([101, 102])
+  let m = fake_codex_machine(lp, files, alive_pids)
+  let driver = fake_codex_driver(m)
+
+  // 1. ensure_ready refuses a ready host that has exited.
+  let dead_flag = Ref::new(false)
+  let dead_kills = Ref::new(0)
+  let dead_host = Host::new(m, "p1", "sig", 1.0, true, "p1")
+  dead_host.proc = Some(fake_codex_proc(lp, "codex-p1", 101, dead_flag, dead_kills))
+  let err_msg = Ref::new("")
+  dead_host
+  .ensure_ready()
+  .on(r => if r is Err(e) { err_msg.val = words_of(e) })
+  lp.run()
+  assert_eq(err_msg.val, "codex app-server is not running")
+
+  // 2. opening > 0 prevents retire_stale and drain from killing; let_go triggers drain when opening reaches 0.
+  let h_alive = Ref::new(true)
+  let h_kills = Ref::new(0)
+  let host = Host::new(m, "p1", "sig", 1.0, true, "p1")
+  host.proc = Some(fake_codex_proc(lp, "codex-p1", 101, h_alive, h_kills))
+  host.login_stale = true
+  host.opening = 1
+  driver.host_set("p1", host)
+
+  driver.retire_stale("p1", None) |> ignore
+  lp.run()
+  assert_eq(h_kills.val, 0)
+  assert_true(driver.is_current(host))
+
+  host.draining = true
+  driver.host_delete("p1")
+  driver.draining_add(host)
+  driver.drain(host) |> ignore
+  lp.run()
+  assert_eq(h_kills.val, 0)
+  assert_true(driver.draining_has(host))
+
+  driver.let_go(host)
+  lp.run()
+  assert_eq(h_kills.val, 1)
+  assert_true(!driver.draining_has(host))
+  assert_true(driver.ended.contains("codex-p1:101"))
+
+  // 3. left_runners skips runners in `ended`, keeps others, and forgets gone entries from `ended`.
+  files["/data/run/runners/codex-p1.json"] = json_text(
+    obj([("id", s("codex-p1")), ("runner", n(101)), ("startedAt", d(1000.0))]),
+  )
+  files["/data/run/runners/codex-p1.2.json"] = json_text(
+    obj([("id", s("codex-p1.2")), ("runner", n(102)), ("startedAt", d(2000.0))]),
+  )
+  let found_ids : Ref[Array[String]] = Ref([])
+  driver.left_runners("p1").map(rs => found_ids.val = rs.map(r => r.id())) |> ignore
+  lp.run()
+  assert_eq(found_ids.val, ["codex-p1.2"])
+  assert_true(driver.ended.contains("codex-p1:101"))
+
+  // Once pid 101 exits, left_runners forgets "codex-p1:101" from `ended`.
+  alive_pids.remove(101)
+  driver.left_runners("p1").map(rs => found_ids.val = rs.map(r => r.id())) |> ignore
+  lp.run()
+  assert_eq(found_ids.val, ["codex-p1.2"])
+  assert_true(!driver.ended.contains("codex-p1:101"))
+}

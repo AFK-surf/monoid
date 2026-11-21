@@ -101,15 +101,6 @@ fn adb_phone_ask() -> Unit {
 }
 
 ///|
-/// The phone as its host last said it, asked once as an old view's page shows (adb_phone_ask, after its build).
-fn adb_phone(c : @ui.Ctx) -> Json? {
-  if adb_host.phone.get() is None && !adb_host.asking {
-    c.tell("adb-phone", adb_phone_ask)
-  }
-  adb_host.phone.get()
-}
-
-///|
 /// The phone as its host says it, for what node `v` makes (a request's card in its chat): asked as `v` is made, between
 /// frames (View::at_moment, its making's moment), where it is not said; asked again while `v` lives as an answer changes
 /// it; read where it is read, told as it is said (a signal), never looked at frame by frame.
@@ -254,15 +245,7 @@ fn adb_next(view : Json?, phone : Json?, there : Bool) -> AdbStep? {
 }
 
 ///|
-/// The first thing left to do on this phone for a chat's grant on the station at `station` (a granted request's card
-/// in its chat, decision.mbt): its 共享调试 switch off, then what the phone lacks, then what that station's lending
-/// waits on (adb_next). None where nothing is, or this device lends no adb of its own.
-pub fn adb_step_at(c : @ui.Ctx, core : Core, station : String) -> AdbStep? {
-  adb_step_of(core, station, adb_phone(c))
-}
-
-///|
-/// The same, the phone as `phone` says it (adb_phone_node's, a node's).
+/// The first thing left to do on this phone for a chat's grant on the station at `station`, the phone as `phone` says it (adb_phone_node's, a node's).
 pub fn adb_step_of(core : Core, station : String, phone : Json?) -> AdbStep? {
   if !flag(phone, "supported") {
     return None
@@ -335,13 +318,6 @@ fn adb_switch_on() -> Unit {
   if !flag(phone, "wireless") && flag(phone, "canSwitch") {
     adb_ask("adb.switch", obj([]))
   }
-}
-
-///|
-/// Whether this device lends its own adb (a phone on Android 11 or later, whatever it still lacks): where a granted
-/// request's card says what is left to do on it, and 允许 turns its 共享调试 on.
-pub fn phone_lends(c : @ui.Ctx) -> Bool {
-  flag(adb_phone(c), "supported")
 }
 
 ///|

@@ -333,6 +333,25 @@ fn icon_merge(parent : @view.View, size : Double, ink : () -> Int64) -> Unit {
 }
 
 ///|
+/// Magnifying glass search icon (mobile catalog drawer trigger).
+fn icon_search(parent : @view.View, size : Double, ink : () -> Int64) -> Unit {
+  let k = size / 24.0
+  icon_box(parent, size, fn() {
+    let c = ink()
+    [
+      @paint.shape_of(
+        [
+          circle_outline(10.5, 10.5, 6.2, k),
+          (flat_scaled([(15.2, 15.2), (20.2, 20.2)], k), false),
+        ],
+        stroke=c,
+        width=1.9 * k,
+      ),
+    ]
+  })
+}
+
+///|
 /// Bottom tab face for `LiquidBottomTabs`: 22pt vector icon, 4pt gap, 12pt medium label.
 fn studio_tab_face(name : String, icon : (@view.View, Double, () -> Int64) -> Unit) -> (@view.View, () -> Int64) -> Unit {
   fn(f, ink) {
@@ -341,6 +360,52 @@ fn studio_tab_face(name : String, icon : (@view.View, Double, () -> Int64) -> Un
       icon(col, 22.0, ink)
       col.box(fn(w) {
         w.words(Is(name), look=@lg.words_at(@lg.type_tab, weight=@lg.weight_medium)).ink(By(ink)) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  }
+}
+
+///|
+/// Spacious mobile 4-tab face for iOS 26 split-island dock: 20pt icon, 4pt gap, 11pt medium label.
+fn studio_tab_face_mobile(name : String, icon : (@view.View, Double, () -> Int64) -> Unit) -> (@view.View, () -> Int64) -> Unit {
+  fn(f, ink) {
+    f.box(fn(col) {
+      col.lines_up(Is(Some(Middle))).gap(Is(4.0)) |> ignore
+      icon(col, 20.0, ink)
+      col.box(fn(w) {
+        w.words(Is(name), look=@lg.words_at(11.0, weight=@lg.weight_medium)).ink(By(ink)) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  }
+}
+
+///|
+/// Dynamic 4th-slot mobile dock face reflecting the active overflow category (`Inputs (2)`, `Nav (3)`, or `Physics (5)`).
+fn studio_tab_face_dynamic(cat : () -> Int) -> (@view.View, () -> Int64) -> Unit {
+  fn(f, ink) {
+    f.box(fn(col) {
+      col.lines_up(Is(Some(Middle))).gap(Is(4.0)) |> ignore
+      col.show(fn() { cat() == 2 }, at_once=true, fn(ic) { icon_terminal(ic, 20.0, ink) })
+      col.show(fn() { cat() == 3 }, at_once=true, fn(ic) { icon_grid(ic, 20.0, ink) })
+      col.show(fn() { cat() != 2 && cat() != 3 }, at_once=true, fn(ic) { icon_merge(ic, 20.0, ink) })
+      col.box(fn(w) {
+        w
+        .words(
+          By(fn() {
+            match cat() {
+              2 => "Inputs"
+              3 => "Nav"
+              _ => "Physics"
+            }
+          }),
+          look=@lg.words_at(11.0, weight=@lg.weight_medium),
+        )
+        .ink(By(ink))
+        |> ignore
       })
       |> ignore
     })

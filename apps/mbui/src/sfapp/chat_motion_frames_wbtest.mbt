@@ -43,9 +43,10 @@ test "a chat's page made as nodes, 小屏 and 大屏, every frame: three lines s
     guard composer_field(t) is Some((fx, _, fw, _)) else { fail("\{at}: no composer's field") }
     tap_send(t)
     let press = t.time()
+    let away_ms = @sfbase.sent_out_away_ms()
     let mut away_seen = false
     while t.time() - press <= @ui.move_most_ms {
-      if @sfbase.flight_hint_away(t.ctx(), sent_nodes_draft) {
+      if t.time() - press < away_ms {
         away_seen = true
         match mf_caret(t, fx, fw) {
           Some(r) => fail("\{at}, \{t.time() - press} ms after the press: a caret drawn at \{Repr(r)} under the words leaving")

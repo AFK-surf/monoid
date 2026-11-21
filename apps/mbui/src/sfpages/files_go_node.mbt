@@ -499,7 +499,7 @@ let go_row_words : @ui.TextStyle = @ui.text_style(size=Ui, color=Fg, wrap=false,
 ///|
 /// The key (kbd): 5 in at its sides, a hairline round it, its corner 4.
 // kept across runs: a value (no field of it changes)
-let go_key_box : @ui.Style = @ui.css("px=S1_25 radius=Base border=B1 border_color=Line")
+let go_key_box : @ui.Style = @ui.css("px=S1_25 radius=Base border=B0_5 border_color=Line")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -519,7 +519,7 @@ let go_keys_box : @ui.Style = @ui.css("w=Full pt=S2_5")
 /// the options'.
 // kept across runs: a value (no field of it changes)
 let switch_button : @ui.Style = @ui.css((
-  #|row h=S6 px=S2 gap=S1_25 align=ACenter radius=Lg bg=Raised border=B1 border_color=Line
+  #|row h=S6 px=S2 gap=S1_25 align=ACenter radius=Lg bg=Raised border=B0_5 border_color=Line
 ))
 
 ///|

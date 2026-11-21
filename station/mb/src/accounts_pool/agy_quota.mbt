@@ -723,6 +723,30 @@ fn agy_status(detail : String) -> Double? {
 }
 
 ///|
+/// At most `most` characters of `text`, but a link the cut falls in kept whole: Google's verification link (`Please
+/// verify your account in your browser to continue: https://accounts.google.com/v3/signin/continue?plt=…`) cut short
+/// opens a 400, and it is what the person is to open.
+fn clip_keeping_links(text : String, most : Int) -> String {
+  if text.length() <= most {
+    return text
+  }
+  let cut = slice(text, 0, b=most)
+  let mut start = cut.length()
+  while start > 0 && !js_space(cut.unsafe_charcode_at(start - 1)) {
+    start -= 1
+  }
+  let tail = slice(cut, start)
+  if !tail.contains("http://") && !tail.contains("https://") {
+    return cut
+  }
+  let mut end = most
+  while end < text.length() && !js_space(text.unsafe_charcode_at(end)) {
+    end += 1
+  }
+  slice(text, 0, b=end)
+}
+
+///|
 /// `agyQuota`. `source`: the environment `agy` is started from (the station's, the profile's own over it).
 pub async fn agy_quota(
   ctx : Ctx,
@@ -827,7 +851,7 @@ pub async fn agy_quota(
       None => ()
     }
   }
-  let detail = slice(said, 0, b=300)
+  let detail = clip_keeping_links(said, 300)
   if auth_failure(detail) {
     raise Thrown(
       "RenewRefused",

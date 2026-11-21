@@ -14,45 +14,7 @@ let machine_sessions : @sf.LiveMap[String, Array[Json]] = @sf.LiveMap::new()
 let machine_sessions_asked : Map[String, Bool] = Map([])
 
 ///|
-/// The offer, where the station's machine kept sessions of its own Claude Code or Codex:
-/// quiet as the words around it until pointed at, then its ground and its words the text's; its list and a look at one
-/// before going on with it are sheets. Drawn by a new chat's page (sfpages), which says where it hangs.
-pub fn machine_sessions_offer(c : @ui.Ctx, core : Core, station : String, name : String) -> Unit {
-  let t = @sf.theme()
-  if !machine_sessions_asked.contains(station) {
-    machine_sessions_asked[station] = true
-    // (asked once the frame's builds are over: the build that first comes to it alone)
-    c.tell("machineSessions.list/" + station, fn() {
-      (core.call)("machineSessions.list", obj([("station", str(station))]), fn(r) {
-        match r {
-          Ok(v) => machine_sessions.set(station, items(Some(v), "sessions"))
-          Err(_) => ()
-        }
-      })
-    })
-  }
-  let sessions = machine_sessions.get(station).unwrap_or([])
-  if sessions.length() == 0 {
-    return
-  }
-  let id = c.id("machine-offer/" + station)
-  c.on_press(id, fn() {
-    open_machine_sessions(core, station, name)
-  })
-  let lit = c.lit(id)
-  let words = fill("android-chat.new.machine.offer", [
-    ("station", if name == "" { tr("android-chat.new.machine.here") } else { name }),
-  ])
-  let b = c.box(style=machine_offer_box, id~, fn() {
-    @sf.icon(c, "monitor", size=machine_offer_mark, color=if lit { t.p.text } else { t.p.muted }) |> ignore
-    c.text(words, style=if lit { machine_offer_words_lit } else { machine_offer_words }) |> ignore
-    @sf.press_ripple(c, id, @sf.small_corner)
-  })
-  c.semantics(b, Button, id~, label=words)
-}
-
-///|
-/// The offer (machine_sessions_offer's) as nodes in `parent`, of the station `station()` names (`name()` its name, ""
+/// The offer as nodes in `parent`, of the station `station()` names (`name()` its name, ""
 /// this machine): the sessions its machine kept asked once a station, as it is first made for it; shown once it has
 /// any, its mark and words quiet till the hand is on it; pressed, their list (open_machine_sessions).
 #callsite(autofill(loc))

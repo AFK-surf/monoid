@@ -696,6 +696,13 @@ fn steps_in_now() -> Int {
 }
 
 ///|
+/// How many steps deep the topmost open panel of nodes stands (1 its first, 0 when none is open): pass to
+/// `panel_back(to=...)` to return to a panel opened as a step inside another without unwinding past it.
+pub fn panel_depth() -> Int {
+  steps_in_now()
+}
+
+///|
 /// The room a panel leaves at its sides while its body is drawn (the presenters set it): what panel_bleed reaches across,
 /// and what a row's ground reaches out across, its words on the column's line (choice_row).
 let panel_sides_in : Ref[Double] = { val: 0.0 }

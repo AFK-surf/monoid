@@ -184,7 +184,7 @@ fn button_by(
     let padx = if card_words && icon == "" && !across { card_foot_words_in(height) } else { button_padx }
     v
     .row(Is(true))
-    .height(Is(Some(height)))
+    .min_height(Is(Some(height)))
     .lines_up(Is(Some(Middle)))
     .radius(Is(height / 2.0))
     .ground(By(fn() { looks().0 }))
@@ -195,12 +195,12 @@ fn button_by(
     let ends_give = across || v.lent(ends_give_lent).unwrap_or(false)
     if across {
       // (as wide as what holds it, whichever way that lays out: its own height kept)
-      v.width_share(Is(1.0)) |> ignore
+      v.width_share(Is(1.0)).padding(Is((0.0, 2.0, 0.0, 2.0))) |> ignore
     } else if ends_give {
       // (as wide as its words and their ends, narrower as what is beside it needs: its ends coming down first)
-      v.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+      v.shrink(Is(1.0)).min_width(Is(Some(0.0))).padding(Is((0.0, 2.0, 0.0, 2.0))) |> ignore
     } else {
-      v.padding(Is((padx, 0.0, padx, 0.0))) |> ignore
+      v.padding(Is((padx, 2.0, padx, 2.0))) |> ignore
       if v.lent(foot_fills_lent).unwrap_or(false) {
         // (at a sheet's foot, in a thumb's reach: its share of the foot's width, as the old button's there, foot_fills;
         // never narrower than its words and its ends need, what is beside it giving way first, as the old one's `keep`)

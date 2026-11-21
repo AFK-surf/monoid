@@ -87,9 +87,6 @@ pub(all) struct Core {
   reporting : () -> Bool?
   /// them turned on or off on this device (Crashes.setReporting)
   set_reporting : (Bool) -> Unit
-  /// a station's login as its card (the chat's, sfpages' login_card.mbt),
-  /// by station and id
-  login_card : (@ui.Ctx, String, String, Bool) -> Unit
   /// the card to share of the workspace's agents at work opened (sfpages' share_card_open)
   share_card : () -> Unit
   /// face `id` (at `index` in the faces' list; `variable`: one file for every weight) shown in itself on the fonts

@@ -943,7 +943,6 @@ test "wide: a new chat becomes its chat as the web's: its scene fading where it 
   assert_at((ex, ey), { let (x, y, _, _) = composer_glass(t); (x, y) })
   // the words in their bubble over the composer at the chat's foot (its rows at its end), gone across to its right
   t.run_for(sent + flight_carry_ms + 34.0 - t.time())
-  assert_true(send_flight.get() is None)
   let landed = seen_once(t, words)
   assert_true(landed.1 < ey && landed.1 > ey - 200.0 && landed.0 > typed.0 + 100.0, msg="landed at \{Repr(landed)} from \{Repr(typed)}")
 }

@@ -97,3 +97,71 @@ test "format_steps and error classification helpers" {
   assert_eq(digits_of(""), -1)
   assert_eq(cut("abcdef", 1, end=4), "bcd")
 }
+
+///|
+test "rename_retrying_by and retire_workspace_by retry transient locks and roll back on persistent EPERM" {
+  let rt = @effect.Runtime::new()
+  // Transient EPERM clears on retry: no archive removal or worktree unlock.
+  let ok_attempts = Ref::new(0)
+  let ok_waits : Array[Int] = []
+  let ok_rm = Ref::new(false)
+  let ok_unlock = Ref::new(false)
+  let f1 = rt.fork(async fn() {
+    retire_workspace_by(
+      async fn() {
+        rename_retrying_by(
+          async fn(_a, _b) {
+            ok_attempts.val += 1
+            if ok_attempts.val <= 2 {
+              raise failed("EPERM: operation not permitted")
+            }
+          },
+          "/room/workspace",
+          "/room/workspace.retiring",
+          backoff=workspace_rename_backoff,
+          wait=async fn(ms) { ok_waits.push(ms) },
+        )
+      },
+      async fn() { ok_rm.val = true },
+      async fn() { ok_unlock.val = true },
+    )
+  })
+  rt.advance(1)
+  assert_true(f1.poll() is Some(Succeeded(_)))
+  assert_eq(ok_attempts.val, 3)
+  assert_eq(ok_waits, [50, 100])
+  assert_true(!ok_rm.val)
+  assert_true(!ok_unlock.val)
+  // Persistent EPERM exhausts workspace backoff, removes archive, unlocks worktrees, and re-raises.
+  let fail_attempts = Ref::new(0)
+  let fail_waits : Array[Int] = []
+  let fail_rm = Ref::new(false)
+  let fail_unlock = Ref::new(false)
+  let f2 = rt.fork(async fn() {
+    retire_workspace_by(
+      async fn() {
+        rename_retrying_by(
+          async fn(_a, _b) {
+            fail_attempts.val += 1
+            raise failed("Operation not permitted (os error 1)")
+          },
+          "/room/workspace",
+          "/room/workspace.retiring",
+          backoff=workspace_rename_backoff,
+          wait=async fn(ms) { fail_waits.push(ms) },
+        )
+      },
+      async fn() { fail_rm.val = true },
+      async fn() { fail_unlock.val = true },
+    )
+  })
+  rt.advance(1)
+  match f2.poll() {
+    Some(Failed(e)) => assert_eq(code_of(e), "EPERM")
+    _ => fail("expected persistent EPERM to fail")
+  }
+  assert_eq(fail_attempts.val, 6)
+  assert_eq(fail_waits, [50, 100, 200, 400, 800])
+  assert_true(fail_rm.val)
+  assert_true(fail_unlock.val)
+}

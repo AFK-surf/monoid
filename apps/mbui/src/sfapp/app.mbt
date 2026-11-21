@@ -66,7 +66,6 @@ pub fn fresh_app() -> Unit {
 /// (scripts/check.sh checks).
 pub fn reset() -> Unit {
   files_cornered.val = false
-  image_quoted_at.val = -1
   // the stack and what the app keeps of it (src/sfbase)
   @sfbase.reset()
   // the desktop's own (src/sfdesk)
@@ -130,8 +129,6 @@ pub fn reset() -> Unit {
   attach_reset()
   // the menu bar given (menu_bar.mbt)
   // Home (home.mbt), the host told (above), a chat's page and what is in it
-  flying.val = None
-  opened_notices.clear()
   tool_parts.clear()
   flashing.val = ("", 0.0)
   bench_on.val = -1

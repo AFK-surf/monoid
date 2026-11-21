@@ -1,37 +1,22 @@
 {
   "counts": {
     "style-literal": {
-      "src/sfbase/flight.mbt": 1,
       "src/sfbase/viewer.mbt": 6
     },
     "box-loose": {
-      "src/sfbase/flight.mbt": 1,
       "src/sfbase/viewer.mbt": 1
-    },
-    "tier-outside-shell": {
-      "src/sfbase/bars.mbt": 1
     },
     "built-by-hand": {
       "src/sfbase/viewer.mbt": 1
     },
     "layout-read-back": {
-      "src/sfbase/pick.mbt": 4,
-      "src/sfbase/screen_links.mbt": 1,
-      "src/sfbase/viewer.mbt": 1,
-      "src/sfbase/viz_page.mbt": 2
+      "src/sfbase/viewer.mbt": 1
     },
     "ui-current": {
-      "src/sfbase/fresh.mbt": 1,
       "src/sfbase/viewer_tree.mbt": 13
     },
     "build-motion": {
-      "src/sfbase/chat_list.mbt": 1,
-      "src/sfbase/emit.mbt": 3,
-      "src/sfbase/flight.mbt": 2,
-      "src/sfbase/fresh.mbt": 2,
-      "src/sfbase/under_post.mbt": 1,
-      "src/sfbase/viewer.mbt": 1,
-      "src/sfbase/viz_page.mbt": 2
+      "src/sfbase/viewer.mbt": 1
     },
     "page-at-moment": {
       "src/sfbase/act.mbt": 1,
@@ -40,11 +25,6 @@
       "src/sfbase/viewer.mbt": 2,
       "src/sfbase/viewer_tree.mbt": 5,
       "src/sfbase/workspace_switch.mbt": 2
-    }
-  },
-  "excused": {
-    "motion-length": {
-      "src/sfbase/under_post.mbt": 1
     }
   }
 }

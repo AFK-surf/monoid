@@ -69,15 +69,32 @@ pub fn[K] toggle_group_node(
     Compact => toggle_group_compact_h
     Regular => toggle_group_h
   }
-  // (the track's corner, and its buttons' concentric with it toggle_group_in in)
-  let (outer, inner) = match shape {
-    Rounded => (small_corner, @ui.concentric(small_corner, toggle_group_in))
-    Pill => (h / 2.0 + toggle_group_in, h / 2.0)
-  }
+  let has_words = items.iter().any(fn(it) { !it.icon_only })
   @headless.toggle_group(made_for=loc, parent, label, is_on, turn, kind~, disabled~, fn(track, g) {
+    let h_now = fn() {
+      if has_words {
+        track.words_redone() |> ignore
+        dmax(h, node_sp(track, theme().t.ui_line).ceil() + 2.0)
+      } else {
+        h
+      }
+    }
+    // (the track's corner, and its buttons' concentric with it toggle_group_in in)
+    let outer = fn() {
+      match shape {
+        Rounded => small_corner
+        Pill => h_now() / 2.0 + toggle_group_in
+      }
+    }
+    let inner = fn() {
+      match shape {
+        Rounded => @ui.concentric(small_corner, toggle_group_in)
+        Pill => h_now() / 2.0
+      }
+    }
     style_node(track, fn() { toggle_group_track })
     track
-    .radius(Is(outer))
+    .radius(By(outer))
     .alpha(By(fn() { if g.disabled() { toggle_group_off_alpha } else { 1.0 } }))
     |> ignore
     for item in items {
@@ -86,9 +103,9 @@ pub fn[K] toggle_group_node(
         style_node(b, fn() { if item.icon_only { toggle_group_icon_button } else { toggle_group_button } })
         b
         .focus_ring_theme()
-        .height(Is(Some(h)))
-        .min_width(Is(Some(h)))
-        .radius(Is(inner))
+        .height(By(fn() { Some(h_now()) }))
+        .min_width(By(fn() { Some(h_now()) }))
+        .radius(By(inner))
         .ground(By(fn() {
           if t.on() {
             @ui.tree_theme().lifted

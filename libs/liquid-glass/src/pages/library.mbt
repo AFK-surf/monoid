@@ -73,7 +73,7 @@ fn lib_section_head(parent : @view.View, title : String, detail : String) -> Uni
   parent.box(fn(hdr) {
     hdr.gap(Is(6.0)) |> ignore
     hdr.box(fn(row) {
-      row.row(Is(true)).lies_along(Is(Between)).lines_up(Is(Some(Middle))).gap(Is(12.0)) |> ignore
+      row.row(Is(true)).wraps(Is(Some(4.0))).lies_along(Is(Between)).lines_up(Is(Some(Middle))).gap(Is(12.0)) |> ignore
       row.box(fn(l) {
         l
         .words(Is(title), look={ ..@lg.words_at(11.0, weight=600), tracking: Points(0.9) })
@@ -84,7 +84,7 @@ fn lib_section_head(parent : @view.View, title : String, detail : String) -> Uni
       if detail != "" {
         row.box(fn(r) {
           r
-          .words(Is(detail), look=@lg.words_at(11.5, weight=500))
+          .words(Is(detail), look=@lg.words_at(11.5, weight=500, wrap=true))
           .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.70) }))
           |> ignore
         })
@@ -108,6 +108,156 @@ fn lib_caption(parent : @view.View, text : String) -> Unit {
     .words(Is(text), look=@lg.words_at(12.0, weight=500))
     .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.74) }))
     |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// Detached circular Liquid Glass Search/Catalog orb (`64×64`, `r=32`) paired beside the 4-tab main dock capsule
+/// on compact mobile viewports (Apple iOS 26 Music / App Store / TV split-island bottom dock pattern).
+/// Matches `tabs_glass()` material identically with `InteractiveHighlight` touch stretch & glow.
+fn lib_dock_catalog_orb(parent : @view.View, is_open : () -> Bool, on_open : () -> Unit) -> Unit {
+  @headless.button(parent, fn() { "Search & Catalog" }, fn(_) { on_open() }, fn(v, btn) {
+    let light = @lg.InteractiveHighlight::new()
+    light.attach(v)
+    let orb_shape = fn(n : @view.View) -> @view.GroundShape {
+      let (dx, dy, sx, sy) = light.stretch(n)
+      if dx == 0.0 && dy == 0.0 && sx == 1.0 && sy == 1.0 {
+        return @view.ground_as_laid
+      }
+      let dw = 64.0 * (sx - 1.0)
+      let dh = 64.0 * (sy - 1.0)
+      let r = (64.0 + dh) / 2.0
+      { dx: dx - dw / 2.0, dy: dy - dh / 2.0, dw, dh, corners: Some((r, r, r, r)) }
+    }
+    v
+    .width(Is(Some(64.0)))
+    .height(Is(Some(64.0)))
+    .shrink(Is(0.0))
+    .radius(Is(32.0))
+    .lines_up(Is(Some(Middle)))
+    .lies_along(Is(Middle))
+    .shadow(Is(@lg.shadow_default))
+    .glass(By(fn() {
+      let dark = @lg.is_dark()
+      Some(
+        @paint.Glass::liquid(
+          blur=2.1,
+          tint=if dark { 0x202020FFL } else { 0xFDFCFD67L },
+          solid=if dark { 0x1E1F24FFL } else { 0xFAFAFAFFL },
+          saturation=1.0,
+          rim=0.6,
+          bezel=20.0,
+          refraction=28.0,
+          chroma=0.0,
+          merge=0.0,
+          adaptive=false,
+        ),
+      )
+    }))
+    .ground_drawn(By(fn() { orb_shape(v) }))
+    .gesture(
+      @ui.touch_slop(),
+      press=fn(d) { light.down(d.x, d.y, d.w, d.h) },
+      tap=fn(_) {
+        light.up()
+        btn.press()
+      },
+      drag=fn(d) {
+        match d.kind {
+          Down | Moved => light.moved(d.x, d.y)
+          Up => {
+            light.up()
+            if d.x >= 0.0 && d.x <= d.w && d.y >= 0.0 && d.y <= d.h {
+              btn.press()
+            }
+          }
+          Off => light.up()
+        }
+      },
+    )
+    |> ignore
+    v.box(fn(ov) {
+      ov
+      .over(Is(true))
+      .points(Is(false))
+      .radius(Is(32.0))
+      .ground(Is(@lg.white))
+      .alpha(By(fn() { @lg.clamp(light.pressed(ov), 0.0, 1.0) * 0.14 }))
+      .ground_drawn(By(fn() { orb_shape(ov) }))
+      |> ignore
+    })
+    |> ignore
+    v.box(fn(ic) {
+      ic
+      .points(Is(false))
+      .lines_up(Is(Some(Middle)))
+      .lies_along(Is(Middle))
+      .offset(By(fn() {
+        let (dx, dy, _, _) = light.stretch(v)
+        (dx, dy)
+      }))
+      .scale(By(fn() {
+        let (_, _, sx, sy) = light.stretch(v)
+        (sx + sy) / 2.0
+      }))
+      |> ignore
+      icon_search(ic, 22.0, fn() { if is_open() { @lg.colors().accent } else { @lg.colors().content } })
+    })
+    |> ignore
+    v.show(fn() { btn.focus_shown() }, fn(ring) {
+      ring
+      .over(Is(true))
+      .points(Is(false))
+      .margin(Is((-3.0, -3.0, -3.0, -3.0)))
+      .radius(Is(35.0))
+      .edge(By(fn() { (2.0, @lg.colors().accent) }))
+      |> ignore
+    })
+  })
+  |> ignore
+}
+
+///|
+/// Floating Liquid Glass circular search/catalog button (36×36, r=18) for tablet portrait viewports in the top NavBar.
+fn lib_nav_catalog_button(parent : @view.View, on_open : () -> Unit) -> Unit {
+  @headless.button(parent, fn() { "Search & Catalog" }, fn(_) { on_open() }, fn(v, btn) {
+    v
+    .width(Is(Some(36.0)))
+    .height(Is(Some(36.0)))
+    .shrink(Is(0.0))
+    .radius(Is(18.0))
+    .lines_up(Is(Some(Middle)))
+    .lies_along(Is(Middle))
+    .shadow(Is(@lg.shadow_default))
+    .glass(By(fn() {
+      let dark = @lg.is_dark()
+      Some(
+        @paint.Glass::liquid(
+          blur=2.1,
+          tint=if dark { 0x202020FFL } else { 0xFDFCFD67L },
+          solid=if dark { 0x1E1F24FFL } else { 0xFAFAFAFFL },
+          saturation=1.0,
+          rim=0.6,
+          bezel=14.0,
+          refraction=18.0,
+          chroma=0.0,
+          merge=0.0,
+          adaptive=false,
+        ),
+      )
+    }))
+    |> ignore
+    icon_search(v, 16.0, fn() { @lg.colors().content })
+    v.show(fn() { btn.focus_shown() }, fn(ring) {
+      ring
+      .over(Is(true))
+      .points(Is(false))
+      .margin(Is((-3.0, -3.0, -3.0, -3.0)))
+      .radius(Is(21.0))
+      .edge(By(fn() { (2.0, @lg.colors().accent) }))
+      |> ignore
+    })
   })
   |> ignore
 }
@@ -412,7 +562,7 @@ fn lib_controls_section(
         })
         |> ignore
         row.box(fn(sl) {
-          sl.width(Is(Some(320.0))) |> ignore
+          sl.grow(Is(1.0)).min_width(Is(Some(240.0))).max_width(Is(Some(360.0)), within=true) |> ignore
           param_slider(
             sl,
             "Bezel Depth",
@@ -450,6 +600,7 @@ fn lib_controls_section(
 /// Section 2 — `Inputs` (7 components): TextField, SearchBar, Checkbox, RadioGroup, Chip, Badge, CountBadge.
 fn lib_inputs_section(
   parent : @view.View,
+  is_phone : () -> Bool,
   name_field : @ui.Field,
   err_field : @ui.Field,
   demo_search : @ui.Field,
@@ -470,9 +621,14 @@ fn lib_inputs_section(
       sec.gap(Is(12.0)) |> ignore
       lib_section_head(sec, "TEXT FIELDS & SEARCH BAR", "liquid_text_field · liquid_search_bar")
       sec.box(fn(row) {
-        row.row(Is(true)).wraps(Is(Some(12.0))).gap(Is(16.0)).lines_up(Is(Some(Start))) |> ignore
+        row
+        .row(By(fn() { !is_phone() }))
+        .wraps(By(fn() { if is_phone() { None } else { Some(12.0) } }))
+        .gap(By(fn() { if is_phone() { 12.0 } else { 16.0 } }))
+        .lines_up(By(fn() { if is_phone() { None } else { Some(Start) } }))
+        |> ignore
         row.box(fn(f1) {
-          f1.width(Is(Some(260.0))) |> ignore
+          f1.width(By(fn() { if is_phone() { None } else { Some(260.0) } })) |> ignore
           @lg.liquid_text_field_node(
             f1,
             name_field,
@@ -485,7 +641,7 @@ fn lib_inputs_section(
         })
         |> ignore
         row.box(fn(f2) {
-          f2.width(Is(Some(240.0))) |> ignore
+          f2.width(By(fn() { if is_phone() { None } else { Some(240.0) } })) |> ignore
           @lg.liquid_text_field_node(
             f2,
             err_field,
@@ -498,7 +654,10 @@ fn lib_inputs_section(
         })
         |> ignore
         row.box(fn(f3) {
-          f3.width(Is(Some(240.0))).padding(Is((0.0, 22.0, 0.0, 0.0))) |> ignore
+          f3
+          .width(By(fn() { if is_phone() { None } else { Some(240.0) } }))
+          .padding(By(fn() { if is_phone() { (0.0, 0.0, 0.0, 0.0) } else { (0.0, 22.0, 0.0, 0.0) } }))
+          |> ignore
           @lg.liquid_search_bar_node(
             f3,
             demo_search,
@@ -644,6 +803,8 @@ fn lib_inputs_section(
 /// Section 3 — `Navigation` (6 components): NavBar, Toolbar, List, Disclosure, Card + ControlTile, AdaptiveSurface.
 fn lib_navigation_section(
   parent : @view.View,
+  is_phone : () -> Bool,
+  is_nav_stack : () -> Bool,
   grid_on : @signals.Signal[Bool],
   boost : @signals.Signal[Bool],
   list_active : @signals.Signal[Int],
@@ -660,7 +821,8 @@ fn lib_navigation_section(
       @lg.liquid_nav_bar_node(
         sec,
         fn() { "Optical Inspector" },
-        subtitle=fn() { "Metal · WebGL 2" },
+        subtitle=fn() { if is_phone() { "Metal · WebGL" } else { "Metal · WebGL 2" } },
+        compact=is_phone,
         leading=fn(s) {
           @lg.liquid_icon_button_node(
             s,
@@ -670,10 +832,14 @@ fn lib_navigation_section(
             size=Small,
           )
           |> ignore
-          @lg.liquid_badge_node(s, fn() { "Live" }, tone=Success, dot=true) |> ignore
+          s.show(fn() { !is_phone() }, at_once=true, fn(slot) {
+            @lg.liquid_badge_node(slot, fn() { "Live" }, tone=Success, dot=true) |> ignore
+          })
         },
         trailing=fn(s) {
-          @lg.liquid_badge_node(s, fn() { "60 fps" }, tone=Neutral) |> ignore
+          s.show(fn() { !is_phone() }, at_once=true, fn(slot) {
+            @lg.liquid_badge_node(slot, fn() { "60 fps" }, tone=Neutral) |> ignore
+          })
           @lg.liquid_icon_button_node(
             s,
             fn() { "Inspector Refresh" },
@@ -710,9 +876,17 @@ fn lib_navigation_section(
 
     // 2. Two-column List + Disclosure on left, Control Center + Adaptive Surface on right
     col.box(fn(split) {
-      split.row(Is(true)).wraps(Is(Some(12.0))).gap(Is(20.0)).lines_up(Is(Some(Start))) |> ignore
+      split
+      .row(By(fn() { !is_nav_stack() }))
+      .gap(Is(20.0))
+      .lines_up(By(fn() { if is_nav_stack() { None } else { Some(Start) } }))
+      |> ignore
       split.box(fn(left) {
-        left.grow(Is(1.0)).min_width(Is(Some(320.0))).gap(Is(14.0)) |> ignore
+        left
+        .grow(By(fn() { if is_nav_stack() { 0.0 } else { 1.0 } }))
+        .min_width(Is(Some(0.0)))
+        .gap(Is(14.0))
+        |> ignore
         lib_section_head(left, "LIST & DISCLOSURE", "liquid_list · liquid_disclosure")
         @lg.liquid_list_node(
           left,
@@ -783,10 +957,14 @@ fn lib_navigation_section(
       |> ignore
 
       split.box(fn(right) {
-        right.width(Is(Some(320.0))).shrink(Is(0.0)).gap(Is(14.0)) |> ignore
+        right
+        .width(By(fn() { if is_nav_stack() { None } else { Some(320.0) } }))
+        .shrink(By(fn() { if is_nav_stack() { 1.0 } else { 0.0 } }))
+        .gap(Is(14.0))
+        |> ignore
         lib_section_head(right, "DECK & ADAPTIVE", "card · tiles · adaptive")
         right.box(fn(deck_row) {
-          deck_row.row(Is(true)).gap(Is(14.0)).lines_up(Is(Some(Middle))) |> ignore
+          deck_row.row(Is(true)).wraps(Is(Some(12.0))).gap(Is(14.0)).lines_up(Is(Some(Middle))) |> ignore
           let wide = @lg.tile_size * 2.0 + @lg.tile_gap
           @lg.liquid_card_node(
             deck_row,
@@ -1122,10 +1300,10 @@ fn lib_overlays_section(
         toast_slot.max_width(Is(Some(480.0))) |> ignore
         toast_slot.pick(fn() { toast_status_idx.get() }, at_once=true, fn(slot, idx) {
           let (st, title, sub) = match idx {
-            1 => (@lg.LiquidStatus::Success, "Bundle compiled", "Metal + WebGL 2 targets ready in 0.4s")
-            2 => (@lg.LiquidStatus::Warning, "High refraction", "Bezel depth exceeds 32pt on narrow viewports")
-            3 => (@lg.LiquidStatus::Error, "Shader fallback", "WebGL 2 context lost; switched to solid fallback")
-            _ => (@lg.LiquidStatus::Info, "Liquid Glass synced", "32 optical components active at 60 fps")
+            1 => (@lg.LiquidStatus::Success, "Bundle compiled", "Metal + WebGL ready")
+            2 => (@lg.LiquidStatus::Warning, "High refraction", "Bezel depth > 32 pt")
+            3 => (@lg.LiquidStatus::Error, "Shader fallback", "Using solid fallback")
+            _ => (@lg.LiquidStatus::Info, "Liquid Glass synced", "32 parts at 60 fps")
           }
           @lg.liquid_toast_node(
             slot,
@@ -1144,7 +1322,7 @@ fn lib_overlays_section(
       sec.box(fn(prow) {
         prow.row(Is(true)).wraps(Is(Some(12.0))).gap(Is(20.0)).lines_up(Is(Some(Middle))) |> ignore
         prow.box(fn(pb) {
-          pb.width(Is(Some(280.0))).gap(Is(10.0)) |> ignore
+          pb.grow(Is(1.0)).min_width(Is(Some(220.0))).max_width(Is(Some(280.0)), within=true).gap(Is(10.0)) |> ignore
           @lg.liquid_progress_bar_node(
             pb,
             fn() { if prog_indet.get() { None } else { Some(prog_val.get() / 100.0) } },
@@ -1204,7 +1382,7 @@ fn lib_physics_section(
   parent.box(fn(col) {
     col.grow(Is(1.0)).gap(Is(14.0)) |> ignore
     col.box(fn(bar) {
-      bar.row(Is(true)).lies_along(Is(Between)).lines_up(Is(Some(Middle))).gap(Is(12.0)) |> ignore
+      bar.row(Is(true)).wraps(Is(Some(8.0))).lies_along(Is(Between)).lines_up(Is(Some(Middle))).gap(Is(12.0)) |> ignore
       @lg.liquid_segmented_node(
         bar,
         fn() { ["Loupe & Blur", "Capillary Merge"] },
@@ -1357,21 +1535,70 @@ fn library_page(
   }
 
   let canvas_scroll = @view.Scroll::new()
+  let catalog_scroll = @view.Scroll::new()
+  let catalog_sheet_open = @signals.signal(false)
+  let mobile_extra_cat = @signals.signal(5)
+  root.reacts(at_start=false, fn() { active_cat.get() }, fn(cat) {
+    if cat == 2 || cat == 3 || cat == 5 {
+      mobile_extra_cat.set(cat)
+    }
+  })
+  let is_narrow = fn() {
+    let w = root.window_w()
+    w > 0.0 && w < 820.0
+  }
+  let is_compact_dock = fn() {
+    let w = root.window_w()
+    w > 0.0 && w < 640.0
+  }
+  let is_phone = fn() {
+    let w = root.window_w()
+    w > 0.0 && w < 560.0
+  }
+  let is_nav_stack = fn() {
+    let w = root.window_w()
+    w > 0.0 && w < 760.0
+  }
+  let mobile_selected = fn() {
+    match active_cat.get() {
+      0 => 0
+      1 => 1
+      4 => 2
+      _ => 3
+    }
+  }
+  let mobile_select = fn(i : Int) {
+    match i {
+      0 => active_cat.set(0)
+      1 => active_cat.set(1)
+      2 => active_cat.set(4)
+      _ => active_cat.set(mobile_extra_cat.get())
+    }
+  }
+
   let shell_ref : Ref[@view.View?] = Ref(None)
   let host_ref : Ref[@view.View?] = Ref(None)
 
-  // Main layout shell mounted directly on `root` (locked to exact viewport bounds)
+  // Main layout shell mounted on `root` (locked to exact viewport bounds)
   root.box(fn(shell) {
     shell
     .over(Is(true))
-    .padding(Is((20.0, 14.0, 20.0, dock_room)))
-    .gap(Is(16.0))
+    .padding(By(fn() {
+      if is_phone() {
+        (12.0, 10.0, 12.0, dock_room)
+      } else {
+        (20.0, 14.0, 20.0, dock_room)
+      }
+    }))
+    .gap(By(fn() { if is_phone() { 10.0 } else { 16.0 } }))
     |> ignore
     shell_ref.val = Some(shell)
   })
   |> ignore
 
-  // Floating bottom tabs (`@lg.liquid_bottom_tabs_node`, pinned 18pt from window bottom, synced with sidebar)
+  // Floating bottom tabs (`@lg.liquid_bottom_tabs_node`, pinned 18pt from window bottom):
+  // - Compact mobile (`w < 640`): iOS 26 split-island dock (spacious 4-tab capsule + 10pt gap + 64×64 Search/Catalog orb)
+  // - Wide / desktop (`w >= 640`): full 600pt 6-tab capsule
   root.box(fn(dock_row) {
     dock_row
     .over(Is(true))
@@ -1380,7 +1607,38 @@ fn library_page(
     .lines_up(Is(Some(Middle)))
     .padding(Is((0.0, 0.0, 0.0, dock_gap)))
     |> ignore
-    dock_row.box(fn(dock_w) {
+    dock_row.show(is_compact_dock, at_once=true, fn(split_dock) {
+      split_dock.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(10.0)).points(Is(false)) |> ignore
+      split_dock.box(fn(dock_w) {
+        dock_w
+        .width(By(fn() {
+          let w = root.window_w()
+          let side_pad = if w > 0.0 && w < 380.0 { 12.0 } else { 14.0 }
+          let avail = w - 2.0 * side_pad - 10.0 - 64.0
+          Some(@lg.clamp(avail, 236.0, 320.0))
+        }))
+        .shrink(Is(0.0))
+        .points(Is(true))
+        |> ignore
+        @lg.liquid_bottom_tabs_node(
+          dock_w,
+          ["Optics", "Controls", "Overlays", "More"],
+          mobile_selected,
+          mobile_select,
+          label="Library sections",
+          faces=[
+            studio_tab_face_mobile("Optics", icon_prism),
+            studio_tab_face_mobile("Controls", icon_sliders),
+            studio_tab_face_mobile("Overlays", icon_layers),
+            studio_tab_face_dynamic(fn() { mobile_extra_cat.get() }),
+          ],
+        )
+        |> ignore
+      })
+      |> ignore
+      lib_dock_catalog_orb(split_dock, fn() { catalog_sheet_open.get() }, fn() { catalog_sheet_open.set(true) })
+    })
+    dock_row.show(fn() { !is_compact_dock() }, at_once=true, fn(dock_w) {
       dock_w.width(Is(Some(600.0))).shrink(Is(0.0)).points(Is(true)) |> ignore
       @lg.liquid_bottom_tabs_node(
         dock_w,
@@ -1399,7 +1657,6 @@ fn library_page(
       )
       |> ignore
     })
-    |> ignore
   })
   |> ignore
 
@@ -1410,135 +1667,314 @@ fn library_page(
   })
   |> ignore
 
-  match (shell_ref.val, host_ref.val) {
-      (Some(shell), Some(overlay_host)) => {
-        // 1. Self-hosted Top Navigation Bar (`@lg.liquid_nav_bar_node`)
-        @lg.liquid_nav_bar_node(
-          shell,
-          fn() { "ui.monoid · Liquid Glass" },
-          subtitle=fn() { "iOS 27 Optical Component Library" },
-          leading=fn(s) {
-            icon_brand_mark(s, 20.0, fn() { @lg.colors().content })
-            @lg.liquid_badge_node(s, fn() { "32 Components" }, tone=Accent, dot=true) |> ignore
-          },
-          trailing=fn(s) {
-            @lg.liquid_segmented_node(
-              s,
-              fn() { ["Light", "Dark"] },
-              fn() { if @lg.is_dark() { 1 } else { 0 } },
-              fn(i) { @lg.set_dark(Some(i == 1)) },
-              width=124.0,
-              height=36.0,
-            )
-            |> ignore
-            @lg.liquid_menu_node(
-              s,
-              overlay_host,
-              fn() { top_menu_open.get() },
-              fn(v) { top_menu_open.set(v) },
-              fn() { "Studio options" },
-              lib_nav_menu_trigger,
-              fn() {
-                [
-                  @lg.LiquidMenuEntry::check(
-                    label="Calibration Grid",
-                    checked=fn() { grid_on.get() },
-                    on_toggle=fn() { grid_on.set(!grid_on.untracked()) },
-                  ),
-                  @lg.LiquidMenuEntry::check(
-                    label="Ambient Glow",
-                    checked=fn() { boost.get() },
-                    on_toggle=fn() { boost.set(!boost.untracked()) },
-                  ),
-                  @lg.LiquidMenuEntry::check(
-                    label="Sidebar",
-                    checked=fn() { sidebar_open.get() },
-                    on_toggle=fn() { sidebar_open.set(!sidebar_open.untracked()) },
-                  ),
-                  @lg.LiquidMenuEntry::separator(),
-                  @lg.LiquidMenuEntry::item(
-                    label="Reset Demos",
-                    on_select=reset_demos,
-                  ),
-                ]
+  let make_cat_rows = fn(close_sheet : Bool) {
+    fn() {
+      let q = search_q.get().to_lower()
+      let cur = active_cat.get()
+      let out : Array[@lg.LiquidListRow] = []
+      for cat in lib_categories {
+        let hit = q == "" || cat.name.to_lower().contains(q) || cat.keywords.contains(q)
+        if hit {
+          let cid = cat.id
+          let icon_fn = lib_cat_icon(cid)
+          out.push(
+            @lg.LiquidListRow::new(
+              title=cat.name,
+              subtitle=cat.subtitle,
+              value=cat.count,
+              icon=fn(ic, ink) { icon_fn(ic, 16.0, ink) },
+              active=cur == cid,
+              on_press=fn() {
+                active_cat.set(cid)
+                if close_sheet {
+                  catalog_sheet_open.set(false)
+                }
               },
-              menu_label=fn() { "Studio Menu" },
-              placement=BelowEnd,
-              anchor_size=(36.0, 36.0),
-              trigger_face=fn(v) { icon_sliders(v, 16.0, fn() { @lg.colors().content }) },
-            )
-            |> ignore
-          },
+            ),
+          )
+        }
+      }
+      if out.length() == 0 {
+        out.push(
+          @lg.LiquidListRow::new(
+            title="No matching parts",
+            subtitle="Try menu, slider, toast, merge",
+          ),
         )
+      }
+      out
+    }
+  }
+
+  match (shell_ref.val, host_ref.val) {
+    (Some(shell), Some(overlay_host)) => {
+      // 1. Self-hosted Top Navigation Bar (`@lg.liquid_nav_bar_node`)
+      @lg.liquid_nav_bar_node(
+        shell,
+        fn() { if is_phone() { "Liquid Glass" } else { "ui.monoid · Liquid Glass" } },
+        subtitle=fn() { if is_phone() { "" } else { "iOS 27 Optical Component Library" } },
+        compact=is_phone,
+        leading=fn(s) {
+          icon_brand_mark(s, 20.0, fn() { @lg.colors().content })
+          s.show(fn() { !is_narrow() }, at_once=true, fn(slot) {
+            @lg.liquid_badge_node(slot, fn() { "32 Components" }, tone=Accent, dot=true) |> ignore
+          })
+          s.show(fn() { is_narrow() && !is_compact_dock() }, at_once=true, fn(slot) {
+            lib_nav_catalog_button(slot, fn() { catalog_sheet_open.set(true) })
+          })
+        },
+        trailing=fn(s) {
+          let theme_seg = @lg.liquid_segmented_node(
+            s,
+            fn() { ["Light", "Dark"] },
+            fn() { if @lg.is_dark() { 1 } else { 0 } },
+            fn(i) { @lg.set_dark(Some(i == 1)) },
+            width=124.0,
+            height=36.0,
+          )
+          theme_seg
+          .width(By(fn() { if is_phone() { Some(96.0) } else { Some(124.0) } }))
+          .max_width(By(fn() { if is_phone() { Some(96.0) } else { Some(124.0) } }), within=true)
+          |> ignore
+          @lg.liquid_menu_node(
+            s,
+            overlay_host,
+            fn() { top_menu_open.get() },
+            fn(v) { top_menu_open.set(v) },
+            fn() { "Studio options" },
+            lib_nav_menu_trigger,
+            fn() {
+              let nav_entry = if is_narrow() {
+                @lg.LiquidMenuEntry::item(
+                  label="Search & Catalog",
+                  on_select=fn() { catalog_sheet_open.set(true) },
+                )
+              } else {
+                @lg.LiquidMenuEntry::check(
+                  label="Sidebar",
+                  checked=fn() { sidebar_open.get() },
+                  on_toggle=fn() { sidebar_open.set(!sidebar_open.untracked()) },
+                )
+              }
+              [
+                @lg.LiquidMenuEntry::check(
+                  label="Calibration Grid",
+                  checked=fn() { grid_on.get() },
+                  on_toggle=fn() { grid_on.set(!grid_on.untracked()) },
+                ),
+                @lg.LiquidMenuEntry::check(
+                  label="Ambient Glow",
+                  checked=fn() { boost.get() },
+                  on_toggle=fn() { boost.set(!boost.untracked()) },
+                ),
+                nav_entry,
+                @lg.LiquidMenuEntry::separator(),
+                @lg.LiquidMenuEntry::item(
+                  label="Reset Demos",
+                  on_select=reset_demos,
+                ),
+              ]
+            },
+            menu_label=fn() { "Studio Menu" },
+            placement=BelowEnd,
+            anchor_size=(36.0, 36.0),
+            trigger_face=fn(v) { icon_sliders(v, 16.0, fn() { @lg.colors().content }) },
+          )
+          |> ignore
+        },
+      )
+      |> ignore
+
+      // 2. Body Row: Left Self-Hosted Sidebar (`264pt`, desktop only) + Right Interactive Exhibition Canvas
+      shell.box(fn(body_row) {
+        body_row
+        .row(Is(true))
+        .grow(Is(1.0))
+        .basis(Is(Some(0.0)))
+        .min_height(Is(Some(0.0)))
+        .gap(By(fn() { if is_narrow() { 0.0 } else { 20.0 } }))
         |> ignore
 
-        // 2. Body Row: Left Self-Hosted Sidebar (`264pt`) + Right Interactive Exhibition Canvas
-        shell.box(fn(body_row) {
-          body_row
-          .row(Is(true))
-          .grow(Is(1.0))
-          .basis(Is(Some(0.0)))
-          .min_height(Is(Some(0.0)))
-          .gap(Is(20.0))
+        // Left floating glass sidebar (SearchBar + reactive category List + ProgressRing footer)
+        body_row.show(fn() { !is_narrow() && sidebar_open.get() }, fn(side) {
+          side.width(Is(Some(264.0))).shrink(Is(0.0)).gap(Is(12.0)).lies_along(Is(Between)) |> ignore
+          side.box(fn(top_part) {
+            top_part.gap(Is(12.0)) |> ignore
+            @lg.liquid_search_bar_node(
+              top_part,
+              search_field,
+              placeholder="Filter 32 parts...",
+              label=fn() { "Filter components" },
+              edited=fn(s) { search_q.set(s) },
+              on_clear=fn() { search_q.set("") },
+            )
+            |> ignore
+            @lg.liquid_list_node(
+              top_part,
+              make_cat_rows(false),
+              header=fn() { "CATEGORIES · 32 PARTS" },
+              dividers=false,
+            )
+            |> ignore
+          })
           |> ignore
 
-          // Left floating glass sidebar (SearchBar + reactive category List + ProgressRing footer)
-          body_row.show(fn() { sidebar_open.get() }, fn(side) {
-            side.width(Is(Some(264.0))).shrink(Is(0.0)).gap(Is(12.0)).lies_along(Is(Between)) |> ignore
-            side.box(fn(top_part) {
-              top_part.gap(Is(12.0)) |> ignore
-              @lg.liquid_search_bar_node(
-                top_part,
-                search_field,
-                placeholder="Filter 32 parts...",
-                label=fn() { "Filter components" },
-                edited=fn(s) { search_q.set(s) },
-                on_clear=fn() { search_q.set("") },
-              )
-              |> ignore
-              @lg.liquid_list_node(
-                top_part,
-                fn() {
-                  let q = search_q.get().to_lower()
-                  let cur = active_cat.get()
-                  let out : Array[@lg.LiquidListRow] = []
-                  for cat in lib_categories {
-                    let hit = q == "" || cat.name.to_lower().contains(q) || cat.keywords.contains(q)
-                    if hit {
-                      let cid = cat.id
-                      let icon_fn = lib_cat_icon(cid)
-                      out.push(
-                        @lg.LiquidListRow::new(
-                          title=cat.name,
-                          subtitle=cat.subtitle,
-                          value=cat.count,
-                          icon=fn(ic, ink) { icon_fn(ic, 16.0, ink) },
-                          active=cur == cid,
-                          on_press=fn() { active_cat.set(cid) },
-                        ),
-                      )
-                    }
-                  }
-                  if out.length() == 0 {
-                    out.push(
-                      @lg.LiquidListRow::new(
-                        title="No matching parts",
-                        subtitle="Try menu, slider, toast, merge",
-                      ),
-                    )
-                  }
-                  out
-                },
-                header=fn() { "CATEGORIES · 32 PARTS" },
-                dividers=false,
-              )
+          // Sidebar footer status line
+          side.box(fn(foot) {
+            foot.row(Is(true)).gap(Is(10.0)).lines_up(Is(Some(Middle))).padding(Is((12.0, 4.0, 12.0, 4.0))) |> ignore
+            @lg.liquid_progress_ring_node(
+              foot,
+              fn() { Some(1.0) },
+              size=18.0,
+              stroke=2.2,
+              label=fn() { "Frame rate status" },
+            )
+            |> ignore
+            foot.box(fn(w) {
+              w
+              .words(Is("60 fps · Apache-2.0"), look=@lg.words_at(12.0, weight=500))
+              .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.74) }))
               |> ignore
             })
             |> ignore
+          })
+          |> ignore
+        })
 
-            // Sidebar footer status line
-            side.box(fn(foot) {
-              foot.row(Is(true)).gap(Is(10.0)).lines_up(Is(Some(Middle))).padding(Is((12.0, 4.0, 12.0, 4.0))) |> ignore
+        // Right Main Exhibition Canvas (reuses Optics / Loupe / Merge scenes; scrolls cleanly for dense galleries)
+        body_row.box(fn(main_area) {
+          main_area.grow(Is(1.0)).basis(Is(Some(0.0))).fills_across(Is(true)).min_height(Is(Some(0.0)))
+          |> ignore
+          main_area.pick(fn() { active_cat.get() }, at_once=true, fn(scene_slot, cat_id) {
+            scene_slot.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+            match cat_id {
+              0 =>
+                optics_scene(
+                  scene_slot,
+                  None,
+                  grid_on,
+                  refraction_val,
+                  chroma_val,
+                  blur_val,
+                  prism_pos,
+                  dialog_open,
+                )
+              5 => lib_physics_section(scene_slot, phys_mode, merge_ctrl)
+              _ => {
+                let sc = scene_slot.scrolls(
+                  canvas_scroll,
+                  slop=@ui.touch_slop(),
+                  bar=@ui.tree_scroll_bar(),
+                  fn(s) {
+                    s.padding(By(fn() {
+                      if is_phone() {
+                        (8.0, 8.0, 8.0, 20.0)
+                      } else {
+                        (16.0, 14.0, 16.0, 24.0)
+                      }
+                    }))
+                    |> ignore
+                    match cat_id {
+                      1 =>
+                        lib_controls_section(
+                          s,
+                          seg_idx,
+                          icon_active,
+                          group_active,
+                          toggle_a,
+                          toggle_b,
+                          bezel_val,
+                          step_val,
+                          last_ctrl,
+                        )
+                      2 =>
+                        lib_inputs_section(
+                          s,
+                          is_phone,
+                          name_field,
+                          err_field,
+                          demo_search,
+                          cb_a,
+                          cb_b,
+                          cb_mixed,
+                          radio_idx,
+                          chip_metal,
+                          chip_vulkan,
+                          chip_webgl,
+                          chip_beta_kept,
+                          badge_count,
+                        )
+                      3 =>
+                        lib_navigation_section(
+                          s,
+                          is_phone,
+                          is_nav_stack,
+                          grid_on,
+                          boost,
+                          list_active,
+                          disc_open,
+                          live_lum,
+                          last_nav,
+                        )
+                      _ =>
+                        lib_overlays_section(
+                          s,
+                          overlay_host,
+                          demo_menu_open,
+                          demo_menu_pin,
+                          select_idx,
+                          popover_open,
+                          sheet_open,
+                          action_sheet_open,
+                          dialog_open,
+                          toast_visible,
+                          toast_status_idx,
+                          prog_val,
+                          prog_indet,
+                          last_ovl,
+                        )
+                    }
+                  },
+                )
+                sc.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+              }
+            }
+          })
+        })
+        |> ignore
+      })
+      |> ignore
+
+      // 3. Global Modal Overlays mounted on `overlay_host`
+      // Mobile & tablet catalog drawer (flat inner search + list -> strictly zero glass-on-glass inside sheet)
+      @lg.liquid_sheet_node(
+        overlay_host,
+        fn() { catalog_sheet_open.get() },
+        fn() { catalog_sheet_open.set(false) },
+        fn() { "Components · 32 Parts" },
+        fn(b) {
+          let sc = b.scrolls(catalog_scroll, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(col) {
+            col.gap(Is(12.0)) |> ignore
+            @lg.liquid_search_bar_node(
+              col,
+              search_field,
+              placeholder="Filter 32 parts...",
+              label=fn() { "Filter components" },
+              edited=fn(s) { search_q.set(s) },
+              on_clear=fn() { search_q.set("") },
+              flat=true,
+            )
+            |> ignore
+            @lg.liquid_list_node(
+              col,
+              make_cat_rows(true),
+              header=fn() { "CATEGORIES · 32 PARTS" },
+              dividers=false,
+              flat=true,
+            )
+            |> ignore
+            col.box(fn(foot) {
+              foot.row(Is(true)).gap(Is(10.0)).lines_up(Is(Some(Middle))).padding(Is((8.0, 2.0, 8.0, 2.0))) |> ignore
               @lg.liquid_progress_ring_node(
                 foot,
                 fn() { Some(1.0) },
@@ -1557,178 +1993,89 @@ fn library_page(
             })
             |> ignore
           })
+          sc.max_height(Is(Some(420.0))) |> ignore
+        },
+        width=420.0,
+        max_height=560.0,
+      )
+      |> ignore
 
-          // Right Main Exhibition Canvas (reuses Optics / Loupe / Merge scenes; scrolls cleanly for dense galleries)
-          body_row.box(fn(main_area) {
-            main_area.grow(Is(1.0)).basis(Is(Some(0.0))).fills_across(Is(true)).min_height(Is(Some(0.0)))
+      @lg.liquid_sheet_node(
+        overlay_host,
+        fn() { sheet_open.get() },
+        fn() { sheet_open.set(false) },
+        fn() { "Optical Export Sheet" },
+        fn(b) {
+          b.gap(Is(10.0)) |> ignore
+          b.box(fn(w) {
+            w
+            .words(
+              Is("Detached floating Liquid Glass sheet with concentric grabber, dimmed scrim and Escape dismissal."),
+              look=@lg.words_at(14.5, wrap=true),
+            )
+            .ink(By(fn() { @lg.colors().content }))
             |> ignore
-            main_area.pick(fn() { active_cat.get() }, at_once=true, fn(scene_slot, cat_id) {
-              scene_slot.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
-              match cat_id {
-                0 =>
-                  optics_scene(
-                    scene_slot,
-                    None,
-                    grid_on,
-                    refraction_val,
-                    chroma_val,
-                    blur_val,
-                    prism_pos,
-                    dialog_open,
-                  )
-                5 => lib_physics_section(scene_slot, phys_mode, merge_ctrl)
-                _ => {
-                  let sc = scene_slot.scrolls(
-                    canvas_scroll,
-                    slop=@ui.touch_slop(),
-                    bar=@ui.tree_scroll_bar(),
-                    fn(s) {
-                      s.padding(Is((16.0, 14.0, 16.0, 24.0))) |> ignore
-                      match cat_id {
-                        1 =>
-                          lib_controls_section(
-                            s,
-                            seg_idx,
-                            icon_active,
-                            group_active,
-                            toggle_a,
-                            toggle_b,
-                            bezel_val,
-                            step_val,
-                            last_ctrl,
-                          )
-                        2 =>
-                          lib_inputs_section(
-                            s,
-                            name_field,
-                            err_field,
-                            demo_search,
-                            cb_a,
-                            cb_b,
-                            cb_mixed,
-                            radio_idx,
-                            chip_metal,
-                            chip_vulkan,
-                            chip_webgl,
-                            chip_beta_kept,
-                            badge_count,
-                          )
-                        3 =>
-                          lib_navigation_section(
-                            s,
-                            grid_on,
-                            boost,
-                            list_active,
-                            disc_open,
-                            live_lum,
-                            last_nav,
-                          )
-                        _ =>
-                          lib_overlays_section(
-                            s,
-                            overlay_host,
-                            demo_menu_open,
-                            demo_menu_pin,
-                            select_idx,
-                            popover_open,
-                            sheet_open,
-                            action_sheet_open,
-                            dialog_open,
-                            toast_visible,
-                            toast_status_idx,
-                            prog_val,
-                            prog_indet,
-                            last_ovl,
-                          )
-                      }
-                    },
-                  )
-                  sc.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
-                }
-              }
-            })
           })
           |> ignore
-        })
-        |> ignore
+          @lg.liquid_progress_bar_node(b, fn() { Some(0.82) }, label=fn() { "Metal Shader Cache" }, show_value=true)
+          |> ignore
+        },
+        subtitle=fn() { "ui.monoid · 3× Offscreen Capture" },
+        footer=fn(f) {
+          f.row(Is(true)).lies_along(Is(End)).gap(Is(10.0)) |> ignore
+          @lg.liquid_button_node(
+            f,
+            fn() { "Done" },
+            fn() { sheet_open.set(false) },
+            tint=lib_vermilion,
+            flat=true,
+          )
+          |> ignore
+        },
+      )
+      |> ignore
 
-        // 3. Global Modal Overlays mounted on `overlay_host`
-        @lg.liquid_sheet_node(
-          overlay_host,
-          fn() { sheet_open.get() },
-          fn() { sheet_open.set(false) },
-          fn() { "Optical Export Sheet" },
-          fn(b) {
-            b.gap(Is(10.0)) |> ignore
-            b.box(fn(w) {
-              w
-              .words(
-                Is("Detached floating Liquid Glass sheet with concentric grabber, dimmed scrim and Escape dismissal."),
-                look=@lg.words_at(14.5, wrap=true),
-              )
-              .ink(By(fn() { @lg.colors().content }))
-              |> ignore
-            })
-            |> ignore
-            @lg.liquid_progress_bar_node(b, fn() { Some(0.82) }, label=fn() { "Metal Shader Cache" }, show_value=true)
-            |> ignore
-          },
-          subtitle=fn() { "ui.monoid · 3× Offscreen Capture" },
-          footer=fn(f) {
-            f.row(Is(true)).lies_along(Is(End)).gap(Is(10.0)) |> ignore
-            @lg.liquid_button_node(
-              f,
-              fn() { "Done" },
-              fn() { sheet_open.set(false) },
-              tint=lib_vermilion,
-              flat=true,
-            )
-            |> ignore
-          },
-        )
-        |> ignore
+      @lg.liquid_action_sheet_node(
+        overlay_host,
+        fn() { action_sheet_open.get() },
+        fn() { action_sheet_open.set(false) },
+        fn() {
+          [
+            @lg.LiquidActionSheetItem::new(
+              label="Copy MoonBit Snippet",
+              on_select=fn() { last_ovl.set("ActionSheet: Copied snippet") },
+            ),
+            @lg.LiquidActionSheetItem::new(
+              label="Export 3× PNG",
+              on_select=fn() { last_ovl.set("ActionSheet: Exported PNG") },
+            ),
+            @lg.LiquidActionSheetItem::new(
+              label="Clear Shader Cache",
+              destructive=true,
+              on_select=fn() { last_ovl.set("ActionSheet: Cache cleared") },
+            ),
+          ]
+        },
+        title=fn() { "Component Actions" },
+        message=fn() { "Separated iOS Liquid Glass action group with independent Cancel capsule." },
+      )
+      |> ignore
 
-        @lg.liquid_action_sheet_node(
-          overlay_host,
-          fn() { action_sheet_open.get() },
-          fn() { action_sheet_open.set(false) },
-          fn() {
-            [
-              @lg.LiquidActionSheetItem::new(
-                label="Copy MoonBit Snippet",
-                on_select=fn() { last_ovl.set("ActionSheet: Copied snippet") },
-              ),
-              @lg.LiquidActionSheetItem::new(
-                label="Export 3× PNG",
-                on_select=fn() { last_ovl.set("ActionSheet: Exported PNG") },
-              ),
-              @lg.LiquidActionSheetItem::new(
-                label="Clear Shader Cache",
-                destructive=true,
-                on_select=fn() { last_ovl.set("ActionSheet: Cache cleared") },
-              ),
-            ]
-          },
-          title=fn() { "Component Actions" },
-          message=fn() { "Separated iOS Liquid Glass action group with independent Cancel capsule." },
-        )
-        |> ignore
-
-        @lg.liquid_dialog_node(
-          overlay_host,
-          fn() { dialog_open.get() },
-          fn() { dialog_open.set(false) },
-          fn() { "Publish ui.monoid" },
-          fn() { dialog_copy },
-          cancel=fn() { "Cancel" },
-          action=fn() { "Publish" },
-          on_action=fn() {
-            dialog_open.set(false)
-            last_ovl.set("Dialog: Published")
-          },
-        )
-        |> ignore
-      }
-      _ => ()
+      @lg.liquid_dialog_node(
+        overlay_host,
+        fn() { dialog_open.get() },
+        fn() { dialog_open.set(false) },
+        fn() { "Publish ui.monoid" },
+        fn() { dialog_copy },
+        cancel=fn() { "Cancel" },
+        action=fn() { "Publish" },
+        on_action=fn() {
+          dialog_open.set(false)
+          last_ovl.set("Dialog: Published")
+        },
+      )
+      |> ignore
     }
+    _ => ()
+  }
 }

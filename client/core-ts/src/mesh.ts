@@ -36,11 +36,16 @@ export const DEVICE_KEY = "device";
 export const RENEW_MS = 5 * 60_000;
 export const CONNECT_TIMEOUT_MS = 10_000;
 /// How long a dial waits for its endpoint to get onto a relay before its CONNECT_TIMEOUT_MS counts all the same
-/// (`onARelay`), and how often it looks.
+/// (`onARelay`), and how often it looks: soon at first, as a relay is often reached within a few round trips, then less.
 export const ONTO_MAX_MS = 30_000;
+const ONTO_FIRST_RECHECK_MS = 10;
 const ONTO_RECHECK_MS = 250;
 export const PROBE_MS = 5_000;
 export const RACE_GRACE_MS = 1_000;
+/// How long a link is given to answer as the UI comes back from a short while away before a new one is dialled beside
+/// it: twice its last round trip, within these.
+export const WOKEN_ANSWER_MIN_MS = 300;
+export const WOKEN_ANSWER_MAX_MS = 1_000;
 export const RETIRE_MS = 10_000;
 export const REBIND_MS = 5_000;
 /// How often each way to a station is pinged (its credential presented again on it, answered by the station itself).
@@ -896,6 +901,8 @@ export class Mesh {
   #reboundAt = -Infinity;
   readonly #known: import("./iroh.ts").IrohAddr[] = [];
   readonly #hedges = new Map<string, Hedge>();
+  /// Stations whose link is being asked whether it still answers, the UI just back (`#checkWoken`).
+  readonly #checking = new Set<string>();
   #serials = 0;
   readonly #pinned = new Map<string, Deferred.Deferred<IrohEndpoint | null>>();
   /// The relays of each fence a station was dialled in (`#fence`), by the fence.
@@ -3125,6 +3132,7 @@ export class Mesh {
     return Effect.gen({ self: this }, function* () {
       for (;;) {
         const wake = yield* this.#env.wakes.next;
+        if (wake.checksConnections()) for (const [addr, link] of this.#openLinks()) this.#env.runner.fork(this.#checkWoken(addr, link));
         if (!wake.suspectsConnections()) continue;
         this.#relaxAll();
         this.#env.runner.fork(this.#endpoint.networkChange());
@@ -3176,6 +3184,27 @@ export class Mesh {
       span.end();
       const taken = Deferred.doneUnsafe(tx, opened._tag === "Success" ? Effect.succeed(opened.success) : Effect.fail(opened.failure));
       if (!taken && opened._tag === "Success") opened.success.close();
+    });
+  }
+
+  /// The UI is back from a short while away, its keepalives frozen meanwhile: the link is asked now, not at its next
+  /// ping, and one that does not answer soon has a new link raced beside it. One that answers costs a round trip.
+  #checkWoken(addr: string, link: Link): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      if (this.#racing.has(addr) || this.#checking.has(addr)) return;
+      this.#checking.add(addr);
+      const last = this.#live(addr).find((w) => w.link === link)?.answeredMs ?? null;
+      const wait = last === null ? WOKEN_ANSWER_MAX_MS : Math.min(WOKEN_ANSWER_MAX_MS, Math.max(WOKEN_ANSWER_MIN_MS, 2 * last));
+      // (its own fiber: a control exchange let go halfway would leave the link's control stream out of step)
+      const asked = this.#env.runner.fork(link.answers());
+      const answered = yield* Effect.ensuring(
+        Effect.raceFirst(Fiber.join(asked), Effect.as(Effect.sleep(wait), false)), // timer: a deadline on the answer
+        Effect.sync(() => this.#checking.delete(addr)),
+      );
+      if (answered || this.#closed || !this.#isCurrent(addr, link) || this.#racing.has(addr)) return;
+      this.#racing.add(addr);
+      // (not `heard`: it has had its time to answer, so whichever comes first is taken, with no grace for the old one)
+      this.#env.runner.fork(this.#race(addr, link));
     });
   }
 
@@ -3327,13 +3356,14 @@ function relayStatus(endpoint: IrohEndpoint): string {
 /// gone off that network, or a web page that dials no address, carries them all the same: counted at once, every dial
 /// ran out before the endpoint was on a relay, and bound it anew, again and again (2026-11-18: the web and Android with
 /// all twelve relays down for up to 25 minutes, each dial `rebound`).
-function onARelay(endpoint: IrohEndpoint, noRelays: boolean): Effect.Effect<void> {
+export function onARelay(endpoint: Pick<IrohEndpoint, "relayStatus">, noRelays: boolean): Effect.Effect<void> {
   const on = () => {
     const status = endpoint.relayStatus();
     return noRelays || status.length === 0 || status.some((s) => s.connected);
   };
   return Effect.gen(function* () {
-    for (let waited = 0; waited < ONTO_MAX_MS && !on(); waited += ONTO_RECHECK_MS) yield* Effect.sleep(ONTO_RECHECK_MS);
+    let next = ONTO_FIRST_RECHECK_MS;
+    for (let waited = 0; waited < ONTO_MAX_MS && !on(); waited += next, next = Math.min(next * 2, ONTO_RECHECK_MS)) yield* Effect.sleep(next);
   });
 }
 

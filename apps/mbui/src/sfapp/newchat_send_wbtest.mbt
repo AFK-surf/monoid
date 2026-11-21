@@ -202,7 +202,6 @@ test "a new chat's first words and picture sent with the keyboard up: no words o
     t.draw()
     assert_true(app.nav.top() is Chat(_))
     t.run_for(flight_carry_after_ms + flight_carry_ms + new_leave_ms)
-    assert_true(send_flight.get() is None)
   })
 }
 
@@ -288,7 +287,6 @@ test "a new chat's first words with the core at once: never gone, into their bub
     let typed = new_chat_sent(t, words)
     let sent = t.time()
     let landed = one_way_till(t, words, sent + flight_carry_after_ms + flight_carry_ms + 100.0, 120.0)
-    assert_true(send_flight.get() is None)
     // over the composer at the chat's foot
     assert_true(landed.1 < typed.1 && landed.1 > typed.1 - 200.0, msg="landed at \{Repr(landed)} from \{Repr(typed)}")
   })
@@ -325,7 +323,6 @@ test "a new chat's first words not sent (the chat not made): the page the new ch
       None => fail("no chat asked for")
     }
     t.draw()
-    assert_true(send_flight.get() is None)
     assert_true(app.nav.top() is NewChat)
     let (_, back, _, _) = t.ime()
     assert_eq(back, words)

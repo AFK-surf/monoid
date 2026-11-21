@@ -56,7 +56,6 @@ fn files_here() -> MessageHere {
     go: None,
     inline: false,
     gutter: 0.0,
-    list: None,
     core: None,
   }
 }

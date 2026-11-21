@@ -127,7 +127,11 @@ pub async fn fs_remove(host : @host.Host, path : String, recursive? : Bool = fal
 
 ///|
 pub async fn fs_rename(host : @host.Host, from : String, to : String, sync? : Bool = false) -> Unit {
-  ignore(shell_call(host, sync, "fs.rename", { "from": @json.Json::string(from), "to": @json.Json::string(to) }))
+  if sync {
+    ignore(host.shell_sync("fs.rename", { "from": @json.Json::string(from), "to": @json.Json::string(to) }))
+  } else {
+    host.rename_retrying(from, to)
+  }
 }
 
 ///|

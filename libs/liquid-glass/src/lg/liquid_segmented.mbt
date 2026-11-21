@@ -42,14 +42,15 @@ pub fn liquid_segmented_node(
       dd.attach(g)
       g
       .height(Is(Some(height)))
-      .shrink(Is(0.0))
+      .shrink(Is(1.0))
+      .min_width(Is(Some(0.0)))
       .padding(Is((ctrl_seg_pad, 0.0, ctrl_seg_pad, 0.0)))
       .radius(Is(outer_r))
       .shadow(Is(shadow_default))
       .glass(By(fn() { Some(ctrl_segmented_track_glass()) }))
       |> ignore
       match width {
-        Some(w) => g.width(Is(Some(w))) |> ignore
+        Some(w) => g.width(Is(Some(w))).max_width(Is(Some(w)), within=true) |> ignore
         None => ()
       }
       // (chosen by what is not the thumb: the keys, its caller; the thumb only slides there, unpressed and unmagnified)
@@ -86,7 +87,6 @@ pub fn liquid_segmented_node(
             let sw = seg_w()
             (dd.value(thumb) * sw + (sw - tw) / 2.0, (height - th) / 2.0)
           }))
-          .shadow(Is(shadow_thumb))
           |> ignore
           // Crisp optical pill at rest (fades out as clear loupe lifts on press)
           thumb.box(fn(pill) {
@@ -105,6 +105,7 @@ pub fn liquid_segmented_node(
             .over(Is(true))
             .points(Is(false))
             .radius(By(fn() { size().1 / 2.0 }))
+            .shadow(Is(shadow_thumb))
             .glass(By(fn() {
               let p = dd.pressed(gl)
               if p > 0.001 {
@@ -167,8 +168,11 @@ pub fn liquid_segmented_node(
                   .grow(Is(1.0))
                   .basis(Is(Some(0.0)))
                   .height(Is(Some(height)))
-                  .padding(Is((ctrl_seg_px, 0.0, ctrl_seg_px, 0.0)))
-                  .radius(Is(inner_r))
+                  .padding(By(fn() {
+                    let sw = seg_w()
+                    let px = if sw > 0.0 && sw < 86.0 { 4.0 } else { ctrl_seg_px }
+                    (px, 0.0, px, 0.0)
+                  }))
                   .lines_up(Is(Some(Middle)))
                   .lies_along(Is(Middle))
                   |> ignore
