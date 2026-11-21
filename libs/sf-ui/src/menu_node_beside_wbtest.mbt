@@ -12,8 +12,10 @@ fn side_menu_tester(
   cancels : Ref[Int],
   under : Ref[Int],
   leave_open? : Bool = false,
+  solid? : Bool = false,
 ) -> @ui.Tester {
   let t = @ui.Tester::new(fn(_c) {  }, w=800.0, h=600.0, platform=0)
+  @ui.set_glass_solid(if solid { Some(true) } else { None })
   t.check_looks(false)
   @ui.set_view_app(fn(root) {
     root.padding(Is((100.0, 100.0, 0.0, 0.0))).gap(Is(40.0)) |> ignore
@@ -322,4 +324,92 @@ test "a short menu gone above what opened it comes in at pop_in's own 0.97, with
   let (_, h0) = p0.unwrap()
   assert_true((h0 / ph - @motion.pop_in.scale).abs() < 1.0e-9, msg="as big as pop_in says: \{h0 / ph}")
   assert_eq(t.audit(), [])
+}
+
+///|
+/// Liquid glass panel opacity (`I.c2.w`, slot 15) drawn now (-1.0 when no `kind == 6` glass is drawn).
+fn side_menu_glass_alpha(t : @ui.Tester) -> Double {
+  for inst in t.drawn_instances() {
+    if inst[5] == 6.0 {
+      return inst[15]
+    }
+  }
+  -1.0
+}
+
+///|
+test "liquid glass menu exit fades words and glass together across 0..pop_out_ms with no hollow glass frame" {
+  let open = @signals.signal(false)
+  let (cancels, under) = (Ref(0), Ref(0))
+  let t = side_menu_tester(true, open, cancels, under)
+  assert_eq(side_words_alpha(t, "一"), 1.0)
+  assert_eq(side_menu_glass_alpha(t), 1.0)
+  t.key(@ui.key_escape)
+  let mut prev_w = 1.0
+  let mut prev_g = 1.0
+  for step in 1..<=5 {
+    t.run_for(@motion.pop_out_ms / 6.0)
+    let wa = side_words_alpha(t, "一")
+    let ga = side_menu_glass_alpha(t)
+    assert_true(wa > 0.0 && ga > 0.0, msg="step \{step}: both visible (wa=\{wa}, ga=\{ga})")
+    assert_true((wa - ga).abs() < 1.0e-3, msg="step \{step}: words and glass stay in lockstep (wa=\{wa}, ga=\{ga})")
+    assert_true(wa <= prev_w + 1.0e-6 && ga <= prev_g + 1.0e-6, msg="step \{step}: monotonic")
+    prev_w = wa
+    prev_g = ga
+  }
+  t.run_for(@motion.pop_out_ms / 2.0)
+  assert_eq((side_words_alpha(t, "一"), side_menu_glass_alpha(t)), (-1.0, -1.0))
+}
+
+///|
+test "liquid glass menu interrupted mid-entrance reverses C0-continuously with both words and glass decreasing monotonically" {
+  let open = @signals.signal(false)
+  let (cancels, under) = (Ref(0), Ref(0))
+  let t = side_menu_tester(true, open, cancels, under)
+  t.key(@ui.key_escape)
+  t.run_for(@motion.pop_out_ms)
+  assert_eq((side_words_alpha(t, "一"), side_menu_glass_alpha(t)), (-1.0, -1.0))
+  open.set(true)
+  t.draw()
+  t.run_for(@motion.pop_ms / 2.0)
+  let mid_w = side_words_alpha(t, "一")
+  let mid_g = side_menu_glass_alpha(t)
+  assert_true(mid_w > 0.0 && mid_w < 1.0 && (mid_w - mid_g).abs() < 1.0e-3, msg="mid-enter: w=\{mid_w}, g=\{mid_g}")
+  t.key(@ui.key_escape)
+  t.draw()
+  let mut prev_w = side_words_alpha(t, "一")
+  let mut prev_g = side_menu_glass_alpha(t)
+  assert_true(prev_w > 0.0 && prev_w <= mid_w + 1.0e-6, msg="no upward jump on words: \{prev_w} after \{mid_w}")
+  assert_true(prev_g > 0.0 && prev_g <= mid_g + 1.0e-6, msg="no upward jump on glass: \{prev_g} after \{mid_g}")
+  assert_true((prev_w - prev_g).abs() < 1.0e-3, msg="sync on reverse: w=\{prev_w}, g=\{prev_g}")
+  for step in 1..<=4 {
+    t.run_for(@motion.pop_out_ms / 5.0)
+    let wa = side_words_alpha(t, "一")
+    let ga = side_menu_glass_alpha(t)
+    if wa >= 0.0 {
+      assert_true(wa <= prev_w + 1.0e-6 && ga <= prev_g + 1.0e-6, msg="step \{step}: monotonic")
+      assert_true((wa - ga).abs() < 1.0e-3, msg="step \{step}: sync")
+      prev_w = wa
+      prev_g = ga
+    }
+  }
+  t.run_for(@motion.pop_out_ms)
+  assert_eq((side_words_alpha(t, "一"), side_menu_glass_alpha(t)), (-1.0, -1.0))
+}
+
+///|
+test "MBUI_GLASS=solid menu keeps ground_first pop_out fallback" {
+  defer { @ui.set_glass_solid(None) }
+  let open = @signals.signal(false)
+  let (cancels, under) = (Ref(0), Ref(0))
+  let t = side_menu_tester(true, open, cancels, under, solid=true)
+  assert_eq((side_words_alpha(t, "一"), side_menu_glass_alpha(t)), (1.0, -1.0))
+  t.key(@ui.key_escape)
+  // At 70ms under Leave + ground_first=true, words have already faded out while solid panel remains until 100ms
+  t.run_for(@motion.pop_out_ms * 0.7)
+  let wa = side_words_alpha(t, "一")
+  assert_true(wa <= 0.0, msg="solid fallback clears words first: \{wa}")
+  assert_true(t.drawn_shadows().length() > 0, msg="solid panel remains drawn before pop_out_ms")
+  t.run_for(@motion.pop_out_ms * 0.5)
+  assert_eq(side_words_alpha(t, "一"), -1.0)
 }

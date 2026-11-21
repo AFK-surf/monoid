@@ -61,6 +61,26 @@ pub let dur_ms : Double = 140.0
 let pop_max_shift : Double = 8.0
 
 ///|
+/// Popover enter transition for node `v`: single-layer liquid glass fades together with its content (`glass_pop_in`),
+/// while `MBUI_GLASS=solid` falls back to `pop_in` (`ground_first=true`) to preserve solid occlusion.
+fn pop_in_for(v : @view.View) -> @motion.Trans {
+  if v.glass_solid() { @motion.pop_in } else { @motion.glass_pop_in }
+}
+
+///|
+/// Popover exit transition for node `v`: single-layer liquid glass fades together on `InOut` (`glass_pop_out`),
+/// while `MBUI_GLASS=solid` falls back to `pop_out` (`Leave`, `ground_first=true`).
+fn pop_out_for(v : @view.View) -> @motion.Trans {
+  if v.glass_solid() { @motion.pop_out } else { @motion.glass_pop_out }
+}
+
+///|
+/// Exit ease matching `pop_out_for(v)` (`Leave` under `MBUI_GLASS=solid`, `InOut` on liquid glass).
+fn pop_out_ease_for(v : @view.View) -> @ui.Ease {
+  if v.glass_solid() { Leave } else { InOut }
+}
+
+///|
 /// What says a thing was copied (a check for the copy button, 已复制) shows this long (parts.tsx CopyButton: 1.6 s).
 pub let copied_ms : Double = 1600.0
 

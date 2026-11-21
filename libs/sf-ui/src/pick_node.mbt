@@ -42,7 +42,7 @@ pub fn pick_node(
       way.go_ms(layer, 1.0, @motion.pop_ms)
       let look = fn() {
         let p = way.shown(layer)
-        @motion.pop_in.at(p, p)
+        pop_in_for(layer).at(p, p)
       }
       let words_in = fn() { look().words }
       // (what is found by the words typed, as they are now)

@@ -300,9 +300,9 @@ test "panel, 大屏 keyboard and mouse: at a point, its way out drawn as it was 
   debug_inspect(out[0], content=(
     #|[
     #|  "alphas {255: 45} ground [255] button [] fading None..None",
-    #|  "alphas {255: 24, 205: 21} ground [255] button [] fading Some((621.941, 320.96))..Some((747.605, 374.816))",
-    #|  "alphas {255: 24, 89: 21} ground [255] button [] fading Some((621.807, 320.868))..Some((746.701, 374.394))",
-    #|  "alphas {255: 24} ground [189] button [] fading None..None",
+    #|  "alphas {255: 24, 222: 21} ground [222] button [] fading Some((621.923, 320.948))..Some((747.483, 374.759))",
+    #|  "alphas {255: 24, 128: 21} ground [128] button [] fading Some((621.703, 320.797))..Some((746, 374.068))",
+    #|  "alphas {255: 24, 33: 21} ground [33] button [] fading Some((621.482, 320.647))..Some((744.517, 373.376))",
     #|  "alphas {255: 24} ground [] button [] fading None..None",
     #|]
   ))
@@ -428,11 +428,11 @@ test "panel, 大屏 keyboard and mouse: at a point, its way in and its way out a
   let gone_from = out_a.search((24, -1)).unwrap_or(out_a.length())
   let gone_at = way_out.get(gone_from).map(fn(f) { f.0 - close_at })
   let gone_stays = out_a.iter().drop(gone_from).all(fn(w) { w == (24, -1) })
-  // (its words faded out by the time half its way out is over, before its ground (kit's pop_out), the frame at or
+  // (its words fade out together with its liquid glass over pop_out_ms (glass_pop_out), the frame at or
   // after that the first they are gone in)
   let in_time = match gone_at {
-    // (to a thousandth of a frame: the moments are sums of frame periods, never exactly on half the way)
-    Some(ms) => ms >= @motion.pop_out_ms / 2.0 && ms <= @motion.pop_out_ms / 2.0 + t.frame_period() + 0.001
+    // (to a thousandth of a frame: the moments are sums of frame periods)
+    Some(ms) => ms >= @motion.pop_out_ms && ms <= @motion.pop_out_ms + t.frame_period() + 0.001
     None => false
   }
   // (what is built meanwhile, the page under it as what it reads says (its own motions), built none of it)

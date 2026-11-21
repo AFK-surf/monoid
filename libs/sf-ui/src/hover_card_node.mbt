@@ -24,16 +24,8 @@ pub let hover_card_close_ms : Double = 120.0
 let hover_card_offset : Double = 6.0
 
 ///|
-/// How a card comes (pop_in: faded in, grown from .97, eased out over 140 ms) and goes (pop_out: to .97, eased to leave
-/// over 100 ms), its ground first, then what it holds.
-// kept across runs: a value (no field of it changes)
-let hover_card_in : @motion.Trans = @motion.pop_in
-
-///|
-// kept across runs: a value (no field of it changes)
-let hover_card_out : @motion.Trans = @motion.pop_out
-
-///|
+/// How long a card comes in (`pop_ms`) and goes out (`pop_out_ms`): liquid glass uses `glass_pop_in` / `glass_pop_out`,
+/// `MBUI_GLASS=solid` falls back to `pop_in` / `pop_out` (`pop_in_for` / `pop_out_for`).
 let hover_card_in_ms : Double = @motion.pop_ms
 
 ///|
@@ -185,7 +177,7 @@ pub fn hover_card_node(
       |> ignore
       let look = fn() {
         let p = way.shown(t)
-        (if way.target() > 0.5 { hover_card_in } else { hover_card_out }).at(p, p)
+        (if way.target() > 0.5 { pop_in_for(t) } else { pop_out_for(t) }).at(p, p)
       }
       small_panel_node(t)
       .beside(anchor.id(), side~, along~, offset=hover_card_offset, padding=8.0, piece?, along_offset~)
@@ -251,7 +243,7 @@ pub fn hover_card_node(
       gate.val.go(anchor, fn() { way.go_ms(anchor, 1.0, hover_card_in_ms, ease=Out) })
     } else {
       gate.val.stop()
-      way.go_ms(anchor, 0.0, hover_card_out_ms, ease=Leave)
+      way.go_ms(anchor, 0.0, hover_card_out_ms, ease=@signals.untracked(fn() { pop_out_ease_for(anchor) }))
     }
     match holder_v.val {
       Some(h) if h.alive() => @view.transition(within=h, fn() { open.set(on) })
@@ -483,7 +475,7 @@ fn hover_panel_surface(
 ) -> Unit {
   let look = fn() {
     let p = way.shown(t)
-    (if way.target() > 0.5 { hover_card_in } else { hover_card_out }).at(p, p)
+    (if way.target() > 0.5 { pop_in_for(t) } else { pop_out_for(t) }).at(p, p)
   }
   let live = fn() { !t.leaving() }
   anchored_popover_shell(
@@ -681,7 +673,7 @@ pub fn hover_panel_node(
       gate.val.go(anchor, fn() { way.go_ms(anchor, 1.0, hover_card_in_ms, ease=Out) })
     } else {
       gate.val.stop()
-      way.go_ms(anchor, 0.0, hover_card_out_ms, ease=Leave)
+      way.go_ms(anchor, 0.0, hover_card_out_ms, ease=@signals.untracked(fn() { pop_out_ease_for(anchor) }))
     }
     match holder_v.val {
       Some(h) if h.alive() => @view.transition(within=h, fn() { open.set(on) })

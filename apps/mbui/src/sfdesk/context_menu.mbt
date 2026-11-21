@@ -98,16 +98,18 @@ fn context_open_at(x : Double, y : Double) -> Unit {
   context.window = wid
   context.x = x
   context.y = y
-  if !again {
-    context_count.val += 1
-    let n = context_count.val
-    // (those gone their way out let go of as another opens: never as one goes, what it is let go in)
-    let left = context_menus.untracked().filter(fn(m) { !context_menus_gone.contains(m) })
-    context_menus_gone.clear()
-    context_menus.set(left + [n])
-    context_now.set(n)
-  }
-  context_told()
+  @view.transition(fn() {
+    if !again {
+      context_count.val += 1
+      let n = context_count.val
+      // (those gone their way out let go of as another opens: never as one goes, what it is let go in)
+      let left = context_menus.untracked().filter(fn(m) { !context_menus_gone.contains(m) })
+      context_menus_gone.clear()
+      context_menus.set(left + [n])
+      context_now.set(n)
+    }
+    context_told()
+  })
 }
 
 ///|
@@ -177,9 +179,11 @@ fn context_share_at(x : Double, y : Double, go : () -> Unit, link : String, word
 /// The menu closed: what it was open for, and the turn a message offered it, let go.
 fn context_closed() -> Unit {
   context.open = false
-  context_now.set(0)
-  @sfbase.share_offered.set(None)
-  context_lit()
+  @view.transition(fn() {
+    context_now.set(0)
+    @sfbase.share_offered.set(None)
+    context_lit()
+  })
 }
 
 ///|

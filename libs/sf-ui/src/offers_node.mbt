@@ -275,7 +275,7 @@ pub fn offers_node(
       shown.reacts(fn() { shown.leaving() }, fn(going) {
         if going {
           live.val = false
-          way.go_ms(shown, 0.0, @motion.pop_out_ms, ease=Leave)
+          way.go_ms(shown, 0.0, @motion.pop_out_ms, ease=@signals.untracked(fn() { pop_out_ease_for(shown) }))
         } else {
           live.val = true
           way.go_ms(shown, 1.0, @motion.pop_ms)
@@ -284,9 +284,9 @@ pub fn offers_node(
       let look = fn() {
         let p = way.shown(shown)
         if shown.leaving() {
-          @motion.pop_out.at(p, p)
+          pop_out_for(shown).at(p, p)
         } else {
-          @motion.pop_in.at(p, p)
+          pop_in_for(shown).at(p, p)
         }
       }
       let panel : Ref[@view.View?] = Ref(None)
