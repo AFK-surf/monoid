@@ -21,6 +21,7 @@ const MAX_DIRECT_HOLD_MS: u64 = 1_800_000;
 const MAX_TRACKED: usize = 512;
 const STALE_PATH_MS: u64 = 3_000;
 const STALE_TX_MIN: u64 = 3;
+const LIVENESS_IDLE_MS: u64 = 60_000;
 const MAX_LIVENESS: usize = 512;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -321,12 +322,19 @@ impl<T: Eq + Hash + Clone, S: Eq + Clone> Policy<T, S> {
         }
     }
     fn update_liveness(&mut self, activities: &[Activity<T, S>], connections: &[S], now: u64) {
+        // `Selector` is shared across remote peers while `connections` only names the peer
+        // in this `select` call. Drop absent paths for this peer immediately, and expire
+        // other peers or closed connections by idle age.
         self.liveness.retain(|entry| {
-            connections.contains(&entry.connection)
-                && activities
+            if connections.contains(&entry.connection) {
+                activities
                     .iter()
                     .any(|a| a.connection == entry.connection && a.path == entry.path)
+            } else {
+                now.saturating_sub(entry.touched) < LIVENESS_IDLE_MS
+            }
         });
+        // Refresh existing active entries before capacity eviction inspects `touched`.
         for act in activities {
             if !connections.contains(&act.connection) {
                 continue;
@@ -337,6 +345,15 @@ impl<T: Eq + Hash + Clone, S: Eq + Clone> Policy<T, S> {
                 .find(|e| e.connection == act.connection && e.path == act.path)
             {
                 entry.observe(act.generation, act.traffic, now);
+            }
+        }
+        for act in activities {
+            if !connections.contains(&act.connection)
+                || self
+                    .liveness
+                    .iter()
+                    .any(|e| e.connection == act.connection && e.path == act.path)
+            {
                 continue;
             }
             if self.liveness.len() >= MAX_LIVENESS {
@@ -344,7 +361,7 @@ impl<T: Eq + Hash + Clone, S: Eq + Clone> Policy<T, S> {
                     .liveness
                     .iter()
                     .enumerate()
-                    .filter(|(_, e)| e.touched < now)
+                    .filter(|(_, e)| !connections.contains(&e.connection))
                     .min_by_key(|(_, e)| e.touched)
                 {
                     self.liveness.remove(oldest);
@@ -361,12 +378,29 @@ impl<T: Eq + Hash + Clone, S: Eq + Clone> Policy<T, S> {
             ));
         }
     }
-    /// Selected paths are shared per remote peer. A tuple stays eligible while any
-    /// active connection on it is non-stale.
-    fn is_tuple_stale(&self, path: &T, now: u64) -> bool {
+    /// Selected paths are shared per remote peer. A tuple is stale only when at least
+    /// one active connection observes it and every active connection on it is tracked
+    /// and stale.
+    fn is_tuple_stale(
+        &self,
+        path: &T,
+        activities: &[Activity<T, S>],
+        connections: &[S],
+        now: u64,
+    ) -> bool {
         let mut any = false;
-        for entry in self.liveness.iter().filter(|e| &e.path == path) {
+        for act in activities
+            .iter()
+            .filter(|a| &a.path == path && connections.contains(&a.connection))
+        {
             any = true;
+            let Some(entry) = self
+                .liveness
+                .iter()
+                .find(|e| e.connection == act.connection && e.path == act.path)
+            else {
+                return false;
+            };
             if !entry.is_stale(now) {
                 return false;
             }
@@ -426,7 +460,7 @@ impl<T: Eq + Hash + Clone, S: Eq + Clone> Policy<T, S> {
         let live_best = paths
             .iter()
             .enumerate()
-            .filter(|(_, p)| !self.is_tuple_stale(&p.path, now))
+            .filter(|(_, p)| !self.is_tuple_stale(&p.path, activities, connections, now))
             .min_by_key(|(_, p)| p.sample.rtt_us)
             .map(|(i, _)| i);
         let any_best = paths
@@ -434,8 +468,9 @@ impl<T: Eq + Hash + Clone, S: Eq + Clone> Policy<T, S> {
             .enumerate()
             .min_by_key(|(_, p)| p.sample.rtt_us)
             .map(|(i, _)| i);
-        let current_stale =
-            seen && current.is_some_and(|(path, _)| self.is_tuple_stale(path, now));
+        let current_stale = seen
+            && current
+                .is_some_and(|(path, _)| self.is_tuple_stale(path, activities, connections, now));
         let stale_rescue = current_stale && live_best.is_some();
         let effective_seen = seen && !stale_rescue;
         for r in self
@@ -499,7 +534,7 @@ impl<T: Eq + Hash + Clone, S: Eq + Clone> Policy<T, S> {
         // between connections must not restart an otherwise continuous observation.
         let pinned = self.gates.get(current_path).and_then(|gate| {
             let candidate = gate.candidate.as_ref()?;
-            if self.is_tuple_stale(candidate, now) {
+            if self.is_tuple_stale(candidate, activities, connections, now) {
                 return None;
             }
             let (old_current, old_next) = gate.compared.as_ref()?;
@@ -536,7 +571,7 @@ impl<T: Eq + Hash + Clone, S: Eq + Clone> Policy<T, S> {
             .enumerate()
             .filter(|(_, p)| {
                 &p.path != current_path
-                    && !self.is_tuple_stale(&p.path, now)
+                    && !self.is_tuple_stale(&p.path, activities, connections, now)
                     && p.sample.sequence != 0
                     && now >= cooldown
                     && !(current_kind == Kind::Transit
@@ -756,7 +791,7 @@ impl PathSelector for Selector {
         // Keep the existing withdrawal rule. Preference alone never retires a backup path.
         let best_for_withdrawal = paths
             .iter()
-            .filter(|p| !policy.is_tuple_stale(&p.path, now))
+            .filter(|p| !policy.is_tuple_stale(&p.path, &activities, &connections, now))
             .min_by_key(|p| p.sample.rtt_us)
             .or_else(|| paths.iter().min_by_key(|p| p.sample.rtt_us));
         if let Some(best) = best_for_withdrawal {
@@ -1805,9 +1840,9 @@ mod stale_path_tests {
     use super::*;
     use Kind::{Direct, Transit};
 
-    #[allow(clippy::too_many_arguments)]
     type ObservedPath = (Candidate<u64, u64>, Activity<u64, u64>);
 
+    #[allow(clippy::too_many_arguments)]
     fn observed(
         id: u64,
         connection: u64,
@@ -2113,35 +2148,27 @@ mod stale_path_tests {
             None
         );
         // Path 2 becomes stale at t=3,000.
+        let stale_step = [
+            observed(1, 1, 1, Transit, 50_000, 2, 13, 13),
+            observed(2, 1, 2, Transit, 10_000, 1, 10, 13),
+        ];
         assert_eq!(
-            step(
-                &mut policy,
-                Some((1, Transit)),
-                &[
-                    observed(1, 1, 1, Transit, 50_000, 2, 13, 13),
-                    observed(2, 1, 2, Transit, 10_000, 1, 10, 13),
-                ],
-                &[1],
-                3_000,
-            ),
+            step(&mut policy, Some((1, Transit)), &stale_step, &[1], 3_000),
             None
         );
-        assert!(policy.is_tuple_stale(&2, 3_000));
+        let stale_acts: Vec<_> = stale_step.iter().map(|(_, a)| a.clone()).collect();
+        assert!(policy.is_tuple_stale(&2, &stale_acts, &[1], 3_000));
         // One authenticated frame arrives on path 2 at t=3,100: staleness clears at once.
+        let live_step = [
+            observed(1, 1, 1, Transit, 50_000, 3, 14, 14),
+            observed(2, 1, 2, Transit, 10_000, 2, 11, 14),
+        ];
         assert_eq!(
-            step(
-                &mut policy,
-                Some((1, Transit)),
-                &[
-                    observed(1, 1, 1, Transit, 50_000, 3, 14, 14),
-                    observed(2, 1, 2, Transit, 10_000, 2, 11, 14),
-                ],
-                &[1],
-                3_100,
-            ),
+            step(&mut policy, Some((1, Transit)), &live_step, &[1], 3_100),
             None
         );
-        assert!(!policy.is_tuple_stale(&2, 3_100));
+        let live_acts: Vec<_> = live_step.iter().map(|(_, a)| a.clone()).collect();
+        assert!(!policy.is_tuple_stale(&2, &live_acts, &[1], 3_100));
         // After 3 seconds of sustained fresh samples from t=3,100, proactive switch to path 2 succeeds.
         assert_eq!(
             step(
@@ -2177,22 +2204,18 @@ mod stale_path_tests {
             None
         );
         // Connection 1 stops receiving on path 1 (+4 tx, 0 rx), while connection 2 still receives on path 1.
+        let mixed = [
+            observed(1, 1, 1, Transit, 8_000, 5, 10, 14),
+            observed(1, 2, 1, Transit, 8_000, 8, 13, 13),
+            observed(2, 1, 2, Transit, 20_000, 8, 13, 13),
+            observed(2, 2, 2, Transit, 20_000, 8, 13, 13),
+        ];
         assert_eq!(
-            step(
-                &mut policy,
-                Some((1, Transit)),
-                &[
-                    observed(1, 1, 1, Transit, 8_000, 5, 10, 14),
-                    observed(1, 2, 1, Transit, 8_000, 8, 13, 13),
-                    observed(2, 1, 2, Transit, 20_000, 8, 13, 13),
-                    observed(2, 2, 2, Transit, 20_000, 8, 13, 13),
-                ],
-                &[1, 2],
-                3_500,
-            ),
+            step(&mut policy, Some((1, Transit)), &mixed, &[1, 2], 3_500),
             None
         );
-        assert!(!policy.is_tuple_stale(&1, 3_500));
+        let mixed_acts: Vec<_> = mixed.iter().map(|(_, a)| a.clone()).collect();
+        assert!(!policy.is_tuple_stale(&1, &mixed_acts, &[1, 2], 3_500));
         // Once connection 2 also goes silent for 3 seconds with >= 3 tx, tuple 1 yields to path 2.
         assert_eq!(
             step(
@@ -2346,20 +2369,129 @@ mod stale_path_tests {
     }
 
     #[test]
-    fn liveness_table_evicts_absent_paths_and_released_connections_and_caps_capacity() {
+    fn liveness_table_evicts_absent_paths_and_idle_peers_and_caps_capacity() {
         let mut policy = Policy::new();
-        let many: Vec<_> = (1..=(MAX_LIVENESS as u64 + 40))
-            .map(|id| observed(id, id, 1, Transit, 10_000, 1, 1, 1))
-            .collect();
-        let conns: Vec<_> = (1..=(MAX_LIVENESS as u64 + 40)).collect();
-        let _ = step(&mut policy, Some((1, Transit)), &many, &conns, 0);
+        // Seed two paths on peer connection 1, then drop path 2 on the next select for connection 1.
+        let initial = [
+            observed(1, 1, 1, Transit, 10_000, 1, 1, 1),
+            observed(2, 1, 2, Transit, 20_000, 1, 1, 1),
+        ];
+        let _ = step(&mut policy, Some((1, Transit)), &initial, &[1], 0);
+        assert_eq!(policy.liveness.len(), 2);
+        let kept = [observed(1, 1, 1, Transit, 10_000, 2, 2, 2)];
+        let _ = step(&mut policy, Some((1, Transit)), &kept, &[1], 500);
+        assert_eq!(policy.liveness.len(), 1);
+        assert_eq!(policy.liveness[0].path, 1);
+
+        // Other peers stay within LIVENESS_IDLE_MS, are LRU-evicted at MAX_LIVENESS, and expire once idle.
+        for peer in 2..=(MAX_LIVENESS as u64 + 40) {
+            let item = [observed(peer, peer, 1, Transit, 10_000, 1, 1, 1)];
+            let _ = step(&mut policy, Some((peer, Transit)), &item, &[peer], 1_000 + peer);
+            assert!(policy.liveness.len() <= MAX_LIVENESS);
+        }
         assert_eq!(policy.liveness.len(), MAX_LIVENESS);
 
-        // Releasing connections and paths shrinks the table to only currently present pairs.
-        let kept = [observed(1, 1, 1, Transit, 10_000, 2, 2, 2)];
-        let _ = step(&mut policy, Some((1, Transit)), &kept, &[1], 1_000);
+        let _ = step(
+            &mut policy,
+            Some((1, Transit)),
+            &kept,
+            &[1],
+            1_000 + (MAX_LIVENESS as u64 + 40) + LIVENESS_IDLE_MS,
+        );
         assert_eq!(policy.liveness.len(), 1);
         assert_eq!(policy.liveness[0].connection, 1);
         assert_eq!(policy.liveness[0].path, 1);
+    }
+
+    #[test]
+    fn other_peer_select_does_not_reset_stale_observation() {
+        let mut policy = Policy::new();
+        let mut result = None;
+        for t in 0..=4 {
+            result = step(
+                &mut policy,
+                Some((1, Transit)),
+                &[
+                    observed(1, 1, 1, Transit, 5_000, 10, 20, 20 + t),
+                    observed(2, 1, 1, Transit, 15_000, 10 + t, 20 + t, 20 + t),
+                ],
+                &[1],
+                t * 1_000,
+            );
+            let _ = step(
+                &mut policy,
+                Some((3, Transit)),
+                &[observed(3, 2, 1, Transit, 5_000, 10 + t, 20 + t, 20 + t)],
+                &[2],
+                t * 1_000,
+            );
+        }
+        assert_eq!(
+            result,
+            Some(2),
+            "another remote peer must not reset peer A liveness"
+        );
+    }
+
+    #[test]
+    fn capacity_overflow_untracked_shared_tuple_connection_is_not_stale() {
+        for uninserted_first in [false, true] {
+            let mut policy = Policy::new();
+            let connections: Vec<u64> = (1..=513).collect();
+            for t in 0..=4 {
+                let mut activities: Vec<_> = (1..=512)
+                    .map(|c| observed(c, c, 1, Transit, 5_000, 10, 20, 20 + t).1)
+                    .collect();
+                let extra = observed(1, 513, 1, Transit, 5_000, 10 + t, 20 + t, 20 + t).1;
+                if uninserted_first && t > 0 {
+                    activities.insert(0, extra);
+                } else {
+                    activities.push(extra);
+                }
+                policy.update_liveness(&activities, &connections, t * 1_000);
+                if t == 4 {
+                    assert!(
+                        !policy.is_tuple_stale(&1, &activities, &connections, 4_000),
+                        "active same-tuple connection omitted at capacity is not evidence of death"
+                    );
+                    // Tuple 2 has only connection 2, which stayed tracked without thrashing and is stale.
+                    assert!(policy.is_tuple_stale(&2, &activities, &connections, 4_000));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn closed_connection_on_shared_tuple_does_not_block_remaining_stale_connection() {
+        let mut policy = Policy::new();
+        assert_eq!(
+            step(
+                &mut policy,
+                Some((1, Transit)),
+                &[
+                    observed(1, 1, 1, Transit, 8_000, 5, 10, 10),
+                    observed(1, 2, 1, Transit, 8_000, 5, 10, 10),
+                    observed(2, 2, 2, Transit, 20_000, 5, 10, 10),
+                ],
+                &[1, 2],
+                0,
+            ),
+            None
+        );
+        // Connection 1 closes cleanly while connection 2 goes silent on tuple 1 (+3 tx, 0 rx).
+        // Even though connection 1's entry has not hit LIVENESS_IDLE_MS yet, connection 2 rescues at 3s.
+        assert_eq!(
+            step(
+                &mut policy,
+                Some((1, Transit)),
+                &[
+                    observed(1, 2, 1, Transit, 8_000, 5, 10, 13),
+                    observed(2, 2, 2, Transit, 20_000, 8, 13, 13),
+                ],
+                &[2],
+                3_000,
+            ),
+            Some(2)
+        );
     }
 }
