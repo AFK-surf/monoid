@@ -375,8 +375,17 @@ let ovl_list_row_gap : Double = 12.0
 let ovl_list_sep_inset : Double = 14.0
 
 ///|
-/// Vertical breathing padding above/below each hairline divider in a grouped list (`2 + 1 + 2 = 5pt`).
-let ovl_list_sep_py : Double = 2.0
+/// Vertical breathing padding above/below each hairline divider in a grouped list (`3 + 1 + 3 = 7pt`), so a hovered
+/// or active row's pill never touches the divider beside it.
+let ovl_list_sep_py : Double = 3.0
+
+///|
+/// A quarter turn in radians (`π / 2`, 90°): `View::turn` takes radians.
+let ovl_turn_quarter : Double = 1.5707963267948966
+
+///|
+/// A half turn in radians (`π`, 180°): `View::turn` takes radians.
+let ovl_turn_half : Double = 3.141592653589793
 
 ///|
 /// Vertical row gap in sidebar / divider-free list mode (`dividers=false`).

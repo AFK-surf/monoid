@@ -815,7 +815,7 @@ test "zero glass-on-glass across NavBar, Toolbar, List, Disclosure, Sheet, Dialo
 }
 
 ///|
-test "liquid_list_node keeps breathing gap between active and hovered rows and hides adjacent divider" {
+test "liquid_list_node keeps steady dividers with breathing room around active and hovered rows" {
   let t = ovl_case(w=500.0, h=460.0, fn(page, _host) {
     page.box(fn(col) {
       col.width(Is(Some(320.0))).gap(Is(16.0)) |> ignore
@@ -848,24 +848,84 @@ test "liquid_list_node keeps breathing gap between active and hovered rows and h
     |> ignore
   })
   t.run_for(springs_out)
-  // 1. Check vertical breathing gap >= 4.0pt in both grouped and sidebar lists
+  // 1. Grouped rows sit >= 6pt apart (3pt + 1pt hairline + 3pt); sidebar rows >= 4pt
   let r0 = t.get(Button, label="Active Row").rect
   let r1 = t.get(Button, label="Middle Row").rect
   let r2 = t.get(Button, label="Bottom Row").rect
   let s0 = t.get(Button, label="Side One").rect
   let s1 = t.get(Button, label="Side Two").rect
-  assert_true(r1.1 - (r0.1 + r0.3) >= 4.0)
-  assert_true(r2.1 - (r1.1 + r1.3) >= 4.0)
+  assert_true(r1.1 - (r0.1 + r0.3) >= 6.0)
+  assert_true(r2.1 - (r1.1 + r1.3) >= 6.0)
   assert_true(s1.1 - (s0.1 + s0.3) >= 4.0)
-  // 2. Divider between row 0 (active) and row 1 is hidden; divider between row 1 and row 2 is drawn
-  let has_divider_between = fn(top_y : Double, bot_y : Double) -> Bool {
-    t.drawn_rects().iter().any(fn(rc) { rc.3 <= 1.5 && rc.1 >= top_y && rc.1 <= bot_y })
+  // 2. Each divider is drawn, steady, and clear of both rows' pills by >= 3pt on each side
+  let divider_clear_between = fn(top_y : Double, bot_y : Double) -> Bool {
+    t
+    .drawn_rects()
+    .iter()
+    .any(fn(rc) { rc.3 <= 1.5 && rc.1 - top_y >= ovl_list_sep_py - 0.5 && bot_y - (rc.1 + rc.3) >= ovl_list_sep_py - 0.5 })
   }
-  let sep01_init = has_divider_between(r0.1 + r0.3, r1.1)
-  let sep12_init = has_divider_between(r1.1 + r1.3, r2.1)
-  // Hover Middle Row -> divider between row 1 and row 2 fades to alpha 0 (not drawn)
+  let sep01_init = divider_clear_between(r0.1 + r0.3, r1.1)
+  let sep12_init = divider_clear_between(r1.1 + r1.3, r2.1)
+  // Hover Middle Row: both dividers beside it stay drawn
   t.move_to(r1.0 + r1.2 / 2.0, r1.1 + r1.3 / 2.0)
   t.run_for(springs_out)
-  let sep12_hovered = has_divider_between(r1.1 + r1.3, r2.1)
-  assert_eq((sep01_init, sep12_init, sep12_hovered), (false, true, false))
+  let sep01_hovered = divider_clear_between(r0.1 + r0.3, r1.1)
+  let sep12_hovered = divider_clear_between(r1.1 + r1.3, r2.1)
+  assert_eq((sep01_init, sep12_init, sep01_hovered, sep12_hovered), (true, true, true, true))
+}
+
+///|
+/// π, written out here so the chevrons' turns are checked against radians, not against the tokens they use.
+let ovl_test_pi : Double = 3.141592653589793
+
+///|
+/// How far the most turned thing drawn is turned, in radians (`View::turn`).
+fn ovl_most_turned() -> Double {
+  let tree = @ui.view_tree().unwrap()
+  tree.drawn().fold(init=0.0, fn(most, d) {
+    let turned = tree.turn_angle_of(d.id).abs()
+    if turned > most {
+      turned
+    } else {
+      most
+    }
+  })
+}
+
+///|
+test "liquid_select_node turns its chevron a half turn and liquid_disclosure_node a quarter turn, in radians" {
+  let expanded = @signals.signal(false)
+  let t = ovl_case(fn(page, _host) {
+    liquid_disclosure_node(
+      page,
+      fn() { "Advanced" },
+      fn() { expanded.get() },
+      fn(v) { expanded.set(v) },
+      fn(c) {
+        c.box(fn(w) { w.words(Is("Hidden details"), look=words_at(ovl_type_sub)).ink(By(fn() { colors().content })) |> ignore })
+        |> ignore
+      },
+    )
+    |> ignore
+  })
+  t.run_for(springs_out)
+  let disc_rest = ovl_most_turned()
+  t.act(Button, Activate, label="Advanced")
+  t.run_for(springs_out)
+  let disc_open = ovl_most_turned()
+  assert_true(disc_rest < 0.01)
+  assert_true((disc_open - ovl_test_pi / 2.0).abs() < 0.01 && disc_open <= 1.7, msg="disclosure turned \{disc_open}")
+  let chosen = @signals.signal(0)
+  let opts = [LiquidSelectOption::new(label="Light"), LiquidSelectOption::new(label="Dark")]
+  let t2 = ovl_case(fn(page, host) {
+    liquid_select_node(page, host, fn() { opts }, fn() { chosen.get() }, fn(i) { chosen.set(i) }, label=fn() { "Theme" })
+    |> ignore
+  })
+  t2.run_for(springs_out)
+  let select_rest = ovl_most_turned()
+  t2.act(Button, Activate, label="Theme: Light")
+  t2.run_for(springs_out)
+  let select_open = ovl_most_turned()
+  assert_true(select_rest < 0.01)
+  assert_true((select_open - ovl_test_pi).abs() < 0.01 && select_open <= 3.2, msg="select turned \{select_open}")
 }

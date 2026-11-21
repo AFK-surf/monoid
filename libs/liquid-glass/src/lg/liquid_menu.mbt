@@ -368,12 +368,12 @@ pub fn liquid_select_node(
     made_for=loc,
     fn(t, disc) {
       let press_way = @motion.NodeWay::new(0.0)
-      let chev_way = @motion.NodeWay::new(if @signals.untracked(fn() { open.get() }) { 180.0 } else { 0.0 })
+      let chev_way = @motion.NodeWay::new(if @signals.untracked(fn() { open.get() }) { ovl_turn_half } else { 0.0 })
       t.reacts(at_start=false, fn() { !disc.disabled() && disc.pressed() }, fn(on) {
         press_way.go(t, if on { 1.0 } else { 0.0 }, @motion.snappy_damped)
       })
       t.reacts(at_start=false, fn() { open.get() }, fn(is_open) {
-        chev_way.go(t, if is_open { 180.0 } else { 0.0 }, @motion.snappy_damped)
+        chev_way.go(t, if is_open { ovl_turn_half } else { 0.0 }, @motion.snappy_damped)
       })
       t
       .row(Is(true))

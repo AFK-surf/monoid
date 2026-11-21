@@ -522,10 +522,10 @@ fn ovl_list_row_inner(r : @view.View, item_sig : @signals.Signal[LiquidListItem]
 
 ///|
 /// An iOS-style grouped inset content-layer list (`r=24pt`, `pad=6pt` -> rows `r=18pt`).
-/// Reactive via `View::each`. With `dividers=true` (default), hairline dividers sit between
-/// adjacent rows with `2pt` vertical breathing room and smoothly fade out whenever either
-/// adjacent row is active, hovered, or pressed. With `dividers=false` (sidebar navigation mode),
-/// rows sit `4pt` apart with no dividers so active and hovered pills never touch.
+/// Reactive via `View::each`. With `dividers=true` (default), steady hairline dividers sit between adjacent rows (none
+/// before the first or after the last) with `3pt` vertical breathing room above and below, so an active, hovered or
+/// pressed row's pill keeps clear of them. With `dividers=false` (sidebar navigation mode), rows sit `4pt` apart with no
+/// dividers so active and hovered pills never touch.
 #callsite(autofill(loc))
 pub fn liquid_list_node(
   parent : @view.View,
@@ -535,7 +535,6 @@ pub fn liquid_list_node(
   dividers? : Bool = true,
   loc~ : SourceLoc,
 ) -> @view.View {
-  let lit_idx : @signals.Signal[Int] = @signals.signal(-1)
   parent.box(made_for=loc, fn(wrap) {
     wrap.show(fn() { header() != "" }, fn(h) {
       h.padding(Is((ovl_list_meta_px, 0.0, ovl_list_meta_px, ovl_list_meta_py))) |> ignore
@@ -566,34 +565,11 @@ pub fn liquid_list_node(
       card.each(fn() { ovl_list_items(rows()) }, fn(it) { it.key }, fn(slot, item_sig) {
         if dividers {
           slot.show(fn() { item_sig.get().idx > 0 }, at_once=true, fn(sep) {
-            let sep_shown = fn() {
-              let idx = item_sig.get().idx
-              let lit = lit_idx.get()
-              if lit == idx || lit == idx - 1 {
-                return false
-              }
-              let rs = rows()
-              let cur_active = match rs.get(idx) {
-                Some(r) => r.active
-                None => false
-              }
-              let prev_active = if idx > 0 {
-                match rs.get(idx - 1) {
-                  Some(r) => r.active
-                  None => false
-                }
-              } else {
-                false
-              }
-              !(cur_active || prev_active)
-            }
-            let sep_fade = @motion.hover_fade(sep, sep_shown)
             sep.padding(Is((ovl_list_sep_inset, ovl_list_sep_py, ovl_list_sep_inset, ovl_list_sep_py))) |> ignore
             sep.box(fn(line) {
               line
               .height(Is(Some(ovl_hairline_h)))
               .ground(By(ovl_hairline))
-              .alpha(By(fn() { clamp(sep_fade(), 0.0, 1.0) }))
               |> ignore
             })
             |> ignore
@@ -616,16 +592,6 @@ pub fn liquid_list_node(
             disabled=fn() { item_sig.get().row.disabled },
             made_for=loc,
             fn(r, btn) {
-              if dividers {
-                r.reacts(at_start=false, fn() { !btn.disabled() && (btn.hovered() || btn.pressed()) }, fn(on) {
-                  let idx = item_sig.untracked().idx
-                  if on {
-                    lit_idx.set(idx)
-                  } else if lit_idx.untracked() == idx {
-                    lit_idx.set(-1)
-                  }
-                })
-              }
               r
               .row(Is(true))
               .lines_up(Is(Some(Start)))
@@ -690,7 +656,7 @@ pub fn liquid_disclosure_node(
   disabled? : () -> Bool = fn() { false },
   loc~ : SourceLoc,
 ) -> @view.View {
-  let chev_turn = @motion.NodeWay::new(if @signals.untracked(open) { 90.0 } else { 0.0 })
+  let chev_turn = @motion.NodeWay::new(if @signals.untracked(open) { ovl_turn_quarter } else { 0.0 })
   let body_way = @motion.NodeWay::new(if @signals.untracked(open) { 1.0 } else { 0.0 })
   parent.box(made_for=loc, fn(card) {
     card
@@ -700,7 +666,7 @@ pub fn liquid_disclosure_node(
     .glass(By(fn() { Some(ovl_panel_glass()) }))
     |> ignore
     card.reacts(open, at_start=false, fn(is_open) {
-      chev_turn.go(card, if is_open { 90.0 } else { 0.0 }, @motion.snappy_damped)
+      chev_turn.go(card, if is_open { ovl_turn_quarter } else { 0.0 }, @motion.snappy_damped)
       body_way.go(card, if is_open { 1.0 } else { 0.0 }, @motion.snappy_damped)
     })
     @headless.disclosure(
