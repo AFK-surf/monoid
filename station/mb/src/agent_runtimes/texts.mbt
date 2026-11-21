@@ -236,6 +236,7 @@ pub let notes : Array[(Int, String)] = [
   (179, "Moving to another station is on for every station now, stable ones too: station_move and skill stillfail-move are there wherever a station did not offer them before."),
   (180, "chat_post now takes a Feishu chat_id as to (to=\"oc_…\"): in a Feishu group your bot made or is in, with no conversation yet, it posts the first message there and makes that thread one of your conversations; its answer names the oc_…/… address to use from then on."),
   (181, "Google Colab GPU sandboxes (colab-g4, colab-l4, colab-t4) are now automatically exposed from Google Colab profiles in Settings → Profiles (设置 → Profiles) and discoverable across stations in the same workspace via station_list and station_task."),
+  (182, "chat_configure now takes for: \"me\" (lead a still.fail chat as your sub-chat) or \"person\" (hand a led sub-chat back to people), and reports led and leader when inspecting a session."),
 ]
 
 ///|

@@ -161,6 +161,7 @@ test "panel live beside what opened it, 大屏 keyboard and mouse: held short of
   t.run_for(@ui.move_most_ms)
   assert_eq("said \{@ui.list_text(said)} presenting \{@sf.presenting()}", "said [ok] presenting false")
   inspect(bottom, content=(
-    #|seen (Some(第20行), Some(第39行)) title [(622, 20, 252, 20)] button Some((606, 450, 284, 36)) in window Some(true)
+    #|seen (Some(第19行), Some(第39行)) title [(622, 20, 252, 20)] button Some((606, 450, 284, 36)) in window Some(true)
+
   ))
 }

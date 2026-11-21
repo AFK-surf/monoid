@@ -14,6 +14,7 @@
 priv struct ChatOwn {
   info_open : @signals.Signal[Bool]
   jobs_open : @signals.Signal[Bool]
+  subchats_open : @signals.Signal[Bool]
 }
 
 ///|
@@ -21,14 +22,17 @@ priv struct ChatOwn {
 let chat_own : ChatOwn = {
   info_open: @signals.signal(false, same=fn(a, b) { a == b }),
   jobs_open: @signals.signal(false, same=fn(a, b) { a == b }),
+  subchats_open: @signals.signal(false, same=fn(a, b) { a == b }),
 }
 
 ///|
 fn chat_page_reset() -> Unit {
   chat_own.info_open.set(false)
   chat_own.jobs_open.set(false)
+  chat_own.subchats_open.set(false)
   chat_pops.info = 0
   chat_pops.jobs = 0
+  chat_pops.subchats = 0
   chat_jobs_wait.val = None
   side_front_wait.val = None
   side_under_chat.val = ""
@@ -100,6 +104,21 @@ pub fn open_info_pop() -> Unit {
 }
 
 ///|
+pub fn open_subchats_pop() -> Unit {
+  chat_own.subchats_open.set(true)
+}
+
+///|
+pub fn toggle_subchats_pop() -> Unit {
+  chat_own.subchats_open.set(!chat_own.subchats_open.untracked())
+}
+
+///|
+pub fn subchats_pop_open() -> Bool {
+  chat_own.subchats_open.get()
+}
+
+///|
 /// Whether its info's popover is open, and its services' (tests).
 pub fn chat_pops_open() -> (Bool, Bool) {
   (chat_own.info_open.get(), chat_own.jobs_open.get())
@@ -110,6 +129,7 @@ pub fn chat_pops_open() -> (Bool, Bool) {
 pub fn chat_find_open(r : ChatRef) -> Unit {
   chat_own.info_open.set(false)
   chat_own.jobs_open.set(false)
+  chat_own.subchats_open.set(false)
   find_open(chat_key(r))
 }
 
@@ -232,7 +252,7 @@ fn chat_bar_said(
   src : Source,
   r : ChatRef,
   top : Bool,
-) -> (Bool, (Bool, Bool, Bool), (String, Double?, Bool, Bool, Bool, String, String)?, (Json?, Json?, Json?)) {
+) -> (Bool, (Bool, Bool, Bool), (String, Double?, Bool, Bool, Bool, String, String, Int, String)?, (Json?, Json?, Json?)) {
   let whole = @sfbase.chat_whole_held(src, r)
   let view = @sfbase.chat_view_now(src, r)
   let chat = @sfbase.chat_head_json(src, r)
@@ -249,6 +269,8 @@ fn chat_bar_said(
         v.offline,
         v.agents.map(fn(a) { a.key }).join(" "),
         v.screens.map(fn(s) { s.id + (if s.agent { "*" } else { "" }) }).join(" "),
+        @sfpages.led_subchats(v.opened).length(),
+        @sfpages.opened_summary_tone(v.opened),
       )
     }),
     (chat, whole.value, jobs),
@@ -305,10 +327,19 @@ fn chat_bar_hand(
       } else {
         None
       }
+      let subchats = if @sfpages.led_subchats(view.opened).length() > 0 {
+        Some((toggle_subchats_pop, @sfpages.opened_summary_tone(view.opened) != ""))
+      } else {
+        None
+      }
       // (the short column, no room in it for their own buttons: the first rows of its "…", a line under them; the
       // user, 2026-11-07: 右上角那两个按钮应该收到右侧边栏)
       let rows = if @sf.native_on() && column_short.get() {
         let firsts : Array[@sf.MenuItem?] = []
+        match subchats {
+          Some((act, _)) => firsts.push(Some(@sf.menu_item_of(@sf.t("web-pages.chat.subchats"), icon="spawned", act)))
+          None => ()
+        }
         match screen {
           Some((act, _)) => firsts.push(Some(@sf.menu_item_of(@sf.t("web-pages.chat.screen"), icon="monitor", act)))
           None => ()
@@ -324,7 +355,7 @@ fn chat_bar_hand(
       } else {
         rows
       }
-      bar_chat(src, r, view.agents, info, rows, more, jobs, screen, if archivable { Some(archive) } else { None })
+      bar_chat(src, r, view.agents, info, rows, more, jobs, screen, subchats, if archivable { Some(archive) } else { None })
       |> ignore
     }
     // (not read yet: the actions of the chat before it kept in the system's bars till its own come)
@@ -339,23 +370,14 @@ fn jobs_toggle() -> Unit {
 }
 
 ///|
-/// Where the screens' button's dot stands (screen_driven_dot): in its top right corner concentric with the button's
-/// (its 10 round: the dot's 5 and 5 in), as the corner rule has it.
-// kept across runs: a value (no field of it changes)
-let screen_driven_room : @ui.Style = @ui.css("w=S8 h=S8 pt=S1_25 pr=S1_25 align=AEnd")
-
-///|
-/// The screens' button's dot while an agent drives one: as the services' (jobs_alarm_room), in the tone of an agent at
-/// work.
-// kept across runs: a value (no field of it changes)
-let screen_driven_dot : @ui.Style = @ui.css("w=S2_5 h=S2_5 radius=Full bg=Warn border=B2 border_color=Bg")
-
-///|
 /// How wide the info's popover and the services' are (jobsPanel).
 let chat_info_w : Double = 320.0
 
 ///|
 let jobs_pop_w : Double = 360.0
+
+///|
+let subchats_pop_w : Double = 340.0
 
 ///|
 /// How many pull requests the info names itself (the rest: 全部 N 个).
@@ -376,19 +398,7 @@ let info_pull_title : @ui.TextStyle = @ui.text_style(size=Ui, color=Fg, wrap=fal
 let info_label_flow : @ui.Style = @ui.style(row=true, w=@sf.grow, gap=S3, align=ACenter, justify=JBetween)
 
 ///|
-/// What is in it between its rooms at its ends (page_bar_room): its title's row and its buttons 16 apart.
-// kept across runs: a value (no field of it changes)
-let chat_bar_inner : @ui.Style = @ui.style(row=true, w=@sf.grow, h=Full, gap=S4, align=ACenter)
-
-///|
-/// Its title, its people and agents 10 apart, 8 in (pageBarTitle), 4 kept past its last for the reach of the badge at
-/// an agent's corner (agent_mark.mbt: 3 past it); never narrower than what is left in it needs (Ctx::box keep), ⌘F's
-/// field beside it giving way first, down to its least.
-// kept across runs: a value (no field of it changes)
-let chat_bar_title_row : @ui.Style = @ui.style(row=true, w=@sf.grow, pl=S2, pr=S1, gap=S2_5, align=ACenter)
-
-///|
-/// How far its title stands in from where its row starts (chat_bar_title_row's pl=S2).
+/// How far its title stands in from where its row starts (pl=S2).
 let chat_bar_title_in : Double = 8.0
 
 ///|
@@ -399,9 +409,6 @@ let chat_title_room : @ui.Style = @ui.css("row")
 /// What leaves the bar's title row first, short of room: its people, then its agents but the
 /// first (the last of them first).
 let chat_bar_drop_people : Int = 1
-
-///|
-let chat_bar_drop_agents : Int = 2
 
 ///|
 /// How wide the title may be: 42% of the bar, 80 at least.
@@ -526,7 +533,7 @@ let agent_mark_btn_on : @ui.Style = @ui.css("radius=Md border=B2 border_color=Ac
 
 ///|
 // kept across runs: a value (no field of it changes)
-let agent_station : @ui.Style = @ui.css("row h=S5 radius=Md bg=Neutral")
+let agent_station : @ui.Style = @ui.css("row h=S5 radius=Md bg=Card")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -581,24 +588,6 @@ let agent_station_part_hot : @ui.Style = agent_station_part.then(@ui.css("bg=Hov
 /// padding (the hover's padded), the station's card under it at the padding, its rows there.
 // kept across runs: a value (no field of it changes)
 let tile_card_agent : @ui.Style = @ui.css("w=Full p=S2_5")
-
-///|
-/// The dot on the tile's bottom right corner, 3 past it.
-// kept across runs: a value (no field of it changes)
-let agent_station_dot_room : @ui.Style = @ui.css("w=Full h=Full align=AEnd justify=JEnd").then(@sf.oversize(3.0))
-
-///|
-/// The services' button's dot (jobsTrigger ::after): 7 across, 6 in from its top right, ringed 2 in the page's ground.
-// kept across runs: a value (no field of it changes)
-let jobs_alarm_room : @ui.Style = @ui.css("w=S8 h=S8 pt=S1 pr=S1 align=AEnd")
-
-///|
-// kept across runs: a value (no field of it changes)
-let jobs_alarm_fail : @ui.Style = @ui.css("w=S2_5 h=S2_5 radius=Full bg=Danger border=B2 border_color=Bg")
-
-///|
-// kept across runs: a value (no field of it changes)
-let jobs_alarm_restart : @ui.Style = @ui.css("w=S2_5 h=S2_5 radius=Full bg=Warn border=B2 border_color=Bg")
 
 ///|
 /// The info's facts (detailRow): what it is muted in a 6em column, 12 apart; 13; at the panel's words' inset. A fact

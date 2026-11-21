@@ -168,7 +168,7 @@ test "a chat's page made as nodes left in a piece of a long message: another run
 ///|
 test "小屏, a chat's page made as nodes under a bar of two rows from the start (a title too long for one): left read up, opened again where it was, three times over, never further down by the bar's second row" {
   let tight_title = "极窄标题测试：当第 1 行连三个汉字加省略号都放不下时自动展开"
-  let (t, _) = chat_bar_node_tester(tight_title, has_jobs=true, w=290.0, msg_count=14, at=14.0)
+  let (t, _) = chat_bar_node_tester(tight_title, has_jobs=true, w=200.0, msg_count=14, at=14.0)
   let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: tight_title, station_name: "Willow" }
   t.run_for(@ui.move_most_ms)
   assert_true(bar_extra_target(r) > 30.0, msg="the bar not of two rows")

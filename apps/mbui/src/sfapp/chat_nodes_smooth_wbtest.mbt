@@ -30,12 +30,13 @@ test "chat_page_nodes smoothness: decision card pick enters once and never repla
       #|tap =一起换
       #|wait 2600
       #|exit
+    let min_y = if w >= @sf.page_narrow_most { @sf.wide_bar_h + 8.0 } else { 120.0 }
     t.drive(script, each=fn(t) {
       for wd in t.words() {
         let (txt, x, y, ww, _, a) = wd
-        // (y >= 120: on 390x844, the list scrolls down as the new reply arrives at the foot, carrying this earlier row up
+        // (y >= min_y: on 390x844, the list scrolls down as the new reply arrives at the foot, carrying this earlier row up
         // into the top bar's scroll-edge fade band)
-        if txt.contains("选择了「一起换」") && a > 0.02 && y >= 120.0 {
+        if txt.contains("选择了「一起换」") && a > 0.02 && y >= min_y {
           seen.push((t.time() - start, x, ww, a))
           break
         }

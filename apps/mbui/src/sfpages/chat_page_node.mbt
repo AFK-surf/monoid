@@ -23,6 +23,7 @@ pub fn chat_page_body_node(
   cover_to? : () -> Double,
   room? : Double = list_room,
   foot? : () -> Double = fn() { list_foot },
+  foot_clear_extra? : () -> Double = fn() { 0.0 },
   composer? : (@view.View) -> Unit,
   lead? : Double = unread_lead,
   on_stack? : () -> Bool = fn() { true },
@@ -256,6 +257,7 @@ pub fn chat_page_body_node(
         // row as far over the bell as it is over the composer without it, as the page before kept it (chat_list's
         // `ask_clear`))
         foot=fn() { foot() + (if @sfbase.ask_clears((here.view)()) { float_lift + float_side } else { 0.0 }) },
+        foot_clear_extra~,
         composer?,
         lead~,
         read=fn(place, scroll, rows, reopening, on_reopened) {

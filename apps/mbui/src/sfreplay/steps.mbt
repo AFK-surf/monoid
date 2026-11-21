@@ -1879,13 +1879,10 @@ pub fn Flow::wheel_aligned(self : Flow, dy : Double, loc~ : SourceLoc) -> Unit {
   }
   let site = loc.to_string()
   let actual = "wheel \{dy.to_int()}"
-  let step = if !self.strict {
-    match self.r.next_step() {
-      Some(recorded) if recorded.has_prefix("wheel ") && recorded != "wheel 0" &&
-        ((dy < 0.0 && recorded.has_prefix("wheel -")) || (dy > 0.0 && !recorded.has_prefix("wheel -"))) => recorded
-      _ => actual
-    }
-  } else { actual }
+  let step = match self.r.next_step() {
+    Some(recorded) if recorded.has_prefix("wheel ") && recorded != "wheel 0" => recorded
+    _ => actual
+  }
   emit(step)
   // (how far, as the strict pass measured it on its screen: a pace pass's the same)
   let dy = match keeping.val {

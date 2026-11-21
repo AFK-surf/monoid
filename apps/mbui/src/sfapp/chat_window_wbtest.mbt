@@ -331,8 +331,8 @@ test "a chat's first ask on 小屏 and 大屏: how many of its last messages it 
     "小屏: [window 30, sub] held 30, drawn 10, bones 0",
     // (10 on 大屏 since a message's head and words are 4 apart again, msg_main_share's gap: 11 before)
     "大屏: [window 30, sub] held 30, drawn 10, bones 0",
-    "小屏 notices: [window 30, sub] held 30, drawn 19, bones 0",
-    "大屏 notices: [window 30, sub] held 30, drawn 18, bones 0",
+    "小屏 notices: [window 30, sub] held 30, drawn 18, bones 0",
+    "大屏 notices: [window 30, sub] held 30, drawn 17, bones 0",
   ])
 }
 
