@@ -310,11 +310,14 @@ pub fn styled_words(w : @view.View, words : () -> String, style : () -> @ui.Text
   .words_look(By(fn() { @ui.style_words(style()) }))
   .ink(By(fn() { @ui.style_ink(style()) }))
   |> ignore
-  let (cut, ellipsis) = @signals.untracked(fn() {
+  let (cut, ellipsis, tabular) = @signals.untracked(fn() {
     let said = style()
     let cut = @ui.style_cut(said)
-    (cut, !cut && @ui.style_fills(said) && !@ui.style_words(said).wrap)
+    (cut, !cut && @ui.style_fills(said) && !@ui.style_words(said).wrap, @ui.style_tabular(said))
   })
+  if tabular is Some(_) {
+    w.words_tabular(Is(tabular)) |> ignore
+  }
   if cut {
     // (cut short where their line has not the room across: given way along a row, never squeezed down, View::cuts)
     w.cuts(Is(true)).min_width(Is(Some(0.0))).allow_ellipsis(Is(true)) |> ignore

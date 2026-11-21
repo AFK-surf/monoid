@@ -157,6 +157,8 @@ pub(all) struct Look {
   mut words_breaks : Bool
   /// whether single-line words are optically centered vertically within their line box (View::words_optical)
   mut words_optical : Bool
+  /// whether its words shape digits all one width (View::words_tabular; None follows theme)
+  mut words_tabular : Bool?
   /// how many times what its glyphs are drawn by was said (View::glyphs_by): its words drawn again as it is
   mut glyphs_said : Int
   /// whether its words' ellipsis, one line cut short past it, is drawn past its box (View::ellipsis_past)
@@ -233,6 +235,8 @@ pub(all) struct Content {
   words_breaks : Bool
   /// its single-line words optically centered vertically within their line box (View::words_optical)
   words_optical : Bool
+  /// whether its words shape digits all one width (View::words_tabular; None follows theme)
+  words_tabular : Bool?
   /// how many times what its glyphs are drawn by was said (View::glyphs_by; Tree::glyphs_of)
   glyphs_said : Int
   /// its words' ellipsis drawn past its box where it has not the room for it (View::ellipsis_past)
@@ -359,6 +363,8 @@ pub(all) struct Drawn {
   words_breaks : Bool
   /// its single-line words optically centered vertically within their line box (View::words_optical)
   words_optical : Bool
+  /// whether its words shape digits all one width (View::words_tabular; None follows theme)
+  words_tabular : Bool?
   /// how many times what its glyphs are drawn by was said (View::glyphs_by; Tree::glyphs_of)
   glyphs_said : Int
   /// its words' ellipsis drawn past its box where it has not the room for it (View::ellipsis_past)
@@ -882,6 +888,8 @@ pub struct Tree {
   /// how narrow words in pieces may be laid out wrapped (the widest of what lies between two places a line may break:
   /// a browser's min-content), at a size of words: what a table's columns are sized by (View::tracks)
   measure_runs_least : (Array[@text.Run], WordsLook, RunsLook, Double) -> Double
+  /// `words_tabular` override of the node currently being measured (Tree::measuring_tabular)
+  mut measuring_tabular : Bool?
   /// whether each node keeps where in the source it was made and its properties said (source.mbt): a Tester's tree
   sources : Bool
   nodes : Array[Node]
@@ -1611,6 +1619,7 @@ pub fn Tree::new(
     measure_kept: measure_kept.unwrap_or(measure),
     measure_runs_kept: measure_runs_kept.unwrap_or(measure_runs),
     measure_runs_least,
+    measuring_tabular: None,
     sources,
     nodes: [],
     free: [],
@@ -2004,6 +2013,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.look.words_center = false
       n.look.words_breaks = false
       n.look.words_optical = false
+      n.look.words_tabular = None
       n.look.glyphs_said = 0
       n.look.ellipsis_past = false
       n.look.picture = None
@@ -2175,7 +2185,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         gen: 0,
         live: true,
         flex: @flex.Node::new(),
-        look: { ground: 0L, ground_over: 0L, ink: 0L, words: "", words_drawn: None, words_look: words_plain, runs: [], runs_look: runs_plain, runs_pressed: -1, runs_picked: (0, 0), runs_marks: [], shadow: (0.0, 0.0, 0L), halo: (0.0, 0L), rects: [], shapes: [], tint: 0L, lines: [], edge: (0.0, 0L), ring: (0.0, 0.0, 0L), focus_ring: None, image: None, image_for: (0.0, 0.0), image_cover: false, image_contain: false, image_cover_at: None, image_fade: false, stretch: 0.0, image_in: None, radius: 0.0, corners: None, glass: None, alpha: 1.0, dx: 0.0, dy: 0.0, sx: 0.0, sy: 0.0, scale: 1.0, pivot: At(0.5, 0.5), scale_shift: 0.0, scale_peak: 0.0, turn: 0.0, turn_drawn: false, fades: (0.0, 0.0, 0.0, 0.0), drawn_off: (0.0, 0.0), drawn_exact: false, ground_drawn: ground_as_laid, cut_soft: false, drawn_as: "", clips: false, clips_past: 0.0, words_center: false, words_breaks: false, words_optical: false, glyphs_said: 0, ellipsis_past: false, picture: None },
+        look: { ground: 0L, ground_over: 0L, ink: 0L, words: "", words_drawn: None, words_look: words_plain, runs: [], runs_look: runs_plain, runs_pressed: -1, runs_picked: (0, 0), runs_marks: [], shadow: (0.0, 0.0, 0L), halo: (0.0, 0L), rects: [], shapes: [], tint: 0L, lines: [], edge: (0.0, 0L), ring: (0.0, 0.0, 0L), focus_ring: None, image: None, image_for: (0.0, 0.0), image_cover: false, image_contain: false, image_cover_at: None, image_fade: false, stretch: 0.0, image_in: None, radius: 0.0, corners: None, glass: None, alpha: 1.0, dx: 0.0, dy: 0.0, sx: 0.0, sy: 0.0, scale: 1.0, pivot: At(0.5, 0.5), scale_shift: 0.0, scale_peak: 0.0, turn: 0.0, turn_drawn: false, fades: (0.0, 0.0, 0.0, 0.0), drawn_off: (0.0, 0.0), drawn_exact: false, ground_drawn: ground_as_laid, cut_soft: false, drawn_as: "", clips: false, clips_past: 0.0, words_center: false, words_breaks: false, words_optical: false, words_tabular: None, glyphs_said: 0, ellipsis_past: false, picture: None },
         parent,
         allow_ellipsis: false,
         words_as_said,
@@ -4077,6 +4087,7 @@ priv enum Prop {
   TakesUnseen
   Rects
   WordsOptical
+  WordsTabular
 }
 
 ///|
@@ -4194,6 +4205,7 @@ impl Show for Prop with output(self, logger) {
       TakesUnseen => "TakesUnseen"
       Rects => "Rects"
       WordsOptical => "WordsOptical"
+      WordsTabular => "WordsTabular"
     },
   )
 }
@@ -4335,6 +4347,7 @@ fn Prop::ord(self : Prop) -> Int {
     TakesUnseen => 104
     Rects => 105
     WordsOptical => 106
+    WordsTabular => 107
   }
 }
 
@@ -7656,6 +7669,8 @@ pub fn View::words(
     let t0 = tree.part_began()
     // (at its own size of words: View::words_scale's)
     let scale = if nd.words_as_said { 1.0 } else { (tree.env.words_scale)() }
+    let prev_tabular = tree.measuring_tabular
+    tree.measuring_tabular = look.words_tabular
     // (its line breaks kept where it says so, View::words_breaks: measured on their lines as written)
     let (mw, mh) = if look.runs.is_empty() {
       (if look.words_breaks { tree.measure_kept } else { tree.measure })(look.words, look.words_look, offered, scale)
@@ -7685,6 +7700,7 @@ pub fn View::words(
     } else {
       mw
     }
+    tree.measuring_tabular = prev_tabular
     match wm {
       Exactly => (w, mh)
       _ => (mw, mh)
@@ -13976,6 +13992,7 @@ fn Tree::made_again(self : Tree, at : Int) -> Unit {
     words_center: n.look.words_center,
     words_breaks: n.look.words_breaks,
     words_optical: n.look.words_optical,
+    words_tabular: n.look.words_tabular,
     glyphs_said: n.look.glyphs_said,
     ellipsis_past: n.look.ellipsis_past,
     picture: n.look.picture,
@@ -14893,6 +14910,7 @@ fn unfolded(c : Content, x : Double, y : Double, a : Double, s : Double) -> Draw
     words_center: c.words_center,
     words_breaks: c.words_breaks,
     words_optical: c.words_optical,
+    words_tabular: c.words_tabular,
     glyphs_said: c.glyphs_said,
     ellipsis_past: c.ellipsis_past,
     picture: c.picture,

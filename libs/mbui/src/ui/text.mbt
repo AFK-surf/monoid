@@ -948,13 +948,21 @@ fn Shaped::breaks(self : Shaped, text : String) -> Array[Int] {
 ///|
 /// With `spacing` (letter spacing, as Android's: each cluster's advance has it, half before its piece and half
 /// after), shaped with no ligatures (@hostapi.style_no_ligatures): a ligature's letters would not be spaced.
-fn shape(text : String, size : Double, weight : Int, style? : Int = 0, spacing? : Double = 0.0) -> Shaped {
+fn shape(
+  text : String,
+  size : Double,
+  weight : Int,
+  style? : Int = 0,
+  spacing? : Double = 0.0,
+  keep_tabular? : Bool = false,
+) -> Shaped {
   // (measured in what the host measures in now, followed: measured again as that changes)
   words_shaped_in.get() |> ignore
   let style = if spacing != 0.0 { style | @hostapi.style_no_ligatures } else { style }
-  // (digits all one width only where they would not be: the code face's are, and words with none have none)
+  // (digits all one width only where they would not be: the code face's are, and words with none have none unless
+  // keep_tabular preserves the pre-truncation choice)
   let style = if (style & @hostapi.style_tabular) != 0 &&
-    ((style & @hostapi.style_mono) != 0 || !has_digit(text)) {
+    ((style & @hostapi.style_mono) != 0 || (!keep_tabular && !has_digit(text))) {
     style & @hostapi.style_tabular.lnot()
   } else {
     style
@@ -1773,8 +1781,9 @@ fn layout_text(
   trim? : Bool = false,
   spacing? : Double = 0.0,
   style? : Int = 0,
+  keep_tabular? : Bool = false,
 ) -> TextLayout {
-  let s = shape(text, size, weight, style~, spacing~)
+  let s = shape(text, size, weight, style~, spacing~, keep_tabular~)
   // greedy wrapping gives the same lines in any width from the widest
   // line up to the one they were made in (as Node::text_layout)
   if indent == 0.0 {

@@ -586,6 +586,32 @@ pub fn View::words_optical(self : View, on : Live[Bool], loc~ : SourceLoc) -> Vi
 }
 
 ///|
+/// Whether its words shape digits all one width (`Some(true)`: tabular, `Some(false)`: proportional, `None`: follow
+/// the tree's theme), as it changes: layout's and paint's.
+#callsite(autofill(loc))
+pub fn View::words_tabular(self : View, on : Live[Bool?], loc~ : SourceLoc) -> View {
+  self.bind(loc~, WordsTabular, on, Both, fn(on) {
+    self.tree.nodes[self.at].look.words_tabular = on
+    self.words_told()
+  })
+  self
+}
+
+///|
+/// Whether its words shape digits all one width as it is said now (View::words_tabular).
+pub fn View::words_tabular_now(self : View) -> Bool? {
+  guard self.live() is Some(n) else { return None }
+  n.look.words_tabular
+}
+
+///|
+/// The `words_tabular` override of the node currently being measured by `Tree`'s measure callbacks (`None` outside
+/// measure or when following the theme).
+pub fn Tree::measuring_tabular(self : Tree) -> Bool? {
+  self.measuring_tabular
+}
+
+///|
 /// A last-resort ellipsis is intended without changing the words' layout sizing (as Ctx::text's allow_ellipsis).
 #callsite(autofill(loc))
 pub fn View::allow_ellipsis(self : View, on : Live[Bool], loc~ : SourceLoc) -> View {
