@@ -2964,7 +2964,7 @@ let en : Map[String, String] = {
   "web-main.newChat.goStations": "Open Station settings",
   "web-main.preset.stationsCount": "{n} stations",
   "web-main.preset.hasInstructions": "Instructions",
-  "web-main.preset.editItem": "Edit {name}",
+  "web-main.preset.moreItem": "More for {name}",
   "web-main.preset.copyItem": "Copy {name} to my presets",
   "web-main.preset.runtimeSection": "Station & model",
   "web-main.preset.anyStation": "Any station",

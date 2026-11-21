@@ -51,7 +51,7 @@ pub fn station_choice_node(
       let items : Array[MenuItem?] = @signals.untracked(stations).map(fn(s) {
         Some(menu_item_of(s.name, fn() { if s.station != at { choose(s.station) } }, chosen=s.station == at))
       })
-      present(Menu(items, title, Start), Node(b))
+      present(Menu(items, title, Start, Bottom), Node(b))
       opener.mark()
     },
     open=fn() { opener.open() },

@@ -180,7 +180,8 @@ fn preset_picker_mark_node(
 
 ///|
 /// A structured preset row in the picker: left selectable main button (icon + name + check + optional summary),
-/// paired with an independent beside action button (edit or copy) aligned to the first line.
+/// paired with an independent beside action button (one's own: ⋯, its menu beside it; another's: copy) aligned to the
+/// first line, given the node it stands in to open beside.
 fn preset_picker_row_node(
   parent : @view.View,
   name : String,
@@ -192,7 +193,7 @@ fn preset_picker_row_node(
   chosen : Bool,
   highlighted : () -> Bool,
   press : () -> Unit,
-  action? : (String, () -> String, () -> Unit),
+  action? : (String, () -> String, (@view.View) -> Unit),
 ) -> Unit {
   parent.box(fn(line) {
     @sf.style_node(line, fn() { preset_picker_line })
@@ -247,7 +248,7 @@ fn preset_picker_row_node(
           .lines_up(Is(Some(Middle)))
           .lies_along(Is(Middle))
           |> ignore
-          @sf.icon_button_node(slot, icon, label, act, ink=fn() { @sf.theme().p.muted }) |> ignore
+          @sf.icon_button_node(slot, icon, label, fn() { act(slot) }, ink=fn() { @sf.theme().p.muted }) |> ignore
         })
         |> ignore
       None => ()
@@ -474,7 +475,7 @@ fn preset_panel(
                 action=(
                   "copy",
                   fn() { @sf.t("web-main.preset.copyItem", args=[("name", picked_name)]) },
-                  fn() { preset_copy_run(src, w, address, picked, stations, close) },
+                  fn(_) { preset_copy_run(src, w, address, picked, stations, close) },
                 ),
               )
             OwnRow(my_key, p) => {
@@ -507,12 +508,27 @@ fn preset_panel(
                   close()
                 },
                 action=(
-                  "edit",
-                  fn() { @sf.t("web-main.preset.editItem", args=[("name", display_name)]) },
-                  fn() {
-                    close()
+                  "more",
+                  fn() { @sf.t("web-main.preset.moreItem", args=[("name", display_name)]) },
+                  fn(slot) {
+                    // (deleted here as in its dialog, without going in first; the panel closed as either is
+                    // picked, its list read as it opened)
                     let up = stations.iter().any(fn(s) { text(Some(s), "station") == at })
-                    preset_dialog(src, w, if up { at } else { address }, id, stations, browse_station=address)
+                    let on = if up { at } else { address }
+                    @sf.menu(
+                      [
+                        Some(@sf.menu_item_of(@sf.t("common.edit"), fn() {
+                          close()
+                          preset_dialog(src, w, on, id, stations, browse_station=address)
+                        }, icon="edit")),
+                        Some(@sf.menu_item_of(@sf.t("common.delete"), fn() {
+                          close()
+                          preset_delete_ask(src, on, id, text(po, "name"))
+                        }, icon="trash", danger=true)),
+                      ],
+                      from=Node(slot),
+                      side=Right,
+                    )
                   },
                 ),
               )
@@ -720,7 +736,7 @@ fn preset_others_content(
               action=(
                 "copy",
                 fn() { @sf.t("web-main.preset.copyItem", args=[("name", name)]) },
-                fn() { preset_copy_run(src, w, address, id, stations, close) },
+                fn(_) { preset_copy_run(src, w, address, id, stations, close) },
               ),
             )
           })
@@ -1469,6 +1485,21 @@ fn preset_drop_node(v : @view.View, press : () -> Unit) -> Unit {
 }
 
 ///|
+/// 删除预设「X」？ asked, preset `id` of station `address` deleted as it is said yes to, `then` before.
+fn preset_delete_ask(src : Source, address : String, id : String, name : String, then? : () -> Unit = fn() {  }) -> Unit {
+  @sf.confirm(
+    @sf.t("web-main.preset.deleteTitle", args=[("name", name)]),
+    @sf.t("web-main.preset.deleteBody"),
+    @sf.t("common.delete"),
+    danger=true,
+    fn() {
+      then()
+      (src.call)("preset.delete", Json::object({ "station": Json::string(address), "id": Json::string(id) }), @sfbase.answer_unread)
+    },
+  )
+}
+
+///|
 /// The dialog's foot in node `v`: 删除 for one there (asked first), 取消, 创建 or 保存 (busy as it is saved; not while it
 /// has no folder or no name, or a clone of it is under way).
 fn preset_foot(
@@ -1482,16 +1513,7 @@ fn preset_foot(
 ) -> Unit {
   if id != "" {
     @sf.button_node(v, fn() { @sf.t("common.delete") }, fn() {
-      @sf.confirm(
-        @sf.t("web-main.preset.deleteTitle", args=[("name", e.name.text())]),
-        @sf.t("web-main.preset.deleteBody"),
-        @sf.t("common.delete"),
-        danger=true,
-        fn() {
-          close()
-          (src.call)("preset.delete", Json::object({ "station": Json::string(address), "id": Json::string(id) }), @sfbase.answer_unread)
-        },
-      )
+      preset_delete_ask(src, address, id, e.name.text(), then=close)
     }, tone=GhostDanger)
     |> ignore
   }

@@ -76,7 +76,7 @@ pub fn way_line_node(
               }
               // (opened by the … itself: beside it wherever it is laid out while open, the focus given back to it
               // as the menu goes)
-              present(Menu(gone, "", Start), Node(s))
+              present(Menu(gone, "", Start, Bottom), Node(s))
             },
             fn(s, _) {
               s.focus_ring_theme() |> ignore

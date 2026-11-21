@@ -39,6 +39,25 @@ fn preset_mode(mode : String, wide? : Bool = false, src? : Source) -> @ui.Tester
 }
 
 ///|
+/// 编辑 of own preset `name` in the open picker: its ⋯, then 编辑 in the menu beside it.
+fn preset_more_edit(t : @ui.Tester, name : String) -> Unit raise {
+  press(t, name + " 的更多操作")
+  t.run_for(@ui.move_most_ms)
+  menu_press(t, "编辑")
+  t.run_for(@ui.move_most_ms)
+}
+
+///|
+/// The open menu's item `label` pressed: a menu's item beside what opened it, a button of the sheet on a phone.
+fn menu_press(t : @ui.Tester, label : String) -> Unit raise {
+  if t.query(MenuItem, label~) is Some(_) {
+    t.click(MenuItem, label~)
+  } else {
+    press(t, label)
+  }
+}
+
+///|
 /// The fixture's source for `mode` with each call kept in `calls`.
 fn preset_calls(mode : String, calls : Array[Made]) -> Source {
   let base = fixture(mode)
@@ -195,6 +214,32 @@ test "with none of one's own, the capsule opens 新预设 and 其他成员的预
 }
 
 ///|
+test "an own preset's ⋯ in the picker deletes it, asked first, without going into its dialog" {
+  for wide in [false, true] {
+    new_run()
+    let calls : Array[Made] = []
+    let t = preset_mode("newchat", wide~, src=preset_calls("newchat", calls))
+    press(t, "预设")
+    t.run_for(@ui.move_most_ms)
+    press(t, "still.fail 开发 的更多操作")
+    t.run_for(@ui.move_most_ms)
+    assert_true(shows(t, "编辑") && shows(t, "删除"), msg=runs(t))
+    let faults = t.audit().filter(fn(f) { !f.contains("in an old view made at") })
+    assert_eq(faults, [])
+    menu_press(t, "删除")
+    t.run_for(@ui.move_most_ms)
+    assert_true(shows_start(t, "删除预设「still.fail 开发」"), msg=runs(t))
+    assert_true(named(calls, "preset.delete").is_empty())
+    press(t, "删除")
+    t.run_for(@ui.move_most_ms)
+    let del = named(calls, "preset.delete")
+    assert_eq(del.length(), 1)
+    assert_eq(text(Some(del[0].params), "id"), "p-sf")
+    assert_false(shows(t, "添加目录"), msg=runs(t))
+  }
+}
+
+///|
 test "browsing starts on the station picked in the new chat composer" {
   new_run()
   @sffixture.new_fix.station = "st2"
@@ -268,7 +313,7 @@ test "editing another station's preset still starts browsing on the composer's s
   let t = preset_mode("newchat", wide=true, src~)
   press(t, "still.fail 开发")
   t.run_for(@ui.move_most_ms)
-  press(t, "编辑 still.fail 开发")
+  preset_more_edit(t, "still.fail 开发")
   t.run_for(@ui.move_most_ms)
   press(t, "添加目录")
   t.run_for(@ui.move_most_ms)
@@ -324,7 +369,7 @@ test "editing a preset made on a station no longer up picks its model of the com
   let t = preset_mode("newchat", src~)
   press(t, "still.fail 开发")
   t.run_for(@ui.move_most_ms)
-  press(t, "编辑 still.fail 开发")
+  preset_more_edit(t, "still.fail 开发")
   t.run_for(@ui.move_most_ms)
   press(t, "不限模型")
   t.run_for(@ui.move_most_ms)

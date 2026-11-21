@@ -111,7 +111,7 @@ test "with someone else's picked, the panel shows it checked with whose it is an
     let t = preset_mode("newchat-preset-theirs", wide~)
     assert_true(shows(t, "线上排障") && shows_start(t, "林夏") && shows(t, "still.fail 开发"), msg="wide \{wide}: \{runs(t)}")
     assert_true(t.query(Button, label="复制 线上排障 为我的预设") is Some(_), msg=t.semantics_dump())
-    assert_false(t.query(Button, label="编辑 线上排障") is Some(_), msg=t.semantics_dump())
+    assert_false(t.query(Button, label="线上排障 的更多操作") is Some(_), msg=t.semantics_dump())
   }
 }
 
@@ -170,7 +170,7 @@ test "editing another preset directly opens its dialog without changing the acti
   new_run()
   let calls : Array[Made] = []
   let t = preset_mode("newchat-preset-many", wide=true, src=others_src("newchat-preset-many", calls, []))
-  press(t, "编辑 微操")
+  preset_more_edit(t, "微操")
   t.run_for(@ui.move_most_ms)
   assert_true(shows(t, "编辑预设"), msg=runs(t))
   assert_eq(named(calls, "newChat.pick").length(), 0)
@@ -217,7 +217,7 @@ test "one's own preset made on another station is edited as the core holds it, i
   let t = preset_mode("newchat", wide=true)
   choose(t, "still.fail 开发")
   t.run_for(@ui.move_most_ms)
-  press(t, "编辑 still.fail 开发")
+  preset_more_edit(t, "still.fail 开发")
   t.run_for(@ui.move_most_ms)
   assert_true(shows(t, "编辑预设") && shows(t, "still.fail 设计稿"), msg=runs(t))
 }

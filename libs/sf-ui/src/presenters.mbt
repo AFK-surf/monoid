@@ -138,7 +138,8 @@ pub fn choice(
 /// What a presenter shows.
 priv enum Shows {
   /// a menu: its items (None a line between), its title ("" none), where a small panel lines up with what opened it
-  Menu(Array[MenuItem?], String, @ui.Along)
+  /// and the side of it it stands on
+  Menu(Array[MenuItem?], String, @ui.Along, @ui.Side)
   /// a pick: its title, the choices, the one chosen now, what choosing one does; whether a long one has a line to
   /// search them by
   Pick(String, Array[Choice], String, (String) -> Unit, @ui.Along, Bool)
@@ -358,7 +359,7 @@ fn presented_told() -> Unit {
 pub fn presented_changed() -> Unit {
   for p in presented_now {
     match (p.shows, presented_items_said.get(p.serial)) {
-      (Menu(items, _, _), Some(s)) => s.set(items_shown(items))
+      (Menu(items, _, _, _), Some(s)) => s.set(items_shown(items))
       _ => ()
     }
   }
@@ -404,8 +405,8 @@ fn present(shows : Shows, from : Anchor, line? : String = "", gone? : () -> Unit
   // that one's place, the topmost of them's; a menu by what was chosen in a menu, a page of that one's sheet)
   let chosen_in = presented_now.iter().filter(fn(q) { q.closed_now && q.stands > 0.0 && q.taken_by == 0 }).last()
   match (chosen_in, shows) {
-    (Some(old), Menu(items, title, _)) if old.chosen &&
-      old.shows is Menu(_, _, _) &&
+    (Some(old), Menu(items, title, _, _)) if old.chosen &&
+      old.shows is Menu(_, _, _, _) &&
       tree_presented.contains(old.serial) &&
       tree_as_sheet.get(old.serial).unwrap_or(false) => {
       // (a page of that sheet, as a panel's step further in is)
@@ -470,16 +471,18 @@ fn present(shows : Shows, from : Anchor, line? : String = "", gone? : () -> Unit
 
 ///|
 /// A menu of `items` (None: a line between; parts.tsx Menu), opened by `from`: chosen, it closes and the item's
-/// `select` goes on. `title` over them ("" none); `along`: how it lines up with what opened it beside it. `gone`: what
-/// is let go of as it closes with nothing chosen (back, Escape, a press outside).
+/// `select` goes on. `title` over them ("" none); `along`: how it lines up with what opened it beside it; `side`: the side
+/// of what opened it it stands on as a small panel (a sheet's has none). `gone`: what is let go of as it closes with
+/// nothing chosen (back, Escape, a press outside).
 pub fn menu(
   items : Array[MenuItem?],
   from~ : Beside,
   title? : String = "",
   along? : @ui.Along = Start,
+  side? : @ui.Side = Bottom,
   gone? : () -> Unit = fn() {  },
 ) -> Unit {
-  present(Menu(items, title, along), from.anchor(), gone~)
+  present(Menu(items, title, along, side), from.anchor(), gone~)
 }
 
 ///|
@@ -1322,7 +1325,7 @@ fn how_of(shows : Shows, from : Anchor, sheet : Bool) -> How {
     (_, Panel(x)) if x.stage => AsDialog
     (true, _) => AsSheet
     (false, Panel(x)) if from == Unanchored || x.form => AsDialog
-    (false, Menu(_, _, _) | Pick(_, _, _, _, _, _) | Panel(_)) => AsPopover
+    (false, Menu(_, _, _, _) | Pick(_, _, _, _, _, _) | Panel(_)) => AsPopover
     (false, Confirm(_, _, _, _, _, _) | Ask(_, _, _, _, _, _, _, _)) => AsDialog
   }
 }
@@ -1430,7 +1433,7 @@ pub struct ChoiceHeld {
 pub fn choice_held() -> ChoiceHeld? {
   guard choosing.val > 0 else { return None }
   match presented_now.search_by(fn(q) { q.serial == choosing.val }) {
-    Some(i) if presented_now[i].shows is Menu(_, _, _) && presented_now[i].closed_now => {
+    Some(i) if presented_now[i].shows is Menu(_, _, _, _) && presented_now[i].closed_now => {
       let p = presented_now[i]
       // (open again as it was: closed for the choice in this same handler, no frame drawn of its going; as a level's
       // page put on reopens it, panel_page, menu_level)

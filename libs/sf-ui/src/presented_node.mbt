@@ -28,7 +28,7 @@ fn tree_sheet_of(p : Presented, sheet : Bool) -> Bool {
 ///|
 /// Whether `p` is a confirm, a question, a menu or a pick: on 小屏 a sheet of the window's tree (sheet_shows_panel).
 fn sheet_shows_of(p : Presented) -> Bool {
-  p.shows is (Confirm(_, _, _, _, _, _) | Ask(_, _, _, _, _, _, _, _) | Menu(_, _, _) | Pick(_, _, _, _, _, _))
+  p.shows is (Confirm(_, _, _, _, _, _) | Ask(_, _, _, _, _, _, _, _) | Menu(_, _, _, _) | Pick(_, _, _, _, _, _))
 }
 
 ///|
@@ -187,7 +187,7 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
             dims~,
             covered~,
           )
-        Menu(items, title, along) => {
+        Menu(items, title, along, side) => {
           // (beside what opened it, where it was drawn as it opened; opened by the keyboard where that showed its focus:
           // menu_anchor_now)
           let (anchor, by_key, offset, keep_field) = @signals.untracked(fn() { menu_anchor_now(p.from) })
@@ -205,6 +205,7 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
             keep_field,
             fn(item) { done(item.select) },
             fn() { dismissed_now(serial) },
+            side~,
             shown~,
             gone~,
           )

@@ -42,7 +42,7 @@ fn sheet_shows_panel(p : Presented) -> PanelOf {
         })
       })
     // (what it holds as it is now, where it is kept: given anew there whole, then told, presented_changed)
-    Menu(items, title, _) => menu_sheet_panel(serial, title, fn() { presented_items_of(serial, items) })
+    Menu(items, title, _, _) => menu_sheet_panel(serial, title, fn() { presented_items_of(serial, items) })
     Pick(title, choices, chosen, choose, _, search) => {
       let many = choices.length() >= pick_search_from
       sheet_nodes_panel(title, if many { sheet_long_pick } else { 0.0 }, fn(col, close) {

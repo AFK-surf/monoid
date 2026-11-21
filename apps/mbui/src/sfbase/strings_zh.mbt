@@ -2935,7 +2935,7 @@ let zh : Map[String, String] = {
   "web-main.newChat.goStations": "前往 Station 设置",
   "web-main.preset.stationsCount": "{n} 台 station",
   "web-main.preset.hasInstructions": "含指令",
-  "web-main.preset.editItem": "编辑 {name}",
+  "web-main.preset.moreItem": "{name} 的更多操作",
   "web-main.preset.copyItem": "复制 {name} 为我的预设",
   "web-main.preset.runtimeSection": "Station 与模型",
   "web-main.preset.anyStation": "不限 Station",

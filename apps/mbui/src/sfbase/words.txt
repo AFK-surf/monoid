@@ -2913,7 +2913,7 @@ web-main.newChat.pickStation
 web-main.newChat.goStations
 web-main.preset.stationsCount
 web-main.preset.hasInstructions
-web-main.preset.editItem
+web-main.preset.moreItem
 web-main.preset.copyItem
 web-main.preset.runtimeSection
 web-main.preset.anyStation
