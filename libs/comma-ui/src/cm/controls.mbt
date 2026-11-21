@@ -76,7 +76,11 @@ fn choice_row(g : @view.View, label : String, hint : String, control : (@view.Vi
   g.box(made_for=loc, fn(r) {
     r.row(Is(true)).gap(Is(space_md)).lines_up(Is(Some(Start))) |> ignore
     r.box(fn(c) {
-      c.padding(Is((0.0, space_xxs, 0.0, 0.0))) |> ignore
+      c
+      .height(By(fn() { Some(@ui.sp_at(c.words_scale(), type_small.line)) }))
+      .lines_up(Is(Some(Middle)))
+      .lies_along(Is(Middle))
+      |> ignore
       control(c)
     })
     |> ignore

@@ -437,3 +437,71 @@ test "dialog_node hides from the semantics tree immediately on close before exit
   let mid_exit = t.all(Dialog, label="Confirm hide").length()
   assert_eq((at_once, mid_exit), (0, 0))
 }
+
+///|
+test "radio_group_node and check_group_node align controls with first-line labels at 1.0x and 2.0x with zero audit faults" {
+  let t = floating_case(fn(p, _) {
+    p.box(fn(r) {
+      r.row(Is(true)).gap(Is(24.0)).lines_up(Is(Some(Start))) |> ignore
+      r.box(fn(b) {
+        b.width(Is(Some(240.0))) |> ignore
+        radio_group_node(
+          b,
+          [("Basic plan", "Up to 10 users."), ("Business plan", "Up to 20 users.")],
+          @signals.signal(0),
+          label="Plan",
+        )
+        |> ignore
+      })
+      |> ignore
+      r.box(fn(b) {
+        b.width(Is(Some(240.0))) |> ignore
+        check_group_node(
+          b,
+          [("Email", "Weekly digest."), ("Push", "")],
+          @signals.signal([true, false]),
+          label="Notify",
+        )
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  fn check_aligned(scale : Double) -> Unit raise {
+    let words = t.words()
+    let pairs : Array[(@view.Role, String)] = [
+      (Radio, "Basic plan"),
+      (Radio, "Business plan"),
+      (Checkbox, "Email"),
+      (Checkbox, "Push"),
+    ]
+    for p in pairs {
+      let (role, name) = p
+      let (_, cy, _, ch) = t.get(role, label=name).rect
+      let ctrl_mid = cy + ch / 2.0
+      let mut label_mid : Double? = None
+      for w in words {
+        if w.0 == name {
+          label_mid = Some(w.2 + w.4 / 2.0)
+          break
+        }
+      }
+      match label_mid {
+        Some(lm) =>
+          assert_true(
+            (ctrl_mid - lm).abs() < 1.0,
+            msg="scale=\{scale} \{name}: ctrl_mid=\{ctrl_mid} vs label_mid=\{lm}",
+          )
+        None => assert_true(false, msg="label \{name} not found in words")
+      }
+    }
+    assert_eq(t.audit(), [])
+  }
+  t.run_for(floating_ms)
+  check_aligned(1.0)
+  t.set_font_scale(2.0)
+  t.draw()
+  t.run_for(floating_ms)
+  check_aligned(2.0)
+}
