@@ -189,9 +189,9 @@ test "a chooser as nodes, on the three screens: where it stands, what it draws a
   inspect(seen.join("\n"), content=(
     #|platform 2 wide false:
     #|rest: (24, 764, 342, 28) expanded Some(false) [小时 (32, 769, 26, 18), 说明文字 (24, 736, 342, 18), 末尾文字 (24, 802, 342, 18)]
-    #|rest drawn: []
+    #|rest drawn: [(48, 771, 10, 10) 4126404607, (50, 773, 6, 6) 1169253631]
     #|open: expanded None [小时 (66, 677, 30, 18), 分钟 (66, 721, 30, 18)]
-    #|open drawn: [(24, 764, 342, 28) 606546703]
+    #|open drawn: [(48, 771, 10, 10) 4126404607, (50, 773, 6, 6) 1169253631, (24, 764, 342, 28) 606546703]
     #|menu: [(MenuItemRadio, 小时, Some(On)), (MenuItemRadio, 分钟, Some(Off))]
     #|chosen: [minutes] [小时 -, 分钟 (32, 769, 26, 18), 单位 (24, 702, 32, 24)]
     #|again: [小时 (66, 677, 30, 18), 分钟 (66, 721, 30, 18)]
@@ -225,6 +225,8 @@ test "a chooser as nodes, on the three screens: where it stands, what it draws a
     #|escape focus: Some(分钟)
     #|outside: [小时 -, 分钟 (372, 416.5, 24, 18), 单位 (364, 328.5, 44, 30)] chosen [minutes]
     #|over its edge: [小时 (406, 460.5, 26, 18), 分钟 (406, 496.5, 26, 18)]
+
+
   ))
 }
 

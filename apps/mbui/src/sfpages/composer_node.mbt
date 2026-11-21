@@ -190,11 +190,14 @@ pub fn chat_composer_node(
   apart? : () -> Bool = fn() { false },
   pane? : () -> FixedArray[@ui.CornerOf]? = fn() { None },
   laid? : () -> Double? = fn() { None },
+  over_it? : (@view.View) -> Unit,
+  over_full? : Bool = false,
+  over_tall? : () -> Double = fn() { 0.0 },
 ) -> Unit {
   // (what changes in it moves only for a cause said (a key typed, the cursor come or let go, a file or a quote put in
   // or taken out by a hand here): what the core answers is there at once, @view.transition)
   v.transitions_only() |> ignore
-  composer_node_of(v, src, r, None, shows~, tips~, apart~, pane~, laid~)
+  composer_node_of(v, src, r, None, shows~, tips~, apart~, pane~, laid~, over_it?, over_full~, over_tall~)
 }
 
 ///|
@@ -234,6 +237,9 @@ fn composer_node_of(
   pane~ : () -> FixedArray[@ui.CornerOf]?,
   laid~ : () -> Double?,
   over? : Double = composer_over,
+  over_it? : (@view.View) -> Unit,
+  over_full? : Bool = false,
+  over_tall? : () -> Double = fn() { 0.0 },
 ) -> Unit {
   let draft = match made {
     Some(m) => m.draft
@@ -361,7 +367,7 @@ fn composer_node_of(
           // (on a device half open, at the top of the half under the fold, the latest chats under it: no room kept over
           // it for its opening, which only pushed it off the fold's edge, tabletop.mbt)
           None if @ui.system_tabletop() is Some(_) => None
-          None => Some(stand.at(fn() { node_open_room(stand, rest_wide()) }))
+          None => Some(stand.at(fn() { node_open_room(stand, rest_wide()) }) + (over_tall)())
           Some(_) if roomy() => None
           Some(m) => Some(stand.at(fn() { node_open_room(stand, rest_wide()) }) - (composer_over - over) + m.over_tall)
         }
@@ -404,24 +410,13 @@ fn composer_node_of(
     // (how far its ground's top is drawn off where it is laid out as its shape goes: what is said over it with it)
     // (its box's, said as it is made, after what is over it: read as said, `drawn_top_said`)
     let drawn_top : Ref[(@view.View) -> Double] = Ref(fn(_) { 0.0 })
+    let over_alpha : Ref[(@view.View) -> Double] = Ref(fn(_) { 1.0 })
     let drawn_top_said = @signals.signal(0)
     // (what stands over it drawn with its ground's top: a chat's notices; a new chat's choices where it is not roomy
     // (laid out so at once, as its page is), its page saying its own notices over it)
     let over_drawn = fn(v : @view.View) {
       drawn_top_said.get() |> ignore
       (drawn_top.val)(v) + foot_shift.shown(v)
-    }
-    match made {
-      None => composer_notices_node(foot, src, r, tips, stand, over_drawn)
-      Some({ over_it: Some(f), .. }) =>
-        foot.show(fn() { !roomy() }, at_once=true, fn(o) {
-          o
-          .width(By(fn() { Some(stand.at(stand.composer_w)) }))
-          .offset(By(fn() { (0.0, over_drawn(o)) }))
-          |> ignore
-          f(o)
-        })
-      Some(_) => ()
     }
     // (wide-layout composer handoff: NewChat -> Chat on send via fresh_composer_at, or bidirectional sidebar
     // NewChat <-> Chat via composer_handoff_at / composer_departed; both use container=true morph on composer_move_flight)
@@ -453,6 +448,39 @@ fn composer_node_of(
     } else {
       None
     }
+    match made {
+      None => {
+        composer_notices_node(foot, src, r, tips, stand, over_drawn)
+        match over_it {
+          Some(f) =>
+            foot.box(fn(o) {
+              o
+              .width(By(fn() { Some(stand.at(if over_full { stand.wide } else { stand.composer_w })) }))
+              .offset(By(fn() { (0.0, over_drawn(o)) }))
+              |> ignore
+              if over_full || from_at is Some(_) {
+                o.alpha(By(fn() {
+                  drawn_top_said.get() |> ignore
+                  (over_alpha.val)(o)
+                }))
+                |> ignore
+              }
+              f(o)
+            })
+            |> ignore
+          None => ()
+        }
+      }
+      Some({ over_it: Some(f), .. }) =>
+        foot.show(fn() { !roomy() }, at_once=true, fn(o) {
+          o
+          .width(By(fn() { Some(stand.at(stand.composer_w)) }))
+          .offset(By(fn() { (0.0, over_drawn(o)) }))
+          |> ignore
+          f(o)
+        })
+      Some(_) => ()
+    }
     composer_box_node(
       foot,
       src,
@@ -472,6 +500,7 @@ fn composer_node_of(
       from_at~,
       own=made,
       before_take_in~,
+      on_over_alpha=fn(f) { over_alpha.val = f },
     )
     // (what went wrong, under it)
     foot.show(at_once=true, fn() { w.error.get() != "" }, fn(e) {
@@ -582,6 +611,7 @@ fn composer_box_node(
   from_at? : (Double, Double, Double, Double)? = None,
   own? : ComposerNodeFor? = None,
   before_take_in? : Ref[() -> Unit] = Ref(fn() {  }),
+  on_over_alpha? : ((@view.View) -> Double) -> Unit = fn(_) { () },
 ) -> Unit {
   let draft = w.key
   let focused = fn() { w.field.focused() }
@@ -700,6 +730,7 @@ fn composer_box_node(
   // (how much taller than it is laid out its ground is drawn, over it: what it was as words were sent from it, held as
   // long as the old composer's on this page is (sfbase's sent_out_hold_ms), then down to none on their flight's curve)
   let sent_over = @motion.NodeWay::new(0.0)
+  let sent_flying = @motion.NodeWay::new(0.0)
   // (the moment it goes down from as tall as it was, once the way it was going on as words left it is over: -1 when
   // it is said to go down as they are sent)
   let sent_down_at = Ref(-1.0)
@@ -933,10 +964,14 @@ fn composer_box_node(
     if own is None && @signals.untracked(fn() { @sfbase.fresh.became.get() }) == Some(r) {
       let handoff_over = @signals.untracked(fn() { @sfbase.fresh_composer_over.get() })
       @sfbase.fresh_composer_over.set(0.0)
-      if handoff_over > 0.5 && !@ui.reduced_motion() {
-        let hold = @sfbase.sent_out_hold_ms
-        sent_over.put(handoff_over)
-        sent_over.go(box, 0.0, @motion.tween(@ui.move_most_ms - hold, ease=Flight, delay=hold))
+      if !@ui.reduced_motion() {
+        sent_flying.put(1.0)
+        sent_flying.go(foot, 0.0, @motion.tween(@sf.hint_back_ms, ease=Out, delay=@ui.move_most_ms))
+        if handoff_over > 0.5 {
+          let hold = @sfbase.sent_out_hold_ms
+          sent_over.put(handoff_over)
+          sent_over.go(box, 0.0, @motion.tween(@ui.move_most_ms - hold, ease=Flight, delay=hold))
+        }
       }
     }
     // (true container morph from the departing composer's full (fx, fy, fw, fh) on composer_move_flight with
@@ -999,6 +1034,8 @@ fn composer_box_node(
       })
       if words_go {
         @sfbase.sent_out_told(draft, at)
+        sent_flying.put(1.0)
+        sent_flying.go(foot, 0.0, @motion.tween(@sf.hint_back_ms, ease=Out, delay=@ui.move_most_ms))
         away_until.val = at + @sfbase.sent_out_away_ms()
         away_said.set(away_said.untracked() + 1)
         hint_in.put(0.0)
@@ -1086,6 +1123,7 @@ fn composer_box_node(
         @view.ground_as_laid
       }
     }
+    on_over_alpha(fn(v) { if sent_over.shown(v) > 0.5 || sent_flying.shown(v) > 0.5 { 0.0 } else { 1.0 } })
     drawn_top(fn(v) { ground_now(v).dy })
     box.ground_drawn(By(fn() { ground_now(box) }))
     |> ignore
@@ -1173,7 +1211,9 @@ fn composer_box_node(
         }
       }),
     )
-    // (the I-beam over it; a new chat's locked, none)
+    // (the I-beam over it; a new chat's locked, none; clip children to the box's animated bounds so growing extras
+    // never bleed out the top of the box over what stands above it during resizes(foot=true))
+    .clips(Is(true))
     .cursor(
       match own {
         Some(m) => By(fn() { if (m.locked)() { None } else { Some(IBeam) } })
@@ -1181,8 +1221,10 @@ fn composer_box_node(
       },
     )
     |> ignore
-    // (what waits to go over its words: its quotes, its files)
-    composer_extras_node(box, src, r, w, tips, stand, extras_alive, grow, quotes_room, files_room)
+    // (what waits to go over its words: its quotes, its files; kept hidden while the box is still morphing up from a
+    // capsule so growing extras never paint over what stands above the box's visual ground)
+    let extras_hidden = fn(v : @view.View) -> Bool { ground_now(v).dy > 0.5 }
+    composer_extras_node(box, src, r, w, tips, stand, extras_alive, grow, extras_hidden, quotes_room, files_room)
     // (`@` and a few letters: the chats they find, over it: a chat's)
     if spec.chat {
       ref_menu_node(box, src, r, w)
@@ -2028,6 +2070,7 @@ fn composer_extras_node(
   stand : Stand,
   alive : @signals.Signal[Bool],
   grow : @motion.NodeWay,
+  hidden : (@view.View) -> Bool,
   quotes_room : Ref[@view.View?],
   files_room : Ref[@view.View?],
 ) -> Unit {
@@ -2041,7 +2084,7 @@ fn composer_extras_node(
     // (let go once it has left: the box a capsule again, where nothing else keeps it a box, on its way)
     area.owns(fn() { @view.transition(fn() { alive.set(false) }) }) |> ignore
     // (drawn with its words as a line more of them makes its way in: `grow`)
-    area.offset(By(fn() { (0.0, grow.shown(area)) })) |> ignore
+    area.offset(By(fn() { (0.0, grow.shown(area)) })).alpha(By(fn() { if hidden(area) { 0.0 } else { 1.0 } })) |> ignore
     area
     .padding(
       By(fn() {

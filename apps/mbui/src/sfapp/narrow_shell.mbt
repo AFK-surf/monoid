@@ -526,6 +526,7 @@ fn narrow_made_as(
                   cover_to=fn() { bar_foot_coming(col, r) },
                   room=list_room,
                   foot=list_foot,
+                  foot_clear_extra=fn() { if @ui.system_tabletop() is Some(_) { 0.0 } else { 34.0 } },
                   composer~,
                   lead=unread_lead(),
                 )

@@ -776,7 +776,7 @@ fn is_step(m : Json) -> Bool {
 pub fn Replay::next_step(self : Replay) -> String? {
   for i in self.first_out..<self.evs.length() {
     let e = self.evs[i]
-    if e.out && !e.done {
+    if e.out && !e.done && is_step(e.msg) {
       return match e.msg {
         Object(m) =>
           match m.get("step") {

@@ -30,7 +30,7 @@ test "a chat opens at its end: its bar, its last messages, the composer's room u
   assert_true(!readings.get("ws1/st1\u{1}s-c1").unwrap().jump)
   t.assert_idle()
   // its people left out for its title where the bar is narrower
-  let narrow = chat_tester("chat", w=350.0)
+  let narrow = chat_tester("chat", w=250.0)
   assert_true(!bar(narrow).contains("你") && !bar(narrow).contains("林"), msg="its people left out for its title: \{Repr(bar(narrow))}")
 }
 

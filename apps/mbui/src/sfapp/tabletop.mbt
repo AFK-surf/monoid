@@ -60,7 +60,16 @@ fn chat_foot_node(
     }))
     |> ignore
   })
-  @sfpages.chat_composer_node(n, src, r, shows~, tips~)
+  @sfpages.chat_composer_node(
+    n,
+    src,
+    r,
+    shows~,
+    tips~,
+    over_it=fn(o) { chat_composer_bar_node(o, src, r, shows, stint) },
+    over_full=true,
+    over_tall=fn() { if @ui.system_tabletop() is Some(_) { 0.0 } else { 34.0 } },
+  )
   n.show(at_once=true, fn() { @ui.system_tabletop() is Some(_) }, fn(recent) {
     // (the room left under the composer, never more: what it holds past it cut, not pushing the foot past the window)
     @sf.style_node(recent, fn() { tabletop_recent })

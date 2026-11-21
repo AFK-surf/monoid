@@ -800,6 +800,7 @@ fn chat_body_node(
   cover_to? : () -> Double,
   room? : Double = list_room,
   foot? : () -> Double = fn() { list_foot },
+  foot_clear_extra? : () -> Double = fn() { 0.0 },
   composer? : (@view.View) -> Unit,
   lead? : Double = unread_lead,
   scroll? : @view.Scroll = @view.Scroll::list(),
@@ -1675,7 +1676,7 @@ fn chat_body_node(
       // (and what covers its foot the composer alone: the room under its last row over it (`foot`, the bell's room
       // with it) the rows show through, as the old page's list was told its room (pv_lists' `room`); so a picture
       // there is seen whole, flying to the viewer and back from where it is, not from under a foot it is not under)
-      foot_clear=foot,
+      foot_clear=fn() { foot() + foot_clear_extra() },
       bands~,
       bar_clear=fn() {
         let f = scroll.foot_hides_now()
