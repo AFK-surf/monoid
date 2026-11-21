@@ -745,10 +745,12 @@ fn Ctx::corner_faults(self : Ctx) -> Array[String] {
       // (unless it is a circle or a capsule reaching across the container into its corners at both ends: it asks the
       // container to be as round as its distance and its half there, though the container's corner now is squarer than
       // the ranges let what follows it stand; not where that corner is the window's, follows an outer corner or is
-      // linked, round as that has it)
+      // linked, round as that has it; nor where the container is a capsule already, as round as it can be: a switch's
+      // knob in its track)
       let wants_rounder = round &&
         spans_across &&
         !ct.window &&
+        ra < room_a - 0.5 &&
         !c.follows_corner(ct, k, grounds) &&
         c.nodes[ct.ground].links is None &&
         dmin(ra, room_a) < dmax(dx, dy) + rb - 0.5 &&

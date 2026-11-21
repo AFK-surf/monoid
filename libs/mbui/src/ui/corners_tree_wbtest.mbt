@@ -1076,6 +1076,9 @@ test "corners, with the theme's ranges: a circle at one side of a card (46 round
   assert_eq(tree_round_in(324.0, 78.0, pad, 18.0, 46.0, 46.0, 23.0), [])
   assert_eq(tree_round_in(324.0, 100.0, pad, 18.0, 46.0, 46.0, 23.0), [])
   assert_eq(tree_round_in(92.0, 32.0, (0.0, 0.0, 0.0, 0.0), 16.0, 28.0, 28.0, 14.0), [])
+  // (a switch's knob stretched wider than tall, 23×18 round 9, at the end of its track 36×22 round 11, 4 in from its
+  // side and 2 from its top and foot: the track a capsule already, nothing it could be rounder by)
+  assert_eq(tree_round_in(36.0, 22.0, (9.0, 2.0, 4.0, 2.0), 11.0, 23.0, 18.0, 9.0), [])
 }
 
 ///|
