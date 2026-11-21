@@ -24,7 +24,7 @@ fn glass_reply(i : Int) -> String {
 /// frame: their words drawn where the pane is.
 fn under_glass(f : @sfreplay.Flow, top~ : Bool) -> Bool {
   let (_, h) = f.t.size()
-  let panes = f.t.drawn_glass().filter(fn(g) { (g.4 == 5 || g.4 == 6) && (if top { g.1 < h / 2.0 } else { g.1 >= h / 2.0 }) })
+  let panes = f.t.drawn_glass().filter(fn(g) { (g.4 == 5 || g.4 == 6) && g.2 > 100.0 && (if top { g.1 < h / 2.0 } else { g.1 >= h / 2.0 }) })
   panes.length() > 0 &&
   glass_words.iter().any(fn(words) {
     match (f.t.drawn_of(words), f.t.rect_of(words)) {
@@ -103,7 +103,7 @@ test "29-glass" {
 /// scripted run is told it), by the wheel, as far as the strict pass measured it (Flow::measured): none where either
 /// is not drawn.
 fn glass_align(f : @sfreplay.Flow, words : String, top~ : Bool) -> Unit {
-  let bar = f.t.drawn_glass().filter(fn(g) { (g.4 == 5 || g.4 == 6) && (if top { g.1 < 100.0 } else { g.1 > 350.0 }) }).get(0)
+  let bar = f.t.drawn_glass().filter(fn(g) { (g.4 == 5 || g.4 == 6) && g.2 > 100.0 && (if top { g.1 < 100.0 } else { g.1 > 350.0 }) }).get(0)
   let down = f.measured(
     match (bar, f.t.rect_of(words)) {
       (Some((_, by, _, bh, _, _)), Some((_, y, _, h))) => (by + bh / 2.0 - (y + h / 2.0)).to_int().to_double()
