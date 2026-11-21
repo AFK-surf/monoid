@@ -165,18 +165,13 @@
     "frame-walk": {},
     "scoped-computed": {},
     "raw-effect": {},
-    "pick-loop": {
-      "src/seg_node.mbt": 2,
-      "src/way_node.mbt": 1
-    },
+    "pick-loop": {},
     "each-min-height": {},
     "each-lookup": {},
     "layout-drawn-while": {},
     "shader-int": {},
     "raw-hover-ground": {},
-    "width-structure": {
-      "src/seg_node.mbt": 5
-    },
+    "width-structure": {},
     "reused-untracked-key": {},
     "manual-fade-way": {},
     "page-at-moment": {},

@@ -230,3 +230,51 @@ test "way_line_node: its …'s menu, open while the window narrows, stays beside
   assert_eq(nx, mx - 100.0, msg="the … 100 further left")
   assert_eq(narrow, wide)
 }
+
+///|
+test "way_line_node: dynamic step updates reuse kept steps, update link/last state, and keep overflow menu accurate" {
+  presenters_reset()
+  let steps = @signals.signal(["所有位置", "Willow · 文档", "项目"])
+  let went : Array[Int] = []
+  let t = @ui.Tester::new(fn(_c) {  }, w=1000.0, h=600.0, platform=0)
+  t.check_looks(false)
+  @ui.set_view_app(fn(root) {
+    root.row(Is(true)).padding(Is((100.0, 0.0, 0.0, 0.0))) |> ignore
+    root.box(fn(g) { g.width(Is(Some(400.0))) |> ignore }) |> ignore
+    root.box(fn(h) {
+      h.width(Is(Some(170.0))).height(Is(Some(100.0))) |> ignore
+      way_line_node(h, fn() { steps.get() }, ways_look, fn(i) { went.push(i) }) |> ignore
+    })
+    |> ignore
+    @ui.old(root, fn(c) { presented(c) }).over(Is(true)) |> @ui.old_takes_own |> ignore
+    presented_nodes(root)
+  })
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  // Grow path: previously last step ("项目") becomes a clickable intermediate step, overflow menu appears.
+  steps.set(["所有位置", "Willow · 文档", "项目", "设计稿", "二〇二六年终"])
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  let shown_long = ways_shown(t, 500.0)
+  assert_true(shown_long.contains(way_more), msg="overflow … shown after growing steps: \{Repr(shown_long)}")
+  assert_true(shown_long.contains("二〇二六年终"), msg="new last step shown: \{Repr(shown_long)}")
+  // Open overflow menu and tap last dropped item.
+  let more = t.words().filter(fn(w) { w.0 == way_more && w.1 >= 499.5 && w.5 > 0.0 })
+  assert_eq(more.length(), 1, msg="one … button")
+  let before = t.words().filter(fn(w) { w.5 > 0.0 }).map(fn(w) { "\{w.0}@\{w.1},\{w.2}" })
+  t.tap(more[0].1 + more[0].3 / 2.0, more[0].2 + more[0].4 / 2.0)
+  t.run_for(@ui.move_most_ms)
+  let items = t.words().filter(fn(w) { w.5 > 0.0 && !before.contains("\{w.0}@\{w.1},\{w.2}") })
+  assert_true(items.length() > 0, msg="overflow menu lists dropped steps")
+  let last_item = items.iter().fold(init=items[0], fn(a, b) { if b.2 > a.2 { b } else { a } })
+  t.tap(last_item.1 + last_item.3 / 2.0, last_item.2 + last_item.4 / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(went.length(), 1, msg="tapped dropped step: \{Repr(went)}")
+  // Shrink back to single root step: no …, root is last and not a link.
+  steps.set(["所有位置"])
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  assert_eq(ways_shown(t, 500.0), ["所有位置"], msg="single root step shown without …")
+  let links = t.semantics().filter(fn(s) { s.role == Link && !s.hidden })
+  assert_eq(links.length(), 0, msg="single last step is not a link when last_link=false")
+}

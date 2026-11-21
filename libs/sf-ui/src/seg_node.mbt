@@ -136,8 +136,8 @@ pub fn seg_node(
             .height(Is(Some(segmented_h + 2.0 * segmented_pad)))
             |> ignore
             // side by side: the thumb, under the options' words, and the options
-            g.show(fn() { !menu() }, fn(strip) {
-              strip.row(Is(true)).gap(Is(segmented_gap)) |> ignore
+            g.box(fn(strip) {
+              strip.row(Is(true)).gap(Is(segmented_gap)).laid_nowhere(By(menu)) |> ignore
               let rect = @motion.cover_indicator(
                 strip,
                 chosen,
@@ -204,68 +204,67 @@ pub fn seg_node(
                 |> ignore
               }
             })
+            |> ignore
             // not side by side: the chosen one's words as its option has them (cut short where they must be), a chevron at its
             // end; pressed, a pick of them all beside it, the chosen one marked (search none: a few short words)
-            g.show(menu, fn(room) {
-              room.row(Is(true)).grow(Is(1.0)) |> ignore
-          let words = fn() { labels().get(chosen()).unwrap_or("") }
-          // (the pick it opened, as presented: 0, none yet; open while it is drawn, presented_drawn_of)
-          let opened : @signals.Signal[Int] = @signals.signal(0)
-          let open = fn() {
-            let s = opened.get()
-            s != 0 && presented_drawn_of(s)
-          }
-          @headless.disclosure(
-            room,
-            fn() { if said == "" { words() } else { said + " " + words() } },
-            open,
-            fn(m) {
-              let (x, y, w, h) = m.rect()
-              let all = @signals.untracked(labels)
-              let now = @signals.untracked(chosen)
-              pick(
-                "",
-                all.mapi(fn(i, l) { choice(i.to_string(), l) }),
-                now.to_string(),
-                fn(k) {
-                  let i = labels_at(all, k, now)
-                  if i != now {
-                    choose(i)
-                  }
-                },
-                from=At(x, y, w, h),
-                search=false,
-              )
-              opened.set(last_presented())
-            },
-            fn(m, _) {
-              m
-              .row(Is(true))
-              .grow(Is(1.0))
-              .height(Is(Some(segmented_h)))
-              .lines_up(Is(Some(Middle)))
-              .padding(Is((segmented_least, 0.0, segmented_least, 0.0)))
-              .gap(Is(segmented_least))
-              |> ignore
-              m.box(fn(w) {
-                w
+            let words = fn() { labels().get(chosen()).unwrap_or("") }
+            // (the pick it opened, as presented: 0, none yet; open while it is drawn, presented_drawn_of)
+            let opened : @signals.Signal[Int] = @signals.signal(0)
+            let open = fn() {
+              let s = opened.get()
+              s != 0 && presented_drawn_of(s)
+            }
+            @headless.disclosure(
+              g,
+              fn() { if said == "" { words() } else { said + " " + words() } },
+              open,
+              fn(m) {
+                let (x, y, w, h) = m.rect()
+                let all = @signals.untracked(labels)
+                let now = @signals.untracked(chosen)
+                pick(
+                  "",
+                  all.mapi(fn(i, l) { choice(i.to_string(), l) }),
+                  now.to_string(),
+                  fn(k) {
+                    let i = labels_at(all, k, now)
+                    if i != now {
+                      choose(i)
+                    }
+                  },
+                  from=At(x, y, w, h),
+                  search=false,
+                )
+                opened.set(last_presented())
+              },
+              fn(m, _) {
+                m
+                .row(Is(true))
                 .grow(Is(1.0))
-                .shrink(Is(1.0))
-                .min_width(Is(Some(0.0)))
-                .words(By(words))
-                .words_look(By(fn() {
-                  let size = theme().t.ui
-                  { size, weight: 500, line: @ui.tree_theme().text_line * size, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
-                }))
-                .ink(By(ink))
+                .laid_nowhere(By(fn() { !menu() }))
+                .height(Is(Some(segmented_h)))
+                .lines_up(Is(Some(Middle)))
+                .padding(Is((segmented_least, 0.0, segmented_least, 0.0)))
+                .gap(Is(segmented_least))
                 |> ignore
-              })
-              |> ignore
-              icon_node(m, "chevron-down", segmented_chevron, By(fn() { theme().p.muted })) |> ignore
-            },
-          )
-          |> ignore
-            })
+                m.box(fn(w) {
+                  w
+                  .grow(Is(1.0))
+                  .shrink(Is(1.0))
+                  .min_width(Is(Some(0.0)))
+                  .words(By(words))
+                  .words_look(By(fn() {
+                    let size = theme().t.ui
+                    { size, weight: 500, line: @ui.tree_theme().text_line * size, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
+                  }))
+                  .ink(By(ink))
+                  |> ignore
+                })
+                |> ignore
+                icon_node(m, "chevron-down", segmented_chevron, By(fn() { theme().p.muted })) |> ignore
+              },
+            )
+            |> ignore
           },
         )
         |> ignore
@@ -334,6 +333,10 @@ pub fn seg_fill_node(
   thumb? : SegThumb,
   loc~ : SourceLoc,
 ) -> @view.View {
+  let labels_now = @signals.computed(fn(_) { labels() })
+  let labels = fn() { labels_now.get() }
+  let chosen_now = @signals.computed(fn(_) { chosen() })
+  let chosen = fn() { chosen_now.get() }
   parent.box(made_for=loc, fn(track) {
     let thumb = match thumb {
       Some(kept) => kept
@@ -408,8 +411,8 @@ pub fn seg_fill_node(
           .height(Is(Some(segmented_narrow_h)))
           |> ignore
           // side by side: the thumb under the options' words, and the options
-          g.show(fn() { !menu() }, fn(strip) {
-            strip.row(Is(true)).grow(Is(1.0)) |> ignore
+          g.box(fn(strip) {
+            strip.row(Is(true)).grow(Is(1.0)).laid_nowhere(By(menu)) |> ignore
           // (each option's width: as fitted, else its share; as many as there are options as it is made)
           let n = @signals.untracked(labels).length()
           let w_of = fn(k : Int) {
@@ -468,6 +471,13 @@ pub fn seg_fill_node(
             thumb.fingered.set(None)
           })
           |> ignore
+          strip.reacts(menu, fn(m) {
+            if m {
+              felt.val = None
+              thumb.fingered.set(None)
+            }
+          })
+          |> ignore
           let lens = fn() { if strip.glass_solid() { 0.0 } else { thumb.held.shown(strip) } }
           // (past either end, where a way turned back with speed takes it (@motion.cover_damped_spring goes past no
           // end from rest), the end pair's blend carried on, as @ui.cover_rect's does: held at the end, the thumb
@@ -516,9 +526,10 @@ pub fn seg_fill_node(
             }
           }
           // the thumb: where its cover has it, its corner concentric in the track's; faded under the lens (zero relayout)
-          strip.show(fn() { w_of(chosen()) > 0.0 }, fn(th) {
+          strip.box(fn(th) {
             th
             .over(Is(true))
+            .laid_nowhere(By(fn() { w_of(chosen()) <= 0.0 }))
             .width(Is(Some(0.0)))
             .height(Is(Some(segmented_narrow_h - 2.0 * seg_inset)))
             .radius(Is(@ui.concentric(seg_radius, seg_inset)))
@@ -546,6 +557,7 @@ pub fn seg_fill_node(
             }))
             |> ignore
           })
+          |> ignore
           // its options: each its share of the room it is given, its words in its middle, the
           // chosen one's in the ink, the others muted, smaller as fitted
           for k in 0..<n {
@@ -615,56 +627,55 @@ pub fn seg_fill_node(
             |> ignore
           })
           })
+          |> ignore
           // not side by side: the chosen one's words (cut short where they must be), a chevron at its end; pressed, a pick of
           // them all beside it, the chosen one marked
-          g.show(menu, fn(room) {
-            room.row(Is(true)).grow(Is(1.0)) |> ignore
-        let words = fn() { labels().get(chosen()).unwrap_or("") }
-        let opened : @signals.Signal[Int] = @signals.signal(0)
-        let open = fn() {
-          let s = opened.get()
-          s != 0 && presented_drawn_of(s)
-        }
-        @headless.disclosure(
-          room,
-          fn() { if said == "" { words() } else { said + " " + words() } },
-          open,
-          fn(m) {
-            let (x, y, w, h) = m.rect()
-            let all = @signals.untracked(labels)
-            let now = @signals.untracked(chosen)
-            pick(
-              "",
-              all.mapi(fn(i, l) { choice(i.to_string(), l) }),
-              now.to_string(),
-              fn(k) {
-                let i = labels_at(all, k, now)
-                if i != now {
-                  choose(i)
-                }
-              },
-              from=At(x, y, w, h),
-              search=false,
-            )
-            opened.set(last_presented())
-          },
-          fn(m, _) {
-            m
-            .row(Is(true))
-            .grow(Is(1.0))
-            .lines_up(Is(Some(Middle)))
-            .padding(Is((seg_menu_in, 0.0, seg_menu_in, 0.0)))
-            .gap(Is(seg_menu_gap))
-            |> ignore
-            // (where even its ellipsis has not the room, that drawn past its words' box into the gap before the chevron, as
-            // seg_menu_words' `w=Cut` words are drawn)
-            m.box(fn(w) { styled_words(w.grow(Is(1.0)), words, fn() { seg_menu_words }).ellipsis_past(Is(true)) |> ignore })
-            |> ignore
-            icon_node(m, "chevron-down", seg_chevron, By(fn() { theme().p.muted })) |> ignore
-          },
-        )
-        |> ignore
-          })
+          let words = fn() { labels().get(chosen()).unwrap_or("") }
+          let opened : @signals.Signal[Int] = @signals.signal(0)
+          let open = fn() {
+            let s = opened.get()
+            s != 0 && presented_drawn_of(s)
+          }
+          @headless.disclosure(
+            g,
+            fn() { if said == "" { words() } else { said + " " + words() } },
+            open,
+            fn(m) {
+              let (x, y, w, h) = m.rect()
+              let all = @signals.untracked(labels)
+              let now = @signals.untracked(chosen)
+              pick(
+                "",
+                all.mapi(fn(i, l) { choice(i.to_string(), l) }),
+                now.to_string(),
+                fn(k) {
+                  let i = labels_at(all, k, now)
+                  if i != now {
+                    choose(i)
+                  }
+                },
+                from=At(x, y, w, h),
+                search=false,
+              )
+              opened.set(last_presented())
+            },
+            fn(m, _) {
+              m
+              .row(Is(true))
+              .grow(Is(1.0))
+              .laid_nowhere(By(fn() { !menu() }))
+              .lines_up(Is(Some(Middle)))
+              .padding(Is((seg_menu_in, 0.0, seg_menu_in, 0.0)))
+              .gap(Is(seg_menu_gap))
+              |> ignore
+              // (where even its ellipsis has not the room, that drawn past its words' box into the gap before the chevron, as
+              // seg_menu_words' `w=Cut` words are drawn)
+              m.box(fn(w) { styled_words(w.grow(Is(1.0)), words, fn() { seg_menu_words }).ellipsis_past(Is(true)) |> ignore })
+              |> ignore
+              icon_node(m, "chevron-down", seg_chevron, By(fn() { theme().p.muted })) |> ignore
+            },
+          )
+          |> ignore
         },
       )
       |> ignore

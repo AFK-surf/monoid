@@ -187,8 +187,9 @@ test "home again: a place of the bar tapped from Home at rest, and Home tapped a
         home_again_measure(t, "\{tag} home→\{place}", fn() { t.tap(xs[i], y) })
         println("home-again \{tag}: on \{Repr(@sfapp.place_of(@sfbase.app.nav.top()))} (asked \{place})")
         // (the place made, first visit; Home put by, not laid out again nor let go; Profile's list or 概览 one page, the
-        // pick between them two nodes more, plus one refresh icon node per quota chip)
-        assert_eq(home_again_peak.val, if place == "profiles" { (640, 0, 538) } else { (363, 0, 254) }, msg="\{tag} home→\{place}")
+        // pick between them two nodes more, plus one refresh icon node per quota chip; seg_fill_node clears 3 show slots
+        // via laid_nowhere, keeping made=640 and +3 initial laid for its disclosure subtree)
+        assert_eq(home_again_peak.val, if place == "profiles" { (640, 0, 541) } else { (363, 0, 254) }, msg="\{tag} home→\{place}")
         t.run_for(@sfapptest.kept_switch_over_ms)
         home_again_measure(t, "\{tag} \{place}→home", fn() { t.tap(xs[0], y) })
         println("home-again \{tag}: on \{Repr(@sfapp.place_of(@sfbase.app.nav.top()))} (asked chats)")
@@ -361,15 +362,16 @@ test "home again: Home come back to in a taller phone's window, and from a page 
       let i = if place == "profiles" { 1 } else if place == "connects" { 2 } else { 3 }
       home_again_measure(t, "\{tag} home→\{place}", fn() { t.tap(xs[i], y) })
       println("home-again \{tag}: on \{Repr(@sfapp.place_of(@sfbase.app.nav.top()))} (asked \{place})")
-      // (Profile's list or 概览 one page, the pick between them two nodes more, plus one refresh icon node per quota chip)
+      // (Profile's list or 概览 one page, the pick between them two nodes more, plus one refresh icon node per quota chip;
+      // seg_fill_node clears 3 show slots via laid_nowhere, keeping made unchanged and +3 initial laid per seg_fill_node)
       let first = if place == "profiles" {
-        (794, 0, 670)
+        (794, 0, 673)
       } else if place == "connects" {
         (439, 0, 306)
       } else {
         // (用量's controls that are a button only while they filter, its rank rows and its legend, each over
-        // action_box_while_node's pick)
-        (487, 0, 398)
+        // action_box_while_node's pick; 3 seg_fill_nodes -> made unchanged, +9 initial laid)
+        (487, 0, 407)
       }
       assert_eq(home_again_peak.val, first, msg="\{tag} home→\{place}")
       t.run_for(@sfapptest.kept_switch_over_ms)
