@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [2d090b2f5](https://github.com/AFK-surf/monoid/commit/2d090b2f58b82a8b86a30d531a9c0d57ab0b7b0f) fix(station): fail over past revoked OAuth logins  | 2.64 | 3.55 | 14.4 | 36.43 | 54.98 | 31.92 | 64.42 | 98.45 | 122.46 |
 | [1ed563f27](https://github.com/AFK-surf/monoid/commit/1ed563f277ba957823051b3e952c87231e3c2a71) fix(station): keep the adb link from writing back  | 2.64 | 3.55 | 14.4 | 36.43 | 54.98 | 31.92 | 64.42 | 98.37 | 121.51 |
 | [317842bf2](https://github.com/AFK-surf/monoid/commit/317842bf2ac2dafe455918387235ed2f2634fa08) feat(sfapp): iOS 26 scroll-to-collapse and compact | 2.64 | 3.55 | 14.4 | 36.43 | 54.98 | 31.92 | 64.42 | 98.62 | 127.63 |
 | [eecf04dd2](https://github.com/AFK-surf/monoid/commit/eecf04dd2c4a543344c687bd742e03a35d20fc20) fix(rig): resolve safe mode task-only station vouc | 2.64 | 3.55 | 14.39 | 36.42 | 54.96 | 31.91 | 64.4 | 98.42 | 125.04 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [71cb5782a](https://github.com/AFK-surf/monoid/commit/71cb5782a514e20dd973f53b050a9a600c586735) fix(core): check open links when the app comes bac | 2.65 | 3.56 | 14.47 | 36.47 | 55.14 | 31.93 | 64.5 | 98.52 | 116.07 |
 | [49eba0456](https://github.com/AFK-surf/monoid/commit/49eba0456e4f1f5b18bb57d6aa60e44351aa6009) ci(station): add MoonBit dual-track parity and rea | 2.65 | 3.56 | 14.47 | 36.47 | 55.14 | 31.93 | 64.5 | 98.26 | 122.4 |
 | [46634e602](https://github.com/AFK-surf/monoid/commit/46634e6021e43e4fbfd9e222e9535e8aa848db19) fix(mbui): rule 4 takes a bar's end in a round out | 2.65 | 3.57 | 14.48 | 36.49 | 55.19 | 31.94 | 64.53 | 98.39 | 126.3 |
-| [1ec0f07a1](https://github.com/AFK-surf/monoid/commit/1ec0f07a174d2813c19136e9755ea5ca612fea62) fix(sf-ui,mbui): scale remaining text controls wit | 2.65 | 3.57 | 14.48 | 36.49 | 55.19 | 31.94 | 64.53 | 98.24 | 121.81 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [2d090b2f5](https://github.com/AFK-surf/monoid/commit/2d090b2f58b82a8b86a30d531a9c0d57ab0b7b0f) fix(station): fail over past revoked OAuth logins  | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.22 |
 | [1ed563f27](https://github.com/AFK-surf/monoid/commit/1ed563f277ba957823051b3e952c87231e3c2a71) fix(station): keep the adb link from writing back  | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.22 |
 | [317842bf2](https://github.com/AFK-surf/monoid/commit/317842bf2ac2dafe455918387235ed2f2634fa08) feat(sfapp): iOS 26 scroll-to-collapse and compact | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.22 |
 | [eecf04dd2](https://github.com/AFK-surf/monoid/commit/eecf04dd2c4a543344c687bd742e03a35d20fc20) fix(rig): resolve safe mode task-only station vouc | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.22 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [71cb5782a](https://github.com/AFK-surf/monoid/commit/71cb5782a514e20dd973f53b050a9a600c586735) fix(core): check open links when the app comes bac | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.15 |
 | [49eba0456](https://github.com/AFK-surf/monoid/commit/49eba0456e4f1f5b18bb57d6aa60e44351aa6009) ci(station): add MoonBit dual-track parity and rea | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.15 |
 | [46634e602](https://github.com/AFK-surf/monoid/commit/46634e6021e43e4fbfd9e222e9535e8aa848db19) fix(mbui): rule 4 takes a bar's end in a round out | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.15 |
-| [1ec0f07a1](https://github.com/AFK-surf/monoid/commit/1ec0f07a174d2813c19136e9755ea5ca612fea62) fix(sf-ui,mbui): scale remaining text controls wit | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.15 |
