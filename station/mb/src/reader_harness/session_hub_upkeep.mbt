@@ -72,13 +72,21 @@ async fn harness_session_hub(host : @host.Host) -> Unit {
           let mut due_ran = false
           let mut cleaned_count = 0
           let mut measured_before_release = 0
+          let mut f2_done_before_release = false
           @effect.scoped(scope => {
             let f1 = scope.fork(async fn() { hub.run_archive_upkeep_if_due(now) })
             read_started.wait() catch { _ => () }
+            // `@effect`'s ready queue is strictly FIFO (`libs/mbui/src/effect/runtime.mbt:416`). Forking `f2`
+            // before `turn` and joining `turn` guarantees `f2` runs to its first suspension (or completes)
+            // before `turn` executes:
+            // - Unfixed code: `f2` sees `upkeep_state_loaded == true`, has no real suspension in fake `world.ask`,
+            //   and completes all 16 measurements (`f2.is_done() == true`, `measured.length() == 16`) before `turn`.
+            // - Fixed code: `f2` suspends on `d.wait()` (`f2.is_done() == false`, `measured.length() == 0`) until
+            //   `read_gate.succeed(())` lets `f1` finish loading and resolve `d`.
             let f2 = scope.fork(async fn() { hub.clean_idle_rebuildable(now) })
-            // Yield once on the cooperative scheduler so f2 runs up to its first suspension point.
             let turn = scope.fork(async fn() { () })
             turn.join() catch { _ => () }
+            f2_done_before_release = f2.is_done()
             measured_before_release = measured.length()
             ignore(read_gate.succeed(()))
             due_ran = f1.join() catch { _ => false }
@@ -88,6 +96,7 @@ async fn harness_session_hub(host : @host.Host) -> Unit {
             {
               "dueRan": Json::boolean(due_ran),
               "cleanedCount": Json::number(cleaned_count.to_double()),
+              "f2DoneBeforeRelease": Json::boolean(f2_done_before_release),
               "measuredBeforeRelease": Json::number(measured_before_release.to_double()),
               "measured": Json::array(measured.map(Json::string)),
               "readCount": Json::number(read_count.val.to_double()),

@@ -440,17 +440,17 @@ test("MoonBit station single-flight upkeep state load prevents concurrent startu
   try {
     const port = (await l.next("mcp serving", (m) => m.serving === "mcp")).port as number;
 
-    // Fire concurrent Hub & P53Upkeep requests immediately after startup with no delay.
-    const [dueRes, cleanRes, relieveRes, upkeepRes] = await Promise.all([
+    // Fire concurrent Hub & P53Upkeep requests immediately after startup with no delay (no real-disk `relieve`).
+    const [dueRes, cleanRes, upkeepRes1, upkeepRes2] = await Promise.all([
       httpJson(port, "POST", "/parts/ask/hub.runArchiveUpkeepIfDue", [t0]),
       httpJson(port, "POST", "/parts/ask/hub.cleanIdleRebuildable", [t0]),
-      httpJson(port, "POST", "/parts/ask/relieve", []),
+      httpJson(port, "POST", "/parts/ask/upkeep", [t0 + HOUR]),
       httpJson(port, "POST", "/parts/ask/upkeep", [t0 + HOUR]),
     ]);
     assert.equal(dueRes.status, 200, JSON.stringify(dueRes));
     assert.equal(cleanRes.status, 200, JSON.stringify(cleanRes));
-    assert.equal(relieveRes.status, 200, JSON.stringify(relieveRes));
-    assert.equal(upkeepRes.status, 200, JSON.stringify(upkeepRes));
+    assert.equal(upkeepRes1.status, 200, JSON.stringify(upkeepRes1));
+    assert.equal(upkeepRes2.status, 200, JSON.stringify(upkeepRes2));
 
     assert.equal(cleanRes.body, 16);
     for (let i = 16; i < 32; i++) {
@@ -461,7 +461,7 @@ test("MoonBit station single-flight upkeep state load prevents concurrent startu
     }
     const persisted = JSON.parse(readFileSync(stateFile, "utf8"));
     assert.equal(Object.keys(persisted.idleMeasured).length, 32, "upkeep-state.json holds 32 keys");
-    assert.ok(branchExists(repo, "b-conc"), "concurrent relieve + upkeep respected persisted lastRepoBranchesAt within 24h");
+    assert.ok(branchExists(repo, "b-conc"), "concurrent upkeep calls respected persisted lastRepoBranchesAt within 24h");
 
     await l.stop();
   } finally {
@@ -516,6 +516,7 @@ test("MoonBit session_hub harness deterministically blocks upkeepState.read and 
   assert.equal(parsed.error, undefined, JSON.stringify(parsed));
   const res = parsed.ok;
   assert.equal(res.readCount, 1, "upkeepState.read called exactly once");
+  assert.equal(res.f2DoneBeforeRelease, false, "clean_idle_rebuildable must remain suspended before read gate opens");
   assert.equal(res.measuredBeforeRelease, 0, "clean_idle_rebuildable waited on single-flight Deferred before measuring");
   assert.equal(res.dueRan, false, "run_archive_upkeep_if_due respected 60s startup grace");
   assert.equal(res.cleanedCount, 16);

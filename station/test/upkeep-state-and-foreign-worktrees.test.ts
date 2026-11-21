@@ -24,7 +24,7 @@ import {
 } from "../src/ops/storage.ts";
 import { UPKEEP_STATE_FILE, readUpkeepState } from "../src/ops/upkeep-state.ts";
 import { Store } from "../src/store/store.ts";
-import { testClock } from "./hub-fakes.ts";
+import { settle, testClock } from "./hub-fakes.ts";
 
 const dirs: string[] = [];
 const fresh = (what: string) => {
@@ -277,6 +277,8 @@ describe("Item 1: persistent idleMeasured & lastArchiveUpkeepAt in <data>/upkeep
     );
 
     let readCount = 0;
+    let readReleased = false;
+    const measuredBeforeRelease: string[] = [];
     let markReadStarted!: () => void;
     const readStarted = new Promise<void>((resolve) => (markReadStarted = resolve));
     let releaseRead!: () => void;
@@ -302,6 +304,7 @@ describe("Item 1: persistent idleMeasured & lastArchiveUpkeepAt in <data>/upkeep
         pack: (key) => coldRooms.pack(key),
         needsPack: (key) => coldRooms.needsPack(key),
         cleanIdleRebuildable: async (key) => {
+          if (!readReleased) measuredBeforeRelease.push(key);
           const res = await coldRooms.cleanIdleRebuildable(key);
           if (res !== null) measured.push(key);
           return res;
@@ -314,11 +317,17 @@ describe("Item 1: persistent idleMeasured & lastArchiveUpkeepAt in <data>/upkeep
     // 1. Start entrypoint A (runArchiveUpkeepIfDue) and confirm readUpkeepState is suspended.
     const pDue = runArchiveUpkeepIfDue(hub, hub.now());
     await readStarted;
-    // 2. Start entrypoint B (cleanIdleRebuildable) while A's read is suspended.
+    // 2. Start entrypoint B (cleanIdleRebuildable) while A's read is suspended, then drain all non-blocked work via
+    //    `settle()` so that unfixed code deterministically measures s-00..s-15 before the read gate opens.
     const pClean = cleanIdleRebuildable(hub, hub.now());
-    await Promise.resolve();
-    assert.equal(measured.length, 0, "entrypoint B must wait for single-flight state load before measuring");
+    await settle(20);
+    assert.deepEqual(
+      measuredBeforeRelease,
+      [],
+      "entrypoint B must wait for single-flight state load before measuring",
+    );
     // 3. Release the read and await both.
+    readReleased = true;
     releaseRead();
     const [dueRan, cleanedCount] = await Promise.all([pDue, pClean]);
     assert.equal(readCount, 1, "upkeep-state.json read exactly once");
