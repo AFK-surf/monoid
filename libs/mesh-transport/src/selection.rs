@@ -19,6 +19,9 @@ const COOLDOWN_MS: u64 = 30_000;
 const STABLE_DIRECT_MS: u64 = 180_000;
 const MAX_DIRECT_HOLD_MS: u64 = 1_800_000;
 const MAX_TRACKED: usize = 512;
+const STALE_PATH_MS: u64 = 3_000;
+const STALE_TX_MIN: u64 = 3;
+const MAX_LIVENESS: usize = 512;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
@@ -136,6 +139,74 @@ struct Candidate<T, S> {
     sample: Sample<S>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Traffic {
+    rx_frames: u64,
+    tx_datagrams: u64,
+}
+
+#[derive(Clone, Debug)]
+struct Activity<T, S> {
+    path: T,
+    connection: S,
+    generation: u64,
+    traffic: Traffic,
+}
+
+/// Per-connection path reception progress, kept apart from `Gate` observations.
+/// Long RTTs, burst loss, or scheduling stalls can still trip the threshold. That
+/// only yields when a non-stale measured alternative exists, and any new inbound
+/// authenticated frame clears staleness at once.
+#[derive(Clone, Debug)]
+struct PathLiveness<T, S> {
+    connection: S,
+    path: T,
+    generation: u64,
+    rx_frames: u64,
+    last_rx_at: u64,
+    tx_at_last_rx: u64,
+    last_tx: u64,
+    touched: u64,
+}
+impl<T, S> PathLiveness<T, S> {
+    fn new(connection: S, path: T, generation: u64, traffic: Traffic, now: u64) -> Self {
+        Self {
+            connection,
+            path,
+            generation,
+            rx_frames: traffic.rx_frames,
+            last_rx_at: now,
+            tx_at_last_rx: traffic.tx_datagrams,
+            last_tx: traffic.tx_datagrams,
+            touched: now,
+        }
+    }
+    fn reset(&mut self, generation: u64, traffic: Traffic, now: u64) {
+        self.generation = generation;
+        self.rx_frames = traffic.rx_frames;
+        self.last_rx_at = now;
+        self.tx_at_last_rx = traffic.tx_datagrams;
+        self.last_tx = traffic.tx_datagrams;
+        self.touched = now;
+    }
+    fn observe(&mut self, generation: u64, traffic: Traffic, now: u64) {
+        if self.generation != generation
+            || traffic.rx_frames < self.rx_frames
+            || traffic.tx_datagrams < self.last_tx
+            || traffic.rx_frames > self.rx_frames
+        {
+            self.reset(generation, traffic, now);
+            return;
+        }
+        self.last_tx = traffic.tx_datagrams;
+        self.touched = now;
+    }
+    fn is_stale(&self, now: u64) -> bool {
+        now.saturating_sub(self.last_rx_at) >= STALE_PATH_MS
+            && self.last_tx.saturating_sub(self.tx_at_last_rx) >= STALE_TX_MIN
+    }
+}
+
 #[derive(Debug)]
 struct Stay<T, S> {
     path: T,
@@ -185,7 +256,11 @@ impl<T: Eq + Clone, S: Eq + Clone> Recovery<T, S> {
         self.touched = now;
         if !seen {
             // Consume this transition once, even if no replacement is available yet.
-            if let Some(stay) = self.stay.take()
+            if self
+                .stay
+                .as_ref()
+                .is_some_and(|stay| current.is_none_or(|(p, _)| &stay.path == p))
+                && let Some(stay) = self.stay.take()
                 && stay.kind == Kind::Direct
                 && now.saturating_sub(stay.since) < STABLE_DIRECT_MS
             {
@@ -228,12 +303,14 @@ impl<T: Eq + Clone, S: Eq + Clone> Recovery<T, S> {
 struct Policy<T, S> {
     gates: HashMap<T, Gate<T, S>>,
     recovery: Vec<Recovery<T, S>>,
+    liveness: Vec<PathLiveness<T, S>>,
 }
 impl<T: Eq + Hash + Clone, S: Eq + Clone> Policy<T, S> {
     fn new() -> Self {
         Self {
             gates: HashMap::new(),
             recovery: Vec::new(),
+            liveness: Vec::new(),
         }
     }
     fn reset(&mut self, current: Option<(&T, Kind)>) {
@@ -243,7 +320,61 @@ impl<T: Eq + Hash + Clone, S: Eq + Clone> Policy<T, S> {
             gate.reset();
         }
     }
+    fn update_liveness(&mut self, activities: &[Activity<T, S>], connections: &[S], now: u64) {
+        self.liveness.retain(|entry| {
+            connections.contains(&entry.connection)
+                && activities
+                    .iter()
+                    .any(|a| a.connection == entry.connection && a.path == entry.path)
+        });
+        for act in activities {
+            if !connections.contains(&act.connection) {
+                continue;
+            }
+            if let Some(entry) = self
+                .liveness
+                .iter_mut()
+                .find(|e| e.connection == act.connection && e.path == act.path)
+            {
+                entry.observe(act.generation, act.traffic, now);
+                continue;
+            }
+            if self.liveness.len() >= MAX_LIVENESS {
+                if let Some((oldest, _)) = self
+                    .liveness
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| e.touched < now)
+                    .min_by_key(|(_, e)| e.touched)
+                {
+                    self.liveness.remove(oldest);
+                } else {
+                    continue;
+                }
+            }
+            self.liveness.push(PathLiveness::new(
+                act.connection.clone(),
+                act.path.clone(),
+                act.generation,
+                act.traffic,
+                now,
+            ));
+        }
+    }
+    /// Selected paths are shared per remote peer. A tuple stays eligible while any
+    /// active connection on it is non-stale.
+    fn is_tuple_stale(&self, path: &T, now: u64) -> bool {
+        let mut any = false;
+        for entry in self.liveness.iter().filter(|e| &e.path == path) {
+            any = true;
+            if !entry.is_stale(now) {
+                return false;
+            }
+        }
+        any
+    }
     /// Pure decision step. The adapter supplies a monotonic elapsed time and selectable paths.
+    #[cfg(test)]
     fn choose(
         &mut self,
         current: Option<(&T, Kind)>,
@@ -252,6 +383,18 @@ impl<T: Eq + Hash + Clone, S: Eq + Clone> Policy<T, S> {
         connections: &[S],
         now: u64,
     ) -> Option<usize> {
+        self.choose_observed(current, seen, paths, &[], connections, now)
+    }
+    fn choose_observed(
+        &mut self,
+        current: Option<(&T, Kind)>,
+        seen: bool,
+        paths: &[Candidate<T, S>],
+        activities: &[Activity<T, S>],
+        connections: &[S],
+        now: u64,
+    ) -> Option<usize> {
+        self.update_liveness(activities, connections, now);
         // Retain long holds. Every active connection is touched, including when the current path wins.
         self.recovery.retain(|r| {
             connections.contains(&r.connection)
@@ -280,6 +423,21 @@ impl<T: Eq + Hash + Clone, S: Eq + Clone> Policy<T, S> {
                 self.recovery.push(Recovery::new(connection.clone(), now));
             }
         }
+        let live_best = paths
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| !self.is_tuple_stale(&p.path, now))
+            .min_by_key(|(_, p)| p.sample.rtt_us)
+            .map(|(i, _)| i);
+        let any_best = paths
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, p)| p.sample.rtt_us)
+            .map(|(i, _)| i);
+        let current_stale =
+            seen && current.is_some_and(|(path, _)| self.is_tuple_stale(path, now));
+        let stale_rescue = current_stale && live_best.is_some();
+        let effective_seen = seen && !stale_rescue;
         for r in self
             .recovery
             .iter_mut()
@@ -292,7 +450,7 @@ impl<T: Eq + Hash + Clone, S: Eq + Clone> Policy<T, S> {
                         .find(|p| &p.path == path && p.sample.connection == r.connection)
                 })
                 .map(|p| &p.sample);
-            r.observe(current, seen, sample, now);
+            r.observe(current, effective_seen, sample, now);
         }
         if let Some((path, _)) = current
             && let Some(gate) = self.gates.get_mut(path)
@@ -301,21 +459,19 @@ impl<T: Eq + Hash + Clone, S: Eq + Clone> Policy<T, S> {
         }
         self.gates
             .retain(|_, gate| now.saturating_sub(gate.touched) < 60_000);
-        let best = paths
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, p)| p.sample.rtt_us)
-            .map(|(i, _)| i);
-        if !seen {
+        if !seen || stale_rescue {
+            let best = live_best.or(any_best);
             self.reset(current);
             if let Some(i) = best {
                 self.switched(current, &paths[i], paths, connections, now);
             }
             return best;
         }
-        let Some((current_path, current_kind)) = current else {
+        if current_stale {
+            self.reset(current);
             return None;
-        };
+        }
+        let (current_path, current_kind) = current?;
         let Some(current_sample) = paths
             .iter()
             .filter(|p| &p.path == current_path && p.sample.sequence != 0)
@@ -343,6 +499,9 @@ impl<T: Eq + Hash + Clone, S: Eq + Clone> Policy<T, S> {
         // between connections must not restart an otherwise continuous observation.
         let pinned = self.gates.get(current_path).and_then(|gate| {
             let candidate = gate.candidate.as_ref()?;
+            if self.is_tuple_stale(candidate, now) {
+                return None;
+            }
             let (old_current, old_next) = gate.compared.as_ref()?;
             let current = paths.iter().find(|p| {
                 &p.path == current_path
@@ -377,6 +536,7 @@ impl<T: Eq + Hash + Clone, S: Eq + Clone> Policy<T, S> {
             .enumerate()
             .filter(|(_, p)| {
                 &p.path != current_path
+                    && !self.is_tuple_stale(&p.path, now)
                     && p.sample.sequence != 0
                     && now >= cooldown
                     && !(current_kind == Kind::Transit
@@ -497,6 +657,7 @@ impl PathSelector for Selector {
     fn select(&self, ctx: &PathSelectionContext<'_>) -> PathSelection {
         let now = self.epoch.elapsed().as_millis().min(u64::MAX as u128) as u64;
         let mut paths = Vec::new();
+        let mut activities = Vec::new();
         let mut data = Vec::new();
         let mut connections = Vec::new();
         let mut first = None;
@@ -520,10 +681,58 @@ impl PathSelector for Selector {
             if first_native.is_none() && !matches!(path.network_path(), FourTuple::Custom { .. }) {
                 first_native = Some(path.clone());
             }
-            let Some(rtt) = stats.same_path_rtt else {
+            let Some(connection) = path.connection() else {
                 continue;
             };
-            let Some(connection) = path.connection() else {
+            let f = &stats.frame_rx;
+            let rx_frames = f
+                .acks
+                .saturating_add(f.path_acks)
+                .saturating_add(f.ack_frequency)
+                .saturating_add(f.crypto)
+                .saturating_add(f.connection_close)
+                .saturating_add(f.data_blocked)
+                .saturating_add(f.datagram)
+                .saturating_add(u64::from(f.handshake_done))
+                .saturating_add(f.immediate_ack)
+                .saturating_add(f.max_data)
+                .saturating_add(f.max_stream_data)
+                .saturating_add(f.max_streams_bidi)
+                .saturating_add(f.max_streams_uni)
+                .saturating_add(f.new_connection_id)
+                .saturating_add(f.path_new_connection_id)
+                .saturating_add(f.new_token)
+                .saturating_add(f.path_challenge)
+                .saturating_add(f.path_response)
+                .saturating_add(f.ping)
+                .saturating_add(f.reset_stream)
+                .saturating_add(f.retire_connection_id)
+                .saturating_add(f.path_retire_connection_id)
+                .saturating_add(f.stream_data_blocked)
+                .saturating_add(f.streams_blocked_bidi)
+                .saturating_add(f.streams_blocked_uni)
+                .saturating_add(f.stop_sending)
+                .saturating_add(f.stream)
+                .saturating_add(f.observed_addr)
+                .saturating_add(f.path_abandon)
+                .saturating_add(f.path_status_available)
+                .saturating_add(f.path_status_backup)
+                .saturating_add(f.max_path_id)
+                .saturating_add(f.paths_blocked)
+                .saturating_add(f.path_cids_blocked)
+                .saturating_add(f.add_address)
+                .saturating_add(f.reach_out)
+                .saturating_add(f.remove_address);
+            activities.push(Activity {
+                path: path.network_path().clone(),
+                connection: connection.clone(),
+                generation: stats.path_generation,
+                traffic: Traffic {
+                    rx_frames,
+                    tx_datagrams: stats.udp_tx.datagrams,
+                },
+            });
+            let Some(rtt) = stats.same_path_rtt else {
                 continue;
             };
             paths.push(Candidate {
@@ -540,8 +749,17 @@ impl PathSelector for Selector {
             data.push(path);
         }
         let mut selection = PathSelection::none();
+        let current = ctx.current().map(|p| (p, Kind::of(p)));
+        let mut policy = self.policy.lock().unwrap();
+        let chosen =
+            policy.choose_observed(current, current_seen, &paths, &activities, &connections, now);
         // Keep the existing withdrawal rule. Preference alone never retires a backup path.
-        if let Some(best) = paths.iter().min_by_key(|p| p.sample.rtt_us) {
+        let best_for_withdrawal = paths
+            .iter()
+            .filter(|p| !policy.is_tuple_stale(&p.path, now))
+            .min_by_key(|p| p.sample.rtt_us)
+            .or_else(|| paths.iter().min_by_key(|p| p.sample.rtt_us));
+        if let Some(best) = best_for_withdrawal {
             let replacement_routed = self.hub.routed(&best.path.remote());
             for path in ctx.paths() {
                 if replacement_routed
@@ -552,9 +770,6 @@ impl PathSelector for Selector {
                 }
             }
         }
-        let current = ctx.current().map(|p| (p, Kind::of(p)));
-        let mut policy = self.policy.lock().unwrap();
-        let chosen = policy.choose(current, current_seen, &paths, &connections, now);
         if let Some(i) = chosen {
             if self.trace_routing {
                 eprintln!(
@@ -1582,5 +1797,569 @@ mod review_tests {
                 expected
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod stale_path_tests {
+    use super::*;
+    use Kind::{Direct, Transit};
+
+    #[allow(clippy::too_many_arguments)]
+    type ObservedPath = (Candidate<u64, u64>, Activity<u64, u64>);
+
+    fn observed(
+        id: u64,
+        connection: u64,
+        generation: u64,
+        kind: Kind,
+        us: u64,
+        seq: u64,
+        rx_frames: u64,
+        tx_datagrams: u64,
+    ) -> ObservedPath {
+        (
+            Candidate {
+                path: id,
+                kind,
+                sample: Sample {
+                    connection,
+                    generation,
+                    epoch: 0,
+                    sequence: seq,
+                    rtt_us: us,
+                },
+            },
+            Activity {
+                path: id,
+                connection,
+                generation,
+                traffic: Traffic {
+                    rx_frames,
+                    tx_datagrams,
+                },
+            },
+        )
+    }
+
+    fn step(
+        policy: &mut Policy<u64, u64>,
+        current: Option<(u64, Kind)>,
+        items: &[ObservedPath],
+        connections: &[u64],
+        now: u64,
+    ) -> Option<u64> {
+        let paths: Vec<_> = items.iter().map(|(c, _)| c.clone()).collect();
+        let activities: Vec<_> = items.iter().map(|(_, a)| a.clone()).collect();
+        let seen = current.is_some_and(|(id, _)| activities.iter().any(|a| a.path == id));
+        policy
+            .choose_observed(
+                current.as_ref().map(|(id, kind)| (id, *kind)),
+                seen,
+                &paths,
+                &activities,
+                connections,
+                now,
+            )
+            .map(|i| paths[i].path)
+    }
+
+    #[test]
+    fn stale_current_rescues_to_lowest_rtt_live_candidate() {
+        let mut policy = Policy::new();
+        // Path 1 is selected with a 5 ms frozen RTT. Paths 2 (30 ms) and 3 (15 ms) open later.
+        assert_eq!(
+            step(
+                &mut policy,
+                Some((1, Transit)),
+                &[observed(1, 1, 1, Transit, 5_000, 10, 20, 20)],
+                &[1],
+                0,
+            ),
+            None
+        );
+        // Before 3 seconds or 3 outbound packets, path 1 stays selected even within the 10 ms margin.
+        assert_eq!(
+            step(
+                &mut policy,
+                Some((1, Transit)),
+                &[
+                    observed(1, 1, 1, Transit, 5_000, 10, 20, 23),
+                    observed(2, 1, 2, Transit, 30_000, 0, 2, 2),
+                    observed(3, 1, 3, Transit, 7_000, 0, 2, 2),
+                ],
+                &[1],
+                2_999,
+            ),
+            None
+        );
+        // At 3,000 ms with 3 unanswered outbound datagrams, path 1 yields to path 3 (lowest live RTT).
+        assert_eq!(
+            step(
+                &mut policy,
+                Some((1, Transit)),
+                &[
+                    observed(1, 1, 1, Transit, 5_000, 10, 20, 23),
+                    observed(2, 1, 2, Transit, 30_000, 0, 3, 3),
+                    observed(3, 1, 3, Transit, 7_000, 0, 3, 3),
+                ],
+                &[1],
+                3_000,
+            ),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn rescue_skips_stale_candidate_with_smaller_frozen_rtt() {
+        let mut policy = Policy::new();
+        // Both path 1 (selected, 4 ms) and path 2 (backup, 6 ms) stop answering at t=0.
+        // Path 3 (18 ms) stays live.
+        assert_eq!(
+            step(
+                &mut policy,
+                Some((1, Transit)),
+                &[
+                    observed(1, 1, 1, Transit, 4_000, 8, 15, 15),
+                    observed(2, 1, 2, Transit, 6_000, 8, 15, 15),
+                    observed(3, 1, 3, Transit, 18_000, 8, 15, 15),
+                ],
+                &[1],
+                0,
+            ),
+            None
+        );
+        // Path 1 is removed by QUIC PathIdle while path 2 still lingers with a smaller frozen RTT.
+        assert_eq!(
+            step(
+                &mut policy,
+                Some((1, Transit)),
+                &[
+                    observed(2, 1, 2, Transit, 6_000, 8, 15, 18),
+                    observed(3, 1, 3, Transit, 18_000, 11, 18, 18),
+                ],
+                &[1],
+                3_073,
+            ),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn proactive_selection_excludes_stale_candidates() {
+        let mut policy = Policy::new();
+        // Path 1 (current, 50 ms) and path 2 (candidate, 10 ms) start observation at t=0.
+        assert_eq!(
+            step(
+                &mut policy,
+                Some((1, Transit)),
+                &[
+                    observed(1, 1, 1, Transit, 50_000, 1, 10, 10),
+                    observed(2, 1, 2, Transit, 10_000, 1, 10, 10),
+                ],
+                &[1],
+                0,
+            ),
+            None
+        );
+        // Path 2 goes silent after advancing sequence once at t=500, then transmits 3 unanswered packets.
+        assert_eq!(
+            step(
+                &mut policy,
+                Some((1, Transit)),
+                &[
+                    observed(1, 1, 1, Transit, 50_000, 2, 11, 11),
+                    observed(2, 1, 2, Transit, 10_000, 2, 11, 11),
+                ],
+                &[1],
+                500,
+            ),
+            None
+        );
+        assert_eq!(
+            step(
+                &mut policy,
+                Some((1, Transit)),
+                &[
+                    observed(1, 1, 1, Transit, 50_000, 5, 15, 15),
+                    observed(2, 1, 2, Transit, 10_000, 2, 11, 14),
+                ],
+                &[1],
+                3_500,
+            ),
+            None
+        );
+        assert!(policy.gates.get(&1).is_none_or(|g| g.candidate.is_none()));
+    }
+
+    #[test]
+    fn unidirectional_inbound_stream_with_frozen_rtt_samples_is_never_stale() {
+        let mut policy = Policy::new();
+        // Server streams data every 400 ms. Client sends pure ACKs, so same_path_rtt_samples stays at 37
+        // while authenticated rx_frames and tx_datagrams both climb.
+        for second in 0..=10 {
+            let rx = 100 + second * 2;
+            let tx = 80 + second * 2;
+            assert_eq!(
+                step(
+                    &mut policy,
+                    Some((1, Transit)),
+                    &[
+                        observed(1, 1, 1, Transit, 12_000, 37, rx, tx),
+                        observed(2, 1, 2, Transit, 18_000, 26 + second, 50 + second, 50 + second),
+                    ],
+                    &[1],
+                    second * 1_000,
+                ),
+                None,
+                "second {second}"
+            );
+        }
+    }
+
+    #[test]
+    fn wake_time_jump_without_three_outbound_packets_does_not_mark_stale() {
+        let mut policy = Policy::new();
+        assert_eq!(
+            step(
+                &mut policy,
+                Some((1, Transit)),
+                &[
+                    observed(1, 1, 1, Transit, 10_000, 5, 20, 20),
+                    observed(2, 1, 2, Transit, 25_000, 5, 20, 20),
+                ],
+                &[1],
+                0,
+            ),
+            None
+        );
+        // Tab wakes after 60 seconds with only 2 outbound packets sent on path 1 since last rx.
+        assert_eq!(
+            step(
+                &mut policy,
+                Some((1, Transit)),
+                &[
+                    observed(1, 1, 1, Transit, 10_000, 5, 20, 22),
+                    observed(2, 1, 2, Transit, 25_000, 6, 21, 21),
+                ],
+                &[1],
+                60_000,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn newly_seen_generation_change_and_counter_rollback_observe_from_now() {
+        let mut policy = Policy::new();
+        // Path 1 starts at t=10,000 with high tx count: first sight starts fresh at t=10,000.
+        assert_eq!(
+            step(
+                &mut policy,
+                Some((1, Transit)),
+                &[
+                    observed(1, 1, 1, Transit, 10_000, 5, 10, 500),
+                    observed(2, 1, 2, Transit, 20_000, 5, 10, 10),
+                ],
+                &[1],
+                10_000,
+            ),
+            None
+        );
+        // Generation bump at t=12,500 resets observation window even with +3 tx since t=10,000.
+        assert_eq!(
+            step(
+                &mut policy,
+                Some((1, Transit)),
+                &[
+                    observed(1, 1, 2, Transit, 10_000, 5, 10, 504),
+                    observed(2, 1, 2, Transit, 20_000, 6, 12, 12),
+                ],
+                &[1],
+                13_000,
+            ),
+            None
+        );
+        // Counter rollback at t=15,500 also resets observation window.
+        assert_eq!(
+            step(
+                &mut policy,
+                Some((1, Transit)),
+                &[
+                    observed(1, 1, 2, Transit, 10_000, 5, 9, 500),
+                    observed(2, 1, 2, Transit, 20_000, 7, 14, 14),
+                ],
+                &[1],
+                16_000,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn new_inbound_frame_immediately_clears_staleness() {
+        let mut policy = Policy::new();
+        assert_eq!(
+            step(
+                &mut policy,
+                Some((1, Transit)),
+                &[
+                    observed(1, 1, 1, Transit, 50_000, 1, 10, 10),
+                    observed(2, 1, 2, Transit, 10_000, 1, 10, 10),
+                ],
+                &[1],
+                0,
+            ),
+            None
+        );
+        // Path 2 becomes stale at t=3,000.
+        assert_eq!(
+            step(
+                &mut policy,
+                Some((1, Transit)),
+                &[
+                    observed(1, 1, 1, Transit, 50_000, 2, 13, 13),
+                    observed(2, 1, 2, Transit, 10_000, 1, 10, 13),
+                ],
+                &[1],
+                3_000,
+            ),
+            None
+        );
+        assert!(policy.is_tuple_stale(&2, 3_000));
+        // One authenticated frame arrives on path 2 at t=3,100: staleness clears at once.
+        assert_eq!(
+            step(
+                &mut policy,
+                Some((1, Transit)),
+                &[
+                    observed(1, 1, 1, Transit, 50_000, 3, 14, 14),
+                    observed(2, 1, 2, Transit, 10_000, 2, 11, 14),
+                ],
+                &[1],
+                3_100,
+            ),
+            None
+        );
+        assert!(!policy.is_tuple_stale(&2, 3_100));
+        // After 3 seconds of sustained fresh samples from t=3,100, proactive switch to path 2 succeeds.
+        assert_eq!(
+            step(
+                &mut policy,
+                Some((1, Transit)),
+                &[
+                    observed(1, 1, 1, Transit, 50_000, 4, 17, 17),
+                    observed(2, 1, 2, Transit, 10_000, 3, 14, 17),
+                ],
+                &[1],
+                6_100,
+            ),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn shared_tuple_with_one_live_and_one_stale_connection_is_not_stale() {
+        let mut policy = Policy::new();
+        assert_eq!(
+            step(
+                &mut policy,
+                Some((1, Transit)),
+                &[
+                    observed(1, 1, 1, Transit, 8_000, 5, 10, 10),
+                    observed(1, 2, 1, Transit, 8_000, 5, 10, 10),
+                    observed(2, 1, 2, Transit, 20_000, 5, 10, 10),
+                    observed(2, 2, 2, Transit, 20_000, 5, 10, 10),
+                ],
+                &[1, 2],
+                0,
+            ),
+            None
+        );
+        // Connection 1 stops receiving on path 1 (+4 tx, 0 rx), while connection 2 still receives on path 1.
+        assert_eq!(
+            step(
+                &mut policy,
+                Some((1, Transit)),
+                &[
+                    observed(1, 1, 1, Transit, 8_000, 5, 10, 14),
+                    observed(1, 2, 1, Transit, 8_000, 8, 13, 13),
+                    observed(2, 1, 2, Transit, 20_000, 8, 13, 13),
+                    observed(2, 2, 2, Transit, 20_000, 8, 13, 13),
+                ],
+                &[1, 2],
+                3_500,
+            ),
+            None
+        );
+        assert!(!policy.is_tuple_stale(&1, 3_500));
+        // Once connection 2 also goes silent for 3 seconds with >= 3 tx, tuple 1 yields to path 2.
+        assert_eq!(
+            step(
+                &mut policy,
+                Some((1, Transit)),
+                &[
+                    observed(1, 1, 1, Transit, 8_000, 5, 10, 17),
+                    observed(1, 2, 1, Transit, 8_000, 8, 13, 16),
+                    observed(2, 1, 2, Transit, 20_000, 11, 16, 16),
+                    observed(2, 2, 2, Transit, 20_000, 11, 16, 16),
+                ],
+                &[1, 2],
+                6_500,
+            ),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn all_paths_stale_preserves_fallback_without_oscillating_or_accumulating_early_deaths() {
+        let mut policy = Policy::new();
+        assert_eq!(
+            step(
+                &mut policy,
+                None,
+                &[
+                    observed(1, 1, 1, Direct, 8_000, 2, 10, 10),
+                    observed(2, 1, 2, Transit, 20_000, 2, 10, 10),
+                    observed(3, 1, 3, Transit, 35_000, 2, 10, 10),
+                ],
+                &[1],
+                0,
+            ),
+            Some(1)
+        );
+        // All three paths become stale from t=3,000 onward: current Direct path stays put without switching
+        // every tick and without counting early deaths while no healthy replacement exists.
+        for tick in 3..=8 {
+            let tx = 10 + tick;
+            assert_eq!(
+                step(
+                    &mut policy,
+                    Some((1, Direct)),
+                    &[
+                        observed(1, 1, 1, Direct, 8_000, 2, 10, tx),
+                        observed(2, 1, 2, Transit, 20_000, 2, 10, tx),
+                        observed(3, 1, 3, Transit, 35_000, 2, 10, tx),
+                    ],
+                    &[1],
+                    tick * 1_000,
+                ),
+                None,
+                "tick {tick}"
+            );
+            assert_eq!(policy.recovery[0].delay, COOLDOWN_MS);
+            assert_eq!(policy.recovery[0].direct_until, 0);
+        }
+        // If current disappears while remaining candidates are all stale, fallback still picks minimum RTT once.
+        assert_eq!(
+            step(
+                &mut policy,
+                Some((1, Direct)),
+                &[
+                    observed(2, 1, 2, Transit, 20_000, 2, 10, 20),
+                    observed(3, 1, 3, Transit, 35_000, 2, 10, 20),
+                ],
+                &[1],
+                9_000,
+            ),
+            Some(2)
+        );
+        assert_eq!(policy.recovery[0].delay, 60_000);
+        // Subsequent ticks on that stale fallback do not keep switching.
+        assert_eq!(
+            step(
+                &mut policy,
+                Some((2, Transit)),
+                &[
+                    observed(2, 1, 2, Transit, 20_000, 2, 10, 23),
+                    observed(3, 1, 3, Transit, 15_000, 2, 10, 23),
+                ],
+                &[1],
+                12_000,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn stale_short_lived_direct_path_counts_once_and_preserves_backoff_and_other_gates() {
+        let mut policy = Policy::new();
+        // Establish an initial 60s direct hold from an earlier failure, then rescue to Direct path 2.
+        assert_eq!(
+            step(
+                &mut policy,
+                None,
+                &[observed(2, 1, 2, Direct, 8_000, 1, 5, 5)],
+                &[1],
+                0,
+            ),
+            Some(2)
+        );
+        assert_eq!(
+            step(
+                &mut policy,
+                Some((2, Direct)),
+                &[observed(1, 1, 1, Transit, 40_000, 1, 5, 5)],
+                &[1],
+                1_000,
+            ),
+            Some(1)
+        );
+        assert_eq!(policy.recovery[0].delay, 60_000);
+        // Rescue onto Direct path 4 when Transit path 1 vanishes at t=2,000.
+        assert_eq!(
+            step(
+                &mut policy,
+                Some((1, Transit)),
+                &[observed(4, 1, 4, Direct, 8_000, 1, 5, 5)],
+                &[1],
+                2_000,
+            ),
+            Some(4)
+        );
+        // Seed an unrelated gate entry on path 9 to verify stale rescue clears only current's gate.
+        let mut other_gate = Gate::new(2_000);
+        other_gate.candidate = Some(1);
+        policy.gates.insert(9, other_gate);
+        let mut current_gate = Gate::new(2_000);
+        current_gate.candidate = Some(1);
+        policy.gates.insert(4, current_gate);
+
+        // Direct path 4 goes stale at t=5,000 while Transit path 1 is healthy -> rescues to 1 and doubles hold to 120s.
+        assert_eq!(
+            step(
+                &mut policy,
+                Some((4, Direct)),
+                &[
+                    observed(4, 1, 4, Direct, 8_000, 1, 5, 9),
+                    observed(1, 1, 1, Transit, 40_000, 2, 9, 9),
+                ],
+                &[1],
+                5_000,
+            ),
+            Some(1)
+        );
+        assert_eq!(policy.recovery[0].delay, 120_000);
+        assert_eq!(policy.recovery[0].direct_until, 125_000);
+        assert!(!policy.gates.contains_key(&4));
+        assert_eq!(policy.gates.get(&9).and_then(|g| g.candidate), Some(1));
+    }
+
+    #[test]
+    fn liveness_table_evicts_absent_paths_and_released_connections_and_caps_capacity() {
+        let mut policy = Policy::new();
+        let many: Vec<_> = (1..=(MAX_LIVENESS as u64 + 40))
+            .map(|id| observed(id, id, 1, Transit, 10_000, 1, 1, 1))
+            .collect();
+        let conns: Vec<_> = (1..=(MAX_LIVENESS as u64 + 40)).collect();
+        let _ = step(&mut policy, Some((1, Transit)), &many, &conns, 0);
+        assert_eq!(policy.liveness.len(), MAX_LIVENESS);
+
+        // Releasing connections and paths shrinks the table to only currently present pairs.
+        let kept = [observed(1, 1, 1, Transit, 10_000, 2, 2, 2)];
+        let _ = step(&mut policy, Some((1, Transit)), &kept, &[1], 1_000);
+        assert_eq!(policy.liveness.len(), 1);
+        assert_eq!(policy.liveness[0].connection, 1);
+        assert_eq!(policy.liveness[0].path, 1);
     }
 }

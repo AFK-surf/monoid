@@ -16,7 +16,7 @@ import { HEDGE } from "../src/host.ts";
 import { loadAddon, nodeIroh } from "../src/hosts/node-iroh.ts";
 import { holdLanguage, t } from "../src/i18n.ts";
 import type { BindOptions, Iroh, IrohConnection } from "../src/iroh.ts";
-import { ADDRESSES_KEY, BULK_SLOW_BPS, clearlyBetter, CONNECT_TIMEOUT_MS, cost, DEVICE_KEY, DIRECT, DIRECT_HOLD_MAX_MS, EXPLORE_MS, fencedOf, HEDGE_FLOOR_MS, KEEP_WAYS, LAN, Mesh, MIN_STAY_MS, PING_TIMEOUT_MS, PROBE_MS, REDIAL_MAIN_MS, RENEW_MS, RETIRE_MS, SPEED_FRESH_MS, SPEED_MIN_BYTES, SPEED_SAID_MS, SPEED_SLOW_MIN_BYTES, SPEED_SLOW_MIN_MS, TAILNET, TICK_MS, type CredentialSource, type Link } from "../src/mesh.ts";
+import { ADDRESSES_KEY, BULK_SLOW_BPS, clearlyBetter, CONNECT_TIMEOUT_MS, cost, DEVICE_KEY, DIRECT, DIRECT_HOLD_MAX_MS, EXPLORE_MS, fencedOf, HEDGE_FLOOR_MS, KEEP_WAYS, LAN, Mesh, MIN_STAY_MS, PING_TIMEOUT_MS, PROBE_MS, RACE_GRACE_MS, REDIAL_MAIN_MS, RENEW_MS, RETIRE_MS, SPEED_FRESH_MS, SPEED_MIN_BYTES, SPEED_SAID_MS, SPEED_SLOW_MIN_BYTES, SPEED_SLOW_MIN_MS, TAILNET, TICK_MS, type CredentialSource, type Link } from "../src/mesh.ts";
 import { claimBy, lockClaim } from "../src/lock.ts";
 import { TRACES } from "../src/route.ts";
 import { ALPN, LockUnconfirmed, MeshWire, STATION_MESH, meshEnv, presented, refusedForLock } from "../src/station/mesh-wire.ts";
@@ -1242,7 +1242,7 @@ for (const relays of [1, 2]) sim(`a_link_whose_station_stops_answering_on_it_is_
   const went = s.time.now();
   await s.settle(s.runner.run(mesh.replaced(id, old)));
   const after = s.time.now() - went;
-  assert.ok(after <= TICK_MS + PING_TIMEOUT_MS + 1_000, `${after}`);
+  assert.ok(after <= TICK_MS + PING_TIMEOUT_MS + RACE_GRACE_MS + 1_000, `${after}`);
   const next = mesh.current(id)!;
   assert.notEqual(next, old);
   assert.equal((await request(s, next, head("/admin/api/overview"))).status, 200);
@@ -3055,6 +3055,140 @@ test("over_the_addon_relay_probes_disable_ip_without_disabling_live_hole_punchin
   assert.ok(live.sockets().length > 0);
   await probe.close();
   await live.close();
+});
+
+/// On a missed ping, a new link opening first gives the suspect link up to RACE_GRACE_MS to finish its control-stream
+/// round trip: if the old link answers in time, it stays in place immediately, the new connection is closed, and an
+/// open event stream is never reopened.
+sim("a_missed_ping_race_keeps_the_old_link_and_event_stream_when_control_answers_within_grace", async (s) => {
+  const a = s.relay("https://a.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 25 }, station: { ms: 25 } });
+  const { station, mesh, id } = await onRelays(s, [a, b]);
+  const old = await s.run(mesh.link(id, grants("ok", { n: 0 })));
+  assert.equal((await request(s, old, head("/admin/api/overview"))).status, 200);
+  await s.time.pass(2 * TICK_MS);
+
+  // Hold an open event stream on the original connection throughout the race.
+  const eventStream = await station.conns[0].openBi();
+  let streamClosed = false;
+  void eventStream.read().then(
+    (chunk: Uint8Array | null) => {
+      if (chunk === null) streamClosed = true;
+    },
+    () => {
+      streamClosed = true;
+    },
+  );
+
+  // Align right after a completed ping so the next ping goes in ~150 ms, then hold `old`'s way silent until
+  // PING_TIMEOUT_MS + 350 ms after that ping: the ping misses at +3 s, the new connection opens immediately on the
+  // healthy relay, and `old`'s queued control round trip completes ~350 ms into RACE_GRACE_MS (< 1_000 ms).
+  const grantsBefore = station.grants.length;
+  await s.until(() => station.grants.length > grantsBefore);
+  await s.time.pass(TICK_MS - 150);
+  const beforeConns = station.conns.length;
+  const oldServerConn = station.conns[0];
+  const recoverAt = s.time.now() + 150 + PING_TIMEOUT_MS + 350;
+  oldServerConn.way.silentUntil = oldServerConn.peer.way.silentUntil = recoverAt;
+  // Wait until the missed ping starts the race and opens the new connection on the station.
+  await s.until(() => station.conns.length > beforeConns);
+  const openedAt = s.time.now();
+  assert.equal(mesh.current(id), old, "still holding old during grace");
+  // ~350 ms into RACE_GRACE_MS, `old`'s control stream answers its round trip and closes the candidate immediately
+  // without waiting out the remaining grace budget.
+  await s.until(() => station.conns.slice(beforeConns).every((c: J) => c.isClosed()), RACE_GRACE_MS - 150);
+  assert.ok(s.time.now() - openedAt < RACE_GRACE_MS - 150, `settled in ${s.time.now() - openedAt} ms`);
+  assert.equal(mesh.current(id), old);
+  assert.equal(old.closed(), null);
+  assert.equal(streamClosed, false, "event stream on old connection stayed open");
+  eventStream.reset(0);
+  await close(s, station, mesh);
+});
+
+/// Transport rxBytes (such as backup-path PATH_RESPONSE or keepalives) and pre-existing or downstream `came` bytes do
+/// not prove the old link's control stream works: if control does not answer within RACE_GRACE_MS, the mesh switches
+/// to the new link at the grace deadline, and switches immediately if the old link is already closed.
+sim("a_missed_ping_race_ignores_rx_bytes_and_switches_at_grace_or_immediately_on_close", async (s) => {
+  const a = s.relay("https://a.relay.test/", { device: { ms: 15 }, station: { ms: 15 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const { station, mesh, id } = await onRelays(s, [a, b]);
+  const old = await s.run(mesh.link(id, grants("ok", { n: 0 })));
+  // Populate `old.came` before the race so pre-existing body bytes are non-zero.
+  const preReply = await request(s, old, head("/admin/api/overview"));
+  assert.equal(preReply.status, 200);
+  while ((await s.run(preReply.body.take)) !== null) {}
+  assert.ok(old.came > 0);
+  await s.time.pass(2 * TICK_MS);
+
+  const beforeConns = station.conns.length;
+  station.deadBelow = beforeConns;
+  const replaced = s.runner.run(mesh.replaced(id, old));
+  await s.until(() => station.conns.length > beforeConns);
+  const candidateAt = s.time.now();
+  // Simulate +30 KB of backup-path transport packets and downstream body bytes arriving on `old` during the grace
+  // window while its control stream stays silent.
+  const beforeRx = old.conn.stats().rxBytes;
+  station.conns[0].peer.counts.rxBytes += 30_211;
+  assert.equal(old.conn.stats().rxBytes, beforeRx + 30_211);
+  old.came += 4_096;
+  await s.time.pass(RACE_GRACE_MS - 200);
+  assert.equal(mesh.current(id), old, "still within RACE_GRACE_MS");
+  await s.settle(replaced);
+  const waited = s.time.now() - candidateAt;
+  assert.ok(waited >= RACE_GRACE_MS && waited < RACE_GRACE_MS + 250, `switched after ${waited} ms`);
+  const next = mesh.current(id)!;
+  assert.notEqual(next, old);
+
+  // Now verify an explicit close on the suspect link during grace switches immediately without waiting out RACE_GRACE_MS.
+  await s.time.pass(2 * TICK_MS);
+  const nextBefore = station.conns.length;
+  station.deadBelow = nextBefore;
+  const replacedAgain = s.runner.run(mesh.replaced(id, next));
+  await s.until(() => station.conns.length > nextBefore);
+  const closeStart = s.time.now();
+  await s.time.pass(150);
+  station.conns[nextBefore - 1].close(0, "gone");
+  await s.settle(replacedAgain);
+  assert.ok(s.time.now() - closeStart < RACE_GRACE_MS - 400, `closed link switched in ${s.time.now() - closeStart} ms`);
+  await close(s, station, mesh);
+});
+
+/// Closing the candidate connection or dropping the link during RACE_GRACE_MS cleans up immediately without installing
+/// a closed link or leaking connections.
+sim("a_missed_ping_race_cleans_up_when_the_new_link_closes_or_the_place_is_dropped_during_grace", async (s) => {
+  const a = s.relay("https://a.relay.test/", { device: { ms: 15 }, station: { ms: 15 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const { station, mesh, id } = await onRelays(s, [a, b]);
+  const old = await s.run(mesh.link(id, grants("ok", { n: 0 })));
+  assert.equal((await request(s, old, head("/admin/api/overview"))).status, 200);
+  await s.time.pass(2 * TICK_MS);
+
+  // Part 1: the new candidate connection closes during RACE_GRACE_MS, then `old` recovers before PROBE_MS ends.
+  const grantsBefore = station.grants.length;
+  await s.until(() => station.grants.length > grantsBefore);
+  await s.time.pass(TICK_MS - 150);
+  const beforeConns = station.conns.length;
+  const oldServerConn = station.conns[0];
+  oldServerConn.way.silentUntil = oldServerConn.peer.way.silentUntil = s.time.now() + 150 + PING_TIMEOUT_MS + 400;
+  await s.until(() => station.conns.length > beforeConns);
+  await s.time.pass(150);
+  station.conns.at(-1)!.close(0, "reset");
+  await s.time.pass(RACE_GRACE_MS);
+  assert.equal(mesh.current(id), old, "never switched to the closed candidate");
+  assert.equal(old.closed(), null);
+
+  // Part 2: `dropLink` during RACE_GRACE_MS immediately closes both `old` and the held candidate connection.
+  await s.time.pass(2 * TICK_MS);
+  const beforeDrop = station.conns.length;
+  station.deadBelow = beforeDrop;
+  await s.until(() => station.conns.length > beforeDrop);
+  await s.time.pass(150);
+  const droppedAt = s.time.now();
+  mesh.dropLink(id);
+  await s.until(() => station.conns.every((c: J) => c.isClosed()), 250);
+  assert.ok(s.time.now() - droppedAt < 250, `cleaned up in ${s.time.now() - droppedAt} ms`);
+  assert.equal(mesh.current(id), null);
+  await close(s, station, mesh);
 });
 
 suite("mesh", { concurrency: true }, () => {

@@ -104,6 +104,32 @@ priv struct Control {
   refusal : ((Json, String) -> Error?)?
   /// The refusal read last was one its user named (`Options.refusal`): the credential was fine.
   mut named : Bool
+  /// Completed post-hello credential exchanges, and waiters for the next one (`Mesh::race`).
+  mut answers : Int
+  waiting : Array[@effect.Deferred[Unit]]
+}
+
+///|
+fn Control::noted(self : Control) -> Unit {
+  self.answers += 1
+  let waiting = self.waiting.copy()
+  self.waiting.clear()
+  for d in waiting {
+    ignore(d.succeed(()))
+  }
+}
+
+///|
+async fn Control::next_answer(self : Control, after : Int) -> Unit {
+  if self.answers > after {
+    return
+  }
+  let told : @effect.Deferred[Unit] = @effect.Deferred::new()
+  self.waiting.push(told)
+  defer {
+    self.waiting.retain(one => !physical_equal(one, told))
+  }
+  told.wait()
 }
 
 ///|
@@ -242,7 +268,9 @@ pub async fn Link::admitted(self : Link) -> Json {
 pub async fn Link::exchange(self : Link, credential : String) -> Json {
   self.lock.with_permit(() => {
     self.control.send(credential)
-    self.control.answer()
+    let answer = self.control.answer()
+    self.control.noted()
+    answer
   })
 }
 
@@ -954,15 +982,4 @@ fn Link::note(self : Link, ms : Int) -> Unit {
     self.srtt = 0.875 * self.srtt + 0.125 * ms
   }
   self.samples += 1
-}
-
-///|
-/// The bytes that came on its connection so far, the transport's own packets too (`conn.stats`); 0 where the shell
-/// does not say.
-fn Link::heard(self : Link) -> Double {
-  let said = self.shell.ask("conn.stats", { "id": self.conn }) catch { _ => return 0.0 }
-  match said {
-    { "rxBytes": Number(bytes, ..), .. } => bytes
-    _ => 0.0
-  }
 }

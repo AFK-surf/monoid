@@ -206,10 +206,14 @@ test "a peer gone from under a link whose pings it answered quickly: at the firs
   assert_eq((old.missed, told.val, far.dials, mesh.racing.length()), (0, 0, [0L], 0))
   stood.rt.advance(1)
   assert_eq(old.missed, 1)
-  // Dialled at once, with the old link's credentials' source (asked as for one it has), connection 5: open, it is
-  // the place's link in that turn. 3 s after the ping went unanswered, not 13.
+  // Dialled at once, with the old link's credentials' source (asked as for one it has), connection 5: held up to
+  // `race_grace_ms` while the old link is still open, then taking its place at 14 s (4 s after the ping went
+  // unanswered, not 13).
   assert_eq(far.dials, [0L, 13000L])
   assert_eq(first_saying(far.heard, "c2"), "13000 5 {\"credential\":\"c2\"}")
+  stood.rt.advance(race_grace_ms - 1)
+  assert_true(mesh.current(peer) is Some(still) && physical_equal(still, old))
+  stood.rt.advance(1)
   guard mesh.current(peer) is Some(next) else { fail("no link at the place after the race") }
   assert_true(!physical_equal(next, old) && next.usable())
   assert_eq(mesh.racing.length(), 0)
@@ -232,7 +236,7 @@ test "a peer gone from under a link whose pings it answered quickly: at the firs
   // The new one was pinged in its turn; on the old one nothing was written after the ping it missed: its probe
   // waited its turn on the line behind that ping, and was never sent.
   assert_eq(far.heard_on(5), [
-    "13000 5 {\"credential\":\"c2\"}", "18000 5 {\"credential\":\"c2\"}", "23000 5 {\"credential\":\"c2\"}",
+    "13000 5 {\"credential\":\"c2\"}", "19000 5 {\"credential\":\"c2\"}", "24000 5 {\"credential\":\"c2\"}",
   ])
   assert_eq(far.heard_on(2), [
     "0 2 {\"credential\":\"c1\"}", "5000 2 {\"credential\":\"c1\"}", "10000 2 {\"credential\":\"c1\"}",
@@ -387,40 +391,56 @@ test "a link raced whose third ping in a row is missed meanwhile is the race's t
 }
 
 ///|
-test "a link suspect on which something came while it was raced is there after all: it is kept and the new one closed, though that one opened first; one that ended meanwhile is not" {
+test "a missed-ping race gives the old link up to race_grace_ms for its control stream, ignores transport rxBytes alone, and switches at once if the old link ended" {
+  // 1. Old link answers its control stream within race_grace_ms after the new link opened: kept at once, new closed.
+  {
+    let (stood, far, mesh, old, _) = quick_link()
+    let replaced = stood.go(() => mesh.replaced(old))
+    far.away = true
+    far.takes = 3_400
+    stood.rt.advance(tick_ms)
+    far.takes = 0
+    stood.rt.advance(ping_timeout_ms)
+    assert_eq((old.missed, mesh.racing.length()), (1, 1))
+    far.away = false
+    stood.dialled()
+    assert_eq(mesh.racing.length(), 1)
+    // 400 ms into race_grace_ms, the ping of 10 s is answered on old's control stream: kept without waiting out 1 s.
+    stood.rt.advance(400)
+    assert_eq(mesh.racing.length(), 0)
+    assert_true(mesh.current(peer) is Some(now) && physical_equal(now, old))
+    assert_eq(far.closes, ["4 closed"])
+    assert_eq((ended_as(replaced), old.usable()), ("waiting", true))
+    assert_eq(ended_as(stood.go(() => mesh.close())), "ok")
+  }
+  // 2. Transport rxBytes increase on old without any control-stream answer: switches at race_grace_ms (or at once if ended).
   for ends in [false, true] {
     let (stood, far, mesh, old, _) = quick_link()
     let replaced = stood.go(() => mesh.replaced(old))
-    far.quiet = true
+    far.lose(2)
     far.away = true
     stood.rx[2] = 1000.0
     stood.rt.advance(tick_ms + ping_timeout_ms)
     assert_eq((old.missed, mesh.racing.length()), (1, 1))
-    // A second into the race the transport says more came on the old connection (its own packets: the network had
-    // only paused), no answer to a ping yet; then the new link's dial is answered (connection 4).
-    stood.rt.advance(1_000)
-    stood.rx[2] = 1200.0
+    stood.rx[2] = 4000.0
     if ends {
       far.end(2, "bye")
     }
     far.away = false
     stood.dialled()
-    assert_eq(mesh.racing.length(), 0)
     if ends {
-      // What came was its end: the new one takes the place.
-      guard mesh.current(peer) is Some(next) else { fail("no link at the place after the race") }
-      assert_true(!physical_equal(next, old) && next.usable())
-      assert_eq(ended_as(replaced), "ok")
+      assert_eq(mesh.racing.length(), 0)
     } else {
-      // Kept: the new link is closed as it opens, its hello sent, and the holder is told nothing.
-      assert_true(mesh.current(peer) is Some(now) && physical_equal(now, old))
-      assert_eq(far.closes, ["4 closed"])
-      assert_eq((ended_as(replaced), old.usable()), ("waiting", true))
-      // Its pings are counted on as they were: still unanswered, it is let go at the third and dialled anew.
-      stood.rt.advance(2 * tick_ms - 1_000)
-      assert_eq((old.missed, far.closes, far.dials), (3, ["4 closed", "2 closed"], [0L, 13000L, 23000L]))
-      assert_eq(ended_as(replaced), "ok")
+      assert_eq(mesh.racing.length(), 1)
+      stood.rt.advance(race_grace_ms - 1)
+      assert_eq(mesh.racing.length(), 1)
+      stood.rt.advance(1)
+      assert_eq(mesh.racing.length(), 0)
     }
+    guard mesh.current(peer) is Some(next) else { fail("no link at the place after the race") }
+    assert_true(!physical_equal(next, old) && next.usable())
+    assert_eq(ended_as(replaced), "ok")
+    assert_eq(ended_as(stood.go(() => mesh.close())), "ok")
   }
 }
 
@@ -522,7 +542,7 @@ test "one peer in two scopes, both links suspect at once: each is raced by itsel
   let told_b = stood.go(() => mesh.replaced(b))
   // The first scope's alone (connection 2) first: the other's link is not raced, nor told anything.
   far.lose(2)
-  stood.rt.advance(tick_ms + ping_timeout_ms)
+  stood.rt.advance(tick_ms + ping_timeout_ms + race_grace_ms)
   guard mesh.current(peer, scope="one") is Some(a2) else { fail("no link in the first scope") }
   assert_true(!physical_equal(a2, a) && a2.usable() && a2.scope == "one")
   assert_true(mesh.current(peer, scope="two") is Some(now) && physical_equal(now, b))
@@ -534,7 +554,7 @@ test "one peer in two scopes, both links suspect at once: each is raced by itsel
   stood.rt.advance(retire_ms)
   far.lose(a2.conn_handle())
   far.lose(b.conn_handle())
-  stood.rt.advance(tick_ms + ping_timeout_ms)
+  stood.rt.advance(tick_ms + ping_timeout_ms + race_grace_ms)
   guard mesh.current(peer, scope="one") is Some(a3) else { fail("no link in the first scope") }
   guard mesh.current(peer, scope="two") is Some(b2) else { fail("no link in the second scope") }
   assert_true(!physical_equal(a3, a2) && !physical_equal(b2, b) && a3.usable() && b2.usable())
@@ -684,12 +704,15 @@ test "a place let go of by its program at each turn from the answer of its race'
   let opening = Ref(0)
   let opened = Ref(0)
   let switched = Ref(0)
-  for late in 0..<12 {
+  for late in 0..<=12 {
     let (stood, far, mesh, old) = race_dialling()
     let replaced = stood.go(() => mesh.replaced(old))
     // The dial is answered, and a fiber lets go of the place `late` turns after: while the new link is being
-    // opened, once it is open, or once it is the place's.
+    // opened, while it waits in `race_grace_ms`, or once `race_grace_ms` elapsed and it is the place's.
     stood.dial_answered()
+    if late == 12 {
+      stood.rt.advance(race_grace_ms)
+    }
     let dropping = stood.start(() => {
       for _ in 0..<late {
         @effect.pause()

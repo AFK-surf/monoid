@@ -63,6 +63,8 @@ pub let ping_timeout_ms : Int32
 
 pub let probe_ms : Int32
 
+pub let race_grace_ms : Int32
+
 pub let rebind_ms : Int32
 
 pub let redial_main_ms : Int32

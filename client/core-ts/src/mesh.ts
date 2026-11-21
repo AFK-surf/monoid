@@ -40,6 +40,7 @@ export const CONNECT_TIMEOUT_MS = 10_000;
 export const ONTO_MAX_MS = 30_000;
 const ONTO_RECHECK_MS = 250;
 export const PROBE_MS = 5_000;
+export const RACE_GRACE_MS = 1_000;
 export const RETIRE_MS = 10_000;
 export const REBIND_MS = 5_000;
 /// How often each way to a station is pinged (its credential presented again on it, answered by the station itself).
@@ -443,6 +444,8 @@ class Control {
   readonly lines: Lines;
   readonly #refusal: MeshEnv["refusal"];
   readonly #says: MeshEnv["says"];
+  answers = 0;
+  #waiting: Deferred.Deferred<void>[] = [];
   constructor(stream: IrohStream, env: Pick<MeshEnv, "refusal" | "says">) {
     this.stream = stream;
     this.lines = new Lines(stream);
@@ -487,7 +490,23 @@ class Control {
   }
 
   exchange(credential: string): Effect.Effect<J, CoreError> {
-    return Effect.andThen(this.send(credential), this.answer());
+    return Effect.tap(Effect.andThen(this.send(credential), this.answer()), () =>
+      Effect.sync(() => {
+        this.answers++;
+        const waiting = this.#waiting;
+        this.#waiting = [];
+        for (const d of waiting) Deferred.doneUnsafe(d, Effect.void);
+      }),
+    );
+  }
+
+  nextAnswer(after: number): Effect.Effect<void> {
+    return Effect.suspend(() => {
+      if (this.answers > after) return Effect.void;
+      const d = Deferred.makeUnsafe<void>();
+      this.#waiting.push(d);
+      return Deferred.await(d);
+    });
   }
 }
 
@@ -788,6 +807,14 @@ export class Link {
   answers(): Effect.Effect<boolean> {
     const exchange = Effect.map(Effect.result(this.controlled((c) => c.exchange(this.credential))), (r) => r._tag === "Success");
     return Effect.raceFirst(exchange, Effect.as(Effect.sleep(PROBE_MS), false));
+  }
+
+  controlAnswers(): number {
+    return this.#control.answers;
+  }
+
+  nextControlAnswer(after: number): Effect.Effect<void> {
+    return this.#control.nextAnswer(after);
   }
 
   usable(): boolean {
@@ -2736,12 +2763,13 @@ export class Mesh {
     this.#env.runner.fork(this.#race(addr, cur, true));
   }
 
-  /// A link suspect against a new one opened beside it at once: whichever answers first. `heard` (its ping missed): the
-  /// new one is let go if anything came on the old one meanwhile (QUIC's own packets too), the network only paused, and
-  /// moving would cut what is open on it.
+  /// A link suspect against a new one opened beside it at once: whichever answers first. On a missed ping (`heard`), if
+  /// the new link opens while the old one is still open and probing, hold switching for at most RACE_GRACE_MS so path
+  /// rescue on the old connection can finish its control-stream round trip without dropping open streams.
   #race(addr: string, old: Link, heard = false): Effect.Effect<void> {
     return Effect.gen({ self: this }, function* () {
-      const rx = old.conn.stats().rxBytes;
+      const before = old.controlAnswers();
+      const recovered = () => heard && old.usable() && old.controlAnswers() > before;
       const span = this.#env.tracer.span("mesh.race", Kind.Internal);
       span.own("station", endpointId(addr));
       const fresh = Effect.result(this.#dialAll(addr, this.#endpoint, old.credentials, false, span.context));
@@ -2752,25 +2780,71 @@ export class Mesh {
         Effect.map(Fiber.join(probeFiber), (answered) => ({ probe: answered }) as const),
         Effect.map(Fiber.join(freshFiber), (opened) => ({ fresh: opened }) as const),
       );
-      let won: "old" | "neither" | Link;
+      let won: "old" | "neither" | "cancelled" | Link;
       if ("probe" in first) {
         if (first.probe) won = "old";
         else {
           const opened = yield* Fiber.join(freshFiber);
-          won = opened._tag === "Success" ? opened.success : "neither";
+          if (recovered()) {
+            if (opened._tag === "Success") opened.success.close();
+            won = "old";
+          } else won = opened._tag === "Success" ? opened.success : "neither";
         }
-      } else if (first.fresh._tag === "Success") won = first.fresh.success;
-      else won = (yield* Fiber.join(probeFiber)) ? "old" : "neither";
-      // Something came on the old one meanwhile, its probe given up or not: it is there after all.
-      if (heard && won !== "old" && old.conn.stats().rxBytes > rx) won = "old";
+      } else if (first.fresh._tag === "Success") {
+        const candidate = first.fresh.success;
+        if (!this.#isCurrent(addr, old) || this.#closed) {
+          candidate.close();
+          won = "cancelled";
+        } else if (recovered()) {
+          candidate.close();
+          won = "old";
+        } else if (!heard || !old.usable()) {
+          won = candidate;
+        } else {
+          const settled = yield* Effect.raceFirst(
+            Effect.map(Fiber.join(probeFiber), (ok) => (ok || recovered() ? ("old" as const) : ("switch" as const))),
+            Effect.raceFirst(
+              Effect.as(old.nextControlAnswer(before), "old" as const),
+              Effect.raceFirst(
+                Effect.as(old.conn.closed(), "switch" as const),
+                Effect.raceFirst(
+                  Effect.as(this.replaced(addr, old), "cancelled" as const),
+                  Effect.raceFirst(
+                    Effect.as(candidate.conn.closed(), "candidate_closed" as const),
+                    Effect.as(Effect.sleep(RACE_GRACE_MS), "switch" as const),
+                  ),
+                ),
+              ),
+            ),
+          );
+          if (settled === "cancelled" || !this.#isCurrent(addr, old) || this.#closed) {
+            candidate.close();
+            won = "cancelled";
+          } else if (settled === "old" && old.usable()) {
+            candidate.close();
+            won = "old";
+          } else if (settled === "candidate_closed" || !candidate.usable()) {
+            candidate.close();
+            const ok = yield* Fiber.join(probeFiber);
+            won = ok || recovered() ? "old" : "neither";
+          } else {
+            won = candidate;
+          }
+        }
+      } else {
+        const ok = yield* Fiber.join(probeFiber);
+        won = ok || recovered() ? "old" : "neither";
+      }
       // The new one, opened or still opening, is let go (by a fiber of the core's: one of this race's would be ended with
       // it, and a link opened already left open).
-      if (won === "old") this.#env.runner.fork(Effect.map(Fiber.join(freshFiber), (r) => (r._tag === "Success" ? r.success.close() : undefined)));
+      if (won === "old" || won === "cancelled") {
+        this.#env.runner.fork(Effect.map(Fiber.join(freshFiber), (r) => (r._tag === "Success" ? r.success.close() : undefined)));
+      }
       this.#racing.delete(addr);
-      span.own("race", won === "old" ? "old" : won === "neither" ? "neither" : "new");
+      span.own("race", won === "old" || won === "cancelled" ? "old" : won === "neither" ? "neither" : "new");
       span.end();
       if (won === "neither") this.#dropIf(addr, old);
-      else if (won !== "old") this.#switch(addr, old, won);
+      else if (won !== "old" && won !== "cancelled") this.#switch(addr, old, won);
     });
   }
 
@@ -2779,6 +2853,7 @@ export class Mesh {
       this.#closed = true;
       for (const [, o] of this.#links) if (o.result && "ok" in o.result) o.result.ok.close();
       this.#links.clear();
+      this.#notify();
       for (const ways of this.#ways.values()) for (const w of ways) w.link.close();
       this.#ways.clear();
       for (const l of this.#retiring) l.close();
