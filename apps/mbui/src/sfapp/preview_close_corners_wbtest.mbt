@@ -129,3 +129,48 @@ test "a picture returning to a shared thumbnail keeps all four unlike corners th
     assert_corners_handoff(t, scale, "\{Repr(corners)}")
   }
 }
+
+///|
+test "a picture returning to a message thumbnail inside a rounded card keeps the card's corners through the handoff" {
+  let scale = 3.25
+  for corners in [(40.0, 40.0, 40.0, 40.0), (40.0, 10.0, 30.0, 20.0)] {
+    new_run()
+    let a = flight_photo()
+    @sfbase.sent_picture_kept(@sfbase.sent_key("ws1/st1", a.path), "sent-key")
+    let src = fixture("chat")
+    let t = @ui.Tester::new(
+      fn(c) { @sf.begin(c) |> ignore },
+      tree=fn(root) {
+        @ui.set_tree_theme(@sf.ui_theme_now)
+        let tips = @sf.TipLayer::new(fn() { Some(root) })
+        root.box(fn(v) {
+          v.grow(Is(1.0)) |> ignore
+          // (the card rounds and clips what it holds, the message's own thumbnail rounded less inside it: the corners
+          // the thumbnail is drawn with are the card's, as an ancestor's clip gives them)
+          v.box(fn(card) {
+            card
+            .over(Is(true))
+            .width(Is(Some(300.0)))
+            .height(Is(Some(225.0)))
+            .corners(Is(Some(corners)))
+            .clips(Is(true))
+            |> ignore
+            @sfpages.message_files_of_node(card, src, tips, "ws1/st1", "s-c1", chat_view_made(Json::object({})), fn() {
+              [a]
+            }, false)
+          })
+          |> ignore
+          @sfbase.viewer_node(v, src, fn() { v.window() })
+        })
+        |> ignore
+      },
+      w=390.0,
+      h=844.0,
+      scale~,
+      images=[("sent-key", 1200, 900), ("mem:preview/ws1/st1/s-c1/uploads/fx/photo.jpg", 1200, 900)],
+    )
+    t.draw()
+    t.run_for(@ui.image_fade_ms)
+    assert_corners_handoff(t, scale, "card \{Repr(corners)}")
+  }
+}

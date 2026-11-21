@@ -38,7 +38,6 @@ fn side_shown(w : Double) -> Bool {
 ///|
 /// The old frame round the tree: on 小屏 the library's menus, picks and questions are its, as the app's frame has them.
 pub fn stories_view(c : @ui.Ctx) -> Unit {
-  @ui.old_views_here(c)
   @sf.presented(c)
 }
 

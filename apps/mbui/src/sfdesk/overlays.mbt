@@ -4,8 +4,7 @@
 // parts.tsx Menu, controls.css.ts popover and menuList), nodes of the window's tree over the shell's panels
 // (overlays_node: taped_shell's, paned_shell's); a press outside one, or Esc, closes it. Under them the mark the system's
 // bars' items are put beside (rail_native_marks_node). A right click's menu is the app's, over all of it (context_menu.mbt
-// context_menu_node, sfapp's app_tree); an old view's field right clicked, whose editing the old frame does, the old
-// frame's (context_fields, sfapp's view_in).
+// context_menu_node, sfapp's app_tree).
 
 ///|
 /// What opens over the wide frame, in node `v` (a shell's, over its panels): the system's bars' mark

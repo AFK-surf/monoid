@@ -9,23 +9,7 @@ fn init {
   @sfbase.share_card_of.val = share_card_open
   @sfbase.screen_made_stream.val = screen_fixture_stream
   @sf.picture_out_now_by.val = fn(png, said) { picture_out_now(png, copy_said=said) }
-  // (a part of a page whose build faulted, in its place: as a list with nothing in it says so; a page's own bar and
-  // back went with it, so back is under the words where there is somewhere to go)
-  @ui.old_fault_shown.val = fn(c, _) {
-    @sf.empty(c, fn() {
-      c.text(@sf.t("android-misc.fault.shown"), style=fault_words) |> ignore
-      if @sfbase.back_step() is Some(_) {
-        @sf.button(c, @sf.t("common.back"), key="fault-back", on_press=fn() {
-          @sfbase.go_back() |> ignore
-        }) |> ignore
-      }
-    })
-  }
 }
-
-///|
-// kept across runs: a value (no field of it changes)
-let fault_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted)
 
 ///|
 /// What this package keeps put back as the app begins anew (its reset).

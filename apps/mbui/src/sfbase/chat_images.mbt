@@ -414,8 +414,7 @@ pub let held_pictures_waiting : Ref[Array[String]] = Ref([])
 
 ///|
 /// Whether the app's first page is built and waits for what it shows (sfapp's first_waiting), followed: what the chats'
-/// lists made once are drawn at none of their opacity by meanwhile, as the old views are (view_in's old_views_look),
-/// the splash in their place.
+/// lists made once are drawn at none of their opacity by meanwhile, the splash in their place.
 // kept across runs: said by the frame as it is told (sfapp's first_hide)
 pub let first_page_waits : @signals.Signal[Bool] = @signals.signal(false)
 

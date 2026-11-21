@@ -4,8 +4,8 @@
 // them; nothing where there is none of these (the page's ground). A message of a chat's list right clicked offers its
 // words, link and turn's picture at the end (sfbase's share_offered, the same actions its ⋯ offers).
 // The library's menu (@sf.menu_node) at the pointer, a node of the window's tree over the wide frame
-// (context_menu_node). An old view's field right clicked is told it by the old frame, whose fields they are, and its
-// editing chosen is done there (context_fields): what of it is left the old frame's while its fields are.
+// (context_menu_node). A field right clicked is told it by the window's tree (@ui.on_field_menu), and its editing
+// chosen is done at once (@ui.field_edit_now).
 
 ///|
 /// The menu while it is open: where (the pointer: the right click's place, which says the right click it is open for:
@@ -76,12 +76,6 @@ let context_menus_gone : Map[Int, Bool] = Map([])
 ///|
 // kept across runs: counted on, put back by context_reset
 let context_count : Ref[Int] = Ref(0)
-
-///|
-/// An old view's field's editing chosen in the menu (the field, what: text_menu_*), done by the old frame whose field it
-/// is (context_fields); None once done.
-// kept across runs: put back by context_reset
-let context_edit : @signals.Signal[(Int, Int)?] = @signals.signal(None)
 
 ///|
 /// The image whose pixels are read for 复制图片 ("" none), put on the clipboard once read (context_menu_node).
@@ -198,7 +192,6 @@ fn context_reset() -> Unit {
   context_menus.set([])
   context_menus_gone.clear()
   context_count.val = 0
-  context_edit.set(None)
   context_copying.set("")
 }
 
@@ -215,29 +208,6 @@ pub fn context_node(v : @view.View) -> Unit {
     }
   })
   |> ignore
-}
-
-///|
-/// What the old frame does of the menu (over the wide frame, its island's): an old view's field right clicked anywhere
-/// opens its editing (Ctx::field_right_clicked: the focus given it, what can be done to it then, field_can), and the
-/// editing chosen in the menu is done to it (Ctx::field_edit; 粘贴 as ⌘V: a picture on the clipboard put in as a file,
-/// else its words, Ctx::field_paste), the focus its again.
-pub fn context_fields(c : @ui.Ctx) -> Unit {
-  match c.field_right_clicked() {
-    Some((id, x, y)) if !context_opened_at(x, y) => context_field_at(id, x, y, c.field_can(id))
-    _ => ()
-  }
-  match context_edit.get() {
-    Some((field, what)) => {
-      context_edit.set(None)
-      if what == @hostapi.text_menu_paste {
-        c.field_paste(field)
-      } else {
-        c.field_edit(field, what)
-      }
-    }
-    None => ()
-  }
 }
 
 ///|

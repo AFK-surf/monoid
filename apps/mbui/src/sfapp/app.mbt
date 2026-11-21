@@ -20,7 +20,6 @@ fn init {
   // a page's own key made as nodes (sfpages' chat page: Space): the tape's page brought over first, as the old page's
   @sfbase.page_for_key.val = @sfdesk.tape_page_for_key
   // an agent's card's jobs (sfpages): the chat's services and jobs as the screen shows them
-  @sfbase.chat_jobs_asked.val = fn(c, src, r) { (@sfbase.chat_jobs_open.val)(src, r, c.window_size().0) }
   @sfbase.chat_jobs_open.val = fn(src, r, w) {
     if @sf.layout(w) is Small {
       open_chat_jobs(src, r)
@@ -474,9 +473,8 @@ fn view_in(c : @ui.Ctx, src : Source) -> Unit {
       None => ()
     }
   }
-  @ui.old_views_here(c)
-  // (and over them: over another app its sheet (over_view); in the wide frame what an old view's field right clicked
-  // does, and the presenters told the app is under them (shell_over))
+  // (and over that: over another app its sheet (over_view); in the wide frame the presenters told the app is under
+  // them (shell_over))
   if over {
     over_view(c, src)
   } else {
@@ -503,8 +501,6 @@ fn view_in(c : @ui.Ctx, src : Source) -> Unit {
   // the first page built, waiting for what it shows (signed_in): not shown yet, the splash over the window's ground
   // (what the host clears to, the ground's colour) in its place, its words as while the workspaces are read
   if first_waiting.val {
-    // (each of the shell's old views: narrow_shell.mbt)
-    @ui.old_views_look(c, { ..@ui.still_look, alpha: 0.0 }) |> ignore
     // (the splash itself the window's tree's nodes over the shell: first_splash_node; the ground alone till the app's
     // first splash has waited its second, the window held not shown for it)
     if !splash_waited.get() {
@@ -549,12 +545,10 @@ fn shell_under(c : @ui.Ctx, src : Source, shell : ShellIs) -> Unit {
 }
 
 ///|
-/// What the old frame does over its old views signed in, in shell `shell` (view_in): in the wide frame with a workspace
-/// in view, an old view's field right clicked and its editing done (sfdesk's context_fields), and the presenters told
-/// the app is under them (what they put up is the window's tree's: presented_nodes).
+/// What the old frame does last signed in, in shell `shell` (view_in): in the wide frame with a workspace in view, the
+/// presenters told the app is under them (what they put up is the window's tree's: presented_nodes).
 fn shell_over(c : @ui.Ctx, src : Source, shell : ShellIs) -> Unit {
   guard shell is (Taped | Paned) && workspace_in_view(src).0 is Some(_) else { return }
-  @sfdesk.context_fields(c)
   @sf.presented(c)
 }
 
@@ -1070,7 +1064,6 @@ pub fn lone_view(c : @ui.Ctx, src : Source) -> Unit {
   c.set_clear((t.p.bg >> 8) & 0xFFFFFFL)
   c.with_theme(@sf.ui_theme(), fn() {
     entry_said()
-    @ui.old_views_here(c)
     // the window's own buttons where they are the app's (Windows', Linux's), over all of it as a title bar's are, on
     // its page's bar's line: its page alone over all of it (window_keys' whole)
     if @ui.window_keys_own() {
