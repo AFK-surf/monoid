@@ -68,7 +68,7 @@ pub fn glass_toast() -> @ui.Glass {
   let t = theme()
   @ui.Glass::liquid(
     blur=2.1,
-    tint=if t.dark { 0x202020FFL } else { 0xFDFCFD67L },
+    tint=if t.dark { 0x202020FFL } else { 0xFDFCFDD9L },
     solid=if t.dark { 0x1E1F24FFL } else { 0xFAFAFAFFL },
     saturation=1.0,
     rim=0.6,

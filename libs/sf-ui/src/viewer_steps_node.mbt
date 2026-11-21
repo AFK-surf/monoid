@@ -84,7 +84,6 @@ fn step_disc(
     .radius(By(fn() { disc() / 2.0 }))
     .lines_up(Is(Some(Middle)))
     .glass(By(fn() { Some(glass_viewer_clear()) }))
-    .edge(By(fn() { if b.glass_solid() { (1.0, panel_edge()) } else { (0.0, 0L) } }))
     .shadow(By(fn() {
       let (blur, dy) = @ui.Shadow::blur_y(Base)
       (blur, dy, @ui.tree_theme().shadow)

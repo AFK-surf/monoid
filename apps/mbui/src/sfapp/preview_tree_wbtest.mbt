@@ -4003,7 +4003,7 @@ fn viewer_glass(t : @ui.Tester, s : String) -> Int {
   }
   let mut at = -1
   for k, i in t.drawn_instances() {
-    if at < 0 && i[5] == 5.0 && (i[0] - g.x).abs() < 0.5 && (i[1] - g.y).abs() < 0.5 && (i[2] - g.w).abs() < 0.5 && (i[3] - g.h).abs() < 0.5 {
+    if at < 0 && (i[5] == 5.0 || i[5] == 6.0) && (i[0] - g.x).abs() < 0.5 && (i[1] - g.y).abs() < 0.5 && (i[2] - g.w).abs() < 0.5 && (i[3] - g.h).abs() < 0.5 {
       at = k
     }
   }
@@ -4051,7 +4051,7 @@ test "viewer on the tree: its picture flying in, as it grows: over the viewer's 
     assert_true(pic >= 0 && ground >= 0 && head >= 0 && chat >= 0, msg="\{share}: found: picture \{pic}, ground \{ground}, its bar \{head}, the chat's \{chat}")
     assert_true(ground < pic, msg="\{share}: over the ground: \{ground} \{pic}")
     let titles = t.words().filter(fn(w) { w.0 == "compare.png" })
-    let glass = t.drawn_instances().mapi(fn(k, i) { (k, i) }).filter(fn(e) { e.1[5] == 5.0 }).map(fn(e) { (e.0, e.1[0].round(), e.1[1].round(), e.1[2].round(), e.1[3].round()) })
+    let glass = t.drawn_instances().mapi(fn(k, i) { (k, i) }).filter(fn(e) { e.1[5] == 5.0 || e.1[5] == 6.0 }).map(fn(e) { (e.0, e.1[0].round(), e.1[1].round(), e.1[2].round(), e.1[3].round()) })
     assert_true(pic < head, msg="\{share}: under its bar: \{pic} \{head}; titles \{Repr(titles)}; glass \{Repr(glass)}")
     assert_true(chat < ground, msg="\{share}: the chat's bar under the ground: \{chat} \{ground}")
   }
