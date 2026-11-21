@@ -4,7 +4,7 @@
 // players are; once ready, its length to the tenth of a second and its picture's size said (`PLAYCHECK ready 1000
 // 64x48`); where the host draws its picture in the canvas (MBUI_PLAYCHECK_DRAWN=1: Linux's), once its first frame is
 // drawn, the middle of its picture as the canvas drew it (`PLAYCHECK drawn red`, else its colour: `PLAYCHECK drawn r g
-// b`); where the host reads its frames' times (MBUI_PLAYCHECK_FRAMES=1: Linux's), how many and the first's and last's
+// b`); where the host reads its frames' times (MBUI_PLAYCHECK_FRAMES=1: Linux's, Windows'), how many and the first's and last's
 // start (`PLAYCHECK frames 10 0 900`); played, said once it has played to its end (`PLAYCHECK ended`); a frame at 500
 // ms grabbed, said once it is a PNG (`PLAYCHECK grabbed`); then the app's end. With MBUI_PLAYCHECK_BEHIND=1, played
 // at a fiftieth of its speed instead, said once it plays (`PLAYCHECK playing`), and once it stops: paused (`PLAYCHECK paused

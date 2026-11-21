@@ -53,7 +53,7 @@
 #        new context, and drawn again there, red in the window's picture (scripts/chk images)
 #   scripts/host_contract.sh HOST play          test/host/playcheck.mp4 played by the host's player, its bytes read
 #        through the app: its length and size once ready, (Linux) the middle of its first frame as the canvas drew it
-#        red and its frames' times read, played to its end, a frame grabbed (kitdemo's MBUI_PLAYCHECK,
+#        red, (Linux, Windows) its frames' times read, played to its end, a frame grabbed (kitdemo's MBUI_PLAYCHECK,
 #        src/kitdemo/gallery/playcheck.mbt); on Android, sent behind as it plays and brought back: paused as it went
 #   scripts/host_contract.sh windows stream     test/host/streamcheck-av1.obu (a second of AV1, 64 × 48 at 10 frames a
 #        second) decoded by the host's stream as an MP4's samples are handed over (kitdemo's MBUI_STREAMCHECK,
@@ -718,12 +718,16 @@ INSTALL
   play)
     # (a second of red, 64 × 48 at 10 frames a second, H.264: its bytes read through the app, played to its end, a frame
     # grabbed; Linux's, which draws its picture in the canvas and reads its frames' times, the middle of its first frame
-    # as drawn and its ten frames' times first)
+    # as drawn and its ten frames' times first; Windows' its ten frames' times)
     vars="MBUI_PLAYCHECK=$(base64 < test/host/playcheck.mp4 | tr -d '\n\r')"
     want="PLAYCHECK ready 1000 64x48|PLAYCHECK ended|PLAYCHECK grabbed"
     if [ "$H" = linux ]; then
       vars="MBUI_PLAYCHECK_DRAWN=1 MBUI_PLAYCHECK_FRAMES=1 $vars"
       want="PLAYCHECK ready 1000 64x48|PLAYCHECK drawn red|PLAYCHECK frames 10 0 900|PLAYCHECK ended|PLAYCHECK grabbed"
+    elif [ "$H" = windows ]; then
+      # (its page reads the file's sample table by ranges of it, as its <video> reads it)
+      vars="MBUI_PLAYCHECK_FRAMES=1 $vars"
+      want="PLAYCHECK ready 1000 64x48|PLAYCHECK frames 10 0 900|PLAYCHECK ended|PLAYCHECK grabbed"
     fi
     run "$vars" $O/play.log || true
     have=$(grep -a "PLAYCHECK" $O/play.log | sed 's/.*PLAYCHECK/PLAYCHECK/' | tr -d '\r' | paste -sd'|' -)
