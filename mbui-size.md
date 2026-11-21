@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [90d471a2c](https://github.com/AFK-surf/monoid/commit/90d471a2c5fb2681a1d25edd634a90b587b6613b) fix(station): recover the Antigravity Gemini weekl | 2.65 | 3.56 | 14.47 | 36.49 | 55.14 | 31.95 | 64.51 | 98.47 | 120.67 |
 | [b523f6425](https://github.com/AFK-surf/monoid/commit/b523f64255b86d450aaee904e8a6ab73afbe38c7) feat(vault): support cross-workspace personal secr | 2.65 | 3.56 | 14.47 | 36.48 | 55.13 | 31.94 | 64.5 | 98.57 | 142.3 |
 | [e62abddee](https://github.com/AFK-surf/monoid/commit/e62abddee6bd33e21adf2dc890df709ee97fee41) refactor(sf-ui,mbui): drop redundant leaving hides | 2.64 | 3.56 | 14.45 | 36.45 | 55.07 | 31.92 | 64.47 | 98.04 | 124.3 |
 | [4e1422b57](https://github.com/AFK-surf/monoid/commit/4e1422b57794ea8e761b0dacefc09ba5bb56e1be) chore(mbui): retire dead old-views shell hooks and | 2.64 | 3.56 | 14.45 | 36.45 | 55.07 | 31.93 | 64.47 | 98.42 | 128.06 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [ce202dfbe](https://github.com/AFK-surf/monoid/commit/ce202dfbe04a704e7944401865ca4231bc17a9fd) feat(mbui): preset picker rows open a ⋯ menu to ed | 2.65 | 3.57 | 14.49 | 36.48 | 55.22 | 31.95 | 64.56 | 98.16 | 122.65 |
 | [b1a24de9c](https://github.com/AFK-surf/monoid/commit/b1a24de9c7f019d5dc2aa67ab6a2b40871c55093) fix(mesh): bound local neighbor descriptor underla | 2.65 | 3.57 | 14.49 | 36.48 | 55.21 | 31.95 | 64.56 | 98.34 | 112.92 |
 | [ccf998c7f](https://github.com/AFK-surf/monoid/commit/ccf998c7f553c44b84d14252f24c661c2302a2a3) fix(mbui,sf-ui): clear 1.3x large-font overflow ac | 2.65 | 3.57 | 14.49 | 36.47 | 55.21 | 31.94 | 64.55 | 98.24 | 122.83 |
-| [1e571376a](https://github.com/AFK-surf/monoid/commit/1e571376ade551adb1357cd54b8123c7effc638e) fix(mbui): resolve pointer coordinates for GTK 4 s | 2.65 | 3.57 | 14.49 | 36.47 | 55.21 | 31.94 | 64.55 | 98.29 | 130.34 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [90d471a2c](https://github.com/AFK-surf/monoid/commit/90d471a2c5fb2681a1d25edd634a90b587b6613b) fix(station): recover the Antigravity Gemini weekl | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.31 |
 | [b523f6425](https://github.com/AFK-surf/monoid/commit/b523f64255b86d450aaee904e8a6ab73afbe38c7) feat(vault): support cross-workspace personal secr | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.31 |
 | [e62abddee](https://github.com/AFK-surf/monoid/commit/e62abddee6bd33e21adf2dc890df709ee97fee41) refactor(sf-ui,mbui): drop redundant leaving hides | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.31 |
 | [4e1422b57](https://github.com/AFK-surf/monoid/commit/4e1422b57794ea8e761b0dacefc09ba5bb56e1be) chore(mbui): retire dead old-views shell hooks and | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.31 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [ce202dfbe](https://github.com/AFK-surf/monoid/commit/ce202dfbe04a704e7944401865ca4231bc17a9fd) feat(mbui): preset picker rows open a ⋯ menu to ed | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54 |
 | [b1a24de9c](https://github.com/AFK-surf/monoid/commit/b1a24de9c7f019d5dc2aa67ab6a2b40871c55093) fix(mesh): bound local neighbor descriptor underla | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54 |
 | [ccf998c7f](https://github.com/AFK-surf/monoid/commit/ccf998c7f553c44b84d14252f24c661c2302a2a3) fix(mbui,sf-ui): clear 1.3x large-font overflow ac | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54 |
-| [1e571376a](https://github.com/AFK-surf/monoid/commit/1e571376ade551adb1357cd54b8123c7effc638e) fix(mbui): resolve pointer coordinates for GTK 4 s | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54 |
