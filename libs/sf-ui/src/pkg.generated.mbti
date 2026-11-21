@@ -1119,6 +1119,7 @@ pub let login_card_least : @ui.Len
 
 pub let login_card_most : @ui.Len
 
+pub fn local_path_of_link(String) -> String?
 pub fn look() -> Look
 
 pub fn look_for(Double) -> Look

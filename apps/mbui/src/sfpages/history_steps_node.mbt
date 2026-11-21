@@ -47,6 +47,7 @@ pub fn history_steps_node(v : @view.View, src : Source, station : String, key : 
   let params : Map[String, Json] = { "station": Json::string(station), "key": Json::string(key) }
   let lkey = "history-steps/" + station + "/" + key
   let head = fn() { steps_head_of(src, params, lkey) }
+  let on_link = fn(href : String) { open_agent_link(src, station, key, href) }
   steps_fills(v)
   v.pick(at_once=true, fn() { steps_state(head()) }, fn(p, state) {
     steps_fills(p)
@@ -73,7 +74,7 @@ pub fn history_steps_node(v : @view.View, src : Source, station : String, key : 
           b.lines_up(Is(Some(Middle))) |> ignore
           steps_words(b, fn() { head().edge }, steps_edge)
         })
-      _ => steps_list_node(p, src, station, key, params, lkey, tips)
+      _ => steps_list_node(p, src, station, key, params, lkey, tips, on_link~)
     }
   })
 }
@@ -88,6 +89,7 @@ fn steps_list_node(
   params : Map[String, Json],
   lkey : String,
   tips : @sf.TipLayer,
+  on_link? : (String) -> Unit = fn(_) {  },
 ) -> Unit {
   let fk = station + "\u{1}" + key
   // its rows by their keys, in order: its top, each item's by the item's, what is in flight, the phase
@@ -288,7 +290,7 @@ fn steps_list_node(
             Item(item, rail) =>
               history_row_node(r, src, station, key, Some(item), rail, tips, marked=fn() {
                 lit.get() == text(Some(item), "key")
-              })
+              }, on_link~)
             Live(l, rail) =>
               steps_main_node(r, fn(m) {
                 ev_node(m, "think", "", "", rail_last=rail, fn(b) {
@@ -317,7 +319,7 @@ fn steps_list_node(
         near_top=(0.5, wants_older, ask_older),
         reused=fn(k) { steps_row_shape(rows.untracked().1.get(k), station, key) },
         make_reused=fn(slot, row_key) {
-          steps_reused_row_node(slot, src, station, key, row_of, row_key, lit, tips, make_row)
+          steps_reused_row_node(slot, src, station, key, row_of, row_key, lit, tips, make_row, on_link~)
         },
         fn(slot, k) {
           slot.pick(at_once=true, fn() { StepsPicked::{ row: row_of(k) } }, fn(p, picked) {
@@ -478,6 +480,8 @@ pub fn steps_seconds(v : @view.View, src : Source, since : Double, till? : Doubl
 ///|
 /// The history's rows to come while it is read the first time in `v`, as its list draws them.
 pub fn steps_sample_node(v : @view.View, station : String, key : String, tips : @sf.TipLayer) -> Unit {
+  // (its bones: nothing in them is a link)
+  let on_link = fn(_ : String) {  }
   let lines = [("group", 16), ("text", 24), ("group", 12), ("group", 20), ("text", 9), ("group", 18)]
   for i, line in lines {
     let (kind, n) = line
@@ -492,7 +496,7 @@ pub fn steps_sample_node(v : @view.View, station : String, key : String, tips : 
     }
     let item = Json::object(item)
     steps_box_node(v, if i == 0 { steps_row_first } else { steps_row }, fn(r) {
-      history_row_node(r, @sfbase.sample_source, station, key, Some(item), i + 1 < lines.length(), tips)
+      history_row_node(r, @sfbase.sample_source, station, key, Some(item), i + 1 < lines.length(), tips, on_link~)
     })
   }
 }
@@ -517,6 +521,7 @@ fn history_row_node(
   rail : Bool,
   tips : @sf.TipLayer,
   marked? : () -> Bool = fn() { false },
+  on_link? : (String) -> Unit = fn(_) {  },
 ) -> Unit {
   let ik = steps_item_key(station, key, text(item, "key"))
   v.box(fn(b) {
@@ -539,7 +544,7 @@ fn history_row_node(
         |> ignore
       })
     }
-    steps_main_node(b, fn(m) { item_node(m, src, station, key, ik, item, rail, tips) })
+    steps_main_node(b, fn(m) { item_node(m, src, station, key, ik, item, rail, tips, on_link~) })
   })
   |> ignore
 }
@@ -774,6 +779,7 @@ fn item_node(
   item : Json?,
   rail : Bool,
   tips : @sf.TipLayer,
+  on_link? : (String) -> Unit = fn(_) {  },
 ) -> Unit {
   let body = field(item, "body")
   let content = field(body, "content")
@@ -817,11 +823,11 @@ fn item_node(
       }
       for k, task in tasks {
         let more = next()
-        task_node(v, ik + "/task/" + k.to_string(), Some(task), more, !more && rail)
+        task_node(v, ik + "/task/" + k.to_string(), Some(task), more, !more && rail, on_link~)
       }
       for k, m in messages {
         let more = next()
-        received_node(v, src, station, ik + "/message/" + k.to_string(), Some(m), more, !more && rail, tips)
+        received_node(v, src, station, ik + "/message/" + k.to_string(), Some(m), more, !more && rail, tips, on_link~)
       }
     }
     // the agent's own words reach no one (only what it posts does): a grey line, opened in a faint card below
@@ -854,7 +860,7 @@ fn item_node(
           },
           line,
           "",
-          fn(w) { card_md_or_clip_node(w, text_label, words, field(content, "md"), small=true) },
+          fn(w) { card_md_or_clip_node(w, text_label, words, field(content, "md"), small=true, on_link~) },
         )
       } else if single && single_line_px(words) <= 220.0 {
         ev_node(v, "said", "", "", rail_last=rail, row=true, fn(b) {
@@ -871,7 +877,7 @@ fn item_node(
           fn(_) {  },
           line,
           "",
-          fn(w) { card_md_or_clip_node(w, text_label, words, field(content, "md"), small=true) },
+          fn(w) { card_md_or_clip_node(w, text_label, words, field(content, "md"), small=true, on_link~) },
         )
       }
     }
@@ -936,7 +942,7 @@ fn item_node(
           })
           |> ignore
         },
-        fn(f) { md_node(f, words, md) },
+        fn(f) { md_node(f, words, md, on_link~) },
       )
       if ends != "" {
         ended_node(
@@ -949,20 +955,20 @@ fn item_node(
       }
     }
     "mark" => mark_node(v, src, ik + "/mark", content, rail)
-    "group" => group_node(v, src, station, key, ik, content, rail, tips)
+    "group" => group_node(v, src, station, key, ik, content, rail, tips, on_link~)
     _ => ()
   }
 }
 
 ///|
 /// Words as Markdown in `v`: the panel's size, or small and grey.
-fn md_node(v : @view.View, words : String, md : Json?, small? : Bool = false) -> Unit {
-  md_live_node(v, fn() { words }, fn() { md }, small~)
+fn md_node(v : @view.View, words : String, md : Json?, small? : Bool = false, on_link? : (String) -> Unit = fn(_) {  }) -> Unit {
+  md_live_node(v, fn() { words }, fn() { md }, small~, on_link~)
 }
 
 ///|
-fn md_live_node(v : @view.View, words : () -> String, md : () -> Json?, small? : Bool = false) -> Unit {
-  @sf.markdown_node(v, words, tree=md, size=fn() { if small { 12.0 } else { 13.0 } }, ink=fn() {
+fn md_live_node(v : @view.View, words : () -> String, md : () -> Json?, small? : Bool = false, on_link? : (String) -> Unit = fn(_) {  }) -> Unit {
+  @sf.markdown_node(v, words, tree=md, on_link~, size=fn() { if small { 12.0 } else { 13.0 } }, ink=fn() {
     if small {
       @sf.theme().p.muted
     } else {
@@ -1220,9 +1226,9 @@ fn may_clip_block(words : String) -> Bool {
 ///|
 /// Renders Markdown (with plain-words test fallback) inside an expanded card, clipping blocks longer than 14 lines and
 /// offering `复制` / `全屏查看` in the card's top bar and a bottom `查看完整内容` strip whenever actually clipped.
-fn card_md_or_clip_node(v : @view.View, title : String, words : String, md : Json?, small? : Bool = true) -> Unit {
+fn card_md_or_clip_node(v : @view.View, title : String, words : String, md : Json?, small? : Bool = true, on_link? : (String) -> Unit = fn(_) {  }) -> Unit {
   let open_full = fn() {
-    open_tool_reader(title, words, fn(rb) { render_md_or_words(rb, words, md, small=false) })
+    open_tool_reader(title, words, fn(rb) { render_md_or_words(rb, words, md, small=false, on_link~) })
   }
   if is_long_block(words) {
     steps_box_node(v, tool_field_stack, fn(stack) {
@@ -1231,15 +1237,15 @@ fn card_md_or_clip_node(v : @view.View, title : String, words : String, md : Jso
         steps_box_node(bar, h_grow, fn(_) {  }, in_row=true)
         tool_copy_btn_node(bar, words)
         tool_expand_btn_node(bar, title, words, fn(rb) {
-          render_md_or_words(rb, words, md, small=false)
+          render_md_or_words(rb, words, md, small=false, on_link~)
         })
       })
-      clip_lines_node(stack, 14, md_line, fn(f) { render_md_or_words(f, words, md, small~) }, on_full=Some(open_full))
+      clip_lines_node(stack, 14, md_line, fn(f) { render_md_or_words(f, words, md, small~, on_link~) }, on_full=Some(open_full))
     })
   } else if may_clip_block(words) {
-    clip_lines_node(v, 14, md_line, fn(f) { render_md_or_words(f, words, md, small~) }, on_full=Some(open_full))
+    clip_lines_node(v, 14, md_line, fn(f) { render_md_or_words(f, words, md, small~, on_link~) }, on_full=Some(open_full))
   } else {
-    render_md_or_words(v, words, md, small~)
+    render_md_or_words(v, words, md, small~, on_link~)
   }
 }
 
@@ -1574,6 +1580,7 @@ fn received_node(
   rail : Bool,
   rail_last : Bool,
   tips : @sf.TipLayer,
+  on_link? : (String) -> Unit = fn(_) {  },
 ) -> Unit {
   let notice = text(m, "notice")
   let job = notice == "job"
@@ -1642,7 +1649,7 @@ fn received_node(
     },
     fn(f) {
       if has_md {
-        md_node(f, words, md)
+        md_node(f, words, md, on_link~)
       } else if job {
         steps_run(f, fn() { words }, h_output, mono=true)
       } else {
@@ -1760,7 +1767,7 @@ fn slack_name_node(
 
 ///|
 /// Work the agent started in the background, ended in `v`.
-fn task_node(v : @view.View, key : String, task : Json?, rail : Bool, rail_last : Bool) -> Unit {
+fn task_node(v : @view.View, key : String, task : Json?, rail : Bool, rail_last : Bool, on_link? : (String) -> Unit = fn(_) {  }) -> Unit {
   let failed = flag(task, "failed")
   let answer = text(task, "result")
   let title = text(task, "text")
@@ -1819,7 +1826,7 @@ fn task_node(v : @view.View, key : String, task : Json?, rail : Bool, rail_last 
       steps_box_node(b, h_post_body, fn(pb) {
         if agent {
           steps_box_node(pb, h_one_card, fn(w) {
-            card_md_or_clip_node(w, first_title, answer, field(task, "md"), small=true)
+            card_md_or_clip_node(w, first_title, answer, field(task, "md"), small=true, on_link~)
           })
         } else {
           steps_box_node(pb, if failed { tool_box_red } else { tool_box }, fn(bx) {
@@ -2114,6 +2121,7 @@ fn group_node(
   g : Json?,
   rail : Bool,
   tips : @sf.TipLayer,
+  on_link? : (String) -> Unit = fn(_) {  },
 ) -> Unit {
   let gk = ik + "/group"
   let open = fn() { steps_own.opened.contains(gk) }
@@ -2164,7 +2172,7 @@ fn group_node(
       |> ignore
     },
     fn(s) {
-      group_rows_node(s, src, station, key, gk, rows, calls)
+      group_rows_node(s, src, station, key, gk, rows, calls, on_link~)
     },
   )
 }
@@ -2178,11 +2186,12 @@ fn group_rows_node(
   gk : String,
   rows : Array[Json],
   calls : Bool,
+  on_link? : (String) -> Unit = fn(_) {  },
 ) -> Unit {
   let single_thought = !calls && rows.length() == 1
   steps_box_node(s, h_steps, fn(list) {
     for i, row in rows {
-      group_row_node(list, src, station, key, group_row_key(gk, row, i), row, single_thought)
+      group_row_node(list, src, station, key, group_row_key(gk, row, i), row, single_thought, on_link~)
     }
   })
 }
@@ -2198,6 +2207,7 @@ fn group_rows_each_node(
   key : String,
   gk : () -> String,
   rows : () -> Array[Json],
+  on_link? : (String) -> Unit = fn(_) {  },
 ) -> Unit {
   let calls_sig = @signals.computed(
     fn(_) { rows().iter().any(fn(r) { text(Some(r), "kind") == "step" }) },
@@ -2216,7 +2226,7 @@ fn group_rows_each_node(
         fn() { GroupRowPicked::{ gk: gk(), row: rows().get(i), single_thought: single_thought_sig.get() } },
         fn(p, cur) {
           guard cur.row is Some(row) else { return }
-          group_row_node(p, src, station, key, group_row_key(cur.gk, row, i), row, cur.single_thought)
+          group_row_node(p, src, station, key, group_row_key(cur.gk, row, i), row, cur.single_thought, on_link~)
         },
       )
     })
@@ -2254,6 +2264,7 @@ fn group_row_node(
   rk : String,
   row : Json,
   single_thought : Bool,
+  on_link? : (String) -> Unit = fn(_) {  },
 ) -> Unit {
   let rv = Some(row)
   let content = field(rv, "content")
@@ -2262,7 +2273,7 @@ fn group_row_node(
     if single_thought {
       whole_node(list, src, station, key, rk, content, fn(body) {
         steps_box_node(body, h_step_card, fn(t) {
-          card_md_or_clip_node(t, @sf.t("web-main.history.thinking"), thought_words, field(content, "md"), small=true)
+          card_md_or_clip_node(t, @sf.t("web-main.history.thinking"), thought_words, field(content, "md"), small=true, on_link~)
         })
       })
     } else {
@@ -2286,7 +2297,7 @@ fn group_row_node(
           }, in_row=true)
         }, fn(body) {
           steps_box_node(body, h_step_card, fn(t) {
-            card_md_or_clip_node(t, @sf.t("web-main.history.thinking"), thought_words, field(content, "md"), small=true)
+            card_md_or_clip_node(t, @sf.t("web-main.history.thinking"), thought_words, field(content, "md"), small=true, on_link~)
           })
         })
       }
@@ -2313,7 +2324,7 @@ fn group_row_node(
       }
     }
   } else {
-    step_node(list, src, station, key, rk, content)
+    step_node(list, src, station, key, rk, content, on_link~)
   }
 }
 
@@ -2523,6 +2534,7 @@ fn steps_reused_row_node(
   lit : @signals.Signal[String],
   tips : @sf.TipLayer,
   make_row : (@view.View, StepsRow) -> Unit,
+  on_link? : (String) -> Unit = fn(_) {  },
 ) -> Unit {
   let picked = @signals.computed(fn(_) { StepsPicked::{ row: row_of(row_key()) } }, same=fn(a, b) { a == b })
   let init_shape = @signals.untracked(fn() { steps_row_shape(picked.get().row, station, key) })
@@ -2708,7 +2720,7 @@ fn steps_reused_row_node(
                           |> ignore
                         None => ()
                       }
-                      group_rows_each_node(s, src, station, key, gk, fn() { items(content(), "rows") })
+                      group_rows_each_node(s, src, station, key, gk, fn() { items(content(), "rows") }, on_link~)
                     })
                   })
                   .fills_across(Is(true))
@@ -2827,7 +2839,7 @@ fn steps_reused_row_node(
                       },
                       fn(f) {
                         if msg_kind == 2 {
-                          md_live_node(f, words, md_fn)
+                          md_live_node(f, words, md_fn, on_link~)
                         } else {
                           steps_words(f, words, h_words)
                         }
@@ -2867,7 +2879,7 @@ fn steps_reused_row_node(
                       |> ignore
                     },
                     fn(f) {
-                      md_live_node(f, fn() { post_words_sig.get() }, fn() { post_md_sig.get() })
+                      md_live_node(f, fn() { post_words_sig.get() }, fn() { post_md_sig.get() }, on_link~)
                     },
                   )
                 }
@@ -3041,7 +3053,7 @@ fn step_has_detail(step : Json?) -> Bool {
 
 ///|
 /// A call in `v`: its line; opened (where it holds more than its summary line), what it asked for and what came back.
-fn step_node(v : @view.View, src : Source, station : String, key : String, rk : String, step : Json?) -> Unit {
+fn step_node(v : @view.View, src : Source, station : String, key : String, rk : String, step : Json?, on_link? : (String) -> Unit = fn(_) {  }) -> Unit {
   let failed = flag(step, "failed")
   let raw_said = text(step, "said")
   let raw_hint = text(step, "hint")
@@ -3120,7 +3132,7 @@ fn step_node(v : @view.View, src : Source, station : String, key : String, rk : 
     rk,
     step,
     render_summary,
-    fn(body) { tool_body_node(body, src, station, key, rk, step) },
+    fn(body) { tool_body_node(body, src, station, key, rk, step, on_link~) },
     before_open~,
     on_close=fn() { steps_own.tool_err.remove(tk) },
   )
@@ -3332,7 +3344,7 @@ fn tool_parts_copy_text(parts : Array[Json]) -> String {
 ///|
 /// A call opened in `v`: what it asked for, then what came back, as the core reads them (`history.tool`),
 /// asked once as it is first shown (or pre-fetched before opening by `step_node`).
-fn tool_body_node(v : @view.View, src : Source, station : String, key : String, rk : String, step : Json?) -> Unit {
+fn tool_body_node(v : @view.View, src : Source, station : String, key : String, rk : String, step : Json?, on_link? : (String) -> Unit = fn(_) {  }) -> Unit {
   let (ask, tk) = tool_ask_of(rk, step)
   v.reacts(fn() { steps_own.tools.contains(tk) || steps_own.tool_err.contains(tk) }, fn(settled) {
     guard !settled else { return }
@@ -3467,7 +3479,7 @@ fn tool_body_node(v : @view.View, src : Source, station : String, key : String, 
             fn(x) { x.0 },
             fn(slot, x) {
               let (idx, part) = x.untracked()
-              tool_part_node(slot, Some(part), rk=rk + "/c" + idx.to_string(), src~, station~, key~, in_card~)
+              tool_part_node(slot, Some(part), rk=rk + "/c" + idx.to_string(), src~, station~, key~, in_card~, on_link~)
             },
           )
         })
@@ -3505,6 +3517,7 @@ fn tool_body_node(v : @view.View, src : Source, station : String, key : String, 
                 key~,
                 in_card~,
                 has_bar=has_result_head,
+                on_link~,
               )
             },
           )
@@ -3604,9 +3617,9 @@ fn is_prose_key(key : String) -> Bool {
 ///|
 /// Renders `words` as Markdown when a parsed tree (`md`) or live Markdown reader is available, falling back to plain
 /// prose text in unit tests that pass raw strings without `md`.
-fn render_md_or_words(v : @view.View, words : String, md : Json?, small? : Bool = false) -> Unit {
+fn render_md_or_words(v : @view.View, words : String, md : Json?, small? : Bool = false, on_link? : (String) -> Unit = fn(_) {  }) -> Unit {
   if md is Some(Array(_)) || @sf.markdown_read.val is Some(_) {
-    md_node(v, words, md, small~)
+    md_node(v, words, md, small~, on_link~)
   } else {
     steps_words(v, fn() { words }, if small { tool_long_words } else { h_words })
   }
@@ -4002,6 +4015,7 @@ fn tool_part_node(
   key? : String = "",
   in_card? : Bool = false,
   has_bar? : Bool = false,
+  on_link? : (String) -> Unit = fn(_) {  },
 ) -> Unit {
   match text(part, "kind") {
     "code" => {
@@ -4121,13 +4135,13 @@ fn tool_part_node(
       let long = is_long_block(words)
       let reader_title = if summary != "" { summary } else if target != "" { "→ " + target } else { "查看内容" }
       let open_full = fn() {
-        open_tool_reader(reader_title, words, fn(rb) { render_md_or_words(rb, words, md, small=false) })
+        open_tool_reader(reader_title, words, fn(rb) { render_md_or_words(rb, words, md, small=false, on_link~) })
       }
       let render_md_body = fn(host : @view.View) {
         if long || may_clip_block(words) {
-          clip_lines_node(host, 14, md_line, fn(f) { render_md_or_words(f, words, md, small=true) }, on_full=Some(open_full))
+          clip_lines_node(host, 14, md_line, fn(f) { render_md_or_words(f, words, md, small=true, on_link~) }, on_full=Some(open_full))
         } else {
-          render_md_or_words(host, words, md, small=true)
+          render_md_or_words(host, words, md, small=true, on_link~)
         }
       }
       if target != "" || long {
@@ -4156,7 +4170,7 @@ fn tool_part_node(
                 bar,
                 reader_title,
                 words,
-                fn(rb) { render_md_or_words(rb, words, md, small=false) },
+                fn(rb) { render_md_or_words(rb, words, md, small=false, on_link~) },
               )
             }
           })
@@ -4208,7 +4222,7 @@ fn tool_part_node(
             "long" => {
               let long = is_long_block(val)
               let open_full = fn() {
-                open_tool_reader(k, val, fn(rb) { render_md_or_words(rb, val, field(rv, "md"), small=false) })
+                open_tool_reader(k, val, fn(rb) { render_md_or_words(rb, val, field(rv, "md"), small=false, on_link~) })
               }
               let render_long_val = fn(host : @view.View) {
                 if long || may_clip_block(val) {
@@ -4216,11 +4230,11 @@ fn tool_part_node(
                     host,
                     14,
                     md_line,
-                    fn(inner) { render_md_or_words(inner, val, field(rv, "md"), small=true) },
+                    fn(inner) { render_md_or_words(inner, val, field(rv, "md"), small=true, on_link~) },
                     on_full=Some(open_full),
                   )
                 } else {
-                  render_md_or_words(host, val, field(rv, "md"), small=true)
+                  render_md_or_words(host, val, field(rv, "md"), small=true, on_link~)
                 }
               }
               steps_box_node(fs, tool_field_stack, fn(f) {
@@ -4230,7 +4244,7 @@ fn tool_part_node(
                   tool_copy_btn_node(head, val)
                   if long {
                     tool_expand_btn_node(head, k, val, fn(rb) {
-                      render_md_or_words(rb, val, field(rv, "md"), small=false)
+                      render_md_or_words(rb, val, field(rv, "md"), small=false, on_link~)
                     })
                   }
                 })
