@@ -3,7 +3,9 @@
 #pragma once
 #include <stdint.h>
 #include <wchar.h>
+#ifndef MB_NO_MOONBIT_H
 #include "moonbit.h"
+#endif
 
 #ifdef __cplusplus
 extern "C" {

@@ -45,7 +45,7 @@ priv struct Publishing {
   stills : Map[String, (String, Double, Double)]
   /// the going through them as its picture is asked for (publish_walk_on), how many times it was asked
   walk : @signals.Signal[PublishWalk?]
-  mut todo : Array[String]
+  mut todo : Array[(String, String)]
   mut walks : Int
   /// the page that shares it as it is made: its layer, its list, where its list is asked to show a block
   mut page : PublishPage?
@@ -54,10 +54,6 @@ priv struct Publishing {
   /// opened by a message's 多选: its seq, the one message ticked once the preview is read, and brought into sight
   /// once it is laid out (None: all ticked, the page from its top)
   mut picked : Double?
-  /// whether it is still to be brought into sight, and what of it is (its message and what was hidden in it) on the
-  /// page as it is made
-  mut aim : Bool
-  mut aim_at : @view.View?
 }
 
 ///|
@@ -102,8 +98,6 @@ let publishing : Publishing = {
   page: None,
   copying: false,
   picked: None,
-  aim: false,
-  aim_at: None,
 }
 
 ///|
@@ -120,8 +114,6 @@ pub fn publish_reset() -> Unit {
   publishing.walk.set(None)
   publishing.todo = []
   publishing.picked = None
-  publishing.aim = false
-  publishing.aim_at = None
 }
 
 ///|
@@ -133,7 +125,6 @@ pub fn open_publish(src : Source, r : ChatRef, thread : Double, picked? : Double
   publishing.of.set(Some((r, thread)))
   publishing.opened.set(publishing.opened.untracked() + 1)
   publishing.picked = picked
-  publishing.aim = picked is Some(_)
   let asked : Map[String, Json] = { "station": Json::string(r.station), "thread": Json::number(thread) }
   (src.call)("chat.publishPreview", Json::object(asked), fn(res) {
     match publishing.of.untracked() {
@@ -161,7 +152,6 @@ fn publish_pick_only(p : Json?) -> Unit {
   guard publishing.picked is Some(seq) else { return }
   let seqs = items(p, "list").map(fn(j) { number(Some(j), "seq") })
   if !seqs.contains(seq) {
-    publishing.aim = false
     return
   }
   for n in seqs {
@@ -257,22 +247,23 @@ fn publish_go(copy? : Bool = false) -> Unit {
 }
 
 ///|
-/// The `k`s of the pages of HTML the picture holds, drawn live on the page (not left out, not in a browser), in the order
-/// they come in it.
-fn publish_viz_todo() -> Array[String] {
+/// The `(k, row_key)` pairs of the pages of HTML the picture holds, drawn live on the page (not left out, not in a
+/// browser), in the order they come in it.
+fn publish_viz_todo() -> Array[(String, String)] {
   let todo = []
   if @ui.platform() == 4 {
     return todo
   }
-  for j in items(publishing.preview.untracked(), "list") {
+  for i, j in items(publishing.preview.untracked(), "list") {
     let m = picture_message(@sfbase.message_of(j), true)
     if publishing.off.contains(message_k(m.seq)) {
       continue
     }
+    let rk = publish_row_key(i, m.seq)
     for a in m.attachments {
       let k = file_k(m.seq, a)
       if k != "" && !publishing.viz_failed.contains(k) && m.placed.contains(a.name) && is_viz(a.name) && !@sfbase.is_mbui_viz(a.name) {
-        todo.push(k)
+        todo.push((k, rk))
       }
     }
   }
@@ -295,11 +286,11 @@ let publish_viz_most_h : Double = 8000.0
 ///|
 /// What the walk through the pages of HTML in the picture said (`w`), at each cause that moves it on (a change of it, a
 /// page come to be drawn on the page, one drawn by its host, a grab answered: publish_walk_said), in the page's layer
-/// `n`: the page brought into sight, under what is over it at the top and over what is at its foot (its message's
-/// block brought to the list's top where it is not made, its page's box then scrolled to where it is not wholly in
-/// sight), left till it has drawn itself, publish_viz_settle_ms more, grabbed, and that kept for the picture; after the
-/// last, the page scrolled back and the picture taken. publish_viz_wait_ms at most at each step: one not there by then
-/// is its card.
+/// `n`: the page brought into sight (step 0 brings its virtualized message row into sight if unmounted, step 1 waits
+/// for it to mount, then adjusts scroll so its box sits under the header and above the foot), left till it has drawn
+/// itself (step 2), publish_viz_settle_ms more, grabbed (step 3), and that kept for the picture; after the last, the
+/// page scrolled back and the picture taken. publish_viz_wait_ms at most at each step: one not there by then is its
+/// card.
 fn publish_walk_on(n : @view.View, w : PublishWalk) -> Unit {
   guard publishing.page is Some(page) else { return }
   if w.at >= publishing.todo.length() {
@@ -308,13 +299,23 @@ fn publish_walk_on(n : @view.View, w : PublishWalk) -> Unit {
     publish_take()
     return
   }
-  let k = publishing.todo[w.at]
+  let (k, rk) = publishing.todo[w.at]
   let next = fn() { publishing.walk.set(Some({ ..w, at: w.at + 1, step: 0 })) }
   let step = fn(s : Int) { publishing.walk.set(Some({ ..w, step: s })) }
   match (w.step, publishing.viz_at.get(k)) {
-    // (not drawn as itself on the page: its card)
-    (0, None) => next()
-    (0, Some((box, f))) => {
+    // (not mounted on the page yet: bring its message row into sight, or skip if loading failed)
+    (0, None) =>
+      if publishing.viz_failed.contains(k) {
+        next()
+      } else {
+        page.place.bring(rk, offset=0.0, glide=false)
+        step(1)
+      }
+    (1, None) =>
+      if publishing.viz_failed.contains(k) {
+        next()
+      }
+    (0 | 1, Some((box, f))) => {
       let (_, y, _, h) = box.rect()
       // (not laid out yet: as the list says what it has in sight once it is)
       if h <= 0.0 {
@@ -329,21 +330,21 @@ fn publish_walk_on(n : @view.View, w : PublishWalk) -> Unit {
         page.scroll.put(page.scroll.at(n.tree) + (y - top))
       }
       ignore(f)
-      step(1)
+      step(2)
     }
-    (1, Some((_, f))) =>
+    (2, Some((_, f))) =>
       if f.drawn() {
         // (left to draw what it draws as it comes in, then grabbed: at that moment, where it is still this step)
         let at = n.cause_at() + publish_viz_settle_ms
         n.at_moment(at, fn() {
           if publishing.walk.untracked() == Some(w) && !f.view.grabbing() {
             f.view.grab_frame(0.0)
-            step(2)
+            step(3)
           }
         })
         |> ignore
       }
-    (2, Some((box, f))) =>
+    (3, Some((box, f))) =>
       match f.view.grabbed() {
         Some(png) => {
           let (_, _, bw, bh) = box.rect()
@@ -373,7 +374,10 @@ fn publish_walk_said() -> (PublishWalk, Int, Bool, Int)? {
     Some(w) => {
       publishing.viz_made.get() |> ignore
       publishing.sighted.get() |> ignore
-      let k = publishing.todo.get(w.at).unwrap_or("")
+      let k = match publishing.todo.get(w.at) {
+        Some((k, _)) => k
+        None => ""
+      }
       match publishing.viz_at.get(k) {
         Some((_, f)) => {
           Some((w, 1, f.drawn(), f.view.grabs_told()))
@@ -736,11 +740,11 @@ fn publish_foot_w(w : Double) -> Double {
 }
 
 ///|
-/// The page's list in `parent` (publish_node's), the window `width` wide: the chat's name over its messages, still.fail's
-/// mark at its foot, the picture as it would be, at the chat's width (760 at most) in the middle, a column before it
-/// where each message's box to tick stands, under what is over it at the top and over the band at the foot; each
-/// message a block of its own (publish_message_block). Opened from a message's 多选, that message brought into sight once
-/// it is laid out (publish_aim), where it is not in sight already.
+/// The page's list in `parent` (publish_node's), the window `width` wide: the chat's name in its `head`, each message
+/// virtualized as its own `scrolls_window` row key (`publish_row_key`) with still.fail's mark as a trailing row
+/// (`publish_foot_key`), at the chat's width (760 at most) in the middle, a column before it where each message's box
+/// to tick stands, under what is over it at the top and over the band at the foot. Opened from a message's 多选, that
+/// message's row is brought into sight via `place.bring`.
 fn publish_list_node(parent : @view.View, src : Source, r : ChatRef, width : () -> Double, tips : @sf.TipLayer) -> Unit {
   parent.over(Is(true)) |> ignore
   let scroll = @view.Scroll::list()
@@ -758,51 +762,50 @@ fn publish_list_node(parent : @view.View, src : Source, r : ChatRef, width : () 
   let here = publish_here(r, column, false, Some(tips))
   let p = @signals.untracked(fn() { publishing.preview.get() })
   let hidden = publish_hidden(p)
-  // (opened from a message's 多选: brought into sight as the list is first laid out (the page opens there, nothing
-  // scrolls), under what is over the page at the top, as far down as the paper's room, where it is not in sight then)
-  place.on_sight(fn(_) {
-    publishing.sighted.set(publishing.sighted.untracked() + 1)
-    guard publishing.aim else { return }
-    match publishing.aim_at {
-      Some(said) => {
-        let (_, y, _, h) = said.rect()
-        if h <= 0.0 {
-          return
-        }
-        publishing.aim = false
-        let top = publish_head_w(width())
-        let wh = parent.window_h()
-        if y < top || y + h > wh - publish_foot_w(width()) {
-          scroll.put(scroll.at(parent.tree) + (y - top - publish_paper_in))
-        }
-      }
-      None => ()
+  let row_keys : Array[String] = []
+  let by_key : Map[String, (Int, Message)] = Map([])
+  let mut picked_at : (Int, String)? = None
+  for i, j in items(p, "list") {
+    let m = @sfbase.message_of(j)
+    let rk = publish_row_key(i, m.seq)
+    row_keys.push(rk)
+    by_key[rk] = (i, m)
+    if picked_at is None && publishing.picked == Some(m.seq) {
+      picked_at = Some((i, rk))
     }
-  })
+  }
+  row_keys.push(publish_foot_key)
+  place.on_sight(fn(_) { publishing.sighted.set(publishing.sighted.untracked() + 1) })
   parent.box(fn(l) {
     l.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-    // (the picture one piece, as it is taken: its messages each made as it opens, every box to tick there for the hand,
-    // the keyboard and a screen reader, as the picture holds them all)
+    // (each message its own virtualized row key, title in head, brand in trailing row so long chats only mount what
+    // is in sight)
     l.scrolls_window(
       scroll,
-      fn() { [publish_picture_key] },
-      fn(slot, _) {
-        slot.box(fn(col) {
-          col.fills_across(Is(true)) |> ignore
-          publish_block(col, column, false, fn(b) {
-            b.padding(By(fn() { (0.0, publish_head_w(width()) + publish_paper_in, 0.0, publish_paper_gap) })) |> ignore
-            publish_title_node(b, column, false, text(p, "title"))
-          })
-          for i, j in items(p, "list") {
-            let m = @sfbase.message_of(j)
-            publish_block(col, column, false, fn(b) { publish_message_block(b, src, here, column, m, hidden, i == 0) })
-          }
-          publish_block(col, column, false, fn(b) {
+      fn() { row_keys },
+      fn(slot, rk) {
+        slot.fills_across(Is(true)) |> ignore
+        if rk == publish_foot_key {
+          publish_block(slot, column, false, fn(b) {
             b.padding(By(fn() { (0.0, publish_paper_gap + publish_foot_down, 0.0, publish_paper_in + publish_page_under + publish_foot_w(width())) })) |> ignore
             publish_brand_node(b, column, false)
           })
+        } else {
+          match by_key.get(rk) {
+            Some((i, m)) =>
+              publish_block(slot, column, false, fn(b) {
+                publish_message_block(b, src, here, column, m, hidden, i == 0)
+              })
+            None => ()
+          }
+        }
+      },
+      head=fn(h) {
+        h.fills_across(Is(true)) |> ignore
+        publish_block(h, column, false, fn(b) {
+          b.padding(By(fn() { (0.0, publish_head_w(width()) + publish_paper_in, 0.0, publish_paper_gap) })) |> ignore
+          publish_title_node(b, column, false, text(p, "title"))
         })
-        |> ignore
       },
       top_covered=fn() { publish_head_w(width()) },
       comes=fn(_) { false },
@@ -810,13 +813,22 @@ fn publish_list_node(parent : @view.View, src : Source, r : ChatRef, width : () 
       place~,
     )
     |> ignore
+    if picked_at is Some((picked_i, rk)) && picked_i > 0 {
+      let gap_now = if column() <= chat_narrow_w { list_gap_narrow } else { list_gap }
+      place.bring(rk, offset=gap_now - publish_paper_in, glide=false)
+    }
   })
   |> ignore
 }
 
 ///|
-/// The page list's one key: the picture as it would be, one piece.
-let publish_picture_key : String = "picture"
+/// The page list's trailing brand row key, and each message's unique row key.
+let publish_foot_key : String = "foot"
+
+///|
+fn publish_row_key(i : Int, seq : Double) -> String {
+  "m:\{i}:\{seq_s(seq)}"
+}
 
 ///|
 /// How much was hidden in each of preview `p`'s messages, by its seq (the preview's `messages`, by their n).
@@ -975,9 +987,6 @@ fn publish_message_block(
       // (a message and, under it, how much was hidden in it, 6 under)
       .gap(Is(@ui.Space::px(S1_5)))
       |> ignore
-      if publishing.picked == Some(m.seq) {
-        publishing.aim_at = Some(content)
-      }
       publish_said_node(content, src, here, m)
       match hidden.get(m.seq) {
         Some(h) =>
@@ -1227,6 +1236,7 @@ fn publish_viz_live(parent : @view.View, r : ChatRef, k : String, a : Attachment
               })
             None if @sfbase.is_mbui_viz(a.name) || taking => {
               publishing.viz_failed[k] = true
+              publishing.viz_made.set(publishing.viz_made.untracked() + 1)
               card(p)
             }
             None =>
@@ -1253,6 +1263,7 @@ fn publish_viz_live(parent : @view.View, r : ChatRef, k : String, a : Attachment
         }
         (1, _) => {
           publishing.viz_failed[k] = true
+          publishing.viz_made.set(publishing.viz_made.untracked() + 1)
           card(p)
         }
         _ =>
