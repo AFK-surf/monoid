@@ -118,6 +118,7 @@ fn loupe_capsule(
       let full = dmin(1.0, follow.held_shown(lens))
       (lens_shadow * full, lens_shadow_y * full, ui_theme_now().shadow)
     }))
+    .shadow_outside(Is(true))
     |> ignore
   })
   |> ignore

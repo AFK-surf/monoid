@@ -3222,11 +3222,10 @@ pub fn Viewer::view(self : Viewer) -> @ui.NativeView? {
 pub let dark_glass_blur : Double = 24.0 * 0.57735 + 0.5
 
 ///|
-/// The frosted glass over a picture: 0x121214 at 62% over its blur; with transparency
-/// reduced, that tint over black.
+/// The dark translucent liquid glass over media (`viewer_head_node`, `viewer_marks_node`): iOS 27 calibrated
+/// clear-dark glass keeping white foreground ink >= 4.5:1 over bright photo highlights.
 pub fn dark_glass() -> @ui.Glass {
-  let tint = @sf.alpha(0x121214FFL, 0.62)
-  @ui.Glass::frosted(blur=dark_glass_blur, tint~, solid=@sf.over(0x000000FFL, tint))
+  @sf.glass_viewer_dark()
 }
 
 ///|

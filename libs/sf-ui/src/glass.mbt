@@ -44,7 +44,7 @@ pub fn glass_floating(tint? : Int64) -> @ui.Glass {
 }
 
 ///|
-/// Single-layer iOS 27 liquid glass for anchored dropdown and context menus (`menu_node`).
+/// Single-layer iOS 27 liquid glass for anchored dropdown and context menus (`menu_node`, `small_panel_node`).
 pub fn glass_menu() -> @ui.Glass {
   let t = theme()
   @ui.Glass::liquid(
@@ -58,6 +58,66 @@ pub fn glass_menu() -> @ui.Glass {
     chroma=0.0,
     merge=0.0,
     adaptive=false,
+  )
+}
+
+///|
+/// Single-layer iOS 27 liquid glass for floating toast capsules (`toaster_node`): light translucent glass with
+/// dark ink in Light mode, dark translucent glass with light ink in Dark mode.
+pub fn glass_toast() -> @ui.Glass {
+  let t = theme()
+  @ui.Glass::liquid(
+    blur=2.1,
+    tint=if t.dark { 0x202020FFL } else { 0xFDFCFD67L },
+    solid=if t.dark { 0x1E1F24FFL } else { 0xFAFAFAFFL },
+    saturation=1.0,
+    rim=0.6,
+    bezel=12.0,
+    refraction=14.0,
+    chroma=0.0,
+    merge=0.0,
+    adaptive=false,
+  )
+}
+
+///|
+/// High-translucency neutral single-layer iOS 27 liquid glass for floating controls over media (`viewer_steps_node`,
+/// `viewer_page_glass`): desaturated backdrop (`saturation=0.55`, `blur=4.0`) prevents vivid saturated photos from
+/// turning circular discs into colored stickers while keeping crisp 9/12 bezel refraction, specular rim, and legible
+/// `<` / `>` chevrons in both Light and Dark themes.
+pub fn glass_viewer_clear(spot? : (Double, Double)? = None) -> @ui.Glass {
+  let t = theme()
+  @ui.Glass::liquid(
+    blur=4.0,
+    tint=if t.dark { 0x202020FFL } else { 0xFDFCFD67L },
+    solid=t.p.canvas,
+    saturation=0.55,
+    rim=0.70,
+    bezel=9.0,
+    refraction=12.0,
+    chroma=0.06,
+    merge=0.0,
+    adaptive=false,
+    spot~,
+  )
+}
+
+///|
+/// Dark translucent liquid glass for floating white-ink media viewer capsules (`dark_glass` / `viewer_marks_node`):
+/// neutral dark iOS 27 glass with controlled saturation (`0.65`) and 9/12 liquid bevel refraction.
+pub fn glass_viewer_dark(spot? : (Double, Double)? = None) -> @ui.Glass {
+  @ui.Glass::liquid(
+    blur=4.0,
+    tint=0x202020FFL,
+    solid=0x161618FFL,
+    saturation=0.65,
+    rim=0.65,
+    bezel=9.0,
+    refraction=12.0,
+    chroma=0.06,
+    merge=0.0,
+    adaptive=false,
+    spot~,
   )
 }
 

@@ -11,9 +11,10 @@ pub fn small_panel_node(p : @view.View) -> @view.View {
   p
   .padding(Is((panel_pad, panel_pad, panel_pad, panel_pad)))
   .radius(Is(r_menu))
-  .ground(By(fn() { panel_ground() }))
-  .edge(By(fn() { (small_panel_line, panel_edge()) }))
+  .glass(By(fn() { Some(glass_menu()) }))
+  .edge(By(fn() { if p.glass_solid() { (small_panel_line, panel_edge()) } else { (0.0, 0L) } }))
   .shadow(By(fn() { float_shadow() }))
+  .shadow_outside(Is(true))
   .clips(Is(true))
 }
 
