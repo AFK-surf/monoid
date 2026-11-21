@@ -14,10 +14,20 @@ fn runtime_list(op : String, value : Json, runtimes : Array[String]?) -> Json {
     ("chats" | "sharedChats", Array(rows)) =>
       Json::array(
         rows.map(r => match r {
-          Object(o) if o.get("agents") is Some(Array(agents)) => {
+          Object(o) => {
+            let mut changed = false
             let out = Map::from_iter(o.iter())
-            out["agents"] = Json::array(agents.filter(a => !(a is Object(x) && unsupported(x.get("runtime")))))
-            Json::object(out)
+            if o.get("agents") is Some(Array(agents)) {
+              out["agents"] = Json::array(agents.filter(a => !(a is Object(x) && unsupported(x.get("runtime")))))
+              changed = true
+            }
+            if o.get("last") is Some(Object(last)) && unsupported(last.get("authorRuntime")) {
+              let next_last = Map::from_iter(last.iter())
+              next_last.remove("authorRuntime")
+              out["last"] = Json::object(next_last)
+              changed = true
+            }
+            if changed { Json::object(out) } else { r }
           }
           _ => r
         }),
