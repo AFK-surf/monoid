@@ -1011,3 +1011,62 @@ test "preset edit dialog and station picker show localized English copy with no 
     msg=runs(t),
   )
 }
+
+///|
+test "browsing a folder from 新预设 opened via the preset panel returns to the dialog and keeps the folder" {
+  for wide in [false, true] {
+    new_run()
+    let calls : Array[Made] = []
+    let t = preset_mode("newchat", wide~, src=preset_calls("newchat", calls))
+    press(t, "预设")
+    t.run_for(@ui.move_most_ms)
+    press(t, "新预设")
+    t.run_for(@ui.move_most_ms)
+    press(t, "添加目录")
+    t.run_for(@ui.move_most_ms)
+    press(t, "浏览文件夹")
+    t.run_for(@ui.move_most_ms)
+    press(t, "项目")
+    t.frame()
+    press(t, "选择「项目」")
+    t.run_for(@ui.move_most_ms)
+    assert_true(shows(t, "名字") && shows(t, "项目"), msg="wide \{wide}: \{runs(t)}")
+    assert_false(shows(t, "其他成员的预设"), msg="wide \{wide}: \{runs(t)}")
+    press(t, "创建")
+    t.frame()
+    let added = named(calls, "preset.add")
+    assert_eq(added.length(), 1, msg="wide \{wide}: \{Repr(calls.map(fn(c) { c.name }))}")
+    let made = Some(added[0].params)
+    assert_eq(
+      items(made, "dirs").map(fn(d) { (if d is String(s) { Some(s) } else { None }).unwrap_or("") }),
+      ["/Users/lin/项目"],
+      msg="wide \{wide}",
+    )
+  }
+}
+
+///|
+test "cloning a repository from 新预设 opened via the preset panel returns to the dialog instead of closing it" {
+  for wide in [false, true] {
+    new_run()
+    let calls : Array[Made] = []
+    let t = preset_mode("newchat", wide~, src=preset_calls("newchat", calls))
+    press(t, "预设")
+    t.run_for(@ui.move_most_ms)
+    press(t, "新预设")
+    t.run_for(@ui.move_most_ms)
+    press(t, "添加目录")
+    t.run_for(@ui.move_most_ms)
+    press(t, "从 Git 克隆")
+    t.run_for(@ui.move_most_ms)
+    if !wide {
+      let (fx, fy) = t.find("owner/r").unwrap()
+      t.tap(fx, fy)
+    }
+    t.type_text("acme/notes")
+    press(t, "克隆")
+    t.run_for(@ui.move_most_ms)
+    assert_true(shows(t, "名字") && shows(t, "notes") && !shows(t, "正在克隆…"), msg="wide \{wide}: \{runs(t)}")
+    assert_false(shows(t, "其他成员的预设"), msg="wide \{wide}: \{runs(t)}")
+  }
+}
