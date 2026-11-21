@@ -1974,7 +1974,7 @@ export class Accounts {
         machine: p.machine === true,
         enabled: p.enabled !== false,
         backgroundOnMessage: p.backgroundOnMessage,
-        maxConcurrentSessions: p.maxConcurrentSessions ?? null,
+        ...(p.maxConcurrentSessions !== undefined ? { maxConcurrentSessions: p.maxConcurrentSessions } : {}),
         fast: takesFast(p) && (!fastNeedsCredits(p) || this.quotas.get(p.id)?.extraUsage === true) ? p.fast === true : null,
         check: checkView,
         login: this.logins.get(p.id),

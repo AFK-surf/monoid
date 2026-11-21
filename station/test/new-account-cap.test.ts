@@ -477,7 +477,7 @@ test("accounts: madeOfLogin defaults maxConcurrentSessions=8, putProfile sets/cl
     // putProfile clears cap with null or 0.
     await accounts.putProfile("sub-auto", { maxConcurrentSessions: 0 }, viewer);
     assert.equal(config.raw().profiles.find((p: any) => p.id === "sub-auto")?.maxConcurrentSessions, undefined);
-    assert.equal(accounts.profilesView(viewer).find((p: any) => p.id === "sub-auto")?.maxConcurrentSessions, null);
+    assert.equal(accounts.profilesView(viewer).find((p: any) => p.id === "sub-auto")?.maxConcurrentSessions, undefined);
     await accounts.putProfile("sub-auto", { maxConcurrentSessions: 5 }, viewer);
     await accounts.putProfile("sub-auto", { maxConcurrentSessions: null }, viewer);
     assert.equal(config.raw().profiles.find((p: any) => p.id === "sub-auto")?.maxConcurrentSessions, undefined);

@@ -997,10 +997,8 @@ pub async fn Accounts::profiles_view(self : Accounts, viewer : JV?) -> JV {
         self.ask("profiles.loginCommand", [js(r), js(p.home), jbool(p.machine)])
       _ => js("")
     }
-    views.push(
-      (
-        jobj([
-          ("id", p.get("id").unwrap_or(jundef)),
+    let mut view = jobj([
+      ("id", p.get("id").unwrap_or(jundef)),
           ("name", js(p.name)),
           ("runtime", jopt(p.runtime)),
           ("service", jopt(p.service)),
@@ -1047,13 +1045,6 @@ pub async fn Accounts::profiles_view(self : Accounts, viewer : JV?) -> JV {
           ("machine", jbool(p.machine)),
           ("enabled", jbool(p.enabled)),
           ("backgroundOnMessage", jbool(p.background_on_message)),
-          (
-            "maxConcurrentSessions",
-            match p.max_concurrent_sessions {
-              Some(n) => jint(n)
-              None => Null
-            },
-          ),
           ("fast", fast),
           ("check", check_view),
           ("login", self.ask("logins.get", [js(p.id)])),
@@ -1075,10 +1066,11 @@ pub async fn Accounts::profiles_view(self : Accounts, viewer : JV?) -> JV {
           ),
           ("workspaces", jstrs(others.filter(w => allowed_in(p, Some(w), home)))),
           ("serves", jbool(allowed_in(p, joined, home))),
-        ]),
-        used_by,
-      ),
-    )
+        ])
+    if p.max_concurrent_sessions is Some(n) {
+      view = jset(view, "maxConcurrentSessions", jint(n))
+    }
+    views.push((view, used_by))
   }
   match joined {
     None => jarr(views.map(v => v.0))
