@@ -1402,7 +1402,7 @@ pub fn studio(root : @view.View, first_scene? : Int = 0, loc~ : SourceLoc) -> Un
       dock_wrap.box(fn(dock_card) {
         dock_card
         .padding(Is((4.0, 4.0, 4.0, 4.0)))
-        .radius(Is(14.0))
+        .radius(Is(@sf.segmented_height() / 2.0 + 4.0))
         .ground(By(fn() { @sf.theme().p.raised }))
         .edge(By(fn() { (0.5, @sf.theme().p.line_strong) }))
         .shadow(By(fn() { (12.0, 4.0, @sf.theme().p.shadow) }))
