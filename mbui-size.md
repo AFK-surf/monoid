@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ea14ed57d](https://github.com/AFK-surf/monoid/commit/ea14ed57d50b70493f151ea2a000c7ac82ffe1eb) refactor(mbui): clear 83 remaining structure-box d | 2.65 | 3.57 | 14.48 | 36.48 | 55.19 | 31.95 | 64.53 | 98.21 | 116.29 |
 | [0b920d6ae](https://github.com/AFK-surf/monoid/commit/0b920d6aed555c603b727f47764697a9d77b0d1d) fix(liquid-glass): preserve overlay close transiti | 2.65 | 3.57 | 14.49 | 36.49 | 55.23 | 31.95 | 64.56 | 98.27 | 101.58 |
 | [fbe2bcdb3](https://github.com/AFK-surf/monoid/commit/fbe2bcdb3bec6c8b963303abcf3885850d5447f5) feat(sf-ui): auto-detect parent row direction in s | 2.65 | 3.57 | 14.49 | 36.49 | 55.23 | 31.97 | 64.61 | 98.09 | 124.28 |
 | [3bbd14a18](https://github.com/AFK-surf/monoid/commit/3bbd14a18a794ee826e2ebde5b7fde6756860fa1) chore(mbui): delete remaining legacy @ui.Ctx views | 2.65 | 3.57 | 14.48 | 36.49 | 55.22 | 31.97 | 64.61 | 98.09 | 122.89 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [b159ee25d](https://github.com/AFK-surf/monoid/commit/b159ee25de5625dfffe1ffa62ff8ef127a01b829) fix(mbui): forward unhandled Control shortcuts on  | 2.79 | 3.77 | 15.36 | 37.47 | 58.06 | 32.84 | 67.06 | 98.22 | 125.05 |
 | [3d1a4607d](https://github.com/AFK-surf/monoid/commit/3d1a4607d7ab8043a526520dc8d364666bf4a8fc) fix(station): restore Gemini profile output speed  | 2.79 | 3.77 | 15.36 | 37.47 | 58.06 | 32.84 | 67.06 | 98.49 | 120.89 |
 | [7541e39ab](https://github.com/AFK-surf/monoid/commit/7541e39ab4f139d8f2f5bae3d3718bb24967678d) fix(mbui): rebuild Windows XAudio2 engine after de | 2.79 | 3.78 | 15.37 | 37.49 | 58.09 | 32.86 | 67.08 | 98.4 | 122.74 |
-| [0ad04e6d2](https://github.com/AFK-surf/monoid/commit/0ad04e6d2fa7af2e8c3b2ef9369e6826135decd9) chore(farview): sync Stage 23B release 29078d90f43 | 2.79 | 3.78 | 15.37 | 37.49 | 58.09 | 32.86 | 67.08 | 98.4 | 122.74 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ea14ed57d](https://github.com/AFK-surf/monoid/commit/ea14ed57d50b70493f151ea2a000c7ac82ffe1eb) refactor(mbui): clear 83 remaining structure-box d | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.28 |
 | [0b920d6ae](https://github.com/AFK-surf/monoid/commit/0b920d6aed555c603b727f47764697a9d77b0d1d) fix(liquid-glass): preserve overlay close transiti | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.28 |
 | [fbe2bcdb3](https://github.com/AFK-surf/monoid/commit/fbe2bcdb3bec6c8b963303abcf3885850d5447f5) feat(sf-ui): auto-detect parent row direction in s | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.28 |
 | [3bbd14a18](https://github.com/AFK-surf/monoid/commit/3bbd14a18a794ee826e2ebde5b7fde6756860fa1) chore(mbui): delete remaining legacy @ui.Ctx views | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.28 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [b159ee25d](https://github.com/AFK-surf/monoid/commit/b159ee25de5625dfffe1ffa62ff8ef127a01b829) fix(mbui): forward unhandled Control shortcuts on  | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.13 |
 | [3d1a4607d](https://github.com/AFK-surf/monoid/commit/3d1a4607d7ab8043a526520dc8d364666bf4a8fc) fix(station): restore Gemini profile output speed  | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.12 |
 | [7541e39ab](https://github.com/AFK-surf/monoid/commit/7541e39ab4f139d8f2f5bae3d3718bb24967678d) fix(mbui): rebuild Windows XAudio2 engine after de | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.12 |
-| [0ad04e6d2](https://github.com/AFK-surf/monoid/commit/0ad04e6d2fa7af2e8c3b2ef9369e6826135decd9) chore(farview): sync Stage 23B release 29078d90f43 | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.18 |
