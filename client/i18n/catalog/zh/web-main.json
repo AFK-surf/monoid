@@ -213,6 +213,7 @@
   "web-main.history.sendFailed": "发送失败",
   "web-main.history.sentTo": "发送到 ",
   "web-main.history.tool.web": "联网",
+  "web-main.history.unsent": "未发送：新消息先到",
   "web-main.history.thinking": "思考",
   "web-main.jobs.chip": "运行中 {n}",
   "web-main.stations.shareCard": "分享卡片",

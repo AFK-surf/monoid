@@ -996,6 +996,23 @@ function itemsOf(held: J[], from: number, cx: Context, sig: Sig | null, day: num
   const isFailedResult = (rIdx: number | null) =>
     rIdx !== null && (timeline[rIdx]?.ok === false || /^Failed to call [\w.-]+:/.test(s(timeline[rIdx], "text")));
   const failedOf = (step: Step) => isFailedResult(step.result);
+  // A post the station held back because a message the agent had not read came first (conversations.ts `NOT_POSTED`):
+  // it went out only if a later chat_post sent it by its id. Else what the agent wrote here never reached the chat.
+  // [whether it never went out, the entries that say so]
+  const unsentOf = (step: Step): [boolean, unknown[]] => {
+    if (step.result === null || failedOf(step)) return [false, []];
+    const held = /\bNot posted: [\s\S]*?\bHeld as (held-\d+)\b/.exec(s(timeline[step.result], "text"));
+    if (held === null) return [false, []];
+    for (let j = step.result + 1; j < timeline.length; j++) {
+      const e = timeline[j];
+      if (s(e, "kind") !== "tool_call" || flag(e, "subagent") || toolName(s(e, "tool")) !== "chat_post" || argsOf(s(e, "text"))?.send !== held[1]) continue;
+      const sent = stepAt.get(j);
+      const r = sent !== undefined ? steps[sent].result : null;
+      // Its answer not yet in: it is being sent.
+      if (r === null || (!isFailedResult(r) && !/\bNot posted: /.test(s(timeline[r], "text")))) return [false, [j, e, r === null ? null : timeline[r]]];
+    }
+    return [true, [timeline.length]];
+  };
   for (let idx = items.length - 1; idx >= 0; idx--) {
     const [cur, cFirst, cLast] = items[idx];
     if (cur.kind !== "text" || flag(timeline[cur.i], "subagent")) continue;
@@ -1028,7 +1045,7 @@ function itemsOf(held: J[], from: number, cx: Context, sig: Sig | null, day: num
         break;
       case "post": {
         const st = steps[item.step];
-        deps.push(st.call, st.result, timeline[st.call], st.result !== null ? timeline[st.result] : undefined);
+        deps.push(st.call, st.result, timeline[st.call], st.result !== null ? timeline[st.result] : undefined, ...unsentOf(st)[1]);
         break;
       }
       case "mark": {
@@ -1147,8 +1164,9 @@ function itemsOf(held: J[], from: number, cx: Context, sig: Sig | null, day: num
         const kind = text("kind");
         const said = mentions(text("text") ?? "", cx);
         const isFailed = failedOf(steps[item.step]);
-        v = { kind: "post", text: said, md: mdOf(said), place: place(text("to")), block: kind === "block" || kind === "need_help" || kind === "need_decision", failed: isFailed };
-        const ends = isFailed ? null : endsOf(kind);
+        const unsent = unsentOf(steps[item.step])[0];
+        v = { kind: "post", text: said, md: mdOf(said), place: place(text("to")), block: kind === "block" || kind === "need_help" || kind === "need_decision", failed: isFailed, unsent };
+        const ends = isFailed || unsent ? null : endsOf(kind);
         if (ends !== null && ends !== "waiting") v.ends = ends;
         break;
       }

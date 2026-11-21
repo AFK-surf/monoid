@@ -878,6 +878,7 @@ fn item_node(
       "post" => {
       let ends = text(content, "ends")
       let failed = flag(content, "failed")
+      let unsent = flag(content, "unsent")
       let words = text(content, "text")
       let md = field(content, "md")
       let pkey = ik + "/post"
@@ -886,7 +887,15 @@ fn item_node(
         v,
         fn() { pkey },
         "send",
-        fn() { if failed { "red" } else { "accent" } },
+        fn() {
+          if failed {
+            "red"
+          } else if unsent {
+            "muted"
+          } else {
+            "accent"
+          }
+        },
         failed=fn() { failed },
         rail_next=fn() { ends != "" || rail },
         extra_gap=fn() { gaps },
@@ -911,6 +920,9 @@ fn item_node(
           }
           if failed {
             @sf.badge_node(l, fn() { @sf.t("web-main.history.sendFailed") }, tone=Red) |> ignore
+          }
+          if unsent {
+            @sf.badge_node(l, fn() { @sf.t("web-main.history.unsent") }) |> ignore
           }
         },
         fn(ev, body_ref, inside) {
@@ -2408,7 +2420,7 @@ fn steps_row_shape(row : StepsRow?, station : String, key : String, ignore_opene
           let failed = flag(content, "failed")
           let block = flag(content, "block")
           let place = field(content, "place")
-          if ends == "" && !failed && !block && place is Some(Object(_)) {
+          if ends == "" && !failed && !flag(content, "unsent") && !block && place is Some(Object(_)) {
             if text(place, "url") != "" || text(place, "session") != "" { 19 } else { 20 }
           } else {
             return None

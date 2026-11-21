@@ -1007,6 +1007,7 @@ let en : Map[String, String] = {
   "web-main.history.subagent": "Subagent",
   "web-main.history.thinking": "Thinking",
   "web-main.history.tool.web": "Web",
+  "web-main.history.unsent": "Not sent: a new message came first",
   "web-main.jobs.chip": "Running {n}",
   "web-main.jobs.inPanel": "Open in panel",
   "web-main.jobs.jobs": "Jobs",

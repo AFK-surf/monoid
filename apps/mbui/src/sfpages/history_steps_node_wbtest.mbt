@@ -720,6 +720,84 @@ test "sent messages, received messages, and long turn-state reasons share statio
 }
 
 ///|
+test "a post a new message held back and never sent says so beside where it would have gone, with no ending of the turn" {
+  steps_reset()
+  @sf.set_words(@sfbase.fill)
+  let base_src = @sffixture.fixture("history")
+  let place : Json = { "name": "整理发布清单", "surface": "ember", "session": "s-c1" }
+  let post = fn(key : String, at : Double, words : String, unsent : Bool) -> Json {
+    {
+      "key": Json::string(key),
+      "entries": [Json::number(at), Json::number(at)],
+      "body": {
+        "kind": "post",
+        "content": {
+          "text": Json::string(words),
+          "md": [["p", [Json::string(words)]]],
+          "place": place,
+          "block": false,
+          "failed": false,
+          "unsent": Json::boolean(unsent),
+        },
+      },
+    }
+  }
+  let items : Array[Json] = [
+    post("p-held", 0.0, "做完了：列表和截图都好了。", true),
+    post("p-sent", 1.0, "好，暗色也截了一张。", false),
+  ]
+  let hist : Json = { "items": Json::array(items), "live": [], "edge": "已到会话开头", "empty": false, "loaded": true, "more": false }
+  let src : @sfbase.Source = {
+    ..base_src,
+    topic_read: fn(name, params) {
+      if name == "history" {
+        { value: Some(hist), error: None, version: 1 }
+      } else {
+        (base_src.topic_read)(name, params)
+      }
+    },
+    topic_keyed: fn(name, params, fld, keys) {
+      if name == "history" {
+        None
+      } else {
+        (base_src.topic_keyed)(name, params, fld, keys)
+      }
+    },
+  }
+  for w in [320.0, 390.0] {
+    let t = @ui.Tester::new(
+      fn(c) {
+        @sf.begin(c) |> ignore
+        c.with_theme(@sf.ui_theme(), fn() { @ui.old_views_here(c) })
+      },
+      w~,
+      h=844.0,
+      platform=2,
+      tree=fn(root) {
+        @ui.set_tree_theme(@sf.ui_theme_now)
+        let tips = @sf.TipLayer::new(fn() { Some(root) })
+        history_steps_node(root, src, "ws1/st1", "s-c1", tips)
+      },
+    )
+    t.draw()
+    t.draw()
+    let unsent = @sf.t("web-main.history.unsent")
+    // Once, on the held post's head line, beside 发送到: the one sent after it says nothing of it.
+    let marks = t.words().filter(fn(x) { x.0 == unsent })
+    assert_eq(marks.length(), 1, msg="\{w}: one mark")
+    let held = t.rect_of("做完了：列表和截图都好了。").unwrap()
+    let sent = t.rect_of("好，暗色也截了一张。").unwrap()
+    assert_true(marks[0].2 < held.1, msg="\{w}: the mark heads the held post")
+    assert_true(sent.1 > held.1, msg="\{w}: the sent post below it")
+    assert_true(!t.words().any(fn(x) { x.0.contains("…") }), msg="\{w}: nothing cut short")
+    assert_eq(t.corner_faults(), [])
+    assert_eq(t.lit_all_faults(), [])
+    assert_eq(t.first_line_faults(), [])
+    steps_reset()
+  }
+}
+
+///|
 test "全屏查看's reader: what is longer than its room scrolls in it, its last line reached between its title and its foot" {
   for case in [(390.0, 2), (900.0, 0)] {
     let (w, platform) = case

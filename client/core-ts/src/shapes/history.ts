@@ -272,6 +272,7 @@ export const HISTORY_SHAPES: Record<string, Shape> = {
     ["place", opt("Place")],
     ["block", "bool"],
     ["failed", "bool"],
+    ["unsent", "bool", { doc: "Held back as a message the agent had not read came first, and never sent after: it did not reach the chat." }],
     ["ends", opt("String"), { doc: "The state it ended its turn in: `done` or `human` (waiting on a person); absent for a progress post." }],
   ], { doc: "A message the agent posted: where to, whether it ended its work blocked, whether it failed." }),
   HistoryMark: struct([
