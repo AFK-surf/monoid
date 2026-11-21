@@ -1138,17 +1138,20 @@ export class ReferenceUsageCounter {
         added += await this.#readFile(path, runtime, false, s, readBefore(path, runtime), cursor.since);
       }
     }
-    // Antigravity startup timing backfill: only locate and read `agy` sources for `agyOnlySessions` so non-agy
-    // sessions (including mixed codex+agy sessions) never trigger Codex/Claude transcript directory walks.
+    // Antigravity startup timing backfill: only locate and read already-tracked `agy` sources that still need timing
+    // for `agyOnlySessions`, so non-agy sessions never trigger Codex/Claude walks and untracked or already-upgraded
+    // idle `agy` files never enter `#readFile`.
     for (const s of agyOnlySessions) {
       for (const source of store.runtimeSessionSources(s.key, s)) {
         if (source.runtime !== "agy") continue;
         const path = transcriptPaths("agy", config.dataDir, homes, [source.id]).paths[0];
         if (path === undefined) continue;
+        const was = readBefore(path, "agy");
+        if (was === undefined || was.offset <= 0 || !needsTiming("agy", was.speed)) continue;
         const real = await canonical(path);
         if (seenFiles.has(real)) continue;
         seenFiles.add(real);
-        added += await this.#readFile(path, "agy", false, s, readBefore(path, "agy"), cursor.since);
+        added += await this.#readFile(path, "agy", false, s, was, cursor.since);
       }
     }
     added += this.#flush();

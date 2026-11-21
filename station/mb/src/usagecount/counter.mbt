@@ -960,20 +960,23 @@ pub async fn Counter::read(self : Counter, ask : Json) -> Json raise {
       added += self.read_file(path, runtime, false, s, self.read_before(known, data, homes, path, runtime), since)
     }
   }
-  // Antigravity startup timing backfill: only locate and read `agy` sources for `agy_only_sessions` so non-agy
-  // sessions (including mixed codex+agy sessions) never trigger Codex/Claude transcript directory walks.
+  // Antigravity startup timing backfill: only locate and read already-tracked `agy` sources that still need timing
+  // for `agy_only_sessions`, so non-agy sessions never trigger Codex/Claude walks and untracked or already-upgraded
+  // idle `agy` files never enter `read_file`.
   for s in agy_only_sessions {
     for source in self.sources(s) {
       if source.runtime != "agy" {
         continue
       }
       guard self.finder.transcript_path("agy", data, homes, source.id, [], true) is Some(path) else { continue }
+      let was = self.read_before(known, data, homes, path, "agy")
+      guard was is Some(w) && w.offset > 0.0 && needs_timing("agy", w.speed) else { continue }
       let real = canonical(host, path)
       if seen_files.contains(real) {
         continue
       }
       seen_files.add(real)
-      added += self.read_file(path, "agy", false, s, self.read_before(known, data, homes, path, "agy"), since)
+      added += self.read_file(path, "agy", false, s, was, since)
     }
   }
   added += self.flush()

@@ -343,3 +343,108 @@ test("agy-only startup backfill skips Codex transcript lookup for pure-codex and
     assert.equal((s.db.prepare("SELECT gen_ms FROM usage WHERE id = 'agy:r-a2c'").get() as { gen_ms: number }).gen_ms, 0, `${label}: archived v1 agy->codex not re-timed`);
   }
 });
+
+test("agy-only startup backfill skips untracked idle agy files (plain + archived) and already-upgraded v1 unarchived files", { skip: binary === null && "no MoonBit reader built" }, async () => {
+  const data = mkdtempSync(join(tmpdir(), "usage-timing-untracked-agy-"));
+  dirs.push(data);
+  const time = testClock();
+  const t0 = Date.parse("2026-11-20T08:00:00Z");
+  await time.adjust(t0);
+
+  const open = (name: string) => {
+    const s = Store.open(join(data, `${name}.db`), null, time.clock);
+    cleanup.unshift(() => s.close());
+    return s;
+  };
+  const tsStore = open("ts");
+  const mbStore = open("mb");
+  const each = (f: (s: Store) => void) => { f(tsStore); f(mbStore); };
+
+  const agyTurn = (run: string, base: number, outTok: number) => [
+    JSON.stringify({ type: "user", time: base }),
+    JSON.stringify({ type: "tool", startedAt: base + 500, time: base + 1500 }),
+    JSON.stringify({ type: "usage", run, time: base + 3000, model: "gemini-4-neon", calls: 1, usage: { inputTokens: 10, outputTokens: outTok } }),
+    JSON.stringify({ type: "end", time: base + 3100 }),
+  ].join("\n") + "\n";
+
+  // Untracked idle sessions whose turn ended BEFORE usage_counter.since (t0 + 60_000) and >= timeFrom:
+  // one archived (.jsonl.zst), one plain (.jsonl).
+  // Plus one tracked, already-upgraded v1 unarchived session whose turn is outside recent.
+  each((s) => {
+    s.insertSession({ key: "untracked-plain", connect: "ember", createdBy: "a@x", runtime: "agy", profile: "ag", workspace: join(data, "w-up"), token: "tok-up", createdAt: t0 - 2000, lastActiveAt: t0 });
+    s.setRuntimeSessionId("untracked-plain", "agy-up");
+    s.ranIn("untracked-plain", "agy-up", "ag");
+    s.startTurnFor("t-up", "untracked-plain", "input", { profile: "ag", person: "a@x", thread: null });
+    s.endTurn("t-up", "completed", null, null, null);
+
+    s.insertSession({ key: "untracked-arch", connect: "ember", createdBy: "a@x", runtime: "agy", profile: "ag", workspace: join(data, "w-ua"), token: "tok-ua", createdAt: t0 - 2000, lastActiveAt: t0 });
+    s.setRuntimeSessionId("untracked-arch", "agy-ua");
+    s.ranIn("untracked-arch", "agy-ua", "ag");
+    s.startTurnFor("t-ua", "untracked-arch", "input", { profile: "ag", person: "a@x", thread: null });
+    s.endTurn("t-ua", "completed", null, null, null);
+
+    s.insertSession({ key: "upgraded-v1", connect: "ember", createdBy: "a@x", runtime: "agy", profile: "ag", workspace: join(data, "w-v1"), token: "tok-v1", createdAt: t0 - 2000, lastActiveAt: t0 });
+    s.setRuntimeSessionId("upgraded-v1", "agy-v1");
+    s.ranIn("upgraded-v1", "agy-v1", "ag");
+    s.startTurnFor("t-v1", "upgraded-v1", "input", { profile: "ag", person: "a@x", thread: null });
+  });
+
+  const agyDir = join(data, "transcripts/agy");
+  mkdirSync(agyDir, { recursive: true });
+  const upPath = join(agyDir, "agy-up.jsonl");
+  const uaPath = join(agyDir, "agy-ua.jsonl");
+  const v1Path = join(agyDir, "agy-v1.jsonl");
+  writeFileSync(v1Path, agyTurn("r-v1-initial", t0 + 1000, 120));
+
+  const config = () => ({ dataDir: data, profiles: [{ home: join(data, "homes/ag") }] });
+  const runOnce = async (only?: ReadonlySet<string>, timeFrom?: number) => {
+    const ts = new ReferenceUsageCounter({ store: tsStore, config, clock: time.clock });
+    const mb = new UsageCounter({ store: mbStore, config, clock: time.clock, mb: binary });
+    try {
+      const tsAdded = await ts.read(only, timeFrom);
+      const mbAdded = await mb.read(only, timeFrom);
+      assert.equal(mbAdded, tsAdded, "added parity");
+      return mbAdded;
+    } finally {
+      await ts.stop();
+      await mb.stop();
+    }
+  };
+
+  // Track `upgraded-v1` normally so it has offset > 0 and speed = 'v1:'.
+  assert.equal(await runOnce(new Set(["upgraded-v1"])), 1);
+  each((s) => s.endTurn("t-v1", "completed", null, null, null));
+  const v1OffsetBefore = (mbStore.db.prepare("SELECT offset FROM usage_files WHERE path = ?").get(v1Path) as { offset: number }).offset;
+  assert.equal((mbStore.db.prepare("SELECT speed FROM usage_files WHERE path = ?").get(v1Path) as { speed: string }).speed, "v1:");
+
+  // Now create the two untracked historical agy transcripts (plain + archived .zst) and advance usage_counter.since
+  // and through past all three turns (ended_at < since, ended_at >= timeFrom). Also append a new usage turn to the
+  // already-upgraded v1 unarchived file.
+  writeFileSync(upPath, agyTurn("r-up-old", t0 + 500, 80));
+  writeFileSync(`${uaPath}.zst`, zstdCompressSync(Buffer.from(agyTurn("r-ua-old", t0 + 500, 90))));
+  appendFileSync(v1Path, agyTurn("r-v1-appended", t0 + 10_000, 150));
+
+  each((s) => {
+    s.db.prepare("UPDATE usage_counter SET since = ?, through = ? WHERE id = 1").run(t0 + 60_000, t0 + 120_000);
+  });
+
+  // Startup read with timeFrom: none of the three sessions are in `recent` or `UNTIMED_SESSIONS`.
+  // `agy_only_sessions` must skip untracked (no `was`) and already-v1 (`!needs_timing`) files before entering `read_file`.
+  assert.equal(await runOnce(undefined, t0 - TIMED_BACK_MS), 0, "timeFrom agy-only startup reads 0 calls");
+  for (const [label, s] of [["mb", mbStore], ["ts", tsStore]] as const) {
+    assert.equal((s.db.prepare("SELECT COUNT(*) AS n FROM usage_files WHERE path IN (?, ?)").get(upPath, uaPath) as { n: number }).n, 0, `${label}: untracked plain+archived agy have no usage_files rows`);
+    assert.equal((s.db.prepare("SELECT COUNT(*) AS n FROM usage WHERE id IN ('agy:r-up-old', 'agy:r-ua-old', 'agy:r-v1-appended')").get() as { n: number }).n, 0, `${label}: no untracked or v1-appended usage recorded`);
+    assert.equal((s.db.prepare("SELECT offset FROM usage_files WHERE path = ?").get(v1Path) as { offset: number }).offset, v1OffsetBefore, `${label}: upgraded v1 file offset untouched by timeFrom`);
+  }
+
+  // Normal recent read (e.g. a new turn ending after through) MUST still read the appended usage from the v1 file.
+  await time.adjust(t0 + 130_000);
+  each((s) => {
+    s.startTurnFor("t-v1-2", "upgraded-v1", "input", { profile: "ag", person: "a@x", thread: null });
+    s.endTurn("t-v1-2", "completed", null, null, null);
+  });
+  assert.equal(await runOnce(undefined, t0 - TIMED_BACK_MS), 1, "normal recent read still picks up appended v1 usage");
+  for (const [label, s] of [["mb", mbStore], ["ts", tsStore]] as const) {
+    assert.equal((s.db.prepare("SELECT gen_ms FROM usage WHERE id = 'agy:r-v1-appended'").get() as { gen_ms: number }).gen_ms, 2000, `${label}: normal recent read times appended v1 call`);
+  }
+});
