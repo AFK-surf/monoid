@@ -106,6 +106,12 @@ pub fn viewer_stage_node(n : @view.View, src : Source, vw : Viewer, width : () -
               } else {
                 Some((fn() { beside_offered(vw.file.path, vw.file.name) }, fn() { vw.move_beside(src) }))
               },
+              // (Markdown's 源码 in the reader's own bars; in a tab, the tab's tools say it)
+              source=if markdown && !vw.beside {
+                Some(fn() { vw.set_source(true) })
+              } else {
+                None
+              },
             )
             |> ignore
           }

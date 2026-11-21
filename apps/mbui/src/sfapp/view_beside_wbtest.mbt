@@ -210,6 +210,14 @@ test "大屏: each kind in a tab shows what the whole window would: Markdown's w
   for f in t.audit() {
     println("audit md: \{f}")
   }
+  // (its 源码 from the tab's 预览 / 源码: its words as they are written, the reader's tools gone; 预览 the reader again)
+  t.tap_text(@sf.t("web-main.preview.source"))
+  t.run_for(@ui.move_most_ms)
+  assert_true(shown_beside(t, "说明.md", "# 发布前要做的"), msg="Markdown's 源码")
+  assert_eq(t.all(Button, label=@sf.t("web-pages.drive.reader.contents")).length(), 0)
+  t.tap_text(@sf.t("web-main.preview.rendered"))
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.all(Button, label=@sf.t("web-pages.drive.reader.contents")).length(), 1)
   @sfbase.open_preview("ws1/st1", "s-c1", made_file("list.ts"), beside=true)
   t.run_for(@ui.move_most_ms)
   assert_true(shown_beside(t, "list.ts", "export const estimate"), msg="code")
