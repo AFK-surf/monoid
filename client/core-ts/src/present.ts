@@ -976,6 +976,25 @@ function legacyCodexQuota(p: J): J {
   };
 }
 
+function profileCheckPlan(check: J): string | undefined {
+  return get(check, "state") === "ok" ? knownPlan(get(check, "plan")) : undefined;
+}
+
+/// The subscription tier as the account named it most recently, from its check or allowance.
+export function profilePlanText(p: J, quota = legacyCodexQuota(p)): string {
+  if (get(get(p, "access"), "kind") !== "subscription") return "";
+  const check = get(p, "check");
+  const state = get(check, "state");
+  const checkPlan = profileCheckPlan(check);
+  const canShowQuotaPlan = !isObject(check) || state === "ok" || state === "unknown";
+  const quotaPlan = canShowQuotaPlan && get(quota, "state") !== "blocked" ? knownPlan(get(quota, "plan")) : undefined;
+  const checkAt = get(check, "checkedAt");
+  const quotaAt = get(quota, "checkedAt");
+  const newerQuota = typeof checkAt === "number" && typeof quotaAt === "number" && quotaAt > checkAt;
+  const plan = newerQuota ? quotaPlan || checkPlan : checkPlan || quotaPlan;
+  return plan === undefined ? "" : planName(plan, str(get(p, "runtime")));
+}
+
 /// A profile with its last check in words, its models' makers and series, what it can do, and its trouble.
 export function profile(p: J): J {
   if (!isObject(p)) return p;
@@ -1019,15 +1038,7 @@ export function profile(p: J): J {
   }
   o.uses = usesList;
   const kind = get(o.access, "kind");
-  // Only subscriptions have a plan. A check may report it, or an allowance (e.g. Grok's billing).
-  const checkPlan = get(o.check, "state") === "ok" ? knownPlan(get(o.check, "plan")) : undefined;
-  const canShowQuotaPlan = !isObject(o.check) || ["ok", "unknown"].includes(String(get(o.check, "state")));
-  const quotaPlan = canShowQuotaPlan && get(o.quota, "state") !== "blocked" ? knownPlan(get(o.quota, "plan")) : undefined;
-  const checkAt = get(o.check, "checkedAt");
-  const quotaAt = get(o.quota, "checkedAt");
-  const newerQuota = typeof checkAt === "number" && typeof quotaAt === "number" && quotaAt > checkAt;
-  const plan = kind === "subscription" ? (newerQuota ? quotaPlan || checkPlan || "" : checkPlan || quotaPlan || "") : "";
-  o.planText = planName(plan, str(o.runtime));
+  o.planText = profilePlanText(o, o.quota);
   const plain = (kind === "subscription" || kind === "env") && !usesList.includes("decision");
   o.usesText = plain ? "" : usesText(usesList);
   if (provider) {
@@ -1050,6 +1061,7 @@ export function profile(p: J): J {
   // address it signed in as where that is its name: its head says it), or that it has none yet.
   const detailOf = str(get(o.check, "detail"));
   const named = str(o.name) ?? "";
+  const checkPlan = profileCheckPlan(o.check);
   const detail = withoutPart(withoutPart((detailOf ?? "").replace(/^(可用[，,]|Works,)\s*/, ""), named), kind === "subscription" ? (checkPlan ?? "") : "");
   // A machine's token-only check may have said `max` while its own login identifies that plan as Ultra.
   o.checkLine = o.enabled === false ? "" : isObject(o.check)

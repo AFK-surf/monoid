@@ -444,6 +444,7 @@ export const PROFILE_SHAPES: Record<string, Shape> = {
   PickProfile: struct([
     ["id", "String"],
     ["name", "String", { said: true }],
+    ["planText", opt("String"), { said: true, skipNone: true, doc: "The subscription tier, where known." }],
     ["kind", opt("AccessKind")],
     ["mark", opt("String"), { doc: "As RunnableProfile's." }],
     ["runtime", opt("RuntimeKind")],
@@ -653,6 +654,7 @@ export const PROFILE_SHAPES: Record<string, Shape> = {
     ["efforts", opt(vec("String")), { doc: "The chosen model’s reasoning levels on this account." }],
     ["id", "String"],
     ["name", "String", { said: true }],
+    ["planText", opt("String"), { said: true, skipNone: true, doc: "The subscription tier, where known." }],
     ["current", "bool"],
     ["spent", opt("Spent")],
     ["kind", opt("AccessKind")],

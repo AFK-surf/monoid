@@ -1321,11 +1321,14 @@ fn ov_alert_block(
           _ => None
         }
       }
+      let plan = fn() { text(field(ev(), "profile"), "planText") }
       @sf.link_row_node(
         card,
         fn() { ov_account_name(ev()) },
         fn() { ov_open_account(core, open_profile, @signals.untracked(ev)) },
         title_cut=true,
+        title_after=fn(a) { @sf.row_tag_node(a, plan) },
+        title_after_shown=fn() { plan() != "" },
         value=fn() { ov_issue_action_label(ev()) },
         trouble=fn() { ov_issue_short(ev()) },
         lead=LeadLine(fn(l) { ov_account_mark_node(l, ev) }),
@@ -1337,11 +1340,14 @@ fn ov_alert_block(
           _ => None
         }
       }
+      let plan = fn() { text(field(ev(), "profile"), "planText") }
       @sf.link_row_node(
         card,
         fn() { ov_account_name(ev()) },
         fn() { ov_open_account(core, open_profile, @signals.untracked(ev)) },
         title_cut=true,
+        title_after=fn(a) { @sf.row_tag_node(a, plan) },
+        title_after_shown=fn() { plan() != "" },
         note=fn() {
           match now.get() {
             Some((OvWaste(_, left, dur), _)) =>

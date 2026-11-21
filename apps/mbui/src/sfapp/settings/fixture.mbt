@@ -1532,9 +1532,9 @@ fn fx_profiles() -> Array[Json] {
     ]),
   ]
   if fx_google_profiles.val {
-    // Google accounts signed in to (settings-profiles-google): a company's on Gemini Enterprise, a person's on Ultra,
+    // Google accounts signed in to (settings-profiles-google): a company's on Gemini Enterprise, a person's on Ultra 5x,
     // their plans as the station's check says them
-    for g in [("gw", "lin@company.example", "Enterprise Ultra"), ("gp", "lin@gmail.example", "Ultra")] {
+    for g in [("gw", "lin@company.example", "Enterprise Ultra"), ("gp", "lin@gmail.example", "Ultra 5x")] {
       profiles.push(
         fx_profile(g.0, g.1, "subscription", "green", "可用", "google", "Google 订阅", [
           ("runtime", str("agy")),

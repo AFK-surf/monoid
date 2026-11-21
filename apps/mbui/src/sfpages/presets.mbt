@@ -2259,11 +2259,13 @@ fn preset_capsules_node(
           ""
         }
         if pid != "" {
-          let acc_name = match items(pick_v(), "accounts").iter().find_first(fn(a) { text(Some(a), "id") == pid }) {
-            Some(a) if text(Some(a), "name") != "" => text(Some(a), "name")
-            _ => pid
+          let acc = items(pick_v(), "accounts").iter().find_first(fn(a) { text(Some(a), "id") == pid })
+          let name = text(acc, "name")
+          parts.push(if name != "" { name } else { pid })
+          let plan = text(acc, "planText")
+          if plan != "" {
+            parts.push(plan)
           }
-          parts.push(acc_name)
         }
       }
       join(parts, " · ")

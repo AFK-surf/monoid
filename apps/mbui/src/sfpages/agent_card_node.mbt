@@ -181,6 +181,7 @@ fn agent_card_head_node(
       _ => field(a(), "profile")
     }
   }
+  let plan = fn() { text(account(), "planText") }
   let quota = fn() { field(field(a(), "account"), "quota") }
   let windows = fn() { if text(quota(), "state") == "ok" { items(quota(), "windows") } else { [] } }
   @sf.panel_content_row_node(p, fn() { text(s(), "agentText") }, fn(_) { runs() }, fn(h) {
@@ -199,6 +200,14 @@ fn agent_card_head_node(
         x.box(fn(ways) {
           @sf.style_node(ways, fn() { agent_card_account_ways })
           ways.one_of(Is(true)) |> ignore
+          let identity = fn(n : @view.View, cut : Bool) {
+            n.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))) |> ignore
+            let name = @sf.words_node(n, fn() { text(account(), "name") }, fn() { if cut { agent_card_line_cut } else { agent_card_line } })
+            if cut {
+              name.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+            }
+            n.show(fn() { plan() != "" }, fn(t) { @sf.row_tag_node(t, plan) })
+          }
           let chips = fn(c : @view.View) {
             c.show(fn() { windows().length() > 0 }, fn(q) {
               q.pick(fn() { windows().length() > 1 }, fn(m, marked) {
@@ -210,7 +219,7 @@ fn agent_card_head_node(
             @sf.style_node(o, fn() { agent_card_account }, in_row=true)
             o.box(fn(n) {
               @sf.style_node(n, fn() { agent_card_name_room }, in_row=true)
-              @sf.words_node(n, fn() { text(account(), "name") }, fn() { agent_card_line }) |> ignore
+              identity(n, false)
             })
             |> ignore
             chips(o)
@@ -220,9 +229,7 @@ fn agent_card_head_node(
             @sf.style_node(o, fn() { agent_card_account_under }, in_row=true)
             o.box(fn(n) {
               @sf.style_node(n, fn() { agent_card_line_box })
-              // (as wide as its words, cut only where the card is narrower: Ctx::text's w=Cut)
-              n.lines_up(Is(Some(Start))) |> ignore
-              @sf.words_node(n, fn() { text(account(), "name") }, fn() { agent_card_line_cut }) |> ignore
+              identity(n, true)
             })
             |> ignore
             chips(o)

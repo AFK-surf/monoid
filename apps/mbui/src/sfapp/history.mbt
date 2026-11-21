@@ -272,9 +272,10 @@ fn run_row_node(v : @view.View, a : () -> Json?, press : (@sf.Anchor) -> Unit) -
     " · " + effort + " · " + account
   }
   let quota = fn() { field(field(a(), "account"), "quota") }
+  let plan = fn() { text(field(a(), "account"), "planText") }
   v.box(fn(o) {
     o.padding(Is((0.0, 6.0, 0.0, 0.0))) |> ignore
-    @sf.action_box_node(o, fn() { model() + rest() }, fn(b) {
+    @sf.action_box_node(o, fn() { @settings.join([model() + rest(), plan()], " · ") }, fn(b) {
       let (x, y, w, h) = b.placed_window_now()
       press(At(x, y, w, h))
     }, fn(b) {
@@ -294,10 +295,7 @@ fn run_row_node(v : @view.View, a : () -> Json?, press : (@sf.Anchor) -> Unit) -
         w.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
         // (the model's name whole, what follows it giving way first: cut short itself only beside the least of that)
         @sf.name_line_node(w, model, fn() { run_model }, rest, fn() { run_rest }) |> ignore
-        w.show(at_once=true, fn() { @sf.has_quota(quota()) }, fn(q) {
-          q.row(Is(true)).padding(Is((0.0, 4.0, 0.0, 0.0))) |> ignore
-          @sf.quota_chips_node(q, quota)
-        })
+        allowance_node(w, quota, plan~)
       })
       |> ignore
       @sf.icon_node(b, "chevron-down", 14.0, By(fn() { @sf.theme().p.muted })) |> ignore

@@ -255,6 +255,8 @@ function profileLines(profiles: J[], runtime: string, m: string | null, current:
       quotaLine: quotaLine(quota),
     };
     if (typeof get(p, "providerMark") === "string") line.mark = p.providerMark;
+    const plan = present.profilePlanText(p);
+    if (plan !== "") line.planText = plan;
     return line;
   });
 }
@@ -495,6 +497,7 @@ export function borrowable(stations: J, here: string, have: J[], runtime: string
             stationName: s.name,
             profile: str(get(p, "id")) ?? "",
             profileName: str(get(p, "name")) ?? "",
+            planText: present.profilePlanText(p),
             subscription: get(get(p, "access"), "kind") === "subscription",
             // Every station may use it already (its copy not here yet): nothing to ask.
             pending: shared && allow === null,

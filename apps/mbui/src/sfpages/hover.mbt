@@ -218,6 +218,7 @@ pub fn agent_card(c : @ui.Ctx, src : Source, r : ChatRef, a : Json, across? : Bo
     _ => field(av, "profile")
   }
   let quota = field(field(av, "account"), "quota")
+  let plan = text(account, "planText")
   let windows = if text(quota, "state") == "ok" { items(quota, "windows") } else { [] }
   c.box(style=if across { agent_card_across } else { agent_card_box }, fn() {
     // what it runs as, one thing: its mark (28), its label (its model) on its line and under it the account it runs
@@ -247,19 +248,29 @@ pub fn agent_card(c : @ui.Ctx, src : Source, r : ChatRef, a : Json, across? : Bo
               @sf.quota_chips(c, quota, small=true, marked=windows.length() > 1, gap=agent_card_chips_gap.px(), key~)
             }
           }
+          let identity = fn(look : @ui.TextStyle) {
+            let name = text(account, "name")
+            if plan == "" {
+              c.text(name, style=look) |> ignore
+            } else {
+              c.box(style=@ui.style(row=true, gap=S1_5, w=Full), fn() {
+                c.text(name, style=look) |> ignore
+                c.text(plan, style=agent_card_line) |> ignore
+              })
+              |> ignore
+            }
+          }
           // beside its account's name where the line has the room for both whole; else under it, at the line's end as
           // before (a third chip, its model's own week, left an account named by its email 98 of 246: Ctx::box one_of)
           c.box(style=agent_card_account_ways, one_of=true, fn() {
             c.box(style=agent_card_account, fn() {
-              c.box(style=agent_card_name_room, fn() {
-                c.text(text(account, "name"), style=agent_card_line) |> ignore
-              })
+              c.box(style=agent_card_name_room, fn() { identity(agent_card_line) })
               |> ignore
               chips("agent-card/quota")
             })
             |> ignore
             c.box(style=agent_card_account_under, fn() {
-              c.box(style=agent_card_line_box, fn() { c.text(text(account, "name"), style=agent_card_line_cut) |> ignore })
+              c.box(style=agent_card_line_box, fn() { identity(agent_card_line_cut) })
               |> ignore
               chips("agent-card/quota/under")
             })

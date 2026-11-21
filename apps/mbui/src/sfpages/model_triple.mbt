@@ -3150,6 +3150,9 @@ fn triple_accounts_node(n : @view.View, src : Source, station : String, of : Str
       compact=true,
       disabled=single_only,
       lead=fn(l) { @sf.check_mark_node(l, checked, dimmed=single_only) },
+      tag=fn(t) {
+        t.show(fn() { text(av(), "planText") != "" }, fn(a) { @sf.row_tag_node(a, fn() { text(av(), "planText") }) })
+      },
       note=fn() { text(field(av(), "quotaLine"), "text") },
       note_ink=fn() {
         match text(field(av(), "quotaLine"), "level") {

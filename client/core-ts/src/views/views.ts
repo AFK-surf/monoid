@@ -4730,6 +4730,7 @@ export class Views implements Owner {
     if (account === null && isObject(profile)) {
       account = { id: profile.id ?? null, name: profile.name ?? null, current: true, kind: get(profile.access, "kind") ?? null, runtime: profile.runtime ?? null, quota: quotaFor(profile.quota ?? null, str(get(session, "model")) ?? str(profile.model) ?? null) };
       if (typeof profile.providerMark === "string") account.mark = profile.providerMark;
+      if (typeof profile.planText === "string" && profile.planText !== "") account.planText = profile.planText;
     }
     // Its latest turn as its summary has it (its detail may list only the latest turns, read before this one began);
     // else the last its detail lists.

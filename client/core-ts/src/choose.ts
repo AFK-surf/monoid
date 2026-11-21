@@ -343,6 +343,12 @@ function picked(r: Resolved): J {
   };
 }
 
+function withAccountPlan(label: string, profile: J): string {
+  const plan = text(get(profile, "planText"));
+  if (plan === null) return label;
+  return label === "" ? plan : `${label} · ${plan}`;
+}
+
 /// The account a control on `value` names (PickAccount; none where it names none) and what it is made of: the one it is
 /// kept to (`kept`, its id, or `keptProfiles` when kept to several), its window running low (`low`). It is the one kept
 /// to, as `option` (the model it runs, its accounts) has it, else the one it is on now (`current`, a chat's); `quiet`,
@@ -361,7 +367,7 @@ function named(value: J, option: J, current: J, quiet: boolean): { kept: string 
       shown !== null && typeof shown.name === "string" && shown.name !== ""
         ? t("core-logic.choose.account.count_on", { n: keptProfiles.length, name: shown.name })
         : t("core-logic.choose.account.count", { n: keptProfiles.length });
-    return { kept: null, keptProfiles, low, account: { text: txt, auto: false, level: low, profile: quiet ? null : shown } };
+    return { kept: null, keptProfiles, low, account: { text: withAccountPlan(txt, shown), auto: false, level: low, profile: quiet ? null : shown } };
   }
   let shown: J = null;
   if (kept !== null) shown = offered.find((a) => a.id === kept) ?? null;
@@ -378,7 +384,7 @@ function named(value: J, option: J, current: J, quiet: boolean): { kept: string 
       : shown !== null
         ? t("core-logic.choose.account.auto_on", { name: typeof shown.name === "string" ? shown.name : "" })
         : t("core-logic.choose.account.auto");
-  return { kept, keptProfiles: null, low, account: { text: txt, auto: kept === null, level: low, profile: quiet ? null : shown } };
+  return { kept, keptProfiles: null, low, account: { text: withAccountPlan(txt, shown), auto: kept === null, level: low, profile: quiet ? null : shown } };
 }
 
 /// Whether what a new chat or a chat runs on now (`value`) runs Fast: as it is set, else as its account does (the one
@@ -1425,7 +1431,7 @@ export class Choose implements Owner {
   #borrowView(station: string, option: J): J {
     const b = option.borrow;
     const name = typeof option.name === "string" ? option.name : String(option.model);
-    const vars = { station: b.stationName, account: b.profileName, model: name };
+    const vars = { station: b.stationName, account: withAccountPlan(b.profileName, b), model: name };
     const allowed = this.#manages(station);
     return {
       note: t("core-logic.choose.borrow.note", vars),
@@ -1544,14 +1550,14 @@ export class Choose implements Owner {
     const who = nonePicked
       ? t("core-logic.choose.account.none")
       : drafted !== undefined && typeof drafted.name === "string"
-        ? drafted.name.split("@")[0]
+        ? withAccountPlan(drafted.name.split("@")[0]!, drafted)
         : profiles !== null
           ? t("core-logic.choose.account.count", { n: profiles.length })
           : t("core-logic.choose.account.all");
     const subsetLevels = profiles !== null ? accounts.filter((a) => profiles.includes(a.id)).map((a) => get(quotaLine(get(a, "quota")), "level") ?? null) : [];
     const subsetLow = subsetLevels.length > 0 && subsetLevels.every((l) => l !== null) ? subsetLevels[0] : null;
     const whoLevel = nonePicked || dropped ? "amber" : profile === null && profiles === null && kept === null && keptProfiles === null ? low : profiles !== null ? subsetLow : null;
-    const currentName = typeof get(current, "name") === "string" ? current.name : "";
+    const currentName = withAccountPlan(text(get(current, "name")) ?? "", current);
     const autoNote = nonePicked
       ? t("core-logic.choose.account.pick_one")
       : profiles !== null
@@ -1568,7 +1574,11 @@ export class Choose implements Owner {
       const found = optionOf(options, x);
       return found !== undefined && typeof found.name === "string" ? found.name : x;
     };
-    const accountText = (id: string | null) => (id === null ? t("core-logic.choose.account.auto") : (account(id)?.name ?? id));
+    const accountText = (id: string | null) => {
+      if (id === null) return t("core-logic.choose.account.auto");
+      const profile = account(id);
+      return withAccountPlan(profile?.name ?? id, profile);
+    };
     const onCurrent = !nonePicked && current !== null && accounts.some((a) => equal(a.id, current.id)) && (profiles === null || profiles.includes(current.id));
     const movesOff = !nonePicked && profile === null && kept === null && m !== null && current !== null && !onCurrent;
     const modelName = nameOf(m);

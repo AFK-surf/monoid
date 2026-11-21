@@ -3,12 +3,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Effect } from "effect";
 import { Choose, frequentCombos, presetMeta, recordCombo, recordPresetUsage, resolve } from "../src/choose.ts";
+import { conform } from "../src/conform.ts";
 import { Data } from "../src/data.ts";
 import { holdLanguage } from "../src/i18n.ts";
 import { Runner } from "../src/runtime.ts";
 import { Store } from "../src/store.ts";
 import { FakeHost } from "../src/testing.ts";
-import { choices, machineMeta, models, quotaLine } from "../src/views/models.ts";
+import { choices, machineMeta, models, quotaLine, runnableOn } from "../src/views/models.ts";
 
 holdLanguage();
 // deno-lint-ignore no-explicit-any
@@ -493,6 +494,38 @@ function makeAllowlistRig() {
   };
   return { choose, data, store, setStations, setOverview, view };
 }
+
+test("a Gemini subscription tier reaches the account picker and the current account", () => {
+  const { choose, setStations, setOverview, view } = makeAllowlistRig();
+  const station = "ws1/st1";
+  const model = "gemini-3.1-pro-preview";
+  const account = {
+    id: "google", name: "google@example.test", runtime: "agy", runtimes: ["agy"], models: [model],
+    access: { kind: "subscription" }, check: { state: "ok", plan: "Pro", checkedAt: 10 },
+    quota: { state: "ok", plan: "Ultra 5x", checkedAt: 20, windows: [] },
+  };
+  const profiles = [account, { ...account, id: "unknown", name: "old@example.test", check: { state: "ok" }, quota: null }];
+  setStations([{ id: "st1", station, name: "Willow", online: true }]);
+  setOverview("st1", profiles);
+  choose.pickNew("ws1", { station: "st1", model, runtime: "agy", profile: "google" });
+  const closed = conform("NewChatPick", view().pick);
+  assert.ok("ok" in closed, JSON.stringify(closed));
+  assert.equal((closed.ok as J).account.text, "google@example.test · Ultra 5x");
+
+  const panel = choose.compute({ topic: "pick", station, of: "new" });
+  assert.ok(panel !== undefined && "ok" in panel);
+  const shaped = conform("PickView", panel.ok);
+  assert.ok("ok" in shaped, JSON.stringify(shaped));
+  const offered = (shaped.ok as J).accounts;
+  assert.equal((shaped.ok as J).who, "google · Ultra 5x");
+  assert.equal(offered.find((p: J) => p.id === "google")?.planText, "Ultra 5x");
+  assert.equal(offered.find((p: J) => p.id === "unknown")?.planText, undefined);
+
+  const current = runnableOn({ profiles }, { profile: "google", model, runtime: "agy" }, 20).find((p) => p.current);
+  const running = conform("RunnableProfile", current);
+  assert.ok("ok" in running, JSON.stringify(running));
+  assert.equal((running.ok as J).planText, "Ultra 5x");
+});
 
 test("auto station allowlist: only acceptAutoChats stations enter the load-balancing pool", () => {
   const { choose, setStations, view } = makeAllowlistRig();

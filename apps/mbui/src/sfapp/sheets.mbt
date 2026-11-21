@@ -606,11 +606,12 @@ fn info_agent_row_node(k : @view.View, src : Source, a : () -> Json?, press : ()
 }
 
 ///|
-/// An account's allowance (allowance_line's, as a node) in `v`, `quota` as it is now: its chips on a line of its own
-/// under what names it, 4 under it; nothing where it says none.
-fn allowance_node(v : @view.View, quota : () -> Json?) -> Unit {
-  v.show(fn() { @sf.has_quota(quota()) }, fn(b) {
+/// An account's tier and allowance chips under its name, where known.
+fn allowance_node(v : @view.View, quota : () -> Json?, plan? : () -> String = fn() { "" }) -> Unit {
+  v.show(fn() { plan() != "" || @sf.has_quota(quota()) }, fn(b) {
     @sf.style_node(b, fn() { allowance_box })
+    b.wraps(Is(Some(4.0))).gap(Is(6.0)).lines_up(Is(Some(Middle))) |> ignore
+    b.show(fn() { plan() != "" }, fn(t) { @sf.row_tag_node(t, plan) })
     @sf.quota_chips_node(b, quota)
   })
 }
@@ -767,6 +768,7 @@ fn agent_node(v : @view.View, src : Source, r : ChatRef, key : String, close : (
         _ => field(a(), "profile")
       }
     }
+    let plan = fn() { text(account(), "planText") }
     @sf.quiet_card_node(
       col,
       fn(list) {
@@ -868,8 +870,8 @@ fn agent_node(v : @view.View, src : Source, r : ChatRef, key : String, close : (
             }
           },
           label_w,
-          under=fn(w) { allowance_node(w, fn() { field(account(), "quota") }) },
-          said=fn() { @sf.quota_chips_said(field(account(), "quota")) },
+          under=fn(w) { allowance_node(w, fn() { field(account(), "quota") }, plan~) },
+          said=fn() { @settings.join([plan(), @sf.quota_chips_said(field(account(), "quota"))], " ") },
           fn() {
             close()
             @sfpages.open_triple_panel(src, r.station, "session:" + key, Unanchored, saved=@sf.t("web-pages.chat.pickSaved"), accounts=true)

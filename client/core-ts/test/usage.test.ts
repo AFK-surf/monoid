@@ -190,7 +190,7 @@ test("one_account_on_several_stations_is_one_row_and_its_allowance_counts_it_onc
   const rows = (profile: string, cost: number) => [row("2026-10-02", "a@x", 7, profile, "claude-opus-5-5", 1, cost)];
   const quota = { state: "ok", windows: [{ label: "5h", usedPercent: 40, mark: "5H", left: 60, level: "ok", checkedAt: 0 }], checkedAt: 0 };
   // (as the accounts' page has them: one account a share hosted on a, borrowed by b and c, its profile's id each its own)
-  const accounts = [{ key: "sh-team@x", title: "team@x", profile: { quota }, members: [
+  const accounts = [{ key: "sh-team@x", title: "team@x", profile: { quota, planText: "Ultra 5x" }, members: [
     { station: "ws/a", profileId: "sh-1" }, { station: "ws/b", profileId: "sh-1b" }, { station: "ws/c", profileId: "sh-1c" },
   ] }];
   const sources: Source[] = [
@@ -202,15 +202,16 @@ test("one_account_on_several_stations_is_one_row_and_its_allowance_counts_it_onc
   const v = usageView(sources, 7, NOW, 480, {}, [], {}, accounts);
   const profiles = v.lists[2].items;
   assert.deepEqual(profiles.map((p: J) => [p.key, p.title, p.sub, p.costText]), [
-    ["sh-team@x", "team@x", "alpha、beta、gamma", "$6.00"],
+    ["sh-team@x", "team@x", "Ultra 5x · alpha、beta、gamma", "$6.00"],
     ["ws/c/gone", "gone（已删除）", "gamma", "$0.50"],
   ]);
   assert.deepEqual(v.accounts.map((a: J) => [a.key, a.costText]), [["sh-team@x", "$6.00"]]);
   // seen alone, by its key: its calls on every station
   const alone = usageView(sources, 7, NOW, 480, {}, [], { only: { list: "profiles", key: "sh-team@x" } }, accounts);
-  assert.deepEqual([alone.only.title, alone.tiles[0].value], ["team@x", "$6.00"]);
+  assert.deepEqual([alone.only.title, alone.tiles[0].value], ["team@x · Ultra 5x", "$6.00"]);
   // split by the accounts: each part's cost beside its name
   const split = usageView(sources, 7, NOW, 480, {}, [], { split: "profiles" }, accounts);
+  assert.equal(split.series[0].name, "team@x · Ultra 5x");
   assert.deepEqual(split.series.map((x: J) => [x.key, x.costText]), [["sh-team@x", "$6.00"], ["ws/c/gone", "$0.50"]]);
 });
 

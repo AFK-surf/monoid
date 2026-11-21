@@ -13,6 +13,8 @@ fn check_model_accounts(t : @ui.Tester, name : String, max_row_h : Double) -> Un
 
   // Middle row with 3-window quota line stays on two single lines (never wraps to 3-4 lines).
   let backup_init = t.get(Button, label="Claude 备用订阅").rect
+  let tier = t.find("Max 5x").unwrap()
+  assert_true(tier.1 >= backup_init.1 && tier.1 < backup_init.1 + backup_init.3, msg="\{name}: tier on the account row")
   assert_true(backup_init.3 <= max_row_h, msg="\{name}: middle row height \{backup_init.3} <= \{max_row_h}")
 
   // 1) 全选 -> 全不选 -> 点一个: tapping 全选 while all are checked clears all checkboxes into 全不选,

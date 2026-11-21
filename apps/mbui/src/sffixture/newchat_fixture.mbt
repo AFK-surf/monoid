@@ -1078,6 +1078,7 @@ pub fn fix_session_pick() -> Json {
         {
           "id": "p3",
           "name": "Claude 备用订阅",
+          "planText": "Max 5x",
           "runtime": "claude",
           "quotaLine": { "text": "5 小时 100% · 每周 84% · 每周 · Fable 100%", "level": "amber" },
         },
