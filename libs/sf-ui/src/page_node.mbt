@@ -2050,23 +2050,45 @@ pub fn switch_row_node(
   }
   parent.box(made_for=loc, fn(r) {
     r
-    .row(Is(true))
-    .gap(Is(12.0))
     // (at its end as far in as holds a switch on its title's line out of the row's and the card's corners, every
     // switch of a card at one edge)
     .padding(Is((text_in, text_in, dmax(text_in, group_corner - list_pad), text_in)))
     .radius(Is(@ui.concentric(group_corner, list_pad)))
     .min_height(By(fn() { Some(theme().items.least) }))
-    .lines_up(By(fn() { Some(if noted() { Start } else { Middle }) }))
+    .lies_along(Is(Middle))
     |> ignore
-    r.box(fn(words) {
-      // (as wide as the row leaves it, narrower where what it holds is wider: its words wrapped there, as a row's are)
-      words.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-      led_title_node(words, title, fn() { pg_switch_title }, lead)
-      words.show(noted, fn(n) { styled_words(n, note, fn() { switch_row_note }) |> ignore })
+    r.box(fn(head) {
+      head
+      .row(Is(true))
+      .wraps(Is(Some(6.0)))
+      .gap(Is(12.0))
+      .lies_along(Is(End))
+      .lines_up(Is(Some(Middle)))
+      |> ignore
+      led_title_node(head, title, fn() { pg_switch_title }, lead).grow(Is(1.0)) |> ignore
+      head.box(fn(end) {
+        end
+        .row(Is(true))
+        .gap(Is(8.0))
+        .lines_up(Is(Some(Middle)))
+        .shrink(Is(0.0))
+        .height(By(fn() {
+          guard noted() else { return None }
+          end.words_redone() |> ignore
+          let line = node_sp(end, @ui.tree_theme().text_size(Body).1)
+          let track = if native_input() is Finger { 28.0 } else { switch_size(false).1 }
+          Some(dmax(line, track))
+        }))
+        |> ignore
+        control(end)
+      })
+      |> ignore
     })
     |> ignore
-    line_end_while_node(r, noted, control)
+    r.show(noted, fn(n) {
+      n.margin(Is((0.0, 2.0, 0.0, 0.0))) |> ignore
+      styled_words(n, note, fn() { switch_row_note }) |> ignore
+    })
   })
   |> ignore
 }
@@ -2080,7 +2102,7 @@ fn led_title_node(
   look : () -> @ui.TextStyle,
   lead : ((@view.View) -> Unit)?,
   loc~ : SourceLoc,
-) -> Unit {
+) -> @view.View {
   match lead {
     Some(make) =>
       parent.box(made_for=loc, fn(l) {
@@ -2088,8 +2110,7 @@ fn led_title_node(
         make(l)
         words_node(l, title, look) |> ignore
       })
-      |> ignore
-    None => words_node(parent, title, look) |> ignore
+    None => words_node(parent, title, look)
   }
 }
 

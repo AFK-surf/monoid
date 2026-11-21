@@ -1492,7 +1492,22 @@ fn image_head(h : @view.View, src : Source, vw : Viewer, stage : () -> (Double, 
       // (its tools; marking, marking's actions in their place; hidden while upgrading with progress shown on narrow head bar)
       row.show(fn() { !marked() && !(vw.upgrading() && vw.got.get() is Some(_)) }, fn(r) {
         r.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(@sf.keys_apart())) |> ignore
-        image_tools(r, src, vw, ink, Is(@sf.tool_side / 2.0), tips)
+        image_tools(
+          r,
+          src,
+          vw,
+          ink,
+          Is(@sf.tool_side / 2.0),
+          tips,
+          seg_most=fn() {
+            let w = stage().0
+            if w <= 640.0 {
+              Some(dmax(96.0, w - 216.0))
+            } else {
+              None
+            }
+          },
+        )
       })
       row.show(marked, fn(r) { marks_actions_node_of(r, vw, ink, tips) })
     },
@@ -1596,6 +1611,7 @@ fn image_tools(
   ink : () -> @sf.ViewerInk,
   corner : @view.Live[Double],
   tips : @sf.TipLayer,
+  seg_most? : () -> Double? = fn() { None },
 ) -> Unit {
   let whole = fn() { vw.bytes.get() is Some(_) }
   let dl = fn() { vw.download(src) }
@@ -1603,7 +1619,7 @@ fn image_tools(
   // segmented choice, its nodes (@sf.seg_node), what it chooses told (Viewer::set_source)
   row.show(fn() { whole() && vf_has_source(vw) }, fn(r) {
     // (giving way as it does where the bar is short of room: its track fitted to what there is)
-    r.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+    r.shrink(Is(1.0)).min_width(Is(Some(0.0))).max_width(By(seg_most)) |> ignore
     @sf.seg_node(
       r,
       fn() { [@sf.t("web-main.preview.rendered"), @sf.t("web-main.preview.source")] },

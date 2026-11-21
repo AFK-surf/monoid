@@ -865,6 +865,7 @@ fn drop_row_node(r : @view.View, s : ScreenSess, d : ScreenDropItem) -> Unit {
               // what is done with it there goes through the view: while driving it
               u.show(at_once=true, fn() { s.driving_now() }, fn(b) {
                 @sf.style_node(b, fn() { drop_buttons }, in_row=true)
+                b.wraps(Is(Some(8.0))) |> ignore
                 b.show(at_once=true, fn() { s.pastes() }, fn(k) {
                   soft_button_node(k, fn() { @sf.t("android-misc.screen.pastePath") }, fn() {
                     s.paste(s.src, d.path(), screen_act(@sf.t("android-misc.screen.pasteWhat")))

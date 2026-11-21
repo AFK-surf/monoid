@@ -708,18 +708,12 @@ let vt_requests : @ui.Style = @ui.css("w=Full gap=S2_5 pb=S2_5")
 let vt_listed_side : Double = 6.0
 
 ///|
-/// The recovery words (Words): three to a row, 10 apart; each its number (the code face 12, subtle, 24 wide at its
-/// end) 8 before it (the code face 15).
-// kept across runs: a value (no field of it changes)
-let vt_words : @ui.Style = @ui.css("w=Full pt=S1 gap=S2_5")
+/// The recovery words (Words): three to a row when room fits (two when large words outgrow three), 10 apart between
+/// rows, 4 over; each its number (the code face 12, subtle, 24 wide at its end) 8 before it (the code face 15).
+let vt_words_top : Double = 4.0
 
 ///|
-// kept across runs: a value (no field of it changes)
-let vt_words_row : @ui.Style = @ui.css("row w=Full")
-
-///|
-// kept across runs: a value (no field of it changes)
-let vt_word : @ui.Style = @ui.style(row=true, w=@sf.grow, gap=S2, align=AEnd)
+let vt_words_row_gap : Double = 10.0
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -956,29 +950,24 @@ fn vault_words_node(b : @view.View, ws : () -> String) -> Unit {
       words=fn() { @sf.t("android-settings.vault.wordsWhy") },
       note=fn() { @sf.t("android-settings.vault.wordsOnce") },
     )
-    k.box(fn(all) {
-      @sf.style_node(all, fn() { vt_words })
-      all.each(fn() { Array::makei((words().length() + 2) / 3, fn(r) { r }) }, fn(r) { r }, fn(line, r) {
-        line.box(fn(l) {
-          @sf.style_node(l, fn() { vt_words_row })
-          for i in 0..<3 {
-            let at = fn() { r.get() * 3 + i }
-            l.box(fn(w) {
-              @sf.style_node(w, fn() { vt_word }, in_row=true)
-              w.show(fn() { at() < words().length() }, fn(s) {
-                s.row(Is(true)).gap(Is(vt_word_gap)).lines_up(Is(Some(End))) |> ignore
-                s.box(fn(n) {
-                  @sf.style_node(n, fn() { vt_word_number })
-                  @sf.mono_line_node(n, fn() { (at() + 1).to_string() }, Meta, fn() { @sf.theme().p.subtle })
-                })
-                |> ignore
-                @sf.mono_line_node(s, fn() { words().get(at()).unwrap_or("") }, Body, fn() { @sf.theme().p.text })
-              })
-            })
-            |> ignore
-          }
+    k.by_room(fn(all, given) {
+      all.row(Is(true)).wraps(Is(Some(vt_words_row_gap))).padding(Is((0.0, vt_words_top, 0.0, 0.0))) |> ignore
+      let cell_w = fn() {
+        all.words_redone() |> ignore
+        let room = given.width()
+        let body_sz = @sf.node_sp(all, @ui.tree_theme().text_size(Body).0)
+        let need = 24.0 + vt_word_gap + body_sz * 4.2
+        let cols = if room >= 3.0 * need { 3 } else { 2 }
+        (room / cols.to_double()).floor()
+      }
+      all.each(fn() { Array::makei(words().length(), fn(i) { i }) }, fn(i) { i }, fn(w, i) {
+        w.row(Is(true)).gap(Is(vt_word_gap)).lines_up(Is(Some(End))).width(By(fn() { Some(cell_w()) })).shrink(Is(0.0)) |> ignore
+        w.box(fn(n) {
+          @sf.style_node(n, fn() { vt_word_number })
+          @sf.mono_line_node(n, fn() { (i.get() + 1).to_string() }, Meta, fn() { @sf.theme().p.subtle })
         })
         |> ignore
+        @sf.mono_line_node(w, fn() { words().get(i.get()).unwrap_or("") }, Body, fn() { @sf.theme().p.text })
       })
     })
     |> ignore

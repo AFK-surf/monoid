@@ -2276,10 +2276,10 @@ fn software_row_node(
     })
     |> ignore
     @sf.row_lines_node(r, spaced=true, fn(h) {
-      h.min_height(Is(Some(sw_mark_d))) |> ignore
+      h.min_height(Is(Some(sw_mark_d))).wraps(Is(Some(6.0))).lies_along(Is(Between)) |> ignore
       h.box(fn(n) {
-        @sf.style_node(n, fn() { sw_name_line.then(sw_name_grow) }, in_row=true)
-        n.min_width(Is(Some(0.0))) |> ignore
+        @sf.style_node(n, fn() { sw_name_line }, in_row=true)
+        n.shrink(Is(0.0)) |> ignore
         @sf.words_node(n, fn() { text(v(), "name") }, fn() { sw_name }) |> ignore
         n.show(fn() { text(v(), "channel") == "beta" && !switches() }, fn(t) {
           t.box(fn(tag) {

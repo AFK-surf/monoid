@@ -886,7 +886,7 @@ fn wide_control_row_node(
     |> ignore
     r.box(fn(words) {
       words.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).gap(Is(desk_list_gap)) |> ignore
-      led_title_node(words, title, title_look, lead)
+      led_title_node(words, title, title_look, lead) |> ignore
       words.show(fn() { note() != "" }, fn(n) { styled_words(n, note, note_look) |> ignore })
     })
     |> ignore

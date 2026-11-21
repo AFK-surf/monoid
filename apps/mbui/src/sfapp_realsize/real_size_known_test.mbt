@@ -438,7 +438,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone settings-vault-waits": (586, 396, 62),
   "phone settings-vault-syncing": (586, 396, 62),
   "phone settings-vault-confirm": (586, 396, 62),
-  "phone settings-vault-words": (537, 401, 82),
+  "phone settings-vault-words": (477, 357, 82),
   // Raised 2026-11-17: what it opens with up a sheet of the window's tree on 小屏 (as phone newchat-preset's).
   "phone settings-vault-add": (696, 481, 63),
   "phone settings-vault-editor": (670, 463, 69),

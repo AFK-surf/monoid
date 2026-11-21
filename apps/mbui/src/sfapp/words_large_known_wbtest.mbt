@@ -14,35 +14,12 @@ let words_large_known : Map[String, Int] = {
   for k in [
     ("phone-zh settings-new-connect-platform", 1),
     ("phone-zh settings-new-connect-platform-group", 1),
-    ("phone-zh settings-vault-words", 14),  // was 10, +4 (a) vault.mbt:859 真问题，待修
     ("phone-zh share-card-senren-adv", 1),
     ("phone-zh share-card-senren-ciallo", 34),
     ("phone-zh share-card-senren-parfait", 87),
     ("phone-zh share-card-senren-title", 160),
     ("phone-zh share-card-senren-affection", 38),
     ("phone-zh share-card-senren-party", 0),
-    ("phone-en chat-agent", 2),  // was 0, +2 (a) hover.mbt:1113 真问题，待修
-    ("phone-en chat-preview-csv", 1),
-    ("phone-en chat-preview-html", 1),
-    // (its switch's title 「Send as file in this chat」 on two lines beside the switch, 40,642 224×50: the old panel's, told
-    // of its nodes again as the tree's squeeze came to say what shares their row; it was 1 before its panel became nodes)
-    ("phone-en chat-station-sheet", 1),
-    ("phone-en drive-upload", 1),
-    ("phone-en history-details", 1),  // was 0, +1 (a) hover.mbt:1113 真问题，待修
-    ("phone-en screen-files-done", 2),
-    ("phone-en settings-station-env", 2),  // was 0, +2 (a)+(g) station_node.mbt:2093 真问题，待修
-    ("phone-en settings-station-lower", 2),  // was 0, +2 (a)+(g) station_node.mbt:2093 真问题，待修
-    ("phone-en settings-station-versions", 2),  // was 0, +2 (a)+(g) station_node.mbt:2093 真问题，待修
-    ("phone-en settings-station-network", 2),  // was 0, +2 (a)+(g) station_node.mbt:2093 真问题，待修
-    ("phone-en settings-station-copies", 2),  // was 0, +2 (a)+(g) station_node.mbt:2093 真问题，待修
-    ("phone-en settings-station-copies-alone", 2),  // was 0, +2 (a)+(g) station_node.mbt:2093 真问题，待修
-    ("phone-en settings-station-restore", 2),  // was 0, +2 (a)+(g) station_node.mbt:2093 真问题，待修
-    ("phone-en settings-station-restore-offer", 2),  // was 0, +2 (a)+(g) station_node.mbt:2093 真问题，待修
-    ("phone-en settings-station-restore-confirm", 2),  // was 0, +2 (a)+(g) station_node.mbt:2093 真问题，待修
-    ("phone-en settings-station-restore-confirm-long", 2),  // was 0, +2 (a)+(g) station_node.mbt:2093 真问题，待修
-    ("phone-en settings-station-restored", 2),  // was 0, +2 (a)+(g) station_node.mbt:2093 真问题，待修
-    ("phone-en settings-vault-words", 14),  // was 10, +4 (a) vault.mbt:859 真问题，待修
-    ("phone-en settings-about", 1),  // was 0, +1 (g) page_node.mbt:1267 真问题，待修
     ("phone-en share-card-senren-adv", 1),
     ("phone-en share-card-senren-ciallo", 18),
     ("phone-en share-card-senren-parfait", 87),

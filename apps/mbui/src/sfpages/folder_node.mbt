@@ -770,7 +770,17 @@ fn upload_state_node(
           } else {
             ask.fits(Is(true)) |> ignore
           }
-          @sf.words_node(ask, fn() { @sf.t("web-pages.drive.taken") }, fn() { @sf.theme().items.meta }).drops(Is(upload_drop_note)) |> ignore
+          @sf.words_node(ask, fn() { @sf.t("web-pages.drive.taken") }, fn() {
+            if under {
+              @sf.theme().items.meta.then(@ui.text_style(wrap=true))
+            } else {
+              @sf.theme().items.meta
+            }
+          })
+          .shrink(Is(if under { 1.0 } else { 0.0 }))
+          .min_width(Is(if under { Some(0.0) } else { None }))
+          .drops(Is(upload_drop_note))
+          |> ignore
           ask.box(fn(a) {
             @sf.style_node(a, fn() { upload_answers }, in_row=true)
             @sf.button_node(a, fn() { @sf.t("web-pages.drive.replace") }, replace, tone=Ghost) |> ignore
