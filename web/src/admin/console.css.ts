@@ -80,9 +80,8 @@ export const wsMark = style({
 });
 export const wsMarkLarge = style({ width: "40px", height: "40px", borderRadius: "12px", fontSize: vars.textTitle });
 export const more = style({
-  margin: "8px auto 0", height: "32px", padding: "0 14px", border: "0", borderRadius: "999px", background: "none",
-  color: vars.muted, fontSize: vars.textMeta, cursor: "pointer",
-  selectors: { "&:hover": { background: vars.hover, color: vars.text } },
+  margin: "8px auto 0", height: "32px", padding: "0 14px", color: vars.muted, fontSize: vars.textMeta,
+  selectors: { "&:hover": { color: vars.text } },
 });
 
 // ── an item's page ──

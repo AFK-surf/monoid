@@ -211,7 +211,7 @@ function ListPage({ account, list }: { account: Account; list: List }) {
               : list === "keys" ? <KeyRow key={row.id} account={account} row={row} />
               : list === "audit" ? <AuditRow key={row.id} row={row} />
               : <ItemRow key={row.id} list={list} row={row} sort={view.sort} open={row.id === id} to={`${PATH[list]}/${encodeURIComponent(row.id)}${search}`} />)}
-            {view.more && <button className={css.more} onClick={() => setLimit((n) => n + STEP)}>{t("web-pages.admin.more", { n: Math.min(STEP, view.found - view.rows.length), total: view.found })}</button>}
+            {view.more && <Button variant="ghost" className={css.more} onClick={() => setLimit((n) => n + STEP)}>{t("web-pages.admin.more", { n: Math.min(STEP, view.found - view.rows.length), total: view.found })}</Button>}
           </div>
         )}
       </div>

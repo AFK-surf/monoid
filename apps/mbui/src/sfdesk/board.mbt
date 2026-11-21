@@ -224,9 +224,9 @@ fn board_beside(s : @view.View, src : Source, r : ChatRef, tips : @sf.TipLayer, 
       @sf.icon_button_node(bar, "expand", fn() { @sf.t("web-main.board.full") }, fn() {
         @sfbase.board_set(src, false)
         open_page(Chat(r))
-      }, tips~)
+      }, tips~, linked=ends.linked)
       |> ignore
-      @sf.icon_button_node(bar, "close", fn() { @sf.t("web-main.board.close") }, fn() { @sfbase.board_pick.set(None) }, tips~)
+      @sf.icon_button_node(bar, "close", fn() { @sf.t("web-main.board.close") }, fn() { @sfbase.board_pick.set(None) }, tips~, linked=ends.linked)
       |> ignore
     })
     |> ignore
