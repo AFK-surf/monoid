@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3bbd14a18](https://github.com/AFK-surf/monoid/commit/3bbd14a18a794ee826e2ebde5b7fde6756860fa1) chore(mbui): delete remaining legacy @ui.Ctx views | 2.65 | 3.57 | 14.48 | 36.49 | 55.22 | 31.97 | 64.61 | 98.09 | 122.89 |
 | [52699920d](https://github.com/AFK-surf/monoid/commit/52699920d48767767ed6f51e7f43dfd81c2623fb) feat(core-ts): add harness-leaf and migrate browse | 2.65 | 3.57 | 14.51 | 36.51 | 55.29 | 31.97 | 64.61 | 98.09 | 126.26 |
 | [e82fc8b5a](https://github.com/AFK-surf/monoid/commit/e82fc8b5a725f6ecaca0f0c629dccaad3887695a) fix(agents): guard agy session/load ghost replay a | 2.65 | 3.57 | 14.51 | 36.5 | 55.28 | 31.97 | 64.61 | 98.17 | 124.49 |
 | [f8026edbe](https://github.com/AFK-surf/monoid/commit/f8026edbe8ce06e0560b6606a431eb443664f79b) fix(mbui): show a film's frames and follow a finge | 2.65 | 3.57 | 14.5 | 36.5 | 55.29 | 31.97 | 64.61 | 98.19 | 133.98 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0ad04e6d2](https://github.com/AFK-surf/monoid/commit/0ad04e6d2fa7af2e8c3b2ef9369e6826135decd9) chore(farview): sync Stage 23B release 29078d90f43 | 2.79 | 3.78 | 15.37 | 37.49 | 58.09 | 32.86 | 67.08 | 98.4 | 122.74 |
 | [b89ddeaad](https://github.com/AFK-surf/monoid/commit/b89ddeaad217518f930ab8441d0130592e687121) test(chat): run node chat page by default and migr | 2.79 | 3.77 | 15.35 | 37.46 | 58.02 | 32.84 | 67.01 | 98.24 | 131.52 |
 | [6fb98cd18](https://github.com/AFK-surf/monoid/commit/6fb98cd188bd3465881e2f904bcb20df372b76ca) fix(mbui): virtualize publish list and guard Windo | 2.79 | 3.77 | 15.35 | 37.47 | 58.02 | 32.84 | 67.01 | 98.47 | 111.98 |
-| [e57ccf433](https://github.com/AFK-surf/monoid/commit/e57ccf43373f7bddf1014965b483083a1097c7dc) fix(mbui): catch capsules and circles reaching acr | 2.79 | 3.77 | 15.34 | 37.47 | 58.01 | 32.83 | 67.01 | 98.49 | 129.8 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3bbd14a18](https://github.com/AFK-surf/monoid/commit/3bbd14a18a794ee826e2ebde5b7fde6756860fa1) chore(mbui): delete remaining legacy @ui.Ctx views | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.28 |
 | [52699920d](https://github.com/AFK-surf/monoid/commit/52699920d48767767ed6f51e7f43dfd81c2623fb) feat(core-ts): add harness-leaf and migrate browse | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.28 |
 | [e82fc8b5a](https://github.com/AFK-surf/monoid/commit/e82fc8b5a725f6ecaca0f0c629dccaad3887695a) fix(agents): guard agy session/load ghost replay a | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.28 |
 | [f8026edbe](https://github.com/AFK-surf/monoid/commit/f8026edbe8ce06e0560b6606a431eb443664f79b) fix(mbui): show a film's frames and follow a finge | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.28 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0ad04e6d2](https://github.com/AFK-surf/monoid/commit/0ad04e6d2fa7af2e8c3b2ef9369e6826135decd9) chore(farview): sync Stage 23B release 29078d90f43 | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.18 |
 | [b89ddeaad](https://github.com/AFK-surf/monoid/commit/b89ddeaad217518f930ab8441d0130592e687121) test(chat): run node chat page by default and migr | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.18 |
 | [6fb98cd18](https://github.com/AFK-surf/monoid/commit/6fb98cd188bd3465881e2f904bcb20df372b76ca) fix(mbui): virtualize publish list and guard Windo | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.18 |
-| [e57ccf433](https://github.com/AFK-surf/monoid/commit/e57ccf43373f7bddf1014965b483083a1097c7dc) fix(mbui): catch capsules and circles reaching acr | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.17 |
