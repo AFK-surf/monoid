@@ -10868,7 +10868,7 @@ fn View::leave(self : View, v : View, ms : Double) -> Unit {
   let p = gone_at(n, now)
   n.span = ms
   n.left_at = now - p * ms
-  self.tree.said_marked(v.at, words=false, state=true)
+  self.tree.said_marked(v.at, state=true, kids=true)
   n.back_at = -1.0
   told_going(n)
   // (leaving, it takes no input: a finger held on it or in it let go of now)
@@ -10893,7 +10893,7 @@ fn View::come_back(self : View, v : View) -> Unit {
   n.left_at = -1.0
   // (it and what it holds told it is back: told anew as it next starts leaving)
   self.tree.tell_back(v.at)
-  self.tree.said_marked(v.at, words=false, state=true)
+  self.tree.said_marked(v.at, state=true, kids=true)
   told_going(n)
   // (beside its anchor again, where that is now: View::beside)
   if n.beside is Some(_) {
@@ -15974,8 +15974,8 @@ pub fn Tree::reads_out(self : Tree, id : NodeId) -> Bool {
   }
   let mut i = id.at
   while i >= 0 {
-    // (nor in its bones: View::bones)
-    if self.nodes[i].said_hidden || self.nodes[i].bones != 0L {
+    // (nor leaving, nor in its bones: View::bones)
+    if self.nodes[i].said_hidden || self.nodes[i].left_at >= 0.0 || self.nodes[i].bones != 0L {
       return false
     }
     i = self.nodes[i].parent
@@ -15999,8 +15999,8 @@ fn Tree::said_now(self : Tree, at : Int) -> Bool {
   }
   let mut i = at
   while i >= 0 {
-    // (nor in its bones: View::bones)
-    if self.nodes[i].said_hidden || self.nodes[i].bones != 0L {
+    // (nor leaving, nor in its bones: View::bones)
+    if self.nodes[i].said_hidden || self.nodes[i].left_at >= 0.0 || self.nodes[i].bones != 0L {
       return false
     }
     i = self.nodes[i].parent

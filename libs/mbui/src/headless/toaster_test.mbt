@@ -310,10 +310,14 @@ test "toaster: no longer given, it is held `leave` for its way out, toaster_rest
   k.t.frame()
   let going = (@headless.toaster_rest("case").unwrap() - k.start, k.item("a").0)
   k.run_to(200.0 + toast_leave_ms - 1.0)
-  let there = k.t.query(Status, label="一") is Some(_)
+  // (still there for its way out, none of it read out)
+  let there = (k.items["a"].row().alive(), k.t.query(Status, label="一") is None)
   k.run_to(200.0 + toast_leave_ms)
-  let after = (k.t.query(Status, label="一") is None, @headless.toaster_rest("case"), k.gone)
-  assert_eq((coming, going, there, after), (250.0, (200.0 + toast_leave_ms, false), true, (true, Some(-1.0), [])))
+  let after = (!k.items["a"].row().alive(), @headless.toaster_rest("case"), k.gone)
+  assert_eq(
+    (coming, going, there, after),
+    (250.0, (200.0 + toast_leave_ms, false), (true, true), (true, Some(-1.0), [])),
+  )
 }
 
 ///|
@@ -323,11 +327,12 @@ test "toaster: going out, given again by its id, it is there again, its time fro
   k.toasts.set([])
   k.t.frame()
   k.run_to(250.0)
+  let going = k.t.query(Status, label="一") is None
   k.toasts.set([said("a", "一")])
   k.t.frame()
   let back = (k.item("a").0, k.t.query(Status, label="一") is Some(_))
   k.run_to(3000.0)
-  assert_eq((back, k.gone), ((true, true), ["a"]))
+  assert_eq((going, back, k.gone), (true, (true, true), ["a"]))
 }
 
 ///|
