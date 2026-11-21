@@ -134,18 +134,6 @@ fn card_old_rig(c : @ui.Ctx, here : MessageHere, m : Message) -> Unit {
 }
 
 ///|
-/// The corner rule's fault known in a phone's request (Tester::corners_known), kept till the card is put in the chat
-/// (the coordinator of the migration, 2026-11-12; xfer's list of what is shown before that): the key at its foot saying
-/// how long it lasts (14 round, a capsule 28 tall), under the hand or with the focus, stands 10 in from the card's side
-/// and 12 over its foot in its 26 corner, as the old card's does: as far from neither edge as from the other, so no
-/// corner of it is concentric there (26 − 12 = 14 by its foot, 26 − 10 = 16 by its side). What would mend it: the key
-/// 12 in from the side too.
-// kept across runs: a value (no field of it changes)
-let card_phone_corners_known : Array[String] = [
-  "「闲置 1 小时后失效」 (at 186,133 143×28, node 48) (corner 14) in the bottom right of 「允许这个对话的 agent 调试你的手机？ 装上…」 (at 16,52 323×121, node 20) (corner 26): 10 and 12 from its edges",
-]
-
-///|
 /// The same post as the nodes draw it in its row (message_others_node, its words' place by `body`: message_card_node
 /// unless it says otherwise), `m` as it changes; `begun`: card_old's.
 fn card_new(
@@ -211,7 +199,6 @@ fn card_new(
     platform~,
     begun~,
   )
-  t.corners_known(card_phone_corners_known)
   t
 }
 
@@ -256,11 +243,9 @@ fn card_audit(t : @ui.Tester, at : String, rooms : Int) -> Unit raise {
     f.contains("×32 to be pressed in, under 36") &&
     (f.contains("stillfail/src/sfpages/message_head_node.mbt:") || f.contains("stillfail/src/sfapp/settings/ask_answered_node.mbt:"))
   }
-  // (the corner rule's fault known at a phone's request's foot, where it shows: card_phone_corners_known)
-  let cornered = card_phone_corners_known.map(@ui.corner_fault_unplaced)
   // (a sign-in's 登录后存入密钥库 16 in at its start, 12.6 at its end: rule 4, said once the spacing rules saw the window's tree's words and icons (2026-11-15), drawn as the old view draws it (the test's own comparison): left for its own change)
   let kept = fn(f : String) { f.has_prefix("rule 4: what 「登录后存入密钥库」") }
-  let rest = faults.filter(fn(f) { !stacked(f) && !kept(f) && !cornered.contains(@ui.corner_fault_unplaced(f)) })
+  let rest = faults.filter(fn(f) { !stacked(f) && !kept(f) })
   assert_true(rest.is_empty(), msg=at + ": " + rest.join(" | "))
   assert_eq(faults.filter(stacked).length(), rooms, msg=at + ": " + faults.join(" | "))
 }
@@ -748,18 +733,36 @@ test "a phone's request in place of its post's words, made once as nodes, is dra
     let mut waiting = ""
     for c in cases {
       let at = "\{c.0} at \{w}"
-      let (was, now, t) = card_phone_both(c.1, c.2, w, at)
-      assert_eq(now, was, msg=at)
-      if c.0 == "waiting" {
-        waiting = now
+      // (waiting and under way place the duration chooser via one_of / ask_foot_chosen_end concentric with the card's
+      // foot corner, mending the old view's non-concentric inset)
+      if c.0 == "waiting" || c.0 == "under way" {
+        let t = card_new(w, c.1, fn() { c.2 })
+        t.run_for(@ui.move_most_ms)
+        let now = head_drawn(t)
+        assert_true(card_has(t, "允许"), msg=at)
+        assert_true(card_has(t, "拒绝"), msg=at)
+        assert_true(card_has(t, @sf.t("android-settings.vault.scope.idle")), msg=at)
+        if c.0 == "waiting" {
+          waiting = now
+        } else {
+          assert_true(now != waiting, msg=at + ": drawn as waiting")
+        }
+        card_audit(t, at, card_phone_rooms(c.0, w))
       } else {
+        let (was, now, t) = card_phone_both(c.1, c.2, w, at)
+        assert_eq(now, was, msg=at)
         assert_true(now != waiting, msg=at + ": drawn as waiting")
+        card_audit(t, at, card_phone_rooms(c.0, w))
       }
-      card_audit(t, at, card_phone_rooms(c.0, w))
     }
   }
-  // (at 1.3 narrow, waiting with its length's choice, the old view's foot goes on to a second line whose choice breaks
-  // the corner rule, which stops its Tester: an hour alone, no choice, in its place)
+  // (waiting with its duration chooser at 1.3 narrow now stacks via one_of with zero audit faults)
+  let t_wait_13 = card_new(390.0, cases[0].1, fn() { cases[0].2 })
+  t_wait_13.set_font_scale(1.3)
+  t_wait_13.run_for(@ui.move_most_ms)
+  assert_true(card_has(t_wait_13, "允许"), msg="waiting at 1.3")
+  assert_true(card_has(t_wait_13, @sf.t("android-settings.vault.scope.idle")), msg="waiting at 1.3")
+  card_audit(t_wait_13, "waiting at 1.3", 0)
   for i in [1, 8] {
     let c = cases[i]
     let at = "\{c.0} at 1.3"
