@@ -341,6 +341,19 @@ fn vault_request_asked(rv : Json?) -> Asked {
     new_about: text(field(rv, "describe"), "about"),
     was_about: text(field(rv, "describe"), "wasAbout"),
     remove: flag(rv, "remove"),
+    browse: field(rv, "browse") is Some(_),
+    browse_hint: text(field(rv, "browse"), "workspace"),
+    browse_workspaces: {
+      let n = count(rv, "browseWorkspaces")
+      if n > 0 { n } else { count(field(rv, "browse"), "workspaces") }
+    },
+    browse_items: {
+      let n = count(rv, "browseItems")
+      if n > 0 { n } else { count(field(rv, "browse"), "items") }
+    },
+    cross_workspace: text(field(rv, "cross"), "workspace"),
+    cross_workspace_name: text(field(rv, "cross"), "workspaceName"),
+    cross_vault_name: text(field(rv, "cross"), "vaultName"),
   }
 }
 

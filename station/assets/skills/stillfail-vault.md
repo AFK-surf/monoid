@@ -113,3 +113,14 @@ does not have to.
 - A script that logs in keeps the session it gets (a cookie, a token) between runs, in a file only its owner reads,
   and logs in again only when that is refused: every login costs the person an approval, and a second factor sent by
   email or SMS cannot be kept.
+
+## Personal secrets from other workspaces
+
+- **Only** pass `other_workspaces: true` (with `reason`, and optional `workspace` hint) on `secret_list` when the user
+  explicitly asks to find or use a personal secret stored in another workspace. Never probe other workspaces on your own.
+- `secret_list { other_workspaces: true, reason }` posts an approval card in the chat. Once approved in the still.fail
+  app, this chat receives only the names, about texts, kinds, modes and hosts of the personal secrets the user selected
+  (never team/workspace vaults, never values). They stay visible to this chat until it is archived or deleted.
+- Use a listed cross-workspace secret with `secret_use` and `secret_run` as usual (prefer its `item` id if names
+  collide). Cross-workspace personal secrets are read-only here: `secret_describe` and `secret_delete` are refused and
+  must be done in the secret's own workspace.

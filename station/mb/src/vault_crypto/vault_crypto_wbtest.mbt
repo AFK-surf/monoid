@@ -158,3 +158,62 @@ test "a snapshot as the routes read it: its value and its body by name, null whe
   inspect(stringify(snapshot_json(Some((v, "b1")))), content="{\"value\":{\"id\":\"v1\",\"seq\":0},\"body\":\"b1\"}")
   inspect(stringify(snapshot_json(None)), content="null")
 }
+
+///|
+test "tag_browse constant and prepare_accept_cross rejects mismatched sourceWs, non-owner, and invalid signature" {
+  inspect(tag_browse, content="stillfail-vault-browse/1")
+  let now = Ref::new(1000.0)
+  let timers : Array[(Double, () -> Unit)] = []
+  let k = test_keeper(now, timers)
+  let lock : Json = {
+    "ws": "wB",
+    "members": { "alice": { "email": "alice@x.com", "role": "owner" } },
+    "devices": { "d1": { "id": "d1", "sub": "alice", "sign_key": "ed25519:00" } },
+  }
+  let entry : Json = {
+    "sourceWs": "wA",
+    "sourceWsName": "Work A",
+    "vault": "vA",
+    "vaultName": "Personal A",
+    "vaultLasts": "hour",
+    "item": "iA",
+    "listing": { "name": "GitHub A", "kind": "token", "modes": ["proxy"], "hosts": ["api.github.com"] },
+  }
+  let request : Json = {
+    "id": "r_cross1",
+    "ws": "wB",
+    "vault": "vA",
+    "item": "iA",
+    "session": "s1",
+    "mode": "proxy",
+    "status": "pending",
+    "cross": { "workspace": "wA", "workspaceName": "Work A" },
+  }
+  // Mismatched sourceWs is rejected before signature check
+  let lv = lock_view(lock)
+  let bad_ws : Json = {
+    "v": 1,
+    "ws": "wB",
+    "sourceWs": "wOTHER",
+    "request": "r_cross1",
+    "vault": "vA",
+    "item": "iA",
+    "mode": "proxy",
+    "hosts": ["api.github.com"],
+    "scope": "once",
+    "exp": 1600,
+    "secret": "x",
+    "at": 1000,
+    "sig": { "key": "ed25519:00", "alg": "Ed25519", "sig": "00" },
+  }
+  match k.prepare_accept_cross(lv, entry, request, bad_ws, "alice") {
+    Refusal(why) => assert_true(why.contains("source workspace") || why.contains("match"))
+    Ready(_) => abort("expected mismatched sourceWs to fail")
+  }
+  // Scope exceeding vaultLasts is rejected
+  let bad_scope = with_field(with_field(bad_ws, "sourceWs", Json::string("wA")), "scope", Json::string("chat"))
+  match k.prepare_accept_cross(lv, entry, request, bad_scope, "alice") {
+    Refusal(why) => assert_true(why.contains("at most") || why.contains("signature") || why.contains("scope"))
+    Ready(_) => abort("expected bad scope or sig to fail")
+  }
+}

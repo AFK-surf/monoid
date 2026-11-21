@@ -71,7 +71,8 @@ function world() {
 const requestOf = (id: string, box: string, o: Partial<Request> = {}): Request => ({ id, ws: WS, vault: VAULT, item: ITEM, session: "s1", chat: "CHAT/1.0", mode: "proxy", reason: "test", box, at: 1000, status: "pending", ...o });
 
 function grantOf(r: Request, by: Person, secret: unknown, o: Partial<Grant> = {}): Grant {
-  const g = { v: 1 as const, ws: WS, request: r.id, vault: VAULT, item: ITEM, mode: r.mode, hosts: ["api.github.com"], scope: "once" as const, exp: 1500, secret: seal(r.box, Buffer.from(JSON.stringify(secret)), grantContext(WS, r.id)), at: 1000, ...o };
+  const mode = r.mode === "browse" ? "proxy" : r.mode;
+  const g = { v: 1 as const, ws: WS, request: r.id, vault: VAULT, item: ITEM, mode, hosts: ["api.github.com"], scope: "once" as const, exp: 1500, secret: seal(r.box, Buffer.from(JSON.stringify(secret)), grantContext(WS, r.id)), at: 1000, ...o };
   return signed(g, TAG.grant, by.signer);
 }
 

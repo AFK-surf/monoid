@@ -2250,6 +2250,26 @@ export interface VaultDescribe {
 	wasAbout: string;
 }
 
+/** A cross-workspace personal secret browse request or its approved counts. */
+export interface VaultBrowse {
+	/** Optional workspace hint requested by the agent. */
+	workspace?: string;
+	/** Number of distinct source workspaces shared once approved. */
+	workspaces?: number;
+	/** Number of personal secret listings shared once approved. */
+	items?: number;
+}
+
+/** Source workspace and personal vault metadata for a cross-workspace secret request. */
+export interface VaultCross {
+	/** Source workspace id holding the personal secret. */
+	workspace: string;
+	/** Source workspace display name. */
+	workspaceName: string;
+	/** Source personal vault display name. */
+	vaultName: string;
+}
+
 /** A keyed vault a secret_save card may save into. */
 export interface VaultTarget {
 	id: string;
@@ -2295,13 +2315,22 @@ export interface VaultAsk {
 	 * one to keep (`answer` approve or setUp).
 	 */
 	remove?: boolean;
+	/** A request to list the person's personal secrets from other workspaces for this chat (`secret_list` other_workspaces). */
+	browse?: VaultBrowse;
+	/** A request to use a personal secret from another workspace. */
+	cross?: VaultCross;
+	/** With `browse` pending: how many other workspaces have eligible personal secrets on this device. */
+	browseWorkspaces?: number;
+	/** With `browse` pending: how many eligible personal secrets exist across other workspaces on this device. */
+	browseItems?: number;
 	/** Another station of the workspace its commands run on (a secret to keep: the one its command read it on), by name. */
 	station?: string;
 	/**
 	 * How it is answered on this device, from the vault as the core holds it (views/vault.ts askAnswers): approve
 	 * (允许 / 存入), setUp (a secret to keep while this device's vault is not on: 开启密钥库 first), elsewhere (approved only in an
 	 * app that keeps keys), notHere (a secret to keep not sealed to this device: approved on another, VaultRequest `notHere`), noKey
-	 * (this device does not hold a key to this encrypted vault yet: cannot approve/save/change/remove here, VaultRequest `noKey`). The chat's cards; absent on a core from before.
+	 * (this device does not hold a key to this encrypted vault yet: cannot approve/save/change/remove here, VaultRequest `noKey`),
+	 * empty (browse request with no eligible personal secrets in other workspaces on this device). The chat's cards; absent on a core from before.
 	 */
 	answer?: string;
 	/** With answer approve, a use: the longest it may be given for (once | hour | chat). */

@@ -264,6 +264,26 @@ let pending_schema : String =
   #|CREATE TRIGGER IF NOT EXISTS vault_pending_nul_drop_v3 AFTER DELETE ON vault_requests BEGIN
   #|  DELETE FROM vault_pending_nul_v3 WHERE ws = OLD.ws AND id = OLD.id;
   #|END;
+  #|CREATE TABLE IF NOT EXISTS vault_pending_owner_v4 (
+  #|  ws TEXT NOT NULL, id TEXT NOT NULL, owner TEXT, at,
+  #|  PRIMARY KEY (ws, id)
+  #|) WITHOUT ROWID;
+  #|CREATE INDEX IF NOT EXISTS vault_pending_owner_v4_owner ON vault_pending_owner_v4 (ws, owner, id);
+  #|CREATE TRIGGER IF NOT EXISTS vault_pending_owner_add_v4 AFTER INSERT ON vault_requests
+  #|  WHEN NEW.status = 'pending' AND json_valid(NEW.body) AND (json_type(NEW.body, '$.browse') = 'object' OR json_type(NEW.body, '$.cross') = 'object') BEGIN
+  #|  INSERT OR REPLACE INTO vault_pending_owner_v4 VALUES (NEW.ws, NEW.id, json_extract(NEW.body, '$.owner'), json_extract(NEW.body, '$.at'));
+  #|END;
+  #|CREATE TRIGGER IF NOT EXISTS vault_pending_owner_change_v4 AFTER UPDATE ON vault_requests
+  #|  WHEN OLD.ws IS NOT NEW.ws OR OLD.id IS NOT NEW.id OR OLD.status IS NOT NEW.status OR OLD.body IS NOT NEW.body BEGIN
+  #|  DELETE FROM vault_pending_owner_v4 WHERE ws = OLD.ws AND id = OLD.id;
+  #|  DELETE FROM vault_pending_owner_v4 WHERE ws = NEW.ws AND id = NEW.id;
+  #|  INSERT OR REPLACE INTO vault_pending_owner_v4
+  #|    SELECT NEW.ws, NEW.id, json_extract(NEW.body, '$.owner'), json_extract(NEW.body, '$.at')
+  #|    WHERE NEW.status = 'pending' AND json_valid(NEW.body) AND (json_type(NEW.body, '$.browse') = 'object' OR json_type(NEW.body, '$.cross') = 'object');
+  #|END;
+  #|CREATE TRIGGER IF NOT EXISTS vault_pending_owner_drop_v4 AFTER DELETE ON vault_requests BEGIN
+  #|  DELETE FROM vault_pending_owner_v4 WHERE ws = OLD.ws AND id = OLD.id;
+  #|END;
   #|
 
 ///|
@@ -332,6 +352,28 @@ let use_schema : String =
   #|END;
   #|CREATE TRIGGER IF NOT EXISTS vault_use_ambiguous_drop_v2 AFTER DELETE ON vault_requests BEGIN
   #|  DELETE FROM vault_use_ambiguous_v2 WHERE ws = OLD.ws AND id = OLD.id;
+  #|END;
+  #|CREATE TABLE IF NOT EXISTS vault_cross_use_lookup (
+  #|  ws TEXT NOT NULL, id TEXT NOT NULL, owner TEXT NOT NULL, at INTEGER,
+  #|  PRIMARY KEY (ws, id)
+  #|) WITHOUT ROWID;
+  #|CREATE INDEX IF NOT EXISTS vault_cross_use_owner ON vault_cross_use_lookup (ws, owner, at DESC, id DESC);
+  #|CREATE TRIGGER IF NOT EXISTS vault_cross_use_add AFTER INSERT ON vault_requests BEGIN
+  #|  DELETE FROM vault_cross_use_lookup WHERE ws = NEW.ws AND id = NEW.id;
+  #|  INSERT OR REPLACE INTO vault_cross_use_lookup
+  #|    SELECT NEW.ws, NEW.id, json_extract(NEW.body, '$.owner'), json_extract(NEW.body, '$.at')
+  #|    WHERE NEW.status IN ('granted', 'denied') AND json_valid(NEW.body) AND json_type(NEW.body, '$.cross') = 'object' AND json_type(NEW.body, '$.owner') = 'text';
+  #|END;
+  #|CREATE TRIGGER IF NOT EXISTS vault_cross_use_change AFTER UPDATE ON vault_requests
+  #|  WHEN OLD.ws IS NOT NEW.ws OR OLD.id IS NOT NEW.id OR OLD.status IS NOT NEW.status OR OLD.body IS NOT NEW.body BEGIN
+  #|  DELETE FROM vault_cross_use_lookup WHERE ws = OLD.ws AND id = OLD.id;
+  #|  DELETE FROM vault_cross_use_lookup WHERE ws = NEW.ws AND id = NEW.id;
+  #|  INSERT OR REPLACE INTO vault_cross_use_lookup
+  #|    SELECT NEW.ws, NEW.id, json_extract(NEW.body, '$.owner'), json_extract(NEW.body, '$.at')
+  #|    WHERE NEW.status IN ('granted', 'denied') AND json_valid(NEW.body) AND json_type(NEW.body, '$.cross') = 'object' AND json_type(NEW.body, '$.owner') = 'text';
+  #|END;
+  #|CREATE TRIGGER IF NOT EXISTS vault_cross_use_drop AFTER DELETE ON vault_requests BEGIN
+  #|  DELETE FROM vault_cross_use_lookup WHERE ws = OLD.ws AND id = OLD.id;
   #|END;
   #|INSERT OR IGNORE INTO vault_use_backfill_all (id, after_ws, done) VALUES (1, NULL, 0);
   #|
@@ -478,6 +520,15 @@ let requests_schema : String =
   #|);
   #|-- A session's grants (move/vault.ts: whose secrets a chat that moves needs).
   #|CREATE INDEX IF NOT EXISTS vault_grants_session ON vault_grants (session);
+  #|CREATE TABLE IF NOT EXISTS vault_cross_listings (
+  #|  ws TEXT NOT NULL,
+  #|  session TEXT NOT NULL,
+  #|  item TEXT NOT NULL,
+  #|  body TEXT NOT NULL,
+  #|  at INTEGER NOT NULL,
+  #|  PRIMARY KEY (ws, session, item)
+  #|) WITHOUT ROWID;
+  #|CREATE INDEX IF NOT EXISTS vault_cross_listings_session ON vault_cross_listings (session, ws, item);
   #|
 
 ///|

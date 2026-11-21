@@ -2081,6 +2081,7 @@ pub fn with_cards(f : Fixture, v : Json, session : String) -> Json {
   // (chat-file-alone: its last message a file of its agent's, no words with it)
   let file_alone = f.mode == "chat-file-alone"
   let vault = f.mode == "chat-vault" || f.mode == "chat-vault-off" || f.mode == "chat-vault-typed" || f.mode == "chat-vault-oauth" || f.mode == "chat-vault-file" || f.mode == "chat-vault-use" || f.mode == "chat-vault-timeout" || f.mode == "chat-vault-before" || f.mode == "chat-vault-no-key" || f.mode == "chat-vault-describe" || f.mode == "chat-vault-remove"
+  let vault_browse = f.mode == "chat-vault-browse"
   let linked = f.mode.has_prefix("chat-phone-linked-")
   let signin = f.mode.has_prefix("chat-signin")
   // (chat-rig: an agent's request for the viewer's rig, waiting; -other: someone else's rig; -web: on a web page;
@@ -2115,7 +2116,7 @@ pub fn with_cards(f : Fixture, v : Json, session : String) -> Json {
       None => rest
     }
   }
-  if session != "s-c1" || (fix_decided.is_empty() && !seeded && !vault && !phone && !signin && !ask_end && !ask_text && !notice_many && !file_alone && !rig) {
+  if session != "s-c1" || (fix_decided.is_empty() && !seeded && !vault && !vault_browse && !phone && !signin && !ask_end && !ask_text && !notice_many && !file_alone && !rig) {
     return v
   }
   match v {
@@ -2172,6 +2173,67 @@ pub fn with_cards(f : Fixture, v : Json, session : String) -> Json {
       // chat-vault's request to keep a password, last
       if vault {
         all.push(vault_post(f.mode == "chat-vault-typed", file=f.mode == "chat-vault-file", use_secret=f.mode == "chat-vault-use" || f.mode == "chat-vault-timeout" || f.mode == "chat-vault-before" || f.mode == "chat-vault-no-key", timed=f.mode == "chat-vault-timeout", describe=f.mode == "chat-vault-describe", remove=f.mode == "chat-vault-remove", oauth=f.mode == "chat-vault-oauth", off=f.mode == "chat-vault-off", no_key=f.mode == "chat-vault-no-key"))
+      }
+      // chat-vault-browse: settled browse outcome + cross-workspace secret_use card + pending browse card
+      if vault_browse {
+        all.push(
+          msg(58, "agent", by_agent("Anthropic", "claude", "s-c1"), "已查看其它工作区的个人密钥列表", "2 分钟前", {
+            "card": {
+              "type": "options",
+              "vault": "r-browse-done",
+              "vaultAsk": {
+                "name": "",
+                "reason": "查找个人仓库发布用的 token",
+                "mode": "proxy",
+                "hosts": [],
+                "browse": { "workspace": "个人", "workspaces": 2, "items": 3 },
+                "status": "granted",
+                "answer": "approve",
+              },
+            },
+            "createdAt": Json::number(1.0e9),
+          }),
+        )
+        all.push(
+          msg(59, "agent", by_agent("Anthropic", "claude", "s-c1"), "申请使用跨工作区个人密钥 GitHub 个人 Token", "1 分钟前", {
+            "card": {
+              "type": "options",
+              "vault": "r-cross-use",
+              "vaultAsk": {
+                "name": "GitHub 个人 Token",
+                "reason": "拉取个人仓库的 PR 状态以核对依赖版本",
+                "mode": "proxy",
+                "hosts": ["api.github.com"],
+                "howText": "代理 · 限 api.github.com",
+                "command": "gh pr list --repo me/tools",
+                "cross": { "workspace": "ws-personal", "workspaceName": "个人", "vaultName": "个人密钥库" },
+                "answer": "approve",
+                "lasts": "chat",
+              },
+            },
+            "createdAt": Json::number(1.0e9),
+          }),
+        )
+        let pending_browse : Map[String, Json] = {
+          "name": "",
+          "reason": "需要查找你的个人 GitHub 或 Cloudflare Token 以完成部署",
+          "mode": "proxy",
+          "hosts": [],
+          "browse": { "workspace": "个人" },
+          "browseWorkspaces": 2,
+          "browseItems": 3,
+          "answer": "approve",
+        }
+        if fix_vault.val != "" {
+          pending_browse["status"] = Json::string(fix_vault.val)
+          pending_browse["browse"] = { "workspace": "个人", "workspaces": 2, "items": 3 }
+        }
+        all.push(
+          msg(60, "agent", by_agent("Anthropic", "claude", "s-c1"), "申请查看其它工作区的个人密钥列表", "刚刚", {
+            "card": { "type": "options", "vault": "r-browse", "vaultAsk": Json::object(pending_browse) },
+            "createdAt": Json::number(1.0e9),
+          }),
+        )
       }
       // chat-phone's request for the person's phone, last
       if phone {
@@ -2319,7 +2381,56 @@ pub fn fixture_card_call(f : Fixture, name : String, params : Json) -> Result[Js
       f.changed()
       Some(Ok(Json::object({})))
     }
-    "vault.approve" | "vault.deny" if text(p, "request") == "r-demo" => {
+    "vault.browseCandidates" =>
+      Some(
+        Ok(
+          {
+            "workspaces": [
+              {
+                "id": "ws-personal",
+                "name": "个人",
+                "items": [
+                  {
+                    "vault": "v-p1",
+                    "vaultName": "个人密钥库",
+                    "item": "it-gh",
+                    "name": "GitHub 个人 Token",
+                    "about": "个人仓库 PR 与发布权限",
+                    "kind": "token",
+                    "howText": "代理 · 限 api.github.com",
+                  },
+                  {
+                    "vault": "v-p1",
+                    "vaultName": "个人密钥库",
+                    "item": "it-cf",
+                    "name": "Cloudflare API Token",
+                    "about": "个人域名 DNS 与 Workers 部署",
+                    "kind": "token",
+                    "howText": "代理 · 限 api.cloudflare.com",
+                  },
+                ],
+              },
+              {
+                "id": "ws-lab",
+                "name": "实验室",
+                "items": [
+                  {
+                    "vault": "v-l1",
+                    "vaultName": "个人密钥库",
+                    "item": "it-oai",
+                    "name": "OpenAI 个人 Key",
+                    "about": "离线评测脚本专用",
+                    "kind": "token",
+                    "howText": "环境变量 · OPENAI_API_KEY",
+                  },
+                ],
+              },
+            ],
+            "unkeyedWorkspaces": 1,
+          },
+        ),
+      )
+    "vault.approve" | "vault.deny" if text(p, "request") == "r-demo" || text(p, "request") == "r-browse" => {
       fix_vault.val = if name == "vault.approve" { "granted" } else { "denied" }
       f.changed()
       Some(Ok(Json::object({})))

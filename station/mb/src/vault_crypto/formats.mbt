@@ -19,6 +19,9 @@ pub let tag_grant : String = "stillfail-vault-grant/1"
 pub let tag_deny : String = "stillfail-vault-deny/1"
 
 ///|
+pub let tag_browse : String = "stillfail-vault-browse/1"
+
+///|
 /// How long a grant lasts, shortest first: one use, an hour, or the chat until it is archived.
 pub let scopes : Array[String] = ["once", "hour", "chat"]
 

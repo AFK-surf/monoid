@@ -1287,7 +1287,7 @@ pub fn fixture_page(mode : String) -> String {
     | "settings-vault-confirm" | "settings-vault-syncing" | "settings-vault-waiting" | "settings-vault-waiting-was" | "settings-vault-replaced"
     | "settings-vault-replaced-was" => "vault"
     "settings-vault-items" | "settings-vault-add" | "settings-vault-editor" | "settings-vault-workspace-editor" => "vault-items"
-    "settings-vault-item" => "vault-item:v1#it1"
+    "settings-vault-item" | "settings-vault-item-cross" => "vault-item:v1#it1"
     "settings-decisions" => "decisions-settings"
     "settings-completion" => "completion"
     "settings-policy" | "settings-policy-text" | "settings-policy-option" => "policy:ws1/st1"
@@ -3627,10 +3627,18 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
         obj([
           (
             "uses",
-            [
-              obj([("at", stamp_of("昨天")), ("session", str("s-c1")), ("station", str("st1")), ("chatTitle", str("整理发布清单")), ("mode", str("proxy")), ("hosts", ["api.github.com"]), ("command", str("git push origin main")), ("howText", str("git push origin main · 代理"))]),
-              obj([("at", stamp_of("3 天前")), ("session", str("s-c4")), ("station", str("st1")), ("chatTitle", str("给设置页加一个深色模式开关")), ("mode", str("proxy")), ("hosts", []), ("denied", Json::boolean(true)), ("howText", str("代理"))]),
-            ],
+            if mode == "settings-vault-item-cross" {
+              [
+                obj([("at", stamp_of("10 分钟前")), ("session", str("s-c2")), ("station", str("st2")), ("workspace", str("ws-team")), ("workspaceName", str("产品研发组")), ("chatTitle", str("排查生产环境发布失败")), ("mode", str("proxy")), ("hosts", ["api.github.com"]), ("command", str("gh run view 9412")), ("howText", str("gh run view 9412 · 代理"))]),
+                obj([("at", stamp_of("昨天")), ("session", str("s-c1")), ("station", str("st1")), ("chatTitle", str("整理发布清单")), ("mode", str("proxy")), ("hosts", ["api.github.com"]), ("command", str("git push origin main")), ("howText", str("git push origin main · 代理"))]),
+                obj([("at", stamp_of("3 天前")), ("session", str("s-cross-2")), ("station", str("st3")), ("workspace", str("ws-ops")), ("workspaceName", str("运维值班")), ("chatTitle", str("轮换线上证书")), ("mode", str("proxy")), ("hosts", []), ("denied", Json::boolean(true)), ("howText", str("代理"))]),
+              ]
+            } else {
+              [
+                obj([("at", stamp_of("昨天")), ("session", str("s-c1")), ("station", str("st1")), ("chatTitle", str("整理发布清单")), ("mode", str("proxy")), ("hosts", ["api.github.com"]), ("command", str("git push origin main")), ("howText", str("git push origin main · 代理"))]),
+                obj([("at", stamp_of("3 天前")), ("session", str("s-c4")), ("station", str("st1")), ("chatTitle", str("给设置页加一个深色模式开关")), ("mode", str("proxy")), ("hosts", []), ("denied", Json::boolean(true)), ("howText", str("代理"))]),
+              ]
+            },
           ),
         ]),
       )

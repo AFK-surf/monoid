@@ -245,6 +245,15 @@ pub(all) struct VaultAsk {
   was_about : String
   /// one to delete the item (secret_delete)
   remove : Bool
+  /// a request to list personal secrets from other workspaces (`secret_list` other_workspaces)
+  browse : Bool
+  browse_hint : String
+  browse_workspaces : Int
+  browse_items : Int
+  /// source workspace and vault metadata for a cross-workspace personal secret request
+  cross_workspace : String
+  cross_workspace_name : String
+  cross_vault_name : String
   status : String
   scope : String
   /// another station of the workspace its commands run on, by name (empty: the chat's)
@@ -576,6 +585,19 @@ pub fn message_of(m : Json) -> Message {
                 new_about: text(field(a, "describe"), "about"),
                 was_about: text(field(a, "describe"), "wasAbout"),
                 remove: flag(a, "remove"),
+                browse: field(a, "browse") is Some(_),
+                browse_hint: text(field(a, "browse"), "workspace"),
+                browse_workspaces: {
+                  let decided = count(field(a, "browse"), "workspaces")
+                  if decided > 0 { decided } else { count(a, "browseWorkspaces") }
+                },
+                browse_items: {
+                  let decided = count(field(a, "browse"), "items")
+                  if decided > 0 { decided } else { count(a, "browseItems") }
+                },
+                cross_workspace: text(field(a, "cross"), "workspace"),
+                cross_workspace_name: text(field(a, "cross"), "workspaceName"),
+                cross_vault_name: text(field(a, "cross"), "vaultName"),
                 status: text(a, "status"),
                 scope: text(a, "scope"),
                 station: text(a, "station"),

@@ -151,3 +151,38 @@ test "hosted modes, oauth services, and delivery labels" {
   assert_eq(scope_words("once").0, "仅本次")
   assert_true(how_words("proxy", ["api.github.com"]).contains("api.github.com"))
 }
+
+///|
+test "cross-workspace SQL schemas and queries are valid and indexed" {
+  assert_true(pending_schema.contains("vault_pending_owner_v4"))
+  assert_true(pending_schema.contains("vault_pending_owner_v4_owner"))
+  assert_true(use_schema.contains("vault_cross_use_lookup"))
+  assert_true(use_schema.contains("vault_cross_use_owner"))
+  assert_true(requests_schema.contains("vault_cross_listings"))
+  assert_true(requests_schema.contains("vault_cross_listings_session"))
+  assert_true(pending_cross_own.contains("vault_pending_owner_v4"))
+  assert_true(cross_uses_sql.contains("vault_cross_use_lookup"))
+}
+
+///|
+test "cross_to_listed preserves stored owner email for multi-person isolation" {
+  let e : Json = {
+    "sourceWs": "wA",
+    "sourceWsName": "Work A",
+    "vault": "vA",
+    "vaultName": "Personal A",
+    "item": "iA",
+    "owner": "alice@x.com",
+    "listing": { "name": "GitHub A", "kind": "token", "modes": ["proxy"], "hosts": ["api.github.com"] },
+  }
+  let listed = cross_to_listed(e, "bob@x.com")
+  assert_eq(listed.owner, Some("alice@x.com"))
+  assert_eq(listed.cross, Some(("wA", "Work A", "Personal A")))
+}
+
+///|
+test "declared tools include cross-workspace secret_list parameters" {
+  assert_true(tools_declared.contains("\"secret_list\""))
+  assert_true(tools_declared.contains("\"other_workspaces\""))
+  assert_true(tools_declared.contains("\"workspace\""))
+}

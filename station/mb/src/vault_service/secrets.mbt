@@ -148,6 +148,7 @@ pub(all) struct Listed {
   item : String
   owner : String?
   listing : Json
+  cross : (String, String, String)?
 }
 
 ///|

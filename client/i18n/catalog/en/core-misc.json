@@ -354,6 +354,7 @@
   "core-misc.vault.personal": "Personal",
   "core-misc.vault.noPlainStation": "No station can keep secrets: update your stations",
   "core-misc.vault.plainLocked": "Security mode is on: secrets go into the encrypted vault",
+  "core-misc.vault.browseEmpty": "No personal secrets from other workspaces can be shared",
   "core-misc.reader.gone": "That book is no longer open; open it again",
   "core-misc.personal.noKey": "This device can't keep a device key. Use the desktop or Android app",
   "core-misc.personal.outside": "This device isn't approved yet: send an approval request on this device, and enter the code your trusted device shows",

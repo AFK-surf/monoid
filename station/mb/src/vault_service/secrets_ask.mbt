@@ -69,7 +69,16 @@ pub async fn Secrets::ask(self : Secrets, session : String, a : UseAsk_) -> Stri
     raise Refused("No secret named \{quoted(a.item)} may be asked for here: secret_list lists those that may.")
   }
   let listing = found.listing
-  let plain = found.vault == @vault_crypto.plain_id
+  let cross = found.cross
+  let plain = cross is None && found.vault == @vault_crypto.plain_id
+  let owner_email = match cross {
+    Some(_) =>
+      match decider {
+        Some(d) if d != "" => Some(lower(d))
+        _ => found.owner.map(lower)
+      }
+    None => if plain { found.owner } else { None }
+  }
   let modes = strings_of(get(Some(listing), "modes"))
   let mode = match a.mode {
     Some(m) => m
@@ -129,10 +138,13 @@ pub async fn Secrets::ask(self : Secrets, session : String, a : UseAsk_) -> Stri
   fs.push(("box", js(if plain { "" } else { self.keeper.open(id) })))
   fs.push(("at", jn((now / 1000.0).floor())))
   fs.push(("status", js("pending")))
-  if plain && found.owner is Some(o) && o != "" {
+  if owner_email is Some(o) && o != "" {
     fs.push(("owner", js(o)))
   }
-  if mode == "browser" && !plain {
+  if cross is Some((cws, cws_name, cvault_name)) {
+    fs.push(("cross", obj([("workspace", js(cws)), ("workspaceName", js(cws_name)), ("vaultName", js(cvault_name))])))
+  }
+  if mode == "browser" && !plain && cross is None {
     match self.renewal_of(ws, found.item) {
       Some(r) => fs.push(("renewal", r))
       None => ()
@@ -246,7 +258,12 @@ async fn Secrets::post(
   }
   let how = how_words(mode, r_hosts)
   let stillfail = thread.surface == stillfail_surface
-  let lines = ["申请使用「\{gtext(Some(l), "name")}」：\{gtext(Some(r), "reason")}"]
+  let cross = get(Some(r), "cross")
+  let cross_hint = match cross {
+    Some(Object(_) as c) => "（来自「\{gtext(Some(c), "workspaceName")}」）"
+    _ => ""
+  }
+  let lines = ["申请使用「\{gtext(Some(l), "name")}」\{cross_hint}：\{gtext(Some(r), "reason")}"]
   if gs(Some(r), "command") is Some(c) && c != "" {
     lines.push("命令：`\{replace_backticks(c)}`")
   }
@@ -294,6 +311,9 @@ async fn Secrets::post(
     }
     if truthy(timeout) {
       vault.push(("timeout", timeout.unwrap()))
+    }
+    if cross is Some(Object(_) as c) {
+      vault.push(("cross", c))
     }
     let fs = [("type", js("options")), ("options", jarr(options))]
     if owner is Some(o) && o != "" {
@@ -389,12 +409,15 @@ pub async fn Secrets::reask(self : Secrets, session : String, id : String, signa
     raise Refused(card_occupied)
   }
   let save = truthy(get(Some(r), "save"))
-  let listing = if save { None } else { self.listing_of(r) }
-  if !save && listing is None {
+  let is_browse = get(Some(r), "browse") is Some(Object(_))
+  let listing = if save || is_browse { None } else { self.listing_of(r) }
+  if !save && !is_browse && listing is None {
     raise Refused("The secret is no longer available to request.")
   }
   let posted = if save {
     self.post_save(session, thread, r, require_empty=true, signal?)
+  } else if is_browse {
+    self.post_browse(session, thread, r, require_empty=true, signal?)
   } else if truthy(get(Some(r), "describe")) {
     self.post_describe(session, thread, r, self.decider_of(r), require_empty=true, signal?)
   } else if truthy(get(Some(r), "remove")) {
@@ -467,6 +490,9 @@ pub async fn Secrets::describe(
   let (ws, _) = self.place_of(session)
   guard self.find_listing(session, lower(trim(item)), person) is Some(found) else {
     raise Refused("No secret named \{quoted(item)} is listed here: secret_list lists those that are.")
+  }
+  if found.cross is Some((_, ws_name, _)) {
+    raise Refused("Cross-workspace personal secrets are read-only here: edit or delete it in its own workspace (\{ws_name}).")
   }
   let decider = match person {
     Some(p) if trim(p) != "" => self.person_for(session, person)
@@ -756,6 +782,9 @@ pub async fn Secrets::remove(self : Secrets, session : String, item : String, re
   guard self.find_listing(session, lower(trim(item)), person) is Some(found) else {
     raise Refused("No secret named \{quoted(item)} is listed here: secret_list lists those that are.")
   }
+  if found.cross is Some((_, ws_name, _)) {
+    raise Refused("Cross-workspace personal secrets are read-only here: edit or delete it in its own workspace (\{ws_name}).")
+  }
   if trim(reason) == "" {
     raise Refused("reason is required: why, for the person deciding")
   }
@@ -962,6 +991,337 @@ pub fn Secrets::removed_plain(self : Secrets, ws : String, email : String, d : J
   Ok(self.plain.item(ws, gtext(Some(next), "id")).unwrap_or(Json::null()))
 }
 
+// ── cross-workspace personal secret browsing (secret_list other_workspaces) ──
+
+///|
+fn host_pattern_ok(h : String) -> Bool {
+  if h.length() == 0 || h.length() > 253 {
+    return false
+  }
+  let start = if starts(h, "*.") { 2 } else { 0 }
+  if start >= h.length() {
+    return false
+  }
+  for i in start..<h.length() {
+    let c = h.code_unit_at(i).to_int()
+    let ok = (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 46 || c == 45
+    if !ok {
+      return false
+    }
+  }
+  true
+}
+
+///|
+fn listing_ok(v : Json?) -> String? {
+  guard v is Some(Object(_) as l) else { return Some("a listing is an object") }
+  guard gs(Some(l), "name") is Some(name) && trim(name) != "" && name.length() <= 200 else {
+    return Some("a listing names the item")
+  }
+  guard gs(Some(l), "kind") is Some(kind) && @vault_crypto.kinds.contains(kind) else {
+    return Some("a listing's kind is token, ssh_key, login, file or browser")
+  }
+  guard ga(Some(l), "modes") is Some(raw_modes) && raw_modes.length() > 0 else {
+    return Some("a listing's modes are proxy, ssh, env, file or browser")
+  }
+  let modes : Array[String] = []
+  for m in raw_modes {
+    match m {
+      String(s) if @vault_crypto.modes.contains(s) => modes.push(s)
+      _ => return Some("a listing's modes are proxy, ssh, env, file or browser")
+    }
+  }
+  if modes.contains("file") != (kind == "file") || (kind == "file" && modes.length() > 1) {
+    return Some("a file is given as a file, and only a file is")
+  }
+  guard ga(Some(l), "hosts") is Some(raw_hosts) else { return Some("a listing's hosts are host names") }
+  for h in raw_hosts {
+    match h {
+      String(s) if host_pattern_ok(s) => ()
+      _ => return Some("a listing's hosts are host names")
+    }
+  }
+  if modes.contains("proxy") && raw_hosts.is_empty() {
+    return Some("given through the proxy, it names its hosts")
+  }
+  if @vault_crypto.browser_listing_ok(l) is Some(why) {
+    return Some(why)
+  }
+  if has(Some(l), "env") {
+    guard gs(Some(l), "env") is Some(env) && env.length() <= 100 && var_name(env) else {
+      return Some("env is a variable's name")
+    }
+  }
+  if has(Some(l), "lasts") {
+    guard gs(Some(l), "lasts") is Some(lasts) && scopes.contains(lasts) else {
+      return Some("lasts is once, hour or chat")
+    }
+  }
+  if has(Some(l), "about") {
+    guard gs(Some(l), "about") is Some(about) && about.length() <= @vault_crypto.about_most else {
+      return Some("about is at most \{@vault_crypto.about_most} characters of text")
+    }
+  }
+  None
+}
+
+///|
+/// secret_list { other_workspaces: true, reason, workspace? }: ask the person to list their personal secrets from
+/// other workspaces for this chat.
+pub async fn Secrets::browse(
+  self : Secrets,
+  session : String,
+  reason : String,
+  workspace? : String,
+  person? : String,
+) -> String {
+  let (ws, _) = self.place_of(session)
+  guard self.person_for(session, person) is Some(email) else {
+    raise Refused(
+      "No one started this chat: there is no one to ask for other workspaces' personal secrets; name the person (person).",
+    )
+  }
+  if trim(reason) == "" {
+    raise Refused("reason is required: why you need to browse their personal secrets in other workspaces")
+  }
+  let thread = match self.latest_thread_ready(session) {
+    None => {
+      (self.w.hub.prepare_latest_threads.unwrap())([session])
+      match (self.w.hub.store.get_session)(session) {
+        Some(row) if !row.archived => ()
+        _ => raise Refused("This chat is archived or gone.")
+      }
+      return self.browse(session, reason, workspace?, person?)
+    }
+    Some(t) => t
+  }
+  let now = self.now()
+  let id = "r_" + ulid(now, (self.w.random)(16))
+  let hint = match workspace {
+    Some(w) if trim(w) != "" => Some(trim(w))
+    _ => None
+  }
+  let browse_obj = match hint {
+    Some(h) => obj([("workspace", js(h))])
+    None => obj([])
+  }
+  let request = obj([
+    ("id", js(id)),
+    ("ws", js(ws)),
+    ("vault", js("")),
+    ("item", js("")),
+    ("session", js(session)),
+    ("chat", js("")),
+    ("mode", js("browse")),
+    ("reason", js(trim(reason))),
+    ("box", js("")),
+    ("at", jn((now / 1000.0).floor())),
+    ("status", js("pending")),
+    ("owner", js(email)),
+    ("browse", browse_obj),
+  ])
+  let kept : KeptRequest = { request, thread: None, card_ts: None, raw: None }
+  if thread is Some(t) {
+    set(request, "chat", js(thread_address(t.channel, t.thread_ts)))
+    kept.card_ts = self.post_browse(session, t, request)
+    kept.thread = Some(t.id)
+  }
+  self.save(kept)
+  self.audit_(request, "browse-request", hint.unwrap_or(""))
+  self.told(request)
+  "Asked \{email} to share their personal secret list from other workspaces for this chat (request \{id}); the card is in your chat, approved in the still.fail app. \{undecided} Only their approval in the app shares the list: a reply in the chat saying yes does not."
+}
+
+///|
+async fn Secrets::post_browse(
+  self : Secrets,
+  session : String,
+  thread : Thread,
+  r : Json,
+  require_empty? : Bool = false,
+  signal? : Signal,
+) -> String? {
+  let stillfail = thread.surface == stillfail_surface
+  let hint = gs(get(Some(r), "browse"), "workspace")
+  let lines = ["申请查看你在其它工作区的个人密钥列表：\{gtext(Some(r), "reason")}"]
+  if hint is Some(h) && h != "" {
+    lines.push("目标工作区：\{h}")
+  }
+  if !stillfail {
+    lines.push("请在 still.fail 客户端的「密钥」中批准。")
+  }
+  let card = if stillfail {
+    let fs = [
+      ("type", js("options")),
+      (
+        "options",
+        jarr([
+          obj([
+            ("label", js("允许查看")),
+            ("detail", js("仅向本对话提供名称与说明，不含密钥明文")),
+            ("recommended", jb(true)),
+          ]),
+          obj([("label", js("拒绝")), ("detail", js("不提供，通知 agent"))]),
+        ]),
+      ),
+    ]
+    if gs(Some(r), "owner") is Some(o) && o != "" {
+      fs.push(("assignee", js(lower(o))))
+    }
+    fs.push(
+      (
+        "vault",
+        obj([
+          ("request", get(Some(r), "id").unwrap_or(Json::null())),
+          ("name", js("其它工作区的个人密钥")),
+          ("reason", get(Some(r), "reason").unwrap_or(Json::null())),
+          ("mode", js("browse")),
+          ("hosts", jarr([])),
+          ("browse", get(Some(r), "browse").unwrap_or(obj([]))),
+        ]),
+      ),
+    )
+    Some(obj(fs))
+  } else {
+    None
+  }
+  self.post_card(session, thread, join(lines, "\n\n"), card, require_empty, Some(r), signal?)
+}
+
+///|
+fn Secrets::said_browse(self : Secrets, r : Json, items? : Array[Json]) -> String raise {
+  let id = gtext(Some(r), "id")
+  match gtext(Some(r), "status") {
+    "denied" => "The person chose not to share their personal secrets from other workspaces (request \{id})."
+    "expired" => "The request to browse personal secrets from other workspaces (\{id}) was let go."
+    "withdrawn" => "You withdrew the request to browse personal secrets from other workspaces (\{id})."
+    _ => {
+      let list = match items {
+        Some(xs) => xs
+        None => self.cross_listings(gtext(Some(r), "ws"), gtext(Some(r), "session"))
+      }
+      let summary = list.map(e => {
+        let l = get(Some(e), "listing")
+        let fs = [
+          ("item", get(Some(e), "item").unwrap_or(Json::null())),
+          ("name", get(l, "name").unwrap_or(Json::null())),
+        ]
+        if truthy(get(l, "about")) {
+          fs.push(("about", get(l, "about").unwrap()))
+        }
+        fs.push(("kind", get(l, "kind").unwrap_or(Json::null())))
+        fs.push(("modes", get(l, "modes").unwrap_or(Json::null())))
+        fs.push(("hosts", get(l, "hosts").unwrap_or(Json::null())))
+        if truthy(get(l, "env")) {
+          fs.push(("env", get(l, "env").unwrap()))
+        }
+        fs.push(("workspace", get(Some(e), "sourceWs").unwrap_or(Json::null())))
+        fs.push(("workspaceName", get(Some(e), "sourceWsName").unwrap_or(Json::null())))
+        fs.push(("vaultName", get(Some(e), "vaultName").unwrap_or(Json::null())))
+        obj(fs)
+      })
+      "Approved (request \{id}): \{list.length()} personal secret(s) from other workspaces are now listed for this chat (read-only here; use secret_use with item id or name):\n\{stringify_pretty(jarr(summary))}"
+    }
+  }
+}
+
+///|
+/// POST vault/browses: signed BrowseAnswer from the owner's app device.
+pub fn Secrets::browsed(self : Secrets, lock : Lock, sub : String, answer : Json) -> String? raise {
+  guard answer is Object(_) &&
+    gn(Some(answer), "v") == Some(1.0) &&
+    gs(Some(answer), "request") is Some(req_id) &&
+    gs(Some(answer), "ws") is Some(ans_ws) else {
+    return Some("a browse answer is {v: 1, ws, request, items, at, sig}")
+  }
+  let k = self.kept(lock.ws, req_id)
+  guard k is Some(k) && get(Some(k.request), "browse") is Some(Object(_)) && gs(Some(k.request), "ws") == Some(ans_ws) else {
+    return Some("no such cross-workspace browse request")
+  }
+  let status = gtext(Some(k.request), "status")
+  if status != "pending" {
+    return Some("the request is \{status}")
+  }
+  guard ga(Some(answer), "items") is Some(raw_items) && raw_items.length() >= 1 && raw_items.length() <= 500 else {
+    return Some("items must contain 1 to 500 cross-workspace listings")
+  }
+  if !safe_int(get(Some(answer), "at")) {
+    return Some("at is unix seconds")
+  }
+  let by = match gs(get(Some(answer), "sig"), "key") {
+    Some(key) => @vault_crypto.signer_of(lock.view, key)
+    None => None
+  }
+  guard by is Some((signer_sub, _)) &&
+    signer_sub == sub &&
+    lock.email_of(sub).map(lower) == gs(Some(k.request), "owner") else {
+    return Some("only the owner's device in the lock may answer a browse request")
+  }
+  if !@vault_crypto.signed_ok(self.crypto, answer, @vault_crypto.tag_browse) {
+    return Some("the browse answer's signature is invalid")
+  }
+  let workspaces : Map[String, Unit] = Map([])
+  let checked : Array[Json] = []
+  let target_ws = gtext(Some(k.request), "ws")
+  for raw in raw_items {
+    guard raw is Object(_) else { return Some("each cross-workspace listing must be an object") }
+    guard gs(Some(raw), "sourceWs") is Some(sws) && trim(sws) != "" && sws != target_ws else {
+      return Some("sourceWs must name another workspace")
+    }
+    guard gs(Some(raw), "sourceWsName") is Some(sws_name) && trim(sws_name) != "" else {
+      return Some("sourceWsName is required")
+    }
+    guard gs(Some(raw), "vault") is Some(v) && trim(v) != "" else { return Some("vault is required") }
+    guard gs(Some(raw), "vaultName") is Some(vn) && trim(vn) != "" else { return Some("vaultName is required") }
+    guard gs(Some(raw), "item") is Some(it) && trim(it) != "" else { return Some("item is required") }
+    if has(Some(raw), "vaultLasts") {
+      guard gs(Some(raw), "vaultLasts") is Some(vl) && scopes.contains(vl) else {
+        return Some("vaultLasts must be once, hour or chat")
+      }
+    }
+    if listing_ok(get(Some(raw), "listing")) is Some(why) {
+      return Some(why)
+    }
+    workspaces[sws] = ()
+    checked.push(raw)
+  }
+  let now_sec = self.secs()
+  let settled = self.settle(
+    k.request,
+    "granted",
+    prepare=current => {
+      let cur_ws = gtext(Some(current), "ws")
+      let cur_session = gtext(Some(current), "session")
+      let cur_owner = gs(Some(current), "owner").map(lower)
+      for e in checked {
+        let stored = match cur_owner {
+          Some(o) if o != "" => spread(Some(e), [("owner", js(o))])
+          _ => e
+        }
+        ignore(
+          self.db.run(
+            "INSERT OR REPLACE INTO vault_cross_listings (ws, session, item, body, at) VALUES (?, ?, ?, ?, ?)",
+            [js(cur_ws), js(cur_session), js(gtext(Some(e), "item")), js(stringify(stored)), jn(now_sec)],
+          ),
+        )
+      }
+      let next_browse = spread(get(Some(current), "browse"), [
+        ("workspaces", ji(workspaces.length())),
+        ("items", ji(checked.length())),
+      ])
+      set(current, "browse", next_browse)
+    },
+    browse_items=checked,
+  ) catch {
+    Refused(m) => return Some(m)
+    e => raise e
+  }
+  if !settled {
+    return Some(self.decision_changed(k.request))
+  }
+  None
+}
+
 // ── a request taken back by the agent that asked (secret_cancel 撤回) ──
 
 ///|
@@ -972,7 +1332,7 @@ pub fn Secrets::cancel(self : Secrets, session : String, id : String) -> String 
     Some(k) if gs(Some(k.request), "session") == Some(session) => k
     _ =>
       raise Refused(
-        "No such request in this chat: give the id (r_…) secret_use, secret_save, secret_describe or secret_delete answered.",
+        "No such request in this chat: give the id (r_…) secret_list, secret_use, secret_save, secret_describe or secret_delete answered.",
       )
   }
   let r = kept.request

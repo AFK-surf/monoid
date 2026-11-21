@@ -43,13 +43,30 @@ export type Item = {
 /// What an item holds, sealed: `fields` by kind (token `{value}`, ssh_key `{private_key, public_key}`, login
 /// `{username, password, totp?}`, file `{content (its bytes in base64), filename?}`).
 export type Plain = { kind: Kind; name: string; fields: Record<string, string>; domains: string[]; notes: string };
+export type CrossListing = {
+  sourceWs: string;
+  sourceWsName: string;
+  vault: string;
+  vaultName: string;
+  vaultLasts?: Scope;
+  item: string;
+  listing: Listing;
+};
+export type BrowseAnswer = {
+  v: 1;
+  ws: string;
+  request: string;
+  items: CrossListing[];
+  at: number;
+  sig: Sig;
+};
 export type Request = {
-  id: string; ws: string; vault: string; item: string; session: string; chat: string; mode: Mode; reason: string;
+  id: string; ws: string; vault: string; item: string; session: string; chat: string; mode: Mode | "browse"; reason: string;
   timeout?: Timeout;
   command?: string; hosts?: string[]; box: string; at: number;
   /// `withdrawn`: taken back by the agent that asked (secret_cancel) before anyone decided it.
   status: "pending" | "granted" | "denied" | "expired" | "withdrawn";
-  /// The plain library's item's owner, or whom a secret to keep is for (their email).
+  /// The plain library's item's owner, or whom a secret to keep, browse, or cross-workspace request is for (their email).
   owner?: string;
   /// An agent asking to keep a secret (secret_save agent 存入): the item as it is to be listed, written
   /// under `item` into `vault` (empty: one of the person's own, made when they have none).
@@ -66,12 +83,16 @@ export type Request = {
   /// An agent asking to delete the item (secret_delete 删除): its name when asked. Granted by deleting the item
   /// (`vault.approve`); it grants nothing.
   remove?: { name: string };
+  /// An agent asking to browse personal secrets from other workspaces for this chat.
+  browse?: { workspace?: string; workspaces?: number; items?: number };
+  /// An agent asking to use a personal secret from another workspace.
+  cross?: { workspace: string; workspaceName: string; vaultName: string };
 };
 /// `typed`: its secret is what the person types in on its card (nothing sealed: the app writes what was typed); with
 /// `oauth`, the token they sign in to that service for on the card (vault/oauth.ts) instead.
 export type Save = { kind: Kind; name: string; modes: Mode[]; hosts: string[]; env?: string; username?: string; public_key?: string; filename?: string; typed?: true; oauth?: string; about?: string; vaultName?: string; shared?: true };
 export type Timeout = { kind: "idle" | "fixed"; seconds: number };
-export type Grant = { v: 1; ws: string; request: string; vault: string; item: string; mode: Mode; hosts: string[]; scope: Scope; exp: number; timeout?: Timeout; secret: string; at: number; sig: Sig };
+export type Grant = { v: 1; ws: string; request: string; vault: string; item: string; mode: Mode; hosts: string[]; scope: Scope; exp: number; timeout?: Timeout; sourceWs?: string; secret: string; at: number; sig: Sig };
 export type Deny = { v: 1; ws: string; request: string; at: number; sig: Sig };
 
 export const TAG = {
@@ -80,6 +101,7 @@ export const TAG = {
   item: "stillfail-vault-item/1",
   grant: "stillfail-vault-grant/1",
   deny: "stillfail-vault-deny/1",
+  browse: "stillfail-vault-browse/1",
 } as const;
 
 export const keyContext = (ws: string, vault: string, epoch: number) => `stillfail-vault-key/1\0${ws}\0${vault}\0${epoch}`;

@@ -75,7 +75,7 @@ import { Priority } from "../sync/scheduler.ts";
 import type { SpanContext } from "../trace.ts";
 import { get, isObject, utf8 } from "../util.ts";
 import {
-  type BoxCert, type Deny, type Grant, type Item, type Listing, type Plain, type Request, type Save, type Scope, type Vault,
+  type BoxCert, type BrowseAnswer, type CrossListing, type Deny, type Grant, type Item, type Listing, type Plain, type Request, type Save, type Scope, type Vault,
   SCOPES, TAG, allows, boxPublic, decrypt, encryptWith, fromWords, grantContext, itemContext, keyContext, openSeal, recoveryPair, saveContext, rulesCrypto, sealWith, sign, toWords,
 } from "../vault/crypto.ts";
 // @ts-ignore: the MoonBit build's JS, untyped
@@ -136,6 +136,8 @@ type Held = {
   memberChains?: Record<string, Entry[]>;
   /// Non-safe-mode workspace member roles returned by `GET /vault/boxes`.
   memberRoles?: Record<string, string>;
+  /// Cross-workspace personal secret uses recorded on each station of this workspace (by station id).
+  crossUses?: Record<string, CrossUse[]>;
 };
 
 /// A vault's version a station holds, and its items' versions; the signatures of those (`sig`, `sigs`): which of two of
@@ -146,6 +148,8 @@ type Holding = { seq: number; items: Record<string, number>; sig?: string; sigs?
 type PlainRow = { id: string; owner: string; version: number; kind: string; name: string; notes: string; listing?: Listing; at: number; deleted?: true; station: string };
 /// A use as a station says it (vault/secrets.ts `Use`).
 type Use = { item: string; at: number; session: string; chatTitle: string | null; mode: string; command: string | null; hosts: string[]; denied: boolean };
+/// A cross-workspace use as a station says it (GET /vault/cross-uses).
+type CrossUse = { at: number; request: string; sourceWorkspace: string; sourceVault: string; item: string; session: string; chatTitle?: string; mode: string; command?: string; hosts: string[]; denied?: true };
 
 /// The id the plain library goes by where a vault's would.
 export const PLAIN = "plain";
@@ -684,7 +688,7 @@ const ask = (inner: Inner, address: string, method: string, path: string, body: 
 
 /// What a station holds of the vault, read again: its vaults (and their items), the box certificates, the requests.
 /// One that holds none says why (no lock pinned; a station from before).
-function readStation(inner: Inner, address: string): Effect.Effect<void, CoreError> {
+export function readStation(inner: Inner, address: string): Effect.Effect<void, CoreError> {
   return Effect.gen(function* () {
     if (!inner.stations.link(address) || !inner.stations.reachable(address)) return;
     const ws = ofAddress(address);
@@ -738,6 +742,7 @@ function readStation(inner: Inner, address: string): Effect.Effect<void, CoreErr
       }
     }
     for (const v of [...(plainItems !== null ? [PLAIN] : []), ...(list ?? []).map((v) => v.id)]) yield* readUses(inner, address, v);
+    yield* readCrossUses(inner, address);
     // Merge teammates' personal chains and roles before computing `fit`, so their BoxCerts and workspace vaults are
     // verified on the very first station read.
     if (Object.keys(incomingChains).length > 0 || Object.keys(incomingRoles).length > 0) {
@@ -1123,7 +1128,9 @@ function heard(inner: Inner, address: string, name: string, data: unknown): void
     case "vault-request":
       if (typeof d?.id !== "string") return;
       // Decided: a use of its item, read again as its station says it (with its chat's title).
-      if ((d.status === "granted" || d.status === "denied") && typeof d.vault === "string") {
+      if ((d.status === "granted" || d.status === "denied") && isObject(d.cross)) {
+        inner.scheduler.enqueue(address, `${address} vault-cross-uses`, Priority.background, readCrossUses(inner, address));
+      } else if ((d.status === "granted" || d.status === "denied") && typeof d.vault === "string" && d.vault !== "") {
         inner.scheduler.enqueue(address, `${address} vault-uses/${d.vault}`, Priority.background, readUses(inner, address, d.vault));
       }
       change(inner, ws, (h) => {
@@ -1146,6 +1153,23 @@ function readUses(inner: Inner, address: string, vault: string): Effect.Effect<v
   return Effect.flatMap(
     Effect.orElseSucceed(Effect.map(ask(inner, address, "GET", `/vault/uses?vault=${encodeURIComponent(vault)}`), (r) => arr(get(r, "uses")) as Use[]), () => null),
     (uses) => Effect.sync(() => { if (uses !== null) change(inner, ws, (h) => void (h.uses[`${station}/${vault}`] = uses)); }),
+  );
+}
+
+/// Cross-workspace personal secret uses recorded on `address`; old stations returning 404 silently yield [].
+function readCrossUses(inner: Inner, address: string): Effect.Effect<void> {
+  const ws = ofAddress(address);
+  const station = address.slice(ws.length + 1);
+  return Effect.flatMap(
+    Effect.orElseSucceed(
+      Effect.map(ask(inner, address, "GET", "/vault/cross-uses"), (r) => arr(get(r, "uses")) as CrossUse[]),
+      () => [] as CrossUse[],
+    ),
+    (uses) => Effect.sync(() => {
+      change(inner, ws, (h) => {
+        h.crossUses = { ...(h.crossUses ?? {}), [station]: uses };
+      });
+    }),
   );
 }
 
@@ -1191,6 +1215,31 @@ function owner(inner: Inner): Owner {
       seen.read("self");
       seen.read(`lock ${ws}`);
       seen.read(`vault ${ws}`);
+      if (t.topic === "vaultUses" || t.topic === "vaultItems") {
+        const sub = inner.workspaces?.owner(ws) ?? null;
+        if (sub !== null) {
+          for (const [otherWs, otherOwner] of inner.workspaces.owned()) {
+            if (otherWs !== ws && otherOwner === sub) seen.read(`vault ${otherWs}`);
+          }
+        }
+      } else if (t.topic === "vaults") {
+        const reqs = Object.values(held(inner, ws).requests);
+        const hasBrowse = reqs.some((r) => r.status === "pending" && r.browse !== undefined);
+        if (hasBrowse) {
+          const sub = inner.workspaces?.owner(ws) ?? null;
+          if (sub !== null) {
+            for (const [otherWs, otherOwner] of inner.workspaces.owned()) {
+              if (otherWs !== ws && otherOwner === sub) seen.read(`vault ${otherWs}`);
+            }
+          }
+        } else {
+          const crossWorkspaces = new Set<string>();
+          for (const r of reqs) {
+            if (r.status === "pending" && r.cross !== undefined) crossWorkspaces.add(r.cross.workspace);
+          }
+          for (const otherWs of crossWorkspaces) seen.read(`vault ${otherWs}`);
+        }
+      }
       return { ok: t.topic === "vaults" ? vaultsView(inner, ws) : t.topic === "vaultUses" ? usesView(inner, ws, String(t.vault), String(t.item)) : itemsView(inner, ws, String(t.vault)) };
     },
   };
@@ -1208,7 +1257,97 @@ const able = (inner: Inner) => inner.host.appKeys === true && typeof inner.host.
 /// a secret to keep while this device's vault is not on (开启密钥库 first); `noKey`: this device does not hold a key to
 /// this encrypted vault yet; else `approve`, a use given for `lasts` at the longest (the item's, else its vault's; a
 /// request not held yet, as one with none said).
-export type AskAnswer = { answer: "approve" | "setUp" | "elsewhere" | "notHere" | "noKey"; lasts?: Scope; saveTargets?: { id: string; name: string; workspace?: boolean }[] };
+export type AskAnswer = {
+  answer: "approve" | "setUp" | "elsewhere" | "notHere" | "noKey" | "empty";
+  lasts?: Scope;
+  saveTargets?: { id: string; name: string; workspace?: boolean }[];
+  browseWorkspaces?: number;
+  browseItems?: number;
+};
+
+export type BrowseCandidateItem = {
+  vault: string;
+  vaultName: string;
+  item: string;
+  name: string;
+  about?: string;
+  kind: string;
+  howText: string;
+};
+
+export type BrowseCandidateWorkspace = {
+  id: string;
+  name: string;
+  items: BrowseCandidateItem[];
+};
+
+export type BrowseCandidates = {
+  workspaces: BrowseCandidateWorkspace[];
+  unkeyedWorkspaces: number;
+};
+
+/// Pure local SQLite read of eligible personal secrets across other workspaces owned by the same account.
+/// Security boundaries (hard-enforced):
+/// - only same-account workspaces (`otherWs !== ws`);
+/// - verified source lock `lockA` with `selfA.sub === ownerSub`;
+/// - only personal vaults (`scope !== "workspace" && owner === ownerSub && !deleted && trusted`);
+/// - only vaults whose key this device holds;
+/// - only non-deleted items with an agent `listing` under the vault's current epoch.
+export function browseCandidates(inner: Inner, ws: string): BrowseCandidates {
+  const ownerSub = inner.workspaces?.owner(ws) ?? null;
+  const signer = signerOf(inner);
+  if (ownerSub === null || signer === null || !able(inner)) return { workspaces: [], unkeyedWorkspaces: 0 };
+  const myBox = mem(inner).box;
+  const workspaces: BrowseCandidateWorkspace[] = [];
+  let unkeyedWorkspaces = 0;
+  for (const [otherWs, otherOwner] of inner.workspaces.owned()) {
+    if (otherWs === ws || otherOwner !== ownerSub) continue;
+    if (inner.data.record("vault", otherWs) === undefined && inner.scheduler) {
+      for (const s of stationsOf(inner, otherWs)) {
+        const addr = `${otherWs}/${s.id}`;
+        inner.scheduler.enqueue(addr, `${addr} vault`, Priority.background, readStation(inner, addr));
+      }
+    }
+    const lockA = lockOf(inner, otherWs);
+    if (lockA instanceof CoreError) continue;
+    const selfA = me(lockA, signer);
+    if (selfA === null || selfA.sub !== ownerSub) continue;
+    const hA = held(inner, otherWs);
+    const mineA = hA.boxes[selfA.device];
+    const mineValid = mineA !== undefined && certOwner(lockA, mineA) !== null && mineA.box === myBox;
+    const wsItems: BrowseCandidateItem[] = [];
+    let hasUnkeyed = false;
+    for (const v of Object.values(hA.vaults)) {
+      if (v.deleted || v.scope === "workspace" || v.owner !== ownerSub || !trusted(lockA, v)) continue;
+      const keyed = mineValid && v.keys.some((k) => k.cert.device === selfA.device && k.cert.box === mineA!.box);
+      if (!keyed || readAs(inner, otherWs, lockA, v, selfA) === null) {
+        hasUnkeyed = true;
+        continue;
+      }
+      for (const i of Object.values(items(inner, otherWs, v.id))) {
+        if (i.deleted || i.listing === undefined || i.epoch !== v.epoch) continue;
+        const l = i.listing;
+        wsItems.push({
+          vault: v.id,
+          vaultName: v.name,
+          item: i.id,
+          name: l.name,
+          ...(l.about ? { about: l.about } : {}),
+          kind: l.kind,
+          howText: l.modes.map((m) => howText(m, l.hosts)).join("、"),
+        });
+      }
+    }
+    if (wsItems.length > 0) {
+      wsItems.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : a.item < b.item ? -1 : a.item > b.item ? 1 : 0));
+      workspaces.push({ id: otherWs, name: workspaceName(inner, otherWs), items: wsItems });
+    } else if (hasUnkeyed) {
+      unkeyedWorkspaces++;
+    }
+  }
+  workspaces.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return { workspaces, unkeyedWorkspaces };
+}
 
 /// Whether a secret an agent asks to keep was sealed by its station to the person's devices set up then, this one not
 /// among them (set up since, or its certificate not on that station then): approved on one of those, or here once
@@ -1259,7 +1398,7 @@ function vaultNoKey(
   return isSetUp() && personalVaults.length > 0 && !personalVaults.some(keyed);
 }
 
-export function askAnswers(inner: Inner, ws: string, asks: { request: string; save: boolean }[]): AskAnswer[] {
+export function askAnswers(inner: Inner, ws: string, asks: { request: string; save: boolean; browse?: boolean; crossWs?: string }[]): AskAnswer[] {
   const lock = lockOf(inner, ws);
   const plain = plainMode(inner, ws);
   if (!able(inner) && !plain) return asks.map(() => ({ answer: "elsewhere" }));
@@ -1302,8 +1441,41 @@ export function askAnswers(inner: Inner, ws: string, asks: { request: string; sa
     saveTargetsCache = [...personal, ...workspace].map((v) => ({ id: v.id, name: v.name, ...(v.scope === "workspace" ? { workspace: true } : {}) }));
     return saveTargetsCache;
   };
-  return asks.map(({ request, save }): AskAnswer => {
+  let browseCache: BrowseCandidates | undefined;
+  const candidatesOf = (): BrowseCandidates => (browseCache ??= browseCandidates(inner, ws));
+  return asks.map(({ request, save, browse, crossWs }): AskAnswer => {
     const r = h.requests[request];
+    if (browse || r?.browse !== undefined) {
+      if (!able(inner) || lock instanceof CoreError || self === null) return { answer: "elsewhere" };
+      const cands = candidatesOf();
+      const browseWorkspaces = cands.workspaces.length;
+      const browseItems = cands.workspaces.reduce((n, w) => n + w.items.length, 0);
+      return browseItems === 0
+        ? { answer: "empty", browseWorkspaces: 0, browseItems: 0 }
+        : { answer: "approve", browseWorkspaces, browseItems };
+    }
+    const sourceWs = r?.cross?.workspace ?? crossWs;
+    if (sourceWs !== undefined) {
+      if (!able(inner) || lock instanceof CoreError || self === null) return { answer: "elsewhere" };
+      const lockA = lockOf(inner, sourceWs);
+      const selfA = lockA instanceof CoreError ? null : me(lockA, signerOf(inner));
+      const hA = held(inner, sourceWs);
+      const mineA = selfA === null || lockA instanceof CoreError ? undefined : hA.boxes[selfA.device];
+      const mineAOk = !(lockA instanceof CoreError) && selfA !== null && selfA.sub === self.sub && mineA !== undefined && certOwner(lockA, mineA) !== null && mineA.box === mem(inner).box;
+      let sourceNoKey = !mineAOk;
+      if (!sourceNoKey && !(lockA instanceof CoreError) && r !== undefined) {
+        const vA = hA.vaults[r.vault];
+        sourceNoKey =
+          vA === undefined ||
+          vA.deleted ||
+          vA.scope === "workspace" ||
+          vA.owner !== self.sub ||
+          readAs(inner, sourceWs, lockA, vA, selfA) === null ||
+          !vA.keys.some((k) => k.cert.device === selfA!.device && k.cert.box === mineA!.box);
+      }
+      const lasts: Scope = r === undefined ? "chat" : (items(inner, sourceWs, r.vault)[r.item]?.listing?.lasts ?? hA.vaults[r.vault]?.lasts ?? "chat");
+      return { answer: sourceNoKey ? "noKey" : "approve", lasts };
+    }
     const noKey = (): boolean =>
       !plain && !(lock instanceof CoreError) && vaultNoKey(lock, h, self, mineOf(), mem(inner).box, r, save, isSetUp, activeMemberVaults);
     if (save) {
@@ -1840,13 +2012,15 @@ export function vaultsView(inner: Inner, ws: string): J {
   const requestRow = (r: Request, itemName: string | null, vaultName: string, lasts: Scope) => ({
     id: r.id, vault: r.vault, vaultName, item: r.item, itemName, lasts,
     session: r.session, chat: r.chat, station: h.asked[r.id] ?? null, mode: r.mode, reason: r.reason, command: r.command ?? null, hosts: r.hosts ?? [], at: r.at, ...(r.timeout ? { timeoutKind: r.timeout.kind, timeoutSeconds: r.timeout.seconds } : {}),
-    howText: r.describe ? describeText(itemName ?? r.describe.was.name, { name: r.describe.name, about: r.describe.about, wasAbout: r.describe.was.about }) : r.save?.about ? aboutText(r.save.about) : howText(r.mode, r.hosts ?? []),
+    howText: r.browse !== undefined ? "" : r.describe ? describeText(itemName ?? r.describe.was.name, { name: r.describe.name, about: r.describe.about, wasAbout: r.describe.was.about }) : r.save?.about ? aboutText(r.save.about) : howText(r.mode, r.hosts ?? []),
     // A secret an agent asks to keep: what kind, the account it is for, whether the person types it in.
     ...(r.save ? { save: { kind: r.save.kind, ...(r.save.username ? { username: r.save.username } : {}), ...(r.save.filename ? { filename: r.save.filename } : {}), ...(r.save.typed ? { typed: true } : {}), ...(r.save.oauth ? { oauth: r.save.oauth } : {}), ...(r.save.vaultName ? { vaultName: r.save.vaultName } : {}), ...(r.save.shared ? { shared: true } : {}) } } : {}),
     // An item to rename or say what it is: its name and about as they would be (and its about as it was).
     ...(r.describe ? { describe: { name: r.describe.name, about: r.describe.about, wasAbout: r.describe.was.about } } : {}),
     // An item to delete.
     ...(r.remove ? { remove: true } : {}),
+    ...(r.browse !== undefined ? { browse: r.browse } : {}),
+    ...(r.cross !== undefined ? { cross: r.cross } : {}),
   });
   const personal = t("core-misc.vault.personal");
   // Security mode on and its lock not checking out here: no plain library and nothing signed (a lock that does not
@@ -1918,10 +2092,48 @@ export function vaultsView(inner: Inner, ws: string): J {
   let activeVaults: Vault[] | undefined;
   const activeMemberVaults = (): Vault[] =>
     (activeVaults ??= self === null ? [] : Object.values(h.vaults).filter((v) => !v.deleted && trusted(lock, v) && v.members.includes(self.sub)));
+  let browseCache: BrowseCandidates | undefined;
+  const browseCounts = (): { browseWorkspaces: number; browseItems: number } => {
+    const cands = (browseCache ??= browseCandidates(inner, ws));
+    return {
+      browseWorkspaces: cands.workspaces.length,
+      browseItems: cands.workspaces.reduce((n, w) => n + w.items.length, 0),
+    };
+  };
   const requests = Object.values(h.requests)
-    .filter((r) => r.status === "pending" && r.vault !== PLAIN && (r.save !== undefined || (h.vaults[r.vault] !== undefined && !h.vaults[r.vault]!.deleted && sub !== null && h.vaults[r.vault]!.members.includes(sub))))
+    .filter((r) => r.status === "pending" && r.vault !== PLAIN && (r.save !== undefined || r.browse !== undefined || r.cross !== undefined || (h.vaults[r.vault] !== undefined && !h.vaults[r.vault]!.deleted && sub !== null && h.vaults[r.vault]!.members.includes(sub))))
     .sort((a, b) => a.at - b.at)
     .map((r) => {
+      if (r.browse !== undefined) {
+        return { ...requestRow(r, null, personal, "chat"), ...browseCounts() };
+      }
+      if (r.cross !== undefined) {
+        const srcWs = r.cross.workspace;
+        const hA = held(inner, srcWs);
+        const listingA = items(inner, srcWs, r.vault)[r.item]?.listing;
+        const lockA = lockOf(inner, srcWs);
+        const selfA = lockA instanceof CoreError ? null : me(lockA, signerOf(inner));
+        const mineA = selfA === null || lockA instanceof CoreError ? undefined : hA.boxes[selfA.device];
+        const vA = hA.vaults[r.vault];
+        const crossNoKey =
+          lockA instanceof CoreError ||
+          self === null ||
+          selfA === null ||
+          selfA.sub !== self.sub ||
+          mineA === undefined ||
+          certOwner(lockA, mineA) === null ||
+          mineA.box !== m.box ||
+          vA === undefined ||
+          vA.deleted ||
+          vA.scope === "workspace" ||
+          vA.owner !== self.sub ||
+          readAs(inner, srcWs, lockA, vA, selfA) === null ||
+          !vA.keys.some((k) => k.cert.device === selfA.device && k.cert.box === mineA.box);
+        return {
+          ...requestRow(r, listingA?.name ?? null, r.cross.vaultName, listingA?.lasts ?? vA?.lasts ?? "chat"),
+          ...(crossNoKey ? { noKey: true } : {}),
+        };
+      }
       const listing = items(inner, ws, r.vault)[r.item]?.listing;
       const isSave = r.save !== undefined || r.describe !== undefined || r.remove !== undefined;
       const noKey = !plain && vaultNoKey(lock, h, self, mine, m.box, r, isSave, () => setUp, activeMemberVaults);
@@ -1951,18 +2163,50 @@ const clockOf = (inner: Inner) => {
 };
 
 /// A vault's uses (any station's, for the plain library), the latest first, as the pages show them.
+/// For a personal vault, also merges cross-workspace uses from other same-account workspaces.
 function usesOf(inner: Inner, ws: string, vault: string): J[] {
   const h = held(inner, ws);
   const clock = clockOf(inner);
-  return Object.entries(h.uses)
+  const combined: (Use & { station: string; workspace?: string; workspaceName?: string })[] = Object.entries(h.uses)
     .filter(([k]) => k.slice(k.indexOf("/") + 1) === vault)
-    .flatMap(([k, list]) => list.map((u) => ({ ...u, station: k.slice(0, k.indexOf("/")) })))
+    .flatMap(([k, list]) => list.map((u) => ({ ...u, station: k.slice(0, k.indexOf("/")) })));
+  const v = h.vaults[vault];
+  const ownerSub = inner.workspaces?.owner(ws) ?? null;
+  if (v !== undefined && v.scope !== "workspace" && ownerSub !== null && v.owner === ownerSub) {
+    for (const [otherWs, otherOwner] of inner.workspaces.owned()) {
+      if (otherWs === ws || otherOwner !== ownerSub) continue;
+      const crossUses = held(inner, otherWs).crossUses;
+      if (!isObject(crossUses)) continue;
+      const otherName = workspaceName(inner, otherWs);
+      for (const [st, list] of Object.entries(crossUses)) {
+        for (const u of list ?? []) {
+          if (u.sourceWorkspace === ws && u.sourceVault === vault) {
+            combined.push({
+              item: u.item,
+              at: u.at,
+              session: u.session,
+              station: st,
+              chatTitle: u.chatTitle ?? null,
+              mode: u.mode,
+              command: u.command ?? null,
+              hosts: u.hosts ?? [],
+              denied: u.denied === true,
+              workspace: otherWs,
+              workspaceName: otherName,
+            });
+          }
+        }
+      }
+    }
+  }
+  return combined
     .sort((a, b) => b.at - a.at)
     .map((u) => ({
       item: u.item, at: stamp(u.at * 1000, clock), session: u.session, station: u.station, chatTitle: u.chatTitle, mode: u.mode, command: u.command, hosts: u.hosts,
       // how, in a line: the command it ran (and its way), else how it was given
       howText: typeof u.command === "string" && u.command !== "" ? `${u.command} · ${modeText(u.mode)}` : howText(u.mode, u.hosts ?? []),
       ...(u.denied ? { denied: true } : {}),
+      ...(u.workspace !== undefined ? { workspace: u.workspace, workspaceName: u.workspaceName } : {}),
     }));
 }
 
@@ -2088,8 +2332,17 @@ function run(inner: Inner, c: Of, ctx: SpanContext | null): Effect.Effect<unknow
       return v.migrate();
     case "recover":
       return v.recover(p("words"));
-    case "approve":
-      return v.approve(p("request"), (str(c.params.scope) ?? "once") as Scope, c.params.typed, c.params.timeout, str(c.params.vault) ?? undefined);
+    case "browseCandidates":
+      return Effect.succeed(browseCandidates(inner, c.workspace));
+    case "approve": {
+      const selected = Array.isArray(c.params.items)
+        ? (c.params.items as unknown[]).filter(
+            (x): x is { workspace: string; vault: string; item: string } =>
+              isObject(x) && typeof x.workspace === "string" && typeof x.vault === "string" && typeof x.item === "string",
+          )
+        : undefined;
+      return v.approve(p("request"), (str(c.params.scope) ?? "once") as Scope, c.params.typed, c.params.timeout, str(c.params.vault) ?? undefined, selected);
+    }
     case "deny":
       return v.deny(p("request"));
     case "setLasts":
@@ -3217,19 +3470,21 @@ class Vaults {
   /// An agent's request granted: the item's plaintext sealed to the keeper's key for this request, signed by this
   /// device (the person asked each time, whether the vault is unlocked or not). One to keep a secret: kept, with what
   /// the person `typed` where it is theirs to type in.
-  approve(id: string, scope: Scope, typed?: unknown, timeoutValue?: unknown, targetVault?: string): Effect.Effect<unknown, CoreError> {
+  approve(id: string, scope: Scope, typed?: unknown, timeoutValue?: unknown, targetVault?: string, selectedItems?: { workspace: string; vault: string; item: string }[]): Effect.Effect<unknown, CoreError> {
     const self = this;
     return Effect.gen(function* () {
       const inner = self.#inner;
+      const asked = yield* self.#request(id);
+      if (asked.r.browse !== undefined) return yield* self.#approveBrowse(asked.r, asked.station, selectedItems);
       if (!["once", "hour", "chat"].includes(scope)) return yield* Effect.fail(CoreError.invalid("scope: once, hour or chat"));
       const timeout = timeoutValue as { kind?: unknown; seconds?: unknown } | undefined;
       if (timeout !== undefined && (timeout === null || typeof timeout !== "object" || (timeout.kind !== "idle" && timeout.kind !== "fixed") || !Number.isSafeInteger(timeout.seconds) || (timeout.seconds as number) < 1 || (timeout.seconds as number) > 30 * 86400 || scope === "once" || (timeout.seconds as number) > GRANT_SECS[scope])) return yield* Effect.fail(CoreError.invalid("invalid timeout"));
       // The plain library's: its owner says so, nothing to open or sign (the station holds the value).
-      const asked = yield* self.#request(id);
       if (asked.r.save) return yield* self.#keepSaved(asked.r, asked.station, typed, targetVault);
       if (asked.r.describe) return yield* self.#describe(asked.r, asked.station);
       if (asked.r.remove) return yield* self.#remove(asked.r, asked.station);
       if (asked.r.timeout && scope !== "once" && !timeout) return yield* Effect.fail(CoreError.invalid("this request needs an approval with its timeout; update the app"));
+      if (asked.r.cross !== undefined) return yield* self.#approveCross(asked.r, asked.station, scope, timeout as { kind: "idle" | "fixed"; seconds: number } | undefined);
       if (asked.r.vault === PLAIN) {
         if (!plainMode(inner, self.ws)) return yield* fail("vault_locked", t("core-misc.vault.plainLocked"));
         const { r, station } = asked;
@@ -3284,12 +3539,13 @@ class Vaults {
           if (put._tag === "Success") bytes = utf8(JSON.stringify(plain));
         }
       }
+      const mode = r.mode === "browse" ? "proxy" : r.mode;
       const grantTo = (box: string): Grant => {
         const eph = new Uint8Array(32);
         inner.host.randomBytes(eph);
         const now = nowS(inner);
         return sign(
-          { v: 1 as const, ws: self.ws, request: r.id, vault: v.id, item: item.id, mode: r.mode, hosts: r.hosts ?? item.listing?.hosts ?? [], scope, exp: now + (timeout ? timeout.seconds as number : GRANT_SECS[scope]), ...(timeout ? { timeout: timeout as { kind: "idle" | "fixed"; seconds: number } } : {}), secret: sealWith(box, bytes, grantContext(self.ws, r.id), eph), at: now },
+          { v: 1 as const, ws: self.ws, request: r.id, vault: v.id, item: item.id, mode, hosts: r.hosts ?? item.listing?.hosts ?? [], scope, exp: now + (timeout ? timeout.seconds as number : GRANT_SECS[scope]), ...(timeout ? { timeout: timeout as { kind: "idle" | "fixed"; seconds: number } } : {}), secret: sealWith(box, bytes, grantContext(self.ws, r.id), eph), at: now },
           TAG.grant,
           signer,
         );
@@ -3307,6 +3563,131 @@ class Vaults {
         yield* self.#station(station, "POST", "/vault/grants", grant);
       }
       self.#settled(r.id, { status: "granted", scope, ...(timeout ? { timeout: timeout as { kind: "idle" | "fixed"; seconds: number } } : {}) });
+      return { request: r.id, scope, exp: grant.exp };
+    });
+  }
+
+  /// Approve a cross-workspace browse request (`secret_list` other_workspaces): re-verifies every candidate against
+  /// strict personal-vault security rules, signs `BrowseAnswer` with `TAG.browse`, and posts to `/vault/browses`.
+  #approveBrowse(r: Request, station: string, selected?: { workspace: string; vault: string; item: string }[]): Effect.Effect<unknown, CoreError> {
+    const self = this;
+    return Effect.gen(function* () {
+      const inner = self.#inner;
+      const { signer, self: who } = yield* self.#ready();
+      const myBox = mem(inner).box;
+      const wanted = selected !== undefined
+        ? selected
+        : browseCandidates(inner, self.ws).workspaces.flatMap((w) => w.items.map((it) => ({ workspace: w.id, vault: it.vault, item: it.item })));
+      if (wanted.length === 0) return yield* fail("vault_browse_empty", t("core-misc.vault.browseEmpty"));
+      const listings: CrossListing[] = [];
+      const seen = new Set<string>();
+      const sourceWorkspaces = new Set<string>();
+      for (const pick of wanted) {
+        const key = `${pick.workspace}/${pick.vault}/${pick.item}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if (pick.workspace === self.ws) return yield* fail("vault_invalid", t("core-misc.vault.unknown"));
+        if (inner.workspaces.owner(pick.workspace) !== who.sub) return yield* fail("vault_not_owner", t("core-misc.vault.notOwner"));
+        const lockA = lockOf(inner, pick.workspace);
+        if (lockA instanceof CoreError) return yield* Effect.fail(lockA);
+        const selfA = me(lockA, signer.id);
+        if (selfA === null || selfA.sub !== who.sub) return yield* fail("vault_not_signer", t("core-misc.vault.notSigner"));
+        const hA = held(inner, pick.workspace);
+        const vA = hA.vaults[pick.vault];
+        if (!vA || vA.deleted || vA.scope === "workspace" || vA.owner !== who.sub || !trusted(lockA, vA)) {
+          return yield* fail("vault_unknown", t("core-misc.vault.unknown"));
+        }
+        const mineA = hA.boxes[selfA.device];
+        if (mineA === undefined || certOwner(lockA, mineA) === null || mineA.box !== myBox || !vA.keys.some((k) => k.cert.device === selfA.device && k.cert.box === mineA.box)) {
+          return yield* fail("vault_no_key", t("core-misc.vault.noKey"));
+        }
+        const itemA = items(inner, pick.workspace, vA.id)[pick.item];
+        if (!itemA || itemA.deleted || itemA.listing === undefined || itemA.epoch !== vA.epoch) {
+          return yield* fail("vault_unknown", t("core-misc.vault.unknownItem"));
+        }
+        sourceWorkspaces.add(pick.workspace);
+        listings.push({
+          sourceWs: pick.workspace,
+          sourceWsName: workspaceName(inner, pick.workspace),
+          vault: vA.id,
+          vaultName: vA.name,
+          ...(vA.lasts ? { vaultLasts: vA.lasts } : {}),
+          item: itemA.id,
+          listing: itemA.listing,
+        });
+      }
+      if (listings.length === 0 || listings.length > 500) return yield* fail("vault_browse_empty", t("core-misc.vault.browseEmpty"));
+      const answer: BrowseAnswer = sign(
+        { v: 1 as const, ws: self.ws, request: r.id, items: listings, at: nowS(inner) },
+        TAG.browse,
+        signer,
+      );
+      yield* self.#station(station, "POST", "/vault/browses", answer);
+      self.#settled(r.id, { status: "granted", browse: { workspaces: sourceWorkspaces.size, items: listings.length } });
+      return { request: r.id, workspaces: sourceWorkspaces.size, items: listings.length };
+    });
+  }
+
+  /// Approve a cross-workspace personal secret use (`r.cross`): dual-lock verified (`lockB` + `lockA`), decrypts
+  /// from local SQLite cache under `wsA`, re-seals under `grantContext(wsB, r.id)` to `r.box`, and posts `Grant`
+  /// with `sourceWs: wsA`.
+  #approveCross(r: Request, station: string, scope: Scope, timeout?: { kind: "idle" | "fixed"; seconds: number }): Effect.Effect<unknown, CoreError> {
+    const self = this;
+    return Effect.gen(function* () {
+      const inner = self.#inner;
+      const wsA = r.cross!.workspace;
+      if (wsA === self.ws) return yield* fail("vault_invalid", t("core-misc.vault.unknown"));
+      const { signer, self: whoB } = yield* self.#ready();
+      if (inner.workspaces.owner(wsA) !== whoB.sub) return yield* fail("vault_not_owner", t("core-misc.vault.notOwner"));
+      const lockA = lockOf(inner, wsA);
+      if (lockA instanceof CoreError) return yield* Effect.fail(lockA);
+      const whoA = me(lockA, signer.id);
+      if (whoA === null || whoA.sub !== whoB.sub) return yield* fail("vault_not_signer", t("core-misc.vault.notSigner"));
+      const hA = held(inner, wsA);
+      const vA = hA.vaults[r.vault];
+      if (!vA || vA.deleted || vA.scope === "workspace" || vA.owner !== whoB.sub) return yield* fail("vault_unknown", t("core-misc.vault.unknown"));
+      const asA = readAs(inner, wsA, lockA, vA, whoA);
+      if (asA === null) return yield* fail("vault_unknown", t("core-misc.vault.unknown"));
+      const itemA = items(inner, wsA, vA.id)[r.item];
+      if (!itemA || itemA.deleted || itemA.listing === undefined || itemA.epoch !== vA.epoch) {
+        return yield* fail("vault_unknown", t("core-misc.vault.unknownItem"));
+      }
+      if (rules.item_ok_js(asA, vA, null, itemA, true, rulesCrypto) !== null) {
+        return yield* fail("vault_untrusted", t("core-misc.vault.untrusted"));
+      }
+      if (!allows(itemA.listing.lasts ?? vA.lasts, scope)) return yield* fail("vault_scope", t("core-misc.vault.scopeTooLong"));
+      const mineA = vA.keys.find((k) => k.cert.device === whoA.device);
+      if (!mineA) return yield* fail("vault_no_key", t("core-misc.vault.noKey"));
+      const priv = yield* self.#boxKey(t("core-misc.vault.reason.approve", { name: itemA.listing.name }));
+      if (boxPublic(priv) !== mineA.cert.box) return yield* fail("vault_no_key", t("core-misc.vault.noKey"));
+      const vaultKey = yield* Effect.try({ try: () => openSeal(priv, mineA.wrapped, keyContext(wsA, vA.id, vA.epoch)), catch: asCoreError });
+      const bytes = yield* Effect.try({ try: () => decrypt(vaultKey, itemA.ct, itemContext(wsA, vA.id, itemA.id, itemA.version, itemA.epoch)), catch: asCoreError });
+      const grantTo = (box: string): Grant => {
+        const eph = new Uint8Array(32);
+        inner.host.randomBytes(eph);
+        const now = nowS(inner);
+        return sign(
+          {
+            v: 1 as const, ws: self.ws, request: r.id, vault: vA.id, item: itemA.id, mode: r.mode as Grant["mode"],
+            hosts: r.hosts ?? itemA.listing!.hosts ?? [], scope, exp: now + (timeout ? timeout.seconds : GRANT_SECS[scope]),
+            ...(timeout ? { timeout } : {}), sourceWs: wsA,
+            secret: sealWith(box, bytes, grantContext(self.ws, r.id), eph), at: now,
+          },
+          TAG.grant,
+          signer,
+        );
+      };
+      let grant = grantTo(r.box);
+      const sent = yield* Effect.result(self.#station(station, "POST", "/vault/grants", grant));
+      if (sent._tag === "Failure") {
+        if (sent.failure.code !== "vault_refused") return yield* Effect.fail(sent.failure);
+        yield* Effect.ignore(readStation(inner, `${self.ws}/${station}`), { log: "Unhandled", message: "vault station read" });
+        const again = held(inner, self.ws).requests[r.id];
+        if (again?.status !== "pending" || !again.box || again.box === r.box) return yield* Effect.fail(sent.failure);
+        grant = grantTo(again.box);
+        yield* self.#station(station, "POST", "/vault/grants", grant);
+      }
+      self.#settled(r.id, { status: "granted", scope, ...(timeout ? { timeout } : {}) });
       return { request: r.id, scope, exp: grant.exp };
     });
   }
@@ -3399,9 +3780,10 @@ class Vaults {
       const now = nowS(inner);
       const eph = new Uint8Array(32);
       inner.host.randomBytes(eph);
+      const saveMode = r.mode === "browse" ? "proxy" : r.mode;
       const grant: Grant | null = r.box
         ? sign(
-            { v: 1 as const, ws: self.ws, request: r.id, vault: vault.id, item: r.item, mode: r.mode, hosts: r.mode === "proxy" || r.mode === "browser" ? (r.hosts ?? s.hosts) : [], scope, exp: now + GRANT_SECS[scope], ...(scope === "hour" ? { timeout: { kind: "idle" as const, seconds: 3600 } } : {}), secret: sealWith(r.box, utf8(JSON.stringify(body.plain)), grantContext(self.ws, r.id), eph), at: now },
+            { v: 1 as const, ws: self.ws, request: r.id, vault: vault.id, item: r.item, mode: saveMode, hosts: saveMode === "proxy" || saveMode === "browser" ? (r.hosts ?? s.hosts) : [], scope, exp: now + GRANT_SECS[scope], ...(scope === "hour" ? { timeout: { kind: "idle" as const, seconds: 3600 } } : {}), secret: sealWith(r.box, utf8(JSON.stringify(body.plain)), grantContext(self.ws, r.id), eph), at: now },
             TAG.grant,
             signer,
           )
@@ -3480,7 +3862,7 @@ class Vaults {
       }
       // (a secret to keep, no safe mode, their own lock begun nowhere yet: turned down with this app's signer, which the
       // station takes from whoever it is kept for, station/src/vault/secrets.ts `deny`; no vault turned on for it)
-      const signer = asked.r.save !== undefined && able(self.#inner) && personalNone(self.#inner, self.ws) ? yield* Signer.make(self.#inner.host) : (yield* self.#ready()).signer;
+      const signer = (asked.r.save !== undefined || asked.r.browse !== undefined || asked.r.cross !== undefined) && able(self.#inner) && personalNone(self.#inner, self.ws) ? yield* Signer.make(self.#inner.host) : (yield* self.#ready()).signer;
       const { r, station } = yield* self.#request(id);
       const deny: Deny = sign({ v: 1 as const, ws: self.ws, request: r.id, at: nowS(self.#inner) }, TAG.deny, signer);
       yield* self.#station(station, "POST", "/vault/denials", deny);

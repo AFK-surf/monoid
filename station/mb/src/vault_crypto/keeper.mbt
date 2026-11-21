@@ -642,6 +642,121 @@ pub fn Keeper::accept(self : Keeper, lock : @vault.LockView, vault : Json, item 
 }
 
 ///|
+/// Checks and opens a cross-workspace personal secret grant without changing the keeper.
+/// `expected_sub` is the authenticated viewer's sub (whose email matches `request.owner`).
+pub fn Keeper::prepare_accept_cross(
+  self : Keeper,
+  lock : @vault.LockView,
+  entry : Json,
+  request : Json,
+  grant : Json,
+  expected_sub : String,
+) -> Prepared {
+  let g = Some(grant)
+  let r = Some(request)
+  let e = Some(entry)
+  guard grant is Object(_) && get(g, "v") is Some(Number(1.0, ..)) else { return Refusal("a grant is {v: 1, …}") }
+  guard get(r, "status") is Some(String("pending")) else {
+    return Refusal("the request is \{js_string(get(r, "status"))}")
+  }
+  let cross = get(r, "cross")
+  guard cross is Some(Object(_)) else { return Refusal("not a cross-workspace request") }
+  if !same(get(g, "ws"), get(r, "ws")) || !same(get(g, "request"), get(r, "id")) || !same(get(g, "vault"), get(r, "vault")) ||
+    !same(get(g, "item"), get(r, "item")) || !same(get(g, "mode"), get(r, "mode")) {
+    return Refusal("the grant is not for this request as asked")
+  }
+  if !same(get(g, "sourceWs"), get(cross, "workspace")) ||
+    !same(get(e, "sourceWs"), get(cross, "workspace")) ||
+    !same(get(e, "vault"), get(r, "vault")) ||
+    !same(get(e, "item"), get(r, "item")) {
+    return Refusal("the grant's source workspace does not match the request")
+  }
+  let listing = get(e, "listing")
+  if !includes(get(listing, "modes"), get(g, "mode")) {
+    return Refusal("the item is not given by \{js_string(get(g, "mode"))}")
+  }
+  guard get(g, "scope") is Some(String(scope)) && lasts_of(scope) is Some(longest) else {
+    return Refusal("scope is once, hour or chat")
+  }
+  if truthy(get(r, "timeout")) && scope != "once" && get(g, "timeout") is None {
+    return Refusal("this request needs an approval with its timeout; update the app")
+  }
+  let t = get(g, "timeout")
+  if t is Some(_) {
+    if timeout_bad(t, scope) || !safe_int(get(g, "at")) ||
+      !same(get(g, "exp"), Some(Json::number(number(get(g, "at")).unwrap() + number(get(t, "seconds")).unwrap()))) {
+      return Refusal("invalid grant timeout")
+    }
+  }
+  let lasts = match get(listing, "lasts") {
+    None | Some(Null) => get(e, "vaultLasts")
+    l => l
+  }
+  if !allows(lasts, get(g, "scope")) {
+    return Refusal("the item is granted for \{js_string(lasts)} at most")
+  }
+  let now = (self.now)()
+  if !safe_int(get(g, "exp")) || number(get(g, "exp")).unwrap() <= now || number(get(g, "exp")).unwrap() > now + longest + slack {
+    return Refusal("the grant's expiry is out of range for its scope")
+  }
+  let item_hosts = get(listing, "hosts")
+  let hosts_ok = match get(g, "hosts") {
+    Some(Array(hs)) =>
+      hs.iter().all(h => match h {
+        String(s) => includes(item_hosts, Some(h)) || (!s.has_prefix("*.") && host_allowed(s, string_array(item_hosts)))
+        _ => false
+      })
+    _ => false
+  }
+  if !hosts_ok {
+    return Refusal("the grant's hosts are not all the item's")
+  }
+  let no_hosts = get(g, "hosts") is Some(Array(hs)) && hs.is_empty()
+  if get(g, "mode") is Some(String("proxy")) && no_hosts {
+    return Refusal("a grant through the proxy names its hosts")
+  }
+  if get(g, "mode") is Some(String("browser")) && no_hosts {
+    return Refusal("a sign-in's grant names its sites (an app from before sign-ins sends none: update it)")
+  }
+  let by = match get(get(g, "sig"), "key") {
+    Some(String(key)) => signer_of(lock, key)
+    _ => None
+  }
+  guard by is Some((sub, _)) && sub == expected_sub else {
+    return Refusal("a cross-workspace grant is signed by its owner's device in the lock")
+  }
+  if !signed_ok(self.c, grant, tag_grant) {
+    return Refusal("the grant's signature is invalid")
+  }
+  let id = str(get(r, "id")).unwrap_or("undefined")
+  guard self.boxes.get(id) is Some(box) else {
+    return Refusal("this station no longer holds the request's box (it restarted): ask again")
+  }
+  let secret = try {
+    guard get(g, "secret") is Some(String(boxed)) else { raise Refused("no seal") }
+    let ws = js_string(get(r, "ws"))
+    parse_js(text_of_bytes(open_seal(self.c, box, boxed, grant_context(ws, id))))
+  } catch {
+    _ => return Refusal("the grant's secret does not open")
+  }
+  if !(secret is Object(_) || secret is Array(_)) || value_of(secret) is None {
+    return Refusal("the grant's secret has no value to use")
+  }
+  Ready(() => {
+    match self.boxes.get(id) {
+      Some(b) if physical_equal(b, box) => ()
+      _ => return Some("this station no longer holds the request's box (it restarted): ask again")
+    }
+    if number(get(g, "exp")).unwrap() <= (self.now)() {
+      return Some("the grant's expiry is out of range for its scope")
+    }
+    self.boxes.remove(id)
+    self.hold_({ request: with_field(request, "status", Json::string("granted")), grant, secret, uses: 0.0, until: None })
+    None
+  })
+}
+
+///|
 /// Holds an item of the plain library for `request`, as its owner decided: no seal and no signature, the secret read
 /// from the station's own store; the same limits as a grant's otherwise. `d`: `{scope, hosts, listing: {modes, hosts},
 /// lasts, timeout?}`.

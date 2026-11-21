@@ -26,7 +26,7 @@ const VAULT_WORDS = {
 };
 
 export const SECRET_LIST_DESCRIPTION =
-  "List vault secrets you may ask to use (name, about, delivery modes, hosts), your active grants, and vault status. Never returns values. Missing credential: use secret_save (never ask in chat); wrong or obsolete: secret_delete. Skill stillfail-vault.";
+  "List vault secrets you may ask to use (name, about, delivery modes, hosts), your active grants, and vault status. Never returns values. Pass other_workspaces: true (with reason) ONLY when the user explicitly asks to find or use a personal secret from another workspace. Missing credential: use secret_save (never ask in chat); wrong or obsolete: secret_delete. Skill stillfail-vault.";
 
 export const SECRET_USE_DESCRIPTION =
   "Request approval via card to use a secret from secret_list. Non-blocking: you are notified once approved in the app (gives a grant id for secret_run; chat replies never grant). Skill stillfail-vault.";
@@ -44,7 +44,7 @@ export const SECRET_DELETE_DESCRIPTION =
   "Request approval via card to permanently delete a wrong, replaced or obsolete secret from its owner's vault across all chats. Non-blocking (only app approval deletes it).";
 
 export const SECRET_CANCEL_DESCRIPTION =
-  "Withdraw an undecided request of this chat (secret_use, secret_save, secret_describe, secret_delete) when no longer needed, closing its card and removing it from the person's pending list.";
+  "Withdraw an undecided request of this chat (secret_list, secret_use, secret_save, secret_describe, secret_delete) when no longer needed, closing its card and removing it from the person's pending list.";
 
 export const SIGN_IN_DESCRIPTION =
   "Get this chat's browser signed in to a website: the one way to ask for it. A sign-in the person you work for keeps in their vault for the site is asked for on a card; with none kept, first open the site's sign-in page in this chat's browser (the `browser` tool), then call this: a card has them sign in, and you never see what they typed. It does not wait: you are told in this session when the page has left its sign-in, and what to do then (done, stuck). Never ask for a password or a code in the chat, and do not post the tab's screen for a sign-in yourself. Skill stillfail-browser (Sign-ins) says the rest: passkeys, a sign-in that ran out.";
@@ -86,12 +86,29 @@ export function vaultTools(secrets: Secrets, workspace: (session: string) => str
     {
       name: "secret_list",
       description: SECRET_LIST_DESCRIPTION,
-      inputSchema: { type: "object", properties: { person: PERSON }, additionalProperties: false },
+      inputSchema: {
+        type: "object",
+        properties: {
+          person: PERSON,
+          other_workspaces: { type: "boolean", description: "Ask the person to list their personal secrets from other workspaces for this chat. ONLY set true when the user explicitly asks to find or use a personal secret from another workspace." },
+          reason: { type: "string", description: "Required when other_workspaces is true: why you need to browse their personal secrets in other workspaces, in their language." },
+          workspace: { type: "string", description: "Optional with other_workspaces: hint of which workspace name or id to look in." },
+        },
+        additionalProperties: false,
+      },
       run: async (key, args) => {
+        if (args.other_workspaces === true) {
+          return secrets.browse(key, {
+            reason: text(args, "reason"),
+            ...(text(args, "workspace").trim() ? { workspace: text(args, "workspace").trim() } : {}),
+            ...personOf(args),
+          });
+        }
         const person = personOf(args).person;
-        const items = secrets.listings(key, person).map(({ item, listing, vaultName, scope }) => ({
+        const items = secrets.listings(key, person).map(({ item, listing, vaultName, scope, cross }) => ({
           item, name: listing.name, ...(listing.about ? { about: listing.about } : {}), kind: listing.kind, modes: listing.modes, hosts: listing.hosts,
           ...(listing.env ? { env: listing.env } : {}), ...(vaultName !== undefined ? { vaultName } : {}), ...(scope !== undefined ? { scope } : {}),
+          ...(cross !== undefined ? { crossWorkspace: true, workspace: cross.workspace, workspaceName: cross.workspaceName } : {}),
         }));
         const held = secrets.held(key).map((h) => ({ grant: h.request.id, item: h.request.item, mode: h.grant.mode, hosts: h.grant.hosts, scope: h.grant.scope, until: new Date((h.until ?? h.grant.exp) * 1000).toISOString(), ...(h.grant.timeout ? { timeout: h.grant.timeout } : {}), ...(h.grant.mode === "proxy" ? { placeholder: placeholder(h.request.id) } : {}), ...(h.request.runOn ? { station: h.request.runOn.name } : {}), ...(accountOf(h.secret) !== null ? { username: accountOf(h.secret)! } : {}) }));
         const vault = VAULT_WORDS[secrets.status(key, person)];
@@ -227,7 +244,7 @@ export function vaultTools(secrets: Secrets, workspace: (session: string) => str
       description: SECRET_CANCEL_DESCRIPTION,
       inputSchema: {
         type: "object",
-        properties: { request: { type: "string", description: "The pending request id (r_…) secret_use, secret_save, secret_describe or secret_delete answered." } },
+        properties: { request: { type: "string", description: "The pending request id (r_…) secret_list, secret_use, secret_save, secret_describe or secret_delete answered." } },
         required: ["request"],
         additionalProperties: false,
       },
@@ -238,7 +255,7 @@ export function vaultTools(secrets: Secrets, workspace: (session: string) => str
       description: "Post a new card for an existing secret_use or secret_save request whose card stopped waiting after a chat message, if the request is still needed. It reuses the same request and never reads the secret again. A different pending card is not replaced. Only this chat's own undecided request may be reasked.",
       inputSchema: {
         type: "object",
-        properties: { request: { type: "string", description: "The pending request id (r_…) from secret_use, secret_save, secret_describe, secret_delete or the card-state notice." } },
+        properties: { request: { type: "string", description: "The pending request id (r_…) from secret_list, secret_use, secret_save, secret_describe, secret_delete or the card-state notice." } },
         required: ["request"],
         additionalProperties: false,
       },

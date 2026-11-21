@@ -420,7 +420,7 @@ test "the vault's page's request where it is not this device's to answer, or dec
 /// phone's window, drawn.
 fn vault_ask(src : Source) -> @ui.Tester {
   let w : Workspace = { id: "ws1", name: "", emoji: "", icon: "", email: "" }
-  let asked : @settings.Asked = { name: "GitHub token", reason: "", timeout_kind: "", timeout_seconds: 0, approved_timeout_kind: "", approved_timeout_seconds: 0, mode: "proxy", command: "", how_text: "", save_kind: "", save_vault_name: "", save_shared: false, save_targets: [], username: "", filename: "", typed: false, oauth: "", station: "", describe: false, new_name: "", new_about: "", was_about: "", remove: false }
+  let asked : @settings.Asked = { name: "GitHub token", reason: "", timeout_kind: "", timeout_seconds: 0, approved_timeout_kind: "", approved_timeout_seconds: 0, mode: "proxy", command: "", how_text: "", save_kind: "", save_vault_name: "", save_shared: false, save_targets: [], username: "", filename: "", typed: false, oauth: "", station: "", describe: false, new_name: "", new_about: "", was_about: "", remove: false, browse: false, browse_hint: "", browse_workspaces: 0, browse_items: 0, cross_workspace: "", cross_workspace_name: "", cross_vault_name: "" }
   let t = @ui.Tester::new(fn(_c) {  }, w=390.0, h=844.0, platform=2)
   let core = settings_core(src, w)
   @ui.set_view_app(fn(root) {
@@ -784,7 +784,7 @@ test "a save request card defaults to personal vault and only shows shared notic
   }
   let w : Workspace = { id: "ws1", name: "", emoji: "", icon: "", email: "" }
   // Even if an older station sent save_shared=true, default stays personal vault with no shared warning.
-  let asked : @settings.Asked = { name: "Sentry DSN", reason: "存入错误上报配置", timeout_kind: "", timeout_seconds: 0, approved_timeout_kind: "", approved_timeout_seconds: 0, mode: "env", command: "", how_text: "环境变量 · SENTRY_DSN", save_kind: "token", save_vault_name: "Workspace 密钥库", save_shared: true, save_targets: [], username: "", filename: "", typed: false, oauth: "", station: "", describe: false, new_name: "", new_about: "", was_about: "", remove: false }
+  let asked : @settings.Asked = { name: "Sentry DSN", reason: "存入错误上报配置", timeout_kind: "", timeout_seconds: 0, approved_timeout_kind: "", approved_timeout_seconds: 0, mode: "env", command: "", how_text: "环境变量 · SENTRY_DSN", save_kind: "token", save_vault_name: "Workspace 密钥库", save_shared: true, save_targets: [], username: "", filename: "", typed: false, oauth: "", station: "", describe: false, new_name: "", new_about: "", was_about: "", remove: false, browse: false, browse_hint: "", browse_workspaces: 0, browse_items: 0, cross_workspace: "", cross_workspace_name: "", cross_vault_name: "" }
 
   // 1. Default save goes to personal vault (v1) with no shared notice.
   new_run()
@@ -842,4 +842,180 @@ test "workspace vault fixture modes pass audit across wide, narrow, and 1.3x fon
       assert_true(faults.is_empty(), msg=at + ": " + faults.join(" | "))
     }
   }
+}
+
+///|
+/// A cross-workspace browse card (pending, empty, granted, or denied) in a chat message row.
+fn browse_ask_card(
+  src : Source,
+  hint? : String = "",
+  workspaces? : Int = 2,
+  items? : Int = 3,
+  decided_workspaces? : Int = 0,
+  decided_items? : Int = 0,
+  answer? : String = "approve",
+  status? : String = "",
+) -> @ui.Tester {
+  let viewer = Json::object({ "me": Json::object({ "email": Json::string("me@x.com") }) })
+  let browse : Map[String, Json] = Map([])
+  if hint != "" {
+    browse["workspace"] = Json::string(hint)
+  }
+  if status != "" {
+    let dw = if decided_workspaces > 0 { decided_workspaces } else { workspaces }
+    let di = if decided_items > 0 { decided_items } else { items }
+    browse["workspaces"] = Json::number(dw.to_double())
+    browse["items"] = Json::number(di.to_double())
+  }
+  let ask : Map[String, Json] = {
+    "name": Json::string(""),
+    "reason": Json::string("查找个人仓库部署用的 Token"),
+    "mode": Json::string("proxy"),
+    "hosts": Json::array([]),
+    "browse": Json::object(browse),
+    "browseWorkspaces": Json::number(workspaces.to_double()),
+    "browseItems": Json::number(items.to_double()),
+    "answer": Json::string(answer),
+  }
+  if status != "" {
+    ask["status"] = Json::string(status)
+  }
+  let m = message_of({
+    "seq": 3,
+    "ts": "3",
+    "authorKind": "agent",
+    "author": "Claude",
+    "text": "申请查看其它工作区的个人密钥列表",
+    "card": { "type": "options", "vault": "r-browse", "vaultAsk": Json::object(ask) },
+  })
+  let ws : Workspace = { id: "ws1", name: "", emoji: "", icon: "", email: "" }
+  @ui.Tester::new(
+    fn(c) {
+      @sf.begin(c) |> ignore
+      c.with_theme(@sf.ui_theme(), fn() { @ui.old_views_here(c) })
+    },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      let here : @sfpages.MessageNodeHere = {
+        station: "ws1/st1",
+        session: "s-c1",
+        view: fn() { chat_view_made(viewer) },
+        width: fn() { 480.0 },
+        tips,
+        stint: fn() { 0 },
+        jump: None,
+        picture: None,
+      }
+      @sfpages.message_row_node(root, src, here, fn() { m }, core=Some(settings_core(src, ws)))
+      @sf.presented_nodes(root)
+    },
+    w=480.0,
+    h=844.0,
+    platform=0,
+  )
+}
+
+///|
+test "cross-workspace browse card renders pending, empty, granted, and denied states" {
+  // 1. Pending with workspace hint: shows title, safe notice, summary, 允许查看, 拒绝, 选择范围.
+  new_run()
+  let calls : Array[String] = []
+  let t = browse_ask_card(vault_src(["r-browse"], true, calls), hint="个人", workspaces=2, items=3)
+  t.draw()
+  for w in ["查看 个人 等工作区的个人密钥列表", "仅共享名称与说明给本对话，不含明文；使用仍需逐次批准", "已选 2 个工作区，共 3 条个人密钥", "允许查看", "拒绝", "选择范围"] {
+    assert_true(t.find(w) is Some(_), msg="pending: " + w)
+  }
+  t.tap_text("允许查看")
+  t.draw()
+  assert_eq(vt_vault_calls(calls), ["vault.approve {\"workspace\":\"ws1\",\"request\":\"r-browse\",\"scope\":\"once\"}"])
+
+  // 2. Empty state: shows empty notice + only 拒绝 button (no 允许查看, no 选择范围).
+  new_run()
+  let empty_calls : Array[String] = []
+  let te = browse_ask_card(vault_src(["r-browse"], true, empty_calls), workspaces=0, items=0, answer="empty")
+  te.draw()
+  assert_true(te.find("其它工作区暂无可共享的个人密钥") is Some(_))
+  assert_true(te.find("允许查看") is None)
+  assert_true(te.find("选择范围") is None)
+  te.tap_text("拒绝")
+  te.draw()
+  assert_eq(vt_vault_calls(empty_calls), ["vault.deny {\"workspace\":\"ws1\",\"request\":\"r-browse\"}"])
+
+  // 3. Settled granted & denied outcome lines (decided browse.items overrides pending candidate browseItems).
+  new_run()
+  let tg = browse_ask_card(vault_src([], true, []), workspaces=2, items=3, status="granted")
+  tg.draw()
+  assert_true(tg.find("已允许查看其它工作区个人密钥 · 3 条") is Some(_))
+  new_run()
+  let tg1 = browse_ask_card(vault_src([], true, []), workspaces=2, items=3, decided_workspaces=1, decided_items=1, status="granted")
+  tg1.draw()
+  assert_true(tg1.find("已允许查看其它工作区个人密钥 · 1 条") is Some(_))
+  assert_true(tg1.find("已允许查看其它工作区个人密钥 · 3 条") is None)
+  new_run()
+  let td = browse_ask_card(vault_src([], true, []), workspaces=2, items=3, status="denied")
+  td.draw()
+  assert_true(td.find("已拒绝查看其它工作区个人密钥") is Some(_))
+}
+
+///|
+test "cross-workspace browse picker expands workspace, toggles item, updates summary, and approves exact items" {
+  new_run()
+  @sf.presenters_reset()
+  let calls : Array[String] = []
+  let base = fixture("chat-vault-browse")
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      calls.push(name + " " + params.stringify())
+      (base.call)(name, params, done)
+    },
+  }
+  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1100.0, h=800.0, platform=0)
+  t.run_for(@ui.move_most_ms)
+  // Cross-workspace secret_use source notice is visible on the earlier card in the chat.
+  assert_true(t.find("来自工作区「个人」的个人密钥") is Some(_))
+  assert_true(t.find("已允许查看其它工作区个人密钥 · 3 条") is Some(_))
+  // Open picker from pending browse card.
+  vt_press(t, "选择范围")
+  assert_true(t.find("选择可查看的个人密钥") is Some(_))
+  assert_true(t.find("另有 1 个工作区的个人密钥库尚未在本设备授权，暂不可选。") is Some(_))
+  // Expand workspace "个人" and uncheck "Cloudflare API Token".
+  guard t.query(Button, label="展开 个人") is Some(exp) else { fail("missing 展开 个人") }
+  t.tap(exp.rect.0 + exp.rect.2 / 2.0, exp.rect.1 + exp.rect.3 / 2.0)
+  t.frame()
+  vt_rest(t)
+  assert_true(t.find("Cloudflare API Token") is Some(_))
+  vt_press(t, "Cloudflare API Token")
+  // Confirm selection and verify card summary updates to 2 items.
+  vt_press(t, "确定")
+  assert_false(@sf.presenter_visible())
+  assert_true(t.find("已选 2 个工作区，共 2 条个人密钥") is Some(_))
+  assert_true(t.find("已选 2 条") is Some(_))
+  // Approve and verify exact selected items are sent to vault.approve.
+  vt_press(t, "允许查看")
+  let approve_calls = vt_vault_calls(calls).filter(fn(c) { c.has_prefix("vault.approve ") })
+  assert_eq(
+    approve_calls,
+    [
+      "vault.approve {\"workspace\":\"ws1\",\"request\":\"r-browse\",\"scope\":\"once\",\"items\":[{\"workspace\":\"ws-personal\",\"vault\":\"v-p1\",\"item\":\"it-gh\"},{\"workspace\":\"ws-lab\",\"vault\":\"v-l1\",\"item\":\"it-oai\"}]}",
+    ],
+  )
+}
+
+///|
+test "vault item cross-workspace audit row shows target workspace pill and opens target workspace chat" {
+  new_run()
+  let src = fixture_app("settings-vault-item-cross")
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=480.0, h=844.0, platform=0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("产品研发组") is Some(_))
+  assert_true(t.find("运维值班") is Some(_))
+  assert_true(t.find("排查生产环境发布失败") is Some(_))
+  let faults = t.audit().filter(fn(f) { !f.contains("edge_node.mbt") })
+  assert_true(faults.is_empty(), msg="settings-vault-item-cross audit: " + faults.join(" | "))
+  t.tap_text("排查生产环境发布失败")
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.top() is Chat({ station: "ws-team/st2", session: "s-c2", .. }))
 }

@@ -883,6 +883,8 @@ export type ViewsEnv = {
   betaOf: (workspace: string) => boolean;
   /// That account's sub; none where not given.
   subOf?: (workspace: string) => string | null;
+  /// Other workspaces owned by the same signed-in account as `workspace` (for cross-workspace vault reactivity).
+  otherWorkspacesOf?: (workspace: string) => string[];
   /// What still.fail calls the relay at a host.
   relayName: (host: string) => string | null;
   /// Every workspace the signed-in accounts are in (xshare.ts); none where not given.
@@ -922,14 +924,21 @@ export type ViewsEnv = {
 };
 
 /// An agent's request about a vault item a card names (`card.vault`), and whether it is one to keep a secret.
-export type VaultAskOf = { request: string; save: boolean };
+export type VaultAskOf = { request: string; save: boolean; browse?: boolean; crossWs?: string };
 
 /// The request card `card` names and says what it asks (`vaultAsk`); null for any other.
 function vaultAskOf(card: J): VaultAskOf | null {
   const request = typeof get(card, "vault") === "string" ? (card.vault as string) : null;
   const ask = get(card, "vaultAsk");
+  if (request === null || request === "" || !isObject(ask)) return null;
+  const crossWs = str(get(get(ask, "cross"), "workspace"));
   // (a request to rename an item is answered as one to keep: written into the vault, by a device set up)
-  return request === null || request === "" || !isObject(ask) ? null : { request, save: get(ask, "save") !== undefined || get(ask, "describe") !== undefined || get(ask, "remove") !== undefined };
+  return {
+    request,
+    save: get(ask, "save") !== undefined || get(ask, "describe") !== undefined || get(ask, "remove") !== undefined,
+    ...(get(ask, "browse") !== undefined ? { browse: true } : {}),
+    ...(crossWs !== null && crossWs !== "" ? { crossWs } : {}),
+  };
 }
 
 /// The views' environment in a core.
@@ -964,6 +973,15 @@ export function envOf(core: Inner): ViewsEnv {
     betaOf: (workspace) => {
       const sub = owner(workspace);
       return sub !== null && get(get(core.data.record("me", sub), "user"), "beta") === true;
+    },
+    otherWorkspacesOf: (workspace) => {
+      const sub = owner(workspace);
+      if (sub === null) return [];
+      const out: string[] = [];
+      for (const [otherWs, otherOwner] of core.workspaces.owned()) {
+        if (otherWs !== workspace && otherOwner === sub) out.push(otherWs);
+      }
+      return out;
     },
     subOf: owner,
     places: () => xshare.places(core),
@@ -1254,12 +1272,18 @@ export class Views implements Owner {
     const one = vaultAskOf(card);
     if (one === null) return card;
     this.#vaultSeen.read(ws);
+    if (one.browse) {
+      for (const otherWs of this.#core.otherWorkspacesOf?.(ws) ?? []) this.#vaultSeen.read(otherWs);
+    } else if (one.crossWs !== undefined) {
+      this.#vaultSeen.read(one.crossWs);
+    }
     const shown: J = { ...card.vaultAsk, ...(this.#core.vaultAnswers?.(ws, [one])[0] ?? {}) };
     const done = this.local.vaultOutcome(one.request);
     if (done !== undefined && shown.status === undefined) {
       shown.status = done.status;
       if (done.scope !== undefined) shown.scope = done.scope;
       if (done.timeout !== undefined) { shown.approvedTimeoutKind = done.timeout.kind; shown.approvedTimeoutSeconds = done.timeout.seconds; }
+      if (done.browse !== undefined) shown.browse = { ...(isObject(shown.browse) ? shown.browse : {}), ...done.browse };
     }
     return { ...card, vaultAsk: shown };
   }

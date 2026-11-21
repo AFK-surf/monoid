@@ -44,6 +44,15 @@ pub(all) struct Asked {
   was_about : String
   /// one to delete the item (secret_delete)
   remove : Bool
+  /// a request to list personal secrets from other workspaces (`secret_list` other_workspaces)
+  browse : Bool
+  browse_hint : String
+  browse_workspaces : Int
+  browse_items : Int
+  /// source workspace and personal vault metadata for a cross-workspace secret request
+  cross_workspace : String
+  cross_workspace_name : String
+  cross_vault_name : String
 }
 
 ///|
@@ -179,6 +188,30 @@ let vault_typed : @sf.LiveMap[String, @ui.Field] = @sf.LiveMap::new()
 let vault_files : @sf.LiveMap[String, (String, String)] = @sf.LiveMap::new()
 
 ///|
+/// A single personal secret selected in the cross-workspace browse picker.
+priv struct BrowsePickedItem {
+  workspace : String
+  vault : String
+  item : String
+  name : String
+}
+
+///|
+/// The selection chosen in the cross-workspace browse picker for a request.
+priv struct BrowsePick {
+  workspaces : Int
+  items : Array[BrowsePickedItem]
+}
+
+///|
+/// The personal secrets manually selected for each cross-workspace browse request; put back by `reset`.
+let vault_browse_picked : @sf.LiveMap[String, BrowsePick] = @sf.LiveMap::new()
+
+///|
+/// Generation counter for in-flight `vault.browseCandidates` reads so stale callbacks do not open a panel.
+let vault_browse_seq : Ref[Int] = Ref(0)
+
+///|
 /// The target vault manually picked for each save request: (vault_id, vault_name, is_workspace); put back by `reset`.
 let vault_target_picked : @sf.LiveMap[String, (String, String, Bool)] = @sf.LiveMap::new()
 
@@ -211,6 +244,8 @@ fn vault_ask_reset() -> Unit {
   vault_timeout_minutes.clear()
   vault_picked.clear()
   vault_target_picked.clear()
+  vault_browse_picked.clear()
+  vault_browse_seq.val = 0
   vault_pending.clear()
   vault_typed.clear()
   vault_files.clear()
@@ -231,6 +266,8 @@ pub(all) enum Answer {
   NotHere
   /// this device does not hold a key to this encrypted vault yet: approve on an authorized device or get access in Vault
   NoKey
+  /// cross-workspace browse request with no eligible personal secrets in other workspaces on this device
+  Empty
   /// decided already, its card not saying so yet
   Decided
   /// another's to answer: whose (the card's 由…决定)
@@ -252,6 +289,7 @@ pub fn card_answer(answer : String, lasts : String, mine : Bool, who? : String? 
     "elsewhere" => Elsewhere
     "notHere" => NotHere
     "noKey" => NoKey
+    "empty" => Empty
     _ => Approve(lasts)
   }
 }
@@ -281,6 +319,24 @@ fn topic_answer(core : Core, ws : String, request : String, mine : Bool, who : S
         None,
       ),
     )
+  }
+  // cross-workspace personal secret browse request: does not require local workspace vault setup
+  if field(row, "browse") is Some(_) {
+    if !flag(view, "available") {
+      return Some((Elsewhere, false, None))
+    } else if count(row, "browseItems") == 0 {
+      return Some((Empty, false, None))
+    } else {
+      return Some((Approve(""), false, None))
+    }
+  }
+  // cross-workspace personal secret use request: only needs the source vault key on this device
+  if field(row, "cross") is Some(_) {
+    if flag(row, "noKey") {
+      return Some((NoKey, false, None))
+    } else {
+      return Some((Approve(text(row, "lasts")), false, None))
+    }
   }
   // (one to rename the item is answered as one to keep: written into the vault, by a device set up)
   let save = field(row, "save") is Some(_) || field(row, "describe") is Some(_) || flag(row, "remove")
@@ -318,6 +374,48 @@ fn vault_save_shared_text(ask : Asked, request : String) -> String {
 }
 
 ///|
+/// Summary of selected cross-workspace personal secrets for a pending browse request, or "" when not applicable.
+fn vault_browse_summary(ask : Asked, request : String) -> String {
+  if !ask.browse {
+    return ""
+  }
+  match vault_browse_picked.get(request) {
+    Some(p) => {
+      let n = p.items.length()
+      if n == 0 {
+        ""
+      } else if p.workspaces == 1 && n == 1 {
+        fill("android-settings.vault.ask.browseSummaryOneItem", [("name", p.items[0].name)])
+      } else if p.workspaces == 1 {
+        fill("android-settings.vault.ask.browseSummaryOneWs", [("n", n.to_string())])
+      } else {
+        fill("android-settings.vault.ask.browseSummary", [("w", p.workspaces.to_string()), ("n", n.to_string())])
+      }
+    }
+    None =>
+      if ask.browse_items <= 0 {
+        ""
+      } else if ask.browse_workspaces <= 1 {
+        fill("android-settings.vault.ask.browseSummaryOneWs", [("n", ask.browse_items.to_string())])
+      } else {
+        fill("android-settings.vault.ask.browseSummary", [("w", ask.browse_workspaces.to_string()), ("n", ask.browse_items.to_string())])
+      }
+  }
+}
+
+///|
+/// Cross-workspace source notice for a cross-workspace secret use request, or "" otherwise.
+fn vault_cross_source_text(ask : Asked) -> String {
+  if !ask.browse && ask.cross_workspace != "" {
+    let ws_name = if ask.cross_workspace_name != "" { ask.cross_workspace_name } else { ask.cross_workspace }
+    fill("android-settings.vault.ask.crossFrom", [("workspace", ws_name)])
+  } else {
+    ""
+  }
+}
+
+
+///|
 /// How a request ended, in words: the item's name in the words' strong ink (ended_name), the rest
 /// quiet.
 pub fn vault_outcome_words(ask : Asked, status : String, scope : String) -> Array[@ui.Run] {
@@ -326,6 +424,13 @@ pub fn vault_outcome_words(ask : Asked, status : String, scope : String) -> Arra
   let said = fn(key, args) { fill_named(key, args, ended_name, fn(w) { @ui.span(w) }) }
   match status {
     "withdrawn" => [@ui.span(tr("android-settings.vault.ask.withdrawn"))]
+    "granted" if ask.browse =>
+      if ask.browse_items == 1 {
+        [@ui.span(tr("android-settings.vault.ask.browseGrantedOne"))]
+      } else {
+        [@ui.span(fill("android-settings.vault.ask.browseGranted", [("n", ask.browse_items.to_string())]))]
+      }
+    "denied" if ask.browse => [@ui.span(tr("android-settings.vault.ask.browseDenied"))]
     "granted" if ask.remove => said("android-settings.vault.ask.removed", [("name", ask.name)])
     "denied" if ask.remove => said("android-settings.vault.ask.notRemoved", [("name", ask.name)])
     "granted" if ask.describe => said("android-settings.vault.ask.changed", [("name", ask.name)])
@@ -500,6 +605,270 @@ fn vault_timeout_open(request : String, minutes : Int, max_minutes : Int, scope 
         disabled=fn() { !once() && (n() < 1 || n() > max_minutes) },
       )
       |> ignore
+    },
+  )
+}
+
+///|
+/// A candidate personal secret item returned by `vault.browseCandidates`.
+priv struct BrowseCandidateItem {
+  vault : String
+  item : String
+  name : String
+  about : String
+  how_text : String
+}
+
+///|
+/// A candidate source workspace returned by `vault.browseCandidates`.
+priv struct BrowseCandidateWorkspace {
+  id : String
+  name : String
+  items : Array[BrowseCandidateItem]
+}
+
+///|
+// kept across runs: immutable styles for the cross-workspace personal secret browse picker panel
+let vault_browse_panel : @ui.Style = @ui.css("w=Full gap=S3")
+
+///|
+// kept across runs: an immutable style
+let vault_browse_group : @ui.Style = @ui.css("w=Full gap=S1")
+
+///|
+// kept across runs: an immutable style
+let vault_browse_head : @ui.Style = @ui.css("row w=Full gap=S2 align=ACenter min_h=S11")
+
+///|
+// kept across runs: an immutable style
+let vault_browse_ws_name : @ui.TextStyle = @ui.text_style(size=Ui, leading=L5, weight=Medium, color=Fg, w=@sf.grow)
+
+///|
+// kept across runs: an immutable style
+let vault_browse_ws_count : @ui.TextStyle = @ui.text_style(size=Ui, leading=L5, color=Muted, wrap=false)
+
+///|
+// kept across runs: an immutable style
+let vault_browse_items : @ui.Style = @ui.css("w=Full pl=S6 gap=S0_5")
+
+///|
+/// Read local eligible personal secrets from other workspaces (`vault.browseCandidates`) and open the picker panel
+/// whole once answered, dropping the open if another overlay or a newer request superseded this press.
+fn vault_browse_picker_open(core : Core, ws : String, request : String) -> Unit {
+  if core.read_only != "" {
+    (core.say)(core.read_only)
+    return
+  }
+  vault_browse_seq.val += 1
+  let seq = vault_browse_seq.val
+  let shown = @sf.last_presented()
+  (core.call)("vault.browseCandidates", obj([("workspace", str(ws))]), fn(res) {
+    if vault_browse_seq.val != seq || @sf.last_presented() != shown {
+      return
+    }
+    match res {
+      Err(e) =>
+        (core.say)(fill("android-misc.act.failed", [("what", tr("android-settings.vault.browse.title")), ("error", error_text(e))]))
+      Ok(v) => vault_browse_picker_show(request, v)
+    }
+  })
+}
+
+///|
+/// Open the cross-workspace personal secret picker panel for `request` with the candidate payload `v` returned by
+/// `vault.browseCandidates`: supports workspace-level select/deselect and expanding each workspace to pick individual
+/// secrets. Confirming stores the selection in `vault_browse_picked[request]` and closes the panel.
+fn vault_browse_picker_show(request : String, v : Json) -> Unit {
+  let workspaces : Array[BrowseCandidateWorkspace] = items(Some(v), "workspaces").map(fn(w) {
+    let ws = Some(w)
+    let ws_items : Array[BrowseCandidateItem] = items(ws, "items").map(fn(it) {
+      let s = Some(it)
+      {
+        vault: text(s, "vault"),
+        item: text(s, "item"),
+        name: text(s, "name"),
+        about: text(s, "about"),
+        how_text: text(s, "howText"),
+      }
+    })
+    { id: text(ws, "id"), name: text(ws, "name"), items: ws_items }
+  })
+  let unkeyed = count(Some(v), "unkeyedWorkspaces")
+  let item_key = fn(ws_id : String, it : BrowseCandidateItem) { ws_id + "/" + it.vault + "/" + it.item }
+  let picked : @sf.LiveMap[String, Bool] = @sf.LiveMap::new()
+  let existing = @signals.untracked(fn() { vault_browse_picked.get(request) })
+  match existing {
+    Some(prev) => {
+      let kept : Map[String, Bool] = Map([])
+      for p in prev.items {
+        kept[p.workspace + "/" + p.vault + "/" + p.item] = true
+      }
+      for w in workspaces {
+        for it in w.items {
+          let k = item_key(w.id, it)
+          picked[k] = kept.get(k).unwrap_or(false)
+        }
+      }
+    }
+    None =>
+      for w in workspaces {
+        for it in w.items {
+          picked[item_key(w.id, it)] = true
+        }
+      }
+  }
+  let expanded : @sf.LiveMap[String, Bool] = @sf.LiveMap::new()
+  for w in workspaces {
+    let mut n = 0
+    for it in w.items {
+      if picked.get(item_key(w.id, it)).unwrap_or(false) {
+        n += 1
+      }
+    }
+    // Auto-expand partially selected workspaces so the person immediately sees which items are excluded.
+    if n > 0 && n < w.items.length() {
+      expanded[w.id] = true
+    }
+  }
+  let picked_total = fn() {
+    let mut n = 0
+    for w in workspaces {
+      for it in w.items {
+        if picked.get(item_key(w.id, it)).unwrap_or(false) {
+          n += 1
+        }
+      }
+    }
+    n
+  }
+  @sf.panel_nodes(
+    tr("android-settings.vault.browse.title"),
+    from=Unanchored,
+    form=true,
+    fn(p, _) {
+      p.box(fn(b) {
+        @sf.style_node(b, fn() { @sf.panel_words_in_node(b).then(vault_browse_panel) })
+        @sf.words_node(b, fn() { tr("android-settings.vault.browse.lead") }, fn() { @sf.ask_note }) |> ignore
+        for w in workspaces {
+          let ws_id = w.id
+          let ws_name = w.name
+          let ws_items = w.items
+          let ws_total = ws_items.length()
+          let ws_selected = fn() {
+            let mut n = 0
+            for it in ws_items {
+              if picked.get(item_key(ws_id, it)).unwrap_or(false) {
+                n += 1
+              }
+            }
+            n
+          }
+          let all_on = fn() { ws_total > 0 && ws_selected() == ws_total }
+          let is_open = fn() { expanded.get(ws_id).unwrap_or(false) }
+          let toggle_open = fn() { expanded[ws_id] = !@signals.untracked(is_open) }
+          b.box(fn(g) {
+            @sf.style_node(g, fn() { vault_browse_group })
+            g.box(fn(head) {
+              @sf.style_node(head, fn() { vault_browse_head }, in_row=true)
+              @sf.check_node(
+                head,
+                all_on,
+                fn(on) {
+                  for it in ws_items {
+                    picked[item_key(ws_id, it)] = on
+                  }
+                },
+                fn() { fill("android-settings.vault.browse.selectWorkspace", [("name", ws_name)]) },
+              )
+              @sf.words_node(head, fn() { ws_name }, fn() { vault_browse_ws_name }).grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+              @sf.words_node(head, fn() { ws_selected().to_string() + "/" + ws_total.to_string() }, fn() { vault_browse_ws_count }) |> ignore
+              @sf.disclosure_key_node(
+                head,
+                fn() {
+                  fill(
+                    if is_open() { "android-settings.vault.browse.collapse" } else { "android-settings.vault.browse.expand" },
+                    [("name", ws_name)],
+                  )
+                },
+                is_open,
+                toggle_open,
+                side=18.0,
+                icon_size=14.0,
+              )
+            })
+            |> ignore
+            g.show(is_open, fn(list) {
+              @sf.style_node(list, fn() { vault_browse_items })
+              list.each(
+                fn() { ws_items.mapi(fn(i, _) { i }) },
+                fn(i) { i },
+                fn(row, idx) {
+                  let it = ws_items[idx.untracked()]
+                  let k = item_key(ws_id, it)
+                  let note = if it.how_text != "" && it.about != "" {
+                    it.how_text + " — " + it.about
+                  } else if it.how_text != "" {
+                    it.how_text
+                  } else {
+                    it.about
+                  }
+                  @sf.check_row_node(
+                    row,
+                    fn() { it.name },
+                    fn() { picked.get(k).unwrap_or(false) },
+                    fn(on) { picked[k] = on },
+                    note=fn() { note },
+                  )
+                },
+              )
+            })
+          })
+          |> ignore
+        }
+        if unkeyed > 0 {
+          @sf.words_node(
+            b,
+            fn() {
+              if unkeyed == 1 {
+                tr("android-settings.vault.browse.unkeyedOne")
+              } else {
+                fill("android-settings.vault.browse.unkeyed", [("n", unkeyed.to_string())])
+              }
+            },
+            fn() { @sf.ask_note },
+          )
+          |> ignore
+        }
+      })
+      |> ignore
+    },
+    foot=fn(f, close) {
+      @sf.button_node(
+        f,
+        fn() { tr("android-settings.vault.browse.confirm") },
+        fn() {
+          let chosen : Array[BrowsePickedItem] = []
+          let mut ws_count = 0
+          for w in workspaces {
+            let mut any_in_ws = false
+            for it in w.items {
+              if @signals.untracked(fn() { picked.get(item_key(w.id, it)).unwrap_or(false) }) {
+                any_in_ws = true
+                chosen.push({ workspace: w.id, vault: it.vault, item: it.item, name: it.name })
+              }
+            }
+            if any_in_ws {
+              ws_count += 1
+            }
+          }
+          vault_browse_picked[request] = { workspaces: ws_count, items: chosen }
+          close()
+        },
+        tone=Primary,
+        disabled=fn() { picked_total() == 0 },
+      )
+      |> ignore
+      @sf.button_node(f, fn() { tr("common.cancel") }, close, tone=Ghost) |> ignore
     },
   )
 }

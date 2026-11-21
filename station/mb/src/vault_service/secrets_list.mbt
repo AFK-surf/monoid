@@ -3,12 +3,74 @@
 // requests a person may decide, and the uses of a vault's secrets.
 
 ///|
+/// Cross-workspace personal secret listings granted to `session` (empty if archived or deleted),
+/// filtered by `owner` (lowercased email) when provided so multi-person chats never mix owners.
+fn Secrets::cross_listings(self : Secrets, ws : String, session : String, owner? : String) -> Array[Json] raise {
+  if self.ended(session) {
+    return []
+  }
+  let rows = self.db
+    .all("SELECT body FROM vault_cross_listings WHERE ws = ? AND session = ? ORDER BY item", [js(ws), js(session)])
+    .map(r => parse_or_null(js_text(r.get(0))))
+  match owner {
+    None => rows
+    Some(o) => {
+      let want = lower(o)
+      rows.filter(e => gs(Some(e), "owner").map(lower) == Some(want))
+    }
+  }
+}
+
+///|
+/// A single cross-workspace personal secret listing granted to `session` (filtered by `owner` when provided).
+fn Secrets::cross_listing(self : Secrets, ws : String, session : String, item : String, owner? : String) -> Json? raise {
+  if self.ended(session) {
+    return None
+  }
+  match
+    self.db.get("SELECT body FROM vault_cross_listings WHERE ws = ? AND session = ? AND item = ?", [
+      js(ws),
+      js(session),
+      js(item),
+    ]) {
+    Some(r) => {
+      let entry = parse_or_null(js_text(r.get(0)))
+      match owner {
+        Some(o) if gs(Some(entry), "owner").map(lower) != Some(lower(o)) => None
+        _ => Some(entry)
+      }
+    }
+    None => None
+  }
+}
+
+///|
+fn cross_to_listed(e : Json, email : String) -> Listed {
+  let sws = gtext(Some(e), "sourceWs")
+  let sws_name = gtext(Some(e), "sourceWsName")
+  let vname = gtext(Some(e), "vaultName")
+  {
+    vault: gtext(Some(e), "vault"),
+    vault_name: Some(vname),
+    scope: Some("personal"),
+    item: gtext(Some(e), "item"),
+    owner: Some(gs(Some(e), "owner").unwrap_or(email)),
+    listing: get(Some(e), "listing").unwrap_or(Json::null()),
+    cross: Some((sws, sws_name, vname)),
+  }
+}
+
+///|
 /// The items a session may ask for: those with a listing of whoever started its chat (or `person`), in their vaults
-/// (security mode on) or their plain library (off).
+/// (security mode on) or their plain library (off), plus any cross-workspace personal secrets approved for this chat.
 pub fn Secrets::listings(self : Secrets, session : String, person? : String) -> Array[Listed] raise {
   let (ws, lock) = self.place_of(session)
   guard self.person_for(session, person) is Some(email) else { return [] }
-  self.listings_at(ws, lock, email)
+  let out = self.listings_at(ws, lock, email)
+  for e in self.cross_listings(ws, session, owner=email) {
+    out.push(cross_to_listed(e, email))
+  }
+  out
 }
 
 ///|
@@ -23,6 +85,7 @@ fn plain_listings(items : Array[Json]) -> Array[Listed] {
         item: gtext(Some(i), "id"),
         owner: gs(Some(i), "owner"),
         listing: get(Some(i), "listing").unwrap(),
+        cross: None,
       })
     }
   }
@@ -45,6 +108,7 @@ fn vault_listings(lock : Lock, vault : Json, items : Array[Json]) -> Array[Liste
         item: gtext(Some(item), "id"),
         owner: lock.email_of(gtext(Some(vault), "owner")),
         listing: get(Some(item), "listing").unwrap(),
+        cross: None,
       })
     }
   }
@@ -91,18 +155,48 @@ fn first_match(ls : Array[Listed], wanted : String) -> Listed? {
 fn Secrets::find_listing(self : Secrets, session : String, wanted : String, person : String?) -> Listed? raise {
   let (ws, lock) = self.place_of(session)
   guard self.person_for(session, person) is Some(email) else { return None }
+  let check_local_collision = fn(local_found : Listed) -> Listed raise {
+    if lower(local_found.item) == wanted {
+      return local_found
+    }
+    let cross_matches = []
+    for e in self.cross_listings(ws, session, owner=email) {
+      if lower(gtext(get(Some(e), "listing"), "name")) == wanted {
+        cross_matches.push(e)
+      }
+    }
+    if cross_matches.length() > 0 {
+      let parts = ["\{local_found.item} (this workspace)"]
+      for e in cross_matches {
+        let eid = gtext(Some(e), "item")
+        let ews = gtext(Some(e), "sourceWsName")
+        let evn = gtext(Some(e), "vaultName")
+        parts.push("\{eid} (\{ews} / \{evn})")
+      }
+      let lname = stringify(js(gtext(Some(local_found.listing), "name")))
+      let choices = parts.join(", ")
+      raise Refused("Multiple secrets named \{lname}: pass the item id instead: \{choices}.")
+    }
+    local_found
+  }
   // The prefix and any remaining reads in one snapshot.
   self.db.exec("SAVEPOINT vault_find_listing")
   let found = (fn() -> Listed? raise {
     guard lock is Some(lock) else {
       let prefix = self.plain.first_items(ws, email, listing_prefix)
-      let found = first_match(plain_listings(prefix.map(e => e.1)), wanted)
-      if found is Some(_) || prefix.length() < listing_prefix {
-        return found
+      if first_match(plain_listings(prefix.map(e => e.1)), wanted) is Some(f) {
+        return Some(check_local_collision(f))
       }
-      return first_match(plain_listings(self.plain.items_after(ws, email, prefix[prefix.length() - 1].0)), wanted)
+      if prefix.length() >= listing_prefix {
+        if first_match(plain_listings(self.plain.items_after(ws, email, prefix[prefix.length() - 1].0)), wanted) is Some(rest) {
+          return Some(check_local_collision(rest))
+        }
+      }
+      return self.find_cross_listing(ws, session, wanted, email)
     }
-    guard lock.member_with_email(email) is Some(sub) else { return None }
+    guard lock.member_with_email(email) is Some(sub) else {
+      return self.find_cross_listing(ws, session, wanted, email)
+    }
     let in_vault = fn(vault : Json, short : Bool) -> Listed? raise {
       if !members_of(vault).contains(sub) {
         return None
@@ -124,18 +218,17 @@ fn Secrets::find_listing(self : Secrets, session : String, wanted : String, pers
     let prefix = self.vaults.first_vaults(lock.ws, listing_prefix)
     for entry in prefix {
       if in_vault(entry.1, true) is Some(f) {
-        return Some(f)
+        return Some(check_local_collision(f))
       }
     }
-    if prefix.length() < listing_prefix {
-      return None
-    }
-    for vault in self.vaults.vaults_after(lock.ws, prefix[prefix.length() - 1].0) {
-      if in_vault(vault, false) is Some(f) {
-        return Some(f)
+    if prefix.length() >= listing_prefix {
+      for vault in self.vaults.vaults_after(lock.ws, prefix[prefix.length() - 1].0) {
+        if in_vault(vault, false) is Some(f) {
+          return Some(check_local_collision(f))
+        }
       }
     }
-    None
+    self.find_cross_listing(ws, session, wanted, email)
   })() catch {
     e => {
       self.db.exec("RELEASE vault_find_listing")
@@ -147,9 +240,38 @@ fn Secrets::find_listing(self : Secrets, session : String, wanted : String, pers
 }
 
 ///|
-/// Whether `viewer` (`sub`, `email`) decides request `r`: the plain library's item's owner, a member of the vault.
+fn Secrets::find_cross_listing(self : Secrets, ws : String, session : String, wanted : String, email : String) -> Listed? raise {
+  let entries = self.cross_listings(ws, session, owner=email)
+  for e in entries {
+    if lower(gtext(Some(e), "item")) == wanted {
+      return Some(cross_to_listed(e, email))
+    }
+  }
+  let by_name = []
+  for e in entries {
+    if lower(gtext(get(Some(e), "listing"), "name")) == wanted {
+      by_name.push(e)
+    }
+  }
+  if by_name.length() == 1 {
+    return Some(cross_to_listed(by_name[0], email))
+  }
+  if by_name.length() > 1 {
+    let choices = join(
+      by_name.map(e => "\{gtext(Some(e), "item")} (\{gtext(Some(e), "sourceWsName")} / \{gtext(Some(e), "vaultName")})"),
+      ", ",
+    )
+    let first_name = gtext(get(Some(by_name[0]), "listing"), "name")
+    raise Refused("Multiple cross-workspace secrets are named \{quoted(first_name)}: pass the item id instead: \{choices}.")
+  }
+  None
+}
+
+///|
+/// Whether `viewer` (`sub`, `email`) decides request `r`: the plain library's item's owner, a member of the vault, or
+/// the owner for save / browse / cross-workspace requests.
 fn Secrets::decides(self : Secrets, r : Json, sub : String, email : String, lock : Lock?) -> Bool raise {
-  if is_plain(r) || truthy(get(Some(r), "save")) {
+  if is_plain(r) || truthy(get(Some(r), "save")) || get(Some(r), "browse") is Some(Object(_)) || get(Some(r), "cross") is Some(Object(_)) {
     return gs(Some(r), "owner") == Some(lower(email))
   }
   match lock {
@@ -163,10 +285,10 @@ fn Secrets::decides(self : Secrets, r : Json, sub : String, email : String, lock
 }
 
 ///|
-/// Whom request `r`'s changes are told to: in its workspace, its owner for the plain library or a secret to keep (none
-/// without one), else the members of its vault as each is told (`inVault`).
+/// Whom request `r`'s changes are told to: in its workspace, its owner for the plain library, save, browse, or
+/// cross-workspace requests (none without one), else the members of its vault as each is told (`inVault`).
 pub fn Secrets::tells(_self : Secrets, r : Json) -> Json? {
-  if !is_plain(r) && !truthy(get(Some(r), "save")) {
+  if !is_plain(r) && !truthy(get(Some(r), "save")) && !(get(Some(r), "browse") is Some(Object(_))) && !(get(Some(r), "cross") is Some(Object(_))) {
     return Some(
       obj([("workspace", get(Some(r), "ws").unwrap_or(Json::null())), ("vault", get(Some(r), "vault").unwrap_or(Json::null()))]),
     )
@@ -328,6 +450,7 @@ pub fn Secrets::pending(self : Secrets, ws : String, lock : Lock?, sub : String,
         }
       }
       add(self.db.all(pending_own, [js(ws), js(lower(email))]))
+      add(self.db.all(pending_cross_own, [js(ws), js(lower(email))]))
       if lock is Some(_) {
         add(self.db.all(pending_member, [js(ws), js(sub)]))
       }
@@ -388,7 +511,11 @@ pub fn Secrets::pending(self : Secrets, ws : String, lock : Lock?, sub : String,
   let vault_decisions : Map[String, Bool] = Map([])
   let out = []
   for r in live {
-    let keep = if is_plain(r) || truthy(get(Some(r), "save")) || lock is None {
+    let keep = if is_plain(r) ||
+      truthy(get(Some(r), "save")) ||
+      get(Some(r), "browse") is Some(Object(_)) ||
+      get(Some(r), "cross") is Some(Object(_)) ||
+      lock is None {
       self.decides(r, sub, email, lock)
     } else {
       let v = gtext(Some(r), "vault")
@@ -443,7 +570,9 @@ pub async fn Secrets::uses(
       (!plain || gs(Some(r), "owner") == Some(low)) &&
       nullish(get(Some(r), "save")) &&
       nullish(get(Some(r), "describe")) &&
-      nullish(get(Some(r), "remove")))
+      nullish(get(Some(r), "remove")) &&
+      nullish(get(Some(r), "browse")) &&
+      nullish(get(Some(r), "cross")))
   let names : Map[String, String?] = Map([])
   let sessions = uniq(requests.map(r => gtext(Some(r), "session")))
   match (self.w.title_if_ready, self.w.hub.prepare_latest_threads) {
@@ -493,6 +622,78 @@ pub async fn Secrets::uses(
 }
 
 ///|
+/// Decided cross-workspace uses of personal secrets initiated by `viewer` in workspace `ws`, latest first.
+pub async fn Secrets::cross_uses(
+  self : Secrets,
+  ws : String,
+  _sub : String,
+  email : String,
+  limit? : Int = 50,
+) -> Array[Json] {
+  let low = lower(email)
+  let rows = self.db.all(cross_uses_sql, [js(ws), js(low), ji(limit)])
+  let requests = rows
+    .map(row => parse_or_null(js_text(row.get(0))))
+    .filter(r => get(Some(r), "cross") is Some(Object(_)) &&
+      gs(Some(r), "owner") == Some(low) &&
+      (gs(Some(r), "status") == Some("granted") || gs(Some(r), "status") == Some("denied")))
+  let names : Map[String, String?] = Map([])
+  let sessions = uniq(requests.map(r => gtext(Some(r), "session")))
+  match (self.w.title_if_ready, self.w.hub.prepare_latest_threads) {
+    (Some(title_if_ready), Some(prepare)) =>
+      while true {
+        let missing = []
+        names.clear()
+        self.db.exec("SAVEPOINT vault_cross_use_titles")
+        for session in sessions {
+          let got = title_if_ready(session) catch {
+            _ => {
+              names[session] = None
+              continue
+            }
+          }
+          match got {
+            None => missing.push(session)
+            Some(name) => names[session] = name
+          }
+        }
+        self.db.exec("RELEASE vault_cross_use_titles")
+        if missing.is_empty() {
+          break
+        }
+        prepare(missing)
+      }
+    _ =>
+      for session in sessions {
+        names[session] = self.title(session)
+      }
+  }
+  requests.map(r => {
+    let fs = [
+      ("at", get(Some(r), "at").unwrap_or(Json::null())),
+      ("request", get(Some(r), "id").unwrap_or(Json::null())),
+      ("sourceWorkspace", get(get(Some(r), "cross"), "workspace").unwrap_or(Json::null())),
+      ("sourceVault", get(Some(r), "vault").unwrap_or(Json::null())),
+      ("item", get(Some(r), "item").unwrap_or(Json::null())),
+      ("session", get(Some(r), "session").unwrap_or(Json::null())),
+    ]
+    match names.get(gtext(Some(r), "session")).unwrap_or(None) {
+      Some(t) if t != "" => fs.push(("chatTitle", js(t)))
+      _ => ()
+    }
+    fs.push(("mode", get(Some(r), "mode").unwrap_or(Json::null())))
+    if gs(Some(r), "command") is Some(c) && c != "" {
+      fs.push(("command", js(c)))
+    }
+    fs.push(("hosts", get(Some(r), "hosts").unwrap_or(jarr([]))))
+    if gs(Some(r), "status") == Some("denied") {
+      fs.push(("denied", jb(true)))
+    }
+    obj(fs)
+  })
+}
+
+///|
 /// `v == null`: absent or null.
 fn nullish(v : Json?) -> Bool {
   v is None || v is Some(Null)
@@ -516,6 +717,16 @@ fn Secrets::lasts_of(self : Secrets, r : Json, l : Json) -> Json? raise {
   if truthy(get(Some(l), "lasts")) {
     return get(Some(l), "lasts")
   }
+  if get(Some(r), "cross") is Some(Object(_)) {
+    return match self.cross_listing(gtext(Some(r), "ws"), gtext(Some(r), "session"), gtext(Some(r), "item")) {
+      Some(e) =>
+        match get(Some(e), "vaultLasts") {
+          None | Some(Null) => None
+          x => x
+        }
+      None => None
+    }
+  }
   let found = if is_plain(r) {
     match gs(Some(r), "owner") {
       Some(o) if o != "" =>
@@ -538,6 +749,9 @@ fn Secrets::lasts_of(self : Secrets, r : Json, l : Json) -> Json? raise {
 /// The listing of a request's item, where it still is.
 fn Secrets::listing_of(self : Secrets, r : Json) -> Json? raise {
   let ws = gtext(Some(r), "ws")
+  if get(Some(r), "cross") is Some(Object(_)) {
+    return get(self.cross_listing(ws, gtext(Some(r), "session"), gtext(Some(r), "item")), "listing")
+  }
   if is_plain(r) {
     get(self.plain.item(ws, gtext(Some(r), "item")), "listing")
   } else {

@@ -13,6 +13,7 @@ fn Secrets::settle(
   scope? : String,
   into? : String,
   prepare? : (Json) -> Unit raise,
+  browse_items? : Array[Json],
 ) -> Bool raise {
   let ws = gtext(Some(r), "ws")
   let rid = gtext(Some(r), "id")
@@ -62,6 +63,9 @@ fn Secrets::settle(
       set(k.request, "status", js(status))
       if into is Some(v) {
         set(k.request, "vault", js(v))
+      }
+      if status == "granted" && get(Some(k.request), "browse") is Some(Object(_) as b) {
+        set(outcome, "browse", b)
       }
       if status == "granted" {
         match self.keeper.usable(session, rid) {
@@ -147,7 +151,11 @@ fn Secrets::settle(
   if status != "granted" {
     self.keeper.drop(rid)
   }
-  self.audit_(k.request, status, "")
+  self.audit_(
+    k.request,
+    if get(Some(k.request), "browse") is Some(Object(_)) && status == "granted" { "browse_granted" } else { status },
+    "",
+  )
   self.told(k.request)
   if status == "granted" &&
     gs(Some(k.request), "mode") == Some("browser") &&
@@ -158,9 +166,12 @@ fn Secrets::settle(
   }
   // The agent is told in its session: no tool call waits for it (one it withdrew itself knows already).
   if status != "expired" && status != "withdrawn" {
-    let l = self.listing_of(r)
+    let is_browse = get(Some(k.request), "browse") is Some(Object(_))
+    let l = if is_browse { None } else { self.listing_of(r) }
     let said = if truthy(get(Some(k.request), "save")) {
       self.said_save(k.request)
+    } else if is_browse {
+      self.said_browse(k.request, items?=browse_items)
     } else if truthy(get(Some(k.request), "describe")) {
       self.said_describe(k.request)
     } else if truthy(get(Some(k.request), "remove")) {
@@ -486,6 +497,9 @@ pub fn Secrets::grant(self : Secrets, lock : Lock, sub : String, grant : Json) -
   if truthy(get(Some(r), "save")) {
     return Some("a secret to keep is approved by POST vault/saves")
   }
+  if get(Some(r), "browse") is Some(Object(_)) {
+    return Some("a browse request is approved by POST vault/browses")
+  }
   if truthy(get(Some(r), "describe")) {
     return Some("a request to rename an item grants nothing: it is approved by POST vault/described")
   }
@@ -495,6 +509,43 @@ pub fn Secrets::grant(self : Secrets, lock : Lock, sub : String, grant : Json) -
   let status = gtext(Some(r), "status")
   if status != "pending" {
     return Some("the request is \{status}")
+  }
+  if get(Some(r), "cross") is Some(Object(_) as cross) {
+    if lock.email_of(sub).map(lower) != gs(Some(r), "owner") || lock.email_of(sub) is None {
+      return Some("only the owner decides cross-workspace secret requests")
+    }
+    let session = gtext(Some(r), "session")
+    let item_id = gtext(Some(r), "item")
+    let expected_ws = gs(Some(cross), "workspace")
+    let expected_vault = gs(Some(r), "vault")
+    let expected_owner = gtext(Some(r), "owner")
+    guard self.cross_listing(lock.ws, session, item_id, owner=expected_owner) is Some(entry) &&
+      gs(Some(entry), "sourceWs") == expected_ws &&
+      gs(Some(entry), "vault") == expected_vault else {
+      return Some("the cross-workspace secret is no longer listed for this chat")
+    }
+    let take = match self.keeper.prepare_accept_cross(lock.view, entry, r, grant, sub) {
+      Refusal(why) => return Some(why)
+      Ready(t) => t
+    }
+    let settled = self.settle(r, "granted", scope=gtext(Some(grant), "scope"), prepare=_ => {
+      guard self.cross_listing(lock.ws, session, item_id, owner=expected_owner) is Some(still) &&
+        gs(Some(still), "sourceWs") == expected_ws &&
+        gs(Some(still), "vault") == expected_vault else {
+        raise Refused("the cross-workspace secret is no longer listed for this chat")
+      }
+      match take() {
+        Some(why) => raise Refused(why)
+        None => ()
+      }
+    }) catch {
+      Refused(m) => return Some(m)
+      e => raise e
+    }
+    if !settled {
+      return Some(self.decision_changed(r))
+    }
+    return None
   }
   let vid = gtext(Some(r), "vault")
   let vault_snapshot = self.vaults.vault_snapshot(lock.ws, vid)
@@ -646,14 +697,17 @@ pub fn Secrets::deny(self : Secrets, lock : Lock, sub : String, deny : Json, ema
     Some(key) => @vault_crypto.signer_of(lock.view, key)
     None => None
   }
-  if truthy(get(Some(k.request), "save")) && lock.open_roster() && lock.devices_for(sub).length() == 0 {
-    // Security mode off and no own lock of theirs heard here: whoever it is kept for turns it down from their app
+  let owner_only = truthy(get(Some(k.request), "save")) ||
+    get(Some(k.request), "browse") is Some(Object(_)) ||
+    get(Some(k.request), "cross") is Some(Object(_))
+  if owner_only && lock.open_roster() && lock.devices_for(sub).length() == 0 {
+    // Security mode off and no own lock of theirs heard here: whoever it is for turns it down from their app
     // before they turned their vault on (their credential says who).
     if email.map(lower) != gs(Some(k.request), "owner") || email is None {
       return Some("only the person it is kept for decides it")
     }
-  } else if truthy(get(Some(k.request), "save")) {
-    // A secret to keep: its owner's to turn down, from one of their devices.
+  } else if owner_only {
+    // A secret to keep, browse, or cross-workspace request: its owner's to turn down, from one of their devices.
     if lock.email_of(sub).map(lower) != gs(Some(k.request), "owner") || lock.email_of(sub) is None {
       return Some("only the person it is kept for decides it")
     }
@@ -1023,5 +1077,8 @@ pub fn Secrets::session_changed(self : Secrets, key : String) -> Unit {
   }
   if self.keeper.holds(key) {
     self.keeper.end(key)
+  }
+  ignore(self.db.run("DELETE FROM vault_cross_listings WHERE session = ?", [js(key)])) catch {
+    _ => ()
   }
 }

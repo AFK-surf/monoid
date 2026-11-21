@@ -41,14 +41,32 @@ export type Timeout = { kind: "idle" | "fixed"; seconds: number };
 export const SCOPES: Scope[] = ["once", "hour", "chat"];
 /// Whether a grant may last as long as `scope` for an item that allows `lasts` at most (none: any).
 export const allows = (lasts: Scope | null | undefined, scope: Scope): boolean => SCOPES.indexOf(scope) >= 0 && SCOPES.indexOf(scope) <= SCOPES.indexOf(lasts ?? "chat");
+export type CrossListing = {
+  sourceWs: string;
+  sourceWsName: string;
+  vault: string;
+  vaultName: string;
+  vaultLasts?: Scope;
+  item: string;
+  listing: Listing;
+};
+export type BrowseAnswer = {
+  v: 1;
+  ws: string;
+  request: string;
+  items: CrossListing[];
+  at: number;
+  sig: Sig;
+};
 export type Request = {
-  id: string; ws: string; vault: string; item: string; session: string; chat: string; mode: Mode; reason: string;
+  id: string; ws: string; vault: string; item: string; session: string; chat: string; mode: Mode | "browse"; reason: string;
   timeout?: Timeout;
   command?: string; hosts?: string[]; box: string; at: number;
   /// `withdrawn`: taken back by the agent that asked (secret_cancel) before anyone decided it.
   status: "pending" | "granted" | "denied" | "expired" | "withdrawn";
   /// A request for an item of the plain library (`vault` is `plain`, no box): its owner's email, who decides it. A
-  /// request to keep a secret (`save`): whose it is to be (whoever started the chat), who decides it.
+  /// request to keep a secret (`save`), browse another workspace's personal secrets (`browse`), or use one (`cross`):
+  /// whose it is to be, who decides it.
   owner?: string;
   /// An agent asking to keep a secret in its owner's vault (secret_save agent 存入): the item as it is to
   /// be listed; `item` is the id it is written under, `vault` the one it is meant for (`plain` without security mode;
@@ -72,6 +90,11 @@ export type Request = {
   /// app that approves it (a vault's, its device signing the deleted version), or here as its owner approves it (the
   /// plain library's). Never a grant of the item.
   remove?: { name: string };
+  /// An agent asking to browse the person's personal secrets in other workspaces for this chat (`secret_list` with
+  /// `other_workspaces: true`).
+  browse?: { workspace?: string; workspaces?: number; items?: number };
+  /// An agent asking to use a personal secret from another workspace (`vault` and `item` are from `cross.workspace`).
+  cross?: { workspace: string; workspaceName: string; vaultName: string };
 };
 export type Describe = { name: string; about: string; was: { name: string; about: string } };
 /// What an agent asks to keep: the item's listing, and the fields of it that are not secret (a login's account name, an
@@ -82,6 +105,7 @@ export type Save = { kind: Kind; name: string; modes: Mode[]; hosts: string[]; e
 export type Sealed = { device: string; box: string; secret: string };
 export type Grant = {
   v: 1; ws: string; request: string; vault: string; item: string; mode: Mode; hosts: string[]; scope: Scope; exp: number; timeout?: Timeout;
+  sourceWs?: string;
   secret: string; at: number; sig: Sig;
 };
 export type Deny = { v: 1; ws: string; request: string; at: number; sig: Sig };
@@ -93,6 +117,7 @@ export const TAG = {
   item: "stillfail-vault-item/1",
   grant: "stillfail-vault-grant/1",
   deny: "stillfail-vault-deny/1",
+  browse: "stillfail-vault-browse/1",
 } as const;
 
 /// The seal's context for a vault key, wrapped to a device or to the recovery key.
@@ -260,6 +285,37 @@ export function vaultOk(lock: LockState, prev: Vault | null, next: Vault, copy =
 /// chat's browser, and only a sign-in is; its hosts are the sites it is for (each with its subdomains: no *.), one at least.
 export function browserListingOk(l: { kind: Kind; modes: Mode[]; hosts: string[] }): string | null {
   return rules.browser_listing_ok_js(l);
+}
+
+const LISTING_KINDS: Kind[] = ["token", "ssh_key", "login", "file", "browser"];
+const LISTING_MODES: Mode[] = ["proxy", "ssh", "env", "file", "browser"];
+
+/// Why a standalone listing (e.g. from a cross-workspace BrowseAnswer) is invalid, or null when valid.
+export function listingOk(v: unknown): string | null {
+  if (v === null || typeof v !== "object") return "a listing is an object";
+  const l = v as Partial<Listing>;
+  if (typeof l.name !== "string" || l.name.trim() === "" || l.name.length > 200) return "a listing names the item";
+  if (typeof l.kind !== "string" || !LISTING_KINDS.includes(l.kind as Kind)) return "a listing's kind is token, ssh_key, login, file or browser";
+  if (!Array.isArray(l.modes) || l.modes.length === 0 || !l.modes.every((m) => typeof m === "string" && LISTING_MODES.includes(m as Mode))) {
+    return "a listing's modes are proxy, ssh, env, file or browser";
+  }
+  if (l.modes.includes("file") !== (l.kind === "file") || (l.kind === "file" && l.modes.length > 1)) {
+    return "a file is given as a file, and only a file is";
+  }
+  if (!Array.isArray(l.hosts) || !l.hosts.every((h) => typeof h === "string" && h.length <= 253 && /^(\*\.)?[a-z0-9.-]+$/.test(h))) {
+    return "a listing's hosts are host names";
+  }
+  if (l.modes.includes("proxy") && l.hosts.length === 0) return "given through the proxy, it names its hosts";
+  const sign = browserListingOk({ kind: l.kind as Kind, modes: l.modes as Mode[], hosts: l.hosts });
+  if (sign !== null) return sign;
+  if (l.env !== undefined && !(typeof l.env === "string" && l.env.length <= 100 && /^[A-Za-z_][A-Za-z0-9_]*$/.test(l.env))) {
+    return "env is a variable's name";
+  }
+  if (l.lasts !== undefined && !SCOPES.includes(l.lasts as Scope)) return "lasts is once, hour or chat";
+  if (l.about !== undefined && !(typeof l.about === "string" && l.about.length <= ABOUT_MOST)) {
+    return `about is at most ${ABOUT_MOST} characters of text`;
+  }
+  return null;
 }
 
 /// Why `next` may not follow `prev` (null: the item's first version) in `vault`, or null when it may. `copy`: a later

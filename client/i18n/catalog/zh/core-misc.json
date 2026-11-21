@@ -354,6 +354,7 @@
   "core-misc.vault.personal": "个人",
   "core-misc.vault.noPlainStation": "没有可存放密钥的 station：请更新 station",
   "core-misc.vault.plainLocked": "已开启安全模式：密钥需存入加密的库",
+  "core-misc.vault.browseEmpty": "其它工作区暂无可共享的个人密钥",
   "core-misc.reader.gone": "这本书已经不在了，请重新打开",
   "core-misc.personal.noKey": "这台设备存不了设备钥匙，请用桌面或安卓 app",
   "core-misc.personal.outside": "此设备尚未获批：先在这台设备上发送批准请求，输入你的受信任设备上显示的安全码",

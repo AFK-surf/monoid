@@ -280,3 +280,24 @@ test "POST /vault/vaults/latest and PUT /vault/vaults sibling support workspace 
   let (s_bad, _) = vault_ask(sibling_parts.admin(), "PUT", "/vault/vaults", [("copy", "1")], Some(sibling_bad_scope))
   assert_eq(s_bad, 400)
 }
+
+///|
+test "POST /vault/browses and GET /vault/cross-uses dispatch to secrets.browsed and secrets.crossUses" {
+  let parts = vault_parts(vault_lock_plain, [
+    ("secrets.browsed", _ => Null),
+    ("secrets.crossUses", _ => jarr([jobj([("request", js("r_1")), ("sourceWs", js("wA")), ("vault", js("vA")), ("item", js("iA"))])])),
+  ])
+  let admin = parts.admin()
+  let (s1, b1) = vault_ask(admin, "POST", "/vault/browses", [], Some(jobj([("request", js("r_b1")), ("items", jarr([]))])))
+  assert_eq(s1, 200)
+  assert_eq(stringify(b1), "{\"ok\":true}")
+  let (s2, b2) = vault_ask(admin, "GET", "/vault/cross-uses", [], None)
+  assert_eq(s2, 200)
+  assert_eq(stringify(b2), "{\"uses\":[{\"request\":\"r_1\",\"sourceWs\":\"wA\",\"vault\":\"vA\",\"item\":\"iA\"}]}")
+  // Refused browse returns 409
+  let refused = vault_parts(vault_lock_plain, [
+    ("secrets.browsed", _ => js("only the person who asked can answer")),
+  ])
+  let (s3, _) = vault_ask(refused.admin(), "POST", "/vault/browses", [], Some(jobj([("request", js("r_b1"))])))
+  assert_eq(s3, 409)
+}

@@ -135,8 +135,25 @@ function vaultAsk(v: J): J | null {
   } else if (isObject(get(v, "remove"))) {
     // A request to delete the item (secret_delete): its name and why say it all.
     out.remove = true;
+  } else if (isObject(get(v, "browse"))) {
+    const b = isObject(get(get(v, "outcome"), "browse")) ? get(get(v, "outcome"), "browse") : get(v, "browse");
+    const browse: J = {};
+    const wsHint = trimmed(get(b, "workspace")) ?? trimmed(get(get(v, "browse"), "workspace"));
+    if (wsHint !== null) browse.workspace = wsHint;
+    if (typeof get(b, "workspaces") === "number") browse.workspaces = get(b, "workspaces");
+    if (typeof get(b, "items") === "number") browse.items = get(b, "items");
+    out.browse = browse;
   } else {
     out.howText = howText(mode, hosts);
+  }
+  const cross = get(v, "cross");
+  if (isObject(cross)) {
+    const cws = trimmed(get(cross, "workspace"));
+    const cwsName = trimmed(get(cross, "workspaceName"));
+    const cvaultName = trimmed(get(cross, "vaultName"));
+    if (cws !== null && cwsName !== null && cvaultName !== null) {
+      out.cross = { workspace: cws, workspaceName: cwsName, vaultName: cvaultName };
+    }
   }
   // What a secret to keep is for and how it is used, as the agent said it: said where how it is given would be.
   const about = trimmed(get(v, "about"));

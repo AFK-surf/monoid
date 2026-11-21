@@ -802,6 +802,7 @@ fn Admin::vault_requests_routes(self : Admin) -> Array[Route] {
     route("POST", "^\\/vault\\/saves$", locked_decision("saved")),
     route("POST", "^\\/vault\\/described$", locked_decision("described")),
     route("POST", "^\\/vault\\/removed$", locked_decision("removed")),
+    route("POST", "^\\/vault\\/browses$", locked_decision("browsed")),
     route("GET", "^\\/vault\\/uses$", async fn(r, _) {
       let l = lock_or_null(r)
       ok(
@@ -812,6 +813,9 @@ fn Admin::vault_requests_routes(self : Admin) -> Array[Route] {
           ),
         ]),
       )
+    }),
+    route("GET", "^\\/vault\\/cross-uses$", async fn(r, _) {
+      ok(jobj([("uses", s("crossUses", [ws(r), r.viewer]))]))
     }),
     route("GET", "^\\/vault\\/plain$", async fn(r, _) {
       let lasts = p("lasts", [ws(r), js(owner(r))])

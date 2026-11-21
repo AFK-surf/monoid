@@ -352,6 +352,13 @@ let vault_ask_none : VaultAsk = {
   new_about: "",
   was_about: "",
   remove: false,
+  browse: false,
+  browse_hint: "",
+  browse_workspaces: 0,
+  browse_items: 0,
+  cross_workspace: "",
+  cross_workspace_name: "",
+  cross_vault_name: "",
   status: "",
   scope: "",
   station: "",
@@ -386,6 +393,13 @@ fn vault_asked_of(ask : VaultAsk) -> @settings.Asked {
     new_about: ask.new_about,
     was_about: ask.was_about,
     remove: ask.remove,
+    browse: ask.browse,
+    browse_hint: ask.browse_hint,
+    browse_workspaces: ask.browse_workspaces,
+    browse_items: ask.browse_items,
+    cross_workspace: ask.cross_workspace,
+    cross_workspace_name: ask.cross_workspace_name,
+    cross_vault_name: ask.cross_vault_name,
   }
 }
 

@@ -810,6 +810,8 @@ async fn p54_vault_ask(v : P54Vault, op : String, a : Json) -> Json? {
       Json::array(secrets.pending(s(0), p54_lock_arg(some(j(1))), p54_viewer_sub(some(j(2))), p54_viewer_email(some(j(2)))))
     "secrets.uses" =>
       Json::array(secrets.uses(s(0), p54_lock_arg(some(j(1))), s(2), p54_viewer_sub(some(j(3))), p54_viewer_email(some(j(3)))))
+    "secrets.crossUses" =>
+      Json::array(secrets.cross_uses(s(0), p54_viewer_sub(some(j(1))), p54_viewer_email(some(j(1)))))
     "secrets.grantPlain" => jopt(secrets.grant_plain(s(0), p54_lock_arg(some(j(1))), s(2), j(3)))
     "secrets.denyPlain" => jopt(secrets.deny_plain(s(0), s(1), j(2)))
     "secrets.describedPlain" => p54_result(secrets.described_plain(s(0), p54_lock_arg(some(j(1))), s(2), j(3)))
@@ -820,6 +822,7 @@ async fn p54_vault_ask(v : P54Vault, op : String, a : Json) -> Json? {
     "secrets.saved" => jopt(secrets.saved(@vault_service.Lock::of_json(j(0)), s(1), j(2)))
     "secrets.described" => jopt(secrets.described(@vault_service.Lock::of_json(j(0)), s(1), j(2)))
     "secrets.removed" => jopt(secrets.removed(@vault_service.Lock::of_json(j(0)), s(1), j(2)))
+    "secrets.browsed" => jopt(secrets.browsed(@vault_service.Lock::of_json(j(0)), s(1), j(2)))
     "secrets.inVault" => Json::boolean(secrets.in_vault(s(0), s(1), s(2)))
     "secrets.status" => Json::string(secrets.status(s(0)))
     "secrets.plain.items" => Json::array(plain.items(s(0), s(1)))

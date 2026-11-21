@@ -25,15 +25,15 @@ import { CARD_OCCUPIED, cardPlace, recordPostedCard } from "../sessions/card-pla
 import type { Hub } from "../sessions/hub.ts";
 import { hold } from "../updates/holds.ts";
 import { stateOf } from "../browser/signins.ts";
-import { ABOUT_MOST, type BoxCert, type Deny, type Grant, type Item, type Kind, type Listing, type Mode, type Request, type Save, type Scope, type Sealed, type Vault, SCOPES, TAG, allows, certOk, saveContext, seal, signedOk, signerOf } from "./crypto.ts";
+import { ABOUT_MOST, type BoxCert, type BrowseAnswer, type CrossListing, type Deny, type Grant, type Item, type Kind, type Listing, type Mode, type Request, type Save, type Scope, type Sealed, type Vault, SCOPES, TAG, allows, certOk, listingOk, saveContext, seal, signedOk, signerOf } from "./crypto.ts";
 import { type Carried, type Held, Keeper, accountOf, hostAllowed, valueOf } from "./keeper.ts";
 import { FILE_MOST, KINDS, MODES, PLAIN, type PlainItem, type PlainStore, plainOk } from "./plain.ts";
 import { Proxy, placeholder } from "./proxy.ts";
 import { CAPTURE_MS, Incoming, RUN_MS, baseEnv } from "./incoming.ts";
 import { ACCOUNT_VAR, type Captured, type Ran, SECRET_VAR, capture, runWith } from "./run.ts";
 import type { VaultStore } from "./store.ts";
-import { UseIndex } from "./use-index.ts";
-import { hasVaultMembers, initializePendingIndex, pendingAuditComplete, pendingIndexComplete, pendingIndexStarted, PENDING_BODIES, PENDING_DUE, PENDING_DUPLICATES, PENDING_MEMBER, PENDING_NO_TIME, PENDING_NUL_FIELDS, PENDING_OTHER_TIME, PENDING_OWN, PENDING_SEED, PENDING_SEED_FIRST } from "./pending-index.ts";
+import { CROSS_USES, UseIndex } from "./use-index.ts";
+import { hasVaultMembers, initializePendingIndex, pendingAuditComplete, pendingIndexComplete, pendingIndexStarted, PENDING_BODIES, PENDING_CROSS_OWN, PENDING_DUE, PENDING_DUPLICATES, PENDING_MEMBER, PENDING_NO_TIME, PENDING_NUL_FIELDS, PENDING_OTHER_TIME, PENDING_OWN, PENDING_SEED, PENDING_SEED_FIRST } from "./pending-index.ts";
 import { hasInvalidVaultMembers, vaultMembersComplete, vaultMembersStarted } from "./member-index.ts";
 import { reboxIndexComplete, REBOX_LEGACY, REBOX_READY } from "./rebox-index.ts";
 
@@ -80,6 +80,15 @@ CREATE TABLE IF NOT EXISTS vault_grants (
 );
 -- A session's grants (move/vault.ts: whose secrets a chat that moves needs).
 CREATE INDEX IF NOT EXISTS vault_grants_session ON vault_grants (session);
+CREATE TABLE IF NOT EXISTS vault_cross_listings (
+  ws TEXT NOT NULL,
+  session TEXT NOT NULL,
+  item TEXT NOT NULL,
+  body TEXT NOT NULL,
+  at INTEGER NOT NULL,
+  PRIMARY KEY (ws, session, item)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS vault_cross_listings_session ON vault_cross_listings (session, ws, item);
 `;
 
 /// The words of a grant's scope on its card, and what each means.
@@ -107,15 +116,20 @@ const DESCRIBE_WORDS = {
   yes: { label: "确认修改", detail: "按以上内容修改名称与说明" },
   no: { label: "保持不变", detail: "不作修改，通知 agent" },
 };
+/// The words on the card of a request to browse personal secrets from other workspaces.
+const BROWSE_WORDS = {
+  yes: { label: "允许查看", detail: "仅向本对话提供名称与说明，不含密钥明文" },
+  no: { label: "拒绝", detail: "不提供，通知 agent" },
+};
 /// The services a person signs in to on a card for a token of their own (secret_save `oauth`), and the hosts it goes
 /// to: the core's providers (client/core-ts/src/vault/oauth.ts `PROVIDERS`), which do the signing in.
 const OAUTH: Record<string, { name: string; hosts: string[] }> = { slack: { name: "Slack", hosts: ["slack.com"] } };
 const KIND_WORDS: Record<Kind, string> = { token: "Token", login: "登录", ssh_key: "SSH 密钥", file: "文件", browser: "登录态" };
-const howWords = (mode: Mode, hosts: string[]): string =>
+const howWords = (mode: Mode | "browse", hosts: string[]): string =>
   mode === "proxy" ? `代理（限 ${hosts.join(", ")}）` : mode === "ssh" ? "ssh-agent（私钥不出 station）" : mode === "file" ? "文件（命令运行时临时写出，可读取内容）"
   : mode === "browser" ? `放进这个对话的浏览器（限 ${hosts.join(", ")}，到期取出）` : "环境变量（命令可读取明文）";
 /// Whether a request in `mode` names the hosts it goes to (on its card, in its grant).
-const hosted = (mode: Mode): boolean => mode === "proxy" || mode === "browser";
+const hosted = (mode: Mode | "browse"): boolean => mode === "proxy" || mode === "browser";
 
 /// The field of each kind that holds its secret.
 const SECRET_FIELD: Record<Kind, string> = { token: "value", login: "password", ssh_key: "private_key", file: "content", browser: "cookies" };
@@ -213,10 +227,25 @@ class DecisionChanged extends Error {}
 class DecisionCardMoved extends Error {}
 
 /// An item an agent may ask for: of a vault (its id) or of the plain library (`plain`), whose owner (email) decides.
-export type Listed = { vault: string; vaultName?: string; scope?: "workspace" | "personal"; item: string; owner: string | null; listing: Listing };
+export type Listed = { vault: string; vaultName?: string; scope?: "workspace" | "personal"; item: string; owner: string | null; listing: Listing; cross?: { workspace: string; workspaceName: string; vaultName: string } };
 
 /// A use of a secret, as the pages list them: a request decided, in the chat that asked.
 export type Use = { item: string; at: number; session: string; chatTitle: string | null; mode: Mode; command: string | null; hosts: string[]; denied: boolean };
+
+/// A cross-workspace use of a personal secret, served by GET /vault/cross-uses.
+export type CrossUse = {
+  at: number;
+  request: string;
+  sourceWorkspace: string;
+  sourceVault: string;
+  item: string;
+  session: string;
+  chatTitle?: string;
+  mode: Mode;
+  command?: string;
+  hosts: string[];
+  denied?: true;
+};
 
 /// What a station from before a method answers it with: as a method it does not know, or as one of its remote tasks.
 const FROM_BEFORE = /unknown method|task key are required|unknown task/;
@@ -376,6 +405,9 @@ export class Secrets {
       if ((c.type === "sessionRemoved" || c.type === "session") && ended(c.key)) {
         for (const [id, away] of this.#away) if (away.session === c.key && away.workspace) void this.#d.ask?.(away.station, { method: "vault.revoke", workspace: away.workspace, id }).catch(() => {});
         if (this.keeper.holds(c.key)) this.keeper.end(c.key);
+        const ws = (c as { ws?: string }).ws ?? d.hub.store.getSession(c.key)?.ws ?? d.home();
+        if (ws !== null && ws !== undefined) d.db.prepare("DELETE FROM vault_cross_listings WHERE ws = ? AND session = ?").run(ws, c.key);
+        else d.db.prepare("DELETE FROM vault_cross_listings WHERE session = ?").run(c.key);
       }
     });
   }
@@ -793,13 +825,49 @@ export class Secrets {
       : this.#d.hub.store.latestThread(session);
   }
 
+  /// Whether `session`'s chat is archived or gone.
+  #ended(session: string): boolean {
+    const row = this.#d.hub.store.getSession(session);
+    return row === null || row.archivedAt != null;
+  }
+
+  /// Cross-workspace personal secret listings granted to `session` (empty if archived or deleted),
+  /// filtered to `owner` (lowercased email) when provided so multi-person chats never mix owners.
+  #crossListings(ws: string, session: string, owner?: string): (CrossListing & { owner?: string })[] {
+    if (this.#ended(session)) return [];
+    const want = owner?.toLowerCase();
+    const all = (this.#d.db.prepare("SELECT body FROM vault_cross_listings WHERE ws = ? AND session = ? ORDER BY item").all(ws, session) as { body: string }[])
+      .map((r) => JSON.parse(r.body) as CrossListing & { owner?: string });
+    return want === undefined ? all : all.filter((e) => typeof e.owner === "string" && e.owner.toLowerCase() === want);
+  }
+
+  /// A single cross-workspace personal secret listing granted to `session` (filtered by `owner` when provided).
+  #crossListing(ws: string, session: string, item: string, owner?: string): (CrossListing & { owner?: string }) | null {
+    if (this.#ended(session)) return null;
+    const row = this.#d.db.prepare("SELECT body FROM vault_cross_listings WHERE ws = ? AND session = ? AND item = ?").get(ws, session, item) as { body: string } | undefined;
+    if (!row) return null;
+    const entry = JSON.parse(row.body) as CrossListing & { owner?: string };
+    if (owner !== undefined && (typeof entry.owner !== "string" || entry.owner.toLowerCase() !== owner.toLowerCase())) return null;
+    return entry;
+  }
+
   /// The items a session may ask for: those with a listing of whoever started its chat, in their vaults (security
-  /// mode on) or their plain library (off).
+  /// mode on) or their plain library (off), plus any cross-workspace personal secrets approved for this chat.
   listings(session: string, person?: string): Listed[] {
     const { ws, lock } = this.#placeOf(session);
     const email = this.#personFor(session, person);
     if (email === null) return [];
-    return this.#listingsAt(ws, lock, email);
+    const local = this.#listingsAt(ws, lock, email);
+    const cross = this.#crossListings(ws, session, email).map((e): Listed => ({
+      vault: e.vault,
+      vaultName: e.vaultName,
+      scope: "personal",
+      item: e.item,
+      owner: e.owner ?? email,
+      listing: e.listing,
+      cross: { workspace: e.sourceWs, workspaceName: e.sourceWsName, vaultName: e.vaultName },
+    }));
+    return [...local, ...cross];
   }
 
   #plainListings(items: PlainItem[]): Listed[] {
@@ -830,17 +898,33 @@ export class Secrets {
     const email = this.#personFor(session, person);
     if (email === null) return undefined;
     const matches = (l: Listed) => l.item.toLowerCase() === wanted || l.listing.name.toLowerCase() === wanted;
+    const checkLocalCollision = (localFound: Listed): Listed => {
+      if (localFound.item.toLowerCase() === wanted) return localFound;
+      const crossMatches = this.#crossListings(ws, session, email).filter((e) => e.listing.name.toLowerCase() === wanted);
+      if (crossMatches.length > 0) {
+        const choices = [
+          `${localFound.item} (this workspace)`,
+          ...crossMatches.map((e) => `${e.item} (${e.sourceWsName} / ${e.vaultName})`),
+        ].join(", ");
+        throw new Refused(`Multiple secrets named ${JSON.stringify(localFound.listing.name)}: pass the item id instead: ${choices}.`);
+      }
+      return localFound;
+    };
     // Keep the prefix and any remaining reads in one snapshot: another connection may change an earlier item between them.
     this.#d.db.exec("SAVEPOINT vault_find_listing");
     try {
       if (lock === null) {
         const prefix = this.#d.plain.firstItems(ws, email, LISTING_PREFIX);
         const found = this.#plainListings(prefix.map((entry) => entry.value)).find(matches);
-        if (found !== undefined || prefix.length < LISTING_PREFIX) return found;
-        return this.#plainListings(this.#d.plain.itemsAfter(ws, email, prefix.at(-1)!.id)).find(matches);
+        if (found !== undefined) return checkLocalCollision(found);
+        if (prefix.length >= LISTING_PREFIX) {
+          const rest = this.#plainListings(this.#d.plain.itemsAfter(ws, email, prefix.at(-1)!.id)).find(matches);
+          if (rest !== undefined) return checkLocalCollision(rest);
+        }
+        return this.#findCrossListing(ws, session, wanted, email);
       }
       const sub = memberWithEmail(lock, email)?.sub;
-      if (sub === undefined) return undefined;
+      if (sub === undefined) return this.#findCrossListing(ws, session, wanted, email);
       const inVault = (vault: Vault, short: boolean): Listed | undefined => {
         if (!vault.members.includes(sub)) return undefined;
         const listings = (items: Item[]) => this.#vaultListings(lock, vault, items);
@@ -855,28 +939,52 @@ export class Secrets {
       const prefix = this.#d.vaults.firstVaults(lock.ws, LISTING_PREFIX);
       for (const entry of prefix) {
         const found = inVault(entry.value, true);
-        if (found !== undefined) return found;
+        if (found !== undefined) return checkLocalCollision(found);
       }
-      if (prefix.length < LISTING_PREFIX) return undefined;
-      for (const vault of this.#d.vaults.vaultsAfter(lock.ws, prefix.at(-1)!.id)) {
-        const found = inVault(vault, false);
-        if (found !== undefined) return found;
+      if (prefix.length >= LISTING_PREFIX) {
+        for (const vault of this.#d.vaults.vaultsAfter(lock.ws, prefix.at(-1)!.id)) {
+          const found = inVault(vault, false);
+          if (found !== undefined) return checkLocalCollision(found);
+        }
       }
-      return undefined;
+      return this.#findCrossListing(ws, session, wanted, email);
     } finally { this.#d.db.exec("RELEASE vault_find_listing"); }
   }
 
-  /// Whether `viewer` decides request `r`: the plain library's item's owner, a member of the vault.
+  #findCrossListing(ws: string, session: string, wanted: string, email: string): Listed | undefined {
+    const entries = this.#crossListings(ws, session, email);
+    const toListed = (e: CrossListing & { owner?: string }): Listed => ({
+      vault: e.vault,
+      vaultName: e.vaultName,
+      scope: "personal",
+      item: e.item,
+      owner: e.owner ?? email,
+      listing: e.listing,
+      cross: { workspace: e.sourceWs, workspaceName: e.sourceWsName, vaultName: e.vaultName },
+    });
+    const byId = entries.find((e) => e.item.toLowerCase() === wanted);
+    if (byId !== undefined) return toListed(byId);
+    const byName = entries.filter((e) => e.listing.name.toLowerCase() === wanted);
+    if (byName.length === 1) return toListed(byName[0]!);
+    if (byName.length > 1) {
+      const choices = byName.map((e) => `${e.item} (${e.sourceWsName} / ${e.vaultName})`).join(", ");
+      throw new Refused(`Multiple cross-workspace secrets are named ${JSON.stringify(byName[0]!.listing.name)}: pass the item id instead: ${choices}.`);
+    }
+    return undefined;
+  }
+
+  /// Whether `viewer` decides request `r`: the plain library's item's owner, a member of the vault, or the owner for
+  /// save / browse / cross-workspace requests.
   #decides(r: Request, viewer: { sub: string; email: string }, lock: LockState | null): boolean {
-    if (r.vault === PLAIN || r.save) return r.owner === viewer.email.toLowerCase();
+    if (r.vault === PLAIN || r.save || r.browse !== undefined || r.cross !== undefined) return r.owner === viewer.email.toLowerCase();
     return lock !== null && this.#d.vaults.vault(lock.ws, r.vault)?.members.includes(viewer.sub) === true;
   }
 
   /// Whom request `r`'s changes are told to (the event streams, api/events.ts `To`): in its workspace, its owner for the
-  /// plain library or a secret to keep (none without one: null), else the members of its vault as each is told
-  /// (`inVault`).
+  /// plain library, save, browse, or cross-workspace requests (none without one: null), else the members of its vault as
+  /// each is told (`inVault`).
   tells(r: Request): To | null {
-    if (r.vault !== PLAIN && !r.save) return { workspace: r.ws, vault: r.vault };
+    if (r.vault !== PLAIN && !r.save && r.browse === undefined && r.cross === undefined) return { workspace: r.ws, vault: r.vault };
     return r.owner === undefined ? null : { workspace: r.ws, email: r.owner };
   }
 
@@ -966,6 +1074,7 @@ export class Secrets {
         const selected = new Map<string, string>();
         const add = (found: unknown[]) => { for (const row of found as { id: string; body: string }[]) selected.set(row.id, row.body); };
         add(this.#d.db.prepare(PENDING_OWN).all(ws, viewer.email.toLowerCase()));
+        add(this.#d.db.prepare(PENDING_CROSS_OWN).all(ws, viewer.email.toLowerCase()));
         if (lock !== null) add(this.#d.db.prepare(PENDING_MEMBER).all(ws, viewer.sub));
         add(this.#d.db.prepare(PENDING_DUE).all(ws, now - PENDING_SECS));
         add(this.#d.db.prepare(PENDING_NO_TIME).all(ws));
@@ -993,7 +1102,7 @@ export class Secrets {
         return current?.status === "pending" && this.#requestLive(current, now) ? [current] : [];
       })
       .filter((r) => {
-        if (r.vault === PLAIN || r.save || lock === null) return this.#decides(r, viewer, lock);
+        if (r.vault === PLAIN || r.save || r.browse !== undefined || r.cross !== undefined || lock === null) return this.#decides(r, viewer, lock);
         const checked = vaultDecisions.get(r.vault);
         if (checked !== undefined) return checked;
         const mayDecide = this.#decides(r, viewer, lock);
@@ -1025,7 +1134,7 @@ export class Secrets {
     // NUL in a key. Never expose a use whose parsed vault or plain-library owner differs from the authorized scope.
     const email = viewer.email.toLowerCase();
     const requests = bodies.map((body) => JSON.parse(body) as Request)
-      .filter((r) => r.vault === vault && (vault !== PLAIN || r.owner === email) && r.save == null && r.describe == null && r.remove == null);
+      .filter((r) => r.vault === vault && (vault !== PLAIN || r.owner === email) && r.save == null && r.describe == null && r.remove == null && r.browse == null && r.cross == null);
     const names = new Map<string, string | null>();
     const prepare = this.#d.hub.prepareLatestThreads;
     const titleIfReady = this.#d.titleIfReady;
@@ -1057,7 +1166,54 @@ export class Secrets {
     } else {
       for (const session of new Set(requests.map((r) => r.session))) names.set(session, this.#title(session));
     }
-    return requests.map((r) => ({ item: r.item, at: r.at, session: r.session, chatTitle: names.get(r.session) ?? null, mode: r.mode, command: r.command ?? null, hosts: r.hosts ?? [], denied: r.status === "denied" }));
+    return requests.map((r) => ({ item: r.item, at: r.at, session: r.session, chatTitle: names.get(r.session) ?? null, mode: r.mode as Mode, command: r.command ?? null, hosts: r.hosts ?? [], denied: r.status === "denied" }));
+  }
+
+  /// Decided cross-workspace uses of personal secrets initiated by `viewer` in workspace `ws`, latest first.
+  async crossUses(ws: string, viewer: { sub: string; email: string }, limit = 50): Promise<CrossUse[]> {
+    const email = viewer.email.toLowerCase();
+    const rows = this.#d.db.prepare(CROSS_USES).all(ws, email, limit) as { body: string }[];
+    const requests = rows.map((row) => JSON.parse(row.body) as Request)
+      .filter((r) => r.cross !== undefined && r.owner === email && (r.status === "granted" || r.status === "denied"));
+    const names = new Map<string, string | null>();
+    const prepare = this.#d.hub.prepareLatestThreads;
+    const titleIfReady = this.#d.titleIfReady;
+    if (titleIfReady && prepare) {
+      const sessions = new Set(requests.map((r) => r.session));
+      for (;;) {
+        const missing: string[] = [];
+        names.clear();
+        for (const session of sessions) {
+          try {
+            const name = titleIfReady(session);
+            if (name === undefined) missing.push(session);
+            else names.set(session, name);
+          } catch {
+            names.set(session, null);
+          }
+        }
+        if (missing.length === 0) break;
+        await prepare(missing);
+      }
+    } else {
+      for (const session of new Set(requests.map((r) => r.session))) names.set(session, this.#title(session));
+    }
+    return requests.map((r) => {
+      const chatTitle = names.get(r.session) ?? null;
+      return {
+        at: r.at,
+        request: r.id,
+        sourceWorkspace: r.cross!.workspace,
+        sourceVault: r.vault,
+        item: r.item,
+        session: r.session,
+        ...(chatTitle ? { chatTitle } : {}),
+        mode: r.mode as Mode,
+        ...(r.command ? { command: r.command } : {}),
+        hosts: r.hosts ?? [],
+        ...(r.status === "denied" ? { denied: true as const } : {}),
+      };
+    });
   }
 
   #title(session: string): string | null {
@@ -1072,11 +1228,13 @@ export class Secrets {
   /// its owner's; null: any.
   #lastsOf(r: Request, l: Listing): Scope | null {
     if (l.lasts) return l.lasts;
+    if (r.cross !== undefined) return this.#crossListing(r.ws, r.session, r.item)?.vaultLasts ?? null;
     return (r.vault === PLAIN ? (r.owner ? this.#d.plain.lasts(r.ws, r.owner)?.lasts : undefined) : this.#d.vaults.vault(r.ws, r.vault)?.lasts) ?? null;
   }
 
   /// The listing of a request's item, where it still is.
   #listingOf(r: Request): Listing | undefined {
+    if (r.cross !== undefined) return this.#crossListing(r.ws, r.session, r.item)?.listing;
     return r.vault === PLAIN ? this.#d.plain.item(r.ws, r.item)?.listing : this.#d.vaults.item(r.ws, r.vault, r.item)?.listing;
   }
 
@@ -1102,7 +1260,9 @@ export class Secrets {
     }
     if (found === undefined) throw new Refused(`No secret named ${JSON.stringify(a.item)} may be asked for here: secret_list lists those that may.`);
     const { listing } = found;
-    const plain = found.vault === PLAIN;
+    const cross = found.cross;
+    const plain = cross === undefined && found.vault === PLAIN;
+    const ownerEmail = cross !== undefined ? (decider ?? found.owner)?.toLowerCase() : (plain && found.owner ? found.owner : undefined);
     const mode = (a.mode ?? listing.modes[0]) as Mode;
     if (!listing.modes.includes(mode)) throw new Refused(`「${listing.name}」 is given only by ${listing.modes.join(", ")}.`);
     if (a.reason.trim() === "") throw new Refused("reason is required: why you need it, for the person deciding");
@@ -1123,8 +1283,9 @@ export class Secrets {
       id, ws, vault: found.vault, item: found.item, session, chat: "", mode, reason: a.reason.trim(),
       ...(a.command ? { command: a.command } : {}), ...(hosts.length ? { hosts } : {}), ...(runOn ? { runOn } : {}), timeout: a.timeout ?? { kind: "idle", seconds: 3600 },
       // The plain library's needs no box: its owner decides, and the station reads the value itself.
-      box: plain ? "" : this.keeper.open(id), at: Math.floor(now / 1000), status: "pending", ...(plain && found.owner ? { owner: found.owner } : {}),
-      ...(mode === "browser" && !plain ? this.#renewalOf(ws, found.item) : {}),
+      box: plain ? "" : this.keeper.open(id), at: Math.floor(now / 1000), status: "pending", ...(ownerEmail ? { owner: ownerEmail } : {}),
+      ...(cross !== undefined ? { cross } : {}),
+      ...(mode === "browser" && !plain && cross === undefined ? this.#renewalOf(ws, found.item) : {}),
     };
     const kept: Kept = { request, thread: null, cardTs: null };
     if (thread !== null) {
@@ -1169,7 +1330,7 @@ export class Secrets {
     // In a still.fail chat the card says where it is approved; Slack has no card, so the words say it.
     const where = stillfail ? [] : ["请在 still.fail 客户端的「密钥」中批准。"];
     const text = [
-      `申请使用「${l.name}」：${r.reason}`, ...(r.command ? [`命令：\`${r.command.replace(/`/g, "'")}\``] : []), `方式：${how}`,
+      `申请使用「${l.name}」${r.cross ? `（来自「${r.cross.workspaceName}」）` : ""}：${r.reason}`, ...(r.command ? [`命令：\`${r.command.replace(/`/g, "'")}\``] : []), `方式：${how}`,
       ...(r.runOn ? [`运行在：${r.runOn.name}`] : []), ...(r.timeout ? [`申请时限：${r.timeout.kind === "idle" ? "闲置" : "固定"} ${r.timeout.seconds / 60} 分钟`] : []), ...where,
     ].join("\n\n");
     // The scopes the item allows, the longest recommended.
@@ -1184,7 +1345,7 @@ export class Secrets {
           ],
           ...(owner ? { assignee: owner.toLowerCase() } : {}),
           // The request as the app draws it; its outcome added once decided (#settle).
-          vault: { request: r.id, name: l.name, reason: r.reason, ...(r.command ? { command: r.command } : {}), mode: r.mode, hosts: hosted(r.mode) ? (r.hosts ?? l.hosts) : [], ...(r.runOn ? { station: r.runOn.name } : {}), ...(r.timeout ? { timeout: r.timeout } : {}) },
+          vault: { request: r.id, name: l.name, reason: r.reason, ...(r.command ? { command: r.command } : {}), mode: r.mode, hosts: hosted(r.mode) ? (r.hosts ?? l.hosts) : [], ...(r.runOn ? { station: r.runOn.name } : {}), ...(r.timeout ? { timeout: r.timeout } : {}), ...(r.cross ? { cross: r.cross } : {}) },
         }
       : null;
     return this.#postCard(session, thread, text, card, requireEmpty, r, signal);
@@ -1226,15 +1387,17 @@ export class Secrets {
     if (place === null) throw new Refused("This request has no card in the chat to ask again.");
     if (place.state === "same") return `The card for request ${id} is already pending in the chat.`;
     if (place.state === "other") throw new Refused(CARD_OCCUPIED);
-    const listing = r.save ? null : this.#listingOf(r);
-    if (!r.save && !listing) throw new Refused("The secret is no longer available to request.");
+    const listing = r.save || r.browse !== undefined ? null : this.#listingOf(r);
+    if (!r.save && r.browse === undefined && !listing) throw new Refused("The secret is no longer available to request.");
     const posted = r.save
       ? await this.#postSave(session, place.thread, r, true, signal)
-      : r.describe
-        ? await this.#postDescribe(session, place.thread, r, this.#deciderOf(r), true, signal)
-        : r.remove
-          ? await this.#postRemove(session, place.thread, r, this.#deciderOf(r), true, signal)
-          : await this.#post(session, place.thread, r, listing!, r.owner, true, signal);
+      : r.browse !== undefined
+        ? await this.#postBrowse(session, place.thread, r, true, signal)
+        : r.describe
+          ? await this.#postDescribe(session, place.thread, r, this.#deciderOf(r), true, signal)
+          : r.remove
+            ? await this.#postRemove(session, place.thread, r, this.#deciderOf(r), true, signal)
+            : await this.#post(session, place.thread, r, listing!, r.owner, true, signal);
     const current = this.#kept(ws, id);
     if (current?.request.status === "pending" && !this.#requestLive(current.request, Math.floor(this.#d.now() / 1000))) this.#settle(current.request, "expired");
     // The original request may have been decided while the new message was being posted.
@@ -1270,6 +1433,7 @@ export class Secrets {
     const { ws } = this.#placeOf(session);
     const found = this.#findListing(session, a.item.trim().toLowerCase(), a.person);
     if (found === undefined) throw new Refused(`No secret named ${JSON.stringify(a.item)} is listed here: secret_list lists those that are.`);
+    if (found.cross !== undefined) throw new Refused(`Cross-workspace personal secrets are read-only here: edit or delete it in its own workspace (${found.cross.workspaceName}).`);
     const decider = a.person?.trim() ? this.#personFor(session, a.person) : found.owner;
     const { listing } = found;
     const was = { name: listing.name, about: listing.about ?? "" };
@@ -1395,6 +1559,7 @@ export class Secrets {
     const { ws } = this.#placeOf(session);
     const found = this.#findListing(session, a.item.trim().toLowerCase(), a.person);
     if (found === undefined) throw new Refused(`No secret named ${JSON.stringify(a.item)} is listed here: secret_list lists those that are.`);
+    if (found.cross !== undefined) throw new Refused(`Cross-workspace personal secrets are read-only here: edit or delete it in its own workspace (${found.cross.workspaceName}).`);
     if (a.reason.trim() === "") throw new Refused("reason is required: why, for the person deciding");
     const decider = a.person?.trim() ? this.#personFor(session, a.person) : found.owner;
     const thread = this.#latestThreadReady(session);
@@ -1491,6 +1656,126 @@ export class Secrets {
     return this.#d.plain.item(ws, next.id)!;
   }
 
+  // ── cross-workspace personal secret browsing (secret_list other_workspaces) ──
+
+  /// secret_list { other_workspaces: true, reason, workspace? }: ask the person to list their personal secrets from
+  /// other workspaces for this chat. Non-blocking: posts a card and notifies the session once approved in the app.
+  async browse(session: string, a: { reason: string; workspace?: string; person?: string }): Promise<string> {
+    const { ws } = this.#placeOf(session);
+    const email = this.#personFor(session, a.person);
+    if (email === null) throw new Refused("No one started this chat: there is no one to ask for other workspaces' personal secrets; name the person (person).");
+    if (a.reason.trim() === "") throw new Refused("reason is required: why you need to browse their personal secrets in other workspaces");
+    const thread = this.#latestThreadReady(session);
+    if (thread === undefined) {
+      await this.#d.hub.prepareLatestThreads!([session]);
+      const current = this.#d.hub.store.getSession(session);
+      if (current === null || current.archivedAt != null) throw new Refused("This chat is archived or gone.");
+      return this.browse(session, a);
+    }
+    const now = this.#d.now();
+    const id = `r_${ulid(now)}`;
+    const hint = a.workspace?.trim();
+    const browse: NonNullable<Request["browse"]> = hint ? { workspace: hint } : {};
+    const request: Request = {
+      id, ws, vault: "", item: "", session, chat: "", mode: "browse", reason: a.reason.trim(),
+      box: "", at: Math.floor(now / 1000), status: "pending", owner: email, browse,
+    };
+    const kept: Kept = { request, thread: null, cardTs: null };
+    if (thread !== null) {
+      request.chat = threadAddress(thread.thread.channel, thread.thread.threadTs);
+      kept.cardTs = await this.#postBrowse(session, thread, request);
+      kept.thread = thread.thread.id;
+    }
+    this.#save(kept);
+    this.#audit(request, "browse-request", hint ?? "");
+    this.#told(request);
+    return `Asked ${email} to share their personal secret list from other workspaces for this chat (request ${id}); the card is in your chat, approved in the still.fail app. ${UNDECIDED} Only their approval in the app shares the list: a reply in the chat saying yes does not.`;
+  }
+
+  async #postBrowse(session: string, thread: SessionThread, r: Request, requireEmpty = false, signal?: AbortSignal): Promise<string | null> {
+    const stillfail = thread.thread.surface === STILLFAIL_SURFACE;
+    const hint = r.browse?.workspace;
+    const text = [
+      `申请查看你在其它工作区的个人密钥列表：${r.reason}`,
+      ...(hint ? [`目标工作区：${hint}`] : []),
+      ...(stillfail ? [] : ["请在 still.fail 客户端的「密钥」中批准。"]),
+    ].join("\n\n");
+    const card = stillfail
+      ? {
+          type: "options",
+          options: [{ ...BROWSE_WORDS.yes, recommended: true }, BROWSE_WORDS.no],
+          assignee: r.owner,
+          vault: { request: r.id, name: "其它工作区的个人密钥", reason: r.reason, mode: "browse", hosts: [], browse: r.browse ?? {} },
+        }
+      : null;
+    return this.#postCard(session, thread, text, card, requireEmpty, r, signal);
+  }
+
+  #saidBrowse(r: Request, items?: CrossListing[]): string {
+    if (r.status === "denied") return `The person chose not to share their personal secrets from other workspaces (request ${r.id}).`;
+    if (r.status === "expired") return `The request to browse personal secrets from other workspaces (${r.id}) was let go.`;
+    if (r.status === "withdrawn") return `You withdrew the request to browse personal secrets from other workspaces (${r.id}).`;
+    const list = items ?? this.#crossListings(r.ws, r.session);
+    const summary = list.map((e) => ({
+      item: e.item,
+      name: e.listing.name,
+      ...(e.listing.about ? { about: e.listing.about } : {}),
+      kind: e.listing.kind,
+      modes: e.listing.modes,
+      hosts: e.listing.hosts,
+      ...(e.listing.env ? { env: e.listing.env } : {}),
+      workspace: e.sourceWs,
+      workspaceName: e.sourceWsName,
+      vaultName: e.vaultName,
+    }));
+    return `Approved (request ${r.id}): ${list.length} personal secret(s) from other workspaces are now listed for this chat (read-only here; use secret_use with item id or name):\n${JSON.stringify(summary, null, 2)}`;
+  }
+
+  /// POST vault/browses: signed BrowseAnswer from the owner's app device.
+  browsed(lock: LockState, sub: string, answer: BrowseAnswer): string | null {
+    const a = answer as any;
+    if (a === null || typeof a !== "object" || a.v !== 1 || typeof a.request !== "string" || typeof a.ws !== "string") {
+      return "a browse answer is {v: 1, ws, request, items, at, sig}";
+    }
+    const k = this.#kept(lock.ws, a.request);
+    if (k === null || k.request.browse === undefined || k.request.ws !== a.ws) return "no such cross-workspace browse request";
+    if (k.request.status !== "pending") return `the request is ${k.request.status}`;
+    if (!Array.isArray(a.items) || a.items.length < 1 || a.items.length > 500) return "items must contain 1 to 500 cross-workspace listings";
+    if (!Number.isSafeInteger(a.at)) return "at is unix seconds";
+    const by = typeof a.sig?.key === "string" ? signerOf(lock, a.sig.key) : null;
+    if (by === null || by.sub !== sub || lock.members.get(sub)?.email?.toLowerCase() !== k.request.owner) {
+      return "only the owner's device in the lock may answer a browse request";
+    }
+    if (!signedOk(a, TAG.browse)) return "the browse answer's signature is invalid";
+    const workspaces = new Set<string>();
+    const checked: CrossListing[] = [];
+    for (const raw of a.items) {
+      if (raw === null || typeof raw !== "object") return "each cross-workspace listing must be an object";
+      const e = raw as CrossListing;
+      if (typeof e.sourceWs !== "string" || e.sourceWs.trim() === "" || e.sourceWs === k.request.ws) return "sourceWs must name another workspace";
+      if (typeof e.sourceWsName !== "string" || e.sourceWsName.trim() === "") return "sourceWsName is required";
+      if (typeof e.vault !== "string" || e.vault.trim() === "") return "vault is required";
+      if (typeof e.vaultName !== "string" || e.vaultName.trim() === "") return "vaultName is required";
+      if (typeof e.item !== "string" || e.item.trim() === "") return "item is required";
+      if (e.vaultLasts !== undefined && !SCOPES.includes(e.vaultLasts)) return "vaultLasts must be once, hour or chat";
+      const whyListing = listingOk(e.listing);
+      if (whyListing !== null) return whyListing;
+      workspaces.add(e.sourceWs);
+      checked.push(e);
+    }
+    const nowSec = Math.floor(this.#d.now() / 1000);
+    try {
+      const settled = this.#settle(k.request, "granted", undefined, undefined, (current) => {
+        const put = this.#d.db.prepare("INSERT OR REPLACE INTO vault_cross_listings (ws, session, item, body, at) VALUES (?, ?, ?, ?, ?)");
+        const rowOwner = current.owner?.toLowerCase();
+        for (const e of checked) put.run(current.ws, current.session, e.item, JSON.stringify(rowOwner ? { ...e, owner: rowOwner } : e), nowSec);
+        current.browse = { ...(current.browse ?? {}), workspaces: workspaces.size, items: checked.length };
+      }, checked);
+      if (!settled) return this.#decisionChanged(k.request);
+    } catch (error) { if (error instanceof Refused) return error.message; throw error; }
+    return null;
+  }
+
   // ── a request taken back by the agent that asked (secret_cancel 撤回) ──
 
   /// secret_cancel: `session` takes back request `id` of its own (secret_use, secret_save, secret_describe,
@@ -1498,7 +1783,7 @@ export class Secrets {
   cancel(session: string, id: string): string {
     const { ws } = this.#placeOf(session);
     const kept = this.#kept(ws, id.trim());
-    if (kept === null || kept.request.session !== session) throw new Refused("No such request in this chat: give the id (r_…) secret_use, secret_save, secret_describe or secret_delete answered.");
+    if (kept === null || kept.request.session !== session) throw new Refused("No such request in this chat: give the id (r_…) secret_list, secret_use, secret_save, secret_describe or secret_delete answered.");
     const r = kept.request;
     if (r.status !== "pending") throw new Refused(`Request ${r.id} is no longer pending (${r.status}): nothing to withdraw.`);
     if (!this.#settle(r, "withdrawn")) {
@@ -1953,7 +2238,7 @@ export class Secrets {
 
   /// A request decided otherwise than granted, or granted (`grant` checked by the keeper first); `into`: the vault a
   /// secret to keep went into.
-  #settle(r: Request, status: Request["status"], scope?: Scope, into?: string, prepare?: (current: Request) => void): boolean {
+  #settle(r: Request, status: Request["status"], scope?: Scope, into?: string, prepare?: (current: Request) => void, browseItems?: CrossListing[]): boolean {
     let settled: { k: Kept; outcome: Record<string, unknown>; queued: boolean } | undefined;
     const requested = JSON.stringify(r);
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -1970,6 +2255,7 @@ export class Secrets {
         prepare?.(k.request);
         k.request.status = status;
         if (into !== undefined) k.request.vault = into;
+        if (status === "granted" && k.request.browse !== undefined) outcome.browse = k.request.browse;
         const held = status === "granted" ? this.keeper.usable(r.session, r.id) : null;
         if (typeof held === "object" && held !== null && held.grant.timeout) outcome.timeout = held.grant.timeout;
         this.#write(k);
@@ -2002,7 +2288,7 @@ export class Secrets {
     }
     this.#forgetSave(r.id, r.ws);
     if (status !== "granted") this.keeper.drop(r.id);
-    this.#audit(k.request, status, "");
+    this.#audit(k.request, k.request.browse !== undefined && status === "granted" ? "browse_granted" : status, "");
     this.#told(k.request);
     if (status === "granted" && k.request.mode === "browser" && !k.request.describe && !k.request.remove) {
       this.#renewalGranted(k.request);
@@ -2011,9 +2297,22 @@ export class Secrets {
     // The agent is told in its session: no tool call waits for it.
     // (one the agent withdrew itself: it knows, from secret_cancel's answer)
     if (status !== "expired" && status !== "withdrawn") {
-      const l = this.#listingOf(r);
+      const l = k.request.browse !== undefined ? undefined : this.#listingOf(r);
       try {
-        this.#d.hub.notify(r.session, k.request.save ? this.#saidSave(k.request) : k.request.describe ? this.#saidDescribe(k.request) : k.request.remove ? this.#saidRemove(k.request) : l ? this.#said(k.request, l) : `The request ${r.id} was ${status}.`);
+        this.#d.hub.notify(
+          r.session,
+          k.request.save
+            ? this.#saidSave(k.request)
+            : k.request.browse !== undefined
+              ? this.#saidBrowse(k.request, browseItems)
+              : k.request.describe
+                ? this.#saidDescribe(k.request)
+                : k.request.remove
+                  ? this.#saidRemove(k.request)
+                  : l
+                    ? this.#said(k.request, l)
+                    : `The request ${r.id} was ${status}.`,
+        );
       } catch {
         // The session is gone: nobody to tell.
       }
@@ -2155,9 +2454,31 @@ export class Secrets {
     const k = typeof grant?.request === "string" ? this.#kept(lock.ws, grant.request) : null;
     if (k === null) return "no such request";
     if (k.request.save) return "a secret to keep is approved by POST vault/saves";
+    if (k.request.browse !== undefined) return "a browse request is approved by POST vault/browses";
     if (k.request.describe) return "a request to rename an item grants nothing: it is approved by POST vault/described";
     if (k.request.remove) return "a request to delete an item grants nothing: it is approved by POST vault/removed";
     if (k.request.status !== "pending") return `the request is ${k.request.status}`;
+    if (k.request.cross !== undefined) {
+      if (lock.members.get(sub)?.email?.toLowerCase() !== k.request.owner) return "only the owner decides cross-workspace secret requests";
+      const entry = this.#crossListing(lock.ws, k.request.session, k.request.item, k.request.owner);
+      if (entry === null || entry.sourceWs !== k.request.cross.workspace || entry.vault !== k.request.vault) {
+        return "the cross-workspace secret is no longer listed for this chat";
+      }
+      const prepared = this.keeper.prepareAcceptCross(lock, entry, k.request, grant, sub);
+      if (typeof prepared === "string") return prepared;
+      try {
+        const settled = this.#settle(k.request, "granted", grant.scope, undefined, () => {
+          const still = this.#crossListing(lock.ws, k.request.session, k.request.item, k.request.owner);
+          if (still === null || still.sourceWs !== k.request.cross!.workspace || still.vault !== k.request.vault) {
+            throw new Refused("the cross-workspace secret is no longer listed for this chat");
+          }
+          const why = prepared();
+          if (why !== null) throw new Refused(why);
+        });
+        if (!settled) return this.#decisionChanged(k.request);
+      } catch (error) { if (error instanceof Refused) return error.message; throw error; }
+      return null;
+    }
     const vaultSnapshot = this.#d.vaults.vaultSnapshot(lock.ws, k.request.vault);
     const itemSnapshot = this.#d.vaults.itemSnapshot(lock.ws, k.request.vault, k.request.item);
     const vault = vaultSnapshot?.value ?? null, item = itemSnapshot?.value ?? null;
@@ -2221,12 +2542,13 @@ export class Secrets {
     if (k === null) return "no such request";
     if (d.v !== 1 || d.ws !== lock.ws) return "a refusal is {v: 1, ws, request, at, sig} of this workspace";
     const by = typeof d.sig?.key === "string" ? signerOf(lock, d.sig.key) : null;
-    if (k.request.save && lock.genesis === "" && devicesFor(lock, sub).length === 0) {
-      // Security mode off and no own lock of theirs heard here: whoever it is kept for turns it down from their app
+    const ownerOnly = Boolean(k.request.save) || k.request.browse !== undefined || k.request.cross !== undefined;
+    if (ownerOnly && lock.genesis === "" && devicesFor(lock, sub).length === 0) {
+      // Security mode off and no own lock of theirs heard here: whoever it is for turns it down from their app
       // before they turned their vault on (their credential says who; it keeps nothing, so asks for no lock of theirs).
       if (email === undefined || email.toLowerCase() !== k.request.owner) return "only the person it is kept for decides it";
-    } else if (k.request.save) {
-      // A secret to keep: its owner's to turn down, from one of their devices.
+    } else if (ownerOnly) {
+      // A secret to keep, browse, or cross-workspace request: its owner's to turn down, from one of their devices.
       if (lock.members.get(sub)?.email.toLowerCase() !== k.request.owner) return "only the person it is kept for decides it";
       if (by === null || by.sub !== sub) return "a refusal is signed by one of their devices in the lock";
     } else {

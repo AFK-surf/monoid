@@ -8,7 +8,7 @@
 // device in the lock), that it answers the request as asked, and that it stays within what the item allows.
 import type { LockState } from "../../../shared/lock.ts";
 import { wall } from "../ops/fibers.ts";
-import { type Grant, type Item, type Mode, type Request, type Scope, type Vault, TAG, allows, grantContext, newBoxPair, openSeal, signedOk, signerOf } from "./crypto.ts";
+import { type CrossListing, type Grant, type Item, type Mode, type Request, type Scope, type Vault, TAG, allows, grantContext, newBoxPair, openSeal, signedOk, signerOf } from "./crypto.ts";
 
 /// The longest a grant may last, by its scope (seconds), with a minute's slack for the clocks of phone and station. A
 /// chat's ends when the chat is archived; 30 days at most, should it never be.
@@ -255,6 +255,52 @@ export class Keeper {
     return typeof prepared === "string" ? prepared : prepared();
   }
 
+  /// Check and open a cross-workspace personal secret grant without changing the keeper.
+  /// `expectedSub` is the authenticated viewer's sub (whose email matches `request.owner`).
+  prepareAcceptCross(lock: LockState, entry: CrossListing, request: Request, grant: Grant, expectedSub: string): string | (() => string | null) {
+    const g = grant as any;
+    if (g === null || typeof g !== "object" || g.v !== 1) return "a grant is {v: 1, …}";
+    if (request.status !== "pending") return `the request is ${request.status}`;
+    if (request.cross === undefined) return "not a cross-workspace request";
+    if (g.ws !== request.ws || g.request !== request.id || g.vault !== request.vault || g.item !== request.item || g.mode !== request.mode) return "the grant is not for this request as asked";
+    if (g.sourceWs !== request.cross.workspace || entry.sourceWs !== request.cross.workspace || entry.vault !== request.vault || entry.item !== request.item) {
+      return "the grant's source workspace does not match the request";
+    }
+    if (!entry.listing.modes.includes(g.mode as Mode)) return `the item is not given by ${g.mode}`;
+    if (typeof g.scope !== "string" || !Object.hasOwn(LASTS, g.scope)) return "scope is once, hour or chat";
+    if (request.timeout && g.scope !== "once" && g.timeout === undefined) return "this request needs an approval with its timeout; update the app";
+    if (g.timeout !== undefined && (g.timeout === null || typeof g.timeout !== "object" || !["idle", "fixed"].includes(g.timeout.kind) || !Number.isSafeInteger(g.timeout.seconds) || g.timeout.seconds < 1 || g.timeout.seconds > LASTS[g.scope as Scope] || g.scope === "once" || !Number.isSafeInteger(g.at) || g.exp !== g.at + g.timeout.seconds)) return "invalid grant timeout";
+    const lasts = entry.listing.lasts ?? entry.vaultLasts;
+    if (!allows(lasts, g.scope)) return `the item is granted for ${lasts} at most`;
+    const now = this.#now();
+    if (!Number.isSafeInteger(g.exp) || g.exp <= now || g.exp > now + LASTS[g.scope as Scope] + SLACK) return "the grant's expiry is out of range for its scope";
+    if (!Array.isArray(g.hosts) || !g.hosts.every((h: unknown) => typeof h === "string" && (entry.listing.hosts.includes(h) || (!h.startsWith("*.") && hostAllowed(h, entry.listing.hosts))))) {
+      return "the grant's hosts are not all the item's";
+    }
+    if (g.mode === "proxy" && g.hosts.length === 0) return "a grant through the proxy names its hosts";
+    if (g.mode === "browser" && g.hosts.length === 0) return "a sign-in's grant names its sites (an app from before sign-ins sends none: update it)";
+    const by = typeof g.sig?.key === "string" ? signerOf(lock, g.sig.key) : null;
+    if (by === null || by.sub !== expectedSub) return "a cross-workspace grant is signed by its owner's device in the lock";
+    if (!signedOk(g, TAG.grant)) return "the grant's signature is invalid";
+    const box = this.#boxes.get(request.id);
+    if (box === undefined) return "this station no longer holds the request's box (it restarted): ask again";
+    let secret: Secret;
+    try {
+      secret = JSON.parse(Buffer.from(openSeal(box, g.secret, grantContext(request.ws, request.id))).toString("utf8"));
+    } catch {
+      return "the grant's secret does not open";
+    }
+    if (secret === null || typeof secret !== "object" || valueOf(secret) === null) return "the grant's secret has no value to use";
+    const checked = structuredClone(grant);
+    return () => {
+      if (this.#boxes.get(request.id) !== box) return "this station no longer holds the request's box (it restarted): ask again";
+      if (checked.exp <= this.#now()) return "the grant's expiry is out of range for its scope";
+      this.#boxes.delete(request.id);
+      this.#hold({ request: { ...request, status: "granted" }, grant: checked, secret, uses: 0 });
+      return null;
+    };
+  }
+
   /// Holds an item of the plain library for `request`, as its owner decided ( 不加锁的库): no seal and no
   /// signature, the secret read from the station's own store; the same limits as a grant's otherwise.
   /// `lasts`: the longest grant it is given for (the item's own, else its owner's for the library; none: any).
@@ -264,6 +310,7 @@ export class Keeper {
     if (request.timeout && d.scope !== "once" && d.timeout === undefined) return "this request needs an approval with its timeout; update the app";
     if (!allows(d.lasts, d.scope)) return `the item is granted for ${d.lasts} at most`;
     if (d.timeout !== undefined && (d.timeout === null || typeof d.timeout !== "object" || !["idle", "fixed"].includes(d.timeout.kind) || !Number.isSafeInteger(d.timeout.seconds) || d.timeout.seconds < 1 || d.timeout.seconds > LASTS[d.scope] || d.scope === "once")) return "invalid grant timeout";
+    if (request.mode === "browse") return "browse requests cannot be granted";
     if (!d.listing.modes.includes(request.mode)) return `the item is not given by ${request.mode}`;
     if (!d.hosts.every((h) => d.listing.hosts.includes(h) || (!h.startsWith("*.") && hostAllowed(h, d.listing.hosts)))) return "the hosts are not all the item's";
     if (request.mode === "proxy" && d.hosts.length === 0) return "given through the proxy, it names its hosts";

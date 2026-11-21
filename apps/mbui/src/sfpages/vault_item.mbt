@@ -290,7 +290,11 @@ fn item_uses_node(b : @view.View, core : Core, ws : () -> String, uses : () -> A
                 l.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
                 @sf.presses_node(l, fn() {
                   let u = @signals.untracked(uv)
-                  (core.open_chat)(@signals.untracked(ws) + "/" + text(u, "station"), text(u, "session"), @signals.untracked(chat))
+                  let target_ws = match text(u, "workspace") {
+                    "" => @signals.untracked(ws)
+                    w => w
+                  }
+                  (core.open_chat)(target_ws + "/" + text(u, "station"), text(u, "session"), @signals.untracked(chat))
                 })
                 l.says(By(fn() { Some(@view.said(Link, label=chat())) })) |> ignore
                 l.box(fn(w) {
@@ -310,6 +314,15 @@ fn item_uses_node(b : @view.View, core : Core, ws : () -> String, uses : () -> A
             } else {
               @sf.words_node(p, chat, fn() { vi_chat }).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
             }
+          })
+          n.show(fn() { text(uv(), "workspace") != "" }, fn(d) {
+            @sf.pill_node(d, fn() {
+              match text(uv(), "workspaceName") {
+                "" => text(uv(), "workspace")
+                name => name
+              }
+            }, tone=Neutral)
+            |> ignore
           })
           n.show(fn() { flag(uv(), "denied") }, fn(d) { @sf.pill_node(d, fn() { @sf.t("web-pages.vault.uses.denied") }, tone=Red) |> ignore })
         },
