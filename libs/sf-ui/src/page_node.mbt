@@ -160,7 +160,7 @@ fn rippled_look(
 ///|
 /// `v` pressed as an old view's box with an id is (Ctx::on_press: a tap, a mouse's click, Enter or Space with the focus,
 /// a screen reader's press): `press` done then; its ripple and sink as `corner` rounds it (press_look); read out as
-/// `role` named `label`.
+/// `role` named `label`, and whether it is the one chosen where `selected` says (None: says nothing of it).
 #callsite(autofill(loc))
 fn pressed_node(
   v : @view.View,
@@ -168,13 +168,14 @@ fn pressed_node(
   corner : @view.Live[Double],
   role : @view.Role,
   label : () -> String,
+  selected? : () -> Bool? = fn() { None },
   loc~ : SourceLoc,
 ) -> Unit {
   v
   .presses(Is(true))
   .focusable(Is(true))
   .focus_ring_theme()
-  .says(By(fn() { Some(@view.said(role, label=label())) }))
+  .says(By(fn() { Some(@view.said(role, label=label(), selected?=selected())) }))
   .on_press(press)
   |> ignore
   rippled_look(loc~, v, corner, press)

@@ -46,8 +46,7 @@ pub fn workspace_row_node(
       r.lines_up(By(fn() { Some(if sub() != "" { Start } else { Middle }) })) |> ignore
       // (its ripple a card's corner in a panel)
       let corner = r.concentric_radius(fn() { card_corner })
-      pressed_node(r, press, corner, Button, label)
-      r.says(By(fn() { Some(@view.said(Button, label=label(), selected=checked())) })) |> ignore
+      pressed_node(r, press, corner, Button, label, selected=fn() { Some(checked()) })
       // (its mark, or an icon in the same square a mark stands in: the rows' words on one line, a workspace's or an
       // action's)
       let lead_square = fn(make : (@view.View) -> Unit) {
