@@ -6,7 +6,9 @@
 // Verifies that D3D11 dynamic vertex buffer growth handles UINT_MAX overflow and CreateBuffer failures without
 // leaving a dangling/NULL `vbuf` dereferenced by `ctx->Map` (0xC0000005), and recovers cleanly on the next frame.
 #define MB_NO_MOONBIT_H 1
+#ifndef _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_WARNINGS
+#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
