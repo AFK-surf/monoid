@@ -97,6 +97,7 @@ fn icon_button_by(
       let is_lit = fn() { b.focus_shown() || b.hovered() || b.pressed() || (!disabled() && lit()) }
       let hand = @motion.NodeWay::new(0.0)
       v.reacts(is_lit, fn(on) { hand.go_ms(v, if on { 1.0 } else { 0.0 }, dur_ms) })
+      bind_pill_press(v)
       let feel = @motion.press_feel(v, live=fn() { !disabled() }, hovers=false)
       feel_of.val = Some(feel)
       let deeper = lit_before_press(v, b, hand)

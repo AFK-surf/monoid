@@ -154,12 +154,12 @@ fn home_top_bar_node(
   shown? : () -> Bool = fn() { true },
 ) -> Unit {
   v.box(fn(g) {
-    // (soft GPU bottom-fade scrim behind the floating liquid glass pills: stays 100% opaque through status_top + 44pt
-    // to completely cover the tucked pull-to-search field, then feathers smoothly over the lower 6pt to base_h)
+    // (Apple iOS 26 UIScrollEdgeEffect.soft: 100% solid behind the system status bar, then full bar_h soft fade
+    // so scrolled chat rows refract cleanly through the translucent liquid glass pills and feather into the status bar)
     narrow_bar_scrim_node(
       g,
       fn(s) { status_top_now(s.window_w()) + bar_h },
-      fn(_) { 6.0 },
+      fn(_) { bar_h },
     )
     g.box(fn(row) {
       row
@@ -322,6 +322,7 @@ fn home_top_bar_node(
             .shrink(Is(1.0))
             .min_width(Is(Some(0.0)))
             |> ignore
+            @sf.bar_pill_key_press_node(s)
             // (the fixture's home-sheet: opened by it as the app starts, beside it wherever it is laid out)
             if home_sheet_at_start.val {
               home_sheet_at_start.val = false

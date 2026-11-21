@@ -265,7 +265,11 @@ fn search_field_shorter() -> Array[String] {
 ///|
 /// The search at the top of a list made once (search_field's) in its line `line`: a quiet field; pressed, the search
 /// opens from it. Not seen while the search's field is it. It stands on the list's line (`at`).
-fn search_field_node(line : @view.View, at : @sf.ListAt) -> @view.View {
+fn search_field_node(
+  line : @view.View,
+  at : @sf.ListAt,
+  reveal? : () -> Double = fn() { 1.0 },
+) -> @view.View {
   let field : Ref[@view.View?] = Ref(None)
   line.box(fn(l) {
     @sf.style_node(l, fn() {
@@ -275,13 +279,18 @@ fn search_field_node(line : @view.View, at : @sf.ListAt) -> @view.View {
         Whole => search_field_line.then(@ui.style(px=@sf.room_of(band.band_in)))
       }
     })
-    @sf.action_box_node(l, fn() { @sf.t("android-chat.search.field") }, fn(f) {
-      let (_, y, _, _) = f.placed_window_now()
-      search_open_from(y)
-    }, fn(f) {
-      field.val = Some(f)
-      @sf.style_node(f, fn() { search_field_box.then(search_field_room(@sf.theme().chat_list, at)) })
-      f.alpha(By(fn() { if search_read().open { 0.0 } else { 1.0 } })) |> ignore
+    @sf.action_box_node(
+      l,
+      fn() { @sf.t("android-chat.search.field") },
+      fn(f) {
+        let (_, y, _, _) = f.placed_window_now()
+        search_open_from(y)
+      },
+      disabled=fn() { search_read().open || reveal() <= 0.001 },
+      fn(f) {
+        field.val = Some(f)
+        @sf.style_node(f, fn() { search_field_box.then(search_field_room(@sf.theme().chat_list, at)) })
+        f.alpha(By(fn() { if search_read().open { 0.0 } else { reveal() } })) |> ignore
       @sf.icon_node(f, "search", @sf.theme().chat_list.band_icon, By(fn() { @sf.theme().p.muted })) |> ignore
       @sf.words_node(f, fn() { @sf.t("android-chat.search.field") }, fn() {
         @sf.theme().chat_list.band_words.then(search_field_words)

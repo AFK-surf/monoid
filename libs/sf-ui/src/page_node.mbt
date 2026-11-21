@@ -133,10 +133,12 @@ fn rippled_look(
   v : @view.View,
   corner : @view.Live[Double],
   press : () -> Unit,
+  ink? : () -> Int64 = fn() { @motion.ripple_ink },
+  pointer? : Bool = false,
   loc~ : SourceLoc,
 ) -> Unit {
   // (a pointer's press lights its ground: press_ripple's)
-  let rippled = press_look(loc~, v, corner, fn() { false }, pointer=false)
+  let rippled = press_look(loc~, v, corner, fn() { false }, ink~, pointer~)
   let on_it = fn(d : @view.Drag) { v.finger_target(d.wx, d.wy) }
   v.gesture(
     @ui.touch_slop(),
@@ -2459,7 +2461,9 @@ pub fn round_key_node(
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
     |> ignore
-    rippled_look(loc~, k, Is(side / 2.0), go)
+    hover_ground_node(k)
+    rippled_look(loc~, k, Is(side / 2.0), go, ink=bar_pill_press_ink, pointer=true)
+    bind_pill_press(k)
     icon_node(k, icon, icon_size, By(ink), name_now?=icon_now) |> ignore
   }
   match opener {

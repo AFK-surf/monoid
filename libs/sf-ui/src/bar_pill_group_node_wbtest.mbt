@@ -94,3 +94,77 @@ test "bar_pill_group_node renders single-layer liquid glass with shadow_outside,
     }
   }
 }
+
+///|
+test "bar_pill_group_node interactive press drives GPU spot highlight, spring scale, theme-adaptive ink, and settles cleanly" {
+  for dark in [false, true] {
+    presenters_reset()
+    set_words(fn(key, _) { key })
+    let t = @ui.Tester::new(fn(_c) {  }, w=420.0, h=160.0, dark~, platform=2)
+    set_dark(Some(dark))
+    @ui.set_glass_solid(None)
+    let pill_ref : Ref[@view.View?] = Ref(None)
+    let key_ref : Ref[@view.View?] = Ref(None)
+    let ws_ref : Ref[@view.View?] = Ref(None)
+    @ui.set_view_app(fn(root) {
+      @ui.set_tree_theme(ui_theme_now)
+      root.box(fn(bar) {
+        bar
+        .row(Is(true))
+        .grow(Is(1.0))
+        .padding(Is((24.0, 24.0, 24.0, 24.0)))
+        .lines_up(Is(Some(Middle)))
+        .ground(By(fn() { theme().p.bg }))
+        |> ignore
+        let g = bar_pill_group_node(bar, height=40.0, pad=3.0, gap=2.0, fn(g) {
+          g.box(fn(k) {
+            key_ref.val = Some(k)
+            round_key_node(k, "bell", fn() { "Attention" }, fn() {  })
+          })
+          |> ignore
+          action_box_node(g, fn() { "Workspace" }, fn(_) {  }, fn(s) {
+            ws_ref.val = Some(s)
+            s
+            .row(Is(true))
+            .height(Is(Some(34.0)))
+            .radius(Is(17.0))
+            .padding(Is((8.0, 0.0, 8.0, 0.0)))
+            .lines_up(Is(Some(Middle)))
+            |> ignore
+            bar_pill_key_press_node(s)
+            words_node(s, fn() { "AFK AI" }, fn() { @ui.text_style(size=Ui, color=Fg) }) |> ignore
+          })
+          |> ignore
+        })
+        pill_ref.val = Some(g)
+      })
+      |> ignore
+    })
+    t.draw()
+    // Dark mode press ink must be bright (non-black) so ripples/overlays are clearly visible over dark glass.
+    let ink = bar_pill_press_ink()
+    let rgb = (ink >> 8) & 0xFFFFFFL
+    if dark {
+      assert_true(rgb > 0x808080L, msg="dark press ink rgb should be bright, got \{ink}")
+    } else {
+      assert_true(rgb < 0x808080L, msg="light press ink rgb should be dark, got \{ink}")
+    }
+    let pill = pill_ref.val.unwrap()
+    let scope = pill.lent(pill_press_lent).unwrap()
+    assert_eq(scope.spot.untracked(), None)
+    assert_true((pill.drawn_scale() - 1.0).abs() < 0.001)
+    for target in [key_ref.val.unwrap(), ws_ref.val.unwrap()] {
+      let (tx, ty, tw, th) = target.placed_window_now()
+      let (cx, cy) = (tx + tw / 2.0, ty + th / 2.0)
+      t.press_at(cx, cy)
+      t.run_for(part_whole_ms)
+      assert_true(scope.spot.untracked() is Some(_), msg="spot must be active while pressed (dark=\{dark})")
+      assert_true(pill.drawn_scale() > 1.01, msg="pill must spring-scale > 1.01 while pressed, got \{pill.drawn_scale()}")
+      t.release(cx, cy)
+      t.run_for(@ui.move_most_ms)
+      assert_eq(scope.spot.untracked(), None)
+      assert_true((pill.drawn_scale() - 1.0).abs() < 0.002, msg="pill must settle back to 1.0, got \{pill.drawn_scale()}")
+    }
+    t.assert_idle()
+  }
+}

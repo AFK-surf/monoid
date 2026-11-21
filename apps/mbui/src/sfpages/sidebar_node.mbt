@@ -437,7 +437,28 @@ fn chats_pane_node(
         "top" => line.height(By(fn() { Some((frame.top)() + @sf.theme().chat_list.top_in) })) |> ignore
         "foot" => line.height(By(fn() { Some((frame.foot)() + @sf.list_foot_in(frame.at)) })) |> ignore
         "search" => {
-          let field = search_field_node(line, frame.at)
+          let tucked = @signals.computed(fn(_) { search_tucked(read().0) })
+          let reveal = match frame.at {
+            Whole =>
+              fn() {
+                if !tucked.get() {
+                  1.0
+                } else {
+                  let band = @sf.theme().chat_list
+                  let vis_bottom = (frame.top)() + band.top_in + band.band_h - scroll.drawn(line.tree)
+                  let emerged = vis_bottom - (frame.under)()
+                  if emerged <= 0.5 {
+                    0.0
+                  } else if emerged >= 22.5 {
+                    1.0
+                  } else {
+                    (emerged - 0.5) / 22.0
+                  }
+                }
+              }
+            Side | Tape => fn() { 1.0 }
+          }
+          let field = search_field_node(line, frame.at, reveal~)
           // the list's first time with its rows: the search tucked over them out of view, the first line after it at the
           // foot of what covers the list (frame.under: a phone's top bar, not the room under it; a side column's band,
           // the room over the list), there once scrolled to (Scroll::tucks: as far as the room over the list and the
@@ -450,7 +471,7 @@ fn chats_pane_node(
                 Whole => (frame.under)()
               }
             },
-            kept=fn() { search_tucked(read().0) },
+            kept=fn() { tucked.get() },
           )
         }
         "wait" => list_waiting_node(line, src, read, frame.at, tips, stint)
