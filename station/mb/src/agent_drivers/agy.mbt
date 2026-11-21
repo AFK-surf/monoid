@@ -205,7 +205,7 @@ fn agy_plan_fields(tier : String?, name : String?, company : Bool) -> String? {
     ("g1-pro-tier", "Pro"),
     ("g1-ultra-lite-tier", "Ultra 5x"),
     ("g1-ultra-tier", "Ultra 20x"),
-    ("gcp-ge-standard-tier", "Enterprise Standard"),
+    ("gcp-ge-standard-tier", "Enterprise"),
     ("gcp-ge-plus-tier", "Enterprise Plus"),
     ("gcp-ge-ultra-tier", "Enterprise Ultra"),
   ]

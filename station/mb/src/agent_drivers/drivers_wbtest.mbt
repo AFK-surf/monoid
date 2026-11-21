@@ -47,7 +47,7 @@ test "Antigravity plans use known IDs or Google's display name" {
     ("g1-pro-tier", "Pro"),
     ("g1-ultra-lite-tier", "Ultra 5x"),
     ("g1-ultra-tier", "Ultra 20x"),
-    ("gcp-ge-standard-tier", "Enterprise Standard"),
+    ("gcp-ge-standard-tier", "Enterprise"),
     ("gcp-ge-plus-tier", "Enterprise Plus"),
     ("gcp-ge-ultra-tier", "Enterprise Ultra"),
     ("gcp-standard-tier", "Enterprise"),
