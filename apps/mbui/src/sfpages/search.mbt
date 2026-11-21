@@ -286,11 +286,13 @@ fn search_field_node(
         let (_, y, _, _) = f.placed_window_now()
         search_open_from(y)
       },
-      disabled=fn() { search_read().open || reveal() <= 0.001 },
       fn(f) {
         field.val = Some(f)
         @sf.style_node(f, fn() { search_field_box.then(search_field_room(@sf.theme().chat_list, at)) })
-        f.alpha(By(fn() { if search_read().open { 0.0 } else { reveal() } })) |> ignore
+        f
+        .alpha(By(fn() { if search_read().open { 0.0 } else { reveal() } }))
+        .presses(By(fn() { !search_read().open && reveal() > 0.001 }))
+        |> ignore
       @sf.icon_node(f, "search", @sf.theme().chat_list.band_icon, By(fn() { @sf.theme().p.muted })) |> ignore
       @sf.words_node(f, fn() { @sf.t("android-chat.search.field") }, fn() {
         @sf.theme().chat_list.band_words.then(search_field_words)

@@ -103,7 +103,8 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // 182), (2473, 503, 1914, 217, 2472))
   // (+8 made, +7 laid, +11 bindings, 2026-11-22: narrow Home and Chat top bar action groups use floating
   // bar_pill_group_node liquid glass capsules, standalone archive circle, and soft GPU bottom-fade narrow_bar_scrim_node; before it (1029, 31, 659, 80, 970))
-  "phone cold": (1037, 31, 666, 80, 981),
+  // (+18 bindings, 2026-11-22: interactive liquid glass pill press feedback (.scale on bar_pill_group_node, hover_ground_node on round_key_node, bar_pill_key_press_node on Home workspace switcher, and tucked search_field_node presses(By(...)); before it (1037, 31, 666, 80, 981))
+  "phone cold": (1037, 31, 666, 80, 999),
   // (2026-11-18: a chat's page made as nodes kept as it is left (ui's Nav kept_left, sfbase's page_entry_parked) and
   // taken back as it is opened again, holding no chat meanwhile and waiting for none of it as it comes back; the same at
   // 60, 120, 24 and 7: before it (341, 19, 227, 28, 346) and wide again (897, 132, 853, 121, 1062))
