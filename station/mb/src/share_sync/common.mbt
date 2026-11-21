@@ -14,6 +14,11 @@ pub suberror ShareError {
   Stopped(String)
   TooLarge(String)
   Failed(String)
+  /// A borrowed profile's login over on its host (index.ts LOGIN_OVER, its `ProfileLoginOver`): the profile's id and
+  /// what is said. A session that could not start on it goes on on another (the actors' `auth`).
+  LoginOver(String, String)
+  /// A login here that can no longer be renewed (console.ts `RenewRefused`, as the accounts raise it): what is said.
+  Over(String)
 }
 
 ///|
@@ -25,7 +30,7 @@ pub impl Show for ShareError with output(self, logger) {
 /// What a failure says (`(e as Error).message`).
 pub fn error_words(e : Error) -> String {
   match e {
-    Refused(m) | Said(m) | Stopped(m) | TooLarge(m) | Failed(m) => m
+    Refused(m) | Said(m) | Stopped(m) | TooLarge(m) | Failed(m) | LoginOver(_, m) | Over(m) => m
     @memory.Failed(m) => m
     @wire.ShellError(m) => m
     Failure(m) => m
@@ -316,4 +321,17 @@ pub fn Log::stderr() -> Log {
       js_stringify(jobj([("level", jstr(level)), ("part", jstr(what)), ("msg", jstr(words)), ("fields", fields)])),
     ),
   }
+}
+
+///|
+/// A login here that can no longer be renewed, as the accounts raise it (`Over`): what lending it then answers says the
+/// host's login is over (LOGIN_OVER).
+pub fn over(said : String) -> ShareError {
+  Over(said)
+}
+
+///|
+/// A borrowed or local profile's login found over as a session opened on it (`LoginOver`): its id and what is said.
+pub fn login_over_of(profile_id : String, said : String) -> ShareError {
+  LoginOver(profile_id, said)
 }

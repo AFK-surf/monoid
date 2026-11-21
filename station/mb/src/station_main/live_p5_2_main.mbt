@@ -112,6 +112,7 @@ pub async fn start_live_p5_2(bus : LiveBus) -> Unit {
     runner_unnamed: Set::new(),
     relieve_low_bytes: None,
     billed_notified: Map([]),
+    profile_login_notified: Map([]),
     in_flight_mcp: 0,
     mcp_draining: false,
     mcp_drained: None,
@@ -1491,6 +1492,64 @@ async fn P52::hub_op(self : P52, op : String, arg : Json) -> Json {
       }
       Json::null()
     }
+    // (a subscription's login newly over, accounts `lost`: each workspace it serves told whose it is, to sign it in
+    // again, once in PROFILE_LOGIN_COOLDOWN_MS; agents.ts `loginLost`)
+    "accounts.profileLogin" => {
+      let given = jitems(arg).get(0).unwrap_or(arg)
+      let id = jtext(given, "id").unwrap_or("")
+      let profile = jfield(given, "profile")
+      let cloud = (self.bus.cloud_state.val)()
+      let is_stillfail = match cloud {
+        Some(c) => @cloud_net.provider_of(Some(jfield(c, "provider"))) is Stillfail
+        None => false
+      }
+      if id != "" && is_stillfail {
+        let at = wall_ms()
+        let all = self.workspaces()
+        let home = all.get(0)
+        let station_name = match jtext(given, "station") {
+          Some(s) if s != "" => s
+          _ =>
+            match cloud {
+              Some(c) => jtext(c, "name").unwrap_or("still.fail")
+              None => "still.fail"
+            }
+        }
+        let runtime_title = @session_hub.runtime_label(jtext(profile, "runtime").unwrap_or(""))
+        let name = jtext(profile, "name").unwrap_or(id)
+        for ws in all.filter(w => profile_allowed_in(profile, w, home)) {
+          let notice = @cloud_net.profile_login_notice(
+            self.profile_login_notified,
+            ws,
+            id,
+            name,
+            runtime_title,
+            station_name,
+            at,
+            tr((self.bus.lang.val)(), "station.notice.profileLogin", args=[("profile", name), ("runtime", runtime_title), ("station", station_name)]),
+          )
+          guard notice is Some(notice) else { continue }
+          let body : Json = if Some(ws) == home {
+            { "notices": Json::array([notice]) }
+          } else {
+            { "notices": Json::array([notice]), "workspace": Json::string(ws) }
+          }
+          ignore(
+            self.host.rt.fork_quiet(name="profile login notify", async fn() {
+              ignore((self.bus.cloud_call.val)("notify", body)) catch {
+                _ => ()
+              }
+            }),
+          )
+        }
+      }
+      Json::null()
+    }
+    "accounts.profileLoginCleared" => {
+      let id = opt_str(jitems(arg).get(0)).unwrap_or(opt_str(Some(arg)).unwrap_or(""))
+      @cloud_net.profile_login_clear(self.profile_login_notified, id)
+      Json::null()
+    }
     "sessions.billedFallback" => {
       let a = jitems(arg)
       let key = opt_str(a.get(0)).unwrap_or("")
@@ -2012,4 +2071,23 @@ fn P52::mount_live(self : P52, hub : @session_hub.Hub) -> Unit {
       }),
     ),
   )
+}
+
+///|
+/// Whether sessions of workspace `ws` may run on `profile` (sessions/config.ts `allowedIn`): a copy of another
+/// station's only in the workspaces it is shared in, any other but where it is withheld from a joined one.
+fn profile_allowed_in(profile : Json, ws : String, home : String?) -> Bool {
+  let share = jfield(profile, "share")
+  if jfield(share, "borrowed") is True && jfield(share, "workspaces") is Array(only) {
+    if !only.iter().any(w => w is String(x) && x == ws) {
+      return false
+    }
+  }
+  if home is None || home == Some(ws) {
+    return true
+  }
+  match jfield(profile, "withheld") {
+    Array(xs) => !xs.iter().any(w => w is String(x) && x == ws)
+    _ => true
+  }
 }

@@ -33,6 +33,30 @@ export class BilledCooldown {
   }
 }
 
+/// Minimum interval between alerts that one profile's login is over, for the same workspace.
+export const PROFILE_LOGIN_COOLDOWN_MS = 4 * 60 * 60 * 1000;
+
+/// Per-(workspace, profile) cooldown gate for login-over alerts, cleared once the profile's login is good again so that
+/// the next time it is over is told at once.
+export class ProfileLoginCooldown {
+  private last = new Map<string, number>();
+
+  take(workspace: string | null, profileId: string, at: number): boolean {
+    const key = `${workspace ?? ""}\0${profileId}`;
+    const prev = this.last.get(key);
+    if (prev !== undefined && at - prev < PROFILE_LOGIN_COOLDOWN_MS) return false;
+    this.last.set(key, at);
+    return true;
+  }
+
+  clear(profileId: string): void {
+    for (const key of [...this.last.keys()]) if (key.endsWith(`\0${profileId}`)) this.last.delete(key);
+  }
+}
+
+/// A profile whose login is over, as its alert names it: `station` the station whose login it is.
+export type ProfileLoginNotice = { workspaces: string[]; profileId: string; profile: string; runtimeTitle: string; stationName: string; at: number };
+
 export class Notifier {
   private since: number;
   /// Each session's last turn noticed (when it ended), so one turn is noticed once.
@@ -149,6 +173,30 @@ export class Notifier {
       ws,
     }]);
     return true;
+  }
+
+  /// Enqueues a manager-only push notice that a profile's login is over, to be signed in again: one a workspace it serves
+  /// (those the station is in), each not told of it within PROFILE_LOGIN_COOLDOWN_MS (`cooldown`). How many were.
+  notifyProfileLogin(info: ProfileLoginNotice, cooldown: ProfileLoginCooldown): number {
+    const notices: Notice[] = [];
+    for (const ws of new Set(info.workspaces)) {
+      if (this.cloud.membership(ws) === null || !cooldown.take(ws, info.profileId, info.at)) continue;
+      notices.push({
+        to: [],
+        audience: "managers",
+        kind: "failed",
+        session: `profile:${info.profileId}`,
+        thread: 0,
+        seq: null,
+        title: info.stationName,
+        by: info.runtimeTitle,
+        text: tr(stationLang(), "station.notice.profileLogin", { profile: info.profile, runtime: info.runtimeTitle, station: info.stationName }),
+        at: info.at,
+        ws,
+      });
+    }
+    this.queue(notices);
+    return notices.length;
   }
 
   private queue(notices: Notice[]) {

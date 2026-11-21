@@ -1157,6 +1157,7 @@ pub async fn Accounts::renew_kimi(self : Accounts, id : String) -> Unit {
 ///|
 /// `afterSignIn`: a profile just signed in: checked and its allowance read, so its page shows them at once.
 fn Accounts::after_sign_in(self : Accounts, id : String) -> Unit {
+  self.auth_revoked.remove(id)
   let profile = self.profile(id)
   match profile {
     Some(p) if p.runtime == Some("codex") && access_kind(p.raw) == "subscription" => {

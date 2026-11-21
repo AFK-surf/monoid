@@ -168,6 +168,7 @@ fn p53_given(machine~ : Bool) -> Json {
     ("sharedLendClaude", jb(true)),
     ("sharedLoginUpdated", jb(true)),
     ("sharedHostName", jb(true)),
+    ("loginNotices", jb(true)),
     ("configChecked", jb(true)),
   ])
 }
@@ -411,7 +412,7 @@ async fn P53Accounts::answer(self : P53Accounts, name : String, args : Array[@ac
         self.sharing().quota_reset(s(0), s(1))
         done
       }
-      "shared.status" => to_jv(self.sharing().status(j(0)))
+      "shared.status" => to_jv(self.sharing().status(j(0), recheck=j(1) is True))
       "shared.view" =>
         match self.sharing().profile_view(j(0), workspace=if j(1) is String(w) { Some(w) } else { None }) {
           Some(v) => to_jv(v)
@@ -549,10 +550,16 @@ async fn P53Accounts::ask(self : P53Accounts, m : String, arg : Json) -> Json {
           NotKnown => jobj_of([("$undef", ji(1))])
         }
       "recheck" => {
-        sessions().recheck(text(0, "profile"))
+        sessions().recheck(text(0, "profile"), force=at(1, "force") is True)
         done
       }
-      "canAuthRetry" => jb(sessions().can_auth_retry(text(0, "key"), text(1, "failedProfile")))
+      "canAuthRetry" => {
+        let tried = match at(2, "tried") {
+          Array(xs) => xs.filter_map(x => if x is String(t) { Some(t) } else { None })
+          _ => []
+        }
+        jb(sessions().can_auth_retry(text(0, "key"), text(1, "failedProfile"), tried~))
+      }
       // (agents.ts: someone follows the events again, after nobody did: the allowances read again)
       "followed" => {
         self.made().followed()

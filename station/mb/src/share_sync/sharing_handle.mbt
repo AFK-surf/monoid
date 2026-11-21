@@ -108,7 +108,7 @@ pub async fn Sharing::handle(self : Sharing, peer : String, request : Json, work
       })
     }
     if asked == "share.status" {
-      return (self.deps.status)(js_string(get(Some(p), "id")))
+      return (self.deps.status)(js_string(get(Some(p), "id")), get(rq, "recheck") is Some(True))
     }
     if asked == "share.quotaReset" {
       let key = match get(rq, "key") {
@@ -362,8 +362,21 @@ async fn Sharing::take_edit_now(self : Sharing, peer : String, id : String, name
 }
 
 ///|
-/// A short-lived access token of a shared subscription, renewed here when needed.
+/// A short-lived access token of a shared subscription, renewed here when needed. Its login over here, it is checked
+/// again (its borrowers, older ones too, read that in `share.status`) and the borrower told so (LOGIN_OVER).
 async fn Sharing::lend(self : Sharing, p : Json, rejected : String?) -> Json {
+  self.lend_of(p, rejected) catch {
+    e if over_here(e) => {
+      let id = js_string(get(Some(p), "id"))
+      self.tasks.spawn(async fn() { ignore((self.deps.status)(id, true)) catch { _ => () } })
+      raise Failed(login_over + error_words(e))
+    }
+    e => raise e
+  }
+}
+
+///|
+async fn Sharing::lend_of(self : Sharing, p : Json, rejected : String?) -> Json {
   let pj = Some(p)
   if !(gets(pj, ["access", "kind"]) is Some(String("subscription"))) {
     raise Failed("only a subscription is lent")
@@ -702,6 +715,10 @@ pub async fn Sharing::lend_claude(self : Sharing, profile : Json, rejected? : St
     self.lent_claude[pid] = lent
     lent
   } catch {
+    e if is_login_over(e) => {
+      self.lent_claude.remove(pid)
+      raise self.over_there(profile, e)
+    }
     e => {
       // Left out by who may use it (`not_ours`): nothing lent before is used, and the copy is asked of again, which
       // takes it away. Any other refusal is the host not answering, as before.
@@ -754,6 +771,7 @@ pub async fn Sharing::lend_codex(self : Sharing, profile : Json, rejected? : Boo
     self.silent_hosts.remove(host)
     got
   } catch {
+    e if is_login_over(e) => raise self.over_there(profile, e)
     e => {
       // Left out by who may use it (`not_ours`): as lend_claude.
       let ours = !not_ours(e)
@@ -855,6 +873,7 @@ pub async fn Sharing::lend_agy(self : Sharing, profile : Json, rejected? : Bool 
     self.silent_hosts.remove(host)
     got
   } catch {
+    e if is_login_over(e) => raise self.over_there(profile, e)
     e => {
       // Left out by who may use it (`not_ours`): as lend_claude.
       let ours = !not_ours(e)
@@ -889,11 +908,30 @@ pub async fn Sharing::lend_agy(self : Sharing, profile : Json, rejected? : Bool 
 }
 
 ///|
-/// A borrowed profile's check and allowance, as its host has them.
-pub async fn Sharing::status(self : Sharing, profile : Json) -> Json {
+/// A borrowed profile's login over on its host (LOGIN_OVER): the host answered, so it is not one that did not; its check
+/// here says to sign in again, and a session that could not start on it goes on on another (`LoginOver`).
+fn Sharing::over_there(self : Sharing, profile : Json, e : Error) -> ShareError raise {
+  let pid = js_string(get(Some(profile), "id"))
+  self.silent_hosts.remove(host_of(profile))
+  if self.deps.login_expired is Some(f) {
+    f(pid)
+  }
+  (self.deps.changed)()
+  self.deps.log.warn("share", "the host's login of a borrowed profile is over", jobj([("profile", jstr(pid)), ("error", jstr(error_words(e)))]))
+  LoginOver(pid, tr((self.deps.lang)(), "station.quota.signInExpired"))
+}
+
+///|
+/// A borrowed profile's check and allowance, as its host has them; `recheck`: its login asked of its provider again
+/// there first (a host from before asks nothing again: its answer is what it had).
+pub async fn Sharing::status(self : Sharing, profile : Json, recheck? : Bool = false) -> Json {
   let host = host_of(profile)
   try {
-    let got = self.ask(host, None, jobj([("method", jstr("share.status")), ("id", gets(Some(profile), ["share", "id"]).unwrap_or(jnull()))]))
+    let request = jobj([("method", jstr("share.status")), ("id", gets(Some(profile), ["share", "id"]).unwrap_or(jnull()))])
+    if recheck && request is Object(m) {
+      m["recheck"] = jbool(true)
+    }
+    let got = self.ask(host, None, request)
     self.silent_hosts.remove(host)
     let or_null = (v : Json?) => match v {
       None | Some(Null) => jnull()

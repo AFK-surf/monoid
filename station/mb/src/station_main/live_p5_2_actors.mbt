@@ -385,7 +385,7 @@ fn error_of(e : Error, runtime : String) -> Json {
   if actor_errors.length() > 256 {
     if actor_errors.keys().next() is Some(k) { actor_errors.remove(k) }
   }
-  let said_own = e is @agent_drivers.Said(_)
+  let said_own = said_own_error(e)
   let missing = match e {
     CommandMissing(c) => c == runtime || c.has_suffix("/" + runtime)
     _ => false
@@ -413,6 +413,15 @@ fn error_of(e : Error, runtime : String) -> Json {
   // (its runtime's start given up, and why: the program's own `openAbort`, actor_run.mbt `open_abort_reason`)
   if message.has_prefix(open_aborted) {
     out["openAbort"] = jstr(if message == open_aborted + ": closed" { "closed" } else { "cancelled" })
+  }
+  // (a login over: the program goes on on another profile, as after a turn refused, actor_run.mbt `open_over`)
+  match e {
+    @share_sync.LoginOver(pid, _) => {
+      out["auth"] = jb(true)
+      out["authProfile"] = jstr(pid)
+    }
+    @accounts_oauth.RenewRefused(_, _) | @accounts_pool.Thrown("RenewRefused", _) => out["auth"] = jb(true)
+    _ => ()
   }
   if e is @accounts_pool.Thrown("AccountCapError", said) {
     out["sessionCap"] = jb(true)

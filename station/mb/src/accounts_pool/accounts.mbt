@@ -213,6 +213,9 @@ pub(all) struct Given {
   shared_lend_claude : Bool
   shared_login_updated : Bool
   shared_host_name : Bool
+  /// Whether a login newly over is told the workspace's managers (`accounts.profileLogin`, P5-2's notifier) and one
+  /// good again clears its cooldown (`accounts.profileLoginCleared`).
+  login_notices : Bool
   /// Whether config.json's edits pass `checkConfig` (ops/config.ts `check`, as the station sets it).
   config_checked : Bool
 }
@@ -250,6 +253,7 @@ pub fn Given::of_jv(v : JV, data : String) -> Given {
     shared_lend_claude: b("sharedLendClaude"),
     shared_login_updated: b("sharedLoginUpdated"),
     shared_host_name: b("sharedHostName"),
+    login_notices: b("loginNotices"),
     config_checked: b("configChecked"),
   }
 }
@@ -318,6 +322,10 @@ pub struct Accounts {
   mut pace_rev : Int
   mut unchecking : @effect.Deferred[Unit]?
   machine_said : Ref[Map[String, String]?]
+  /// Logins a runtime was refused on and a recheck found over (FB-44), with what is said and the allowance kept then
+  /// (index.ts `authRevoked`): signed out through checks that say otherwise till it signs in anew, its share changes,
+  /// or an allowance read after says it works.
+  auth_revoked : Map[String, (String, JV?, Double)]
 }
 
 ///|
@@ -401,6 +409,7 @@ pub async fn Accounts::new(
     pace_rev: 0,
     unchecking: None,
     machine_said: Ref(None),
+    auth_revoked: Map::new(),
   }
   for entry in jitems(Some(json_to_jv(b.with_store(s => s.profile_status())))) {
     let items = jitems(Some(entry))
@@ -461,22 +470,7 @@ pub fn Accounts::start(self : Accounts) -> Unit {
   match self.hub_accounts {
     Some(h) => {
       h.set_health(id => self.health(id))
-      h.set_recheck(async fn(id) {
-        match self.profile(id) {
-          Some(p) if p.runtime == Some("codex") && access_kind(p.raw) == "subscription" => {
-            let generation = self.login_generation.get(id).unwrap_or(0)
-            let read = self.read_quota(id, true)
-            if self.login_generation.get(id).unwrap_or(0) != generation {
-              return
-            }
-            if jget(read, "state") != Some(Str("ok")) &&
-              jget(self.checks.get(id), "state") != Some(Str("login")) {
-              self.codex_login(id, true, self.ctx.station_lang)
-            }
-          }
-          _ => ignore(self.check(id, self.ctx.station_lang))
-        }
-      })
+      h.set_recheck(async fn(id, force) { self.recheck_profile(id, force~) })
       h.set_quota_again(async fn(id) {
         match self.quota_busy.get(id) {
           Some(busy) => busy.wait()
@@ -736,8 +730,15 @@ pub async fn Accounts::codex_accounts_read(self : Accounts) -> Unit {
 }
 
 ///|
-/// `lentHealth`: how a profile is doing, told to a station borrowing it.
-pub async fn Accounts::lent_health(self : Accounts, id : String) -> Health {
+/// `lentHealth`: how a profile is doing, told to a station borrowing it; `recheck`: the borrower was refused on it, so
+/// it is asked of its provider again first (`recheck_profile`).
+pub async fn Accounts::lent_health(self : Accounts, id : String, recheck? : Bool = false) -> Health {
+  if recheck {
+    self.recheck_profile(id) catch {
+      _ => ()
+    }
+    return self.health(id)
+  }
   if !self.quotas.contains(id) ||
     self.background.now() - self.quota_asked_at(id) >= quota_every_ms {
     ignore(self.refresh_quota(id)) catch {

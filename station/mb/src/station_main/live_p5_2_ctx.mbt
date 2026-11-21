@@ -60,6 +60,9 @@ priv struct P52 {
   mut relieve_low_bytes : Double?
   /// Last time a billed-per-use fallback alert was emitted, by `<workspace>\0<runtime>`.
   billed_notified : Map[String, Int64]
+  /// Last time a profile's login-over alert was sent, by `<workspace>\0<profile>` (cloud/notify.ts
+  /// `ProfileLoginCooldown`): cleared once its login is good again.
+  profile_login_notified : Map[String, Int64]
   /// In-flight `/mcp` calls drained before handover so `chat_state` / `chat_post` finish before actors close.
   mut in_flight_mcp : Int
   mut mcp_draining : Bool
@@ -385,7 +388,7 @@ async fn P52::open_agent(
   force_cap? : Bool = false,
   cancelled? : () -> Bool = () => false,
 ) -> (Agent, Json) {
-  let hub = self.the_hub()
+  ignore(self.the_hub())
   let initial = self.bus.store.get_session(key)
   if initial == Json::null() {
     raise LiveError("session \{key} disappeared")
@@ -395,6 +398,32 @@ async fn P52::open_agent(
   }
   set_runtime(was)
   let profile = self.run_on(key, false, true, force_cap~)
+  // (a login found over as it opens is said as the profile it is of, for the program to go on on another: actor.ts
+  // `openAgent`, actor_run.mbt `open_over`; a start given up goes as it is)
+  let profile_id = jtext(profile, "id").unwrap_or("")
+  self.open_agent_on(key, stopped, read_back, profile_before, set_runtime, generation, listener, was, profile, cancelled) catch {
+    (@accounts_oauth.RenewRefused(_, _) | @accounts_pool.Thrown("RenewRefused", _) | @share_sync.Over(_)) as e if profile_id != "" =>
+      raise @share_sync.login_over_of(profile_id, said_of(e))
+    e => raise e
+  }
+}
+
+///|
+/// `open_agent` on the profile `run_on` gave it.
+async fn P52::open_agent_on(
+  self : P52,
+  key : String,
+  stopped : Array[Json],
+  read_back : Bool,
+  profile_before : String?,
+  set_runtime : (String) -> Unit,
+  generation : () -> Int,
+  listener : (Int) -> (@jsjson.JValue) -> Unit,
+  was : String,
+  profile : Json,
+  cancelled : () -> Bool,
+) -> (Agent, Json) {
+  let hub = self.the_hub()
   let row = self.bus.store.get_session(key)
   guard @session_hub.runtime_named(jtext(row, "runtime").unwrap_or("")) is Some(runtime) else {
     raise LiveError("session \{key} runs an unknown runtime")
@@ -509,11 +538,23 @@ async fn P52::open_agent(
 }
 
 ///|
+/// Whether a failure's words are the station's own, for people (i18n.ts `Said`, which a login not lent or over,
+/// console.ts `RenewRefused`, share/index.ts `ProfileLoginOver`, is in the TypeScript).
+fn said_own_error(e : Error) -> Bool {
+  match e {
+    @agent_drivers.Said(_) | @share_sync.Said(_) | @share_sync.LoginOver(_, _) | @share_sync.Over(_) |
+    @accounts_oauth.RenewRefused(_, _) | @accounts_pool.Thrown("RenewRefused", _) => true
+    _ => false
+  }
+}
+
+///|
 /// Whether opening a runtime session failed for something other than the conversation itself (actor.ts
 /// `isNonSessionOpenError`).
 fn non_session_open_error(e : Error) -> Bool {
   match e {
-    @agent_drivers.Said(_) | CommandMissing(_) => true
+    _ if said_own_error(e) => true
+    CommandMissing(_) => true
     other => {
       let said = said_of(other)
       // (given up, or its process not starting in time: nothing of the conversation)
@@ -1166,8 +1207,8 @@ async fn P52::deps(self : P52, _key : String, name : String, args : Array[Json])
         Number(_) as n => n
         _ => jn(wall_ms().to_double() + 3_600_000.0)
       }
-    "recheck" => self.bus.jobs_accounts_recheck(a(0))
-    "canAuthRetry" => self.bus.jobs_accounts_can_auth_retry(a(0), a(1))
+    "recheck" => self.bus.jobs_accounts_recheck(a(0), a(1))
+    "canAuthRetry" => self.bus.jobs_accounts_can_auth_retry(a(0), a(1), a(2))
     "runtimeMissing" => {
       hub.runtime_updated(s(0))
       self.bus.coord_updates_runtime_missing(a(0))

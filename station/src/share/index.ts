@@ -43,7 +43,7 @@ import { basename, dirname, join } from "node:path";
 import type { Clock } from "effect";
 import type { Env, MachineToken } from "../agents/machine-logins.ts";
 import { codexAuthFile } from "../agents/machine-logins.ts";
-import { CONSOLE_FILE } from "../accounts/console.ts";
+import { CONSOLE_FILE, ProfileLoginOver, RenewRefused } from "../accounts/console.ts";
 import { authFile as cursorAuthFile } from "../accounts/cursor.ts";
 import { KIMI_FILE, KIMI_TOKEN_FILE } from "../accounts/kimi.ts";
 import { devinAccountFile, grokAuthFile } from "../accounts/profiles.ts";
@@ -130,8 +130,10 @@ export type SharingDeps = {
   /// Has `agy` renew an Antigravity CLI profile's sign-in here (agents/agy.ts `agyRenew`: it holds the OAuth client).
   agyRenew?: (home: string) => Promise<void>;
   /// A profile's check and allowance as this station has them, its allowance asked again when old (for the stations
-  /// borrowing it).
-  status: (profileId: string) => Promise<{ check: Json; quota: Json }>;
+  /// borrowing it). `recheck`: a borrower was refused on it, so its login is asked of its provider again first.
+  status: (profileId: string, recheck?: boolean) => Promise<{ check: Json; quota: Json }>;
+  /// A borrowed profile's host said its login is over (LOGIN_OVER): its check here says to sign in again at once.
+  loginExpired?: (id: string) => void;
   /// Something the overview shows changed.
   changed: () => void;
   /// A host that had not answered answers again: what is borrowed from it is checked again.
@@ -196,6 +198,18 @@ const NOT_SHARED = "this station does not share that";
 /// cloud's list says (NOT_THERE, STATIONS_UNKNOWN) it can hold back or lose a station of a while, a host that forgot a
 /// move answers NOT_SHARED till the new one says it, and a copy taken away loses what was set on it here (`paused`).
 const notOurs = (e: unknown) => e instanceof Error && e.message === NOT_FOR_IT;
+/// What a host answers `share.lend` when its own login of the profile is over (refused by its provider, none kept, run
+/// out and not renewed), followed by its words: the host answered, so it is not one that did not (`unreachable`), and
+/// nothing lent before is used (it is of the same login), FB-44.
+export const LOGIN_OVER = "the host's login has expired: ";
+const loginOver = (e: unknown) => e instanceof Error && e.message.includes(LOGIN_OVER);
+/// Whether lending failed because the login here is over, not for now.
+const overHere = (e: unknown) => {
+  if (e instanceof RenewRefused) return true;
+  const said = e instanceof Error ? e.message : String(e);
+  return (["zh", "en"] as const).some((lang) => said === tr(lang, "station.claudeAuth.noCredentials")) ||
+    said.includes("runs out soon and cannot be renewed") || /no refresh token/i.test(said);
+};
 /// Whether two of a share's `allow` let the same stations use it (null: every one), in whatever order.
 const sameStations = (a: string[] | null, b: string[] | null) =>
   a === null || b === null ? a === b : a.length === b.length && new Set([...a, ...b]).size === new Set(a).size;
@@ -1197,7 +1211,7 @@ export class Sharing {
         if (this.moving.has(id)) throw new Error("the login is being moved to another station");
         return this.lend(p, typeof request.rejected === "string" ? request.rejected : undefined);
       }
-      if (method === "share.status") return this.deps.status(p.id);
+      if (method === "share.status") return this.deps.status(p.id, request.recheck === true);
       if (method === "share.quotaReset") {
         const key = typeof request.key === "string" ? request.key : "";
         if (!key || p.runtime !== "codex" || p.access?.kind !== "subscription") throw new Error("invalid allowance reset");
@@ -1339,8 +1353,19 @@ export class Sharing {
     return { version: next, conflict };
   }
 
-  /// A short-lived access token of a shared subscription, renewed here when needed.
+  /// A short-lived access token of a shared subscription, renewed here when needed. Its login over here, it is checked
+  /// again (its borrowers, older ones too, read that in `share.status`) and the borrower told so (LOGIN_OVER).
   private async lend(p: Json, rejected?: string): Promise<Json> {
+    try {
+      return await this.lendOf(p, rejected);
+    } catch (e) {
+      if (!overHere(e)) throw e;
+      void this.deps.status(p.id, true).catch(() => {});
+      throw new Error(`${LOGIN_OVER}${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  private async lendOf(p: Json, rejected?: string): Promise<Json> {
     if (p.access?.kind !== "subscription") throw new Error("only a subscription is lent");
     if (p.runtime === "claude") {
       const t = await this.deps.claudeToken(p, rejected);
@@ -1503,6 +1528,7 @@ export class Sharing {
       this.lentClaude.set(profile.id, token);
       return token;
     } catch (e) {
+      if (loginOver(e)) throw this.overThere(profile, e, () => this.lentClaude.delete(profile.id));
       // Left out by who may use it (notOurs): nothing lent before is used, and the copy is asked of again, which takes
       // it away. Any other refusal is the host not answering, as before.
       const ours = !notOurs(e);
@@ -1533,6 +1559,7 @@ export class Sharing {
       got = await this.deps.ask(host, null, { method: "share.lend", id: profile.share.id });
       this.unreachable.delete(host);
     } catch (e) {
+      if (loginOver(e)) throw this.overThere(profile, e);
       // Left out by who may use it (notOurs): as lendClaude.
       const ours = !notOurs(e);
       if (ours) this.unreachable.set(host, this.time.now());
@@ -1569,6 +1596,7 @@ export class Sharing {
       got = await this.deps.ask(host, null, { method: "share.lend", id: profile.share.id });
       this.unreachable.delete(host);
     } catch (e) {
+      if (loginOver(e)) throw this.overThere(profile, e);
       // Left out by who may use it (notOurs): as lendClaude.
       const ours = !notOurs(e);
       if (ours) this.unreachable.set(host, this.time.now());
@@ -1588,11 +1616,24 @@ export class Sharing {
     return Number(got.expiresAt ?? 0);
   }
 
-  /// A borrowed profile's check and allowance, as its host has them.
-  async status(profile: Json): Promise<{ check: Json; quota: Json }> {
+  /// A borrowed profile's login over on its host (LOGIN_OVER): the host answered, so it is not one that did not; what was
+  /// lent before is of that login and not used (`forget`); its check here says to sign in again, and a session that could
+  /// not start on it goes on on another (ProfileLoginOver).
+  private overThere(profile: Json, e: unknown, forget?: () => void): Error {
+    this.unreachable.delete(this.hostOf(profile));
+    forget?.();
+    this.deps.loginExpired?.(profile.id);
+    this.deps.changed();
+    log.warn("share", "the host's login of a borrowed profile is over", { profile: profile.id, error: (e as Error).message });
+    return new ProfileLoginOver(profile.id, tr(stationLang(), "station.quota.signInExpired"));
+  }
+
+  /// A borrowed profile's check and allowance, as its host has them; `recheck`: its login asked of its provider again
+  /// there first (a host from before asks nothing again: its answer is what it had).
+  async status(profile: Json, recheck = false): Promise<{ check: Json; quota: Json }> {
     const host = this.hostOf(profile);
     try {
-      const got = await this.deps.ask(host, null, { method: "share.status", id: profile.share.id });
+      const got = await this.deps.ask(host, null, { method: "share.status", id: profile.share.id, ...(recheck ? { recheck: true } : {}) });
       this.unreachable.delete(host);
       return { check: got?.check ?? null, quota: got?.quota ?? null };
     } catch (e) {

@@ -362,6 +362,7 @@
   "station.notice.refused": "模型服务不支持此 station 所在地区：设置代理",
   "station.notice.runtimeMissing": "无法启动 agent：此 station 尚未安装 {name}",
   "station.notice.stopped": "已停止当前任务",
+  "station.notice.profileLogin": "账号 {profile}（{runtime} · {station}）登录已失效，请重新登录",
   "station.notice.cutOffRestart": "station 重启导致本轮中断，回复即可继续",
   "station.port.mcp": "agent 的 MCP 端点",
   "station.port.taken": "{what} 的端口 {host}:{port} 已被别的程序占用（配置里指定了这个端口）。用 `lsof -nP -iTCP:{port} -sTCP:LISTEN` 看是谁，或在配置里换一个端口。",

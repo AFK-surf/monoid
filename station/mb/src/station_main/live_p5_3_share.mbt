@@ -318,17 +318,29 @@ fn P53Share::attach(self : P53Share) -> Unit {
       machine_email: None,
       claude_token: async fn(profile, rejected) {
         let accounts = self.accounts.made()
-        let got = p53_json(accounts.claude_token(to_jv(profile), rejected, true))
+        // (a login that can no longer be renewed, said so to the sharing: it tells its borrowers, LOGIN_OVER)
+        let got = p53_json(accounts.claude_token(to_jv(profile), rejected, true)) catch {
+          @accounts_pool.Thrown("RenewRefused", said) =>
+            raise @share_sync.over(match said.get("message") { Some(Str(m)) => m; _ => "" })
+          @accounts_oauth.RenewRefused(_, m) => raise @share_sync.over(m)
+          e => raise e
+        }
         (jtext_or_empty(got, "token"), jnum_of(got, "expiresAt").unwrap_or(0.0))
       },
       codex_renew_running: async fn(profile) {
         bus.hub_codex_renew_running(profile)
       },
       agy_renew: Some(async fn(profile) { bus.hub_agy_renew(profile) }),
-      status: async fn(id) {
+      status: async fn(id, recheck) {
         let accounts = self.accounts.made()
-        p53_json(accounts.health(id).to_jv())
+        // (a borrower refused on it: asked of its provider again first, accounts `lent_health`)
+        if recheck {
+          p53_json(accounts.lent_health(id, recheck=true).to_jv())
+        } else {
+          p53_json(accounts.health(id).to_jv())
+        }
       },
+      login_expired: Some(id => match self.accounts.accounts { Some(a) => a.mark_login_expired(id); None => () }),
       changed: () => (bus.overview_changed.val)(),
       recheck: Some(() => match self.accounts.accounts { Some(a) => a.recheck_borrowed(); None => () }),
       profile_changed: Some(async fn(id, login) {

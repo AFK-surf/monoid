@@ -928,8 +928,13 @@ test("Codex authentication failure moves an automatic session and continues once
   assert.ok(retry.prompts[0]!.includes(GO_ON_AFTER_AUTH));
   retry.end({ kind: "failed", reason: "auth", message: "401 token_revoked" });
   await settle();
-  assert.equal(r.codex.count(), 2, "a second failure is reported, not retried indefinitely");
-  assert.deepEqual(checked, ["cx", "cx2"]);
+  // (cx2's recheck here says nothing against it: tried once more on it, FB-44's chain; refused again there, it is
+  // rechecked as over, `force`, and with no profile left untried the failure is reported)
+  assert.equal(r.codex.count(), 3, "tried once more on a profile its recheck did not find over");
+  r.codex.last().end({ kind: "failed", reason: "auth", message: "401 token_revoked" });
+  await settle();
+  assert.equal(r.codex.count(), 3, "a failure on every profile is reported, not retried indefinitely");
+  assert.deepEqual(checked, ["cx", "cx2", "cx2"]);
   await r.close();
 });
 

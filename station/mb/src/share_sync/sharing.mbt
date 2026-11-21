@@ -119,8 +119,11 @@ pub(all) struct SharingDeps {
   codex_renew_running : async (String) -> Bool
   /// Has `agy` renew an Antigravity CLI profile's sign-in here.
   agy_renew : (async (String) -> Unit)?
-  /// A profile's check and allowance as this station has them (`{check, quota}`).
-  status : async (String) -> Json
+  /// A profile's check and allowance as this station has them (`{check, quota}`); `true`: a borrower was refused on
+  /// it, so its login is asked of its provider again first.
+  status : async (String, Bool) -> Json
+  /// A borrowed profile's host said its login is over (LOGIN_OVER): its check here says to sign in again at once.
+  login_expired : ((String) -> Unit)?
   /// Something the overview shows changed.
   changed : () -> Unit
   /// A host that had not answered answers again.
@@ -695,6 +698,28 @@ let not_shared : String = "this station does not share that"
 /// that forgot a move answers NOT_SHARED till the new one says it.
 fn not_ours(e : Error) -> Bool {
   error_words(e) == not_for_it
+}
+
+///|
+/// What a host answers `share.lend` when its own login of the profile is over (refused by its provider, none kept, run
+/// out and not renewed), followed by its words (index.ts LOGIN_OVER): the host answered, so it is not one that did not,
+/// and nothing lent before is used (it is of the same login), FB-44.
+pub let login_over : String = "the host's login has expired: "
+
+///|
+fn is_login_over(e : Error) -> Bool {
+  error_words(e).contains(login_over)
+}
+
+///|
+/// Whether lending failed because the login here is over, not for now (index.ts `overHere`).
+fn over_here(e : Error) -> Bool {
+  if e is Over(_) {
+    return true
+  }
+  let said = error_words(e)
+  said == tr("zh", "station.claudeAuth.noCredentials") || said == tr("en", "station.claudeAuth.noCredentials") ||
+  said.contains("runs out soon and cannot be renewed") || said.to_lower().contains("no refresh token")
 }
 
 ///|

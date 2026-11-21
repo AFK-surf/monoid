@@ -1718,6 +1718,10 @@ async fn Actors::start_turn(
     self.log(a, "info", "archived: no turn of its own", fields={ "kind": jstr(kind) })
     return
   }
+  // (a turn begun anew: the profiles a chain of `auth_retry` turns was refused on are those of turns before)
+  if kind != "auth_retry" {
+    a.auth_tried = []
+  }
   self.start_turn_body(a, kind, text, by, retry_about, delivery, passive, notices_taken) catch {
     e => {
       let turn = a.turn
@@ -1820,7 +1824,7 @@ async fn Actors::start_turn_body(
   if (kind == "input" || kind == "resume" || kind == "job") && a.runtime == "codex" && !self.busy(a) {
     self.refused_thread(a)
   }
-  let mut agent = self.ensure_agent(a)
+  let mut agent = self.open_over(a, passive)
   let lost = a.resume_lost
   a.resume_lost = false
   let (handed, told_choices) = self.with_choices(a, text)
@@ -2085,6 +2089,62 @@ async fn Actors::rpc_open(self : Actors, a : Actor, args : Array[Json]) -> Json 
 }
 
 ///|
+/// At most this many profiles a turn goes on to after each refused it (`auth_tried`): a pool of any size is tried
+/// through, never round and round.
+const AUTH_TRIED_MOST : Int = 16
+
+///|
+/// The profiles `a`'s turn was refused on, as Node takes them (sessions/accounts.ts `canAuthRetry`'s `tried`).
+fn auth_tried_json(a : Actor) -> Json {
+  Json::array(a.auth_tried.map(jstr))
+}
+
+///|
+/// `ensure_agent`, going on on another profile where its process could not open as the login of the one it was to
+/// open on is over (Node's `auth`: a borrowed profile whose host said so, share/index.ts LOGIN_OVER, FB-44): that one
+/// rechecked (passed over from then on) and the next the pool gives opened, each once, till none is left. Any other
+/// failure to open is as before.
+async fn Actors::open_over(self : Actors, a : Actor, passive : Bool) -> Agent raise {
+  while true {
+    let opened : Agent? = try {
+      Some(self.ensure_agent(a))
+    } catch {
+      // (a start given up by a stop, a suspension or a close goes as it is: `open_abort_reason`)
+      Asked(j) as e if !passive && j.value("auth") is Some(True) && open_abort_reason(e) is None => {
+        let id = match str_of(j.value("authProfile")) {
+          Some(p) if p != "" => p
+          _ =>
+            match a.profile {
+              String(p) if p != "" => p
+              _ => raise e
+            }
+        }
+        if a.auth_tried.length() >= AUTH_TRIED_MOST {
+          raise e
+        }
+        let already = a.auth_tried.contains(id)
+        ignore(self.deps(a, "recheck", [jstr(id), jbool(already)]))
+        let retry = !(self.deps(a, "canAuthRetry", [jstr(a.key), jstr(id), auth_tried_json(a)]) is False)
+        if !already {
+          a.auth_tried.push(id)
+        }
+        if !retry {
+          a.auth_tried = []
+          raise e
+        }
+        self.log(a, "info", "its login is over where it was to open; going on on another profile", fields={ "profile": jstr(id), "error": j.value("message").unwrap_or(jstr("")) })
+        None
+      }
+      e => raise e
+    }
+    if opened is Some(g) {
+      return g
+    }
+  }
+  abort("unreachable")
+}
+
+///|
 /// actor.ts `ensureAgent`: its runtime session, opened (Node's: the driver, its options, the words it is told of how it
 /// was opened) where it has none.
 async fn Actors::ensure_agent(self : Actors, a : Actor) -> Agent raise {
@@ -2313,6 +2373,8 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
   let mut reason = str_of(outcome.value("reason")).unwrap_or("")
   let message = str_of(outcome.value("message")).unwrap_or("")
   let mut lent_expired = false
+  // (its sign-in run out under it, not refused: nothing to recheck)
+  let mut ran_out = false
   if a.runtime == "agy" && kind == "failed" && a.agent is Some(g) {
     // (agy 1.5.8 says only `⚠ Agent execution terminated due to error.` (`other`) when its borrowed sign-in runs out
     // under a turn, 2026-11-16: where the process's sign-in has expired, take it as `auth` so `auth_retry` reopens on
@@ -2320,6 +2382,7 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
     if reason == "other" && message.to_lower().contains("agent execution terminated due to error") {
       if truthy(self.agent_do(a, g, "signInExpired", []) catch { _ => Json::null() }) {
         reason = "auth"
+        ran_out = true
       }
       if !self.is_current(a, generation) {
         return
@@ -2378,6 +2441,11 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
   }
   let stop_requested = a.stop_requested
   a.stop_requested = false
+  // (a chain of `auth_retry` turns goes on only while each is refused so)
+  let refused = kind == "failed" && reason == "auth" && !stop_requested && turn is Some({ declared: None, .. })
+  if !refused {
+    a.auth_tried = []
+  }
   // A turn that already declared its end state (all_done, need_human, waiting) only needed the runtime's trailing LLM
   // call to emit unread closing text. If that call fails with auth (an hourly borrowed token expiring right after
   // chat_state returned), close the stale process so the next turn opens fresh, keep the declared state (its waiting
@@ -2513,8 +2581,16 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
     ignore(self.rpc(a.key, "node.updateCodex", [jnum(update.id.to_double())]))
     return
   }
-  if a.runtime == "codex" && kind == "failed" && reason == "auth" && !stop_requested && !(a.profile is Null) {
-    ignore(self.deps(a, "recheck", [a.profile]))
+  // (refused on its profile, any runtime's: rechecked at once, so the pool passes over one whose login is over, a
+  // borrowed one's too, before the next is picked, FB-44; one refused again after it was rechecked and tried again in
+  // this chain is taken as over, `force`. A sign-in that only ran out is not rechecked.)
+  let refused_on = match a.profile {
+    String(p) if p != "" && refused && !lent_expired && !ran_out => Some(p)
+    _ => None
+  }
+  let tried_before = auth_tried_json(a)
+  if refused_on is Some(p) {
+    ignore(self.deps(a, "recheck", [jstr(p), jbool(a.auth_tried.contains(p))]))
   }
   // (agy: session/load answers without checking the CLI's conversation database, and a prompt on a conversation whose
   // database is absent or corrupt fails with "trajectory not found"; end the broken process so no retry hits it again,
@@ -2536,25 +2612,30 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
   }
   // (agy: a sign-in lent by another station runs out under a process that never reads it again; a new one opens on
   // one lent anew, agents/agy.ts AGY_LENT_RENEW_MS)
-  if (a.runtime == "claude" || a.runtime == "codex" || a.runtime == "agy") && kind == "failed" && reason == "auth" && !stop_requested &&
-    !self.held(a) && turn is Some(t) && (!t.auth_retried || lent_expired) && (!t.passive || lent_expired) && t.declared is None {
+  // (each profile it is refused on rechecked and left for the next the pool gives, till none is left: never round and
+  // round, `AUTH_TRIED_MOST`)
+  if refused && !self.held(a) && turn is Some(t) && (!t.passive || lent_expired) &&
+    (lent_expired || ran_out || !t.auth_retried || refused_on is Some(_)) && a.auth_tried.length() < AUTH_TRIED_MOST {
     let agent = a.agent
     self.set_agent(a, None)
     self.end_process(a, agent)
-    if a.runtime == "claude" && !(a.profile is Null) {
-      ignore(self.deps(a, "recheck", [a.profile]))
-    }
-    let allow_retry = if !(a.profile is Null) && !lent_expired {
-      !(self.deps(a, "canAuthRetry", [jstr(a.key), a.profile]) is False)
-    } else {
-      true
+    let allow_retry = match refused_on {
+      Some(p) => {
+        let can = !(self.deps(a, "canAuthRetry", [jstr(a.key), jstr(p), tried_before]) is False)
+        if !a.auth_tried.contains(p) {
+          a.auth_tried.push(p)
+        }
+        can
+      }
+      None => lent_expired || ran_out || !t.auth_retried
     }
     if !allow_retry {
+      a.auth_tried = []
       self.notify_store(a)
       self.log(a, "info", "authentication failed; profile unusable and no healthy fallback, waiting for user", fields={ "runtime": jstr(a.runtime) })
     } else {
       a.nudges = 0
-      self.log(a, "info", "authentication failed; reopening and continuing once", fields={ "runtime": jstr(a.runtime) })
+      self.log(a, "info", "authentication failed; reopening and continuing", fields={ "runtime": jstr(a.runtime), "tried": auth_tried_json(a) })
       let text = self.words(a, "GO_ON_AFTER_AUTH")
       if self.max_concurrent_turns > 0 && self.active_turn_slots() > self.max_concurrent_turns {
         a.queued_retry = Some({ kind: "auth_retry", text, by: t.by, codex_retried: t.codex_retried })

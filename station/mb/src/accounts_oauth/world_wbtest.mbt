@@ -510,6 +510,7 @@ fn check_case(c : Json) -> Json raise {
     env: env_of(get(o, "env")),
     machine: get(o, "machine") is Some(True),
     login: get(o, "login") is Some(True),
+    recheck: get(o, "recheck") is Some(True),
     machine_token: match get(o, "machineToken") {
       Some(String(t)) => Some(async fn(_) { t })
       _ => None

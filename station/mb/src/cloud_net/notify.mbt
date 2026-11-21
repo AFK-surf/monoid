@@ -202,6 +202,55 @@ pub fn Notifier::notify_billed_fallback(
 }
 
 ///|
+/// Minimum interval between alerts that one profile's login is over, for the same workspace (cloud/notify.ts
+/// PROFILE_LOGIN_COOLDOWN_MS).
+pub let profile_login_cooldown_ms : Int64 = 14_400_000L
+
+///|
+/// A manager-only push notice that profile `id`'s login is over, to be signed in again (cloud/notify.ts
+/// `notifyProfileLogin`), unless workspace `ws` was told of it within `profile_login_cooldown_ms` (`told`, by
+/// `<workspace>\0<profile>`: `ProfileLoginCooldown`). `text`: its words, `station.notice.profileLogin`.
+pub fn profile_login_notice(
+  told : Map[String, Int64],
+  ws : String,
+  id : String,
+  profile : String,
+  runtime_title : String,
+  station_name : String,
+  at : Int64,
+  text : String,
+) -> Json? {
+  ignore(profile)
+  let k = "\{ws}\u{0}\{id}"
+  match told.get(k) {
+    Some(prev) if at - prev < profile_login_cooldown_ms => return None
+    _ => ()
+  }
+  told[k] = at
+  Some({
+    "to": Json::array([]),
+    "audience": Json::string("managers"),
+    "kind": Json::string("failed"),
+    "session": Json::string("profile:\{id}"),
+    "thread": Json::number(0.0),
+    "seq": Json::null(),
+    "title": Json::string(station_name),
+    "by": Json::string(runtime_title),
+    "text": Json::string(text),
+    "at": int_json(at),
+  })
+}
+
+///|
+/// Profile `id`'s login good again: its next time over is told at once (`ProfileLoginCooldown.clear`).
+pub fn profile_login_clear(told : Map[String, Int64], id : String) -> Unit {
+  let gone = told.keys().filter(k => k.has_suffix("\u{0}\{id}")).collect()
+  for k in gone {
+    told.remove(k)
+  }
+}
+
+///|
 /// Notices to go out with the next batch (tests and what the readers made).
 pub fn Notifier::queue(self : Notifier, notices : Array[Json]) -> Unit {
   if notices.length() == 0 {

@@ -443,6 +443,7 @@ async fn P53Accounts::check_profile(self : P53Accounts, request : Json, lang : S
     env,
     machine: jfield(request, "machine") is True,
     login: jfield(request, "login") is True,
+    recheck: jfield(request, "recheck") is True,
     machine_token: Some(async fn(e) {
       let fields = @agent_runtimes.Fields::new()
       for k, v in e {

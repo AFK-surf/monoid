@@ -13,6 +13,7 @@ import { SessionsProgram, type ProgramUser } from "../agents/mb-program.ts";
 import type { HostedProcess, Router } from "../agents/mb-agents.ts";
 import { mbReaderBinary } from "../read/mb-reader.ts";
 import { CommandMissing } from "../agents/runner.ts";
+import { RenewRefused } from "../accounts/console.ts";
 import { modelLimitOf, runtimeLabel, type AgentSession, type RuntimeEvent, type RuntimeKind } from "../agents/runtime.ts";
 import { chars } from "../agents/live.ts";
 import * as instructions from "../agents/instructions.ts";
@@ -326,6 +327,9 @@ function errorOf(error: unknown, runtime: RuntimeKind): Json {
     kind: (error as Error)?.constructor?.name ?? "Error",
     // (given up, and why: the program's own `openAbort`, actor_run.mbt `open_abort_reason`)
     ...(error instanceof OpenAborted ? { openAbort: error.why } : {}),
+    // (a login over, and on which profile where known: the program goes on on another profile, as after a turn
+    // refused, actor_run.mbt `open_over`)
+    ...(error instanceof RenewRefused ? { auth: true, ...(error.profileId ? { authProfile: error.profileId } : {}) } : {}),
     ...cap,
   };
 }

@@ -96,6 +96,9 @@ priv struct Actor {
   mut starting_turn : Bool
   /// deferred `auth_retry` / `spend` continuation waiting for a concurrency slot
   mut queued_retry : QueuedRetry?
+  /// profiles this turn's chain of `auth_retry` turns was refused on (FB-44): each rechecked and passed over, so a pool
+  /// with several revoked logins goes on to a good one; emptied when a turn begins anew or ends otherwise
+  mut auth_tried : Array[String]
   mut codex_update : CodexUpdate?
   mut codex_next : Int
   /// the Codex thread taken up again from its rollout after its turn was refused with a bare Bad Request (FB-26;
@@ -338,6 +341,7 @@ fn Actors::actor(self : Actors, key : String, runtime : String) -> Actor {
         deferred_end: None,
         starting_turn: false,
         queued_retry: None,
+        auth_tried: [],
         codex_update: None,
         codex_next: 0,
         codex_reloaded: None,

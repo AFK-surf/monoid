@@ -531,3 +531,49 @@ test "RefreshLock heartbeat calls utimes every 5s past 60s and non-recursive mkd
   w.rt.advance(500)
   assert_true(second_acquired_at.val > 0L)
 }
+
+///|
+test "FB-44: a Claude subscription's OAuth token answered 403 is renewed, and over when still refused or its refresh refused" {
+  let claude_cmd : Json = { "code": 0, "stdout": "{\"loggedIn\":true,\"email\":\"a@x.com\",\"subscriptionType\":\"max\"}" }
+  let urls : Json = { "anthropic": "http://api.test", "claudeToken": "http://auth.test/token" }
+  let run = (routes : Json, recheck : Bool) => check_case({
+    "now": Json::number(t0),
+    "files": { "/p/.credentials.json": Json::string(creds("old", t0 + 3_600_000.0)) },
+    "commands": { "claude auth status": claude_cmd },
+    "routes": routes,
+    "options": { "runtime": "claude", "kind": "subscription", "home": "/p", "urls": urls, "lang": "zh", "recheck": Json::boolean(recheck) },
+    "root": "/p",
+  })
+  assert_true(claude_auth_status(Some(401)) && claude_auth_status(Some(403)) && !claude_auth_status(Some(429)) && !claude_auth_status(None))
+  // 403 (OAuth token revoked), renewal refused: over.
+  let refused = run({
+    "/token": [{ "status": 400, "body": { "error": "invalid_grant" } }],
+    "/v1/models": [{ "status": 403, "body": { "error": { "message": "OAuth token revoked" } } }],
+  }, false)
+  assert_eq(get(get(Some(refused), "result"), "state"), Some(Json::string("login")))
+  // 403, renewed, and still 403: over.
+  let still = run({
+    "/token": [{ "status": 200, "body": { "access_token": "new", "refresh_token": "r2", "expires_in": 3600 } }],
+    "/v1/models": [{ "status": 403, "body": {} }, { "status": 403, "body": {} }],
+  }, false)
+  assert_eq(get(get(Some(still), "result"), "state"), Some(Json::string("login")))
+  assert_eq(get(get(Some(still), "result"), "detail"), Some(Json::string("station.quota.signInExpired")))
+  // Models listed for the revoked token, asked again after a refusal: its refresh token refused is a login over.
+  let listed = run({
+    "/token": [{ "status": 400, "body": { "error": "invalid_grant" } }],
+    "/v1/models": [{ "status": 200, "body": { "data": [{ "id": "claude-opus-5-5" }] } }],
+  }, true)
+  assert_eq(get(get(Some(listed), "result"), "state"), Some(Json::string("login")))
+  // The same not asked again: what is listed stands.
+  let plain = run({
+    "/token": [{ "status": 400, "body": { "error": "invalid_grant" } }],
+    "/v1/models": [{ "status": 200, "body": { "data": [{ "id": "claude-opus-5-5" }] } }],
+  }, false)
+  assert_eq(get(get(Some(plain), "result"), "state"), Some(Json::string("ok")))
+  // Asked again with the token endpoint not reached: a listing that worked stands.
+  let away = run({
+    "/token": [{ "status": 503, "body": { "error": "unavailable" } }],
+    "/v1/models": [{ "status": 200, "body": { "data": [{ "id": "claude-opus-5-5" }] } }],
+  }, true)
+  assert_eq(get(get(Some(away), "result"), "state"), Some(Json::string("ok")))
+}
