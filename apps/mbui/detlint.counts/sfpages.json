@@ -102,5 +102,10 @@
       "src/sfpages/vault.mbt": 1,
       "src/sfpages/workspace_page.mbt": 1
     }
+  },
+  "excused": {
+    "layout-drawn-while": {
+      "src/sfpages/board_node.mbt": 1
+    }
   }
 }
