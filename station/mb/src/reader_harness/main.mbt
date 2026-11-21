@@ -20,6 +20,8 @@ fn main {
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => harness_core_routes(host))
     (Some("harness-lock"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => harness_lock(host))
+    (Some("harness-leaf"), _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => harness_leaf(host))
     _ => {
       @host.note("usage: stillfail-reader-harness --builder harness-<package> [--shell-dir <dir> | --db <file>]")
       2

@@ -12,7 +12,7 @@
     "build": "esbuild src/index.ts src/hosts/node.ts --outbase=src --bundle --platform=node --format=esm --target=node24 --outdir=dist --external:*.node",
     "test": "node ../../scripts/native.ts run mesh reader-harness -- node --test --test-force-exit test/*.test.ts",
     "side": "node ../../scripts/native.ts run mesh iroh-relay -- node --test --test-concurrency=1 --test-force-exit side/*.test.ts",
-    "side:browser": "node ../../scripts/native.ts iroh-pkg && node ../../scripts/native.ts run mesh iroh-relay -- node --test --test-force-exit side/mesh-leaf-browser.ts",
+    "side:browser": "node ../../scripts/native.ts iroh-pkg && node ../../scripts/native.ts run mesh iroh-relay reader-harness -- node --test --test-force-exit side/mesh-leaf-browser.ts",
     "hermes": "node scripts/hermes-bundle.ts"
   },
   "dependencies": {

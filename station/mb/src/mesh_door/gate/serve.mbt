@@ -634,42 +634,6 @@ async fn answer_request(
   if moved_too_old(k, viewer, build) {
     return answer_json(stream, 426, ({ "error": Json::string((m.update_words)(lang)), "update": true } : Json).stringify())
   }
-  // (a device's leaf in its workspace's mesh scope: serve.ts's `/admin/api/mesh/leaf`, its events)
-  if path == "/admin/api/mesh/leaf/events" && verb == "GET" {
-    guard m.leaves is Some(l) else {
-      return answer_json(stream, 404, ({ "error": "no leaf transport" } : Json).stringify())
-    }
-    @door.write_line(stream, { "status": 200, "headers": { "content-type": "application/x-ndjson" } })
-    return (l.follow)(conn, viewer.workspace, stream)
-  }
-  if path == "/admin/api/mesh/leaf" {
-    guard m.leaves is Some(l) else {
-      return answer_json(stream, 404, ({ "error": "no leaf transport" } : Json).stringify())
-    }
-    let answered = try {
-      if verb == "GET" {
-        Ok((200, (l.view)(viewer.workspace)))
-      } else {
-        let body = reader.rest()
-        if verb != "POST" || body.length() > 16384 {
-          Ok((400, ({ "error": "invalid leaf attachment request" } : Json)))
-        } else {
-          let input = @json.parse(@utf8.decode_lossy(body))
-          match input {
-            Object(o) if o.get("target") is Some(String(target)) =>
-              Ok((200, (l.attach)(conn, viewer.workspace, o.get("descriptor").unwrap_or(Json::null()), target)))
-            _ => Ok((400, ({ "error": "missing leaf target" } : Json)))
-          }
-        }
-      }
-    } catch {
-      e => Err(e)
-    }
-    return match answered {
-      Ok((code, said)) => answer_json(stream, code, said.stringify())
-      Err(e) => answer_json(stream, 403, ({ "error": Json::string("\{e}") } : Json).stringify())
-    }
-  }
   if m.streams is Some(parts) && parts(head) is Some(part) {
     return part({ conn, viewer, head, stream, reader })
   }
@@ -689,6 +653,41 @@ async fn answer_request(
     }
   }
   let body = reader.rest()
+  // (a device's leaf in its workspace's mesh scope: serve.ts's `/admin/api/mesh/leaf`, its events)
+  if path == "/admin/api/mesh/leaf/events" && verb == "GET" {
+    guard m.leaves is Some(l) else {
+      return answer_json(stream, 404, ({ "error": "no leaf transport" } : Json).stringify())
+    }
+    @door.write_line(stream, { "status": 200, "headers": { "content-type": "application/x-ndjson" } })
+    return (l.follow)(conn, viewer.workspace, stream)
+  }
+  if path == "/admin/api/mesh/leaf" {
+    guard m.leaves is Some(l) else {
+      return answer_json(stream, 404, ({ "error": "no leaf transport" } : Json).stringify())
+    }
+    let answered = try {
+      if verb == "GET" {
+        Ok((200, (l.view)(viewer.workspace)))
+      } else {
+        if verb != "POST" || body.length() > 16384 {
+          Ok((400, ({ "error": "invalid leaf attachment request" } : Json)))
+        } else {
+          let input = @json.parse(@utf8.decode_lossy(body))
+          match input {
+            Object(o) if o.get("target") is Some(String(target)) =>
+              Ok((200, (l.attach)(conn, viewer.workspace, o.get("descriptor").unwrap_or(Json::null()), target)))
+            _ => Ok((400, ({ "error": "missing leaf target" } : Json)))
+          }
+        }
+      }
+    } catch {
+      e => Err(e)
+    }
+    return match answered {
+      Ok((code, said)) => answer_json(stream, code, said.stringify())
+      Err(e) => answer_json(stream, 403, ({ "error": Json::string("\{e}") } : Json).stringify())
+    }
+  }
   let rt = @effect.runtime()
   let aborted = Ref(false)
   let handling = Ref(true)

@@ -15,12 +15,8 @@ import { createRequire } from "node:module";
 import { build } from "esbuild";
 import { loadAddon } from "../src/hosts/node-iroh.ts";
 import { HOT_RELAYS } from "../src/mesh.ts";
-import { Cloud, writeState } from "../../../station/src/cloud/state.ts";
 import { GrantKey } from "../../../station/test/fake-control-plane.ts";
-import { serve } from "../../../station/src/mesh/serve.ts";
-import { writeLine } from "../../../station/src/mesh/wire.ts";
-import { LeafAttachments } from "../../../station/src/mesh/leaf.ts";
-import { workspaceScope } from "../../../station/src/mesh/enrollment-door.ts";
+import { startLeafHarness, writeLine } from "./mb-leaf-harness.ts";
 import { RelayCapture } from "./relay-load-cdp.ts";
 import { dualRelayFailure } from "./relay-load-failure.ts";
 import { relayControls } from "./relay-load-controls.ts";
@@ -112,10 +108,15 @@ test("relay load in a real core worker", { timeout: options.durationMs + 180_000
   const urls = relays.map(r => r.url);
   const entries = relays.flatMap(r => r.entry ? [r.entry] : []);
   const targets = Object.fromEntries(relays.flatMap(r => r.entry ? [[r.entry, r.url]] : []));
+  const harness = startLeafHarness();
+  cleanups.push(() => harness.close());
   const workspaces = Array.from({ length: options.workspaces }, (_, i) => `relay-load-${i}`);
+  const workspaceScopes = new Map<string, string>();
+  for (const workspace of workspaces) workspaceScopes.set(workspace, await harness.workspaceScope(origin, workspace));
   const nodes: any[] = [];
+  const secretKeys = Array.from({ length: options.stations }, () => randomBytes(32));
   cleanups.push(async () => { await Promise.all(nodes.map(node => node.close())); });
-  for (let i = 0; i < options.stations; i++) nodes.push(await addon.bind({ secretKey: randomBytes(32), alpns: [alpn], relayUrls: urls, discovery: false, lookup: false }));
+  for (let i = 0; i < options.stations; i++) nodes.push(await addon.bind({ secretKey: secretKeys[i], alpns: [alpn], relayUrls: urls, discovery: false, lookup: false }));
   await until(() => nodes.every(n => n.relayStatus().filter((r: any) => r.connected).length === options.relays), "stations home on every relay");
   const descriptors = new Map<string, any[]>();
   const descriptorChanges: { at: number; scope: string; station: string; descriptor: any }[] = [];
@@ -146,7 +147,7 @@ test("relay load in a real core worker", { timeout: options.durationMs + 180_000
       }
     }).catch(error => { directoryErrors.push(String(error)); });
   };
-  for (const workspace of workspaces) descriptors.set(workspaceScope(origin, workspace), []);
+  for (const workspace of workspaces) descriptors.set(workspaceScopes.get(workspace)!, []);
   for (let i = 0; i < nodes.length; i++) {
     assert.equal(typeof nodes[i].meshSubscribe, "function", "native scope address updates are required");
     await nodes[i].meshSubscribe(1, (error: Error | null, scopes: any[]) => {
@@ -160,7 +161,7 @@ test("relay load in a real core worker", { timeout: options.durationMs + 180_000
     await directoryWork;
   });
   for (const workspace of workspaces) {
-    const scope = workspaceScope(origin, workspace);
+    const scope = workspaceScopes.get(workspace)!;
     await Promise.all(nodes.map(async (node, i) => publish(i, scope,
       await node.meshConfigure({ scope, transit: true, peers: [], relayUrls: urls }))));
   }
@@ -174,28 +175,54 @@ test("relay load in a real core worker", { timeout: options.durationMs + 180_000
   for (let i = 0; i < nodes.length; i++) {
     const peers = nodes.filter((_, j) => j !== i).map(node => ({ id: node.id(), name: "peer" }));
     const data = join(temp, `station-${i}`);
-    writeState(data, { origin, station: nodes[i].id(), workspace: workspaces[0], workspace_name: "Load", name: `station-${i}`,
-      relay_url: urls[0], relay_urls: urls, grant_keys: { keys: [grant.jwk] }, peers, revocations: [],
-      joined: workspaces.slice(1).map(workspace => ({ workspace, workspace_name: "Load", name: `station-${i}`, peers, revocations: [] })),
+    const initialRecords = Object.fromEntries(
+      [...descriptors.entries()].map(([scope, list]) => [scope, list.map((descriptor, j) => ({ descriptor, secretKey: secretKeys[j] }))]),
+    );
+    const station = await harness.createStation({
+      data,
+      state: { origin, station: nodes[i].id(), workspace: workspaces[0], workspace_name: "Load", name: `station-${i}`,
+        relay_url: urls[0], relay_urls: urls, grant_keys: { keys: [grant.jwk] }, peers, revocations: [],
+        joined: workspaces.slice(1).map(workspace => ({ workspace, workspace_name: "Load", name: `station-${i}`, peers, revocations: [] })),
+      },
+      stationId: nodes[i].id(),
+      secretKey: secretKeys[i],
+      records: initialRecords,
+      node: nodes[i],
+      customStreams: {
+        "/admin/api/relay-load/ok": async ({ stream }) => {
+          serverCounts.requests++;
+          await writeLine(stream, { status: 200, headers: {} });
+          await stream.write(Buffer.from("ok"));
+          await stream.finish();
+        },
+        "/admin/api/relay-load/events": async ({ stream }) => {
+          serverCounts.eventOpens++;
+          eventStreams.add(stream);
+          try {
+            await writeLine(stream, { status: 200, headers: {} });
+            await stream.write(Buffer.from("ready\n"));
+            await stream.stopped();
+          } finally {
+            eventStreams.delete(stream);
+          }
+        },
+      },
     });
-    const cloud = new Cloud(data); cleanups.push(() => cloud.close());
-    const directory = { directory: { policy: () => ({ nodes: nodes.map(n => n.id()), relayUrls: urls, globalRelays: [] }),
-      records: (scope: string) => descriptors.get(scope)!.map(descriptor => ({ body: JSON.stringify({ descriptor }) })) }, listen: (listener: (scope: string) => void) => { directoryListeners.add(listener); return () => { directoryListeners.delete(listener); }; } };
-    const leaves = new LeafAttachments(nodes[i], directory as any, cloud);
+    cleanups.push(() => station.close());
+    let syncQueue = Promise.resolve();
+    const listener = (scope: string) => {
+      const list = descriptors.get(scope);
+      if (!list || list.filter(Boolean).length !== nodes.length) return;
+      const snapshot = list.map((descriptor, j) => ({ descriptor, secretKey: secretKeys[j] }));
+      syncQueue = syncQueue.then(() => station.updateRecords(scope, snapshot)).catch(error => { (directoryErrors as string[]).push(String(error)); });
+    };
+    directoryListeners.add(listener);
+    cleanups.push(() => { directoryListeners.delete(listener); });
     void (async () => {
       for (;;) {
         const conn = await nodes[i].accept(); if (!conn) break;
         serverCounts.accepted++;
-        void serve({ cloud, leaves, admin: undefined as any, up: () => true,
-          streams: head => head.path === "/admin/api/relay-load/ok" ? async ({ stream }) => {
-            serverCounts.requests++; await writeLine(stream, { status: 200, headers: {} });
-            await stream.write(Buffer.from("ok")); await stream.finish();
-          } : head.path === "/admin/api/relay-load/events" ? async ({ stream }) => {
-            serverCounts.eventOpens++; eventStreams.add(stream);
-            try { await writeLine(stream, { status: 200, headers: {} }); await stream.write(Buffer.from("ready\n")); await stream.stopped(); }
-            finally { eventStreams.delete(stream); }
-          } : undefined,
-        }, conn).catch(error => { if (!conn.isClosed()) console.error("station serve", error); });
+        void station.serveConnection(conn).catch(error => { if (!conn.isClosed()) console.error("station serve", error); });
       }
     })();
   }

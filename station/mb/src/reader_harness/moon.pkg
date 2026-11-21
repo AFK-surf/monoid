@@ -1,5 +1,6 @@
 import {
   "moonbitlang/core/buffer",
+  "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/json",
   "moonbitlang/core/string",
   "mbui/effect",
@@ -19,7 +20,9 @@ import {
   "station/cloud_lock",
   "station/cloud_net",
   "station/drive",
+  "station/mesh_door/door",
   "station/mesh_door/gate",
+  "station/mesh_scopes",
   "station/rigs_mode",
   "station/session_chats",
   "station/session_hub",
