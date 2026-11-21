@@ -179,10 +179,10 @@ test "float_pill_group_node: one capsule of glass_floating() liquid glass round 
         let (cx, cy) = (r.0 + r.2 / 2.0, r.1 + r.3 / 2.0)
         t.press_at(cx, cy)
         t.run_for(part_whole_ms)
-        assert_eq((at, i, scope.spot.untracked()), (at, i, Some((18.0, r.1 - gy + 16.0))))
+        assert_eq((at, i, scope.fx.untracked().0), (at, i, Some((18.0, r.1 - gy + 16.0))))
         t.release(cx, cy)
         t.run_for(@ui.move_most_ms)
-        assert_eq((at, i, scope.spot.untracked()), (at, i, None))
+        assert_eq((at, i, scope.fx.untracked().0), (at, i, None))
       }
       assert_eq((at, pressed.val), (at, ["待处理", "对话目录", "跳到最新"]))
       // solid: no glass, glass_floating()'s solid ground and the hairline edge

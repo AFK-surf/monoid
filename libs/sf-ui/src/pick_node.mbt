@@ -87,6 +87,7 @@ pub fn pick_node(
     let at = anchor(layer)
     let reach = menu_row_reach(th.rows.pick)
     let list = @view.Scroll::new()
+    anchored_popover_bridge(layer, at, look, side~, along~, offset~)
     layer.box(fn(p) {
       anchored_popover_shell(
         p,
@@ -140,7 +141,7 @@ pub fn pick_node(
           // (its search, a capsule in its top corners, the library's line: Enter in it picks the active one)
           cv.box(fn(s) {
             // (as far in as all else it holds, past the panel's own ground: Look's `words`)
-            s.alpha(By(words_in)) |> ignore
+            s.alpha(By(fn() { popover_content_alpha(p, s, words_in) })) |> ignore
             search.val = Some(
               input_node(s, line, placeholder_by=fn() { t("common.search") }, small=true, submitted=fn(_) {
                 match @signals.untracked(fn() { cb.active() }) {
@@ -153,7 +154,7 @@ pub fn pick_node(
           |> ignore
           // (none found: said so)
           cv.show(fn() { found().is_empty() }, fn(e) {
-            e.alpha(By(words_in)) |> ignore
+            e.alpha(By(fn() { popover_content_alpha(p, e, words_in) })) |> ignore
             e.padding(Is((@ui.Space::px(S2_5) + reach, @ui.Space::px(S2), @ui.Space::px(S2_5) + reach, @ui.Space::px(S2)))) |> ignore
             e.box(fn(w) {
               w
@@ -173,7 +174,7 @@ pub fn pick_node(
             .max_height(Is(Some(pick_list_most)))
             .shrink(Is(1.0))
             .min_height(Is(Some(0.0)))
-            .alpha(By(words_in))
+            .alpha(By(fn() { popover_content_alpha(p, l, words_in) }))
             |> ignore
             // (a finger scrolling what is found keeps its search's keyboard: View::scrolls' `for_in`)
             l.scrolls(list, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), for_in?=search.val.map(fn(v) { v.id() }), fn(b) {

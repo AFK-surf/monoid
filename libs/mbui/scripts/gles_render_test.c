@@ -1031,6 +1031,31 @@ int main(void) {
     CHECK(gl_adaptive_settling() == 0);
     gl_set_fixed_dt(0.0);
     glass_forget();
+    // Wave 4B v17: foreground optical lens (kind == 8): offscreen Gaussian defocus + spherical bevel refraction + SDF clip
+    double k8[3 * MB_INST];
+    rect_at(k8, 0, 0, W, H, 0, 1.0, 1.0, 1.0, 0);
+    rect_at(k8 + MB_INST, 15, 10, 70, 60, 8, 1.0, 1.0, 1.0, 0);
+    k8[MB_INST + 4] = 16;
+    k8[MB_INST + 7] = 3.0;   // blur = 3pt
+    k8[MB_INST + 11] = 1.0;  // alpha = 1
+    k8[MB_INST + 12] = 1.0;  // child_n = 1
+    k8[MB_INST + 13] = 18.0; // bezel = 18pt
+    k8[MB_INST + 14] = 14.0; // refraction = 14pt
+    k8[MB_INST + 15] = 1.0;
+    k8[MB_INST + 36] = 16; k8[MB_INST + 37] = 16; k8[MB_INST + 38] = 16; k8[MB_INST + 39] = 16;
+    rect_at(k8 + 2 * MB_INST, 38, 28, 24, 24, 0, 1.0, 0.0, 0.0, 0);
+    gl_present(k8, 3, 1.0, 1.0, 1.0);
+    unsigned char *px_k8 = pixels_of_fb(surface);
+    // RGBA at 2x (y flipped): center (50,40)->(100,80), blur halo (35,40)->(70,80), outside SDF (5,40)->(10,80)
+    unsigned char *k8_ctr = px_k8 + ((fb_h - 1 - 80) * fb_w + 100) * 4;
+    unsigned char *k8_halo = px_k8 + ((fb_h - 1 - 80) * fb_w + 70) * 4;
+    unsigned char *k8_out = px_k8 + ((fb_h - 1 - 80) * fb_w + 10) * 4;
+    printf("gles_render: kind8 lens ctr=%d,%d,%d halo=%d,%d,%d out=%d,%d,%d\n",
+           k8_ctr[0], k8_ctr[1], k8_ctr[2], k8_halo[0], k8_halo[1], k8_halo[2], k8_out[0], k8_out[1], k8_out[2]);
+    CHECK((int)k8_ctr[0] - (int)k8_ctr[2] > 120);
+    CHECK((int)k8_halo[0] - (int)k8_halo[2] > 20);
+    CHECK(abs((int)k8_out[0] - (int)k8_out[2]) <= 2 && k8_out[0] >= 250);
+    free(px_k8);
   }
 
   // A group the host keeps drawn out by its header straight into the floats: each instance moved in doubles, then

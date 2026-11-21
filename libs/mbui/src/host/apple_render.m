@@ -289,7 +289,7 @@ static NSString *shader_src = @
 "// (from its top: 0 at x, whole y below it; from its foot: 0 at z, whole w above it; none where y, w are 0), fadex\n"
 "// the same across (from its left, from its right)\n"
 "struct Inst { float4 rect; float4 p; float4 color; float4 c2; float4 clip; float4 pad; float4 rc; float4 rs; float4 rot; float4 rr; float4 oclip; float4 orc; float4 ors; float4 fade; float4 fadex; };\n"
-"struct U { float2 vp; float scale; float pad; };\n"
+"struct U { float2 vp; float scale; float pad; float2 origin; float2 _pad2; };\n"
 "// glass: where a point's backdrop is in the blurred copy (uv = p * map.xy + map.zw, kept in uvc), a liquid group's\n"
 "// bounds, shapes and corners, how many (misc.x); misc.y 1 where what it copied of a native view's hole is let through\n"
 "// (glass_through)\n"
@@ -302,7 +302,7 @@ static NSString *shader_src = @
 "                         (vid == 2 || vid == 3 || vid == 5) ? 1.0 : 0.0);\n"
 "  int kind = int(I.p.y + 0.5);\n"
 "  bool merged_liquid = kind == 6 && I.pad.w > 0.0;\n"
-"  float grow = kind == 2 ? I.p.w * 3.0 + 2.0 : (kind == 6 && I.pad.w <= 0.0) ? 2.0 : ((kind == 0 || kind == 4 || kind == 5) ? 1.0 : 0.0);\n"
+"  float grow = kind == 2 ? I.p.w * 3.0 + 2.0 : (kind == 6 && I.pad.w <= 0.0) ? 2.0 : ((kind == 0 || kind == 4 || kind == 5 || kind == 8) ? 1.0 : 0.0);\n"
 "  float2 pos = I.rect.xy - grow + corner * (I.rect.zw + 2.0 * grow);\n"
 "  if (merged_liquid) pos = mix(g.gb.xy, g.gb.zw, corner);\n"
 "  // the pieces of shapes (kind 12): nothing drawn\n"
@@ -312,7 +312,8 @@ static NSString *shader_src = @
 "  float2 at = pos;\n"
 "  if (I.rot.x != 0.0) { float2 d = pos - I.rot.yz; float c = cos(I.rot.x), s = sin(I.rot.x); at = I.rot.yz + float2(c * d.x - s * d.y, s * d.x + c * d.y); }\n"
 "  VOut o;\n"
-"  o.pos = float4(at.x / u.vp.x * 2.0 - 1.0, 1.0 - at.y / u.vp.y * 2.0, 0.0, 1.0);\n"
+"  float2 rel = at - u.origin;\n"
+"  o.pos = float4(rel.x / u.vp.x * 2.0 - 1.0, 1.0 - rel.y / u.vp.y * 2.0, 0.0, 1.0);\n"
 "  o.p = pos; o.cp = I.rot.w > 0.5 ? at : pos; o.iid = iid;\n"
 "  return o;\n"
 "}\n"
@@ -523,25 +524,21 @@ MB_CORNER_SL
 "    float ext_cov = mb_contour_int(max(outward + 0.5, 0.0), edgeW)\n"
 "                  - mb_contour_int(max(outward - 0.5, 0.0), edgeW);\n"
 "    if (materialAlpha < 0.01 && ext_cov < 0.01) discard_fragment();\n"
-"    bool is_clear = (I.p.w <= 0.1 && col.a < 0.12);\n"
+"    float regMix = smoothstep(0.105, 0.305, col.a);\n"
+"    bool is_clear = (regMix <= 0.0);\n"
 "    bool is_adaptive = I.c2.z < -0.5;\n"
 "    float spot_raw = is_adaptive ? (-I.c2.z - 1.0) : I.c2.z;\n"
-"    bool is_dark = (!is_clear && col.a >= 0.05 && luma(col.rgb) < 0.35);\n"
+"    bool is_dark = (!is_clear && luma(col.rgb) < 0.35);\n"
 "    float inward = max(-d, 0.0);\n"
 "    float rawBevel = max(I.c2.y, 0.0);\n"
 "    float rawAmount = max(I.pad.y, 0.0);\n"
-"    float bevel;\n"
-"    float amount;\n"
-"    if (!is_clear) {\n"
-"      // refractionFitsShape = true (iOS 27 regular)\n"
-"      bevel = min(rawBevel, 0.5 * halfMinor);\n"
-"      amount = min(rawAmount, halfMinor);\n"
-"    } else {\n"
-"      // refractionFitsShape = false (iOS 27 clear)\n"
-"      float lensScale = min(1.0, halfMinor / max(rawBevel, 0.001));\n"
-"      bevel = rawBevel * lensScale;\n"
-"      amount = rawAmount * lensScale;\n"
-"    }\n"
+"    float lensScale = min(1.0, halfMinor / max(rawBevel, 0.001));\n"
+"    float clearBevel = rawBevel * lensScale;\n"
+"    float clearAmount = rawAmount * lensScale;\n"
+"    float regBevel = min(rawBevel, 0.5 * halfMinor);\n"
+"    float regAmount = min(rawAmount, halfMinor);\n"
+"    float bevel = mix(clearBevel, regBevel, regMix);\n"
+"    float amount = mix(clearAmount, regAmount, regMix);\n"
 "    float2 surfaceNormal = float2(0.0, 0.0);\n"
 "    float shortening = 0.0;\n"
 "    float2 disp = float2(0.0, 0.0);\n"
@@ -661,6 +658,18 @@ MB_CORNER_SL
 "      contourStr = 0.43; contourDirAmt = 0.77; bevelShadowStr = 0.036;\n"
 "      glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;\n"
 "    }\n"
+"    if (regMix > 0.0 && regMix < 1.0) {\n"
+"      emission = mix(float3(0.126, 0.126, 0.126), emission, regMix);\n"
+"      transmittance = mix(0.90, transmittance, regMix);\n"
+"      lift = mix(0.10, lift, regMix);\n"
+"      chromaGain = mix(1.0, chromaGain, regMix);\n"
+"      contourStr = mix(0.25, contourStr, regMix);\n"
+"      contourDirAmt = mix(0.77, contourDirAmt, regMix);\n"
+"      bevelShadowStr = mix(0.04, bevelShadowStr, regMix);\n"
+"      glintLum = mix(1.2, glintLum, regMix);\n"
+"      glintFaceGain = mix(0.25, glintFaceGain, regMix);\n"
+"      glintVib = mix(1.5, glintVib, regMix);\n"
+"    }\n"
 "    if (fogT > 0.001) {\n"
 "      float r1 = fogT * 2.6;\n"
 "      float r2 = fogT * 3.6;\n"
@@ -730,6 +739,41 @@ MB_CORNER_SL
 "    float extA = ext_cov * contourStr * contourDir * I.c2.w;\n"
 "    float visA = materialAlpha * I.c2.w;\n"
 "    return float4(result * visA, clamp(visA + extA, 0.0, 1.0)) * cover;\n"
+"  }\n"
+"  if (kind == 8) {\n"
+"    // Foreground optical lens (View::content_lens): offscreen blurred child subtree refracted through spherical bevel & SDF-clipped\n"
+"    float4 s_rr = max(max(I.rr.x, I.rr.y), max(I.rr.z, I.rr.w)) > 0.0 ? I.rr : float4(I.p.x);\n"
+"    float d = sd_rr(p, I.rect, s_rr);\n"
+"    float materialAlpha = clamp(0.5 - d * u.scale, 0.0, 1.0);\n"
+"    if (materialAlpha < 0.005) discard_fragment();\n"
+"    float halfMinor = max(min(I.rect.z, I.rect.w) * 0.5, 1.0);\n"
+"    float inward = max(-d, 0.0);\n"
+"    float rawBevel = max(I.c2.y, 0.0);\n"
+"    float rawAmount = max(I.c2.z, 0.0);\n"
+"    float lensScale = min(1.0, halfMinor / max(rawBevel, 0.001));\n"
+"    float bevel = rawBevel * lensScale;\n"
+"    float amount = rawAmount * lensScale;\n"
+"    float2 disp = float2(0.0, 0.0);\n"
+"    if (inward < bevel && bevel > 0.001 && amount > 0.001) {\n"
+"      float e = 0.5;\n"
+"      float2 grad = float2(\n"
+"        sd_rr(p + float2(e, 0.0), I.rect, s_rr) - sd_rr(p - float2(e, 0.0), I.rect, s_rr),\n"
+"        sd_rr(p + float2(0.0, e), I.rect, s_rr) - sd_rr(p - float2(0.0, e), I.rect, s_rr)\n"
+"      ) / (2.0 * e);\n"
+"      float gradLen = length(grad);\n"
+"      float2 surfaceNormal = gradLen > 0.0001 ? grad / gradLen : float2(0.0, 0.0);\n"
+"      float shortening = sqrt(clamp(gradLen, 0.0, 1.0));\n"
+"      float bevelX = 1.0 - clamp(inward / bevel, 0.0, 1.0);\n"
+"      float mag = amount * (1.0 - sqrt(max(1.0 - bevelX * bevelX, 0.0))) * shortening;\n"
+"      disp = surfaceNormal * (-mag);\n"
+"    }\n"
+"    float2 uv = (p + disp) * g.map.xy + g.map.zw;\n"
+"    float4 fg = float4(0.0);\n"
+"    if (uv.x >= g.uvc.x && uv.x <= g.uvc.z && uv.y >= g.uvc.y && uv.y <= g.uvc.w) {\n"
+"      constexpr sampler sb(filter::linear, address::clamp_to_edge);\n"
+"      fg = bd.sample(sb, uv);\n"
+"    }\n"
+"    return fg * (materialAlpha * col.a) * cover;\n"
 "  }\n"
 "  if (kind == 10) {\n"
 "    // a piece of a line (scene.mbt): from c2.xy to c2.zw (shares of its rect), p.x half its width, its ends round\n"
@@ -1025,7 +1069,7 @@ static id<MTLRenderPipelineState> make_pipe(id<MTLLibrary> lib, MTLPixelFormat f
 #define MB_KIND_LIQUID_SINGLE 13
 #define MB_KINDS 14
 static int has_own_pipe(int kind) {
-  return (kind >= 0 && kind <= 7) || kind == 10 || kind == 11 || kind == MB_KIND_LIQUID_SINGLE;
+  return (kind >= 0 && kind <= 8) || kind == 10 || kind == 11 || kind == MB_KIND_LIQUID_SINGLE;
 }
 static id<MTLRenderPipelineState> kpipe[MB_KINDS];
 static dispatch_group_t kinds_made;
@@ -2061,15 +2105,21 @@ static int grab_in_part(const Grab *m) {
          (int)sc.y < m->py0 + m->h;
 }
 
-static id<MTLRenderCommandEncoder> begin_pass(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderPipelineState> p,
-                                              id<MTLBuffer> buf, int clear, double r, double g, double b, double alpha) {
+static id<MTLRenderCommandEncoder> begin_pass_ex(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderPipelineState> p,
+                                                 id<MTLBuffer> buf, int clear, double r, double g, double b, double alpha,
+                                                 float ox, float oy, float vp_w, float vp_h, int use_sc, int vpw, int vph) {
   MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
   rp.colorAttachments[0].texture = target;
   rp.colorAttachments[0].loadAction = clear ? MTLLoadActionClear : MTLLoadActionLoad;
   rp.colorAttachments[0].storeAction = MTLStoreActionStore;
   rp.colorAttachments[0].clearColor = MTLClearColorMake(r, g, b, alpha);
   id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rp];
-  struct { float vp[2]; float scale; float pad; } u = {{(float)at_w, (float)at_h}, (float)at_scale, (float)seg_base};
+  if (vpw > 0 && vph > 0) {
+    [enc setViewport:(MTLViewport){0, 0, (double)vpw, (double)vph, 0, 1}];
+    [enc setScissorRect:(MTLScissorRect){0, 0, (NSUInteger)vpw, (NSUInteger)vph}];
+  }
+  struct { float vp[2]; float scale; float pad; float origin[2]; float pad2[2]; } u = {
+    {vp_w, vp_h}, (float)at_scale, (float)seg_base, {ox, oy}, {0, 0}};
   [enc setRenderPipelineState:p];
   [enc setVertexBuffer:buf offset:0 atIndex:0];
   [enc setVertexBytes:&u length:sizeof(u) atIndex:1];
@@ -2082,8 +2132,13 @@ static id<MTLRenderCommandEncoder> begin_pass(id<MTLCommandBuffer> cb, id<MTLTex
   [enc setFragmentTexture:(gtex ?: atlas) atIndex:2];
   id<MTLTexture> adt = (at_win && at_win->ad_tex[at_win->ad_cur]) ? at_win->ad_tex[at_win->ad_cur] : atlas;
   [enc setFragmentTexture:adt atIndex:4];
-  if (sc_on) [enc setScissorRect:sc];
+  if (use_sc && sc_on) [enc setScissorRect:sc];
   return enc;
+}
+
+static id<MTLRenderCommandEncoder> begin_pass(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderPipelineState> p,
+                                              id<MTLBuffer> buf, int clear, double r, double g, double b, double alpha) {
+  return begin_pass_ex(cb, target, p, buf, clear, r, g, b, alpha, 0.0f, 0.0f, (float)at_w, (float)at_h, 1, 0, 0);
 }
 
 // Instances start to end drawn, each that pays for it in strips (bands.h), the rest as they come.
@@ -2234,12 +2289,112 @@ static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderP
   while (start < count) {
     int tid = (int)f[start * MB_INST + 20];
     int kind = (int)(f[start * MB_INST + 5] + 0.5f), hole = kind == 9;
+    if (kind == 8) {
+      int32_t child_n = (int32_t)(f[start * MB_INST + 12] + 0.5f);
+      if (child_n < 0) child_n = 0;
+      if (start + 1 + child_n > count) child_n = count - start - 1;
+      const float *hb = f + (size_t)start * MB_INST;
+      if (child_n <= 0 || hb[11] <= 0.001f || hb[2] <= 0.0f || hb[3] <= 0.0f) {
+        start += 1 + child_n;
+        continue;
+      }
+      float sc_f = (float)at_scale;
+      float blur_pt = fmaxf(hb[7], 0.0f);
+      float refr_pt = fmaxf(hb[14], 0.0f);
+      float margin = blur_pt * 3.0f + refr_pt + 4.0f;
+      float x0 = hb[0], y0 = hb[1], x1 = hb[0] + hb[2], y1 = hb[1] + hb[3];
+      for (int32_t ci = start + 1; ci < start + 1 + child_n; ci++) {
+        const float *cb_f = f + (size_t)ci * MB_INST;
+        int ck = (int)(cb_f[5] + 0.5f);
+        if (ck == 12 || cb_f[2] <= 0.0f || cb_f[3] <= 0.0f) continue;
+        if (cb_f[0] < x0) x0 = cb_f[0];
+        if (cb_f[1] < y0) y0 = cb_f[1];
+        if (cb_f[0] + cb_f[2] > x1) x1 = cb_f[0] + cb_f[2];
+        if (cb_f[1] + cb_f[3] > y1) y1 = cb_f[1] + cb_f[3];
+      }
+      float ox = floorf((x0 - margin) * sc_f) / sc_f;
+      float oy = floorf((y0 - margin) * sc_f) / sc_f;
+      int pw = (int)ceilf(((x1 + margin) - ox) * sc_f);
+      int ph = (int)ceilf(((y1 + margin) - oy) * sc_f);
+      int max_dim_w = (int)target.width > 2048 ? (int)target.width : 2048;
+      int max_dim_h = (int)target.height > 2048 ? (int)target.height : 2048;
+      if (pw < 1) pw = 1;
+      if (ph < 1) ph = 1;
+      if (pw > max_dim_w) pw = max_dim_w;
+      if (ph > max_dim_h) ph = max_dim_h;
+      [enc endEncoding];
+      ensure_levels(pw, ph);
+      // Pass 1: render child subtree into lv[0] cleared to transparent
+      id<MTLRenderCommandEncoder> lenc = begin_pass_ex(cb, lv[0], p, buf, 1, 0, 0, 0, 0,
+                                                       ox, oy, (float)pw / sc_f, (float)ph / sc_f, 0, pw, ph);
+      int32_t cs = start + 1, cend_all = start + 1 + child_n;
+      while (cs < cend_all) {
+        int ctid = (int)f[cs * MB_INST + 20];
+        int ck = (int)(f[cs * MB_INST + 5] + 0.5f);
+        if (ck == 5 || ck == 6 || ck == 8 || ck == 9 || ck == 12 || ctid < 0) {
+          cs++;
+          continue;
+        }
+        int cown = has_own_pipe(ck);
+        int32_t ce = cs + 1;
+        while (ce < cend_all && (int)f[ce * MB_INST + 20] == ctid) {
+          int kk = (int)(f[ce * MB_INST + 5] + 0.5f);
+          if (kk == 5 || kk == 6 || kk == 8 || kk == 9 || kk == 12) break;
+          if (cown ? kk != ck : has_own_pipe(kk)) break;
+          ce++;
+        }
+        id<MTLTexture> ct = tex_of(ctid);
+        if (ctid > MB_STREAM_TEX && !ct) { cs = ce; continue; }
+        if (ctid > 0 && ctid <= MB_STREAM_TEX && !ct) encode_missing = 1;
+        [lenc setRenderPipelineState:(cown ? kind_pipe(p, ck) : p)];
+        [lenc setFragmentTexture:(ct ?: atlas) atIndex:1];
+        [lenc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6 instanceCount:ce - cs baseInstance:cs];
+        cs = ce;
+      }
+      [lenc endEncoding];
+      // Pass 2: optional downsample + separable Gaussian blur
+      int lw[4], lh[4];
+      lw[0] = pw; lh[0] = ph;
+      for (int j = 1; j <= 3; j++) { lw[j] = (lw[j - 1] + 1) / 2; lh[j] = (lh[j - 1] + 1) / 2; }
+      float sp = blur_pt * sc_f;
+      int lk = 0;
+      while (lk < 2 && sp / (float)(1 << (lk + 1)) >= 2.0f) lk++;
+      float sk_f = sp / (float)(1 << lk);
+      float pre = lk > 0 ? 0.75f * (1.0f - powf(0.25f, (float)lk)) / 3.0f + 1.0f / 6.0f : 0.0f;
+      float sg = sqrtf(fmaxf(sk_f * sk_f - pre, 0.0f));
+      if (sp > 0.25f) {
+        for (int j = 1; j <= lk; j++) {
+          post_pass(cb, lv[j - 1], lw[j - 1], lh[j - 1], lv[j], lw[j], lh[j], 1, 0, 0, 0, NULL);
+        }
+        if (sg > 0.3f) {
+          post_pass(cb, lv[lk], lw[lk], lh[lk], ltmp, lw[lk], lh[lk], 2, sg, 1, 0, NULL);
+          post_pass(cb, ltmp, lw[lk], lh[lk], lv[lk], lw[lk], lh[lk], 2, sg, 0, 1, NULL);
+        }
+      } else {
+        lk = 0;
+      }
+      // Pass 3: composite refracted & SDF-clipped foreground lens onto target
+      id<MTLTexture> ltex = lv[lk];
+      gtex = ltex;
+      memset(&gu, 0, sizeof gu);
+      float W = (float)ltex.width, H = (float)ltex.height, d_lv = (float)(1 << lk);
+      gu.map[0] = sc_f / d_lv / W; gu.map[1] = sc_f / d_lv / H;
+      gu.map[2] = -(ox * sc_f) / d_lv / W; gu.map[3] = -(oy * sc_f) / d_lv / H;
+      gu.uvc[0] = 0.5f / W; gu.uvc[1] = 0.5f / H;
+      gu.uvc[2] = ((float)lw[lk] - 0.5f) / W; gu.uvc[3] = ((float)lh[lk] - 0.5f) / H;
+      enc = begin_pass(cb, target, p, buf, 0, r, g, b, alpha);
+      [enc setRenderPipelineState:kind_pipe(p, 8)];
+      [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6 instanceCount:1 baseInstance:start];
+      bound = 0;
+      start += 1 + child_n;
+      continue;
+    }
     // (kinds without their own pipeline one run, as before)
     int own = tid >= 0 && has_own_pipe(kind);
     int32_t end = start + 1;
     while (end < count && (int)f[end * MB_INST + 20] == tid) {
       int k = (int)(f[end * MB_INST + 5] + 0.5f);
-      if ((k == 9) != hole || (own ? k != kind : tid >= 0 && has_own_pipe(k))) break;
+      if (k == 8 || (k == 9) != hole || (own ? k != kind : tid >= 0 && has_own_pipe(k))) break;
       end++;
     }
     if (tid < 0) {

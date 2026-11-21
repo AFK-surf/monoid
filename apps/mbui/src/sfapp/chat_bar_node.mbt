@@ -717,8 +717,7 @@ fn bar_end_node(
         "info",
         fn() { tr("android-chat.info.title") },
         fn() {
-          let (x, y, iw, ih) = k.placed_window_now()
-          open_info(src, r, from=At(x, y, iw, ih), along=End)
+          open_info(src, r, from=Node(k), along=End)
         },
         icon_size=20.0,
       )
@@ -738,8 +737,7 @@ fn bar_end_node(
               None => ""
             }
             let chat = src.topic("chat", chat_params(r)).get().value
-            let (x, y, mw, mh) = more.placed_window_now()
-            @sfpages.open_chat_menu(src, w, r, @sfpages.chat_extra_items(src, r, chat), from=At(x, y, mw, mh), along=End)
+            @sfpages.open_chat_menu(src, w, r, @sfpages.chat_extra_items(src, r, chat), from=Node(more), along=End)
           },
           icon_size=18.0,
         )

@@ -468,6 +468,7 @@
   layout(location=13) in vec4 a_fade;
   layout(location=14) in vec4 a_fadex;
   uniform vec2 u_vp;
+  uniform vec2 u_origin;
   uniform vec4 u_gb;
   out vec2 v_pos; out vec2 v_cpos;
   flat out vec4 v_rect; flat out vec4 v_p; flat out vec4 v_color; flat out vec4 v_c2; flat out vec4 v_clip; flat out vec4 v_pad;
@@ -480,7 +481,7 @@
     vec2 corner = vec2((vid == 1 || vid == 4 || vid == 5) ? 1.0 : 0.0, (vid == 2 || vid == 3 || vid == 5) ? 1.0 : 0.0);
     int kind = int(a_p.y + 0.5);
     bool merged_liquid = kind == 6 && a_pad.w > 0.0;
-    float grow = kind == 2 ? a_p.w * 3.0 + 2.0 : (kind == 6 && a_pad.w <= 0.0) ? 2.0 : ((kind == 0 || kind == 4 || kind == 5) ? 1.0 : 0.0);
+    float grow = kind == 2 ? a_p.w * 3.0 + 2.0 : (kind == 6 && a_pad.w <= 0.0) ? 2.0 : ((kind == 0 || kind == 4 || kind == 5 || kind == 8) ? 1.0 : 0.0);
     vec2 pos = a_rect.xy - grow + corner * (a_rect.zw + 2.0 * grow);
     if (merged_liquid) pos = mix(u_gb.xy, u_gb.zw, corner);
     // the pieces of shapes (kind 12): nothing drawn
@@ -489,7 +490,8 @@
     // too or (35: one from outside what turned) where it is drawn (v_cpos)
     vec2 at = pos;
     if (a_rot.x != 0.0) { vec2 d = pos - a_rot.yz; float c = cos(a_rot.x), s = sin(a_rot.x); at = a_rot.yz + vec2(c * d.x - s * d.y, s * d.x + c * d.y); }
-    gl_Position = vec4(at.x / u_vp.x * 2.0 - 1.0, 1.0 - at.y / u_vp.y * 2.0, 0.0, 1.0);
+    vec2 rel = at - u_origin;
+    gl_Position = vec4(rel.x / u_vp.x * 2.0 - 1.0, 1.0 - rel.y / u_vp.y * 2.0, 0.0, 1.0);
     v_pos = pos; v_cpos = a_rot.w > 0.5 ? at : pos; v_rect = a_rect; v_p = a_p; v_color = a_color; v_c2 = a_c2; v_clip = a_clip; v_pad = a_pad; v_rc = a_rc; v_rs = a_rs; v_rr = a_rr;
     // (a glyph's p.x, which it has no use for: how it is turned, for its texels taken whole where it is not)
     if (kind == 1 || kind == 3 || kind == 7) v_p.x = a_rot.x;
@@ -1029,25 +1031,21 @@
       float ext_cov = mb_contour_int(max(outward + 0.5, 0.0), edgeW)
                     - mb_contour_int(max(outward - 0.5, 0.0), edgeW);
       if (materialAlpha < 0.01 && ext_cov < 0.01) discard;
-      bool is_clear = (v_p.w <= 0.1 && col.a < 0.12);
+      float regMix = smoothstep(0.105, 0.305, col.a);
+      bool is_clear = (regMix <= 0.0);
       bool is_adaptive = v_c2.z < -0.5;
       float spot_raw = is_adaptive ? (-v_c2.z - 1.0) : v_c2.z;
-      bool is_dark = (!is_clear && col.a >= 0.05 && luma(col.rgb) < 0.35);
+      bool is_dark = (!is_clear && luma(col.rgb) < 0.35);
       float inward = max(-d, 0.0);
       float rawBevel = max(v_c2.y, 0.0);
       float rawAmount = max(v_pad.y, 0.0);
-      float bevel;
-      float amount;
-      if (!is_clear) {
-        // refractionFitsShape = true (iOS 27 regular)
-        bevel = min(rawBevel, 0.5 * halfMinor);
-        amount = min(rawAmount, halfMinor);
-      } else {
-        // refractionFitsShape = false (iOS 27 clear)
-        float lensScale = min(1.0, halfMinor / max(rawBevel, 0.001));
-        bevel = rawBevel * lensScale;
-        amount = rawAmount * lensScale;
-      }
+      float lensScale = min(1.0, halfMinor / max(rawBevel, 0.001));
+      float clearBevel = rawBevel * lensScale;
+      float clearAmount = rawAmount * lensScale;
+      float regBevel = min(rawBevel, 0.5 * halfMinor);
+      float regAmount = min(rawAmount, halfMinor);
+      float bevel = mix(clearBevel, regBevel, regMix);
+      float amount = mix(clearAmount, regAmount, regMix);
       vec2 surfaceNormal = vec2(0.0, 0.0);
       float shortening = 0.0;
       vec2 disp = vec2(0.0, 0.0);
@@ -1183,6 +1181,18 @@
         contourStr = 0.43; contourDirAmt = 0.77; bevelShadowStr = 0.036;
         glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;
       }
+      if (regMix > 0.0 && regMix < 1.0) {
+        emission = mix(vec3(0.126, 0.126, 0.126), emission, regMix);
+        transmittance = mix(0.90, transmittance, regMix);
+        lift = mix(0.10, lift, regMix);
+        chromaGain = mix(1.0, chromaGain, regMix);
+        contourStr = mix(0.25, contourStr, regMix);
+        contourDirAmt = mix(0.77, contourDirAmt, regMix);
+        bevelShadowStr = mix(0.04, bevelShadowStr, regMix);
+        glintLum = mix(1.2, glintLum, regMix);
+        glintFaceGain = mix(0.25, glintFaceGain, regMix);
+        glintVib = mix(1.5, glintVib, regMix);
+      }
       if (fogT > 0.001) {
         float r1 = fogT * 2.6;
         float r2 = fogT * 3.6;
@@ -1252,6 +1262,42 @@
       float extA = ext_cov * contourStr * contourDir * v_c2.w;
       float visA = materialAlpha * v_c2.w;
       o = vec4(result * visA, clamp(visA + extA, 0.0, 1.0));
+      return;
+    }
+    #endif
+    #if ONE_KIND < 0
+    if (kind == 8) {
+      vec4 s_rr = max(max(v_rr.x, v_rr.y), max(v_rr.z, v_rr.w)) > 0.0 ? v_rr : vec4(v_p.x);
+      float d = sd_rr(p, v_rect, s_rr);
+      float materialAlpha = clamp(0.5 - d * u_scale, 0.0, 1.0);
+      if (materialAlpha < 0.005) discard;
+      float halfMinor = max(min(v_rect.z, v_rect.w) * 0.5, 1.0);
+      float inward = max(-d, 0.0);
+      float rawBevel = max(v_c2.y, 0.0);
+      float rawAmount = max(v_c2.z, 0.0);
+      float lensScale = min(1.0, halfMinor / max(rawBevel, 0.001));
+      float bevel = rawBevel * lensScale;
+      float amount = rawAmount * lensScale;
+      vec2 disp = vec2(0.0, 0.0);
+      if (inward < bevel && bevel > 0.001 && amount > 0.001) {
+        float e = 0.5;
+        vec2 grad = vec2(
+          sd_rr(p + vec2(e, 0.0), v_rect, s_rr) - sd_rr(p - vec2(e, 0.0), v_rect, s_rr),
+          sd_rr(p + vec2(0.0, e), v_rect, s_rr) - sd_rr(p - vec2(0.0, e), v_rect, s_rr)
+        ) / (2.0 * e);
+        float gradLen = length(grad);
+        vec2 surfaceNormal = gradLen > 0.0001 ? grad / gradLen : vec2(0.0, 0.0);
+        float shortening = sqrt(clamp(gradLen, 0.0, 1.0));
+        float bevelX = 1.0 - clamp(inward / bevel, 0.0, 1.0);
+        float mag = amount * (1.0 - sqrt(max(1.0 - bevelX * bevelX, 0.0))) * shortening;
+        disp = surfaceNormal * (-mag);
+      }
+      vec2 uv = (p + disp) * u_map.xy + u_map.zw;
+      vec4 fg = vec4(0.0);
+      if (uv.x >= u_uvc.x && uv.x <= u_uvc.z && uv.y >= u_uvc.y && uv.y <= u_uvc.w) {
+        fg = texture(u_bd, uv);
+      }
+      o = fg * (materialAlpha * col.a);
       return;
     }
     #endif
@@ -1578,7 +1624,7 @@
     if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
     gl.deleteShader(fs);
     const u = {};
-    for (const n of ['u_vp', 'u_scale', 'u_atlas', 'u_img', 'u_bd', 'u_map', 'u_uvc', 'u_gb', 'u_shape', 'u_rad', 'u_n', 'u_glight', 'u_segs', 'u_ad', 'u_ad_box', 'u_ad_n']) {
+    for (const n of ['u_vp', 'u_origin', 'u_scale', 'u_atlas', 'u_img', 'u_bd', 'u_map', 'u_uvc', 'u_gb', 'u_shape', 'u_rad', 'u_n', 'u_glight', 'u_segs', 'u_ad', 'u_ad_box', 'u_ad_n']) {
       u[n] = gl.getUniformLocation(p, n);
     }
     gl.useProgram(p);
@@ -1606,7 +1652,8 @@
     const u = k.u;
     // The framebuffer's rounded size may not be exactly cssW*dpr. Mapping to cssW would stretch its pixels by that
     // remainder, sampling glyphs between atlas texels. A point must cover exactly dpr pixels, including at 125% zoom.
-    if (u.u_vp) gl.uniform2f(u.u_vp, canvas.width / dpr, canvas.height / dpr);
+    if (u.u_vp) gl.uniform2f(u.u_vp, lensVpW > 0 ? lensVpW : canvas.width / dpr, lensVpH > 0 ? lensVpH : canvas.height / dpr);
+    if (u.u_origin) gl.uniform2f(u.u_origin, lensOx, lensOy);
     if (u.u_scale) gl.uniform1f(u.u_scale, dpr);
     if (u.u_map) gl.uniform4fv(u.u_map, gmap);
     if (u.u_uvc) gl.uniform4fv(u.u_uvc, guvc);
@@ -1683,6 +1730,7 @@
   // few texels wide (dual Kawase's downsample, at most 1/8), blurred there by a Gaussian of what deviation is left,
   // and kept in an LRU slot (GLASS_SLOTS) so frames with unchanged content under the glass reuse the blur with zero passes.
   let lv = null, lvW = 0, lvH = 0, bdTex = null;
+  let lensLv = null, lensW = 0, lensH = 0, lensOx = 0, lensOy = 0, lensVpW = 0, lensVpH = 0;
   let glassSlots = makeGlassSlots(), glassSlotsClock = 0;
   let underNow = new Float32Array(INST * 256), underNowN = 0, underWhole = 0, underPicked = 0;
   const gmap = new Float32Array(4), guvc = new Float32Array(4), ggb = new Float32Array(4);
@@ -1910,6 +1958,7 @@
   }
   function glassLost() {
     lv = null; lvW = 0; lvH = 0; bdTex = null;
+    lensLv = null; lensW = 0; lensH = 0;
     for (let i = 0; i < GLASS_SLOTS; i++) {
       const s = glassSlots[i];
       s.bt = null; s.bfb = null; s.bw = 0; s.bh = 0; s.bf = 0; s.valid = false;
@@ -1919,6 +1968,7 @@
   }
   function glassFree() {
     if (lv && gl) for (const l of lv) { gl.deleteTexture(l.t); gl.deleteFramebuffer(l.fb); }
+    if (lensLv && gl) for (const l of lensLv) { gl.deleteTexture(l.t); gl.deleteFramebuffer(l.fb); }
     if (gl) {
       for (let i = 0; i < GLASS_SLOTS; i++) {
         const s = glassSlots[i];
@@ -1959,6 +2009,13 @@
     lv = [];
     for (let j = 0; j < 4; j++) lv.push(levelTex(j === 0 ? gl.RGBA8 : gl.RGB10_A2, (lvW + (1 << j) - 1) >> j, (lvH + (1 << j) - 1) >> j));
     lv.push(levelTex(gl.RGB10_A2, lvW, lvH));
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+  function ensureLensLevels(w, h) {
+    if (lensLv && lensW >= w && lensH >= h) return;
+    if (lensLv) for (const l of lensLv) { gl.deleteTexture(l.t); gl.deleteFramebuffer(l.fb); }
+    lensW = Math.max(w, lensW); lensH = Math.max(h, lensH);
+    lensLv = [levelTex(gl.RGBA8, lensW, lensH), levelTex(gl.RGBA8, lensW, lensH)];
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
   function postPass(src, sw, sh, dst, w, h, mode, sg, dx, dy) {
@@ -2917,12 +2974,105 @@
     while (start < n) {
       const tid = f32[start * INST + 20] | 0;
       const kind = Math.round(f32[start * INST + 5]);
+      if (kind === 8) {
+        let childN = Math.round(f32[start * INST + 12]);
+        if (childN < 0) childN = 0;
+        if (start + 1 + childN > n) childN = n - start - 1;
+        const hb = start * INST;
+        if (childN <= 0 || f32[hb + 11] <= 0.001 || f32[hb + 2] <= 0 || f32[hb + 3] <= 0) {
+          start += 1 + childN;
+          continue;
+        }
+        glassDrawn = true;
+        const scF = dpr;
+        const blurPt = Math.max(f32[hb + 7], 0);
+        const refrPt = Math.max(f32[hb + 14], 0);
+        const margin = blurPt * 3 + refrPt + 4;
+        let x0 = f32[hb], y0 = f32[hb + 1], x1 = f32[hb] + f32[hb + 2], y1 = f32[hb + 1] + f32[hb + 3];
+        for (let ci = start + 1; ci < start + 1 + childN; ci++) {
+          const cb = ci * INST;
+          const ck = Math.round(f32[cb + 5]);
+          if (ck === 12 || f32[cb + 2] <= 0 || f32[cb + 3] <= 0) continue;
+          if (f32[cb] < x0) x0 = f32[cb];
+          if (f32[cb + 1] < y0) y0 = f32[cb + 1];
+          if (f32[cb] + f32[cb + 2] > x1) x1 = f32[cb] + f32[cb + 2];
+          if (f32[cb + 1] + f32[cb + 3] > y1) y1 = f32[cb + 1] + f32[cb + 3];
+        }
+        const ox = Math.floor((x0 - margin) * scF) / scF;
+        const oy = Math.floor((y0 - margin) * scF) / scF;
+        const pw = Math.min(Math.max(1, Math.ceil(((x1 + margin) - ox) * scF)), Math.max(canvas.width, 2048));
+        const ph = Math.min(Math.max(1, Math.ceil(((y1 + margin) - oy) * scF)), Math.max(canvas.height, 2048));
+        ensureLensLevels(pw, ph);
+        // Pass 1: render children into lensLv[0]
+        gl.bindFramebuffer(gl.FRAMEBUFFER, lensLv[0].fb);
+        gl.viewport(0, 0, pw, ph);
+        gl.disable(gl.SCISSOR_TEST);
+        gl.clearColor(0, 0, 0, 0);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        gl.enable(gl.BLEND);
+        lensOx = ox; lensOy = oy; lensVpW = pw / scF; lensVpH = ph / scF;
+        progGen++;
+        let cs = start + 1, cendAll = start + 1 + childN;
+        while (cs < cendAll) {
+          const ctid = f32[cs * INST + 20] | 0;
+          const ck = Math.round(f32[cs * INST + 5]);
+          if (ck === 5 || ck === 6 || ck === 8 || ck === 9 || ck === 12 || ctid < 0) {
+            cs++;
+            continue;
+          }
+          const cown = hasOwnProg(ck);
+          let ce = cs + 1;
+          while (ce < cendAll && (f32[ce * INST + 20] | 0) === ctid) {
+            const kk = Math.round(f32[ce * INST + 5]);
+            if (kk === 5 || kk === 6 || kk === 8 || kk === 9 || kk === 12) break;
+            if (cown ? kk !== ck : hasOwnProg(kk)) break;
+            ce++;
+          }
+          let ct = atlasTex;
+          if (ctid > STREAM_TEX) {
+            const st = streams.get(ctid - STREAM_TEX);
+            if (!st || !st.tex) { cs = ce; continue; }
+            ct = st.tex;
+          } else if (ctid > 0) {
+            const im = images.get(ctid);
+            if (im && im.tex) ct = im.tex;
+            else drewMissing = true;
+          }
+          gl.activeTexture(gl.TEXTURE1);
+          gl.bindTexture(gl.TEXTURE_2D, ct);
+          useProg(cown ? ck : -1);
+          drawRun(cs, ce - cs);
+          cs = ce;
+        }
+        // Pass 2: separable Gaussian blur in RGBA8
+        const sp = blurPt * scF;
+        if (sp > 0.25) {
+          gl.disable(gl.BLEND);
+          gl.useProgram(post);
+          postPass(lensLv[0], pw, ph, lensLv[1], pw, ph, 2, sp, 1, 0);
+          postPass(lensLv[1], pw, ph, lensLv[0], pw, ph, 2, sp, 0, 1);
+        }
+        // Pass 3: composite refracted & SDF-clipped foreground lens onto target
+        lensOx = 0; lensOy = 0; lensVpW = 0; lensVpH = 0;
+        bdTex = lensLv[0].t;
+        const W = lensLv[0].w, H = lensLv[0].h;
+        gmap[0] = scF / W; gmap[1] = -scF / H;
+        gmap[2] = -(ox * scF) / W; gmap[3] = (ph + oy * scF) / H;
+        guvc[0] = 0.5 / W; guvc[1] = 0.5 / H;
+        guvc[2] = (pw - 0.5) / W; guvc[3] = (ph - 0.5) / H;
+        mainState();
+        useProg(-1);
+        drawRun(start, 1);
+        bound = 0;
+        start += 1 + childN;
+        continue;
+      }
       const h = kind === 9;
       const own = tid >= 0 && !h && hasOwnProg(kind);
       let end = start + 1;
       while (end < n && (f32[end * INST + 20] | 0) === tid) {
         const k = Math.round(f32[end * INST + 5]);
-        if ((k === 9) !== h) break;
+        if (k === 8 || (k === 9) !== h) break;
         if (own ? k !== kind : (tid >= 0 && !h && hasOwnProg(k))) break;
         end++;
       }

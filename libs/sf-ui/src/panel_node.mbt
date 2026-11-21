@@ -128,6 +128,7 @@ fn panel_node(
       let field : Ref[PanelField?] = Ref(None)
       layer.lends(panel_field_lent, field) |> ignore
       gate.collect(fn() {
+      anchored_popover_bridge(layer, at, look, side=x.side, along=x.along, offset=x.offset)
       layer.box(fn(p) {
         presented_popovers[keyed.serial] = p
         anchored_popover_shell(
@@ -204,7 +205,7 @@ fn panel_node(
         let head = fn(v : @view.View) {
           v.box(fn(h) {
             style_node(h, fn() { panel_part_in(panel_pad, 0.0) })
-            h.alpha(By(fn() { look().words })) |> ignore
+            h.alpha(By(fn() { popover_content_alpha(p, h, fn() { look().words }) })) |> ignore
             h.box(fn(b) {
               style_node(b, fn() { panel_head_box })
               if !stepped {
@@ -255,10 +256,10 @@ fn panel_node(
             b.box(fn(col) {
               if x.nodes.hugs {
                 style_node(col, fn() { panel_part_in(over(), under) })
-                col.shrink(Is(1.0)).min_height(Is(Some(0.0))).alpha(By(fn() { look().words })) |> ignore
+                col.shrink(Is(1.0)).min_height(Is(Some(0.0))).alpha(By(fn() { popover_content_alpha(p, col, fn() { look().words }) })) |> ignore
               } else {
                 style_node(col, fn() { panel_grows.then(panel_part_in(over(), under)) })
-                col.grow(Is(1.0)).alpha(By(fn() { look().words })) |> ignore
+                col.grow(Is(1.0)).alpha(By(fn() { popover_content_alpha(p, col, fn() { look().words }) })) |> ignore
               }
               // (laid out as a small panel's body is: wide, its words a row's padding in)
               panel_in_lend(col, Wide, text_in, sides=panel_pad, small=true)
@@ -292,7 +293,7 @@ fn panel_node(
               // (what it holds: in a column, its words as far in as its look says)
               s.box(fn(col) {
                 style_node(col, fn() { held_in().then(@ui.style(pt=room(over()), pb=room(under))) })
-                col.margin(By(fn() { (0.0, -over(), 0.0, -out_under) })).alpha(By(fn() { look().words })) |> ignore
+                col.margin(By(fn() { (0.0, -over(), 0.0, -out_under) })).alpha(By(fn() { popover_content_alpha(p, col, fn() { look().words }) })) |> ignore
                 // (laid out as a small panel's body is: wide, its words a row's padding in)
                 panel_in_lend(col, Wide, text_in, sides=panel_pad, small=true)
                 (x.nodes.body)(col, close)
@@ -314,7 +315,7 @@ fn panel_node(
           Some(f) =>
             p.box(fn(fv) {
               style_node(fv, fn() { panel_part_in(0.0, panel_pad) })
-              fv.margin(Is((-panel_pad, 0.0, -panel_pad, -panel_pad))).alpha(By(fn() { look().words })) |> ignore
+              fv.margin(Is((-panel_pad, 0.0, -panel_pad, -panel_pad))).alpha(By(fn() { popover_content_alpha(p, fv, fn() { look().words }) })) |> ignore
               if x.ruled {
                 fv.box(fn(r) { style_node(r, fn() { foot_rule.then(@ui.style(mx=room(-panel_pad))) }) }) |> ignore
               }

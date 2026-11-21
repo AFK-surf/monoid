@@ -152,18 +152,18 @@ test "bar_pill_group_node interactive press drives GPU spot highlight, spring sc
     }
     let pill = pill_ref.val.unwrap()
     let scope = pill.lent(pill_press_lent).unwrap()
-    assert_eq(scope.spot.untracked(), None)
+    assert_eq(scope.fx.untracked().0, None)
     assert_true((pill.drawn_scale() - 1.0).abs() < 0.001)
     for target in [key_ref.val.unwrap(), ws_ref.val.unwrap()] {
       let (tx, ty, tw, th) = target.placed_window_now()
       let (cx, cy) = (tx + tw / 2.0, ty + th / 2.0)
       t.press_at(cx, cy)
       t.run_for(part_whole_ms)
-      assert_true(scope.spot.untracked() is Some(_), msg="spot must be active while pressed (dark=\{dark})")
+      assert_true(scope.fx.untracked().0 is Some(_), msg="spot must be active while pressed (dark=\{dark})")
       assert_true(pill.drawn_scale() > 1.01, msg="pill must spring-scale > 1.01 while pressed, got \{pill.drawn_scale()}")
       t.release(cx, cy)
       t.run_for(@ui.move_most_ms)
-      assert_eq(scope.spot.untracked(), None)
+      assert_eq(scope.fx.untracked().0, None)
       assert_true((pill.drawn_scale() - 1.0).abs() < 0.002, msg="pill must settle back to 1.0, got \{pill.drawn_scale()}")
     }
     t.assert_idle()

@@ -1263,6 +1263,34 @@ int main(void) {
       CHECK(r[0][1] <= 92 && r[0][1] + r[0][3] >= 298);
       mb_render_set_fixed_dt(0.0);
       glass_forget();
+      // Wave 4B v17: foreground optical lens (kind == 8): offscreen Gaussian defocus + spherical bevel refraction + SDF clip
+      double k8[3 * MB_INST];
+      rect_at(k8, 0, 0, 400, 300, 0, 1.0, 1.0, 1.0, 0);
+      rect_at(k8 + MB_INST, 100, 80, 120, 120, 8, 1.0, 1.0, 1.0, 0);
+      k8[MB_INST + 4] = 28;
+      k8[MB_INST + 7] = 4.0;   // blur = 4pt
+      k8[MB_INST + 11] = 1.0;  // alpha = 1
+      k8[MB_INST + 12] = 1.0;  // child_n = 1
+      k8[MB_INST + 13] = 24.0; // bezel = 24pt
+      k8[MB_INST + 14] = 18.0; // refraction = 18pt
+      k8[MB_INST + 15] = 1.0;
+      k8[MB_INST + 36] = 28; k8[MB_INST + 37] = 28; k8[MB_INST + 38] = 28; k8[MB_INST + 39] = 28;
+      rect_at(k8 + 2 * MB_INST, 140, 120, 40, 40, 0, 1.0, 0.0, 0.0, 0);
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(k8, 3, 1.0, 1.0, 1.0);
+      present_drain();
+      int k8w = 0, k8h = 0;
+      uint8_t *px_k8 = read_texture(canvas, &k8w, &k8h);
+      // BGRA at 2x: center (160,140)->(320,280), blur halo (136,140)->(272,280), outside SDF (80,140)->(160,280)
+      uint8_t *k8_ctr = px_k8 + (280 * k8w + 320) * 4;
+      uint8_t *k8_halo = px_k8 + (280 * k8w + 272) * 4;
+      uint8_t *k8_out = px_k8 + (280 * k8w + 160) * 4;
+      printf("apple_render: kind8 lens ctr=%d,%d,%d halo=%d,%d,%d out=%d,%d,%d\n",
+             k8_ctr[2], k8_ctr[1], k8_ctr[0], k8_halo[2], k8_halo[1], k8_halo[0], k8_out[2], k8_out[1], k8_out[0]);
+      CHECK((int)k8_ctr[2] - (int)k8_ctr[0] > 120);
+      CHECK((int)k8_halo[2] - (int)k8_halo[0] > 20);
+      CHECK(abs((int)k8_out[2] - (int)k8_out[0]) <= 2 && k8_out[2] >= 250);
+      free(px_k8);
     }
 
     // A group kept by the host (groups.h) drawn out by a header, straight into the floats: each instance moved in

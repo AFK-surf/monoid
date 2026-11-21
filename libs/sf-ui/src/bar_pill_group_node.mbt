@@ -8,22 +8,43 @@
 /// Translucent liquid glass for floating top bar action pills (`36–40pt` tall): matches `glass_tab_bar()`'s
 /// iOS 27 40% tint (`0x20202067L` / `0xFDFCFD67L`) with bevel/refraction tuned for top bar capsules and
 /// live `spot` specular highlight on press.
-fn glass_bar_pill(spot? : (Double, Double)? = None) -> @ui.Glass {
+fn glass_bar_pill(
+  spot? : (Double, Double)? = None,
+  layer? : Int = 0,
+) -> @ui.Glass {
   let t = theme()
   let tint = if t.dark { 0x20202067L } else { 0xFDFCFD67L }
-  @ui.Glass::liquid(
-    blur=2.5,
-    tint~,
-    solid=panel_ground(),
-    saturation=1.0,
-    rim=0.6,
-    bezel=14.0,
-    refraction=20.0,
-    chroma=0.0,
-    merge=0.0,
-    adaptive=false,
-    spot~,
-  ).sharing()
+  if layer > 0 {
+    @ui.Glass::liquid(
+      blur=2.5,
+      tint~,
+      solid=panel_ground(),
+      saturation=1.0,
+      rim=0.6,
+      bezel=14.0,
+      refraction=20.0,
+      chroma=0.0,
+      merge=0.0,
+      layer~,
+      break_gap=12.0,
+      adaptive=false,
+      spot~,
+    )
+  } else {
+    @ui.Glass::liquid(
+      blur=2.5,
+      tint~,
+      solid=panel_ground(),
+      saturation=1.0,
+      rim=0.6,
+      bezel=14.0,
+      refraction=20.0,
+      chroma=0.0,
+      merge=0.0,
+      adaptive=false,
+      spot~,
+    ).sharing()
+  }
 }
 
 ///|
@@ -31,7 +52,7 @@ fn glass_bar_pill(spot? : (Double, Double)? = None) -> @ui.Glass {
 /// `icon_button_node`, and custom pill actions via `bind_pill_press` / `bar_pill_key_press_node`).
 priv struct PillPressScope {
   pill : @view.View
-  spot : @signals.Signal[(Double, Double)?]
+  fx : @signals.Signal[((Double, Double)?, Int)]
   press_way : @motion.NodeWay
   mut count : Int
 }
@@ -52,13 +73,19 @@ pub fn bar_pill_press_ink() -> Int64 {
 /// springs the pill scale via `@motion.backdrop_press_spring`. No-op outside a `bar_pill_group_node`.
 pub fn bind_pill_press(child : @view.View) -> Unit {
   guard child.lent(pill_press_lent) is Some(scope) else { return }
+  let trig_opt = child.lent(glass_pill_trigger_lent)
+  match trig_opt {
+    Some(trig) => trig.children.push(child)
+    None => ()
+  }
   let active = Ref(false)
   let release = fn() {
     if active.val {
       active.val = false
       scope.count = if scope.count > 0 { scope.count - 1 } else { 0 }
       if scope.count == 0 {
-        scope.spot.set(None)
+        let (_, ly) = scope.fx.get()
+        scope.fx.set((None, ly))
         scope.press_way.go(scope.pill, 0.0, @motion.backdrop_press_spring)
       }
     }
@@ -72,7 +99,8 @@ pub fn bind_pill_press(child : @view.View) -> Unit {
       if !scope.pill.glass_solid() {
         let (gx, gy, _, _) = scope.pill.placed_window_now()
         let (cx, cy, cw, ch) = child.placed_window_now()
-        scope.spot.set(Some((cx - gx + cw / 2.0, cy - gy + ch / 2.0)))
+        let (_, ly) = scope.fx.get()
+        scope.fx.set((Some((cx - gx + cw / 2.0, cy - gy + ch / 2.0)), ly))
       }
       if !@ui.reduced_motion() {
         scope.press_way.go(scope.pill, 1.0, @motion.backdrop_press_spring)
@@ -81,7 +109,29 @@ pub fn bind_pill_press(child : @view.View) -> Unit {
       release()
     }
   })
-  child.owns(release) |> ignore
+  child.owns(fn() {
+    release()
+    match trig_opt {
+      Some(trig) => {
+        let cid = child.id()
+        let mut idx = -1
+        for i in 0..<trig.children.length() {
+          if trig.children[i].id() == cid {
+            idx = i
+            break
+          }
+        }
+        if idx >= 0 {
+          ignore(trig.children.remove(idx))
+          if trig.children.is_empty() {
+            trig.children.shrink_to_fit()
+          }
+        }
+      }
+      None => ()
+    }
+  })
+  |> ignore
 }
 
 ///|
@@ -102,6 +152,24 @@ pub fn bar_pill_key_press_node(v : @view.View) -> Unit {
 }
 
 ///|
+/// Read-only trigger scope lent by `bar_pill_group_node` to its children (0 new signals, 0 new cold-start bindings)
+/// so an anchored popover can briefly activate a private SDF fusion layer (`pill.id().at + 100`) on its own pill
+/// alone while keeping adjacent pills (`layer == 0`, `.sharing()`) 100% isolated.
+priv struct PillTriggerScope {
+  pill : @view.View
+  fx : @signals.Signal[((Double, Double)?, Int)]
+  press_way : @motion.NodeWay
+  morph_glass : Ref[(() -> @ui.Glass?)?]
+  morph_shadow : Ref[(() -> (Double, Double, Int64))?]
+  children : Array[@view.View]
+  height : Double
+  pad : Double
+}
+
+///|
+let glass_pill_trigger_lent : @view.Lent[PillTriggerScope] = @view.Lent::new()
+
+///|
 /// A single-layer liquid glass pill container in `parent` for a group of top bar controls made by `body`:
 /// `height` tall (default `40.0`, full capsule radius `height / 2.0`), padded `pad` all around (default `3.0`,
 /// concentric with 34pt `round_key_node` at `height=40.0, pad=3.0` and 32pt `icon_button_node` at `height=36.0, pad=2.0`),
@@ -117,9 +185,22 @@ pub fn bar_pill_group_node(
 ) -> @view.View {
   parent.box(made_for=loc, fn(g) {
     let r = height / 2.0
-    let spot_sig : @signals.Signal[(Double, Double)?] = @signals.signal(None)
+    let fx_sig : @signals.Signal[((Double, Double)?, Int)] = @signals.signal((None, 0))
+    let morph_glass : Ref[(() -> @ui.Glass?)?] = Ref(None)
+    let morph_shadow : Ref[(() -> (Double, Double, Int64))?] = Ref(None)
+    let children : Array[@view.View] = []
     let press_way = @motion.NodeWay::new(0.0)
-    let scope : PillPressScope = { pill: g, spot: spot_sig, press_way, count: 0 }
+    let scope : PillPressScope = { pill: g, fx: fx_sig, press_way, count: 0 }
+    let trig_scope : PillTriggerScope = {
+      pill: g,
+      fx: fx_sig,
+      press_way,
+      morph_glass,
+      morph_shadow,
+      children,
+      height,
+      pad,
+    }
     g
     .row(Is(true))
     .height(Is(Some(height)))
@@ -128,13 +209,38 @@ pub fn bar_pill_group_node(
     .gap(Is(gap))
     .lines_up(Is(Some(Middle)))
     .shrink(Is(0.0))
-    .glass(By(fn() { Some(glass_bar_pill(spot=spot_sig.get())) }))
+    .glass(
+      By(fn() {
+        let (sp, ly) = fx_sig.get()
+        if ly != 0 {
+          match morph_glass.val {
+            Some(f) => f()
+            None => if ly < 0 { None } else { Some(glass_bar_pill(spot=sp, layer=ly)) }
+          }
+        } else {
+          Some(glass_bar_pill(spot=sp, layer=ly))
+        }
+      }),
+    )
     .scale(By(fn() { 1.0 + 0.05 * press_way.shown(g) }), about=At(0.5, 0.5))
     .edge(By(fn() { if g.glass_solid() { (control_edge_w, panel_edge()) } else { (0.0, 0L) } }))
-    .shadow(By(fn() { glass_control_shadow() }))
+    .shadow(
+      By(fn() {
+        let ly = fx_sig.get().1
+        if ly != 0 {
+          match morph_shadow.val {
+            Some(f) => f()
+            None => if ly < 0 { (0.0, 0.0, 0L) } else { glass_control_shadow() }
+          }
+        } else {
+          glass_control_shadow()
+        }
+      }),
+    )
     .shadow_outside(Is(true))
     .clips(Is(true))
     .lends(pill_press_lent, scope)
+    .lends(glass_pill_trigger_lent, trig_scope)
     |> ignore
     corner_card_node(g, fn() { r }, inset=fn() { pad })
     body(g)

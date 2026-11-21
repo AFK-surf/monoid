@@ -167,7 +167,7 @@ static const char *shader_src =
     "#ifndef ONE_KIND\n"
     "#define ONE_KIND -1\n"
     "#endif\n"
-    "cbuffer U : register(b0) { float2 vp; float scale; float pad; };\n"
+    "cbuffer U : register(b0) { float2 vp; float scale; float pad; float2 origin; float2 _pad2; };\n"
     "// glass (src/ui/glass.mbt): where a point is in the blurred copy under it (uv = p * gmap.xy + gmap.zw, kept in guvc),\n"
     "// a liquid group's bounds, shapes, corners (x of each), how many\n"
     "cbuffer G : register(b1) { float4 gmap; float4 guvc; float4 ggb; float4 gshape[8]; float4 grad[8]; float4 gmisc; float4 gad_box[16]; float4 gad_meta; };\n"
@@ -195,7 +195,7 @@ static const char *shader_src =
     "                         (vid == 2 || vid == 3 || vid == 5) ? 1.0 : 0.0);\n"
     "  int kind = int(I.p.y + 0.5);\n"
     "  bool merged_liquid = kind == 6 && I.pd.w > 0.0;\n"
-    "  float grow = kind == 2 ? I.p.w * 3.0 + 2.0 : (kind == 6 && I.pd.w <= 0.0) ? 2.0 : ((kind == 0 || kind == 4 || kind == 5) ? 1.0 : 0.0);\n"
+    "  float grow = kind == 2 ? I.p.w * 3.0 + 2.0 : (kind == 6 && I.pd.w <= 0.0) ? 2.0 : ((kind == 0 || kind == 4 || kind == 5 || kind == 8) ? 1.0 : 0.0);\n"
     "  float2 pos = I.rect.xy - grow + corner * (I.rect.zw + 2.0 * grow);\n"
     "  if (merged_liquid) pos = lerp(ggb.xy, ggb.zw, corner);\n"
     "  // the pieces of shapes (kind 12): nothing drawn\n"
@@ -206,7 +206,8 @@ static const char *shader_src =
     "  if (I.rot.x != 0.0) { float2 d = pos - I.rot.yz; float c = cos(I.rot.x), s = sin(I.rot.x);\n"
     "    at = I.rot.yz + float2(c * d.x - s * d.y, s * d.x + c * d.y); }\n"
     "  VOut o;\n"
-    "  o.pos = float4(at.x / vp.x * 2.0 - 1.0, 1.0 - at.y / vp.y * 2.0, 0.0, 1.0);\n"
+    "  float2 rel = at - origin;\n"
+    "  o.pos = float4(rel.x / vp.x * 2.0 - 1.0, 1.0 - rel.y / vp.y * 2.0, 0.0, 1.0);\n"
     "  o.p = pos; o.cp = I.rot.w > 0.5 ? at : pos; o.rect = I.rect; o.prm = I.p; o.color = I.color; o.c2 = I.c2; o.clip = I.clip; o.pd = I.pd; o.rc = I.rc; o.rs = I.rs; o.rr = I.rr;\n"
     "  if (kind == 1) o.prm.x = I.rot.x;\n"
     "  if (kind == 4 && I.pd.z > 0.5) o.pd.x = I.rot.w;\n"
@@ -456,25 +457,21 @@ static const char *shader_src =
     "    float ext_cov = mb_contour_int(max(outward + 0.5, 0.0), edgeW)\n"
     "                  - mb_contour_int(max(outward - 0.5, 0.0), edgeW);\n"
     "    if (materialAlpha < 0.01 && ext_cov < 0.01) discard;\n"
-    "    bool is_clear = (I.prm.w <= 0.1 && col.a < 0.12);\n"
+    "    float regMix = smoothstep(0.105, 0.305, col.a);\n"
+    "    bool is_clear = (regMix <= 0.0);\n"
     "    bool is_adaptive = I.c2.z < -0.5;\n"
     "    float spot_raw = is_adaptive ? (-I.c2.z - 1.0) : I.c2.z;\n"
-    "    bool is_dark = (!is_clear && col.a >= 0.05 && luma(col.rgb) < 0.35);\n"
+    "    bool is_dark = (!is_clear && luma(col.rgb) < 0.35);\n"
     "    float inward = max(-d, 0.0);\n"
     "    float rawBevel = max(I.c2.y, 0.0);\n"
     "    float rawAmount = max(I.pd.y, 0.0);\n"
-    "    float bevel;\n"
-    "    float amount;\n"
-    "    if (!is_clear) {\n"
-    "      // refractionFitsShape = true (iOS 27 regular)\n"
-    "      bevel = min(rawBevel, 0.5 * halfMinor);\n"
-    "      amount = min(rawAmount, halfMinor);\n"
-    "    } else {\n"
-    "      // refractionFitsShape = false (iOS 27 clear)\n"
-    "      float lensScale = min(1.0, halfMinor / max(rawBevel, 0.001));\n"
-    "      bevel = rawBevel * lensScale;\n"
-    "      amount = rawAmount * lensScale;\n"
-    "    }\n"
+    "    float lensScale = min(1.0, halfMinor / max(rawBevel, 0.001));\n"
+    "    float clearBevel = rawBevel * lensScale;\n"
+    "    float clearAmount = rawAmount * lensScale;\n"
+    "    float regBevel = min(rawBevel, 0.5 * halfMinor);\n"
+    "    float regAmount = min(rawAmount, halfMinor);\n"
+    "    float bevel = lerp(clearBevel, regBevel, regMix);\n"
+    "    float amount = lerp(clearAmount, regAmount, regMix);\n"
     "    float2 surfaceNormal = float2(0.0, 0.0);\n"
     "    float shortening = 0.0;\n"
     "    float2 disp = float2(0.0, 0.0);\n"
@@ -614,6 +611,18 @@ static const char *shader_src =
     "        contourStr = 0.43; contourDirAmt = 0.77; bevelShadowStr = 0.036;\n"
     "        glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;\n"
     "      }\n"
+    "      if (regMix < 1.0) {\n"
+    "        emission = lerp(float3(0.126, 0.126, 0.126), emission, regMix);\n"
+    "        transmittance = lerp(0.90, transmittance, regMix);\n"
+    "        lift = lerp(0.10, lift, regMix);\n"
+    "        chromaGain = lerp(1.0, chromaGain, regMix);\n"
+    "        contourStr = lerp(0.25, contourStr, regMix);\n"
+    "        contourDirAmt = lerp(0.77, contourDirAmt, regMix);\n"
+    "        bevelShadowStr = lerp(0.04, bevelShadowStr, regMix);\n"
+    "        glintLum = lerp(1.2, glintLum, regMix);\n"
+    "        glintFaceGain = lerp(0.25, glintFaceGain, regMix);\n"
+    "        glintVib = lerp(1.5, glintVib, regMix);\n"
+    "      }\n"
     "    }\n"
     "    [branch] if (fogT > 0.001) {\n"
     "      float r1 = fogT * 2.6;\n"
@@ -684,6 +693,39 @@ static const char *shader_src =
     "    float extA = ext_cov * contourStr * contourDir * I.c2.w;\n"
     "    float visA = materialAlpha * I.c2.w;\n"
     "    return float4(result * visA, saturate(visA + extA)) * cover;\n"
+    "  }\n"
+    "  if (kind == 8) {\n"
+    "    float4 s_rr = max(max(I.rr.x, I.rr.y), max(I.rr.z, I.rr.w)) > 0.0 ? I.rr : I.prm.xxxx;\n"
+    "    float d = sd_rr(p, I.rect, s_rr);\n"
+    "    float materialAlpha = saturate(0.5 - d * scale);\n"
+    "    if (materialAlpha < 0.005) discard;\n"
+    "    float halfMinor = max(min(I.rect.z, I.rect.w) * 0.5, 1.0);\n"
+    "    float inward = max(-d, 0.0);\n"
+    "    float rawBevel = max(I.c2.y, 0.0);\n"
+    "    float rawAmount = max(I.c2.z, 0.0);\n"
+    "    float lensScale = min(1.0, halfMinor / max(rawBevel, 0.001));\n"
+    "    float bevel = rawBevel * lensScale;\n"
+    "    float amount = rawAmount * lensScale;\n"
+    "    float2 disp = float2(0.0, 0.0);\n"
+    "    if (inward < bevel && bevel > 0.001 && amount > 0.001) {\n"
+    "      float e = 0.5;\n"
+    "      float2 grad = float2(\n"
+    "        sd_rr(p + float2(e, 0.0), I.rect, s_rr) - sd_rr(p - float2(e, 0.0), I.rect, s_rr),\n"
+    "        sd_rr(p + float2(0.0, e), I.rect, s_rr) - sd_rr(p - float2(0.0, e), I.rect, s_rr)\n"
+    "      ) / (2.0 * e);\n"
+    "      float gradLen = length(grad);\n"
+    "      float2 surfaceNormal = gradLen > 0.0001 ? grad / gradLen : float2(0.0, 0.0);\n"
+    "      float shortening = sqrt(saturate(gradLen));\n"
+    "      float bevelX = 1.0 - saturate(inward / bevel);\n"
+    "      float mag = amount * (1.0 - sqrt(max(1.0 - bevelX * bevelX, 0.0))) * shortening;\n"
+    "      disp = surfaceNormal * (-mag);\n"
+    "    }\n"
+    "    float2 uv = (p + disp) * gmap.xy + gmap.zw;\n"
+    "    float4 fg = float4(0.0, 0.0, 0.0, 0.0);\n"
+    "    if (uv.x >= guvc.x && uv.x <= guvc.z && uv.y >= guvc.y && uv.y <= guvc.w) {\n"
+    "      fg = bd.SampleLevel(samp, uv, 0);\n"
+    "    }\n"
+    "    return fg * (materialAlpha * col.a) * cover;\n"
     "  }\n"
     "  float2 hs = I.rect.zw * 0.5;\n"
     "  float2 c = I.rect.xy + hs;\n"
@@ -1252,7 +1294,7 @@ void *mb_render_views_visual_of(int wid) {
 #define MB_KIND_LIQUID_SINGLE 13
 #define MB_KINDS 14
 static int has_own_ps(int kind) {
-  return (kind >= 0 && kind <= 7) || kind == 10 || kind == 11 || kind == MB_KIND_LIQUID_SINGLE;
+  return (kind >= 0 && kind <= 8) || kind == 10 || kind == 11 || kind == MB_KIND_LIQUID_SINGLE;
 }
 static ID3D11PixelShader *kps[MB_KINDS];
 static HANDLE kinds_thread;
@@ -1324,7 +1366,7 @@ static void make_pipeline(void) {
   gp->Release();
   ap->Release();
 
-  D3D11_BUFFER_DESC ud = {16, D3D11_USAGE_DEFAULT, D3D11_BIND_CONSTANT_BUFFER, 0, 0, 0};
+  D3D11_BUFFER_DESC ud = {32, D3D11_USAGE_DEFAULT, D3D11_BIND_CONSTANT_BUFFER, 0, 0, 0};
   dev->CreateBuffer(&ud, NULL, &ubuf);
   D3D11_BUFFER_DESC pd = {32 + sizeof(MBContained), D3D11_USAGE_DEFAULT, D3D11_BIND_CONSTANT_BUFFER, 0, 0, 0};
   dev->CreateBuffer(&pd, NULL, &pbuf);
@@ -1576,6 +1618,28 @@ static level level_tex(DXGI_FORMAT format, int w, int h) {
 
 static void glass_free(void);
 static void slots_invalidate(void);
+static level lens_lv[2];
+static int lens_w, lens_h;
+
+static int ensure_lens_levels(int w, int h) {
+  if (lens_lv[0].t && lens_w >= w && lens_h >= h) return 1;
+  for (int j = 0; j < 2; j++) {
+    if (lens_lv[j].srv) lens_lv[j].srv->Release();
+    if (lens_lv[j].rt) lens_lv[j].rt->Release();
+    if (lens_lv[j].t) lens_lv[j].t->Release();
+    lens_lv[j] = level{};
+  }
+  lens_w = w > lens_w ? w : lens_w;
+  lens_h = h > lens_h ? h : lens_h;
+  for (int j = 0; j < 2; j++) {
+    lens_lv[j] = level_tex(DXGI_FORMAT_B8G8R8A8_UNORM, lens_w, lens_h);
+    if (!lens_lv[j].t || !lens_lv[j].rt || !lens_lv[j].srv) {
+      glass_free();
+      return 0;
+    }
+  }
+  return 1;
+}
 
 static int ensure_levels(int w, int h) {
   if (lv[0].t && lv_w >= w && lv_h >= h) return 1;
@@ -1875,6 +1939,13 @@ static void glass_free(void) {
     ad_forget(&render_wins[k]);
   }
   lv_w = lv_h = 0;
+  for (int j = 0; j < 2; j++) {
+    if (lens_lv[j].srv) lens_lv[j].srv->Release();
+    if (lens_lv[j].rt) lens_lv[j].rt->Release();
+    if (lens_lv[j].t) lens_lv[j].t->Release();
+    lens_lv[j] = level{};
+  }
+  lens_w = lens_h = 0;
 }
 
 // Glass's levels (as big as the largest capture yet) let go of once this many frames in a row drew no glass (a sheet
@@ -2475,7 +2546,7 @@ static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count
   if (part) cut = *part;
   else ctx->ClearRenderTargetView(target, clear);
   if (count <= 0 && !part) return;
-  struct { float vp[2]; float scale; float pad; } u = {{(float)vw, (float)vh}, (float)vscale, 0};
+  struct { float vp[2]; float scale; float pad; float origin[2]; float pad2[2]; } u = {{(float)vw, (float)vh}, (float)vscale, 0, {0, 0}, {0, 0}};
   ctx->UpdateSubresource(ubuf, 0, NULL, &u, 0, 0);
   memset(&gu, 0, sizeof gu);
   ad_fill_gu(rw);
@@ -2545,11 +2616,115 @@ static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count
     }
     // holes for native views (kind 9) apart, written without blending: transparent there
     int kind = (int)(f[start * MB_INST + 5] + 0.5f), hole = kind == 9, own = has_own_ps(kind);
+    if (kind == 8) {
+      int32_t child_n = (int32_t)(f[start * MB_INST + 12] + 0.5f);
+      if (child_n < 0) child_n = 0;
+      if (start + 1 + child_n > count) child_n = count - start - 1;
+      const float *hb = f + (size_t)start * MB_INST;
+      if (child_n <= 0 || hb[11] <= 0.001f || hb[2] <= 0.0f || hb[3] <= 0.0f) {
+        start += 1 + child_n;
+        continue;
+      }
+      glass_drawn = 1;
+      float sc_f = (float)vscale;
+      float blur_pt = fmaxf(hb[7], 0.0f);
+      float refr_pt = fmaxf(hb[14], 0.0f);
+      float margin = blur_pt * 3.0f + refr_pt + 4.0f;
+      float x0 = hb[0], y0 = hb[1], x1 = hb[0] + hb[2], y1 = hb[1] + hb[3];
+      for (int32_t ci = start + 1; ci < start + 1 + child_n; ci++) {
+        const float *cb_f = f + (size_t)ci * MB_INST;
+        int ck = (int)(cb_f[5] + 0.5f);
+        if (ck == 12 || cb_f[2] <= 0.0f || cb_f[3] <= 0.0f) continue;
+        if (cb_f[0] < x0) x0 = cb_f[0];
+        if (cb_f[1] < y0) y0 = cb_f[1];
+        if (cb_f[0] + cb_f[2] > x1) x1 = cb_f[0] + cb_f[2];
+        if (cb_f[1] + cb_f[3] > y1) y1 = cb_f[1] + cb_f[3];
+      }
+      float ox = floorf((x0 - margin) * sc_f) / sc_f;
+      float oy = floorf((y0 - margin) * sc_f) / sc_f;
+      int lpw = (int)ceilf(((x1 + margin) - ox) * sc_f);
+      int lph = (int)ceilf(((y1 + margin) - oy) * sc_f);
+      int max_w = pw > 2048 ? pw : 2048;
+      int max_h = ph > 2048 ? ph : 2048;
+      if (lpw < 1) lpw = 1;
+      if (lph < 1) lph = 1;
+      if (lpw > max_w) lpw = max_w;
+      if (lph > max_h) lph = max_h;
+      if (!ensure_lens_levels(lpw, lph)) {
+        start += 1 + child_n;
+        continue;
+      }
+      // Pass 1: render children into lens_lv[0]
+      ID3D11ShaderResourceView *none[3] = {NULL, NULL, NULL};
+      ctx->PSSetShaderResources(0, 3, none);
+      float zclear[4] = {0, 0, 0, 0};
+      ctx->OMSetRenderTargets(1, &lens_lv[0].rt, NULL);
+      ctx->ClearRenderTargetView(lens_lv[0].rt, zclear);
+      D3D11_VIEWPORT lvp = {0, 0, (float)lpw, (float)lph, 0, 1};
+      ctx->RSSetViewports(1, &lvp);
+      ctx->RSSetState(raster);
+      struct { float vp[2]; float scale; float pad; float origin[2]; float pad2[2]; } lu = {
+        {(float)lpw / sc_f, (float)lph / sc_f}, sc_f, 0, {ox, oy}, {0, 0}};
+      ctx->UpdateSubresource(ubuf, 0, NULL, &lu, 0, 0);
+      ctx->PSSetShaderResources(0, 1, &atlas_srv);
+      ctx->PSSetShaderResources(2, 1, &atlas_srv);
+      ctx->PSSetShaderResources(3, 1, &segs_srv);
+      int32_t cs = start + 1, cend_all = start + 1 + child_n;
+      while (cs < cend_all) {
+        int ctid = (int)f[cs * MB_INST + 20];
+        int ck = (int)(f[cs * MB_INST + 5] + 0.5f);
+        if (ck == 5 || ck == 6 || ck == 8 || ck == 9 || ck == 12 || ctid < 0) {
+          cs++;
+          continue;
+        }
+        int cown = has_own_ps(ck);
+        int32_t ce = cs + 1;
+        while (ce < cend_all && (int)f[ce * MB_INST + 20] == ctid) {
+          int kk = (int)(f[ce * MB_INST + 5] + 0.5f);
+          if (kk == 5 || kk == 6 || kk == 8 || kk == 9 || kk == 12) break;
+          if (cown ? kk != ck : has_own_ps(kk)) break;
+          ce++;
+        }
+        ID3D11ShaderResourceView *ct = ctid > MB_STREAM_TEX ? (ID3D11ShaderResourceView *)mb_stream_srv(ctid - MB_STREAM_TEX)
+                                      : ctid ? (ID3D11ShaderResourceView *)mb_image_srv(ctid) : atlas_srv;
+        if (ctid > MB_STREAM_TEX && !ct) { cs = ce; continue; }
+        if (ctid > 0 && ctid <= MB_STREAM_TEX && !ct) encode_missing = 1;
+        ctx->PSSetShaderResources(1, 1, ct ? &ct : &atlas_srv);
+        ctx->PSSetShader(cown ? kind_ps(ck) : ps, NULL, 0);
+        ctx->DrawInstanced(6, (UINT)(ce - cs), 0, (UINT)cs);
+        cs = ce;
+      }
+      // Pass 2: separable Gaussian blur in BGRA8
+      float sp = blur_pt * sc_f;
+      if (sp > 0.25f) {
+        ctx->OMSetBlendState(NULL, NULL, 0xffffffff);
+        ctx->IASetInputLayout(NULL);
+        ctx->VSSetShader(pvs, NULL, 0);
+        ctx->PSSetShader(pps, NULL, 0);
+        post_pass(&lens_lv[0], lpw, lph, &lens_lv[1], lpw, lph, 2, sp, 1.0f, 0.0f);
+        post_pass(&lens_lv[1], lpw, lph, &lens_lv[0], lpw, lph, 2, sp, 0.0f, 1.0f);
+      }
+      // Pass 3: composite refracted & SDF-clipped foreground lens onto target
+      ctx->UpdateSubresource(ubuf, 0, NULL, &u, 0, 0);
+      memset(&gu, 0, sizeof gu);
+      float W = (float)lens_lv[0].w, H = (float)lens_lv[0].h;
+      gu.map[0] = sc_f / W; gu.map[1] = sc_f / H;
+      gu.map[2] = -(ox * sc_f) / W; gu.map[3] = -(oy * sc_f) / H;
+      gu.uvc[0] = 0.5f / W; gu.uvc[1] = 0.5f / H;
+      gu.uvc[2] = ((float)lpw - 0.5f) / W; gu.uvc[3] = ((float)lph - 0.5f) / H;
+      gsrv = lens_lv[0].srv;
+      main_state(target, pw, ph);
+      ctx->PSSetShader(kind_ps(8), NULL, 0);
+      ctx->DrawInstanced(6, 1, 0, (UINT)start);
+      bound = 0;
+      start += 1 + child_n;
+      continue;
+    }
     // (kinds without their own pixel shader one run, as before)
     end = start + 1;
     while (end < count && (int)f[end * MB_INST + 20] == tid) {
       int k = (int)(f[end * MB_INST + 5] + 0.5f);
-      if ((k == 9) != hole || (own ? k != kind : has_own_ps(k))) break;
+      if (k == 8 || (k == 9) != hole || (own ? k != kind : has_own_ps(k))) break;
       end++;
     }
     // (a hole's image is its view's, src/hostapi/host.mbt view_tex_base + its id: the view is under the canvas here)
