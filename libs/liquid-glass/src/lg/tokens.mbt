@@ -241,7 +241,15 @@ pub let blur_band_tint : Double = 0.8
 ///|
 /// Words `size` high at `weight`, on one line unless `wrap` (at most `lines` of them where `lines` > 0).
 pub fn words_at(size : Double, weight? : Int = 400, wrap? : Bool = false, lines? : Int = 0) -> @view.WordsLook {
-  { size, weight, line: size * 1.4, wrap, tracking: Points(0.0), balance: false, max_lines: lines }
+  {
+    size,
+    weight,
+    line: size * 1.4,
+    wrap,
+    tracking: if size >= 18.0 { Points(-0.25) } else { Points(0.0) },
+    balance: false,
+    max_lines: lines,
+  }
 }
 
 ///|

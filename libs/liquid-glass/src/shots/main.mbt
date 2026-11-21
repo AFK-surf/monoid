@@ -197,6 +197,10 @@ fn main {
     println("shots: MBUI_LG_SHOTS=<dir> says where the pictures go")
     return
   }
+  let font = @ui.env("MBUI_LG_FONT")
+  if font != "" {
+    ignore(@ui.face_add(@hostapi.face_ui, font))
+  }
   let only = @ui.env("MBUI_LG_ONLY")
   let page_w = env_double("MBUI_LG_W", 1280.0)
   let page_h = env_double("MBUI_LG_H", 1040.0)

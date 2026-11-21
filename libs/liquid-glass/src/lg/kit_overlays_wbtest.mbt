@@ -929,3 +929,77 @@ test "liquid_select_node turns its chevron a half turn and liquid_disclosure_nod
   assert_true(select_rest < 0.01)
   assert_true((select_open - ovl_test_pi).abs() < 0.01 && select_open <= 3.2, msg="select turned \{select_open}")
 }
+
+///|
+/// Declared mid-flight probe moments (ms) for `liquid_menu_node` liquid morph tests.
+let ovl_morph_open_probe_ms : Double = 40.0
+
+///|
+let ovl_morph_close_probe_ms : Double = 60.0
+
+///|
+/// Deterministic snapshot of `liquid_menu_node` capillary liquid morph across opening, rest, closing, and unmount.
+fn ovl_menu_morph_snapshot() -> (Int, Double, Int, Int, Int, Int, Array[String]) raise {
+  let open = @signals.signal(false)
+  let t = ovl_case(fn(page, host) {
+    liquid_menu_node(
+      page,
+      host,
+      fn() { open.get() },
+      fn(v) { open.set(v) },
+      fn() { "Actions" },
+      ovl_test_trigger("Actions"),
+      fn() {
+        [
+          LiquidMenuEntry::item(label="Duplicate", shortcut="⌘D", on_select=fn() {  }),
+          LiquidMenuEntry::separator(),
+          LiquidMenuEntry::item(label="Delete", destructive=true, on_select=fn() {  }),
+        ]
+      },
+      menu_label=fn() { "Morph Menu" },
+    )
+    |> ignore
+  })
+  let r = fn(x : Double) { (x * 100.0).round() / 100.0 }
+  let snap_glass = fn() {
+    t.drawn_glass().map(fn(e) { "\{r(e.0)},\{r(e.1)},\{r(e.2)},\{r(e.3)}" }).join(" ")
+  }
+  let snaps : Array[String] = []
+  t.act(Button, Activate, label="Actions")
+  // Mid-flight opening (t = 40ms): trigger + blooming menu shell (zero extra glass instances)
+  t.run_for(ovl_morph_open_probe_ms)
+  let mid_glass = t.drawn_glass().length()
+  let mid_menu_w = t.drawn_glass().fold(init=0.0, fn(mx, g) { if g.2 > mx { g.2 } else { mx } })
+  snaps.push(snap_glass())
+  // Settled open (t = springs_out): trigger + 1 clean menu shell, zero faults
+  t.run_for(springs_out)
+  let rest_glass = t.drawn_glass().length()
+  let rest_menu_w = t.get(Menu, label="Morph Menu").rect.2
+  assert_no_nested_glass(t, "liquid_menu_morph rest")
+  assert_eq(t.audit(), [])
+  snaps.push(snap_glass())
+  // Mid-flight closing (t = 60ms after Escape): glass shell still contracting smoothly
+  t.key(@ui.key_escape)
+  t.run_for(ovl_morph_close_probe_ms)
+  let closing_glass = t.drawn_glass().length()
+  snaps.push(snap_glass())
+  // Past leave duration: cleanly unmounted (only trigger glass remains, Menu role count == 0)
+  t.run_for(ovl_morph_leave_ms + a_frame)
+  let closed_glass = t.drawn_glass().length()
+  let closed_menus = t.all(Menu, label="Morph Menu").length()
+  snaps.push(snap_glass())
+  (mid_glass, mid_menu_w / rest_menu_w, rest_glass, closing_glass, closed_glass, closed_menus, snaps)
+}
+
+///|
+test "liquid_menu_node liquid morph blooms cleanly from trigger, settles with 0 extra glass, closes smoothly, and is FPS-invariant" {
+  let (mid_glass, mid_ratio, rest_glass, closing_glass, closed_glass, closed_menus, snaps) = ovl_menu_morph_snapshot()
+  assert_eq(mid_glass, 2)
+  assert_true(mid_ratio < 0.90, msg="expected menu shell scaled < 0.90 at 40ms, got \{mid_ratio}")
+  assert_eq(rest_glass, 2)
+  assert_eq(closing_glass, 2)
+  assert_eq(closed_glass, 1)
+  assert_eq(closed_menus, 0)
+  let (_, _, _, _, _, _, snaps2) = ovl_menu_morph_snapshot()
+  assert_eq(snaps, snaps2)
+}

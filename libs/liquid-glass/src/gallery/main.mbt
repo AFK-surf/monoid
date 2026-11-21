@@ -10,5 +10,8 @@ fn main {
   let name = @ui.env("MBUI_LG_PAGE")
   let first = if name == "" { "library" } else { name }
   let chrome = @ui.env("MBUI_LG_CHROME") != "0"
-  @ui.run_tree("Liquid Glass", fn(root) { @pages.gallery(root, first, chrome~) })
+  @ui.run_tree("Liquid Glass", fn(root) {
+    give_ui_face()
+    @pages.gallery(root, first, chrome~)
+  })
 }

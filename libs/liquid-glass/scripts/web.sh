@@ -7,9 +7,14 @@
 set -e
 D="$(cd "$(dirname "$0")" && pwd)"
 A=$(cd "$D/.." && pwd)
+REPO=$(cd "$A/../.." && pwd)
 MBUI_DIR=$(cd "$A/../mbui" && pwd)
 out=$(mkdir -p "${1:-out/web}" && cd "${1:-out/web}" && pwd)
 APP=gallery MBUI_APP_MOD="$A" bash "$MBUI_DIR/scripts/web.sh" bundle "$out"
+mkdir -p "$out/assets"
+inter=$(ls "$REPO"/node_modules/.pnpm/@fontsource-variable+inter@*/node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2 2>/dev/null | tail -1)
+[ -n "$inter" ] || inter="$REPO/website/ui/assets/fonts/Inter-Regular.woff2"
+[ ! -f "$inter" ] || cp "$inter" "$out/assets/inter.woff2"
 cat > "$out/index.html" <<'HTML'
 <!doctype html>
 <html lang="en">
@@ -43,12 +48,16 @@ cat > "$out/index.html" <<'HTML'
       history.replaceState(null, "", `${location.pathname}?${q}${location.hash}`);
     }
     document.documentElement.classList.toggle("dark", q.get("MBUI_DARK") === "1");
-    for (const src of ["host.js", "app.js"]) {
+    const assets = (globalThis.__mbassets = globalThis.__mbassets || {});
+    const fontDone = fetch("assets/inter.woff2")
+      .then((r) => (r.ok ? r.arrayBuffer() : null), () => null)
+      .then((b) => { if (b) assets["inter.woff2"] = new Uint8Array(b); });
+    const load = (src) => new Promise((ok, no) => {
       const s = document.createElement("script");
-      s.src = src;
-      s.async = false;
+      s.src = src; s.onload = ok; s.onerror = no;
       document.body.appendChild(s);
-    }
+    });
+    Promise.all([load("host.js"), fontDone]).then(() => load("app.js"));
   })();
 </script>
 </body>

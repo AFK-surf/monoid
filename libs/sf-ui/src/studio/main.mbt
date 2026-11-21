@@ -27,6 +27,7 @@ fn main {
   @ui.run_tree(
     "ui.monoid — Standard UI",
     fn(root) {
+      give_ui_face()
       @sf.set_dark(Some(dark))
       if accent != "" {
         @sf.set_accent(accent)

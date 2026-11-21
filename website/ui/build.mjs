@@ -247,9 +247,28 @@ function expandTemplate(content, ctx, shotSizes, shotCounter, pendingShots) {
   return out;
 }
 
+function findInterWoff2(compAppDir) {
+  const fromComp = resolve(compAppDir, "assets/inter.woff2");
+  if (existsSync(fromComp)) return fromComp;
+  const pnpmDir = resolve(REPO, "node_modules/.pnpm");
+  if (existsSync(pnpmDir)) {
+    const entries = readdirSync(pnpmDir)
+      .filter((e) => e.startsWith("@fontsource-variable+inter@"))
+      .sort();
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const p = resolve(pnpmDir, entries[i], "node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2");
+      if (existsSync(p)) return p;
+    }
+  }
+  const fallback = resolve(ASSETS_DIR, "fonts/Inter-Regular.woff2");
+  return existsSync(fallback) ? fallback : "";
+}
+
 function renderLiquidGlassAppHtml(lgAppDir) {
   const hostSrc = withVersion("host.js", resolve(lgAppDir, "host.js"));
   const appSrc = withVersion("app.js", resolve(lgAppDir, "app.js"));
+  const fontPath = resolve(lgAppDir, "assets/inter.woff2");
+  const fontSrc = existsSync(fontPath) ? withVersion("assets/inter.woff2", fontPath) : "";
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -296,11 +315,19 @@ function renderLiquidGlassAppHtml(lgAppDir) {
       document.getElementById("nogl").hidden = false;
       return;
     }
-    [${JSON.stringify(hostSrc)}, ${JSON.stringify(appSrc)}].forEach(function (src) {
-      var s = document.createElement("script");
-      s.src = src;
-      s.async = false;
-      document.body.appendChild(s);
+    var assets = (globalThis.__mbassets = globalThis.__mbassets || {});
+    var load = function (src) {
+      return new Promise(function (resolve, reject) {
+        var s = document.createElement("script");
+        s.src = src;
+        s.onload = resolve;
+        s.onerror = reject;
+        document.body.appendChild(s);
+      });
+    };
+    var fontDone = ${fontSrc ? `fetch(${JSON.stringify(fontSrc)}).then(function (r) { return r.ok ? r.arrayBuffer() : null; }, function () { return null; }).then(function (b) { if (b) assets["inter.woff2"] = new Uint8Array(b); })` : "Promise.resolve()"};
+    Promise.all([load(${JSON.stringify(hostSrc)}), fontDone]).then(function () {
+      return load(${JSON.stringify(appSrc)});
     });
   })();
 </script>
@@ -312,6 +339,8 @@ function renderLiquidGlassAppHtml(lgAppDir) {
 function renderStandardAppHtml(stdAppDir) {
   const hostSrc = withVersion("host.js", resolve(stdAppDir, "host.js"));
   const appSrc = withVersion("app.js", resolve(stdAppDir, "app.js"));
+  const fontPath = resolve(stdAppDir, "assets/inter.woff2");
+  const fontSrc = existsSync(fontPath) ? withVersion("assets/inter.woff2", fontPath) : "";
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -358,11 +387,19 @@ function renderStandardAppHtml(stdAppDir) {
       document.getElementById("nogl").hidden = false;
       return;
     }
-    [${JSON.stringify(hostSrc)}, ${JSON.stringify(appSrc)}].forEach(function (src) {
-      var s = document.createElement("script");
-      s.src = src;
-      s.async = false;
-      document.body.appendChild(s);
+    var assets = (globalThis.__mbassets = globalThis.__mbassets || {});
+    var load = function (src) {
+      return new Promise(function (resolve, reject) {
+        var s = document.createElement("script");
+        s.src = src;
+        s.onload = resolve;
+        s.onerror = reject;
+        document.body.appendChild(s);
+      });
+    };
+    var fontDone = ${fontSrc ? `fetch(${JSON.stringify(fontSrc)}).then(function (r) { return r.ok ? r.arrayBuffer() : null; }, function () { return null; }).then(function (b) { if (b) assets["inter.woff2"] = new Uint8Array(b); })` : "Promise.resolve()"};
+    Promise.all([load(${JSON.stringify(hostSrc)}), fontDone]).then(function () {
+      return load(${JSON.stringify(appSrc)});
     });
   })();
 </script>
@@ -448,6 +485,11 @@ function buildMbuiEmbeds(out, skipMbui) {
     },
     stdio: "inherit",
   });
+  const interWoff2 = findInterWoff2(compAppDir);
+  if (interWoff2) {
+    mkdirSync(resolve(lgAppDir, "assets"), { recursive: true });
+    cpSync(interWoff2, resolve(lgAppDir, "assets/inter.woff2"));
+  }
   writeFileSync(resolve(lgAppDir, "index.html"), renderLiquidGlassAppHtml(lgAppDir));
 
   const ghosttySrc = resolve(compAppDir, "ghostty-vt.wasm");
@@ -467,6 +509,10 @@ function buildMbuiEmbeds(out, skipMbui) {
     },
     stdio: "inherit",
   });
+  if (interWoff2) {
+    mkdirSync(resolve(stdAppDir, "assets"), { recursive: true });
+    cpSync(interWoff2, resolve(stdAppDir, "assets/inter.woff2"));
+  }
   writeFileSync(resolve(stdAppDir, "index.html"), renderStandardAppHtml(stdAppDir));
   const stdGhosttyDst = resolve(stdAppDir, "ghostty-vt.wasm");
   if (existsSync(ghosttySrc) && !existsSync(stdGhosttyDst)) {

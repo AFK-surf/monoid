@@ -1,6 +1,7 @@
 import {
   "mbui/film",
   "mbui/host",
+  "mbui/hostapi",
   "mbui/ui",
   "liquid-glass/lg",
   "liquid-glass/pages",

@@ -20,27 +20,25 @@ pub fn liquid_popover_node(
   let pop = @headless.Popover::new(open, set_open)
   let (side, along) = ovl_beside_of(placement)
   let trigger = pop.trigger(parent, trigger_label, trigger_look, made_for=loc)
+  ovl_attach_trigger_recoil(trigger, open)
   pop.layer(
     host,
     content_label,
-    leave=@motion.pop_out_ms,
+    leave=ovl_morph_leave_ms,
     made_for=loc,
     fn(v, opener) {
-      let (look, _) = @motion.overlay_presence(v, enter=@motion.pop_in, exit=@motion.pop_out)
       match opener {
         Some(op) => v.beside(op.id(), side~, along~, offset=ovl_float_gap, padding=ovl_float_pad) |> ignore
         None => ()
       }
-      v
-      .width(Is(Some(width)))
-      .padding(Is((ovl_popover_pad, ovl_popover_pad, ovl_popover_pad, ovl_popover_pad)))
-      .radius(Is(ovl_popover_radius))
-      .shadow(Is(shadow_default))
-      .glass(By(fn() { Some(ovl_panel_glass()) }))
-      .alpha(By(fn() { look().alpha }))
-      .scale(By(fn() { look().sx }), about=FromBeside)
+      v.width(Is(Some(width))) |> ignore
+      ovl_attach_liquid_morph(v, v, side, along, ovl_popover_radius, fn(content_box) {
+        content_box
+        .padding(Is((ovl_popover_pad, ovl_popover_pad, ovl_popover_pad, ovl_popover_pad)))
+        |> ignore
+        content_look(content_box)
+      })
       |> ignore
-      content_look(v)
     },
   )
   trigger
