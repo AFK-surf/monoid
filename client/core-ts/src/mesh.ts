@@ -36,8 +36,9 @@ export const DEVICE_KEY = "device";
 export const RENEW_MS = 5 * 60_000;
 export const CONNECT_TIMEOUT_MS = 10_000;
 /// How long a dial waits for its endpoint to get onto a relay before its CONNECT_TIMEOUT_MS counts all the same
-/// (`onARelay`), and how often it looks.
+/// (`onARelay`), and how often it looks: soon at first, as a relay is often reached within a few round trips, then less.
 export const ONTO_MAX_MS = 30_000;
+const ONTO_FIRST_RECHECK_MS = 10;
 const ONTO_RECHECK_MS = 250;
 export const PROBE_MS = 5_000;
 export const RACE_GRACE_MS = 1_000;
@@ -3355,13 +3356,14 @@ function relayStatus(endpoint: IrohEndpoint): string {
 /// gone off that network, or a web page that dials no address, carries them all the same: counted at once, every dial
 /// ran out before the endpoint was on a relay, and bound it anew, again and again (2026-11-18: the web and Android with
 /// all twelve relays down for up to 25 minutes, each dial `rebound`).
-function onARelay(endpoint: IrohEndpoint, noRelays: boolean): Effect.Effect<void> {
+export function onARelay(endpoint: Pick<IrohEndpoint, "relayStatus">, noRelays: boolean): Effect.Effect<void> {
   const on = () => {
     const status = endpoint.relayStatus();
     return noRelays || status.length === 0 || status.some((s) => s.connected);
   };
   return Effect.gen(function* () {
-    for (let waited = 0; waited < ONTO_MAX_MS && !on(); waited += ONTO_RECHECK_MS) yield* Effect.sleep(ONTO_RECHECK_MS);
+    let next = ONTO_FIRST_RECHECK_MS;
+    for (let waited = 0; waited < ONTO_MAX_MS && !on(); waited += next, next = Math.min(next * 2, ONTO_RECHECK_MS)) yield* Effect.sleep(next);
   });
 }
 

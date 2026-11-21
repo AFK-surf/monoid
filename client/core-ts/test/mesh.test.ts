@@ -16,7 +16,7 @@ import { HEDGE } from "../src/host.ts";
 import { loadAddon, nodeIroh } from "../src/hosts/node-iroh.ts";
 import { holdLanguage, t } from "../src/i18n.ts";
 import type { BindOptions, Iroh, IrohConnection } from "../src/iroh.ts";
-import { ADDRESSES_KEY, BULK_SLOW_BPS, clearlyBetter, CONNECT_TIMEOUT_MS, cost, DEVICE_KEY, DIRECT, DIRECT_HOLD_MAX_MS, EXPLORE_MS, fencedOf, HEDGE_FLOOR_MS, HOT_RELAYS, HOT_SETTLE_MS, KEEP_WAYS, LAN, Mesh, MIN_STAY_MS, PING_TIMEOUT_MS, PROBE_MS, RACE_GRACE_MS, REDIAL_MAIN_MS, RENEW_MS, RETIRE_MS, SPEED_FRESH_MS, SPEED_MIN_BYTES, SPEED_SAID_MS, SPEED_SLOW_MIN_BYTES, SPEED_SLOW_MIN_MS, TAILNET, TICK_MS, type CredentialSource, type Link } from "../src/mesh.ts";
+import { onARelay, ONTO_MAX_MS, ADDRESSES_KEY, BULK_SLOW_BPS, clearlyBetter, CONNECT_TIMEOUT_MS, cost, DEVICE_KEY, DIRECT, DIRECT_HOLD_MAX_MS, EXPLORE_MS, fencedOf, HEDGE_FLOOR_MS, HOT_RELAYS, HOT_SETTLE_MS, KEEP_WAYS, LAN, Mesh, MIN_STAY_MS, PING_TIMEOUT_MS, PROBE_MS, RACE_GRACE_MS, REDIAL_MAIN_MS, RENEW_MS, RETIRE_MS, SPEED_FRESH_MS, SPEED_MIN_BYTES, SPEED_SAID_MS, SPEED_SLOW_MIN_BYTES, SPEED_SLOW_MIN_MS, TAILNET, TICK_MS, type CredentialSource, type Link } from "../src/mesh.ts";
 import { claimBy, lockClaim } from "../src/lock.ts";
 import { TRACES } from "../src/route.ts";
 import { ALPN, LockUnconfirmed, MeshWire, STATION_MESH, meshEnv, presented, refusedForLock } from "../src/station/mesh-wire.ts";
@@ -1770,6 +1770,21 @@ sim("a_device_off_the_lan_it_kept_addresses_of_waits_for_its_relays_before_its_d
   assert.equal(s.net.tries.slice(tries).filter((t) => t.to === id && t.ips).length, 1, "dialled once at them");
   assert.equal((await request(s, link, head("/admin/api/overview"))).status, 200);
   await close(s, station, mesh);
+});
+
+/// A dial goes on as its endpoint gets onto a relay: a fixed 250 ms between looks held nine of a phone's eleven first
+/// dials for all of it. With no relay to be had it still looks rarely, and stops at ONTO_MAX_MS.
+sim("a_dial_goes_on_soon_after_its_endpoint_is_on_a_relay_and_looks_rarely_while_none_answers", async (s) => {
+  const started = s.time.now();
+  const on = started + 30;
+  await s.run(onARelay({ relayStatus: () => [{ url: "relay", connected: s.time.now() >= on }] }, false));
+  assert.ok(s.time.now() - on <= 40, `went on ${s.time.now() - on} ms after it was on a relay`);
+
+  let looks = 0;
+  const from = s.time.now();
+  await s.run(onARelay({ relayStatus: () => (looks++, [{ url: "relay", connected: false }]) }, false), ONTO_MAX_MS + 1_000);
+  assert.ok(s.time.now() - from >= ONTO_MAX_MS && s.time.now() - from <= ONTO_MAX_MS + 250, `gave up after ${s.time.now() - from} ms`);
+  assert.ok(looks <= 126, `looked ${looks} times`);
 });
 
 /// The same device back on that LAN, no relay reached yet: the addresses it kept answer, and nothing waits for a relay.
