@@ -370,7 +370,7 @@ fn pl_row_block(
 /// avoids a per-row `View::by_room` second layout pass.
 fn pl_account_quota_room_w(w : @view.View, page_w : () -> Double) -> () -> Double {
   let in_pane = w.lent(@sf.pane_lent).unwrap_or(false)
-  let wide = @sf.look_node(w) is Wide
+  let wide = @sf.look_node(w) == @sf.look_for(@sf.narrow_most)
   let card_pad = if in_pane { @sf.corner_inset } else { @sf.list_pad }
   fn() {
     let block_w = if wide {
