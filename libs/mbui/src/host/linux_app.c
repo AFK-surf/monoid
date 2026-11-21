@@ -64,6 +64,9 @@ typedef struct WinSlot {
   double press_x, press_y;
   guint32 press_time;
   int press_button;
+  // the last valid pointer position in the surface's coordinates, as a fallback for events without coordinates
+  double ptr_x, ptr_y;
+  int ptr_valid;
   // the last press that moved the window: when and where, for the second of a double click there
   guint32 drag_time;
   double drag_x, drag_y;
@@ -657,8 +660,40 @@ static gboolean on_key_here(GtkEventControllerKey *k, guint keyval, guint keycod
 // an event's place in the area's points
 static void area_point(GdkEvent *ev, double *x, double *y) {
   double sx = 0, sy = 0, nx = 0, ny = 0;
-  gdk_event_get_position(ev, &sx, &sy);
   GtkNative *native = gtk_widget_get_native(ws->area);
+  if (gdk_event_get_position(ev, &sx, &sy) && isfinite(sx) && isfinite(sy)) {
+    ws->ptr_x = sx;
+    ws->ptr_y = sy;
+    ws->ptr_valid = 1;
+  } else {
+    // GTK 4 scroll events carry no coordinates (gdk_event_get_position returns FALSE and writes NaN);
+    // query the seat pointer on the event's surface, falling back to the last valid surface position.
+    GdkSurface *surf = gdk_event_get_surface(ev);
+    if (!surf && native) surf = gtk_native_get_surface(native);
+    GdkSeat *seat = gdk_event_get_seat(ev);
+    if (!seat && surf) {
+      GdkDisplay *disp = gdk_surface_get_display(surf);
+      if (disp) seat = gdk_display_get_default_seat(disp);
+    }
+    GdkDevice *ptr = seat ? gdk_seat_get_pointer(seat) : NULL;
+    GdkModifierType mask = 0;
+    if (surf && ptr && gdk_surface_get_device_position(surf, ptr, &sx, &sy, &mask) && isfinite(sx) && isfinite(sy)) {
+      ws->ptr_x = sx;
+      ws->ptr_y = sy;
+      ws->ptr_valid = 1;
+    } else if (ws->ptr_valid) {
+      sx = ws->ptr_x;
+      sy = ws->ptr_y;
+    } else {
+      sx = 0;
+      sy = 0;
+    }
+  }
+  if (!native) {
+    *x = sx;
+    *y = sy;
+    return;
+  }
   gtk_native_get_surface_transform(native, &nx, &ny);
   graphene_point_t p = GRAPHENE_POINT_INIT((float)(sx - nx), (float)(sy - ny)), out;
   if (gtk_widget_compute_point(GTK_WIDGET(native), ws->area, &p, &out)) {
