@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [eecf04dd2](https://github.com/AFK-surf/monoid/commit/eecf04dd2c4a543344c687bd742e03a35d20fc20) fix(rig): resolve safe mode task-only station vouc | 2.64 | 3.55 | 14.39 | 36.42 | 54.96 | 31.91 | 64.4 | 98.42 | 125.04 |
 | [1eec0cd3c](https://github.com/AFK-surf/monoid/commit/1eec0cd3ce63e0c127930aa9b4136bd17e5c67ef) chore(mbui): tighten 66 sfapp motion whitelist bar | 2.63 | 3.55 | 14.39 | 36.42 | 54.95 | 31.91 | 64.4 | 98.22 | 116.41 |
 | [94dff2fc3](https://github.com/AFK-surf/monoid/commit/94dff2fc3c5c1d56e1d12bc77ebe824e7f9ca20f) fix(sf-ui): collapse blank lines in quote card two | 2.63 | 3.55 | 14.39 | 36.42 | 54.95 | 31.91 | 64.4 | 98.47 | 112.62 |
 | [895ac12da](https://github.com/AFK-surf/monoid/commit/895ac12dad37088d039749275a83586a980fe79d) fix(mbui): cut a picture's clipping nodes as the w | 2.63 | 3.55 | 14.39 | 36.42 | 54.95 | 31.91 | 64.4 | 98.42 | 119.56 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [1ec0f07a1](https://github.com/AFK-surf/monoid/commit/1ec0f07a174d2813c19136e9755ea5ca612fea62) fix(sf-ui,mbui): scale remaining text controls wit | 2.65 | 3.57 | 14.48 | 36.49 | 55.19 | 31.94 | 64.53 | 98.24 | 121.81 |
 | [30e2a95d3](https://github.com/AFK-surf/monoid/commit/30e2a95d3418054dde1a7448b347ec346ca0502f) refactor(profiles): decouple profiles from coding- | 2.65 | 3.57 | 14.48 | 36.49 | 55.19 | 31.94 | 64.53 | 98.24 | 121.81 |
 | [ea14ed57d](https://github.com/AFK-surf/monoid/commit/ea14ed57d50b70493f151ea2a000c7ac82ffe1eb) refactor(mbui): clear 83 remaining structure-box d | 2.65 | 3.57 | 14.48 | 36.48 | 55.19 | 31.95 | 64.53 | 98.21 | 116.29 |
-| [0b920d6ae](https://github.com/AFK-surf/monoid/commit/0b920d6aed555c603b727f47764697a9d77b0d1d) fix(liquid-glass): preserve overlay close transiti | 2.65 | 3.57 | 14.49 | 36.49 | 55.23 | 31.95 | 64.56 | 98.27 | 101.58 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [eecf04dd2](https://github.com/AFK-surf/monoid/commit/eecf04dd2c4a543344c687bd742e03a35d20fc20) fix(rig): resolve safe mode task-only station vouc | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.22 |
 | [1eec0cd3c](https://github.com/AFK-surf/monoid/commit/1eec0cd3ce63e0c127930aa9b4136bd17e5c67ef) chore(mbui): tighten 66 sfapp motion whitelist bar | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.22 |
 | [94dff2fc3](https://github.com/AFK-surf/monoid/commit/94dff2fc3c5c1d56e1d12bc77ebe824e7f9ca20f) fix(sf-ui): collapse blank lines in quote card two | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54 |
 | [895ac12da](https://github.com/AFK-surf/monoid/commit/895ac12dad37088d039749275a83586a980fe79d) fix(mbui): cut a picture's clipping nodes as the w | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [1ec0f07a1](https://github.com/AFK-surf/monoid/commit/1ec0f07a174d2813c19136e9755ea5ca612fea62) fix(sf-ui,mbui): scale remaining text controls wit | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.15 |
 | [30e2a95d3](https://github.com/AFK-surf/monoid/commit/30e2a95d3418054dde1a7448b347ec346ca0502f) refactor(profiles): decouple profiles from coding- | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.28 |
 | [ea14ed57d](https://github.com/AFK-surf/monoid/commit/ea14ed57d50b70493f151ea2a000c7ac82ffe1eb) refactor(mbui): clear 83 remaining structure-box d | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.28 |
-| [0b920d6ae](https://github.com/AFK-surf/monoid/commit/0b920d6aed555c603b727f47764697a9d77b0d1d) fix(liquid-glass): preserve overlay close transiti | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.28 |
