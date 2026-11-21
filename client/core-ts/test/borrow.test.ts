@@ -27,7 +27,7 @@ function workspace(): J[] {
     ]),
     station(STUDIO, "Office", [
       profile("go", ["kimi-k3"], { runtimes: ["claude", "codex", "dsh"], access: { kind: "opencode-go", key: "st_1…" }, share: { id: "sh-go", role: "host", host: STUDIO, allow: [HERE] } }),
-      profile("cx", ["gpt-6-astra"], { runtime: "codex", runtimes: ["codex"] }),
+      profile("cx", ["gpt-6-astra"], { runtime: "codex", runtimes: ["codex"], check: { state: "ok", plan: "plus" } }),
       profile("ds", ["deepseek-v4-pro", "claude-opus-5-5"], { runtimes: ["dsh"], access: { kind: "api-provider", key: "sk…" }, share: { id: "sh-ds", role: "host", host: STUDIO, allow: [MINI] } }),
     ], { emoji: "🖥️" }),
     // Down: what it has is not known.
@@ -163,6 +163,9 @@ test("picking_another_stations_model_asks_to_borrow_it_and_borrowing_shares_it_w
   const m: J = (member.compute({ topic: "pick", station: at, of }) as J).ok;
   assert.deepEqual([m.borrow.allowed, m.borrow.why], [false, "只有 owner 或 admin 可以借用"]);
   assert.throws(() => member.borrow(at, of), /owner 或 admin/);
+  choose.set(at, of, { model: "gpt-6-astra" });
+  const subscription: J = (choose.compute({ topic: "pick", station: at, of }) as J).ok;
+  assert.equal(subscription.borrow.title, "向 Office 借用 cx@x.com · Plus");
   choose.set(at, of, { model: "claude-opus-5-5" });
   assert.equal((choose.compute({ topic: "pick", station: at, of }) as J).ok.borrow, null);
   assert.throws(() => choose.borrow(at, of), /无需借用/);

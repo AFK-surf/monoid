@@ -475,6 +475,7 @@ export function borrowable(stations: J, here: string, have: J[], runtime: string
     for (const p of profilesOf(s.overview)) {
       if (!lent(p, ownHere)) continue;
       const share = get(p, "share");
+      const planText = present.profilePlanText(p);
       for (const o of lentModels(s.overview, p, now)) {
         if (runtime !== null && !arr(o.runtimes).includes(runtime)) continue;
         const key = model.key(o.model);
@@ -497,7 +498,7 @@ export function borrowable(stations: J, here: string, have: J[], runtime: string
             stationName: s.name,
             profile: str(get(p, "id")) ?? "",
             profileName: str(get(p, "name")) ?? "",
-            planText: present.profilePlanText(p),
+            ...(planText !== "" ? { planText } : {}),
             subscription: get(get(p, "access"), "kind") === "subscription",
             // Every station may use it already (its copy not here yet): nothing to ask.
             pending: shared && allow === null,
