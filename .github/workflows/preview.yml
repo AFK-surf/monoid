@@ -889,10 +889,10 @@ jobs:
       # WinRT UserConsentVerifier::CheckAvailabilityAsync alone took 41-72 s on cold windows-2025 runners, pushing the
       # post-build checks past the 5 min cap: 44733105178, 44757376609). Start them here so they compile while the
       # caches restore and finish while the app builds; the post-build check step collects their exit codes and logs.
-      - name: Host checks (collate, sealed, hello), started
+      - name: Host checks (collate, sealed, hello, reports), started
         run: |
           L=$RUNNER_TEMP/win-checks; mkdir -p "$L"
-          for c in collate sealed hello; do
+          for c in collate sealed hello reports; do
             nohup bash -c 'bash apps/mbui/scripts/win.sh "$1" > "$0/$1.log" 2>&1; echo $? > "$0/$1.status"' "$L" "$c" > /dev/null 2>&1 &
           done
       # The app's build as the last run on main left it (mbui's in libs/mbui: moon's _build, the split C and its objects, the .exe): of main's pushes that run this job, three in four leave the app's C
@@ -1200,7 +1200,7 @@ jobs:
       # Each writes only its own directory (setup's in RUNNER_TEMP, out/collate, out/engine-sync, out/sealed, out/hello):
       # one after another the first four were 21 s of the job's 300, which main's 44497568003 ran out of 1-2 s short of
       # saving its caches; hello alone then grew to 41-72 s on cold runners (44733105178, 44757376609).
-      - name: The installer, installed and taken away (e2e/win/setup.sh) and engine-sync beside it; collate, sealed and hello collected
+      - name: The installer, installed and taken away (e2e/win/setup.sh) and engine-sync beside it; collate, sealed, hello and reports collected
         run: |
           L=$RUNNER_TEMP/win-checks; mkdir -p "$L"
           t0=$SECONDS
@@ -1213,7 +1213,7 @@ jobs:
             [ "$s" = 0 ] || { echo "::error::${c%%:*} failed (exit $s)"; bad=1; }
           done
           echo "setup and engine-sync side by side: $((SECONDS - t0)) s"
-          for c in collate sealed hello; do
+          for c in collate sealed hello reports; do
             if [ ! -s "$L/$c.status" ]; then
               node apps/mbui/scripts/waitfor.mjs --deadline 60 --what "win.sh $c" --exists "$(cygpath -w "$L/$c.status")" > /dev/null || true
             fi
@@ -1221,7 +1221,7 @@ jobs:
             echo "::group::$c (exit $s)"; cat "$L/$c.log" 2>/dev/null; echo "::endgroup::"
             [ "$s" = 0 ] || { echo "::error::$c failed (exit $s)"; bad=1; }
           done
-          echo "the five collected: $((SECONDS - t0)) s"
+          echo "the six collected: $((SECONDS - t0)) s"
           exit $bad
       # out before the e2e flow ends (its tests hold nothing back): put, checked, then its feed, once its signing (begun
       # after the build) is over, beside the caches' saves and the e2e flow (the put mostly waiting on the network)

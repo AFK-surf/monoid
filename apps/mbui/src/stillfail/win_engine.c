@@ -4,6 +4,8 @@
 // this machine's station, the app's own native call (src/host/station_calls.h)
 #include "../host/win_station.c"
 #include "../host/station_calls.h"
+// crash/hang/fault telemetry to PostHog (src/host/win_reports.c, after win_core.c for desktop_app_data)
+#include "../host/win_reports.c"
 
 extern int sf_terminal_linked;
 
@@ -14,7 +16,3 @@ int32_t mb_stillfail_core_linked(void) {
   sf_app_calls_use();
   return sf_terminal_linked;
 }
-
-// What still.fail's own host is told (reports.mbt: crash reports, the bar's timing): only Android's takes it
-// (src/host/android_reports.c); 0 says so.
-int32_t mb_stillfail_tell(const void *what, const void *a, const void *b, int32_t n, int32_t m) { return 0; }
