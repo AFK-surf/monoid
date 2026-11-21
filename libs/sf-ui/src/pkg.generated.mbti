@@ -794,6 +794,9 @@ pub fn glass_foot() -> @paint.Glass
 
 pub fn glass_knob() -> @paint.Glass
 
+#callsite(autofill(loc))
+pub fn glass_lift_surface(@view.View, () -> Double, flat_ground? : (() -> Int64)?, glass? : () -> @paint.Glass, radius? : Double, shadow? : () -> (Double, Double, Int64), loc~ : SourceLoc) -> Unit
+
 pub fn glass_menu() -> @paint.Glass
 
 pub fn glass_sheet() -> @paint.Glass
@@ -1119,6 +1122,7 @@ pub let login_card_least : @ui.Len
 
 pub let login_card_most : @ui.Len
 
+pub fn local_path_of_link(String) -> String?
 pub fn look() -> Look
 
 pub fn look_for(Double) -> Look

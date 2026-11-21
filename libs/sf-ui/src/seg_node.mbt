@@ -152,8 +152,22 @@ pub fn seg_node(
                     None
                   }
                 },
+                spec=@motion.backdrop_press_spring,
               )
               // the thumb: where its cover has it, drawn directly in paint layer via ground_drawn (zero relayout)
+              let held = @motion.NodeWay::new(0.0)
+              let pressed_id : @signals.Signal[@view.NodeId?] = @signals.signal(None)
+              strip.reacts(
+                fn() { !strip.glass_solid() && !@ui.reduced_motion() && !menu() && pressed_id.get() is Some(_) },
+                fn(down) { held.go(strip, if down { 1.0 } else { 0.0 }, @motion.backdrop_press_spring) },
+              )
+              let lens = fn() {
+                if strip.glass_solid() || @ui.reduced_motion() {
+                  0.0
+                } else {
+                  held.shown(strip)
+                }
+              }
               strip.box(fn(th) {
                 th
                 .over(Is(true))
@@ -163,6 +177,7 @@ pub fn seg_node(
                 .ground(By(fn() { @ui.tree_theme().lifted }))
                 .edge(By(fn() { (0.5, theme().p.line) }))
                 .shadow(By(fn() { (1.0, 0.0, theme().p.shadow) }))
+                .alpha(By(fn() { seg_thumb_alpha(lens()) }))
                 .ground_drawn(By(fn() {
                   match rect() {
                     Some((x, _, w, _)) => { dx: x - segmented_pad, dy: 0.0, dw: w, dh: 0.0, corners: None }
@@ -178,6 +193,7 @@ pub fn seg_node(
                 let label = fn() { labels().get(k).unwrap_or("") }
                 rg.item(strip, fn() { k }, label, fn(o, item) {
                   let on = fn() { item.chosen() }
+                  seg_bind_item_press(o, fn() { item.pressed() }, pressed_id)
                   o
                   .width(By(fn() { Some(w_of(k)) }))
                   .height(By(fn() { Some(opt_h()) }))
@@ -207,6 +223,12 @@ pub fn seg_node(
                 })
                 |> ignore
               }
+              seg_lens_overlay_node(
+                strip,
+                lens,
+                opt_h,
+                fn() { rect().map(fn(r) { (r.0 - segmented_pad, r.1, r.2, r.3) }) },
+              )
             })
             |> ignore
             // not side by side: the chosen one's words as its option has them (cut short where they must be), a chevron at its
@@ -290,28 +312,118 @@ let seg_lens_shadow : Double = 6.0
 let seg_lens_shadow_y : Double = 2.0
 
 ///|
+/// Growth ratio of the clear liquid glass lens while a segmented thumb is held (matching 78/56).
+let seg_lens_grow : Double = 78.0 / 56.0 - 1.0
+
+///|
+/// Horizontal growth cap (pt) for wide segments so the lifted lens keeps an even +11pt optical lip per side.
+let seg_lens_max_grow_x : Double = 22.0
+
+///|
+/// Solid thumb opacity while cross-fading out under the lifted clear liquid glass lens.
+fn seg_thumb_alpha(l : Double) -> Double {
+  if l > 0.001 {
+    1.0 - dmin(1.0, l)
+  } else {
+    1.0
+  }
+}
+
+///|
+/// Track which radio/tab item in a segmented strip is currently pressed without adding `on_drag` on headless nodes.
+fn seg_bind_item_press(
+  o : @view.View,
+  pressed : () -> Bool,
+  holder : @signals.Signal[@view.NodeId?],
+) -> Unit {
+  let id = o.id()
+  o.reacts(pressed, fn(down) {
+    if down {
+      holder.set(Some(id))
+    } else if holder.untracked() == Some(id) {
+      holder.set(None)
+    }
+  })
+  o.owns(fn() {
+    if holder.untracked() == Some(id) {
+      holder.set(None)
+    }
+  })
+  |> ignore
+}
+
+///|
+/// Clear lifted liquid glass lens mounted above a segmented/pill-tab strip's labels while held (`lens() > 0.001`).
+/// Zero hidden glass instances at rest, zero pointer interception, and zero relayout via paint-layer `ground_drawn`.
+fn seg_lens_overlay_node(
+  parent : @view.View,
+  lens : () -> Double,
+  h : () -> Double,
+  rect : () -> (Double, Double, Double, Double)?,
+) -> Unit {
+  parent.show(fn() { lens() > 0.001 }, fn(l) {
+    let full = fn() { dmin(1.0, lens()) }
+    l
+    .over(Is(true))
+    .points(Is(false))
+    .offset(Is((0.0, 0.0)))
+    .width(Is(Some(0.0)))
+    .height(By(fn() { Some(h()) }))
+    // (round as a pill is said to be, Full, as the old lens's capsule: as round as it can be)
+    .radius(Is(1.0e6))
+    .glass(By(fn() { Some(glass_tab_lens(full())) }))
+    .shadow(By(fn() { (seg_lens_shadow * full(), seg_lens_shadow_y * full(), @ui.tree_theme().shadow) }))
+    .shadow_outside(Is(true))
+    .alpha(By(full))
+    .ground_drawn(By(fn() {
+      match rect() {
+        Some((rx, ry, rw, _)) => {
+          let l = lens()
+          let grow_x = dmin(rw * seg_lens_grow, seg_lens_max_grow_x) * l
+          let hh = h()
+          let lw = rw + grow_x
+          let lh = hh * (1.0 + seg_lens_grow * l)
+          {
+            dx: rx + (rw - lw) / 2.0,
+            dy: ry + (hh - lh) / 2.0,
+            dw: lw,
+            dh: lh - hh,
+            corners: Some((lh / 2.0, lh / 2.0, lh / 2.0, lh / 2.0)),
+          }
+        }
+        None => @view.ground_as_laid
+      }
+    }))
+    |> ignore
+  })
+}
+
+///|
 /// The thumb's motion belongs to the view that keeps the selection across page changes.
 pub struct SegThumb {
   priv held : @motion.NodeWay
   priv position : @motion.NodeWay
   priv fingered : @signals.Signal[Double?]
+  priv pressed : @signals.Signal[Bool]
 }
 
 ///|
 /// Keep the thumb's current position and press motion on `owner`, so a new view can draw the same motion.
 pub fn SegThumb::new(owner : @view.View, chosen : () -> Int) -> SegThumb {
   let fingered : @signals.Signal[Double?] = @signals.signal(None)
+  let pressed : @signals.Signal[Bool] = @signals.signal(false)
   let held = @motion.NodeWay::new(0.0)
-  owner.reacts(fn() { !owner.glass_solid() && fingered.get() is Some(_) }, fn(down) {
-    held.go(owner, if down { 1.0 } else { 0.0 }, @motion.backdrop_press_spring)
-  })
+  owner.reacts(
+    fn() { !owner.glass_solid() && !@ui.reduced_motion() && (fingered.get() is Some(_) || pressed.get()) },
+    fn(down) { held.go(owner, if down { 1.0 } else { 0.0 }, @motion.backdrop_press_spring) },
+  )
   let goal = fn() { fingered.get().unwrap_or(chosen().to_double()) }
   let position = @motion.NodeWay::new(@signals.untracked(goal))
   owner.reacts(at_start=false, goal, fn(p) {
     let spring = if fingered.untracked() is Some(_) { @motion.tactile_bounce } else { @motion.snappy_damped }
     position.go(owner, p, spring)
   })
-  { held, position, fingered }
+  { held, position, fingered, pressed }
 }
 
 ///|
@@ -475,19 +587,31 @@ pub fn seg_fill_node(
               }
             }
           }
+          let mouse_pressed : @signals.Signal[@view.NodeId?] = @signals.signal(None)
+          strip.reacts(fn() { !menu() && mouse_pressed.get() is Some(_) }, fn(down) {
+            thumb.pressed.set(down)
+          })
           strip.owns(fn() {
             felt.val = None
             thumb.fingered.set(None)
+            thumb.pressed.set(false)
           })
           |> ignore
           strip.reacts(menu, fn(m) {
             if m {
               felt.val = None
               thumb.fingered.set(None)
+              thumb.pressed.set(false)
             }
           })
           |> ignore
-          let lens = fn() { if strip.glass_solid() { 0.0 } else { thumb.held.shown(strip) } }
+          let lens = fn() {
+            if strip.glass_solid() || @ui.reduced_motion() {
+              0.0
+            } else {
+              thumb.held.shown(strip)
+            }
+          }
           // (past either end, where a way turned back with speed takes it (@motion.cover_damped_spring goes past no
           // end from rest), the end pair's blend carried on, as @ui.cover_rect's does: held at the end, the thumb
           // would stop dead there)
@@ -557,14 +681,7 @@ pub fn seg_fill_node(
               }
             }))
             // (as the old thumb: faded only while the lens is out, not past 1 as the hand's spring comes back past 0)
-            .alpha(By(fn() {
-              let l = lens()
-              if l > 0.0 {
-                1.0 - dmin(1.0, l)
-              } else {
-                1.0
-              }
-            }))
+            .alpha(By(fn() { seg_thumb_alpha(lens()) }))
             |> ignore
           })
           |> ignore
@@ -574,6 +691,7 @@ pub fn seg_fill_node(
             let label = fn() { labels().get(k).unwrap_or("") }
             rg.item(strip, fn() { k }, label, slop=@ui.touch_slop(), slide=(seg_hold_ms, fn(d) { preview(k, d) }), fn(o, item) {
               let on = fn() { item.chosen() }
+              seg_bind_item_press(o, fn() { !(@ui.pointing() is Finger) && item.pressed() }, mouse_pressed)
               o
               // (its share, or as fitted)
               .width(By(fn() { Some(w_of(k)) }))
@@ -602,42 +720,14 @@ pub fn seg_fill_node(
             })
             |> ignore
           }
-          // held by a finger: the thumb a lens of liquid glass over the options (iOS 26's), a capsule on the thumb's way,
-          // larger as it is held (past the track's edges), raised off it by a shadow as far as it is in the finger
-          strip.show(fn() { lens() > 0.0 }, fn(l) {
-            let full = fn() { dmin(1.0, lens()) }
-            let h = fn() { track_h() - 2.0 * seg_inset }
-            l
-            .over(Is(true))
-            .offset(Is((0.0, 0.0)))
-            .width(Is(Some(0.0)))
-            .height(By(fn() { Some(h()) }))
-            // (round as a pill is said to be, Full, as the old lens's capsule: as round as it can be)
-            .radius(Is(1.0e6))
-            .glass(By(fn() { Some(glass_tab_lens(full())) }))
-            .shadow(By(fn() { (seg_lens_shadow * full(), seg_lens_shadow_y * full(), @ui.tree_theme().shadow) }))
-            .shadow_outside(Is(true))
-            .alpha(By(full))
-            .ground_drawn(By(fn() {
-              match rect() {
-                Some((rx, _, rw, _)) => {
-                  let s = 1.0 + (78.0 / 56.0 - 1.0) * lens()
-                  let hh = h()
-                  let lw = rw * s
-                  let lh = hh * s
-                  {
-                    dx: (rx - seg_inset) + (rw - lw) / 2.0,
-                    dy: (hh - lh) / 2.0,
-                    dw: lw,
-                    dh: lh - hh,
-                    corners: Some((lh / 2.0, lh / 2.0, lh / 2.0, lh / 2.0)),
-                  }
-                }
-                None => @view.ground_as_laid
-              }
-            }))
-            |> ignore
-          })
+          // held by a finger or pointer: the thumb a lens of liquid glass over the options (iOS 26's), a capsule on the
+          // thumb's way, larger as it is held (past the track's edges), raised off it by a shadow
+          seg_lens_overlay_node(
+            strip,
+            lens,
+            fn() { track_h() - 2.0 * seg_inset },
+            fn() { rect().map(fn(r) { (r.0 - seg_inset, r.1, r.2, r.3) }) },
+          )
           })
           |> ignore
           // not side by side: the chosen one's words (cut short where they must be), a chevron at its end; pressed, a pick of
@@ -858,27 +948,43 @@ pub fn seg_icons_node(
         }
         last.val = k
       })
-      // the thumb, where its way has it as each frame draws it while it goes
-      g.box(fn(th) {
-        let x = fn() {
-          way.said()
-          way.value_at(th.drawn_while(fn(t) { way.goes_at(t) }))
+      let held = @motion.NodeWay::new(0.0)
+      let pressed_id : @signals.Signal[@view.NodeId?] = @signals.signal(None)
+      g.reacts(
+        fn() { !g.glass_solid() && !@ui.reduced_motion() && pressed_id.get() is Some(_) },
+        fn(down) { held.go(g, if down { 1.0 } else { 0.0 }, @motion.backdrop_press_spring) },
+      )
+      let lens = fn() {
+        if g.glass_solid() || @ui.reduced_motion() {
+          0.0
+        } else {
+          held.shown(g)
         }
+      }
+      let thumb_x = fn(v : @view.View) {
+        way.said()
+        way.value_at(v.drawn_while(fn(t) { way.goes_at(t) }))
+      }
+      // the thumb, where its way has it as each frame draws it while it goes (over(true) is border-box relative, so
+      // way already includes pad in x and y is pad to stay centered and concentric inside g's padding)
+      g.box(fn(th) {
         th
         .over(Is(true))
-        .offset(By(fn() { (x() - pad, 0.0) }))
+        .offset(By(fn() { (thumb_x(th), pad) }))
         .width(Is(Some(high)))
         .height(Is(Some(high)))
         .radius(Is(high / 2.0))
         .ground(By(fn() { @ui.tree_theme().lifted }))
         .edge(By(fn() { (0.5, theme().p.line) }))
         .shadow(By(fn() { (1.0, 0.0, theme().p.shadow) }))
+        .alpha(By(fn() { seg_thumb_alpha(lens()) }))
         |> ignore
       })
       |> ignore
       g.each(ways, fn(w) { w.0 }, fn(slot, w) {
         let key = w.untracked().0
         let o = rg.item(slot, fn() { key }, fn() { w.get().2 }, fn(o, item) {
+          seg_bind_item_press(o, fn() { item.pressed() }, pressed_id)
           o.width(Is(Some(high))).height(Is(Some(high))).lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
           icon_node(o, "", 16.0, By(fn() { if item.chosen() || item.hovered() { theme().p.text } else { theme().p.muted } }), name_now=fn() {
             w.get().1
@@ -890,6 +996,12 @@ pub fn seg_icons_node(
           None => ()
         }
       })
+      seg_lens_overlay_node(
+        g,
+        lens,
+        fn() { high },
+        fn() { Some((thumb_x(g), pad, high, high)) },
+      )
     },
   )
 }

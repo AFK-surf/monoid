@@ -891,6 +891,7 @@ fn route_read(route : String, pairs : Array[(String, String)], viewer : Json, la
 fn changed_read(route : String, pairs : Array[(String, String)], viewer : Json, lang : String, body : Bytes, runtimes : Array[String]) -> Route {
   let list = match route {
     "/admin/api/changed/chats" => "chats"
+    "/admin/api/changed/shared" => "sharedChats"
     "/admin/api/changed/sessions" => "sessions"
     "/admin/api/changed/threads" => "threads"
     _ => return Not
@@ -907,11 +908,7 @@ fn changed_read(route : String, pairs : Array[(String, String)], viewer : Json, 
     _ => None
   }
   guard held is Some(held) else { return Refuse(400, "held: each held row's digest by its id") }
-  let get = match route_read("/admin/api/" + list, pairs, viewer, lang) {
-    Read(_, args) => args
-    _ => return Not
-  }
-  let id = if list == "chats" { "id" } else if list == "sessions" { "key" } else { "id" }
+  let id = if list == "sessions" { "key" } else { "id" }
   // (the chats' own args: a GET /chats with neither marks, shared nor rows, api/routes/chats.ts `chatsOf`)
   let args = if list == "chats" {
     let a : Map[String, Json] = { "viewer": viewer, "archived": Json::boolean(pairs.iter().any(p => p.0 == "archived" && p.1 == "1")) }
@@ -922,8 +919,13 @@ fn changed_read(route : String, pairs : Array[(String, String)], viewer : Json, 
       }
     }
     Json::object(a)
+  } else if list == "sharedChats" {
+    { "viewer": viewer, "sessions": Json::null(), "threads": Json::null() }
   } else {
-    get
+    match route_read("/admin/api/" + list, pairs, viewer, lang) {
+      Read(_, a) => a
+      _ => return Not
+    }
   }
   Read("changed", {
     "op": Json::string(list),
@@ -958,7 +960,7 @@ fn chats_read(pairs : Array[(String, String)], viewer : Json) -> (String, Json)?
     } else {
       Json::null()
     }
-    return Some(("chatMarks", { "viewer": viewer, "scope": scope }))
+    return Some(("chatMarks", { "viewer": viewer, "scope": scope, "own": Json::boolean(param("own") == Some("1")) }))
   }
   if param("shared") == Some("1") {
     return Some(("sharedChats", if some { scoped } else { { "viewer": viewer, "sessions": Json::null(), "threads": Json::null() } }))

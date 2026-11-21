@@ -187,10 +187,10 @@ test "home again: a place of the bar tapped from Home at rest, and Home tapped a
         home_again_measure(t, "\{tag} home→\{place}", fn() { t.tap(xs[i], y) })
         println("home-again \{tag}: on \{Repr(@sfapp.place_of(@sfbase.app.nav.top()))} (asked \{place})")
         // (the place made, first visit; Home put by, not laid out again nor let go; Profile's list or 概览 one page, the
-        // pick between them two nodes more, plus one refresh icon node per quota chip; seg_fill_node clears 3 show slots
-        // via laid_nowhere, keeping made=640 and +3 initial laid for its disclosure subtree; +1 made/+1 laid for
-        // place_top_bar_glass wrapping settings in bar_pill_group_node)
-        assert_eq(home_again_peak.val, if place == "profiles" { (641, 0, 542) } else { (364, 0, 255) }, msg="\{tag} home→\{place}")
+        // pick between them two nodes more; slimmed fill_chip_node with on-demand refresh icon and single-branch pooled
+        // quota brings profiles down to made=591, laid=457 (+1 made/+1 laid for place_top_bar_glass wrapping settings
+        // in bar_pill_group_node))
+        assert_eq(home_again_peak.val, if place == "profiles" { (592, 0, 458) } else { (364, 0, 255) }, msg="\{tag} home→\{place}")
         t.run_for(@sfapptest.kept_switch_over_ms)
         home_again_measure(t, "\{tag} \{place}→home", fn() { t.tap(xs[0], y) })
         println("home-again \{tag}: on \{Repr(@sfapp.place_of(@sfbase.app.nav.top()))} (asked chats)")
@@ -363,11 +363,11 @@ test "home again: Home come back to in a taller phone's window, and from a page 
       let i = if place == "profiles" { 1 } else if place == "connects" { 2 } else { 3 }
       home_again_measure(t, "\{tag} home→\{place}", fn() { t.tap(xs[i], y) })
       println("home-again \{tag}: on \{Repr(@sfapp.place_of(@sfbase.app.nav.top()))} (asked \{place})")
-      // (Profile's list or 概览 one page, the pick between them two nodes more, plus one refresh icon node per quota chip;
-      // seg_fill_node clears 3 show slots via laid_nowhere, keeping made unchanged and +3 initial laid per seg_fill_node;
-      // +1 made/+1 laid for place_top_bar_glass wrapping settings in bar_pill_group_node)
+      // (Profile's list or 概览 one page, the pick between them two nodes more; slimmed fill_chip_node with on-demand
+      // refresh icon and single-branch pooled quota brings tall profiles down to made=731, laid=565; +1 made/+1 laid
+      // for place_top_bar_glass wrapping settings in bar_pill_group_node)
       let first = if place == "profiles" {
-        (795, 0, 674)
+        (732, 0, 566)
       } else if place == "connects" {
         (440, 0, 307)
       } else {

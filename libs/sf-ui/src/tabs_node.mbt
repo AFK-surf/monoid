@@ -109,6 +109,21 @@ pub fn[K : Eq] tabs_node(
               }
             }
           })
+          let held = @motion.NodeWay::new(0.0)
+          let pressed_id : @signals.Signal[@view.NodeId?] = @signals.signal(None)
+          if look is Pill {
+            strip.reacts(
+              fn() { !strip.glass_solid() && !@ui.reduced_motion() && pressed_id.get() is Some(_) },
+              fn(down) { held.go(strip, if down { 1.0 } else { 0.0 }, @motion.backdrop_press_spring) },
+            )
+          }
+          let lens = fn() {
+            if !(look is Pill) || strip.glass_solid() || @ui.reduced_motion() {
+              0.0
+            } else {
+              held.shown(strip)
+            }
+          }
           strip.box(fn(mark) {
             mark
             .over(Is(true))
@@ -143,6 +158,7 @@ pub fn[K : Eq] tabs_node(
                 .ground(By(fn() { @ui.tree_theme().lifted }))
                 .edge(By(fn() { (0.5, theme().p.line) }))
                 .shadow(By(fn() { (1.0, 0.0, theme().p.shadow) }))
+                .alpha(By(fn() { seg_thumb_alpha(lens()) }))
                 |> ignore
             }
           })
@@ -150,6 +166,9 @@ pub fn[K : Eq] tabs_node(
           for i, tab in tabs {
             let (key, words) = tab
             rg.item(strip, fn() { key }, words, made_for=loc, fn(o, item) {
+              if look is Pill {
+                seg_bind_item_press(o, fn() { item.pressed() }, pressed_id)
+              }
               o
               .focus_ring_theme()
               .width(By(fn() { Some(w_of(i)) }))
@@ -185,6 +204,9 @@ pub fn[K : Eq] tabs_node(
               |> ignore
             })
             |> ignore
+          }
+          if look is Pill {
+            seg_lens_overlay_node(strip, lens, tab_h_now, rect)
           }
         })
         |> ignore

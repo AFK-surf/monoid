@@ -317,3 +317,88 @@ test "大屏, a chat only in Feishu, built as a host builds: words a mouse picke
   assert_eq(last_quote(calls), ("已挂载文本选区标记", "", "agent", "Claude"))
   assert_true(@ui.picked_now() is None)
 }
+
+///|
+/// 大屏's chat in `dark` (glass drawn solid where `solid`, as MBUI_GLASS=solid makes it), words of a message a mouse
+/// picked, its 引用 shown: the Tester, the faults it had before the pick and where 引用's words are drawn.
+fn quote_pill_tester(dark : Bool, solid : Bool) -> (@ui.Tester, Array[String], (Double, Double, Double, Double)) raise {
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, mode="chat")
+  @sf.set_dark(Some(dark))
+  @ui.set_glass_solid(if solid { Some(true) } else { None })
+  t.check_looks(false)
+  for _ in 0..<12 {
+    match t.run_rects("做了什么") {
+      [(_, y, _, _), ..] if y > 100.0 && y < 500.0 => break
+      _ => t.wheel(900.0, 400.0, -200.0)
+    }
+  }
+  t.run_for(@ui.move_most_ms)
+  let before = t.audit().map(aw_plain)
+  let (hx, hy, _, hh) = words_rect(t, "做了什么")
+  let (ix, iy, iw, ih) = words_rect(t, "滚动位置记成")
+  mouse_dragged(t, hx + 1.0, hy + hh / 2.0, ix + iw - 1.0, iy + ih / 2.0)
+  t.run_for(@ui.move_most_ms)
+  guard t.words().filter(fn(w) { w.0 == "引用" && w.2 < iy && w.2 > iy - 60.0 }) is [(_, qx, qy, qw, qh, _), ..] else {
+    fail("no 引用 over the pick (dark \{dark}, solid \{solid})")
+  }
+  (t, before, (qx, qy, qw, qh))
+}
+
+///|
+/// Whether (x, y, w, h) holds the middle of `r`.
+fn holds_middle(x : Double, y : Double, w : Double, h : Double, r : (Double, Double, Double, Double)) -> Bool {
+  let cx = r.0 + r.2 / 2.0
+  let cy = r.1 + r.3 / 2.0
+  cx > x && cx < x + w && cy > y && cy < y + h
+}
+
+///|
+test "大屏, light and dark: 引用 over words a mouse picked is one layer of liquid glass with its shadow outside, its mark and words in the ink; under MBUI_GLASS=solid the panel's ground with a hairline edge" {
+  for dark in [false, true] {
+    // glass
+    let (t, before, q) = quote_pill_tester(dark, false)
+    let ink = @sf.theme().p.text
+    let glass = t.drawn_glass().filter(fn(g) { holds_middle(g.0, g.1, g.2, g.3, q) })
+    let liquid = glass.filter(fn(g) { g.4 == 6 })
+    guard liquid is [pill, ..] else { fail("dark \{dark}: no glass under 引用: \{Repr(t.drawn_glass())}") }
+    let (px, py, pw, ph, _, _) = pill
+    // (no solid ground of its own over or under the glass, the size of the pill)
+    let solid_fill = t
+      .drawn_rects()
+      .iter()
+      .any(fn(r) {
+        (r.4 & 0xFFL) != 0L && (r.0 - px).abs() < 1.0 && (r.1 - py).abs() < 1.0 && (r.2 - pw).abs() < 1.0 && (r.3 - ph).abs() < 1.0
+      })
+    let outside_shadow = t
+      .drawn_instances()
+      .iter()
+      .any(fn(a) { a.length() > 12 && a[5] == 2.0 && a[12] == 1.0 && holds_middle(a[0], a[1], a[2], a[3], q) })
+    let words_ink = t.boxes_held().filter(fn(b) { b.text == "引用" }).map(fn(b) { b.color })
+    let edged = t.boxes_held().filter(fn(b) { b.border_w > 0.0 && holds_middle(b.x, b.y, b.w, b.h, q) }).length()
+    // (none new, and none of the pill's: what the page had before the pick is the sidebar's, not this)
+    let new_faults = t.audit().filter(fn(f) { !before.contains(aw_plain(f)) || f.contains("chat_quote_node") })
+    assert_eq(
+      (dark, glass.length(), liquid.length(), solid_fill, outside_shadow, words_ink, edged, new_faults),
+      (dark, 1, 1, false, true, [ink], 0, []),
+    )
+    // solid
+    let (ts, before, q) = quote_pill_tester(dark, true)
+    let panel = @sf.panel_ground()
+    let glass = ts.drawn_glass().filter(fn(g) { holds_middle(g.0, g.1, g.2, g.3, q) }).length()
+    let ground = ts.drawn_rects().iter().any(fn(r) { r.4 == panel && holds_middle(r.0, r.1, r.2, r.3, q) })
+    let edges = ts
+      .boxes_held()
+      .filter(fn(b) { b.border_w > 0.0 && holds_middle(b.x, b.y, b.w, b.h, q) })
+      .map(fn(b) { (b.border_w, b.border_c) })
+    let words_ink = ts.boxes_held().filter(fn(b) { b.text == "引用" }).map(fn(b) { b.color })
+    let new_faults = ts.audit().filter(fn(f) { !before.contains(aw_plain(f)) || f.contains("chat_quote_node") })
+    @ui.set_glass_solid(None)
+    assert_eq(
+      (dark, glass, ground, edges, words_ink, new_faults),
+      (dark, 0, true, [(@sf.control_edge_w, @sf.theme().p.line)], [@sf.theme().p.text], []),
+    )
+  }
+  @ui.set_glass_solid(None)
+  @sf.set_dark(None)
+}

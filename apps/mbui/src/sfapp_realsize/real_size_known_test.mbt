@@ -224,7 +224,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone files-transfers": (688, 578, 90),
   "phone files-tree": (811, 691, 103),
   "phone place-stations": (553, 412, 91),
-  "phone place-profiles": (797, 646, 84),
+  "phone place-profiles": (694, 524, 84),
   "phone place-remote": (355, 291, 29),
   "phone place-remote-tabs": (355, 291, 29),
   "phone chat-remote": (1029, 663, 80),

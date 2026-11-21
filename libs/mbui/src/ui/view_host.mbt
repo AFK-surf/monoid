@@ -2855,19 +2855,23 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
       self.notch_last_at(ny, nr, nf)
     }
   }
-  match (if bone_whole { None } else { c.glass }) {
+  let eff_glass = match (if bone_whole { None } else { c.glass }) {
+    Some(gl) if gl.strength > 0.001 => Some(gl)
+    _ => None
+  }
+  match eff_glass {
     Some(gl) if solid => {
       if blur > 0.0 {
         self.push_inst(0.0, dy, c.w, c.h, c.radius, 2.0, 0.0, blur, cast, 1.0, 0.0, 0.0, 0.0, 0.0)
         each()
       }
-      self.emit_rect(0.0, 0.0, c.w, c.h, c.radius, gl.solid, 0.0, 0L, 1.0)
+      self.emit_rect(0.0, 0.0, c.w, c.h, c.radius, gl.solid, 0.0, 0L, gl.strength)
       notched()
       each()
     }
     Some(gl) => {
       glass_at = self.ninst - start
-      self.glass_inst(0.0, 0.0, c.w, c.h, c.radius, gl, 1.0)
+      self.glass_inst(0.0, 0.0, c.w, c.h, c.radius, gl, gl.strength)
       if !gl.liquid {
         notched()
       }

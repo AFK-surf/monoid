@@ -52,6 +52,77 @@ export function worded(row: J, words: Words): J {
   return out;
 }
 
+/// Minimal persisted sidecar per shared chat row: only the digest and projection inputs that cannot be recovered from
+/// the projected row (no raw shared row, no `mineOf`, no `answeredBy`).
+export type SharedSidecar = {
+  digest: string;
+  said: J | null;
+  named: J | null;
+  quotedOnly: boolean;
+  localAdmin: boolean;
+};
+
+/// Extracts the minimal sidecar from a station's shared chat row and its digest.
+export function sidecarOf(shared: J, rowDigest: string): SharedSidecar {
+  const last = shared.last;
+  const quotedOnly = last !== null && typeof last === "object" && last.quotedOnly === true;
+  const localAdmin = last !== null && typeof last === "object"
+    && (last.authorName === null || last.authorName === undefined)
+    && last.authorKind === "person" && last.author === "local";
+  return {
+    digest: rowDigest,
+    said: shared.said !== null && typeof shared.said === "object" ? shared.said : null,
+    named: shared.named !== null && typeof shared.named === "object" ? shared.named : null,
+    quotedOnly,
+    localAdmin,
+  };
+}
+
+/// Re-projects a persisted viewer chat row using its minimal sidecar, updated viewer marks (`own`), and language
+/// `words`. Preserves `mine` and `answered` (identity changes discard the baseline and refetch whole). Revokes derived
+/// marks (`pinned`, `hidden`, `muted`, `archiveReminderDismissed`, `unread`, `card`/`need`/`decision` `dismissed`)
+/// whenever absent from `own`.
+export function reprojectChatRow(row: J, sidecar: SharedSidecar, own: Own, words: Words): J {
+  const out: J = { ...row };
+  if (sidecar.named !== null) {
+    out.title = titles.chatTitle(sidecar.named.thread, sidecar.named.firstText ?? null, sidecar.named.channelName ?? null, words);
+  }
+  if (out.last && typeof out.last === "object") {
+    let last: J | null = null;
+    if (sidecar.quotedOnly) last = { ...(last ?? out.last), text: words.quotedOnly };
+    if (sidecar.localAdmin && words.admin !== undefined) last = { ...(last ?? out.last), authorName: words.admin };
+    if (last !== null) out.last = last;
+  }
+  const thread = typeof out.thread === "number" ? out.thread : null;
+  out.unread = thread !== null && unread(sidecar.said, own.reads.get(thread) ?? 0, own.mine);
+  if (thread !== null) {
+    out.archiveReminderDismissed = own.kept.has(thread);
+    if (own.hidden !== undefined) out.hidden = own.hidden.has(thread);
+    if (own.muted !== undefined) out.muted = own.muted.has(thread);
+    for (const k of ["card", "need"] as const) {
+      const c = out[k];
+      if (c && typeof c === "object") {
+        const dismissed = own.dismissed.has(`${thread}:${c.seq}`);
+        if (dismissed && c.dismissed !== true) out[k] = { ...c, dismissed: true };
+        else if (!dismissed && c.dismissed !== undefined) {
+          const { dismissed: _, ...rest } = c;
+          out[k] = rest;
+        }
+      }
+    }
+    if (out.decision && typeof out.decision === "object") {
+      const dismissed = own.dismissed.has(`${thread}:${out.decision.seq}`);
+      if (dismissed && out.decision.dismissed !== true) out.decision = { ...out.decision, dismissed: true };
+      else if (!dismissed && out.decision.dismissed !== undefined) {
+        const { dismissed: _, ...rest } = out.decision;
+        out.decision = rest;
+      }
+    }
+  }
+  out.pinned = typeof out.id === "string" ? (own.pins.get(out.id) ?? null) : null;
+  return out;
+}
+
 /// The row of `shared` (a chat's row as its station made it for everyone) for a viewer, in `words` (none: what names it
 /// kept, for the client to word: `worded`).
 export function rowFor(shared: J, own: Own, words?: Words): J {

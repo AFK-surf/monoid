@@ -329,6 +329,45 @@ test "history steps at 1.3x: fold toggle room, task wrap, step meta and tool pat
 }
 
 ///|
+test "a file link in what an agent posted opens that file from its history" {
+  new_run()
+  let history : Json = {
+    "items": [
+      {
+        "key": "p-link",
+        "entries": [1, 1],
+        "body": { "kind": "post", "content": { "text": "同步更新 [ledger.md](file:///w/ledger.md) 了" } },
+      },
+    ],
+    "live": [],
+    "usage": [],
+    "edge": "",
+    "empty": false,
+    "loaded": true,
+  }
+  let (base, r) = history_fixes_src(history)
+  let asked : Array[String] = []
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      if name == "file.peek" && params is Object(m) && m.get("path") is Some(String(path)) {
+        asked.push(path)
+      }
+      (base.call)(name, params, done)
+    },
+  }
+  open_chat(r)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.run_for(@ui.move_most_ms)
+  app.nav.push(History(r, "s-c1", None))
+  t.run_for(@ui.move_most_ms)
+  t.tap_run("ledger.md")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(asked, ["/w/ledger.md"])
+  assert_eq(t.opened(), [])
+}
+
+///|
 /// How late the made-up core answers each subscription from a press of 详情 on (ms): at once, a frame late, and on to
 /// well past the 300 ms nothing may look like loading in.
 let details_press_lates : Array[Double] = [0.0, 16.0, 120.0, 250.0, 400.0, 700.0]

@@ -146,21 +146,8 @@ pub fn chat_row_node(
         },
         fn(to) { lift.go(slot, to, @motion.tactile_bounce) },
       )
+      @sf.glass_lift_surface(slot, lifted)
       slot
-      .ground(By(fn() {
-        let ink = lifted()
-        if ink > 0.0 {
-          @sf.alpha(t().p.raised, ink)
-        } else {
-          0L
-        }
-      }))
-      .radius(Is(@sf.row_corner))
-      .shadow(By(fn() {
-        let ink = lifted()
-        let r = @sf.held_raised
-        (r.sigma * ink, r.dy * ink, @sf.alpha(r.color, ink))
-      }))
       .scale(By(fn() { 1.0 - row_lift_inset * lifted() }))
       .over_scrim(By(fn() { lifted() > 0.0 }))
       |> ignore

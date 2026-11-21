@@ -200,6 +200,55 @@ pub fn path_of_link(href : String) -> (String, Int?)? {
 }
 
 ///|
+/// The path of a file on the agent's machine that a link names: a file's chip (path_link), a `file://` address, or a
+/// path with no scheme (`docs/plan.md`, `/w/plan.md#L3`, its fragment left out). None for a web link, a link within the
+/// page, or any other scheme.
+pub fn local_path_of_link(href : String) -> String? {
+  if path_of_link(href) is Some((path, _)) {
+    return Some(path)
+  }
+  let u = href.trim(chars=" ").to_owned()
+  let cut = fn(s : String) {
+    let mut end = s.length()
+    for i, ch in s {
+      if ch == '#' || ch == '?' {
+        end = i
+        break
+      }
+    }
+    s.exact_view(end~).to_owned()
+  }
+  if u.has_prefix("file://") {
+    let rest = u.exact_view(start=7).to_owned()
+    let rest = match rest.find("/") {
+      Some(i) => rest.exact_view(start=i).to_owned()
+      None => return None
+    }
+    let path = @codec.percent_decoded(cut(rest))
+    // (`file:///C:/w/a.md`: Windows' drive, with no slash before it)
+    let drive = path.length() > 2 && path.at(2).to_int() == 58
+    return Some(if drive { path.exact_view(start=1).to_owned() } else { path })
+  }
+  if u == "" || u.has_prefix("#") || u.has_prefix("?") || u.has_prefix("//") || has_scheme(u) {
+    return None
+  }
+  let path = @codec.percent_decoded(cut(u))
+  if path == "" { None } else { Some(path) }
+}
+
+///|
+/// Whether `u` starts with a URL's scheme (two letters or more, so that a Windows drive `C:` is no scheme).
+fn has_scheme(u : String) -> Bool {
+  guard u.find(":") is Some(i) && i >= 2 else { return false }
+  for k, ch in u.exact_view(end=i) {
+    let letter = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')
+    let more = (ch >= '0' && ch <= '9') || ch == '+' || ch == '-' || ch == '.'
+    guard letter || (k > 0 && more) else { return false }
+  }
+  true
+}
+
+///|
 let path_scheme : String = "stillfail-path:"
 
 ///|

@@ -16,8 +16,8 @@ type Json = any;
 
 const TIMEOUT_MS = 25_000;
 
-/// The usage read that says the resets as well (the windows as /api/oauth/usage says them; no spend, which is not read).
-export const USAGE_PATH = "/api/oauth/usage?at_wall=1&skip_spend=1";
+/// The usage read that includes limit resets and extra_usage (skip_spend=1 omits extra_usage, which gates Claude Code fast mode).
+export const USAGE_PATH = "/api/oauth/usage?at_wall=1";
 
 /// Claude Code's own headers for its OAuth endpoints: the resets are offered only to it, by its version.
 export function claudeHeaders(token: string, version: string | null): Record<string, string> {

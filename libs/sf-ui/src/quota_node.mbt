@@ -51,37 +51,28 @@ pub fn fill_chip_node(
       b.min_width(Is(Some(0.0))) |> ignore
     }
     // (its fill a plain rectangle cut along the chip's corners, its end square where it stops)
-    b.box(fn(f) {
-      style_node(f, fn() { chip_fill_row })
-      f.over(Is(true)).clips(Is(true)) |> ignore
-      f.box(fn(x) {
-        style_node(x, fn() { chip_fill_part })
-        x
-        .grow(By(fn() { if is_refill() { 100.0 } else { part().to_double() } }))
-        .basis(Is(Some(0.0)))
-        .ground(By(fn() {
-          let t = theme()
-          if is_refill() {
-            over(t.p.card, t.p.red_bg)
+    b.clips(Is(true)) |> ignore
+    b.box(fn(x) {
+      style_node(x, fn() { chip_fill_part })
+      x
+      .over_at(Is((Some(0.0), Some(0.0), None, Some(0.0))))
+      .width_share(By(fn() { if is_refill() { 1.0 } else { part().to_double() / 100.0 } }))
+      .ground(By(fn() {
+        let t = theme()
+        if is_refill() {
+          over(t.p.card, t.p.red_bg)
+        } else {
+          let lv = level()
+          let tint = if lv == "amber" || lv == "red" {
+            level_color(lv)
+          } else if lv == "progress" {
+            t.p.accent_text
           } else {
-            let lv = level()
-            let tint = if lv == "amber" || lv == "red" {
-              level_color(lv)
-            } else if lv == "progress" {
-              t.p.accent_text
-            } else {
-              t.p.muted
-            }
-            alpha(tint, chip_fill_share)
+            t.p.muted
           }
-        }))
-        |> ignore
-      })
-      |> ignore
-      f.box(fn(x) {
-        style_node(x, fn() { chip_fill_part })
-        x.grow(By(fn() { if is_refill() { 0.0 } else { (100 - part()).to_double() } })).basis(Is(Some(0.0))) |> ignore
-      })
+          alpha(tint, chip_fill_share)
+        }
+      }))
       |> ignore
     })
     |> ignore
@@ -112,13 +103,13 @@ pub fn fill_chip_node(
         if is_refill() { chip_refill_label_text } else if label_muted { chip_label_text } else { chip_text }
       })
       match refill {
-        Some(_) => {
-          let ic = icon_node(w, "refresh", icon_sz, By(fn() { theme().p.red }))
-          ic.laid_nowhere(By(fn() { !is_refill() })) |> ignore
-          if squeezes {
-            ic.shrink(Is(0.0)) |> ignore
-          }
-        }
+        Some(_) =>
+          w.show(at_once=true, is_refill, fn(x) {
+            let ic = icon_node(x, "refresh", icon_sz, By(fn() { theme().p.red }))
+            if squeezes {
+              ic.shrink(Is(0.0)) |> ignore
+            }
+          })
         None => ()
       }
       let f = words_node(w, fn() { if joined() { mark() + words() } else { words() } }, fn() {
@@ -446,23 +437,58 @@ pub fn quota_worded_node(
   q : () -> Json?,
   gap? : Double = 8.0,
   tips? : TipLayer,
+  room_w? : () -> Double,
   loc~ : SourceLoc,
 ) -> Unit {
-  let windows = fn() {
-    match chip_field(q(), "windows") {
-      Some(Array(a)) => a
-      _ => []
-    }
-  }
   parent.show(fn() { has_quota(q()) }, fn(x) {
-    x.by_room(loc~, fn(held, given) {
+    let windows_sig = @signals.computed(fn(_) {
+      match chip_field(q(), "windows") {
+        Some(Array(a)) => a
+        _ => []
+      }
+    })
+    let windows = fn() { windows_sig.get() }
+    let parts_sig = @signals.computed(fn(_) { quota_parts(windows()) })
+    let parts = fn() { parts_sig.get() }
+    let pooled_sig = @signals.computed(fn(_) { parts().iter().any(fn(p) { p.0 != "" }) })
+    let pooled = fn() { pooled_sig.get() }
+    let part = fn(k : Int) { parts().get(k).unwrap_or(("", [])) }
+    let build = fn(held : @view.View, avail_w : () -> Double) {
       // (how wide a line of its chips said `form`'s way stands, `gap` apart: each chip its words' room and theirs)
       let wide = fn(form : Int) {
         let look = @ui.style_words(chip_text)
         let label_look = @ui.style_words(chip_label_text)
         let size = node_sp(held, look.size)
-        let fig_w = fn(s : String) { if s == "" { 0.0 } else { node_words_w(s, size, weight=look.weight) } }
-        let mark_w = fn(s : String) { if s == "" { 0.0 } else { node_words_w(s, size, weight=label_look.weight) } }
+        let fig_cache : Map[String, Double] = Map([])
+        let mark_cache : Map[String, Double] = Map([])
+        let fig_w = fn(s : String) {
+          if s == "" {
+            0.0
+          } else {
+            match fig_cache.get(s) {
+              Some(w) => w
+              None => {
+                let w = node_words_w(s, size, weight=look.weight)
+                fig_cache[s] = w
+                w
+              }
+            }
+          }
+        }
+        let mark_w = fn(s : String) {
+          if s == "" {
+            0.0
+          } else {
+            match mark_cache.get(s) {
+              Some(w) => w
+              None => {
+                let w = node_words_w(s, size, weight=label_look.weight)
+                mark_cache[s] = w
+                w
+              }
+            }
+          }
+        }
         let side = @ui.Space::S2.px()
         let mut used = 0.0
         for i, w in windows() {
@@ -478,96 +504,105 @@ pub fn quota_worded_node(
         }
         used
       }
-      let form = fn() {
-        if wide(1) <= given.width() + 0.01 {
+      let wide1_sig = @signals.computed(fn(_) {
+        let _ = theme()
+        let _ = held.words_scale()
+        wide(1)
+      })
+      let wide2_sig = @signals.computed(fn(_) {
+        let _ = theme()
+        let _ = held.words_scale()
+        wide(2)
+      })
+      let form_sig = @signals.computed(fn(_) {
+        if wide1_sig.get() <= avail_w() + 0.01 {
           1
         } else {
           2
         }
-      }
-      // (where its windows come in pools, on one line where their marks fit it, else on its lines, each pool's under its
-      // group's name: both made in its one box, which lays out one of them by the room, a row of chips or a column of
-      // lines; an allowance with no pools makes its chips alone, as many nodes as a line of them takes)
-      let parts = fn() { quota_parts(windows()) }
-      let pooled = fn() { parts().iter().any(fn(p) { p.0 != "" }) }
-      let lined = fn() { pooled() && !(wide(2) <= given.width() + 0.01) }
-      let part = fn(k : Int) { parts().get(k).unwrap_or(("", [])) }
-      let label_w = fn() { nav_quota_label_w(held, parts()) }
-      // (a window's key its place among them; a pool's line's, `lines_from` on from its place among the pools)
-      let lines_from = 1000
-      held.box(fn(r) {
-        r
-        .row(By(fn() { !lined() }))
-        .lines_up(By(fn() { if lined() { Some(Start) } else { Some(Middle) } }))
-        .gap(By(fn() { if lined() { @ui.Space::S1_5.px() } else { gap } }))
-        .wraps(By(fn() { if lined() { None } else { Some(gap) } }))
-        |> ignore
-        r.each(
-          fn() {
-            let ws = Array::makei(windows().length(), fn(i) { i })
-            if pooled() {
-              ws + Array::makei(parts().length(), fn(k) { lines_from + k })
-            } else {
-              ws
-            }
-          },
-          fn(i) { i },
-          fn(c, i) {
-            let i = i.untracked()
-            if i < lines_from {
-              // (a window as a chip of the line, by its name where the line has the room, else by its mark)
-              let w = fn() { windows().get(i) }
-              c.laid_nowhere(By(lined)) |> ignore
-              fill_chip_node(
-                c,
-                fn() { chip_left(w()) },
-                fn() { chip_str(w(), "level") },
-                fn() { quota_worded(w(), form()).0 },
-                fn() { quota_figure(w()) },
-                label_muted=true,
-                refill=fn() { quota_is_refill(w()) },
-                said=fn() { quota_said(w()) },
-                tips?,
-              )
-              |> ignore
-            } else {
-              // (a pool's line: its name in a column as wide as the widest pool's, its short capsules beside it)
-              let k = i - lines_from
-              c.laid_nowhere(By(fn() { !lined() })).width_share(Is(1.0)) |> ignore
-              style_node(c, fn() { quota_chips_part.then(@ui.style(gap=room(gap))) })
-              c.show(fn() { part(k).0 != "" }, fn(l) {
-                l.width(By(fn() { Some(label_w()) })).shrink(Is(0.0)) |> ignore
-                words_node(l, fn() { part(k).0 }, fn() { nav_quota_group }) |> ignore
-              })
-              c.box(fn(cs) {
-                style_node(cs, fn() { quota_chips_row.then(@ui.style(gap=room(gap))) })
-                cs.grow(Is(1.0)).min_width(Is(Some(0.0))).wraps(Is(Some(quota_chips_part_lines))) |> ignore
-                let ws = fn() { part(k).1 }
-                cs.each(fn() { Array::makei(ws().length(), fn(j) { j }) }, fn(j) { j }, fn(d, j) {
-                  let j = j.untracked()
-                  let w = fn() { ws().get(j) }
-                  fill_chip_node(
-                    d,
-                    fn() { chip_left(w()) },
-                    fn() { chip_str(w(), "level") },
-                    fn() { quota_line_mark(part(k).0, w()) },
-                    fn() { quota_figure(w()) },
-                    label_muted=true,
-                    refill=fn() { quota_is_refill(w()) },
-                    said=fn() { quota_said(w()) },
-                    tips?,
-                  )
-                  |> ignore
-                })
-              })
-              |> ignore
-            }
-          },
-        )
       })
-      |> ignore
-    })
-    |> ignore
+      let form = fn() { form_sig.get() }
+      let lined_sig = @signals.computed(fn(_) { pooled() && !(wide2_sig.get() <= avail_w() + 0.01) })
+      let lined = fn() { lined_sig.get() }
+      let label_w_sig = @signals.computed(fn(_) {
+        let _ = theme()
+        let _ = held.words_scale()
+        nav_quota_label_w(held, parts())
+      })
+      let label_w = fn() { label_w_sig.get() }
+      // (where its windows come in pools, on one line where their marks fit it, else on its lines, each pool's under its
+      // group's name: only the active branch is mounted)
+      held.pick(at_once=true, lined, fn(r, is_lined) {
+        if is_lined {
+          r
+          .row(Is(false))
+          .lines_up(Is(Some(Start)))
+          .gap(Is(@ui.Space::S1_5.px()))
+          .wraps(Is(None))
+          |> ignore
+          r.each(fn() { Array::makei(parts().length(), fn(k) { k }) }, fn(k) { k }, fn(c, k) {
+            // (a pool's line: its name in a column as wide as the widest pool's, its short capsules beside it)
+            let k = k.untracked()
+            c.width_share(Is(1.0)) |> ignore
+            style_node(c, fn() { quota_chips_part.then(@ui.style(gap=room(gap))) })
+            c.show(fn() { part(k).0 != "" }, fn(l) {
+              l.width(By(fn() { Some(label_w()) })).shrink(Is(0.0)) |> ignore
+              words_node(l, fn() { part(k).0 }, fn() { nav_quota_group }) |> ignore
+            })
+            c.box(fn(cs) {
+              style_node(cs, fn() { quota_chips_row.then(@ui.style(gap=room(gap))) })
+              cs.grow(Is(1.0)).min_width(Is(Some(0.0))).wraps(Is(Some(quota_chips_part_lines))) |> ignore
+              let ws = fn() { part(k).1 }
+              cs.each(fn() { Array::makei(ws().length(), fn(j) { j }) }, fn(j) { j }, fn(d, j) {
+                let j = j.untracked()
+                let w = fn() { ws().get(j) }
+                fill_chip_node(
+                  d,
+                  fn() { chip_left(w()) },
+                  fn() { chip_str(w(), "level") },
+                  fn() { quota_line_mark(part(k).0, w()) },
+                  fn() { quota_figure(w()) },
+                  label_muted=true,
+                  refill=fn() { quota_is_refill(w()) },
+                  said=fn() { quota_said(w()) },
+                  tips?,
+                )
+                |> ignore
+              })
+            })
+            |> ignore
+          })
+        } else {
+          r
+          .row(Is(true))
+          .lines_up(Is(Some(Middle)))
+          .gap(Is(gap))
+          .wraps(Is(Some(gap)))
+          |> ignore
+          r.each(fn() { Array::makei(windows().length(), fn(i) { i }) }, fn(i) { i }, fn(c, i) {
+            // (a window as a chip of the line, by its name where the line has the room, else by its mark)
+            let i = i.untracked()
+            let w = fn() { windows().get(i) }
+            fill_chip_node(
+              c,
+              fn() { chip_left(w()) },
+              fn() { chip_str(w(), "level") },
+              fn() { quota_worded(w(), form()).0 },
+              fn() { quota_figure(w()) },
+              label_muted=true,
+              refill=fn() { quota_is_refill(w()) },
+              said=fn() { quota_said(w()) },
+              tips?,
+            )
+            |> ignore
+          })
+        }
+      })
+    }
+    match room_w {
+      Some(rw) => x.box(made_for=loc, fn(held) { build(held, rw) }) |> ignore
+      None => x.by_room(loc~, fn(held, given) { build(held, fn() { given.width() }) }) |> ignore
+    }
   })
 }
 
@@ -621,9 +656,51 @@ fn nav_quota_chip_w(v : @view.View) -> (String, String, Bool) -> Double {
   let label_look = @ui.style_words(chip_label_text)
   let refill_label_look = @ui.style_words(chip_refill_label_text)
   let size = node_sp(v, look.size)
-  let fig_w = fn(s : String) { if s == "" { 0.0 } else { node_words_w(s, size, weight=look.weight) } }
-  let mark_w = fn(s : String) { if s == "" { 0.0 } else { node_words_w(s, size, weight=label_look.weight) } }
-  let refill_mark_w = fn(s : String) { if s == "" { 0.0 } else { node_words_w(s, size, weight=refill_label_look.weight) } }
+  let fig_cache : Map[String, Double] = Map([])
+  let mark_cache : Map[String, Double] = Map([])
+  let refill_mark_cache : Map[String, Double] = Map([])
+  let fig_w = fn(s : String) {
+    if s == "" {
+      0.0
+    } else {
+      match fig_cache.get(s) {
+        Some(w) => w
+        None => {
+          let w = node_words_w(s, size, weight=look.weight)
+          fig_cache[s] = w
+          w
+        }
+      }
+    }
+  }
+  let mark_w = fn(s : String) {
+    if s == "" {
+      0.0
+    } else {
+      match mark_cache.get(s) {
+        Some(w) => w
+        None => {
+          let w = node_words_w(s, size, weight=label_look.weight)
+          mark_cache[s] = w
+          w
+        }
+      }
+    }
+  }
+  let refill_mark_w = fn(s : String) {
+    if s == "" {
+      0.0
+    } else {
+      match refill_mark_cache.get(s) {
+        Some(w) => w
+        None => {
+          let w = node_words_w(s, size, weight=refill_label_look.weight)
+          refill_mark_cache[s] = w
+          w
+        }
+      }
+    }
+  }
   fn(mark, words, refill) {
     let side = @ui.Space::S1_25.px()
     let gap = @ui.Space::S1.px()
@@ -642,12 +719,32 @@ fn nav_quota_chip_w(v : @view.View) -> (String, String, Bool) -> Double {
 /// all of it needs on one line (nav_quota_line_node): what a sidebar's rows of a provider are laid out by
 /// (nav_quota_chips_node's `widest`).
 pub fn nav_quota_room_node(v : @view.View, q : Json?) -> (Double, Array[Double]) {
+  guard has_quota(q) else { return (0.0, []) }
   let windows = match chip_field(q, "windows") {
     Some(Array(a)) => a
     _ => []
   }
   let chip = nav_quota_chip_w(v)
-  (nav_quota_line_node(v, q), windows.map(fn(w) { chip(quota_mark(Some(w)), quota_figure(Some(w)), quota_is_refill(Some(w))) }))
+  let parts = quota_parts(windows)
+  let label_w = nav_quota_label_w(v, parts)
+  let widths = windows.map(fn(w) { chip(quota_mark(Some(w)), quota_figure(Some(w)), quota_is_refill(Some(w))) })
+  let line_w = if label_w > 0.0 {
+    parts.fold(init=0.0, fn(most, p) {
+      let mut sum = if p.0 == "" { 0.0 } else { label_w + @ui.Space::S1_5.px() }
+      for i, w in p.1 {
+        sum += chip(quota_part_mark(p.0, Some(w)), quota_figure(Some(w)), quota_is_refill(Some(w))) +
+          (if i > 0 { @ui.Space::S1.px() } else { 0.0 })
+      }
+      dmax(most, sum)
+    })
+  } else {
+    let mut sum = 0.0
+    for i, cw in widths {
+      sum += cw + (if i > 0 { @ui.Space::S1.px() } else { 0.0 })
+    }
+    sum
+  }
+  (line_w, widths)
 }
 
 ///|
@@ -693,15 +790,9 @@ pub fn nav_quota_chips_node(
   at : ListAt,
   widest : () -> (Double, Array[Double]),
   tips? : TipLayer,
+  room_w? : () -> Double,
   loc~ : SourceLoc,
 ) -> Unit {
-  let windows = fn() {
-    match chip_field(q(), "windows") {
-      Some(Array(a)) => a
-      _ => []
-    }
-  }
-  let parts = fn() { quota_parts(windows()) }
   let inset = @ui.capsule_in(row_corner, fill_chip_small_h)
   let side = band_pad_in(at)
   // (a capsule reaches the corner until it is past the outer corner's circle-equivalent radius)
@@ -729,18 +820,33 @@ pub fn nav_quota_chips_node(
       |> ignore
     })
   }
-  // (the pool at `k` of them as it is now)
-  let part = fn(k : Int) { parts().get(k).unwrap_or(("", [])) }
-  let part_keys = fn() { Array::makei(parts().length(), fn(k) { k }) }
   parent.show(fn() { has_quota(q()) }, fn(x) {
+    let windows_sig = @signals.computed(fn(_) {
+      match chip_field(q(), "windows") {
+        Some(Array(a)) => a
+        _ => []
+      }
+    })
+    let windows = fn() { windows_sig.get() }
+    let parts_sig = @signals.computed(fn(_) { quota_parts(windows()) })
+    let parts = fn() { parts_sig.get() }
+    // (the pool at `k` of them as it is now)
+    let part = fn(k : Int) { parts().get(k).unwrap_or(("", [])) }
+    let part_keys = fn() { Array::makei(parts().length(), fn(k) { k }) }
     // (all of what its line leaves it: the room it is fitted to)
     x.grow(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-    x.by_room(loc~, fn(held, given) {
+    let build = fn(held : @view.View, avail_w : () -> Double) {
       // (on one line where the room the widest of its provider's rows needs fits beside the corner's: else on lines)
-      let room = fn() { given.width() - (inset - side) - clear }
-      let one = fn() { dmax(widest().0, nav_quota_line_node(held, q())) <= room() + 0.01 }
+      let room = fn() { avail_w() - (inset - side) - clear }
+      let line_w_sig = @signals.computed(fn(_) {
+        let _ = theme()
+        let _ = held.words_scale()
+        nav_quota_line_node(held, q())
+      })
+      let one_sig = @signals.computed(fn(_) { dmax(widest().0, line_w_sig.get()) <= room() + 0.01 })
+      let one = fn() { one_sig.get() }
       // (on lines: as many as the widest of its provider's take, each of this row's as many of its chips as share them)
-      let per = fn() {
+      let per_sig = @signals.computed(fn(_) {
         let n = windows().length()
         if one() {
           n
@@ -748,58 +854,61 @@ pub fn nav_quota_chips_node(
           let lines = nav_quota_lines(widest().1, room())
           dmax(1.0, (n.to_double() / lines.to_double()).ceil()).to_int()
         }
-      }
-      let label_w = fn() { nav_quota_label_w(held, parts()) }
+      })
+      let per = fn() { per_sig.get() }
+      let label_w_sig = @signals.computed(fn(_) {
+        let _ = theme()
+        let _ = held.words_scale()
+        nav_quota_label_w(held, parts())
+      })
+      let label_w = fn() { label_w_sig.get() }
       held.pick(at_once=true, fn() { label_w() > 0.0 }, fn(b, pooled) {
         b.width_share(Is(1.0)) |> ignore
         if pooled {
-          // one line a pool, its name in a column of its own, its short capsules beside it
-          b.box(fn(a) {
-            a
-            .laid_nowhere(By(fn() { !one() }))
-            .width_share(Is(1.0))
-            .margin(By(fn() { (inset - side, pad_y(), 0.0, pad_y()) }))
-            .padding(Is((0.0, 0.0, clear, 0.0)))
-            .gap(Is(@ui.Space::px(S1)))
-            |> ignore
-            a.each(part_keys, fn(k) { k }, fn(p, k) {
-              let k = k.untracked()
-              p.row(Is(true)).width_share(Is(1.0)).lines_up(Is(Some(Middle))).gap(Is(@ui.Space::px(S1_5))) |> ignore
-              p.show(fn() { part(k).0 != "" }, fn(l) {
-                l.width(By(fn() { Some(label_w()) })) |> ignore
-                words_node(l, fn() { part(k).0 }, fn() { nav_quota_group }) |> ignore
-              })
-              p.box(fn(r) {
-                style_node(r, fn() { quota_chips_row.then(@ui.style(gap=S1)) }, in_row=true)
-                chips(r, fn() { part(k).1 }, fn() { part(k).0 })
-              })
+          b.pick(at_once=true, one, fn(a, single) {
+            if single {
+              // one line a pool, its name in a column of its own, its short capsules beside it
+              a
+              .width_share(Is(1.0))
+              .margin(By(fn() { (inset - side, pad_y(), 0.0, pad_y()) }))
+              .padding(Is((0.0, 0.0, clear, 0.0)))
+              .gap(Is(@ui.Space::px(S1)))
               |> ignore
-            })
-          })
-          |> ignore
-          // on lines: a pool's name over its capsules, each pool's on as many lines as they take
-          b.box(fn(a) {
-            a
-            .laid_nowhere(By(one))
-            .width_share(Is(1.0))
-            .margin(By(fn() { (inset - side, pad_y(), clear, pad_y()) }))
-            .gap(Is(@ui.Space::px(S1)))
-            |> ignore
-            a.each(part_keys, fn(k) { k }, fn(p, k) {
-              let k = k.untracked()
-              p.width_share(Is(1.0)).gap(Is(@ui.Space::px(S0_5))) |> ignore
-              p.show(fn() { part(k).0 != "" }, fn(n) {
-                words_node(n, fn() { part(k).0 }, fn() { nav_quota_group }) |> ignore
+              a.each(part_keys, fn(k) { k }, fn(p, k) {
+                let k = k.untracked()
+                p.row(Is(true)).width_share(Is(1.0)).lines_up(Is(Some(Middle))).gap(Is(@ui.Space::px(S1_5))) |> ignore
+                p.show(fn() { part(k).0 != "" }, fn(l) {
+                  l.width(By(fn() { Some(label_w()) })) |> ignore
+                  words_node(l, fn() { part(k).0 }, fn() { nav_quota_group }) |> ignore
+                })
+                p.box(fn(r) {
+                  style_node(r, fn() { quota_chips_row.then(@ui.style(gap=S1)) }, in_row=true)
+                  chips(r, fn() { part(k).1 }, fn() { part(k).0 })
+                })
+                |> ignore
               })
-              p.box(fn(r) {
-                style_node(r, fn() { quota_chips_part.then(@ui.style(gap=S1)) })
-                r.wraps(Is(Some(@ui.Space::S1.px()))) |> ignore
-                chips(r, fn() { part(k).1 }, fn() { part(k).0 })
-              })
+            } else {
+              // on lines: a pool's name over its capsules, each pool's on as many lines as they take
+              a
+              .width_share(Is(1.0))
+              .margin(By(fn() { (inset - side, pad_y(), clear, pad_y()) }))
+              .gap(Is(@ui.Space::px(S1)))
               |> ignore
-            })
+              a.each(part_keys, fn(k) { k }, fn(p, k) {
+                let k = k.untracked()
+                p.width_share(Is(1.0)).gap(Is(@ui.Space::px(S0_5))) |> ignore
+                p.show(fn() { part(k).0 != "" }, fn(n) {
+                  words_node(n, fn() { part(k).0 }, fn() { nav_quota_group }) |> ignore
+                })
+                p.box(fn(r) {
+                  style_node(r, fn() { quota_chips_part.then(@ui.style(gap=S1)) })
+                  r.wraps(Is(Some(@ui.Space::S1.px()))) |> ignore
+                  chips(r, fn() { part(k).1 }, fn() { part(k).0 })
+                })
+                |> ignore
+              })
+            }
           })
-          |> ignore
         } else {
           // every window a marked capsule, on one line where it has the room, else on as many as per() says
           b
@@ -813,7 +922,10 @@ pub fn nav_quota_chips_node(
           })
         }
       })
-    })
-    |> ignore
+    }
+    match room_w {
+      Some(rw) => x.box(made_for=loc, fn(held) { build(held, rw) }) |> ignore
+      None => x.by_room(loc~, fn(held, given) { build(held, fn() { given.width() }) }) |> ignore
+    }
   })
 }

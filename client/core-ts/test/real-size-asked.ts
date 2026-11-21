@@ -598,6 +598,21 @@ export const CAUSES: Record<string, Cause> = {
   // A draft of 待派发 edited on another device of the person's, carried here as a station told it (views/board-drafts.ts
   // `carry`: the device's records written).
   boardDraft: { run: ({ t, base }) => t.data.put("boardDrafts", "ws", boardDraftsChanged(base, t.host.nowMs())) },
+  // Cold-start `POST /changed/shared` quiet delta: 0 changed shared rows and unchanged marks via `applySharedChanged`
+  // (verifies zero chat row reads/writes and zero view walk growth with shown or total chats).
+  sharedDelta: {
+    run: ({ t }) => {
+      t.data.applySharedChanged(
+        station,
+        [],
+        [],
+        false,
+        (r) => ({ row: r, place: sharedPlace(r) }),
+        { reads: new Map(), pins: new Map(), kept: new Set(), dismissed: new Set() },
+        { me: PEOPLE[0]!.email, selves: [], lang: "zh", hiddenKnown: false, mutedKnown: false, noRouteBuild: null },
+      );
+    },
+  },
 };
 
 /// What goes out to each of `ASKED` as each cause happens, on a rig of its own (the chat's six pages' too where it is

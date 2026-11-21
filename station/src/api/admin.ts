@@ -57,7 +57,7 @@ import { tr } from "../ops/i18n.ts";
 /// dismissed), which change nothing anyone else sees.
 const OWN_MARKS = /^\/*threads\/+[^/]+\/+(read|hidden|muted|dismissed|closed-card)(?:\/.*)?$/;
 /// Reads that send what the client holds (routes/changed.ts), and several reads in one (`batch`).
-const READS = /^\/*(changed\/+(chats|threads|sessions)|batch)$/;
+const READS = /^\/*(changed\/+(chats|threads|sessions|shared)|batch)$/;
 /// What a batch may read (POST /batch): the history a client brings onto its device in the background, each a read
 /// whose answer is JSON. At most BATCH_MOST of them, BATCH_AT_ONCE at a time.
 const BATCHED = [/^\/threads\/\d+\/entries$/, /^\/threads\/\d+\/letters$/, /^\/threads\/\d+$/, /^\/sessions\/[^/]+$/, /^\/sessions\/[^/]+\/timeline$/];

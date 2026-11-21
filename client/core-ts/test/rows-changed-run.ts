@@ -5,7 +5,8 @@
 import assert from "node:assert/strict";
 import { isMainThread, parentPort, workerData } from "node:worker_threads";
 import { worded } from "../src/chat-row.ts";
-import { rowWords, rowsShared, sharedPlace } from "../src/station/rows-made.ts";
+import { digest } from "../src/digest.ts";
+import { OwnHeld, marksOf, rowWords, rowsShared, sharedPlace } from "../src/station/rows-made.ts";
 import { glanced, work } from "../src/work.ts";
 import type { HttpRequest } from "../src/host.ts";
 import { CHAT, SIZE, address, fixture } from "./real-size.ts";
@@ -41,6 +42,9 @@ export class Station {
   /// Its chat list as it makes it for everyone (chat-row.ts), by row id.
   readonly shared = new Map<string, J>();
   marks: J;
+  changedSharedCalls = 0;
+  wholeSharedCalls = 0;
+  marksOwnCalls = 0;
   constructor() {
     const of = (topic: string) => JSON.parse(JSON.stringify(fixture(BASE).find(([t]) => t.topic === topic && t.station === address(0))![1]).replaceAll("me@x.com", ME)) as J[];
     for (const s of of("sessions")) this.sessions.set(s.key, s);
@@ -91,15 +95,35 @@ export class Station {
   /// Its answer to a request of the core's (undefined: station-fixture's table's).
   reply(req: HttpRequest): unknown {
     const path = req.url.replace("https://stillfail.test/admin/api", "");
+    if (req.method === "POST" && path === "/changed/shared") {
+      this.changedSharedCalls++;
+      const held = (req.body ? (JSON.parse(new TextDecoder().decode(req.body)) as { held?: Record<string, string> }).held : undefined) ?? {};
+      const all = [...this.shared.values()];
+      return {
+        order: all.map((r) => String(r.id)),
+        rows: all.filter((r) => held[String(r.id)] !== digest(r)),
+      };
+    }
     if (req.method !== "GET") return undefined;
     if (path === "/sessions") return [...this.sessions.values()];
     if (path === "/threads") return [...this.threads.values()];
-    if (path === "/chats?shared=1") return [...this.shared.values()];
+    if (path === "/chats?shared=1") {
+      this.wholeSharedCalls++;
+      return [...this.shared.values()];
+    }
     const thread = /^\/threads\/(\d+)$/.exec(path);
     if (thread) return this.threads.get(Number(thread[1])) ?? status(404, { error: "no such chat" });
     if (path.startsWith("/chats?marks=1")) {
       const q = new URLSearchParams(path.slice(path.indexOf("?") + 1));
       const scoped = q.has("session") || q.has("thread");
+      if (q.get("own") === "1") {
+        this.marksOwnCalls++;
+        const m = this.marks;
+        return structuredClone({
+          kept: m.kept, hidden: m.hidden, muted: m.muted, pins: m.pins,
+          selves: m.selves, dismissed: m.dismissed, reads: m.reads,
+        });
+      }
       return this.marksOf(scoped ? new Set(q.getAll("session")) : null, scoped ? new Set(q.getAll("thread").map(Number)) : null);
     }
     return undefined;
@@ -133,12 +157,27 @@ export function stored(s: Started): Row[] {
     .map((r) => ({ id: String(r[0]), json: String(r[1]), unread: r[2] as number | null, ord: r[3] as number }));
 }
 
-/// What a core started anew makes of what this one holds (its shared list and viewer marks): rows-made.ts with an empty
-/// memo, in the viewer's words, each id once.
-export function madeAnew(s: Started): Row[] {
-  const link = s.core.inner.stations.link(ST)!;
+/// Pure canonical deep equality for JSON values (independent of object key order and of production `digest`).
+function sameJsonValue(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (a === null || b === null || typeof a !== "object" || typeof b !== "object") return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((v, i) => sameJsonValue(v, b[i]));
+  }
+  const ao = a as Record<string, unknown>;
+  const bo = b as Record<string, unknown>;
+  const ak = Object.keys(ao);
+  const bk = Object.keys(bo);
+  if (ak.length !== bk.length) return false;
+  return ak.every((k) => Object.prototype.hasOwnProperty.call(bo, k) && sameJsonValue(ao[k], bo[k]));
+}
+
+/// Independent station ground truth: built solely from the fixture's authoritative `station.shared` and `station.marks`
+/// (never reading `link.sharedRows` or `link.own`), for verifying converged state after whole/reconnect reconciliation.
+export function madeFromStation(station: Station): Row[] {
   const words = rowWords();
-  const rows = rowsShared(link.sharedRows!.values(), link.own!, ME, words);
+  const own = new OwnHeld(marksOf(station.marks)!, ME);
+  const rows = rowsShared(station.shared.values(), own, ME, words);
   const seen = new Set<string>();
   return rows.flatMap((r) => {
     if (seen.has(r.id)) return [];
@@ -147,7 +186,24 @@ export function madeAnew(s: Started): Row[] {
   });
 }
 
-/// Where two lists of rows differ: an id at a place, or a field of a row (none: the same).
+/// What a core started anew makes of the station's shared list and the in-process viewer's marks: rows-made.ts with an
+/// empty memo, in the viewer's words, each id once.
+export function madeAnew(s: Started, station?: Station): Row[] {
+  const link = s.core.inner.stations.link(ST)!;
+  const words = rowWords();
+  const source: Iterable<J> = station
+    ? station.shared.values()
+    : link.sharedRows!.values();
+  const rows = rowsShared(source, link.own!, ME, words);
+  const seen = new Set<string>();
+  return rows.flatMap((r) => {
+    if (seen.has(r.id)) return [];
+    seen.add(r.id);
+    return [{ id: r.id, ...asStored(worded(r, words)), ord: sharedPlace(r) }];
+  });
+}
+
+/// Where two lists of rows differ: an id at a place, or a field of a row (canonical deep equality; none: the same).
 export function differences(stored: Row[], made: Row[]): string[] {
   const out: string[] = [];
   for (let i = 0; i < Math.max(stored.length, made.length); i++) {
@@ -163,9 +219,8 @@ export function differences(stored: Row[], made: Row[]): string[] {
     const x = JSON.parse(a!.json) as J;
     const y = JSON.parse(b!.json) as J;
     for (const k of new Set([...Object.keys(x), ...Object.keys(y)])) {
-      if (JSON.stringify(x[k]) !== JSON.stringify(y[k])) out.push(`${a!.id} ${k}: stored ${JSON.stringify(x[k])}, made ${JSON.stringify(y[k])}`);
+      if (!sameJsonValue(x[k], y[k])) out.push(`${a!.id} ${k}: stored ${JSON.stringify(x[k])}, made ${JSON.stringify(y[k])}`);
     }
-    if (out.length === 0) out.push(`${a!.id}: the same fields in another order`);
   }
   return out;
 }
@@ -415,7 +470,8 @@ export async function probed(): Promise<{ chats: number; did: Record<string, Did
     await s.host.time.pass(settled(name), 100);
     const looked = Object.fromEntries(Object.entries(glanced).map(([k, n]) => [k, n - from.glanced[k as keyof typeof glanced]])) as Did["glanced"];
     did[name] = { made: work.chatRowsMade - from.made, serialised: work.chatRowsSerialised - from.serialised, chatJson: chatJson() - from.chatJson, glanced: looked };
-    for (const d of differences(stored(s), madeAnew(s))) differ.push(`${name}: ${d}`);
+    const expected = SHARED_WHOLE.has(name) ? madeFromStation(station) : madeAnew(s, station);
+    for (const d of differences(stored(s), expected)) differ.push(`${name}: ${d}`);
   }
   const chats = stored(s).length;
   s.core.close();
@@ -431,8 +487,12 @@ export async function movedOnce(): Promise<{ chats: number; put: number; placed:
   const s = await startedOn(station);
   const sql = s.core.inner.data.of(ST)!.sql as J;
   const ids = stored(s).map((r) => r.id);
-  // (the places of before, and a row kept beside each record as a list keeps the rows it shows: db/kept.ts listRow)
+  // (the places of before, and a row kept beside each record as a list keeps the rows it shows: db/kept.ts listRow;
+  // an older core before sharedPlace also has no shared_sidecar/shared_meta/shared_mark baseline)
   ids.forEach((id, i) => sql.run("UPDATE chat SET ord = ? WHERE station = ? AND archived = 0 AND id = ?", [i, ST, id]));
+  sql.run("DELETE FROM shared_sidecar WHERE station = ?", [ST]);
+  sql.run("DELETE FROM shared_meta WHERE station = ?", [ST]);
+  sql.run("DELETE FROM shared_mark WHERE station = ?", [ST]);
   sql.run("INSERT OR REPLACE INTO chat_row (station, id, key, state, whole, sent) SELECT station, id, 'k', NULL, '{}', '{}' FROM chat WHERE station = ? AND archived = 0", [ST]);
   const kept = () => sql.all("SELECT count(*) FROM chat_row WHERE station = ?", [ST])[0][0] as number;
   const keptBefore = kept();
@@ -464,6 +524,79 @@ export async function movedOnce(): Promise<{ chats: number; put: number; placed:
   return out;
 }
 
+/// A real cold restart with the SQLite sidecar baseline intact and 1 shared row changed on the station while offline:
+/// verifies `POST /changed/shared` + `GET /chats?marks=1&own=1` reconcile in O(1) without calling `GET /chats?shared=1`
+/// and converge to independent station ground truth (`madeFromStation`).
+export async function coldDeltaOnce(): Promise<{
+  chats: number;
+  changedSharedCalls: number;
+  wholeSharedCalls: number;
+  marksOwnCalls: number;
+  made: number;
+  serialised: number;
+  put: number;
+  chatJson: number;
+  glanced: Record<string, number>;
+  differ: string[];
+}> {
+  const station = new Station();
+  const s = await startedOn(station);
+  const chats = stored(s).length;
+  s.core.close();
+  // Mutate exactly 1 shared row on the station while the client is closed (leaving SQLite sidecar baseline intact).
+  const target = nth(station, 6);
+  const updated = {
+    ...target,
+    title: "冷启动增量标题",
+    named: { ...(target.named ?? {}), thread: { ...(target.named?.thread ?? {}), title: "冷启动增量标题" }, firstText: null },
+  };
+  station.shared.set(updated.id, updated);
+  const changedSharedBefore = station.changedSharedCalls;
+  const wholeSharedBefore = station.wholeSharedCalls;
+  const marksOwnBefore = station.marksOwnCalls;
+  const madeBefore = work.chatRowsMade;
+  const serialisedBefore = work.chatRowsSerialised;
+  const glancedBefore = { ...glanced };
+  let put = 0;
+  let chatJson = 0;
+  for (const db of s.host.sqls.values() as Iterable<J>) {
+    const run = db.run.bind(db);
+    const all = db.all.bind(db);
+    db.run = (q: string, params?: unknown[]) => {
+      if (/^INSERT OR REPLACE INTO chat \(/.test(q)) put++;
+      return run(q, params);
+    };
+    db.all = (q: string, params?: unknown[]) => {
+      const out = all(q, params);
+      if (/^\s*SELECT\b/i.test(q) && /\b(FROM|JOIN) chat\b/.test(q) && /\bjson\b/.test(q)) chatJson += out.length;
+      return out;
+    };
+  }
+  const core = await Core.create(s.host, { clock: s.host.time.clock, sample: 0, wire: () => new HostWire(s.host) });
+  await s.host.time.pass(3000, 100);
+  const again = { ...s, core };
+  const looked = Object.fromEntries(
+    Object.entries(glanced)
+      .map(([k, n]) => [k, n - glancedBefore[k as keyof typeof glanced]])
+      .filter(([, n]) => n !== 0),
+  );
+  const out = {
+    chats,
+    changedSharedCalls: station.changedSharedCalls - changedSharedBefore,
+    wholeSharedCalls: station.wholeSharedCalls - wholeSharedBefore,
+    marksOwnCalls: station.marksOwnCalls - marksOwnBefore,
+    made: work.chatRowsMade - madeBefore,
+    serialised: work.chatRowsSerialised - serialisedBefore,
+    put,
+    chatJson,
+    glanced: looked,
+    differ: differences(stored(again), madeFromStation(station)),
+  };
+  core.close();
+  return out;
+}
+
 if (!isMainThread && (workerData as J)?.rowsChanged === true) {
-  ((workerData as J).moved === true ? movedOnce() : probed()).then((found) => parentPort!.postMessage({ size: SIZE, ...found }), (e) => parentPort!.postMessage({ error: String(e?.stack ?? e) }));
+  const mode = (workerData as J).coldDelta === true ? coldDeltaOnce() : (workerData as J).moved === true ? movedOnce() : probed();
+  mode.then((found) => parentPort!.postMessage({ size: SIZE, ...found }), (e) => parentPort!.postMessage({ error: String(e?.stack ?? e) }));
 }

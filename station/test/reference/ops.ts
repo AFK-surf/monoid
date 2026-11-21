@@ -21,7 +21,7 @@ const cursorOf = (page: string): [number, string] | null => {
 export const ops: Record<string, ReadOp> = {
   chats: (store, a) => (a.archived && typeof a.page === "string" ? archivedPage(store, a.viewer, cursorOf(a.page)) : chats(store, a.viewer, a.archived)),
   chatRows: (store, a) => chatRows(store, a.viewer, a.sessions, a.threads),
-  chatMarks: (store, a) => chatMarks(store, a.viewer, a.scope ?? null),
+  chatMarks: (store, a) => chatMarks(store, a.viewer, a.scope ?? null, a.own === true),
   sharedChats: (store, a) => sharedChatRows(store, a.viewer, a.sessions, a.threads),
   /// The chat list (or the rows some sessions and threads touch) as told to every stream that makes its sidebar of it.
   sharedOf: (store, a) => sharedOf(store, a.sessions, a.threads),

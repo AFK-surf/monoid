@@ -114,10 +114,13 @@ export function stationHost(answers: Answers) {
       if (streamType !== null) return { status: 200, headers: [["content-type", streamType]], body: new TextEncoder().encode(answers.map((a) => `${JSON.stringify(a)}\n`).join("")) };
       return jsonResponse(200, { answers });
     }
-    const list = /^\/admin\/api\/changed\/(chats|threads|sessions)(\?|$)/.exec(path);
+    const list = /^\/admin\/api\/changed\/(chats|threads|sessions|shared)(\?|$)/.exec(path);
     if (req.method === "POST" && list) {
       if (!changes.on) return jsonResponse(404, { error: `no route POST ${path.replace("/admin/api", "").split("?")[0]}` });
-      return changedOf(answer({ ...req, method: "GET", url: req.url.replace("/admin/api/changed/", "/admin/api/"), body: null }), list[1] === "sessions" ? "key" : "id", req);
+      const targetUrl = list[1] === "shared"
+        ? req.url.replace("/admin/api/changed/shared", "/admin/api/chats?shared=1")
+        : req.url.replace("/admin/api/changed/", "/admin/api/");
+      return changedOf(answer({ ...req, method: "GET", url: targetUrl, body: null }), list[1] === "sessions" ? "key" : "id", req);
     }
     let key = `${req.method} ${path.replace("/admin/api", "")}`;
     // A session's detail with its latest turns alone (`?turns=`): as a station from before, which lists them all, unless
@@ -125,7 +128,11 @@ export function stationHost(answers: Answers) {
     if (!(key in answers) && /^GET \/sessions\/[^/?]+\?turns=\d+(&jobs=now)?$/.test(key)) key = key.split("?")[0]!;
     // The archive a page at a time (`&page=`): as a station from before, the whole list, unless the test answers pages.
     if (!(key in answers) && /^GET \/chats\?archived=1&page=/.test(key)) key = "GET /chats?archived=1";
-    // The sidebar's marks (`marks=1`) and shared list (`shared=1`): empty defaults unless the test answers them.
+    // The sidebar's marks (`marks=1&own=1` -> `marks=1`) and shared list (`shared=1`): empty defaults unless the test answers them.
+    if (!(key in answers) && key.startsWith("GET /chats?marks=1&own=1")) {
+      const legacy = key.replace("&own=1", "");
+      if (legacy in answers) key = legacy;
+    }
     if (!(key in answers) && /^GET \/chats\?marks=1/.test(key)) return jsonResponse(200, MARKS);
     if (!(key in answers) && key === "GET /chats?shared=1") return jsonResponse(200, []);
     // The open jobs without their chats (`chats=0`): as a station from before, the list as the test answers it.

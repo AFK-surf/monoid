@@ -176,6 +176,111 @@ if (!isMainThread && (workerData as J)?.viewWork === true) {
   measure((workerData as J).shown).then((f) => parentPort!.postMessage(f), (e) => parentPort!.postMessage({ error: String(e?.stack ?? e) }));
 }
 
+/// Measures the exact same 1-row title mutation (`chatRenamed(base)[RENAMED_ROW]`) on two identical fresh `held(false)`
+/// rigs with the same `ASKED` subscription set and `shown` scaling: existing `renamed` (`putChat`) vs `applySharedChanged`
+/// (1 changed row). Avoids adding to `OVER_SHOWN` while proving 1-row `applySharedChanged` does no more work than `renamed`.
+async function measureSharedDeltaVsRenamed(shown: number): Promise<{ renamed: Cost; sharedDelta1Row: Cost }> {
+  const { holdLanguage } = await import("../src/i18n.ts");
+  const { walked, walkingBy } = await import("../src/work.ts");
+  const { sharedPlace } = await import("../src/station/rows-made.ts");
+  const asked = await import("./real-size-asked.ts");
+  const size = await import("./real-size.ts");
+  holdLanguage();
+  if (shown !== 1) {
+    for (const name of Object.keys(asked.WINDOWS)) asked.WINDOWS[name] = asked.WINDOWS[name]! * shown;
+    size.JOB_LOG_LINES.forEach((n, i) => (size.JOB_LOG_LINES[i] = n * shown));
+    for (const a of Object.values(asked.ASKED)) {
+      if (typeof a.limit === "number") a.limit = a.limit * shown;
+      if (a.topic === "jobLog" && typeof a.lines === "number") a.lines = a.lines * shown;
+      if (a.topic === "usage" && typeof a.days === "number") a.days = a.days * shown;
+    }
+  }
+  const snap = (): Walked => ({ ...walked });
+  const enc = new TextEncoder();
+  const took = (h: J, sent: Record<string, Sent>): number => {
+    const ms = h.t.host.takeEmitted();
+    for (const [, m] of ms) {
+      const name = typeof m?.id === "number" && m.id <= asked.AGAIN ? h.names[m.id - 1] : undefined;
+      if (name === undefined) continue;
+      const topic = String(asked.ASKED[name]!.topic);
+      const s = (sent[topic] ??= { messages: 0, ops: 0, bytes: 0 });
+      s.messages++;
+      s.ops += Array.isArray(m.delta) ? m.delta.length : 1;
+      s.bytes += enc.encode(JSON.stringify(m)).length;
+    }
+    return ms.length;
+  };
+  const rest = async (h: J, sent: Record<string, Sent>) => {
+    for (let i = 0; i < 100; i++) {
+      const before = walked.reads + walked.recomputes;
+      await h.t.host.settle();
+      if (took(h, sent) === 0 && walked.reads + walked.recomputes === before) return;
+    }
+    throw new Error("the core did not come to rest");
+  };
+  const runOne = async (mode: "renamed" | "sharedDelta1Row"): Promise<Cost> => {
+    const h = await asked.held(false);
+    try {
+      if (shown !== 1) {
+        const n = h.chat * shown;
+        for (const [topic, value] of size.fixture(h.base, n)) {
+          if (topic.topic === "thread" && topic.station === size.CHAT.station && topic.thread === size.CHAT.thread) h.t.set(topic, value);
+        }
+        (h as { chat: number }).chat = n;
+      }
+      await rest(h, {});
+      const station = size.address(0);
+      const updated = size.chatRenamed(h.base)[size.RENAMED_ROW]!;
+      const from = snap();
+      const sent: Record<string, Sent> = {};
+      const by = new Map<string, Walked>();
+      walkingBy(by);
+      if (mode === "renamed") {
+        asked.CAUSES.renamed!.run(h);
+      } else {
+        h.t.data.applySharedChanged(
+          station,
+          [{ row: updated, place: sharedPlace(updated), sidecar: { digest: "delta-renamed", said: null, named: null, quotedOnly: false, localAdmin: false } }],
+          [],
+          false,
+          (r: J) => ({ row: r, place: sharedPlace(r) }),
+          { reads: new Map(), pins: new Map(), kept: new Set(), dismissed: new Set() },
+          { me: size.PEOPLE[0]!.email, selves: [], lang: "zh", hiddenKnown: false, mutedKnown: false, noRouteBuild: null },
+        );
+      }
+      for (let t = 0; t < 1000; t += 100) {
+        await h.t.host.time.pass(100);
+        took(h, sent);
+      }
+      await rest(h, sent);
+      walkingBy(null);
+      const total = snap();
+      for (const k of Object.keys(total) as (keyof Walked)[]) total[k] -= from[k];
+      return { total, by: Object.fromEntries(by), sent };
+    } finally {
+      h.t.store.runner.shutdown();
+    }
+  };
+  return { renamed: await runOne("renamed"), sharedDelta1Row: await runOne("sharedDelta1Row") };
+}
+
+if (!isMainThread && (workerData as J)?.compareSharedDelta === true) {
+  measureSharedDeltaVsRenamed((workerData as J).shown).then((f) => parentPort!.postMessage(f), (e) => parentPort!.postMessage({ error: String(e?.stack ?? e) }));
+}
+
+function comparedSharedDelta(shown: number): Promise<{ renamed: Cost; sharedDelta1Row: Cost }> {
+  return new Promise((resolve, reject) => {
+    const w = new Worker(new URL(import.meta.url), { workerData: { compareSharedDelta: true, shown } });
+    w.once("message", (m) => {
+      void w.terminate();
+      const e = (m as { error?: string }).error;
+      if (e !== undefined) reject(new Error(e));
+      else resolve(m as { renamed: Cost; sharedDelta1Row: Cost });
+    });
+    w.once("error", reject);
+  });
+}
+
 function measured(shown: number, realSize: Record<string, number>): Promise<Found> {
   return new Promise((resolve, reject) => {
     const w = new Worker(new URL(import.meta.url), { workerData: { viewWork: true, shown, realSize } });
@@ -276,4 +381,37 @@ if (isMainThread) test("what_one_change_walks_follows_what_changed_not_what_is_s
   }
   if (print) for (const c of SHOWN_WHOLE) console.log(whole(c, base[c]!));
   assert.deepEqual(fail, []);
+});
+
+if (isMainThread) test("sharedDelta one-row title change does no more view work than renamed at SHOWN=1 and SHOWN=3", { timeout: 120_000 }, async () => {
+  const [one, three] = await Promise.all([comparedSharedDelta(1), comparedSharedDelta(SHOWN)]);
+  const pick = (c: Cost) => ({
+    total: { reads: c.total.reads, shared: c.total.shared, diffed: c.total.diffed },
+    chatSearch: {
+      reads: c.by.chatSearch?.reads ?? 0,
+      shared: c.by.chatSearch?.shared ?? 0,
+      diffed: c.by.chatSearch?.diffed ?? 0,
+    },
+  });
+  console.log("SHOWN=1 renamed vs sharedDelta1Row:", JSON.stringify({ renamed: pick(one.renamed), sharedDelta1Row: pick(one.sharedDelta1Row) }));
+  console.log("SHOWN=3 renamed vs sharedDelta1Row:", JSON.stringify({ renamed: pick(three.renamed), sharedDelta1Row: pick(three.sharedDelta1Row) }));
+  for (const [label, pair] of [["SHOWN=1", one], ["SHOWN=3", three]] as const) {
+    assert.ok(pair.renamed.total.reads > 0 && pair.sharedDelta1Row.total.reads > 0, `${label}: both paths must perform non-zero reads`);
+    assert.ok((pair.renamed.by.chatSearch?.reads ?? 0) > 0 && (pair.sharedDelta1Row.by.chatSearch?.reads ?? 0) > 0, `${label}: both paths must exercise chatSearch`);
+    for (const k of ["reads", "shared", "diffed"] as const) {
+      assert.ok(
+        (pair.sharedDelta1Row.by.chatSearch?.[k] ?? 0) <= (pair.renamed.by.chatSearch?.[k] ?? 0),
+        `${label} chatSearch.${k}: sharedDelta1Row=${pair.sharedDelta1Row.by.chatSearch?.[k] ?? 0} > renamed=${pair.renamed.by.chatSearch?.[k] ?? 0}`,
+      );
+      assert.ok(
+        pair.sharedDelta1Row.total[k] <= pair.renamed.total[k],
+        `${label} total.${k}: sharedDelta1Row=${pair.sharedDelta1Row.total[k]} > renamed=${pair.renamed.total[k]}`,
+      );
+    }
+  }
+  for (const k of ["reads", "shared", "diffed"] as const) {
+    const renamedGrowth = (three.renamed.by.chatSearch?.[k] ?? 0) - (one.renamed.by.chatSearch?.[k] ?? 0);
+    const deltaGrowth = (three.sharedDelta1Row.by.chatSearch?.[k] ?? 0) - (one.sharedDelta1Row.by.chatSearch?.[k] ?? 0);
+    assert.ok(deltaGrowth <= renamedGrowth, `SHOWN=1->3 chatSearch.${k} growth: sharedDelta1Row=+${deltaGrowth} > renamed=+${renamedGrowth}`);
+  }
 });

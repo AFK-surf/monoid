@@ -125,9 +125,10 @@ fn chat_remote_menu_show(
   }
   let has_browser = !user_tabs.is_empty() || (can_browser && src is Some(_))
   let has_terms = term_ok || !open_terms.is_empty()
+  // (the station's browser one part: the pages an agent drives in it and the way to its own tabs, under 浏览器, as the
+  // terminals' part holds a new one and those open)
   let groups = (if !other_screens.is_empty() { 1 } else { 0 }) +
-    (if has_browser { 1 } else { 0 }) +
-    (if !agent_tabs.is_empty() { 1 } else { 0 }) +
+    (if has_browser || !agent_tabs.is_empty() { 1 } else { 0 }) +
     (if has_terms { 1 } else { 0 })
   let items_out : Array[@sf.MenuItem?] = []
   let add_sep = fn() {
@@ -145,10 +146,10 @@ fn chat_remote_menu_show(
       })))
     }
   }
-  if !agent_tabs.is_empty() {
+  if has_browser || !agent_tabs.is_empty() {
     add_sep()
     if groups > 1 {
-      items_out.push(Some(@sf.menu_item_of(@sf.t("web-pages.screen.agentPages"), heading=true, fn() { })))
+      items_out.push(Some(@sf.menu_item_of(@sf.t("web-pages.screen.browser"), heading=true, fn() { })))
     }
     for s in agent_tabs {
       items_out.push(Some(@sf.menu_item_of(chat_screen_label(s), icon=chat_screen_icon(s), fn() {
@@ -157,9 +158,8 @@ fn chat_remote_menu_show(
     }
   }
   if has_browser {
-    add_sep()
     let listed_ids = user_tabs.map(fn(s) { s.id })
-    items_out.push(Some(@sf.menu_item_of(@sf.t("web-pages.screen.browser"), icon="web", fn() {
+    items_out.push(Some(@sf.menu_item_of(@sf.t("web-pages.screen.openBrowserRow"), icon="web", fn() {
       match src {
         Some(s) => open_remote_browser(s, r.station, listed_ids)
         None =>

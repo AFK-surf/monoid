@@ -195,13 +195,17 @@ export class StationTopics implements Owner {
       const evicted = this.#core.data.opened("entry", station, String(id), true);
       const entries = entriesOf(station, id);
       const known = this.summary(station, id) !== null;
+      const openingBring = !evicted && known ? this.#opening(station, id).bring : null;
       if (evicted || !known) this.#sync.channels.bring(entries, Priority.shown);
       // Its latest not on the device yet: that page alone, at once. What is before it comes with the station's history,
       // in batches behind (sync.ts #history), or as it is scrolled back to.
       // Not where it opens to be read itself (#opening's `bring`, read at once by #thread): that read goes alone.
-      else if (this.#sync.channels.latestMissing(entries) && this.#opening(station, id).bring === null) this.#sync.channels.bring(entries, Priority.shown, "latest");
+      else if (this.#sync.channels.latestMissing(entries) && openingBring === null) this.#sync.channels.bring(entries, Priority.shown, "latest");
       // No summary held: the chat waits on it (views.ts `#chat`), read with its entries.
       if (!known) this.#sync.summaryOf(station, id);
+      // Opened while the station is catching up: prioritize its summary and bounded continuation pages on the existing
+      // lane (deduplicated per catching epoch and thread) without altering the opening window or unread line.
+      else this.#sync.prioritizeOpenedThread(station, id, !evicted && openingBring === null);
       this.#moveOldPlace(station, id);
       // Used now: its agents' histories are brought whole, behind the rest (channel-kinds.ts `whole`).
       for (const key of membersOf(this.summary(station, id))) this.#wholeHistory(station, key);

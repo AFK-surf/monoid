@@ -38,6 +38,8 @@ pub(all) struct Glass {
   // liquid: optical magnification factor of the backdrop inside a clear lens (1.0: none, up to 3.0; active when
   // `liquid` is true and `blur <= 0.0`)
   zoom : Double
+  // continuous materialisation strength in [0.0, 1.0] (0.0: fully flat / no glass emitted; 1.0: full glass)
+  strength : Double
 }
 
 ///|
@@ -52,6 +54,7 @@ pub fn Glass::frosted(
   rim_back? : Double = 0.0,
   shares_capture? : Bool = false,
   contained? : Bool = false,
+  strength? : Double = 1.0,
 ) -> Glass {
   {
     blur,
@@ -72,6 +75,7 @@ pub fn Glass::frosted(
     contained,
     spot: None,
     zoom: 1.0,
+    strength: dclamp(strength, 0.0, 1.0),
   }
 }
 
@@ -102,6 +106,7 @@ pub fn Glass::liquid(
   adaptive? : Bool = true,
   spot? : (Double, Double)? = None,
   zoom? : Double = 1.0,
+  strength? : Double = 1.0,
 ) -> Glass {
   {
     blur,
@@ -122,6 +127,31 @@ pub fn Glass::liquid(
     contained: false,
     spot,
     zoom,
+    strength: dclamp(strength, 0.0, 1.0),
+  }
+}
+
+///|
+/// Scale this glass's materialisation continuously by `t` in `[0.0, 1.0]` for smooth flat-to-glass transitions
+/// (clamping spring overshoots). `bezel` keeps its full width so the bevel never collapses into a sharp hairline,
+/// while optical effects (`blur`, `refraction`, `rim`, `chroma`, `saturation`, `zoom`) and `strength` scale smoothly.
+pub fn Glass::at_strength(self : Glass, t : Double) -> Glass {
+  let t = dclamp(t, 0.0, 1.0)
+  if t >= 0.9999 {
+    return self
+  }
+  {
+    ..self,
+    blur: self.blur * t,
+    refraction: self.refraction * t,
+    rim: self.rim * t,
+    chroma: self.chroma * t,
+    rim_edge: self.rim_edge * t,
+    rim_lit: self.rim_lit * t,
+    rim_back: self.rim_back * t,
+    saturation: 1.0 + (self.saturation - 1.0) * t,
+    zoom: 1.0 + (self.zoom - 1.0) * t,
+    strength: self.strength * t,
   }
 }
 
@@ -142,6 +172,7 @@ pub fn Glass::clear(
   adaptive? : Bool = true,
   spot? : (Double, Double)? = None,
   zoom? : Double = 1.0,
+  strength? : Double = 1.0,
 ) -> Glass {
   Glass::liquid(
     blur~,
@@ -156,5 +187,6 @@ pub fn Glass::clear(
     adaptive~,
     spot~,
     zoom~,
+    strength~,
   )
 }

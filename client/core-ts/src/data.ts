@@ -8,6 +8,7 @@
 import { Deferred, Effect, Fiber, Queue } from "effect";
 import { OVERVIEW_CHAT, OVERVIEW_PROFILED, OVERVIEW_SETTINGS } from "./db/schema.ts";
 import { AccountDb, LIST_OF, MD_SHOWN_EVERY, foundOf, type ChatFound, type Changes, type Derive, type HeadRow, type ListKind, type LogTable, type MdPut, type MovedTo, type RowChange, frozen } from "./db/account.ts";
+import type { SharedMarkKind, SharedMarksSnapshot, SharedMeta } from "./db/chats.ts";
 import { KEPT as BESIDE, type AnyKept, type Kept, type Maker, type Owner } from "./db/kept.ts";
 import { CHAT_READS, chatKeys, type ChatRead, type ReadKey } from "./db/chat-reads.ts";
 import type { Host, Sql, SqlRow, SqlValue } from "./host.ts";
@@ -17,7 +18,7 @@ import { topicKey, type Topic } from "./protocol.ts";
 import { Marks, signal, tracking, untracked, type Source as ReactiveSource } from "./reactive.ts";
 import type { Runner } from "./runtime.ts";
 import { equal, get, isObject, parseJson, toJsonBytes, u64 } from "./util.ts";
-import { worded, type Words } from "./chat-row.ts";
+import { worded, type SharedSidecar, type Words } from "./chat-row.ts";
 import { rowWords } from "./station/rows-made.ts";
 import { ofAddress } from "./workspace.ts";
 import { glanced } from "./work.ts";
@@ -1209,6 +1210,75 @@ export class Data {
 
   dropChat(station: string, id: string): void {
     this.of(station)?.dropChat(station, id);
+  }
+
+  sharedMeta(station: string): SharedMeta | null {
+    return this.of(station)?.sharedMeta(station) ?? null;
+  }
+
+  setSharedNoRouteBuild(station: string, build: string | null): void {
+    this.of(station)?.setSharedNoRouteBuild(station, build);
+  }
+
+  sharedDigests(station: string): Map<string, string> {
+    return this.of(station)?.sharedDigests(station) ?? new Map();
+  }
+
+  sharedSidecar(station: string, id: string): SharedSidecar | null {
+    return this.of(station)?.sharedSidecar(station, id) ?? null;
+  }
+
+  clearSharedBaseline(station: string): void {
+    this.of(station)?.clearSharedBaseline(station);
+  }
+
+  setSharedChats(station: string, rows: readonly unknown[], places: readonly number[], sidecars: ReadonlyMap<string, SharedSidecar>, marks: SharedMarksSnapshot, meta: SharedMeta): void {
+    glanced.chatRowsWorded += rows.length;
+    this.of(station)?.setSharedChats(station, rows.map(inWords) as Record<string, any>[], this.#host.nowMs(), places, sidecars, marks, meta);
+  }
+
+  putSharedChat(station: string, row: unknown, place: number, sidecar: SharedSidecar | null): void {
+    this.of(station)?.putSharedChat(station, inWords(row), place, sidecar);
+  }
+
+  putSharedBatch(
+    station: string,
+    updates: readonly { row: unknown; place: number; sidecar: SharedSidecar | null }[],
+    drops: readonly string[],
+    markUpdates: readonly { kind: SharedMarkKind; k: string; v: string | null }[],
+    scopedMarks: { scope: { sessions: readonly string[]; threads: readonly number[] }; marks: SharedMarksSnapshot } | null,
+  ): void {
+    this.of(station)?.putSharedBatch(
+      station,
+      updates.map((u) => ({ row: inWords(u.row), place: u.place, sidecar: u.sidecar })),
+      drops,
+      markUpdates,
+      scopedMarks,
+    );
+  }
+
+  applySharedChanged(
+    station: string,
+    changed: readonly { row: unknown; place: number; sidecar: SharedSidecar }[],
+    gone: readonly string[],
+    reprojectAll: boolean,
+    reproject: (row: Record<string, any>, sidecar: SharedSidecar) => { row: Record<string, any>; place: number },
+    newMarks: SharedMarksSnapshot,
+    meta: SharedMeta,
+    extraReproject?: { ids?: Iterable<string>; threads?: Iterable<number> },
+  ): void {
+    glanced.chatRowsWorded += changed.length;
+    this.of(station)?.applySharedChanged(
+      station,
+      changed.map((c) => ({ row: inWords(c.row), place: c.place, sidecar: c.sidecar })),
+      gone,
+      reprojectAll,
+      reproject,
+      newMarks,
+      this.#host.nowMs(),
+      meta,
+      extraReproject,
+    );
   }
 
   /// What a declared read of the chat table finds (db/chat-reads.ts), across the databases of the stations it reads (its

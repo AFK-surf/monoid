@@ -560,6 +560,41 @@ export function ensureMoved(sql: Sql): void {
   sql.exec("CREATE TABLE IF NOT EXISTS moved (station TEXT NOT NULL, session TEXT NOT NULL, there_station TEXT NOT NULL, thread INTEGER, there INTEGER, at INTEGER, came INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (station, session)) WITHOUT ROWID");
 }
 
+/// Minimal per-station sidecar for `POST /changed/shared`: only row digest and re-projection inputs (no raw shared row,
+/// no `mineOf`, no `answeredBy`), per-station viewer identity/language/build metadata (`shared_meta`), and keyed viewer
+/// marks (`shared_mark`) so cold-start mark diffs re-project only changed rows by index. Made where missing at every
+/// open, as `said` and `moved`.
+export function ensureSharedSidecar(sql: Sql): void {
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS shared_sidecar (
+      station TEXT NOT NULL,
+      id TEXT NOT NULL,
+      digest TEXT NOT NULL,
+      said TEXT,
+      named TEXT,
+      quoted_only INTEGER NOT NULL DEFAULT 0,
+      local_admin INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (station, id)
+    ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS shared_mark (
+      station TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      k TEXT NOT NULL,
+      v TEXT NOT NULL,
+      PRIMARY KEY (station, kind, k)
+    ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS shared_meta (
+      station TEXT PRIMARY KEY,
+      me TEXT NOT NULL,
+      selves TEXT NOT NULL,
+      lang TEXT NOT NULL,
+      hidden_known INTEGER NOT NULL DEFAULT 0,
+      muted_known INTEGER NOT NULL DEFAULT 0,
+      no_route_build TEXT
+    ) WITHOUT ROWID;
+  `);
+}
+
 /// What is kept of each log (a thread's entries, `entry`; an agent's transcript, `transcript`) as the device holds
 /// within its room (data.ts KEPT): when its chat was last opened here, and whether its items were let go for room.
 /// Made where missing at every open, as `said`.

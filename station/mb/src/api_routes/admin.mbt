@@ -80,7 +80,7 @@ let own_marks : Re = re(
 )
 
 ///|
-let reads_re : Re = re("^\\/*(changed\\/+(chats|threads|sessions)|batch)$")
+let reads_re : Re = re("^\\/*(changed\\/+(chats|threads|sessions|shared)|batch)$")
 
 ///|
 let batched : Array[Re] = [

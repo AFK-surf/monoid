@@ -55,7 +55,7 @@ test("a_reached_station_is_linked_read_as_its_stream_opens_and_its_topics_read_o
   const read = host.requests.find(r => r.url.endsWith("/admin/api/overview"));
   assert.equal(read?.headers.find(([key]) => key === "stillfail-runtimes")?.[1], RUNTIMES.join(","));
   assert.equal(streams[0].path, "/events?running=1&views=1&rows=1&shared=1");
-  for (const path of ["/admin/api/overview", "/admin/api/sessions", "/admin/api/threads", "/admin/api/chats?marks=1"]) assert.equal(gets(host, path), 1, path);
+  for (const path of ["/admin/api/overview", "/admin/api/sessions", "/admin/api/threads", "/admin/api/chats?marks=1&own=1"]) assert.equal(gets(host, path), 1, path);
   // Its chats' entries are brought onto the device, nobody looking.
   assert.equal(gets(host, "/admin/api/threads/7/entries?limit=50"), 1);
   const before = host.requests.length;

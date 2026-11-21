@@ -20,6 +20,7 @@ let served_routes : Array[String] = [
   "GET /admin/api/jobs/*",
   "GET /admin/api/jobs/*/log",
   "POST /admin/api/changed/chats",
+  "POST /admin/api/changed/shared",
   "POST /admin/api/changed/sessions",
   "POST /admin/api/changed/threads",
   "GET /admin/api/events",

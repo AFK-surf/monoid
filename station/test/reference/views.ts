@@ -13,7 +13,7 @@
 //   agents go by; none when it has none.
 // Words are in the language the request asks in (`stillfail-lang`, else Accept-Language, else Chinese).
 import type { Viewer } from "../../src/mesh/credential.ts";
-import { sees } from "../../src/store/rows.ts";
+import { sees, seesMissing } from "../../src/store/rows.ts";
 import * as store from "./store.ts";
 import { Refused as HttpError } from "../../src/api/request.ts";
 import * as titles from "../../../client/core-ts/src/titles.ts";
@@ -384,7 +384,7 @@ export function sharedOf(station: Store, sessions: string[] | null, threads: num
 /// opened from each and its opener (`opened`, `openers`), who each is shared with (`shares`), client keys, the Slack
 /// teams' names by connect (`teams`) and the Slack users the viewer is (`selves`). Of the shown sessions' chats, or of
 /// those `threads` and `sessions` alone.
-export function chatMarks(station: Store, viewer: Viewer, scope: { sessions: string[]; threads: number[] } | null = null): Json {
+export function chatMarks(station: Store, viewer: Viewer, scope: { sessions: string[]; threads: number[] } | null = null, ownOnly = false): Json {
   // What a slow one spent where: 5.7 s for one new chat's on a station (2026-11-03), unsaid where.
   const started = performance.now();
   const stages: Record<string, number> = {};
@@ -397,16 +397,57 @@ export function chatMarks(station: Store, viewer: Viewer, scope: { sessions: str
   useNames(station);
   const api = apiOf(station);
   const s = api.store;
+  const seesThread = (id: number): boolean => {
+    const members = store.threadSessions(s, id);
+    if (members.length === 0) return sees(viewer, null);
+    return members.some((m) => {
+      const x = store.getSession(s, m.session);
+      return x !== null && sees(viewer, x.ws);
+    });
+  };
+  const seesPin = (rawKey: string, anchor: string): boolean => {
+    const row = store.getSession(s, anchor) ?? (rawKey !== anchor ? store.getSession(s, rawKey) : null);
+    return row !== null ? sees(viewer, row.ws) : seesMissing(viewer, anchor);
+  };
   const shown = (scope === null ? store.shownSessions(s) : scope.sessions.flatMap((k) => store.getSession(s, k) ?? []).filter((x) => x.archivedAt === null)).filter((x) => sees(viewer, x.ws));
   const keys = shown.map((x) => x.key);
-  const threadIds = [...new Set([...(scope?.threads ?? []), ...store.threadsOfSessions(s, keys)])];
+  const threadIds = [...new Set([...(scope?.threads ?? []).filter(seesThread), ...store.threadsOfSessions(s, keys)])];
   // The chats themselves and who is in them, by their keys alone: their summaries (latest message, unread, people) are
   // the device's already, and read with them, this read took up to 73 s on a station short of memory (2026-11-03).
   const own = threadIds.flatMap((id) => {
     const thread = store.getThread(s, id);
-    return thread !== null && thread.surface === STILLFAIL_SURFACE && thread.hiddenAt === null ? [{ thread, sessions: store.threadSessions(s, id) }] : [];
+    return thread !== null && thread.surface === STILLFAIL_SURFACE && thread.hiddenAt === null ? [{ thread, sessions: ownOnly ? [] : store.threadSessions(s, id) }] : [];
   });
   stage("found");
+  const ids = own.map((t) => t.thread.id);
+  const dismissed = store.dismissed(s, viewer.email, ids);
+  const kept = [...store.keptChats(s, viewer.email, ids)];
+  const pinMap = new Map<string, number>();
+  const pinScope = scope === null ? null : (() => {
+    const out = new Set(keys);
+    if (keys.length > 0) {
+      for (const r of s.db.prepare("SELECT key FROM sessions INDEXED BY sessions_conv_grouped WHERE conv IS NOT NULL AND conv != key AND conv IN (SELECT value FROM json_each(?))").all(JSON.stringify(keys)) as { key: string }[]) {
+        out.add(r.key);
+      }
+    }
+    return [...out];
+  })();
+  for (const [k, at] of store.pins(s, viewer.email, pinScope)) {
+    const row = store.getSession(s, k);
+    const anchor = typeof row?.conv === "string" && row.conv !== "" ? row.conv : k;
+    if (!seesPin(k, anchor)) continue;
+    const prev = pinMap.get(anchor);
+    if (prev === undefined || at < prev) pinMap.set(anchor, at);
+  }
+  const pins = Object.fromEntries(pinMap);
+  const selves = store.slackIdentities(s, viewer.email);
+  // What is the viewer's own of the chat list (client/core-ts/src/chat-row.ts): the cards they let go, where they read.
+  const reads = Object.fromEntries(store.readsOf(s, viewer.email, ids));
+  const hidden = [...store.hiddenChats(s, viewer.email, ids)];
+  const muted = [...store.mutedChats(s, viewer.email, ids)];
+  if (ownOnly) {
+    return { kept, hidden, muted, pins, selves, dismissed: [...dismissed], reads };
+  }
   const listed = new Set(keys);
   const listedOne = (key: string) => {
     if (scope === null) return listed.has(key);
@@ -418,14 +459,12 @@ export function chatMarks(station: Store, viewer: Viewer, scope: { sessions: str
     if (!lastTurns.has(key)) lastTurns.set(key, store.lastTurn(s, key));
     return lastTurns.get(key) ?? null;
   };
-  const dismissed = store.dismissed(s, viewer.email, own.map((t) => t.thread.id));
   const mine = isMine(api, viewer);
   const card: Json = {};
   const need: Json = {};
   const suggested: number[] = [];
   const verdicts: Json = {};
   // The review's marks of these chats, by its two small tables: a chat's last entry read only where one has any.
-  const ids = own.map((t) => t.thread.id);
   const reviewed = ids.length === 0 ? new Set<number>() : new Set<number>(store.reviewedThreads(s, ids));
   // The cards they wait on as kept; a chat with a card from before they were kept, worked out as it was.
   const cards = store.pendingCards(s, ids);
@@ -463,24 +502,6 @@ export function chatMarks(station: Store, viewer: Viewer, scope: { sessions: str
     (answered[a.question.thread] ??= []).push(answeredView(a));
   }
   stage("answered");
-  const kept = [...store.keptChats(s, viewer.email, own.map((t) => t.thread.id))];
-  const pinMap = new Map<string, number>();
-  const pinScope = scope === null ? null : (() => {
-    const out = new Set(keys);
-    if (keys.length > 0) {
-      for (const r of s.db.prepare("SELECT key FROM sessions INDEXED BY sessions_conv_grouped WHERE conv IS NOT NULL AND conv != key AND conv IN (SELECT value FROM json_each(?))").all(JSON.stringify(keys)) as { key: string }[]) {
-        out.add(r.key);
-      }
-    }
-    return [...out];
-  })();
-  for (const [k, at] of store.pins(s, viewer.email, pinScope)) {
-    const row = store.getSession(s, k);
-    const anchor = typeof row?.conv === "string" && row.conv !== "" ? row.conv : k;
-    const prev = pinMap.get(anchor);
-    if (prev === undefined || at < prev) pinMap.set(anchor, at);
-  }
-  const pins = Object.fromEntries(pinMap);
   const named = (o: { station: string | null; session: string; title: string | null; led?: true; active?: true }) => ({ ...(o.station !== null ? { station: o.station } : {}), session: o.session, ...(o.title !== null ? { title: o.title } : {}), ...(o.led === true ? { led: true } : {}), ...(o.active === true ? { active: true } : {}) });
   const openers = Object.fromEntries([...store.openers(s, keys)].map(([k, o]) => [k, named(o)]));
   const opened = Object.fromEntries([...store.openedChats(s, keys)].map(([k, list]) => [k, list.map(named)]));
@@ -490,14 +511,9 @@ export function chatMarks(station: Store, viewer: Viewer, scope: { sessions: str
     const name = teamName(s, c.id);
     return name === null ? [] : [[c.id, name]];
   }));
-  const selves = store.slackIdentities(s, viewer.email);
   stage("rest");
   const ms = Math.round(performance.now() - started);
   if (ms >= 1_000) log.warn("readers", "a chat marks read's stages", { ms, chats: own.length, scoped: scope !== null, ...(scope !== null ? { sessions: scope.sessions.length, threads: scope.threads.length } : {}), ...stages });
-  // What is the viewer's own of the chat list (client/core-ts/src/chat-row.ts): the cards they let go, where they read.
-  const reads = Object.fromEntries(store.readsOf(s, viewer.email, ids));
-  const hidden = [...store.hiddenChats(s, viewer.email, ids)];
-  const muted = [...store.mutedChats(s, viewer.email, ids)];
   return { card, need, answered, suggested, verdicts, reviews: api.reviews, kept, hidden, muted, pins, openers, opened, shares, clientKeys, teams, selves, dismissed: [...dismissed], reads };
 }
 

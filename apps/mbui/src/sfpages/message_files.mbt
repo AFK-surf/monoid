@@ -49,6 +49,16 @@ fn beside_option(here : MessageHere, a : Attachment, at : String) -> @sf.MenuIte
 let named_open_serial : Ref[Int] = Ref(0)
 
 ///|
+/// A link in what agent `agent` wrote, pressed: a file it names opens from that agent's machine, any other link as
+/// links do.
+fn open_agent_link(src : Source, station : String, agent : String, href : String) -> Unit {
+  match @sf.local_path_of_link(href) {
+    Some(path) if agent != "" => open_named(src, station, agent, path)
+    _ => open_link(href)
+  }
+}
+
+///|
 /// A file an agent names by its path: check it in the agent's session before opening it. A path in code can name
 /// something that was never a file, or one removed since the pointer last rested on it. `beside`: asked beside the chat
 /// (its menu's 在侧边打开); else as the press asked, over the whole window or not said as it is pressed (full_asked),

@@ -3,27 +3,35 @@
 // rows whose digest (the core's own, client/core-ts/src/digest.ts) is not what the client holds.
 
 ///|
-/// runtime-view.ts `runtimeList` of the three lists asked so: what of the client shapes (client/core-ts/src/shapes)
+/// runtime-view.ts `runtimeList` of the lists asked so: what of the client shapes (client/core-ts/src/shapes)
 /// names a runtime there is a session's `runtime` (`Session`) and each agent's of a chat's row (`ChatItem.agents`,
-/// `RowAgent.runtime`); a session of a runtime the client does not have is left out, and so is such an agent of a row.
-/// A thread (`ChatThread`) names none. test/mb-reader-changed.test.ts holds this to the shapes.
+/// `RowAgent.runtime`); a session or agent of an unsupported runtime is left out. A thread (`ChatThread`) names none.
 fn runtime_list(op : String, value : Json, runtimes : Array[String]?) -> Json {
   guard runtimes is Some(supported) else { return value }
   let unsupported = (v : Json?) => v is Some(String(r)) && !supported.contains(r)
   match (op, value) {
     ("sessions", Array(rows)) => Json::array(rows.filter(r => !(r is Object(o) && unsupported(o.get("runtime")))))
-    ("chats", Array(rows)) =>
+    ("chats" | "sharedChats", Array(rows)) =>
       Json::array(
         rows.map(r => match r {
-          Object(o) =>
-            match o.get("agents") {
-              Some(Array(agents)) => {
-                let out = Map::from_iter(o.iter())
-                out["agents"] = Json::array(agents.filter(a => !(a is Object(x) && unsupported(x.get("runtime")))))
-                Json::object(out)
-              }
-              _ => r
-            }
+          Object(o) if o.get("agents") is Some(Array(agents)) => {
+            let out = Map::from_iter(o.iter())
+            out["agents"] = Json::array(agents.filter(a => !(a is Object(x) && unsupported(x.get("runtime")))))
+            Json::object(out)
+          }
+          _ => r
+        }),
+      )
+    ("threads", Array(rows)) =>
+      Json::array(
+        rows.map(r => match r {
+          Object(o) if o.get("lastMessage") is Some(Object(msg)) && unsupported(msg.get("authorRuntime")) => {
+            let out = Map::from_iter(o.iter())
+            let next_msg = Map::from_iter(msg.iter())
+            next_msg.remove("authorRuntime")
+            out["lastMessage"] = Json::object(next_msg)
+            Json::object(out)
+          }
           _ => r
         }),
       )

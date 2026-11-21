@@ -11,10 +11,11 @@
 let sw_words : String = "我也来看看"
 
 ///|
-/// What the core was told of the chat as it shows (`client.focus {chat}`): when, its end, the message read.
+/// What the core was told of the chat as it shows (`client.focus {chat}`): when, its end, its laid-out endSeq, the message read.
 priv struct SwTold {
   at : Double
   end : Bool
+  end_seq : Double
   seen : Double
 }
 
@@ -57,6 +58,7 @@ fn sw_run(screen : (String, Double, Double, Int), said : Bool) -> (Array[SwTold]
             told.push({
               at: (now.val)(),
               end: field(Some(chat), "end") is Some(True),
+              end_seq: @sfbase.number(Some(chat), "endSeq"),
               seen: @sfbase.number(Some(chat), "seen"),
             })
           None => ()
@@ -127,7 +129,7 @@ test "chat as nodes, a message said at its foot at its end: the end told not see
     }
     // (told the end seen and it read once, at its way's end, its words whole by then (on the host's pixels its row is
     // at its rest a frame or so before its way ends: mbui's rows_on_way))
-    let read = told.filter(fn(x) { x.end && x.seen == 171.0 })
+    let read = told.filter(fn(x) { x.end && x.end_seq == 171.0 && x.seen == 171.0 })
     assert_eq(read.length(), 1, msg="\{name}: \{s}")
     assert_true(ends > cause && read[0].at == ends, msg="\{name}: its way ends at \{ends}, its words whole at \{whole}: \{s}")
     assert_eq(told.length(), 2, msg="\{name}: \{s}")
@@ -139,10 +141,10 @@ test "chat as nodes, a message caught up on at its foot at its end: simply there
   for screen in [("小屏", 390.0, 844.0, 2), ("大屏", 1280.0, 800.0, 0)] {
     let (told, cause, _, frames) = sw_run(screen, false)
     let name = screen.0
-    let s = told.map(fn(x) { "\{x.at} end=\{x.end} seen=\{x.seen}" }).join("; ")
+    let s = told.map(fn(x) { "\{x.at} end=\{x.end} endSeq=\{x.end_seq} seen=\{x.seen}" }).join("; ")
     assert_eq(sw_whole_at(frames), Some(cause), msg="\{name}: its words whole in the change's frame")
     assert_eq(told.length(), 1, msg="\{name}: \{s}")
-    assert_true(told[0].at == cause && told[0].end && told[0].seen == 171.0, msg="\{name}: \{s}")
+    assert_true(told[0].at == cause && told[0].end && told[0].end_seq == 171.0 && told[0].seen == 171.0, msg="\{name}: \{s}")
   }
 }
 

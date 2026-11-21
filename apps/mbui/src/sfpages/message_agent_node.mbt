@@ -310,10 +310,7 @@ fn agent_prose_node(
         viz_open(a.name, here.station, owner_of(old_here, a), a.path, here.session, linked=true)
       Some(a) => open_file(old_here, a, at=@signals.untracked(at))
       None =>
-        match @sf.path_of_link(h) {
-          Some((path, _)) => open_named(src, here.station, now.by.agent, path)
-          None => open_link(h)
-        }
+        open_agent_link(src, here.station, now.by.agent, h)
     }
   }
   let on_hold = fn(href : String, at : (Double, Double, Double, Double)) {

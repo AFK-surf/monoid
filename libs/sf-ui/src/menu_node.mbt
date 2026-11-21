@@ -17,7 +17,8 @@
 /// A menu in `parent` while `open()` (let go of once drawn back, pop_out_ms after: closing, nothing of it pressed):
 /// what `content` holds as it is now (None a line between parts: its rows, what can be chosen of them, the keys' way
 /// along them and what a choice does, all from the same of it, read again as it is told changed, the menu open as it
-/// was, its focus where it was), headed by `title` ("" none), beside what `anchor` makes in its layer (what opened it,
+/// was, its focus where it was), headed by `title` ("" none; none drawn over a heading of its own first, still its
+/// name to a screen reader), beside what `anchor` makes in its layer (what opened it,
 /// where that is drawn), `offset` off it, lined up `along` it; `by_key`: opened by the keyboard (the focus on its first
 /// row); `keep_field`: opened by a finger with a field focused (kit's dropdown_menu: its input method left in place):
 /// the focus left in that field, what is typed still its (View::leaves_typing), every key, the wheel and every press
@@ -403,8 +404,12 @@ fn menu_node_by(
               body.margin(Is((-side, 0.0, -side, 0.0))).alpha(By(words_in)) |> ignore
               body.scrolls(@view.Scroll::new(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(b) {
                 b.padding(Is((side, 0.0, side, 0.0))) |> ignore
+                // (its title over its rows, in a heading's look: none over a heading of its own first, two headings
+                // one over the other reading as one more of them; a sheet of it still titled by it, sheet_shows_node's)
                 if title != "" {
-                  menu_heading_node(b, fn() { title }, past, reach)
+                  b.show(fn() { !(content().get(0) is Some(Some(i)) && i.heading) }, fn(h) {
+                    menu_heading_node(h, fn() { title }, past, reach)
+                  })
                 }
                 // (each of what it holds by its place and its kind: one changing what it is (a line, a heading, a row) made
                 // anew there; a row's words, icon, check and whether it can be chosen read again as they change, the row the

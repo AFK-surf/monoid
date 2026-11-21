@@ -371,7 +371,10 @@ export class Attend {
     let upTo = 0;
     for (const f of shown) {
       if (!f.visible || !f.focused || f.chat === null) continue;
-      if (!short && f.chat.end === true) upTo = Math.max(upTo, newest);
+      if (!short && f.chat.end === true) {
+        const endAt = typeof f.chat.endSeq === "number" ? Math.min(f.chat.endSeq, newest) : newest;
+        upTo = Math.max(upTo, endAt);
+      }
       if (typeof f.chat.seen === "number") upTo = Math.max(upTo, Math.min(f.chat.seen, newest));
     }
     if (upTo > known) {

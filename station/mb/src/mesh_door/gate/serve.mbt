@@ -553,7 +553,7 @@ pub fn reads_of(verb : String, path : String) -> Bool {
     at += 1
   }
   let name = bare.clamped_view(start=at).to_owned()
-  name == "batch" || name == "changed/chats" || name == "changed/threads" || name == "changed/sessions"
+  name == "batch" || name == "changed/chats" || name == "changed/shared" || name == "changed/threads" || name == "changed/sessions"
 }
 
 ///|
