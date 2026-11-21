@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4f479f697](https://github.com/AFK-surf/monoid/commit/4f479f6976db6b666de085bbf5819148ea33f569) style(sf-ui): tighten default button height to 32p | 2.64 | 3.56 | 14.43 | 36.47 | 55.09 | 31.97 | 64.5 | 98.52 | 116.54 |
 | [cb0becd11](https://github.com/AFK-surf/monoid/commit/cb0becd11ca4fca8f82357c1ae9b660ed94e9fcf) feat(sf-ui,sfapp,sfdesk): add bar_pill_group_node  | 2.64 | 3.56 | 14.43 | 36.47 | 55.09 | 31.97 | 64.5 | 98.67 | 121.65 |
 | [efc9285ad](https://github.com/AFK-surf/monoid/commit/efc9285ad725615312d1077870b4554b6feee666) feat(sf-ui): upgrade sheet to iOS 26 floating liqu | 2.64 | 3.55 | 14.43 | 36.47 | 55.08 | 31.96 | 64.48 | 98.75 | 118.22 |
 | [fb2f2c703](https://github.com/AFK-surf/monoid/commit/fb2f2c7033a956484fc6060aedce9caf9e2f896b) feat(mbui): report Windows UI hangs and handled er | 2.64 | 3.55 | 14.43 | 36.47 | 55.07 | 31.96 | 64.48 | 98.47 | 125.58 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [90d471a2c](https://github.com/AFK-surf/monoid/commit/90d471a2c5fb2681a1d25edd634a90b587b6613b) fix(station): recover the Antigravity Gemini weekl | 2.65 | 3.56 | 14.47 | 36.49 | 55.14 | 31.95 | 64.51 | 98.47 | 120.67 |
 | [b523f6425](https://github.com/AFK-surf/monoid/commit/b523f64255b86d450aaee904e8a6ab73afbe38c7) feat(vault): support cross-workspace personal secr | 2.65 | 3.56 | 14.47 | 36.48 | 55.13 | 31.94 | 64.5 | 98.57 | 142.3 |
 | [e62abddee](https://github.com/AFK-surf/monoid/commit/e62abddee6bd33e21adf2dc890df709ee97fee41) refactor(sf-ui,mbui): drop redundant leaving hides | 2.64 | 3.56 | 14.45 | 36.45 | 55.07 | 31.92 | 64.47 | 98.04 | 124.3 |
-| [4e1422b57](https://github.com/AFK-surf/monoid/commit/4e1422b57794ea8e761b0dacefc09ba5bb56e1be) chore(mbui): retire dead old-views shell hooks and | 2.64 | 3.56 | 14.45 | 36.45 | 55.07 | 31.93 | 64.47 | 98.42 | 128.06 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4f479f697](https://github.com/AFK-surf/monoid/commit/4f479f6976db6b666de085bbf5819148ea33f569) style(sf-ui): tighten default button height to 32p | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54 |
 | [cb0becd11](https://github.com/AFK-surf/monoid/commit/cb0becd11ca4fca8f82357c1ae9b660ed94e9fcf) feat(sf-ui,sfapp,sfdesk): add bar_pill_group_node  | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54 |
 | [efc9285ad](https://github.com/AFK-surf/monoid/commit/efc9285ad725615312d1077870b4554b6feee666) feat(sf-ui): upgrade sheet to iOS 26 floating liqu | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54 |
 | [fb2f2c703](https://github.com/AFK-surf/monoid/commit/fb2f2c7033a956484fc6060aedce9caf9e2f896b) feat(mbui): report Windows UI hangs and handled er | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [90d471a2c](https://github.com/AFK-surf/monoid/commit/90d471a2c5fb2681a1d25edd634a90b587b6613b) fix(station): recover the Antigravity Gemini weekl | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.31 |
 | [b523f6425](https://github.com/AFK-surf/monoid/commit/b523f64255b86d450aaee904e8a6ab73afbe38c7) feat(vault): support cross-workspace personal secr | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.31 |
 | [e62abddee](https://github.com/AFK-surf/monoid/commit/e62abddee6bd33e21adf2dc890df709ee97fee41) refactor(sf-ui,mbui): drop redundant leaving hides | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.31 |
-| [4e1422b57](https://github.com/AFK-surf/monoid/commit/4e1422b57794ea8e761b0dacefc09ba5bb56e1be) chore(mbui): retire dead old-views shell hooks and | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.31 |
