@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [45690a1a0](https://github.com/AFK-surf/monoid/commit/45690a1a001d810573eb14cc4f6c6db886dfde91) fix(sf-ui,sfdesk): fade liquid-glass popovers and  | 2.64 | 3.55 | 14.4 | 36.43 | 54.98 | 31.92 | 64.42 | 98.68 | 134 |
 | [d68c56649](https://github.com/AFK-surf/monoid/commit/d68c56649313d1f3fa921cc65d84b291f8b3c809) fix(core): show a wait in history only when the ag | 2.64 | 3.55 | 14.4 | 36.43 | 54.97 | 31.92 | 64.42 | 98.67 | 129.43 |
 | [5d23b1d3c](https://github.com/AFK-surf/monoid/commit/5d23b1d3c6325b138ae7233bc8131cc76cf95e88) feat(sf-ui,sfdesk): upgrade floating controls to l | 2.64 | 3.55 | 14.4 | 36.43 | 54.97 | 31.92 | 64.42 | 98.45 | 128.25 |
 | [7518002f5](https://github.com/AFK-surf/monoid/commit/7518002f53d978e3d43b44eb3ac3fadd81445b5b) feat(mbui): add glass_pop_in and glass_pop_out mot | 2.64 | 3.55 | 14.4 | 36.43 | 54.97 | 31.92 | 64.42 | 98.44 | 122.33 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d306b52f5](https://github.com/AFK-surf/monoid/commit/d306b52f5d0a69b1ca9520e69f56481d338693ce) chore(mbui): delete legacy viewer @ui.Ctx flight p | 2.64 | 3.56 | 14.45 | 36.45 | 55.07 | 31.92 | 64.47 | 98.32 | 128.32 |
 | [fd06d1a0d](https://github.com/AFK-surf/monoid/commit/fd06d1a0dafdd5115fc793ed996865e74656c7ff) fix(mbui): ring letter workspaces in the rail inst | 2.65 | 3.56 | 14.47 | 36.47 | 55.14 | 31.94 | 64.51 | 98.14 | 113.74 |
 | [ec882d99f](https://github.com/AFK-surf/monoid/commit/ec882d99fa0c2e5def567b132dd43055f9f9ed26) fix(mbui): keep hyphen spacing steady on chatlist  | 2.65 | 3.56 | 14.47 | 36.47 | 55.14 | 31.94 | 64.5 | 98.19 | 126.89 |
-| [3298ca4ca](https://github.com/AFK-surf/monoid/commit/3298ca4ca4c0e7d05639f996a69a4a3331d809ee) feat(history): mark posts a new message held back  | 2.65 | 3.56 | 14.47 | 36.47 | 55.14 | 31.94 | 64.5 | 98.19 | 126.89 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [45690a1a0](https://github.com/AFK-surf/monoid/commit/45690a1a001d810573eb14cc4f6c6db886dfde91) fix(sf-ui,sfdesk): fade liquid-glass popovers and  | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.1 |
 | [d68c56649](https://github.com/AFK-surf/monoid/commit/d68c56649313d1f3fa921cc65d84b291f8b3c809) fix(core): show a wait in history only when the ag | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.1 |
 | [5d23b1d3c](https://github.com/AFK-surf/monoid/commit/5d23b1d3c6325b138ae7233bc8131cc76cf95e88) feat(sf-ui,sfdesk): upgrade floating controls to l | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.1 |
 | [7518002f5](https://github.com/AFK-surf/monoid/commit/7518002f53d978e3d43b44eb3ac3fadd81445b5b) feat(mbui): add glass_pop_in and glass_pop_out mot | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.1 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d306b52f5](https://github.com/AFK-surf/monoid/commit/d306b52f5d0a69b1ca9520e69f56481d338693ce) chore(mbui): delete legacy viewer @ui.Ctx flight p | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.17 |
 | [fd06d1a0d](https://github.com/AFK-surf/monoid/commit/fd06d1a0dafdd5115fc793ed996865e74656c7ff) fix(mbui): ring letter workspaces in the rail inst | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.17 |
 | [ec882d99f](https://github.com/AFK-surf/monoid/commit/ec882d99fa0c2e5def567b132dd43055f9f9ed26) fix(mbui): keep hyphen spacing steady on chatlist  | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.17 |
-| [3298ca4ca](https://github.com/AFK-surf/monoid/commit/3298ca4ca4c0e7d05639f996a69a4a3331d809ee) feat(history): mark posts a new message held back  | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.15 |
