@@ -1643,8 +1643,9 @@ fn layout_flex(
           f.unsafe_set(i + MAR_MAIN_START, cb.mar_t * k)
           f.unsafe_set(i + MAR_MAIN_END, cb.mar_b * k)
         }
-      } else if !(row && cs.come_across && known(cs.come_now)) {
-        // (along a row on its way: from nothing, its padding too, Style's come_across)
+      } else if said_main || !(cs.come_across == row && known(cs.come_now)) {
+        // (its padding its least, but where it comes or goes along its axis with no size said: from nothing or to it,
+        // its padding with what it holds, measured so above, Style's come_*)
         basis = fmax(basis, pb_main)
       }
       // (coming or going down a column, or along a row (Style's come_across), as long along it as its way has got of
@@ -2164,11 +2165,13 @@ fn layout_flex(
       let iw = if row { f.unsafe_get(i + MAIN) } else { f.unsafe_get(i + CROSS) }
       let ih = if row { f.unsafe_get(i + CROSS) } else { f.unsafe_get(i + MAIN) }
       if !reusing.val &&
+        !known(n.style.come_now) &&
         n.children.length() == 0 &&
         n.measure is None &&
         known(iw) &&
         known(ih) {
-        // a box with nothing in it, its size given: what size_node comes
+        // a box with nothing in it, its size given, on no way (come_now: its
+        // padding no least of it then, as size_node has it): what size_node comes
         // to (its box the one set up above, its caches already started in
         // this compute, nothing kept for a compute that reuses), without
         // the calls
