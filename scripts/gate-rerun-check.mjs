@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 // A branch's run attempted again (GitHub's "Re-run jobs") goes through its gate (pipeline.yml) only where every job
-// that failed or was cancelled in the attempts before it failed for GitHub's or the network's sake: a check that failed
-// and passes on the same commit let something uncontrolled in, and is found and taken out, never rerun green (the root
+// that failed or was cancelled before stopped before doing its work, or failed for GitHub or the network.
+// A check that fails and passes on the same commit let something uncontrolled in. Find and remove it, never rerun green (the root
 // AGENTS.md). Let through, a job of an attempt before:
 //   - that never ran what it is for: no runner took it, it has no steps, or what failed of it is only the job's setting
 //     up (its runner's own steps, the checkout, the caches and artifacts, the toolchains: INFRA_STEP);
+//   - stopped at native.ts's exact missing-prebuild diagnostic, with no other failed step or failure in its log.
+//     The native build or test never started. Supplying its artifact lets that work start on the next attempt;
 //   - cancelled with its whole run (a push after it, by hand, a dead runner's queue given up), before a job's time;
 //   - whose step failed with GitHub's or the network's failure in its log (INFRA_LOG), and nothing in it that is the
 //     change's own for certain (HARD_FAILED). Its log is read in that order: what is the change's for certain, then
@@ -52,6 +54,9 @@ export const HARD_FAILED = [
 ];
 /** A check's summary of a failure: the change's, unless GitHub's or the network's failure is said beside it. */
 export const SOFT_FAILED = [/\bFAILED\b/, /\btest\b.*\bfailed\b/i, /^✖ /m, /^not ok \d/m];
+
+/** native.ts's CI refusal before a build starts. Match the full diagnostic, including the same part and target twice. */
+const MISSING_PREBUILD = /^native: ([a-z][a-z0-9-]*) ([a-z0-9]+(?:-[a-z0-9]+)+) [a-f0-9]{24} is not prebuilt: run the prebuild workflow on the branch, gh workflow run prebuild\.yml -R AFK-surf\/monoid --ref \S+ \(or on a Mac, node scripts\/native\.ts prebuild \1:\2\)$/;
 
 /** Seconds of setting up that, with GitHub's or the network's failure in its log, leave a job that ran its time out
  * let through, its own steps having had less than its time (RAN_OUT_S less a minute). */
@@ -105,6 +110,19 @@ export async function judge(job, run, log) {
   };
   const hard = first(HARD_FAILED);
   if (hard) return { ok: false, why: `${names} failed: ${hard}` };
+  const logLines = said.split(/\r?\n/);
+  const missing = logLines.find((line) => MISSING_PREBUILD.test(line));
+  if (missing) {
+    // Only the exact diagnostic and its exit-code wrapper can explain this failure. In particular, a network
+    // error beside an unrelated test summary must not hide that summary through the INFRA_LOG branch below.
+    const other = logLines.find((line) => !MISSING_PREBUILD.test(line) &&
+      (SOFT_FAILED.some((p) => p.test(line)) ||
+        (/^(?:##\[error\]|::error::|\w*Error:|error:|fatal:)/i.test(line) && line !== "##[error]Process completed with exit code 1.")));
+    if (job.conclusion !== "failure" || failed.length !== 1 || other) {
+      return { ok: false, why: `${names} failed beside a missing prebuild: ${other || "another step failed or the job was cancelled"}` };
+    }
+    return { ok: true, why: `${names} stopped before its work: ${missing}` };
+  }
   const infra = first([...INFRA_LOG, SHUTDOWN]);
   if (infra) return { ok: true, why: `${names} failed for GitHub's or the network's sake: ${infra}` };
   const soft = first(SOFT_FAILED);

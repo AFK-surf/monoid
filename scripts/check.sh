@@ -354,9 +354,9 @@ if part ts; then
   if touches '^scripts/download-artifact'; then
     step "artifact download: whole by digest or nothing there" bash scripts/download-artifact-test.sh
   fi
-  # A run attempted again goes through only where what failed before was GitHub's or the network's (pipeline.yml's gate).
+  # A rerun passes only after failure before work starts or infrastructure failure (pipeline.yml's gate).
   if touches '^scripts/gate-rerun-check'; then
-    step "CI gate: a rerun only after GitHub's or the network's failure" node --test scripts/gate-rerun-check.test.mjs
+    step "CI gate: a rerun only before work or after infrastructure failure" node --test scripts/gate-rerun-check.test.mjs
   fi
   # A prebuilt native part's download: asked again after a 5xx or a broken connection, never after a 404.
   if touches '^scripts/native(\.ts|-download-test\.mjs)$'; then

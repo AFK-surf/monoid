@@ -68,7 +68,9 @@
   cancelled, so `!cancelled() && !failure()` alone ran nine jobs without the readers (main 44466921858).
 - A check that failed and passed on the same commit is never rerun green (the root AGENTS.md): a branch's `gate`, in a
   run attempted again, fails unless every job that failed or was cancelled before failed for GitHub's or the network's
-  sake (`scripts/gate-rerun-check.mjs`). Do not rerun an old commit's main pipeline: it deploys that commit's beta over
+  sake (`scripts/gate-rerun-check.mjs`). The gate also allows a job stopped only by `native.ts`'s exact missing-prebuild
+  diagnostic, with no other failure: its build or test never started. Supplying the artifact lets that work start.
+  Do not rerun an old commit's main pipeline: it deploys that commit's beta over
   the newer one.
 - An artifact uploaded for people to look at (pictures, logs, what moved) says `continue-on-error: true`: a runner's
   connection to GitHub's artifact service reset fails a check that had passed (main acb00686, 2026-11-01; #5157's
