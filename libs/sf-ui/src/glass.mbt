@@ -88,7 +88,7 @@ fn glass_lens() -> @ui.Glass {
     solid=over(t.p.bg, alpha(t.p.raised, 0.72)),
     saturation=1.0,
     rim=0.6,
-    bezel=16.0,
+    bezel=10.0,
     refraction=12.0,
     chroma=-0.06,
     merge=0.0,

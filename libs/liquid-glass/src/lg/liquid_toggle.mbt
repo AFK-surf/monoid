@@ -138,6 +138,7 @@ pub fn liquid_toggle_node(
         (x + (thumb_w - w) / 2.0, (toggle_h - h) / 2.0)
       }))
       .shadow(Is(shadow_thumb))
+      .shadow_outside(Is(true))
       |> ignore
       thumb.box(fn(solid) {
         solid

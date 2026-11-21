@@ -79,6 +79,7 @@ pub fn liquid_adaptive_surface_node(
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
     .shadow(Is(shadow_default))
+    .shadow_outside(Is(true))
     .glass(By(fn() { Some(adaptive_glass(luminance(), size)) }))
     |> ignore
     c.box(fn(w) {

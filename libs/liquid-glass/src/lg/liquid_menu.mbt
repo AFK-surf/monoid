@@ -421,6 +421,7 @@ pub fn liquid_select_node(
       .height(Is(Some(ovl_select_h)))
       .radius(Is(ovl_select_radius))
       .shadow(Is(shadow_default))
+      .shadow_outside(Is(true))
       .glass(By(fn() { Some(ovl_morph_bridge_glass(merge=0.0)) }))
       .scale(By(fn() { 1.0 - 0.02 * clamp(press_way.shown(t), 0.0, 1.0) }))
       |> ignore

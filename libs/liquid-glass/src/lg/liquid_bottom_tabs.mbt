@@ -41,8 +41,8 @@ fn tab_lens_glass(p : Double) -> @paint.Glass {
     solid=alpha(c.container, 1.0 / 0.4),
     saturation=1.0,
     rim=0.6 * p,
-    bezel=16.0 * p,
-    refraction=24.0 * p,
+    bezel=10.0 * p,
+    refraction=14.0 * p,
     chroma=-0.06 * p,
     merge=0.0,
     adaptive=false,
@@ -181,6 +181,7 @@ pub fn liquid_bottom_tabs_node(
         .margin(Is((-tabs_pad, -tabs_pad, 0.0, 0.0)))
         .radius(Is(tabs_h / 2.0))
         .shadow(Is(shadow_default))
+        .shadow_outside(Is(true))
         .glass(By(fn() { Some(tabs_glass()) }))
         .ground_drawn(By(fn() {
           let ww = w()
@@ -283,6 +284,7 @@ pub fn liquid_bottom_tabs_node(
           let (s, dy, ink) = shadow_default
           (s, dy, alpha(ink, dd.pressed(lens)))
         }))
+        .shadow_outside(Is(true))
         |> ignore
         // Idle selection pill fades out as the clear glass loupe fades in (avoids ios27Clear veil at rest).
         lens.box(fn(pill) {

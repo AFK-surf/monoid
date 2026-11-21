@@ -166,6 +166,7 @@ pub fn liquid_slider_node(
             (x + (thumb_w - tw) / 2.0, (thumb_h - th) / 2.0)
           }))
           .shadow(Is(shadow_thumb))
+          .shadow_outside(Is(true))
           |> ignore
           thumb.box(fn(solid) {
             solid
