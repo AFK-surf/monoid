@@ -22,6 +22,8 @@ import { platform } from "../platform/index.ts";
 import { profileFetch } from "../ops/agent-env.ts";
 import { withShellCommand } from "../ops/shell-path.ts";
 import { claudePlan, codexClaimsSoon } from "./machine.ts";
+import { DEFAULT_SERVICES, type ServiceRegistry } from "./services.ts";
+import type { Profile } from "../sessions/config.ts";
 
 type Json = any;
 
@@ -159,8 +161,9 @@ export const runtimesFor = (access: Json, runtime: unknown): Runtime[] => profil
 /// None for DeepSeek Harness, which has no subscription here. One on the machine's own login (`machine`) is signed in
 /// where the machine's is, its usual home (machine-logins.ts): its own home holds no login, so signing that in changes
 /// nothing it uses.
-export const loginCommand = (runtime: Runtime, home: string, machine = false) =>
-  machine ? (runtime === "claude" ? "claude auth login" : runtime === "codex" ? "codex login" : "")
+export const loginCommand = (runtime: Runtime | undefined, home: string, machine = false) =>
+  runtime === undefined ? ""
+  : machine ? (runtime === "claude" ? "claude auth login" : runtime === "codex" ? "codex login" : "")
   : runtime === "claude" ? `CLAUDE_CONFIG_DIR=${home} claude auth login`
   : runtime === "codex" ? `CODEX_HOME=${home} codex login`
   : runtime === "grok" ? `GROK_HOME=${join(home, "grok")} grok login --device-auth`
@@ -170,11 +173,15 @@ export const loginCommand = (runtime: Runtime, home: string, machine = false) =>
 
 /// What a check is given: the account and where it lives.
 export type CheckOptions = {
-  runtime: Runtime;
+  runtime?: Runtime;
   kind: AccessKind;
   key: string;
   /// Of an API-provider profile: which provider and where.
   via: Via;
+  /// Of a service profile: which service adapter id, and the registry to look it up in.
+  service?: string;
+  services?: ServiceRegistry;
+  profile?: Profile;
   home: string;
   /// The station's environment (where a machine login is read, and the CLIs found).
   env: Env;
@@ -235,6 +242,22 @@ export async function checkProfile(o: CheckOptions): Promise<ProfileCheck> {
 async function checkInner(o: CheckOptions, lang: Lang): Promise<ProfileCheck> {
   const urls = o.urls ?? URLS;
   const t = (key: string, args?: Record<string, unknown>) => tr(lang, key, args);
+  if (o.kind === "service") {
+    const adapter = o.service !== undefined ? (o.services ?? DEFAULT_SERVICES).get(o.service) : undefined;
+    if (!adapter) return check("failed", t("station.profile.unknownProvider"), null);
+    const profile: Profile = o.profile ?? {
+      id: "",
+      name: o.service ?? "",
+      home: o.home,
+      access: { kind: "service", service: o.service },
+      ...(o.service !== undefined ? { service: o.service } : {}),
+      runtimes: [],
+      models: [],
+      named: [],
+      backgroundOnMessage: true,
+    };
+    return await adapter.check(profile, { env: o.env, lang });
+  }
   if (o.kind === "opencode-go") {
     // The model list answers any key; the usage is the key's own, so it is what tells a key that works.
     const usage = await get(`${urls.opencode}/v1/usage`, { authorization: `Bearer ${o.key}` });

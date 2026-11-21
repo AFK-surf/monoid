@@ -57,6 +57,7 @@ import { type Bound, LEND_BOUND_MS, claudeOAuthToken } from "./oauth.ts";
 import { accessKinds, checkProfile, devinAccountFile, devinNotedIn, grokAuthFile, grokEmailIn, keyed, loginCommand, needsKey, type ProfileCheck, type ProfileQuota, runtimesFor, runtimesOf, URLS, type Urls } from "./profiles.ts";
 import { checkQuota, codexUsage, lentCodexUsage, machineUsage } from "./quota.ts";
 import { claudeResetWith } from "./claude-reset.ts";
+import { DEFAULT_SERVICES, serviceOf, type ServiceRegistry } from "./services.ts";
 import { Refused as Refusal } from "../api/request.ts";
 
 export { checkConfig } from "./check.ts";
@@ -93,7 +94,7 @@ const POLICY_CHATS = 20;
 export { Refusal };
 
 /// What a check is asked: the account and where it signs in (its home, or a trial one for a key being tried).
-export type CheckRequest = { runtime: Runtime; kind: AccessKind; key: string; via: Via; home: string; machine: boolean; login?: boolean };
+export type CheckRequest = { runtime?: Runtime; kind: AccessKind; key: string; via: Via; service?: string; profile?: Profile; home: string; machine: boolean; login?: boolean };
 
 /// The profile's codex app-server, for what only it says (the agents' CodexDriver: rateLimits, resetQuota, models).
 export type CodexAccess = {
@@ -147,6 +148,8 @@ export type AccountsDeps = {
   clock?: Clock.Clock;
   /// The workspaces the station is in, its home one first; none by default.
   workspaces?: () => string[];
+  /// Service profile adapters for non-agent-runtime accounts (`access.kind === "service"`).
+  services?: ServiceRegistry;
   /// Profiles other stations share with this one (share/index.ts): how they are doing is their host's to say, and
   /// what the overview says of each profile's sharing.
   shared?: {
@@ -169,12 +172,12 @@ export type AccountsDeps = {
 /// A sign-in with no profile yet: its runtime, its home while signing in, who started it, what it made.
 /// `access`: an OpenCode Go profile signed in to the OpenCode Console, or a Kimi Code one to Kimi (absent: the runtime's
 /// subscription).
-type Pending = { runtime: Runtime; access?: "opencode-go" | "kimi-code" | "agy-enterprise"; home: string; by: Viewer; created: string | null; error: string | null };
+type Pending = { runtime?: Runtime; service?: string; access?: "opencode-go" | "kimi-code" | "agy-enterprise"; home: string; by: Viewer; created: string | null; error: string | null };
 
 const isObject = (v: unknown): v is Record<string, any> => v !== null && typeof v === "object" && !Array.isArray(v);
 const manages = managesStation;
 const runtimeOf = (v: unknown): Runtime | undefined => runtimeKind(v);
-const ACCESS_KINDS: AccessKind[] = ["subscription", "opencode-go", "anthropic-api", "env", "api-provider"];
+const ACCESS_KINDS: AccessKind[] = ["subscription", "opencode-go", "anthropic-api", "env", "api-provider", "service"];
 const accessKindOf = (v: unknown): AccessKind | undefined => (ACCESS_KINDS.includes(v as AccessKind) ? (v as AccessKind) : undefined);
 /// admin/mod.rs Input::text: JavaScript's String(x ?? "").
 const text = (v: unknown) => (v === undefined || v === null ? "" : typeof v === "string" ? v : JSON.stringify(v));
@@ -197,20 +200,36 @@ async function lentLoginVersion(home: string): Promise<string | null> {
 type HomeSays = { exists: boolean; email: string | null };
 
 /// What a profile's home is read for: the home, and what in it says whose account it is.
-function homeAsked(p: Json): { home: string; runtime: Runtime; files: "account" | "console" | null } {
-  const files = accessKind(p) === "subscription" ? (borrowed(p) ? null : "account") : isObject(p.access) && p.access.login === true ? "console" : null;
-  return { home: String(p.home ?? ""), runtime: p.runtime, files };
+function homeAsked(p: Json): { home: string; runtime?: Runtime; service?: string; files: "account" | "console" | "service" | null } {
+  const kind = accessKind(p);
+  const service = serviceOf(p);
+  const files =
+    kind === "service"
+      ? (service !== undefined ? "service" : null)
+      : kind === "subscription"
+        ? (borrowed(p) ? null : "account")
+        : isObject(p.access) && p.access.login === true
+          ? "console"
+          : null;
+  return {
+    home: String(p.home ?? ""),
+    ...(p.runtime !== undefined ? { runtime: p.runtime } : {}),
+    ...(service !== undefined ? { service } : {}),
+    files,
+  };
 }
 
 /// `homeAsked`'s answer, read off the thread (fs/promises).
-async function homeSaysSoon(p: Json): Promise<HomeSays> {
-  const { home, runtime, files } = homeAsked(p);
+async function homeSaysSoon(p: Json, services: ServiceRegistry = DEFAULT_SERVICES): Promise<HomeSays> {
+  const { home, runtime, service, files } = homeAsked(p);
   const email =
-    files === "account"
+    files === "account" && runtime !== undefined
       ? await accountEmailSoon(runtime, home)
       : files === "console"
         ? await emailInSoon([consoleFile(home)])
-        : null;
+        : files === "service" && service !== undefined
+          ? ((await services.get(service)?.identity(home)) ?? null)
+          : null;
   return { exists: await accessFile(home).then(() => true, () => false), email };
 }
 
@@ -259,6 +278,7 @@ export class Accounts {
   private background: Fibers;
   private stops: (() => void)[] = [];
   private readonly urls: Urls;
+  private readonly services: ServiceRegistry;
   private readonly checkFn: (request: CheckRequest, lang: Lang) => Promise<ProfileCheck>;
   private readonly quotaFn: ((profile: Profile) => Promise<ProfileQuota>) | null;
   private readonly resetFn: ((profile: Profile, key: string, kind: string | null) => Promise<Json>) | null;
@@ -276,19 +296,20 @@ export class Accounts {
     this.deps = deps;
     this.background = new Fibers("accounts", deps.clock);
     this.urls = deps.urls ?? URLS;
+    this.services = deps.services ?? DEFAULT_SERVICES;
     // A Cursor sign-in's key is named for this machine in the person's Cursor dashboard (accounts/cursor.ts).
     this.logins = new LoginManager(deps.data, deps.loginCommands, undefined, deps.clock, this.urls.console, this.urls.cursor ?? CURSOR, () => `still.fail · ${hostname()}`, this.urls.kimi ?? KIMI_AUTH);
     this.logins.setStateFile((id) => this.loginStateFile(id));
     this.machine =
       deps.machine !== undefined ? deps.machine : new MachineLogins(this.env, (runtime, env) => machineUsage(runtime, env, this.urls), undefined, deps.clock);
     this.checkFn =
-      deps.check ?? ((request, lang) => checkProfile({ ...request, env: this.env, machineToken: (env, rejected) => this.machineToken(env, rejected), urls: this.urls, lang }));
+      deps.check ?? ((request, lang) => checkProfile({ ...request, services: this.services, env: this.env, machineToken: (env, rejected) => this.machineToken(env, rejected), urls: this.urls, lang }));
     this.quotaFn =
       deps.quota !== undefined
         ? deps.quota
         : (profile) => {
             const codex = deps.codex?.();
-            return checkQuota(profile, this.env, codex ? (p) => codex.rateLimits(p) : undefined, this.urls, stationLang(), deps.claudeVersion?.() ?? null);
+            return checkQuota(profile, this.env, codex ? (p) => codex.rateLimits(p) : undefined, this.urls, stationLang(), deps.claudeVersion?.() ?? null, this.services);
           };
     this.resetFn =
       deps.resetQuota !== undefined
@@ -375,7 +396,7 @@ export class Accounts {
             }
             return;
           }
-          for (const p of this.profiles()) if (p.machine === true && before.get(p.runtime) !== last.get(p.runtime)) this.afterSignIn(p.id);
+          for (const p of this.profiles()) if (p.machine === true && p.runtime !== undefined && before.get(p.runtime) !== last.get(p.runtime)) this.afterSignIn(p.id);
         }),
       );
       this.background.spawn(() => this.machine!.refresh());
@@ -601,6 +622,12 @@ export class Accounts {
         if (endpoint === undefined) throw new Refusal(400, tr(lang, "station.profile.addressNeeded"));
       }
       const protocol: string | undefined = typeof keep?.protocol === "string" ? keep.protocol : undefined;
+      const service: string | undefined =
+        typeof keep?.service === "string"
+          ? keep.service
+          : isObject(access) && typeof access.service === "string" && access.service.trim() !== ""
+            ? access.service.trim()
+            : undefined;
       const givenName = get("name");
       const name = typeof givenName === "string" ? givenName.trim() : typeof existing?.name === "string" ? existing.name : undefined;
       const givenModel = get("model");
@@ -640,13 +667,14 @@ export class Accounts {
       const next: Json = { id };
       if (name !== undefined && name !== "") next.name = name;
       const runtime = runtimeOf(get("runtime")) ?? runtimeOf(existing?.runtime);
-      if (runtime !== undefined) next.runtime = runtime;
+      if (kind !== "service" && runtime !== undefined) next.runtime = runtime;
       if (kind !== undefined) {
         next.access = { kind };
         if (key !== undefined) next.access.key = key;
         if (api && provider !== undefined) next.access.provider = provider;
         if (api && endpoint !== undefined) next.access.endpoint = endpoint;
         if (api && protocol !== undefined) next.access.protocol = protocol;
+        if (kind === "service" && service !== undefined) next.access.service = service;
         // Signed in to the OpenCode Console or to Kimi: still, unless a key was given in place of its token.
         const signsIn = kind === "opencode-go" || (api && provider === KIMI_CODE);
         if (signsIn && keep?.login === true && givenKey === undefined) next.access.login = true;
@@ -837,6 +865,15 @@ export class Accounts {
     if (!profile) throw new Refusal(404, `unknown profile ${id}`);
     const kind = accessKind(profile);
     const kimi = kimiSignedIn(profile);
+    if (kind === "service") {
+      if (borrowed(profile)) throw new Refusal(409, tr(lang, "station.share.borrowedEdit"));
+      const sid = serviceOf(profile);
+      const adapter = sid !== undefined ? this.services.get(sid) : undefined;
+      if (!adapter?.login) throw new Refusal(400, tr(lang, "station.admin.loginSubscriptionOnly"));
+      log.info("accounts", "service login started from the admin page", { profile: id, service: sid, by: viewer.email });
+      const email = await adapter.identity(profile.home).catch(() => null);
+      return adapter.login({ id, home: profile.home, email }, { env: this.env, lang });
+    }
     if (kind !== "subscription" && kind !== "opencode-go" && !kimi) throw new Refusal(400, tr(lang, "station.admin.loginSubscriptionOnly"));
     if (profile.machine === true) throw new Refusal(400, tr(lang, "station.admin.loginOnMachine"));
     if (borrowed(profile)) throw new Refusal(409, tr(lang, "station.share.borrowedEdit"));
@@ -858,6 +895,7 @@ export class Accounts {
       const candidate = (fromHome ?? fallback)?.trim() ?? "";
       email = EMAIL_RE.test(candidate) ? candidate : null;
     }
+    if (profile.runtime === undefined) throw new Refusal(400, tr(lang, "station.admin.loginSubscriptionOnly"));
     return this.logins.start({ id, runtime: profile.runtime, home: profile.home, ...(email ? { email } : {}) }, lang);
   }
 
@@ -869,12 +907,12 @@ export class Accounts {
     const id = `login-${randomBytes(4).toString("hex")}`;
     const home = join(this.deps.data, "homes", id);
     if (input.access === "opencode-go") {
-      this.pending.set(id, { runtime: "claude", access: "opencode-go", home, by: viewer, created: null, error: null });
+      this.pending.set(id, { access: "opencode-go", home, by: viewer, created: null, error: null });
       log.info("accounts", "OpenCode sign-in for a new profile started", { login: id, by: viewer.email });
       return { id, job: await this.logins.startConsole({ id, home }, lang) };
     }
     if (input.access === "kimi-code") {
-      this.pending.set(id, { runtime: "claude", access: "kimi-code", home, by: viewer, created: null, error: null });
+      this.pending.set(id, { access: "kimi-code", home, by: viewer, created: null, error: null });
       log.info("accounts", "Kimi sign-in for a new profile started", { login: id, by: viewer.email });
       return { id, job: await this.logins.startKimi({ id, home }, lang) };
     }
@@ -944,9 +982,23 @@ export class Accounts {
     const kimiLogin = kimi ? await readKimi(p.home) : null;
     if (gone()) return;
     if (kimi && !kimiLogin) return this.pendingFailed(id, tr(lang, "station.login.kimiUnreadable"));
-    const email = signedIn ? signedIn.email : kimi ? null : await accountEmailSoon(p.runtime, p.home);
+    const email = signedIn
+      ? signedIn.email
+      : kimi
+        ? null
+        : p.service !== undefined
+          ? ((await this.services.get(p.service)?.identity(p.home)) ?? null)
+          : p.runtime !== undefined
+            ? await accountEmailSoon(p.runtime, p.home)
+            : null;
     if (gone()) return;
-    const base = signedIn ? "opencode-go" : kimi ? KIMI_CODE : slug(email ?? `${p.runtime}-subscription`, 40) || p.runtime;
+    const base = signedIn
+      ? "opencode-go"
+      : kimi
+        ? KIMI_CODE
+        : p.service !== undefined
+          ? (slug(email ?? p.service, 40) || p.service)
+          : (slug(email ?? `${p.runtime ?? "account"}-subscription`, 40) || p.runtime || "account");
     const taken = await this.takenIdsSoon();
     if (gone()) return;
     // (its id held from the homes' listing to its save: another made meanwhile takes another)
@@ -975,7 +1027,24 @@ export class Accounts {
       return;
     }
     const enterprise = p.access === "agy-enterprise";
-    const name = signedIn ? (email ?? "OpenCode Go") : kimi ? "Kimi Code" : enterprise ? (email ?? tr(lang, "station.profile.agyEnterpriseSubscription")) : (email ?? tr(lang, p.runtime === "claude" ? "station.profile.claudeSubscription" : p.runtime === "grok" ? "station.profile.grokSubscription" : p.runtime === "cursor" ? "station.profile.cursorSubscription" : p.runtime === "devin" ? "station.profile.devinSubscription" : p.runtime === "agy" ? "station.profile.agySubscription" : "station.profile.chatgptSubscription"));
+    const subscriptionName = () => {
+      if (p.runtime === "claude") return tr(lang, "station.profile.claudeSubscription");
+      if (p.runtime === "codex") return tr(lang, "station.profile.chatgptSubscription");
+      if (p.runtime === "grok") return tr(lang, "station.profile.grokSubscription");
+      if (p.runtime === "cursor") return tr(lang, "station.profile.cursorSubscription");
+      if (p.runtime === "devin") return tr(lang, "station.profile.devinSubscription");
+      if (p.runtime === "agy") return tr(lang, "station.profile.agySubscription");
+      return profileId;
+    };
+    const name = signedIn
+      ? (email ?? "OpenCode Go")
+      : kimi
+        ? "Kimi Code"
+        : p.service !== undefined
+          ? (email ?? this.services.get(p.service)?.name ?? p.service)
+          : enterprise
+            ? (email ?? tr(lang, "station.profile.agyEnterpriseSubscription"))
+            : (email ?? subscriptionName());
     try {
       await this.save(p.by, `profile ${profileId} from a sign-in`, (raw) => {
         // An OpenCode Go one runs every runtime its key does (it has none of its own).
@@ -984,7 +1053,9 @@ export class Accounts {
           ? { id: profileId, name, access: { kind: "opencode-go", key: signedIn.access, login: true }, home: `homes/${profileId}`, env: {} }
           : kimi
             ? { id: profileId, name, access: { kind: "api-provider", provider: KIMI_CODE, login: true }, home: `homes/${profileId}`, env: {} }
-            : { id: profileId, name, runtime: p.runtime, access: enterprise ? { kind: "subscription", enterprise: true } : { kind: "subscription" }, home: `homes/${profileId}`, env: {} };
+            : p.service !== undefined
+              ? { id: profileId, name, access: { kind: "service", service: p.service }, home: `homes/${profileId}`, env: {} }
+              : { id: profileId, name, ...(p.runtime !== undefined ? { runtime: p.runtime } : {}), access: enterprise ? { kind: "subscription", enterprise: true } : { kind: "subscription" }, home: `homes/${profileId}`, env: {} };
         raw.profiles = [...(Array.isArray(raw.profiles) ? raw.profiles : []), made];
       });
     } catch (e) {
@@ -1271,7 +1342,7 @@ export class Accounts {
     const key = kimi ? (kimiLogin?.access ?? "") : String((profile.access as Json)?.key ?? "").trim();
     const signedOut = kimi && (kimiLogin?.refresh ?? "") === "";
     const check = await this.checkFn(
-      { runtime: profile.runtime, kind, key: signedOut ? "" : key, via: profileVia(profile), home: profile.home, machine: profile.machine === true, login: (profile.access as Json)?.login === true },
+      { runtime: profile.runtime, kind, key: signedOut ? "" : key, via: profileVia(profile), service: serviceOf(profile), profile, home: profile.home, machine: profile.machine === true, login: (profile.access as Json)?.login === true },
       lang,
     );
     // Codex capabilities kept for each account, including providers whose model ids came from their API.
@@ -1339,7 +1410,7 @@ export class Accounts {
         }
       }
     }
-    check.decision = await this.discoverFn(profile, check);
+    if (kind !== "service") check.decision = await this.discoverFn(profile, check);
     // A profile edited during the probe does not inherit the previous account's capabilities.
     const now = this.profile(id);
     if (!now || fingerprint(now) !== fingerprint(profile)) throw new Refusal(409, tr(lang, "station.profile.changedRecheck"));
@@ -1868,12 +1939,13 @@ export class Accounts {
         if (check.decision && check.decision.fingerprint !== fingerprint(p)) checkView.decision = { state: "pending", detail: "Profile 已修改，等待自动检查", reason: "changed" };
       }
       return {
-        id: p.id, name: p.name, runtime: p.runtime, runtimes: p.runtimes,
-        email: kind === "subscription" ? this.email(p, says) : a.login === true ? says.email : null,
+        id: p.id, name: p.name, runtime: p.runtime ?? null, service: p.service ?? null, runtimes: p.runtimes,
+        email: kind === "subscription" ? this.email(p, says) : kind === "service" || a.login === true ? says.email : null,
         // A provider's key says `env` where an older core reads it; the provider next to it tells a newer core it is not.
         access: {
           kind: kind === "api-provider" ? "env" : kind, key: mask(String(a.key ?? "").trim()),
           provider: via.provider ?? null, endpoint: via.endpoint ?? null, protocol: via.protocol ?? null,
+          service: p.service ?? null,
           // Its key is the token of a sign-in to the OpenCode Console or to Kimi (signed in again, not replaced).
           login: (kind === "opencode-go" || kimiSignedIn(p)) && a.login === true,
         },
@@ -1895,7 +1967,7 @@ export class Accounts {
         share: this.deps.shared?.view(p, viewer?.workspace ?? null) ?? null,
         // Whether its login can be lent to the workspace's other stations (share/index.ts shareRefusal): its page says
         // so where it cannot, rather than a switch that is refused.
-        shareable: shareRefusal(p) === null,
+        shareable: shareRefusal(p, this.services) === null,
         // The joined workspaces whose sessions may run on it, and whether the viewer's may.
         workspaces: others.filter((w) => allowedIn(p, w, home)),
         serves: allowedIn(p, joined, home),
@@ -1981,7 +2053,7 @@ export class Accounts {
       return under.read;
     }
     const entry = { since, tell, read: Promise.resolve() };
-    entry.read = homeSaysSoon(p)
+    entry.read = homeSaysSoon(p, this.services)
       .then((says) => {
         if (this.homesChanged !== since) return;
         this.homes.set(p.id, { asked, says });
@@ -2007,7 +2079,7 @@ export class Accounts {
       for (const p of profiles) {
         const asked = JSON.stringify(homeAsked(p));
         const since = this.homesChanged;
-        const says = await homeSaysSoon(p).catch(() => null);
+        const says = await homeSaysSoon(p, this.services).catch(() => null);
         const kept = this.homes.get(p.id);
         // Not shown yet (read as it is), or changed meanwhile: left as it is.
         if (says === null || kept === undefined || kept.asked !== asked || this.homesChanged !== since) continue;
@@ -2024,7 +2096,7 @@ export class Accounts {
 
   /// The overview's `logins`: sign-ins for new profiles.
   loginsView(_viewer?: Viewer): Json[] {
-    return [...this.pending.entries()].map(([id, p]) => ({ id, runtime: p.runtime, job: this.logins.get(id), created: p.created, error: p.error }));
+    return [...this.pending.entries()].map(([id, p]) => ({ id, runtime: p.runtime ?? null, ...(p.service !== undefined ? { service: p.service } : {}), job: this.logins.get(id), created: p.created, error: p.error }));
   }
 
   /// The overview's `machineLogins`.

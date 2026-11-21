@@ -257,7 +257,7 @@ pub fn Given::of_jv(v : JV, data : String) -> Given {
 ///|
 /// A sign-in with no profile yet (`Pending`).
 struct Pending {
-  runtime : String
+  runtime : String?
   access : String?
   home : String
   by : JV
@@ -462,7 +462,7 @@ pub fn Accounts::start(self : Accounts) -> Unit {
       h.set_health(id => self.health(id))
       h.set_recheck(async fn(id) {
         match self.profile(id) {
-          Some(p) if p.runtime == "codex" && access_kind(p.raw) == "subscription" => {
+          Some(p) if p.runtime == Some("codex") && access_kind(p.raw) == "subscription" => {
             let generation = self.login_generation.get(id).unwrap_or(0)
             let read = self.read_quota(id, true)
             if self.login_generation.get(id).unwrap_or(0) != generation {
@@ -585,9 +585,13 @@ pub async fn Accounts::machine_changed(self : Accounts) -> Unit {
           continue
         }
         let check = self.checks.get(p.id)
-        let login = logins
-          .iter()
-          .find_first(l => l.get("runtime") == Some(Str(p.runtime)) && is_truthy(l.get("loggedIn")))
+        let login = match p.runtime {
+          Some(r) =>
+            logins
+            .iter()
+            .find_first(l => l.get("runtime") == Some(Str(r)) && is_truthy(l.get("loggedIn")))
+          None => None
+        }
         match (jget(check, "state"), jget(login, "plan")) {
           (Some(Str("ok")), Some(plan)) if is_truthy(Some(plan)) &&
             jget(check, "plan") != Some(plan) => self.after_sign_in(p.id)
@@ -597,8 +601,9 @@ pub async fn Accounts::machine_changed(self : Accounts) -> Unit {
     }
     Some(b) =>
       for p in self.profiles() {
-        if p.machine && b.get(p.runtime) != last.get(p.runtime) {
-          self.after_sign_in(p.id)
+        match p.runtime {
+          Some(r) if p.machine && b.get(r) != last.get(r) => self.after_sign_in(p.id)
+          _ => ()
         }
       }
   }
@@ -658,7 +663,7 @@ fn Accounts::profile(self : Accounts, id : String) -> Profile? {
 /// `health`: how a profile is doing, for the pool.
 pub fn Accounts::health(self : Accounts, id : String) -> Health {
   let account = match self.profile(id) {
-    Some(p) if p.runtime == "codex" && access_kind(p.raw) == "subscription" =>
+    Some(p) if p.runtime == Some("codex") && access_kind(p.raw) == "subscription" =>
       self.codex_account(p)
     _ => None
   }
@@ -723,7 +728,7 @@ async fn Accounts::codex_account_read(
 ///|
 /// `codexAccountsRead`: every Codex subscription profile's account read again.
 pub async fn Accounts::codex_accounts_read(self : Accounts) -> Unit {
-  let codex = self.profiles().filter(p => p.runtime == "codex" && access_kind(p.raw) == "subscription")
+  let codex = self.profiles().filter(p => p.runtime == Some("codex") && access_kind(p.raw) == "subscription")
   for p in codex {
     self.codex_account_read(p, true)
   }

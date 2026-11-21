@@ -5,7 +5,7 @@
 
 ///|
 let check_access_kinds : Array[String] = [
-  "subscription", "opencode-go", "anthropic-api", "env", "api-provider",
+  "subscription", "opencode-go", "anthropic-api", "env", "api-provider", "service",
 ]
 
 ///|
@@ -274,7 +274,11 @@ pub fn check_sandboxes(raw : JV) -> Unit raise Thrown {
 
 ///|
 /// `checkConfig`: throws what parse_config refuses in `raw` (config.json as written).
-pub fn check_config(raw : JV?, _data : String) -> Unit raise Thrown {
+pub fn check_config(
+  raw : JV?,
+  _data : String,
+  services? : Array[String] = [],
+) -> Unit raise Thrown {
   guard raw is Some(Obj(_) as raw) else {
     raise check_fail("invalid type: \{describe(raw)}, expected struct RawConfig")
   }
@@ -349,7 +353,7 @@ pub fn check_config(raw : JV?, _data : String) -> Unit raise Thrown {
         raise check_fail("missing field `kind`")
       }
       variant(a.get("kind"), check_access_kinds, "an access kind")
-      for f in ["key", "provider", "endpoint", "protocol"] {
+      for f in ["key", "provider", "service", "endpoint", "protocol"] {
         optional(a.get(f), "string", "a string")
       }
     }
@@ -392,12 +396,23 @@ pub fn check_config(raw : JV?, _data : String) -> Unit raise Thrown {
     }
     let runtimes = runtimes_for(access, p.get("runtime"))
     let provider = nonempty_str(jget(access, "provider"))
+    let service = nonempty_str(jget(access, "service"))
     let endpoint = match jget(access, "endpoint") {
       Some(Str(e)) => clean_endpoint(e)
       _ => None
     }
     let protocol = nonempty_str(jget(access, "protocol"))
-    if kind == "api-provider" {
+    if kind == "service" {
+      if present(p.get("runtime")) {
+        raise check_fail("profile \{id}: service profile must not set runtime")
+      }
+      guard service is Some(svc) && id_ok(svc) else {
+        raise check_fail("profile \{id}: service access needs a valid service id")
+      }
+      if !services.contains(svc) {
+        raise check_fail("profile \{id}: unknown service \{svc}")
+      }
+    } else if kind == "api-provider" {
       let s = match provider {
         None => None
         Some(pid) => find_source(pid)

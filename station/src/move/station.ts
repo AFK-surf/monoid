@@ -29,6 +29,8 @@ import { Told } from "./told.ts";
 import { type Lang, stationLang, tr } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
 import { hold as holdUpdates } from "../updates/holds.ts";
+import { profileRuntimes } from "../agents/profiles.ts";
+import { allowedIn } from "../sessions/config.ts";
 
 /// A JSON file written whole (beside, then renamed).
 async function writeJsonFile(path: string, v: unknown): Promise<void> {
@@ -291,6 +293,14 @@ export class Moves {
         const reads = this.#planning.get(ws);
         const pages = reads !== undefined && reads.loaded().length > 0 ? reads.loaded() : this.#pagesNow(ws);
         for (const page of pages) for (const k of page.keys) for (const [id, a] of this.handover.accountsOf([k], page)) out.set(id, a);
+        const home = d.home();
+        for (const p of d.profiles()) {
+          if (typeof p?.id !== "string" || out.has(p.id)) continue;
+          if (p.machine === true || p.share?.borrowed === true) continue;
+          if (profileRuntimes(p).length > 0) continue;
+          if (!allowedIn(p, ws === home ? null : ws, home)) continue;
+          out.set(p.id, accountOf(p, here()));
+        }
         return out;
       },
       shared: (id) => {

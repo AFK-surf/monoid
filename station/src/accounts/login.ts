@@ -58,7 +58,9 @@ export type LoginState = "starting" | "needs_code" | "needs_project" | "needs_ap
 
 export type LoginJob = {
   profile: string;
-  runtime: Runtime;
+  runtime?: Runtime;
+  /// Service id when signing in a non-agent service profile.
+  service?: string;
   /// Signing in to OpenCode (an OpenCode Go profile) or Kimi (a Kimi Code profile) rather than the runtime's
   /// subscription (absent: the runtime's).
   provider?: "opencode" | "kimi";
@@ -465,7 +467,7 @@ export class LoginManager {
     this.finished.delete(profile.id);
     const id = profile.id;
     const now = this.background.now();
-    const job: LoginJob = { profile: id, runtime: "claude", provider, state: "starting", url: null, userCode: null, error: null, startedAt: now, expiresAt: now + TIMEOUT_MS };
+    const job: LoginJob = { profile: id, provider, state: "starting", url: null, userCode: null, error: null, startedAt: now, expiresAt: now + TIMEOUT_MS };
     const run = ++this.runs;
     const running: Running = { run, job, child: null, raw: "", output: "", exited: true, lang, home: profile.home, cancelTimer: () => {} };
     this.jobs.set(id, running);
@@ -586,9 +588,9 @@ export class LoginManager {
   }
 
   /// A sign-in that cannot be started here, recorded like any other failure, so the page shows why.
-  private refused(id: string, runtime: Runtime, error: string): LoginJob {
+  private refused(id: string, runtime: Runtime | undefined, error: string, service?: string): LoginJob {
     const now = this.background.now();
-    const failed: LoginJob = { profile: id, runtime, state: "failed", url: null, userCode: null, error, startedAt: now, expiresAt: now };
+    const failed: LoginJob = { profile: id, ...(runtime !== undefined ? { runtime } : {}), ...(service !== undefined ? { service } : {}), state: "failed", url: null, userCode: null, error, startedAt: now, expiresAt: now };
     this.finished.set(id, failed);
     this.emit(id);
     return { ...failed };

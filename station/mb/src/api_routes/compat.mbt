@@ -55,12 +55,25 @@ fn is_omit(v : JV) -> Bool {
 }
 
 ///|
-fn runtime_view(ty : JV, value : JV, supported : Array[String]) -> JV {
+fn client_profile_services(headers : Array[(String, String)]) -> Bool {
+  match header_of(headers, "stillfail-profile-services") {
+    Some(v) => trim_js(v) == "1"
+    None => false
+  }
+}
+
+///|
+fn runtime_view(
+  ty : JV,
+  value : JV,
+  supported : Array[String],
+  services : Bool,
+) -> JV {
   let set : Map[String, Unit] = {}
   for k in supported {
     set[k] = ()
   }
-  match @events.runtime_view(ty, Some(value), set) {
+  match @events.runtime_view(ty, Some(value), set, services~) {
     Omit => jobj([("$omit", jbool(true))])
     Value(Some(v)) => v
     Value(None) => jundef
@@ -87,7 +100,7 @@ fn shape_for(path : String) -> JV? {
 }
 
 ///|
-fn frame(text : String, supported : Array[String]) -> String raise {
+fn frame(text : String, supported : Array[String], services : Bool) -> String raise {
   let lines = text.split("\n").map(l => l.to_string()).collect()
   let event = match lines.iter().find_first(l => l.has_prefix("event: ")) {
     Some(l) => Some(l.unsafe_substring(start=7, end=l.length()))
@@ -112,7 +125,7 @@ fn frame(text : String, supported : Array[String]) -> String raise {
   let view = if event == Some("thread") {
     entries_view(value, supported)
   } else {
-    runtime_view(ty.unwrap(), value, supported)
+    runtime_view(ty.unwrap(), value, supported, services)
   }
   if is_omit(view) && event == Some("session") {
     // Keep the event's id for resumable streams and remove an obsolete cached session.
@@ -147,6 +160,7 @@ fn find_frame_end(b : Bytes, from : Int32) -> Int32 {
 fn events_view(
   next : async () -> Bytes?,
   supported : Array[String],
+  services : Bool,
 ) -> async () -> Bytes? {
   let pending = @buffer.new()
   let out : Array[Bytes] = []
@@ -160,7 +174,7 @@ fn events_view(
           let mut at = 0
           while find_frame_end(all, at) is end && end >= 0 {
             let text = utf8_text(all[at:end].to_bytes())
-            out.push(utf8(frame(text, supported) + "\n\n"))
+            out.push(utf8(frame(text, supported, services) + "\n\n"))
             at = end + 2
           }
           pending.reset()
@@ -171,7 +185,7 @@ fn events_view(
           let rest = utf8_text(pending.to_bytes())
           pending.reset()
           if rest != "" {
-            out.push(utf8(frame(rest, supported)))
+            out.push(utf8(frame(rest, supported, services)))
           }
         }
       }
@@ -203,18 +217,19 @@ pub async fn Admin::runtime_compatible(
     return answer
   }
   let supported = client_runtimes(r.headers)
-  if self.setup.runtime_kinds.iter().all(k => supported.contains(k)) {
+  let services = client_profile_services(r.headers)
+  if services && self.setup.runtime_kinds.iter().all(k => supported.contains(k)) {
     return answer
   }
   let path = re("\\/+$").replace_all(r.path, _ => "")
   if path == "/events" {
     match answer.body {
       Stream(next) =>
-        return { ..answer, body: Stream(events_view(next, supported)), }
+        return { ..answer, body: Stream(events_view(next, supported, services)), }
       Streamed(next, close) =>
         return {
           ..answer,
-          body: Streamed(events_view(next, supported), close),
+          body: Streamed(events_view(next, supported, services), close),
         }
       Whole(_) => ()
     }
@@ -276,11 +291,11 @@ pub async fn Admin::runtime_compatible(
   } else if account && raw is Obj(_) {
     match raw.get("overview") {
       Some(o) =>
-        jset(raw, "overview", runtime_view(js("Overview"), o, supported))
-      None => runtime_view(js("Overview"), raw, supported)
+        jset(raw, "overview", runtime_view(js("Overview"), o, supported, services))
+      None => runtime_view(js("Overview"), raw, supported, services)
     }
   } else {
-    runtime_view(ty.unwrap(), raw, supported)
+    runtime_view(ty.unwrap(), raw, supported, services)
   }
   if is_omit(view) {
     return error(426, self.tr(r.lang, "station.admin.updateClientForRuntime"))

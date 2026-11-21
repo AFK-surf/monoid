@@ -48,6 +48,7 @@ import { authFile as cursorAuthFile } from "../accounts/cursor.ts";
 import { KIMI_FILE, KIMI_TOKEN_FILE } from "../accounts/kimi.ts";
 import { devinAccountFile, grokAuthFile } from "../accounts/profiles.ts";
 import { accountEmailSoon } from "../accounts/index.ts";
+import { DEFAULT_SERVICES, defaultServiceShareRefusal, serviceOf, type ServiceRegistry } from "../accounts/services.ts";
 import { agyAccountFile, agyExpiryIn, agyLentFile, agyToken } from "../agents/agy.ts";
 import { LEND_BOUND_MS } from "../accounts/oauth.ts";
 import { devinData } from "../agents/devin.ts";
@@ -149,6 +150,8 @@ export type SharingDeps = {
   codexTokenUrl?: string;
   /// Tests: the MoonBit program that reads and writes the skills' files (readerBinary's where none is given).
   binary?: string;
+  /// Service profile adapters for non-agent-runtime accounts (`access.kind === "service"`).
+  services?: ServiceRegistry;
 };
 
 /// `dir`: of a skill, its directory's device and inode (`dev:ino`), by which it is found again once renamed.
@@ -202,11 +205,15 @@ const newId = () => `sh-${randomBytes(10).toString("hex")}`;
 /// The files a profile's login is in, under its home, by its runtime and how it signs in: what is handed over with it as
 /// it moves to another station. Login and identity files alone, never the home's caches, sessions or transcripts. A key
 /// profile has none (its key is in the profile).
-export function signInFiles(p: Json): string[] {
+export function signInFiles(p: Json, services: ServiceRegistry = DEFAULT_SERVICES): string[] {
   const kind = isObject(p?.access) ? p.access.kind : undefined;
+  if (kind === "service") {
+    const s = serviceOf(p);
+    return s !== undefined ? [...(services.get(s)?.signInFiles() ?? [])] : [];
+  }
   const out: string[] = [];
   if (kind === "subscription") {
-    const r = String(p.runtime ?? "claude");
+    const r = typeof p.runtime === "string" ? p.runtime : undefined;
     if (r === "claude") out.push(".credentials.json", ".claude.json");
     else if (r === "codex") out.push("auth.json");
     else if (r === "grok") out.push(grokAuthFile(""));
@@ -292,8 +299,13 @@ async function keptCodexExpiry(file: string): Promise<number> {
 /// Why profile `p`'s login cannot be shared with other stations (null: it can): what `shareProfile` refuses turning a
 /// share on, and what a move asks before sharing a login as it moves it (move/accounts.ts), so the two never differ. A
 /// copy of another station's is not this station's to share.
-export function shareRefusal(p: Json): string | null {
+export function shareRefusal(p: Json, services: ServiceRegistry = DEFAULT_SERVICES): string | null {
   if (isObject(p?.share) && p.share.borrowed === true) return "this profile is another station's";
+  if (p?.access?.kind === "service") {
+    const s = serviceOf(p);
+    const adapter = s !== undefined ? services.get(s) : undefined;
+    return adapter?.shareRefusal ? adapter.shareRefusal() : defaultServiceShareRefusal(s);
+  }
   // Grok Build's sign-in is not lent yet (only Claude Code's, Codex's and the Antigravity CLI's are: lendClaude,
   // lendCodex, lendAgy).
   if (p?.access?.kind === "subscription" && p.runtime === "grok") return "a SuperGrok subscription cannot be shared with other stations yet";
@@ -1264,12 +1276,20 @@ export class Sharing {
     return { heard: true };
   }
 
+  private get services(): ServiceRegistry {
+    return this.deps.services ?? DEFAULT_SERVICES;
+  }
+
   private async emailOf(p: Json): Promise<string | null> {
     if (typeof p.share?.email === "string") return p.share.email;
     if (p.machine === true) return this.deps.machineEmail?.(p.runtime) ?? null;
     const home = this.home(p);
+    if (p?.access?.kind === "service") {
+      const s = serviceOf(p);
+      return s !== undefined ? ((await this.services.get(s)?.identity(home)) ?? null) : null;
+    }
     // (read again only once its file changed: accounts/index.ts emailKept)
-    if (p.runtime === "grok" || p.runtime === "cursor") return accountEmailSoon(p.runtime, home);
+    if (p.runtime === "grok" || p.runtime === "cursor" || p.runtime === "devin" || p.runtime === "agy") return accountEmailSoon(p.runtime, home);
     if (p.runtime === "codex") {
       try {
         const auth = JSON.parse(await readFile(join(home, "auth.json"), "utf8"));
@@ -1280,6 +1300,7 @@ export class Sharing {
         return null;
       }
     }
+    if (p.runtime !== "claude") return null;
     for (const file of [join(home, ".claude.json"), join(home, "claude.json")]) {
       try {
         const email = JSON.parse(await readFile(file, "utf8"))?.oauthAccount?.emailAddress;
@@ -1641,7 +1662,7 @@ export class Sharing {
     const p = this.profiles().find((x) => x.id === profileId);
     if (!p) throw new Error(`unknown profile ${profileId}`);
     if (isObject(p.share) && p.share.borrowed === true) throw new Error("this profile is another station's");
-    const refused = on ? shareRefusal(p) : null;
+    const refused = on ? shareRefusal(p, this.services) : null;
     if (refused !== null) throw new Error(refused);
     const had = isObject(p.share) && typeof p.share.id === "string" ? (p.share.id as string) : null;
     // (the stations it reaches are said by the cloud: a station just started waits for them, as a login wanted does)
@@ -1729,7 +1750,7 @@ export class Sharing {
     if (ws === null) throw new Said(t("station.share.moveWhere"));
     const credentials: Record<string, string> = {};
     const home = this.home(p);
-    for (const name of signInFiles(p)) {
+    for (const name of signInFiles(p, this.services)) {
       try {
         const path = join(home, name);
         if (!(await lstat(path)).isSymbolicLink()) credentials[name] = (await readFile(path)).toString("base64");
@@ -1738,7 +1759,7 @@ export class Sharing {
     // (its account read while its login is here: the copy kept here is named by it after the login goes)
     const email = await this.emailOf(p);
     const me = this.me();
-    const sharing = !isObject(p.share) && shareFirst !== undefined && shareRefusal(p) === null && me !== null;
+    const sharing = !isObject(p.share) && shareFirst !== undefined && shareRefusal(p, this.services) === null && me !== null;
     if (!isObject(p.share) && !sharing) return this.moveOwn(p, to, ws, credentials, t, lang);
     const id = sharing ? newId() : (p.share.id as string);
     if (this.moving.has(id)) throw new Said(t("station.share.moving"));
@@ -1946,7 +1967,7 @@ export class Sharing {
 
   /// The login files handed over with a profile, written in its home here (only those its runtime signs in with).
   private async writeSignIns(home: string, given: Json, credentials: unknown) {
-    const allowed = new Set(signInFiles(given));
+    const allowed = new Set(signInFiles(given, this.services));
     for (const [name, data] of Object.entries(isObject(credentials) ? credentials : {})) {
       if (!allowed.has(name) || typeof data !== "string") continue;
       const path = join(home, name);
@@ -1977,7 +1998,7 @@ export class Sharing {
     const email = typeof request.email === "string" && request.email !== "" ? request.email : null;
     let same: Json | undefined;
     for (const x of email === null ? [] : this.profiles()) {
-      if (x.machine !== true && !(isObject(x.share) && x.share.borrowed === true) && x.runtime === given.runtime && x.access?.kind === given.access?.kind && (await this.emailOf(x)) === email) {
+      if (x.machine !== true && !(isObject(x.share) && x.share.borrowed === true) && x.runtime === given.runtime && x.access?.kind === given.access?.kind && serviceOf(x) === serviceOf(given) && (await this.emailOf(x)) === email) {
         same = x;
         break;
       }

@@ -7,7 +7,7 @@ import { afreshThreshold } from "../../../client/core-ts/src/cache-policy.ts";
 import { agyBaseModel } from "../agents/agy.ts";
 import { devinFusionBase, splitDevinFusion } from "../agents/devin.ts";
 import { runtimeKind, runtimeLabel, type Profile as RuntimeProfile } from "../agents/runtime.ts";
-import { profileRuntimes, type Runtime } from "../agents/profiles.ts";
+import { profileRuntimes, profileService, type Runtime } from "../agents/profiles.ts";
 import { modelKey } from "../read/usage.ts";
 import { tr, type Lang } from "../ops/i18n.ts";
 
@@ -18,6 +18,8 @@ export type Profile = RuntimeProfile & {
   name: string;
   /// The runtimes it can run.
   runtimes: Runtime[];
+  /// The service id for a non-agent service profile (`access.kind === "service"`).
+  service?: string;
   /// Models it runs: those named by hand (`named`), then the rest its check found (each once, in either spelling).
   models: string[];
   /// Models named in config.json (trimmed, each once): by hand where its provider lists none, or ticked on before every
@@ -111,6 +113,8 @@ export function hubConfig(raw: any, dataDir: string, found: (id: string) => read
       .filter((m: string) => m !== "" && !seen.has(m) && (seen.add(m), true));
     const base: RuntimeProfile = { ...p, home: under(dataDir, String(p.home ?? "")) };
     const runtimes = profileRuntimes(base);
+    const service = profileService(base);
+    if (runtimes[0] === undefined) delete base.runtime;
     const runs = [...models];
     if (runtimes.length > 0) {
       const has = new Set(models.map(modelKey));
@@ -124,8 +128,8 @@ export function hubConfig(raw: any, dataDir: string, found: (id: string) => read
       ...base,
       id: p.id,
       name: (p.machine === true ? machineName(str(p.name)) : str(p.name))?.trim() || p.id,
-      // One that runs neither runtime (a provider of chat completions only) is Claude's in name.
-      runtime: runtimes[0] ?? "claude",
+      ...(runtimes[0] !== undefined ? { runtime: runtimes[0] } : {}),
+      ...(service !== undefined ? { service } : {}),
       runtimes,
       models: runs,
       named: models,

@@ -47,7 +47,7 @@ async fn Accounts::reset_fn(
   if self.given.reset_quota == "given" {
     return self.ask("resetQuota", [profile.raw, js(key), jopt(kind)])
   }
-  if profile.runtime == "claude" {
+  if profile.runtime == Some("claude") {
     return self.claude_reset(profile, key, kind)
   }
   if !self.given.codex {
@@ -198,7 +198,8 @@ pub async fn Accounts::check(self : Accounts, id : String, lang : String) -> JV 
     ""
   let mut check = self.check_fn(
     jobj([
-      ("runtime", js(profile.runtime)),
+      ("runtime", jopt(profile.runtime)),
+      ("service", jopt(profile.service)),
       ("kind", js(kind)),
       ("key", js(if signed_out { "" } else { key })),
       ("via", via_jv(profile_via(profile.raw))),
@@ -208,7 +209,7 @@ pub async fn Accounts::check(self : Accounts, id : String, lang : String) -> JV 
     ]),
     lang,
   )
-  let codex_subscription = kind == "subscription" && profile.runtime == "codex"
+  let codex_subscription = kind == "subscription" && profile.runtime == Some("codex")
   let state = () => jstr(check.get("state"))
   if (state() == Some("ok") || state() == Some("unknown")) &&
     profile.runtimes.contains("codex") &&
@@ -269,7 +270,7 @@ pub async fn Accounts::check(self : Accounts, id : String, lang : String) -> JV 
       }
     }
   }
-  if profile.runtime == "hermes" && self.given.hermes {
+  if profile.runtime == Some("hermes") && self.given.hermes {
     let listed = async fn() {
       let models = jitems(Some(self.ask("hermes.models", [profile.raw])))
       check = jset(check, "models", jarr(models))
@@ -320,7 +321,7 @@ pub async fn Accounts::check(self : Accounts, id : String, lang : String) -> JV 
       }
     }
   }
-  if profile.runtime == "agy" &&
+  if profile.runtime == Some("agy") &&
     (state() == Some("ok") || state() == Some("unknown")) &&
     self.given.agy {
     let listed = async fn() {
@@ -378,7 +379,9 @@ pub async fn Accounts::check(self : Accounts, id : String, lang : String) -> JV 
       }
     }
   }
-  check = jset(check, "decision", self.discover_fn(profile, check))
+  if kind != "service" {
+    check = jset(check, "decision", self.discover_fn(profile, check))
+  }
   let now = self.profile(id)
   let same = match now {
     Some(n) => self.fingerprint(n) == self.fingerprint(profile)
@@ -389,9 +392,13 @@ pub async fn Accounts::check(self : Accounts, id : String, lang : String) -> JV 
   }
   if profile.machine && kind == "subscription" && state() == Some("ok") {
     let logins = jitems(Some(self.ask("machine.get", [])))
-    let login = logins
-      .iter()
-      .find_first(l => l.get("runtime") == Some(Str(profile.runtime)) && is_truthy(l.get("loggedIn")))
+    let login = match profile.runtime {
+      Some(r) =>
+        logins
+        .iter()
+        .find_first(l => l.get("runtime") == Some(Str(r)) && is_truthy(l.get("loggedIn")))
+      None => None
+    }
     match jget(login, "plan") {
       Some(Str(p)) if trim_js(p) != "" => check = jset(check, "plan", js(trim_js(p)))
       _ => ()
@@ -526,7 +533,7 @@ fn Accounts::missing_borrowed_reset_details(
   profile : Profile,
   q : JV?,
 ) -> Bool {
-  if profile.runtime != "codex" || !borrowed(profile.raw) {
+  if profile.runtime != Some("codex") || !borrowed(profile.raw) {
     return false
   }
   match q {
@@ -647,7 +654,7 @@ async fn Accounts::ask_quota(self : Accounts, id : String, stands : Bool) -> JV?
   let lang = self.ctx.station_lang
   if borrowed(profile.raw) && access_kind(profile.raw) == "subscription" && self.given.shared {
     let now = self.background.now()
-    let mut own = if profile.runtime == "codex" {
+    let mut own = if profile.runtime == Some("codex") {
       lent_codex_usage(self.ctx, profile.home, now, lang) catch {
         _ => None
       }
@@ -655,7 +662,7 @@ async fn Accounts::ask_quota(self : Accounts, id : String, stands : Bool) -> JV?
       None
     }
     let signed_out = (q : JV?) => is_truthy(jget(q, "signedOut"))
-    if profile.runtime == "codex" &&
+    if profile.runtime == Some("codex") &&
       (own is None || signed_out(own)) &&
       self.given.shared_lend_codex {
       let lend = async fn() {
@@ -678,7 +685,7 @@ async fn Accounts::ask_quota(self : Accounts, id : String, stands : Bool) -> JV?
       let read = jset(jdel(own.unwrap(), "signedOut"), "checkedAt", jnum(now))
       self.quotas[id] = read
       self.keep_quota(id, read)
-      if profile.runtime == "codex" {
+      if profile.runtime == Some("codex") {
         self.codex_login(id, false, lang)
       }
       self.changed()
@@ -732,7 +739,7 @@ async fn Accounts::ask_quota(self : Accounts, id : String, stands : Bool) -> JV?
   self.quota_unanswered.remove(id)
   let mut current = asked
   let mut refused = signed_out
-  if profile.runtime == "codex" && access_kind(profile.raw) == "subscription" && refused {
+  if profile.runtime == Some("codex") && access_kind(profile.raw) == "subscription" && refused {
     let fresh = codex_usage(self.ctx, join_path([profile.home, "auth.json"]), lang) catch {
       _ => None
     }
@@ -754,7 +761,7 @@ async fn Accounts::ask_quota(self : Accounts, id : String, stands : Bool) -> JV?
   self.quotas[id] = read
   self.keep_quota(id, read)
   self.changed()
-  if profile.runtime == "codex" && access_kind(profile.raw) == "subscription" {
+  if profile.runtime == Some("codex") && access_kind(profile.raw) == "subscription" {
     if refused {
       self.codex_login(id, true, lang)
     } else if read.get("state") == Some(Str("ok")) {
@@ -772,7 +779,7 @@ async fn Accounts::ask_quota(self : Accounts, id : String, stands : Bool) -> JV?
         _ => ()
       }
     })
-  } else if profile.runtime == "claude" &&
+  } else if profile.runtime == Some("claude") &&
     access_kind(profile.raw) == "subscription" &&
     read.get("state") == Some(Str("ok")) &&
     (jget(self.checks.get(id), "state") == Some(Str("failed")) ||
@@ -854,7 +861,7 @@ pub async fn Accounts::shared_changed(self : Accounts, id : String, reset : Bool
     return
   }
   ignore(self.check_borrowed(profile, self.ctx.station_lang))
-  if profile.runtime == "codex" && self.given.shared_lend_codex {
+  if profile.runtime == Some("codex") && self.given.shared_lend_codex {
     let before = match self.borrowed_login.get(id) {
       Some(b) => b
       None => self.lent_login_version(profile.home)
@@ -879,7 +886,7 @@ pub async fn Accounts::shared_changed(self : Accounts, id : String, reset : Bool
       ignore(self.ask("hub.allowanceReset", [js(id)]))
     }
   }
-  if profile.runtime == "agy" && self.given.shared_lend_agy {
+  if profile.runtime == Some("agy") && self.given.shared_lend_agy {
     ignore(self.ask("shared.lendAgy", [profile.raw, jbool(true)])) catch {
       _ => ()
     }
@@ -918,7 +925,7 @@ pub async fn Accounts::reset_quota(
   guard self.profile(id) is Some(profile) else {
     raise refusal(404, t("station.profile.notFound"))
   }
-  if (profile.runtime != "codex" && profile.runtime != "claude") ||
+  if (profile.runtime != Some("codex") && profile.runtime != Some("claude")) ||
     access_kind(profile.raw) != "subscription" {
     raise refusal(400, t("station.quota.resetSubscriptionOnly"))
   }

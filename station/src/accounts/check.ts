@@ -9,8 +9,9 @@ import { fallbackEfforts } from "../sessions/pool.ts";
 import { RUNTIME_KINDS } from "../agents/runtime.ts";
 import { checkNetwork } from "../mesh/settings.ts";
 import { checkAgentEnv } from "../ops/agent-env.ts";
+import { DEFAULT_SERVICES, type ServiceRegistry } from "./services.ts";
 
-const ACCESS_KINDS = ["subscription", "opencode-go", "anthropic-api", "env", "api-provider"];
+const ACCESS_KINDS = ["subscription", "opencode-go", "anthropic-api", "env", "api-provider", "service"];
 const RUNTIMES: string[] = RUNTIME_KINDS;
 const MODES = ["multi-session", "single-session"];
 /// The connects the station has a part for (slack/, feishu/, comma/, group/).
@@ -46,7 +47,7 @@ const optional = (v: unknown, type: "string" | "boolean" | "number", what: strin
 };
 
 /// Throws what parse_config refuses in `raw` (config.json as written); `data` is the data directory homes are under.
-export function checkConfig(raw: any, _data: string): void {
+export function checkConfig(raw: any, _data: string, services: ServiceRegistry = DEFAULT_SERVICES): void {
   if (!isObject(raw)) throw new Error(`invalid type: ${describe(raw)}, expected struct RawConfig`);
   // The device tools' access (src/device/tools.ts).
   if (raw.tools !== undefined && raw.tools !== null) {
@@ -79,7 +80,7 @@ export function checkConfig(raw: any, _data: string): void {
       if (!isObject(p.access)) throw new Error(`invalid type: ${describe(p.access)}, expected struct RawProfileAccess`);
       if (p.access.kind === undefined) throw new Error("missing field `kind`");
       variant(p.access.kind, ACCESS_KINDS, "an access kind");
-      for (const f of ["key", "provider", "endpoint", "protocol"]) optional(p.access[f], "string", "a string");
+      for (const f of ["key", "provider", "endpoint", "protocol", "service"]) optional(p.access[f], "string", "a string");
     }
     for (const f of ["machine", "backgroundOnMessage", "fast", "enabled"]) optional(p[f], "boolean", "a boolean");
     optional(p.name, "string", "a string");
@@ -103,7 +104,12 @@ export function checkConfig(raw: any, _data: string): void {
     const provider = typeof access?.provider === "string" && access.provider !== "" ? access.provider : undefined;
     const endpoint = typeof access?.endpoint === "string" ? cleanEndpoint(access.endpoint) : undefined;
     const protocol = typeof access?.protocol === "string" && access.protocol !== "" ? access.protocol : undefined;
-    if (kind === "api-provider") {
+    if (kind === "service") {
+      if (p.runtime !== undefined && p.runtime !== null) throw new Error(`profile ${p.id}: service profile cannot specify a runtime`);
+      const service = typeof access?.service === "string" && access.service !== "" ? access.service : undefined;
+      if (service === undefined || !idOk(service)) throw new Error(`profile ${p.id}: service needs a valid service id`);
+      if (!services.has(service)) throw new Error(`profile ${p.id}: unknown service ${service}`);
+    } else if (kind === "api-provider") {
       // Which runtimes it runs follows from its provider; one that runs neither still serves the automatic decisions.
       const source = provider === undefined ? undefined : find(provider);
       if (!source) throw new Error(`profile ${p.id}: api-provider needs a known provider`);

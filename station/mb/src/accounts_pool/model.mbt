@@ -18,6 +18,7 @@ pub using @agent_runtimes {
   split_agy_tier,
   expand_devin_fusion,
   access_kind,
+  profile_service,
   billed_per_use,
   kimi_signed_in,
   takes_fast,
@@ -110,7 +111,7 @@ pub fn legacy_source(id : String) -> Bool {
 ///|
 /// The access kinds there are, in config.json's words.
 let access_kinds_all : Array[String] = [
-  "subscription", "opencode-go", "anthropic-api", "env", "api-provider",
+  "subscription", "opencode-go", "anthropic-api", "env", "api-provider", "service",
 ]
 
 ///|

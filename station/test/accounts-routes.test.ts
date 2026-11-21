@@ -526,7 +526,7 @@ describe("the accounts routes", { concurrency: true }, () => {
       data,
       store,
       check: async (o) => {
-        checked.push(o.runtime);
+        checked.push(o.runtime ?? "");
         return { state: "ok", detail: "fake", models: o.runtime === "claude" ? ["claude-fable-5-2", "claude-fable-5-1", "claude-opus-5-5"] : ["gpt-6.1-sol"], checkedAt: 0 };
       },
     });

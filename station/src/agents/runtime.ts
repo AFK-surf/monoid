@@ -52,7 +52,7 @@ export type RuntimeEvent =
 
 export type Profile = {
   id: string;
-  runtime: RuntimeKind;
+  runtime?: RuntimeKind;
   /// The profile's home (CLAUDE_CONFIG_DIR / CODEX_HOME / DSH_HOME; Grok Build's GROK_HOME is its grok/, Cursor's keeps cursor/, Devin's devin/, Pi's PI_CODING_AGENT_DIR pi/).
   home: string;
   /// Whatever else the profile's config says (env, access kind, machine…): read by the drivers as runtime/*.rs do.
