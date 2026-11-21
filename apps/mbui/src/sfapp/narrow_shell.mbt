@@ -889,14 +889,14 @@ fn place_top_bar_node(
 fn narrow_bar_scrim_node(
   parent : @view.View,
   base_h : (@view.View) -> Double,
-  fade_h~ : Double,
+  fade_h : (@view.View) -> Double,
 ) -> Unit {
   parent.box(fn(scrim) {
     scrim
     .over(Is(true))
     .width_share(Is(1.0))
     .height(By(fn() { Some(base_h(scrim)) }))
-    .fades(Is((0.0, 0.0, 0.0, fade_h)))
+    .fades(By(fn() { (0.0, 0.0, 0.0, fade_h(scrim)) }))
     |> ignore
     scrim.box(fn(fill) {
       // (register fill in inputs_in via pointed() while keeping points=false so Tree::target_at visits fill and
@@ -919,7 +919,7 @@ fn place_top_bar_glass(
   title_alpha? : (@view.View) -> Double = fn(_) { 1.0 },
 ) -> Unit {
   v.box(fn(g) {
-    narrow_bar_scrim_node(g, fn(s) { top_bar_h_at(s.window_w()) }, fade_h=18.0)
+    narrow_bar_scrim_node(g, fn(s) { top_bar_h_at(s.window_w()) }, fn(_) { 18.0 })
     g.box(fn(row) {
       row
       .row(Is(true))

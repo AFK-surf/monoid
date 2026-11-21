@@ -159,7 +159,7 @@ fn home_top_bar_node(
     narrow_bar_scrim_node(
       g,
       fn(s) { status_top_now(s.window_w()) + bar_h },
-      fade_h=6.0,
+      fn(_) { 6.0 },
     )
     g.box(fn(row) {
       row

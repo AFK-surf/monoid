@@ -261,7 +261,7 @@ fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> 
     narrow_bar_scrim_node(
       g,
       fn(s) { status_top_now(s.window_w()) + bar_h + state.open_way.shown(s) * state.row2_h.get() },
-      fade_h=18.0,
+      fn(s) { if state.open_way.shown(s) > 0.0 { 6.0 } else { 18.0 } },
     )
     g.reacts(can_toggle, fn(ok) {
       if !ok && state.manual_expanded.get() {
