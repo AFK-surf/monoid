@@ -324,6 +324,8 @@ fn topic_answer(core : Core, ws : String, request : String, mine : Bool, who : S
   if field(row, "browse") is Some(_) {
     if !flag(view, "available") {
       return Some((Elsewhere, false, None))
+    } else if flag(row, "noKey") {
+      return Some((NoKey, false, None))
     } else if count(row, "browseItems") == 0 {
       return Some((Empty, false, None))
     } else {

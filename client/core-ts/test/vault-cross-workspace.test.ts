@@ -18,7 +18,7 @@ import {
   type BoxCert, type BrowseAnswer, type Grant, type Item, type Request, type Vault,
   TAG, boxPublic, encryptWith, grantContext, itemContext, keyContext, openSeal, sealWith, sign, signedOk,
 } from "../src/vault/crypto.ts";
-import { askAnswers, readStation } from "../src/views/vault.ts";
+import { askAnswers, browseCandidates, readStation, vaultsView } from "../src/views/vault.ts";
 import { call, subscribe } from "./helpers.ts";
 import { base, started, stationReplies, status } from "./station-fixture.ts";
 
@@ -314,6 +314,247 @@ test("browseCandidates excludes team vaults & unlisted items; offline cross-work
     assert.equal(uses.uses[0]!.chatTitle, "Deploy in Work B");
     assert.equal(uses.uses[0]!.workspace, "wsB");
     assert.equal(uses.uses[0]!.workspaceName, "Work B");
+  } finally {
+    r.core.close();
+  }
+});
+
+test("waitingAs personal vault without hA.boxes entry still lists, approves browse, and grants cross-workspace use", async () => {
+  const r = await multiWsRig();
+  try {
+    // 1. Add a second device (devOld) to ws lock so personal vault in ws is keyed to both devId and devOld.
+    const devOld = "cd".repeat(32);
+    const oldBoxPriv = fill(31);
+    const oldBoxCert: BoxCert = sign(
+      { v: 1 as const, ws: "ws", device: devOld, box: boxPublic(oldBoxPriv), at: 1001 },
+      TAG.box,
+      r.signerObj,
+    );
+    const l0 = r.core.inner.data.record("lock", "ws") as { head: { seq: number; hash: string; genesis: string }; entries: Entry[]; requests: unknown[] };
+    const addDevEntry: Omit<Entry, "sig"> = {
+      v: 1, ws: "ws", seq: 1, prev: l0.head.hash, at: 1001, kind: "device",
+      body: { id: devOld, sub: "s1", kind: "app", label: "Old Phone", sign_key: r.signerObj.id },
+    };
+    const h1 = entryHash(addDevEntry as Entry);
+    const e1: Entry = { ...addDevEntry, sig: { key: r.signerObj.id, alg: "Ed25519", sig: r.signerObj.signBytes(signedBytes(h1)) } };
+    r.core.inner.data.put("lock", "ws", { head: { seq: 1, hash: h1, genesis: l0.head.genesis }, entries: [...l0.entries, e1], requests: [] });
+
+    // Set up ws personal vault (keyed for devId) and wsB personal vault (ensures mem.box is loaded).
+    const setupA = await r.ask("vault.setup", { workspace: "ws" });
+    const personalA = setupA.made as string;
+    await r.ask("vault.setup", { workspace: "wsB" });
+
+    // Re-sign personalA so it holds keys for both devId and devOld (using real vault key via putItem first).
+    const itemRes = await r.ask("vault.putItem", {
+      workspace: "ws",
+      vault: personalA,
+      plain: { kind: "token", name: "Waiting Secret", fields: { value: "val_waiting_as" }, domains: [], notes: "" },
+      listing: { name: "Waiting Secret", kind: "token", modes: ["proxy"], hosts: ["api.waiting.test"] },
+    });
+    const curVault = r.stA.vaults.get(personalA)!;
+    const vaultWithOld: Vault = sign(
+      {
+        v: 1 as const, ws: "ws", id: curVault.id, seq: curVault.seq + 1, owner: curVault.owner, name: curVault.name,
+        members: curVault.members, epoch: curVault.epoch,
+        keys: [...curVault.keys, { cert: oldBoxCert, wrapped: sealWith(oldBoxCert.box, fill(44), keyContext("ws", curVault.id, curVault.epoch), fill(45)) }],
+        at: 1002,
+      },
+      TAG.vault,
+      r.signerObj,
+    );
+    r.stA.vaults.set(personalA, vaultWithOld);
+    await Effect.runPromise(readStation(r.core.inner, "ws/st"));
+
+    // 2. Remove devOld from ws lock -> vaultWithOld is no longer `trusted(lockA, v)`, only `waitingAs`!
+    //    Also clear hA.boxes to verify browseCandidates / askAnswers / #approveBrowse do not require hA.boxes[devId].
+    const rmDevEntry: Omit<Entry, "sig"> = {
+      v: 1, ws: "ws", seq: 2, prev: h1, at: 1003, kind: "device.remove",
+      body: { id: devOld },
+    };
+    const h2 = entryHash(rmDevEntry as Entry);
+    const e2: Entry = { ...rmDevEntry, sig: { key: r.signerObj.id, alg: "Ed25519", sig: r.signerObj.signBytes(signedBytes(h2)) } };
+    r.core.inner.data.put("lock", "ws", { head: { seq: 2, hash: h2, genesis: l0.head.genesis }, entries: [...l0.entries, e1, e2], requests: [] });
+
+    const heldA = structuredClone(r.core.inner.data.record("vault", "ws")) as Record<string, unknown>;
+    heldA.boxes = {};
+    r.core.inner.data.put("vault", "ws", heldA);
+
+    // 3. Verify browseCandidates lists the waitingAs personal vault item.
+    const cand = browseCandidates(r.core.inner, "wsB");
+    assert.equal(cand.unkeyedWorkspaces, 0);
+    assert.equal(cand.workspaces.length, 1);
+    assert.deepEqual(cand.workspaces[0]!.items.map((it) => it.name), ["Waiting Secret"]);
+
+    // 4. Verify askAnswers returns approve and #approveBrowse succeeds.
+    const browseReq: Request = {
+      id: "r_browse_wait", ws: "wsB", vault: "", item: "", session: "s1", chat: "CHAT/1.0",
+      mode: "browse", reason: "need waitingAs secret", owner: "me@x.com", box: "", at: 1005, status: "pending",
+      browse: {},
+    };
+    r.stB.requests.push(browseReq);
+    await Effect.runPromise(readStation(r.core.inner, "wsB/stB"));
+    assert.deepEqual(
+      askAnswers(r.core.inner, "wsB", [{ request: "r_browse_wait", save: false, browse: true }])[0],
+      { answer: "approve", browseWorkspaces: 1, browseItems: 1 },
+    );
+    const browseRes = await r.ask("vault.approve", { workspace: "wsB", request: "r_browse_wait" });
+    assert.deepEqual(browseRes, { request: "r_browse_wait", workspaces: 1, items: 1 });
+
+    // 5. Verify cross-workspace secret_use askAnswers & #approveCross produce a decryptable Grant.
+    const keeperPriv = fill(55);
+    r.stB.keepers.set("r_cross_wait", keeperPriv);
+    r.stB.requests.push({
+      id: "r_cross_wait", ws: "wsB", vault: personalA, item: itemRes.id, session: "s1", chat: "CHAT/1.0",
+      mode: "proxy", hosts: ["api.waiting.test"], reason: "use waitingAs secret", owner: "me@x.com",
+      box: boxPublic(keeperPriv), at: 1006, status: "pending",
+      cross: { workspace: "ws", workspaceName: "W", vaultName: "Personal" },
+    });
+    await Effect.runPromise(readStation(r.core.inner, "wsB/stB"));
+    assert.equal(
+      askAnswers(r.core.inner, "wsB", [{ request: "r_cross_wait", save: false, crossWs: "ws" }])[0]!.answer,
+      "approve",
+    );
+    const useRes = await r.ask("vault.approve", { workspace: "wsB", request: "r_cross_wait", scope: "once" });
+    assert.equal(useRes.request, "r_cross_wait");
+    const g = r.stB.grants.find((x) => x.request === "r_cross_wait")!;
+    const opened = JSON.parse(new TextDecoder().decode(openSeal(keeperPriv, g.secret, grantContext("wsB", "r_cross_wait"))));
+    assert.equal(opened.fields.value, "val_waiting_as");
+  } finally {
+    r.core.close();
+  }
+});
+
+test("browseCandidates enqueues background refresh once even when local vault record exists as empty", async () => {
+  const r = await multiWsRig();
+  try {
+    await r.ask("vault.setup", { workspace: "wsB" });
+    // Seed an empty local vault record for ws (simulating warm restart / stale empty cache).
+    r.core.inner.data.put("vault", "ws", {
+      vaults: {}, at: {}, boxes: {}, requests: {}, asked: {}, refused: {}, on: {}, keeps: [], plain: {}, plainOn: [], uses: {}, hidden: {},
+    });
+    const enqueued: string[] = [];
+    const origScheduler = r.core.inner.scheduler;
+    r.core.inner.scheduler = {
+      enqueue: (addr: string, label: string) => {
+        enqueued.push(`${addr}:${label}`);
+      },
+    } as never;
+    try {
+      browseCandidates(r.core.inner, "wsB");
+      assert.deepEqual(enqueued, ["ws/st:ws/st vault"]);
+      // Second evaluation in the same run must not re-enqueue.
+      browseCandidates(r.core.inner, "wsB");
+      assert.deepEqual(enqueued, ["ws/st:ws/st vault"]);
+    } finally {
+      r.core.inner.scheduler = origScheduler;
+    }
+  } finally {
+    r.core.close();
+  }
+});
+
+test("browse request returns noKey (not empty) when other workspaces only have unkeyed personal vaults", async () => {
+  const r = await multiWsRig();
+  try {
+    await r.ask("vault.setup", { workspace: "wsB" });
+    // Create a personal vault in ws owned by s1, keyed ONLY to another device (not this device).
+    const otherDev = "ef".repeat(32);
+    const otherBox = boxPublic(fill(66));
+    const otherCert: BoxCert = sign({ v: 1 as const, ws: "ws", device: otherDev, box: otherBox, at: 1001 }, TAG.box, r.signerObj);
+    const l0 = r.core.inner.data.record("lock", "ws") as { head: { seq: number; hash: string; genesis: string }; entries: Entry[]; requests: unknown[] };
+    const addOther: Omit<Entry, "sig"> = {
+      v: 1, ws: "ws", seq: 1, prev: l0.head.hash, at: 1001, kind: "add_device",
+      body: { id: otherDev, sub: "s1", kind: "app", label: "Other Mac", sign_key: r.signerObj.id },
+    };
+    const h1 = entryHash(addOther as Entry);
+    const e1: Entry = { ...addOther, sig: { key: r.signerObj.id, alg: "Ed25519", sig: r.signerObj.signBytes(signedBytes(h1)) } };
+    r.core.inner.data.put("lock", "ws", { head: { seq: 1, hash: h1, genesis: l0.head.genesis }, entries: [...l0.entries, e1], requests: [] });
+
+    const unkeyedVault: Vault = sign(
+      {
+        v: 1 as const, ws: "ws", id: "v_unkeyed_a", seq: 0, owner: "s1", name: "Personal A",
+        members: ["s1"], epoch: 0,
+        keys: [{ cert: otherCert, wrapped: sealWith(otherBox, fill(67), keyContext("ws", "v_unkeyed_a", 0), fill(68)) }],
+        at: 1002,
+      },
+      TAG.vault,
+      r.signerObj,
+    );
+    r.stA.vaults.set("v_unkeyed_a", unkeyedVault);
+    await Effect.runPromise(readStation(r.core.inner, "ws/st"));
+
+    const browseReq: Request = {
+      id: "r_browse_nokey", ws: "wsB", vault: "", item: "", session: "s1", chat: "CHAT/1.0",
+      mode: "browse", reason: "list other personal secrets", owner: "me@x.com", box: "", at: 1005, status: "pending",
+      browse: {},
+    };
+    r.stB.requests.push(browseReq);
+    await Effect.runPromise(readStation(r.core.inner, "wsB/stB"));
+
+    assert.deepEqual(
+      askAnswers(r.core.inner, "wsB", [{ request: "r_browse_nokey", save: false, browse: true }])[0],
+      { answer: "noKey", browseWorkspaces: 0, browseItems: 0 },
+    );
+    const view = vaultsView(r.core.inner, "wsB");
+    const row = (view.requests as any[]).find((q) => q.id === "r_browse_nokey");
+    assert.equal(row.noKey, true);
+    assert.equal(row.browseWorkspaces, 0);
+    assert.equal(row.browseItems, 0);
+  } finally {
+    r.core.close();
+  }
+});
+
+test("browseCandidates and #approveCross support items still encrypted under an earlier before epoch", async () => {
+  const r = await multiWsRig();
+  try {
+    const setupA = await r.ask("vault.setup", { workspace: "ws" });
+    const personalA = setupA.made as string;
+    const itemRes = await r.ask("vault.putItem", {
+      workspace: "ws",
+      vault: personalA,
+      plain: { kind: "token", name: "Old Epoch Token", fields: { value: "val_from_epoch_0" }, domains: [], notes: "" },
+      listing: { name: "Old Epoch Token", kind: "token", modes: ["proxy"], hosts: ["api.old-epoch.test"] },
+    });
+    await r.ask("vault.setup", { workspace: "wsB" });
+
+    // Advance personalA to epoch 1 while leaving itemRes at epoch 0 and keeping epoch 0 vault in hA.before.
+    const v0 = r.stA.vaults.get(personalA)!;
+    const boxCertA = r.stA.boxes.get(r.devId)!;
+    const v1Key = fill(77);
+    const v1: Vault = sign(
+      {
+        v: 1 as const, ws: "ws", id: v0.id, seq: v0.seq + 1, owner: v0.owner, name: v0.name,
+        members: v0.members, epoch: v0.epoch + 1,
+        keys: [{ cert: boxCertA, wrapped: sealWith(boxCertA.box, v1Key, keyContext("ws", v0.id, v0.epoch + 1), fill(78)) }],
+        at: 1003,
+      },
+      TAG.vault,
+      r.signerObj,
+    );
+    const heldA = structuredClone(r.core.inner.data.record("vault", "ws")) as Record<string, any>;
+    heldA.vaults[personalA] = v1;
+    heldA.before = { [personalA]: { [String(v0.epoch)]: v0 } };
+    r.core.inner.data.put("vault", "ws", heldA);
+
+    const cand = browseCandidates(r.core.inner, "wsB");
+    assert.equal(cand.workspaces.length, 1);
+    assert.deepEqual(cand.workspaces[0]!.items.map((it) => it.name), ["Old Epoch Token"]);
+
+    const keeperPriv = fill(88);
+    r.stB.keepers.set("r_cross_before", keeperPriv);
+    r.stB.requests.push({
+      id: "r_cross_before", ws: "wsB", vault: personalA, item: itemRes.id, session: "s1", chat: "CHAT/1.0",
+      mode: "proxy", hosts: ["api.old-epoch.test"], reason: "use old-epoch secret", owner: "me@x.com",
+      box: boxPublic(keeperPriv), at: 1006, status: "pending",
+      cross: { workspace: "ws", workspaceName: "W", vaultName: "Personal" },
+    });
+    await Effect.runPromise(readStation(r.core.inner, "wsB/stB"));
+    const useRes = await r.ask("vault.approve", { workspace: "wsB", request: "r_cross_before", scope: "once" });
+    assert.equal(useRes.request, "r_cross_before");
+    const g = r.stB.grants.find((x) => x.request === "r_cross_before")!;
+    const opened = JSON.parse(new TextDecoder().decode(openSeal(keeperPriv, g.secret, grantContext("wsB", "r_cross_before"))));
+    assert.equal(opened.fields.value, "val_from_epoch_0");
   } finally {
     r.core.close();
   }
