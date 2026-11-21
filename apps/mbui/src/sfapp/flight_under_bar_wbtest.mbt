@@ -14,7 +14,8 @@ fn last_kind_at(t : @ui.Tester, x : Double, y : Double) -> Int {
   let mut kind = -1
   for i in t.drawn_instances() {
     let cut = i[18] <= i[16] || (x >= i[16] && x <= i[18] && y >= i[17] && y <= i[19])
-    if i[11] > 0.5 && x >= i[0] && x <= i[0] + i[2] && y >= i[1] && y <= i[1] + i[3] && cut {
+    let alpha = if i[5] == 6.0 { i[15] } else { i[11] }
+    if alpha > 0.5 && x >= i[0] && x <= i[0] + i[2] && y >= i[1] && y <= i[1] + i[3] && cut {
       kind = i[5].to_int()
     }
   }
@@ -113,7 +114,7 @@ fn picture_under_bar_faults(top : Double, platform : Int, w : Double, film? : Bo
   // highest)
   let mut under = -1.0
   for i in t.drawn_instances() {
-    if i[5] == 5.0 && i[0] <= x && x <= i[0] + i[2] && i[3] < 200.0 && (under < 0.0 || i[1] + i[3] / 2.0 < under) {
+    if (i[5] == 5.0 || i[5] == 6.0) && i[0] <= x && x <= i[0] + i[2] && i[3] < 200.0 && (under < 0.0 || i[1] + i[3] / 2.0 < under) {
       under = i[1] + i[3] / 2.0
     }
   }
