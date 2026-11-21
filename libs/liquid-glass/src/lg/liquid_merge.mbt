@@ -32,10 +32,14 @@ pub let merge_separated_gap : Double = 48.0
 pub let merge_max_gap : Double = 72.0
 
 ///|
-pub let merge_k_max : Double = 26.0
+pub let merge_k_max : Double = 34.0
 
 ///|
-pub let merge_break_gap : Double = 11.7
+pub let merge_break_gap : Double = 9.5
+
+///|
+/// Visual outer-contour tangency offset (0.75pt external contour on each glass body = 1.5pt total).
+pub let merge_contact_gap : Double = 1.5
 
 ///|
 fn merge_smoothstep(lo : Double, hi : Double, x : Double) -> Double {
@@ -101,7 +105,7 @@ pub fn LiquidMerge::new(
   max_gap? : Double = merge_max_gap,
   auto_separate? : Bool = true,
 ) -> LiquidMerge {
-  let start_x = if separated { separated_gap } else { merged_gap }
+  let start_x = (if separated { separated_gap } else { merged_gap }) + merge_contact_gap
   {
     merged_gap,
     separated_gap,
@@ -145,12 +149,13 @@ fn LiquidMerge::cancel_scheduled(self : LiquidMerge) -> Unit {
 }
 
 ///|
-/// Exact 360° 2D surface gap (dp) between the main capsule and satellite at offset `(dx, dy)`.
+/// Exact 360° 2D visual surface gap (dp) between the main capsule and satellite outer contours at offset `(dx, dy)`.
+/// `0.0` corresponds to exact outer-contour tangency (`rounded_rect_gap == merge_contact_gap`).
 fn LiquidMerge::surface_gap(self : LiquidMerge, dx : Double, dy : Double) -> Double {
   let (mx, my, mw, mh, sat) = self.geom.val
   let bx = mx + mw + dx
   let by = my + (mh - sat) * 0.5 + dy
-  @motion.rounded_rect_gap(mx, my, mw, mh, mh * 0.5, bx, by, sat, sat, sat * 0.5)
+  @motion.rounded_rect_gap(mx, my, mw, mh, mh * 0.5, bx, by, sat, sat, sat * 0.5) - merge_contact_gap
 }
 
 ///|
@@ -267,7 +272,7 @@ pub fn LiquidMerge::set_separated(
   self.recoil_x.put(0.0)
   self.recoil_y.put(0.0)
   self.separated_sig.set(separated)
-  let target_x = if separated { self.separated_gap } else { self.merged_gap }
+  let target_x = (if separated { self.separated_gap } else { self.merged_gap }) + merge_contact_gap
   self.x_way.go(target_x, @motion.liquid_toggle_spring, at~, loc~)
   self.y_way.go(0.0, @motion.liquid_toggle_spring, at~, loc~)
   let threshold = if separated { self.bond.break_gap() } else { self.bond.contact_gap() }
@@ -338,7 +343,7 @@ fn LiquidMerge::on_drag(self : LiquidMerge, d : @view.Drag) -> Unit {
         if raw_gap > 0.0 {
           // Gentle capillary surface-tension resistance along the outward normal while stretching an active bridge.
           let (nx, ny) = self.surface_normal(raw_x, raw_y)
-          let pull = raw_gap * 0.22
+          let pull = raw_gap * 0.12
           let eff_x = clamp(raw_x - nx * pull, min_dx, max_dx)
           let eff_y = clamp(raw_y - ny * pull, min_dy, max_dy)
           let eff_gap = self.surface_gap(eff_x, eff_y)

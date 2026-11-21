@@ -280,6 +280,73 @@ fn main {
       failed += 1
     }
   }
+  if only == "sync-loupe" {
+    // 1. Merge 4-step visual/state lockstep frames (1120×637 dark @ 3×):
+    //    Stage at 1120×637: x=28, y=68, w=692, h=473 -> main_x=226 (254..446), sat_y=204.5 (y=272.5, center y=304.5).
+    //    Initial dx = -6.5 (visual gap = -8.0) -> sat center x = 254 + 192 - 6.5 + 32 = 471.5 -> (472, 305).
+    let merge_frames : Array[(String, String)] = [
+      ("merge-sync-1-pre-split", "tapxy 735 587\nwait 400\ndrag 472 305 18 0 300"),
+      ("merge-sync-2-post-split", "tapxy 735 587\nwait 400\ndrag 472 305 26 0 350\nwait 600"),
+      ("merge-sync-3-near-hover", "tapxy 735 587\nwait 400\ndrag 472 305 26 0 300\nwait 600\ndrag 528 305 -45 0 400\nwait 300"),
+      ("merge-sync-4-contact-fuse", "tapxy 735 587\nwait 400\ndrag 472 305 26 0 300\nwait 600\ndrag 528 305 -48 0 400\nwait 500"),
+    ]
+    @lg.set_dark(Some(true))
+    for frame in merge_frames {
+      let (fname, script) = frame
+      let path = "\{dir}/\{fname}.png"
+      let ok = @film.picture(
+        fn(root) { @pages.page(root, "overview") },
+        path~,
+        w=1120.0,
+        h=637.0,
+        scale=3.0,
+        dark=true,
+        script~,
+        at=1000.0,
+      )
+      println("shots: \{path} \{if ok { "ok" } else { "failed" }}")
+      if !ok {
+        failed += 1
+      }
+    }
+    // 2. Loupe 3× shots (1120×637 light & dark, landing on `Metal, Vulkan` on line 4):
+    //    Loupe tab is index 2 in 468pt dock (326..794) -> center x = 326 + 2 * 117 + 58 = 618, y = 587.
+    for dark in [false, true] {
+      @lg.set_dark(Some(dark))
+      let path = "\{dir}/loupe-1120x637-\{if dark { "dark" } else { "light" }}.png"
+      let ok = @film.picture(
+        fn(root) { @pages.page(root, "overview") },
+        path~,
+        w=1120.0,
+        h=637.0,
+        scale=3.0,
+        dark~,
+        script="tapxy 618 587\nwait 600",
+        at=1000.0,
+      )
+      println("shots: \{path} \{if ok { "ok" } else { "failed" }}")
+      if !ok {
+        failed += 1
+      }
+    }
+    // 3. 60fps Merge lockstep clip (1120×637 dark @ 2×) to inspect exact pre-split (+9.0pt) & post-split frames:
+    @lg.set_dark(Some(true))
+    let clip_out = "\{dir}/merge-sync-demo.mp4"
+    let clip_ok = @film.film(
+      fn(root) { @pages.page(root, "overview") },
+      script="tapxy 735 587\nwait 350\ndrag 472 305 26 0 800\nwait 500\ndrag 528 305 -45 0 400\nwait 400\ndrag 483 305 -10 0 300\nwait 450",
+      out=clip_out,
+      w=1120.0,
+      h=637.0,
+      scale=2.0,
+      dark=true,
+      fps=60,
+    )
+    println("shots: \{clip_out} \{if clip_ok { "ok" } else { "failed" }}")
+    if !clip_ok {
+      failed += 1
+    }
+  }
   if only == "" || only == "merge" {
     for dark in [false, true] {
       @lg.set_dark(Some(dark))
