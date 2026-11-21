@@ -60,6 +60,10 @@ priv struct P52 {
   mut relieve_low_bytes : Double?
   /// Last time a billed-per-use fallback alert was emitted, by `<workspace>\0<runtime>`.
   billed_notified : Map[String, Int64]
+  /// In-flight `/mcp` calls drained before handover so `chat_state` / `chat_post` finish before actors close.
+  mut in_flight_mcp : Int
+  mut mcp_draining : Bool
+  mut mcp_drained : @effect.Deferred[Unit]?
 }
 
 ///|

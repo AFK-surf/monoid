@@ -514,9 +514,9 @@ export async function chatPost(hub: Hub, key: string, args: Args, held: Held = {
           }
         } catch (error) { recorded = false; stateError = (error as Error).message; }
       }
-    } else {
-      await actor?.about(about);
-      await actor?.declare(kind);
+    } else if (actor) {
+      await actor.about(about);
+      recorded = await actor.declare(kind);
     }
   }
   const titled = typeof args.title === "string" ? nameChat(hub, thread.thread, args.title) : "";
@@ -709,12 +709,16 @@ export async function chatState(hub: Hub, key: string, args: Args): Promise<stri
       throw new Error("the turn ended while checking its question; its state was not recorded");
   } else {
     const actor = actorOf(hub, key);
-    if (words !== null) {
-      if (kind.kind === "waiting") await actor?.waitFor(words, watch);
-      else await actor?.need(words);
+    if (actor) {
+      if (words !== null) {
+        if (kind.kind === "waiting") await actor.waitFor(words, watch);
+        else await actor.need(words);
+      }
+      await actor.about(about);
+      if (!await actor.declare(kind)) {
+        throw new Error("the turn ended before its state was recorded; its state was not recorded");
+      }
     }
-    await actor?.about(about);
-    await actor?.declare(kind);
   }
   if (kind.kind === "all_done") suggestArchive(hub, key);
   if (kind.kind !== "waiting") return `Recorded state ${saidAs(kind)}.`;

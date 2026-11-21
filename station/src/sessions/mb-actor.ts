@@ -34,6 +34,8 @@ type Mirror = {
   queued: number;
   seen: number;
   turn: string | null;
+  warm: boolean;
+  deferredEnd: boolean;
   codexUpdate: boolean;
   agent: number | null;
   idleSince: number;
@@ -353,7 +355,7 @@ export class MbActor {
     this.key = key;
     this.runtime = runtime;
     this.#deps = deps;
-    this.#mirror = { queued: 0, seen: 0, turn: null, codexUpdate: false, agent: null, idleSince: program.now(), notices: 0, waiting: false, refill: false, unread: [], identity: null, runtime, closed: false };
+    this.#mirror = { queued: 0, seen: 0, turn: null, warm: false, deferredEnd: false, codexUpdate: false, agent: null, idleSince: program.now(), notices: 0, waiting: false, refill: false, unread: [], identity: null, runtime, closed: false };
     this.#post({ runtime });
   }
 
@@ -393,17 +395,17 @@ export class MbActor {
   }
 
   processState(): "running" | "warm" | "cold" {
-    if (this.#mirror.turn || this.#mirror.codexUpdate || this.#session()?.busy()) return "running";
+    if (this.#mirror.turn || this.#mirror.warm || this.#mirror.deferredEnd || this.#mirror.codexUpdate || this.#session()?.busy()) return "running";
     return this.#mirror.agent !== null ? "warm" : "cold";
   }
 
   idleMs(now: number): number | null {
     const session = this.#session();
-    return session && !session.busy() && !this.#mirror.turn ? now - this.#mirror.idleSince : null;
+    return session && !session.busy() && !this.#mirror.turn && !this.#mirror.warm && !this.#mirror.deferredEnd ? now - this.#mirror.idleSince : null;
   }
 
   holdsState(): boolean {
-    return this.#mirror.codexUpdate || this.#mirror.notices > 0 || this.#mirror.waiting || this.#mirror.refill;
+    return this.#mirror.codexUpdate || this.#mirror.notices > 0 || this.#mirror.waiting || this.#mirror.refill || this.#mirror.warm || this.#mirror.deferredEnd;
   }
 
   unreadIn(thread: number, before: number): PendingMessage[] {
@@ -443,7 +445,7 @@ export class MbActor {
     finally { this.#records.delete(token); }
   }
   toolsAt(url: string) { return this.#call("toolsAt", [url]).then(() => undefined); }
-  declare(state: DeclaredState) { return this.#call("declare", [state]).then(() => undefined); }
+  declare(state: DeclaredState): Promise<boolean> { return this.#call("declare", [state]).then((v) => v === true); }
   waitFor(what: string, watch: boolean) { return this.#call("waitFor", [what, watch]).then(() => undefined); }
   need(what: string) { return this.#call("need", [what]).then(() => undefined); }
   about(about: [number, number, string] | null) { return this.#call("about", [about]).then(() => undefined); }
@@ -506,12 +508,28 @@ export class MbActor {
     const pending = this.#adopting?.pending ?? [];
     this.#adopting = null;
     let taken: Json = null;
+    const hasDeferred = snap.deferredEnd != null;
     if (agent) {
       const handle = ++this.#next;
       this.#agents.set(handle, { generation: this.#generation, session: agent });
       taken = { handle, generation: this.#generation };
-      this.#mirror = { ...this.#mirror, agent: handle, turn: snap.turn?.id ?? null, idleSince: this.#program.now() - (snap.idleMs ?? 0), runtime: snap.runtime };
+      this.#mirror = {
+        ...this.#mirror,
+        agent: handle,
+        turn: snap.turn?.id ?? null,
+        warm: snap.turn == null && hasDeferred,
+        deferredEnd: hasDeferred,
+        idleSince: this.#program.now() - (snap.idleMs ?? 0),
+        runtime: snap.runtime,
+      };
       this.runtime = snap.runtime;
+    } else if (hasDeferred) {
+      this.#mirror = {
+        ...this.#mirror,
+        turn: snap.turn?.id ?? null,
+        warm: snap.turn == null,
+        deferredEnd: true,
+      };
     }
     const adopted = this.#call("adopt", [{ ...snap, agent: null }, taken, profile, this.#deps.store.getSession(this.key)]);
     if (agent) {

@@ -34,6 +34,13 @@ priv struct QueuedRetry {
 }
 
 ///|
+/// An undeclared turn end deferred while the session is held (e.g. during handover `drain` or `starting`).
+priv struct DeferredEnd {
+  lost : Bool
+  recorded : String?
+}
+
+///|
 priv struct Working {
   connect : String
   channel : String
@@ -81,6 +88,10 @@ priv struct Actor {
   mut read_back : Bool
   mut phase : String
   mut turn : Turn?
+  /// true between an undeclared turn end and the follow-up nudge/tools-lost `begin_turn`, keeping `process_state` running
+  mut warm : Bool
+  /// deferred undeclared turn end waiting for `release` after `hold`
+  mut deferred_end : DeferredEnd?
   /// true while acquiring/opening a turn before `turn` is set, or deciding continuation in `on_turn_ended`
   mut starting_turn : Bool
   /// deferred `auth_retry` / `spend` continuation waiting for a concurrency slot
@@ -293,6 +304,8 @@ fn Actors::actor(self : Actors, key : String, runtime : String) -> Actor {
         read_back: false,
         phase: "idle",
         turn: None,
+        warm: false,
+        deferred_end: None,
         starting_turn: false,
         queued_retry: None,
         codex_update: None,
@@ -363,6 +376,8 @@ fn Actors::mirror(self : Actors, a : Actor) -> Unit {
     "queued": Json::number(a.queued.to_double()),
     "seen": Json::number(a.seen.to_double()),
     "turn": turn,
+    "warm": Json::boolean(a.warm),
+    "deferredEnd": Json::boolean(a.deferred_end is Some(_)),
     "codexUpdate": Json::boolean(a.codex_update is Some(_)),
     "agent": match a.agent { Some(g) => Json::number(g.handle.to_double()); None => Json::null() },
     "idleSince": Json::number(a.idle_since),

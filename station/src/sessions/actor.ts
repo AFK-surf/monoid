@@ -246,6 +246,8 @@ export type Snapshot = {
   runtime: RuntimeKind;
   agent: unknown | null;
   turn: { id: string; authRetried: boolean; codexRetried?: boolean; by: TurnFor; declared: string | null; wait: number | null } | null;
+  /// Undeclared turn end deferred while the session was held (optional: a station from before does not say).
+  deferredEnd?: { lost: boolean; recorded: string | null } | null;
   workingFor: Working[];
   notices: string[];
   waitingMs: number | null;

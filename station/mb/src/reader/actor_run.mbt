@@ -97,11 +97,14 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
     }
     "declare" => {
       let state = arg(0)
+      let mut recorded = false
       self.enqueue(a, async fn() {
         guard a.turn is Some(t) else { return }
         t.declared = Some(state)
         self.declare_turn(a, t.id, Some(state))
+        recorded = true
       })
+      return jbool(recorded)
     }
     "waitFor" => {
       let what = arg(0)
@@ -422,6 +425,10 @@ async fn Actors::stop(self : Actors, a : Actor) -> Json raise {
   let stop_recovery = a.recoveries > 0 || a.recovery_deferred
   a.recovery_deferred = false
   a.queued_retry = None
+  let had_deferred = a.deferred_end is Some(_) || a.warm
+  a.deferred_end = None
+  a.warm = false
+  self.mirror(a)
   self.remove_turn_wait(a.key)
   a.delivery_interruptions += 1
   // (what is being read and formatted for it: Node's, given up at once there, mb-actor.ts)
@@ -429,7 +436,7 @@ async fn Actors::stop(self : Actors, a : Actor) -> Json raise {
     defer {
       a.delivery_interruptions -= 1
     }
-    if stop_recovery {
+    if stop_recovery || had_deferred {
       self.set_running(a, false)
     }
     if a.codex_update is Some(_) {
@@ -763,6 +770,23 @@ async fn Actors::release(self : Actors, a : Actor) -> Json raise {
     if a.notices.length() > 0 {
       self.give_notices(a)
     }
+    if !self.held(a) && a.turn is None && a.deferred_end is Some(d) {
+      let was_warm = a.warm
+      a.deferred_end = None
+      self.mirror(a)
+      defer {
+        if a.warm && a.deferred_end is None {
+          a.warm = false
+          self.mirror(a)
+        }
+      }
+      if self.archived(a) {
+        self.cool(a, was_warm)
+        self.let_go(a)
+        return
+      }
+      self.continue_undeclared_end(a, d.lost, d.recorded, was_warm)
+    }
   })
   Json::null()
 }
@@ -913,6 +937,9 @@ async fn Actors::clear_now(
   a.compacted_untold = false
   a.nudges = 0
   a.tools_restarts = 0
+  a.deferred_end = None
+  a.warm = false
+  self.mirror(a)
   ignore(self.deps(a, "ranIn", [jstr(a.key), left, Json::null()]))
   ignore(self.store(a, "setRuntimeSessionId", [jstr(a.key), Json::null()]))
   a.read_back = read_back
@@ -936,6 +963,8 @@ async fn Actors::suspend(self : Actors, a : Actor, why? : String = "the station 
     let turn = a.turn
     let had_slot = turn is Some(_) || a.starting_turn
     a.turn = None
+    a.warm = false
+    a.deferred_end = None
     a.starting_turn = false
     a.queued_retry = None
     self.remove_turn_wait(a.key)
@@ -992,12 +1021,21 @@ fn Actors::snapshot(self : Actors, a : Actor) -> Json {
       } : Json)
     None => Json::null()
   }
+  let deferred_end = match a.deferred_end {
+    Some(d) =>
+      ({
+        "lost": jbool(d.lost),
+        "recorded": match d.recorded { Some(r) => jstr(r); None => Json::null() },
+      } : Json)
+    None => Json::null()
+  }
   let max0 = (x : Double) => if x < 0.0 { 0.0 } else { x }
   let snap : Json = {
     "key": jstr(a.key),
     "runtime": jstr(a.runtime),
     "identity": a.running_identity,
     "turn": turn,
+    "deferredEnd": deferred_end,
     "workingFor": Json::array(a.working_for.map(working_json)),
     "notices": Json::array(a.notices.map(jstr)),
     "waitingMs": if a.waiting is Some(_) { jnum(max0(a.waiting_until - self.now)) } else { Json::null() },
@@ -1053,6 +1091,15 @@ fn Actors::adopt(self : Actors, a : Actor, snap : Json, agent : Json, profile : 
     _ => None
   }
   a.phase = if a.turn is Some(_) { "running" } else { "idle" }
+  a.deferred_end = match snap.value("deferredEnd") {
+    Some(Object(d)) =>
+      Some({
+        lost: d.get("lost") is Some(True),
+        recorded: str_of(d.get("recorded")),
+      })
+    _ => None
+  }
+  a.warm = a.turn is None && a.deferred_end is Some(_)
   a.working_for = match snap.value("workingFor") {
     Some(Array(ws)) => ws.map(working_of)
     _ => []
@@ -1085,6 +1132,8 @@ fn Actors::close(self : Actors, a : Actor) -> Unit {
   let had_slot = a.turn is Some(_) || a.starting_turn
   a.phase = "closed"
   a.turn = None
+  a.warm = false
+  a.deferred_end = None
   a.starting_turn = false
   a.queued_retry = None
   self.remove_turn_wait(a.key)
@@ -1327,6 +1376,7 @@ async fn Actors::pump(self : Actors, a : Actor, before_failures? : Int = -1) -> 
   }
   a.nudges = 0
   a.tools_restarts = 0
+  a.deferred_end = None
   self.work_for(a, d.pending)
   let by = match d.pending.search_by(m => str_of(m.value("authorKind")) == Some("person")) {
     Some(i) => ({ "person": d.pending[i].value("person").unwrap_or(Json::null()), "thread": d.pending[i].value("thread").unwrap_or(Json::null()), "profile": Json::null() } : Json)
@@ -1649,6 +1699,8 @@ async fn Actors::begin_turn(self : Actors, a : Actor, kind : String, by : Json, 
   let asked_before = if kind == "job" { self.asked_now(a) } else { None }
   let is_passive = passive || kind == "title" || kind == "nudge"
   a.turn = Some({ id, declared: None, auth_retried: kind == "auth_retry", codex_retried: kind == "codex_retry", passive: is_passive, by, asked_before })
+  a.deferred_end = None
+  a.warm = false
   a.phase = "running"
   a.waiting = None
   let for_ = match by {
@@ -1969,11 +2021,18 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
   self.idle_now(a)
   let turn = a.turn
   a.turn = None
+  if kind == "completed" && !a.stop_requested && turn is Some({ declared: None, .. }) {
+    a.warm = true
+  }
   let had_turn = turn is Some(_)
   if had_turn {
     a.starting_turn = true
   }
   defer {
+    if a.warm && a.deferred_end is None {
+      a.warm = false
+      self.mirror(a)
+    }
     if had_turn {
       a.starting_turn = false
       if a.turn is None {
@@ -2033,7 +2092,10 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
   // one asked as often as it may be ends here, stopped at once)
   let warm = kind == "completed" && !stop_requested && turn is Some({ declared: None, .. }) &&
     a.nudges < num_of(Some(self.deps(a, "maxNudges", []))).unwrap_or(0.0).to_int()
-  if !warm {
+  if warm {
+    a.warm = true
+  } else {
+    a.warm = false
     self.set_running(a, false)
   }
   let overloaded = turn is Some(_) && kind == "failed" && reason == "overloaded" && !stop_requested
@@ -2312,6 +2374,7 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
     }
   }
   if self.archived(a) {
+    a.deferred_end = None
     self.cool(a, warm)
     self.let_go(a)
     ignore(self.deps(a, "idle", [jstr(a.key)]))
@@ -2365,9 +2428,23 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
     return
   }
   if self.held(a) {
-    return self.cool(a, warm)
+    a.deferred_end = Some({ lost: lost is Some(_), recorded })
+    self.mirror(a)
+    return
   }
-  if lost is Some(_) {
+  self.continue_undeclared_end(a, lost is Some(_), recorded, warm)
+}
+
+///|
+/// Continues after a turn ended without declaring a state (immediately or once `release` lifts a hold).
+async fn Actors::continue_undeclared_end(
+  self : Actors,
+  a : Actor,
+  lost : Bool,
+  recorded : String?,
+  warm : Bool,
+) -> Unit raise {
+  if lost {
     a.nudges = 0
     if a.tools_restarts < 1 {
       a.tools_restarts += 1
@@ -2401,6 +2478,10 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
 /// A turn's end that kept it running (`warm`: it said no state, to be asked again at once) and started nothing after
 /// all: stopped now.
 async fn Actors::cool(self : Actors, a : Actor, warm : Bool) -> Unit raise {
+  if a.warm {
+    a.warm = false
+    self.mirror(a)
+  }
   if warm && a.turn is None && !a.compacting && a.codex_update is None {
     self.set_running(a, false)
   }
@@ -2518,6 +2599,9 @@ async fn Actors::stop_background(self : Actors, a : Actor) -> Unit raise {
 async fn Actors::let_go(self : Actors, a : Actor) -> Unit raise {
   a.notices = []
   a.queued_retry = None
+  a.deferred_end = None
+  a.warm = false
+  self.mirror(a)
   a.nudges = 0
   let waited = a.waiting is Some(_)
   a.waiting = None

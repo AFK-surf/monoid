@@ -1128,6 +1128,25 @@ let tools_order : Array[String] = [
 ///|
 /// The agents' door's `/mcp` (tools/http.ts over tools/mcp.ts `McpEndpoint`).
 async fn P52::mcp(self : P52, r : Request) -> Reply {
+  if self.mcp_draining {
+    let is_tool_call = match attempt(() => @json.parse(@utf8.decode_lossy(r.body))) {
+      Ok({ "method": String("tools/call"), .. }) => true
+      _ => false
+    }
+    if is_tool_call {
+      return json_reply(503, { "error": jstr("station is handing over") })
+    }
+  }
+  self.in_flight_mcp += 1
+  defer {
+    self.in_flight_mcp -= 1
+    if self.in_flight_mcp == 0 {
+      if self.mcp_drained is Some(d) {
+        self.mcp_drained = None
+        ignore(d.succeed(()))
+      }
+    }
+  }
   let endpoint = @mcp_tools.McpEndpoint::new(self.tools_backend(), () => {
     self.tools()
   })

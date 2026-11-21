@@ -36,6 +36,8 @@ priv struct Mirror {
   mut queued : Int32
   mut seen : Int32
   mut turn : String?
+  mut warm : Bool
+  mut deferred_end : Bool
   mut codex_update : Bool
   mut agent : Int32?
   mut idle_since : Double
@@ -413,6 +415,8 @@ fn ActorsProgram::actor(
       queued: 0,
       seen: 0,
       turn: None,
+      warm: false,
+      deferred_end: false,
       codex_update: false,
       agent: None,
       idle_since: self.now(),
@@ -498,6 +502,8 @@ fn MbActor::mirrored(self : MbActor, state : Json) -> Unit {
   m.queued = jnum_of(state, "queued").unwrap_or(0.0).to_int()
   m.seen = jnum_of(state, "seen").unwrap_or(0.0).to_int()
   m.turn = jtext(state, "turn")
+  m.warm = jfield(state, "warm") is True
+  m.deferred_end = jfield(state, "deferredEnd") is True
   m.codex_update = jfield(state, "codexUpdate") is True
   m.agent = jnum_of(state, "agent").map(a => a.to_int())
   m.idle_since = jnum_of(state, "idleSince").unwrap_or(m.idle_since)
@@ -532,7 +538,7 @@ fn MbActor::process_state(self : MbActor) -> String {
     Some(s) => (s.busy)()
     None => false
   }
-  if self.mirror.turn is Some(_) || self.mirror.codex_update || busy {
+  if self.mirror.turn is Some(_) || self.mirror.warm || self.mirror.deferred_end || self.mirror.codex_update || busy {
     "running"
   } else if self.mirror.agent is Some(_) {
     "warm"
@@ -544,7 +550,7 @@ fn MbActor::process_state(self : MbActor) -> String {
 ///|
 fn MbActor::idle_ms(self : MbActor, now : Double) -> Double? {
   match self.session() {
-    Some(s) if !(s.busy)() && self.mirror.turn is None =>
+    Some(s) if !(s.busy)() && self.mirror.turn is None && !self.mirror.warm && !self.mirror.deferred_end =>
       Some(now - self.mirror.idle_since)
     _ => None
   }
@@ -555,7 +561,9 @@ fn MbActor::holds_state(self : MbActor) -> Bool {
   self.mirror.codex_update ||
   self.mirror.notices > 0 ||
   self.mirror.waiting ||
-  self.mirror.refill
+  self.mirror.refill ||
+  self.mirror.warm ||
+  self.mirror.deferred_end
 }
 
 ///|
@@ -855,6 +863,7 @@ async fn MbActor::hub_asked(
       }
       Json::null()
     }
+    "declare" => jb(self.call("declare", args) is True)
     "compact" | "clear" => self.call(meth, args)
     _ => {
       ignore(self.call(meth, args))
@@ -886,6 +895,9 @@ async fn MbActor::adopt(
     }
     None => ()
   }
+  let has_deferred = jfield(snap, "deferredEnd") != Json::null()
+  self.mirror.deferred_end = has_deferred
+  self.mirror.warm = self.mirror.turn is None && has_deferred
   let bare = match snap {
     Object(m) => {
       let c = m.copy()

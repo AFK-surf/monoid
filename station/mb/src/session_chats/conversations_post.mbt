@@ -593,7 +593,7 @@ pub async fn chat_post(w : World, key : String, args : J, held : Held) -> String
       }
     } else if has_actor {
       w.actor(key, "about", [about]) |> ignore
-      w.actor(key, "declare", [kind]) |> ignore
+      recorded = w.actor(key, "declare", [kind]) is Bool(true)
     }
   }
   let titled = match at(Some(args), "title") {

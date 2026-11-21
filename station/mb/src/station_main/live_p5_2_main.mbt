@@ -112,6 +112,9 @@ pub async fn start_live_p5_2(bus : LiveBus) -> Unit {
     runner_unnamed: Set::new(),
     relieve_low_bytes: None,
     billed_notified: Map([]),
+    in_flight_mcp: 0,
+    mcp_draining: false,
+    mcp_drained: None,
   }
   p52_lang_fn.val = () => ctx.lang()
   // The cards' queued outcomes, written by the parts that decide a card (the rigs, the phones, the vault) and their
@@ -1709,6 +1712,18 @@ fn P52::status_agents(self : P52) -> Json {
 /// sessions handed over.
 async fn P52::hand_over(self : P52) -> Array[Json] {
   guard self.hub is Some(hub) else { return [] }
+  self.mcp_draining = true
+  if self.in_flight_mcp > 0 {
+    let d : @effect.Deferred[Unit] = @effect.Deferred::new()
+    self.mcp_drained = Some(d)
+    let drained = @effect.timeout(2_000, async fn() { d.wait() })
+    self.mcp_drained = None
+    if drained is None && self.in_flight_mcp > 0 {
+      slice_log("warn", "agents", "in-flight MCP calls did not drain before handover", {
+        "remaining": ji(self.in_flight_mcp),
+      })
+    }
+  }
   // Within the launcher's 30 s (`Times::exit`): partial handover keeps every settled session's snapshot while
   // skipping any that did not settle in time; its runner is detached and taken up by crash-recovery on the next
   // station.

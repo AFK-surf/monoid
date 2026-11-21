@@ -256,7 +256,10 @@ pub async fn chat_state(w : World, key : String, args : J) -> String {
       }
     }
     w.actor(key, "about", [about]) |> ignore
-    w.actor(key, "declare", [kind]) |> ignore
+    let ok = w.actor(key, "declare", [kind])
+    if !(ok is Bool(true)) {
+      raise fail_("the turn ended before its state was recorded; its state was not recorded")
+    }
   }
   if kind_kind(kind) == "all_done" {
     suggest_archive(w, key)
