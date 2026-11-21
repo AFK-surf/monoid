@@ -11,7 +11,7 @@ import { type Entry as StationEntry, LockRefusal, entryHash as stationHash, fold
 import { Cloud, writeState } from "../../../station/src/cloud/state.ts";
 import { inLock, inLockBringing, lockPartRoute, lockRoute, refusalOf } from "../../../station/src/mesh/serve.ts";
 import { deviceBuildsOf } from "../../../station/src/mesh/device-builds.ts";
-import { buildOf } from "../../../station/src/api/oldest.ts";
+import { buildOf } from "../src/station/oldest.ts";
 import { HAND_OVER_FROM } from "../src/lock-handover.ts";
 import { type Dev, type Key, Log, bring, dev, ed, signed, viewerOf } from "../../../station/test/lock-moved-world.ts";
 import { d4Diff, d4Old } from "../../../station/test/lock-roster4-model.ts";

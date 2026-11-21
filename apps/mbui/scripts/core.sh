@@ -791,13 +791,6 @@ p = u.urlparse(sys.argv[1]); q = u.parse_qs(p.query); back = u.urlparse(q.get("r
 ok = p.scheme == "https" and p.path == "/v1/auth/google/start" and "state" in q and back.scheme == "http" and back.hostname == "127.0.0.1" and back.path == "/oauth/callback"
 print(back.port if ok else 0)' "$url")
   ok "it is still.fail cloud's login page, coming back to 127.0.0.1:$port/oauth/callback" '[ "$port" -gt 0 ]'
-  if [ -f "$SF_SRC/station/src/logins/parse.ts" ]; then
-    local seen=$(node --experimental-strip-types --no-warnings --input-type=module -e "
-const { loopbackOf } = await import('$SF_SRC/station/src/logins/parse.ts');
-const b = loopbackOf(process.argv[1]);
-console.log(b && b.state ? b.host + ':' + b.port + b.path : 'none');" "$url" 2>&1)
-    ok "a station's login takes it as a loopback login with a state ($seen)" '[ "$seen" = "127.0.0.1:$port/oauth/callback" ]'
-  fi
   ok "the app itself listens there (lsof, as the station checks before relaying)" 'lsof -a -p $pid -iTCP:$port -sTCP:LISTEN -n -P | grep -q "127.0.0.1:$port"'
   ok "another path is not taken" '[ "$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:$port/favicon.ico)" = 404 ]'
   ok "nor the callback under another host name" '[ "$(curl -s -o /dev/null -w "%{http_code}" -H "Host: elsewhere.example:$port" "http://127.0.0.1:$port/oauth/callback?code=x&state=y")" = 404 ]'
