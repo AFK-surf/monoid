@@ -375,8 +375,8 @@ test("a_google_account_is_googles_plan_running_the_antigravity_cli_beside_its_ke
   view = flows.value(topic);
   // A person's plan, a company's (Gemini Enterprise: signed in with a work Google account), or the key.
   assert.deepEqual([view.step, view.choices.map((c: J) => [c.id, c.title])], ["method", [["plan", "订阅 · Google AI"], ["enterprise", "企业版 · Gemini Enterprise"], ["key", "API key"]]]);
-  assert.match(view.choices[0].hint, /^Google AI Pro \/ Ultra.*Antigravity CLI.*账号可能被停用。$/);
-  assert.match(view.choices[1].hint, /^公司的 Google Workspace 或 Google Cloud 账号.*Google Cloud 项目.*账号可能被停用。$/);
+  assert.match(view.choices[0].hint, /^Google AI Pro \/ Ultra.*Antigravity CLI.*有封号风险）$/);
+  assert.match(view.choices[1].hint, /^Google Workspace \/ Cloud 公司账号.*Antigravity CLI.*有封号风险）$/);
   flows.change(topic, 1, "edit", { method: "enterprise" });
   view = flows.value(topic);
   assert.ok("ok" in conform("ProfileFlowView", view), JSON.stringify(conform("ProfileFlowView", view)));

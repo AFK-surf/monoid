@@ -5116,8 +5116,8 @@ fn fx_profile_flow_google(at : String) -> Json {
       "choices",
       if at == "method" {
         [
-          choice("plan", "订阅 · Google AI", "Google AI Pro / Ultra 或免费 Google 账号，用于运行 Antigravity CLI。用 Google 账号登录一次，再贴回页面给的授权码。Google 的条款不允许其他工具这样用，账号可能被停用。"),
-          choice("enterprise", "企业版 · Gemini Enterprise", "公司的 Google Workspace 或 Google Cloud 账号，用于运行 Antigravity CLI。用公司的 Google 账号登录一次，再贴回页面给的授权码；账号没分到许可证时，再填一个 Google Cloud 项目。Google 的条款不允许其他工具这样用，账号可能被停用。"),
+          choice("plan", "订阅 · Google AI", "Google AI Pro / Ultra 或免费账号，运行 Antigravity CLI（第三方工具使用有封号风险）"),
+          choice("enterprise", "企业版 · Gemini Enterprise", "Google Workspace / Cloud 公司账号，运行 Antigravity CLI（第三方工具使用有封号风险）"),
           choice("key", "API key", "使用 Google Gemini 的 API key，按量计费"),
         ]
       } else {
@@ -5195,9 +5195,9 @@ fn fx_profile_flow_google_colab_ways() -> Json {
     (
       "choices",
       [
-        choice("plan", "订阅 · Google AI", "Google AI Pro / Ultra 或免费 Google 账号，用于运行 Antigravity CLI。用 Google 账号登录一次，再贴回页面给的授权码。Google 的条款不允许其他工具这样用，账号可能被停用。"),
-        choice("enterprise", "企业版 · Gemini Enterprise", "公司的 Google Workspace 或 Google Cloud 账号，用于运行 Antigravity CLI。用公司的 Google 账号登录一次，再贴回页面给的授权码；账号没分到许可证时，再填一个 Google Cloud 项目。Google 的条款不允许其他工具这样用，账号可能被停用。"),
-        choice("colab", "Google Colab", "Google Colab Pro / Pro+ 或 Google AI Ultra，用于运行 GPU 算力任务。用 Google 账号登录一次，再贴回页面给的授权码。"),
+        choice("plan", "订阅 · Google AI", "Google AI Pro / Ultra 或免费账号，运行 Antigravity CLI（第三方工具使用有封号风险）"),
+        choice("enterprise", "企业版 · Gemini Enterprise", "Google Workspace / Cloud 公司账号，运行 Antigravity CLI（第三方工具使用有封号风险）"),
+        choice("colab", "Google Colab", "Google Colab / AI Ultra 账号，用于 GPU 算力任务"),
         choice("key", "API key", "使用 Google Gemini 的 API key，按量计费"),
       ],
     ),

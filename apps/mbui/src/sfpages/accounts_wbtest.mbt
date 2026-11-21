@@ -1398,7 +1398,7 @@ test "profiles list aggregates Google Colab under Google group and add profile f
     "choices": [
       { "id": "plan", "title": "订阅 · Google AI", "hint": "Antigravity CLI" },
       { "id": "enterprise", "title": "企业版 · Gemini Enterprise", "hint": "Gemini Enterprise" },
-      { "id": "colab", "title": "Google Colab", "hint": "Google Colab Pro / Pro+ 或 Google AI Ultra，用于运行 GPU 算力任务。" },
+      { "id": "colab", "title": "Google Colab", "hint": "Google Colab / AI Ultra 账号，用于 GPU 算力任务" },
       { "id": "key", "title": "API key", "hint": "使用 Google Gemini 的 API key，按量计费" },
     ],
     "signIn": null,
