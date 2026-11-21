@@ -757,21 +757,16 @@ fn composer_box_node(
   // (taken out too, as the core answers what a hand here asked (its ✕): from that answer's moment; not what goes as
   // it is sent, which leaves at once, its ground held as it was: sent_from_node, `sent_at`)
   let sent_at = Ref(-1.0)
-  // (what is given its draft from outside (a pick, a share, a quote, a drop) about to be taken in while it holds none:
-  // its height said to go its way first, before what it is given lays it out anew as a box (take_in_node's `before`))
-  before_take_in.val = fn() {
-    if @signals.untracked(fn() { w.quotes.get().is_empty() && w.files.get().is_empty() }) &&
-      !@signals.untracked(multiline) &&
-      foot.cause_at() != sent_at.val {
-      resize_moved(None)
-    }
-  }
+  // (what is given its draft from outside (a pick, a share, a quote, a drop): capsule-to-box opening is handled by
+  // `morph` + `quotes_room`/`files_room` `resizes(uncut=true)` so `area` is never clipped by `box.resizes(foot=true)`)
+  before_take_in.val = fn() {  }
   // (how far its words are drawn under where they are laid out as a line more of them makes its way in (`regrow`):
   // where they stood, by its top, down to where they stand; how far that line is from all of it shown)
   let grow = @motion.NodeWay::new(0.0)
   let grew = Ref(0.0)
-  // (the rooms of what waits to go, over its words, while it holds any: composer_extras_node's, its quotes' and its
-  // files', each growing or shrinking its own way; and how many of each it held as last told)
+  // (the rooms of what waits to go, over its words, while it holds any: composer_extras_node's, its top inset pad_room,
+  // its quotes' and its files', each growing or shrinking its own way; and how many of each it held as last told)
+  let pad_room : Ref[@view.View?] = Ref(None)
   let quotes_room : Ref[@view.View?] = Ref(None)
   let files_room : Ref[@view.View?] = Ref(None)
   let counts_was = Ref(@signals.untracked(fn() { (w.quotes.get().length(), w.files.get().length()) }))
@@ -795,32 +790,34 @@ fn composer_box_node(
     let (qn_was, fn_was) = counts_was.val
     counts_was.val = now
     let (qn, fn_) = now
-    if foot.cause_at() != sent_at.val {
-      if qn_was + fn_was > 0 && qn + fn_ > 0 {
-        if foot.was_placed() && !composing_node.quiet && foot.cause_at() != reshaped_at.val {
-          // (a cause of a person's, a file added from a panel over it too (its closing no cause here): its way, the box's
-          // transitions_only)
-          let change = fn() {
-            let mut said = false
-            if qn != qn_was && quotes_room.val is Some(qr) && qr.was_placed() {
-              qr.resizes() |> ignore
-              said = true
-            }
-            if fn_ != fn_was && files_room.val is Some(fr) && fr.was_placed() {
-              fr.resizes() |> ignore
-              said = true
-            }
-            if said {
-              reshaped_at.val = foot.cause_at()
-            } else {
-              reshape()
-            }
-          }
-          @view.transition(within=foot.transitions_root(), change)
+    if foot.cause_at() != sent_at.val &&
+      foot.was_placed() &&
+      !composing_node.quiet &&
+      !foot_at_rest.val &&
+      foot.cause_at() != reshaped_at.val {
+      // (a cause of a person's, a file added from a panel over it too (its closing no cause here): its way, the box's
+      // transitions_only; uncut so attachments scale/fade into the room without clipping)
+      let change = fn() {
+        let mut said = false
+        if (qn + fn_ > 0) != (qn_was + fn_was > 0) && pad_room.val is Some(pr) && pr.was_placed() {
+          pr.resizes(uncut=true) |> ignore
+          said = true
         }
-      } else {
-        reshape()
+        if qn != qn_was && quotes_room.val is Some(qr) && qr.was_placed() {
+          qr.resizes(uncut=true) |> ignore
+          said = true
+        }
+        if fn_ != fn_was && files_room.val is Some(fr) && fr.was_placed() {
+          fr.resizes(uncut=true) |> ignore
+          said = true
+        }
+        if said {
+          reshaped_at.val = foot.cause_at()
+        } else {
+          reshape()
+        }
       }
+      @view.transition(within=foot.transitions_root(), change)
     }
   })
   foot.box(fn(box) {
@@ -1059,6 +1056,20 @@ fn composer_box_node(
     // (its ground as drawn now off where it is laid out, as node `v` draws it: from its capsule to its box of one line
     // or back (`morph`), or as tall as it was as words left it (`sent_over`); what stands over it going with its top:
     // chat_composer_node's `drawn_top`)
+    let morph_dy = fn(v : @view.View) -> Double {
+      let k = morph.shown(v)
+      let to = morph.target()
+      if k != to {
+        let (_, _, b) = shut_in()
+        let shut_h = one_line() + 2.0 * stand.place().capsule_pad
+        let open_h = stand.at(fn() { node_open_room(stand, (stand.wide)()) - 12.0 - composer_foot_at((stand.wide)()) })
+        let low = fn(k : Double) { between(b, 0.0, k) }
+        let high = fn(k : Double) { between(shut_h, open_h, k) }
+        low(to) + high(to) - low(k) - high(k)
+      } else {
+        0.0
+      }
+    }
     let ground_now = fn(v : @view.View) -> @view.GroundShape {
       let over = sent_over.shown(v)
       let k = morph.shown(v)
@@ -1182,7 +1193,7 @@ fn composer_box_node(
     )
     |> ignore
     // (what waits to go over its words: its quotes, its files)
-    composer_extras_node(box, src, r, w, tips, stand, extras_alive, grow, quotes_room, files_room)
+    composer_extras_node(box, src, r, w, tips, stand, extras_alive, grow, morph_dy, pad_room, quotes_room, files_room)
     // (`@` and a few letters: the chats they find, over it: a chat's)
     if spec.chat {
       ref_menu_node(box, src, r, w)
@@ -1453,13 +1464,10 @@ fn composer_box_node(
   let first = Ref(true)
   // (whether anything is in it: what is written, what waits to go)
   let held_in = fn() { w.text.get() != "" || w.files.get().length() > 0 || w.quotes.get().length() > 0 }
-  let held_in_was = Ref(@signals.untracked(held_in))
   // (roomy as the window's width has it: crossed by the window resized, its shape there at once, no motion)
   let roomy_was = Ref(@signals.untracked(roomy))
-  foot.reacts(fn() { (multiline(), composing_node.quiet_n.get(), held_in(), roomy()) }, fn(now) {
-    let (on, quiet, full, roomy_now) = now
-    let had = held_in_was.val
-    held_in_was.val = full
+  foot.reacts(fn() { (multiline(), composing_node.quiet_n.get(), roomy()) }, fn(now) {
+    let (on, quiet, roomy_now) = now
     let resized = roomy_now != roomy_was.val
     roomy_was.val = roomy_now
     let to = if on { 1.0 } else { 0.0 }
@@ -1485,12 +1493,8 @@ fn composer_box_node(
       } else {
         // det-ok(motion-length): the field opening past ＋ and send kept off them on this clock, as the old one's
         shape.go_ms(foot, to, composer_shape_ms, ease=Move)
-        if (!full && !had) || on_send {
-          // det-ok(motion-length): the field opening past ＋ and send kept off them on this clock, as the old one's
-          morph.go_ms(foot, to, composer_shape_ms, ease=Move)
-        } else {
-          morph.put(to)
-        }
+        // det-ok(motion-length): smooth morph between capsule and expanded box even when attachments arrive or leave
+        morph.go_ms(foot, to, composer_shape_ms, ease=Move)
       }
     }
   })
@@ -2028,33 +2032,146 @@ fn composer_extras_node(
   stand : Stand,
   alive : @signals.Signal[Bool],
   grow : @motion.NodeWay,
+  morph_dy : (@view.View) -> Double,
+  pad_room : Ref[@view.View?],
   quotes_room : Ref[@view.View?],
   files_room : Ref[@view.View?],
 ) -> Unit {
   let inner = fn() { stand.at(fn() { @sf.composer_inner() }) }
-  // (as what the core's draft says it holds: what a hand here put in or took out (sfbase's writing_act `moves`, a
-  // transition) comes in and leaves on its way, what leaves faded out where it stood, out of the flow (pop_leave), what
-  // stays sliding to where it rests (@motion.moves_for, each of its rooms'), its height going its way (View::resizes,
-  // said at that cause); what an answer of the core's or a send puts in or takes out is there or gone at once)
-  box.show(leave=@sf.leave_ms, pop_leave=true, fn() { w.quotes.get().length() > 0 || w.files.get().length() > 0 }, fn(area) {
+  let live_count = Ref(0)
+  let track_live = fn(v : @view.View) {
+    live_count.val = live_count.val + 1
     alive.set(true)
-    // (let go once it has left: the box a capsule again, where nothing else keeps it a box, on its way)
-    area.owns(fn() { @view.transition(fn() { alive.set(false) }) }) |> ignore
-    // (drawn with its words as a line more of them makes its way in: `grow`)
-    area.offset(By(fn() { (0.0, grow.shown(area)) })) |> ignore
+    v.owns(fn() {
+      live_count.val = live_count.val - 1
+      if live_count.val <= 0 {
+        live_count.val = 0
+        @view.transition(fn() { alive.set(false) })
+      }
+    })
+    |> ignore
+  }
+  let leave_ease = fn(x : Double) -> Double {
+    if x <= 0.0 {
+      0.0
+    } else if x >= 1.0 {
+      1.0
+    } else {
+      1.0 - (1.0 - x) * (1.0 - x)
+    }
+  }
+  let attach_motion = fn(
+    room : @view.View,
+    item : @view.View,
+    fill_across : Bool,
+    build : (@view.View) -> Unit,
+  ) {
+    let animates = item.allows_transition()
+    let enter : (() -> Double)? = if animates {
+      Some(@motion.presence_in(item, @sf.waiting_in.spec, carries=true))
+    } else {
+      None
+    }
+    let from_room : @signals.Signal[Bool?] = @signals.signal(if animates { None } else { Some(false) })
+    if animates {
+      @signals.after_flush(fn() {
+        guard item.alive() && room.alive() else { return }
+        let s = @signals.untracked(fn() { room.come_share_of(item) })
+        from_room.set(Some(s < 0.999))
+      })
+    }
+    item.box(fn(wrap) {
+      if fill_across {
+        wrap.fills_across(Is(true)) |> ignore
+      }
+      wrap
+      .scale(
+        By(fn() {
+          let s = room.come_share_of(item)
+          if item.leaving() {
+            if s < 0.999 {
+              s
+            } else {
+              1.0 - 0.1 * leave_ease(item.going())
+            }
+          } else {
+            match from_room.get() {
+              Some(true) => s
+              Some(false) =>
+                match enter {
+                  Some(e) => 0.92 + 0.08 * e()
+                  None => 1.0
+                }
+              None => s
+            }
+          }
+        }),
+        about=At(0.0, 0.0),
+      )
+      .alpha(
+        By(fn() {
+          let s = room.come_share_of(item)
+          if item.leaving() {
+            if s < 0.999 {
+              @sf.seen_at(s)
+            } else {
+              1.0
+            }
+          } else {
+            match from_room.get() {
+              Some(true) => @ui.Ease::Out.at(@sf.seen_at(s))
+              Some(false) =>
+                match enter {
+                  Some(e) => e()
+                  None => 1.0
+                }
+              None => 0.0
+            }
+          }
+        }),
+      )
+      |> ignore
+      build(wrap)
+    })
+    |> ignore
+  }
+  // (always mounted so qs_room and fs_room are placed from frame 0 and grow/shrink smoothly from 0 without clipping)
+  box.box(fn(area) {
+    // (drawn with its words as a line more of them makes its way in (`grow`) and with the morphing glass top (`morph_dy`))
+    area.offset(By(fn() { (0.0, grow.shown(area) + morph_dy(area)) })) |> ignore
     area
     .padding(
       By(fn() {
         let d = stand.at(fn() { @sf.composer_waiting_in() })
-        (d, d, d, 0.0)
+        (d, 0.0, d, 0.0)
       }),
     )
     |> ignore
-    // (its quotes, then its files: each nothing while it holds none, so what goes closes with the area's own way)
-    // (each in a room of its own, said to the box it is in, which grows or shrinks it its way as one more comes or goes,
-    // none tall while it holds none and never let out of the area's flow: what changes in one moves nothing of the
-    // other; each of its parts going from where it was drawn to where it is laid out as one before it goes:
-    // moves_for, said once its parts are made)
+    // (top inset room: carries composer_waiting_in() so qs/fs first rows stay at rel_y=0 and stacking quotes never shifts files)
+    area.box(fn(pr) {
+      pad_room.val = Some(pr)
+      pr.owns(fn() {
+        match pad_room.val {
+          Some(v) if v.id() == pr.id() => pad_room.val = None
+          _ => ()
+        }
+      })
+      |> ignore
+      pr
+      .shrink(Is(0.0))
+      .height(
+        By(fn() {
+          if w.quotes.get().length() > 0 || w.files.get().length() > 0 {
+            Some(stand.at(fn() { @sf.composer_waiting_in() }))
+          } else {
+            Some(0.0)
+          }
+        }),
+      )
+      |> ignore
+    })
+    |> ignore
+    // (its quotes, then its files: each nothing while it holds none, so what goes closes with its room's own way)
     area.box(fn(qs_room) {
       quotes_room.val = Some(qs_room)
       qs_room.owns(fn() {
@@ -2067,17 +2184,24 @@ fn composer_extras_node(
       let q_moves : Ref[@motion.Moves?] = Ref(None)
       let q_first : Array[@view.View] = []
       qs_room.box(fn(qs) {
-        // (each 10 over what follows it, within it: what goes closes with it, nothing left behind)
-        qs.gap(Is(@ui.Space::px(S1_5))).gone_empty(Is(true)).padding(Is((0.0, 0.0, 0.0, @ui.Space::px(S2_5)))) |> ignore
+        // (each 10 over what follows it, within it; padding collapses to 0 when empty so no gone_empty out-flag blocks focus)
+        qs
+        .gap(Is(@ui.Space::px(S1_5)))
+        .padding(
+          By(fn() {
+            if w.quotes.get().length() > 0 {
+              (0.0, 0.0, 0.0, @ui.Space::px(S2_5))
+            } else {
+              (0.0, 0.0, 0.0, 0.0)
+            }
+          }),
+        )
+        |> ignore
         qs.each(leave=@sf.leave_ms, pop_leave=true, fn() { w.quotes.get() }, fn(q) { text(Some(q), "id") }, fn(row, q) {
+          track_live(row)
           match q_moves.val {
             Some(m) => m.moves_with(row)
             None => q_first.push(row)
-          }
-          // (one put in by a hand here: faded in as what waits comes, @sf.waiting_in; one there as it is made, at once)
-          if row.allows_transition() {
-            let shown = @motion.presence_in(row, @sf.waiting_in.spec)
-            row.alpha(By(fn() { shown() })) |> ignore
           }
           let id = text(Some(@signals.untracked(fn() { q.get() })), "id")
           let v = fn() { Some(q.get()) }
@@ -2102,72 +2226,74 @@ fn composer_extras_node(
           })
           |> ignore
           let card_key = w.key + "\u{1}" + id
-          @sf.composer_quote_card_node(
-            row,
-            tips,
-            fn() { text(v(), "author") },
-            fn() { text(v(), "text") },
-            fn() { text(v(), "role") },
-            fn(line) {
-              @ui.field(
-                line,
-                f,
-                placeholder=@sf.t("web-main.quote.commentPlaceholder"),
-                font_size=@signals.untracked(fn() { @sf.theme().t.ui }),
-                line=@signals.untracked(fn() { @sf.theme().t.ui_line }),
-                max_lines=1,
-                enter_sends=true,
-                colors_by=fn() {
-                  let p = @sf.theme().p
-                  (p.text, p.subtle, p.accent)
-                },
-                edited=fn(now) { writing_comment(src, w, id, now) },
-                // (Enter in it: back to the words)
-                submitted=fn(_) { w.field.focus() },
-              )
-              .grow(Is(1.0))
-              |> ignore
-            },
-            fn() {
-              if f.focused() {
-                w.field.focus()
-              }
-              writing_unquote(src, w, id)
-            },
-            fn() { @sf.t("web-main.quote.remove") },
-            pictured=fn() { quote_picture_now(src, w, r.station, v()) is Some(_) },
-            picture=fn(b) {
-              // (its picture flies on its own as it is sent, from its square to its place in the message's card: none of
-              // it in the card flown from here, View::flies_apart)
-              b.flies_apart() |> ignore
-              // (a message's video on the station: its still, as a message's file shows it: video_still_node)
-              let still = quote_still_node(b, src, r.station, v)
-              let tile = waiting_tile_of(
-                b,
-                fn() {
-                  match quote_picture_now(src, w, r.station, v()).map(fn(p) { p.0 }) {
-                    Some("") => still()
-                    Some(k) => k
-                    None => ""
-                  }
-                },
-                fn() { quote_picture_now(src, w, r.station, v()).map(fn(p) { p.1 }).unwrap_or(false) },
-                fn() { going_now(field(v(), "own")) },
-                fn() { gone_up(field(v(), "own")) },
-                fn() { text(field(v(), "own"), "error") != "" },
-                fn() { writing_retry(src, w, text(field(v(), "own"), "id")) },
-              )
-              // (its square, for what is sent to fly from: composer_sent_parts)
-              composer_sent_parts_kept(w.key + "\u{1}" + id + "\u{1}picture", tile)
-            },
-            // (the card and its ✕ as one, what a message sent from here takes it to its own card as: its card flies from it
-            // as one box, its words and its ✕ seen going as the message's come, mbui's View::shared `container`)
-            whole=fn(h) {
-              let made = @signals.untracked(fn() { draft_sent_into(w.key) })
-              h.shared(By(fn() { composer_quote_shared(w.key, card_key, made) }), sent_part_flight, container=true) |> ignore
-            },
-          )
-          |> ignore
+          attach_motion(qs_room, row, true, fn(wrap) {
+            @sf.composer_quote_card_node(
+              wrap,
+              tips,
+              fn() { text(v(), "author") },
+              fn() { text(v(), "text") },
+              fn() { text(v(), "role") },
+              fn(line) {
+                @ui.field(
+                  line,
+                  f,
+                  placeholder=@sf.t("web-main.quote.commentPlaceholder"),
+                  font_size=@signals.untracked(fn() { @sf.theme().t.ui }),
+                  line=@signals.untracked(fn() { @sf.theme().t.ui_line }),
+                  max_lines=1,
+                  enter_sends=true,
+                  colors_by=fn() {
+                    let p = @sf.theme().p
+                    (p.text, p.subtle, p.accent)
+                  },
+                  edited=fn(now) { writing_comment(src, w, id, now) },
+                  // (Enter in it: back to the words)
+                  submitted=fn(_) { w.field.focus() },
+                )
+                .grow(Is(1.0))
+                |> ignore
+              },
+              fn() {
+                if f.focused() {
+                  w.field.focus()
+                }
+                writing_unquote(src, w, id)
+              },
+              fn() { @sf.t("web-main.quote.remove") },
+              pictured=fn() { quote_picture_now(src, w, r.station, v()) is Some(_) },
+              picture=fn(b) {
+                // (its picture flies on its own as it is sent, from its square to its place in the message's card: none of
+                // it in the card flown from here, View::flies_apart)
+                b.flies_apart() |> ignore
+                // (a message's video on the station: its still, as a message's file shows it: video_still_node)
+                let still = quote_still_node(b, src, r.station, v)
+                let tile = waiting_tile_of(
+                  b,
+                  fn() {
+                    match quote_picture_now(src, w, r.station, v()).map(fn(p) { p.0 }) {
+                      Some("") => still()
+                      Some(k) => k
+                      None => ""
+                    }
+                  },
+                  fn() { quote_picture_now(src, w, r.station, v()).map(fn(p) { p.1 }).unwrap_or(false) },
+                  fn() { going_now(field(v(), "own")) },
+                  fn() { gone_up(field(v(), "own")) },
+                  fn() { text(field(v(), "own"), "error") != "" },
+                  fn() { writing_retry(src, w, text(field(v(), "own"), "id")) },
+                )
+                // (its square, for what is sent to fly from: composer_sent_parts)
+                composer_sent_parts_kept(w.key + "\u{1}" + id + "\u{1}picture", tile)
+              },
+              // (the card and its ✕ as one, what a message sent from here takes it to its own card as: its card flies from it
+              // as one box, its words and its ✕ seen going as the message's come, mbui's View::shared `container`)
+              whole=fn(h) {
+                let made = @signals.untracked(fn() { draft_sent_into(w.key) })
+                h.shared(By(fn() { composer_quote_shared(w.key, card_key, made) }), sent_part_flight, container=true) |> ignore
+              },
+            )
+            |> ignore
+          })
           // (the one the core says asks for the focus: given it, told; none where it says none, a quote of its own with no id
           // among them)
           // (given once what it is made in is held from the window's root, and once a menu or a sheet its quote was asked
@@ -2208,28 +2334,29 @@ fn composer_extras_node(
       let f_first : Array[@view.View] = []
       fs_room.box(fn(fs) {
         fs
-        .gone_empty(Is(true))
         .row(Is(true))
         .gap(Is(@ui.Space::px(S1_5)))
         .wraps(By(fn() { Some(@ui.Space::px(S1_5) + @sf.corner_remove_reach(inner())) }))
         .padding(
           By(fn() {
-            let end = stand.at(fn() { @sf.composer_files_end() - @sf.composer_waiting_in() })
-            (0.0, 0.0, end, @ui.Space::px(S2_5))
+            if w.files.get().length() > 0 {
+              let end = stand.at(fn() { @sf.composer_files_end() - @sf.composer_waiting_in() })
+              (0.0, 0.0, end, @ui.Space::px(S2_5))
+            } else {
+              (0.0, 0.0, 0.0, 0.0)
+            }
           }),
         )
         |> ignore
         fs.each(leave=@sf.leave_ms, pop_leave=true, fn() { w.files.get() }, fn(f) { text(Some(f), "id") }, fn(item, f) {
+          track_live(item)
           match f_moves.val {
             Some(m) => m.moves_with(item)
             None => f_first.push(item)
           }
-          // (one put in by a hand here: faded in as what waits comes, @sf.waiting_in; one there as it is made, at once)
-          if item.allows_transition() {
-            let shown = @motion.presence_in(item, @sf.waiting_in.spec)
-            item.alpha(By(fn() { shown() })) |> ignore
-          }
-          composer_file_node(item, src, r, w, tips, fn() { Some(f.get()) }, inner, stand)
+          attach_motion(fs_room, item, false, fn(wrap) {
+            composer_file_node(wrap, src, r, w, tips, fn() { Some(f.get()) }, inner, stand)
+          })
         })
       })
       |> ignore
@@ -2242,6 +2369,7 @@ fn composer_extras_node(
     })
     |> ignore
   })
+  |> ignore
 }
 
 ///|
@@ -2994,7 +3122,7 @@ fn composer_sent_parts_kept(key : String, v : @view.View) -> Unit {
 /// nothing laid out for it.
 fn composer_sent_part_at(key : String) -> (Double, Double, Double, Double)? {
   match composer_sent_parts.get(key) {
-    Some(v) if v.alive() => Some(v.placed_window_now())
+    Some(v) if v.alive() => Some(v.rect())
     _ => None
   }
 }

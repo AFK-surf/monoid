@@ -10585,9 +10585,8 @@ fn[T : Eq, K : Hash + Eq] each_change(
     if !seen.contains(k) {
       gone.push(k)
       // (said to leave out of the flow: from where it stands, never come back to: pop_leave.mbt)
-      // (but where none stays: what holds it goes as it does (a show said to pop out with it), it in the flow there, so
-      // that it is not put back where it stood twice, once by itself and once with what holds it)
-      if pop_leave && leave > 0.0 && kept is None && !seen.is_empty() {
+      // (skip only when the holding slot itself is already leaving, so it is not put back where it stood twice)
+      if pop_leave && leave > 0.0 && kept is None && !slot.leaving_now() {
         slot.tree.tell_leaving(r.0.at)
         slot.pop_leaves(r.0, leave) |> ignore
         continue
@@ -10942,6 +10941,7 @@ fn View::comes(
   spec? : (Double, (Double) -> Double),
   foot? : Bool = false,
   anew? : Bool = false,
+  uncut? : Bool = false,
 ) -> Bool {
   let tree = self.tree
   // (in a block of a page's list said `flips`: there at once, the list setting it out with the rest of its column)
@@ -11056,6 +11056,9 @@ fn View::comes(
   }
   // (one way with what else comes or goes in its column at this moment and what is on its way there now)
   tree.come_group_join(v, st, at)
+  if uncut {
+    n.come_uncut = true
+  }
   n.look.clips = n.clips_said || !n.come_uncut
   (n.come_off)()
   n.come_off = fn() {  }
@@ -11064,62 +11067,64 @@ fn View::comes(
     None => {
       let s = @signals.signal(0)
       n.come_said = Some(s)
-      let gen = n.gen
-      let vat = v.at
-      // (the clock followed by the tree, not by what it holds: what rests as it closes its way does not rest this)
-      let owner = @signals.set_owner(None)
-      let stop = tree.queued(
-        fn() {
-          s.get() |> ignore
-          if tree.nodes[vat].coming {
-            Some(tree.drawn_at())
-          } else {
-            None
-          }
-        },
-        fn(t) {
-          let m = tree.nodes[vat]
-          if !m.live || m.gen != gen {
-            return
-          }
-          // (the clock set to a change's moment and back again as things are measured or settled then
-          // (Tree::measured_now) moves no way: laid out where the frame has it, not again at that moment's and again
-          // at the frame's, each laying out what reads it anew)
-          match t {
-            Some(t) if t != tree.frame_ms && m.flex.style.come_now == m.flex.style.come_now => return
-            _ => ()
-          }
-          let was = m.flex.style.come_now
-          let now = match t {
-            Some(t) => t
-            None => 0.0 / 0.0
-          }
-          if now == was || (now != now && was != was) {
-            return
-          }
-          m.flex.style.come_now = now
-          tree.layout_marked_at(vat)
-          // (how it is cut told again only as that changes: as tall as it is laid out at each step of its way, it is made
-          // again where it is placed, Tree::place)
-          let clips = m.clips_said || (m.coming && !m.come_uncut)
-          if clips != m.look.clips {
-            m.look.clips = clips
-            tree.look_marked_at(vat)
-          }
-          // (what draws its ground by how tall this shows: drawn again by it, View::shown_by)
-          match tree.shown_followers.get(vat) {
-            Some(fs) =>
-              for f in fs {
-                tree.place_marked_at(f)
-              }
-            None => ()
-          }
-        },
-      )
-      @signals.set_owner(owner) |> ignore
-      n.prop_set(Comes.ord(), stop)
       s
     }
+  }
+  if !n.prop_has(Comes.ord()) {
+    let gen = n.gen
+    let vat = v.at
+    // (the clock followed by the tree, not by what it holds: what rests as it closes its way does not rest this)
+    let owner = @signals.set_owner(None)
+    let stop = tree.queued(
+      fn() {
+        said.get() |> ignore
+        if tree.nodes[vat].coming {
+          Some(tree.drawn_at())
+        } else {
+          None
+        }
+      },
+      fn(t) {
+        let m = tree.nodes[vat]
+        if !m.live || m.gen != gen {
+          return
+        }
+        // (the clock set to a change's moment and back again as things are measured or settled then
+        // (Tree::measured_now) moves no way: laid out where the frame has it, not again at that moment's and again
+        // at the frame's, each laying out what reads it anew)
+        match t {
+          Some(t) if t != tree.frame_ms && m.flex.style.come_now == m.flex.style.come_now => return
+          _ => ()
+        }
+        let was = m.flex.style.come_now
+        let now = match t {
+          Some(t) => t
+          None => 0.0 / 0.0
+        }
+        if now == was || (now != now && was != was) {
+          return
+        }
+        m.flex.style.come_now = now
+        tree.layout_marked_at(vat)
+        // (how it is cut told again only as that changes: as tall as it is laid out at each step of its way, it is made
+        // again where it is placed, Tree::place)
+        let clips = m.clips_said || (m.coming && !m.come_uncut)
+        if clips != m.look.clips {
+          m.look.clips = clips
+          tree.look_marked_at(vat)
+        }
+        // (what draws its ground by how tall this shows: drawn again by it, View::shown_by)
+        match tree.shown_followers.get(vat) {
+          Some(fs) =>
+            for f in fs {
+              tree.place_marked_at(f)
+            }
+          None => ()
+        }
+      },
+    )
+    @signals.set_owner(owner) |> ignore
+    n.prop_set(Comes.ord(), stop)
   }
   said.set(said.untracked() + 1)
   tree.layout_marked_at(v.at)
@@ -11129,6 +11134,10 @@ fn View::comes(
     @signals.after_flush(fn() {
       guard v.live() is Some(m) && m.coming && st.come_at == at && st.come_to >= 1.0 else { return }
       tree.measured_now()
+      match m.come_said {
+        Some(s) => s.set(s.untracked() + 1)
+        None => ()
+      }
       let ends = if st.come_ends == st.come_ends { st.come_ends } else { at + @flex.move_most_ms }
       // (one asked before, by this way said twice in its change or its group: let go, so no end of before is waited for)
       (m.come_off)()
@@ -11442,6 +11451,10 @@ fn Tree::come_group_settle(
       // (leaving as long as the group's way: let go as it ends)
       m.span = dmax(st.come_ends - m.left_at, 0.0)
     }
+    match m.come_said {
+      Some(s) => s.set(s.untracked() + 1)
+      None => ()
+    }
     self.layout_marked_at(w.at)
   }
 }
@@ -11478,7 +11491,6 @@ fn come_done(tree : Tree, v : View, m : Node) -> Unit {
     Some(s) => s.set(s.untracked() + 1)
     None => ()
   }
-  m.come_said = None
   m.prop_stop(Comes.ord())
   tree.layout_marked_at(v.at)
   tree.look_marked_at(v.at)
@@ -11567,7 +11579,7 @@ fn Tree::holds_shared(self : Tree, at : Int) -> Bool {
     return false
   }
   let n = self.nodes[at]
-  n.share is Some(_) || n.kids.iter().any(fn(k) { self.holds_shared(k) })
+  (n.share is Some(_) && !n.share_stays) || n.kids.iter().any(fn(k) { self.holds_shared(k) })
 }
 
 ///|

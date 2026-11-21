@@ -1515,6 +1515,7 @@ pub fn View::claims(Self, (Double, Double) -> Bool, scrolls? : Bool, for_in? : N
 pub fn View::clear(Self) -> (Double, Double, Double, Double)
 #callsite(autofill(loc))
 pub fn View::clips(Self, Live[Bool], loc~ : SourceLoc) -> Self
+pub fn View::come_share_of(Self, Self) -> Double
 pub fn View::comes_end(Self, laid? : Bool) -> Double
 pub fn View::concentric_end_pad(Self, Double) -> Live[Double]
 pub fn View::concentric_radius(Self, () -> Double, extra_inset? : () -> Double, min_radius? : Double) -> Live[Double]
@@ -1752,7 +1753,8 @@ pub fn View::radius(Self, Live[Double], loc~ : SourceLoc) -> Self
 pub fn[T : Eq] View::reacts(Self, () -> T, (T) -> Unit, at_start? : Bool) -> Unit
 pub fn View::read_from(Self) -> Self
 pub fn View::rect(Self) -> (Double, Double, Double, Double)
-pub fn View::resizes(Self, spec? : (Double, (Double) -> Double), foot? : Bool) -> Self
+#callsite(autofill(loc))
+pub fn View::resizes(Self, spec? : (Double, (Double) -> Double), foot? : Bool, uncut? : Bool, loc~ : SourceLoc) -> Self
 pub fn View::reused_bool(Self, default? : Bool) -> @signals.Signal[Bool]
 pub fn View::reused_kind(Self) -> Int?
 #callsite(autofill(loc))

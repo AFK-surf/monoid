@@ -132,6 +132,8 @@ priv struct Lift {
   mut kids_a : Double
   /// the old copy of a pair (else the one made, or one flying alone)
   old : Bool
+  /// drawn scale at departure (for container=true old copy to unwind smoothly to 1.0 over the flight)
+  from_s : Double
   /// how far what it holds is drawn past its own box at rest (left, top, right, bottom: a card's ✕ hung on its corner),
   /// what of it is seen on the way (Tree::lift_cut) taking that in too
   hang : (Double, Double, Double, Double)
@@ -198,6 +200,7 @@ priv struct Departure {
   id : String
   node : NodeId
   from : (Double, Double, Double, Double)
+  from_s : Double
   look : FromLook
   held : NodeId
   leaving : Bool
@@ -1385,9 +1388,12 @@ fn Tree::mark_on_flight(
 /// How big what node `n` holds is drawn on its flight's way (`w` wide as it is drawn): as wide as it is drawn for as
 /// wide as it is laid out.
 fn lift_scale(n : Node, l : Lift, w : Double) -> Double {
-  // (a container never grown: what it holds at its own size, its box alone going from one end's to the other's)
+  // (a container never grown: what it holds at its own size, its box alone going from one end's to the other's;
+  // its old copy keeps the drawn scale it departed at and eases smoothly to 1.0 over the flight)
   if !l.box && n.lw > 0.0 {
     w / n.lw
+  } else if l.box && l.old && l.from_s < 1.0 {
+    1.0 + (l.from_s - 1.0) * l.k
   } else {
     1.0
   }
@@ -1770,7 +1776,7 @@ fn Tree::departed(self : Tree, found : Array[Int], held : NodeId, leaving : Bool
       any = true
       continue
     }
-    let (from, look) = match n.lift {
+    let (from, from_s, look) = match n.lift {
       Some(l) => {
         // (on a flight's way: where it is drawn as of the change's moment, as it looks there; that flight over)
         match self.flying_of(at) {
@@ -1783,11 +1789,11 @@ fn Tree::departed(self : Tree, found : Array[Int], held : NodeId, leaving : Bool
           Some(f) => self.flight_over(f)
           None => ()
         }
-        ((x, y, w, h), look)
+        ((x, y, w, h), 1.0, look)
       }
       None => {
         let (x, y, _, s) = self.projected(at, drawn=true)
-        ((x, y, n.lw * s, n.lh * s), self.look_from(at, s))
+        ((x, y, n.lw * s, n.lh * s), s, self.look_from(at, s))
       }
     }
     // (what held it, for where it meets the one made (Tree::flight_host); what it holds drawn past its box, where it
@@ -1797,6 +1803,7 @@ fn Tree::departed(self : Tree, found : Array[Int], held : NodeId, leaving : Bool
       id,
       node: { at, gen: n.gen },
       from,
+      from_s,
       look,
       held,
       leaving,
@@ -2174,6 +2181,7 @@ fn Tree::paired(
     box,
     kids_a: 1.0,
     old: false,
+    from_s: 1.0,
     hang: hang_to,
     d: dd,
     late,
@@ -2194,6 +2202,7 @@ fn Tree::paired(
     box,
     kids_a: 1.0,
     old: true,
+    from_s: d.from_s,
     hang: hang_from,
     d: dd,
     late,
@@ -2428,6 +2437,7 @@ fn Tree::fly_from(
     box: container,
     kids_a: 1.0,
     old: false,
+    from_s: 1.0,
     hang: hang_to,
     d: dd,
     late,
