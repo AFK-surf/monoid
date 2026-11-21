@@ -471,6 +471,101 @@ pub async fn slack_connect_of(w : World, key : String, bot : String?) -> String 
 }
 
 ///|
+/// What withdrawing a card where no conversation began yet is told.
+let withdraw_begun : String = "withdraw needs an existing CHANNEL/THREAD_TS conversation"
+
+///|
+/// The Feishu chat a chat_post's `to` names where it begins a conversation there (`oc_…`, a `/` after it allowed);
+/// None for anything else (a conversation's CHANNEL/THREAD_TS among them).
+fn feishu_chat_id(to : J?) -> String? {
+  guard str_of(to) is Some(given) else { return None }
+  let t = trim(given)
+  let chat = if t.has_suffix("/") { t[:t.length() - 1].to_string() } else { t }
+  guard chat.has_prefix("oc_") && chat.length() > 3 else { return None }
+  for c in chat[3:] {
+    if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+      return None
+    }
+  }
+  Some(chat)
+}
+
+///|
+/// The Feishu connect a session begins a conversation through: its own; else the one of a recent conversation of it;
+/// else the station's Feishu bot in its workspace (with several, the one bound to its profile, its runtime and model,
+/// or its runtime). Only one whose surface can begin a conversation.
+async fn feishu_connect_of(w : World, key : String) -> String {
+  let session = w.store_get_session(key)
+  let connects = arr_of(at(Some(w.config()), "connects")).unwrap_or([])
+  let usable = async fn(id : String) -> Bool {
+    if id == "" || id == internal_connect {
+      return false
+    }
+    let platform = str_of(Some(w.ask("hub.chatProp", [js(id), js("platform")])))
+    let feishu = connects.iter().any(c => str_of(at(Some(c), "id")) == Some(id) && str_of(at(Some(c), "kind")) == Some("feishu")) ||
+      platform == Some("feishu") ||
+      platform == Some("lark")
+    feishu && w.ask("hub.chatHas", [js(id), js("begin")]) is Bool(true)
+  }
+  let own = str_of(at(Some(session), "connect")).unwrap_or("")
+  if usable(own) {
+    return own
+  }
+  let threads = arr_of(at(Some(w.with_threads_j(t => t.recent_session_threads(Json::string(key), Json::null()))), "threads")).unwrap_or([])
+  for t in threads {
+    let c = str_of(at(Some(t), "connect")).unwrap_or("")
+    if usable(c) {
+      return c
+    }
+  }
+  let workspaces = w.with_hub(h => h.workspaces()).map(js)
+  let home = if workspaces.length() > 0 { workspaces[0] } else { J::Null }
+  let ws = jopt(w.with_hub(h => h.ws_of_arg((if session is Null { js(key) } else { session }).to_json())))
+  let bots = []
+  for c in connects {
+    if str_of(at(Some(c), "kind")) != Some("feishu") || !(at(Some(c), "enabled") is Some(Bool(true))) {
+      continue
+    }
+    let cws = match at(Some(c), "workspace") {
+      None | Some(Null) => home
+      Some(x) => x
+    }
+    if !(home is Null) && !jeq(cws, ws) {
+      continue
+    }
+    if !usable(str_of(at(Some(c), "id")).unwrap_or("")) {
+      continue
+    }
+    bots.push(c)
+  }
+  let id_of = (c : J) => str_of(at(Some(c), "id")).unwrap_or("")
+  if bots.length() == 1 {
+    return id_of(bots[0])
+  }
+  if bots.length() == 0 {
+    raise fail_("this station has no Feishu bot in this chat's workspace")
+  }
+  let bind = (c : J, name : String) => match str_of(at(at(Some(c), "bind"), name)) {
+    Some(v) if v != "" => Some(v)
+    _ => None
+  }
+  let of_session = (name : String) => str_of(at(Some(session), name))
+  let one = (picked : Array[J]) => if picked.length() == 1 { Some(id_of(picked[0])) } else { None }
+  let found = match one(bots.filter(c => bind(c, "profile") is Some(p) && of_session("profile") == Some(p))) {
+    Some(f) => Some(f)
+    None =>
+      match one(bots.filter(c => bind(c, "runtime") == of_session("runtime") && bind(c, "model") is Some(m) && of_session("model") == Some(m))) {
+        Some(f) => Some(f)
+        None => one(bots.filter(c => bind(c, "runtime") == of_session("runtime")))
+      }
+  }
+  match found {
+    Some(f) => f
+    None => raise fail_("this chat has no Feishu bot of its own, and this workspace has several Feishu bots (\{bots.map(id_of).join(", ")})")
+  }
+}
+
+///|
 /// slack_api: a Slack Web API call from session `key`, as the bot of `via` (else `slack_connect_of`).
 pub async fn slack_api(
   w : World,

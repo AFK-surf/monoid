@@ -335,6 +335,26 @@ test("run: a Slack connect and a Feishu one connected, slack_api and feishu_api 
   const sending = await post(mcp.port, "/mcp", { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "feishu_api", arguments: { method: "POST /open-apis/im/v1/messages", params: {} } } }, "t2");
   assert.equal(sending.result.isError, true);
   assert.match(sending.result.content[0].text, /chat_post/);
+  // chat_post to a Feishu chat with no conversation yet (FB-43): its first message there, its file uploaded before it and
+  // posted after it, its card's buttons changed to answer in the thread it began; the thread one of s2's conversations
+  const report = join(data, "report.pdf");
+  writeFileSync(report, "pdf");
+  const begun = await post(mcp.port, "/mcp", { jsonrpc: "2.0", id: 8, method: "tools/call", params: { name: "chat_post", arguments: { to: "oc_new/", text: "选哪个", files: [report], card: { type: "options", options: [{ label: "A" }, { label: "B" }] } } } }, "t2");
+  assert.equal(begun.result.isError, undefined, JSON.stringify(begun));
+  const begunTs = /^Posted to oc_new\/(om_bot\d+) \(now one of your conversations\)\./.exec(begun.result.content[0].text)?.[1];
+  assert.ok(begunTs, begun.result.content[0].text);
+  assert.deepEqual(feishu.calls("POST", /^\/open-apis\/im\/v1\/(files|messages)$/).filter((c) => c.path.endsWith("/files") || c.body?.receive_id === "oc_new").map((c) => [c.path, c.body.msg_type ?? c.body.file_type]), [
+    ["/open-apis/im/v1/files", "pdf"],
+    ["/open-apis/im/v1/messages", "interactive"],
+    ["/open-apis/im/v1/messages", "file"],
+  ]);
+  assert.equal(JSON.parse(feishu.calls("PATCH", `/open-apis/im/v1/messages/${begunTs}`)[0]!.body.content).body.elements.find((e: any) => e.tag === "button").behaviors[0].value.t, begunTs);
+  const kept = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
+  assert.equal(kept.sessionThread("s2", "oc_new", begunTs!)?.connect, "f1");
+  kept.close();
+  const noAbout = await post(mcp.port, "/mcp", { jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "chat_post", arguments: { to: "oc_x", text: "hi", kind: "all_done", done: "已在新建群发出首条消息，群里已有人回复", about: "om_1" } } }, "t2");
+  assert.equal(noAbout.result.isError, true);
+  assert.equal(noAbout.result.content[0].text, "about must be the ts of a message in an existing conversation (leave about out when starting a new Feishu chat)");
   // `stillfail update --beta` asks the running station (run/channel-ask, a SIGHUP the launcher passes on as `hup`)
   writeFileSync(join(data, "run", "channel-ask"), "beta\n");
   a.tell({ op: "hup" });

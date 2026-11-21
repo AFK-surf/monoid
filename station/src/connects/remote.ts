@@ -91,6 +91,9 @@ export type Described = {
   link: string | null;
   /// The surface's calls it has, of those it may not (ChatSurface's optional ones).
   has: string[];
+  /// Its `begin` takes a first message's files and card, and the station it runs on routes the thread it begins to the
+  /// asking station (`connect.call`'s `begin`); absent from a station from before.
+  beginPost?: true;
 };
 
 /// The optional calls of a surface a remote one has only where the connect's has them (the hub tells by their absence).
@@ -119,6 +122,7 @@ export function describe(connect: Connect, workspace: string, surface: ChatSurfa
     mention: at < 0 ? ["<@", ">"] : [mention.slice(0, at), mention.slice(at + 1)],
     link: surface.sessionLink ? surface.sessionLink("\u0001", "\u0002") : "<\u0001|\u0002>",
     has: OPTIONAL.filter((name) => typeof (surface as any)[name] === "function"),
+    ...(typeof surface.begin === "function" ? { beginPost: true as const } : {}),
   };
 }
 
@@ -167,11 +171,14 @@ export class RemoteSurface implements ChatSurface {
   private d: Described;
   private readonly ask: Ask;
   private readonly names: NameBook | null;
+  /// This station's id: where a thread `begin` started is routed to on a station from before.
+  private readonly here: () => string;
   /// The files of the answers `api` gave, as that station read them.
   private readonly files = new WeakMap<object, InboundFile[]>();
 
-  constructor(id: string, known: Known, station: string, described: Described, ask: Ask, names: NameBook | null) {
+  constructor(id: string, known: Known, station: string, described: Described, ask: Ask, names: NameBook | null, here: () => string = () => "") {
     this.id = id;
+    this.here = here;
     this.known = known;
     this.station = station;
     this.d = described;
@@ -223,8 +230,8 @@ export class RemoteSurface implements ChatSurface {
     return this.d.link === null ? null : this.d.link.replace("\u0001", url).replace("\u0002", label);
   }
 
-  /// Its files go first, each as the bytes after a call of its own, and the post names them as that station keeps them.
-  async post(thread: ThreadRef, message: string, files: Attachment[], card?: Json | null): Promise<string> {
+  /// Each file sent to the connect's station as the bytes after a call of its own: the files as that station keeps them.
+  private async uploadFiles(files: Attachment[]): Promise<Attachment[]> {
     const there: Attachment[] = [];
     for (const file of files) {
       const size = (await stat(file.path)).size;
@@ -232,6 +239,12 @@ export class RemoteSurface implements ChatSurface {
       if (typeof kept?.path !== "string") throw new Error("the connect's station did not keep the file");
       there.push({ ...file, path: kept.path });
     }
+    return there;
+  }
+
+  /// Its files go first, and the post names them as that station keeps them.
+  async post(thread: ThreadRef, message: string, files: Attachment[], card?: Json | null): Promise<string> {
+    const there = await this.uploadFiles(files);
     return String(await this.call("post", [thread, message, there, card ?? null]));
   }
 
@@ -286,8 +299,20 @@ export class RemoteSurface implements ChatSurface {
   peopleIn(channel: string): Promise<Member[]> {
     return this.call("peopleIn", [channel]);
   }
-  begin(channel: string, message: string, title = ""): Promise<{ thread: ThreadRef; ts: string }> {
-    return this.call("begin", [channel, message, title]);
+  /// As a post's, its files go first. A station from before takes neither files nor a card here (it would drop them) and
+  /// does not route the thread begun: words alone go, and the thread is routed here by `connect.route`.
+  async begin(channel: string, message: string, title = "", files: Attachment[] = [], card?: Json | null): Promise<{ thread: ThreadRef; ts: string }> {
+    const before = this.d.beginPost !== true;
+    if (before && (files.length > 0 || (card !== undefined && card !== null))) {
+      throw new Error("the station that runs this connect needs an update before chat_post can attach files or a card to a new conversation's first message");
+    }
+    const there = await this.uploadFiles(files);
+    const begun = await this.call("begin", [channel, message, title, there, card ?? null]);
+    const thread = begun?.thread;
+    if (before && ROUTED.includes(this.d.kind) && this.d.mode !== "single-session" && typeof thread?.channel === "string" && typeof thread?.threadTs === "string" && this.here() !== "") {
+      await this.ask(this.station, { method: ROUTE, workspace: this.d.workspace, connect: this.known, channel: thread.channel, threadTs: thread.threadTs, station: this.here() });
+    }
+    return begun;
   }
   edit(thread: ThreadRef, ts: string, message: string): Promise<boolean> {
     return this.call("edit", [thread, ts, message]);
@@ -345,13 +370,15 @@ export function answerCall(surface: (connect: Known, workspace: string | undefin
       return { result: { path } };
     }
     if (!CALLS.has(op)) throw new Error("no such call");
-    if (op === "post") {
-      const [thread, message, files, card] = args;
+    if (op === "post" || op === "begin") {
+      const files = op === "post" ? args[2] : args[3];
       const kept = (Array.isArray(files) ? files : []) as Attachment[];
       // Only what came for it, from where uploads keeps it.
       for (const f of kept) if (!f.path.startsWith(uploads + "/") && !f.path.startsWith(uploads + "\\")) throw new Error("that file did not come here");
       try {
-        return { result: await chat.post(thread, String(message), kept, card) };
+        if (op === "post") return { result: await chat.post(args[0], String(args[1]), kept, args[3]) };
+        if (typeof chat.begin !== "function") throw new Error("that connect has no such call");
+        return { result: await chat.begin(String(args[0]), String(args[1]), typeof args[2] === "string" ? args[2] : "", kept, args[4] ?? null) };
       } finally {
         await Promise.all(kept.map((f) => rm(join(f.path, ".."), { recursive: true, force: true }).catch(() => {})));
       }
@@ -457,7 +484,7 @@ export class RemoteConnects {
     if (had !== undefined) return had;
     const r = this.known.get(id);
     if (r === undefined) return undefined;
-    const made = new RemoteSurface(id, knownOf(id, this.here()), r.station, r.described, this.ask, this.names(r.described.kind));
+    const made = new RemoteSurface(id, knownOf(id, this.here()), r.station, r.described, this.ask, this.names(r.described.kind), this.here);
     this.surfaces.set(id, made);
     return made;
   }

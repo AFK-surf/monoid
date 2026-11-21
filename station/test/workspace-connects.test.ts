@@ -165,6 +165,78 @@ test("feishu_api of a chat whose Feishu connect runs on another station: its JSO
   }
 });
 
+test("chat_post to a Feishu chat_id from a chat whose Feishu connect runs on another station: its file and card go through that station, which keeps no file after and routes the new thread's messages back here (FB-43)", async () => {
+  const { h, s, close } = workspace();
+  const fake = await FakeFeishu.start();
+  const surface = new FeishuSurface({
+    connect: "fs", appId: "cli_test", appSecret: "s", domain: "feishu",
+    threads: new FeishuThreads(join(h.rig.dir, "threads.json")),
+    client: new FeishuClient("cli_test", "s", "feishu", fake.base),
+  });
+  try {
+    h.rig.raw.connects.push({ id: "fs", kind: "feishu", feishu: { appId: "cli_test", appSecret: "s" }, bind: { runtime: "claude" }, station: S });
+    h.local.set("fs", surface);
+    await h.connects.receive("fs", { type: "message", message: { channel: "oc_g", threadTs: "om_a", ts: "om_a", user: "ou_ada", text: "@Bot 建个群", addressed: true } });
+    await settle();
+    const id = `fs@${H}`;
+    const key = sessionKey(id, "oc_g", "om_a");
+    assert.ok(s.rig.store.getSession(key), "the session is S's");
+    s.rig.claude.last().reads();
+    const file = join(s.rig.dir, "report.pdf");
+    writeFileSync(file, "pdf");
+    const answer = await s.rig.call(key, "chat_post", { to: "oc_remote", text: "选哪个", files: [file], card: { type: "options", options: [{ label: "A" }, { label: "B" }] }, kind: "need_human", need: "选 A 或 B" });
+    const ts = /^Posted to oc_remote\/(om_bot\d+) \(now one of your conversations\), and recorded state need_human\./.exec(answer)?.[1];
+    assert.ok(ts, answer);
+    // H's bot posted it: the file uploaded there first, the card first in the chat, its buttons answering in the thread.
+    assert.deepEqual(fake.calls("POST", /^\/open-apis\/im\/v1\/(files|messages)$/).map((c) => [c.path, c.body.msg_type ?? c.body.file_type]), [
+      ["/open-apis/im/v1/files", "pdf"],
+      ["/open-apis/im/v1/messages", "interactive"],
+      ["/open-apis/im/v1/messages", "file"],
+    ]);
+    assert.equal(JSON.parse(fake.calls("PATCH", `/open-apis/im/v1/messages/${ts}`)[0]!.body.content).body.elements.find((e: Json) => e.tag === "button").behaviors[0].value.t, ts);
+    assert.deepEqual(readdirSync(join(h.rig.dir, "run", "connect-uploads")), [], "the file is not kept after it is posted");
+    // The thread is S's: H routes what is said in it there.
+    assert.equal(h.rig.store.connectThreadStation("fs", "oc_remote", ts!), S);
+    const thread = s.rig.store.threadAt(s.rig.hub.surface(id), "oc_remote", ts!)!;
+    assert.equal(s.rig.store.sessionThread(key, "oc_remote", ts!)?.connect, id);
+    await h.connects.receive("fs", { type: "message", message: { channel: "oc_remote", threadTs: ts!, ts: "om_y", user: "ou_ada", text: "收到", addressed: false } });
+    await settle();
+    assert.deepEqual(s.rig.said(thread.id).map((m) => m.text), ["选哪个", "收到"]);
+    assert.equal(h.rig.store.threadAt(h.rig.hub.surface("fs"), "oc_remote", ts!), null, "H keeps no thread of it");
+    // H as a station from before describes it (no beginPost): files or a card are refused before anything is asked of
+    // H; words alone go, and S routes the thread it began to itself with connect.route.
+    const was = s.connects.describedFor(id)!;
+    const { beginPost: _given, ...old } = was.described;
+    s.connects.remote.learn(id, was.station, old);
+    const asked: string[] = [];
+    const handle = h.bus.handle.bind(h.bus);
+    h.bus.handle = ((ws: Json, peer: Json, request: Json) => {
+      // (what begins, uploads or routes: the status lines a turn shows go on beside them)
+      if (request?.method !== "connect.call" || ["begin", "upload", "post"].includes(request?.op)) asked.push(request?.op ?? request?.method);
+      return handle(ws, peer, request);
+    }) as typeof h.bus.handle;
+    const update = "the station that runs this connect needs an update before chat_post can attach files or a card to a new conversation's first message";
+    s.rig.claude.last().reads();
+    assert.equal(await s.rig.refused(key, "chat_post", { to: "oc_old", text: "附件", files: [file] }), update);
+    assert.equal(await s.rig.refused(key, "chat_post", { to: "oc_old", text: "选哪个", card: { type: "options", options: [{ label: "A" }] } }), update);
+    assert.deepEqual(asked, [], "nothing uploaded to or begun on H");
+    assert.deepEqual(readdirSync(join(h.rig.dir, "run", "connect-uploads")), []);
+    const plain = await s.rig.call(key, "chat_post", { to: "oc_old", text: "大家好" });
+    const oldTs = /^Posted to oc_old\/(om_bot\d+) \(now one of your conversations\)\./.exec(plain)?.[1];
+    assert.ok(oldTs, plain);
+    assert.deepEqual(asked, ["begin", "connect.route"]);
+    assert.equal(h.rig.store.connectThreadStation("fs", "oc_old", oldTs!), S);
+    await h.connects.receive("fs", { type: "message", message: { channel: "oc_old", threadTs: oldTs!, ts: "om_z", user: "ou_ada", text: "收到了", addressed: false } });
+    await settle();
+    const oldThread = s.rig.store.threadAt(s.rig.hub.surface(id), "oc_old", oldTs!)!;
+    assert.deepEqual(s.rig.said(oldThread.id).map((m) => m.text), ["大家好", "收到了"]);
+  } finally {
+    await close();
+    await surface.stop();
+    await fake.close();
+  }
+});
+
 test("a conversation that began before stays where it is; one the station named cannot take runs on the connect's own", async () => {
   const { h, s, close } = workspace();
   const before = message({ text: "<@UBOT> hi" });

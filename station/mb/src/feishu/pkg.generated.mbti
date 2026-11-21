@@ -371,7 +371,7 @@ pub struct FeishuSurface {
 }
 pub async fn FeishuSurface::address(Self) -> String
 pub async fn FeishuSurface::api(Self, String, @jsjson.JValue) -> Answered
-pub async fn FeishuSurface::begin(Self, String, String) -> (ThreadRef, String)
+pub async fn FeishuSurface::begin(Self, String, String, files? : Array[Attachment], card? : @jsjson.JValue?) -> (ThreadRef, String)
 pub fn FeishuSurface::bot_name(Self) -> String
 pub fn FeishuSurface::bot_user_id(Self) -> String
 pub async fn FeishuSurface::card_ended(Self, ThreadRef, String, String, @jsjson.JValue?, CardEnd) -> Unit

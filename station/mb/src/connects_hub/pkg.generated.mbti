@@ -622,7 +622,7 @@ pub struct RemoteSurface {
   described : @jsjson.JValue
   // private fields
 }
-pub fn RemoteSurface::new(String, Known, String, @jsjson.JValue, Asker, NameBook?, Fs, Log) -> Self
+pub fn RemoteSurface::new(String, Known, String, @jsjson.JValue, Asker, NameBook?, Fs, Log, here? : () -> String) -> Self
 pub fn RemoteSurface::surface(Self) -> Surface
 
 pub(all) struct Signer {

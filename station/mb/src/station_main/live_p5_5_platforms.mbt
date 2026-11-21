@@ -249,6 +249,15 @@ fn feishu_card_end(v : @jsjson.JValue?) -> @feishu.CardEnd {
 }
 
 ///|
+/// The files a post or a conversation's first message names, as the Feishu surface takes them.
+fn feishu_files(v : @jsjson.JValue?) -> Array[@feishu.Attachment] {
+  match v {
+    Some(Arr(xs)) => xs.map(f => ({ path: jv_text(f, "path").unwrap_or(""), name: jv_text(f, "name").unwrap_or("") } : @feishu.Attachment))
+    _ => []
+  }
+}
+
+///|
 /// The Feishu calls a surface answers (feishu/surface.ts).
 let feishu_calls : Array[String] = [
   "mention", "sessionLink", "post", "cardEnded", "download", "history", "quoted", "places", "peopleIn", "begin", "edit",
@@ -310,10 +319,7 @@ fn feishu_connection(host : @host.Host, s : @feishu.FeishuSurface, id : String, 
   let call = async fn(name : String, a : Array[@jsjson.JValue]) -> @jsjson.JValue? {
     match name {
       "post" => {
-        let files = match a.get(2) {
-          Some(Arr(xs)) => xs.map(f => ({ path: jv_text(f, "path").unwrap_or(""), name: jv_text(f, "name").unwrap_or("") } : @feishu.Attachment))
-          _ => []
-        }
+        let files = feishu_files(a.get(2))
         let card = match a.get(3) { Some(Null) | None => None; Some(c) => Some(c) }
         Some(to_jv(Json::string(s.post(feishu_thread(a.get(0)), txt(a, 1), files, card~))))
       }
@@ -336,7 +342,9 @@ fn feishu_connection(host : @host.Host, s : @feishu.FeishuSurface, id : String, 
       "places" => Some(Arr(s.places().map(p => to_jv({ "id": Json::string(p.id), "name": Json::string(p.name), "kind": Json::string(p.kind) }))))
       "peopleIn" => Some(Arr(s.people_in(txt(a, 0)).map(m => to_jv({ "id": Json::string(m.id), "name": Json::string(m.name) }))))
       "begin" => {
-        let (t, ts) = s.begin(txt(a, 0), txt(a, 1))
+        let files = feishu_files(a.get(3))
+        let card = match a.get(4) { Some(Null) | None => None; Some(c) => Some(c) }
+        let (t, ts) = s.begin(txt(a, 0), txt(a, 1), files~, card~)
         Some(to_jv({ "thread": { "channel": Json::string(t.channel), "threadTs": Json::string(t.thread_ts) }, "ts": Json::string(ts) }))
       }
       "edit" => Some(Bool(s.edit(feishu_thread(a.get(0)), txt(a, 1), txt(a, 2))))

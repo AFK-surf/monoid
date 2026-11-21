@@ -266,6 +266,9 @@ pub async fn chat_post(w : World, key : String, args : J, held : Held) -> String
       Str(u) if trim(@jsjson.sanitize_str(u)) != "" => @jsjson.sanitize_str(u)
       _ => raise fail_("withdraw must be your question's message ts")
     }
+    if feishu_chat_id(at(Some(args), "to")) is Some(_) {
+      raise fail_(withdraw_begun)
+    }
     let thread = target(w, key, at(Some(args), "to"))
     let tid = at(at(Some(thread), "thread"), "id").unwrap_or(Null)
     let vault = at(Some(w.with_threads_j(t => t.card_at(tid.to_json(), Json::string(ts)))), "vault")
@@ -288,6 +291,9 @@ pub async fn chat_post(w : World, key : String, args : J, held : Held) -> String
     let t = match title {
       Str(u) if clean_title(@jsjson.sanitize_str(u)) != "" => @jsjson.sanitize_str(u)
       _ => raise fail_("title is empty")
+    }
+    if feishu_chat_id(at(Some(args), "to")) is Some(_) {
+      raise fail_("cannot set title before starting the Feishu conversation: give text or files with chat_post")
     }
     let thread = target(w, key, at(Some(args), "to"))
     let row = at(Some(thread), "thread")
@@ -335,12 +341,18 @@ pub async fn chat_post(w : World, key : String, args : J, held : Held) -> String
   if text == "" && paths.length() == 0 {
     raise fail_("text is empty")
   }
-  let thread = target(w, key, at(Some(args), "to"))
-  let row = at(Some(thread), "thread")
+  // A Feishu chat with no conversation yet (one its bot made, or is in): this post begins one, the session's from now on.
+  let feishu_chat = feishu_chat_id(at(Some(args), "to"))
+  if feishu_chat is Some(_) && about_ts(args) is Some(_) {
+    raise fail_("about must be the ts of a message in an existing conversation (leave about out when starting a new Feishu chat)")
+  }
+  let existing = feishu_chat is None
+  let thread = if existing { target(w, key, at(Some(args), "to")) } else { J::Null }
+  let row = if existing { at(Some(thread), "thread") } else { None }
   let tid = at(row, "id").unwrap_or(Null)
-  let connect = str_of(at(Some(thread), "connect")).unwrap_or("")
-  let surface = str_of(at(row, "surface")).unwrap_or("")
-  if w.store_manually_archived(tid) {
+  let connect = if existing { str_of(at(Some(thread), "connect")).unwrap_or("") } else { feishu_connect_of(w, key) }
+  let surface = if existing { str_of(at(row, "surface")).unwrap_or("") } else { w.with_hub(h => h.surface(connect)) }
+  if existing && w.store_manually_archived(tid) {
     raise archived_by_hand(row)
   }
   match str_of(at(Some(card), "assignee")) {
@@ -399,7 +411,7 @@ pub async fn chat_post(w : World, key : String, args : J, held : Held) -> String
     }
   }
   let question_threads : Ref[(async () -> Array[J])?] = Ref::new(None)
-  if ts is Some(t) {
+  if ts is Some(t) && existing {
     if checking_question {
       let threads_of = async fn() {
         let current = target(w, key, at(Some(args), "to"))
@@ -427,7 +439,7 @@ pub async fn chat_post(w : World, key : String, args : J, held : Held) -> String
       raise fail_("a new card is this post's question: omit about so the wait points to it")
     }
   }
-  let unseen = unseen_in(w, key, tid, 9007199254740991.0)
+  let unseen = if existing { unseen_in(w, key, tid, 9007199254740991.0) } else { [] }
   if unseen.length() > 0 {
     let id = match held.id {
       Some(i) => i
@@ -464,17 +476,56 @@ pub async fn chat_post(w : World, key : String, args : J, held : Held) -> String
   let no_files = arr_of(Some(files)).unwrap_or([]).length() == 0
   check_question_turn()
   let here = thread_ref(row)
-  let opening = if card is Null && no_files {
+  let opening = if existing && card is Null && no_files {
     into_opening(w, key, connect, row.unwrap_or(Null), text, check_question_turn)
   } else {
     None
   }
   let mut posted = J::Null
   let mut n = J::Null
+  let mut begun_row : J? = None
   match opening {
     Some((p, m)) => {
       posted = p
       n = m
+    }
+    None if !existing => {
+      check_question_turn()
+      let title = match at(Some(args), "title") {
+        Some(Str(u)) => clean_title(@jsjson.sanitize_str(u))
+        _ => ""
+      }
+      let begun = w.chat(connect, "begin", [
+        js(feishu_chat.unwrap_or("")),
+        js(text),
+        if title == "" { J::Null } else { js(title) },
+        files,
+        shown,
+      ])
+      if paths.length() > 0 {
+        text = @session_hub.place_figures(text, json_items(files))
+      }
+      let channel = str_of(at(at(Some(begun), "thread"), "channel")).unwrap_or("")
+      let thread_ts = str_of(at(at(Some(begun), "thread"), "threadTs")).unwrap_or("")
+      let opened = w.with_threads_j(t => t.open_thread(Json::string(surface), Json::string(channel), Json::string(thread_ts), Json::null(), Json::string(key)))
+      let otid = at(Some(opened), "id").unwrap_or(Null)
+      w.with_threads_j(t => t.join_thread(otid.to_json(), Json::string(key), Json::string(connect))) |> ignore
+      begun_row = Some(opened)
+      posted = at(Some(begun), "ts").unwrap_or(Null)
+      let fields = [
+        ("thread", otid),
+        ("ts", posted),
+        ("authorKind", js("agent")),
+        ("author", js(key)),
+        ("text", js(text)),
+        ("attachments", files),
+        ("declared", if kind is Null { J::Null } else { js(declared_str(kind)) }),
+        ("card", card),
+      ]
+      if identity is Some(i) {
+        fields.push(("agentIdentity", i))
+      }
+      n = at_i(Some(w.store_insert_message(jo(fields))), 0).unwrap_or(Null)
     }
     None => {
       check_question_turn()
@@ -511,6 +562,12 @@ pub async fn chat_post(w : World, key : String, args : J, held : Held) -> String
       n = at_i(Some(w.store_insert_message(jo(fields))), 0).unwrap_or(Null)
     }
   }
+  // (the conversation this post began, once it did)
+  let row = match begun_row {
+    Some(r) => Some(r)
+    None => row
+  }
+  let tid = at(row, "id").unwrap_or(Null)
   let offered = if card is Null {
     ""
   } else {
@@ -603,7 +660,7 @@ pub async fn chat_post(w : World, key : String, args : J, held : Held) -> String
   let place = address_of_row(row) +
     (match opening {
       Some(_) => " (added to the station's first message there, ts \{js_string_of(Some(posted))})"
-      None => ""
+      None => if existing { "" } else { " (now one of your conversations)" }
     })
   let crossed = unread_before(w, key, tid, n)
   if !(kind is Null) {

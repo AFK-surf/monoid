@@ -536,6 +536,12 @@ async fn runner_assignee(w : World, thread : J, assignee : String) -> String? {
   if !profiles.iter().any(p => own(at(Some(p), "name")) == assignee || own(at(Some(p), "email")) == assignee) {
     return None
   }
+  // (a conversation not begun yet: nobody wrote in it)
+  if thread is Null {
+    return Some(
+      "card.assignee \{assignee} is an account agents run on here, not a person in this chat (an email your runtime calls its user's is that account). Set it to the deciding person's email from their message's from.",
+    )
+  }
   if w.db_first("SELECT 1 FROM thread_people WHERE thread = ? AND lower(author) = ? LIMIT 1", [thread.to_json(), Json::string(assignee)]) is Some(_) {
     return None
   }

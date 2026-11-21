@@ -328,9 +328,11 @@ export async function attach(hub: Hub, key: string, paths: string[], into: strin
 /// name or email) and nobody of that email wrote in the chat. Claude Code tells its model its account's email as "the
 /// user's", which agents took for the person deciding, and the card waited in a 待处理 nobody reads (2026-11-15). One who
 /// runs their agents on their own account and writes in the chat is still theirs to be asked.
-function runnerAssignee(hub: Hub, thread: number, assignee: string): string | null {
+function runnerAssignee(hub: Hub, thread: number | null, assignee: string): string | null {
   const own = (v: unknown) => (typeof v === "string" ? v.trim().toLowerCase() : "");
   if (!hub.config().profiles.some((p) => own(p.name) === assignee || own(p.email) === assignee)) return null;
+  // (a conversation not begun yet: nobody wrote in it)
+  if (thread === null) return `card.assignee ${assignee} is an account agents run on here, not a person in this chat (an email your runtime calls its user's is that account). Set it to the deciding person's email from their message's from.`;
   const db = hub.store.db;
   if (db.prepare("SELECT 1 FROM thread_people WHERE thread = ? AND lower(author) = ? LIMIT 1").get(thread, assignee) !== undefined) return null;
   const wrote = db.prepare("SELECT author FROM thread_people WHERE thread = ? AND author LIKE '%@%' AND author NOT LIKE '%:%' LIMIT 10").all(thread) as { author: string }[];
@@ -347,6 +349,7 @@ export async function chatPost(hub: Hub, key: string, args: Args, held: Held = {
     if (Object.keys(args).some((k) => k !== "to" && k !== "withdraw")) throw new Error("withdraw uses only to and withdraw; post updates and record your ending separately");
     const ts = typeof args.withdraw === "string" && args.withdraw.trim() !== "" ? args.withdraw : null;
     if (ts === null) throw new Error("withdraw must be your question's message ts");
+    if (feishuChatId(args.to) !== null) throw new Error(WITHDRAW_BEGUN);
     const thread = target(hub, key, args.to);
     // A vault request's card closed alone would leave the request waiting in its owner's 密钥: it is withdrawn whole.
     const vault = (store.cardAt(thread.thread.id, ts) as { vault?: { request?: unknown } } | null)?.vault;
@@ -359,6 +362,7 @@ export async function chatPost(hub: Hub, key: string, args: Args, held: Held = {
   if (args.title !== undefined && args.text === undefined && args.files === undefined) {
     if (Object.keys(args).some((k) => k !== "to" && k !== "title")) throw new Error("titling alone uses only to and title; post updates and record your ending separately");
     if (typeof args.title !== "string" || cleanTitle(args.title) === "") throw new Error("title is empty");
+    if (feishuChatId(args.to) !== null) throw new Error("cannot set title before starting the Feishu conversation: give text or files with chat_post");
     const thread = target(hub, key, args.to);
     if (store.manuallyArchived(thread.thread.id)) throw new Error(`${threadAddress(thread.thread.channel, thread.thread.threadTs)} was archived by hand: it takes no messages until someone restores it`);
     return nameChat(hub, thread.thread, args.title).trim() || "The chat already has that title.";
@@ -380,10 +384,15 @@ export async function chatPost(hub: Hub, key: string, args: Args, held: Held = {
   }
   if (kind === null && args.about !== undefined && args.about !== null) throw new Error("about goes with kind: the message the state this post records is about");
   if (text === "" && paths.length === 0) throw new Error("text is empty");
-  const thread = target(hub, key, args.to);
-  if (store.manuallyArchived(thread.thread.id)) throw new Error(`${threadAddress(thread.thread.channel, thread.thread.threadTs)} was archived by hand: it takes no messages until someone restores it`);
-  const chat = hub.chat(thread.connect);
-  const refused = typeof card?.assignee === "string" ? runnerAssignee(hub, thread.thread.id, card.assignee) : null;
+  // A Feishu chat with no conversation yet (one its bot made, or is in): this post begins one, the session's from now on.
+  const feishuChat = feishuChatId(args.to);
+  if (feishuChat !== null && aboutTs(args) !== null) throw new Error("about must be the ts of a message in an existing conversation (leave about out when starting a new Feishu chat)");
+  const existing = feishuChat === null ? target(hub, key, args.to) : null;
+  if (existing !== null && store.manuallyArchived(existing.thread.id)) throw new Error(`${threadAddress(existing.thread.channel, existing.thread.threadTs)} was archived by hand: it takes no messages until someone restores it`);
+  const connect = existing?.connect ?? feishuConnectOf(hub, key);
+  const surface = existing?.thread.surface ?? hub.surface(connect);
+  const chat = hub.chat(connect);
+  const refused = typeof card?.assignee === "string" ? runnerAssignee(hub, existing?.thread.id ?? null, card.assignee) : null;
   if (refused !== null) throw new Error(refused);
   // A login card on a platform: its page to open, with a field for the code that page gives or the device code to enter
   // there; so only for a login of this station at such a step. Elsewhere the card is still kept in the still.fail chat
@@ -392,8 +401,8 @@ export async function chatPost(hub: Hub, key: string, args: Args, held: Held = {
   const loginHere = page !== null;
   // (the page goes only into what the platform shows, never into the card the chat keeps; a login card the platform
   // cannot show inline is omitted from the platform post while kept in the chat)
-  const shown = loginHere ? { ...card, page } : card?.type === "login" && thread.thread.surface !== STILLFAIL_SURFACE ? null : card;
-  if (card !== null && thread.thread.surface !== STILLFAIL_SURFACE && !(chat.cards === true && (card.type === "options" || card.type === "text")) && card.type !== "login") {
+  const shown = loginHere ? { ...card, page } : card?.type === "login" && surface !== STILLFAIL_SURFACE ? null : card;
+  if (card !== null && surface !== STILLFAIL_SURFACE && !(chat.cards === true && (card.type === "options" || card.type === "text")) && card.type !== "login") {
     throw new Error('cards (options, a text field) are not shown here; write the choices or the question in the text and end with kind "need_human"');
   }
   if (card !== null && text === "") throw new Error("text is required with a card: what it asks and the facts it turns on, so it can be answered from this message alone");
@@ -410,7 +419,8 @@ export async function chatPost(hub: Hub, key: string, args: Args, held: Held = {
       throw new Error("the turn ended while checking its question; no message was posted");
   };
   let questionThreads: (() => number[]) | null = null;
-  if (ts !== null) {
+  if (ts !== null && existing !== null) {
+    const thread = existing;
     if (checkingQuestion) {
       questionThreads = () => {
         const current = target(hub, key, args.to);
@@ -426,8 +436,9 @@ export async function chatPost(hub: Hub, key: string, args: Args, held: Held = {
   }
   // Messages in this thread the agent has not read: the post may no longer fit them, so it is held back and they come
   // to the agent first; it sends the post as written by its id, or writes another.
-  const unseen = unseenIn(hub, key, thread.thread.id, Number.MAX_SAFE_INTEGER);
-  if (unseen.length > 0) {
+  const unseen = existing === null ? [] : unseenIn(hub, key, existing.thread.id, Number.MAX_SAFE_INTEGER);
+  if (existing !== null && unseen.length > 0) {
+    const thread = existing;
     const id = held.id ?? hold(hub, key);
     const { kind: _k, need: _n, done: _d, about: _a, ...post } = held.args;
     hub.heldPosts.get(key)!.set(id, post);
@@ -437,12 +448,12 @@ export async function chatPost(hub: Hub, key: string, args: Args, held: Held = {
   if (held.id !== null) hub.heldPosts.get(key)?.delete(held.id);
   // Slack gets the files in the thread below the text. An app made before it could upload (no files:write) links to
   // them in still.fail instead.
-  if (thread.thread.surface === STILLFAIL_SURFACE) {
+  if (surface === STILLFAIL_SURFACE) {
     const row = store.getSession(key);
     if (!row) throw new Error("unknown session");
     text = prepare(text, paths, row.workspace);
   }
-  const slack = thread.thread.surface !== STILLFAIL_SURFACE && paths.length > 0;
+  const slack = surface !== STILLFAIL_SURFACE && paths.length > 0;
   const link = () => {
     const link = hub.link(key);
     if (link === undefined) throw new Error("files cannot be shown from Slack until this station is in a still.fail workspace; mention their paths in the text instead");
@@ -450,13 +461,27 @@ export async function chatPost(hub: Hub, key: string, args: Args, held: Held = {
   };
   const files = await keep(paths.length === 0 ? [] : await attach(hub, key, paths), thumbsDir(hub.config().dataDir));
   checkQuestionTurn();
-  const here = { channel: thread.thread.channel, threadTs: thread.thread.threadTs };
   let posted: string;
   // A chat's first post where it was relayed goes into the station's first message there (relay.ts).
-  const opening = card === null && files.length === 0 ? await intoOpening(hub, key, chat, thread.thread, text, checkQuestionTurn) : null;
+  const opening = existing !== null && card === null && files.length === 0 ? await intoOpening(hub, key, chat, existing.thread, text, checkQuestionTurn) : null;
   let n: number;
-  if (opening !== null) [posted, n] = opening;
-  else {
+  let thread: SessionThread;
+  if (opening !== null) {
+    thread = existing!;
+    [posted, n] = opening;
+  } else if (existing === null) {
+    checkQuestionTurn();
+    const title = cleanTitle(typeof args.title === "string" ? args.title : "");
+    const begun = await chat.begin!(feishuChat!, text, title || undefined, files, shown);
+    if (paths.length > 0) text = placeFigures(text, files);
+    const row = store.openThread(surface, begun.thread.channel, begun.thread.threadTs, null, key);
+    store.joinThread(row.id, key, connect);
+    thread = { thread: row, connect };
+    posted = begun.ts;
+    [n] = store.insertMessage({ thread: row.id, ts: posted, authorKind: "agent", author: key, text, attachments: files, declared: kind ? declaredStr(kind) : null, card, agentIdentity: identity });
+  } else {
+    thread = existing;
+    const here = { channel: thread.thread.channel, threadTs: thread.thread.threadTs };
     checkQuestionTurn();
     if (slack) {
       try {
@@ -520,7 +545,7 @@ export async function chatPost(hub: Hub, key: string, args: Args, held: Held = {
     }
   }
   const titled = typeof args.title === "string" ? nameChat(hub, thread.thread, args.title) : "";
-  const place = threadAddress(thread.thread.channel, thread.thread.threadTs) + (opening !== null ? ` (added to the station's first message there, ts ${posted})` : "");
+  const place = threadAddress(thread.thread.channel, thread.thread.threadTs) + (opening !== null ? ` (added to the station's first message there, ts ${posted})` : existing === null ? " (now one of your conversations)" : "");
   const crossed = unreadBefore(hub, key, thread.thread.id, n);
   return kind !== null ? recorded
     ? `Posted to ${place}, and recorded state ${saidAs(kind)}.${crossed}${titled}${offered}`
@@ -817,6 +842,45 @@ export function slackConnectOf(hub: Hub, key: string, bot: string | null): strin
   if (bound.length === 1) return bound[0].id;
   if (bots.length === 0) throw new Error("this station has no Slack bot in this chat's workspace");
   throw new Error(`this chat has no Slack bot of its own: give bot= one of: ${bots.map(named).join(", ")}`);
+}
+
+/// What withdrawing a card where no conversation began yet is told.
+const WITHDRAW_BEGUN = "withdraw needs an existing CHANNEL/THREAD_TS conversation";
+
+/// The Feishu chat a chat_post's `to` names where it begins a conversation there (`oc_…`, a `/` after it allowed); null
+/// for anything else (a conversation's CHANNEL/THREAD_TS among them).
+export function feishuChatId(to: Json): string | null {
+  if (typeof to !== "string") return null;
+  const chat = to.trim().replace(/\/$/, "");
+  return /^oc_[A-Za-z0-9]+$/.test(chat) ? chat : null;
+}
+
+/// The Feishu connect a session begins a conversation through: its own; else the one of a recent conversation of it;
+/// else the station's Feishu bot in its workspace (with several, the one bound to its profile, its runtime and model,
+/// or its runtime). Only one whose surface can begin a conversation.
+export function feishuConnectOf(hub: Hub, key: string): string {
+  const session = hub.store.getSession(key);
+  const usable = (id: string) => {
+    const chat = hub.chatOf(id);
+    const platform = chat?.platform?.() ?? null;
+    const feishu = hub.config().connects.some((c) => c.id === id && c.kind === "feishu") || platform === "feishu" || platform === "lark";
+    return feishu && typeof chat?.begin === "function";
+  };
+  if (session?.connect && session.connect !== INTERNAL_CONNECT && usable(session.connect)) return session.connect;
+  const recent = hub.store.recentSessionThreads(key).threads.find((t) => usable(t.connect));
+  if (recent !== undefined) return recent.connect;
+  const home = hub.workspaces()[0] ?? null;
+  const ws = hub.wsOf(session ?? key);
+  const bots = hub.config().connects.filter((c) => c.kind === "feishu" && c.enabled && (home === null || (c.workspace ?? home) === ws) && usable(c.id));
+  if (bots.length === 1) return bots[0]!.id;
+  if (bots.length === 0) throw new Error("this station has no Feishu bot in this chat's workspace");
+  const one = (picked: typeof bots) => (picked.length === 1 ? picked[0]!.id : null);
+  const found =
+    one(bots.filter((c) => c.bind.profile && c.bind.profile === session?.profile)) ??
+    one(bots.filter((c) => c.bind.runtime === session?.runtime && c.bind.model && c.bind.model === session?.model)) ??
+    one(bots.filter((c) => c.bind.runtime === session?.runtime));
+  if (found !== null) return found;
+  throw new Error(`this chat has no Feishu bot of its own, and this workspace has several Feishu bots (${bots.map((c) => c.id).join(", ")})`);
 }
 
 /// slack_api: a Slack Web API call from session `key`, as the bot of `via` (else `slackConnectOf`). Writes keep to the
