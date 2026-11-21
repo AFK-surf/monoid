@@ -445,16 +445,13 @@ fn agy_model_windows(ctx : Ctx, body : JV?) -> Array[JV] {
     }
     guard f.1 is Obj(_) else { continue }
     guard f.1.get("quotaInfo") is Some(Obj(_) as qi) else { continue }
-    let frac = match qi.get("remainingFraction") {
-      Some(Num(v)) => Some(v)
-      _ =>
-        match qi.get("remaining_fraction") {
-          Some(Num(v)) => Some(v)
-          _ => None
-        }
-    }
-    guard frac is Some(v) else { continue }
     let resets_at = at(ctx, coalesce(qi.get("resetTime"), () => qi.get("reset_time")))
+    // Google omits the zero fraction for an exhausted model pool and still gives its reset time.
+    let v = match (qi.get("remainingFraction"), qi.get("remaining_fraction")) {
+      (Some(Num(v)), _) | (_, Some(Num(v))) => v
+      (None | Some(Null), None | Some(Null)) if resets_at is Some(_) => 0.0
+      _ => continue
+    }
     if agy_scope_for_model(Some(model_id)) == "gemini" {
       match gemini_frac {
         None => {

@@ -182,6 +182,8 @@ describe("allowances and renewing", { concurrency: true }, () => {
     // so `agyQuota` confirms an active tier via `loadCodeAssist` and falls back to `retrieveUserQuotaSummary` +
     // `fetchAvailableModels` to fill missing pools (e.g. Gemini).
     let paidTier = true;
+    let geminiSpent = false;
+    const geminiReset = "2026-11-21T05:27:31Z";
     const agyApi = await provider((req) => {
       if (req.url.endsWith(":loadCodeAssist")) {
         return {
@@ -217,8 +219,8 @@ describe("allowances and renewing", { concurrency: true }, () => {
           status: 200,
           body: {
             models: {
-              "gemini-4-hydrogen-sonar": { quotaInfo: { remainingFraction: 0.92, resetTime: "2026-11-21T05:27:31Z" } },
-              "gemini-3.8-flash-tiered": { quotaInfo: { remainingFraction: 0.98, resetTime: "2026-11-21T05:27:31Z" } },
+              "gemini-4-hydrogen-sonar": { quotaInfo: { remainingFraction: geminiSpent ? undefined : 0.92, resetTime: geminiReset } },
+              "gemini-3.8-flash-tiered": { quotaInfo: { remainingFraction: geminiSpent ? undefined : 0.98, resetTime: geminiReset } },
               "claude-opus-5-5-high": { quotaInfo: { remainingFraction: 0.9, resetTime: "2026-11-21T05:30:00Z" } },
               tab_flash_lite_preview: { quotaInfo: { remainingFraction: 1 } },
             },
@@ -231,9 +233,18 @@ describe("allowances and renewing", { concurrency: true }, () => {
       const fallbackQ = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: locationErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
       assert.equal(fallbackQ.state, "ok");
       assert.deepEqual(fallbackQ.windows, [
-        { label: "5 小时 · Gemini", usedPercent: 8, resetsAt: Date.parse("2026-11-21T05:27:31Z"), minutes: 300, scope: "gemini" },
+        { label: "5 小时 · Gemini", usedPercent: 8, resetsAt: Date.parse(geminiReset), minutes: 300, scope: "gemini" },
         { label: "每周 · Claude / GPT", usedPercent: 0, resetsAt: null, minutes: 10080, scope: "3p" },
         { label: "5 小时 · Claude / GPT", usedPercent: 10, resetsAt: Date.parse("2026-11-21T05:30:00Z"), minutes: 300, scope: "3p" },
+      ]);
+
+      // Google omits remainingFraction when the model pool is exhausted, but still gives its reset time.
+      geminiSpent = true;
+      const spentQ = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: locationErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
+      assert.equal(spentQ.state, "ok");
+      assert.deepEqual(spentQ.windows, [
+        { ...fallbackQ.windows[0]!, usedPercent: 100 },
+        ...fallbackQ.windows.slice(1),
       ]);
 
       // Account with no active tier at all in this location: falls through to report the location error, never a
@@ -249,6 +260,8 @@ describe("allowances and renewing", { concurrency: true }, () => {
       agyModelWindows({
         models: {
           "gemini-2.5-pro": { quotaInfo: { remainingFraction: 0.75, resetTime: "2026-11-21T05:27:31Z" } },
+          "gemini-3-flash": { quotaInfo: {} },
+          "gemini-2.5-flash": { quotaInfo: { remainingFraction: "unknown", resetTime: geminiReset } },
           tab_jump_flash_lite_preview: { quotaInfo: { remainingFraction: 1 } },
         },
       }),
