@@ -339,6 +339,26 @@ pub fn open_triple_panel(
 }
 
 ///|
+/// Whether what opens from the control `b` goes up from it: where it stands low in the window, short of room under it
+/// for the model's panel (the tallest of a new chat's choices), more over it. Said as it is pressed, where it stands
+/// then: nothing laid out is read back for it.
+fn triple_opens_up(b : @view.View) -> Bool {
+  let (_, y, _, h) = b.placed_window_now()
+  let under = b.window_h() - (y + h)
+  under < triple_up_need && y > under
+}
+
+///|
+/// The side what a new chat's choice (its preset's, its station's, its model's) opens on, beside `from`: up from it as
+/// its model's panel goes (triple_opens_up), so that the row's choices all open the same way.
+fn choice_side(from : @sf.Beside) -> @ui.Side {
+  match from {
+    Node(b) if triple_opens_up(b) => Top
+    _ => Bottom
+  }
+}
+
+///|
 /// The control of the pick `of` on `station` (model_triple's, as nodes, made once) in `parent`, its words as the core's
 /// pick says them now: the model's mark and name, then (each left out where the line has not the room, what matters
 /// least first) its runtime, how hard it thinks, how fast, who runs it (its mark, its name, its allowance's chips); a
@@ -430,9 +450,7 @@ pub fn model_triple_node(
       }
       let go = fn() {
         let (x, y, w, h) = b.placed_window_now()
-        // (its panel gone up from it where it stands low in the window: short of room for it under it, more over it)
-        let under = b.window_h() - (y + h)
-        let up = under < triple_up_need && y > under
+        let up = triple_opens_up(b)
         if @signals.untracked(bound) {
           match on_bound {
             Some(f) => if @signals.untracked(offers) { f(Node(b)) }

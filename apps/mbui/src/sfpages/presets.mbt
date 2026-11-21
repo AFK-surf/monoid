@@ -543,7 +543,7 @@ fn preset_panel(
       |> ignore
     },
     from=from.anchor(),
-    side=Top,
+    side=choice_side(from),
     w=340.0,
     foot=fn(f, close) {
       f.box(fn(row) {
@@ -906,6 +906,7 @@ fn preset_fixed_menu(src : Source, w : Workspace, address : String, v : Json?, t
     ],
     from~,
     title~,
+    side=choice_side(from),
   )
 }
 

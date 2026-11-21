@@ -537,7 +537,7 @@ fn new_station_control_node(
   let fixed = fn() { flag(view(), "presetStations") && items(view(), "stations").length() <= 1 }
   let open = fn(b : @view.View) {
     let v = @signals.untracked(view)
-    @sf.panel_nodes(@sf.t("android-chat.new.station.pick"), fn(n, close) { station_rows_node(n, on.src, on.w, v, close) }, from=Node(b))
+    @sf.panel_nodes(@sf.t("android-chat.new.station.pick"), fn(n, close) { station_rows_node(n, on.src, on.w, v, close) }, from=Node(b), side=choice_side(Node(b)))
   }
   let auto_on = fn() { flag(view(), "autoStation") }
   let label = fn() {
