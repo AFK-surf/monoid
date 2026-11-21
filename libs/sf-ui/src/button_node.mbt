@@ -186,7 +186,7 @@ fn button_by(
     .row(Is(true))
     .min_height(Is(Some(height)))
     .lines_up(Is(Some(Middle)))
-    .radius(Is(1.0e6))
+    .radius(Is(height / 2.0))
     .ground(By(fn() { looks().0 }))
     .alpha(By(fn() { seen.shown(v) }))
     |> ignore

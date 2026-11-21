@@ -667,7 +667,7 @@ pub fn farview_pane_node(
             .padding(Is((6.0, 6.0, 6.0, 6.0)))
             .lines_up(Is(Some(Middle)))
             .ground(By(fn() { @sf.theme().p.neutral_bg }))
-            .radius(Is(1.0e6))
+            .radius(Is(@sf.button_height() / 2.0 + 6.0))
             |> ignore
             line.box(fn(w) {
               // (its start off the capsule's round end, S3 in as the address's words in theirs: the line's 6 and the rest)
