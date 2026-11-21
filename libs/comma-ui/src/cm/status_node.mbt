@@ -61,9 +61,9 @@ pub fn status_node(
         .row(Is(true))
         .lines_up(Is(Some(Middle)))
         .gap(Is(space_xs))
-        .height(Is(Some(24.0)))
-        .padding(By(fn() { if on() { (space_xs, 0.0, space_md, 0.0) } else { (space_xxs, 0.0, space_xxs, 0.0) } }))
-        .radius(Is(12.0))
+        .min_height(Is(Some(24.0)))
+        .padding(By(fn() { if on() { (space_xs, space_xxs, space_md, space_xxs) } else { (space_xxs, space_xxs, space_xxs, space_xxs) } }))
+        .radius(Is(1.0e6))
         .ground(By(fn() {
           let c = colors()
           alpha(c.bg_quaternary, pill.shown(item).max(hand.shown(item)))

@@ -76,6 +76,7 @@ pub fn tooltip_node(
     .shadow(By(fn() { cast(shadow_xs, shadow_dark_xs) }))
     .scale(By(fn() { 0.97 + 0.03 * e.shown(t) }))
     .alpha(By(fn() { e.shown(t) }))
+    .hides(By(fn() { !open.get() }))
     .says(By(fn() { Some(@view.said(Tooltip, label=label())) }))
     |> ignore
     t.box(fn(w) {
@@ -218,7 +219,7 @@ pub fn menu_node(
   h.show(fn() { open.get() }, leave=ms_menu_exit, fn(m) {
     let e = opening(m, fn() { open.get() }, ms_menu_enter, ms_menu_exit)
     m.beside(anchor.id(), side~, along=Start, offset=space_xs) |> ignore
-    m.width(Is(Some(width))).padding(Is((0.0, space_sm, 0.0, space_sm))) |> ignore
+    m.width(Is(Some(width))).padding(Is((0.0, space_sm, 0.0, space_sm))).hides(By(fn() { !open.get() })) |> ignore
     panel_look(m, e, radius_xl, fn() { colors().bg_popup_secondary }, fn() { cast(shadow_lg, shadow_dark_lg) })
     menu_rows(m, items, label, close)
   })
@@ -271,8 +272,8 @@ pub fn dropdown_node(
       .row(Is(true))
       .lines_up(Is(Some(Middle)))
       .gap(Is(space_md))
-      .height(Is(Some(40.0)))
-      .padding(Is((space_lg + space_xxs, 0.0, space_lg, 0.0)))
+      .min_height(Is(Some(40.0)))
+      .padding(Is((space_lg + space_xxs, space_md, space_lg, space_md)))
       .radius(Is(radius_md))
       .ground(By(fn() { if disabled() { colors().bg_disabled } else { colors().bg_primary } }))
       .edge(By(fn() {
@@ -316,7 +317,7 @@ pub fn dropdown_node(
   h.show(fn() { open.get() }, leave=ms_menu_exit, fn(m) {
     let e = opening(m, fn() { open.get() }, ms_menu_enter, ms_menu_exit)
     m.beside(trigger.id(), side=Bottom, along=Start, offset=space_xs, width=Anchor) |> ignore
-    m.padding(Is((0.0, space_sm, 0.0, space_sm))) |> ignore
+    m.padding(Is((0.0, space_sm, 0.0, space_sm))).hides(By(fn() { !open.get() })) |> ignore
     panel_look(m, e, radius_xl, fn() { colors().bg_popup_secondary }, fn() { cast(shadow_lg, shadow_dark_lg) })
     let items = fn() {
       let i = chosen.get()
@@ -346,7 +347,8 @@ pub fn popup_node(
   h.show(fn() { open.get() }, leave=ms_hover_card_exit, fn(p) {
     let e = opening(p, fn() { open.get() }, ms_hover_card_enter, ms_hover_card_exit)
     p.beside(anchor.id(), side=Bottom, along=Start, offset=space_md) |> ignore
-    p.width(Is(Some(width))).padding(Is((space_xl, space_xl, space_xl, space_xl))) |> ignore
+    p.width(Is(Some(width))).padding(Is((space_xl, space_xl, space_xl, space_xl))).hides(By(fn() { !open.get() }))
+    |> ignore
     panel_look(p, e, radius_2xl, fn() { colors().bg_popup_primary }, fn() { cast(shadow_sm, shadow_dark_sm) })
     p.says(Is(Some(@view.said(Dialog, label~)))) |> ignore
     body(p)
@@ -384,7 +386,7 @@ pub fn dialog_node(
           .lies_along(Is(Middle))
           .padding(Is((space_xl, space_xl, space_xl, space_xl)))
           |> ignore
-          s.modal(By(fn() { open.get() })) |> ignore
+          s.modal(By(fn() { open.get() })).hides(By(fn() { !open.get() })) |> ignore
           // (the scrim: a press on it closes the dialog)
           @headless.button(s, fn() { "Close dialog" }, fn(_) { close() }, fn(c, _) {
             c
@@ -422,7 +424,8 @@ pub fn dialog_node(
             |> ignore
             body(p)
             p.box(fn(f) {
-              f.row(Is(true)).lies_along(Is(End)).lines_up(Is(Some(Middle))).gap(Is(space_md)) |> ignore
+              f.row(Is(true)).wraps(Is(Some(space_md)), reverse=true).lies_along(Is(End)).lines_up(Is(Some(Middle))).gap(Is(space_md))
+              |> ignore
               actions(f)
             })
             |> ignore
