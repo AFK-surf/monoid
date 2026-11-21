@@ -1,37 +1,45 @@
-// Apple iOS 26/27 Liquid Glass Menu Morph with C2-continuous emergence and physically gap-driven
-// GPU SDF capillary bridge (`merged_liquid`) for anchored floating overlays (`liquid_menu_node`,
-// `liquid_select_node`, `liquid_popover_node`).
+// Apple iOS 26/27 Liquid Glass Menu Morph with C2-continuous emergence, physically gap-driven
+// GPU SDF capillary bridge (`merged_liquid`), and zero-cliff pinch-off for anchored floating
+// overlays (`liquid_menu_node`, `liquid_select_node`, `liquid_popover_node`).
 //
 // Closed-form `@motion.NodeWay` architecture (zero frame loops, 60/120/24/7 fps invariant):
-// - Zero-jump C2 emergence from 100% coincident trigger rect `(tx, ty, tw, th, tr)` with proportional
-//   droplet growth (`grow_w` & `grow_h` coordinated by physical `gap`), staying clear of adjacent bar
-//   controls while emerging and blooming smoothly once below the trigger edge.
-// - Optical parameters during bridging match the trigger button (`blur=2.1, bezel=15.0, refraction=22.0,
-//   chroma=0.0, subtle rim`), eliminating fog/bloom artifacts on small circular triggers, then smoothly
-//   transitioning to `ovl_panel_glass()` (`blur=8.0, bezel=20.0, refraction=36.0`) after bridge snap-off.
-// - Capillary bridge merge radius `m` is driven strictly by physical edge gap `gap`: bonded across
-//   `gap < ovl_morph_break_gap (5.8pt)` and snapping cleanly to `0.0` at `gap >= 5.8pt`, guaranteeing
-//   zero overlap after separation.
-// - Strict 4-layer draw order guarantees GPU `merged_liquid` SDF batching (`prev == k` with identical
-//   `alpha`, `blur`, and `merge > 0`, zero intervening shadows/grounds/children):
-//   1. `shadow_box` (`shadow_outside(true)`, zero `.glass`)
-//   2. `trigger_ghost` (locks onto trigger rect while `m > 0.01`; `None` once separated / at rest)
-//   3. `shell` (immediately adjacent glass sibling; settles bit-exact to `ovl_panel_glass()` & `ground_as_laid`)
-//   4. `content_box` (fades in only once `gap >= 5.0pt`, zero text overflow on any frame)
+// - Every spring uses `threshold = 0.001` (`backdrop_scale_x_spring`, `backdrop_scale_y_spring`,
+//   `snappy_damped`), eliminating end-of-curve truncation jumps.
+// - Capillary bridge `merge` decays continuously to `0.0` across `gap in [0.0, ovl_morph_break_gap (5.8)]`,
+//   passing smoothly through the SDF pinch-off neck (`m == 2 * gap`) with zero cliff.
+// - Once separated (`gap >= 5.8`, `m == 0.0`), `trigger_ghost` fades out smoothly as an independent
+//   `unmerged_liquid` instance across `gap in [5.8, 7.6]` before returning `.glass(None)` at rest.
+// - Optical parameters (`blur`, `bezel`, `refraction`) transition smoothly across `gap in [2.0, 7.8]`
+//   with identical `blur` on both siblings, and `content_box` reveals on an independent 160ms tween
+//   after a 170ms delay (70ms fade-out on close).
 
 ///|
 /// Leave duration (ms) passed to `pop.layer(..., leave=ovl_morph_leave_ms)` so the closing capillary
 /// re-absorption completes cleanly before unmount.
-let ovl_morph_leave_ms : Double = 260.0
+let ovl_morph_leave_ms : Double = 300.0
 
 ///|
 /// Peak GPU smooth-min metaball merge radius (pt) between `trigger_ghost` and `shell` while bonded.
 let ovl_morph_merge_max : Double = 28.0
 
 ///|
-/// Minimum physical air gap (pt) between trigger and shell before the capillary liquid bridge snaps off.
-/// Guarantees that once separated (`trigger_ghost` unmounted), a clean `>= 5.8pt` air gap separates them.
+/// Physical air gap (pt) at which `merge` reaches `0.0` (natural SDF pinch-off occurs earlier near `m == 2 * gap`).
 let ovl_morph_break_gap : Double = 5.8
+
+///|
+/// Physical air gap (pt) at which `trigger_ghost` completes its post-pinch fade-out and unmounts (`.glass(None)`).
+let ovl_morph_ghost_gone_gap : Double = 7.6
+
+///|
+/// Independent content reveal timing (ms): delayed so text fades in softly over ~10 frames once the shell opens,
+/// and fades out first over 70ms when closing.
+let ovl_morph_reveal_open_ms : Double = 160.0
+
+///|
+let ovl_morph_reveal_delay_ms : Double = 170.0
+
+///|
+let ovl_morph_reveal_close_ms : Double = 70.0
 
 ///|
 /// GLSL-style cubic Hermite smoothstep supporting both rising (`edge0 < edge1`) and falling (`edge0 > edge1`) ramps.
@@ -65,43 +73,43 @@ fn ovl_morph_pivot(side : @view.Side, along : @view.Along) -> @view.Pivot {
 }
 
 ///|
-/// Capillary bridge merge radius (pt) driven strictly by physical edge gap `gap`:
-/// - `gap >= ovl_morph_break_gap` or `p <= 0.01`: strictly `0.0` (clean snap-off with zero post-separation overlap).
-/// - `gap < 0.0`: seamless full `ovl_morph_merge_max` from frame 1 while emerging from the trigger.
-/// - `0.0 <= gap < ovl_morph_break_gap`: smoothly thins from `28.0` to `12.0` across the real air gap.
+/// Continuous capillary bridge merge radius (pt) driven strictly by physical edge gap `gap`:
+/// - `gap >= ovl_morph_break_gap` or `p <= 0.005`: strictly `0.0`.
+/// - `gap <= 0.0`: full `ovl_morph_merge_max * onset`.
+/// - `0.0 < gap < ovl_morph_break_gap`: decays continuously from `28.0` to `0.0` with zero cliff.
 fn ovl_morph_bridge_merge_for_gap(p : Double, gap : Double) -> Double {
-  if gap >= ovl_morph_break_gap || p <= 0.01 {
+  if gap >= ovl_morph_break_gap || p <= 0.005 {
     return 0.0
   }
-  let onset = ovl_smoothstep(0.0, 0.04, p)
-  if gap < 0.0 {
+  let onset = ovl_smoothstep(0.0, 0.08, p)
+  if gap <= 0.0 {
     ovl_morph_merge_max * onset
   } else {
-    lerp(ovl_morph_merge_max, 12.0, ovl_smoothstep(0.0, ovl_morph_break_gap, gap)) * onset
+    ovl_morph_merge_max * (1.0 - ovl_smoothstep(0.0, ovl_morph_break_gap, gap)) * onset
   }
 }
 
 ///|
 /// Shared dynamic Liquid Glass recipe for both `trigger_ghost` and `shell`.
-/// Matches the trigger button's clear glass (`blur=2.1, bezel=15.0, refraction=22.0, chroma=0.0`) throughout
-/// bridging so small circular triggers stay crisp with zero white fog, then transitions cleanly to
-/// `ovl_panel_glass()` across `gap in [ovl_morph_break_gap, ovl_float_gap]`.
+/// Transitions smoothly across `gap in [2.0, 7.8]` (`blur 1.8 -> 8.0`, `bezel 12.0 -> 20.0`,
+/// `refraction 16.0 -> 36.0`, `chroma = 0.0`) with bit-identical `blur` on both siblings, and matches
+/// `ovl_panel_glass()` bit-for-bit once settled (`energy <= 0.001 && merge <= 0.001 && gap >= 7.8`).
 fn ovl_morph_panel_glass(gap : Double, energy : Double, merge~ : Double) -> @paint.Glass {
-  if energy <= 0.001 && merge <= 0.001 && gap >= ovl_float_gap - 0.01 {
+  if energy <= 0.001 && merge <= 0.001 && gap >= ovl_float_gap - 0.2 {
     return ovl_panel_glass()
   }
   let d = is_dark()
   let e = clamp(energy, 0.0, 1.0)
   let m = if merge > 0.0 { merge } else { 0.0 }
-  let post_t = ovl_smoothstep(ovl_morph_break_gap, ovl_float_gap, gap)
+  let glass_t = ovl_smoothstep(2.0, ovl_float_gap - 0.2, gap)
   @paint.Glass::liquid(
-    blur=lerp(2.1, 8.0, post_t),
+    blur=lerp(1.8, 8.0, glass_t),
     tint=if d { 0x202020FFL } else { 0xFDFCFD67L },
     solid=if d { 0x1C1C1EFFL } else { 0xF7F7FAFFL },
     saturation=1.0,
-    rim=0.6 + 0.14 * e,
-    bezel=lerp(15.0, 20.0, post_t),
-    refraction=lerp(22.0, 36.0, post_t),
+    rim=0.6 + 0.12 * e,
+    bezel=lerp(12.0, 20.0, glass_t),
+    refraction=lerp(16.0, 36.0, glass_t),
     chroma=0.0,
     merge=m,
     adaptive=false,
@@ -182,16 +190,16 @@ fn ovl_morph_shell_geom(
     return (@view.ground_as_laid, ovl_float_gap)
   }
   let (tx, ty, tw, th, tr) = ovl_morph_trigger_rect(w, h, side, along, anchor_size)
-  let px = clamp(sx, 0.0, 1.05)
-  let py = clamp(sy, 0.0, 1.05)
+  let px = if sx > 0.0 { sx } else { 0.0 }
+  let py = if sy > 0.0 { sy } else { 0.0 }
   let pt = clamp(p, 0.0, 1.0)
   let (mx, my, mw, mh, gap) = match side {
     Bottom => {
       let y = lerp(ty, 0.0, pt)
       let g = y - (ty + th)
-      let clear_t = ovl_smoothstep(-14.0, 4.5, g)
-      let grow_w = clamp(lerp(px * 0.10, px, clear_t), 0.0, 1.05)
-      let grow_h = clamp(lerp(py * 0.28, py, ovl_smoothstep(-20.0, 3.5, g)), 0.0, 1.05)
+      let clear_t = ovl_smoothstep(-5.5, 5.0, g)
+      let grow_w = lerp(px * 0.08, px, clear_t)
+      let grow_h = lerp(py * 0.26, py, ovl_smoothstep(-16.0, 4.5, g))
       let raw_mw = lerp(tw, w, grow_w)
       let raw_mh = lerp(th, h, grow_h)
       let cur_w = if raw_mw > 4.0 { raw_mw } else { 4.0 }
@@ -206,9 +214,9 @@ fn ovl_morph_shell_geom(
     Top => {
       let bot = lerp(ty + th, h, pt)
       let g = ty - bot
-      let clear_t = ovl_smoothstep(-14.0, 4.5, g)
-      let grow_w = clamp(lerp(px * 0.10, px, clear_t), 0.0, 1.05)
-      let grow_h = clamp(lerp(py * 0.28, py, ovl_smoothstep(-20.0, 3.5, g)), 0.0, 1.05)
+      let clear_t = ovl_smoothstep(-5.5, 5.0, g)
+      let grow_w = lerp(px * 0.08, px, clear_t)
+      let grow_h = lerp(py * 0.26, py, ovl_smoothstep(-16.0, 4.5, g))
       let raw_mw = lerp(tw, w, grow_w)
       let raw_mh = lerp(th, h, grow_h)
       let cur_w = if raw_mw > 4.0 { raw_mw } else { 4.0 }
@@ -223,9 +231,9 @@ fn ovl_morph_shell_geom(
     Right => {
       let x = lerp(tx, 0.0, pt)
       let g = x - (tx + tw)
-      let clear_t = ovl_smoothstep(-14.0, 4.5, g)
-      let grow_h = clamp(lerp(py * 0.10, py, clear_t), 0.0, 1.05)
-      let grow_w = clamp(lerp(px * 0.28, px, ovl_smoothstep(-20.0, 3.5, g)), 0.0, 1.05)
+      let clear_t = ovl_smoothstep(-5.5, 5.0, g)
+      let grow_h = lerp(py * 0.08, py, clear_t)
+      let grow_w = lerp(px * 0.26, px, ovl_smoothstep(-16.0, 4.5, g))
       let raw_mw = lerp(tw, w, grow_w)
       let raw_mh = lerp(th, h, grow_h)
       let cur_w = if raw_mw > 4.0 { raw_mw } else { 4.0 }
@@ -240,9 +248,9 @@ fn ovl_morph_shell_geom(
     Left => {
       let r_edge = lerp(tx + tw, w, pt)
       let g = tx - r_edge
-      let clear_t = ovl_smoothstep(-14.0, 4.5, g)
-      let grow_h = clamp(lerp(py * 0.10, py, clear_t), 0.0, 1.05)
-      let grow_w = clamp(lerp(px * 0.28, px, ovl_smoothstep(-20.0, 3.5, g)), 0.0, 1.05)
+      let clear_t = ovl_smoothstep(-5.5, 5.0, g)
+      let grow_h = lerp(py * 0.08, py, clear_t)
+      let grow_w = lerp(px * 0.26, px, ovl_smoothstep(-16.0, 4.5, g))
       let raw_mw = lerp(tw, w, grow_w)
       let raw_mh = lerp(th, h, grow_h)
       let cur_w = if raw_mw > 4.0 { raw_mw } else { 4.0 }
@@ -276,15 +284,22 @@ fn ovl_attach_liquid_morph(
   let sx_way = @motion.NodeWay::new(0.0)
   let sy_way = @motion.NodeWay::new(0.0)
   let p_way = @motion.NodeWay::new(0.0)
+  let reveal_way = @motion.NodeWay::new(0.0)
   layer.reacts(fn() { layer.leaving() }, fn(leaving) {
     if leaving {
       sx_way.go(layer, 0.0, @motion.snappy_damped)
       sy_way.go(layer, 0.0, @motion.snappy_damped)
       p_way.go(layer, 0.0, @motion.snappy_damped)
+      reveal_way.go(layer, 0.0, @motion.tween(ovl_morph_reveal_close_ms, ease=@ui.Ease::Out))
     } else {
       sx_way.go(layer, 1.0, @motion.backdrop_scale_x_spring)
       sy_way.go(layer, 1.0, @motion.backdrop_scale_y_spring)
-      p_way.go(layer, 1.0, @motion.liquid_auto_fuse_spring)
+      p_way.go(layer, 1.0, @motion.backdrop_scale_y_spring)
+      reveal_way.go(
+        layer,
+        1.0,
+        @motion.tween(ovl_morph_reveal_open_ms, ease=@ui.Ease::Out, delay=ovl_morph_reveal_delay_ms),
+      )
     }
   })
   let modal_live = fn() { !layer.leaving() }
@@ -347,11 +362,24 @@ fn ovl_attach_liquid_morph(
     })
     |> ignore
     // 2 & 3. Strictly adjacent liquid glass siblings (`trigger_ghost` + `shell`): zero shadow, zero ground,
-    //        zero children, identical `alpha`, `blur` & `merge` so Metal / WebGL 2 batches them into one SDF `sd_group`.
+    //        zero children, identical `blur` so Metal / WebGL 2 batches them into one SDF `sd_group` while
+    //        `m > 0.01`, then `trigger_ghost` fades out smoothly as an independent unmerged glass across
+    //        `gap in [5.8, 7.6]` before returning `.glass(None)` at rest.
     inner.box(fn(trigger_ghost) {
       let tw = anchor_size.0
       let th = anchor_size.1
       let tr = th * 0.5
+      let ghost_alpha = fn() -> Double {
+        let p = p_way.shown(trigger_ghost)
+        let ga = ovl_smoothstep(0.0, 0.16, p)
+        let gap = gap_on(trigger_ghost)
+        let m = ovl_morph_bridge_merge_for_gap(p, gap)
+        if m > 0.01 {
+          ga
+        } else {
+          ga * (1.0 - ovl_smoothstep(ovl_morph_break_gap, ovl_morph_ghost_gone_gap, gap))
+        }
+      }
       trigger_ghost
       .over(Is(true))
       .points(Is(false))
@@ -370,16 +398,16 @@ fn ovl_attach_liquid_morph(
           (tx, ty)
         }),
       )
-      .alpha(By(fn() { ovl_smoothstep(0.0, 0.16, p_way.shown(trigger_ghost)) }))
+      .alpha(By(ghost_alpha))
       .glass(
         By(fn() {
           let p = p_way.shown(trigger_ghost)
-          let ga = ovl_smoothstep(0.0, 0.16, p)
-          let gap = gap_on(trigger_ghost)
-          let m = ovl_morph_bridge_merge_for_gap(p, gap)
-          if m > 0.01 && ga > 0.01 {
+          let a = ghost_alpha()
+          if a > 0.01 {
             let sx = sx_way.shown(trigger_ghost)
             let sy = sy_way.shown(trigger_ghost)
+            let gap = gap_on(trigger_ghost)
+            let m = ovl_morph_bridge_merge_for_gap(p, gap)
             Some(ovl_morph_panel_glass(gap, energy_of(sx, sy, p), merge=m))
           } else {
             None
@@ -429,29 +457,18 @@ fn ovl_attach_liquid_morph(
       |> ignore
     })
     |> ignore
-    // 4. Foreground content box: appears only once physical gap >= 5.0pt (zero text overflow on any frame)
+    // 4. Foreground content box: smooth 160ms reveal after 170ms delay (70ms fade-out first on close)
     inner.box(fn(content_box) {
       content_ref.val = Some(content_box)
       content_box
       .scale(
-        By(fn() { lerp(0.92, 1.0, ovl_smoothstep(5.0, 8.0, gap_on(content_box))) }),
+        By(fn() { lerp(0.95, 1.0, reveal_way.shown(content_box)) }),
         about=ovl_morph_pivot(side, along),
       )
-      .alpha(
-        By(fn() {
-          let g = gap_on(content_box)
-          if layer.leaving() {
-            ovl_smoothstep(5.2, 7.6, g)
-          } else {
-            ovl_smoothstep(5.0, 7.6, g)
-          }
-        }),
-      )
+      .alpha(By(fn() { reveal_way.shown(content_box) }))
       .offset(
         By(fn() {
-          let g = gap_on(content_box)
-          let u = 1.0 - ovl_smoothstep(5.0, 7.8, g)
-          let d = u * 6.0
+          let d = (1.0 - reveal_way.shown(content_box)) * 4.0
           match side {
             Bottom => (0.0, -d)
             Top => (0.0, d)

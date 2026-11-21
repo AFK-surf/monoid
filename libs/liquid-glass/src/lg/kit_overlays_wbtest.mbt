@@ -931,15 +931,18 @@ test "liquid_select_node turns its chevron a half turn and liquid_disclosure_nod
 }
 
 ///|
-/// Declared probe timeline (ms) for `liquid_menu_node` gap-driven capillary liquid morph tests.
-let ovl_morph_probe_steps : Array[Double] = [20.0, 20.0, 20.0, 20.0, 20.0, 20.0, 30.0, 30.0, 40.0]
+/// Declared 16ms frame step and sample count (`0..368ms`) for `liquid_menu_node` smoothness & gap-driven bridge tests.
+let ovl_morph_step_ms : Double = 16.0
+
+///|
+let ovl_morph_step_count : Int = 23
 
 ///|
 let ovl_morph_close_probe_ms : Double = 60.0
 
 ///|
-/// Deterministic snapshot of `liquid_menu_node` gap-driven GPU capillary morph across opening, separation, rest, and unmount.
-fn ovl_menu_morph_snapshot() -> (Bool, Bool, Int, Int, Int, Int, Array[String]) raise {
+/// Deterministic snapshot of `liquid_menu_node` gap-driven GPU capillary morph across 16ms steps, rest, and unmount.
+fn ovl_menu_morph_snapshot() -> (Double, Bool, Bool, Int, Int, Int, Int, Array[String]) raise {
   let open = @signals.signal(false)
   let t = ovl_case(fn(page, host) {
     liquid_menu_node(
@@ -969,21 +972,34 @@ fn ovl_menu_morph_snapshot() -> (Bool, Bool, Int, Int, Int, Int, Array[String]) 
   let snaps : Array[String] = []
   let mut saw_air_gap_bridge = false
   let mut post_sep_clean = true
+  let mut prev_shell_top : Double? = None
+  let mut max_step_jump = 0.0
   t.act(Button, Activate, label="Actions")
-  // Probe at 20, 40, 60, 80, 100, 120, 150, 180, 220 ms
-  for dt in ovl_morph_probe_steps {
-    t.run_for(dt)
+  // Step every 16ms across 0..368ms to verify smooth C2 motion with zero truncation jumps
+  for _ in 0..<ovl_morph_step_count {
+    t.run_for(ovl_morph_step_ms)
     let gs = t.drawn_glass()
     snaps.push(snap_glass())
-    if gs.length() == 3 {
-      let shell_top = gs[2].1
-      if shell_top > trigger_bottom + 0.5 {
-        saw_air_gap_bridge = true
+    if gs.length() >= 2 {
+      let shell_top = gs[gs.length() - 1].1
+      match prev_shell_top {
+        Some(prev) => {
+          let jump = (shell_top - prev).abs()
+          if jump > max_step_jump {
+            max_step_jump = jump
+          }
+        }
+        None => ()
       }
-    } else if gs.length() == 2 {
-      let shell_top = gs[1].1
-      if shell_top < trigger_bottom + 5.0 {
-        post_sep_clean = false
+      prev_shell_top = Some(shell_top)
+      if gs.length() == 3 {
+        if shell_top > trigger_bottom + 0.5 {
+          saw_air_gap_bridge = true
+        }
+      } else if gs.length() == 2 {
+        if shell_top < trigger_bottom + 6.0 {
+          post_sep_clean = false
+        }
       }
     }
   }
@@ -1003,18 +1019,19 @@ fn ovl_menu_morph_snapshot() -> (Bool, Bool, Int, Int, Int, Int, Array[String]) 
   let closed_glass = t.drawn_glass().length()
   let closed_menus = t.all(Menu, label="Morph Menu").length()
   snaps.push(snap_glass())
-  (saw_air_gap_bridge, post_sep_clean, rest_glass, closing_glass, closed_glass, closed_menus, snaps)
+  (max_step_jump, saw_air_gap_bridge, post_sep_clean, rest_glass, closing_glass, closed_glass, closed_menus, snaps)
 }
 
 ///|
-test "liquid_menu_node gap-driven morph bridges across real air gap, never overlaps after separation, settles clean, and is FPS-invariant" {
-  let (saw_air_gap_bridge, post_sep_clean, rest_glass, closing_glass, closed_glass, closed_menus, snaps) = ovl_menu_morph_snapshot()
+test "liquid_menu_node gap-driven morph has zero truncation jump, bridges across real air gap, never overlaps after separation, and is FPS-invariant" {
+  let (max_step_jump, saw_air_gap_bridge, post_sep_clean, rest_glass, closing_glass, closed_glass, closed_menus, snaps) = ovl_menu_morph_snapshot()
+  assert_true(max_step_jump < 6.5, msg="expected smooth 16ms shell_top step < 6.5pt, got \{max_step_jump}")
   assert_true(saw_air_gap_bridge, msg="expected GPU merged bridge (3 glass rects) across real air gap (gap > 0.5pt)")
-  assert_true(post_sep_clean, msg="expected zero overlap (gap >= 5.0pt) whenever separated (2 glass rects)")
+  assert_true(post_sep_clean, msg="expected zero overlap (gap >= 6.0pt) whenever separated (2 glass rects)")
   assert_eq(rest_glass, 2)
   assert_true(closing_glass >= 2, msg="expected contracting glass shell at 60ms after close, got \{closing_glass}")
   assert_eq(closed_glass, 1)
   assert_eq(closed_menus, 0)
-  let (_, _, _, _, _, _, snaps2) = ovl_menu_morph_snapshot()
+  let (_, _, _, _, _, _, _, snaps2) = ovl_menu_morph_snapshot()
   assert_eq(snaps, snaps2)
 }
