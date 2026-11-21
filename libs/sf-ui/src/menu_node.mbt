@@ -384,8 +384,7 @@ fn menu_node_by(
           roving=true,
           in_node=true,
           fn(p, menu) {
-            p
-            .beside(at.id(), side~, along=view_along(along), offset~, padding=8.0)
+            anchored_popover_shell(p, at.id(), look, side~, along~, offset~, holds_side=false)
             .min_width(Is(Some(min_w)))
             .max_width(By(fn() { Some(over_room(layer).0 - 16.0) }))
             .max_height(By(fn() { Some(dmax(0.0, over_room(layer).1 - 16.0)) }))
@@ -395,17 +394,6 @@ fn menu_node_by(
                 (panel_pad - reach, if first_row() { panel_pad - reach } else { panel_pad }, panel_pad - reach, if last_row() { panel_pad - reach } else { panel_pad })
               }),
             )
-            .radius(Is(r_menu))
-            .glass(By(fn() { Some(glass_menu()) }))
-            .edge(By(fn() { if p.glass_solid() { (1.0, panel_edge()) } else { (0.0, 0L) } }))
-            .shadow(By(fn() { float_shadow() }))
-            .shadow_outside(Is(true))
-            .clips(Is(true))
-            .alpha(By(fn() { look().alpha }))
-            .scale(By(fn() { look().sx }), about=FromBeside, max_shift=pop_max_shift)
-            // (a press on it its own: on what of it takes none (its padding, a heading, a line, a row not to be chosen),
-            // nothing, not outside it)
-            |> ground_node
             |> ignore
             p.box(fn(body) {
               // (all it holds as far in as its look says, past the panel's own ground, edge and shadow: its rows, their

@@ -129,17 +129,13 @@ test "a panel's body holding nothing takes none of its room; holding something, 
     #|words 它里面的话@24,742 342x18 a1
     #|small panel, empty:
     #|rect 40,40 720x36 3907312895
-    #|rect 40,82 296x86 4294967295
     #|rect 285,126 45x36 606546943
-    #|rect 40,82 296x86 0
     #|words 一个@62,94 252x20 a1
     #|words 好@301,134 13x20 a1
     #|words 打开@387,48 26x20 a1
     #|small panel, holding words:
     #|rect 40,40 720x36 3907312895
-    #|rect 40,82 296x104 4294967295
     #|rect 285,144 45x36 606546943
-    #|rect 40,82 296x104 0
     #|words 一个@62,94 252x20 a1
     #|words 好@301,152 13x20 a1
     #|words 打开@387,48 26x20 a1

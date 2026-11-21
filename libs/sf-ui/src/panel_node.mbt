@@ -127,31 +127,26 @@ fn panel_node(
       gate.collect(fn() {
       layer.box(fn(p) {
         presented_popovers[keyed.serial] = p
-        p
-        // (on the side it is on for as long as it has the room there: what it holds shrinking moves its far edge
-        // alone, never the panel across its control; View::beside's `holds_side`)
-        .beside(at.id(), side=x.side, along=x.along, offset=x.offset, padding=8.0, holds_side=true)
+        anchored_popover_shell(
+          p,
+          at.id(),
+          look,
+          side=x.side,
+          along=x.along,
+          offset=x.offset,
+          holds_side=true,
+          concentric_inset=panel_pad,
+        )
         // (`fits`: as wide as what it holds is laid out, `w` at most, the tree sizing it by it)
         .width(Is(if x.fits { None } else { Some(x.w) }))
         .max_width(if x.fits { By(fn() { Some(dmin(x.w, dmax(0.0, over_room(layer).0 - 16.0))) }) } else { Is(None) })
         .max_height(By(fn() { Some(dmax(0.0, over_room(layer).1 - 16.0)) }))
         // (`tall`: a share of the window, no taller than the room beside what opened it, small_panel's `h`)
         .height(By(fn() { if x.tall > 0.0 { Some(dmin(x.tall * over_room(layer).1, dmax(0.0, over_room(layer).1 - 16.0))) } else { None } }))
-        // (small_panel's: its padding round what it holds, its corner, ground, line and shadow)
         .padding(Is((panel_pad, panel_pad, panel_pad, panel_pad)))
-        .radius(Is(r_menu))
-        .ground(By(fn() { panel_ground() }))
-        .edge(By(fn() { (1.0, panel_edge()) }))
-        .shadow(By(fn() { float_shadow() }))
-        .clips(Is(true))
-        .alpha(By(fn() { look().alpha }))
-        .scale(By(fn() { look().sx }), about=FromBeside, max_shift=pop_max_shift)
         .carries_until(fn() { way.ends_at() })
         .says(Is(Some(@view.said(Dialog, label=x.title))))
-        // (a press on it its own: not outside it)
-        |> ground_node
         |> ignore
-        corner_card_node(p, fn() { r_menu }, inset=fn() { panel_pad })
         // (each part of it out to the panel's edges it stands by, the panel's padding round what it holds inside it: what
         // reaches into that padding on purpose (a head's search in its top corner, a foot's buttons in its foot corner, a
         // row out to its sides) drawn and pressed there, cut by the panel alone, as small_panel's are)

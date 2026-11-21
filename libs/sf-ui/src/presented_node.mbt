@@ -28,7 +28,7 @@ fn tree_sheet_of(p : Presented, sheet : Bool) -> Bool {
 ///|
 /// Whether `p` is a confirm, a question, a menu or a pick: on 小屏 a sheet of the window's tree (sheet_shows_panel).
 fn sheet_shows_of(p : Presented) -> Bool {
-  p.shows is (Confirm(_, _, _, _, _, _) | Ask(_, _, _, _, _, _, _, _) | Menu(_, _, _, _) | Pick(_, _, _, _, _, _))
+  p.shows is (Confirm(_, _, _, _, _, _) | Ask(_, _, _, _, _, _, _, _) | Menu(_, _, _, _) | Pick(_, _, _, _, _, _, _))
 }
 
 ///|
@@ -262,7 +262,7 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
             gone~,
           )
         }
-        Pick(title, choices, chosen, choose, along, search) if !pick_menu_of(choices, search) => {
+        Pick(title, choices, chosen, choose, along, side, search) if !pick_menu_of(choices, search) => {
           // (a panel with its search over its list: pick_node)
           // (panel_offset off what opened it, a point too: @kit.popover's, as a long pick gives no other)
           let (anchor, _, _, _) = @signals.untracked(fn() { menu_anchor_now(p.from) })
@@ -281,9 +281,10 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
             fn() { dismissed_now(serial) },
             shown~,
             gone~,
+            side~,
           )
         }
-        Pick(title, choices, chosen, choose, along, _) => {
+        Pick(title, choices, chosen, choose, along, side, _) => {
           // (a menu of its choices, a short pick's: the one chosen checked where one is, else each its icon;
           // what each is under its words, its value at its row's end, its own mark after its check)
           let (anchor, by_key, offset, keep_field) = @signals.untracked(fn() { menu_anchor_now(p.from) })
@@ -313,6 +314,7 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
             keep_field,
             fn(item) { done(item.select) },
             fn() { dismissed_now(serial) },
+            side~,
             shown~,
             gone~,
             extras=fn(i) {

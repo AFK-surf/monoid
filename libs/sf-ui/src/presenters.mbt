@@ -135,9 +135,9 @@ priv enum Shows {
   /// a menu: its items (None a line between), its title ("" none), where a small panel lines up with what opened it
   /// and the side of it it stands on
   Menu(Array[MenuItem?], String, @ui.Along, @ui.Side)
-  /// a pick: its title, the choices, the one chosen now, what choosing one does; whether a long one has a line to
-  /// search them by
-  Pick(String, Array[Choice], String, (String) -> Unit, @ui.Along, Bool)
+  /// a pick: its title, the choices, the one chosen now, what choosing one does, where it lines up, the side it stands on,
+  /// and whether a long one has a line to search them by
+  Pick(String, Array[Choice], String, (String) -> Unit, @ui.Along, @ui.Side, Bool)
   /// a small panel, or with nothing that opened it a dialog (PanelOf)
   Panel(PanelOf)
   /// a confirm: its title, what it does, a warning, its action, whether that cannot be undone, what goes on once said
@@ -503,9 +503,10 @@ pub fn pick(
   choose : (String) -> Unit,
   from~ : Beside,
   along? : @ui.Along = Start,
+  side? : @ui.Side = Bottom,
   search? : Bool = true,
 ) -> Unit {
-  present(Pick(title, choices, chosen, choose, along, search), from.anchor())
+  present(Pick(title, choices, chosen, choose, along, side, search), from.anchor())
 }
 
 ///|
@@ -1293,7 +1294,7 @@ fn how_of(shows : Shows, from : Anchor, sheet : Bool) -> How {
     (_, Panel(x)) if x.stage => AsDialog
     (true, _) => AsSheet
     (false, Panel(x)) if from == Unanchored || x.form => AsDialog
-    (false, Menu(_, _, _, _) | Pick(_, _, _, _, _, _) | Panel(_)) => AsPopover
+    (false, Menu(_, _, _, _) | Pick(_, _, _, _, _, _, _) | Panel(_)) => AsPopover
     (false, Confirm(_, _, _, _, _, _) | Ask(_, _, _, _, _, _, _, _)) => AsDialog
   }
 }

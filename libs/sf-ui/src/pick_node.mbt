@@ -29,6 +29,7 @@ pub fn pick_node(
   cancel : () -> Unit,
   shown? : () -> Unit = fn() {  },
   gone? : () -> Unit = fn() {  },
+  side? : @ui.Side = Bottom,
 ) -> Unit {
   parent.show(
     open,
@@ -84,25 +85,22 @@ pub fn pick_node(
     let reach = menu_row_reach(th.rows.pick)
     let list = @view.Scroll::new()
     layer.box(fn(p) {
-      p
-      .beside(at.id(), side=Bottom, along=view_along(along), offset~, padding=8.0)
+      anchored_popover_shell(
+        p,
+        at.id(),
+        look,
+        side~,
+        along~,
+        offset~,
+        holds_side=true,
+      )
       .width(Is(Some(chooser_menu_w)))
       .max_height(By(fn() { Some(dmax(0.0, over_room(layer).1 - 16.0)) }))
-      // (small_panel: its padding; its search and rows reaching past it to stand concentric with its corners)
       // (small_panel's padding: its search and rows reaching past it at its sides and top to stand concentric with its
       // corners, its last row at its foot, menu_item's at_foot)
       .padding(Is((panel_pad - reach, panel_pad - reach, panel_pad - reach, panel_pad)))
-      .radius(Is(r_menu))
-      .ground(By(fn() { panel_ground() }))
-      .edge(By(fn() { (1.0, panel_edge()) }))
-      .shadow(By(fn() { float_shadow() }))
-      .clips(Is(true))
-      .alpha(By(fn() { look().alpha }))
-      .scale(By(fn() { look().sx }), about=FromBeside, max_shift=pop_max_shift)
       .carries_until(fn() { way.ends_at() })
       .says(Is(Some(@view.said(Dialog, label=title))))
-      // (a press on it its own: on what of it takes none, nothing, not outside it)
-      |> ground_node
       |> ignore
       // (which of what is found the keys are on: the one chosen as it opens, where it is found and to be chosen, else
       // the first found that is; ↓ ↑ moving it bring it into sight: `keyed`)

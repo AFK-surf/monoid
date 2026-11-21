@@ -44,12 +44,12 @@ pub fn glass_floating(tint? : Int64) -> @ui.Glass {
 }
 
 ///|
-/// Single-layer iOS 27 liquid glass for anchored dropdown and context menus (`menu_node`).
+/// Single-layer iOS 27 liquid glass for anchored popovers (`anchored_popover_shell`: menus, panels, picks, hover panels).
 pub fn glass_menu() -> @ui.Glass {
   let t = theme()
   @ui.Glass::liquid(
     blur=8.0,
-    tint=if t.dark { 0x202020FFL } else { 0xFDFCFD67L },
+    tint=if t.dark { 0x202020FFL } else { 0xFDFCFDD9L },
     solid=panel_ground(),
     saturation=1.0,
     rim=0.6,

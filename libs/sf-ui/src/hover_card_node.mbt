@@ -486,8 +486,15 @@ fn hover_panel_surface(
     (if way.target() > 0.5 { hover_card_in } else { hover_card_out }).at(p, p)
   }
   let live = fn() { !t.leaving() }
-  t
-  .beside(anchor_id, side=spec.side, along=spec.along, offset=spec.offset, padding=8.0, holds_side=true)
+  anchored_popover_shell(
+    t,
+    anchor_id,
+    look,
+    side=spec.side,
+    along=spec.along,
+    offset=spec.offset,
+    holds_side=true,
+  )
   .width(Is(Some(spec.w)))
   .max_width(By(fn() { Some(dmax(0.0, over_room(t).0 - 16.0)) }))
   .max_height(By(fn() { Some(dmax(0.0, over_room(t).1 - 16.0)) }))
@@ -499,19 +506,11 @@ fn hover_panel_surface(
     }
   }))
   .padding(Is((panel_pad, panel_pad, panel_pad, panel_pad)))
-  .radius(Is(r_menu))
-  .ground(By(fn() { panel_ground() }))
-  .edge(By(fn() { (1.0, panel_edge()) }))
-  .shadow(By(fn() { float_shadow() }))
-  .clips(Is(true))
-  .alpha(By(fn() { look().alpha }))
-  .scale(By(fn() { look().sx }), about=FromBeside, max_shift=pop_max_shift)
   .carries_until(fn() { way.ends_at() })
   // (leaving nodes with left_at >= 0.0 are hidden from semantics by the framework)
   .in_use(By(live))
   .says(Is(Some(@view.said(Dialog, label=title))))
   .focus_returns()
-  |> ground_node
   |> ignore
   match opened {
     Some(o) => t.opened_by(o) |> ignore
