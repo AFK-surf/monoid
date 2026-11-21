@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f39855bf5](https://github.com/AFK-surf/monoid/commit/f39855bf5363691b4b521cd1e9afbe7257d76dd7) feat(mesh): request bounded single-path pings when | 2.79 | 3.77 | 15.37 | 37.5 | 58.1 | 32.87 | 67.1 | 98.57 | 121.97 |
 | [98f640ad0](https://github.com/AFK-surf/monoid/commit/98f640ad064f17f3f3b20920419e4aa7c182686e) fix(mbui): keep a swiped page inside its way when  | 2.79 | 3.77 | 15.37 | 37.49 | 58.1 | 32.86 | 67.08 | 98.47 | 125.93 |
 | [9be3cdd0e](https://github.com/AFK-surf/monoid/commit/9be3cdd0ed61303b1507a6be02c9e89f81352837) fix(mbui): a press on a gliding column catches it  | 2.79 | 3.77 | 15.37 | 37.49 | 58.1 | 32.86 | 67.08 | 98.47 | 125.93 |
 | [d8f593dbc](https://github.com/AFK-surf/monoid/commit/d8f593dbc0021b52cab100be94fd7f36eb492ac6) refactor(sf-ui): remove all 20 redundant structure | 2.79 | 3.77 | 15.37 | 37.49 | 58.1 | 32.86 | 67.08 | 98.47 | 125.93 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f01cb2955](https://github.com/AFK-surf/monoid/commit/f01cb295503137fc410dde9b0611a05443aaaf7b) feat(station): Farview Stage 14A release, farview. | 2.77 | 3.74 | 15.24 | 37.3 | 57.72 | 32.7 | 66.65 | 98.09 | 122.24 |
 | [b62885c7a](https://github.com/AFK-surf/monoid/commit/b62885c7a4b0c908f096f39d85bf11a00a2c190c) fix(station): say why a lent profile cannot serve  | 2.77 | 3.74 | 15.24 | 37.3 | 57.72 | 32.69 | 66.65 | 98.42 | 126.19 |
 | [b8c850ece](https://github.com/AFK-surf/monoid/commit/b8c850ece362fd8c79db6729999c6b628a0a9eab) chore(mbui): delete unreachable Ctx views from sf- | 2.77 | 3.74 | 15.24 | 37.3 | 57.72 | 32.69 | 66.65 | 98.42 | 126.19 |
-| [ede8c9a28](https://github.com/AFK-surf/monoid/commit/ede8c9a2850aae2ce08bc0910afdfb2fab86993f) fix(mbui): use pixel quantization band for sub-hal | 2.77 | 3.74 | 15.24 | 37.3 | 57.72 | 32.69 | 66.65 | 98.42 | 116.32 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f39855bf5](https://github.com/AFK-surf/monoid/commit/f39855bf5363691b4b521cd1e9afbe7257d76dd7) feat(mesh): request bounded single-path pings when | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 53.86 |
 | [98f640ad0](https://github.com/AFK-surf/monoid/commit/98f640ad064f17f3f3b20920419e4aa7c182686e) fix(mbui): keep a swiped page inside its way when  | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 53.86 |
 | [9be3cdd0e](https://github.com/AFK-surf/monoid/commit/9be3cdd0ed61303b1507a6be02c9e89f81352837) fix(mbui): a press on a gliding column catches it  | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.3 |
 | [d8f593dbc](https://github.com/AFK-surf/monoid/commit/d8f593dbc0021b52cab100be94fd7f36eb492ac6) refactor(sf-ui): remove all 20 redundant structure | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.07 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f01cb2955](https://github.com/AFK-surf/monoid/commit/f01cb295503137fc410dde9b0611a05443aaaf7b) feat(station): Farview Stage 14A release, farview. | 0.47 | 0.61 | 2.36 | 3.4 | 5.59 | 1.7 | 4.6 | 53.89 |
 | [b62885c7a](https://github.com/AFK-surf/monoid/commit/b62885c7a4b0c908f096f39d85bf11a00a2c190c) fix(station): say why a lent profile cannot serve  | 0.47 | 0.61 | 2.36 | 3.4 | 5.59 | 1.7 | 4.6 | 53.89 |
 | [b8c850ece](https://github.com/AFK-surf/monoid/commit/b8c850ece362fd8c79db6729999c6b628a0a9eab) chore(mbui): delete unreachable Ctx views from sf- | 0.46 | 0.61 | 2.36 | 3.4 | 5.58 | 1.7 | 4.6 | 54.25 |
-| [ede8c9a28](https://github.com/AFK-surf/monoid/commit/ede8c9a2850aae2ce08bc0910afdfb2fab86993f) fix(mbui): use pixel quantization band for sub-hal | 0.46 | 0.61 | 2.36 | 3.4 | 5.58 | 1.7 | 4.6 | 54.25 |
