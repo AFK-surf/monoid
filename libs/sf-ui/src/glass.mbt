@@ -49,7 +49,7 @@ pub fn glass_menu() -> @ui.Glass {
   let t = theme()
   @ui.Glass::liquid(
     blur=8.0,
-    tint=if t.dark { 0x202020D9L } else { 0xFDFCFDD9L },
+    tint=if t.dark { 0x202020BFL } else { 0xFDFCFDBFL },
     solid=panel_ground(),
     saturation=1.0,
     rim=0.6,
@@ -68,7 +68,7 @@ pub fn glass_toast() -> @ui.Glass {
   let t = theme()
   @ui.Glass::liquid(
     blur=2.1,
-    tint=if t.dark { 0x202020D9L } else { 0xFDFCFDD9L },
+    tint=if t.dark { 0x202020BFL } else { 0xFDFCFDBFL },
     solid=if t.dark { 0x1E1F24FFL } else { 0xFAFAFAFFL },
     saturation=1.0,
     rim=0.6,

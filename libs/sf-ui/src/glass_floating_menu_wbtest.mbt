@@ -22,7 +22,7 @@ test "glass_floating and glass_menu emit iOS 27 liquid glass recipes in light an
     let fl_tinted = glass_floating(tint=0x11223344L)
     let mn = glass_menu()
     let expected_floating_tint = if dark { 0x20202067L } else { 0xFDFCFD67L }
-    let expected_menu_tint = if dark { 0x202020D9L } else { 0xFDFCFDD9L }
+    let expected_menu_tint = if dark { 0x202020BFL } else { 0xFDFCFDBFL }
     assert_eq(
       (fl.liquid, fl.blur, fl.bezel, fl.refraction, fl.tint),
       (true, 6.0, 14.0, 18.0, expected_floating_tint),

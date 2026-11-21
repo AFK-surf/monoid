@@ -9,7 +9,7 @@ fn ovl_panel_glass() -> @paint.Glass {
   let d = is_dark()
   @paint.Glass::liquid(
     blur=8.0,
-    tint=if d { 0x202020D9L } else { 0xFDFCFD67L },
+    tint=if d { 0x202020BFL } else { 0xFDFCFD67L },
     solid=if d { 0x1C1C1EFFL } else { 0xF7F7FAFFL },
     saturation=1.0,
     rim=0.6,
@@ -27,7 +27,7 @@ fn ovl_sheet_glass() -> @paint.Glass {
   let d = is_dark()
   @paint.Glass::liquid(
     blur=10.0,
-    tint=if d { 0x202020E6L } else { 0xFDFCFD67L },
+    tint=if d { 0x202020CCL } else { 0xFDFCFD67L },
     solid=if d { 0x1C1C1EFFL } else { 0xF7F7FAFFL },
     saturation=1.0,
     rim=0.6,
