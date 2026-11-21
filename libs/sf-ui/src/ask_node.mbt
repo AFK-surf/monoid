@@ -64,6 +64,7 @@ pub fn ask_node(
       // (a press on it its own: not outside it)
       |> ground_node
       |> ignore
+      corner_card_node(d, fn() { dialog_r }, inset=fn() { dialog_pad })
       let words_in = fn() { look().words }
       // (its title's row: dialog_head's, 1 under its padding's top, as tall as a close button's room at least)
       d.box(fn(h) {
@@ -109,11 +110,19 @@ pub fn ask_node(
         |> ignore
       })
       |> ignore
-      // (its foot: its buttons at its end, 8 apart, 24 over them; as far from its foot and sides as its corner has them)
+      // (its foot: its buttons at its end, 8 apart, 24 over them; as far from its foot and sides as its corner has them;
+      // wraps onto a second line when narrow or at large font size so the primary action stays on the bottom row)
       d.box(fn(f) {
         let at = @ui.capsule_in(dialog_r, button_height())
-        f.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(@ui.Space::px(S2))).padding(Is((at, @ui.Space::px(S6), at, at))).alpha(By(words_in)) |> ignore
-        f.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
+        f
+        .row(Is(true))
+        .lies_along(Is(End))
+        .lines_up(Is(Some(Middle)))
+        .gap(Is(@ui.Space::px(S2)))
+        .wraps(By(fn() { Some(ask_foot_lines()) }))
+        .padding(Is((at, @ui.Space::px(S6), at, at)))
+        .alpha(By(words_in))
+        |> ignore
         button_node(f, fn() { t("common.cancel") }, cancel, tone=Ghost) |> ignore
         button_node(f, fn() { action }, go, tone=Primary, disabled=fn() { !can() }) |> ignore
       })

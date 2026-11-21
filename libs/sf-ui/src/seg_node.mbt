@@ -69,16 +69,20 @@ pub fn seg_node(
   parent.box(made_for=loc, fn(line) {
     line.row(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
     line.box(fn(track) {
+      let opt_h = fn() {
+        track.words_redone() |> ignore
+        dmax(segmented_h, node_sp(track, theme().t.ui * @ui.tree_theme().text_line).ceil() + 2.0 * 4.0)
+      }
       // (its pad round its options inside what it holds: what is said of it as a group (View::by_room's) out to its edges)
       track
       .row(Is(true))
-      .radius(Is(segmented_corner + segmented_pad))
+      .radius(By(fn() { opt_h() / 2.0 + segmented_pad }))
       .ground(By(fn() { alpha(theme().p.text, 0.06) }))
       // (as wide as its columns where its line has the room, giving way to what it has: down to nothing, its options
       // fitted to it)
       .basis(By(fn() { Some(whole()) }))
       // (as high as its options with its pad round them: not stretched to its line's height)
-      .height(Is(Some(segmented_h + 2.0 * segmented_pad)))
+      .height(By(fn() { Some(opt_h() + 2.0 * segmented_pad) }))
       .shrink(Is(1.0))
       .min_width(Is(Some(0.0)))
       |> ignore
@@ -133,7 +137,7 @@ pub fn seg_node(
             g
             .row(Is(true))
             .padding(Is((segmented_pad, segmented_pad, segmented_pad, segmented_pad)))
-            .height(Is(Some(segmented_h + 2.0 * segmented_pad)))
+            .height(By(fn() { Some(opt_h() + 2.0 * segmented_pad) }))
             |> ignore
             // side by side: the thumb, under the options' words, and the options
             g.box(fn(strip) {
@@ -143,7 +147,7 @@ pub fn seg_node(
                 chosen,
                 fn(k) {
                   if k >= 0 && k < n {
-                    Some((x_of(k), 0.0, w_of(k), segmented_h))
+                    Some((x_of(k), 0.0, w_of(k), opt_h()))
                   } else {
                     None
                   }
@@ -154,8 +158,8 @@ pub fn seg_node(
                 th
                 .over(Is(true))
                 .width(Is(Some(0.0)))
-                .height(Is(Some(segmented_h)))
-                .radius(Is(segmented_corner))
+                .height(By(fn() { Some(opt_h()) }))
+                .radius(By(fn() { opt_h() / 2.0 }))
                 .ground(By(fn() { @ui.tree_theme().lifted }))
                 .edge(By(fn() { (0.5, theme().p.line) }))
                 .shadow(By(fn() { (1.0, 0.0, theme().p.shadow) }))
@@ -176,7 +180,7 @@ pub fn seg_node(
                   let on = fn() { item.chosen() }
                   o
                   .width(By(fn() { Some(w_of(k)) }))
-                  .height(Is(Some(segmented_h)))
+                  .height(By(fn() { Some(opt_h()) }))
                   // (its words in its middle both ways, as the old view's option is: align and justify centre)
                   .lines_up(Is(Some(Middle)))
                   .lies_along(Is(Middle))
@@ -242,7 +246,7 @@ pub fn seg_node(
                 .row(Is(true))
                 .grow(Is(1.0))
                 .laid_nowhere(By(fn() { !menu() }))
-                .height(Is(Some(segmented_h)))
+                .height(By(fn() { Some(opt_h()) }))
                 .lines_up(Is(Some(Middle)))
                 .padding(Is((segmented_least, 0.0, segmented_least, 0.0)))
                 .gap(Is(segmented_least))

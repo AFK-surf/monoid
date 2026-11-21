@@ -137,7 +137,7 @@ pub let float_button_reach : Double = 6.0
 /// arrow; the hover ground under the hand.
 // kept across runs: a value (no field of it changes)
 let float_button_look : @ui.Style = @ui.css((
-  #|row h=S8 min_w=S8 px=S2 gap=S1 radius=Full border=B1 border_color=Line bg=Surface shadow=Md align=ACenter justify=JCenter
+  #|row h=S8 min_w=S8 px=S2 gap=S1 radius=Full border=B0_5 border_color=Line bg=Surface shadow=Md align=ACenter justify=JCenter
 ))
 
 ///|

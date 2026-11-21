@@ -263,6 +263,7 @@ fn confirm_panel(
     .offset(By(fn() { (look().dx, look().dy) }))
     .says(By(fn() { Some(@view.said(Dialog, label=title(), description=if warning == "" { words() } else { words() + "\n" + warning })) }))
     |> ignore
+    corner_card_node(d, fn() { dialog_r }, inset=fn() { dialog_pad })
     // (all it holds as far in as its look says, past its own ground, edge and shadow: each part of it, its title, its
     // words, its foot and its buttons, the same, Look's `words` as a surface's are)
     let words_in = fn() { look().words }
@@ -293,18 +294,19 @@ fn confirm_panel(
       |> ignore
     }
     // (its foot: its buttons at its end, 8 apart, 8 over them; as far from its foot and sides as its corner has them:
-    // dialog_corner_foot)
+    // dialog_corner_foot; wraps when narrow or at large font size so the primary action stays on the bottom row)
     d.box(fn(f) {
       let at = @ui.capsule_in(dialog_r, button_height())
       f
       .row(Is(true))
+      .lies_along(Is(End))
       .lines_up(Is(Some(Middle)))
       .gap(Is(@ui.Space::px(S2)))
+      .wraps(By(fn() { Some(ask_foot_lines()) }))
       .padding(Is((at - dialog_pad, @ui.Space::px(S2), at - dialog_pad, at)))
       // (its buttons, their grounds and words, as far in as the rest of what it holds)
       .alpha(By(words_in))
       |> ignore
-      f.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
       // (going, they take nothing: what is leaving takes no press, focus or key; drawn as they were, going with it)
       let no = button_node(f, fn() { t("common.cancel") }, cancel, tone=Ghost)
       // (its action the default where it can be undone: Enter that nothing with the focus takes does it; one that cannot

@@ -210,9 +210,9 @@ test "a choice of a few as nodes short of room, its words made smaller to fit (t
     )
   }
   // (the thumb: the theme's lifted, as high as an option, where the chosen one is and as wide)
-  let thumb = t.drawn_rects().filter(fn(d) { d.4 == @ui.tree_theme().lifted && d.3 == segmented_h })
   let on = radios.filter(fn(s) { s.check == Some(@ui.Check::On) })
   assert_eq(on.map(fn(s) { s.label }), ["源码"])
+  let thumb = t.drawn_rects().filter(fn(d) { d.4 == @ui.tree_theme().lifted && d.3 == on[0].rect.3 })
   assert_eq(thumb.map(fn(d) { (d.0, d.2) }), [(on[0].rect.0, on[0].rect.2)], msg="the thumb under 源码: \{Repr(thumb)}")
 }
 
@@ -284,4 +284,32 @@ test "seg_node: thumb slide animation causes zero relayout (laid == 0)" {
   for f in t.tree_frames() {
     assert_eq(f.laid, 0, msg="seg_node thumb slide relaid out: \{Repr(f)}")
   }
+}
+
+///|
+test "seg_node: 1.0x keeps exact 30pt option / 36pt track; 2.0x scales height with zero fixed_outgrown or squeeze_faults" {
+  let chosen = @signals.signal(0)
+  let t = @ui.Tester::new(fn(_c) {  }, w=600.0, h=200.0, platform=0)
+  t.check_looks(false)
+  @ui.set_view_app(
+    fn(root) {
+      root.row(Is(true)).padding(Is((20.0, 20.0, 20.0, 20.0))) |> ignore
+      seg_node(root, fn() { ["Overview", "Processes", "Settings"] }, fn() { chosen.get() }, fn(k) { chosen.set(k) })
+      |> ignore
+    },
+    theme=ui_theme_now,
+  )
+  t.draw()
+  assert_eq(seg_shown(t, RadioGroup).map(fn(s) { s.rect.3 }), [36.0], msg="1.0x track height exact 36pt")
+  assert_eq(seg_shown(t, Radio).map(fn(s) { s.rect.3 }), [30.0, 30.0, 30.0], msg="1.0x option height exact 30pt")
+  assert_eq(t.fixed_outgrown(), [], msg="1.0x fixed_outgrown")
+  assert_eq(t.squeeze_faults(), [], msg="1.0x squeeze_faults")
+  t.set_font_scale(2.0)
+  t.draw()
+  let track_h = seg_shown(t, RadioGroup)[0].rect.3
+  let opt_hs = seg_shown(t, Radio).map(fn(s) { s.rect.3 })
+  assert_true(track_h > 36.0, msg="2.0x track grew: \{track_h}")
+  assert_true(opt_hs.iter().all(fn(h) { h > 30.0 }), msg="2.0x options grew: \{Repr(opt_hs)}")
+  assert_eq(t.fixed_outgrown(), [], msg="2.0x fixed_outgrown")
+  assert_eq(t.squeeze_faults(), [], msg="2.0x squeeze_faults")
 }

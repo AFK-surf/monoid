@@ -866,3 +866,83 @@ test "on_baseline aligns secondary Meta text to primary Ui first-line baseline a
   }
   @ui.set_web_lines(false)
 }
+
+///|
+test "ask_node, confirm_node, and card_foot_node wrap at narrow 220pt / 1.3x keeping primary button on bottom row" {
+  // 1. ask_node at 220pt / 1.3x
+  let t1 = @ui.Tester::new(fn(_c) {  }, w=220.0, h=420.0, platform=0)
+  t1.check_looks(false)
+  t1.set_font_scale(1.3)
+  let field = @ui.Field::new()
+  @ui.set_view_app(
+    fn(root) {
+      ask_node(
+        root,
+        fn() { true },
+        "重命名",
+        field,
+        "",
+        "名称",
+        "保存并应用更改",
+        "",
+        false,
+        false,
+        fn() {  },
+        fn(_) {  },
+      )
+    },
+    theme=ui_theme_now,
+  )
+  t1.run_for(@ui.move_most_ms)
+  let btns1 = t1.semantics().filter(fn(s) { s.role == Button && !s.hidden })
+  let cancel1 = btns1.filter(fn(s) { s.label == t("common.cancel") })[0]
+  let act1 = btns1.filter(fn(s) { s.label == "保存并应用更改" })[0]
+  assert_true(act1.rect.1 > cancel1.rect.1 + 1.0, msg="ask_node primary on bottom row: cancel=\{Repr(cancel1.rect)} act=\{Repr(act1.rect)}")
+
+  // 2. confirm_node at 220pt / 1.3x
+  let t2 = @ui.Tester::new(fn(_c) {  }, w=220.0, h=420.0, platform=0)
+  t2.check_looks(false)
+  t2.set_font_scale(1.3)
+  @ui.set_view_app(
+    fn(root) {
+      confirm_node(
+        root,
+        fn() { true },
+        fn() { "确认删除" },
+        fn() { "此操作不可撤销。" },
+        fn() { "永久删除全部数据" },
+        true,
+        fn() {  },
+        fn() {  },
+      )
+    },
+    theme=ui_theme_now,
+  )
+  t2.run_for(@ui.move_most_ms)
+  let btns2 = t2.semantics().filter(fn(s) { s.role == Button && !s.hidden })
+  let cancel2 = btns2.filter(fn(s) { s.label == t("common.cancel") })[0]
+  let act2 = btns2.filter(fn(s) { s.label == "永久删除全部数据" })[0]
+  assert_true(act2.rect.1 > cancel2.rect.1 + 1.0, msg="confirm_node primary on bottom row: cancel=\{Repr(cancel2.rect)} act=\{Repr(act2.rect)}")
+
+  // 3. card_foot_node (Start / reverse=true) at 220pt / 1.3x
+  let t3 = @ui.Tester::new(fn(_c) {  }, w=220.0, h=300.0, platform=2)
+  t3.check_looks(false)
+  t3.set_font_scale(1.3)
+  @ui.set_view_app(
+    fn(root) {
+      root.padding(Is((12.0, 12.0, 12.0, 12.0))) |> ignore
+      page_card_node(root, footed=true, fn(k) {
+        card_foot_node(k, fn(f) {
+          button_node(f, fn() { "立即开启保护" }, fn() {  }, tone=Primary, card_words=true) |> ignore
+          button_node(f, fn() { "稍后再说" }, fn() {  }, tone=Ghost) |> ignore
+        })
+      })
+    },
+    theme=ui_theme_now,
+  )
+  t3.draw()
+  let btns3 = t3.semantics().filter(fn(s) { s.role == Button && !s.hidden })
+  let primary3 = btns3.filter(fn(s) { s.label == "立即开启保护" })[0]
+  let sec3 = btns3.filter(fn(s) { s.label == "稍后再说" })[0]
+  assert_true(primary3.rect.1 > sec3.rect.1 + 1.0, msg="card_foot_node primary on bottom row: primary=\{Repr(primary3.rect)} sec=\{Repr(sec3.rect)}")
+}

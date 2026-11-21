@@ -4,12 +4,18 @@
 
 ///|
 /// How thick an outlined control's edge is: a hairline (`@ui.Stroke::B0_5`, as seg_node's and tabs_node's lines).
-let control_edge_w : Double = 0.5
+pub let control_edge_w : Double = 0.5
 
 ///|
 /// An outlined control's edge now: `hot` (pointed at, open or written in) the theme's Border; `solid` (on the page's
 /// own ground, no line of its own) the ground's; else the theme's Line.
-fn control_edge(hot? : Bool = false, solid? : Bool = false) -> (Double, Int64) {
+pub fn control_edge(hot? : Bool = false, solid? : Bool = false) -> (Double, Int64) {
   let t = @ui.tree_theme()
   (control_edge_w, t.color(if hot { Border } else if solid { Bg } else { Line }))
+}
+
+///|
+/// An outlined control's edge as a style (`B0_5`, `Border` when `hot`, `Bg` when `solid`, else `Line`).
+pub fn control_edge_style(hot? : Bool = false, solid? : Bool = false) -> @ui.Style {
+  @ui.style(border=B0_5, border_color=if hot { Border } else if solid { Bg } else { Line })
 }

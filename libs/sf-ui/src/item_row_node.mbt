@@ -15,8 +15,10 @@ pub fn item_row_node(parent : @view.View, body : (@view.View) -> Unit, loc~ : So
     // container to the corner rule, as a face's row in a wide list is: page_wide_node's)
     r.clips(Is(true)) |> ignore
     match at.look {
-      Narrow =>
-        r.padding(Is((text_in, text_in, text_in, text_in))).radius(Is(@ui.concentric(group_corner, list_pad))) |> ignore
+      Narrow => {
+        r.padding(Is((text_in, text_in, text_in, text_in))) |> ignore
+        concentric_radius_node(r, fn() { @ui.concentric(group_corner, list_pad) })
+      }
       Wide =>
         r
         .padding(Is((text_in, wide_row_over, text_in, wide_row_over)))

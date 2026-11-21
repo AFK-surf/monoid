@@ -152,6 +152,7 @@ fn panel_node(
         // (a press on it its own: not outside it)
         |> ground_node
         |> ignore
+        corner_card_node(p, fn() { r_menu }, inset=fn() { panel_pad })
         // (each part of it out to the panel's edges it stands by, the panel's padding round what it holds inside it: what
         // reaches into that padding on purpose (a head's search in its top corner, a foot's buttons in its foot corner, a
         // row out to its sides) drawn and pressed there, cut by the panel alone, as small_panel's are)
@@ -294,6 +295,7 @@ fn panel_node(
               fv.box(fn(row) {
                 let at = if x.ruled { panel_corner_foot().then(@ui.style(pt=room(@ui.capsule_in(r_menu, button_height())))) } else { panel_corner_foot() }
                 style_node(row, fn() { panel_foot_at.then(at) }, in_row=false)
+                row.wraps(By(fn() { Some(ask_foot_lines()) })) |> ignore
                 f(row, close)
               })
               |> ignore

@@ -81,7 +81,7 @@ fn pick_bar_button(parent : @view.View, it : PickBarItem, loc~ : SourceLoc) -> @
 ///|
 /// The capsule (pick_bar's): 40 high, 4 in at its ends, round, on the raised ground with a line round it.
 // kept across runs: a value (no field of it changes)
-let pick_bar_look : @ui.Style = @ui.css("row h=S10 px=S1 radius=Full bg=Raised border=B1 border_color=Line align=ACenter")
+let pick_bar_look : @ui.Style = @ui.css("row h=S10 px=S1 radius=Full bg=Raised border=B0_5 border_color=Line align=ACenter")
 
 ///|
 /// A button (pick_button's): 32 high, 12 in, its icon 5 before its words, round.

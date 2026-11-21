@@ -2333,6 +2333,7 @@ pub fn page_card_node(
       .ground(By(fn() { @ui.tree_theme().color(Card) }))
       .lends(part_at, { ..at, list: false, card: true })
       |> ignore
+      corner_card_node(k, fn() { @ui.tree_theme().corner(Xl3) }, inset=fn() { card_pad })
       body(k)
     })
     |> ignore
@@ -2389,9 +2390,15 @@ pub fn card_foot_node(
 ) -> Unit {
   parent.box(made_for=loc, fn(f) {
     let out = card_foot_in(button_height()) - card_pad
-    f.row(Is(true)).gap(Is(card_foot_gap)).lines_up(Is(Some(Middle))).margin(Is((out, 0.0, out, 0.0))) |> ignore
+    f
+    .row(Is(true))
+    .gap(Is(card_foot_gap))
+    .lines_up(Is(Some(Middle)))
+    .wraps(By(fn() { Some(ask_foot_lines()) }), reverse=!at_end)
+    .margin(Is((out, 0.0, out, 0.0)))
+    |> ignore
     if at_end {
-      f.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
+      f.lies_along(Is(End)) |> ignore
     }
     make(f)
   })

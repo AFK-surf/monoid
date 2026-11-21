@@ -137,12 +137,12 @@ test "a dialog's foot in the middle of a window and a panel's beside what opened
   }
   inspect(seen.join("\n"), content=(
     #|dialog, place false, 添加到此 workspace，然后再看一看: 取消 254.4,330.3 66.4x36 | 添加到此 workspace，然后再看一看 328.8,330.3 307.2x36
-    #|dialog, place false, 添加到此 workspace，然后再看一看，再看一看: 先取消这一次的添加然后再说 -20.8,330.3 255.6x36 | 添加到此 workspace，然后再看一看，再看一看 242.8,330.3 393.2x36
+    #|dialog, place false, 添加到此 workspace，然后再看一看，再看一看: 先取消这一次的添加然后再说 380.4,308.3 255.6x36 | 添加到此 workspace，然后再看一看，再看一看 242.8,352.3 393.2x36
     #|dialog, place true, 添加到此 workspace，然后再看一看: 取消 254.4,330.3 66.4x36 | 添加到此 workspace，然后再看一看 328.8,330.3 307.2x36
-    #|dialog, place true, 添加到此 workspace，然后再看一看，再看一看: 先取消这一次的添加然后再说 -20.8,330.3 255.6x36 | 添加到此 workspace，然后再看一看，再看一看 242.8,330.3 393.2x36
-    #|beside, place false, 添加到此 workspace，然后再看一看: 取消 -51.6,151.2 66.4x36 | 添加到此 workspace，然后再看一看 22.8,151.2 307.2x36
-    #|beside, place false, 添加到此 workspace，然后再看一看，再看一看: 先取消这一次的添加然后再说 -326.8,151.2 255.6x36 | 添加到此 workspace，然后再看一看，再看一看 -63.2,151.2 393.2x36
-    #|beside, place true, 添加到此 workspace，然后再看一看: 取消 -51.6,151.2 66.4x36 | 添加到此 workspace，然后再看一看 22.8,151.2 307.2x36
-    #|beside, place true, 添加到此 workspace，然后再看一看，再看一看: 先取消这一次的添加然后再说 -326.8,151.2 255.6x36 | 添加到此 workspace，然后再看一看，再看一看 -63.2,151.2 393.2x36
+    #|dialog, place true, 添加到此 workspace，然后再看一看，再看一看: 先取消这一次的添加然后再说 380.4,308.3 255.6x36 | 添加到此 workspace，然后再看一看，再看一看 242.8,352.3 393.2x36
+    #|beside, place false, 添加到此 workspace，然后再看一看: 取消 263.6,151.2 66.4x36 | 添加到此 workspace，然后再看一看 22.8,195.2 307.2x36
+    #|beside, place false, 添加到此 workspace，然后再看一看，再看一看: 先取消这一次的添加然后再说 74.4,151.2 255.6x36 | 添加到此 workspace，然后再看一看，再看一看 -63.2,195.2 393.2x36
+    #|beside, place true, 添加到此 workspace，然后再看一看: 取消 263.6,151.2 66.4x36 | 添加到此 workspace，然后再看一看 22.8,195.2 307.2x36
+    #|beside, place true, 添加到此 workspace，然后再看一看，再看一看: 先取消这一次的添加然后再说 74.4,151.2 255.6x36 | 添加到此 workspace，然后再看一看，再看一看 -63.2,195.2 393.2x36
   ))
 }

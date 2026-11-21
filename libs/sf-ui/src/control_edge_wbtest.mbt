@@ -157,3 +157,20 @@ test "choices: the others a hairline of the line, of the border under the pointe
     assert_eq(edged(t).map(edge_of), [(2.0, ink), (0.5, p.line_strong)], msg="\{what} pointed at")
   }
 }
+
+///|
+test "float_button_node and pick_bar_node use hairline control_edge_w (0.5pt)" {
+  for dark in [false, true] {
+    let t = edge_case(dark, fn(root) {
+      root.lines_up(Is(Some(Start))) |> ignore
+      float_button_node(root, "arrow-down", fn() { "最新" }, fn() {  }) |> ignore
+      pick_bar_node(root, [{ label: "复制", icon: "copy", mark: false, press: fn() {  } }]) |> ignore
+    })
+    let bs = edged(t, w=20.0)
+    assert_eq(bs.length(), 2, msg="dark \{dark}: \{edges_said(t)}")
+    for b in bs {
+      assert_eq(edge_of(b), (control_edge_w, theme().p.line), msg="dark \{dark}: \{edges_said(t)}")
+    }
+    edge_clean(t, "float_button & pick_bar dark \{dark}")
+  }
+}
