@@ -269,6 +269,7 @@ const REMOTE_SANDBOX_READ_OR_CLEANUP = new Set([
 ]);
 
 type RemoteSandboxEntry = { id: string; name: string; host: string; hostId: string; gpu: ColabGpu; accounts: number };
+const REMOTE_SANDBOXES_TTL_MS = 30_000;
 
 /// What the program knows the remote tasks' shell by.
 const REMOTE_KEY = "#remote";
@@ -326,8 +327,8 @@ export class Remote {
   private sandboxes: ((workspace?: string) => Sandbox[]) | null = null;
   /// Usable Google Colab accounts per workspace (profiles with `colab-auth.json` on disk).
   private colabAccounts: ((workspace?: string) => ColabAccount[]) | null = null;
-  /// Remote Colab sandboxes discovered from peers' `describe` answers, cached per workspace for name resolution.
-  private remoteSandboxesCache = new Map<string, RemoteSandboxEntry[]>();
+  /// Remote Colab sandboxes discovered from peers' `describe` answers, cached per workspace with a short TTL.
+  private remoteSandboxesCache = new Map<string, { at: number; entries: RemoteSandboxEntry[] }>();
   private removeTask: (path: string) => Promise<void>;
   /// Under how many bytes free the disk is low to the program's `relieve` (`relieve`'s `below`).
   private lowBelow = DISK_LOW_BYTES;
@@ -396,6 +397,7 @@ export class Remote {
   /// them itself (station/mb src/reader/dirsync.mbt `put_blobs`): its thousands of small files' writes, stats and renames
   /// held this thread for seconds when they were Node's (2026-11-15: 6.0 s and 4.2 s on a station short of memory).
   private async answer(workspace: string, peer: string, request: Json): Promise<Json> {
+    let canonicalSandbox: string | null = null;
     const sbName = typeof request?.sandbox === "string" ? request.sandbox : "";
     if (sbName !== "") {
       if (!SANDBOX_NAME_RE.test(sbName)) throw new Refused("invalid sandbox name");
@@ -411,11 +413,12 @@ export class Remote {
           throw new Refused(`Colab sandbox ${sbName} is not available for this workspace on this station`);
         }
       }
+      if (matched !== undefined) canonicalSandbox = matched.name;
     }
     const bytes = bytesOf(request);
     // (`landed` is only ever this station's own: never a path another station names)
     const { landed: _, ...asked0 } = request ?? {};
-    let asked: Json = asked0;
+    let asked: Json = canonicalSandbox !== null ? { ...asked0, sandbox: canonicalSandbox } : asked0;
     let id = 0;
     let landed: string | null = null;
     try {
@@ -985,10 +988,11 @@ export class Remote {
     return out;
   }
 
-  /// Remote Colab sandboxes advertised by peers in `workspace` (from cache, or fetched once from workspace peers).
+  /// Remote Colab sandboxes advertised by peers in `workspace` (from cache within TTL, or fetched from workspace peers).
   private async remoteSandboxesFor(workspace: string): Promise<RemoteSandboxEntry[]> {
+    const now = this.store.now();
     const cached = this.remoteSandboxesCache.get(workspace);
-    if (cached !== undefined) return cached;
+    if (cached !== undefined && now - cached.at < REMOTE_SANDBOXES_TTL_MS) return cached.entries;
     let roster: Json;
     try {
       roster = await this.ask("", { method: "peers", workspace });
@@ -1008,7 +1012,7 @@ export class Remote {
         }
       }),
     );
-    this.remoteSandboxesCache.set(workspace, found);
+    this.remoteSandboxesCache.set(workspace, { at: this.store.now(), entries: found });
     return found;
   }
 
@@ -1049,7 +1053,7 @@ export class Remote {
         return { ...entry, ...(await said(workspace, session, rig, described)), ...heard(got, field(rig, "version")) };
       }),
     );
-    this.remoteSandboxesCache.set(workspace, remoteSandboxes);
+    this.remoteSandboxesCache.set(workspace, { at: this.store.now(), entries: remoteSandboxes });
     // Its sandboxes too (agents/sandbox.ts), by `sandbox:<name>`: nothing to ask, they are this station's;
     // then remote Colab sandboxes advertised by peers in the workspace (`sandbox:<hostId>:<name>`).
     const colabAccts = this.colabAccounts?.(workspace) ?? [];
@@ -1139,9 +1143,10 @@ export class Remote {
       const workspace = text(request, "workspace");
       if (text(request, "method") === "describe") {
         const described = await this.bus.ask(remote.hostId, { method: "describe", workspace });
-        const found = this.advertisedSandboxes(remote.hostId, remote.hostId, described).find((s) => s.name === remote.name);
+        const want = remote.name.toLowerCase();
+        const found = this.advertisedSandboxes(remote.hostId, remote.hostId, described).find((s) => s.name.toLowerCase() === want);
         if (found === undefined) throw new Refused(`Colab sandbox ${remote.name} is not available on station ${remote.hostId}`);
-        return { hostId: remote.hostId, ...sandboxDescribed({ name: found.name, kind: "colab", gpu: found.gpu }, { accounts: found.accounts }) };
+        return { id: found.id, name: found.name, hostId: remote.hostId, ...sandboxDescribed({ name: found.name, kind: "colab", gpu: found.gpu }, { accounts: found.accounts }) };
       }
       const bytes = bytesOf(request);
       const forwarded = { ...(request ?? {}), sandbox: remote.name };

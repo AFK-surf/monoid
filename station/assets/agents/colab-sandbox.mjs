@@ -316,8 +316,15 @@ function ensureNode(ssh) {
 
 const bridged = (bridge, spec) => new Promise((resolve) => {
   const child = spawn(process.execPath, [bridge, "host", JSON.stringify(spec)], { stdio: "inherit" });
-  for (const s of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(s, () => child.kill(s));
-  child.on("exit", (code, signal) => resolve(code ?? (signal ? 128 : 1)));
+  const handlers = ["SIGTERM", "SIGINT", "SIGHUP"].map((s) => {
+    const fn = () => child.kill(s);
+    process.on(s, fn);
+    return [s, fn];
+  });
+  child.on("exit", (code, signal) => {
+    for (const [s, fn] of handlers) process.off(s, fn);
+    resolve(code ?? (signal ? 128 : 1));
+  });
 });
 
 async function runTask(o) {

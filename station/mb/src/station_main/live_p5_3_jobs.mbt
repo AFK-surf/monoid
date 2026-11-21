@@ -296,7 +296,7 @@ async fn P53Jobs::launch_in_sandbox(self : P53Jobs, job : @jobs_host.JobStart, p
     guard p53_colab_file(self.bus) is Some(script) else {
       raise P53Error("sandbox \{name}: colab-sandbox.mjs is not beside this station's program")
     }
-    ("node", script, p53_colab_accounts(self.bus, workspace~))
+    (p53_node_program(self.bus), script, p53_colab_accounts(self.bus, workspace~))
   } else {
     (reader_program(self.bus), "", [])
   }
@@ -365,6 +365,29 @@ async fn p53_colab_file(bus : LiveBus) -> String? {
     }
   }
   None
+}
+
+///|
+/// Finds a runnable Node binary: prefers `<data>/node/<ver>/bin/node` (or `node.exe` on Windows) installed by the
+/// station, falling back to `resolved_program("node", None)` (PATH / system dirs) or bare `"node"`.
+async fn p53_node_program(bus : LiveBus) -> String {
+  let node_dir = @nodepath.join(sep(), [bus.data, "node"])
+  let entries = match (try { Ok(bus.host.shell("fs.readdir", { "path": jstr(node_dir) })) } catch { e => Err(e) }) {
+    Ok((Array(xs), _)) => xs.filter_map(x => if x is String(s) && !s.has_prefix(".") { Some(s) } else { None })
+    _ => []
+  }
+  entries.sort_by((a, b) => b.compare(a))
+  for ver in entries {
+    let bin = if is_windows() {
+      @nodepath.join(sep(), [node_dir, ver, "node.exe"])
+    } else {
+      @nodepath.join(sep(), [node_dir, ver, "bin", "node"])
+    }
+    if p53_file_is(bus.host, bin) {
+      return bin
+    }
+  }
+  resolved_program("node", None)
 }
 
 ///|

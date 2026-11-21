@@ -42,9 +42,12 @@ priv struct P53Remote {
   /// none), and whether it told every one it read as it started (`usedReady`).
   used : Map[String, Json]
   mut used_ready : Bool
-  /// Remote Colab sandboxes discovered from peers' `describe` answers, cached per workspace.
-  remote_sandboxes : Map[String, Array[Json]]
+  /// Remote Colab sandboxes discovered from peers' `describe` answers, cached per workspace with a short TTL.
+  remote_sandboxes : Map[String, (Double, Array[Json])]
 }
+
+///|
+let p53_remote_sandboxes_ttl_ms : Double = 30000.0
 
 ///|
 /// host.ts CPU_EVERY_MS, CPU_SPAN_MS.
@@ -191,6 +194,7 @@ let p53_remote_sandbox_read_or_cleanup : Array[String] = [
 /// asked for whole) sent after it. A refusal is the program's answered refusal (`Refused`).
 async fn P53Remote::answer(self : P53Remote, workspace : String, peer : String, request : Json, bytes : Bytes?) -> (Json, Bytes?) {
   let sb_name = jtext_or_empty(request, "sandbox")
+  let mut canonical_sb : String? = None
   if sb_name != "" {
     if !@agent_runtimes.sandbox_name_ok(sb_name) {
       raise @jobs_host.Refused("invalid sandbox name")
@@ -210,6 +214,9 @@ async fn P53Remote::answer(self : P53Remote, workspace : String, peer : String, 
         _ => raise @jobs_host.Refused("Colab sandbox \{sb_name} is not available for this workspace on this station")
       }
     }
+    if matched is Some(d) {
+      canonical_sb = Some(d.name)
+    }
   }
   let host = self.bus.host
   let mut asked = match request {
@@ -217,6 +224,9 @@ async fn P53Remote::answer(self : P53Remote, workspace : String, peer : String, 
       let c = m.copy()
       c.remove("landed")
       c.remove("bytes")
+      if canonical_sb is Some(canon) {
+        c["sandbox"] = jstr(canon)
+      }
       Json::object(c)
     }
     _ => request
@@ -301,13 +311,16 @@ async fn P53Remote::ask(self : P53Remote, station : String, request : Json, byte
         BusError(m) => raise @jobs_host.Unreached(m)
         e => raise @jobs_host.Unreached(p53_words(e))
       }
-      let found = p53_advertised_sandboxes(host_id, host_id, described).iter().find_first(s => jtext_or_empty(s, "name") == sb_name)
+      let want = sb_name.to_lower()
+      let found = p53_advertised_sandboxes(host_id, host_id, described).iter().find_first(s => jtext_or_empty(s, "name").to_lower() == want)
       guard found is Some(s) else {
         raise @jobs_host.Refused("Colab sandbox \{sb_name} is not available on station \{host_id}")
       }
-      let d : @agent_runtimes.Sandbox = { name: sb_name, kind: "colab", target: "", size: None, identity: None, gpu: Some(jtext_or_empty(s, "gpu")) }
+      let canon = jtext_or_empty(s, "name")
+      let d : @agent_runtimes.Sandbox = { name: canon, kind: "colab", target: "", size: None, identity: None, gpu: Some(jtext_or_empty(s, "gpu")) }
       let accounts = jnum_of(s, "accounts").map(n => n.to_int()).unwrap_or(0)
-      return (jwith(of_jv(@agent_runtimes.sandbox_described(d, accounts~)), "hostId", jstr(host_id)), None)
+      let out = of_jv(@agent_runtimes.sandbox_described(d, accounts~))
+      return (jwith(jwith(jwith(out, "id", jtext_or_empty(s, "id") |> jstr), "name", jstr(canon)), "hostId", jstr(host_id)), None)
     }
     let forwarded = jwith(request, "sandbox", jstr(sb_name))
     return self.bus.call_peer(host_id, Some(ws_str), meth, forwarded, bytes?) catch {
@@ -740,7 +753,7 @@ async fn P53Remote::station_list(self : P53Remote, workspace : String, session :
       self.bus.rigs_call("rigs.stationListed", [jstr(workspace), jstr(session), rig, answer.unwrap_or(Json::null())])
     }),
   )
-  self.remote_sandboxes[workspace] = discovered
+  self.remote_sandboxes[workspace] = (self.bus.store.now().to_double(), discovered)
   out
 }
 
@@ -789,7 +802,8 @@ fn p53_advertised_sandboxes(peer_id : String, host_name : String, described : Js
 
 ///|
 async fn P53Remote::remote_sandboxes_for(self : P53Remote, workspace : String) -> Array[Json] {
-  if self.remote_sandboxes.get(workspace) is Some(cached) {
+  let now = self.bus.store.now().to_double()
+  if self.remote_sandboxes.get(workspace) is Some((at, cached)) && now - at < p53_remote_sandboxes_ttl_ms {
     return cached
   }
   let roster = self.roster(workspace)
@@ -824,7 +838,7 @@ async fn P53Remote::remote_sandboxes_for(self : P53Remote, workspace : String) -
       }),
     ),
   )
-  self.remote_sandboxes[workspace] = found
+  self.remote_sandboxes[workspace] = (self.bus.store.now().to_double(), found)
   found
 }
 

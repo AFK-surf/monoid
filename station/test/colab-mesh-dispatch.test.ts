@@ -162,9 +162,10 @@ describe("cross-station Colab sandbox mesh dispatch", () => {
     assert.equal(g4.accounts, 1);
     assert.equal((listed.stations as Json[]).some((s) => s.name === "l4es-only"), false);
 
-    // Single-target station_list on remote sandbox id
-    const detail = await callTool(a.remote, "station_list", "s1", { station: `sandbox:${ID_B}:colab-g4` });
+    // Single-target station_list on remote sandbox id (including mixed case)
+    const detail = await callTool(a.remote, "station_list", "s1", { station: `sandbox:${ID_B}:COLAB-G4` });
     assert.equal(detail.sandboxKind, "colab");
+    assert.equal(detail.name, "colab-g4");
     assert.equal(detail.gpu, "G4");
     assert.equal(detail.accounts, 1);
 
@@ -198,6 +199,24 @@ describe("cross-station Colab sandbox mesh dispatch", () => {
     const backFile = join(sessionWs, "station-back", "gpu-job-1", "out.txt");
     assert.equal(existsSync(backFile), true);
     assert.equal(readFileSync(backFile, "utf8"), "gpu-result");
+
+    // 2b. Explicit mixed-case remote sandbox id (`sandbox:<B>:COLAB-G4`) is canonicalized on the host to `colab-g4`.
+    const prepUpper = await callTool(a.remote, "station_task", "s1", {
+      station: `sandbox:${ID_B}:COLAB-G4`,
+      action: "prepare",
+      key: "gpu-job-upper",
+      name: "gpu upper",
+      command: "printf 'upper-ok'",
+    });
+    assert.equal(prepUpper.prepared, true);
+    await callTool(a.remote, "station_task", "s1", {
+      station: `sandbox:${ID_B}:COLAB-G4`,
+      action: "start",
+      key: "gpu-job-upper",
+    });
+    await until(() => a.told.some(([, text]) => text.includes("gpu-job-upper") && text.includes("exited")));
+    assert.equal(spawnedSandboxes.length, 2);
+    assert.equal(spawnedSandboxes[1]!.sandbox, "colab-g4");
 
     // 3. Attempting to call B's local l4es sandbox remotely is Refused.
     await assert.rejects(

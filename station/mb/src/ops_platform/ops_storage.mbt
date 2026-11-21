@@ -129,6 +129,7 @@ pub let storage_manifest : Array[StorageEntry] = [
     reclaim="Upkeep goneBoardFiles",
   ),
   se("homes", "authoritative", "the runtimes' homes (accounts' sign-ins, their settings)", reclaim="sessions/lifecycle.ts deleteSession (exclusive transcripts), ops/storage.ts relieveOrphanTranscripts (low disk only)"),
+  se("colab", "bounded-ephemeral", "the Colab sandboxes' CLI venv, synced CLI homes, SSH key and VM records (agents/sandbox.ts colabPool; no authoritative credentials)", reclaim="agents/sandbox.ts reapColab"),
   se("repos", "session-bound", "the repositories' shared clones", reclaim="Upkeep pruneAllRepoBranches (daily), sessions/lifecycle.ts relieveRepos (low disk only)"),
   se(
     "repo-bundles",

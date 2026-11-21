@@ -209,7 +209,8 @@ pub async fn start_live_p5_3(bus : LiveBus) -> Unit {
             ("pool", jstr(pool)),
             ("accounts", Json::array(accts.map(a => jobj_of([("id", jstr(a.0)), ("authFile", jstr(a.1))])))),
           ]).stringify()
-          match (try { Ok(spawn(bus.host, "node", [script, "reap", payload], stdout=Ignored, stderr=Ignored)) } catch { e => Err(e) }) {
+          let node = p53_node_program(bus)
+          match (try { Ok(spawn(bus.host, node, [script, "reap", payload], stdout=Ignored, stderr=Ignored)) } catch { e => Err(e) }) {
             Ok(proc) => ignore(proc.finished()) catch { _ => () }
             Err(_) => ()
           }
