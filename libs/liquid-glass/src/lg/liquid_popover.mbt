@@ -16,12 +16,13 @@ pub fn liquid_popover_node(
   placement? : @headless.Placement = BelowCenter,
   width? : Double = 280.0,
   anchor_size? : (Double, Double) = (40.0, 40.0),
+  trigger_face? : (@view.View) -> Unit,
   loc~ : SourceLoc,
 ) -> @view.View {
   let pop = @headless.Popover::new(open, set_open)
   let (side, along) = ovl_beside_of(placement)
   let trigger = pop.trigger(parent, trigger_label, trigger_look, made_for=loc)
-  ovl_attach_trigger_recoil(trigger, open)
+  let handoff = ovl_setup_trigger_handoff(trigger, open, side, anchor_size, trigger_face)
   pop.layer(
     host,
     content_label,
@@ -33,7 +34,7 @@ pub fn liquid_popover_node(
         None => ()
       }
       v.width(Is(Some(width))) |> ignore
-      ovl_attach_liquid_morph(v, v, side, along, ovl_popover_radius, anchor_size, fn(content_box) {
+      ovl_attach_liquid_morph(v, v, side, along, ovl_popover_radius, handoff, fn(content_box) {
         content_box
         .padding(Is((ovl_popover_pad, ovl_popover_pad, ovl_popover_pad, ovl_popover_pad)))
         |> ignore

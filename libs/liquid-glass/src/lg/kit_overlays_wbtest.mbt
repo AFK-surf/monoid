@@ -1035,3 +1035,61 @@ test "liquid_menu_node gap-driven morph has zero truncation jump, bridges across
   let (_, _, _, _, _, _, _, snaps2) = ovl_menu_morph_snapshot()
   assert_eq(snaps, snaps2)
 }
+
+///|
+test "liquid_menu_node with trigger_face hands off trigger cleanly with <= 2 glass instances on every 16ms frame" {
+  let open = @signals.signal(false)
+  let t = ovl_case(fn(page, host) {
+    liquid_menu_node(
+      page,
+      host,
+      fn() { open.get() },
+      fn(v) { open.set(v) },
+      fn() { "Actions" },
+      ovl_test_trigger("Actions"),
+      fn() {
+        [
+          LiquidMenuEntry::item(label="Duplicate", shortcut="⌘D", on_select=fn() {  }),
+          LiquidMenuEntry::separator(),
+          LiquidMenuEntry::item(label="Delete", destructive=true, on_select=fn() {  }),
+        ]
+      },
+      menu_label=fn() { "Handoff Menu" },
+      anchor_size=(84.0, 40.0),
+      trigger_face=fn(v) {
+        v.box(fn(w) { w.words(Is("Actions"), look=words_at(ovl_type_body)).ink(By(fn() { colors().content })) |> ignore })
+        |> ignore
+      },
+    )
+    |> ignore
+  })
+  let trigger_rect = t.get(Button, label="Actions").rect
+  let trigger_bottom = trigger_rect.1 + trigger_rect.3
+  let mut max_glass_count = 0
+  let mut saw_air_gap_bridge = false
+  t.act(Button, Activate, label="Actions")
+  for _ in 0..<ovl_morph_step_count {
+    t.run_for(ovl_morph_step_ms)
+    let gs = t.drawn_glass()
+    if gs.length() > max_glass_count {
+      max_glass_count = gs.length()
+    }
+    if gs.length() == 2 {
+      let shell_top = gs[1].1
+      if shell_top > trigger_bottom + 0.5 && shell_top < trigger_bottom + ovl_morph_break_gap {
+        saw_air_gap_bridge = true
+      }
+    }
+  }
+  t.run_for(springs_out)
+  let rest_glass = t.drawn_glass().length()
+  assert_no_nested_glass(t, "liquid_menu_handoff rest")
+  assert_eq(t.audit(), [])
+  t.key(@ui.key_escape)
+  t.run_for(ovl_morph_leave_ms + a_frame)
+  let closed_glass = t.drawn_glass().length()
+  assert_true(max_glass_count <= 2, msg="expected zero double-glass stacking (<= 2 glass rects), got \{max_glass_count}")
+  assert_true(saw_air_gap_bridge, msg="expected air-gap capillary bridge frame with trigger_face handoff")
+  assert_eq(rest_glass, 2)
+  assert_eq(closed_glass, 1)
+}

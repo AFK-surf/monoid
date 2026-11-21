@@ -121,13 +121,14 @@ pub fn liquid_menu_node(
   placement? : @headless.Placement = BelowStart,
   min_width? : Double = 212.0,
   anchor_size? : (Double, Double) = (40.0, 40.0),
+  trigger_face? : (@view.View) -> Unit,
   loc~ : SourceLoc,
 ) -> @view.View {
   let pop = @headless.Popover::new(open, set_open)
   let cleaned = fn() { ovl_clean_menu_entries(entries()) }
   let (side, along) = ovl_beside_of(placement)
   let trigger = pop.trigger(parent, trigger_label, trigger_look, made_for=loc)
-  ovl_attach_trigger_recoil(trigger, open)
+  let handoff = ovl_setup_trigger_handoff(trigger, open, side, anchor_size, trigger_face)
   pop.layer(
     host,
     menu_label,
@@ -152,7 +153,7 @@ pub fn liquid_menu_node(
         made_for=loc,
         fn(panel, menu) {
           panel.min_width(Is(Some(min_width))) |> ignore
-          ovl_attach_liquid_morph(v, panel, side, along, ovl_menu_radius, anchor_size, fn(content_box) {
+          ovl_attach_liquid_morph(v, panel, side, along, ovl_menu_radius, handoff, fn(content_box) {
             content_box
             .padding(Is((ovl_menu_pad, ovl_menu_pad, ovl_menu_pad, ovl_menu_pad)))
             .gap(Is(ovl_menu_item_gap_y))
@@ -353,6 +354,42 @@ pub fn liquid_select_node(
       placeholder
     }
   }
+  let open_fn = fn() { open.get() }
+  let chev_way = @motion.NodeWay::new(if @signals.untracked(open_fn) { ovl_turn_half } else { 0.0 })
+  let draw_select_face = fn(box : @view.View) {
+    box
+    .lies_along(Is(Between))
+    .padding(Is((ovl_select_px, 0.0, ovl_select_px, 0.0)))
+    .gap(Is(ovl_select_gap))
+    |> ignore
+    box.box(fn(w) {
+      w
+      .grow(Is(1.0))
+      .words(By(current_text), look=words_at(ovl_type_body))
+      .ink(
+        By(fn() {
+          let opts = options()
+          let i = selected()
+          if i >= 0 && i < opts.length() {
+            colors().content
+          } else {
+            ovl_muted_ink()
+          }
+        }),
+      )
+      |> ignore
+    })
+    |> ignore
+    box.box(fn(chev) {
+      chev
+      .width(Is(Some(ovl_select_chevron)))
+      .height(Is(Some(ovl_select_chevron)))
+      .turn(By(fn() { chev_way.shown(chev) }))
+      .shapes(By(fn() { ovl_chevron_down_shapes(ovl_select_chevron, ovl_muted_ink()) }))
+      |> ignore
+    })
+    |> ignore
+  }
   let trigger = pop.trigger(
     parent,
     fn() {
@@ -368,58 +405,46 @@ pub fn liquid_select_node(
     made_for=loc,
     fn(t, disc) {
       let press_way = @motion.NodeWay::new(0.0)
-      let recoil_way = ovl_trigger_recoil_way(t, fn() { open.get() })
-      let chev_way = @motion.NodeWay::new(if @signals.untracked(fn() { open.get() }) { ovl_turn_half } else { 0.0 })
       t.reacts(at_start=false, fn() { !disc.disabled() && disc.pressed() }, fn(on) {
         press_way.go(t, if on { 1.0 } else { 0.0 }, @motion.snappy_damped)
       })
-      t.reacts(at_start=false, fn() { open.get() }, fn(is_open) {
+      t.reacts(at_start=false, open_fn, fn(is_open) {
         chev_way.go(t, if is_open { ovl_turn_half } else { 0.0 }, @motion.snappy_damped)
       })
       t
       .row(Is(true))
       .lines_up(Is(Some(Middle)))
-      .lies_along(Is(Between))
       .width(Is(Some(width)))
       .height(Is(Some(ovl_select_h)))
-      .padding(Is((ovl_select_px, 0.0, ovl_select_px, 0.0)))
-      .gap(Is(ovl_select_gap))
       .radius(Is(ovl_select_radius))
       .shadow(Is(shadow_default))
-      .glass(By(fn() { Some(ovl_capsule_glass()) }))
-      .scale(By(fn() { (1.0 - 0.02 * clamp(press_way.shown(t), 0.0, 1.0)) * recoil_way.shown(t) }))
-      .alpha(By(fn() { if disc.disabled() { ovl_disabled_alpha } else { 1.0 } }))
+      .glass(By(fn() { Some(ovl_morph_bridge_glass(merge=0.0)) }))
+      .scale(By(fn() { 1.0 - 0.02 * clamp(press_way.shown(t), 0.0, 1.0) }))
       |> ignore
       ovl_focus_ring(t, fn() { disc.focus_shown() }, ovl_select_radius)
-      t.box(fn(w) {
-        w
-        .grow(Is(1.0))
-        .words(By(current_text), look=words_at(ovl_type_body))
-        .ink(
-          By(fn() {
-            let opts = options()
-            let i = selected()
-            if i >= 0 && i < opts.length() {
-              colors().content
-            } else {
-              ovl_muted_ink()
-            }
-          }),
-        )
-        |> ignore
-      })
-      |> ignore
-      t.box(fn(chev) {
-        chev
-        .width(Is(Some(ovl_select_chevron)))
-        .height(Is(Some(ovl_select_chevron)))
-        .turn(By(fn() { chev_way.shown(chev) }))
-        .shapes(By(fn() { ovl_chevron_down_shapes(ovl_select_chevron, ovl_muted_ink()) }))
-        |> ignore
-      })
-      |> ignore
+      draw_select_face(t)
     },
   )
+  let handoff = ovl_setup_trigger_handoff(
+    trigger,
+    open_fn,
+    Bottom,
+    (width, ovl_select_h),
+    Some(draw_select_face),
+    attach_recoil=false,
+  )
+  trigger.alpha(
+    By(fn() {
+      if disabled() {
+        ovl_disabled_alpha
+      } else if handoff.is_bridging(trigger) {
+        0.0
+      } else {
+        1.0
+      }
+    }),
+  )
+  |> ignore
   pop.layer(
     host,
     label,
@@ -444,7 +469,7 @@ pub fn liquid_select_node(
         made_for=loc,
         fn(panel, menu) {
           panel.min_width(Is(Some(width))) |> ignore
-          ovl_attach_liquid_morph(v, panel, Bottom, Start, ovl_menu_radius, (width, ovl_select_h), fn(content_box) {
+          ovl_attach_liquid_morph(v, panel, Bottom, Start, ovl_menu_radius, handoff, fn(content_box) {
             content_box
             .padding(Is((ovl_menu_pad, ovl_menu_pad, ovl_menu_pad, ovl_menu_pad)))
             .gap(Is(ovl_menu_item_gap_y))

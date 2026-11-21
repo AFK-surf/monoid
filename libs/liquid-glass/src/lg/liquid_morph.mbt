@@ -1,17 +1,17 @@
-// Apple iOS 26/27 Liquid Glass Menu Morph with C2-continuous emergence, physically gap-driven
-// GPU SDF capillary bridge (`merged_liquid`), and zero-cliff pinch-off for anchored floating
-// overlays (`liquid_menu_node`, `liquid_select_node`, `liquid_popover_node`).
+// Apple iOS 26/27 Liquid Glass Menu Morph with zero-double-glass trigger handoff,
+// C2-continuous emergence, physically gap-driven GPU SDF capillary bridge (`merged_liquid`),
+// and zero-cliff pinch-off for anchored floating overlays (`liquid_menu_node`,
+// `liquid_select_node`, `liquid_popover_node`).
 //
-// Closed-form `@motion.NodeWay` architecture (zero frame loops, 60/120/24/7 fps invariant):
-// - Every spring uses `threshold = 0.001` (`backdrop_scale_x_spring`, `backdrop_scale_y_spring`,
-//   `snappy_damped`), eliminating end-of-curve truncation jumps.
-// - Capillary bridge `merge` decays continuously to `0.0` across `gap in [0.0, ovl_morph_break_gap (5.8)]`,
-//   passing smoothly through the SDF pinch-off neck (`m == 2 * gap`) with zero cliff.
-// - Once separated (`gap >= 5.8`, `m == 0.0`), `trigger_ghost` fades out smoothly as an independent
-//   `unmerged_liquid` instance across `gap in [5.8, 7.6]` before returning `.glass(None)` at rest.
-// - Optical parameters (`blur`, `bezel`, `refraction`) transition smoothly across `gap in [2.0, 7.8]`
-//   with identical `blur` on both siblings, and `content_box` reveals on an independent 160ms tween
-//   after a 170ms delay (70ms fade-out on close).
+// Architecture (closed-form `@motion.NodeWay`, 60/120/24/7 fps invariant):
+// - When `trigger_face` is provided (`OvlMorphHandoff`), the original `trigger` hides (`alpha=0`)
+//   during `is_bridging` (`gap < ovl_morph_break_gap`) while `trigger_ghost` + `shell` render as ONE
+//   single-layer GPU `merged_liquid` SDF using the trigger's exact glass recipe (`blur=2.1, bezel=14,
+//   refraction=18, rim=0.6`), and `trigger_face_box` draws the razor-sharp icon/label ON TOP of the
+//   glass (after `shell`, never breaking glass batching).
+// - At `gap >= 5.8pt`, `is_bridging` flips `false` in the exact same frame on both `trigger` and
+//   `host`: `trigger_ghost` (`m≈0`, trigger recipe) hands off pixel-identically to the real `trigger`,
+//   while `shell` smoothly transitions its material to `ovl_panel_glass()` via `material_way` (150ms).
 
 ///|
 /// Leave duration (ms) passed to `pop.layer(..., leave=ovl_morph_leave_ms)` so the closing capillary
@@ -27,7 +27,7 @@ let ovl_morph_merge_max : Double = 28.0
 let ovl_morph_break_gap : Double = 5.8
 
 ///|
-/// Physical air gap (pt) at which `trigger_ghost` completes its post-pinch fade-out and unmounts (`.glass(None)`).
+/// Physical air gap (pt) at which fallback `trigger_ghost` (when `trigger_face` is None) completes fade-out.
 let ovl_morph_ghost_gone_gap : Double = 7.6
 
 ///|
@@ -40,6 +40,16 @@ let ovl_morph_reveal_delay_ms : Double = 170.0
 
 ///|
 let ovl_morph_reveal_close_ms : Double = 70.0
+
+///|
+/// Post-pinch material transition timing (ms): `shell` glides from trigger-matched clear glass to `ovl_panel_glass()`.
+let ovl_morph_mat_open_ms : Double = 150.0
+
+///|
+let ovl_morph_mat_delay_ms : Double = 190.0
+
+///|
+let ovl_morph_mat_close_ms : Double = 90.0
 
 ///|
 /// GLSL-style cubic Hermite smoothstep supporting both rising (`edge0 < edge1`) and falling (`edge0 > edge1`) ramps.
@@ -73,15 +83,27 @@ fn ovl_morph_pivot(side : @view.Side, along : @view.Along) -> @view.Pivot {
 }
 
 ///|
+/// Closed-form physical edge gap (pt) between trigger and morphing shell, independent of panel size `(w, h)`.
+/// Allows both the original `trigger` and the overlay `host` to evaluate bit-identical `gap` in the same frame.
+fn ovl_morph_gap(side : @view.Side, anchor_size : (Double, Double), p : Double) -> Double {
+  let pt = clamp(p, 0.0, 1.0)
+  let axis = match side {
+    Bottom | Top => anchor_size.1
+    Right | Left => anchor_size.0
+  }
+  (ovl_float_gap + axis) * pt - axis
+}
+
+///|
 /// Continuous capillary bridge merge radius (pt) driven strictly by physical edge gap `gap`:
 /// - `gap >= ovl_morph_break_gap` or `p <= 0.005`: strictly `0.0`.
-/// - `gap <= 0.0`: full `ovl_morph_merge_max * onset`.
+/// - `gap <= 0.0`: ramps smoothly via `onset = ovl_smoothstep(0.0, 0.22, p)` (so `p=0.01` already batches in SDF).
 /// - `0.0 < gap < ovl_morph_break_gap`: decays continuously from `28.0` to `0.0` with zero cliff.
 fn ovl_morph_bridge_merge_for_gap(p : Double, gap : Double) -> Double {
   if gap >= ovl_morph_break_gap || p <= 0.005 {
     return 0.0
   }
-  let onset = ovl_smoothstep(0.0, 0.08, p)
+  let onset = ovl_smoothstep(0.0, 0.22, p)
   if gap <= 0.0 {
     ovl_morph_merge_max * onset
   } else {
@@ -90,28 +112,48 @@ fn ovl_morph_bridge_merge_for_gap(p : Double, gap : Double) -> Double {
 }
 
 ///|
-/// Shared dynamic Liquid Glass recipe for both `trigger_ghost` and `shell`.
-/// Transitions smoothly across `gap in [2.0, 7.8]` (`blur 1.8 -> 8.0`, `bezel 12.0 -> 20.0`,
-/// `refraction 16.0 -> 36.0`, `chroma = 0.0`) with bit-identical `blur` on both siblings, and matches
-/// `ovl_panel_glass()` bit-for-bit once settled (`energy <= 0.001 && merge <= 0.001 && gap >= 7.8`).
-fn ovl_morph_panel_glass(gap : Double, energy : Double, merge~ : Double) -> @paint.Glass {
-  if energy <= 0.001 && merge <= 0.001 && gap >= ovl_float_gap - 0.2 {
+/// Trigger-matched clear Liquid Glass recipe used during capillary bridging (`blur=2.1, bezel=14, refraction=18,
+/// rim=0.6, chroma=0.0`), matching `lib_nav_menu_trigger` bit-for-bit so pinch-off handoff has zero pixel pop.
+fn ovl_morph_bridge_glass(merge~ : Double) -> @paint.Glass {
+  let d = is_dark()
+  let m = if merge > 0.0 { merge } else { 0.0 }
+  @paint.Glass::liquid(
+    blur=2.1,
+    tint=if d { 0x202020FFL } else { 0xFDFCFD67L },
+    solid=if d { 0x1E1F24FFL } else { 0xFAFAFAFFL },
+    saturation=1.0,
+    rim=0.6,
+    bezel=14.0,
+    refraction=18.0,
+    chroma=0.0,
+    merge=m,
+    adaptive=false,
+  )
+}
+
+///|
+/// Panel shell glass recipe: returns bit-identical `ovl_morph_bridge_glass(merge~)` while `merge > 0.01`
+/// (guaranteeing GPU `merged_liquid` batching & 0-diff handoff at pinch-off), then glides smoothly along
+/// `mat_t in [0, 1]` to `ovl_panel_glass()` (`blur 2.1->8.0, bezel 14->20, refraction 18->36`).
+fn ovl_morph_shell_glass(mat_t : Double, merge~ : Double) -> @paint.Glass {
+  if merge > 0.01 {
+    return ovl_morph_bridge_glass(merge~)
+  }
+  let t = clamp(mat_t, 0.0, 1.0)
+  if t >= 0.999 {
     return ovl_panel_glass()
   }
   let d = is_dark()
-  let e = clamp(energy, 0.0, 1.0)
-  let m = if merge > 0.0 { merge } else { 0.0 }
-  let glass_t = ovl_smoothstep(2.0, ovl_float_gap - 0.2, gap)
   @paint.Glass::liquid(
-    blur=lerp(1.8, 8.0, glass_t),
+    blur=lerp(2.1, 8.0, t),
     tint=if d { 0x202020FFL } else { 0xFDFCFD67L },
     solid=if d { 0x1C1C1EFFL } else { 0xF7F7FAFFL },
     saturation=1.0,
-    rim=0.6 + 0.12 * e,
-    bezel=lerp(12.0, 20.0, glass_t),
-    refraction=lerp(16.0, 36.0, glass_t),
+    rim=0.6,
+    bezel=lerp(14.0, 20.0, t),
+    refraction=lerp(18.0, 36.0, t),
     chroma=0.0,
-    merge=m,
+    merge=0.0,
     adaptive=false,
   )
 }
@@ -129,11 +171,56 @@ fn ovl_trigger_recoil_way(trigger : @view.View, open : () -> Bool) -> @motion.No
 }
 
 ///|
-/// Attaches a subtle liquid elastic recoil (`0.94 -> 1.0` on `@motion.tactile_bounce`) to a menu/popover trigger
-/// whenever its overlay opens.
-fn ovl_attach_trigger_recoil(trigger : @view.View, open : () -> Bool) -> Unit {
-  let way = ovl_trigger_recoil_way(trigger, open)
-  trigger.scale(By(fn() { way.shown(trigger) })) |> ignore
+/// Shared handoff handle linking a trigger node and its overlay layer so both read the exact same `p_way`
+/// and flip `is_bridging` in the exact same frame (zero double-glass stacking, zero icon blur).
+priv struct OvlMorphHandoff {
+  p_way : @motion.NodeWay
+  side : @view.Side
+  anchor_size : (Double, Double)
+  open : () -> Bool
+  trigger_face : ((@view.View) -> Unit)?
+  layer_live : Ref[() -> Bool]
+}
+
+///|
+fn OvlMorphHandoff::is_bridging(self : OvlMorphHandoff, node : @view.View) -> Bool {
+  let p = self.p_way.shown(node)
+  let gap = ovl_morph_gap(self.side, self.anchor_size, p)
+  let active = (self.layer_live.val)()
+  active && gap < ovl_morph_break_gap && ((self.open)() || p > 0.01)
+}
+
+///|
+/// Creates a shared handoff handle and wires the trigger's visibility / recoil:
+/// - With `trigger_face`: hides original `trigger` (`alpha=0`) during `is_bridging` while keeping its outer
+///   glass box unscaled (`scale=1.0`) for 0.00px alignment at handoff.
+/// - Without `trigger_face`: attaches the standard tactile recoil (`0.94 -> 1.0`) to `trigger`.
+fn ovl_setup_trigger_handoff(
+  trigger : @view.View,
+  open : () -> Bool,
+  side : @view.Side,
+  anchor_size : (Double, Double),
+  trigger_face : ((@view.View) -> Unit)?,
+  attach_recoil? : Bool = true,
+) -> OvlMorphHandoff {
+  let handoff : OvlMorphHandoff = {
+    p_way: @motion.NodeWay::new(0.0),
+    side,
+    anchor_size,
+    open,
+    trigger_face,
+    layer_live: Ref(fn() { false }),
+  }
+  match trigger_face {
+    Some(_) =>
+      trigger.alpha(By(fn() { if handoff.is_bridging(trigger) { 0.0 } else { 1.0 } })) |> ignore
+    None =>
+      if attach_recoil {
+        let way = ovl_trigger_recoil_way(trigger, open)
+        trigger.scale(By(fn() { way.shown(trigger) })) |> ignore
+      }
+  }
+  handoff
 }
 
 ///|
@@ -278,34 +365,45 @@ fn ovl_attach_liquid_morph(
   side : @view.Side,
   along : @view.Along,
   panel_radius : Double,
-  anchor_size : (Double, Double),
+  handoff : OvlMorphHandoff,
   content : (@view.View) -> Unit,
 ) -> () -> Bool {
+  let anchor_size = handoff.anchor_size
+  let has_face = handoff.trigger_face is Some(_)
+  let p_way = handoff.p_way
   let sx_way = @motion.NodeWay::new(0.0)
   let sy_way = @motion.NodeWay::new(0.0)
-  let p_way = @motion.NodeWay::new(0.0)
   let reveal_way = @motion.NodeWay::new(0.0)
+  let material_way = @motion.NodeWay::new(0.0)
+  let icon_recoil_way = @motion.NodeWay::new(1.0)
+  handoff.layer_live.val = fn() { layer.alive() && ((handoff.open)() || layer.leaving()) }
   layer.reacts(fn() { layer.leaving() }, fn(leaving) {
     if leaving {
       sx_way.go(layer, 0.0, @motion.snappy_damped)
       sy_way.go(layer, 0.0, @motion.snappy_damped)
       p_way.go(layer, 0.0, @motion.snappy_damped)
       reveal_way.go(layer, 0.0, @motion.tween(ovl_morph_reveal_close_ms, ease=@ui.Ease::Out))
+      material_way.go(layer, 0.0, @motion.tween(ovl_morph_mat_close_ms, ease=@ui.Ease::Out))
     } else {
       sx_way.go(layer, 1.0, @motion.backdrop_scale_x_spring)
       sy_way.go(layer, 1.0, @motion.backdrop_scale_y_spring)
-      p_way.go(layer, 1.0, @motion.backdrop_scale_y_spring)
+      p_way.go_from(layer, 0.0, 1.0, @motion.backdrop_scale_y_spring)
       reveal_way.go(
         layer,
         1.0,
         @motion.tween(ovl_morph_reveal_open_ms, ease=@ui.Ease::Out, delay=ovl_morph_reveal_delay_ms),
       )
+      material_way.go(
+        layer,
+        1.0,
+        @motion.tween(ovl_morph_mat_open_ms, ease=@ui.Ease::Out, delay=ovl_morph_mat_delay_ms),
+      )
+      if has_face {
+        icon_recoil_way.go_from(layer, 0.92, 1.0, @motion.tactile_bounce)
+      }
     }
   })
   let modal_live = fn() { !layer.leaving() }
-  let energy_of = fn(sx : Double, sy : Double, p : Double) -> Double {
-    clamp((1.0 - clamp(p, 0.0, 1.0)) * 1.2 + (sx - sy).abs() * 2.2, 0.0, 1.0)
-  }
   panel.by_room(fn(inner, room) {
     let content_ref : Ref[@view.View?] = Ref(None)
     let panel_h = fn() -> Double {
@@ -314,21 +412,45 @@ fn ovl_attach_liquid_morph(
         None => 0.0
       }
     }
-    let gap_on = fn(node : @view.View) -> Double {
-      let (_, g) = ovl_morph_shell_geom(
-        room.width(),
-        panel_h(),
-        side,
-        along,
-        anchor_size,
-        panel_radius,
-        sx_way.shown(node),
-        sy_way.shown(node),
-        p_way.shown(node),
-      )
-      g
+    let tw = anchor_size.0
+    let th = anchor_size.1
+    let tr = th * 0.5
+    // 1. Trigger outside-only shadow during handoff (preserves trigger's exact shadow while real trigger is hidden)
+    if has_face {
+      inner.box(fn(trigger_shadow_box) {
+        trigger_shadow_box
+        .over(Is(true))
+        .points(Is(false))
+        .width(Is(Some(tw)))
+        .height(Is(Some(th)))
+        .radius(Is(tr))
+        .shadow_outside(Is(true))
+        .offset(
+          By(fn() {
+            let (tx, ty, _, _, _) = ovl_morph_trigger_rect(
+              room.width(),
+              panel_h(),
+              side,
+              along,
+              anchor_size,
+            )
+            (tx, ty)
+          }),
+        )
+        .shadow(
+          By(fn() {
+            if handoff.is_bridging(trigger_shadow_box) {
+              shadow_default
+            } else {
+              shadow_none
+            }
+          }),
+        )
+        |> ignore
+      })
+      |> ignore
     }
-    // 1. Preceding outside-only shadow layer (zero `.glass`, never breaks glass batching)
+    // 2. Panel outside-only shadow layer (zero `.glass`, never breaks glass batching)
     inner.box(fn(shadow_box) {
       shadow_box
       .over(Is(true))
@@ -361,23 +483,27 @@ fn ovl_attach_liquid_morph(
       |> ignore
     })
     |> ignore
-    // 2 & 3. Strictly adjacent liquid glass siblings (`trigger_ghost` + `shell`): zero shadow, zero ground,
-    //        zero children, identical `blur` so Metal / WebGL 2 batches them into one SDF `sd_group` while
-    //        `m > 0.01`, then `trigger_ghost` fades out smoothly as an independent unmerged glass across
-    //        `gap in [5.8, 7.6]` before returning `.glass(None)` at rest.
+    // 3 & 4. Strictly adjacent liquid glass siblings (`trigger_ghost` + `shell`): zero shadow, zero ground,
+    //        zero children, bit-identical trigger glass recipe (`blur=2.1, bezel=14, refraction=18, rim=0.6`)
+    //        during bridging so Metal / WebGL 2 merges them into ONE SDF `sd_group` with 0-diff handoff.
     inner.box(fn(trigger_ghost) {
-      let tw = anchor_size.0
-      let th = anchor_size.1
-      let tr = th * 0.5
       let ghost_alpha = fn() -> Double {
-        let p = p_way.shown(trigger_ghost)
-        let ga = ovl_smoothstep(0.0, 0.16, p)
-        let gap = gap_on(trigger_ghost)
-        let m = ovl_morph_bridge_merge_for_gap(p, gap)
-        if m > 0.01 {
-          ga
+        if has_face {
+          if handoff.is_bridging(trigger_ghost) {
+            1.0
+          } else {
+            0.0
+          }
         } else {
-          ga * (1.0 - ovl_smoothstep(ovl_morph_break_gap, ovl_morph_ghost_gone_gap, gap))
+          let p = p_way.shown(trigger_ghost)
+          let ga = ovl_smoothstep(0.0, 0.16, p)
+          let gap = ovl_morph_gap(side, anchor_size, p)
+          let m = ovl_morph_bridge_merge_for_gap(p, gap)
+          if m > 0.01 {
+            ga
+          } else {
+            ga * (1.0 - ovl_smoothstep(ovl_morph_break_gap, ovl_morph_ghost_gone_gap, gap))
+          }
         }
       }
       trigger_ghost
@@ -404,11 +530,9 @@ fn ovl_attach_liquid_morph(
           let p = p_way.shown(trigger_ghost)
           let a = ghost_alpha()
           if a > 0.01 {
-            let sx = sx_way.shown(trigger_ghost)
-            let sy = sy_way.shown(trigger_ghost)
-            let gap = gap_on(trigger_ghost)
+            let gap = ovl_morph_gap(side, anchor_size, p)
             let m = ovl_morph_bridge_merge_for_gap(p, gap)
-            Some(ovl_morph_panel_glass(gap, energy_of(sx, sy, p), merge=m))
+            Some(ovl_morph_bridge_glass(merge=m))
           } else {
             None
           }
@@ -422,17 +546,28 @@ fn ovl_attach_liquid_morph(
       .over(Is(true))
       .points(Is(false))
       .radius(Is(panel_radius))
-      .alpha(By(fn() { ovl_smoothstep(0.0, 0.16, p_way.shown(shell)) }))
+      .alpha(
+        By(fn() {
+          let p = p_way.shown(shell)
+          if has_face {
+            if p <= 0.005 { 0.0 } else { 1.0 }
+          } else {
+            ovl_smoothstep(0.0, 0.16, p)
+          }
+        }),
+      )
       .glass(
         By(fn() {
           let p = p_way.shown(shell)
-          let ga = ovl_smoothstep(0.0, 0.16, p)
+          if has_face && p <= 0.005 {
+            return None
+          }
+          let ga = if has_face { 1.0 } else { ovl_smoothstep(0.0, 0.16, p) }
           if ga > 0.01 {
-            let sx = sx_way.shown(shell)
-            let sy = sy_way.shown(shell)
-            let gap = gap_on(shell)
+            let gap = ovl_morph_gap(side, anchor_size, p)
             let m = ovl_morph_bridge_merge_for_gap(p, gap)
-            Some(ovl_morph_panel_glass(gap, energy_of(sx, sy, p), merge=m))
+            let mat_t = material_way.shown(shell)
+            Some(ovl_morph_shell_glass(mat_t, merge=m))
           } else {
             None
           }
@@ -457,7 +592,39 @@ fn ovl_attach_liquid_morph(
       |> ignore
     })
     |> ignore
-    // 4. Foreground content box: smooth 160ms reveal after 170ms delay (70ms fade-out first on close)
+    // 5. Razor-sharp trigger face drawn ON TOP of the merged glass (after `shell`, never breaks glass batching)
+    match handoff.trigger_face {
+      Some(draw_face) =>
+        inner.box(fn(trigger_face_box) {
+          trigger_face_box
+          .over(Is(true))
+          .points(Is(false))
+          .width(Is(Some(tw)))
+          .height(Is(Some(th)))
+          .row(Is(true))
+          .lines_up(Is(Some(Middle)))
+          .lies_along(Is(Middle))
+          .offset(
+            By(fn() {
+              let (tx, ty, _, _, _) = ovl_morph_trigger_rect(
+                room.width(),
+                panel_h(),
+                side,
+                along,
+                anchor_size,
+              )
+              (tx, ty)
+            }),
+          )
+          .scale(By(fn() { icon_recoil_way.shown(trigger_face_box) }))
+          .alpha(By(fn() { if handoff.is_bridging(trigger_face_box) { 1.0 } else { 0.0 } }))
+          |> ignore
+          draw_face(trigger_face_box)
+        })
+        |> ignore
+      None => ()
+    }
+    // 6. Foreground content box: smooth 160ms reveal after 170ms delay (70ms fade-out first on close)
     inner.box(fn(content_box) {
       content_ref.val = Some(content_box)
       content_box

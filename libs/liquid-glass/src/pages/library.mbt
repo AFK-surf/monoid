@@ -186,13 +186,13 @@ fn lib_glass_trigger(label : String, tint? : Int64 = @lg.clear) -> (@view.View, 
       }
       Some(
         @paint.Glass::liquid(
-          blur=3.0,
+          blur=2.1,
           tint=g_tint,
           solid~,
           saturation=1.0,
           rim=0.6,
-          bezel=16.0,
-          refraction=24.0,
+          bezel=14.0,
+          refraction=18.0,
           chroma=0.0,
           merge=0.0,
           adaptive=false,
@@ -977,6 +977,13 @@ fn lib_overlays_section(
           },
           menu_label=fn() { "Demo Menu" },
           anchor_size=(142.0, 48.0),
+          trigger_face=fn(v) {
+            v.box(fn(w) {
+              w.words(Is("Open Menu"), look=@lg.words_at(15.0, weight=@lg.weight_medium)).ink(By(fn() { @lg.colors().content }))
+              |> ignore
+            })
+            |> ignore
+          },
         )
         |> ignore
         @lg.liquid_select_node(
@@ -1028,6 +1035,13 @@ fn lib_overlays_section(
           },
           placement=BelowStart,
           anchor_size=(144.0, 48.0),
+          trigger_face=fn(v) {
+            v.box(fn(w) {
+              w.words(Is("Popover"), look=@lg.words_at(15.0, weight=@lg.weight_medium)).ink(By(fn() { @lg.colors().content }))
+              |> ignore
+            })
+            |> ignore
+          },
         )
         |> ignore
         @lg.liquid_tooltip_node(
@@ -1451,6 +1465,7 @@ fn library_page(
               menu_label=fn() { "Studio Menu" },
               placement=BelowEnd,
               anchor_size=(36.0, 36.0),
+              trigger_face=fn(v) { icon_sliders(v, 16.0, fn() { @lg.colors().content }) },
             )
             |> ignore
           },
