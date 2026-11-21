@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e45da35ec](https://github.com/AFK-surf/monoid/commit/e45da35ec1e054ea394aa6d692de2c30c5175a8b) feat(mbui,sf-ui,liquid-glass): align dark liquid g | 2.64 | 3.55 | 14.43 | 36.47 | 55.06 | 31.96 | 64.47 | 98.58 | 123.22 |
 | [dcc0e30c5](https://github.com/AFK-surf/monoid/commit/dcc0e30c52ae14fd1619133294a2ca5065c602ae) feat(sfpages): make the mouse quote pill single-la | 2.64 | 3.55 | 14.42 | 36.47 | 55.06 | 31.96 | 64.47 | 98.47 | 122.73 |
 | [c86bcdee8](https://github.com/AFK-surf/monoid/commit/c86bcdee8df51053775ef26ad6b1e855521819f5) perf(cold-start): F4a POST /changed/shared + own m | 2.64 | 3.55 | 14.42 | 36.47 | 55.06 | 31.93 | 64.47 | 98.55 | 120.03 |
 | [7568ac3f7](https://github.com/AFK-surf/monoid/commit/7568ac3f70ffc0765351b1a302077419225c2f85) feat(mbui,sf-ui,sfpages): add continuous Glass.str | 2.64 | 3.55 | 14.42 | 36.44 | 55.05 | 31.93 | 64.47 | 98.55 | 127.18 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [5a4092b7e](https://github.com/AFK-surf/monoid/commit/5a4092b7e85121be38f4de74e0f05840c8ef261f) fix(mbui): hide leaving nodes from the semantics t | 2.65 | 3.56 | 14.45 | 36.45 | 55.07 | 31.92 | 64.47 | 97.98 | 120.66 |
 | [73d4b2a2d](https://github.com/AFK-surf/monoid/commit/73d4b2a2db7accd7dc5e79edcb52dcfdfb9ba0c2) chore(sf-ui): delete dead legacy @ui.Ctx component | 2.65 | 3.56 | 14.45 | 36.45 | 55.07 | 31.92 | 64.47 | 97.98 | 120.66 |
 | [48e1aa776](https://github.com/AFK-surf/monoid/commit/48e1aa7767396adddbe4592de561c070ba4e6063) refactor(sf-ui): export layout-neutral card and no | 2.65 | 3.56 | 14.45 | 36.45 | 55.09 | 31.93 | 64.47 | 98.19 | 113.96 |
-| [e4e521cb2](https://github.com/AFK-surf/monoid/commit/e4e521cb2fbf584634e6e5c29248ca00dc77e085) fix(liquid-glass): eliminate anchored overlay clos | 2.65 | 3.56 | 14.45 | 36.45 | 55.09 | 31.93 | 64.47 | 98.08 | 112.02 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e45da35ec](https://github.com/AFK-surf/monoid/commit/e45da35ec1e054ea394aa6d692de2c30c5175a8b) feat(mbui,sf-ui,liquid-glass): align dark liquid g | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54 |
 | [dcc0e30c5](https://github.com/AFK-surf/monoid/commit/dcc0e30c52ae14fd1619133294a2ca5065c602ae) feat(sfpages): make the mouse quote pill single-la | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.07 |
 | [c86bcdee8](https://github.com/AFK-surf/monoid/commit/c86bcdee8df51053775ef26ad6b1e855521819f5) perf(cold-start): F4a POST /changed/shared + own m | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.07 |
 | [7568ac3f7](https://github.com/AFK-surf/monoid/commit/7568ac3f70ffc0765351b1a302077419225c2f85) feat(mbui,sf-ui,sfpages): add continuous Glass.str | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.07 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [5a4092b7e](https://github.com/AFK-surf/monoid/commit/5a4092b7e85121be38f4de74e0f05840c8ef261f) fix(mbui): hide leaving nodes from the semantics t | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.31 |
 | [73d4b2a2d](https://github.com/AFK-surf/monoid/commit/73d4b2a2db7accd7dc5e79edcb52dcfdfb9ba0c2) chore(sf-ui): delete dead legacy @ui.Ctx component | 0.47 | 0.61 | 2.37 | 3.42 | 5.61 | 1.72 | 4.63 | 54.2 |
 | [48e1aa776](https://github.com/AFK-surf/monoid/commit/48e1aa7767396adddbe4592de561c070ba4e6063) refactor(sf-ui): export layout-neutral card and no | 0.47 | 0.61 | 2.37 | 3.42 | 5.61 | 1.72 | 4.63 | 54.2 |
-| [e4e521cb2](https://github.com/AFK-surf/monoid/commit/e4e521cb2fbf584634e6e5c29248ca00dc77e085) fix(liquid-glass): eliminate anchored overlay clos | 0.47 | 0.61 | 2.37 | 3.42 | 5.61 | 1.72 | 4.63 | 54.2 |
