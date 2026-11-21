@@ -145,7 +145,7 @@ SHA=$(command -v sha256sum > /dev/null && echo sha256sum || echo "shasum -a 256"
 # apps, and the four change about twice a day (station/package.json's packages, 2026-11) without changing the core.
 # One that does change it ships with the next release, its core made anew because the key changed. Do not make the
 # two agree: a file the bundle takes goes in both, a config file here alone (decided in #6106, 2026-11-14).
-HBC_TREES="client/core-ts client/i18n rules/js station/src/updates/keys.ts station/src/api/moved-from.ts web/public/avatars/index.json package.json tsconfig.json station/package.json station/tsconfig.json"
+HBC_TREES="client/core-ts client/i18n rules/js shared/release-keys.ts shared/moved-from.ts web/public/avatars/index.json package.json tsconfig.json"
 # What the key is of in the checkout: HBC_TREES and, for each of them and for this module's core/ where it lies in the
 # checkout, the package.json, tsconfig.json and jsconfig.json of every directory above it, up to the checkout's own:
 # every place the config esbuild makes a file of theirs by can be, now or after a later commit. Worked out of

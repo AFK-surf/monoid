@@ -27,7 +27,7 @@ Narrower rules:
 - Helper UI (`station/native/helper`) uses still.fail's design (`web/ui/src/palette.ts`, corners, capsule buttons, `s.` mark), not system controls.
 - `station/src/main.ts` is the composition root: each part an Effect 4 `Layer` (`station/src/services.ts`), no self-registration or globals; scoped fibers, `Schedule` backoff, streams for pushes, plain functions.
 - Mesh wire and door (`station/src/mesh/AGENTS.md`) stay independent of still.fail admission and routes (`scripts/mesh-base.ts`).
-- The main thread waits on nothing: no synchronous `node:fs`, `child_process`, or `zlib` in `station/src/` unless marked `sync:` with a reason (startup or atomic step), except `*worker.ts`, off-main-thread `station/src/read/`, `station/src/cli.ts`, `station/src/updates/command.ts` / `delta.ts` (`scripts/check.sh`; `station/test/main-thread-waits.test.ts` counts only fall; `station/test/src-sync-calls.test.ts`, config writes via `updateSoon`, its list only shrinks).
+- The main thread waits on nothing: no synchronous `node:fs`, `child_process`, or `zlib` in `station/src/` unless marked `sync:` with a reason (startup or atomic step), except `*worker.ts`, off-main-thread `station/src/read/`, `station/src/cli.ts`, `station/src/updates/command.ts` (`scripts/check.sh`; `station/test/main-thread-waits.test.ts` counts only fall; `station/test/src-sync-calls.test.ts`, config writes via `updateSoon`, its list only shrinks).
 - Effect `Clock` (`TestClock` in tests). `Date.now`, `new Date()`, `setTimeout`, `setInterval` only in `station/src/ops/fibers.ts` (`wall`: external mtimes, expiries, deadlines); `scripts/check.sh` rejects them elsewhere.
 
 ## Its data

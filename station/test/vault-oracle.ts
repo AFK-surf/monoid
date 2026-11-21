@@ -1,6 +1,6 @@
 // The vault's rules as station/src/vault/crypto.ts had them in TypeScript, before rules/ (MoonBit) took them over:
 // what station/test/rules-vault.test.ts checks the MoonBit against, until the proofs cover all of them.
-import type { LockState } from "../src/cloud/lock.ts";
+import type { LockState } from "../../shared/lock.ts";
 import { type BoxCert, type Item, type Kind, type Mode, type Sig, type Vault, SCOPES, TAG, ITEM_ID, VAULT_ID, signedOk } from "../src/vault/crypto.ts";
 
 /// The member and lock device whose app `sign_key` is `keyId`; null when no app device in the lock signs with it, or

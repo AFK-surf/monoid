@@ -7,7 +7,7 @@
 // gone). A vault is written on one station (its host) and copied to the
 // others by its members' devices (`?copy=1`: a later version than the one held, not necessarily the next; one not later
 // is answered with the one held, unchanged), so that agents on any station may ask for its secrets.
-import { type LockState, admit } from "../../cloud/lock.ts";
+import { type LockState, admit } from "../../../../shared/lock.ts";
 import type { Viewer } from "../../mesh/credential.ts";
 import { type BoxCert, type Item, type Vault, TAG, certOk, itemOk, itemSupersedes, signedOk, signerOf, vaultOk, vaultSupersedes } from "../../vault/crypto.ts";
 import { isDeletedVaultWrite, type VaultStore } from "../../vault/store.ts";

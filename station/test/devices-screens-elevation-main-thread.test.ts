@@ -18,7 +18,7 @@ import { type GrantBody, type Kind, latest, signedBytes } from "../../client/cor
 import { PhoneDisplays } from "../src/adb/displays.ts";
 import { adbPath } from "../src/adb/link.ts";
 import { GrantServers, type Server } from "../src/adb/servers.ts";
-import { type Entry, entryHash, signedBytes as entryBytes } from "../src/cloud/lock.ts";
+import { type Entry, entryHash, signedBytes as entryBytes } from "../../shared/lock.ts";
 import { DeviceTools } from "../src/device/tools.ts";
 import { Elevation } from "../src/elevation/elevation.ts";
 import { ModelCatalog } from "../src/models/module.ts";

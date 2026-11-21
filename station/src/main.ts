@@ -15,7 +15,7 @@ import { Effect, Fiber, Layer, SubscriptionRef } from "effect";
 import { enroll, id, isRig, joinWorkspace, lockCommand, staysIn, status } from "./cli.ts";
 import { readState } from "./cloud/state.ts";
 import { loadKey } from "./cloud/key.ts";
-import { shortCode } from "./cloud/lock.ts";
+import { shortCode } from "../../shared/lock.ts";
 import { MeshLive } from "./mesh/mesh.ts";
 import { AwakeLive } from "./ops/awake.ts";
 import { AgentsLive } from "./sessions/agents.ts";

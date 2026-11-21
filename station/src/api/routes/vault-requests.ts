@@ -20,7 +20,7 @@
 // A request to delete an item (secret_delete 删除), approved: POST vault/removed `{request}` once the viewer's app wrote
 // the item's deleted version (and brought it here), POST vault/plain/removed `{request}` to delete it from the plain
 // library here. It grants nothing either.
-import { admit, type LockState } from "../../cloud/lock.ts";
+import { admit, type LockState } from "../../../../shared/lock.ts";
 import { wall } from "../../ops/fibers.ts";
 import type { Deny, Grant } from "../../vault/crypto.ts";
 import { type PlainItem, type PlainStore, plainOk, shown } from "../../vault/plain.ts";

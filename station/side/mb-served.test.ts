@@ -12,7 +12,7 @@ import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Readers } from "../src/read/pool.ts";
 import { withFront } from "../src/mesh/front.ts";
 import { SERVED_ROUTES, Served } from "../src/mesh/served.ts";
-import { MOVED_FROM_BUILD, ROOT_OUT_FROM_BUILD } from "../src/api/moved-from.ts";
+import { MOVED_FROM_BUILD, ROOT_OUT_FROM_BUILD } from "../../shared/moved-from.ts";
 import { RUNTIME_KINDS } from "../src/agents/runtime.ts";
 import { tr } from "../src/ops/i18n.ts";
 import { type Endpoint, type Stream, loadMesh } from "../src/mesh/native.ts";

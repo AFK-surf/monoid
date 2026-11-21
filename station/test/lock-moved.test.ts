@@ -9,7 +9,7 @@
 // that move shut out. What reads the chain itself (its seq, head) still reads the chain's.
 import assert from "node:assert/strict";
 import { mock, test } from "node:test";
-import { LockRefusal, entryHash, fold, state4, state4Moved } from "../src/cloud/lock.ts";
+import { LockRefusal, entryHash, fold, state4, state4Moved } from "../../shared/lock.ts";
 import { NOT_GIVEN, personChainsOf } from "../src/cloud/state.ts";
 import { wall } from "../src/ops/fibers.ts";
 import { inLock, inLockBringing, lockHead, lockPartRoute, stillIn } from "../src/mesh/serve.ts";

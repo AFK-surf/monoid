@@ -50,7 +50,7 @@ import { type Device as PersonDevice, type PersonalEnv, type Stated, type Statem
 import { CHAIN_MOST, type Folded, type InForce, bodyHash, bodyRefused, fold, goodFor, inForce, movedRoot, wsTag } from "../lock-moved.ts";
 import { type Said, bindBytes, bodiesOf, byHash, plan, prevOf, rootOf as rootNamed } from "../lock-statements.ts";
 import { HAND_OVER_FIRST_SECS, HAND_OVER_FROM, type HandOverPlan, type Who, ableBuild, ableLarge, handOverPlan, mayHandOver } from "../lock-handover.ts";
-import { LOGS_BEFORE } from "../../../../station/src/api/moved-from.ts";
+import { LOGS_BEFORE } from "../../../../shared/moved-from.ts";
 import { buildOf, ownBuild } from "../station/oldest.ts";
 import { type Act, CLOUD_WRITE_MS, PENDING_MOST, actText, cloudSilent, type Pending, type PendingRow, bounded, pastBound, pendingFields, pendingRow, repeats } from "../lock-pending.ts";
 

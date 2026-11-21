@@ -11,7 +11,7 @@
 // (Android's APK). A delta only spares bytes: one malformed, or not smaller than the package, is not offered, never an
 // update refused. On Windows what it makes is checked against the signed words' `raw`, never the feed's own.
 import { ed25519 } from "@noble/curves/ed25519.js";
-import { RELEASE_KEYS } from "../../../station/src/updates/keys.ts";
+import { RELEASE_KEYS } from "../../../shared/release-keys.ts";
 import { fromBase64, hex, sha256 } from "./util.ts";
 
 // deno-lint-ignore no-explicit-any

@@ -13,7 +13,7 @@ import {
   type AddBody, type DeviceBody, type Device, type GrantBody, type RevokeBody, type SettingsBody, type Signed, type Kind, TIMEOUT_MAX, signedBytes, wellFormed,
   FULL_FOR, type FullBody,
 } from "../../../client/core-ts/src/rig-form.ts";
-import { type Entry, entryHash, personFold, signatureOk } from "../cloud/lock.ts";
+import { type Entry, entryHash, personFold, signatureOk } from "../../../shared/lock.ts";
 import { PrivateFile } from "../ops/files.ts";
 import { Fibers } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";

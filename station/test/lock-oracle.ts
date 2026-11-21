@@ -1,6 +1,6 @@
 // The workspace lock's rules as station/src/cloud/lock.ts had them in TypeScript, before rules/ (MoonBit) took them
 // over: what station/test/rules-lock.test.ts checks the MoonBit against, until the proofs cover all of them.
-import { type Device, type Entry, type LockState, type Member, type Passkey, type Role, type Sig, type Station, LockRefusal, WEB_DEVICE_SECS, endpointProof, entryHash, rank, sigValid, validKeyId } from "../src/cloud/lock.ts";
+import { type Device, type Entry, type LockState, type Member, type Passkey, type Role, type Sig, type Station, LockRefusal, WEB_DEVICE_SECS, endpointProof, entryHash, rank, sigValid, validKeyId } from "../../shared/lock.ts";
 
 const HEX32 = /^[0-9a-f]{64}$/;
 const isId = (v: unknown): v is string => typeof v === "string" && HEX32.test(v);

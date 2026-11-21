@@ -14,7 +14,7 @@ import { type Answer, type Request, error, json } from "../api/request.ts";
 import type { Device, GrantBody, Timeout } from "../../../client/core-ts/src/rig-form.ts";
 import { wellFormed } from "../../../client/core-ts/src/rig-form.ts";
 import { grantChatTitle } from "../adb/title.ts";
-import { shortCode } from "../cloud/lock.ts";
+import { shortCode } from "../../../shared/lock.ts";
 import type { Rig } from "../cloud/state.ts";
 import { Refused as PeerRefused } from "../mesh/bus.ts";
 import { managesStation } from "../mesh/credential.ts";

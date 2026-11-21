@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { mock, test } from "node:test";
 import { Cloud, personChainsOf } from "../src/cloud/state.ts";
 import { BODY_MOST } from "../src/cloud/lock-bodies.ts";
-import { type Entry as StationEntry, bodyHash, entryHash, wsTag } from "../src/cloud/lock.ts";
+import { type Entry as StationEntry, bodyHash, entryHash, wsTag } from "../../shared/lock.ts";
 import { wall } from "../src/ops/fibers.ts";
 import { answerLock } from "../src/mesh/lock-sync.ts";
 import { bodiesSyncWith } from "../src/mesh/person-sync.ts";

@@ -9,7 +9,7 @@
 // someone holding their credential), the log their vaults are already signed by is theirs, then the one their box
 // certificate checks against, then the newest: so a log brought later takes neither their vaults nor the secrets kept
 // for them.
-import { type Device, type LockState, type Member, personFold } from "./lock.ts";
+import { type Device, type LockState, type Member, personFold } from "../../../shared/lock.ts";
 import type { BoxCert, Vault } from "../vault/crypto.ts";
 
 /// What the vault keeps of a workspace that this lock is made of: its vaults (whose owners and members it names, and

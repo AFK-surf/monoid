@@ -30,9 +30,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { crc32, deflateRawSync, gunzipSync, inflateRawSync } from "node:zlib";
-import { CHUNK, type Header, MAGIC, type Range, apply, applyFile, parseHeader, patch, readOld } from "../station/src/updates/delta.ts";
+import { CHUNK, type Header, MAGIC, type Range, apply, applyFile, parseHeader, patch, readOld } from "../shared/delta.ts";
 
-export { CHUNK, type Header, type Range, type Sink, apply, applyFile, parseHeader, patch, readOld } from "../station/src/updates/delta.ts";
+export { CHUNK, type Header, type Range, type Sink, apply, applyFile, parseHeader, patch, readOld } from "../shared/delta.ts";
 
 const TWO32 = 4294967296;
 const sha256 = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");

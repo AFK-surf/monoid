@@ -13,7 +13,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Effect } from "effect";
-import { type Entry as StationEntry, entryHash as stationHash } from "../../../station/src/cloud/lock.ts";
+import { type Entry as StationEntry, entryHash as stationHash } from "../../../shared/lock.ts";
 import { key, signed } from "../../../station/test/lock-world-sim.ts";
 import { Core } from "../src/core.ts";
 import { CoreError } from "../src/error.ts";

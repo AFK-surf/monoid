@@ -14,8 +14,8 @@
 // that workspace already: one pinned is let go or replaced only by its own entry or on the machine (station/AGENTS.md).
 import { nowSecs } from "../ops/files.ts";
 import type { Cloud } from "../cloud/state.ts";
-import { type Entry, admit, state4Moved } from "../cloud/lock.ts";
-import { hashOf } from "../cloud/log-keep.ts";
+import { type Entry, admit, state4Moved } from "../../../shared/lock.ts";
+import { hashOf } from "../../../shared/log-keep.ts";
 import type { PeerCall } from "./bus.ts";
 import { subOf } from "./person-chains.ts";
 import { personChainsOf } from "./serve.ts";

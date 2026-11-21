@@ -25,7 +25,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { after, test } from "node:test";
 import { WebSocketServer, type WebSocket } from "ws";
-import { type Entry, bodyHash, endpointBytes, entryHash, signedBytes, wsTag } from "../src/cloud/lock.ts";
+import { type Entry, bodyHash, endpointBytes, entryHash, signedBytes, wsTag } from "../../shared/lock.ts";
 import { loadMesh, type Connection, type Endpoint, type Stream as MeshStream } from "../src/mesh/native.ts";
 import { Reader } from "../src/mesh/wire.ts";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";

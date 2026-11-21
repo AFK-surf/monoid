@@ -14,7 +14,7 @@ const posix = (path: string) => path.replaceAll("\\", "/");
 
 /// Not the station's process: the command line (`stillfail-station …` with no station of its own on the thread), and
 /// the update's (`stillfail-station update`, the delta applier and Codex's repair it alone runs).
-const APART = new Set(["src/cli.ts", "src/updates/command.ts", "src/updates/delta.ts", "src/updates/codex-repair.ts"]);
+const APART = new Set(["src/cli.ts", "src/updates/command.ts", "src/updates/codex-repair.ts"]);
 
 /// The files whose synchronous calls of node:fs or node:zlib stand from before the rule, unmarked: what each does
 /// before the station serves or at one step that must not be split (a lock's file written whole, the process's entry,

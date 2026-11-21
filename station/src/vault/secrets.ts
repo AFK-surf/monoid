@@ -13,7 +13,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { basename } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { devicesFor, memberWithEmail, membersWithEmail, type LockState } from "../cloud/lock.ts";
+import { devicesFor, memberWithEmail, membersWithEmail, type LockState } from "../../../shared/lock.ts";
 import type { To } from "../api/events.ts";
 import { UNDECIDED, threadAddress } from "../agents/instructions.ts";
 import { Fibers, wall } from "../ops/fibers.ts";

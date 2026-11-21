@@ -5,7 +5,7 @@
 // whole state, 1.6 s in Node and about 110 s in Hermes for a chain of 1000 members (handover measurements).
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type Entry, apply, entryHash, fold, lockChain } from "../src/cloud/lock.ts";
+import { type Entry, apply, entryHash, fold, lockChain } from "../../shared/lock.ts";
 import { ed, signed } from "./lock-moved-world.ts";
 // @ts-ignore: the MoonBit build's JS, untyped
 import * as rules from "../../rules/js/rules.js";

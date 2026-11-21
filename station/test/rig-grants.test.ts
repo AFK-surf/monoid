@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { type GrantBody, type Kind, type Timeout, latest, signedBytes } from "../../client/core-ts/src/rig-form.ts";
-import { type Entry, entryHash, signedBytes as entryBytes } from "../src/cloud/lock.ts";
+import { type Entry, entryHash, signedBytes as entryBytes } from "../../shared/lock.ts";
 import { applyState } from "../src/cloud/presence.ts";
 import { Cloud, MODE_PENDING_S, readState, rigGrantsPath, writeState } from "../src/cloud/state.ts";
 import { Fibers } from "../src/ops/fibers.ts";

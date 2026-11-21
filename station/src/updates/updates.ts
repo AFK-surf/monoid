@@ -56,7 +56,7 @@ import { platform as machine } from "../platform/index.ts";
 import { holding, onLetGo } from "./holds.ts";
 import { AGY_MANIFESTS, watchAgyDownload } from "./agy-download.ts";
 import { type Back, applyApart, backTo, earlierIn, planBack, planUpdate, readFeed, takeArchive, takeDelta, verifiedOrNull, type Plan } from "./release.ts";
-import type { Release } from "./signed.ts";
+import type { Release } from "../../../shared/release-signed.ts";
 import { SDK_PACKAGE, sdkPrefix, sdkVersionSoon } from "../agents/cursor.ts";
 import { canSwitchCodexSoon, captureCodexSoon, codexBinarySoon, hasCodexHostSoon, missingCodexHost, restoreCodex, switchCodex, type CodexEntry } from "./codex-repair.ts";
 import {

@@ -37,7 +37,7 @@ import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { WebSocketServer, type WebSocket } from "ws";
 import { type GrantBody, type Kind, type Timeout, latest, signedBytes as rigSignedBytes } from "../../client/core-ts/src/rig-form.ts";
-import { type Entry, entryHash, signedBytes as lockSignedBytes } from "../src/cloud/lock.ts";
+import { type Entry, entryHash, signedBytes as lockSignedBytes } from "../../shared/lock.ts";
 import { loadMesh, type Connection, type Stream as MeshStream } from "../src/mesh/native.ts";
 import { Reader } from "../src/mesh/wire.ts";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";

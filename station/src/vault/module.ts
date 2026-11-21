@@ -22,7 +22,7 @@ import { plainStore, shown } from "./plain.ts";
 import { Secrets } from "./secrets.ts";
 import { vaultStore } from "./store.ts";
 import { type BoxCert, certOk } from "./crypto.ts";
-import type { LockState } from "../cloud/lock.ts";
+import type { LockState } from "../../../shared/lock.ts";
 import { vaultWriteGate } from "./write-gate.ts";
 
 export const VaultLive = Layer.effectDiscard(

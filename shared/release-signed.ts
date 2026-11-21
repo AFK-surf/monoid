@@ -7,7 +7,7 @@
 // (cloud/src/install.ts, bin/install.<lang>.sh), told what the archive and Node must hash to. The Windows app's
 // installer is signed the same way (its .sig beside it, which the apps' core verifies: client/core-ts/src/app-release.ts),
 import { createHash, createPublicKey, verify } from "node:crypto";
-import { RELEASE_KEYS } from "./keys.ts";
+import { RELEASE_KEYS } from "./release-keys.ts";
 
 /// The keys releases are signed with (keys.ts, which the apps' core reads too). A key is named by keyId.
 /// STILLFAIL_RELEASE_KEYS (comma-separated) adds keys for a test's own releases (a dev cloud's); it is the station's

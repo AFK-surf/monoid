@@ -3,7 +3,7 @@
 // checks here is who may write what, so a station or cloud taken over cannot add itself to a vault. Pure; the same
 // formats as client/core-ts/src/vault/crypto.ts, tested on the same values (test/fixtures/vault-vectors.json).
 import { createCipheriv, createDecipheriv, createHash, createPrivateKey, createPublicKey, diffieHellman, hkdfSync, randomBytes } from "node:crypto";
-import { canonical, publicKey, signatureOk, type LockState } from "../cloud/lock.ts";
+import { canonical, publicKey, signatureOk, type LockState } from "../../../shared/lock.ts";
 // @ts-ignore: the MoonBit build's JS, untyped
 import * as rules from "../../../rules/js/rules.js";
 

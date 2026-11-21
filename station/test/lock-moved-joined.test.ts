@@ -10,7 +10,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mock, test } from "node:test";
-import { type Entry, LockRefusal, entryHash } from "../src/cloud/lock.ts";
+import { type Entry, LockRefusal, entryHash } from "../../shared/lock.ts";
 import { applyState } from "../src/cloud/presence.ts";
 import { Cloud, type Joined, personChainsOf, writeState } from "../src/cloud/state.ts";
 import { wall } from "../src/ops/fibers.ts";

@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { connect as tlsConnect } from "node:tls";
-import { type Entry, entryHash, genesis, signedBytes as lockBytes } from "../src/cloud/lock.ts";
+import { type Entry, entryHash, genesis, signedBytes as lockBytes } from "../../shared/lock.ts";
 import { type BoxCert, type Grant, type Item, type Request, type Sig, type Vault, TAG, encryptWith, grantContext, itemContext, keyContext, newBoxPair, seal, signedBytes } from "../src/vault/crypto.ts";
 import { Keeper, hostAllowed } from "../src/vault/keeper.ts";
 import { Proxy, placeholder, swap } from "../src/vault/proxy.ts";

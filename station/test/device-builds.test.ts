@@ -12,7 +12,7 @@ import { wall } from "../src/ops/fibers.ts";
 import { Store } from "../src/store/store.ts";
 import { DeviceBuilds, deviceBuildsOf } from "../src/mesh/device-builds.ts";
 import { inLock, lockPartRoute, lockRoute, movedFloor, movedTooOld, sawBuild } from "../src/mesh/serve.ts";
-import { MOVED_FROM_BUILD } from "../src/api/moved-from.ts";
+import { MOVED_FROM_BUILD } from "../../shared/moved-from.ts";
 import { Log, WS2, bring, station, viewerOf, world } from "./lock-moved-world.ts";
 
 const DAY = 86400;

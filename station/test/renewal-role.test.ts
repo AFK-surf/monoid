@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { mock, test, type TestContext } from "node:test";
 import type { Admin } from "../src/api/admin.ts";
 import { json, type Request } from "../src/api/request.ts";
-import { endpointBytes, entryHash } from "../src/cloud/lock.ts";
+import { endpointBytes, entryHash } from "../../shared/lock.ts";
 import { Cloud, writeState } from "../src/cloud/state.ts";
 import { ALPN, Reader, seenDevicesOf, serve, writeLine } from "../src/mesh/serve.ts";
 import { wall } from "../src/ops/fibers.ts";

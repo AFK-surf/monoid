@@ -11,7 +11,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { type Entry, LockRefusal, endpointBytes, entryHash, fold, signedBytes } from "../src/cloud/lock.ts";
+import { type Entry, LockRefusal, endpointBytes, entryHash, fold, signedBytes } from "../../shared/lock.ts";
 import { Cloud, lockPath, writeState } from "../src/cloud/state.ts";
 import { tellLocks } from "../src/mesh/lock-events.ts";
 import { answerLock, syncWith } from "../src/mesh/lock-sync.ts";
@@ -23,7 +23,7 @@ const WS = "01HFORKFORKFORKFORKFORKFOR";
 /// What a fork was answered before every branch was kept, and still is (an app from before reads its words).
 const FORK = "the entry disagrees with this station's lock (a fork)";
 /// The bound on what a log keeps aside (cloud/log-keep.ts), 256 where the station has none.
-const ASIDE_MOST: number = await import("../src/cloud/log-keep.ts").then((m) => m.ASIDE_MOST, () => 256);
+const ASIDE_MOST: number = await import("../../shared/log-keep.ts").then((m) => m.ASIDE_MOST, () => 256);
 
 const hexOf = (k: KeyObject) => Buffer.from(k.export({ format: "jwk" }).x as string, "base64url").toString("hex");
 function ed() {

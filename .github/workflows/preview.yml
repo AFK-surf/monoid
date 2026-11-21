@@ -26,7 +26,10 @@ on:
       - "client/**"
       - "rules/js/**"
       - "web/public/avatars/index.json"
-      - "station/src/api/moved-from.ts"
+      - "shared/moved-from.ts"
+      - "shared/release-keys.ts"
+      - "shared/release-signed.ts"
+      - "shared/delta.ts"
       # (not the four config files apps/mbui/scripts/core.sh HBC_TREES ends with, on purpose: it says why)
       - "vendor/**"
       - "scripts/native.ts"
@@ -103,7 +106,7 @@ jobs:
             base=${{ github.event.before }}
             [ -n "$branch" ] && base=$(git merge-base origin/main HEAD)
             if git cat-file -e "$base^{commit}" 2>/dev/null && git diff --name-only "$base" HEAD |
-              grep -qE '^(apps/mbui/windows/|apps/mbui/e2e/win/handoff\.sh$|apps/mbui/scripts/win\.sh$|apps/mbui/src/host/win_core\.c$|apps/mbui/src/host/win_(electron_sealed|hello)\.h$|libs/mbui/src/host/win_(life|update)\.h$|scripts/(win-feeds|release)\.sh$|scripts/release-sign\.ts$|station/src/updates/)'; then v=yes; fi
+              grep -qE '^(apps/mbui/windows/|apps/mbui/e2e/win/handoff\.sh$|apps/mbui/scripts/win\.sh$|apps/mbui/src/host/win_core\.c$|apps/mbui/src/host/win_(electron_sealed|hello)\.h$|libs/mbui/src/host/win_(life|update)\.h$|scripts/(win-feeds|release)\.sh$|scripts/release-sign\.ts$|shared/(release-keys|release-signed|delta)\.ts$|station/src/updates/)'; then v=yes; fi
           fi
           echo "handoff=$v" >> "$GITHUB_OUTPUT"
           echo "handoff: $v"

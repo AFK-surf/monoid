@@ -16,12 +16,12 @@
 import assert from "node:assert/strict";
 import { mock, test } from "node:test";
 import { Effect } from "effect";
-import { type Entry as StationEntry, entryHash as stationHash } from "../../../station/src/cloud/lock.ts";
+import { type Entry as StationEntry, entryHash as stationHash } from "../../../shared/lock.ts";
 import { Cloud, personChainsOf } from "../../../station/src/cloud/state.ts";
 import { inLock, movedTooOld, sawBuild } from "../../../station/src/mesh/serve.ts";
 import { deviceBuildsOf } from "../../../station/src/mesh/device-builds.ts";
 import { HAND_OVER_FROM } from "../src/lock-handover.ts";
-import { LOGS_ANY_FROM_BUILD, LOGS_BEFORE, MOVED_FROM_BUILD } from "../../../station/src/api/moved-from.ts";
+import { LOGS_ANY_FROM_BUILD, LOGS_BEFORE, MOVED_FROM_BUILD } from "../../../shared/moved-from.ts";
 import { type Key, Log, bring, dev, ed, signed } from "../../../station/test/lock-moved-world.ts";
 import { d4Diff } from "../../../station/test/lock-roster4-model.ts";
 import { key } from "../../../station/test/lock-world-sim.ts";

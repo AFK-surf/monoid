@@ -11,10 +11,10 @@
 // different entries at one place while the cloud took the one that lost, the cloud follows them once one of them gives
 // it theirs: its head is theirs again, and what comes after it is taken (before, it refused every entry after their
 // head for good, and the core, which reads a lock again as the cloud's view of it moves, never did).
-export { apply, canonical, genesis, shortCode, type Entry, type LockState } from "../../station/src/cloud/lock.ts";
-import { apply, asEntry as stationAsEntry, entryHash as stationEntryHash, genesis, lockChain, signer, type Entry, type LockState } from "../../station/src/cloud/lock.ts";
-import { type Kept, type LogRules, keep } from "../../station/src/cloud/log-keep.ts";
-export { ASIDE_MOST } from "../../station/src/cloud/log-keep.ts";
+export { apply, canonical, genesis, shortCode, type Entry, type LockState } from "../../shared/lock.ts";
+import { apply, asEntry as stationAsEntry, entryHash as stationEntryHash, genesis, lockChain, signer, type Entry, type LockState } from "../../shared/lock.ts";
+import { type Kept, type LogRules, keep } from "../../shared/log-keep.ts";
+export { ASIDE_MOST } from "../../shared/log-keep.ts";
 
 export type LockEntry = { v: 1; ws: string; seq: number; prev: string | null; at: number; kind: string; body: unknown; sig: unknown };
 

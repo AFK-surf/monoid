@@ -44,6 +44,10 @@ export interface Entry {
 // For a commit that does not say its parts (those from before they were said), each file reaches the parts of the first
 // of these it is under.
 const PARTS: [RegExp, Part[]][] = [
+  // Shared modules used by multiple parts.
+  [/^shared\/(lock|log-keep)\.ts$/, ["station", "cloud"]],
+  [/^shared\/(release-keys|moved-from)\.ts$/, ["station", "web", "android", "desktop"]],
+  [/^shared\//, ["station"]],
   // The station: station/ (src/ and its native parts; not its tests), and mesh/ in the history before it (the Rust one).
   [/^station\/(src|native)\/|^mesh\//, ["station"]],
   // Android's native shell (the web's iroh, client/iroh-wasm, is among what Android does not carry).

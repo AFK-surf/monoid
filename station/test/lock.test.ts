@@ -8,7 +8,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { type Entry, admit, apply, canonical, devicesFor, endpointBytes, entryHash, fold, genesis, LockRefusal, memberWithEmail, membersWithEmail, shortCode, signedBytes } from "../src/cloud/lock.ts";
+import { type Entry, admit, apply, canonical, devicesFor, endpointBytes, entryHash, fold, genesis, LockRefusal, memberWithEmail, membersWithEmail, shortCode, signedBytes } from "../../shared/lock.ts";
 import { applyState } from "../src/cloud/presence.ts";
 import { Cloud, writeState } from "../src/cloud/state.ts";
 import { verifyMember } from "../src/mesh/credential.ts";

@@ -10,7 +10,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mock, test } from "node:test";
-import { type Entry, type LockState, entryHash, state4Moved } from "../src/cloud/lock.ts";
+import { type Entry, type LockState, entryHash, state4Moved } from "../../shared/lock.ts";
 import { Cloud, writeState } from "../src/cloud/state.ts";
 import { wall } from "../src/ops/fibers.ts";
 import { inLock } from "../src/mesh/serve.ts";

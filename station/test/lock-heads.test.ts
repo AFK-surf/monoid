@@ -5,8 +5,8 @@
 // (`movedTooOld`, 426) where the state in force is made of more, and nowhere else.
 import assert from "node:assert/strict";
 import { mock, test } from "node:test";
-import { LOGS_ANY_FROM_BUILD, LOGS_BEFORE, MOVED_FROM_BUILD, ROOT_OUT_FROM_BUILD } from "../src/api/moved-from.ts";
-import { type Entry as StationEntry, bodyHash, entryHash } from "../src/cloud/lock.ts";
+import { LOGS_ANY_FROM_BUILD, LOGS_BEFORE, MOVED_FROM_BUILD, ROOT_OUT_FROM_BUILD } from "../../shared/moved-from.ts";
+import { type Entry as StationEntry, bodyHash, entryHash } from "../../shared/lock.ts";
 import { type Cloud, personChainsOf } from "../src/cloud/state.ts";
 import { wall } from "../src/ops/fibers.ts";
 import { lockPartRoute, lockRoute, movedFloor, movedTooOld } from "../src/mesh/serve.ts";

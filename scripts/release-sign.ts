@@ -27,7 +27,7 @@ import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sig
 import { createReadStream, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename } from "node:path";
 import { createGunzip } from "node:zlib";
-import { type Build, RELEASE_KEYS, keyId, verifySigned } from "../station/src/updates/signed.ts";
+import { type Build, RELEASE_KEYS, keyId, verifySigned } from "../shared/release-signed.ts";
 import { storedZip } from "./delta.ts";
 
 const args = process.argv.slice(2);
@@ -94,7 +94,7 @@ function signingKey(): { key: ReturnType<typeof createPrivateKey>; raw: string }
   if (key.asymmetricKeyType !== "ed25519") fail(`RELEASE_SIGNING_KEY is ${key.asymmetricKeyType}, not Ed25519`);
   const raw = Buffer.from(createPublicKey(key).export({ format: "jwk" }).x as string, "base64url").toString("base64");
   const taken = RELEASE_KEYS.includes(raw);
-  if (!taken && process.env.CI) fail(`RELEASE_SIGNING_KEY's public key (${raw}) is not one of the keys stations take (station/src/updates/signed.ts RELEASE_KEYS)`);
+  if (!taken && process.env.CI) fail(`RELEASE_SIGNING_KEY's public key (${raw}) is not one of the keys stations take (shared/release-keys.ts RELEASE_KEYS)`);
   if (!taken) console.error(`release-sign: warning: the key ${raw} is not one of RELEASE_KEYS; only a station given it (STILLFAIL_RELEASE_KEYS) takes these releases`);
   return { key, raw };
 }

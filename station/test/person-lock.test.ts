@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign as nodeSign } from "node:crypto";
 import { test } from "node:test";
-import { type Entry, LockRefusal, admit, admitPerson, apply, endpointBytes, entryHash, genesis, personFold, signedBytes } from "../src/cloud/lock.ts";
+import { type Entry, LockRefusal, admit, admitPerson, apply, endpointBytes, entryHash, genesis, personFold, signedBytes } from "../../shared/lock.ts";
 import { PersonChains } from "../src/mesh/person-chains.ts";
 import { checkChain } from "../src/mesh/person-sync.ts";
 

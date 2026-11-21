@@ -12,7 +12,7 @@ import { log } from "../ops/log.ts";
 import { wall } from "../ops/fibers.ts";
 import { MbProcess } from "../read/mb-reader.ts";
 import { COUNTED_FROM, OLDEST_CORE, stationBuild } from "../api/oldest.ts";
-import { MOVED_FROM_BUILD } from "../api/moved-from.ts";
+import { MOVED_FROM_BUILD } from "../../../shared/moved-from.ts";
 import { RUNTIME_KINDS } from "../agents/runtime.ts";
 import { READS_PENDING } from "../read/pool.ts";
 import { LAST_KNOWN } from "../store/store.ts";

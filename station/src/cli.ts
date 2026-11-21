@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { loadKey } from "./cloud/key.ts";
 import { Cloud, joinedLockPath, joinedPendingPath, pendingLockPath, readLock, readState, writeState, type CloudState } from "./cloud/state.ts";
 import { nowSecs, writePrivate } from "./ops/files.ts";
-import { entryHash, shortCode } from "./cloud/lock.ts";
+import { entryHash, shortCode } from "../../shared/lock.ts";
 import { rmSync } from "node:fs";
 import { type Provider, specOf } from "./cloud/provider.ts";
 import { stationLang, tr } from "./ops/i18n.ts";

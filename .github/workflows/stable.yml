@@ -635,7 +635,7 @@ jobs:
         with:
           sparse-checkout: |
             /scripts/
-            /station/src/updates/delta.ts
+            /shared/delta.ts
             /.node-version
             /.github/actions/node/
           sparse-checkout-cone-mode: false
@@ -673,7 +673,7 @@ jobs:
         with:
           sparse-checkout: |
             /scripts/
-            /station/src/updates/delta.ts
+            /shared/delta.ts
             /.node-version
             /.github/actions/node/
           sparse-checkout-cone-mode: false

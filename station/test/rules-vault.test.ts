@@ -4,7 +4,7 @@
 // answer in the same words, first versions and following ones, kept and brought as copies.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type Entry, fold } from "../src/cloud/lock.ts";
+import { type Entry, fold } from "../../shared/lock.ts";
 import { TAG, browserListingOk, certOk, itemOk, signedBytes, signerOf, vaultOk } from "../src/vault/crypto.ts";
 import { WS, bases, genesisOf, key, nextOf, people, rng, signers, spare } from "./lock-chains.ts";
 import * as oracle from "./vault-oracle.ts";

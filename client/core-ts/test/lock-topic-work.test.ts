@@ -16,12 +16,12 @@ import { countRules, since, snapshot } from "./rules-counted.ts";
 
 await countRules();
 const { Effect } = await import("effect");
-const { entryHash: stationHash, fold: stationFold } = await import("../../../station/src/cloud/lock.ts");
+const { entryHash: stationHash, fold: stationFold } = await import("../../../shared/lock.ts");
 const { Cloud, writeState } = await import("../../../station/src/cloud/state.ts");
 const { wall } = await import("../../../station/src/ops/fibers.ts");
 const { lockPartRoute, lockRoute } = await import("../../../station/src/mesh/serve.ts");
 const { deviceBuildsOf } = await import("../../../station/src/mesh/device-builds.ts");
-const { MOVED_FROM_BUILD } = await import("../../../station/src/api/moved-from.ts");
+const { MOVED_FROM_BUILD } = await import("../../../shared/moved-from.ts");
 const { Log, bring, dev, ed, signed, viewerOf } = await import("../../../station/test/lock-moved-world.ts");
 const { key, signed: simSigned } = await import("../../../station/test/lock-world-sim.ts");
 const { HAND_OVER_FROM } = await import("../src/lock-handover.ts");
@@ -36,7 +36,7 @@ const { grant, rig, withoutMesh } = await import("./lock-rig.ts");
 const { signIn } = await import("./helpers.ts");
 type Entry = import("../src/lock.ts").Entry;
 type Signer = import("../src/lock.ts").Signer;
-type StationEntry = import("../../../station/src/cloud/lock.ts").Entry;
+type StationEntry = import("../../../shared/lock.ts").Entry;
 type CoreError = import("../src/error.ts").CoreError;
 
 const DAY = 86400;

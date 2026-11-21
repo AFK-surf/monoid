@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
-import { type Entry, entryHash, signedBytes as lockBytes } from "../src/cloud/lock.ts";
+import { type Entry, entryHash, signedBytes as lockBytes } from "../../shared/lock.ts";
 import { loadMesh, type Connection, type Stream as MeshStream } from "../src/mesh/native.ts";
 import { Reader } from "../src/mesh/wire.ts";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";

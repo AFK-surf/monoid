@@ -2,7 +2,7 @@
 // app is out, a picture (fetched once and kept on the device), the buddies a Slack app can wear, a dev cloud's sign-in.
 import { Deferred, Effect, Semaphore } from "effect";
 import buddiesList from "../../../web/public/avatars/index.json" with { type: "json" };
-import { RELEASE_KEYS } from "../../../station/src/updates/keys.ts";
+import { RELEASE_KEYS } from "../../../shared/release-keys.ts";
 import { type Deltas, deltaFrom, feedDeltas, winReleaseWords } from "./app-release.ts";
 import { encodeComponent } from "./accounts.ts";
 import type { AccountSessions } from "./account-provider.ts";

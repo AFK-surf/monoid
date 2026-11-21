@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { mock, test } from "node:test";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { Effect } from "effect";
-import { type Entry as StationEntry } from "../../../station/src/cloud/lock.ts";
+import { type Entry as StationEntry } from "../../../shared/lock.ts";
 import { Cloud, personChainsOf, writeState } from "../../../station/src/cloud/state.ts";
 import { wall } from "../../../station/src/ops/fibers.ts";
 import { lockPartRoute, lockRoute } from "../../../station/src/mesh/serve.ts";

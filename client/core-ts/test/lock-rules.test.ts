@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { checkLock, signerIn } from "../src/vault/lock-check.ts";
 import { genesisOf, nextOf, p256s, passkeys, rng, signers, spare } from "../../../station/test/lock-chains.ts";
 import { fold, signer } from "../../../station/test/lock-oracle.ts";
-import type { Entry } from "../../../station/src/cloud/lock.ts";
+import type { Entry } from "../../../shared/lock.ts";
 
 const SEEDS = Number(process.env.RULES_SEEDS ?? 20);
 const NOW = 1000 + 20 * 60;

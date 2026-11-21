@@ -12,7 +12,7 @@ import { fold, movedRoot } from "./lock-moved.ts";
 import { checkChain, crypto } from "./personal-lock.ts";
 import { type Checked, checkLock, signerIn } from "./vault/lock-check.ts";
 import { COUNTED_FROM } from "./station/oldest.ts";
-import { LOGS_ANY_FROM_BUILD, MOVED_FROM_BUILD } from "../../../station/src/api/moved-from.ts";
+import { LOGS_ANY_FROM_BUILD, MOVED_FROM_BUILD } from "../../../shared/moved-from.ts";
 
 // deno-lint-ignore no-explicit-any
 type J = any;

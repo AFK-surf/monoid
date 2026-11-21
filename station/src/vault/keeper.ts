@@ -6,7 +6,7 @@
 // value, which the station's store holds anyway, and gives them back after a restart).
 // Whether a grant may be taken is decided here, from the grant itself: who signed it (a member of the vault, by a
 // device in the lock), that it answers the request as asked, and that it stays within what the item allows.
-import type { LockState } from "../cloud/lock.ts";
+import type { LockState } from "../../../shared/lock.ts";
 import { wall } from "../ops/fibers.ts";
 import { type Grant, type Item, type Mode, type Request, type Scope, type Vault, TAG, allows, grantContext, newBoxPair, openSeal, signedOk, signerOf } from "./crypto.ts";
 

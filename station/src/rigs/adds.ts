@@ -7,7 +7,7 @@
 // (`rig.proof`); each station checks it against the lock it pinned.
 import type { DatabaseSync } from "node:sqlite";
 import { type AddBody, type Signed, wellFormed } from "../../../client/core-ts/src/rig-form.ts";
-import { type Entry, type LockState, entryHash, personFold, rank, signer, stateWord } from "../cloud/lock.ts";
+import { type Entry, type LockState, entryHash, personFold, rank, signer, stateWord } from "../../../shared/lock.ts";
 import type { Cloud, Rig } from "../cloud/state.ts";
 import { signatureHolds } from "../rig/grants.ts";
 

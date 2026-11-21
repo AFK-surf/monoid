@@ -4,8 +4,8 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign } from "node:crypto";
 import test from "node:test";
-import { entryHash, signedBytes, type Entry } from "../../station/src/cloud/lock.ts";
-import { personFold } from "../../station/src/cloud/lock.ts";
+import { entryHash, signedBytes, type Entry } from "../../shared/lock.ts";
+import { personFold } from "../../shared/lock.ts";
 import { extendPersonal, extendPersonalKept, type PersonalEntry } from "../src/personal-lock.ts";
 
 const SUB = "s1";

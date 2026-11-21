@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { type Entry, admit, entryHash, genesis, signedBytes as lockBytes } from "../src/cloud/lock.ts";
+import { type Entry, admit, entryHash, genesis, signedBytes as lockBytes } from "../../shared/lock.ts";
 import type { Request } from "../src/api/request.ts";
 import { routes } from "../src/api/routes/vault.ts";
 import { boxPublic, certOk, signedBytes, TAG, type BoxCert } from "../src/vault/crypto.ts";
