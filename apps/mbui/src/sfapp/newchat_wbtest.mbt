@@ -352,7 +352,7 @@ test "a new chat with disabled profiles leads back to enable them" {
 ///|
 test "the bar is liquid glass: its capsule and 令's circle beside it, each a shape of its own, no notch cut" {
   let t = tester("home")
-  let gs = t.drawn_glass().filter(fn(g) { g.1 > 844.0 - 22.0 - 56.0 - 40.0 })
+  let gs = t.drawn_glass().filter(fn(g) { g.1 > 844.0 - 22.0 - bar_track - 40.0 })
   let capsule = gs.filter(fn(g) { (g.0 - 22.0).abs() < 0.5 && (g.2 - bar_capsule_w(390.0 - 44.0, 1.0)).abs() < 0.5 })
   let circle = gs.filter(fn(g) { (g.0 - (22.0 + 390.0 - 44.0 - act_size)).abs() < 0.5 && (g.2 - act_size).abs() < 0.5 })
   assert_eq((capsule.length(), circle.length()), (1, 1), msg="\{Repr(gs)}")

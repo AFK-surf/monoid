@@ -36,7 +36,13 @@ fn bar_back() -> @ui.Tester raise {
 /// How wide the last frame drew the bar's capsule of glass (Tester::drawn_glass: the glass as high as the bar, the
 /// widest), its right end in by the action's room as far as the notch is open; 0 none.
 fn glass_notch(t : @ui.Tester) -> Double {
-  t.drawn_glass().fold(init=0.0, fn(a, g) { if (g.3 - bar_track).abs() < 1.0 && g.2 > a { g.2 } else { a } })
+  t.drawn_glass().fold(init=0.0, fn(a, g) {
+    if (g.0 - 22.0).abs() < 1.0 && (g.3 - bar_track).abs() < 1.0 && g.2 > a {
+      g.2
+    } else {
+      a
+    }
+  })
 }
 
 ///|
