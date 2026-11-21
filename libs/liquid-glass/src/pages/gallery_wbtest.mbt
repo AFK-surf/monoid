@@ -541,3 +541,155 @@ test "library app mobile responsive layout at 390x844 and 360x800: iOS 26 4-tab 
   }
   assert_eq(faults, [])
 }
+
+///|
+let overlays_close_step_ms : Double = 16.0
+
+///|
+let overlays_close_steps : Int = 27
+
+///|
+let overlays_drag_steps : Int = 18
+
+///|
+let overlays_settle_steps : Int = 15
+
+///|
+test "Overlays anchored Menu, Select and Popover close with 0.00px trigger/label jitter and zero rebound" {
+  let t = @ui.Tester::new(fn(_c) {  }, w=1280.0, h=800.0, platform=0)
+  @lg.set_dark(Some(true))
+  @ui.set_view_app(fn(root) { gallery(root, "library", chrome=true) })
+  t.draw()
+  let (ox, oy) = middle_of(t, Tab, "Overlays")
+  t.tap(ox, oy)
+  t.run_for(settled)
+
+  let check_close = fn(
+    name : String,
+    btn_label : String,
+    word_match : String,
+    close_action : () -> Unit raise,
+  ) raise {
+    let rest_r = t.get(Button, label=btn_label).rect
+    let rest_words = t.words_said().filter(fn(w) { w.0 == word_match })
+    assert_eq(rest_words.length(), 1, msg="\{name}: expected 1 rest word for \{word_match}")
+    let (rx, ry) = (rest_words[0].1, rest_words[0].2)
+    // Open and settle
+    t.tap(rest_r.0 + rest_r.2 / 2.0, rest_r.1 + rest_r.3 / 2.0)
+    t.run_for(settled)
+    // Verify trigger_face_box (when open) aligns 0.00px with resting trigger label
+    let in_trigger_row = fn(w : (String, Double, Double, Double, Double, Double)) -> Bool {
+      w.0 == word_match && w.2 >= rest_r.1 - 4.0 && w.2 <= rest_r.1 + rest_r.3 + 4.0
+    }
+    let open_words = t.words_said().filter(in_trigger_row)
+    for ow in open_words {
+      assert_true(
+        (ow.1 - rx).abs() < 0.01 && (ow.2 - ry).abs() < 0.01,
+        msg="\{name}: open word offset (\{ow.1},\{ow.2}) != rest (\{rx},\{ry})",
+      )
+    }
+    // Close and step every 16ms across 0..432ms
+    close_action()
+    for step in 1..<=overlays_close_steps {
+      t.run_for(overlays_close_step_ms)
+      let ws = t.words_said().filter(in_trigger_row)
+      for w in ws {
+        assert_true(
+          (w.1 - rx).abs() < 0.01 && (w.2 - ry).abs() < 0.01,
+          msg="\{name} step=\{step}: word drifted (\{w.1},\{w.2}) != rest (\{rx},\{ry})",
+        )
+      }
+      // Trigger glass at resting row must match exact trigger width/height (zero 142/144pt mismatch)
+      let at_trigger = t
+        .drawn_glass()
+        .filter(fn(g) {
+          g.4 == 6 && (g.0 - rest_r.0).abs() < 0.5 && (g.1 - rest_r.1).abs() < 0.5
+        })
+      for g in at_trigger {
+        assert_true(
+          (g.2 - rest_r.2).abs() < 0.5 && (g.3 - rest_r.3).abs() < 0.5,
+          msg="\{name} step=\{step}: trigger glass (\{g.2}x\{g.3}) != rest (\{rest_r.2}x\{rest_r.3})",
+        )
+      }
+      // After handoff (step >= 18 -> t >= 288ms): exactly 1 glass rect at trigger (zero rebound, zero double glass)
+      if step >= 18 {
+        assert_eq(
+          at_trigger.length(),
+          1,
+          msg="\{name} step=\{step}: expected 1 glass rect at trigger after handoff, got \{at_trigger.length()}",
+        )
+      }
+    }
+    assert_no_nested_glass(t, "overlays_close_rest/\{name}")
+  }
+
+  // Test all 3 overlays across outside tap, item/option selection, and trigger re-tap
+  check_close("OpenMenu-outside", "Open Menu", "Open Menu", fn() { t.tap(1000.0, 400.0) })
+  check_close("OpenMenu-item", "Open Menu", "Open Menu", fn() raise {
+    t.act(MenuItem, Activate, label="Duplicate Preset")
+  })
+  check_close("OpenMenu-trigger", "Open Menu", "Open Menu", fn() raise {
+    let r = t.get(Button, label="Open Menu").rect
+    t.tap(r.0 + r.2 / 2.0, r.1 + r.3 / 2.0)
+  })
+  check_close("Select-outside", "Material: iOS 27 Regular", "iOS 27 Regular", fn() {
+    t.tap(1000.0, 400.0)
+  })
+  check_close("Select-trigger", "Material: iOS 27 Regular", "iOS 27 Regular", fn() raise {
+    let r = t.get(Button, label="Material: iOS 27 Regular").rect
+    t.tap(r.0 + r.2 / 2.0, r.1 + r.3 / 2.0)
+  })
+  check_close("Popover-outside", "Open Popover", "Popover", fn() { t.tap(1000.0, 400.0) })
+  check_close("Popover-trigger", "Open Popover", "Popover", fn() raise {
+    let r = t.get(Button, label="Open Popover").rect
+    t.tap(r.0 + r.2 / 2.0, r.1 + r.3 / 2.0)
+  })
+}
+
+///|
+test "GPU Pipeline slider, progress bar and progress ring animate with zero per-frame Flex relayout" {
+  let t = @ui.Tester::new(fn(_c) {  }, w=1280.0, h=800.0, platform=0)
+  @lg.set_dark(Some(true))
+  @ui.set_view_app(fn(root) { gallery(root, "library", chrome=true) })
+  t.draw()
+  let (ox, oy) = middle_of(t, Tab, "Overlays")
+  t.tap(ox, oy)
+  t.run_for(settled)
+  let tree = @ui.view_tree().unwrap()
+  let slider_r = t.get(Slider, label="Progress Value").rect
+  let sx = slider_r.0 + slider_r.2 * 0.68
+  let sy = slider_r.1 + slider_r.3 / 2.0
+  // Drag slider smoothly across 18 steps, then release and step 15 frames through jelly + progress settle
+  t.touch(0, sx, sy)
+  t.run_for(overlays_close_step_ms)
+  for i in 1..<=overlays_drag_steps {
+    t.touch(1, sx - i.to_double() * 5.0, sy)
+    t.run_for(overlays_close_step_ms)
+  }
+  t.touch(2, sx - 90.0, sy)
+  t.run_for(overlays_close_step_ms)
+  let laid_before_settle = tree.work().laid
+  for _ in 0..<overlays_settle_steps {
+    t.run_for(overlays_close_step_ms)
+  }
+  let laid_during_settle = tree.work().laid - laid_before_settle
+  assert_eq(
+    laid_during_settle,
+    0,
+    msg="expected 0 Flex layouts during post-drag slider/progress spring settle, got \{laid_during_settle}",
+  )
+  // Toggle Indeterminate ON and verify continuous sweep + ring spin causes 0 Flex layouts
+  let (ix, iy) = middle_of(t, Switch, "Indeterminate")
+  t.tap(ix, iy)
+  t.run_for(settled)
+  let laid_before_indet = tree.work().laid
+  for _ in 0..<overlays_settle_steps {
+    t.run_for(overlays_close_step_ms)
+  }
+  let laid_during_indet = tree.work().laid - laid_before_indet
+  assert_eq(
+    laid_during_indet,
+    0,
+    msg="expected 0 Flex layouts during indeterminate progress sweep, got \{laid_during_indet}",
+  )
+}

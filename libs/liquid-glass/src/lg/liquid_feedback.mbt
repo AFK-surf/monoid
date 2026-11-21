@@ -176,7 +176,7 @@ pub fn liquid_progress_bar_node(
       let prog_way = @motion.NodeWay::new(@signals.untracked(fn() { prog.part() * 100.0 }))
       v.reacts(at_start=false, fn() { if prog.indeterminate() { -1.0 } else { prog.part() * 100.0 } }, fn(pct) {
         if pct >= 0.0 {
-          prog_way.go(v, pct, @motion.move_damped)
+          prog_way.go(v, pct, value_spring(0.05))
         }
       })
       v.gap(Is(ovl_progress_gap)) |> ignore
@@ -188,15 +188,19 @@ pub fn liquid_progress_bar_node(
         })
         |> ignore
         hdr.show(fn() { show_value && !prog.indeterminate() }, fn(val_box) {
-          val_box
-          .words(
-            By(fn() {
-              let pct = (prog.part() * 100.0).round().to_int()
-              "\{pct}%"
-            }),
-            look=words_at(ovl_type_meta),
-          )
-          .ink(By(ovl_muted_ink))
+          val_box.row(Is(true)).width(Is(Some(38.0))).lies_along(Is(End)).lines_up(Is(Some(Middle))) |> ignore
+          val_box.box(fn(w) {
+            w
+            .words(
+              By(fn() {
+                let pct = (prog.part() * 100.0).round().to_int()
+                "\{pct}%"
+              }),
+              look=words_at(ovl_type_meta),
+            )
+            .ink(By(ovl_muted_ink))
+            |> ignore
+          })
           |> ignore
         })
       })
@@ -207,38 +211,45 @@ pub fn liquid_progress_bar_node(
         .ground(By(ovl_track_color))
         .clips(Is(true))
         |> ignore
-        track.show(fn() { !prog.indeterminate() }, fn(bar) {
-          bar
-          .height(Is(Some(height)))
-          .width_share(By(fn() { clamp(prog_way.shown(bar) / 100.0, 0.0, 1.0) }))
-          .radius(Is(height / 2.0))
-          .ground(By(fill_color))
-          |> ignore
-        })
-        track.show(fn() { prog.indeterminate() }, fn(sweep_row) {
-          sweep_row.row(Is(true)).height(Is(Some(height))) |> ignore
-          sweep_row.box(fn(lead) {
-            lead
+        track.by_room(fn(inner, room) {
+          let w = fn() { room.width() }
+          let r = height / 2.0
+          inner.show(fn() { !prog.indeterminate() }, fn(bar) {
+            bar
+            .over(Is(true))
+            .width(By(fn() { Some(w()) }))
             .height(Is(Some(height)))
-            .width_share(
+            .radius(Is(r))
+            .ground(By(fill_color))
+            .ground_drawn(
               By(fn() {
-                let c = @motion.resident_cycle(lead, @motion.progress_sweep_ms)
-                c * (1.0 - ovl_progress_sweep_w)
+                let tw = w()
+                let shown = clamp(prog_way.shown(bar) / 100.0, 0.0, 1.0) * tw
+                { ..@view.ground_as_laid, dw: shown - tw }
               }),
             )
             |> ignore
           })
-          |> ignore
-          sweep_row.box(fn(sweep) {
+          inner.show(fn() { prog.indeterminate() }, fn(sweep) {
             sweep
+            .over(Is(true))
+            .width(By(fn() { Some(w()) }))
             .height(Is(Some(height)))
-            .width_share(Is(ovl_progress_sweep_w))
-            .radius(Is(height / 2.0))
+            .radius(Is(r))
             .ground(By(fill_color))
+            .ground_drawn(
+              By(fn() {
+                let tw = w()
+                let c = sweep.cycle(@motion.progress_sweep_ms)
+                let sw = tw * ovl_progress_sweep_w
+                let dx = c * (tw - sw)
+                { ..@view.ground_as_laid, dx, dw: sw - tw }
+              }),
+            )
             |> ignore
           })
-          |> ignore
         })
+        |> ignore
       })
       |> ignore
     },
@@ -270,7 +281,7 @@ pub fn liquid_progress_ring_node(
       let ring_way = @motion.NodeWay::new(@signals.untracked(fn() { prog.part() * 100.0 }))
       v.reacts(at_start=false, fn() { if prog.indeterminate() { -1.0 } else { prog.part() * 100.0 } }, fn(pct) {
         if pct >= 0.0 {
-          ring_way.go(v, pct, @motion.move_damped)
+          ring_way.go(v, pct, value_spring(0.05))
         }
       })
       v
@@ -280,7 +291,7 @@ pub fn liquid_progress_ring_node(
       .shapes(
         By(fn() {
           if prog.indeterminate() {
-            let phase = @motion.resident_cycle(v, @motion.progress_sweep_ms)
+            let phase = v.cycle(@motion.progress_sweep_ms)
             ovl_ring_shapes(size, stroke, phase, 0.28, ring_color(), ovl_track_color())
           } else {
             ovl_ring_shapes(

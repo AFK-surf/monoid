@@ -15,8 +15,13 @@
 
 ///|
 /// Leave duration (ms) passed to `pop.layer(..., leave=ovl_morph_leave_ms)` so the closing capillary
-/// re-absorption (`snappy_damped` from 1.0 to < 0.01 takes ~324ms) completes cleanly before unmount.
+/// re-absorption (`snappy_damped` from 1.0 to `ovl_morph_handoff_p` takes ~274ms) completes cleanly before unmount.
 let ovl_morph_leave_ms : Double = 340.0
+
+///|
+/// Progress threshold at which the closing morph shell has already converged 0.00px onto `trigger_ghost`,
+/// allowing `shell` to turn off and `is_bridging` to hand off pixel-identically to the real `trigger`.
+let ovl_morph_handoff_p : Double = 0.025
 
 ///|
 /// Peak GPU smooth-min metaball merge radius (pt) between `trigger_ghost` and `shell` while bonded.
@@ -86,7 +91,7 @@ fn ovl_morph_pivot(side : @view.Side, along : @view.Along) -> @view.Pivot {
 /// Closed-form physical edge gap (pt) between trigger and morphing shell, independent of panel size `(w, h)`.
 /// Allows both the original `trigger` and the overlay `host` to evaluate bit-identical `gap` in the same frame.
 fn ovl_morph_gap(side : @view.Side, anchor_size : (Double, Double), p : Double) -> Double {
-  let pt = clamp(p, 0.0, 1.0)
+  let pt = clamp((p - ovl_morph_handoff_p) / (1.0 - ovl_morph_handoff_p), 0.0, 1.0)
   let axis = match side {
     Bottom | Top => anchor_size.1
     Right | Left => anchor_size.0
@@ -96,16 +101,17 @@ fn ovl_morph_gap(side : @view.Side, anchor_size : (Double, Double), p : Double) 
 
 ///|
 /// Continuous capillary bridge merge radius (pt) driven strictly by physical edge gap `gap`:
-/// - `gap >= ovl_morph_break_gap` or `p <= 0.005`: strictly `0.0`.
-/// - `gap <= 0.0`: ramps smoothly via `onset = ovl_smoothstep(0.0, 0.22, p)` (so `p=0.01` already batches in SDF).
+/// - `gap >= ovl_morph_break_gap` or `p <= ovl_morph_handoff_p`: strictly `0.0`.
+/// - `gap <= 0.0`: ramps smoothly via `onset = ovl_smoothstep(ovl_morph_handoff_p, 0.24, p)`.
 /// - `0.0 < gap < ovl_morph_break_gap`: decays continuously from `28.0` to `0.0` with zero cliff.
 fn ovl_morph_bridge_merge_for_gap(p : Double, gap : Double) -> Double {
-  if gap >= ovl_morph_break_gap || p <= 0.01 {
+  if gap >= ovl_morph_break_gap || p <= ovl_morph_handoff_p {
     return 0.0
   }
-  let onset = ovl_smoothstep(0.0, 0.22, p)
+  let onset = ovl_smoothstep(ovl_morph_handoff_p, 0.24, p)
   if gap <= 0.0 {
-    ovl_morph_merge_max * onset
+    let m = ovl_morph_merge_max * onset
+    if m < 0.02 { 0.02 } else { m }
   } else {
     ovl_morph_merge_max * (1.0 - ovl_smoothstep(0.0, ovl_morph_break_gap, gap)) * onset
   }
@@ -177,20 +183,23 @@ fn ovl_trigger_recoil_way(trigger : @view.View, open : () -> Bool) -> @motion.No
 /// Shared handoff handle linking a trigger node and its overlay layer so both read the exact same `p_way`
 /// and flip `is_bridging` in the exact same frame (zero double-glass stacking, zero icon blur).
 priv struct OvlMorphHandoff {
+  trigger : @view.View
   p_way : @motion.NodeWay
   side : @view.Side
   anchor_size : (Double, Double)
+  live_anchor : Ref[(Double, Double)]
   open : () -> Bool
   trigger_face : ((@view.View) -> Unit)?
+  attach_recoil : Bool
   layer_live : Ref[() -> Bool]
 }
 
 ///|
 fn OvlMorphHandoff::is_bridging(self : OvlMorphHandoff, node : @view.View) -> Bool {
   let p = self.p_way.shown(node)
-  let gap = ovl_morph_gap(self.side, self.anchor_size, p)
+  let gap = ovl_morph_gap(self.side, self.live_anchor.val, p)
   let active = (self.layer_live.val)()
-  active && gap < ovl_morph_break_gap && ((self.open)() || p > 0.01)
+  active && gap < ovl_morph_break_gap && ((self.open)() || p > ovl_morph_handoff_p)
 }
 
 ///|
@@ -207,11 +216,14 @@ fn ovl_setup_trigger_handoff(
   attach_recoil? : Bool = true,
 ) -> OvlMorphHandoff {
   let handoff : OvlMorphHandoff = {
+    trigger,
     p_way: @motion.NodeWay::new(0.0),
     side,
     anchor_size,
+    live_anchor: Ref(anchor_size),
     open,
     trigger_face,
+    attach_recoil,
     layer_live: Ref(fn() { false }),
   }
   match trigger_face {
@@ -280,16 +292,20 @@ fn ovl_morph_shell_geom(
     return (@view.ground_as_laid, ovl_float_gap)
   }
   let (tx, ty, tw, th, tr) = ovl_morph_trigger_rect(w, h, side, along, anchor_size)
-  let px = if sx > 0.0 { sx } else { 0.0 }
-  let py = if sy > 0.0 { sy } else { 0.0 }
-  let pt = clamp(p, 0.0, 1.0)
+  let remap_scale = fn(v : Double) -> Double {
+    let u = (v - ovl_morph_handoff_p) / (1.0 - ovl_morph_handoff_p)
+    if u > 0.0 { u } else { 0.0 }
+  }
+  let px = remap_scale(sx)
+  let py = remap_scale(sy)
+  let pt = clamp((p - ovl_morph_handoff_p) / (1.0 - ovl_morph_handoff_p), 0.0, 1.0)
   let (mx, my, mw, mh, gap) = match side {
     Bottom => {
       let y = lerp(ty, 0.0, pt)
       let g = y - (ty + th)
-      let clear_t = ovl_smoothstep(-5.5, 5.0, g)
-      let grow_w = lerp(px * 0.08, px, clear_t)
-      let grow_h = lerp(py * 0.26, py, ovl_smoothstep(-16.0, 4.5, g))
+      let clear_t = ovl_smoothstep(-th * 0.65, ovl_float_gap, g)
+      let grow_w = lerp(px * 0.22, px, clear_t)
+      let grow_h = lerp(py * 0.32, py, ovl_smoothstep(-th * 0.75, ovl_float_gap, g))
       let raw_mw = lerp(tw, w, grow_w)
       let raw_mh = lerp(th, h, grow_h)
       let cur_w = if raw_mw > 4.0 { raw_mw } else { 4.0 }
@@ -304,9 +320,9 @@ fn ovl_morph_shell_geom(
     Top => {
       let bot = lerp(ty + th, h, pt)
       let g = ty - bot
-      let clear_t = ovl_smoothstep(-5.5, 5.0, g)
-      let grow_w = lerp(px * 0.08, px, clear_t)
-      let grow_h = lerp(py * 0.26, py, ovl_smoothstep(-16.0, 4.5, g))
+      let clear_t = ovl_smoothstep(-th * 0.65, ovl_float_gap, g)
+      let grow_w = lerp(px * 0.22, px, clear_t)
+      let grow_h = lerp(py * 0.32, py, ovl_smoothstep(-th * 0.75, ovl_float_gap, g))
       let raw_mw = lerp(tw, w, grow_w)
       let raw_mh = lerp(th, h, grow_h)
       let cur_w = if raw_mw > 4.0 { raw_mw } else { 4.0 }
@@ -321,9 +337,9 @@ fn ovl_morph_shell_geom(
     Right => {
       let x = lerp(tx, 0.0, pt)
       let g = x - (tx + tw)
-      let clear_t = ovl_smoothstep(-5.5, 5.0, g)
-      let grow_h = lerp(py * 0.08, py, clear_t)
-      let grow_w = lerp(px * 0.26, px, ovl_smoothstep(-16.0, 4.5, g))
+      let clear_t = ovl_smoothstep(-tw * 0.65, ovl_float_gap, g)
+      let grow_h = lerp(py * 0.22, py, clear_t)
+      let grow_w = lerp(px * 0.32, px, ovl_smoothstep(-tw * 0.75, ovl_float_gap, g))
       let raw_mw = lerp(tw, w, grow_w)
       let raw_mh = lerp(th, h, grow_h)
       let cur_w = if raw_mw > 4.0 { raw_mw } else { 4.0 }
@@ -338,9 +354,9 @@ fn ovl_morph_shell_geom(
     Left => {
       let r_edge = lerp(tx + tw, w, pt)
       let g = tx - r_edge
-      let clear_t = ovl_smoothstep(-5.5, 5.0, g)
-      let grow_h = lerp(py * 0.08, py, clear_t)
-      let grow_w = lerp(px * 0.26, px, ovl_smoothstep(-16.0, 4.5, g))
+      let clear_t = ovl_smoothstep(-tw * 0.65, ovl_float_gap, g)
+      let grow_h = lerp(py * 0.22, py, clear_t)
+      let grow_w = lerp(px * 0.32, px, ovl_smoothstep(-tw * 0.75, ovl_float_gap, g))
       let raw_mw = lerp(tw, w, grow_w)
       let raw_mh = lerp(th, h, grow_h)
       let cur_w = if raw_mw > 4.0 { raw_mw } else { 4.0 }
@@ -371,7 +387,9 @@ fn ovl_attach_liquid_morph(
   handoff : OvlMorphHandoff,
   content : (@view.View) -> Unit,
 ) -> () -> Bool {
-  let anchor_size = handoff.anchor_size
+  let (_, _, pw, ph) = handoff.trigger.placed_now()
+  let anchor_size = if pw > 0.0 && ph > 0.0 { (pw, ph) } else { handoff.anchor_size }
+  handoff.live_anchor.val = anchor_size
   let has_face = handoff.trigger_face is Some(_)
   let p_way = handoff.p_way
   let sx_way = @motion.NodeWay::new(0.0)
@@ -401,7 +419,7 @@ fn ovl_attach_liquid_morph(
         1.0,
         @motion.tween(ovl_morph_mat_open_ms, ease=@ui.Ease::Out, delay=ovl_morph_mat_delay_ms),
       )
-      if has_face {
+      if has_face && handoff.attach_recoil {
         icon_recoil_way.go_from(layer, 0.92, 1.0, @motion.tactile_bounce)
       }
     }
@@ -462,9 +480,13 @@ fn ovl_attach_liquid_morph(
       .shadow_outside(Is(true))
       .shadow(
         By(fn() {
-          let ga = ovl_smoothstep(0.0, 0.22, p_way.shown(shadow_box))
-          let (s, dy, ink) = shadow_default
-          (s, dy, alpha(ink, ga))
+          let ga = ovl_smoothstep(0.06, 0.30, p_way.shown(shadow_box))
+          if ga <= 0.001 {
+            shadow_none
+          } else {
+            let (s, dy, ink) = shadow_default
+            (s, dy, alpha(ink, ga))
+          }
         }),
       )
       .ground_drawn(
@@ -499,7 +521,7 @@ fn ovl_attach_liquid_morph(
           }
         } else {
           let p = p_way.shown(trigger_ghost)
-          let ga = ovl_smoothstep(0.0, 0.16, p)
+          let ga = ovl_smoothstep(ovl_morph_handoff_p, 0.18, p)
           let gap = ovl_morph_gap(side, anchor_size, p)
           let m = ovl_morph_bridge_merge_for_gap(p, gap)
           if m > 0.01 {
@@ -553,19 +575,19 @@ fn ovl_attach_liquid_morph(
         By(fn() {
           let p = p_way.shown(shell)
           if has_face {
-            if p <= 0.01 { 0.0 } else { 1.0 }
+            if p <= ovl_morph_handoff_p { 0.0 } else { 1.0 }
           } else {
-            ovl_smoothstep(0.0, 0.16, p)
+            ovl_smoothstep(ovl_morph_handoff_p, 0.18, p)
           }
         }),
       )
       .glass(
         By(fn() {
           let p = p_way.shown(shell)
-          if has_face && p <= 0.01 {
+          if has_face && p <= ovl_morph_handoff_p {
             return None
           }
-          let ga = if has_face { 1.0 } else { ovl_smoothstep(0.0, 0.16, p) }
+          let ga = if has_face { 1.0 } else { ovl_smoothstep(ovl_morph_handoff_p, 0.18, p) }
           if ga > 0.01 {
             let gap = ovl_morph_gap(side, anchor_size, p)
             let m = ovl_morph_bridge_merge_for_gap(p, gap)

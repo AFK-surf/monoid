@@ -273,6 +273,7 @@ fn lib_nav_menu_trigger(v : @view.View, d : @headless.Disclosure) -> Unit {
   .radius(Is(18.0))
   .lines_up(Is(Some(Middle)))
   .lies_along(Is(Middle))
+  .shadow_outside(Is(true))
   .shadow(Is(@lg.shadow_default))
   .glass(By(fn() {
     let dark = @lg.is_dark()
@@ -306,7 +307,11 @@ fn lib_nav_menu_trigger(v : @view.View, d : @headless.Disclosure) -> Unit {
 
 ///|
 /// Capsule trigger look for `@lg.liquid_menu_node` and `@lg.liquid_popover_node` on the exhibition canvas.
-fn lib_glass_trigger(label : String, tint? : Int64 = @lg.clear) -> (@view.View, @headless.Disclosure) -> Unit {
+fn lib_glass_trigger(
+  label : String,
+  tint? : Int64 = @lg.clear,
+  width? : Double,
+) -> (@view.View, @headless.Disclosure) -> Unit {
   fn(v : @view.View, d : @headless.Disclosure) {
     let has_tint = tint != @lg.clear
     v
@@ -317,6 +322,7 @@ fn lib_glass_trigger(label : String, tint? : Int64 = @lg.clear) -> (@view.View, 
     .padding(Is((18.0, 0.0, 18.0, 0.0)))
     .gap(Is(8.0))
     .radius(Is(24.0))
+    .shadow_outside(Is(true))
     .shadow(Is(@lg.shadow_default))
     .glass(By(fn() {
       let dark = @lg.is_dark()
@@ -350,6 +356,10 @@ fn lib_glass_trigger(label : String, tint? : Int64 = @lg.clear) -> (@view.View, 
       )
     }))
     |> ignore
+    match width {
+      Some(w) => v.width(Is(Some(w))) |> ignore
+      None => ()
+    }
     v.box(fn(w) {
       w
       .words(Is(label), look=@lg.words_at(15.0, weight=@lg.weight_medium))
@@ -1126,7 +1136,7 @@ fn lib_overlays_section(
           fn() { demo_menu_open.get() },
           fn(v) { demo_menu_open.set(v) },
           fn() { "Open Menu" },
-          lib_glass_trigger("Open Menu"),
+          lib_glass_trigger("Open Menu", width=116.0),
           fn() {
             [
               @lg.LiquidMenuEntry::item(
@@ -1154,7 +1164,7 @@ fn lib_overlays_section(
             ]
           },
           menu_label=fn() { "Demo Menu" },
-          anchor_size=(142.0, 48.0),
+          anchor_size=(116.0, 48.0),
           trigger_face=fn(v) {
             v.box(fn(w) {
               w.words(Is("Open Menu"), look=@lg.words_at(15.0, weight=@lg.weight_medium)).ink(By(fn() { @lg.colors().content }))
@@ -1189,7 +1199,7 @@ fn lib_overlays_section(
           fn() { popover_open.get() },
           fn(v) { popover_open.set(v) },
           fn() { "Open Popover" },
-          lib_glass_trigger("Popover"),
+          lib_glass_trigger("Popover", width=100.0),
           fn() { "Shader Telemetry" },
           fn(c) {
             c.gap(Is(8.0)) |> ignore
@@ -1212,7 +1222,7 @@ fn lib_overlays_section(
             |> ignore
           },
           placement=BelowStart,
-          anchor_size=(144.0, 48.0),
+          anchor_size=(100.0, 48.0),
           trigger_face=fn(v) {
             v.box(fn(w) {
               w.words(Is("Popover"), look=@lg.words_at(15.0, weight=@lg.weight_medium)).ink(By(fn() { @lg.colors().content }))

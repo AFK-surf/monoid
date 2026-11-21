@@ -151,35 +151,46 @@ pub fn liquid_slider_node(
         })
         |> ignore
         inner.box(fn(thumb) {
-          let size = fn() {
-            let (sx, sy) = dd.jelly(thumb, 10.0)
-            (thumb_w * sx, thumb_h * sy)
+          let thumb_shape = fn(n : @view.View) -> @view.GroundShape {
+            let (sx, sy) = dd.jelly(n, 10.0)
+            let tw = thumb_w * sx
+            let th = thumb_h * sy
+            let x = slider_thumb_x(w(), dd.progress(n))
+            let r = th / 2.0
+            {
+              dx: x + (thumb_w - tw) / 2.0,
+              dy: (thumb_h - th) / 2.0,
+              dw: tw - thumb_w,
+              dh: th - thumb_h,
+              corners: Some((r, r, r, r)),
+            }
           }
           thumb
           .over(Is(true))
-          .width(By(fn() { Some(size().0) }))
-          .height(By(fn() { Some(size().1) }))
-          .radius(By(fn() { size().1 / 2.0 }))
-          .offset(By(fn() {
-            let (tw, th) = size()
-            let x = slider_thumb_x(w(), dd.progress(thumb))
-            (x + (thumb_w - tw) / 2.0, (thumb_h - th) / 2.0)
-          }))
+          .width(Is(Some(thumb_w)))
+          .height(Is(Some(thumb_h)))
+          .radius(Is(thumb_h / 2.0))
           .shadow(Is(shadow_thumb))
+          .ground_drawn(By(fn() { thumb_shape(thumb) }))
           |> ignore
           thumb.box(fn(solid) {
             solid
             .over(Is(true))
-            .radius(By(fn() { size().1 / 2.0 }))
+            .width(Is(Some(thumb_w)))
+            .height(Is(Some(thumb_h)))
+            .radius(Is(thumb_h / 2.0))
             .ground(Is(white))
             .alpha(By(fn() { 1.0 - clamp(dd.pressed(solid), 0.0, 1.0) }))
+            .ground_drawn(By(fn() { thumb_shape(solid) }))
             |> ignore
           })
           |> ignore
           thumb.box(fn(gl) {
             gl
             .over(Is(true))
-            .radius(By(fn() { size().1 / 2.0 }))
+            .width(Is(Some(thumb_w)))
+            .height(Is(Some(thumb_h)))
+            .radius(Is(thumb_h / 2.0))
             .glass(By(fn() {
               let p = dd.pressed(gl)
               if p > 0.001 {
@@ -189,6 +200,7 @@ pub fn liquid_slider_node(
               }
             }))
             .alpha(By(fn() { clamp(dd.pressed(gl), 0.0, 1.0) }))
+            .ground_drawn(By(fn() { thumb_shape(gl) }))
             |> ignore
           })
           |> ignore
