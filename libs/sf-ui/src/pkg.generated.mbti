@@ -790,6 +790,8 @@ pub fn glass_foot() -> @paint.Glass
 
 pub fn glass_knob() -> @paint.Glass
 
+pub fn glass_menu() -> @paint.Glass
+
 pub fn glass_sheet() -> @paint.Glass
 
 pub fn glass_tab_lens(Double) -> @paint.Glass

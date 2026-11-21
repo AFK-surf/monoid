@@ -397,9 +397,10 @@ fn menu_node_by(
               }),
             )
             .radius(Is(r_menu))
-            .ground(By(fn() { panel_ground() }))
-            .edge(By(fn() { (1.0, panel_edge()) }))
+            .glass(By(fn() { Some(glass_menu()) }))
+            .edge(By(fn() { if p.glass_solid() { (1.0, panel_edge()) } else { (0.0, 0L) } }))
             .shadow(By(fn() { float_shadow() }))
+            .shadow_outside(Is(true))
             .clips(Is(true))
             .alpha(By(fn() { look().alpha }))
             .scale(By(fn() { look().sx }), about=FromBeside, max_shift=pop_max_shift)

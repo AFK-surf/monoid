@@ -784,7 +784,9 @@ fn service_stage_node(
           r.box(fn(pill) {
             @sf.style_node(pill, fn() { service_restart_pill })
             // (its shadow the theme's large one, Restart's shadow-lg: a style's shadow is no node's)
-            pill.shadow(By(fn() { (restart_shadow_blur, restart_shadow_fall, @ui.tree_theme().shadow) })) |> ignore
+            pill.shadow(By(fn() { (restart_shadow_blur, restart_shadow_fall, @ui.tree_theme().shadow) }))
+            .shadow_outside(Is(true))
+            |> ignore
             pill.glass(By(fn() { Some(@sf.glass_floating()) })) |> ignore
             @sf.first_line_node(pill, Ui, fn(l) {
               l.box(fn(d) { @sf.style_node(d, fn() { service_restart_dot }, in_row=true) }) |> ignore

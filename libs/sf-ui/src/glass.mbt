@@ -19,13 +19,46 @@ pub fn glass_foot() -> @ui.Glass {
 }
 
 ///|
-/// A capsule floating over the list (mFloating, the composer's): `--raised` at 72% over a 20px
-/// blur; `tint` for glass of another colour. Its breath of shadow is the box's (shadow 2, black at 30%, 0.5 down),
-/// drawn outside it only.
+/// A capsule floating over the list (mFloating, the composer's): iOS 27 liquid glass (`ios27Dark` / `ios27Light`
+/// neutral tint when `tint` is `None`, or caller-supplied `tint` such as drag-over accent); `solid` preserves the
+/// opaque raised fallback under `MBUI_GLASS=solid`.
 pub fn glass_floating(tint? : Int64) -> @ui.Glass {
   let t = theme()
-  let ground = alpha(tint.unwrap_or(t.p.raised), 0.72)
-  @ui.Glass::frosted(blur=20.0, tint=ground, solid=over(t.p.bg, ground))
+  let glass_tint = match tint {
+    Some(c) => c
+    None => if t.dark { 0x202020FFL } else { 0xFDFCFD67L }
+  }
+  let solid = over(t.p.bg, alpha(tint.unwrap_or(t.p.raised), 0.72))
+  @ui.Glass::liquid(
+    blur=6.0,
+    tint=glass_tint,
+    solid~,
+    saturation=1.0,
+    rim=0.6,
+    bezel=14.0,
+    refraction=18.0,
+    chroma=0.0,
+    merge=0.0,
+    adaptive=false,
+  )
+}
+
+///|
+/// Single-layer iOS 27 liquid glass for anchored dropdown and context menus (`menu_node`).
+pub fn glass_menu() -> @ui.Glass {
+  let t = theme()
+  @ui.Glass::liquid(
+    blur=8.0,
+    tint=if t.dark { 0x202020FFL } else { 0xFDFCFD67L },
+    solid=panel_ground(),
+    saturation=1.0,
+    rim=0.6,
+    bezel=16.0,
+    refraction=22.0,
+    chroma=0.0,
+    merge=0.0,
+    adaptive=false,
+  )
 }
 
 ///|

@@ -318,6 +318,7 @@ pub fn offers_node(
         .max_height(By(fn() { Some(dmax(0.0, over_room(shown).1 - 16.0)) }))
         .glass(By(fn() { Some(glass_floating()) }))
         .shadow(By(fn() { (2.0, 1.0, @ui.tree_theme().shadow) }))
+        .shadow_outside(Is(true))
         .clips(Is(true))
         .alpha(By(fn() { look().alpha }))
         .scale(By(fn() { look().sx }), about=FromBeside, max_shift=pop_max_shift)
