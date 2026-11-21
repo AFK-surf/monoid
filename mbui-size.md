@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [98740f8c3](https://github.com/AFK-surf/monoid/commit/98740f8c3889a118b00a1fe13b5f976afb824e3b) fix(mbui): hide closing overlays from semantics an | 2.65 | 3.56 | 14.46 | 36.47 | 55.1 | 31.94 | 64.5 | 98.31 | 119.53 |
 | [faf605199](https://github.com/AFK-surf/monoid/commit/faf605199178e1f65849aed176b11507580f1a16) feat(station,mbui): configurable per-account concu | 2.65 | 3.56 | 14.46 | 36.46 | 55.09 | 31.93 | 64.48 | 98.16 | 116.77 |
 | [5a4092b7e](https://github.com/AFK-surf/monoid/commit/5a4092b7e85121be38f4de74e0f05840c8ef261f) fix(mbui): hide leaving nodes from the semantics t | 2.65 | 3.56 | 14.45 | 36.45 | 55.07 | 31.92 | 64.47 | 97.98 | 120.66 |
 | [73d4b2a2d](https://github.com/AFK-surf/monoid/commit/73d4b2a2db7accd7dc5e79edcb52dcfdfb9ba0c2) chore(sf-ui): delete dead legacy @ui.Ctx component | 2.65 | 3.56 | 14.45 | 36.45 | 55.07 | 31.92 | 64.47 | 97.98 | 120.66 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [96e07d52b](https://github.com/AFK-surf/monoid/commit/96e07d52be5de4878aad57afeb1535bf636e96e5) fix(sf-ui,mbui): align icons, marks, and chevrons  | 2.65 | 3.57 | 14.49 | 36.47 | 55.21 | 31.94 | 64.55 | 98.32 | 123.59 |
 | [0dca5d031](https://github.com/AFK-surf/monoid/commit/0dca5d031982fd2e56f3326852a5223a5420b6c3) fix(mbui): keep each workspace in its place in the | 2.65 | 3.57 | 14.49 | 36.47 | 55.21 | 31.94 | 64.55 | 98.32 | 123.59 |
 | [2e5f2a432](https://github.com/AFK-surf/monoid/commit/2e5f2a432b88771aba1cd8b8cf9cc5de010fa277) chore(mbui): delete non-message legacy @ui.Ctx vie | 2.65 | 3.57 | 14.51 | 36.48 | 55.29 | 31.95 | 64.6 | 98.31 | 127.53 |
-| [b12eefbd0](https://github.com/AFK-surf/monoid/commit/b12eefbd04396dbf363ced3a7f795a7f1841f9db) feat(core-ts): wire stillfail-reader-harness and m | 2.65 | 3.57 | 14.51 | 36.48 | 55.3 | 31.95 | 64.6 | 98.22 | 129.41 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [98740f8c3](https://github.com/AFK-surf/monoid/commit/98740f8c3889a118b00a1fe13b5f976afb824e3b) fix(mbui): hide closing overlays from semantics an | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.31 |
 | [faf605199](https://github.com/AFK-surf/monoid/commit/faf605199178e1f65849aed176b11507580f1a16) feat(station,mbui): configurable per-account concu | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.31 |
 | [5a4092b7e](https://github.com/AFK-surf/monoid/commit/5a4092b7e85121be38f4de74e0f05840c8ef261f) fix(mbui): hide leaving nodes from the semantics t | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.31 |
 | [73d4b2a2d](https://github.com/AFK-surf/monoid/commit/73d4b2a2db7accd7dc5e79edcb52dcfdfb9ba0c2) chore(sf-ui): delete dead legacy @ui.Ctx component | 0.47 | 0.61 | 2.37 | 3.42 | 5.61 | 1.72 | 4.63 | 54.2 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [96e07d52b](https://github.com/AFK-surf/monoid/commit/96e07d52be5de4878aad57afeb1535bf636e96e5) fix(sf-ui,mbui): align icons, marks, and chevrons  | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54 |
 | [0dca5d031](https://github.com/AFK-surf/monoid/commit/0dca5d031982fd2e56f3326852a5223a5420b6c3) fix(mbui): keep each workspace in its place in the | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.04 |
 | [2e5f2a432](https://github.com/AFK-surf/monoid/commit/2e5f2a432b88771aba1cd8b8cf9cc5de010fa277) chore(mbui): delete non-message legacy @ui.Ctx vie | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 53.86 |
-| [b12eefbd0](https://github.com/AFK-surf/monoid/commit/b12eefbd04396dbf363ced3a7f795a7f1841f9db) feat(core-ts): wire stillfail-reader-harness and m | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 53.86 |
