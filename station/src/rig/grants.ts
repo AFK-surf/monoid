@@ -311,7 +311,13 @@ export class RigGrants {
   /// What the person signed taking this rig into a workspace in security mode (rig-form.ts `AddBody`): kept to show the
   /// stations that ask (`proof`). Checked here only for being about this rig; each station checks who signed it
   /// against the workspace's lock, which this rig does not judge.
-  added(signed: unknown): void {
+  ///
+  /// The workspace lock's hash to pin, where the add names one (`lock`, FB-45: a rig that joined before the workspace
+  /// turned safe mode on pins none and takes no lock the control plane alone brings): only from a statement a key on
+  /// its person's own lock signed (this rig's one root of trust), `pin` where the add itself is signed by the
+  /// workspace's lock (that person's device on it), with their lock as brought (`chain`). A `pin` that does not hold
+  /// is refused; an add alone that is not their own lock's names nothing to pin.
+  added(signed: unknown, pin?: unknown, chain?: unknown): { lock: string | null } {
     const self = this.#self();
     if (!wellFormed("add", signed)) throw new Refusal("not a rig's add");
     const s = signed as Signed<AddBody>;
@@ -319,6 +325,19 @@ export class RigGrants {
     if (!signatureHolds("add", s)) throw new Refusal("the signature does not hold");
     this.#kept.add = s;
     this.#save();
+    const given = pin !== undefined && pin !== null;
+    const candidate = (given ? pin : signed) as Signed<AddBody> | null;
+    if (typeof candidate?.body?.lock !== "string") {
+      if (given) throw new Refusal("the pin names no lock");
+      return { lock: null };
+    }
+    try {
+      if (chain !== undefined && chain !== null) this.takeChain(chain);
+      return { lock: this.#checked<AddBody>("add", candidate).body.lock ?? null };
+    } catch (error) {
+      if (given) throw error;
+      return { lock: null };
+    }
   }
 
   /// Its person's word that this machine is to be a whole station again (rig-form.ts `FullBody`), checked as a grant

@@ -358,6 +358,7 @@
   "core-misc.reader.gone": "That book is no longer open; open it again",
   "core-misc.personal.noKey": "This device can't keep a device key. Use the desktop or Android app",
   "core-misc.personal.outside": "This device isn't approved yet: send an approval request on this device, and enter the code your trusted device shows",
+  "core-misc.personal.outsideSafe": "This device hasn't finished approval yet: send an approval request in Settings › Security on this device, and enter the code your trusted device shows",
   "core-misc.personal.replaced": "Your trusted devices were set up again: confirm it in Settings › Security on this device first",
   "core-misc.rig.appOnly": "The web app can't do this: use the app on your phone or computer",
   "core-misc.rig.notOwner": "Only this station's owner can do that",

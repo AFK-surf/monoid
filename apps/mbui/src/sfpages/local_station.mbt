@@ -331,6 +331,16 @@ fn local_facts(s : Json?, pc : Bool) -> Array[String] {
     }
     @sf.t(if flag(workspace, "removed") { "web-pages.localStation.removed" } else { "web-pages.localStation.inWorkspace" }, args=[("workspace", ws)])
   }
+  // its security code where it is in a workspace (not removed from it): what its owner checks it by in a workspace in
+  // safe mode, read here as well as from its command (FB-45)
+  let code = if place != "" && !flag(workspace, "removed") {
+    match station_short_code(text(workspace, "station")) {
+      "" => ""
+      c => @sf.t("web-pages.thisDevice.securityCode", args=[("code", c)])
+    }
+  } else {
+    ""
+  }
   // its data where it is: moved (its name a link to it), where it was moved to, and, where that disk is not
   // connected, that it starts once it is
   let data = match text(s, "at") {
@@ -338,7 +348,43 @@ fn local_facts(s : Json?, pc : Bool) -> Array[String] {
     at if flag(s, "away") => @sf.t("web-pages.localStation.awayLine", args=[("path", at)])
     at => @sf.t("web-pages.localStation.at", args=[("path", at)])
   }
-  [run_by, text(s, "version"), place, data].filter(fn(l) { l != "" })
+  [run_by, text(s, "version"), place, code, data].filter(fn(l) { l != "" })
+}
+
+///|
+/// A station's security code from its id (64 lowercase hex digits, its key's public half), as the client core reads one
+/// (client/core-ts/src/lock-form.ts `codeText`, `shortCodeOf`): the first six bytes of the SHA-256 of
+/// `stillfail-lock-code/1`, a NUL and the id, each a letter of 32; "" for anything that is not such an id.
+fn station_short_code(id : String) -> String {
+  if id.length() != 64 {
+    return ""
+  }
+  for c in id {
+    if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+      return ""
+    }
+  }
+  let hash = @zip.sha256(@utf8.encode("stillfail-lock-code/1\u{0}" + id)).to_array()
+  let alphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ".to_array()
+  let out = StringBuilder()
+  for i in 0..<6 {
+    let byte = hex_digit(hash[2 * i].to_int()) * 16 + hex_digit(hash[2 * i + 1].to_int())
+    if i == 3 {
+      out.write_char('-')
+    }
+    out.write_char(alphabet[byte % 32])
+  }
+  out.to_string()
+}
+
+///|
+/// One lowercase hex digit's value.
+fn hex_digit(c : Int) -> Int {
+  if c >= '0'.to_int() && c <= '9'.to_int() {
+    c - '0'.to_int()
+  } else {
+    c - 'a'.to_int() + 10
+  }
 }
 
 ///|

@@ -180,8 +180,9 @@ export async function world(mode: Mode, trusted = 1, o: { web?: boolean; w2?: bo
   const theirs = [x.app.base.hex, ...more.map((d) => d.base.hex)];
   const now = () => Math.floor(r.host.nowMs() / 1000);
   const approve = async (hello: J, by: string): Promise<J> => {
-    // (the chain never moved: an entry of it, signed by the owner's device that approves it, as `Lock.append` signs)
-    if (mode === "chain") {
+    // (the chain never moved: an entry of it, signed by the owner's device that approves it, as `Lock.append` signs;
+    // one of s1's own that approves puts it on their own log, as below)
+    if (mode === "chain" && owners.includes(by)) {
       const chain = r.cloud.chains.get("ws")! as unknown as StationEntry[];
       const last = chain.at(-1)!;
       const e = signed({ v: 1, ws: "ws", seq: last.seq + 1, prev: stationHash(last), at: Math.max(last.at, now()), kind: "device", body: { id: base.hex, sub: "s1", kind: hello.kind === "web" ? "web" : "app", label: "Pixel", ...(typeof hello.sign_key === "string" ? { sign_key: hello.sign_key } : {}), ...(hello.kind === "web" ? { exp: now() + 30 * 86400 } : {}) } }, signers.get(by) ?? alice.app.signer);

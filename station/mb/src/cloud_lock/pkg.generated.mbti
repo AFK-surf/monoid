@@ -292,6 +292,7 @@ pub fn Cloud::list(Self, String?) -> Locked?
 pub fn Cloud::listen(Self, (CloudState?) -> Unit) -> () -> Unit
 pub fn Cloud::lock_after(Self, Double, ws? : String?) -> Array[@json.Json]
 pub fn Cloud::lock_kept(Self, ws? : String?) -> Array[@json.Json]
+pub fn Cloud::lock_named(Self) -> Unit
 pub fn Cloud::lock_off(Self, ws? : String?) -> Kept?
 pub fn Cloud::locked(Self, ws? : String?) -> Locked?
 pub fn Cloud::logs_of(Self, String?) -> Array[String]

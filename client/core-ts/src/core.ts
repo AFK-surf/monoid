@@ -71,7 +71,7 @@ import { Rigs } from "./rigs.ts";
 import { Devices } from "./devices.ts";
 import { Signer } from "./lock.ts";
 import { PersonalLock } from "./personal-lock.ts";
-import { answersOf, asked, bindPerson, enrolled, inForceOf, keepToPerson, lockSeen, movedBySelf, movedHere, ownLockEnv, ownLockFor, personStations, personalStations, refusedAgain, safeNow, signerKnown, signerOf, signsAs, takeOffBound, tellStations, tookOrRefused, withBound } from "./views/lock.ts";
+import { answersOf, asked, bindPerson, enrolled, inForceOf, keepToPerson, lockSeen, movedBySelf, movedHere, ownLockEnv, ownLockFor, personStations, personalStations, pinHash, refusedAgain, safeNow, signerKnown, signerOf, signsAs, takeOffBound, tellStations, tookOrRefused, withBound } from "./views/lock.ts";
 import { personalBegin, personalCancel, personalPairState, personalProve } from "./views/pair.ts";
 import { envOf, Views } from "./views/views.ts";
 import * as xshare from "./views/xshare.ts";
@@ -403,6 +403,7 @@ export class Core {
           locked: (workspace) => signsAs(inner, workspace).locked,
           enrolled: (sub, workspace, made) => enrolled(inner, sub, workspace, made),
           signsAs: (workspace) => signsAs(inner, workspace).as,
+          pinHash: (workspace) => pinHash(inner, workspace),
           signAdd: (_workspace, bytes) =>
             Effect.flatMap(Signer.load(inner.host), (signer) =>
               signer === null ? Effect.fail(new CoreError("lock_no_signer", t("core-misc.rig.notSigner"))) : Effect.succeed({ key: signer.id, sig: signer.signBytes(bytes) })),

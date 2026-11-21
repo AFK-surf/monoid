@@ -124,6 +124,21 @@ function heard(got: { ok: Json } | { error: Error } | null, seen: Json): Json {
 
 const text = (v: Json, key: string): string => (v !== null && typeof v === "object" && typeof v[key] === "string" ? v[key] : "");
 const field = (v: Json, key: string): Json => (v !== null && typeof v === "object" && !Array.isArray(v) && key in v ? v[key] : null);
+/// station_list's line for a rig of a workspace in safe mode its owner has not checked the security code of yet
+/// (peer.ts `rigsWaiting`): not asked (no station sends it anything until then), saying whose it is and what is to be
+/// done (FB-45).
+const rigWaiting = (rig: Json): Json => {
+  const owner = text(rig, "owner_email") || text(rig, "owner_name") || text(rig, "owner");
+  const seen = field(rig, "version");
+  return {
+    id: text(rig, "id"),
+    name: text(rig, "name"),
+    mode: "tasks",
+    ...(owner !== "" ? { owner } : {}),
+    ...(typeof seen === "string" && seen !== "" ? { version_seen: seen } : {}),
+    unprotected: `not taken into this workspace yet: its owner${owner === "" ? "" : ` ${owner}`} has to check its security code in still.fail first`,
+  };
+};
 /// serde_json's as_u64.
 const asU64 = (v: unknown): number | null => (typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : null);
 
@@ -1024,6 +1039,8 @@ export class Remote {
     const own = this.ownId();
     const stations = Array.isArray(roster?.stations) ? roster.stations : [];
     const left = (Array.isArray(unprotected) ? unprotected : []).map((entry: Json) => ({ ...entry, unprotected: UNPROTECTED }));
+    // Its rigs in safe mode not checked by their owner yet, listed not asked (FB-45).
+    const waitingRigs = (Array.isArray(roster?.rigsWaiting) ? (roster.rigsWaiting as Json[]) : []).map(rigWaiting);
     const remoteSandboxes: RemoteSandboxEntry[] = [];
     const listed = await Promise.all(
       stations.map(async (entry: Json) => {
@@ -1070,9 +1087,9 @@ export class Remote {
       ...sandboxDescribed({ name: r.name, kind: "colab", gpu: r.gpu }, { accounts: r.accounts, host: r.host }),
     }));
     listed.push(...sandboxes, ...remoteListed);
-    if (rigs.length === 0 || said === null) return { ...roster, stations: [...listed, ...left], rigs: undefined, rigsWaiting: undefined };
+    if (rigs.length === 0 || said === null) return { ...roster, stations: [...listed, ...waitingRigs, ...left], rigs: undefined, rigsWaiting: undefined };
     const { rigs: _, rigsWaiting: __, ...rest } = roster as Record<string, Json>;
-    return { ...rest, stations: [...listed, ...listedRigs, ...left] };
+    return { ...rest, stations: [...listed, ...listedRigs, ...waitingRigs, ...left] };
   }
 
   /// The id of the station an agent names: station_list shows each by its name and its id, and either is taken. A name

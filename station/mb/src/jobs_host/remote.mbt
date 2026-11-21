@@ -332,6 +332,32 @@ fn advertised_colab_sandboxes(peer_id : String, host_name : String, described : 
 }
 
 ///|
+/// station_list's line for a rig of a workspace in safe mode its owner has not checked the security code of yet
+/// (remote.ts `rigWaiting`): not asked, saying whose it is and what is to be done (FB-45).
+fn rig_waiting(rig : Json) -> Json {
+  let owner = if text(rig, "owner_email") != "" {
+    text(rig, "owner_email")
+  } else if text(rig, "owner_name") != "" {
+    text(rig, "owner_name")
+  } else {
+    text(rig, "owner")
+  }
+  let out : Map[String, Json] = { "id": jstr(text(rig, "id")), "name": jstr(text(rig, "name")), "mode": jstr("tasks") }
+  if owner != "" {
+    out["owner"] = jstr(owner)
+  }
+  match field(rig, "version") {
+    Some(String(seen)) if seen != "" => out["version_seen"] = jstr(seen)
+    _ => ()
+  }
+  let whose = if owner == "" { "" } else { " " + owner }
+  out["unprotected"] = jstr(
+    "not taken into this workspace yet: its owner\{whose} has to check its security code in still.fail first",
+  )
+  Json::object(out)
+}
+
+///|
 /// station_list (remote.ts `listStations`): the stations of `workspace` from its roster, each asked how busy it is at
 /// once (this one answers itself, `own_load`), one not answered within LIST_WAIT_MS listed unanswered; its rigs after
 /// (what `rig_said` says of each), its sandboxes (local and peer-advertised Colab), then those safe mode leaves out, not asked.
@@ -353,6 +379,10 @@ pub async fn list_stations(
   let left = match unprotected {
     Array(a) =>
       a.map(entry => merged(without(entry, []), obj([("unprotected", jstr(unprotected_words))])))
+    _ => []
+  }
+  let waiting_rigs = match roster.get("rigsWaiting") {
+    Some(Array(a)) => a.map(rig_waiting)
     _ => []
   }
   let remote_sandboxes : Array[Json] = []
@@ -411,7 +441,7 @@ pub async fn list_stations(
     listed.push(r)
   }
   let out = without(Json::object(roster), ["rigs", "rigsWaiting"])
-  out["stations"] = Json::array(listed + listed_rigs + left)
+  out["stations"] = Json::array(listed + listed_rigs + waiting_rigs + left)
   Json::object(out)
 }
 

@@ -1345,6 +1345,12 @@ export class Cloud {
     if (this.listeners !== undefined) this.tell();
   }
 
+  /// A lock to pin named on this machine since it started (rig/module.ts `#added`): what follows it told, so the
+  /// control plane is asked for that lock at once (presence.ts `pendingAsks`).
+  lockNamed(): void {
+    if (this.listeners !== undefined) this.tell();
+  }
+
   listen(f: (s: CloudState | null) => void): () => void {
     this.listeners.add(f);
     return () => this.listeners.delete(f);

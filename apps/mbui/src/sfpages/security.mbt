@@ -57,7 +57,7 @@ pub fn security_node(
             out.push("rebound")
           } else if text(me, "forgetText") != "" {
             out.push("replaced")
-          } else if flag(me, "waiting") || flag(me, "unsigned") {
+          } else if flag(me, "waiting") || flag(me, "unsigned") || flag(me, "ownLock") {
             out.push("pair")
           } else if text(me, "confirmText") != "" {
             out.push("confirm-signer")
@@ -287,6 +287,9 @@ fn pair_node(parent : @view.View, core : Core, ws : () -> String, lock : () -> J
         @sf.t(
           if flag(field(lock(), "me"), "unsigned") {
             "web-pages.security.upgradeTitle"
+          } else if flag(field(lock(), "me"), "confirmed") && flag(field(lock(), "me"), "ownLock") {
+            // (trusted here, its person's own lock begun on another device not naming it: views/lock.ts `confirmedOffOwn`)
+            "web-pages.security.ownOutsideTitle"
           } else {
             "web-pages.security.waitingTitle"
           },

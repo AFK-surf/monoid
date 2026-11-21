@@ -17,6 +17,7 @@
 
 - A chat uses a rig only with a statement signed by the rig owner's personal lock (`client/core-ts/src/rig-form.ts`): a fixed or idle-timed grant, a revocation, or 免批准 (open to every chat in the workspace). The rig verifies signatures against its pinned lock itself. Neither cloud nor another station can bypass this.
 - In safe mode, stations accept a rig only after its owner signs for it (`station/src/rigs/adds.ts`) or the lock already lists it.
+- A rig that joined before safe mode was turned on pins no workspace lock. Its owner's add names one (`AddBody.lock`), and the rig names it to pin only when a key on its owner's personal lock signed it (the add, or `pin` beside a workspace-lock-signed add). It never replaces a lock already pinned or named (`station/src/rig/grants.ts` `added`, `station/src/rig/module.ts`).
 - In a moved workspace, the rig pins the chain by its enrollment hash and waits for state. Meanwhile it answers peer stations with `rig.added` and `rig.proof` (`station/src/mesh/peer.ts` `heardWaiting`), and a peer sends it the logs and bodies (`Cloud.givenTo`, `station/src/mesh/person-sync.ts`) which the rig verifies against its pinned chain (`station/test/rig-moved.test.ts`).
 
 ## Minimal rig surface and attached devices

@@ -168,7 +168,7 @@ pub fn lock_command(host : @host.Host, data : String, what : String, workspace :
     )
   }
   guard @cloud_lock.read_lock(disk, @cloud_lock.Crypto::of_host(host), data, None) is Some(lock) else {
-    return say("station.cli.lock.none", [])
+    return unpinned(disk, data, say)
   }
   guard lock.state is Some(s) else { return say("station.cli.lock.broken", []) }
   let head = if s.head.length() > 16 { s.head[:16].to_owned() } else { s.head }
@@ -184,6 +184,32 @@ pub fn lock_command(host : @host.Host, data : String, what : String, workspace :
   } else {
     status + say("station.cli.lock.aside", [("n", lock.aside.length().to_string())])
   }
+}
+
+///|
+/// The hash `enroll --lock` or its owner's check left to pin (presence.ts `pendingLock`).
+fn home_pending(disk : @cloud_lock.Disk, data : String) -> String? {
+  match disk.read(@cloud_lock.pending_lock_path(data)).bind(@cloud_lock.parse) {
+    Some({ "hash": String(h), .. }) if @cloud_lock.is_hex32(h) => Some(h)
+    _ => None
+  }
+}
+
+///|
+/// `lock status` with no lock pinned (cli.ts `unpinned`): waiting for one, with the code to check, else off, with this
+/// machine's security code where it is in a workspace (FB-45).
+fn unpinned(disk : @cloud_lock.Disk, data : String, say : (String, Array[(String, String)]) -> String) -> String {
+  let state = try { @cloud_lock.read_state(disk, data) } catch { _ => None }
+  guard state is Some(st) && st.text("station") != "" else { return say("station.cli.lock.none", []) }
+  let code = short_code(st.text("station"))
+  if home_pending(disk, data) is Some(_) {
+    let rig = st.get("rig") is Some(Object(_))
+    return say(if rig { "station.cli.rig.pending" } else { "station.cli.lock.pending" }, [("code", code)])
+  }
+  if st.text("workspace") == "" || opt_num(st.get("removed_at")) is Some(_) {
+    return say("station.cli.lock.none", [])
+  }
+  say("station.cli.lock.none", []) + "\n" + say("station.cli.lock.code", [("code", code)])
 }
 
 ///|
@@ -306,8 +332,11 @@ pub fn status_text(host : @host.Host, data : String, now : Double) -> String {
     _ => ()
   }
   out.push(say("station.cli.status.cloud", [("origin", st.text("origin"))]))
-  if @cloud_lock.read_lock(disk, @cloud_lock.Crypto::of_host(host), data, None) is Some(_) {
+  if @cloud_lock.read_lock(disk, @cloud_lock.Crypto::of_host(host), data, None) is Some(_) ||
+    home_pending(disk, data) is Some(_) {
     out.push(lock_command(host, data, "status", None))
+  } else if station_id != "" && opt_num(st.get("removed_at")) is None {
+    out.push(say("station.cli.lock.code", [("code", short_code(station_id))]))
   }
   let removed_at = opt_num(st.get("removed_at"))
   match removed_at {

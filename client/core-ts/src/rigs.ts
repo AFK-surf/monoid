@@ -109,6 +109,8 @@ export type RigsEnv = {
     enrolled(sub: string, workspace: string, made: unknown): Effect.Effect<unknown, CoreError>;
     signsAs(workspace: string): "lock" | "person" | null;
     signAdd(workspace: string, bytes: Uint8Array): Effect.Effect<{ key: string; sig: string }, CoreError>;
+    /// The entry of the workspace's lock a rig that pins none is to pin (views/lock.ts `pinHash`).
+    pinHash?: (workspace: string) => string | null;
   };
   sha256: (bytes: Uint8Array) => Uint8Array;
 };
@@ -250,7 +252,7 @@ export class Rigs {
       const env = this.#env;
       const { sub, name } = yield* this.#mine(workspace, rig);
       const body: DeviceBody = { v: 1, sub, ws: workspace, rig, device, removed, at: this.#now() };
-      const signed: Signed<DeviceBody> = yield* env.personal().signRig(sub, "device", body, t(removed ? "core-misc.device.reason.remove" : "core-misc.device.reason.add", { name: device.name, station: name }));
+      const signed: Signed<DeviceBody> = yield* this.#signRig(workspace, sub, "device", body, t(removed ? "core-misc.device.reason.remove" : "core-misc.device.reason.add", { name: device.name, station: name }));
       yield* this.#viaStation(workspace, (at) => env.call(at, "POST", `/rigs/${rig}/devices`, { signed, chain: env.personal().entries(sub) }));
       return { device: { ...device, station: rig } };
     });
@@ -269,7 +271,7 @@ export class Rigs {
       this.#numbered.set(k, seq);
       const dev = this.devices(workspace).find((d) => d.station === rig && d.id === device);
       const body: SettingsBody = { v: 1, sub, ws: workspace, rig, seq, open, at: now, device };
-      const signed: Signed<SettingsBody> = yield* env.personal().signRig(sub, "settings", body, t("core-misc.device.reason.settings", { name: str(dev?.name) }));
+      const signed: Signed<SettingsBody> = yield* this.#signRig(workspace, sub, "settings", body, t("core-misc.device.reason.settings", { name: str(dev?.name) }));
       return yield* this.#viaStation(workspace, (at) => env.call(at, "POST", `/rigs/${rig}/settings`, { signed, chain: env.personal().entries(sub) }));
     });
   }
@@ -337,9 +339,18 @@ export class Rigs {
     return Math.floor(this.#env.host.nowMs() / 1000);
   }
 
+  /// A statement of `kind` signed for `sub` by a key on their own lock (personal-lock.ts `signRig`); not on it, in
+  /// `workspace` in safe mode, the refusal says where on this device it joins it (设置 › 安全, FB-45).
+  #signRig<B>(workspace: string, sub: string, kind: Parameters<PersonalLock["signRig"]>[1], body: B, reason: string, station?: string): Effect.Effect<Signed<B>, CoreError> {
+    const env = this.#env;
+    return Effect.mapError(env.personal().signRig(sub, kind, body, reason, station), (e) =>
+      e.code === "personal_outside" && env.lock.locked(workspace) ? new CoreError("personal_outside", t("core-misc.personal.outsideSafe")) : e);
+  }
+
   /// The hash of `sub`'s own lock, which a rig of theirs pins: begun here where they have none yet, and this device
-  /// (an app's) on it.
-  #person(sub: string): Effect.Effect<string, CoreError> {
+  /// (an app's) on it. Not on it, in `workspace` in safe mode: where on this device it is asked to join it (设置 › 安全,
+  /// views/lock.ts `confirmedOffOwn`, FB-45).
+  #person(sub: string, workspace?: string): Effect.Effect<string, CoreError> {
     return Effect.gen({ self: this }, function* () {
       const env = this.#env;
       if (env.host.appKeys !== true) return yield* Effect.fail(new CoreError("rig_app_only", t("core-misc.rig.appOnly")));
@@ -348,12 +359,13 @@ export class Rigs {
       const standing = personal.standing(sub);
       // Not heard from the cloud, no lock known here is not no lock: one begun now would take its place.
       if (read._tag === "Failure" && standing === "none") return yield* Effect.fail(read.failure);
-      if (standing === "outside") return yield* Effect.fail(new CoreError("personal_outside", t("core-misc.personal.outside")));
+      const outside = () => new CoreError("personal_outside", t(workspace !== undefined && env.lock.locked(workspace) ? "core-misc.personal.outsideSafe" : "core-misc.personal.outside"));
+      if (standing === "outside") return yield* Effect.fail(outside());
       if (standing === "replaced") return yield* Effect.fail(new CoreError("personal_replaced", t("core-misc.personal.replaced")));
       // (none yet is no step of its own, as a phone's first grant: it is begun here, this device its first)
       if (standing === "none") yield* personal.begin(sub, t("core-misc.personal.reason.open"));
       const root = personal.root(sub);
-      if (root === null) return yield* Effect.fail(new CoreError("personal_outside", t("core-misc.personal.outside")));
+      if (root === null) return yield* Effect.fail(outside());
       return root;
     });
   }
@@ -366,7 +378,7 @@ export class Rigs {
     return Effect.gen({ self: this }, function* () {
       const env = this.#env;
       const sub = yield* this.#sub(workspace);
-      const person = yield* this.#person(sub);
+      const person = yield* this.#person(sub, workspace);
       yield* env.call(new StationAddr(workspace, station), "POST", "/mode", { mode: "tasks", person });
       return yield* env.cloud(sub, "PATCH", `/v1/workspaces/${encodeURIComponent(workspace)}/stations/${encodeURIComponent(station)}`, { mode: "tasks" });
     });
@@ -379,7 +391,7 @@ export class Rigs {
       const env = this.#env;
       const { sub, name } = yield* this.#mine(workspace, rig);
       const body: FullBody = { v: 1, sub, ws: workspace, rig, at: this.#now() };
-      const signed: Signed<FullBody> = yield* env.personal().signRig(sub, "full", body, t("core-misc.rig.reason.full", { name }));
+      const signed: Signed<FullBody> = yield* this.#signRig(workspace, sub, "full", body, t("core-misc.rig.reason.full", { name }));
       yield* this.#viaStation(workspace, (at) => env.call(at, "POST", `/rigs/${rig}/full`, { signed, chain: env.personal().entries(sub) }));
       return yield* env.cloud(sub, "PATCH", `/v1/workspaces/${encodeURIComponent(workspace)}/stations/${encodeURIComponent(rig)}`, { mode: "full" });
     });
@@ -389,7 +401,7 @@ export class Rigs {
     return Effect.gen({ self: this }, function* () {
       const env = this.#env;
       const sub = yield* this.#sub(workspace);
-      const root = yield* this.#person(sub);
+      const root = yield* this.#person(sub, workspace);
       const made = (yield* env.lock.enrolled(sub, workspace, yield* env.cloud(sub, "POST", `/v1/workspaces/${encodeURIComponent(workspace)}/rigs/enrollments`, { name }))) as J;
       const out: J = { ...made, person: root };
       if (typeof out.install === "string") out.install = `${out.install} rig:${root}`;
@@ -415,7 +427,7 @@ export class Rigs {
         title: str(get(ask, "title")), by: str(get(ask, "by")), timeout: call.timeout, at: now, exp: latest(now, call.timeout),
         ...(str(get(ask, "device")) !== "" ? { device: str(get(ask, "device")) } : {}),
       };
-      const signed = yield* env.personal().signRig(sub, "grant", body, t("core-misc.rig.reason.grant", { name }), call.station);
+      const signed = yield* this.#signRig(at.workspace, sub, "grant", body, t("core-misc.rig.reason.grant", { name }), call.station);
       return yield* env.call(at, "POST", path, { allow: true, signed, chain: env.personal().entries(sub) });
     });
   }
@@ -430,7 +442,7 @@ export class Rigs {
       let said: J = { rig: call.rig };
       if (!pending) {
         const body: RevokeBody = { v: 1, sub, ws: call.workspace, rig: call.rig, request: call.request, at: this.#now() };
-        const signed: Signed<RevokeBody> = yield* env.personal().signRig(sub, "revoke", body, t("core-misc.rig.reason.revoke", { name }));
+        const signed: Signed<RevokeBody> = yield* this.#signRig(call.workspace, sub, "revoke", body, t("core-misc.rig.reason.revoke", { name }));
         said = { rig: call.rig, signed, chain: env.personal().entries(sub) };
       }
       // Its chat's own station ends it there at once; with that one away, any station carries it to the rig.
@@ -461,7 +473,7 @@ export class Rigs {
       const seq = Math.max(known + 1, (this.#numbered.get(rig) ?? 0) + 1, now);
       this.#numbered.set(rig, seq);
       const body: SettingsBody = { v: 1, sub, ws: workspace, rig, seq, open, at: now };
-      const signed: Signed<SettingsBody> = yield* env.personal().signRig(sub, "settings", body, t("core-misc.rig.reason.settings", { name }));
+      const signed: Signed<SettingsBody> = yield* this.#signRig(workspace, sub, "settings", body, t("core-misc.rig.reason.settings", { name }));
       return yield* this.#viaStation(workspace, (at) => env.call(at, "POST", `/rigs/${rig}/settings`, { signed, chain: env.personal().entries(sub) }));
     });
   }
@@ -471,14 +483,39 @@ export class Rigs {
       const env = this.#env;
       const { sub, name } = yield* this.#mine(workspace, rig);
       if (shortCode(rig) !== code.trim().toUpperCase()) return yield* Effect.fail(new CoreError("rig_wrong_code", t("core-misc.rig.wrongCode")));
-      const body: AddBody = { v: 1, sub, ws: workspace, rig, at: this.#now() };
+      // (the workspace lock's entry the rig pins, where it pins none: one that joined before safe mode was turned on,
+      // FB-45; it takes it only from what its person's own lock signed, `pin` where the add is the workspace lock's)
+      const lock = env.lock.pinHash?.(workspace) ?? null;
+      const body: AddBody = { v: 1, sub, ws: workspace, rig, at: this.#now(), ...(lock !== null ? { lock } : {}) };
       const how = env.lock.signsAs(workspace);
       if (how === null) return yield* Effect.fail(new CoreError("lock_no_signer", t("core-misc.rig.notSigner")));
-      let signed: Signed<AddBody>;
-      if (how === "person") signed = yield* env.personal().signRig(sub, "add", body, t("core-misc.rig.reason.add", { name }));
-      else signed = { body, sig: yield* env.lock.signAdd(workspace, signedBytes("add", body, env.sha256)) };
+      const reason = t("core-misc.rig.reason.add", { name });
+      let said: J;
+      if (how === "person") {
+        const signed: Signed<AddBody> = yield* this.#signRig(workspace, sub, "add", body, reason);
+        const chain = env.personal().entries(sub);
+        said = { signed, ...(chain.length > 0 ? { chain } : {}) };
+      } else {
+        // (its own lock's `pin` beside it where the rig is to pin the workspace's lock: that lock read first; not on it,
+        // asked where on this device it joins it before anything is sent, so the rig is not marked checked without what
+        // it pins by, FB-45; with no lock of its own at all, the add alone, as before)
+        let pin: Signed<AddBody> | undefined;
+        let chain: unknown[] | undefined;
+        if (lock !== null) {
+          yield* Effect.ignore(env.personal().refresh(sub));
+          const standing = env.personal().standing(sub);
+          if (standing === "outside") return yield* Effect.fail(new CoreError("personal_outside", t(env.lock.locked(workspace) ? "core-misc.personal.outsideSafe" : "core-misc.personal.outside")));
+          if (standing === "replaced") return yield* Effect.fail(new CoreError("personal_replaced", t("core-misc.personal.replaced")));
+          if (standing === "member") {
+            pin = yield* this.#signRig(workspace, sub, "add", body, reason);
+            chain = env.personal().entries(sub);
+          }
+        }
+        const signed: Signed<AddBody> = { body, sig: yield* env.lock.signAdd(workspace, signedBytes("add", body, env.sha256)) };
+        said = { signed, ...(pin !== undefined ? { pin, chain } : {}) };
+      }
       // To every station at once: each checks it against the lock it pinned, and takes the rig from then on.
-      return yield* this.#viaStation(workspace, (at) => env.call(at, "POST", `/rigs/${rig}/add`, { signed }));
+      return yield* this.#viaStation(workspace, (at) => env.call(at, "POST", `/rigs/${rig}/add`, said));
     });
   }
 }

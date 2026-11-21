@@ -358,6 +358,7 @@
   "core-misc.reader.gone": "这本书已经不在了，请重新打开",
   "core-misc.personal.noKey": "这台设备存不了设备钥匙，请用桌面或安卓 app",
   "core-misc.personal.outside": "此设备尚未获批：先在这台设备上发送批准请求，输入你的受信任设备上显示的安全码",
+  "core-misc.personal.outsideSafe": "此设备尚未完成批准：先在这台设备的「设置 › 安全」发送批准请求，输入你的受信任设备上显示的安全码",
   "core-misc.personal.replaced": "你的受信任设备被重新设置过，先在这台设备的「设置 › 安全」里确认",
   "core-misc.rig.appOnly": "网页版做不了这件事：请在手机或电脑上的 app 里操作",
   "core-misc.rig.notOwner": "只有这台 station 的所有者可以这样做",

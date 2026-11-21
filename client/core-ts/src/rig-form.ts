@@ -33,8 +33,10 @@ export type RevokeBody = { v: 1; sub: string; ws: string; rig: string; request: 
 /// `device`: one of its devices' settings, numbered on their own.
 export type SettingsBody = { v: 1; sub: string; ws: string; rig: string; seq: number; open: boolean; at: number; device?: string };
 /// The rig taken into a workspace in security mode by its person, who compared its code: what the stations there
-/// take in the place of the cloud's word that it is one of the workspace's rigs.
-export type AddBody = { v: 1; sub: string; ws: string; rig: string; at: number };
+/// take in the place of the cloud's word that it is one of the workspace's rigs. `lock`: an entry of the workspace's
+/// lock (its hash), which a rig that pins none yet pins where its person's own lock signed this (FB-45: one that joined
+/// before safe mode was turned on).
+export type AddBody = { v: 1; sub: string; ws: string; rig: string; at: number; lock?: string };
 
 /// The rig made a whole station again (one that runs agents and serves the workspace's every chat) by its person:
 /// what the machine takes, with the control plane listing it as one, to stop being a rig. Good for `FULL_FOR` seconds
@@ -105,6 +107,7 @@ export function wellFormed(kind: Kind, signed: unknown): boolean {
     case "device":
       return deviceRefusal(b.device) === null && typeof b.removed === "boolean";
     case "add":
+      return b.lock === undefined || (typeof b.lock === "string" && HEX32.test(b.lock));
     case "full":
       return true;
   }

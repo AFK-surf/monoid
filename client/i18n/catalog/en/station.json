@@ -177,6 +177,7 @@
   },
   "station.cli.lock.broken": "Security mode: this station's lock.json is invalid, so all connections are refused. Run `stillfail lock reset` to let still.fail's servers manage access again",
   "station.cli.lock.none": "Security mode: off (still.fail's servers manage access)",
+  "station.cli.lock.code": "Security code: {code}",
   "station.cli.lock.pending": "This station enters security mode once it receives the workspace's trusted list. Verify the station in still.fail with security code {code}",
   "station.cli.lock.reset": "This station has left security mode; still.fail's servers manage access again. To turn it back on, use a trusted device",
   "station.cli.lock.resetWorkspace": "This station no longer keeps a security mode record for workspace {workspace}. If that workspace is in security mode, the station takes none of its members until it is protected there again from a trusted device",

@@ -131,6 +131,12 @@ test("id, lock status and status, as cli.ts says them, on the same data", { skip
   for (const s of [state, { ...state, removed_at: 1_794_900_000, removed_code: 4004 }, { ...state, removed_at: 1_794_900_000, removed_code: 404 }, { ...state, rig: { owner: "u1", owner_email: "a@b.c", owner_name: "A", person: "ab".repeat(32) } }]) {
     writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify(s));
     assert.equal(run(["status", "--data", data]).out, `${tsStatus(data)}\n`, JSON.stringify(s));
+    // (its security code where it is in a workspace, FB-45; waiting for a lock named, the code to check)
+    assert.equal(run(["lock", "status", "--data", data]).out, `${lockCommand(data, "status")}\n`, JSON.stringify(s));
+    writeFileSync(join(data, "mesh", "lock-pending.json"), JSON.stringify({ hash: "cd".repeat(32) }));
+    assert.equal(run(["lock", "status", "--data", data]).out, `${lockCommand(data, "status")}\n`, `pending ${JSON.stringify(s)}`);
+    assert.equal(run(["status", "--data", data]).out, `${tsStatus(data)}\n`, `pending ${JSON.stringify(s)}`);
+    rmSync(join(data, "mesh", "lock-pending.json"));
   }
   // in English, as config.json says
   writeFileSync(join(data, "config.json"), JSON.stringify({ language: "en" }));

@@ -335,7 +335,7 @@ pub fn RigFollow::step(Self) -> Follow
 pub struct RigGrants {
   // private fields
 }
-pub fn RigGrants::added(Self, @json.Json?) -> Unit raise Refused
+pub fn RigGrants::added(Self, @json.Json?, pin? : @json.Json?, chain? : @json.Json?) -> String? raise Refused
 pub fn RigGrants::close(Self) -> Unit
 pub fn RigGrants::device(Self, @json.Json?, @json.Json?) -> Unit raise Refused
 pub fn RigGrants::device_refusal(Self, String, String, String, String, use_? : Bool) -> String?

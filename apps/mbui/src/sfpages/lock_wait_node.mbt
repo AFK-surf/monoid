@@ -231,7 +231,16 @@ fn pair_steps_node(col : @view.View, core : Core, ws : () -> String, in_card? : 
           lock_note_node(n, fn() {
             match state() {
               "none" => @sf.t("web-pages.security.pairNone")
-              _ => @sf.t(if flag(me(), "unsigned") { "web-pages.security.upgradeNotAsked" } else { "web-pages.security.notAsked" })
+              _ =>
+                @sf.t(
+                  if flag(me(), "unsigned") {
+                    "web-pages.security.upgradeNotAsked"
+                  } else if flag(me(), "confirmed") && flag(me(), "ownLock") {
+                    "web-pages.security.ownOutsideNotAsked"
+                  } else {
+                    "web-pages.security.notAsked"
+                  },
+                )
             }
           }, in_card~)
         })

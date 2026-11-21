@@ -217,7 +217,13 @@ fn rig_ask_node(v : @view.View, here : MessageNodeHere, core : @settings.Core?, 
         }
       }, same=fn(a, b) { a == b })
       @settings.rig_card_node(r, core, here.station, fn() { card.get() }, lock=fn() {
-        open_page(Setting(@settings.Route::AdbShare(here.station)))
+        // (in safe mode its approval is 设置 › 安全's, to people the one safe mode there is, FB-45; else 共享调试's)
+        let locked = match core {
+          Some(c) =>
+            @signals.untracked(fn() { flag((c.topic)("rigs", { "workspace": str(workspace_of(here.station)) }).get().value, "locked") })
+          None => false
+        }
+        open_page(if locked { Setting(@settings.Route::Security) } else { Setting(@settings.Route::AdbShare(here.station)) })
       })
     }, fn(p) {
       @settings.rig_outcome_node(

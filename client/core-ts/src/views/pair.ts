@@ -52,7 +52,7 @@ import { type BoxCert, fromB64url } from "../vault/crypto.ts";
 import { type Checked, checkLock } from "../vault/lock-check.ts";
 import { Priority } from "../sync/scheduler.ts";
 import { ownBuild } from "../station/oldest.ts";
-import { Lock, approvedHere, asked, baseOf, beginsFor, beginsHere, bindsHere, leftAppsIn, leftIn, needsAppIn, deviceText, deviceVerifyCode, fold, held, inForceOf, live, lockSeen, movedHere, movedWorks, nameOf, offOwnLock, onBoundPerson, reboundIn, pairs, putOnBound, read, refusedAgain, sayAdmit, signerKnown, signerLoading, signerOf, stateOf, unnote, view, withBound, notedRole, roleText } from "./lock.ts";
+import { Lock, approvedHere, asked, baseOf, beginsFor, beginsHere, bindsHere, leftAppsIn, leftIn, needsAppIn, deviceText, deviceVerifyCode, fold, held, inForceOf, live, lockSeen, movedHere, movedWorks, nameOf, offOwnLock, onBoundPerson, reboundIn, pairs, putOnBound, read, refusedAgain, safeMode, sayAdmit, signerKnown, signerLoading, signerOf, stateOf, unnote, view, withBound, notedRole, roleText } from "./lock.ts";
 import { BOX_KEY, type HandedVault, handoverForApproved, needsBoxForHandover, pairBoxCerts, previewHandoverVaults, takeHanded } from "./vault.ts";
 import type { Said } from "../lock-statements.ts";
 
@@ -988,7 +988,12 @@ function begin(inner: Inner): Effect.Effect<unknown, CoreError> {
     // The accounts here whose devices a workspace lets in by their own lock, which this device is not on
     // (views/lock.ts `offOwnLock`): asked into it on the same code, by the devices on it (`personalAsked` there), so
     // that one code and one ask on the device showing it let this one in everywhere it waits.
-    const ownLocked = inner.host.appKeys === true ? [...new Set([...inner.workspaces.owned()].filter(([ws]) => offOwnLock(inner, ws)).map(([, sub]) => sub))] : [];
+    // (and those trusted in a workspace in safe mode, waiting in none of it, while their own lock, begun on another
+    // device, does not name this one: views/lock.ts `confirmedOffOwn`; a device still waiting there asks that
+    // workspace's devices first, as before)
+    const ownLocked = inner.host.appKeys === true
+      ? [...new Set([...inner.workspaces.owned()].filter(([ws, sub]) => offOwnLock(inner, ws) || (safeMode(inner, ws) && !workspaces.includes(ws) && inner.adb.personal().standing(sub) === "outside")).map(([, sub]) => sub))]
+      : [];
     // (a web page whose person has no app in the list: nobody could approve it, so it says to install one first)
     if (workspaces.length === 0 && ownLocked.length === 0 && needsApp.length > 0) return yield* Effect.fail(new CoreError("lock_needs_app", t("core-misc.lock.needsApp")));
     if (workspaces.length === 0 && ownLocked.length === 0 && left.length > 0) return null;
