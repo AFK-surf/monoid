@@ -118,27 +118,34 @@ pub fn graphic_scene(text : String) -> GraphicScene? {
 }
 
 ///|
-fn draw_graphic_nodes(c : @ui.Ctx, nodes : Array[GraphicNode]) -> Unit {
+fn draw_graphic_nodes(parent : @view.View, nodes : Array[GraphicNode]) -> Unit {
   for node in nodes {
     match node {
       Center(children) =>
-        c.box(style=@ui.css("row w=Full h=Full align=ACenter justify=JCenter"), fn() {
-          draw_graphic_nodes(c, children)
-        }) |> ignore
+        parent.box(fn(v) {
+          v
+          .row(Is(true))
+          .width_share(Is(1.0))
+          .height_share(Is(1.0))
+          .lines_up(Is(Some(Middle)))
+          .lies_along(Is(Middle))
+          |> ignore
+          draw_graphic_nodes(v, children)
+        })
+        |> ignore
       Panel(x, y, w, h, background, radius, children) =>
-        @figure.panel(c, x, y, w, h, background, radius, fn() { draw_graphic_nodes(c, children) })
+        @figure.panel_node(parent, x, y, w, h, background, radius, fn(p) { draw_graphic_nodes(p, children) })
       Words(x, y, words, size, color, weight, width, line) =>
-        @figure.words(c, x, y, words, size, color, weight~, width~, line~)
-      SignIn(width, reverse, key) => sign_in_example(c, width, reverse, key)
+        @figure.words_node(parent, x, y, words, size, color, weight~, width~, line~)
+      SignIn(width, reverse, _) => sign_in_example(parent, width, reverse)
     }
   }
 }
 
 ///|
-pub fn draw_graphic_scene(c : @ui.Ctx, scene : GraphicScene) -> Unit {
-  c.with_theme(@sf.ui_theme_now(), fn() {
-    @figure.canvas(c, scene.width, scene.height, scene.background, fn() {
-      draw_graphic_nodes(c, scene.children)
-    })
+pub fn draw_graphic_scene(root : @view.View, scene : GraphicScene) -> Unit {
+  @ui.set_tree_theme(@sf.ui_theme_now)
+  @figure.canvas_node(root, scene.width, scene.height, scene.background, fn(canvas) {
+    draw_graphic_nodes(canvas, scene.children)
   })
 }

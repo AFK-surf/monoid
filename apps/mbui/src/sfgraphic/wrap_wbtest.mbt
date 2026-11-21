@@ -1,11 +1,16 @@
 ///|
 fn example_positions(width : Double, reverse : Bool) -> (Double, Double, Double, Double) {
-  let t = @ui.Tester::new(fn(c) {
-    c.with_theme(@sf.ui_theme_now(), fn() {
-      sign_in_example(c, width, reverse, "example")
-    })
-  }, w=width, h=250.0, words_over_held=false, corners_held=false)
-  @sf.set_dark(Some(true))
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @sf.set_dark(Some(true))
+      sign_in_example(root, width, reverse)
+    },
+    w=width,
+    h=250.0,
+    words_over_held=false,
+    corners_held=false,
+    theme=@sf.ui_theme_now,
+  )
   t.draw()
   let (_, primary_y, _, _) = t.rect_of("Use password manager").unwrap()
   let (_, screen_y, _, _) = t.rect_of("Sign in here").unwrap()
@@ -30,15 +35,18 @@ test "the same three sign-in actions fit wide and wrap in the requested directio
 
 ///|
 test "the figure's white panels keep mbui's corners and room around their cards and words" {
-  let started = Ref(false)
-  let t = @ui.Tester::new(fn(c) {
-    if !started.val {
+  let t = @ui.Tester::tree(
+    fn(root) {
       @sf.set_dark(Some(true))
-      started.val = true
-    }
-    wrap_figure(c)
-  }, w=960.0, h=540.0, corners_held=false, words_over_held=false)
-  let boxes = t.boxes()
+      wrap_figure(root)
+    },
+    w=960.0,
+    h=540.0,
+    corners_held=false,
+    words_over_held=false,
+    theme=@sf.ui_theme_now,
+  )
+  let boxes = t.boxes_held()
   let panels = boxes.filter(fn(b) { b.bg == white && (b.w == 860.0 || b.w == 418.0) })
   assert_eq(panels.length(), 3)
   let card_ground = @sf.theme().p.card

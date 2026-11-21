@@ -32,37 +32,29 @@ fn figure_initialize(font : String) -> Unit {
 fn figure(name : String, path : String, font : String) -> Bool {
   let single = name == "wrap-normal" || name == "wrap-reverse" || name == "align-edge" || name == "align-text"
   // Tester resets the app's theme and faces when it starts. Give them after that reset, before the first view reads
-  // either, just as sffilm's source gives the app its faces. The closure is built once for this picture.
-  let initialized = Ref(false)
-  let view = fn(c : @ui.Ctx) {
-    if !initialized.val {
-      figure_initialize(font)
-      initialized.val = true
-    }
+  // either, just as sffilm's source gives the app its faces. The tree is built once for this picture.
+  let view = fn(root : @view.View) {
+    figure_initialize(font)
     match name {
-      "wrap" => @sfgraphic.wrap_figure(c)
-      "align" => @sfgraphic.alignment_figure(c)
-      "wrap-normal" => @sfgraphic.wrap_card_figure(c, false)
-      "wrap-reverse" => @sfgraphic.wrap_card_figure(c, true)
-      "align-edge" => @sfgraphic.alignment_card_figure(c, false)
-      _ => @sfgraphic.alignment_card_figure(c, true)
+      "wrap" => @sfgraphic.wrap_figure(root)
+      "align" => @sfgraphic.alignment_figure(root)
+      "wrap-normal" => @sfgraphic.wrap_card_figure(root, false)
+      "wrap-reverse" => @sfgraphic.wrap_card_figure(root, true)
+      "align-edge" => @sfgraphic.alignment_card_figure(root, false)
+      _ => @sfgraphic.alignment_card_figure(root, true)
     }
   }
-  @film.picture_legacy_ctx(view, path~, w=if single { 480.0 } else { 960.0 }, h=if single { 270.0 } else { 540.0 }, scale=if single { 5.0 } else { 2.5 }, corner_faults_ok=fn(faults) {
+  @film.picture(view, path~, w=if single { 480.0 } else { 960.0 }, h=if single { 270.0 } else { 540.0 }, scale=if single { 5.0 } else { 2.5 }, theme=@sf.ui_theme_now, corner_faults_ok=fn(faults) {
     if name == "align" || name == "align-edge" { @sfgraphic.alignment_corner_faults_ok(faults) } else { faults.is_empty() }
   })
 }
 
 ///|
 fn figure_scene(scene : @sfgraphic.GraphicScene, path : String, font : String) -> Bool {
-  let initialized = Ref(false)
-  @film.picture_legacy_ctx(fn(c) {
-    if !initialized.val {
-      figure_initialize(font)
-      initialized.val = true
-    }
-    @sfgraphic.draw_graphic_scene(c, scene)
-  }, path~, w=scene.width, h=scene.height, scale=scene.scale)
+  @film.picture(fn(root) {
+    figure_initialize(font)
+    @sfgraphic.draw_graphic_scene(root, scene)
+  }, path~, w=scene.width, h=scene.height, scale=scene.scale, theme=@sf.ui_theme_now)
 }
 
 ///|
