@@ -1,5 +1,6 @@
 // A person's drafts of 待派发 carried between a workspace's stations by their own devices (src/views/board-drafts.ts,
-// src/board-drafts.ts), on the stations' own code (station/src/api/routes/board.ts, station/src/sessions/board-drafts.ts):
+// src/board-drafts.ts), on the stations' own MoonBit code (station/mb/src/api_routes/board.mbt,
+// station/mb/src/session_chats/board_drafts.mbt via `harness-core-routes`):
 // what one device writes shows on another; a draft's picture is put up to the station it is to run on, shown on the
 // other device and sent by it as an upload; a draft started on one is let go of on the other and not brought back; a
 // station away is brought what it missed as its stream comes back; the drafts kept on the device before are taken in.
@@ -7,47 +8,45 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { Effect } from "effect";
-import type { Route } from "../../../station/src/api/admin.ts";
-import { routes as boardRoutes } from "../../../station/src/api/routes/board.ts";
-import type { Viewer } from "../../../station/src/mesh/credential.ts";
-import { BoardDrafts } from "../../../station/src/sessions/board-drafts.ts";
 import type { Inner } from "../src/core.ts";
 import { handlers } from "../src/core/execute.ts";
 import { CoreError } from "../src/error.ts";
 import { isGoneDraft } from "../src/board-drafts.ts";
 import { type BoardDraftViews, draftKey, heldOf, install } from "../src/views/board-drafts.ts";
+import { startHarness } from "./mb-harness.ts";
 
 const WS = "ws";
 const ME = { sub: "s1", email: "a@x.com", name: "阿一" };
 const clock = { now: 1_800_000_000_000 };
 
+const harness = startHarness("harness-core-routes");
+after(() => harness.close());
+
+type Viewer = { sub: string; email: string; name: string; role: string; workspace: string; device: string };
 type Answer = { status: number; headers: Record<string, string>; body: Buffer };
-type Rig = { id: string; address: string; data: string; routes: Route[]; told: string[] };
+type Rig = { id: string; address: string; data: string; handle: Promise<number>; told: string[] };
 
 function station(id: string): Rig {
   const data = mkdtempSync(join(tmpdir(), "bdc-"));
-  const rows = new Map<string, string>();
   const told: string[] = [];
-  const drafts = new BoardDrafts({
-    store: () => ({ boardDrafts: (w, s) => rows.get(`${w}/${s}`) ?? null, putBoardDrafts: (w, s, d) => void rows.set(`${w}/${s}`, d) }),
-    dir: () => join(data, "board-files"),
-    uploads: () => join(data, "uploads"),
-    now: () => clock.now,
-  });
-  return { id, address: `${WS}/${id}`, data, told, routes: boardRoutes({ drafts, told: () => told.push("boardDrafts") }) };
+  const handle = harness.call<{ handle: number }>("createBoard", { data, nowMs: clock.now }).then((r) => r.handle);
+  return { id, address: `${WS}/${id}`, data, handle, told };
 }
 
 async function answer(s: Rig, viewer: Viewer, method: string, path: string, body: Uint8Array | null): Promise<Answer> {
-  const [p, q] = path.split("?");
-  const query = (q ?? "").split("&").filter((x) => x !== "").map((kv) => kv.split("=").map(decodeURIComponent) as [string, string]);
-  for (const route of s.routes) {
-    const m = route.method === method ? route.pattern.exec(p!) : null;
-    if (m === null) continue;
-    return (await route.handle({ method, path: p, query, headers: {}, body: Buffer.from(body ?? new Uint8Array()), viewer, lang: "en" } as never, m.slice(1) as never)) as Answer;
-  }
-  return { status: 404, headers: {}, body: Buffer.from(JSON.stringify({ error: `no route ${method} ${p}` })) };
+  const handle = await s.handle;
+  const res = await harness.call<{ status: number; headers: Record<string, string>; bodyBase64: string; told: string[] }>("request", {
+    handle,
+    method,
+    path,
+    bodyBase64: body === null ? "" : Buffer.from(body).toString("base64"),
+    viewer,
+    nowMs: clock.now,
+  });
+  for (const t of res.told) s.told.push(t);
+  return { status: res.status, headers: res.headers, body: Buffer.from(res.bodyBase64, "base64") };
 }
 
 /// One device of the person's, reaching `stations`: its kept records, its composer's files by id, a queue run by

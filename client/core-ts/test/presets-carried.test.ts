@@ -1,21 +1,16 @@
 // A person's presets and starred models carried between a workspace's stations by their own devices
-// (src/views/presets.ts, src/presets-kept.ts), on the stations' own code (station/src/api/routes/presets.ts, stars.ts,
-// station/src/sessions/presets.ts): two stations that never talk and devices that each reach some of them come to the
-// same records by the devices alone; a deletion is not brought back; what was changed with a station away reaches it
-// as its link opens; a station from before is read and written the old way and shows nothing twice; someone else's
-// preset is read at a press, picked, kept with its station away and copied; a chat opens with what the device holds;
-// starred models' union, unstarring and the defaults of a device that never starred.
+// (src/views/presets.ts, src/presets-kept.ts), on the stations' own MoonBit code (station/mb/src/api_routes/presets.mbt,
+// station/mb/src/session_chats/presets.mbt via `harness-core-routes`): two stations that never talk and devices that
+// each reach some of them come to the same records by the devices alone; a deletion is not brought back; what was
+// changed with a station away reaches it as its link opens; a station from before is read and written the old way and
+// shows nothing twice; someone else's preset is read at a press, picked, kept with its station away and copied; a chat
+// opens with what the device holds; starred models' union, unstarring and the defaults of a device that never starred.
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { Effect } from "effect";
-import type { Route } from "../../../station/src/api/admin.ts";
-import { routes as presetRoutes } from "../../../station/src/api/routes/presets.ts";
-import { routes as starRoutes } from "../../../station/src/api/routes/stars.ts";
-import type { Viewer } from "../../../station/src/mesh/credential.ts";
-import { Presets, readPresetsFile } from "../../../station/src/sessions/presets.ts";
 import { Choose } from "../src/choose.ts";
 import type { Inner } from "../src/core.ts";
 import { handlers } from "../src/core/execute.ts";
@@ -26,30 +21,63 @@ import { OTHERS_WAIT_MS, PresetViews, carryAll, install, likedKey, whoIn } from 
 import { overview } from "./station-fixture.ts";
 import { Runner } from "../src/runtime.ts";
 import { FakeHost } from "../src/testing.ts";
+import { startHarness } from "./mb-harness.ts";
 
 const WS = "ws";
 const ME = { sub: "s1", email: "a@x.com", name: "阿一" };
 const YOU = { sub: "s2", email: "b@x.com", name: "Bo" };
 const clock = { now: 1_000 };
 
+const harness = startHarness("harness-core-routes");
+after(() => harness.close());
+
+type Viewer = { sub: string; email: string; name: string; role: string; workspace: string; device: string };
 type Ask = (method: string, path: string, body: unknown) => Effect.Effect<unknown, CoreError>;
-type Rig = { id: string; address: string; presets: Presets; answer: (viewer: Viewer) => Ask; told: string[]; home: string };
+type PresetsProxy = {
+  kept: (ws: string | null, who: { sub: string; email: string }) => Promise<KeptRecord[]>;
+  list: (ws: string | null) => Promise<{ id: string; name: string }[]>;
+  get: (ws: string | null, id: string) => Promise<{ id: string; name: string; owner: string } | null>;
+  add: (ws: string | null, input: Record<string, unknown>, email: string, sub?: string) => Promise<{ id: string; owner: string }>;
+  delete: (ws: string | null, id: string, who?: { sub: string; email: string }) => Promise<void>;
+};
+type Rig = { id: string; address: string; presets: PresetsProxy; answer: (viewer: Viewer) => Ask; told: string[]; home: string };
+
+function readPresetsFile(home: string, station: string): Promise<{ presets: KeptRecord[]; gone: KeptRecord[] }> {
+  return harness.call("readPresetsFile", { home, station });
+}
+
+function presetsProxy(handlePromise: Promise<number>): PresetsProxy {
+  return {
+    kept: async (ws, who) => harness.call("presetsKept", { handle: await handlePromise, ws, who, nowMs: clock.now }),
+    list: async (ws) => harness.call("presetsList", { handle: await handlePromise, ws, nowMs: clock.now }),
+    get: async (ws, presetId) => harness.call("presetsGet", { handle: await handlePromise, ws, presetId, nowMs: clock.now }),
+    add: async (ws, input, email, sub) => harness.call("presetsAdd", { handle: await handlePromise, ws, input, email, sub: sub ?? "", nowMs: clock.now }),
+    delete: async (ws, presetId, who) => {
+      await harness.call("presetsDelete", { handle: await handlePromise, ws, presetId, who: who ?? null, nowMs: clock.now });
+    },
+  };
+}
 
 /// What the station's routes answer `r`, as the mesh would: its JSON, or its refusal as the core's requests make one.
-function served(routes: Route[], viewer: Viewer): Ask {
+function served(handlePromise: Promise<number>, told: string[] | null, viewer: Viewer): Ask {
   return (method, path, body) =>
     Effect.flatMap(
       Effect.promise(async () => {
-        for (const route of routes) {
-          const m = route.method === method ? route.pattern.exec(path) : null;
-          if (m === null) continue;
-          const req = { method, path, query: [], headers: {}, body: Buffer.from(body === null || body === undefined ? "" : JSON.stringify(body)), viewer, lang: "en" };
-          return await route.handle(req as never, m.slice(1) as never);
+        const res = await harness.call<{ status: number; headers: Record<string, string>; bodyBase64: string; told: string[] }>("request", {
+          handle: await handlePromise,
+          method,
+          path,
+          body: body === null || body === undefined ? null : JSON.stringify(body),
+          viewer,
+          nowMs: clock.now,
+        });
+        if (told !== null) {
+          for (const t of res.told) told.push(t);
         }
-        return { status: 404, headers: {}, body: Buffer.from(JSON.stringify({ error: `no route ${method} ${path}` })) };
+        return res;
       }),
       (a) => {
-        const text = Buffer.from(a.body as Uint8Array).toString("utf8");
+        const text = Buffer.from(a.bodyBase64, "base64").toString("utf8");
         return a.status >= 400 ? Effect.fail(new CoreError(`http_${a.status}`, (JSON.parse(text) as { error: string }).error, a.status)) : Effect.succeed(JSON.parse(text) as unknown);
       },
     );
@@ -59,38 +87,25 @@ function served(routes: Route[], viewer: Viewer): Ask {
 function station(id: string): Rig {
   const home = mkdtempSync(join(tmpdir(), "prc-home-"));
   const repos = mkdtempSync(join(tmpdir(), "prc-repos-"));
-  const presets = new Presets(() => home, () => clock.now, { station: () => id, workspace: () => WS, stationName: (s) => s });
-  const stars = new Map<string, string>();
+  const handle = harness.call<{ handle: number }>("createPresets", { stationId: id, workspace: WS, home, repos, legacy: false, nowMs: clock.now }).then((r) => r.handle);
   const told: string[] = [];
-  const routes = [
-    ...presetRoutes({ presets, reposDir: () => repos, changed: () => told.push("presets") }),
-    ...starRoutes({ kept: { modelStars: (w, s) => stars.get(`${w}/${s}`) ?? null, putModelStars: (w, s, t) => void stars.set(`${w}/${s}`, t) }, told: () => told.push("stars") }),
-  ];
-  return { id, address: `${WS}/${id}`, presets, told, home, answer: (viewer) => served(routes, viewer) };
+  return { id, address: `${WS}/${id}`, presets: presetsProxy(handle), told, home, answer: (viewer) => served(handle, told, viewer) };
 }
 
 /// A station from before: GET /presets lists every preset of the workspace (none of `owner`, `rev`, `home`), POST,
 /// PUT and DELETE /presets change one; nothing else (`no route`).
 function before(id: string): Rig {
   const home = mkdtempSync(join(tmpdir(), "prc-old-"));
-  const presets = new Presets(() => home, () => clock.now, { station: () => id, workspace: () => WS });
+  const handle = harness.call<{ handle: number }>("createPresets", { stationId: id, workspace: WS, home, repos: home, legacy: true, nowMs: clock.now }).then((r) => r.handle);
   const asked: string[] = [];
-  const old = (p: Record<string, unknown>) => {
-    const { owner: _o, rev: _r, home: _h, ...rest } = p;
-    return rest;
-  };
-  const routes: Route[] = [
-    { method: "GET", pattern: /^\/presets$/, handle: async () => ({ status: 200, headers: {}, body: Buffer.from(JSON.stringify({ presets: (await presets.list(null)).map((p) => old(p as never)), candidates: [], clones: [] })) }) },
-    ...presetRoutes({ presets, reposDir: () => home }).filter((r) => r.method !== "GET" && !String(r.pattern).includes("kept") && !String(r.pattern).includes("clone")),
-  ];
   return {
     id,
     address: `${WS}/${id}`,
-    presets,
+    presets: presetsProxy(handle),
     home,
     told: asked,
     answer: (viewer) => {
-      const ask = served(routes, viewer);
+      const ask = served(handle, null, viewer);
       return (method, path, body) => {
         asked.push(`${method} ${path}`);
         return ask(method, path, body);

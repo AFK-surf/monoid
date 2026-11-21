@@ -16,6 +16,8 @@ fn main {
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => harness_session_hub(host))
     (Some("harness-rigs"), _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => harness_rigs(host))
+    (Some("harness-core-routes"), _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => harness_core_routes(host))
     _ => {
       @host.note("usage: stillfail-reader-harness --builder harness-<package> [--shell-dir <dir> | --db <file>]")
       2
