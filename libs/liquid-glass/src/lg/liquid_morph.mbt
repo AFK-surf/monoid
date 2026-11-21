@@ -1,16 +1,22 @@
-// Apple iOS 26/27 Liquid Glass Menu Morph with real GPU SDF capillary bridge (`merged_liquid`)
-// for anchored floating overlays (`liquid_menu_node`, `liquid_select_node`, `liquid_popover_node`).
+// Apple iOS 26/27 Liquid Glass Menu Morph with physically gap-driven GPU SDF capillary bridge
+// (`merged_liquid`) for anchored floating overlays (`liquid_menu_node`, `liquid_select_node`,
+// `liquid_popover_node`).
 //
 // Closed-form `@motion.NodeWay` architecture (zero frame loops, 60/120/24/7 fps invariant):
-// - `panel` stays unscaled in `(0, 0, w, h)` so `trigger_ghost` locks pixel-for-pixel onto the real
-//   trigger button's `(tx, ty, tw, th, tr)` while `shell` stretches smoothly out of `(tx, ty, tw, th, tr)`
-//   into `(0, 0, w, h, panel_radius)` via `ground_drawn`.
+// - Two-stage drop-first emergence: the morphing droplet accelerates out of the trigger along `side`
+//   (`drop_t = 1 - (1 - pt)^2`) while staying hugged to the trigger's cross-axis width until it clears
+//   the trigger bar (`gap >= 0`), then blooms smoothly to full width `w` with zero overlap against
+//   neighboring bar controls.
+// - Capillary bridge merge radius `m` is driven strictly by real physical edge gap `gap`:
+//   stays bonded across `gap < ovl_morph_break_gap (5.8pt)` (forming a visible curved hourglass neck
+//   in the `1.5..5.8pt` air gap) and snaps cleanly to `0.0` only once `gap >= 5.8pt`, guaranteeing
+//   zero overlap after separation.
 // - Strict 4-layer draw order guarantees GPU `merged_liquid` SDF batching (`prev == k` with identical
-//   `blur` and `merge > 0`, zero intervening shadows/grounds/children):
+//   `blur`, `alpha`, and `merge > 0`, zero intervening shadows/grounds/children):
 //   1. `shadow_box` (`shadow_outside(true)`, zero `.glass`)
-//   2. `trigger_ghost` (only submits `.glass(Some(...))` while `m > 0.01`; `None` at rest)
+//   2. `trigger_ghost` (locks onto trigger rect while `m > 0.01`; `None` once separated / at rest)
 //   3. `shell` (immediately adjacent glass sibling; settles bit-exact to `ovl_panel_glass()` & `ground_as_laid`)
-//   4. `content_box` (shell-before-text reveal on open, text-first fade on close)
+//   4. `content_box` (fades in only once `gap >= 5.0pt`, zero text overflow on any frame)
 
 ///|
 /// Leave duration (ms) passed to `pop.layer(..., leave=ovl_morph_leave_ms)` so the closing capillary
@@ -18,8 +24,13 @@
 let ovl_morph_leave_ms : Double = 260.0
 
 ///|
-/// Peak GPU smooth-min metaball merge radius (pt) between `trigger_ghost` and `shell` during capillary bridging.
-let ovl_morph_merge_max : Double = 32.0
+/// Peak GPU smooth-min metaball merge radius (pt) between `trigger_ghost` and `shell` while bonded.
+let ovl_morph_merge_max : Double = 30.0
+
+///|
+/// Minimum physical air gap (pt) between trigger and shell before the capillary liquid bridge snaps off.
+/// Guarantees that once separated (`trigger_ghost` unmounted), a clean `>= 5.8pt` air gap separates them.
+let ovl_morph_break_gap : Double = 5.8
 
 ///|
 /// GLSL-style cubic Hermite smoothstep supporting both rising (`edge0 < edge1`) and falling (`edge0 > edge1`) ramps.
@@ -53,26 +64,35 @@ fn ovl_morph_pivot(side : @view.Side, along : @view.Along) -> @view.Pivot {
 }
 
 ///|
-/// Capillary bridge merge radius (pt) as a function of morph progress `p`:
-/// peaks at `ovl_morph_merge_max` across `p in [0.08, 0.70]` (covering emergence & gap bridging),
-/// smoothly pinches off to `0.0` across `p in [0.70, 0.92]`, and stays strictly `0.0` at rest (`p >= 0.92`).
-fn ovl_morph_bridge_merge(p : Double) -> Double {
-  ovl_morph_merge_max * ovl_smoothstep(0.0, 0.08, p) * ovl_smoothstep(0.76, 0.56, p)
+/// Capillary bridge merge radius (pt) driven strictly by physical edge gap `gap`:
+/// - `gap >= ovl_morph_break_gap` or `p <= 0.01`: strictly `0.0` (clean snap-off with zero post-separation overlap).
+/// - `gap <= 1.5`: full `ovl_morph_merge_max` while emerging from the trigger.
+/// - `1.5 < gap < ovl_morph_break_gap`: smoothly thins from `30.0` to `14.0` across the real air gap.
+fn ovl_morph_bridge_merge_for_gap(p : Double, gap : Double) -> Double {
+  if gap >= ovl_morph_break_gap || p <= 0.01 {
+    return 0.0
+  }
+  let onset = ovl_smoothstep(0.0, 0.06, p)
+  if gap <= 1.5 {
+    ovl_morph_merge_max * onset
+  } else {
+    lerp(ovl_morph_merge_max, 14.0, ovl_smoothstep(1.5, ovl_morph_break_gap, gap)) * onset
+  }
 }
 
 ///|
 /// Shared dynamic Liquid Glass recipe for both `trigger_ghost` and `shell`.
-/// Both siblings call this with the exact same `p`, guaranteeing identical `blur` for GPU `merged_liquid`
-/// batching (`blur=4.0` during bridging so the trigger icon remains crisp, settling to `8.0` at rest),
-/// and matching `ovl_panel_glass()` bit-for-bit once `energy <= 0.001 && merge <= 0.001 && p >= 0.82`.
-fn ovl_morph_panel_glass(p : Double, energy : Double, merge~ : Double) -> @paint.Glass {
-  if energy <= 0.001 && merge <= 0.001 && p >= 0.82 {
+/// Both siblings call this with the exact same `gap`, guaranteeing identical `blur` for GPU `merged_liquid`
+/// batching (`blur=4.0` during bridging, settling to `8.0` at rest), and matching `ovl_panel_glass()`
+/// bit-for-bit once `energy <= 0.001 && merge <= 0.001 && gap >= 7.2`.
+fn ovl_morph_panel_glass(gap : Double, energy : Double, merge~ : Double) -> @paint.Glass {
+  if energy <= 0.001 && merge <= 0.001 && gap >= 7.2 {
     return ovl_panel_glass()
   }
   let d = is_dark()
   let e = clamp(energy, 0.0, 1.0)
   let m = if merge > 0.0 { merge } else { 0.0 }
-  let blur = lerp(4.0, 8.0, ovl_smoothstep(0.56, 0.80, p))
+  let blur = lerp(4.0, 8.0, ovl_smoothstep(4.0, 7.2, gap))
   @paint.Glass::liquid(
     blur~,
     tint=if d { 0x202020FFL } else { 0xFDFCFD67L },
@@ -139,8 +159,9 @@ fn ovl_morph_trigger_rect(
 }
 
 ///|
-/// Morphing panel `GroundShape` stretching from trigger rect `(tx, ty, tw, th, tr)` to resting `(0, 0, w, h, panel_radius)`.
-fn ovl_morph_shell_shape(
+/// Computes both the morphing panel `GroundShape` and the exact physical edge gap `gap` (pt) between the
+/// trigger and the morphing shell (`gap < 0` overlapping, `gap == 0` touching, `gap > 0` clean air gap).
+fn ovl_morph_shell_geom(
   w : Double,
   h : Double,
   side : @view.Side,
@@ -150,49 +171,97 @@ fn ovl_morph_shell_shape(
   sx : Double,
   sy : Double,
   p : Double,
-) -> @view.GroundShape {
+) -> (@view.GroundShape, Double) {
   if (sx - 1.0).abs() < 0.001 && (sy - 1.0).abs() < 0.001 && (p - 1.0).abs() < 0.001 {
-    return @view.ground_as_laid
+    return (@view.ground_as_laid, ovl_float_gap)
   }
   if w <= 0.0 || h <= 0.0 {
-    return @view.ground_as_laid
+    return (@view.ground_as_laid, ovl_float_gap)
   }
   let (tx, ty, tw, th, tr) = ovl_morph_trigger_rect(w, h, side, along, anchor_size)
   let px = clamp(sx, 0.0, 1.06)
   let py = clamp(sy, 0.0, 1.06)
   let pt = clamp(p, 0.0, 1.0)
-  let raw_mw = lerp(tw, w, px)
-  let raw_mh = lerp(th, h, py)
-  let mw = if raw_mw > 4.0 { raw_mw } else { 4.0 }
-  let mh = if raw_mh > 4.0 { raw_mh } else { 4.0 }
-  let mx = match side {
-    Right => lerp(tx, 0.0, pt)
-    Left => lerp(tx + tw - mw, 0.0, pt)
-    _ =>
-      match along {
+  // Quadratic ease-out drop clears the trigger bar early so bridging and expansion happen in clean air space.
+  let drop_t = 1.0 - (1.0 - pt) * (1.0 - pt)
+  let (mx, my, mw, mh, gap) = match side {
+    Bottom => {
+      let my_start = ty + th * 0.5
+      let y = lerp(my_start, 0.0, drop_t)
+      let g = y - (ty + th)
+      let clear_t = ovl_smoothstep(-4.0, 4.5, g)
+      let px_eff = clamp(lerp(px * 0.15, px, clear_t), 0.0, 1.06)
+      let raw_mw = lerp(tw, w, px_eff)
+      let raw_mh = lerp(th, h, py)
+      let cur_w = if raw_mw > 4.0 { raw_mw } else { 4.0 }
+      let cur_h = if raw_mh > 4.0 { raw_mh } else { 4.0 }
+      let x = match along {
         Start => 0.0
-        End => w - mw
-        Middle => (w - mw) * 0.5
+        End => w - cur_w
+        Middle => (w - cur_w) * 0.5
       }
-  }
-  let my = match side {
-    Bottom => lerp(ty, 0.0, pt)
-    Top => lerp(ty + th - mh, 0.0, pt)
-    _ =>
-      match along {
+      (x, y, cur_w, cur_h, g)
+    }
+    Top => {
+      let bot_start = ty + th * 0.5
+      let bot = lerp(bot_start, h, drop_t)
+      let g = ty - bot
+      let clear_t = ovl_smoothstep(-4.0, 4.5, g)
+      let px_eff = clamp(lerp(px * 0.15, px, clear_t), 0.0, 1.06)
+      let raw_mw = lerp(tw, w, px_eff)
+      let raw_mh = lerp(th, h, py)
+      let cur_w = if raw_mw > 4.0 { raw_mw } else { 4.0 }
+      let cur_h = if raw_mh > 4.0 { raw_mh } else { 4.0 }
+      let x = match along {
         Start => 0.0
-        End => h - mh
-        Middle => (h - mh) * 0.5
+        End => w - cur_w
+        Middle => (w - cur_w) * 0.5
       }
+      (x, bot - cur_h, cur_w, cur_h, g)
+    }
+    Right => {
+      let mx_start = tx + tw * 0.5
+      let x = lerp(mx_start, 0.0, drop_t)
+      let g = x - (tx + tw)
+      let clear_t = ovl_smoothstep(-4.0, 4.5, g)
+      let py_eff = clamp(lerp(py * 0.15, py, clear_t), 0.0, 1.06)
+      let raw_mw = lerp(tw, w, px)
+      let raw_mh = lerp(th, h, py_eff)
+      let cur_w = if raw_mw > 4.0 { raw_mw } else { 4.0 }
+      let cur_h = if raw_mh > 4.0 { raw_mh } else { 4.0 }
+      let y = match along {
+        Start => 0.0
+        End => h - cur_h
+        Middle => (h - cur_h) * 0.5
+      }
+      (x, y, cur_w, cur_h, g)
+    }
+    Left => {
+      let right_start = tx + tw * 0.5
+      let r_edge = lerp(right_start, w, drop_t)
+      let g = tx - r_edge
+      let clear_t = ovl_smoothstep(-4.0, 4.5, g)
+      let py_eff = clamp(lerp(py * 0.15, py, clear_t), 0.0, 1.06)
+      let raw_mw = lerp(tw, w, px)
+      let raw_mh = lerp(th, h, py_eff)
+      let cur_w = if raw_mw > 4.0 { raw_mw } else { 4.0 }
+      let cur_h = if raw_mh > 4.0 { raw_mh } else { 4.0 }
+      let y = match along {
+        Start => 0.0
+        End => h - cur_h
+        Middle => (h - cur_h) * 0.5
+      }
+      (r_edge - cur_w, y, cur_w, cur_h, g)
+    }
   }
   let half_min = (if mw < mh { mw } else { mh }) * 0.5
   let raw_r = lerp(tr, panel_radius, pt)
   let mr = if raw_r < half_min { raw_r } else { half_min }
-  { dx: mx, dy: my, dw: mw - w, dh: mh - h, corners: Some((mr, mr, mr, mr)) }
+  ({ dx: mx, dy: my, dw: mw - w, dh: mh - h, corners: Some((mr, mr, mr, mr)) }, gap)
 }
 
 ///|
-/// Attaches the GPU-merged capillary Liquid Glass Menu Morph to an anchored overlay `panel` inside `layer`.
+/// Attaches the physically gap-driven GPU-merged capillary Liquid Glass Menu Morph to `panel` inside `layer`.
 /// `panel` stays unscaled with no `.glass`, `.shadow`, or `.clips`; `content` receives `content_box`.
 fn ovl_attach_liquid_morph(
   layer : @view.View,
@@ -229,6 +298,20 @@ fn ovl_attach_liquid_morph(
         None => 0.0
       }
     }
+    let gap_on = fn(node : @view.View) -> Double {
+      let (_, g) = ovl_morph_shell_geom(
+        room.width(),
+        panel_h(),
+        side,
+        along,
+        anchor_size,
+        panel_radius,
+        sx_way.shown(node),
+        sy_way.shown(node),
+        p_way.shown(node),
+      )
+      g
+    }
     // 1. Preceding outside-only shadow layer (zero `.glass`, never breaks glass batching)
     inner.box(fn(shadow_box) {
       shadow_box
@@ -238,14 +321,14 @@ fn ovl_attach_liquid_morph(
       .shadow_outside(Is(true))
       .shadow(
         By(fn() {
-          let ga = ovl_smoothstep(0.0, 0.24, p_way.shown(shadow_box))
+          let ga = ovl_smoothstep(0.0, 0.22, p_way.shown(shadow_box))
           let (s, dy, ink) = shadow_default
           (s, dy, alpha(ink, ga))
         }),
       )
       .ground_drawn(
         By(fn() {
-          ovl_morph_shell_shape(
+          let (shape, _) = ovl_morph_shell_geom(
             room.width(),
             panel_h(),
             side,
@@ -256,13 +339,14 @@ fn ovl_attach_liquid_morph(
             sy_way.shown(shadow_box),
             p_way.shown(shadow_box),
           )
+          shape
         }),
       )
       |> ignore
     })
     |> ignore
     // 2 & 3. Strictly adjacent liquid glass siblings (`trigger_ghost` + `shell`): zero shadow, zero ground,
-    //        zero children, identical `blur` & `merge` so Metal / WebGL 2 batches them into one SDF `sd_group`.
+    //        zero children, identical `alpha`, `blur` & `merge` so Metal / WebGL 2 batches them into one SDF `sd_group`.
     inner.box(fn(trigger_ghost) {
       let tw = anchor_size.0
       let th = anchor_size.1
@@ -285,16 +369,17 @@ fn ovl_attach_liquid_morph(
           (tx, ty)
         }),
       )
-      .alpha(By(fn() { ovl_smoothstep(0.0, 0.20, p_way.shown(trigger_ghost)) }))
+      .alpha(By(fn() { ovl_smoothstep(0.0, 0.18, p_way.shown(trigger_ghost)) }))
       .glass(
         By(fn() {
           let p = p_way.shown(trigger_ghost)
-          let ga = ovl_smoothstep(0.0, 0.20, p)
-          let m = ovl_morph_bridge_merge(p)
-          if m > 4.0 && ga > 0.01 {
+          let ga = ovl_smoothstep(0.0, 0.18, p)
+          let gap = gap_on(trigger_ghost)
+          let m = ovl_morph_bridge_merge_for_gap(p, gap)
+          if m > 0.01 && ga > 0.01 {
             let sx = sx_way.shown(trigger_ghost)
             let sy = sy_way.shown(trigger_ghost)
-            Some(ovl_morph_panel_glass(p, energy_of(sx, sy, p), merge=m))
+            Some(ovl_morph_panel_glass(gap, energy_of(sx, sy, p), merge=m))
           } else {
             None
           }
@@ -308,17 +393,17 @@ fn ovl_attach_liquid_morph(
       .over(Is(true))
       .points(Is(false))
       .radius(Is(panel_radius))
-      .alpha(By(fn() { ovl_smoothstep(0.0, 0.20, p_way.shown(shell)) }))
+      .alpha(By(fn() { ovl_smoothstep(0.0, 0.18, p_way.shown(shell)) }))
       .glass(
         By(fn() {
           let p = p_way.shown(shell)
-          let ga = ovl_smoothstep(0.0, 0.20, p)
+          let ga = ovl_smoothstep(0.0, 0.18, p)
           if ga > 0.01 {
             let sx = sx_way.shown(shell)
             let sy = sy_way.shown(shell)
-            let m = ovl_morph_bridge_merge(p)
-            let eff_m = if m > 4.0 { m } else { 0.0 }
-            Some(ovl_morph_panel_glass(p, energy_of(sx, sy, p), merge=eff_m))
+            let gap = gap_on(shell)
+            let m = ovl_morph_bridge_merge_for_gap(p, gap)
+            Some(ovl_morph_panel_glass(gap, energy_of(sx, sy, p), merge=m))
           } else {
             None
           }
@@ -326,7 +411,7 @@ fn ovl_attach_liquid_morph(
       )
       .ground_drawn(
         By(fn() {
-          ovl_morph_shell_shape(
+          let (shape, _) = ovl_morph_shell_geom(
             room.width(),
             panel_h(),
             side,
@@ -337,33 +422,34 @@ fn ovl_attach_liquid_morph(
             sy_way.shown(shell),
             p_way.shown(shell),
           )
+          shape
         }),
       )
       |> ignore
     })
     |> ignore
-    // 4. Foreground content box: appears only once the glass shell is >=95% open (0 text overflow on any frame)
+    // 4. Foreground content box: appears only once physical gap >= 5.0pt (zero text overflow on any frame)
     inner.box(fn(content_box) {
       content_ref.val = Some(content_box)
       content_box
       .scale(
-        By(fn() { lerp(0.92, 1.0, ovl_smoothstep(0.70, 1.0, clamp(p_way.shown(content_box), 0.0, 1.0))) }),
+        By(fn() { lerp(0.92, 1.0, ovl_smoothstep(5.0, 8.0, gap_on(content_box))) }),
         about=ovl_morph_pivot(side, along),
       )
       .alpha(
         By(fn() {
-          let p = p_way.shown(content_box)
+          let g = gap_on(content_box)
           if layer.leaving() {
-            ovl_smoothstep(0.62, 0.90, p)
+            ovl_smoothstep(5.2, 7.6, g)
           } else {
-            ovl_smoothstep(0.70, 0.94, p)
+            ovl_smoothstep(5.0, 7.6, g)
           }
         }),
       )
       .offset(
         By(fn() {
-          let p = p_way.shown(content_box)
-          let u = 1.0 - ovl_smoothstep(0.70, 0.96, p)
+          let g = gap_on(content_box)
+          let u = 1.0 - ovl_smoothstep(5.0, 7.8, g)
           let d = u * 6.0
           match side {
             Bottom => (0.0, -d)
