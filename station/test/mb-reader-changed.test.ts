@@ -62,7 +62,7 @@ test("the MoonBit reader reads what of a list changed as the worker does", { ski
   };
   chat("both", "Both", ["c1", "x1"], 100);
   chat("grok", "Grok's", ["g1"], 90, "g1");
-  chat("all", "Everyone", ["c1", "x1", "g1", "d1"], 80, "g1");
+  chat("all", "Everyone", ["d1", "c1", "x1", "g1"], 80, "g1");
   chat("none", "Nobody", [], 70);
   const viewer = { email: "p@x", workspace: "w", home: true };
   const worker = new Readers(data, 1, REFERENCE);
@@ -104,20 +104,16 @@ test("the MoonBit reader reads what of a list changed as the worker does", { ski
     const said = JSON.stringify(first);
     for (const sign of ["\"order\":[", "\"rows\":[]", "Everyone", "\"runtime\":\"grok\""]) assert.ok(said.includes(sign), sign);
     // Consecutive POST /changed/shared with digests computed from actual production whole projection
-    // (`station/src/read/runtime-view.ts`, which filters `agents` and deletes unsupported `last.authorRuntime`)
+    // (`station/src/read/runtime-view.ts`, which filters only `agents` and preserves `last.authorRuntime`)
     // must return 0 rows for both full and restricted runtime capability sets.
     const { runtimeView } = await import("../src/read/runtime-view.ts");
     const wholeRaw = JSON.parse(await program.read("sharedChats", { viewer, sessions: null, threads: null }, "en")) as Record<string, any>[];
     for (const rt of [["claude"], ["claude", "codex", "grok", "dsh"]]) {
       const projected = runtimeView({ vec: "ChatItem" }, wholeRaw, new Set(rt)) as Record<string, any>[];
       const grokRow = projected.find((row) => row.id === "g1");
-      if (rt.includes("grok")) {
-        assert.equal(grokRow?.last?.authorRuntime, "grok", "supported authorRuntime preserved");
-        assert.equal(grokRow?.agents?.length, 1);
-      } else {
-        assert.equal(grokRow?.last?.authorRuntime, undefined, "unsupported authorRuntime deleted by runtimeView");
-        assert.equal(grokRow?.agents?.length, 0, "unsupported agent filtered out of agents");
-      }
+      assert.equal(grokRow?.last?.authorRuntime, "grok", "production whole preserves last.authorRuntime");
+      if (rt.includes("grok")) assert.equal(grokRow?.agents?.length, 1);
+      else assert.equal(grokRow?.agents?.length, 0, "unsupported agent filtered out of agents");
       const held = Object.fromEntries(projected.map((row) => [String(row.id), digest(row)]));
       const delta = await read(program, { op: "sharedChats", args: { viewer, sessions: null, threads: null }, id: "id", held, runtimes: rt }, "en");
       assert.deepEqual(delta.rows, [], `consecutive changed/shared with production whole digests returns 0 rows for runtimes=${rt.join(",")}`);
