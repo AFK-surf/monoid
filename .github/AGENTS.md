@@ -58,7 +58,7 @@
   Mac app's and the station's release signing on `macos-26` (`desktop`, `station`: their uploads over Mini1's home line
   were cut at five minutes, 2026-11-17), and
   a branch's `natives-mac-main` runs only with `vars.MINI1 = 'on'`. The tests' MoonBit program (`reader-harness`, which
-  only `check-station` runs) builds in `natives-harness` alone, never in `natives`' list or `natives-main`, on
+  `check-station` and `check-core` run) builds in `natives-harness` alone, never in `natives`' list or `natives-main`, on
   `ubuntu-24.04` at -O0 wherever `shell-station` is published, main's too: a concurrency group pends one job and cancels
   the one pending before it, so the readers' group on `ci-1` takes no third. Runners on one
   self-hosted machine share its cores and queue bursts of multi-job workflows, so keep bursty multi-job PR builds and

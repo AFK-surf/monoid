@@ -187,8 +187,8 @@ jobs:
               # (only ui-windows uses Windows' reader, and only for a change to the station)
               if grep -qE '^station=true$' "$RUNNER_TEMP/plan"; then missing_win=$(pick $BRANCH_WIN_READER)
               else missing_win=""; fi
-              # (only check-station runs the harnesses)
-              if grep -qE '^station_tests=true$' "$RUNNER_TEMP/plan"; then missing_harness=$(pick $BRANCH_HARNESS)
+              # (only check-station and check-core run the harnesses)
+              if grep -qE '^(station_tests|core_tests)=true$' "$RUNNER_TEMP/plan"; then missing_harness=$(pick $BRANCH_HARNESS)
               else missing_harness=""; fi
               if grep -qE '^(check_mac|station|release_smoke)=true$' "$RUNNER_TEMP/plan"; then missing_mac=$(pick $BRANCH_MAC_NATIVES)
               else missing_mac=""; echo "missing (mac): skipped (no mac job planned)"; fi
@@ -1194,8 +1194,8 @@ jobs:
   # web's and cloud's beside them: 180 to 250 s, then past the job's five minutes as files were added (179 files; main
   # 6045382883, 43272321433, 2026-11-12). More files: more slices (here, in `shard` and STILLFAIL_CORE_SHARD).
   check-core:
-    needs: [plan, natives]
-    if: ${{ !cancelled() && !failure() && contains(fromJSON('["success","skipped"]'), needs.natives.result) && needs.plan.outputs.core_tests == 'true' }}
+    needs: [plan, natives, natives-harness]
+    if: ${{ !cancelled() && !failure() && contains(fromJSON('["success","skipped"]'), needs.natives.result) && contains(fromJSON('["success","skipped"]'), needs.natives-harness.result) && needs.plan.outputs.core_tests == 'true' }}
     strategy:
       fail-fast: false
       matrix:
