@@ -1,8 +1,7 @@
 // ui.monoid V3 Homepage Interactive Playgrounds (zero dependencies):
-// 1. Hero Live WebGL 2 launcher + in-stage 4-scene switcher
-// 2. Playable Demo 1: Retained Tree & Fine-Grained Signals
-// 3. Playable Demo 2: Closed-Form Spring Physics Lab (120 / 60 / 24 / 7 fps)
-// 4. Playable Demo 3: Deterministic Offscreen Tester & Clipping Fault Injector
+// 1. Playable Demo 1: Retained Tree & Fine-Grained Signals
+// 2. Playable Demo 2: Closed-Form Spring Physics Lab (120 / 60 / 24 / 7 fps)
+// 3. Playable Demo 3: Deterministic Offscreen Tester & Clipping Fault Injector
 
 (() => {
   const isZh = () => document.documentElement.dataset.lang === "zh";
@@ -30,92 +29,7 @@
     io.observe(el);
   };
 
-  // ── 1. Hero Live WebGL 2 Stage & Floating Scene Switcher ──
-  (() => {
-    const stage = document.getElementById("hero-stage");
-    const layer = document.getElementById("hero-live-layer");
-    const frameWrap = document.getElementById("hero-live-frame-wrap");
-    const fallback = document.getElementById("hero-live-fallback");
-    if (!stage || !layer || !frameWrap) return;
-
-    const sceneBtns = [...layer.querySelectorAll("[data-hero-scene]")];
-    const exitBtn = layer.querySelector("[data-hero-exit]");
-    const launchBtns = [...stage.querySelectorAll("[data-hero-launch]")];
-    let frame = null;
-
-    const hasWebGL2 = () => {
-      try {
-        const gl = document.createElement("canvas").getContext("webgl2");
-        if (!gl) return false;
-        gl.getExtension("WEBGL_lose_context")?.loseContext();
-        return true;
-      } catch {
-        return false;
-      }
-    };
-
-    const withLang = (src) => {
-      if (!src || !src.startsWith("/components/app/")) return src;
-      const sep = src.includes("?") ? "&" : "?";
-      return `${src}${sep}MBUI_LANG=${isZh() ? "zh" : "en"}`;
-    };
-
-    const loadScene = (key) => {
-      const targetBtn = sceneBtns.find((b) => b.dataset.heroScene === key) || sceneBtns[0];
-      if (!targetBtn) return;
-      for (const b of sceneBtns) {
-        b.setAttribute("aria-pressed", String(b === targetBtn));
-      }
-      layer.hidden = false;
-      if (!hasWebGL2()) {
-        if (fallback) fallback.hidden = false;
-        return;
-      }
-      if (fallback) fallback.hidden = true;
-      const src = withLang(targetBtn.dataset.src);
-      if (!frame) {
-        frame = document.createElement("iframe");
-        frame.title = "ui.monoid Live WebGL 2";
-        frame.allow = "clipboard-read; clipboard-write";
-        frameWrap.appendChild(frame);
-      }
-      if (frame.dataset.currentSrc !== src) {
-        frame.dataset.currentSrc = src;
-        frame.src = src;
-      }
-    };
-
-    for (const btn of launchBtns) {
-      btn.addEventListener("click", () => {
-        loadScene(btn.dataset.heroLaunch || "glass-dark");
-      });
-    }
-    for (const btn of sceneBtns) {
-      btn.addEventListener("click", () => {
-        loadScene(btn.dataset.heroScene);
-      });
-    }
-    for (const tab of document.querySelectorAll('.hero-tabs [role="tab"]')) {
-      tab.addEventListener("click", () => {
-        if (layer.hidden) return;
-        const pane = document.getElementById(tab.getAttribute("aria-controls"));
-        const sceneKey = pane?.dataset.sceneKey;
-        if (sceneKey) loadScene(sceneKey);
-      });
-    }
-    onLangChange(() => {
-      if (layer.hidden) return;
-      const active = sceneBtns.find((b) => b.getAttribute("aria-pressed") === "true");
-      if (active?.dataset.src?.startsWith("/components/app/")) {
-        loadScene(active.dataset.heroScene);
-      }
-    });
-    exitBtn?.addEventListener("click", () => {
-      layer.hidden = true;
-    });
-  })();
-
-  // ── 2. Playable Demo 1: Retained Tree & Signals ──
+  // ── 1. Playable Demo 1: Retained Tree & Fine-Grained Signals ──
   (() => {
     const root = document.getElementById("demo-signals");
     if (!root) return;

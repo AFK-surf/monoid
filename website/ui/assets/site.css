@@ -347,6 +347,7 @@ a.mega-card:hover { background: var(--card-2); }
   height: 36px; padding: 0 14px; border-radius: var(--r-s);
   border: 1px solid rgba(255, 255, 255, 0.16);
   background: rgba(23, 23, 23, 0.88); color: #ffffff;
+  text-decoration: none;
   -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
   font: 500 13px/1 var(--text); letter-spacing: -0.004em; cursor: pointer;
   box-shadow: var(--shadow-m);
@@ -354,30 +355,6 @@ a.mega-card:hover { background: var(--card-2); }
 }
 .live-launch:hover { background: #171717; }
 .live-launch svg { width: 13px; height: 13px; color: var(--brand); }
-.live-frame-wrap {
-  position: absolute; inset: 0; z-index: 4;
-  background: var(--paper); opacity: 0; pointer-events: none;
-  transition: opacity .24s var(--ease-out);
-}
-.live-stage.is-live .live-frame-wrap { opacity: 1; pointer-events: auto; }
-.live-frame-wrap iframe { width: 100%; height: 100%; border: 0; display: block; }
-.live-close {
-  position: absolute; top: 12px; right: 12px; z-index: 8;
-  display: none; align-items: center; gap: 6px;
-  height: 32px; padding: 0 11px; border-radius: var(--r-xs);
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  background: rgba(14, 14, 16, 0.82); color: #ffffff;
-  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
-  font: 500 12px/1 var(--text); cursor: pointer;
-}
-.live-stage.is-live .live-close { display: inline-flex; }
-.live-close-dock[hidden] { display: none !important; }
-.live-stage.is-live .live-bar { display: none; }
-.live-fallback {
-  position: absolute; inset: 0; z-index: 7; display: grid; place-items: center;
-  padding: 24px; background: rgba(255, 255, 255, 0.94); text-align: center;
-}
-.live-fallback[hidden] { display: none; }
 
 /* ── Stage bottom tabs (3 wide tabs) ── */
 .tabs { display: grid; grid-template-columns: repeat(3, 1fr); margin-top: 20px; text-align: left; }

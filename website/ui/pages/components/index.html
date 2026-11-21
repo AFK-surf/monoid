@@ -10,44 +10,36 @@
     <p class="lede" data-en="Zero-coupling interaction state machines and live WebGL 2 controls." data-zh="零耦合交互状态机与实时 WebGL 2 组件。">Zero-coupling interaction state machines and live WebGL 2 controls.</p>
 
     <div class="stage" id="comp-stage">
-      <div class="live-stage" data-live-src="/standard/app/" data-live-title="ui.monoid Standard UI Stage">
-        {{shot:std-hero-light:ui.monoid Standard UI stage rendered offscreen on Metal}}
-        <div class="live-bar">
-          <button type="button" class="live-launch" data-live-launch>
-            {{i:play}}<span data-en="Launch Live Standard UI (WebGL 2)" data-zh="启动实时 Standard UI (WebGL 2)">Launch Live Standard UI (WebGL 2)</span>
-          </button>
+      <div class="live-stage" id="comp-preview-stage">
+        <div class="pane on" data-comp-preview="light">
+          {{shot:std-hero-light:ui.monoid Standard UI light stage rendered offscreen on Metal}}
         </div>
-        <div class="live-frame-wrap"></div>
-        <div class="live-fallback" hidden>
-          <p data-en="WebGL 2 is unavailable in this browser." data-zh="当前浏览器不支持 WebGL 2。">WebGL 2 is unavailable in this browser.</p>
+        <div class="pane" data-comp-preview="dark">
+          {{shot:std-hero-dark:ui.monoid Standard UI dark stage rendered offscreen on Metal}}
+        </div>
+        <div class="live-bar">
+          <a class="live-launch" id="comp-launch-link" href="/standard/app/">
+            {{i:arrow-ne}}<span data-en="Open Standard UI Library" data-zh="进入普通组件库">Open Standard UI Library</span>
+          </a>
         </div>
       </div>
     </div>
 
-    <div class="story-dock" role="toolbar" aria-label="Standard UI Stage scenes" data-en-aria="Standard UI Stage scenes" data-zh-aria="Standard UI 舞台场景切换">
+    <div class="story-dock" role="toolbar" aria-label="Standard UI Stage preview" data-en-aria="Standard UI Stage preview" data-zh-aria="Standard UI 预览切换">
       <div class="story-pills">
-        <button type="button" class="story-pill" data-story-src="/standard/app/?MBUI_STD_SCENE=0" aria-pressed="false">
-          {{i:sliders}}<span data-en="Controls" data-zh="控件台">Controls</span>
+        <button type="button" class="story-pill is-active" data-comp-theme="light" aria-pressed="true">
+          {{i:palette}}<span data-en="Light Surface" data-zh="浅色表面">Light Surface</span>
         </button>
-        <button type="button" class="story-pill" data-story-src="/standard/app/?MBUI_STD_SCENE=1" aria-pressed="false">
-          {{i:palette}}<span data-en="Tokens" data-zh="OKLCH 色阶">Tokens</span>
-        </button>
-        <button type="button" class="story-pill" data-story-src="/standard/app/?MBUI_STD_SCENE=2" aria-pressed="false">
-          {{i:layers}}<span data-en="Overlays" data-zh="浮层">Overlays</span>
-        </button>
-        <button type="button" class="story-pill" data-story-src="/standard/app/?MBUI_DARK=1" aria-pressed="false">
-          {{i:sparkles}}<span data-en="Dark Mode" data-zh="深色模式">Dark Mode</span>
+        <button type="button" class="story-pill" data-comp-theme="dark" aria-pressed="false">
+          {{i:sparkles}}<span data-en="Dark Surface" data-zh="深色表面">Dark Surface</span>
         </button>
       </div>
       <div class="story-pills">
-        <button type="button" class="story-pill live-close-dock" data-live-close="comp-stage" hidden>
-          {{i:close}}<span data-en="Return to Preview" data-zh="回到静态图">Return to Preview</span>
-        </button>
-        <a class="story-pill story-full" href="/components/app/?STORY=palette&amp;MBUI_BRAND=ui.monoid" target="_blank" rel="noopener noreferrer">
+        <a class="story-pill story-full" href="/components/app/?STORY=palette&amp;MBUI_BRAND=ui.monoid">
           <span data-en="Open Full 27-Control Storybook" data-zh="打开完整 27 控件 Storybook">Open Full 27-Control Storybook</span>{{i:arrow-ne}}
         </a>
-        <a class="story-pill story-full" href="/standard/app/" target="_blank" rel="noopener noreferrer">
-          <span data-en="Fullscreen" data-zh="全屏">Fullscreen</span>{{i:arrow-ne}}
+        <a class="story-pill story-full" href="/standard/app/">
+          <span data-en="Enter Standard UI App" data-zh="进入普通组件库">Enter Standard UI App</span>{{i:arrow-ne}}
         </a>
       </div>
     </div>
@@ -238,66 +230,27 @@
 
 <script>
 (() => {
-  const hasWebGL2 = () => {
-    try {
-      const gl = document.createElement("canvas").getContext("webgl2");
-      if (!gl) return false;
-      gl.getExtension("WEBGL_lose_context")?.loseContext();
-      return true;
-    } catch {
-      return false;
+  // 1. Instant Light / Dark offscreen capture switcher (zero iframe)
+  const stage = document.getElementById("comp-preview-stage");
+  const themeBtns = [...document.querySelectorAll("[data-comp-theme]")];
+  const launchLink = document.getElementById("comp-launch-link");
+  if (stage && themeBtns.length) {
+    const previews = [...stage.querySelectorAll("[data-comp-preview]")];
+    const setTheme = (theme) => {
+      for (const p of previews) p.classList.toggle("on", p.dataset.compPreview === theme);
+      for (const b of themeBtns) {
+        const on = b.dataset.compTheme === theme;
+        b.classList.toggle("is-active", on);
+        b.setAttribute("aria-pressed", String(on));
+      }
+      if (launchLink) {
+        launchLink.href = theme === "dark" ? "/standard/app/?MBUI_DARK=1" : "/standard/app/";
+      }
+    };
+    for (const b of themeBtns) {
+      b.addEventListener("click", () => setTheme(b.dataset.compTheme === "dark" ? "dark" : "light"));
     }
-  };
-
-  // 1. In-place Storybook WebGL 2 scene switcher
-  const stage = document.querySelector("#comp-stage .live-stage");
-  const pills = [...document.querySelectorAll("[data-story-src]")];
-  if (stage && pills.length) {
-    const wrap = stage.querySelector(".live-frame-wrap");
-    const fallback = stage.querySelector(".live-fallback");
-    const closeBtn = document.querySelector('[data-live-close="comp-stage"]');
-
-    const setActive = (btn) => {
-      for (const p of pills) {
-        const on = p === btn;
-        p.classList.toggle("is-active", on);
-        p.setAttribute("aria-pressed", String(on));
-      }
-    };
-
-    const withLang = (base) => {
-      if (!base.startsWith("/components/app/")) return base;
-      const lang = document.documentElement.dataset.lang === "zh" ? "zh" : "en";
-      const sep = base.includes("?") ? "&" : "?";
-      return `${base}${sep}MBUI_LANG=${lang}`;
-    };
-
-    const loadStory = (btn) => {
-      const base = btn.dataset.storySrc;
-      if (!base || !wrap) return;
-      const url = withLang(base);
-      setActive(btn);
-      stage.dataset.liveSrc = url;
-      if (!hasWebGL2()) {
-        if (fallback) fallback.hidden = false;
-        return;
-      }
-      if (fallback) fallback.hidden = true;
-      let frame = wrap.querySelector("iframe");
-      if (!frame) {
-        frame = document.createElement("iframe");
-        frame.title = stage.dataset.liveTitle || "ui.monoid Storybook";
-        frame.allow = "clipboard-read; clipboard-write";
-        wrap.appendChild(frame);
-      }
-      frame.src = url;
-      stage.classList.add("is-live");
-    };
-
-    for (const p of pills) {
-      p.addEventListener("click", () => loadStory(p));
-    }
-    closeBtn?.addEventListener("click", () => setActive(null));
+    setTheme("light");
   }
 
   // 2. Interactive @headless keyboard roving demo

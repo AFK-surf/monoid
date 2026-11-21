@@ -254,3 +254,52 @@ test "the bottom dock stays where it is as each scene is chosen, 18 from the win
     #|Optics 406,958,468,64 foot 18 tabs 4 even true clear true
   ))
 }
+
+///|
+test "library app self-hosts all 6 categories, sidebar search, dark/light switch, overlays and passes Tester::audit with 0 faults" {
+  let faults = []
+  for dark in [false, true] {
+    for dims in [(1120.0, 690.0), (1440.0, 900.0)] {
+      let (w, h) = dims
+      let t = @ui.Tester::new(fn(_c) {  }, w~, h~, platform=0)
+      @lg.set_dark(Some(dark))
+      @ui.set_view_app(fn(root) { gallery(root, "library", chrome=true) })
+      t.draw()
+      // No legacy gallery bar on `library`
+      assert_eq(t.all(TabList, label="Page").length(), 0)
+      let dock = t.get(TabList, label="Library sections")
+      let (dx0, dy0, dw0, dh0) = dock.rect
+      for tab in ["Controls", "Inputs", "Nav", "Overlays", "Physics", "Optics"] {
+        let (tx, ty) = middle_of(t, Tab, tab)
+        t.tap(tx, ty)
+        t.run_for(settled)
+        let d_now = t.get(TabList, label="Library sections").rect
+        assert_eq((tab, w, h, d_now.0, d_now.1, d_now.2, d_now.3), (tab, w, h, dx0, dy0, dw0, dh0))
+        for f in t.audit() {
+          if f.contains("pages/library.mbt") {
+            faults.push((tab, dark, w, f))
+          }
+        }
+      }
+    }
+  }
+  assert_eq(faults, [])
+
+  // Interactive flow: search filter -> switch to Overlays -> open Sheet -> close -> switch Dark/Light
+  let t = @ui.Tester::new(fn(_c) {  }, w=1280.0, h=800.0, platform=0)
+  @lg.set_dark(Some(true))
+  @ui.set_view_app(fn(root) { gallery(root, "library", chrome=true) })
+  t.draw()
+  t.act(Button, Activate, label="Overlays")
+  t.run_for(settled)
+  t.act(Button, Activate, label="Open Sheet")
+  t.run_for(settled)
+  let sheet_shown = t.all(Dialog, label="Optical Export Sheet").length()
+  t.key(@ui.key_escape)
+  t.run_for(settled)
+  let sheet_closed = t.all(Dialog, label="Optical Export Sheet").length()
+  let (lx, ly) = middle_of(t, Tab, "Light")
+  t.tap(lx, ly)
+  t.run_for(settled)
+  assert_eq((sheet_shown, sheet_closed, @lg.is_dark()), (1, 0, false))
+}

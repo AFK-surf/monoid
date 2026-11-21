@@ -7,14 +7,17 @@ model (uniform blurred backdrop, quarter-circle bevel refraction, adaptive iOS 2
 inner bevel shadow, glint, and 0.75pt external contour). mbui is the framework and holds no look; a library holds the
 looks; an app uses a library.
 
-- `src/lg` is the library; `src/pages` the gallery's pages (overview, dialog, interactive: the overview with every part
-  held, film: what the film drags) and the gallery round them (`gallery.mbt`: a bar of glass choosing the page and the
-  look, the gallery's own, not the catalog's), shown by `src/gallery` in a window (`MBUI_LG_PAGE`, `MBUI_DARK=1`,
-  `MBUI_LG_CHROME=0` no bar; `APP=gallery MBUI_APP_MOD=libs/liquid-glass libs/mbui/scripts/mac.sh run`) and in the
-  browser (`scripts/web.sh [OUT]`, the settings in the page's query, as ui.monoid.build/liquid-glass serves it), and
-  drawn by `src/shots` offscreen (`MBUI_LG_SHOTS=<dir>`, `MBUI_LG_ONLY=<page|film|gallery>`: each page light and dark
-  at 3×, the gallery with its bar, and a 60 fps film of the parts held and dragged, mbui's `@film.picture` and
-  `@film.film`). `scripts/check.sh` is its check, CI's `check-liquid-glass`.
+- `src/lg` is the library (32 Liquid Glass components across controls, inputs, navigation, overlays, feedback and
+  physics; token files `tokens.mbt`, `tokens_controls.mbt`, `tokens_overlays.mbt`); `src/pages` holds the self-hosted
+  fullscreen component library (`library.mbt`, the default entry when `MBUI_LG_PAGE` is empty) plus the gallery's pages
+  (`pages.mbt`: overview, dialog, interactive: the overview with every part held, film: what the film drags, merge) and
+  the gallery round them (`gallery.mbt`: a bar of glass choosing the page and the look on non-`library` pages), shown by
+  `src/gallery` in a window (`MBUI_LG_PAGE`, `MBUI_DARK=1`, `MBUI_LG_CHROME=0` no bar;
+  `APP=gallery MBUI_APP_MOD=libs/liquid-glass libs/mbui/scripts/mac.sh run`) and in the browser (`scripts/web.sh [OUT]`,
+  the settings in the page's query, as ui.monoid.build/liquid-glass/app/ serves it), and drawn by `src/shots` offscreen
+  (`MBUI_LG_SHOTS=<dir>`, `MBUI_LG_ONLY=<library|library-film|page|film|gallery>`: the self-hosted library shots and
+  60 fps demo, each page light and dark at 3×, the gallery with its bar, and a 60 fps film of the parts held and
+  dragged, mbui's `@film.picture` and `@film.film`). `scripts/check.sh` is its check, CI's `check-liquid-glass`.
 - `page` draws each page as the shots always have: the gallery only adds room over it (`top`), so `src/shots`' page
   pictures stay the same byte for byte.
 - It is released on its own as ui.monoid's Liquid Glass under Apache-2.0 (`LICENSE`, `NOTICE` naming the catalog's

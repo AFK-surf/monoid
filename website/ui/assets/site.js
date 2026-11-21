@@ -128,7 +128,7 @@
   }
 })();
 
-// 4. Stage tab switcher & zero-flash in-place WebGL 2 live launcher
+// 4. Stage tab switcher ([data-tabs], instant static WebP switching; zero embedded iframes)
 (() => {
   for (const tabs of document.querySelectorAll("[data-tabs]")) {
     const stage = document.getElementById(tabs.dataset.tabs);
@@ -142,80 +142,6 @@
         }
       });
     }
-  }
-
-  const hasWebGL2 = () => {
-    try {
-      const gl = document.createElement("canvas").getContext("webgl2");
-      if (!gl) return false;
-      gl.getExtension("WEBGL_lose_context")?.loseContext();
-      return true;
-    } catch {
-      return false;
-    }
-  };
-
-  for (const box of document.querySelectorAll("[data-live-src]")) {
-    const launchBtn = box.querySelector("[data-live-launch]");
-    const stageId = box.closest(".stage")?.id;
-    const closeBtn = box.querySelector("[data-live-close]") || (stageId ? document.querySelector(`[data-live-close="${stageId}"]`) : null);
-    const wrap = box.querySelector(".live-frame-wrap");
-    const fallback = box.querySelector(".live-fallback");
-    if (!launchBtn || !wrap) continue;
-
-    if (closeBtn && closeBtn.classList.contains("live-close-dock")) {
-      const syncClose = () => {
-        closeBtn.hidden = !box.classList.contains("is-live");
-      };
-      new MutationObserver(syncClose).observe(box, { attributes: true, attributeFilter: ["class"] });
-      syncClose();
-    }
-
-    launchBtn.addEventListener("click", () => {
-      if (!hasWebGL2()) {
-        if (fallback) fallback.hidden = false;
-        return;
-      }
-      let frame = wrap.querySelector("iframe");
-      if (!frame) {
-        const label = launchBtn.querySelector("span") || launchBtn;
-        const isZh = document.documentElement.dataset.lang === "zh";
-        const origText = label.textContent;
-        const restoreBtn = () => {
-          launchBtn.disabled = false;
-          const nowZh = document.documentElement.dataset.lang === "zh";
-          label.textContent = label.dataset?.en && label.dataset?.zh
-            ? (nowZh ? label.dataset.zh : label.dataset.en)
-            : origText;
-        };
-        launchBtn.disabled = true;
-        label.textContent = isZh ? "正在加载 WebGL 2…" : "Loading WebGL 2…";
-        frame = document.createElement("iframe");
-        frame.title = box.dataset.liveTitle || "Live mbui WebGL 2";
-        frame.allow = "clipboard-read; clipboard-write";
-        frame.addEventListener(
-          "load",
-          () => {
-            restoreBtn();
-            box.classList.add("is-live");
-          },
-          { once: true },
-        );
-        frame.addEventListener("error", restoreBtn, { once: true });
-        let src = box.dataset.liveSrc;
-        if (src && src.startsWith("/components/app/") && !src.includes("MBUI_LANG=")) {
-          src += (src.includes("?") ? "&" : "?") + "MBUI_LANG=" + (isZh ? "zh" : "en");
-        }
-        frame.src = src;
-        wrap.appendChild(frame);
-      } else {
-        box.classList.add("is-live");
-      }
-    });
-
-    closeBtn?.addEventListener("click", () => {
-      box.classList.remove("is-live");
-    });
   }
 })();
 

@@ -125,6 +125,35 @@ let stage_merge_script : String =
   #|wait 450
 
 ///|
+/// Interactive 60 fps demo of the 1280×800 self-hosted `ui.monoid · Liquid Glass` 32-component library:
+/// Controls -> glide Segmented lens -> switch to Overlays -> open Menu -> open Sheet -> toggle Light & Dark
+/// via top NavBar SegmentedControl -> switch to Physics (Loupe & 360° Capillary Merge).
+let library_film_script : String =
+  #|wait 400
+  #|tapxy 556 333
+  #|wait 450
+  #|tapxy 456 333
+  #|wait 400
+  #|tap Overlays
+  #|wait 450
+  #|tap Open Menu
+  #|wait 650
+  #|key escape
+  #|wait 350
+  #|tap Open Sheet
+  #|wait 650
+  #|key escape
+  #|wait 400
+  #|tapxy 1114 42
+  #|wait 600
+  #|tapxy 1176 42
+  #|wait 500
+  #|tap Physics
+  #|wait 550
+  #|tapxy 512 105
+  #|wait 700
+
+///|
 /// The gallery's pictures: each its name, the page first shown, and what is done before it is drawn.
 let gallery_shots : Array[(String, String, String)] = [
   ("overview", "overview", ""),
@@ -365,6 +394,63 @@ fn main {
       if !ok {
         failed += 1
       }
+    }
+  }
+  if only == "library" {
+    let lib_scale = env_double("MBUI_LG_SCALE", 2.0)
+    let lib_shots : Array[(String, Bool, Double, Double, String)] = [
+      ("lib-controls-dark", true, 1280.0, 800.0, ""),
+      ("lib-controls-light", false, 1280.0, 800.0, ""),
+      ("lib-inputs-dark", true, 1280.0, 800.0, "tap Inputs\nwait 500"),
+      ("lib-nav-dark", true, 1280.0, 800.0, "tap Navigation\nwait 500"),
+      ("lib-nav-light", false, 1280.0, 800.0, "tap Navigation\nwait 500"),
+      ("lib-overlays-dark", true, 1280.0, 800.0, "tap Overlays\nwait 500\ntap Open Menu\nwait 500"),
+      ("lib-overlays-light", false, 1280.0, 800.0, "tap Overlays\nwait 500\ntap Open Menu\nwait 500"),
+      ("lib-optics-dark", true, 1280.0, 800.0, "tap Optics\nwait 500"),
+      ("lib-physics-dark", true, 1280.0, 800.0, "tap Physics\nwait 500"),
+      // Exact 1120×690 website hero & scene shots
+      ("web-lg-hero-dark", true, 1120.0, 690.0, ""),
+      ("web-lg-hero-light", false, 1120.0, 690.0, ""),
+      ("web-lg-overlays-dark", true, 1120.0, 690.0, "tap Overlays\nwait 500\ntap Open Menu\nwait 500"),
+      ("web-lg-inputs-light", false, 1120.0, 690.0, "tap Inputs\nwait 500"),
+      ("web-lg-physics-dark", true, 1120.0, 690.0, "tap Physics\nwait 500\ntapxy 512 105\nwait 500"),
+    ]
+    for item in lib_shots {
+      let (name, dark, w, h, script) = item
+      @lg.set_dark(Some(dark))
+      let path = "\{dir}/\{name}.png"
+      let ok = @film.picture(
+        fn(root) { @pages.gallery(root, "library", chrome=true) },
+        path~,
+        w~,
+        h~,
+        scale=lib_scale,
+        dark~,
+        script~,
+        at=1000.0,
+      )
+      println("shots: \{path} \{if ok { "ok" } else { "failed" }}")
+      if !ok {
+        failed += 1
+      }
+    }
+  }
+  if only == "library-film" {
+    @lg.set_dark(Some(true))
+    let out = "\{dir}/lg-library-demo-dark.mp4"
+    let ok = @film.film(
+      fn(root) { @pages.gallery(root, "library", chrome=true) },
+      script=library_film_script,
+      out~,
+      w=1280.0,
+      h=800.0,
+      scale=2.0,
+      dark=true,
+      fps=60,
+    )
+    println("shots: \{out} \{if ok { "ok" } else { "failed" }}")
+    if !ok {
+      failed += 1
     }
   }
   if failed > 0 {

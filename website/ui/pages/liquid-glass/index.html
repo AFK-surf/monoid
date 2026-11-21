@@ -5,26 +5,31 @@
 
 <section class="hero dark lg-hero">
   <div class="wrap">
-    <div class="eyebrow" data-en="Apache-2.0 · iOS 27 UIGlassEffect Model" data-zh="Apache-2.0 · iOS 27 UIGlassEffect 光学模型">Apache-2.0 · iOS 27 UIGlassEffect Model</div>
-    <h1 data-en="Liquid Glass, refracted live." data-zh="实时折射的液态玻璃。">Liquid Glass, refracted live.</h1>
-    <p class="lede" data-en="Uniform blur, quarter-circle bevel refraction, capillary liquid bridge merge &amp; split, adaptive ios27Light / ios27Dark / ios27Clear transmission, touch spots, and shared backdrop capture on WebGL 2." data-zh="对标 Apple iOS 27 UIGlassEffect（flutter_liquid_glass 光学模型）：均匀轻雾、四分之一圆倒角折射、毛细液桥融合与分离、明暗自适应传输、触摸光斑与共享捕获。">Uniform blur, quarter-circle bevel refraction, capillary liquid bridge merge &amp; split, adaptive ios27Light / ios27Dark / ios27Clear transmission, touch spots, and shared backdrop capture on WebGL 2.</p>
+    <div class="eyebrow" data-en="Apache-2.0 · 32 Self-Hosted Components · iOS 27 Optics" data-zh="Apache-2.0 · 32 个自举组件 · iOS 27 光学模型">Apache-2.0 · 32 Self-Hosted Components · iOS 27 Optics</div>
+    <h1 data-en="Liquid Glass, complete and self-hosted." data-zh="完整自举的液态玻璃组件库。">Liquid Glass, complete and self-hosted.</h1>
+    <p class="lede" data-en="32 optical components rendered directly by ui.monoid on Metal, D3D11, GLES, and WebGL 2 — controls, inputs, navigation, menus, sheets, toasts, 1.5× glyph loupe, and 360° capillary merge." data-zh="32 个由 ui.monoid 直绘六端 GPU 的完整液态玻璃组件：控件、输入、导航、菜单、浮层抽屉、通知、1.5× 字符放大镜与 360° 毛细融合，组件库本身 100% 由自身组件构成。">32 optical components rendered directly by ui.monoid on Metal, D3D11, GLES, and WebGL 2 — controls, inputs, navigation, menus, sheets, toasts, 1.5× glyph loupe, and 360° capillary merge.</p>
 
     <div class="stage obsidian" id="lg-stage">
-      <div class="live-stage" id="lg-live" data-live-src="/liquid-glass/app/?MBUI_LG_PAGE=overview&amp;MBUI_DARK=1&amp;MBUI_LG_CHROME=0" data-live-title="ui.monoid Liquid Glass">
-        <div class="lg-preview on" data-lg-preview="dark">
-          {{shot:lg-hero-dark:Liquid Glass component gallery on dark surface}}
+      <div class="live-stage" id="lg-preview-stage">
+        <div class="lg-preview on" data-lg-preview="library-dark">
+          {{shot:lg-hero-dark:ui.monoid 32-component Liquid Glass dark library rendered offscreen on Metal}}
         </div>
-        <div class="lg-preview" data-lg-preview="light">
-          {{shot:lg-hero-light:Liquid Glass component gallery on light surface}}
+        <div class="lg-preview" data-lg-preview="library-light">
+          {{shot:lg-hero-light:ui.monoid 32-component Liquid Glass light library rendered offscreen on Metal}}
+        </div>
+        <div class="lg-preview" data-lg-preview="overlays">
+          {{shot:lg-crop-dialog-dark:Liquid Glass menus, sheets, toasts and progress indicators rendered offscreen on Metal}}
+        </div>
+        <div class="lg-preview" data-lg-preview="inputs">
+          {{shot:lg-crop-interactive-light:Liquid Glass text fields, checkboxes, radio groups, chips and badges rendered offscreen on Metal}}
+        </div>
+        <div class="lg-preview" data-lg-preview="physics">
+          {{shot:lg-crop-center-dark:Liquid Glass 360-degree capillary merge and 1.5x glyph loupe rendered offscreen on Metal}}
         </div>
         <div class="live-bar">
-          <button type="button" class="live-launch" data-live-launch>
-            {{i:play}}<span data-en="Launch Live WebGL 2" data-zh="启动实时 WebGL 2">Launch Live WebGL 2</span>
-          </button>
-        </div>
-        <div class="live-frame-wrap"></div>
-        <div class="live-fallback" hidden>
-          <p data-en="WebGL 2 is unavailable in this browser." data-zh="当前浏览器不支持 WebGL 2。">WebGL 2 is unavailable in this browser.</p>
+          <a class="live-launch" id="lg-launch-link" href="/liquid-glass/app/?MBUI_DARK=1">
+            {{i:arrow-ne}}<span data-en="Open Liquid Glass Library" data-zh="进入液态玻璃组件库">Open Liquid Glass Library</span>
+          </a>
         </div>
       </div>
     </div>
@@ -40,23 +45,20 @@
       </div>
 
       <div class="lg-scene-pills">
-        <button type="button" class="lg-pill" data-lg-page="overview" aria-pressed="false">
-          {{i:grid}}<span data-en="Overview" data-zh="总览">Overview</span>
+        <button type="button" class="lg-pill is-active" data-lg-shot="library" aria-pressed="true">
+          {{i:grid}}<span data-en="Library" data-zh="组件库">Library</span>
         </button>
-        <button type="button" class="lg-pill" data-lg-page="interactive" aria-pressed="false">
-          {{i:motion}}<span data-en="Interactive" data-zh="交互态">Interactive</span>
+        <button type="button" class="lg-pill" data-lg-shot="inputs" aria-pressed="false">
+          {{i:sliders}}<span data-en="Inputs" data-zh="输入与选择">Inputs</span>
         </button>
-        <button type="button" class="lg-pill" data-lg-page="dialog" aria-pressed="false">
-          {{i:layers}}<span data-en="Dialog" data-zh="对话框">Dialog</span>
+        <button type="button" class="lg-pill" data-lg-shot="overlays" aria-pressed="false">
+          {{i:layers}}<span data-en="Overlays" data-zh="浮层与反馈">Overlays</span>
         </button>
-        <button type="button" class="lg-pill" data-lg-page="merge" aria-pressed="false">
-          {{i:motion}}<span data-en="Merge" data-zh="液态融合">Merge</span>
+        <button type="button" class="lg-pill" data-lg-shot="physics" aria-pressed="false">
+          {{i:motion}}<span data-en="Physics" data-zh="物理与融合">Physics</span>
         </button>
-        <button type="button" class="lg-pill live-close-dock" data-live-close="lg-stage" hidden>
-          {{i:close}}<span data-en="Return to Preview" data-zh="回到静态图">Return to Preview</span>
-        </button>
-        <a class="lg-pill lg-full" href="/liquid-glass/app/?MBUI_DARK=1" target="_blank" rel="noopener noreferrer">
-          <span data-en="Fullscreen" data-zh="全屏">Fullscreen</span>{{i:arrow-ne}}
+        <a class="lg-pill lg-full" href="/liquid-glass/app/?MBUI_DARK=1">
+          <span data-en="Enter Interactive App" data-zh="直达全屏交互库">Enter Interactive App</span>{{i:arrow-ne}}
         </a>
       </div>
     </div>
@@ -67,42 +69,42 @@
   <div class="wrap">
     <div class="bento lg-gallery">
       <article class="tile lg-tile w6">
-        <div class="lg-shot-frame lg-shot-light">
-          {{shot:lg-crop-interactive-light:Close-up of Liquid Glass interactive drag lens, jelly squeeze, and specular press highlights}}
+        <div class="lg-shot-frame">
+          {{shot:lg-crop-controls-dark:Liquid Glass buttons, icon actions, segmented lens, toggles, sliders and stepper on dark surface}}
         </div>
         <div class="lg-tile-meta">
-          <h3 data-en="Drag Lens & Specular Press" data-zh="拖拽透镜与触点高光">Drag Lens &amp; Specular Press</h3>
-          <p data-en="Closed-form springs drive jelly squeeze and live contact illumination." data-zh="闭式弹簧驱动果冻形变与触点实时高光。">Closed-form springs drive jelly squeeze and live contact illumination.</p>
+          <h3 data-en="Controls & Segmented Lens" data-zh="控件与拖拽透镜">Controls &amp; Segmented Lens</h3>
+          <p data-en="Buttons, icon buttons, grouped capsules, draggable segmented lens, toggles, sliders, and steppers." data-zh="按钮、图标按钮、胶囊组、可拖拽分段透镜、开关、滑块与步进器。">Buttons, icon buttons, grouped capsules, draggable segmented lens, toggles, sliders, and steppers.</p>
         </div>
       </article>
 
       <article class="tile lg-tile w6">
-        <div class="lg-shot-frame">
-          {{shot:lg-crop-controls-dark:Close-up of Liquid Glass buttons, toggles, sliders, and bottom tabs on dark surface}}
+        <div class="lg-shot-frame lg-shot-light">
+          {{shot:lg-crop-interactive-light:Liquid Glass text fields, search bar, checkboxes, radio groups, chips and count badges on light surface}}
         </div>
         <div class="lg-tile-meta">
-          <h3 data-en="Buttons, Toggles & Sliders" data-zh="按钮、开关与滑块">Buttons, Toggles &amp; Sliders</h3>
-          <p data-en="Tinted, transparent, and surface finishes over @headless primitives." data-zh="基于 @headless 原语的透明、表层与染色三态控件。">Tinted, transparent, and surface finishes over @headless primitives.</p>
+          <h3 data-en="Inputs & Selection" data-zh="输入与选择体系">Inputs &amp; Selection</h3>
+          <p data-en="Clearable glass text fields, live search bar, tri-state checkboxes, radio groups, filter chips, and count badges." data-zh="可清除输入框、实时搜索栏、三态复选框、单选组、过滤芯片与计数角标。">Clearable glass text fields, live search bar, tri-state checkboxes, radio groups, filter chips, and count badges.</p>
         </div>
       </article>
 
       <article class="tile lg-tile w5">
         <div class="lg-shot-frame">
-          {{shot:lg-crop-center-dark:Close-up of Liquid Glass control center tiles, adaptive luminance cards, and progressive blur}}
+          {{shot:lg-crop-dialog-dark:Liquid Glass menus, selects, popovers, sheets, action sheets, dialogs and toasts}}
         </div>
         <div class="lg-tile-meta">
-          <h3 data-en="Control Center & Adaptive Blur" data-zh="控制中心与自适应模糊">Control Center &amp; Adaptive Blur</h3>
-          <p data-en="Luminance-aware glass tiles with smoothstep progressive blur." data-zh="随背景亮度调节的磁贴与渐进式模糊遮罩。">Luminance-aware glass tiles with smoothstep progressive blur.</p>
+          <h3 data-en="Menus, Sheets & Toasts" data-zh="菜单、抽屉与通知">Menus, Sheets &amp; Toasts</h3>
+          <p data-en="Anchored menus, selects, popovers, tooltips, detached floating sheets, action sheets, dialogs, toasts, and progress." data-zh="锚定菜单、选择器、气泡、提示、离边抽屉、操作表、弹窗、通知与进度指示。">Anchored menus, selects, popovers, tooltips, detached floating sheets, action sheets, dialogs, toasts, and progress.</p>
         </div>
       </article>
 
       <article class="tile lg-tile w7">
         <div class="lg-shot-frame">
-          {{shot:lg-crop-dialog-dark:Close-up of Liquid Glass refractive modal dialog over dark wallpaper}}
+          {{shot:lg-crop-center-dark:Liquid Glass 1.5x glyph-snapped optical loupe and 360-degree capillary merge}}
         </div>
         <div class="lg-tile-meta">
-          <h3 data-en="Refractive Modal Dialogs" data-zh="实时折射模态对话框">Refractive Modal Dialogs</h3>
-          <p data-en="Live backdrop refraction with @headless.dialog focus trap." data-zh="实时背景折射，完整继承 @headless.dialog 焦点陷阱。">Live backdrop refraction with @headless.dialog focus trap.</p>
+          <h3 data-en="Optics, 1.5× Loupe & 360° Merge" data-zh="光学、1.5× 放大镜与 360° 融合">Optics, 1.5× Loupe &amp; 360° Merge</h3>
+          <p data-en="Real 1.5× glyph-snapped magnifier, progressive blur, adaptive luminance glass, and 360° capillary liquid bridge." data-zh="真实 1.5× 字符吸附放大镜、渐进模糊、亮度自适应玻璃与 360° 毛细液桥融合。">Real 1.5× glyph-snapped magnifier, progressive blur, adaptive luminance glass, and 360° capillary liquid bridge.</p>
         </div>
       </article>
     </div>
@@ -230,87 +232,46 @@ let bond = @lg.LiquidMerge::new(separated=false)
 
 <script>
 (() => {
-  const hasWebGL2 = () => {
-    try {
-      const gl = document.createElement("canvas").getContext("webgl2");
-      if (!gl) return false;
-      gl.getExtension("WEBGL_lose_context")?.loseContext();
-      return true;
-    } catch {
-      return false;
-    }
-  };
-
-  const stage = document.getElementById("lg-live");
+  const stage = document.getElementById("lg-preview-stage");
   if (!stage) return;
 
-  const wrap = stage.querySelector(".live-frame-wrap");
-  const fallback = stage.querySelector(".live-fallback");
-  const closeBtn = document.querySelector('[data-live-close="lg-stage"]');
   const previews = [...stage.querySelectorAll("[data-lg-preview]")];
   const themeBtns = [...document.querySelectorAll("[data-lg-theme]")];
-  const pageBtns = [...document.querySelectorAll("[data-lg-page]")];
+  const shotBtns = [...document.querySelectorAll("[data-lg-shot]")];
+  const launchLink = document.getElementById("lg-launch-link");
 
   let theme = "dark";
-  let page = "overview";
+  let shot = "library";
 
-  const buildUrl = () => {
-    const darkParam = theme === "dark" ? "&MBUI_DARK=1" : "";
-    return `/liquid-glass/app/?MBUI_LG_PAGE=${encodeURIComponent(page)}${darkParam}&MBUI_LG_CHROME=0`;
-  };
-
-  const syncPreview = () => {
-    for (const p of previews) p.classList.toggle("on", p.dataset.lgPreview === theme);
+  const sync = () => {
+    const key = shot === "library" ? `library-${theme}` : shot;
+    for (const p of previews) p.classList.toggle("on", p.dataset.lgPreview === key);
     for (const b of themeBtns) b.setAttribute("aria-selected", String(b.dataset.lgTheme === theme));
-    stage.dataset.liveSrc = buildUrl();
-  };
-
-  const setActivePage = (active) => {
-    for (const b of pageBtns) {
-      const on = active && b.dataset.lgPage === page;
+    for (const b of shotBtns) {
+      const on = b.dataset.lgShot === shot;
       b.classList.toggle("is-active", on);
       b.setAttribute("aria-pressed", String(on));
     }
-  };
-
-  const launchLive = () => {
-    const url = buildUrl();
-    stage.dataset.liveSrc = url;
-    if (!hasWebGL2()) {
-      if (fallback) fallback.hidden = false;
-      return;
+    if (launchLink) {
+      launchLink.href = theme === "dark" ? "/liquid-glass/app/?MBUI_DARK=1" : "/liquid-glass/app/";
     }
-    if (fallback) fallback.hidden = true;
-    if (!wrap) return;
-    let frame = wrap.querySelector("iframe");
-    if (!frame) {
-      frame = document.createElement("iframe");
-      frame.title = stage.dataset.liveTitle || "ui.monoid Liquid Glass";
-      frame.allow = "clipboard-read; clipboard-write";
-      wrap.appendChild(frame);
-    }
-    frame.src = url;
-    stage.classList.add("is-live");
-    setActivePage(true);
   };
 
   for (const b of themeBtns) {
     b.addEventListener("click", () => {
       theme = b.dataset.lgTheme === "light" ? "light" : "dark";
-      syncPreview();
-      if (stage.classList.contains("is-live")) launchLive();
+      shot = "library";
+      sync();
     });
   }
 
-  for (const b of pageBtns) {
+  for (const b of shotBtns) {
     b.addEventListener("click", () => {
-      page = b.dataset.lgPage || "overview";
-      syncPreview();
-      launchLive();
+      shot = b.dataset.lgShot || "library";
+      sync();
     });
   }
 
-  closeBtn?.addEventListener("click", () => setActivePage(false));
-  syncPreview();
+  sync();
 })();
 </script>

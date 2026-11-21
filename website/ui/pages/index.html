@@ -15,62 +15,47 @@
 
     <div class="stage obsidian" id="hero-stage">
       <div class="hero-stage-shell">
-        <div class="pane on" id="pane-glass-dark" role="tabpanel" data-scene-key="glass-dark">
+        <div class="pane on" id="pane-glass-dark" role="tabpanel">
           <div class="hero-shot-wrap">
-            {{shot:lg-hero-dark:mbui Liquid Glass dark gallery rendered offscreen on Metal}}
+            {{shot:lg-hero-dark:ui.monoid 32-component Liquid Glass dark library rendered offscreen on Metal}}
             <div class="live-bar">
-              <button type="button" class="live-launch" data-hero-launch="glass-dark">
-                {{i:play}}<span data-en="Try Live WebGL 2" data-zh="体验实时 WebGL 2">Try Live WebGL 2</span>
-              </button>
+              <a class="live-launch" href="/liquid-glass/app/?MBUI_DARK=1">
+                {{i:arrow-ne}}<span data-en="Open Liquid Glass Library" data-zh="进入液态玻璃组件库">Open Liquid Glass Library</span>
+              </a>
             </div>
           </div>
         </div>
 
-        <div class="pane" id="pane-std-light" role="tabpanel" data-scene-key="std-light">
+        <div class="pane" id="pane-glass-light" role="tabpanel">
+          <div class="hero-shot-wrap">
+            {{shot:lg-hero-light:ui.monoid 32-component Liquid Glass light library rendered offscreen on Metal}}
+            <div class="live-bar">
+              <a class="live-launch" href="/liquid-glass/app/">
+                {{i:arrow-ne}}<span data-en="Open Liquid Glass Library" data-zh="进入液态玻璃组件库">Open Liquid Glass Library</span>
+              </a>
+            </div>
+          </div>
+        </div>
+
+        <div class="pane" id="pane-std-light" role="tabpanel">
           <div class="hero-shot-wrap">
             {{shot:std-hero-light:ui.monoid Standard UI light stage rendered offscreen on Metal}}
             <div class="live-bar">
-              <button type="button" class="live-launch" data-hero-launch="std-light">
-                {{i:play}}<span data-en="Try Live WebGL 2" data-zh="体验实时 WebGL 2">Try Live WebGL 2</span>
-              </button>
+              <a class="live-launch" href="/standard/app/">
+                {{i:arrow-ne}}<span data-en="Open Standard UI Library" data-zh="进入普通组件库">Open Standard UI Library</span>
+              </a>
             </div>
           </div>
         </div>
 
-        <div class="pane" id="pane-std-dark" role="tabpanel" data-scene-key="std-dark">
+        <div class="pane" id="pane-std-dark" role="tabpanel">
           <div class="hero-shot-wrap">
             {{shot:std-hero-dark:ui.monoid Standard UI dark stage rendered offscreen on Metal}}
             <div class="live-bar">
-              <button type="button" class="live-launch" data-hero-launch="std-dark">
-                {{i:play}}<span data-en="Try Live WebGL 2" data-zh="体验实时 WebGL 2">Try Live WebGL 2</span>
-              </button>
+              <a class="live-launch" href="/standard/app/?MBUI_DARK=1">
+                {{i:arrow-ne}}<span data-en="Open Standard UI Library" data-zh="进入普通组件库">Open Standard UI Library</span>
+              </a>
             </div>
-          </div>
-        </div>
-
-        <div class="hero-live-layer" id="hero-live-layer" hidden>
-          <div class="hero-live-bar" role="toolbar" aria-label="Live WebGL 2 scene switcher">
-            <div class="hero-live-scenes">
-              <button type="button" class="hero-scene-btn" data-hero-scene="glass-dark" data-src="/liquid-glass/app/?MBUI_DARK=1&amp;MBUI_LG_CHROME=0" aria-pressed="true">
-                <span data-en="Liquid Glass Dark" data-zh="深色 Liquid Glass">Liquid Glass Dark</span>
-              </button>
-              <button type="button" class="hero-scene-btn" data-hero-scene="glass-light" data-src="/liquid-glass/app/?MBUI_LG_CHROME=0" aria-pressed="false">
-                <span data-en="Liquid Glass Light" data-zh="浅色 Liquid Glass">Liquid Glass Light</span>
-              </button>
-              <button type="button" class="hero-scene-btn" data-hero-scene="std-light" data-src="/standard/app/" aria-pressed="false">
-                <span data-en="Standard UI Light" data-zh="浅色普通组件库">Standard UI Light</span>
-              </button>
-              <button type="button" class="hero-scene-btn" data-hero-scene="std-dark" data-src="/standard/app/?MBUI_DARK=1" aria-pressed="false">
-                <span data-en="Standard UI Dark" data-zh="深色普通组件库">Standard UI Dark</span>
-              </button>
-            </div>
-            <button type="button" class="hero-live-exit" data-hero-exit>
-              {{i:close}}<span data-en="Exit Live" data-zh="退出实时预览">Exit Live</span>
-            </button>
-          </div>
-          <div class="hero-live-frame-wrap" id="hero-live-frame-wrap"></div>
-          <div class="live-fallback" id="hero-live-fallback" hidden>
-            <p data-en="WebGL 2 is unavailable in this browser. Inspect the offscreen Metal capture instead." data-zh="当前浏览器不支持 WebGL 2，请直接查看离屏 Metal 渲染图。">WebGL 2 is unavailable in this browser. Inspect the offscreen Metal capture instead.</p>
           </div>
         </div>
       </div>
@@ -79,17 +64,22 @@
     <div class="tabs hero-tabs" role="tablist" data-tabs="hero-stage">
       <button type="button" role="tab" aria-selected="true" aria-controls="pane-glass-dark">
         {{i:glass}}
-        <b data-en="Liquid Glass" data-zh="Liquid Glass">Liquid Glass</b>
-        <span data-en="Optical Stage · Metal & WebGL 2" data-zh="光学舞台 · Metal 与 WebGL 2">Optical Stage · Metal &amp; WebGL 2</span>
+        <b data-en="Liquid Glass Dark" data-zh="深色液态玻璃">Liquid Glass Dark</b>
+        <span data-en="32 self-hosted optical components" data-zh="32 个自举光学组件 · 深色">32 self-hosted optical components</span>
+      </button>
+      <button type="button" role="tab" aria-selected="false" aria-controls="pane-glass-light">
+        {{i:sparkles}}
+        <b data-en="Liquid Glass Light" data-zh="浅色液态玻璃">Liquid Glass Light</b>
+        <span data-en="iOS 27 bevel refraction · Light" data-zh="iOS 27 倒角折射 · 浅色">iOS 27 bevel refraction · Light</span>
       </button>
       <button type="button" role="tab" aria-selected="false" aria-controls="pane-std-light">
         {{i:palette}}
-        <b data-en="Standard UI" data-zh="Standard UI">Standard UI</b>
-        <span data-en="Standard Stage · OKLCH & sf-ui" data-zh="通用组件舞台 · OKLCH 与 sf-ui">Standard Stage · OKLCH &amp; sf-ui</span>
+        <b data-en="Standard UI Light" data-zh="浅色普通组件库">Standard UI Light</b>
+        <span data-en="OKLCH & sf-ui · Light" data-zh="OKLCH 色阶与 sf-ui · 浅色">OKLCH &amp; sf-ui · Light</span>
       </button>
       <button type="button" role="tab" aria-selected="false" aria-controls="pane-std-dark">
-        {{i:sparkles}}
-        <b data-en="Standard Dark" data-zh="深色标准组件">Standard Dark</b>
+        {{i:layers}}
+        <b data-en="Standard UI Dark" data-zh="深色普通组件库">Standard UI Dark</b>
         <span data-en="Adaptive dark surfaces & overlays" data-zh="深色表面色阶与浮层体系">Adaptive dark surfaces &amp; overlays</span>
       </button>
     </div>

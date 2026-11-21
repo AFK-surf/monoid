@@ -21,7 +21,9 @@
   ],
   "style": {
     "tokens": [
-      "src/lg/tokens.mbt"
+      "src/lg/tokens.mbt",
+      "src/lg/tokens_controls.mbt",
+      "src/lg/tokens_overlays.mbt"
     ],
     "outside": []
   },

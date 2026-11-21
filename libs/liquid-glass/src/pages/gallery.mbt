@@ -147,12 +147,13 @@ pub fn gallery(root : @view.View, first : String, chrome? : Bool = true) -> Unit
     w.grow(Is(1.0)) |> ignore
     w.pick(fn() { name.get() }, at_once=true, fn(p, n) {
       p.grow(Is(1.0)) |> ignore
-      page(p, n, top~, closed=fn() { name.set("overview") })
+      let page_top = if n == "library" { 0.0 } else { top }
+      page(p, n, top=page_top, closed=fn() { name.set("overview") })
     })
     // (none while the dialog page's dialog is open: it is modal, what is not in it neither read out nor pressed, and
-    // over its scrim the bar would show as if it were)
+    // over its scrim the bar would show as if it were; none on `library`, which self-hosts its own `@lg` chrome)
     if chrome {
-      w.show(fn() { name.get() != "dialog" }, fn(o) {
+      w.show(fn() { name.get() != "dialog" && name.get() != "library" }, fn(o) {
         o.over(Is(true)) |> ignore
         bar(o, name)
       })

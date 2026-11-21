@@ -93,6 +93,7 @@ pub fn page(root : @view.View, name : String, top? : Double = 0.0, closed? : () 
     w.grow(Is(1.0)).clips(Is(true)) |> ignore
     wallpaper(w, fn() { grid_on.get() }, fn() { boost.get() })
     match name {
+      "library" => library_page(w, grid_on, boost)
       "film" => film_page(w, top)
       "merge" => merge_page(w, top)
       _ => {

@@ -1,0 +1,689 @@
+// Liquid Glass feedback, navigation and structured container components:
+// Toast, ProgressBar, ProgressRing, NavBar, Toolbar, List, and Disclosure.
+// Zero glass-on-glass: outer shells use iOS 27 `Glass::liquid`, inner elements use subtle ink layers.
+
+///|
+/// Semantic status for `liquid_toast_node`.
+#derive(Eq, Debug)
+pub(all) enum LiquidStatus {
+  Info
+  Success
+  Warning
+  Error
+}
+
+///|
+/// A Liquid Glass floating toast capsule (`r=24pt`) with vector status badge, title, optional
+/// subtitle, optional action capsule and optional `×` dismiss button.
+#callsite(autofill(loc))
+pub fn liquid_toast_node(
+  parent : @view.View,
+  visible : () -> Bool,
+  title : () -> String,
+  subtitle? : () -> String = fn() { "" },
+  status? : LiquidStatus = Info,
+  action_label? : () -> String = fn() { "" },
+  on_action? : () -> Unit,
+  on_dismiss? : () -> Unit,
+  loc~ : SourceLoc,
+) -> @view.View {
+  parent.box(made_for=loc, fn(h) {
+    h.show(visible, leave=@motion.pop_out_ms, fn(s) {
+      let (look, _) = @motion.overlay_presence(s, enter=@motion.pop_in, exit=@motion.pop_out)
+      s
+      .row(Is(true))
+      .lines_up(Is(Some(Start)))
+      .gap(Is(ovl_toast_gap))
+      .padding(Is((ovl_toast_px, ovl_toast_py, ovl_toast_pr, ovl_toast_py)))
+      .radius(Is(ovl_toast_radius))
+      .shadow(Is(shadow_default))
+      .glass(By(fn() { Some(ovl_capsule_glass()) }))
+      .alpha(By(fn() { look().alpha }))
+      .scale(By(fn() { look().sx }))
+      .says(By(fn() { Some(@view.said(Status, label=title(), description=subtitle())) }))
+      |> ignore
+      // Vector status icon aligned to first line of title
+      s.box(fn(ic) {
+        ic
+        .width(Is(Some(ovl_toast_icon_size)))
+        .height(Is(Some(ovl_toast_icon_size)))
+        .margin(Is((0.0, ovl_first_line_icon_pt, 0.0, 0.0)))
+        .shrink(Is(0.0))
+        .shapes(By(fn() { ovl_status_shapes(status, ovl_toast_icon_size, ovl_status_color(status)) }))
+        |> ignore
+      })
+      |> ignore
+      // Title + optional subtitle
+      s.box(fn(col) {
+        col.grow(Is(1.0)).gap(Is(ovl_text_gap)) |> ignore
+        col.box(fn(w) {
+          w
+          .words(By(title), look=words_at(ovl_type_body, weight=weight_medium, wrap=true))
+          .ink(By(fn() { colors().content }))
+          |> ignore
+        })
+        |> ignore
+        col.show(fn() { subtitle() != "" }, fn(sub) {
+          sub
+          .words(By(subtitle), look=words_at(ovl_type_sub, wrap=true))
+          .ink(By(ovl_muted_ink))
+          |> ignore
+        })
+      })
+      |> ignore
+      // Optional action pill button
+      match on_action {
+        Some(act) =>
+          s.show(fn() { action_label() != "" }, fn(slot) {
+            @headless.button(slot, action_label, fn(_) { act() }, made_for=loc, fn(b, btn) {
+              b
+              .row(Is(true))
+              .lines_up(Is(Some(Middle)))
+              .lies_along(Is(Middle))
+              .height(Is(Some(ovl_toast_action_h)))
+              .padding(Is((ovl_toast_action_px, 0.0, ovl_toast_action_px, 0.0)))
+              .radius(Is(ovl_toast_action_h / 2.0))
+              |> ignore
+              let hover_t = @motion.hover_fade(b, fn() { btn.hovered() })
+              let press_t = @motion.hover_fade(b, fn() { btn.pressed() }, duration_ms=@motion.pointer_tap_ms)
+              b
+              .ground(
+                By(fn() {
+                  let base = ovl_action_pill_ground()
+                  let h = hover_t()
+                  let p = press_t()
+                  let with_h = if h > 0.001 { over(base, alpha(ovl_row_hover(), h)) } else { base }
+                  if p > 0.001 { over(with_h, alpha(ovl_row_press(), p)) } else { with_h }
+                }),
+              )
+              |> ignore
+              ovl_focus_ring(b, fn() { btn.focus_shown() }, ovl_toast_action_h / 2.0)
+              b.box(fn(w) {
+                w
+                .words(By(action_label), look=words_at(ovl_type_sub, weight=weight_medium))
+                .ink(By(fn() { colors().content }))
+                |> ignore
+              })
+              |> ignore
+            })
+            |> ignore
+          })
+        None => ()
+      }
+      // Optional dismiss button
+      match on_dismiss {
+        Some(dismiss) =>
+          @headless.button(s, fn() { "Dismiss" }, fn(_) { dismiss() }, made_for=loc, fn(b, btn) {
+            b
+            .width(Is(Some(ovl_toast_close_size)))
+            .height(Is(Some(ovl_toast_close_size)))
+            .shrink(Is(0.0))
+            .radius(Is(ovl_toast_close_size / 2.0))
+            .lines_up(Is(Some(Middle)))
+            .lies_along(Is(Middle))
+            |> ignore
+            ovl_attach_row_ground(b, fn() { btn.hovered() }, fn() { btn.pressed() })
+            ovl_focus_ring(b, fn() { btn.focus_shown() }, ovl_toast_close_size / 2.0)
+            b.box(fn(ic) {
+              ic
+              .width(Is(Some(ovl_close_icon_size)))
+              .height(Is(Some(ovl_close_icon_size)))
+              .shapes(By(fn() { ovl_close_shapes(ovl_close_icon_size, ovl_muted_ink()) }))
+              |> ignore
+            })
+            |> ignore
+          })
+          |> ignore
+        None => ()
+      }
+    })
+  })
+}
+
+///|
+/// A Liquid Glass linear progress bar over `@headless.progress`.
+/// Supports determinate `Some(0.0..1.0)` and smooth closed-form indeterminate `None` sweep.
+#callsite(autofill(loc))
+pub fn liquid_progress_bar_node(
+  parent : @view.View,
+  value : () -> Double?,
+  label? : () -> String = fn() { "" },
+  show_value? : Bool = false,
+  tint? : Int64 = clear,
+  height? : Double = 8.0,
+  loc~ : SourceLoc,
+) -> @view.View {
+  @headless.progress(
+    parent,
+    value,
+    min=0.0,
+    max=1.0,
+    label~,
+    made_for=loc,
+    fn(v, prog) {
+      let fill_color = fn() { if tint != clear { tint } else { ovl_accent_ink() } }
+      v.gap(Is(ovl_progress_gap)) |> ignore
+      v.show(fn() { label() != "" || (show_value && !prog.indeterminate()) }, fn(hdr) {
+        hdr.row(Is(true)).lies_along(Is(Between)).lines_up(Is(Some(Middle))) |> ignore
+        hdr.box(fn(w) {
+          w.words(By(label), look=words_at(ovl_type_sub, weight=weight_medium)).ink(By(fn() { colors().content }))
+          |> ignore
+        })
+        |> ignore
+        hdr.show(fn() { show_value && !prog.indeterminate() }, fn(val_box) {
+          val_box
+          .words(
+            By(fn() {
+              let pct = (prog.part() * 100.0).round().to_int()
+              "\{pct}%"
+            }),
+            look=words_at(ovl_type_meta),
+          )
+          .ink(By(ovl_muted_ink))
+          |> ignore
+        })
+      })
+      v.box(fn(track) {
+        track
+        .height(Is(Some(height)))
+        .radius(Is(height / 2.0))
+        .ground(By(ovl_track_color))
+        .clips(Is(true))
+        |> ignore
+        track.show(fn() { !prog.indeterminate() }, fn(bar) {
+          bar
+          .height(Is(Some(height)))
+          .width_share(By(fn() { prog.part() }))
+          .radius(Is(height / 2.0))
+          .ground(By(fill_color))
+          |> ignore
+        })
+        track.show(fn() { prog.indeterminate() }, fn(sweep_row) {
+          sweep_row.row(Is(true)).height(Is(Some(height))) |> ignore
+          sweep_row.box(fn(lead) {
+            lead
+            .height(Is(Some(height)))
+            .width_share(
+              By(fn() {
+                let c = @motion.resident_cycle(lead, @motion.progress_sweep_ms)
+                c * (1.0 - ovl_progress_sweep_w)
+              }),
+            )
+            |> ignore
+          })
+          |> ignore
+          sweep_row.box(fn(sweep) {
+            sweep
+            .height(Is(Some(height)))
+            .width_share(Is(ovl_progress_sweep_w))
+            .radius(Is(height / 2.0))
+            .ground(By(fill_color))
+            |> ignore
+          })
+          |> ignore
+        })
+      })
+      |> ignore
+    },
+  )
+}
+
+///|
+/// A Liquid Glass circular progress ring over `@headless.progress` and `@paint.shape_of`.
+/// Supports determinate `Some(0.0..1.0)` arc and smooth closed-form indeterminate `None` spin.
+#callsite(autofill(loc))
+pub fn liquid_progress_ring_node(
+  parent : @view.View,
+  value : () -> Double?,
+  size? : Double = 36.0,
+  stroke? : Double = 3.5,
+  tint? : Int64 = clear,
+  label? : () -> String = fn() { "Progress" },
+  loc~ : SourceLoc,
+) -> @view.View {
+  @headless.progress(
+    parent,
+    value,
+    min=0.0,
+    max=1.0,
+    label~,
+    made_for=loc,
+    fn(v, prog) {
+      let ring_color = fn() { if tint != clear { tint } else { ovl_accent_ink() } }
+      v
+      .width(Is(Some(size)))
+      .height(Is(Some(size)))
+      .shrink(Is(0.0))
+      .shapes(
+        By(fn() {
+          if prog.indeterminate() {
+            let phase = @motion.resident_cycle(v, @motion.progress_sweep_ms)
+            ovl_ring_shapes(size, stroke, phase, 0.28, ring_color(), ovl_track_color())
+          } else {
+            ovl_ring_shapes(size, stroke, 0.0, prog.part(), ring_color(), ovl_track_color())
+          }
+        }),
+      )
+      |> ignore
+    },
+  )
+}
+
+///|
+/// A Liquid Glass floating navigation bar (`r = height / 2`) with centered title, optional
+/// subtitle, and optional `leading` / `trailing` action slots.
+#callsite(autofill(loc))
+pub fn liquid_nav_bar_node(
+  parent : @view.View,
+  title : () -> String,
+  subtitle? : () -> String = fn() { "" },
+  leading? : (@view.View) -> Unit,
+  trailing? : (@view.View) -> Unit,
+  height? : Double = 56.0,
+  loc~ : SourceLoc,
+) -> @view.View {
+  parent.box(made_for=loc, fn(bar) {
+    bar
+    .row(Is(true))
+    .lines_up(Is(Some(Middle)))
+    .lies_along(Is(Between))
+    .height(Is(Some(height)))
+    .padding(Is((ovl_nav_px, 0.0, ovl_nav_px, 0.0)))
+    .gap(Is(ovl_nav_gap))
+    .radius(Is(height / 2.0))
+    .shadow(Is(shadow_default))
+    .glass(By(fn() { Some(ovl_capsule_glass()) }))
+    .says(By(fn() { Some(@view.said(Navigation, label=title())) }))
+    |> ignore
+    match leading {
+      Some(draw_leading) =>
+        bar.box(fn(slot) {
+          slot.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(ovl_toolbar_gap)) |> ignore
+          draw_leading(slot)
+        })
+        |> ignore
+      None => ()
+    }
+    bar.box(fn(mid) {
+      mid.grow(Is(1.0)).lines_up(Is(Some(Middle))).gap(Is(ovl_text_gap)) |> ignore
+      mid.box(fn(w) {
+        w
+        .words(By(title), look=words_at(ovl_type_heading, weight=ovl_weight_semibold))
+        .ink(By(fn() { colors().content }))
+        |> ignore
+      })
+      |> ignore
+      mid.show(fn() { subtitle() != "" }, fn(sub) {
+        sub.words(By(subtitle), look=words_at(ovl_type_meta)).ink(By(ovl_muted_ink)) |> ignore
+      })
+    })
+    |> ignore
+    match trailing {
+      Some(draw_trailing) =>
+        bar.box(fn(slot) {
+          slot.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(ovl_toolbar_gap)) |> ignore
+          draw_trailing(slot)
+        })
+        |> ignore
+      None => ()
+    }
+  })
+}
+
+///|
+/// A Liquid Glass floating capsule toolbar (`r = height / 2`).
+#callsite(autofill(loc))
+pub fn liquid_toolbar_node(
+  parent : @view.View,
+  body : (@view.View) -> Unit,
+  height? : Double = 48.0,
+  loc~ : SourceLoc,
+) -> @view.View {
+  parent.box(made_for=loc, fn(bar) {
+    bar
+    .row(Is(true))
+    .lines_up(Is(Some(Middle)))
+    .height(Is(Some(height)))
+    .padding(Is((ovl_toolbar_px, 0.0, ovl_toolbar_px, 0.0)))
+    .gap(Is(ovl_toolbar_gap))
+    .radius(Is(height / 2.0))
+    .shadow(Is(shadow_default))
+    .glass(By(fn() { Some(ovl_capsule_glass()) }))
+    .says(Is(Some(@view.said(Toolbar, label="Toolbar"))))
+    |> ignore
+    body(bar)
+  })
+}
+
+///|
+/// One row in a `liquid_list_node`.
+pub(all) struct LiquidListRow {
+  title : String
+  subtitle : String
+  value : String
+  icon : ((@view.View, () -> Int64) -> Unit)?
+  chevron : Bool
+  on_press : (() -> Unit)?
+  active : Bool
+  destructive : Bool
+  disabled : Bool
+}
+
+///|
+/// Convenience constructor for `LiquidListRow`.
+pub fn LiquidListRow::new(
+  title~ : String,
+  subtitle? : String = "",
+  value? : String = "",
+  icon? : (@view.View, () -> Int64) -> Unit,
+  chevron? : Bool = false,
+  on_press? : () -> Unit,
+  active? : Bool = false,
+  destructive? : Bool = false,
+  disabled? : Bool = false,
+) -> LiquidListRow {
+  { title, subtitle, value, icon, chevron, on_press, active, destructive, disabled }
+}
+
+///|
+/// Internal reactive entry for `liquid_list_node`'s `View::each`.
+priv struct LiquidListItem {
+  key : String
+  idx : Int
+  has_press : Bool
+  has_icon : Bool
+  row : LiquidListRow
+}
+
+///|
+impl Eq for LiquidListItem with equal(self, other) {
+  self.key == other.key &&
+  self.idx == other.idx &&
+  self.has_press == other.has_press &&
+  self.has_icon == other.has_icon &&
+  self.row.title == other.row.title &&
+  self.row.subtitle == other.row.subtitle &&
+  self.row.value == other.row.value &&
+  self.row.chevron == other.row.chevron &&
+  self.row.active == other.row.active &&
+  self.row.destructive == other.row.destructive &&
+  self.row.disabled == other.row.disabled
+}
+
+///|
+/// Wrap rows with unique stable keys and current indices for reactive `View::each`.
+fn ovl_list_items(rows : Array[LiquidListRow]) -> Array[LiquidListItem] {
+  let seen : Map[String, Int] = Map([])
+  let out : Array[LiquidListItem] = []
+  for idx, row in rows {
+    let n = seen.get(row.title).unwrap_or(0)
+    seen.set(row.title, n + 1)
+    let has_press = row.on_press is Some(_)
+    let has_icon = row.icon is Some(_)
+    let press_tag = if has_press { "p" } else { "s" }
+    let key = if n == 0 { "\{press_tag}:\{row.title}" } else { "\{press_tag}:\{row.title}#\{n}" }
+    out.push({ key, idx, has_press, has_icon, row })
+  }
+  out
+}
+
+///|
+/// Render the reactive interior content of a `LiquidListRow`.
+#callsite(autofill(loc))
+fn ovl_list_row_inner(r : @view.View, item_sig : @signals.Signal[LiquidListItem], loc~ : SourceLoc) -> Unit {
+  let row = fn() { item_sig.get().row }
+  let title_ink = fn() {
+    let cur = row()
+    if cur.destructive {
+      ovl_destructive()
+    } else {
+      colors().content
+    }
+  }
+  r.show(fn() { item_sig.get().has_icon }, fn(ic) {
+    ic
+    .width(Is(Some(ovl_toast_icon_size)))
+    .height(Is(Some(ovl_toast_icon_size)))
+    .margin(Is((0.0, ovl_first_line_icon_pt, 0.0, 0.0)))
+    .shrink(Is(0.0))
+    .lines_up(Is(Some(Middle)))
+    .lies_along(Is(Middle))
+    |> ignore
+    match item_sig.untracked().row.icon {
+      Some(draw_icon) => draw_icon(ic, title_ink)
+      None => ()
+    }
+  })
+  r.box(made_for=loc, fn(col) {
+    col.grow(Is(1.0)).gap(Is(ovl_text_gap)) |> ignore
+    col.box(fn(w) {
+      w.words(By(fn() { row().title }), look=words_at(ovl_type_body, wrap=true)).ink(By(title_ink)) |> ignore
+    })
+    |> ignore
+    col.show(fn() { row().subtitle != "" }, fn(sub) {
+      sub.words(By(fn() { row().subtitle }), look=words_at(ovl_type_sub, wrap=true)).ink(By(ovl_muted_ink)) |> ignore
+    })
+  })
+  |> ignore
+  r.show(fn() { row().value != "" }, fn(v) {
+    v
+    .margin(Is((0.0, ovl_first_line_sub_pt, 0.0, 0.0)))
+    .words(By(fn() { row().value }), look=words_at(ovl_type_sub))
+    .ink(By(ovl_muted_ink))
+    |> ignore
+  })
+  r.show(fn() { row().chevron }, fn(ch) {
+    ch
+    .width(Is(Some(ovl_list_chevron)))
+    .height(Is(Some(ovl_list_chevron)))
+    .margin(Is((0.0, ovl_first_line_chevron_pt, 0.0, 0.0)))
+    .shrink(Is(0.0))
+    .shapes(By(fn() { ovl_chevron_right_shapes(ovl_list_chevron, ovl_muted_ink()) }))
+    |> ignore
+  })
+}
+
+///|
+/// An iOS-style grouped inset Liquid Glass list (`r=24pt`, `pad=6pt` -> rows `r=18pt`).
+/// Reactive via `View::each`; inset hairline dividers are drawn strictly between adjacent rows
+/// (zero leading/trailing/double lines even under live search filtering).
+#callsite(autofill(loc))
+pub fn liquid_list_node(
+  parent : @view.View,
+  rows : () -> Array[LiquidListRow],
+  header? : () -> String = fn() { "" },
+  footer? : () -> String = fn() { "" },
+  loc~ : SourceLoc,
+) -> @view.View {
+  parent.box(made_for=loc, fn(wrap) {
+    wrap.show(fn() { header() != "" }, fn(h) {
+      h.padding(Is((ovl_list_meta_px, 0.0, ovl_list_meta_px, ovl_list_meta_py))) |> ignore
+      h.box(fn(w) {
+        w
+        .words(By(header), look=words_at(ovl_type_meta, weight=ovl_weight_semibold))
+        .ink(By(ovl_muted_ink))
+        |> ignore
+      })
+      |> ignore
+    })
+    wrap.box(fn(card) {
+      card
+      .padding(Is((ovl_list_pad, ovl_list_pad, ovl_list_pad, ovl_list_pad)))
+      .radius(Is(ovl_list_radius))
+      .shadow(Is(shadow_default))
+      .glass(By(fn() { Some(ovl_panel_glass()) }))
+      .clips(Is(true))
+      .says(
+        By(fn() {
+          let h = header()
+          Some(@view.said(Group, label=if h != "" { h } else { "List" }))
+        }),
+      )
+      |> ignore
+      card.each(fn() { ovl_list_items(rows()) }, fn(it) { it.key }, fn(slot, item_sig) {
+        slot.show(fn() { item_sig.get().idx > 0 }, at_once=true, fn(sep) {
+          sep.padding(Is((ovl_list_sep_inset, 0.0, ovl_list_sep_inset, 0.0))) |> ignore
+          sep.box(fn(line) {
+            line.height(Is(Some(ovl_hairline_h))).ground(By(ovl_hairline)) |> ignore
+          })
+          |> ignore
+        })
+        let init_press = item_sig.untracked().has_press
+        if init_press {
+          @headless.button(
+            slot,
+            fn() { item_sig.get().row.title },
+            fn(_) {
+              let cur = item_sig.untracked().row
+              if !cur.disabled {
+                match cur.on_press {
+                  Some(press) => press()
+                  None => ()
+                }
+              }
+            },
+            disabled=fn() { item_sig.get().row.disabled },
+            made_for=loc,
+            fn(r, btn) {
+              r
+              .row(Is(true))
+              .lines_up(Is(Some(Start)))
+              .min_height(Is(Some(ovl_list_row_min_h)))
+              .padding(Is((ovl_list_row_px, ovl_list_row_py, ovl_list_row_px, ovl_list_row_py)))
+              .gap(Is(ovl_list_row_gap))
+              .radius(Is(ovl_list_row_radius))
+              .alpha(By(fn() { if btn.disabled() { ovl_disabled_alpha } else { 1.0 } }))
+              |> ignore
+              ovl_attach_row_ground(
+                r,
+                fn() { btn.hovered() },
+                fn() { btn.pressed() },
+                selected=fn() { item_sig.get().row.active },
+                disabled=fn() { btn.disabled() },
+              )
+              ovl_focus_ring(r, fn() { btn.focus_shown() }, ovl_list_row_radius)
+              ovl_list_row_inner(r, item_sig)
+            },
+          )
+          |> ignore
+        } else {
+          slot.box(fn(r) {
+            r
+            .row(Is(true))
+            .lines_up(Is(Some(Start)))
+            .min_height(Is(Some(ovl_list_row_min_h)))
+            .padding(Is((ovl_list_row_px, ovl_list_row_py, ovl_list_row_px, ovl_list_row_py)))
+            .gap(Is(ovl_list_row_gap))
+            .radius(Is(ovl_list_row_radius))
+            .ground(By(fn() { if item_sig.get().row.active { ovl_row_selected() } else { clear } }))
+            .alpha(By(fn() { if item_sig.get().row.disabled { ovl_disabled_alpha } else { 1.0 } }))
+            |> ignore
+            ovl_list_row_inner(r, item_sig)
+          })
+          |> ignore
+        }
+      })
+    })
+    |> ignore
+    wrap.show(fn() { footer() != "" }, fn(f) {
+      f.padding(Is((ovl_list_meta_px, ovl_list_meta_py, ovl_list_meta_px, 0.0))) |> ignore
+      f.box(fn(w) {
+        w.words(By(footer), look=words_at(ovl_type_meta, wrap=true)).ink(By(ovl_muted_ink)) |> ignore
+      })
+      |> ignore
+    })
+  })
+}
+
+///|
+/// A Liquid Glass collapsible disclosure card (`r=22pt`, `pad=6pt` -> header `r=16pt`) over
+/// `@headless.disclosure` with a closed-form animated vector chevron.
+#callsite(autofill(loc))
+pub fn liquid_disclosure_node(
+  parent : @view.View,
+  title : () -> String,
+  open : () -> Bool,
+  on_toggle : (Bool) -> Unit,
+  content : (@view.View) -> Unit,
+  subtitle? : () -> String = fn() { "" },
+  disabled? : () -> Bool = fn() { false },
+  loc~ : SourceLoc,
+) -> @view.View {
+  let chev_turn = @motion.NodeWay::new(if @signals.untracked(open) { 90.0 } else { 0.0 })
+  parent.box(made_for=loc, fn(card) {
+    card
+    .padding(Is((ovl_disc_pad, ovl_disc_pad, ovl_disc_pad, ovl_disc_pad)))
+    .radius(Is(ovl_disc_radius))
+    .shadow(Is(shadow_default))
+    .glass(By(fn() { Some(ovl_panel_glass()) }))
+    .clips(Is(true))
+    |> ignore
+    card.reacts(open, at_start=false, fn(is_open) {
+      chev_turn.go(card, if is_open { 90.0 } else { 0.0 }, @motion.snappy_damped)
+    })
+    @headless.disclosure(
+      card,
+      title,
+      open,
+      fn(_) { on_toggle(!@signals.untracked(open)) },
+      disabled~,
+      made_for=loc,
+      fn(hdr, d) {
+        hdr
+        .row(Is(true))
+        .lines_up(Is(Some(Start)))
+        .lies_along(Is(Between))
+        .padding(Is((ovl_disc_hdr_px, ovl_disc_hdr_py, ovl_disc_hdr_px, ovl_disc_hdr_py)))
+        .gap(Is(ovl_list_row_gap))
+        .radius(Is(ovl_disc_hdr_radius))
+        .alpha(By(fn() { if d.disabled() { ovl_disabled_alpha } else { 1.0 } }))
+        |> ignore
+        ovl_attach_row_ground(
+          hdr,
+          fn() { d.hovered() },
+          fn() { d.pressed() },
+          disabled=fn() { d.disabled() },
+        )
+        ovl_focus_ring(hdr, fn() { d.focus_shown() }, ovl_disc_hdr_radius)
+        hdr.box(fn(col) {
+          col.grow(Is(1.0)).gap(Is(ovl_text_gap)) |> ignore
+          col.box(fn(w) {
+            w
+            .words(By(title), look=words_at(ovl_type_body, weight=weight_medium, wrap=true))
+            .ink(By(fn() { colors().content }))
+            |> ignore
+          })
+          |> ignore
+          col.show(fn() { subtitle() != "" }, fn(sub) {
+            sub.words(By(subtitle), look=words_at(ovl_type_sub, wrap=true)).ink(By(ovl_muted_ink)) |> ignore
+          })
+        })
+        |> ignore
+        hdr.box(fn(ch) {
+          ch
+          .width(Is(Some(ovl_disc_chevron)))
+          .height(Is(Some(ovl_disc_chevron)))
+          .margin(Is((0.0, ovl_first_line_chevron_pt, 0.0, 0.0)))
+          .shrink(Is(0.0))
+          .turn(By(fn() { chev_turn.shown(ch) }))
+          .shapes(By(fn() { ovl_chevron_right_shapes(ovl_disc_chevron, ovl_muted_ink()) }))
+          |> ignore
+        })
+        |> ignore
+      },
+    )
+    |> ignore
+    card.show(open, fn(body) {
+      body.box(fn(sep) {
+        sep.padding(Is((ovl_list_sep_inset, 0.0, ovl_list_sep_inset, 0.0))) |> ignore
+        sep.box(fn(line) { line.height(Is(Some(ovl_hairline_h))).ground(By(ovl_hairline)) |> ignore }) |> ignore
+      })
+      |> ignore
+      body.box(fn(inner) {
+        inner.padding(Is((ovl_disc_body_px, ovl_disc_body_py, ovl_disc_body_px, ovl_disc_body_py))) |> ignore
+        content(inner)
+      })
+      |> ignore
+    })
+  })
+}

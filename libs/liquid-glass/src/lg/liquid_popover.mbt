@@ -1,0 +1,131 @@
+// Liquid Glass Popover and Tooltip components over `@headless.Popover` and `@headless.tooltip_bubble`.
+
+///|
+/// A Liquid Glass popover: trigger in `parent`, floating glass card mounted in `host` beside
+/// the trigger according to `placement`. Closes on Escape or outside press via `@headless.Popover`.
+#callsite(autofill(loc))
+pub fn liquid_popover_node(
+  parent : @view.View,
+  host : @view.View,
+  open : () -> Bool,
+  set_open : (Bool) -> Unit,
+  trigger_label : () -> String,
+  trigger_look : (@view.View, @headless.Disclosure) -> Unit,
+  content_label : () -> String,
+  content_look : (@view.View) -> Unit,
+  placement? : @headless.Placement = BelowCenter,
+  width? : Double = 280.0,
+  loc~ : SourceLoc,
+) -> @view.View {
+  let pop = @headless.Popover::new(open, set_open)
+  let (side, along) = ovl_beside_of(placement)
+  let trigger = pop.trigger(parent, trigger_label, trigger_look, made_for=loc)
+  pop.layer(
+    host,
+    content_label,
+    leave=@motion.pop_out_ms,
+    made_for=loc,
+    fn(v, opener) {
+      let (look, _) = @motion.overlay_presence(v, enter=@motion.pop_in, exit=@motion.pop_out)
+      match opener {
+        Some(op) => v.beside(op.id(), side~, along~, offset=ovl_float_gap, padding=ovl_float_pad) |> ignore
+        None => ()
+      }
+      v
+      .width(Is(Some(width)))
+      .padding(Is((ovl_popover_pad, ovl_popover_pad, ovl_popover_pad, ovl_popover_pad)))
+      .radius(Is(ovl_popover_radius))
+      .shadow(Is(shadow_default))
+      .glass(By(fn() { Some(ovl_panel_glass()) }))
+      .clips(Is(true))
+      .alpha(By(fn() { look().alpha }))
+      .scale(By(fn() { look().sx }), about=FromBeside)
+      |> ignore
+      content_look(v)
+    },
+  )
+  trigger
+}
+
+///|
+/// A Liquid Glass tooltip: wraps `trigger_look` in `parent` and floats a refractive capsule
+/// (`r=12pt`, `presses(Is(false))`, zero click occlusion) in `host` on hover or keyboard focus.
+#callsite(autofill(loc))
+pub fn liquid_tooltip_node(
+  parent : @view.View,
+  host : @view.View,
+  tip : () -> String,
+  trigger_look : (@view.View) -> Unit,
+  placement? : @headless.Placement = AboveCenter,
+  loc~ : SourceLoc,
+) -> @view.View {
+  let shown : @signals.Signal[Int?] = @signals.signal(None)
+  let group = @headless.TooltipGroup::new(fn() { shown.get() }, fn(v) { shown.set(v) })
+  let (side, along) = ovl_beside_of(placement)
+  let anchor_ref : Ref[@view.View?] = Ref(None)
+  let trigger = parent.box(made_for=loc, fn(t) {
+    anchor_ref.val = Some(t)
+    t.points(Is(true)) |> ignore
+    trigger_look(t)
+    group.trigger(t, 0)
+    // Also react when pointer or keyboard focus lands on a child control inside `trigger_look`.
+    let pending : Ref[() -> Unit] = Ref(fn() {  })
+    let cancel_pending = fn() {
+      (pending.val)()
+      pending.val = fn() {  }
+    }
+    t.reacts(
+      fn() { (t.pointed_in(), t.pointed(), t.focus_shown()) },
+      at_start=false,
+      fn(st) {
+        let (in_sub, direct, focused) = st
+        cancel_pending()
+        if focused {
+          shown.set(Some(0))
+        } else if in_sub && !direct {
+          let at = t.cause_at()
+          pending.val = t.at_moment(at + @headless.tooltip_delay_ms, fn() {
+            pending.val = fn() {  }
+            if @signals.untracked(fn() { t.pointed_in() }) {
+              shown.set(Some(0))
+            }
+          })
+        } else if !in_sub && !direct && !focused {
+          if shown.untracked() == Some(0) {
+            shown.set(None)
+          }
+        }
+      },
+    )
+    t.owns(cancel_pending) |> ignore
+  })
+  host.show(
+    fn() { group.is_open(0) && tip() != "" },
+    leave=@motion.tip_out_ms,
+    fn(s) {
+      @headless.tooltip_bubble(s, tip, made_for=loc, fn(b) {
+        let (look, _) = @motion.overlay_presence(b, enter=@motion.tip_in, exit=@motion.tip_out)
+        match anchor_ref.val {
+          Some(op) => b.beside(op.id(), side~, along~, offset=ovl_float_gap, padding=ovl_float_pad) |> ignore
+          None => ()
+        }
+        b
+        .points(Is(false))
+        .max_width(Is(Some(ovl_tooltip_max_w)))
+        .padding(Is((ovl_tooltip_px, ovl_tooltip_py, ovl_tooltip_px, ovl_tooltip_py)))
+        .radius(Is(ovl_tooltip_radius))
+        .shadow(Is(shadow_default))
+        .glass(By(fn() { Some(ovl_capsule_glass()) }))
+        .alpha(By(fn() { look().alpha }))
+        .scale(By(fn() { look().sx }), about=FromBeside)
+        |> ignore
+        b.box(fn(w) {
+          w.words(By(tip), look=words_at(ovl_type_sub, wrap=true)).ink(By(fn() { colors().content })) |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    },
+  )
+  trigger
+}
