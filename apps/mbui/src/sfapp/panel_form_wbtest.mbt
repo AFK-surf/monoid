@@ -103,14 +103,15 @@ test "panel a form, 大屏 keyboard and mouse and a tablet by touch: at a point,
   assert_true(drawn.iter().all(fn(d) { d }))
   debug_inspect(out, content=(
     #|[
-    #|  "at: dialog Some((380, 287.5, 520, 225)) field Some((420, 369.5, 440, 22)) ok Some((404, 452.5, 472, 36)) focus focused Some(TextField 填一下) ime (true, , 0, 0) | field 甲 | escape: presenting false focus focused Some(TextField 发消息) ime (true, , 0, 0)",
-    #|  "tall at: dialog Some((380, 287.5, 520, 225)) field Some((420, 369.5, 440, 22)) ok Some((404, 452.5, 472, 36)) focus focused Some(TextField 填一下) ime (true, , 0, 0) | field 甲 | escape: presenting false focus focused Some(TextField 发消息) ime (true, , 0, 0)",
-    #|  "middle: dialog Some((380, 274.5, 520, 251)) field Some((420, 382.5, 440, 22)) ok Some((404, 465.5, 472, 36)) focus focused Some(TextField 填一下) ime (true, , 0, 0) | field 甲 | escape: presenting false focus focused Some(TextField 发消息) ime (true, , 0, 0)",
-    #|  "short: dialog Some((380, 24, 520, 452)) field Some((420, 106, 440, 22)) ok Some((404, 1329, 472, 36)) focus focused Some(TextField 填一下) ime (true, , 0, 0) | field 甲 | far: ok Some((404, 416, 472, 36)) last [(404, 340, 472, 22)] seen [true] | ok pressed: said [ok] presenting false focus focused Some(TextField 发消息) ime (true, , 0, 0) | escape: presenting false focus focused Some(TextField 发消息) ime (true, , 0, 0)",
-    #|  "tablet: dialog Some((160, 333.5, 520, 233)) field Some((200, 419.5, 440, 22)) ok Some((184, 506.5, 472, 36)) focus focused Some(TextField 填一下) ime (true, , 0, 0) | field 甲 | escape: presenting false focus focused None ime (false, , 0, 0)",
-    #|  "grown: dialog Some((380, 287.5, 520, 225)) field Some((420, 369.5, 440, 22)) ok Some((404, 452.5, 472, 36)) focus focused Some(TextField 填一下) ime (true, , 0, 0) | field 甲 | more: dialog Some((380, 135.5, 520, 529)) ok Some((404, 604.5, 472, 36)) less: dialog Some((380, 249.5, 520, 301)) ok Some((404, 490.5, 472, 36)) | escape: presenting false focus focused Some(TextField 发消息) ime (true, , 0, 0)",
-    #|  "unfield: dialog Some((380, 287.5, 520, 225)) field Some((420, 369.5, 440, 22)) ok Some((404, 452.5, 472, 36)) focus focused Some(TextField 填一下) ime (true, , 0, 0) | field 甲 | escape: presenting false focus focused Some(TextField 发消息) ime (true, , 0, 0)",
+    #|  "at: dialog Some((380, 288.5, 520, 223)) field Some((420, 370.5, 440, 22)) ok Some((406, 453.5, 468, 32)) focus focused Some(TextField 填一下) ime (true, , 0, 0) | field 甲 | escape: presenting false focus focused Some(TextField 发消息) ime (true, , 0, 0)",
+    #|  "tall at: dialog Some((380, 288.5, 520, 223)) field Some((420, 370.5, 440, 22)) ok Some((406, 453.5, 468, 32)) focus focused Some(TextField 填一下) ime (true, , 0, 0) | field 甲 | escape: presenting false focus focused Some(TextField 发消息) ime (true, , 0, 0)",
+    #|  "middle: dialog Some((380, 275.5, 520, 249)) field Some((420, 383.5, 440, 22)) ok Some((406, 466.5, 468, 32)) focus focused Some(TextField 填一下) ime (true, , 0, 0) | field 甲 | escape: presenting false focus focused Some(TextField 发消息) ime (true, , 0, 0)",
+    #|  "short: dialog Some((380, 24, 520, 452)) field Some((420, 106, 440, 22)) ok Some((406, 1329, 468, 32)) focus focused Some(TextField 填一下) ime (true, , 0, 0) | field 甲 | far: ok Some((406, 418, 468, 32)) last [(404, 342, 472, 22)] seen [true] | ok pressed: said [ok] presenting false focus focused Some(TextField 发消息) ime (true, , 0, 0) | escape: presenting false focus focused Some(TextField 发消息) ime (true, , 0, 0)",
+    #|  "tablet: dialog Some((160, 334.5, 520, 231)) field Some((200, 420.5, 440, 22)) ok Some((186, 507.5, 468, 32)) focus focused Some(TextField 填一下) ime (true, , 0, 0) | field 甲 | escape: presenting false focus focused None ime (false, , 0, 0)",
+    #|  "grown: dialog Some((380, 288.5, 520, 223)) field Some((420, 370.5, 440, 22)) ok Some((406, 453.5, 468, 32)) focus focused Some(TextField 填一下) ime (true, , 0, 0) | field 甲 | more: dialog Some((380, 136.5, 520, 527)) ok Some((406, 605.5, 468, 32)) less: dialog Some((380, 250.5, 520, 299)) ok Some((406, 491.5, 468, 32)) | escape: presenting false focus focused Some(TextField 发消息) ime (true, , 0, 0)",
+    #|  "unfield: dialog Some((380, 288.5, 520, 223)) field Some((420, 370.5, 440, 22)) ok Some((406, 453.5, 468, 32)) focus focused Some(TextField 填一下) ime (true, , 0, 0) | field 甲 | escape: presenting false focus focused Some(TextField 发消息) ime (true, , 0, 0)",
     #|]
+
   ))
 }
 

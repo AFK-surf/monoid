@@ -29,6 +29,13 @@ fn ink_node(v : @view.View, w : Double, h : Double, ink : Int64) -> Unit {
 }
 
 ///|
+/// A foot capsule `w` by `button_height()` of `ink`, as a node in `v`.
+fn foot_ink_node(v : @view.View, w : Double, ink : Int64) -> Unit {
+  let h = @sf.button_height()
+  v.box(fn(b) { b.width(Is(Some(w))).height(Is(Some(h))).ground(Is(ink)).radius(Is(h / 2.0)) |> ignore }) |> ignore
+}
+
+///|
 /// Where the body's and the foot's boxes are drawn once the panel is in, and its head's words and its close button,
 /// then closed by Escape and gone.
 fn body_and_foot(
@@ -51,13 +58,13 @@ fn body_and_foot(
 ///|
 test "大屏: a panel beside what opened it whose body and foot are nodes: each where it was beside the old frame's body and foot of the same panel" {
   let t = menu_tester(1280.0, 800.0, 0)
-  @sf.panel_nodes("面板", from=At(600.0, 300.0, 0.0, 0.0), foot=fn(v, _) { ink_node(v, 60.0, 36.0, foot_ink) }, fn(v, _) {
+  @sf.panel_nodes("面板", from=At(600.0, 300.0, 0.0, 0.0), foot=fn(v, _) { foot_ink_node(v, 60.0, foot_ink) }, fn(v, _) {
     ink_node(v, 40.0, 36.0, body_ink)
   })
   debug_inspect(body_and_foot(t), content=(
     #|(
     #|  (606, 342, 40, 36),
-    #|  (830, 386, 60, 36),
+    #|  (828, 386, 60, 32),
     #|  [
     #|    "A (440, 18, 4, 8)",
     #|    "A (241, 435, 4, 8)",
@@ -122,19 +129,20 @@ test "大屏: a panel beside what opened it whose body and foot are nodes: each 
     #|)
 
 
+
   ))
 }
 
 ///|
 test "大屏: an untitled panel beside what opened it whose body is nodes, ruled over its foot: each where it was beside the old frame's" {
   let t = menu_tester(1280.0, 800.0, 0)
-  @sf.panel_nodes("", from=At(600.0, 300.0, 0.0, 0.0), ruled=true, foot=fn(v, _) { ink_node(v, 60.0, 36.0, foot_ink) }, fn(v, _) {
+  @sf.panel_nodes("", from=At(600.0, 300.0, 0.0, 0.0), ruled=true, foot=fn(v, _) { foot_ink_node(v, 60.0, foot_ink) }, fn(v, _) {
     ink_node(v, 40.0, 36.0, body_ink)
   })
   debug_inspect(body_and_foot(t), content=(
     #|(
     #|  (606, 312, 40, 36),
-    #|  (830, 360.5, 60, 36),
+    #|  (828, 362.5, 60, 32),
     #|  [
     #|    "A (440, 18, 4, 8)",
     #|    "A (241, 435, 4, 8)",
@@ -196,6 +204,7 @@ test "大屏: an untitled panel beside what opened it whose body is nodes, ruled
     #|  ],
     #|  "None",
     #|)
+
 
 
   ))
@@ -204,13 +213,13 @@ test "大屏: an untitled panel beside what opened it whose body is nodes, ruled
 ///|
 test "大屏: a panel in the middle of the window whose body and foot are nodes, titled and saying what it is: each where it was beside the old frame's" {
   let t = menu_tester(1280.0, 800.0, 0)
-  @sf.panel_nodes("对话框", description="它说的话", from=Unanchored, foot=fn(v, _) { ink_node(v, 60.0, 36.0, foot_ink) }, fn(v, _) {
+  @sf.panel_nodes("对话框", description="它说的话", from=Unanchored, foot=fn(v, _) { foot_ink_node(v, 60.0, foot_ink) }, fn(v, _) {
     ink_node(v, 40.0, 36.0, body_ink)
   })
   debug_inspect(body_and_foot(t, close=true), content=(
     #|(
-    #|  (404, 390.5, 40, 36),
-    #|  (816, 450.5, 60, 36),
+    #|  (404, 391.5, 40, 36),
+    #|  (814, 451.5, 60, 32),
     #|  [
     #|    "A (440, 18, 4, 8)",
     #|    "A (241, 435, 4, 8)",
@@ -230,7 +239,7 @@ test "大屏: a panel in the middle of the window whose body and foot are nodes,
     #|    "发消息 (402, 710, 772, 22)",
     #|    "忽略 (408, 277.6, 24, 18)",
     #|    "周报的模板 (82, 671, 174, 20)",
-    #|    "对话框 (404, 315.5, 66, 30)",
+    #|    "对话框 (404, 316.5, 66, 30)",
     #|    "搜索全部内容 (90, 19, 188, 20)",
     #|    "整理发布清单 (316, 12, 96, 20)",
     #|    "整理发布清单 (82, 95, 174, 20)",
@@ -238,7 +247,7 @@ test "大屏: a panel in the middle of the window whose body and foot are nodes,
     #|    "先不换 (454, 163.6, 396, 20)",
     #|    "5 分钟前 (450, 565.7, 44, 18)",
     #|    "Claude (408, 71.5, 36, 18)",
-    #|    "它说的话 (404, 352.5, 472, 20)",
+    #|    "它说的话 (404, 353.5, 472, 20)",
     #|    "Claude (408, 394.6, 36, 18)",
     #|    "Claude (408, 565.7, 36, 18)",
     #|    "等 林 决定 (408, 123.6, 60, 18)",
@@ -272,8 +281,9 @@ test "大屏: a panel in the middle of the window whose body and foot are nodes,
     #|    "做完了：列表、跳到最新的按钮、加载更早的消息都好了，截图也换了。 (408, 590.7, 760, 23.1)",
     #|    "高度先按 90 估，量过一次就记住。深色模式我一起看。要不要把旧的截图也一起换掉？ (408, 96.5, 760, 23.1)",
     #|  ],
-    #|  "Some((842, 315.5, 32, 32))",
+    #|  "Some((842, 316.5, 32, 32))",
     #|)
+
 
 
   ))
@@ -282,13 +292,13 @@ test "大屏: a panel in the middle of the window whose body and foot are nodes,
 ///|
 test "大屏: an untitled form whose body and foot are nodes: each where it was beside the old frame's" {
   let t = menu_tester(1280.0, 800.0, 0)
-  @sf.panel_nodes("", from=At(600.0, 300.0, 0.0, 0.0), form=true, foot=fn(v, _) { ink_node(v, 60.0, 36.0, foot_ink) }, fn(v, _) {
+  @sf.panel_nodes("", from=At(600.0, 300.0, 0.0, 0.0), form=true, foot=fn(v, _) { foot_ink_node(v, 60.0, foot_ink) }, fn(v, _) {
     ink_node(v, 40.0, 36.0, body_ink)
   })
   debug_inspect(body_and_foot(t), content=(
     #|(
-    #|  (404, 369, 40, 36),
-    #|  (816, 429, 60, 36),
+    #|  (404, 370, 40, 36),
+    #|  (814, 430, 60, 32),
     #|  [
     #|    "A (440, 18, 4, 8)",
     #|    "A (241, 435, 4, 8)",
@@ -350,6 +360,7 @@ test "大屏: an untitled form whose body and foot are nodes: each where it was 
     #|  ],
     #|  "None",
     #|)
+
 
 
   ))
@@ -381,13 +392,13 @@ test "大屏: a panel whose body is nodes: drawn by the window's tree, read out 
 ///|
 test "大屏: an untitled panel in the middle of the window whose body and foot are nodes: its close button in its corner where it was beside the old frame's" {
   let t = menu_tester(1280.0, 800.0, 0)
-  @sf.panel_nodes("", from=Unanchored, foot=fn(v, _) { ink_node(v, 60.0, 36.0, foot_ink) }, fn(v, _) {
+  @sf.panel_nodes("", from=Unanchored, foot=fn(v, _) { foot_ink_node(v, 60.0, foot_ink) }, fn(v, _) {
     ink_node(v, 40.0, 36.0, body_ink)
   })
   debug_inspect(body_and_foot(t, close=true), content=(
     #|(
-    #|  (404, 369, 40, 36),
-    #|  (816, 429, 60, 36),
+    #|  (404, 370, 40, 36),
+    #|  (814, 430, 60, 32),
     #|  [
     #|    "A (440, 18, 4, 8)",
     #|    "A (241, 435, 4, 8)",
@@ -447,8 +458,9 @@ test "大屏: an untitled panel in the middle of the window whose body and foot 
     #|    "做完了：列表、跳到最新的按钮、加载更早的消息都好了，截图也换了。 (408, 590.7, 760, 23.1)",
     #|    "高度先按 90 估，量过一次就记住。深色模式我一起看。要不要把旧的截图也一起换掉？ (408, 96.5, 760, 23.1)",
     #|  ],
-    #|  "Some((842, 337, 32, 32))",
+    #|  "Some((842, 338, 32, 32))",
     #|)
+
 
 
   ))
@@ -467,7 +479,7 @@ fn hugging(t : @ui.Tester) -> ((Double, Double, Double, Double), (Double, Double
     assert_false(@sf.presenter_visible(), msg="gone")
     boxes
   }
-  @sf.panel_nodes("列表", from=Unanchored, tall=0.78, hugs=true, foot=fn(v, _) { ink_node(v, 60.0, 36.0, foot_ink) }, fn(v, _) {
+  @sf.panel_nodes("列表", from=Unanchored, tall=0.78, hugs=true, foot=fn(v, _) { foot_ink_node(v, 60.0, foot_ink) }, fn(v, _) {
     @sf.panel_list_node(v, fn() { [0] }, fn(b, _) { ink_node(b, 40.0, 36.0, body_ink) }, est=40.0) |> ignore
   })
   at()
@@ -479,9 +491,10 @@ test "a panel a share of the window caps whose body is nodes, as tall as what it
   let dialog = hugging(menu_tester(1280.0, 800.0, 0))
   debug_inspect((sheet, dialog), content=(
     #|(
-    #|  ((0, 700, 40, 36), (310, 784, 60, 36)),
-    #|  ((396, 377.5, 40, 36), (816, 437.5, 60, 36)),
+    #|  ((0, 704, 40, 36), (310, 788, 60, 32)),
+    #|  ((396, 378.5, 40, 36), (814, 438.5, 60, 32)),
     #|)
+
   ))
 }
 

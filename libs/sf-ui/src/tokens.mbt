@@ -691,17 +691,18 @@ pub fn over_foot_reach(height : Double) -> @ui.Style {
 
 ///|
 /// What stands first on a card, over such a row of capsules `height` high at its foot (a field the card is all but
-/// made of, its answer's buttons under it): out to the sides as they reach (foot_reach) and up as far, so that it is as
-/// far from the card's top corners as they are from its foot's, its own corner concentric with them (top_reach_corner).
-pub fn top_reach(height : Double) -> @ui.Style {
-  let out = room(card_foot_in(height) - card_pad)
+/// made of, its answer's buttons under it): out to the card's corner inset (`corner_inset`) so its own corner lands on
+/// the theme ladder (`row_corner = 18`, concentric with `card_corner = 26`).
+pub fn top_reach(_height : Double) -> @ui.Style {
+  let out = room(corner_inset - card_pad)
   @ui.style(ml=out, mr=out, mt=out)
 }
 
 ///|
-/// The corner of what stands so (top_reach): the card's, concentric, as far in as the capsules at its foot.
-pub fn top_reach_corner(height : Double) -> Double {
-  @ui.concentric(card_corner, card_foot_in(height))
+/// The corner of what stands so (top_reach): the ladder's row corner (`18`), concentric with `card_corner` (`26`) at
+/// `corner_inset` (`8`).
+pub fn top_reach_corner(_height : Double) -> Double {
+  row_corner
 }
 
 ///|

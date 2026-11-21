@@ -532,7 +532,7 @@ test "a vault item's request for a time asked, made once as nodes: how long acro
   let cases = vault_card_cases()
   let minutes = vault_card_post(vault_use(more={ "timeoutKind": "idle", "timeoutSeconds": 259140 }))
   for asked in [(cases[3].1, "闲置 36 小时后失效"), (minutes, "闲置 4319 分钟后失效")] {
-    for case in [(760.0, 1.0), (390.0, 1.0), (390.0, 1.3)] {
+    for case in [(760.0, 1.0), (390.0, 1.0), (320.0, 1.3)] {
       let (w, scale) = case
       let at = "\{asked.1} at \{w}, \{scale}"
       let t = card_new(w, vault_src(None), fn() { asked.0 })

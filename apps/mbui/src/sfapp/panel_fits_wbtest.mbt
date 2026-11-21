@@ -57,16 +57,17 @@ test "panel fits, 大屏 keyboard and mouse: as wide as its words as they change
     #|  "plain 38: dialog Some((600, 106, 400, 86)) title [(622, 118, 356, 20)] words [(606, 142, 388, 44)] button None end None",
     #|  "plain 8: dialog Some((600, 106, 124, 64)) title [(622, 118, 80, 20)] words [(606, 142, 112, 22)] button None end None",
     #|  "plain 3: dialog Some((600, 106, 70, 64)) title [(622, 118, 26, 20)] words [(606, 142, 58, 22)] button None end None",
-    #|  "foot 3: dialog Some((600, 106, 70, 108)) title [(622, 118, 26, 20)] words [(606, 142, 58, 22)] button Some((606, 172, 58, 36)) end None",
-    #|  "foot 38: dialog Some((600, 106, 400, 130)) title [(622, 118, 356, 20)] words [(606, 142, 388, 44)] button Some((936, 194, 58, 36)) end None",
-    #|  "foot 8: dialog Some((600, 106, 124, 108)) title [(622, 118, 80, 20)] words [(606, 142, 112, 22)] button Some((660, 172, 58, 36)) end None",
-    #|  "foot 3: dialog Some((600, 106, 70, 108)) title [(622, 118, 26, 20)] words [(606, 142, 58, 22)] button Some((606, 172, 58, 36)) end None",
+    #|  "foot 3: dialog Some((600, 106, 70, 106)) title [(622, 118, 26, 20)] words [(606, 142, 58, 22)] button Some((608, 172, 54, 32)) end None",
+    #|  "foot 38: dialog Some((600, 106, 400, 128)) title [(622, 118, 356, 20)] words [(606, 142, 388, 44)] button Some((938, 194, 54, 32)) end None",
+    #|  "foot 8: dialog Some((600, 106, 124, 106)) title [(622, 118, 80, 20)] words [(606, 142, 112, 22)] button Some((662, 172, 54, 32)) end None",
+    #|  "foot 3: dialog Some((600, 106, 70, 106)) title [(622, 118, 26, 20)] words [(606, 142, 58, 22)] button Some((608, 172, 54, 32)) end None",
     #|  "narrow 3: dialog Some((600, 106, 70, 64)) title [(622, 118, 26, 20)] words [(606, 142, 58, 22)] button None end None",
     #|  "narrow 38: dialog Some((600, 106, 200, 108)) title [(622, 118, 156, 20)] words [(606, 142, 188, 66)] button None end None",
     #|  "narrow 8: dialog Some((600, 106, 124, 64)) title [(622, 118, 80, 20)] words [(606, 142, 112, 22)] button None end None",
     #|  "narrow 3: dialog Some((600, 106, 70, 64)) title [(622, 118, 26, 20)] words [(606, 142, 58, 22)] button None end None",
     #|  "column: dialog (600, 90, 70, 402) row0 [(606, 126, 58, 22)] | wheel: [(606, 6, 58, 22)]",
     #|]
+
   ))
 }
 
