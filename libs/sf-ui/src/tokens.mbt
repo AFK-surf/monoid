@@ -750,13 +750,6 @@ pub fn sides_clear(more : Double) -> @ui.Style {
 }
 
 ///|
-/// How far under a page's bar what is drawn from the page's top stands (the bar 45, in a panel of its own as much taller
-/// as puts its buttons in the panel's corner concentric with it: tape_bar_over).
-pub fn under_bar_room() -> @ui.Space {
-  room(wide_bar_h + (if in_pane() { tape_bar_over() } else { 0.0 }))
-}
-
-///|
 /// Where a page's capsule `height` high stands at its foot (foot_capsule): in from its panel's sides by as much more
 /// than the page's own `side` room as makes each end concentric with the corner it is in (a margin, `side` less that),
 /// and over its foot.
@@ -1044,13 +1037,6 @@ let wide_round : Round = { side: 32.0, glyph: 16.0 }
 ///|
 /// The phone's (mPlus, mSend: 36, both glyphs 18).
 let narrow_round : Round = { side: 36.0, glyph: 18.0 }
-
-///|
-/// It: `side` round, what it shows in its middle.
-pub fn round_face() -> @ui.Style {
-  let r = theme().round
-  @ui.style(w=Fixed(r.side), h=Fixed(r.side), radius=InnerOr(Full), align=ACenter, justify=JCenter)
-}
 
 ///|
 let bars_drawn : Bars = { key: 28.0, icon: 14.0, field: 30.0 }
@@ -1708,11 +1694,6 @@ pub let usage_plot : Double = 150.0
 pub let dot_size : @ui.Len = Fixed(7.0)
 
 ///|
-/// An option of a segmented choice in the wide frame, at its narrowest (the web's 105, controls.css.ts seg, less the
-/// track's inset on both sides).
-pub let seg_pill_min : @ui.Len = Fixed(101.0)
-
-///|
 /// A code's box's edge: the words' colour at 18%.
 pub let code_edge : @ui.Color = A(Fg, Exact(0.18))
 
@@ -2148,10 +2129,6 @@ pub let rail_say_max : @ui.Len = Fixed(280.0)
 pub let ended_max : @ui.Len = Fixed(320.0)
 
 ///|
-/// A button's height on the phone.
-pub let button_38 : @ui.Len = Fixed(38.0)
-
-///|
 /// A link's card in a message: 236 wide; a screen's with its preview over its words 280.
 pub let link_card_w : @ui.Len = Fixed(236.0)
 
@@ -2230,12 +2207,6 @@ pub let ask_card_room_most : @ui.Style = @ui.css("w=Cut min_w=Within(560) max_w=
 
 ///|
 pub let login_card_corner : @ui.Radius = rounded(card_corner)
-
-///|
-pub let file_sheet_w : @ui.Len = Fixed(30.0)
-
-///|
-pub let file_sheet_h : @ui.Len = Fixed(36.0)
 
 ///|
 /// A name over a message at its widest.
@@ -2655,9 +2626,6 @@ fn rule_ink(c : @ui.Ctx) -> Int64 {
 pub let no_ground : Int64 = 0L
 
 ///|
-pub let no_ring : Double = 0.0
-
-///|
 /// A length off the scale, as a style's room (padding, margins: below 0 for a margin): align.mbt's.
 fn room(x : Double) -> @ui.Space {
   Exact(x)
@@ -2826,10 +2794,6 @@ pub fn composer_round_in() -> Double {
 }
 
 ///|
-/// The composer's padding as a style's (composer_pad).
-pub let composer_pad_room : @ui.Space = room(composer_pad)
-
-///|
 /// Where a dialog's buttons stand in its foot corners (the theme's button: a capsule): as far from its foot and its sides
 /// as makes the last, and what stands at the foot's start (a 删除), concentric with its corners (dialog_r), the row
 /// reaching past its sides' room `pad` to there at both ends.
@@ -2916,13 +2880,6 @@ pub let row_top_in_y : Double = row_corner - mouse_head_h / 2.0
 pub let row_foot_in_y : Double = 2.0 * row_in_y - row_top_in_y
 
 ///|
-/// What is a capsule while its words fit one line `line_h` high (with its padding), wrapped to more: as round as that
-/// one line makes it, not round all its height (the toast's toast_r, a notice over a chat's composer).
-pub fn line_capsule_corner(line_h : Double) -> @ui.Radius {
-  rounded(line_h / 2.0)
-}
-
-///|
 /// An agent's mark `side` across (the web's ui.css.ts agentMark): its corner .3 of its side (a 28 one's 8.4: an agent's
 /// card).
 pub fn agent_mark_corner(side : Double) -> @ui.Radius {
@@ -2970,10 +2927,6 @@ pub fn tile_whole() -> Bool {
 
 ///|
 pub let agent_station_in : @ui.Space = room(20.0 * 0.19 + 1.0)
-
-///|
-/// A person in a chat's stack of people: 16 ringed 1.5.
-pub let person_ringed : @ui.Len = Fixed(19.0)
 
 ///|
 /// The people a day's usage is split by, in the order the core's usage view ranks them (the web's Usage.css.ts, the

@@ -256,18 +256,6 @@ fn pin_of(author : String, role : String) -> String {
 }
 
 ///|
-/// How much further in from its card's corner a quote's words are in the composer than in a message, across and down
-/// (quote_source_composer's padding and quote_source's; a pin as far in in both): sent, its card in the message sets
-/// out from its card in the composer by as much, so that its words set out from where they were.
-pub fn quote_sent_shift(author : String, role : String) -> (Double, Double) {
-  if pin_of(author, role) != "" {
-    (0.0, 0.0)
-  } else {
-    (quote_in_composer.px() - (quote_card_in + quote_in), quote_over_composer - quote_card_in)
-  }
-}
-
-///|
 /// A quote's mark (11, the accent's) in a box as tall as its line.
 let quote_icon : Double = 11.0
 
@@ -317,12 +305,6 @@ pub fn composer_inner() -> Double {
 /// composer_inner: none where that is concentric at the padding.
 pub fn composer_waiting_in() -> Double {
   dmax(composer_corner() - composer_pad - composer_inner(), 0.0)
-}
-
-///|
-/// The composer's box's corner as a style's (composer_corner).
-pub fn composer_radius() -> @ui.Radius {
-  rounded(composer_corner())
 }
 
 ///|

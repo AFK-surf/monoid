@@ -97,17 +97,6 @@ pub fn window_keys_room(roots? : @ui.CornerRoots = @ui.corner_roots()) -> Double
 }
 
 ///|
-/// What a top row at the window's top right leaves the buttons in a window `width` wide, from the window's side to
-/// before their rule, as they stand in its layout (window_keys_at): none where they are not the app's.
-pub fn window_keys_room_at(width : Double) -> Double {
-  if @ui.window_keys_own() {
-    window_keys_at(width).1 + window_keys_w()
-  } else {
-    0.0
-  }
-}
-
-///|
 /// The same on the tape (laid out Medium), from the window's side (tape_bar_end; the strip of a panel at the window's
 /// right holding them: sfdesk's tape_shows_right), `roots` as window_keys_room's (the old views' read where none builds
 /// put the last key of a page's bar made as nodes, sfdesk's pane_bar_node, against their rule: 20 nearer it than a

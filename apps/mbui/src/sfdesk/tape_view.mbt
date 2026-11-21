@@ -1685,11 +1685,9 @@ pub fn tape_under(c : @ui.Ctx, src : Source, w : Workspace, all : Array[Workspac
   wide.mark = 0.0
   land(src, w)
   // (beside the system's action at the column's foot, the cards' foot corners the one the composer stands concentric in
-  // on its line: said before any of them is built; another than the last frame's, what was kept of them drawn anew, as
-  // for the screen's corner: rail_native.mbt native_frame)
-  if @sf.native_foot_set(r.panel_top + r.panel_h, keyboard=c.ime_inset()) {
-    c.forget_parts()
-  }
+  // on its line: said before any of them is built, the window's tree reading it, as for the screen's corner:
+  // rail_native.mbt native_frame)
+  @sf.native_foot_set(r.panel_top + r.panel_h, keyboard=c.ime_inset()) |> ignore
   // (back, the shell's one way: the tape's node's, tape_view, wide_takes_back)
 }
 

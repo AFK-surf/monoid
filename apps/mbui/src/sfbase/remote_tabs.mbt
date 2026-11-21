@@ -164,14 +164,6 @@ pub fn remote_tab_open(src : Source, ws : String, tab : RemoteTab) -> String {
 }
 
 ///|
-pub fn remote_tab_front(src : Source, ws : String, key : String) -> Unit {
-  let (tabs, active) = @signals.untracked(fn() { remote_tabs_raw(src, ws) })
-  if tabs.contains(key) && active != key {
-    remote_tabs_save(src, ws, tabs.copy(), key)
-  }
-}
-
-///|
 pub fn remote_tab_close(src : Source, ws : String, key : String) -> Unit {
   let (tabs, active) = @signals.untracked(fn() { remote_tabs_raw(src, ws) })
   guard tabs.search(key) is Some(idx) else { return }
@@ -188,15 +180,6 @@ pub fn remote_tab_close(src : Source, ws : String, key : String) -> Unit {
     active
   }
   remote_tabs_save(src, ws, next, next_active)
-}
-
-///|
-pub fn remote_tab_step(src : Source, ws : String, delta : Int) -> Unit {
-  let (tabs, active) = @signals.untracked(fn() { remote_tabs_raw(src, ws) })
-  guard tabs.length() > 1 else { return }
-  let idx = tabs.search(active).unwrap_or(0)
-  let next_idx = (idx + delta + tabs.length()) % tabs.length()
-  remote_tabs_save(src, ws, tabs.copy(), tabs[next_idx])
 }
 
 ///|

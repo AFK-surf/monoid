@@ -1215,13 +1215,6 @@ let verify_words : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, color=Pos
 let pill_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, weight=Medium, wrap=false)
 
 ///|
-/// Nothing here (parts.tsx Empty, parts.css.ts empty): what `body` says in the middle of the room it has, 40 in, its
-/// parts 6 apart, in the muted ink (its words the page's, centred).
-pub fn empty(c : @ui.Ctx, body : () -> Unit) -> Unit {
-  c.box(style=empty_box, body) |> ignore
-}
-
-///|
 /// What a list with nothing in it shows (empty's, as a node) in `parent`: what `body` makes, in the middle of the room
 /// left, 40 in.
 #callsite(autofill(loc))
@@ -1864,14 +1857,6 @@ let option_check_room : @ui.Style = @ui.css("w=Full h=Full align=ACenter justify
 ///|
 /// How far an option's row keeps its words from its end, where the one being sent turns.
 let option_row_end : Double = 12.0
-
-///|
-/// Room at the start of ask_line_card's row where no mark leads it (what the chat needed, let go): its words where the
-/// mark `icon` wide would start in ask_line_mark's column.
-pub fn ask_line_start(icon : Double) -> @ui.Style {
-  let side = (ask_line_disc() - icon) / 2.0
-  @ui.style(pl=room(side))
-}
 
 ///|
 // kept across runs: a value (no field of it changes)

@@ -83,14 +83,6 @@ let dot_across : Double = 7.0
 let state_breath_low : Double = 0.35
 
 ///|
-/// How long an alive dot's breath out takes (jobLive 2.4 s).
-pub let state_live_ms : Double = 2400.0
-
-///|
-/// How far an alive dot's breath reaches past it (inset -4).
-pub let state_halo_out : Double = 4.0
-
-///|
 /// What is before a station's name in its row (the web's StationRow): wide, whether it is online, then its mark where it
 /// has one; narrow, its mark alone; 8 apart, across the middle of its name's line; each as it is now.
 pub fn station_lead(online : () -> Bool, emoji : () -> String, icon : () -> String, stint : () -> Int) -> RowLead {

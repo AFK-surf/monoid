@@ -746,13 +746,6 @@ fn pane_side_at(src : Source, n : @view.View) -> SideAt {
 }
 
 ///|
-/// Who the page shown in the pane off the tape is among the old views' (its island's: pane_page_one), for a test: what it
-/// shows across is read by it (fold_peek_shift).
-pub fn pane_page_id() -> Int {
-  fold_goes.page_id
-}
-
-///|
 /// What the window's tree has of the frame off the tape, for a test: who its shell, its row, the block's column and the
 /// page's pane are (made once: the same while it shows), and how wide the column is laid out. None while it does not
 /// show.

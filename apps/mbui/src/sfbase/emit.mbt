@@ -256,15 +256,6 @@ pub fn emit_release(e : Emits) -> Unit {
 }
 
 ///|
-/// How long a pose takes (Float on from the message before: only the drop).
-pub fn pose_ms(pose : Pose, from : (Double, Double)?) -> Double {
-  match pose {
-    Float => if from is Some(_) { emit_drop_ms } else { Float.ms() }
-    _ => pose.ms()
-  }
-}
-
-///|
 /// One glyph arriving, shared by an agent's message and its activity. `turn` is when its place in reading order
 /// would come; its own little variation, fade and rise are the same in either place.
 pub fn glyph_in(ms : Double, turn : Double, index : Int, salt : Int) -> @ui.GlyphLook {

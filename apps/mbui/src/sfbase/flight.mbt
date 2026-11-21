@@ -40,15 +40,6 @@ let flight_fly : Double = 0.8
 let flight_settle : Double = 0.24
 
 ///|
-/// How many lines the words in field `field` take in it, as it lays them out now (none: a line).
-pub fn field_lines_n(field : @ui.Field) -> Int {
-  match field.lines() {
-    Some(l) => if l.starts.length() > 0 { l.starts.length() } else { 1 }
-    None => 1
-  }
-}
-
-///|
 /// Legacy no-op kept for callers in `sfpages/new_chat.mbt`.
 pub fn flight_carry_gone(_from : String) -> Unit {
   ()

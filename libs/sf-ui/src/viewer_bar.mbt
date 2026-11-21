@@ -128,9 +128,3 @@ pub fn viewer_back_corner(alone : Double) -> @ui.CornerOf {
 pub fn viewer_bar_start_in(alone : Double, roots : @ui.CornerRoots) -> Double {
   window_link_in(viewer_back_corner(alone), viewer_bar_in, roots)
 }
-
-///|
-/// What a bar's buttons are under the pointer and while on: its ink's hover and chosen grounds.
-pub fn viewer_lit(ink : ViewerInk) -> @ui.Style {
-  @ui.style(hovered=@ui.patch(bg=Data(ink.hover)), selected=@ui.patch(bg=Data(ink.chosen)))
-}

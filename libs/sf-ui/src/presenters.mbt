@@ -394,13 +394,10 @@ pub fn presenters_reset() -> Unit {
   presented_sheet_next.val = 0
   presented_sheet_ended.val = -1.0
   sheet_win_h.val = 0.0
-  window_root_at.val = None
-  hover_panel_old_reset()
 }
 
 ///|
 fn present(shows : Shows, from : Anchor, line? : String = "", gone? : () -> Unit = fn() {  }) -> Unit {
-  hover_panel_old_close()
   // (presented as a sheet closed, none drawn of that going yet (what was chosen or pressed in it presents this): in
   // that one's place, the topmost of them's; a menu by what was chosen in a menu, a page of that one's sheet)
   let chosen_in = presented_now.iter().filter(fn(q) { q.closed_now && q.stands > 0.0 && q.taken_by == 0 }).last()

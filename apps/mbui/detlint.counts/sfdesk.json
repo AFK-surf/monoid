@@ -11,10 +11,6 @@
       "src/sfdesk/lists.mbt": 6,
       "src/sfdesk/settings_frame.mbt": 1
     },
-    "built-by-hand": {
-      "src/sfdesk/rail_native.mbt": 1,
-      "src/sfdesk/tape_view.mbt": 1
-    },
     "ui-current": {
       "src/sfdesk/chats.mbt": 1,
       "src/sfdesk/pane_view.mbt": 1,

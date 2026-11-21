@@ -77,7 +77,6 @@ fn list_reset() -> Unit {
   flashing_now.val = ("", 0.0)
   ask_turns.clear()
   find_around.val = -1.0
-  outline_entries.clear()
   outline_presets.clear()
   find_goes.clear()
   outline_hover_reset()

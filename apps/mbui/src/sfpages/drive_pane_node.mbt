@@ -512,25 +512,5 @@ let fpane_actions : @ui.Style = @ui.css("row w=Full gap=S1_5")
 let fpane_mark_corner : Double = 12.0
 
 ///|
-/// What the file is shown as in a preview (fpane_way's: "picture", "text", or ""), for a chat's 文件 tab's (sfdesk's).
-pub fn preview_way(e : DvEntry) -> String {
-  fpane_way(e)
-}
-
-///|
-/// The file read as a preview shows it (fpane_read's), once a file: for a chat's 文件 tab's (sfdesk's), from what is
-/// told once its build is over.
-pub fn preview_read(src : Source, station : String, root : String, path : String, e : DvEntry, way : String) -> Unit {
-  fpane_read(src, station, root, path, e, way)
-}
-
-///|
-/// What the preview has read of the file shown, as it is now: its picture's key ("" none yet), its text's start, whether
-/// it could not be read.
-pub fn preview_read_now() -> (String, String?, Bool) {
-  (fpane.picture.get(), fpane.text.get(), fpane.failed.get())
-}
-
-///|
 /// The start of a text a preview shows (TEXT_PART).
 pub let preview_text_part : Int = fpane_text_part

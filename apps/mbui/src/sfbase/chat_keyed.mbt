@@ -61,22 +61,6 @@ pub fn ChatMessages::count(self : ChatMessages) -> Int {
 }
 
 ///|
-/// The last of its messages from the end that `pick` takes (none where none does), read by what it reads of each:
-/// looked at from the end no further than to find it (the newest, the last that is no system line).
-pub fn ChatMessages::last_where(self : ChatMessages, pick : (Message) -> Bool) -> Message? {
-  let keys = self.keys()
-  let mut i = keys.length() - 1
-  while i >= 0 {
-    match self.get(keys[i]) {
-      Some(m) if pick(m) => return Some(m)
-      _ => ()
-    }
-    i = i - 1
-  }
-  None
-}
-
-///|
 /// Message `k`'s item `j` read: as it was where it is the same item.
 fn ChatMessages::of(self : ChatMessages, k : String, j : Json) -> Message {
   match self.read.get(k) {
@@ -506,4 +490,3 @@ pub fn chat_card_answered(m : Message) -> Message {
   let said = @sf.t("core-logic.decisions.replied", args=[("name", @sf.t("core-logic.decisions.you"))])
   { ..m, asked: false, decision: Some({ resolved: true, dismissed: false, text: Some(said), chosen: None }) }
 }
-

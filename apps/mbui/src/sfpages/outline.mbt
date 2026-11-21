@@ -178,7 +178,6 @@ pub fn open_outline(
   typed? : String = "",
 ) -> Unit {
   rail_hover_close()
-  @sf.hover_panel_old_close()
   let at : OutlineAt = {
     field: @ui.Field::new(),
     query: @signals.signal("", same=fn(a, b) { a == b }),
@@ -854,18 +853,10 @@ let outline_count_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted,
 // ── What opens it on the chat's page (an old view's, as the way to the newest beside it) ──────────────────────────
 
 ///|
-/// The chats whose page shows a way into the outline now, by the chat's key: what (its id, to stand beside), whether
-/// its rail shows (its outline held then: what the steps' keys go along), and whether it stands beside the rail's
-/// middle (when the round button does not show). ⌘G opens it there.
-// kept across runs: said as each page is built, let go of by the package's reset (pages.mbt)
-let outline_entries : Map[String, (Int, Bool, Bool)] = Map([])
-
-///|
 /// What people said in chat `r` (its view `v`), oldest first, as a key's handler finds it: its outline where its rail
-/// holds it (an old view's, as it said; a page made as nodes: `railed`, its rail showing), else what its window holds.
+/// holds it (`railed`, its rail showing), else what its window holds.
 fn said_now(src : Source, r : ChatRef, v : ChatView, railed? : Bool = false) -> Array[Double] {
-  let held = railed || (outline_entries.get(chat_key(r)) is Some((_, true, _)))
-  match (held, v.thread) {
+  match (railed, v.thread) {
     (true, Some(th)) =>
       match src.topic("chatOutline", outline_params(r, th)).get().value {
         Some(_) as o => outline_seqs(o)
@@ -912,11 +903,7 @@ pub fn outline_open_keys(
     }
     _ => ()
   }
-  match outline_entries.get(chat_key(r)) {
-    Some((id, _, true)) => open_outline(src, r, th, current, from=Of(id), side=Left, along=Middle, keys=true, stint~, typed~)
-    Some((id, _, false)) => open_outline(src, r, th, current, from=Of(id), side=Left, keys=true, stint~, typed~)
-    None => open_outline(src, r, th, current, from=Unanchored, keys=true, stint~, typed~)
-  }
+  open_outline(src, r, th, current, from=Unanchored, keys=true, stint~, typed~)
   true
 }
 

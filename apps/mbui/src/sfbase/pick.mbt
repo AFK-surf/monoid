@@ -180,13 +180,6 @@ pub fn pick_reset() -> Unit {
 }
 
 ///|
-/// Whether words are picked as a desktop's (a mouse's selection over the page, its pill) rather than as a phone's
-/// (held, the handles, the bar): by the hand alone, in any layout (@ui.pointing).
-pub fn mouse_picks() -> Bool {
-  @sf.pointer_rests()
-}
-
-///|
 /// How much of the accent a picked passage's ground is.
 pub let picked_alpha : Double = 0.26
 

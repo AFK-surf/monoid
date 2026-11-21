@@ -3348,21 +3348,6 @@ pub fn composer_node_room(draft : String, at : Double) -> Double? {
 }
 
 ///|
-/// Where the composer made as nodes shown now stands at `at`, as the old composer's box is measured (what a test sets
-/// beside it): its box as laid out, drawn off it by as far as its foot's room is on its way on the page's
-/// (chat_composer_node's foot_shift); what its ground holds over it as words leave it not counted, as the old one's
-/// measured box does not; none where none shows.
-pub fn composer_node_ground(at : Double) -> (Double, Double, Double, Double)? {
-  for _, c in composer_nodes {
-    if c.0.alive() {
-      let (x, y, w, h) = c.0.laid_window_now()
-      return Some((x, y + c.3.value_at(at), w, h))
-    }
-  }
-  None
-}
-
-///|
 /// Where the composer made as nodes shown now is laid out (composer_node_box's), whichever draft's it is: none where none
 /// shows. (`at`: what its ground holds over it as words leave it is drawn, not laid out: composer_node_room's.)
 pub fn composer_node_shown(at : Double) -> (Double, Double, Double, Double)? {
@@ -3373,20 +3358,6 @@ pub fn composer_node_shown(at : Double) -> (Double, Double, Double, Double)? {
     }
   }
   None
-}
-
-///|
-/// How many nodes the composer made as nodes shown now holds, its foot's own with all it holds (what it costs: a test).
-pub fn composer_node_count() -> Int {
-  fn count(v : @view.View) -> Int {
-    v.kids().fold(init=1, fn(n, k) { n + count(k) })
-  }
-  for _, c in composer_nodes {
-    if c.1.alive() {
-      return count(c.1)
-    }
-  }
-  0
 }
 
 ///|

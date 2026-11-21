@@ -1,8 +1,5 @@
 {
   "counts": {
-    "built-by-hand": {
-      "src/sfbase/viewer.mbt": 1
-    },
     "ui-current": {
       "src/sfbase/viewer_tree.mbt": 8
     },

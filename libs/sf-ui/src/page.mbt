@@ -109,21 +109,10 @@ pub(all) struct PageBar {
 }
 
 ///|
-/// The frame's bar over a page in a panel of its own (`in_pane`): it draws its bar from what the page says of itself,
-/// then `page` under it. The shell's, given as the app starts (None: no such bar, the page its own head).
-// kept across runs: a wire, said once as the app starts
-pub let pane_bar : Ref[((@ui.Ctx, PageBar, () -> Unit) -> Unit)?] = Ref(None)
-
-///|
 /// What a place's top page under the frame's own bar does (its `named`), given to that bar as the page is drawn: the
 /// bar holds it at its end and takes it from here (用量's days, 连接's filter).
 // kept across runs: said by the page as it is drawn, taken by the bar over it
 pub let named_actions : Ref[(() -> Unit)?] = Ref(None)
-
-///|
-/// What the app's fixtures ask of a page's list as it is laid out (scrolled down to a block: settings fixture.mbt's
-/// fixture_open), given its key and how many rows it has; nothing in the app itself.
-pub let page_list_opened : Ref[(@ui.Ctx, String, Int) -> Unit] = Ref(fn(_, _, _) {  })
 
 ///|
 /// A wide setting's title, using the shared row-title weight at the input's text size.
@@ -579,10 +568,6 @@ pub let desk_column_most : Double = 760.0
 pub let desk_column_in : Double = 16.0
 
 ///|
-// kept across runs: a value (no field of it changes)
-pub let desk_hint_box : @ui.Style = @ui.style(w=Full, max_w=Fixed(desk_hint_most), pt=S2)
-
-///|
 let desk_hint_most : Double = 624.0
 
 ///|
@@ -602,10 +587,6 @@ pub let desk_card : @ui.Style = card_surface
 ///|
 // kept across runs: a value (no field of it changes)
 pub let card_row : @ui.Style = @ui.css("row w=Full gap=S3 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-pub let desk_card_row : @ui.Style = card_row
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -735,10 +716,6 @@ pub fn rows_held(body : () -> Unit) -> Unit {
 ///|
 // kept across runs: a value (no field of it changes)
 pub let desk_list_text : @ui.Style = @ui.style(w=grow, gap=S0_5)
-
-///|
-// kept across runs: a value (no field of it changes)
-pub let desk_named : @ui.Style = @ui.css("row gap=S1_5 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)

@@ -180,12 +180,6 @@ pub let farview_native : @signals.Signal[Bool] = @signals.signal(false, same=fn(
 pub let board_feature : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
 
 ///|
-/// Whether the device's own feature `id` is on (the prefs' `features`, as the core says them).
-pub fn feature_on(src : Source, id : String) -> Bool {
-  @settings.feature_from(src.topic("prefs", {}).get().value, id)
-}
-
-///|
 /// How a chat's column is laid out as the shell has it at a node's moment (chat_page_made's `narrower`): how much narrower
 /// than it is drawn (`by`), how far across it is moved (`across`), and the width it is laid out at (`laid`: where that
 /// steps, all it holds is laid out anew at once, View::lays_anew); the width at the other end of its way (`toward`:

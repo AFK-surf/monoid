@@ -71,12 +71,6 @@ pub fn open_remote_browser(src : Source, station : String, listed_ids : Array[St
 }
 
 ///|
-/// The first of the chat's screens, its station's own display where it has one.
-pub fn chat_screen_first(r : ChatRef, screens : Array[ChatScreen]) -> Unit {
-  chat_remote_first(r, screens, false)
-}
-
-///|
 /// The first of the chat's screens, its station's own display where it has one, else a chat-workspace terminal when
 /// terminals are offered (`can_terminal`: its keys, ⌘K, the menu bar: chat.screen).
 pub fn chat_remote_first(r : ChatRef, screens : Array[ChatScreen], can_terminal : Bool) -> Unit {
