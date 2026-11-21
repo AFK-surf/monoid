@@ -38,6 +38,7 @@ pub fn liquid_toast_node(
       .padding(Is((ovl_toast_px, ovl_toast_py, ovl_toast_pr, ovl_toast_py)))
       .radius(Is(ovl_toast_radius))
       .shadow(Is(shadow_default))
+      .shadow_outside(Is(true))
       .glass(By(fn() { Some(ovl_capsule_glass()) }))
       .alpha(By(fn() { look().alpha }))
       .scale(By(fn() { look().sx }))
@@ -345,6 +346,7 @@ pub fn liquid_nav_bar_node(
       bar
       .radius(Is(height / 2.0))
       .shadow(Is(shadow_default))
+      .shadow_outside(Is(true))
       .glass(By(fn() { Some(ovl_capsule_glass()) }))
       |> ignore
     }
@@ -409,6 +411,7 @@ pub fn liquid_toolbar_node(
     .gap(Is(ovl_toolbar_gap))
     .radius(Is(height / 2.0))
     .shadow(Is(shadow_default))
+    .shadow_outside(Is(true))
     .glass(By(fn() { Some(ovl_capsule_glass()) }))
     .says(Is(Some(@view.said(Toolbar, label="Toolbar"))))
     |> ignore
@@ -588,7 +591,7 @@ pub fn liquid_list_node(
         .edge(By(fn() { (0.5, ovl_hairline()) }))
         |> ignore
       } else {
-        card.shadow(Is(shadow_default)).glass(By(fn() { Some(ovl_panel_glass()) })) |> ignore
+        card.shadow(Is(shadow_default)).shadow_outside(Is(true)).glass(By(fn() { Some(ovl_panel_glass()) })) |> ignore
       }
       if !dividers {
         card.gap(Is(ovl_list_gap_nodiv)) |> ignore
@@ -694,6 +697,7 @@ pub fn liquid_disclosure_node(
     .padding(Is((ovl_disc_pad, ovl_disc_pad, ovl_disc_pad, ovl_disc_pad)))
     .radius(Is(ovl_disc_radius))
     .shadow(Is(shadow_default))
+    .shadow_outside(Is(true))
     .glass(By(fn() { Some(ovl_panel_glass()) }))
     |> ignore
     card.reacts(open, at_start=false, fn(is_open) {

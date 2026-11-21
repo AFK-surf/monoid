@@ -5,7 +5,7 @@
 // refracts real colour fields and calibration hairlines behind it.
 
 ///|
-/// Category metadata for the 6 exhibition sections (32 Liquid Glass components total).
+/// Category metadata for the 6 exhibition sections (34 Liquid Glass components total).
 priv struct LibCategory {
   id : Int
   name : String
@@ -33,16 +33,16 @@ let lib_categories : Array[LibCategory] = [
   {
     id: 2,
     name: "Inputs",
-    count: "7",
+    count: "8",
     subtitle: "Fields & Badges",
-    keywords: "inputs text field search checkbox radio chip badge count",
+    keywords: "inputs text field search morph checkbox radio chip badge count",
   },
   {
     id: 3,
     name: "Navigation",
-    count: "6",
+    count: "7",
     subtitle: "Bars, Lists & Deck",
-    keywords: "navigation nav bar toolbar list disclosure card control tile adaptive",
+    keywords: "navigation nav bar toolbar collapsible tabs list disclosure card control tile adaptive",
   },
   {
     id: 4,
@@ -138,6 +138,7 @@ fn lib_dock_catalog_orb(parent : @view.View, is_open : () -> Bool, on_open : () 
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
     .shadow(Is(@lg.shadow_default))
+    .shadow_outside(Is(true))
     .glass(By(fn() {
       let dark = @lg.is_dark()
       Some(
@@ -230,6 +231,7 @@ fn lib_nav_catalog_button(parent : @view.View, on_open : () -> Unit) -> Unit {
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
     .shadow(Is(@lg.shadow_default))
+    .shadow_outside(Is(true))
     .glass(By(fn() {
       let dark = @lg.is_dark()
       Some(
@@ -611,9 +613,12 @@ fn lib_controls_section(
 fn lib_inputs_section(
   parent : @view.View,
   is_phone : () -> Bool,
+  window_w : () -> Double,
   name_field : @ui.Field,
   err_field : @ui.Field,
   demo_search : @ui.Field,
+  morph_search_field : @ui.Field,
+  morph_search_open : @signals.Signal[Bool],
   cb_a : @signals.Signal[Bool],
   cb_b : @signals.Signal[Bool],
   cb_mixed : @signals.Signal[Bool],
@@ -624,12 +629,20 @@ fn lib_inputs_section(
   chip_beta_kept : @signals.Signal[Bool],
   badge_count : @signals.Signal[Int],
 ) -> Unit {
+  let morph_w = fn() {
+    let w = window_w()
+    if w <= 0.0 || w >= 560.0 {
+      352.0
+    } else {
+      @lg.clamp((w - 48.0).floor(), 240.0, 340.0)
+    }
+  }
   parent.box(fn(col) {
     col.gap(Is(20.0)) |> ignore
-    // 1. TextField & SearchBar
+    // 1. TextField, SearchBar & iOS 26 Search Morph
     col.box(fn(sec) {
       sec.gap(Is(12.0)) |> ignore
-      lib_section_head(sec, "TEXT FIELDS & SEARCH BAR", "liquid_text_field · liquid_search_bar")
+      lib_section_head(sec, "TEXT FIELDS & SEARCH BAR", "liquid_text_field · liquid_search_bar · liquid_search_morph")
       sec.box(fn(row) {
         row
         .row(By(fn() { !is_phone() }))
@@ -677,6 +690,24 @@ fn lib_inputs_section(
           |> ignore
         })
         |> ignore
+      })
+      |> ignore
+      sec.box(fn(morph_col) {
+        morph_col.gap(Is(8.0)) |> ignore
+        lib_caption(morph_col, "Search Morph · tap orb to expand")
+        morph_col.pick(morph_w, at_once=true, fn(slot, mw) {
+          @lg.liquid_search_morph_node(
+            slot,
+            morph_search_field,
+            fn() { morph_search_open.get() },
+            fn(v) { morph_search_open.set(v) },
+            width=mw,
+            placeholder="Search Liquid Glass...",
+            label=fn() { "Morph Search" },
+            cancel_label=fn() { "Cancel Morph Search" },
+          )
+          |> ignore
+        })
       })
       |> ignore
     })
@@ -815,19 +846,30 @@ fn lib_navigation_section(
   parent : @view.View,
   is_phone : () -> Bool,
   is_nav_stack : () -> Bool,
+  window_w : () -> Double,
   grid_on : @signals.Signal[Bool],
   boost : @signals.Signal[Bool],
   list_active : @signals.Signal[Int],
   disc_open : @signals.Signal[Bool],
   live_lum : @signals.Signal[Double],
+  ctab_idx : @signals.Signal[Int],
+  ctab_min : @signals.Signal[Bool],
   last_nav : @signals.Signal[String],
 ) -> Unit {
+  let ctab_w = fn() {
+    let w = window_w()
+    if w <= 0.0 || w >= 560.0 {
+      300.0
+    } else {
+      @lg.clamp((w - 122.0).floor(), 180.0, 280.0)
+    }
+  }
   parent.box(fn(col) {
     col.gap(Is(18.0)) |> ignore
-    // 1. Embedded NavBar & Toolbar
+    // 1. Embedded NavBar, Toolbar & iOS 26 Collapsible Tabs
     col.box(fn(sec) {
       sec.gap(Is(12.0)) |> ignore
-      lib_section_head(sec, "NAVIGATION BAR & TOOLBAR", "liquid_nav_bar · liquid_toolbar")
+      lib_section_head(sec, "NAVIGATION BAR & TOOLBAR", "liquid_nav_bar · liquid_toolbar · liquid_collapsible_tabs")
       @lg.liquid_nav_bar_node(
         sec,
         fn() { "Optical Inspector" },
@@ -879,6 +921,53 @@ fn lib_navigation_section(
           |> ignore
         })
         |> ignore
+      })
+      |> ignore
+      sec.box(fn(ct_col) {
+        ct_col.gap(Is(8.0)) |> ignore
+        ct_col.box(fn(ct_hdr) {
+          ct_hdr.row(Is(true)).wraps(Is(Some(8.0))).gap(Is(12.0)).lines_up(Is(Some(Middle))) |> ignore
+          lib_caption(ct_hdr, "Collapsible Tabs · minimize to orb")
+          @lg.liquid_button_node(
+            ct_hdr,
+            fn() { if ctab_min.get() { "Expand" } else { "Minimize" } },
+            fn() { ctab_min.set(!ctab_min.untracked()) },
+            flat=true,
+          )
+          |> ignore
+        })
+        |> ignore
+        ct_col.pick(ctab_w, at_once=true, fn(slot, ew) {
+          @lg.liquid_collapsible_tabs_node(
+            slot,
+            ["Home", "Browse", "Radio"],
+            fn() { ctab_idx.get() },
+            fn(i) {
+              ctab_idx.set(i)
+              let name = match i {
+                0 => "Home"
+                1 => "Browse"
+                _ => "Radio"
+              }
+              last_nav.set("Collapsible tab: \{name}")
+            },
+            fn() { ctab_min.get() },
+            fn() {
+              ctab_min.set(false)
+              last_nav.set("Collapsible tabs expanded")
+            },
+            fn() { last_nav.set("Collapsible tab: Search") },
+            action_label=fn() { "Collapsible Search" },
+            compact_icons=[
+              fn(ic, ink) { icon_prism(ic, 22.0, ink) },
+              fn(ic, ink) { icon_grid(ic, 22.0, ink) },
+              fn(ic, ink) { icon_spark(ic, 22.0, ink) },
+            ],
+            label="Collapsible Tabs",
+            expanded_width=ew,
+          )
+          |> ignore
+        })
       })
       |> ignore
     })
@@ -1313,7 +1402,7 @@ fn lib_overlays_section(
             1 => (@lg.LiquidStatus::Success, "Bundle compiled", "Metal + WebGL ready")
             2 => (@lg.LiquidStatus::Warning, "High refraction", "Bezel depth > 32 pt")
             3 => (@lg.LiquidStatus::Error, "Shader fallback", "Using solid fallback")
-            _ => (@lg.LiquidStatus::Info, "Liquid Glass synced", "32 parts at 60 fps")
+            _ => (@lg.LiquidStatus::Info, "Liquid Glass synced", "34 parts at 60 fps")
           }
           @lg.liquid_toast_node(
             slot,
@@ -1473,6 +1562,8 @@ fn library_page(
   let name_field = @ui.Field::new(text="iOS 27 Prism")
   let err_field = @ui.Field::new(text="2")
   let demo_search = @ui.Field::new()
+  let morph_search_field = @ui.Field::new()
+  let morph_search_open = @signals.signal(false)
   let cb_a = @signals.signal(true)
   let cb_b = @signals.signal(false)
   let cb_mixed = @signals.signal(true)
@@ -1487,6 +1578,8 @@ fn library_page(
   let list_active = @signals.signal(0)
   let disc_open = @signals.signal(false)
   let live_lum = @signals.signal(84.0)
+  let ctab_idx = @signals.signal(0)
+  let ctab_min = @signals.signal(false)
   let last_nav = @signals.signal("Tap a row or expand disclosure")
 
   // Overlays state
@@ -1530,9 +1623,13 @@ fn library_page(
     chip_webgl.set(true)
     chip_beta_kept.set(true)
     badge_count.set(12)
+    morph_search_open.set(false)
+    morph_search_field.set("")
     list_active.set(0)
     disc_open.set(false)
     live_lum.set(84.0)
+    ctab_idx.set(0)
+    ctab_min.set(false)
     select_idx.set(0)
     toast_visible.set(true)
     toast_status_idx.set(1)
@@ -1727,7 +1824,7 @@ fn library_page(
         leading=fn(s) {
           icon_brand_mark(s, 20.0, fn() { @lg.colors().content })
           s.show(fn() { !is_narrow() }, at_once=true, fn(slot) {
-            @lg.liquid_badge_node(slot, fn() { "32 Components" }, tone=Accent, dot=true) |> ignore
+            @lg.liquid_badge_node(slot, fn() { "34 Components" }, tone=Accent, dot=true) |> ignore
           })
           s.show(fn() { is_narrow() && !is_compact_dock() }, at_once=true, fn(slot) {
             lib_nav_catalog_button(slot, fn() { catalog_sheet_open.set(true) })
@@ -1813,7 +1910,7 @@ fn library_page(
             @lg.liquid_search_bar_node(
               top_part,
               search_field,
-              placeholder="Filter 32 parts...",
+              placeholder="Filter 34 parts...",
               label=fn() { "Filter components" },
               edited=fn(s) { search_q.set(s) },
               on_clear=fn() { search_q.set("") },
@@ -1822,7 +1919,7 @@ fn library_page(
             @lg.liquid_list_node(
               top_part,
               make_cat_rows(false),
-              header=fn() { "CATEGORIES · 32 PARTS" },
+              header=fn() { "CATEGORIES · 34 PARTS" },
               dividers=false,
             )
             |> ignore
@@ -1901,9 +1998,12 @@ fn library_page(
                         lib_inputs_section(
                           s,
                           is_phone,
+                          fn() { root.window_w() },
                           name_field,
                           err_field,
                           demo_search,
+                          morph_search_field,
+                          morph_search_open,
                           cb_a,
                           cb_b,
                           cb_mixed,
@@ -1919,11 +2019,14 @@ fn library_page(
                           s,
                           is_phone,
                           is_nav_stack,
+                          fn() { root.window_w() },
                           grid_on,
                           boost,
                           list_active,
                           disc_open,
                           live_lum,
+                          ctab_idx,
+                          ctab_min,
                           last_nav,
                         )
                       _ =>
@@ -1961,14 +2064,14 @@ fn library_page(
         overlay_host,
         fn() { catalog_sheet_open.get() },
         fn() { catalog_sheet_open.set(false) },
-        fn() { "Components · 32 Parts" },
+        fn() { "Components · 34 Parts" },
         fn(b) {
           let sc = b.scrolls(catalog_scroll, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(col) {
             col.gap(Is(12.0)) |> ignore
             @lg.liquid_search_bar_node(
               col,
               search_field,
-              placeholder="Filter 32 parts...",
+              placeholder="Filter 34 parts...",
               label=fn() { "Filter components" },
               edited=fn(s) { search_q.set(s) },
               on_clear=fn() { search_q.set("") },
@@ -1978,7 +2081,7 @@ fn library_page(
             @lg.liquid_list_node(
               col,
               make_cat_rows(true),
-              header=fn() { "CATEGORIES · 32 PARTS" },
+              header=fn() { "CATEGORIES · 34 PARTS" },
               dividers=false,
               flat=true,
             )

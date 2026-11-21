@@ -455,7 +455,7 @@ test "library app mobile responsive layout at 390x844 and 360x800: iOS 26 4-tab 
   @ui.set_view_app(fn(root) { gallery(root, "library", chrome=true) })
   desk.draw()
   desk.run_for(settled)
-  assert_eq(desk.all(Group, label="CATEGORIES · 32 PARTS").length(), 1)
+  assert_eq(desk.all(Group, label="CATEGORIES · 34 PARTS").length(), 1)
   assert_eq(desk.all(Button, label="Search & Catalog").length(), 0)
   assert_eq(desk.all(Tab, within=desk.get(TabList, label="Library sections")).length(), 6)
 
@@ -470,7 +470,7 @@ test "library app mobile responsive layout at 390x844 and 360x800: iOS 26 4-tab 
       t.draw()
       t.run_for(settled)
       // Inline sidebar auto-collapsed; exactly one detached 64x64 Search & Catalog orb beside the 4-tab dock
-      assert_eq(t.all(Group, label="CATEGORIES · 32 PARTS").length(), 0)
+      assert_eq(t.all(Group, label="CATEGORIES · 34 PARTS").length(), 0)
       assert_eq(t.all(Button, label="Search & Catalog").length(), 1)
 
       let dock = t.get(TabList, label="Library sections")
@@ -509,7 +509,7 @@ test "library app mobile responsive layout at 390x844 and 360x800: iOS 26 4-tab 
         let (ox, oy) = middle_of(t, Button, "Search & Catalog")
         t.tap(ox, oy)
         t.run_for(settled)
-        let sheet_rect = t.get(Dialog, label="Components · 32 Parts").rect
+        let sheet_rect = t.get(Dialog, label="Components · 34 Parts").rect
         assert_true(sheet_rect.0 >= 0.0 && sheet_rect.0 + sheet_rect.2 <= w + 0.5)
         assert_overlay_panel_clean(t, "mobile/\{w}/CatalogSheet/\{sheet_label} dark=\{dark}", sheet_rect)
         for f in t.audit() {
@@ -519,7 +519,7 @@ test "library app mobile responsive layout at 390x844 and 360x800: iOS 26 4-tab 
         }
         t.act(Button, Activate, label=sheet_label)
         t.run_for(settled)
-        assert_eq(t.all(Dialog, label="Components · 32 Parts").length(), 0)
+        assert_eq(t.all(Dialog, label="Components · 34 Parts").length(), 0)
         // 4th slot dynamically adopts the selected overflow category and stays selected
         assert_eq(t.get(Tab, label="More").selected, Some(true))
         assert_true(t.words_said().iter().any(fn(ws) { ws.0 == dock_word }))
@@ -692,4 +692,85 @@ test "GPU Pipeline slider, progress bar and progress ring animate with zero per-
     0,
     msg="expected 0 Flex layouts during indeterminate progress sweep, got \{laid_during_indet}",
   )
+}
+
+///|
+test "library Inputs (liquid_search_morph) and Navigation (liquid_collapsible_tabs) pass zero nested glass, corner_faults and squeeze_faults at 1280pt and 390pt" {
+  for dims in [(1280.0, 800.0), (390.0, 844.0)] {
+    let (w, h) = dims
+    let is_narrow = w < 640.0
+    for dark in [false, true] {
+      let t = @ui.Tester::new(fn(_c) {  }, w~, h~, platform=0)
+      @lg.set_dark(Some(dark))
+      @ui.set_view_app(fn(root) { gallery(root, "library", chrome=true) })
+      t.draw()
+      t.run_for(settled)
+
+      // 1. Navigate to Inputs section
+      if is_narrow {
+        let (ox, oy) = middle_of(t, Button, "Search & Catalog")
+        t.tap(ox, oy)
+        t.run_for(settled)
+        t.act(Button, Activate, label="Inputs")
+        t.run_for(settled)
+      } else {
+        let (ix, iy) = middle_of(t, Tab, "Inputs")
+        t.tap(ix, iy)
+        t.run_for(settled)
+      }
+      assert_no_nested_glass(t, "inputs-rest/\{w} dark=\{dark}")
+      assert_eq(t.corner_faults(), [], msg="inputs-rest/\{w} dark=\{dark} corner_faults")
+      assert_eq(t.squeeze_faults(), [], msg="inputs-rest/\{w} dark=\{dark} squeeze_faults")
+      // Tap Morph Search orb -> expands search bar + cancel orb cleanly inside viewport
+      t.act(Button, Activate, label="Morph Search")
+      t.run_for(settled)
+      let cancel_r = t.get(Button, label="Cancel Morph Search").rect
+      assert_true(
+        cancel_r.0 >= 0.0 && cancel_r.0 + cancel_r.2 <= w + 0.5,
+        msg="inputs-expanded/\{w}: cancel orb overflowed (\{cancel_r.0}, \{cancel_r.2}) > \{w}",
+      )
+      assert_no_nested_glass(t, "inputs-expanded/\{w} dark=\{dark}")
+      assert_eq(t.corner_faults(), [], msg="inputs-expanded/\{w} dark=\{dark} corner_faults")
+      assert_eq(t.squeeze_faults(), [], msg="inputs-expanded/\{w} dark=\{dark} squeeze_faults")
+      // Tap Cancel Morph Search -> collapses back to single orb
+      t.act(Button, Activate, label="Cancel Morph Search")
+      t.run_for(settled)
+      assert_eq(t.all(Button, label="Cancel Morph Search").length(), 0)
+      assert_no_nested_glass(t, "inputs-collapsed/\{w} dark=\{dark}")
+
+      // 2. Navigate to Navigation section
+      if is_narrow {
+        let (ox, oy) = middle_of(t, Button, "Search & Catalog")
+        t.tap(ox, oy)
+        t.run_for(settled)
+        t.act(Button, Activate, label="Navigation")
+        t.run_for(settled)
+      } else {
+        let (nx, ny) = middle_of(t, Tab, "Nav")
+        t.tap(nx, ny)
+        t.run_for(settled)
+      }
+      let ctab_list = t.get(TabList, label="Collapsible Tabs").rect
+      let ctab_act = t.get(Button, label="Collapsible Search").rect
+      assert_true(
+        ctab_list.0 >= 0.0 && ctab_act.0 + ctab_act.2 <= w + 0.5,
+        msg="nav-expanded/\{w}: collapsible tabs overflowed (\{ctab_act.0} + \{ctab_act.2} > \{w})",
+      )
+      assert_no_nested_glass(t, "nav-expanded/\{w} dark=\{dark}")
+      assert_eq(t.corner_faults(), [], msg="nav-expanded/\{w} dark=\{dark} corner_faults")
+      assert_eq(t.squeeze_faults(), [], msg="nav-expanded/\{w} dark=\{dark} squeeze_faults")
+      // Tap Minimize -> collapses to active orb + search orb
+      t.act(Button, Activate, label="Minimize")
+      t.run_for(settled)
+      assert_eq(t.all(Button, label="Expand Home").length(), 1)
+      assert_no_nested_glass(t, "nav-minimized/\{w} dark=\{dark}")
+      assert_eq(t.corner_faults(), [], msg="nav-minimized/\{w} dark=\{dark} corner_faults")
+      assert_eq(t.squeeze_faults(), [], msg="nav-minimized/\{w} dark=\{dark} squeeze_faults")
+      // Tap Expand -> restores full tab bar
+      t.act(Button, Activate, label="Expand")
+      t.run_for(settled)
+      assert_eq(t.all(TabList, label="Collapsible Tabs").length(), 1)
+      assert_no_nested_glass(t, "nav-restored/\{w} dark=\{dark}")
+    }
+  }
 }

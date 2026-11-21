@@ -97,7 +97,7 @@ pub fn liquid_search_morph_node(
       cancel_sched()
       let at = stage.cause_at()
       let target = if exp { 1.0 } else { 0.0 }
-      morph_way.go(target, @motion.liquid_toggle_spring, at~)
+      morph_way.go(target, @motion.snappy_damped, at~)
       let threshold = if exp { bond.break_gap() } else { bond.contact_gap() }
       let t_end = morph_way.end()
       let cross = @motion.liquid_bond_cross_time(

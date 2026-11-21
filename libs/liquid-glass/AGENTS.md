@@ -12,7 +12,7 @@ looks; an app uses a library.
   `Tester::drawn_glass()` (`assert_no_nested_glass` in `src/lg/kit_overlays_wbtest.mbt` and
   `src/pages/gallery_wbtest.mbt`), concentric corner ladder (`R_inner = R_outer - pad`, 0 faults), WCAG >= 4.5:1 contrast
   with zero `alpha == 0` hidden glass instances at rest, and closed-form `@headless` controls.
-- `src/lg` is the library (32 Liquid Glass components across controls, inputs, navigation, overlays, feedback and
+- `src/lg` is the library (34 Liquid Glass components across controls, inputs, navigation, overlays, feedback and
   physics; token files `tokens.mbt`, `tokens_controls.mbt`, `tokens_overlays.mbt`); `src/pages` holds the self-hosted
   fullscreen component library (`library.mbt`, the default entry when `MBUI_LG_PAGE` is empty) plus the gallery's pages
   (`pages.mbt`: overview, dialog, interactive: the overview with every part held, film: what the film drags, merge) and

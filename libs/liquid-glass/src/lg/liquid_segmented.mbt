@@ -47,6 +47,7 @@ pub fn liquid_segmented_node(
       .padding(Is((ctrl_seg_pad, 0.0, ctrl_seg_pad, 0.0)))
       .radius(Is(outer_r))
       .shadow(Is(shadow_default))
+      .shadow_outside(Is(true))
       .glass(By(fn() { Some(ctrl_segmented_track_glass()) }))
       |> ignore
       match width {
@@ -106,6 +107,7 @@ pub fn liquid_segmented_node(
             .points(Is(false))
             .radius(By(fn() { size().1 / 2.0 }))
             .shadow(Is(shadow_thumb))
+            .shadow_outside(Is(true))
             .glass(By(fn() {
               let p = dd.pressed(gl)
               if p > 0.001 {

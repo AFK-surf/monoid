@@ -136,6 +136,7 @@ pub fn liquid_text_field_node(
       .gap(Is(ctrl_input_gap))
       .radius(Is(ctrl_input_r))
       .shadow(Is(shadow_default))
+      .shadow_outside(Is(true))
       .glass(By(fn() { Some(ctrl_input_glass()) }))
       .edge(By(fn() {
         if tf.invalid() {
@@ -275,7 +276,7 @@ pub fn liquid_search_bar_node(
       if flat {
         cap.ground(By(fn() { if is_dark() { 0xFFFFFF18L } else { 0x0000000DL } })) |> ignore
       } else {
-        cap.shadow(Is(shadow_default)).glass(By(fn() { Some(ctrl_input_glass()) })) |> ignore
+        cap.shadow(Is(shadow_default)).shadow_outside(Is(true)).glass(By(fn() { Some(ctrl_input_glass()) })) |> ignore
       }
       cap.box(fn(ic) {
         ic
