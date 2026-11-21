@@ -90,15 +90,18 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
   // (over the pages, a modal layer: what is under it (the pages, the bar, what the shell draws round them) takes no key,
   // no wheel, no stop of Tab, and is read out none, as the old frame's modal overlay made it; what opens over all of it,
   // a menu, a sheet, its own)
-  n
-  .over(Is(true))
-  // (while it is the one open: closing, the pages' input theirs again as it begins to go, whatever is still drawn)
-  .modal(By(fn() {
+  let live = fn() {
     match viewer.get() {
       Some(v) => physical_equal(v, vw)
       None => false
     }
-  }))
+  }
+  n
+  .over(Is(true))
+  // (while it is the one open: closing, the pages' input theirs again as it begins to go, whatever is still drawn)
+  .modal(By(live))
+  // (going, nothing of it read out: as panel_node / sheet_node / confirm_node / menu_node)
+  .hides(By(fn() { !live() }))
   // (its keys, at their moment, where nothing over it (a menu, a field being written in) takes them first)
   .on_key(fn(k) { vw.key_on(src, k) })
   // (back: leaving marking first, else closing it; a sheet, a menu over it, theirs first: Ctx::back_taker)

@@ -1,10 +1,5 @@
 {
   "counts": {
-    "style-literal": {
-      "src/sfapp/settings/run_more.mbt": 1,
-      "src/sfapp/share.mbt": 2,
-      "src/sfapp/sheets.mbt": 4
-    },
     "page-hand": {
       "src/sfapp/app.mbt": 1
     },

@@ -998,7 +998,7 @@ let add_people_picked_line : @ui.Style = @ui.css("row w=Full pt=S2_5 gap=S3 alig
 ///|
 /// What takes the rest of a row.
 // kept across runs: a value (no field of it changes)
-let add_people_grow : @ui.Style = @ui.css("w=Grow(1.0)")
+let add_people_grow : @ui.Style = @ui.style(w=@sf.grow)
 
 ///|
 /// A heading of adding people's form (邮箱, 角色): the meta's size, semibold, 18 a line.

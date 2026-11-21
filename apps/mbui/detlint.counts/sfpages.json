@@ -7,9 +7,6 @@
       "src/sfpages/notifications.mbt": 2,
       "src/sfpages/security.mbt": 5
     },
-    "ui-current": {
-      "src/sfpages/search.mbt": 2
-    },
     "page-at-moment": {
       "src/sfpages/about.mbt": 1,
       "src/sfpages/activity_steady_node.mbt": 1,

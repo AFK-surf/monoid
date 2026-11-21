@@ -646,7 +646,7 @@ fn info_title_node(h : @view.View, src : Source, r : ChatRef, title : () -> Stri
     })
     |> ignore
     line.show(at_once=true, open, fn(b) {
-      @sf.style_node(b, fn() { info_rename.then(@ui.style(bg=Data(@sf.alpha(@sf.theme().p.text, 0.05)))) })
+      @sf.style_node(b, fn() { info_rename.then(@ui.style(bg=Data(@sf.alpha(@sf.theme().p.text, info_rename_ink)))) })
       @sf.rippled_node(
         b,
         fn() { open_rename(src, r, @signals.untracked(thread), @signals.untracked(title), from=Node(b)) },
@@ -680,6 +680,9 @@ let info_rename : @ui.Style = @ui.css("w=S8 h=S8 radius=Full align=ACenter justi
 
 ///|
 let info_rename_side : Double = 32.0
+
+///|
+let info_rename_ink : Double = 0.05
 
 ///|
 /// An info row's icon (16), and the faces before its facts (16, ringed 1.5).
@@ -1834,7 +1837,7 @@ fn job_output_node(v : @view.View, src : Source, r : ChatRef, id : String) -> Un
         )
         let top = @signals.computed(fn(_) { first() == n }, same=fn(a, b) { a == b })
         @sf.style_node(row, fn() {
-          job_output_line.then(@ui.style(pt=@sf.room_of(if top.get() { job_output_end } else { 0.0 })))
+          if top.get() { job_output_first } else { job_output_line }
         })
         job_runs_node(row, fn() { runs.get() }, fn() { job_words(@sf.theme().t.caption, line=job_code_line) }, fn() {
           @sf.theme().p.text
@@ -1953,10 +1956,13 @@ let job_notice_words : @ui.Style = @ui.css("w=Full")
 let job_last : @ui.Style = @ui.css("w=Full gap=S0_5")
 
 ///|
+let job_output_min_h : Double = 120.0
+
+///|
 /// Its output: filling what is left, 120 at least, 16 round, on the ink at 5%, cut at its corners; its lines 14 in, 12
 /// over the first and under the last; a spinner 12 across 14 in and 12 down while it is read.
 // kept across runs: a value (no field of it changes)
-let job_output_box : @ui.Style = @ui.css("w=Full h=Full min_h=Fixed(120.0) radius=Xl1_5 clip")
+let job_output_box : @ui.Style = @ui.css("w=Full h=Full radius=Xl1_5 clip").then(@ui.style(min_h=Fixed(job_output_min_h)))
 
 ///|
 let job_output_ink : Double = 0.05
@@ -1970,18 +1976,22 @@ let job_output_end : Double = 12.0
 
 ///|
 // kept across runs: a value (no field of it changes)
+let job_output_first : @ui.Style = job_output_line.then(@ui.style(pt=@sf.room_of(job_output_end)))
+
+///|
+// kept across runs: a value (no field of it changes)
 let job_output_wait : @ui.Style = @ui.css("px=S3_5 py=S3")
 
 ///|
 let job_output_spin : Double = 12.0
 
 ///|
-/// Stopping it: a capsule across, 46 high, its mark and words 6 apart in its middle, on red at 12%.
-// kept across runs: a value (no field of it changes)
-let job_stop : @ui.Style = @ui.css("row w=Full h=Fixed(46.0) radius=Full gap=S1_5 align=ACenter justify=JCenter")
+let job_stop_h : Double = 46.0
 
 ///|
-let job_stop_h : Double = 46.0
+/// Stopping it: a capsule across, 46 high, its mark and words 6 apart in its middle, on red at 12%.
+// kept across runs: a value (no field of it changes)
+let job_stop : @ui.Style = @ui.css("row w=Full radius=Full gap=S1_5 align=ACenter justify=JCenter").then(@ui.style(h=Fixed(job_stop_h)))
 
 ///|
 let job_stop_ink : Double = 0.12

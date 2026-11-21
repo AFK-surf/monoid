@@ -823,7 +823,7 @@ fn shared_words_head_node(h : @view.View, source : String, head : String?, look 
       }
       if alone {
         w.box(fn(b) {
-          @sf.style_node(b, fn() { share_whole.then(@ui.style(pt=@sf.room_of(if look.wide { 0.0 } else { share_alone_over }))) })
+          @sf.style_node(b, fn() { if look.wide { share_whole } else { share_alone_box } })
           @sf.words_node(b, fn() { source }, fn() { share_alone_words }) |> ignore
         })
         |> ignore
@@ -847,6 +847,10 @@ let share_head_row : @ui.Style = @ui.css("row w=Full align=AStart")
 
 ///|
 let share_alone_over : Double = 7.0
+
+///|
+// kept across runs: a value (no field of it changes)
+let share_alone_box : @ui.Style = share_whole.then(@ui.style(pt=@sf.room_of(share_alone_over)))
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -933,8 +937,11 @@ let share_tile_px : Int = 512
 let share_files_row : @ui.Style = @ui.css("row w=Full pt=S1 pb=S0_5 gap=S3")
 
 ///|
+let share_files_mark_top : Double = 3.0
+
+///|
 // kept across runs: a value (no field of it changes)
-let share_files_mark : @ui.Style = @ui.css("w=S4 align=ACenter").then(@ui.style(pt=@sf.room_of(3.0)))
+let share_files_mark : @ui.Style = @ui.css("w=S4 align=ACenter").then(@ui.style(pt=@sf.room_of(share_files_mark_top)))
 
 ///|
 let share_files_icon : Double = 16.0

@@ -24,6 +24,8 @@ priv struct Search {
   /// told as it opens, goes back or closes (search_told): what reads it, the shell's bar and what is over another
   /// page among it, built again wherever that was
   said : @signals.Signal[Int]
+  /// the mounted search page node, for letting go of focus on close without @ui.current()
+  mut node : @view.View?
 }
 
 ///|
@@ -36,6 +38,7 @@ let search : Search = {
   offered: fn() { [] },
   fly: 0,
   said: @signals.signal(0),
+  node: None,
 }
 
 ///|
@@ -76,6 +79,7 @@ fn search_reset() -> Unit {
   search.over = false
   search.offered = fn() { [] }
   search.fly = 0
+  search.node = None
   search_told()
 }
 
@@ -335,6 +339,13 @@ pub fn search_page_node(
     }
   }
   // (how it came up said for what goes away under it too (search_away_node): let go as it closes, search_gone)
+  search.node = Some(v)
+  v.owns(fn() {
+    if search.node is Some(cur) && physical_equal(cur, v) {
+      search.node = None
+    }
+  })
+  |> ignore
   fly()
   v.reacts(fn() { search_read().leaving }, fn(leaving) {
     if leaving {
@@ -380,7 +391,7 @@ pub fn search_page_node(
     @sf.style_node(bar, fn() { search_bar_row })
     // (取消's room beside the field as it comes in: its words' width and the room before them)
     let cancel_w = fn() {
-      @ui.text_advance(@sf.t("android-chat.search.cancel"), size=@ui.current().sp(@sf.theme().t.title)) + 12.0
+      @ui.text_advance(@sf.t("android-chat.search.cancel"), size=@sf.node_sp(bar, @sf.theme().t.title)) + 12.0
     }
     bar.box(fn(slot) {
       slot
@@ -459,7 +470,10 @@ fn search_close_now() -> Unit {
   if !search.open || search.leaving {
     return
   }
-  @ui.current().blur()
+  match search.node {
+    Some(n) => n.focus_let_go()
+    None => ()
+  }
   if search.summoned {
     search_gone()
     return

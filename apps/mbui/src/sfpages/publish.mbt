@@ -476,6 +476,8 @@ pub fn publish_layer_node(v : @view.View, src : Source) -> Unit {
       .over(Is(true))
       // (the pages under it theirs again as it begins to go)
       .modal(By(live))
+      // (going, nothing of it read out: as panel_node / sheet_node / confirm_node / menu_node)
+      .hides(By(fn() { n.leaving() }))
       .presses(By(live))
       .ground(By(fn() { @sf.theme().p.bg }))
       .alpha(By(fn() { look().alpha }))
