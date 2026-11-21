@@ -692,7 +692,7 @@ pub fn liquid_badge_node(
     .padding(Is((ctrl_badge_px, 0.0, ctrl_badge_px, 0.0)))
     .gap(Is(ctrl_badge_gap))
     .radius(Is(ctrl_badge_r))
-    .ground(By(fn() { ctrl_badge_palette(tone).1 }))
+    .ground(By(fn() { ctrl_badge_palette(tone).0 }))
     .edge(By(fn() { (ctrl_badge_edge_w, ctrl_badge_edge_ink()) }))
     .says(By(fn() { Some(@view.said(Status, label=label())) }))
     |> ignore

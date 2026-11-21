@@ -3,7 +3,7 @@
 // `ovl_` to stay collision-free with parallel tracks.
 
 ///|
-/// Liquid glass material for floating panels (Menu, Popover).
+/// Liquid glass material for floating panels (Menu, Popover, List, Disclosure).
 /// Uses iOS 27 `Glass::liquid` with high-contrast opaque solid fallback for accessibility audits.
 fn ovl_panel_glass() -> @paint.Glass {
   let d = is_dark()
@@ -56,26 +56,6 @@ fn ovl_capsule_glass() -> @paint.Glass {
     adaptive=false,
   )
 }
-
-///|
-/// Content-layer grouped card background (List, Disclosure — zero `Glass::liquid` so floating glass
-/// islands, search bars, and docks stand out cleanly above calm content surfaces).
-fn ovl_content_card_bg() -> Int64 {
-  if is_dark() { 0x16181FD9L } else { 0xFFFFFFD8L }
-}
-
-///|
-/// Content-layer grouped card hairline edge (0.5pt).
-fn ovl_content_card_edge() -> Int64 {
-  if is_dark() { 0xFFFFFF1AL } else { 0x00000014L }
-}
-
-///|
-let ovl_content_card_edge_w : Double = 0.5
-
-///|
-/// Restrained soft shadow for content-layer grouped cards.
-let ovl_content_card_shadow : (Double, Double, Int64) = (8.0, 2.0, 0x00000012L)
 
 ///|
 /// Subtle translucent hover ground inside a glass surface (zero glass-on-glass).

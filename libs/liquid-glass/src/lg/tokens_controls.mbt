@@ -313,39 +313,40 @@ fn ctrl_chip_selected_tint() -> Int64 {
 }
 
 ///|
-/// Semantic tone palette for `liquid_badge_node`: (glass_tint, solid_bg, fg_ink, dot_ink).
+/// Semantic tone palette for `liquid_badge_node`: (translucent_pill_bg, solid_bg, fg_ink, dot_ink).
+/// Light/airy translucent capsule fills harmonized with surrounding Liquid Glass (WCAG >= 4.5:1).
 fn ctrl_badge_palette(tone : LiquidTone) -> (Int64, Int64, Int64, Int64) {
   let d = is_dark()
   match tone {
     Neutral =>
       if d {
-        (0x28282EE0L, 0x242428FFL, 0xF2F2F7FFL, 0xAEAEB2FFL)
+        (0x28282E9EL, 0x242428FFL, 0xF2F2F7FFL, 0xAEAEB2FFL)
       } else {
-        (0xF5F5F7E6L, 0xF2F2F7FFL, 0x1C1C1EFFL, 0x6E6E73FFL)
+        (0xFFFFFFB8L, 0xF2F2F7FFL, 0x1C1C1EFFL, 0x6E6E73FFL)
       }
     Accent =>
       if d {
-        (0x0E2E52E0L, 0x132842FFL, 0x7CC4FFFFL, 0x4DA6FFFFL)
+        (0x0E2E529EL, 0x132842FFL, 0x7CC4FFFFL, 0x4DA6FFFFL)
       } else {
-        (0xE6F1FFE6L, 0xE6F1FFFFL, 0x004099FFL, 0x0070F3FFL)
+        (0xE6F1FFC4L, 0xE6F1FFFFL, 0x004099FFL, 0x0070F3FFL)
       }
     Success =>
       if d {
-        (0x0F331EE0L, 0x112E1CFFL, 0x6CE38DFFL, 0x34C759FFL)
+        (0x0F331E9EL, 0x112E1CFFL, 0x6CE38DFFL, 0x34C759FFL)
       } else {
-        (0xE6F7EBE6L, 0xE6F7EBFFL, 0x0B5320FFL, 0x248A3DFFL)
+        (0xE6F7EBC4L, 0xE6F7EBFFL, 0x0B5320FFL, 0x248A3DFFL)
       }
     Warning =>
       if d {
-        (0x3B290AE0L, 0x33240DFFL, 0xFFCC66FFL, 0xFF9F0AFFL)
+        (0x3B290A9EL, 0x33240DFFL, 0xFFCC66FFL, 0xFF9F0AFFL)
       } else {
-        (0xFFF4E0E6L, 0xFFF4E0FFL, 0x6E3B00FFL, 0xD97706FFL)
+        (0xFFF4E0C4L, 0xFFF4E0FFL, 0x6E3B00FFL, 0xD97706FFL)
       }
     Danger =>
       if d {
-        (0x421619E0L, 0x3B1618FFL, 0xFF8A8AFFL, 0xFF453AFFL)
+        (0x4216199EL, 0x3B1618FFL, 0xFF8A8AFFL, 0xFF453AFFL)
       } else {
-        (0xFFEBEBE6L, 0xFFEBEBFFL, 0x981B12FFL, 0xD92D20FFL)
+        (0xFFEBEBC4L, 0xFFEBEBFFL, 0x981B12FFL, 0xD92D20FFL)
       }
   }
 }

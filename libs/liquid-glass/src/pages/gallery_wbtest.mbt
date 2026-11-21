@@ -186,13 +186,13 @@ test "the bottom dock switches between Optics, Deck, Loupe and Merge, and Publis
 ///|
 test "a run of choices is drawn the same at 60, 120, 24 and 7 frames a second" {
   inspect(chosen_at().join("\n"), content=(
-    #|Overview false 5 399,12,482
-    #|Interactive false 8 399,12,482
-    #|Interactive true 8 399,12,482
-    #|Overview true 5 399,12,482
-    #|Overview false 5 399,12,482
-    #| false 5 
-    #|Overview false 5 399,12,482
+    #|Overview false 4 399,12,482
+    #|Interactive false 7 399,12,482
+    #|Interactive true 7 399,12,482
+    #|Overview true 4 399,12,482
+    #|Overview false 4 399,12,482
+    #| false 4 
+    #|Overview false 4 399,12,482
   ))
 }
 

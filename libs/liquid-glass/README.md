@@ -43,8 +43,8 @@ All of them live in `src/lg` (`@lg`) and are showcased live in the self-hosted `
 | `liquid_nav_bar_node` | iOS 26/27 floating-island navigation bar (transparent chrome hosting floating glass islands in `leading`/`trailing`, or optional `glass=true` when child-glass-free) with centered title/subtitle. |
 | `liquid_toolbar_node` | Floating capsule toolbar container (`r = height / 2`) for quick actions. |
 | `liquid_bottom_tabs_node`, `liquid_bottom_tab_node` | A bar of tabs with a draggable refractive lens over the chosen tab. |
-| `liquid_list_node`, `LiquidListRow` | Content-layer reactive iOS-style grouped inset list (`r=24pt`, `0.5pt` hairline edge) with `active` highlight and strict between-row hairlines. |
-| `liquid_disclosure_node` | Content-layer collapsible disclosure card (`r=22pt`, `0.5pt` hairline edge) with closed-form animated chevron. |
+| `liquid_list_node`, `LiquidListRow` | Single-layer Liquid Glass grouped inset list (`r=24pt`, optional `dividers=false` sidebar mode) with flat inner rows, `active` highlight, and hover-avoiding hairlines. |
+| `liquid_disclosure_node` | Single-layer Liquid Glass collapsible disclosure card (`r=22pt`) with closed-form animated chevron and smooth slide/fade body. |
 | `liquid_card_node`, `liquid_control_tile_node`, `liquid_control_item_node` | Control center glass tiles, cards and switches. |
 
 ### Overlays & Feedback

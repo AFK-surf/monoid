@@ -427,13 +427,31 @@ fn plate_stripes(parent : @view.View, radius : Double, stripe_color : () -> Int6
 }
 
 ///|
-/// Calm content-layer inspector panel surface (zero `Glass::liquid` so floating Prism, Adaptive
-/// Surface, and 360° Capillary Merge remain single-layer refractive heroes and inner buttons/sliders
-/// never trigger glass-on-glass).
+/// Single-layer Liquid Glass material for `OPTICAL PARAMETERS` and `CAPILLARY HYSTERESIS` inspector
+/// panels (all buttons inside use `flat=true`, so zero glass-on-glass).
+fn inspector_glass() -> @paint.Glass {
+  let d = @lg.is_dark()
+  @paint.Glass::liquid(
+    blur=7.0,
+    tint=if d { 0x1B1D2678L } else { 0xFFFFFF82L },
+    solid=if d { 0x161820FFL } else { 0xFAF8F4FFL },
+    saturation=1.05,
+    rim=0.6,
+    bezel=20.0,
+    refraction=24.0,
+    chroma=0.0,
+    merge=0.0,
+    adaptive=false,
+  )
+}
+
+///|
+/// Light translucent non-glass surface for containers hosting child `Glass::liquid` specimens
+/// (such as `ADAPTIVE LUMINANCE` hosting two `liquid_adaptive_surface_node` lenses).
 fn inspector_surface(node : @view.View) -> Unit {
   node
-  .ground(By(fn() { if @lg.is_dark() { 0x16181FDCL } else { 0xFFFFFFD8L } }))
-  .edge(By(fn() { (0.5, if @lg.is_dark() { 0xFFFFFF1AL } else { 0x00000014L }) }))
+  .ground(By(fn() { if @lg.is_dark() { 0x16181F78L } else { 0xFFFFFF78L } }))
+  .edge(By(fn() { (0.5, if @lg.is_dark() { 0xFFFFFF22L } else { 0x00000018L }) }))
   .shadow(Is((8.0, 2.0, 0x00000012L)))
   |> ignore
 }
@@ -712,7 +730,7 @@ fn optics_scene(
       |> ignore
     })
     |> ignore
-    // Right content-layer Glass Inspector panel (348pt wide, vertically centered)
+    // Right floating single-layer Glass Inspector island (348pt wide, vertically centered)
     row.box(fn(insp_col) {
       insp_col.shrink(Is(0.0)).lies_along(Is(Middle)) |> ignore
       insp_col.box(fn(insp) {
@@ -722,8 +740,10 @@ fn optics_scene(
       .radius(Is(44.0))
       .padding(Is((20.0, 18.0, 20.0, 20.0)))
       .gap(Is(12.0))
+      .shadow(Is(@lg.shadow_default))
+      .shadow_outside(Is(true))
+      .glass(By(fn() { Some(inspector_glass()) }))
       |> ignore
-      inspector_surface(insp)
       // Header row
       insp.box(fn(ih) {
         ih.row(Is(true)).lies_along(Is(Between)).lines_up(Is(Some(Middle))) |> ignore
@@ -827,7 +847,7 @@ fn optics_scene(
         |> ignore
       })
       |> ignore
-      // Bottom action row: Reset + Publish
+      // Bottom action row: Reset + Publish (flat=true inside Glass Inspector -> zero glass-on-glass)
       insp.box(fn(acts) {
         acts.row(Is(true)).gap(Is(10.0)).lines_up(Is(Some(Middle))) |> ignore
         acts.box(fn(b1) {
@@ -842,6 +862,7 @@ fn optics_scene(
               blur_val.set(1.8)
               grid_on.set(true)
             },
+            flat=true,
             light?=held.map(fn(h) { h.button }),
           )
           |> ignore
@@ -849,7 +870,14 @@ fn optics_scene(
         |> ignore
         acts.box(fn(b2) {
           b2.grow(Is(1.0)) |> ignore
-          @lg.liquid_button_node(b2, fn() { "Publish" }, fn() { dialog_open.set(true) }, tint=monoid_vermilion) |> ignore
+          @lg.liquid_button_node(
+            b2,
+            fn() { "Publish" },
+            fn() { dialog_open.set(true) },
+            tint=monoid_vermilion,
+            flat=true,
+          )
+          |> ignore
         })
         |> ignore
       })
@@ -1397,7 +1425,7 @@ fn merge_scene(parent : @view.View, merge_ctrl : @lg.LiquidMerge) -> Unit {
       |> ignore
     })
     |> ignore
-    // Right content-layer `CAPILLARY HYSTERESIS` telemetry & control panel (348pt wide)
+    // Right floating single-layer `CAPILLARY HYSTERESIS` telemetry & control island (348pt wide)
     row.box(fn(insp_col) {
       insp_col.shrink(Is(0.0)).lies_along(Is(Middle)) |> ignore
       insp_col.box(fn(insp) {
@@ -1408,8 +1436,10 @@ fn merge_scene(parent : @view.View, merge_ctrl : @lg.LiquidMerge) -> Unit {
         .radius(Is(44.0))
         .padding(Is((20.0, 18.0, 20.0, 20.0)))
         .gap(Is(12.0))
+        .shadow(Is(@lg.shadow_default))
+        .shadow_outside(Is(true))
+        .glass(By(fn() { Some(inspector_glass()) }))
         |> ignore
-        inspector_surface(insp)
         // Header row
         insp.box(fn(ih) {
           ih.row(Is(true)).lies_along(Is(Between)).lines_up(Is(Some(Middle))) |> ignore
@@ -1554,6 +1584,7 @@ fn merge_scene(parent : @view.View, merge_ctrl : @lg.LiquidMerge) -> Unit {
               fn() { if merge_ctrl.is_separated() { "Fuse Droplet" } else { "Split Droplet" } },
               fn() { merge_ctrl.set_separated(!merge_ctrl.is_separated(), at=cause_at()) },
               tint=monoid_vermilion,
+              flat=true,
             )
             |> ignore
           })

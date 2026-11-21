@@ -551,9 +551,8 @@ pub fn liquid_list_node(
       card
       .padding(Is((ovl_list_pad, ovl_list_pad, ovl_list_pad, ovl_list_pad)))
       .radius(Is(ovl_list_radius))
-      .ground(By(ovl_content_card_bg))
-      .edge(By(fn() { (ovl_content_card_edge_w, ovl_content_card_edge()) }))
-      .shadow(Is(ovl_content_card_shadow))
+      .shadow(Is(shadow_default))
+      .glass(By(fn() { Some(ovl_panel_glass()) }))
       .says(
         By(fn() {
           let h = header()
@@ -697,9 +696,8 @@ pub fn liquid_disclosure_node(
     card
     .padding(Is((ovl_disc_pad, ovl_disc_pad, ovl_disc_pad, ovl_disc_pad)))
     .radius(Is(ovl_disc_radius))
-    .ground(By(ovl_content_card_bg))
-    .edge(By(fn() { (ovl_content_card_edge_w, ovl_content_card_edge()) }))
-    .shadow(Is(ovl_content_card_shadow))
+    .shadow(Is(shadow_default))
+    .glass(By(fn() { Some(ovl_panel_glass()) }))
     |> ignore
     card.reacts(open, at_start=false, fn(is_open) {
       chev_turn.go(card, if is_open { 90.0 } else { 0.0 }, @motion.snappy_damped)

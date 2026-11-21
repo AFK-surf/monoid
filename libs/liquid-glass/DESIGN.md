@@ -4,30 +4,26 @@ This specification defines the visual and architectural laws for `libs/liquid-gl
 
 ---
 
-## Law 1 — Strict Two-Layer Material Architecture
+## Law 1 — Strict Single-Layer Liquid Glass Architecture
 
-Liquid Glass is a **floating functional material**, never a wallpaper or a content container. The interface is strictly divided into two layers:
+Liquid Glass is a **single-layer translucent functional material** — never an opaque solid block, and never glass stacked on top of glass. The interface is strictly divided into two roles:
 
-### 1. Content Layer (Zero `Glass::liquid`)
-Carries information, lists, forms, badges, inspector panels, and any control placed *inside* a floating glass container (Sheet, Dialog, Popover, Menu, Toolbar, Card).
+### 1. Single-Layer Translucent `Glass::liquid` Surfaces
+Standalone floating controls, navigation islands, overlays, and surface containers render **one** layer of `@paint.Glass::liquid` with high-contrast opaque `solid` fallback so backdrops and colour fields refract cleanly underneath:
 
-- **Material**: Calm, legible translucent or solid surface (`.ground(...)` + `0.5pt` hairline `.edge(...)` + restrained soft shadow). Never uses `.glass(Glass::liquid)`.
-- **Components in this layer**:
-  - Containers: `liquid_list_node`, `liquid_disclosure_node`, parameter/telemetry inspector panels (`OPTICAL PARAMETERS`, `ADAPTIVE LUMINANCE`, `CAPILLARY HYSTERESIS`).
-  - Form & selection controls: `liquid_checkbox_node`, `liquid_radio_group_node`, `liquid_progress_bar_node`, `liquid_progress_ring_node`.
-  - Semantic metadata: `liquid_badge_node`, `liquid_count_badge_node`.
-  - Inner glass-surface actions: `liquid_button_node(..., flat=true)`, `liquid_control_item_node`, dialog/sheet/menu/action-sheet rows and close buttons.
-- **Why**: Keeps text razor-sharp, hierarchy calm, and guarantees that placing badges, checkboxes, or buttons inside lists, toolbars, or sheets never causes double-refraction muddiness.
+- **Standalone surface containers** (single-layer `Glass::liquid` shell; **all children inside must be flat non-glass**):
+  - `liquid_list_node`, `liquid_disclosure_node`, `liquid_toolbar_node`, `liquid_card_node`, `liquid_control_tile_node`, `liquid_menu_node`, `liquid_select_node`, `liquid_popover_node`, `liquid_tooltip_node`, `liquid_sheet_node`, `liquid_action_sheet_node`, `liquid_dialog_node`, `liquid_toast_node`, and parameter/telemetry inspector panels (`OPTICAL PARAMETERS`, `CAPILLARY HYSTERESIS`).
+- **Floating-island navigation chrome**:
+  - `liquid_nav_bar_node` is transparent layout chrome by default (`glass=false`) so `leading` and `trailing` slots host floating single-layer Liquid Glass islands (`liquid_icon_button_node`, `liquid_segmented_node`, `liquid_button_group_node`) without glass-on-glass nesting. Pass `glass=true` only when the bar contains zero inner glass controls.
+- **Standalone floating controls & optical physics**:
+  - `liquid_button_node` (`flat=false`), `liquid_icon_button_node`, `liquid_button_group_node`, `liquid_segmented_node`, `liquid_stepper_node`, `liquid_chip_node`, `liquid_text_field_node`, `liquid_search_bar_node`, `liquid_bottom_tabs_node`, `liquid_toggle_node` (lens on press), `liquid_slider_node` (lens on press), `liquid_adaptive_surface_node`, `liquid_magnifier_node`, `liquid_progressive_blur_node`, `liquid_merge_node`.
 
-### 2. Floating Liquid Glass Layer (Single-Layer `Glass::liquid`)
-Floats *above* the Content Layer and backdrop wallpaper to refract real colour fields and calibration lines underneath.
+### 2. Flat Translucent Inner / Content Elements (Zero `Glass::liquid`)
+Every element placed *inside* a glass container (or alongside glass chrome) uses crisp, airy translucent ink fills (`.ground(...)` + subtle `0.5pt` hairline `.edge(...)`) — never a second layer of `Glass::liquid`:
 
-- **Material**: Single-layer `@paint.Glass::liquid` with high-contrast opaque `solid` fallback.
-- **Components in this layer**:
-  - Navigation & floating chrome: `liquid_nav_bar_node` (transparent layout bar hosting floating glass islands in `leading`/`trailing`, or `glass=true` only when strictly free of glass children), `liquid_toolbar_node`, `liquid_bottom_tabs_node`.
-  - Standalone controls: `liquid_button_node` (`flat=false`), `liquid_icon_button_node`, `liquid_button_group_node`, `liquid_segmented_node`, `liquid_stepper_node`, `liquid_chip_node`, `liquid_text_field_node`, `liquid_search_bar_node`, `liquid_toggle_node` (lens on press), `liquid_slider_node` (lens on press).
-  - Anchored & modal overlays: `liquid_menu_node`, `liquid_select_node`, `liquid_popover_node`, `liquid_tooltip_node`, `liquid_sheet_node`, `liquid_action_sheet_node`, `liquid_dialog_node`, `liquid_toast_node`.
-  - Optical physics & deck specimens: `liquid_card_node`, `liquid_control_tile_node`, `liquid_adaptive_surface_node`, `liquid_magnifier_node`, `liquid_progressive_blur_node`, `liquid_merge_node`.
+- **Inner glass-surface actions**: `liquid_button_node(..., flat=true)`, `liquid_control_item_node`, dialog/sheet/menu/action-sheet/list rows and close buttons.
+- **Form & metadata primitives**: `liquid_checkbox_node`, `liquid_radio_group_node`, `liquid_badge_node`, `liquid_count_badge_node`, `liquid_progress_bar_node`, `liquid_progress_ring_node`, hairlines and slider tracks.
+- **Multi-specimen staging containers**: containers that directly host child `Glass::liquid` specimens (such as `ADAPTIVE LUMINANCE` hosting two `liquid_adaptive_surface_node` lenses) use a light translucent surface rather than `Glass::liquid`.
 
 ---
 
