@@ -51,41 +51,49 @@ pub fn file_card_node(
         menu_presses_node(card, fn() { if open() { on_press(Open) } }, fn(x, y, _) { if open() { menu_at(x, y) } })
       None => card_presses_node(card, fn() { on_press(Open) }, open)
     }
-    // (its mark, 24, concentric with its round start; going up, the ring in its place: how far, or turning while that
+    // (its mark and its words together on the card's middle, the mark on their first line's middle, never on the middle
+    // of both: apps/mbui/AGENTS.md, a mark beside a block of lines)
+    let held = card.box(fn(row) {
+      row.row(Is(true)).lines_up(Is(Some(Start))).gap(Is(@ui.Space::px(S2))).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+    })
+    // (its mark, 24, on the first line's middle; going up, the ring in its place: how far, or turning while that
     // is not known or every byte is gone and its station is still to say so)
-    card.box(fn(m) {
-      style_node(m, fn() { card_mark }, in_row=true)
-      let mark = fn(mark : @view.View) {
-        icon_node(mark, "file", card_mark_size, By(fn() { if failed() { theme().p.red } else { theme().p.muted } }), name_now=fn() {
-          file_mark(name())
-        })
-        |> ignore
-      }
-      match pending {
-        None => mark(m)
-        Some(going_up) =>
-          m.pick(fn() { going_up() && !failed() }, at_once=true, fn(d, going) {
-            if going {
-              progress_spinner_node(
-                d,
-                fn() {
-                  match progress() {
-                    Some(p) if p < 1.0 => Some(if p < 0.0 { 0.0 } else { p })
-                    _ => None
-                  }
-                },
-                size=tile_going_spinner,
-              )
-              |> ignore
-            } else {
-              mark(d)
-            }
+    first_line_node(held, Ui, leading=L6, fn(l) {
+      l.box(fn(m) {
+        style_node(m, fn() { card_mark }, in_row=true)
+        let mark = fn(mark : @view.View) {
+          icon_node(mark, "file", card_mark_size, By(fn() { if failed() { theme().p.red } else { theme().p.muted } }), name_now=fn() {
+            file_mark(name())
           })
-      }
+          |> ignore
+        }
+        match pending {
+          None => mark(m)
+          Some(going_up) =>
+            m.pick(fn() { going_up() && !failed() }, at_once=true, fn(d, going) {
+              if going {
+                progress_spinner_node(
+                  d,
+                  fn() {
+                    match progress() {
+                      Some(p) if p < 1.0 => Some(if p < 0.0 { 0.0 } else { p })
+                      _ => None
+                    }
+                  },
+                  size=tile_going_spinner,
+                )
+                |> ignore
+              } else {
+                mark(d)
+              }
+            })
+        }
+      })
+      |> ignore
     })
     |> ignore
     // (as wide as what it says, cut short where the card is at its widest)
-    card.box(fn(w) {
+    held.box(fn(w) {
       style_node(w, fn() { card_words_hug }, in_row=true)
       file_name_node(w, name)
       words_node(w, meta, fn() { if failed() { card_failed } else { card_meta } }) |> ignore

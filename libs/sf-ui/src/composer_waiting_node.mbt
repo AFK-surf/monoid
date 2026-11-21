@@ -58,24 +58,24 @@ pub fn file_waiting_node(
     let held = card.box(fn(row) {
       row.row(Is(true)).lines_up(Is(Some(Start))).gap(Is(@ui.Space::px(S2))).grow(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
     })
-    held.pick(spins, at_once=true, fn(m, spinning) {
-      // (as far over its first line's top as it is taller than that line: its middle on the line's)
-      m.margin(By(fn() { (0.0, (@ui.style_words(card_name).line - card_mark_size) / 2.0, 0.0, 0.0) })) |> ignore
-      if spinning {
-        style_node(m, fn() { tile_going }, in_row=true)
-        spinner_node(m, size=tile_going_spinner) |> ignore
-      } else {
+    first_line_node(held, Ui, leading=L6, fn(l) {
+      l.pick(spins, at_once=true, fn(m, spinning) {
         style_node(m, fn() { card_mark }, in_row=true)
-        icon_node(
-          m,
-          "file",
-          card_mark_size,
-          By(fn() { if fails() { theme().p.red } else { theme().p.muted } }),
-          name_now=fn() { if dir() { "folder" } else { file_mark(name()) } },
-        )
-        |> ignore
-      }
+        if spinning {
+          spinner_node(m, size=tile_going_spinner) |> ignore
+        } else {
+          icon_node(
+            m,
+            "file",
+            card_mark_size,
+            By(fn() { if fails() { theme().p.red } else { theme().p.muted } }),
+            name_now=fn() { if dir() { "folder" } else { file_mark(name()) } },
+          )
+          |> ignore
+        }
+      })
     })
+    |> ignore
     held.box(fn(w) {
       style_node(w, fn() { card_words }, in_row=true)
       w.pick(fn() { title() != "" }, at_once=true, fn(n, titled) {

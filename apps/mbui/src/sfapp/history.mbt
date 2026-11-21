@@ -284,11 +284,14 @@ fn run_row_node(v : @view.View, a : () -> Json?, press : (@sf.Anchor) -> Unit) -
       .gap(Is(6.0))
       .radius(Is(10.0))
       .edge(By(fn() { (1.0, @sf.theme().p.line) }))
-      .lines_up(Is(Some(Middle)))
+      .lines_up(Is(Some(Start)))
       |> ignore
-      b.pick(at_once=true, fn() { (text(field(s(), "maker"), "id"), text(s(), "runtime")) }, fn(m, k) {
-        @sf.maker_mark_node(m, k.0, k.1, 15.0) |> ignore
+      @sf.first_line_node(b, Ui, fn(l) {
+        l.pick(at_once=true, fn() { (text(field(s(), "maker"), "id"), text(s(), "runtime")) }, fn(m, k) {
+          @sf.maker_mark_node(m, k.0, k.1, 15.0) |> ignore
+        })
       })
+      |> ignore
       // how it runs on its line, its account's allowance under it, a line of its own
       b.box(fn(w) {
         w.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
@@ -300,7 +303,10 @@ fn run_row_node(v : @view.View, a : () -> Json?, press : (@sf.Anchor) -> Unit) -
         })
       })
       |> ignore
-      @sf.icon_node(b, "chevron-down", 14.0, By(fn() { @sf.theme().p.muted })) |> ignore
+      @sf.first_line_node(b, Ui, fn(l) {
+        @sf.icon_node(l, "chevron-down", 14.0, By(fn() { @sf.theme().p.muted })) |> ignore
+      })
+      |> ignore
     })
     |> ignore
   })

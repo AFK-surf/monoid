@@ -349,6 +349,7 @@ fn panel_row_by(
   lit? : () -> Bool = fn() { false },
   titled? : Bool = true,
   face? : (Double, (@view.View) -> Unit),
+  top_face? : Bool = false,
   point? : () -> Unit,
   loc~ : SourceLoc,
 ) -> Unit {
@@ -425,9 +426,12 @@ fn panel_row_by(
         }
       }
       r
-      .padding(By(fn() { (face_in(), menu_row_over, words_at(), menu_row_over) }))
+      .padding(By(fn() {
+        let top_over = if top_face { dmax(menu_row_over, face_in()) } else { menu_row_over }
+        (face_in(), top_over, words_at(), menu_row_over)
+      }))
       .gap(Is(if plain { menu_row_gap } else { panel_row_gap }))
-      .lines_up(Is(Some(Middle)))
+      .lines_up(Is(Some(if top_face { Start } else { Middle })))
       |> ignore
       // (the pointer's own moving onto it, never a list scrolled under a pointer at rest: what the keys move stays theirs)
       if point is Some(p) {
@@ -441,6 +445,14 @@ fn panel_row_by(
               fn() { panel_row_face.then(@ui.style(w=Fixed(dmax(face_size, panel_row_icon_w + words_at() - face_in())))) },
               in_row=true,
             )
+            if top_face {
+              col
+              .height(By(fn() {
+                col.words_redone() |> ignore
+                Some(node_sp(col, @ui.tree_theme().text_size(Meta).1))
+              }))
+              |> ignore
+            }
             fill(col)
           })
           |> ignore
@@ -550,7 +562,7 @@ pub fn panel_said_row_node(
     (Some((_, f)), _) | (None, Some(f)) => Some((panel_icon, fn(col : @view.View) { f(col, panel_icon) }))
     _ => None
   }
-  panel_row_by(loc~, parent, label, fn(_) { press() }, fn() { "" }, fn() { "" }, "", false, lit~, titled=false, face?, point?, made=fn(r) {
+  panel_row_by(loc~, parent, label, fn(_) { press() }, fn() { "" }, fn() { "" }, "", false, lit~, titled=false, face?, top_face=who is Some(_), point?, made=fn(r) {
     match who {
       Some((name, _)) =>
         // (who over what they said, both as far in as the row's words)

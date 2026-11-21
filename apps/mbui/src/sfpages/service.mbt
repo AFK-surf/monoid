@@ -166,7 +166,7 @@ fn corner_of(width : Int, scale : Double) -> Double {
 
 ///|
 // kept across runs: a value (no field of it changes)
-let service_restart_pill : @ui.Style = @ui.css("row pl=S4 pr=S4_5 py=S2_5 gap=S3 radius=Full align=ACenter")
+let service_restart_pill : @ui.Style = @ui.css("row pl=S4 pr=S4_5 py=S2_5 gap=S3 radius=Full align=AStart")
 
 ///|
 // kept across runs: a value (no field of it changes)
