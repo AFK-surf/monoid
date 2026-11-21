@@ -5,7 +5,7 @@
 - A bottom-bar place never opens on bones when the device has its data: list every opening list in both `lasting` (shown immediately) and `place_reads` (pre-requested), verified by `apps/mbui/src/sfapp/place_first_wbtest.mbt`. Sole exception: `stationNet` (Station network line) samples stations only after pressing the Station tab, so that line alone may show bones on first open.
 - Read-only page, panel, and card topics (`views_kept`) stay cached in the client and display immediately on re-open until the core answers (`@core.Client::show_kept`, `MBUI_SWR_VIEWS`). Chat values wait for the core, bar lists replay via `last_said`, and `station_marks` never uses kept values.
 - Cards, panels, sheets, and dialogs opening for the first time wait up to `open_hold_ms` for local topic reads made during construction, never waiting on a station (`libs/sf-ui/src/open_gate.mbt`, `Source::topic`, `MBUI_OPEN_WHOLE`, `apps/mbui/src/sfapp/open_whole_wbtest.mbt`).
-- On 小屏, keep switched-away bottom-bar places parked on the stack shelf (`nav_root_kept`: bar, chats, history, while rail, wide frames, and legacy views replace normally) and release them only on workspace or tier change (`@settings.left`). Parked places automatically preserve scroll, 连接's 我的, Home's list/filter/search, and 用量's days (keyboard focus still clears).
+- On 小屏 bottom bar and 中屏/大屏 rail, keep switched-away root places parked on the stack shelf (`nav_root_kept` + `keeps_made=true`) and release them only on workspace switch, tier change (`@settings.left`), or explicit `kept=false`. Parked places automatically preserve scroll, 连接's 我的, Home's list/filter/search, and 用量's days (keyboard focus still clears).
 
 ## Workspace switch, ahead reads, and press waits
 

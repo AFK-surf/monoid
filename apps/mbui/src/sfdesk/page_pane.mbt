@@ -110,15 +110,67 @@ fn gate_heading_node(h : @view.View, src : Source, w : Workspace) -> Unit {
 fn pane_shows(k : Int) -> () -> Bool {
   let last = Ref(true)
   fn() {
-    if app.nav.page_of(k) is Some(_) && !(app.nav.top() is (Screen(_) | Terminal(_) | DriveRead(_) | DrivePlay(_))) {
-      last.val = app.nav.shows(k)
+    match app.nav.page_of(k) {
+      Some((p, _)) if app.nav.shelved(p) != Some(k) &&
+        !(app.nav.top() is (Screen(_) | Terminal(_) | DriveRead(_) | DrivePlay(_))) =>
+        last.val = app.nav.shows(k)
+      _ => ()
     }
     last.val
   }
 }
 
 ///|
+/// Pause non-Farview remote screens when `Place("remote")` is parked on the nav shelf (`keeps_holds=false` pauses
+/// `remote_workbench_node`'s own `v.reacts` while shelved) and resume the active screen when returning to it.
+fn remote_shelf_pause_node(v : @view.View, src : Source) -> Unit {
+  let was_shelved = Ref(false)
+  v.reacts(
+    fn() {
+      let _ = app.nav.pages()
+      let shelved = app.nav.shelved(Place("remote")) is Some(_)
+      let ws = @sfbase.workspace_in_view(src).0.map(fn(w) { w.id })
+      (shelved, ws)
+    },
+    fn(cur) {
+      let (shelved, ws) = cur
+      if shelved == was_shelved.val {
+        return
+      }
+      was_shelved.val = shelved
+      guard ws is Some(wid) else { return }
+      let (tabs, active) = @signals.untracked(fn() { @sfbase.remote_tabs_of(src, wid) })
+      if shelved {
+        let top = @signals.untracked(fn() { app.nav.top() })
+        for tab in tabs {
+          match tab.1 {
+            @sfbase.RemoteTab::Screen(at) if !@sfpages.farview_screen(at.screen) => {
+              let shown_aside = @signals.untracked(fn() { side_screen_shown(src, at.station, at.screen) })
+              let shown_full = top is Screen(t) && t.station == at.station && t.screen == at.screen
+              if !shown_aside && !shown_full {
+                @sfpages.screen_covered(src, at.station, at.screen, true)
+              }
+            }
+            _ => ()
+          }
+        }
+      } else if @signals.untracked(fn() { app.nav.top() }) == Place("remote") {
+        for tab in tabs {
+          if tab.0 == active {
+            if tab.1 is @sfbase.RemoteTab::Screen(at) && !@sfpages.farview_screen(at.screen) {
+              @sfpages.screen_covered(src, at.station, at.screen, false)
+            }
+            break
+          }
+        }
+      }
+    },
+  )
+}
+
+///|
 fn pane_stack(v : @view.View, src : Source, tips : @sf.TipLayer) -> Unit {
+  remote_shelf_pause_node(v, src)
   @ui.nav_flat_view(
     v,
     app.nav,
@@ -132,6 +184,7 @@ fn pane_stack(v : @view.View, src : Source, tips : @sf.TipLayer) -> Unit {
     shown=fn(ks) { fold_goes.shown = ks },
     // (a chat's page made as nodes left kept, taken back as it is opened again: sfbase's chat_page_left_key)
     keeps_left=@sfbase.chat_page_left_key,
+    keeps_made=true,
   )
   |> ignore
 }

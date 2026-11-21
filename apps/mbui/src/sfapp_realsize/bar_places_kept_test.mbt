@@ -232,20 +232,112 @@ test "bar places kept: Home at rest on the shelf is not pressed, focused or read
 }
 
 ///|
-test "bar places kept: on 大屏 a place switched to from the rail is put in place as before, the one left let go, nothing kept" {
+test "bar places kept: on 大屏 explicit kept=false replaces without parking on the shelf" {
   let t = @sfapptest.wide_tester([])
   t.run_for(@sfapptest.kept_switch_over_ms)
   let first = @sfbase.app.nav.top_stay().0
-  @ui.view_tree().unwrap().event(t.time(), fn() { @sfbase.go_place("connects") |> ignore })
+  @ui.view_tree().unwrap().event(t.time(), fn() { @sfbase.go_place("connects", kept=false) |> ignore })
   t.run_for(@sfapptest.kept_switch_over_ms)
-  @ui.view_tree().unwrap().event(t.time(), fn() { @sfbase.go_place("chats") |> ignore })
+  @ui.view_tree().unwrap().event(t.time(), fn() { @sfbase.go_place("chats", kept=false) |> ignore })
   t.run_for(@sfapptest.kept_switch_over_ms)
   // (Home made anew in its place: another entry, none on the shelf)
-  println("bar-kept wide: \{Repr(@sfbase.app.nav.pages().map(@sfapp.place_of))}")
+  println("bar-kept wide unkept: \{Repr(@sfbase.app.nav.pages().map(@sfapp.place_of))}")
   assert_true(@sfbase.app.nav.pages()[0] == Home)
   assert_true(@sfbase.app.nav.top_stay().0 != first)
   assert_eq(@sfbase.app.nav.shelved(Home), None)
   assert_eq(@sfbase.app.nav.shelved(Place("connects")), None)
+}
+
+///|
+test "bar places kept: on 大屏 rail switch parks Place(profiles) with zero rebuilds and restores Chat from kept_left" {
+  let c = @sfrealsize.RealSizeChanging::new()
+  let (_, w, h, platform, _) = real_size_windows[1]
+  let src_ref : Ref[@sfbase.Source?] = Ref(None)
+  let made = fn() {
+    match src_ref.val {
+      Some(s) => s
+      None => {
+        @sfapp.reset()
+        let s = c.source(@sffixture.fixture("home"))
+        @sfapp.open_fixture_over("home", s)
+        src_ref.val = Some(s)
+        s
+      }
+    }
+  }
+  let t = @ui.Tester::new(
+    fn(x) { @sfapp.view(x, made()) },
+    tree=fn(root) { @sfapp.app_tree(made())(root) },
+    w~,
+    h~,
+    platform~,
+    window_corner=@sfapptest.test_window_corner(platform),
+    corners_held=false,
+    words_over_held=false,
+    env=[("MBUI_LOCALE", "zh")],
+  )
+  t.motion_unjudged(true)
+  t.set_a11y(true)
+  t.run_for(@sfapptest.squeeze_opening)
+  t.run_for(@sfapptest.kept_switch_over_ms)
+  let src = made()
+  let chat_ref = match @sfbase.app.nav.top() {
+    Chat(r) => r
+    _ => {
+      let w = @signals.untracked(fn() { @sfbase.workspace_in_view(src).0.unwrap() })
+      let first = @signals.untracked(fn() { @sfbase.chats_of(src, w.id, "all").0.unwrap().days[0].items[0] })
+      let r : @sfbase.ChatRef = {
+        station: first.station,
+        session: first.session,
+        title: first.title,
+        station_name: first.station_name,
+      }
+      @ui.view_tree().unwrap().event(t.time(), fn() { @sfbase.nav_over_home([Chat(r)]) })
+      t.run_for(@sfapptest.kept_switch_over_ms)
+      r
+    }
+  }
+  assert_true(@sfbase.app.nav.top() == Chat(chat_ref))
+  // 1. Chat -> Place("profiles") (kept=true): first open builds profiles page
+  t.tree_frames_from_now()
+  @ui.view_tree().unwrap().event(t.time(), fn() { @sfbase.go_place("profiles", kept=true) |> ignore })
+  t.run_for(@sfapptest.kept_switch_over_ms)
+  let first_made = t.tree_frames().fold(init=0, fn(n, f) { n + f.made })
+  let first_let_go = t.tree_frames().fold(init=0, fn(n, f) { n + f.let_go })
+  assert_true(@sfbase.app.nav.top() == Place("profiles"))
+  let profiles_serial = @sfbase.app.nav.top_stay().0
+  assert_eq(t.unasked_faults(), [], msg="wide profiles first open unasked")
+  // 2. Place("profiles") -> 对话 (go_place("chats", kept=true) + nav_over_home([Chat(chat_ref)])):
+  //    profiles stays shelved, Chat restores from kept_left
+  t.tree_frames_from_now()
+  @ui.view_tree().unwrap().event(t.time(), fn() {
+    @sfbase.go_place("chats", kept=true) |> ignore
+    @sfbase.nav_over_home([Chat(chat_ref)])
+  })
+  t.run_for(@sfapptest.kept_switch_over_ms)
+  let back_chat_made = t.tree_frames().fold(init=0, fn(n, f) { n + f.made })
+  let back_chat_let_go = t.tree_frames().fold(init=0, fn(n, f) { n + f.let_go })
+  assert_true(@sfbase.app.nav.top() == Chat(chat_ref))
+  assert_true(@sfbase.app.nav.shelved(Place("profiles")) is Some(_), msg="profiles parked on shelf when returning to chat")
+  assert_eq(t.unasked_faults(), [], msg="wide back to chat unasked")
+  let (chat_a11y, chat_tabs, _) = kept_reachable(t, 8)
+  assert_false(chat_a11y.is_empty(), msg="chat a11y populated")
+  assert_false(chat_tabs.iter().any(fn(l) { l.contains("添加账号") }), msg="no shelved profiles focus on chat")
+  // 3. Second switch back to Place("profiles") (kept=true): reuses exact entry serial with zero rebuilds/drops
+  t.tree_frames_from_now()
+  @ui.view_tree().unwrap().event(t.time(), fn() { @sfbase.go_place("profiles", kept=true) |> ignore })
+  t.run_for(@sfapptest.kept_switch_over_ms)
+  let second_made = t.tree_frames().fold(init=0, fn(n, f) { n + f.made })
+  let second_let_go = t.tree_frames().fold(init=0, fn(n, f) { n + f.let_go })
+  println(
+    "bar-kept wide profiles: first=(made \{first_made}, let_go \{first_let_go}), back_chat=(made \{back_chat_made}, let_go \{back_chat_let_go}), second=(made \{second_made}, let_go \{second_let_go})",
+  )
+  assert_true(@sfbase.app.nav.top() == Place("profiles"))
+  assert_eq(@sfbase.app.nav.top_stay().0, profiles_serial, msg="second switch reuses same profiles entry serial")
+  assert_eq((second_made, second_let_go), (0, 0), msg="second switch to parked profiles builds/drops zero nodes")
+  assert_eq(t.unasked_faults(), [], msg="wide profiles second open unasked")
+  t.run_for(@sfapptest.kept_glide_over_ms)
+  t.assert_idle()
 }
 
 ///|

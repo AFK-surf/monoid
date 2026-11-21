@@ -35,6 +35,7 @@ fn tape_page_pane(v : @view.View, src : Source) -> Unit {
     |> ignore
     // (its corners the tape's, those at the window's edge following the window's: linked each, as @sf.corners_radius)
     @ui.tree_corners_linked(panel, fn() { Some(tape_pane_corners(Page, tape_shown_side() is Some(_))) })
+    remote_shelf_pause_node(panel, src)
     @ui.nav_flat_view(
       panel,
       app.nav,
@@ -59,6 +60,7 @@ fn tape_page_pane(v : @view.View, src : Source) -> Unit {
       takes_back=fn() { wide.tape_at.get() == Page },
       // (a chat's page made as nodes left kept, taken back as it is opened again: sfbase's chat_page_left_key)
       keeps_left=@sfbase.chat_page_left_key,
+      keeps_made=true,
       transition=@ui.NavTransition::layered(),
     )
     |> ignore

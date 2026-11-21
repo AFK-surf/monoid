@@ -66,7 +66,7 @@ fn lists_foot_node(o : @view.View, src : Source, workspace : () -> Workspace?, a
       @sf.count_chip_node(
         k,
         words,
-        fn(_) { @sfbase.go_place("stations") |> ignore },
+        fn(_) { @sfbase.go_place("stations", kept=true) |> ignore },
         lead=fn(r) {
           @sf.station_glyph_node(
             r,
