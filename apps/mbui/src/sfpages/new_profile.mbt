@@ -103,7 +103,7 @@ fn new_profile_flow_node(
   }
   let sign = fn() { field(d(), "signIn") }
   let install = fn() { field(d(), "install") }
-  let plan = fn() { step() == "connect" && (text(d(), "method") == "plan" || text(d(), "method") == "enterprise") }
+  let plan = fn() { step() == "connect" && (text(d(), "method") == "plan" || text(d(), "method") == "enterprise" || text(d(), "method") == "colab") }
   let planning = fn() { plan() && !(install() is Some(Object(_))) && sign() is Some(Object(_)) }
   // a plan's sign-in starts as its step comes; left unfinished, let go as it goes
   v.reacts(planning, fn(on) {
@@ -381,6 +381,9 @@ fn new_profile_methods_node(b : @view.View, d : () -> Json?, choose : (String) -
     choose,
     mark=fn(m, id) {
       @sf.provider_mark_node(m, fn() {
+        if id == "colab" {
+          return ("", "service", "colab")
+        }
         let t = tile()
         let kind = if (id == "plan" || id == "enterprise") && text(t, "kind") != "opencode-go" && text(t, "id") != "moonshotai" {
           "subscription"

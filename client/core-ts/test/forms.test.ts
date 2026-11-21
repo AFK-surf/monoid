@@ -552,26 +552,51 @@ test("Hermes variables are offered only on stations that support Hermes", () => 
   assert.ok(!flows.value(topic).groups.find((g: J) => g.id === "local").providers.some((p: J) => p.id === "env-hermes"));
 });
 
-test("Google Colab is offered in services group when station advertises profileServices and starts service sign-in", () => {
+test("Google Colab is aggregated under Google tile across all runtime/key/service combinations", () => {
   const { s, flows, topic } = flow();
   flows.change(topic, 1, "open", {});
-  s.set(overview, { ok: { apiProviders: [], profileServices: ["colab"] } });
+
+  // 1. agy + key + colab -> 4 choices under Google tile (no separate services group)
+  s.set(overview, { ok: { apiProviders: [{ id: "google" }], updates: [{ id: "agy", name: "Antigravity CLI", installed: true }], profileServices: ["colab"] } });
   let view = flows.value(topic);
   assert.ok("ok" in conform("ProfileFlowView", view), JSON.stringify(conform("ProfileFlowView", view)));
-  const servicesGroup = view.groups.find((g: J) => g.id === "services");
-  assert.ok(servicesGroup, "services group should be present");
-  assert.deepEqual(
-    servicesGroup.providers.map((p: J) => [p.id, p.name, p.mark, p.hasPlan, p.hasKey]),
-    [["service-colab", "Google Colab", "colab", true, false]],
-  );
-  flows.change(topic, 1, "edit", { provider: "service-colab" });
+  assert.equal(view.groups.find((g: J) => g.id === "services"), undefined);
+  const googleTile = view.groups.find((g: J) => g.id === "labs").providers.find((p: J) => p.id === "google");
+  assert.ok(googleTile);
+  assert.equal(googleTile.name, "Google");
+  assert.equal(googleTile.service, "colab");
+  flows.change(topic, 1, "edit", { provider: "google" });
+  view = flows.value(topic);
+  assert.ok("ok" in conform("ProfileFlowView", view), JSON.stringify(conform("ProfileFlowView", view)));
+  assert.equal(view.step, "method");
+  assert.deepEqual(view.choices.map((c: J) => c.id), ["plan", "enterprise", "colab", "key"]);
+  flows.change(topic, 1, "edit", { method: "colab" });
   view = flows.value(topic);
   assert.ok("ok" in conform("ProfileFlowView", view), JSON.stringify(conform("ProfileFlowView", view)));
   assert.equal(view.step, "connect");
+  assert.equal(view.title, "连接 Google Colab");
   assert.deepEqual(view.signIn, { service: "colab", provider: "Google Colab" });
   assert.equal(view.usesLine, "添加后可用于 Google Colab GPU 算力任务");
-  // Station without profileServices hides the services group.
-  s.set(overview, { ok: { apiProviders: [] } });
-  flows.change(topic, 1, "edit", { back: true });
-  assert.equal(flows.value(topic).groups.find((g: J) => g.id === "services"), undefined);
+
+  // 2. key + colab (no agy) -> 2 choices (colab + key, NO plan)
+  s.set(overview, { ok: { apiProviders: [{ id: "google" }], updates: [], profileServices: ["colab"] } });
+  flows.change(topic, 1, "edit", { provider: "google" });
+  view = flows.value(topic);
+  assert.equal(view.step, "method");
+  assert.deepEqual(view.choices.map((c: J) => c.id), ["colab", "key"]);
+
+  // 3. colab only (no agy, no key) -> skips method step straight to Google Colab connect step
+  s.set(overview, { ok: { apiProviders: [], updates: [], profileServices: ["colab"] } });
+  flows.change(topic, 1, "edit", { provider: "google" });
+  view = flows.value(topic);
+  assert.equal(view.step, "connect");
+  assert.equal(view.title, "连接 Google Colab");
+  assert.deepEqual(view.signIn, { service: "colab", provider: "Google Colab" });
+
+  // 4. agy + key without profileServices -> original 3 choices (no colab)
+  s.set(overview, { ok: { apiProviders: [{ id: "google" }], updates: [{ id: "agy", name: "Antigravity CLI", installed: true }] } });
+  flows.change(topic, 1, "edit", { provider: "google" });
+  view = flows.value(topic);
+  assert.equal(view.step, "method");
+  assert.deepEqual(view.choices.map((c: J) => c.id), ["plan", "enterprise", "key"]);
 });

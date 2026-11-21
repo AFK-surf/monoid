@@ -1296,23 +1296,44 @@ test "colab service profile shows CU credits, active VM note, and relogin on exp
 }
 
 ///|
-test "profiles list shows Google Colab group with CU balance and add profile flow starts service login" {
+test "profiles list aggregates Google Colab under Google group and add profile flow picks colab method" {
+  let agy_item : Json = {
+    "key": "agy-lin@example.com",
+    "group": "agy",
+    "groupTitle": "Google",
+    "title": "lin@example.com",
+    "usable": true,
+    "station": "ws1/st1",
+    "stationName": "Willow",
+    "state": { "text": "", "tone": "neutral" },
+    "profile": {
+      "id": "agy-1",
+      "name": "lin@example.com",
+      "runtime": "agy",
+      "access": { "kind": "subscription" },
+      "providerMark": "gemini",
+      "kindText": "Google 订阅",
+      "planText": "Ultra 5x",
+      "quota": { "state": "ok", "windows": [] },
+    },
+  }
   let colab_item : Json = {
-    "key": "colab-user@example.com",
-    "group": "colab",
-    "groupTitle": "Google Colab",
-    "title": "user@example.com",
+    "key": "colab-lin@example.com",
+    "group": "agy",
+    "groupTitle": "Google",
+    "title": "lin@example.com",
     "usable": true,
     "station": "ws1/st1",
     "stationName": "Willow",
     "state": { "text": "", "tone": "neutral" },
     "profile": {
       "id": "colab-1",
-      "name": "user@example.com",
+      "name": "lin@example.com",
       "runtime": null,
       "service": "colab",
       "access": { "kind": "service", "service": "colab" },
       "providerMark": "colab",
+      "kindText": "Google Colab",
       "planText": "",
       "quota": {
         "state": "ok",
@@ -1329,7 +1350,7 @@ test "profiles list shows Google Colab group with CU balance and add profile flo
           let copy = o.copy()
           for k, val in o {
             copy[k] = if k == "items" && val is Array(arr) {
-              Json::array(arr + [colab_item])
+              Json::array(arr + [agy_item, colab_item])
             } else {
               inject_list(val)
             }
@@ -1352,34 +1373,34 @@ test "profiles list shows Google Colab group with CU balance and add profile flo
       },
     }
   })
-  assert_true(t_list.find("Google Colab") is Some(_), msg="profiles list shows Google Colab group")
+  assert_true(t_list.find("Google") is Some(_), msg="profiles list shows Google group")
+  assert_true(t_list.find("Ultra 5x") is Some(_), msg="profiles list shows Antigravity CLI row")
+  assert_true(t_list.find("Google Colab") is Some(_), msg="profiles list shows Google Colab tag on Colab row")
   assert_true(t_list.find("2,500 CU · 1 台运行中 · 10.05 CU/h") is Some(_), msg="profiles list shows CU balance and active VM detail")
   assert_eq(t_list.audit(), [])
 
-  // Add profile flow: pick step shows services group -> Google Colab and sends profileFlow.edit
+  // Add profile flow: Google method step shows Google Colab option and sends profile.flow.edit(method: "colab")
   let edit_calls : Array[Json] = []
-  let pick_view : Json = {
-    "step": "pick",
-    "title": "添加账号",
-    "groups": [
-      {
-        "id": "services",
-        "title": "算力与服务",
-        "providers": [
-          {
-            "id": "service-colab",
-            "name": "Google Colab",
-            "mark": "colab",
-            "hasPlan": true,
-            "hasKey": false,
-            "usesText": "Google Colab 算力",
-            "kind": "service",
-            "service": "colab",
-          },
-        ],
-      },
+  let method_view : Json = {
+    "step": "method",
+    "title": "连接 Google",
+    "tile": {
+      "id": "google",
+      "name": "Google",
+      "kind": "api-provider",
+      "runtime": "agy",
+      "service": "colab",
+      "mark": "gemini",
+      "hasPlan": true,
+      "hasKey": true,
+    },
+    "groups": [],
+    "choices": [
+      { "id": "plan", "title": "订阅 · Google AI", "hint": "Antigravity CLI" },
+      { "id": "enterprise", "title": "企业版 · Gemini Enterprise", "hint": "Gemini Enterprise" },
+      { "id": "colab", "title": "Google Colab", "hint": "Google Colab Pro / Pro+ 或 Google AI Ultra，用于运行 GPU 算力任务。" },
+      { "id": "key", "title": "API key", "hint": "使用 Google Gemini 的 API key，按量计费" },
     ],
-    "choices": [],
     "signIn": null,
     "showKey": false,
     "showEndpoint": false,
@@ -1389,12 +1410,12 @@ test "profiles list shows Google Colab group with CU balance and add profile flo
     "pending": false,
     "error": null,
   }
-  let t_pick = setting_tester(NewProfile("ws1/st1"), 1280.0, over=fn(s) {
+  let t_method = setting_tester(NewProfile("ws1/st1"), 1280.0, over=fn(s) {
     {
       ..s,
       topic_read: fn(name, params) {
         if name == "profileFlow" {
-          { value: Some(pick_view), version: 1, error: None }
+          { value: Some(method_view), version: 1, error: None }
         } else {
           s.topic(name, params).get().snapshot()
         }
@@ -1409,24 +1430,23 @@ test "profiles list shows Google Colab group with CU balance and add profile flo
       },
     }
   })
-  assert_true(t_pick.find("算力与服务") is Some(_), msg="add profile shows services group")
-  assert_true(t_pick.find("Google Colab") is Some(_), msg="add profile shows Google Colab tile")
-  assert_eq(t_pick.audit(), [])
-  t_pick.tap_text("Google Colab")
-  t_pick.frame()
+  assert_true(t_method.find("Google Colab") is Some(_), msg="Google method step shows Google Colab choice")
+  assert_eq(t_method.audit(), [])
+  t_method.tap_text("Google Colab")
+  t_method.frame()
   assert_eq(edit_calls.length(), 1, msg="tapping Google Colab calls profile.flow.edit")
-  assert_eq(text(field(Some(edit_calls[0]), "input"), "provider"), "service-colab")
+  assert_eq(text(field(Some(edit_calls[0]), "input"), "method"), "colab")
 
-  // Connect step for Google Colab starts login.new with service=colab (no runtime)
+  // Connect step for Google Colab (method=colab) starts login.new with service=colab (no runtime)
   let login_calls : Array[Json] = []
   let connect_view : Json = {
     "step": "connect",
-    "method": "plan",
+    "method": "colab",
     "title": "连接 Google Colab",
     "groups": [],
     "choices": [],
     "signIn": { "service": "colab", "provider": "Google Colab" },
-    "usesLine": "添加后可用于：Google Colab 算力",
+    "usesLine": "添加后可用于 Google Colab GPU 算力任务",
     "showKey": false,
     "showEndpoint": false,
     "protocols": [],
@@ -1455,7 +1475,7 @@ test "profiles list shows Google Colab group with CU balance and add profile flo
       },
     }
   })
-  assert_true(t_conn.find("Google Colab 算力") is Some(_), msg="connect step shows usesLine")
+  assert_true(t_conn.find("Google Colab GPU 算力任务") is Some(_), msg="connect step shows usesLine")
   assert_eq(login_calls.length(), 1, msg="connect step starts login.new")
   assert_eq(text(Some(login_calls[0]), "service"), "colab", msg="login.new passes service=colab")
   assert_eq(field(Some(login_calls[0]), "runtime"), None, msg="login.new omits runtime for service")

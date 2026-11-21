@@ -399,7 +399,7 @@ function poolSpecs(items: J[], now: number): PoolRows[] {
     return [find(ws, "gemini", "long"), find(ws, "gemini", "short")];
   };
   const gemini = items.filter((i) => {
-    if (groupOf(i) !== "agy") return false;
+    if (groupOf(i) !== "agy" || i?.profile?.access?.kind === "service") return false;
     const [long, short] = geminiOf(i);
     // (an allowance read that has no Gemini window: an account of none, not one to wait for)
     return !(long === null && short === null && i?.profile?.quota?.state === "ok" && !needsFix(i));

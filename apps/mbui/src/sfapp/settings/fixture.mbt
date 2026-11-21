@@ -1298,7 +1298,7 @@ pub fn fixture_page(mode : String) -> String {
     "settings-adb-second" => "adb:ws1/st2"
     "settings-profile-menu" | "settings-profile-lower" | "settings-profile-share" | "settings-profile-login" | "settings-profile-login-station" =>
       "profile:ws1/st1#cc"
-    "settings-new-profile" | "settings-new-profile-hermes" | "settings-new-profile-colab" | "settings-new-profile-colab-login" | "settings-new-profile-stations" | "settings-new-profile-login" | "settings-new-profile-login-station" | "settings-new-profile-key" | "settings-new-profile-google" | "settings-new-profile-google-ways"
+    "settings-new-profile" | "settings-new-profile-hermes" | "settings-new-profile-colab" | "settings-new-profile-google-colab-ways" | "settings-new-profile-colab-login" | "settings-new-profile-stations" | "settings-new-profile-login" | "settings-new-profile-login-station" | "settings-new-profile-key" | "settings-new-profile-google" | "settings-new-profile-google-ways"
     | "settings-new-profile-google-code" | "settings-new-profile-google-plan" | "settings-new-profile-google-project" => "new-profile:ws1/st1"
     "settings-connect-menu" | "settings-connect-mode" => "connect:ws1/st1#k1"
     "settings-connect-run" | "settings-connect-switch" | "settings-slack-app" => "connect:ws1/st1#k1"
@@ -1574,7 +1574,25 @@ fn fx_profiles() -> Array[Json] {
   }
   if fx_colab_profiles.val {
     profiles.push(
-      fx_profile("colab", "lin@colab.example", "service", "green", "可用", "colab", "Google Colab", [
+      fx_profile("gp-colab", "lin@gmail.example", "subscription", "green", "可用", "agy", "Google", [
+        ("runtime", str("agy")),
+        ("runtimes", [str("agy")]),
+        ("email", str("lin@gmail.example")),
+        ("planText", str("Ultra 5x")),
+        ("signInProvider", str("Google")),
+        ("usesText", str("Antigravity CLI")),
+        ("usedBy", []),
+        ("quota", obj([
+          ("state", str("ok")),
+          ("windows", [
+            fx_window("5 小时 · Gemini", "Gemini 5H", 99, "1 小时后恢复", "Gemini"),
+            fx_window("每周 · Gemini", "Gemini W", 76, "3 天后恢复", "Gemini"),
+          ]),
+        ])),
+      ]),
+    )
+    profiles.push(
+      fx_profile("colab", "lin@colab.example", "service", "green", "可用", "agy", "Google", [
         ("runtime", Json::null()),
         ("service", str("colab")),
         ("runtimes", []),
@@ -3638,6 +3656,7 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
         ]),
       )
     "profileFlow" if fx_colab_login.val => Some(fx_profile_flow_colab_login())
+    "profileFlow" if mode == "settings-new-profile-google-colab-ways" => Some(fx_profile_flow_google_colab_ways())
     "profileFlow" if fx_google.val != "" => Some(fx_profile_flow_google(fx_google.val))
     "profileFlow" if fx.new_login => Some(fx_profile_flow_plan())
     "profileFlow" if fx.new_key => Some(fx_profile_flow_key())
@@ -5158,6 +5177,46 @@ fn fx_profile_flow_key() -> Json {
 }
 
 ///|
+/// A new profile's draft at Google's 4-way method picker (`profileFlow`, settings-new-profile-google-colab-ways).
+fn fx_profile_flow_google_colab_ways() -> Json {
+  let choice = fn(id : String, title : String, hint : String) { obj([("id", str(id)), ("title", str(title)), ("hint", str(hint))]) }
+  obj([
+    ("step", str("method")),
+    ("station", str("ws1/st1")),
+    ("title", str("连接 Google")),
+    ("hint", str("")),
+    ("method", str("")),
+    (
+      "tile",
+      obj([
+        ("id", str("google")), ("name", str("Google")), ("kind", str("api-provider")), ("runtime", str("agy")),
+        ("service", str("colab")), ("mark", str("gemini")), ("hasKey", Json::boolean(true)), ("hasPlan", Json::boolean(true)),
+      ]),
+    ),
+    ("groups", []),
+    (
+      "choices",
+      [
+        choice("plan", "订阅 · Google AI", "Google AI Pro / Ultra 或免费 Google 账号，用于运行 Antigravity CLI。用 Google 账号登录一次，再贴回页面给的授权码。Google 的条款不允许其他工具这样用，账号可能被停用。"),
+        choice("enterprise", "企业版 · Gemini Enterprise", "公司的 Google Workspace 或 Google Cloud 账号，用于运行 Antigravity CLI。用公司的 Google 账号登录一次，再贴回页面给的授权码；账号没分到许可证时，再填一个 Google Cloud 项目。Google 的条款不允许其他工具这样用，账号可能被停用。"),
+        choice("colab", "Google Colab", "Google Colab Pro / Pro+ 或 Google AI Ultra，用于运行 GPU 算力任务。用 Google 账号登录一次，再贴回页面给的授权码。"),
+        choice("key", "API key", "使用 Google Gemini 的 API key，按量计费"),
+      ],
+    ),
+    ("showEndpoint", Json::boolean(false)),
+    ("endpoint", str("")),
+    ("protocols", []),
+    ("showKey", Json::boolean(false)),
+    ("key", str("")),
+    ("keyLabel", str("")),
+    ("canSubmit", Json::boolean(false)),
+    ("pending", Json::boolean(false)),
+    ("submitLabel", str("")),
+    ("usesLine", str("")),
+  ])
+}
+
+///|
 /// A new profile's draft at a Google Colab OAuth sign-in (`profileFlow`, settings-new-profile-colab-login).
 fn fx_profile_flow_colab_login() -> Json {
   obj([
@@ -5165,8 +5224,8 @@ fn fx_profile_flow_colab_login() -> Json {
     ("station", str("ws1/st1")),
     ("title", str("连接 Google Colab")),
     ("hint", str("")),
-    ("method", str("plan")),
-    ("tile", obj([("id", str("service-colab")), ("name", str("Google Colab")), ("kind", str("service")), ("service", str("colab")), ("mark", str("colab"))])),
+    ("method", str("colab")),
+    ("tile", obj([("id", str("google")), ("name", str("Google")), ("kind", str("api-provider")), ("runtime", str("agy")), ("service", str("colab")), ("mark", str("gemini"))])),
     ("signIn", obj([("service", str("colab")), ("provider", str("Google Colab"))])),
     ("groups", []),
     ("choices", []),
@@ -5189,44 +5248,31 @@ fn fx_profile_flow(hermes? : Bool = false, colab? : Bool = false) -> Json {
   let provider = fn(id : String, name : String, group : String, runtime : String, mark : String) {
     obj([("id", str(id)), ("name", str(name)), ("group", str(group)), ("kind", str("api-provider")), ("runtime", str(runtime)), ("mark", str(mark))])
   }
-  let groups : Array[Json] = [
-    obj([
-      ("id", str("labs")),
-      ("title", str("模型厂商")),
-      (
-        "providers",
-        [
-          provider("openai", "OpenAI", "labs", "codex", "openai"),
-          provider("anthropic", "Anthropic", "labs", "claude", "anthropic"),
-          provider("deepseek", "DeepSeek", "labs", "", "deepseek"),
-          provider("kimi", "Kimi", "labs", "", "kimi"),
-        ],
-      ),
-    ]),
-    obj([("id", str("gateways")), ("title", str("中转站")), ("providers", [provider("openrouter", "OpenRouter", "gateways", "", "openrouter")])]),
+  let labs_providers : Array[Json] = [
+    provider("openai", "OpenAI", "labs", "codex", "openai"),
+    provider("anthropic", "Anthropic", "labs", "claude", "anthropic"),
+    provider("deepseek", "DeepSeek", "labs", "", "deepseek"),
+    provider("kimi", "Kimi", "labs", "", "kimi"),
   ]
   if colab {
-    groups.push(obj([
-      ("id", str("services")),
-      ("title", str("算力与服务")),
-      (
-        "providers",
-        [
-          obj([
-            ("id", str("service-colab")),
-            ("name", str("Google Colab")),
-            ("group", str("services")),
-            ("kind", str("service")),
-            ("service", str("colab")),
-            ("mark", str("colab")),
-            ("hasPlan", Json::boolean(true)),
-            ("hasKey", Json::boolean(false)),
-            ("usesText", str("Google Colab GPU 算力")),
-          ]),
-        ],
-      ),
-    ]))
+    labs_providers.push(
+      obj([
+        ("id", str("google")),
+        ("name", str("Google")),
+        ("group", str("labs")),
+        ("kind", str("api-provider")),
+        ("runtime", str("agy")),
+        ("service", str("colab")),
+        ("mark", str("gemini")),
+        ("hasKey", Json::boolean(true)),
+        ("hasPlan", Json::boolean(true)),
+      ]),
+    )
   }
+  let groups : Array[Json] = [
+    obj([("id", str("labs")), ("title", str("模型厂商")), ("providers", Json::array(labs_providers))]),
+    obj([("id", str("gateways")), ("title", str("中转站")), ("providers", [provider("openrouter", "OpenRouter", "gateways", "", "openrouter")])]),
+  ]
   if hermes {
     groups.push(obj([
       ("id", str("local")), ("title", str("自定义变量")),

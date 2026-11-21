@@ -449,9 +449,16 @@ fn pl_account_row_node(r : @view.View, core : Core, ev : () -> Json?, tips : @sf
         title_cut=true,
         title_after=fn(a) {
           a.drops(Is(pl_drop_plan)) |> ignore
-          @sf.row_tag_node(a, fn() { text(p(), "planText") })
+          @sf.row_tag_node(a, fn() {
+            match text(p(), "planText") {
+              "" => if text(field(p(), "access"), "kind") == "service" { text(p(), "kindText") } else { "" }
+              s => s
+            }
+          })
         },
-        title_after_shown=fn() { text(p(), "planText") != "" },
+        title_after_shown=fn() {
+          text(p(), "planText") != "" || (text(field(p(), "access"), "kind") == "service" && text(p(), "kindText") != "")
+        },
         below=fn(q) {
           q.show(windows, fn(w) { pl_quota_node(w, quota, tips) })
         },
@@ -498,7 +505,10 @@ fn pl_station_row_node(r : @view.View, core : Core, station : String, pv : () ->
     note=fn() {
       join(
         [
-          text(pv(), "planText"),
+          match text(pv(), "planText") {
+            "" => if text(field(pv(), "access"), "kind") == "service" { text(pv(), "kindText") } else { "" }
+            s => s
+          },
           text(pv(), "checkText"),
           if flag(pv(), "machine") {
             text(pv(), "kindText")

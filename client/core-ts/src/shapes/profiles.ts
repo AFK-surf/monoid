@@ -279,7 +279,7 @@ export const PROFILE_SHAPES: Record<string, Shape> = {
     ["hint", "String"],
     ["groups", vec("ProviderGroup")],
     ["tile", opt("ApiProvider")],
-    ["method", opt("String"), { doc: "plan | key, once chosen." }],
+    ["method", opt("String"), { doc: "plan | enterprise | colab | key, once chosen." }],
     ["choices", vec("FlowChoice"), { doc: "At the method step: the two cards." }],
     ["showEndpoint", "bool"],
     ["endpoint", "String"],
