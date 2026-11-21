@@ -2999,7 +2999,7 @@ pub fn Tester::drawn_glass_contained(self : Tester) -> Array[Bool] {
     let b = k * inst_size
     let kind = c.inst[b + 5].to_int()
     if kind == 5 || kind == 6 {
-      out.push(c.inst[b + 7] < 0.0)
+      out.push(kind == 5 && c.inst[b + 7] < 0.0)
     }
   }
   out

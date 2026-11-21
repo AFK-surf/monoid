@@ -455,15 +455,21 @@ MB_CORNER_SL
 "      float mag = amount * (1.0 - sqrt(max(1.0 - bevelX * bevelX, 0.0))) * shortening;\n"
 "      disp = surfaceNormal * (-mag);\n"
 "    }\n"
+"    float lensZoom = (I.p.w < 0.0) ? clamp(1.0 - I.p.w, 1.0, 3.0) : 1.0;\n"
+"    float2 sampleBase = p;\n"
+"    if (lensZoom > 1.0001) {\n"
+"      float2 zoomC = (k <= 0.0) ? (I.rect.xy + I.rect.zw * 0.5) : ((g.gb.xy + g.gb.zw) * 0.5);\n"
+"      sampleBase = zoomC + (p - zoomC) / lensZoom;\n"
+"    }\n"
 "    float3 refractColor;\n"
 "    if (abs(I.pad.z) * amount * u.scale <= 0.25) {\n"
-"      refractColor = backdrop(bd, g, p + disp);\n"
+"      refractColor = backdrop(bd, g, sampleBase + disp);\n"
 "    } else {\n"
 "      float ds = I.pad.z * 0.5;\n"
 "      refractColor = float3(\n"
-"        backdrop(bd, g, p + disp * (1.0 + ds)).r,\n"
-"        backdrop(bd, g, p + disp).g,\n"
-"        backdrop(bd, g, p + disp * (1.0 - ds)).b\n"
+"        backdrop(bd, g, sampleBase + disp * (1.0 + ds)).r,\n"
+"        backdrop(bd, g, sampleBase + disp).g,\n"
+"        backdrop(bd, g, sampleBase + disp * (1.0 - ds)).b\n"
 "      );\n"
 "    }\n"
 "    float3 emission;\n"
@@ -521,11 +527,16 @@ MB_CORNER_SL
 "      spot = 1.0 - smoothstep(gr * 0.1, gr, length(p - gp));\n"
 "      baseColor = clamp(baseColor + float3(0.08 * spot), 0.0, 1.0);\n"
 "    }\n"
-"    float tangency = abs(surfaceNormal.x);\n"
+"    float2 la = g.misc.zw;\n"
+"    float2 rn = float2(\n"
+"      surfaceNormal.x * la.x + surfaceNormal.y * la.y,\n"
+"      -surfaceNormal.x * la.y + surfaceNormal.y * la.x\n"
+"    );\n"
+"    float tangency = abs(rn.x);\n"
 "    float3 result = baseColor;\n"
-"    // (a) Inner bevel shadow (subtracts only transmittedColor; lightFacing = -surfaceNormal.y)\n"
+"    // (a) Inner bevel shadow (subtracts only transmittedColor; lightFacing = -rn.y)\n"
 "    if (bevelShadowStr >= 0.001 && inward < 23.0) {\n"
-"      float lightFacing = -surfaceNormal.y;\n"
+"      float lightFacing = -rn.y;\n"
 "      float shadowShift = 6.0 * lightFacing;\n"
 "      float penumbra = 2.0 * shadowShift;\n"
 "      float bevelLeading = penumbra > 0.001 ? smoothstep(0.0, penumbra, inward) : 1.0;\n"
@@ -1023,12 +1034,13 @@ typedef struct { int px0, py0, w, h, k, contained; float sg; GU g; MBContained e
 static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t count, int tw, int th) {
   memset(m, 0, sizeof *m);
   const float *a = f + start * MB_INST;
-  // A negative blur is contained: its straight edges are the capture's edges, its curved ones extended separately.
-  float blur = fabsf(a[7]);
+  // For frosted glass (kind 5), negative slot 7 is contained; for liquid glass (kind 6), negative slot 7 encodes clear-lens zoom.
   int kind = (int)(a[5] + 0.5f);
+  int is_contained = (kind == 5 && a[7] < 0.0f);
+  float blur = (kind == 6 && a[7] < 0.0f) ? 0.0f : fabsf(a[7]);
   int merged_liquid = (kind == 6 && a[23] > 0.0f);
   int unmerged_liquid = (kind == 6 && !merged_liquid);
-  float margin = a[7] < 0.0f ? 0.0f : 3.0f * blur + (kind == 6 ? a[21] * (1.0f + fabsf(a[22])) + fmaxf(a[23], 0.0f) : 0.0f) + 2.0f;
+  float margin = is_contained ? 0.0f : 3.0f * blur + (kind == 6 ? a[21] * (1.0f + fabsf(a[22])) + fmaxf(a[23], 0.0f) : 0.0f) + 2.0f;
   float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
   int n = 0;
   for (int32_t i = start; i < end; i++) {
@@ -1048,7 +1060,7 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
         }
         n++;
       }
-      if (unmerged_liquid && a[7] >= 0.0f) {
+      if (unmerged_liquid) {
         float bm = 3.0f * blur + b[21] * (1.0f + fabsf(b[22])) + m23 + 2.0f;
         if (bm > margin) margin = bm;
       }
@@ -1063,7 +1075,7 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
         float m23 = fmaxf(b[23], 0.0f);
         x0 = fminf(x0, b[0] - m23); y0 = fminf(y0, b[1] - m23);
         x1 = fmaxf(x1, b[0] + b[2] + m23); y1 = fmaxf(y1, b[1] + b[3] + m23);
-        if (a[7] >= 0.0f) {
+        {
           float bm = 3.0f * blur + b[21] * (1.0f + fabsf(b[22])) + m23 + 2.0f;
           if (bm > margin) margin = bm;
         }
@@ -1085,7 +1097,7 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
   if (py1 > th) py1 = th;
   if (px1 <= px0 || py1 <= py0 || x1 <= x0 || y1 <= y0) return 0;
   m->px0 = px0; m->py0 = py0; m->w = px1 - px0; m->h = py1 - py0;
-  m->contained = mb_contained_make(&m->edge, a, px0 / sc, py0 / sc, 1.0f / sc, 1.0f / sc);
+  m->contained = is_contained ? mb_contained_make(&m->edge, a, px0 / sc, py0 / sc, 1.0f / sc, 1.0f / sc) : 0;
   // down to where the deviation is 2 texels or more, at most 1/8
   float sp = blur * sc;
   int k = 0;
@@ -1107,12 +1119,16 @@ static void grab_levels(const Grab *m, int lw[4], int lh[4]) {
   }
 }
 
+static float g_light_angle = 0.0f;
+
 // What the glass shows of a grab's blur in texture `bt` (level k's place in it): gtex and gu, its numbers with where
 // in it it is.
 static void show_blur(const Grab *m, id<MTLTexture> bt) {
   int lw[4], lh[4];
   grab_levels(m, lw, lh);
   gu = m->g;
+  gu.misc[2] = cosf(g_light_angle);
+  gu.misc[3] = sinf(g_light_angle);
   gtex = bt;
   float sc = (float)at_scale;
   float W = (float)gtex.width, H = (float)gtex.height, d = (float)(1 << m->k);
@@ -1361,6 +1377,10 @@ static int sc_on;
 static MTLScissorRect sc;
 
 void mb_host_render_dirty(double x, double y, double w, double h) { dirty_add(&rw->said, x, y, w, h); }
+void mb_host_glass_light_angle(double rad) {
+  float a = (float)rad;
+  if (a != g_light_angle) { g_light_angle = a; if (rw) shown_ok = 0; }
+}
 
 // The parts of a target tw × th pixels a frame draws, from what was said of them (`d`, a frame nothing was said for
 // drawn whole), into `r`: how many (0 none), -1 all of it. `kept`: the target holds the frame before.

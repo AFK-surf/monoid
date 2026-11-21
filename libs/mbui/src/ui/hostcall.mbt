@@ -717,9 +717,23 @@ fn h_present(buf : FixedArray[Double], count : Int) -> Unit {
   let (r, gg, b) = c.clear
   // what of it differs from the frame presented before, the part a host that keeps its picture draws again
   let t0 = h_now()
+  let la = @signals.untracked(glass_light_angle)
+  @hostapi.set_glass_light_angle(la)
   // (a frame of its looks alone with only lists moved by their headers (looks_frame): those headers compared alone)
   let moved = if looks_heads_only.val {
-    presented.moved(buf, count, c.window_w, c.window_h, c.scale, r, gg, b, list_heads.map(fn(h) { h.at }), known=damage_known)
+    presented.moved(
+      buf,
+      count,
+      c.window_w,
+      c.window_h,
+      c.scale,
+      r,
+      gg,
+      b,
+      list_heads.map(fn(h) { h.at }),
+      known=damage_known,
+      light_angle=la,
+    )
   } else {
     None
   }
@@ -739,6 +753,7 @@ fn h_present(buf : FixedArray[Double], count : Int) -> Unit {
         b,
         groups=!ride_spans.is_empty(),
         known=damage_known,
+        light_angle=la,
       )
   }
   damage_known.clear()

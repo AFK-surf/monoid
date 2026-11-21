@@ -316,3 +316,39 @@ test "merged liquid glass keeps independent 4-corner radii and Glass::clear defa
   assert_eq((gs[1][4], gs[1][36], gs[1][37], gs[1][38], gs[1][39]), (24.0, 24.0, 24.0, 24.0, 24.0))
   assert_eq((gs[1][7], gs[1][12], gs[1][13], gs[1][21], gs[1][22], gs[1][23]), (0.0, 0.6, 14.0, 16.0, 0.0, 16.0))
 }
+
+///|
+test "liquid glass clear-lens zoom encodes negative slot 7, shares capture with blur=0 liquid, and light_angle signal resets cleanly" {
+  let cl0 = @ui.Glass::clear(merge=0.0)
+  let clz = @ui.Glass::clear(merge=0.0, zoom=1.25)
+  let cl_clamp = @ui.Glass::liquid(blur=0.0, merge=0.0, zoom=5.0)
+  let blurred_zoom = @ui.Glass::liquid(blur=2.0, merge=0.0, zoom=1.5)
+  assert_eq((cl0.zoom, clz.zoom), (1.0, 1.25))
+  let t = @ui.Tester::new(fn(c) {
+    c.box(w=Fill(1.0), h=Fill(1.0), bg=0x111827FFL, gap=8.0, fn() {
+      c.box(w=Px(80.0), h=Px(44.0), radius=22.0, glass=cl0, fn() {  }) |> ignore
+      // zoomed clear lens right after blur=0 clear glass shares the same capture (both effective blur 0.0)
+      c.box(w=Px(80.0), h=Px(44.0), radius=22.0, glass=clz, fn() {  }) |> ignore
+      // zoom > 3.0 clamps to 3.0 -> slot 7 = -2.0; sharing() also joins the blur=0 liquid capture
+      c.box(w=Px(80.0), h=Px(44.0), radius=22.0, glass=cl_clamp.sharing(), fn() {  }) |> ignore
+      // blur > 0 ignores zoom and writes positive blur
+      c.box(w=Px(80.0), h=Px(44.0), radius=22.0, glass=blurred_zoom, fn() {  }) |> ignore
+    })
+    |> ignore
+  })
+  let gs = t.drawn_instances().filter(fn(a) { a[5] == 6.0 })
+  assert_eq(gs.length(), 4)
+  assert_eq((gs[0][7], gs[1][7], gs[2][7], gs[3][7]), (0.0, -0.25, -2.0, 2.0))
+  assert_eq(gs[1][20], gs[0][20])
+  assert_eq(gs[2][20], gs[0][20])
+  assert_true(gs[3][20] != gs[0][20])
+  // negative slot 7 on liquid (kind 6) must never be reported as frosted `contained`
+  assert_eq(t.drawn_glass_contained(), [false, false, false, false])
+
+  // global ambient light angle signal updates and resets cleanly
+  assert_eq(@ui.glass_light_angle(), 0.0)
+  @ui.set_glass_light_angle(0.75)
+  assert_eq(@ui.glass_light_angle(), 0.75)
+  @ui.set_glass_light_angle(0.0)
+  assert_eq(@ui.glass_light_angle(), 0.0)
+}

@@ -1093,6 +1093,11 @@ impl @hostapi.Host for Native with rn_dirty(_, x, y, w, h) {
 }
 
 ///|
+impl @hostapi.Host for Native with rn_glass_light_angle(_, rad) {
+  rn_glass_light_angle(rad)
+}
+
+///|
 impl @hostapi.Host for Native with nv_bar(_, spec) {
   nv_bar(spec)
 }

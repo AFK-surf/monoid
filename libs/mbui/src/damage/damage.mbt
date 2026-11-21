@@ -137,6 +137,7 @@ pub struct Damage {
   priv mut r : Double
   priv mut g : Double
   priv mut b : Double
+  priv mut light_angle : Double
   priv mut has : Bool
   /// why the last frame was drawn whole (Damage::why)
   priv mut why : Int
@@ -216,6 +217,7 @@ pub fn Damage::new() -> Damage {
     r: 0.0,
     g: 0.0,
     b: 0.0,
+    light_angle: 0.0,
     has: false,
     why: 0,
     seen: [],
@@ -283,6 +285,7 @@ pub fn Damage::next(
   b : Double,
   groups? : Bool = false,
   known? : Array[(Double, Double, Double, Double)] = [],
+  light_angle? : Double = 0.0,
 ) -> Array[(Double, Double, Double, Double)] {
   let given = count
   self.heads_at.clear()
@@ -296,6 +299,7 @@ pub fn Damage::next(
     r == self.r &&
     g == self.g &&
     b == self.b
+  let light_changed = self.has && light_angle != self.light_angle
   self.why = if !self.has {
     1
   } else if !same_frame {
@@ -307,15 +311,15 @@ pub fn Damage::next(
   self.seg_now = -1
   self.step_far = 0.0
   self.step_ink = 0.0
-  self.step_known = same_frame && known.is_empty()
+  self.step_known = same_frame && known.is_empty() && !light_changed
   let out = if same_frame {
-    self.changed(inst, count, w, h, known)
+    self.changed(inst, count, w, h, known, light_changed)
   } else {
     [(0.0, 0.0, -1.0, -1.0)]
   }
   // (nothing changed of as many: what is kept is it already, every number the same, not copied again)
-  if !(same_frame && out.is_empty() && count == self.n) {
-    self.keep(inst, count, w, h, scale, r, g, b)
+  if !(same_frame && !light_changed && out.is_empty() && count == self.n) {
+    self.keep(inst, count, w, h, scale, r, g, b, light_angle)
   }
   out
 }
@@ -400,6 +404,7 @@ pub fn Damage::moved(
   b : Double,
   moved : Array[Int],
   known? : Array[(Double, Double, Double, Double)] = [],
+  light_angle? : Double = 0.0,
 ) -> Array[(Double, Double, Double, Double)]? {
   guard self.has &&
     count == self.given_n &&
@@ -408,7 +413,8 @@ pub fn Damage::moved(
     scale == self.scale &&
     r == self.r &&
     g == self.g &&
-    b == self.b else {
+    b == self.b &&
+    light_angle == self.light_angle else {
     return None
   }
   // (each header where it is among the kept frame's units)
@@ -584,6 +590,7 @@ fn Damage::keep(
   r : Double,
   g : Double,
   b : Double,
+  light_angle : Double,
 ) -> Unit {
   let len = count * inst_size
   if self.prev.length() < len {
@@ -607,6 +614,7 @@ fn Damage::keep(
   self.r = r
   self.g = g
   self.b = b
+  self.light_angle = light_angle
   self.has = true
 }
 
@@ -992,12 +1000,13 @@ fn glass_rim(a : FixedArray[Double], o : Int) -> Double {
 fn glass_margin(a : FixedArray[Double], k : Int) -> Double {
   let o = k * inst_size
   let liquid = kind_at(a, k) == 6
-  // (contained: its own box, its blur said below 0)
-  if a[o + 7] < 0.0 {
+  // (contained: its own box, its blur said below 0 — frosted kind 5 only)
+  if !liquid && a[o + 7] < 0.0 {
     return 2.0 + reach_pad
   }
-  3.0 * a[o + 7] +
-  (if liquid { a[o + 21] * (1.0 + a[o + 22]) + glass_rim(a, o) } else { 0.0 }) +
+  let eff_blur = if liquid && a[o + 7] < 0.0 { 0.0 } else { a[o + 7] }
+  3.0 * eff_blur +
+  (if liquid { a[o + 21] * (1.0 + a[o + 22].abs()) + glass_rim(a, o) } else { 0.0 }) +
   2.0 +
   reach_pad
 }
@@ -1087,6 +1096,7 @@ fn Damage::changed(
   w : Double,
   h : Double,
   known : Array[(Double, Double, Double, Double)],
+  light_changed : Bool,
 ) -> Array[(Double, Double, Double, Double)] {
   let prev = self.prev
   let n_old = self.n
@@ -1246,6 +1256,24 @@ fn Damage::changed(
             }
             changed(-1, head + j)
           }
+        }
+      }
+    }
+  }
+  if !whole && light_changed {
+    // Global ambient light axis rotated: mark all glass regions (in current or previous frame) dirty so specular
+    // glints, inner bevel shadows, and external contours redraw cleanly under partial redraw.
+    for gr in glass_groups(inst, seg) {
+      if add_part(parts, gr.within(window)) && parts_area(parts) > most_area {
+        whole = true
+        break
+      }
+    }
+    if !whole {
+      for gr in glass_groups(prev, seg_old) {
+        if add_part(parts, gr.within(window)) && parts_area(parts) > most_area {
+          whole = true
+          break
         }
       }
     }

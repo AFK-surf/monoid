@@ -105,6 +105,7 @@ static const char *FS =
     "uniform vec4 u_shape[8];\n"
     "uniform vec4 u_rad[8];\n"
     "uniform int u_n;\n"
+    "uniform vec2 u_glight;\n"
     "// the pieces of the frame's shapes (src/ui/shape.mbt: the instances of kind 12 after every one drawn), 2040 fours\n"
     "// (136 instances) a row\n"
     "uniform highp sampler2D u_segs;\n"
@@ -284,15 +285,21 @@ static const char *FS =
     "      float mag = amount * (1.0 - sqrt(max(1.0 - bevelX * bevelX, 0.0))) * shortening;\n"
     "      disp = surfaceNormal * (-mag);\n"
     "    }\n"
+    "    float lensZoom = (v_p.w < 0.0) ? clamp(1.0 - v_p.w, 1.0, 3.0) : 1.0;\n"
+    "    vec2 sampleBase = p;\n"
+    "    if (lensZoom > 1.0001) {\n"
+    "      vec2 zoomC = (k <= 0.0) ? (v_rect.xy + v_rect.zw * 0.5) : ((u_gb.xy + u_gb.zw) * 0.5);\n"
+    "      sampleBase = zoomC + (p - zoomC) / lensZoom;\n"
+    "    }\n"
     "    vec3 refractColor;\n"
     "    if (abs(v_pad.z) * amount * u_scale <= 0.25) {\n"
-    "      refractColor = backdrop(p + disp);\n"
+    "      refractColor = backdrop(sampleBase + disp);\n"
     "    } else {\n"
     "      float ds = v_pad.z * 0.5;\n"
     "      refractColor = vec3(\n"
-    "        backdrop(p + disp * (1.0 + ds)).r,\n"
-    "        backdrop(p + disp).g,\n"
-    "        backdrop(p + disp * (1.0 - ds)).b\n"
+    "        backdrop(sampleBase + disp * (1.0 + ds)).r,\n"
+    "        backdrop(sampleBase + disp).g,\n"
+    "        backdrop(sampleBase + disp * (1.0 - ds)).b\n"
     "      );\n"
     "    }\n"
     "    vec3 emission;\n"
@@ -350,11 +357,16 @@ static const char *FS =
     "      spot = 1.0 - smoothstep(gr * 0.1, gr, length(p - gp));\n"
     "      baseColor = clamp(baseColor + vec3(0.08 * spot), 0.0, 1.0);\n"
     "    }\n"
-    "    float tangency = abs(surfaceNormal.x);\n"
+    "    vec2 la = u_glight;\n"
+    "    vec2 rn = vec2(\n"
+    "      surfaceNormal.x * la.x + surfaceNormal.y * la.y,\n"
+    "      -surfaceNormal.x * la.y + surfaceNormal.y * la.x\n"
+    "    );\n"
+    "    float tangency = abs(rn.x);\n"
     "    vec3 result = baseColor;\n"
-    "    // (a) Inner bevel shadow (subtracts only transmittedColor; lightFacing = -surfaceNormal.y)\n"
+    "    // (a) Inner bevel shadow (subtracts only transmittedColor; lightFacing = -rn.y)\n"
     "    if (bevelShadowStr >= 0.001 && inward < 23.0) {\n"
-    "      float lightFacing = -surfaceNormal.y;\n"
+    "      float lightFacing = -rn.y;\n"
     "      float shadowShift = 6.0 * lightFacing;\n"
     "      float penumbra = 2.0 * shadowShift;\n"
     "      float bevelLeading = penumbra > 0.001 ? smoothstep(0.0, penumbra, inward) : 1.0;\n"
@@ -556,7 +568,7 @@ static GLint pu_src, pu_a, pu_b, pu_c;
 static int has_own_prog(int kind) { return (kind >= 0 && kind <= 4) || kind == 10 || kind == 11; }
 typedef struct {
   GLuint p;
-  GLint vp, scale, map, uvc, gb, shape, rad, n;
+  GLint vp, scale, map, uvc, gb, shape, rad, n, glight;
   unsigned gen;
 } kprog;
 static kprog progs[MB_KINDS + 1];
@@ -627,6 +639,7 @@ static kprog make_prog(GLuint vs, int kind) {
   k.shape = glGetUniformLocation(k.p, "u_shape");
   k.rad = glGetUniformLocation(k.p, "u_rad");
   k.n = glGetUniformLocation(k.p, "u_n");
+  k.glight = glGetUniformLocation(k.p, "u_glight");
   glUseProgram(k.p);
   glUniform1i(glGetUniformLocation(k.p, "u_atlas"), 0);
   glUniform1i(glGetUniformLocation(k.p, "u_img"), 1);
@@ -791,8 +804,12 @@ static void gl_dirty_add(double x, double y, double w, double h) {
   }
 }
 
+static volatile float g_light_angle = 0.0f;
+static void gl_set_glass_light_angle(double rad) { g_light_angle = (float)rad; }
+
 #ifndef MB_HOST_THREADS
 void mb_host_render_dirty(double x, double y, double w, double h) { gl_dirty_add(x, y, w, h); }
+void mb_host_glass_light_angle(double rad) { gl_set_glass_light_angle(rad); }
 // (each frame drawn as it is made, on the app's thread: none dropped. A host whose app runs on another thread counts
 // those a newer one took the place of: android_host.c)
 int32_t mb_host_frames_dropped(void) { return 0; }
@@ -894,12 +911,13 @@ typedef struct {
 static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t count) {
   memset(m, 0, sizeof *m);
   const float *a = f + start * MB_INST;
-  // A negative blur is contained: its straight edges are the capture's edges, its curved ones extended separately.
-  float blur = fabsf(a[7]);
+  // For frosted glass (kind 5), negative slot 7 is contained; for liquid glass (kind 6), negative slot 7 encodes clear-lens zoom.
   int kind = (int)(a[5] + 0.5f);
+  int is_contained = (kind == 5 && a[7] < 0.0f);
+  float blur = (kind == 6 && a[7] < 0.0f) ? 0.0f : fabsf(a[7]);
   int merged_liquid = (kind == 6 && a[23] > 0.0f);
   int unmerged_liquid = (kind == 6 && !merged_liquid);
-  float margin = a[7] < 0.0f ? 0.0f : 3.0f * blur + (kind == 6 ? a[21] * (1.0f + fabsf(a[22])) + fmaxf(a[23], 0.0f) : 0.0f) + 2.0f;
+  float margin = is_contained ? 0.0f : 3.0f * blur + (kind == 6 ? a[21] * (1.0f + fabsf(a[22])) + fmaxf(a[23], 0.0f) : 0.0f) + 2.0f;
   float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
   for (int32_t i = start; i < end; i++) {
     const float *b = f + i * MB_INST;
@@ -917,7 +935,7 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
         }
         m->n++;
       }
-      if (unmerged_liquid && a[7] >= 0.0f) {
+      if (unmerged_liquid) {
         float bm = 3.0f * blur + b[21] * (1.0f + fabsf(b[22])) + m23 + 2.0f;
         if (bm > margin) margin = bm;
       }
@@ -934,7 +952,7 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
     if (unmerged_liquid) {
       float m23 = fmaxf(b[23], 0.0f);
       bx0 = b[0] - m23; by0 = b[1] - m23; bx1 = b[0] + b[2] + m23; by1 = b[1] + b[3] + m23;
-      if (a[7] >= 0.0f) {
+      {
         float bm = 3.0f * blur + b[21] * (1.0f + fabsf(b[22])) + m23 + 2.0f;
         if (bm > margin) margin = bm;
       }
@@ -961,7 +979,7 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
   // (a capture outside the part drawn: neither copied nor drawn. One that meets it is in it whole: @damage)
   if (cut_on && (px1 <= cut[0] || cut[0] + cut[2] <= px0 || pb1 <= cut[1] || cut[1] + cut[3] <= pb0)) return 0;
   m->px0 = px0; m->pb0 = pb0; m->w = px1 - px0; m->h = pb1 - pb0; m->top = top;
-  m->contained = mb_contained_make(&m->edge, a, px0 / sc, (top - pb0) / sc, 1.0f / sc, -1.0f / sc);
+  m->contained = is_contained ? mb_contained_make(&m->edge, a, px0 / sc, (top - pb0) / sc, 1.0f / sc, -1.0f / sc) : 0;
   float sp = blur * sc;
   int k = 0;
   while (k < 3 && sp / (float)(1 << (k + 1)) >= 2.0f) k++;
@@ -1298,6 +1316,10 @@ static void use_prog(int kind) {
   glUniform4fv(k->shape, 8, gshape);
   glUniform4fv(k->rad, 8, grad);
   glUniform1i(k->n, gn);
+  if (k->glight >= 0) {
+    float a = g_light_angle;
+    glUniform2f(k->glight, cosf(a), sinf(a));
+  }
 }
 
 // the main programs' state (after the passes)

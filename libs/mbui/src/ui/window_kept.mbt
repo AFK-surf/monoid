@@ -148,6 +148,7 @@ fn window_kept_ui_0() -> Array[WindowKept] {
 }) }),
     kept_ref(tree_inset_said, fn() { @signals.signal(None, same=fn(a, b) { a == b }) }),
     kept_ref(glass_forced_said, fn() { @signals.signal(-1, same=fn(a, b) { a == b }) }),
+    kept_ref(glass_light_angle_said, fn() { @signals.signal(0.0, same=fn(a, b) { a == b }) }),
     kept_ref(inset_said, inset_said_new),
     kept_ref(zoomed_said, zoomed_said_new),
     kept_ref(snap_said, snap_said_new),

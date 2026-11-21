@@ -810,6 +810,7 @@
   uniform vec4 u_shape[8];
   uniform vec4 u_rad[8];
   uniform int u_n;
+  uniform vec2 u_glight;
   // the pieces of the frame's shapes (src/ui/shape.mbt: the instances of kind 12 after every one drawn), 2040 fours
   // (136 instances) a row
   uniform highp sampler2D u_segs;
@@ -995,15 +996,21 @@
         float mag = amount * (1.0 - sqrt(max(1.0 - bevelX * bevelX, 0.0))) * shortening;
         disp = surfaceNormal * (-mag);
       }
+      float lensZoom = (v_p.w < 0.0) ? clamp(1.0 - v_p.w, 1.0, 3.0) : 1.0;
+      vec2 sampleBase = p;
+      if (lensZoom > 1.0001) {
+        vec2 zoomC = (k <= 0.0) ? (v_rect.xy + v_rect.zw * 0.5) : ((u_gb.xy + u_gb.zw) * 0.5);
+        sampleBase = zoomC + (p - zoomC) / lensZoom;
+      }
       vec3 refractColor;
       if (abs(v_pad.z) * amount * u_scale <= 0.25) {
-        refractColor = backdrop(p + disp);
+        refractColor = backdrop(sampleBase + disp);
       } else {
         float ds = v_pad.z * 0.5;
         refractColor = vec3(
-          backdrop(p + disp * (1.0 + ds)).r,
-          backdrop(p + disp).g,
-          backdrop(p + disp * (1.0 - ds)).b
+          backdrop(sampleBase + disp * (1.0 + ds)).r,
+          backdrop(sampleBase + disp).g,
+          backdrop(sampleBase + disp * (1.0 - ds)).b
         );
       }
       vec3 emission;
@@ -1061,11 +1068,16 @@
         spot = 1.0 - smoothstep(gr * 0.1, gr, length(p - gp));
         baseColor = clamp(baseColor + vec3(0.08 * spot), 0.0, 1.0);
       }
-      float tangency = abs(surfaceNormal.x);
+      vec2 la = u_glight;
+      vec2 rn = vec2(
+        surfaceNormal.x * la.x + surfaceNormal.y * la.y,
+        -surfaceNormal.x * la.y + surfaceNormal.y * la.x
+      );
+      float tangency = abs(rn.x);
       vec3 result = baseColor;
-      // (a) Inner bevel shadow (subtracts only transmittedColor; lightFacing = -surfaceNormal.y)
+      // (a) Inner bevel shadow (subtracts only transmittedColor; lightFacing = -rn.y)
       if (bevelShadowStr >= 0.001 && inward < 23.0) {
-        float lightFacing = -surfaceNormal.y;
+        float lightFacing = -rn.y;
         float shadowShift = 6.0 * lightFacing;
         float penumbra = 2.0 * shadowShift;
         float bevelLeading = penumbra > 0.001 ? smoothstep(0.0, penumbra, inward) : 1.0;
@@ -1275,7 +1287,7 @@
     if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
     gl.deleteShader(fs);
     const u = {};
-    for (const n of ['u_vp', 'u_scale', 'u_atlas', 'u_img', 'u_bd', 'u_map', 'u_uvc', 'u_gb', 'u_shape', 'u_rad', 'u_n', 'u_segs']) {
+    for (const n of ['u_vp', 'u_scale', 'u_atlas', 'u_img', 'u_bd', 'u_map', 'u_uvc', 'u_gb', 'u_shape', 'u_rad', 'u_n', 'u_glight', 'u_segs']) {
       u[n] = gl.getUniformLocation(p, n);
     }
     gl.useProgram(p);
@@ -1310,6 +1322,7 @@
     gl.uniform4fv(u.u_shape, gshape);
     gl.uniform4fv(u.u_rad, grad);
     gl.uniform1i(u.u_n, gn);
+    if (u.u_glight) gl.uniform2f(u.u_glight, Math.cos(glassLightAngle), Math.sin(glassLightAngle));
   }
 
   function setupGL() {
@@ -1455,6 +1468,11 @@
   let cv = null, cvOk = false, target = null;
   let dirty = [], dirtyWhole = false, dirtyTold = false, missing = false, drewMissing = false, cutOn = false;
   const cut = [0, 0, 0, 0];
+  let glassLightAngle = 0;
+  H.glassLightAngle = (rad) => {
+    glassLightAngle = Number.isFinite(rad) ? rad : 0;
+    progGen++;
+  };
   H.renderDirty = (x, y, w, h) => {
     dirtyTold = true;
     if (w < 0 || h < 0) dirtyWhole = true;
@@ -1496,11 +1514,13 @@
 
   function grabOf(start, end, count) {
     const a = start * INST;
-    // A negative blur is contained: its straight edges are the capture's edges, its curved ones extended separately.
-    const blur = Math.abs(f32[a + 7]), kind = Math.round(f32[a + 5]);
+    // For frosted glass (kind 5), negative slot 7 is contained; for liquid glass (kind 6), negative slot 7 encodes clear-lens zoom.
+    const kind = Math.round(f32[a + 5]);
+    const isContained = kind === 5 && f32[a + 7] < 0;
+    const blur = (kind === 6 && f32[a + 7] < 0) ? 0 : Math.abs(f32[a + 7]);
     const mergedLiquid = kind === 6 && f32[a + 23] > 0;
     const unmergedLiquid = kind === 6 && !mergedLiquid;
-    let margin = f32[a + 7] < 0 ? 0 : 3 * blur + (kind === 6 ? f32[a + 21] * (1 + Math.abs(f32[a + 22])) + Math.max(f32[a + 23], 0) : 0) + 2;
+    let margin = isContained ? 0 : 3 * blur + (kind === 6 ? f32[a + 21] * (1 + Math.abs(f32[a + 22])) + Math.max(f32[a + 23], 0) : 0) + 2;
     let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
     let mN = 0;
     const mShape = new Float32Array(32), mRad = new Float32Array(32);
@@ -1520,7 +1540,7 @@
           }
           mN++;
         }
-        if (unmergedLiquid && f32[a + 7] >= 0) {
+        if (unmergedLiquid) {
           const bm = 3 * blur + f32[b + 21] * (1 + Math.abs(f32[b + 22])) + m + 2;
           if (bm > margin) margin = bm;
         }
@@ -1534,7 +1554,7 @@
         const m = Math.max(f32[b + 23], 0);
         x0 = Math.min(x0, f32[b] - m); y0 = Math.min(y0, f32[b + 1] - m);
         x1 = Math.max(x1, f32[b] + f32[b + 2] + m); y1 = Math.max(y1, f32[b + 1] + f32[b + 3] + m);
-        if (f32[a + 7] >= 0) {
+        {
           const bm = 3 * blur + f32[b + 21] * (1 + Math.abs(f32[b + 22])) + m + 2;
           if (bm > margin) margin = bm;
         }
@@ -1551,7 +1571,7 @@
     // (a capture outside the part drawn: neither copied nor drawn. One that meets it is in it whole: @damage)
     if (cutOn && (px1 <= cut[0] || cut[0] + cut[2] <= px0 || pb1 <= cut[1] || cut[1] + cut[3] <= pb0)) return null;
     const w = px1 - px0, h = pb1 - pb0;
-    const contained = f32[a + 7] < 0 && (f32[a + 4] > 0 ||
+    const contained = isContained && (f32[a + 4] > 0 ||
       [24, 25, 26, 27, 44, 45, 46, 47].some((i) => f32[a + i] > 0));
     let edge = null;
     if (contained) {

@@ -634,6 +634,93 @@ int main(void) {
       CHECK((int)cl_veil[1] >= 44 && (int)cl_veil[1] <= 62);
       CHECK(abs((int)cl_lens[1] - (int)cl_bg[1]) <= 2 && abs((int)cl_lens[2] - (int)cl_bg[2]) <= 2);
       free(px_cl);
+
+      // Wave 3A (1): clear-lens optical zoom (slot 7 = -(zoom - 1.0)) magnifies centered backdrop
+      double zm[3 * MB_INST];
+      rect_at(zm, 0, 0, 400, 300, 0, 0.05, 0.05, 0.08, 0);
+      // Red square centered at (100, 130), half-width 14pt -> x in [86, 114]
+      rect_at(zm + 1 * MB_INST, 86, 116, 28, 28, 0, 0.95, 0.10, 0.10, 0);
+      // Clear liquid lens (40, 80, 120, 100), center (100, 130), refraction = 0 so only zoom shifts sample
+      rect_at(zm + 2 * MB_INST, 40, 80, 120, 100, 6, 1, 1, 1, -15);
+      zm[2 * MB_INST + 4] = 24;
+      zm[2 * MB_INST + 6] = 1;
+      zm[2 * MB_INST + 7] = 0.0;  // zoom = 1.0
+      zm[2 * MB_INST + 11] = 0.0;
+      zm[2 * MB_INST + 12] = 0.0;
+      zm[2 * MB_INST + 13] = 8;
+      zm[2 * MB_INST + 15] = 1;
+      zm[2 * MB_INST + 21] = 0;
+      zm[2 * MB_INST + 22] = 0;
+      zm[2 * MB_INST + 23] = 0;
+
+      glass_forget();
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(zm, 3, 0.05, 0.05, 0.08);
+      present_drain();
+      uint8_t *px_z1 = read_texture(canvas, &aw, &ah);
+      // Probe (116, 130) -> (232, 260) at 2x: outside [86, 114] at zoom=1.0 -> dark background
+      uint8_t *z1_p = px_z1 + (260 * aw + 232) * 4;
+      CHECK((int)z1_p[2] < 40);
+      free(px_z1);
+
+      zm[2 * MB_INST + 7] = -0.25;  // zoom = 1.25 -> sampleBase.x = 100 + 16/1.25 = 112.8 (inside red square!)
+      glass_forget();
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(zm, 3, 0.05, 0.05, 0.08);
+      present_drain();
+      uint8_t *px_z2 = read_texture(canvas, &aw, &ah);
+      uint8_t *z2_p = px_z2 + (260 * aw + 232) * 4;
+      CHECK((int)z2_p[2] > 200);
+      free(px_z2);
+
+      // Wave 3A (2): global ambient light_angle rotates specular glint by 90 deg and restores bit-exact at 0.0
+      double la_inst[2 * MB_INST];
+      rect_at(la_inst, 0, 0, 400, 300, 0, 0.10, 0.10, 0.12, 0);
+      rect_at(la_inst + 1 * MB_INST, 100, 80, 120, 120, 6, 0.12, 0.12, 0.12, -16);
+      la_inst[1 * MB_INST + 4] = 28;
+      la_inst[1 * MB_INST + 6] = 1;
+      la_inst[1 * MB_INST + 7] = 1.0;
+      la_inst[1 * MB_INST + 11] = 0.5;
+      la_inst[1 * MB_INST + 12] = 1.0;
+      la_inst[1 * MB_INST + 13] = 12;
+      la_inst[1 * MB_INST + 15] = 1;
+      la_inst[1 * MB_INST + 21] = 0;
+      la_inst[1 * MB_INST + 22] = 0;
+      la_inst[1 * MB_INST + 23] = 0;
+
+      mb_host_glass_light_angle(0.0);
+      glass_forget();
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(la_inst, 2, 0.10, 0.10, 0.12);
+      present_drain();
+      uint8_t *px_la0 = read_texture(canvas, &aw, &ah);
+      // Top edge (160, 80.5) -> (320, 161); Left edge (100.5, 140) -> (201, 280)
+      int top0 = (int)px_la0[(161 * aw + 320) * 4 + 1];
+      int left0 = (int)px_la0[(280 * aw + 201) * 4 + 1];
+      CHECK(top0 > left0 + 30);
+
+      mb_host_glass_light_angle(1.5707963267948966);  // PI / 2
+      glass_forget();
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(la_inst, 2, 0.10, 0.10, 0.12);
+      present_drain();
+      uint8_t *px_la90 = read_texture(canvas, &aw, &ah);
+      int top90 = (int)px_la90[(161 * aw + 320) * 4 + 1];
+      int left90 = (int)px_la90[(280 * aw + 201) * 4 + 1];
+      int right90 = (int)px_la90[(280 * aw + 439) * 4 + 1];
+      CHECK(left90 > top90 + 30);
+      CHECK(right90 > top90 + 30);
+      free(px_la90);
+
+      mb_host_glass_light_angle(0.0);
+      glass_forget();
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(la_inst, 2, 0.10, 0.10, 0.12);
+      present_drain();
+      uint8_t *px_la0_again = read_texture(canvas, &aw, &ah);
+      CHECK(memcmp(px_la0, px_la0_again, (size_t)aw * (size_t)ah * 4) == 0);
+      free(px_la0);
+      free(px_la0_again);
     }
 
     // A group kept by the host (groups.h) drawn out by a header, straight into the floats: each instance moved in

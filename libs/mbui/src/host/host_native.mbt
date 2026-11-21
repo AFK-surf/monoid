@@ -1416,6 +1416,9 @@ extern "C" fn nv_able() -> Int = "mb_host_nav_able"
 extern "C" fn rn_dirty(x : Double, y : Double, w : Double, h : Double) -> Unit = "mb_host_render_dirty"
 
 ///|
+extern "C" fn rn_glass_light_angle(rad : Double) -> Unit = "mb_host_glass_light_angle"
+
+///|
 /// 0: what the system allows (0 unknown, 1 granted, 2 denied, 3 can be asked); 1: ask it (1 asked); 2: its answer,
 /// once (-1 none yet, 0 refused, 1 allowed)
 extern "C" fn nt_state(what : Int) -> Int = "mb_host_notice_state"
