@@ -718,11 +718,50 @@ fn sheet_node(
         // drawn from as tall as it stood, moved_by: what it draws only moves with it, never another height a frame
         // later); stepped back under a sheet over it, as tall as it is, its foot over that one's (another glass in its
         // place at that cause: it comes to no other height under it))
+        let sheet_float_drawn = fn(v : @view.View) -> @view.GroundShape {
+          let wh = win_h()
+          let pg = top()
+          let h_share = match tall_held.get() {
+            Some(h) => if wh > 0.0 { h / wh } else { 0.0 }
+            None =>
+              if sized.get() {
+                if wh > 0.0 { tall.shown(v) / wh } else { 0.0 }
+              } else if capped_of(pg.x) && !hugs_of(pg) {
+                pg.x.tall
+              } else {
+                0.5
+              }
+          }
+          let float_t = dclamp((0.82 - h_share) / 0.14, 0.0, 1.0)
+          if float_t <= 0.001 {
+            return { dx: 0.0, dy: 0.0, dw: 0.0, dh: 0.0, corners: None }
+          }
+          let inset = 8.0 * float_t
+          let bottom_r = pane_corner * float_t
+          {
+            dx: inset,
+            dy: 0.0,
+            dw: -2.0 * inset,
+            dh: -(reach.get() + 8.0) * float_t,
+            corners: Some((pane_corner, pane_corner, bottom_r, bottom_r)),
+          }
+        }
         let ground = fn(make : (@view.View) -> Unit) {
-          sheet.pick(at_once=true, fn() { covered_by() is Some(_) }, fn(g, covered) {
-            g.over(Is(true)).radius(Is(pane_corner)) |> ignore
-            if !covered {
-              g.height(By(fn() { Some(layer.window_h() * 2.0) })) |> ignore
+          sheet.pick(at_once=true, fn() { (covered_by() is Some(_), placed.get() is Some(_)) }, fn(g, key) {
+            let covered = key.0
+            let docked = key.0 || key.1
+            if docked {
+              g
+              .over(Is(true), edges=(Some(0.0), Some(0.0), Some(0.0), if covered { Some(0.0) } else { None }))
+              .height(By(fn() { if covered { None } else { Some(win_h() * 2.0) } }))
+              .radius(Is(pane_corner))
+              |> ignore
+            } else {
+              g
+              .over(Is(true))
+              .radius(Is(pane_corner))
+              .ground_drawn(By(fn() { sheet_float_drawn(g) }))
+              |> ignore
             }
             make(g)
           })
@@ -737,6 +776,7 @@ fn sheet_node(
             Some({ ..glass_sheet(), solid: over(over(t.p.bg, alpha(0x000000FFL, 0.28 * live_dim())), alpha(t.p.card, 0.8)) })
           }))
           .shadow(Is((sheet_raised.sigma, sheet_raised.dy, sheet_raised.color)))
+          .shadow_outside(Is(true))
           |> ignore
         })
         // its top (sheet_drag_h: the grabber and the head) drags it, a node of its own over its glass and under what it
@@ -854,6 +894,15 @@ fn sheet_node(
           .min_height(Is(Some(0.0)))
           .padding(By(fn() { (0.0, 0.0, 0.0, reach.get()) }))
           .radius(Is(pane_corner))
+          .ground_drawn(
+            By(fn() {
+              if covered_by() is Some(_) || placed.get() is Some(_) {
+                @view.ground_as_laid
+              } else {
+                sheet_float_drawn(cut)
+              }
+            }),
+          )
           .clips(Is(true))
           |> ignore
           // (what it holds, as tall as the sheet less its foot's room past the window: what is read out as the sheet, a
