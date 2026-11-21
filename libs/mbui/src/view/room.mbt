@@ -44,12 +44,6 @@ pub fn View::by_room(self : View, make : (View, Room) -> Unit, loc~ : SourceLoc)
     }
     let made = Ref(false)
     let held = x.box(loc~, fn(_) {  })
-    // (grown down its box: as tall as what it holds where that box is too, filling it where what holds by_room
-    // stretches or grows it taller; set on its layout alone, not said, so View::sets_together or held's own
-    // View::grow still takes it as one never set)
-    if held.live() is Some(h) {
-      h.flex.style.grow = 1.0
-    }
     n.flex.room = true
     n.flex.measure = Some(fn(w, wm, h, hm) {
       if wm is Undefined || !held.alive() {
@@ -69,12 +63,56 @@ pub fn View::by_room(self : View, make : (View, Room) -> Unit, loc~ : SourceLoc)
           room.wide.set(w)
         }
         tree.room_bindings_run()
+        // (grown down its box where what holds by_room can give that more height than what it holds comes to
+        // (stretched across a row, grown down a column, its height or least height said, or stretched top to foot
+        // over what holds it): filling it; else not, down a column as tall as what it holds, so View::resizes and
+        // View::comes make their way there. Set on its layout alone, left once its own View::grow is said, by
+        // View::sets_together too)
+        if held.live() is Some(hn) && !hn.grow_said {
+          let want = if tree.by_room_fills_down(x.at) { 1.0 } else { 0.0 }
+          if hn.flex.style.grow != want {
+            hn.flex.style.grow = want
+            tree.room_marked_at(held.at)
+          }
+        }
         room.measure(w)
       })
       (if changed { 1.0 } else { 0.0 }, 0.0)
     })
     tree.soft_min_applied(x.at)
   })
+}
+
+///|
+/// Whether View::by_room's own box `at` can be given more height by what holds it than what it holds comes to, by its
+/// place in the tree alone: its height or a least height said, stretched top to foot over what holds it, stretched
+/// across a row, or grown down a column.
+fn Tree::by_room_fills_down(self : Tree, at : Int) -> Bool {
+  let xs = self.nodes[at].flex.style
+  if xs.height_kind() != @flex.LEN_AUTO {
+    return true
+  }
+  if xs.min_height_kind() != @flex.LEN_AUTO &&
+    (xs.min_height_kind() != @flex.LEN_PT || xs.min_height_value() > 0.0) {
+    return true
+  }
+  if xs.position is @flex.PositionType::Absolute {
+    return xs.inset_top_kind() != @flex.LEN_AUTO && xs.inset_bottom_kind() != @flex.LEN_AUTO
+  }
+  let p = self.box_holder(at)
+  if p < 0 {
+    return false
+  }
+  let ps = self.nodes[p].flex.style
+  if ps.direction is (Row | RowReverse) {
+    match xs.align_self {
+      Auto => ps.align_items is Stretch
+      Stretch => true
+      _ => false
+    }
+  } else {
+    xs.grow > 0.0
+  }
 }
 
 ///|

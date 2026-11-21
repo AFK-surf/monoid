@@ -546,6 +546,9 @@ struct Node {
   mut focused_cell : @signals.Signal[Bool]?
   /// whether it lays what it holds across, told as View::row changes it (View::in_row); made as first read
   mut row_cell : @signals.Signal[Bool]?
+  /// whether how much of the room left it takes was ever said (View::grow): what View::by_room grows of its own
+  /// (what it holds filling its box) left to that from then
+  mut grow_said : Bool
   /// how big it was laid out, told once all of the layout is done (View::laid_size_told: none till then); made as
   /// first read
   mut size_cell : @signals.Signal[(Double, Double)?]?
@@ -2074,6 +2077,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.beside_piece = None
       n.focused_cell = None
       n.row_cell = None
+      n.grow_said = false
       n.size_cell = None
       n.size_seen = false
       n.bounds_input = false
@@ -2223,6 +2227,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         tab_by_stop: false,
         focused_cell: None,
         row_cell: None,
+        grow_said: false,
         size_cell: None,
         size_seen: false,
         bounds_input: false,
@@ -4698,6 +4703,9 @@ pub fn View::in_row(self : View) -> Bool {
 /// How much of the room left it takes.
 #callsite(autofill(loc))
 pub fn View::grow(self : View, g : Live[Double], loc~ : SourceLoc) -> View {
+  if self.live() is Some(n) {
+    n.grow_said = true
+  }
   self.bind(loc~, Grow, g, Layout, fn(g) {
     self.tree.nodes[self.at].flex.style.grow = g
     self.tree.soft_min_applied(self.at)
@@ -9434,6 +9442,7 @@ fn View::let_go(self : View) -> Unit {
   n.beside_piece = None
   n.focused_cell = None
   n.row_cell = None
+  n.grow_said = false
   n.focus_shown_cell = None
   n.size_cell = None
   n.size_seen = false
@@ -12182,6 +12191,7 @@ fn Tree::drain_parked_garbage(self : Tree) -> Unit {
     n.beside_piece = None
     n.focused_cell = None
     n.row_cell = None
+    n.grow_said = false
     n.focus_shown_cell = None
     n.size_cell = None
     n.size_seen = false
