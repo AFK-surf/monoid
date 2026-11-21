@@ -1173,43 +1173,24 @@ pub async fn Accounts::put_profile(
       Some(n) if n != "" => fields.push(("name", js(n)))
       _ => ()
     }
-    let runtime = match runtime_kind(get("runtime")) {
-      Some(r) => Some(r)
-      None => runtime_kind(jget(existing, "runtime"))
-    }
+    let (runtime, built_access) = put_profile_runtime_and_access(
+      existing,
+      get("runtime"),
+      access,
+      keep,
+      kind,
+      key,
+      provider,
+      endpoint,
+      protocol,
+      given_key,
+    )
     match runtime {
       Some(r) => fields.push(("runtime", js(r)))
       None => ()
     }
-    match kind {
-      Some(k) => {
-        let a = [("kind", js(k))]
-        match key {
-          Some(kv) => a.push(("key", js(kv)))
-          None => ()
-        }
-        if api {
-          match provider {
-            Some(p) => a.push(("provider", js(p)))
-            None => ()
-          }
-          match endpoint {
-            Some(e) => a.push(("endpoint", js(e)))
-            None => ()
-          }
-          match protocol {
-            Some(p) => a.push(("protocol", js(p)))
-            None => ()
-          }
-        }
-        let signs_in = k == "opencode-go" || (api && provider == Some(kimi_code))
-        if signs_in &&
-          jget(keep, "login") == Some(Bool(true)) &&
-          given_key is None {
-          a.push(("login", jbool(true)))
-        }
-        fields.push(("access", jobj(a)))
-      }
+    match built_access {
+      Some(a) => fields.push(("access", a))
       None => ()
     }
     fields.push(("home", js(home)))
@@ -1432,4 +1413,70 @@ async fn Accounts::profile_gone(self : Accounts, id : String, what : String) -> 
   run() catch {
     e => self.log("warn", what, [("profile", js(id)), ("error", js(message_of(e)))])
   }
+}
+
+///|
+/// Pure helper for `Accounts::put_profile`: resolves `service`, `runtime` (omitted for `service` profiles),
+/// and the serialized `access` object so edits to `service` profiles never drop `access.service` or write `runtime`.
+fn put_profile_runtime_and_access(
+  existing : JV?,
+  given_runtime : JV?,
+  access : JV?,
+  keep : JV?,
+  kind : String?,
+  key : String?,
+  provider : String?,
+  endpoint : String?,
+  protocol : String?,
+  given_key : String?,
+) -> (String?, JV?) {
+  let service = match jget(access, "service") {
+    Some(Str(s)) if trim_js(s) != "" && access is Some(Obj(_)) => Some(trim_js(s))
+    _ => jstr(jget(keep, "service"))
+  }
+  let runtime = if kind == Some("service") {
+    None
+  } else {
+    match runtime_kind(given_runtime) {
+      Some(r) => Some(r)
+      None => runtime_kind(jget(existing, "runtime"))
+    }
+  }
+  let api = kind == Some("api-provider")
+  let built_access = match kind {
+    Some(k) => {
+      let a = [("kind", js(k))]
+      match key {
+        Some(kv) => a.push(("key", js(kv)))
+        None => ()
+      }
+      if k == "service" {
+        match service {
+          Some(s) => a.push(("service", js(s)))
+          None => ()
+        }
+      }
+      if api {
+        match provider {
+          Some(p) => a.push(("provider", js(p)))
+          None => ()
+        }
+        match endpoint {
+          Some(e) => a.push(("endpoint", js(e)))
+          None => ()
+        }
+        match protocol {
+          Some(p) => a.push(("protocol", js(p)))
+          None => ()
+        }
+      }
+      let signs_in = k == "opencode-go" || (api && provider == Some(kimi_code))
+      if signs_in && jget(keep, "login") == Some(Bool(true)) && given_key is None {
+        a.push(("login", jbool(true)))
+      }
+      Some(jobj(a))
+    }
+    None => None
+  }
+  (runtime, built_access)
 }

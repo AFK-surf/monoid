@@ -8,6 +8,8 @@ const object = (v: unknown): v is Record<string, any> => v !== null && typeof v 
 const isNonEmptyString = (v: unknown): v is string => typeof v === "string" && v !== "";
 const isServiceProfile = (v: Record<string, any>): boolean =>
   (object(v.access) && (v.access.kind === "service" || isNonEmptyString(v.access.service))) || isNonEmptyString(v.service);
+const isServiceLogin = (type: string, v: Record<string, any>): boolean =>
+  isNonEmptyString(v.service) || (type === "PendingLogin" && object(v.job) && isNonEmptyString(v.job.service));
 
 // Unsupported required metadata removes its containing list item; optional metadata becomes null. A runtime
 // is never relabelled as Claude/Codex, which would offer the wrong controls and silently change configuration.
@@ -35,13 +37,8 @@ export function runtimeView(type: Ty, value: unknown, supported: Set<string>, su
     return OMIT;
   }
   if (!supportsServices) {
-    if (isProfile) {
-      if (isServiceProfile(value)) return OMIT;
-    }
-    if (isLogin) {
-      if (isNonEmptyString(value.service) || value.runtime == null) return OMIT;
-      if (type === "PendingLogin" && object(value.job) && (isNonEmptyString(value.job.service) || value.job.runtime == null)) return OMIT;
-    }
+    if (isProfile && isServiceProfile(value)) return OMIT;
+    if (isLogin && isServiceLogin(type, value)) return OMIT;
   }
   if (shape?.kind === "tagged") {
     const variant = shape.variants[String(value[shape.tag])];
@@ -58,7 +55,7 @@ export function runtimeView(type: Ty, value: unknown, supported: Set<string>, su
     if (v === OMIT) return OMIT;
     out[field.name] = v;
   }
-  if (!supportsServices && (type === "Profile" || type === "StationProfile" || type === "ListedProfile" || type === "RowProfile")) {
+  if (!supportsServices && (isProfile || isLogin)) {
     if (out.runtime == null) out.runtime = "claude";
   }
   return out;

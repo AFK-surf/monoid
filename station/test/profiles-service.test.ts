@@ -131,11 +131,33 @@ describe("service profile decoupling", () => {
       profiles: [
         { id: "cc", name: "Claude", runtime: "claude", runtimes: ["claude"], access: { kind: "subscription", key: "" } },
         { id: "jev", name: "Jev", runtime: null, runtimes: [], access: { kind: "env", key: "k", provider: "jev" } },
+        {
+          id: "og",
+          name: "OpenCode Go",
+          runtime: "claude",
+          runtimes: ["claude", "codex"],
+          access: { kind: "opencode-go", key: "k", login: true },
+          login: { profile: "og", runtime: null, provider: "opencode", state: "needs_approval", startedAt: 1, expiresAt: 2 },
+        },
         { id: "gpu-1", name: "GPU", runtime: null, service: "fake-gpu", runtimes: [], access: { kind: "service", key: "", service: "fake-gpu" } },
       ],
       logins: [
         { id: "l1", runtime: "claude", job: null, created: null, error: null },
-        { id: "l2", runtime: null, service: "fake-gpu", job: null, created: null, error: null },
+        {
+          id: "l-og",
+          runtime: null,
+          job: { profile: "l-og", runtime: null, provider: "opencode", state: "needs_approval", startedAt: 1, expiresAt: 2 },
+          created: null,
+          error: null,
+        },
+        {
+          id: "l-svc",
+          runtime: null,
+          service: "fake-gpu",
+          job: { profile: "l-svc", runtime: null, service: "fake-gpu", state: "needs_code", startedAt: 1, expiresAt: 2 },
+          created: null,
+          error: null,
+        },
       ],
     };
     const viewer = { sub: "u", email: "u@x", name: "", role: "owner", workspace: "w", device: "d" };
@@ -144,17 +166,24 @@ describe("service profile decoupling", () => {
 
     // Legacy client: knows all 9 runtimes, but no stillfail-profile-services header.
     const oldOut = JSON.parse(String(runtimeCompatible(req({ [RUNTIMES_HEADER]: RUNTIME_KINDS.join(",") }), ans()).body));
-    assert.deepEqual(oldOut.profiles.map((p: { id: string }) => p.id), ["cc", "jev"]);
+    assert.deepEqual(oldOut.profiles.map((p: { id: string }) => p.id), ["cc", "jev", "og"]);
     assert.equal(oldOut.profiles.find((p: { id: string }) => p.id === "jev").runtime, "claude");
-    assert.deepEqual(oldOut.logins.map((l: { id: string }) => l.id), ["l1"]);
+    assert.equal(oldOut.profiles.find((p: { id: string }) => p.id === "og").login.runtime, "claude");
+    assert.deepEqual(oldOut.logins.map((l: { id: string }) => l.id), ["l1", "l-og"]);
+    const oldOgLogin = oldOut.logins.find((l: { id: string }) => l.id === "l-og");
+    assert.equal(oldOgLogin.runtime, "claude");
+    assert.equal(oldOgLogin.job.runtime, "claude");
 
     // New client: sends stillfail-profile-services: 1.
     const newOut = JSON.parse(
       String(runtimeCompatible(req({ [RUNTIMES_HEADER]: RUNTIME_KINDS.join(","), [PROFILE_SERVICES_HEADER]: "1" }), ans()).body),
     );
-    assert.deepEqual(newOut.profiles.map((p: { id: string }) => p.id), ["cc", "jev", "gpu-1"]);
+    assert.deepEqual(newOut.profiles.map((p: { id: string }) => p.id), ["cc", "jev", "og", "gpu-1"]);
     assert.equal(newOut.profiles.find((p: { id: string }) => p.id === "jev").runtime, null);
+    assert.equal(newOut.profiles.find((p: { id: string }) => p.id === "og").login.runtime, null);
     assert.equal(newOut.profiles.find((p: { id: string }) => p.id === "gpu-1").runtime, null);
-    assert.deepEqual(newOut.logins.map((l: { id: string }) => l.id), ["l1", "l2"]);
+    assert.deepEqual(newOut.logins.map((l: { id: string }) => l.id), ["l1", "l-og", "l-svc"]);
+    assert.equal(newOut.logins.find((l: { id: string }) => l.id === "l-og").runtime, null);
+    assert.equal(newOut.logins.find((l: { id: string }) => l.id === "l-og").job.runtime, null);
   });
 });

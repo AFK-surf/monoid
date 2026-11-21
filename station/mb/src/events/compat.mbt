@@ -165,16 +165,18 @@ pub fn runtime_view(
             }
             if is_login {
               let svc = text_of(v.get("service"))
-              if (svc is Some(s) && s != "") ||
-                v.get("runtime") is None ||
-                v.get("runtime") is Some(Null) {
+              let job_svc = match v.get("job") {
+                Some(Obj(_) as job) if name == "PendingLogin" => text_of(job.get("service"))
+                _ => None
+              }
+              if (svc is Some(s) && s != "") || (job_svc is Some(js) && js != "") {
                 return Omit
               }
             }
           }
           let mut out : J = v
           if !services &&
-            is_profile &&
+            (is_profile || is_login) &&
             (v.get("runtime") is None || v.get("runtime") is Some(Null)) {
             out = with_prop(out, "runtime", js("claude"))
           }

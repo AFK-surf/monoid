@@ -460,5 +460,9 @@ test("service profiles decorate without agent runtime, dedup by (service, email)
   assert.equal(view.items.length, 4);
   const merged = view.items.find((i: any) => i.group === "service" && i.members.length === 2);
   assert.ok(merged, "same (service, email) across stations should merge");
+  assert.equal(merged.title, "alice@example.com");
+  const anon = view.items.find((i: any) => i.group === "service" && i.members.length === 1);
+  assert.ok(anon);
+  assert.equal(anon.title, "GPU 1");
   assert.ok(view.items.some((i: any) => i.group === "agy" && i.members.length === 1), "agy subscription must not merge with service profile");
 });

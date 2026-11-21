@@ -191,9 +191,9 @@ export function workspaceProfiles(stations: J[]): J {
       stationId: String(s.id),
       stationName: String(s.name),
       profile: p,
-      // What it is called: a subscription or a sign-in by the account signed in (what makes it one row: each station's
+      // What it is called: a subscription, sign-in, or service account by the account signed in (what makes it one row: each station's
       // copy may be named otherwise), a key by its profile's name.
-      title: subscription && typeof p.email === "string" && p.email !== "" ? p.email : String(p.name ?? ""),
+      title: (subscription || p.access?.kind === "service") && typeof p.email === "string" && p.email !== "" ? p.email : String(p.name ?? ""),
       shared: share !== null,
       host,
       hostName: name(host),

@@ -613,3 +613,43 @@ test "service and non-runtime profiles keep runtime=None and validate against se
   }
   assert_true(rejected_rt)
 }
+
+///|
+test "put_profile_runtime_and_access preserves access.service and omits runtime when editing a service profile" {
+  let existing = @jsjson.parse(
+    "{\"id\":\"gpu-1\",\"name\":\"GPU 1\",\"runtime\":\"claude\",\"access\":{\"kind\":\"service\",\"service\":\"fake-gpu\"}}",
+  )
+  let keep = existing.get("access")
+  // Editing name/enabled/workspaces without re-sending access keeps access.service and strips runtime.
+  let (rt, acc) = put_profile_runtime_and_access(
+    Some(existing),
+    None,
+    None,
+    keep,
+    Some("service"),
+    None,
+    None,
+    None,
+    None,
+    None,
+  )
+  assert_eq(rt, None)
+  assert_eq(jstr(jget(acc, "kind")), Some("service"))
+  assert_eq(jstr(jget(acc, "service")), Some("fake-gpu"))
+  // Explicit access.service overrides kept service and still omits runtime.
+  let new_access = @jsjson.parse("{\"kind\":\"service\",\"service\":\"other-svc\"}")
+  let (rt2, acc2) = put_profile_runtime_and_access(
+    Some(existing),
+    Some(js("claude")),
+    Some(new_access),
+    keep,
+    Some("service"),
+    None,
+    None,
+    None,
+    None,
+    None,
+  )
+  assert_eq(rt2, None)
+  assert_eq(jstr(jget(acc2, "service")), Some("other-svc"))
+}

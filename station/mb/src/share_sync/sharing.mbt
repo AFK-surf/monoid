@@ -177,9 +177,12 @@ pub fn sign_in_files(p : Json, sep : String) -> Array[String] {
   let access = get(Some(p), "access")
   let kind = if access is Some(Object(_)) { get(access, "kind") } else { None }
   let out = []
+  if kind is Some(String("service")) {
+    return out
+  }
   if kind is Some(String("subscription")) {
     let r = match get(Some(p), "runtime") {
-      None | Some(Null) => "claude"
+      None | Some(Null) => ""
       v => js_string(v)
     }
     match r {
