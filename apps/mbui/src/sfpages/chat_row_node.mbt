@@ -146,7 +146,7 @@ pub fn chat_row_node(
         },
         fn(to) { lift.go(slot, to, @motion.tactile_bounce) },
       )
-      @sf.glass_lift_surface(slot, lifted, fn() { 0L })
+      @sf.glass_lift_surface(slot, lifted)
       slot
       .scale(By(fn() { 1.0 - row_lift_inset * lifted() }))
       .over_scrim(By(fn() { lifted() > 0.0 }))

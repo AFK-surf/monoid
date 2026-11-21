@@ -19,7 +19,7 @@ test "glass_lift_surface transitions cleanly across rest, mid-hold, full lift, a
         page.grow(Is(1.0)).padding(Is((24.0, 24.0, 24.0, 24.0))).ground(By(fn() { theme().p.bg })) |> ignore
         page.box(fn(card) {
           card.width(Is(Some(320.0))).padding(Is((16.0, 12.0, 16.0, 12.0))) |> ignore
-          glass_lift_surface(card, fn() { progress.get() }, fn() { theme().p.canvas })
+          glass_lift_surface(card, fn() { progress.get() }, flat_ground=Some(fn() { theme().p.canvas }))
           card.box(fn(w) {
             words_node(w, fn() { "Lifted Row Title" }, fn() { @ui.text_style(size=Ui, color=Fg) }) |> ignore
           })
@@ -95,7 +95,7 @@ test "glass_lift_surface degrades cleanly under MBUI_GLASS=solid with smooth rai
         page.grow(Is(1.0)).padding(Is((24.0, 24.0, 24.0, 24.0))).ground(By(fn() { theme().p.bg })) |> ignore
         page.box(fn(card) {
           card.width(Is(Some(320.0))).padding(Is((16.0, 12.0, 16.0, 12.0))) |> ignore
-          glass_lift_surface(card, fn() { progress.get() }, fn() { 0L })
+          glass_lift_surface(card, fn() { progress.get() })
           card.box(fn(w) {
             words_node(w, fn() { "Solid Fallback Row" }, fn() { @ui.text_style(size=Ui, color=Fg) }) |> ignore
           })
