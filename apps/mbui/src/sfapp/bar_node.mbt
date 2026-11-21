@@ -29,6 +29,8 @@ priv enum BarPart {
   Tints
   /// the notch's icon and its swap
   Icon
+  /// scroll-to-collapse progress alone (collapse): tab fades/scales and capsule clip
+  Collapse
 }
 
 ///|
@@ -41,12 +43,13 @@ let bar_parts_said : Array[@signals.Signal[Int]] = [
   @signals.signal(0, same=fn(a, b) { a == b }),
   @signals.signal(0, same=fn(a, b) { a == b }),
   @signals.signal(0, same=fn(a, b) { a == b }),
+  @signals.signal(0, same=fn(a, b) { a == b }),
 ]
 
 ///|
 /// What each part's ways were last told, as text (bar_part_told), in BarPart's order.
 // kept across runs: said again each time the bar is told (bar_said_again), emptied by bar_reset's
-let bar_parts_told : Array[String] = ["", "", "", "", "", ""]
+let bar_parts_told : Array[String] = ["", "", "", "", "", "", ""]
 
 ///|
 fn BarPart::ord(self : BarPart) -> Int {
@@ -57,6 +60,7 @@ fn BarPart::ord(self : BarPart) -> Int {
     Tints => 3
     Icon => 4
     Panel => 5
+    Collapse => 6
   }
 }
 
@@ -117,13 +121,14 @@ fn bar_part_told(p : BarPart) -> String {
       }
       spr_told(m.o) + "\{m.mode.untracked()} " + swap
     }
+    Collapse => "\{m.collapse.target()} \{m.collapse.ends_at()}"
   }
 }
 
 ///|
 /// The bar told anew: each part whose ways changed said, and the bar as a whole.
 fn bar_said_again() -> Unit {
-  for p in [Vis, Notch, Ball, Tints, Icon, Panel] {
+  for p in [Vis, Notch, Ball, Tints, Icon, Panel, Collapse] {
     let told = bar_part_told(p)
     if told != bar_parts_told[p.ord()] {
       bar_parts_told[p.ord()] = told
@@ -248,6 +253,7 @@ fn bar_nav_gesturing() -> Bool {
 ///|
 /// Watches the active root page's primary scrollable list and feeds its scroll offset into `bar_scroll_note`.
 fn bar_scroll_watch_node(b : @view.View, ws : () -> Workspace?) -> Unit {
+  let prev_in_hand : Ref[Bool] = Ref(false)
   b.reacts(
     fn() {
       ignore(@sfbase.first_page_waits.get())
@@ -271,14 +277,36 @@ fn bar_scroll_watch_node(b : @view.View, ws : () -> Workspace?) -> Unit {
         }
       }
       match best {
-        Some(s) => Some((w.id + ":" + active, s.drawn(tree), best_most))
+        Some(s) => {
+          let key = w.id + ":" + active
+          let held = s.in_hand()
+          if held {
+            Some((key, s.at(tree), best_most, true))
+          } else {
+            let gliding = s.glides_till() is Some(_)
+            if prev_in_hand.val || gliding {
+              Some((key, if gliding { s.drawn(tree) } else { s.at(tree) }, best_most, false))
+            } else {
+              None
+            }
+          }
+        }
         None => None
       }
     },
     fn(obs) {
       match obs {
-        Some((page_key, y, most)) => bar_scroll_note(page_key, y, most, b.cause_at())
-        None => ()
+        Some((page_key, y, _, true)) => {
+          prev_in_hand.val = true
+          bar.scroll_page_key = page_key
+          bar.scroll_last_y = y
+          bar.scroll_acc = 0.0
+        }
+        Some((page_key, y, most, false)) => {
+          prev_in_hand.val = false
+          bar_scroll_note(page_key, y, most, b.cause_at())
+        }
+        None => prev_in_hand.val = false
       }
     },
   )
@@ -874,14 +902,24 @@ fn bar_places_node(
 ) -> Unit {
   let items = fn() { bar_laid_now().items }
   let slot = fn(n : Int) { bar_slot(w(), n) }
-  bar_at(holder, fn() { 0.0 }, row_top, w, fn() { bar_track }, fn(row) {
+  holder.box(fn(row) {
     row
+    .over(Is(true))
+    .width(By(fn() { Some(w()) }))
+    .height(Is(Some(bar_track)))
+    .offset(By(fn() { (0.0, row_top()) }))
     .radius(Is(rad))
     .clips(Is(true))
     .ground_drawn(
       By(fn() {
-        let t = bar_moment(row, Notch, bar_k_until())
-        { dx: 0.0, dy: 0.0, dw: bar_cur_capsule_w(w(), bar.k_at(t), bar.collapse_at(t)) - w(), dh: 0.0, corners: None }
+        let t = bar_moment(row, Collapse, bar.collapse.ends_at())
+        let c = bar.collapse_at(t)
+        let dw = if c <= 0.0001 {
+          0.0
+        } else {
+          bar_cur_capsule_w(w(), bar.k_at(t), c) - w()
+        }
+        { dx: 0.0, dy: 0.0, dw, dh: 0.0, corners: None }
       }),
     )
     .alpha(By(fn() { if bar.swap_at(bar_moment(row, Panel, bar.o.end())) is Some(_) { 0.0 } else { 1.0 } }))
@@ -904,17 +942,19 @@ fn bar_places_node(
         }, fn() { (bar_track - 44.0) / 2.0 }, fn() { slot(items().length()) }, fn() { 44.0 }, fn(at) {
         at
         .alpha(By(fn() {
-          if is_active() {
+          let c = bar.collapse_at(bar_moment(at, Collapse, bar.collapse.ends_at()))
+          if c <= 0.0001 || is_active() {
             1.0
           } else {
-            dclamp(1.0 - bar.collapse_at(bar_moment(at, Notch, bar_k_until())) / 0.30, 0.0, 1.0)
+            dclamp(1.0 - c / 0.30, 0.0, 1.0)
           }
         }))
         .scale(By(fn() {
-          if is_active() {
+          let c = bar.collapse_at(bar_moment(at, Collapse, bar.collapse.ends_at()))
+          if c <= 0.0001 || is_active() {
             1.0
           } else {
-            1.0 - 0.12 * bar.collapse_at(bar_moment(at, Notch, bar_k_until()))
+            1.0 - 0.12 * c
           }
         }))
         |> ignore

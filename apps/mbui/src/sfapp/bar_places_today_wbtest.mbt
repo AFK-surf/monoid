@@ -412,6 +412,10 @@ test "bar places today: each place made as nodes left for another and come back 
     println("bar-keep \{place}: scroll mark \{Repr(marked.map(fn(m) { m.0 }))} at \{left_y} as left")
     println("bar-keep \{place}: as left: \{left} \{choice()} entry \{today_entry()}")
     // to 额度 (an old view's place) and back, by a finger on the bar
+    if bar.collapsed {
+      t.tap(22.0 + bar_track / 2.0, y)
+      to_bar_rest(t)
+    }
     t.tap(today_bar_at().0[3], y)
     t.run_for(kept_switch_over_ms)
     to_bar_rest(t)
@@ -429,7 +433,7 @@ test "bar places today: each place made as nodes left for another and come back 
     assert_eq(mark_y(), left_y, msg="\{place}: its list where it was left")
     assert_eq(what(back), what(left), msg="\{place}: what shows and what is chosen as left")
     match place {
-      "chats" => assert_eq(mark_y(), "[318]", msg="Home's list where it was left")
+      "chats" => assert_eq(mark_y(), "[324]", msg="Home's list where it was left")
       "usage" => {
         // (scrolled as left: not at its top, where 用量 opens on its activity at 340)
         assert_false(left.has_prefix("mid Some((\"Token 活跃度\", 340))"), msg="用量 scrolled before it was left: \{left}")

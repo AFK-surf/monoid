@@ -765,7 +765,7 @@ fn BarModel::open_panel(self : BarModel, open : Bool, at~ : Double) -> Unit {
     if @ui.reduced_motion() {
       self.collapse.put(0.0)
     } else {
-      self.collapse.go(0.0, bar_collapse_spring, at~)
+      self.collapse.go(0.0, @motion.snappy_damped, at~)
     }
   }
   self.mode.set(open)
@@ -939,10 +939,6 @@ fn bar_merge_at(t : Double) -> Double {
 }
 
 ///|
-/// Scroll-to-collapse spring (~290ms smooth lightly damped spring, FPS-invariant).
-let bar_collapse_spring : @motion.Spec = @motion.spring(ratio=0.92, stiffness=420.0, threshold=0.001)
-
-///|
 /// Scroll hysteresis thresholds for iOS 26 bottom bar scroll-to-collapse (dp).
 let bar_collapse_down_acc : Double = 36.0
 
@@ -996,7 +992,7 @@ fn bar_set_collapsed(collapsed : Bool, at : Double) -> Unit {
   if @ui.reduced_motion() {
     m.collapse.put(target)
   } else {
-    m.collapse.go(target, bar_collapse_spring, at~)
+    m.collapse.go(target, @motion.snappy_damped, at~)
   }
   let prev_k_end = m.k_end()
   m.schedule_bond(prev_k_end, at~)
@@ -1224,7 +1220,7 @@ fn bar_tell(told : BarTold, at : Double) -> Unit {
     if @ui.reduced_motion() {
       m.collapse.put(0.0)
     } else {
-      m.collapse.go(0.0, bar_collapse_spring, at~)
+      m.collapse.go(0.0, @motion.snappy_damped, at~)
     }
   }
   // shown or not

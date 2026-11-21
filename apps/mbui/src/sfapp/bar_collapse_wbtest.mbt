@@ -3,6 +3,12 @@
 // orb, scrolling up >= 24pt, returning near top (y <= 24pt), switching tabs, or opening the panel expands it again.
 
 ///|
+let collapse_settle_ms : Double = @ui.move_most_ms * 2.0
+
+///|
+let collapse_sample_ms : Double = 1000.0 / 50.0
+
+///|
 fn bar_collapse_capsule_w(t : @ui.Tester) -> Double {
   t.drawn_glass().fold(init=0.0, fn(a, g) {
     if (g.0 - 22.0).abs() < 1.0 && (g.3 - bar_track).abs() < 1.0 {
@@ -32,7 +38,7 @@ test "bar scroll-to-collapse: downward scroll collapses to 50pt orb with centere
   // Scrolling further past y > 48pt with accumulated downward delta >= 36pt triggers collapse
   bar_scroll_note("ws1:chats", 96.0, 600.0, t0 + 32.0)
   assert_true(bar.collapsed)
-  t.run_for(500.0)
+  t.run_for(collapse_settle_ms)
   let orb_w = bar_collapse_capsule_w(t)
   assert_true((orb_w - bar_track).abs() < 0.5, msg="collapsed orb w=\{orb_w} expected=\{bar_track}")
   assert_eq(bar_merge_at(t.time()), 0.0)
@@ -58,7 +64,7 @@ test "bar scroll-to-collapse: downward scroll collapses to 50pt orb with centere
   t.touch(0, 22.0 + bar_track / 2.0, bar_y)
   t.touch(2, 22.0 + bar_track / 2.0, bar_y)
   assert_false(bar.collapsed)
-  t.run_for(500.0)
+  t.run_for(collapse_settle_ms)
   assert_true((bar_collapse_capsule_w(t) - full_w).abs() < 0.5, msg="re-expanded w=\{bar_collapse_capsule_w(t)}")
   assert_eq(place_of(app.nav.top()), Some("chats"))
 }
@@ -136,7 +142,7 @@ test "bar scroll-to-collapse: real touch drag on Home list triggers collapse and
   assert_false(bar.collapsed)
   // Finger swipe up on the list (scrolls list downward > 48pt with >= 36pt delta)
   t.drag(195.0, 580.0, 195.0, 260.0, steps=12)
-  t.run_for(500.0)
+  t.run_for(collapse_settle_ms)
   assert_true(bar.collapsed, msg="expected bar to collapse after real downward scroll drag")
   let orb_w = bar_collapse_capsule_w(t)
   assert_true((orb_w - bar_track).abs() < 0.5, msg="collapsed orb w=\{orb_w}")
@@ -144,7 +150,7 @@ test "bar scroll-to-collapse: real touch drag on Home list triggers collapse and
   let bar_y = 844.0 - 22.0 - bar_track / 2.0
   t.touch(0, 22.0 + bar_track / 2.0, bar_y)
   t.touch(2, 22.0 + bar_track / 2.0, bar_y)
-  t.run_for(500.0)
+  t.run_for(collapse_settle_ms)
   assert_false(bar.collapsed)
 }
 
@@ -196,7 +202,7 @@ test "bar scroll-to-collapse: every visible tab icon stays strictly inside capsu
   // Trigger collapse and sample every 20ms across 0..360ms
   bar_set_collapsed(true, t.time())
   for i in 0..<=18 {
-    t.run_for(20.0)
+    t.run_for(collapse_sample_ms)
     assert_bar_icons_inside_capsule(t, "collapse-\{i * 20}ms")
   }
   assert_true(bar.collapsed)
@@ -207,7 +213,7 @@ test "bar scroll-to-collapse: every visible tab icon stays strictly inside capsu
   t.touch(2, 22.0 + bar_track / 2.0, bar_y)
   assert_false(bar.collapsed)
   for i in 0..<=18 {
-    t.run_for(20.0)
+    t.run_for(collapse_sample_ms)
     assert_bar_icons_inside_capsule(t, "expand-\{i * 20}ms")
   }
 }
