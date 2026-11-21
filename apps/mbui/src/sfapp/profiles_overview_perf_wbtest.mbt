@@ -134,3 +134,199 @@ test "profiles overview perf: second switch 账号 -> 概览 wakes kept pane wit
   assert_eq(let_go, 0)
   ov_perf_audit_clean(t, "phone-second-switch")
 }
+
+///|
+fn ov_perf_frame_totals(since : Int) -> (Int, Int, Int, Int) {
+  let mut made = 0
+  let mut let_go = 0
+  let mut laid = 0
+  let mut measured = 0
+  let j = @ui.journal()
+  for i in since..<j.length() {
+    match j[i] {
+      Work({ what: Frame(f), .. }) => {
+        made += f.made
+        let_go += f.let_go
+        laid += f.laid
+        measured += f.measured
+      }
+      _ => ()
+    }
+  }
+  (made, let_go, laid, measured)
+}
+
+///|
+test "profiles place perf: wide overview <-> account wakes parked panes with made == 0, let_go == 0 and zero leaks" {
+  let t = wide_tester([], mode="place-profiles-sum-a")
+  @settings.fixture_page("settings-profiles-sum-a") |> ignore
+  app.nav.replace(Place("profiles"))
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("额度与恢复") is Some(_))
+
+  // First visit to account A builds its pane and parks 概览
+  t.tap_text("Claude 主账号")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("额度与恢复") is None)
+  assert_eq(t.unasked_faults(), [])
+
+  // Second visit to 概览 wakes parked overview pane with 0 made / 0 let_go
+  t.tree_frames_from_now()
+  t.tap_text("概览")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("额度与恢复") is Some(_))
+  let mut ov_made = 0
+  let mut ov_let_go = 0
+  for f in t.tree_frames() {
+    ov_made += f.made
+    ov_let_go += f.let_go
+  }
+  println("wide place-profiles wake overview: made=\{ov_made} let_go=\{ov_let_go}")
+  assert_eq(ov_made, 0)
+  assert_eq(ov_let_go, 0)
+  ov_perf_audit_clean(t, "wide-wake-overview", check_tree_room=false)
+
+  // Second visit to account A wakes parked account pane with 0 made / 0 let_go and releases ahead-reads cleanly
+  t.tree_frames_from_now()
+  t.tap_text("Claude 主账号")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("额度与恢复") is None)
+  let mut acc_made = 0
+  let mut acc_let_go = 0
+  for f in t.tree_frames() {
+    acc_made += f.made
+    acc_let_go += f.let_go
+  }
+  println("wide place-profiles wake account A: made=\{acc_made} let_go=\{acc_let_go}")
+  assert_eq(acc_made, 0)
+  assert_eq(acc_let_go, 0)
+  ov_perf_audit_clean(t, "wide-wake-account", check_tree_room=false)
+}
+
+///|
+test "profiles place perf: wide LRU keeps at most 4 recent accounts while keeping 概览 parked" {
+  let t = wide_tester([], mode="place-profiles-sum-a")
+  @settings.fixture_page("settings-profiles-sum-a") |> ignore
+  app.nav.replace(Place("profiles"))
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("额度与恢复") is Some(_))
+
+  // Open 4 distinct accounts: all 4 fit in the LRU alongside 概览
+  for name in ["Claude 主账号", "afkdev1@proton.me", "afkdev2@proton.me", "cuesurf4@proton.me"] {
+    t.tap_text(name)
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("额度与恢复") is None, msg="opened \{name}")
+  }
+
+  // Opening a 5th account evicts the oldest ("Claude 主账号")
+  t.tree_frames_from_now()
+  t.tap_text("cuesurf2@proton.me")
+  t.run_for(@ui.move_most_ms)
+  let mut fifth_let_go = 0
+  for f in t.tree_frames() {
+    fifth_let_go += f.let_go
+  }
+  println("wide place-profiles 5th account eviction: let_go=\{fifth_let_go}")
+  assert_true(fifth_let_go > 0, msg="5th account should evict oldest parked account")
+
+  // 概览 is still permanently parked (made == 0, let_go == 0)
+  t.tree_frames_from_now()
+  t.tap_text("概览")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("额度与恢复") is Some(_))
+  let mut ov_made = 0
+  let mut ov_let_go = 0
+  for f in t.tree_frames() {
+    ov_made += f.made
+    ov_let_go += f.let_go
+  }
+  assert_eq(ov_made, 0, msg="概览 must remain parked after LRU eviction")
+  assert_eq(ov_let_go, 0, msg="概览 must not evict on wake")
+
+  // 2nd account ("afkdev1@proton.me") is still in the 4-account LRU (made == 0, let_go == 0)
+  t.tree_frames_from_now()
+  t.tap_text("afkdev1@proton.me")
+  t.run_for(@ui.move_most_ms)
+  let mut recent_made = 0
+  let mut recent_let_go = 0
+  for f in t.tree_frames() {
+    recent_made += f.made
+    recent_let_go += f.let_go
+  }
+  assert_eq(recent_made, 0, msg="recent account in LRU should wake with made == 0")
+  assert_eq(recent_let_go, 0, msg="recent account in LRU should wake with let_go == 0")
+
+  // Evicted oldest account ("Claude 主账号") must rebuild when revisited (made > 0)
+  t.tree_frames_from_now()
+  t.tap_text("Claude 主账号")
+  t.run_for(@ui.move_most_ms)
+  let mut evicted_made = 0
+  for f in t.tree_frames() {
+    evicted_made += f.made
+  }
+  assert_true(evicted_made > 0, msg="evicted oldest account should rebuild when revisited")
+  assert_eq(t.unasked_faults(), [])
+}
+
+///|
+test "profiles side widths: unrelated profile fields (usedCount / checkText) do not re-measure sidebar quota widths" {
+  new_run()
+  let bump : @signals.Signal[Int] = @signals.signal(0)
+  let base = fixture("settings")
+  let patch_non_quota = fn(v : Json, n : Int) -> Json {
+    if n == 0 {
+      return v
+    }
+    match v {
+      Object(o) => {
+        let copy = o.copy()
+        if copy.get("items") is Some(Array(arr)) {
+          let next = arr.map(fn(e) {
+            match e {
+              Object(eo) => {
+                let ec = eo.copy()
+                if ec.get("profile") is Some(Object(po)) && po.get("id") == Some(Json::string("cc")) {
+                  let pc = po.copy()
+                  pc["usedCount"] = Json::number((n + 10).to_double())
+                  pc["checkText"] = Json::string("已检查 " + n.to_string())
+                  ec["profile"] = Json::object(pc)
+                }
+                Json::object(ec)
+              }
+              _ => e
+            }
+          })
+          copy["items"] = Json::array(next)
+        }
+        Json::object(copy)
+      }
+      _ => v
+    }
+  }
+  let src : Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      let r = base.topic(name, params).get().snapshot()
+      let n = bump.get()
+      if name == "profiles" {
+        { ..r, value: r.value.map(fn(v) { patch_non_quota(v, n) }) }
+      } else {
+        r
+      }
+    },
+  }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  app.nav.replace(Place("profiles"))
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("Claude 主账号") is Some(_))
+
+  let since = @ui.journal().length()
+  bump.set(1)
+  t.draw()
+  let (made, let_go, laid, measured) = ov_perf_frame_totals(since)
+  println("profiles side widths non-quota update: made=\{made} let_go=\{let_go} laid=\{laid} measured=\{measured}")
+  assert_eq(made, 0)
+  assert_eq(let_go, 0)
+  assert_eq(laid, 0)
+  assert_eq(measured, 0)
+}

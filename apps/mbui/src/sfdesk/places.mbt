@@ -223,9 +223,46 @@ fn profiles_place_node(
       None => None
     }
   }
-  v.pick(picked, fn(p, at) {
+  let kept : @signals.Signal[Array[(String, String)?]] = @signals.signal([])
+  let seen_overview : Ref[Bool] = Ref(false)
+  let recent : Array[(String, String)] = []
+  v.reacts(picked, fn(cur) {
+    match cur {
+      Some(("", "")) => {
+        seen_overview.val = true
+        let next : Array[(String, String)?] = [Some(("", ""))]
+        for x in recent {
+          next.push(Some(x))
+        }
+        kept.set(next)
+      }
+      Some((a, id)) => {
+        // (release any ahead-read handed over by show_answered after the frame draws: covers both initial build,
+        // idempotent with profile_node's own shown_read, and subsequent wake-ups of a parked profile_node)
+        @ui.after_drawn_frame(fn() { @sfbase.shown_read(@sfbase.profile_shown_at(a, id)) })
+        match recent.search((a, id)) {
+          Some(i) => recent.remove(i) |> ignore
+          None => ()
+        }
+        recent.push((a, id))
+        while recent.length() > 4 {
+          recent.remove(0) |> ignore
+        }
+        let next : Array[(String, String)?] = []
+        if seen_overview.val {
+          next.push(Some(("", "")))
+        }
+        for x in recent {
+          next.push(Some(x))
+        }
+        kept.set(next)
+      }
+      None => ()
+    }
+  })
+  v.each(fn() { [picked()] }, fn(k) { k }, keeps=fn() { kept.get() }, at_once=true, fn(p, at_sig) {
     p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-    match at {
+    match @signals.untracked(fn() { at_sig.get() }) {
       Some(("", "")) =>
         @sfpages.profiles_overview_node(
           p,

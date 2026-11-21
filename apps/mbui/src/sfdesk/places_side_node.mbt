@@ -162,24 +162,62 @@ fn profiles_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
       })
     }
     // (the room the allowance of each kind of account that needs the most on one line takes, a vendor's, a profile's or
-    // an offered login's, so that every row of a kind takes one way (nav_quota_chips_node); told on only as it comes out
-    // otherwise: a quota changed that leaves it as it was runs nothing of the rows. The user, 2026-11-13: 「按账号类型来
-    // 搞，不要所有全用同一种」「相同供应商的账号用同一种就行」)
-    let widths = @signals.computed(fn(_) {
-      let by : Map[String, (Double, Array[Double])] = Map([])
-      let put = fn(k : String, quota : Json?) {
-        let room = @sf.nav_quota_room_node(q, quota)
-        match by.get(k) {
-          Some((most, _)) if most >= room.0 => ()
-          _ => by[k] = room
-        }
+    // an offered login's, so that every row of a kind takes one way (nav_quota_chips_node); narrowed to only the quota
+    // fields that affect chip width so unrelated profile updates (usedCount, checkText, state, name, planText, where,
+    // usable) do not re-measure text across all accounts. The user, 2026-11-13: 「按账号类型来搞，不要所有全用同一种」「相同
+    // 供应商的账号用同一种就行」)
+    let quota_windows_key = fn(quota : Json?) -> Array[(String, String, String, Int, String)] {
+      if !@sf.has_quota(quota) {
+        return []
       }
+      items(quota, "windows").map(fn(win) {
+        let wv = Some(win)
+        let left = match field(wv, "left") {
+          Some(Number(x, ..)) => {
+            let n = x.to_int()
+            if n < 0 { 0 } else if n > 100 { 100 } else { n }
+          }
+          _ => 0
+        }
+        (text(wv, "label"), text(wv, "scope"), text(wv, "mark"), left, text(wv, "refillShort"))
+      })
+    }
+    let quota_inputs = @signals.computed(fn(_) {
+      let out : Array[(String, Array[(String, String, String, Int, String)])] = []
       for e in list() {
-        put(profile_kind(Some(e)), field(field(Some(e), "profile"), "quota"))
+        let ws = quota_windows_key(field(field(Some(e), "profile"), "quota"))
+        if !ws.is_empty() {
+          out.push((profile_kind(Some(e)), ws))
+        }
       }
       for o in offered() {
         for l in o.1 {
-          put(offer_kind(Some(l)), field(Some(l), "quota"))
+          let ws = quota_windows_key(field(Some(l), "quota"))
+          if !ws.is_empty() {
+            out.push((offer_kind(Some(l)), ws))
+          }
+        }
+      }
+      out
+    })
+    let widths = @signals.computed(fn(_) {
+      let by : Map[String, (Double, Array[Double])] = Map([])
+      for item in quota_inputs.get() {
+        let (k, ws) = item
+        let wins = ws.map(fn(win) {
+          Json::object({
+            "label": Json::string(win.0),
+            "scope": Json::string(win.1),
+            "mark": Json::string(win.2),
+            "left": Json::number(win.3.to_double()),
+            "refillShort": Json::string(win.4),
+          })
+        })
+        let qj : Json = Json::object({ "state": Json::string("ok"), "windows": Json::array(wins) })
+        let room = @sf.nav_quota_room_node(q, Some(qj))
+        match by.get(k) {
+          Some((most, _)) if most >= room.0 => ()
+          _ => by[k] = room
         }
       }
       by
@@ -227,7 +265,7 @@ fn profiles_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
       }
     })
     let lit = q.selected(fn() { chosen.get() })
-    place_list_node(q, list_at, lines, profiles_line_shape, fn(line, key, now) {
+    place_list_node(q, list_at, lines, profiles_line_shape, est=@signals.untracked(fn() { @sf.theme().chat_list.row_h + 24.0 }), fn(line, key, now) {
       let data = fn() { now().bind(fn(p) { p.data }) }
       // (told on only as it comes out otherwise: its line changed tells its room under it nothing)
       let more_c = @signals.computed(fn(_) { now().map(fn(p) { p.more }).unwrap_or(false) })
@@ -649,8 +687,10 @@ fn place_list_node(
   list_at : @sf.ListAt,
   lines : () -> Array[PlaceLine],
   shape : (String) -> Int,
+  est? : Double,
   make : (@view.View, () -> String, () -> PlaceLine?) -> Unit,
 ) -> Unit {
+  let est = est.unwrap_or_else(fn() { @signals.untracked(fn() { @sf.theme().chat_list.row_h }) })
   let held = l.keyed_by(lines, fn(p) { p.key })
   let keys = @signals.computed(fn(_) {
     let ks = held.keys().copy()
@@ -662,7 +702,7 @@ fn place_list_node(
     fn() { keys.get() },
     shape~,
     reuses=fn(k) { k != place_list_foot },
-    est=@signals.untracked(fn() { @sf.theme().chat_list.row_h }),
+    est~,
     slop=@ui.touch_slop(),
     bar=@ui.tree_scroll_bar(),
     fn(b, k) {

@@ -353,31 +353,47 @@ fn ov_refill_minutes(s : String) -> Int {
   if s == "" {
     return 999999
   }
-  let chars = s.to_array()
-  let len = chars.length()
+  let len = s.length()
   let mut i = 0
   let mut total = 0
   let mut matched = false
+  let c0 = '0'.to_int()
+  let c9 = '9'.to_int()
+  let c_space = ' '.to_int()
+  let c_day_zh = '天'.to_int()
+  let c_hour_zh = '小'.to_int()
+  let c_min_zh = '分'.to_int()
+  let c_d = 'd'.to_int()
+  let c_D = 'D'.to_int()
+  let c_h = 'h'.to_int()
+  let c_H = 'H'.to_int()
+  let c_m = 'm'.to_int()
+  let c_M = 'M'.to_int()
   while i < len {
-    let ch = chars[i]
-    if ch >= '0' && ch <= '9' {
+    let ch = s.unsafe_get(i).to_int()
+    if ch >= c0 && ch <= c9 {
       let mut n = 0
-      while i < len && chars[i] >= '0' && chars[i] <= '9' {
-        n = n * 10 + (chars[i].to_int() - '0'.to_int())
-        i += 1
+      while i < len {
+        let d = s.unsafe_get(i).to_int()
+        if d >= c0 && d <= c9 {
+          n = n * 10 + (d - c0)
+          i += 1
+        } else {
+          break
+        }
       }
-      while i < len && chars[i] == ' ' {
+      while i < len && s.unsafe_get(i).to_int() == c_space {
         i += 1
       }
       if i < len {
-        let u = chars[i]
-        if u == '天' || u == 'd' || u == 'D' {
+        let u = s.unsafe_get(i).to_int()
+        if u == c_day_zh || u == c_d || u == c_D {
           total += n * 1440
           matched = true
-        } else if u == '小' || u == 'h' || u == 'H' {
+        } else if u == c_hour_zh || u == c_h || u == c_H {
           total += n * 60
           matched = true
-        } else if u == '分' || u == 'm' || u == 'M' {
+        } else if u == c_min_zh || u == c_m || u == c_M {
           total += n
           matched = true
         }
