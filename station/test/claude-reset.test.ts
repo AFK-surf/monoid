@@ -60,14 +60,22 @@ describe("a Claude subscription's limit resets", { concurrency: true }, () => {
   });
 
   test("are asked as the installed Claude Code asks them, and shown with the allowance", async () => {
-    const p = await provider(() => ({ status: 200, body: { seven_day: { utilization: 70, resets_at: null }, juniper_tide: notAtWall, cedar_ember: ember([grant], grant.id) } }));
+    const p = await provider((asked) => ({
+      status: 200,
+      body: {
+        seven_day: { utilization: 70, resets_at: null },
+        ...(asked.url.includes("skip_spend=1") ? {} : { extra_usage: { is_enabled: true } }),
+        juniper_tide: notAtWall,
+        cedar_ember: ember([grant], grant.id),
+      },
+    }));
     const q = await claudeUsage(p.base, "t", "zh", "2.1.321");
-    assert.deepEqual([q.resetCount, q.resetExpiries, q.resets?.map((r) => r.kind)], [1, [Date.parse("2027-03-09T07:59:00Z")], ["full"]]);
-    assert.equal(p.asked[0]!.url, "/api/oauth/usage?at_wall=1&skip_spend=1");
+    assert.deepEqual([q.resetCount, q.resetExpiries, q.resets?.map((r) => r.kind), q.extraUsage], [1, [Date.parse("2027-03-09T07:59:00Z")], ["full"], true]);
+    assert.equal(p.asked[0]!.url, "/api/oauth/usage?at_wall=1");
     assert.equal(p.asked[0]!.headers["user-agent"], "claude-cli/2.1.321 (external, cli)");
     // No Claude Code to ask as: the plain read, no resets.
     const plain = await claudeUsage(p.base, "t", "zh");
-    assert.deepEqual(["resetCount" in plain, "resets" in plain], [false, false]);
+    assert.deepEqual(["resetCount" in plain, "resets" in plain, plain.extraUsage], [false, false, true]);
     assert.equal(p.asked[1]!.url, "/api/oauth/usage");
     await p.close();
   });
