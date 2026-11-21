@@ -8,7 +8,7 @@ import { stationAddr } from "../mesh/relays.ts";
 // over (run/handover.json) and the next takes them up, runtimes and all, from their runners. Under the launcher the
 // next process is up before the previous one hands over: it takes up only once that one is gone (run/hub.json says
 // which process holds the sessions), and opens the agents' door only then, so no call reaches a hub without its session.
-import { sandboxesOf } from "../agents/sandbox.ts";
+import { COLAB_REAP_MS, reapColab, sandboxesOf } from "../agents/sandbox.ts";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { rm } from "node:fs/promises";
@@ -857,6 +857,12 @@ export const AgentsLive = (control: Control) =>
       };
       yield* plane.changes.pipe(
         Stream.runForEach(() => Effect.promise(follow)),
+        Effect.forkScoped,
+      );
+
+      // Its Colab sandboxes' VMs no task holds, stopped once kept warm long enough (agents/sandbox.ts).
+      yield* Effect.promise(() => reapColab(data, sandboxesOf(config.raw())).catch(() => {})).pipe(
+        Effect.repeat(Schedule.spaced(COLAB_REAP_MS)), // timer: a deadline (an idle Colab VM is stopped 3 minutes after its last task; Colab tells nothing and never takes one back)
         Effect.forkScoped,
       );
 

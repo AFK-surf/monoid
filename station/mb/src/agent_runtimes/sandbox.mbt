@@ -66,6 +66,15 @@ fn sandbox_refusal(s : J) -> String? {
   let x = Some(s)
   let name = str_of(get(x, "name"))
   guard name is Some(n) && sandbox_name_ok(n) else { return Some("a name of letters, digits, ., _ and -") }
+  match str_of(get(x, "kind")) {
+    Some("colab") =>
+      return match str_of(get(x, "gpu")) {
+        Some("T4" | "L4" | "G4" | "A100" | "H100") => None
+        _ => Some("\{n}'s gpu is one of Colab's: T4, L4, G4, A100, H100")
+      }
+    Some(_) => return Some("\{n}'s kind is \"colab\" or none (an l4es front door)")
+    None => ()
+  }
   match str_of(get(x, "target")) {
     Some(target) if front_door_ok(target) => ()
     _ => return Some("\{n}'s target is its front door, like {name}.WORKSPACE@HOST")
@@ -84,10 +93,11 @@ fn sandbox_refusal(s : J) -> String? {
 }
 
 ///|
-/// `sandboxesOf`: config.json's `sandboxes` as the station takes them, those not well formed left out.
+/// `sandboxesOf`: config.json's `sandboxes` as the station takes them, those not well formed left out. A Colab one
+/// (kind "colab") is the TypeScript station's alone so far: taken as well formed, not listed here.
 pub fn sandboxes_of(raw : J?) -> Array[Sandbox] {
   arr(get(raw, "sandboxes"))
-  .filter(s => sandbox_refusal(s) is None)
+  .filter(s => sandbox_refusal(s) is None && str_of(get(Some(s), "kind")) is None)
   .map(s => {
     let x = Some(s)
     {

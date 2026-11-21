@@ -939,7 +939,7 @@ export class Remote {
     const rigs = Array.isArray(roster?.rigs) ? (roster.rigs as Json[]) : [];
     const said = this.rigs;
     // Its sandboxes too (agents/sandbox.ts), by `sandbox:<name>`: nothing to ask, they are this station's.
-    const sandboxes = (this.sandboxes?.() ?? []).map((d) => ({ id: SANDBOX + d.name, name: d.name, ...sandboxDescribed(d) }));
+    const sandboxes = (this.sandboxes?.() ?? []).map((d) => ({ id: SANDBOX + d.name, name: d.name, ...sandboxDescribed(d, this.data) }));
     listed.push(...sandboxes);
     if (rigs.length === 0 || said === null) return { ...roster, stations: [...listed, ...left], rigs: undefined, rigsWaiting: undefined };
     const listedRigs = await Promise.all(
@@ -1016,7 +1016,7 @@ export class Remote {
       const workspace = text(request, "workspace");
       const sandbox = this.sandboxes?.().find((d) => SANDBOX + d.name === station);
       if (sandbox === undefined) return Promise.reject(new Refused("no such sandbox on this station (config.json's sandboxes)"));
-      if (text(request, "method") === "describe") return Promise.resolve(sandboxDescribed(sandbox));
+      if (text(request, "method") === "describe") return Promise.resolve(sandboxDescribed(sandbox, this.data));
       return this.bus.handle(workspace, station, request);
     }
     return this.bus.ask(station, request);

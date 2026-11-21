@@ -3,7 +3,7 @@
 // real processes, is the side run's (side/sandbox.test.ts).
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { BRIDGE, checkSandboxes, sandboxCommand, sandboxDescribed, sandboxOf, sandboxesOf } from "../src/agents/sandbox.ts";
+import { BRIDGE, COLAB, checkSandboxes, colabPool, sandboxCommand, sandboxDescribed, sandboxOf, sandboxesOf } from "../src/agents/sandbox.ts";
 import { sandboxName } from "../src/agents/sandbox-name.ts";
 
 /// The bridge specs a command made by sandboxCommand runs, in order.
@@ -66,5 +66,27 @@ describe("sandboxes", () => {
     assert.equal(said.tasks, true);
     assert.equal(said.sync, 1);
     assert.equal(said.chats, false);
+  });
+  test("a Colab sandbox: a GPU of Colab's, its task run by colab-sandbox.mjs from the station's pool, both specs over one VM", () => {
+    const raw = { sandboxes: [{ name: "colab-g4", kind: "colab", gpu: "G4" }, { name: "l4es", target: "{name}.t@h" }] };
+    checkSandboxes(raw);
+    assert.deepEqual(sandboxesOf(raw), raw.sandboxes);
+    assert.throws(() => checkSandboxes({ sandboxes: [{ name: "x", kind: "colab", gpu: "RTX5090" }] }), /gpu is one of Colab's/);
+    assert.throws(() => checkSandboxes({ sandboxes: [{ name: "x", kind: "aws", target: "{name}.t@h" }] }), /kind is "colab"/);
+    const d = sandboxesOf(raw)[0]!;
+    const command = sandboxCommand("/data", d, { sandbox: "colab-g4", session: "s1", back: ["out"] }, "render", "/data/remote/w/src", [4750], "/data/jobs/exit/j.lost", "node");
+    const words = [...command.matchAll(/'((?:[^']|'\\'')*)'/g)].map((m) => m[1]!.replaceAll(`'\\''`, "'"));
+    assert.deepEqual(words.slice(0, 3), ["node", COLAB, "task"]);
+    const o = JSON.parse(words[3]!);
+    assert.deepEqual([o.pool, o.gpu, o.chat, o.bridge], [colabPool("/data"), "G4", "s1", BRIDGE]);
+    // No ssh in the specs: colab-sandbox.mjs gives the VM's, once it holds one.
+    assert.equal(o.run.ssh, undefined);
+    assert.deepEqual([o.run.program, o.run.args, o.run.cwd, o.run.ports, o.run.lostFile], ["/bin/sh", ["-c", "render"], "/data/remote/w/src", [4750], "/data/jobs/exit/j.lost"]);
+    assert.deepEqual(o.back.sync.map((e: any) => [e.path, e.push]), [["/data/remote/w/src/out", false]]);
+    assert.equal(JSON.parse([...sandboxCommand("/data", d, { sandbox: "colab-g4", session: "s1", back: [] }, "true", "/w", [], "/l", "node").matchAll(/'((?:[^']|'\\'')*)'/g)].map((m) => m[1]!)[3]!).back, null);
+    const said = sandboxDescribed(d, "/data", "node") as any;
+    assert.deepEqual([said.kind, said.gpu, said.tasks, said.chats], ["sandbox", "G4", true, false]);
+    assert.match(said.login, /colab-sandbox\.mjs' 'login'/);
+    assert.match(said.note, /G4 GPU/);
   });
 });
