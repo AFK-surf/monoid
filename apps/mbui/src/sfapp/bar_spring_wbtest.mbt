@@ -190,3 +190,52 @@ test "bar: capsule and action circle share one liquid glass backdrop capture" {
   assert_true(liquids[0].5 > 0, msg="\{Repr(liquids)}")
   assert_eq(liquids[1].5, liquids[0].5, msg="\{Repr(liquids)}")
 }
+
+///|
+test "bar: dragging panel up and down triggers capillary liquid fuse and split" {
+  let settle_ms = 1000.0
+  let t = tester("home")
+  let (xs, y) = bar_places_at()
+  // At rest with ＋ separated: merge == 0.0
+  assert_eq(bar_merge_at(t.time()), 0.0)
+  // Drag up to open multi-row panel (＋ fuses into capsule)
+  let t_open0 = t.time()
+  t.drag(xs[1], y, xs[1], y - 80.0)
+  let t_open_end = dmax(bar_rest(), t.time())
+  let mut saw_fuse_merge = false
+  let mut s = t_open0
+  while s <= t_open_end {
+    if bar_merge_at(s) > 0.5 {
+      saw_fuse_merge = true
+      break
+    }
+    s += 5.0
+  }
+  t.run_for(settle_ms)
+  let open_rest = (bar.o.to == 1.0, bar.k_at(t.time()) <= 0.002, bar_merge_at(t.time()) == 0.0)
+  // Drag down to close panel (＋ emerges with liquid bridge, snaps past break_gap back to 0.0)
+  let t_close0 = t.time()
+  t.drag(xs[1], y - 56.0, xs[1], y)
+  let t_close_end = dmax(bar_rest(), t.time())
+  let mut saw_split_bridge = false
+  let mut saw_snap_zero = false
+  let mut c = t_close0
+  while c <= t_close_end {
+    let k = bar.k_at(c)
+    let gap = (act_size + act_gap) * k - act_size
+    let m = bar_merge_at(c)
+    if gap > 0.0 && gap < bar_bond_break_gap && m > 0.5 {
+      saw_split_bridge = true
+    }
+    if saw_split_bridge && gap >= bar_bond_break_gap && m == 0.0 {
+      saw_snap_zero = true
+    }
+    c += 5.0
+  }
+  t.run_for(settle_ms)
+  let close_rest = (bar.o.to == 0.0, (bar.k_at(t.time()) - 1.0).abs() < 0.001, bar_merge_at(t.time()) == 0.0)
+  assert_eq(
+    (saw_fuse_merge, open_rest, saw_split_bridge, saw_snap_zero, close_rest),
+    (true, (true, true, true), true, true, (true, true, true)),
+  )
+}

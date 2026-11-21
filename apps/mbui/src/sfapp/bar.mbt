@@ -816,36 +816,51 @@ let bar_bond_break_gap : Double = 6.5
 
 ///|
 /// Schedules the closed-form capillary liquid bridge (`bond_merge` & `bond_recoil`) whenever the effective notch target
-/// `k_end()` flips between closed (0) and open (1), whether driven by tab change or panel open/close.
+/// `k_end()` flips between closed (0) and open (1), or when an emerging bonded droplet finishes separating past
+/// `break_gap` (e.g. panel drag-down releasing to `o = 0`), whether driven by tab change or panel open/close.
 fn BarModel::schedule_bond(self : BarModel, prev_k_end : Double, at~ : Double) -> Unit {
   let next_k_end = self.k_end()
-  if (next_k_end > 0.5) == (prev_k_end > 0.5) {
-    return
-  }
   let end = dmax(at, dmax(self.k.end(), self.o.end()))
   let gap_at = fn(t : Double) { (act_size + act_gap) * self.k_at(t) - act_size }
   if next_k_end > 0.5 {
-    // Opening: ＋ emerges from capsule right end -> stretches liquid bridge until gap >= break_gap -> critically damped snap to 0
-    let delay = match @motion.liquid_bond_cross_time(at, end, gap_at, true, bar_bond_break_gap) {
-      Some(ts) => dmax(0.0, ts - at)
-      None => 0.0
+    if prev_k_end > 0.5 && !self.bond_bonded {
+      return
     }
-    self.bond_bonded = false
-    self.bond_merge.put(bar_bond_merge_max)
-    self.bond_merge.go(0.0, @motion.liquid_split_spring.delayed(delay), at~)
-    self.bond_recoil.put(0.0)
-    self.bond_recoil.go(0.0, @motion.liquid_recoil_spring.delayed(delay), at~, velocity=-4.5)
+    // Opening: ＋ emerges from capsule right end -> stays bonded until gap >= break_gap -> critically damped snap to 0
+    match @motion.liquid_bond_cross_time(at, end, gap_at, true, bar_bond_break_gap) {
+      Some(ts) => {
+        let delay = dmax(0.0, ts - at)
+        self.bond_bonded = false
+        self.bond_merge.put(bar_bond_merge_max)
+        self.bond_merge.go(0.0, @motion.liquid_split_spring.delayed(delay), at~)
+        self.bond_recoil.put(0.0)
+        self.bond_recoil.go(0.0, @motion.liquid_recoil_spring.delayed(delay), at~, velocity=-4.5)
+      }
+      None => {
+        // Still emerging inside break_gap (e.g. mid-drag): stay bonded until a subsequent spring leg crosses break_gap
+        self.bond_bonded = true
+        self.bond_merge.put(bar_bond_merge_max)
+      }
+    }
   } else {
-    // Closing: ＋ approaches with zero magnetic attraction while gap > 0 -> blooms on physical contact (gap <= 0)
-    let delay = match @motion.liquid_bond_cross_time(at, end, gap_at, false, 0.0) {
-      Some(tt) => dmax(0.0, tt - at)
-      None => 0.0
+    if prev_k_end <= 0.5 {
+      return
     }
-    self.bond_bonded = true
-    self.bond_merge.put(0.0)
-    self.bond_merge.go(bar_bond_merge_max, @motion.liquid_merge_spring.delayed(delay), at~)
-    self.bond_recoil.put(0.0)
-    self.bond_recoil.go(0.0, @motion.liquid_recoil_spring.delayed(delay), at~, velocity=4.0)
+    // Closing: ＋ approaches with zero magnetic attraction while gap > 0 -> blooms on physical contact (gap <= 0)
+    match @motion.liquid_bond_cross_time(at, end, gap_at, false, 0.0) {
+      Some(tt) => {
+        let delay = dmax(0.0, tt - at)
+        self.bond_bonded = true
+        self.bond_merge.put(0.0)
+        self.bond_merge.go(bar_bond_merge_max, @motion.liquid_merge_spring.delayed(delay), at~)
+        self.bond_recoil.put(0.0)
+        self.bond_recoil.go(0.0, @motion.liquid_recoil_spring.delayed(delay), at~, velocity=4.0)
+      }
+      None => {
+        self.bond_bonded = false
+        self.bond_merge.put(0.0)
+      }
+    }
   }
 }
 
@@ -1362,8 +1377,10 @@ fn bar_finger_at(src : Source, ws : Workspace, d : @view.Drag, how : BarFingerIs
     for id, g in m.tints {
       lit[id] = g.at(t).0
     }
+    let prev_k_end = m.k_end()
     m.mode.set(false)
     m.o.go(0.0, 200.0, 28.0, at=t)
+    m.schedule_bond(prev_k_end, at=t)
     m.swap = Some({
       i,
       n,
@@ -1475,11 +1492,13 @@ fn bar_finger_at(src : Source, ws : Workspace, d : @view.Drag, how : BarFingerIs
           }
           let snap = if m.open { 1.0 } else { 0.0 }
           let goal = dclamp(snap + lean * (raw - snap), 0.0, 1.1)
+          let prev_k_end = m.k_end()
           if m.open {
             m.o.go(goal, 260.0, 17.0, at=t)
           } else {
             m.o.go(goal, 320.0, 26.0, at=t)
           }
+          m.schedule_bond(prev_k_end, at=t)
         }
       }
       m.drag = px
