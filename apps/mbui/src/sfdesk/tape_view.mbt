@@ -155,7 +155,7 @@ priv struct TapeRoom {
 }
 
 ///|
-fn tape_room(ww : Double, wh : Double, open : Bool, shown : Bool) -> TapeRoom {
+fn tape_room(ww : Double, wh : Double, ime : Double, open : Bool, shown : Bool) -> TapeRoom {
   let under = @sf.native_clear()
   let tw = ww - under
   let s = tape_side_w(tw, wide.side_w.get())
@@ -173,7 +173,7 @@ fn tape_room(ww : Double, wh : Double, open : Bool, shown : Bool) -> TapeRoom {
   let foot = if @sf.native_side() {
     cards_foot
   } else if edge {
-    dmin(bars.bottom, cards_foot + @ui.current().ime_inset())
+    dmin(bars.bottom, cards_foot + ime)
   } else {
     bars.bottom
   }
@@ -208,11 +208,14 @@ fn tape_shown_side() -> SideOf? {
 ///|
 /// The tape's room now (tape_room), its window as the tree's frames give it.
 fn tape_room_now() -> TapeRoom {
-  let (ww, wh) = match tape_goes.node {
-    Some(v) => v.window()
-    None => (0.0, 0.0)
+  let (ww, wh, ime) = match tape_goes.node {
+    Some(v) => {
+      let (w, h) = v.window()
+      (w, h, v.keyboard_inset())
+    }
+    None => (0.0, 0.0, 0.0)
   }
-  tape_room(ww, wh, (tape_goes.panel_of)() is Some(_), tape_shown_side() is Some(_))
+  tape_room(ww, wh, ime, (tape_goes.panel_of)() is Some(_), tape_shown_side() is Some(_))
 }
 
 ///|
@@ -462,7 +465,10 @@ fn tape_to(p : TapePane, at : Double, velocity_px? : Double = 0.0) -> Unit {
     velocity_px~,
   )
   if p != Page {
-    @ui.current().blur()
+    match tape_goes.node {
+      Some(v) => v.focus_let_go()
+      None => ()
+    }
   }
 }
 
@@ -538,7 +544,14 @@ fn tape_let_go(p : TapePane, v : Double, at : Double) -> Unit {
 /// over or back as a finger's is; called off, back where it was. Each at its step's moment. A back with no gesture (a
 /// back key, ⌘[) brings `p` over at once.
 fn tape_back(p : TapePane, step : @ui.BackStep) -> Unit {
-  let now = @ui.tree_cause().unwrap_or(@ui.current().moment())
+  let now = match @ui.tree_cause() {
+    Some(t) => t
+    None =>
+      match tape_goes.node {
+        Some(v) => v.cause_at()
+        None => 0.0
+      }
+  }
   match step {
     Began(x, t) =>
       if wide.tape_pull.get() is None {

@@ -5,24 +5,8 @@
 // of the system's `bars`). The shell gives a page what of them is its to keep room for (PageFrame's `top` and `foot`).
 
 ///|
-/// Whether the pages have the bottom bar under them: the phone's pages do (laid out Small), the wide frame's not.
-fn has_bar() -> Bool {
-  !@sfdesk.is_wide(@ui.current())
-}
-
-///|
-/// What the bottom bar takes at the pages' foot (over the navigation bar): its room with it, nothing without.
-fn bar_room_now() -> Double {
-  if has_bar() {
-    bar_room
-  } else {
-    0.0
-  }
-}
-
-///|
-/// What the bottom bar takes at the pages' foot in a window `width` wide (bar_room_now's, by the width a node of the
-/// window's tree follows: View::window).
+/// What the bottom bar takes at the pages' foot in a window `width` wide, by the width a node of the window's tree
+/// follows (View::window): its room laid out Small, nothing on the wide frame.
 fn bar_room_at(width : Double) -> Double {
   if !@sfdesk.wide_at(width) {
     bar_room
@@ -32,26 +16,10 @@ fn bar_room_at(width : Double) -> Double {
 }
 
 ///|
-/// A top bar's least height, the status bar's and its own (bar_h) as one length (TopGlassBar, Chat.kt BarFrame: the
-/// status bar's padding, then heightIn(min = TopBarHeight)).
-fn top_bar_h() -> Double {
-  status_top() + bar_h
-}
-
-///|
-/// The status bar's height: what a page's top bar is padded by.
-fn status_top() -> Double {
-  let top = @ui.system_bars().top
-  // (whether the buttons are in its top row read first, as the frame began, followed: a node's binding that reads
-  // this (the viewers' room, viewer_host_of) is worked out again as it changes, whatever the width said then)
-  let inset = @ui.window_inset_now()
-  // a desktop's window with its buttons in the app's top row (macOS: its title bar the app's; Windows: the app's
-  // own buttons, @sf.window_keys), a phone's page in it: the buttons' band over the page, as a status bar is
-  if top == 0.0 && inset && @sf.layout(@ui.current().window_size().0) is Small {
-    window_band_now()
-  } else {
-    top
-  }
+/// A top bar's least height in a window `width` wide, the status bar's and its own (bar_h) as one length (TopGlassBar,
+/// Chat.kt BarFrame: the status bar's padding, then heightIn(min = TopBarHeight)).
+fn top_bar_h_at(width : Double) -> Double {
+  status_top_now(width) + bar_h
 }
 
 ///|
@@ -78,17 +46,20 @@ fn nav_foot() -> Double {
 
 ///|
 /// What a page drawn over the whole window keeps room for (a screen's: under the status bar, over the navigation bar),
-/// the shell's to say (PageFrame).
-fn system_frame() -> PageFrame {
-  { back: None, top: status_top(), foot: nav_foot(), named: false }
+/// in a window `width` wide, the shell's to say (PageFrame).
+fn system_frame_at(width : Double) -> PageFrame {
+  { back: None, top: status_top_now(width), foot: nav_foot(), named: false }
 }
 
 ///|
-/// The status bar's height for a node of the window's tree in a window `width` wide (status_top's, followed): where the
-/// window's buttons are in the app's top row and it is laid out Small, their band.
+/// The status bar's height for a node of the window's tree in a window `width` wide, followed: where the window's
+/// buttons are in the app's top row and it is laid out Small, their band.
 fn status_top_now(width : Double) -> Double {
   let top = @ui.system_bars().top
-  if top == 0.0 && @sf.layout(width) is Small && @ui.window_inset_now() {
+  // (whether the buttons are in its top row read first, as the frame began, followed: a node's binding that reads
+  // this (the viewers' room, viewer_host_of) is worked out again as it changes, whatever the width said then)
+  let inset = @ui.window_inset_now()
+  if top == 0.0 && inset && @sf.layout(width) is Small {
     window_band_now()
   } else {
     top

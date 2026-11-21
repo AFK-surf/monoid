@@ -84,8 +84,8 @@ fn chat_bar_state(r : ChatRef) -> ChatBarState {
 /// Where chat `r`'s bar comes to end, its second row as it comes to show or not (a long title's, measured as the bar is
 /// laid out, after the list was made and put where it opens; opened or shut by a press): what the list put somewhere
 /// stands under. Read as it changes: its state made where the bar is not made yet.
-fn bar_foot_coming(r : ChatRef) -> Double {
-  bar_foot() + chat_bar_state(r).extra_target.get()
+fn bar_foot_coming(v : @view.View, r : ChatRef) -> Double {
+  bar_foot_at(v.window_w()) + chat_bar_state(r).extra_target.get()
 }
 
 ///|

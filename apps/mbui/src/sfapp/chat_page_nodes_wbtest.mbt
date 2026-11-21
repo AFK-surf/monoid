@@ -2194,7 +2194,7 @@ fn reopen_lines(t : @ui.Tester, top : Double, foot : Double) -> Array[(String, D
 /// its words: one whose words begin over the bar's foot and go on well under the room the list keeps there (so the
 /// block before it shows nothing under the bar to read: chat_reader_at's); -1 where none is so.
 fn reopen_piece_at_top(t : @ui.Tester) -> Int {
-  let cover = bar_foot() + bar_extra_target(long_ref)
+  let cover = bar_foot_at(t.ctx().window_size().0) + bar_extra_target(long_ref)
   let mut piece = -1
   for w in t.words() {
     guard w.0.has_prefix("第") && w.5 > 0.5 && w.2 < cover + 2.0 && w.2 + w.4 > cover + 30.0 else { continue }

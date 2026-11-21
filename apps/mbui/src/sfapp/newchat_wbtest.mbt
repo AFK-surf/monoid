@@ -102,7 +102,7 @@ test "the bar: 文件 tapped is its page in place of the chats', back is the cha
 fn bar_title_x(t : @ui.Tester, title : String) -> Double {
   t
   .words()
-  .fold(init=1.0e9, fn(a, w) { if w.0 == title && w.2 < status_top() + top_bar_h() && w.1 < a { w.1 } else { a } })
+  .fold(init=1.0e9, fn(a, w) { if w.0 == title && w.2 < status_top_now(390.0) + top_bar_h_at(390.0) && w.1 < a { w.1 } else { a } })
 }
 
 ///|
@@ -111,7 +111,7 @@ fn bar_title_x(t : @ui.Tester, title : String) -> Double {
 fn bar_words(t : @ui.Tester, from : Double) -> Array[(String, Double, Double)] {
   t
   .words()
-  .filter(fn(w) { w.2 < status_top() + top_bar_h() && w.1 >= from - 0.5 && w.1 < from + 390.0 - 0.5 })
+  .filter(fn(w) { w.2 < status_top_now(390.0) + top_bar_h_at(390.0) && w.1 >= from - 0.5 && w.1 < from + 390.0 - 0.5 })
   .map(fn(w) { (w.0, (w.1 - from).round(), w.2.round()) })
 }
 

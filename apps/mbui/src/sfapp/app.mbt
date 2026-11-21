@@ -144,7 +144,7 @@ pub fn reset() -> Unit {
 /// What the app's own doings ask of the pages (sfbase shell.mbt): home and what is over the pages put their sheets
 /// down too, an invitation's link shows its sheet, the screens live in their cards stop as the app goes behind; a file
 /// asked beside, in the side panel of the chat in view where the frame is the wide one (`wide`, this frame's).
-fn pages_shell(src : Source, wide : Bool, window_width : Double) -> Shell {
+fn pages_shell(src : Source, wide : Bool, window_width : Double, now : () -> Double) -> Shell {
   {
     home,
     close_overlays,
@@ -155,9 +155,9 @@ fn pages_shell(src : Source, wide : Bool, window_width : Double) -> Shell {
       // (where each chat open on a page made as nodes is, kept and told now: no frame may come after)
       @sfpages.chat_reads_behind()
     },
-    open: fn(p) { open_where(src, p) },
-    open_over: fn(p) { open_over_where(src, p) },
-    detail: detail_where,
+    open: fn(p) { open_where(src, wide, p) },
+    open_over: fn(p) { open_over_where(src, wide, p) },
+    detail: fn(s, r, tab) { detail_where(s, wide, r, tab) },
     beside: fn(tab, full) { beside_where(src, wide, tab, full) },
     beside_for: fn(tab, was) {
       match app.nav.top() {
@@ -166,9 +166,9 @@ fn pages_shell(src : Source, wide : Bool, window_width : Double) -> Shell {
       }
     },
     beside_room: fn() { wide && app.nav.top() is Chat(_) },
-    back: fn() { back_where(src) },
+    back: fn() { back_where(src, wide, now) },
     show: fn() {
-      if @sfdesk.is_wide(@ui.current()) {
+      if wide {
         @sfdesk.show_page()
       }
     },
@@ -186,15 +186,14 @@ fn pages_shell(src : Source, wide : Bool, window_width : Double) -> Shell {
 /// What back does where the layout has it (the tiers' table): the wide frame's (sfdesk's
 /// wide_back); laid out Small, a page of the stack popped, a place's top page other than the chats back to the chats
 /// in place (from no side), none at the chats' (the system's: the app left).
-fn back_where(src : Source) -> (() -> Unit)? {
-  let c = @ui.current()
-  if @sfdesk.is_wide(c) {
+fn back_where(src : Source, wide : Bool, now : () -> Double) -> (() -> Unit)? {
+  if wide {
     return @sfdesk.wide_back(src)
   }
   if app.nav.depth() > 1 {
     Some(@sfbase.back_pop)
   } else if app.nav.top() != Home {
-    Some(fn() { go_place(c.moment(), "chats", [], -1) })
+    Some(fn() { go_place(now(), "chats", [], -1) })
   } else {
     None
   }
@@ -205,8 +204,8 @@ fn back_where(src : Source) -> (() -> Unit)? {
 /// a chat's detail asked as a page (its history, a service, a file) laid beside its chat by the frame (sfdesk's
 /// beside_follow), on the tape shown in the page pane (sfdesk's show_page: brought over with the side panel in use, also
 /// the chat already shown, chosen again); laid out Small on the phone's stack (a new chat risen from the foot).
-fn open_where(src : Source, p : Page) -> Unit {
-  if !@sfdesk.is_wide(@ui.current()) {
+fn open_where(src : Source, wide : Bool, p : Page) -> Unit {
+  if !wide {
     stack_open(p)
     return
   }
@@ -249,8 +248,8 @@ fn open_where(src : Source, p : Page) -> Unit {
 /// Page `p` opened from the page in view (a chat's link in a message): on the wide frame, another chat over the chat
 /// shown (Nav::push_over), so back comes to it again as the web's history does (the user, 2026-10-27: a chat's link
 /// followed, back went to a new chat); else where the layout has it (open_where).
-fn open_over_where(src : Source, p : Page) -> Unit {
-  if @sfdesk.is_wide(@ui.current()) {
+fn open_over_where(src : Source, wide : Bool, p : Page) -> Unit {
+  if wide {
     match (app.nav.top(), p) {
       (Chat(open), Chat(r)) if open.station != r.station || open.session != r.session => {
         app.nav.push_over(p)
@@ -260,7 +259,7 @@ fn open_over_where(src : Source, p : Page) -> Unit {
       _ => ()
     }
   }
-  open_where(src, p)
+  open_where(src, wide, p)
 }
 
 ///|
@@ -305,8 +304,8 @@ fn open_chat_beside(r : ChatRef) -> Unit {
 ///|
 /// Chat `r`'s detail `tab` opened where the layout has it: on the wide frame its side panel's tab, toggled; laid out
 /// Small the page it is (an agent's history, what the pages' message rows ask).
-fn detail_where(src : Source, r : ChatRef, tab : String) -> Unit {
-  if @sfdesk.is_wide(@ui.current()) {
+fn detail_where(src : Source, wide : Bool, r : ChatRef, tab : String) -> Unit {
+  if wide {
     @sfdesk.side_toggle(src, r, tab)
   } else {
     app.nav.push(History(r, tab, None))
@@ -400,7 +399,7 @@ pub fn view(c : @ui.Ctx, src : Source) -> Unit {
   (@sfbase.made_frame.val)(c)
   @sfbase.held_build()
   c.after_build("held/end", fn() { @sfbase.held_end() })
-  shell_set(pages_shell(src, @sfdesk.is_wide(c), c.window_size().0))
+  shell_set(pages_shell(src, @sfdesk.is_wide(c), c.window_size().0, fn() { c.moment() }))
   // the Mac's menu bar, in the app's words (menu_bar.mbt); an item of the pages' chosen is done as its action is, at
   // that moment (@settings.ask_action)
   menu_bar(c, src)
@@ -413,7 +412,7 @@ pub fn view(c : @ui.Ctx, src : Source) -> Unit {
   @sf.set_shortcuts(@sfdesk.tip_keys(src))
   // the library's words, the app's catalog's; what its viewers ask of the page (viewer_host.mbt)
   @sf.set_words(fill)
-  @sf.set_viewer_host(viewer_host_of(src))
+  @sf.set_viewer_host(viewer_host_of(src, fn() { c.window_size().0 }))
   // a chat's file downloaded by the core, all here: kept where the system keeps downloads, whatever page shows
   // (downloads.mbt)
   downloads_frame(c, src)
@@ -427,9 +426,9 @@ pub fn view(c : @ui.Ctx, src : Source) -> Unit {
   // the wide frame's lines set as the desktop app's pages set them (a browser's way)
   @ui.set_web_lines(wide)
   @settings.wide.val = wide
-  @settings.status_top.val = status_top()
+  @settings.status_top.val = status_top_now(c.window_size().0)
   @settings.nav_foot.val = nav_foot()
-  @settings.bar_room.val = bar_room_now()
+  @settings.bar_room.val = bar_room_at(c.window_size().0)
   linger_tick(c, src, in_front=app_in_front())
   // the screens live in their cards (screen_links.mbt): which are on the screen, their frames acknowledged
   peeks_frame(c, src)
@@ -648,7 +647,7 @@ fn app_looks_told(root : @view.View, src : Source, words_set~ : Bool = true) -> 
     // being otherwise and its faces then changed with nothing measured yet)
     if a.1 > 0.0 {
       let wide = @sfdesk.wide_at(a.1)
-      shell_set(pages_shell(src, wide, a.1))
+      shell_set(pages_shell(src, wide, a.1, fn() { root.cause_at() }))
       @settings.wide.val = wide
       @ui.set_web_lines(wide)
       faces(src, wide)
@@ -673,7 +672,7 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
     @sf.set_words(fill)
     // (what its viewers ask of the page, said before any page of nodes is made: a text a reader of nodes reads as it is
     // made read by the core, viewer_host.mbt)
-    @sf.set_viewer_host(viewer_host_of(src))
+    @sf.set_viewer_host(viewer_host_of(src, fn() { root.window_w() }))
     // Keep the prefs reader with the tree from its first read, including before the first frame is built.
     root.reacts(fn() { src.topic("prefs", {}).get().value }, fn(p) {
       @sfbase.language_from_prefs(p)

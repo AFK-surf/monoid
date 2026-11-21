@@ -54,7 +54,7 @@ test "an answer taller than the window out of the avatar, the list at its end: r
   t.run_for(emit_all_ms() + 1000.0)
   // its top in view under the bar, not the list at the end of it
   guard t.drawn_of(first) is Some((_, y)) else { fail("the answer's top is not in view") }
-  assert_true(y > bar_foot() && y < 844.0 / 2.0, msg="the answer's top at \{y}, the bar's foot at \{bar_foot()}")
+  assert_true(y > bar_foot_at(t.ctx().window_size().0) && y < 844.0 / 2.0, msg="the answer's top at \{y}, the bar's foot at \{bar_foot_at(t.ctx().window_size().0)}")
   emit_restore()
 }
 
