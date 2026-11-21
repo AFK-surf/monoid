@@ -2309,7 +2309,7 @@ fn phone_player_node(
           .height(Is(Some(@ui.Space::S12.px())))
           .padding(Is((@ui.Space::S1.px(), 0.0, @ui.Space::S1.px(), 0.0)))
           .gap(Is(@ui.Space::S1.px()))
-          .radius(By(fn() { @ui.tree_theme().corner(Xl1_5) }))
+          .radius(Is(@ui.Space::S12.px() / 2.0))
           .lines_up(Is(Some(Middle)))
           .ground(By(fn() { ink().ground }))
           .presses(By(live))
