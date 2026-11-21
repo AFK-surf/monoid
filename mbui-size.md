@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e357b7d47](https://github.com/AFK-surf/monoid/commit/e357b7d473fa0efb4d73a89732af582dae5cdb3e) perf(station): wire 2x --serve child pool into Moo | 2.65 | 3.57 | 14.49 | 36.49 | 55.24 | 31.96 | 64.58 | 98.27 | 114.59 |
 | [7cd3bff10](https://github.com/AFK-surf/monoid/commit/7cd3bff105d44ab717b311d9a2187dcb722cab5d) fix(sf-ui,mbui,web): clear remaining visual whitel | 2.65 | 3.57 | 14.49 | 36.49 | 55.23 | 31.95 | 64.58 | 98.39 | 128.2 |
 | [c18c4ece1](https://github.com/AFK-surf/monoid/commit/c18c4ece1389c01679b0f1aa0ca755980009c116) feat(mbui): fill a by_room box down by structure a | 2.65 | 3.57 | 14.49 | 36.48 | 55.22 | 31.95 | 64.56 | 98.16 | 128.14 |
 | [614c97001](https://github.com/AFK-surf/monoid/commit/614c9700169bc54d9dd93a7952017db5fbdfcd45) feat(core-ts): add harness-lock and migrate lock/v | 2.65 | 3.57 | 14.49 | 36.48 | 55.22 | 31.95 | 64.56 | 98.16 | 128.14 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [bfa6aa2cd](https://github.com/AFK-surf/monoid/commit/bfa6aa2cd8882ce8f39782ba32a901e78a74b2d8) feat(sf-ui,website): add Standard UI interactive s | 2.79 | 3.77 | 15.34 | 37.46 | 58.01 | 32.83 | 67.01 | 98.24 | 79.2 |
 | [8863ff935](https://github.com/AFK-surf/monoid/commit/8863ff9356893bd1d1e411a83cb9a4165aa0a6a8) fix(chat): node chat page fixes before chatPage gr | 2.79 | 3.77 | 15.34 | 37.46 | 58.01 | 32.83 | 67.01 | 98.44 | 125.63 |
 | [89726c415](https://github.com/AFK-surf/monoid/commit/89726c41509afc0ff2adf754e620c93dab37b48c) chore(mesh): pin noq last-open-path idle cleanup ( | 2.79 | 3.77 | 15.33 | 37.45 | 57.98 | 32.82 | 66.98 | 98.29 | 122.42 |
-| [f82607a79](https://github.com/AFK-surf/monoid/commit/f82607a7983e2ac0e09c37d49cf61ced5a9c43f1) fix(mesh): yield stale transport paths and bound m | 2.79 | 3.77 | 15.33 | 37.45 | 57.97 | 32.82 | 66.96 | 98.29 | 127.37 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e357b7d47](https://github.com/AFK-surf/monoid/commit/e357b7d473fa0efb4d73a89732af582dae5cdb3e) perf(station): wire 2x --serve child pool into Moo | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.23 |
 | [7cd3bff10](https://github.com/AFK-surf/monoid/commit/7cd3bff105d44ab717b311d9a2187dcb722cab5d) fix(sf-ui,mbui,web): clear remaining visual whitel | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.23 |
 | [c18c4ece1](https://github.com/AFK-surf/monoid/commit/c18c4ece1389c01679b0f1aa0ca755980009c116) feat(mbui): fill a by_room box down by structure a | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.23 |
 | [614c97001](https://github.com/AFK-surf/monoid/commit/614c9700169bc54d9dd93a7952017db5fbdfcd45) feat(core-ts): add harness-lock and migrate lock/v | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [bfa6aa2cd](https://github.com/AFK-surf/monoid/commit/bfa6aa2cd8882ce8f39782ba32a901e78a74b2d8) feat(sf-ui,website): add Standard UI interactive s | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.71 | 4.62 | 54.08 |
 | [8863ff935](https://github.com/AFK-surf/monoid/commit/8863ff9356893bd1d1e411a83cb9a4165aa0a6a8) fix(chat): node chat page fixes before chatPage gr | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.71 | 4.62 | 54.08 |
 | [89726c415](https://github.com/AFK-surf/monoid/commit/89726c41509afc0ff2adf754e620c93dab37b48c) chore(mesh): pin noq last-open-path idle cleanup ( | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.71 | 4.62 | 54.08 |
-| [f82607a79](https://github.com/AFK-surf/monoid/commit/f82607a7983e2ac0e09c37d49cf61ced5a9c43f1) fix(mesh): yield stale transport paths and bound m | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.71 | 4.62 | 54.08 |
