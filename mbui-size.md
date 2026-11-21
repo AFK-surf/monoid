@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [895ac12da](https://github.com/AFK-surf/monoid/commit/895ac12dad37088d039749275a83586a980fe79d) fix(mbui): cut a picture's clipping nodes as the w | 2.63 | 3.55 | 14.39 | 36.42 | 54.95 | 31.91 | 64.4 | 98.42 | 119.56 |
 | [1162dbc1f](https://github.com/AFK-surf/monoid/commit/1162dbc1fc327db65c2924527a020c576824840f) fix(station): preserve binary stream bytes in Moon | 2.63 | 3.55 | 14.39 | 36.42 | 54.95 | 31.91 | 64.4 | 98.42 | 119.56 |
 | [db0d63d54](https://github.com/AFK-surf/monoid/commit/db0d63d54ae7550698148b3760c64c83f26f4ae5) fix(mbui): offer quote action on Slack and Feishu  | 2.63 | 3.55 | 14.39 | 36.42 | 54.95 | 31.91 | 64.4 | 98.32 | 125.11 |
 | [51b6af01d](https://github.com/AFK-surf/monoid/commit/51b6af01dfaeff7467fea7183dd422143c005b02) fix(ci): chain stable station natives with needs ( | 2.64 | 3.55 | 14.39 | 36.42 | 54.95 | 31.91 | 64.38 | 98.58 | 122.64 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0b920d6ae](https://github.com/AFK-surf/monoid/commit/0b920d6aed555c603b727f47764697a9d77b0d1d) fix(liquid-glass): preserve overlay close transiti | 2.65 | 3.57 | 14.49 | 36.49 | 55.23 | 31.95 | 64.56 | 98.27 | 101.58 |
 | [fbe2bcdb3](https://github.com/AFK-surf/monoid/commit/fbe2bcdb3bec6c8b963303abcf3885850d5447f5) feat(sf-ui): auto-detect parent row direction in s | 2.65 | 3.57 | 14.49 | 36.49 | 55.23 | 31.97 | 64.61 | 98.09 | 124.28 |
 | [3bbd14a18](https://github.com/AFK-surf/monoid/commit/3bbd14a18a794ee826e2ebde5b7fde6756860fa1) chore(mbui): delete remaining legacy @ui.Ctx views | 2.65 | 3.57 | 14.48 | 36.49 | 55.22 | 31.97 | 64.61 | 98.09 | 122.89 |
-| [52699920d](https://github.com/AFK-surf/monoid/commit/52699920d48767767ed6f51e7f43dfd81c2623fb) feat(core-ts): add harness-leaf and migrate browse | 2.65 | 3.57 | 14.51 | 36.51 | 55.29 | 31.97 | 64.61 | 98.09 | 126.26 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [895ac12da](https://github.com/AFK-surf/monoid/commit/895ac12dad37088d039749275a83586a980fe79d) fix(mbui): cut a picture's clipping nodes as the w | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54 |
 | [1162dbc1f](https://github.com/AFK-surf/monoid/commit/1162dbc1fc327db65c2924527a020c576824840f) fix(station): preserve binary stream bytes in Moon | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 53.92 |
 | [db0d63d54](https://github.com/AFK-surf/monoid/commit/db0d63d54ae7550698148b3760c64c83f26f4ae5) fix(mbui): offer quote action on Slack and Feishu  | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 53.92 |
 | [51b6af01d](https://github.com/AFK-surf/monoid/commit/51b6af01dfaeff7467fea7183dd422143c005b02) fix(ci): chain stable station natives with needs ( | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 53.92 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0b920d6ae](https://github.com/AFK-surf/monoid/commit/0b920d6aed555c603b727f47764697a9d77b0d1d) fix(liquid-glass): preserve overlay close transiti | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.28 |
 | [fbe2bcdb3](https://github.com/AFK-surf/monoid/commit/fbe2bcdb3bec6c8b963303abcf3885850d5447f5) feat(sf-ui): auto-detect parent row direction in s | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.28 |
 | [3bbd14a18](https://github.com/AFK-surf/monoid/commit/3bbd14a18a794ee826e2ebde5b7fde6756860fa1) chore(mbui): delete remaining legacy @ui.Ctx views | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.28 |
-| [52699920d](https://github.com/AFK-surf/monoid/commit/52699920d48767767ed6f51e7f43dfd81c2623fb) feat(core-ts): add harness-leaf and migrate browse | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.28 |
