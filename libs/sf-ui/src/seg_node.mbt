@@ -152,7 +152,7 @@ pub fn seg_node(
                     None
                   }
                 },
-                spec=@motion.snappy_damped,
+                spec=@motion.backdrop_press_spring,
               )
               // the thumb: where its cover has it, drawn directly in paint layer via ground_drawn (zero relayout)
               let held = @motion.NodeWay::new(0.0)
