@@ -7,13 +7,10 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect } from "effect";
-import { type Entry as StationEntry, LockRefusal, entryHash as stationHash, fold as stationFold } from "../../../shared/lock.ts";
-import { Cloud, writeState } from "../../../station/src/cloud/state.ts";
-import { inLock, inLockBringing, lockPartRoute, lockRoute, refusalOf } from "../../../station/src/mesh/serve.ts";
-import { deviceBuildsOf } from "../../../station/src/mesh/device-builds.ts";
+import { type Entry as StationEntry, entryHash as stationHash, fold as stationFold } from "../../../shared/lock.ts";
 import { buildOf } from "../src/station/oldest.ts";
 import { HAND_OVER_FROM } from "../src/lock-handover.ts";
-import { type Dev, type Key, Log, bring, dev, ed, signed, viewerOf } from "../../../station/test/lock-moved-world.ts";
+import { type Dev, type Key, Log, dev, ed, signed, viewerOf } from "../../../station/test/lock-moved-world.ts";
 import { d4Diff, d4Old } from "../../../station/test/lock-roster4-model.ts";
 import { key, signed as simSigned } from "../../../station/test/lock-world-sim.ts";
 import type { CoreError } from "../src/error.ts";
@@ -25,15 +22,13 @@ import { HostWire } from "../src/station/wire.ts";
 import { hex, utf8 } from "../src/util.ts";
 import { handOver, held, inForceOf, read } from "../src/views/lock.ts";
 import { serveTrusted, tryOne } from "../src/views/pair.ts";
-import { stationClock } from "./station-clock.ts";
+import { MbLockStation } from "./mb-lock-station.ts";
 import { grant, pipe, rig, withoutMesh } from "./lock-rig.ts";
 import { signIn } from "./helpers.ts";
 
 /// The device's clock as each test begins: thirty days past HAND_OVER_FROM, since when chains are handed over by
 /// themselves (a genesis of before counts its fourteen days from then, `mayHandOver`).
 export const T0 = HAND_OVER_FROM! + 30 * 86400;
-/// The stations' clock: the core's (each test's rig sets it, station-clock.ts).
-let clock = () => 0;
 
 export const MINE = 7001;
 export const seedOf = (n: number) => {
@@ -143,22 +138,26 @@ export async function setUp(o: Opts = {}) {
     host.storage.set("personal-signer-id", utf8(k.id));
     host.secure.set("personal-signer", { value: seedOf(MINE), user: true });
   }, ours, ours, undefined, [D], o.view === undefined ? {} : { members: o.view });
-  clock = () => r.host.nowMs();
-  stationClock(clock);
+  const clock = () => r.host.nowMs();
   let inner = r.core.inner;
   const signer = mine! as Signer;
   // The chain: the genesis, each member's binding, by their own device; the extras' web page.
   const chain: Entry[] = [r.cloud.chains.get("ws")![0]!];
+  const pendingBuilds: Promise<void>[] = [];
   const after = (by: Key | Signer, kind: string, body: unknown): Entry => {
     const last = chain[chain.length - 1]!;
     const e = next("ws", { seq: last.seq, hash: entryHash(last), genesis: entryHash(chain[0]!) }, Math.max(last.at, now), kind, body);
     const s = "signBytes" in by ? by.sign(e) : (signed(e as Omit<StationEntry, "sig">, by) as unknown as Entry);
     chain.push(s);
     // (an app device approved on the chain meanwhile: seen by the stations on an able build, as it would be as it asks)
-    if (kind === "device" && (body as { kind?: string }).kind === "app") for (const c of made) deviceBuildsOf(c).saw((body as { id: string }).id, 0, Math.floor(clock() / 1000));
+    if (kind === "device" && (body as { kind?: string }).kind === "app") {
+      const id = (body as { id: string }).id;
+      const at = Math.floor(clock() / 1000);
+      for (const c of made) pendingBuilds.push(c.deviceBuildsSaw(id, 0, at));
+    }
     return s;
   };
-  const made: Cloud[] = [];
+  const made: MbLockStation[] = [];
   if (o.unbound !== true) after(o.mine === "otherKey" ? other : signer, "person", { sub: "s1", person: gMe });
   const s1Phone = dev();
   if (o.unbound === true) after(signer, "device", { id: s1Phone.base.hex, sub: "s1", kind: "app", label: "s1's phone", sign_key: s1Phone.signer.id });
@@ -172,49 +171,66 @@ export async function setUp(o: Opts = {}) {
   if (o.noLog === true) after(first.app.signer, "moved", { root: first.genesis });
   r.cloud.chains.set("ws", chain);
   // Stations A and B, the station's own code, the chain pinned and the members' logs heard
-  const station = (id: string): Cloud => {
+  const station = async (id: string): Promise<MbLockStation> => {
     const data = mkdtempSync(join(tmpdir(), "lock-handover-"));
-    writeState(data, { origin: "https://stillfail.test", station: id, workspace: "ws", workspace_name: "W", name: id.slice(0, 4), relay_url: "", relay_urls: [], grant_keys: g.keys, peers: ours.map((p, i) => ({ id: p, name: `s${i}` })), revocations: [] } as never);
-    const c = new Cloud(data, false);
-    if (o.noLog === true) c.takeLock(chain.slice(0, -1) as unknown as StationEntry[]), c.takeLock(chain as unknown as StationEntry[], null, true);
-    else c.takeLock(chain as unknown as StationEntry[]);
+    const c = await MbLockStation.create(data, { origin: "https://stillfail.test", station: id, workspace: "ws", workspace_name: "W", name: id.slice(0, 4), relay_url: "", relay_urls: [], grant_keys: g.keys, peers: ours.map((p, i) => ({ id: p, name: `s${i}` })), revocations: [] }, clock);
+    if (o.noLog === true) {
+      await c.takeLock(chain.slice(0, -1));
+      await c.takeLock(chain, null, true);
+    } else {
+      await c.takeLock(chain);
+    }
     // (each member's log as their app device brought it to the station, POST /lock/person)
-    for (const l of [bob, xena, ...(o.mine === "second" ? [first] : []), ...crowd]) if (!o.unbrought?.includes(l.sub as "r2" | "r3")) bring(c, l, false, "ws");
+    for (const l of [bob, xena, ...(o.mine === "second" ? [first] : []), ...crowd]) if (!o.unbrought?.includes(l.sub as "r2" | "r3")) await c.bring(l, false, "ws");
     // (each member's app device on the chain seen asking on the build `builds` says, this one's own aside: it runs this)
     for (const [did, d] of stationFold(chain as unknown as StationEntry[], null).devices) {
       if (d.kind !== "app" || did === base.hex) continue;
       const b = o.builds?.[d.sub] === undefined ? "0.1.0" : o.builds[d.sub]!;
-      if (b !== null) deviceBuildsOf(c).saw(did, buildOf(b), Math.floor(clock() / 1000));
+      if (b !== null) await c.deviceBuildsSaw(did, buildOf(b), Math.floor(clock() / 1000));
     }
     made.push(c);
     return c;
   };
-  const stations: { A: Cloud; B: Cloud; C?: Cloud } = { A: station(A), B: station(B), ...(o.third ? { C: station(C) } : {}) };
+  const stations: { A: MbLockStation; B: MbLockStation; C?: MbLockStation } = { A: await station(A), B: await station(B), ...(o.third ? { C: await station(C) } : {}) };
   const nameOf = (id: string) => (id === A ? "A" : id === B ? "B" : id === C ? "C" : id === D ? "D" : null);
   const st = { silent: false, down: new Set<string>(o.down ?? []), old: new Set<string>(o.old ?? []), noCarried: new Set<string>(o.noCarried ?? []), noHeads: new Set<string>(o.noHeads ?? []), lockDown: new Set<string>(o.lockDown ?? []), dOld: o.dOld === true, dSince: Math.floor(clock() / 1000), asked: [] as Asked[], hook: null as null | (() => void) };
   const viewer = viewerOf("s1", { base }, "owner", "ws");
-  const route = (c: Cloud, method: string, path: string, body: unknown): Effect.Effect<unknown, CoreError> => {
+  const flushBuilds = async () => {
+    if (pendingBuilds.length === 0) return;
+    const ps = pendingBuilds.splice(0, pendingBuilds.length);
+    await Promise.all(ps);
+  };
+  const route = (c: MbLockStation, method: string, path: string, body: unknown): Effect.Effect<unknown, CoreError> => {
     const [p, q] = path.split("?") as [string, string | undefined];
     // (POST /lock/given is a read)
     if (st.silent && method === "POST" && p !== "/lock/given") return Effect.never;
-    const buf = Buffer.from(body === null || body === undefined ? "" : JSON.stringify(body));
-    const [status, said] = p === "/lock" ? lockRoute(c, method, q ? [...new URLSearchParams(q)] : [], buf, viewer as never) : lockPartRoute(c, p.slice("/lock/".length), method, buf, viewer as never);
-    // (a station from before: its rules know no `moved`, and it serves none of what a moved chain is made of)
-    const from = Object.entries(stations).find(([, x]) => x === c)?.[0] ?? "";
-    const out = p === "/lock" && st.old.has(from) && status === 200 ? { ...(said as object), serves: ((said as { serves?: string[] }).serves ?? []).filter((x) => x !== "bodies" && x !== "logs" && x !== "builds" && x !== "carried" && x !== "heads") }
-      : p === "/lock" && st.noCarried.has(from) && status === 200 ? { ...(said as object), serves: ((said as { serves?: string[] }).serves ?? []).filter((x) => x !== "carried" && x !== "heads") }
-      : p === "/lock" && st.noHeads.has(from) && status === 200 ? { ...(said as object), serves: ((said as { serves?: string[] }).serves ?? []).filter((x) => x !== "heads") }
-      : p === "/lock/person" && method === "GET" && (st.old.has(from) || st.noCarried.has(from)) ? { chains: (said as { chains: unknown }).chains, ...(st.old.has(from) ? {} : { serves: ["logs", "builds"] }) }
-      : said;
-    // (the first time statements were taken: what the test changes before the `moved`)
-    if (status === 200 && p === "/lock/person" && Array.isArray((body as { bodies?: unknown })?.bodies) && st.hook) {
-      const h = st.hook;
-      st.hook = null;
-      h();
-    }
+    const text = body === null || body === undefined ? "" : JSON.stringify(body);
     const asked = st.asked.at(-1);
-    if (asked !== undefined && asked.path === path && asked.got === undefined) asked.got = Buffer.byteLength(JSON.stringify(out));
-    return status === 200 ? Effect.succeed(out) : Effect.fail(httpError(status, out));
+    return Effect.flatMap(
+      Effect.promise(async () => {
+        await flushBuilds();
+        return p === "/lock"
+          ? c.lockRoute(method, q ? [...new URLSearchParams(q)] : [], text, viewer)
+          : c.lockPartRoute(p.slice("/lock/".length), method, text, viewer);
+      }),
+      ([status, said]) => {
+        // (a station from before: its rules know no `moved`, and it serves none of what a moved chain is made of)
+        const from = Object.entries(stations).find(([, x]) => x === c)?.[0] ?? "";
+        const out = p === "/lock" && st.old.has(from) && status === 200 ? { ...(said as object), serves: ((said as { serves?: string[] }).serves ?? []).filter((x) => x !== "bodies" && x !== "logs" && x !== "builds" && x !== "carried" && x !== "heads") }
+          : p === "/lock" && st.noCarried.has(from) && status === 200 ? { ...(said as object), serves: ((said as { serves?: string[] }).serves ?? []).filter((x) => x !== "carried" && x !== "heads") }
+          : p === "/lock" && st.noHeads.has(from) && status === 200 ? { ...(said as object), serves: ((said as { serves?: string[] }).serves ?? []).filter((x) => x !== "heads") }
+          : p === "/lock/person" && method === "GET" && (st.old.has(from) || st.noCarried.has(from)) ? { chains: (said as { chains: unknown }).chains, ...(st.old.has(from) ? {} : { serves: ["logs", "builds"] }) }
+          : said;
+        // (the first time statements were taken: what the test changes before the `moved`)
+        if (status === 200 && p === "/lock/person" && Array.isArray((body as { bodies?: unknown })?.bodies) && st.hook) {
+          const h = st.hook;
+          st.hook = null;
+          h();
+        }
+        if (asked !== undefined && asked.path === path && asked.got === undefined) asked.got = Buffer.byteLength(JSON.stringify(out));
+        return status === 200 ? Effect.succeed(out) : Effect.fail(httpError(status, out));
+      },
+    );
   };
   // (this device's mesh, and its requests to the workspace's stations, on a core as it starts: `restart`)
   const install = (inner: typeof r.core.inner) => {
@@ -223,14 +239,14 @@ export async function setUp(o: Opts = {}) {
     inner.stations.requests.call = ((addr: { toString(): string }, method: string, path: string, body: unknown, ...rest: unknown[]) => {
       const [ws, id] = addr.toString().split("/");
       const n = id === undefined ? null : nameOf(id);
-      if (path.startsWith("/lock") && n !== null && (n === "D" || (stations as Record<string, Cloud | undefined>)[n] !== undefined)) {
+      if (path.startsWith("/lock") && n !== null && (n === "D" || (stations as Record<string, MbLockStation | undefined>)[n] !== undefined)) {
         const at = `${ws}/${n}`;
         st.asked.push({ at, method, path, body: JSON.stringify(body ?? null) });
         // (D, w2's: its GET /lock/person, keeping no log of s1's, says it serves logs and the devices' builds unless `dOld`)
         if ((id === D || ws !== "ws") && method === "GET" && path === "/lock/person") return Effect.succeed(st.dOld ? { chains: [] } : { chains: [], serves: ["logs", "builds"], builds: { since: st.dSince, devices: {} } });
         if (id === D || ws !== "ws") return method === "POST" ? Effect.succeed({}) : Effect.fail(httpError(404, { error: "no route" }));
         if (st.down.has(at.slice(-1)) || (st.lockDown.has(n) && method === "GET" && /^\/lock(\?|$)/.test(path))) return Effect.fail(httpError(503, { error: "not reached" }));
-        return route((stations as Record<string, Cloud | undefined>)[n]!, method, path, body);
+        return route((stations as Record<string, MbLockStation | undefined>)[n]!, method, path, body);
       }
       return (original as (...x: unknown[]) => unknown)(addr, method, path, body, ...rest);
     }) as typeof inner.stations.requests.call;
@@ -284,7 +300,7 @@ export async function setUp(o: Opts = {}) {
   };
   /// An ask of the person's own lock's key for something else: grants signed (none: the ask alone).
   const askGrant = () => run(inner.adb.personal().signGrants("s1", [], "a grant"));
-  return { r, get inner() { return inner; }, s1Phone, restart, first, signer, chain, after, stations, st, asked, said, hand, run, d4Chain, gMe, bob, xena, r4, crowd, base, WEB, WEB5, A, B, C, D, viewer, firstApp, g, askGrant, now: () => now };
+  return { r, get inner() { return inner; }, s1Phone, restart, first, signer, chain, after, flushBuilds, stations, st, asked, said, hand, run, d4Chain, gMe, bob, xena, r4, crowd, base, WEB, WEB5, A, B, C, D, viewer, firstApp, g, askGrant, now: () => now };
 }
 
 /// A second app device of `log`'s person (`d`) as the product puts it on their own log: a device entry signed by the
@@ -303,22 +319,18 @@ export function d4Core(inner: any) {
   };
 }
 /// A station's state as the model's D4 has one (its own `locked`), rooted in `root`.
-export const d4Station = (c: Cloud, root: string, now: number) => d4Old(c.locked(null)!.state!, root, now);
+export const d4Station = async (c: MbLockStation, root: string, now: number) => d4Old((await c.locked(null))!.state!, root, now);
 export const admitted = (sub: string, d: { base: Key }, role: string) => ({ viewer: viewerOf(sub, d, role, "ws"), exp: 4102444800, iat: 0, sid: "s" });
 
 
 /// A device of `sub`'s (`k`) at a station's hello, as the mesh makes it: in, or refused with what the refusal tells it
 /// (station/src/mesh/serve.ts `refusalOf`: left out, whom to ask, whether the list names an app of `sub`'s).
-export const hello = (c: Cloud, sub: string, k: Key, role: string): { in: boolean; left?: { approvers: string[]; apps?: boolean } } => {
+export const hello = async (c: MbLockStation, sub: string, k: Key, role: string): Promise<{ in: boolean; left?: { approvers: string[]; apps?: boolean } }> => {
   const v = viewerOf(sub, { base: k }, role, "ws");
   const said = { lock: { device: k.hex, proof: v.lockDevice.proof } };
-  try {
-    inLockBringing(c, { viewer: v, exp: 4102444800, iat: 0, sid: "" } as never, role, v.device, said);
-    return { in: true };
-  } catch (e) {
-    if (!(e instanceof LockRefusal)) throw e;
-    return { in: false, left: (refusalOf(c, said, v.device, e, undefined, sub) as { left?: { approvers: string[]; apps?: boolean } }).left };
-  }
+  const res = await c.inLockBringing({ viewer: v, exp: 4102444800, iat: 0, sid: "" }, role, v.device, said, sub);
+  if (res.ok) return { in: true };
+  return { in: false, left: (res.body as { left?: { approvers: string[]; apps?: boolean } }).left };
 };
 
 /// Nothing said in this device's own log, nobody asked: what every handover here holds.
@@ -327,12 +339,14 @@ export const silent = (w: Awaited<ReturnType<typeof setUp>>) => {
   assert.deepEqual(w.said(), [], "nothing said in its log");
   assert.deepEqual(w.inner.adb.personal().entries("s1").filter((e) => e.kind === "web"), [], "no web page said in its log");
 };
-export const movedAt = (w: Awaited<ReturnType<typeof setUp>>) => Object.values(w.stations).map((c) => c.chain(null)?.state?.moved ?? null);
+export const movedAt = async (w: Awaited<ReturnType<typeof setUp>>) =>
+  Promise.all(Object.values(w.stations).map(async (c) => (await c.chain(null))?.state?.moved ?? null));
 /// Each of the stations brought the chain as it stands here (as another keeper's), and the person logs of `logs`.
-export const takeChain = (w: Awaited<ReturnType<typeof setUp>>, logs: Log[] = []) => {
+export const takeChain = async (w: Awaited<ReturnType<typeof setUp>>, logs: Log[] = []) => {
+  await w.flushBuilds();
   for (const c of Object.values(w.stations)) {
-    c.takeLock([...w.chain] as unknown as StationEntry[]);
-    for (const l of logs) bring(c, l, false, "ws");
+    await c.takeLock([...w.chain]);
+    for (const l of logs) await c.bring(l, false, "ws");
   }
 };
 /// The chain's list before, at A, B and here, every one of `devices` let in by A.
@@ -341,9 +355,11 @@ export const asTheChain = async (w: Awaited<ReturnType<typeof setUp>>, before: R
   assert.equal(held(w.inner, "ws")?.entries.at(-1)?.kind, "moved", "the chain held moved");
   const now = Math.floor(w.r.host.nowMs() / 1000);
   assert.deepEqual(d4Diff(before, d4Core(w.inner)), [], "the state in force here is the chain's list before (the model's d4Old)");
-  for (const [n, c] of Object.entries(w.stations)) assert.deepEqual(d4Diff(before, d4Station(c, w.gMe, now)), [], `${n}'s state is the chain's list before`);
+  for (const [n, c] of Object.entries(w.stations)) assert.deepEqual(d4Diff(before, await d4Station(c, w.gMe, now)), [], `${n}'s state is the chain's list before`);
   for (const [sub, d, role] of devices) {
     const a = admitted(sub, d, role);
-    assert.equal(inLock(w.stations.A, a as never, role, a.viewer.device).viewer.role, role, `${sub}'s device ${d.base.hex.slice(0, 6)} let in by A`);
+    const res = await w.stations.A.inLock(a, role, a.viewer.device);
+    assert.equal(res.ok, true, `${sub}'s device ${d.base.hex.slice(0, 6)} let in by A: ${res.ok ? "" : res.message}`);
+    if (res.ok) assert.equal(res.viewer.role, role, `${sub}'s device ${d.base.hex.slice(0, 6)} let in by A`);
   }
 };

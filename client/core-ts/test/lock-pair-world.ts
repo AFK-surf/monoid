@@ -16,10 +16,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Effect } from "effect";
-import { type Entry as StationEntry, LockRefusal, entryHash as stationHash } from "../../../shared/lock.ts";
-import { Cloud, writeState } from "../../../station/src/cloud/state.ts";
-import { inLockBringing, lockPartRoute, lockRoute, refusalOf } from "../../../station/src/mesh/serve.ts";
-import { type Dev, Log, bring as brought, dev, ed, signed, viewerOf } from "../../../station/test/lock-moved-world.ts";
+import { type Entry as StationEntry, entryHash as stationHash } from "../../../shared/lock.ts";
+import { type Dev, Log, dev, ed, signed, viewerOf } from "../../../station/test/lock-moved-world.ts";
 import { key, signed as simSigned } from "../../../station/test/lock-world-sim.ts";
 import { bindBytes } from "../../../station/test/lock-roster4-model.ts";
 import { hooks } from "../src/core/execute.ts";
@@ -31,11 +29,9 @@ import { hex, utf8 } from "../src/util.ts";
 import { held, read } from "../src/views/lock.ts";
 import { dialer } from "../src/views/pair.ts";
 import { call } from "./helpers.ts";
-import { stationClock } from "./station-clock.ts";
+import { MbLockStation } from "./mb-lock-station.ts";
 import { grant, pipe, rig, unhex } from "./lock-rig.ts";
 import { stationReplies } from "./station-fixture.ts";
-
-let clock = () => 0;
 
 /// The seed of key `n` of station/test/lock-world-sim.ts's `key`, as a device keeps it sealed.
 const seedOf = (n: number) => {
@@ -107,76 +103,71 @@ export async function world(mode: Mode, trusted = 1, o: { web?: boolean; w2?: bo
       host.secure.set("personal-signer", { value: seedOf(7_301), user: true });
     }
   }, [A], [A], undefined, [], { role: "member" });
-  clock = () => r.host.nowMs();
-  stationClock(clock);
+  const clock = () => r.host.nowMs();
   stationReplies(r.host, (req) => (req.url.endsWith("/v1/me/personal-lock") ? (req.method === "GET" ? { entries: cloudKeeps.s1 } : { ok: true }) : r.cloud.reply(req)));
   r.cloud.chains.set("ws", (moving ? [first, moved] : [first]) as unknown as Entry[]);
   const inner = r.core.inner;
   inner.mesh = () => Effect.succeed({ deviceId: () => base.hex, sign: () => ({ publicKey: new Uint8Array(32), signature: new Uint8Array(64) }), link: () => Effect.fail(CoreError.plainly("mesh", "no station link here")) } as never);
   inner.cloudSync.credential = () => Effect.succeed({ credential: "signed-member", issued_at: 1000, expires_at: 4102444800, relay_url: "https://relay.example" });
   const data = mkdtempSync(join(tmpdir(), "lock-pair-world-"));
-  writeState(data, { origin: "https://stillfail.test", station: A, workspace: "ws", workspace_name: "W", name: "a", relay_url: "", relay_urls: [], grant_keys: g.keys, peers: [{ id: A, name: "a" }], revocations: [] } as never);
-  const c = new Cloud(data, false);
-  c.takeLock([first]);
-  if (moving) c.takeLock([first, moved], null, true);
+  const c = await MbLockStation.create(data, { origin: "https://stillfail.test", station: A, workspace: "ws", workspace_name: "W", name: "a", relay_url: "", relay_urls: [], grant_keys: g.keys, peers: [{ id: A, name: "a" }], revocations: [] }, clock);
+  await c.takeLock([first]);
+  if (moving) await c.takeLock([first, moved], null, true);
   /// What the cloud keeps of s1's own lock (for the devices from before): what a trusted device brought it too.
   const cloudKeeps: { s1: Entry[] } = { s1: [] };
-  const bring = (l: Log) => {
-    brought(c, l, true, "ws");
+  const bring = async (l: Log) => {
+    await c.bring(l, true, "ws");
     if (l === x) cloudKeeps.s1 = x.entries as unknown as Entry[];
   };
-  for (const l of !moving ? [] : named ? [alice, bob, x] : [alice, bob]) bring(l);
+  for (const l of !moving ? [] : named ? [alice, bob, x] : [alice, bob]) await bring(l);
   const viewer = viewerOf("s1", { base }, "member", "ws");
   /// `personDown`: the station answers no read of a person's own lock (the cloud's copy alone is reached).
   const st = { refusals: [] as J[], admitted: 0, personDown: false };
   /// The link's hello to A, as the station answers it: null where it lets this device in; else its refusal, told the
   /// core as the mesh wire tells it (station/mesh-wire.ts `refusedFor`).
-  const hello = (): CoreError | null => {
+  const hello = async (): Promise<CoreError | null> => {
     const own = inner.adb.personal().entries("s1");
     const said = { lock: { device: base.hex, proof: viewer.lockDevice.proof, ...(own.length > 0 ? { person: own } : {}) } };
-    try {
-      inLockBringing(c, { viewer, exp: 4102444800, iat: 0, sid: "" } as never, "member", viewer.device, said);
-    } catch (e) {
-      if (!(e instanceof LockRefusal)) throw e;
-      const refusal = refusalOf(c, said, viewer.device, e, undefined, "s1") as J;
+    const res = await c.inLockBringing({ viewer, exp: 4102444800, iat: 0, sid: "" }, "member", viewer.device, said, "s1");
+    if (!res.ok) {
+      const refusal = res.body as J;
       st.refusals.push(refusal);
-      return hooks.lockRefused?.(inner, "ws", A, refusal.lock, refusal) ?? new CoreError("lock_unconfirmed", e.message);
+      return hooks.lockRefused?.(inner, "ws", A, refusal.lock, refusal) ?? new CoreError("lock_unconfirmed", res.message);
     }
     st.admitted++;
     return null;
   };
   /// Whether station A lets this device in now (asked as its next hello would be, nothing told the core).
-  const admits = () => {
+  const admits = async (): Promise<boolean> => {
     const own = inner.adb.personal().entries("s1");
-    try {
-      inLockBringing(c, { viewer, exp: 4102444800, iat: 0, sid: "" } as never, "member", viewer.device, { lock: { device: base.hex, proof: viewer.lockDevice.proof, ...(own.length > 0 ? { person: own } : {}) } });
-      return true;
-    } catch (e) {
-      if (!(e instanceof LockRefusal)) throw e;
-      return false;
-    }
+    const res = await c.inLockBringing({ viewer, exp: 4102444800, iat: 0, sid: "" }, "member", viewer.device, { lock: { device: base.hex, proof: viewer.lockDevice.proof, ...(own.length > 0 ? { person: own } : {}) } }, "s1");
+    return res.ok;
   };
   const cameOnline = inner.stations.cameOnline.bind(inner.stations);
   inner.stations.cameOnline = (address: string) => {
     cameOnline(address);
     // (its link dialled again on its own, as the mesh does: never within the call that asked it)
-    if (address === `ws/${A}`) inner.runner.fork(Effect.suspend(() => (hello() === null ? Effect.ignore(read(inner, "ws")) : Effect.void)));
+    if (address === `ws/${A}`) inner.runner.fork(Effect.gen(function* () {
+      if ((yield* Effect.promise(() => hello())) === null) yield* Effect.ignore(read(inner, "ws"));
+    }));
   };
   const original = inner.stations.requests.call.bind(inner.stations.requests);
   // (each ask answered as it runs, not as it is made: a refusal told the core makes it ask again within that ask)
-  inner.stations.requests.call = ((addr: { toString(): string }, method: string, path: string, body: unknown, ...rest: unknown[]): Effect.Effect<unknown, CoreError> => Effect.suspend(() => {
+  inner.stations.requests.call = ((addr: { toString(): string }, method: string, path: string, body: unknown, ...rest: unknown[]): Effect.Effect<unknown, CoreError> => Effect.gen(function* () {
     const [w, id] = addr.toString().split("/");
-    if (id !== A || !path.startsWith("/lock")) return (original as (...x: unknown[]) => Effect.Effect<unknown, CoreError>)(addr, method, path, body, ...rest);
-    if (w !== "ws") return Effect.fail(httpError(404, { error: "no route" }));
-    if (st.personDown && path.startsWith("/lock/person")) return Effect.fail(new CoreError("station_offline", "not reached"));
+    if (id !== A || !path.startsWith("/lock")) return yield* (original as (...x: unknown[]) => Effect.Effect<unknown, CoreError>)(addr, method, path, body, ...rest);
+    if (w !== "ws") return yield* Effect.fail(httpError(404, { error: "no route" }));
+    if (st.personDown && path.startsWith("/lock/person")) return yield* Effect.fail(new CoreError("station_offline", "not reached"));
     const waits = hooks.lockWaiting?.(inner, w, A) ?? null;
-    if (waits !== null) return Effect.fail(waits);
-    const no = hello();
-    if (no !== null) return Effect.fail(no);
+    if (waits !== null) return yield* Effect.fail(waits);
+    const no = yield* Effect.promise(() => hello());
+    if (no !== null) return yield* Effect.fail(no);
     const [p, q] = path.split("?") as [string, string | undefined];
-    const buf = Buffer.from(body === null || body === undefined ? "" : JSON.stringify(body));
-    const [status, out] = p === "/lock" ? lockRoute(c, method, q ? [...new URLSearchParams(q)] : [], buf, viewer as never) : lockPartRoute(c, p.slice("/lock/".length), method, buf, viewer as never);
-    return status === 200 ? Effect.succeed(out) : Effect.fail(httpError(status, out));
+    const text = body === null || body === undefined ? "" : JSON.stringify(body);
+    const [status, out] = yield* Effect.promise(() =>
+      p === "/lock" ? c.lockRoute(method, q ? [...new URLSearchParams(q)] : [], text, viewer) : c.lockPartRoute(p.slice("/lock/".length), method, text, viewer),
+    );
+    return status === 200 ? out : yield* Effect.fail(httpError(status, out));
   })) as typeof inner.stations.requests.call;
 
   // The trusted devices it may dial, by base id, in the order `world`'s doc gives; each signs as a real one would.
@@ -188,31 +179,31 @@ export async function world(mode: Mode, trusted = 1, o: { web?: boolean; w2?: bo
   const signers = new Map([alice.app, bob.app, ...more].map((d) => [d.base.hex, d.signer]));
   const theirs = [x.app.base.hex, ...more.map((d) => d.base.hex)];
   const now = () => Math.floor(r.host.nowMs() / 1000);
-  const approve = (hello: J, by: string): J => {
+  const approve = async (hello: J, by: string): Promise<J> => {
     // (the chain never moved: an entry of it, signed by the owner's device that approves it, as `Lock.append` signs)
     if (mode === "chain") {
       const chain = r.cloud.chains.get("ws")! as unknown as StationEntry[];
       const last = chain.at(-1)!;
       const e = signed({ v: 1, ws: "ws", seq: last.seq + 1, prev: stationHash(last), at: Math.max(last.at, now()), kind: "device", body: { id: base.hex, sub: "s1", kind: hello.kind === "web" ? "web" : "app", label: "Pixel", ...(typeof hello.sign_key === "string" ? { sign_key: hello.sign_key } : {}), ...(hello.kind === "web" ? { exp: now() + 30 * 86400 } : {}) } }, signers.get(by) ?? alice.app.signer);
-      c.takeLock([...chain, e]);
+      await c.takeLock([...chain, e]);
       r.cloud.chains.set("ws", [...chain, e] as unknown as Entry[]);
       return { t: "approved", workspaces: ["ws"], failed: [] };
     }
     if (owners.includes(by)) {
       alice.say("member", { sub: "s1", email: "s1@x.com", lock: stationHash(hello.log[0]), role: "member" }, "ws");
-      bring(alice);
+      await bring(alice);
       return { t: "approved", workspaces: ["ws"], failed: [] };
     }
     if (hello.kind === "web") {
       x.add("web", { id: base.hex, label: "Chrome", exp: now() + 30 * 86400 }, x.app.key, now());
-      bring(x);
+      await bring(x);
       return { t: "approved", workspaces: ["ws"], failed: [] };
     }
     x.add("device", { key: hello.personal.key, id: base.hex, label: "Pixel", ...(typeof hello.sign_key === "string" && !o.unsaid ? { sign_key: hello.sign_key } : {}) });
     // (a member the chain carries unbound: bound to the log their device puts this one on, in the same ask:
     // views/lock.ts `bindsFor`)
     if (mode === "carried" && !x.entries.some((e) => e.kind === "ws")) x.say("bind", { key: x.app.signer.id, sig: x.app.signer.sign(bindBytes("ws", "s1", x.genesis, stationHash(moved))) }, "ws");
-    bring(x);
+    await bring(x);
     return { t: "approved", workspaces: ["person:s1"], failed: [], chains: { s1: x.entries } };
   };
   /// The code each shows (as typed on the new device), and how each goes.
@@ -254,9 +245,9 @@ export async function world(mode: Mode, trusted = 1, o: { web?: boolean; w2?: bo
       yield* there.send({ t: "wrong", left });
     }
     if (f.kind === "mute") return yield* Effect.never;
-    const signs = Effect.andThen(Effect.sleep(f.ms ?? 0), Effect.sync(() => {
+    const signs = Effect.andThen(Effect.sleep(f.ms ?? 0), Effect.promise(async () => {
       signedBy.push({ id, at: r.host.nowMs() });
-      return approve(hello, id);
+      return await approve(hello, id);
     }));
     if (f.kind === "cut" || f.kind === "gone") {
       if (f.kind === "cut") there.close();

@@ -126,9 +126,25 @@ export class TestTime implements HostTime {
 /// that no sleep of the clock shows, which `pass` gives its turns rather than skip them.
 const busy = () => process.getActiveResourcesInfo().some((r) => r === "Immediate" || r === "Timeout");
 
+/// Out-of-process test harnesses (test/mb-harness.ts) register here so `flush` waits for in-flight RPCs before
+/// `TestTime` advances the virtual clock. Each returns true when it waited, so continuations run before checking again.
+const flushWaiters = new Set<() => Promise<boolean>>();
+export function onFlush(wait: () => Promise<boolean>): () => void {
+  flushWaiters.add(wait);
+  return () => void flushWaiters.delete(wait);
+}
+
 /// Lets what is ready run: promise continuations and the runtime's scheduled fibers.
 export async function flush(rounds = 6): Promise<void> {
-  for (let i = 0; i < rounds; i++) await new Promise<void>((r) => setImmediate(r));
+  for (let attempt = 0; attempt < 32; attempt++) {
+    for (let i = 0; i < rounds; i++) await new Promise<void>((r) => setImmediate(r));
+    if (flushWaiters.size === 0) break;
+    let waited = false;
+    for (const w of flushWaiters) {
+      if (await w()) waited = true;
+    }
+    if (!waited) break;
+  }
 }
 
 type Responder = (request: HttpRequest) => HttpResponse | Promise<HttpResponse>;

@@ -11,18 +11,14 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mock, test } from "node:test";
+import { test } from "node:test";
 import { countRules, since, snapshot } from "./rules-counted.ts";
 
 await countRules();
 const { Effect } = await import("effect");
 const { entryHash: stationHash, fold: stationFold } = await import("../../../shared/lock.ts");
-const { Cloud, writeState } = await import("../../../station/src/cloud/state.ts");
-const { wall } = await import("../../../station/src/ops/fibers.ts");
-const { lockPartRoute, lockRoute } = await import("../../../station/src/mesh/serve.ts");
-const { deviceBuildsOf } = await import("../../../station/src/mesh/device-builds.ts");
 const { MOVED_FROM_BUILD } = await import("../../../shared/moved-from.ts");
-const { Log, bring, dev, ed, signed, viewerOf } = await import("../../../station/test/lock-moved-world.ts");
+const { Log, dev, ed, signed, viewerOf } = await import("../../../station/test/lock-moved-world.ts");
 const { key, signed: simSigned } = await import("../../../station/test/lock-world-sim.ts");
 const { HAND_OVER_FROM } = await import("../src/lock-handover.ts");
 const { entryHash, next } = await import("../src/lock.ts");
@@ -32,6 +28,7 @@ const { ownBuild, setOwnBuild } = await import("../src/station/oldest.ts");
 const { handOverState, held, inForceOf, lockSeen, lockView, read, safeMode } = await import("../src/views/lock.ts");
 const { verifies } = await import("../src/vault/verified.ts");
 const { walked, walkingBy } = await import("../src/work.ts");
+const { MbLockStation } = await import("./mb-lock-station.ts");
 const { grant, rig, withoutMesh } = await import("./lock-rig.ts");
 const { signIn } = await import("./helpers.ts");
 type Entry = import("../src/lock.ts").Entry;
@@ -41,8 +38,6 @@ type CoreError = import("../src/error.ts").CoreError;
 
 const DAY = 86400;
 const T0 = HAND_OVER_FROM! + 30 * DAY;
-let clock = () => 0;
-mock.method(wall, "now", () => clock());
 const MINE = 7001;
 const seedOf = (n: number) => {
   const s = new Uint8Array(32);
@@ -104,7 +99,7 @@ async function setUp(o: Size) {
     host.storage.set("personal-signer-id", utf8(k.id));
     host.secure.set("personal-signer", { value: seedOf(MINE), user: true });
   }, ids, ids, undefined, [], o.role === "member" ? { role: "member" } : {});
-  clock = () => r.host.nowMs();
+  const clock = () => r.host.nowMs();
   const inner = r.core.inner;
   const signer = mine! as Signer;
   const byOwner = owner ? owner.app.signer : signer;
@@ -125,15 +120,14 @@ async function setUp(o: Size) {
     else after(byOwner, "device.remove", { id });
   }, () => chain.length);
   r.cloud.chains.set("ws", chain);
-  const stations = ids.map((id) => {
+  const stations = await Promise.all(ids.map(async (id) => {
     const data = mkdtempSync(join(tmpdir(), "lock-topic-work-"));
-    writeState(data, { origin: "https://stillfail.test", station: id, workspace: "ws", workspace_name: "W", name: id.slice(0, 4), relay_url: "", relay_urls: [], grant_keys: g.keys, peers: ids.map((p, i) => ({ id: p, name: `s${i}` })), revocations: [] } as never);
-    const c = new Cloud(data, false);
-    c.takeLock(chain as unknown as StationEntry[]);
-    for (const l of logs) bring(c, l, false, "ws");
-    for (const [did, d] of stationFold(chain as unknown as StationEntry[], null).devices) if (d.kind === "app" && did !== base.hex) deviceBuildsOf(c).saw(did, 0, Math.floor(clock() / 1000));
+    const c = await MbLockStation.create(data, { origin: "https://stillfail.test", station: id, workspace: "ws", workspace_name: "W", name: id.slice(0, 4), relay_url: "", relay_urls: [], grant_keys: g.keys, peers: ids.map((p, i) => ({ id: p, name: `s${i}` })), revocations: [] }, clock);
+    await c.takeLock(chain);
+    for (const l of logs) await c.bring(l, false, "ws");
+    for (const [did, d] of stationFold(chain as unknown as StationEntry[], null).devices) if (d.kind === "app" && did !== base.hex) await c.deviceBuildsSaw(did, 0, Math.floor(clock() / 1000));
     return c;
-  });
+  }));
   const viewer = viewerOf("s1", { base }, o.role, "ws");
   /// Each station's answers, by path: counted, as this device asks them.
   const asked: string[] = [];
@@ -145,10 +139,14 @@ async function setUp(o: Size) {
     if (path.startsWith("/lock") && ws === "ws" && at >= 0) {
       asked.push(`${method} ${path.split("?")[0]}`);
       const [p, q] = path.split("?") as [string, string | undefined];
-      const buf = Buffer.from(body === null || body === undefined ? "" : JSON.stringify(body));
+      const text = body === null || body === undefined ? "" : JSON.stringify(body);
       const c = stations[at]!;
-      const [status, said] = p === "/lock" ? lockRoute(c, method, q ? [...new URLSearchParams(q)] : [], buf, viewer as never) : lockPartRoute(c, p.slice("/lock/".length), method, buf, viewer as never);
-      return status === 200 ? Effect.succeed(said) : Effect.fail(httpError(status, said));
+      return Effect.flatMap(
+        Effect.promise(() =>
+          p === "/lock" ? c.lockRoute(method, q ? [...new URLSearchParams(q)] : [], text, viewer) : c.lockPartRoute(p.slice("/lock/".length), method, text, viewer),
+        ),
+        ([status, said]) => (status === 200 ? Effect.succeed(said) : Effect.fail(httpError(status, said))),
+      );
     }
     if (path.startsWith("/lock") && ws !== "ws") return method === "GET" && path === "/lock/person" ? Effect.succeed({ chains: [], serves: ["logs", "builds"], builds: { since: 0, devices: {} } }) : Effect.fail(httpError(404, { error: "no route" }));
     return (original as (...x: unknown[]) => unknown)(addr, method, path, body, ...rest);
@@ -251,7 +249,7 @@ test("measured: a make of the lock topic, safeMode and the vaults' topic, in (a)
     let s = snapshot();
     const m = w.others[0]!;
     m.add("device", { key: dev().key.id, id: dev().base.hex, label: "one more" });
-    for (const c of w.stations) bring(c, m, false, "ws");
+    for (const c of w.stations) await c.bring(m, false, "ws");
     await w.run(read(w.inner, "ws"));
     await w.r.host.time.pass(1000);
     lockView(w.inner, "ws");
@@ -261,7 +259,7 @@ test("measured: a make of the lock topic, safeMode and the vaults' topic, in (a)
       // (the chain as the stations and this device hold it now: what it signed since by itself is on it)
       w.chain.splice(0, w.chain.length, ...held(w.inner, "ws")!.entries);
       w.after(w.byOwner, "device", { id: ed().hex, sub: "s1", kind: "web", label: "one more page", exp: Math.floor(w.r.host.nowMs() / 1000) + 10 * DAY });
-      for (const c of w.stations) c.takeLock(w.chain as unknown as StationEntry[]);
+      for (const c of w.stations) await c.takeLock(w.chain);
       await w.run(read(w.inner, "ws"));
       await w.r.host.time.pass(1000);
       lockView(w.inner, "ws");
@@ -300,7 +298,7 @@ test("(a), (c) a member's log one entry longer, and (a) the chain one entry long
     let s = snapshot();
     const m = w.others[0]!;
     m.add("device", { key: dev().key.id, id: dev().base.hex, label: "one more" });
-    for (const c of w.stations) bring(c, m, false, "ws");
+    for (const c of w.stations) await c.bring(m, false, "ws");
     await w.run(read(w.inner, "ws"));
     await w.r.host.time.pass(1000);
     lockView(w.inner, "ws");
@@ -318,7 +316,7 @@ test("(a), (c) a member's log one entry longer, and (a) the chain one entry long
       // (the chain as the stations and this device hold it now: what it signed since by itself is on it)
       w.chain.splice(0, w.chain.length, ...held(w.inner, "ws")!.entries);
       w.after(w.byOwner, "device", { id: ed().hex, sub: "s1", kind: "web", label: "one more page", exp: Math.floor(w.r.host.nowMs() / 1000) + 10 * DAY });
-      for (const c of w.stations) c.takeLock(w.chain as unknown as StationEntry[]);
+      for (const c of w.stations) await c.takeLock(w.chain);
       await w.run(read(w.inner, "ws"));
       await w.r.host.time.pass(1000);
       lockView(w.inner, "ws");

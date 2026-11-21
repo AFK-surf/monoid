@@ -316,6 +316,9 @@ export class PersonalLock {
   /// Of each person's lock, what `#heard` brought the stations last and they took (`#bringPinned`): the head pinned and
   /// what the read that it answered showed.
   readonly #brought = new Map<string, string>();
+  /// People whose pinned chain is currently being brought to the stations (`#bringPinned`): prevents a station's
+  /// refusal of that POST from triggering recursive concurrent POSTs.
+  readonly #bringing = new Set<string>();
 
   constructor(env: PersonalEnv) {
     this.#env = env;
@@ -425,7 +428,12 @@ export class PersonalLock {
     const root = pinned[0] === undefined ? null : entryHash(pinned[0]);
     const mine = root === null ? [] : chains.filter((c) => c[0] !== undefined && entryHash(c[0]) === root && !this.#isLeft(sub, c));
     let best: Entry[] | null = null;
-    for (const c of mine) if (checkChain(c, sub) !== null && (best === null || c.length > best.length)) best = c;
+    for (const c of mine) {
+      // A chain read over HTTP/JSON-RPC is a fresh array even when identical to `pinned`; reuse `pinned` so `checkChain`'s WeakMap cache hits without re-running `person_fold_js`.
+      const same = c.length === pinned.length && c.every((e, i) => entryHash(e) === entryHash(pinned[i]!));
+      const candidate = same ? pinned : c;
+      if (checkChain(candidate, sub) !== null && (best === null || candidate.length > best.length)) best = candidate;
+    }
     if (mine.length > 0) return { chain: best ?? [], more: mine.filter((c) => c !== best).flat() };
     for (const c of chains) if (c.length > 0 && !this.#isLeft(sub, c) && checkChain(c, sub) !== null) best = c;
     return { chain: best ?? [], more: [] };
@@ -472,7 +480,7 @@ export class PersonalLock {
         yield* this.#pin(sub, entries);
         this.#seen.delete(sub);
       } else if (holds && entries.length > 0) this.#seen.set(sub, entries);
-      else this.#seen.delete(sub);
+      else if (stations) this.#seen.delete(sub);
       // Told only when it changed: what is told retries the stations that refused this device, and each refusal brings
       // this same chain again (views/lock.ts heardRefused), so telling it unchanged would ask them again at once, endlessly.
       if (this.#stands(sub) !== was) this.#env.changed();
@@ -488,12 +496,16 @@ export class PersonalLock {
   /// not to change by it (round 24 of apps/mbui/e2e/locks-moved.ts, 2026-11-14: the root's person's new app, its old
   /// log shown as theirs, 878 POSTs in 91 s). Not taken, it is brought at the next read, as before.
   #bringPinned(sub: string, chain: Entry[], heard: readonly Entry[]): Effect.Effect<void> {
-    if (chain.length === 0) return Effect.void;
+    if (chain.length === 0 || this.#bringing.has(sub)) return Effect.void;
     const why = `${hashOf(chain[chain.length - 1]!)} ${heard.length === 0 ? "-" : `${entryHash(heard[0]!)} ${hashOf(heard[heard.length - 1]!)}`}`;
     if (this.#brought.get(sub) === why) return Effect.void;
-    return Effect.ignore(Effect.tap(this.#env.stations!.bring(sub, chain), (took) => Effect.sync(() => {
-      if (typeof took === "number" && took > 0) this.#brought.set(sub, why);
-    })));
+    this.#bringing.add(sub);
+    return Effect.ensuring(
+      Effect.ignore(Effect.tap(this.#env.stations!.bring(sub, chain), (took) => Effect.sync(() => {
+        if (typeof took === "number" && took > 0) this.#brought.set(sub, why);
+      }))),
+      Effect.sync(() => { this.#bringing.delete(sub); }),
+    );
   }
 
   /// Whether `entries` (a chain that holds, heard of the stations by a device with none pinned) is its person's lock as

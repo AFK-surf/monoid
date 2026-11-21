@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
+import { onFlush } from "../src/testing.ts";
 
 const HOST_TARGET: Record<string, string> = {
   "darwin-arm64": "darwin-arm64",
@@ -42,13 +43,20 @@ export function startHarness(builder: string): HarnessClient {
   let nextId = 1;
   let closed = false;
   let stderr = "";
-  const pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
+  const pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void; done: Promise<void> }>();
 
   const failAll = (reason: string) => {
     const err = new Error(stderr.trim() ? `${reason}\nstderr:\n${stderr.trim()}` : reason);
     for (const p of pending.values()) p.reject(err);
     pending.clear();
   };
+
+  const offFlush = onFlush(() => {
+    if (pending.size === 0) return Promise.resolve(false);
+    // Snapshot only currently in-flight RPCs so self-retriggering fibers cannot starve `flush()`.
+    const inflight = [...pending.values()].map((p) => p.done);
+    return Promise.all(inflight).then(() => true);
+  });
 
   child.stderr.setEncoding("utf8");
   child.stderr.on("data", (chunk: string) => {
@@ -97,11 +105,18 @@ export function startHarness(builder: string): HarnessClient {
         );
       }
       const id = nextId++;
+      let finish!: () => void;
+      const done = new Promise<void>((r) => { finish = r; });
       return new Promise<T>((resolve, reject) => {
-        pending.set(id, { resolve, reject });
+        pending.set(id, {
+          resolve: (v) => { finish(); resolve(v); },
+          reject: (e) => { finish(); reject(e); },
+          done,
+        });
         child.stdin.write(`${JSON.stringify({ ...params, id, op })}\n`, (err) => {
           if (err) {
             pending.delete(id);
+            finish();
             reject(err);
           }
         });
@@ -110,6 +125,8 @@ export function startHarness(builder: string): HarnessClient {
     async close(): Promise<void> {
       if (closed) return;
       closed = true;
+      offFlush();
+      failAll(`harness (${builder}) closed`);
       try {
         rl.close();
         if (!child.stdin.destroyed) child.stdin.end();

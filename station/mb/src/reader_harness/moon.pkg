@@ -19,12 +19,14 @@ import {
   "station/cloud_lock",
   "station/cloud_net",
   "station/drive",
+  "station/mesh_door/gate",
   "station/rigs_mode",
   "station/session_chats",
   "station/session_hub",
   "station/store_sessions",
   "station/store_threads",
   "station/station_main",
+  "stillfail/rules/lock",
 }
 
 pkgtype(kind: "executable")

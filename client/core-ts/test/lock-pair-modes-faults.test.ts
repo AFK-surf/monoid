@@ -57,7 +57,7 @@ async function laws(w: World, calls: { ms: number | null; answer?: Record<string
   if (signed) {
     assert.ok(calls.some((c) => c.answer !== undefined && "ok" in c.answer), `signed in by ${w.signedBy[0]!.id.slice(0, 6)}, yet no code typed was answered so: ${calls.map((c) => JSON.stringify(c.answer?.error ?? "ok")).join(", ")}; ${why}`);
     assert.equal(page.me.confirmed, true, `signed in, yet the page not confirmed (${JSON.stringify(page.me.pair)}); ${why}`);
-    assert.equal(w.admits(), true, `signed in, yet the station does not let it in; ${why}`);
+    assert.equal(await w.admits(), true, `signed in, yet the station does not let it in; ${why}`);
     // In, and able to do what a trusted device does (sign, approve, open what is sealed for it): never confirmed with
     // its own lock left behind, as a carried member's new app was with its approval lost (the station let it in by
     // what its own device brought, this device outside that lock and signing nothing).
@@ -109,7 +109,7 @@ test("a member's new app joins their own lock: in at once, the workspaces their 
   await asked(w);
   const done = await typed(w, w.codes.get(w.ids[0]!)!);
   assert.ok(done.answer !== undefined && "ok" in done.answer, JSON.stringify(done.answer));
-  assert.equal(w.admits(), true, "the station lets it in");
+  assert.equal(await w.admits(), true, "the station lets it in");
   await w.r.host.time.pass(300);
   assert.equal((await w.page()).me.confirmed, true, `confirmed as the call answered (${w.why()})`);
   await laws(w, [done], w.why());

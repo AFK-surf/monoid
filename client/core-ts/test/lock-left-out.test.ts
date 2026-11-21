@@ -12,13 +12,10 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mock, test } from "node:test";
+import { test } from "node:test";
 import { Effect } from "effect";
-import { type Entry as StationEntry, LockRefusal, entryHash as stationHash } from "../../../shared/lock.ts";
-import { Cloud, personChainsOf, writeState } from "../../../station/src/cloud/state.ts";
-import { wall } from "../../../station/src/ops/fibers.ts";
-import { inLockBringing, lockPartRoute, lockRoute, refusalOf } from "../../../station/src/mesh/serve.ts";
-import { Log, bring as brought, dev, ed, signed, viewerOf } from "../../../station/test/lock-moved-world.ts";
+import { entryHash as stationHash } from "../../../shared/lock.ts";
+import { Log, dev, ed, signed, viewerOf } from "../../../station/test/lock-moved-world.ts";
 import { hooks } from "../src/core/execute.ts";
 import { CoreError } from "../src/error.ts";
 import { type Entry, Signer } from "../src/lock.ts";
@@ -27,11 +24,9 @@ import { httpError } from "../src/station/requests.ts";
 import { hex } from "../src/util.ts";
 import { held, read, signerKnown } from "../src/views/lock.ts";
 import { dialer } from "../src/views/pair.ts";
+import { MbLockStation } from "./mb-lock-station.ts";
 import { grant, pipe, rig } from "./lock-rig.ts";
 import { stationReplies } from "./station-fixture.ts";
-
-let clock = () => 0;
-mock.method(wall, "now", () => clock());
 
 const unhex = (h: string) => Uint8Array.from(h.match(/../g) ?? [], (b) => parseInt(b, 16));
 /// The code the trusted devices here show (as typed on the new device).
@@ -40,7 +35,7 @@ const CODE = "246810";
 const WEB_DAYS = 10;
 type J = any;
 /// What a trusted device answers once the code is confirmed (it signs what lets the new one in first), by its base id.
-type Approver = { where: (hello: J) => string[]; approve: (hello: J) => J };
+type Approver = { where: (hello: J) => string[]; approve: (hello: J) => J | Promise<J> };
 
 /// `named`: s1 a member by X's log (`noApp`: a log no station was given, so naming no app of s1's). `web`: this core a
 /// web page. `waiting`: the station given no root's log. `older`: a station from before its refusal said `apps`.
@@ -76,7 +71,7 @@ async function setUp(o: { named?: boolean; noApp?: boolean; web?: boolean; waiti
   const r = await rig(() => ({ ws: first as unknown as Entry }), (host) => {
     if (o.web) host.appKeys = false;
   }, [A], [A], undefined, [], { role: o.rootLost ? "owner" : "member", ...(o.unread ? { lock: null } : {}) });
-  clock = () => r.host.nowMs();
+  const clock = () => r.host.nowMs();
   // (the cloud's copy of a person's own lock, for the devices from before: it keeps none of s1's)
   // (`unread`: it keeps s1's, as it does for an app from before, read before any station answered)
   stationReplies(r.host, (req) => (req.url.endsWith("/v1/me/personal-lock") ? (req.method === "GET" ? { entries: o.unread ? x.entries : [] } : { ok: true }) : r.cloud.reply(req)));
@@ -93,13 +88,14 @@ async function setUp(o: { named?: boolean; noApp?: boolean; web?: boolean; waiti
   inner.cloudSync.credential = () => Effect.succeed({ credential: "signed-member", issued_at: 1000, expires_at: 4102444800, relay_url: "https://relay.example" });
   // Station A: the station's own code, the chain pinned and moved, the logs and bodies its members' devices gave it.
   const data = mkdtempSync(join(tmpdir(), "lock-left-out-"));
-  writeState(data, { origin: "https://stillfail.test", station: A, workspace: "ws", workspace_name: "W", name: "a", relay_url: "", relay_urls: [], grant_keys: g.keys, peers: [{ id: A, name: "a" }], revocations: [] } as never);
-  const c = new Cloud(data, false);
-  c.takeLock(before);
-  c.takeLock([...before, moved], null, true);
+  const c = await MbLockStation.create(data, { origin: "https://stillfail.test", station: A, workspace: "ws", workspace_name: "W", name: "a", relay_url: "", relay_urls: [], grant_keys: g.keys, peers: [{ id: A, name: "a" }], revocations: [] }, clock);
+  await c.takeLock(before);
+  await c.takeLock([...before, moved], null, true);
   // (as each member's app device brings them, POST /lock/person)
-  const bring = (l: Log) => void brought(c, l, true, "ws");
-  for (const l of o.waiting ? [bob] : (o.named && !o.noApp) || o.rootLost ? [alice, bob, x] : [alice, bob]) bring(l);
+  const bring = async (l: Log) => {
+    await c.bring(l, true, "ws");
+  };
+  for (const l of o.waiting ? [bob] : (o.named && !o.noApp) || o.rootLost ? [alice, bob, x] : [alice, bob]) await bring(l);
   const viewer = viewerOf("s1", { base }, o.rootLost ? "owner" : "member", "ws");
   /// What the station does to each of its asks: `lie`, a device its refusals name to ask in place of those it would.
   /// `down`: (`downs`, `rootLost`'s) its link refused and not dialled again yet: asks fail as a link waiting does, no
@@ -107,21 +103,19 @@ async function setUp(o: { named?: boolean; noApp?: boolean; web?: boolean; waiti
   const st = { lie: null as string | null, refusals: [] as J[], admitted: 0, asked: [] as string[], down: false, personHeld: o.personHeld === true || o.unread === true, personUntold: o.personHeld === true, lockUnread: o.unread === true, ownUnsaid: false, downs: o.rootLost === true };
   /// The link's hello to A, as the station answers it: null where it lets this device in; else its refusal, told the
   /// core as the mesh wire tells it (station/mesh-wire.ts `refusedFor`).
-  const hello = (): CoreError | null => {
+  const hello = async (): Promise<CoreError | null> => {
     const own = inner.adb.personal().entries("s1");
     const said = { lock: { device: base.hex, proof: viewer.lockDevice.proof, ...(own.length > 0 && !st.ownUnsaid ? { person: own } : {}) } };
-    try {
-      inLockBringing(c, { viewer, exp: 4102444800, iat: 0, sid: "" } as never, "member", viewer.device, said);
-    } catch (e) {
-      if (!(e instanceof LockRefusal)) throw e;
-      const refusal = refusalOf(c, said, viewer.device, e, undefined, "s1") as J;
+    const res = await c.inLockBringing({ viewer, exp: 4102444800, iat: 0, sid: "" }, "member", viewer.device, said, "s1");
+    if (!res.ok) {
+      const refusal = res.body as J;
       if (st.lie !== null && refusal.left !== undefined) refusal.left = { approvers: [st.lie] };
       if (o.older && refusal.left !== undefined) delete refusal.left.apps;
       // (its own lock not heard of here yet: the refusals before the test's own say nothing of it)
       if (st.personUntold) delete refusal.person;
       st.refusals.push(refusal);
       st.down = st.downs;
-      return hooks.lockRefused?.(inner, "ws", A, refusal.lock, refusal) ?? new CoreError("lock_unconfirmed", e.message);
+      return hooks.lockRefused?.(inner, "ws", A, refusal.lock, refusal) ?? new CoreError("lock_unconfirmed", res.message);
     }
     st.admitted++;
     st.down = false;
@@ -132,32 +126,36 @@ async function setUp(o: { named?: boolean; noApp?: boolean; web?: boolean; waiti
   const cameOnline = inner.stations.cameOnline.bind(inner.stations);
   inner.stations.cameOnline = (address: string) => {
     cameOnline(address);
-    if (address === `ws/${A}` && hello() === null) inner.runner.fork(Effect.ignore(read(inner, "ws")));
+    if (address === `ws/${A}`) inner.runner.fork(Effect.gen(function* () {
+      if ((yield* Effect.promise(() => hello())) === null) yield* Effect.ignore(read(inner, "ws"));
+    }));
   };
   const original = inner.stations.requests.call.bind(inner.stations.requests);
-  const answer = (addr: { toString(): string }, method: string, path: string, body: unknown, ...rest: unknown[]): Effect.Effect<unknown, CoreError> => {
+  const answer = (addr: { toString(): string }, method: string, path: string, body: unknown, ...rest: unknown[]): Effect.Effect<unknown, CoreError> => Effect.gen(function* () {
     const [ws, id] = addr.toString().split("/");
-    if (id !== A || !path.startsWith("/lock")) return (original as (...x: unknown[]) => Effect.Effect<unknown, CoreError>)(addr, method, path, body, ...rest);
-    if (ws !== "ws") return Effect.fail(httpError(404, { error: "no route" }));
+    if (id !== A || !path.startsWith("/lock")) return yield* (original as (...x: unknown[]) => Effect.Effect<unknown, CoreError>)(addr, method, path, body, ...rest);
+    if (ws !== "ws") return yield* Effect.fail(httpError(404, { error: "no route" }));
     // (its person's own lock not read yet: not answered, until the test lets it be)
-    if (st.personHeld && method === "GET" && path === "/lock/person") return Effect.fail(new CoreError("station_offline", "not reached"));
+    if (st.personHeld && method === "GET" && path === "/lock/person") return yield* Effect.fail(new CoreError("station_offline", "not reached"));
     // (`ownUnsaid`: a lock of this device's own never taken by the station)
-    if (st.ownUnsaid && method === "POST" && path === "/lock/person") return Effect.fail(new CoreError("station_offline", "not reached"));
+    if (st.ownUnsaid && method === "POST" && path === "/lock/person") return yield* Effect.fail(new CoreError("station_offline", "not reached"));
     // (the workspace's lock not read of it yet: its links opened first)
-    if (st.lockUnread && method === "GET" && (path === "/lock" || path.startsWith("/lock?") || path === "/lock/logs" || path === "/lock/bodies")) return Effect.fail(new CoreError("station_offline", "not reached"));
+    if (st.lockUnread && method === "GET" && (path === "/lock" || path.startsWith("/lock?") || path === "/lock/logs" || path === "/lock/bodies")) return yield* Effect.fail(new CoreError("station_offline", "not reached"));
     // (its link's hello first: a station that refused this device is not dialled again until told to, as the mesh does)
     const waits = hooks.lockWaiting?.(inner, ws, A) ?? null;
-    if (waits !== null) return Effect.fail(waits);
+    if (waits !== null) return yield* Effect.fail(waits);
     // (`rootLost`: a link refused is down until dialled again, as the mesh's is: its asks fail meanwhile, no hello made)
-    if (st.down) return Effect.fail(new CoreError("station_offline", "its link refused, not dialled again yet"));
+    if (st.down) return yield* Effect.fail(new CoreError("station_offline", "its link refused, not dialled again yet"));
     st.asked.push(`${method} ${path}`);
-    const no = hello();
-    if (no !== null) return Effect.fail(no);
+    const no = yield* Effect.promise(() => hello());
+    if (no !== null) return yield* Effect.fail(no);
     const [p, q] = path.split("?") as [string, string | undefined];
-    const buf = Buffer.from(body === null || body === undefined ? "" : JSON.stringify(body));
-    const [status, out] = p === "/lock" ? lockRoute(c, method, q ? [...new URLSearchParams(q)] : [], buf, viewer as never) : lockPartRoute(c, p.slice("/lock/".length), method, buf, viewer as never);
-    return status === 200 ? Effect.succeed(out) : Effect.fail(httpError(status, out));
-  };
+    const text = body === null || body === undefined ? "" : JSON.stringify(body);
+    const [status, out] = yield* Effect.promise(() =>
+      p === "/lock" ? c.lockRoute(method, q ? [...new URLSearchParams(q)] : [], text, viewer) : c.lockPartRoute(p.slice("/lock/".length), method, text, viewer),
+    );
+    return status === 200 ? out : yield* Effect.fail(httpError(status, out));
+  });
   inner.stations.requests.call = answer as typeof inner.stations.requests.call;
   // The trusted devices it dials: each it knows answers as a device on the lock does (a code, the exchange, what it
   // signs, then `approved`); any other, that it approves nothing here.
@@ -181,7 +179,7 @@ async function setUp(o: { named?: boolean; noApp?: boolean; web?: boolean; waiti
       const keys = pakeKeys(p, unhex(m.y), "trusted")!;
       yield* there.send({ t: "pake", y: hex(p.share), mac: hex(keys.mine) });
       yield* there.next();
-      yield* there.send(a.approve(hello));
+      yield* there.send(yield* Effect.promise(() => Promise.resolve(a.approve(hello))));
     }));
     return here;
   }));
@@ -228,9 +226,9 @@ test("a newcomer's first app: not confirmed and able to ask; it dials an owner's
   assert.deepEqual([before.me.confirmed, before.me.waiting], [false, true], "not confirmed, able to ask");
   w.approvers.set(w.alice.app.base.hex, {
     where: () => ["ws"],
-    approve: (hello) => {
+    approve: async (hello) => {
       w.alice.say("member", { sub: "s1", email: "s1@x.com", lock: stationHash(hello.log[0]), role: "member" }, "ws");
-      w.bring(w.alice);
+      await w.bring(w.alice);
       return { t: "approved", workspaces: ["ws"], failed: [] };
     },
   });
@@ -260,7 +258,7 @@ test("a newcomer approved before a station took its `member` statement (2026-11-
   const done = await w.ask("lock.pairCode", { workspace: "ws", code: CODE });
   assert.equal(done.error, undefined, done.error?.message);
   assert.equal((await w.page()).me.confirmed, false, "not in while no station took it");
-  w.bring(w.alice);
+  await w.bring(w.alice);
   await w.r.host.time.pass(10_000);
   const after = await w.page();
   assert.equal(after.me.confirmed, true, `in (${w.why()})`);
@@ -274,9 +272,9 @@ test("a member's new web page: it asks that member's own app, `web` said, in", a
   assert.deepEqual([before.me.confirmed, before.me.waiting], [false, true], "not confirmed, able to ask");
   w.approvers.set(w.x.app.base.hex, {
     where: () => ["ws"],
-    approve: () => {
+    approve: async () => {
       w.x.add("web", { id: w.base.hex, label: "Chrome", exp: w.now() + 30 * 86400 }, w.x.app.key, w.now());
-      w.bring(w.x);
+      await w.bring(w.x);
       return { t: "approved", workspaces: ["ws"], failed: [] };
     },
   });
@@ -295,13 +293,13 @@ test("a member's new web page: it asks that member's own app, `web` said, in", a
 test("a member's web page taken off their log: refused, told out (its page waits, not confirmed), never 'not heard yet'", async () => {
   const w = await setUp({ named: true, web: true });
   w.x.add("web", { id: w.base.hex, label: "Chrome", exp: w.now() + 30 * 86400 }, w.x.app.key, w.now());
-  w.bring(w.x);
+  await w.bring(w.x);
   await w.r.host.time.pass(600_000);
   assert.equal((await w.page()).me.confirmed, true, `in (${w.why()})`);
   w.x.add("web.remove", { id: w.base.hex }, w.x.app.key, w.now());
-  w.bring(w.x);
+  await w.bring(w.x);
   const refused = w.st.refusals.length;
-  const no = w.hello();
+  const no = await w.hello();
   assert.ok(no !== null && w.st.refusals.length > refused, "refused");
   assert.notEqual(no!.message, "station 尚未收到此设备的批准，即将重试", "not told its approval was not heard yet");
   const after = await w.page();
@@ -313,7 +311,7 @@ test("a member's web page left out, said on their log meanwhile by their app (ca
   const before = await w.page();
   assert.deepEqual([before.me.confirmed, before.me.waiting], [false, true], "out, able to ask");
   w.x.add("web", { id: w.base.hex, label: "Chrome", exp: w.now() + 20 * 86400 }, w.x.app.key, w.now());
-  w.bring(w.x);
+  await w.bring(w.x);
   // X's app is there to be dialled, and would approve: nothing asks it.
   w.approvers.set(w.x.app.base.hex, { where: () => ["ws"], approve: () => ({ t: "approved", workspaces: ["ws"], failed: [] }) });
   // (before 2026-11-14 it stayed out while it only waited, ten minutes and for good: the chain's head, which its mark
@@ -336,10 +334,10 @@ test("a device refused where the chain moved, then let in by what it is not give
   assert.deepEqual([before.me.confirmed, before.me.waiting], [false, true], "out");
   const asked = w.r.host.secureAsked.length;
   w.x.add("web", { id: w.base.hex, label: "Chrome", exp: w.now() + 20 * 86400 }, w.x.app.key, w.now());
-  w.bring(w.x);
+  await w.bring(w.x);
   // (the link's next retry: it dials unless `lockWaiting` holds the station back, as station/mesh-wire.ts does)
   assert.equal(hooks.lockWaiting?.(w.inner, "ws", w.A) ?? null, null, "not held back: asked again at the link's retry");
-  assert.equal(w.hello(), null, `let in (${w.why()})`);
+  assert.equal(await w.hello(), null, `let in (${w.why()})`);
   assert.deepEqual(w.dialled, [], "nothing pressed, no app dialled");
   assert.equal(w.r.host.secureAsked.length, asked, "nobody asked");
 });
@@ -350,9 +348,9 @@ test("a member's own second app: the personal exchange with their app on the log
   assert.deepEqual([before.me.confirmed, before.me.waiting], [false, true], "not confirmed, able to ask");
   w.approvers.set(w.x.app.base.hex, {
     where: () => ["person:s1"],
-    approve: (hello) => {
+    approve: async (hello) => {
       w.x.add("device", { key: hello.personal.key, id: w.base.hex, label: "Pixel", sign_key: hello.sign_key });
-      w.bring(w.x);
+      await w.bring(w.x);
       return { t: "approved", workspaces: ["person:s1"], chains: { s1: w.x.entries } };
     },
   });
@@ -379,7 +377,7 @@ test("a member's own second app refused before its own lock was read, and after:
     w.st.personUntold = false;
     const heardFrom = personal.heardFrom.bind(personal);
     if (first === "refusal") personal.heardFrom = () => Effect.void;
-    const said = w.hello();
+    const said = await w.hello();
     personal.heardFrom = heardFrom;
     console.log(`${first} first: standing ${personal.standing("s1")}; refused: ${said?.message}`);
     assert.ok(said !== null, "refused");
@@ -408,7 +406,7 @@ test("a new app of a person with a log it is not on, its first refusal before th
   w.inner.data.put("lock", "ws", {});
   assert.equal(held(w.inner, "ws"), null, "no lock of the workspace held yet (an app just signed in)");
   assert.equal(w.st.refusals.length, 0, "no station reached yet: this is its first refusal");
-  const said = w.hello();
+  const said = await w.hello();
   console.log(`first refusal, lock held ${JSON.stringify(held(w.inner, "ws")?.entries.map((e) => e.kind) ?? null)}, own lock read: ${said?.message}`);
   assert.ok(said !== null, "refused");
   assert.doesNotMatch(said!.message, /管理员|admin/i);
@@ -517,18 +515,18 @@ test("a carried member with no log, the list naming an app of theirs: their new 
 test("a carried member taken out and added again: their new app, told the list names no app of theirs, begins its log, asks an owner, and is admitted face to face, bound by that admit", async () => {
   const w = await setUp({ carried: true });
   w.alice.say("member.remove", { sub: "s1", cancels: [stationHash(w.moved)] }, "ws");
-  w.bring(w.alice);
+  await w.bring(w.alice);
   // (its link's next hello, as its own retry dials it: refused again, now told the list names no app of theirs)
-  w.hello();
+  await w.hello();
   await w.page();
-  assert.equal(w.c.locked()!.state!.members.has("s1"), false, "out of the station's list");
+  assert.equal((await w.c.locked())!.state!.members.has("s1"), false, "out of the station's list");
   assert.equal(w.st.refusals.at(-1)?.left?.apps, false, `told the list names no app of theirs (${w.why()})`);
   w.approvers.set(w.alice.app.base.hex, {
     // (an owner's app shows a code only for a newcomer whose hello brings their log, views/pair.ts `admitOf`)
     where: (hello) => (Array.isArray(hello.log) && hello.log.length > 0 ? ["ws"] : []),
-    approve: (hello) => {
+    approve: async (hello) => {
       w.alice.say("member", { sub: "s1", email: "s1@x.com", lock: stationHash(hello.log[0]), role: "member" }, "ws");
-      w.bring(w.alice);
+      await w.bring(w.alice);
       return { t: "approved", workspaces: ["ws"], failed: [] };
     },
   });
@@ -543,7 +541,7 @@ test("a carried member taken out and added again: their new app, told the list n
   assert.equal(after.me.confirmed, true, `in (${w.why()})`);
   const log = w.inner.adb.personal().root("s1");
   assert.ok(log !== null, "its own log begun");
-  assert.equal(w.c.locked()!.state!.persons.get("s1"), log, "bound at the station by that admit");
+  assert.equal((await w.c.locked())!.state!.persons.get("s1"), log, "bound at the station by that admit");
 });
 
 // The root's person, every device lost (apps/mbui/e2e/locks-moved.ts round 24; the lead, 2026-11-14: after a move they
@@ -563,14 +561,14 @@ test("the root's person's app begun anew, taken out and let in again by an owner
   assert.ok(log !== null && log !== w.x.genesis, "its own log begun anew");
   assert.equal(pl.standing("s1"), "member", "on its own log begun anew, never `replaced` (it began it)");
   w.alice.say("member.remove", { sub: "s1", cancels: [w.x.genesis] }, "ws");
-  w.bring(w.alice);
-  w.hello();
-  assert.equal(w.c.locked()!.state!.members.has("s1"), false, "out of the station's list");
+  await w.bring(w.alice);
+  await w.hello();
+  assert.equal((await w.c.locked())!.state!.members.has("s1"), false, "out of the station's list");
   w.approvers.set(w.alice.app.base.hex, {
     where: (hello) => (Array.isArray(hello.log) && hello.log.length > 0 ? ["ws"] : []),
-    approve: (hello) => {
+    approve: async (hello) => {
       w.alice.say("member", { sub: "s1", email: "s1@x.com", lock: stationHash(hello.log[0]), role: "owner" }, "ws");
-      w.bring(w.alice);
+      await w.bring(w.alice);
       return { t: "approved", workspaces: ["ws"], failed: [] };
     },
   });
@@ -581,8 +579,8 @@ test("the root's person's app begun anew, taken out and let in again by an owner
   assert.equal(done.error, undefined, done.error?.message);
   const after = await w.page();
   assert.equal(after.me.confirmed, true, `in (${w.why()})`);
-  assert.equal(w.c.locked()!.state!.persons.get("s1"), log, "bound at the station by its new log");
-  const kept = new Set(personChainsOf(w.c).of("s1").map(([g]) => g));
+  assert.equal((await w.c.locked())!.state!.persons.get("s1"), log, "bound at the station by its new log");
+  const kept = new Set((await w.c.personChainsOf("s1")).map(([g]) => g));
   assert.ok(kept.has(w.x.genesis) && kept.has(log!), "the station keeps both: the root's log and the new one");
   // Then what it asks of the station while nothing changes: reads, and no log brought.
   console.log(`asked from the restart to the approval's end: ${summary(w.st.asked.slice(atRestart))}`);
@@ -610,7 +608,7 @@ test("every other device of a member's lost: their new app names them, dials the
   w.st.downs = true;
   const phone = dev();
   w.x.add("device", { key: phone.key.id, id: phone.base.hex, label: "still.fail Android · Pixel 9", sign_key: phone.signer.id });
-  w.bring(w.x);
+  await w.bring(w.x);
   w.inner.cloudSync.workspaceRelays = (ws: string) => (ws === "ws" ? [WS_RELAY] : []);
   const pl = w.inner.adb.personal();
   await w.run(pl.refresh("s1"));
@@ -643,15 +641,15 @@ test("every other device of a member's lost: their new app names them, dials the
   assert.equal(refused.error?.code, "lock_rebound", `asking refused with the same words (${refused.error?.message})`);
   // An owner takes them out: the list binds them by nothing, and the app asks as a newcomer.
   w.alice.say("member.remove", { sub: "s1", cancels: admitsOf(w.alice, "s1") }, "ws");
-  w.bring(w.alice);
-  w.hello();
+  await w.bring(w.alice);
+  await w.hello();
   const out = await w.page();
   assert.equal(out.me.reboundText, undefined, `nothing to wait for once taken out (${w.why()})`);
   w.approvers.set(w.alice.app.base.hex, {
     where: (hello) => (Array.isArray(hello.log) && hello.log.length > 0 ? ["ws"] : []),
-    approve: (hello) => {
+    approve: async (hello) => {
       w.alice.say("member", { sub: "s1", email: "s1@x.com", lock: stationHash(hello.log[0]), role: "member" }, "ws");
-      w.bring(w.alice);
+      await w.bring(w.alice);
       return { t: "approved", workspaces: ["ws"], failed: [] };
     },
   });
@@ -662,7 +660,7 @@ test("every other device of a member's lost: their new app names them, dials the
   assert.equal(done.error, undefined, done.error?.message);
   const after = await w.page();
   assert.equal(after.me.confirmed, true, `in (${w.why()})`);
-  assert.equal(w.c.locked()!.state!.persons.get("s1"), log, "bound by the lock begun here");
+  assert.equal((await w.c.locked())!.state!.persons.get("s1"), log, "bound by the lock begun here");
 });
 
 test("taken out first, then every other device lost: their new app, made their only trusted device, asks an owner at once", async () => {
@@ -670,10 +668,10 @@ test("taken out first, then every other device lost: their new app, made their o
   // (a link refused waits for its own retry, as the mesh's does: each ask of the station is no hello of its own)
   w.st.downs = true;
   w.alice.say("member.remove", { sub: "s1", cancels: admitsOf(w.alice, "s1") }, "ws");
-  w.bring(w.alice);
+  await w.bring(w.alice);
   const pl = w.inner.adb.personal();
   await w.run(pl.refresh("s1"));
-  w.hello();
+  await w.hello();
   assert.equal(pl.standing("s1"), "outside");
   assert.equal((await w.ask("lock.pair", { workspace: "ws" })).error, undefined);
   const none = await w.page();
@@ -684,9 +682,9 @@ test("taken out first, then every other device lost: their new app, made their o
   assert.equal(after.me.reboundText, undefined, `nothing to wait for: the list binds them by nothing (${w.why()})`);
   w.approvers.set(w.alice.app.base.hex, {
     where: (hello) => (Array.isArray(hello.log) && hello.log.length > 0 ? ["ws"] : []),
-    approve: (hello) => {
+    approve: async (hello) => {
       w.alice.say("member", { sub: "s1", email: "s1@x.com", lock: stationHash(hello.log[0]), role: "member" }, "ws");
-      w.bring(w.alice);
+      await w.bring(w.alice);
       return { t: "approved", workspaces: ["ws"], failed: [] };
     },
   });
@@ -706,7 +704,7 @@ test("an owner whose every other device is lost: made their only trusted device,
   const none = await w.page();
   assert.equal(none.me.restartText, "我的其它设备都不在了", `offered (${JSON.stringify(none.me.pair)}; ${w.why()})`);
   assert.equal((await w.ask("lock.restartOwn", { workspace: "ws" })).error, undefined);
-  w.hello();
+  await w.hello();
   const rebound = await w.page();
   assert.match(rebound.me.reboundText ?? "", /另一位 owner.*stillfail lock reset/, `an owner's words (${w.why()})`);
 });
@@ -727,7 +725,7 @@ test("their own lock begun anew on another device: not confirmed, told what happ
   w.st.personHeld = false;
   w.st.personUntold = false;
   // (its link dialled again: the refusal names the lock the station keeps of theirs)
-  w.hello();
+  await w.hello();
   await w.page();
   assert.equal(pl.standing("s1"), "replaced", "the stations keep another of theirs");
   const replaced = await w.page();

@@ -14,24 +14,20 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mock, test } from "node:test";
+import { test } from "node:test";
 import { Effect } from "effect";
-import { type Entry as StationEntry, LockRefusal } from "../../../shared/lock.ts";
-import { Cloud, writeState } from "../../../station/src/cloud/state.ts";
-import { wall } from "../../../station/src/ops/fibers.ts";
-import { inLockBringing, lockPartRoute, lockRoute, refusalOf } from "../../../station/src/mesh/serve.ts";
-import { type Key, Log, bring, ed, signed, viewerOf } from "../../../station/test/lock-moved-world.ts";
+import { type Entry as StationEntry } from "../../../shared/lock.ts";
+import { type Key, Log, ed, signed, viewerOf } from "../../../station/test/lock-moved-world.ts";
 import { key, signed as simSigned } from "../../../station/test/lock-world-sim.ts";
 import type { CoreError } from "../src/error.ts";
 import { type Entry, type Signer, entryHash, next } from "../src/lock.ts";
 import { httpError } from "../src/station/requests.ts";
 import { hex, utf8 } from "../src/util.ts";
 import { held, inForceOf, read } from "../src/views/lock.ts";
+import { MbLockStation } from "./mb-lock-station.ts";
 import { grant, rig, withoutMesh } from "./lock-rig.ts";
 
 type J = any;
-let clock = () => 0;
-mock.method(wall, "now", () => clock());
 
 const MINE = 7101;
 const seedOf = (n: number) => {
@@ -82,7 +78,7 @@ async function setUp(o: { flag?: boolean; bare?: boolean } = {}) {
     host.storage.set("personal-signer-id", utf8(k.id));
     host.secure.set("personal-signer", { value: seedOf(MINE), user: true });
   }, [A, B], [A, B], undefined, [D], { role: "admin" });
-  clock = () => r.host.nowMs();
+  const clock = () => r.host.nowMs();
   const inner = r.core.inner;
   inner.mesh = () => withoutMesh(base.hex);
   const signer = mine! as Signer;
@@ -106,18 +102,17 @@ async function setUp(o: { flag?: boolean; bare?: boolean } = {}) {
   after(owner.app.signer, "device", web(WO, "s1", "s1's browser, by the owner", now + 10 * DAY));
   after(signer, "device", web(WR, "r2", "r2's browser", now + 10 * DAY));
   r.cloud.chains.set("ws", chain);
-  const station = (id: string): Cloud => {
+  const station = async (id: string): Promise<MbLockStation> => {
     const data = mkdtempSync(join(tmpdir(), "lock-webs-carried-"));
-    writeState(data, { origin: "https://stillfail.test", station: id, workspace: "ws", workspace_name: "W", name: id.slice(0, 4), relay_url: "", relay_urls: [], grant_keys: g.keys, peers: [A, B].map((p, i) => ({ id: p, name: `s${i}` })), revocations: [] } as never);
-    const c = new Cloud(data, false);
-    c.takeLock(chain as unknown as StationEntry[]);
-    for (const l of [owner, r2]) bring(c, l, false, "ws");
+    const c = await MbLockStation.create(data, { origin: "https://stillfail.test", station: id, workspace: "ws", workspace_name: "W", name: id.slice(0, 4), relay_url: "", relay_urls: [], grant_keys: g.keys, peers: [A, B].map((p, i) => ({ id: p, name: `s${i}` })), revocations: [] }, clock);
+    await c.takeLock(chain);
+    for (const l of [owner, r2]) await c.bring(l, false, "ws");
     // (s1's log, as their app brought it as it came to the station)
-    const [status] = lockPartRoute(c, "person", "POST", Buffer.from(JSON.stringify({ chain: myLog })), viewerOf("s1", { base }, "admin", "ws") as never);
+    const [status] = await c.lockPartRoute("person", "POST", JSON.stringify({ chain: myLog }), viewerOf("s1", { base }, "admin", "ws"));
     assert.equal(status, 200, "s1's log taken");
     return c;
   };
-  const stations = { A: station(A), B: station(B) };
+  const stations = { A: await station(A), B: await station(B) };
   const viewer = viewerOf("s1", { base }, "admin", "ws");
   const d = { says: false };
   const original = inner.stations.requests.call.bind(inner.stations.requests);
@@ -128,9 +123,13 @@ async function setUp(o: { flag?: boolean; bare?: boolean } = {}) {
       if (id === D || ws !== "ws") return method === "POST" ? Effect.succeed({}) : Effect.fail(httpError(404, { error: "no route" }));
       const c = id === A ? stations.A : stations.B;
       const [p, q] = path.split("?") as [string, string | undefined];
-      const buf = Buffer.from(body === null || body === undefined ? "" : JSON.stringify(body));
-      const [status, out] = p === "/lock" ? lockRoute(c, method, q ? [...new URLSearchParams(q)] : [], buf, viewer as never) : lockPartRoute(c, p.slice("/lock/".length), method, buf, viewer as never);
-      return status === 200 ? Effect.succeed(out) : Effect.fail(httpError(status, out));
+      const text = body === null || body === undefined ? "" : JSON.stringify(body);
+      return Effect.flatMap(
+        Effect.promise(() =>
+          p === "/lock" ? c.lockRoute(method, q ? [...new URLSearchParams(q)] : [], text, viewer) : c.lockPartRoute(p.slice("/lock/".length), method, text, viewer),
+        ),
+        ([status, out]) => (status === 200 ? Effect.succeed(out) : Effect.fail(httpError(status, out))),
+      );
     }
     return (original as (...x: unknown[]) => unknown)(addr, method, path, body, ...rest);
   }) as typeof inner.stations.requests.call;
@@ -164,24 +163,20 @@ async function setUp(o: { flag?: boolean; bare?: boolean } = {}) {
     }
     after(owner.app.signer, "moved", { root: owner.genesis });
     for (const c of Object.values(stations)) {
-      bring(c, owner, true, "ws");
-      c.takeLock([...chain] as unknown as StationEntry[]);
-      assert.equal(c.chain(null)?.state?.moved, owner.genesis, "the station took the moved");
+      await c.bring(owner, true, "ws");
+      await c.takeLock([...chain]);
+      assert.equal((await c.chain(null))?.state?.moved, owner.genesis, "the station took the moved");
     }
     await run(read(inner, "ws"));
     assert.equal(held(inner, "ws")?.entries.at(-1)?.kind, "moved", "the chain held moved");
   };
   /// A web page of s1's (`k`) at a station's hello: in, or refused with what the refusal tells it.
-  const page = (c: Cloud, k: Key): { in: boolean; left?: J } => {
+  const page = async (c: MbLockStation, k: Key): Promise<{ in: boolean; left?: J }> => {
     const v = viewerOf("s1", { base: k }, "admin", "ws");
     const said = { lock: { device: k.hex, proof: v.lockDevice.proof } };
-    try {
-      inLockBringing(c, { viewer: v, exp: 4102444800, iat: 0, sid: "" } as never, "admin", v.device, said);
-      return { in: true };
-    } catch (e) {
-      if (!(e instanceof LockRefusal)) throw e;
-      return { in: false, left: (refusalOf(c, said, v.device, e, undefined, "s1") as J).left };
-    }
+    const res = await c.inLockBringing({ viewer: v, exp: 4102444800, iat: 0, sid: "" }, "admin", v.device, said, "s1");
+    if (res.ok) return { in: true };
+    return { in: false, left: (res.body as J).left };
   };
   return { r, inner, base, stations, W1, WX, WD, WL, WO, WR, asked, webs, grantAsked, handOver, page, run, d, now: () => now };
 }
@@ -195,8 +190,8 @@ test("after a handover that says nothing: the chain's pages in at both stations 
   await w.run(read(w.inner, "ws"));
   for (const [n, c] of Object.entries(w.stations)) {
     // (s1's own pages at s1's hello; r2's is r2's, in force below)
-    for (const k of ["W1", "WO"] as const) assert.equal(w.page(c, w[k]).in, true, `${k} let in by ${n}`);
-    for (const k of ["WX", "WD", "WL"] as const) assert.equal(w.page(c, w[k]).in, false, `${k} out at ${n}`);
+    for (const k of ["W1", "WO"] as const) assert.equal((await w.page(c, w[k])).in, true, `${k} let in by ${n}`);
+    for (const k of ["WX", "WD", "WL"] as const) assert.equal((await w.page(c, w[k])).in, false, `${k} out at ${n}`);
   }
   const f = inForceOf(w.inner, "ws").f;
   for (const k of ["W1", "WO", "WR"] as const) assert.ok(f.devices.has(w[k].hex), `${k} in force here`);
@@ -212,6 +207,6 @@ test("a carried page is out at its exp on the chain, at both stations and here",
   await movedAlone(w);
   w.r.host.advance((10 * DAY + 60) * 1000);
   await w.run(read(w.inner, "ws"));
-  for (const [n, c] of Object.entries(w.stations)) assert.equal(w.page(c, w.W1).in, false, `W1 out at ${n}`);
+  for (const [n, c] of Object.entries(w.stations)) assert.equal((await w.page(c, w.W1)).in, false, `W1 out at ${n}`);
   assert.ok(!inForceOf(w.inner, "ws").f.devices.has(w.W1.hex), "W1 not in force here");
 });

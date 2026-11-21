@@ -9,17 +9,12 @@ import { join } from "node:path";
 import { mock, test } from "node:test";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { Effect } from "effect";
-import { type Entry as StationEntry } from "../../../shared/lock.ts";
-import { Cloud, personChainsOf, writeState } from "../../../station/src/cloud/state.ts";
-import { wall } from "../../../station/src/ops/fibers.ts";
-import { lockPartRoute, lockRoute } from "../../../station/src/mesh/serve.ts";
-import { deviceBuildsOf } from "../../../station/src/mesh/device-builds.ts";
 import { Core } from "../src/core.ts";
 import { apply as applyOps } from "../src/delta.ts";
 import { CoreError, HostError } from "../src/error.ts";
 import { jsonResponse } from "../src/testing.ts";
 import { t } from "../src/i18n.ts";
-import type { HttpRequest } from "../src/host.ts";
+import type { HttpRequest, HttpResponse } from "../src/host.ts";
 import type { StationAddr } from "../src/station/addr.ts";
 import { HostWire, type RequestHead, type StationWire } from "../src/station/wire.ts";
 import type { FakeHost } from "../src/testing.ts";
@@ -40,6 +35,7 @@ import { type Duplex, dialer, personalBegin, personalProve, serveTrusted } from 
 import { PERSONAL_KEY } from "../src/personal-lock.ts";
 import { Queue } from "effect";
 import { world as pairWorld } from "./lock-pair-world.ts";
+import { MbLockStation } from "./mb-lock-station.ts";
 import { subscribe, call } from "./helpers.ts";
 import { withoutMesh } from "./lock-rig.ts";
 import { type Answers, Status, base, entry, started, stationLater, stationReplies, status } from "./station-fixture.ts";
@@ -2563,16 +2559,17 @@ test("a station's conflict or refusal by the rules is no offline: the write fail
 /// pinned here and kept at `S`; else none of theirs anywhere, as for someone who never turned anything on.
 async function ownRig(o: { begun: boolean }) {
   const r = await rig(false, false, {}, { stations: [{ id: S, name: "studio", online: true, last_seen: null }] });
-  const st = lockStation(r, false);
+  const st = await lockStation(r, false);
   if (o.begun) {
     const seed = fill(0x51);
     const own = [signOn(seed, "person:s1", [], "genesis", { sub: "s1", device: { key: key(seed).id, id: "ab".repeat(32), label: "this", sign_key: r.me.signer!.id } })];
-    st.keepLog(own);
+    await st.keepLog(own);
     r.host.storage.set(`personal-lock-${hex(utf8("s1"))}`, utf8(JSON.stringify(own)));
     r.host.storage.set("personal-signer-id", utf8(key(seed).id));
     r.host.secure.set("personal-signer", { value: seed, user: true });
   }
-  stationReplies(r.host, (req) => st.routed(req) ?? r.st.reply(req));
+  stationLater(r.host, (req) => st.routed(req));
+  stationReplies(r.host, (req) => r.st.reply(req));
   await r.restart();
   // (this device's endpoint, as its mesh says it: what its own lock names it by as it is begun)
   r.core.inner.mesh = () => Effect.succeed({ deviceId: () => "ab".repeat(32), sign: () => ({ publicKey: new Uint8Array(32), signature: new Uint8Array(64) }), link: () => Effect.fail(CoreError.plainly("mesh", "no station link here")) } as never);
@@ -2597,7 +2594,7 @@ test("no safe mode: the vault is the person's own, encrypted; 开启 begins thei
   assert.equal(setup.words.split(" ").length, 24, "the recovery words, the first time");
   // Their own lock begun, this device on it with its signer, kept at the station.
   assert.equal(r.core.inner.adb.personal().standing("s1"), "member");
-  assert.equal(personChainsOf(r.station.c).of("s1").length, 1, "the station keeps their lock");
+  assert.equal((await r.station.c.personChainsOf("s1")).length, 1, "the station keeps their lock");
   const v = r.st.vaults.get(setup.made)!;
   assert.deepEqual([v.owner, v.members, v.keys.map((k) => k.cert.device)], ["s1", ["s1"], ["ab".repeat(32)]]);
   // What was plain moved in, its key in hand (nobody asked again), and deleted where it was.
@@ -2700,33 +2697,34 @@ test("turning the lock off: asked once, for the entry alone; nobody's vault open
 /// by its own read (views/lock.ts `readLockOnce`), as it would of a station. `take` keeps entries of the chain; `keepLog`
 /// a person's log as their device brings it (POST /lock/person); `takeBodies` s1's statements' bodies brought with s1's
 /// log as kept there.
-let clock = () => 0;
-mock.method(wall, "now", () => clock());
-function lockStation(r: Awaited<ReturnType<typeof rig>>, locked = true) {
-  clock = () => r.host.nowMs();
+async function lockStation(r: Awaited<ReturnType<typeof rig>>, locked = true) {
   const data = mkdtempSync(join(tmpdir(), "vault-lock-"));
-  writeState(data, { origin: "https://stillfail.test", station: S, workspace: "ws", workspace_name: "W", name: "studio", relay_url: "", relay_urls: [], grant_keys: { keys: [] }, peers: [{ id: S, name: "studio" }], revocations: [] } as never);
-  const c = new Cloud(data, false);
-  if (locked) c.takeLock(r.lock.entries as unknown as StationEntry[]);
+  const c = await MbLockStation.create(data, { origin: "https://stillfail.test", station: S, workspace: "ws", workspace_name: "W", name: "studio", relay_url: "", relay_urls: [], grant_keys: { keys: [] }, peers: [{ id: S, name: "studio" }], revocations: [] }, () => r.host.nowMs());
+  if (locked) await c.takeLock(r.lock.entries);
   const viewer = { sub: "s1", email: "a@x.com", name: "s1", role: "owner", workspace: "ws", device: "ab".repeat(32) };
-  const routed = (req: HttpRequest): unknown => {
+  const routed = (req: HttpRequest): Promise<HttpResponse> | undefined => {
     const url = new URL(req.url);
     const path = url.pathname.replace("/admin/api", "");
     if (url.pathname.startsWith("/v1/") || !(path === "/lock" || path.startsWith("/lock/"))) return undefined;
-    const buf = Buffer.from(req.body ?? new Uint8Array());
-    const [code, out] = path === "/lock" ? lockRoute(c, req.method, [...url.searchParams], buf, viewer as never) : lockPartRoute(c, path.slice("/lock/".length), req.method, buf, viewer as never);
-    return code === 200 ? out : status(code, out);
+    const body = req.body ?? new Uint8Array();
+    return (async () => {
+      const [code, out] = path === "/lock" ? await c.lockRoute(req.method, [...url.searchParams], body, viewer) : await c.lockPartRoute(path.slice("/lock/".length), req.method, body, viewer);
+      return jsonResponse(code, out);
+    })();
   };
   return {
     c, routed,
-    take: () => void c.takeLock(r.lock.entries as unknown as StationEntry[]),
-    keepLog: (entries: readonly Entry[]) => {
+    take: async () => {
+      await c.takeLock(r.lock.entries);
+    },
+    keepLog: async (entries: readonly Entry[]) => {
       const sub = String((entries[0]!.body as { sub?: unknown }).sub);
-      const [code, out] = lockPartRoute(c, "person", "POST", Buffer.from(JSON.stringify({ chain: entries })), { ...viewer, sub } as never);
+      const [code, out] = await c.lockPartRoute("person", "POST", JSON.stringify({ chain: entries }), { ...viewer, sub });
       assert.equal(code, 200, `the station took ${sub}'s log: ${JSON.stringify(out)}`);
     },
-    takeBodies: (bodies: unknown[]) => {
-      const [code, out] = lockPartRoute(c, "person", "POST", Buffer.from(JSON.stringify({ chain: personChainsOf(c).of("s1")[0]?.[1] ?? [], bodies })), viewer as never);
+    takeBodies: async (bodies: unknown[]) => {
+      const chains = await c.personChainsOf("s1");
+      const [code, out] = await c.lockPartRoute("person", "POST", JSON.stringify({ chain: chains[0]?.[1] ?? [], bodies }), viewer);
       assert.equal(code, 200, JSON.stringify(out));
       return out as { taken: number; refused?: unknown[] };
     },
@@ -2772,34 +2770,35 @@ async function movedRig(secret: boolean, o: { signKey?: boolean; phone?: boolean
   // (`carried`: the phone on the workspace's chain alone, never put on s1's log: the chain as it moved carries it)
   if (o.phone && !o.carried) own = [...own, sign1(own, "device", { key: PHONE_LOG.id, id: r.phone.hex, label: "phone", sign_key: r.phone.id })];
   const g = entryHash(own[0]!);
-  const st = lockStation(r);
+  const st = await lockStation(r);
   let prev: string | null = null;
   let salt = 0x7700;
   /// A statement of s1's: its entry on their log, its body; both brought to the station (the entry first, which the
   /// body is taken against).
-  const said = (what: Record<string, unknown>): string => {
+  const said = async (what: Record<string, unknown>): Promise<string> => {
     const b: Record<string, unknown> = { ws: "ws", ...what, prev, salt: (salt++).toString(16).padStart(32, "0") };
     prev = bodyHash(b)!;
     own = [...own, sign1(own, "ws", { t: wsTag("ws", g), h: prev })];
-    st.keepLog(own);
-    const t = st.takeBodies([b]);
+    await st.keepLog(own);
+    const t = await st.takeBodies([b]);
     assert.equal(t.taken, 1, `the station took the body: ${JSON.stringify(t.refused)}`);
     return prev;
   };
   // (`waiting`: the root's log said nothing of the workspace yet, nor came to the station: its state waits)
   if (!o.waiting) {
-    said({ kind: "open", origins: ["https://stillfail.test"], rp_id: "stillfail.test", cloud_keys: {}, email: "a@x.com" });
-    said({ kind: "station", key: S });
+    await said({ kind: "open", origins: ["https://stillfail.test"], rp_id: "stillfail.test", cloud_keys: {}, email: "a@x.com" });
+    await said({ kind: "station", key: S });
   }
   r.host.storage.set(`personal-lock-${hex(utf8("s1"))}`, utf8(JSON.stringify(own)));
   r.host.storage.set("personal-signer-id", utf8(k.id));
   r.host.secure.set("personal-signer", { value: seed, user: true });
+  stationLater(r.host, (req) => st.routed(req));
   stationReplies(r.host, (req) => {
     if (req.url.includes("/v1/workspaces/ws/lock")) return r.lock;
-    return st.routed(req) ?? r.st.reply(req);
+    return r.st.reply(req);
   });
   grow(r, "moved", { root: g });
-  st.take();
+  await st.take();
   // (started anew: the person's own lock read from what is kept, as an app that had it pinned)
   await r.restart();
   const settle = async () => {
@@ -2814,14 +2813,14 @@ async function movedRig(secret: boolean, o: { signKey?: boolean; phone?: boolean
     /// A statement of s1's (the root's) in their log, made on another device of theirs, its entry and body at the
     /// station; its body's hash.
     say: async (what: Record<string, unknown>): Promise<string> => {
-      const h = said(what);
+      const h = await said(what);
       await settle();
       return h;
     },
     /// An entry of s1's log signed by its key there (a device put on or taken off), at the station.
     own: async (kind: string, body: unknown) => {
       own = [...own, sign1(own, kind, body)];
-      st.keepLog(own);
+      await st.keepLog(own);
       await settle();
     },
     /// Another person's log, as their device brought it to the station (given on as the state is made of it).
@@ -2870,7 +2869,7 @@ test("a moved workspace turned off, the second ask turned down: not off, nothing
 const S2_LOG = fill(0x61), S2_SIGNS = key(fill(0x62)), D2 = "d2".repeat(32);
 async function s2In(r: Awaited<ReturnType<typeof movedRig>>) {
   const log = [signOn(S2_LOG, "person:s2", [], "genesis", { sub: "s2", device: { key: key(S2_LOG).id, id: D2, label: "b2", sign_key: S2_SIGNS.id } })];
-  r.putLog(log);
+  await r.putLog(log);
   const admit = await r.say({ kind: "member", sub: "s2", email: "b@x.com", lock: entryHash(log[0]!), role: "member" });
   const [v] = [...r.st.vaults.values()];
   const { sig: _, ...rest } = v!;
@@ -3187,17 +3186,22 @@ async function handRig() {
   grow(r, "station", { key: S, name: "studio" });
   grow(r, "person", { sub: "s1", person: g });
   grow(r, "person", { sub: "s2", person: g2 }, r.other);
-  const st = lockStation(r);
-  st.keepLog(own);
-  st.keepLog(s2log);
+  const st = await lockStation(r);
+  await st.keepLog(own);
+  await st.keepLog(s2log);
   // (s2's app seen asking the station on an unnumbered build, as an app let in is)
-  deviceBuildsOf(st.c).saw(r.other.hex, 0, Math.floor(r.host.nowMs() / 1000));
+  await st.c.deviceBuildsSaw(r.other.hex, 0, Math.floor(r.host.nowMs() / 1000));
   const seen: string[] = [];
+  stationLater(r.host, (req) => {
+    const path = new URL(req.url).pathname;
+    if (path.includes("/lock") && !req.url.includes("/v1/")) seen.push(`${req.method} ${path.slice(path.indexOf("/lock"))}`);
+    return st.routed(req);
+  });
   stationReplies(r.host, (req) => {
     const path = new URL(req.url).pathname;
-    if (path.includes("/lock")) seen.push(`${req.method} ${req.url.includes("/v1/") ? "cloud " : ""}${path.slice(path.indexOf("/lock"))}`);
+    if (path.includes("/lock") && req.url.includes("/v1/")) seen.push(`${req.method} cloud ${path.slice(path.indexOf("/lock"))}`);
     if (req.url.includes("/v1/workspaces/ws/lock")) return req.method === "GET" ? r.lock : { ok: true };
-    return st.routed(req) ?? r.st.reply(req);
+    return r.st.reply(req);
   });
   await r.restart();
   // (this device's base key, as its mesh's: the rig reaches its station another way)
@@ -3243,7 +3247,7 @@ async function handRig() {
     /// An entry of s2's own log signed by its key there, as the stations give it.
     s2Own: async (kind: string, body: unknown) => {
       s2log = [...s2log, signOn(S2_LOG, "person:s2", s2log, kind, body)];
-      st.keepLog(s2log);
+      await st.keepLog(s2log);
       await settle();
     },
   };
@@ -3255,7 +3259,7 @@ test("a vault made before the move, s2 in it: after handOver, by the state in fo
   // (s1's phone, on the chain and not on s1's own log, taken off the chain by this device by itself first, as any
   // device of its person's not on their log is, views/lock.ts `keepToPerson`: settled before the handover begins)
   await r.settle();
-  assert.deepEqual(r.station.c.lockAfter(-1, null).map((e) => e.kind), ["genesis", "station", "person", "person", "device.remove"], "the station took the removal");
+  assert.deepEqual((await r.station.c.lockAfter(-1, null)).map((e) => e.kind), ["genesis", "station", "person", "person", "device.remove"], "the station took the removal");
   assert.deepEqual(pendingHeld(inner, "ws"), [], "nothing pending as it begins");
   const vaults = await r.watch(1, { topic: "vaults", workspace: "ws" });
   const asked = r.host.secureAsked.length;
@@ -3263,7 +3267,7 @@ test("a vault made before the move, s2 in it: after handOver, by the state in fo
   assert.equal(out.error, undefined, out.error?.message);
   assert.equal(out.ok, null, `handed over: ${JSON.stringify(out.ok)} (the station asked ${r.seen.slice(-12).join(", ")})`);
   assert.deepEqual(r.host.secureAsked.slice(asked).map((a) => a.key), [], "nobody asked: the handover says nothing (2026-11-14)");
-  assert.equal(r.station.c.lockAfter(-1, null).at(-1)?.kind, "moved", "the station took the moved");
+  assert.equal((await r.station.c.lockAfter(-1, null)).at(-1)?.kind, "moved", "the station took the moved");
   for (let n = 0; n < 2; n++) await r.settle();
   const f = inForceOf(inner, "ws");
   assert.deepEqual([f.said, f.root], ["on", r.root], "in force: rooted in s1's log");
