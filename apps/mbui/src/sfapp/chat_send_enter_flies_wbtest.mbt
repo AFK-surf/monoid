@@ -13,7 +13,6 @@ let csef_words : String = "发布前再看一眼签名"
 fn csef_way(screen : (String, Double, Double, Int), send : (@ui.Tester) -> Unit) -> (Double, Double) {
   let (name, w, h, platform) = screen
   new_run()
-  @sfbase.hold_chat_page_nodes(Some(true))
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)

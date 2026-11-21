@@ -207,10 +207,8 @@ test "wide: Station 文件 from the chat's \"…\" beside it (kept by the core: 
 
 ///|
 test "wide: a new chat's Station 文件 beside it (NewChat.tsx): kept open, closed and opened by its bar's button; a row's 添加到消息 into its draft" {
-  // (its page made either way: the old view's side_beside, or as nodes with its composer, new_side_node)
   both_pages(fn() raise {
     new_run()
-    both_way()
     let calls : Array[Made] = []
     let base = fixture("newchat-files")
     let src : Source = {

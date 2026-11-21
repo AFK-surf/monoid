@@ -24,7 +24,9 @@ fn init {
     // (the chat's page made as nodes hands over the pictures of the rows its list has made round what shows, a screen
     // over and under it, where the old list handed over those in view: its 小屏 finger's pick held at its end, 2026-11-13)
     ("src/sfapp/chat_page_nodes_wbtest.mbt", 38548),
-    ("src/sfapp/chat_pictures_held_wbtest.mbt", 89156),
+    // (a picture of the chat's page made as nodes scrolled into sight at a phone's foot, its rows round what shows made
+    // with it: chat_pictures_held_wbtest's bar, its test folded in here, 2026-11-19)
+    ("src/sfapp/chat_pictures_scrolled_wbtest.mbt", 89156),
     ("src/sfapp/chat_send_from_above_wbtest.mbt", 89156),
     // (the chat's page made as nodes, its words and a quoted picture sent: the pictures of the rows round what shows,
     // as chat_page_nodes_wbtest's, and the quote's, 2026-11-14; the quote's picture flying from its 56 tile to its
@@ -47,7 +49,6 @@ fn init {
     ("src/sfapp/fast_down_wbtest.mbt", 57758),
     ("src/sfapp/flight_under_bar_wbtest.mbt", 519822),
     ("src/sfapp/image_corners_chat_wbtest.mbt", 159102),
-    ("src/sfapp/kept_rows_kinds_wbtest.mbt", 243220),
     ("src/sfapp/linger_wbtest.mbt", 89156),
     ("src/sfapp/newchat_send_wbtest.mbt", 231032),
     ("src/sfapp/notices_wbtest.mbt", 999086),
@@ -59,7 +60,6 @@ fn init {
     ("src/sfapp/quote_image_wbtest.mbt", 320444),
     ("src/sfapp/screens_wbtest.mbt", 1857231),
     ("src/sfapp/search_wbtest.mbt", 127704),
-    ("src/sfapp/send_hold_wbtest.mbt", 89156),
     ("src/sfapp/squeeze_wbtest.mbt", 1975151),
     ("src/sfapp/tape_wbtest.mbt", 89156),
     ("src/sfapp/things_sheet_wbtest.mbt", 159102),
@@ -67,8 +67,8 @@ fn init {
     // more, 38548, of the rows round what shows, as chat_page_nodes_wbtest's; viewer_pick_wbtest's, made by its tester)
     ("src/sfapp/touch_wide_wbtest.mbt", 243220),
     ("src/sfapp/view_beside_wbtest.mbt", 2970770),
-    // (the chat's page made as nodes by default on the test channel since 2026-11-19, chatPage moved to beta: one picture
-    // more, 38548, of the rows round what shows, as chat_page_nodes_wbtest's)
+    // (the chat's page made as nodes hands over the pictures of the rows its list has made round what shows, a screen
+    // over and under it, as chat_page_nodes_wbtest's: compare.png's 38548 more)
     ("src/sfapp/viewer_flight_wbtest.mbt", 185462),
     ("src/sfapp/viewer_media_wbtest.mbt", 115516),
     ("src/sfapp/viewer_pick_wbtest.mbt", 243220),

@@ -303,7 +303,7 @@ for t in $targets; do
     # send_steady has nine tests now, and tests 2-3 (22 and 27 paced sends) walk the most frames. Its 2-9 range ran
     # as one process on app 4/4, which hit the 5-minute limit at 318 s on main f855908e (44401157133). Cut it in five.
     sweeps=(src/sfapp/screens_wbtest.mbt:1 src/sfapp/corners_wbtest.mbt:6 src/sfapp/squeeze_said_wbtest.mbt:1
-      src/sfapp/contrast_wbtest.mbt:1 src/sfapp/kept_rows_kinds_wbtest.mbt:@2@3@4@5@8 src/sfapp/preview_tree_wbtest.mbt:@54
+      src/sfapp/contrast_wbtest.mbt:1 src/sfapp/preview_tree_wbtest.mbt:@54
       src/sfapp/words_large_wbtest.mbt:2 src/sfapp/duo_side_wbtest.mbt:2 src/sfapp/send_steady_wbtest.mbt:@1@2@3@4
       src/sfapp/chat_page_nodes_wbtest.mbt:2 src/sfapp/answers_still_wbtest.mbt:@2@3@4@5
       src/sfapp/switches_still_wbtest.mbt:32)
@@ -768,14 +768,9 @@ for t in $targets; do
       # (and on the fourth since: on the second beside its pages on three programs and its sweeps, eleven processes on
       # its four cores, it ran 200 s and app 2/4 293 s, every other run there slowed alike (screens 175 s), where app 4/4
       # with send_steady's three alone beside its pages was 108, #6694's 43864771728)
-      # At the default rate, contrast runs the wide real_size sweep, four kept_rows ranges, send_steady 3-4 and 4-9,
-      # and both duo_side and words_large runs.
+      # At the default rate, contrast runs the wide real_size sweep, send_steady 3-4 and 4-9, and both duo_side and
+      # words_large runs.
       "src/sfapp/duo_side_wbtest.mbt "*) echo contrast ;;
-      "src/sfapp/kept_rows_kinds_wbtest.mbt --index 0-2" | "src/sfapp/kept_rows_kinds_wbtest.mbt --index 2-3" | \
-        "src/sfapp/kept_rows_kinds_wbtest.mbt --index 3-4" | "src/sfapp/kept_rows_kinds_wbtest.mbt --index 4-5")
-        if [ -z "${MBUI_TEST_FPS:-}" ]; then echo contrast; else echo 3; fi ;;
-      "src/sfapp/kept_rows_kinds_wbtest.mbt --index 8-"*) echo 2 ;;
-      "src/sfapp/kept_rows_kinds_wbtest.mbt "*) echo 3 ;;
       # (preview_tree's two on the fourth, the one with the most programs: at 120 a second APP_PART gives each of its
       # two halves one; at 24 and at 7 the fourth has a runner for each. At the default rate and at 60 on the first:
       # there the fourth's 138 files of pages and preview_tree's two, six processes on its four cores, were 214-273 s

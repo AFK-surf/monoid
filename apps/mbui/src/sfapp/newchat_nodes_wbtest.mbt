@@ -10,7 +10,6 @@
 /// at rest: a phone's window, or a desk's (`wide`: 1280 by 800, a mouse).
 fn nodes_new_chat(mode : String, wide? : Bool = false) -> @ui.Tester {
   new_run()
-  @sfbase.hold_chat_page_nodes(Some(true))
   let src = fixture(mode)
   let t = if wide {
     @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
@@ -161,7 +160,6 @@ test "a new chat made as nodes laid out narrow and wide again as its window chan
 /// are, and where the window's foot over the keyboard is.
 fn nodes_new_chat_keyboard_up() -> (@ui.Tester, (Double, Double, Double, Double), (Double, Double, Double, Double), Double) raise {
   new_run()
-  @sfbase.chat_page_nodes.set(true)
   let src = fixture("newchat")
   let (w, h, kb, bottom) = (351.0, 805.0, 320.0, 24.0)
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform=2)

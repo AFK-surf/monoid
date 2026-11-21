@@ -79,7 +79,6 @@ fn st_look(t : @ui.Tester) -> StFrame {
 fn st_walk(screen : (String, Double, Double, Int), after : Double, deliver : Double, core : Double) -> (Array[StFrame], Int) raise {
   let (_, w, h, platform) = screen
   new_run()
-  @sfbase.hold_chat_page_nodes(Some(true))
   fix_pace.val = (deliver, 30000.0, fix_turn_end_ms)
   fix_sent_for.val = -1.0
   fix_core_for.val = core
@@ -250,4 +249,68 @@ test "a chat's page made as nodes, 小屏 and 大屏: the second words sent 1000
 ///|
 test "a chat's page made as nodes, 小屏 and 大屏: the second words sent 3000 ms after the first: nothing over them down, the agent's line kept against the composer, the time line gone in the press's frame" {
   st_cases(3000.0, [(700.0, 400.0), (0.0, 100.0), (700.0, 800.0)])
+}
+
+///|
+test "words sent while the words sent before still stand in the field they set out from: those land with what is under them (its time line), nothing of them left on its way over the next (words_over)" {
+  new_run()
+  fix_pace.val = (100.0, 30000.0, fix_turn_end_ms)
+  fix_sent_for.val = -1.0
+  let src = fixture("chat")
+  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.set_rows_on_pixels(true)
+  t.run_for(@ui.move_most_ms)
+  guard composer_field(t) is Some((fx, fy, fw, fh)) else { fail("no composer's field") }
+  t.tap(fx + fw / 2.0, fy + fh / 2.0)
+  t.type_text(st_first)
+  t.run_for(@ui.move_most_ms)
+  tap_send(t)
+  // (the second sent while the first is still in the field: sent_in_field_land lands it, its time line with it)
+  t.run_shown(@sfbase.sent_out_away_ms() / 2.0)
+  t.type_text(st_second)
+  tap_send(t)
+  // (each frame drawn on to rest: words over words fail the Tester as they are drawn)
+  t.run_shown(@ui.move_most_ms + 1000.0)
+  assert_true(st_row(st_first) is Some(_) && st_row(st_second) is Some(_))
+}
+
+///|
+/// The fixture's chat on 小屏, rows on the host's pixels, its composer pressed: the Tester and the field's middle.
+fn st_composer_open() -> @ui.Tester raise {
+  new_run()
+  let src = fixture("chat")
+  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.set_rows_on_pixels(true)
+  t.run_for(@ui.move_most_ms)
+  guard composer_field(t) is Some((fx, fy, fw, fh)) else { fail("no composer's field") }
+  t.tap(fx + fw / 2.0, fy + fh / 2.0)
+  t
+}
+
+///|
+test "words sent as the composer still grows for a line just begun: its height slows to rest from that way, never past it and back (sizes_steady)" {
+  let t = st_composer_open()
+  t.type_text(st_first)
+  t.run_for(@ui.move_most_ms)
+  t.type_text("\n" + st_second)
+  // (sent two frames into its growing: sent_hold takes it on its way)
+  t.run_shown(@ui.frame_period_default * 2.0)
+  tap_send(t)
+  // (each frame drawn on to rest: a height stopped dead or gone back fails the Tester as it is drawn)
+  t.run_shown(@ui.move_most_ms + 1000.0)
+  assert_true(st_row(st_first) is Some(_))
+}
+
+///|
+test "words of two lines sent with the cursor gone from the composer: its foot closes on its way in the frame they are sent, not at once (sizes_steady)" {
+  let t = st_composer_open()
+  t.type_text(st_first + "\n" + st_second)
+  t.run_for(@ui.move_most_ms)
+  t.ctx().blur()
+  t.run_for(@ui.move_most_ms)
+  tap_send(t)
+  t.run_shown(@ui.move_most_ms + 1000.0)
+  assert_true(st_row(st_first) is Some(_))
 }

@@ -184,17 +184,15 @@ test "the viewer's own message taller than the list is followed to the end: its 
 test "its line gone with the answer that came out of its avatar, the agent still at work: not back this turn" {
   let clock = Ref(0.0)
   let t = emit_core(clock)
-  let em = emits_of("ws1/st1\u{1}s-c1")
   fix_clock_set(clock, clock.val + fix_answer_ms)
   t.draw()
   t.run_for(emit_all_ms())
-  assert_true(em.watched)
-  assert_true(em.current is None)
+  // (the node page's answers come out of the avatar by its own queue, AgentOutQueue and View::spatial_reveal: what is
+  // seen of it is said here, the answer in and the line gone)
+  assert_true(t.find("收到：「看一下列表」") is Some(_))
   // (2026-11-09 the user: the answer takes its place, 「处理中」跟回复同一次换位)
   assert_true(readings.get("ws1/st1\u{1}s-c1").unwrap().running.length() > 0)
   assert_true(t.find(tr("android-chat.chat.working")) is None)
-  // (the copy that flew is gone: the activity's own avatar shows again)
-  assert_eq(em.copied, "")
   emit_restore()
 }
 
@@ -240,12 +238,8 @@ test "activity: an agent given words it has yet to take is at work: its line the
 ///|
 /// The working agent's chat on 小屏, its agent's `live` as the core client holds it (`live`: its version one more each
 /// time it is another value), the rest the fixture's.
-fn activity_live_chat(live : @signals.Signal[Json], old? : Bool = false) -> @ui.Tester {
+fn activity_live_chat(live : @signals.Signal[Json]) -> @ui.Tester {
   new_run()
-  // (the old page's own, its list's (sfbase's chat_list.mbt): held so whatever the fixture's channel)
-  if old {
-    @sfbase.hold_chat_page_nodes(Some(false))
-  }
   let base = fixture("chat-working")
   let version = Ref(0)
   let seen : Ref[Json?] = Ref(None)
@@ -285,9 +279,8 @@ fn activity_frame_after(t : @ui.Tester, come : () -> Unit) -> (String, @ui.TreeF
 /// What its agent's stream changes beside the line (its rate where the line does not say it, a call's input growing, a
 /// step ended before its entry comes, its work) the core sends a chat nothing of (`live` is its `activity` alone,
 /// client/core-ts topic-bytes.test.ts: a working agent's stream): nothing is built in the frame after. Before, it was
-/// sent the rest of the agent's state as it changed, and each such message built the chat's row of the line again as
-/// one that changed the line did (a list's row read changed): shown here by such a value told, the line's words as
-/// they were. What changes the line, the line.
+/// sent the rest of the agent's state as it changed; the node page builds nothing for such a value either (the line's
+/// words as they were: its row's reads unchanged), shown here by one told. What changes the line, the line.
 test "activity: what its agent's stream changes beside the line builds nothing in the chat; what changes the line builds its row and says it" {
   fn now(key : String, words : String) -> Json {
     { "key": Json::string(key), "text": Json::string(words), "mono": true }
@@ -296,7 +289,7 @@ test "activity: what its agent's stream changes beside the line builds nothing i
     ({ "activity": { "now": now("call:1", @sffixture.working_step) } } : Json),
     same=fn(a, b) { physical_equal(a, b) },
   )
-  let t = activity_live_chat(live, old=true)
+  let t = activity_live_chat(live)
   assert_true(t.find(@sffixture.working_step) is Some(_), msg="the line says its step")
   // a rate, a call's input growing, a step ended: nothing comes
   let none = activity_frame_after(t, fn() { () })
@@ -314,8 +307,11 @@ test "activity: what its agent's stream changes beside the line builds nothing i
   let changed = activity_frame_after(t, fn() { live.set({ "activity": { "now": now("call:2", "整理下一步") } }) })
   t.run_for(@ui.move_most_ms * 4.0)
   println("nothing told: \{Repr(none)}\nthe rest of its state told, the line as it was (before): \{Repr(before)}\nthe line changed: \{Repr(changed)}")
-  assert_true(before.0 != "", msg="before, the line's row was built again for what it does not show: \{Repr(before)}")
-  assert_true(changed.0 != "", msg="the line's row built for its words: \{Repr(changed)}")
+  assert_eq(before.0, "", msg="with the node page, non-line agent state changes build nothing: \{Repr(before)}")
+  assert_true(before.1.made == 0 && before.1.laid == 0, msg="no layout work: \{Repr(before)}")
+  // (the node page's row says its new words by its bindings: nothing built again for them)
+  assert_eq(changed.0, "", msg="the line's words told by its bindings, nothing built again: \{Repr(changed)}")
+  assert_true(changed.1.bindings > 0, msg="the line's row told its words: \{Repr(changed)}")
   assert_true(t.find("整理下一步") is Some(_), msg="the line says what it does now")
 }
 
@@ -365,43 +361,40 @@ test "activity: opens execution history within open_hold_ms when session.transcr
 ///|
 test "activity: pressing the row right of its words or while its words narrow still opens execution history" {
   let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
-  for nodes in [false, true] {
-    new_run()
-    @sfbase.chat_page_nodes.set(nodes)
-    let base = fixture("chat-working")
-    let live = @signals.signal(
-      ({ "activity": { "now": { "key": "call:1", "text": Json::string(@sffixture.working_step), "mono": true } } } : Json),
-      same=fn(a, b) { physical_equal(a, b) },
-    )
-    let src : Source = {
-      ..base,
-      topic_read: fn(name, params) {
-        if name == "live" && text(Some(Json::object(params)), "key") == "s-c1" {
-          { value: Some(live.get()), error: None, version: 1 }
-        } else {
-          base.topic(name, params).get().snapshot()
-        }
-      },
-    }
-    open_chat(r)
-    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
-    t.run_for(@ui.move_most_ms)
-    let lines = t.all(Button).filter(fn(s) { s.label.has_prefix("Claude：") })
-    assert_eq(lines.length(), 1, msg="nodes=\{nodes}: one activity button")
-    let (bx, by, bw, bh) = lines[0].rect
-    let (wx, _, ww, _) = t.rect_of(@sffixture.working_step).unwrap()
-    assert_true(bx + bw > wx + ww + 40.0, msg="nodes=\{nodes}: activity button spans the row past its words")
-    // Press on the right end of the long step text, shorten the step before releasing, and verify the press still lands.
-    let px = wx + ww - 8.0
-    let py = by + bh / 2.0
-    t.press_at(px, py)
-    live.set({ "activity": { "now": { "key": "call:2", "text": "短", "mono": false } } })
-    t.run_for(later_step_shown_ms)
-    assert_true(t.find("短") is Some(_), msg="nodes=\{nodes}: step narrowed before release")
-    t.release(px, py)
-    t.run_for(@ui.move_most_ms)
-    assert_eq(side_now(r).1, "s-c1", msg="nodes=\{nodes}: shrinking words between down and up still opens history")
+  new_run()
+  let base = fixture("chat-working")
+  let live = @signals.signal(
+    ({ "activity": { "now": { "key": "call:1", "text": Json::string(@sffixture.working_step), "mono": true } } } : Json),
+    same=fn(a, b) { physical_equal(a, b) },
+  )
+  let src : Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      if name == "live" && text(Some(Json::object(params)), "key") == "s-c1" {
+        { value: Some(live.get()), error: None, version: 1 }
+      } else {
+        base.topic(name, params).get().snapshot()
+      }
+    },
   }
+  open_chat(r)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  t.run_for(@ui.move_most_ms)
+  let lines = t.all(Button).filter(fn(s) { s.label.has_prefix("Claude：") })
+  assert_eq(lines.length(), 1, msg="one activity button")
+  let (bx, by, bw, bh) = lines[0].rect
+  let (wx, _, ww, _) = t.rect_of(@sffixture.working_step).unwrap()
+  assert_true(bx + bw > wx + ww + 40.0, msg="activity button spans the row past its words")
+  // Press on the right end of the long step text, shorten the step before releasing, and verify the press still lands.
+  let px = wx + ww - 8.0
+  let py = by + bh / 2.0
+  t.press_at(px, py)
+  live.set({ "activity": { "now": { "key": "call:2", "text": "短", "mono": false } } })
+  t.run_for(later_step_shown_ms)
+  assert_true(t.find("短") is Some(_), msg="step narrowed before release")
+  t.release(px, py)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(side_now(r).1, "s-c1", msg="shrinking words between down and up still opens history")
 }
 
 ///|

@@ -132,7 +132,6 @@ test "a chat's page made with its inside nodes, on 小屏 and 大屏: opened aga
 fn rail_told_tester(outline : @signals.Signal[Json?]) -> @ui.Tester {
   new_run()
   @sf.presenters_reset()
-  @sfbase.hold_chat_page_nodes(Some(true))
   let base = fixture("chat-outline-away")
   let told = Ref(0)
   let src : Source = {

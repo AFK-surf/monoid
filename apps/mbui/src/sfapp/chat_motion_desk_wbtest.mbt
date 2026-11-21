@@ -35,7 +35,6 @@ fn dk_open(
   let (_, w, sh, platform) = screen
   let h = h.unwrap_or(sh)
   new_run()
-  @sfbase.hold_chat_page_nodes(Some(true))
   fix_pace.val = (fix_deliver_ms, fix_answer_ms, 1.0e7)
   let src = fixture("chat")
   open_chat(dk_chat)
@@ -463,8 +462,7 @@ fn dk_host_words(
   script : String,
 ) -> Array[(Double, Map[String, Double], Array[String])] {
   new_run()
-  @sfbase.hold_chat_page_nodes(Some(true))
-  let src = fixture_app(mode, chat_nodes=true)
+  let src = fixture_app(mode)
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, words_over_held=false)
   t.check_looks(false)
   t.set_rows_on_pixels(true)
@@ -591,8 +589,7 @@ fn dk_host_each(
   delivered_in? : Double,
 ) -> Unit {
   new_run()
-  @sfbase.hold_chat_page_nodes(Some(true))
-  let src = fixture_app(mode, chat_nodes=true)
+  let src = fixture_app(mode)
   // (the station taking what is sent this long after it is sent)
   match delivered_in {
     Some(ms) => {

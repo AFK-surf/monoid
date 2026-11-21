@@ -186,6 +186,8 @@ test "小屏: a screen card's preview goes on as older messages come in before i
   assert_eq(@sfbase.peek_views.val, 1)
   scroll_to_words(t, "打开定价页")
   middle_words(t, "打开定价页")
+  // (a little further up, the list's top within its screen of reach: older messages asked for, chat_body_node's near_top)
+  t.wheel(195.0, 400.0, -300.0)
   t.run_for(@ui.move_most_ms)
   let (now, _) = t.visible()
   assert_true(now > first, msg="its row at another place: \{first} then \{now}")

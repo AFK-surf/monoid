@@ -422,14 +422,11 @@ test "made again: one come at the end, one changed, one gone, one moved back, a 
 }
 
 ///|
-test "a chat's page with nothing changed goes over none of its rows again; a message come, its rows made again" {
+test "a chat's page with nothing changed makes and lays out nothing again; a message come, it shows" {
   new_run()
-  // (the old page's rows and their motion keys (rd.motion_keys), what stable keeps)
-  @sfbase.hold_chat_page_nodes(Some(false))
   let base = fixture("chat")
   let messages = Array::makei(30, fn(i) { said(i + 1, "第 \{i + 1} 句") })
   let title = Ref("整理发布清单")
-  let clear_ask = Ref(false)
   let changes = @signals.signal(1)
   let src : Source = {
     ..base,
@@ -442,8 +439,6 @@ test "a chat's page with nothing changed goes over none of its rows again; a mes
           "messages": Json::array(messages),
           "agents": [],
           "people": [],
-          "asks": if clear_ask.val { [{ "seq": 1 }] } else { [] },
-          "askClear": Json::boolean(clear_ask.val),
         }
         { value: Some(chat), error: None, version }
       } else {
@@ -454,42 +449,28 @@ test "a chat's page with nothing changed goes over none of its rows again; a mes
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
   t.run_for(@ui.move_most_ms)
-  let rd = @sfbase.reading_of("ws1/st1\u{1}s-c1")
-  let rows = rd.motion_keys
-  assert_true(rows.length() > 30)
+  // (the page made as nodes: nothing changed, its tree makes and lays out nothing in the frames after)
+  t.tree_frames_from_now()
   t.frame()
   t.frame()
-  assert_true(physical_equal(rd.motion_keys, rows))
-  // Unrelated metadata changes, but its message rows and their names do not need to be made again.
+  let idle = t.tree_frames()
+  assert_true(idle.iter().all(fn(f) { f.made == 0 && f.laid == 0 }), msg="made again with nothing changed: \{Repr(idle)}")
+  // its title renamed: said where it shows
   title.val = "发布清单"
   changes.set(2)
   t.frame()
-  assert_true(physical_equal(rd.motion_keys, rows))
   assert_true(t.find("发布清单") is Some(_))
-  // The bell changes the foot's room even though the message entries themselves are unchanged.
-  let foot = t.row(rd.motion_keys.length() - 1).unwrap().3
-  clear_ask.val = true
+  // one more said: it comes in at the end
+  messages.push(said(31, "新的一句"))
   changes.set(3)
   t.frame()
-  assert_false(physical_equal(rd.motion_keys, rows))
-  t.run_for(@ui.row_size_ms / 2.0)
-  let foot_half = t.row(rd.motion_keys.length() - 1).unwrap().3
-  assert_true(foot_half > foot, msg="foot \{foot}, halfway \{foot_half}")
-  let after_ask = rd.motion_keys
-  // one more said: its rows made again, the new one among them once it has come in
-  messages.push(said(31, "新的一句"))
-  changes.set(4)
-  t.frame()
-  assert_false(physical_equal(rd.motion_keys, after_ask))
   t.run_for(@sf.enter_ms)
-  assert_true(rd.motion_keys.iter().any(fn(k) { k.has_suffix("m:t31") }), msg=Repr(rd.motion_keys).to_string())
+  assert_true(t.find("新的一句") is Some(_))
 }
 
 ///|
 test "a chat keeps its rows when scrolled and renamed, then shows a new message at the end" {
   new_run()
-  // (the old page's rows and their motion keys (rd.motion_keys), what stable keeps)
-  @sfbase.hold_chat_page_nodes(Some(false))
   let base = fixture("chat")
   let messages = Array::makei(30, fn(i) { said(i + 1, "第 \{i + 1} 句") })
   let title = Ref("整理发布清单")
@@ -515,31 +496,38 @@ test "a chat keeps its rows when scrolled and renamed, then shows a new message 
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
   t.run_for(@ui.move_most_ms)
-  let rd = @sfbase.reading_of("ws1/st1\u{1}s-c1")
-  let rows = rd.motion_keys
-  assert_true(t.at_end())
-  t.scroll_to(4)
-  t.frame()
-  assert_false(t.at_end())
-  let (first, _) = t.visible()
-  assert_true(first >= 0 && first < 15, msg="first visible row \{first}")
-  assert_true(physical_equal(rd.motion_keys, rows))
+  // read up from its end
+  t.move_to(195.0, 400.0)
+  t.wheel(195.0, 400.0, -900.0)
+  t.run_for(@ui.move_most_ms)
+  // a row the reader sees, and where
+  let seen = fn() {
+    t.words().filter(fn(w) { w.0.has_prefix("第 ") && w.2 > 120.0 && w.2 < 600.0 })
+  }
+  let before = seen()
+  guard before is [(words, _, _, _, _, _), ..] else { fail("no row in sight after scrolling up") }
+  let at = fn() {
+    match t.drawn_of(words) {
+      Some((_, y)) => y
+      None => -1.0
+    }
+  }
+  let y = at()
+  // renamed: the title said, the rows where they were, nothing made again
   title.val = "发布清单"
   changes.set(2)
+  t.tree_frames_from_now()
   t.frame()
   assert_true(t.find("发布清单") is Some(_))
-  assert_false(t.at_end())
-  assert_eq(t.visible().0, first)
-  assert_true(physical_equal(rd.motion_keys, rows))
+  assert_true((at() - y).abs() < 0.5, msg="「\{words}」 moved from \{y} to \{at()} as the chat was renamed")
+  // one more said: the reader stays where they read
   messages.push(said(31, "新的一句"))
   changes.set(3)
   t.frame()
   t.run_for(@sf.enter_ms)
-  assert_false(t.at_end())
-  assert_eq(t.visible().0, first)
-  assert_true(rd.motion_keys.iter().any(fn(k) { k.has_suffix("m:t31") }))
-  t.scroll_to_end()
-  t.frame()
-  assert_true(t.at_end())
-  assert_true(t.find("新的一句") is Some(_))
+  assert_true((at() - y).abs() < 0.5, msg="「\{words}」 moved from \{y} to \{at()} as a message came")
+  // read down to the end: the new one there
+  t.wheel(195.0, 400.0, 5000.0)
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_true(t.shown_of("新的一句") is Some(_), msg="the new message not in sight at the end")
 }

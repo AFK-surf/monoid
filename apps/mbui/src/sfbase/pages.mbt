@@ -162,7 +162,7 @@ pub let chat_page_nodes : @signals.Signal[Bool] = @signals.signal(chat_page_node
 ///|
 /// What chat_page_nodes is as a run begins.
 // kept across runs: a value
-let chat_page_nodes_at_start : Bool = false
+let chat_page_nodes_at_start : Bool = true
 
 ///|
 /// What a stack keeps of a page that left it (nav_view's and nav_flat_view's `keeps_left`): a chat's page made as nodes

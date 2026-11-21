@@ -18,13 +18,14 @@ test "a finger scrolls the @ menu while the composer and its keyboard keep focus
   t.tap_text("发消息")
   t.type_text("@")
   t.frame()
-  let (x, y, w, h) = t.get(Button, label="候选对话 2").rect
-  let (_, before_y, _, _) = t.rect_of("候选对话 7").unwrap()
+  let (x, y, w, h) = t.get(Option, label="候选对话 2").rect
+  // (as the semantics tree says it: what is drawn of the offers is cut to their room)
+  let (_, before_y, _, _) = t.get(Option, label="候选对话 7").rect
   assert_true(t.ctx().field_focused(), msg="the composer starts focused")
   t.drag(x + w / 2.0, y + h / 2.0, x + w / 2.0, y + h / 2.0 - 120.0)
   assert_true(t.ctx().field_focused(), msg="the composer keeps its focus")
   assert_true(t.ime().0, msg="the keyboard stays open")
-  let (_, after_y, _, _) = t.rect_of("候选对话 7").unwrap()
+  let (_, after_y, _, _) = t.get(Option, label="候选对话 7").rect
   assert_true(after_y < before_y, msg="the results moved up")
   t.tap_text("候选对话 7")
   t.draw()
@@ -50,7 +51,8 @@ test "`@` and words: the chats they find over the composer; one picked goes in a
   t.draw()
   let (_, words, _, _) = t.ime()
   assert_eq(words, "看 @[首页的列表改成按天分组] ")
-  // the menu closed for this `@`
+  // the menu closed for this `@` (gone once its way out is over)
+  t.run_for(@motion.pop_out_ms)
   assert_true(t.find("引用对话") is None)
   t.backspace()
   let (_, words, _, _) = t.ime()
@@ -68,11 +70,13 @@ test "`@` and words: the workspace's other stations' chats too, each with its st
   t.tap_text("发消息")
   // written in a chat of Willow's (ws1/st1); 夜里的构建又失败了 is Maple's (ws1/st2)
   t.type_text("@的")
+  // (its offers popped in whole, as tall as they stand)
+  t.run_for(@motion.pop_ms)
   // (then when it was last active)
   assert_true(after_on_its_row(t, "夜里的构建又失败了") == ["Maple", "15 分钟前"], msg=about_its_row(t, "夜里的构建又失败了"))
   assert_true(after_on_its_row(t, "首页的列表改成按天分组") == ["8 分钟前"], msg=about_its_row(t, "首页的列表改成按天分组"))
   // a finger's row: 44 high at least (Theme::rows pick)
-  let (_, _, _, high) = t.get(Button, label="夜里的构建又失败了").rect
+  let (_, _, _, high) = t.get(Option, label="夜里的构建又失败了").rect
   assert_true(high >= 44.0, msg="\{high}")
   t.tap_text("夜里的构建又失败了")
   t.draw()
@@ -287,25 +291,8 @@ test "words with a mark leave the field as they stand: the same inks from the fr
   tap_send(t)
   t.draw()
   assert_eq(inks(), typed)
-  // (the old page's words on their way (its SendFlight); the page made as nodes flies them as tree nodes
-  // (View::flies_in), what is on its way the list's: the words in pieces, the mark's its own)
-  match flight_of("ws1/st1:s-c1") {
-    Some(f) => assert_true(@sfbase.flight_said(f) == "@首页 吧")
-    None => {
-      match sending_of("ws1/st1\u{1}s-c1") {
-        [l] => {
-          let parts = match l.row.words {
-            Some(Array(a)) => a
-            _ => []
-          }
-          assert_eq(parts.map(fn(p) { text(Some(p), "text") }), ["首页", " 吧"])
-          assert_true(field(Some(parts[0]), "ref") is Some(True))
-        }
-        _ => fail("not in the list")
-      }
-      assert_true(t.run_rects("首页").length() >= 1)
-    }
-  }
+  // (what was sent as it stands in the list: its mark and words, the page made as nodes flying none of the old one's)
+  assert_true(t.find("@首页") is Some(_))
   t.draw()
   assert_true(t.run_rects("吧").length() == 1)
 }
@@ -359,6 +346,7 @@ test "a chat picked the core cannot make a mark of: a toast says why, the `@word
   assert_eq(text(Some(made[0].params), "into"), "ws1")
   (made[0].done)(Err({ "message": "没有权限" }))
   t.draw()
+  t.run_for(@motion.pop_out_ms)
   assert_eq(app.toast.get().words, "无法引用「首页的列表改成按天分组」：没有权限")
   let (_, words, _, _) = t.ime()
   assert_eq(words, "@首页")

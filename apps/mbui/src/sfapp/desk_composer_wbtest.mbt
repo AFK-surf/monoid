@@ -5,7 +5,6 @@
 /// The desk's composer for chat s-c1, over the chat fixture; what the core was asked kept in `calls`.
 fn desk_composer_tester(
   calls : Array[Made],
-  spec_of? : (ComposerFor) -> @sfpages.ComposerSpec = default_spec,
   pointing? : @ui.Pointing = Mouse,
   platform? : Int = 0,
   over? : (String, Topic) -> Topic = fn(_, t) { t },
@@ -27,61 +26,31 @@ fn desk_composer_tester(
     },
   }
   let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
-  // (made as nodes where both_pages says: the chat's composer made as nodes (sfpages' chat_composer_node,
-  // `spec_of`'s default: no test here gives another) drawn on its own in the window as the old one is below, over what
-  // the presenters show)
-  if both_nodes.val {
-    both_way()
-    @sf.set_words(fill)
-    let t = @ui.Tester::new(
-      // (the library's theme for this window, as the old composer's is begun: its words' sizes on a computer)
-      fn(c) {
-        @sf.set_words(fill)
-        let _ = @sf.begin(c)
-
-      },
-      tree=fn(root) {
-        @ui.set_tree_theme(@sf.ui_theme_now)
-        // (the window's keys as the app has them: what a field offers among them, sf's offers_bindings)
-        root.keymap(By(fn() { @settings.keymap_of(src.topic("prefs", {}).get().value) })) |> ignore
-        root.box(fn(b) {
-          b
-          .grow(Is(1.0))
-          .padding(Is((16.0, 16.0, 16.0, 16.0)))
-          .lies_along(Is(@view.Lies::End))
-          |> ignore
-          @sfpages.chat_composer_node(b, src, r, shows=fn() { true }, tips=@sf.TipLayer::new(fn() { Some(root) }))
-        })
-        |> ignore
-        @sf.presented_nodes(root)
-      },
-      w=900.0,
-      h=500.0,
-      platform~,
-      pointing~,
-    )
-    return (t, src)
-  }
+  // (the chat's composer made as nodes (sfpages' chat_composer_node)
+  // drawn on its own in the window, over what the presenters show)
+  @sf.set_words(fill)
   let t = @ui.Tester::new(
-    @ui.old_views_here,
-    tree=@sf.presented_tree(fn(c) {
-      // (the library's words as the app's view says them: without, the composer said its keys, and passed only after
-      // another test had drawn the app, 2026-10-24)
+    // (the library's theme for this window, as the old composer's is begun: its words' sizes on a computer)
+    fn(c) {
       @sf.set_words(fill)
       let _ = @sf.begin(c)
-      let ws : Workspace = { id: "ws1", name: "Acme", emoji: "", icon: "", email: "" }
-      c.box(style=@ui.css("w=Full h=Full p=S4 justify=JEnd"), fn() {
-        @sfpages.composer(c, src, ws, spec_of({ station: r.station, key: "ws1/st1:s-c1" }), fn(w) {
-          match view_of_chat(src, r).0 {
-            Some(v) => @sfpages.send_in_chat(c, src, r, v, w)
-            None => ()
-          }
-        })
+
+    },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      // (the window's keys as the app has them: what a field offers among them, sf's offers_bindings)
+      root.keymap(By(fn() { @settings.keymap_of(src.topic("prefs", {}).get().value) })) |> ignore
+      root.box(fn(b) {
+        b
+        .grow(Is(1.0))
+        .padding(Is((16.0, 16.0, 16.0, 16.0)))
+        .lies_along(Is(@view.Lies::End))
+        |> ignore
+        @sfpages.chat_composer_node(b, src, r, shows=fn() { true }, tips=@sf.TipLayer::new(fn() { Some(root) }))
       })
       |> ignore
-      // what the presenters show (＋'s sheet with a finger), over it as the shell has it
-      @sf.presented(c)
-    }),
+      @sf.presented_nodes(root)
+    },
     w=900.0,
     h=500.0,
     platform~,
@@ -191,9 +160,7 @@ test "desk composer: a quote waiting is its card over the words, its comment tol
     t.frame()
     // (made as nodes, its height on its way as the quote came, from that moment: come to rest before its ✕ is pressed,
     // what this test holds (a way turned back as it sets out slows as flex's come_turned has it, steep, known and taken))
-    if both_nodes.val {
-      t.run_for(@ui.move_most_ms)
-    }
+    t.run_for(@ui.move_most_ms)
     assert_true(t.find("其余的行按估计的高度占位") is Some(_), msg=t.words().map(fn(x) { x.0 }).join("|"))
     let (x, y, bw, bh) = t.query(Button, label="移除引用").unwrap().rect
     t.tap(x + bw / 2.0, y + bh / 2.0)
@@ -259,11 +226,7 @@ fn shown_lines(t : @ui.Tester) -> Int {
 /// What a row of the `@` menu is to a screen reader as both_pages runs now: the old composer's a button, the one made as
 /// nodes an option of its combobox (@sf.offers_node).
 fn at_row() -> @ui.Role {
-  if both_nodes.val {
-    Option
-  } else {
-    Button
-  }
+  Option
 }
 
 ///|
@@ -307,9 +270,7 @@ test "desk composer: `@` and words offer the chats they find over it (ChatRefMen
     assert_eq(text(Some(made[0].params), "into"), "ws1")
     assert_eq(desk_words(src), "看 @[首页的列表改成按天分组] ")
     // (made as nodes, the menu going out on its way: pop_out_ms, offers_node's)
-    if both_nodes.val {
-      t.run_for(@motion.pop_out_ms)
-    }
+    t.run_for(@motion.pop_out_ms)
     assert_true(t.find("引用对话") is None)
     // drawn as the mark: `[@…]`, its brackets clear
     t.backspace()
@@ -403,9 +364,7 @@ test "desk composer: Escape closes the `@` menu for that `@`; the words stay, En
     t.key(@ui.key_escape)
     t.frame()
     // (made as nodes, the menu going out on its way: pop_out_ms, offers_node's)
-    if both_nodes.val {
-      t.run_for(@motion.pop_out_ms)
-    }
+    t.run_for(@motion.pop_out_ms)
     assert_true(t.find("引用对话") is None)
     t.enter()
     t.frame()
@@ -635,24 +594,6 @@ test "desk composer: an image or a video sent while it goes up is among its mess
     assert_eq(row.uploads.map(fn(u) { u.0 }), ["build.log"])
     // (the old page's flight, send_flight: made as nodes, its row flies from the composer by itself, View::flies_in,
     // where it is drawn every frame held by chat_motion_frames_wbtest)
-    if !both_nodes.val {
-      // it flies there as the upload it is (file_key: its path the station's once it is up), drawn where its tile was as
-      // its tile, a picture, until it sets off; not a card
-      let flying = match send_flight.get() {
-        Some(f) => f.files
-        None => fail("nothing flies")
-      }
-      assert_eq(flying.map(fn(ff) { ff.key }), ["upload:" + id, "upload:" + clip])
-      let picture = flying[0].picture.unwrap()
-      assert_true(picture != "")
-      let face = @ui.Tester::new(fn(c) { (flying[0].face)(c) }, w=200.0, h=200.0)
-      // (its bytes again: a tester of its own starts with none)
-      @ui.add_image(picture, png_head())
-      face.draw()
-      assert_true(face.find("照片.png") is None)
-      assert_eq(loaded_sources(face), 1)
-      send_flight.set(None)
-    }
   })
 }
 
@@ -665,56 +606,6 @@ fn loaded_sources(t : @ui.Tester) -> Int {
     seen[l.0] = true
   }
   seen.length()
-}
-
-///|
-/// A picture in the desk composer's draft, as the core says it (`as`: its file's fields put or taken off), sent: whether
-/// a spinner turned over its tile as it waited there, and over what is drawn where its tile was till it sets off.
-fn spun_tile_and_face(as_ : (Map[String, Json]) -> Unit) -> (Bool, Bool) raise {
-  let calls : Array[Made] = []
-  let heard : @signals.Signal[Topic?] = @signals.signal(None)
-  let (t, src) = desk_composer_tester(calls, over=fn(name, now) {
-    match heard.get() {
-      Some(before) if name == "composer" => before
-      _ => now
-    }
-  })
-  desk_focus(t)
-  let w = @sfbase.writing(src, "ws1/st1:s-c1")
-  @sfbase.writing_add(src, w, "ws1/st1", "照片.png", png_head())
-  t.frame()
-  let now = src.topic("composer", { "key": Json::string("ws1/st1:s-c1") }).get().snapshot()
-  let files = items(now.value, "files").map(fn(f) {
-    guard f is Object(m) else { f }
-    let g = m.copy()
-    as_(g)
-    Json::object(g)
-  })
-  guard now.value is Some(Object(v)) else { @halt.saying("no draft") }
-  let before = v.copy()
-  before["files"] = Json::array(files)
-  heard.set(Some({ value: Some(Json::object(before)), error: None, version: now.version + 1 }))
-  t.frame()
-  // Compare the spinner on the visible tile with the face sent from it, after the composer's opening has shown it.
-  t.run_for(@ui.move_most_ms)
-  let lines = t.drawn_lines()
-  t.enter()
-  t.frame()
-  let flying = match send_flight.get() {
-    Some(f) => f.files
-    None => fail("nothing flies")
-  }
-  assert_eq(flying.length(), 1)
-  let (x, y, fw, fh) = flying[0].from
-  let tile = lines.iter().any(fn(l) { l.0 >= x && l.0 <= x + fw && l.1 >= y && l.1 <= y + fh })
-  let face = @ui.Tester::new(fn(c) { (flying[0].face)(c) }, w=200.0, h=200.0)
-  // (its bytes again: a tester of its own starts with none)
-  @ui.add_image(flying[0].picture.unwrap(), png_head())
-  face.draw()
-  assert_eq(loaded_sources(face), 1)
-  let spun = face.drawn_lines().length() > 0
-  send_flight.set(None)
-  (tile, spun)
 }
 
 ///|
@@ -744,10 +635,6 @@ test "desk composer: a restored picture sent while uploading keeps the picture s
     assert_eq(sent_picture("ws1/st1", row.attachments[0]), Some("mem:test/kept"))
     // (the old page's flight, send_flight: made as nodes, its row flies from the composer by itself, View::flies_in,
     // where it is drawn every frame held by chat_motion_frames_wbtest)
-    if !both_nodes.val {
-      let flying = send_flight.get().unwrap().files
-      assert_eq(flying.map(fn(f) { (f.key, f.picture) }), [("upload:kept-1", Some("mem:test/kept"))])
-    }
   })
 }
 
@@ -778,10 +665,6 @@ test "desk composer: a restored picture already uploaded stays visible when sent
     assert_eq(sent_picture("ws1/st1", row.attachments[0]), Some("mem:test/kept"))
     // (the old page's flight, send_flight: made as nodes, its row flies from the composer by itself, View::flies_in,
     // where it is drawn every frame held by chat_motion_frames_wbtest)
-    if !both_nodes.val {
-      let flying = send_flight.get().unwrap().files
-      assert_eq(flying.map(fn(f) { (f.key, f.picture) }), [("/w/uploads/照片.png", Some("mem:test/kept"))])
-    }
   })
 }
 
@@ -815,9 +698,6 @@ test "desk composer: a restored quote's picture stays with it when sent" {
     assert_eq(sent_picture("ws1/st1", row.attachments[0]), Some("mem:test/kept"))
     // (the old page's flight, send_flight: made as nodes, its row flies from the composer by itself, View::flies_in,
     // where it is drawn every frame held by chat_motion_frames_wbtest)
-    if !both_nodes.val {
-      assert_true(send_flight.get().unwrap().files.iter().any(fn(f) { f.key == @sfbase.quote_picture_key(0) && f.picture == Some("mem:test/kept") }))
-    }
   })
 }
 
@@ -857,28 +737,6 @@ test "desk composer: a draft kept, read again as the app starts, shows its pictu
     assert_true(!words.iter().any(fn(w) { w.contains("照片") }), msg="\{Repr(words)}")
     assert_true(words.iter().any(fn(w) { w.contains("说明") }), msg="\{Repr(words)}")
   })
-}
-
-///|
-test "desk composer: a picture sent is drawn where its tile was as the composer drew it till it sets off: a spinner over it while it goes up, none over a new chat's waiting for its message" {
-  both_pages(fn() raise {
-    // going up: a spinner over its tile, and over it till it sets off
-    assert_eq(
-      spun_tile_and_face(fn(g) {
-        g.remove("done")
-        g["sent"] = Json::number(1.0)
-      }),
-      (true, true),
-    )
-    // a new chat's, waiting for its message (composer.ts `waits`): nothing going up, no spinner over either
-    assert_eq(
-      spun_tile_and_face(fn(g) {
-        g.remove("done")
-        g["waits"] = Json::boolean(true)
-      }),
-      (false, false),
-    )
-  }, old_only="the old flight's face (send_flight) drawn on its own: made as nodes, what flies is its message's own picture, drawn where its tile was by View::flies_in, its going up said by its row (chat_motion_frames_wbtest's picture sent, held every frame)")
 }
 
 ///|
@@ -1059,23 +917,14 @@ test "the room a list keeps for the composer opened with one line is as tall as 
       }
       t.run_for(@ui.move_most_ms)
       t.draw()
-      if both_nodes.val {
-        // (opened with one line: as tall as the room kept for it, none more; let go, the same room, so the messages
-        // over it stand where they did)
-        let (_, _, _, h) = @sfpages.composer_node_box("ws1/st1:s-c1").unwrap()
-        assert_true(shut is Some(_) && room() == shut, msg="\{Repr(shut)} let go, \{Repr(room())} opened")
-        assert_true(room().unwrap() >= h + 12.0, msg="\{h} opened in \{Repr(room())}")
-        t.ctx().blur()
-        t.run_for(@sfpages.let_go_ms + @ui.move_most_ms)
-        assert_eq(room(), shut, msg="let go again")
-        continue
-      }
-      // (12 over the box and its foot's room under it, as a chat's foot has it)
-      let pane = t.ctx().width
-      assert_eq(
-        @motion.measured(t.ctx(), "composer/content"),
-        Some(@sfpages.composer_open_room(t.ctx(), pane) - 12.0 - @sfpages.composer_foot_in(t.ctx(), pane)),
-      )
+      // (opened with one line: as tall as the room kept for it, none more; let go, the same room, so the messages
+      // over it stand where they did)
+      let (_, _, _, h) = @sfpages.composer_node_box("ws1/st1:s-c1").unwrap()
+      assert_true(shut is Some(_) && room() == shut, msg="\{Repr(shut)} let go, \{Repr(room())} opened")
+      assert_true(room().unwrap() >= h + 12.0, msg="\{h} opened in \{Repr(room())}")
+      t.ctx().blur()
+      t.run_for(@sfpages.let_go_ms + @ui.move_most_ms)
+      assert_eq(room(), shut, msg="let go again")
     }
   })
 }
@@ -1117,7 +966,6 @@ test "the composer growing a line as it is typed in draws none of its words over
 test "a chat's composer growing a line as it is typed in keeps its send whole on its way, nothing of it faded or cut" {
   both_pages(fn() raise {
     new_run()
-    both_way()
     let src = fixture("chat")
     let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
     open_chat(r)
@@ -1245,9 +1093,7 @@ test "on a phone a finger 3 off the send button, beside it or over it, sends: th
         t.run_for(opened - t.time())
       }
       // (made as nodes, its shape's way declares no rest of the old view's: run past it, at rest)
-      if both_nodes.val {
-        t.run_for(@ui.move_most_ms)
-      }
+      t.run_for(@ui.move_most_ms)
       t.draw()
       let (cx, cy) = t.locate("icon:arrow-up")[0]
       let half = @sf.theme().round.side / 2.0
@@ -1259,65 +1105,9 @@ test "on a phone a finger 3 off the send button, beside it or over it, sends: th
 }
 
 ///|
-test "desk composer: 抄送 opens a menu of the chat's Slack and Feishu threads; several stay open to tick, ticked ones said beside 抄送 (chat.cc)" {
-  both_pages(fn() raise {
-    new_run()
-    both_way()
-    let calls : Array[Made] = []
-    let base = fixture("chat")
-    let src : Source = {
-      ..base,
-      call: fn(name, params, done) {
-        calls.push({ name, params, bytes: None, done })
-        (base.call)(name, params, done)
-      },
-    }
-    let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
-    let on = Ref(false)
-    let t = @ui.Tester::new(
-      @ui.old_views_here,
-      tree=@sf.presented_tree(fn(c) {
-        @sf.set_words(fill)
-        let _ = @sf.begin(c)
-        let ws : Workspace = { id: "ws1", name: "Acme", emoji: "", icon: "", email: "" }
-        let v = chat_view_made({
-          "title": "整理发布清单",
-          "thread": { "id": 7 },
-          "cc": [
-            { "thread": 21, "place": "#still-fail", "via": "slack", "on": Json::boolean(on.val) },
-            { "thread": 22, "place": "产品讨论", "via": "feishu", "on": false },
-          ],
-        })
-        @sfpages.chat_composer(c, src, ws, r, Some(v))
-        @sf.presented(c)
-      }),
-      w=900.0,
-      h=500.0,
-      pointing=Mouse,
-    )
-    t.draw()
-    let cc = @sf.t("web-main.composer.ccLabel")
-    t.click(Button, label=cc)
-    t.click(MenuItemCheckbox, label="#still-fail")
-    on.val = true
-    t.draw()
-    // still open: the other can be ticked next
-    t.click(MenuItemCheckbox, label="产品讨论")
-    let asked = calls.filter(fn(m) { m.name == "chat.cc" }).map(fn(m) { m.params })
-    assert_eq(asked, [
-      { "station": "ws1/st1", "thread": 7, "to": 21, "on": true },
-      { "station": "ws1/st1", "thread": 7, "to": 22, "on": true },
-    ])
-    // what is ticked is said beside 抄送
-    assert_true(t.find("#still-fail") is Some(_), msg=t.words().map(fn(x) { x.0 }).join("|"))
-  }, old_only="it draws the old composer itself over a chat's view made here (sfpages' chat_composer): made as nodes, 抄送's menu is composer_node_wbtest's, ticked over the fixture's chat-cc")
-}
-
-///|
 test "desk composer: where 抄送 copies to is said just before send in either shape, staying where it is as the composer opens and shuts, 抄送 beside it once opened (chat.cc)" {
   both_pages(fn() raise {
     new_run()
-    both_way()
     let src = fixture("chat-cc")
     let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
     open_chat(r)
@@ -1353,60 +1143,4 @@ test "desk composer: where 抄送 copies to is said just before send in either s
     let moved = xs.filter(fn(x) { (x - xs[0]).abs() > 2.5 })
     assert_true(moved.is_empty(), msg="went across: \{Repr(xs)}")
   })
-}
-
-///|
-test "desk composer: 抄送's menu has each thread's platform mark before its place, its check only at its end (chat.cc)" {
-  both_pages(fn() raise {
-    new_run()
-    both_way()
-    let src = fixture("chat")
-    let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
-    let t = @ui.Tester::new(
-      @ui.old_views_here,
-      tree=@sf.presented_tree(fn(c) {
-        @sf.set_words(fill)
-        let _ = @sf.begin(c)
-        let ws : Workspace = { id: "ws1", name: "Acme", emoji: "", icon: "", email: "" }
-        let v = chat_view_made({
-          "title": "整理发布清单",
-          "thread": { "id": 7 },
-          "cc": [
-            { "thread": 21, "place": "产品讨论", "via": "feishu", "on": true },
-            { "thread": 22, "place": "#still-fail", "via": "slack", "on": false },
-          ],
-        })
-        @sfpages.chat_composer(c, src, ws, r, Some(v))
-        @sf.presented(c)
-      }),
-      w=900.0,
-      h=500.0,
-      pointing=Mouse,
-    )
-    t.draw()
-    // (named with what is ticked)
-    t.click(Button, label=@sf.t("web-main.composer.ccLabel") + " 产品讨论")
-    let bs = t.boxes()
-    // whether it or what is in it draws a picture (a mark, an icon)
-    let draws = fn(i : Int) {
-      bs.iter().any(fn(b) {
-        let mut at = b.index
-        while at >= 0 && at != i {
-          at = bs[at].parent
-        }
-        at == i && b.draws
-      })
-    }
-    for place in ["产品讨论", "#still-fail"] {
-      // (the menu's, made by 抄送 before what is said by send: a ticked one's place is said there too)
-      let w = bs.iter().find_first(fn(b) { b.text == place }).unwrap()
-      let row = bs.filter(fn(b) { b.parent == w.parent })
-      let before = row.filter(fn(b) { b.index < w.index })
-      let after = row.filter(fn(b) { b.index > w.index })
-      // one column before its words, its mark's: none empty where a check would go
-      assert_true(before.length() == 1 && draws(before[0].index), msg="\{place}: \{Repr(before.map(fn(b) { (b.kind, b.x, b.w) }))}")
-      // a ticked one's check at its end, only there
-      assert_eq(after.iter().any(fn(b) { draws(b.index) }), place == "产品讨论", msg=place)
-    }
-  }, old_only="it draws the old composer itself over a chat's view made here (sfpages' chat_composer): made as nodes, 抄送's menu is composer_node_wbtest's, ticked over the fixture's chat-cc")
 }

@@ -82,6 +82,7 @@ test "panel centred, 大屏 keyboard and mouse: closed by its close button, by E
     #|  "own: focus closed Some(TextField 发消息) midway Some(TextField 发消息) then presenting false gone 0 said [ok] focus Some(TextField 发消息)",
     #|  "untitled close pressed: focus closed Some(TextField 发消息) midway Some(TextField 发消息) then presenting false gone 1 said [] focus Some(TextField 发消息)",
     #|]
+
   ))
 }
 

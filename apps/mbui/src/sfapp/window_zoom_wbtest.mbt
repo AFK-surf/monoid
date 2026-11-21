@@ -45,14 +45,15 @@ test "window zoom: the chat remains usable at both limits" {
     }
     let faults = t.corner_faults()
     assert_true(faults.is_empty(), msg="zoom \{zoom}: \{Repr(faults)}")
-    // (the old composer's editor, else the field of the composer made as nodes, composer_field's)
-    let editor = match t.boxes().iter().find_first(fn(b) { b.kind == "editor" }) {
-      Some(e) => Some((e.x, e.y, e.w, e.h))
-      None => composer_field(t)
+    // (the composer's field made as nodes, as the semantics tree says it: its message field)
+    guard t
+      .semantics()
+      .iter()
+      .find_first(fn(s) { s.role == TextField && (s.label == "发消息" || s.label == "按空格输入") }) is Some(editor) else {
+      fail("no chat editor at zoom \{zoom}")
     }
-    guard editor is Some((ex, ey, ew, eh)) else { fail("no chat editor at zoom \{zoom}") }
     let (w, h) = t.ctx().window_size()
-    let (x, y) = (ex + ew / 2.0, ey + eh / 2.0)
+    let (x, y) = (editor.rect.0 + editor.rect.2 / 2.0, editor.rect.1 + editor.rect.3 / 2.0)
     assert_true(x >= 0.0 && x < w && y >= 0.0 && y < h, msg="the chat editor is outside the window at zoom \{zoom}")
     t.tap(x, y)
     t.type_text("第一行")

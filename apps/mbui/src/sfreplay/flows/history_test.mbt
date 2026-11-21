@@ -17,10 +17,12 @@ test "26-history" {
     f.see_n(2, "文档目录看过了 083209")
     f.tap("icon:info")
     // the chat's sheet risen
+    f.run_for(@ui.move_most_ms)
     f.run_to(@sf.presented_rest)
     // (its first row's: under it, the pull requests' and the public links' have one too)
     f.tap("icon:chevron-right", top=true)
     // the agent's card in the sheet's place, the sheet at its height
+    f.run_for(@ui.move_most_ms)
     f.run_to(@sf.presented_rest)
     f.see("=历史")
     f.tap("=历史")

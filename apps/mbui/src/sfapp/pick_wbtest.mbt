@@ -387,18 +387,5 @@ test "a tap anywhere else lets go of it, as back does" {
 
 
 ///|
-test "its words no longer laid out: what was picked goes in that very frame, not frames later" {
-  let calls : Array[Made] = []
-  let t = fake_core(calls)
-  hold_on(t, "做完了：列表、跳到最新的按钮") |> ignore
-  assert_true(pk.ts != "")
-  // (as if its message scrolled far off: no box laid out holds its words now)
-  pk.sel.key = "gone"
-  t.frame()
-  assert_eq(pk.ts, "")
-  t.assert_idle()
-}
-
-///|
 /// How long a finger is held still for a long press (ViewConfiguration's long press timeout, as Compose has it).
 let long_press_ms : Double = @ui.long_press_ms

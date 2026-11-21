@@ -3940,13 +3940,9 @@ test "viewer on the tree: closed, the chat moved under it on the way back: the p
   assert_true(pic_flies(t, v), msg="flying back")
   let end = pic_flight_end(t, v)
   t.frame_at(t.time() + (end - t.time()) / 3.0)
-  if @sfbase.chat_page_nodes.untracked() {
-    // (a row up on the page made as nodes takes the thumbnail under the composer: the wheel moves it up within sight)
-    t.wheel(195.0, 400.0, 150.0)
-  } else {
-    let (first, _) = t.visible()
-    t.scroll_to(if first > 0 { first - 1 } else { first + 1 })
-  }
+  // (its row brought to the list's top: the thumbnail moved up and still whole over the composer)
+  let (first, _) = t.visible()
+  t.scroll_to(first)
   // (each frame on from there as a host draws them, till well past where its way ends: where it was drawn flying last)
   let mut landing = None
   let till = pic_flight_end(t, v) + @ui.move_most_ms
@@ -4466,7 +4462,6 @@ test "the viewer stands in with the picture a file was picked as here: one sent,
 /// The chat's page and its composer made as nodes over fixture `mode` in a window `w` × `h`, walked by `script` (a drive's).
 fn film_page(mode : String, script : String, w? : Double = 390.0, h? : Double = 844.0, platform? : Int = 2) -> (@ui.Tester, Source) raise {
   new_run()
-  @sfbase.hold_chat_page_nodes(Some(true))
   let src = @sffixture.fixture(mode)
   open_fixture_over(mode, src)
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)

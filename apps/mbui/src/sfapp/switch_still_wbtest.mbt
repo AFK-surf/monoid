@@ -68,13 +68,12 @@ fn still_chats(v : Json?, n : Int, params : Map[String, Json]) -> Json? {
 }
 
 ///|
-/// The app over the made-up workspace with chat 整理发布清单 open (its page made as nodes where `nodes`), in screen `s`
+/// The app over the made-up workspace with chat 整理发布清单 open, in screen `s`
 /// as a desktop's host draws it, the core answering still_late late and keeping what the lists said (lasting, read
 /// ahead, as on a device); at rest, its composer's cursor gone long enough for it to be a capsule. And the chats' lists'
 /// changes, a number: each one more a chat come at their top.
-fn still_open(s : StillScreen, nodes : Bool) -> (@ui.Tester, Source, @signals.Signal[Int]) {
+fn still_open(s : StillScreen) -> (@ui.Tester, Source, @signals.Signal[Int]) {
   new_run()
-  @sfbase.hold_chat_page_nodes(Some(nodes))
   let base = @sffixture.fixture("chat")
   // (read as the core's topic is worked out: a change of it told as the core tells one, to what holds the list)
   let bump = @signals.signal(0)
@@ -153,14 +152,12 @@ fn still_act(t : @ui.Tester, f : () -> Unit) -> Unit {
 }
 
 ///|
-/// Each screen, the chat's page old and made as nodes: `walk` says what moved where it should not, a line each.
-fn still_each(walk : (StillScreen, Bool) -> Array[String]) -> Unit raise {
+/// Each screen: `walk` says what moved where it should not, a line each.
+fn still_each(walk : (StillScreen) -> Array[String]) -> Unit raise {
   let found = []
   for s in still_screens {
-    for nodes in [false, true] {
-      for line in walk(s, nodes) {
-        found.push("\{s.name} nodes=\{nodes}: \{line}")
-      }
+    for line in walk(s) {
+      found.push("\{s.name}: \{line}")
     }
   }
   if found.length() > 0 {
@@ -170,8 +167,8 @@ fn still_each(walk : (StillScreen, Bool) -> Array[String]) -> Unit raise {
 
 ///|
 test "switch: chats picked one after another in the sidebar, the composer's cursor gone long: each in its place at once, nothing of the composer, the messages or what floats over them moving" {
-  still_each(fn(s, nodes) {
-    let (t, _, _) = still_open(s, nodes)
+  still_each(fn(s) {
+    let (t, _, _) = still_open(s)
     let out = []
     // (the chat open read up from its end: the way to the newest shows over it, and stands there as it is come back to)
     let newest = @sf.t("web-main.chat.toLatest")
@@ -200,8 +197,8 @@ test "switch: chats picked one after another in the sidebar, the composer's curs
 
 ///|
 test "switch: 新建对话 and a chat back and forth: the bar, the page and the composer there at once, nothing flown across the window; a new chat's first words sent, its chat in its place" {
-  still_each(fn(s, nodes) {
-    let (t, _, _) = still_open(s, nodes)
+  still_each(fn(s) {
+    let (t, _, _) = still_open(s)
     let out = []
     // (in one workspace the composer goes between the chat's foot and the new chat's page: #1259's, its own; the
     // rest there at once)
@@ -231,8 +228,8 @@ test "switch: 新建对话 and a chat back and forth: the bar, the page and the 
 
 ///|
 test "switch: the sidebar's filter 全部 → 我参与的 → 全部: the lists slide along the track, none of them making its way down" {
-  still_each(fn(s, nodes) {
-    let (t, src, _) = still_open(s, nodes)
+  still_each(fn(s) {
+    let (t, src, _) = still_open(s)
     let ws = @sfbase.workspace_in_view(src).0.unwrap()
     let out = []
     for f in ["mine", "all"] {
@@ -256,8 +253,8 @@ fn still_workspace(t : @ui.Tester, src : Source, ws : String) -> Unit {
 
 ///|
 test "switch: another workspace (我参与的 to 全部), its list as kept shown at once and its answer, a chat come meanwhile, taken quietly: no slide, no way down, no row moving" {
-  still_each(fn(s, nodes) {
-    let (t, src, bump) = still_open(s, nodes)
+  still_each(fn(s) {
+    let (t, src, bump) = still_open(s)
     let ws1 = @sfbase.workspace_in_view(src).0.unwrap()
     still_act(t, fn() { @sfpages.set_filter(src, ws1, "mine") })
     t.run_for(still_late * 8.0 + @ui.move_most_ms)
@@ -283,8 +280,8 @@ test "switch: another workspace (我参与的 to 全部), its list as kept shown
 
 ///|
 test "switch: 设置 and back to the chat, a chat come to the list meanwhile: its list as kept and its answer taken at once, the composer not flown" {
-  still_each(fn(s, nodes) {
-    let (t, src, bump) = still_open(s, nodes)
+  still_each(fn(s) {
+    let (t, src, bump) = still_open(s)
     let out = []
     for line in still_after(t, fn() { still_act(t, fn() { open_setting("connects") }) }) {
       out.push("设置: \{line}")
@@ -301,8 +298,8 @@ test "switch: 设置 and back to the chat, a chat come to the list meanwhile: it
 
 ///|
 test "switch: a chat come while the hand is on the sidebar, a chat picked there and the hand gone to it: the order held put in place quietly" {
-  still_each(fn(s, nodes) {
-    let (t, _, bump) = still_open(s, nodes)
+  still_each(fn(s) {
+    let (t, _, bump) = still_open(s)
     let out = []
     guard t.query(Link, label="首页的列表改成按天分组") is Some(row) else { return ["no row"] }
     let (x, y, w, h) = row.rect
@@ -322,9 +319,9 @@ test "switch: a chat come while the hand is on the sidebar, a chat picked there 
 
 ///|
 test "switch: a new chat left for another workspace, and for 设置 then a chat: the composer laid out where it is, flown from nothing" {
-  still_each(fn(s, nodes) {
+  still_each(fn(s) {
     let out = []
-    let (t, src, _) = still_open(s, nodes)
+    let (t, src, _) = still_open(s)
     still_new_chat(t)
     t.run_for(still_late * 8.0 + @ui.move_most_ms)
     // (on 大屏 the new chat's composer in its page's middle, far from a chat's foot: what would fly, were it flown)
@@ -337,7 +334,7 @@ test "switch: a new chat left for another workspace, and for 设置 then a chat:
     for line in still_after(t, fn() { still_workspace(t, src, "ws1") }) {
       out.push("ws2 → ws1: \{line}")
     }
-    let (t, _, _) = still_open(s, nodes)
+    let (t, _, _) = still_open(s)
     still_new_chat(t)
     t.run_for(still_late * 8.0 + @ui.move_most_ms)
     for line in still_after(t, fn() { still_act(t, fn() { open_setting("connects") }) }) {

@@ -68,19 +68,6 @@ fn hint_seen(t : @ui.Tester, hint? : String = "发消息") -> Bool {
 }
 
 ///|
-/// The empty quote comment's hint is drawn in the field's colour, where the field is drawn.
-fn quote_hint_seen(t : @ui.Tester) -> Bool {
-  match t.words().iter().find_first(fn(w) { w.0 == "添加说明（可选）" && w.5 > 0.05 }) {
-    Some((_, x, y, w, h, _)) =>
-      t.drawn_glyphs().iter().any(fn(g) {
-        g.0 >= x - 1.0 && g.0 <= x + w + 1.0 && g.1 >= y - 1.0 && g.1 <= y + h + 1.0 &&
-          g.2 >> 8 == @sf.theme().p.subtle >> 8 && (g.2 & 0xFFL) != 0L
-      })
-    None => false
-  }
-}
-
-///|
 /// How much of a quote's ✕ is seen now (its round, 20 across, in the ink): 0 none.
 fn x_seen(t : @ui.Tester) -> Double {
   let ink = @sf.theme().p.text
@@ -164,59 +151,11 @@ fn quoting(calls : Array[Made]) -> @ui.Tester {
 }
 
 ///|
-/// A quote with its empty comment line and a picture, sent from the composer on either size of screen.
-fn quote_media_departure(name : String, width : Double, height : Double, platform : Int) -> Unit raise {
-  new_run()
-  let src = fixture("chat")
-  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
-  both_way()
-  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=width, h=height, platform~)
-  let file : Json = {
-    "name": Json::string(name), "path": Json::string("/w/uploads/" + name), "size": 120,
-    "width": 1600, "height": 900, "owner": "s-c1",
-  }
-  @sfbase.writing_quote(src, @sfbase.writing(src, "ws1/st1:s-c1"), {
-    "author": "Ana", "text": quote_passage, "ts": "ts8",
-  }, file~)
-  t.run_for(@ui.move_most_ms + @ui.image_fade_ms)
-  let before = quote_ground(t)
-  assert_true(quote_hint_seen(t), msg="the comment hint was not drawn before sending")
-  // A tap can owe several frames. Check each of them, including the frame before the destination row takes over.
-  let frames : Array[Bool] = []
-  t.between_frames(fn() { frames.push(quote_hint_seen(t)) })
-  tap_send(t)
-  t.between_frames(fn() {  })
-  assert_true(frames.length() > 0 && frames.iter().all(fn(seen) { seen }), msg="the comment hint blinked: \{Repr(frames)}")
-  let first = quote_ground(t)
-  assert_true((first.3 - before.3).abs() < 0.5, msg="the card shrank on sending: \{Repr(before)} to \{Repr(first)}")
-  assert_true(quote_hint_seen(t), msg="the comment hint vanished on sending")
-  t.frame()
-  let second = quote_ground(t)
-  assert_true((second.3 - first.3).abs() < 2.0, msg="the card jumped on its next frame: \{Repr(first)} to \{Repr(second)}")
-  assert_true(quote_hint_seen(t), msg="the comment hint vanished on the next frame")
-}
-
-///|
-test "a quoted picture's card and empty comment do not blink as it is sent" {
-  both_pages(fn() raise {
-    quote_media_departure("departure.png", 390.0, 844.0, 2)
-  }, old_only="the nodes page flies the message's quote card (#6593's message_quotes_node `from`), which has no comment line: decided a known difference (2026-11-16)")
-}
-
-///|
-test "a quoted video cover's card and empty comment do not blink as it is sent" {
-  both_pages(fn() raise {
-    quote_media_departure("departure.mp4", 1280.0, 800.0, 0)
-  }, old_only="the nodes page flies the message's quote card (#6593's message_quotes_node `from`), which has no comment line: decided a known difference (2026-11-16)")
-}
-
-///|
 test "a long quoted picture's words do not rewrap as the card sets out" {
   both_pages(fn() raise {
     new_run()
     let src = fixture("chat")
     open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
-    both_way()
     let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
     let passage = quote_passage + "，然后把表格中的每一项逐一检查，确保发送前后文字不会在这里突然换行"
     let file : Json = {
@@ -249,12 +188,6 @@ test "a quote sent alone is in the list at once, its card flying there from the 
     assert_eq(sent[0].row.quotes.map(fn(q) { (q.text, q.comment, q.ts) }), [(quote_passage, "这里要对齐", "ts8")])
     // (the old page's flight; made as nodes, its row flies from where the composer had it: its SentFrom, mbui's
     // View::flies_in, what follows holds the same of it)
-    if !both_nodes.val {
-      match send_flight.get() {
-        Some(f) => assert_eq(f.files.map(fn(ff) { ff.key }), [@sfbase.quote_key(0)])
-        None => fail("nothing flies")
-      }
-    }
     // where its words were as it is sent, then every frame till it has landed: never gone, never twice apart
     let at = quote_once(t)
     assert_true((at.0 - was.0).abs() < 0.5 && (at.1 - was.1).abs() < 0.5, msg="sent, seen at \{Repr(at)}, not \{Repr(was)}")
@@ -369,9 +302,6 @@ test "sent, a quote's ✕ leaves with its card and the send button fades to fain
     // one box to the message's, View::shared's `container`: cut by that box's edge as it narrows, as what the card
     // holds is, at its own size)
     assert_true(xs[0] > 0.9, msg="\{Repr(xs)}")
-    if !both_nodes.val {
-      assert_true(xs.iter().any(fn(a) { a > 0.1 && a < 0.9 }), msg="\{Repr(xs)}")
-    }
     assert_eq(xs[xs.length() - 1], 0.0)
     for k in 1..<xs.length() {
       if xs[k] > xs[k - 1] + 0.01 {
@@ -387,17 +317,14 @@ test "sent, a quote's ✕ leaves with its card and the send button fades to fain
 
 ///|
 test "a draft's quote with no id of its own takes no cursor on a phone, on the old page and made as nodes; its ✕ leaves none" {
-  for nodes in [false, true] {
-    new_run()
-    @sf.presenters_reset()
-    @sfbase.hold_chat_page_nodes(Some(nodes))
-    let src = fixture("chat-quote")
-    open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
-    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
-    t.run_for(@ui.move_most_ms)
-    assert_eq(focused_field(t), "", msg="nodes \{nodes}: opened")
-    t.click(Button, label=@sf.t("web-main.quote.remove"))
-    t.run_for(@ui.move_most_ms)
-    assert_eq(focused_field(t), "", msg="nodes \{nodes}: its quote taken out")
-  }
+  new_run()
+  @sf.presenters_reset()
+  let src = fixture("chat-quote")
+  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(focused_field(t), "", msg="opened")
+  t.click(Button, label=@sf.t("web-main.quote.remove"))
+  t.run_for(@ui.move_most_ms)
+  assert_eq(focused_field(t), "", msg="its quote taken out")
 }

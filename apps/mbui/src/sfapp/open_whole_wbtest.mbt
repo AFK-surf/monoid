@@ -183,7 +183,6 @@ test "a panel closed while it waits goes as it is, nothing of it seen, nothing l
 fn open_agent_card(gates : Bool) -> @ui.Tester {
   new_run()
   let base = fixture("chat-agent-card")
-  @sfbase.hold_chat_page_nodes(Some(true))
   let src : Source = {
     ..round_trip_again(base, 0.0, late=fn(name, _) { if name == "agentCard" { open_late_ms } else { 0.0 } }),
     gates_opens: fn() { gates },

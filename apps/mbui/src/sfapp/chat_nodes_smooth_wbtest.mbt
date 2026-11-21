@@ -17,8 +17,7 @@ test "chat_page_nodes smoothness: decision card pick enters once and never repla
   for screen in [dk_screens[0]] {
     let (name, w, h, platform) = screen
     new_run()
-    @sfbase.hold_chat_page_nodes(Some(true))
-    let src = fixture_app("chat", chat_nodes=true)
+    let src = fixture_app("chat")
     let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, words_over_held=true)
     t.set_rows_on_pixels(true)
     t.set_frame_period(1000.0 / 60.0)
@@ -70,9 +69,8 @@ test "chat_page_nodes smoothness: NewChat -> Chat glides the composer down on å¤
   for screen in dk_screens {
     let (name, w, h, platform) = screen
     new_run()
-    @sfbase.hold_chat_page_nodes(Some(true))
     let fixture = if w >= @sf.page_narrow_most { "chat" } else { "newchat" }
-    let src = fixture_app(fixture, chat_nodes=true)
+    let src = fixture_app(fixture)
     let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, words_over_held=true)
     t.set_rows_on_pixels(true)
     t.run_for(@ui.move_most_ms * 2.0)

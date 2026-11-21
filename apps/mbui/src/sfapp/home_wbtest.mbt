@@ -2,10 +2,7 @@
 /// The app over a fixture, from its start (the pages, the sheet and the filters forgotten).
 fn tester(mode : String) -> @ui.Tester {
   new_run()
-  // (the chat's page made as both_pages runs it now, its new chat too; outside one, as the fixture's channel has it)
-  if both_running.val {
-    both_way()
-  }
+  // (the chat's page made as both_pages runs it now, its new chat too: none outside one)
   let src = fixture(mode)
   @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
 }

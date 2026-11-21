@@ -154,43 +154,6 @@ test "desk composer: its menu, a letter typed, Enter and Escape before a frame: 
 }
 
 ///|
-test "desk composer: its menu under a panel that leaves the field its focus: Enter the panel's (read by it once), not the menu's nor the field's; Escape closes the panel as it is taken" {
-  both_pages(fn() raise {
-    let calls : Array[Made] = []
-    let (t, _, src) = ref_menu_tester(calls~)
-    let entered = Ref(0)
-    @sf.panel_nodes(
-      "盖在上面",
-      fn(v, _) {
-        // (the keys the panel's: Enter taken by it, once)
-        v.on_key(fn(k) {
-          if k.code == @ui.key_code_enter {
-            entered.val += 1
-            true
-          } else {
-            false
-          }
-        })
-        |> ignore
-        @sf.words_node(v, fn() { "盖在上面的对话框" }, fn() { @sf.paragraph }) |> ignore
-      },
-      from=@sf.at_point(450.0, 60.0).anchor(),
-      focus=false,
-    )
-    t.draw()
-    assert_true(t.find("盖在上面的对话框") is Some(_))
-    // (the field under it keeping the focus: what the menu is said to take keys of)
-    assert_true(composer_focused(), msg="the field under the dialog keeps the focus")
-    t.key_told(@ui.key_code_enter, 0, t.time())
-    t.draw()
-    assert_eq((named(calls, "chat.ref").length(), named(calls, "chat.send").length(), desk_words(src), entered.val), (0, 0, "看 @首页", 1))
-    // Escape the panel's, closing it as it is taken
-    t.key_told(@ui.key_escape, 0, t.time())
-    assert_true(!@sf.presenting(), msg="the panel closed as Escape is taken")
-  }, old_only="a panel over the old composer that leaves its field the focus (focus=false): over the composer made as nodes a layer over its field takes the keys from it (Tree::takes_keys), its focus given back as the layer goes; Enter and Escape a panel's then are presenters_wbtest's")
-}
-
-///|
 /// A finger's composer (Enter a line's end): two lines written, an `@` on the second, its menu shown, then `keys` as
 /// the host hands them on, a frame between each or none: where the caret is then, and how often a chat was referenced.
 fn ref_phone_then(keys : Array[Int], frames : Bool) -> (Int, Int, String) raise {
@@ -262,27 +225,12 @@ test "desk composer: its menu, `[` typed after its @ and the core's answer for i
     t.frame()
     t.frame()
     // (made as nodes, the menu going out on its way: pop_out_ms, offers_node's)
-    if both_nodes.val {
-      t.run_for(@motion.pop_out_ms)
-    }
+    t.run_for(@motion.pop_out_ms)
     assert_true(t.find("引用对话") is None, msg=desk_words(src))
     t.key_told(@ui.key_code_enter, 0, t.time())
     t.draw()
     assert_eq(named(calls, "chat.ref").length(), 0, msg=desk_words(src))
   })
-}
-
-///|
-test "desk composer: its menu, `[` typed after its @ and Enter before a frame (its menu as it was still shown): the one shown chosen put in for the @ and what follows it" {
-  both_pages(fn() raise {
-    let calls : Array[Made] = []
-    let (t, _, src) = ref_menu_tester(calls~)
-    t.text_told("[", t.time())
-    t.key_told(@ui.key_code_enter, 0, t.time())
-    t.draw()
-    t.draw()
-    assert_eq((named(calls, "chat.ref").length(), desk_words(src), named(calls, "chat.send").length()), (1, "看 @[首页的列表改成按天分组] ", 0))
-  }, old_only="Enter taken by the menu as the old view's last frame built it, the core's answer for the `[` not yet read by a build: made as nodes nothing waits for a frame, the menu going as that answer comes, before the Enter of the same moment (the case after a frame held both ways above)")
 }
 
 ///|

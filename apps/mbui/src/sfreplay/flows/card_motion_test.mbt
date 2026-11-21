@@ -34,6 +34,15 @@ test "70-card-motion" {
       f.run_to(fn() { glide })
     }
     f.see("=忽略")
+    // (the card's room still opening under the composer at a quicker pace, its 忽略 under the field: to its end)
+    let opening = f.t.rest_of("a list's rows' heights")
+    if opening > f.t.time() &&
+      (match (f.t.locate("=忽略"), f.t.query(@ui.Role::TextField)) {
+        ([(_, y), ..], Some(field)) => y >= field.rect.1 - 20.0
+        _ => false
+      }) {
+      f.run_to(fn() { opening })
+    }
     f.tap_now("=忽略") |> ignore
     f.answered("decision.dismiss", 1)
     // let go on screen (decision.dismiss): 忽略 and the card's options close (mbui's view/list_motion.mbt)

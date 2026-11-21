@@ -9,10 +9,6 @@ let decide_src : Ref[Source?] = Ref(None)
 /// in a desktop's window when `wide`.
 fn decide_core(calls : Array[Made], mode : String, wide? : Bool = false, pointing? : @ui.Pointing) -> @ui.Tester {
   new_run()
-  // (the chat's page made as both_pages runs it now; outside one, as the fixture's channel has it)
-  if both_running.val {
-    both_way()
-  }
   let base = fixture(mode)
   let src : Source = {
     ..base,

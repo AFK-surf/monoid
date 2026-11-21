@@ -43,7 +43,6 @@ fn sw_drawn_now(w : String) -> (Double, Double, Double)? {
 fn sw_run(screen : (String, Double, Double, Int), said : Bool) -> (Array[SwTold], Double, Double, Array[SwDrawn]) {
   let (_, w, h, platform) = screen
   new_run()
-  @sfbase.hold_chat_page_nodes(Some(true))
   let clock : Ref[Double] = { val: 0.0 }
   fix_clock.val = Some(fn() { clock.val })
   let base = fixture("chat")

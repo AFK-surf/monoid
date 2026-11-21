@@ -139,7 +139,6 @@ fn mf_open(screen : (String, Double, Double, Int)) -> (@ui.Tester, Source) {
   let (_, w, h, platform) = screen
   new_run()
   // (its composer made as nodes too: what these frames hold of it)
-  @sfbase.hold_chat_page_nodes(Some(true))
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)
@@ -327,12 +326,11 @@ test "a chat's page made as nodes, 小屏 and 大屏, every frame of a picture a
 ///|
 /// The fixture's chat s-c1 on a phone (`390×844`) either on the old page (`nodes = false`) or made as nodes
 /// (`nodes = true`), its rows on the host's pixels at 60 frames a second, at rest.
-fn mf_open_dual(nodes : Bool, mode? : String = "chat") -> (@ui.Tester, Source) {
+fn mf_open_dual(mode? : String = "chat") -> (@ui.Tester, Source) {
   new_run()
-  @sfbase.hold_chat_page_nodes(Some(nodes))
   let src = fixture(mode)
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
-  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2, words_over_held=nodes)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2, words_over_held=true)
   t.set_rows_on_pixels(true)
   t.set_frame_period(1000.0 / 60.0)
   t.draw()
@@ -516,171 +514,165 @@ fn mf_hold_no_overlap(
 
 ///|
 test "every frame, old page and nodes page: send-picture — composer white ground never covers list, flying picture/file/words start at their composer places and never overlap" {
-  for nodes in [false, true] {
-    let mode = if nodes { "nodes" } else { "old" }
-    let (t, src) = mf_open_dual(nodes)
-    fix_pace.val = (fix_deliver_ms, fix_answer_ms, 1.0e7)
-    t.tap_text("发消息")
-    t.type_text("看一下列表")
-    let draft = @sfbase.writing(src, sent_nodes_draft)
-    @sfbase.writing_add(src, draft, "ws1/st1", "看图.png", png_head())
-    @sfbase.writing_add(src, draft, "ws1/st1", "夜构建日志.log", @utf8.encode("夜里的构建日志"))
-    t.run_for(@ui.move_most_ms + @ui.image_fade_ms)
-    assert_eq(draft.field.text(), "看一下列表")
-    guard back_round_ground(t) is Some((_, gy0, _, _, _, _)) else { fail("\{mode}: composer ground not drawn") }
-    guard mf_drawn_picture_box(t) is Some(pic0) else { fail("\{mode}: picture tile not drawn in composer") }
-    guard mf_drawn_part_box(t, "夜构建") is Some(file0) else { fail("\{mode}: file card not drawn in composer") }
-    guard composer_field(t) is Some(words0) else {
-      fail("\{mode}: composer field not found")
-    }
-    tap_send(t)
-    let press = t.time()
-    let mut frame_idx = 0
-    while t.time() - press <= fix_deliver_ms + @ui.move_most_ms {
-      let ms = t.time() - press
-      let at = "\{mode}, \{ms} ms after send-picture"
-      mf_hold_composer_uncovered(t, gy0, ms, at)
-      guard mf_drawn_picture_box(t) is Some(pic) else { fail("\{at}: picture not drawn") }
-      // (the picture flies out of its square tile as that tile, 56 by 56, never its own 3:2 shape scaled to the tile's
-      // width, 56 by 37 with its foot cut flat: mbui's Tree::fills_lifted)
-      if nodes && frame_idx == 0 {
-        assert_true(
-          pic.3 >= 52.0 && pic.2 >= 52.0,
-          msg="\{at}: the picture set out \{Repr(pic)}, not as its composer tile \{Repr(pic0)}",
-        )
-      }
-      guard mf_drawn_part_box(t, "夜构建") is Some(file) else { fail("\{at}: file card not drawn") }
-      guard mf_drawn_part_box(t, "看一下列表") is Some(words) else { fail("\{at}: words not drawn") }
-      if frame_idx <= 1 {
-        assert_true(
-          (pic.0 - pic0.0).abs() <= 28.0 && (pic.1 - pic0.1).abs() <= 28.0,
-          msg="\{at}: picture started at \{Repr(pic)}, composer tile was \{Repr(pic0)}",
-        )
-        assert_true(
-          (file.0 - file0.0).abs() <= 28.0 && (file.1 - file0.1).abs() <= 28.0,
-          msg="\{at}: file card started at \{Repr(file)}, composer card was \{Repr(file0)}",
-        )
-        assert_true(
-          (words.0 - words0.0).abs() <= 28.0 && (words.1 - words0.1).abs() <= 28.0,
-          msg="\{at}: words started at \{Repr(words)}, composer field was \{Repr(words0)}",
-        )
-      }
-      // (picture and file card unwrap from side-by-side in composer to stacked in message: picture stays above or level
-      // with file card all the way, and neither ever overlaps words; at start and at rest picture and file card are
-      // completely separate)
+  let mode = "nodes"
+  let (t, src) = mf_open_dual()
+  fix_pace.val = (fix_deliver_ms, fix_answer_ms, 1.0e7)
+  t.tap_text("发消息")
+  t.type_text("看一下列表")
+  let draft = @sfbase.writing(src, sent_nodes_draft)
+  @sfbase.writing_add(src, draft, "ws1/st1", "看图.png", png_head())
+  @sfbase.writing_add(src, draft, "ws1/st1", "夜构建日志.log", @utf8.encode("夜里的构建日志"))
+  t.run_for(@ui.move_most_ms + @ui.image_fade_ms)
+  assert_eq(draft.field.text(), "看一下列表")
+  guard back_round_ground(t) is Some((_, gy0, _, _, _, _)) else { fail("\{mode}: composer ground not drawn") }
+  guard mf_drawn_picture_box(t) is Some(pic0) else { fail("\{mode}: picture tile not drawn in composer") }
+  guard mf_drawn_part_box(t, "夜构建") is Some(file0) else { fail("\{mode}: file card not drawn in composer") }
+  guard composer_field(t) is Some(words0) else {
+    fail("\{mode}: composer field not found")
+  }
+  tap_send(t)
+  let press = t.time()
+  let mut frame_idx = 0
+  while t.time() - press <= fix_deliver_ms + @ui.move_most_ms {
+    let ms = t.time() - press
+    let at = "\{mode}, \{ms} ms after send-picture"
+    mf_hold_composer_uncovered(t, gy0, ms, at)
+    guard mf_drawn_picture_box(t) is Some(pic) else { fail("\{at}: picture not drawn") }
+    // (the picture flies out of its square tile as that tile, 56 by 56, never its own 3:2 shape scaled to the tile's
+    // width, 56 by 37 with its foot cut flat: mbui's Tree::fills_lifted)
+    if frame_idx == 0 {
       assert_true(
-        pic.1 <= file.1 + 2.0,
-        msg="\{at}: flying picture \{Repr(pic)} dropped below file card \{Repr(file)}",
+        pic.3 >= 52.0 && pic.2 >= 52.0,
+        msg="\{at}: the picture set out \{Repr(pic)}, not as its composer tile \{Repr(pic0)}",
       )
-      if ms <= 80.0 || ms >= 360.0 {
-        mf_hold_no_overlap(at, "picture", pic, "file card", file)
-      }
-      mf_hold_no_overlap(at, "picture", pic, "words", words)
-      // (the old page's flight, sfbase flight.mbt, has its file card's faint ground over the words' bubble by 2.4pt at
-      // 200 ms: the old view is frozen, not changed again, so it is held to 3pt; the page made as nodes to 1.5)
-      mf_hold_no_overlap(at, "file card", file, "words", words, tol=if nodes { 1.5 } else { 3.0 })
-      frame_idx = frame_idx + 1
-      t.run_for(mf_frame_ms)
     }
+    guard mf_drawn_part_box(t, "夜构建") is Some(file) else { fail("\{at}: file card not drawn") }
+    guard mf_drawn_part_box(t, "看一下列表") is Some(words) else { fail("\{at}: words not drawn") }
+    if frame_idx <= 1 {
+      assert_true(
+        (pic.0 - pic0.0).abs() <= 28.0 && (pic.1 - pic0.1).abs() <= 28.0,
+        msg="\{at}: picture started at \{Repr(pic)}, composer tile was \{Repr(pic0)}",
+      )
+      assert_true(
+        (file.0 - file0.0).abs() <= 28.0 && (file.1 - file0.1).abs() <= 28.0,
+        msg="\{at}: file card started at \{Repr(file)}, composer card was \{Repr(file0)}",
+      )
+      assert_true(
+        (words.0 - words0.0).abs() <= 28.0 && (words.1 - words0.1).abs() <= 28.0,
+        msg="\{at}: words started at \{Repr(words)}, composer field was \{Repr(words0)}",
+      )
+    }
+    // (picture and file card unwrap from side-by-side in composer to stacked in message: picture stays above or level
+    // with file card all the way, and neither ever overlaps words; at start and at rest picture and file card are
+    // completely separate)
+    assert_true(
+      pic.1 <= file.1 + 2.0,
+      msg="\{at}: flying picture \{Repr(pic)} dropped below file card \{Repr(file)}",
+    )
+    if ms <= 80.0 || ms >= 360.0 {
+      mf_hold_no_overlap(at, "picture", pic, "file card", file)
+    }
+    mf_hold_no_overlap(at, "picture", pic, "words", words)
+    // (the old page's flight, sfbase flight.mbt, has its file card's faint ground over the words' bubble by 2.4pt at
+    // 200 ms: the old view is frozen, not changed again, so it is held to 3pt; the page made as nodes to 1.5)
+    mf_hold_no_overlap(at, "file card", file, "words", words, tol=1.5)
+    frame_idx = frame_idx + 1
+    t.run_for(mf_frame_ms)
   }
 }
 
 ///|
 test "every frame, old page and nodes page: send-quote — composer white ground never covers list, flying quote card and words start at their composer places and never overlap" {
-  for nodes in [false, true] {
-    let mode = if nodes { "nodes" } else { "old" }
-    let (t, src) = mf_open_dual(nodes)
-    fix_pace.val = (fix_deliver_ms, fix_answer_ms, 1.0e7)
-    t.tap_text("发消息")
-    t.type_text("看一下列表")
-    let draft = @sfbase.writing(src, sent_nodes_draft)
-    @sfbase.writing_quote(src, draft, { "author": "Claude", "text": "推送截图前要先登录 gh。", "ts": "ts10" })
-    t.run_for(@ui.move_most_ms)
-    assert_eq(draft.field.text(), "看一下列表")
-    guard back_round_ground(t) is Some((_, gy0, _, _, _, _)) else { fail("\{mode}: composer ground not drawn") }
-    guard mf_drawn_part_box(t, "推送截图前要先登录 gh。") is Some(quote0) else {
-      fail("\{mode}: quote card not drawn in composer")
+  let mode = "nodes"
+  let (t, src) = mf_open_dual()
+  fix_pace.val = (fix_deliver_ms, fix_answer_ms, 1.0e7)
+  t.tap_text("发消息")
+  t.type_text("看一下列表")
+  let draft = @sfbase.writing(src, sent_nodes_draft)
+  @sfbase.writing_quote(src, draft, { "author": "Claude", "text": "推送截图前要先登录 gh。", "ts": "ts10" })
+  t.run_for(@ui.move_most_ms)
+  assert_eq(draft.field.text(), "看一下列表")
+  guard back_round_ground(t) is Some((_, gy0, _, _, _, _)) else { fail("\{mode}: composer ground not drawn") }
+  guard mf_drawn_part_box(t, "推送截图前要先登录 gh。") is Some(quote0) else {
+    fail("\{mode}: quote card not drawn in composer")
+  }
+  guard composer_field(t) is Some(words0) else {
+    fail("\{mode}: composer field not found")
+  }
+  tap_send(t)
+  let press = t.time()
+  let mut frame_idx = 0
+  while t.time() - press <= fix_deliver_ms + @ui.move_most_ms {
+    let ms = t.time() - press
+    let at = "\{mode}, \{ms} ms after send-quote"
+    mf_hold_composer_uncovered(t, gy0, ms, at)
+    guard mf_drawn_part_box(t, "推送截图前要先登录 gh。") is Some(quote) else {
+      fail("\{at}: quote card not drawn")
     }
-    guard composer_field(t) is Some(words0) else {
-      fail("\{mode}: composer field not found")
+    guard mf_drawn_part_box(t, "看一下列表") is Some(words) else {
+      fail("\{at}: words not drawn")
     }
-    tap_send(t)
-    let press = t.time()
-    let mut frame_idx = 0
-    while t.time() - press <= fix_deliver_ms + @ui.move_most_ms {
-      let ms = t.time() - press
-      let at = "\{mode}, \{ms} ms after send-quote"
-      mf_hold_composer_uncovered(t, gy0, ms, at)
-      guard mf_drawn_part_box(t, "推送截图前要先登录 gh。") is Some(quote) else {
-        fail("\{at}: quote card not drawn")
-      }
-      guard mf_drawn_part_box(t, "看一下列表") is Some(words) else {
-        fail("\{at}: words not drawn")
-      }
-      if frame_idx <= 1 {
-        assert_true(
-          (quote.0 - quote0.0).abs() <= 28.0 && (quote.1 - quote0.1).abs() <= 28.0,
-          msg="\{at}: quote card started at \{Repr(quote)}, composer card was \{Repr(quote0)}",
-        )
-        assert_true(
-          (words.0 - words0.0).abs() <= 28.0 && (words.1 - words0.1).abs() <= 28.0,
-          msg="\{at}: words started at \{Repr(words)}, composer field was \{Repr(words0)}",
-        )
-      }
-      mf_hold_no_overlap(at, "quote", quote, "words", words)
-      frame_idx = frame_idx + 1
-      t.run_for(mf_frame_ms)
+    if frame_idx <= 1 {
+      assert_true(
+        (quote.0 - quote0.0).abs() <= 28.0 && (quote.1 - quote0.1).abs() <= 28.0,
+        msg="\{at}: quote card started at \{Repr(quote)}, composer card was \{Repr(quote0)}",
+      )
+      assert_true(
+        (words.0 - words0.0).abs() <= 28.0 && (words.1 - words0.1).abs() <= 28.0,
+        msg="\{at}: words started at \{Repr(words)}, composer field was \{Repr(words0)}",
+      )
     }
+    mf_hold_no_overlap(at, "quote", quote, "words", words)
+    frame_idx = frame_idx + 1
+    t.run_for(mf_frame_ms)
   }
 }
 
 ///|
 test "every frame, old page and nodes page: decide 一起换 — card closing and messages below rising never step past a motion frame's limit" {
-  for nodes in [false, true] {
-    let mode = if nodes { "nodes" } else { "old" }
-    let (t, _) = mf_open_dual(nodes)
-    fix_pace.val = (fix_deliver_ms, fix_answer_ms, 1.0e7)
-    let watched = [
-      "要不要把旧的截图也一起换掉？",
-      "Willow 上 codex 的登录已失效",
-      "推送截图前要先登录 gh。",
-      "做完了：列表、跳到最新的按钮",
-    ]
-    let prev : Map[String, Double] = Map([])
-    for s in watched {
-      guard mf_drawn_part_box(t, s) is Some((_, y, _, _)) else {
-        fail("\{mode}: 「\{s}」 not drawn before tapping 一起换")
-      }
-      prev[s] = y
+  let mode = "nodes"
+  let (t, _) = mf_open_dual()
+  fix_pace.val = (fix_deliver_ms, fix_answer_ms, 1.0e7)
+  let watched = [
+    "要不要把旧的截图也一起换掉？",
+    "Willow 上 codex 的登录已失效",
+    "推送截图前要先登录 gh。",
+    "做完了：列表、跳到最新的按钮",
+  ]
+  let prev : Map[String, Double] = Map([])
+  for s in watched {
+    guard mf_drawn_part_box(t, s) is Some((_, y, _, _)) else {
+      fail("\{mode}: 「\{s}」 not drawn before tapping 一起换")
     }
-    t.tap_text("把首页和聊天页的截图都更新")
-    let press = t.time()
-    while t.time() - press <= 2200.0 {
-      let ms = t.time() - press
-      let at = "\{mode}, \{ms} ms after 一起换"
-      for s in watched {
-        match mf_drawn_part_box(t, s) {
-          Some((_, y, _, _)) => {
-            match prev.get(s) {
-              Some(py) =>
-                assert_true(
-                  (y - py).abs() <= 32.0,
-                  msg="\{at}: 「\{s}」 jumped \{y - py} in one 16 ms frame (from \{py} to \{y})",
-                )
-              None => ()
-            }
-            prev[s] = y
-          }
-          None =>
-            if s != "要不要把旧的截图也一起换掉？" {
-              fail("\{at}: 「\{s}」 vanished for a frame while the card closed")
-            } else {
-              prev.remove(s)
-            }
-        }
-      }
-      t.run_for(mf_frame_ms)
-    }
-    assert_true(t.find("你 选择了「一起换」") is Some(_), msg="\{mode}: card answer not shown after 一起换")
+    prev[s] = y
   }
+  t.tap_text("把首页和聊天页的截图都更新")
+  let press = t.time()
+  while t.time() - press <= 2200.0 {
+    let ms = t.time() - press
+    let at = "\{mode}, \{ms} ms after 一起换"
+    for s in watched {
+      match mf_drawn_part_box(t, s) {
+        Some((_, y, _, _)) => {
+          match prev.get(s) {
+            Some(py) =>
+              assert_true(
+                (y - py).abs() <= 32.0,
+                msg="\{at}: 「\{s}」 jumped \{y - py} in one 16 ms frame (from \{py} to \{y})",
+              )
+            None => ()
+          }
+          prev[s] = y
+        }
+        None =>
+          if s != "要不要把旧的截图也一起换掉？" {
+            fail("\{at}: 「\{s}」 vanished for a frame while the card closed")
+          } else {
+            prev.remove(s)
+          }
+      }
+    }
+    t.run_for(mf_frame_ms)
+  }
+  assert_true(t.find("你 选择了「一起换」") is Some(_), msg="\{mode}: card answer not shown after 一起换")
 }

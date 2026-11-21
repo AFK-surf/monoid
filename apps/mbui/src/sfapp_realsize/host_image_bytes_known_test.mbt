@@ -7,7 +7,6 @@ fn init {
     // (a chat of real size opened as nodes: the pictures of the rows round what shows, as chat_page_nodes_wbtest's)
     ("src/sfapp_realsize/chat_nodes_open_budget_test.mbt", 40824),
     // (the same chat opened again on each page, old and as nodes: the pictures of the rows round what shows, 2026-11-16)
-    ("src/sfapp_realsize/chat_nodes_vs_old_test.mbt", 38548),
     // (中屏's chat opened, its workspace switched: the chat's pictures handed over as it showed, 2026-11-14)
     ("src/sfapp_realsize/medium_switch_corners_test.mbt", 38548),
     // (a new chat sent on a workspace of real size, its people's pictures on the chats' list: Studio's run, 2026-11-15)

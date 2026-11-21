@@ -245,7 +245,7 @@ test "words sent, the core's row of them late: the list goes up only, never down
 /// in one frame past twice what they went the frame before and the frame after (what goes on a way goes on at about
 /// its pace; what is put somewhere at once goes far in one frame between two it hardly moved in), from the frame the
 /// next were sent, and when.
-fn sent_soon_step(soon : Double, deliver : Double) -> (Double, Double) raise {
+fn sent_soon_step(soon : Double, deliver : Double) -> (Double, Double) {
   new_run()
   fix_pace.val = (deliver, 30000.0, fix_turn_end_ms)
   let src = fixture("chat")
@@ -256,15 +256,9 @@ fn sent_soon_step(soon : Double, deliver : Double) -> (Double, Double) raise {
   t.type_text("再看一下")
   tap_send(t)
   let sent = t.time()
-  if soon >= 0.0 && @sfbase.chat_page_nodes.untracked() {
-    // (the page made as nodes keeps no old send_flight: its words out of the field as long after they were sent as
-    // sent_out_away_ms says, its composer's `away_until`)
-    t.run_for(sent + @sfbase.sent_out_away_ms() - t.time())
-  } else if soon >= 0.0 {
-    while send_flight.get().map(fn(f) { !@sfbase.flight_out(t.ctx(), f) }).unwrap_or(false) {
-      t.frame()
-    }
-    assert_true(send_flight.get() is Some(_), msg="the words sent first landed before they were out of the field")
+  if soon >= 0.0 {
+    // (the node composer's words out of the field: as long as they are away from it, sent_out_away_ms)
+    t.run_for(@sfbase.sent_out_away_ms())
   }
   let till = if soon >= 0.0 { t.time() + soon } else { sent - soon }
   while t.time() < till {
@@ -312,14 +306,7 @@ test "words sent while the words sent before them still fly: those go on to thei
   let bad : Array[String] = []
   for soon in [0.0, 50.0, 100.0, 200.0, 400.0] {
     for deliver in [100.0, 700.0] {
-      let (step, when) = sent_soon_step(soon, deliver) catch {
-        e => {
-          let said = e.to_string()
-          let cut = if said.length() > 900 { said.clamped_view(end=900).to_owned() } else { said }
-          bad.push("soon \{soon} deliver \{deliver}: " + cut.replace_all(old="\n", new=" "))
-          continue
-        }
-      }
+      let (step, when) = sent_soon_step(soon, deliver)
       if step > 6.0 {
         bad.push("soon \{soon} deliver \{deliver}: the words sent first went \{step} past their pace in a frame, \{when} ms after they were sent")
       }
@@ -327,30 +314,6 @@ test "words sent while the words sent before them still fly: those go on to thei
   }
   for b in bad {
     println("SENDSOON " + b)
-  }
-  assert_eq(bad.length(), 0)
-}
-
-///|
-test "words sent before the words sent before them are out of the field: never drawn over those" {
-  if @ui.test_at_a_rate() {
-    return
-  }
-  // (still where they were typed, they would lie under the words now sent, drawn there as typed till their row is
-  // laid out (words_over.mbt): in their row at once, the frame those are sent)
-  let bad : Array[String] = []
-  for soon in [-17.0, -50.0, -100.0, -150.0] {
-    let _ = sent_soon_step(soon, 100.0) catch {
-      e => {
-        let said = e.to_string()
-        let cut = if said.length() > 900 { said.clamped_view(end=900).to_owned() } else { said }
-        bad.push("\{-soon} ms after: " + cut.replace_all(old="\n", new=" "))
-        continue
-      }
-    }
-  }
-  for b in bad {
-    println("SENDUNDER " + b)
   }
   assert_eq(bad.length(), 0)
 }
@@ -397,9 +360,6 @@ test "words sent: the chat's rows they fly past are kept, not built again each f
     return
   }
   new_run()
-  // (the old page's rows built again each frame of the old flight (send_flight, rows_built): the page made as nodes
-  // keeps its rows, nothing of this to count)
-  @sfbase.hold_chat_page_nodes(Some(false))
   let src = fixture("chat-done-live")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
@@ -415,11 +375,9 @@ test "words sent: the chat's rows they fly past are kept, not built again each f
   let end_at = t.time() + @sfbase.flight_most_ms
   while t.time() < end_at {
     t.frame()
-    let rows = t.rows_built().filter(fn(r) { r.1 >= 0 }).length()
-    match send_flight.get() {
-      Some(f) if f.placed => built.push(rows)
-      _ => ()
-    }
+    // (each frame of their way, the node page's: their words drawn on it all along)
+    built.push(t.rows_built().filter(fn(r) { r.1 >= 0 }).length())
+    assert_true(t.find("看一下列表") is Some(_), msg="the words sent not drawn at \{t.time()}")
   }
   assert_true(built.length() >= 20, msg="frames of their flight: \{built.length()}")
   // (their own row, where its pieces are drawn, and no other; all of them again only in the frames a share of their

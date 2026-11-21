@@ -1485,7 +1485,7 @@ fn composer_box_node(
       } else {
         // det-ok(motion-length): the field opening past ＋ and send kept off them on this clock, as the old one's
         shape.go_ms(foot, to, composer_shape_ms, ease=Move)
-        if !full && !had {
+        if (!full && !had) || on_send {
           // det-ok(motion-length): the field opening past ＋ and send kept off them on this clock, as the old one's
           morph.go_ms(foot, to, composer_shape_ms, ease=Move)
         } else {

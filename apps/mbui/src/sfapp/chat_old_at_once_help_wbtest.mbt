@@ -1,5 +1,4 @@
-// What chat_old_at_once_wbtest (the shipped page) and chat_nodes_old_at_once_wbtest (the page made as nodes) judge by:
-// the cases and the judge, said once.
+// What chat_nodes_old_at_once_wbtest (the chat's page, made as nodes) judges by: the cases and the judge, said once.
 //
 // What was said before the reader saw it is simply there (the owner's, 2026-11-14, on the released desktop app:
 // 「旧消息加载到底为什么需要动效？」; the principle in sf/motion.mbt's head, sfbase/chat_list.mbt's row_keys and
@@ -9,8 +8,7 @@
 // arrives, is drawn as it is at rest. Data arriving late is no cause of motion: no row easing in, growing, sliding or
 // fading, no words coming in a glyph at a time, no picture making an entrance, nothing gliding.
 //
-// Each case is run on the page the app ships (sfbase's chat_page_nodes off: the old page, sfbase/chat_list.mbt) and on
-// the page made as nodes (on: sfpages/chat_body_node.mbt), on 大屏 (1280x800, a mouse) and 小屏 (390x844, a finger),
+// Each case is run on the chat's page (sfpages/chat_body_node.mbt), on 大屏 (1280x800, a mouse) and 小屏 (390x844, a finger),
 // the core answering at once and 400 ms late, with the Tester's own check (its kept rows built again whole). What is
 // left to be mended on its own is not held here (oa_apart: as a device draws, `check_looks(false)`, and 小屏 shown
 // again after a page over it; a chat opened over a late core drawn in more than two ways, a resumed stream's telling:
@@ -519,12 +517,8 @@ fn oa_tester(src : Source, s : (String, Double, Double, Int), device : Bool) -> 
 }
 
 ///|
-fn oa_name(nodes : Bool) -> String {
-  if nodes {
-    "new page"
-  } else {
-    "old page"
-  }
+fn oa_name() -> String {
+  "new page"
 }
 
 ///|
@@ -592,32 +586,30 @@ fn oa_runs(which : OaWhich, device : Bool, s : (String, Double, Double, Int), ca
 /// s-c2, then chat s-c1 opened.
 fn oa_open_late(
   s : (String, Double, Double, Int),
-  nodes : Bool,
   device : Bool,
   ms : Double,
   ways? : Bool = false,
 ) -> Array[String] {
   new_run()
   oa_begin()
-  @sfbase.hold_chat_page_nodes(Some(nodes))
   let armed = Ref(false)
   let src = oa_source(round_trip_again(fixture("chat"), 0.0, late=fn(_, _) { if armed.val { ms } else { 0.0 } }))
   open_chat(oa_c2)
   let t = oa_tester(src, s, device)
   oa_run(t, 1000.0)
   armed.val = true
-  let label = "\{oa_name(nodes)} \{s.0} opened, core \{ms} ms\{oa_how(device)}"
+  let label = "\{oa_name()} \{s.0} opened, core \{ms} ms\{oa_how(device)}"
   oa_watch(t, s, label, fn() { @ui.view_tree().unwrap().event(t.time(), fn() { open_chat(oa_c1) }) }, ms + 1500.0, in_ways=ways)
 }
 
 ///|
-fn oa_case1(nodes : Bool, ways? : Bool = false, which? : OaWhich = Held) -> Unit raise {
+fn oa_case1(ways? : Bool = false, which? : OaWhich = Held) -> Unit raise {
   let all = []
   for s in oa_screens {
     for ms in oa_lates {
       for device in [false, true] {
         guard oa_runs(which, device, s, 1) else { continue }
-        all.push_iter(oa_open_late(s, nodes, device, ms, ways~).iter())
+        all.push_iter(oa_open_late(s, device, ms, ways~).iter())
       }
     }
   }
@@ -843,10 +835,9 @@ fn oa_tick(a : OaAttend, t : @ui.Tester) -> () -> Unit {
 }
 
 ///|
-fn oa_held_then(s : (String, Double, Double, Int), nodes : Bool, device : Bool, later : OaLater) -> Array[String] {
+fn oa_held_then(s : (String, Double, Double, Int), device : Bool, later : OaLater) -> Array[String] {
   new_run()
   oa_begin()
-  @sfbase.hold_chat_page_nodes(Some(nodes))
   let a = oa_attend()
   let src = oa_source(oa_attending(a))
   open_chat(oa_c2)
@@ -855,7 +846,7 @@ fn oa_held_then(s : (String, Double, Double, Int), nodes : Bool, device : Bool, 
   oa_run(t, 1000.0, pump=tick)
   @ui.view_tree().unwrap().event(t.time(), fn() { open_chat(oa_c1) })
   oa_run(t, 300.0, pump=tick)
-  let label = "\{oa_name(nodes)} \{s.0} held, then \{oa_later_name(later)}\{oa_how(device)}"
+  let label = "\{oa_name()} \{s.0} held, then \{oa_later_name(later)}\{oa_how(device)}"
   let out = match later {
     CaughtUp => oa_watch(t, s, label, fn() { oa_say(a, src, false) }, 1500.0, pump=tick)
     Resumed => oa_watch(t, s, label, fn() { oa_say(a, src, true) }, 1500.0, pump=tick)
@@ -878,13 +869,13 @@ fn oa_held_then(s : (String, Double, Double, Int), nodes : Bool, device : Bool, 
 
 ///|
 /// (not yet told by a resumed stream: the core marks those said, wrongly, attend.ts, left to be mended there)
-fn oa_case2(nodes : Bool, laters? : Array[OaLater] = [CaughtUp, Away], which? : OaWhich = Held) -> Unit raise {
+fn oa_case2(laters? : Array[OaLater] = [CaughtUp, Away], which? : OaWhich = Held) -> Unit raise {
   let all = []
   for s in oa_screens {
     for later in laters {
       for device in [false, true] {
         guard oa_runs(which, device, s, 2) else { continue }
-        all.push_iter(oa_held_then(s, nodes, device, later).iter())
+        all.push_iter(oa_held_then(s, device, later).iter())
       }
     }
   }
@@ -1001,10 +992,9 @@ fn oa_stroke(t : @ui.Tester, s : (String, Double, Double, Int), d : Double) -> U
 // ---- case 3: reading up, the page before arriving ---------------------------------------------------------------
 
 ///|
-fn oa_read_up(s : (String, Double, Double, Int), nodes : Bool, device : Bool, ms : Double) -> Array[String] {
+fn oa_read_up(s : (String, Double, Double, Int), device : Bool, ms : Double) -> Array[String] {
   new_run()
   oa_begin()
-  @sfbase.hold_chat_page_nodes(Some(nodes))
   let l = long_chat()
   let held : Array[(Double, () -> Unit)] = []
   let clock = Ref(0.0)
@@ -1023,7 +1013,7 @@ fn oa_read_up(s : (String, Double, Double, Int), nodes : Bool, device : Bool, ms
   while pages < 2 && strokes < 12 {
     strokes += 1
     let asked = l.asked.filter(fn(a) { a.has_prefix("older") }).length()
-    let label = "\{oa_name(nodes)} \{s.0} read up, stroke \{strokes}, core \{ms} ms\{oa_how(device)}"
+    let label = "\{oa_name()} \{s.0} read up, stroke \{strokes}, core \{ms} ms\{oa_how(device)}"
     out.push_iter(
       oa_watch(t, s, label, fn() { oa_stroke(t, s, s.2 * 0.4) }, ms + long_rest_ms * 2.0, scroll=true, pump~).iter(),
     )
@@ -1031,9 +1021,9 @@ fn oa_read_up(s : (String, Double, Double, Int), nodes : Bool, device : Bool, ms
       pages += 1
     }
   }
-  println("OLD_AT_ONCE_PAGED \{oa_name(nodes)} \{s.0} core \{ms}\{oa_how(device)}: \{pages} pages before in \{strokes} strokes, asked \{@ui.list_text(l.asked)}")
+  println("OLD_AT_ONCE_PAGED \{oa_name()} \{s.0} core \{ms}\{oa_how(device)}: \{pages} pages before in \{strokes} strokes, asked \{@ui.list_text(l.asked)}")
   if pages < 2 {
-    out.push("\{oa_name(nodes)} \{s.0} core \{ms}\{oa_how(device)}: the page before asked \{pages} times in \{strokes} strokes, not twice")
+    out.push("\{oa_name()} \{s.0} core \{ms}\{oa_how(device)}: the page before asked \{pages} times in \{strokes} strokes, not twice")
   }
   out
 }
@@ -1041,13 +1031,13 @@ fn oa_read_up(s : (String, Double, Double, Int), nodes : Bool, device : Bool, ms
 ///|
 // run by the tests of what is kept apart for its time (reading up and down held before and after)
 #warnings("-unused_value")
-fn oa_case3(nodes : Bool, which? : OaWhich = Held) -> Unit raise {
+fn oa_case3(which? : OaWhich = Held) -> Unit raise {
   let all = []
   for s in oa_screens {
     for ms in oa_lates {
       for device in [false, true] {
         guard oa_runs(which, device, s, 3) else { continue }
-        all.push_iter(oa_read_up(s, nodes, device, ms).iter())
+        all.push_iter(oa_read_up(s, device, ms).iter())
       }
     }
   }
@@ -1059,10 +1049,9 @@ fn oa_case3(nodes : Bool, which? : OaWhich = Held) -> Unit raise {
 // ---- case 4: the page after arriving ----------------------------------------------------------------------------
 
 ///|
-fn oa_read_down(s : (String, Double, Double, Int), nodes : Bool, device : Bool, ms : Double) -> Array[String] {
+fn oa_read_down(s : (String, Double, Double, Int), device : Bool, ms : Double) -> Array[String] {
   new_run()
   oa_begin()
-  @sfbase.hold_chat_page_nodes(Some(nodes))
   let l = long_chat(unread=60)
   let held : Array[(Double, () -> Unit)] = []
   let clock = Ref(0.0)
@@ -1081,7 +1070,7 @@ fn oa_read_down(s : (String, Double, Double, Int), nodes : Bool, device : Bool, 
   while pages < 1 && strokes < 16 {
     strokes += 1
     let asked = l.asked.filter(fn(a) { a == "newer" }).length()
-    let label = "\{oa_name(nodes)} \{s.0} read down, stroke \{strokes}, core \{ms} ms\{oa_how(device)}"
+    let label = "\{oa_name()} \{s.0} read down, stroke \{strokes}, core \{ms} ms\{oa_how(device)}"
     out.push_iter(
       oa_watch(t, s, label, fn() { oa_stroke(t, s, -s.2 * 0.4) }, ms + long_rest_ms * 2.0, scroll=true, pump~).iter(),
     )
@@ -1089,9 +1078,9 @@ fn oa_read_down(s : (String, Double, Double, Int), nodes : Bool, device : Bool, 
       pages += 1
     }
   }
-  println("OLD_AT_ONCE_PAGED \{oa_name(nodes)} \{s.0} down core \{ms}\{oa_how(device)}: \{pages} pages after in \{strokes} strokes, asked \{@ui.list_text(l.asked)}")
+  println("OLD_AT_ONCE_PAGED \{oa_name()} \{s.0} down core \{ms}\{oa_how(device)}: \{pages} pages after in \{strokes} strokes, asked \{@ui.list_text(l.asked)}")
   if pages < 1 {
-    out.push("\{oa_name(nodes)} \{s.0} core \{ms}\{oa_how(device)}: the page after never asked in \{strokes} strokes")
+    out.push("\{oa_name()} \{s.0} core \{ms}\{oa_how(device)}: the page after never asked in \{strokes} strokes")
   }
   out
 }
@@ -1099,13 +1088,13 @@ fn oa_read_down(s : (String, Double, Double, Int), nodes : Bool, device : Bool, 
 ///|
 // run by the tests of what is kept apart for its time (reading up and down held before and after)
 #warnings("-unused_value")
-fn oa_case4(nodes : Bool, which? : OaWhich = Held) -> Unit raise {
+fn oa_case4(which? : OaWhich = Held) -> Unit raise {
   let all = []
   for s in oa_screens {
     for ms in oa_lates {
       for device in [false, true] {
         guard oa_runs(which, device, s, 4) else { continue }
-        all.push_iter(oa_read_down(s, nodes, device, ms).iter())
+        all.push_iter(oa_read_down(s, device, ms).iter())
       }
     }
   }
@@ -1135,14 +1124,12 @@ fn oa_open_by_hand(t : @ui.Tester, s : (String, Double, Double, Int), r : ChatRe
 ///|
 fn oa_switch(
   s : (String, Double, Double, Int),
-  nodes : Bool,
   device : Bool,
   ms : Double,
   ways? : Bool = false,
 ) -> Array[String] {
   new_run()
   oa_begin()
-  @sfbase.hold_chat_page_nodes(Some(nodes))
   let armed = Ref(false)
   let src = oa_source(round_trip_again(fixture("chat"), 0.0, late=fn(_, _) { if armed.val { ms } else { 0.0 } }))
   open_chat(oa_c1)
@@ -1157,7 +1144,7 @@ fn oa_switch(
     oa_run(t, 1000.0)
   }
   out.push_iter(
-    oa_watch(t, s, "\{oa_name(nodes)} \{s.0} to another chat, core \{ms} ms\{oa_how(device)}", fn() {
+    oa_watch(t, s, "\{oa_name()} \{s.0} to another chat, core \{ms} ms\{oa_how(device)}", fn() {
       oa_open_by_hand(t, s, oa_c2, by)
     }, ms + 1500.0, in_ways=ways).iter(),
   )
@@ -1166,22 +1153,22 @@ fn oa_switch(
     oa_run(t, 1000.0)
   }
   out.push_iter(
-    oa_watch(t, s, "\{oa_name(nodes)} \{s.0} back to the chat, core \{ms} ms\{oa_how(device)}", fn() {
+    oa_watch(t, s, "\{oa_name()} \{s.0} back to the chat, core \{ms} ms\{oa_how(device)}", fn() {
       oa_open_by_hand(t, s, oa_c1, by)
     }, ms + 1500.0, in_ways=ways).iter(),
   )
-  println("OLD_AT_ONCE_BY \{oa_name(nodes)} \{s.0} core \{ms}: \{@ui.list_text(by)}, back on it: \{oa_drawn(t, s, "做完了")}")
+  println("OLD_AT_ONCE_BY \{oa_name()} \{s.0} core \{ms}: \{@ui.list_text(by)}, back on it: \{oa_drawn(t, s, "做完了")}")
   out
 }
 
 ///|
-fn oa_case5(nodes : Bool, ways? : Bool = false, which? : OaWhich = Held) -> Unit raise {
+fn oa_case5(ways? : Bool = false, which? : OaWhich = Held) -> Unit raise {
   let all = []
   for s in oa_screens {
     for ms in oa_lates {
       for device in [false, true] {
         guard oa_runs(which, device, s, 5) else { continue }
-        all.push_iter(oa_switch(s, nodes, device, ms, ways~).iter())
+        all.push_iter(oa_switch(s, device, ms, ways~).iter())
       }
     }
   }
@@ -1193,10 +1180,9 @@ fn oa_case5(nodes : Bool, ways? : Bool = false, which? : OaWhich = Held) -> Unit
 // ---- case 6: another page over the chat while messages come -------------------------------------------------------
 
 ///|
-fn oa_covered(s : (String, Double, Double, Int), nodes : Bool, device : Bool) -> Array[String] {
+fn oa_covered(s : (String, Double, Double, Int), device : Bool) -> Array[String] {
   new_run()
   oa_begin()
-  @sfbase.hold_chat_page_nodes(Some(nodes))
   let a = oa_attend()
   let src = oa_source(oa_attending(a))
   open_chat(oa_c1)
@@ -1209,7 +1195,7 @@ fn oa_covered(s : (String, Double, Double, Int), nodes : Bool, device : Bool) ->
   // (the station tells them as they are said: events of its stream)
   oa_say(a, src, true)
   oa_run(t, 1000.0, pump=tick)
-  let label = "\{oa_name(nodes)} \{s.0} shown again after a page over it\{oa_how(device)}"
+  let label = "\{oa_name()} \{s.0} shown again after a page over it\{oa_how(device)}"
   // (小屏: back, the chat under the page; 大屏: the page took the pane, the chat opened again as a person comes back)
   let out = oa_watch(t, s, label, fn() {
     if s.3 == 2 {
@@ -1228,12 +1214,12 @@ fn oa_covered(s : (String, Double, Double, Int), nodes : Bool, device : Bool) ->
 }
 
 ///|
-fn oa_case6(nodes : Bool, which? : OaWhich = Held) -> Unit raise {
+fn oa_case6(which? : OaWhich = Held) -> Unit raise {
   let all = []
   for s in oa_screens {
     for device in [false, true] {
       guard oa_runs(which, device, s, 6) else { continue }
-      all.push_iter(oa_covered(s, nodes, device).iter())
+      all.push_iter(oa_covered(s, device).iter())
     }
   }
   if all.length() > 0 {
@@ -1244,10 +1230,9 @@ fn oa_case6(nodes : Bool, which? : OaWhich = Held) -> Unit raise {
 // ---- case 7: a long chat with an agent at work opened -------------------------------------------------------------
 
 ///|
-fn oa_working(s : (String, Double, Double, Int), nodes : Bool, device : Bool, ms : Double) -> Array[String] {
+fn oa_working(s : (String, Double, Double, Int), device : Bool, ms : Double) -> Array[String] {
   new_run()
   oa_begin()
-  @sfbase.hold_chat_page_nodes(Some(nodes))
   let l = long_chat()
   let held : Array[(Double, () -> Unit)] = []
   let clock = Ref(0.0)
@@ -1270,20 +1255,20 @@ fn oa_working(s : (String, Double, Double, Int), nodes : Bool, device : Bool, ms
   }
   oa_run(t, 1000.0, pump~)
   armed.val = true
-  let label = "\{oa_name(nodes)} \{s.0} a long chat with an agent at work opened, core \{ms} ms\{oa_how(device)}"
+  let label = "\{oa_name()} \{s.0} a long chat with an agent at work opened, core \{ms} ms\{oa_how(device)}"
   let out = oa_watch(t, s, label, fn() { @ui.view_tree().unwrap().event(t.time(), fn() { open_chat(long_ref) }) }, ms + 1500.0, pump~)
   println("OLD_AT_ONCE_WORKING \{label}: its line drawn \{t.find(tr("android-chat.chat.working")) is Some(_)}")
   out
 }
 
 ///|
-fn oa_case7(nodes : Bool, which? : OaWhich = Held) -> Unit raise {
+fn oa_case7(which? : OaWhich = Held) -> Unit raise {
   let all = []
   for s in oa_screens {
     for ms in oa_lates {
       for device in [false, true] {
         guard oa_runs(which, device, s, 7) else { continue }
-        all.push_iter(oa_working(s, nodes, device, ms).iter())
+        all.push_iter(oa_working(s, device, ms).iter())
       }
     }
   }
