@@ -975,11 +975,9 @@ export function envOf(core: Inner): ViewsEnv {
       return sub !== null && get(get(core.data.record("me", sub), "user"), "beta") === true;
     },
     otherWorkspacesOf: (workspace) => {
-      const sub = owner(workspace);
-      if (sub === null) return [];
       const out: string[] = [];
-      for (const [otherWs, otherOwner] of core.workspaces.owned()) {
-        if (otherWs !== workspace && otherOwner === sub) out.push(otherWs);
+      for (const [otherWs] of core.workspaces.owned()) {
+        if (otherWs !== workspace) out.push(otherWs);
       }
       return out;
     },

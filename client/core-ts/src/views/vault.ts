@@ -668,7 +668,14 @@ export function boxKeyKnown(inner: Inner, pub: string | null): void {
 
 export function install(inner: Inner): void {
   handlers.vault = (core, call, _progress, _at, ctx) => run(core, call as Of, ctx);
-  inner.stations.also.push({ read: (address) => readStation(inner, address), event: (address, name, data) => heard(inner, address, name, data) });
+  inner.stations.also.push({
+    read: (address) => readStation(inner, address),
+    resumed: (address) => {
+      const ws = ofAddress(address);
+      return inner.data.record("vault", ws) !== undefined ? Effect.void : readStation(inner, address);
+    },
+    event: (address, name, data) => heard(inner, address, name, data),
+  });
   inner.router.owners.push(owner(inner));
   // What this app keeps (no person asked): its box key's public half.
   inner.runner.fork(
@@ -1218,21 +1225,15 @@ function owner(inner: Inner): Owner {
       seen.read(`lock ${ws}`);
       seen.read(`vault ${ws}`);
       if (t.topic === "vaultUses" || t.topic === "vaultItems") {
-        const sub = inner.workspaces?.owner(ws) ?? null;
-        if (sub !== null) {
-          for (const [otherWs, otherOwner] of inner.workspaces.owned()) {
-            if (otherWs !== ws && otherOwner === sub) seen.read(`vault ${otherWs}`);
-          }
+        for (const [otherWs] of inner.workspaces.owned()) {
+          if (otherWs !== ws) seen.read(`vault ${otherWs}`);
         }
       } else if (t.topic === "vaults") {
         const reqs = Object.values(held(inner, ws).requests);
         const hasBrowse = reqs.some((r) => r.status === "pending" && r.browse !== undefined);
         if (hasBrowse) {
-          const sub = inner.workspaces?.owner(ws) ?? null;
-          if (sub !== null) {
-            for (const [otherWs, otherOwner] of inner.workspaces.owned()) {
-              if (otherWs !== ws && otherOwner === sub) seen.read(`vault ${otherWs}`);
-            }
+          for (const [otherWs] of inner.workspaces.owned()) {
+            if (otherWs !== ws) seen.read(`vault ${otherWs}`);
           }
         } else {
           const crossWorkspaces = new Set<string>();
@@ -1332,19 +1333,23 @@ export function browseCandidates(inner: Inner, ws: string): BrowseCandidates {
   const workspaces: BrowseCandidateWorkspace[] = [];
   let unkeyedWorkspaces = 0;
   for (const [otherWs, otherOwner] of inner.workspaces.owned()) {
-    if (otherWs === ws || otherOwner !== ownerSub) continue;
+    if (otherWs === ws) continue;
     if (inner.scheduler && !mem(inner).browseRead.has(otherWs)) {
-      mem(inner).browseRead.add(otherWs);
-      for (const s of stationsOf(inner, otherWs)) {
-        const addr = `${otherWs}/${s.id}`;
-        inner.scheduler.enqueue(addr, `${addr} vault`, Priority.background, readStation(inner, addr));
+      const ready = stationsOf(inner, otherWs)
+        .map((s) => `${otherWs}/${s.id}`)
+        .filter((addr) => inner.stations.link(addr) && inner.stations.reachable(addr));
+      if (ready.length > 0) {
+        mem(inner).browseRead.add(otherWs);
+        for (const addr of ready) {
+          inner.scheduler.enqueue(addr, `${addr} vault`, Priority.background, readStation(inner, addr));
+        }
       }
     }
     const hA = held(inner, otherWs);
     const lockA = lockOf(inner, otherWs);
     const selfA = lockA instanceof CoreError ? null : me(lockA, signer);
-    if (lockA instanceof CoreError || selfA === null || selfA.sub !== ownerSub) {
-      if (Object.values(hA.vaults).some((v) => !v.deleted && v.scope !== "workspace" && v.owner === ownerSub)) {
+    if (lockA instanceof CoreError || selfA === null || selfA.sub !== otherOwner) {
+      if (Object.values(hA.vaults).some((v) => !v.deleted && v.scope !== "workspace" && v.owner === otherOwner)) {
         unkeyedWorkspaces++;
       }
       continue;
@@ -1352,7 +1357,7 @@ export function browseCandidates(inner: Inner, ws: string): BrowseCandidates {
     const wsItems: BrowseCandidateItem[] = [];
     let hasUnkeyed = false;
     for (const v of Object.values(hA.vaults)) {
-      if (v.deleted || v.scope === "workspace" || v.owner !== ownerSub) continue;
+      if (v.deleted || v.scope === "workspace" || v.owner !== otherOwner) continue;
       const asA = readAs(inner, otherWs, lockA, v, selfA);
       const keyed = asA !== null && myBox !== null && myBox !== undefined && v.keys.some((k) => k.cert.device === selfA.device && k.cert.box === myBox);
       if (!keyed) {
@@ -1495,18 +1500,19 @@ export function askAnswers(inner: Inner, ws: string, asks: { request: string; sa
     const sourceWs = r?.cross?.workspace ?? crossWs;
     if (sourceWs !== undefined) {
       if (!able(inner) || lock instanceof CoreError || self === null) return { answer: "elsewhere" };
+      const otherOwner = inner.workspaces.owner(sourceWs);
       const lockA = lockOf(inner, sourceWs);
       const selfA = lockA instanceof CoreError ? null : me(lockA, signerOf(inner));
       const hA = held(inner, sourceWs);
       const myBox = mem(inner).box;
-      let sourceNoKey = lockA instanceof CoreError || selfA === null || selfA.sub !== self.sub || myBox === null || myBox === undefined;
+      let sourceNoKey = otherOwner === null || lockA instanceof CoreError || selfA === null || selfA.sub !== otherOwner || myBox === null || myBox === undefined;
       if (!sourceNoKey && !(lockA instanceof CoreError) && r !== undefined) {
         const vA = hA.vaults[r.vault];
         sourceNoKey =
           vA === undefined ||
           vA.deleted ||
           vA.scope === "workspace" ||
-          vA.owner !== self.sub ||
+          vA.owner !== otherOwner ||
           readAs(inner, sourceWs, lockA, vA, selfA) === null ||
           !vA.keys.some((k) => k.cert.device === selfA!.device && k.cert.box === myBox);
       }
@@ -2148,22 +2154,24 @@ export function vaultsView(inner: Inner, ws: string): J {
       }
       if (r.cross !== undefined) {
         const srcWs = r.cross.workspace;
+        const otherOwner = inner.workspaces.owner(srcWs);
         const hA = held(inner, srcWs);
         const listingA = items(inner, srcWs, r.vault)[r.item]?.listing;
         const lockA = lockOf(inner, srcWs);
         const selfA = lockA instanceof CoreError ? null : me(lockA, signerOf(inner));
         const vA = hA.vaults[r.vault];
         const crossNoKey =
+          otherOwner === null ||
           lockA instanceof CoreError ||
           self === null ||
           selfA === null ||
-          selfA.sub !== self.sub ||
+          selfA.sub !== otherOwner ||
           m.box === null ||
           m.box === undefined ||
           vA === undefined ||
           vA.deleted ||
           vA.scope === "workspace" ||
-          vA.owner !== self.sub ||
+          vA.owner !== otherOwner ||
           readAs(inner, srcWs, lockA, vA, selfA) === null ||
           !vA.keys.some((k) => k.cert.device === selfA.device && k.cert.box === m.box);
         return {
@@ -2210,8 +2218,8 @@ function usesOf(inner: Inner, ws: string, vault: string): J[] {
   const v = h.vaults[vault];
   const ownerSub = inner.workspaces?.owner(ws) ?? null;
   if (v !== undefined && v.scope !== "workspace" && ownerSub !== null && v.owner === ownerSub) {
-    for (const [otherWs, otherOwner] of inner.workspaces.owned()) {
-      if (otherWs === ws || otherOwner !== ownerSub) continue;
+    for (const [otherWs] of inner.workspaces.owned()) {
+      if (otherWs === ws) continue;
       const crossUses = held(inner, otherWs).crossUses;
       if (!isObject(crossUses)) continue;
       const otherName = workspaceName(inner, otherWs);
@@ -3610,7 +3618,7 @@ class Vaults {
     const self = this;
     return Effect.gen(function* () {
       const inner = self.#inner;
-      const { signer, self: who } = yield* self.#ready();
+      const { signer } = yield* self.#ready();
       const myBox = mem(inner).box;
       const wanted = selected !== undefined
         ? selected
@@ -3624,14 +3632,15 @@ class Vaults {
         if (seen.has(key)) continue;
         seen.add(key);
         if (pick.workspace === self.ws) return yield* fail("vault_invalid", t("core-misc.vault.unknown"));
-        if (inner.workspaces.owner(pick.workspace) !== who.sub) return yield* fail("vault_not_owner", t("core-misc.vault.notOwner"));
+        const otherOwner = inner.workspaces.owner(pick.workspace);
+        if (otherOwner === null) return yield* fail("vault_not_owner", t("core-misc.vault.notOwner"));
         const lockA = lockOf(inner, pick.workspace);
         if (lockA instanceof CoreError) return yield* Effect.fail(lockA);
         const selfA = me(lockA, signer.id);
-        if (selfA === null || selfA.sub !== who.sub) return yield* fail("vault_not_signer", t("core-misc.vault.notSigner"));
+        if (selfA === null || selfA.sub !== otherOwner) return yield* fail("vault_not_signer", t("core-misc.vault.notSigner"));
         const hA = held(inner, pick.workspace);
         const vA = hA.vaults[pick.vault];
-        if (!vA || vA.deleted || vA.scope === "workspace" || vA.owner !== who.sub) {
+        if (!vA || vA.deleted || vA.scope === "workspace" || vA.owner !== otherOwner) {
           return yield* fail("vault_unknown", t("core-misc.vault.unknown"));
         }
         const asA = readAs(inner, pick.workspace, lockA, vA, selfA);
@@ -3677,15 +3686,16 @@ class Vaults {
       const inner = self.#inner;
       const wsA = r.cross!.workspace;
       if (wsA === self.ws) return yield* fail("vault_invalid", t("core-misc.vault.unknown"));
-      const { signer, self: whoB } = yield* self.#ready();
-      if (inner.workspaces.owner(wsA) !== whoB.sub) return yield* fail("vault_not_owner", t("core-misc.vault.notOwner"));
+      const { signer } = yield* self.#ready();
+      const otherOwner = inner.workspaces.owner(wsA);
+      if (otherOwner === null) return yield* fail("vault_not_owner", t("core-misc.vault.notOwner"));
       const lockA = lockOf(inner, wsA);
       if (lockA instanceof CoreError) return yield* Effect.fail(lockA);
       const whoA = me(lockA, signer.id);
-      if (whoA === null || whoA.sub !== whoB.sub) return yield* fail("vault_not_signer", t("core-misc.vault.notSigner"));
+      if (whoA === null || whoA.sub !== otherOwner) return yield* fail("vault_not_signer", t("core-misc.vault.notSigner"));
       const hA = held(inner, wsA);
       const vA = hA.vaults[r.vault];
-      if (!vA || vA.deleted || vA.scope === "workspace" || vA.owner !== whoB.sub) return yield* fail("vault_unknown", t("core-misc.vault.unknown"));
+      if (!vA || vA.deleted || vA.scope === "workspace" || vA.owner !== otherOwner) return yield* fail("vault_unknown", t("core-misc.vault.unknown"));
       const asA = readAs(inner, wsA, lockA, vA, whoA);
       if (asA === null) return yield* fail("vault_unknown", t("core-misc.vault.unknown"));
       const itemA = items(inner, wsA, vA.id)[r.item];

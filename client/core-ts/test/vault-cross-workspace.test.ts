@@ -50,6 +50,7 @@ function makeFakeStation(ws: string) {
   const crossUses: unknown[] = [];
   const keepers = new Map<string, Uint8Array>();
   const down = { on: false };
+  const counts = { vaults: 0 };
 
   const reply = (req: HttpRequest): unknown => {
     const path = req.url.replace("https://stillfail.test/admin/api", "");
@@ -59,7 +60,7 @@ function makeFakeStation(ws: string) {
     const [route, query] = path.split("?");
     const k = `${req.method} ${route}`;
     switch (k) {
-      case "GET /vault/vaults": return { vaults: [...vaults.values()] };
+      case "GET /vault/vaults": counts.vaults++; return { vaults: [...vaults.values()] };
       case "POST /vault/vaults/latest": return { vaults: [] };
       case "PUT /vault/vaults": vaults.set(body.id, body); return { vault: body };
       case "GET /vault/items": return { items: [...items.values()].filter((i) => !query || query === `vault=${i.vault}`) };
@@ -87,7 +88,7 @@ function makeFakeStation(ws: string) {
       default: return status(404, { error: `no route ${k}` });
     }
   };
-  return { vaults, items, boxes, requests, grants, browses, denials, crossUses, keepers, down, reply };
+  return { vaults, items, boxes, requests, grants, browses, denials, crossUses, keepers, down, counts, reply };
 }
 
 async function multiWsRig() {
@@ -463,7 +464,7 @@ test("browse request returns noKey (not empty) when other workspaces only have u
     const otherCert: BoxCert = sign({ v: 1 as const, ws: "ws", device: otherDev, box: otherBox, at: 1001 }, TAG.box, r.signerObj);
     const l0 = r.core.inner.data.record("lock", "ws") as { head: { seq: number; hash: string; genesis: string }; entries: Entry[]; requests: unknown[] };
     const addOther: Omit<Entry, "sig"> = {
-      v: 1, ws: "ws", seq: 1, prev: l0.head.hash, at: 1001, kind: "add_device",
+      v: 1, ws: "ws", seq: 1, prev: l0.head.hash, at: 1001, kind: "device",
       body: { id: otherDev, sub: "s1", kind: "app", label: "Other Mac", sign_key: r.signerObj.id },
     };
     const h1 = entryHash(addOther as Entry);
@@ -555,6 +556,189 @@ test("browseCandidates and #approveCross support items still encrypted under an 
     const g = r.stB.grants.find((x) => x.request === "r_cross_before")!;
     const opened = JSON.parse(new TextDecoder().decode(openSeal(keeperPriv, g.secret, grantContext("wsB", "r_cross_before"))));
     assert.equal(opened.fields.value, "val_from_epoch_0");
+  } finally {
+    r.core.close();
+  }
+});
+
+test("multi-account same device: browse & cross-use across signed-in accounts while excluding team & other-member personal vaults", async () => {
+  const r = await multiWsRig();
+  try {
+    // Configure ws under account s1 and wsB under a second signed-in account s2 on this same device.
+    await Effect.runPromise(
+      r.core.inner.accounts.migrate([{ sub: "s2", email: "me2@x.com", access: "tok2", refresh: "r2", accessExpires: Math.floor(r.host.nowMs() / 1000) + 3600 }]),
+    );
+    r.core.inner.workspaces.setOwners(new Map([["ws", "s1"], ["wsB", "s2"]]));
+    r.core.inner.data.put("lock", "wsB", lockOf("wsB", r.signerObj, r.devId, "s2"));
+
+    // Add a third member s3 to ws's lock so we can verify another member's personal vault in ws is strictly excluded.
+    const l0 = r.core.inner.data.record("lock", "ws") as { head: { seq: number; hash: string; genesis: string }; entries: Entry[]; requests: unknown[] };
+    const addS3: Omit<Entry, "sig"> = {
+      v: 1, ws: "ws", seq: 1, prev: l0.head.hash, at: 1001, kind: "member",
+      body: { sub: "s3", email: "other@x.com", role: "member" },
+    };
+    const h1 = entryHash(addS3 as Entry);
+    const e1: Entry = { ...addS3, sig: { key: r.signerObj.id, alg: "Ed25519", sig: r.signerObj.signBytes(signedBytes(h1)) } };
+    r.core.inner.data.put("lock", "ws", { head: { seq: 1, hash: h1, genesis: l0.head.genesis }, entries: [...l0.entries, e1], requests: [] });
+
+    // Set up personal vaults in ws (owner s1) and wsB (owner s2).
+    const setupA = await r.ask("vault.setup", { workspace: "ws" });
+    const personalA = setupA.made as string;
+    const itemA = await r.ask("vault.putItem", {
+      workspace: "ws",
+      vault: personalA,
+      plain: { kind: "token", name: "Account A Token", fields: { value: "val_from_account_a" }, domains: [], notes: "" },
+      listing: { name: "Account A Token", kind: "token", modes: ["proxy"], hosts: ["api.acct-a.test"] },
+    });
+    await r.ask("vault.setup", { workspace: "wsB" });
+
+    // Inject a team vault (scope: "workspace") and a third member's personal vault (owner: "s3") in ws.
+    const boxCertA = r.stA.boxes.get(r.devId)!;
+    const teamKey = fill(91);
+    const teamVault: Vault = sign({
+      v: 1 as const, ws: "ws", id: "v_team_acct", seq: 0, owner: "s1", scope: "workspace" as const,
+      name: "Team Vault", members: ["s1"], epoch: 0,
+      keys: [{ cert: boxCertA, wrapped: sealWith(boxCertA.box, teamKey, keyContext("ws", "v_team_acct", 0), fill(92)) }],
+      at: 1002,
+    }, TAG.vault, r.signerObj);
+    const teamItem: Item = sign({
+      v: 1 as const, ws: "ws", vault: "v_team_acct", id: "i_team_acct", version: 0, epoch: 0,
+      ct: encryptWith(teamKey, utf8(JSON.stringify({ kind: "token", name: "TeamSecret", fields: { value: "team_val" }, domains: [], notes: "" })), itemContext("ws", "v_team_acct", "i_team_acct", 0, 0), fill(93, 12)),
+      listing: { name: "TeamSecret", kind: "token" as const, modes: ["proxy" as const], hosts: ["team.test"] },
+      at: 1002,
+    }, TAG.item, r.signerObj);
+    const otherKey = fill(94);
+    const otherPersonal: Vault = sign({
+      v: 1 as const, ws: "ws", id: "v_s3_personal", seq: 0, owner: "s3",
+      name: "S3 Personal", members: ["s3"], epoch: 0,
+      keys: [{ cert: boxCertA, wrapped: sealWith(boxCertA.box, otherKey, keyContext("ws", "v_s3_personal", 0), fill(95)) }],
+      at: 1002,
+    }, TAG.vault, r.signerObj);
+    const otherItem: Item = sign({
+      v: 1 as const, ws: "ws", vault: "v_s3_personal", id: "i_s3_1", version: 0, epoch: 0,
+      ct: encryptWith(otherKey, utf8(JSON.stringify({ kind: "token", name: "S3Secret", fields: { value: "s3_val" }, domains: [], notes: "" })), itemContext("ws", "v_s3_personal", "i_s3_1", 0, 0), fill(96, 12)),
+      listing: { name: "S3Secret", kind: "token" as const, modes: ["proxy" as const], hosts: ["s3.test"] },
+      at: 1002,
+    }, TAG.item, r.signerObj);
+    r.stA.vaults.set("v_team_acct", teamVault);
+    r.stA.items.set("i_team_acct", teamItem);
+    r.stA.vaults.set("v_s3_personal", otherPersonal);
+    r.stA.items.set("i_s3_1", otherItem);
+    await Effect.runPromise(readStation(r.core.inner, "ws/st"));
+
+    // 1. browseCandidates from wsB (s2) lists Account A's personal secret, excluding team and s3 personal vaults.
+    const cand = browseCandidates(r.core.inner, "wsB");
+    assert.equal(cand.workspaces.length, 1);
+    assert.equal(cand.workspaces[0]!.id, "ws");
+    assert.deepEqual(cand.workspaces[0]!.items.map((it) => it.name), ["Account A Token"]);
+
+    // 2. Browse request on wsB: askAnswers -> approve; explicitly picking team or s3 vault fails; picking Account A succeeds.
+    r.stB.requests.push({
+      id: "r_browse_acct", ws: "wsB", vault: "", item: "", session: "s2_sess", chat: "CHAT/2.0",
+      mode: "browse", reason: "need account A secret", owner: "me2@x.com", box: "", at: 1005, status: "pending",
+      browse: {},
+    });
+    await Effect.runPromise(readStation(r.core.inner, "wsB/stB"));
+    assert.deepEqual(
+      askAnswers(r.core.inner, "wsB", [{ request: "r_browse_acct", save: false, browse: true }])[0],
+      { answer: "approve", browseWorkspaces: 1, browseItems: 1 },
+    );
+    await assert.rejects(
+      r.ask("vault.approve", { workspace: "wsB", request: "r_browse_acct", items: [{ workspace: "ws", vault: "v_team_acct", item: "i_team_acct" }] }),
+      (e: any) => e.code === "vault_unknown",
+    );
+    await assert.rejects(
+      r.ask("vault.approve", { workspace: "wsB", request: "r_browse_acct", items: [{ workspace: "ws", vault: "v_s3_personal", item: "i_s3_1" }] }),
+      (e: any) => e.code === "vault_unknown",
+    );
+    const browseRes = await r.ask("vault.approve", { workspace: "wsB", request: "r_browse_acct" });
+    assert.deepEqual(browseRes, { request: "r_browse_acct", workspaces: 1, items: 1 });
+
+    // 3. Cross-workspace secret_use across accounts s1 -> s2 succeeds and produces a decryptable Grant.
+    const keeperPriv = fill(97);
+    r.stB.keepers.set("r_cross_acct", keeperPriv);
+    r.stB.requests.push({
+      id: "r_cross_acct", ws: "wsB", vault: personalA, item: itemA.id, session: "s2_sess", chat: "CHAT/2.0",
+      mode: "proxy", hosts: ["api.acct-a.test"], reason: "use account A secret from B", owner: "me2@x.com",
+      box: boxPublic(keeperPriv), at: 1006, status: "pending",
+      cross: { workspace: "ws", workspaceName: "W", vaultName: "Personal" },
+    });
+    await Effect.runPromise(readStation(r.core.inner, "wsB/stB"));
+    assert.equal(
+      askAnswers(r.core.inner, "wsB", [{ request: "r_cross_acct", save: false, crossWs: "ws" }])[0]!.answer,
+      "approve",
+    );
+    const useRes = await r.ask("vault.approve", { workspace: "wsB", request: "r_cross_acct", scope: "once" });
+    assert.equal(useRes.request, "r_cross_acct");
+    const g = r.stB.grants.find((x) => x.request === "r_cross_acct")!;
+    const opened = JSON.parse(new TextDecoder().decode(openSeal(keeperPriv, g.secret, grantContext("wsB", "r_cross_acct"))));
+    assert.equal(opened.fields.value, "val_from_account_a");
+  } finally {
+    r.core.close();
+  }
+});
+
+test("cold-start browseRead waits for reachable station link and also.resumed reads only when vaults cache is empty", async () => {
+  const r = await multiWsRig();
+  try {
+    const setupA = await r.ask("vault.setup", { workspace: "ws" });
+    const personalA = setupA.made as string;
+    await r.ask("vault.setup", { workspace: "wsB" });
+
+    // Clear local vault cache for ws to simulate warm restart / cold start.
+    r.core.inner.data.put("vault", "ws", {
+      vaults: {}, at: {}, boxes: {}, requests: {}, asked: {}, refused: {}, on: {}, keeps: [], plain: {}, plainOn: [], uses: {}, hidden: {},
+    });
+
+    const enqueued: string[] = [];
+    const origScheduler = r.core.inner.scheduler;
+    const origLink = r.core.inner.stations.link.bind(r.core.inner.stations);
+    const origReachable = r.core.inner.stations.reachable.bind(r.core.inner.stations);
+    let linkReady = false;
+    r.core.inner.scheduler = {
+      enqueue: (addr: string, label: string) => {
+        enqueued.push(`${addr}:${label}`);
+      },
+    } as never;
+    r.core.inner.stations.link = ((addr: string) => (addr === "ws/st" ? (linkReady ? origLink(addr) : undefined) : origLink(addr))) as never;
+    r.core.inner.stations.reachable = ((addr: string) => (addr === "ws/st" ? linkReady : origReachable(addr))) as never;
+    try {
+      // 1. Before station link is ready: nothing enqueued, ws NOT prematurely added to browseRead.
+      browseCandidates(r.core.inner, "wsB");
+      assert.deepEqual(enqueued, []);
+
+      // 2. Once station link becomes ready: browseCandidates enqueues readStation once and does not repeat.
+      linkReady = true;
+      browseCandidates(r.core.inner, "wsB");
+      assert.deepEqual(enqueued, ["ws/st:ws/st vault"]);
+      browseCandidates(r.core.inner, "wsB");
+      assert.deepEqual(enqueued, ["ws/st:ws/st vault"]);
+    } finally {
+      r.core.inner.scheduler = origScheduler;
+      r.core.inner.stations.link = origLink;
+      r.core.inner.stations.reachable = origReachable;
+    }
+
+    // 3. also.resumed triggers readStation only when record("vault", ws) === undefined, and no-ops once a vault record exists (even if empty).
+    const runResumed = async () => {
+      for (const hook of r.core.inner.stations.also) {
+        if (hook.resumed) await Effect.runPromise(Effect.ignore(hook.resumed("ws/st")));
+      }
+    };
+    const readsBeforeExisting = r.stA.counts.vaults;
+    assert.notEqual(r.core.inner.data.record("vault", "ws"), undefined);
+    await runResumed();
+    assert.equal(r.stA.counts.vaults, readsBeforeExisting, "resumed should no-op when vault record already exists (even if empty)");
+
+    r.core.inner.data.put("vault", "ws", undefined);
+    assert.equal(r.core.inner.data.record("vault", "ws"), undefined);
+    await runResumed();
+    assert.equal(r.stA.counts.vaults, readsBeforeExisting + 1, "resumed should call GET /vault/vaults when vault record is absent");
+    assert.ok((r.core.inner.data.record("vault", "ws") as any).vaults[personalA], "resumed should populate vaults when record was absent");
+
+    // Second resumed call with populated vault record must be a strict no-op.
+    await runResumed();
+    assert.equal(r.stA.counts.vaults, readsBeforeExisting + 1, "resumed should no-op once vault record is present");
   } finally {
     r.core.close();
   }

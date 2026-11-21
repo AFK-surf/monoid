@@ -478,6 +478,7 @@ export class CloudSync {
       }
     }
     core.workspaces.setOwners(owners);
+    core.views?.vaultChanged(null);
     this.onReach?.();
   }
 
