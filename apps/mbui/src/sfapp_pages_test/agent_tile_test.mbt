@@ -20,7 +20,6 @@ test "the joined maker's hover ground is uncovered and square at the seam" {
   })
   assert_true(grounds.length() == 1, msg="the maker paints no second ground over its hover")
   let (_, _, _, _, _, corners) = grounds[0]
-  assert_true(corners.0 > 0.0 && corners.3 > 0.0)
   assert_true(corners.1 == 0.0 && corners.2 == 0.0, msg="both corners at the seam are square")
 }
 

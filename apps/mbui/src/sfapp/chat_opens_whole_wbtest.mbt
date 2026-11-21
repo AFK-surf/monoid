@@ -163,9 +163,31 @@ fn ow_left(t : @ui.Tester, was : Double) -> Double {
 }
 
 ///|
+/// The composer-top ceiling (skipping the composer and its 36pt liquid glass capsule strip above it), else `h`.
+fn ow_composer_top(t : @ui.Tester, h : Double) -> Double {
+  let mut f : (Double, Double, Double, Double)? = None
+  for s in t.semantics() {
+    if s.role == @ui.Role::TextField && !s.hidden {
+      let better = match f {
+        None => true
+        Some(prev) => s.rect.1 > prev.1 + 1.0 || ((s.rect.1 - prev.1).abs() <= 1.0 && s.rect.0 > prev.0)
+      }
+      if better {
+        f = Some(s.rect)
+      }
+    }
+  }
+  match f {
+    Some((_, y, _, _)) => y - 48.0
+    None => h
+  }
+}
+
+///|
 /// The chat's list as drawn now in a window `across` wide and `h` high, right of `left` (what is held off the window's
 /// side, a page waiting to slide in, not: it is not seen).
 fn ow_things(t : @ui.Tester, left : Double, across : Double, h : Double) -> Array[OwThing] {
+  let list_bottom = ow_composer_top(t, h)
   let out : Array[OwThing] = []
   let seen : Map[String, Int] = Map([])
   let key = fn(k : String) {
@@ -179,13 +201,13 @@ fn ow_things(t : @ui.Tester, left : Double, across : Double, h : Double) -> Arra
   }
   for wd in t.words() {
     let (s, x, y, w, hh, a) = wd
-    if a <= 0.0 || y + hh <= 0.0 || y >= h || x + w <= left || x >= across || !ow_said(s) || ow_title(s) {
+    if a <= 0.0 || y + hh <= 0.0 || y >= list_bottom || x + w <= left || x >= across || !ow_said(s) || ow_title(s) {
       continue
     }
     out.push({ key: key("words 「\{s}」"), words: s, x, y, w, h: hh, a })
   }
   for r in t.text_runs() {
-    if r.bottom <= 0.0 || r.top >= h || r.x1 <= left || r.x0 >= across || !ow_said(r.text) || ow_title(r.text) {
+    if r.bottom <= 0.0 || r.top >= list_bottom || r.x1 <= left || r.x0 >= across || !ow_said(r.text) || ow_title(r.text) {
       continue
     }
     out.push({ key: key("line 「\{r.text}」"), words: r.text, x: r.x0, y: r.top, w: r.x1 - r.x0, h: r.bottom - r.top, a: 1.0 })

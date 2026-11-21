@@ -22,7 +22,6 @@ let pace_splits_known : Map[String, Array[Int]] = {
   // (the first tap on a chat's row comes before the frame that builds Home's list and sends its reads (they go
   // out as a frame is built): at 7 a second it falls on the bar under it, Station's tab (glass: Home's
   // subscriptions at 1159 here, 1033-1050 in the strict pass; the tap at 1150))
-  "delete-failed": [7],
   "service-page": [7],
   // (two sends 67 ms apart, under a frame at 7 a second (142.86 ms): the second's composer.take goes out before the
   // frame that sends the first's chat.send; the trace recorded again with its frames, 120 a second the same)

@@ -216,24 +216,36 @@ fn chat_quote_node(
     }
   }
   v.reacts(fn() { chat_finger_picked(rows) is Some(_) }, fn(on) { if on { make() } })
-  v.pick(fn() { chat_quotable(rows).map(fn(q) { q.0.made }) }, fn(holds, made) {
-    guard made is Some(_) && @signals.untracked(fn() { chat_quotable(rows) }) is Some((p, _)) else { return }
-    @sf.action_box_node(holds, fn() { @sf.t("web-main.chat.quote") }, fn(_) { chat_quote_take(src, draft, rows) }, fn(b) {
-      @sf.style_node(b, fn() { chat_quote_pill })
-      @ui.keeps_picked(b)
-      .glass(By(fn() { Some(@sf.glass_menu()) }))
-      .edge(By(fn() { if b.glass_solid() { (@sf.control_edge_w, @sf.theme().p.line) } else { (0.0, 0L) } }))
-      .shadow(By(fn() { @sf.float_shadow() }))
-      .shadow_outside(Is(true))
-      .clips(Is(true))
-      .beside(p.ends_in, side=Top, offset=8.0, piece=@ui.picked_end_piece(p))
+  let quote_in = fn(host : @view.View) {
+    host.pick(fn() { chat_quotable(rows).map(fn(q) { q.0.made }) }, fn(holds, made) {
+      guard made is Some(_) && @signals.untracked(fn() { chat_quotable(rows) }) is Some((p, _)) else { return }
+      @sf.action_box_node(holds, fn() { @sf.t("web-main.chat.quote") }, fn(_) { chat_quote_take(src, draft, rows) }, fn(b) {
+        @sf.style_node(b, fn() { chat_quote_pill })
+        @ui.keeps_picked(b)
+        .glass(By(fn() { Some(@sf.glass_menu()) }))
+        .edge(By(fn() { if b.glass_solid() { (@sf.control_edge_w, @sf.theme().p.line) } else { (0.0, 0L) } }))
+        .shadow(By(fn() { @sf.float_shadow() }))
+        .shadow_outside(Is(true))
+        .clips(Is(true))
+        .beside(p.ends_in, side=Top, offset=8.0, piece=@ui.picked_end_piece(p))
+        |> ignore
+        @sf.hover_ground_node(b)
+        @sf.icon_node(b, if p.ends_at_start { "quote-open" } else { "quote" }, chat_quote_icon, By(fn() { @sf.theme().p.text })) |> ignore
+        @sf.words_node(b, fn() { @sf.t("web-main.chat.quote") }, fn() { chat_quote_words }) |> ignore
+      })
       |> ignore
-      @sf.hover_ground_node(b)
-      @sf.icon_node(b, if p.ends_at_start { "quote-open" } else { "quote" }, chat_quote_icon, By(fn() { @sf.theme().p.text })) |> ignore
-      @sf.words_node(b, fn() { @sf.t("web-main.chat.quote") }, fn() { chat_quote_words }) |> ignore
     })
-    |> ignore
-  })
+  }
+  let quote_made = Ref(false)
+  let make_quote = fn() {
+    guard !quote_made.val else { return }
+    quote_made.val = true
+    match (@sf.window_tips().layer)() {
+      Some(l) => quote_in(l.box(fn(h) { h.over(Is(true)) |> ignore }).lives_with(v))
+      None => quote_in(v)
+    }
+  }
+  v.reacts(fn() { chat_quotable(rows) is Some(_) }, fn(on) { if on { make_quote() } })
 }
 
 ///|

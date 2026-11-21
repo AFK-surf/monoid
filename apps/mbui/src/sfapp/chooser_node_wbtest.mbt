@@ -225,6 +225,9 @@ test "a chooser as nodes, on the three screens: where it stands, what it draws a
     #|escape focus: Some(分钟)
     #|outside: [小时 -, 分钟 (372, 416.5, 24, 18), 单位 (364, 328.5, 44, 30)] chosen [minutes]
     #|over its edge: [小时 (406, 460.5, 26, 18), 分钟 (406, 496.5, 26, 18)]
+
+
+
   ))
 }
 

@@ -1312,7 +1312,7 @@ test "a phone's chat: each key of its bar, over the messages scrolled under the 
   assert_true(runs.iter().any(fn(r) { r.top < foot }), msg="no message's words under the bar")
   // (a message's, over the composer: not its 发消息)
   let composer_top = t.rect_of("发消息").map(fn(r) { r.1 }).unwrap_or(844.0)
-  let past = match runs.search_by(fn(r) { r.top >= foot + 10.0 && r.bottom < composer_top - 10.0 && r.x1 - r.x0 >= 30.0 }) {
+  let past = match runs.search_by(fn(r) { r.top >= foot + 10.0 && r.bottom < composer_top - 10.0 && r.text.contains("推送截图") }) {
     Some(i) => runs[i]
     None => @halt.saying("no message's words past the bar")
   }

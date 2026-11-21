@@ -937,7 +937,7 @@ test "a chat's info on a phone: each agent's name whole and its allowance under 
   let t = decide_core(calls, "chat-info")
   // (beside its name the allowance cut the name to 「Claud…」, then left the row on a phone: the allowance gone,
   // 2026-10-26)
-  let (_, name_y) = t.find("Claude · Opus 5.5").unwrap()
+  let name_y = t.words().filter(fn(w) { w.0 == "Claude · Opus 5.5" && w.5 > 0.5 && w.2 < 680.0 })[0].2
   let (_, chip_y) = t.find("62%").unwrap()
   assert_true(t.find("18%") is Some(_))
   assert_true(chip_y > name_y, msg="its allowance \{chip_y} under its name \{name_y}")

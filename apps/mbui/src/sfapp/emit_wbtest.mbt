@@ -76,7 +76,7 @@ test "with the reader scrolled up (not watched), an answer just appears" {
 test "read up a little, the answer coming in under what is read comes where it is, its room opening: not there at once" {
   let clock = Ref(0.0)
   let t = emit_core(clock)
-  t.wheel(195.0, 400.0, -120.0)
+  t.wheel(195.0, 400.0, -40.0)
   t.run_for(@ui.move_most_ms)
   fix_clock_set(clock, clock.val + fix_answer_ms)
   t.draw()

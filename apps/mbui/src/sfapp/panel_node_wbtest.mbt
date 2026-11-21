@@ -304,12 +304,13 @@ test "panel, 大屏 keyboard and mouse: at a point, its way out drawn as it was 
   // (360 wide, its farthest edge kept within @sf's pop_max_shift, 8, as it shrinks: View::scale's max_shift)
   debug_inspect(out[0], content=(
     #|[
-    #|  "alphas {255: 45} ground [255] button [] fading None..None",
-    #|  "alphas {255: 24, 222: 21} ground [222] button [] fading Some((621.923, 320.948))..Some((747.483, 372.766))",
-    #|  "alphas {255: 24, 128: 21} ground [128] button [] fading Some((621.703, 320.797))..Some((746, 372.095))",
-    #|  "alphas {255: 24, 33: 21} ground [33] button [] fading Some((621.482, 320.647))..Some((744.517, 371.423))",
-    #|  "alphas {255: 24} ground [] button [] fading None..None",
+    #|  "alphas {255: 21} ground [255] button [] fading None..None",
+    #|  "alphas {222: 21} ground [222] button [] fading Some((621.923, 320.948))..Some((747.483, 372.766))",
+    #|  "alphas {128: 21} ground [128] button [] fading Some((621.703, 320.797))..Some((746, 372.095))",
+    #|  "alphas {33: 21} ground [33] button [] fading Some((621.482, 320.647))..Some((744.517, 371.423))",
+    #|  "alphas {} ground [] button [] fading None..None",
     #|]
+
 
   ))
 }
@@ -405,6 +406,8 @@ test "panel, 大屏 keyboard and mouse: at a point, its way in and its way out a
   // (each frame built as a host builds it: none of the looks alone drawn whole after it as well, Tester::check_looks;
   // this test's alone)
   t.check_looks(false)
+  let bg = words().0
+  let open_n = bg + 21
   let open_at = t.time()
   @sf.panel_nodes("面板", body, from=At(600.0, 300.0, 0.0, 0.0))
   // (the frame it opens in, and those after it of its own: then its way in, the clock alone, past its end)
@@ -420,20 +423,20 @@ test "panel, 大屏 keyboard and mouse: at a point, its way in and its way out a
   println("PANELBUILT in \{Repr(way_in)} out \{Repr(way_out)}")
   let alphas = fn(frames : Array[(Double, Bool, (Int, Int))]) { frames.map(fn(f) { f.2 }) }
   // (its way in: some frame of it drawn part way, its words whole by its end)
-  let part_in = alphas(way_in).iter().any(fn(w) { w.0 == 45 && w.1 > 0 && w.1 < 255 })
-  let whole_in = way_in.last().map(fn(f) { f.2 }) == Some((45, -1))
+  let part_in = alphas(way_in).iter().any(fn(w) { w.0 == open_n && w.1 > 0 && w.1 < 255 })
+  let whole_in = way_in.last().map(fn(f) { f.2 }) == Some((open_n, -1))
   // (its way out: its words no more opaque frame by frame, some frame part way, then gone, from the first frame at or
   // after its end, and gone thereafter)
   let out_a = alphas(way_out)
-  let part_out = out_a.iter().any(fn(w) { w.0 == 45 && w.1 > 0 && w.1 < 255 })
-  let fading = out_a.filter(fn(w) { w.0 == 45 }).map(fn(w) { if w.1 < 0 { 255 } else { w.1 } })
+  let part_out = out_a.iter().any(fn(w) { w.0 == open_n && w.1 > 0 && w.1 < 255 })
+  let fading = out_a.filter(fn(w) { w.0 == open_n }).map(fn(w) { if w.1 < 0 { 255 } else { w.1 } })
   let mut falls = true
   for i in 1..<fading.length() {
     falls = falls && fading[i] <= fading[i - 1]
   }
-  let gone_from = out_a.search((24, -1)).unwrap_or(out_a.length())
+  let gone_from = out_a.search((bg, -1)).unwrap_or(out_a.length())
   let gone_at = way_out.get(gone_from).map(fn(f) { f.0 - close_at })
-  let gone_stays = out_a.iter().drop(gone_from).all(fn(w) { w == (24, -1) })
+  let gone_stays = out_a.iter().drop(gone_from).all(fn(w) { w == (bg, -1) })
   // (its words fade out together with its liquid glass over pop_out_ms (glass_pop_out), the frame at or
   // after that the first they are gone in)
   let in_time = match gone_at {

@@ -115,12 +115,22 @@ test "the chat's \"…\": the menu a row has, pinning it from it" {
 }
 
 ///|
+/// Tap the topmost (sheet's) match for `row`, skipping the composer-top capsule behind the modal sheet.
+fn tap_sheet_row(t : @ui.Tester, row : String) -> Unit {
+  let matches = t.words().filter(fn(w) { w.0 == row && w.5 > 0.5 && w.1 >= 0.0 && w.1 < 390.0 })
+  match matches.last() {
+    Some(w) => t.tap(w.1 + w.3 / 2.0, w.2 + w.4 / 2.0)
+    None => t.tap_text(row)
+  }
+}
+
+///|
 test "the chat's own sheet: its agents, and on to the agent's card and its history; what is done with it is not in it" {
   let calls : Array[Made] = []
   let t = decide_core(calls, "chat-info")
   assert_true(t.find("复制会话链接") is None)
   assert_true(t.find("Claude · Opus 5.5") is Some(_))
-  t.tap_text("Claude · Opus 5.5")
+  tap_sheet_row(t, "Claude · Opus 5.5")
   assert_true(t.find("费用估算") is Some(_))
   assert_true(t.find("共工作 1 小时 12 分") is Some(_))
   t.tap_text("共工作 1 小时 12 分")
@@ -146,7 +156,7 @@ test "the chat's own sheet, on to its agent's card and to what was said in it: e
   for further in [("Claude · Opus 5.5", "费用估算"), (@sf.t("web-main.things.title"), @sf.t("web-main.things.title"))] {
     let (row, shown) = further
     assert_true(t.find(row) is Some(_), msg=row)
-    t.tap_text(row)
+    tap_sheet_row(t, row)
     assert_true(t.find(shown) is Some(_), msg=row)
     for _ in 0..<40 {
       t.run_for(@ui.frame_period_default)
@@ -401,8 +411,16 @@ fn steps_in_one_sheet(t : @ui.Tester, row : String, scroll? : Double = 0.0) -> U
   let in_window = fn() { t.words().filter(fn(w) { w.0.length() > 1 && w.1 >= 0.0 && w.1 < 390.0 }) }
   let shown0 = in_window()
   let before : Set[String] = Set::from_array(shown0.map(fn(w) { w.0 }))
+  // Tap the topmost (sheet's) match for `row`, not the composer-top capsule behind the modal sheet.
+  let tap_row = fn() {
+    let matches = t.words().filter(fn(w) { w.0 == row && w.5 > 0.5 && w.1 >= 0.0 && w.1 < 390.0 })
+    match matches.last() {
+      Some(w) => t.tap(w.1 + w.3 / 2.0, w.2 + w.4 / 2.0)
+      None => t.tap_text(row)
+    }
+  }
   // (in and back once at rest, to know what the next shows of its own and where)
-  t.tap_text(row)
+  tap_row()
   t.run_for(@sf.presented_rest() - t.time())
   let shown1 = in_window()
   let after : Set[String] = Set::from_array(shown1.map(fn(w) { w.0 }))
@@ -427,7 +445,7 @@ fn steps_in_one_sheet(t : @ui.Tester, row : String, scroll? : Double = 0.0) -> U
   }
   let y_scrolled = t.drawn_of(first).map(fn(p) { p.1 })
   // in, frame by frame
-  t.tap_text(row)
+  tap_row()
   let mut first_x = x0
   let mut next_at = 10000.0
   let mut between = false

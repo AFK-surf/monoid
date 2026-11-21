@@ -206,7 +206,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone chat-outline-find": (1029, 663, 80),
   "phone archived": (1027, 646, 102),
   "phone history": (671, 481, 64),
-  "phone history-details": (622, 440, 79),
+  "phone history-details": (614, 435, 88),
   "phone drive": (688, 578, 90),
   "phone drive-roots": (461, 376, 60),
   "phone drive-download": (697, 586, 92),
@@ -272,10 +272,10 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone player-video": (437, 354, 34),
   // (written again, 2026-11-17: a service's page on a phone made as nodes, sfpages service_node.mbt: its bar, stage and
   // what marking shows, what its old view built as it opened now made, laid out and measured by the window's tree)
-  "phone service": (408, 265, 32),
-  "phone service-restart": (408, 265, 32),
-  "phone service-sized": (408, 265, 32),
-  "phone service-stopped": (408, 265, 32),
+  "phone service": (397, 257, 36),
+  "phone service-restart": (397, 257, 36),
+  "phone service-sized": (397, 257, 36),
+  "phone service-stopped": (397, 257, 36),
   "phone share-in": (901, 609, 70),
   "phone share-in-files": (904, 612, 70),
   "phone share-in-stations": (901, 609, 70),

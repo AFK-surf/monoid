@@ -2245,7 +2245,7 @@ test "小屏, a chat with its bar's second row open all along and long messages 
   let k = long_ref.station + "\u{1}" + long_ref.session
   // at its end
   let l = long_chat()
-  let t = reopen_long_open(l)
+  let t = reopen_long_open(l, w=200.0)
   assert_true(bar_extra_target(long_ref) > 30.0, msg="its bar's second row not open as it opens")
   let foot = reopen_lines(t, 0.0, 800.0).filter(fn(w) { w.0.has_prefix("第\{long_count}条：") })
   assert_eq(foot.length(), 1, msg="its last message not drawn as it opens")
@@ -2254,7 +2254,7 @@ test "小屏, a chat with its bar's second row open all along and long messages 
   }
   // read up, into the third paragraph (piece 2) of a long message, at its top
   let l = long_chat()
-  let t = reopen_long_open(l)
+  let t = reopen_long_open(l, w=200.0)
   t.move_to(180.0, 400.0)
   let rd = @sfbase.reading_of(k)
   let mut tries = 0

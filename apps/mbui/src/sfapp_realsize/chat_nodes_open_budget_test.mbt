@@ -104,7 +104,10 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // (+8 made, +7 laid, +11 bindings, 2026-11-22: narrow Home and Chat top bar action groups use floating
   // bar_pill_group_node liquid glass capsules, standalone archive circle, and soft GPU bottom-fade narrow_bar_scrim_node; before it (1029, 31, 659, 80, 970))
   // (+18 bindings, 2026-11-22: interactive liquid glass pill press feedback (.scale on bar_pill_group_node, hover_ground_node on round_key_node, bar_pill_key_press_node on Home workspace switcher, and tucked search_field_node presses(By(...)); before it (1037, 31, 666, 80, 981))
-  "phone cold": (1037, 31, 666, 80, 999),
+  // (2026-11-22: composer-top liquid glass capsule displays agent name and station name: phone cold -9 made, -5 let go,
+  // -2 laid, +4 measured for the two new text labels, +18 bindings for glass surface, text, over_alpha and tips-layer
+  // quote pill; before it (1037, 31, 666, 80, 999))
+  "phone cold": (1028, 26, 664, 84, 1017),
   // (2026-11-18: a chat's page made as nodes kept as it is left (ui's Nav kept_left, sfbase's page_entry_parked) and
   // taken back as it is opened again, holding no chat meanwhile and waiting for none of it as it comes back; the same at
   // 60, 120, 24 and 7: before it (341, 19, 227, 28, 346) and wide again (897, 132, 853, 121, 1062))
@@ -123,7 +126,10 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // (+6 bindings, 1 let go fewer, 2026-11-21: a hairline ring of its own under each rail workspace shown by its letter
   // (sfdesk rail_workspaces_node), in place of the pointer's ground it rested on; the same at 60, 120, 24 and 7; before
   // it (2449, 501, 1924, 187, 2491))
-  "wide cold": (2449, 500, 1924, 187, 2497),
+  // (2026-11-22: composer-top liquid glass capsule displays agent name and station name: wide cold -5 made, -3 let go,
+  // -1 laid, +4 measured for the two new text labels, +13 bindings for glass surface, text, over_alpha and tips-layer
+  // quote pill; before it (2449, 500, 1924, 187, 2497))
+  "wide cold": (2444, 497, 1923, 191, 2510),
   // (2026-11-18: a chat's list's keys worked out of each message's JSON, its pieces of the core's tree's shape (sfpages
   // chat_said_keys_raw, sf core_pieces), each message read as a Message only as a row of it shows: wide again 2 made, 2
   // let go, 17 laid and 18 bindings fewer, the same at 60, 120, 24 and 7; before it (899, 134, 870, 121, 1080))

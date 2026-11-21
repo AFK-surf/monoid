@@ -41,6 +41,7 @@ fn chat_body_nodes(
     on_stack~,
     cover=fn() { chat_bar_room(in_pane~) },
     room=list_head_gap,
+    foot_clear_extra=fn() { 36.0 },
     composer=fn(n) {
       held.val = Some(n)
       composer(n)

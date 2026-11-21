@@ -21,9 +21,5 @@
       "src/sfdesk/tape_view.mbt": 1
     }
   },
-  "excused": {
-    "corners-each": {
-      "src/sfdesk/chat_page.mbt": 2
-    }
-  }
+  "excused": {}
 }

@@ -117,54 +117,6 @@ let ask_turns : Map[String, Int] = Map([])
 let bar_drop_people : Int = 1
 
 ///|
-/// The tag's height (its words' 16 and 2 over and under), its words' room at its ends, its dot's side.
-let station_tag_h : Double = 20.0
-
-///|
-/// Where the dot leading a station's tag stands in its round end (a capsule's: round, @sf.capsule_in's room its half).
-let station_dot_in : Double = @ui.capsule_in(station_tag_h / 2.0, via_dot_side, room=station_tag_h / 2.0)
-
-///|
-let station_tag_end : Double = 8.0
-
-///|
-let via_dot_side : Double = 7.0
-
-///|
-/// An agent's mark in the bar: 22 square on the card's ground with a line round it, its maker .6 of it,
-/// a station's mark 13.
-fn mark_side() -> Double {
-  22.0
-}
-
-///|
-fn mark_ground() -> (Int64, Double) {
-  let p = @sf.theme().p
-  (p.card, 1.0)
-}
-
-///|
-/// Its corner: 6.
-fn mark_corner(_side : Double) -> Double {
-  6.0
-}
-
-///|
-fn mark_logo(side : Double) -> Double {
-  side * 0.6
-}
-
-///|
-fn mark_station() -> Double {
-  13.0
-}
-
-///|
-fn station_part_type() -> (Double, Double, Double) {
-  (96.0, 5.0, 14.0)
-}
-
-///|
 /// MBUI_CHAT_BENCH=1: once the chat is in place, the pages before are brought in (held at its top) until it has 3000
 /// messages or no more (a minute at most); then from its end it is scrolled up 600 frames at 40 a frame, and the
 /// frames' times are said (CHATBENCH …) and the app ends.

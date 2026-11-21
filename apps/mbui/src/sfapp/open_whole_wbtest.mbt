@@ -199,7 +199,7 @@ fn open_agent_card(gates : Bool) -> @ui.Tester {
   t.run_for(@ui.move_most_ms * 2.0)
   let last = t
     .words()
-    .filter(fn(w) { w.0 == "Claude" && w.5 > 0.5 })
+    .filter(fn(w) { w.0 == "Claude" && w.5 > 0.5 && w.2 < 640.0 })
     .iter()
     .fold(init=None, fn(acc : (String, Double, Double, Double, Double, Double)?, w) {
       match acc {
@@ -221,14 +221,14 @@ test "大屏: an agent's card hovered the first time over a core 40 ms late: not
   let whole = "$4.20"
   for gates in [false, true] {
     let t = open_agent_card(gates)
-    let (early, _) = open_frames(t, 800.0, head, whole, open_late_ms - @ui.frame_period_default)
+    let (early, _) = open_frames(t, 640.0, head, whole, open_late_ms - @ui.frame_period_default)
     assert_eq(early, !gates, msg="gates \{gates}: seen before its view came")
-    let (seen, first_whole) = open_frames(t, 800.0, head, whole, @ui.move_most_ms)
+    let (seen, first_whole) = open_frames(t, 640.0, head, whole, @ui.move_most_ms)
     if gates {
       assert_true(seen && first_whole, msg="whole in its first frame (\{seen}, \{first_whole})")
     }
     t.run_for(@ui.move_most_ms)
-    assert_true(open_seen(t, head, 800.0) && open_seen(t, whole, 800.0), msg="gates \{gates}: open at rest")
+    assert_true(open_seen(t, head, 640.0) && open_seen(t, whole, 640.0), msg="gates \{gates}: open at rest")
   }
 }
 

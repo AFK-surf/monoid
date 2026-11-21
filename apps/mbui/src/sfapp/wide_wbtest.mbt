@@ -999,8 +999,8 @@ test "wide: a new chat's first words, the hint gone under them, into their bubbl
   let sent = t.time()
   // the new chat's choices gone with its page (the node page's own composer: newchat_send_wbtest says how they go)
   t.run_for(new_fade_ms + 1.0)
-  let (gx, _, gw, _) = composer_glass(t)
-  assert_true(seen_words(t, "Willow").iter().all(fn(p) { p.0 < gx || p.0 > gx + gw }), msg="the choices gone")
+  let (gx, gy, gw, gh) = composer_glass(t)
+  assert_true(seen_words(t, "Willow").iter().all(fn(p) { p.0 < gx || p.0 > gx + gw || p.1 < gy || p.1 > gy + gh }), msg="the choices gone")
   assert_false(hint_drawn(t), msg="the hint under the words sent, the composer gone to the chat's foot")
   // with the list, no frame where they are not, nor a jump
   let landed = one_way_till(t, words, sent + flight_carry_ms + 34.0, 120.0)
@@ -2355,7 +2355,7 @@ test "wide: ⌘V with a picture or files on the clipboard puts them in as files 
 test "wide: an agent's card over its picture beside its message (AgentCard.tsx), laid out as the web's over the window" {
   let calls : Array[Made] = []
   let t = wide_tester(calls, mode="chat-agent-card")
-  let word = fn(s : String) { t.words().filter(fn(w) { w.0 == s && w.5 > 0.5 }) }
+  let word = fn(s : String) { t.words().filter(fn(w) { w.0 == s && w.5 > 0.5 && w.2 < 640.0 }) }
   // the last of its messages' names; its picture in the margin before it
   let names = word("Claude")
   let last = match names.iter().fold(init=None, fn(acc : (String, Double, Double, Double, Double, Double)?, w) {
@@ -2589,7 +2589,7 @@ test "wide: the station a chat's agent runs on, beside its mark in the bar, has 
   let t = wide_tester(calls, mode="chat-agent-card")
   let word = fn(s : String) { t.words().filter(fn(w) { w.0 == s && w.5 > 0.5 }) }
   // its part of the tile: in the chat's bar, named for what it is
-  let part = t.locate("=Willow").filter(fn(p) { p.1 < 60.0 && p.0 > 400.0 })
+  let part = t.locate("=Willow").filter(fn(p) { p.1 > 600.0 && p.0 > 350.0 })
   assert_eq(part.length(), 1, msg="\{Repr(t.locate("=Willow"))}")
   assert_eq(word("机器详情").length(), 0)
   t.move_to(part[0].0, part[0].1)
@@ -2645,7 +2645,7 @@ fn working_agent_card(stands? : String) -> @ui.Tester {
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
   let last = t
     .words()
-    .filter(fn(w) { w.0 == "Claude" && w.5 > 0.5 })
+    .filter(fn(w) { w.0 == "Claude" && w.5 > 0.5 && w.2 < 640.0 })
     .iter()
     .fold(init=None, fn(acc : (String, Double, Double, Double, Double, Double)?, w) {
       match acc {
@@ -2662,7 +2662,7 @@ fn working_agent_card(stands? : String) -> @ui.Tester {
 ///|
 test "wide: a working agent's card has its stop at the end of where it stands, under its label (the corner rule sees it)" {
   let t = working_agent_card()
-  let shown = t.words().filter(fn(w) { w.5 > 0.5 })
+  let shown = t.words().filter(fn(w) { w.5 > 0.5 && w.2 < 640.0 })
   let label = shown.filter(fn(w) { w.0 == "Claude · Opus 5.5" })
   let stands = shown.filter(fn(w) { w.0 == "做完了" })
   // (the card's stop: right of the chat's column, where the activity's are)
@@ -2680,7 +2680,7 @@ test "wide: a working agent's card has its stop at the end of where it stands, u
 test "wide: a working agent's card whose standing is long (what it waits for) has it on whole lines, its stop by the first" {
   let waits = "等待：最新主线与读取修复的合并验证；之后验证分页和读取调度"
   let t = working_agent_card(stands=waits)
-  let shown = t.words().filter(fn(w) { w.5 > 0.5 })
+  let shown = t.words().filter(fn(w) { w.5 > 0.5 && w.2 < 640.0 })
   let stands = shown.filter(fn(w) { w.0.has_prefix("等待：") })
   let label = shown.filter(fn(w) { w.0 == "Claude · Opus 5.5" })
   let stop = t.locate("icon:stop").filter(fn(p) { label.length() == 1 && p.0 > label[0].1 })

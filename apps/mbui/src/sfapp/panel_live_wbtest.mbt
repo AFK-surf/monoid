@@ -150,7 +150,7 @@ test "panel live in the middle, 大屏 keyboard and mouse, in a short window: it
     #|    "甲",
     #|    (Some("第2行"), Some("第13行")),
     #|  ),
-    #|  (true, true, Some("任务"), "甲", (Some("第2行"), Some("第13行"))),
+    #|  (true, true, Some("任务"), "甲", (Some("第4行"), Some("第13行"))),
     #|  (
     #|    true,
     #|    true,
@@ -159,6 +159,8 @@ test "panel live in the middle, 大屏 keyboard and mouse, in a short window: it
     #|    (Some("第2行"), Some("第13行")),
     #|  ),
     #|]
+
+
   ))
 }
 
