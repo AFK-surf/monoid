@@ -370,8 +370,8 @@ test "home again: Home come back to in a taller phone's window, and from a page 
         (439, 0, 306)
       } else {
         // (用量's controls that are a button only while they filter, its rank rows and its legend, each over
-        // action_box_while_node's pick; 3 seg_fill_nodes -> made unchanged, +9 initial laid)
-        (487, 0, 407)
+        // action_box_while_node's pick; 3 seg_fill_nodes -> made unchanged, +9 initial laid; -1 structure-box in usage_node)
+        (486, 0, 406)
       }
       assert_eq(home_again_peak.val, first, msg="\{tag} home→\{place}")
       t.run_for(@sfapptest.kept_switch_over_ms)
