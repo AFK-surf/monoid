@@ -19,7 +19,9 @@
 //    file's sheet in its tile), in a capsule what stands at its ends concentric with them by their middles (a dot, a
 //    tab's ×; a capsule button by its end's). A capsule's mark concentric with one end and its lines of words at the
 //    other (a file's card: its name over its size) stand each as its end has it: the mark so, the lines' box as clear
-//    of the curve at theirs as of the capsule's top and foot.
+//    of the curve at theirs as of the capsule's top and foot. A box with no corner of its own, one end in a round corner
+//    of what holds it (the window's) and the other on a square edge: that end stands as the corner has it, a block
+//    concentric with the corner, or what is there past its curve by as far as the other end is in.
 //
 // 5. The blocks that show their edges (a ground, an edge, what lights up), half as wide as what they stand on at least,
 //    the outermost on it, stand on the edges most of them do, whatever boxes lay them out: one off them by less than
@@ -542,6 +544,8 @@ fn Ctx::gap_rules(self : Ctx) -> Array[String] {
   self.gap_meet_faults(whole, layer, pictures, out)
   // 4. what a box with a ground holds, in from its edges and as far from both sides: each content's box, the nearest
   // grounded one round it
+  // (the rounded grounds laid as layers under boxes of their size: rule 4's containers, rules 5, 7 and 8's grounds)
+  let laid = self.layer_grounds()
   let held : Map[Int, Array[Int]] = Map([])
   for i in 0..<n {
     let c = self.nodes[i]
@@ -724,9 +728,8 @@ fn Ctx::gap_rules(self : Ctx) -> Array[String] {
       (x0 - gb.x, gb.x + gb.fw - x1)
     }
     // (and where those boxes are not as far in, what is seen in it may be: its words, drawings and blocks with a ground,
-    // wherever in it (its held, as above), not a row's padding nor a button's room whose ground only the hand shows. A
-    // wide chat's bar: its title's row 12 in, its last button's room 6 from its end, concentric with the window's corner
-    // as the corner rule has it, its title and that button's icon each 20 in where the window's corner is round; 2026-11-15)
+    // wherever in it (its held, as above), not a row's padding nor a button's room whose ground only the hand shows: a
+    // bar's title's row 12 in and its words 20 (12 + 8), its last button's room 12 from its end and its icon 20 (12 + 8))
     // (a block with a ground at one end, as far from the box's top, foot and that end and round by the box's corner
     // less that, is concentric with the box's corners there, as what stands at a capsule's end is (a tip's last key
     // cap, 4 in, 6 round in a tip 10 round): that end is seen as far in as the centre of their arcs, the box's corner,
@@ -763,8 +766,97 @@ fn Ctx::gap_rules(self : Ctx) -> Array[String] {
       Some((sl, sr)) => (sl - sr).abs() <= 2.0 * gap_slack
       None => false
     }
+    // (a box with no corner of its own, one end in a round corner of what holds it (the window's top right, laid by
+    // the system) and the other on a square edge (a pane's beside it): that end stands as the corner has it, not as
+    // the other. A block round at that corner as far from both its edges and round by the corner less that, the
+    // outermost at that end, is concentric with it (a button 6 from the bar's end and top in a 16 corner, 10 round, as
+    // round as a corner in a corner may be; in an 8 corner 2, too small: said); else what is at that end stands past
+    // the curve by as far as the other end is in (12 at one end, 28 in a 16 corner))
+    let outer_even = fn() -> Bool {
+      if gb.corner() >= gap_slack {
+        return false
+      }
+      let ct = match self.corner_container(gi, laid) {
+        Some(ct) => ct
+        None => return false
+      }
+      let ca = self.nodes[ct.node]
+      let at_top = (gb.y - ca.y).abs() <= gap_slack
+      let at_foot = (ca.y + ca.fh - (gb.y + gb.fh)).abs() <= gap_slack
+      let outer = fn(left : Bool) -> (Int, Double)? {
+        let at_side = if left {
+          (gb.x - ca.x).abs() <= gap_slack
+        } else {
+          (ca.x + ca.fw - (gb.x + gb.fw)).abs() <= gap_slack
+        }
+        if !at_side {
+          return None
+        }
+        let ends = if left { [(0, at_top), (3, at_foot)] } else { [(1, at_top), (2, at_foot)] }
+        let mut best : (Int, Double)? = None
+        for e in ends {
+          let (k, at) = e
+          let cr = self.container_r(ct, k)
+          if at && cr >= 6.0 && self.corner_fits_least(cr) {
+            match best {
+              Some((_, b)) if b >= cr => ()
+              _ => best = Some((k, cr))
+            }
+          }
+        }
+        best
+      }
+      let (ck, cr, corner_left) = match (outer(true), outer(false)) {
+        (Some((k, kr)), None) => (k, kr, true)
+        (None, Some((k, kr))) => (k, kr, false)
+        _ => return false
+      }
+      let (end_in, other_in) = if corner_left { (l, r) } else { (r, l) }
+      for m in 0..<n {
+        if m == gi || !whole[m] || layer[m] != layer[gi] {
+          continue
+        }
+        let mb = self.nodes[m]
+        if !(mb.shows_ground() || mb.lit_ground()) || mb.corner_at(ck) < gap_slack {
+          continue
+        }
+        let dx = if corner_left { mb.x - ca.x } else { ca.x + ca.fw - (mb.x + mb.fw) }
+        let dy = if ck < 2 { mb.y - ca.y } else { ca.y + ca.fh - (mb.y + mb.fh) }
+        if dx < gap_slack ||
+          dx >= cr - gap_slack ||
+          (dx - dy).abs() > gap_slack ||
+          !self.corner_fits_least(cr - dy) ||
+          (dx - end_in).abs() > gap_slack ||
+          other_in < dx - gap_slack {
+          continue
+        }
+        let mut q = mb.parent
+        while q >= 0 && q != gi {
+          q = self.nodes[q].parent
+        }
+        if q == gi {
+          return true
+        }
+      }
+      end_in >= cr + gap_slack && (end_in - cr - other_in).abs() <= 2.0 * gap_slack
+    }
+    // (one box with no ground laid across it alone, what is seen in it not spanning it (in from a side by a quarter of
+    // it or more: a bar's row holding its title alone, before its buttons show), does not span it; two at its two
+    // ends (a field and its button, nothing typed in the field yet) still do)
+    let one_unspanned = first >= 0 &&
+      first == last &&
+      self.nodes[first].kind == kind_box &&
+      !self.nodes[first].grounded() &&
+      !(sx0 < sx1 && sx0 - gb.x < gb.fw / 4.0 && gb.x + gb.fw - sx1 < gb.fw / 4.0)
     let one_line = y1 - y0 <= tallest + gap_slack
-    if bx0 < bx1 && one_line && l < gb.fw / 4.0 && r < gb.fw / 4.0 && (l - r).abs() > 2.0 * gap_slack && !seen_even {
+    if !one_unspanned &&
+      bx0 < bx1 &&
+      one_line &&
+      l < gb.fw / 4.0 &&
+      r < gb.fw / 4.0 &&
+      (l - r).abs() > 2.0 * gap_slack &&
+      !seen_even &&
+      !outer_even() {
       let shown = match seen {
         Some((sl, sr)) => " (what is seen of it \{sl} and \{sr})"
         None => ""
@@ -779,7 +871,6 @@ fn Ctx::gap_rules(self : Ctx) -> Array[String] {
   // out or falls short
   let groups : Map[Int, Array[Int]] = Map([])
   // (a box grounded by a layer of its size under it, a card drawn so, is grounded as one with its own: by that ground)
-  let laid = self.layer_grounds()
   let ground_of = fn(k : Int) -> Int? {
     if self.nodes[k].grounded() {
       Some(k)

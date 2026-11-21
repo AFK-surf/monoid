@@ -44,7 +44,9 @@
 /// Their counts add up to the earlier counts for all odd windows. 2026-11-19, rule 8 counting the tree's marks among
 /// the rows' words (Ctx::tree_draws) and taking a row with a ground at rest as wide and as far in as the rows (the one
 /// chosen, one opened in place) for one of them, its words held to their line: one fewer in zh 0/4, zh 1/2 and both
-/// English halves.
+/// English halves. 2026-11-21, rule 4 taking a bar's end in the window's round corner as that corner has it (its last
+/// button concentric with it, or a capsule past its curve) and asking only where what is seen spans the box (not a
+/// loading chat's half row): the wide chats' heads, 80 fewer in each 1/2.
 let gaps_known : Map[String, Int] = {
   "zh 0/4 rule 1": 0,
   "zh 0/4 rule 2": 0,
@@ -67,7 +69,7 @@ let gaps_known : Map[String, Int] = {
   "zh 1/2 rule 1": 0,
   "zh 1/2 rule 2": 0,
   "zh 1/2 rule 3": 0,
-  "zh 1/2 rule 4": 81,
+  "zh 1/2 rule 4": 1,
   "zh 1/2 rule 5": 0,
   "zh 1/2 rule 6": 0,
   "zh 1/2 rule 7": 0,
@@ -85,7 +87,7 @@ let gaps_known : Map[String, Int] = {
   "en 1/2 rule 1": 0,
   "en 1/2 rule 2": 0,
   "en 1/2 rule 3": 0,
-  "en 1/2 rule 4": 82,
+  "en 1/2 rule 4": 2,
   "en 1/2 rule 5": 0,
   "en 1/2 rule 6": 0,
   "en 1/2 rule 7": 0,
