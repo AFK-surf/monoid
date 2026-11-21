@@ -313,7 +313,11 @@ fn rs_bar(t : @ui.Tester, h : Double) -> Double? {
       }
     }
   }
-  at
+  match at {
+    // (on narrow phones, narrow_bar_scrim_node extends 14pt below the bar's interactive foot for its soft bottom fade)
+    Some(b) if t.size().0 < @sf.medium_from => Some(b - 14.0)
+    other => other
+  }
 }
 
 ///|

@@ -901,7 +901,10 @@ fn narrow_bar_scrim_node(
     .fades(Is((0.0, 0.0, 0.0, fade_h)))
     |> ignore
     scrim.box(fn(fill) {
-      fill.width_share(Is(1.0)).height_share(Is(1.0)).ground(By(fn() { @sf.theme().p.bg })) |> ignore
+      // (register fill in inputs_in via pointed() while keeping points=false so Tree::target_at visits fill and
+      // applies Node::covers to block click-through onto scrolled content behind the top bar without affecting hover)
+      fill.width_share(Is(1.0)).height_share(Is(1.0)).ground(By(fn() { @sf.theme().p.bg })).points(Is(false)) |> ignore
+      fill.pointed() |> ignore
     })
     |> ignore
   })
