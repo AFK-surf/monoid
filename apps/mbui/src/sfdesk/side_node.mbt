@@ -485,11 +485,10 @@ fn lists_band_node(
 /// 新建对话 stands elsewhere: as wide as the row, as high as a band's row; its place handed to the system's glass as it is
 /// read out (native_sidebar_items, by its node's id), what the workspaces' sheet opens beside, let go with it.
 fn workspace_glass_node(r : @view.View, src : Source, workspace : () -> Workspace?) -> Unit {
-  r.box(fn(b) {
+  @sf.host_button_anchor_node(r, fn() { workspace().map(fn(w) { w.name }).unwrap_or("") }, fn(b) {
     b
     .grow(Is(1.0))
     .height(By(fn() { Some(@sf.band_row_h()) }))
-    .says(By(fn() { Some(@view.said(Button, label=workspace().map(fn(w) { w.name }).unwrap_or(""))) }))
     |> ignore
     let id = @ui.tree_read_out_id(b)
     native_workspace_hooked()
@@ -527,11 +526,10 @@ fn sidebar_glass_node(
   icon : String,
   menu : () -> Array[(String, String, Bool, String)],
 ) -> Unit {
-  k.box(fn(b) {
+  @sf.host_button_anchor_node(k, title, fn(b) {
     b
     .width(By(fn() { Some(@sf.band_row_h()) }))
     .height(By(fn() { Some(@sf.band_row_h()) }))
-    .says(By(fn() { Some(@view.said(Button, label=title())) }))
     |> ignore
     let id = @ui.tree_read_out_id(b)
     native_workspace_hooked()

@@ -1871,7 +1871,7 @@ fn attach_node(
   no_files : () -> Bool,
   place? : (@view.View) -> Unit = fn(_) {  },
 ) -> Unit {
-  @headless.button(
+  @sf.action_box_node(
     parent,
     fn() { @sf.t("web-main.composer.attach") },
     fn(b) {
@@ -1882,8 +1882,8 @@ fn attach_node(
       }
     },
     disabled=no_files,
-    fn(b, state) {
-      let lit = fn() { !no_files() && (state.hovered() || state.pressed() || state.focus_shown()) }
+    fn(b) {
+      let lit = fn() { !no_files() && @sf.lit_node(b) }
       let side = @sf.theme().round.side
       place(b)
       b
@@ -1892,7 +1892,6 @@ fn attach_node(
       .radius(Is(side / 2.0))
       .lines_up(Is(Some(Middle)))
       .lies_along(Is(Middle))
-      .focus_ring_theme()
       |> ignore
       @sf.hover_ground_node(b, on=fn() { !no_files() })
       @sf.icon_node(
@@ -1932,25 +1931,28 @@ fn cc_chooser_node(parent : @view.View, src : Source, r : ChatRef, head : () -> 
   }
   let open = @signals.signal(false, same=fn(a, b) { a == b })
   let label = fn() { @sf.t("web-main.composer.ccLabel") }
-  let b = @headless.disclosure(parent, fn() { ([label()] + to().0.filter(fn(o) { o.on }).map(fn(o) { o.place })).join(" ") }, fn() {
-    open.get()
-  }, fn(_) { open.set(!open.untracked()) }, fn(v, d) {
-    let lit = fn() { @sf.lit_node(v) || d.open() }
-    v
-    .row(Is(true))
-    .height(Is(Some(@ui.Space::px(S7))))
-    .padding(Is((@ui.Space::px(S2), 0.0, @ui.Space::px(S2), 0.0)))
-    .gap(Is(@ui.Space::px(S1_5)))
-    .radius(By(fn() { @ui.tree_theme().corner(Lg) }))
-    .lines_up(Is(Some(Middle)))
-    .ground(By(fn() { if lit() { @ui.tree_theme().color(Hover) } else { 0L } }))
-    .focus_ring_theme()
-    |> ignore
-    @sf.words_node(v, label, fn() { if lit() { cc_words_lit } else { cc_words } }) |> ignore
-    @sf.icon_node(v, "chevron-down", 12.0, By(fn() { if lit() { @sf.theme().p.text } else { @sf.theme().p.muted } }))
-    |> ignore
-    v.on_leaving(fn() { open.set(false) }) |> ignore
-  })
+  let b = @sf.action_box_node(
+    parent,
+    fn() { ([label()] + to().0.filter(fn(o) { o.on }).map(fn(o) { o.place })).join(" ") },
+    fn(_) { open.set(!open.untracked()) },
+    expanded=fn() { open.get() },
+    fn(v) {
+      let lit = fn() { @sf.lit_node(v) || open.get() }
+      v
+      .row(Is(true))
+      .height(Is(Some(@ui.Space::px(S7))))
+      .padding(Is((@ui.Space::px(S2), 0.0, @ui.Space::px(S2), 0.0)))
+      .gap(Is(@ui.Space::px(S1_5)))
+      .radius(By(fn() { @ui.tree_theme().corner(Lg) }))
+      .lines_up(Is(Some(Middle)))
+      .ground(By(fn() { if lit() { @ui.tree_theme().color(Hover) } else { 0L } }))
+      |> ignore
+      @sf.words_node(v, label, fn() { if lit() { cc_words_lit } else { cc_words } }) |> ignore
+      @sf.icon_node(v, "chevron-down", 12.0, By(fn() { if lit() { @sf.theme().p.text } else { @sf.theme().p.muted } }))
+      |> ignore
+      v.on_leaving(fn() { open.set(false) }) |> ignore
+    },
+  )
   // (its menu made over the window, living as long as 抄送 does: not in the composer, which cuts what it holds)
   let holder = parent.tree.root().box(fn(h) { h.over(Is(true)) |> ignore }).lives_with(b)
   @sf.menu_ticks_node(

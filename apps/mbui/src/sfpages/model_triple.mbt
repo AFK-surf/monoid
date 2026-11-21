@@ -2170,11 +2170,9 @@ fn triple_chip_node(
   maker? : () -> String = fn() { "" },
   look? : () -> @ui.TextStyle = fn() { triple_who_name },
 ) -> @view.View {
-  parent.box(fn(b) {
+  @sf.action_box_node(parent, words, press, fn(b) {
     @sf.style_node(b, fn() { triple_who(hot=@sf.lit_node(b)) }, in_row=true)
     b.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-    b.says(By(fn() { Some(@view.said(Button, label=words())) })) |> ignore
-    @sf.presses_node(b, fn() { press(b) })
     @sf.words_node(b, fn() { head }, fn() { triple_who_lead }) |> ignore
     // (its mark where it has one; none, nor the room after it: the capsule as wide as its words make it)
     b.box(fn(mb) {
@@ -3010,12 +3008,10 @@ fn triple_option_node(
   press~ : () -> Unit,
   able? : () -> Bool = fn() { true },
 ) -> @view.View {
-  parent.box(fn(b) {
+  @sf.action_box_node(parent, label, fn(_) { press() }, disabled=fn() { !able() }, fn(b) {
     // (across its column, as wide as its words need at least: what the column needs, the panel's columns laid out by it)
     @sf.style_node(b, fn() { triple_option_look(on() || active() || @sf.lit_node(b)) })
     b.min_width(Is(Some(0.0))) |> ignore
-    b.says(By(fn() { Some(@view.said(Button, label=label())) })) |> ignore
-    @sf.presses_node(b, press, on=able)
     body(b)
     // what is at its end, at the end: the room left, never less than it needs
     b.box(fn(e) {

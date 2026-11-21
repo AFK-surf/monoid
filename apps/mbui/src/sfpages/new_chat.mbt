@@ -594,18 +594,24 @@ fn station_rows_node(n : @view.View, src : Source, w : Workspace, v : Json?, clo
   for s in items(v, "stations") {
     let st = Some(s)
     let here = !is_auto && text(st, "station") == current
-    n.box(fn(row) {
-      // (its words on the panel's words' line wherever it is drawn: @sf.panel_row_in_node; its ground under a mouse, as
-      // panel_row_in's `hovered`)
-      @sf.style_node(row, fn() { station_row.then(@sf.panel_row_in_node(row)) })
-      @sf.hover_ground_node(row, lit=Some(fn() { @sf.hovered_in_node(row) || row.focus_shown() }))
-      @sf.rippled_node(row, fn() {
+    @sf.action_box_node(
+      n,
+      fn() { text(st, "name") },
+      fn(_) {
         @sfbase.pick_new(src, w.id, { "station": Json::string(text(st, "id")) })
         close()
-      }, @sf.row_corner, fn() { text(st, "name") })
-      // (read out checked or not: the one it starts on)
-      row.says(Is(Some(@view.said(Button, label=text(st, "name"), check=if here { On } else { Off })))) |> ignore
-      row.box(fn(m) {
+      },
+      check=fn() { if here { On } else { Off } },
+      fn(row) {
+        // (its words on the panel's words' line wherever it is drawn: @sf.panel_row_in_node; its ground under a mouse, as
+        // panel_row_in's `hovered`)
+        @sf.style_node(row, fn() { station_row.then(@sf.panel_row_in_node(row)) })
+        @sf.hover_ground_node(row, lit=Some(fn() { @sf.hovered_in_node(row) || row.focus_shown() }))
+        @sf.rippled_node(row, fn() {
+          @sfbase.pick_new(src, w.id, { "station": Json::string(text(st, "id")) })
+          close()
+        }, @sf.row_corner, fn() { text(st, "name") })
+        row.box(fn(m) {
         @sf.style_node(m, fn() { station_row_mark_box }, in_row=true)
         if @sf.has_station_mark(text(st, "emoji"), text(st, "icon")) {
           @sf.station_mark_node(m, fn() { text(st, "emoji") }, fn() { text(st, "icon") }, station_row_mark, fn() {

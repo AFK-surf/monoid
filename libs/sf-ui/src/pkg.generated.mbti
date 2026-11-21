@@ -32,7 +32,7 @@ pub let accents : Array[AccentTone]
 
 pub fn action(@ui.Ctx, String, String, icon? : String, busy? : Bool, disabled? : Bool, bad? : Bool) -> Bool
 
-pub fn action_box_node(@view.View, () -> String, (@view.View) -> Unit, (@view.View) -> Unit, selected? : () -> Bool, expanded? : () -> Bool, on? : () -> Bool, disabled? : () -> Bool, label_is? : String, in_node? : Bool, on_hold? : () -> Unit, loc~ : SourceLoc) -> @view.View
+pub fn action_box_node(@view.View, () -> String, (@view.View) -> Unit, (@view.View) -> Unit, selected? : () -> Bool, expanded? : () -> Bool, on? : () -> Bool, check? : () -> @view.Check, disabled? : () -> Bool, said_while_disabled? : Bool, focusable? : Bool, label_is? : String, in_node? : Bool, on_hold? : () -> Unit, loc~ : SourceLoc) -> @view.View
 
 pub fn action_box_while_node(@view.View, () -> Bool, () -> String, (@view.View) -> Unit, (@view.View) -> Unit, expanded? : () -> Bool, loc~ : SourceLoc) -> Unit
 
@@ -275,6 +275,9 @@ pub fn check_row_node(@view.View, () -> String, () -> Bool, (Bool) -> Unit, note
 pub fn chip(@ui.Ctx, String, key? : String, icon? : String, ink? : Int64, disabled? : Bool, inner? : Bool, said? : String, on_press? : () -> Unit) -> Bool
 
 pub fn chip_node(@view.View, () -> String, () -> Unit, icon? : String, ink? : () -> Int64, said? : () -> String, tips? : TipLayer) -> @view.View
+
+#callsite(autofill(loc))
+pub fn chip_tabs_node(@view.View, () -> String, Array[String], () -> String, (String) -> Unit, (String) -> String, (@view.View, String, RadioRow) -> Unit, on_item? : (String, @view.View) -> Unit, loc~ : SourceLoc) -> @view.View
 
 pub fn choice(String, String, note? : String, value? : String, icon? : String, mark? : ChoiceMark) -> Choice
 
@@ -854,6 +857,9 @@ pub fn hold_button_node(@view.View, () -> String, () -> Unit, hold_ms? : Double,
 pub fn holds_least(Double) -> Double
 
 pub let home_workspace_title_look : @view.WordsLook
+
+#callsite(autofill(loc))
+pub fn host_button_anchor_node(@view.View, () -> String, (@view.View) -> Unit, loc~ : SourceLoc) -> @view.View
 
 pub let hover_card_close_ms : Double
 

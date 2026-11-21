@@ -1079,11 +1079,12 @@ fn pane_edge(n : @view.View, holder : @view.View, src : Source, tips : @sf.TipLa
   @ui.yield_thumbs(e)
   // (a button's as the web's is: its pointer the resizing one while open; read out as what a press does; Enter, Space
   // or a screen reader's press of it, as a press of it is)
-  e
-  .cursor(By(fn() { if wide.folded.get() { None } else { Some(ResizeX) } }))
-  .says(By(fn() { Some(@view.said(Button, label=words())) }))
-  .focusable(Is(true))
-  .on_press(fold)
+  @sf.action_box_node(e, words, fn(_) { fold() }, in_node=true, fn(v) {
+    v
+    .focus_ring(Is(None))
+    .cursor(By(fn() { if wide.folded.get() { None } else { Some(ResizeX) } }))
+    |> ignore
+  })
   |> ignore
   e.box(fn(g) {
     g.over(Is(true)).padding(Is((@ui.Space::px(@sf.edge_in), 0.0, 0.0, 0.0))) |> ignore

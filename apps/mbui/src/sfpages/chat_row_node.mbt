@@ -959,45 +959,44 @@ fn tray_node(
         |> ignore
         h.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
         // 撤销: its room to the hand at least undo_reach high, its capsule as high as a row's key, lit under the hand
-        h.box(fn(k) {
-          k
-          .row(Is(true))
-          .lines_up(Is(Some(Middle)))
-          .shrink(Is(0.0))
-          .min_height(Is(Some(undo_reach)))
-          .says(By(fn() {
-            if undo_on() {
-              Some(@view.said(Button, label=@sf.t("android-chat.archived.undo")))
-            } else {
-              None
-            }
-          }))
-          .moved_by(
-            fn(kw, _, _) {
-              let w = room.width()
-              let q = if here { tray.undo_in(k, w) } else { 0.0 }
-              (-end_in() + (1.0 - q) * (end_in() + kw), 0.0)
-            },
-            fn(_, _) { 0.0 },
-          )
-          |> ignore
-          @sf.presses_node(k, undo, on=undo_on)
-          k.box(fn(c) {
-            c
+        @sf.action_box_node(
+          h,
+          fn() { @sf.t("android-chat.archived.undo") },
+          fn(_) { undo() },
+          disabled=fn() { !undo_on() },
+          said_while_disabled=false,
+          fn(k) {
+            k
             .row(Is(true))
             .lines_up(Is(Some(Middle)))
-            .height(Is(Some(row_key_side)))
-            .radius(Is(row_key_side / 2.0))
-            .padding(By(fn() { (side(), 0.0, side(), 0.0) }))
+            .shrink(Is(0.0))
+            .min_height(Is(Some(undo_reach)))
+            .moved_by(
+              fn(kw, _, _) {
+                let w = room.width()
+                let q = if here { tray.undo_in(k, w) } else { 0.0 }
+                (-end_in() + (1.0 - q) * (end_in() + kw), 0.0)
+              },
+              fn(_, _) { 0.0 },
+            )
             |> ignore
-            @sf.hover_ground_node(c, by=k, on=undo_on, color=fn() { @sf.alpha(@sf.theme().p.text, 0.08) })
-            @sf.words_node(c, fn() { @sf.t("android-chat.archived.undo") }, fn() {
-              swipe_words.then(@ui.text_style(color=Data(ink(c, fn(p) { p.text }))))
+            k.box(fn(c) {
+              c
+              .row(Is(true))
+              .lines_up(Is(Some(Middle)))
+              .height(Is(Some(row_key_side)))
+              .radius(Is(row_key_side / 2.0))
+              .padding(By(fn() { (side(), 0.0, side(), 0.0) }))
+              |> ignore
+              @sf.hover_ground_node(c, by=k, on=undo_on, color=fn() { @sf.alpha(@sf.theme().p.text, 0.08) })
+              @sf.words_node(c, fn() { @sf.t("android-chat.archived.undo") }, fn() {
+                swipe_words.then(@ui.text_style(color=Data(ink(c, fn(p) { p.text }))))
+              })
+              |> ignore
             })
             |> ignore
-          })
-          |> ignore
-        })
+          },
+        )
         |> ignore
       })
       held.over(Is(true)).moved_by(fn(w, _, _) { (-tray.edge(held, w), 0.0) }, fn(_, _) { 0.0 }) |> ignore

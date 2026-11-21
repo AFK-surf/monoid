@@ -163,28 +163,39 @@ pub fn drive_row_node(
         // (had by holding it, its menu says what it is of: a sheet over the row it was held on)
         drive_row_menu(key, (row.items)(), @sf.at_point(x, y), title=if held { @signals.untracked(e).name } else { "" })
       }
-      @sf.row_presses_node(
+      @sf.action_box_node(
         g,
-        By(fn() { if @sf.more_held() { @sf.row_corner } else { row_round } }),
-        fn() {
+        fn() { e().name },
+        fn(_) {
           if @signals.untracked(live) {
             if finger() { (row.open)() } else { (row.press)() }
           }
         },
-        fn(d) {
-          guard @signals.untracked(live) else { return }
-          if g.twice(d) || finger() {
-            (row.open)()
-          } else {
-            (row.press)()
-          }
+        selected=row.chosen,
+        expanded?=if tree && dir { Some(expanded) } else { None },
+        in_node=true,
+        fn(g) {
+          @sf.row_presses_node(
+            g,
+            By(fn() { if @sf.more_held() { @sf.row_corner } else { row_round } }),
+            fn() {
+              if @signals.untracked(live) {
+                if finger() { (row.open)() } else { (row.press)() }
+              }
+            },
+            fn(d) {
+              guard @signals.untracked(live) else { return }
+              if g.twice(d) || finger() {
+                (row.open)()
+              } else {
+                (row.press)()
+              }
+            },
+            fn(d) { menu_at(d.wx, d.wy, true) },
+            fn(x, y) { menu_at(x, y, false) },
+          )
         },
-        fn(d) { menu_at(d.wx, d.wy, true) },
-        fn(x, y) { menu_at(x, y, false) },
       )
-      g.says(By(fn() {
-        Some(@view.said(Button, label=e().name, selected=(row.chosen)(), expanded?=if tree && dir { Some(expanded()) } else { None }))
-      }))
       |> ignore
       g.box(fn(inner) {
         @sf.style_node(inner, fn() {

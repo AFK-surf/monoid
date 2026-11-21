@@ -38,12 +38,6 @@
       "src/sfdesk/rail_node.mbt": 2,
       "src/sfdesk/tape_view.mbt": 1
     },
-    "page-control-by-hand": {
-      "src/sfdesk/page_pane.mbt": 1,
-      "src/sfdesk/pane_view.mbt": 1,
-      "src/sfdesk/side_node.mbt": 2,
-      "src/sfdesk/tape_view.mbt": 1
-    },
     "structure-box": {
       "src/sfdesk/archive_side_node.mbt": 1,
       "src/sfdesk/attention.mbt": 3,

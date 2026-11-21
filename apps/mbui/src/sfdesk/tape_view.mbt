@@ -1118,43 +1118,50 @@ fn tape_cover(n : @view.View, p : TapePane, room : () -> (Double, Double, Double
       fn(cover) {
         // (a finger's press on it keeps what a finger picked: its pull begins all the same, as the old cover's)
         @ui.keeps_picked(cover) |> ignore
-        cover
-        .grow(Is(1.0))
         // (what a screen reader says of it: a button, what pressing it does; none of the one in use, on its way to it
-        // or pulled over, its own widgets read out)
-        .says(By(fn() { Some(@view.said(Button, label=tape_words(p))) }))
-        .hides(By(fn() { wide.tape_at.get() == p }))
-        // (the page's, while the sidebar is in use: a stop of the keyboard's after the sidebar's own, Enter or Space
-        // bringing the page over as a press does; the keyboard's one way to it, all of the page behind taking none:
-        // tape_in_use)
-        .focusable(By(fn() { p == Page && wide.tape_at.get() == Side }))
-        .focus_ring(Is(Some((-1.0, -4.0, 0L))))
-        // (pressed by a screen reader: brought over at that moment, as a tap brings it; a finger and the pointer its
-        // gesture's, as ever: what drags a node is what a press on it finds)
-        .on_press(fn() {
-          wide.tape_ask.set(Some(p))
-          tape_take_ask(cover.cause_at()) |> ignore
-        })
-        .on_menu(fn(m) {
-          wide.tape_ask.set(Some(p))
-          tape_take_ask(m.at) |> ignore
-        })
-        .gesture(
-          @ui.press_slop,
-          // (a finger held still on it the long press's while: handed to what is under it, the panel's own words
-          // picked as it is brought over)
-          through=@ui.long_press_ms,
-          press=fn(d) { down.val = Some((d.wx, d.at)) },
-          tap=fn(d) {
-            down.val = None
+        // or pulled over, its own widgets read out; pressed by a screen reader: brought over at that moment, as a tap
+        // brings it; a finger and the pointer its gesture's, as ever: what drags a node is what a press on it finds)
+        @sf.action_box_node(
+          cover,
+          fn() { tape_words(p) },
+          fn(_) {
             wide.tape_ask.set(Some(p))
-            tape_take_ask(d.at) |> ignore
+            tape_take_ask(cover.cause_at()) |> ignore
           },
-          drag=fn(d) {
-            tape_pulled(p, d, down.val.unwrap_or((d.wx, d.at)))
-            if d.kind is (Up | Off) {
-              down.val = None
-            }
+          in_node=true,
+          focusable=false,
+          fn(cover) {
+            cover
+            .grow(Is(1.0))
+            .hides(By(fn() { wide.tape_at.get() == p }))
+            // (the page's, while the sidebar is in use: a stop of the keyboard's after the sidebar's own, Enter or Space
+            // bringing the page over as a press does; the keyboard's one way to it, all of the page behind taking none:
+            // tape_in_use)
+            .focusable(By(fn() { p == Page && wide.tape_at.get() == Side }))
+            .focus_ring(Is(Some((-1.0, -4.0, 0L))))
+            .on_menu(fn(m) {
+              wide.tape_ask.set(Some(p))
+              tape_take_ask(m.at) |> ignore
+            })
+            .gesture(
+              @ui.press_slop,
+              // (a finger held still on it the long press's while: handed to what is under it, the panel's own words
+              // picked as it is brought over)
+              through=@ui.long_press_ms,
+              press=fn(d) { down.val = Some((d.wx, d.at)) },
+              tap=fn(d) {
+                down.val = None
+                wide.tape_ask.set(Some(p))
+                tape_take_ask(d.at) |> ignore
+              },
+              drag=fn(d) {
+                tape_pulled(p, d, down.val.unwrap_or((d.wx, d.at)))
+                if d.kind is (Up | Off) {
+                  down.val = None
+                }
+              },
+            )
+            |> ignore
           },
         )
         |> ignore

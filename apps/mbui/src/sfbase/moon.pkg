@@ -16,7 +16,6 @@ import {
   "mbui/dmath",
   "mbui/signals",
   "mbui/view",
-  "mbui/headless",
   "stillfail/sf",
   "stillfail/gallery",
   "stillfail/sfapp/settings",

@@ -1578,21 +1578,23 @@ fn board_chips_node(v : @view.View, src : Source, ws : () -> String) -> Unit {
       .min_width(By(fn() { Some(held.window_w()) }))
       .offset(By(fn() { (left.shown(row), 0.0) }))
       |> ignore
-      @headless.radio_group(
+      @sf.chip_tabs_node(
         row,
         fn() { @sf.t("web-main.board.board") },
+        lanes,
         fn() { @sfbase.board_lane.get() },
         fn(lane) { @sfbase.board_lane.set(lane) },
-        kind=Tab,
-        in_node=true,
-        fn(g, rg) {
-          for k, lane in lanes {
-            let count = fn() { counts.get().get(k).unwrap_or(0) }
-            let said = fn() { @sfbase.board_lane_words(lane) + " " + count().to_string() }
-            let chip = rg.item(g, fn() { lane }, said, fn(c, item) { board_chip_look(c, item, lane, count) })
-            chips[lane] = chip
-          }
+        fn(lane) {
+          let k = lanes.search(lane).unwrap_or(0)
+          let count = counts.get().get(k).unwrap_or(0)
+          @sfbase.board_lane_words(lane) + " " + count.to_string()
         },
+        fn(c, lane, item) {
+          let k = lanes.search(lane).unwrap_or(0)
+          let count = fn() { counts.get().get(k).unwrap_or(0) }
+          board_chip_look(c, item, lane, count)
+        },
+        on_item=fn(lane, chip) { chips[lane] = chip },
       )
       |> ignore
       // (column `lane`'s chip whole in sight, its margin beside it: scrolled to (`glide`) from where it shows now, or
@@ -1658,9 +1660,9 @@ fn board_line(v : @view.View, look : @ui.TextStyle) -> Double {
 /// A chip's look (board_chips_node's, an item of its radio group in `c`): board_chip_h high at least, growing with its
 /// words at the system's size of words, round; its words and its count on a tint of the words' ink, the accent's while
 /// chosen; the hand on it warming its ground over dur_ms; the keyboard's focus a ring of the theme's where it shows.
-fn board_chip_look(c : @view.View, item : @headless.RadioItem, lane : String, count : () -> Int) -> Unit {
-  let on = fn() { item.chosen() }
-  let lit = fn() { !on() && (item.hovered() || item.focus_shown() || item.pressed()) }
+fn board_chip_look(c : @view.View, item : @sf.RadioRow, lane : String, count : () -> Int) -> Unit {
+  let on = fn() { item.picked() }
+  let lit = fn() { !on() && item.lit() }
   let hand = @motion.NodeWay::new(if @signals.untracked(lit) { 1.0 } else { 0.0 })
   c.reacts(lit, fn(l) { hand.go_ms(c, if l { 1.0 } else { 0.0 }, @sf.dur_ms) })
   c
@@ -1684,7 +1686,7 @@ fn board_chip_look(c : @view.View, item : @headless.RadioItem, lane : String, co
       @sf.alpha(p.text, 0.05 + 0.04 * hand.shown(c))
     }
   }))
-  .edge(By(fn() { if item.focus_shown() { (@ui.tree_theme().focus_w, @ui.tree_theme().focus) } else { (0.0, 0L) } }))
+  .edge(By(fn() { if c.focus_shown() { (@ui.tree_theme().focus_w, @ui.tree_theme().focus) } else { (0.0, 0L) } }))
   |> ignore
   @sf.words_node(c, fn() { @sfbase.board_lane_words(lane) }, fn() { if on() { chip_on_look } else { board_chip_words } }) |> ignore
   @sf.words_node(c, fn() { count().to_string() }, fn() { if on() { chip_on_look } else { chip_count_look } }) |> ignore
@@ -1940,25 +1942,27 @@ fn draft_card(
     card_ground(card, fn() { false }, fn() { hand.lit(card, fn() { false }) }, lifted) |> ignore
     card.shadow(By(fn() { card_shadow(lifted()) })) |> ignore
     hand.watch(card)
-    card.on_menu(fn(e) { menu(e.wx, e.wy, false) }) |> ignore
-    @sf.presses_held_node(
-      card,
-      edit,
-      @ui.long_press_ms,
-      // (held long by a finger: lifted, its menu; a mouse's button held is a press as long as any)
-      fn(e) {
-        if !@sf.pointer_rests() {
-          lift.held.set(true)
-          menu(e.wx, e.wy, true)
-        }
-      },
-      down=fn(_) { hand.down(card) },
-      up=fn() {
-        hand.up()
-        lift.held.set(false)
-      },
-    )
-    card.says(By(fn() { Some(@view.said(Button, label=title())) })) |> ignore
+    @sf.action_box_node(card, title, fn(_) { edit() }, in_node=true, fn(card) {
+      card.on_menu(fn(e) { menu(e.wx, e.wy, false) }) |> ignore
+      @sf.presses_held_node(
+        card,
+        edit,
+        @ui.long_press_ms,
+        // (held long by a finger: lifted, its menu; a mouse's button held is a press as long as any)
+        fn(e) {
+          if !@sf.pointer_rests() {
+            lift.held.set(true)
+            menu(e.wx, e.wy, true)
+          }
+        },
+        down=fn(_) { hand.down(card) },
+        up=fn() {
+          hand.up()
+          lift.held.set(false)
+        },
+      )
+    })
+    |> ignore
     card.box(fn(head) {
       head.row(Is(true)).gap(Is(8.0)).lines_up(Is(Some(Start))) |> ignore
       head.box(fn(t) {
@@ -2299,18 +2303,20 @@ fn board_chat_card(
     // flown across it)
     @motion.shared(card, board_shared(own, lane, name) + (if wide { "" } else { "@" + lane })) |> ignore
     let ground = card_ground(card, picked, fn() { hand.lit(card, menu_on) }, raised)
-    card.says(By(fn() { Some(@view.said(Button, label=title())) })) |> ignore
-    // (never dragged, wide or narrow: a finger on it scrolls its column; right clicked, its menu; held long by a finger,
-    // its menu; a mouse's button held is a press as long as any)
-    card.on_menu(fn(e) { open_menu(e.wx, e.wy, false) }) |> ignore
-    @sf.presses_held_node(
-      card,
-      open,
-      @ui.long_press_ms,
-      fn(d) { if !@sf.pointer_rests() { open_menu(d.wx, d.wy, true) } },
-      down=fn(_) { down() },
-      up~,
-    )
+    @sf.action_box_node(card, title, fn(_) { open() }, in_node=true, fn(card) {
+      // (never dragged, wide or narrow: a finger on it scrolls its column; right clicked, its menu; held long by a finger,
+      // its menu; a mouse's button held is a press as long as any)
+      card.on_menu(fn(e) { open_menu(e.wx, e.wy, false) }) |> ignore
+      @sf.presses_held_node(
+        card,
+        open,
+        @ui.long_press_ms,
+        fn(d) { if !@sf.pointer_rests() { open_menu(d.wx, d.wy, true) } },
+        down=fn(_) { down() },
+        up~,
+      )
+    })
+    |> ignore
     // (a pointer over it lights it, asking nothing: its whole row is asked as the hand goes down on it or its menu is
     // asked for, never for each card a pointer passes over)
     hand.watch(card)

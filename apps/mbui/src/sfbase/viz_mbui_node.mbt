@@ -2245,18 +2245,17 @@ fn viz_render_node(
               let note = viz_interp(store, subtitle)
               if note == "" { lbl } else { lbl + "\n" + note }
             }
-            @headless.disclosure(
+            @sf.action_box_node(
               col,
               label_fn,
-              open,
               fn(_) {
                 let next = !viz_json_truthy(sig.untracked())
                 viz_state_set(store, hears, state_key, Json::boolean(next))
               },
-              fn(head, _) {
+              expanded=open,
+              fn(head) {
                 @sf.style_node(head, fn() { head_style })
                 head
-                .focus_ring_theme()
                 .ground(By(fn() { if head.pressed() { @ui.tree_theme().color(TintStrong) } else { 0L } }))
                 |> ignore
                 @sf.hover_ground_node(head, on=fn() { !head.pressed() })

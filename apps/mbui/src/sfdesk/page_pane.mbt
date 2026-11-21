@@ -146,14 +146,13 @@ fn gate_heading_node(h : @view.View, src : Source, w : Workspace) -> Unit {
     let list = @sf.theme().chat_list
     list.band_in + list.heading_in
   }
-  h.box(fn(b) {
+  @sf.host_button_anchor_node(h, fn() { w.name }, fn(b) {
     b
     .width(By(fn() {
       Some(dmin(dmax(side_min, wide.side_w.get()), pane_w_at(src, b) - @sf.native_clear() - 2.0 * inset()))
     }))
     .height(By(fn() { Some(@sf.band_row_h()) }))
     .offset(By(fn() { (inset(), side_top_web + band_new_top) }))
-    .says(Is(Some(@view.said(Button, label=w.name))))
     |> ignore
     let id = @ui.tree_read_out_id(b)
     native_workspace_hooked()

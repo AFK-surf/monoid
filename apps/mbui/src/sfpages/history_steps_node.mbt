@@ -1432,28 +1432,36 @@ fn message_fold_stack_node(
             same=fn(a, b) { a == b },
           )
           let words = fn() { words_sig.get() }
-          // (the show's own node the button, by hand: a node of its own would be one more in every long message's head,
-          // over the chat's page's bar)
-          @sf.presses_node(t, fn() {
-            rail_used.set(true)
-            match room_ref.val {
-              Some(rm) => rm.resizes() |> ignore
-              None => ()
-            }
-            steps_flip(@signals.untracked(key_fn))
-          })
-          t.says(By(fn() { Some(@view.said(Button, label=words(), expanded=open())) })) |> ignore
-          @sf.words_node(t, words, fn() {
-            if @sf.lit_node(t) { h_msg_toggle_hot } else { h_msg_toggle_words }
-          })
-          |> ignore
-          steps_chevron_node(
+          // (the show's own node the button, in_node=true: zero extra nodes in every long message's head, keeping
+          // chat_nodes_open_budget)
+          @sf.action_box_node(
             t,
-            "chevron-down",
-            12.0,
-            By(fn() { if @sf.lit_node(t) { @sf.theme().p.text } else { @sf.theme().p.muted } }),
-            open,
+            words,
+            fn(_) {
+              rail_used.set(true)
+              match room_ref.val {
+                Some(rm) => rm.resizes() |> ignore
+                None => ()
+              }
+              steps_flip(@signals.untracked(key_fn))
+            },
+            expanded=open,
+            in_node=true,
+            fn(t) {
+              @sf.words_node(t, words, fn() {
+                if @sf.lit_node(t) { h_msg_toggle_hot } else { h_msg_toggle_words }
+              })
+              |> ignore
+              steps_chevron_node(
+                t,
+                "chevron-down",
+                12.0,
+                By(fn() { if @sf.lit_node(t) { @sf.theme().p.text } else { @sf.theme().p.muted } }),
+                open,
+              )
+            },
           )
+          |> ignore
         })
       None => ()
     }

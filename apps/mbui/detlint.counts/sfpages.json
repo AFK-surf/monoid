@@ -97,18 +97,6 @@
       "src/sfpages/terminal_view_node.mbt": 2,
       "src/sfpages/vault.mbt": 1
     },
-    "page-headless": {
-      "src/sfpages/board_node.mbt": 2,
-      "src/sfpages/composer_node.mbt": 2
-    },
-    "page-control-by-hand": {
-      "src/sfpages/board_node.mbt": 2,
-      "src/sfpages/chat_row_node.mbt": 1,
-      "src/sfpages/drive_row_node.mbt": 1,
-      "src/sfpages/history_steps_node.mbt": 1,
-      "src/sfpages/model_triple.mbt": 2,
-      "src/sfpages/new_chat.mbt": 1
-    },
     "structure-box": {
       "src/sfpages/about.mbt": 1,
       "src/sfpages/accounts.mbt": 6,

@@ -251,6 +251,45 @@ pub fn radio_rows_node(
 }
 
 ///|
+/// A row of tab chips in `parent` itself (`@headless.radio_group` with `kind=Tab`, `in_node=true`, no box of its own),
+/// called `label`: one tab per key in `keys`, `chosen()` the key active now and `choose` told the key picked by a press
+/// or ← → Home End. `said` gives each tab's screen-reader label; `look` lays out each tab's node, given the node, its
+/// key and its `RadioRow` state (`picked`, `lit`); `on_item` (when given) is told each tab's key and node as it is made.
+/// The group's node (`parent`).
+#callsite(autofill(loc))
+pub fn chip_tabs_node(
+  parent : @view.View,
+  label : () -> String,
+  keys : Array[String],
+  chosen : () -> String,
+  choose : (String) -> Unit,
+  said : (String) -> String,
+  look : (@view.View, String, RadioRow) -> Unit,
+  on_item? : (String, @view.View) -> Unit,
+  loc~ : SourceLoc,
+) -> @view.View {
+  @headless.radio_group(
+    made_for=loc,
+    parent,
+    label,
+    chosen,
+    choose,
+    kind=Tab,
+    in_node=true,
+    fn(g, rg) {
+      for key in keys {
+        let chip = rg.item(g, fn() { key }, fn() { said(key) }, fn(c, item) {
+          look(c, key, { item, node: c })
+        })
+        if on_item is Some(f) {
+          f(key, chip)
+        }
+      }
+    },
+  )
+}
+
+///|
 /// The pill's height (preset capsules', a press's room) and its ×, concentric with its end.
 let filter_pill_clear : Double = 32.0
 
