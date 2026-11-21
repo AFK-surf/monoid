@@ -427,12 +427,9 @@ pub fn section_node(
           |> ignore
           match actions {
             Some((shown, make)) =>
-              line.show(shown, fn(a) {
-                a.box(fn(r) {
-                  r.row(Is(true)).gap(Is(section_actions_gap)).lines_up(Is(Some(Middle))) |> ignore
-                  make(r)
-                })
-                |> ignore
+              line.show(shown, fn(r) {
+                r.row(Is(true)).gap(Is(section_actions_gap)).lines_up(Is(Some(Middle))) |> ignore
+                make(r)
               })
             None => ()
           }

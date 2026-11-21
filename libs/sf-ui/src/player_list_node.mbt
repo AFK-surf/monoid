@@ -235,15 +235,12 @@ fn play_list_rows_node(col : @view.View, pn : PlayerNode, ink : () -> ViewerInk,
             |> ignore
           })
           |> ignore
-          b.show(now, fn(c) {
-            c.box(fn(i) {
-              i
-              .width(Is(Some(desk_check_icon)))
-              .height(Is(Some(desk_check_icon)))
-              .shapes(By(fn() { tool_shapes_sized(if pn.plays() { "play" } else { "check" }, desk_check_icon) }))
-              .tint(By(fn() { ink().ink }))
-              |> ignore
-            })
+          b.show(now, fn(i) {
+            i
+            .width(Is(Some(desk_check_icon)))
+            .height(Is(Some(desk_check_icon)))
+            .shapes(By(fn() { tool_shapes_sized(if pn.plays() { "play" } else { "check" }, desk_check_icon) }))
+            .tint(By(fn() { ink().ink }))
             |> ignore
           })
         })

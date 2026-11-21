@@ -92,7 +92,7 @@ pub fn choices_node(
         m.box(fn(r) {
           style_node(r, fn() { if on() { radio_mark_on } else { radio_mark } })
           r.margin(Is((0.0, 0.0, choice_mark_clear(in_panel), 0.0))) |> ignore
-          r.show(on, at_once=true, fn(d) { d.box(fn(dot) { style_node(dot, fn() { radio_dot }) }) |> ignore })
+          r.show(on, at_once=true, fn(dot) { style_node(dot, fn() { radio_dot }) })
         })
         |> ignore
       })
@@ -101,14 +101,11 @@ pub fn choices_node(
     // (parts.css.ts choiceExtra: under its words while it is chosen; narrow, its rows a step of the ladder in)
     match extra {
       Some(f) =>
-        card.show(on, fn(s) {
-          s.box(fn(o) {
-            style_node(o, fn() { if narrow { choice_extra_rows } else { choice_extra } })
-            o.box(fn(i) {
-              style_node(i, fn() { if narrow { choice_extra_rows_in } else { choice_extra_in } })
-              f(i)
-            })
-            |> ignore
+        card.show(on, fn(o) {
+          style_node(o, fn() { if narrow { choice_extra_rows } else { choice_extra } })
+          o.box(fn(i) {
+            style_node(i, fn() { if narrow { choice_extra_rows_in } else { choice_extra_in } })
+            f(i)
           })
           |> ignore
         })

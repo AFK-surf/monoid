@@ -679,7 +679,7 @@ fn narrow_page_node(
             }))
             |> ignore
             // (what it is of, over its large title: LargeTitle's small line)
-            s.show(fn() { small() != "" }, fn(k) { k.box(fn(w) { styled_words(w, small, fn() { secondary }) |> ignore }) |> ignore })
+            s.show(fn() { small() != "" }, fn(w) { styled_words(w, small, fn() { secondary }) |> ignore })
             s.box(fn(l) {
               // (one line while its title at its least and what it does at the least that comes to have the room
               // beside each other; else what it does, all of it, under the title at the same end, the line's end:

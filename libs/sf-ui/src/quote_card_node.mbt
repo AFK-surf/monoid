@@ -43,12 +43,9 @@ pub fn quote_card_node(
       })
       |> ignore
     })
-    card.show(fn() { comment() != "" }, fn(s) {
-      s.box(fn(b) {
-        style_node(b, fn() { quote_comment })
-        words_node(b, comment, fn() { quote_said }) |> ignore
-      })
-      |> ignore
+    card.show(fn() { comment() != "" }, fn(b) {
+      style_node(b, fn() { quote_comment })
+      words_node(b, comment, fn() { quote_said }) |> ignore
     })
   })
 }

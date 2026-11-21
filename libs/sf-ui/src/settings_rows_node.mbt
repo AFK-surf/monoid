@@ -43,17 +43,14 @@ pub fn state_dot_node(
   // (one that breathes: made anew as its state changes, what a state has bound only in it (the old view's job_dot,
   // a box each state), so a job up, failed or off binds its colour alone; a job's tones are each a ground, no ring)
   if breathes {
-    parent.pick(loc~, state, fn(p, st) {
-      p.box(fn(d) {
-        round(d)
-        d.ground(By(fn() { look_of(st).0 })) |> ignore
-        // (restarting: breathing to .35 and back)
-        if st == "restart" {
-          let breathe = @motion.breathe_alpha(d, period_ms=breath_ms, low=state_breath_low, resident=true)
-          d.alpha(By(breathe)) |> ignore
-        }
-      })
-      |> ignore
+    parent.pick(loc~, state, fn(d, st) {
+      round(d)
+      d.ground(By(fn() { look_of(st).0 })) |> ignore
+      // (restarting: breathing to .35 and back)
+      if st == "restart" {
+        let breathe = @motion.breathe_alpha(d, period_ms=breath_ms, low=state_breath_low, resident=true)
+        d.alpha(By(breathe)) |> ignore
+      }
     })
     return
   }

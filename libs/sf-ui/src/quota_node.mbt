@@ -168,30 +168,27 @@ pub fn quota_chips_node(
       _ => []
     }
   }
-  parent.show(fn() { has_quota(q()) }, fn(x) {
-    x.box(fn(r) {
-      style_node(r, fn() { quota_chips_row.then(@ui.style(gap=room(gap))) }, in_row=true)
-      r.shrink(Is(0.0)) |> ignore
-      r.each(fn() { Array::makei(windows().length(), fn(i) { i }) }, fn(i) { i }, fn(c, i) {
-        let k = i.untracked()
-        let w = fn() { windows().get(k) }
-        fill_chip_node(
-          c,
-          fn() { chip_left(w()) },
-          fn() { chip_str(w(), "level") },
-          fn() { if marked { quota_mark(w()) } else { "" } },
-          fn() { quota_figure(w()) },
-          small~,
-          label_muted=true,
-          refill=fn() { quota_is_refill(w()) },
-          said=fn() { quota_said(w()) },
-          tips?,
-          tips_within~,
-        )
-        |> ignore
-      })
+  parent.show(fn() { has_quota(q()) }, fn(r) {
+    style_node(r, fn() { quota_chips_row.then(@ui.style(gap=room(gap))) }, in_row=true)
+    r.shrink(Is(0.0)) |> ignore
+    r.each(fn() { Array::makei(windows().length(), fn(i) { i }) }, fn(i) { i }, fn(c, i) {
+      let k = i.untracked()
+      let w = fn() { windows().get(k) }
+      fill_chip_node(
+        c,
+        fn() { chip_left(w()) },
+        fn() { chip_str(w(), "level") },
+        fn() { if marked { quota_mark(w()) } else { "" } },
+        fn() { quota_figure(w()) },
+        small~,
+        label_muted=true,
+        refill=fn() { quota_is_refill(w()) },
+        said=fn() { quota_said(w()) },
+        tips?,
+        tips_within~,
+      )
+      |> ignore
     })
-    |> ignore
   })
 }
 
@@ -538,12 +535,9 @@ pub fn quota_worded_node(
               let k = i - lines_from
               c.laid_nowhere(By(fn() { !lined() })).width_share(Is(1.0)) |> ignore
               style_node(c, fn() { quota_chips_part.then(@ui.style(gap=room(gap))) })
-              c.show(fn() { part(k).0 != "" }, fn(n) {
-                n.box(fn(l) {
-                  l.width(By(fn() { Some(label_w()) })).shrink(Is(0.0)) |> ignore
-                  words_node(l, fn() { part(k).0 }, fn() { nav_quota_group }) |> ignore
-                })
-                |> ignore
+              c.show(fn() { part(k).0 != "" }, fn(l) {
+                l.width(By(fn() { Some(label_w()) })).shrink(Is(0.0)) |> ignore
+                words_node(l, fn() { part(k).0 }, fn() { nav_quota_group }) |> ignore
               })
               c.box(fn(cs) {
                 style_node(cs, fn() { quota_chips_row.then(@ui.style(gap=room(gap))) })
@@ -771,12 +765,9 @@ pub fn nav_quota_chips_node(
             a.each(part_keys, fn(k) { k }, fn(p, k) {
               let k = k.untracked()
               p.row(Is(true)).width_share(Is(1.0)).lines_up(Is(Some(Middle))).gap(Is(@ui.Space::px(S1_5))) |> ignore
-              p.show(fn() { part(k).0 != "" }, fn(n) {
-                n.box(fn(l) {
-                  l.width(By(fn() { Some(label_w()) })) |> ignore
-                  words_node(l, fn() { part(k).0 }, fn() { nav_quota_group }) |> ignore
-                })
-                |> ignore
+              p.show(fn() { part(k).0 != "" }, fn(l) {
+                l.width(By(fn() { Some(label_w()) })) |> ignore
+                words_node(l, fn() { part(k).0 }, fn() { nav_quota_group }) |> ignore
               })
               p.box(fn(r) {
                 style_node(r, fn() { quota_chips_row.then(@ui.style(gap=S1)) }, in_row=true)

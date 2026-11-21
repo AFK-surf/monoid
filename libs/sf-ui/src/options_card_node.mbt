@@ -165,17 +165,14 @@ fn option_row_node(
         |> ignore
       })
       |> ignore
-      col.show(fn() { o().1 != "" }, fn(d) {
-        d.box(fn(w) {
-          w
-          .words(By(fn() { o().1 }))
-          .words_look(By(fn() {
-            let ot = option_type()
-            { ..@view.words_plain, size: ot.detail, line: ot.detail_line }
-          }))
-          .ink(By(fn() { theme().p.muted }))
-          |> ignore
-        })
+      col.show(fn() { o().1 != "" }, fn(w) {
+        w
+        .words(By(fn() { o().1 }))
+        .words_look(By(fn() {
+          let ot = option_type()
+          { ..@view.words_plain, size: ot.detail, line: ot.detail_line }
+        }))
+        .ink(By(fn() { theme().p.muted }))
         |> ignore
       })
     })
