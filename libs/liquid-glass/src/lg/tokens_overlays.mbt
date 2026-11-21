@@ -23,20 +23,73 @@ fn ovl_panel_glass() -> @paint.Glass {
 
 ///|
 /// Liquid glass material for detached floating sheets and action sheets.
+/// Uses symmetric 80% dense liquid glass (`0xFDFCFDCCL` light / `0x202020CCL` dark) for >= 4.5:1 body text contrast.
 fn ovl_sheet_glass() -> @paint.Glass {
   let d = is_dark()
   @paint.Glass::liquid(
-    blur=10.0,
-    tint=if d { 0x202020CCL } else { 0xFDFCFD67L },
+    blur=12.0,
+    tint=if d { 0x202020CCL } else { 0xFDFCFDCCL },
     solid=if d { 0x1C1C1EFFL } else { 0xF7F7FAFFL },
     saturation=1.0,
     rim=0.6,
-    bezel=24.0,
-    refraction=48.0,
+    bezel=22.0,
+    refraction=36.0,
     chroma=0.0,
     merge=0.0,
     adaptive=false,
   )
+}
+
+///|
+/// Liquid glass material for floating sheets that morph smoothly from a detached glass island
+/// (`detent = 0.0`, 80% symmetric `0xCC`) into a high-readability full-height liquid glass surface
+/// (`detent = 1.0`, 86% symmetric `0xDC`) in both light and dark modes, keeping soft specular rim
+/// and subtle backdrop translucency.
+fn ovl_sheet_glass_at(detent : Double) -> @paint.Glass {
+  let t = clamp(detent, 0.0, 1.0)
+  if t <= 0.001 {
+    return ovl_sheet_glass()
+  }
+  let d = is_dark()
+  let a = (lerp(204.0, 220.0, t).round()).to_int64() & 0xFFL
+  let tint = if d { 0x20202000L | a } else { 0xFDFCFD00L | a }
+  @paint.Glass::liquid(
+    blur=lerp(12.0, 16.0, t),
+    tint~,
+    solid=if d { 0x1C1C1EFFL } else { 0xF7F7FAFFL },
+    saturation=1.0,
+    rim=lerp(0.6, 0.45, t),
+    bezel=lerp(22.0, 14.0, t),
+    refraction=lerp(36.0, 18.0, t),
+    chroma=0.0,
+    merge=0.0,
+    adaptive=false,
+  )
+}
+
+///|
+/// Liquid glass material for floating island side drawers (`r=28pt`, 10pt outer margin).
+/// Uses symmetric 80% dense liquid glass (`0xFDFCFDCCL` light / `0x202020CCL` dark) with crisp bevel refraction.
+fn ovl_drawer_glass() -> @paint.Glass {
+  let d = is_dark()
+  @paint.Glass::liquid(
+    blur=12.0,
+    tint=if d { 0x202020CCL } else { 0xFDFCFDCCL },
+    solid=if d { 0x1C1C1EFFL } else { 0xF7F7FAFFL },
+    saturation=1.0,
+    rim=0.6,
+    bezel=22.0,
+    refraction=36.0,
+    chroma=0.0,
+    merge=0.0,
+    adaptive=false,
+  )
+}
+
+///|
+/// 1pt hairline border used when `MBUI_GLASS=solid` degrades a floating glass drawer or sheet to opaque solid.
+fn ovl_solid_edge() -> (Double, Int64) {
+  if is_dark() { (1.0, 0xFFFFFF24L) } else { (1.0, 0x00000018L) }
 }
 
 ///|
@@ -232,36 +285,76 @@ let ovl_tooltip_py : Double = 6.0
 let ovl_tooltip_max_w : Double = 260.0
 
 ///|
-/// Detached floating sheet geometry (r=36pt).
-let ovl_sheet_radius : Double = 36.0
+/// Detached floating sheet geometry (r=28pt floating -> narrow-screen docked top r=24pt / bottom r=0pt).
+let ovl_sheet_radius : Double = 28.0
 
 ///|
-let ovl_sheet_inset : Double = 16.0
+let ovl_sheet_expanded_top_radius : Double = 24.0
 
 ///|
-let ovl_sheet_pad : Double = 24.0
+let ovl_sheet_inset : Double = 10.0
 
 ///|
-/// Concentric footer inset inside a 36pt sheet (`12pt + 24pt capsule button radius == 36pt`).
+let ovl_sheet_wide_inset : Double = 12.0
+
+///|
+let ovl_sheet_pad : Double = 20.0
+
+///|
+/// Concentric footer inset inside a 28pt sheet (`12pt + 16pt capsule button radius == 28pt`).
 let ovl_sheet_footer_pad : Double = 12.0
 
 ///|
-let ovl_sheet_gap : Double = 14.0
+let ovl_sheet_gap : Double = 12.0
 
 ///|
 let ovl_sheet_grabber_w : Double = 36.0
 
 ///|
-let ovl_sheet_grabber_h : Double = 5.0
+let ovl_sheet_grabber_h : Double = 4.0
 
 ///|
-let ovl_sheet_grabber_pt : Double = 10.0
+let ovl_sheet_hdr_pr : Double = 12.0
 
 ///|
-let ovl_sheet_hdr_pt : Double = 5.0
+let ovl_sheet_hdr_pr_expanded : Double = 8.0
 
 ///|
-let ovl_sheet_hdr_pr : Double = 20.0
+let ovl_sheet_drag_dismiss : Double = 80.0
+
+///|
+let ovl_sheet_drag_vel : Double = 0.45
+
+///|
+let ovl_sheet_overpull_max : Double = 20.0
+
+///|
+/// Floating island side drawer geometry (10pt floating margin, r=28pt, 12pt concentric header/body/footer pad).
+let ovl_drawer_inset : Double = 10.0
+
+///|
+let ovl_drawer_radius : Double = 28.0
+
+///|
+let ovl_drawer_pad : Double = 12.0
+
+///|
+let ovl_drawer_hdr_pl : Double = 16.0
+
+///|
+let ovl_drawer_scrim_alpha : Double = 0.18
+
+///|
+let ovl_drawer_overpull_max : Double = 16.0
+
+///|
+let ovl_drawer_dismiss_ratio : Double = 0.32
+
+///|
+let ovl_drawer_dismiss_vel : Double = 0.45
+
+///|
+let ovl_drawer_leave_ms : Double = 320.0
 
 ///|
 let ovl_close_btn_size : Double = 32.0

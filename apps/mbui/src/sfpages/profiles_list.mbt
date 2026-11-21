@@ -158,7 +158,7 @@ pub fn profiles_list_node(
               @sf.section_heading_node(s, fn() { @sf.sample_words(4) })
               @sf.group_node(s, fn(g) {
                 g.each(fn() { profiles_sample }, fn(e) { text(Some(e), "key") }, fn(r, e) {
-                  pl_account_row_node(r, core.quiet(), fn() { Some(e.get()) }, tips)
+                  pl_account_row_node(r, core.quiet(), fn() { Some(e.get()) }, tips, width?)
                 })
               })
             },
@@ -246,7 +246,7 @@ pub fn profiles_list_node(
             @sf.section_heading_node(b, title, lead=fn(l) { vt_group_mark_node(l, group) })
           }
         }
-        k if k.has_prefix("p/") => pl_row_block(b, core, only, parts, tips, fn() { k })
+        k if k.has_prefix("p/") => pl_row_block(b, core, only, parts, tips, fn() { k }, width?)
         k if k.has_prefix("o/") => {
           let station = k.exact_view(start=2).to_owned()
           let sv = @signals.computed(fn(_) {
@@ -278,7 +278,7 @@ pub fn profiles_list_node(
     back_as=fn() { if only == "" { "" } else { text(one(), "name") } },
     // (an account's row put by as it leaves what shows and taken by the next, reading the key it shows now)
     reused=fn(k) { if k.has_prefix("p/") { Some(0) } else { None } },
-    make_reused=fn(b, _, key) { pl_row_block(b, core, only, parts, tips, key) },
+    make_reused=fn(b, _, key) { pl_row_block(b, core, only, parts, tips, key, width?) },
   )
 }
 
@@ -336,6 +336,7 @@ fn pl_row_block(
   parts : @signals.KeyedList[String, (String, PlPart)],
   tips : @sf.TipLayer,
   key : () -> String,
+  width? : () -> Double,
 ) -> Unit {
   let last : Ref[(Json, @sf.CardPiece)?] = Ref(None)
   let now = @signals.computed(fn(_) {
@@ -356,7 +357,7 @@ fn pl_row_block(
   // (wide, a piece of its section's list card as wide_group_node's: workspace_page's, a station's screens')
   @sf.card_piece_node(b, fn() { now.get().map(fn(n) { n.1 }).unwrap_or(@sf.CardPiece::CardWhole) }, wide_group=true, fn(card) {
     if only == "" {
-      pl_account_row_node(card, core, fn() { row_now.get() }, tips)
+      pl_account_row_node(card, core, fn() { row_now.get() }, tips, width?)
     } else {
       pl_station_row_node(card, core, only, fn() { row_now.get() }, tips)
     }
@@ -364,11 +365,42 @@ fn pl_row_block(
 }
 
 ///|
+/// The inner width available to `quota_worded_node` inside `pl_account_row_node`, derived from `page_w()` along
+/// `page_node` -> `card_piece_node(..., wide_group=true)` -> `link_row_node(..., lines_from_lead=true)` so each row
+/// avoids a per-row `View::by_room` second layout pass.
+fn pl_account_quota_room_w(w : @view.View, page_w : () -> Double) -> () -> Double {
+  let in_pane = w.lent(@sf.pane_lent).unwrap_or(false)
+  let wide = @sf.look_node(w) == @sf.look_for(@sf.narrow_most)
+  let card_pad = if in_pane { @sf.corner_inset } else { @sf.list_pad }
+  fn() {
+    let block_w = if wide {
+      let lane_side = if in_pane { 0.0 } else { @sf.desk_lane_in }
+      let avail = page_w() - 2.0 * lane_side
+      let col_w = if avail < @sf.desk_lane_most { avail } else { @sf.desk_lane_most }
+      col_w - 2.0 * @sf.desk_column_in
+    } else {
+      let room_side = if in_pane { @sf.panel_card_in } else { 12.0 }
+      page_w() - 2.0 * room_side
+    }
+    let row_w = block_w - 2.0 * card_pad
+    // link_row_node(lines_from_lead=true): r padding_x = text_in*2, words margin_left = corner_inset - text_in
+    let avail = row_w - @sf.text_in - @sf.corner_inset
+    if avail > 0.0 { avail } else { 0.0 }
+  }
+}
+
+///|
 /// The workspace's account in a row (profile_list_blocks' row), `ev` its entry as it is now: its vendor's mark by its
 /// first line, its name (a subscription's account, a key's name) and its plan after it; under them what needs a look,
 /// in its tone, or what its allowance lacks; its allowance's windows in words a line of their own. One whose station is
 /// away dimmed. Pressed, its page.
-fn pl_account_row_node(r : @view.View, core : Core, ev : () -> Json?, tips : @sf.TipLayer) -> Unit {
+fn pl_account_row_node(
+  r : @view.View,
+  core : Core,
+  ev : () -> Json?,
+  tips : @sf.TipLayer,
+  width? : () -> Double,
+) -> Unit {
   let p = fn() { field(ev(), "profile") }
   let usable = fn() { flag(ev(), "usable") }
   let state = fn() { field(ev(), "state") }
@@ -460,7 +492,10 @@ fn pl_account_row_node(r : @view.View, core : Core, ev : () -> Json?, tips : @sf
           text(p(), "planText") != "" || (text(field(p(), "access"), "kind") == "service" && text(p(), "kindText") != "")
         },
         below=fn(q) {
-          q.show(windows, fn(w) { pl_quota_node(w, quota, tips) })
+          q.show(windows, fn(w) {
+            let room_w = width.map(fn(page_w) { pl_account_quota_room_w(w, page_w) })
+            pl_quota_node(w, quota, tips, room_w?)
+          })
         },
         below_open=fn() { if windows() { 1.0 } else { 0.0 } },
         // (what is under its name from its vendor's mark: its allowance's chips the room to be each said whole, the
@@ -474,11 +509,16 @@ fn pl_account_row_node(r : @view.View, core : Core, ev : () -> Json?, tips : @sf
 
 ///|
 /// Allowance chips at the row's foot, inset so their corner follows the row's.
-fn pl_quota_node(w : @view.View, quota : () -> Json?, tips : @sf.TipLayer) -> Unit {
+fn pl_quota_node(
+  w : @view.View,
+  quota : () -> Json?,
+  tips : @sf.TipLayer,
+  room_w? : () -> Double,
+) -> Unit {
   @sf.style_node(w, fn() { pl_quota_line })
   let (_, _, _, foot) = @sf.row_below_inset(w)
   w.margin(Is((0.0, 0.0, 0.0, foot))) |> ignore
-  @sf.quota_worded_node(w, quota, tips~)
+  @sf.quota_worded_node(w, quota, tips~, room_w?)
 }
 
 ///|

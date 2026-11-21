@@ -5,7 +5,7 @@
 // refracts real colour fields and calibration hairlines behind it.
 
 ///|
-/// Category metadata for the 6 exhibition sections (34 Liquid Glass components total).
+/// Category metadata for the 6 exhibition sections (35 Liquid Glass components total).
 priv struct LibCategory {
   id : Int
   name : String
@@ -47,9 +47,9 @@ let lib_categories : Array[LibCategory] = [
   {
     id: 4,
     name: "Overlays",
-    count: "9",
-    subtitle: "Menus, Sheets & Toasts",
-    keywords: "overlays menu select popover tooltip sheet action dialog toast progress bar ring",
+    count: "10",
+    subtitle: "Menus, Drawers & Sheets",
+    keywords: "overlays menu select popover tooltip drawer sheet detent action dialog toast progress bar ring",
   },
   {
     id: 5,
@@ -1193,8 +1193,8 @@ fn right_tile_stack(parent : @view.View, last_nav : @signals.Signal[String]) -> 
 }
 
 ///|
-/// Section 4 — `Overlays` (9 components): Menu, Select, Popover, Tooltip, Sheet, ActionSheet, Dialog, Toast,
-/// ProgressBar & ProgressRing. All floating panels mount on `overlay_host` at root Z-order.
+/// Section 4 — `Overlays` (10 components): Menu, Select, Popover, Tooltip, Drawer, Sheet, ActionSheet, Dialog,
+/// Toast, ProgressBar & ProgressRing. All floating panels mount on `overlay_host` at root Z-order.
 fn lib_overlays_section(
   parent : @view.View,
   overlay_host : @view.View,
@@ -1202,6 +1202,8 @@ fn lib_overlays_section(
   demo_menu_pin : @signals.Signal[Bool],
   select_idx : @signals.Signal[Int],
   popover_open : @signals.Signal[Bool],
+  drawer_open : @signals.Signal[Bool],
+  drawer_side : @signals.Signal[@lg.DrawerSide],
   sheet_open : @signals.Signal[Bool],
   action_sheet_open : @signals.Signal[Bool],
   dialog_open : @signals.Signal[Bool],
@@ -1336,12 +1338,33 @@ fn lib_overlays_section(
     })
     |> ignore
 
-    // 2. Modal overlays: Sheet, ActionSheet, Dialog
+    // 2. Modal overlays: Drawer, Sheet (detents), ActionSheet, Dialog
     col.box(fn(sec) {
       sec.gap(Is(12.0)) |> ignore
-      lib_section_head(sec, "MODAL SHEETS & DIALOG", "liquid_sheet · liquid_action_sheet · liquid_dialog")
+      lib_section_head(sec, "MODAL DRAWER, SHEETS & DIALOG", "liquid_drawer · liquid_sheet · liquid_action_sheet · liquid_dialog")
       sec.box(fn(row) {
         row.row(Is(true)).wraps(Is(Some(12.0))).gap(Is(12.0)).lines_up(Is(Some(Middle))) |> ignore
+        @lg.liquid_button_node(
+          row,
+          fn() { "Leading Drawer" },
+          fn() {
+            drawer_side.set(Leading)
+            drawer_open.set(true)
+            last_ovl.set("Drawer: Leading")
+          },
+          tint=lib_cobalt,
+        )
+        |> ignore
+        @lg.liquid_button_node(
+          row,
+          fn() { "Trailing Drawer" },
+          fn() {
+            drawer_side.set(Trailing)
+            drawer_open.set(true)
+            last_ovl.set("Drawer: Trailing")
+          },
+        )
+        |> ignore
         @lg.liquid_button_node(
           row,
           fn() { "Open Sheet" },
@@ -1402,7 +1425,7 @@ fn lib_overlays_section(
             1 => (@lg.LiquidStatus::Success, "Bundle compiled", "Metal + WebGL ready")
             2 => (@lg.LiquidStatus::Warning, "High refraction", "Bezel depth > 32 pt")
             3 => (@lg.LiquidStatus::Error, "Shader fallback", "Using solid fallback")
-            _ => (@lg.LiquidStatus::Info, "Liquid Glass synced", "34 parts at 60 fps")
+            _ => (@lg.LiquidStatus::Info, "Liquid Glass synced", "35 parts at 60 fps")
           }
           @lg.liquid_toast_node(
             slot,
@@ -1588,7 +1611,11 @@ fn library_page(
   let demo_menu_pin = @signals.signal(true)
   let select_idx = @signals.signal(0)
   let popover_open = @signals.signal(false)
+  let drawer_open = @signals.signal(false)
+  let drawer_side : @signals.Signal[@lg.DrawerSide] = @signals.signal(Leading)
+  let drawer_item = @signals.signal(0)
   let sheet_open = @signals.signal(false)
+  let sheet_expanded = @signals.signal(false)
   let action_sheet_open = @signals.signal(false)
   let dialog_open = @signals.signal(false)
   let toast_visible = @signals.signal(true)
@@ -1827,7 +1854,7 @@ fn library_page(
         leading=fn(s) {
           icon_brand_mark(s, 20.0, fn() { @lg.colors().content })
           s.show(fn() { !is_narrow() }, at_once=true, fn(slot) {
-            @lg.liquid_badge_node(slot, fn() { "34 Components" }, tone=Accent, dot=true) |> ignore
+            @lg.liquid_badge_node(slot, fn() { "35 Components" }, tone=Accent, dot=true) |> ignore
           })
           s.show(fn() { is_narrow() && !is_compact_dock() }, at_once=true, fn(slot) {
             lib_nav_catalog_button(slot, fn() { catalog_sheet_open.set(true) })
@@ -1913,7 +1940,7 @@ fn library_page(
             @lg.liquid_search_bar_node(
               top_part,
               search_field,
-              placeholder="Filter 34 parts...",
+              placeholder="Filter 35 parts...",
               label=fn() { "Filter components" },
               edited=fn(s) { search_q.set(s) },
               on_clear=fn() { search_q.set("") },
@@ -1922,7 +1949,7 @@ fn library_page(
             @lg.liquid_list_node(
               top_part,
               make_cat_rows(false),
-              header=fn() { "CATEGORIES · 34 PARTS" },
+              header=fn() { "CATEGORIES · 35 PARTS" },
               dividers=false,
             )
             |> ignore
@@ -2041,6 +2068,8 @@ fn library_page(
                           demo_menu_pin,
                           select_idx,
                           popover_open,
+                          drawer_open,
+                          drawer_side,
                           sheet_open,
                           action_sheet_open,
                           dialog_open,
@@ -2068,14 +2097,14 @@ fn library_page(
         overlay_host,
         fn() { catalog_sheet_open.get() },
         fn() { catalog_sheet_open.set(false) },
-        fn() { "Components · 34 Parts" },
+        fn() { "Components · 35 Parts" },
         fn(b) {
           let sc = b.scrolls(catalog_scroll, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(col) {
             col.gap(Is(12.0)) |> ignore
             @lg.liquid_search_bar_node(
               col,
               search_field,
-              placeholder="Filter 34 parts...",
+              placeholder="Filter 35 parts...",
               label=fn() { "Filter components" },
               edited=fn(s) { search_q.set(s) },
               on_clear=fn() { search_q.set("") },
@@ -2085,7 +2114,7 @@ fn library_page(
             @lg.liquid_list_node(
               col,
               make_cat_rows(true),
-              header=fn() { "CATEGORIES · 34 PARTS" },
+              header=fn() { "CATEGORIES · 35 PARTS" },
               dividers=false,
               flat=true,
             )
@@ -2117,17 +2146,130 @@ fn library_page(
       )
       |> ignore
 
+      overlay_host.pick(fn() { drawer_side.get() }, at_once=true, fn(slot, cur_side) {
+        slot.over(Is(true)).points(Is(false)) |> ignore
+        @lg.liquid_drawer_node(
+          slot,
+          fn() { drawer_open.get() },
+          fn() { drawer_open.set(false) },
+          fn() { "Studio Drawer" },
+          fn(b) {
+            b.gap(Is(12.0)) |> ignore
+            b.box(fn(w) {
+              w
+              .words(
+                Is("Floating 10pt island glass drawer. Drag horizontally toward the edge to dismiss, or over-pull for rubber-band resistance."),
+                look=@lg.words_at(13.5, wrap=true),
+              )
+              .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.82) }))
+              |> ignore
+            })
+            |> ignore
+            @lg.liquid_list_node(
+              b,
+              fn() {
+                let cur = drawer_item.get()
+                [
+                  @lg.LiquidListRow::new(
+                    title="Symmetric Glass",
+                    subtitle="80% light & dark parity",
+                    value="0xCC",
+                    icon=fn(ic, ink) { icon_prism(ic, 16.0, ink) },
+                    active=cur == 0,
+                    on_press=fn() {
+                      drawer_item.set(0)
+                      last_ovl.set("Drawer: Symmetric Glass")
+                    },
+                  ),
+                  @lg.LiquidListRow::new(
+                    title="Concentric Corners",
+                    subtitle="28pt outer · 12pt + 16pt",
+                    value="0 faults",
+                    icon=fn(ic, ink) { icon_grid(ic, 16.0, ink) },
+                    active=cur == 1,
+                    on_press=fn() {
+                      drawer_item.set(1)
+                      last_ovl.set("Drawer: Concentric Corners")
+                    },
+                  ),
+                  @lg.LiquidListRow::new(
+                    title="Spring Physics",
+                    subtitle="Velocity-continuous drag",
+                    value="60 fps",
+                    icon=fn(ic, ink) { icon_spark(ic, 16.0, ink) },
+                    active=cur == 2,
+                    on_press=fn() {
+                      drawer_item.set(2)
+                      last_ovl.set("Drawer: Spring Physics")
+                    },
+                  ),
+                ]
+              },
+              header=fn() { "DRAWER INSPECTOR" },
+              dividers=false,
+              flat=true,
+            )
+            |> ignore
+          },
+          side=cur_side,
+          subtitle=fn() {
+            match cur_side {
+              Leading => "Leading · Floating Island"
+              Trailing => "Trailing · Floating Island"
+            }
+          },
+          footer=fn(f) {
+            f.row(Is(true)).lies_along(Is(Between)).lines_up(Is(Some(Middle))).gap(Is(8.0)) |> ignore
+            f.box(fn(w) {
+              w
+              .words(Is("Drag edge or Esc"), look=@lg.words_at(12.5, weight=500))
+              .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.72) }))
+              |> ignore
+            })
+            |> ignore
+            @headless.button(f, fn() { "Done" }, fn(_) { drawer_open.set(false) }, fn(bv, btn) {
+              bv
+              .height(Is(Some(32.0)))
+              .padding(Is((16.0, 0.0, 16.0, 0.0)))
+              .radius(Is(16.0))
+              .lines_up(Is(Some(Middle)))
+              .lies_along(Is(Middle))
+              .ground(Is(lib_cobalt))
+              |> ignore
+              bv.box(fn(w) {
+                w.words(Is("Done"), look=@lg.words_at(13.5, weight=@lg.weight_medium)).ink(Is(@lg.white)) |> ignore
+              })
+              |> ignore
+              bv.show(fn() { btn.focus_shown() }, fn(ring) {
+                ring
+                .over(Is(true))
+                .points(Is(false))
+                .margin(Is((-3.0, -3.0, -3.0, -3.0)))
+                .radius(Is(19.0))
+                .edge(By(fn() { (2.0, @lg.colors().accent) }))
+                |> ignore
+              })
+            })
+            |> ignore
+          },
+        )
+        |> ignore
+      })
+
       @lg.liquid_sheet_node(
         overlay_host,
         fn() { sheet_open.get() },
-        fn() { sheet_open.set(false) },
+        fn() {
+          sheet_open.set(false)
+          sheet_expanded.set(false)
+        },
         fn() { "Optical Export Sheet" },
         fn(b) {
           b.gap(Is(10.0)) |> ignore
           b.box(fn(w) {
             w
             .words(
-              Is("Detached floating Liquid Glass sheet with concentric grabber, dimmed scrim and Escape dismissal."),
+              Is("Drag the top handle up to morph into a full-height docked reading surface, or drag down past 80pt to dismiss."),
               look=@lg.words_at(14.5, wrap=true),
             )
             .ink(By(fn() { @lg.colors().content }))
@@ -2137,15 +2279,48 @@ fn library_page(
           @lg.liquid_progress_bar_node(b, fn() { Some(0.82) }, label=fn() { "Metal Shader Cache" }, show_value=true)
           |> ignore
         },
-        subtitle=fn() { "ui.monoid · 3× Offscreen Capture" },
+        subtitle=fn() {
+          if sheet_expanded.get() {
+            "Large Detent · Docked Reading Surface"
+          } else {
+            "Medium Detent · Floating Liquid Glass"
+          }
+        },
+        detents=true,
+        expanded=fn() { sheet_expanded.get() },
+        on_expanded=fn(v) { sheet_expanded.set(v) },
         footer=fn(f) {
           f.row(Is(true)).lies_along(Is(End)).gap(Is(10.0)) |> ignore
-          @lg.liquid_button_node(
+          @headless.button(
             f,
             fn() { "Done" },
-            fn() { sheet_open.set(false) },
-            tint=lib_vermilion,
-            flat=true,
+            fn(_) {
+              sheet_open.set(false)
+              sheet_expanded.set(false)
+            },
+            fn(bv, btn) {
+              bv
+              .height(Is(Some(32.0)))
+              .padding(Is((16.0, 0.0, 16.0, 0.0)))
+              .radius(Is(16.0))
+              .lines_up(Is(Some(Middle)))
+              .lies_along(Is(Middle))
+              .ground(Is(lib_vermilion))
+              |> ignore
+              bv.box(fn(w) {
+                w.words(Is("Done"), look=@lg.words_at(13.5, weight=@lg.weight_medium)).ink(Is(@lg.white)) |> ignore
+              })
+              |> ignore
+              bv.show(fn() { btn.focus_shown() }, fn(ring) {
+                ring
+                .over(Is(true))
+                .points(Is(false))
+                .margin(Is((-3.0, -3.0, -3.0, -3.0)))
+                .radius(Is(19.0))
+                .edge(By(fn() { (2.0, @lg.colors().accent) }))
+                |> ignore
+              })
+            },
           )
           |> ignore
         },

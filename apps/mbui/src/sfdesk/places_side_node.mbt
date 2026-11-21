@@ -223,6 +223,7 @@ fn profiles_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
       by
     })
     let widest = fn(kind : String) { fn() { widths.get().get(kind).unwrap_or((0.0, [])) } }
+    let quota_room_w = profiles_side_quota_room_w(fn() { at().laid_w }, list_at)
     // (its lines in their order: the overview, the accounts under their kinds' headings, each station's logins under
     // its own)
     let lines = fn() -> Array[PlaceLine] {
@@ -307,9 +308,9 @@ fn profiles_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
           list_at,
         )
       } else if made_as == 3 {
-        profile_side_row_node(line, src, w, tips, list_at, data, more, lit, widest)
+        profile_side_row_node(line, src, w, tips, list_at, data, more, lit, widest, quota_room_w)
       } else {
-        machine_side_row_node(line, src, core, here, tips, list_at, data, more, widest)
+        machine_side_row_node(line, src, core, here, tips, list_at, data, more, widest, quota_room_w)
       }
     })
   })
@@ -387,6 +388,17 @@ fn offer_kind(l : Json?) -> String {
 }
 
 ///|
+/// The inner width available to `nav_quota_chips_node` inside a row of `profiles_side_node`, derived from the sidebar's
+/// `laid_w()` without reading `at()` during tree construction: `from` (+side_into_rail) and `back` (-side_into_rail)
+/// cancel out, leaving `side_list` (`band_in` per side) and `list_row_in(list_at)` (`band_pad_in(list_at)` per side).
+fn profiles_side_quota_room_w(laid_w : () -> Double, list_at : @sf.ListAt) -> () -> Double {
+  fn() {
+    let w = laid_w() - 2.0 * @sf.theme().chat_list.band_in - 2.0 * @sf.band_pad_in(list_at)
+    if w > 0.0 { w } else { 0.0 }
+  }
+}
+
+///|
 /// An account's row in the profiles' sidebar (profiles_side_node's), as `e()` says it now: its provider's logo, its
 /// name (faint where it cannot be used); what is wrong in its tone, else a balance or why its allowance is not said; its
 /// allowance's chips across its foot where it has windows. Pressed, its page in the pane once what it shows is answered,
@@ -401,6 +413,7 @@ fn profile_side_row_node(
   more : () -> Bool,
   lit : (String) -> Bool,
   widest : (String) -> () -> (Double, Array[Double]),
+  room_w : () -> Double,
 ) -> Unit {
   // (each part of it it shows worked out once as the row's account changes, told on only as it comes out otherwise:
   // an account's state changed runs only what shows it)
@@ -499,7 +512,7 @@ fn profile_side_row_node(
         })
       },
       more~,
-      foot=fn(f) { @sf.nav_quota_chips_node(f, quota, list_at, fn() { widest_c.get() }, tips~) },
+      foot=fn(f) { @sf.nav_quota_chips_node(f, quota, list_at, fn() { widest_c.get() }, tips~, room_w~) },
       foot_on=windows,
       foot_capsule=@sf.fill_chip_small_h,
     )
@@ -521,6 +534,7 @@ fn machine_side_row_node(
   row : () -> Json?,
   more : () -> Bool,
   widest : (String) -> () -> (Double, Array[Double]),
+  room_w : () -> Double,
 ) -> Unit {
   let l = fn() { field(row(), "login") }
   let station = fn() { text(row(), "station") }
@@ -570,7 +584,7 @@ fn machine_side_row_node(
         })
       },
       more~,
-      foot=fn(f) { @sf.nav_quota_chips_node(f, quota, list_at, fn() { widest_c.get() }, tips~) },
+      foot=fn(f) { @sf.nav_quota_chips_node(f, quota, list_at, fn() { widest_c.get() }, tips~, room_w~) },
       foot_on=windows,
       foot_capsule=@sf.fill_chip_small_h,
     )
