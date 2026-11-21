@@ -59,3 +59,51 @@ test "dragged over from the words before a quote's card to the words after it, w
   // (the card lends a picker that picks none: mbui's ui keeps the words of what is so lent out of what is picked)
   assert_eq(picked, "正文在前\n正文在后", msg=quoted)
 }
+
+///|
+test "quote_pin: 1.0x keeps exact 16pt; 2.0x stays clean with zero fixed_outgrown or squeeze_faults" {
+  let mut pin_v : @view.View? = None
+  let tr = @ui.Tester::new(
+    fn(c) { begin(c) |> ignore },
+    tree=fn(root) {
+      @ui.set_tree_theme(ui_theme_now)
+      let tips = TipLayer::new(fn() { Some(root) })
+      root.box(fn(page) {
+        page.width(Is(Some(360.0))).padding(Is((16.0, 40.0, 16.0, 0.0))).gap(Is(8.0)) |> ignore
+        quote_card_node(
+          page,
+          tips,
+          fn() { "Ana" },
+          fn() { "先把签名核对一遍" },
+          fn() { "person" },
+          fn() { "1" },
+          fn() { true },
+          fn() {  },
+        )
+        |> ignore
+        page.box(fn(mark) {
+          pin_v = Some(mark)
+          style_node(mark, fn() { quote_pin })
+          mark_words_node(mark, fn() { "1" }, fn() { quote_pin_words }) |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    },
+    w=400.0,
+    h=300.0,
+    platform=0,
+  )
+  tr.draw()
+  let pin_h = match @ui.view_tree().unwrap().drawn().iter().find_first(fn(d) { d.id == pin_v.unwrap().id() }) {
+    Some(d) => d.h
+    None => 0.0
+  }
+  assert_eq(pin_h, @ui.Space::S4.px(), msg="1.0x pin height")
+  assert_eq(tr.fixed_outgrown(), [], msg="1.0x fixed_outgrown")
+  assert_eq(tr.squeeze_faults(), [], msg="1.0x squeeze_faults")
+  tr.set_font_scale(2.0)
+  tr.draw()
+  assert_eq(tr.fixed_outgrown(), [], msg="2.0x fixed_outgrown")
+  assert_eq(tr.squeeze_faults(), [], msg="2.0x squeeze_faults")
+}

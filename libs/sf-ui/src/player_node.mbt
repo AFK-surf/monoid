@@ -1108,18 +1108,18 @@ fn speed_node(
       if phone {
         v
         .min_width(Is(Some(phone_key_side)))
-        .height(Is(Some(phone_key_side)))
-        .padding(Is((@ui.Space::S2.px(), 0.0, @ui.Space::S2.px(), 0.0)))
-        .radius(Is(phone_key_side / 2.0))
+        .min_height(Is(Some(phone_key_side)))
+        .padding(Is((@ui.Space::S2.px(), 2.0, @ui.Space::S2.px(), 2.0)))
+        .radius(Is(1.0e6))
         .ground(By(fn() { if lit() { alpha(ink().text, media_lit_share) } else { no_ground } }))
         |> ignore
       } else {
         v
         .min_width(Is(Some(media_rate_w)))
-        .height(Is(Some(media_rate_h)))
-        .padding(Is((@ui.Space::S2.px(), 0.0, @ui.Space::S2.px(), 0.0)))
+        .min_height(Is(Some(media_rate_h)))
+        .padding(Is((@ui.Space::S2.px(), 2.0, @ui.Space::S2.px(), 2.0)))
         .margin(Is((0.0, 0.0, @ui.capsule_in(card_corner, media_rate_h) - media_bar_pad, 0.0)))
-        .radius(Is(media_rate_h / 2.0))
+        .radius(Is(1.0e6))
         .focus_ring_theme()
         .ground(By(fn() { alpha(ink().text, media_rate_share) }))
         |> ignore
@@ -1868,7 +1868,7 @@ fn desk_controls_node(
     })
     timeline_node(bar, pn, media_timeline_h(), ink, pointed=true)
     bar.box(fn(row) {
-      row.row(Is(true)).height(Is(Some(media_row_h()))).gap(Is(@ui.Space::S3.px())).lines_up(Is(Some(Middle))) |> ignore
+      row.row(Is(true)).min_height(Is(Some(media_row_h()))).gap(Is(@ui.Space::S3.px())).lines_up(Is(Some(Middle))) |> ignore
       row.box(fn(g) {
         g.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(keys_apart(size=media_key_d))) |> ignore
         // (the one before and the one after, where the folder has others)
@@ -2440,7 +2440,7 @@ fn phone_controls_node(parent : @view.View, pn : PlayerNode, ink : () -> MediaIn
     |> ignore
     timeline_node(c, pn, phone_timeline_h(), ink, pointed=false)
     c.box(fn(row) {
-      row.row(Is(true)).height(Is(Some(phone_row_h()))).lines_up(Is(Some(Middle))).gap(Is(keys_apart(size=phone_key_side))).fits(Is(true)) |> ignore
+      row.row(Is(true)).min_height(Is(Some(phone_row_h()))).lines_up(Is(Some(Middle))).gap(Is(keys_apart(size=phone_key_side))).fits(Is(true)) |> ignore
       let key = fn(parent : @view.View, icon : () -> String, label : () -> String, press : () -> Unit, lit : () -> Bool) {
         media_key_node(parent, icon, label, on, ink, press, side=phone_key_side, faint=false, ripples=true, lit~) |> ignore
       }
