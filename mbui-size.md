@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [fca1d04f9](https://github.com/AFK-surf/monoid/commit/fca1d04f95bc33b63b3f0c520d631b9a7da214df) fix(mbui): let auto-sized column items animate thr | 2.79 | 3.77 | 15.36 | 37.48 | 58.06 | 32.84 | 67.06 | 98.42 | 123.57 |
 | [bb906ebb3](https://github.com/AFK-surf/monoid/commit/bb906ebb34bffe02aeccdd1bed4824393f7dfae0) refactor(mbui): clear remaining page-headless and  | 2.79 | 3.77 | 15.36 | 37.47 | 58.06 | 32.84 | 67.06 | 98.22 | 125.05 |
 | [b159ee25d](https://github.com/AFK-surf/monoid/commit/b159ee25de5625dfffe1ffa62ff8ef127a01b829) fix(mbui): forward unhandled Control shortcuts on  | 2.79 | 3.77 | 15.36 | 37.47 | 58.06 | 32.84 | 67.06 | 98.22 | 125.05 |
 | [3d1a4607d](https://github.com/AFK-surf/monoid/commit/3d1a4607d7ab8043a526520dc8d364666bf4a8fc) fix(station): restore Gemini profile output speed  | 2.79 | 3.77 | 15.36 | 37.47 | 58.06 | 32.84 | 67.06 | 98.49 | 120.89 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [394d28e5f](https://github.com/AFK-surf/monoid/commit/394d28e5f1c0a32101335be75e593477604cd43f) feat(sf-ui): add built-in zh/en fallback words, op | 2.77 | 3.74 | 15.22 | 37.28 | 57.63 | 32.68 | 66.6 | 98.34 | 121.28 |
 | [3ae3dd86c](https://github.com/AFK-surf/monoid/commit/3ae3dd86ca419e0f5dd102be2ecd23062b941450) fix(station): answer a chat's station_move soon, t | 2.76 | 3.73 | 15.2 | 37.27 | 57.57 | 32.68 | 66.56 | 98.8 | 124.6 |
 | [1dd0b7818](https://github.com/AFK-surf/monoid/commit/1dd0b7818eb78e33e60e2ba80032311ad1e36576) feat(website): add ui.monoid.build V3 interactive  | 2.76 | 3.73 | 15.19 | 37.27 | 57.55 | 32.67 | 66.55 | 98.35 | 105.82 |
-| [e2303813a](https://github.com/AFK-surf/monoid/commit/e2303813ace976914092725ff9cab869cbcfd1a6) fix(mbui): place fresh rows past carried rows and  | 2.76 | 3.73 | 15.19 | 37.27 | 57.55 | 32.67 | 66.55 | 98.35 | 105.82 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [fca1d04f9](https://github.com/AFK-surf/monoid/commit/fca1d04f95bc33b63b3f0c520d631b9a7da214df) fix(mbui): let auto-sized column items animate thr | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.4 |
 | [bb906ebb3](https://github.com/AFK-surf/monoid/commit/bb906ebb34bffe02aeccdd1bed4824393f7dfae0) refactor(mbui): clear remaining page-headless and  | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.4 |
 | [b159ee25d](https://github.com/AFK-surf/monoid/commit/b159ee25de5625dfffe1ffa62ff8ef127a01b829) fix(mbui): forward unhandled Control shortcuts on  | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.13 |
 | [3d1a4607d](https://github.com/AFK-surf/monoid/commit/3d1a4607d7ab8043a526520dc8d364666bf4a8fc) fix(station): restore Gemini profile output speed  | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.12 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [394d28e5f](https://github.com/AFK-surf/monoid/commit/394d28e5f1c0a32101335be75e593477604cd43f) feat(sf-ui): add built-in zh/en fallback words, op | 0.46 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.12 |
 | [3ae3dd86c](https://github.com/AFK-surf/monoid/commit/3ae3dd86ca419e0f5dd102be2ecd23062b941450) fix(station): answer a chat's station_move soon, t | 0.46 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.12 |
 | [1dd0b7818](https://github.com/AFK-surf/monoid/commit/1dd0b7818eb78e33e60e2ba80032311ad1e36576) feat(website): add ui.monoid.build V3 interactive  | 0.46 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.12 |
-| [e2303813a](https://github.com/AFK-surf/monoid/commit/e2303813ace976914092725ff9cab869cbcfd1a6) fix(mbui): place fresh rows past carried rows and  | 0.46 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.08 |
