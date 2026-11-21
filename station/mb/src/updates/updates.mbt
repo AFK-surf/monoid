@@ -838,7 +838,7 @@ fn Updates::notify_progress(self : Updates, immediate? : Bool = false) -> Unit {
   } else if self.progress_later is None {
     // timer: a debounce of a download's progress.
     self.progress_later = Some(
-      self.later(wait, async fn() {
+      self.later(wait, fn() {
         // (none held back before `changed`, which would call this one off)
         self.progress_later = None
         if self.closed {
