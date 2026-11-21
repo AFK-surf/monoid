@@ -291,7 +291,7 @@ pub struct EntryEdit {
   edit : async (@jsjson.JValue, @jsjson.JValue) -> @jsjson.JValue
 }
 
-pub struct Kept {
+pub(all) struct Kept {
   status : Int32
   headers : Map[String, String]
   body : Bytes

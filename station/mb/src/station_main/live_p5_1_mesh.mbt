@@ -32,6 +32,8 @@ priv struct Endpoint {
   /// Whether it is reached through a relay now, end to end (endpoint.ts `probeRelay`).
   probe_relay : async (String) -> Json
   close : async () -> Unit
+  /// Routes requests matching `routes` on `alpn` to `--serve` sockets `to` (front_client.mbt `route`).
+  route : (async (Bytes, Array[String], Array[String]) -> Bool)?
   /// Its mesh scopes, where its endpoint keeps them (the front's: endpoint.ts `meshConfigure` and the rest).
   mesh : MeshOps?
 }
@@ -52,6 +54,8 @@ priv struct MeshLive {
   mut keeper : @gate.Keeper?
   /// The workspaces' mesh directory (mesh/scope-sync.ts), where the endpoint keeps scopes.
   mut scopes : @mesh_scopes.ScopeSync?
+  /// The `--serve` child pool answering routed device reads/writes directly over the front.
+  mut served : Served?
 }
 
 ///|
@@ -319,6 +323,7 @@ async fn shell_endpoint(host : @host.Host, options : Json, key : Bytes) -> Endpo
         _ => ()
       }
     },
+    route: None,
     mesh: None,
   }
 }
@@ -363,6 +368,7 @@ async fn front_endpoint(host : @host.Host, socket : String, bind : Map[String, J
     relay_status: () => e.relay_status(),
     probe_relay: async fn(url) { e.probe_relay(url) },
     close: async fn() { e.close() },
+    route: Some(async fn(alpn, to, routes) { e.route(alpn, to, routes) }),
     mesh: Some({
       scopes: {
         configure: async fn(config) { e.mesh_configure(config) },
@@ -752,7 +758,11 @@ fn P51::mesh_live(self : P51) -> MeshLive {
   })
   // (peer.ts `heard`: another station heard from, told the parts that follow it: the moves)
   peers.heard(peer => bus.notify_peer_heard(peer))
-  let m : MeshLive = { endpoint: None, call: None, http: None, peers, keeper: None, scopes: None }
+  let m : MeshLive = { endpoint: None, call: None, http: None, peers, keeper: None, scopes: None, served: None }
+  bus.register_pids(() => match m.served {
+    Some(s) => s.pids()
+    None => []
+  })
   // Outbound: through the mesh once it is up (the bus's `peer_call`).
   let before = bus.peer_call.val
   bus.peer_call.val = async fn(target, ws, meth, params, bytes) {
@@ -1097,7 +1107,58 @@ async fn P51::mesh_run(self : P51, m : MeshLive, rig : Bool) -> Unit {
     }
     _ => None
   }
-  let members = if rig { None } else { Some(self.members(keeper, endpoint, leaves~)) }
+  let members_ref : Ref[@gate.Members?] = Ref(None)
+  let mut served_live : Served? = None
+  let members = if rig {
+    None
+  } else {
+    let told_viewer : @gate.ToldViewer? = match (endpoint.route, self.admin) {
+      (Some(route_fn), Some(admin_live)) => {
+        let s = self.served_live(
+          keeper,
+          admin_live,
+          members_ref,
+          paths => ignore(
+            host.rt.fork_quiet(name="served routes", async fn() {
+              ignore(route_fn(@utf8.encode(@gate.alpn), paths, served_routes)) catch {
+                _ => ()
+              }
+            }),
+          ),
+        )
+        served_live = Some(s)
+        Some((conn, viewer, moved, floor) => s.viewer(conn, viewer, moved, floor))
+      }
+      _ => None
+    }
+    let m_val = self.members(keeper, endpoint, leaves~, served=told_viewer)
+    members_ref.val = Some(m_val)
+    Some(m_val)
+  }
+  match (served_live, endpoint.route) {
+    (Some(s), Some(route_fn)) => {
+      m.served = Some(s)
+      scope_stops.push(() => s.close_sync())
+      let started = try {
+        Ok(s.start())
+      } catch {
+        e => Err(e)
+      }
+      match started {
+        Ok(paths) => {
+          let routed = route_fn(@utf8.encode(@gate.alpn), paths, served_routes) catch { _ => false }
+          if !routed {
+            p51_log("INFO", "mesh", "the front routes nothing (one from before); every request is this process's")
+          } else {
+            p51_log("INFO", "mesh", "requests routed to the MoonBit program", fields={ "routes": Json::array(served_routes.map(Json::string)) })
+          }
+        }
+        Err(e) =>
+          p51_log("WARN", "mesh", "the MoonBit program that answers requests did not start", fields={ "error": Json::string(said_of(e)) })
+      }
+    }
+    _ => ()
+  }
   let superseded = @gate.Superseded::new()
   let storms = @gate.Storms::new(@host.now)
   let storms_fiber = host.rt.fork(name="storms", async fn() { storms.start() })
@@ -1281,9 +1342,15 @@ fn P51::lock_source(self : P51, plane : Plane) -> @mesh_runtime.LockSource {
 }
 
 ///|
-/// The members of the station's workspaces, as the gate serves them: the admin API, a part's own stream, what the
-/// station's program would answer of a device's reads (this process here: none of its own `--serve` yet).
-fn P51::members(self : P51, keeper : @gate.Keeper, endpoint : Endpoint, leaves? : @gate.LeafDoor? = None) -> @gate.Members {
+/// The members of the station's workspaces, as the gate serves them: the admin API, a part's own stream, and what the
+/// `--serve` child processes answer of a device's reads/writes (`served`).
+fn P51::members(
+  self : P51,
+  keeper : @gate.Keeper,
+  endpoint : Endpoint,
+  leaves? : @gate.LeafDoor? = None,
+  served? : @gate.ToldViewer? = None,
+) -> @gate.Members {
   let bus = self.bus
   let host = self.host
   let lan = () => {
@@ -1314,7 +1381,7 @@ fn P51::members(self : P51, keeper : @gate.Keeper, endpoint : Endpoint, leaves? 
     lan: () => @mesh_runtime.lan_addrs((endpoint.sockets)(), []).filter(a => lan().iter().any(l => a.has_prefix(l))),
     tailnet: () => @mesh_runtime.tailnet_addrs((endpoint.sockets)(), []),
     connected: () => bus.parts.connected(),
-    served: None,
+    served,
     lang_of: hs => @gate.lang_of_core(hs),
     update_words: lang => tr(lang, "station.update.tooOld"),
     leaves,

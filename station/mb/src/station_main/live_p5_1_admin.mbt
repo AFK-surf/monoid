@@ -271,7 +271,12 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
       }
     "readers.names.set" => {
       match (args.get(0), args.get(1)) {
-        (Some(Str(email)), Some(Str(n))) => self.readers.unwrap().names[email] = n
+        (Some(Str(email)), Some(Str(n))) => {
+          self.readers.unwrap().names[email] = n
+          if self.mesh is Some({ served: Some(s), .. }) {
+            s.remember_name(email, n)
+          }
+        }
         _ => ()
       }
       Null

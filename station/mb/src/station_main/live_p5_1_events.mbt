@@ -398,6 +398,10 @@ pub async fn live_p5_1_handed() -> Unit {
       _ => ()
     }
   }
+  match p51_live.val {
+    Some({ mesh: Some({ served: Some(s), .. }), .. }) => s.wait_closed()
+    _ => ()
+  }
 }
 
 ///|

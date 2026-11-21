@@ -51,7 +51,7 @@ pub fn Setup::has(self : Setup, part : String) -> Bool {
 
 ///|
 /// A kept answer: its status, headers and bytes.
-pub struct Kept {
+pub(all) struct Kept {
   status : Int32
   headers : Map[String, String]
   body : Bytes

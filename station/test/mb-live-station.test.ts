@@ -24,6 +24,7 @@ import { loadMesh, type Connection, type Stream as MeshStream } from "../src/mes
 import { Reader } from "../src/mesh/wire.ts";
 import { GrantKey } from "./fake-control-plane.ts";
 import { Store } from "../src/store/store.ts";
+import { RUNTIME_KINDS } from "../src/agents/runtime.ts";
 import { DatabaseSync } from "node:sqlite";
 
 const binary = mbReaderBinary();
@@ -322,10 +323,10 @@ async function member(conn: Connection, credential: string) {
 }
 
 /// A member's request on the mesh: a body given as JSON, or bytes as they are (an upload's).
-async function memberAsk(conn: Connection, method: string, path: string, body?: unknown): Promise<[number, any]> {
+async function memberAsk(conn: Connection, method: string, path: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<[number, any]> {
   const stream = await conn.openBi();
   const bytes = Buffer.isBuffer(body);
-  await line(stream, { method, path, headers: { "content-type": bytes ? "application/octet-stream" : "application/json" } });
+  await line(stream, { method, path, headers: { "content-type": bytes ? "application/octet-stream" : "application/json", ...extraHeaders } });
   if (body !== undefined) await stream.write(bytes ? body : Buffer.from(JSON.stringify(body)));
   await stream.finish();
   const reader = new Reader(stream);
@@ -746,4 +747,166 @@ test("a release with no Node: a relay enrolled by an agent's token on the statio
   const after = await relays({ action: "list" });
   assert.deepEqual(after.mesh?.map((r: any) => [r.node, r.revoked]), [[relay.id(), 1]], JSON.stringify(after));
   assert.match(String((await enrol({ op: "resume", scope: issued.scope })).code), /relay_not_registered/);
+});
+
+/// `--serve` child processes of `ppid` currently alive, by PID.
+function serveChildrenOf(ppid: number): number[] {
+  const out = spawnSync("ps", ["-eo", "pid=,ppid=,command="], { encoding: "utf8" }).stdout;
+  const pids: number[] = [];
+  for (const row of out.split("\n")) {
+    const m = row.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
+    if (m && Number(m[2]) === ppid && m[3]!.includes("--serve")) pids.push(Number(m[1]));
+  }
+  return pids.sort((a, b) => a - b);
+}
+
+test("a release with no Node: --serve children answer routed reads, marks, idempotent messages and events, recover on crash, and clean up on stop", { skip, timeout: 300_000 }, async () => {
+  const app = fresh("app");
+  mkdirSync(join(app, "station"), { recursive: true });
+  copyFileSync(binary!, join(app, "station", "stillfail-reader"));
+  chmodSync(join(app, "station", "stillfail-reader"), 0o755);
+  copyFileSync(runner, join(app, "station", "stillfail-runner"));
+  chmodSync(join(app, "station", "stillfail-runner"), 0o755);
+  writeFileSync(join(app, "BUILD"), "9700\n");
+  const bin = fresh("bin");
+  fakeClaude(bin);
+  const out = fresh("out");
+
+  const data = fresh("data");
+  const id = spawnSync(join(app, "station", "stillfail-reader"), ["id", "--data", data], { env: { PATH: bin, HOME: data }, encoding: "utf8" }).stdout.trim();
+  assert.match(id, /^[0-9a-f]{64}$/);
+  const grant = new GrantKey();
+  const meshPort = await freeUdpPort();
+  const plane = await controlPlane([{ id, name: "mac", ips: [`127.0.0.1:${meshPort}`] }]);
+  const mcpPort = await freeTcpPort();
+  mkdirSync(join(data, "mesh"), { recursive: true });
+  writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify({
+    origin: plane.origin, station: id, workspace: "w1", workspace_name: "团队", name: "mac", relay_url: "", relay_urls: [], grant_keys: { keys: [grant.jwk] }, peers: [], revocations: [],
+  }));
+  mkdirSync(join(data, "homes", "cc"), { recursive: true });
+  writeFileSync(join(data, "homes", "cc", ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "sk-ant-oat-test", expiresAt: Date.now() + 86_400_000 } }));
+  writeFileSync(join(data, "config.json"), JSON.stringify({
+    language: "en",
+    http: { port: mcpPort },
+    profiles: [{ id: "cc", runtime: "claude", home: "homes/cc", access: { kind: "subscription" } }],
+    maxNudges: 1,
+  }));
+
+  const env = {
+    PATH: bin, HOME: data, TMPDIR: tmpdir(), FAKE_OUT: out, FAKE_NO_JOB: "1",
+    STILLFAIL_LOCAL_ADMIN: "1", STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${meshPort}`,
+    STILLFAIL_AGENT_NICE: "0",
+  };
+  const loopPort = await freeTcpPort();
+  const station = spawn(launcher, ["run", "--app", app, "--data", data, "--port", String(loopPort)], { stdio: ["ignore", "pipe", "pipe"], env });
+  children.push(station);
+  let err = "";
+  station.stdout!.on("data", (d) => (err += d));
+  station.stderr!.on("data", (d) => (err += d));
+  const tail = () => err.slice(-4000);
+  const ended = new Promise<number | null>((resolve) => station.on("exit", (code) => resolve(code)));
+
+  const takenOver = () => [...err.matchAll(/Node (\d+) has taken over/g)].map((m) => Number(m[1]));
+  const stationPid = await until("the station taken over", () => takenOver()[0], tail);
+  await until("presence.json online", () => readJson(join(data, "run", "presence.json"))?.online === true, tail);
+
+  // ── 2 --serve children spawned and registered with the front ──
+  await until("requests routed to --serve", () => err.includes("requests routed to the MoonBit program"), tail);
+  const initialServe = await until("2 --serve children alive", () => {
+    const pids = serveChildrenOf(stationPid);
+    return pids.length === 2 ? pids : null;
+  }, tail);
+  const runDir = join(data, "run");
+  const serveSocks = () => readdirSync(runDir).filter((f) => f.startsWith(`serve-${stationPid}-`) && f.endsWith(".sock")).sort();
+  assert.deepEqual(serveSocks(), [`serve-${stationPid}-0.sock`, `serve-${stationPid}-1.sock`]);
+
+  // ── member connects on real iroh with full runtime header so --serve handles fast paths directly ──
+  const client = await addon!.bind({ secretKey: randomBytes(32), alpns: [Buffer.from("client/1")], relayUrls: [], discovery: false, bindAddr: "127.0.0.1:0" });
+  closers.push(() => void client.close());
+  const now = Math.floor(Date.now() / 1000);
+  const credential = grant.credential({ typ: "stillfail-member+jwt" }, { iss: "stillfail-cloud", sub: "u1", email: "ada@x.com", name: "Ada", ws: "w1", role: "owner", device: client.id(), sid: "s1", iat: now, exp: now + 3600 });
+  const conn = await until("connected on the mesh", () => client.connect({ id, ips: [`127.0.0.1:${meshPort}`] }, Buffer.from("stillfail/admin/1")), tail);
+  assert.equal((await member(conn, credential)).ok, true);
+
+  const servedHeaders = { "stillfail-runtimes": RUNTIME_KINDS.join(",") };
+  const [made, said] = await memberAsk(conn, "POST", "/admin/api/sessions", { runtime: "claude", profile: "cc" }, servedHeaders);
+  assert.equal(made, 200, `${JSON.stringify(said)}; ${tail()}`);
+  const key: string = said.key;
+  const threadId: number = said.thread?.id ?? said.thread?.thread?.id;
+  assert.ok(typeof key === "string" && typeof threadId === "number", JSON.stringify(said));
+
+  // GET /admin/api/chats
+  const [chatsStatus, chats] = await memberAsk(conn, "GET", "/admin/api/chats", undefined, servedHeaders);
+  assert.equal(chatsStatus, 200, JSON.stringify(chats));
+  const chatList = Array.isArray(chats) ? chats : chats?.chats;
+  assert.ok(Array.isArray(chatList) && chatList.some((c: any) => c.id === key || c.thread === threadId), JSON.stringify(chats));
+
+  // GET /admin/api/threads/:id/entries
+  const [ent0Status, ent0] = await memberAsk(conn, "GET", `/admin/api/threads/${threadId}/entries`, undefined, servedHeaders);
+  assert.equal(ent0Status, 200, JSON.stringify(ent0));
+  assert.ok(Array.isArray(ent0?.entries), JSON.stringify(ent0));
+
+  // GET /admin/api/events (streamed via --serve relay)
+  const events = await memberEvents(conn);
+
+  // POST /admin/api/threads/:id/messages with Idempotency-Key + retry
+  const [msg1Status, msg1] = await memberAsk(
+    conn, "POST", `/admin/api/threads/${threadId}/messages`, { text: "hello via serve" },
+    { ...servedHeaders, "idempotency-key": "idem-serve-1" },
+  );
+  assert.equal(msg1Status, 200, JSON.stringify(msg1));
+  assert.equal(typeof msg1?.n, "number", JSON.stringify(msg1));
+
+  const [msg2Status, msg2] = await memberAsk(
+    conn, "POST", `/admin/api/threads/${threadId}/messages`, { text: "hello via serve" },
+    { ...servedHeaders, "idempotency-key": "idem-serve-1" },
+  );
+  assert.equal(msg2Status, 200, JSON.stringify(msg2));
+  assert.equal(msg2.n, msg1.n, "idempotency retry returns the same entry number");
+
+  // Agent receives delivery and completes turn; events stream receives the reply
+  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
+  closers.push(() => store.close());
+  await until("agent turn ended all_done", () => store.listTurns(key).some((t) => t.summary.ending === "all_done"), () => `${JSON.stringify(store.listTurns(key).map((t) => t.summary))}; ${tail()}`);
+  await until("events stream received agent reply", () => events.text.includes("posted by the fake"), () => `${events.text.slice(-2000)}; ${tail()}`);
+
+  const [ent1Status, ent1] = await memberAsk(conn, "GET", `/admin/api/threads/${threadId}/entries`, undefined, servedHeaders);
+  assert.equal(ent1Status, 200, JSON.stringify(ent1));
+  const personMsgs = (ent1.entries as any[]).filter((e) => e.text === "hello via serve");
+  assert.equal(personMsgs.length, 1, `no duplicate from idempotency retry: ${JSON.stringify(ent1.entries)}`);
+  assert.ok((ent1.entries as any[]).some((e) => String(e.text ?? "").includes("posted by the fake")), JSON.stringify(ent1.entries));
+
+  // PUT /admin/api/threads/:id/read (mark written in --serve, changes broadcast to store/events)
+  const [readStatus, readSaid] = await memberAsk(conn, "PUT", `/admin/api/threads/${threadId}/read`, { n: msg1.n }, servedHeaders);
+  assert.equal(readStatus, 200, JSON.stringify(readSaid));
+  assert.equal(readSaid.n, msg1.n, JSON.stringify(readSaid));
+
+  // ── kill one --serve child: auto-restarts and requests keep working without hanging ──
+  const victim = initialServe[0]!;
+  process.kill(victim, "SIGKILL");
+  await until("killed --serve child exited", () => !alive(victim), tail);
+  const recoveredServe = await until("killed --serve child automatically restarted", () => {
+    const pids = serveChildrenOf(stationPid);
+    return pids.length === 2 && !pids.includes(victim) ? pids : null;
+  }, tail);
+  assert.deepEqual(serveSocks(), [`serve-${stationPid}-0.sock`, `serve-${stationPid}-1.sock`]);
+
+  // Verify requests succeed on both existing and fresh connections after recovery
+  const conn2 = await until("fresh connection after --serve restart", () => client.connect({ id, ips: [`127.0.0.1:${meshPort}`] }, Buffer.from("stillfail/admin/1")), tail);
+  assert.equal((await member(conn2, credential)).ok, true);
+  for (let i = 0; i < 4; i++) {
+    const [st, body] = await memberAsk(conn2, "GET", "/admin/api/chats", undefined, servedHeaders);
+    assert.equal(st, 200, `post-recovery GET /chats #${i}: ${JSON.stringify(body)}`);
+  }
+
+  // ── stop station: all --serve children and serve-*.sock files cleaned up ──
+  const frontPid = Number(readFileSync(join(data, "run", "front.pid"), "utf8").trim() || "0");
+  station.kill("SIGTERM");
+  assert.equal(await ended, 0, tail());
+  await until("station process gone", () => !alive(stationPid), tail);
+  if (frontPid > 0) await until("front gone", () => !alive(frontPid), tail);
+  for (const pid of recoveredServe) {
+    await until(`--serve child ${pid} gone`, () => !alive(pid), tail);
+  }
+  assert.deepEqual(serveSocks(), [], "no serve-*.sock files left after stop");
 });
