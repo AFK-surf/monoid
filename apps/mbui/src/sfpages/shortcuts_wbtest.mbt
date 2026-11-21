@@ -177,7 +177,7 @@ test "快捷键, at each width and with either hand: every action's name drawn, 
 }
 
 ///|
-test "快捷键, at each width and with either hand: looked for by words, by the keys pressed (按键搜索) till Esc or the key again, a group with none found not shown, nothing found said so" {
+test "快捷键, at each width and with either hand: looked for by words, by the keys pressed (按键搜索) till Esc or the key again, a group with none found not shown, nothing found said so; the field under how a message is sent, kept in its place" {
   for case in page_cases {
     let (w, platform) = case
     let at = "\{w} platform \{platform}"
@@ -186,12 +186,14 @@ test "快捷键, at each width and with either hand: looked for by words, by the
     let switch_ = @sf.t("web-main.keymap.chat.switch")
     let history = @sf.t("web-main.keymap.chat.history")
     assert_true(t.find("搜索快捷键") is Some(_) && t.find(history) is Some(_), msg=at)
-    // by words: its name
+    // by words: its name; how a message is sent stays above the field, the field where it was
+    let key_at = t.get(Button, label="按键搜索").rect
     t.tap_text("搜索快捷键")
     t.type_text("快速切换")
     t.run_for(@ui.move_most_ms)
     assert_true(t.find(switch_) is Some(_), msg=at)
-    assert_true(t.find(history) is None && t.find("发送消息") is None, msg=at)
+    assert_true(t.find(history) is None && t.find("发送消息") is Some(_), msg=at)
+    assert_eq(t.get(Button, label="按键搜索").rect, key_at, msg=at)
     t.type_text("没有这样的快捷键")
     t.run_for(@ui.move_most_ms)
     assert_true(t.find("没有匹配的快捷键") is Some(_) && t.find(switch_) is None, msg=at)

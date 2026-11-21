@@ -30,11 +30,10 @@ fn set_keys(core : Core, action : String?, keys : Json) -> Unit {
 /// keys pressed, the next key press is its new keys: Esc leaves them, ⌫ clears them, keys another action had are moved
 /// here (the core says so); pressed again, or this page no longer the one on top of its stack (`active`: another put
 /// over it, it gone back off), it records none. 恢复默认 an action's own again. Kept on this device. What it says of
-/// itself told `said`. At its top the field to look through them by: its words find the actions whose name or keys in
+/// itself told `said`. Under how a message is sent, at the top of the keys' list, the field to look through them by: its words find the actions whose name or keys in
 /// words hold them; its keyboard key at its end (按键搜索), pressed, has each key press after it said there as a key
 /// cap shows it, finding the actions those keys do, till Esc or the key again (the window's keys stand aside meanwhile,
-/// as while an action records). A group none of whose actions is found is not shown, and how a message is sent only
-/// while nothing is looked for; nothing found, that said.
+/// as while an action records). A group none of whose actions is found is not shown; nothing found, that said.
 pub fn shortcuts_node(
   v : @view.View,
   core : Core,
@@ -147,18 +146,21 @@ pub fn shortcuts_node(
     v,
     fn() { @sf.t("web-main.shortcuts.title") },
     fn() {
-      let keys = ["search"]
-      // (a core before the choice says none; looking for an action's keys, not shown)
-      if send() is Some(_) && !looked() {
+      // (how a message is sent first, apart from the keys: a core before the choice says none; then the field to look
+      // through the keys by, at the top of their list)
+      let keys = []
+      if send() is Some(_) {
         keys.push("send")
       }
+      let top = keys.length()
+      keys.push("search")
       groups().eachi(fn(i, g) {
         let group = text(Some(g), "group")
         if shown_in(group).length() > 0 {
           keys.push("\{i}/" + group)
         }
       })
-      if keys.length() == 1 && looked() {
+      if keys.length() == top + 1 && looked() {
         keys.push("none")
       }
       keys
