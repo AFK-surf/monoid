@@ -21,6 +21,7 @@ priv struct Agent {
   prompt : async (String) -> Unit
   steer : async (String) -> Bool
   abort : async () -> Unit
+  background_tools : async () -> Unit
   compact : async () -> Unit
   dispose : async () -> Unit
   retune : (Json) -> Bool
@@ -1030,6 +1031,10 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
         jb((s.steer)(as_text(r(0)).unwrap_or("")))
       "abort" => {
         (s.abort)()
+        Json::null()
+      }
+      "backgroundTools" => {
+        (s.background_tools)()
         Json::null()
       }
       "compact" => {

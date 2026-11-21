@@ -642,3 +642,224 @@ test("core live real-process parity suite list (mb-live-*.test.ts) does not regr
   const emptySuites = requiredLiveSuites.filter((name) => !/\b(?:test|it)\s*\(/.test(read(join(testDir, name))));
   assert.deepEqual(emptySuites, [], `core live parity suites with no test cases: ${emptySuites.join(", ")}`);
 });
+
+// ── reader ↔ station_main & Node mb-actor.ts RPC contracts ──
+
+/// Extract unique literal string matches with their first file:line occurrence.
+function scanLiterals(files: string[], re: RegExp): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const f of files) {
+    const text = read(f);
+    for (const m of text.matchAll(re)) {
+      const name = m[1]!;
+      if (!out.has(name)) {
+        const line = text.slice(0, m.index!).split("\n").length;
+        out.set(name, `${relative(station, f)}:${line}`);
+      }
+    }
+  }
+  return out;
+}
+
+/// Extract a single MoonBit function body starting at `header` through its closing `\n}` line.
+function mbtFnBody(text: string, header: RegExp): string {
+  const m = header.exec(text);
+  assert.ok(m !== null, `function not found: ${header}`);
+  const start = m.index!;
+  const end = text.indexOf("\n}\n", start);
+  return end < 0 ? text.slice(start) : text.slice(start, end + 3);
+}
+
+/// Extract `match` arm string literals from a MoonBit snippet.
+function mbtMatchArms(snippet: string): Set<string> {
+  const arms = new Set<string>();
+  for (const line of snippet.split("\n")) {
+    const arm = /^\s*("[^"\n]+"(?:\s*\|\s*"[^"\n]+")*)\s*(?:if\b.*)?=>/.exec(line);
+    if (arm) for (const m of arm[1]!.matchAll(/"([^"]+)"/g)) arms.add(m[1]!);
+  }
+  return arms;
+}
+
+/// Extract `case "…":` string literals from a TypeScript snippet.
+function tsSwitchCases(snippet: string): Set<string> {
+  const out = new Set<string>();
+  for (const m of snippet.matchAll(/\bcase\s+"([^"]+)"\s*:/g)) out.add(m[1]!);
+  return out;
+}
+
+test("every RPC and tell that reader actors make is handled in station_main and Node mb-actor.ts", () => {
+  const readerDir = join(mb, "reader");
+  const actorFiles = [join(readerDir, "actor_base.mbt"), join(readerDir, "actor_run.mbt")];
+  const actorsMbt = read(join(mb, "station_main", "live_p5_2_actors.mbt"));
+  const ctxMbt = read(join(mb, "station_main", "live_p5_2_ctx.mbt"));
+  const mainMbt = read(join(mb, "station_main", "live_p5_2_main.mbt"));
+  const dispatchMbt = read(join(mb, "station_main", "live_dispatch.mbt"));
+  const mbActorTs = read(join(station, "src", "sessions", "mb-actor.ts"));
+  const actorTs = read(join(station, "src", "sessions", "actor.ts"));
+
+  // 1. self.rpc(..., "node.<name>")
+  const nodeRpcs = scanLiterals(actorFiles, /\bself\.rpc\(\s*[^,]+,\s*"node\.([^"]+)"/g);
+  assert.ok(nodeRpcs.size >= 20, `reader node.* RPCs read: ${nodeRpcs.size} (expected >= 20)`);
+  const mbAskedBody = mbtFnBody(actorsMbt, /\nasync fn MbActor::asked\(/);
+  const mbNodeArms = mbtMatchArms(mbAskedBody);
+  const tsAskedStart = mbActorTs.indexOf("async asked(");
+  assert.ok(tsAskedStart >= 0, "mb-actor.ts has no async asked()");
+  const tsAskedEnd = mbActorTs.indexOf("\n  #words(", tsAskedStart);
+  assert.ok(tsAskedEnd > tsAskedStart, "mb-actor.ts has no #words() after asked()");
+  const tsAskedCases = tsSwitchCases(mbActorTs.slice(tsAskedStart, tsAskedEnd));
+
+  // 2. self.tell(..., "node.<name>" | "chat.<name>" | "log")
+  const actorTells = scanLiterals(actorFiles, /\bself\.tell\(\s*[^,]+,\s*"([^"]+)"/g);
+  assert.ok(actorTells.size >= 3, `reader actor tells read: ${actorTells.size} (expected >= 3)`);
+  const mbToldBody = mbtFnBody(actorsMbt, /\nfn MbActor::told_\(/);
+  const mbToldArms = mbtMatchArms(mbToldBody);
+  const tsToldStart = mbActorTs.indexOf("told(f: string");
+  assert.ok(tsToldStart >= 0, "mb-actor.ts has no told()");
+  const tsToldCases = tsSwitchCases(mbActorTs.slice(tsToldStart, tsAskedStart));
+
+  // 3. self.deps(..., "<name>")
+  const depsCalls = scanLiterals(actorFiles, /\bself\.deps\(\s*[^,]+,\s*"([^"]+)"/g);
+  assert.ok(depsCalls.size >= 15, `reader deps.* calls read: ${depsCalls.size} (expected >= 15)`);
+  const mbDepsArms = mbtMatchArms(mbtFnBody(ctxMbt, /\nasync fn P52::deps\(/));
+  const mbDepsExtra = mbtMatchArms(`${actorsMbt}\n${mainMbt}`);
+  const tsDepsTypeStart = actorTs.indexOf("export type SessionDeps =");
+  assert.ok(tsDepsTypeStart >= 0, "actor.ts has no SessionDeps");
+  const tsDepsText = `${actorTs.slice(tsDepsTypeStart)}\n${mbActorTs}`;
+
+  // 4. self.agent_do(..., "<name>")
+  const agentCalls = scanLiterals(actorFiles, /\bself\.agent_do\(\s*[^,]+,\s*[^,]+,\s*"([^"]+)"/g);
+  assert.ok(agentCalls.size >= 10, `reader agent.* calls read: ${agentCalls.size} (expected >= 10)`);
+  const agentBlockStart = mbAskedBody.indexOf('if part == "agent"');
+  assert.ok(agentBlockStart >= 0, "MbActor::asked has no agent dispatch block");
+  const agentBlockEnd = mbAskedBody.indexOf('if f == "t"', agentBlockStart);
+  const mbAgentArms = mbtMatchArms(mbAskedBody.slice(agentBlockStart, agentBlockEnd));
+  const tsAgentsText = `${mbActorTs}\n${walk(join(station, "src", "agents"), (p) => p.endsWith(".ts") && !p.endsWith(".test.ts")).map(read).join("\n")}`;
+
+  // 5. self.store(..., "<name>")
+  const storeCalls = scanLiterals(actorFiles, /\bself\.store\(\s*[^,]+,\s*"([^"]+)"/g);
+  assert.ok(storeCalls.size >= 20, `reader store.* calls read: ${storeCalls.size} (expected >= 20)`);
+  const mbStoreLiterals = new Set<string>();
+  for (const text of [
+    actorsMbt,
+    ctxMbt,
+    dispatchMbt,
+    read(join(readerDir, "actor_store.mbt")),
+    ...mbt(join(mb, "store_sessions")).map(read),
+    ...mbt(join(mb, "store_threads")).map(read),
+  ]) {
+    for (const m of text.matchAll(/"([A-Za-z_][A-Za-z0-9_]*)"/g)) mbStoreLiterals.add(m[1]!);
+  }
+  const tsStoreText = `${mbActorTs}\n${actorTs}\n${walk(join(station, "src", "store"), (p) => p.endsWith(".ts") && !p.endsWith(".test.ts")).map(read).join("\n")}`;
+
+  const results: Result[] = [];
+  for (const [name, where] of nodeRpcs) {
+    results.push({
+      name: `reader node.${name} (station_main)`,
+      ok: mbNodeArms.has(name),
+      why: `${where} calls self.rpc(..., "node.${name}"), unhandled in live_p5_2_actors.mbt MbActor::asked`,
+    });
+    results.push({
+      name: `reader node.${name} (mb-actor.ts)`,
+      ok: tsAskedCases.has(name),
+      why: `${where} calls self.rpc(..., "node.${name}"), unhandled in station/src/sessions/mb-actor.ts asked()`,
+    });
+  }
+  for (const [name, where] of actorTells) {
+    results.push({
+      name: `reader tell ${name} (station_main)`,
+      ok: mbToldArms.has(name),
+      why: `${where} calls self.tell(..., "${name}"), unhandled in live_p5_2_actors.mbt MbActor::told_`,
+    });
+    results.push({
+      name: `reader tell ${name} (mb-actor.ts)`,
+      ok: tsToldCases.has(name),
+      why: `${where} calls self.tell(..., "${name}"), unhandled in station/src/sessions/mb-actor.ts told()`,
+    });
+  }
+  for (const [name, where] of depsCalls) {
+    results.push({
+      name: `reader deps.${name} (station_main)`,
+      ok: mbDepsArms.has(name) || mbDepsExtra.has(name),
+      why: `${where} calls self.deps(..., "${name}"), unhandled in live_p5_2_ctx.mbt P52::deps`,
+    });
+    results.push({
+      name: `reader deps.${name} (Node)`,
+      ok: new RegExp(`\\b${name}\\??\\s*[(:]`).test(tsDepsText),
+      why: `${where} calls self.deps(..., "${name}"), missing from SessionDeps / mb-actor.ts`,
+    });
+  }
+  for (const [name, where] of agentCalls) {
+    results.push({
+      name: `reader agent.${name} (station_main)`,
+      ok: mbAgentArms.has(name),
+      why: `${where} calls self.agent_do(..., "${name}"), unhandled in live_p5_2_actors.mbt MbActor::asked agent block`,
+    });
+    results.push({
+      name: `reader agent.${name} (Node)`,
+      ok: tsAskedCases.has(name) || new RegExp(`\\b${name}\\??\\s*\\(`).test(tsAgentsText),
+      why: `${where} calls self.agent_do(..., "${name}"), unhandled in mb-actor.ts or station/src/agents/`,
+    });
+  }
+  for (const [name, where] of storeCalls) {
+    results.push({
+      name: `reader store.${name} (station_main)`,
+      ok: mbStoreLiterals.has(name),
+      why: `${where} calls self.store(..., "${name}"), missing in station_main / actor_store / store_sessions / store_threads`,
+    });
+    results.push({
+      name: `reader store.${name} (Node)`,
+      ok: new RegExp(`\\b${name}\\??\\s*\\(`).test(tsStoreText),
+      why: `${where} calls self.store(..., "${name}"), missing in mb-actor.ts / station/src/store/`,
+    });
+  }
+
+  const wrong = judge(results);
+  assert.deepEqual(wrong, [], wrong.join("\n"));
+});
+
+test("every tell from reader #jobs, #live and #remote is handled in station_main", () => {
+  const readerDir = join(mb, "reader");
+  const results: Result[] = [];
+
+  // #jobs
+  const jobsTells = scanLiterals([join(readerDir, "jobs.mbt")], /\bself\.tell\(\s*[^,]+,\s*"([^"]+)"/g);
+  assert.ok(jobsTells.size >= 2, `reader jobs tells read: ${jobsTells.size}`);
+  const jobsArms = mbtMatchArms(mbtFnBody(read(join(mb, "station_main", "live_p5_3_jobs.mbt")), /\nfn P53Jobs::told\(/));
+  for (const [name, where] of jobsTells) {
+    results.push({
+      name: `reader #jobs tell ${name}`,
+      ok: jobsArms.has(name),
+      why: `${where} tells "${name}", unhandled in live_p5_3_jobs.mbt P53Jobs::told`,
+    });
+  }
+
+  // #live (mounted in live_p5_2_main.mbt mount_live → session_hub/live.mbt LiveShell::told_by_program)
+  const liveTells = scanLiterals([join(readerDir, "live.mbt")], /\bself\.tell\(\s*[^,]+,\s*"([^"]+)"/g);
+  assert.ok(liveTells.size >= 10, `reader live tells read: ${liveTells.size}`);
+  const mainMbt = read(join(mb, "station_main", "live_p5_2_main.mbt"));
+  assert.match(mainMbt, /p\.shells\["#live"\]\s*=\s*\([\s\S]*?live\.told_by_program/, "live_p5_2_main.mbt mount_live must wire live.told_by_program");
+  const liveArms = mbtMatchArms(mbtFnBody(read(join(mb, "session_hub", "live.mbt")), /\npub fn LiveShell::told_by_program\(/));
+  for (const [name, where] of liveTells) {
+    results.push({
+      name: `reader #live tell ${name}`,
+      ok: liveArms.has(name),
+      why: `${where} tells "${name}", unhandled in session_hub/live.mbt LiveShell::told_by_program`,
+    });
+  }
+
+  // #remote
+  const remoteFiles = readdirSync(readerDir).filter((n) => /^remote.*\.mbt$/.test(n)).map((n) => join(readerDir, n));
+  const remoteTells = scanLiterals(remoteFiles, /\bself\.tell\(\s*[^,]+,\s*"([^"]+)"/g);
+  assert.ok(remoteTells.size >= 4, `reader remote tells read: ${remoteTells.size}`);
+  const remoteArms = mbtMatchArms(mbtFnBody(read(join(mb, "station_main", "live_p5_3_remote.mbt")), /\nfn P53Remote::told\(/));
+  for (const [name, where] of remoteTells) {
+    results.push({
+      name: `reader #remote tell ${name}`,
+      ok: remoteArms.has(name),
+      why: `${where} tells "${name}", unhandled in live_p5_3_remote.mbt P53Remote::told`,
+    });
+  }
+
+  const wrong = judge(results);
+  assert.deepEqual(wrong, [], wrong.join("\n"));
+});
