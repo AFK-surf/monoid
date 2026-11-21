@@ -17,14 +17,14 @@ test "Wave 3B glass helpers emit calibrated iOS 27 liquid glass in light and dar
     let vd = glass_viewer_dark()
     let vp = viewer_page_glass()
     let gt = glass_toast()
-    let expected_tint = if dark { 0x202020FFL } else { 0xFDFCFD67L }
+    let expected_tint = if dark { 0x20202067L } else { 0xFDFCFD67L }
     assert_eq(
       (vc.liquid, vc.blur, vc.tint, vc.saturation, vc.bezel, vc.refraction, vc.chroma, vc.rim),
       (true, 4.0, expected_tint, 0.55, 9.0, 12.0, 0.06, 0.70),
     )
     assert_eq(
       (vd.liquid, vd.blur, vd.tint, vd.solid, vd.saturation, vd.bezel, vd.refraction, vd.chroma, vd.rim),
-      (true, 4.0, 0x202020FFL, 0x161618FFL, 0.65, 9.0, 12.0, 0.06, 0.65),
+      (true, 4.0, 0x20202067L, 0x161618FFL, 0.65, 9.0, 12.0, 0.06, 0.65),
     )
     assert_eq(
       (vp.liquid, vp.blur, vp.saturation, vp.bezel, vp.refraction, vp.rim),
@@ -32,7 +32,7 @@ test "Wave 3B glass helpers emit calibrated iOS 27 liquid glass in light and dar
     )
     assert_eq(
       (gt.liquid, gt.blur, gt.tint, gt.bezel, gt.refraction),
-      (true, 2.1, if dark { 0x202020FFL } else { 0xFDFCFDD9L }, 12.0, 14.0),
+      (true, 2.1, if dark { 0x202020BFL } else { 0xFDFCFDBFL }, 12.0, 14.0),
     )
   }
   set_dark(None)

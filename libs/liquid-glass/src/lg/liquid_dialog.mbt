@@ -15,7 +15,7 @@ fn dialog_glass() -> @paint.Glass {
   let c = colors()
   @paint.Glass::liquid(
     blur=8.0,
-    tint=if d { 0x202020FFL } else { 0xFDFCFD67L },
+    tint=if d { 0x202020BFL } else { 0xFDFCFD67L },
     solid=alpha(c.dialog_container, if d { 1.0 / 0.4 } else { 1.0 / 0.6 }),
     saturation=1.0,
     rim=0.6,

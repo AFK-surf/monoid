@@ -809,8 +809,10 @@ fn rail_native_taps(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
       match tabs_kept.get(tab_kept_key(w.id, id)) {
         // (its stack as it was left: the chat open in it, the list it showed)
         Some(pages) if pages.length() > 0 => {
-          @sfbase.go_place(place) |> ignore
-          app.nav.replace(pages[0])
+          @sfbase.go_place(place, kept=true) |> ignore
+          if app.nav.top() != pages[0] {
+            @sfbase.nav_root_kept(pages[0])
+          }
           for i in 1..<pages.length() {
             app.nav.push(pages[i])
           }

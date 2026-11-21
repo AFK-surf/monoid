@@ -361,7 +361,7 @@ fn switcher_offered(src : Source, w : Workspace, wide_frame : Bool) -> Array[@sf
     typed: true,
     version: "",
     station: "",
-    run: fn() { @sfbase.go_place("remote") |> ignore },
+    run: fn() { @sfbase.go_place("remote", kept=true) |> ignore },
   })
   let routes : Array[(String, @settings.Route, String)] = [
     ("appearance", @settings.Route::Appearance, @sf.t("web-pages.settings.nav.appearance")),

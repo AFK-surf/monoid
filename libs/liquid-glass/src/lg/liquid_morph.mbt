@@ -125,7 +125,7 @@ fn ovl_morph_bridge_glass(merge~ : Double) -> @paint.Glass {
   let m = if merge > 0.0 { merge } else { 0.0 }
   @paint.Glass::liquid(
     blur=2.1,
-    tint=if d { 0x202020FFL } else { 0xFDFCFD67L },
+    tint=if d { 0x20202067L } else { 0xFDFCFD67L },
     solid=if d { 0x1E1F24FFL } else { 0xFAFAFAFFL },
     saturation=1.0,
     rim=0.6,
@@ -155,7 +155,7 @@ fn ovl_morph_shell_glass(mat_t : Double, gap : Double, merge~ : Double) -> @pain
   let d = is_dark()
   @paint.Glass::liquid(
     blur=lerp(2.1, 8.0, t),
-    tint=if d { 0x202020FFL } else { 0xFDFCFD67L },
+    tint=if d { 0x20202067L } else { 0xFDFCFD67L },
     solid=if d { 0x1C1C1EFFL } else { 0xF7F7FAFFL },
     saturation=1.0,
     rim=0.6,

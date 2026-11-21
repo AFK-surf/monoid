@@ -14,6 +14,7 @@
 #   scripts/win.sh engine-sync             synchronous host answers across the engine DLL checked
 #   scripts/win.sh sealed                  the desktop app's sealed values opened (src/host/win_electron_sealed.h) checked
 #   scripts/win.sh hello                   Windows Hello as secure.* asks it (src/host/win_hello.h) checked
+#   scripts/win.sh reports                 PostHog reports payload and reports.json logic (src/host/win_reports.c) checked
 #   scripts/win.sh setup                   the installer (windows/setup.c) with the app built and put packed after it
 #   scripts/win.sh setup-bare              the installer's own program alone (out/setup-bare), which setup packs the app with
 # Its identity (as mac-app.sh's Info.plist has the Mac app's), in the program's resources: its icon
@@ -87,11 +88,24 @@ res() {
   rm -rf "$r" && mkdir -p "$r"
   cp "$icon" "$r/app.ico"
   env_lines="MBUI_APP_ID=$id
-MBUI_APP_NAME=$name"
+MBUI_APP_NAME=$name
+MBUI_VERSION=0.1.$n
+MBUI_BUILD=$n"
   [ -z "$schemes" ] || env_lines="$env_lines
 MBUI_SCHEMES=$schemes"
   env_lines="$env_lines
 $extra"
+  if [ -n "${STILLFAIL_POSTHOG:-}" ] && { [ "${MBUI_VARIANT:-preview}" = stable ] || [ "${MBUI_VARIANT:-preview}" = beta ]; }; then
+    local ph_path ph_host ph_key
+    ph_path=$(cygpath -w "$STILLFAIL_POSTHOG" 2>/dev/null || printf '%s' "$STILLFAIL_POSTHOG")
+    ph_host=$(node -e 'const d = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); process.stdout.write(typeof d.host === "string" ? d.host : "");' "$ph_path") || return 1
+    ph_key=$(node -e 'const d = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); process.stdout.write(typeof d.key === "string" ? d.key : "");' "$ph_path") || return 1
+    [ -n "$ph_key" ] || { echo "win.sh: no PostHog key in $STILLFAIL_POSTHOG" >&2; return 1; }
+    [ -z "$ph_host" ] || env_lines="$env_lines
+STILLFAIL_POSTHOG_HOST=$ph_host"
+    env_lines="$env_lines
+STILLFAIL_POSTHOG_KEY=$ph_key"
+  fi
   printf '%s\n' "$env_lines" > "$r/app.env"
   cat > "$r/app.rc" <<RC
 1 ICON "app.ico"
@@ -191,6 +205,16 @@ hello() {
   check_crt "$out/hello_test_win.exe" || return 1
   "$out/hello_test_win.exe"
 }
+# reports: Windows PostHog telemetry payload and reports.json logic (src/host/win_reports.c), checked by
+# core/reports_test_win.c (pure C at -W4 -WX -utf-8) with zero Visual C++ redistributable dependency (check_crt)
+reports() {
+  local out=$A/out/reports
+  mkdir -p "$out"
+  (cd "$A" && cl.exe -nologo -O2 -W4 -WX -utf-8 -Isrc/host core/reports_test_win.c -Fe"$(cygpath -w "$out/reports_test_win.exe")" \
+    -Fo"$(cygpath -w "$out/")" > "$out/build.log") || { cat "$out/build.log"; return 1; }
+  check_crt "$out/reports_test_win.exe" || return 1
+  "$out/reports_test_win.exe"
+}
 # setup: the installer (windows/setup.c) with the app as built and put (put: the program, its engine and shell, core.hbc)
 # packed after it, as MBUI_VARIANT has it: <MBUI_SETUP_OUT, else out/setup>/<name> (MBUI_SETUP_NAME, else
 # stillfail-setup-0.1.<n>.exe); with MBUI_SETUP_RAW (a path) its raw form (setup.c --raw's) written there as it is packed
@@ -260,6 +284,7 @@ app_cmd() {
     engine-sync) engine_sync ;;
     sealed) sealed ;;
     hello) hello ;;
+    reports) reports ;;
     setup) setup ;;
     setup-bare) setup_bare ;;
     *) echo "win.sh: no command $1" >&2; exit 1 ;;

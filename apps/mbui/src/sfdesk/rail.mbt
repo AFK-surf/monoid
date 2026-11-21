@@ -466,7 +466,7 @@ fn rail_go_told(src : Source, w : Workspace, place : String, tell : (String, () 
       } else if app.nav.pages()[0] == Home && lit_place() == "chats" && !app.nav.pages().contains(Archived) {
         ()
       } else {
-        @sfbase.go_place("chats") |> ignore
+        @sfbase.go_place("chats", kept=true) |> ignore
         wide.landed.set("")
         land_chat(src, w)
       }
@@ -476,7 +476,7 @@ fn rail_go_told(src : Source, w : Workspace, place : String, tell : (String, () 
       archive_side.landed = false
       app.nav.replace_above(1, [Archived])
     }
-    p => @sfbase.go_place(p) |> ignore
+    p => @sfbase.go_place(p, kept=true) |> ignore
   }
 }
 

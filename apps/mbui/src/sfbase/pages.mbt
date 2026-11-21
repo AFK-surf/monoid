@@ -1431,13 +1431,22 @@ pub fn nav_home() -> Unit {
 }
 
 ///|
-/// The stack made Home and `pages` over it, in place, as one change (Nav::replace_above): Home kept where it is the
-/// root, else put in place of the root.
+/// The stack made Home and `pages` over it, in place, as one change: Home kept where it is the root, else the non-Home
+/// root is parked on the shelf via `nav_root_kept` (preserving the shelf) inside a single signal batch before `pages`
+/// are placed over Home.
 pub fn nav_over_home(pages : Array[Page]) -> Unit {
   if app.nav.pages()[0] == Home {
     app.nav.replace_above(1, pages)
   } else {
-    app.nav.replace_above(0, [Home, ..pages])
+    @signals.start_batch()
+    if app.nav.depth() > 1 {
+      app.nav.replace_above(1, [])
+    }
+    nav_root_kept(Home)
+    if pages.length() > 0 {
+      app.nav.replace_above(1, pages)
+    }
+    @signals.end_batch()
   }
 }
 

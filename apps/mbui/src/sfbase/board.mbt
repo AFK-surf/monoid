@@ -636,7 +636,7 @@ pub fn board_set(src : Source, on : Bool) -> Unit {
         history_act(fn() { nav_home() })
       }
     } else {
-      go_place("chats") |> ignore
+      go_place("chats", kept=true) |> ignore
     }
   }
 }

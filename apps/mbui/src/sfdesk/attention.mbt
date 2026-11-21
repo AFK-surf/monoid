@@ -389,7 +389,7 @@ fn attention_rows_node(v : @view.View, src : Source, w : Workspace, railed : Boo
     @sf.panel_group_node(t, fn() { "Station" }, fn(rows) {
       attention_item_node(rows, src, fn() { { "kind": "alert", "title": Json::string(trouble()) } }, fn() {
         close()
-        @sfbase.go_place("stations") |> ignore
+        @sfbase.go_place("stations", kept=true) |> ignore
       })
     })
   })

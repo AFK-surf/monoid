@@ -1039,17 +1039,21 @@
         glintFaceGain = mix(0.0, 0.25, clearVeil);
         glintVib = mix(2.85, 1.5, clearVeil);
       } else if (is_dark) {
-        emission = vec3(32.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0);
-        transmittance = 0.52625; lift = 0.583; chromaGain = 1.005;
+        float darkDens = (col.a > 0.41) ? col.a : 0.30;
+        float extra = clamp((darkDens - 0.30) / (1.0 - 0.30), 0.0, 1.0);
+        emission = mix(vec3(28.0 / 255.0, 28.0 / 255.0, 28.0 / 255.0), vec3(34.0 / 255.0, 34.0 / 255.0, 34.0 / 255.0), extra);
+        transmittance = mix(0.54, 0.0, extra);
+        lift = mix(0.36, 0.0, extra);
+        chromaGain = mix(0.92, 0.0, extra);
         contourStr = 0.88; contourDirAmt = 1.0; bevelShadowStr = 0.036;
         glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;
       } else {
-        float lightDens = (col.a > 0.41) ? col.a : 0.4032;
-        float extra = clamp((lightDens - 0.4032) / (1.0 - 0.4032), 0.0, 1.0);
+        float lightDens = (col.a > 0.41) ? col.a : 0.30;
+        float extra = clamp((lightDens - 0.30) / (1.0 - 0.30), 0.0, 1.0);
         emission = vec3(253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0) * lightDens;
-        transmittance = mix(0.5994, 0.0, extra);
-        lift = mix(0.216, 0.0, extra);
-        chromaGain = mix(1.169, 0.0, extra);
+        transmittance = mix(0.70, 0.0, extra);
+        lift = mix(0.16, 0.0, extra);
+        chromaGain = mix(1.18, 0.0, extra);
         contourStr = 0.43; contourDirAmt = 0.77; bevelShadowStr = 0.036;
         glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;
       }

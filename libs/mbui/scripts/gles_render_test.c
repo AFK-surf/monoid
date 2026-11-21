@@ -689,10 +689,54 @@ int main(void) {
              ld_case[i][1], ld_case[i][2], ld_case[i][3], c[0], c[1], c[2], ld_lum[i]);
     }
     CHECK(memcmp(px_ld[0], px_ld[1], (size_t)fb_w * fb_h * 4) == 0);
-    CHECK(ld_lum[1] >= 0.35 && ld_lum[1] <= 0.46);
-    CHECK(ld_lum[2] >= 0.80 && ld_lum[2] > ld_lum[1] + 0.3);
+    CHECK(ld_lum[1] >= 0.25 && ld_lum[1] <= 0.36);
+    CHECK(ld_lum[2] >= 0.80 && ld_lum[2] > ld_lum[1] + 0.40);
     CHECK(px_ld[3][((fb_h - 1 - 70) * fb_w + 100) * 4 + 0] >= (int)(0.72 * 255.0 + 0.5));
     for (int i = 0; i < 4; i++) free(px_ld[i]);
+  }
+
+  // Neutral dark liquid glass density (kind 6, is_dark): alpha <= 0.41 keeps the regular baseline to the byte
+  // (0x20202050 and 0x20202067 draw the same), while dense veils (0x202020BF 75%, 0x202020D9 85%) fade
+  // transmittance, lift and chroma toward 0, so over white they stay dark for white ink and over saturated blue
+  // chroma is cleanly attenuated.
+  {
+    double dd[2 * MB_INST];
+    unsigned char *px_dd[5];
+    // (alpha byte, backdrop r, g, b)
+    static const double dd_case[5][4] = {
+        {0x50, 1, 1, 1}, {0x67, 1, 1, 1}, {0xBF, 1, 1, 1}, {0xD9, 1, 1, 1}, {0xD9, 0.0, 0.4, 1.0}};
+    for (int i = 0; i < 5; i++) {
+      rect_at(dd, 0, 0, W, H, 0, dd_case[i][1], dd_case[i][2], dd_case[i][3], 0);
+      rect_at(dd + MB_INST, 10, 10, 80, 50, 6, 32.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0, -17);
+      dd[MB_INST + 4] = 12;
+      dd[MB_INST + 6] = 1;
+      dd[MB_INST + 7] = 1.0;
+      dd[MB_INST + 11] = dd_case[i][0] / 255.0;
+      dd[MB_INST + 12] = 0.0;
+      dd[MB_INST + 13] = 4;
+      dd[MB_INST + 15] = 1;
+      dd[MB_INST + 21] = 0;
+      dd[MB_INST + 22] = 0;
+      dd[MB_INST + 23] = 0;
+      glass_forget();
+      gl_present(dd, 2, dd_case[i][1], dd_case[i][2], dd_case[i][3]);
+      px_dd[i] = pixels_of_fb(surface);
+    }
+    // centre (50, 35) -> (100, 70) at 2x
+    double dd_lum[5];
+    for (int i = 0; i < 5; i++) {
+      unsigned char *c = px_dd[i] + ((fb_h - 1 - 70) * fb_w + 100) * 4;
+      dd_lum[i] = (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]) / 255.0;
+      printf("gles_render: dark glass 0x%02X over (%.1f, %.1f, %.1f): rgb %d %d %d, luma %.4f\n", (int)dd_case[i][0],
+             dd_case[i][1], dd_case[i][2], dd_case[i][3], c[0], c[1], c[2], dd_lum[i]);
+    }
+    CHECK(memcmp(px_dd[0], px_dd[1], (size_t)fb_w * fb_h * 4) == 0);
+    CHECK(dd_lum[1] >= 0.55 && dd_lum[1] <= 0.74);
+    CHECK(dd_lum[2] <= 0.36 && dd_lum[2] <= dd_lum[1] - 0.25);
+    CHECK(dd_lum[3] <= 0.30 && dd_lum[3] < dd_lum[2]);
+    unsigned char *dd_blue = px_dd[4] + ((fb_h - 1 - 70) * fb_w + 100) * 4;
+    CHECK(((double)dd_blue[2] - (double)dd_blue[0]) / 255.0 <= 0.28);
+    for (int i = 0; i < 5; i++) free(px_dd[i]);
   }
 
   // A group the host keeps drawn out by its header straight into the floats: each instance moved in doubles, then

@@ -12,7 +12,7 @@ fn tile_glass(angle : Double) -> @paint.Glass {
   let d = is_dark()
   @paint.Glass::liquid(
     blur=2.1,
-    tint=if d { 0x202020FFL } else { 0xFDFCFD67L },
+    tint=if d { 0x20202067L } else { 0xFDFCFD67L },
     solid=over(colors().dialog_container, tile_container),
     saturation=1.0,
     rim=0.6,

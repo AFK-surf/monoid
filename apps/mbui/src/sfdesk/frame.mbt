@@ -670,7 +670,7 @@ pub fn wide_back(src : Source) -> (() -> Unit)? {
           Side =>
             if lit_place() != "chats" || app.nav.pages().contains(Archived) {
               Some(fn() {
-                @sfbase.go_place("chats") |> ignore
+                @sfbase.go_place("chats", kept=true) |> ignore
                 wide.landed.set("")
               })
             } else if wide.tape_ask.get() == Some(Page) {

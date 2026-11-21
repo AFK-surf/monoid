@@ -3,7 +3,7 @@
 Liquid glass controls for [mbui](../mbui), the MoonBit UI framework that draws the same window on macOS, Windows,
 Linux, iOS, Android and the web. Its foundational optical controls and damped springs originate from the component
 catalog of [Kyant0/AndroidLiquidGlass](https://github.com/Kyant0/AndroidLiquidGlass) (Apache-2.0), expanded into a
-complete 34-component library built on `mbui`'s `@headless` primitives and the iOS 27 `@paint.Glass::liquid` optical
+complete 35-component library built on `mbui`'s `@headless` primitives and the iOS 27 `@paint.Glass::liquid` optical
 model.
 
 What a control is to the hand, the keyboard and a screen reader comes from mbui's headless components, so every part
@@ -11,7 +11,7 @@ takes a tap, a drag, Tab and the arrow keys, and is read out by its role and nam
 
 Gallery: [ui.monoid.build/liquid-glass](https://ui.monoid.build/liquid-glass/) · Design Specification: [DESIGN.md](DESIGN.md)
 
-## The 34 parts
+## The 35 parts
 
 All of them live in `src/lg` (`@lg`) and are showcased live in the self-hosted `library` app (`src/pages/library.mbt`, default entry), following the strict two-layer material architecture in [DESIGN.md](DESIGN.md) (Floating Liquid Glass Layer vs. Content Layer, zero glass-on-glass):
 
@@ -56,7 +56,8 @@ All of them live in `src/lg` (`@lg`) and are showcased live in the self-hosted `
 | `liquid_select_node`, `LiquidSelectOption` | Capsule select trigger with floating refractive option menu and detail subtitles. |
 | `liquid_popover_node` | Anchored floating refractive popover panel positioned via `@headless.Placement`. |
 | `liquid_tooltip_node` | Hover/focus glass tooltip capsule that never blocks pointer clicks. |
-| `liquid_sheet_node` | Detached floating modal glass sheet (`r=36pt`) with grabber, dimmed scrim, Escape and close handling. |
+| `liquid_drawer_node`, `DrawerSide` | Floating island side drawer (`Leading`/`Trailing`, 10pt margin, `r=28pt`) with horizontal drag-to-dismiss, rubber-band over-pull, and velocity-continuous spring settle. |
+| `liquid_sheet_node` | Detached floating modal glass sheet (`r=36pt`) with interactive vertical drag-to-dismiss and optional `detents=true` morphing to a full-height docked reading surface. |
 | `liquid_action_sheet_node`, `LiquidActionSheetItem` | Separated iOS-style action group with independent Cancel glass capsule. |
 | `liquid_dialog_node` | Modal refractive glass dialog over a dimmed page, with Cancel and primary action. |
 | `liquid_toast_node`, `LiquidStatus` | Floating status capsule (`Info`, `Success`, `Warning`, `Error`) with optional action pill and dismiss button. |

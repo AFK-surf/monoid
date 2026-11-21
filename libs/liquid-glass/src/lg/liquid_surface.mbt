@@ -47,7 +47,7 @@ pub fn adaptive_glass(lum : Double, min_side : Double) -> @paint.Glass {
   let is_light = lum > 0.5
   @paint.Glass::liquid(
     blur~,
-    tint=if is_light { 0xFDFCFD67L } else { 0x202020FFL },
+    tint=if is_light { 0xFDFCFD67L } else { 0x20202067L },
     solid=if is_light { white } else { black },
     saturation=1.0,
     rim=0.6,

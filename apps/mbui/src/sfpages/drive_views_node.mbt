@@ -433,6 +433,9 @@ pub fn rows_view_node(
 /// rows as rows_view_node draws them (on a card but where not `card`), of made-up names, a couple of folders first.
 pub fn rows_sample_node(parent : @view.View, s : Shown, at : DriveAt, count : Int, compact? : Bool = false, card? : Bool = true) -> Unit {
   @sf.waiting_node(parent, fn(w) {
+    // (keep driveBrowse watched after head during pre-order Tree::rest_in while still in "reading",
+    // matching "list" and post-order View::let_go so drive unsubscribes before driveBrowse at every FPS)
+    w.reacts(fn() { s.b.shown(s.src) is Some(_) }, fn(_) {  })
     for i in 0..<count {
       let (dir, name) = rows_sample_names[i % rows_sample_names.length()]
       let e = @sfbase.dv_entry({

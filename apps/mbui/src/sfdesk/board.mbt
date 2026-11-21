@@ -312,7 +312,7 @@ fn board_back_to_chat(w : Workspace) -> Bool {
   guard board_kept_chat.get(w.id) is Some(p) else { return false }
   board_kept_chat.remove(w.id)
   if app.nav.pages()[0] != Home {
-    @sfbase.go_place("chats") |> ignore
+    @sfbase.go_place("chats", kept=true) |> ignore
   }
   @sfbase.history_push()
   app.nav.replace_above(1, [p])

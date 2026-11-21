@@ -455,7 +455,7 @@ test "library app mobile responsive layout at 390x844 and 360x800: iOS 26 4-tab 
   @ui.set_view_app(fn(root) { gallery(root, "library", chrome=true) })
   desk.draw()
   desk.run_for(settled)
-  assert_eq(desk.all(Group, label="CATEGORIES · 34 PARTS").length(), 1)
+  assert_eq(desk.all(Group, label="CATEGORIES · 35 PARTS").length(), 1)
   assert_eq(desk.all(Button, label="Search & Catalog").length(), 0)
   assert_eq(desk.all(Tab, within=desk.get(TabList, label="Library sections")).length(), 6)
 
@@ -470,7 +470,7 @@ test "library app mobile responsive layout at 390x844 and 360x800: iOS 26 4-tab 
       t.draw()
       t.run_for(settled)
       // Inline sidebar auto-collapsed; exactly one detached 64x64 Search & Catalog orb beside the 4-tab dock
-      assert_eq(t.all(Group, label="CATEGORIES · 34 PARTS").length(), 0)
+      assert_eq(t.all(Group, label="CATEGORIES · 35 PARTS").length(), 0)
       assert_eq(t.all(Button, label="Search & Catalog").length(), 1)
 
       let dock = t.get(TabList, label="Library sections")
@@ -509,7 +509,7 @@ test "library app mobile responsive layout at 390x844 and 360x800: iOS 26 4-tab 
         let (ox, oy) = middle_of(t, Button, "Search & Catalog")
         t.tap(ox, oy)
         t.run_for(settled)
-        let sheet_rect = t.get(Dialog, label="Components · 34 Parts").rect
+        let sheet_rect = t.get(Dialog, label="Components · 35 Parts").rect
         assert_true(sheet_rect.0 >= 0.0 && sheet_rect.0 + sheet_rect.2 <= w + 0.5)
         assert_overlay_panel_clean(t, "mobile/\{w}/CatalogSheet/\{sheet_label} dark=\{dark}", sheet_rect)
         for f in t.audit() {
@@ -519,7 +519,7 @@ test "library app mobile responsive layout at 390x844 and 360x800: iOS 26 4-tab 
         }
         t.act(Button, Activate, label=sheet_label)
         t.run_for(settled)
-        assert_eq(t.all(Dialog, label="Components · 34 Parts").length(), 0)
+        assert_eq(t.all(Dialog, label="Components · 35 Parts").length(), 0)
         // 4th slot dynamically adopts the selected overflow category and stays selected
         assert_eq(t.get(Tab, label="More").selected, Some(true))
         assert_true(t.words_said().iter().any(fn(ws) { ws.0 == dock_word }))
@@ -816,5 +816,56 @@ test "Wave 4A: Optics Light Angle slider updates global glass_light_angle, reset
     t.tap(cx, cy)
     t.run_for(settled)
     assert_true(@ui.glass_light_angle().abs() < 1.0e-6, msg="leaving Optics must reset light_angle to 0")
+  }
+}
+
+///|
+test "Wave 5B: Overlays Leading/Trailing Drawer and Detent Sheet open cleanly with zero nested glass and zero faults" {
+  for dark in [false, true] {
+    let t = @ui.Tester::new(fn(_c) {  }, w=1280.0, h=800.0, platform=0)
+    @lg.set_dark(Some(dark))
+    @ui.set_view_app(fn(root) { gallery(root, "library", chrome=true) })
+    t.draw()
+    let (ox, oy) = middle_of(t, Tab, "Overlays")
+    t.tap(ox, oy)
+    t.run_for(settled)
+
+    // 1. Leading Drawer
+    t.act(Button, Activate, label="Leading Drawer")
+    t.run_for(settled)
+    let dr_l = t.get(Dialog, label="Studio Drawer").rect
+    assert_true((dr_l.0 - 10.0).abs() < 1.0, msg="Leading Drawer x=\{dr_l.0}")
+    assert_overlay_panel_clean(t, "library/DrawerLeading dark=\{dark}", dr_l)
+    assert_eq(t.corner_faults(), [], msg="Leading Drawer corner_faults dark=\{dark}")
+    assert_eq(t.squeeze_faults(), [], msg="Leading Drawer squeeze_faults dark=\{dark}")
+    t.key(@ui.key_escape)
+    t.run_for(settled)
+    assert_eq(t.all(Dialog, label="Studio Drawer").length(), 0)
+
+    // 2. Trailing Drawer
+    t.act(Button, Activate, label="Trailing Drawer")
+    t.run_for(settled)
+    let dr_r = t.get(Dialog, label="Studio Drawer").rect
+    assert_true((1280.0 - (dr_r.0 + dr_r.2) - 10.0).abs() < 1.0, msg="Trailing Drawer right inset")
+    assert_overlay_panel_clean(t, "library/DrawerTrailing dark=\{dark}", dr_r)
+    assert_eq(t.corner_faults(), [], msg="Trailing Drawer corner_faults dark=\{dark}")
+    t.act(Button, Activate, label="Done")
+    t.run_for(settled)
+    assert_eq(t.all(Dialog, label="Studio Drawer").length(), 0)
+
+    // 3. Detent Sheet: Medium -> Expand Sheet (Large) -> Escape
+    t.act(Button, Activate, label="Open Sheet")
+    t.run_for(settled)
+    let sh_m = t.get(Dialog, label="Optical Export Sheet").rect
+    assert_overlay_panel_clean(t, "library/DetentSheetMed dark=\{dark}", sh_m)
+    t.act(Button, Activate, label="Expand Sheet")
+    t.run_for(settled)
+    let sh_l = t.get(Dialog, label="Optical Export Sheet").rect
+    assert_true(sh_l.3 > sh_m.3 + 120.0, msg="Detent Sheet Large height \{sh_l.3} <= Med \{sh_m.3}")
+    assert_overlay_panel_clean(t, "library/DetentSheetLarge dark=\{dark}", sh_l)
+    assert_eq(t.corner_faults(), [], msg="Detent Sheet Large corner_faults dark=\{dark}")
+    t.key(@ui.key_escape)
+    t.run_for(settled)
+    assert_eq(t.all(Dialog, label="Optical Export Sheet").length(), 0)
   }
 }
