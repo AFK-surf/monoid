@@ -16,7 +16,7 @@ import type { Frame, FrameConfig, ScreenInput, ScreenSource, ScreenVideo, Screen
 /// The version of ./scrcpy-server: it refuses to run under any other name.
 export const SERVER_VERSION = "5.0.1";
 /// scrcpy's server: beside this module in src, and beside main.js (this module bundled into it) in a release.
-export const SERVER_FILE = fileURLToPath(new URL("./scrcpy-server", import.meta.url));
+export const SERVER_FILE = fileURLToPath(import.meta.url.endsWith(".ts") ? new URL("../../assets/screens/scrcpy-server", import.meta.url) : new URL("./scrcpy-server", import.meta.url));
 /// How long a view's program has to start listening on the device.
 const CONNECT_TIMEOUT = 15_000;
 /// How long a look at a device is given (a phone over Wi-Fi may be slow, one that has gone never answers).

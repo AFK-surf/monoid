@@ -17,7 +17,7 @@ import type { Json } from "../store/store.ts";
 export const SANDBOX = "sandbox:";
 
 /// The bridge the station runs in a sandbox job's place.
-export const BRIDGE = fileURLToPath(new URL("./sandbox-bridge.mjs", import.meta.url));
+export const BRIDGE = fileURLToPath(import.meta.url.endsWith(".ts") ? new URL("../../assets/agents/sandbox-bridge.mjs", import.meta.url) : new URL("./sandbox-bridge.mjs", import.meta.url));
 
 /// What the bridge says, and its exit code, when the connection to the sandbox was lost rather than the command
 /// ending (sandbox-bridge.mjs `LOST`): a job is started again once.

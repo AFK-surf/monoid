@@ -29,7 +29,7 @@ type PortalOptions = {
 
 /// Beside the source in development, beside the station's main.js in its release.
 function helperPath(mode: PortalOptions["mode"]): string {
-  return fileURLToPath(new URL(mode === "x11" ? "./linux-x11.py" : "./linux-portal.py", import.meta.url));
+  return fileURLToPath(import.meta.url.endsWith(".ts") ? new URL(mode === "x11" ? "../../assets/screens/linux-x11.py" : "../../assets/screens/linux-portal.py", import.meta.url) : new URL(mode === "x11" ? "./linux-x11.py" : "./linux-portal.py", import.meta.url));
 }
 
 export class LinuxGstDesktop implements ScreenSource {

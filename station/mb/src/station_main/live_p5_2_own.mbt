@@ -22,7 +22,7 @@ fn own_runtime_driver(
 
 ///|
 /// Where a script the station ships beside its program is (package.json's `build` copies them into dist/, which a
-/// release puts at `<app>/station/`): a release's, else the checkout's (`station/src/agents`) above the program.
+/// release puts at `<app>/station/`): a release's, else the checkout's (`station/assets/agents`) above the program.
 fn station_script(app : String, argv0 : String, name : String) -> String {
   let s = sep()
   let candidates = [
@@ -34,8 +34,8 @@ fn station_script(app : String, argv0 : String, name : String) -> String {
     attempt(() => @drive.realpath(argv0)).unwrap_or(argv0),
   )
   for _ in 0..<8 {
-    candidates.push(path([dir, "station", "src", "agents", name]))
-    candidates.push(path([dir, "src", "agents", name]))
+    candidates.push(path([dir, "station", "assets", "agents", name]))
+    candidates.push(path([dir, "assets", "agents", name]))
     dir = @nodepath.dirname(s, dir)
   }
   match

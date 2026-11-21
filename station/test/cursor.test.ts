@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { modelOf } from "../src/agents/cursor-bridge.mjs";
+import { modelOf } from "../assets/agents/cursor-bridge.mjs";
 import { CursorDriver, classifyFailure, cursorHome, outcomeOf, rulesFolder } from "../src/agents/cursor.ts";
 import { cursorCall, cursorOutput } from "./reference/live.ts";
 import type { AgentSession, OpenOptions, RuntimeEvent } from "../src/agents/runtime.ts";

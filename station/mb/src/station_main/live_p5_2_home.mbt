@@ -5,14 +5,14 @@
 
 ///|
 /// Where the station's own skills are (agent-home.ts `skillsSource`): a release's (`<app>/station/dist/skills`,
-/// `<app>/station/skills`), else the checkout's (`station/src/skills`) above the program.
+/// `<app>/station/skills`), else the checkout's (`station/assets/skills`) above the program.
 fn skills_source(app : String, argv0 : String) -> String? {
   let s = sep()
   let candidates = [path([app, "station", "dist", "skills"]), path([app, "station", "skills"]), path([app, "skills"])]
   let mut dir = @nodepath.dirname(s, attempt(() => @drive.realpath(argv0)).unwrap_or(argv0))
   for _ in 0..<6 {
-    candidates.push(path([dir, "station", "src", "skills"]))
-    candidates.push(path([dir, "src", "skills"]))
+    candidates.push(path([dir, "station", "assets", "skills"]))
+    candidates.push(path([dir, "assets", "skills"]))
     dir = @nodepath.dirname(s, dir)
   }
   candidates.iter().find_first(c => attempt(() => @drive.stat(path([c, "stillfail-chats.md"]))) is Ok(_))

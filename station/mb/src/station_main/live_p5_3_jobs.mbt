@@ -322,7 +322,7 @@ fn p53_port_of(url : String) -> Int {
 
 ///|
 /// The sandboxes' bridge, beside this program as a release has it (`<app>/station/sandbox-bridge.mjs`) or in a checkout
-/// (station/src/agents/).
+/// (station/assets/agents/).
 fn p53_bridge_file(bus : LiveBus) -> String? {
   let program = reader_program(bus)
   let here = @nodepath.dirname(sep(), program)
@@ -330,8 +330,8 @@ fn p53_bridge_file(bus : LiveBus) -> String? {
     @nodepath.join(sep(), [here, "sandbox-bridge.mjs"]),
     @nodepath.join(sep(), [bus.app, "station", "sandbox-bridge.mjs"]),
     @nodepath.join(sep(), [bus.app, "station", "dist", "sandbox-bridge.mjs"]),
-    @nodepath.join(sep(), [here, "..", "..", "src", "agents", "sandbox-bridge.mjs"]),
-    @nodepath.join(sep(), [bus.app, "station", "src", "agents", "sandbox-bridge.mjs"]),
+    @nodepath.join(sep(), [here, "..", "..", "assets", "agents", "sandbox-bridge.mjs"]),
+    @nodepath.join(sep(), [bus.app, "station", "assets", "agents", "sandbox-bridge.mjs"]),
   ]
   candidates.iter().find_first(f => (try { Ok(@drive.stat(f)) } catch { e => Err(e) }) is Ok({ file: true, .. }))
 }

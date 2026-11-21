@@ -10,7 +10,7 @@ import { type Gamepad, type ScreenInput, gamepadReleased } from "./source.ts";
 
 /// Beside the source in development, beside the station's main.js in its release.
 function helperPath(): string {
-  return fileURLToPath(new URL("./linux-gamepad.py", import.meta.url));
+  return fileURLToPath(import.meta.url.endsWith(".ts") ? new URL("../../assets/screens/linux-gamepad.py", import.meta.url) : new URL("./linux-gamepad.py", import.meta.url));
 }
 
 export class LinuxGamepads {

@@ -9,7 +9,7 @@ import sys
 import unittest
 from unittest import mock
 
-path = Path(__file__).resolve().parents[1] / "src/screens/linux-gamepad.py"
+path = Path(__file__).resolve().parents[1] / "assets/screens/linux-gamepad.py"
 spec = importlib.util.spec_from_file_location("linux_gamepad_test", path)
 pad = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(pad)

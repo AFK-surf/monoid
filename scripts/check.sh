@@ -609,9 +609,8 @@ if [ $full = 1 ]; then
     # in one moon test (a call a package checked their shared dependencies again each time).
     remembered "tests: station's MoonBit" "station/mb libs/base/src libs/base/moon.mod libs/mbui/src/effect libs/mbui/moon.mod rules/src rules/moon.mod" sh -c 'cd station/mb && moon test --target native src/accounts_oauth src/accounts_pool src/acp src/adb_devices src/admit src/agent_drivers src/agent_runtimes src/api_routes src/browser src/claude src/cloud_lock src/cloud_net src/codex src/comma src/connects_hub src/cprep src/cursor src/drive src/dsh src/events src/feishu src/front src/history src/host src/i18n src/jobs_host src/jscase src/jsjson src/live_wire src/mcp_tools src/memory src/mesh_door/door src/mesh_door/gate src/mesh_runtime src/mesh_scopes src/move_coord src/nodepath src/ops_platform src/packed src/pi src/pieces src/replica_coord src/rigs_mode src/screens src/session_chats src/session_hub src/session_storage src/share_sync src/slack src/station_main/media src/store_schema src/store_sessions src/store_threads src/terminals_logins src/updates src/usagecount src/vault_crypto src/vault_service src/wire'
     step "typecheck: station" after station sh -c 'cd station && pnpm exec tsgo --noEmit'
-    # The station's time is its Clock's (写法): the machine's only through ops/fibers.ts' wall. The Claude TUI,
-    # Cursor and sandbox bridges run in processes of their own.
-    step "station: time through its clock" sh -c '! git grep -nE "Date\.now\(|new Date\(\)|setTimeout\(|setInterval\(" -- station/src ":!station/src/ops/fibers.ts" ":!station/src/agents/claude-tui.mjs" ":!station/src/agents/cursor-bridge.mjs" ":!station/src/agents/sandbox-bridge.mjs"'
+    # The station's time is its Clock's (写法): the machine's only through ops/fibers.ts' wall.
+    step "station: time through its clock" sh -c '! git grep -nE "Date\.now\(|new Date\(\)|setTimeout\(|setInterval\(" -- station/src ":!station/src/ops/fibers.ts"'
   fi
   # The station's tests (station/test): every file, or one slice of them (STILLFAIL_STATION_SHARD="<i>/<n>": the
   # files dealt by what each costs, the longest first, each onto the slice with the least: scripts/station-slice.sh). CI runs them in slices on Linux runners of their own (pipeline.yml,

@@ -671,7 +671,7 @@ test("a sandbox's task through the program's own bridge, skill_read and skill.re
   // the bridge where a release puts it (package.json `build`: beside the program in <app>/station/), wherever the
   // program the test runs was built
   mkdirSync(join(app, "station"), { recursive: true });
-  copyFileSync(fileURLToPath(new URL("../src/agents/sandbox-bridge.mjs", import.meta.url)), join(app, "station", "sandbox-bridge.mjs"));
+  copyFileSync(fileURLToPath(new URL("../assets/agents/sandbox-bridge.mjs", import.meta.url)), join(app, "station", "sandbox-bridge.mjs"));
   mkdirSync(join(data, "mesh"), { recursive: true });
   writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify({ origin: "http://127.0.0.1:9", station: "st-here", workspace: "w1", workspace_name: "W", name: "here", relay_url: "", relay_urls: [], grant_keys: null, peers: [], revocations: [] }));
   writeFileSync(join(data, "config.json"), JSON.stringify({ profiles: [], sandboxes: [{ name: "box", target: "{name}.ws@host", size: "large" }] }));

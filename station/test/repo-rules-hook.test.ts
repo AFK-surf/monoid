@@ -11,7 +11,7 @@ import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 // (the file repo-rules.ts names as REPO_RULES_HOOK: test/claude.test.ts and codex.test.ts hold that it is the one started)
-const REPO_RULES_HOOK = fileURLToPath(new URL("../src/agents/repo-rules-hook.mjs", import.meta.url));
+const REPO_RULES_HOOK = fileURLToPath(new URL("../assets/agents/repo-rules-hook.mjs", import.meta.url));
 
 const root = mkdtempSync(join(tmpdir(), "repo-rules-"));
 after(() => rmSync(root, { recursive: true, force: true }));

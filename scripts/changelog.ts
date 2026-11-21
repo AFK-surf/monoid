@@ -48,8 +48,8 @@ const PARTS: [RegExp, Part[]][] = [
   [/^shared\/(lock|log-keep)\.ts$/, ["station", "cloud"]],
   [/^shared\/(release-keys|moved-from)\.ts$/, ["station", "web", "android", "desktop"]],
   [/^shared\//, ["station"]],
-  // The station: station/ (src/ and its native parts; not its tests), and mesh/ in the history before it (the Rust one).
-  [/^station\/(src|native)\/|^mesh\//, ["station"]],
+  // The station: station/ (src/, assets/, and its native parts; not its tests), and mesh/ in the history before it (the Rust one).
+  [/^station\/(src|native|assets)\/|^mesh\//, ["station"]],
   // Android's native shell (the web's iroh, client/iroh-wasm, is among what Android does not carry).
   [/^client\/(shell\/|Cargo\.)/, ["android"]],
   // The core, which every app carries; but what client/core-ts/scripts/not-carried.txt says the apps do not.

@@ -1156,13 +1156,13 @@ test("the station's own skills are written and kept as the station has them; the
   await writeBuiltinSkills(home, false);
   const path = join(home, "skills", "stillfail-jobs", "SKILL.md");
   assert.ok(readFileSync(path, "utf8").startsWith("---\nname: stillfail-jobs\n"));
-  assert.equal(readFileSync(path, "utf8"), readFileSync(new URL("../src/skills/stillfail-jobs.md", import.meta.url), "utf8"), "the station's text");
+  assert.equal(readFileSync(path, "utf8"), readFileSync(new URL("../assets/skills/stillfail-jobs.md", import.meta.url), "utf8"), "the station's text");
   writeFileSync(path, "edited by hand");
   await writeBuiltinSkills(home, false);
   assert.ok(readFileSync(path, "utf8").includes("job_start"), "the station's own, as it has it");
   assert.equal(readFileSync(join(home, "skills", "team-skill", "SKILL.md"), "utf8"), "ours", "the team's stay");
   const script = join(home, "skills", "stillfail-github-ci", "ci-wait.sh");
-  assert.equal(readFileSync(script, "utf8"), readFileSync(new URL("../src/skills/stillfail-github-ci/ci-wait.sh", import.meta.url), "utf8"), "the scripts a skill brings, beside it");
+  assert.equal(readFileSync(script, "utf8"), readFileSync(new URL("../assets/skills/stillfail-github-ci/ci-wait.sh", import.meta.url), "utf8"), "the scripts a skill brings, beside it");
   assert.ok(statSync(script).mode & 0o100, "runnable");
   writeFileSync(script, "edited by hand");
   await writeBuiltinSkills(home, false);
