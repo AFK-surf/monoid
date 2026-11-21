@@ -360,7 +360,6 @@ fn center_choice_node(
   @sf.panel_row_opens_node(parent, fn() { @sf.t(name) }, fn(from) {
     let beside : @sf.Beside = match from {
       Node(r) => Node(r)
-      Of(id) => Of(id)
       At(x, y, w, h) => At(x, y, w, h)
       Unanchored => return
     }

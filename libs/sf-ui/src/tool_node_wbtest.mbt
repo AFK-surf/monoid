@@ -31,20 +31,10 @@ fn tools_tester(
     root.row(Is(true)) |> ignore
     // (room before them: what goes beside either kept in the window by none of its edges)
     root.box(fn(g) { g.width(Is(Some(60.0))) |> ignore }) |> ignore
-    root.box(fn(h) {
-      h.width(Is(Some(100.0))).height(Is(Some(100.0))) |> ignore
-      @ui.old(h, fn(c) {
-        let s = said.get()
-        icon_button(c, s.icon, key="old", label=s.label + " old", on=s.on, disabled=s.disabled, on_press=fn() {
-          count("old")
-        })
-      }).grow(Is(1.0))
-      |> ignore
-    })
-    |> ignore
-    // (the layer over all of it the node's tip is drawn in: made last, over the rest)
+    // (the layer over all of it the nodes' tips are drawn in: made last, over the rest)
     let layer : Ref[@view.View?] = Ref(None)
     let tips = TipLayer::new(fn() { layer.val })
+    let other_tips = TipLayer::new(fn() { layer.val })
     tips_made.val = Some(tips)
     root.box(fn(b) {
       b.width(Is(Some(100.0))).height(Is(Some(100.0))).presses(By(fn() { held.get() })) |> ignore
@@ -62,6 +52,21 @@ fn tools_tester(
       )
       |> ignore
       })
+    })
+    |> ignore
+    root.box(fn(h) {
+      h.width(Is(Some(100.0))).height(Is(Some(100.0))) |> ignore
+      icon_button_node(
+        h,
+        "copy",
+        fn() { said.get().label + " old" },
+        fn() { count("old") },
+        tips=other_tips,
+        icon_now=fn() { said.get().icon },
+        on=fn() { said.get().on },
+        disabled=fn() { said.get().disabled },
+      )
+      |> ignore
     })
     |> ignore
     root.show(fn() { modal.get() }, fn(m) { m.over(Is(true)).modal(Is(true)) |> ignore })

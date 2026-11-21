@@ -3,13 +3,6 @@
 // choice, small panels and their rows, page heads and cards, and the three
 // ways of waiting.
 
-
-///|
-/// For parts whose own parameter is called `icon`.
-fn draw_icon(c : @ui.Ctx, name : String, size : Double, color : Int64, by_ink? : Bool = false) -> Unit {
-  icon(c, name, size~, color~, by_ink~) |> ignore
-}
-
 ///|
 /// What a button is (controls.css.ts): `Plain` lined, on the canvas;
 /// `Primary` the one thing to do, solid; `Ghost` words alone, a ground
@@ -23,16 +16,6 @@ pub(all) enum Tone {
   DangerSolid
   /// a ghost's in the red (controls.css.ts btnGhost with btnDanger: 删除 beside a dialog's other buttons)
   GhostDanger
-}
-
-///|
-/// What pressing `id` does (`on_press`), where it takes presses now (`live`): done as the press is let go on it (a tap,
-/// a click, Enter or Space, Activate), outside any build, at its moment (Ctx::on_press), not read by the build after.
-fn press_does(c : @ui.Ctx, id : Int, live : Bool, on_press : (() -> Unit)?) -> Unit {
-  match on_press {
-    Some(f) if live => c.on_press(id, f)
-    _ => ()
-  }
 }
 
 ///|
@@ -65,77 +48,6 @@ pub fn button_height() -> Double {
 ///|
 /// An icon button's side (iconBtn's 32), with a finger too: what stands among a bar's icon buttons is as high.
 pub let icon_button_side : Double = 32.0
-
-///|
-/// An icon button (page.css.ts iconBtn, parts.tsx IconButton): `size` square (32), its corner 12 (`corner`: the
-/// ladder's step where it stands, a card's text inset in its corner the small block's 10; `round`: a circle, where it
-/// stands in a pane's corner, concentric with it; `linked`: its corner where that comes from, a bar's buttons' at the
-/// window's corner: @sf.bar_keys_link), the icon (16) quiet until pointed at (`lit`: so as what points at it is told
-/// from outside, the host's: the window's maximize button the app draws, window_keys); `on` held down
-/// (aria-pressed); named for a screen reader and said in its tip with its keys (`shortcut`, an action's).
-/// `ink` and `quiet` for one over a ground of its own (the reader's paper).
-pub fn icon_button(
-  c : @ui.Ctx,
-  icon : String,
-  key? : String = "",
-  size? : Double = icon_button_side,
-  icon_size? : Double = 16.0,
-  on? : Bool = false,
-  lit? : Bool = false,
-  round? : Bool = false,
-  corner? : Double = r_field,
-  linked? : @ui.CornerOf,
-  ink? : Int64,
-  quiet? : Int64,
-  disabled? : Bool = false,
-  label? : String = "",
-  shortcut? : String = "",
-  on_press? : () -> Unit,
-) -> Unit {
-  let t = theme()
-  // (drawn its own size with a finger too: a finger reaches it from round it, mbui's press_reach)
-  let ink = ink.unwrap_or(t.p.text)
-  let quiet = quiet.unwrap_or(t.p.muted)
-  let id = c.id(if key == "" { "sf-ib/" + icon } else { key })
-  press_does(c, id, !disabled, on_press)
-  // (its ground and its icon's ink eased as they are painted: told as it is built, read where it is drawn)
-  let h = @motion.told(
-    c,
-    "sf-ib-h/\{id}",
-    if !disabled && (lit || c.lit(id) || c.pressed(id)) { 1.0 } else { 0.0 },
-    spec=@motion.tween(dur_ms, ease=Out),
-  )
-  // the page's hover, as a tint of the ink it sits with
-  let ground_at = fn(h : Double) { if on { alpha(ink, 0.08) } else { alpha(ink, 0.065 * h) } }
-  let corner : @ui.Radius = match linked {
-    Some(link) => Linked(link)
-    None => rounded(if round { size / 2.0 } else { corner })
-  }
-  let b = c.box(
-    style=@ui.style(radius=corner),
-    w=Px(size),
-    h=Px(size),
-    align=ACenter,
-    justify=JCenter,
-    bg=ground_at(h.target()),
-    opacity=if disabled { 0.35 } else { 1.0 },
-    id=if disabled { 0 } else { id },
-    fn() {
-      draw_icon(c, icon, icon_size, if on || h.target() > 0.5 { ink } else { quiet })
-    },
-  )
-  c.bg_by(b, fn() { ground_at(h.get(c)) })
-  // (its icon quiet, in the ink once its ground is half way to the hover's, as it is painted; a runtime's mark in its
-  // maker's own colours)
-  if !on && !icon.has_prefix("runtime:") {
-    c.ink_by(b, fn() { if h.get(c) > 0.5 { ink } else { quiet } })
-  }
-  // named (IconButton's label): what a screen reader calls it, and its tip
-  if label != "" {
-    c.semantics(b, Button, id~, label~, disabled~)
-    tip(c, "ib/" + key + icon, id, label, shortcut~)
-  }
-}
 
 ///|
 /// How far an option's words stand in from its column's sides (segmentedOption: 0 12), and how little they may where
@@ -251,116 +163,8 @@ pub let sheet_grab_h : Double = 8.0 + 4.0 + 5.0 + 4.0 + 4.0
 pub let tip_delay_ms : Double = 400.0
 
 ///|
-/// A tip over control `id` (parts.tsx Tip): `label` said beside it once the pointer has rested on it a moment (on
-/// `side`, under it by default), and with a `shortcut`, the keys that do the same after it, quieter (shortcuts.mbt).
-/// The only way anything explains itself on hover; to a finger, which rests on nothing, as it holds what it names
-/// (Android's tooltips: @kit.tooltip). With no label, none. `key` names it where it is asked. `repeats`: it says
-/// words the control shows itself (a file's name on its card, a tab's), whole: said only while they show cut short
-/// there (@ui.Ctx::shows_cut); shown whole, a tip saying them again says nothing.
-fn tip(
-  c : @ui.Ctx,
-  key : String,
-  id : Int,
-  label : String,
-  side? : @ui.Side = Bottom,
-  shortcut? : String = "",
-  shown? : Bool = false,
-  repeats? : Bool = false,
-) -> Unit {
-  if label == "" || id == 0 || (repeats && !c.shows_cut(id)) {
-    return
-  }
-  let keys = shortcut_keys(shortcut)
-  @kit.tooltip(c, "tip/" + key, id, label, delay=tip_delay_ms, side~, shown~, look=fn(c, _, words) {
-    tip_look(c, words, keys)
-  })
-  |> ignore
-}
-
-///|
-/// A tip as the web draws it (parts.css.ts tooltip), as tip_node's tip_look_node draws one, said in the theme's roles:
-/// small words on the primary ink, 5 by 10 in, 10 round, a small shadow; in the dark not that ink (the light grey, a
-/// glare of a block) but the raised grey lifted a step toward the words, a faint line round it. Its keys, where it says
-/// any, each a cap of its own after its words (key_caps), the tip then 4 over, under and after them (concentric with
-/// them, 6 round), its words 10 from its start.
-fn tip_look(c : @ui.Ctx, words : String, keys : String) -> Unit {
-  let caps = key_caps(keys)
-  // (the tip: the surface of the look it comes in by: Ctx::surface)
-  let tip = c.box(style=if caps.is_empty() { tip_box } else { tip_key_box }, fn() {
-    c.box(style=if caps.is_empty() { tip_line } else { tip_key_line }, fn() {
-      c.box(style=if caps.is_empty() { tip_words_box } else { tip_key_words }, fn() {
-        c.text(words, style=tip_words_style) |> ignore
-      })
-      |> ignore
-      if !caps.is_empty() {
-        c.box(style=tip_caps_row, fn() {
-          for cap in caps {
-            c.box(style=tip_cap_box, fn() { c.text(cap, style=tip_cap_words) |> ignore }) |> ignore
-          }
-        })
-        |> ignore
-      }
-    })
-    |> ignore
-  })
-  c.surface(tip)
-}
-
-///|
-// kept across runs: a value (no field of it changes)
-let tip_box : @ui.Style = @ui.style(
-  px=S2_5,
-  py=S1_25,
-  bg=Primary,
-  radius=rounded(small_corner),
-  max_w=tip_max,
-  shadow=Sm,
-  dark=@ui.patch(bg=Over(Raised, A(Fg, O5)), border=B1, border_color=A(Fg, O10)),
-)
-
-///|
-// kept across runs: a value (no field of it changes)
-let tip_key_box : @ui.Style = tip_box.then(@ui.css("pl=S2_5 pr=S1 py=S1"))
-
-///|
-// kept across runs: a value (no field of it changes)
-let tip_line : @ui.Style = @ui.css("row gap=S2 align=ACenter")
-
-///|
 // kept across runs: a value (no field of it changes)
 let tip_key_line : @ui.Style = @ui.css("row gap=S2 align=AStart")
-
-///|
-// kept across runs: a value (no field of it changes)
-let tip_words_box : @ui.Style = @ui.css("")
-
-///|
-// kept across runs: a value (no field of it changes)
-let tip_key_words : @ui.Style = @ui.css("py=SPx")
-
-///|
-// kept across runs: a value (no field of it changes)
-let tip_words_style : @ui.TextStyle = @ui.text_style(size=Meta, color=OnPrimary, dark=@ui.text_patch(color=Fg))
-
-///|
-// kept across runs: a value (no field of it changes)
-let tip_caps_row : @ui.Style = @ui.css("row gap=S0_5")
-
-///|
-// kept across runs: a value (no field of it changes)
-let tip_cap_box : @ui.Style = @ui.css((
-  #|row h=S5 min_w=S5 px=S1_25 radius=Md bg=Over(Primary,A(OnPrimary,O10)) align=ACenter justify=JCenter dark{bg=Over(Over(Raised,A(Fg,O5)),A(Fg,O10))}
-))
-
-///|
-// kept across runs: a value (no field of it changes)
-let tip_cap_words : @ui.TextStyle = @ui.text_style(
-  size=Caption,
-  weight=Medium,
-  color=OnPrimary,
-  wrap=false,
-  dark=@ui.text_patch(color=Fg),
-)
 
 ///|
 /// A small panel's ground (glass.ts panel), what floats over a card (a menu, a popover, a hover card, ⌘K): the canvas

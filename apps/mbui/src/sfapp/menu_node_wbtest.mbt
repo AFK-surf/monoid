@@ -497,9 +497,9 @@ test "大屏, keyboard and mouse: a menu's row lit, Tab to its panel, then that 
 }
 
 ///|
-test "大屏, keyboard and mouse: a menu presented beside what was never drawn: beside the window's corner, as the old menu (its panel at 8, 8, as main has it)" {
+test "大屏, keyboard and mouse: a menu presented beside the window's corner stays inside the margin (its panel at 8, 8)" {
   let t = menu_tester(1280.0, 800.0, 0)
-  @sf.menu(menu_items_counting(["复制", "重命名", "删除"], []), from=Of(987654321))
+  @sf.menu(menu_items_counting(["复制", "重命名", "删除"], []), from=@sf.at_point(0.0, 0.0))
   t.run_for(@ui.move_most_ms)
   let (x, y, _, _) = t.get(Menu).rect
   assert_eq((x, y), (8.0, 8.0))

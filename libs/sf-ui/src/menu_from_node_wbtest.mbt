@@ -89,8 +89,8 @@ test "two openers beside the same are the same: the same node, box or rectangle;
   let b = opener.val.unwrap()
   assert_true(Beside::Node(b) == Beside::Node(b))
   assert_true(Beside::Node(b).anchor() == Anchor::Node(b))
-  assert_false(Beside::Node(b) == Beside::Of(1))
+  assert_false(Beside::Node(b) == Beside::At(1.0, 2.0, 0.0, 0.0))
   assert_true(Beside::At(1.0, 2.0, 0.0, 0.0) == at_point(1.0, 2.0))
-  assert_false(Beside::Of(3) == Beside::Of(4))
+  assert_false(Beside::At(1.0, 2.0, 0.0, 0.0) == Beside::At(3.0, 4.0, 0.0, 0.0))
   presenters_reset()
 }

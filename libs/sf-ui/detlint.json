@@ -87,11 +87,9 @@
     "hash-order": {},
     "globals": {},
     "style-literal": {
-      "src/parts.mbt": 5
+      "src/parts.mbt": 3
     },
-    "box-loose": {
-      "src/parts.mbt": 1
-    },
+    "box-loose": {},
     "style-exact": {
       "src/tokens.mbt": 25
     },

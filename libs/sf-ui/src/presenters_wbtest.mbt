@@ -50,7 +50,7 @@ fn presenting_view(open : (Anchor) -> Unit, at? : @ui.Justify = JStart) -> (@ui.
       let h = button_height()
       c.box(w=Fill(1.0), h=Fill(1.0), pad=40.0, justify=at, fn() {
         let from = c.id("open")
-        c.on_press(from, fn() { open(Of(from)) })
+        c.on_press(from, fn() { open(At(40.0, 40.0, 60.0, h)) })
         c.box(id=from, h=Px(h), padx=button_padx, bg=t.p.chip, radius=h / 2.0, align=ACenter, justify=JCenter, fn() {
           c.text(
             "打开",
@@ -108,7 +108,6 @@ fn presenting_tester(at : (Int, Double, Double), open : (Anchor) -> Unit, button
 /// What opened it as a menu's or a pick's (what presenting_tester opened it by: its 打开).
 fn beside_of(from : Anchor) -> Beside {
   match from {
-    Anchor::Of(id) => Of(id)
     Anchor::Node(v) => Node(v)
     Anchor::At(x, y, w, h) => At(x, y, w, h)
     Unanchored => @halt.saying("a menu or a pick is opened beside what opened it")

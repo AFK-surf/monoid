@@ -20,21 +20,18 @@
 //   close button or the sheet dragged down closing all of it.
 
 ///|
-/// What opened a presenter: the box pressed (its id, `c.id(key)`; a node of the window's tree, `Node`: a row of a
-/// panel whose body is nodes), a rectangle of the window (x, y, w, h: a point is one 0 by 0, where a right click was),
-/// or nothing (what is asked by no press of the person's).
+/// What opened a presenter: a node of the window's tree (`Node`), a rectangle of the window (x, y, w, h: a point is
+/// one 0 by 0, where a right click was), or nothing (what is asked by no press of the person's).
 pub(all) enum Anchor {
-  Of(Int)
   Node(@view.View)
   At(Double, Double, Double, Double)
   Unanchored
 }
 
 ///|
-/// The same opener: the same box, the same node, the same rectangle, or both nothing.
+/// The same opener: the same node, the same rectangle, or both nothing.
 pub impl Eq for Anchor with equal(self, other) {
   match (self, other) {
-    (Of(a), Of(b)) => a == b
     (Node(a), Node(b)) => a.id() == b.id()
     (At(x, y, w, h), At(x2, y2, w2, h2)) => x == x2 && y == y2 && w == w2 && h == h2
     (Unanchored, Unanchored) => true
@@ -44,17 +41,16 @@ pub impl Eq for Anchor with equal(self, other) {
 
 ///|
 /// What opened a menu or a pick, which stand beside it on Medium and Large (rule 3: the steps one
-/// after another near each other): the box pressed (its id), a node of the window's tree pressed (`Node`: beside it
+/// after another near each other): a node of the window's tree pressed (`Node`: beside it
 /// where it is drawn, following it as it moves, the focus given back to it as it closes), or a rectangle of the window
 /// (a right click's point). Never nothing: no page can open one beside nothing, as a dialog in the middle of the window.
 pub(all) enum Beside {
-  Of(Int)
   Node(@view.View)
   At(Double, Double, Double, Double)
 }
 
 ///|
-/// The same opener: the same box, the same node, the same rectangle (Anchor's).
+/// The same opener: the same node or the same rectangle (Anchor's).
 pub impl Eq for Beside with equal(self, other) {
   self.anchor() == other.anchor()
 }
@@ -63,7 +59,6 @@ pub impl Eq for Beside with equal(self, other) {
 /// What opened it, as the presenters keep it.
 pub fn Beside::anchor(self : Beside) -> Anchor {
   match self {
-    Of(id) => Anchor::Of(id)
     Node(v) => Anchor::Node(v)
     At(x, y, w, h) => Anchor::At(x, y, w, h)
   }

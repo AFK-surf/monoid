@@ -6,18 +6,6 @@
 let made : Map[String, Bool] = Map([])
 
 ///|
-/// An icon or a picture as drawn: its shapes and the name its node says.
-priv struct DrawnShapes {
-  shapes : Array[@ui.Shape]
-  name : String
-}
-
-///|
-/// The icons drawn, by name, size and colour (`icon`): found by those, its name said once, not written out in words
-/// (a size and a colour in figures) for each icon on every frame.
-let icons_made : Map[(String, Double, Int64), DrawnShapes] = Map([])
-
-///|
 /// Icons' parts drawn, by name, parts, size and ink (`icon_parts_shapes`): what breathes or lights in steps drawn in
 /// each step's ink found again, not cut from the icon's numbers anew each step.
 let parts_made : Map[(String, Array[Int], Double, Int64), Array[@ui.Shape]] = Map([])
@@ -28,7 +16,6 @@ let parts_made : Map[(String, Array[Int], Double, Int64), Array[@ui.Shape]] = Ma
 fn init {
   @ui.on_reset(fn() {
     made.clear()
-    icons_made.clear()
     parts_made.clear()
     tiles_made.clear()
     dark_set.set(None)
@@ -54,27 +41,6 @@ fn init {
 /// (@hostapi.nav_bar's tabs and items); "" for none of that name.
 pub fn icon_path(name : String) -> String {
   icon_data.get(name).unwrap_or("")
-}
-
-///|
-/// Icon `name` (design/icons: "chevron-left", "list", "search"…) `size`
-/// square in `color`.
-pub fn icon(c : @ui.Ctx, name : String, size? : Double = 16.0, color? : Int64, by_ink? : Bool = false) -> Int {
-  let color = color.unwrap_or(theme().p.text)
-  let drawn = match icons_made.get((name, size, color)) {
-    Some(d) => d
-    None => {
-      let shapes = match icon_numbers(name) {
-        Some(d) => icon_shapes(d, size / 24.0, color)
-        None => []
-      }
-      let d = { shapes, name: "sf/icon/\{name}/\{size}/\{color}" }
-      icons_made[(name, size, color)] = d
-      d
-    }
-  }
-  // (`by_ink`: laid out by where it draws, its grid's room either side taking none: at a button's end, Ctx::shapes)
-  c.shapes(drawn.shapes, w=Px(size), h=Px(size), name=drawn.name, by_ink~)
 }
 
 ///|
