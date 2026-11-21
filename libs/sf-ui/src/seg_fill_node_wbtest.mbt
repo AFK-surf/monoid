@@ -80,7 +80,8 @@ fn seg_same(made : Array[String], old : Array[String], what : String) -> Unit ra
 test "a narrow page's choice as nodes, drawn as the old view's: each chosen, filling its room, its words fitted short of it, at larger words" {
   let three = ["不提示", "做完就提示", "按模型判断"]
   let five = ["全部", "自动", "关闭", "仅工作日", "每天提醒我"]
-  for case in [(390.0, three, 1.0), (390.0, five, 1.0), (260.0, five, 1.0), (200.0, five, 1.0), (390.0, three, 2.0), (390.0, five, 1.5)] {
+  // (at 1.0x..1.5x track stays 34pt matching old Seg; at 2.0x track grows so Base labels no longer clip)
+  for case in [(390.0, three, 1.0), (390.0, five, 1.0), (260.0, five, 1.0), (200.0, five, 1.0), (390.0, five, 1.5)] {
     let (w, labels, scale) = case
     for k in 0..<labels.length() {
       seg_same(seg_fill_drawn(true, w, k, labels, scale~), seg_fill_drawn(false, w, k, labels, scale~), "\{w} \{labels.length()} at \{scale}, chosen \{k}")
@@ -100,7 +101,6 @@ test "a narrow page's choice as nodes too narrow for its options side by side, d
   for case in cases {
     let (w, labels, scale) = case
     for k in 0..<labels.length() {
-      let old = seg_fill_drawn(false, w, k, labels, scale~)
       let made = seg_fill_drawn(true, w, k, labels, scale~)
       // (not side by side: no words of the others drawn)
       let drawn = @ui.view_tree().unwrap().drawn()
@@ -109,11 +109,15 @@ test "a narrow page's choice as nodes too narrow for its options side by side, d
           assert_true(!drawn.iter().any(fn(d) { d.words == l }), msg="\{Repr(case)}: a pick, \{l} not drawn")
         }
       }
-      try {
-        seg_same(made, old, "\{w} \{labels.length()} at \{scale}, chosen \{k}")
-      } catch {
-        Failure(e) => wrong.push(e)
-        e => wrong.push(e.to_string())
+      // (at 2.0x track grows past 34pt so y shifts vs old fixed-34pt Seg; compare exact parity up to 1.5x)
+      if scale <= 1.5 {
+        let old = seg_fill_drawn(false, w, k, labels, scale~)
+        try {
+          seg_same(made, old, "\{w} \{labels.length()} at \{scale}, chosen \{k}")
+        } catch {
+          Failure(e) => wrong.push(e)
+          e => wrong.push(e.to_string())
+        }
       }
     }
   }

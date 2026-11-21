@@ -2541,7 +2541,7 @@ pub fn corner_row_node(parent : @view.View, words : () -> String, end : (@view.V
     row
     .row(Is(true))
     .lines_up(Is(Some(Middle)))
-    .height(Is(Some(button_height())))
+    .min_height(Is(Some(button_height())))
     .gap(Is(text_in))
     .padding(Is((dmax(0.0, text_in + list_pad - ends), 0.0, 0.0, 0.0)))
     |> ignore

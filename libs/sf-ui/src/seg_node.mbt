@@ -346,12 +346,17 @@ pub fn seg_fill_node(
       Some(kept) => kept
       None => SegThumb::new(track, chosen)
     }
+    let track_h = fn() {
+      track.words_redone() |> ignore
+      let (_, line) = @ui.tree_theme().text_size(Base)
+      dmax(segmented_narrow_h, node_sp(track, line).ceil() + 2.0 * seg_inset)
+    }
     // (its inset round its options inside what it holds: what is said of it as a group (View::by_room's) out to its
     // edges)
     track
     .row(Is(true))
-    .height(Is(Some(segmented_narrow_h)))
-    .radius(Is(seg_radius))
+    .height(By(fn() { Some(track_h()) }))
+    .radius(By(fn() { track_h() / 2.0 }))
     .ground(By(track_glass_ink))
     |> ignore
     // (what it holds by the room the track is given: its options shared or fitted to that as the layout comes to it)
@@ -412,7 +417,7 @@ pub fn seg_fill_node(
           .row(Is(true))
           .grow(Is(1.0))
           .padding(Is((seg_inset, seg_inset, seg_inset, seg_inset)))
-          .height(Is(Some(segmented_narrow_h)))
+          .height(By(fn() { Some(track_h()) }))
           |> ignore
           // side by side: the thumb under the options' words, and the options
           g.box(fn(strip) {
@@ -488,7 +493,7 @@ pub fn seg_fill_node(
           // would stop dead there)
           let rect = fn() {
             guard n > 0 else { return None }
-            let h = segmented_narrow_h - 2.0 * seg_inset
+            let h = track_h() - 2.0 * seg_inset
             guard n > 1 else { return Some((x_of(0), 0.0, w_of(0), h)) }
             let p = thumb.position.shown(strip)
             let i = p.floor().to_int()
@@ -503,7 +508,8 @@ pub fn seg_fill_node(
           // a corner of the track's: the rule's own conditions, here, are these)
           let thumb_corners = fn(r : (Double, Double, Double, Double)) -> (Double, Double, Double, Double)? {
             let (x, _, w, h) = r
-            let own = @ui.concentric(seg_radius, seg_inset)
+            let track_r = track_h() / 2.0
+            let own = @ui.concentric(track_r, seg_inset)
             let room = given.width()
             let (l, t, rr, d) = (x, seg_inset, room - x - w, seg_inset)
             let half = dmin(w, h) / 2.0
@@ -511,9 +517,9 @@ pub fn seg_fill_node(
             let rs = FixedArray::make(4, own)
             let mut moved = 0
             for k in 0..<4 {
-              match @ui.corner_lies_in(k, l, t, rr, d, seg_radius) {
+              match @ui.corner_lies_in(k, l, t, rr, d, track_r) {
                 Some(inset) =>
-                  match @ui.corner_following(own, half, seg_radius, inset, fit) {
+                  match @ui.corner_following(own, half, track_r, inset, fit) {
                     Some(kk) => {
                       rs[k] = kk
                       moved += 1
@@ -535,8 +541,8 @@ pub fn seg_fill_node(
             .over(Is(true))
             .laid_nowhere(By(fn() { w_of(chosen()) <= 0.0 }))
             .width(Is(Some(0.0)))
-            .height(Is(Some(segmented_narrow_h - 2.0 * seg_inset)))
-            .radius(Is(@ui.concentric(seg_radius, seg_inset)))
+            .height(By(fn() { Some(track_h() - 2.0 * seg_inset) }))
+            .radius(By(fn() { @ui.concentric(track_h() / 2.0, seg_inset) }))
             .ground(By(fn() { @ui.tree_theme().lifted }))
             .ground_drawn(By(fn() {
               match rect() {
@@ -571,7 +577,7 @@ pub fn seg_fill_node(
               o
               // (its share, or as fitted)
               .width(By(fn() { Some(w_of(k)) }))
-              .height(Is(Some(segmented_narrow_h - 2.0 * seg_inset)))
+              .height(By(fn() { Some(track_h() - 2.0 * seg_inset) }))
               .row(Is(true))
               .lines_up(Is(Some(Middle)))
               // (its words in its middle, as laid out: seg_full_option's justify)
@@ -600,12 +606,12 @@ pub fn seg_fill_node(
           // larger as it is held (past the track's edges), raised off it by a shadow as far as it is in the finger
           strip.show(fn() { lens() > 0.0 }, fn(l) {
             let full = fn() { dmin(1.0, lens()) }
-            let h = segmented_narrow_h - 2.0 * seg_inset
+            let h = fn() { track_h() - 2.0 * seg_inset }
             l
             .over(Is(true))
             .offset(Is((0.0, 0.0)))
             .width(Is(Some(0.0)))
-            .height(Is(Some(h)))
+            .height(By(fn() { Some(h()) }))
             // (round as a pill is said to be, Full, as the old lens's capsule: as round as it can be)
             .radius(Is(1.0e6))
             .glass(By(fn() { Some(glass_tab_lens(full())) }))
@@ -616,13 +622,14 @@ pub fn seg_fill_node(
               match rect() {
                 Some((rx, _, rw, _)) => {
                   let s = 1.0 + (78.0 / 56.0 - 1.0) * lens()
+                  let hh = h()
                   let lw = rw * s
-                  let lh = h * s
+                  let lh = hh * s
                   {
                     dx: (rx - seg_inset) + (rw - lw) / 2.0,
-                    dy: (h - lh) / 2.0,
+                    dy: (hh - lh) / 2.0,
                     dw: lw,
-                    dh: lh - h,
+                    dh: lh - hh,
                     corners: Some((lh / 2.0, lh / 2.0, lh / 2.0, lh / 2.0)),
                   }
                 }
@@ -721,10 +728,6 @@ fn seg_shares(room : Double, least : Array[Double]) -> Array[Double] {
   }
   least.mapi(fn(i, l) { if kept[i] { l } else { share } })
 }
-
-///|
-/// A filling Seg’s full-height capsule.
-let seg_radius : Double = segmented_narrow_h / 2.0
 
 ///|
 /// Match the bottom bar's hold time and how far its thumb leans toward the finger.

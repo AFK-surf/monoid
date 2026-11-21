@@ -1415,8 +1415,8 @@ pub fn code_block_node(
     b.box(fn(k) {
       k
       .row(Is(true))
-      .height(Is(Some(code_key_h)))
-      .padding(Is((7.0, 0.0, 7.0, 0.0)))
+      .min_height(Is(Some(code_key_h)))
+      .padding(Is((7.0, 1.0, 7.0, 1.0)))
       .gap(Is(4.0))
       .lines_up(Is(Some(Middle)))
       .radius(Is(code_key_h / 2.0))
@@ -1465,7 +1465,7 @@ pub fn code_block_node(
   let bar = fn(b : @view.View) {
     b
     .row(Is(true))
-    .height(Is(Some(key_inset + code_key_h)))
+    .min_height(Is(Some(key_inset + code_key_h)))
     .padding(Is((key_inset, key_inset, key_inset, 0.0)))
     .lies_along(Is(End))
     .lines_up(Is(Some(Middle)))
@@ -1485,8 +1485,8 @@ pub fn code_block_node(
     b.box(fn(k) {
       k
       .row(Is(true))
-      .height(Is(Some(code_key_h)))
-      .padding(Is((7.0, 0.0, 7.0, 0.0)))
+      .min_height(Is(Some(code_key_h)))
+      .padding(Is((7.0, 1.0, 7.0, 1.0)))
       .lines_up(Is(Some(Middle)))
       .radius(Is(code_key_h / 2.0))
       .ground(By(fn() { alpha(theme().p.canvas, 0.8) }))
