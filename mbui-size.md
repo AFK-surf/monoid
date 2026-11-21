@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3d1a4607d](https://github.com/AFK-surf/monoid/commit/3d1a4607d7ab8043a526520dc8d364666bf4a8fc) fix(station): restore Gemini profile output speed  | 2.79 | 3.77 | 15.36 | 37.47 | 58.06 | 32.84 | 67.06 | 98.49 | 120.89 |
 | [7541e39ab](https://github.com/AFK-surf/monoid/commit/7541e39ab4f139d8f2f5bae3d3718bb24967678d) fix(mbui): rebuild Windows XAudio2 engine after de | 2.79 | 3.78 | 15.37 | 37.49 | 58.09 | 32.86 | 67.08 | 98.4 | 122.74 |
 | [0ad04e6d2](https://github.com/AFK-surf/monoid/commit/0ad04e6d2fa7af2e8c3b2ef9369e6826135decd9) chore(farview): sync Stage 23B release 29078d90f43 | 2.79 | 3.78 | 15.37 | 37.49 | 58.09 | 32.86 | 67.08 | 98.4 | 122.74 |
 | [b89ddeaad](https://github.com/AFK-surf/monoid/commit/b89ddeaad217518f930ab8441d0130592e687121) test(chat): run node chat page by default and migr | 2.79 | 3.77 | 15.35 | 37.46 | 58.02 | 32.84 | 67.01 | 98.24 | 131.52 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e2303813a](https://github.com/AFK-surf/monoid/commit/e2303813ace976914092725ff9cab869cbcfd1a6) fix(mbui): place fresh rows past carried rows and  | 2.76 | 3.73 | 15.19 | 37.27 | 57.55 | 32.67 | 66.55 | 98.35 | 105.82 |
 | [442ec2eb0](https://github.com/AFK-surf/monoid/commit/442ec2eb03ab6ff866b384611713211ec720e1ce) perf(mbui): bring WebGL2 host to parity with nativ | 2.76 | 3.73 | 15.19 | 37.27 | 57.55 | 32.67 | 66.55 | 98.35 | 105.82 |
 | [5799e3d5b](https://github.com/AFK-surf/monoid/commit/5799e3d5b5e6382838e822d460cc99f5cb0f83d0) chore(farview): bump Stage 12A release (cf0d2d2736 | 2.76 | 3.73 | 15.19 | 37.27 | 57.55 | 32.67 | 66.55 | 98.35 | 105.82 |
-| [faab03fb6](https://github.com/AFK-surf/monoid/commit/faab03fb646501b107bb8e3f2586582529e1d78d) fix(mbui): align scrollbars to container edges and | 2.76 | 3.73 | 15.18 | 37.27 | 57.54 | 32.67 | 66.53 | 98.14 | 120.72 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3d1a4607d](https://github.com/AFK-surf/monoid/commit/3d1a4607d7ab8043a526520dc8d364666bf4a8fc) fix(station): restore Gemini profile output speed  | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.12 |
 | [7541e39ab](https://github.com/AFK-surf/monoid/commit/7541e39ab4f139d8f2f5bae3d3718bb24967678d) fix(mbui): rebuild Windows XAudio2 engine after de | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.12 |
 | [0ad04e6d2](https://github.com/AFK-surf/monoid/commit/0ad04e6d2fa7af2e8c3b2ef9369e6826135decd9) chore(farview): sync Stage 23B release 29078d90f43 | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.18 |
 | [b89ddeaad](https://github.com/AFK-surf/monoid/commit/b89ddeaad217518f930ab8441d0130592e687121) test(chat): run node chat page by default and migr | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.18 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e2303813a](https://github.com/AFK-surf/monoid/commit/e2303813ace976914092725ff9cab869cbcfd1a6) fix(mbui): place fresh rows past carried rows and  | 0.46 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.08 |
 | [442ec2eb0](https://github.com/AFK-surf/monoid/commit/442ec2eb03ab6ff866b384611713211ec720e1ce) perf(mbui): bring WebGL2 host to parity with nativ | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.05 |
 | [5799e3d5b](https://github.com/AFK-surf/monoid/commit/5799e3d5b5e6382838e822d460cc99f5cb0f83d0) chore(farview): bump Stage 12A release (cf0d2d2736 | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.05 |
-| [faab03fb6](https://github.com/AFK-surf/monoid/commit/faab03fb646501b107bb8e3f2586582529e1d78d) fix(mbui): align scrollbars to container edges and | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.05 |
