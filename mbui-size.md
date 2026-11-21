@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c86bcdee8](https://github.com/AFK-surf/monoid/commit/c86bcdee8df51053775ef26ad6b1e855521819f5) perf(cold-start): F4a POST /changed/shared + own m | 2.64 | 3.55 | 14.42 | 36.47 | 55.06 | 31.93 | 64.47 | 98.55 | 120.03 |
 | [7568ac3f7](https://github.com/AFK-surf/monoid/commit/7568ac3f70ffc0765351b1a302077419225c2f85) feat(mbui,sf-ui,sfpages): add continuous Glass.str | 2.64 | 3.55 | 14.42 | 36.44 | 55.05 | 31.93 | 64.47 | 98.55 | 127.18 |
 | [7bc5afc43](https://github.com/AFK-surf/monoid/commit/7bc5afc43ee385ba2b72a960421fb7cdd68fddff) fix(mbui): open file links in the execution histor | 2.64 | 3.55 | 14.42 | 36.44 | 55.04 | 31.93 | 64.45 | 98.24 | 120.63 |
 | [4b8bd08a2](https://github.com/AFK-surf/monoid/commit/4b8bd08a2fc920995ab0db535cf4d2b0715744dc) feat(mbui): support keeps_made shelf parking in na | 2.64 | 3.55 | 14.42 | 36.44 | 55.04 | 31.93 | 64.45 | 98.24 | 120.63 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [48e1aa776](https://github.com/AFK-surf/monoid/commit/48e1aa7767396adddbe4592de561c070ba4e6063) refactor(sf-ui): export layout-neutral card and no | 2.65 | 3.56 | 14.45 | 36.45 | 55.09 | 31.93 | 64.47 | 98.19 | 113.96 |
 | [e4e521cb2](https://github.com/AFK-surf/monoid/commit/e4e521cb2fbf584634e6e5c29248ca00dc77e085) fix(liquid-glass): eliminate anchored overlay clos | 2.65 | 3.56 | 14.45 | 36.45 | 55.09 | 31.93 | 64.47 | 98.08 | 112.02 |
 | [a0fe5061d](https://github.com/AFK-surf/monoid/commit/a0fe5061d00685af6f9b2f98f4c63265e36ea2f9) fix(mbui): keep ancestor clip corners on shared fl | 2.65 | 3.56 | 14.45 | 36.45 | 55.09 | 31.93 | 64.47 | 98.01 | 111.15 |
-| [b9e664ad5](https://github.com/AFK-surf/monoid/commit/b9e664ad5da6da530485de35c49951e3c2e410e0) feat(mbui): support per-corner radii in merged liq | 2.64 | 3.56 | 14.45 | 36.45 | 55.07 | 31.92 | 64.47 | 98.13 | 128.7 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c86bcdee8](https://github.com/AFK-surf/monoid/commit/c86bcdee8df51053775ef26ad6b1e855521819f5) perf(cold-start): F4a POST /changed/shared + own m | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.07 |
 | [7568ac3f7](https://github.com/AFK-surf/monoid/commit/7568ac3f70ffc0765351b1a302077419225c2f85) feat(mbui,sf-ui,sfpages): add continuous Glass.str | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.07 |
 | [7bc5afc43](https://github.com/AFK-surf/monoid/commit/7bc5afc43ee385ba2b72a960421fb7cdd68fddff) fix(mbui): open file links in the execution histor | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.07 |
 | [4b8bd08a2](https://github.com/AFK-surf/monoid/commit/4b8bd08a2fc920995ab0db535cf4d2b0715744dc) feat(mbui): support keeps_made shelf parking in na | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.43 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [48e1aa776](https://github.com/AFK-surf/monoid/commit/48e1aa7767396adddbe4592de561c070ba4e6063) refactor(sf-ui): export layout-neutral card and no | 0.47 | 0.61 | 2.37 | 3.42 | 5.61 | 1.72 | 4.63 | 54.2 |
 | [e4e521cb2](https://github.com/AFK-surf/monoid/commit/e4e521cb2fbf584634e6e5c29248ca00dc77e085) fix(liquid-glass): eliminate anchored overlay clos | 0.47 | 0.61 | 2.37 | 3.42 | 5.61 | 1.72 | 4.63 | 54.2 |
 | [a0fe5061d](https://github.com/AFK-surf/monoid/commit/a0fe5061d00685af6f9b2f98f4c63265e36ea2f9) fix(mbui): keep ancestor clip corners on shared fl | 0.47 | 0.61 | 2.37 | 3.42 | 5.61 | 1.72 | 4.63 | 54.2 |
-| [b9e664ad5](https://github.com/AFK-surf/monoid/commit/b9e664ad5da6da530485de35c49951e3c2e410e0) feat(mbui): support per-corner radii in merged liq | 0.47 | 0.61 | 2.37 | 3.42 | 5.61 | 1.72 | 4.63 | 54.2 |
