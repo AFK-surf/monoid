@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bfa6aa2cd](https://github.com/AFK-surf/monoid/commit/bfa6aa2cd8882ce8f39782ba32a901e78a74b2d8) feat(sf-ui,website): add Standard UI interactive s | 2.79 | 3.77 | 15.34 | 37.46 | 58.01 | 32.83 | 67.01 | 98.24 | 79.2 |
 | [8863ff935](https://github.com/AFK-surf/monoid/commit/8863ff9356893bd1d1e411a83cb9a4165aa0a6a8) fix(chat): node chat page fixes before chatPage gr | 2.79 | 3.77 | 15.34 | 37.46 | 58.01 | 32.83 | 67.01 | 98.44 | 125.63 |
 | [89726c415](https://github.com/AFK-surf/monoid/commit/89726c41509afc0ff2adf754e620c93dab37b48c) chore(mesh): pin noq last-open-path idle cleanup ( | 2.79 | 3.77 | 15.33 | 37.45 | 57.98 | 32.82 | 66.98 | 98.29 | 122.42 |
 | [f82607a79](https://github.com/AFK-surf/monoid/commit/f82607a7983e2ac0e09c37d49cf61ced5a9c43f1) fix(mesh): yield stale transport paths and bound m | 2.79 | 3.77 | 15.33 | 37.45 | 57.97 | 32.82 | 66.96 | 98.29 | 127.37 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [9b61589f6](https://github.com/AFK-surf/monoid/commit/9b61589f6a4a651103abc7b17fd0df268db3b21a) perf(mbui): drop dead sharp backdrop level and ena | 2.76 | 3.73 | 15.18 | 37.26 | 57.53 | 32.67 | 66.53 | 98.26 | 122.81 |
 | [05ca57c9c](https://github.com/AFK-surf/monoid/commit/05ca57c9c0e1ea864891e03d6ca938ccb4f4838e) fix(mbui): decode an image again when its key gets | 2.76 | 3.73 | 15.18 | 37.26 | 57.53 | 32.67 | 66.53 | 98.26 | 122.81 |
 | [99884b6e3](https://github.com/AFK-surf/monoid/commit/99884b6e37139704f2119e65eecee3ae59f1bdeb) fix(mesh): enforce relay allowlist on client endpo | 2.76 | 3.73 | 15.18 | 37.26 | 57.53 | 32.67 | 66.53 | 98.26 | 122.81 |
-| [6d19980fa](https://github.com/AFK-surf/monoid/commit/6d19980fa800cf2f775045f29ca86df9ceb3a0a4) ci(preview): start windows host checks before the  | 2.76 | 3.73 | 15.18 | 37.26 | 57.53 | 32.65 | 66.51 | 98.22 | 121.84 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bfa6aa2cd](https://github.com/AFK-surf/monoid/commit/bfa6aa2cd8882ce8f39782ba32a901e78a74b2d8) feat(sf-ui,website): add Standard UI interactive s | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.71 | 4.62 | 54.08 |
 | [8863ff935](https://github.com/AFK-surf/monoid/commit/8863ff9356893bd1d1e411a83cb9a4165aa0a6a8) fix(chat): node chat page fixes before chatPage gr | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.71 | 4.62 | 54.08 |
 | [89726c415](https://github.com/AFK-surf/monoid/commit/89726c41509afc0ff2adf754e620c93dab37b48c) chore(mesh): pin noq last-open-path idle cleanup ( | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.71 | 4.62 | 54.08 |
 | [f82607a79](https://github.com/AFK-surf/monoid/commit/f82607a7983e2ac0e09c37d49cf61ced5a9c43f1) fix(mesh): yield stale transport paths and bound m | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.71 | 4.62 | 54.08 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [9b61589f6](https://github.com/AFK-surf/monoid/commit/9b61589f6a4a651103abc7b17fd0df268db3b21a) perf(mbui): drop dead sharp backdrop level and ena | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.25 |
 | [05ca57c9c](https://github.com/AFK-surf/monoid/commit/05ca57c9c0e1ea864891e03d6ca938ccb4f4838e) fix(mbui): decode an image again when its key gets | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.2 |
 | [99884b6e3](https://github.com/AFK-surf/monoid/commit/99884b6e37139704f2119e65eecee3ae59f1bdeb) fix(mesh): enforce relay allowlist on client endpo | 0.46 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.2 |
-| [6d19980fa](https://github.com/AFK-surf/monoid/commit/6d19980fa800cf2f775045f29ca86df9ceb3a0a4) ci(preview): start windows host checks before the  | 0.46 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.2 |
