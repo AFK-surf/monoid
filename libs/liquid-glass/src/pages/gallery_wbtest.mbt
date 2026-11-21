@@ -305,13 +305,13 @@ test "library app self-hosts all 6 categories, sidebar search, dark/light switch
 }
 
 ///|
-/// Hard zero glass-on-glass gate: verifies no two drawn `Glass::liquid` (`kind == 6`) rectangles
-/// overlap by more than `1.0 pt²` (allowing at most `allowed_pairs` intentional capillary pairs).
+/// Hard zero glass-on-glass gate: verifies no two visible (clip-cut) drawn `Glass::liquid`
+/// rectangles overlap by more than `1.0 pt²` (allowing at most `allowed_pairs` intentional capillary pairs).
 fn assert_no_nested_glass(t : @ui.Tester, ctx : String, allowed_pairs? : Int = 0) -> Unit raise {
   let rects : Array[(Double, Double, Double, Double)] = []
-  for g in t.drawn_glass() {
-    if g.4 == 6 && g.2 > 0.0 && g.3 > 0.0 {
-      rects.push((g.0, g.1, g.2, g.3))
+  for g in t.drawn_glass_cut() {
+    if g.2 > 0.0 && g.3 > 0.0 {
+      rects.push(g)
     }
   }
   let overlaps : Array[String] = []
@@ -445,4 +445,80 @@ test "hard zero glass-on-glass gate across all 6 library categories (light & dar
     t.key(@ui.key_escape)
     t.run_for(settled)
   }
+}
+
+///|
+test "library app mobile responsive layout at 390x844 and 360x800: 0 audit faults, no overflow, catalog sheet & sidebar collapse" {
+  // Desktop 1280x800 keeps inline sidebar open by default
+  let desk = @ui.Tester::new(fn(_c) {  }, w=1280.0, h=800.0, platform=0)
+  @lg.set_dark(Some(false))
+  @ui.set_view_app(fn(root) { gallery(root, "library", chrome=true) })
+  desk.draw()
+  desk.run_for(settled)
+  assert_eq(desk.all(Group, label="CATEGORIES · 32 PARTS").length(), 1)
+  assert_eq(desk.all(Button, label="Search & Catalog").length(), 0)
+
+  // Narrow viewports: 390x844 (iPhone portrait) & 360x800 (narrow Android) across Light & Dark
+  let faults : Array[(Double, Bool, String, String)] = []
+  for dims in [(390.0, 844.0), (360.0, 800.0)] {
+    let (w, h) = dims
+    for dark in [false, true] {
+      let t = @ui.Tester::new(fn(_c) {  }, w~, h~, platform=0)
+      @lg.set_dark(Some(dark))
+      @ui.set_view_app(fn(root) { gallery(root, "library", chrome=true) })
+      t.draw()
+      t.run_for(settled)
+      // Inline sidebar auto-collapsed on narrow screens; catalog trigger button shown in nav bar
+      assert_eq(t.all(Group, label="CATEGORIES · 32 PARTS").length(), 0)
+      assert_eq(t.all(Button, label="Search & Catalog").length(), 1)
+
+      let dock = t.get(TabList, label="Library sections")
+      let (dx0, dy0, dw0, dh0) = dock.rect
+      assert_true(dx0 >= 0.0 && dx0 + dw0 <= w + 0.5)
+      let nav = t.get(Navigation, label="Liquid Glass")
+      let (nx, _ny, nw, _nh) = nav.rect
+      assert_true(nx >= 0.0 && nx + nw <= w + 0.5)
+
+      for tab in ["Controls", "Inputs", "Nav", "Overlays", "Physics", "Optics"] {
+        let (tx, ty) = middle_of(t, Tab, tab)
+        t.tap(tx, ty)
+        t.run_for(settled)
+        let d_now = t.get(TabList, label="Library sections").rect
+        assert_eq((tab, w, d_now.0, d_now.1, d_now.2, d_now.3), (tab, w, dx0, dy0, dw0, dh0))
+        // Check all bottom dock tabs stay within [0, w]
+        for tb in t.all(Tab, within=t.get(TabList, label="Library sections")) {
+          assert_true(tb.rect.0 >= -0.5 && tb.rect.0 + tb.rect.2 <= w + 0.5)
+        }
+        assert_no_nested_glass(t, "mobile/\{w}/\{tab} dark=\{dark}")
+        for f in t.audit() {
+          if f.contains("pages/library.mbt") {
+            faults.push((w, dark, tab, f))
+          }
+        }
+      }
+
+      // Open mobile Catalog Sheet, verify clean glass-on-glass & zero audit faults, pick a category to close
+      t.act(Button, Activate, label="Search & Catalog")
+      t.run_for(settled)
+      let sheet_rect = t.get(Dialog, label="Components · 32 Parts").rect
+      assert_true(sheet_rect.0 >= 0.0 && sheet_rect.0 + sheet_rect.2 <= w + 0.5)
+      assert_overlay_panel_clean(t, "mobile/\{w}/CatalogSheet dark=\{dark}", sheet_rect)
+      for f in t.audit() {
+        if f.contains("pages/library.mbt") {
+          faults.push((w, dark, "CatalogSheet", f))
+        }
+      }
+      t.act(Button, Activate, label="Inputs")
+      t.run_for(settled)
+      assert_eq(t.all(Dialog, label="Components · 32 Parts").length(), 0)
+
+      // Toggle Light/Dark via compact top segmented control
+      let target_theme = if dark { "Light" } else { "Dark" }
+      let (lx, ly) = middle_of(t, Tab, target_theme)
+      t.tap(lx, ly)
+      t.run_for(settled)
+      assert_eq(@lg.is_dark(), !dark)
+    }
+  }
+  assert_eq(faults, [])
 }

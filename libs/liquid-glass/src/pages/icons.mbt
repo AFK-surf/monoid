@@ -333,6 +333,25 @@ fn icon_merge(parent : @view.View, size : Double, ink : () -> Int64) -> Unit {
 }
 
 ///|
+/// Magnifying glass search icon (mobile catalog drawer trigger).
+fn icon_search(parent : @view.View, size : Double, ink : () -> Int64) -> Unit {
+  let k = size / 24.0
+  icon_box(parent, size, fn() {
+    let c = ink()
+    [
+      @paint.shape_of(
+        [
+          circle_outline(10.5, 10.5, 6.2, k),
+          (flat_scaled([(15.2, 15.2), (20.2, 20.2)], k), false),
+        ],
+        stroke=c,
+        width=1.9 * k,
+      ),
+    ]
+  })
+}
+
+///|
 /// Bottom tab face for `LiquidBottomTabs`: 22pt vector icon, 4pt gap, 12pt medium label.
 fn studio_tab_face(name : String, icon : (@view.View, Double, () -> Int64) -> Unit) -> (@view.View, () -> Int64) -> Unit {
   fn(f, ink) {
@@ -345,5 +364,28 @@ fn studio_tab_face(name : String, icon : (@view.View, Double, () -> Int64) -> Un
       |> ignore
     })
     |> ignore
+  }
+}
+
+///|
+/// Responsive bottom tab face: standard 20pt icon + 11.5pt label on wide viewports, compact 18pt icon + 10.5pt label
+/// on phone viewports so all 6 library tabs fit cleanly inside 360pt–390pt widths without truncation.
+fn studio_tab_face_responsive(
+  name : String,
+  icon : (@view.View, Double, () -> Int64) -> Unit,
+  compact : () -> Bool,
+) -> (@view.View, () -> Int64) -> Unit {
+  fn(f, ink) {
+    f.pick(compact, at_once=true, fn(slot, is_compact) {
+      slot.lines_up(Is(Some(Middle))).gap(Is(if is_compact { 2.0 } else { 4.0 })) |> ignore
+      icon(slot, if is_compact { 18.0 } else { 20.0 }, ink)
+      slot.box(fn(w) {
+        w
+        .words(Is(name), look=@lg.words_at(if is_compact { 10.5 } else { 11.5 }, weight=@lg.weight_medium))
+        .ink(By(ink))
+        |> ignore
+      })
+      |> ignore
+    })
   }
 }

@@ -56,7 +56,7 @@ pub fn liquid_toast_node(
       |> ignore
       // Title + optional subtitle
       s.box(fn(col) {
-        col.grow(Is(1.0)).gap(Is(ovl_text_gap)) |> ignore
+        col.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).gap(Is(ovl_text_gap)) |> ignore
         col.box(fn(w) {
           w
           .words(By(title), look=words_at(ovl_type_body, weight=weight_medium, wrap=true))
@@ -314,6 +314,7 @@ pub fn liquid_nav_bar_node(
   trailing? : (@view.View) -> Unit,
   height? : Double = 56.0,
   glass? : Bool = false,
+  compact? : () -> Bool = fn() { false },
   loc~ : SourceLoc,
 ) -> @view.View {
   parent.box(made_for=loc, fn(bar) {
@@ -322,8 +323,11 @@ pub fn liquid_nav_bar_node(
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Between))
     .height(Is(Some(height)))
-    .padding(Is((ovl_nav_px, 0.0, ovl_nav_px, 0.0)))
-    .gap(Is(ovl_nav_gap))
+    .padding(By(fn() {
+      let px = if compact() { 2.0 } else { ovl_nav_px }
+      (px, 0.0, px, 0.0)
+    }))
+    .gap(By(fn() { if compact() { 6.0 } else { ovl_nav_gap } }))
     .says(By(fn() { Some(@view.said(Navigation, label=title())) }))
     |> ignore
     if glass {
@@ -336,7 +340,11 @@ pub fn liquid_nav_bar_node(
     match leading {
       Some(draw_leading) =>
         bar.box(fn(slot) {
-          slot.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(ovl_toolbar_gap)) |> ignore
+          slot
+          .row(Is(true))
+          .lines_up(Is(Some(Middle)))
+          .gap(By(fn() { if compact() { 6.0 } else { ovl_toolbar_gap } }))
+          |> ignore
           draw_leading(slot)
         })
         |> ignore
@@ -359,7 +367,11 @@ pub fn liquid_nav_bar_node(
     match trailing {
       Some(draw_trailing) =>
         bar.box(fn(slot) {
-          slot.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(ovl_toolbar_gap)) |> ignore
+          slot
+          .row(Is(true))
+          .lines_up(Is(Some(Middle)))
+          .gap(By(fn() { if compact() { 6.0 } else { ovl_toolbar_gap } }))
+          |> ignore
           draw_trailing(slot)
         })
         |> ignore
@@ -493,7 +505,7 @@ fn ovl_list_row_inner(r : @view.View, item_sig : @signals.Signal[LiquidListItem]
     }
   })
   r.box(made_for=loc, fn(col) {
-    col.grow(Is(1.0)).gap(Is(ovl_text_gap)) |> ignore
+    col.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).gap(Is(ovl_text_gap)) |> ignore
     col.box(fn(w) {
       w.words(By(fn() { row().title }), look=words_at(ovl_type_body, wrap=true)).ink(By(title_ink)) |> ignore
     })
@@ -534,6 +546,7 @@ pub fn liquid_list_node(
   header? : () -> String = fn() { "" },
   footer? : () -> String = fn() { "" },
   dividers? : Bool = true,
+  flat? : Bool = false,
   loc~ : SourceLoc,
 ) -> @view.View {
   parent.box(made_for=loc, fn(wrap) {
@@ -551,8 +564,6 @@ pub fn liquid_list_node(
       card
       .padding(Is((ovl_list_pad, ovl_list_pad, ovl_list_pad, ovl_list_pad)))
       .radius(Is(ovl_list_radius))
-      .shadow(Is(shadow_default))
-      .glass(By(fn() { Some(ovl_panel_glass()) }))
       .says(
         By(fn() {
           let h = header()
@@ -560,6 +571,14 @@ pub fn liquid_list_node(
         }),
       )
       |> ignore
+      if flat {
+        card
+        .ground(By(fn() { if is_dark() { 0xFFFFFF12L } else { 0x0000000AL } }))
+        .edge(By(fn() { (0.5, ovl_hairline()) }))
+        |> ignore
+      } else {
+        card.shadow(Is(shadow_default)).glass(By(fn() { Some(ovl_panel_glass()) })) |> ignore
+      }
       if !dividers {
         card.gap(Is(ovl_list_gap_nodiv)) |> ignore
       }

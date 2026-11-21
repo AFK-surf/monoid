@@ -24,6 +24,10 @@ let progressive_copy : String = "One retained UI tree rendered straight on Metal
 let loupe_source_copy : String = "let prism = @paint.Glass::liquid(\n  blur=1.8, bezel=22.0, refraction=28.0, chroma=-0.06,\n  saturation=1.18, rim=0.68, adaptive=false,\n)\n// One GPU pass on Metal, Vulkan, D3D11, GLES & WebGL 2."
 
 ///|
+/// Compact-width MoonBit source specimen for Optical Loupe on narrow viewports (<= 30 chars/line, fits 360pt cleanly).
+let loupe_source_copy_compact : String = "let prism = Glass::liquid(\n  blur=1.8, bezel=22.0,\n  refraction=28.0,\n  chroma=-0.06, rim=0.68,\n)\n// Metal · Vulkan · WebGL 2"
+
+///|
 /// Studio copy for Publish Dialog.
 let dialog_copy : String = "Compile one MoonBit UI tree into native GPU bundles for macOS, iOS, Android, Windows, Linux, and WebGL 2 with zero WebView overhead."
 
@@ -503,8 +507,432 @@ let stage_least : Double = 340.0
 let stage_most : Double = 480.0
 
 ///|
+/// Shared `OPTICAL PARAMETERS` single-layer Liquid Glass inspector panel used by both desktop split and narrow stacked
+/// layouts of `optics_scene`.
+fn optics_inspector(
+  parent : @view.View,
+  held : Held?,
+  grid_on : @signals.Signal[Bool],
+  refraction_val : @signals.Signal[Double],
+  chroma_val : @signals.Signal[Double],
+  blur_val : @signals.Signal[Double],
+  prism_pos : @signals.Signal[(Double, Double)],
+  dialog_open : @signals.Signal[Bool],
+  stacked : Bool,
+) -> Unit {
+  parent.box(fn(insp) {
+    if !stacked {
+      insp.width(Is(Some(348.0))).shrink(Is(0.0)) |> ignore
+    }
+    insp
+    .radius(Is(if stacked { 32.0 } else { 44.0 }))
+    .padding(Is(if stacked { (16.0, 16.0, 16.0, 16.0) } else { (20.0, 18.0, 20.0, 20.0) }))
+    .gap(Is(12.0))
+    .shadow(Is(@lg.shadow_default))
+    .shadow_outside(Is(true))
+    .glass(By(fn() { Some(inspector_glass()) }))
+    |> ignore
+    // Header row
+    insp.box(fn(ih) {
+      ih.row(Is(true)).lies_along(Is(Between)).lines_up(Is(Some(Middle))) |> ignore
+      ih.box(fn(l) {
+        l
+        .words(Is("OPTICAL PARAMETERS"), look={ ..@lg.words_at(11.0, weight=600), tracking: Points(0.9) })
+        .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.62) }))
+        |> ignore
+      })
+      |> ignore
+      ih.box(fn(r) {
+        r
+        .words(Is("iOS 27 SDF"), look=@lg.words_at(11.0, weight=500))
+        .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.52) }))
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+    // Three live optical parameter sliders
+    param_slider(
+      insp,
+      "Refraction",
+      fn() { "\{refraction_val.get().round().to_int()} px" },
+      fn() { refraction_val.get() },
+      fn(v) { refraction_val.set(v) },
+      0.0,
+      56.0,
+      drag?=held.map(fn(h) { h.slider }),
+    )
+    param_slider(
+      insp,
+      "Chroma",
+      fn() { fmt_chroma(chroma_val.get()) },
+      fn() { chroma_val.get() },
+      fn(v) { chroma_val.set(v) },
+      0.0,
+      15.0,
+    )
+    param_slider(
+      insp,
+      "Blur",
+      fn() { "\{fmt_tenth(blur_val.get())} pt" },
+      fn() { blur_val.get() },
+      fn(v) { blur_val.set(v) },
+      0.0,
+      12.0,
+    )
+    // Toggles row: Dark + Grid
+    insp.box(fn(toggles) {
+      toggles.row(Is(true)).wraps(Is(Some(8.0))).gap(Is(20.0)).lines_up(Is(Some(Middle))).padding(Is((0.0, 2.0, 0.0, 2.0)))
+      |> ignore
+      toggles.box(fn(t1) {
+        t1.row(Is(true)).gap(Is(8.0)).lines_up(Is(Some(Middle))) |> ignore
+        @lg.liquid_toggle_node(t1, fn() { @lg.is_dark() }, fn(v) { @lg.set_dark(Some(v)) }, fn() { "Dark" }) |> ignore
+        t1.box(fn(lbl) {
+          lbl.words(Is("Dark"), look=@lg.words_at(12.5, weight=500)).ink(By(fn() { @lg.colors().content })) |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+      toggles.box(fn(t2) {
+        t2.row(Is(true)).gap(Is(8.0)).lines_up(Is(Some(Middle))) |> ignore
+        @lg.liquid_toggle_node(
+          t2,
+          fn() { grid_on.get() },
+          fn(v) { grid_on.set(v) },
+          fn() { "Grid" },
+          drag?=held.map(fn(h) { h.toggle }),
+        )
+        |> ignore
+        t2.box(fn(lbl) {
+          lbl.words(Is("Grid"), look=@lg.words_at(12.5, weight=500)).ink(By(fn() { @lg.colors().content })) |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+    // Live MoonBit code pill
+    insp.box(fn(code) {
+      code
+      .radius(Is(14.0))
+      .padding(Is((12.0, 8.0, 12.0, 8.0)))
+      .ground(By(fn() { if @lg.is_dark() { 0x090A0E7AL } else { 0x1417200FL } }))
+      .edge(By(fn() { (1.0, if @lg.is_dark() { 0xFFFFFF14L } else { 0x14172014L }) }))
+      |> ignore
+      code.box(fn(w) {
+        w
+        .words(
+          By(fn() {
+            let b = fmt_tenth(blur_val.get())
+            let rf = refraction_val.get().round().to_int()
+            let ch = fmt_chroma(chroma_val.get())
+            "Glass::liquid(blur: \{b}, refraction: \{rf},\n  chroma: \{ch})"
+          }),
+          look={ ..@lg.words_at(11.5, weight=500, wrap=true), line: 16.0 },
+        )
+        .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.88) }))
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+    // Bottom action row: Reset + Publish (flat=true inside Glass Inspector -> zero glass-on-glass)
+    insp.box(fn(acts) {
+      acts.row(Is(true)).gap(Is(10.0)).lines_up(Is(Some(Middle))) |> ignore
+      acts.box(fn(b1) {
+        b1.grow(Is(1.0)) |> ignore
+        @lg.liquid_button_node(
+          b1,
+          fn() { "Reset" },
+          fn() {
+            prism_pos.set((0.0, 0.0))
+            refraction_val.set(28.0)
+            chroma_val.set(6.0)
+            blur_val.set(1.8)
+            grid_on.set(true)
+          },
+          flat=true,
+          light?=held.map(fn(h) { h.button }),
+        )
+        |> ignore
+      })
+      |> ignore
+      acts.box(fn(b2) {
+        b2.grow(Is(1.0)) |> ignore
+        @lg.liquid_button_node(
+          b2,
+          fn() { "Publish" },
+          fn() { dialog_open.set(true) },
+          tint=monoid_vermilion,
+          flat=true,
+        )
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// Interactive optical prism stage shared between desktop split and narrow stacked `optics_scene`.
+fn optics_stage(
+  parent : @view.View,
+  refraction_val : @signals.Signal[Double],
+  chroma_val : @signals.Signal[Double],
+  blur_val : @signals.Signal[Double],
+  prism_pos : @signals.Signal[(Double, Double)],
+  last_drag : Ref[(Double, Double)],
+  stacked : Bool,
+) -> Unit {
+  parent.box(fn(stage_host) {
+    if stacked {
+      stage_host.height(Is(Some(300.0))).clips(Is(true)).radius(Is(24.0)) |> ignore
+    } else {
+      stage_host.grow(Is(1.0)).fills_across(Is(true)).lies_along(Is(Middle)) |> ignore
+    }
+    let stage_room = stage_host.by_room(fn(stage, room) {
+      stage.grow(Is(1.0)) |> ignore
+      let rw = fn() { room.width() }
+      let rh = fn() { room.height().unwrap_or(if stacked { 300.0 } else { stage_most }) }
+      let prism_w = fn() {
+        if stacked {
+          @lg.clamp(rw() - 28.0, 200.0, 256.0)
+        } else {
+          268.0
+        }
+      }
+      let prism_h = if stacked { 156.0 } else { 176.0 }
+      let sun_d = if stacked { 168.0 } else { 236.0 }
+      let plate_w = if stacked { 184.0 } else { 248.0 }
+      let plate_h = if stacked { 104.0 } else { 132.0 }
+      // 1. Monoid Vermilion Sun
+      stage.box(fn(sun) {
+        sun
+        .over(Is(true))
+        .points(Is(false))
+        .width(Is(Some(sun_d)))
+        .height(Is(Some(sun_d)))
+        .radius(Is(sun_d / 2.0))
+        .offset(By(fn() {
+          if stacked {
+            (rw() * 0.36 - sun_d / 2.0, rh() * 0.38 - sun_d / 2.0)
+          } else {
+            (rw() * 0.43 - 118.0, rh() * 0.38 - 118.0)
+          }
+        }))
+        .ground(Is(monoid_vermilion))
+        |> ignore
+      })
+      |> ignore
+      // 2. Inverse-luminance architectural contrast plate
+      stage.box(fn(plate) {
+        plate
+        .over(Is(true))
+        .points(Is(false))
+        .width(Is(Some(plate_w)))
+        .height(Is(Some(plate_h)))
+        .radius(Is(if stacked { 22.0 } else { 26.0 }))
+        .clips(Is(true))
+        .offset(By(fn() {
+          if stacked {
+            (rw() * 0.62 - plate_w / 2.0, rh() * 0.56 - plate_h / 2.0)
+          } else {
+            (rw() * 0.56 - 92.0, rh() * 0.54 - 66.0)
+          }
+        }))
+        .ground(By(fn() { if @lg.is_dark() { 0xF5F2EBFFL } else { 0x151720FFL } }))
+        |> ignore
+        plate_stripes(
+          plate,
+          if stacked { 22.0 } else { 26.0 },
+          fn() { if @lg.is_dark() { 0xDDD8CEFFL } else { 0x292D3BFFL } },
+          if stacked { 16.0 } else { 20.0 },
+          if stacked { 16.0 } else { 20.0 },
+        )
+        plate.box(fn(tag) {
+          tag
+          .over(Is(true))
+          .padding(Is((14.0, 8.0, 14.0, 10.0)))
+          .lines_up(Is(Some(End)))
+          .lies_along(Is(End))
+          |> ignore
+          tag.box(fn(w) {
+            w
+            .words(
+              By(fn() { if @lg.is_dark() { "L 0.92" } else { "L 0.08" } }),
+              look={ ..@lg.words_at(10.5, weight=600), tracking: Points(0.6) },
+            )
+            .ink(By(fn() { if @lg.is_dark() { 0x14151B80L } else { 0xFFFFFF80L } }))
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+      // 3. Oversized architectural wordmark `ui.monoid`
+      stage.box(fn(wm) {
+        wm
+        .over(Is(true))
+        .points(Is(false))
+        .offset(By(fn() {
+          if stacked {
+            (rw() * 0.5 - 116.0, rh() * 0.72 - 22.0)
+          } else {
+            (rw() * 0.5 - 264.0, rh() * 0.67 - 42.0)
+          }
+        }))
+        .words(Is("ui.monoid"), look=@lg.words_at(if stacked { 50.0 } else { 116.0 }, weight=700))
+        .ink(By(fn() { if @lg.is_dark() { 0xFFFFFF26L } else { 0x1417201FL } }))
+        |> ignore
+      })
+      |> ignore
+      // 4. Draggable live Liquid Glass Prism
+      stage.box(fn(prism) {
+        let clamped_pos = fn() {
+          let (dx, dy) = prism_pos.get()
+          let max_x = @lg.clamp((rw() - prism_w()) / 2.0 - 8.0, 0.0, 600.0)
+          let max_y = @lg.clamp((rh() - prism_h) / 2.0 - 8.0, 0.0, 400.0)
+          (@lg.clamp(dx, -max_x, max_x), @lg.clamp(dy, -max_y, max_y))
+        }
+        prism
+        .over(Is(true))
+        .width(By(fn() { Some(prism_w()) }))
+        .height(Is(Some(prism_h)))
+        .radius(Is(if stacked { 28.0 } else { 32.0 }))
+        .padding(Is((if stacked { 16.0 } else { 20.0 }, if stacked { 16.0 } else { 20.0 }, if stacked { 16.0 } else { 20.0 }, if stacked { 16.0 } else { 20.0 })))
+        .lies_along(Is(Between))
+        .shadow(Is(@lg.shadow_default))
+        .shadow_outside(Is(true))
+        .glass(By(fn() {
+          Some(
+            @paint.Glass::liquid(
+              blur=blur_val.get(),
+              tint=if @lg.is_dark() { 0x1D202A42L } else { 0xFFFFFF36L },
+              solid=if @lg.is_dark() { 0x1A1C24FFL } else { 0xFAF8F4FFL },
+              saturation=1.18,
+              rim=0.68,
+              bezel=22.0,
+              refraction=refraction_val.get(),
+              chroma=-chroma_val.get() / 100.0,
+              merge=0.0,
+              adaptive=false,
+            ),
+          )
+        }))
+        .offset(By(fn() {
+          let (dx, dy) = clamped_pos()
+          ((rw() - prism_w()) / 2.0 + dx, (rh() - prism_h) / 2.0 + dy)
+        }))
+        .says(By(fn() { Some(@view.said(Group, label="Optical Prism")) }))
+        .gesture(@ui.touch_slop(), press=fn(d) { last_drag.val = (d.wx, d.wy) }, drag=fn(d) {
+          match d.kind {
+            Down => last_drag.val = (d.wx, d.wy)
+            Moved => {
+              let (lx, ly) = last_drag.val
+              let (px, py) = prism_pos.untracked()
+              let max_x = @lg.clamp((rw() - prism_w()) / 2.0 - 8.0, 0.0, 600.0)
+              let max_y = @lg.clamp((rh() - prism_h) / 2.0 - 8.0, 0.0, 400.0)
+              prism_pos.set((@lg.clamp(px + d.wx - lx, -max_x, max_x), @lg.clamp(py + d.wy - ly, -max_y, max_y)))
+              last_drag.val = (d.wx, d.wy)
+            }
+            Up | Off => ()
+          }
+        })
+        |> ignore
+        // Minimal top-left HUD pill
+        prism.box(fn(top_row) {
+          top_row.row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
+          top_row.box(fn(pill) {
+            pill
+            .row(Is(true))
+            .height(Is(Some(24.0)))
+            .padding(Is((10.0, 0.0, 10.0, 0.0)))
+            .radius(Is(12.0))
+            .gap(Is(6.0))
+            .lines_up(Is(Some(Middle)))
+            .ground(By(fn() { if @lg.is_dark() { 0x0B0C1080L } else { 0xFFFFFFA6L } }))
+            |> ignore
+            pill.box(fn(dot) {
+              dot
+              .width(Is(Some(6.0)))
+              .height(Is(Some(6.0)))
+              .radius(Is(3.0))
+              .shrink(Is(0.0))
+              .ground(Is(monoid_vermilion))
+              |> ignore
+            })
+            |> ignore
+            pill.box(fn(lbl) {
+              lbl
+              .words(Is("DRAG PRISM"), look={ ..@lg.words_at(10.5, weight=600), tracking: Points(0.8) })
+              .ink(By(fn() { @lg.colors().content }))
+              |> ignore
+            })
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+        // Bottom HUD row: live offset coordinates left, prism icon right
+        prism.box(fn(bot_row) {
+          bot_row.row(Is(true)).lies_along(Is(Between)).lines_up(Is(Some(Middle))) |> ignore
+          bot_row.box(fn(coord_pill) {
+            coord_pill
+            .height(Is(Some(24.0)))
+            .padding(Is((10.0, 0.0, 10.0, 0.0)))
+            .radius(Is(12.0))
+            .lines_up(Is(Some(Middle)))
+            .lies_along(Is(Middle))
+            .ground(By(fn() { if @lg.is_dark() { 0x0B0C1078L } else { 0xFFFFFFA6L } }))
+            |> ignore
+            coord_pill.box(fn(w) {
+              w
+              .words(
+                By(fn() {
+                  let (dx, dy) = clamped_pos()
+                  "x \{fmt_signed(dx)}  y \{fmt_signed(dy)}"
+                }),
+                look=@lg.words_at(11.0, weight=500),
+              )
+              .ink(By(fn() { @lg.colors().content }))
+              |> ignore
+            })
+            |> ignore
+          })
+          |> ignore
+          bot_row.box(fn(ic_pill) {
+            ic_pill
+            .width(Is(Some(24.0)))
+            .height(Is(Some(24.0)))
+            .radius(Is(12.0))
+            .lines_up(Is(Some(Middle)))
+            .lies_along(Is(Middle))
+            .ground(By(fn() { if @lg.is_dark() { 0x0B0C1078L } else { 0xFFFFFFA6L } }))
+            |> ignore
+            icon_prism(ic_pill, 15.0, fn() { @lg.colors().content })
+          })
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    if stacked {
+      stage_room.height(Is(Some(300.0))) |> ignore
+    } else {
+      stage_room.grow(Is(1.0)).min_height(Is(Some(stage_least))).max_height(Is(Some(stage_most))) |> ignore
+    }
+  })
+  |> ignore
+}
+
+///|
 /// Scene 0 — `Optics`: left interactive optical stage (Monoid Vermilion sun + inverse-luminance architectural plate +
 /// oversized `ui.monoid` wordmark + draggable 268×176 live liquid glass prism) and right 348pt `Glass Inspector`.
+/// Automatically stacks vertically inside a scroll container when narrower than `740pt`.
 fn optics_scene(
   parent : @view.View,
   held : Held?,
@@ -516,378 +944,33 @@ fn optics_scene(
   dialog_open : @signals.Signal[Bool],
 ) -> Unit {
   let last_drag = Ref((0.0, 0.0))
-  parent.box(fn(row) {
-    row.row(Is(true)).grow(Is(1.0)).gap(Is(24.0)).lines_up(Is(Some(Middle))) |> ignore
-    // Left interactive optical stage: as tall as the scene leaves it (stage_least to stage_most, in its middle), grows
-    // horizontally with the viewport; what it draws is placed by the room it is given, so a shorter window (the home
-    // page's live hero, 637 tall) neither cuts it nor pushes the dock
-    row.box(fn(stage_host) {
-      stage_host.grow(Is(1.0)).fills_across(Is(true)).lies_along(Is(Middle)) |> ignore
-      stage_host.by_room(fn(stage, room) {
-        stage.grow(Is(1.0)) |> ignore
-        let rw = fn() { room.width() }
-        let rh = fn() { room.height().unwrap_or(stage_most) }
-        let prism_w = 268.0
-        let prism_h = 176.0
-        // 1. Monoid Vermilion Sun (236pt solid circle, upper-middle of left stage)
-        stage.box(fn(sun) {
-          sun
-          .over(Is(true))
-          .points(Is(false))
-          .width(Is(Some(236.0)))
-          .height(Is(Some(236.0)))
-          .radius(Is(118.0))
-          .offset(By(fn() { (rw() * 0.43 - 118.0, rh() * 0.38 - 118.0) }))
-          .ground(Is(monoid_vermilion))
-          |> ignore
-        })
-        |> ignore
-        // 2. Inverse-luminance architectural contrast plate (248×132, overlapping sun)
-        stage.box(fn(plate) {
-          plate
-          .over(Is(true))
-          .points(Is(false))
-          .width(Is(Some(248.0)))
-          .height(Is(Some(132.0)))
-          .radius(Is(26.0))
-          .clips(Is(true))
-          .offset(By(fn() { (rw() * 0.56 - 92.0, rh() * 0.54 - 66.0) }))
-          .ground(By(fn() { if @lg.is_dark() { 0xF5F2EBFFL } else { 0x151720FFL } }))
-          |> ignore
-          plate_stripes(
-            plate,
-            26.0,
-            fn() { if @lg.is_dark() { 0xDDD8CEFFL } else { 0x292D3BFFL } },
-            20.0,
-            20.0,
-          )
-          plate.box(fn(tag) {
-            tag
-            .over(Is(true))
-            .padding(Is((16.0, 10.0, 16.0, 12.0)))
-            .lines_up(Is(Some(End)))
-            .lies_along(Is(End))
-            |> ignore
-            tag.box(fn(w) {
-              w
-              .words(
-                By(fn() { if @lg.is_dark() { "L 0.92" } else { "L 0.08" } }),
-                look={ ..@lg.words_at(10.5, weight=600), tracking: Points(0.6) },
-              )
-              .ink(By(fn() { if @lg.is_dark() { 0x14151B80L } else { 0xFFFFFF80L } }))
-              |> ignore
-            })
-            |> ignore
-          })
-          |> ignore
-        })
-        |> ignore
-        // 3. Oversized architectural wordmark `ui.monoid` (116pt weight 700)
-        stage.box(fn(wm) {
-          wm
-          .over(Is(true))
-          .points(Is(false))
-          .offset(By(fn() { (rw() * 0.5 - 264.0, rh() * 0.67 - 42.0) }))
-          .words(Is("ui.monoid"), look=@lg.words_at(116.0, weight=700))
-          .ink(By(fn() { if @lg.is_dark() { 0xFFFFFF26L } else { 0x1417201FL } }))
-          |> ignore
-        })
-        |> ignore
-        // 4. Draggable 268×176 live Liquid Glass Prism
-        stage.box(fn(prism) {
-          let clamped_pos = fn() {
-            let (dx, dy) = prism_pos.get()
-            let max_x = @lg.clamp((rw() - prism_w) / 2.0 - 8.0, 0.0, 600.0)
-            let max_y = @lg.clamp((rh() - prism_h) / 2.0 - 8.0, 0.0, 400.0)
-            (@lg.clamp(dx, -max_x, max_x), @lg.clamp(dy, -max_y, max_y))
-          }
-          prism
-          .over(Is(true))
-          .width(Is(Some(prism_w)))
-          .height(Is(Some(prism_h)))
-          .radius(Is(32.0))
-          .padding(Is((20.0, 20.0, 20.0, 20.0)))
-          .lies_along(Is(Between))
-          .shadow(Is(@lg.shadow_default))
-          .shadow_outside(Is(true))
-          .glass(By(fn() {
-            Some(
-              @paint.Glass::liquid(
-                blur=blur_val.get(),
-                tint=if @lg.is_dark() { 0x1D202A42L } else { 0xFFFFFF36L },
-                solid=if @lg.is_dark() { 0x1A1C24FFL } else { 0xFAF8F4FFL },
-                saturation=1.18,
-                rim=0.68,
-                bezel=22.0,
-                refraction=refraction_val.get(),
-                chroma=-chroma_val.get() / 100.0,
-                merge=0.0,
-                adaptive=false,
-              ),
-            )
-          }))
-          .offset(By(fn() {
-            let (dx, dy) = clamped_pos()
-            ((rw() - prism_w) / 2.0 + dx, (rh() - prism_h) / 2.0 + dy)
-          }))
-          .says(By(fn() { Some(@view.said(Group, label="Optical Prism")) }))
-          .gesture(@ui.touch_slop(), press=fn(d) { last_drag.val = (d.wx, d.wy) }, drag=fn(d) {
-            match d.kind {
-              Down => last_drag.val = (d.wx, d.wy)
-              Moved => {
-                let (lx, ly) = last_drag.val
-                let (px, py) = prism_pos.untracked()
-                let max_x = @lg.clamp((rw() - prism_w) / 2.0 - 8.0, 0.0, 600.0)
-                let max_y = @lg.clamp((rh() - prism_h) / 2.0 - 8.0, 0.0, 400.0)
-                prism_pos.set((@lg.clamp(px + d.wx - lx, -max_x, max_x), @lg.clamp(py + d.wy - ly, -max_y, max_y)))
-                last_drag.val = (d.wx, d.wy)
-              }
-              Up | Off => ()
-            }
-          })
-          |> ignore
-          // Minimal top-left HUD pill (leaves most of the prism transparent for refraction)
-          prism.box(fn(top_row) {
-            top_row.row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
-            top_row.box(fn(pill) {
-              pill
-              .row(Is(true))
-              .height(Is(Some(24.0)))
-              .padding(Is((10.0, 0.0, 10.0, 0.0)))
-              .radius(Is(12.0))
-              .gap(Is(6.0))
-              .lines_up(Is(Some(Middle)))
-              .ground(By(fn() { if @lg.is_dark() { 0x0B0C1080L } else { 0xFFFFFFA6L } }))
-              |> ignore
-              pill.box(fn(dot) {
-                dot
-                .width(Is(Some(6.0)))
-                .height(Is(Some(6.0)))
-                .radius(Is(3.0))
-                .shrink(Is(0.0))
-                .ground(Is(monoid_vermilion))
-                |> ignore
-              })
-              |> ignore
-              pill.box(fn(lbl) {
-                lbl
-                .words(Is("DRAG PRISM"), look={ ..@lg.words_at(10.5, weight=600), tracking: Points(0.8) })
-                .ink(By(fn() { @lg.colors().content }))
-                |> ignore
-              })
-              |> ignore
-            })
-            |> ignore
-          })
-          |> ignore
-          // Bottom HUD row: live offset coordinates left, prism icon right
-          prism.box(fn(bot_row) {
-            bot_row.row(Is(true)).lies_along(Is(Between)).lines_up(Is(Some(Middle))) |> ignore
-            bot_row.box(fn(coord_pill) {
-              coord_pill
-              .height(Is(Some(24.0)))
-              .padding(Is((10.0, 0.0, 10.0, 0.0)))
-              .radius(Is(12.0))
-              .lines_up(Is(Some(Middle)))
-              .lies_along(Is(Middle))
-              .ground(By(fn() { if @lg.is_dark() { 0x0B0C1078L } else { 0xFFFFFFA6L } }))
-              |> ignore
-              coord_pill.box(fn(w) {
-                w
-                .words(
-                  By(fn() {
-                    let (dx, dy) = clamped_pos()
-                    "x \{fmt_signed(dx)}  y \{fmt_signed(dy)}"
-                  }),
-                  look=@lg.words_at(11.0, weight=500),
-                )
-                .ink(By(fn() { @lg.colors().content }))
-                |> ignore
-              })
-              |> ignore
-            })
-            |> ignore
-            bot_row.box(fn(ic_pill) {
-              ic_pill
-              .width(Is(Some(24.0)))
-              .height(Is(Some(24.0)))
-              .radius(Is(12.0))
-              .lines_up(Is(Some(Middle)))
-              .lies_along(Is(Middle))
-              .ground(By(fn() { if @lg.is_dark() { 0x0B0C1078L } else { 0xFFFFFFA6L } }))
-              |> ignore
-              icon_prism(ic_pill, 15.0, fn() { @lg.colors().content })
-            })
-            |> ignore
-          })
-          |> ignore
-        })
-        |> ignore
+  let scroll_state = @view.Scroll::new()
+  let is_stacked = fn() {
+    let w = parent.window_w()
+    w > 0.0 && w < 740.0
+  }
+  parent.pick(is_stacked, at_once=true, fn(slot, stacked) {
+    slot.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+    if stacked {
+      let sc = slot.scrolls(scroll_state, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(col) {
+        col.padding(Is((4.0, 4.0, 4.0, 20.0))).gap(Is(14.0)) |> ignore
+        optics_stage(col, refraction_val, chroma_val, blur_val, prism_pos, last_drag, true)
+        optics_inspector(col, held, grid_on, refraction_val, chroma_val, blur_val, prism_pos, dialog_open, true)
       })
-      .grow(Is(1.0))
-      .min_height(Is(Some(stage_least)))
-      .max_height(Is(Some(stage_most)))
-      |> ignore
-    })
-    |> ignore
-    // Right floating single-layer Glass Inspector island (348pt wide, vertically centered)
-    row.box(fn(insp_col) {
-      insp_col.shrink(Is(0.0)).lies_along(Is(Middle)) |> ignore
-      insp_col.box(fn(insp) {
-      insp
-      .width(Is(Some(348.0)))
-      .shrink(Is(0.0))
-      .radius(Is(44.0))
-      .padding(Is((20.0, 18.0, 20.0, 20.0)))
-      .gap(Is(12.0))
-      .shadow(Is(@lg.shadow_default))
-      .shadow_outside(Is(true))
-      .glass(By(fn() { Some(inspector_glass()) }))
-      |> ignore
-      // Header row
-      insp.box(fn(ih) {
-        ih.row(Is(true)).lies_along(Is(Between)).lines_up(Is(Some(Middle))) |> ignore
-        ih.box(fn(l) {
-          l
-          .words(Is("OPTICAL PARAMETERS"), look={ ..@lg.words_at(11.0, weight=600), tracking: Points(0.9) })
-          .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.62) }))
-          |> ignore
-        })
-        |> ignore
-        ih.box(fn(r) {
-          r
-          .words(Is("iOS 27 SDF"), look=@lg.words_at(11.0, weight=500))
-          .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.52) }))
-          |> ignore
+      sc.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+    } else {
+      slot.box(fn(row) {
+        row.row(Is(true)).grow(Is(1.0)).gap(Is(24.0)).lines_up(Is(Some(Middle))) |> ignore
+        optics_stage(row, refraction_val, chroma_val, blur_val, prism_pos, last_drag, false)
+        row.box(fn(insp_col) {
+          insp_col.shrink(Is(0.0)).lies_along(Is(Middle)) |> ignore
+          optics_inspector(insp_col, held, grid_on, refraction_val, chroma_val, blur_val, prism_pos, dialog_open, false)
         })
         |> ignore
       })
       |> ignore
-      // Three live optical parameter sliders
-      param_slider(
-        insp,
-        "Refraction",
-        fn() { "\{refraction_val.get().round().to_int()} px" },
-        fn() { refraction_val.get() },
-        fn(v) { refraction_val.set(v) },
-        0.0,
-        56.0,
-        drag?=held.map(fn(h) { h.slider }),
-      )
-      param_slider(
-        insp,
-        "Chroma",
-        fn() { fmt_chroma(chroma_val.get()) },
-        fn() { chroma_val.get() },
-        fn(v) { chroma_val.set(v) },
-        0.0,
-        15.0,
-      )
-      param_slider(
-        insp,
-        "Blur",
-        fn() { "\{fmt_tenth(blur_val.get())} pt" },
-        fn() { blur_val.get() },
-        fn(v) { blur_val.set(v) },
-        0.0,
-        12.0,
-      )
-      // Toggles row: Dark + Grid
-      insp.box(fn(toggles) {
-        toggles.row(Is(true)).gap(Is(20.0)).lines_up(Is(Some(Middle))).padding(Is((0.0, 2.0, 0.0, 2.0))) |> ignore
-        toggles.box(fn(t1) {
-          t1.row(Is(true)).gap(Is(8.0)).lines_up(Is(Some(Middle))) |> ignore
-          @lg.liquid_toggle_node(t1, fn() { @lg.is_dark() }, fn(v) { @lg.set_dark(Some(v)) }, fn() { "Dark" }) |> ignore
-          t1.box(fn(lbl) {
-            lbl.words(Is("Dark"), look=@lg.words_at(12.5, weight=500)).ink(By(fn() { @lg.colors().content })) |> ignore
-          })
-          |> ignore
-        })
-        |> ignore
-        toggles.box(fn(t2) {
-          t2.row(Is(true)).gap(Is(8.0)).lines_up(Is(Some(Middle))) |> ignore
-          @lg.liquid_toggle_node(
-            t2,
-            fn() { grid_on.get() },
-            fn(v) { grid_on.set(v) },
-            fn() { "Grid" },
-            drag?=held.map(fn(h) { h.toggle }),
-          )
-          |> ignore
-          t2.box(fn(lbl) {
-            lbl.words(Is("Grid"), look=@lg.words_at(12.5, weight=500)).ink(By(fn() { @lg.colors().content })) |> ignore
-          })
-          |> ignore
-        })
-        |> ignore
-      })
-      |> ignore
-      // Live MoonBit code pill
-      insp.box(fn(code) {
-        code
-        .radius(Is(14.0))
-        .padding(Is((12.0, 8.0, 12.0, 8.0)))
-        .ground(By(fn() { if @lg.is_dark() { 0x090A0E7AL } else { 0x1417200FL } }))
-        .edge(By(fn() { (1.0, if @lg.is_dark() { 0xFFFFFF14L } else { 0x14172014L }) }))
-        |> ignore
-        code.box(fn(w) {
-          w
-          .words(
-            By(fn() {
-              let b = fmt_tenth(blur_val.get())
-              let rf = refraction_val.get().round().to_int()
-              let ch = fmt_chroma(chroma_val.get())
-              "Glass::liquid(blur: \{b}, refraction: \{rf},\n  chroma: \{ch})"
-            }),
-            look={ ..@lg.words_at(11.5, weight=500, wrap=true), line: 16.0 },
-          )
-          .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.88) }))
-          |> ignore
-        })
-        |> ignore
-      })
-      |> ignore
-      // Bottom action row: Reset + Publish (flat=true inside Glass Inspector -> zero glass-on-glass)
-      insp.box(fn(acts) {
-        acts.row(Is(true)).gap(Is(10.0)).lines_up(Is(Some(Middle))) |> ignore
-        acts.box(fn(b1) {
-          b1.grow(Is(1.0)) |> ignore
-          @lg.liquid_button_node(
-            b1,
-            fn() { "Reset" },
-            fn() {
-              prism_pos.set((0.0, 0.0))
-              refraction_val.set(28.0)
-              chroma_val.set(6.0)
-              blur_val.set(1.8)
-              grid_on.set(true)
-            },
-            flat=true,
-            light?=held.map(fn(h) { h.button }),
-          )
-          |> ignore
-        })
-        |> ignore
-        acts.box(fn(b2) {
-          b2.grow(Is(1.0)) |> ignore
-          @lg.liquid_button_node(
-            b2,
-            fn() { "Publish" },
-            fn() { dialog_open.set(true) },
-            tint=monoid_vermilion,
-            flat=true,
-          )
-          |> ignore
-        })
-        |> ignore
-      })
-      |> ignore
-    })
-    |> ignore
-    })
-    |> ignore
+    }
   })
-  |> ignore
 }
 
 ///|
@@ -1209,59 +1292,65 @@ fn deck_scene(
 }
 
 ///|
-/// Scene 2 — `Loupe`: centered compact two-tier specimen stage (`max_width: 960`) with single-layer Progressive Blur
-/// above and a draggable MoonBit source Optical Loupe below.
-fn loupe_scene(parent : @view.View) -> Unit {
-  parent.box(fn(wrap) {
-    wrap.grow(Is(1.0)).lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
-    wrap.box(fn(col) {
+/// Inner two-tier Loupe specimen column shared by desktop centered and narrow scrollable `loupe_scene`.
+fn loupe_content(parent : @view.View, compact : Bool) -> Unit {
+  parent.box(fn(col) {
+    if compact {
+      col.max_width(Is(Some(640.0)), within=true).gap(Is(16.0)) |> ignore
+    } else {
       col.width(Is(Some(640.0))).max_width(Is(Some(640.0)), within=true).gap(Is(18.0)) |> ignore
-      // Top tier: Progressive Blur
-      col.box(fn(sec1) {
-        sec1.gap(Is(10.0)) |> ignore
-        sec1.box(fn(lbl) {
-          lbl
-          .words(Is("PROGRESSIVE BLUR"), look={ ..@lg.words_at(11.0, weight=600), tracking: Points(0.9) })
-          .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.60) }))
+    }
+    // Top tier: Progressive Blur
+    col.box(fn(sec1) {
+      sec1.gap(Is(10.0)) |> ignore
+      sec1.box(fn(lbl) {
+        lbl
+        .words(Is("PROGRESSIVE BLUR"), look={ ..@lg.words_at(11.0, weight=600), tracking: Points(0.9) })
+        .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.60) }))
+        |> ignore
+      })
+      |> ignore
+      sec1.box(fn(b) {
+        b.radius(Is(24.0)).clips(Is(true)) |> ignore
+        b.box(fn(text) {
+          text
+          .padding(Is(if compact { (16.0, 16.0, 16.0, 16.0) } else { (22.0, 20.0, 22.0, 20.0) }))
+          .ground(By(fn() { @lg.alpha(@lg.colors().paper, 0.56) }))
+          |> ignore
+          text.box(fn(t) {
+            t
+            .words(Is(progressive_copy), look=@lg.words_at(if compact { 14.0 } else { 15.5 }, wrap=true))
+            .ink(By(fn() { @lg.colors().content }))
+            |> ignore
+          })
           |> ignore
         })
         |> ignore
-        sec1.box(fn(b) {
-          b.radius(Is(24.0)).clips(Is(true)) |> ignore
-          b.box(fn(text) {
-            text.padding(Is((22.0, 20.0, 22.0, 20.0))).ground(By(fn() { @lg.alpha(@lg.colors().paper, 0.56) }))
-            |> ignore
-            text.box(fn(t) {
-              t
-              .words(Is(progressive_copy), look=@lg.words_at(15.5, wrap=true))
-              .ink(By(fn() { @lg.colors().content }))
-              |> ignore
-            })
-            |> ignore
-          })
-          |> ignore
-          b.box(fn(o) {
-            o.over(Is(true)) |> ignore
-            @lg.liquid_progressive_blur_node(o, words=fn() { "Progressive Blur · ui.monoid" }, height=74.0) |> ignore
-          })
-          |> ignore
+        b.box(fn(o) {
+          o.over(Is(true)) |> ignore
+          @lg.liquid_progressive_blur_node(o, words=fn() { "Progressive Blur · ui.monoid" }, height=74.0) |> ignore
         })
         |> ignore
       })
       |> ignore
-      // Bottom tier: Optical Loupe over MoonBit source code
-      col.box(fn(sec2) {
-        sec2.gap(Is(10.0)) |> ignore
-        sec2.box(fn(lbl) {
-          lbl
-          .words(Is("OPTICAL LOUPE · MOONBIT SOURCE"), look={ ..@lg.words_at(11.0, weight=600), tracking: Points(0.9) })
-          .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.60) }))
-          |> ignore
-        })
-        |> ignore
-        @lg.liquid_magnifier_node(sec2, fn() { loupe_source_copy }, label=fn() { "Optical Loupe" }, at=(192.0, 108.0))
+    })
+    |> ignore
+    // Bottom tier: Optical Loupe over MoonBit source code
+    col.box(fn(sec2) {
+      sec2.gap(Is(10.0)) |> ignore
+      sec2.box(fn(lbl) {
+        lbl
+        .words(Is("OPTICAL LOUPE · MOONBIT SOURCE"), look={ ..@lg.words_at(11.0, weight=600), tracking: Points(0.9) })
+        .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.60) }))
         |> ignore
       })
+      |> ignore
+      @lg.liquid_magnifier_node(
+        sec2,
+        fn() { if compact { loupe_source_copy_compact } else { loupe_source_copy } },
+        label=fn() { "Optical Loupe" },
+        at=if compact { (104.0, 60.0) } else { (192.0, 108.0) },
+      )
       |> ignore
     })
     |> ignore
@@ -1270,10 +1359,37 @@ fn loupe_scene(parent : @view.View) -> Unit {
 }
 
 ///|
+/// Scene 2 — `Loupe`: centered compact two-tier specimen stage (`max_width: 960`) with single-layer Progressive Blur
+/// above and a draggable MoonBit source Optical Loupe below. Scrolls cleanly on narrow/short viewports.
+fn loupe_scene(parent : @view.View) -> Unit {
+  let scroll_state = @view.Scroll::new()
+  let is_compact = fn() {
+    let w = parent.window_w()
+    w > 0.0 && w < 740.0
+  }
+  parent.pick(is_compact, at_once=true, fn(slot, compact) {
+    slot.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+    if compact {
+      let sc = slot.scrolls(scroll_state, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(body) {
+        body.padding(Is((4.0, 4.0, 4.0, 20.0))) |> ignore
+        loupe_content(body, true)
+      })
+      sc.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+    } else {
+      slot.box(fn(wrap) {
+        wrap.grow(Is(1.0)).lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
+        loupe_content(wrap, false)
+      })
+      |> ignore
+    }
+  })
+}
+
+///|
 /// Compact law row in the Capillary Hysteresis telemetry card: left label, right formula readout.
 fn merge_law_row(parent : @view.View, title : String, formula : String) -> Unit {
   parent.box(fn(r) {
-    r.row(Is(true)).lies_along(Is(Between)).lines_up(Is(Some(Middle))).gap(Is(8.0)) |> ignore
+    r.row(Is(true)).wraps(Is(Some(4.0))).lies_along(Is(Between)).lines_up(Is(Some(Middle))).gap(Is(8.0)) |> ignore
     r.box(fn(l) {
       l
       .words(Is(title), look=@lg.words_at(11.5, weight=600))
@@ -1293,9 +1409,368 @@ fn merge_law_row(parent : @view.View, title : String, formula : String) -> Unit 
 }
 
 ///|
+/// Shared `CAPILLARY HYSTERESIS` telemetry & control island for desktop split and narrow stacked `merge_scene`.
+fn merge_inspector(
+  parent : @view.View,
+  merge_ctrl : @lg.LiquidMerge,
+  insp_ref : Ref[@view.View?],
+  cause_at : () -> Double,
+  stacked : Bool,
+) -> Unit {
+  parent.box(fn(insp) {
+    insp_ref.val = Some(insp)
+    if !stacked {
+      insp.width(Is(Some(348.0))).shrink(Is(0.0)) |> ignore
+    }
+    insp
+    .radius(Is(if stacked { 32.0 } else { 44.0 }))
+    .padding(Is(if stacked { (16.0, 16.0, 16.0, 16.0) } else { (20.0, 18.0, 20.0, 20.0) }))
+    .gap(Is(12.0))
+    .shadow(Is(@lg.shadow_default))
+    .shadow_outside(Is(true))
+    .glass(By(fn() { Some(inspector_glass()) }))
+    |> ignore
+    // Header row
+    insp.box(fn(ih) {
+      ih.row(Is(true)).lies_along(Is(Between)).lines_up(Is(Some(Middle))) |> ignore
+      ih.box(fn(l) {
+        l
+        .words(Is("CAPILLARY HYSTERESIS"), look={ ..@lg.words_at(11.0, weight=600), tracking: Points(0.9) })
+        .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.62) }))
+        |> ignore
+      })
+      |> ignore
+      ih.box(fn(r) {
+        r
+        .words(Is("iOS 27 BOND"), look=@lg.words_at(11.0, weight=500))
+        .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.52) }))
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+    // Live bond status capsule (`BONDED` / `SEPARATED`)
+    insp.box(fn(status_row) {
+      status_row.row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
+      status_row.box(fn(badge) {
+        badge
+        .row(Is(true))
+        .height(Is(Some(26.0)))
+        .padding(Is((10.0, 0.0, 10.0, 0.0)))
+        .radius(Is(13.0))
+        .gap(Is(7.0))
+        .lines_up(Is(Some(Middle)))
+        .ground(By(fn() { if @lg.is_dark() { 0x090A0E7AL } else { 0x1417200FL } }))
+        .edge(By(fn() { (1.0, if @lg.is_dark() { 0xFFFFFF18L } else { 0x14172016L }) }))
+        |> ignore
+        badge.box(fn(dot) {
+          dot
+          .width(Is(Some(7.0)))
+          .height(Is(Some(7.0)))
+          .radius(Is(3.5))
+          .shrink(Is(0.0))
+          .ground(By(fn() {
+            let _ = merge_ctrl.merge_on(dot)
+            let _ = merge_ctrl.is_separated()
+            if merge_ctrl.is_bonded() {
+              monoid_vermilion
+            } else {
+              @lg.alpha(@lg.colors().content, 0.42)
+            }
+          }))
+          |> ignore
+        })
+        |> ignore
+        badge.box(fn(lbl) {
+          lbl
+          .words(
+            By(fn() {
+              let _ = merge_ctrl.merge_on(lbl)
+              let _ = merge_ctrl.is_separated()
+              if merge_ctrl.is_bonded() { "BONDED" } else { "SEPARATED" }
+            }),
+            look={ ..@lg.words_at(10.5, weight=600), tracking: Points(0.9) },
+          )
+          .ink(By(fn() { @lg.colors().content }))
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+    // Live numeric telemetry (`Surface Gap` & `Smooth Merge k`)
+    insp.box(fn(telem) {
+      telem
+      .radius(Is(14.0))
+      .padding(Is((12.0, 10.0, 12.0, 10.0)))
+      .gap(Is(8.0))
+      .ground(By(fn() { if @lg.is_dark() { 0x090A0E7AL } else { 0x1417200FL } }))
+      .edge(By(fn() { (1.0, if @lg.is_dark() { 0xFFFFFF14L } else { 0x14172014L }) }))
+      |> ignore
+      telem.box(fn(r1) {
+        r1.row(Is(true)).lies_along(Is(Between)).lines_up(Is(Some(Middle))) |> ignore
+        r1.box(fn(l) {
+          l
+          .words(Is("Surface Gap"), look=@lg.words_at(12.5, weight=500))
+          .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.78) }))
+          |> ignore
+        })
+        |> ignore
+        r1.box(fn(v) {
+          v
+          .words(
+            By(fn() { "\{fmt_signed_tenth(merge_ctrl.gap_on(v))} pt" }),
+            look=@lg.words_at(12.5, weight=600),
+          )
+          .ink(By(fn() { @lg.colors().content }))
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+      telem.box(fn(r2) {
+        r2.row(Is(true)).lies_along(Is(Between)).lines_up(Is(Some(Middle))) |> ignore
+        r2.box(fn(l) {
+          l
+          .words(Is("Smooth Merge k"), look=@lg.words_at(12.5, weight=500))
+          .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.78) }))
+          |> ignore
+        })
+        |> ignore
+        r2.box(fn(v) {
+          v
+          .words(
+            By(fn() { "\{fmt_tenth(@lg.clamp(merge_ctrl.merge_on(v), 0.0, 99.9))} pt" }),
+            look=@lg.words_at(12.5, weight=600),
+          )
+          .ink(By(fn() { @lg.colors().content }))
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+    // Hairline separator + 3 capillary hysteresis physics laws
+    insp.box(fn(sep) {
+      sep.height(Is(Some(1.0))).ground(By(fn() { @lg.alpha(@lg.colors().content, 0.12) })) |> ignore
+    })
+    |> ignore
+    insp.box(fn(laws) {
+      laws.gap(Is(6.0)) |> ignore
+      merge_law_row(laws, "Pinch-Off", "gap >= 9.5 pt -> snap 0")
+      merge_law_row(laws, "Approach", "gap > 0 pt -> zero pull")
+      merge_law_row(laws, "Coalesce", "gap <= 0 pt -> liquid bloom")
+    })
+    |> ignore
+    // Action row: primary programmatic Split/Fuse + concentric Reset pill
+    insp.box(fn(acts) {
+      acts.row(Is(true)).gap(Is(10.0)).lines_up(Is(Some(Middle))) |> ignore
+      acts.box(fn(b1) {
+        b1.grow(Is(1.0)) |> ignore
+        @lg.liquid_button_node(
+          b1,
+          fn() { if merge_ctrl.is_separated() { "Fuse Droplet" } else { "Split Droplet" } },
+          fn() { merge_ctrl.set_separated(!merge_ctrl.is_separated(), at=cause_at()) },
+          tint=monoid_vermilion,
+          flat=true,
+        )
+        |> ignore
+      })
+      |> ignore
+      @headless.button(
+        acts,
+        fn() { "Reset" },
+        fn(_) { merge_ctrl.set_separated(false, at=cause_at()) },
+        fn(b, btn) {
+          b
+          .row(Is(true))
+          .height(Is(Some(48.0)))
+          .padding(Is((18.0, 0.0, 18.0, 0.0)))
+          .radius(Is(24.0))
+          .lines_up(Is(Some(Middle)))
+          .lies_along(Is(Middle))
+          .ground(By(fn() {
+            let d = @lg.is_dark()
+            if btn.pressed() || btn.hovered() {
+              if d { 0xFFFFFF24L } else { 0x14172018L }
+            } else if d {
+              0xFFFFFF14L
+            } else {
+              0xFFFFFFA8L
+            }
+          }))
+          .edge(By(fn() { (1.0, if @lg.is_dark() { 0xFFFFFF22L } else { 0x1417201AL }) }))
+          |> ignore
+          b.box(fn(w) {
+            w.words(Is("Reset"), look=@lg.words_at(14.0, weight=500)).ink(By(fn() { @lg.colors().content }))
+            |> ignore
+          })
+          |> ignore
+          b.show(fn() { btn.focus_shown() }, fn(ring) {
+            ring
+            .over(Is(true))
+            .margin(Is((-3.0, -3.0, -3.0, -3.0)))
+            .radius(Is(27.0))
+            .edge(By(fn() { (2.0, @lg.colors().accent) }))
+            |> ignore
+          })
+        },
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// Shared interactive 360° 2D capillary liquid bridge stage for desktop split and narrow stacked `merge_scene`.
+fn merge_stage(parent : @view.View, merge_ctrl : @lg.LiquidMerge, stacked : Bool) -> Unit {
+  parent.box(fn(stage_host) {
+    if stacked {
+      stage_host.height(Is(Some(300.0))).clips(Is(true)).radius(Is(24.0)) |> ignore
+    } else {
+      stage_host.grow(Is(1.0)).fills_across(Is(true)).lies_along(Is(Middle)) |> ignore
+    }
+    let stage_room = stage_host.by_room(fn(stage, room) {
+      stage.grow(Is(1.0)) |> ignore
+      let rw = fn() { room.width() }
+      let rh = fn() { room.height().unwrap_or(if stacked { 300.0 } else { stage_most }) }
+      let orb_d = if stacked { 136.0 } else { 180.0 }
+      let plate_w = if stacked { 176.0 } else { 240.0 }
+      let plate_h = if stacked { 96.0 } else { 120.0 }
+      // 1. Soft Monoid Vermilion orb
+      stage.box(fn(orb) {
+        orb
+        .over(Is(true))
+        .points(Is(false))
+        .width(Is(Some(orb_d)))
+        .height(Is(Some(orb_d)))
+        .radius(Is(orb_d / 2.0))
+        .offset(By(fn() { (rw() * 0.28 - orb_d / 2.0, rh() * 0.34 - orb_d / 2.0) }))
+        .ground(Is(monoid_vermilion))
+        |> ignore
+      })
+      |> ignore
+      // 2. Inverse-luminance architectural calibration plate
+      stage.box(fn(plate) {
+        plate
+        .over(Is(true))
+        .points(Is(false))
+        .width(Is(Some(plate_w)))
+        .height(Is(Some(plate_h)))
+        .radius(Is(if stacked { 22.0 } else { 26.0 }))
+        .clips(Is(true))
+        .offset(By(fn() {
+          if stacked {
+            (rw() * 0.60 - plate_w / 2.0, rh() * 0.56 - plate_h / 2.0)
+          } else {
+            (rw() * 0.56 - 96.0, rh() * 0.54 - 60.0)
+          }
+        }))
+        .ground(By(fn() { if @lg.is_dark() { 0xF5F2EBFFL } else { 0x151720FFL } }))
+        |> ignore
+        plate_stripes(
+          plate,
+          if stacked { 22.0 } else { 26.0 },
+          fn() { if @lg.is_dark() { 0xDDD8CEFFL } else { 0x292D3BFFL } },
+          if stacked { 14.0 } else { 18.0 },
+          if stacked { 16.0 } else { 18.0 },
+        )
+      })
+      |> ignore
+      // 3. Low-opacity oversized architectural watermark `capillary`
+      stage.box(fn(wm) {
+        wm
+        .over(Is(true))
+        .points(Is(false))
+        .offset(By(fn() {
+          if stacked {
+            (rw() * 0.5 - 112.0, rh() * 0.74 - 24.0)
+          } else {
+            (rw() * 0.5 - 186.0, rh() * 0.72 - 36.0)
+          }
+        }))
+        .words(Is("capillary"), look=@lg.words_at(if stacked { 52.0 } else { 88.0 }, weight=700))
+        .ink(By(fn() { if @lg.is_dark() { 0xFFFFFF1EL } else { 0x14172018L } }))
+        |> ignore
+      })
+      |> ignore
+      // 4. Top-left HUD pill
+      stage.box(fn(hud_wrap) {
+        hud_wrap
+        .over(Is(true))
+        .points(Is(false))
+        .padding(Is((10.0, 10.0, 0.0, 0.0)))
+        .lines_up(Is(Some(Start)))
+        |> ignore
+        hud_wrap.box(fn(pill) {
+          pill
+          .row(Is(true))
+          .height(Is(Some(24.0)))
+          .padding(Is((10.0, 0.0, 10.0, 0.0)))
+          .radius(Is(12.0))
+          .gap(Is(6.0))
+          .lines_up(Is(Some(Middle)))
+          .ground(By(fn() { if @lg.is_dark() { 0x0B0C1080L } else { 0xFFFFFFA6L } }))
+          |> ignore
+          pill.box(fn(dot) {
+            dot
+            .width(Is(Some(6.0)))
+            .height(Is(Some(6.0)))
+            .radius(Is(3.0))
+            .shrink(Is(0.0))
+            .ground(Is(monoid_vermilion))
+            |> ignore
+          })
+          |> ignore
+          pill.box(fn(lbl) {
+            lbl
+            .words(
+              Is(if stacked { "DRAG 360° · TOUCH TO FUSE" } else { "DRAG 360° FREELY · TOUCH ANY EDGE TO FUSE" }),
+              look={ ..@lg.words_at(10.5, weight=600), tracking: Points(0.8) },
+            )
+            .ink(By(fn() { @lg.colors().content }))
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+      // 5. Full-stage hero 360° 2D liquid merge arena
+      stage.box(fn(arena_wrap) {
+        arena_wrap.over(Is(true)) |> ignore
+        @lg.liquid_merge_node(
+          arena_wrap,
+          controller=merge_ctrl,
+          main_w=if stacked { 160.0 } else { 192.0 },
+          main_h=if stacked { 54.0 } else { 60.0 },
+          sat_size=if stacked { 56.0 } else { 64.0 },
+          arena=fn() { (rw(), rh()) },
+          main_label=fn() { "Liquid Capsule" },
+          sat_label=fn() { "+" },
+          label=fn() { "Drag Droplet" },
+        )
+        |> ignore
+      })
+      |> ignore
+    })
+    if stacked {
+      stage_room.height(Is(Some(300.0))) |> ignore
+    } else {
+      stage_room.grow(Is(1.0)).min_height(Is(Some(stage_least))).max_height(Is(Some(stage_most))) |> ignore
+    }
+  })
+  |> ignore
+}
+
+///|
 /// Scene 3 — `Merge`: two-column iOS 27 360° 2D capillary liquid bridge arena (left full-stage responsive 2D free-drag
 /// arena over high-contrast non-glass targets; right 348pt `Capillary Hysteresis` telemetry & control island driving
-/// the same droplet).
+/// the same droplet). Automatically stacks vertically inside a scroll container when narrower than `740pt`.
 fn merge_scene(parent : @view.View, merge_ctrl : @lg.LiquidMerge) -> Unit {
   let insp_ref : Ref[@view.View?] = Ref(None)
   let cause_at = fn() -> Double {
@@ -1304,339 +1779,33 @@ fn merge_scene(parent : @view.View, merge_ctrl : @lg.LiquidMerge) -> Unit {
       None => 0.0
     }
   }
-  parent.box(fn(row) {
-    row.row(Is(true)).grow(Is(1.0)).gap(Is(24.0)).lines_up(Is(Some(Middle))) |> ignore
-    // Left interactive 360° 2D capillary arena (same responsive height contract as `optics_scene`: zero clipping and
-    // zero dock collision across 1120×637, 1120×690, and 1280×1040)
-    row.box(fn(stage_host) {
-      stage_host.grow(Is(1.0)).fills_across(Is(true)).lies_along(Is(Middle)) |> ignore
-      stage_host.by_room(fn(stage, room) {
-        stage.grow(Is(1.0)) |> ignore
-        let rw = fn() { room.width() }
-        let rh = fn() { room.height().unwrap_or(stage_most) }
-        // 1. Soft Monoid Vermilion orb (180pt solid circle, upper-left area)
-        stage.box(fn(orb) {
-          orb
-          .over(Is(true))
-          .points(Is(false))
-          .width(Is(Some(180.0)))
-          .height(Is(Some(180.0)))
-          .radius(Is(90.0))
-          .offset(By(fn() { (rw() * 0.28 - 90.0, rh() * 0.34 - 90.0) }))
-          .ground(Is(monoid_vermilion))
-          |> ignore
-        })
-        |> ignore
-        // 2. Inverse-luminance architectural calibration plate (240×120, radius 26pt, zero glass-on-glass)
-        stage.box(fn(plate) {
-          plate
-          .over(Is(true))
-          .points(Is(false))
-          .width(Is(Some(240.0)))
-          .height(Is(Some(120.0)))
-          .radius(Is(26.0))
-          .clips(Is(true))
-          .offset(By(fn() { (rw() * 0.56 - 96.0, rh() * 0.54 - 60.0) }))
-          .ground(By(fn() { if @lg.is_dark() { 0xF5F2EBFFL } else { 0x151720FFL } }))
-          |> ignore
-          plate_stripes(
-            plate,
-            26.0,
-            fn() { if @lg.is_dark() { 0xDDD8CEFFL } else { 0x292D3BFFL } },
-            18.0,
-            18.0,
-          )
-        })
-        |> ignore
-        // 3. Low-opacity oversized architectural watermark `capillary` (88pt weight 700)
-        stage.box(fn(wm) {
-          wm
-          .over(Is(true))
-          .points(Is(false))
-          .offset(By(fn() { (rw() * 0.5 - 186.0, rh() * 0.72 - 36.0) }))
-          .words(Is("capillary"), look=@lg.words_at(88.0, weight=700))
-          .ink(By(fn() { if @lg.is_dark() { 0xFFFFFF1EL } else { 0x14172018L } }))
-          |> ignore
-        })
-        |> ignore
-        // 4. Top-left HUD pill (`DRAG 360° FREELY · TOUCH ANY EDGE TO FUSE`)
-        stage.box(fn(hud_wrap) {
-          hud_wrap
-          .over(Is(true))
-          .points(Is(false))
-          .padding(Is((10.0, 10.0, 0.0, 0.0)))
-          .lines_up(Is(Some(Start)))
-          |> ignore
-          hud_wrap.box(fn(pill) {
-            pill
-            .row(Is(true))
-            .height(Is(Some(24.0)))
-            .padding(Is((10.0, 0.0, 10.0, 0.0)))
-            .radius(Is(12.0))
-            .gap(Is(6.0))
-            .lines_up(Is(Some(Middle)))
-            .ground(By(fn() { if @lg.is_dark() { 0x0B0C1080L } else { 0xFFFFFFA6L } }))
-            |> ignore
-            pill.box(fn(dot) {
-              dot
-              .width(Is(Some(6.0)))
-              .height(Is(Some(6.0)))
-              .radius(Is(3.0))
-              .shrink(Is(0.0))
-              .ground(Is(monoid_vermilion))
-              |> ignore
-            })
-            |> ignore
-            pill.box(fn(lbl) {
-              lbl
-              .words(
-                Is("DRAG 360° FREELY · TOUCH ANY EDGE TO FUSE"),
-                look={ ..@lg.words_at(10.5, weight=600), tracking: Points(0.8) },
-              )
-              .ink(By(fn() { @lg.colors().content }))
-              |> ignore
-            })
-            |> ignore
-          })
-          |> ignore
-        })
-        |> ignore
-        // 5. Full-stage hero 360° 2D liquid merge arena
-        stage.box(fn(arena_wrap) {
-          arena_wrap.over(Is(true)) |> ignore
-          @lg.liquid_merge_node(
-            arena_wrap,
-            controller=merge_ctrl,
-            main_w=192.0,
-            main_h=60.0,
-            sat_size=64.0,
-            arena=fn() { (rw(), rh()) },
-            main_label=fn() { "Liquid Capsule" },
-            sat_label=fn() { "+" },
-            label=fn() { "Drag Droplet" },
-          )
-          |> ignore
-        })
-        |> ignore
+  let scroll_state = @view.Scroll::new()
+  let is_stacked = fn() {
+    let w = parent.window_w()
+    w > 0.0 && w < 740.0
+  }
+  parent.pick(is_stacked, at_once=true, fn(slot, stacked) {
+    slot.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+    if stacked {
+      let sc = slot.scrolls(scroll_state, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(col) {
+        col.padding(Is((4.0, 4.0, 4.0, 20.0))).gap(Is(14.0)) |> ignore
+        merge_stage(col, merge_ctrl, true)
+        merge_inspector(col, merge_ctrl, insp_ref, cause_at, true)
       })
-      .grow(Is(1.0))
-      .min_height(Is(Some(stage_least)))
-      .max_height(Is(Some(stage_most)))
-      |> ignore
-    })
-    |> ignore
-    // Right floating single-layer `CAPILLARY HYSTERESIS` telemetry & control island (348pt wide)
-    row.box(fn(insp_col) {
-      insp_col.shrink(Is(0.0)).lies_along(Is(Middle)) |> ignore
-      insp_col.box(fn(insp) {
-        insp_ref.val = Some(insp)
-        insp
-        .width(Is(Some(348.0)))
-        .shrink(Is(0.0))
-        .radius(Is(44.0))
-        .padding(Is((20.0, 18.0, 20.0, 20.0)))
-        .gap(Is(12.0))
-        .shadow(Is(@lg.shadow_default))
-        .shadow_outside(Is(true))
-        .glass(By(fn() { Some(inspector_glass()) }))
-        |> ignore
-        // Header row
-        insp.box(fn(ih) {
-          ih.row(Is(true)).lies_along(Is(Between)).lines_up(Is(Some(Middle))) |> ignore
-          ih.box(fn(l) {
-            l
-            .words(Is("CAPILLARY HYSTERESIS"), look={ ..@lg.words_at(11.0, weight=600), tracking: Points(0.9) })
-            .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.62) }))
-            |> ignore
-          })
-          |> ignore
-          ih.box(fn(r) {
-            r
-            .words(Is("iOS 27 BOND"), look=@lg.words_at(11.0, weight=500))
-            .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.52) }))
-            |> ignore
-          })
-          |> ignore
-        })
-        |> ignore
-        // Live bond status capsule (`BONDED` / `SEPARATED`)
-        insp.box(fn(status_row) {
-          status_row.row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
-          status_row.box(fn(badge) {
-            badge
-            .row(Is(true))
-            .height(Is(Some(26.0)))
-            .padding(Is((10.0, 0.0, 10.0, 0.0)))
-            .radius(Is(13.0))
-            .gap(Is(7.0))
-            .lines_up(Is(Some(Middle)))
-            .ground(By(fn() { if @lg.is_dark() { 0x090A0E7AL } else { 0x1417200FL } }))
-            .edge(By(fn() { (1.0, if @lg.is_dark() { 0xFFFFFF18L } else { 0x14172016L }) }))
-            |> ignore
-            badge.box(fn(dot) {
-              dot
-              .width(Is(Some(7.0)))
-              .height(Is(Some(7.0)))
-              .radius(Is(3.5))
-              .shrink(Is(0.0))
-              .ground(By(fn() {
-                let _ = merge_ctrl.merge_on(dot)
-                let _ = merge_ctrl.is_separated()
-                if merge_ctrl.is_bonded() {
-                  monoid_vermilion
-                } else {
-                  @lg.alpha(@lg.colors().content, 0.42)
-                }
-              }))
-              |> ignore
-            })
-            |> ignore
-            badge.box(fn(lbl) {
-              lbl
-              .words(
-                By(fn() {
-                  let _ = merge_ctrl.merge_on(lbl)
-                  let _ = merge_ctrl.is_separated()
-                  if merge_ctrl.is_bonded() { "BONDED" } else { "SEPARATED" }
-                }),
-                look={ ..@lg.words_at(10.5, weight=600), tracking: Points(0.9) },
-              )
-              .ink(By(fn() { @lg.colors().content }))
-              |> ignore
-            })
-            |> ignore
-          })
-          |> ignore
-        })
-        |> ignore
-        // Live numeric telemetry (`Surface Gap` & `Smooth Merge k`)
-        insp.box(fn(telem) {
-          telem
-          .radius(Is(14.0))
-          .padding(Is((12.0, 10.0, 12.0, 10.0)))
-          .gap(Is(8.0))
-          .ground(By(fn() { if @lg.is_dark() { 0x090A0E7AL } else { 0x1417200FL } }))
-          .edge(By(fn() { (1.0, if @lg.is_dark() { 0xFFFFFF14L } else { 0x14172014L }) }))
-          |> ignore
-          telem.box(fn(r1) {
-            r1.row(Is(true)).lies_along(Is(Between)).lines_up(Is(Some(Middle))) |> ignore
-            r1.box(fn(l) {
-              l
-              .words(Is("Surface Gap"), look=@lg.words_at(12.5, weight=500))
-              .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.78) }))
-              |> ignore
-            })
-            |> ignore
-            r1.box(fn(v) {
-              v
-              .words(
-                By(fn() { "\{fmt_signed_tenth(merge_ctrl.gap_on(v))} pt" }),
-                look=@lg.words_at(12.5, weight=600),
-              )
-              .ink(By(fn() { @lg.colors().content }))
-              |> ignore
-            })
-            |> ignore
-          })
-          |> ignore
-          telem.box(fn(r2) {
-            r2.row(Is(true)).lies_along(Is(Between)).lines_up(Is(Some(Middle))) |> ignore
-            r2.box(fn(l) {
-              l
-              .words(Is("Smooth Merge k"), look=@lg.words_at(12.5, weight=500))
-              .ink(By(fn() { @lg.alpha(@lg.colors().content, 0.78) }))
-              |> ignore
-            })
-            |> ignore
-            r2.box(fn(v) {
-              v
-              .words(
-                By(fn() { "\{fmt_tenth(@lg.clamp(merge_ctrl.merge_on(v), 0.0, 99.9))} pt" }),
-                look=@lg.words_at(12.5, weight=600),
-              )
-              .ink(By(fn() { @lg.colors().content }))
-              |> ignore
-            })
-            |> ignore
-          })
-          |> ignore
-        })
-        |> ignore
-        // Hairline separator + 3 capillary hysteresis physics laws
-        insp.box(fn(sep) {
-          sep.height(Is(Some(1.0))).ground(By(fn() { @lg.alpha(@lg.colors().content, 0.12) })) |> ignore
-        })
-        |> ignore
-        insp.box(fn(laws) {
-          laws.gap(Is(6.0)) |> ignore
-          merge_law_row(laws, "Pinch-Off", "gap >= 9.5 pt -> snap 0")
-          merge_law_row(laws, "Approach", "gap > 0 pt -> zero pull")
-          merge_law_row(laws, "Coalesce", "gap <= 0 pt -> liquid bloom")
-        })
-        |> ignore
-        // Action row: primary programmatic Split/Fuse + concentric Reset pill
-        insp.box(fn(acts) {
-          acts.row(Is(true)).gap(Is(10.0)).lines_up(Is(Some(Middle))) |> ignore
-          acts.box(fn(b1) {
-            b1.grow(Is(1.0)) |> ignore
-            @lg.liquid_button_node(
-              b1,
-              fn() { if merge_ctrl.is_separated() { "Fuse Droplet" } else { "Split Droplet" } },
-              fn() { merge_ctrl.set_separated(!merge_ctrl.is_separated(), at=cause_at()) },
-              tint=monoid_vermilion,
-              flat=true,
-            )
-            |> ignore
-          })
-          |> ignore
-          @headless.button(
-            acts,
-            fn() { "Reset" },
-            fn(_) { merge_ctrl.set_separated(false, at=cause_at()) },
-            fn(b, btn) {
-              b
-              .row(Is(true))
-              .height(Is(Some(48.0)))
-              .padding(Is((18.0, 0.0, 18.0, 0.0)))
-              .radius(Is(24.0))
-              .lines_up(Is(Some(Middle)))
-              .lies_along(Is(Middle))
-              .ground(By(fn() {
-                let d = @lg.is_dark()
-                if btn.pressed() || btn.hovered() {
-                  if d { 0xFFFFFF24L } else { 0x14172018L }
-                } else if d {
-                  0xFFFFFF14L
-                } else {
-                  0xFFFFFFA8L
-                }
-              }))
-              .edge(By(fn() { (1.0, if @lg.is_dark() { 0xFFFFFF22L } else { 0x1417201AL }) }))
-              |> ignore
-              b.box(fn(w) {
-                w.words(Is("Reset"), look=@lg.words_at(14.0, weight=500)).ink(By(fn() { @lg.colors().content }))
-                |> ignore
-              })
-              |> ignore
-              b.show(fn() { btn.focus_shown() }, fn(ring) {
-                ring
-                .over(Is(true))
-                .margin(Is((-3.0, -3.0, -3.0, -3.0)))
-                .radius(Is(27.0))
-                .edge(By(fn() { (2.0, @lg.colors().accent) }))
-                |> ignore
-              })
-            },
-          )
-          |> ignore
+      sc.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+    } else {
+      slot.box(fn(row) {
+        row.row(Is(true)).grow(Is(1.0)).gap(Is(24.0)).lines_up(Is(Some(Middle))) |> ignore
+        merge_stage(row, merge_ctrl, false)
+        row.box(fn(insp_col) {
+          insp_col.shrink(Is(0.0)).lies_along(Is(Middle)) |> ignore
+          merge_inspector(insp_col, merge_ctrl, insp_ref, cause_at, false)
         })
         |> ignore
       })
       |> ignore
-    })
-    |> ignore
+    }
   })
-  |> ignore
 }
 
 ///|

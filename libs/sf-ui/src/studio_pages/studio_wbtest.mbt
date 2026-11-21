@@ -167,3 +167,34 @@ test "studio interactions are identical at 60, 120, 24 and 7 fps" {
   assert_eq(res[3].has_prefix("dark dark=true accent=blue dock="), true)
   assert_eq(res[4].has_prefix("overlays dark=true accent=blue dock="), true)
 }
+
+///|
+test "mobile responsive layout at 390x844 and 360x800 passes audit with 0 faults and no horizontal overflow" {
+  let faults : Array[(Double, Bool, Int, String)] = []
+  for dims in [(390.0, 844.0), (360.0, 800.0)] {
+    let (w, h) = dims
+    for dark in [false, true] {
+      let t = studio_case(first_scene=0, dark~, w~, h~)
+      t.run_for(settled_ms)
+      let dock0 = t.get(RadioGroup, label="Stage Scene").rect
+      assert_true(dock0.0 >= 0.0 && dock0.0 + dock0.2 <= w + 0.5)
+      let scenes : Array[(Int, String)] = [(0, "Controls"), (1, "Tokens"), (2, "Overlays")]
+      for item in scenes {
+        let (idx, name) = item
+        let (sx, sy) = mid(t, Radio, name)
+        t.tap(sx, sy)
+        t.run_for(settled_ms)
+        let dock_now = t.get(RadioGroup, label="Stage Scene").rect
+        assert_eq(dock_now, dock0)
+        // Verify all buttons stay within viewport width [0, w]
+        for btn in t.all(Button) {
+          assert_true(btn.rect.0 >= -0.5 && btn.rect.0 + btn.rect.2 <= w + 0.5)
+        }
+        for f in t.audit() {
+          faults.push((w, dark, idx, f))
+        }
+      }
+    }
+  }
+  assert_eq(faults, [])
+}

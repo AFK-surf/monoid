@@ -202,7 +202,12 @@ fn accent_dot_btn(parent : @view.View, key : String, name : String, loc~ : Sourc
 /// Top Studio Bar (`height: 40`): brand mark + `ui.monoid · STANDARD STAGE` on left; OKLCH accent dots +
 /// Dark/Light toggle + status pill on right.
 #callsite(autofill(loc))
-fn studio_bar(parent : @view.View, loc~ : SourceLoc) -> Unit {
+fn studio_bar(
+  parent : @view.View,
+  is_narrow : () -> Bool,
+  hide_stage_tag : () -> Bool,
+  loc~ : SourceLoc,
+) -> Unit {
   parent.box(made_for=loc, fn(hdr) {
     hdr
     .row(Is(true))
@@ -221,27 +226,30 @@ fn studio_bar(parent : @view.View, loc~ : SourceLoc) -> Unit {
         |> ignore
       })
       |> ignore
-      left.box(fn(dot) {
-        dot
-        .width(Is(Some(3.0)))
-        .height(Is(Some(3.0)))
-        .radius(Is(1.5))
-        .shrink(Is(0.0))
-        .ground(By(fn() { @sf.theme().p.subtle }))
+      left.show(fn() { !hide_stage_tag() }, at_once=true, fn(tag_slot) {
+        tag_slot.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(8.0)) |> ignore
+        tag_slot.box(fn(dot) {
+          dot
+          .width(Is(Some(3.0)))
+          .height(Is(Some(3.0)))
+          .radius(Is(1.5))
+          .shrink(Is(0.0))
+          .ground(By(fn() { @sf.theme().p.subtle }))
+          |> ignore
+        })
+        |> ignore
+        tag_slot.box(fn(w) {
+          w
+          .words(Is("STANDARD STAGE"), look=words_look(11.0, weight=600, line=16.0, tracking=1.0))
+          .ink(By(fn() { @sf.theme().p.muted }))
+          |> ignore
+        })
         |> ignore
       })
-      |> ignore
-      left.box(fn(w) {
-        w
-        .words(Is("STANDARD STAGE"), look=words_look(11.0, weight=600, line=16.0, tracking=1.0))
-        .ink(By(fn() { @sf.theme().p.muted }))
-        |> ignore
-      })
-      |> ignore
     })
     |> ignore
     hdr.box(fn(right) {
-      right.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(12.0)) |> ignore
+      right.row(Is(true)).lines_up(Is(Some(Middle))).gap(By(fn() { if is_narrow() { 8.0 } else { 12.0 } })) |> ignore
       // OKLCH accent quick-switch dots
       right.box(fn(dots) {
         dots
@@ -277,8 +285,8 @@ fn studio_bar(parent : @view.View, loc~ : SourceLoc) -> Unit {
           |> ignore
         },
       )
-      // Status indicator
-      right.box(fn(st) {
+      // Status indicator (desktop only)
+      right.show(fn() { !is_narrow() }, at_once=true, fn(st) {
         st.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(6.0)) |> ignore
         st.box(fn(dot) {
           dot
@@ -298,7 +306,6 @@ fn studio_bar(parent : @view.View, loc~ : SourceLoc) -> Unit {
         })
         |> ignore
       })
-      |> ignore
     })
     |> ignore
   })
@@ -308,13 +315,20 @@ fn studio_bar(parent : @view.View, loc~ : SourceLoc) -> Unit {
 ///|
 /// Standard Bento card container (`radius: 18`, `0.5pt` hairline, `@sf.theme().p.card`).
 #callsite(autofill(loc))
-fn bento_card(parent : @view.View, grow? : Double = 1.0, gap? : Double = 12.0, body : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit {
+fn bento_card(
+  parent : @view.View,
+  is_narrow : () -> Bool,
+  grow? : Double = 1.0,
+  gap? : Double = 12.0,
+  body : (@view.View) -> Unit,
+  loc~ : SourceLoc,
+) -> Unit {
   parent.box(made_for=loc, fn(c) {
     c
-    .grow(Is(grow))
-    .basis(Is(Some(0.0)))
+    .grow(By(fn() { if is_narrow() { 0.0 } else { grow } }))
+    .basis(By(fn() { if is_narrow() { None } else { Some(0.0) } }))
     .min_width(Is(Some(0.0)))
-    .padding(Is((22.0, 18.0, 22.0, 18.0)))
+    .padding(By(fn() { if is_narrow() { (18.0, 18.0, 18.0, 18.0) } else { (22.0, 18.0, 22.0, 18.0) } }))
     .gap(Is(gap))
     .radius(Is(@sf.row_corner))
     .ground(By(fn() { @sf.theme().p.card }))
@@ -500,13 +514,19 @@ fn platform_chips_row(parent : @view.View, st : StageState, loc~ : SourceLoc) ->
 }
 
 ///|
-/// Scene 0: `Controls` — Release Workbench (2-column Bento: Inputs & Selection | Actions & Telemetry).
+/// Scene 0: `Controls` — Release Workbench (2-column Bento on desktop, single-column stacked on narrow viewports).
 #callsite(autofill(loc))
-fn scene_controls(parent : @view.View, st : StageState, tips : @sf.TipLayer, loc~ : SourceLoc) -> Unit {
+fn scene_controls(
+  parent : @view.View,
+  st : StageState,
+  tips : @sf.TipLayer,
+  is_narrow : () -> Bool,
+  loc~ : SourceLoc,
+) -> Unit {
   parent.box(made_for=loc, fn(grid) {
-    grid.row(Is(true)).gap(Is(16.0)).width_share(Is(1.0)) |> ignore
+    grid.row(By(fn() { !is_narrow() })).gap(Is(16.0)).width_share(Is(1.0)) |> ignore
     // Left Card: Inputs & Selection
-    bento_card(grid, grow=1.05, gap=12.0, fn(left) {
+    bento_card(grid, is_narrow, grow=1.05, gap=12.0, fn(left) {
       card_head(left, "INPUTS & SELECTION", right=fn(r) {
         @sf.badge_node(r, fn() { "\{st.active_platform_count()} / 6 targets" }, tone=Accented) |> ignore
       })
@@ -544,7 +564,7 @@ fn scene_controls(parent : @view.View, st : StageState, tips : @sf.TipLayer, loc
       |> ignore
       // 3. Channel segmented control
       left.box(fn(r) {
-        r.row(Is(true)).lies_along(Is(Between)).lines_up(Is(Some(Middle))).gap(Is(12.0)) |> ignore
+        r.row(Is(true)).wraps(Is(Some(8.0))).lies_along(Is(Between)).lines_up(Is(Some(Middle))).gap(Is(12.0)) |> ignore
         r.box(fn(l) {
           l
           .words(Is("Channel"), look=words_look(13.0, weight=500, line=18.0))
@@ -600,7 +620,7 @@ fn scene_controls(parent : @view.View, st : StageState, tips : @sf.TipLayer, loc
       |> ignore
       // 5. Switch rows
       left.box(fn(sws) {
-        sws.row(Is(true)).gap(Is(24.0)).lines_up(Is(Some(Middle))) |> ignore
+        sws.row(Is(true)).wraps(Is(Some(10.0))).gap(Is(24.0)).lines_up(Is(Some(Middle))) |> ignore
         sws.box(fn(r1) {
           r1.row(Is(true)).gap(Is(10.0)).lines_up(Is(Some(Middle))) |> ignore
           @sf.switch_node(
@@ -637,7 +657,7 @@ fn scene_controls(parent : @view.View, st : StageState, tips : @sf.TipLayer, loc
       |> ignore
     })
     // Right Card: Actions & Telemetry
-    bento_card(grid, grow=0.95, gap=12.0, fn(right) {
+    bento_card(grid, is_narrow, grow=0.95, gap=12.0, fn(right) {
       card_head(right, "ACTIONS & TELEMETRY", right=fn(r) {
         r.pick(fn() { st.channel.get() }, at_once=true, fn(slot, ch) {
           let tone : @sf.PillTone = match ch {
@@ -663,7 +683,7 @@ fn scene_controls(parent : @view.View, st : StageState, tips : @sf.TipLayer, loc
         .edge(By(fn() { (0.5, @sf.theme().p.line) }))
         |> ignore
         preview.box(fn(top) {
-          top.row(Is(true)).lies_along(Is(Between)).lines_up(Is(Some(Middle))).gap(Is(8.0)) |> ignore
+          top.row(Is(true)).wraps(Is(Some(6.0))).lies_along(Is(Between)).lines_up(Is(Some(Middle))).gap(Is(8.0)) |> ignore
           top.box(fn(title) {
             title
             .words(
@@ -741,7 +761,7 @@ fn scene_controls(parent : @view.View, st : StageState, tips : @sf.TipLayer, loc
                 "Idle — click Run Build to step the pipeline"
               }
             }),
-            look=words_look(12.0, weight=400, line=16.0),
+            look=words_look(12.0, weight=400, line=16.0, wrap=true),
           )
           .ink(By(fn() { @sf.theme().p.muted }))
           |> ignore
@@ -950,16 +970,23 @@ fn token_tile(parent : @view.View, name : String, role : String, color : () -> I
 ///|
 /// Scene 1: `Tokens` — OKLCH Accent & Surface Ladder + Live Component Specimen.
 #callsite(autofill(loc))
-fn scene_tokens(parent : @view.View, st : StageState, loc~ : SourceLoc) -> Unit {
+fn scene_tokens(
+  parent : @view.View,
+  st : StageState,
+  is_narrow : () -> Bool,
+  is_phone : () -> Bool,
+  loc~ : SourceLoc,
+) -> Unit {
   parent.box(made_for=loc, fn(col) {
     col.gap(Is(16.0)).width_share(Is(1.0)) |> ignore
     // Top palette selector strip
     col.box(fn(strip) {
       strip
-      .row(Is(true))
-      .lies_along(Is(Between))
-      .lines_up(Is(Some(Middle)))
-      .padding(Is((20.0, 12.0, 20.0, 12.0)))
+      .row(By(fn() { !is_narrow() }))
+      .lies_along(By(fn() { if is_narrow() { Start } else { Between } }))
+      .lines_up(By(fn() { if is_narrow() { None } else { Some(Middle) } }))
+      .gap(Is(10.0))
+      .padding(By(fn() { if is_narrow() { (18.0, 16.0, 18.0, 18.0) } else { (20.0, 12.0, 20.0, 12.0) } }))
       .radius(Is(@sf.row_corner))
       .ground(By(fn() { @sf.theme().p.card }))
       .edge(By(fn() { (0.5, @sf.theme().p.line_strong) }))
@@ -976,7 +1003,10 @@ fn scene_tokens(parent : @view.View, st : StageState, loc~ : SourceLoc) -> Unit 
         |> ignore
         info.box(fn(sub) {
           sub
-          .words(Is("Switch accent or appearance to recompute every surface ramp instantaneously."), look=words_look(13.0, weight=400, line=18.0))
+          .words(
+            Is("Switch accent or appearance to recompute every surface ramp instantaneously."),
+            look=words_look(13.0, weight=400, line=18.0, wrap=true),
+          )
           .ink(By(fn() { @sf.theme().p.text }))
           |> ignore
         })
@@ -984,7 +1014,7 @@ fn scene_tokens(parent : @view.View, st : StageState, loc~ : SourceLoc) -> Unit 
       })
       |> ignore
       strip.box(fn(swatches) {
-        swatches.row(Is(true)).gap(Is(8.0)).lines_up(Is(Some(Middle))) |> ignore
+        swatches.row(Is(true)).wraps(Is(Some(8.0))).gap(Is(8.0)).lines_up(Is(Some(Middle))) |> ignore
         theme_swatch_pill(swatches, "", "Vermilion")
         theme_swatch_pill(swatches, "blue", "Blue")
         theme_swatch_pill(swatches, "teal", "Teal")
@@ -996,30 +1026,60 @@ fn scene_tokens(parent : @view.View, st : StageState, loc~ : SourceLoc) -> Unit 
     |> ignore
     // Two-column body: Surface & Contrast Ladder | Live Component Specimen
     col.box(fn(split) {
-      split.row(Is(true)).gap(Is(16.0)).width_share(Is(1.0)) |> ignore
-      bento_card(split, grow=1.18, gap=12.0, fn(left) {
+      split.row(By(fn() { !is_narrow() })).gap(Is(16.0)).width_share(Is(1.0)) |> ignore
+      bento_card(split, is_narrow, grow=1.18, gap=12.0, fn(left) {
         card_head(left, "SURFACE & CONTRAST LADDER", right=fn(r) {
           @sf.badge_node(r, fn() { if @sf.theme().dark { "Dark Ramp" } else { "Light Ramp" } }, tone=Accented)
           |> ignore
         })
-        left.box(fn(r1) {
-          r1.row(Is(true)).gap(Is(10.0)) |> ignore
-          token_tile(r1, "bg", "Page", fn() { @sf.theme().p.bg })
-          token_tile(r1, "canvas", "Canvas", fn() { @sf.theme().p.canvas })
-          token_tile(r1, "raised", "Raised", fn() { @sf.theme().p.raised })
-          token_tile(r1, "card", "Card", fn() { @sf.theme().p.card })
+        left.pick(is_phone, at_once=true, fn(slot, phone) {
+          slot.gap(Is(10.0)) |> ignore
+          if phone {
+            slot.box(fn(r1) {
+              r1.row(Is(true)).gap(Is(10.0)) |> ignore
+              token_tile(r1, "bg", "Page", fn() { @sf.theme().p.bg })
+              token_tile(r1, "canvas", "Canvas", fn() { @sf.theme().p.canvas })
+            })
+            |> ignore
+            slot.box(fn(r2) {
+              r2.row(Is(true)).gap(Is(10.0)) |> ignore
+              token_tile(r2, "raised", "Raised", fn() { @sf.theme().p.raised })
+              token_tile(r2, "card", "Card", fn() { @sf.theme().p.card })
+            })
+            |> ignore
+            slot.box(fn(r3) {
+              r3.row(Is(true)).gap(Is(10.0)) |> ignore
+              token_tile(r3, "chip", "Chip", fn() { @sf.theme().p.chip })
+              token_tile(r3, "selected", "Selected", fn() { @sf.theme().p.selected })
+            })
+            |> ignore
+            slot.box(fn(r4) {
+              r4.row(Is(true)).gap(Is(10.0)) |> ignore
+              token_tile(r4, "accent", "Accent", fn() { @sf.theme().p.accent })
+              token_tile(r4, "line_strong", "0.5pt Edge", fn() { @sf.theme().p.line_strong })
+            })
+            |> ignore
+          } else {
+            slot.box(fn(r1) {
+              r1.row(Is(true)).gap(Is(10.0)) |> ignore
+              token_tile(r1, "bg", "Page", fn() { @sf.theme().p.bg })
+              token_tile(r1, "canvas", "Canvas", fn() { @sf.theme().p.canvas })
+              token_tile(r1, "raised", "Raised", fn() { @sf.theme().p.raised })
+              token_tile(r1, "card", "Card", fn() { @sf.theme().p.card })
+            })
+            |> ignore
+            slot.box(fn(r2) {
+              r2.row(Is(true)).gap(Is(10.0)) |> ignore
+              token_tile(r2, "chip", "Chip", fn() { @sf.theme().p.chip })
+              token_tile(r2, "selected", "Selected", fn() { @sf.theme().p.selected })
+              token_tile(r2, "accent", "Accent", fn() { @sf.theme().p.accent })
+              token_tile(r2, "line_strong", "0.5pt Edge", fn() { @sf.theme().p.line_strong })
+            })
+            |> ignore
+          }
         })
-        |> ignore
-        left.box(fn(r2) {
-          r2.row(Is(true)).gap(Is(10.0)) |> ignore
-          token_tile(r2, "chip", "Chip", fn() { @sf.theme().p.chip })
-          token_tile(r2, "selected", "Selected", fn() { @sf.theme().p.selected })
-          token_tile(r2, "accent", "Accent", fn() { @sf.theme().p.accent })
-          token_tile(r2, "line_strong", "0.5pt Edge", fn() { @sf.theme().p.line_strong })
-        })
-        |> ignore
       })
-      bento_card(split, grow=0.82, gap=12.0, fn(right) {
+      bento_card(split, is_narrow, grow=0.82, gap=12.0, fn(right) {
         card_head(right, "LIVE COMPONENT SPECIMEN", right=fn(r) {
           @sf.pill_node(r, fn() { if @sf.accent_key() == "" { "vermilion" } else { @sf.accent_key() } }, tone=Accented)
           |> ignore
@@ -1061,7 +1121,7 @@ fn scene_tokens(parent : @view.View, st : StageState, loc~ : SourceLoc) -> Unit 
         )
         |> ignore
         right.box(fn(srow) {
-          srow.row(Is(true)).lies_along(Is(Between)).lines_up(Is(Some(Middle))) |> ignore
+          srow.row(Is(true)).wraps(Is(Some(8.0))).lies_along(Is(Between)).lines_up(Is(Some(Middle))).gap(Is(8.0)) |> ignore
           srow.box(fn(l) {
             l.words(Is("Appearance"), look=words_look(13.0, weight=500, line=18.0)).ink(By(fn() { @sf.theme().p.text }))
             |> ignore
@@ -1145,14 +1205,20 @@ fn kbd_cap(parent : @view.View, keys : String, loc~ : SourceLoc) -> Unit {
 ///|
 /// Scene 2: `Overlays` — 2x2 interactive bench for Dropdown Menu, Modal Confirm, Toast Queue & Hover Tooltips.
 #callsite(autofill(loc))
-fn scene_overlays(parent : @view.View, st : StageState, tips : @sf.TipLayer, loc~ : SourceLoc) -> Unit {
+fn scene_overlays(
+  parent : @view.View,
+  st : StageState,
+  tips : @sf.TipLayer,
+  is_narrow : () -> Bool,
+  loc~ : SourceLoc,
+) -> Unit {
   parent.box(made_for=loc, fn(col) {
     col.gap(Is(16.0)).width_share(Is(1.0)) |> ignore
     // Top row: Dropdown Menu | Modal Confirm Dialog
     col.box(fn(r1) {
-      r1.row(Is(true)).gap(Is(16.0)).width_share(Is(1.0)) |> ignore
+      r1.row(By(fn() { !is_narrow() })).gap(Is(16.0)).width_share(Is(1.0)) |> ignore
       // 1. Dropdown Menu
-      bento_card(r1, grow=1.0, gap=10.0, fn(c) {
+      bento_card(r1, is_narrow, grow=1.0, gap=10.0, fn(c) {
         card_head(c, "DROPDOWN MENU", right=fn(r) {
           @sf.badge_node(r, fn() { "@sf.menu_ticks_node" }, tone=Neutral) |> ignore
         })
@@ -1167,7 +1233,7 @@ fn scene_overlays(parent : @view.View, st : StageState, tips : @sf.TipLayer, loc
         })
         |> ignore
         c.box(fn(act) {
-          act.row(Is(true)).gap(Is(12.0)).lines_up(Is(Some(Middle))) |> ignore
+          act.row(Is(true)).wraps(Is(Some(8.0))).gap(Is(12.0)).lines_up(Is(Some(Middle))) |> ignore
           @sf.button_opens_node(
             act,
             fn() { "Configure Backends" },
@@ -1184,7 +1250,7 @@ fn scene_overlays(parent : @view.View, st : StageState, tips : @sf.TipLayer, loc
         |> ignore
       })
       // 2. Modal Confirm Dialog
-      bento_card(r1, grow=1.0, gap=10.0, fn(c) {
+      bento_card(r1, is_narrow, grow=1.0, gap=10.0, fn(c) {
         card_head(c, "MODAL CONFIRM DIALOG", right=fn(r) {
           @sf.badge_node(r, fn() { "@sf.confirm_node" }, tone=Neutral) |> ignore
         })
@@ -1236,9 +1302,9 @@ fn scene_overlays(parent : @view.View, st : StageState, tips : @sf.TipLayer, loc
     |> ignore
     // Bottom row: Toast Queue | Hover Tooltips & Keyboard Focus
     col.box(fn(r2) {
-      r2.row(Is(true)).gap(Is(16.0)).width_share(Is(1.0)) |> ignore
+      r2.row(By(fn() { !is_narrow() })).gap(Is(16.0)).width_share(Is(1.0)) |> ignore
       // 3. Toast Queue
-      bento_card(r2, grow=1.0, gap=10.0, fn(c) {
+      bento_card(r2, is_narrow, grow=1.0, gap=10.0, fn(c) {
         card_head(c, "TOAST QUEUE", right=fn(r) {
           @sf.badge_node(r, fn() { "@sf.toaster_node" }, tone=Neutral) |> ignore
         })
@@ -1282,7 +1348,7 @@ fn scene_overlays(parent : @view.View, st : StageState, tips : @sf.TipLayer, loc
         |> ignore
       })
       // 4. Hover Tooltips & Keyboard Focus
-      bento_card(r2, grow=1.0, gap=10.0, fn(c) {
+      bento_card(r2, is_narrow, grow=1.0, gap=10.0, fn(c) {
         card_head(c, "HOVER TOOLTIPS & FOCUS", right=fn(r) {
           @sf.badge_node(r, fn() { "@sf.tip_node" }, tone=Neutral) |> ignore
         })
@@ -1328,7 +1394,7 @@ fn scene_overlays(parent : @view.View, st : StageState, tips : @sf.TipLayer, loc
         })
         |> ignore
         c.box(fn(kbds) {
-          kbds.row(Is(true)).gap(Is(8.0)).lines_up(Is(Some(Middle))) |> ignore
+          kbds.row(Is(true)).wraps(Is(Some(6.0))).gap(Is(8.0)).lines_up(Is(Some(Middle))) |> ignore
           kbds.box(fn(l) {
             l.words(Is("Shortcuts"), look=words_look(12.0, weight=500, line=16.0)).ink(By(fn() { @sf.theme().p.muted }))
             |> ignore
@@ -1359,34 +1425,78 @@ pub fn studio(root : @view.View, first_scene? : Int = 0, loc~ : SourceLoc) -> Un
   let tip_host : Ref[@view.View?] = Ref(None)
   let tips = @sf.TipLayer::new(fn() { tip_host.val })
 
+  let body_scroll = @view.Scroll::new()
+
   root.box(made_for=loc, fn(stage) {
     stage.grow(Is(1.0)).clips(Is(true)) |> ignore
     // 1. Neutral architectural backdrop with 80pt hairline grid
     stage_backdrop(stage)
 
-    // 2. Main viewport column (top bar + centered scene content with 84pt bottom clearance for pinned switcher)
+    // 2. Responsive viewport shell (top bar + scene content + pinned bottom 3-scene switcher)
+    let is_narrow = fn() {
+      let w = stage.window_w()
+      w > 0.0 && w < 760.0
+    }
+    let is_phone = fn() {
+      let w = stage.window_w()
+      w > 0.0 && w < 520.0
+    }
+    let hide_stage_tag = fn() {
+      let w = stage.window_w()
+      w > 0.0 && w < 480.0
+    }
+    let compact_dock = fn() {
+      let w = stage.window_w()
+      w > 0.0 && w < 390.0
+    }
+
+    let draw_scene = fn(slot : @view.View, idx : Int) {
+      slot.width_share(Is(1.0)) |> ignore
+      match idx {
+        1 => scene_tokens(slot, st, is_narrow, is_phone)
+        2 => scene_overlays(slot, st, tips, is_narrow)
+        _ => scene_controls(slot, st, tips, is_narrow)
+      }
+    }
+
     stage.box(fn(main_col) {
       main_col
       .grow(Is(1.0))
-      .padding(Is((28.0, 14.0, 28.0, 0.0)))
+      .min_height(Is(Some(0.0)))
+      .padding(By(fn() {
+        if is_narrow() {
+          (14.0, 10.0, 14.0, 0.0)
+        } else {
+          (28.0, 14.0, 28.0, 0.0)
+        }
+      }))
       |> ignore
-      studio_bar(main_col)
-      main_col.box(fn(body) {
-        body
-        .grow(Is(1.0))
-        .lies_along(Is(Middle))
-        .padding(Is((0.0, 10.0, 0.0, 82.0)))
-        |> ignore
-        body.pick(fn() { st.scene.get() }, at_once=true, fn(slot, idx) {
-          slot.width_share(Is(1.0)) |> ignore
-          match idx {
-            1 => scene_tokens(slot, st)
-            2 => scene_overlays(slot, st, tips)
-            _ => scene_controls(slot, st, tips)
-          }
-        })
+      studio_bar(main_col, is_narrow, hide_stage_tag)
+      main_col.pick(is_narrow, at_once=true, fn(body_slot, narrow) {
+        body_slot.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+        if narrow {
+          let sc = body_slot.scrolls(
+            body_scroll,
+            slop=@ui.touch_slop(),
+            bar=@ui.tree_scroll_bar(),
+            fn(s) {
+              s.padding(Is((0.0, 10.0, 0.0, 84.0))) |> ignore
+              s.pick(fn() { st.scene.get() }, at_once=true, draw_scene)
+            },
+          )
+          sc.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+        } else {
+          body_slot.box(fn(body) {
+            body
+            .grow(Is(1.0))
+            .lies_along(Is(Middle))
+            .padding(Is((0.0, 10.0, 0.0, 82.0)))
+            |> ignore
+            body.pick(fn() { st.scene.get() }, at_once=true, draw_scene)
+          })
+          |> ignore
+        }
       })
-      |> ignore
     })
     |> ignore
 
@@ -1406,15 +1516,17 @@ pub fn studio(root : @view.View, first_scene? : Int = 0, loc~ : SourceLoc) -> Un
         .edge(By(fn() { (0.5, @sf.theme().p.line_strong) }))
         .shadow(By(fn() { (12.0, 4.0, @sf.theme().p.shadow) }))
         |> ignore
-        @sf.seg_node(
-          dock_shell,
-          fn() { ["Controls", "Tokens", "Overlays"] },
-          fn() { st.scene.get() },
-          fn(i) { st.scene.set(i) },
-          item_w=118.0,
-          said="Stage Scene",
-        )
-        |> ignore
+        dock_shell.pick(compact_dock, at_once=true, fn(slot, compact) {
+          @sf.seg_node(
+            slot,
+            fn() { ["Controls", "Tokens", "Overlays"] },
+            fn() { st.scene.get() },
+            fn(i) { st.scene.set(i) },
+            item_w=if compact { 104.0 } else { 118.0 },
+            said="Stage Scene",
+          )
+          |> ignore
+        })
       })
       |> ignore
     })
