@@ -17,11 +17,11 @@ fn place_tester(place : String) -> @ui.Tester {
 ///|
 test "a place's page: from under its frosted top bar, scrolled on under it, not cut off at its foot" {
   let t = place_tester("stations")
-  // the bar spans from the page's top over the status bar to its foot (24 + 50) with floating liquid glass pill controls
+  // the bar spans from the page's top over the status bar to its foot (24 + 50, plus soft-fade scrim tail) with floating liquid glass pill controls
   let glass = t.drawn_glass()
-  let rects = t.drawn_rects()
-  if !rects.iter().any(fn(r) { r.0 == 0.0 && r.1 == 0.0 && r.2 == 390.0 && r.3 == 24.0 + 50.0 }) {
-    fail("no top bar ground spanning status bar: \{Repr(rects)}")
+  let tree = @ui.view_tree().unwrap()
+  if !tree.drawn().iter().any(fn(d) { d.ground != 0L && d.x == 0.0 && d.y == 0.0 && d.w == 390.0 && d.h >= 24.0 + 50.0 && d.h <= 24.0 + 50.0 + 20.0 }) {
+    fail("no top bar scrim spanning status bar")
   }
   if !glass.iter().any(fn(g) { g.4 == 6 && g.1 >= 24.0 && g.1 + g.3 <= 24.0 + 50.0 }) {
     fail("no liquid glass pill in top bar: \{Repr(glass)}")

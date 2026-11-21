@@ -1300,7 +1300,8 @@ test "a phone's chat: each key of its bar, over the messages scrolled under the 
   assert_true(bars.length() >= 1, msg="the bar's ground: \{bars.length()}")
   let pills = tree.drawn().filter(fn(d) { d.glass is Some(_) && d.y < bar_h })
   assert_true(pills.length() >= 2, msg="the bar's glass pills: \{pills.length()}")
-  let foot = bars[0].y + bars[0].h
+  // (the bar's interactive foot sits 14pt above the soft-fade scrim's visual tail, which has points=false)
+  let foot = bars[0].y + bars[0].h - 14.0
   // (its keys: back, 40 across, and the three round ones, 34)
   let keys = tree
     .press_boxes()
