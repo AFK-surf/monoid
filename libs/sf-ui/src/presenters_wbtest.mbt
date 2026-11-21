@@ -359,22 +359,17 @@ test "a long pick with a finger at Small: the search in its sheet finds by the w
 }
 
 ///|
-/// A panel: its words, and a button under them that closes it.
-fn panel_body(said : Array[String]) -> (@view.View, () -> Unit) -> Unit {
-  fn(v, close) {
+/// A panel's body: its words.
+fn panel_body() -> (@view.View, () -> Unit) -> Unit {
+  fn(v, _) {
     words_node(v, fn() { "面板里的话" }, fn() { paragraph }) |> ignore
-    button_node(v, fn() { "好的" }, fn() {
-      said.push("ok")
-      close()
-    }, tone=Primary)
-    |> ignore
   }
 }
 
 ///|
 test "a panel with a finger at Small: a sheet; back closes it" {
   let said : Array[String] = []
-  let t = presenting_tester(phone, fn(from) { panel_nodes("面板", panel_body(said), from~) })
+  let t = presenting_tester(phone, fn(from) { panel_nodes("面板", panel_body(), foot=ok_foot(said), from~) })
   open_it(t)
   assert_eq(presented_how, [AsSheet])
   assert_true(t.find("面板里的话") is Some(_))
@@ -389,7 +384,7 @@ test "a panel with a finger at Small: a sheet; back closes it" {
 ///|
 test "a panel with a mouse at Large: beside what opened it; a press outside closes it" {
   let said : Array[String] = []
-  let t = presenting_tester(desk, fn(from) { panel_nodes("面板", panel_body(said), from~) })
+  let t = presenting_tester(desk, fn(from) { panel_nodes("面板", panel_body(), foot=ok_foot(said), from~) })
   open_it(t)
   assert_eq(presented_how, [AsPopover])
   let (_, by) = where_is(t, "打开")
@@ -658,6 +653,8 @@ fn panel_with_confirm(at : (Int, Double, Double), by_nothing? : Bool = false) ->
       from=if by_nothing { Unanchored } else { from },
       fn(v, _) {
         words_node(v, fn() { "面板内容" }, fn() { paragraph }) |> ignore
+      },
+      foot=fn(v, _) {
         button_node(v, fn() { "删掉" }, fn() { confirm("删掉这个？", "删掉后找不回来。", "确认删掉", fn() {  }, danger=true) }) |> ignore
       },
     )

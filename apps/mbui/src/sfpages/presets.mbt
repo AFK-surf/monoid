@@ -553,7 +553,7 @@ fn preset_panel(
           close()
           preset_dialog(src, w, address, "", stations)
         }, fn(btn) {
-          @sf.style_node(btn, fn() { preset_foot_btn.then(@ui.style(min_h=Fixed(@sf.theme().items.least))) }, in_row=true)
+          @sf.style_node(btn, fn() { preset_foot_btn.then(@ui.style(min_h=Fixed(@sf.button_height()))) }, in_row=true)
           @sf.hover_ground_node(btn)
           @sf.icon_node(btn, "plus", 15.0, By(fn() { @sf.theme().p.muted })) |> ignore
           @sf.words_node(btn, fn() { @sf.t("web-main.preset.newRow") }, fn() { preset_foot_words }) |> ignore
@@ -565,7 +565,7 @@ fn preset_panel(
             preset_pick(src, w, "", "")()
             close()
           }, fn(btn) {
-            @sf.style_node(btn, fn() { preset_foot_btn.then(@ui.style(min_h=Fixed(@sf.theme().items.least))) }, in_row=true)
+            @sf.style_node(btn, fn() { preset_foot_btn.then(@ui.style(min_h=Fixed(@sf.button_height()))) }, in_row=true)
             @sf.hover_ground_node(btn)
             @sf.words_node(btn, fn() { @sf.t("web-main.preset.none") }, fn() { preset_sheet_clear_words }) |> ignore
           })
@@ -579,7 +579,7 @@ fn preset_panel(
             preset_others_open(src, w, v, from, in_panel=true)
           }
         }, fn(btn) {
-          @sf.style_node(btn, fn() { preset_foot_btn.then(@ui.style(min_h=Fixed(@sf.theme().items.least))) }, in_row=true)
+          @sf.style_node(btn, fn() { preset_foot_btn.then(@ui.style(min_h=Fixed(@sf.button_height()))) }, in_row=true)
           @sf.hover_ground_node(btn)
           @sf.icon_node(btn, "users", 15.0, By(fn() { @sf.theme().p.muted })) |> ignore
           @sf.words_node(btn, fn() { @sf.t("web-main.preset.others") }, fn() { preset_foot_words }) |> ignore

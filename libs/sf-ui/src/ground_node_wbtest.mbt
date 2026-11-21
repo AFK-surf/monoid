@@ -20,9 +20,11 @@ fn shape_at(t : @ui.Tester, x : Double, y : Double) -> @view.Cursor {
 /// Each of the library's panels of nodes, as a mouse's window has it (1200 by 800; a sheet, 390 by 800): its name, the
 /// window, how it is opened, what of it is pressed (what is read out so, by its name).
 fn ground_kinds() -> Array[(String, (Int, Double, Double), (Anchor) -> Unit, String)] {
-  // (its words, then its key under them: not right under a centred one's close button, apart from it)
+  // (its words, then its key in its foot: not right under a centred one's close button, apart from it)
   let body = fn(v : @view.View, _close : () -> Unit) {
     v.box(fn(w) { w.words(Is("面板里的字")) |> ignore }) |> ignore
+  }
+  let foot = fn(v : @view.View, _close : () -> Unit) {
     button_node(v, fn() { "里面的键" }, fn() {  }) |> ignore
   }
   // (a long pick: as many choices as one searched takes, pick_node)
@@ -36,10 +38,10 @@ fn ground_kinds() -> Array[(String, (Int, Double, Double), (Anchor) -> Unit, Str
       },
       "一项",
     ),
-    ("panel_node", (0, 1200.0, 800.0), fn(from) { panel_nodes("面板", body, from~) }, "里面的键"),
-    ("panel_centred_node", (0, 1200.0, 800.0), fn(_) { panel_nodes("面板", body, from=Unanchored) }, "里面的键"),
+    ("panel_node", (0, 1200.0, 800.0), fn(from) { panel_nodes("面板", body, foot~, from~) }, "里面的键"),
+    ("panel_centred_node", (0, 1200.0, 800.0), fn(_) { panel_nodes("面板", body, foot~, from=Unanchored) }, "里面的键"),
     ("confirm_node", (0, 1200.0, 800.0), fn(from) { confirm("确定吗？", "这里说明它做什么。", "好", fn() {  }, from~) }, "好"),
-    ("sheet_node", (0, 390.0, 800.0), fn(from) { panel_nodes("面板", body, from~) }, "里面的键"),
+    ("sheet_node", (0, 390.0, 800.0), fn(from) { panel_nodes("面板", body, foot~, from~) }, "里面的键"),
     ("ask_node", (0, 1200.0, 800.0), fn(from) { ask("写一句", "好", fn(_) {  }, empty=true, from~) }, "common.cancel"),
     ("pick_node", (0, 1200.0, 800.0), fn(from) { pick("选一个", choices, "c0", fn(_) {  }, from=beside_of(from)) }, "第1项"),
   ]

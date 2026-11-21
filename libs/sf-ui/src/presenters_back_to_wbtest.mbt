@@ -101,8 +101,10 @@ fn panels_nested_four_deep(said : Array[String]) -> (Anchor) -> Unit {
     ) {
       panel_nodes(
         title,
-        fn(v, close) {
+        fn(v, _) {
           words_node(v, fn() { words }, fn() { panel_note_words }) |> ignore
+        },
+        foot=fn(v, close) {
           button_node(v, fn() { button }, fn() {
             if close_first {
               close()

@@ -72,7 +72,7 @@ test "rows together in a panel's body as nodes: a sheet opened by nothing and by
   }
   inspect(seen.join("\n"), content=(
     #|sheet opened by nothing:
-    #|rect 40,40 310x36 3907312895
+    #|rect 40,40 310x32 3907312895
     #|rect 0,0 390x844 71
     #|rect 176,559 38x5 841819172
     #|rect 16,652 358x168 606546701
@@ -81,12 +81,12 @@ test "rows together in a panel's body as nodes: a sheet opened by nothing and by
     #|rect 284,760 64x28 3428463871
     #|rect 306,762 40x24 4294967295
     #|words 一组@24,576 32x24 a1
-    #|words 打开@180,47 30x22 a1
+    #|words 打开@180,45 30x22 a1
     #|words 它说的话@24,610 342x18 a1
     #|words 第一个开关@40,687 232x22 a1
     #|words 第二个开关@40,763 232x22 a1
     #|sheet opened by a press:
-    #|rect 40,40 310x36 3907312895
+    #|rect 40,40 310x32 3907312895
     #|rect 0,0 390x844 71
     #|rect 176,569 38x5 841819172
     #|rect 16,652 358x168 606546701
@@ -95,12 +95,12 @@ test "rows together in a panel's body as nodes: a sheet opened by nothing and by
     #|rect 284,760 64x28 3428463871
     #|rect 306,762 40x24 4294967295
     #|words 一组@24,586 32x24 a1
-    #|words 打开@180,47 30x22 a1
+    #|words 打开@180,45 30x22 a1
     #|words 它说的话@24,620 342x18 a1
     #|words 第一个开关@40,687 232x22 a1
     #|words 第二个开关@40,763 232x22 a1
     #|sheet opened by a press, with a mouse:
-    #|rect 40,40 310x36 3907312895
+    #|rect 40,40 310x32 3907312895
     #|rect 0,0 390x844 71
     #|rect 176,585 38x5 841819172
     #|rect 16,668 358x152 606546701
@@ -109,24 +109,24 @@ test "rows together in a panel's body as nodes: a sheet opened by nothing and by
     #|rect 312,767 36x22 3428463871
     #|rect 323.5,769 22.5x18 4294967295
     #|words 一组@24,602 32x24 a1
-    #|words 打开@182,48 26x20 a1
+    #|words 打开@182,46 26x20 a1
     #|words 它说的话@24,636 342x18 a1
     #|words 第一个开关@40,699 260x22 a1
     #|words 第二个开关@40,767 260x22 a1
     #|small panel:
-    #|rect 40,40 720x36 3907312895
-    #|rect 46,150 284x126 4294967295
-    #|rect 270,173 36x22 2021161011
-    #|rect 272,175 22.5x18 4294967295
-    #|rect 270,231 36x22 3428463871
-    #|rect 281.5,233 22.5x18 4294967295
-    #|words 一组@62,94 252x20 a1
-    #|words 打开@387,48 26x20 a1
-    #|words 它说的话@62,118 252x18 a1
-    #|words 第一个开关@68,174 186x20 a1
-    #|words 第二个开关@68,232 186x20 a1
+    #|rect 40,40 720x32 3907312895
+    #|rect 46,146 284x126 4294967295
+    #|rect 270,169 36x22 2021161011
+    #|rect 272,171 22.5x18 4294967295
+    #|rect 270,227 36x22 3428463871
+    #|rect 281.5,229 22.5x18 4294967295
+    #|words 一组@62,90 252x20 a1
+    #|words 打开@387,46 26x20 a1
+    #|words 它说的话@62,114 252x18 a1
+    #|words 第一个开关@68,170 186x20 a1
+    #|words 第二个开关@68,228 186x20 a1
     #|dialog:
-    #|rect 40,40 720x36 3907312895
+    #|rect 40,40 720x32 3907312895
     #|rect 0,0 800x600 320215859
     #|rect 140,166.5 520x267 4294967295
     #|rect 156,289.5 488x128 606546701
@@ -135,11 +135,12 @@ test "rows together in a panel's body as nodes: a sheet opened by nothing and by
     #|rect 582,370.5 36x22 3428463871
     #|rect 593.5,372.5 22.5x18 4294967295
     #|rect 140,166.5 520x267 0
-    #|words 打开@387,48 26x20 a1
+    #|words 打开@387,46 26x20 a1
     #|words 一组@164,192.5 44x30 a1
     #|words 它说的话@164,241.5 472x18 a1
     #|words 第一个开关@180,315.5 386x20 a1
     #|words 第二个开关@180,371.5 386x20 a1
+
 
 
   ))

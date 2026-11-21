@@ -804,9 +804,9 @@ pub let card_foot_out : @ui.Style = @ui.style(mb=room(card_corner - small_corner
 pub let panel_words : Double = card_pad
 
 ///|
-/// A button's height with keyboard and mouse (34, as everything pressed is: a row, a field; button_height): a capsule,
-/// @ui.capsule_in(card_corner, 34) in from a card's corner where it stands in one.
-pub let button_h : Double = menu_row_min
+/// A button's height (32, matching icon_button_side / float_button_side / bar_key_side / dialog_close; button_height):
+/// a capsule, @ui.capsule_in(card_corner, 32) = 10 in from a card's corner where it stands in one.
+pub let button_h : Double = 32.0
 
 ///|
 /// A card of pressable rows (a list card, a card of options): the rows this far in, as a menu's are in its panel
@@ -994,8 +994,8 @@ let wide_type : Type = {
 }
 
 ///|
-/// A control's height (Theme::control_h): with keyboard and mouse 36, as a row and a button are (2026-10-30, one
-/// height; 2026-11-03 34 to 36, the corners' numbers whole), a finger's (44); a button 36 with either (button_height).
+/// A control's height (Theme::control_h): with keyboard and mouse 36, as a row is (menu_row_min), a finger's (44); a
+/// button is 32 with either (button_height).
 let wide_control_h : Double = menu_row_min
 
 ///|
@@ -2800,10 +2800,15 @@ pub fn dialog_corner_foot(pad : Double) -> @ui.Style {
 ///|
 /// Where a small panel's buttons stand in its foot corners (the theme's button: a capsule): as far from its foot and its
 /// sides as makes the last, and what stands at the foot's start (the model panel's account), concentric with its corner
-/// (r_menu), the row reaching past its padding (panel_pad) to there at both ends.
+/// (r_menu), the row reaching past or inset inside its padding (panel_pad) to there at both ends.
 pub fn panel_corner_foot() -> @ui.Style {
-  let at = room(@ui.capsule_in(r_menu, button_height()) - panel_pad)
-  @ui.style(ml=at, mr=at, mb=at)
+  let d = @ui.capsule_in(r_menu, button_height()) - panel_pad
+  let at = room(d)
+  if d >= 0.0 {
+    @ui.style(pl=at, pr=at, pb=at)
+  } else {
+    @ui.style(ml=at, mr=at, mb=at)
+  }
 }
 
 ///|

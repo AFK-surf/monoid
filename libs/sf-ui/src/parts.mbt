@@ -24,7 +24,7 @@ let button_reshape : @motion.Spec = @motion.moved()
 
 ///|
 /// How far a button's words are in from its sides.
-let button_padx : Double = 16.0
+let button_padx : Double = 14.0
 
 ///|
 /// Keep a button's leading icon or words on the line of the surrounding words, with its ground reaching past them.
@@ -37,12 +37,10 @@ pub fn button_start_reach() -> @ui.Style {
 let button_icon : Double = 16.0
 
 ///|
-/// A button's height: what can be pressed is one height (menu_row_min; the user, 2026-10-30: 「搞这么多标准干啥」), on every
-/// screen with either native input (the user,
-/// 2026-10-31: a finger's 44 「太大了」「我们现在发送按钮也没那么大」「按钮既然缩，那就跟大屏一致呗」「我们本就大屏小屏都支持
-/// 触控」: drawn 44, one in a card's foot corners stood 4 from its edges); its press reaching the 44 every press has.
+/// A button's height (button_h = 32, matching icon_button_side / float_button_side / bar_key_side / dialog_close), on
+/// every screen with either native input; its press reaching the 44 every press has.
 pub fn button_height() -> Double {
-  menu_row_min
+  button_h
 }
 
 ///|

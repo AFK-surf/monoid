@@ -2528,11 +2528,9 @@ pub fn top_bar_title_node(
 }
 
 ///|
-/// A card's one row with a control at its end (a button) standing in the card's corner, concentric with it: the ladder
-/// makes a card's corner less its padding a row's corner, a button's half (button_height), so the row is as tall as the
-/// button and the card's own padding is round it above, below and at its end; where a wide panel's card has wider ends
-/// than it has padding above and below, the control's margin takes it out to the same (the user, 2026-11-10: a one-row
-/// card's trailing button 16 and 22 in, its capsule not concentric with the card's corner, 「这按钮和卡片圆角也对不上」).
+/// A card's one row with a control at its end (a button) standing in the card's corner, concentric with it: its top,
+/// foot and end stand `@ui.capsule_in(corner, button_height())` from the card's edges so the capsule button's corner
+/// matches the card's (`card_corner` in a pane, `list_card_corner` otherwise).
 /// `words` on its start as a row's title, as far in as the other rows' are.
 #callsite(autofill(loc))
 pub fn corner_row_node(parent : @view.View, words : () -> String, end : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit {
@@ -2540,6 +2538,9 @@ pub fn corner_row_node(parent : @view.View, words : () -> String, end : (@view.V
   let pane = in_pane_node(parent)
   // (the card's padding above and below, and at its ends: group_node's, wide_group_node's)
   let pad = if pane { corner_inset } else { list_pad }
+  let corner = if pane { card_corner } else { list_card_corner }
+  let want = @ui.capsule_in(corner, button_height())
+  let extra = dmax(0.0, want - pad)
   let ends = if wide && pane { card_pad - wide_row_over } else { pad }
   parent.box(made_for=loc, fn(row) {
     row
@@ -2547,11 +2548,11 @@ pub fn corner_row_node(parent : @view.View, words : () -> String, end : (@view.V
     .lines_up(Is(Some(Middle)))
     .min_height(Is(Some(button_height())))
     .gap(Is(text_in))
-    .padding(Is((dmax(0.0, text_in + list_pad - ends), 0.0, 0.0, 0.0)))
+    .padding(Is((dmax(0.0, text_in + list_pad - ends), extra, 0.0, extra)))
     |> ignore
     words_node(row, words, fn() { pg_row_title }).grow(Is(1.0)).shrink(Is(1.0)) |> ignore
     row.box(fn(e) {
-      e.margin(Is((0.0, 0.0, pad - ends, 0.0))) |> ignore
+      e.margin(Is((0.0, 0.0, want - ends, 0.0))) |> ignore
       end(e)
     })
     |> ignore

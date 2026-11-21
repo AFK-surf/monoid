@@ -78,10 +78,11 @@ test "a sheet's foot of nodes: two buttons whose words fit, each its share" {
     }
   }
   inspect(seen.join("\n"), content=(
-    #|place false, words 1: 取消 20,784 171x36 | 下载 199,784 171x36
-    #|place false, words 1.3: 取消 20,784 171x36 | 下载 199,784 171x36
-    #|place true, words 1: 取消 20,784 171x36 | 下载 199,784 171x36
-    #|place true, words 1.3: 取消 20,784 171x36 | 下载 199,784 171x36
+    #|place false, words 1: 取消 20,788 171x32 | 下载 199,788 171x32
+    #|place false, words 1.3: 取消 20,788 171x32 | 下载 199,788 171x32
+    #|place true, words 1: 取消 20,788 171x32 | 下载 199,788 171x32
+    #|place true, words 1.3: 取消 20,788 171x32 | 下载 199,788 171x32
+
   ))
 }
 
@@ -98,12 +99,13 @@ test "a sheet's foot of nodes: one button's words more than its share, it as wid
     }
   }
   inspect(seen.join("\n"), content=(
-    #|place false, 添加到此 workspace at 1.3: 取消 20,784 134.5x36 | 添加到此 workspace 162.5,784 207.5x36
-    #|place false, Add to this workspace at 1.3: Cancel 20,784 105.25x36 | Add to this workspace 133.25,784 236.75x36
-    #|place false, 添加到此 workspace，然后再看一看 at 1: 取消 20,784 70x36 | 添加到此 workspace，然后再看一看 98,784 272x36
-    #|place true, 添加到此 workspace at 1.3: 取消 20,784 134.5x36 | 添加到此 workspace 162.5,784 207.5x36
-    #|place true, Add to this workspace at 1.3: Cancel 20,784 105.25x36 | Add to this workspace 133.25,784 236.75x36
-    #|place true, 添加到此 workspace，然后再看一看 at 1: 取消 20,784 70x36 | 添加到此 workspace，然后再看一看 98,784 272x36
+    #|place false, 添加到此 workspace at 1.3: 取消 20,788 138.5x32 | 添加到此 workspace 166.5,788 203.5x32
+    #|place false, Add to this workspace at 1.3: Cancel 20,788 109.25x32 | Add to this workspace 137.25,788 232.75x32
+    #|place false, 添加到此 workspace，然后再看一看 at 1: 取消 20,788 74x32 | 添加到此 workspace，然后再看一看 102,788 268x32
+    #|place true, 添加到此 workspace at 1.3: 取消 20,788 138.5x32 | 添加到此 workspace 166.5,788 203.5x32
+    #|place true, Add to this workspace at 1.3: Cancel 20,788 109.25x32 | Add to this workspace 137.25,788 232.75x32
+    #|place true, 添加到此 workspace，然后再看一看 at 1: 取消 20,788 74x32 | 添加到此 workspace，然后再看一看 102,788 268x32
+
   ))
 }
 
@@ -116,8 +118,9 @@ test "a sheet's foot of nodes: both buttons' words more than the foot has room f
     seen.push("place \{place}: \{new.join(" | ")}")
   }
   inspect(seen.join("\n"), content=(
-    #|place false: 先取消这一次的添加然后 20,740 350x36 | 添加到此 workspace，然后再看一看 20,784 350x36
-    #|place true: 先取消这一次的添加然后 20,740 350x36 | 添加到此 workspace，然后再看一看 20,784 350x36
+    #|place false: 先取消这一次的添加然后 20,748 350x32 | 添加到此 workspace，然后再看一看 20,788 350x32
+    #|place true: 先取消这一次的添加然后 20,748 350x32 | 添加到此 workspace，然后再看一看 20,788 350x32
+
   ))
 }
 
@@ -136,13 +139,14 @@ test "a dialog's foot in the middle of a window and a panel's beside what opened
     }
   }
   inspect(seen.join("\n"), content=(
-    #|dialog, place false, 添加到此 workspace，然后再看一看: 取消 254.4,330.3 66.4x36 | 添加到此 workspace，然后再看一看 328.8,330.3 307.2x36
-    #|dialog, place false, 添加到此 workspace，然后再看一看，再看一看: 先取消这一次的添加然后再说 380.4,308.3 255.6x36 | 添加到此 workspace，然后再看一看，再看一看 242.8,352.3 393.2x36
-    #|dialog, place true, 添加到此 workspace，然后再看一看: 取消 254.4,330.3 66.4x36 | 添加到此 workspace，然后再看一看 328.8,330.3 307.2x36
-    #|dialog, place true, 添加到此 workspace，然后再看一看，再看一看: 先取消这一次的添加然后再说 380.4,308.3 255.6x36 | 添加到此 workspace，然后再看一看，再看一看 242.8,352.3 393.2x36
-    #|beside, place false, 添加到此 workspace，然后再看一看: 取消 263.6,151.2 66.4x36 | 添加到此 workspace，然后再看一看 22.8,195.2 307.2x36
-    #|beside, place false, 添加到此 workspace，然后再看一看，再看一看: 先取消这一次的添加然后再说 74.4,151.2 255.6x36 | 添加到此 workspace，然后再看一看，再看一看 -63.2,195.2 393.2x36
-    #|beside, place true, 添加到此 workspace，然后再看一看: 取消 263.6,151.2 66.4x36 | 添加到此 workspace，然后再看一看 22.8,195.2 307.2x36
-    #|beside, place true, 添加到此 workspace，然后再看一看，再看一看: 先取消这一次的添加然后再说 74.4,151.2 255.6x36 | 添加到此 workspace，然后再看一看，再看一看 -63.2,195.2 393.2x36
+    #|dialog, place false, 添加到此 workspace，然后再看一看: 取消 260.4,331.3 62.4x32 | 添加到此 workspace，然后再看一看 330.8,331.3 303.2x32
+    #|dialog, place false, 添加到此 workspace，然后再看一看，再看一看: 先取消这一次的添加然后再说 382.4,311.3 251.6x32 | 添加到此 workspace，然后再看一看，再看一看 244.8,351.3 389.2x32
+    #|dialog, place true, 添加到此 workspace，然后再看一看: 取消 260.4,331.3 62.4x32 | 添加到此 workspace，然后再看一看 330.8,331.3 303.2x32
+    #|dialog, place true, 添加到此 workspace，然后再看一看，再看一看: 先取消这一次的添加然后再说 382.4,311.3 251.6x32 | 添加到此 workspace，然后再看一看，再看一看 244.8,351.3 389.2x32
+    #|beside, place false, 添加到此 workspace，然后再看一看: 取消 265.6,147.2 62.4x32 | 添加到此 workspace，然后再看一看 24.8,187.2 303.2x32
+    #|beside, place false, 添加到此 workspace，然后再看一看，再看一看: 先取消这一次的添加然后再说 76.4,147.2 251.6x32 | 添加到此 workspace，然后再看一看，再看一看 -61.2,187.2 389.2x32
+    #|beside, place true, 添加到此 workspace，然后再看一看: 取消 265.6,147.2 62.4x32 | 添加到此 workspace，然后再看一看 24.8,187.2 303.2x32
+    #|beside, place true, 添加到此 workspace，然后再看一看，再看一看: 先取消这一次的添加然后再说 76.4,147.2 251.6x32 | 添加到此 workspace，然后再看一看，再看一看 -61.2,187.2 389.2x32
+
   ))
 }
