@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [48e1aa776](https://github.com/AFK-surf/monoid/commit/48e1aa7767396adddbe4592de561c070ba4e6063) refactor(sf-ui): export layout-neutral card and no | 2.65 | 3.56 | 14.45 | 36.45 | 55.09 | 31.93 | 64.47 | 98.19 | 113.96 |
 | [e4e521cb2](https://github.com/AFK-surf/monoid/commit/e4e521cb2fbf584634e6e5c29248ca00dc77e085) fix(liquid-glass): eliminate anchored overlay clos | 2.65 | 3.56 | 14.45 | 36.45 | 55.09 | 31.93 | 64.47 | 98.08 | 112.02 |
 | [a0fe5061d](https://github.com/AFK-surf/monoid/commit/a0fe5061d00685af6f9b2f98f4c63265e36ea2f9) fix(mbui): keep ancestor clip corners on shared fl | 2.65 | 3.56 | 14.45 | 36.45 | 55.09 | 31.93 | 64.47 | 98.01 | 111.15 |
 | [b9e664ad5](https://github.com/AFK-surf/monoid/commit/b9e664ad5da6da530485de35c49951e3c2e410e0) feat(mbui): support per-corner radii in merged liq | 2.64 | 3.56 | 14.45 | 36.45 | 55.07 | 31.92 | 64.47 | 98.13 | 128.7 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d081e8e54](https://github.com/AFK-surf/monoid/commit/d081e8e5408a3b4557c5c9cce60c62eb5bb62e30) fix(accounts): show Antigravity subscription plans | 2.65 | 3.57 | 14.51 | 36.48 | 55.3 | 31.95 | 64.6 | 98.35 | 128.58 |
 | [d6bfd48bd](https://github.com/AFK-surf/monoid/commit/d6bfd48bd32c6e6f1847e1a84c2ab8d6788f02e5) feat(station): port admin CLI natively into stillf | 2.65 | 3.57 | 14.51 | 36.47 | 55.28 | 31.94 | 64.58 | 98.91 | 118.95 |
 | [e952e0f5c](https://github.com/AFK-surf/monoid/commit/e952e0f5cb13149da32a9aacd7ff658d14fb2614) chore(mbui): delete legacy @ui.Ctx pages and pane_ | 2.65 | 3.57 | 14.51 | 36.47 | 55.28 | 31.94 | 64.58 | 98.16 | 118.95 |
-| [4725fad51](https://github.com/AFK-surf/monoid/commit/4725fad511ac58f314f11cad753be7ea3804c2b6) fix(mbui): restore visible capillary liquid bridge | 2.79 | 3.77 | 15.38 | 37.5 | 58.1 | 32.87 | 67.1 | 98.32 | 124.13 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [48e1aa776](https://github.com/AFK-surf/monoid/commit/48e1aa7767396adddbe4592de561c070ba4e6063) refactor(sf-ui): export layout-neutral card and no | 0.47 | 0.61 | 2.37 | 3.42 | 5.61 | 1.72 | 4.63 | 54.2 |
 | [e4e521cb2](https://github.com/AFK-surf/monoid/commit/e4e521cb2fbf584634e6e5c29248ca00dc77e085) fix(liquid-glass): eliminate anchored overlay clos | 0.47 | 0.61 | 2.37 | 3.42 | 5.61 | 1.72 | 4.63 | 54.2 |
 | [a0fe5061d](https://github.com/AFK-surf/monoid/commit/a0fe5061d00685af6f9b2f98f4c63265e36ea2f9) fix(mbui): keep ancestor clip corners on shared fl | 0.47 | 0.61 | 2.37 | 3.42 | 5.61 | 1.72 | 4.63 | 54.2 |
 | [b9e664ad5](https://github.com/AFK-surf/monoid/commit/b9e664ad5da6da530485de35c49951e3c2e410e0) feat(mbui): support per-corner radii in merged liq | 0.47 | 0.61 | 2.37 | 3.42 | 5.61 | 1.72 | 4.63 | 54.2 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d081e8e54](https://github.com/AFK-surf/monoid/commit/d081e8e5408a3b4557c5c9cce60c62eb5bb62e30) fix(accounts): show Antigravity subscription plans | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 53.86 |
 | [d6bfd48bd](https://github.com/AFK-surf/monoid/commit/d6bfd48bd32c6e6f1847e1a84c2ab8d6788f02e5) feat(station): port admin CLI natively into stillf | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 53.86 |
 | [e952e0f5c](https://github.com/AFK-surf/monoid/commit/e952e0f5cb13149da32a9aacd7ff658d14fb2614) chore(mbui): delete legacy @ui.Ctx pages and pane_ | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 53.86 |
-| [4725fad51](https://github.com/AFK-surf/monoid/commit/4725fad511ac58f314f11cad753be7ea3804c2b6) fix(mbui): restore visible capillary liquid bridge | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 53.86 |
