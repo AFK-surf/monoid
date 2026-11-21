@@ -584,6 +584,9 @@ pub fn drawable_node(@view.View, String, Double, tint? : () -> Int64?) -> @view.
 
 pub fn drawable_vector(String) -> @pixels.Vector?
 
+#callsite(autofill(loc))
+pub fn drawer_node(@view.View, () -> Bool, () -> String, () -> Unit, (@view.View) -> Unit, spec? : DrawerSpec, loc~ : SourceLoc) -> Unit
+
 pub fn dropdown(@ui.Ctx, String, Bool, Int32, Array[@kit.Entry], Map[String, String], Double, submenu? : Bool, side? : @view.Side, along? : @view.Along, offset? : Double, at? : (Double, Double, Double, Double), row_end? : (@ui.Ctx, @kit.MenuItemState) -> Unit, danger? : Array[String], marks? : Map[String, (@ui.Ctx, Double) -> Unit], notes? : Map[String, String], check_end? : Bool, show_exit? : Bool, on_pick? : (String) -> Unit) -> @kit.Menu
 
 pub let dur_ms : Double
@@ -2953,6 +2956,22 @@ pub(all) struct Dial {
 }
 
 type DrawnShapes
+
+#derive(Eq, @debug.Debug)
+pub(all) enum DrawerSide {
+  Leading
+  Trailing
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) struct DrawerSpec {
+  side : DrawerSide
+  width : Double
+  inset : Double
+  radius : Double
+  scrim : Bool
+}
+pub fn DrawerSpec::default() -> Self
 
 pub struct EdgePull {
   // private fields

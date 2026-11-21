@@ -265,15 +265,21 @@ let sheet_under : Double = pane_corner
 pub let sheet_scrim : Int64 = 0x00000047L
 
 ///|
-/// A sheet over the page: the surface at 90% over a 28px blur (the scrim is drawn under it, so it is in
-/// what the glass frosts, as on the web). 90%, not the 80% it was: what is written on a sheet keeps 4.5:1 whatever
-/// lies under it (the accent's words, the weakest ink a sheet's words are in, over the page at its darkest, black: the
-/// tint alone carries them), a sheet as tall as what it holds lying over any part of the page.
+/// A sheet or floating side drawer over the page: single-layer symmetric 80% iOS 26 liquid glass (`0xFDFCFDCC` in
+/// Light, `0x202020CC` in Dark, aligned with PR #8057 symmetric density curve; `blur=12`, `bezel=20`,
+/// `refraction=24`). Degrades to opaque `t.p.bg` under `MBUI_GLASS=solid`.
 pub fn glass_sheet() -> @ui.Glass {
   let t = theme()
-  @ui.Glass::frosted(blur=28.0, tint=alpha(t.p.canvas, sheet_tint), solid=t.p.bg)
+  @ui.Glass::liquid(
+    blur=12.0,
+    tint=if t.dark { 0x202020CCL } else { 0xFDFCFDCCL },
+    solid=t.p.bg,
+    saturation=1.0,
+    rim=0.6,
+    bezel=20.0,
+    refraction=24.0,
+    chroma=0.0,
+    merge=0.0,
+    adaptive=false,
+  )
 }
-
-///|
-/// How much of a sheet's glass is its surface's colour (glass_sheet).
-let sheet_tint : Double = 0.9
