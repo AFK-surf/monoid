@@ -12,6 +12,7 @@ pub fn shell_packer(host : @host.Host) -> @door.Packer {
       let id = match made { { "id": id, .. } => id; _ => Json::null() }
       {
         push: async fn(piece : Bytes) -> Bytes { host.shell("zstd.push", { "id": id }, bytes=piece).1.unwrap_or(b"") },
+        finish: async fn() -> Bytes { host.shell("zstd.push", { "id": id, "finish": Json::boolean(true) }, bytes=b"").1.unwrap_or(b"") },
         close: () => ignore(host.rt.fork_quiet(() => ignore(host.shell("zstd.close", { "id": id })) catch { _ => () })),
       }
     },

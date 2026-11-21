@@ -20,7 +20,7 @@ import { ADDRESSES_KEY, BULK_SLOW_BPS, clearlyBetter, CONNECT_TIMEOUT_MS, cost, 
 import { claimBy, lockClaim } from "../src/lock.ts";
 import { TRACES } from "../src/route.ts";
 import { ALPN, LockUnconfirmed, MeshWire, STATION_MESH, meshEnv, presented, refusedForLock } from "../src/station/mesh-wire.ts";
-import { BULK, BULK_LANE, NDJSON, NO_HEDGE, READS } from "../src/station/requests.ts";
+import { BATCH_LINES, BULK, BULK_LANE, NDJSON, NO_HEDGE, READS } from "../src/station/requests.ts";
 import { Runner } from "../src/runtime.ts";
 import { StationAddr } from "../src/station/addr.ts";
 import { readAll, type RequestHead } from "../src/station/wire.ts";
@@ -1463,6 +1463,47 @@ sim("a_read_in_the_background_slow_on_its_way_is_not_asked_on_another_as_well", 
   assert.deepEqual(asked, ["main /admin/api/batch"], "in the background: asked once, the mark the wire's alone");
   go();
   assert.equal(await s.settle(batch), 200);
+});
+
+sim("mesh_wire_skips_speed_timing_for_streamed_batch_replies_and_times_whole_json_fallback", async (s) => {
+  const timedPaths: string[] = [];
+  let replyHeaders: [string, string][] = [];
+  const main = {
+    request: () => Effect.succeed({ status: 200, headers: replyHeaders, body: { take: Effect.succeed(null) }, cancel: () => {} }),
+    path: () => "relay",
+    via: () => "https://r.relay.test/",
+    speedKey: () => "https://r.relay.test/",
+    conn: { closeReason: () => null },
+    closed: () => null,
+  } as unknown as Link;
+  let currentPath = "";
+  const mesh = {
+    link: () => Effect.succeed(main),
+    hedgeAfter: () => HEDGE_FLOOR_MS,
+    standby: () => null,
+    replaced: () => Effect.never,
+    now: () => s.time.now(),
+    outran: () => {},
+    dropWay: () => {},
+    timed: (_key: string, _via: string, body: unknown) => {
+      timedPaths.push(currentPath);
+      return body;
+    },
+  } as unknown as Mesh;
+  const status = new Status(s.host, s.runner);
+  const wire = new MeshWire({ mesh: () => Effect.succeed(mesh), meshNow: () => mesh, credentials: () => grants("ok", { n: 0 }), relays: () => [], status: () => status });
+  const addr = StationAddr.parse("w/st");
+  const ask = async (label: string, h: RequestHead, resHeaders: [string, string][]) => {
+    currentPath = label;
+    replyHeaders = resHeaders;
+    return s.settle(s.runner.run(Effect.scoped(Effect.map(wire.request(addr, h, new Uint8Array()), (r) => r.status))));
+  };
+  const batchHead: RequestHead = { method: "POST", path: "/admin/api/batch", headers: [[READS, "1"], [NO_HEDGE, "1"], ["accept", `${BATCH_LINES}, application/json`]] };
+  assert.equal(await ask("new-stream", batchHead, [["content-type", BATCH_LINES]]), 200);
+  assert.equal(await ask("old-ndjson", batchHead, [["content-type", NDJSON]]), 200);
+  assert.equal(await ask("old-json", batchHead, [["content-type", "application/json"]]), 200);
+  assert.equal(await ask("sse", { method: "GET", path: "/admin/api/events", headers: [["accept", "text/event-stream"]] }, []), 200);
+  assert.deepEqual(timedPaths, ["old-json"]);
 });
 
 /// One in the background whose way is gone under it is still asked again on the link put in its place.

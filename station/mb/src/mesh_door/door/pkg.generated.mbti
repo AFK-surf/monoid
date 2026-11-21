@@ -17,7 +17,7 @@ pub fn asks_zstd(Array[(String, String)]) -> Bool
 
 pub fn closed_with(Connection) -> (String, String)?
 
-pub async fn compressed(Packer, Answer, Array[(String, String)], String) -> Answer
+pub async fn compressed(Packer, Answer, Array[(String, String)], String, extra_types? : Array[String]) -> Answer
 
 pub fn concat(Array[Bytes]) -> Bytes
 
@@ -136,6 +136,7 @@ pub(all) struct Packer {
 
 pub(all) struct Packing {
   push : async (Bytes) -> Bytes
+  finish : async () -> Bytes
   close : () -> Unit
 }
 

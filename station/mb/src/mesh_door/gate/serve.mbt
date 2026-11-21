@@ -510,6 +510,7 @@ fn tracing(
           if outcome_status.val == 101 ||
             kind.has_prefix("text/event-stream") ||
             kind.has_prefix("application/x-ndjson") ||
+            kind.has_prefix("application/vnd.stillfail.batch-lines+json") ||
             kind.has_prefix("application/x-stillfail-screen") {
             end(true, None)
           }
@@ -712,7 +713,13 @@ async fn answer_request(
     let text = match handled.body { Whole(b) => @utf8.decode_lossy(b); Coming(_) => "" }
     return answer_json(stream, handled.status, text)
   }
-  let sent = @door.compressed(m.packer, handled, headers, rest)
+  let sent = @door.compressed(
+    m.packer,
+    handled,
+    headers,
+    rest,
+    extra_types=["application/vnd.stillfail.batch-lines+json"],
+  )
   @door.send(stream, sent)
   (stream.finish)()
 }

@@ -469,8 +469,9 @@ async fn Admin::batch(self : Admin, r : Request) -> Answer {
   if aborted() {
     return error(503, "read cancelled")
   }
-  if header_of(r.headers, "accept").unwrap_or("").to_lower().contains(ndjson) {
-    return self.batch_lines(r, paths)
+  match batch_stream_type(header_of(r.headers, "accept").unwrap_or("")) {
+    Some(content_type) => return self.batch_lines(r, paths, content_type)
+    None => ()
   }
   let answers : Array[String] = Array::make(paths.length(), "")
   let next = Ref(0)
@@ -502,7 +503,12 @@ async fn Admin::batch(self : Admin, r : Request) -> Answer {
 /// waits for no other, and a client stopping (the device gone, or the stream let go of) starts no read after the one
 /// under way. Each line is as a client from before takes it (compat.mbt, as the whole batch's answers are: that one
 /// sees a stream, and leaves it as it is).
-fn Admin::batch_lines(self : Admin, r : Request, paths : Array[String]) -> Answer {
+fn Admin::batch_lines(
+  self : Admin,
+  r : Request,
+  paths : Array[String],
+  content_type : String,
+) -> Answer {
   let own = Signal::new()
   let stopped = Ref(false)
   let at = Ref(0)
@@ -535,7 +541,7 @@ fn Admin::batch_lines(self : Admin, r : Request, paths : Array[String]) -> Answe
   }
   {
     status: 200,
-    headers: { "content-type": ndjson, "cache-control": "no-store" },
+    headers: { "content-type": content_type, "cache-control": "no-store" },
     body: Streamed(next, close),
   }
 }
@@ -575,7 +581,34 @@ async fn Admin::batch_read(
 
 ///|
 /// A batch's answers a line at a time (`Admin::batch_lines`).
+let batch_lines_type : String = "application/vnd.stillfail.batch-lines+json"
+
+///|
 let ndjson : String = "application/x-ndjson"
+
+///|
+fn batch_stream_type(accept : String) -> String? {
+  let mut saw_ndjson = false
+  for part in accept.split(",") {
+    let raw = part.to_string()
+    let base = match raw.find(";") {
+      Some(i) => raw.unsafe_substring(start=0, end=i)
+      None => raw
+    }
+    let token = base.trim(chars=" \t\n\r").to_owned().to_lower()
+    if token == batch_lines_type {
+      return Some(batch_lines_type)
+    }
+    if token == ndjson {
+      saw_ndjson = true
+    }
+  }
+  if saw_ndjson {
+    Some(ndjson)
+  } else {
+    None
+  }
+}
 
 ///|
 fn path_of(p : String) -> String {

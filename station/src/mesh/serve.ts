@@ -971,7 +971,7 @@ function tracing(traces: Traces | undefined, head: any, method: string, path: st
           const said = JSON.parse(line.toString());
           outcome.status = Number(said.status) || 0;
           const type = String(said.headers?.["content-type"] ?? "");
-          if (outcome.status === 101 || type.startsWith("text/event-stream") || type.startsWith("application/x-ndjson") || type.startsWith("application/x-stillfail-screen")) end(true, null);
+          if (outcome.status === 101 || type.startsWith("text/event-stream") || type.startsWith("application/x-ndjson") || type.startsWith("application/vnd.stillfail.batch-lines+json") || type.startsWith("application/x-stillfail-screen")) end(true, null);
         } catch {}
         outcome.sent += bytes.length - line.length - 1;
       } else outcome.sent += bytes.length;
@@ -1041,7 +1041,7 @@ async function answerRequest(m: Members, stream: Stream, reader: Reader, head: a
   const { handled, headers, rest, plain } = await handledOf(m, method, path, head, body, viewer, controller?.signal).finally(() => { handling = false; });
   if (plain) return answer(handled.status, (handled.body as Buffer).toString());
   // Compressed, for a client that asks so (compress.ts).
-  const sent = await compressed(handled, headers, rest);
+  const sent = await compressed(handled, headers, rest, ["application/vnd.stillfail.batch-lines+json"]);
   const ready = wall.now();
   await send(stream, sent);
   await stream.finish();

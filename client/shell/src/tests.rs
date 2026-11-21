@@ -465,6 +465,37 @@ fn takes_zstd_apart_a_piece_at_a_time() {
     let id = serde_json::from_str::<Value>(&answer(call + 4).0).unwrap()["id"].as_u64().unwrap();
     shell.call(call + 5, "zstd.push".into(), format!(r#"{{"id":{id}}}"#).as_bytes(), Some(b"not zstd at all".to_vec()));
     assert_ne!(answer(call + 5).1, "");
+
+    // zstd.stream + zstd.push with finish: true ends the frame cleanly (both multi-chunk and empty).
+    shell.call(call + 6, "zstd.stream".into(), b"{\"level\":3,\"window\":20}", None);
+    let sid = serde_json::from_str::<Value>(&answer(call + 6).0).unwrap()["id"].as_u64().unwrap();
+    let mut streamed = Vec::new();
+    for (i, piece) in [b"{\"status\":200,\"body\":1}\n".as_slice(), b"{\"status\":200,\"body\":2}\n".as_slice()].into_iter().enumerate() {
+        shell.call(call + 7 + i as u64, "zstd.push".into(), format!(r#"{{"id":{sid}}}"#).as_bytes(), Some(piece.to_vec()));
+        let (_, error, bytes) = answer(call + 7 + i as u64);
+        assert_eq!(error, "");
+        streamed.extend(bytes.unwrap_or_default());
+    }
+    shell.call(call + 9, "zstd.push".into(), format!(r#"{{"id":{sid},"finish":true}}"#).as_bytes(), Some(Vec::new()));
+    let (_, error, tail) = answer(call + 9);
+    assert_eq!(error, "");
+    streamed.extend(tail.unwrap_or_default());
+    shell.call(call + 10, "zstd.close".into(), format!(r#"{{"id":{sid}}}"#).as_bytes(), None);
+    assert_eq!(answer(call + 10).1, "");
+    let decoded = zstd::stream::decode_all(&streamed[..]).unwrap();
+    assert_eq!(decoded, b"{\"status\":200,\"body\":1}\n{\"status\":200,\"body\":2}\n");
+
+    // Empty zstd.stream finished immediately produces a valid empty zstd frame.
+    shell.call(call + 11, "zstd.stream".into(), b"{\"level\":3,\"window\":20}", None);
+    let esid = serde_json::from_str::<Value>(&answer(call + 11).0).unwrap()["id"].as_u64().unwrap();
+    shell.call(call + 12, "zstd.push".into(), format!(r#"{{"id":{esid},"finish":true}}"#).as_bytes(), Some(Vec::new()));
+    let (_, error, empty_frame) = answer(call + 12);
+    assert_eq!(error, "");
+    let empty_frame = empty_frame.unwrap_or_default();
+    assert!(!empty_frame.is_empty());
+    assert_eq!(zstd::stream::decode_all(&empty_frame[..]).unwrap(), b"");
+    shell.call(call + 13, "zstd.close".into(), format!(r#"{{"id":{esid}}}"#).as_bytes(), None);
+    assert_eq!(answer(call + 13).1, "");
 }
 
 #[test]

@@ -25,6 +25,8 @@ test("a whole JSON answer is compressed for a client that asks so, and only then
   assert.equal(await compressed(page, asks, "/preview/5173/index.html"), page);
   const picture = { ...answer, headers: { "content-type": "image/png" } };
   assert.equal(await compressed(picture, asks, "/sessions/k/files"), picture);
+  const otherPlusJson = { ...answer, headers: { "content-type": "application/problem+json" } };
+  assert.equal(await compressed(otherPlusJson, asks, "/chats", ["application/vnd.stillfail.batch-lines+json"]), otherPlusJson);
   const small = json({ ok: true });
   assert.equal(await compressed(small, asks, "/threads/1"), small);
 });
@@ -53,7 +55,8 @@ test("a batch's answers a line at a time are compressed line by line, each whole
       return { done: true, value: undefined };
     },
   };
-  const sent = await compressed({ status: 200, headers: { "content-type": "application/x-ndjson", "cache-control": "no-store" }, body: source }, asks, "/batch");
+  const batchLines = ["application/vnd.stillfail.batch-lines+json"];
+  const sent = await compressed({ status: 200, headers: { "content-type": "application/vnd.stillfail.batch-lines+json", "cache-control": "no-store" }, body: source }, asks, "/batch", batchLines);
   assert.equal(sent.headers["content-encoding"], ZSTD);
   const it = (sent.body as AsyncIterable<Buffer>)[Symbol.asyncIterator]();
   const read = createZstdDecompress();
@@ -78,6 +81,113 @@ test("a batch's answers a line at a time are compressed line by line, each whole
   read.close();
   await it.return?.();
   assert.equal(let_go, true);
+});
+
+test("a compressed stream finishes its zstd frame once on normal EOF (including empty) and never fakes a trailer on cancel or error", async () => {
+  const batchLines = ["application/vnd.stillfail.batch-lines+json"];
+  // Non-empty normal EOF: ends with a complete zstd frame readable by strict whole-frame decompression.
+  const lines = pages.slice(0, 4).map((p) => `${JSON.stringify(p)}\n`);
+  const finite = async function* () {
+    for (const l of lines) yield Buffer.from(l);
+  };
+  const sent = await compressed({ status: 200, headers: { "content-type": "application/vnd.stillfail.batch-lines+json", "cache-control": "no-store" }, body: finite() }, asks, "/batch", batchLines);
+  assert.equal(sent.headers["content-encoding"], ZSTD);
+  const chunks: Buffer[] = [];
+  for await (const c of sent.body as AsyncIterable<Buffer>) chunks.push(c);
+  const packed = Buffer.concat(chunks);
+  assert.equal(zstdDecompressSync(packed).toString(), lines.join(""));
+  assert.ok(packed.length < Buffer.byteLength(lines.join("")) / 2);
+
+  // Empty source normal EOF: still produces a valid empty zstd frame.
+  const emptySource = async function* (): AsyncGenerator<Buffer> {};
+  const emptySent = await compressed({ status: 200, headers: { "content-type": "application/vnd.stillfail.batch-lines+json" }, body: emptySource() }, asks, "/batch", batchLines);
+  assert.equal(emptySent.headers["content-encoding"], ZSTD);
+  const emptyChunks: Buffer[] = [];
+  for await (const c of emptySent.body as AsyncIterable<Buffer>) emptyChunks.push(c);
+  assert.ok(emptyChunks.length >= 1);
+  assert.equal(zstdDecompressSync(Buffer.concat(emptyChunks)).length, 0);
+
+  // Cancelled stream: closes without emitting a frame trailer, so strict decompression rejects it as incomplete.
+  let released = false;
+  let idx = 0;
+  const cancellable: AsyncIterableIterator<Buffer> = {
+    [Symbol.asyncIterator]: () => cancellable,
+    next: async () => (idx < lines.length ? { done: false, value: Buffer.from(lines[idx++]!) } : { done: true, value: undefined }),
+    return: async () => {
+      released = true;
+      return { done: true, value: undefined };
+    },
+  };
+  const cancelSent = await compressed({ status: 200, headers: { "content-type": "application/vnd.stillfail.batch-lines+json" }, body: cancellable }, asks, "/batch", batchLines);
+  const cancelIt = (cancelSent.body as AsyncIterable<Buffer>)[Symbol.asyncIterator]();
+  const first = await cancelIt.next();
+  assert.equal(first.done, false);
+  await cancelIt.return?.();
+  assert.equal(released, true);
+  assert.deepEqual(await cancelIt.next(), { done: true, value: undefined });
+  assert.throws(() => zstdDecompressSync(first.value as Buffer));
+
+  // Concurrent return() while next() is in-flight inside compress() or finish() settles cleanly without hanging.
+  let releaseChunk!: () => void;
+  let releasedInCompress = false;
+  const bigChunk = Buffer.from(lines.join("").repeat(20));
+  const raceCompressSource: AsyncIterableIterator<Buffer> = {
+    [Symbol.asyncIterator]: () => raceCompressSource,
+    next: () => new Promise((resolve) => { releaseChunk = () => resolve({ done: false, value: bigChunk }); }),
+    return: async () => {
+      releasedInCompress = true;
+      return { done: true, value: undefined };
+    },
+  };
+  const raceCompress = await compressed({ status: 200, headers: { "content-type": "application/vnd.stillfail.batch-lines+json" }, body: raceCompressSource }, asks, "/batch", batchLines);
+  const rcIt = (raceCompress.body as AsyncIterable<Buffer>)[Symbol.asyncIterator]();
+  const rcNext = rcIt.next();
+  releaseChunk();
+  // Let microtask enter compress(chunk), then cancel while zstd flush is pending on libuv threadpool.
+  await Promise.resolve();
+  const [rcRes] = await Promise.all([rcNext, rcIt.return?.()]);
+  assert.equal(releasedInCompress, true);
+  assert.deepEqual(rcRes, { done: true, value: undefined });
+
+  let releaseEof!: () => void;
+  let releasedInFinish = false;
+  const raceFinishSource: AsyncIterableIterator<Buffer> = {
+    [Symbol.asyncIterator]: () => raceFinishSource,
+    next: () => new Promise((resolve) => { releaseEof = () => resolve({ done: true, value: undefined }); }),
+    return: async () => {
+      releasedInFinish = true;
+      return { done: true, value: undefined };
+    },
+  };
+  const raceFinish = await compressed({ status: 200, headers: { "content-type": "application/vnd.stillfail.batch-lines+json" }, body: raceFinishSource }, asks, "/batch", batchLines);
+  const rfIt = (raceFinish.body as AsyncIterable<Buffer>)[Symbol.asyncIterator]();
+  const rfNext = rfIt.next();
+  releaseEof();
+  // Let microtask enter finish(), then cancel while z.end() is pending.
+  await Promise.resolve();
+  const [rfRes] = await Promise.all([rfNext, rfIt.return?.()]);
+  assert.equal(releasedInFinish, true);
+  assert.deepEqual(rfRes, { done: true, value: undefined });
+
+  // Errored source: propagates error without emitting a frame trailer.
+  const failing: AsyncIterable<Buffer> = {
+    [Symbol.asyncIterator]() {
+      let step = 0;
+      return {
+        async next() {
+          if (step++ === 0) return { done: false, value: Buffer.from(lines[0]!) };
+          throw new Error("boom");
+        },
+      };
+    },
+  };
+  const failSent = await compressed({ status: 200, headers: { "content-type": "application/x-ndjson" }, body: failing }, asks, "/batch", batchLines);
+  const failChunks: Buffer[] = [];
+  await assert.rejects(async () => {
+    for await (const c of failSent.body as AsyncIterable<Buffer>) failChunks.push(c);
+  }, /boom/);
+  assert.equal(failChunks.length, 1);
+  assert.throws(() => zstdDecompressSync(Buffer.concat(failChunks)));
 });
 
 test("an event stream is compressed event by event, each whole as it arrives, and let go of at once", async () => {

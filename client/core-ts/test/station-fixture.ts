@@ -108,8 +108,10 @@ export function stationHost(answers: Answers) {
         const a = answer({ ...req, method: "GET", url: `https://stillfail.test/admin/api${g}`, body: null });
         return { status: a.status, body: a.body.length > 0 ? JSON.parse(new TextDecoder().decode(a.body)) : null };
       });
-      const streams = batches.ndjson && req.headers.some(([k, v]) => k.toLowerCase() === "accept" && v.includes("application/x-ndjson"));
-      if (streams) return { status: 200, headers: [["content-type", "application/x-ndjson"]], body: new TextEncoder().encode(answers.map((a) => `${JSON.stringify(a)}\n`).join("")) };
+      const accept = req.headers.find(([k]) => k.toLowerCase() === "accept")?.[1] ?? "";
+      const tokens = accept.split(",").map((p) => p.split(";", 1)[0]!.trim().toLowerCase());
+      const streamType = !batches.ndjson ? null : tokens.includes("application/vnd.stillfail.batch-lines+json") ? "application/vnd.stillfail.batch-lines+json" : tokens.includes("application/x-ndjson") ? "application/x-ndjson" : null;
+      if (streamType !== null) return { status: 200, headers: [["content-type", streamType]], body: new TextEncoder().encode(answers.map((a) => `${JSON.stringify(a)}\n`).join("")) };
       return jsonResponse(200, { answers });
     }
     const list = /^\/admin\/api\/changed\/(chats|threads|sessions)(\?|$)/.exec(path);

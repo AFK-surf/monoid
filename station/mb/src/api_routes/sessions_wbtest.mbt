@@ -98,3 +98,21 @@ test "GET /sessions/:key/files routes thumb=1 to thumbnail, thumb=2 to preview, 
   assert_eq(p0.calls.filter(c => c.0 == "drive/thumbs.thumbnail").length(), 0)
   assert_eq(p0.calls.filter(c => c.0 == "drive/thumbs.preview").length(), 0)
 }
+
+///|
+test "POST /batch negotiates matching streaming MIME token and keeps old ndjson and whole JSON fallback" {
+  assert_eq(
+    batch_stream_type("application/vnd.stillfail.batch-lines+json, application/json"),
+    Some("application/vnd.stillfail.batch-lines+json"),
+  )
+  assert_eq(
+    batch_stream_type("application/x-ndjson; charset=utf-8, application/json"),
+    Some("application/x-ndjson"),
+  )
+  assert_eq(
+    batch_stream_type("application/x-ndjson, application/vnd.stillfail.batch-lines+json"),
+    Some("application/vnd.stillfail.batch-lines+json"),
+  )
+  assert_eq(batch_stream_type("application/json"), None)
+  assert_eq(batch_stream_type(""), None)
+}

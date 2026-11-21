@@ -24,10 +24,11 @@ const compressWhole = promisify(zstdCompress);
 const header = (headers: Record<string, string>, name: string) => Object.entries(headers).find(([k]) => k.toLowerCase() === name)?.[1];
 
 /// `answer` as it goes to a client that asked with `headers` for `path` (after /admin/api): compressed where it can be.
-export async function compressed(answer: Answer, headers: Record<string, string>, path: string): Promise<Answer> {
+export async function compressed(answer: Answer, headers: Record<string, string>, path: string, extraTypes: readonly string[] = []): Promise<Answer> {
   const asked = (header(headers, "accept-encoding") ?? "").split(",").some((e) => e.trim() === ZSTD);
   if (!asked || path.startsWith("/preview/") || header(answer.headers, "content-encoding") !== undefined) return answer;
-  if (!/^(application\/(json|x-ndjson)|text\/)/.test(header(answer.headers, "content-type") ?? "")) return answer;
+  const type = (header(answer.headers, "content-type") ?? "").split(";", 1)[0]!.trim().toLowerCase();
+  if (type !== "application/json" && type !== "application/x-ndjson" && !type.startsWith("text/") && !extraTypes.includes(type)) return answer;
   // A length said was of what it says, not of what is sent (a file's progress would go by it): none is said.
   const sent = Object.fromEntries(Object.entries(answer.headers).filter(([k]) => k.toLowerCase() !== "content-length"));
   sent["content-encoding"] = ZSTD;
@@ -38,33 +39,107 @@ export async function compressed(answer: Answer, headers: Record<string, string>
   return { ...answer, headers: sent, body: compressedStream(answer.body) };
 }
 
-/// A stream's chunks compressed, each flushed as it goes. Ends as the stream does; let go of (`return`), it lets go of the
-/// stream at once (written by hand: an async generator's would wait for the stream's next chunk).
+/// A stream's chunks compressed, each flushed as it goes. On normal EOF the encoder finishes its zstd frame once
+/// (including an empty source); let go of (`return`) or on a source error it closes without faking a trailer and lets
+/// go of the stream at once (written by hand: an async generator's would wait for the stream's next chunk).
 function compressedStream(body: AsyncIterable<Buffer>): AsyncIterableIterator<Buffer> {
   const source = body[Symbol.asyncIterator]();
   const z = createZstdCompress({ params });
   // What it gives as it is written and flushed (flowing: a big chunk's output is never held back for want of a reader).
   const out: Buffer[] = [];
+  let cancelled = false;
+  let closed = false;
+  let finished = false;
+  let cancelPending: (() => void) | null = null;
   z.on("data", (part: Buffer) => out.push(part));
+  // Keep an idle error listener so destroying/closing never surfaces as an uncaught stream error.
+  z.on("error", () => {});
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    const cancel = cancelPending;
+    cancelPending = null;
+    z.close();
+    cancel?.();
+  };
   const compress = (chunk: Buffer) =>
     new Promise<Buffer>((resolve, reject) => {
+      if (cancelled || closed) return resolve(Buffer.alloc(0));
+      let settled = false;
+      const done = (err: Error | null) => {
+        if (settled) return;
+        settled = true;
+        if (cancelPending === onCancel) cancelPending = null;
+        z.off("error", onError);
+        z.off("close", onClose);
+        if (err) {
+          cancelled = true;
+          close();
+          reject(err);
+        } else resolve(cancelled ? Buffer.alloc(0) : Buffer.concat(out.splice(0)));
+      };
+      const onError = (err: Error) => done(err);
+      const onClose = () => done(null);
+      const onCancel = () => done(null);
+      cancelPending = onCancel;
+      z.once("error", onError);
+      z.once("close", onClose);
       z.write(chunk, (error) => {
-        if (error) reject(error);
+        if (error) done(error);
       });
-      z.flush(constants.ZSTD_e_flush, () => resolve(Buffer.concat(out.splice(0))));
+      z.flush(constants.ZSTD_e_flush, () => done(null));
+    });
+  const finish = () =>
+    new Promise<Buffer>((resolve, reject) => {
+      if (cancelled || closed || finished) return resolve(Buffer.alloc(0));
+      finished = true;
+      let settled = false;
+      const done = (err: Error | null) => {
+        if (settled) return;
+        settled = true;
+        if (cancelPending === onCancel) cancelPending = null;
+        z.off("error", onError);
+        z.off("end", onEnd);
+        z.off("close", onClose);
+        close();
+        if (err) reject(err);
+        else resolve(cancelled ? Buffer.alloc(0) : Buffer.concat(out.splice(0)));
+      };
+      const onError = (err: Error) => done(err);
+      const onEnd = () => done(null);
+      const onClose = () => done(null);
+      const onCancel = () => done(null);
+      cancelPending = onCancel;
+      z.once("error", onError);
+      z.once("end", onEnd);
+      z.once("close", onClose);
+      z.end();
     });
   const it: AsyncIterableIterator<Buffer> = {
     [Symbol.asyncIterator]: () => it,
     next: async () => {
-      const next = await source.next();
-      if (next.done) {
-        z.close();
-        return { done: true, value: undefined };
+      if (cancelled || finished) return { done: true, value: undefined };
+      let next: IteratorResult<Buffer>;
+      try {
+        next = await source.next();
+      } catch (err) {
+        cancelled = true;
+        close();
+        throw err;
       }
-      return { done: false, value: await compress(next.value) };
+      if (cancelled) return { done: true, value: undefined };
+      if (next.done) {
+        const tail = await finish();
+        if (cancelled) return { done: true, value: undefined };
+        return tail.length > 0 ? { done: false, value: tail } : { done: true, value: undefined };
+      }
+      const chunk = await compress(next.value);
+      if (cancelled) return { done: true, value: undefined };
+      return { done: false, value: chunk };
     },
     return: async () => {
-      z.close();
+      cancelled = true;
+      close();
       await source.return?.();
       return { done: true, value: undefined };
     },

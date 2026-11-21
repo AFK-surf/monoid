@@ -19,7 +19,7 @@ import { RELAY, type Place, type Status } from "../status.ts";
 import { route } from "../route.ts";
 import { utf8 } from "../util.ts";
 import type { StationAddr } from "./addr.ts";
-import { BULK, BULK_LANE, IDEMPOTENCY_KEY, IDEMPOTENT, NDJSON, NO_HEDGE, READS } from "./requests.ts";
+import { BATCH_LINES, BULK, BULK_LANE, IDEMPOTENCY_KEY, IDEMPOTENT, NDJSON, NO_HEDGE, READS } from "./requests.ts";
 import type { LinkNet, PeerDiag, RequestHead, ScreenAsk, StationWire, TerminalAsk, WireReply, WireSocket } from "./wire.ts";
 import { RECHECKING } from "./words.ts";
 
@@ -221,8 +221,13 @@ export class MeshWire implements StationWire {
       const relay = l.path() === "relay" ? l.via() : null;
       const speedVia = typeof l.speedKey === "function" ? l.speedKey() : relay;
       // How fast it comes tells how fast that way is; not an event stream's, which comes as things happen, nor a batch
-      // streamed (NDJSON), which comes as the station reads each of it.
-      const streams = head.headers.some(([k, v]) => k.toLowerCase() === "accept" && (v.includes("text/event-stream") || v.includes(NDJSON)));
+      // streamed line-by-line, which comes as the station reads each of it. Use the actual response type for batches so
+      // an old station falling back to whole JSON still times normally, while keeping Accept: text/event-stream's rule.
+      const replyType = (reply.headers.find(([k]) => k.toLowerCase() === "content-type")?.[1] ?? "").split(";", 1)[0]!.trim().toLowerCase();
+      const streams =
+        head.headers.some(([k, v]) => k.toLowerCase() === "accept" && v.includes("text/event-stream")) ||
+        replyType === BATCH_LINES ||
+        replyType === NDJSON;
       // The whole body gone and answered: how fast its way took it.
       if (timesBody && speedVia !== null) mesh.noteSpeed(key, speedVia, body.length, Math.max(1, mesh.now() - askedAt));
       const timed = speedVia !== null && !streams ? mesh.timed(key, speedVia, reply.body) : reply.body;

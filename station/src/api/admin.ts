@@ -449,7 +449,8 @@ export class Admin {
     const paths = gets as string[];
     if (r.signal?.aborted) return error(503, "read cancelled");
     const accept = Object.entries(r.headers).find(([k]) => k.toLowerCase() === "accept")?.[1] ?? "";
-    if (accept.toLowerCase().includes(NDJSON)) return this.batchLines(r, paths);
+    const streamType = batchStreamType(accept);
+    if (streamType !== null) return this.batchLines(r, paths, streamType);
     const answers: string[] = [];
     let next = 0;
     const work = async () => {
@@ -469,7 +470,7 @@ export class Admin {
   /// and starts none after it. Each line is as a client from before takes it (runtime-compat.ts, as the whole batch's
   /// answers are: that one sees a stream, and leaves it as it is). Written by hand: an async generator's `return`
   /// would wait for the read under way.
-  private batchLines(r: Request, paths: string[]): Answer {
+  private batchLines(r: Request, paths: string[], contentType: string): Answer {
     const stop = new AbortController();
     const signal = r.signal === undefined ? stop.signal : AbortSignal.any([r.signal, stop.signal]);
     const done = { done: true as const, value: undefined };
@@ -496,7 +497,7 @@ export class Admin {
         return done;
       },
     };
-    return { status: 200, headers: { "content-type": NDJSON, "cache-control": "no-store" }, body: it };
+    return { status: 200, headers: { "content-type": contentType, "cache-control": "no-store" }, body: it };
   }
 
   /// One read of a batch, as its GET is answered, in the background.
@@ -509,7 +510,17 @@ export class Admin {
 }
 
 /// A batch's answers a line at a time (`batchLines`).
+const BATCH_LINES = "application/vnd.stillfail.batch-lines+json";
 const NDJSON = "application/x-ndjson";
+function batchStreamType(accept: string): string | null {
+  let sawNdjson = false;
+  for (const part of accept.split(",")) {
+    const token = part.split(";", 1)[0]!.trim().toLowerCase();
+    if (token === BATCH_LINES) return BATCH_LINES;
+    if (token === NDJSON) sawNdjson = true;
+  }
+  return sawNdjson ? NDJSON : null;
+}
 const pathOf = (p: string) => (p.indexOf("?") < 0 ? p : p.slice(0, p.indexOf("?")));
 /// One answer of a batch as it is said: its body as it is where it is JSON, else as a string.
 function batchLine(a: Answer): string {

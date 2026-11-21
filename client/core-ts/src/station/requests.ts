@@ -37,7 +37,9 @@ export const BULK = "stillfail-bulk";
 /// Lane index for striped multi-way bulk transfers (mesh-wire.ts). Said to the wire alone, never sent.
 export const BULK_LANE = "stillfail-bulk-lane";
 /// What a batch's answer is as a station streams it (station/src/api/admin.ts `batchLines`): a line of JSON a read,
-/// in order.
+/// in order. New clients ask for `BATCH_LINES` so older stations whose streaming zstd encoder did not finish its frame
+/// fall back to whole `application/json`; `NDJSON` stays recognised for streams that reply with it.
+export const BATCH_LINES = "application/vnd.stillfail.batch-lines+json";
 export const NDJSON = "application/x-ndjson";
 export const LANG_HEADER = "stillfail-lang";
 export const EVENT_STREAM = "text/event-stream";
@@ -330,7 +332,7 @@ export class Requests {
       Effect.gen({ self: this }, function* () {
         const status = this.#status(station);
         const bytes = toJsonBytes({ gets });
-        const [span, head] = this.#head(station, "POST", "/batch", [["content-type", "application/json"], [READS, "1"], [NO_HEDGE, "1"], ["accept", `${NDJSON}, application/json`]], bytes.length, ctx);
+        const [span, head] = this.#head(station, "POST", "/batch", [["content-type", "application/json"], [READS, "1"], [NO_HEDGE, "1"], ["accept", `${BATCH_LINES}, application/json`]], bytes.length, ctx);
         const result = yield* Effect.result(
           Effect.gen({ self: this }, function* () {
             const reply = yield* within(this.wire.request(station, head, bytes), JSON_IDLE_MS);
@@ -353,8 +355,9 @@ export class Requests {
               out.push(item);
               return Effect.void;
             });
-            if ((replyHeader(reply, "content-type") ?? "").startsWith(NDJSON)) {
-              // A line at a time as it comes: what is left of a line goes on with the next piece.
+            const mediaType = (replyHeader(reply, "content-type") ?? "").split(";", 1)[0]!.trim().toLowerCase();
+            if (mediaType === BATCH_LINES || mediaType === NDJSON) {
+              // A line at a time as it comes: every line the station produces ends with '\n'.
               let rest: Uint8Array = empty;
               const line = (bytes: Uint8Array) => {
                 const parsed = timed("reply.parse", () => parseJson(bytes));
@@ -366,14 +369,15 @@ export class Requests {
                 const piece = rest.length === 0 ? chunk : concat([rest, chunk]);
                 let from = 0;
                 for (let nl = piece.indexOf(10, from); nl >= 0; nl = piece.indexOf(10, from)) {
-                  if (nl > from) yield* line(piece.subarray(from, nl));
+                  if (nl === from) return yield* Effect.fail(bad());
+                  yield* line(piece.subarray(from, nl));
                   from = nl + 1;
                 }
                 rest = from === 0 ? piece : piece.slice(from);
               }
-              if (rest.length > 0) yield* line(rest);
+              if (rest.length > 0) return yield* Effect.fail(bad());
             } else {
-              // (a station from before streams: all of them in one)
+              // (a station from before streams, or one that answered whole JSON: all of them in one)
               const whole = yield* readAll(pull);
               const answers = get(timed("reply.parse", () => parseJson(whole)), "answers");
               if (!Array.isArray(answers) || answers.length !== gets.length) return yield* Effect.fail(bad());
