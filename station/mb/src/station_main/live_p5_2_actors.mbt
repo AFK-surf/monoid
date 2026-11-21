@@ -56,7 +56,7 @@ priv struct MbActor {
   mirror : Mirror
   mut sent : Int32
   mut next : Int32
-  agents : Map[Int32, (Int32, Agent)]
+  agents : Map[Int32, (Int32, Agent, Int?)]
   mut generation : Int32
   mut closed : Bool
   told : Map[Int32, () -> Unit]
@@ -822,9 +822,15 @@ async fn MbActor::hub_asked(
     }
     "snapshot" => {
       let snap = self.call("snapshot", [])
-      let held = match jnum_of(snap, "agent") {
-        Some(h) => self.agents.get(h.to_int()).map(x => x.1)
+      let entry = match jnum_of(snap, "agent") {
+        Some(h) => self.agents.get(h.to_int())
         None => None
+      }
+      let held = entry.map(x => x.1)
+      let tools_unheard = match entry {
+        Some((_, _, Some(heard))) if self.runtime != "codex" =>
+          self.program.ctx.mcp_heard_of(self.key) == heard
+        _ => false
       }
       self.closing()
       let agent = match held {
@@ -839,6 +845,9 @@ async fn MbActor::hub_asked(
         Object(m) => {
           let c = m.copy()
           c["agent"] = agent
+          if tools_unheard {
+            c["toolsUnheard"] = jb(true)
+          }
           Json::object(c)
         }
         other => other
@@ -883,15 +892,20 @@ async fn MbActor::adopt(
   let mut taken = Json::null()
   match agent {
     Some(g) => {
+      if jtext(snap, "runtime") is Some(r) { self.runtime = r }
+      let heard = if jfield(snap, "toolsUnheard") is True && self.runtime != "codex" {
+        Some(self.program.ctx.mcp_heard_of(self.key))
+      } else {
+        None
+      }
       self.next += 1
       let handle = self.next
-      self.agents[handle] = (self.generation, g)
+      self.agents[handle] = (self.generation, g, heard)
       taken = { "handle": ji(handle), "generation": ji(self.generation) }
       self.mirror.agent = Some(handle)
       self.mirror.turn = jtext(jfield(snap, "turn"), "id")
       self.mirror.idle_since = self.program.now() -
         jnum_of(snap, "idleMs").unwrap_or(0.0)
-      if jtext(snap, "runtime") is Some(r) { self.runtime = r }
     }
     None => ()
   }
@@ -950,7 +964,7 @@ fn MbActor::told_(self : MbActor, f : String, args : Array[Json]) -> Unit {
       let tasks = match as_num(a(0)) {
         Some(h) =>
           match self.agents.get(h.to_int()) {
-            Some((_, s)) => (s.background)()
+            Some((_, s, _)) => (s.background)()
             None => Json::array([])
           }
         None => Json::array([])
@@ -991,7 +1005,7 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
     let handle = as_num(a(0))
       .unwrap_or(-1.0)
       .to_int()
-    guard self.agents.get(handle) is Some((_, s)) else {
+    guard self.agents.get(handle) is Some((_, s, _)) else {
       raise LiveError("no runtime session \{handle}")
     }
     let rest = args[1:].to_owned()
@@ -1146,6 +1160,7 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
     }
     "open" => {
       let gen = Ref(0)
+      let heard = ctx.mcp_heard_of(self.key)
       let opened = ctx.open_agent(
         self.key,
         jitems(a(0)),
@@ -1160,7 +1175,7 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
       )
       self.next += 1
       let handle = self.next
-      self.agents[handle] = (gen.val, opened.0)
+      self.agents[handle] = (gen.val, opened.0, Some(heard))
       self.route(opened.0, gen.val)
       match opened.1 {
         Object(m) => {
@@ -1177,7 +1192,7 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
         .unwrap_or(-1.0)
         .to_int()
       match self.agents.get(handle) {
-        Some((_, s)) =>
+        Some((_, s, _)) =>
           ctx.retune_agent(
             self.key,
             s,
@@ -1190,12 +1205,24 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
       }
     }
     "profileId" => jfield(ctx.run_on(self.key, a(0) is True, true), "id")
+    "toolsUnheard" => {
+      let handle = as_num(a(0)).unwrap_or(-1.0).to_int()
+      match self.agents.get(handle) {
+        Some((_, _, Some(heard))) if self.runtime != "codex" =>
+          if ctx.mcp_heard_of(self.key) == heard {
+            jstr("its process never reached the station's tools")
+          } else {
+            Json::null()
+          }
+        _ => Json::null()
+      }
+    }
     "outlived" =>
       match
         self.agents.get(
           as_num(a(0)).unwrap_or(-1.0).to_int(),
         ) {
-        Some((_, s)) => jb((s.outlived)())
+        Some((_, s, _)) => jb((s.outlived)())
         None => jb(false)
       }
     "notice" => {
@@ -1296,7 +1323,7 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
       let version = match as_num(a(0)) {
         Some(h) =>
           match self.agents.get(h.to_int()) {
-            Some((_, s)) => (s.runtime_version)()
+            Some((_, s, _)) => (s.runtime_version)()
             None => None
           }
         None => None

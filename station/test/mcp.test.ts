@@ -186,3 +186,21 @@ test("fitted prioritizes PRIORITY tools ahead of smaller non-priority tools with
   for (const t of prio) assert.ok(names.includes(t.name), `${t.name} should be declared directly ahead of tiny tools`);
   assert.ok(indirect.length > 0 && indirect.every((t) => t.name.startsWith("tiny_")));
 });
+
+test("heard counts only authorized tools/list and tools/call requests", async () => {
+  const e = endpoint();
+  assert.equal(e.heard("session-1"), 0);
+  assert.equal((await e.handle("GET", "Bearer good", "")).status, 405);
+  assert.equal((await rpc(e, undefined, { jsonrpc: "2.0", id: 1, method: "tools/list" })).status, 401);
+  assert.equal((await rpc(e, "bad", { jsonrpc: "2.0", id: 1, method: "tools/list" })).status, 401);
+  assert.equal((await e.handle("POST", "Bearer good", "{not-json")).status, 400);
+  assert.equal((await rpc(e, "good", { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } })).status, 200);
+  assert.equal((await rpc(e, "good", { jsonrpc: "2.0", method: "notifications/initialized" })).status, 202);
+  assert.equal((await rpc(e, "good", { jsonrpc: "2.0", id: 2, method: "ping" })).status, 200);
+  assert.equal((await rpc(e, "good", { jsonrpc: "2.0", id: 3, method: "unknown/method" })).status, 200);
+  assert.equal(e.heard("session-1"), 0);
+  assert.equal((await rpc(e, "good", { jsonrpc: "2.0", id: 4, method: "tools/list" })).status, 200);
+  assert.equal(e.heard("session-1"), 1);
+  assert.equal((await rpc(e, "good", { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "echo", arguments: { text: "hi" } } })).status, 200);
+  assert.equal(e.heard("session-1"), 2);
+});

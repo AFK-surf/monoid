@@ -1151,6 +1151,25 @@ async fn P52::mcp(self : P52, r : Request) -> Reply {
     self.tools()
   })
   let answered = endpoint.handle(r.meth, r.header("authorization"), r.body)
+  if r.meth == "POST" && answered.status == 200 {
+    match attempt(() => @json.parse(@utf8.decode_lossy(r.body))) {
+      Ok({ "method": String("tools/list" | "tools/call"), "id": _, .. }) => {
+        let auth = r.header("authorization").unwrap_or("")
+        let token = (if auth.has_prefix("Bearer ") || auth.has_prefix("bearer ") {
+          auth[7:].to_owned()
+        } else {
+          auth
+        }).trim().to_owned()
+        if token != "" {
+          match self.bus.store.session_key_by_token(token) {
+            String(session) if session != "" => self.note_mcp_heard(session)
+            _ => ()
+          }
+        }
+      }
+      _ => ()
+    }
+  }
   match answered.body {
     Some(b) => json_reply(answered.status, of_jv(b))
     None => { status: answered.status, headers: [], body: b"", }

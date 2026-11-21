@@ -1633,6 +1633,73 @@ test("an agent whose process never reached the station's tools is started again 
   await r.close();
 });
 
+test("toolsUnheard survives handover for a process that never reached tools, and is not triggered if it already reached them", async () => {
+  // Case 1: process never reached tools before handover -> snapshot carries toolsUnheard -> adopted process is restarted with TOOLS_LOST.
+  const heard1 = new Map<string, number>();
+  const first = new Rig({ maxNudges: 2, toolsHeard: heard1 });
+  const m1 = message();
+  await first.accept(m1);
+  await settle();
+  const old1 = first.claude.last();
+  const handed1 = await first.hub.handOver();
+  assert.equal(handed1.sessions.length, 1);
+  assert.equal(handed1.sessions[0]!.toolsUnheard, true);
+  const claude1 = new FakeDriver("claude");
+  const hub1 = first.newHub({
+    chats: (id) => (id === "cl" ? first.chat : undefined),
+    drivers: [claude1, new FakeDriver("codex")],
+    internal: false,
+    toolsHeard: new Map<string, number>(),
+  });
+  await hub1.takeUp();
+  hub1.recover();
+  await settle();
+  const taken1 = claude1.last();
+  assert.equal(taken1.sessionId, old1.sessionId);
+  taken1.says("I still have no chat_post tool.");
+  taken1.complete();
+  await settle();
+  assert.ok(taken1.disposed, "adopted process that never reached tools is disposed");
+  const restarted = claude1.last();
+  assert.notEqual(restarted, taken1);
+  assert.equal(restarted.options.resume, taken1.sessionId);
+  assert.deepEqual(restarted.prompts.map(untimed), [TOOLS_LOST]);
+  await hub1.shutdown();
+  await first.close();
+
+  // Case 2: process already reached tools before handover -> snapshot omits toolsUnheard -> adopted process is nudged, not restarted.
+  const heard2 = new Map<string, number>();
+  const second = new Rig({ maxNudges: 2, toolsHeard: heard2 });
+  const m2 = message();
+  await second.accept(m2);
+  await settle();
+  const old2 = second.claude.last();
+  const key2 = old2.options.route;
+  heard2.set(key2, (heard2.get(key2) ?? 0) + 1);
+  const handed2 = await second.hub.handOver();
+  assert.equal(handed2.sessions.length, 1);
+  assert.equal(handed2.sessions[0]!.toolsUnheard, undefined);
+  const claude2 = new FakeDriver("claude");
+  const hub2 = second.newHub({
+    chats: (id) => (id === "cl" ? second.chat : undefined),
+    drivers: [claude2, new FakeDriver("codex")],
+    internal: false,
+    toolsHeard: new Map<string, number>(),
+  });
+  await hub2.takeUp();
+  hub2.recover();
+  await settle();
+  const taken2 = claude2.last();
+  assert.equal(taken2.sessionId, old2.sessionId);
+  taken2.complete();
+  await settle();
+  assert.ok(!taken2.disposed, "adopted process that already reached tools is kept");
+  assert.equal(claude2.count(), 1);
+  assert.deepEqual(taken2.prompts.map(untimed), [NUDGE]);
+  await hub2.shutdown();
+  await second.close();
+});
+
 test("a turn given up on for want of a state (回复即可继续) is tried again by its notice's 重试", async () => {
   const r = new Rig({ maxNudges: 0 });
   const m = message();

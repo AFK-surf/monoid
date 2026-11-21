@@ -115,6 +115,7 @@ pub async fn start_live_p5_2(bus : LiveBus) -> Unit {
     in_flight_mcp: 0,
     mcp_draining: false,
     mcp_drained: None,
+    mcp_heard: Map([]),
   }
   p52_lang_fn.val = () => ctx.lang()
   // The cards' queued outcomes, written by the parts that decide a card (the rigs, the phones, the vault) and their

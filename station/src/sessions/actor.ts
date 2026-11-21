@@ -266,6 +266,8 @@ export type Snapshot = {
   restart?: boolean;
   /// Its context was being compacted by hand (optional: a station from before it does not say).
   compacting?: boolean;
+  /// Its process had not yet reached the station's tools as it was handed over (optional: a station from before does not say).
+  toolsUnheard?: boolean;
   identity?: { model: string | null; effort: string | null; runtime: RuntimeKind } | null;
 };
 
