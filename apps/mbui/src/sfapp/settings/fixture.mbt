@@ -1544,6 +1544,15 @@ fn fx_profiles() -> Array[Json] {
           ("signInProvider", str("Google")),
           ("usesText", str("Antigravity CLI")),
           ("usedBy", []),
+          ("quota", obj([
+            ("state", str("ok")),
+            ("windows", [
+              fx_window("5 小时 · Gemini", "Gemini 5H", 99, "1 小时后恢复", "Gemini"),
+              fx_window("每周 · Gemini", "Gemini W", 76, "3 天后恢复", "Gemini"),
+              fx_window("5 小时 · Claude / GPT", "Claude / GPT 5H", 100, "3 小时后恢复", "Claude / GPT"),
+              fx_window("每周 · Claude / GPT", "Claude / GPT W", 49, "3 天后恢复", "Claude / GPT"),
+            ]),
+          ])),
         ]),
       )
     }

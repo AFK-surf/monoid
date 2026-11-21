@@ -448,15 +448,7 @@ fn pl_account_row_node(r : @view.View, core : Core, ev : () -> Json?, tips : @sf
         },
         title_after_shown=fn() { text(p(), "planText") != "" },
         below=fn(q) {
-          q.show(windows, fn(w) {
-            @sf.style_node(w, fn() { pl_quota_line })
-            // (small blocks in the row's foot start corner: where its mark is, out to the ladder's inset from its side
-            // (lines_from_lead), and out to it from its foot, concentric with its corner there; #6417's quota_line_out)
-            // (by the row's width as it was made, as the row is: link_row_node's narrow or wide)
-            let (_, _, _, foot) = @sf.row_below_inset(w)
-            w.margin(Is((0.0, 0.0, 0.0, foot))) |> ignore
-            @sf.quota_worded_node(w, quota, tips~)
-          })
+          q.show(windows, fn(w) { pl_quota_node(w, quota, tips) })
         },
         below_open=fn() { if windows() { 1.0 } else { 0.0 } },
         // (what is under its name from its vendor's mark: its allowance's chips the room to be each said whole, the
@@ -469,13 +461,26 @@ fn pl_account_row_node(r : @view.View, core : Core, ev : () -> Json?, tips : @sf
 }
 
 ///|
-/// A station's profile in a row (profile_row's), `pv` as it is now: whether it works by its first line, its name; under
-/// it what its check says, whose it is or what it is and its models; why its provider refuses it; at its end what is
-/// under way with it and its allowance. Pressed, its page.
+/// Allowance chips at the row's foot, inset so their corner follows the row's.
+fn pl_quota_node(w : @view.View, quota : () -> Json?, tips : @sf.TipLayer) -> Unit {
+  @sf.style_node(w, fn() { pl_quota_line })
+  let (_, _, _, foot) = @sf.row_below_inset(w)
+  w.margin(Is((0.0, 0.0, 0.0, foot))) |> ignore
+  @sf.quota_worded_node(w, quota, tips~)
+}
+
+///|
+/// A station's profile in a row (profile_row's), with its state, name and tier above its check and models.
+/// Scoped allowance windows go below the row's text. Pressing the row opens the profile's page.
 fn pl_station_row_node(r : @view.View, core : Core, station : String, pv : () -> Json?, tips : @sf.TipLayer) -> Unit {
   let id = fn() { text(pv(), "id") }
   let on = fn() { [("station", station), ("id", id())] }
   let calls = ["profile.check", "profile.quota"]
+  let quota = fn() { field(pv(), "quota") }
+  let grouped = fn() {
+    @sf.has_quota(quota()) && items(quota(), "windows").iter().any(fn(w) { text(Some(w), "scope") != "" })
+  }
+  let trouble = fn() { pl_trouble_of(pv()) }
   // (its menu where the pointer's other button is pressed on it: its page opened, its name copied)
   r.on_menu(fn(m) { pl_menu(fn() { (core.push)(Profile(station, @signals.untracked(id))) }, text(@signals.untracked(pv), "name"), m) })
   |> ignore
@@ -507,28 +512,28 @@ fn pl_station_row_node(r : @view.View, core : Core, station : String, pv : () ->
     // (why its provider refuses it, quiet as the line over it, and where that is the station's trouble, how to mend it
     // in the link's ink: profile_row's)
     below=fn(q) {
-      q.box(fn(c) {
+      q.show(fn() { trouble() != "" }, fn(c) {
         @sf.style_node(c, fn() { pl_trouble })
         // (the next lines of the row's words, as close under its note as its note is under its title: not below's 6)
         c.grow(Is(1.0)).min_width(Is(Some(0.0))).margin(Is((0.0, -6.0, 0.0, 0.0))) |> ignore
-        @sf.words_node(c, fn() { pl_trouble_of(pv()) }, fn() { pl_offer_note }) |> ignore
+        @sf.words_node(c, trouble, fn() { pl_offer_note }) |> ignore
         c.show(fn() { field(pv(), "trouble") is Some(Object(_)) }, fn(f) {
           @sf.words_node(f, fn() { @sf.t("android-settings.profile.seeFix") }, fn() { pl_see_fix }) |> ignore
         })
       })
-      |> ignore
+      q.show(grouped, fn(w) { pl_quota_node(w, quota, tips) })
     },
-    below_open=fn() { if pl_trouble_of(pv()) != "" { 1.0 } else { 0.0 } },
+    below_open=fn() { if trouble() != "" || grouped() { 1.0 } else { 0.0 } },
     tail=fn(t) {
       t.box(fn(e) {
         @sf.style_node(e, fn() { pl_tail }, in_row=true)
         doing_mark_node(e, fn() { is_doing(core, calls, on()) }, fn() { failed_of(core, calls, on()) }, tips~)
-        @sf.quota_chips_node(e, fn() { field(pv(), "quota") }, small=true, tips~)
+        @sf.quota_chips_node(e, fn() { if grouped() { None } else { quota() } }, small=true, tips~)
       })
       |> ignore
     },
     // (its tail's room only while it holds something: what is under way, or its allowance's chips)
-    tail_shown=fn() { is_doing(core, calls, on()) || failed_of(core, calls, on()) is Some(_) || @sf.has_quota(field(pv(), "quota")) },
+    tail_shown=fn() { is_doing(core, calls, on()) || failed_of(core, calls, on()) is Some(_) || (!grouped() && @sf.has_quota(quota())) },
   )
 }
 
@@ -906,7 +911,7 @@ let pl_drop_plan : Int = 1
 let pl_quota_line : @ui.Style = @ui.css("w=Full pt=S1_5")
 
 ///|
-/// What is under way with a station's profile and its allowance at its row's end, 8 apart across its middle.
+/// What is under way with a station's profile and its unscoped allowance at its row's end, 8 apart.
 // kept across runs: a value (no field of it changes)
 let pl_tail : @ui.Style = @ui.css("row gap=S2 align=ACenter")
 

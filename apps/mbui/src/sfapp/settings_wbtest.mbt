@@ -525,11 +525,13 @@ test "an account on several stations shows its subscription tier" {
 }
 
 ///|
-test "Google subscription tiers appear in the station's profile list" {
+test "Google subscription tiers appear beside the account names with four quota windows" {
   for w in [360.0, 1280.0] {
     let list = settings_tester("profiles:ws1/st1", shows="settings-profiles-google", w~, h=1300.0)
     assert_true(list.find("Ultra 5x") is Some(_), msg="station profiles at \{w}")
     assert_true(list.find("Enterprise Ultra") is Some(_), msg="station profiles at \{w}")
+    assert_true(list.find("lin@gmail.example") is Some(_), msg="account name at \{w}")
+    assert_true(list.find("Claude / GPT") is Some(_), msg="grouped quota at \{w}")
   }
 }
 
