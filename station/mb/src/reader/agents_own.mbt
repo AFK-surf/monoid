@@ -198,8 +198,13 @@ fn Agents::acp_told(self : Agents, h : Hosted, op : String, m : Map[String, Json
   }
   match op {
     "acpSession" => s.session = text("id")
-    "acpOpened" => s.loading = false
-    "acpPrompt" => self.own_now(h, own, s.prompted(text("owner"), text("text")))
+    "acpOpened" => s.opened(resumed=m.get("resumed") is Some(True))
+    "acpPrompt" =>
+      if m.get("resend") is Some(True) {
+        self.own_now(h, own, s.resent(text("owner")))
+      } else {
+        self.own_now(h, own, s.prompted(text("owner"), text("text"), now=() => self.now()))
+      }
     "acpInject" => self.own_now(h, own, s.injected(text("id"), m.get("takeOver") is Some(True), text("text")))
     _ => ()
   }

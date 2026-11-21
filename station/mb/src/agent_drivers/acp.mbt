@@ -167,6 +167,9 @@ pub struct AcpSession {
   mut model : String?
   transcript : KeptTranscript?
   mut is_open : Bool
+  mut is_resumed : Bool
+  mut pending_prompt : String?
+  mut resend_from : String?
   mut acp : AcpHooks
 }
 
@@ -191,6 +194,9 @@ pub fn AcpSession::new(lp : Loop, kind : String, ids : Ids, events : (JValue) ->
     model: None,
     transcript,
     is_open: false,
+    is_resumed: false,
+    pending_prompt: None,
+    resend_from: None,
     acp: {
       updated: (_, _) => (),
       ending: (_, _) => (),
@@ -209,17 +215,20 @@ pub fn AcpSession::new(lp : Loop, kind : String, ids : Ids, events : (JValue) ->
       Some(t) => t.settled()
       None => None
     },
-    cut_short: said => match session.transcript {
-      Some(t) =>
-        t.ended(
-          own.session_id,
-          obj([
-            ("kind", s("failed")),
-            ("reason", s("exited")),
-            ("message", s("\{kind} exited (\{said})")),
-          ]),
-        )
-      None => ()
+    cut_short: said => {
+      session.pending_prompt = None
+      match session.transcript {
+        Some(t) =>
+          t.ended(
+            own.session_id,
+            obj([
+              ("kind", s("failed")),
+              ("reason", s("exited")),
+              ("message", s("\{kind} exited (\{said})")),
+            ]),
+          )
+        None => ()
+      }
     },
     attached: () => session.attached(),
   }
@@ -241,9 +250,10 @@ pub fn AcpSession::say(self : AcpSession, what : String, fields : JValue) -> Uni
 
 ///|
 /// Open: what session/new or session/load said (`opened`).
-pub fn AcpSession::opened(self : AcpSession, result : JValue?) -> Unit {
+pub fn AcpSession::opened(self : AcpSession, result : JValue?, resumed? : Bool = false) -> Unit {
   self.is_open = true
-  self.say("acpOpened", obj([]))
+  self.is_resumed = resumed
+  self.say("acpOpened", if resumed { obj([("resumed", b(true))]) } else { obj([]) })
   (self.acp.opened)(result)
 }
 
@@ -254,7 +264,29 @@ pub fn AcpSession::attached(self : AcpSession) -> Unit {
     self.say("acpSession", obj([("id", s(self.own.session_id))]))
   }
   if self.is_open {
-    self.say("acpOpened", obj([]))
+    self.say("acpOpened", if self.is_resumed { obj([("resumed", b(true))]) } else { obj([]) })
+  }
+}
+
+///|
+/// Hosted options with post-heard handling for agy session/load ghost replay resend.
+pub fn AcpSession::hosted_options(
+  self : AcpSession,
+  label : String,
+  flavor : String,
+  kept? : Bool = false,
+) -> HostedOptions {
+  let base = self.own.hosted_options(label, "acp", flavor~, kept~)
+  {
+    ..base,
+    heard: h => {
+      let res = (base.heard)(h)
+      if self.resend_from is Some(prev) {
+        self.resend_from = None
+        self.resend_prompt(prev)
+      }
+      res
+    },
   }
 }
 
@@ -366,14 +398,46 @@ pub fn AcpSession::took(self : AcpSession, e : JValue) -> Bool {
       }
       let answer = get(Some(e), "answer").unwrap_or(Null)
       if get(Some(e), "outcome") is Some(_) {
+        self.is_resumed = false
+        self.pending_prompt = None
         (self.acp.ending)(id, answer)
       } else {
         (self.acp.ignored)(id, answer)
       }
       true
     }
+    Some("loadReplay") => {
+      self.is_resumed = false
+      let id = str_at(Some(e), "id").unwrap_or("")
+      self.resend_from = Some(id)
+      true
+    }
     _ => false
   }
+}
+
+///|
+fn AcpSession::resend_prompt(self : AcpSession, prev_id : String) -> Unit {
+  let text = self.pending_prompt
+  self.pending_prompt = None
+  guard text is Some(t) else { return }
+  if self.own.closed() || !self.own.busy() || self.own.flag("aborting") {
+    return
+  }
+  let owner = "\{acp_prompt}\{(self.ids.next)()}"
+  self.own.set_flag("owner", s(owner))
+  match self.transcript {
+    Some(tr) =>
+      tr.m.log(
+        "info",
+        "agents::\{self.own.kind}",
+        "agy session/load replayed history on first prompt; resending prompt",
+        obj([("session", s(self.own.session_id)), ("previous", s(prev_id)), ("owner", s(owner))]),
+      )
+    None => ()
+  }
+  self.say("acpPrompt", obj([("owner", s(owner)), ("resend", b(true))]))
+  (self.own.p().write)(rpc(owner, "session/prompt", self.prompt_params(t)))
 }
 
 ///|
@@ -411,6 +475,7 @@ pub fn AcpSession::prompt(self : AcpSession, text : String) -> Later[Unit] {
     e => return Later::fail(self.lp(), e)
   }
   let owner = "\{acp_prompt}\{(self.ids.next)()}"
+  self.pending_prompt = Some(text)
   self.own.set_flag("busy", b(true))
   self.own.set_flag("owner", s(owner))
   let fields = [("owner", s(owner))]

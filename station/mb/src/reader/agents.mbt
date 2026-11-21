@@ -163,6 +163,9 @@ fn Agents::told(self : Agents, line : String) -> Unit {
       if !only.contains(k) {
         continue
       }
+      if h.own is Some(Acp(s) as own) {
+        self.own_now(h, own, s.flush_staged_events())
+      }
       // (what it holds told first: the state said next is of all it read)
       self.flush(h)
       h.frozen = true

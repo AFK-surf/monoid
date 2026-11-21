@@ -172,6 +172,8 @@ const say = (m) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...m })
 const reply = (id, result) => say({ id, result });
 let sessionId;
 let held;
+let loaded = false;
+let loadReplayCount = 0;
 const update = (u) => say({ method: 'session/update', params: { sessionId, update: u } });
 const dir = args[args.indexOf('--gemini-dir') + 1];
 const conversations = join(dir, 'antigravity-cli', 'conversations');
@@ -217,6 +219,7 @@ for await (const line of createInterface({ input: process.stdin })) {
     reply(m.id, { sessionId, models: opening(), ...(process.env.FAKE_AGY_TIER ? { _meta: { antigravity: { tier: { id: process.env.FAKE_AGY_TIER, name: 'Google AI Ultra' } } } } : {}) });
   } else if (m.method === 'session/load') {
     sessionId = p.sessionId;
+    loaded = true;
     if (existsSync(join(conversations, `${sessionId}.db`))) update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'past replay' } });
     reply(m.id, { models: opening() });
   } else if (m.method === 'session/set_model') {
@@ -235,6 +238,18 @@ for await (const line of createInterface({ input: process.stdin })) {
       update({ sessionUpdate: 'user_message_chunk', content: { type: 'text', text } });
     }
     if (text === 'expired') { say({ id: m.id, error: { code: -32603, message: 'Authentication expired. Please log back in.' } }); held = null; continue; }
+    if (text === 'verification-required') { update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '⚠ Verification Required' } }); say({ id: m.id, result: { stopReason: 'end_turn' } }); held = null; continue; }
+    if (text === 'verification-required-mid-turn') { update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'partial ' } }); update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '\n⚠ Verification Required\n' } }); say({ id: m.id, result: { stopReason: 'end_turn' } }); held = null; continue; }
+    if (loaded && Number(process.env.FAKE_AGY_LOAD_REPLAY ?? 0) > loadReplayCount) {
+      loadReplayCount++;
+      update({ sessionUpdate: 'tool_call', toolCallId: `ghost_t${loadReplayCount}`, title: 'view_file', kind: 'read', status: 'in_progress', rawInput: { AbsolutePath: '/ghost.txt' } });
+      update({ sessionUpdate: 'tool_call_update', toolCallId: `ghost_t${loadReplayCount}`, status: 'completed', content: [{ type: 'content', content: { type: 'text', text: 'ghost history output' } }] });
+      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'ghost history replay text' } });
+      reply(m.id, { stopReason: 'end_turn' });
+      held = null;
+      continue;
+    }
+    if (text === 'no-usage-end') { update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'short reply without usage' } }); reply(m.id, { stopReason: 'end_turn' }); held = null; continue; }
     if (text.includes('expire-mid-turn')) { update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'partial ' } }); update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '\n⚠ Agent execution terminated due to error.\n' } }); say({ id: m.id, result: { stopReason: 'end_turn' } }); held = null; continue; }
     if (text.includes('unauth-mid-turn')) { update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'partial ' } }); update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '\n⚠ UNAUTHENTICATED (code 401): Request had invalid authentication credentials.\n' } }); say({ id: m.id, result: { stopReason: 'end_turn' } }); held = null; continue; }
     if (text === 'quota-said') { update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '\n⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 56m33s.\n' } }); say({ id: m.id, result: { stopReason: 'end_turn' } }); held = null; continue; }

@@ -179,6 +179,9 @@ pub struct Acp {
   mut model : String?
   transcript : Kept?
   mut opened : Bool
+  mut resumed : Bool
+  mut pending_prompt : String?
+  mut resend_from : String?
   // Devin's: the `model` config option's values, its running turn's calls.
   mut families : Array[J]
   mut usage : DevinUsage?
@@ -218,6 +221,9 @@ pub fn Acp::new(
     },
     transcript: if keeps { Some({ own, quiet: false }) } else { None },
     opened: false,
+    resumed: false,
+    pending_prompt: None,
+    resend_from: None,
     families: [],
     usage: None,
     windows: Fields::new(),
@@ -242,9 +248,14 @@ pub fn Acp::busy(self : Acp) -> Bool {
 
 ///|
 /// `opened`: session/new's or session/load's answer (`result`) says what it runs on besides.
-pub fn Acp::open(self : Acp, result : J?) -> Unit {
+pub fn Acp::open(self : Acp, result : J?, resumed? : Bool = false) -> Unit {
   self.opened = true
-  self.own.say("acpOpened")
+  self.resumed = resumed
+  if resumed {
+    self.own.say("acpOpened", args=obj([("resumed", Bool(true))]))
+  } else {
+    self.own.say("acpOpened")
+  }
   match self.flavor {
     "devin" => {
       let model = arr(get(result, "configOptions")).search_by(o => is_s(get(Some(o), "id"), "model"))
@@ -286,7 +297,11 @@ pub fn Acp::attached(self : Acp) -> Unit {
     self.own.say("acpSession", args=obj([("id", js(self.own.session_id))]))
   }
   if self.opened {
-    self.own.say("acpOpened")
+    if self.resumed {
+      self.own.say("acpOpened", args=obj([("resumed", Bool(true))]))
+    } else {
+      self.own.say("acpOpened")
+    }
   }
 }
 
@@ -401,11 +416,32 @@ fn Acp::took(self : Acp, e : J) -> Bool {
   }
   if is_s(ty, "answered") {
     if get(x, "outcome") is Some(_) {
+      self.resumed = false
+      self.pending_prompt = None
       self.ending(said(get(x, "id")), get(x, "answer"))
     }
     return true
   }
+  if is_s(ty, "loadReplay") {
+    self.resumed = false
+    self.resend_from = Some(said(get(x, "id")))
+    return true
+  }
   false
+}
+
+///|
+fn Acp::resend_prompt(self : Acp, _prev_id : String) -> Unit {
+  let text = self.pending_prompt
+  self.pending_prompt = None
+  guard text is Some(t) else { return }
+  if self.own.closed || !self.busy() || self.own.turn_flag("aborting") {
+    return
+  }
+  let owner = "\{acp_prompt}\{self.own.uuid()}"
+  self.own.turn.set_str("owner", owner)
+  self.own.say("acpPrompt", args=obj([("owner", js(owner)), ("resend", Bool(true))]))
+  self.own.write(rpc(owner, "session/prompt", self.prompt_params(t)))
 }
 
 ///|
@@ -415,6 +451,10 @@ pub fn Acp::heard_hosted(self : Acp, heard : J?) -> Unit {
     self.heard(said(get(Some(line), "text")))
   }
   self.own.told(heard, e => self.took(e))
+  if self.resend_from is Some(prev) {
+    self.resend_from = None
+    self.resend_prompt(prev)
+  }
 }
 
 ///|
@@ -521,6 +561,7 @@ pub fn Acp::prompt(self : Acp, text : String) -> String? {
     return Some(why)
   }
   let owner = "\{acp_prompt}\{self.own.uuid()}"
+  self.pending_prompt = Some(text)
   self.own.set_flag("busy", true)
   self.own.turn.set_str("owner", owner)
   let args = Fields::of([("owner", js(owner))])
@@ -621,6 +662,7 @@ pub fn Acp::abort(self : Acp) -> Unit {
 ///|
 /// `cutShort`: its process went away during a turn; its end in the transcript.
 fn Acp::cut_short(self : Acp, said_ : String) -> Unit {
+  self.pending_prompt = None
   if self.flavor == "devin" {
     self.usage = None
   }

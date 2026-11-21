@@ -342,7 +342,7 @@ const SESSION_ID = /^[a-zA-Z0-9_-]+$/;
 
 /// What failed a turn, from what it said of it.
 export const classifyFailure = (text: string): FailureReason =>
-  failureOf(text, { auth: ["authentication required", "not logged into antigravity", "authentication expired", "couldn't sign in", "invalid_grant", "unauthenticated", "token expired"], limit: ["resource_exhausted", "quota"] });
+  failureOf(text, { auth: ["authentication required", "not logged into antigravity", "authentication expired", "couldn't sign in", "invalid_grant", "unauthenticated", "token expired", "verification required"], limit: ["resource_exhausted", "quota"] });
 
 /// A failure Antigravity CLI tells only in words: a turn whose answer is end_turn, all it said one line of its own
 /// notice (⚠). Its spent quota came so on 1.5.9 (2026-11-15: "⚠ Individual quota reached. Please upgrade your
@@ -365,15 +365,17 @@ export function noticeFailure(said: string): FailureReason | null {
     return reason === "model" ? "other" : reason;
   }
   if (lower.startsWith(AGY_UNAUTHENTICATED)) return "auth";
+  if (lower.startsWith(AGY_VERIFICATION_REQUIRED)) return "auth";
   if (!text.startsWith("⚠") || text.includes("\n")) return null;
   const reason = classifyFailure(text);
   return reason === "model" ? null : reason;
 }
 
-/// What Antigravity CLI says of a turn its executor ended on an error (1.5.8: unnamed; 1.5.9: named or HTTP 401).
+/// What Antigravity CLI says of a turn its executor ended on an error (1.5.8: unnamed; 1.5.9: named or HTTP 401; 1.5.14: verification gate).
 const AGY_TERMINATED = "⚠ agent execution terminated due to error.";
 const AGY_EXECUTOR_ERROR = "⚠ agent executor error:";
 const AGY_UNAUTHENTICATED = "⚠ unauthenticated (code 401):";
+const AGY_VERIFICATION_REQUIRED = "⚠ verification required";
 
 /// The process's arguments: the profile's files, no approvals, no telemetry.
 export const agyArgs = (home: string) => ["acp", "--gemini-dir", geminiDir(home), "--dangerously-skip-permissions", "--disable-telemetry"];
@@ -816,8 +818,8 @@ export class AgySession extends AcpSession {
     super.named(id);
   }
 
-  opened(result: Json) {
-    super.opened(result);
+  opened(result: Json, resumed = false) {
+    super.opened(result, resumed);
     this.availableModels = agyModels(result);
     this.plan = agySessionPlan(result) ?? this.plan;
     const current = result?.models?.currentModelId;

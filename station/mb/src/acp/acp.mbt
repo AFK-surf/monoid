@@ -313,7 +313,7 @@ pub fn classify(flavor : String, text : String) -> String {
         text,
         auth=[
           "authentication required", "not logged into antigravity", "authentication expired", "couldn't sign in", "invalid_grant",
-          "unauthenticated", "token expired",
+          "unauthenticated", "token expired", "verification required",
         ],
         limit=["resource_exhausted", "quota"],
       )
@@ -348,6 +348,9 @@ pub fn notice_failure(said : String) -> String? {
     return Some(if reason == "model" { "other" } else { reason })
   }
   if lower.has_prefix("\u{26a0} unauthenticated (code 401):") {
+    return Some("auth")
+  }
+  if lower.has_prefix("\u{26a0} verification required") {
     return Some("auth")
   }
   if text.unsafe_get(0).to_int() != 0x26a0 || text.contains("\n") {
@@ -462,6 +465,17 @@ pub fn Turn::of_json(v : J?) -> Turn {
 }
 
 ///|
+/// Whether a prompt's answer carries non-zero token usage (matches agy.ts `turnUsage`).
+fn has_turn_usage(answer : J?) -> Bool {
+  guard field(field(answer, "result"), "usage") is Some(Obj(_) as u) else { return false }
+  let pos = (k : String) => match u.get(k) {
+    Some(Num(x)) if x - x == 0.0 && x > 0.0 => x
+    _ => 0.0
+  }
+  pos("inputTokens") + pos("cachedReadTokens") + pos("cachedWriteTokens") + pos("outputTokens") > 0.0
+}
+
+///|
 /// A session as the program reads its process (acp.ts `AcpSession`).
 pub(all) struct Session {
   /// which runtime: "agy", "grok", "devin" or "hermes"
@@ -472,6 +486,12 @@ pub(all) struct Session {
   mut session : String
   /// until the session is open: what session/load says again of its past is no turn
   mut loading : Bool
+  /// agy opened via session/load: guards the first prompt against ghost history replay + empty end_turn
+  mut load_replay_guard : Bool
+  /// when the guarded first prompt started (on the parser's clock)
+  mut guard_started_at : Double?
+  /// kept transcript lines staged while load_replay_guard is active
+  staged_kept : Array[J]
   turn : Turn
   mut live : Live
   calls : Array[(String, Call)]
@@ -489,6 +509,9 @@ pub fn Session::new(flavor : String, kept~ : Bool) -> Session {
     kept,
     session: [],
     loading: true,
+    load_replay_guard: false,
+    guard_started_at: None,
+    staged_kept: [],
     turn: { busy: false, aborting: false, owner: None, steering: [] },
     live: Live::new(),
     calls: [],
@@ -496,6 +519,43 @@ pub fn Session::new(flavor : String, kept~ : Bool) -> Session {
     said: None,
     children: [],
   }
+}
+
+///|
+/// The session is open (`acpOpened`): what session/load said before is no turn, and an `agy` session opened via
+/// `session/load` (`resumed=true`) guards its first prompt against ghost history replay.
+pub fn Session::opened(self : Session, resumed? : Bool = false) -> Unit {
+  if self.loading && self.flavor == "agy" && resumed {
+    self.load_replay_guard = true
+  }
+  self.loading = false
+}
+
+///|
+fn Session::emit_kept(self : Session, line : J, events : Array[J]) -> Unit {
+  if self.load_replay_guard && self.guard_started_at is Some(_) {
+    self.staged_kept.push(kept(line))
+  } else {
+    events.push(kept(line))
+  }
+}
+
+///|
+fn Session::flush_staged(self : Session, events : Array[J]) -> Unit {
+  for e in self.staged_kept {
+    events.push(e)
+  }
+  self.staged_kept.clear()
+  self.load_replay_guard = false
+  self.guard_started_at = None
+}
+
+///|
+/// Flushes any staged kept lines (for freeze/handover) and turns off load_replay_guard.
+pub fn Session::flush_staged_events(self : Session) -> Array[J] {
+  let events = []
+  self.flush_staged(events)
+  events
 }
 
 ///|
@@ -665,6 +725,16 @@ fn Session::update(self : Session, params : J?, now : () -> Double, events : Arr
   if !self.turn.busy && turn_step(update) && !self.unprompted(events) {
     return
   }
+  if self.load_replay_guard {
+    match self.guard_started_at {
+      Some(started) if now() - started >= 5000.0 => self.flush_staged(events)
+      None if self.turn.busy => self.guard_started_at = Some(now())
+      _ => ()
+    }
+    if is_str(field(update, "sessionUpdate"), "usage_update") {
+      self.flush_staged(events)
+    }
+  }
   let done = self.track(update, now)
   self.heard_said(update)
   self.take(update, done, events)
@@ -783,7 +853,7 @@ fn Session::take(self : Session, update : J?, done : (String, Call, Bool, String
   }
   line.push(("args", call.input))
   line.push(("result", Str(@claude.chars(text, 20000))))
-  events.push(kept(obj(line)))
+  self.emit_kept(obj(line), events)
 }
 
 ///|
@@ -791,7 +861,7 @@ fn Session::take(self : Session, update : J?, done : (String, Call, Bool, String
 fn Session::flush(self : Session, events : Array[J]) -> Unit {
   guard self.said is Some((kind, text)) else { return }
   if trimmed(text).length() > 0 {
-    events.push(kept(obj([("type", jstr(kind)), ("text", Str(text))])))
+    self.emit_kept(obj([("type", jstr(kind)), ("text", Str(text))]), events)
   }
   self.said = None
 }
@@ -894,6 +964,27 @@ fn Session::end(self : Session, id : String, answer : J, events : Array[J]) -> U
   if self.flavor == "agy" && is_str(outcome.get("kind"), "completed") && said.length() > 0 && notice_failure(said) is Some(reason) {
     outcome = failed(reason, @claude.chars(last_line(said), 1000))
   }
+  if self.flavor == "agy" &&
+    self.load_replay_guard &&
+    !self.turn.aborting &&
+    self.turn.steering.length() == 0 &&
+    is_str(outcome.get("kind"), "completed") &&
+    !has_turn_usage(a) {
+    self.load_replay_guard = false
+    self.guard_started_at = None
+    self.staged_kept.clear()
+    self.said = None
+    self.calls.clear()
+    for e in self.live.ended() {
+      events.push(live(e))
+    }
+    for e in self.live.prompted() {
+      events.push(live(e))
+    }
+    self.turn.busy = true
+    events.push(obj([("type", jstr("loadReplay")), ("id", Str(id))]))
+    return
+  }
   // An answer to a prompt this station did not see start (taken up after a crash just as it was given).
   if !self.turn.busy {
     events.push(obj([("type", jstr("turnStarted"))]))
@@ -902,6 +993,7 @@ fn Session::end(self : Session, id : String, answer : J, events : Array[J]) -> U
   self.turn.aborting = false
   self.turn.owner = None
   self.flush(events)
+  self.flush_staged(events)
   events.push(obj([("type", jstr("answered")), ("id", Str(id)), ("answer", answer), ("outcome", outcome)]))
   if self.flavor == "grok" {
     for c in self.children.map(c => c.0) {
@@ -920,12 +1012,32 @@ fn Session::end(self : Session, id : String, answer : J, events : Array[J]) -> U
 
 ///|
 /// A prompt of Node's, `owner` its id (acp.ts `prompt`): the turn runs, its message kept, the turn with the model.
-pub fn Session::prompted(self : Session, owner : String, text : String) -> Array[J] {
+pub fn Session::prompted(self : Session, owner : String, text : String, now? : () -> Double) -> Array[J] {
   let events = []
   self.turn.busy = true
   self.said_last = []
   self.turn.owner = Some(owner)
   self.user(text, false, events)
+  if self.load_replay_guard {
+    self.guard_started_at = match now {
+      Some(clock) => Some(clock())
+      None => None
+    }
+  }
+  for e in self.live.prompted() {
+    events.push(live(e))
+  }
+  events
+}
+
+///|
+/// The driver resent the original prompt after an agy session/load ghost replay (`acpPrompt` with `resend: true`):
+/// updates the active turn owner without writing a second `user` transcript line.
+pub fn Session::resent(self : Session, owner : String) -> Array[J] {
+  let events = []
+  self.turn.busy = true
+  self.said_last = []
+  self.turn.owner = Some(owner)
   for e in self.live.prompted() {
     events.push(live(e))
   }
@@ -937,6 +1049,7 @@ pub fn Session::prompted(self : Session, owner : String, text : String) -> Array
 /// turn from now on (Antigravity CLI's).
 pub fn Session::injected(self : Session, id : String, take_over : Bool, text : String) -> Array[J] {
   let events = []
+  self.flush_staged(events)
   let add = (s : String) => if !self.turn.steering.contains(s) { self.turn.steering.push(s) }
   if take_over {
     if self.turn.owner is Some(o) {
@@ -972,6 +1085,7 @@ pub fn Session::cut_short(self : Session) -> Array[J] {
     return events
   }
   self.flush(events)
+  self.flush_staged(events)
   self.calls.clear()
   for e in self.live.ended() {
     events.push(live(e))

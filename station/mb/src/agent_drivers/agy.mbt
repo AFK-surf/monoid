@@ -299,7 +299,7 @@ pub fn agy_classify_failure(text : String) -> String {
     text,
     auth=[
       "authentication required", "not logged into antigravity", "authentication expired", "couldn't sign in", "invalid_grant",
-      "unauthenticated", "token expired",
+      "unauthenticated", "token expired", "verification required",
     ],
     limit=["resource_exhausted", "quota"],
   )
@@ -1405,7 +1405,7 @@ pub fn AgyDriver::acp_begin(
       start.command,
       start.args,
       start.env,
-      own.hosted_options("agy \{key}", "acp", flavor="agy", kept=true),
+      session.acp.hosted_options("agy \{key}", "agy", kept=true),
     )
     .bind(_ => {
       let meta = match start.meta {
@@ -1466,7 +1466,7 @@ pub fn AgyDriver::acp_begin(
           }
         })
         .bind(opened => {
-          session.acp.opened(get(Some(opened), "result"))
+          session.acp.opened(get(Some(opened), "result"), resumed=str_at(o, "resume") is Some(_))
           self.ready(session, options, probe)
         })
         .bind(_ => match own.settled() {

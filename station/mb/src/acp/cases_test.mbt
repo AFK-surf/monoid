@@ -95,13 +95,15 @@ test "each line as the TypeScript read it" {
     if v.get("$new") is Some(n) {
       s = @acp.Session::new(text_of(n.get("flavor")), kept=n.get("kept") is Some(Bool(true)))
     } else if v.get("$prompt") is Some(p) {
-      got = s.prompted(text_of(p.get("owner")), text_of(p.get("text")))
+      got = s.prompted(text_of(p.get("owner")), text_of(p.get("text")), now=() => NOW)
+    } else if v.get("$resend") is Some(p) {
+      got = s.resent(text_of(p.get("owner")))
     } else if v.get("$inject") is Some(p) {
       got = s.injected(text_of(p.get("id")), p.get("takeOver") is Some(Bool(true)), text_of(p.get("text")))
     } else if v.get("$session") is Some(Str(id)) {
       s.session = id
-    } else if v.get("$opened") is Some(_) {
-      s.loading = false
+    } else if v.get("$opened") is Some(o) {
+      s.opened(resumed=o.get("resumed") is Some(Bool(true)))
     } else if v.get("$aborting") is Some(_) {
       s.turn.aborting = true
     } else if v.get("$cut") is Some(_) {

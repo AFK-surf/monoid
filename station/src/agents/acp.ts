@@ -24,6 +24,7 @@ import { join } from "node:path";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { chars } from "./live.ts";
+import type { Heard } from "./mb-agents.ts";
 import { type Events, type Hosting, type ProcessSnapshot, type Replayed, OwnProcessDriver, OwnProcessSession, parseLine } from "./own-process.ts";
 import { profileModel } from "./profiles.ts";
 import type { RunnerInfo } from "./runner.ts";
@@ -217,12 +218,19 @@ export abstract class AcpSession extends OwnProcessSession<AcpTurn> {
 
   /// Whether it is open (`opened`): what it says of its past before is no turn's.
   #open = false;
+  /// Whether it opened via session/load (cleared once the first turn ends or replays).
+  #resumed = false;
+  /// Original prompt text of the running turn, kept for one-shot resend on agy session/load ghost replay.
+  #pendingPrompt: string | null = null;
+  /// Previous prompt id when the reader reported `loadReplay`, resent after `heardHosted` finishes `take(turn)`.
+  #resendFrom: string | null = null;
 
   /// Open: session/new's or session/load's answer (`result`) says what it runs on besides. What it says of its past
   /// before is no turn's (the program is told).
-  opened(_result: Json) {
+  opened(_result: Json, resumed = false) {
     this.#open = true;
-    (this.proc as typeof this.proc | undefined)?.say("acpOpened");
+    this.#resumed = resumed;
+    (this.proc as typeof this.proc | undefined)?.say("acpOpened", resumed ? { resumed: true } : {});
   }
 
   /// The program started again reads it from what it was told last: the session it is, open.
@@ -230,7 +238,7 @@ export abstract class AcpSession extends OwnProcessSession<AcpTurn> {
     const proc = this.proc as typeof this.proc | undefined;
     if (proc === undefined) return;
     if (this.sessionId !== "") proc.say("acpSession", { id: this.sessionId });
-    if (this.#open) proc.say("acpOpened");
+    if (this.#open) proc.say("acpOpened", this.#resumed ? { resumed: true } : {});
   }
 
   named(id: string) {
@@ -281,11 +289,40 @@ export abstract class AcpSession extends OwnProcessSession<AcpTurn> {
       return true;
     }
     if (e?.type === "answered") {
-      if (e.outcome !== undefined) this.ending(String(e.id), e.answer);
-      else this.ignored(String(e.id), e.answer);
+      if (e.outcome !== undefined) {
+        this.#resumed = false;
+        this.#pendingPrompt = null;
+        this.ending(String(e.id), e.answer);
+      } else this.ignored(String(e.id), e.answer);
+      return true;
+    }
+    if (e?.type === "loadReplay") {
+      this.#resumed = false;
+      this.#resendFrom = typeof e.id === "string" ? e.id : "";
       return true;
     }
     return false;
+  }
+
+  protected override heardHosted(heard: Heard): void | Promise<void> {
+    const out = super.heardHosted(heard);
+    if (this.#resendFrom !== null) {
+      const prev = this.#resendFrom;
+      this.#resendFrom = null;
+      this.resendPrompt(prev);
+    }
+    return out;
+  }
+
+  private resendPrompt(previous: string) {
+    const text = this.#pendingPrompt;
+    this.#pendingPrompt = null;
+    if (text === null || this.turn.closed || !this.turn.busy || this.turn.aborting) return;
+    const owner = `${PROMPT}${uuid()}`;
+    this.turn.owner = owner;
+    log.info(`agents::${this.kind}`, "agy session/load replayed history on first prompt; resending prompt", { session: this.sessionId, previous, owner });
+    this.proc.say("acpPrompt", { owner, resend: true });
+    this.proc.write(rpc(owner, "session/prompt", { sessionId: this.sessionId, prompt: [{ type: "text", text: this.promptText(text) }] }));
   }
 
   protected settled(): Promise<void> | null {
@@ -304,12 +341,14 @@ export abstract class AcpSession extends OwnProcessSession<AcpTurn> {
   /// Its process went away during a turn: what was being said is written by the program (its steps end there), its end
   /// here.
   protected cutShort(said: string) {
+    this.#pendingPrompt = null;
     this.transcript?.ended(this.sessionId, { kind: "failed", reason: "exited", message: `${this.kind} exited (${said})` });
   }
 
   async prompt(text: string) {
     this.startable();
     const owner = `${PROMPT}${uuid()}`;
+    this.#pendingPrompt = text;
     this.turn.busy = true;
     this.turn.owner = owner;
     this.proc.say("acpPrompt", { owner, ...(this.transcript !== null ? { text } : {}) });
@@ -466,7 +505,7 @@ export abstract class AcpDriver<S extends AcpSession> extends OwnProcessDriver<S
         session.named(id);
         if (!probe) session.began(options.cwd);
       }
-      session.opened(opened?.result);
+      session.opened(opened?.result, options.resume !== undefined);
       await this.ready(session, options, probe);
       // (what it keeps of its opening written before it is anyone's)
       await session.adopted();

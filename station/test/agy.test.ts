@@ -1751,3 +1751,82 @@ test("Antigravity CLI is declared the station's tools within what it keeps, chat
     assert.ok(weighed(before) + before.length * AGY_TOOL_WRAP > AGY_TOOL_CEILING);
   }
 });
+
+test("agy Verification Required notice is classified as auth failure (single-line and trailing after partial text)", async () => {
+  assert.equal(classifyFailure("Verification Required"), "auth");
+  assert.equal(noticeFailure("⚠ Verification Required"), "auth");
+  assert.equal(noticeFailure("  ⚠ Verification Required  "), "auth");
+  assert.equal(noticeFailure("partial output\n⚠ Verification Required\n"), "auth");
+  const { options, events, driver } = setup();
+  const s = await driver.open(options, (e) => events.push(e));
+  await s.prompt("verification-required");
+  await until(() => ended(events).length === 1);
+  assert.deepEqual(ended(events)[0], { type: "turnEnded", outcome: { kind: "failed", reason: "auth", message: "⚠ Verification Required" } });
+  await s.prompt("verification-required-mid-turn");
+  await until(() => ended(events).length === 2);
+  assert.deepEqual(ended(events)[1], { type: "turnEnded", outcome: { kind: "failed", reason: "auth", message: "⚠ Verification Required" } });
+  await s.dispose();
+});
+
+test("agy session/load ghost history replay on first prompt is discarded and original prompt is transparently resent once", async () => {
+  const { options, events, driver, dump } = setup();
+  const s = await driver.open({ ...options, model: "gemini-3.1-pro" }, (e) => events.push(e));
+  await s.prompt("initial turn");
+  await until(() => ended(events).length === 1);
+  const id = s.id();
+  await s.dispose();
+
+  // Reopen via session/load with FAKE_AGY_LOAD_REPLAY=1: first prompt replays ghost history and ends without usage;
+  // driver must discard ghost history, not emit turnEnded, not duplicate the user line, and resend once with a new prompt id.
+  const dump2 = join(data, `dump-replay-${++n}`);
+  const opts2: OpenOptions = {
+    ...options,
+    key: `agy-replay-${n}`,
+    resume: id,
+    profile: { ...options.profile, env: { ...(options.profile.env as Record<string, string>), FAKE_DUMP: dump2, FAKE_AGY_LOAD_REPLAY: "1" } },
+  };
+  const events2: RuntimeEvent[] = [];
+  const resumed = await driver.open(opts2, (e) => events2.push(e));
+  await resumed.prompt("real question after load");
+  await until(() => ended(events2).length === 1);
+  assert.deepEqual(ended(events2), [{ type: "turnEnded", outcome: { kind: "completed" } }]);
+  const prompts = rpc(dump2).filter((m) => m.method === "session/prompt");
+  assert.equal(prompts.length, 2, "driver resent the prompt once after ghost replay");
+  assert.notEqual(prompts[0].id, prompts[1].id, "resent prompt uses a fresh prompt:<uuid> id");
+  assert.ok(String(prompts[1].id).startsWith("prompt:"));
+  assert.equal(prompts[0].params.prompt[0].text, "real question after load");
+  assert.equal(prompts[1].params.prompt[0].text, "real question after load");
+
+  const path = transcriptPath("agy", options.profile.home, id)!;
+  const entries = readFileSync(path, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(entries.filter((e) => e.type === "user" && e.text === "real question after load").length, 1, "user prompt written only once");
+  assert.equal(entries.some((e) => e.text === "ghost history replay text" || e.result === "ghost history output"), false, "ghost replay history not written to transcript");
+  assert.equal(entries.filter((e) => e.type === "assistant").at(-1)?.text, "first real question after load");
+  assert.equal(entries.filter((e) => e.type === "end").length, 2, "only initial turn and real resumed turn wrote end lines");
+  await resumed.dispose();
+
+  // At most 1 resend: if the resent prompt also ends without usage, it completes normally instead of looping.
+  const dump3 = join(data, `dump-replay-once-${++n}`);
+  const opts3: OpenOptions = {
+    ...options,
+    key: `agy-replay-once-${n}`,
+    resume: id,
+    profile: { ...options.profile, env: { ...(options.profile.env as Record<string, string>), FAKE_DUMP: dump3, FAKE_AGY_LOAD_REPLAY: "2" } },
+  };
+  const events3: RuntimeEvent[] = [];
+  const resumed2 = await driver.open(opts3, (e) => events3.push(e));
+  await resumed2.prompt("double empty");
+  await until(() => ended(events3).length === 1);
+  assert.deepEqual(ended(events3), [{ type: "turnEnded", outcome: { kind: "completed" } }]);
+  assert.equal(rpc(dump3).filter((m) => m.method === "session/prompt").length, 2, "never resends more than once");
+  await resumed2.dispose();
+
+  // session/new (not session/load) never triggers load_replay_guard even when end_turn has no usage.
+  const { options: newOpts, events: newEvents, driver: newDriver, dump: newDump } = setup();
+  const fresh = await newDriver.open(newOpts, (e) => newEvents.push(e));
+  await fresh.prompt("no-usage-end");
+  await until(() => ended(newEvents).length === 1);
+  assert.deepEqual(ended(newEvents), [{ type: "turnEnded", outcome: { kind: "completed" } }]);
+  assert.equal(rpc(newDump).filter((m) => m.method === "session/prompt").length, 1, "session/new never resends");
+  await fresh.dispose();
+});
