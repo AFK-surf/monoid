@@ -163,7 +163,10 @@ fn rects_meet_by(a : Int, b : Int, inst : FixedArray[Double], pad : Double) -> B
 ///|
 /// The glass instance of node `n` (its frame), at `alpha`.
 fn Ctx::emit_glass(self : Ctx, n : Node, gl : Glass, alpha : Double) -> Unit {
-  self.glass_inst(n.x, n.y, n.fw, n.fh, n.radius, gl, alpha)
+  if gl.strength <= 0.001 {
+    return
+  }
+  self.glass_inst(n.x, n.y, n.fw, n.fh, n.radius, gl, alpha * gl.strength)
   // (frosted, unmerged liquid, and merged liquid all keep each shape's 4 independent corner radii in 36..39)
   self.corners_last(n)
   self.glass_capture(self.ninst - 1, gl.liquid, gl.shares_capture)
@@ -335,11 +338,17 @@ fn Ctx::emit_group_glass(self : Ctx, i : Int, alpha_in : Double) -> Unit {
 /// drop of a liquid group's (drawn as its group's one shape) casts none of
 /// its own.
 fn Ctx::paint_glass(self : Ctx, n : Node, gl : Glass, alpha : Double) -> Unit {
+  if gl.strength <= 0.001 {
+    if n.shadow > 0.0 {
+      self.paint_shadow(n, alpha, n.shadow_out)
+    }
+    return
+  }
   if glass_paint.solid {
     if n.shadow > 0.0 {
       self.paint_shadow(n, alpha, false)
     }
-    self.emit_rect(n.x, n.y, n.fw, n.fh, n.radius, gl.solid, 0.0, 0L, alpha)
+    self.emit_rect(n.x, n.y, n.fw, n.fh, n.radius, gl.solid, 0.0, 0L, alpha * gl.strength)
     self.notch_last(n)
     self.corners_last(n)
     return
