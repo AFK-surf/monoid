@@ -119,7 +119,7 @@ fn waiting_picture_return(new_chat : Bool) -> Unit raise {
   t.touch(2, cx, cy)
   t.frames_owed()
   let closing = pv_leaving.get().unwrap()
-  assert_true(pic_flies(t, closing) && (closing.fly_back || closing.tree_back.get()), msg="the preview returns to the tile")
+  assert_true(pic_flies(t, closing) && closing.tree_back.get(), msg="the preview returns to the tile")
   let end = pic_flight_end(t, closing)
   t.frame_at((t.time() + end) / 2.0)
   assert_false(visible(), msg="the tile is hidden while the picture returns")

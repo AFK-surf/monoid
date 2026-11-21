@@ -197,7 +197,7 @@ pub fn runs_links(
 fn runs_link_pieces(v : @view.View, w : Double) -> Array[(Int, Double, Double, Double, Double)] {
   let (rs, look, set) = v.runs_set_now()
   guard !rs.is_empty() else { return [] }
-  let (r, lay, _) = view_runs_laid(rs, look, set, w, v.tree.words_scale_of(v.id()), kept=v.words_breaks_now())
+  let (r, lay, _) = view_runs_laid(rs, look, set, w, v.tree.words_scale_of(v.id()), kept=v.words_breaks_now(), tabular=v.words_tabular_now())
   rich_link_pieces(r, lay, 0.0, 0.0, center_in=if v.words_centered_now() { w } else { -1.0 })
 }
 
@@ -237,7 +237,7 @@ pub fn runs_piece(v : @view.View, from : Int, to : Int) -> (Double, Double) -> (
   fn(w, _h) {
     let (rs, look, set) = v.runs_set_now()
     guard !rs.is_empty() && from < to else { return None }
-    let (_, lay, _) = view_runs_laid(rs, look, set, w, v.tree.words_scale_of(v.id()), kept=v.words_breaks_now())
+    let (_, lay, _) = view_runs_laid(rs, look, set, w, v.tree.words_scale_of(v.id()), kept=v.words_breaks_now(), tabular=v.words_tabular_now())
     guard to <= lay.text.length() else { return None }
     let center = if v.words_centered_now() { w } else { -1.0 }
     let mut box : (Double, Double, Double, Double)? = None

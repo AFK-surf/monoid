@@ -322,6 +322,7 @@ pub fn liquid_stepper_node(
       .padding(Is((ctrl_group_pad, ctrl_group_pad, ctrl_group_pad, ctrl_group_pad)))
       .radius(Is(r_outer))
       .shadow(Is(shadow_default))
+      .shadow_outside(Is(true))
       .glass(By(fn() { Some(ctrl_surface_glass(clear, clear)) }))
       .alpha(By(fn() { if disabled() { ctrl_disabled_alpha } else { 1.0 } }))
       |> ignore
@@ -515,6 +516,7 @@ pub fn liquid_chip_node(
         .gap(Is(ctrl_chip_gap))
         .radius(Is(ctrl_chip_r))
         .shadow(Is(shadow_thumb))
+        .shadow_outside(Is(true))
         .glass(By(fn() { Some(ctrl_surface_glass(eff_tint(), clear, bezel=14.0, refraction=16.0)) }))
         .scale(By(fn() {
           let p = clamp(press_way.shown(c), 0.0, 1.0)
@@ -566,6 +568,7 @@ pub fn liquid_chip_node(
         .gap(Is(ctrl_group_item_gap))
         .radius(Is(ctrl_chip_r))
         .shadow(Is(shadow_thumb))
+        .shadow_outside(Is(true))
         .glass(By(fn() { Some(ctrl_surface_glass(eff_tint(), clear, bezel=14.0, refraction=16.0)) }))
         .alpha(By(fn() { if disabled() { ctrl_disabled_alpha } else { 1.0 } }))
         |> ignore

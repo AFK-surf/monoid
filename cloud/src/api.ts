@@ -11,6 +11,8 @@ import { guestOf, guests } from "./guests";
 import { productOf } from "../../client/i18n/brand.ts";
 import type { Live } from "./account";
 import { EVENTS_PROTOCOLS, ROLES, sockets, type AddedMail, type Role } from "./directory";
+import { PROVISION_KEY_PREFIX } from "./directory/stations";
+import { fail } from "./directory/types";
 import type { Env } from "./env";
 import { requestLang, tr, type Lang } from "./i18n.ts";
 import { mailConfigured, sendAdded } from "./mail";
@@ -36,11 +38,14 @@ const STATUS: Record<string, number> = {
   too_many_workspaces: 429, too_many_invitations: 429, too_many_members: 429, too_many_stations: 429,
   invite_code_required: 403, invite_code_invalid: 404, invite_code_used: 409, invite_code_expired: 410,
   invalid_note: 400, invalid_expiry: 400, invalid_limits: 400, invalid_days: 400, too_many_keys: 409, key_not_found: 404,
-  feedback_not_found: 404,
+  feedback_not_found: 404, unauthorized: 401,
   invalid_signature: 401, wrong_relay_kind: 403, too_many_mesh_relays: 409, mesh_registry_capacity: 409, mesh_generation_exhausted: 409, mesh_relay_not_registered: 403, stale_mesh_address: 409, invalid_node: 400, mesh_relay_not_found: 404,
   invalid_target: 400, too_many_relays: 429, relay_not_found: 404, invalid_token: 403, wrong_relay: 403, unknown_relay: 400, invalid_secret: 403, not_from_relay: 403, invalid_request: 400,
   invalid_lock_entries: 400, lock_exists: 409, lock_fork: 409, lock_does_not_follow: 409, lock_refused: 409, invalid_device: 400, invalid_kind: 400,
 };
+
+/** A provisioning key as directory/stations.ts makes it: `sfpk_` and 32 bytes, base64url. */
+const PROVISION_KEY = new RegExp(`^${PROVISION_KEY_PREFIX}[A-Za-z0-9_-]{43}$`);
 
 const FEEDBACK_STATUSES: readonly FeedbackStatus[] = ["new", "triaged", "fixed", "wontfix"];
 
@@ -287,6 +292,33 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
   // ── Slack's pictures, for the app in a browser, which may not read them from Slack (pictures.ts) ──
   if (path === "/v1/pictures" && method === "GET") return servePicture(request);
 
+  // ── a console's provisioning key (directory/stations.ts): a station's enrollment at a time, and nothing else ──
+  // Only `Authorization: Bearer sfpk_…` here, and such a key nowhere else (any other route takes it for no account's
+  // token: 401). No account's token is taken here. A key not working (unknown, revoked, expired, its maker no longer
+  // managing the workspace) is 401 `unauthorized`: the console asks someone to connect again.
+  if (path === "/v1/provision/verify" || path === "/v1/provision/enrollments") {
+    const unauthorized = () => reply({ error: "unauthorized" }, 401);
+    const supplied = bearerToken(request);
+    if (!supplied || !PROVISION_KEY.test(supplied)) return unauthorized();
+    const dir = env.DIRECTORY.getByName("primary");
+    const hash = await digest(supplied);
+    if (path === "/v1/provision/verify" && method === "GET") {
+      const found = await dir.verifyProvisionKey(hash);
+      return found ? reply(found) : unauthorized();
+    }
+    if (path === "/v1/provision/enrollments" && method === "POST") {
+      const input = await readJson(request, 4096).catch(() => null);
+      if (!input) return reply({ error: "invalid_request" }, 400);
+      return directory(async () => {
+        const made = (await dir.createProvisionedEnrollment(hash, input.name)) ?? fail(401, "unauthorized");
+        // As an owner's 添加 station has it: on the test channel's host the installer is the test channel's.
+        const beta = betaOrigin(env);
+        return { workspace: made.workspace, ...withCommands(env, { token: made.token, expires_at: made.expires_at }, (beta !== null && url.origin === beta) || header(request, "channel") === "beta") };
+      });
+    }
+    return reply({ error: "not_found" }, 404);
+  }
+
   // ── accounts ────────────────────────────────────────────────────────────
   const isAccountRoute = path === "/v1/me" || path === "/v1/me/personal-lock" || path === "/v1/me/picture" || path.startsWith("/v1/workspaces") || path.startsWith("/v1/invitations/");
   if (!isAccountRoute) return null;
@@ -395,6 +427,11 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
       return withCommands(env, made, (beta !== null && url.origin === beta) || header(request, "channel") === "beta");
     });
   }
+  // The workspace's provisioning keys (directory/stations.ts), its owners' and admins': listed, one made ({ name,
+  // days? }, the key in this answer alone), one revoked.
+  if (kind === "provision-keys" && !target && method === "GET") return directory(async () => ({ keys: await dir.provisionKeys(sub, ws) }));
+  if (kind === "provision-keys" && !target && method === "POST") return directory(() => dir.createProvisionKey(sub, ws, input.name, input.days));
+  if (kind === "provision-keys" && target && !action && method === "DELETE") return directory(() => dir.revokeProvisionKey(sub, ws, target));
   // A rig's enrollment (a station that only runs tasks): the same commands, to which the app adds that it is one with its person's own lock
   // to pin (`rig:<hash>`, `--rig <hash>`), as it adds a workspace lock's hash: the cloud never says whose lock that is.
   if (kind === "rigs" && target === "enrollments" && !action && method === "POST") {

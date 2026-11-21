@@ -17,7 +17,7 @@
 //   (its rect, its clip) as before it is turned, the renderers turning
 //   where it is drawn and nothing of how; 35 1: its clip is not turned
 //   (one from outside what turned: where it is drawn). · 36-39 a box's
-//   corners' radii (kinds 0, 2, 4, 5, 9: top left, top right, bottom right,
+//   corners' radii (kinds 0, 2, 4, 5, 6, 9: top left, top right, bottom right,
 //   bottom left, each as smooth as its rect has room for; all 4 where they
 //   are one). · 40-51 the rounded clip outside its own that its own cuts
 //   through (clip_stack: a pane round an image's rounded frame scrolled into

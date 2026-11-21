@@ -459,7 +459,7 @@ export class DirectoryWorkspaces {
     const told = [...this.#db.members(id), ...this.#db.invitees(id)];
     const stations = this.#db.stationsIn(id).map((station) => ({ station, home: this.#db.memberships(station)[0] }));
     this.#db.ctx.storage.transactionSync(() => {
-      for (const table of ["members", "invitations", "added", "added_mails", "added_mail_retries", "station_members", "enrollments", "lock_entries", "lock_aside", "devices", "lock_requests", "told"]) this.#db.run(`DELETE FROM ${table} WHERE workspace = ?`, id);
+      for (const table of ["members", "invitations", "added", "added_mails", "added_mail_retries", "station_members", "enrollments", "lock_entries", "lock_aside", "devices", "lock_requests", "provision_keys", "told"]) this.#db.run(`DELETE FROM ${table} WHERE workspace = ?`, id);
       this.#db.run("DELETE FROM workspaces WHERE id = ?", id);
     });
     this.#host.tell(told, LIST, { type: "workspace", id });

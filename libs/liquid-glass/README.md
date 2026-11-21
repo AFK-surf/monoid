@@ -3,7 +3,7 @@
 Liquid glass controls for [mbui](../mbui), the MoonBit UI framework that draws the same window on macOS, Windows,
 Linux, iOS, Android and the web. Its foundational optical controls and damped springs originate from the component
 catalog of [Kyant0/AndroidLiquidGlass](https://github.com/Kyant0/AndroidLiquidGlass) (Apache-2.0), expanded into a
-complete 32-component library built on `mbui`'s `@headless` primitives and the iOS 27 `@paint.Glass::liquid` optical
+complete 34-component library built on `mbui`'s `@headless` primitives and the iOS 27 `@paint.Glass::liquid` optical
 model.
 
 What a control is to the hand, the keyboard and a screen reader comes from mbui's headless components, so every part
@@ -11,7 +11,7 @@ takes a tap, a drag, Tab and the arrow keys, and is read out by its role and nam
 
 Gallery: [ui.monoid.build/liquid-glass](https://ui.monoid.build/liquid-glass/) · Design Specification: [DESIGN.md](DESIGN.md)
 
-## The 32 parts
+## The 34 parts
 
 All of them live in `src/lg` (`@lg`) and are showcased live in the self-hosted `library` app (`src/pages/library.mbt`, default entry), following the strict two-layer material architecture in [DESIGN.md](DESIGN.md) (Floating Liquid Glass Layer vs. Content Layer, zero glass-on-glass):
 
@@ -31,6 +31,7 @@ All of them live in `src/lg` (`@lg`) and are showcased live in the self-hosted `
 | --- | --- |
 | `liquid_text_field_node` | Capsule glass text field over `@headless.TextField` with lead icon, clear button, label, and error state. |
 | `liquid_search_bar_node` | Floating glass search capsule with vector magnifier, live `edited` callback, and `show`-gated clear button. |
+| `liquid_search_morph_node` | iOS 26 search orb (`48pt`) morphing into a full-width liquid glass search bar with a capillary-budded circular `×` cancel orb (`@motion.LiquidBond` hysteresis). |
 | `liquid_checkbox_node` | Content-layer checkbox (checked / unchecked / mixed) with vector checkmark/dash and first-line label alignment (safe inside glass overlays). |
 | `liquid_radio_group_node` | Content-layer vertical or horizontal radio group over `@headless.radio_group` (safe inside glass overlays). |
 | `liquid_chip_node` | Toggleable filter/selection glass chip with optional leading icon and removable `×` button. |
@@ -43,6 +44,7 @@ All of them live in `src/lg` (`@lg`) and are showcased live in the self-hosted `
 | `liquid_nav_bar_node` | iOS 26/27 floating-island navigation bar (transparent chrome hosting floating glass islands in `leading`/`trailing`, or optional `glass=true` when child-glass-free) with centered title/subtitle. |
 | `liquid_toolbar_node` | Floating capsule toolbar container (`r = height / 2`) for quick actions. |
 | `liquid_bottom_tabs_node`, `liquid_bottom_tab_node` | A bar of tabs with a draggable refractive lens over the chosen tab. |
+| `liquid_collapsible_tabs_node` | iOS 26 `TabBarMinimizeBehavior` floating glass tab bar that smoothly collapses into a compact active-tab glass orb beside a detached circular Search/Action orb. |
 | `liquid_list_node`, `LiquidListRow` | Single-layer Liquid Glass grouped inset list (`r=24pt`, optional `dividers=false` sidebar mode) with flat inner rows, `active` highlight, and hover-avoiding hairlines. |
 | `liquid_disclosure_node` | Single-layer Liquid Glass collapsible disclosure card (`r=22pt`) with closed-form animated chevron and smooth slide/fade body. |
 | `liquid_card_node`, `liquid_control_tile_node`, `liquid_control_item_node` | Control center glass tiles, cards and switches. |

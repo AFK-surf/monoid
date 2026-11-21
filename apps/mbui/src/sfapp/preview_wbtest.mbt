@@ -79,7 +79,7 @@ test "an image opens fitted, its bar over it; a double tap zooms in, another bac
   t.back()
   assert_true(viewer.get() is None)
   // to where its way out said it ends (@ui.move_most_ms or pv_fade_ms from when it set out)
-  t.run_for(if v.flies { @ui.move_most_ms } else { pv_fade_ms })
+  t.run_for(if v.tree_back.get() { @ui.move_most_ms } else { pv_fade_ms })
   assert_true(t.find("界面草图.png") is None)
   t.assert_idle()
 }
@@ -454,12 +454,16 @@ fn video_in_chat(duration? : Double = 0.0, still? : Bool = true) -> @ui.Tester {
     held: false,
   }
   let t = @ui.Tester::new(
-    fn(c) { @ui.old_views_here(c) },
+    fn(c) { @sf.begin(c) |> ignore },
     tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
       root.box(fn(v) {
         v.grow(Is(1.0)) |> ignore
-        @ui.old(v, fn(c) { c.box(style=@ui.style(w=Fixed(300.0)), fn() { legacy_note_thumb_file(c, src, a) }) |> ignore })
-        .over(Is(true))
+        v.box(fn(col) {
+          col.over(Is(true)).width(Is(Some(300.0))) |> ignore
+          @sfpages.message_files_of_node(col, src, tips, "ws1/st1", "s-c1", chat_view_made(Json::object({})), fn() { [a] }, false)
+        })
         |> ignore
         @sfbase.viewer_node(v, src, fn() { v.window() })
       })
@@ -493,11 +497,9 @@ test "a video flies from its thumbnail in the chat, its still flying; the player
   // halfway: its still flies (the thumbnail hidden meanwhile), the player's picture not yet
   t.run_for(@ui.move_most_ms / 2.0)
   assert_eq(t.holes().length(), 0)
-  assert_eq(pv_hidden.get(), "ws1/st1/s-c1/uploads/fx/演示录屏.mp4")
   assert_true(t.drawn_images().iter().any(fn(i) { i[2] > 300.0 && i[2] < 390.0 }))
   // in: the player's picture where the still was, edge to edge
   t.run_for(@ui.move_most_ms)
-  assert_eq(pv_hidden.get(), "")
   assert_eq(t.holes().length(), 1)
   assert_true((t.holes()[0].2 - 390.0).abs() < 0.5)
 }
@@ -524,12 +526,10 @@ test "a video closed: the frame it shows grabbed, flown back with and kept by it
     None => fail("no frame kept")
   }
   assert_eq(t.holes().length(), 0)
-  assert_eq(pv_hidden.get(), id)
   // landed: the viewer gone, its player closed, the thumbnail shown again (with the frame kept)
   t.run_for(@ui.move_most_ms)
   assert_true(viewer.get() is None && pv_leaving.get() is None)
   assert_true(t.views().contains("close 1"))
-  assert_eq(pv_hidden.get(), "")
   // opened again: on from where it was left, played once its player says how long it is (not left at its end); the
   // video itself pressed (its name's tip shows under it now, the pointer rested on it as it landed)
   t.click(Button, label=@sf.t("web-main.file.play", args=[("name", "演示录屏.mp4")]))
@@ -1117,7 +1117,6 @@ test "a picture of the chat grows from its thumbnail; back closes it at once and
   assert_true(frames > 3)
   assert_true(last < 0.5)
   assert_true(pv_leaving.get() is None)
-  assert_eq(pv_hidden.get(), "")
   // (the chat's other pictures brushed in once decoded: sfpages message_files.mbt)
   t.run_for(@sfpages.reveal_ms)
   t.assert_idle()
@@ -1221,86 +1220,6 @@ test "a desktop's video opened over its chat has the keys: Space plays it each t
 }
 
 ///|
-/// TEMPORARY (Wave 8B-2B): exercises sfbase/viewer.mbt's legacy Ctx note_thumb/note_list/over_flight contract until
-/// Wave 8B-3 deletes note_thumb and migrates/retires these viewer flight tests together.
-fn legacy_note_thumb_file(
-  c : @ui.Ctx,
-  src : Source,
-  a : Attachment,
-  list? : String = "",
-  fixed_box? : (Double, Double)? = None,
-) -> Unit {
-  let id = "ws1/st1/s-c1/" + a.path
-  let r = @sf.message_file_corner
-  let open = c.id("pv-legacy-thumb/" + a.path)
-  c.on_press(open, fn() { open_preview("ws1/st1", "s-c1", a) })
-  match preview_kind(a.name).0 {
-    Some(KVideo) => {
-      let (bw, bh, letterbox) = @sfpages.image_box(a, @sfpages.video_least)
-      let (w, h) = match fixed_box {
-        Some((fw, fh)) => (fw, fh)
-        None => if bw > 300.0 { (300.0, bh * 300.0 / bw) } else { (bw, bh) }
-      }
-      let kept = pv_frames.get(id).map(fn(f) { f.0 }).unwrap_or("")
-      let pic = if kept != "" { kept } else { (src.poster)("ws1/st1", "s-c1", a.name) }
-      let node = c.box(
-        style=@ui.style(w=Fixed(w), h=Fixed(h), radius=InnerOr(@sf.file_radius(r)), clip=true),
-        id=open,
-        label=a.name,
-        fn() {
-          c.layer(fn() {
-            if pic != "" && pic != "!" {
-              c.image(pic, w=Px(w), h=Px(h), fit=if letterbox { FitContain } else { FitCover }, fade=false) |> ignore
-            }
-          })
-          |> ignore
-          c.layer(fn() {
-            c.box(style=@ui.css("w=Full h=Full p=S2 align=AStart justify=JEnd"), fn() {
-              @sf.video_capsule(c, "video/legacy/" + a.path, a.duration, coming=None, corner=r)
-            })
-            |> ignore
-          })
-          |> ignore
-        },
-      )
-      note_thumb(
-        c,
-        id,
-        node,
-        r,
-        picture=if pic == "!" { "" } else { pic },
-        letterbox~,
-        list~,
-        over=Some({ duration: a.duration, coming: None, corner: r, seen: 1.0 }),
-      )
-      c.look(node, @ui.look(alpha=thumb_shows(id)))
-      c.semantics(node, Button, id=open, label=@sf.t("web-main.file.play", args=[("name", a.name)]))
-    }
-    _ => {
-      let (bw, bh, letterbox) = @sfpages.image_box(a, @sfpages.image_least, min_side=@sfpages.image_min_side)
-      let (w, h) = match fixed_box {
-        Some((fw, fh)) => (fw, fh)
-        None => if bw > 300.0 { (300.0, bh * 300.0 / bw) } else { (bw, bh) }
-      }
-      let pic = @sfbase.sent_picture("ws1/st1", a).unwrap_or("")
-      let start_crop = a.width > 0.0 && a.height > 0.0 && (a.width / a.height >= 2.5 || a.height / a.width >= 2.5)
-      let node = c.box(
-        style=@ui.style(w=Fixed(w), h=Fixed(h), radius=InnerOr(@sf.file_radius(r)), clip=true),
-        id=open,
-        fn() {
-          if pic != "" {
-            let fit : @ui.Fit = if letterbox { FitContain } else if start_crop { FitCoverFrom(0.0, 0.0) } else { FitCover }
-            c.image(pic, w=Px(w), h=Px(h), fit~, fade=false) |> ignore
-          }
-        },
-      )
-      note_thumb(c, id, node, r, picture=pic, letterbox~, start_crop~, list~)
-      c.look(node, @ui.look(alpha=thumb_shows(id)))
-    }
-  }
-}
-
-///|
 /// A chat's file `a` as its message draws it (sfpages' message_files_of_node), in a column 300 wide.
 fn chat_file_tester(src : Source, a : Attachment) -> @ui.Tester {
   @ui.Tester::new(
@@ -1394,6 +1313,7 @@ fn pin_number_middle(t : @ui.Tester, n : Int) -> (Double, Double)? {
 /// it: its capsule its length alone), whatever words the app's tables give.
 fn tap_video(t : @ui.Tester, name : String) -> Unit raise {
   let at = t.reachable(name)
+  let at = if at.length() > 0 { at } else { t.reachable(@sf.t("web-main.file.play", args=[("name", name)])) }
   guard at.length() > 0 else { fail("no video \"\{name}\" to tap") }
   t.tap(at[0].0, at[0].1)
 }

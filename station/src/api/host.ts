@@ -161,7 +161,7 @@ export class Host {
       const ticks = platform.host.cpuTicks();
       if (!(ticks instanceof Promise)) return this.cpu.note(wall.now(), ticks);
       reading = true;
-      void ticks.then((read) => { if (!stopped) this.cpu.note(wall.now(), read); }).finally(() => (reading = false));
+      void ticks.then((read) => { if (!stopped) this.cpu.note(wall.now(), read); }, () => {}).finally(() => (reading = false));
     };
     note();
     const stop = wall.every(CPU_EVERY_MS, note); // timer: a sample of this machine (its CPUs)

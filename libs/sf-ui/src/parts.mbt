@@ -848,9 +848,10 @@ let menu_item_icon : Double = 16.0
 let panel_icon_col : Double = 20.0
 
 ///|
-/// A panel row's icon's column (parts.css.ts panelRowIcon): 20 wide, the icon in its middle.
+/// A panel row's icon's column (parts.css.ts panelRowIcon): 20 wide, the icon at its start (aligned with the panel's
+/// title and group labels, as panel_row_face's is).
 // kept across runs: a value (no field of it changes)
-let panel_row_icon : @ui.Style = @ui.css("w=S5 align=ACenter")
+let panel_row_icon : @ui.Style = @ui.css("w=S5 align=AStart")
 
 ///|
 /// How wide a panel's row's icon column is (panel_row_icon's), and its face's column: the face at its start, in the
@@ -2703,7 +2704,7 @@ let radio_dot : @ui.Style = @ui.css("w=S2 h=S2 radius=Full bg=Fg")
 /// A small panel's head with what stands at its end: its title in by a row's padding, 12 before what follows it, which
 /// takes the rest of the line, 4 over what follows.
 // kept across runs: a value (no field of it changes)
-let panel_head_line : @ui.Style = @ui.css("row w=Full pl=S2_5 pb=S1 gap=S3 align=ACenter")
+let panel_head_line : @ui.Style = @ui.css("row w=Full pl=S4 pb=S1 gap=S3 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -2757,7 +2758,7 @@ pub fn panel_button(
 
 ///|
 // kept across runs: a value (no field of it changes)
-let panel_head_box : @ui.Style = @ui.css("w=Full px=S2_5 pt=S1_5 pb=S1 gap=S0_5")
+let panel_head_box : @ui.Style = @ui.css("w=Full px=S4 pt=S1_5 pb=S1 gap=S0_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -2773,7 +2774,7 @@ let panel_group_box : @ui.Style = @ui.css("w=Full")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let panel_label_at : @ui.Style = @ui.css("w=Full px=S2_5 pt=S1_5 pb=S0_5")
+let panel_label_at : @ui.Style = @ui.css("w=Full px=S4 pt=S1_5 pb=S0_5")
 
 ///|
 /// A label with something before it (panel_group_node's `lead`): in a line, 6 apart.
@@ -2782,7 +2783,7 @@ let panel_label_led : @ui.Style = @ui.css("row gap=S1_5 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let panel_text_box : @ui.Style = @ui.css("w=Full px=S2_5")
+let panel_text_box : @ui.Style = @ui.css("w=Full px=S4")
 
 ///|
 // kept across runs: a value (no field of it changes)

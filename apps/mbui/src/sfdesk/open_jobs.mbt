@@ -245,13 +245,13 @@ let open_job_box : @ui.Style = @ui.css("w=Full")
 /// down (what is beside its two lines on the first), concentric with the panel; on the hover grey where it leads
 /// somewhere and the pointer is on it.
 // kept across runs: a value (no field of it changes)
-let open_job_row : @ui.Style = @ui.css("row w=Full px=S2_5 py=S1_25 gap=S2_5 radius=Inner align=AStart")
+let open_job_row : @ui.Style = @ui.css("row w=Full px=S4 py=S1_25 gap=S2_5 radius=Inner align=AStart")
 
 ///|
-/// Its row in a list of them alone (the sidebar foot's 运行中): its dot's column 6 in, so the dot stands where its
-/// group's heading's words start.
+/// Its row in a list of them alone (the sidebar foot's 运行中): its dot's column 12 in, so the dot stands where its
+/// group's heading's words start (panel_label_at's S4, 16: 12 + 4).
 // kept across runs: a value (no field of it changes)
-let open_job_row_alone : @ui.Style = @ui.css("row w=Full pl=S1_5 pr=S2_5 py=S1_25 gap=S2_5 radius=Inner align=AStart")
+let open_job_row_alone : @ui.Style = @ui.css("row w=Full pl=S3 pr=S4 py=S1_25 gap=S2_5 radius=Inner align=AStart")
 
 ///|
 /// The dot, in the 16 column the icons of the rows under it take (openJobMark), across its name's line's middle (the
@@ -302,7 +302,7 @@ let open_job_stop_lit : @ui.TextStyle = @ui.text_style(size=Meta, color=Danger, 
 ///|
 /// 还有 N 个 (openJobsMore: the meta's size, muted, the text's pointed at), its words where a row's are.
 // kept across runs: a value (no field of it changes)
-let open_jobs_more : @ui.Style = @ui.style(px=S2_5, py=@sf.room_of(@sf.menu_row_over))
+let open_jobs_more : @ui.Style = @ui.style(px=S4, py=@sf.room_of(@sf.menu_row_over))
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -314,10 +314,10 @@ let open_jobs_more_lit : @ui.TextStyle = open_jobs_more_words.then(@ui.text_styl
 
 ///|
 /// 其他运行中 · N (the others' fold): on its own line under the viewer's own, its words where a group's heading's are
-/// (10 in), its chevron after them on that line, 6 over and under; concentric with the panel, the hover grey under the
+/// (16 in), its chevron after them on that line, 6 over and under; concentric with the panel, the hover grey under the
 /// pointer.
 // kept across runs: a value (no field of it changes)
-let open_jobs_fold : @ui.Style = @ui.css("row w=Full px=S2_5 py=S1_5 gap=S1 align=ACenter radius=Inner")
+let open_jobs_fold : @ui.Style = @ui.css("row w=Full px=S4 py=S1_5 gap=S1 align=ACenter radius=Inner")
 
 ///|
 // kept across runs: a value (no field of it changes)

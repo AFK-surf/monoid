@@ -58,6 +58,4 @@ fn board_beside_nodes(p : @view.View, src : Source, r : ChatRef, tips : @sf.TipL
     }, shows)
   })
   |> ignore
-  // (a picture flying from its list drawn here while under the bar, the bar over it: viewer_flight_slot)
-  p.box(fn(slot) { @sfbase.viewer_flight_slot(slot, retained, serial, fn() { slot.window() }) }) |> ignore
 }

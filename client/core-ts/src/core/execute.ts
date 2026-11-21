@@ -162,7 +162,7 @@ export function execute(inner: Inner, call: Call, progress: Progress, at: [Clien
             const roster = rosterOf(op.method, op.path, op.body);
             const signed = roster && hooks.roster ? yield* hooks.roster(inner, sub, roster.ws, roster.what) : null;
             const adding = op.method === "POST" ? /^\/v1\/workspaces\/([^/]+)\/members$/.exec(op.path) : null;
-            const enrolling = op.method === "POST" ? /^\/v1\/workspaces\/([^/]+)\/enrollments$/.exec(op.path) : null;
+            const enrolling = op.method === "POST" ? /^\/v1\/workspaces\/([^/]+)\/(?:enrollments|provision-keys)$/.exec(op.path) : null;
             // The roster's writes end by CLOUD_WRITE_MS. One whose lock's entry is pending (no station took it) and that
             // fails here leaves nothing changed: that entry is dropped too, as the failure says (nothing saved).
             const asked = inner.provider.request(sub, op.method, op.path, op.body, ctx);
@@ -182,7 +182,8 @@ export function execute(inner: Inner, call: Call, progress: Progress, at: [Clien
               const role = isObject(op.body) && typeof op.body.role === "string" ? op.body.role : "member";
               result = withPending(pendingRow(yield* hooks.added(inner, sub, decodeURIComponent(adding[1]!), role, result)));
             }
-            // A locked workspace's station joins with the lock's hash, to pin it (views/lock.ts).
+            // A locked workspace's station joins with the lock's hash, to pin it (views/lock.ts): one a console enrolls by a
+            // provisioning key too, the key's answer carrying the hash for the console to give each station (`lock`).
             if (enrolling && hooks.enrolled) result = yield* hooks.enrolled(inner, sub, decodeURIComponent(enrolling[1]!), result);
             // A workspace made: the invite code kept through signing in is done with.
             if (made) prefs.inviteUsed(inner.data);

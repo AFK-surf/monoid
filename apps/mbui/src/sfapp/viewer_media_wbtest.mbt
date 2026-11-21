@@ -24,14 +24,16 @@ fn media_tree(w? : Double = 390.0, platform? : Int = 0, pressed? : Array[Int] = 
     held: false,
   }
   let t = @ui.Tester::new(
-    fn(c) { @ui.old_views_here(c) },
+    fn(c) { @sf.begin(c) |> ignore },
     tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
       root.box(fn(v) {
         v.grow(Is(1.0)) |> ignore
-        @ui.old(v, fn(c) {
-          c.box(style=@ui.style(w=Full, h=Full), fn() { legacy_note_thumb_file(c, src, a) }) |> ignore
+        v.box(fn(col) {
+          col.over(Is(true)).width(Is(Some(300.0))) |> ignore
+          @sfpages.message_files_of_node(col, src, tips, "ws1/st1", "s-c1", chat_view_made(Json::object({})), fn() { [a] }, false)
         })
-        .over(Is(true))
         |> ignore
         v.box(fn(f) {
           f.over(Is(true)).padding(Is((0.0, 760.0, 0.0, 0.0))) |> ignore
@@ -139,7 +141,8 @@ test "a video closed, its frame's grab answered with nothing: back into its thum
   assert_eq(t.holes().length(), 0, msg="flown back")
   // (no frame kept: its thumbnail shows its still as before; where it was kept, opened again on from there)
   assert_eq(pv_frames.values().to_array(), [("", 4000.0)])
-  assert_true(v.fly_pic != "" && media_drawn(t, v.fly_pic) is [r] && media_near(r, hole), msg="its still \{v.fly_pic} flying from where its picture was: \{Repr(media_drawn(t, v.fly_pic))}, was \{Repr(hole)}")
+  let still = v.still(fixture("chat"))
+  assert_true(still != "" && media_drawn(t, still) is [r] && media_near(r, hole), msg="its still \{still} flying from where its picture was: \{Repr(media_drawn(t, still))}, was \{Repr(hole)}")
   t.run_for(@ui.move_most_ms)
   assert_true(viewer.get() is None && pv_leaving.get() is None && media_closed(t) == 1, msg="gone, its player closed once")
 }
@@ -149,13 +152,14 @@ test "a video opened from its thumbnail: at each of four moments of its flight i
   let t = media_tree()
   tap_video(t, "演示录屏.mp4")
   let v = viewer.get().unwrap()
-  let (from, to) = (v.fly.starts_at(), v.fly.ends_at())
-  assert_true(v.flies && !v.fly_back && to > from, msg="set out as a flight in")
+  let from = t.time()
+  let to = v.tree_way_end.get()
+  assert_true(v.tree_way.get() && !v.tree_back.get() && to > from, msg="set out as a flight in")
   for k in 1..=4 {
     let at = from + (to - from) * k.to_double() / 5.0
-    t.run_for(at - t.ctx().moment())
-    assert_true(v.flies && !v.fly_back && v.fly.goes_at(t.ctx().moment()), msg="at \{k}/5: still flying in")
-    let still = if v.fly_pic != "" { v.fly_pic } else { v.still(fixture("chat")) }
+    t.run_for(at - t.time())
+    assert_true(v.tree_way.get() && !v.tree_back.get() && t.flight_of(v.thumb_id()) is Some(_), msg="at \{k}/5: still flying in")
+    let still = v.still(fixture("chat"))
     let drawn = media_drawn(t, still)
     assert_eq(drawn.length(), 1, msg="at \{k}/5: its still \{still} drawn \{Repr(drawn)}")
   }
@@ -201,7 +205,7 @@ test "a film played on an iPhone Duo, the window from wide to Small with its act
 ///|
 test "a video sent with no size, its still's known: opened from its thumbnail, its flight sets out at once from the thumbnail with its still, as big as it is there, in the very frame it opens" {
   let t = media_tree(sent=(0.0, 0.0))
-  guard t.reachable("演示录屏.mp4") is [(x, y), ..] else { fail("no video") }
+  guard film_at(t) is [(x, y), ..] else { fail("no video") }
   // (where the thumbnail is: its still as the chat draws it)
   let thumbs = t.drawn_images().filter(fn(i) { i[2] > 100.0 })
   guard thumbs is [th] else { fail("its thumbnail: \{Repr(thumbs)}") }
@@ -210,7 +214,7 @@ test "a video sent with no size, its still's known: opened from its thumbnail, i
   t.each_frame(
     Some(fn() {
       match viewer.get() {
-        Some(v) => seen.push((v.flies && !v.fly_back, media_drawn(t, v.still(fixture("chat")))))
+        Some(v) => seen.push((v.tree_way.get() && !v.tree_back.get(), media_drawn(t, v.still(fixture("chat")))))
         None => ()
       }
     }),

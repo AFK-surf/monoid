@@ -559,3 +559,167 @@ test "a thumbnail 30 under the bar over its column flown back from its picture z
     assert_true(a == 0.0 && b == 0.0, msg="its top's: \{Repr(cs)}")
   }
 }
+
+///|
+/// A card 300 wide and `card_h` tall `top` down the window, its corners `corners`, cutting what it holds to them
+/// (View::clips), holding what `kid` makes (one that stays, of id `id`); over all of it while `open` is said a picture
+/// 390 by 260 100 down the window that moves, of that id. The tree, open, what `kid` made, the picture.
+fn clip_corner_scene(
+  top : Double,
+  card_h : Double,
+  corners : (Double, Double, Double, Double),
+  id : String,
+  kid : (@view.View) -> Unit,
+) -> (@view.Tree, @signals.Signal[Bool], Ref[@view.View?], Ref[@view.View?]) {
+  let open = @signals.signal(false)
+  let held : Ref[@view.View?] = Ref(None)
+  let big : Ref[@view.View?] = Ref(None)
+  let tree = @view.Tree::new(fn(root) {
+    root.box(fn(p) {
+      p.width(Is(Some(390.0))).height(Is(Some(844.0))) |> ignore
+      p.box(fn(r) { r.height(Is(Some(top))).shrink(Is(0.0)) |> ignore }) |> ignore
+      p.box(fn(c) {
+        c
+        .width(Is(Some(300.0)))
+        .height(Is(Some(card_h)))
+        .shrink(Is(0.0))
+        .corners(Is(Some(corners)))
+        .clips(Is(true))
+        |> ignore
+        c.box(fn(k) {
+          held.val = Some(k)
+          kid(k)
+        })
+        |> ignore
+      })
+      |> ignore
+      p.show(fn() { open.get() }, fn(o) {
+        o.over(Is(true)) |> ignore
+        o.box(fn(r) { r.height(Is(Some(100.0))).shrink(Is(0.0)) |> ignore }) |> ignore
+        o.box(fn(b) {
+          big.val = Some(b)
+          b
+          .width(Is(Some(390.0)))
+          .height(Is(Some(260.0)))
+          .shrink(Is(0.0))
+          .ground(Is(blue))
+          .shared(Is(id), straight, with_stays=true)
+          |> ignore
+        })
+        |> ignore
+      })
+    })
+    |> ignore
+  })
+  (tree, open, held, big)
+}
+
+///|
+/// Four corners to a hundredth of a point.
+fn corners_near(c : (Double, Double, Double, Double)?) -> (Double, Double, Double, Double)? {
+  let r = fn(x : Double) { (x * 100.0).round() / 100.0 }
+  c.map(fn(c) { (r(c.0), r(c.1), r(c.2), r(c.3)) })
+}
+
+///|
+test "a thumbnail that stays in a card that cuts it to corners of its own: round as the card has it where their corners meet, as it rests, as it sets out and as it lands back" {
+  let (tree, open, thumb, big) = clip_corner_scene(0.0, 225.0, (40.0, 10.0, 30.0, 20.0), "a", fn(t) {
+    t
+    .width(Is(Some(300.0)))
+    .height(Is(Some(225.0)))
+    .shrink(Is(0.0))
+    .ground(Is(red))
+    .radius(Is(26.0))
+    .clips(Is(true))
+    .shared(Is("a"), straight, stays=true)
+    |> ignore
+  })
+  let seen = Some((40.0, 26.0, 30.0, 26.0))
+  let half = Some((20.0, 13.0, 15.0, 13.0))
+  tree.frame(390.0, 844.0, now=0.0) |> ignore
+  assert_eq(corners_near(tree.stays_drawn("a").map(fn(f) { f.1 })), seen)
+  tree.event(1000.0, fn() { open.set(true) })
+  tree.frame(390.0, 844.0, now=1000.0) |> ignore
+  let b = big.val.unwrap()
+  assert_true(b.flies(), msg="flown from the thumbnail")
+  assert_eq(corners_near(tree.flight_drawn("a").map(fn(f) { f.1 })), seen)
+  assert_eq(corners_near(tree.lift_cut_corners(b.id())), seen)
+  tree.frame(390.0, 844.0, now=1100.0) |> ignore
+  assert_eq(corners_near(tree.flight_drawn("a").map(fn(f) { f.1 })), half)
+  assert_eq(corners_near(tree.lift_cut_corners(b.id())), half)
+  tree.frame(390.0, 844.0, now=1300.0) |> ignore
+  assert_true(!b.flies())
+  // (closed: flown back to the thumbnail, half way as round as half the card's, as it lands all of it)
+  tree.event(2000.0, fn() { open.set(false) })
+  tree.frame(390.0, 844.0, now=2000.0) |> ignore
+  let t = thumb.val.unwrap()
+  assert_true(t.flies(), msg="flown back")
+  let end = tree.flight_ends_at("a").unwrap()
+  tree.frame(390.0, 844.0, now=2100.0) |> ignore
+  assert_eq(corners_near(tree.flight_drawn("a").map(fn(f) { f.1 })), half)
+  tree.frame(390.0, 844.0, now=end - 0.01) |> ignore
+  assert_true(t.flies(), msg="not yet landed")
+  assert_eq(corners_near(tree.flight_drawn("a").map(fn(f) { f.1 })), seen)
+  assert_eq(corners_near(tree.lift_cut_corners(t.id())), seen)
+  tree.frame(390.0, 844.0, now=end + 100.0) |> ignore
+  assert_true(!t.flies())
+  assert_eq(corners_near(tree.stays_drawn("a").map(fn(f) { f.1 })), seen)
+}
+
+///|
+test "a picture that stays in a card's corner, and one reaching past the card's top that cuts it: round as the card only where their corners meet, the card's corners kept as it lands back" {
+  // (the top left of a grid two by two, 147 by 110 with 6 between: only the corner it shares with the card the card's)
+  let (tree, _, _, _) = clip_corner_scene(0.0, 225.0, (40.0, 40.0, 40.0, 40.0), "tl", fn(g) {
+    g.width(Is(Some(300.0))).height(Is(Some(225.0))).shrink(Is(0.0)) |> ignore
+    for row in 0..<2 {
+      g.box(fn(r) {
+        r.row(Is(true)).width(Is(Some(300.0))).height(Is(Some(110.0))).shrink(Is(0.0)) |> ignore
+        if row == 1 {
+          r.margin(Is((0.0, 5.0, 0.0, 0.0))) |> ignore
+        }
+        for col in 0..<2 {
+          r.box(fn(c) {
+            c.width(Is(Some(147.0))).height(Is(Some(110.0))).shrink(Is(0.0)).ground(Is(red)).radius(Is(6.0)) |> ignore
+            if col == 1 {
+              c.margin(Is((6.0, 0.0, 0.0, 0.0))) |> ignore
+            }
+            if row == 0 && col == 0 {
+              c.shared(Is("tl"), straight, stays=true) |> ignore
+            }
+          })
+          |> ignore
+        }
+      })
+      |> ignore
+    }
+  })
+  tree.frame(390.0, 844.0, now=0.0) |> ignore
+  assert_eq(corners_near(tree.stays_drawn("tl").map(fn(f) { f.1 })), Some((40.0, 6.0, 6.0, 6.0)))
+  // (a card 175 tall 50 down the window holding a picture 200 tall reaching 25 past its top: cut by the card there)
+  let (tree, open, crop, _) = clip_corner_scene(50.0, 175.0, (40.0, 40.0, 40.0, 40.0), "crop", fn(k) {
+    k
+    .width(Is(Some(300.0)))
+    .height(Is(Some(200.0)))
+    .shrink(Is(0.0))
+    .margin(Is((0.0, -25.0, 0.0, 0.0)))
+    .ground(Is(red))
+    .radius(Is(0.0))
+    .shared(Is("crop"), straight, stays=true)
+    |> ignore
+  })
+  tree.frame(390.0, 844.0, now=0.0) |> ignore
+  tree.event(1000.0, fn() { open.set(true) })
+  tree.frame(390.0, 844.0, now=1000.0) |> ignore
+  tree.frame(390.0, 844.0, now=1300.0) |> ignore
+  tree.event(2000.0, fn() { open.set(false) })
+  tree.frame(390.0, 844.0, now=2000.0) |> ignore
+  let t = crop.val.unwrap()
+  assert_true(t.flies(), msg="flown back")
+  let end = tree.flight_ends_at("crop").unwrap()
+  tree.frame(390.0, 844.0, now=end - 0.01) |> ignore
+  assert_true(t.flies(), msg="not yet landed")
+  match corners_near(tree.lift_cut_corners(t.id())) {
+    Some((a, b, _, _)) => assert_true(a == 40.0 && b == 40.0, msg="its top's the card's: \{a} \{b}")
+    None => fail("not cut")
+  }
+}

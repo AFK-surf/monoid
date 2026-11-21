@@ -470,12 +470,24 @@ let diag_said_ms : Double = 1500.0
 // ── 按键 ─────────────────────────────────────────────────────────────────
 
 ///|
+/// Wide enough for the 3-column English combo tiles ("Switch windows", "Task Manager", etc.) to fit without ellipsis
+/// after `tiles_box` (`S4`) and `tile_box` (`S1`) padding.
+let keys_panel_w : Double = 380.0
+
+///|
 /// 按键 (the combos, then F1–F12 and the keys the keys row has not) beside what opened it (`from`), or with keyboard and
 /// mouse (`combos_only`: its keyboard has the rest) 组合键 alone; this page's panel of its own (screen_panel_toggle).
 fn keys_open(s : ScreenSess, u : ScreenUi, from : @sf.Anchor, combos_only? : Bool = false) -> Unit {
   let title = @sf.t(if combos_only { "web-pages.screen.combos" } else { "web-pages.screen.keysPanel" })
   screen_panel_toggle(u, "keys", fn() {
-    @sf.panel_nodes(title, fn(v, _) { keys_node(v, s, u, combos_only) }, from~, side=screen_panel_side(), focus=false)
+    @sf.panel_nodes(
+      title,
+      fn(v, _) { keys_node(v, s, u, combos_only) },
+      from~,
+      w=keys_panel_w,
+      side=screen_panel_side(),
+      focus=false,
+    )
   })
 }
 

@@ -21,23 +21,24 @@ test "a picture too big to show, in its chat with its picture there and words un
   }
   @sfbase.sent_picture_kept(@sfbase.sent_key("ws1/st1", photo.path), "sent-key")
   let src = fixture("chat")
-  // (the chat an old view the window's tree hosts, the viewer beside it as the shells have it)
   let t = @ui.Tester::new(
-    fn(c) { @ui.old_views_here(c) },
+    fn(c) { @sf.begin(c) |> ignore },
     tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
       root.box(fn(v) {
         v.grow(Is(1.0)) |> ignore
-        @ui.old(v, fn(c) {
-          c.box(style=@ui.style(w=Full, h=Full), fn() {
-            legacy_note_thumb_file(c, src, photo)
-            // (the chat's words under where it tells of the picture: none of its words over them as it comes)
-            for i in 0..<24 {
-              c.text("聊天里的一行字，在文件信息底下 \{i}") |> ignore
-            }
-          })
-          |> ignore
+        v.box(fn(col) {
+          col.over(Is(true)) |> ignore
+          @sfpages.message_files_of_node(col, src, tips, "ws1/st1", "s-c1", chat_view_made(Json::object({})), fn() { [photo] }, false)
+          // (the chat's words under where it tells of the picture: none of its words over them as it comes)
+          for i in 0..<24 {
+            col.box(fn(line) {
+              line.words(Is("聊天里的一行字，在文件信息底下 \{i}")) |> ignore
+            })
+            |> ignore
+          }
         })
-        .over(Is(true))
         |> ignore
         @sfbase.viewer_node(v, src, fn() { v.window() })
       })
@@ -49,15 +50,13 @@ test "a picture too big to show, in its chat with its picture there and words un
   )
   t.draw()
   t.run_for(@ui.image_fade_ms)
-  let at = t.locate("img:sent-key")
-  guard at is [(x, y), ..] else { fail("no thumbnail") }
-  t.tap(x, y)
+  let pics = drawn_of(t, "sent-key")
+  guard pics is [p, ..] else { fail("no thumbnail") }
+  t.tap(p.0 + p.2 / 2.0, p.1 + p.3 / 2.0)
   let v = viewer.get().unwrap()
-  assert_true(v.told_of() && v.flies, msg="told of, set out as a flight")
+  assert_true(v.told_of(), msg="told of")
   t.draw()
   assert_true(t.find("文件过大，无法在此显示，下载后可打开") is Some(_), msg="its stage told of from its first frame")
-  assert_eq(drawn_of(t, "sent-key").length(), 0, msg="its thumbnail hidden as it would fly")
-  t.run_for(v.fly.end() - t.ctx().moment() + @ui.frame_period_default)
-  assert_true(!v.flies, msg="its flight's time over")
-  assert_eq(drawn_of(t, "sent-key").length(), 1, msg="its thumbnail back")
+  t.run_for(pv_fade_ms + @ui.frame_period_default)
+  assert_true(t.find("文件过大，无法在此显示，下载后可打开") is Some(_), msg="its stage told of at rest")
 }

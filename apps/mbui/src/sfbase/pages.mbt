@@ -525,8 +525,6 @@ pub fn chat_page_made(
       })
     })
   }
-  // (a picture flying from its list drawn here while under its bar, the bar over it: viewer_flight_slot)
-  v.box(fn(slot) { viewer_flight_slot(slot, retained, serial, fn() { slot.window() }) }) |> ignore
   match over {
     Some(f) =>
       // (while the page shows, as its old view is built: what it reads let go of while another covers it; kept, at rest,

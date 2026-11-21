@@ -2,7 +2,9 @@ import {
   "mbui/film",
   "mbui/host",
   "mbui/hostapi",
+  "mbui/signals",
   "mbui/ui",
+  "mbui/view",
   "liquid-glass/lg",
   "liquid-glass/pages",
 }

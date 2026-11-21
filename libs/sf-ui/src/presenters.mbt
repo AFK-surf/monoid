@@ -1567,9 +1567,13 @@ let step_back_side : Double = dialog_close
 let step_back_in : Double = (dialog_close - 16.0) / 2.0
 
 ///|
-/// A step's back key before a title's row of its own: as far out of the words' line as before a title (step_head).
+/// A step's back key offset from the small panel's title line (panel_pad + text_in) to keep it concentric with r_menu.
+let step_back_out_px : Double = r_menu - step_back_side / 2.0 - panel_pad - text_in
+
+///|
+/// A step's back key before a title's row of its own: concentric with the small panel's top-left corner (`r_menu`).
 // kept across runs: a value (no field of it changes)
-let step_back_out : @ui.Style = @ui.style(ml=room(-step_back_in))
+let step_back_out : @ui.Style = @ui.style(ml=room(step_back_out_px))
 
 ///|
 /// A step's back key before a dialog's title in its head's row (dialog_head, its parts S3 apart): as far out of the

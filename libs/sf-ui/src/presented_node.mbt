@@ -444,11 +444,11 @@ pub fn panel_words_at_node(v : @view.View) -> Double {
 
 ///|
 /// How far in from the column a panel's body is given node `v` its title starts, in points: beside what opened it, as
-/// far as its head puts it (panel_head_box's S2_5); on a sheet, on the words' line; none outside a panel. What its body
+/// far as its head puts it (panel_head_box's S4, text_in); on a sheet, on the words' line; none outside a panel. What its body
 /// lines up under the title by (the board's draft's panel: its words and what it runs on).
 pub fn panel_title_at_node(v : @view.View) -> Double {
   match v.lent(panel_in_lent) {
-    Some(p) if p.small => @ui.Space::px(S2_5)
+    Some(p) if p.small => text_in
     Some(p) => p.words
     None => 0.0
   }

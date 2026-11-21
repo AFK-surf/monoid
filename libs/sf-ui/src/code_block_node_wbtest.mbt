@@ -95,3 +95,24 @@ test "a code block's 换行 is pressed as far round it as a press's room: over i
     assert_true(t.find(md_wrap_words(true)) is Some(_), msg="\{dy} from its words' top")
   }
 }
+
+///|
+test "code_block_node: 1.0x/1.3x keep 24pt code keys; 2.0x grows copy and wrap keys with zero fixed_outgrown or squeeze_faults" {
+  let t = cb_tester(true, platform=2, scale=1.0)
+  let keys_1 = t.semantics().filter(fn(s) { s.role == Button && !s.hidden }).map(fn(s) { s.rect.3 })
+  assert_eq(keys_1, [24.0, 24.0], msg="1.0x code keys exact 24pt")
+  assert_eq(t.fixed_outgrown(), [], msg="1.0x fixed_outgrown")
+  assert_eq(t.squeeze_faults(), [], msg="1.0x squeeze_faults")
+  t.set_font_scale(1.3)
+  t.draw()
+  let keys_13 = t.semantics().filter(fn(s) { s.role == Button && !s.hidden }).map(fn(s) { s.rect.3 })
+  assert_eq(keys_13, [24.0, 24.0], msg="1.3x code keys exact 24pt")
+  assert_eq(t.fixed_outgrown(), [], msg="1.3x fixed_outgrown")
+  assert_eq(t.squeeze_faults(), [], msg="1.3x squeeze_faults")
+  t.set_font_scale(2.0)
+  t.draw()
+  let keys_2 = t.semantics().filter(fn(s) { s.role == Button && !s.hidden }).map(fn(s) { s.rect.3 })
+  assert_true(keys_2.length() == 2 && keys_2.iter().all(fn(h) { h > 24.0 }), msg="2.0x code keys grew: \{Repr(keys_2)}")
+  assert_eq(t.fixed_outgrown(), [], msg="2.0x fixed_outgrown")
+  assert_eq(t.squeeze_faults(), [], msg="2.0x squeeze_faults")
+}

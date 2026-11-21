@@ -78,6 +78,23 @@ export interface AdminKeyView {
   revoked_at: number | null;
 }
 
+/**
+ * A workspace's provisioning key (GET /v1/workspaces/{ws}/provision-keys): what a console holds to enroll the stations
+ * of machines it makes for that workspace, with no one there to press Connect each time. The key itself is shown once,
+ * when made; it works while its maker still manages the workspace, until revoked or expired. Times in seconds.
+ */
+export interface ProvisionKeyView {
+  id: string;
+  workspace: string;
+  name: string;
+  prefix: string;
+  created_by: string;
+  created_at: number;
+  expires_at: number | null;
+  last_used_at: number | null;
+  revoked_at: number | null;
+}
+
 /** What an operator of the console changed (GET /v1/admin/audit): who, what, of what. Times in seconds. */
 export interface AdminAuditEntry {
   id: string;

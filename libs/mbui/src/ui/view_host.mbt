@@ -344,8 +344,15 @@ fn view_made_now(make : (@view.View) -> Unit) -> Unit {
   let tree_wid = window_now.now
   // (a change told as it is made, at the host's now: what it sets going starts then, whatever frame takes it)
   let made : Ref[@view.Tree?] = Ref(None)
+  let measuring_tab = fn() {
+    match made.val {
+      Some(tree) => tree.measuring_tabular()
+      None => None
+    }
+  }
   let t = @view.Tree::new(
     fn(root) {
+      made.val = Some(root.tree)
       // (where its nodes are drawn told it first: what they read of it as they are made, as later)
       view_drawn_by(root.tree)
       // (what a node says moves, from the first it makes: View::said_moving)
@@ -356,7 +363,7 @@ fn view_made_now(make : (@view.View) -> Unit) -> Unit {
       // (its words shaped as the theme it is drawn in says (its digits all one width or not: the app's, set_tree_theme,
       // else the window's for its width): as that changes, every word measured and drawn again so at the change's
       // moment, whatever is read of it before a frame; followed by its root, let go with it. As made, shaped so.)
-      root.reacts(view_words_style, fn(_s) {
+      root.reacts(fn() { view_words_style() }, fn(_s) {
         match made.val {
           Some(tree) => tree.words_again()
           None => ()
@@ -370,12 +377,12 @@ fn view_made_now(make : (@view.View) -> Unit) -> Unit {
         }
       })
     },
-    measure=view_words_measure,
-    measure_runs=view_runs_measure,
-    measure_kept=view_words_measure_kept,
-    measure_runs_kept=view_runs_measure_kept,
-    measure_runs_least=view_runs_least,
-    measure_shorter=view_shorter_measure,
+    measure=fn(words, look, width, scale) { view_words_measure(words, look, width, scale, tabular=measuring_tab()) },
+    measure_runs=fn(runs, look, set, width, scale) { view_runs_measure(runs, look, set, width, scale, tabular=measuring_tab()) },
+    measure_kept=fn(words, look, width, scale) { view_words_measure_kept(words, look, width, scale, tabular=measuring_tab()) },
+    measure_runs_kept=fn(runs, look, set, width, scale) { view_runs_measure_kept(runs, look, set, width, scale, tabular=measuring_tab()) },
+    measure_runs_least=fn(runs, look, set, scale) { view_runs_least(runs, look, set, scale, tabular=measuring_tab()) },
+    measure_shorter=fn(words, shorter, look, width, scale) { view_shorter_measure(words, shorter, look, width, scale, tabular=measuring_tab()) },
     time=fn() { h_event_time() },
     sources=@hostapi.keeps_sources(),
   )
@@ -623,15 +630,27 @@ fn view_forget() -> Unit {
 /// Words of a node made once measured as they are drawn (text.mbt), in `width` (< 0: as wide as they are): at the
 /// size of words `scale` its node's are at (View::words_scale's: the system's, as an old view's are, Ctx::sp, but where
 /// it says its words are as said), the look's size and line said at 1.
-fn view_words_measure(words : String, look : @view.WordsLook, width : Double, scale : Double) -> (Double, Double) {
-  view_words_measure_set(words, look, false, width, scale)
+fn view_words_measure(
+  words : String,
+  look : @view.WordsLook,
+  width : Double,
+  scale : Double,
+  tabular? : Bool? = None,
+) -> (Double, Double) {
+  view_words_measure_set(words, look, false, width, scale, tabular~)
 }
 
 ///|
 /// Words of a node made once that keep their line breaks (View::words_breaks) measured as they are drawn: the tree's
 /// `measure_kept`.
-fn view_words_measure_kept(words : String, look : @view.WordsLook, width : Double, scale : Double) -> (Double, Double) {
-  view_words_measure_set(words, look, true, width, scale)
+fn view_words_measure_kept(
+  words : String,
+  look : @view.WordsLook,
+  width : Double,
+  scale : Double,
+  tabular? : Bool? = None,
+) -> (Double, Double) {
+  view_words_measure_set(words, look, true, width, scale, tabular~)
 }
 
 ///|
@@ -642,6 +661,7 @@ fn view_words_measure_set(
   kept : Bool,
   width : Double,
   scale : Double,
+  tabular? : Bool? = None,
 ) -> (Double, Double) {
   let tl = layout_words(
     view_words_set(words, look, kept),
@@ -652,7 +672,7 @@ fn view_words_measure_set(
     balance=look.balance,
     line=view_line(scale, look),
     spacing=view_spacing(scale, look),
-    style=view_words_style(),
+    style=view_words_style(tabular~),
     max_lines=look.max_lines,
   )
   // (where their first line is, for what lines them up by it: view_baseline.mbt)
@@ -730,20 +750,32 @@ fn view_shorter_measure(
   look : @view.WordsLook,
   width : Double,
   scale : Double,
+  tabular? : Bool? = None,
 ) -> Double {
-  let lay = fn(s : String) {
-    layout_text(s, view_sp(scale, look.size), look.weight, 1.0e9, false, line=view_line(scale, look), spacing=view_spacing(scale, look), style=view_words_style())
+  let lay = fn(s : String, keep_tabular : Bool) {
+    layout_text(
+      s,
+      view_sp(scale, look.size),
+      look.weight,
+      1.0e9,
+      false,
+      line=view_line(scale, look),
+      spacing=view_spacing(scale, look),
+      style=view_words_style(tabular~),
+      keep_tabular~,
+    )
   }
   // (set on one line as they are drawn, its own and the shorter ones alike: view_words_set)
   let words = view_words_set(words, look, false)
-  said_in(words, lay(words), shorter.map(fn(a) { view_words_set(a, look, false) }), width, lay).w
+  said_in(words, lay(words, false), shorter.map(fn(a) { view_words_set(a, look, false) }), width, lay).w
 }
 
 ///|
-/// How a node's words are shaped besides their size and weight: their digits all one width where the tree's theme says
-/// so of the app's own words (Theme::tabular), as an old view's words are where they say nothing of it (Ctx::text).
-fn view_words_style() -> Int {
-  if tree_theme().tabular {
+/// How a node's words are shaped besides their size and weight: their digits all one width where the node or the tree's
+/// theme says so (View::words_tabular, Theme::tabular), as an old view's words are where they say nothing of it
+/// (Ctx::text).
+fn view_words_style(tabular? : Bool? = None) -> Int {
+  if tabular.unwrap_or(tree_theme().tabular) {
     @hostapi.style_tabular
   } else {
     0
@@ -757,7 +789,14 @@ fn view_words_style() -> Int {
 /// node's are at (view_words_measure's), in the theme's digits where they are the app's own words (view_words_style),
 /// in the face chosen for a person's words where they are those (faces_style, as Ctx::rich's `words`); their line
 /// breaks kept where `kept` (View::words_breaks).
-fn view_rich(runs : Array[@text.Run], look : @view.WordsLook, set : @view.RunsLook, scale : Double, kept : Bool) -> Rich {
+fn view_rich(
+  runs : Array[@text.Run],
+  look : @view.WordsLook,
+  set : @view.RunsLook,
+  scale : Double,
+  kept : Bool,
+  tabular? : Bool? = None,
+) -> Rich {
   // (on one line where they do not wrap: what breaks them run on with a space across all of them at once, a break and
   // what blanks follow it perhaps in two of them, as Ctx::rich's; each as weighty and inked as it was; on their lines
   // as written where they keep their breaks, as Ctx::rich's `breaks`)
@@ -787,7 +826,7 @@ fn view_rich(runs : Array[@text.Run], look : @view.WordsLook, set : @view.RunsLo
     base: 0,
     select: false,
     max_lines: look.max_lines,
-    faces: if set.words { faces_style(true, 0) } else { view_words_style() },
+    faces: if set.words { faces_style(true, 0) } else { view_words_style(tabular~) },
     shaped_in: words_shaped_in.get(),
   }
 }
@@ -821,8 +860,9 @@ fn view_runs_laid(
   w : Double,
   scale : Double,
   kept? : Bool = false,
+  tabular? : Bool? = None,
 ) -> (Rich, RichLayout, Bool) {
-  let r = view_rich(runs, look, set, scale, kept)
+  let r = view_rich(runs, look, set, scale, kept, tabular~)
   let lay = layout_rich(r, if r.wrap { w } else { 1.0e9 })
   if runs_over(r, lay, w) {
     let cut_r = cut_rich({ ..r, max_lines: 1 }, lay, w)
@@ -845,8 +885,9 @@ fn view_runs_measure(
   set : @view.RunsLook,
   width : Double,
   scale : Double,
+  tabular? : Bool? = None,
 ) -> (Double, Double) {
-  view_runs_measure_set(runs, look, set, false, width, scale)
+  view_runs_measure_set(runs, look, set, false, width, scale, tabular~)
 }
 
 ///|
@@ -858,8 +899,9 @@ fn view_runs_measure_kept(
   set : @view.RunsLook,
   width : Double,
   scale : Double,
+  tabular? : Bool? = None,
 ) -> (Double, Double) {
-  view_runs_measure_set(runs, look, set, true, width, scale)
+  view_runs_measure_set(runs, look, set, true, width, scale, tabular~)
 }
 
 ///|
@@ -871,8 +913,9 @@ fn view_runs_measure_set(
   kept : Bool,
   width : Double,
   scale : Double,
+  tabular? : Bool? = None,
 ) -> (Double, Double) {
-  let r = view_rich(runs, look, set, scale, kept)
+  let r = view_rich(runs, look, set, scale, kept, tabular~)
   let w = if width < 0.0 || !look.wrap { 1.0e9 } else { width }
   let lay = layout_rich(r, w)
   // (on more lines than it says it is drawn on: cut after the last, as it is drawn, view_runs_laid)
@@ -886,12 +929,18 @@ fn view_runs_measure_set(
 ///|
 /// How narrow a node's words in pieces may wrap, measured as they are drawn (view_runs_measure): the tree's
 /// `measure_runs_least`.
-fn view_runs_least(runs : Array[@text.Run], look : @view.WordsLook, set : @view.RunsLook, scale : Double) -> Double {
+fn view_runs_least(
+  runs : Array[@text.Run],
+  look : @view.WordsLook,
+  set : @view.RunsLook,
+  scale : Double,
+  tabular? : Bool? = None,
+) -> Double {
   // (on one line where they do not wrap: as wide as that line)
   if !look.wrap {
-    return view_runs_measure(runs, look, set, -1.0, scale).0
+    return view_runs_measure(runs, look, set, -1.0, scale, tabular~).0
   }
-  rich_least_w(view_rich(runs, look, set, scale, false))
+  rich_least_w(view_rich(runs, look, set, scale, false, tabular~))
 }
 
 ///|
@@ -2874,7 +2923,7 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
     // (as their words are laid out to be drawn, below: one line given less than it is wide cut to it, its ellipsis's
     // bar with it)
     if c.words != "" && !c.runs.is_empty() {
-      let r = view_rich(c.runs, c.words_look, c.runs_look, words_scale, c.words_breaks)
+      let r = view_rich(c.runs, c.words_look, c.runs_look, words_scale, c.words_breaks, tabular=c.words_tabular)
       let lay = layout_rich(r, if r.wrap { c.w } else { 1.0e9 })
       let lay = if runs_over(r, lay, c.w) {
         layout_rich(cut_rich({ ..r, max_lines: 1 }, lay, c.w), 1.0e9)
@@ -2888,11 +2937,11 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
       // (what is drawn of its words: shorter ones where it says them and its own have not the room, View::shorter)
       let shown = c.words_drawn.unwrap_or(c.words)
       let k = c.words_look
-      let (size, line, style, spacing) = (view_sp(words_scale, k.size), view_line(words_scale, k), view_words_style(), view_spacing(words_scale, k))
+      let (size, line, style, spacing) = (view_sp(words_scale, k.size), view_line(words_scale, k), view_words_style(tabular=c.words_tabular), view_spacing(words_scale, k))
       let words = view_words_set(shown, k, c.words_breaks)
       let tl = layout_words(words, size, k.weight, if k.wrap { c.w } else { 1.0e9 }, k.wrap, balance=k.balance, line~, style~, spacing~, max_lines=k.max_lines)
       let tl = if !k.wrap && tl.w > c.w + 0.5 {
-        ellipsized(words, tl, c.w, fn(s) { layout_text(s, size, k.weight, 1.0e9, false, line~, style~, spacing~) })
+        ellipsized(words, tl, c.w, fn(s, keep_tabular) { layout_text(s, size, k.weight, 1.0e9, false, line~, style~, spacing~, keep_tabular~) })
       } else {
         tl
       }
@@ -2923,7 +2972,7 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
   if bones == 0L && c.words != "" && !c.runs.is_empty() {
     // (in pieces each set its own way: one paragraph, as Ctx::rich's; one line given less than it is wide cut to it,
     // ending in an ellipsis, as its plain words are)
-    let (r, lay, over) = view_runs_laid(c.runs, c.words_look, c.runs_look, c.w, words_scale, kept=c.words_breaks)
+    let (r, lay, over) = view_runs_laid(c.runs, c.words_look, c.runs_look, c.w, words_scale, kept=c.words_breaks, tabular=c.words_tabular)
     // (each run's ink its own, else a link's, code's, else the node's: as an old view's paragraph's, Rich::run_colors)
     let ink = if c.ink < 0L { @signals.untracked(fn() { tree_theme().fg }) } else { c.ink }
     let colors = r.run_colors(ink)
@@ -3025,12 +3074,12 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
     let k = c.words_look
     // (one line given less than it is wide: cut to it, ending in an ellipsis, as an old view's words on one line are)
     // (at the system's size of words, in the theme's digits, as measured: view_words_measure)
-    let (size, line, style, spacing) = (view_sp(words_scale, k.size), view_line(words_scale, k), view_words_style(), view_spacing(words_scale, k))
+    let (size, line, style, spacing) = (view_sp(words_scale, k.size), view_line(words_scale, k), view_words_style(tabular=c.words_tabular), view_spacing(words_scale, k))
     // (wrapped in its width as laid out, as an old view's words are where they are placed: Node::text_layout's)
     let words = view_words_set(shown, k, c.words_breaks)
     let tl = layout_words(words, size, k.weight, if k.wrap { c.w } else { 1.0e9 }, k.wrap, balance=k.balance, line~, style~, spacing~, max_lines=k.max_lines)
     let tl = if !k.wrap && tl.w > c.w + 0.5 {
-      ellipsized(words, tl, c.w, fn(s) { layout_text(s, size, k.weight, 1.0e9, false, line~, style~, spacing~) })
+      ellipsized(words, tl, c.w, fn(s, keep_tabular) { layout_text(s, size, k.weight, 1.0e9, false, line~, style~, spacing~, keep_tabular~) })
     } else {
       tl
     }

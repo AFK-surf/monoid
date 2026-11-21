@@ -261,7 +261,7 @@ static NSString *shader_src = @
 "// glass: where a point's backdrop is in the blurred copy (uv = p * map.xy + map.zw, kept in uvc), a liquid group's\n"
 "// bounds, shapes and corners, how many (misc.x); misc.y 1 where what it copied of a native view's hole is let through\n"
 "// (glass_through)\n"
-"struct G { float4 map; float4 uvc; float4 gb; float4 shape[8]; float4 rad[2]; float4 misc; };\n"
+"struct G { float4 map; float4 uvc; float4 gb; float4 shape[8]; float4 rad[8]; float4 misc; };\n"
 "struct VOut { float4 pos [[position]]; float2 p; float2 cp; uint iid [[flat]]; };\n"
 "vertex VOut vmain(uint vid [[vertex_id]], uint iid [[instance_id]],\n"
 "    const device Inst* inst [[buffer(0)]], constant U& u [[buffer(1)]], constant G& g [[buffer(2)]]) {\n"
@@ -308,7 +308,7 @@ MB_CORNER_SL
 "  int n = int(g.misc.x + 0.5);\n"
 "  for (int i = 0; i < 8; i++) {\n"
 "    if (i >= n) break;\n"
-"    d = smin_k(d, sd_rr(p, g.shape[i], float4(g.rad[i / 4][i % 4])), k);\n"
+"    d = smin_k(d, sd_rr(p, g.shape[i], g.rad[i]), k);\n"
 "  }\n"
 "  return d;\n"
 "}\n"
@@ -398,7 +398,7 @@ MB_CORNER_SL
 "      int n_sh = int(g.misc.x + 0.5);\n"
 "      for (int i = 0; i < 8; i++) {\n"
 "        if (i >= n_sh) break;\n"
-"        float di = sd_rr(p, g.shape[i], float4(g.rad[i / 4][i % 4]));\n"
+"        float di = sd_rr(p, g.shape[i], g.rad[i]);\n"
 "        float hi = min(g.shape[i].z, g.shape[i].w) * 0.5;\n"
 "        if (i == 0) {\n"
 "          d = di;\n"
@@ -477,12 +477,20 @@ MB_CORNER_SL
 "    float glintFaceGain;\n"
 "    float glintVib;\n"
 "    if (is_clear) {\n"
-"      // Pure crystal-clear refractive optical lens (lifted tab-bar / toggle / slider thumb & loupe):\n"
-"      // zero milky emission veil so light bars never clip to opaque white and dark bars stay crisp.\n"
-"      emission = float3(0.0, 0.0, 0.0);\n"
-"      transmittance = 1.0; lift = 0.0; chromaGain = 1.06;\n"
-"      contourStr = 0.24; contourDirAmt = 0.85; bevelShadowStr = 0.045;\n"
-"      glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;\n"
+"      // iOS 27 clear liquid glass: col.a == 0.0 keeps crystal-clear zero-veil optical lens\n"
+"      // (lifted tab-bar / toggle / slider thumb & loupe), while Glass::clear() (col.a ~ 0.102)\n"
+"      // blends smoothly into the +0.126 translucent micro-veil over media.\n"
+"      float clearVeil = smoothstep(0.005, 0.102, col.a);\n"
+"      emission = float3(1.0, 1.0, 1.0) * (0.126 * clearVeil);\n"
+"      transmittance = mix(1.0, 0.90, clearVeil);\n"
+"      lift = mix(0.0, 0.10, clearVeil);\n"
+"      chromaGain = mix(1.06, 1.0, clearVeil);\n"
+"      contourStr = mix(0.24, 0.25, clearVeil);\n"
+"      contourDirAmt = mix(0.85, 0.77, clearVeil);\n"
+"      bevelShadowStr = mix(0.045, 0.04, clearVeil);\n"
+"      glintLum = mix(1.6, 1.2, clearVeil);\n"
+"      glintFaceGain = mix(0.0, 0.25, clearVeil);\n"
+"      glintVib = mix(2.85, 1.5, clearVeil);\n"
 "    } else if (is_dark) {\n"
 "      emission = float3(32.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0);\n"
 "      transmittance = 0.52625; lift = 0.583; chromaGain = 1.005;\n"
@@ -873,7 +881,7 @@ static void atlas_flush(uint64_t upto) {
 // slopes into flat steps, a texel of the last level 8 pixels wide on the screen (a blur under 4 pixels, too narrow to
 // halve, is written back into the copy: it leaves no slope that wide).
 
-typedef struct { float map[4]; float uvc[4]; float gb[4]; float shape[8][4]; float rad[2][4]; float misc[4]; } GU;
+typedef struct { float map[4]; float uvc[4]; float gb[4]; float shape[8][4]; float rad[8][4]; float misc[4]; } GU;
 static GU gu;
 static id<MTLTexture> gtex;  // the blurred copy the glass in view shows
 
@@ -1033,11 +1041,15 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
       bx0 = b[0] - m23; by0 = b[1] - m23; bx1 = b[0] + b[2] + m23; by1 = b[1] + b[3] + m23;
       if (merged_liquid && n < 8) {
         for (int k = 0; k < 4; k++) m->g.shape[n][k] = b[k];
-        m->g.rad[n / 4][n % 4] = b[4];
+        if (fmaxf(fmaxf(b[36], b[37]), fmaxf(b[38], b[39])) > 0.0f) {
+          for (int k = 0; k < 4; k++) m->g.rad[n][k] = b[36 + k];
+        } else {
+          for (int k = 0; k < 4; k++) m->g.rad[n][k] = b[4];
+        }
         n++;
       }
       if (unmerged_liquid && a[7] >= 0.0f) {
-        float bm = 3.0f * blur + b[21] * (1.0f + b[22]) + m23 + 2.0f;
+        float bm = 3.0f * blur + b[21] * (1.0f + fabsf(b[22])) + m23 + 2.0f;
         if (bm > margin) margin = bm;
       }
     }
@@ -1052,7 +1064,7 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
         x0 = fminf(x0, b[0] - m23); y0 = fminf(y0, b[1] - m23);
         x1 = fmaxf(x1, b[0] + b[2] + m23); y1 = fmaxf(y1, b[1] + b[3] + m23);
         if (a[7] >= 0.0f) {
-          float bm = 3.0f * blur + b[21] * (1.0f + b[22]) + m23 + 2.0f;
+          float bm = 3.0f * blur + b[21] * (1.0f + fabsf(b[22])) + m23 + 2.0f;
           if (bm > margin) margin = bm;
         }
       } else {

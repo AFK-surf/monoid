@@ -105,6 +105,7 @@ pub fn liquid_dialog_node(
           card
           .radius(Is(dialog_radius))
           .shadow(Is(shadow_default))
+          .shadow_outside(Is(true))
           .glass(By(fn() { Some(dialog_glass()) }))
           .alpha(By(fn() { look().alpha }))
           .scale(By(fn() { look().sx }))

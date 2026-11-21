@@ -214,14 +214,14 @@ fn Ctx::tree_words_facts(
   guard contents.get(d.id.at) is Some((c, _)) else { return }
   let k = c.words_look
   let scale = tree.words_scale_of(d.id)
-  let (size, line, style, spacing) = (view_sp(scale, k.size), view_line(scale, k), view_words_style(), view_spacing(scale, k))
+  let (size, line, style, spacing) = (view_sp(scale, k.size), view_line(scale, k), view_words_style(tabular=c.words_tabular), view_spacing(scale, k))
   w.wrap = k.wrap
   w.balance = k.balance
   w.max_lines = k.max_lines
   w.center = c.words_center
   w.line_h = line
   w.spacing = spacing
-  w.tabular = tree_theme().tabular
+  w.tabular = c.words_tabular.unwrap_or(tree_theme().tabular)
   // (as big as it is laid out, its words laid out in that: as the tree lays them out and draws them)
   w.fw = c.w
   w.fh = c.h
@@ -237,7 +237,7 @@ fn Ctx::tree_words_facts(
     None => []
   }
   if c.runs.is_empty() {
-    let lay = fn(s : String) { layout_text(s, size, k.weight, 1.0e9, false, line~, style~, spacing~) }
+    let lay = fn(s : String, keep_tabular : Bool) { layout_text(s, size, k.weight, 1.0e9, false, line~, style~, spacing~, keep_tabular~) }
     let shown = view_words_set(c.words_drawn.unwrap_or(c.words), k, c.words_breaks)
     let tl = layout_words(
       shown,
@@ -255,12 +255,12 @@ fn Ctx::tree_words_facts(
     w.full_cut = k.wrap && k.max_lines > 0 && tl.text != shown
     let tl = if !k.wrap && tl.w > c.w + 0.5 { ellipsized(shown, tl, c.w, lay) } else { tl }
     w.tl = Some(tl)
-    w.full = Some(if k.wrap { tl } else { lay(w.text) })
+    w.full = Some(if k.wrap { tl } else { lay(w.text, false) })
     w.full_max = if k.wrap { c.w } else { 1.0e9 }
   } else {
     w.kind = kind_rich
     w.text = c.words
-    let rich = view_rich(c.runs, k, c.runs_look, scale, c.words_breaks)
+    let rich = view_rich(c.runs, k, c.runs_look, scale, c.words_breaks, tabular=c.words_tabular)
     let whole = layout_rich(rich, 1.0e9)
     w.rich = Some(rich)
     w.rl_whole = if k.wrap { @double.not_a_number } else { whole.w }

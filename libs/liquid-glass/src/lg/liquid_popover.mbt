@@ -117,6 +117,7 @@ pub fn liquid_tooltip_node(
         .padding(Is((ovl_tooltip_px, ovl_tooltip_py, ovl_tooltip_px, ovl_tooltip_py)))
         .radius(Is(ovl_tooltip_radius))
         .shadow(Is(shadow_default))
+        .shadow_outside(Is(true))
         .glass(By(fn() { Some(ovl_capsule_glass()) }))
         .alpha(By(fn() { look().alpha }))
         .scale(By(fn() { look().sx }), about=FromBeside)

@@ -122,7 +122,7 @@ test "rows together in a panel's body as nodes: a sheet opened by nothing and by
     #|rect 270,231 36x22 3428463871
     #|rect 281.5,233 22.5x18 4294967295
     #|rect 40,82 296x228 0
-    #|words 一组@56,94 264x20 a1
+    #|words 一组@62,94 252x20 a1
     #|words 打开@387,48 26x20 a1
     #|words 它说的话@62,118 252x18 a1
     #|words 第一个开关@68,174 186x20 a1

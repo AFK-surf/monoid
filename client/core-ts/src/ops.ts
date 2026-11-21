@@ -240,6 +240,7 @@ export const PARAMS: Record<string, string> = {
   "workspace.setRole": "workspace:string member:string role?:string",
   "workspace.removeMember": "workspace:string member:string",
   "workspace.enroll": "workspace:string name?:string",
+  "workspace.createProvisionKey": "workspace:string name?:string days?:number",
   "workspace.renameStation": "workspace:string station:string name?:string emoji?:string icon?:string",
   "workspace.removeStation": "workspace:string station:string",
   "workspace.feedbackReply": "workspace:string id:string text:string",
@@ -861,6 +862,10 @@ function cloudOp(name: string, params: unknown): Request | null {
       return op("DELETE", () => `${ws()}/members/${p.at("member")}`, null);
     case "workspace.enroll":
       return op("POST", () => `${ws()}/enrollments`, p.pick(["name"]));
+    // A provisioning key for a console that enrolls the stations of machines it makes (web connect `mode=provision`):
+    // in a locked workspace with the lock's head as this device holds it, as an enrollment's (core/execute.ts).
+    case "workspace.createProvisionKey":
+      return op("POST", () => `${ws()}/provision-keys`, p.pick(["name", "days"]));
     case "workspace.renameStation":
       return op("PATCH", () => `${ws()}/stations/${p.at("station")}`, p.pick(["name", "emoji", "icon"]));
     case "workspace.removeStation":

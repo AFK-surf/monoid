@@ -1,22 +1,18 @@
-// What a test reads of a chat's picture flying into its viewer and back, the same on a page of either kind: on a chat's
-// page made as nodes the window's tree flies it, by its thumbnail's id (@ui's Tester::flight_of: the thumbnail the end
-// that stays, the viewer's picture the end that moves); on the old page the viewer flies it itself (Viewer::flies), and
-// what is read of it is the picture drawn last over the page (zoom_flight_wbtest's zf_pic).
+// What a test reads of a chat's picture flying into its viewer and back: on a chat's page made as nodes the window's
+// tree flies it, by its thumbnail's id (@ui's Tester::flight_of: the thumbnail the end that stays, the viewer's picture
+// the end that moves).
 
 ///|
 /// Where the picture viewer `v` shows was drawn on its flight in the frame drawn last (x, y, w, h) and its corners
 /// there (top left, then round it); none where it does not fly.
 fn pic_flight(t : @ui.Tester, v : Viewer) -> ((Double, Double, Double, Double), (Double, Double, Double, Double))? {
-  match t.flight_of(v.thumb_id()) {
-    Some(f) => Some(f)
-    None => if v.flies { zf_pic(t).map(fn(p) { (p.at, p.corners) }) } else { None }
-  }
+  t.flight_of(v.thumb_id())
 }
 
 ///|
 /// Whether the picture viewer `v` shows flies now (into the viewer or back).
 fn pic_flies(t : @ui.Tester, v : Viewer) -> Bool {
-  t.flight_of(v.thumb_id()) is Some(_) || v.flies
+  t.flight_of(v.thumb_id()) is Some(_)
 }
 
 ///|
@@ -24,7 +20,7 @@ fn pic_flies(t : @ui.Tester, v : Viewer) -> Bool {
 fn pic_flight_end(t : @ui.Tester, v : Viewer) -> Double {
   match t.flight_end(v.thumb_id()) {
     Some(e) => e
-    None => v.fly.end()
+    None => v.tree_way_end.get()
   }
 }
 

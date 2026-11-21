@@ -1,29 +1,17 @@
 {
   "counts": {
-    "style-literal": {
-      "src/sfbase/viewer.mbt": 6
-    },
-    "box-loose": {
-      "src/sfbase/viewer.mbt": 1
-    },
     "built-by-hand": {
       "src/sfbase/viewer.mbt": 1
     },
-    "layout-read-back": {
-      "src/sfbase/viewer.mbt": 1
-    },
     "ui-current": {
-      "src/sfbase/viewer_tree.mbt": 13
-    },
-    "build-motion": {
-      "src/sfbase/viewer.mbt": 1
+      "src/sfbase/viewer_tree.mbt": 8
     },
     "page-at-moment": {
       "src/sfbase/act.mbt": 1,
       "src/sfbase/bars.mbt": 1,
       "src/sfbase/screen_links_node.mbt": 2,
       "src/sfbase/viewer.mbt": 2,
-      "src/sfbase/viewer_tree.mbt": 5,
+      "src/sfbase/viewer_tree.mbt": 4,
       "src/sfbase/workspace_switch.mbt": 2
     }
   }

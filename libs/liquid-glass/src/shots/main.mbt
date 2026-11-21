@@ -191,6 +191,111 @@ let gallery_shots : Array[(String, String, String)] = [
 ]
 
 ///|
+/// High-contrast non-glass optical backdrop for standalone iOS 26 component offscreen demos.
+fn ios26_backdrop(w : @view.View) -> Unit {
+  w.box(fn(bg) {
+    bg
+    .over(Is(true))
+    .clips(Is(true))
+    .points(Is(false))
+    .ground(By(fn() { if @lg.is_dark() { 0x090A0EFFL } else { 0xF4F1EAFFL } }))
+    |> ignore
+    bg.box(fn(orb) {
+      orb
+      .over(Is(true))
+      .width(Is(Some(156.0)))
+      .height(Is(Some(156.0)))
+      .radius(Is(78.0))
+      .offset(Is((52.0, 26.0)))
+      .ground(Is(0xEF6334FFL))
+      |> ignore
+    })
+    |> ignore
+    bg.box(fn(plate) {
+      plate
+      .over(Is(true))
+      .width(Is(Some(240.0)))
+      .height(Is(Some(96.0)))
+      .radius(Is(24.0))
+      .offset(Is((220.0, 74.0)))
+      .ground(By(fn() { if @lg.is_dark() { 0xF5F2EBFFL } else { 0x151720FFL } }))
+      |> ignore
+    })
+    |> ignore
+    bg.box(fn(ribbon) {
+      ribbon
+      .over(Is(true))
+      .width(Is(Some(900.0)))
+      .height(Is(Some(3.0)))
+      .offset(Is((-120.0, 148.0)))
+      .turn(Is(-0.22))
+      .ground(Is(0xEF633455L))
+      |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+fn ios26_collapsible_stage(root : @view.View) -> Unit {
+  @ui.set_tree_theme(@lg.ui_theme)
+  let tab = @signals.signal(0)
+  let minimized = @signals.signal(false)
+  root.box(fn(w) {
+    w.grow(Is(1.0)).clips(Is(true)).lines_up(Is(Some(Middle))).lies_along(Is(Between)).padding(Is((24.0, 24.0, 24.0, 28.0)))
+    |> ignore
+    ios26_backdrop(w)
+    w.box(fn(top_row) {
+      top_row.row(Is(true)).gap(Is(12.0)).lines_up(Is(Some(Middle))) |> ignore
+      @lg.liquid_button_node(
+        top_row,
+        fn() { if minimized.get() { "Expand" } else { "Minimize" } },
+        fn() { minimized.set(!minimized.untracked()) },
+        flat=true,
+      )
+      |> ignore
+    })
+    |> ignore
+    @lg.liquid_collapsible_tabs_node(
+      w,
+      ["Home", "Browse", "Radio"],
+      fn() { tab.get() },
+      fn(i) { tab.set(i) },
+      fn() { minimized.get() },
+      fn() { minimized.set(false) },
+      fn() {  },
+      label="iOS 26 Tabs",
+      expanded_width=320.0,
+    )
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+fn ios26_search_morph_stage(root : @view.View) -> Unit {
+  @ui.set_tree_theme(@lg.ui_theme)
+  let field = @ui.Field::new()
+  let expanded = @signals.signal(false)
+  root.box(fn(w) {
+    w.grow(Is(1.0)).clips(Is(true)).lines_up(Is(Some(Middle))).lies_along(Is(Middle)).padding(Is((24.0, 24.0, 24.0, 24.0)))
+    |> ignore
+    ios26_backdrop(w)
+    @lg.liquid_search_morph_node(
+      w,
+      field,
+      fn() { expanded.get() },
+      fn(v) { expanded.set(v) },
+      width=380.0,
+      placeholder="Search Liquid Glass...",
+    )
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
 fn main {
   let dir = @ui.env("MBUI_LG_SHOTS")
   if dir == "" {
@@ -481,6 +586,44 @@ fn main {
     println("shots: \{out} \{if ok { "ok" } else { "failed" }}")
     if !ok {
       failed += 1
+    }
+  }
+  if only == "ios26" {
+    let collapsible_script = "wait 350\ntap Browse\nwait 350\ntap Minimize\nwait 750\ntap Expand Browse\nwait 750"
+    let search_script = "wait 350\ntap Search\nwait 850\ntap Cancel Search\nwait 850"
+    for dark in [false, true] {
+      let tag = if dark { "dark" } else { "light" }
+      @lg.set_dark(Some(dark))
+      let out1 = "\{dir}/ios26-collapsible-\{tag}.mp4"
+      let ok1 = @film.film(
+        ios26_collapsible_stage,
+        script=collapsible_script,
+        out=out1,
+        w=560.0,
+        h=240.0,
+        scale=3.0,
+        dark~,
+        fps=60,
+      )
+      println("shots: \{out1} \{if ok1 { "ok" } else { "failed" }}")
+      if !ok1 {
+        failed += 1
+      }
+      let out2 = "\{dir}/ios26-search-morph-\{tag}.mp4"
+      let ok2 = @film.film(
+        ios26_search_morph_stage,
+        script=search_script,
+        out=out2,
+        w=560.0,
+        h=200.0,
+        scale=3.0,
+        dark~,
+        fps=60,
+      )
+      println("shots: \{out2} \{if ok2 { "ok" } else { "failed" }}")
+      if !ok2 {
+        failed += 1
+      }
     }
   }
   if failed > 0 {

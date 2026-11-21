@@ -171,6 +171,7 @@ pub fn liquid_slider_node(
           .height(Is(Some(thumb_h)))
           .radius(Is(thumb_h / 2.0))
           .shadow(Is(shadow_thumb))
+          .shadow_outside(Is(true))
           .ground_drawn(By(fn() { thumb_shape(thumb) }))
           |> ignore
           thumb.box(fn(solid) {

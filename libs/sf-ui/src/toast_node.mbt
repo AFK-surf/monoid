@@ -232,8 +232,8 @@ fn toast_look(
       let lit = fn() { a.pointed() || a.pressed() }
       a
       .row(Is(true))
-      .height(Is(Some(toast_action_h)))
-      .padding(Is((toast_px - toast_action_in, 0.0, toast_px - toast_action_in, 0.0)))
+      .min_height(Is(Some(toast_action_h)))
+      .padding(Is((toast_px - toast_action_in, 1.0, toast_px - toast_action_in, 1.0)))
       .radius(Is(toast_action_h / 2.0))
       .lines_up(Is(Some(Middle)))
       .ground(By(fn() { theme().color(A(OnPrimary, if lit() { O5 } else { O15 })) }))

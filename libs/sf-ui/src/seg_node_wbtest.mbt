@@ -317,3 +317,37 @@ test "seg_node: 1.0x keeps exact 30pt option / 36pt track; 2.0x scales height wi
   assert_eq(t.fixed_outgrown(), [], msg="2.0x fixed_outgrown")
   assert_eq(t.squeeze_faults(), [], msg="2.0x squeeze_faults")
 }
+
+///|
+test "seg_fill_node: 1.0x/1.3x keep exact 34pt track / 30pt option; 2.0x scales height with zero fixed_outgrown or squeeze_faults" {
+  let chosen = @signals.signal(0)
+  let t = @ui.Tester::new(fn(_c) {  }, w=390.0, h=200.0, platform=2)
+  t.check_looks(false)
+  @ui.set_view_app(
+    fn(root) {
+      root.padding(Is((16.0, 20.0, 16.0, 20.0))) |> ignore
+      seg_fill_node(root, fn() { ["跟随系统", "浅色", "深色"] }, fn() { chosen.get() }, fn(k) { chosen.set(k) })
+      |> ignore
+    },
+    theme=ui_theme_now,
+  )
+  t.draw()
+  assert_eq(seg_shown(t, RadioGroup).map(fn(s) { s.rect.3 }), [34.0], msg="1.0x track height exact 34pt")
+  assert_eq(seg_shown(t, Radio).map(fn(s) { s.rect.3 }), [30.0, 30.0, 30.0], msg="1.0x option height exact 30pt")
+  assert_eq(t.fixed_outgrown(), [], msg="1.0x fixed_outgrown")
+  assert_eq(t.squeeze_faults(), [], msg="1.0x squeeze_faults")
+  t.set_font_scale(1.3)
+  t.draw()
+  assert_eq(seg_shown(t, RadioGroup).map(fn(s) { s.rect.3 }), [34.0], msg="1.3x track height exact 34pt")
+  assert_eq(seg_shown(t, Radio).map(fn(s) { s.rect.3 }), [30.0, 30.0, 30.0], msg="1.3x option height exact 30pt")
+  assert_eq(t.fixed_outgrown(), [], msg="1.3x fixed_outgrown")
+  assert_eq(t.squeeze_faults(), [], msg="1.3x squeeze_faults")
+  t.set_font_scale(2.0)
+  t.draw()
+  let track_h = seg_shown(t, RadioGroup)[0].rect.3
+  let opt_hs = seg_shown(t, Radio).map(fn(s) { s.rect.3 })
+  assert_true(track_h > 34.0, msg="2.0x track grew: \{track_h}")
+  assert_true(opt_hs.iter().all(fn(h) { h > 30.0 }), msg="2.0x options grew: \{Repr(opt_hs)}")
+  assert_eq(t.fixed_outgrown(), [], msg="2.0x fixed_outgrown")
+  assert_eq(t.squeeze_faults(), [], msg="2.0x squeeze_faults")
+}

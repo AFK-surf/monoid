@@ -558,19 +558,19 @@ fn attention_link_node(parent : @view.View, label : () -> String, press : () -> 
 let att_ws_mark : Double = 14.0
 
 ///|
-/// Nothing waiting (empty): 10 round, 13, muted.
+/// Nothing waiting (empty): 10 by 16 in, 13, muted.
 // kept across runs: a value (no field of it changes)
-let att_empty : @ui.Style = @ui.css("w=Full p=S2_5")
+let att_empty : @ui.Style = @ui.css("w=Full px=S4 py=S2_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
 let att_empty_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, leading=L6)
 
 ///|
-/// A row (item): 6 by 10 in, its corner the panel's inner (--panel-in); pointed at, on the pointer's ground. Its first
+/// A row (item): 6 by 16 in, its corner the panel's inner (--panel-in); pointed at, on the pointer's ground. Its first
 /// line (att_head) over the line under it (att_under).
 // kept across runs: a value (no field of it changes)
-let att_item : @ui.Style = @ui.style(w=Full, px=S2_5, py=S1_5, radius=@sf.panel_in)
+let att_item : @ui.Style = @ui.style(w=Full, px=S4, py=S1_5, radius=@sf.panel_in)
 
 ///|
 /// A row's first line: its dot's column, its title and 忽略, 10 apart, their middles on one line. Its words start where
@@ -633,14 +633,14 @@ let att_dismiss_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, l
 let att_dismiss_on_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg, leading=L4_75, wrap=false)
 
 ///|
-/// The foot (foot): its words 12 apart, 8 by 10 in and 4 under, 4 more over it.
+/// The foot (foot): its words 12 apart, 8 by 16 in and 4 under, 4 more over it.
 // kept across runs: a value (no field of it changes)
-let att_foot : @ui.Style = @ui.css("row w=Full gap=S3 px=S2_5 pt=S3 pb=S1")
+let att_foot : @ui.Style = @ui.css("row w=Full gap=S3 px=S4 pt=S3 pb=S1")
 
 ///|
 /// The foot beside the bell: as att_foot, its room over it the panel's foot's (8) and 4 more, 12 under what scrolls.
 // kept across runs: a value (no field of it changes)
-let att_foot_beside : @ui.Style = @ui.css("row w=Full gap=S3 px=S2_5 pt=S1 pb=S1")
+let att_foot_beside : @ui.Style = @ui.css("row w=Full gap=S3 px=S4 pt=S1 pb=S1")
 
 ///|
 // kept across runs: a value (no field of it changes)

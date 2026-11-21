@@ -112,9 +112,17 @@ pub fn take_picture(
     _ => ()
   }
   let held : Ref[@view.View?] = Ref(None)
+  let made : Ref[@view.Tree?] = Ref(None)
+  let measuring_tab = fn() {
+    match made.val {
+      Some(tree) => tree.measuring_tabular()
+      None => None
+    }
+  }
   let tree = @signals.untracked(fn() {
     @view.Tree::new(
       fn(root) {
+        made.val = Some(root.tree)
         root.tree.drawn_by(
           words_scale=fn() { font_scale() },
           pixel_scale=fn() { if scale > 0.0 { scale } else { g().scale } },
@@ -129,12 +137,12 @@ pub fn take_picture(
         })
         |> ignore
       },
-      measure=view_words_measure,
-      measure_runs=view_runs_measure,
-      measure_kept=view_words_measure_kept,
-      measure_runs_kept=view_runs_measure_kept,
-      measure_runs_least=view_runs_least,
-      measure_shorter=view_shorter_measure,
+      measure=fn(words, look, width, scale) { view_words_measure(words, look, width, scale, tabular=measuring_tab()) },
+      measure_runs=fn(runs, look, set, width, scale) { view_runs_measure(runs, look, set, width, scale, tabular=measuring_tab()) },
+      measure_kept=fn(words, look, width, scale) { view_words_measure_kept(words, look, width, scale, tabular=measuring_tab()) },
+      measure_runs_kept=fn(runs, look, set, width, scale) { view_runs_measure_kept(runs, look, set, width, scale, tabular=measuring_tab()) },
+      measure_runs_least=fn(runs, look, set, scale) { view_runs_least(runs, look, set, scale, tabular=measuring_tab()) },
+      measure_shorter=fn(words, shorter, look, width, scale) { view_shorter_measure(words, shorter, look, width, scale, tabular=measuring_tab()) },
       time=fn() { h_event_time() },
     )
   })

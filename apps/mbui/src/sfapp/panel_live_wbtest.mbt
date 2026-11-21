@@ -58,8 +58,8 @@ test "panel live, 大屏 keyboard and mouse: in the middle, a share of the windo
     #|  "tall (任务, 第 1 步, 说的话): dialog Some((任务, (380, 65.5, 520, 669))) title [(404, 91.5, 44, 30)] step [(456, 101.5, 42, 20)] says [(404, 128.5, 472, 20)] close [(842, 91.5, 32, 32)] words [(404, 166.5, 472, 22)]",
     #|  "tall (, , ): dialog Some((面板里的话，长一些，好看它怎么折行 好的 关闭, (380, 87, 520, 626))) title [] step [] says [] close [(842, 113, 32, 32)] words [(404, 145, 472, 22)]",
     #|  "beside (, , ): dialog Some((面板里的话，长一些，好看它怎么折行 好的, (600, 106, 296, 70))) title [] step [] says [] close [] words [(606, 112, 284, 22)]",
-    #|  "beside (任务, , ): dialog Some((任务 面板里的话，长一些，好看它怎么折行 好的, (600, 106, 296, 100))) title [(616, 118, 264, 20)] step [] says [] close [] words [(606, 142, 284, 22)]",
-    #|  "beside (任务, 第 1 步, 说的话): dialog Some((任务 面板里的话，长一些，好看它怎么折行 好的, (600, 106, 296, 100))) title [(616, 118, 264, 20)] step [] says [] close [] words [(606, 142, 284, 22)]",
+    #|  "beside (任务, , ): dialog Some((任务 面板里的话，长一些，好看它怎么折行 好的, (600, 106, 296, 100))) title [(622, 118, 252, 20)] step [] says [] close [] words [(606, 142, 284, 22)]",
+    #|  "beside (任务, 第 1 步, 说的话): dialog Some((任务 面板里的话，长一些，好看它怎么折行 好的, (600, 106, 296, 100))) title [(622, 118, 252, 20)] step [] says [] close [] words [(606, 142, 284, 22)]",
     #|  "beside (, , ): dialog Some((面板里的话，长一些，好看它怎么折行 好的, (600, 106, 296, 70))) title [] step [] says [] close [] words [(606, 112, 284, 22)]",
     #|]
   ))
