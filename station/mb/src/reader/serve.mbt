@@ -42,7 +42,8 @@ priv struct Serving {
   /// What Node says of an answer it makes as it comes (`chunk`, then `done`: None), by the request's number.
   streams : Map[Int, @effect.Queue[String?]]
   mut next : Int
-  /// The wall's time when Node last said it, and this clock's then.
+  /// The wall's time when Node last said it, and this clock's then (till it says it, the world's time as this program
+  /// first asked: never 0, which made `now` the machine's uptime, a message written then dated 1970).
   mut wall : Int64
   mut at : Int64
 }
@@ -82,8 +83,8 @@ pub async fn serve_reads(host : @host.Host, reader : Reader, socket : String) ->
     fallbacks: Map([]),
     streams: Map([]),
     next: 0,
-    wall: 0L,
-    at: 0L,
+    wall: @host.epoch_ms(),
+    at: @host.now(),
   }
   host.say(({ "listening": Json::string(socket) } : Json).stringify())
   ignore(
@@ -178,6 +179,19 @@ fn Serving::told(self : Serving, line : String) -> Unit {
 /// The wall's time now, as Node last said it gone on by this clock.
 fn Serving::now(self : Serving) -> Int64 {
   self.wall + (@host.now() - self.at)
+}
+
+///|
+/// A Slack-style ts's time in ms (internal.ts `nextTsAt`: seconds, `.`, six digits of microseconds); None for another.
+fn ts_ms(ts : String) -> Int64? {
+  let parts = ts.split(".").to_array()
+  guard parts is [whole, frac] && frac.length() == 6 && whole.length() > 0 else { return None }
+  let mut ms = 0L
+  for c in whole.iter().concat(frac[0:3].iter()) {
+    guard c >= '0' && c <= '9' else { return None }
+    ms = ms * 10L + (c.to_int() - '0'.to_int()).to_int64()
+  }
+  Some(ms)
 }
 
 ///|
@@ -1584,7 +1598,14 @@ async fn Serving::say(
   }
   guard claimed.value("ts") is Some(String(_) as ts) else { return error(500, "no timestamp") }
   let email = viewer.value("email").unwrap_or(Json::null())
-  let at = Json::number(self.now().to_double())
+  // (when Node claimed it, by Node's clock as the message's `ts` is: lifecycle.ts `say` writes them both from one
+  // clock too)
+  let at = Json::number(
+    (match ts {
+      String(t) => ts_ms(t)
+      _ => None
+    }).unwrap_or(self.now()).to_double(),
+  )
   // (rows.ts `jsonList`: none for none)
   let kept_quotes = if quotes.length() == 0 { Json::null() } else { Json::string(@jsjson.stringify(Arr(quotes))) }
   let written = try {
