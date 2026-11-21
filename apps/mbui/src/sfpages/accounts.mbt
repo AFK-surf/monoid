@@ -1263,6 +1263,11 @@ fn profile_quota_node(
   let windows = fn() { windows_now.get() }
   let credits_now = @signals.computed(fn(_) { text(quota(), "creditsText") }, same=fn(a, b) { a == b })
   let credits = fn() { credits_now.get() }
+  let credits_note_now = @signals.computed(
+    fn(_) { if windows().length() == 0 { opt_text(quota(), "detail").unwrap_or("") } else { "" } },
+    same=fn(a, b) { a == b },
+  )
+  let credits_note = fn() { credits_note_now.get() }
   let refreshing = fn() {
     is_doing(core, ["profile.quota"], on) ||
     (is_doing(core, ["profile.check"], on) && text(quota(), "state") != "unsupported")
@@ -1390,7 +1395,7 @@ fn profile_quota_node(
             x,
             fn() { @sf.t("android-settings.quota.credits") },
             fn() {  },
-            note=fn() { if windows().length() == 0 { opt_text(quota(), "detail").unwrap_or("") } else { "" } },
+            note=credits_note,
             value=credits,
             goes=false,
           )
@@ -2148,23 +2153,33 @@ fn profile_settings_node(
                 busy~,
               )
             })
-            g.show(at_once=true, fn() { profile_max_sessions(p()) }, fn(cap_row) {
+            let max_sessions_shown = @signals.computed(fn(_) { profile_max_sessions(p()) })
+            let max_sessions_protection = @signals.computed(fn(_) { profile_in_protection(p()) })
+            let max_sessions_cap = @signals.computed(fn(_) {
+              match field(p(), "maxConcurrentSessions") {
+                Some(Number(n, ..)) if n >= 1.0 => n.to_int()
+                _ => 0
+              }
+            })
+            g.show(at_once=true, fn() { max_sessions_shown.get() }, fn(cap_row) {
               cap_row.pick(at_once=true, fn() { !busy() }, fn(r, goes) {
                 @sf.link_row_node(
                   r,
                   fn() { @sf.t("web-pages.profiles.maxConcurrentSessions") },
                   fn() { ask_max_sessions(core, address, id, p) },
                   note=fn() {
-                    if profile_in_protection(p()) {
+                    if max_sessions_protection.get() {
                       @sf.t("web-pages.profiles.maxConcurrentSessionsProtectionNote")
                     } else {
                       @sf.t("web-pages.profiles.maxConcurrentSessionsNote")
                     }
                   },
                   value=fn() {
-                    match field(p(), "maxConcurrentSessions") {
-                      Some(Number(n, ..)) if n >= 1.0 => n.to_int().to_string()
-                      _ => @sf.t("web-pages.profiles.maxConcurrentSessionsUnlimited")
+                    let cap = max_sessions_cap.get()
+                    if cap >= 1 {
+                      cap.to_string()
+                    } else {
+                      @sf.t("web-pages.profiles.maxConcurrentSessionsUnlimited")
                     }
                   },
                   goes~,
