@@ -74,7 +74,11 @@ test "FB-44: a host's login over is said apart from its not answering (LOGIN_OVE
   assert_true(!is_login_over(Refused(not_for_it)))
   assert_true(!is_login_over(Failed("the host did not answer")))
   assert_true(over_here(over("expired")))
-  assert_true(over_here(Failed("the Codex login here runs out soon and cannot be renewed now")))
+  assert_true(!over_here(Failed("the Codex login here runs out soon and cannot be renewed now")))
+  assert_true(over_here(Over("the token endpoint answered 401")))
+  assert_true(over_here(Failed("ENOENT: no such file or directory")))
+  assert_true(over_here(Failed("invalid_grant")))
+  assert_true(!over_here(Failed("the token endpoint answered 503")))
   assert_true(!over_here(Failed("network unreachable")))
   assert_eq(error_words(LoginOver("sh-1", "sign in again")), "sign in again")
 }

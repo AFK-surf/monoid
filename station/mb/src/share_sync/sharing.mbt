@@ -450,7 +450,7 @@ pub struct Sharing {
   priv program : MemoryProgram
   priv hosted_turn : Turn
   priv link_turn : Turn
-  priv renewing : Map[String, @effect.Deferred[Unit]]
+  priv renewing : Map[String, @effect.Deferred[Error?]]
   priv mut closed : Bool
   /// The one copy of state.json in memory (index.ts `state`).
   priv mut state : Map[String, Json]?
@@ -712,14 +712,22 @@ fn is_login_over(e : Error) -> Bool {
 }
 
 ///|
-/// Whether lending failed because the login here is over, not for now (index.ts `overHere`).
+/// Whether lending failed because the login here is over (none kept, its refresh refused), not for now (index.ts
+/// `overHere`): a renewal that failed for now leaves a login that runs out soon refused as before (notLent).
 fn over_here(e : Error) -> Bool {
   if e is Over(_) {
     return true
   }
   let said = error_words(e)
-  said == tr("zh", "station.claudeAuth.noCredentials") || said == tr("en", "station.claudeAuth.noCredentials") ||
-  said.contains("runs out soon and cannot be renewed") || said.to_lower().contains("no refresh token")
+  let lower = said.to_lower()
+  said == tr("zh", "station.claudeAuth.noCredentials") ||
+  said == tr("en", "station.claudeAuth.noCredentials") ||
+  said.contains("ENOENT:") ||
+  lower.contains("no refresh token") ||
+  lower.contains("invalid_grant") ||
+  lower.contains("refresh_token_expired") ||
+  lower.contains("token has been expired or revoked") ||
+  lower.contains("oauth token revoked")
 }
 
 ///|

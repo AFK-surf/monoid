@@ -203,12 +203,14 @@ const notOurs = (e: unknown) => e instanceof Error && e.message === NOT_FOR_IT;
 /// nothing lent before is used (it is of the same login), FB-44.
 export const LOGIN_OVER = "the host's login has expired: ";
 const loginOver = (e: unknown) => e instanceof Error && e.message.includes(LOGIN_OVER);
-/// Whether lending failed because the login here is over, not for now.
+/// Whether lending failed because the login here is over (none kept, its refresh refused), not for now: a renewal that
+/// failed for now (the provider in trouble, the network) leaves a login that runs out soon refused as before (notLent).
 const overHere = (e: unknown) => {
   if (e instanceof RenewRefused) return true;
+  if ((e as NodeJS.ErrnoException | null)?.code === "ENOENT") return true;
   const said = e instanceof Error ? e.message : String(e);
   return (["zh", "en"] as const).some((lang) => said === tr(lang, "station.claudeAuth.noCredentials")) ||
-    said.includes("runs out soon and cannot be renewed") || /no refresh token/i.test(said);
+    /no refresh token|\binvalid_grant\b|refresh_token_expired|token has been expired or revoked|\boauth token revoked\b/i.test(said);
 };
 /// Whether two of a share's `allow` let the same stations use it (null: every one), in whatever order.
 const sameStations = (a: string[] | null, b: string[] | null) =>
@@ -1375,6 +1377,7 @@ export class Sharing {
     const file = this.codexFile(p);
     let auth = JSON.parse(await readFile(file, "utf8"));
     let expiresAt = jwtExpiry(auth?.tokens?.access_token) ?? 0;
+    let over: Error | null = null;
     if (expiresAt - this.time.now() < CODEX_LEND_MS) {
       // By the Codex running on it, asked to (else it would only when its own token runs out, the station's borrowers
       // refused till then), or here where none runs.
@@ -1384,12 +1387,13 @@ export class Sharing {
       // One that still lasts CODEX_MIN_MS waits for its renewal LEND_BOUND_MS at most, then is lent as it is, the renewal
       // going on behind: the station that asked waits 30 s for the answer (mesh/peer.ts ANSWER_MS), as long as the
       // renewal's call may take (Claude's lend, 2026-11-14). One with less waits for it.
-      if (expiresAt - this.time.now() >= CODEX_MIN_MS) await this.withinBound(p, "Codex", expiresAt, renewed);
-      else await renewed;
+      over = expiresAt - this.time.now() >= CODEX_MIN_MS ? await this.withinBound(p, "Codex", expiresAt, renewed) : await renewed;
       // Read again either way: Codex may have renewed it and then failed a step after (it answers with that error).
       auth = JSON.parse(await readFile(file, "utf8"));
       expiresAt = jwtExpiry(auth?.tokens?.access_token) ?? 0;
     }
+    // (its renewal refused for good: the login here is over, LOGIN_OVER; failed for now: refused as before)
+    if (expiresAt - this.time.now() < CODEX_MIN_MS && over !== null) throw over;
     if (expiresAt - this.time.now() < CODEX_MIN_MS) throw new Error("the Codex login here runs out soon and cannot be renewed now");
     const tokens = auth.tokens ?? {};
     return { runtime: "codex", tokens: { id_token: tokens.id_token, access_token: tokens.access_token, account_id: tokens.account_id }, expiresAt };
@@ -1402,16 +1406,17 @@ export class Sharing {
     const file = agyToken(this.home(p));
     let text = await readFile(file, "utf8");
     let expiresAt = agyExpiryIn(text);
+    let over: Error | null = null;
     if (expiresAt - this.time.now() < AGY_LEND_MS) {
       const renewed = this.renewOnce(p, "Antigravity CLI", expiresAt, () => {
         if (!this.deps.agyRenew) throw new Error("this station renews no Antigravity CLI sign-in");
         return this.deps.agyRenew(this.home(p));
       });
-      if (expiresAt - this.time.now() >= AGY_MIN_MS) await this.withinBound(p, "Antigravity CLI", expiresAt, renewed);
-      else await renewed;
+      over = expiresAt - this.time.now() >= AGY_MIN_MS ? await this.withinBound(p, "Antigravity CLI", expiresAt, renewed) : await renewed;
       text = await readFile(file, "utf8");
       expiresAt = agyExpiryIn(text);
     }
+    if (expiresAt - this.time.now() < AGY_MIN_MS && over !== null) throw over;
     if (expiresAt - this.time.now() < AGY_MIN_MS) throw new Error("the Antigravity CLI sign-in here runs out soon and cannot be renewed now");
     const had = JSON.parse(text);
     const { refresh_token: _, ...token } = had.token ?? {};
@@ -1421,19 +1426,23 @@ export class Sharing {
     return { runtime: "agy", token, email: typeof had.id_token_email === "string" ? had.id_token_email : null, auth_method: typeof had.auth_method === "string" ? had.auth_method : null, stored: rest, expiresAt };
   }
 
-  /// `renewed` waited for LEND_BOUND_MS at most: past it, what is lent is the login as it is, which is said.
-  private async withinBound(p: Json, what: string, expiresAt: number, renewed: Promise<void>): Promise<void> {
+  /// `renewed` waited for LEND_BOUND_MS at most: past it, what is lent is the login as it is, which is said. What came of
+  /// it in time: its login found over (`renewOnce`), else null.
+  private async withinBound(p: Json, what: string, expiresAt: number, renewed: Promise<Error | null>): Promise<Error | null> {
     const began = this.time.now();
     let stop = () => {};
     const bound = new Promise<boolean>((resolve) => (stop = this.time.after(LEND_BOUND_MS, () => resolve(false))));
     const inTime = await Promise.race([renewed.then(() => true), bound]);
     stop();
-    if (!inTime) log.warn("share", `a shared ${what} login's renewal outlasted the lend's bound; the login it has was lent, the renewal goes on`, { profile: p.id, ms: this.time.now() - began, lastsMin: Math.round((expiresAt - this.time.now()) / 60_000) });
+    if (inTime) return await renewed;
+    log.warn("share", `a shared ${what} login's renewal outlasted the lend's bound; the login it has was lent, the renewal goes on`, { profile: p.id, ms: this.time.now() - began, lastsMin: Math.round((expiresAt - this.time.now()) / 60_000) });
+    return null;
   }
 
   /// One renewal of a profile's login at a time (`renew`), what is lent meanwhile waiting on it; a failure is said:
-  /// which login, how long it took, how long what it has still lasts.
-  private renewOnce(p: Json, what: string, expiresAt: number, renew: () => Promise<unknown>): Promise<void> {
+  /// which login, how long it took, how long what it has still lasts. What came of it: the failure where it says the
+  /// login is over (`overHere`), else null; never a rejection (one going on behind has no one waiting on it).
+  private renewOnce(p: Json, what: string, expiresAt: number, renew: () => Promise<unknown>): Promise<Error | null> {
     const id = String(p.id);
     const going = this.renewing.get(id);
     if (going !== undefined) return going;
@@ -1441,8 +1450,11 @@ export class Sharing {
     const done = Promise.resolve()
       .then(renew)
       .then(
-        () => {},
-        (e) => log.warn("share", `renewing a shared ${what} login failed`, { profile: p.id, ms: this.time.now() - began, lastsMin: Math.round((expiresAt - this.time.now()) / 60_000), error: (e as Error).message }),
+        () => null,
+        (e) => {
+          log.warn("share", `renewing a shared ${what} login failed`, { profile: p.id, ms: this.time.now() - began, lastsMin: Math.round((expiresAt - this.time.now()) / 60_000), error: (e as Error).message });
+          return overHere(e) ? (e instanceof Error ? e : new Error(String(e))) : null;
+        },
       )
       .finally(() => this.renewing.delete(id));
     this.renewing.set(id, done);
@@ -1450,23 +1462,25 @@ export class Sharing {
   }
 
   /// The renewals of shared logins going on, by profile: one at a time, what is lent meanwhile waiting on it.
-  private renewing = new Map<string, Promise<void>>();
+  private renewing = new Map<string, Promise<Error | null>>();
 
   /// Once a renewal of profile `id` going on, if any, is over (tests).
   renewedBehind(id: string): Promise<void> {
-    return this.renewing.get(id) ?? Promise.resolve();
+    return (this.renewing.get(id) ?? Promise.resolve(null)).then(() => {});
   }
 
   /// Codex's own renewal of its ChatGPT login, done here while no Codex runs on it (it would hold the old refresh token).
   private async renewCodex(file: string, auth: Json): Promise<Json> {
     const refresh = auth?.tokens?.refresh_token;
-    if (typeof refresh !== "string" || refresh === "") throw new Error("no refresh token");
+    if (typeof refresh !== "string" || refresh === "") throw new RenewRefused(null, "no refresh token");
     const response = await profileFetch(this.deps.codexTokenUrl ?? CODEX_TOKEN_URL, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ client_id: CODEX_CLIENT_ID, grant_type: "refresh_token", refresh_token: refresh, scope: "openid profile email" }),
       signal: AbortSignal.timeout(30_000),
     });
+    // (refused: the login is over; any other answer is the provider's trouble, for now)
+    if (response.status === 400 || response.status === 401 || response.status === 403) throw new RenewRefused(response.status, `the token endpoint answered ${response.status}`);
     if (!response.ok) throw new Error(`the token endpoint answered ${response.status}`);
     const got = await response.json();
     const next = structuredClone(auth);
