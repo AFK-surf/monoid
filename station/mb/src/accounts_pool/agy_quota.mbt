@@ -395,6 +395,12 @@ fn network_failure(text : String) -> Bool {
 let agy_cloud_code_url : String = "https://daily-cloudcode-pa.googleapis.com"
 
 ///|
+let agy_production_url : String = "https://cloudcode-pa.googleapis.com"
+
+///|
+let agy_quota_summary : String = "/v1internal:retrieveUserQuotaSummary"
+
+///|
 let agy_user_agent : String = "antigravity/1.5.12"
 
 ///|
@@ -553,7 +559,27 @@ async fn agy_post(
 }
 
 ///|
-async fn agy_direct_quota(ctx : Ctx, home : String, lang : String) -> JV? {
+fn agy_base(ctx : Ctx, fallback : String) -> String {
+  let raw_base = match ctx.url("agyQuota") {
+    Some(u) if trim_js(u) != "" => trim_js(u)
+    _ => fallback
+  }
+  strip_trailing_slashes(raw_base)
+}
+
+///|
+priv struct AgyQuotaProject {
+  token : String
+  tier : JV
+  payload : JV
+}
+
+///|
+async fn agy_quota_project(
+  ctx : Ctx,
+  home : String,
+  base : String,
+) -> AgyQuotaProject? {
   let token_text = ctx.io.read_file_or_none(
     join_path([home, "agy", ".gemini", "antigravity-cli", "antigravity-oauth-token"]),
   ).unwrap_or("")
@@ -561,11 +587,6 @@ async fn agy_direct_quota(ctx : Ctx, home : String, lang : String) -> JV? {
     Some(Str(t)) if t != "" => t
     _ => return None
   }
-  let raw_base = match ctx.url("agyQuota") {
-    Some(u) if trim_js(u) != "" => u
-    _ => agy_cloud_code_url
-  }
-  let base = strip_trailing_slashes(raw_base)
   let loaded = agy_post(
     ctx,
     base,
@@ -585,20 +606,45 @@ async fn agy_direct_quota(ctx : Ctx, home : String, lang : String) -> JV? {
     Some(Str(p)) if p != "" => jobj([("project", js(p))])
     _ => jobj([])
   }
-  let summary = agy_post(ctx, base, "/v1internal:retrieveUserQuotaSummary", token, payload)
-  let models = agy_post(ctx, base, "/v1internal:fetchAvailableModels", token, payload)
-  let (windows, scoped) = match summary {
-    Some(_) => agy_allowance(ctx, summary)
-    None => ([], [])
+  Some({ token, tier, payload })
+}
+
+///|
+fn is_gemini_weekly(window : JV) -> Bool {
+  window.get("scope") == Some(Str("gemini")) &&
+  window.get("minutes") == Some(Num(week_minutes))
+}
+
+///|
+async fn agy_gemini_weekly(ctx : Ctx, base : String, project : AgyQuotaProject) -> JV? {
+  let (windows, _) = agy_allowance(
+    ctx,
+    agy_post(ctx, base, agy_quota_summary, project.token, project.payload),
+  )
+  for window in windows {
+    if is_gemini_weekly(window) {
+      return Some(window)
+    }
   }
-  let has_scope = (s : String) => windows.iter().any(w => w.get("scope") == Some(Str(s)))
-  let extra = match models {
-    Some(_) =>
-      agy_model_windows(ctx, models).filter(w => match w.get("scope") {
-        Some(Str(s)) => !has_scope(s)
-        _ => false
-      })
-    None => []
+  None
+}
+
+///|
+async fn agy_direct_quota(ctx : Ctx, home : String, lang : String) -> JV? {
+  let base = agy_base(ctx, agy_cloud_code_url)
+  guard agy_quota_project(ctx, home, base) is Some(project) else { return None }
+  let summary = agy_post(ctx, base, agy_quota_summary, project.token, project.payload)
+  let models = agy_post(ctx, base, "/v1internal:fetchAvailableModels", project.token, project.payload)
+  let (windows, scoped) = agy_allowance(ctx, summary)
+  let extra = agy_model_windows(ctx, models).filter(w => !windows.iter().any(reported =>
+    reported.get("scope") == w.get("scope") && reported.get("minutes") == w.get("minutes")
+  ))
+  let production = agy_base(ctx, agy_production_url)
+  if base != production && !windows.iter().any(is_gemini_weekly) {
+    match agy_gemini_weekly(ctx, production, project) {
+      Some(weekly) => windows.insert(0, weekly)
+      None => ()
+    }
   }
   let merged = []
   for w in extra {
@@ -628,7 +674,7 @@ async fn agy_direct_quota(ctx : Ctx, home : String, lang : String) -> JV? {
   if q.get("state") == Some(Str("ok")) && merged.length() > 0 && scoped.length() > 0 {
     q = jset(q, "scoped", jarr(scoped))
   }
-  if ctx.io.b.ask("agy.plan", [tier]) is Str(plan) {
+  if ctx.io.b.ask("agy.plan", [project.tier]) is Str(plan) {
     q = jset(q, "plan", js(plan))
   }
   Some(q)
@@ -795,6 +841,15 @@ pub async fn agy_quota(
   let parsed = parse_json_line(stdout)
   if jget(parsed, "status") == Some(Str("SUCCESS")) {
     let (windows, scoped) = agy_allowance(ctx, parsed)
+    if windows.length() > 0 && !windows.iter().any(is_gemini_weekly) {
+      let base = agy_base(ctx, agy_cloud_code_url)
+      if agy_quota_project(ctx, home, base) is Some(project) {
+        match agy_gemini_weekly(ctx, agy_base(ctx, agy_production_url), project) {
+          Some(weekly) => windows.insert(0, weekly)
+          None => ()
+        }
+      }
+    }
     if windows.length() == 0 && scoped.length() == 0 {
       let token = ctx.io.read_file_or_none(
         join_path([home, "agy", ".gemini", "antigravity-cli", "antigravity-oauth-token"]),

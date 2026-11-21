@@ -60,7 +60,9 @@ async function printUsage() {
           {
             name: 'Gemini Models',
             buckets: [
-              { id: 'gemini-weekly', name: 'Weekly Limit Remaining', window: 'weekly', remaining_fraction: 0.75, reset_time: '2026-11-19T09:14:38Z' },
+              ...(process.env.FAKE_AGY_USAGE_NO_GEMINI_WEEKLY ? [] : [
+                { id: 'gemini-weekly', name: 'Weekly Limit Remaining', window: 'weekly', remaining_fraction: 0.75, reset_time: '2026-11-19T09:14:38Z' },
+              ]),
               { id: 'gemini-5h', name: 'Five Hour Limit Remaining', window: '5h', remaining_fraction: 0.9, reset_time: '2026-11-12T14:14:38Z' },
             ],
           },

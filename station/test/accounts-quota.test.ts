@@ -104,6 +104,57 @@ describe("allowances and renewing", { concurrency: true }, () => {
     assert.equal(ran.key, null, "scrubs inherited GEMINI_API_KEY");
     assert.equal(ran.updates, "1");
 
+    let hasGeminiWeekly = true;
+    const weeklyReset = "2030-01-20T08:00:00Z";
+    const quotaApi = await provider((req) => {
+      if (req.url.endsWith(":loadCodeAssist")) {
+        return { status: 200, body: { paidTier: { id: "g1-pro-tier" }, cloudaicompanionProject: "aicode-consumers" } };
+      }
+      if (req.url.endsWith(":retrieveUserQuotaSummary")) {
+        return {
+          status: 200,
+          body: {
+            quotaSummary: {
+              groups: [
+                {
+                  displayName: "Gemini Models",
+                  buckets: [
+                    { bucketId: "gemini-5h", remainingFraction: 0.5 },
+                    ...(hasGeminiWeekly ? [{ bucketId: "gemini-weekly", remainingFraction: 0.68, resetTime: weeklyReset }] : []),
+                  ],
+                },
+                { displayName: "Gemini 4 Argon", buckets: [{ bucketId: "gemini-argon-wtu-weekly", remainingFraction: 0.8 }] },
+              ],
+            },
+          },
+        };
+      }
+      return { status: 404, body: {} };
+    });
+    try {
+      const apiUrls = { ...URLS, agyQuota: quotaApi.base };
+      const complete = await checkQuota(profile, { PATH: fakePath }, undefined, apiUrls, "zh");
+      assert.deepEqual(complete.windows, q.windows);
+      assert.deepEqual(quotaApi.asked, []);
+
+      const partialEnv = { PATH: fakePath, FAKE_AGY_USAGE_NO_GEMINI_WEEKLY: "1" };
+      const supplemented = await checkQuota(profile, partialEnv, undefined, apiUrls, "zh");
+      assert.deepEqual(supplemented.windows, [
+        { label: "每周 · Gemini", usedPercent: 32, resetsAt: Date.parse(weeklyReset), minutes: 10080, scope: "gemini" },
+        ...q.windows.slice(1),
+      ]);
+      assert.deepEqual(quotaApi.asked.map(({ url, body }) => [url, body]), [
+        ["/v1internal:loadCodeAssist", { metadata: { ideType: "ANTIGRAVITY" } }],
+        ["/v1internal:retrieveUserQuotaSummary", { project: "aicode-consumers" }],
+      ]);
+
+      hasGeminiWeekly = false;
+      const unavailable = await checkQuota(profile, partialEnv, undefined, apiUrls, "zh");
+      assert.deepEqual(unavailable.windows, q.windows.slice(1));
+    } finally {
+      await quotaApi.close();
+    }
+
     // macOS: `agy` is kept to the profile's file (`AGY_FILE_TOKENS`, HOME its agy/), never the login keychain's one
     // item. A profile whose file `agy` had moved into that item takes it back when the item is its noted account; an
     // unsigned profile (even with `agy/sessions` linked by `linkTranscripts` and a cancelled `agy` home) and one whose
@@ -183,6 +234,7 @@ describe("allowances and renewing", { concurrency: true }, () => {
     // `fetchAvailableModels` to fill missing pools (e.g. Gemini).
     let paidTier = true;
     let geminiSpent = false;
+    let dailyHasGeminiWeekly = false;
     const geminiReset = "2030-01-15T08:00:00Z";
     const thirdPartyReset = "2030-01-15T08:15:00Z";
     const agyApi = await provider((req) => {
@@ -204,6 +256,10 @@ describe("allowances and renewing", { concurrency: true }, () => {
           status: 200,
           body: {
             groups: [
+              ...(dailyHasGeminiWeekly ? [{
+                displayName: "Gemini Models",
+                buckets: [{ bucketId: "gemini-weekly", remainingFraction: 0.68, resetTime: weeklyReset }],
+              }] : []),
               {
                 displayName: "Claude and GPT models",
                 buckets: [
@@ -247,6 +303,14 @@ describe("allowances and renewing", { concurrency: true }, () => {
       assert.deepEqual(spentQ.windows, [
         { ...fallbackQ.windows[0]!, usedPercent: 100 },
         ...fallbackQ.windows.slice(1),
+      ]);
+
+      dailyHasGeminiWeekly = true;
+      const weeklyQ = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: locationErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
+      assert.deepEqual(weeklyQ.windows, [
+        spentQ.windows[0],
+        { label: "每周 · Gemini", usedPercent: 32, resetsAt: Date.parse(weeklyReset), minutes: 10080, scope: "gemini" },
+        ...spentQ.windows.slice(1),
       ]);
 
       // Account with no active tier at all in this location: falls through to report the location error, never a

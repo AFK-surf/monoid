@@ -18,6 +18,8 @@ type Json = any;
 
 const TIMEOUT_MS = 30_000;
 const AGY_CLOUD_CODE_URL = "https://daily-cloudcode-pa.googleapis.com";
+const AGY_PRODUCTION_URL = "https://cloudcode-pa.googleapis.com";
+const AGY_QUOTA_SUMMARY = "/v1internal:retrieveUserQuotaSummary";
 const AGY_USER_AGENT = "antigravity/1.5.12";
 const DAY_MINUTES = 24 * 60;
 const WEEK_MINUTES = 7 * DAY_MINUTES;
@@ -229,10 +231,11 @@ async function agyPost(base: string, path: string, token: string, body: Json): P
   }
 }
 
-/// Fallback when `agy -p /usage` rejects an eligible paid account whose `loadCodeAssist` response also includes an
-/// ineligible `free-tier` (`UNSUPPORTED_LOCATION`): confirm an active tier via `loadCodeAssist`, then read windows
-/// from `retrieveUserQuotaSummary` and fill any missing pool (such as Gemini) from `fetchAvailableModels`.
-async function agyDirectQuota(home: string, urls: Urls, lang: Lang): Promise<ProfileQuota | null> {
+function agyBase(urls: Urls, fallback: string): string {
+  return (urls.agyQuota?.trim() || fallback).replace(/\/+$/, "");
+}
+
+async function agyQuotaProject(home: string, base: string) {
   let token: string;
   try {
     const parsed = JSON.parse(await readFile(agyToken(home), "utf8"));
@@ -241,20 +244,41 @@ async function agyDirectQuota(home: string, urls: Urls, lang: Lang): Promise<Pro
     return null;
   }
   if (token === "") return null;
-  const base = (urls.agyQuota && urls.agyQuota.trim() !== "" ? urls.agyQuota : AGY_CLOUD_CODE_URL).replace(/\/+$/, "");
   const loaded = await agyPost(base, "/v1internal:loadCodeAssist", token, { metadata: { ideType: "ANTIGRAVITY" } });
   if (!isObject(loaded)) return null;
   const tier = isObject(loaded.paidTier) ? loaded.paidTier : loaded.currentTier;
   if (!isObject(tier)) return null;
   const project = typeof loaded.cloudaicompanionProject === "string" && loaded.cloudaicompanionProject !== "" ? loaded.cloudaicompanionProject : null;
   const payload = project !== null ? { project } : {};
+  return { token, tier, payload };
+}
+
+function isGeminiWeekly(window: QuotaWindow): boolean {
+  return window.scope === "gemini" && window.minutes === WEEK_MINUTES;
+}
+
+// The CLI and the daily endpoint can omit Gemini's week. Read the explicit shared window from production.
+async function agyGeminiWeekly(base: string, token: string, payload: Json): Promise<QuotaWindow | undefined> {
+  return agyWindows(await agyPost(base, AGY_QUOTA_SUMMARY, token, payload)).find(isGeminiWeekly);
+}
+
+/// Fallback when the CLI rejects an account with an active tier and an ineligible free tier.
+async function agyDirectQuota(home: string, urls: Urls, lang: Lang): Promise<ProfileQuota | null> {
+  const base = agyBase(urls, AGY_CLOUD_CODE_URL);
+  const project = await agyQuotaProject(home, base);
+  if (project === null) return null;
+  const { token, tier, payload } = project;
   const [summary, models] = await Promise.all([
-    agyPost(base, "/v1internal:retrieveUserQuotaSummary", token, payload),
+    agyPost(base, AGY_QUOTA_SUMMARY, token, payload),
     agyPost(base, "/v1internal:fetchAvailableModels", token, payload),
   ]);
   const { windows, scoped } = summary !== null ? agyAllowance(summary) : { windows: [], scoped: [] };
-  const hasScope = (s: string) => windows.some((w) => w.scope === s);
-  const extra = models !== null ? agyModelWindows(models).filter((w) => w.scope !== undefined && !hasScope(w.scope)) : [];
+  const extra = agyModelWindows(models).filter((w) => !windows.some((reported) => reported.scope === w.scope && reported.minutes === w.minutes));
+  const production = agyBase(urls, AGY_PRODUCTION_URL);
+  if (base !== production && !windows.some(isGeminiWeekly)) {
+    const weekly = await agyGeminiWeekly(production, token, payload);
+    if (weekly !== undefined) windows.unshift(weekly);
+  }
   const merged = [...extra.filter((w) => w.scope === "gemini"), ...windows, ...extra.filter((w) => w.scope !== "gemini")];
   if (merged.length === 0 && scoped.length === 0) return null;
   const q = okOrUnavailable(merged.length > 0 ? merged : scoped, tr(lang, "station.quota.agyNoWindows"));
@@ -369,6 +393,14 @@ export async function agyQuota(home: string, sourceEnv: Env, urls: Urls, lang: L
   const parsed = parseJsonLine(stdout);
   if (parsed !== null && parsed.status === "SUCCESS") {
     const { windows, scoped } = agyAllowance(parsed);
+    if (windows.length > 0 && !windows.some(isGeminiWeekly)) {
+      const production = agyBase(urls, AGY_PRODUCTION_URL);
+      const project = await agyQuotaProject(home, agyBase(urls, AGY_CLOUD_CODE_URL));
+      if (project !== null) {
+        const weekly = await agyGeminiWeekly(production, project.token, project.payload);
+        if (weekly !== undefined) windows.unshift(weekly);
+      }
+    }
     // A company's account paying as it goes (a Google Cloud project with no subscription) has no windows to show.
     if (windows.length === 0 && scoped.length === 0 && agyCompany(await readFile(agyToken(home), "utf8").catch(() => ""))) {
       return { state: "unsupported", windows: [], detail: tr(lang, "station.quota.agyPayAsYouGo"), checkedAt: 0 };
