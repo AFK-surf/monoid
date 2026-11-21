@@ -589,6 +589,7 @@ fn Ctx::tree_shot_paint(self : Ctx, tree : @view.Tree) -> Unit {
       }
       clipping.push(c.id)
     }
+    let ground_drawn = tree.ground_drawn_of(c.id)
     let ring_at = self.view_drawn(
       tree,
       c,
@@ -599,23 +600,18 @@ fn Ctx::tree_shot_paint(self : Ctx, tree : @view.Tree) -> Unit {
       ux,
       uy,
       tree.turn_angle_of(c.id),
-      tree.ground_drawn_of(c.id),
+      ground_drawn,
     )
     let outer_ring_at = self.emit_outer_ring(c, x, y, a, s)
+    // (as the window's tree cuts it (Ctx::view_paint): past its foot as it says, to its ground as it is drawn)
     if c.clips && !c.clips_self {
-      let r = c.radius * s
-      // (said down alone: open across, Content::clips_way)
-      let (cx, cy, cw, ch) = clip_way_box(c.clips_way, x, y, c.w * s, c.h * s)
-      match c.corners {
-        Some((tl, tr, br, bl)) => push_box_clip(cx, cy, cw, ch, tl * s, tr * s, br * s, bl * s)
-        None => push_box_clip(cx, cy, cw, ch, r, r, r, r)
-      }
+      let ch = push_node_clip(c, ground_drawn, x, y, dmax(0.0, c.h + tree.clips_past_of(c.id)) * s, s)
       clipping.push(c.id)
       match tree.cut_across_of(c.id) {
         Some((from, to)) => {
           let from = dclamp(from, 0.0, c.w)
           let to = dclamp(to, 0.0, c.w)
-          push_clip(x + from * s, y, x + dmax(from, to) * s, y + c.h * s)
+          push_clip(x + from * s, y, x + dmax(from, to) * s, y + ch)
           clipping.push(c.id)
         }
         None => ()

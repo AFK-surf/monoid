@@ -2066,32 +2066,7 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
     // (and past its foot as far as it says, drawn only: View::clips_past, a block of a page's list closing cut as tall as
     // it is drawn, not as it rests)
     if c.clips && !c.clips_self {
-      let r = c.radius * s
-      let ch = dmax(0.0, c.h + tree.clips_past_of(c.id)) * s
-      // (said down alone: open across, Content::clips_way)
-      let (cx, cy, cw, ch) = clip_way_box(c.clips_way, x, y, c.w * s, ch)
-      // (its ground drawn other than as it is laid out (View::ground_drawn: a shape going to its new one): what it holds
-      // cut to that ground as it is drawn, its corners with it, not to where it rests)
-      if ground_drawn.reshaped() && c.clips_way == 0 {
-        let g = ground_drawn
-        let gw = dmax(0.0, cw + g.dw * s)
-        let gh = dmax(0.0, ch + g.dh * s)
-        match g.corners {
-          Some((tl, tr, br, bl)) =>
-            push_box_clip(cx + g.dx * s, cy + g.dy * s, gw, gh, tl * s, tr * s, br * s, bl * s)
-          None =>
-            match c.corners {
-              Some((tl, tr, br, bl)) =>
-                push_box_clip(cx + g.dx * s, cy + g.dy * s, gw, gh, tl * s, tr * s, br * s, bl * s)
-              None => push_box_clip(cx + g.dx * s, cy + g.dy * s, gw, gh, r, r, r, r)
-            }
-        }
-      } else {
-        match c.corners {
-          Some((tl, tr, br, bl)) => push_box_clip(cx, cy, cw, ch, tl * s, tr * s, br * s, bl * s)
-          None => push_box_clip(cx, cy, cw, ch, r, r, r, r)
-        }
-      }
+      let ch = push_node_clip(c, ground_drawn, x, y, dmax(0.0, c.h + tree.clips_past_of(c.id)) * s, s)
       clipping.push(c.id)
       // (and across only between where it says, as it is painted, View::cut_across: a second cut, straight, let go with its
       // own as what it holds ends)
@@ -2247,6 +2222,44 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
   tree_over_scrim_cut.clear()
   dr.targets_said = false
   view_paint_work.handed = view_paint_work.handed + (self.ninst - n0)
+}
+
+///|
+/// What node `c`, drawn at (`x`, `y`) as big as `s` and `h` tall (past its foot as far as it says, View::clips_past),
+/// cuts what it holds to as it clips (Content::clips): its box, said down alone (open across, Content::clips_way), its
+/// corners as it says; its ground drawn other than as it is laid out (View::ground_drawn: a shape going to its new one),
+/// to that ground as it is drawn, its corners with it, not to where it rests. The window's tree and a picture's
+/// (Ctx::view_paint, Ctx::tree_shot_paint) cut alike. How tall the box it pushed is, before its ground's change.
+fn push_node_clip(
+  c : @view.Content,
+  ground_drawn : @view.GroundShape,
+  x : Double,
+  y : Double,
+  h : Double,
+  s : Double,
+) -> Double {
+  let r = c.radius * s
+  let (cx, cy, cw, ch) = clip_way_box(c.clips_way, x, y, c.w * s, h)
+  if ground_drawn.reshaped() && c.clips_way == 0 {
+    let g = ground_drawn
+    let gw = dmax(0.0, cw + g.dw * s)
+    let gh = dmax(0.0, ch + g.dh * s)
+    match g.corners {
+      Some((tl, tr, br, bl)) => push_box_clip(cx + g.dx * s, cy + g.dy * s, gw, gh, tl * s, tr * s, br * s, bl * s)
+      None =>
+        match c.corners {
+          Some((tl, tr, br, bl)) =>
+            push_box_clip(cx + g.dx * s, cy + g.dy * s, gw, gh, tl * s, tr * s, br * s, bl * s)
+          None => push_box_clip(cx + g.dx * s, cy + g.dy * s, gw, gh, r, r, r, r)
+        }
+    }
+  } else {
+    match c.corners {
+      Some((tl, tr, br, bl)) => push_box_clip(cx, cy, cw, ch, tl * s, tr * s, br * s, bl * s)
+      None => push_box_clip(cx, cy, cw, ch, r, r, r, r)
+    }
+  }
+  ch
 }
 
 ///|
