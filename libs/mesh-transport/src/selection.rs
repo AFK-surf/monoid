@@ -23,6 +23,11 @@ const STALE_PATH_MS: u64 = 3_000;
 const STALE_TX_MIN: u64 = 3;
 const LIVENESS_IDLE_MS: u64 = 60_000;
 const MAX_LIVENESS: usize = 512;
+const PROBE_MIN_INTERVAL_MS: u64 = 1_000;
+const PROBE_IN_FLIGHT_MS: u64 = 2_000;
+const PROBE_BUDGET_MAX: u8 = 6;
+const PROBE_BACKOFF_MS: u64 = 30_000;
+const MAX_PROBES: usize = 512;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
@@ -69,6 +74,15 @@ impl<S: Eq> Sample<S> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GateOutcome {
+    Rejected,
+    Armed,
+    Observing,
+    Stalled,
+    Ready,
+}
+
 #[derive(Debug)]
 struct Gate<T, S> {
     candidate: Option<T>,
@@ -91,6 +105,7 @@ impl<T: Eq + Clone, S: Eq + Clone> Gate<T, S> {
         self.candidate = None;
         self.compared = None;
     }
+    #[cfg(test)]
     fn consider(
         &mut self,
         candidate: T,
@@ -99,6 +114,16 @@ impl<T: Eq + Clone, S: Eq + Clone> Gate<T, S> {
         now: u64,
         kinds: (Kind, Kind),
     ) -> bool {
+        self.consider_outcome(candidate, current, next, now, kinds) == GateOutcome::Ready
+    }
+    fn consider_outcome(
+        &mut self,
+        candidate: T,
+        current: Sample<S>,
+        next: Sample<S>,
+        now: u64,
+        kinds: (Kind, Kind),
+    ) -> GateOutcome {
         self.touched = now;
         let gain = next
             .rtt_us
@@ -106,7 +131,7 @@ impl<T: Eq + Clone, S: Eq + Clone> Gate<T, S> {
             .is_some_and(|required| required <= current.rtt_us);
         if !gain || now < self.cooldown || current.sequence == 0 || next.sequence == 0 {
             self.reset();
-            return false;
+            return GateOutcome::Rejected;
         }
         let same_sources = self
             .compared
@@ -121,15 +146,19 @@ impl<T: Eq + Clone, S: Eq + Clone> Gate<T, S> {
             self.candidate = Some(candidate);
             self.compared = Some((current, next));
             self.since = now;
-            return false;
+            return GateOutcome::Armed;
         }
         let (old_current, old_next) = self.compared.as_ref().unwrap();
         // Repeated snapshots and PATH_RESPONSE estimates cannot advance evidence.
         if current.sequence == old_current.sequence || next.sequence == old_next.sequence {
-            return false;
+            return GateOutcome::Stalled;
         }
         self.compared = Some((current, next));
-        now.saturating_sub(self.since) >= kinds.0.observation(kinds.1)
+        if now.saturating_sub(self.since) >= kinds.0.observation(kinds.1) {
+            GateOutcome::Ready
+        } else {
+            GateOutcome::Observing
+        }
     }
 }
 
@@ -208,6 +237,129 @@ impl<T, S> PathLiveness<T, S> {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ProbeTarget<T, S> {
+    connection: S,
+    path: T,
+    generation: u64,
+}
+
+/// Per-(connection, path) single-path probe budget, ceiling, and in-flight guard.
+/// Kept apart from `Gate` and across temporary RTT absence or generation churn so neither
+/// gate resets nor path flapping can refill an exhausted budget before backoff expires.
+#[derive(Clone, Debug)]
+struct ProbeState<T, S> {
+    connection: S,
+    path: T,
+    generation: u64,
+    epoch: u64,
+    last_sequence: u64,
+    probe_seq_ceiling: u64,
+    last_advance_at: Option<u64>,
+    in_flight: Option<(u64, u64)>,
+    last_sent_at: Option<u64>,
+    remaining: u8,
+    backoff_until: u64,
+    saw_independent_evidence: bool,
+    touched: u64,
+}
+impl<T, S> ProbeState<T, S> {
+    fn new(connection: S, path: T, sample: &Sample<S>, now: u64) -> Self {
+        Self {
+            connection,
+            path,
+            generation: sample.generation,
+            epoch: sample.epoch,
+            last_sequence: sample.sequence,
+            probe_seq_ceiling: sample.sequence,
+            last_advance_at: None,
+            in_flight: None,
+            last_sent_at: None,
+            remaining: PROBE_BUDGET_MAX,
+            backoff_until: 0,
+            saw_independent_evidence: false,
+            touched: now,
+        }
+    }
+    fn observe(&mut self, sample: &Sample<S>, now: u64) {
+        self.touched = now;
+        if sample.generation != self.generation {
+            self.generation = sample.generation;
+            self.epoch = sample.epoch;
+            self.last_sequence = sample.sequence;
+            self.probe_seq_ceiling = sample.sequence;
+            self.last_advance_at = None;
+            self.in_flight = None;
+            self.last_sent_at = None;
+        } else if sample.epoch != self.epoch || sample.sequence < self.last_sequence {
+            // Same-generation RTT epoch reset (for example after a cross-path ACK in `noq`):
+            // carry unanswered probe debt into the new sequence space so late on-path probe ACKs
+            // from the previous epoch cannot be misread as independent ACK progress.
+            let unanswered = self.probe_seq_ceiling.saturating_sub(self.last_sequence);
+            self.in_flight = None;
+            self.epoch = sample.epoch;
+            self.last_sequence = sample.sequence;
+            self.probe_seq_ceiling = sample.sequence.saturating_add(unanswered);
+            self.last_advance_at = (sample.sequence != 0).then_some(now);
+        } else if sample.sequence > self.last_sequence {
+            if let Some((sent_seq, sent_at)) = self.in_flight
+                && (sample.sequence > sent_seq
+                    || now.saturating_sub(sent_at) >= PROBE_IN_FLIGHT_MS)
+            {
+                self.in_flight = None;
+            }
+            if sample.sequence > self.probe_seq_ceiling {
+                self.saw_independent_evidence = true;
+            }
+            self.last_sequence = sample.sequence;
+            self.probe_seq_ceiling = self.probe_seq_ceiling.max(sample.sequence);
+            self.last_advance_at = Some(now);
+        } else if let Some((_, sent_at)) = self.in_flight
+            && now.saturating_sub(sent_at) >= PROBE_IN_FLIGHT_MS
+        {
+            self.in_flight = None;
+        }
+        if self.saw_independent_evidence && now >= self.backoff_until {
+            self.remaining = PROBE_BUDGET_MAX;
+            self.backoff_until = 0;
+            self.saw_independent_evidence = false;
+        }
+    }
+    fn has_recent_advance(&self, now: u64) -> bool {
+        self.last_advance_at
+            .is_some_and(|at| now.saturating_sub(at) < PROBE_MIN_INTERVAL_MS)
+    }
+    fn try_send(&mut self, now: u64) -> bool {
+        if self.has_recent_advance(now) || self.in_flight.is_some() || now < self.backoff_until {
+            return false;
+        }
+        if self
+            .last_sent_at
+            .is_some_and(|sent_at| now.saturating_sub(sent_at) < PROBE_MIN_INTERVAL_MS)
+        {
+            return false;
+        }
+        if self.remaining > 0 {
+            self.remaining -= 1;
+            if self.remaining == 0 {
+                self.backoff_until = now.saturating_add(PROBE_BACKOFF_MS);
+                self.saw_independent_evidence = false;
+            }
+        } else {
+            // Post-backoff liveness guarantee: emit at most one probe per PROBE_BACKOFF_MS
+            // without refilling `remaining` until genuine independent ACK progress arrives.
+            self.backoff_until = now.saturating_add(PROBE_BACKOFF_MS);
+        }
+        self.probe_seq_ceiling = self
+            .probe_seq_ceiling
+            .max(self.last_sequence)
+            .saturating_add(1);
+        self.in_flight = Some((self.probe_seq_ceiling.saturating_sub(1), now));
+        self.last_sent_at = Some(now);
+        true
+    }
+}
+
 #[derive(Debug)]
 struct Stay<T, S> {
     path: T,
@@ -253,7 +405,7 @@ impl<T: Eq + Clone, S: Eq + Clone> Recovery<T, S> {
         seen: bool,
         sample: Option<&Sample<S>>,
         now: u64,
-    ) {
+    ) -> bool {
         self.touched = now;
         if !seen {
             // Consume this transition once, even if no replacement is available yet.
@@ -268,24 +420,26 @@ impl<T: Eq + Clone, S: Eq + Clone> Recovery<T, S> {
                 self.delay = self.delay.saturating_mul(2).min(MAX_DIRECT_HOLD_MS);
                 self.direct_until = now.saturating_add(self.delay);
             }
-            return;
+            return false;
         }
-        let Some((path, kind)) = current else { return };
+        let Some((path, kind)) = current else {
+            return false;
+        };
         if self.stay.as_ref().is_none_or(|stay| &stay.path != path) {
             self.selected(path, kind, sample, now);
-            return;
+            return false;
         }
         let stay = self.stay.as_mut().unwrap();
         if kind != Kind::Direct {
-            return;
+            return false;
         }
         let Some(sample) = sample.filter(|s| s.sequence != 0) else {
-            return;
+            return false;
         };
         let Some(old) = &stay.last_sample else {
             stay.evidence_since = now;
             stay.last_sample = Some(sample.clone());
-            return;
+            return false;
         };
         if !sample.same_source(old) || sample.sequence < old.sequence || old.sequence == 0 {
             stay.evidence_since = now;
@@ -296,7 +450,13 @@ impl<T: Eq + Clone, S: Eq + Clone> Recovery<T, S> {
             self.delay = COOLDOWN_MS;
             self.direct_until = 0;
         }
+        let needs_confirmation = (self.delay > COOLDOWN_MS || self.direct_until > 0)
+            && sample.same_source(old)
+            && sample.sequence == old.sequence
+            && now.saturating_sub(stay.since) >= STABLE_DIRECT_MS
+            && now.saturating_sub(stay.evidence_since) >= STABLE_DIRECT_MS;
         stay.last_sample = Some(sample.clone());
+        needs_confirmation
     }
 }
 
@@ -305,6 +465,7 @@ struct Policy<T, S> {
     gates: HashMap<T, Gate<T, S>>,
     recovery: Vec<Recovery<T, S>>,
     liveness: Vec<PathLiveness<T, S>>,
+    probes: Vec<ProbeState<T, S>>,
 }
 impl<T: Eq + Hash + Clone, S: Eq + Clone> Policy<T, S> {
     fn new() -> Self {
@@ -312,6 +473,7 @@ impl<T: Eq + Hash + Clone, S: Eq + Clone> Policy<T, S> {
             gates: HashMap::new(),
             recovery: Vec::new(),
             liveness: Vec::new(),
+            probes: Vec::new(),
         }
     }
     fn reset(&mut self, current: Option<(&T, Kind)>) {
@@ -418,6 +580,122 @@ impl<T: Eq + Hash + Clone, S: Eq + Clone> Policy<T, S> {
         now: u64,
     ) -> Option<usize> {
         self.choose_observed(current, seen, paths, &[], connections, now)
+            .0
+    }
+    #[cfg(test)]
+    fn update_probes(&mut self, paths: &[Candidate<T, S>], connections: &[S], now: u64) {
+        self.update_probes_with_activities(paths, &[], connections, now);
+    }
+    fn update_probes_with_activities(
+        &mut self,
+        paths: &[Candidate<T, S>],
+        activities: &[Activity<T, S>],
+        connections: &[S],
+        now: u64,
+    ) {
+        // Keep per-(connection, path) budget debt across temporary `same_path_rtt == None`
+        // snapshots and short path flaps, expiring idle records by `LIVENESS_IDLE_MS` (60 s).
+        self.probes
+            .retain(|entry| now.saturating_sub(entry.touched) < LIVENESS_IDLE_MS);
+        for entry in &mut self.probes {
+            if !connections.contains(&entry.connection) {
+                continue;
+            }
+            if let Some(p) = paths.iter().find(|p| {
+                p.sample.connection == entry.connection
+                    && p.path == entry.path
+                    && p.sample.sequence != 0
+            }) {
+                entry.observe(&p.sample, now);
+            } else if let Some(act) = activities
+                .iter()
+                .find(|a| a.connection == entry.connection && a.path == entry.path)
+            {
+                entry.touched = now;
+                if act.generation != entry.generation {
+                    // Leave `entry.generation` for `observe()` so the first sample of a true new
+                    // generation resets sequence state instead of taking the same-generation epoch branch.
+                    entry.in_flight = None;
+                    entry.last_sent_at = None;
+                    entry.last_advance_at = None;
+                } else if let Some((_, sent_at)) = entry.in_flight
+                    && now.saturating_sub(sent_at) >= PROBE_IN_FLIGHT_MS
+                {
+                    entry.in_flight = None;
+                }
+            } else {
+                entry.in_flight = None;
+            }
+        }
+    }
+    fn ensure_probe_state(
+        &mut self,
+        path: &T,
+        sample: &Sample<S>,
+        connections: &[S],
+        now: u64,
+    ) -> Option<usize> {
+        if let Some(idx) = self
+            .probes
+            .iter()
+            .position(|e| e.connection == sample.connection && &e.path == path)
+        {
+            if self.probes[idx].generation != sample.generation {
+                self.probes[idx].observe(sample, now);
+            }
+            return Some(idx);
+        }
+        if self.probes.len() >= MAX_PROBES {
+            let (oldest, _) = self
+                .probes
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| !connections.contains(&e.connection))
+                .min_by_key(|(_, e)| e.touched)?;
+            self.probes.remove(oldest);
+        }
+        self.probes.push(ProbeState::new(
+            sample.connection.clone(),
+            path.clone(),
+            sample,
+            now,
+        ));
+        Some(self.probes.len() - 1)
+    }
+    fn maybe_request_probe(
+        &mut self,
+        probes: &mut Vec<ProbeTarget<T, S>>,
+        path: &T,
+        sample: &Sample<S>,
+        connections: &[S],
+        now: u64,
+    ) {
+        let target = ProbeTarget {
+            connection: sample.connection.clone(),
+            path: path.clone(),
+            generation: sample.generation,
+        };
+        if probes.contains(&target) {
+            return;
+        }
+        let Some(idx) = self.ensure_probe_state(path, sample, connections, now) else {
+            return;
+        };
+        if self.probes[idx].try_send(now) {
+            probes.push(target);
+        }
+    }
+    fn collect_recovery_probes(
+        &mut self,
+        pending: &[(T, Sample<S>)],
+        connections: &[S],
+        now: u64,
+    ) -> Vec<ProbeTarget<T, S>> {
+        let mut probes = Vec::new();
+        for (path, sample) in pending {
+            self.maybe_request_probe(&mut probes, path, sample, connections, now);
+        }
+        probes
     }
     fn choose_observed(
         &mut self,
@@ -427,8 +705,9 @@ impl<T: Eq + Hash + Clone, S: Eq + Clone> Policy<T, S> {
         activities: &[Activity<T, S>],
         connections: &[S],
         now: u64,
-    ) -> Option<usize> {
+    ) -> (Option<usize>, Vec<ProbeTarget<T, S>>) {
         self.update_liveness(activities, connections, now);
+        self.update_probes_with_activities(paths, activities, connections, now);
         // Retain long holds. Every active connection is touched, including when the current path wins.
         self.recovery.retain(|r| {
             connections.contains(&r.connection)
@@ -473,6 +752,7 @@ impl<T: Eq + Hash + Clone, S: Eq + Clone> Policy<T, S> {
                 .is_some_and(|(path, _)| self.is_tuple_stale(path, activities, connections, now));
         let stale_rescue = current_stale && live_best.is_some();
         let effective_seen = seen && !stale_rescue;
+        let mut recovery_pending = Vec::new();
         for r in self
             .recovery
             .iter_mut()
@@ -485,7 +765,12 @@ impl<T: Eq + Hash + Clone, S: Eq + Clone> Policy<T, S> {
                         .find(|p| &p.path == path && p.sample.connection == r.connection)
                 })
                 .map(|p| &p.sample);
-            r.observe(current, effective_seen, sample, now);
+            if r.observe(current, effective_seen, sample, now)
+                && let Some((path, _)) = current
+                && let Some(s) = sample
+            {
+                recovery_pending.push((path.clone(), s.clone()));
+            }
         }
         if let Some((path, _)) = current
             && let Some(gate) = self.gates.get_mut(path)
@@ -500,13 +785,15 @@ impl<T: Eq + Hash + Clone, S: Eq + Clone> Policy<T, S> {
             if let Some(i) = best {
                 self.switched(current, &paths[i], paths, connections, now);
             }
-            return best;
+            return (best, Vec::new());
         }
         if current_stale {
             self.reset(current);
-            return None;
+            return (None, Vec::new());
         }
-        let (current_path, current_kind) = current?;
+        let Some((current_path, current_kind)) = current else {
+            return (None, Vec::new());
+        };
         let Some(current_sample) = paths
             .iter()
             .filter(|p| &p.path == current_path && p.sample.sequence != 0)
@@ -514,7 +801,7 @@ impl<T: Eq + Hash + Clone, S: Eq + Clone> Policy<T, S> {
             .map(|p| &p.sample)
         else {
             self.reset(current);
-            return None;
+            return (None, Vec::new());
         };
         let cooldown = self
             .recovery
@@ -585,7 +872,8 @@ impl<T: Eq + Hash + Clone, S: Eq + Clone> Policy<T, S> {
             .min_by_key(|(_, p)| p.sample.rtt_us);
         let Some((i, next)) = eligible else {
             self.reset(current);
-            return None;
+            let probes = self.collect_recovery_probes(&recovery_pending, connections, now);
+            return (None, probes);
         };
         // Still rank different network paths. A genuinely faster eligible path starts
         // its own observation, while another sample of this candidate keeps its sources.
@@ -595,24 +883,71 @@ impl<T: Eq + Hash + Clone, S: Eq + Clone> Policy<T, S> {
         };
         // Capacity exhaustion keeps a working path, but never blocks the failure branch above.
         if !self.gates.contains_key(current_path) && self.gates.len() >= MAX_TRACKED {
-            return None;
+            let probes = self.collect_recovery_probes(&recovery_pending, connections, now);
+            return (None, probes);
         }
+        let current_sample = current_sample.clone();
+        let next_path = next.path.clone();
+        let next_sample = next.sample.clone();
+        let next_kind = next.kind;
         let gate = self
             .gates
             .entry(current_path.clone())
             .or_insert_with(|| Gate::new(now));
         gate.cooldown = cooldown;
-        if !gate.consider(
-            next.path.clone(),
+        let outcome = gate.consider_outcome(
+            next_path.clone(),
             current_sample.clone(),
-            next.sample.clone(),
+            next_sample.clone(),
             now,
-            (current_kind, next.kind),
-        ) {
-            return None;
+            (current_kind, next_kind),
+        );
+        let gate_since = gate.since;
+        match outcome {
+            GateOutcome::Rejected => {
+                let probes = self.collect_recovery_probes(&recovery_pending, connections, now);
+                (None, probes)
+            }
+            GateOutcome::Armed => {
+                let _ = self.ensure_probe_state(current_path, &current_sample, connections, now);
+                let _ = self.ensure_probe_state(&next_path, &next_sample, connections, now);
+                let probes = self.collect_recovery_probes(&recovery_pending, connections, now);
+                (None, probes)
+            }
+            GateOutcome::Observing => {
+                let probes = self.collect_recovery_probes(&recovery_pending, connections, now);
+                (None, probes)
+            }
+            GateOutcome::Stalled => {
+                let mut probes = self.collect_recovery_probes(&recovery_pending, connections, now);
+                let observation = current_kind.observation(next_kind);
+                if now
+                    .saturating_sub(gate_since)
+                    .saturating_add(PROBE_MIN_INTERVAL_MS)
+                    >= observation
+                {
+                    self.maybe_request_probe(
+                        &mut probes,
+                        current_path,
+                        &current_sample,
+                        connections,
+                        now,
+                    );
+                    self.maybe_request_probe(
+                        &mut probes,
+                        &next_path,
+                        &next_sample,
+                        connections,
+                        now,
+                    );
+                }
+                (None, probes)
+            }
+            GateOutcome::Ready => {
+                self.switched(current, &paths[i], paths, connections, now);
+                (Some(i), Vec::new())
+            }
         }
-        self.switched(current, next, paths, connections, now);
-        Some(i)
     }
     fn switched(
         &mut self,
@@ -786,7 +1121,7 @@ impl PathSelector for Selector {
         let mut selection = PathSelection::none();
         let current = ctx.current().map(|p| (p, Kind::of(p)));
         let mut policy = self.policy.lock().unwrap();
-        let chosen =
+        let (chosen, probes) =
             policy.choose_observed(current, current_seen, &paths, &activities, &connections, now);
         // Keep the existing withdrawal rule. Preference alone never retires a backup path.
         let best_for_withdrawal = paths
@@ -832,6 +1167,22 @@ impl PathSelector for Selector {
                 now,
             );
             selection.set(&fallback);
+        } else {
+            for target in &probes {
+                if let Some((_, d)) = paths.iter().zip(&data).find(|(p, _)| {
+                    p.sample.connection == target.connection
+                        && p.path == target.path
+                        && p.sample.generation == target.generation
+                }) {
+                    if self.trace_routing {
+                        eprintln!(
+                            "MESH_DIAG ping now={now} path={:?} gen={}",
+                            target.path, target.generation
+                        );
+                    }
+                    selection.ping(d);
+                }
+            }
         }
         selection
     }
@@ -1896,6 +2247,7 @@ mod stale_path_tests {
                 connections,
                 now,
             )
+            .0
             .map(|i| paths[i].path)
     }
 
@@ -2493,5 +2845,1003 @@ mod stale_path_tests {
             ),
             Some(2)
         );
+    }
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use super::*;
+    use Kind::{Direct, Transit};
+
+    type ObservedPath = (Candidate<u64, u64>, Activity<u64, u64>);
+
+    #[allow(clippy::too_many_arguments)]
+    fn observed(
+        id: u64,
+        connection: u64,
+        generation: u64,
+        kind: Kind,
+        us: u64,
+        seq: u64,
+        rx_frames: u64,
+        tx_datagrams: u64,
+    ) -> ObservedPath {
+        (
+            Candidate {
+                path: id,
+                kind,
+                sample: Sample {
+                    connection,
+                    generation,
+                    epoch: 0,
+                    sequence: seq,
+                    rtt_us: us,
+                },
+            },
+            Activity {
+                path: id,
+                connection,
+                generation,
+                traffic: Traffic {
+                    rx_frames,
+                    tx_datagrams,
+                },
+            },
+        )
+    }
+
+    fn step_probes(
+        policy: &mut Policy<u64, u64>,
+        current: Option<(u64, Kind)>,
+        items: &[ObservedPath],
+        connections: &[u64],
+        now: u64,
+    ) -> (Option<u64>, Vec<ProbeTarget<u64, u64>>) {
+        let paths: Vec<_> = items.iter().map(|(c, _)| c.clone()).collect();
+        let activities: Vec<_> = items.iter().map(|(_, a)| a.clone()).collect();
+        let seen = current.is_some_and(|(id, _)| activities.iter().any(|a| a.path == id));
+        let (chosen, probes) = policy.choose_observed(
+            current.as_ref().map(|(id, kind)| (id, *kind)),
+            seen,
+            &paths,
+            &activities,
+            connections,
+            now,
+        );
+        (chosen.map(|i| paths[i].path), probes)
+    }
+
+    fn target(connection: u64, path: u64, generation: u64) -> ProbeTarget<u64, u64> {
+        ProbeTarget {
+            connection,
+            path,
+            generation,
+        }
+    }
+
+    #[test]
+    fn unidirectional_downstream_frozen_current_probes_and_switches() {
+        let mut policy = Policy::new();
+        let mut cur_seq = 1;
+        let mut switched_at = None;
+        let mut probes_by_sec = Vec::new();
+
+        for sec in 0..=10 {
+            let now = sec * 1_000;
+            let rx = 20 + sec * 5;
+            let tx = 20 + sec * 5;
+            let next_seq = 1 + sec;
+            let (chosen, probes) = step_probes(
+                &mut policy,
+                Some((1, Transit)),
+                &[
+                    observed(1, 1, 1, Transit, 30_000, cur_seq, rx, tx),
+                    observed(2, 1, 2, Direct, 1_500, next_seq, 10 + sec, 10 + sec),
+                ],
+                &[1],
+                now,
+            );
+            assert!(
+                !probes.iter().any(|p| p.path == 2),
+                "advancing candidate must not be probed"
+            );
+            probes_by_sec.push((sec, probes.clone()));
+            if let Some(chosen_path) = chosen {
+                assert_eq!(chosen_path, 2);
+                assert!(probes.is_empty(), "switching tick cancels pending probes");
+                switched_at = Some(now);
+                break;
+            }
+            if probes.contains(&target(1, 1, 1)) {
+                cur_seq += 1;
+            }
+        }
+        // Window-tail probing emits 0 probes during t=0..3s, 1 probe at t=4s, and switches at t=5s.
+        assert_eq!(switched_at, Some(5_000));
+        for (sec, probes) in &probes_by_sec {
+            if *sec == 4 {
+                assert_eq!(probes, &vec![target(1, 1, 1)]);
+            } else {
+                assert!(probes.is_empty(), "sec {sec} unexpected probes: {probes:?}");
+            }
+        }
+
+        // Once settled on Direct in initial Recovery tier, continuous unidirectional stream sends 0 probes.
+        for sec in 6..=66 {
+            let (_, probes) = step_probes(
+                &mut policy,
+                Some((2, Direct)),
+                &[
+                    observed(1, 1, 1, Transit, 30_000, cur_seq + sec, 60 + sec, 60 + sec),
+                    observed(2, 1, 2, Direct, 1_500, 6, 100 + sec * 5, 100 + sec * 5),
+                ],
+                &[1],
+                sec * 1_000,
+            );
+            assert!(probes.is_empty(), "steady-state tick {sec} must send zero probes");
+        }
+    }
+
+    #[test]
+    fn window_tail_lost_probe_retries_without_missing_round() {
+        let mut policy = Policy::new();
+        let mut cur_seq = 1;
+
+        // t=0..3s: Gate arms at t=0 and checks gain without sending early probes.
+        for sec in 0..=3 {
+            let (chosen, probes) = step_probes(
+                &mut policy,
+                Some((1, Transit)),
+                &[
+                    observed(1, 1, 1, Transit, 30_000, cur_seq, 20 + sec * 5, 20 + sec * 5),
+                    observed(2, 1, 2, Direct, 1_500, 1 + sec, 10 + sec, 10 + sec),
+                ],
+                &[1],
+                sec * 1_000,
+            );
+            assert_eq!(chosen, None);
+            assert!(probes.is_empty(), "early window sec {sec} must not probe");
+        }
+
+        // t=4s: Window-tail probe #1 fires on stalled `current`, and its reply is LOST (`cur_seq` stays 1).
+        let (chosen_4, probes_4) = step_probes(
+            &mut policy,
+            Some((1, Transit)),
+            &[
+                observed(1, 1, 1, Transit, 30_000, cur_seq, 45, 45),
+                observed(2, 1, 2, Direct, 1_500, 5, 14, 14),
+            ],
+            &[1],
+            4_000,
+        );
+        assert_eq!(chosen_4, None);
+        assert_eq!(probes_4, vec![target(1, 1, 1)]);
+
+        // t=5s: Probe #1 is still within the 2s in-flight guard, and `Gate` stays armed (`since == 0`).
+        let (chosen_5, probes_5) = step_probes(
+            &mut policy,
+            Some((1, Transit)),
+            &[
+                observed(1, 1, 1, Transit, 30_000, cur_seq, 50, 50),
+                observed(2, 1, 2, Direct, 1_500, 6, 15, 15),
+            ],
+            &[1],
+            5_000,
+        );
+        assert_eq!(chosen_5, None);
+        assert!(probes_5.is_empty());
+        assert_eq!(policy.gates.get(&1).unwrap().since, 0);
+
+        // t=6s: First tick after `PROBE_IN_FLIGHT_MS` expires immediately retries on `current`
+        // without restarting the 5s observation window.
+        let (chosen_6, probes_6) = step_probes(
+            &mut policy,
+            Some((1, Transit)),
+            &[
+                observed(1, 1, 1, Transit, 30_000, cur_seq, 55, 55),
+                observed(2, 1, 2, Direct, 1_500, 7, 16, 16),
+            ],
+            &[1],
+            6_000,
+        );
+        assert_eq!(chosen_6, None);
+        assert_eq!(probes_6, vec![target(1, 1, 1)]);
+        cur_seq += 1;
+
+        // t=7s: Retry reply arrives (`cur_seq == 2`) and completes the same observation round.
+        let (chosen_7, probes_7) = step_probes(
+            &mut policy,
+            Some((1, Transit)),
+            &[
+                observed(1, 1, 1, Transit, 30_000, cur_seq, 60, 60),
+                observed(2, 1, 2, Direct, 1_500, 8, 17, 17),
+            ],
+            &[1],
+            7_000,
+        );
+        assert_eq!(chosen_7, Some(2));
+        assert!(probes_7.is_empty());
+    }
+
+    #[test]
+    fn asymmetric_bidirectional_frozen_candidate_probes_and_switches() {
+        let mut policy = Policy::new();
+        let mut next_seq = 1;
+        let mut probes_by_sec = Vec::new();
+        let mut switched_at = None;
+
+        for sec in 0..=8 {
+            let now = sec * 1_000;
+            // Candidate advances naturally for t=0..4s, then freezes at seq=5 once peer switches early.
+            if (1..=4).contains(&sec) {
+                next_seq += 1;
+            }
+            let (chosen, probes) = step_probes(
+                &mut policy,
+                Some((1, Transit)),
+                &[
+                    observed(1, 1, 1, Transit, 28_000, 10 + sec * 5, 50 + sec * 5, 50 + sec * 5),
+                    observed(2, 1, 2, Direct, 1_500, next_seq, 20 + sec * 5, 20 + sec * 5),
+                ],
+                &[1],
+                now,
+            );
+            probes_by_sec.push((sec, probes.clone()));
+            if let Some(chosen_path) = chosen {
+                assert_eq!(chosen_path, 2);
+                assert!(probes.is_empty());
+                switched_at = Some(now);
+                break;
+            }
+            if probes.contains(&target(1, 2, 2)) {
+                next_seq += 1;
+            }
+        }
+        assert_eq!(switched_at, Some(6_000));
+        // Natural ACKs advanced both sides for t=0..4s (0 probes), t=5s probed Direct once, t=6s switched.
+        for (sec, probes) in &probes_by_sec {
+            if *sec == 5 {
+                assert_eq!(probes, &vec![target(1, 2, 2)]);
+            } else {
+                assert!(probes.is_empty(), "sec {sec} unexpected probes: {probes:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn cooldown_and_direct_hold_and_capacity_emit_zero_probes() {
+        let mut policy = Policy::new();
+        // Initial selection on Transit path 1, then switch to Transit path 2 at t=3,000 -> 30s cooldown.
+        let _ = step_probes(
+            &mut policy,
+            None,
+            &[observed(1, 1, 1, Transit, 60_000, 1, 5, 5)],
+            &[1],
+            0,
+        );
+        let _ = step_probes(
+            &mut policy,
+            Some((1, Transit)),
+            &[
+                observed(1, 1, 1, Transit, 60_000, 1, 6, 6),
+                observed(2, 1, 2, Transit, 25_000, 1, 6, 6),
+            ],
+            &[1],
+            1_000,
+        );
+        let (chosen, _) = step_probes(
+            &mut policy,
+            Some((1, Transit)),
+            &[
+                observed(1, 1, 1, Transit, 60_000, 2, 10, 10),
+                observed(2, 1, 2, Transit, 25_000, 2, 10, 10),
+            ],
+            &[1],
+            4_000,
+        );
+        assert_eq!(chosen, Some(2));
+
+        // Throughout cooldown (t=5,000..33,000), a faster Direct candidate with frozen seq gets 0 probes.
+        for sec in 5..=33 {
+            let (chosen, probes) = step_probes(
+                &mut policy,
+                Some((2, Transit)),
+                &[
+                    observed(2, 1, 2, Transit, 25_000, 2, 10 + sec, 10 + sec),
+                    observed(3, 1, 3, Direct, 1_000, 1, 10 + sec, 10 + sec),
+                ],
+                &[1],
+                sec * 1_000,
+            );
+            assert_eq!(chosen, None);
+            assert!(probes.is_empty(), "cooldown sec {sec} must emit zero probes");
+        }
+
+        // Force an early Direct failure to enter 60s direct_until hold.
+        let mut hold_policy = Policy::new();
+        let _ = step_probes(
+            &mut hold_policy,
+            None,
+            &[observed(3, 1, 3, Direct, 1_000, 1, 5, 5)],
+            &[1],
+            0,
+        );
+        // Path 3 disappears at t=5,000 -> rescues to Transit path 2 with 60s direct_until (until 65,000).
+        let (rescued, probes) = step_probes(
+            &mut hold_policy,
+            Some((3, Direct)),
+            &[observed(2, 1, 2, Transit, 25_000, 2, 10, 10)],
+            &[1],
+            5_000,
+        );
+        assert_eq!(rescued, Some(2));
+        assert!(probes.is_empty());
+        assert_eq!(hold_policy.recovery[0].direct_until, 65_000);
+
+        for sec in 6..=64 {
+            let (chosen, probes) = step_probes(
+                &mut hold_policy,
+                Some((2, Transit)),
+                &[
+                    observed(2, 1, 2, Transit, 25_000, 2, 10 + sec, 10 + sec),
+                    observed(4, 1, 4, Direct, 1_000, 1, 10 + sec, 10 + sec),
+                ],
+                &[1],
+                sec * 1_000,
+            );
+            assert_eq!(chosen, None);
+            assert!(probes.is_empty(), "direct_until hold sec {sec} must emit zero probes");
+        }
+
+        // Disqualified candidate (!gain) and MAX_TRACKED gate capacity overflow also emit 0 probes.
+        let mut cap_policy = Policy::new();
+        for p in 100..(100 + MAX_TRACKED as u64) {
+            cap_policy.gates.insert(p, Gate::new(0));
+        }
+        for sec in 0..=5 {
+            let (_, no_gain_probes) = step_probes(
+                &mut cap_policy,
+                Some((100, Transit)),
+                &[
+                    observed(100, 1, 1, Transit, 20_000, 1, 10 + sec, 10 + sec),
+                    observed(200, 1, 2, Direct, 19_000, 1, 10 + sec, 10 + sec),
+                ],
+                &[1],
+                sec * 1_000,
+            );
+            assert!(no_gain_probes.is_empty());
+
+            let (_, cap_probes) = step_probes(
+                &mut cap_policy,
+                Some((999, Transit)),
+                &[
+                    observed(999, 1, 9, Transit, 40_000, 1, 10 + sec, 10 + sec),
+                    observed(200, 1, 2, Direct, 1_000, 1, 10 + sec, 10 + sec),
+                ],
+                &[1],
+                sec * 1_000,
+            );
+            assert!(cap_probes.is_empty(), "capacity overflow must emit zero probes");
+        }
+    }
+
+    #[test]
+    fn lost_probe_responses_are_bounded_and_wait_for_independent_evidence() {
+        let mut policy = Policy::new();
+        // Arm at t=0; window-tail sends first probe at t=4,000.
+        for sec in 0..=3 {
+            let (_, early) = step_probes(
+                &mut policy,
+                Some((1, Transit)),
+                &[
+                    observed(1, 1, 1, Transit, 30_000, 1 + sec, 10 + sec * 2, 10 + sec * 2),
+                    observed(2, 1, 2, Direct, 1_000, 1, 10 + sec * 2, 10 + sec * 2),
+                ],
+                &[1],
+                sec * 1_000,
+            );
+            assert!(early.is_empty());
+        }
+
+        let (_, p4) = step_probes(
+            &mut policy,
+            Some((1, Transit)),
+            &[
+                observed(1, 1, 1, Transit, 30_000, 5, 18, 18),
+                observed(2, 1, 2, Direct, 1_000, 1, 18, 18),
+            ],
+            &[1],
+            4_000,
+        );
+        assert_eq!(p4, vec![target(1, 2, 2)]);
+
+        // While the t=4,000 probe is still in flight (< PROBE_IN_FLIGHT_MS = 2,000 ms),
+        // intermediate ticks emit zero duplicate probes.
+        for t in [4_200, 4_500, 5_000, 5_999] {
+            let (_, pi) = step_probes(
+                &mut policy,
+                Some((1, Transit)),
+                &[
+                    observed(1, 1, 1, Transit, 30_000, 6 + t / 500, 20 + t / 200, 20 + t / 200),
+                    observed(2, 1, 2, Direct, 1_000, 1, 20 + t / 200, 20 + t / 200),
+                ],
+                &[1],
+                t,
+            );
+            assert!(pi.is_empty(), "in-flight guard violated at t={t}");
+        }
+
+        // Exhaust the remaining 5 burst probes at t=6, 8, 10, 12, 14s (`backoff_until = 44,000`),
+        // verify complete silence throughout `[15s, 43s]`, and verify post-backoff rate is capped
+        // to at most 1 probe per 30s (`remaining` stays 0 until independent ACK progress).
+        let mut burst_sent = 1usize;
+        for sec in 6..=43 {
+            let (chosen, probes) = step_probes(
+                &mut policy,
+                Some((1, Transit)),
+                &[
+                    observed(1, 1, 1, Transit, 30_000, 20 + sec, 50 + sec * 2, 50 + sec * 2),
+                    observed(2, 1, 2, Direct, 1_000, 1, 50 + sec * 2, 50 + sec * 2),
+                ],
+                &[1],
+                sec * 1_000,
+            );
+            assert_eq!(chosen, None);
+            burst_sent += probes.len();
+            if sec >= 15 {
+                assert!(
+                    probes.is_empty(),
+                    "must remain silent throughout 30s backoff after burst budget exhausted (sec={sec})"
+                );
+            }
+        }
+        assert_eq!(burst_sent, usize::from(PROBE_BUDGET_MAX));
+        assert_eq!(policy.probes.iter().find(|e| e.path == 2).unwrap().remaining, 0);
+
+        let mut post_backoff_sent = 0usize;
+        for sec in 44..=103 {
+            let (chosen, probes) = step_probes(
+                &mut policy,
+                Some((1, Transit)),
+                &[
+                    observed(1, 1, 1, Transit, 30_000, 20 + sec, 50 + sec * 2, 50 + sec * 2),
+                    observed(2, 1, 2, Direct, 1_000, 1, 50 + sec * 2, 50 + sec * 2),
+                ],
+                &[1],
+                sec * 1_000,
+            );
+            assert_eq!(chosen, None);
+            post_backoff_sent += probes.len();
+            assert_eq!(policy.probes.iter().find(|e| e.path == 2).unwrap().remaining, 0);
+        }
+        assert_eq!(post_backoff_sent, 2, "60s after backoff allows exactly 2 recovery probes (1 per 30s)");
+
+        // Once an independent ACK advances Direct seq past `probe_seq_ceiling` after backoff,
+        // `remaining` refills to `PROBE_BUDGET_MAX` and completes the switch.
+        let ceiling = policy.probes.iter().find(|e| e.path == 2).unwrap().probe_seq_ceiling;
+        let mut next_seq = ceiling + 1;
+        let mut switched = false;
+        for sec in 104..=110 {
+            let (chosen, probes) = step_probes(
+                &mut policy,
+                Some((1, Transit)),
+                &[
+                    observed(1, 1, 1, Transit, 30_000, 20 + sec, 50 + sec * 2, 50 + sec * 2),
+                    observed(2, 1, 2, Direct, 1_000, next_seq, 50 + sec * 2, 50 + sec * 2),
+                ],
+                &[1],
+                sec * 1_000,
+            );
+            if chosen == Some(2) {
+                switched = true;
+                break;
+            }
+            if probes.contains(&target(1, 2, 2)) {
+                next_seq += 1;
+            }
+        }
+        assert!(switched, "independent ACK evidence restores burst budget and completes switch");
+        assert_eq!(
+            policy.probes.iter().find(|e| e.path == 2).unwrap().remaining,
+            PROBE_BUDGET_MAX
+        );
+    }
+
+    #[test]
+    fn generation_change_and_path_close_invalidate_old_probe_state() {
+        let mut policy = Policy::new();
+        for sec in 0..=3 {
+            let _ = step_probes(
+                &mut policy,
+                Some((1, Transit)),
+                &[
+                    observed(1, 1, 1, Transit, 30_000, 1 + sec, 10 + sec * 2, 10 + sec * 2),
+                    observed(2, 1, 1, Direct, 1_000, 4, 10 + sec * 2, 10 + sec * 2),
+                ],
+                &[1],
+                sec * 1_000,
+            );
+        }
+        let (_, p4) = step_probes(
+            &mut policy,
+            Some((1, Transit)),
+            &[
+                observed(1, 1, 1, Transit, 30_000, 5, 18, 18),
+                observed(2, 1, 1, Direct, 1_000, 4, 18, 18),
+            ],
+            &[1],
+            4_000,
+        );
+        assert_eq!(p4, vec![target(1, 2, 1)]);
+        assert!(
+            policy
+                .probes
+                .iter()
+                .any(|e| e.path == 2 && e.generation == 1 && e.in_flight.is_some() && e.remaining == 5)
+        );
+
+        // Path 2 reopens as generation 2 at t=4,500: old generation-1 `in_flight` is cleared at once
+        // while `remaining == 5` is preserved (not refilled to 6), and re-arming emits zero stale probes.
+        let (_, p_rearm) = step_probes(
+            &mut policy,
+            Some((1, Transit)),
+            &[
+                observed(1, 1, 1, Transit, 30_000, 6, 20, 20),
+                observed(2, 1, 2, Direct, 1_000, 1, 2, 2),
+            ],
+            &[1],
+            4_500,
+        );
+        assert!(p_rearm.is_empty());
+        let entry = policy.probes.iter().find(|e| e.path == 2).unwrap();
+        assert_eq!(entry.generation, 2);
+        assert!(entry.in_flight.is_none());
+        assert_eq!(entry.remaining, 5);
+
+        // Reaching the new window tail on generation 2 targets generation 2 (`remaining` drops to 4).
+        let (_, p_gen2) = step_probes(
+            &mut policy,
+            Some((1, Transit)),
+            &[
+                observed(1, 1, 1, Transit, 30_000, 10, 28, 28),
+                observed(2, 1, 2, Direct, 1_000, 1, 6, 6),
+            ],
+            &[1],
+            8_500,
+        );
+        assert_eq!(p_gen2, vec![target(1, 2, 2)]);
+        assert_eq!(policy.probes.iter().find(|e| e.path == 2).unwrap().remaining, 4);
+
+        // Closing path 2 clears `in_flight` immediately while retaining budget debt until `LIVENESS_IDLE_MS`.
+        let (_, p_closed) = step_probes(
+            &mut policy,
+            Some((1, Transit)),
+            &[observed(1, 1, 1, Transit, 30_000, 11, 30, 30)],
+            &[1],
+            9_000,
+        );
+        assert!(p_closed.is_empty());
+        let closed_entry = policy.probes.iter().find(|e| e.path == 2).unwrap();
+        assert!(closed_entry.in_flight.is_none());
+        assert_eq!(closed_entry.remaining, 4);
+
+        let _ = step_probes(
+            &mut policy,
+            Some((1, Transit)),
+            &[observed(1, 1, 1, Transit, 30_000, 70, 90, 90)],
+            &[1],
+            69_000,
+        );
+        assert!(!policy.probes.iter().any(|e| e.path == 2));
+    }
+
+    #[test]
+    fn recovery_probes_only_when_penalized_at_three_minutes_and_resets_only_after_new_ack() {
+        // 1. Initial tier (delay == COOLDOWN_MS, direct_until == 0): 10 minutes of frozen seq on Direct -> 0 probes.
+        let mut clean_policy = Policy::new();
+        let _ = step_probes(
+            &mut clean_policy,
+            None,
+            &[observed(2, 1, 1, Direct, 1_500, 3, 10, 10)],
+            &[1],
+            0,
+        );
+        for sec in 1..=600 {
+            let (_, probes) = step_probes(
+                &mut clean_policy,
+                Some((2, Direct)),
+                &[observed(2, 1, 1, Direct, 1_500, 3, 10 + sec * 5, 10 + sec * 5)],
+                &[1],
+                sec * 1_000,
+            );
+            assert!(probes.is_empty(), "initial tier sec {sec} must never probe");
+        }
+
+        // 2. Penalized tier (early death -> delay = 60,000): probes once at 3 minutes, resets ONLY after new ACK.
+        let mut policy = Policy::new();
+        let _ = step_probes(
+            &mut policy,
+            None,
+            &[observed(2, 1, 1, Direct, 1_500, 1, 5, 5)],
+            &[1],
+            0,
+        );
+        // Early failure at t=5,000 -> delay becomes 60,000.
+        let _ = step_probes(
+            &mut policy,
+            Some((2, Direct)),
+            &[observed(1, 1, 1, Transit, 30_000, 1, 5, 5)],
+            &[1],
+            5_000,
+        );
+        assert_eq!(policy.recovery[0].delay, 60_000);
+        // Rescue back onto Direct (generation 2, seq=5) at t=10,000 when Transit disappears.
+        let (chosen, _) = step_probes(
+            &mut policy,
+            Some((1, Transit)),
+            &[observed(2, 1, 2, Direct, 1_500, 5, 10, 10)],
+            &[1],
+            10_000,
+        );
+        assert_eq!(chosen, Some(2));
+        assert_eq!(policy.recovery[0].delay, 60_000);
+
+        // Before 3 minutes on Direct (t=11,000..189,000, elapsed < 180,000 ms): 0 probes, delay stays 60,000.
+        for sec in 11..=189 {
+            let (_, probes) = step_probes(
+                &mut policy,
+                Some((2, Direct)),
+                &[observed(2, 1, 2, Direct, 1_500, 5, 20 + sec * 5, 20 + sec * 5)],
+                &[1],
+                sec * 1_000,
+            );
+            assert!(probes.is_empty(), "sec {sec} before 3 min must not probe");
+            assert_eq!(policy.recovery[0].delay, 60_000);
+        }
+
+        // At t=190,000 (elapsed == 180,000 ms) with seq still 5: requests 1 confirmation probe, does NOT reset yet!
+        let (_, p_180) = step_probes(
+            &mut policy,
+            Some((2, Direct)),
+            &[observed(2, 1, 2, Direct, 1_500, 5, 1_000, 1_000)],
+            &[1],
+            190_000,
+        );
+        assert_eq!(p_180, vec![target(1, 2, 2)]);
+        assert_eq!(
+            policy.recovery[0].delay, 60_000,
+            "inbound frames and wall time alone must not reset Recovery before ACK"
+        );
+
+        // Without ACK at t=191,000 (seq still 5): still not reset, and in-flight guard emits 0 probes.
+        let (_, p_181_no_ack) = step_probes(
+            &mut policy,
+            Some((2, Direct)),
+            &[observed(2, 1, 2, Direct, 1_500, 5, 1_005, 1_005)],
+            &[1],
+            191_000,
+        );
+        assert!(p_181_no_ack.is_empty());
+        assert_eq!(policy.recovery[0].delay, 60_000);
+
+        // Once same-generation ACK arrives (seq: 5 -> 6) at t=191,500: Recovery resets, and later ticks emit 0 probes.
+        let (_, p_ack) = step_probes(
+            &mut policy,
+            Some((2, Direct)),
+            &[observed(2, 1, 2, Direct, 1_500, 6, 1_008, 1_008)],
+            &[1],
+            191_500,
+        );
+        assert!(p_ack.is_empty());
+        assert_eq!(policy.recovery[0].delay, COOLDOWN_MS);
+        assert_eq!(policy.recovery[0].direct_until, 0);
+
+        for sec in 192..=210 {
+            let (_, probes) = step_probes(
+                &mut policy,
+                Some((2, Direct)),
+                &[observed(2, 1, 2, Direct, 1_500, 6, 1_010 + sec, 1_010 + sec)],
+                &[1],
+                sec * 1_000,
+            );
+            assert!(probes.is_empty());
+        }
+    }
+
+    #[test]
+    fn gate_reset_does_not_refill_probe_budget() {
+        let mut policy = Policy::new();
+        let mut cur_seq = 1;
+        let mut total_probes = 0usize;
+
+        // Every 6th second (sec % 6 == 5, right after the t=4s window-tail probe), candidate RTT
+        // spikes to 29.5 ms (!gain -> Gate.reset()) and then recovers. Even when every probe is
+        // answered by +1 seq, repeated Gate.reset() cycles exhaust PROBE_BUDGET_MAX at sec=34
+        // and stay completely silent throughout the 30s backoff (sec=35..=63).
+        for sec in 0..=63 {
+            let now = sec * 1_000;
+            let cand_rtt = if sec % 6 == 5 { 29_500 } else { 1_500 };
+            let (chosen, probes) = step_probes(
+                &mut policy,
+                Some((1, Transit)),
+                &[
+                    observed(1, 1, 1, Transit, 30_000, cur_seq, 20 + sec * 4, 20 + sec * 4),
+                    observed(2, 1, 2, Direct, cand_rtt, 1 + sec, 20 + sec, 20 + sec),
+                ],
+                &[1],
+                now,
+            );
+            assert_eq!(chosen, None);
+            total_probes += probes.len();
+            if probes.contains(&target(1, 1, 1)) {
+                cur_seq += 1;
+            }
+            if sec >= 35 {
+                assert!(
+                    probes.is_empty(),
+                    "Gate.reset() must not refresh probe budget during backoff (sec={sec})"
+                );
+            }
+        }
+        assert_eq!(total_probes, usize::from(PROBE_BUDGET_MAX));
+        assert_eq!(policy.probes.iter().find(|e| e.path == 1).unwrap().remaining, 0);
+    }
+
+    #[test]
+    fn review_exhausted_current_eventually_retries_after_candidate_stabilizes() {
+        let mut p = Policy::new();
+        let mut seq = 1;
+        for sec in 0..=60 {
+            let (_, probes) = step_probes(
+                &mut p,
+                Some((1, Transit)),
+                &[
+                    observed(1, 1, 1, Transit, 30_000, seq, 100 + sec, 100 + sec),
+                    observed(
+                        2,
+                        1,
+                        2,
+                        Direct,
+                        if sec % 6 == 5 { 29_500 } else { 1_500 },
+                        1 + sec,
+                        100 + sec,
+                        100 + sec,
+                    ),
+                ],
+                &[1],
+                sec * 1_000,
+            );
+            if probes.contains(&target(1, 1, 1)) {
+                seq += 1;
+            }
+        }
+        assert_eq!(p.probes.iter().find(|e| e.path == 1).unwrap().remaining, 0);
+
+        let mut switched = false;
+        let mut retry_count = 0;
+        for sec in 61..=600 {
+            let (chosen, probes) = step_probes(
+                &mut p,
+                Some((1, Transit)),
+                &[
+                    observed(1, 1, 1, Transit, 30_000, seq, 100 + sec, 100 + sec),
+                    observed(2, 1, 2, Direct, 1_500, 1 + sec, 100 + sec, 100 + sec),
+                ],
+                &[1],
+                sec * 1_000,
+            );
+            retry_count += probes.len();
+            if probes.contains(&target(1, 1, 1)) {
+                seq += 1;
+            }
+            if chosen == Some(2) {
+                switched = true;
+                break;
+            }
+        }
+        assert!(
+            switched,
+            "healthy stable candidate must not remain blocked forever after backoff"
+        );
+        assert_eq!(retry_count, 1);
+    }
+
+    #[test]
+    fn review_late_probe_reply_is_not_independent_budget_refill() {
+        let mut s = observed(1, 1, 1, Transit, 30_000, 1, 10, 10).0.sample;
+        let mut p = ProbeState::new(1, 1, &s, 0);
+        // Five probe replies arrive promptly, without any natural ACK progress.
+        for i in 0..5 {
+            let t = i * 3_000;
+            p.observe(&s, t);
+            assert!(p.try_send(t));
+            s.sequence += 1;
+            p.observe(&s, t + 1_000);
+        }
+        p.observe(&s, 15_000);
+        assert!(p.try_send(15_000));
+        assert_eq!(p.remaining, 0);
+        p.observe(&s, 17_000);
+        assert!(p.in_flight.is_none());
+        // Sixth probe's only ACK is delayed until after its timeout, with candidate inactive.
+        s.sequence += 1;
+        p.observe(&s, 18_000);
+        p.observe(&s, 45_000);
+        assert_eq!(
+            p.remaining, 0,
+            "late probe-only ACK must not replenish independent-evidence budget"
+        );
+    }
+
+    #[test]
+    fn review_missing_rtt_same_generation_keeps_budget_debt() {
+        let mut p = Policy::new();
+        let mut s = observed(2, 1, 9, Direct, 1_000, 1, 10, 10).0.sample;
+        let idx = p.ensure_probe_state(&2, &s, &[1], 0).unwrap();
+        for i in 0..6 {
+            p.probes[idx].observe(&s, i * 2_000);
+            assert!(p.probes[idx].try_send(i * 2_000));
+        }
+        assert_eq!(p.probes[idx].remaining, 0);
+        // Adapter omits Candidate when same_path_rtt is None, although connection/path persists.
+        p.update_probes(&[], &[1], 11_000);
+        let idx = p.ensure_probe_state(&2, &s, &[1], 12_000).unwrap();
+        assert_eq!(
+            p.probes[idx].remaining, 0,
+            "temporary absence must not refill the incarnation budget"
+        );
+        assert!(!p.probes[idx].try_send(12_000));
+        // Bumping generation on the same (connection, path) before backoff expires also keeps debt.
+        s.generation = 10;
+        let idx = p.ensure_probe_state(&2, &s, &[1], 13_000).unwrap();
+        assert_eq!(p.probes[idx].remaining, 0);
+        assert!(!p.probes[idx].try_send(13_000));
+    }
+
+    #[test]
+    fn review_other_peer_preserves_budget_and_inflight() {
+        let mut p = Policy::new();
+        let a = observed(1, 1, 1, Transit, 30_000, 1, 10, 10).0;
+        let b = observed(2, 2, 1, Transit, 30_000, 1, 10, 10).0;
+        let idx = p.ensure_probe_state(&a.path, &a.sample, &[1], 0).unwrap();
+        assert!(p.probes[idx].try_send(0));
+        p.update_probes(&[b], &[2], 1_000);
+        assert_eq!(p.probes.len(), 1);
+        assert_eq!(p.probes[0].remaining, 5);
+        assert_eq!(p.probes[0].in_flight, Some((1, 0)));
+        p.update_probes(&[a], &[1], 1_500);
+        assert_eq!(p.probes[0].remaining, 5);
+        assert_eq!(p.probes[0].in_flight, Some((1, 0)));
+        p.update_probes(&[], &[2], 61_500);
+        assert!(p.probes.is_empty());
+    }
+
+    #[test]
+    fn review_recovery_shares_exhausted_budget_and_confirms_after_backoff() {
+        let mut p = Policy::new();
+        let item = observed(2, 1, 1, Direct, 1_000, 1, 10, 10);
+        let idx = p.ensure_probe_state(&2, &item.0.sample, &[1], 0).unwrap();
+        for i in 0..6 {
+            p.probes[idx].observe(&item.0.sample, i * 2_000);
+            assert!(p.probes[idx].try_send(i * 2_000));
+        }
+        let mut r = Recovery::new(1, 0);
+        r.delay = 60_000;
+        r.selected(&2, Direct, Some(&item.0.sample), 0);
+        p.recovery.push(r);
+
+        let mut seq = 1;
+        let mut confirm_probes = 0usize;
+        for sec in 180..=185 {
+            let (_, probes) = step_probes(
+                &mut p,
+                Some((2, Direct)),
+                &[observed(2, 1, 1, Direct, 1_000, seq, 100 + sec, 100 + sec)],
+                &[1],
+                sec * 1_000,
+            );
+            confirm_probes += probes.len();
+            if probes.contains(&target(1, 2, 1)) {
+                seq += 1;
+            }
+        }
+        assert_eq!(confirm_probes, 1);
+        assert_eq!(p.recovery[0].delay, COOLDOWN_MS);
+    }
+
+    #[test]
+    fn reviewer_generation_churn_is_burst_bounded() {
+        let mut s = observed(1, 1, 1, Transit, 30_000, 1, 10, 10).0.sample;
+        let mut p = ProbeState::new(1, 1, &s, 0);
+        let mut sent = Vec::new();
+        for t in 0..=90_006 {
+            s.generation += 1;
+            p.observe(&s, t);
+            if p.try_send(t) {
+                sent.push(t);
+            }
+        }
+        assert_eq!(&sent[..6], &[0, 1, 2, 3, 4, 5]);
+        assert_eq!(&sent[6..], &[30_005, 60_005, 90_005]);
+        assert_eq!(p.remaining, 0);
+    }
+
+    #[test]
+    fn reviewer_observing_advancing_paths_never_probe() {
+        let mut p = Policy::new();
+        for sec in 0..=5 {
+            let (choice, probes) = step_probes(
+                &mut p,
+                Some((1, Transit)),
+                &[
+                    observed(1, 1, 1, Transit, 30_000, sec + 1, 100 + sec, 100 + sec),
+                    observed(2, 1, 1, Direct, 1_000, sec + 1, 100 + sec, 100 + sec),
+                ],
+                &[1],
+                sec * 1_000,
+            );
+            assert!(probes.is_empty());
+            assert_eq!(choice, if sec == 5 { Some(2) } else { None });
+        }
+    }
+
+    #[test]
+    fn reviewer_observing_only_allows_independent_recovery_probe() {
+        let mut p = Policy::new();
+        let old = observed(1, 2, 1, Direct, 31_000, 1, 100, 100);
+        let mut recovery = Recovery::new(2, 0);
+        recovery.delay = 60_000;
+        recovery.selected(&1, Direct, Some(&old.0.sample), 0);
+        p.recovery.push(recovery);
+        for (now, seq) in [(180_000, 10), (182_000, 11)] {
+            let (chosen, probes) = step_probes(
+                &mut p,
+                Some((1, Direct)),
+                &[
+                    observed(1, 1, 1, Direct, 30_000, seq, now, now),
+                    observed(1, 2, 1, Direct, 31_000, 1, now, now),
+                    observed(2, 1, 1, Direct, 1_000, seq, now, now),
+                ],
+                &[1, 2],
+                now,
+            );
+            assert_eq!(chosen, None);
+            assert_eq!(probes, vec![target(2, 1, 1)]);
+        }
+        let gate = p.gates.get(&1).unwrap();
+        assert_eq!(gate.since, 180_000);
+        assert_eq!(gate.compared.as_ref().unwrap().0.sequence, 11);
+    }
+
+    #[test]
+    fn reviewer_epoch_reset_does_not_erase_unanswered_probe_debt() {
+        let mut p = Policy::new();
+        let mut item = observed(1, 1, 1, Transit, 30_000, 10, 100, 100);
+        let idx = p.ensure_probe_state(&1, &item.0.sample, &[1], 0).unwrap();
+        for t in (0..=10_000).step_by(2_000) {
+            p.probes[idx].observe(&item.0.sample, t);
+            assert!(p.probes[idx].try_send(t));
+        }
+        assert_eq!(p.probes[idx].remaining, 0);
+        // Cross-path ACK invalidates RTT, resets sequence, and increments epoch while
+        // the same path and generation stay active in `Activity`.
+        p.update_probes_with_activities(&[], &[item.1.clone()], &[1], 11_000);
+        item.0.sample.epoch = 1;
+        // Two previously sent probes are acknowledged on-path in packet-number order,
+        // without any independent application ACK.
+        for (t, seq) in [(12_000, 1), (13_000, 2)] {
+            item.0.sample.sequence = seq;
+            p.update_probes_with_activities(&[item.0.clone()], &[item.1.clone()], &[1], t);
+        }
+        p.update_probes_with_activities(&[item.0.clone()], &[item.1.clone()], &[1], 40_000);
+        assert_eq!(
+            p.probes[idx].remaining, 0,
+            "epoch reset must not turn old probe replies into independent evidence"
+        );
+        // Once genuine natural ACKs advance sequence past the migrated ceiling (`7`),
+        // independent evidence refills the budget cleanly.
+        item.0.sample.sequence = 8;
+        p.update_probes_with_activities(&[item.0.clone()], &[item.1], &[1], 41_000);
+        assert_eq!(p.probes[idx].remaining, PROBE_BUDGET_MAX);
     }
 }
