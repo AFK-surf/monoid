@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [2e5f2a432](https://github.com/AFK-surf/monoid/commit/2e5f2a432b88771aba1cd8b8cf9cc5de010fa277) chore(mbui): delete non-message legacy @ui.Ctx vie | 2.65 | 3.57 | 14.51 | 36.48 | 55.29 | 31.95 | 64.6 | 98.31 | 127.53 |
 | [b12eefbd0](https://github.com/AFK-surf/monoid/commit/b12eefbd04396dbf363ced3a7f795a7f1841f9db) feat(core-ts): wire stillfail-reader-harness and m | 2.65 | 3.57 | 14.51 | 36.48 | 55.3 | 31.95 | 64.6 | 98.22 | 129.41 |
 | [d081e8e54](https://github.com/AFK-surf/monoid/commit/d081e8e5408a3b4557c5c9cce60c62eb5bb62e30) fix(accounts): show Antigravity subscription plans | 2.65 | 3.57 | 14.51 | 36.48 | 55.3 | 31.95 | 64.6 | 98.35 | 128.58 |
 | [d6bfd48bd](https://github.com/AFK-surf/monoid/commit/d6bfd48bd32c6e6f1847e1a84c2ab8d6788f02e5) feat(station): port admin CLI natively into stillf | 2.65 | 3.57 | 14.51 | 36.47 | 55.28 | 31.94 | 64.58 | 98.91 | 118.95 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f00bc6da4](https://github.com/AFK-surf/monoid/commit/f00bc6da4a5d39ce05f875db5181d95e2b9b6a38) chore(mbui): delete dead sfbase and sfpages Ctx vi | 2.78 | 3.75 | 15.28 | 37.34 | 57.86 | 32.73 | 66.74 | 98.16 | 133.91 |
 | [4c3ca1b67](https://github.com/AFK-surf/monoid/commit/4c3ca1b673569c07ac58c1ee7c1e8b6f05dd43f7) perf(mbui): split View::window_w/h signals and mak | 2.78 | 3.75 | 15.28 | 37.34 | 57.86 | 32.73 | 66.74 | 98.26 | 121.96 |
 | [7e5d6b10e](https://github.com/AFK-surf/monoid/commit/7e5d6b10e2e97b0971b447e16432f83ab975a3bb) chore(mbui): delete dead settings Ctx views and cl | 2.78 | 3.75 | 15.28 | 37.35 | 57.85 | 32.73 | 66.74 | 98.27 | 131.13 |
-| [e410e26d2](https://github.com/AFK-surf/monoid/commit/e410e26d208a829d1aa7e3c6c2026d54c5a3e1c0) feat(mbui): support middle-click to close side pan | 2.77 | 3.75 | 15.27 | 37.34 | 57.83 | 32.72 | 66.73 | 98.39 | 126 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [2e5f2a432](https://github.com/AFK-surf/monoid/commit/2e5f2a432b88771aba1cd8b8cf9cc5de010fa277) chore(mbui): delete non-message legacy @ui.Ctx vie | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 53.86 |
 | [b12eefbd0](https://github.com/AFK-surf/monoid/commit/b12eefbd04396dbf363ced3a7f795a7f1841f9db) feat(core-ts): wire stillfail-reader-harness and m | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 53.86 |
 | [d081e8e54](https://github.com/AFK-surf/monoid/commit/d081e8e5408a3b4557c5c9cce60c62eb5bb62e30) fix(accounts): show Antigravity subscription plans | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 53.86 |
 | [d6bfd48bd](https://github.com/AFK-surf/monoid/commit/d6bfd48bd32c6e6f1847e1a84c2ab8d6788f02e5) feat(station): port admin CLI natively into stillf | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 53.86 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f00bc6da4](https://github.com/AFK-surf/monoid/commit/f00bc6da4a5d39ce05f875db5181d95e2b9b6a38) chore(mbui): delete dead sfbase and sfpages Ctx vi | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.6 | 54.02 |
 | [4c3ca1b67](https://github.com/AFK-surf/monoid/commit/4c3ca1b673569c07ac58c1ee7c1e8b6f05dd43f7) perf(mbui): split View::window_w/h signals and mak | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.6 | 54.02 |
 | [7e5d6b10e](https://github.com/AFK-surf/monoid/commit/7e5d6b10e2e97b0971b447e16432f83ab975a3bb) chore(mbui): delete dead settings Ctx views and cl | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.6 | 54.02 |
-| [e410e26d2](https://github.com/AFK-surf/monoid/commit/e410e26d208a829d1aa7e3c6c2026d54c5a3e1c0) feat(mbui): support middle-click to close side pan | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.6 | 54.02 |
