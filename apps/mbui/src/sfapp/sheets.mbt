@@ -606,14 +606,28 @@ fn info_agent_row_node(k : @view.View, src : Source, a : () -> Json?, press : ()
 }
 
 ///|
-/// An account's tier and allowance chips under its name, where known.
-fn allowance_node(v : @view.View, quota : () -> Json?, plan? : () -> String = fn() { "" }) -> Unit {
-  v.show(fn() { plan() != "" || @sf.has_quota(quota()) }, fn(b) {
+/// An account's allowance (allowance_line's, as a node) in `v`, `quota` as it is now: its chips on a line of its own
+/// under what names it, 4 under it; nothing where it says none.
+fn allowance_node(v : @view.View, quota : () -> Json?) -> Unit {
+  v.show(fn() { @sf.has_quota(quota()) }, fn(b) {
     @sf.style_node(b, fn() { allowance_box })
-    b.wraps(Is(Some(4.0))).gap(Is(6.0)).lines_up(Is(Some(Middle))) |> ignore
-    b.show(fn() { plan() != "" }, fn(t) { @sf.row_tag_node(t, plan) })
     @sf.quota_chips_node(b, quota)
   })
+}
+
+///|
+/// `value`'s words in `w` with `tag` after them on their line where it says one (an account's tier: the meta's size,
+/// subtle, 8 after, as a profile row's title_after), the words cut short before the tag gives way.
+fn tagged_words_node(w : @view.View, value : () -> String, look : () -> @ui.TextStyle, tag : () -> String) -> Unit {
+  w.box(fn(line) {
+    line.row(Is(true)).lines_up(Is(Some(Middle))).min_width(Is(Some(0.0))) |> ignore
+    @sf.words_node(line, value, look).cuts(Is(true)).min_width(Is(Some(0.0))).allow_ellipsis(Is(true)) |> ignore
+    line.show(fn() { tag() != "" }, fn(a) {
+      a.margin(Is((8.0, 0.0, 0.0, 0.0))) |> ignore
+      @sf.row_tag_node(a, tag)
+    })
+  })
+  |> ignore
 }
 
 ///|
@@ -870,7 +884,8 @@ fn agent_node(v : @view.View, src : Source, r : ChatRef, key : String, close : (
             }
           },
           label_w,
-          under=fn(w) { allowance_node(w, fn() { field(account(), "quota") }, plan~) },
+          tag=plan,
+          under=fn(w) { allowance_node(w, fn() { field(account(), "quota") }) },
           said=fn() { @settings.join([plan(), @sf.quota_chips_said(field(account(), "quota"))], " ") },
           fn() {
             close()
@@ -959,6 +974,7 @@ fn agent_row_node(
   label_w : () -> Double,
   under? : (@view.View) -> Unit,
   said? : () -> String = fn() { "" },
+  tag? : () -> String,
   trailing? : (@view.View) -> Unit,
   press : () -> Unit,
 ) -> @view.View {
@@ -976,7 +992,10 @@ fn agent_row_node(
     @sf.row_label_node(row, label, label_w)
     row.box(fn(w) {
       @sf.style_node(w, fn() { agent_row_body_style }, in_row=true)
-      @sf.words_node(w, value, fn() { agent_row_value }) |> ignore
+      match tag {
+        Some(t) => tagged_words_node(w, value, fn() { agent_row_value }, t)
+        None => @sf.words_node(w, value, fn() { agent_row_value }) |> ignore
+      }
       match under {
         Some(f) => f(w)
         None => ()

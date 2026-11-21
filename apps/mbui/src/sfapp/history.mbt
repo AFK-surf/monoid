@@ -294,8 +294,20 @@ fn run_row_node(v : @view.View, a : () -> Json?, press : (@sf.Anchor) -> Unit) -
       b.box(fn(w) {
         w.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
         // (the model's name whole, what follows it giving way first: cut short itself only beside the least of that)
-        @sf.name_line_node(w, model, fn() { run_model }, rest, fn() { run_rest }) |> ignore
-        allowance_node(w, quota, plan~)
+        // (its account's tier after the line, as a profile row's title_after: the line giving way first)
+        w.box(fn(line) {
+          line.row(Is(true)).lines_up(Is(Some(Middle))).min_width(Is(Some(0.0))) |> ignore
+          @sf.name_line_node(line, model, fn() { run_model }, rest, fn() { run_rest }).shrink(Is(1.0)) |> ignore
+          line.show(fn() { plan() != "" }, fn(a) {
+            a.margin(Is((8.0, 0.0, 0.0, 0.0))) |> ignore
+            @sf.row_tag_node(a, plan)
+          })
+        })
+        |> ignore
+        w.show(at_once=true, fn() { @sf.has_quota(quota()) }, fn(q) {
+          q.row(Is(true)).padding(Is((0.0, 4.0, 0.0, 0.0))) |> ignore
+          @sf.quota_chips_node(q, quota)
+        })
       })
       |> ignore
       @sf.icon_node(b, "chevron-down", 14.0, By(fn() { @sf.theme().p.muted })) |> ignore
