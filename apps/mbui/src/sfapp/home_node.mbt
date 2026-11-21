@@ -154,9 +154,14 @@ fn home_top_bar_node(
   shown? : () -> Bool = fn() { true },
 ) -> Unit {
   v.box(fn(g) {
-    // (clean page ground behind the floating liquid glass pills: hides the tucked pull-to-search field
-    // beneath `frame.under` at rest without nesting glass-on-glass)
-    g.ground(By(fn() { @sf.theme().p.bg })) |> ignore
+    // (soft GPU bottom-fade scrim behind the floating liquid glass pills: stays 100% opaque through status_top + 44pt
+    // to completely cover the tucked pull-to-search field, then feathers smoothly over the lower 20pt)
+    narrow_bar_scrim_node(
+      g,
+      fn(s) { status_top_now(s.window_w()) + bar_h },
+      tail=14.0,
+      fade_h=20.0,
+    )
     g.box(fn(row) {
       row
       .row(Is(true))

@@ -1,6 +1,6 @@
 // Tests for `bar_pill_group_node`: single-layer iOS 26 / macOS 26 liquid glass (`kind == 6`, zero nested glass),
 // tight outside-only `bar_pill_shadow()` (`shadow_outside == true`), exact concentric corners for both 34pt `round_key_node`
-// (`height=40, pad=3`) and 32pt `icon_button_node` (`height=38, pad=3`), 40pt standalone circle (`height=40, pad=0`),
+// (`height=40, pad=3`) and 32pt `icon_button_node` (`height=36, pad=2`), 40pt standalone circle (`height=40, pad=0`),
 // `MBUI_GLASS=solid` degradation (`panel_ground()` + `control_edge_w` `panel_edge()`, 0 glass instances), and clean
 // `Tester::audit()` in both Light and Dark themes.
 
@@ -51,7 +51,7 @@ fn pill_group_tester(kind : String, dark : Bool, solid : Bool) -> @ui.Tester {
         })
         |> ignore
       } else {
-        bar_pill_group_node(bar, height=38.0, pad=3.0, gap=2.0, fn(g) {
+        bar_pill_group_node(bar, height=36.0, pad=2.0, gap=2.0, fn(g) {
           icon_button_node(g, "info", fn() { "Info" }, fn() {  }) |> ignore
           icon_button_node(g, "more", fn() { "More" }, fn() {  }) |> ignore
         })

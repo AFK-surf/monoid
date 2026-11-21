@@ -882,7 +882,34 @@ fn place_top_bar_node(
 }
 
 ///|
-/// place_top_bar_node's bar in `v`: clean page ground behind the title (no full-width `glass_bar()` to avoid
+/// Soft GPU bottom-fade backdrop for floating-pill narrow top bars (iOS 26 UIScrollEdgeEffect.soft):
+/// stays 100% opaque `p.bg` across the status bar & title area, then feathers smoothly to transparent
+/// over the lower `fade_h` pt (extending `tail` pt past `base_h`) so scrolled content dissolves cleanly
+/// instead of being hard-clipped at the bar's bottom edge.
+fn narrow_bar_scrim_node(
+  parent : @view.View,
+  base_h : (@view.View) -> Double,
+  tail~ : Double,
+  fade_h~ : Double,
+) -> Unit {
+  parent.box(fn(scrim) {
+    scrim
+    .over(Is(true))
+    .points(Is(false))
+    .width_share(Is(1.0))
+    .height(By(fn() { Some(base_h(scrim) + tail) }))
+    .fades(Is((0.0, 0.0, 0.0, fade_h)))
+    |> ignore
+    scrim.box(fn(fill) {
+      fill.width_share(Is(1.0)).height_share(Is(1.0)).ground(By(fn() { @sf.theme().p.bg })) |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// place_top_bar_node's bar in `v`: soft bottom-fade scrim behind the title (no full-width `glass_bar()` to avoid
 /// glass-on-glass) with the right-side settings action inside a floating liquid glass circle.
 fn place_top_bar_glass(
   v : @view.View,
@@ -891,7 +918,7 @@ fn place_top_bar_glass(
   title_alpha? : (@view.View) -> Double = fn(_) { 1.0 },
 ) -> Unit {
   v.box(fn(g) {
-    g.ground(By(fn() { @sf.theme().p.bg })) |> ignore
+    narrow_bar_scrim_node(g, fn(s) { top_bar_h_at(s.window_w()) }, tail=14.0, fade_h=30.0)
     g.box(fn(row) {
       row
       .row(Is(true))

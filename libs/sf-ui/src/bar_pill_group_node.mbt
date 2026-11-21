@@ -17,7 +17,7 @@ fn bar_pill_shadow() -> (Double, Double, Int64) {
 ///|
 /// A single-layer liquid glass pill container in `parent` for a group of top bar controls made by `body`:
 /// `height` tall (default `40.0`, full capsule radius `height / 2.0`), padded `pad` all around (default `3.0`,
-/// concentric with 34pt `round_key_node` at `height=40.0` and 32pt `icon_button_node` at `height=38.0`),
+/// concentric with 34pt `round_key_node` at `height=40.0, pad=3.0` and 32pt `icon_button_node` at `height=36.0, pad=2.0`),
 /// children `gap` apart (default `2.0`). Never nest inside another glass surface.
 #callsite(autofill(loc))
 pub fn bar_pill_group_node(

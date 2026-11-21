@@ -789,7 +789,7 @@ fn wide_bar_keys(
       }
     }
     let chat = fn() { @sfbase.chat_head_json(src, r) }
-    // nothing left in it (the core's `archivable`): standalone 38×38 liquid glass circle so dynamic show/hide
+    // nothing left in it (the core's `archivable`): standalone 36×36 liquid glass circle so dynamic show/hide
     // outside a transition never steps the width of the persistent action pill
     slot.show(
       fn() {
@@ -800,7 +800,7 @@ fn wide_bar_keys(
       },
       along_row=true,
       fn(b) {
-        @sf.bar_pill_group_node(b, height=38.0, pad=3.0, gap=0.0, fn(p) {
+        @sf.bar_pill_group_node(b, height=36.0, pad=2.0, gap=0.0, fn(p) {
           @sf.icon_button_node(p, "archive", fn() { @sf.t("web-pages.chat.archive") }, fn() {
             match (@signals.untracked(view), @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 })) {
               (Some(v), Some(w)) => archive_asked(src, w, r, v, @signals.untracked(chat))
@@ -813,7 +813,7 @@ fn wide_bar_keys(
       },
     )
     // grouped action pill: services/jobs, remote screens, info, more
-    @sf.bar_pill_group_node(slot, height=38.0, pad=3.0, gap=2.0, fn(k) {
+    @sf.bar_pill_group_node(slot, height=36.0, pad=2.0, gap=2.0, fn(k) {
       // its services and jobs, while it has any
       k.show(has_jobs, along_row=true, fn(b) {
         let button = @sf.icon_button_node(b, "web", fn() { @sf.t("web-pages.chat.services") }, fn() { jobs_pressed(src, r) }, tips~, shortcut="chat.jobs")
@@ -882,7 +882,7 @@ fn wide_bar_keys(
       |> ignore
     })
     |> ignore
-    // the side panel's switch while it is closed: standalone 38×38 liquid glass circle matching macOS 26 Tahoe sidebar toggle
+    // the side panel's switch while it is closed: standalone 36×36 liquid glass circle matching macOS 26 Tahoe sidebar toggle
     let panel_closed_with_switch = fn() {
       match view() {
         Some(v) => side_of(v).0.length() == 0 && v.agents.length() > 0
@@ -893,7 +893,7 @@ fn wide_bar_keys(
       panel_closed_with_switch,
       along_row=true,
       fn(b) {
-        @sf.bar_pill_group_node(b, height=38.0, pad=3.0, gap=0.0, fn(p) {
+        @sf.bar_pill_group_node(b, height=36.0, pad=2.0, gap=0.0, fn(p) {
           @sf.icon_button_node(p, "panel-open", fn() { @sf.t("web-pages.chat.openPanel") }, fn() {
             match @signals.untracked(view) {
               Some(v) if v.agents.length() > 0 => side_change(src, r, "open", Some(v.agents[0].key))
