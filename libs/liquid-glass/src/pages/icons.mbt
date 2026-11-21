@@ -368,24 +368,47 @@ fn studio_tab_face(name : String, icon : (@view.View, Double, () -> Int64) -> Un
 }
 
 ///|
-/// Responsive bottom tab face: standard 20pt icon + 11.5pt label on wide viewports, compact 18pt icon + 10.5pt label
-/// on phone viewports so all 6 library tabs fit cleanly inside 360pt–390pt widths without truncation.
-fn studio_tab_face_responsive(
-  name : String,
-  icon : (@view.View, Double, () -> Int64) -> Unit,
-  compact : () -> Bool,
-) -> (@view.View, () -> Int64) -> Unit {
+/// Spacious mobile 4-tab face for iOS 26 split-island dock: 20pt icon, 4pt gap, 11pt medium label.
+fn studio_tab_face_mobile(name : String, icon : (@view.View, Double, () -> Int64) -> Unit) -> (@view.View, () -> Int64) -> Unit {
   fn(f, ink) {
-    f.pick(compact, at_once=true, fn(slot, is_compact) {
-      slot.lines_up(Is(Some(Middle))).gap(Is(if is_compact { 2.0 } else { 4.0 })) |> ignore
-      icon(slot, if is_compact { 18.0 } else { 20.0 }, ink)
-      slot.box(fn(w) {
+    f.box(fn(col) {
+      col.lines_up(Is(Some(Middle))).gap(Is(4.0)) |> ignore
+      icon(col, 20.0, ink)
+      col.box(fn(w) {
+        w.words(Is(name), look=@lg.words_at(11.0, weight=@lg.weight_medium)).ink(By(ink)) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  }
+}
+
+///|
+/// Dynamic 4th-slot mobile dock face reflecting the active overflow category (`Inputs (2)`, `Nav (3)`, or `Physics (5)`).
+fn studio_tab_face_dynamic(cat : () -> Int) -> (@view.View, () -> Int64) -> Unit {
+  fn(f, ink) {
+    f.box(fn(col) {
+      col.lines_up(Is(Some(Middle))).gap(Is(4.0)) |> ignore
+      col.show(fn() { cat() == 2 }, at_once=true, fn(ic) { icon_terminal(ic, 20.0, ink) })
+      col.show(fn() { cat() == 3 }, at_once=true, fn(ic) { icon_grid(ic, 20.0, ink) })
+      col.show(fn() { cat() != 2 && cat() != 3 }, at_once=true, fn(ic) { icon_merge(ic, 20.0, ink) })
+      col.box(fn(w) {
         w
-        .words(Is(name), look=@lg.words_at(if is_compact { 10.5 } else { 11.5 }, weight=@lg.weight_medium))
+        .words(
+          By(fn() {
+            match cat() {
+              2 => "Inputs"
+              3 => "Nav"
+              _ => "Physics"
+            }
+          }),
+          look=@lg.words_at(11.0, weight=@lg.weight_medium),
+        )
         .ink(By(ink))
         |> ignore
       })
       |> ignore
     })
+    |> ignore
   }
 }

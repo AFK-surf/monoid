@@ -113,7 +113,113 @@ fn lib_caption(parent : @view.View, text : String) -> Unit {
 }
 
 ///|
-/// Floating Liquid Glass circular search/catalog button (36×36, r=18) for narrow viewports in the top NavBar.
+/// Detached circular Liquid Glass Search/Catalog orb (`64×64`, `r=32`) paired beside the 4-tab main dock capsule
+/// on compact mobile viewports (Apple iOS 26 Music / App Store / TV split-island bottom dock pattern).
+/// Matches `tabs_glass()` material identically with `InteractiveHighlight` touch stretch & glow.
+fn lib_dock_catalog_orb(parent : @view.View, is_open : () -> Bool, on_open : () -> Unit) -> Unit {
+  @headless.button(parent, fn() { "Search & Catalog" }, fn(_) { on_open() }, fn(v, btn) {
+    let light = @lg.InteractiveHighlight::new()
+    light.attach(v)
+    let orb_shape = fn(n : @view.View) -> @view.GroundShape {
+      let (dx, dy, sx, sy) = light.stretch(n)
+      if dx == 0.0 && dy == 0.0 && sx == 1.0 && sy == 1.0 {
+        return @view.ground_as_laid
+      }
+      let dw = 64.0 * (sx - 1.0)
+      let dh = 64.0 * (sy - 1.0)
+      let r = (64.0 + dh) / 2.0
+      { dx: dx - dw / 2.0, dy: dy - dh / 2.0, dw, dh, corners: Some((r, r, r, r)) }
+    }
+    v
+    .width(Is(Some(64.0)))
+    .height(Is(Some(64.0)))
+    .shrink(Is(0.0))
+    .radius(Is(32.0))
+    .lines_up(Is(Some(Middle)))
+    .lies_along(Is(Middle))
+    .shadow(Is(@lg.shadow_default))
+    .glass(By(fn() {
+      let dark = @lg.is_dark()
+      Some(
+        @paint.Glass::liquid(
+          blur=2.1,
+          tint=if dark { 0x202020FFL } else { 0xFDFCFD67L },
+          solid=if dark { 0x1E1F24FFL } else { 0xFAFAFAFFL },
+          saturation=1.0,
+          rim=0.6,
+          bezel=20.0,
+          refraction=28.0,
+          chroma=0.0,
+          merge=0.0,
+          adaptive=false,
+        ),
+      )
+    }))
+    .ground_drawn(By(fn() { orb_shape(v) }))
+    .gesture(
+      @ui.touch_slop(),
+      press=fn(d) { light.down(d.x, d.y, d.w, d.h) },
+      tap=fn(_) {
+        light.up()
+        btn.press()
+      },
+      drag=fn(d) {
+        match d.kind {
+          Down | Moved => light.moved(d.x, d.y)
+          Up => {
+            light.up()
+            if d.x >= 0.0 && d.x <= d.w && d.y >= 0.0 && d.y <= d.h {
+              btn.press()
+            }
+          }
+          Off => light.up()
+        }
+      },
+    )
+    |> ignore
+    v.box(fn(ov) {
+      ov
+      .over(Is(true))
+      .points(Is(false))
+      .radius(Is(32.0))
+      .ground(Is(@lg.white))
+      .alpha(By(fn() { @lg.clamp(light.pressed(ov), 0.0, 1.0) * 0.14 }))
+      .ground_drawn(By(fn() { orb_shape(ov) }))
+      |> ignore
+    })
+    |> ignore
+    v.box(fn(ic) {
+      ic
+      .points(Is(false))
+      .lines_up(Is(Some(Middle)))
+      .lies_along(Is(Middle))
+      .offset(By(fn() {
+        let (dx, dy, _, _) = light.stretch(v)
+        (dx, dy)
+      }))
+      .scale(By(fn() {
+        let (_, _, sx, sy) = light.stretch(v)
+        (sx + sy) / 2.0
+      }))
+      |> ignore
+      icon_search(ic, 22.0, fn() { if is_open() { @lg.colors().accent } else { @lg.colors().content } })
+    })
+    |> ignore
+    v.show(fn() { btn.focus_shown() }, fn(ring) {
+      ring
+      .over(Is(true))
+      .points(Is(false))
+      .margin(Is((-3.0, -3.0, -3.0, -3.0)))
+      .radius(Is(35.0))
+      .edge(By(fn() { (2.0, @lg.colors().accent) }))
+      |> ignore
+    })
+  })
+  |> ignore
+}
+
+///|
+/// Floating Liquid Glass circular search/catalog button (36×36, r=18) for tablet portrait viewports in the top NavBar.
 fn lib_nav_catalog_button(parent : @view.View, on_open : () -> Unit) -> Unit {
   @headless.button(parent, fn() { "Search & Catalog" }, fn(_) { on_open() }, fn(v, btn) {
     v
@@ -1431,9 +1537,19 @@ fn library_page(
   let canvas_scroll = @view.Scroll::new()
   let catalog_scroll = @view.Scroll::new()
   let catalog_sheet_open = @signals.signal(false)
+  let mobile_extra_cat = @signals.signal(5)
+  root.reacts(at_start=false, fn() { active_cat.get() }, fn(cat) {
+    if cat == 2 || cat == 3 || cat == 5 {
+      mobile_extra_cat.set(cat)
+    }
+  })
   let is_narrow = fn() {
     let w = root.window_w()
     w > 0.0 && w < 820.0
+  }
+  let is_compact_dock = fn() {
+    let w = root.window_w()
+    w > 0.0 && w < 640.0
   }
   let is_phone = fn() {
     let w = root.window_w()
@@ -1442,6 +1558,22 @@ fn library_page(
   let is_nav_stack = fn() {
     let w = root.window_w()
     w > 0.0 && w < 760.0
+  }
+  let mobile_selected = fn() {
+    match active_cat.get() {
+      0 => 0
+      1 => 1
+      4 => 2
+      _ => 3
+    }
+  }
+  let mobile_select = fn(i : Int) {
+    match i {
+      0 => active_cat.set(0)
+      1 => active_cat.set(1)
+      2 => active_cat.set(4)
+      _ => active_cat.set(mobile_extra_cat.get())
+    }
   }
 
   let shell_ref : Ref[@view.View?] = Ref(None)
@@ -1464,7 +1596,9 @@ fn library_page(
   })
   |> ignore
 
-  // Floating bottom tabs (`@lg.liquid_bottom_tabs_node`, pinned 18pt from window bottom, synced with sidebar)
+  // Floating bottom tabs (`@lg.liquid_bottom_tabs_node`, pinned 18pt from window bottom):
+  // - Compact mobile (`w < 640`): iOS 26 split-island dock (spacious 4-tab capsule + 10pt gap + 64×64 Search/Catalog orb)
+  // - Wide / desktop (`w >= 640`): full 600pt 6-tab capsule
   root.box(fn(dock_row) {
     dock_row
     .over(Is(true))
@@ -1473,21 +1607,39 @@ fn library_page(
     .lines_up(Is(Some(Middle)))
     .padding(Is((0.0, 0.0, 0.0, dock_gap)))
     |> ignore
-    dock_row.box(fn(dock_w) {
-      dock_w
-      .width(By(fn() {
-        let w = root.window_w()
-        if w <= 0.0 || w >= 632.0 {
-          Some(600.0)
-        } else if w - 16.0 > 300.0 {
-          Some(w - 16.0)
-        } else {
-          Some(300.0)
-        }
-      }))
-      .shrink(Is(0.0))
-      .points(Is(true))
+    dock_row.show(is_compact_dock, at_once=true, fn(split_dock) {
+      split_dock.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(10.0)).points(Is(false)) |> ignore
+      split_dock.box(fn(dock_w) {
+        dock_w
+        .width(By(fn() {
+          let w = root.window_w()
+          let side_pad = if w > 0.0 && w < 380.0 { 12.0 } else { 14.0 }
+          let avail = w - 2.0 * side_pad - 10.0 - 64.0
+          Some(@lg.clamp(avail, 236.0, 320.0))
+        }))
+        .shrink(Is(0.0))
+        .points(Is(true))
+        |> ignore
+        @lg.liquid_bottom_tabs_node(
+          dock_w,
+          ["Optics", "Controls", "Overlays", "More"],
+          mobile_selected,
+          mobile_select,
+          label="Library sections",
+          faces=[
+            studio_tab_face_mobile("Optics", icon_prism),
+            studio_tab_face_mobile("Controls", icon_sliders),
+            studio_tab_face_mobile("Overlays", icon_layers),
+            studio_tab_face_dynamic(fn() { mobile_extra_cat.get() }),
+          ],
+        )
+        |> ignore
+      })
       |> ignore
+      lib_dock_catalog_orb(split_dock, fn() { catalog_sheet_open.get() }, fn() { catalog_sheet_open.set(true) })
+    })
+    dock_row.show(fn() { !is_compact_dock() }, at_once=true, fn(dock_w) {
+      dock_w.width(Is(Some(600.0))).shrink(Is(0.0)).points(Is(true)) |> ignore
       @lg.liquid_bottom_tabs_node(
         dock_w,
         ["Optics", "Controls", "Inputs", "Nav", "Overlays", "Physics"],
@@ -1495,17 +1647,16 @@ fn library_page(
         fn(i) { active_cat.set(i) },
         label="Library sections",
         faces=[
-          studio_tab_face_responsive("Optics", icon_prism, is_phone),
-          studio_tab_face_responsive("Controls", icon_sliders, is_phone),
-          studio_tab_face_responsive("Inputs", icon_terminal, is_phone),
-          studio_tab_face_responsive("Nav", icon_grid, is_phone),
-          studio_tab_face_responsive("Overlays", icon_layers, is_phone),
-          studio_tab_face_responsive("Physics", icon_merge, is_phone),
+          studio_tab_face("Optics", icon_prism),
+          studio_tab_face("Controls", icon_sliders),
+          studio_tab_face("Inputs", icon_terminal),
+          studio_tab_face("Nav", icon_grid),
+          studio_tab_face("Overlays", icon_layers),
+          studio_tab_face("Physics", icon_merge),
         ],
       )
       |> ignore
     })
-    |> ignore
   })
   |> ignore
 
@@ -1568,7 +1719,7 @@ fn library_page(
           s.show(fn() { !is_narrow() }, at_once=true, fn(slot) {
             @lg.liquid_badge_node(slot, fn() { "32 Components" }, tone=Accent, dot=true) |> ignore
           })
-          s.show(is_narrow, at_once=true, fn(slot) {
+          s.show(fn() { is_narrow() && !is_compact_dock() }, at_once=true, fn(slot) {
             lib_nav_catalog_button(slot, fn() { catalog_sheet_open.set(true) })
           })
         },
