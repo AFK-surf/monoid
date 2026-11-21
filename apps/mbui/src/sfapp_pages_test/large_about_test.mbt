@@ -3,10 +3,9 @@
 // picked of its words.
 
 ///|
-/// 关于 on a large screen (`platform`'s input), `w` × 900, in the window's tree's frame: its page made once (`tree`; not:
-/// pane_makes off till the next such tester, what the library's pages made once elsewhere are drawn as by their old view).
+/// 关于 on a large screen (`platform`'s input), `w` × 900, in the window's tree's frame: its page made once.
 fn large_about_tester(
-  tree : Bool,
+  _tree : Bool,
   platform : Int,
   w? : Double = 1280.0,
   mode? : String = "settings-about",
@@ -37,8 +36,6 @@ fn large_about_tester(
       { ..got, value: Some(Json::object(o)) }
     },
   }
-  // (the same frame, the window's tree's; its page the old view's where not `tree`)
-  @sfdesk.pane_makes.val = tree
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h=900.0, platform~, window_inset~)
   t.set_font_scale(scale)
   t.run_for(wait)
@@ -204,7 +201,6 @@ test "a real client's prefs change the language of the existing settings page" {
       if name == "prefs" { client.release_topic(name, params~) } else { (base.release)(name, params) }
     },
   }
-  @sfdesk.pane_makes.val = true
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=900.0, platform=0, env=[("MBUI_LOCALE", "zh")])
   guard client.peek_topic("prefs") is Some(sub) else { fail("prefs not subscribed") }
   assert_eq(sent.length(), 1, msg="tree creation and the first frame share the prefs subscription")
@@ -590,7 +586,6 @@ fn archiving_pictures_asked(w : Double, url : String) -> (Array[Int], Array[Int]
       { ..r, value: Some(Json::array(first + a[1:].to_owned())) }
     },
   }
-  @sfdesk.pane_makes.val = true
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h=900.0, platform=0)
   t.run_for(@ui.move_most_ms)
   let mine = fn() { asked.filter(fn(u) { u == url }).length() }
@@ -656,8 +651,7 @@ test "归档 made once, on every screen: a station's picture answered later, whi
         { ..r, value: Some(Json::array(first + a[1:].to_owned())) }
       },
     }
-    @sfdesk.pane_makes.val = true
-    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h=900.0, platform=0)
+      let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h=900.0, platform=0)
     t.run_for(@ui.move_most_ms)
     let emoji_before = tree_words_drawn().iter().any(fn(o) { o.contains("🛰") })
     let asked_before = pending.length()

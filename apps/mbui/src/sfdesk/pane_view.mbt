@@ -513,22 +513,6 @@ fn fold_drawn_at(n : @view.View) -> Double {
 }
 
 ///|
-/// Where the block is as an island builds (`now` where nothing is committed): read again each frame its move goes (its
-/// way read so), at rest no more.
-fn fold_built(c : @ui.Ctx, now : FoldLook) -> FoldLook {
-  fold_goes.said.get() |> ignore
-  fold_goes.way.said()
-  if fold_goes.way.goes_at(c.moment()) {
-    fold_goes.way.get(c) |> ignore
-    fold_along(c.moment(), now)
-  } else {
-    // (at rest, as the state has it now: what it is worked out from that no move follows, the theme, the window's
-    // buttons, read as the island is built)
-    now
-  }
-}
-
-///|
 /// The frame off the tape in node `v` (the signed-in shell's, filling the window: sfapp's paned_shell), in the workspace
 /// in view (its file's head).
 pub fn pane_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : Double) -> Unit {
@@ -891,23 +875,6 @@ fn fold_held_at(t : Double, f : FoldLook) -> (Double, Double, Double) {
     (Some(a), Some(b)) if fold_going(t) && (a.showing <= 0.0 || b.showing <= 0.0) =>
       (dmax(a.brand, b.brand), dmax(a.side_w, b.side_w), dmin(a.band, b.band))
     _ => (f.brand, f.side_w, f.band)
-  }
-}
-
-///|
-/// What an old page's bars work out from where the block's move has got (page_bar_room).
-fn fold_bars(c : @ui.Ctx, f : FoldLook) -> Unit {
-  wide.bar_pl = f.bar_pl
-  wide.bar_ml = f.bar_ml
-  wide.bar_mr = f.bar_mr
-  wide.brand_h = f.brand
-  wide.band = f.band
-  wide.mark = f.mark
-  // (the page's width on the block's way: where the block's column goes, the window's less it)
-  match (fold_goes.to, fold_goes.node) {
-    (Some(b), Some(v)) if fold_going(c.moment()) =>
-      @sfbase.page_way_said(fold_goes.way.starts_at().to_string(), v.window_w() - b.col, ends=fold_goes.way.ends_at())
-    _ => @sfbase.page_way_said("", 0.0, ends=0.0)
   }
 }
 

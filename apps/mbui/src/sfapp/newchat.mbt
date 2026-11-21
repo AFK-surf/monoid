@@ -11,22 +11,3 @@ fn new_chat() -> Unit {
   app.menu = false
   open_page(NewChat)
 }
-
-///|
-/// The new chat's page (NewChatScreen).
-fn new_chat_page(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
-  @sfpages.new_chat_page(c, src, w, new_frame(src, w))
-}
-
-///|
-/// Over the chat a new chat became: its scene leaving (140 ms), then nothing.
-fn new_chat_leaving(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef) -> Unit {
-  if !@sfbase.new_chat_leaving_of(c, r) {
-    return
-  }
-  let l = c.layer(fn() {
-    @sfpages.new_chat_left(c, src, w, new_frame(src, w), fresh.scene.get(), new_leave(c), new_fade(c))
-  })
-  // (drawn only, while it leaves)
-  c.draw_only(l)
-}

@@ -85,28 +85,7 @@ fn narrow_shell(v : @view.View, src : Source) -> Unit {
   @ui.nav_view(
     v,
     app.nav,
-    fn(c, page) {
-      match workspace_in_view(src).0 {
-        Some(w) => narrow_page_held(c, src, w, page)
-        None => ()
-      }
-    },
-    page_for=fn(entry, serial) {
-      let retained = @sfbase.page_entry_source(src, entry, serial)
-      let page_read = @sfbase.page_chat_reader(retained, entry, serial)
-      fn(visible) {
-        let shown = src.owned_by(visible)
-        fn(c, page) {
-          @sfbase.page_entry_read(serial, retained, page)
-          page_read(page)
-          let page_src = if page is Chat(_) { retained } else { shown }
-          match workspace_in_view(page_src).0 {
-            Some(w) => narrow_page_held(c, page_src, w, page)
-            None => ()
-          }
-        }
-      }
-    },
+    fn(_c, _page) {  },
     bg=fn() { @sf.theme().p.bg },
     // a page opened slides in once the core has given what it shows
     ready=fn(page) {
@@ -116,8 +95,6 @@ fn narrow_shell(v : @view.View, src : Source) -> Unit {
       }
     },
     most=page_local_ms,
-    // (each page's island built again as what it is laid out by besides what it reads changes: narrow_page_key)
-    page_key=fn(_page) { narrow_island_key(src) },
     // (the pages made once as nodes: narrow_made)
     made=fn(page) { narrow_made(src, page) },
     // (a place of the bottom bar switched away from kept, its nodes put by at rest, taken back as it is switched to:
@@ -222,39 +199,6 @@ fn narrow_shell(v : @view.View, src : Source) -> Unit {
 }
 
 ///|
-/// What a page's island in the narrow shell is built again by besides what it reads (narrow_page_key), with workspace
-/// in view.
-fn narrow_island_key(src : Source) -> String {
-  match workspace_in_view(src).0 {
-    Some(w) => narrow_page_key(@ui.current(), w)
-    None => ""
-  }
-}
-
-///|
-/// Page `page` of the narrow shell's stack as its island builds it: picked words with a mouse (a finger holds to pick:
-/// pick.mbt), the pictures it waits for said afresh (image_item, video_item).
-fn narrow_page_held(c : @ui.Ctx, src : Source, w : Workspace, page : Page, barred? : Bool = false) -> Unit {
-  @sfbase.held_pictures_waiting.val = []
-  // (the page is its island, kept as its nodes by what it reads and its key (narrow_page_key): no part of its own)
-  let built = fn() {
-    let whole = c.box(style=page_whole, fn() {
-      let (now, _, _, _) = workspace_in_view(src)
-      page_view(c, src, now.unwrap_or(w), page, barred~)
-    })
-    if !stack_by_finger() {
-      @sfdesk.context_page(c, whole)
-    }
-    @motion.scope(c, whole, bottom=true)
-  }
-  c.selectable(color=@sf.alpha(@sf.theme().p.blue, 0.28), built)
-  // what is the page's own and takes back before it (said with it, in its island: what it reads is what the page
-  // writes): words picked in a chat, a link's menu, let go first (pick.mbt); the player sideways turned upright first
-  // is the player's own (@sf.player_node)
-  pick_back(c)
-}
-
-///|
 /// What the frame does with the app signed in and workspace `w` in view, in every tier, before its frame: what is
 /// told as the frame ends, the icon's number, links, updates, what was shared in, whether the first page waits.
 fn signed_in_frame(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
@@ -323,16 +267,6 @@ fn narrow_takes_back() -> Bool {
 }
 
 ///|
-/// What a page laid out Small is laid out by besides what it reads: the window, the bars' room, the keyboard's, the
-/// ground, where it stands in the stack and the way a place came in, the workspace (its key as a part kept as its
-/// nodes: a page's island's, narrow_shell; its kept part's, narrow_page).
-fn narrow_page_key(c : @ui.Ctx, w : Workspace) -> String {
-  let t = @sf.theme()
-  "\{c.width} \{c.height} \{status_top()} \{nav_foot()} \{bar_room_now()} " +
-  "\{t.p.bg} \{t.dark} \{app.nav.under() is None} \{app.switch_way} \{w.id}"
-}
-
-///|
 /// Whether the bottom bar shows: on a place's top page with nothing over it; not while this device waits to be
 /// confirmed in the workspace's safe mode (its Home is the wait: lock_gate).
 fn narrow_bar_shown(src : Source, w : Workspace) -> Bool {
@@ -380,24 +314,7 @@ fn signed_in_prompts(v : @view.View, src : Source) -> Unit {
 }
 
 ///|
-/// What the Small stack gives a new chat's page (newchat.mbt): its bar (新对话 in the middle), the navigation bar's
-/// room under it (ChatHost.kt: windowInsetsPadding(keyboard.union(navigationBars))).
-fn new_frame(src : Source, w : Workspace) -> @sfpages.NewChatFrame {
-  {
-    core: settings_core(src, w),
-    bar: fn(c) {
-      @sf.nav_bar(c, "new/cancel", tr("common.cancel"), tr("android-chat.new.title"), bg=@sf.theme().p.bg, top=status_top(), on_press=fn() {
-        @sfbase.close_page(NewChat) |> ignore
-      })
-    },
-    foot: nav_foot(),
-    in_place: true,
-    sent: fn(_) {  },
-  }
-}
-
-///|
-/// What the Small stack gives a new chat made as nodes in node `v` (sfpages' new_chat_node: new_frame's): its bar (取消
+/// What the Small stack gives a new chat made as nodes in node `v` (sfpages' new_chat_node): its bar (取消
 /// back to where it was opened from, 新对话 in the middle) under the status bar as the window it is in is now, the
 /// navigation bar's room under it; the chat it becomes opens in its place.
 /// `width`: the window's, which the page is as wide as.

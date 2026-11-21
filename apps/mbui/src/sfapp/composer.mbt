@@ -24,11 +24,6 @@
 let files_cornered : Ref[Bool] = Ref(false)
 
 ///|
-fn draft_key(r : ChatRef) -> String {
-  r.station + ":" + r.session
-}
-
-///|
 /// How long after a change to the draft it is kept.
 pub let draft_keep_ms : Double = 400.0
 

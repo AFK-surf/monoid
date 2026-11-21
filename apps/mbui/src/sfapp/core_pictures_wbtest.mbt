@@ -61,12 +61,21 @@ fn someone(id : String, name : String) -> Person {
 
 ///|
 test "people stacked: side by side 5 over the one before, the first drawn over them all, ringed in their ground" {
-  new_run()
+  fresh_app()
   let src = fixture("home")
   // (their colours: Lin's the sixth, Mo's the fifth)
   let people = [someone("lin", "Lin"), someone("mo", "Mo")]
   let ring = 0x123456FFL
-  let t = @ui.Tester::new(fn(c) { c.box(fn() { people_stack(c, src, people, 16.0, ring~) }) |> ignore }, platform=2)
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.box(fn(b) {
+        @sf.avatar_stack_node(b, stack_faces(src, people, fn() { 0 }), 16.0, fn() { ring }) |> ignore
+      })
+      |> ignore
+    },
+    platform=2,
+  )
   let lin = drawn_in(t, @sf.avatar_color("lin"))
   let mo = drawn_in(t, @sf.avatar_color("mo"))
   assert_eq(lin.length(), 1)

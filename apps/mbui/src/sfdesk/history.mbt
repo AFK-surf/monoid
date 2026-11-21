@@ -546,12 +546,6 @@ fn wh_line_node(
 let wh_mark_side : Double = 16.0
 
 ///|
-/// A station's workspace, from its address (ws/station: sfpages' history_station_scope).
-fn scope_of(station : String) -> String {
-  @sfpages.history_station_scope(station)
-}
-
-///|
 /// The head (historyHead): 45 high, 16 in at its start, 8 at its end.
 // kept across runs: a value (no field of it changes)
 let wh_head : @ui.Style = @ui.css("row w=Full h=S11 pl=S4 pr=S2 pb=SPx gap=S2 align=ACenter justify=JBetween")

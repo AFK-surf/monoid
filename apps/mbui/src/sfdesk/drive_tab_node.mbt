@@ -85,7 +85,7 @@ fn tab_drag_node(v : @view.View, item : () -> Dragged, live : () -> Bool) -> Uni
 /// station's 文件 tab), where it is kept by `scope`; it starts at the chat's station's home for one who browses every
 /// folder, else at its one folder pinned, else at the places. 添加 at its foot as `foot` lays it (in the panel's foot
 /// corner, concentric with it). What is said of what the pointer rests on, in `tips`.
-fn files_tab_node(
+pub fn files_tab_node(
   v : @view.View,
   src : Source,
   ws : String,

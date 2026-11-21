@@ -8,7 +8,6 @@
     },
     "tier-outside-shell": {
       "src/sfdesk/chat_page.mbt": 1,
-      "src/sfdesk/chat_talk.mbt": 1,
       "src/sfdesk/lists.mbt": 6,
       "src/sfdesk/settings_frame.mbt": 1
     },
@@ -16,18 +15,10 @@
       "src/sfdesk/rail_native.mbt": 1,
       "src/sfdesk/tape_view.mbt": 1
     },
-    "layout-read-back": {
-      "src/sfdesk/chat_layers.mbt": 2,
-      "src/sfdesk/pane_page.mbt": 1
-    },
     "ui-current": {
       "src/sfdesk/chats.mbt": 1,
       "src/sfdesk/pane_view.mbt": 1,
       "src/sfdesk/tape_view.mbt": 3
-    },
-    "build-motion": {
-      "src/sfdesk/pane_view.mbt": 1,
-      "src/sfdesk/tape_view.mbt": 1
     },
     "reused-untracked-key": {
       "src/sfdesk/archive_side_node.mbt": 1

@@ -383,16 +383,6 @@ fn histories_ticked() -> Unit {
 }
 
 ///|
-/// What opens from one of the page's actions in the system's bars (its info's popover): the mark where it was chosen,
-/// beside the column down the side, under it across the top; None (and `side`, `along`) where the page has its own.
-fn bar_anchor(side : @ui.Side, along : @ui.Along) -> (@view.View?, @ui.Side, @ui.Along) {
-  match native_mark_now() {
-    Some(m) => if @sf.native_side() { (Some(m), Left, Start) } else { (Some(m), Bottom, End) }
-    None => (None, side, along)
-  }
-}
-
-///|
 /// bar_anchor's for a popover of nodes (chat_pops_node's): the mark where it was chosen; where the
 /// page has its own, beside its own button (`own`, a node: as it is drawn) on `side`, lined up `along` it; none where
 /// that is not made.
@@ -408,23 +398,8 @@ fn bar_anchor_node(own : @view.View?, side : @ui.Side, along : @ui.Along) -> (@s
 }
 
 ///|
-/// What opens from one of the page's actions as a menu of the page's (a station's screens): as bar_anchor's. A menu goes
-/// under what opened it, so beside the column down the side it opens from the point left of the item, ending there,
-/// not under the item and over the column (the user, 2026-11-04); `id` where the page has its own.
-fn bar_menu_from(c : @ui.Ctx, id : Int) -> (@sf.Beside, @ui.Along) {
-  match native_mark_now() {
-    None => (Of(id), End)
-    Some(_) if @sf.native_side() => {
-      let (x, y, _) = native_mark_in(c.window_size())
-      (@sf.at_point(x - @sf.panel_offset, y), End)
-    }
-    Some(m) => (Node(m), End)
-  }
-}
-
-///|
-/// bar_menu_from's for a page made as nodes, in node `v`: where it has no item of the system's bars chosen yet, beside
-/// the page's node.
+/// What opens from one of the page's actions as a menu of the page's (a station's screens), in node `v`: where it has
+/// no item of the system's bars chosen yet, beside the page's node.
 fn bar_menu_from_node(v : @view.View) -> (@sf.Beside, @ui.Along) {
   match native_mark_now() {
     None => (Node(v), End)
@@ -434,16 +409,6 @@ fn bar_menu_from_node(v : @view.View) -> (@sf.Beside, @ui.Along) {
     }
     Some(m) => (Node(m), End)
   }
-}
-
-///|
-/// Whether the window turned or was folded since `was` (the width it had) beside the system's tabs: what opened from
-/// their items is elsewhere now, closed as the system's popovers are. False elsewhere, always: nothing closes so.
-fn native_turned(c : @ui.Ctx, was : FixedArray[Double]) -> Bool {
-  let width = c.window_size().0
-  let turned = was[0] > 0.0 && was[0] != width && @sf.native_on()
-  was[0] = width
-  turned
 }
 
 ///|

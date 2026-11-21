@@ -1714,60 +1714,6 @@ fn bar_glass_node(v : @view.View, src : Source, ws : () -> Workspace?) -> Unit {
 }
 
 ///|
-/// A place's top page other than the chats (with the bar under it): Home's top bar over it (the
-/// place's name, settings), what it shows the settings' page of it (src/sfapp/settings).
-fn place_page(c : @ui.Ctx, src : Source, w : Workspace, place : String) -> Unit {
-  // what it shows runs under the top bar, frosted over it (scrolling under it)
-  c.box(style=page_whole, fn() {
-    // what it shows: the settings' page of the same place (src/sfapp/settings), in place of its own bar
-    c.box(style=page_whole, fn() {
-      match @settings.route_of(place) {
-        Some(r) => {
-          // under the top bar, which names it; over the bottom bar
-          let top = status_top() + bar_h + 8.0
-          let core = settings_core(src, w)
-          @settings.page(c, core, @settings.here_of(core, w.id, w.name), r, root=true, top~)
-        }
-        None => ()
-      }
-    })
-    |> ignore
-    c.layer(fn() { place_top_bar(c, place) }) |> ignore
-  })
-  |> ignore
-}
-
-///|
-/// A place's top bar at the stack's root: the place's name, the page's actions
-/// (`@sf.named_actions`), settings at the right edge; frosted over what runs under it, no line under it.
-fn place_top_bar(c : @ui.Ctx, place : String) -> Unit {
-  let actions = @sf.named_actions.val
-  @sf.named_actions.val = None
-  let glass_top = c.box(style=place_top_whole, glass=@sf.glass_bar(), fn() {
-    // under the status bar (TopGlassBar: windowInsetsPadding(statusBars), then TopBarHeight)
-    c.box(style=place_top_row.then(@ui.style(pt=@sf.room_of(status_top()), min_h=Fixed(top_bar_h()))), fn() {
-      // (its words whole: what the page does at its end gives way where the bar has not the room, @sf.head_end)
-      c.box(style=place_title_box, keep=true, fn() {
-        top_bar_title(c, place_label(place)) |> ignore
-      })
-      |> ignore
-      match actions {
-        Some(a) => @sf.head_end(c, a)
-        None => ()
-      }
-      // settings at the right edge, as at Home's
-      nav_button(c, "settings", 22.0, key="place-settings", said=tr("android-chat.home.settings"), on_press=fn() {
-        @sfbase.history_push()
-        app.nav.push(Settings)
-      })
-    })
-    |> ignore
-  })
-  // over what runs under it: the scroll bar there keeps clear of it
-  c.floats_over(glass_top)
-}
-
-///|
 /// A slide let go while the finger still moves across: the place chosen is where the finger would be this long on at
 /// the speed it was let go at (a flick's way projected on, as a list's fling carries its speed), never further than one
 /// place's room past where it is let go; let go still, where it is (bar_flung).
@@ -1780,20 +1726,3 @@ fn bar_flung(px : Double, vx : Double, w : Double) -> Double {
   let slot = bar_item_w(w, 1.0, 4)
   px + dclamp(vx * bar_fling_ms, -slot, slot)
 }
-
-///|
-/// A place's top bar (place_top_bar): as wide as the page; its row (16 in from its sides, 10 between its parts), its
-/// title's box (34 high, what the page does at its end giving way to it).
-// kept across runs: a value (no field of it changes)
-let place_top_whole : @ui.Style = @ui.css("w=Full")
-
-///|
-// kept across runs: a value (no field of it changes)
-let place_top_row : @ui.Style = @ui.css("row w=Full px=S4 gap=S2_5 align=ACenter")
-
-///|
-let place_title_h : Double = 34.0
-
-///|
-// kept across runs: a value (no field of it changes)
-let place_title_box : @ui.Style = @ui.css("row w=Full align=ACenter").then(@ui.style(h=Fixed(place_title_h)))

@@ -1054,13 +1054,6 @@ pub fn tape_behind_now(p : TapePane, t : Double) -> Double {
 }
 
 ///|
-/// What the tape's panels' islands are built from besides what they read: the theme, whether a finger has the pointer.
-fn tape_island_key() -> String {
-  let t = @sf.theme()
-  "\{t.p.bg} \{t.dark} \{pane_finger()} \{@ui.window_inset()}"
-}
-
-///|
 /// The room round a panel in column `n` (the page's, the side panel's): from the bars, 6 in, and before it what is
 /// between it and the one before (the side panel's 8 from the page's).
 fn tape_panel_room(n : @view.View) -> (Double, Double, Double, Double) {
@@ -1276,49 +1269,6 @@ fn tape_swipes(n : @view.View, p : TapePane) -> Unit {
     }
   })
   |> ignore
-}
-
-///|
-/// What panel `p`'s island draws (`body`, its answer): behind the one in use on the ground a step darker
-/// (@sf.behind_ground), as far behind as the tape's move has got, what is on it as it is; in use, on its own, read out
-/// (behind it, only drawn: what reads the widgets reads its cover). Built as each move sets off, as far behind as it
-/// ends; its ground worked out as it is painted while the move goes (Ctx::grounds_by), so nothing of it is built again
-/// at each frame of it.
-fn tape_behind(c : @ui.Ctx, p : TapePane, body : () -> Unit) -> Unit {
-  // (where the move ends, read as the island is built: built again as a move sets off, not as it goes)
-  tape_goes.said.get() |> ignore
-  tape_goes.way.said()
-  let k = tape_behind_at(p, @double.infinity)
-  let shown = fn() {
-    if wide.tape_at.get() == p {
-      body()
-    } else {
-      c.hidden_from_semantics(body)
-    }
-  }
-  let built = fn() {
-    if k <= 0.0 {
-      shown()
-    } else {
-      @sf.with_ground(c, @sf.behind_ground(k~), shown)
-    }
-  }
-  let i = tape_index(p)
-  if tape_goes.behind[2 * i] == tape_goes.behind[2 * i + 1] {
-    built()
-    return
-  }
-  // (as far behind as the move has got, as it is painted: what stands on its ground, the page's or the darker one,
-  // eased with it)
-  c.grounds_by(
-    tape_ground(k),
-    fn() {
-      // (the frames asked for while the move goes, as they are painted: Way::get)
-      tape_goes.way.get(c) |> ignore
-      tape_ground(tape_behind_at(p, c.moment()))
-    },
-    built,
-  )
 }
 
 ///|

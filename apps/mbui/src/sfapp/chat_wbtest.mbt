@@ -473,17 +473,26 @@ test "words sent going up into the list tell the core where it is as the message
 let place_drag : Double = 300.0
 
 ///|
-test "a long title has what is left beside what follows it, which keeps its own width (Chat.kt BarFrame)" {
-  new_run()
-  let t = @ui.Tester::new(
-    fn(c) {
-      bar_frame(
-        c,
-        "端到端测试的对话 post:你好，我是测试用的 agent",
-        fn() { c.box(w=Px(60.0), fn() { c.text("尾", size=12.0, wrap=false) |> ignore }) |> ignore },
-        fn() {  },
-        true,
-      )
+test "a long title has what is left beside what follows it, which keeps its own width (chat_bar_node)" {
+  fresh_app()
+  let base = fixture("chat")
+  let long_title = "端到端测试的对话 post:你好，我是测试用的 agent"
+  let src : Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      let r = base.topic(name, params).get().snapshot()
+      guard name == "chat" && r.value is Some(Object(m)) else { return r }
+      let m2 = m.copy()
+      m2["title"] = Json::string(long_title)
+      { ..r, value: Some(Json::object(m2)) }
+    },
+  }
+  let chat_ref : ChatRef = { station: "ws1/st1", session: "s-c1", title: long_title, station_name: "Willow" }
+  @sf.set_words(fill)
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      chat_bar_node(root, src, fn() { Some(Chat(chat_ref)) }, fn() { 0 })
     },
     w=390.0,
     h=200.0,
@@ -491,13 +500,13 @@ test "a long title has what is left beside what follows it, which keeps its own 
   )
   t.draw()
   let (tx, _, tw, _) = t.rect_of("端到端").unwrap()
-  let (ax, _, _, _) = t.rect_of("尾").unwrap()
-  // 390 - 16 (its end) - 34 (…) and the room before it (bar_keys_apart) - 34 (ⓘ) and its room - 8, the box of 60: what
-  // follows starts where it would with a short title
-  assert_eq(ax, 390.0 - 16.0 - 34.0 - bar_keys_apart() - 34.0 - bar_keys_apart() - 8.0 - 60.0)
-  // the title cut to what is left, 8 before it
-  assert_true(tx + tw <= ax - 8.0 + 0.5)
-  assert_true(t.lines_of("端到端")[0].has_suffix("…"))
+  let info = t.get(Button, label=tr("android-chat.info.title")).rect
+  let more = t.get(Button, label=tr("common.more")).rect
+  // info & more buttons stand at the right end with bar_keys_apart between them; title is cut with ellipsis before them
+  assert_true(more.0 > info.0 + info.2, msg="more right of info")
+  assert_true(tx + tw <= info.0, msg="title fits before trailing keys: \{tx}+\{tw} vs \{info.0}")
+  let lines = t.lines_of("端到端")
+  assert_true(lines[0].has_suffix("…"), msg="long title ellipsized: \{lines[0]}")
 }
 
 ///|

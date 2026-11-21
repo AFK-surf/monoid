@@ -1,6 +1,19 @@
 // Shared whitebox test helpers retained for remaining stillfail/sfapp tests after moving pages tests to stillfail/sfapp_pages_test.
 
 ///|
+fn draft_key(r : ChatRef) -> String {
+  r.station + ":" + r.session
+}
+
+///|
+fn bar_extra_target(r : ChatRef) -> Double {
+  match chat_bar_states.get(chat_bar_key(r)) {
+    Some(s) => s.extra_target.get()
+    None => 0.0
+  }
+}
+
+///|
 /// How the client asked topic `name` with `params` of the made-up core in `heard` (round_trip_again's): how many times it
 /// was subscribed to, and how many of those it let go.
 fn asked_held(heard : Array[String], name : String, params : Map[String, Json]) -> (Int, Int) {
@@ -146,10 +159,9 @@ fn landing_titles() -> (Array[(String, Bool, Bool)], Array[(String, Bool, Bool)]
 }
 
 ///|
-/// 关于 on a large screen (`platform`'s input), `w` × 900, in the window's tree's frame: its page made once (`tree`; not:
-/// pane_makes off till the next such tester, what the library's pages made once elsewhere are drawn as by their old view).
+/// 关于 on a large screen (`platform`'s input), `w` × 900, in the window's tree's frame: its page made once.
 fn large_about_tester(
-  tree : Bool,
+  _tree : Bool,
   platform : Int,
   w? : Double = 1280.0,
   mode? : String = "settings-about",
@@ -180,8 +192,6 @@ fn large_about_tester(
       { ..got, value: Some(Json::object(o)) }
     },
   }
-  // (the same frame, the window's tree's; its page the old view's where not `tree`)
-  @sfdesk.pane_makes.val = tree
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h=900.0, platform~, window_inset~)
   t.set_font_scale(scale)
   t.run_for(wait)

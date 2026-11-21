@@ -398,11 +398,6 @@ fn pages_left(src : Source) -> Unit {
 }
 
 ///|
-/// A page of the stack, all of what it is given.
-// kept across runs: a value (no field of it changes)
-let page_whole : @ui.Style = @ui.css("w=Full h=Full")
-
-///|
 /// The app over `src`: call each frame.
 pub fn view(c : @ui.Ctx, src : Source) -> Unit {
   // (the made-up core, where one is linked, on this frame's runtime)
@@ -1131,88 +1126,6 @@ fn t_reading_workspaces(src : Source) -> String {
 }
 
 ///|
-fn page_view(
-  c : @ui.Ctx,
-  src : Source,
-  w : Workspace,
-  page : Page,
-  barred? : Bool = false,
-) -> Unit {
-  // a place switched to on the bar comes in from the side the ball goes to, fading in (220 ms; 180 from no side); the
-  // page at the stack's root is so with a page sliding in over it or back off it too (where it stands, not how deep
-  // the stack is: Nav::under), its place's top bar kept. How far it has come is read as it is painted (moved there,
-  // tapped there too, and faded), not as it is built: nothing built as it comes in
-  let root = app.nav.under() is None
-  if root {
-    bar_built(c, page)
-  }
-  let at = c.box(
-    w=Fill(1.0),
-    h=Fill(1.0),
-    fn() {
-      match page {
-        // a device waiting to be confirmed in the workspace's safe mode sees that instead of the chats (its
-        // stations refuse it: Security.kt LockGate); its settings stay
-        // (made once: narrow_shell.mbt's Home)
-        Home => ()
-        Chat(r) => {
-          chat_page(c, src, w, r, barred~)
-          new_chat_leaving(c, src, w, r)
-        }
-        NewChat => new_chat_page(c, src, w)
-        Place(p) => place_page(c, src, w, p)
-        // 文件 and a station's drive: made once (narrow_shell.mbt's narrow_made_as: files_narrow.mbt)
-        Files | Drive(_) => ()
-        // (made once: narrow_shell.mbt's reader_page_node)
-        DriveRead(_) => ()
-        // (made once: narrow_shell.mbt's play_page_node)
-        DrivePlay(_) => ()
-        // (made once: narrow_shell.mbt's service_page_node, preview_file_page_node)
-        Service(_, _) | PreviewFile(_, _, _, _) => ()
-        Archived => setting_page(c, src, w, @settings.Route::Archive)
-        // (made once: narrow_shell.mbt's settings_home_node)
-        Settings => ()
-        Setting(r) => setting_page(c, src, w, r)
-        // (made once: narrow_shell.mbt's history_node)
-        History(_, _, _) => ()
-        // (a Farview tab drawn natively, and any other station's screen: made once, narrow_shell.mbt's)
-        Screen(_) => ()
-        // (made once: narrow_shell.mbt's terminal_node)
-        Terminal(_) => ()
-        // (a window of its own's alone: lone_tree)
-        SideTab(_) => ()
-      }
-      // the page runs under the status bar; it keeps the paper behind its icons, moving with it (App.kt: the list, a
-      // place's top page with the bar and a chat have frosted bars there instead; a book and a film their own)
-      let own_top = match page {
-        Home | Chat(_) | NewChat | DriveRead(_) | DrivePlay(_) | Terminal(_) => true
-        Place(_) | Files => root
-        _ => false
-      }
-      if !own_top && status_top() > 0.0 {
-        c.layer(fn() {
-          c.box(style=@ui.style(w=Full, h=Fixed(status_top()), bg=Bg), fn() {  }) |> ignore
-        })
-        |> ignore
-      }
-      // in a window with its buttons in the app's top row, their band drags it (as a title bar does)
-      if @ui.window_inset() && !@sfdesk.is_wide(c) {
-        c.layer(fn() {
-          let id = c.id("window-band")
-          c.window_drag(id)
-          c.box(style=@ui.style(w=Full, h=Fixed(window_band())), id~, fn() {  }) |> ignore
-        })
-        |> ignore
-      }
-    },
-  )
-  if root {
-    c.moved_by(at, fn(_, _) { (app.switch_way.to_double() * switch_slide * (1.0 - place_switch.get(c)), 0.0) })
-    c.look_by(at, fn() { @ui.look(alpha=place_switch.get(c)) })
-  }
-}
-
-///|
 /// A place from the bottom bar (AppState.place): its page takes the stack's root, in place (nothing to go back to),
 /// coming in from the side the ball goes to; the same place again changes nothing. `sets`, `cur`:
 /// the bar it is chosen in (none: from no side). The page left kept and the one come to taken back where it was kept
@@ -1258,14 +1171,6 @@ pub fn go_place_by(at : Double, place : String, sets : Array[Array[String]], cur
   // (what a finger's press on its tab asked ahead held till the place has come in: sfbase's places_ahead_node)
   let tab_end = app.nav.tab_ends_at()
   @sfbase.place_switched(if tab_end > 0.0 { tab_end } else { place_switch.ends_at() })
-}
-
-///|
-/// A page of the settings, over the workspace in view, in the stack's frame: back to the page under it, under the status
-/// bar, over the navigation bar. One not merged yet: the phone's copy (src/sfapp/settings).
-fn setting_page(c : @ui.Ctx, src : Source, w : Workspace, r : @settings.Route) -> Unit {
-  let core = settings_core(src, w)
-  @settings.page(c, core, @settings.here_of(core, w.id, w.name), r)
 }
 
 ///|

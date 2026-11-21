@@ -81,14 +81,6 @@ fn chat_bar_state(r : ChatRef) -> ChatBarState {
 }
 
 ///|
-fn bar_extra_target(r : ChatRef) -> Double {
-  match chat_bar_states.get(chat_bar_key(r)) {
-    Some(s) => s.extra_target.get()
-    None => 0.0
-  }
-}
-
-///|
 /// Where chat `r`'s bar comes to end, its second row as it comes to show or not (a long title's, measured as the bar is
 /// laid out, after the list was made and put where it opens; opened or shut by a press): what the list put somewhere
 /// stands under. Read as it changes: its state made where the bar is not made yet.

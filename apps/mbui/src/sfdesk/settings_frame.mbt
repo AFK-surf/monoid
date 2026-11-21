@@ -5,27 +5,6 @@
 // package's, once.
 
 ///|
-/// The settings page `route` in the pane.
-fn setting_page(c : @ui.Ctx, src : Source, w : Workspace, route : Route) -> Unit {
-  let core = settings_core(src, w)
-  let here = @settings.here_of(core, w.id, w.name)
-  // a page under another of them shows back (the sidebar is the way to the others)
-  let under = app.nav.under()
-  let deep = under is Some(Setting(_))
-  settings_deep.val = deep
-  // (the settings' pages not ported yet read it too)
-  @settings.wide_deep.val = deep
-  @settings.frame(core, here)
-  settings_fixture(src, core)
-  @settings.page(c, core, here, route)
-}
-
-///|
-/// Whether the settings page drawn is under another of them (its head's back shown).
-// kept across runs: said again by every settings page as it is drawn (setting_page)
-let settings_deep : Ref[Bool] = Ref(false)
-
-///|
 /// A dialog a fixture's mode puts up over its page (MBUI_FIXTURE=settings-policy-text, settings-security-join, …:
 /// @settings.fixture_desk), once the page is drawn with what it needs; before it is made where a frame makes it once
 /// (pane_made, tape_made, the narrow frame's).
@@ -96,7 +75,7 @@ pub fn settings_fixture(src : Source, core : Core) -> Unit {
 ///|
 /// What the settings pages here keep put back as the app begins anew.
 fn settings_reset() -> Unit {
-  settings_deep.val = false
+  ()
 }
 
 ///|

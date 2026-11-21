@@ -5,38 +5,9 @@
 // (pane_made); the others still the settings' package's (@settings.page).
 
 ///|
-/// A place of the rail's in the pane: Station's and Profile's the page picked in their list, 连接's its page, the
-/// others (用量) the settings' page of it across the pane.
-fn place_page(c : @ui.Ctx, src : Source, w : Workspace, place : String) -> Unit {
-  let core = settings_core(src, w)
-  let here = @settings.here_of(core, w.id, w.name)
-  // (at the stack's root: no back over its head, its own or the settings' pages')
-  @settings.wide_deep.val = false
-  settings_deep.val = false
-  @settings.frame(core, here, root=true)
-  match place {
-    // (made once as nodes in every frame: stations_place_node, profiles_place_node)
-    "stations" | "profiles" => ()
-    _ =>
-      c.box(style=place_across, fn() {
-        match @settings.route_of(place) {
-          Some(r) => @settings.page(c, core, here, r, root=true)
-          None => ()
-        }
-      })
-      |> ignore
-  }
-}
-
-///|
 fn places_reset() -> Unit {
   place_pick.clear()
 }
-
-///|
-/// A page across the pane (连接, 用量: no sidebar), on the page's ground.
-// kept across runs: a value (no field of it changes)
-let place_across : @ui.Style = @ui.css("w=Full h=Full bg=Bg")
 
 ///|
 /// The page picked in a place (the stations' or the profiles' list) of the workspace `w`; none: the first.

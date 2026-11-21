@@ -1,33 +1,21 @@
 {
   "counts": {
     "style-literal": {
-      "src/sfapp/app.mbt": 2,
-      "src/sfapp/chat.mbt": 46,
-      "src/sfapp/home.mbt": 3,
       "src/sfapp/settings/run_more.mbt": 1,
       "src/sfapp/share.mbt": 2,
       "src/sfapp/sheets.mbt": 4
-    },
-    "box-loose": {
-      "src/sfapp/app.mbt": 1,
-      "src/sfapp/chat.mbt": 30,
-      "src/sfapp/home.mbt": 2
     },
     "page-hand": {
       "src/sfapp/app.mbt": 1
     },
     "tier-outside-shell": {
-      "src/sfapp/chat.mbt": 3,
+      "src/sfapp/chat.mbt": 1,
       "src/sfapp/settings/core.mbt": 3,
       "src/sfapp/viewer_host.mbt": 2
     },
     "ui-current": {
       "src/sfapp/app.mbt": 5,
-      "src/sfapp/bars.mbt": 2,
-      "src/sfapp/narrow_shell.mbt": 1
-    },
-    "build-motion": {
-      "src/sfapp/chat.mbt": 1
+      "src/sfapp/bars.mbt": 2
     },
     "submitted-read": {
       "src/sfapp/settings/vault_ask.mbt": 1

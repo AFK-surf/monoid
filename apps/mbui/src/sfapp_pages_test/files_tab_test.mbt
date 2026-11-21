@@ -1,8 +1,8 @@
-// A chat's 文件 tab (src/sfdesk/drive_tab.mbt) drawn alone in a box of a side panel's width, over the fixture.
+// A chat's 文件 tab (src/sfdesk/drive_tab_node.mbt) drawn alone in a box of a side panel's width, over the fixture.
 
 ///|
 fn tab_tester(calls : Array[Made], platform? : Int = 0) -> @ui.Tester {
-  new_run()
+  fresh_app()
   let base = fixture("home")
   let src : Source = {
     ..base,
@@ -12,21 +12,29 @@ fn tab_tester(calls : Array[Made], platform? : Int = 0) -> @ui.Tester {
     },
   }
   let w : Workspace = { id: "ws1", name: "星火工作室", emoji: "", icon: "", email: "" }
-  @ui.Tester::new(
-    @ui.old_views_here,
-    tree=@sf.presented_tree(fn(c) {
-      // (the library's words as the app's view says them: the tab's labels are found by them, and were its keys unless
-      // another test had drawn the app first, 2026-10-24)
-      @sf.set_words(fill)
-      // (a desktop's: the mouse drags no list, as the wide frame says)
-      c.mouse_drags_lists(false)
-      c.box(w=Px(480.0), h=Fill(1.0), fn() { @sfdesk.files_tab(c, src, w.id, "s-c1", "ws1/st1") }) |> ignore
-      // (what the tab presents, its menus, over it, as the shell draws them)
-      @sf.presented(c)
-    }),
+  @sf.set_words(fill)
+  @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.row(Is(true)) |> ignore
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      root.box(fn(pane) {
+        pane.width(Is(Some(480.0))).height(Is(Some(800.0))) |> ignore
+        @sfdesk.files_tab_node(pane, src, w.id, "s-c1", "ws1/st1", fn() { @ui.css("pb=S4") }, tips)
+      })
+      |> ignore
+      root.box(fn(drop_zone) {
+        drop_zone.grow(Is(1.0)).height(Is(Some(800.0))).ground(By(fn() { @sf.theme().p.bg })) |> ignore
+        @sfdesk.chat_drop_node(drop_zone, src, "s-c1", fn() { "ws1/st1" }, fn() { None }, fn() { true })
+      })
+      |> ignore
+      @sf.presented_nodes(root)
+    },
     w=1280.0,
     h=800.0,
     platform~,
+    // fixture("home") routes all topic reads through one global fixture_changes signal
+    fanout_limit=0,
   )
 }
 
@@ -35,12 +43,13 @@ test "a chat's 文件 tab (DriveTab.tsx): at the chat's station's home, the trai
   let calls : Array[Made] = []
   let t = tab_tester(calls)
   t.frame()
+  t.frame()
   // the home: its trail (Willow › 主目录), its folders in a list
-  assert_true(t.query(Button, label="Willow") is Some(_))
+  assert_true(t.query(Link, label="Willow") is Some(_))
   assert_true(t.find("主目录") is Some(_))
   assert_true(t.find("文档") is Some(_))
   // the places: 个人收藏, each station's home, its folders and disks, and its pinned folders
-  t.click(Button, label="Willow")
+  t.click(Link, label="Willow")
   t.frame()
   assert_true(t.find("照片") is Some(_), msg="Maple's pinned folder")
   assert_true(t.find("离线") is Some(_), msg="Maple away")
@@ -83,16 +92,14 @@ test "a chat's 文件 tab: a row's menu puts it into the chat's message (添加�
   t.tap_text("复制路径")
   t.frame()
   assert_eq(t.clipboard(), fix_docs + "/长篇小说.txt")
-  // dragged off the tab (to where the composer is): let go there, for it to take
+  // dragged off the tab onto the chat drop zone: dropped into the chat's draft
   let (x, y) = t.find("首页截图.png").unwrap()
   t.drag(x, y, 900.0, 600.0)
-  match @sfdesk.tab_take_drop(t.ctx()) {
-    Some((item, dx, _)) => {
-      assert_eq(item.name, "首页截图.png")
-      assert_true(dx > 800.0)
-    }
-    None => fail("nothing let go")
-  }
+  t.frame()
+  let added = calls.filter(fn(m) { m.name == "composer.add" })
+  assert_true(added.length() > 0, msg="dropped onto chat: composer.add not called")
+  let files = items(Some(added[0].params), "files")
+  assert_eq(text(files.get(0), "name"), "首页截图.png")
 }
 
 ///|

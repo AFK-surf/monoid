@@ -804,7 +804,6 @@ fn wide_bar_keys(
     k.show(fn() { own() && has_jobs() }, along_row=true, fn(b) {
       let button = @sf.icon_button_node(b, "web", fn() { @sf.t("web-pages.chat.services") }, fn() { jobs_pressed(src, r) }, tips~, linked=ends.linked, shortcut="chat.jobs")
       // (its popover beside it, where it is as that is drawn: chat_pops_node's)
-      chat_bar_from.jobs_node = Some(button)
       chat_jobs_pop_node(b, src, r, Some(button))
     })
     // (a dot on the row's first button, as the old bar's layer stood, drawn after its services' button: red while a
@@ -858,7 +857,6 @@ fn wide_bar_keys(
       let button = @sf.icon_button_node(b, "info", fn() { @sf.t("web-pages.chat.info") }, fn() {
         chat_own.info_open.set(!chat_own.info_open.untracked())
       }, tips~, linked=ends.linked)
-      chat_bar_from.info_node = Some(button)
       chat_info_pop_node(b, src, r, view, stint, Some(button))
     })
     k.show(own, at_once=true, fn(b) {
@@ -898,18 +896,6 @@ fn wide_bar_keys(
   })
   |> ignore
 }
-
-///|
-/// The bar's info and jobs buttons as they were last made (what the old view's popovers open beside, where each is as
-/// they are drawn, and a press on which is no press outside them: chat_page's chat_bar_by).
-priv struct ChatBarFrom {
-  mut info_node : @view.View?
-  mut jobs_node : @view.View?
-}
-
-///|
-// kept across runs: put back by chat_page_reset
-let chat_bar_from : ChatBarFrom = { info_node: None, jobs_node: None }
 
 ///|
 /// The larger of two whole numbers.

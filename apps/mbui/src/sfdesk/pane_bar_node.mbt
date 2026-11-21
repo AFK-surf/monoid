@@ -187,3 +187,8 @@ fn bar_fills(v : @view.View) -> @view.View {
 fn pane_bar_h() -> Double {
   @sf.wide_bar_h + @sf.tape_bar_over()
 }
+
+///|
+/// What the page is of, after its title in the bar: the secondary words.
+// kept across runs: a value (no field of it changes)
+let pane_bar_small : @ui.TextStyle = @sf.secondary.then(@ui.text_style(wrap=false))

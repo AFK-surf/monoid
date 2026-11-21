@@ -203,19 +203,7 @@ fn context_reset() -> Unit {
 }
 
 ///|
-/// A right click in the page (box `page`): the words picked's menu, where words are picked and nothing in the page
-/// that has a menu of its own was right clicked (Ctx::menu_asked: a message's image is its own menu's alone).
-pub fn context_page(c : @ui.Ctx, page : Int) -> Unit {
-  match c.menu_asked(page) {
-    Some((x, y)) if !context_opened_at(x, y) && c.selected_text().trim(chars=" \n\t") != "" =>
-      context_asked(x, y, c.selected_text())
-    _ => ()
-  }
-}
-
-///|
-/// A page made once (node `v`, the tree's), as an old view's page is in its frame (page_one's c.selectable and
-/// context_page): its words in pieces picked with the mouse (@ui.words_picked), and a right click in it the words
+/// A page made once (node `v`, the tree's): its words in pieces picked with the mouse (@ui.words_picked), and a right click in it the words
 /// picked's menu, where nothing in it that takes a press of its own was right clicked (Tree::menu_at: the topmost that
 /// does is asked), as the click's event, at its moment.
 pub fn context_node(v : @view.View) -> Unit {

@@ -39,14 +39,6 @@ fn top_bar_h() -> Double {
 }
 
 ///|
-/// A bar's room, `h` high (none when it is 0).
-fn bar_room_box(c : @ui.Ctx, h : Double) -> Unit {
-  if h > 0.0 {
-    c.box(style=@ui.style(w=Full, h=Fixed(h)), fn() {  }) |> ignore
-  }
-}
-
-///|
 /// The status bar's height: what a page's top bar is padded by.
 fn status_top() -> Double {
   let top = @ui.system_bars().top
@@ -59,17 +51,6 @@ fn status_top() -> Double {
     window_band_now()
   } else {
     top
-  }
-}
-
-///|
-/// The band a window's buttons take at the top of a phone's page in it: macOS's title bar's 28; where they are the
-/// app's (Windows'), a bar's line's (@sf.window_keys_band).
-fn window_band() -> Double {
-  if @ui.window_keys_own() {
-    @sf.window_keys_band
-  } else {
-    dmax(window_band_mac, @ui.window_points_to_content(window_band_mac))
   }
 }
 

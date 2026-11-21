@@ -422,11 +422,6 @@ pub fn side_width(pane : Double) -> Double {
 }
 
 ///|
-/// The chat and the panel side by side.
-// kept across runs: a value (no field of it changes)
-let panel_row : @ui.Style = @ui.css("row w=Full h=Full")
-
-///|
 /// The least the chat and the panel are side by side (ChatSide.tsx panelWidth: the chat 360, the panel 360 at least, the
 /// rule between): on a page narrower, the panel over the page.
 let side_both_least : Double = 721.0
@@ -434,16 +429,6 @@ let side_both_least : Double = 721.0
 ///|
 /// How wide the panel is over the page (ChatPage.css.ts sidePanel on a narrow page: min(460px, 100vw)).
 let side_over_w : Double = 460.0
-
-///|
-/// The page under the panel over it: as wide as it is.
-// kept across runs: a value (no field of it changes)
-let panel_page_whole : @ui.Style = @ui.css("w=Full h=Full")
-
-///|
-/// The panel over the page (sidePanel, narrow): the page's ground, its shadow at its side (-12 0 32).
-// kept across runs: a value (no field of it changes)
-let side_over_box : @ui.Style = @ui.css("bg=Bg shadow=Xl")
 
 ///|
 /// The panel (sidePanel): its ground the canvas, beside the page with no line between: its edge's own line shows as
@@ -628,140 +613,6 @@ fn side_left(key : String) -> Unit {
   if side_leaving(key) is Some(_) {
     panel_own.leaving.set(None)
   }
-}
-
-///|
-/// Page `key` (`page`) and its side panel (`panel`, `whole` wide at rest) side by side, the panel `open` or not. Opened by
-/// a change asked here, the panel's column widens from nothing over 280 ms and the page narrows with it, frame by frame;
-/// closed, the other way over 240 ms. The panel keeps its whole width all along and shows
-/// through its column as it grows, so it comes in from the right edge without what it holds laid out again; turned back
-/// on its way, it goes on from where it is. Open or closed otherwise (a page opened with its tabs as they were left),
-/// it is so at once.
-pub fn side_beside(c : @ui.Ctx, key : String, open : Bool, whole : Double, page : () -> Unit, panel : () -> Unit) -> Unit {
-  // where the page has not the room for the chat and the panel at their least side by side, the panel comes in over
-  // the page from its right edge (a shadow at its side), the
-  // page as wide as it was, the panel's edge not dragged
-  let over = c.width < side_both_least
-  let whole = if over { dmin(side_over_w, c.width) } else { whole }
-  let name = "--side-panel/" + key
-  match panel_own.was.get(key) {
-    Some(was) if was != open && panel_own.asked.get() == key => {
-      panel_own.asked.set("")
-      // (in and out on a Move as long as it is wide)
-      c.move_state([("side-panel", [name])])
-    }
-    _ => ()
-  }
-  // (each page's own: a panel beside one page and beside another, each as it was last built)
-  if panel_own.was.get(key) != Some(open) {
-    panel_own.was[key] = open
-  }
-  // its column (the panel) as wide as it has got
-  let col = c.moved(name, if open { whole } else { 0.0 })
-  if col <= 0.0 {
-    if !open && side_leaving(key) is Some(_) {
-      panel_own.leaving.set(None)
-    }
-    // (the frame it sets off on, its column not open yet: the page on its way from this frame, as on those after it,
-    // not from whichever is drawn next)
-    if open && !over && whole > 0.0 {
-      let (way, to, ends) = (@sfbase.page_way.id, @sfbase.page_way.to, @sfbase.page_way.ends)
-      @sfbase.page_way_said(
-        way + "/" + name + "/" + open.to_string(),
-        (if way != "" { to } else { c.width }) - whole,
-        ends=dmax(if way != "" { ends } else { 0.0 }, c.moved_ends(name).unwrap_or(c.moment())),
-      )
-      page()
-      @sfbase.page_way_said(way, to, ends~)
-      return
-    }
-    page()
-    return
-  }
-  if over {
-    c.box(style=panel_row, fn() {
-      c.box(style=panel_page_whole, fn() { page() }) |> ignore
-      c.box(style=side_over_box.then(@ui.style(w=Fixed(whole))), right=0.0, top=0.0, bottom=0.0, tx=whole - col, fn() {
-        c.sized(whole, c.height, panel)
-      })
-      |> ignore
-    })
-    |> ignore
-    return
-  }
-  let left = c.width - col
-  c.box(style=panel_row, fn() {
-    // (the page on its way as the panel slides, or as what holds it goes: as wide as that leaves it beside the panel)
-    let (way, to, ends) = (@sfbase.page_way.id, @sfbase.page_way.to, @sfbase.page_way.ends)
-    let target = if open { whole } else { 0.0 }
-    let sliding = col != target
-    if sliding || way != "" {
-      @sfbase.page_way_said(
-        way + "/" + name + "/" + open.to_string(),
-        (if way != "" { to } else { c.width }) - target,
-        ends=dmax(if way != "" { ends } else { 0.0 }, c.moved_ends(name).unwrap_or(c.moment())),
-      )
-    }
-    c.box(style=@ui.style(w=Fixed(left), h=Full), fn() { c.sized(left, c.height, page) }) |> ignore
-    @sfbase.page_way_said(way, to, ends~)
-    // (cut to its column only while it slides: at rest what it puts past its left edge, its edge's handle half over
-    // the page, shows whole, as the web's sidePanel cuts nothing)
-    c.box(style=@ui.style(w=Fixed(col), h=Full, clip=col < whole), fn() {
-      c.box(style=@ui.style(w=Fixed(whole), h=Full), fn() { c.sized(whole, c.height, panel) }) |> ignore
-    })
-    |> ignore
-  })
-  |> ignore
-}
-
-///|
-/// Chat `r`'s page (`chat`) in workspace `w`, its side panel the tree's beside it (side_panel_node; on the tape a panel
-/// of its own, tape_side_node): as the panel's column slides, the page on its way to the width it leaves the page, there as
-/// the slide ends: built again in the first frame at or past its end (Ctx::shows_until), whether or not the page's room
-/// changes then. (A frame drawn just short of the end has the column as wide as it comes to be already; at 24 frames a
-/// second, in a window wide enough for the list to be held at its width on the way (sfpages' laid_w), the next kept the
-/// page as on its way, parting from it built anew: view_beside_wbtest, wide_panel_wbtest.)
-pub fn with_side(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef, chat : () -> Unit) -> Unit {
-  if @sf.in_pane() {
-    chat()
-    return
-  }
-  let key = chat_key(r)
-  let (id, to, ends) = (@sfbase.page_way.id, @sfbase.page_way.to, @sfbase.page_way.ends)
-  let open = side_now(src, r).0.length() > 0
-  let way_opt = panel_own.goes.get(key)
-  let way_goes = match way_opt {
-    Some(way) => way.goes_at(c.moment())
-    None => false
-  }
-  if !way_goes && !(id != "" && open) {
-    chat()
-    return
-  }
-  let pane = if id != "" {
-    to
-  } else {
-    let ww = c.window_size().0
-    ww - fold_target(src, w, ww).1.col
-  }
-  if pane < side_both_least {
-    chat()
-    return
-  }
-  let (side_to, side_ends, side_tag) = match way_opt {
-    Some(way) if way_goes => {
-      c.shows_until(way.ends_at())
-      (way.target(), way.ends_at(), (way.target() > 0.0).to_string())
-    }
-    _ => (side_width(pane), 0.0, "true")
-  }
-  @sfbase.page_way_said(
-    id + "/--side-panel/" + key + "/" + side_tag,
-    pane - side_to,
-    ends=dmax(if id != "" { ends } else { 0.0 }, side_ends),
-  )
-  chat()
-  @sfbase.page_way_said(id, to, ends~)
 }
 
 ///|
