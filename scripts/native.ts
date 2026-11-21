@@ -1389,7 +1389,7 @@ async function download(part: string, target: Target, k: string): Promise<string
   let url = "";
   let bytes: Buffer | null = null;
   // (set from inside each try, below)
-  const release = { failed: false };
+  const release = { failed: false, notFound: false };
   const releaseUrl = `${GITHUB}/${REPO}/releases/download/${RELEASE}/${name}`;
   // (each place in turn: one that answers and then breaks off is said so, and the next one asked: a body cut short
   // failed the whole job with only the socket's error, 39431384793)
@@ -1423,7 +1423,10 @@ async function download(part: string, target: Target, k: string): Promise<string
       const r = direct ? await fetchNative(at, { redirect: "follow", signal }) : await fetch(at, { redirect: "follow", signal });
       moved();
       if (!r.ok) {
-        if (at === releaseUrl && r.status !== 404) release.failed = true;
+        if (at === releaseUrl) {
+          if (r.status === 404) release.notFound = true;
+          else release.failed = true;
+        }
         if (r.status !== 404) log(`${part} ${target}: ${at} answered ${r.status}`);
         await r.body?.cancel().catch(() => {});
         return passing(r.status) ? "again" : "next";
@@ -1450,7 +1453,10 @@ async function download(part: string, target: Target, k: string): Promise<string
       await pause(RETRY_MS * n);
     }
   }
-  if (!bytes && release.failed) {
+  // A 404 there is asked of the API too in CI's consumer jobs (STILLFAIL_NATIVE_INBOX, set by .github/actions/natives):
+  // the download endpoint's edge kept answering 404 for a part 47 s after the natives job had published it, while the
+  // API had it (check-station 44892476775); elsewhere a 404 spends no API request.
+  if (!bytes && (release.failed || (release.notFound && Boolean(process.env.STILLFAIL_NATIVE_INBOX)))) {
     const fromApi = await releaseThroughApi(name);
     if (fromApi !== null) { bytes = fromApi.bytes; url = fromApi.url; }
   }
@@ -1899,7 +1905,10 @@ async function main(argv: string[]) {
         const there = remote.has(name) || (await inStore(name));
         const before = complete(cached(p, t, k), p, t);
         const started = Date.now();
-        const dir = await get(p, t);
+        // Known absent from the release and the store, and not in the inbox: built without asking the download endpoint
+        // first, whose 404 its edge then kept serving to the jobs fetching the part just published (44892476775).
+        const inboxed = Boolean(process.env.STILLFAIL_NATIVE_INBOX && existsSync(join(process.env.STILLFAIL_NATIVE_INBOX, name)));
+        const dir = await get(p, t, !before && listed !== null && !there && !inboxed ? "build" : "any");
         const took = ((Date.now() - started) / 1000).toFixed(0);
         const how = before ? "cached" : JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")).from === "built" ? "built" : "downloaded";
         let note = "";
