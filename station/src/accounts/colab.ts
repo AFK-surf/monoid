@@ -446,8 +446,8 @@ export function makeColabServiceAdapter(urls?: ColabUrls): ServiceProfileAdapter
         {
           authUrl,
           callbackCode: (tabUrl) => colabCallbackCode(tabUrl, state),
-          exchange: async (rawCode, exchangeLang) => {
-            const code = colabCodeOf(rawCode, state, exchangeLang);
+          validate: (rawCode, validateLang) => colabCodeOf(rawCode, state, validateLang),
+          exchange: async (code, exchangeLang) => {
             const auth = await exchangeColabCode(resolved(), code, codeVerifier, exchangeLang);
             await writeColabAuth(profile.home, auth);
           },

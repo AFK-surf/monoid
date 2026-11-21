@@ -137,6 +137,7 @@ type Running = {
   chose?: boolean;
   agy?: AgySteps;
   said?: string;
+  validateCode?: (rawCode: string, lang: Lang) => string;
   onCode?: (code: string, lang: Lang) => Promise<void>;
   callbackCode?: (tabUrl: string | null) => string | null;
 };
@@ -613,7 +614,12 @@ export class LoginManager {
   /// Starts an OAuth2 authorization-code sign-in for a service profile (no CLI child process).
   async startOAuthCode(
     profile: { id: string; home: string; service: string },
-    flow: { authUrl: string; exchange: (code: string, lang: Lang) => Promise<void>; callbackCode?: (tabUrl: string | null) => string | null },
+    flow: {
+      authUrl: string;
+      validate?: (rawCode: string, lang: Lang) => string;
+      exchange: (code: string, lang: Lang) => Promise<void>;
+      callbackCode?: (tabUrl: string | null) => string | null;
+    },
     lang: Lang = stationLang(),
   ): Promise<LoginJob> {
     this.cancel(profile.id);
@@ -640,6 +646,7 @@ export class LoginManager {
       exited: true,
       lang,
       home: profile.home,
+      ...(flow.validate !== undefined ? { validateCode: flow.validate } : {}),
       onCode: flow.exchange,
       ...(flow.callbackCode !== undefined ? { callbackCode: flow.callbackCode } : {}),
       cancelTimer: this.background.after(TIMEOUT_MS, () => this.failRun(id, run, tr(lang, "station.login.timedOut"))),
@@ -674,6 +681,7 @@ export class LoginManager {
     const trimmed = code.trim();
     if (trimmed === "") throw new Error(tr(lang, "station.login.emptyCode"));
     if (running.onCode !== undefined) {
+      const clean = running.validateCode ? running.validateCode(trimmed, lang) : trimmed;
       running.stop?.();
       running.stop = this.background.after(VERIFY_WAIT_MS, () => { // timer: a deadline for OAuth code exchange
         if (this.jobs.get(profile) === running && running.job.state === "verifying") this.finish(profile, "failed", tr(running.lang, "station.login.verifyTimedOut"));
@@ -682,7 +690,7 @@ export class LoginManager {
       const job = { ...running.job };
       this.emit(profile);
       try {
-        await running.onCode(trimmed, lang);
+        await running.onCode(clean, lang);
         if (this.jobs.get(profile) === running && running.job.state === "verifying") this.finish(profile, "done", null);
       } catch (e) {
         if (this.jobs.get(profile) === running && running.job.state === "verifying") this.finish(profile, "failed", (e as Error).message);

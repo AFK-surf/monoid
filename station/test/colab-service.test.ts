@@ -285,22 +285,38 @@ describe("Google Colab service profile adapter", () => {
       assert.ok(started.job.url?.startsWith(`${mock.urls.authUri}?`));
 
       const loginState = new URL(started.job.url!).searchParams.get("state")!;
+      // Submitting a callback URL with mismatched state fails synchronously without aborting the login job.
+      await assert.rejects(
+        () =>
+          accounts.logins.submitCode(
+            started.id,
+            "https://sdk.cloud.google.com/applicationdefaultauthcode.html?code=4/0A-e2e&state=wrong-state",
+            "en",
+          ),
+        /does not match/,
+      );
+      assert.equal(accounts.logins.get(started.id)?.state, "needs_code");
+
+      // Event-driven wait for pendingSettled to create the profile (no sleep polling).
+      const createdPromise = new Promise<string>((resolve) => {
+        const check = () => {
+          const entry = accounts.loginsView(viewer).find((l) => l.id === started.id);
+          if (entry?.created) {
+            stop();
+            resolve(entry.created);
+          }
+        };
+        const stop = accounts.onChange(check);
+        check();
+      });
+
       await accounts.logins.submitCode(
         started.id,
         `https://sdk.cloud.google.com/applicationdefaultauthcode.html?code=4/0A-e2e&state=${encodeURIComponent(loginState)}`,
         "en",
       );
 
-      // Wait for pendingSettled to create the profile
-      let createdId: string | null = null;
-      for (let i = 0; i < 40; i++) {
-        const entry = accounts.loginsView(viewer).find((l) => l.id === started.id);
-        if (entry?.created) {
-          createdId = entry.created;
-          break;
-        }
-        await new Promise((r) => setTimeout(r, 25));
-      }
+      const createdId = await createdPromise;
       assert.ok(createdId, "service login should create a profile");
       const created = accounts.profiles().find((p) => p.id === createdId)!;
       assert.equal(created.runtime, undefined);
@@ -323,7 +339,7 @@ describe("Google Colab service profile adapter", () => {
       assert.equal(chk.models, null);
       assert.match(chk.detail, /colab-user@example\.com/);
 
-      const q = await accounts.refreshQuota(createdId);
+      const q = await accounts.askedQuota(createdId);
       assert.equal(q?.state, "ok");
       assert.equal(q?.credits?.balance, "2500.00 CU");
 
@@ -375,11 +391,20 @@ describe("Google Colab service profile adapter", () => {
         },
         "en",
       );
+      const donePromise = new Promise<void>((resolve) => {
+        const check = (id?: string) => {
+          if (id && id !== "p-colab") return;
+          if (logins.get("p-colab")?.state === "done") {
+            stop();
+            resolve();
+          }
+        };
+        const stop = logins.changes(check);
+        check();
+      });
       tabUrl = "https://sdk.cloud.google.com/applicationdefaultauthcode.html?code=4/0A-tab-code&state=st-123";
       listener!("profile:p-colab");
-      for (let i = 0; i < 20 && logins.get("p-colab")?.state !== "done"; i++) {
-        await new Promise((r) => setTimeout(r, 15));
-      }
+      await donePromise;
       assert.equal(capturedCode, "4/0A-tab-code");
       assert.equal(closedKey, "profile:p-colab");
       assert.equal(logins.get("p-colab")?.state, "done");
