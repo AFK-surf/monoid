@@ -3,7 +3,7 @@
 // that disk's own trash (`.Trashes/<uid>` on macOS, `.Trash-<uid>` on Linux), as the system's do: it is moved, never
 // copied. Where there is none to move it to (Windows, a disk that will not take one), the caller is told (null).
 import { constants } from "node:fs";
-import { mkdir, open, rename, stat } from "node:fs/promises";
+import { lstat, mkdir, open, rename, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -91,4 +91,5 @@ function withNumber(name: string, n: number): string {
   return dot > 0 ? `${name.slice(0, dot)} ${n}${name.slice(dot)}` : `${name} ${n}`;
 }
 
-const exists = (path: string) => stat(path).then(() => true, (e: NodeJS.ErrnoException) => e.code !== "ENOENT");
+// A trashed link still occupies its name when its target no longer resolves from the trash.
+const exists = (path: string) => lstat(path).then(() => true, (e: NodeJS.ErrnoException) => e.code !== "ENOENT");
