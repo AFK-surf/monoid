@@ -57,7 +57,7 @@ fn open_named(src : Source, station : String, agent : String, path : String, bes
   let full = beside is None && @sfbase.full_asked()
   named_open_serial.val += 1
   let serial = named_open_serial.val
-  guard agent != "" && !path.has_suffix("/") else { return }
+  guard agent != "" && !is_dir_path(path) else { return }
   let page = @sfbase.app.nav.top()
   let params : Map[String, Json] = {
     "station": Json::string(station),

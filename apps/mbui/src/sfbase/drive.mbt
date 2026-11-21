@@ -214,10 +214,13 @@ pub fn dv_parent(path : String) -> String {
 }
 
 ///|
-/// Whether an absolute path names a Windows drive or UNC share. A backslash in a Unix name is not a separator.
+/// Whether a path names a Windows drive, UNC share, or backslash relative path. A backslash in a Unix name with `/` is not a separator.
 pub fn dv_windows_path(path : String) -> Bool {
   path.has_prefix("\\\\") ||
-  (path.find(":") is Some(1) && (path.exact_view(start=2).has_prefix("\\") || path.exact_view(start=2).has_prefix("/")))
+  path.has_prefix(".\\") ||
+  path.has_prefix("..\\") ||
+  (path.find(":") is Some(1) && (path.exact_view(start=2).has_prefix("\\") || path.exact_view(start=2).has_prefix("/"))) ||
+  (!path.contains("/") && path.contains("\\"))
 }
 
 ///|

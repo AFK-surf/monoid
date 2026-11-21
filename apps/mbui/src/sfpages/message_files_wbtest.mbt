@@ -7,6 +7,41 @@ test "a chat attachment uses its stored filename on Windows and Unix" {
     assert_eq(@sfbase.viz_base_name(path), name)
   }
   assert_eq(@sfbase.base_name("/Users/lin/a\\b.txt"), "a\\b.txt")
+  assert_true(!@sfbase.dv_windows_path("/Users/lin/a\\b.txt"))
+  // Windows relative backslash paths, directories, base_of, and new preview_kind extensions (FB-35).
+  for p in [".\\scripts\\deploy.ps1", "..\\config\\app.json", "src\\main.dart", "D:\\work\\proj\\"] {
+    assert_true(@sfbase.dv_windows_path(p), msg=p)
+  }
+  assert_eq(base_of("D:\\work\\proj\\report.md"), "report.md")
+  assert_eq(base_of("D:\\work\\proj\\"), "proj")
+  assert_eq(base_of(".\\scripts\\deploy.ps1"), "deploy.ps1")
+  assert_eq(base_of("src\\main.dart"), "main.dart")
+  assert_true(is_dir_path("D:\\work\\proj\\"))
+  assert_true(is_dir_path(".\\out\\"))
+  assert_true(is_dir_path("src/list/"))
+  assert_true(!is_dir_path("D:\\work\\proj\\report.md"))
+  assert_true(!is_dir_path("/Users/lin/a\\"))
+  for ext_file in ["build.bat", "run.cmd", "boot.hex"] {
+    let (kind, mime, lang) = @sfbase.preview_kind(ext_file)
+    assert_true(kind == Some(@sfbase.KText), msg=ext_file)
+    assert_eq(mime, "text/plain", msg=ext_file)
+    assert_eq(lang, "", msg=ext_file)
+  }
+  for pair in [
+    ("analysis.ipynb", "json"),
+    ("events.jsonl", "json"),
+    ("stream.ndjson", "json"),
+    ("ViewController.m", "c"),
+    ("App.mm", "cpp"),
+    ("mod.psm1", "ps1"),
+    ("mod.psd1", "ps1"),
+    ("pkg.generated.mbti", "mbt"),
+  ] {
+    let (file, want_lang) = pair
+    let (kind, _, lang) = @sfbase.preview_kind(file)
+    assert_true(kind == Some(@sfbase.KCode), msg=file)
+    assert_eq(lang, want_lang, msg=file)
+  }
 }
 
 ///|

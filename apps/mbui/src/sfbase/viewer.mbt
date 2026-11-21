@@ -100,23 +100,25 @@ pub fn preview_kind(name : String) -> (PKind?, String, String) {
     Some((k, t)) => return (Some(k), t, if k == KHtml { "html" } else if ext == "mbui" { "json" } else { "" })
     None => ()
   }
-  if ["txt", "text", "log", "out", "err", "lock"].contains(ext) {
+  if ["txt", "text", "log", "out", "err", "lock", "bat", "cmd", "hex"].contains(ext) {
     return (Some(KText), "text/plain", "")
   }
   let language = match ext {
     "mjs" | "cjs" => "js"
     "mts" | "cts" => "ts"
-    "h" => "c"
-    "hh" | "hpp" | "cc" | "cxx" => "cpp"
+    "h" | "m" => "c"
+    "hh" | "hpp" | "cc" | "cxx" | "mm" => "cpp"
     "kts" => "kotlin"
     "yml" => "yaml"
     "zsh" | "sh" => "bash"
+    "psm1" | "psd1" => "ps1"
     "patch" => "diff"
     "conf" | "cfg" => "ini"
     "env" => "dotenv"
     "gradle" => "groovy"
     "plist" | "svg" => "xml"
-    "mbui" => "json"
+    "mbui" | "ipynb" | "jsonl" | "ndjson" => "json"
+    "mbti" => "mbt"
     e => e
   }
   if code_languages.contains(language) {
