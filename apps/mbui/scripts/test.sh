@@ -113,17 +113,38 @@ for t in $targets; do
   # whole of mbui in each) compiled without optimising (MBC_LIGHT_TESTS): a change to mbui compiled its units again in
   # each of them beside sfapp's, ~80 s of four programs' compile on CI's four cores, 2026-10-24, 40127533069
   light=""
+  # (a release/* branch's run: yesterday's main, ~24 h behind the 3 h of units main's store keeps, is never merged back
+  # into main and runs only the default rate, so the whole app's programs are light there as before #7350: cold at their
+  # own level its app build ran past 233 s and its replay build past 202 s, 44919782303, 2026-11-22)
+  release_light=0
+  if [ -n "${GITHUB_ACTIONS:-}" ] && [[ "${GITHUB_REF:-}" == refs/heads/release/* ]]; then release_light=1; fi
   for p in $pkgs; do
     case $p in
+      -p) continue ;;
+      stillfail/core) [ "$release_light" = 1 ] || continue ;;
+      stillfail/sfreplay/flows) [ "$release_light" = 0 ] || light="$light sfreplay/flows/flows.blackbox_test"; continue ;;
+      stillfail/sfapp) [ "$release_light" = 0 ] || light="$light sfapp/sfapp.whitebox_test"; continue ;;
+      stillfail/sfapp_realsize) [ "$release_light" = 0 ] || light="$light sfapp_realsize/sfapp_realsize.blackbox_test"; continue ;;
+      stillfail/sfapp_pages_test) [ "$release_light" = 0 ] || light="$light sfapp_pages_test/sfapp_pages_test.blackbox_test"; continue ;;
       # (sfapp's program and the flows' at their own level, a branch's as main's: a branch's built at -O0, its 409 units
       # of sfpages, sfdesk, sfbase and sfapp were none of them main's once merged, which compiled them again at -O2
       # past its app build's budget, 44452414116, 2026-11-19. Their tests' units are test.<unit>, at MBC_TEST_OPT below)
-      -p | stillfail/core | stillfail/sfreplay/* | stillfail/sfapp | stillfail/sfapp_realsize | stillfail/sfapp_pages_test) continue ;;
+      stillfail/sfreplay/*) continue ;;
     esac
     n=$(basename "$p")
     light="$light ${p#stillfail/}/$n.internal_test ${p#stillfail/}/$n.blackbox_test ${p#stillfail/}/$n.whitebox_test"
   done
   export MBC_LIGHT_TESTS="$light"
+  # (release/*: a whole app's program built alone keeps mbui's and the library's units at its own level (mbc's
+  # MBC_LIGHT_KEEP), which run in every frame of its tests, at -O0 2.5 times as long, 44243493008)
+  if [ "$release_light" = 1 ]; then
+    case " $light " in
+      *" sfapp/sfapp.whitebox_test "*) [ "$pkgs" = "-p stillfail/sfapp" ] && export MBC_LIGHT_KEEP="mbui_ stillfail_sf_ stillfail_sfgraphic_" ;;
+      *" sfapp_realsize/sfapp_realsize.blackbox_test "*) [ -n "${REALSIZE_BUILD_OUT:-}" ] && export MBC_LIGHT_KEEP="mbui_ stillfail_sf_ stillfail_sfgraphic_" ;;
+      *" sfapp_pages_test/sfapp_pages_test.blackbox_test "*) [ -n "${PAGES_TEST_BUILD_OUT:-}" ] && export MBC_LIGHT_KEEP="mbui_ stillfail_sf_ stillfail_sfgraphic_" ;;
+      *" sfreplay/flows/flows.blackbox_test "*) [ -n "${REPLAY_BUILD_OUT:-}" ] && export MBC_LIGHT_KEEP="mbui_ stillfail_sf_ stillfail_sfgraphic_" ;;
+    esac
+  fi
   # A test's functions (its *_test.mbt's, *_wbtest.mbt's) in units of their own (mbc's test.<unit>), compiled at -O1 in
   # every program at its own level (mbc's MBC_TEST_OPT), a branch's as main's, so what a branch compiled is what main
   # takes from the store once merged: sfapp's 526 test files are 92% of its source, beside its 43, and at -O2 a change
