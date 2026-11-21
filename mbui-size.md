@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5f9a5797a](https://github.com/AFK-surf/monoid/commit/5f9a5797a01fd0f4c5317139bf5892c0ed0714b6) fix(comma-ui): clamp narrow-screen overlays and sl | 2.65 | 3.56 | 14.47 | 36.48 | 55.13 | 31.95 | 64.51 | 98.19 | 125.07 |
 | [4a7cac438](https://github.com/AFK-surf/monoid/commit/4a7cac43804dd872d4f2e14c66ba7c02b1461719) fix(core,mbui): recognize Windows file paths and c | 2.65 | 3.56 | 14.47 | 36.48 | 55.13 | 31.95 | 64.51 | 98.34 | 121.31 |
 | [060d4db7d](https://github.com/AFK-surf/monoid/commit/060d4db7dab3e7fe8e96d9905d0ea70deaeab8ed) refactor(mbui): migrate sfgraphic, sffigure, and s | 2.65 | 3.56 | 14.47 | 36.48 | 55.13 | 31.95 | 64.51 | 98.4 | 128.56 |
 | [90d471a2c](https://github.com/AFK-surf/monoid/commit/90d471a2c5fb2681a1d25edd634a90b587b6613b) fix(station): recover the Antigravity Gemini weekl | 2.65 | 3.56 | 14.47 | 36.49 | 55.14 | 31.95 | 64.51 | 98.47 | 120.67 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [614c97001](https://github.com/AFK-surf/monoid/commit/614c9700169bc54d9dd93a7952017db5fbdfcd45) feat(core-ts): add harness-lock and migrate lock/v | 2.65 | 3.57 | 14.49 | 36.48 | 55.22 | 31.95 | 64.56 | 98.16 | 128.14 |
 | [172f7d8cd](https://github.com/AFK-surf/monoid/commit/172f7d8cda1538cbcc1cd7c5b71514b228e9a4d5) feat(liquid-glass): add liquid glass menu morph an | 2.65 | 3.57 | 14.49 | 36.48 | 55.22 | 31.95 | 64.56 | 98.14 | 133.78 |
 | [4a929f079](https://github.com/AFK-surf/monoid/commit/4a929f079832867d0926378a8b9e37ed16290704) feat(core-ts): add harness-core-routes and migrate | 2.65 | 3.57 | 14.49 | 36.48 | 55.22 | 31.95 | 64.56 | 98.37 | 127.86 |
-| [ce202dfbe](https://github.com/AFK-surf/monoid/commit/ce202dfbe04a704e7944401865ca4231bc17a9fd) feat(mbui): preset picker rows open a ⋯ menu to ed | 2.65 | 3.57 | 14.49 | 36.48 | 55.22 | 31.95 | 64.56 | 98.16 | 122.65 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5f9a5797a](https://github.com/AFK-surf/monoid/commit/5f9a5797a01fd0f4c5317139bf5892c0ed0714b6) fix(comma-ui): clamp narrow-screen overlays and sl | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.02 |
 | [4a7cac438](https://github.com/AFK-surf/monoid/commit/4a7cac43804dd872d4f2e14c66ba7c02b1461719) fix(core,mbui): recognize Windows file paths and c | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.02 |
 | [060d4db7d](https://github.com/AFK-surf/monoid/commit/060d4db7dab3e7fe8e96d9905d0ea70deaeab8ed) refactor(mbui): migrate sfgraphic, sffigure, and s | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.02 |
 | [90d471a2c](https://github.com/AFK-surf/monoid/commit/90d471a2c5fb2681a1d25edd634a90b587b6613b) fix(station): recover the Antigravity Gemini weekl | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.31 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [614c97001](https://github.com/AFK-surf/monoid/commit/614c9700169bc54d9dd93a7952017db5fbdfcd45) feat(core-ts): add harness-lock and migrate lock/v | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54 |
 | [172f7d8cd](https://github.com/AFK-surf/monoid/commit/172f7d8cda1538cbcc1cd7c5b71514b228e9a4d5) feat(liquid-glass): add liquid glass menu morph an | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54 |
 | [4a929f079](https://github.com/AFK-surf/monoid/commit/4a929f079832867d0926378a8b9e37ed16290704) feat(core-ts): add harness-core-routes and migrate | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54 |
-| [ce202dfbe](https://github.com/AFK-surf/monoid/commit/ce202dfbe04a704e7944401865ca4231bc17a9fd) feat(mbui): preset picker rows open a ⋯ menu to ed | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54 |
