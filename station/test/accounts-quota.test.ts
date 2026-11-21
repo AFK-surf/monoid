@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, rmdirSync, statSync,
 import { devNull } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { agyAllowance, agyScopeForModel, agyVerify, clipKeepingLinks } from "../src/accounts/agy-quota.ts";
+import { agyAllowance, agyModelWindows, agyScopeForModel, agyVerify, clipKeepingLinks } from "../src/accounts/agy-quota.ts";
 import { claudeOAuthToken, RefreshLock } from "../src/accounts/oauth.ts";
 import { readClaudeCredentials } from "../src/agents/machine-logins.ts";
 import { URLS } from "../src/accounts/profiles.ts";
@@ -175,6 +175,85 @@ describe("allowances and renewing", { concurrency: true }, () => {
     assert.deepEqual([verifyQ.state, verifyQ.unanswered, verifyQ.detail], ["blocked", undefined, `Google 要求先验证这个账号才能用 Antigravity。用登录了这个 Google 账号的浏览器打开下面的链接完成验证，然后重新查询额度\n${page}`]);
     assert.equal(agyVerify("PERMISSION_DENIED (code 403): Verify your account to continue."), "");
     assert.equal(agyVerify("Your account has been suspended"), null);
+    const locationErr = "Eligibility check failed: Your current account is not eligible for Antigravity, because it is not currently available in your location.";
+    assert.equal(agyVerify(locationErr), null);
+
+    // Paid account whose free-tier is ineligible in the current location: `agy -p /usage` fails its eligibility check,
+    // so `agyQuota` confirms an active tier via `loadCodeAssist` and falls back to `retrieveUserQuotaSummary` +
+    // `fetchAvailableModels` to fill missing pools (e.g. Gemini).
+    let paidTier = true;
+    const agyApi = await provider((req) => {
+      if (req.url.endsWith(":loadCodeAssist")) {
+        return {
+          status: 200,
+          body: paidTier
+            ? {
+                currentTier: { id: "standard-tier" },
+                paidTier: { id: "g1-pro-tier", name: "Google AI Pro" },
+                cloudaicompanionProject: "aicode-consumers",
+                ineligibleTiers: [{ tierId: "free-tier", reasonCode: "UNSUPPORTED_LOCATION" }],
+              }
+            : { ineligibleTiers: [{ tierId: "free-tier", reasonCode: "UNSUPPORTED_LOCATION" }] },
+        };
+      }
+      if (req.url.endsWith(":retrieveUserQuotaSummary")) {
+        return {
+          status: 200,
+          body: {
+            groups: [
+              {
+                displayName: "Claude and GPT models",
+                buckets: [
+                  { bucketId: "3p-weekly", window: "weekly", remainingFraction: 1 },
+                  { bucketId: "3p-5h", window: "5h", remainingFraction: 0.9, resetTime: "2026-11-21T05:30:00Z" },
+                ],
+              },
+            ],
+          },
+        };
+      }
+      if (req.url.endsWith(":fetchAvailableModels")) {
+        return {
+          status: 200,
+          body: {
+            models: {
+              "gemini-4-hydrogen-sonar": { quotaInfo: { remainingFraction: 0.92, resetTime: "2026-11-21T05:27:31Z" } },
+              "gemini-3.8-flash-tiered": { quotaInfo: { remainingFraction: 0.98, resetTime: "2026-11-21T05:27:31Z" } },
+              "claude-opus-5-5-high": { quotaInfo: { remainingFraction: 0.9, resetTime: "2026-11-21T05:30:00Z" } },
+              tab_flash_lite_preview: { quotaInfo: { remainingFraction: 1 } },
+            },
+          },
+        };
+      }
+      return { status: 404, body: {} };
+    });
+    try {
+      const fallbackQ = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: locationErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
+      assert.equal(fallbackQ.state, "ok");
+      assert.deepEqual(fallbackQ.windows, [
+        { label: "5 小时 · Gemini", usedPercent: 8, resetsAt: Date.parse("2026-11-21T05:27:31Z"), minutes: 300, scope: "gemini" },
+        { label: "每周 · Claude / GPT", usedPercent: 0, resetsAt: null, minutes: 10080, scope: "3p" },
+        { label: "5 小时 · Claude / GPT", usedPercent: 10, resetsAt: Date.parse("2026-11-21T05:30:00Z"), minutes: 300, scope: "3p" },
+      ]);
+
+      // Account with no active tier at all in this location: falls through to report the location error, never a
+      // verification hold.
+      paidTier = false;
+      const trulyBlockedQ = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: locationErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
+      assert.equal(trulyBlockedQ.state, "unavailable");
+      assert.ok(trulyBlockedQ.detail?.includes("not currently available in your location"));
+    } finally {
+      await agyApi.close();
+    }
+    assert.deepEqual(
+      agyModelWindows({
+        models: {
+          "gemini-2.5-pro": { quotaInfo: { remainingFraction: 0.75, resetTime: "2026-11-21T05:27:31Z" } },
+          tab_jump_flash_lite_preview: { quotaInfo: { remainingFraction: 1 } },
+        },
+      }),
+      [{ label: "5 小时 · Gemini", usedPercent: 25, resetsAt: Date.parse("2026-11-21T05:27:31Z"), minutes: 300, scope: "gemini" }],
+    );
 
     // Another error a link is cut in: the link kept whole, which cut short opens a 400.
     assert.equal(clipKeepingLinks(`${"x".repeat(10)} ${page} after`, 30), `${"x".repeat(10)} ${page}`);

@@ -392,12 +392,21 @@ fn network_failure(text : String) -> Bool {
 }
 
 ///|
+let agy_cloud_code_url : String = "https://daily-cloudcode-pa.googleapis.com"
+
+///|
+let agy_user_agent : String = "antigravity/1.5.12"
+
+///|
+let agy_timeout_ms : Int = 30_000
+
+///|
 /// `agyVerify`: Google holding an account until a person verifies it ("Eligibility check failed: Your current account
 /// is not eligible for Antigravity. Verify your account to continue." and the page to do it on; its backend
 /// `VALIDATION_REQUIRED`): that page, "" when it gives none, None when it is not that.
 pub fn agy_verify(text : String) -> String? {
   let l = lower(text)
-  if !["verify your account", "not eligible for antigravity", "validation_required"].iter().any(w => l.contains(w)) {
+  if !["verify your account", "validation_required"].iter().any(w => l.contains(w)) {
     return None
   }
   let at = index_of(text, "https://accounts.google.com/")
@@ -409,6 +418,223 @@ pub fn agy_verify(text : String) -> String? {
     end += 1
   }
   Some(slice(text, at, b=end))
+}
+
+///|
+fn agy_location_ineligible(text : String) -> Bool {
+  let l = lower(text)
+  l.contains("not currently available in your location") ||
+  l.contains("unsupported_location") ||
+  l.contains("not eligible for antigravity")
+}
+
+///|
+/// `agyModelWindows`: 5-hour quota windows derived from `v1internal:fetchAvailableModels` (`models[*].quotaInfo`),
+/// one per pool (`gemini` and `3p`), taking the lowest remaining fraction in each pool.
+fn agy_model_windows(ctx : Ctx, body : JV?) -> Array[JV] {
+  guard jget(body, "models") is Some(Obj(_)) else { return [] }
+  let models = jget(body, "models")
+  let mut gemini_frac : Double? = None
+  let mut gemini_reset : Double? = None
+  let mut p3_frac : Double? = None
+  let mut p3_reset : Double? = None
+  for f in jfields(models) {
+    let model_id = f.0
+    if lower(model_id).has_prefix("tab_") {
+      continue
+    }
+    guard f.1 is Obj(_) else { continue }
+    guard f.1.get("quotaInfo") is Some(Obj(_) as qi) else { continue }
+    let frac = match qi.get("remainingFraction") {
+      Some(Num(v)) => Some(v)
+      _ =>
+        match qi.get("remaining_fraction") {
+          Some(Num(v)) => Some(v)
+          _ => None
+        }
+    }
+    guard frac is Some(v) else { continue }
+    let resets_at = at(ctx, coalesce(qi.get("resetTime"), () => qi.get("reset_time")))
+    if agy_scope_for_model(Some(model_id)) == "gemini" {
+      match gemini_frac {
+        None => {
+          gemini_frac = Some(v)
+          gemini_reset = resets_at
+        }
+        Some(prev) => {
+          if v < prev {
+            gemini_frac = Some(v)
+          }
+          if gemini_reset is None && resets_at is Some(_) {
+            gemini_reset = resets_at
+          }
+        }
+      }
+    } else {
+      match p3_frac {
+        None => {
+          p3_frac = Some(v)
+          p3_reset = resets_at
+        }
+        Some(prev) => {
+          if v < prev {
+            p3_frac = Some(v)
+          }
+          if p3_reset is None && resets_at is Some(_) {
+            p3_reset = resets_at
+          }
+        }
+      }
+    }
+  }
+  let out = []
+  let base_label = window_label(Some(300.0), "5 小时")
+  match gemini_frac {
+    Some(v) =>
+      out.push(
+        quota_window(
+          "\{base_label} · Gemini",
+          percent(Some(Num((1.0 - v) * 100.0))),
+          gemini_reset,
+          Some(300.0),
+          scope="gemini",
+        ),
+      )
+    None => ()
+  }
+  match p3_frac {
+    Some(v) =>
+      out.push(
+        quota_window(
+          "\{base_label} · Claude / GPT",
+          percent(Some(Num((1.0 - v) * 100.0))),
+          p3_reset,
+          Some(300.0),
+          scope="3p",
+        ),
+      )
+    None => ()
+  }
+  out
+}
+
+///|
+fn strip_trailing_slashes(s : String) -> String {
+  let mut end = s.length()
+  while end > 0 && s.unsafe_charcode_at(end - 1) == '/'.to_int() {
+    end -= 1
+  }
+  slice(s, 0, b=end)
+}
+
+///|
+async fn agy_post(
+  ctx : Ctx,
+  base : String,
+  path : String,
+  token : String,
+  body : JV,
+) -> JV? {
+  let response = Some(
+    ctx.io.fetch({
+      url: "\{base}\{path}",
+      verb: Some("POST"),
+      headers: [
+        ("authorization", "Bearer \{token}"),
+        ("content-type", "application/json"),
+        ("accept", "application/json"),
+        ("user-agent", agy_user_agent),
+      ],
+      body: Some(stringify(body)),
+      timeout_ms: agy_timeout_ms,
+    }),
+  ) catch {
+    _ => None
+  }
+  guard response is Some(res) && res.ok() else { return None }
+  try_parse(res.text)
+}
+
+///|
+async fn agy_direct_quota(ctx : Ctx, home : String, lang : String) -> JV? {
+  let token_text = ctx.io.read_file_or_none(
+    join_path([home, "agy", ".gemini", "antigravity-cli", "antigravity-oauth-token"]),
+  ).unwrap_or("")
+  let token = match jget(jget(try_parse(token_text), "token"), "access_token") {
+    Some(Str(t)) if t != "" => t
+    _ => return None
+  }
+  let raw_base = match ctx.url("agyQuota") {
+    Some(u) if trim_js(u) != "" => u
+    _ => agy_cloud_code_url
+  }
+  let base = strip_trailing_slashes(raw_base)
+  let loaded = agy_post(
+    ctx,
+    base,
+    "/v1internal:loadCodeAssist",
+    token,
+    jobj([("metadata", jobj([("ideType", js("ANTIGRAVITY"))]))]),
+  )
+  let has_tier = match jget(loaded, "paidTier") {
+    Some(Obj(_)) => true
+    _ =>
+      match jget(loaded, "currentTier") {
+        Some(Obj(_)) => true
+        _ => false
+      }
+  }
+  if !has_tier {
+    return None
+  }
+  let payload = match jget(loaded, "cloudaicompanionProject") {
+    Some(Str(p)) if p != "" => jobj([("project", js(p))])
+    _ => jobj([])
+  }
+  let summary = agy_post(ctx, base, "/v1internal:retrieveUserQuotaSummary", token, payload)
+  let models = agy_post(ctx, base, "/v1internal:fetchAvailableModels", token, payload)
+  let (windows, scoped) = match summary {
+    Some(_) => agy_allowance(ctx, summary)
+    None => ([], [])
+  }
+  let has_scope = (s : String) => windows.iter().any(w => w.get("scope") == Some(Str(s)))
+  let extra = match models {
+    Some(_) =>
+      agy_model_windows(ctx, models).filter(w => match w.get("scope") {
+        Some(Str(s)) => !has_scope(s)
+        _ => false
+      })
+    None => []
+  }
+  let merged = []
+  for w in extra {
+    if w.get("scope") == Some(Str("gemini")) {
+      merged.push(w)
+    }
+  }
+  for w in windows {
+    merged.push(w)
+  }
+  for w in extra {
+    if w.get("scope") != Some(Str("gemini")) {
+      merged.push(w)
+    }
+  }
+  if merged.length() == 0 && scoped.length() == 0 {
+    return None
+  }
+  let mut q = ok_or_unavailable(
+    if merged.length() > 0 {
+      merged
+    } else {
+      scoped
+    },
+    ctx.tr(lang, "station.quota.agyNoWindows"),
+  )
+  if q.get("state") == Some(Str("ok")) && merged.length() > 0 && scoped.length() > 0 {
+    q = jset(q, "scoped", jarr(scoped))
+  }
+  Some(q)
 }
 
 ///|
@@ -597,6 +823,12 @@ pub async fn agy_quota(
       ])
     }
     None => ()
+  }
+  if agy_location_ineligible(said) {
+    match agy_direct_quota(ctx, home, lang) {
+      Some(q) => return q
+      None => ()
+    }
   }
   let detail = slice(said, 0, b=300)
   if auth_failure(detail) {

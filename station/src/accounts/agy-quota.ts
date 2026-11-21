@@ -7,6 +7,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import { devNull } from "node:os";
 import { AGY_FILE_TOKENS, agyCompany, agyHome, agyTakeBack, agyToken, geminiDir } from "../agents/agy.ts";
 import { type Env, platform } from "../platform/index.ts";
+import { profileFetch } from "../ops/agent-env.ts";
 import { type Lang, Said, stationLang, tr } from "../ops/i18n.ts";
 import { withShellCommand } from "../ops/shell-path.ts";
 import { RenewRefused } from "./console.ts";
@@ -16,6 +17,8 @@ import { at, okOrUnavailable, percent, windowLabel } from "./quota.ts";
 type Json = any;
 
 const TIMEOUT_MS = 30_000;
+const AGY_CLOUD_CODE_URL = "https://daily-cloudcode-pa.googleapis.com";
+const AGY_USER_AGENT = "antigravity/1.5.12";
 const DAY_MINUTES = 24 * 60;
 const WEEK_MINUTES = 7 * DAY_MINUTES;
 const SCRUBBED = [
@@ -147,8 +150,108 @@ function authFailure(text: string): boolean {
 /// `VALIDATION_REQUIRED`): that page, "" when it gives none, null when it is not that.
 export function agyVerify(text: string): string | null {
   const lower = text.toLowerCase();
-  if (!["verify your account", "not eligible for antigravity", "validation_required"].some((w) => lower.includes(w))) return null;
+  if (!["verify your account", "validation_required"].some((w) => lower.includes(w))) return null;
   return /https:\/\/accounts\.google\.com\/\S+/.exec(text)?.[0] ?? "";
+}
+
+function agyLocationIneligible(text: string): boolean {
+  const lower = text.toLowerCase();
+  return (
+    lower.includes("not currently available in your location") ||
+    lower.includes("unsupported_location") ||
+    lower.includes("not eligible for antigravity")
+  );
+}
+
+/// 5-hour quota windows derived from `v1internal:fetchAvailableModels` (`models[*].quotaInfo`), one per pool
+/// (`gemini` and `3p`), taking the lowest remaining fraction in each pool.
+export function agyModelWindows(body: Json): QuotaWindow[] {
+  const models = isObject(body?.models) ? body.models : null;
+  if (models === null) return [];
+  const pools: Record<"gemini" | "3p", { frac: number; resetsAt: number | null } | null> = { gemini: null, "3p": null };
+  for (const [modelId, entry] of Object.entries(models)) {
+    if (modelId.toLowerCase().startsWith("tab_") || !isObject(entry)) continue;
+    const qi = isObject(entry.quotaInfo) ? entry.quotaInfo : null;
+    if (qi === null) continue;
+    const frac = typeof qi.remainingFraction === "number" ? qi.remainingFraction : typeof qi.remaining_fraction === "number" ? qi.remaining_fraction : null;
+    if (frac === null) continue;
+    const scope = agyScopeForModel(modelId);
+    const resetsAt = at(qi.resetTime ?? qi.reset_time);
+    const prev = pools[scope];
+    if (prev === null) {
+      pools[scope] = { frac, resetsAt };
+    } else {
+      if (frac < prev.frac) prev.frac = frac;
+      if (prev.resetsAt === null && resetsAt !== null) prev.resetsAt = resetsAt;
+    }
+  }
+  const out: QuotaWindow[] = [];
+  for (const [scope, suffix] of [
+    ["gemini", "Gemini"],
+    ["3p", "Claude / GPT"],
+  ] as const) {
+    const p = pools[scope];
+    if (p === null) continue;
+    out.push({
+      label: `${windowLabel(300, "5 小时")} · ${suffix}`,
+      usedPercent: percent((1 - p.frac) * 100),
+      resetsAt: p.resetsAt,
+      minutes: 300,
+      scope,
+    });
+  }
+  return out;
+}
+
+async function agyPost(base: string, path: string, token: string, body: Json): Promise<Json | null> {
+  try {
+    const res = await profileFetch(`${base}${path}`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        accept: "application/json",
+        "user-agent": AGY_USER_AGENT,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    if (!res.ok) return null;
+    return JSON.parse(await res.text());
+  } catch {
+    return null;
+  }
+}
+
+/// Fallback when `agy -p /usage` rejects an eligible paid account whose `loadCodeAssist` response also includes an
+/// ineligible `free-tier` (`UNSUPPORTED_LOCATION`): confirm an active tier via `loadCodeAssist`, then read windows
+/// from `retrieveUserQuotaSummary` and fill any missing pool (such as Gemini) from `fetchAvailableModels`.
+async function agyDirectQuota(home: string, urls: Urls, lang: Lang): Promise<ProfileQuota | null> {
+  let token: string;
+  try {
+    const parsed = JSON.parse(await readFile(agyToken(home), "utf8"));
+    token = typeof parsed?.token?.access_token === "string" ? parsed.token.access_token : "";
+  } catch {
+    return null;
+  }
+  if (token === "") return null;
+  const base = (urls.agyQuota && urls.agyQuota.trim() !== "" ? urls.agyQuota : AGY_CLOUD_CODE_URL).replace(/\/+$/, "");
+  const loaded = await agyPost(base, "/v1internal:loadCodeAssist", token, { metadata: { ideType: "ANTIGRAVITY" } });
+  if (!isObject(loaded) || (!isObject(loaded.paidTier) && !isObject(loaded.currentTier))) return null;
+  const project = typeof loaded.cloudaicompanionProject === "string" && loaded.cloudaicompanionProject !== "" ? loaded.cloudaicompanionProject : null;
+  const payload = project !== null ? { project } : {};
+  const [summary, models] = await Promise.all([
+    agyPost(base, "/v1internal:retrieveUserQuotaSummary", token, payload),
+    agyPost(base, "/v1internal:fetchAvailableModels", token, payload),
+  ]);
+  const { windows, scoped } = summary !== null ? agyAllowance(summary) : { windows: [], scoped: [] };
+  const hasScope = (s: string) => windows.some((w) => w.scope === s);
+  const extra = models !== null ? agyModelWindows(models).filter((w) => w.scope !== undefined && !hasScope(w.scope)) : [];
+  const merged = [...extra.filter((w) => w.scope === "gemini"), ...windows, ...extra.filter((w) => w.scope !== "gemini")];
+  if (merged.length === 0 && scoped.length === 0) return null;
+  const q = okOrUnavailable(merged.length > 0 ? merged : scoped, tr(lang, "station.quota.agyNoWindows"));
+  if (q.state === "ok" && merged.length > 0 && scoped.length > 0) q.scoped = scoped;
+  return q;
 }
 
 async function runAgyUsage(command: string, env: Env, cwd: string): Promise<{ code: number | null; stdout: string; stderr: string; authPrompted: boolean }> {
@@ -271,6 +374,10 @@ export async function agyQuota(home: string, sourceEnv: Env, urls: Urls, lang: L
   if (verify !== null) {
     const detail = verify !== "" ? tr(lang, "station.quota.agyVerifyAt", { url: verify }) : tr(lang, "station.quota.agyVerify");
     return { state: "blocked", windows: [], detail, checkedAt: 0 };
+  }
+  if (agyLocationIneligible(said)) {
+    const direct = await agyDirectQuota(home, urls, lang);
+    if (direct !== null) return direct;
   }
   const detail = clipKeepingLinks(said, 300);
   if (authFailure(detail)) {

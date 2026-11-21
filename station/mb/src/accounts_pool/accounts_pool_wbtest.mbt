@@ -527,4 +527,10 @@ test "agy says where to verify an account Google holds until it is verified" {
   )
   assert_eq(agy_verify("PERMISSION_DENIED (code 403): Verify your account to continue."), Some(""))
   assert_eq(agy_verify("Your account has been suspended"), None)
+  assert_eq(
+    agy_verify(
+      "Eligibility check failed: Your current account is not eligible for Antigravity, because it is not currently available in your location.",
+    ),
+    None,
+  )
 }
