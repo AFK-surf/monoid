@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [172f7d8cd](https://github.com/AFK-surf/monoid/commit/172f7d8cda1538cbcc1cd7c5b71514b228e9a4d5) feat(liquid-glass): add liquid glass menu morph an | 2.65 | 3.57 | 14.49 | 36.48 | 55.22 | 31.95 | 64.56 | 98.14 | 133.78 |
 | [4a929f079](https://github.com/AFK-surf/monoid/commit/4a929f079832867d0926378a8b9e37ed16290704) feat(core-ts): add harness-core-routes and migrate | 2.65 | 3.57 | 14.49 | 36.48 | 55.22 | 31.95 | 64.56 | 98.37 | 127.86 |
 | [ce202dfbe](https://github.com/AFK-surf/monoid/commit/ce202dfbe04a704e7944401865ca4231bc17a9fd) feat(mbui): preset picker rows open a ⋯ menu to ed | 2.65 | 3.57 | 14.49 | 36.48 | 55.22 | 31.95 | 64.56 | 98.16 | 122.65 |
 | [b1a24de9c](https://github.com/AFK-surf/monoid/commit/b1a24de9c7f019d5dc2aa67ab6a2b40871c55093) fix(mesh): bound local neighbor descriptor underla | 2.65 | 3.57 | 14.49 | 36.48 | 55.21 | 31.95 | 64.56 | 98.34 | 112.92 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f82c45e91](https://github.com/AFK-surf/monoid/commit/f82c45e914c82f87b0e406e054a53248e31d1a53) chore(farview): sync Stage 19A release a00124db8f5 | 2.78 | 3.76 | 15.31 | 37.42 | 57.92 | 32.8 | 66.93 | 98.27 | 124.63 |
 | [298439eb4](https://github.com/AFK-surf/monoid/commit/298439eb46de043778d2cbe142ed7e3764903354) fix(mesh): prefer validated direct paths with dire | 2.78 | 3.76 | 15.29 | 37.36 | 57.87 | 32.74 | 66.8 | 98.31 | 122.73 |
 | [c877b9401](https://github.com/AFK-surf/monoid/commit/c877b9401b55f30f565af218486c8a0b290941d7) feat(mbui): add iOS 27 capillary liquid bridge mer | 2.78 | 3.75 | 15.29 | 37.35 | 57.86 | 32.74 | 66.76 | 98.49 | 119.09 |
-| [ae684ef51](https://github.com/AFK-surf/monoid/commit/ae684ef5190c837baf00bb4d75f7f2d01d8c9b30) perf(mbui): show each frame at once when scrubbing | 2.78 | 3.75 | 15.28 | 37.34 | 57.85 | 32.73 | 66.76 | 98.34 | 120.72 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [172f7d8cd](https://github.com/AFK-surf/monoid/commit/172f7d8cda1538cbcc1cd7c5b71514b228e9a4d5) feat(liquid-glass): add liquid glass menu morph an | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54 |
 | [4a929f079](https://github.com/AFK-surf/monoid/commit/4a929f079832867d0926378a8b9e37ed16290704) feat(core-ts): add harness-core-routes and migrate | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54 |
 | [ce202dfbe](https://github.com/AFK-surf/monoid/commit/ce202dfbe04a704e7944401865ca4231bc17a9fd) feat(mbui): preset picker rows open a ⋯ menu to ed | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54 |
 | [b1a24de9c](https://github.com/AFK-surf/monoid/commit/b1a24de9c7f019d5dc2aa67ab6a2b40871c55093) fix(mesh): bound local neighbor descriptor underla | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f82c45e91](https://github.com/AFK-surf/monoid/commit/f82c45e914c82f87b0e406e054a53248e31d1a53) chore(farview): sync Stage 19A release a00124db8f5 | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.71 | 4.62 | 54.08 |
 | [298439eb4](https://github.com/AFK-surf/monoid/commit/298439eb46de043778d2cbe142ed7e3764903354) fix(mesh): prefer validated direct paths with dire | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.71 | 4.62 | 54.08 |
 | [c877b9401](https://github.com/AFK-surf/monoid/commit/c877b9401b55f30f565af218486c8a0b290941d7) feat(mbui): add iOS 27 capillary liquid bridge mer | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.71 | 4.62 | 54.08 |
-| [ae684ef51](https://github.com/AFK-surf/monoid/commit/ae684ef5190c837baf00bb4d75f7f2d01d8c9b30) perf(mbui): show each frame at once when scrubbing | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.71 | 4.62 | 54.22 |
