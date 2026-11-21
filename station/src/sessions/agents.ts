@@ -1035,6 +1035,7 @@ export const AgentsLive = (control: Control) =>
           maxConcurrentTurns = cfg.maxConcurrentTurns;
           hub.setMaxConcurrentTurns(maxConcurrentTurns);
         }
+        hub.drainCapQueue();
       });
       time.after(120_000, reviewing);
 

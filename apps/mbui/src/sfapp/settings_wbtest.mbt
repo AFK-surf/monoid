@@ -1544,3 +1544,28 @@ test "关闭安全模式: its dialog has the keys in the field the workspace's n
     assert_true(t.focus_said().has_prefix("TextField"), msg="\{at}: \{t.focus_said()}")
   }
 }
+
+///|
+test "profile: maxConcurrentSessions row shows cap on subscription, 不限 when null, opens ask dialog, hidden on api key and borrowed copy" {
+  let t = settings_tester("profile:ws1/st1#cc", w=1280.0, h=1100.0)
+  assert_true(t.find("并发上限") is Some(_))
+  assert_true(t.find("8") is Some(_))
+  assert_eq(t.squeeze_faults(), [])
+  let (x, y) = t.find("并发上限").unwrap()
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("输入正整数（留空或填 0 表示不限）") is Some(_))
+  assert_true(t.find("保存") is Some(_))
+  let t_narrow = settings_tester("profile:ws1/st1#cc", w=390.0, h=1200.0)
+  assert_true(t_narrow.find("并发上限") is Some(_))
+  assert_true(t_narrow.find("8") is Some(_))
+  assert_eq(t_narrow.squeeze_faults(), [])
+  let t_cx = settings_tester("profile:ws1/st1#cx", w=1280.0, h=1400.0)
+  assert_true(t_cx.find("并发上限") is Some(_))
+  assert_true(t_cx.find("不限") is Some(_))
+  assert_eq(t_cx.squeeze_faults(), [])
+  let t_k2 = settings_tester("profile:ws1/st1#k2", w=1280.0, h=1400.0)
+  assert_true(t_k2.find("并发上限") is None)
+  let t_bx = settings_tester("profile:ws1/st1#bx", shows="settings-profile-copy", w=1280.0, h=1100.0)
+  assert_true(t_bx.find("并发上限") is None)
+}

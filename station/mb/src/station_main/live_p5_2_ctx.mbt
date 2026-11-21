@@ -325,16 +325,26 @@ async fn P52::open_options(self : P52, row : Json, profile : Json, memory : Stri
 /// The profile a session's runtime starts on now (accounts.ts `runOn`): the accounts' answer where they are made
 /// (another part's, `accounts.runOn`), else its own while it is one of the station's, else the first that runs its
 /// runtime, else the machine's own login of its runtime.
-async fn P52::run_on(self : P52, key : String, holding : Bool, across : Bool) -> Json {
+async fn P52::run_on(
+  self : P52,
+  key : String,
+  holding : Bool,
+  across : Bool,
+  force_cap? : Bool = false,
+) -> Json {
   // (the accounts' pool, P5-3's: its token, its home and its env as the session's account now)
-  match (try { Ok(self.bus.jobs_accounts_run_on(key, holding, across)) } catch { e => Err(e) }) {
+  match (try { Ok(self.bus.jobs_accounts_run_on(key, holding, across, force_cap~)) } catch { e => Err(e) }) {
     Ok(Object(_) as p) => return p
     Ok(_) => ()
-    Err(e) =>
+    Err(e) => {
+      if e is @accounts_pool.Thrown("AccountCapError", _) {
+        raise e
+      }
       slice_log("warn", "agents", "the accounts did not say a profile; the session's own is taken", {
         "session": jstr(key),
         "error": jstr(said_of(e)),
       })
+    }
   }
   let row = self.bus.store.get_session(key) catch { _ => Json::null() }
   let runtime = jtext(row, "runtime").unwrap_or("claude")
@@ -372,6 +382,7 @@ async fn P52::open_agent(
   set_runtime : (String) -> Unit,
   generation : () -> Int,
   listener : (Int) -> (@jsjson.JValue) -> Unit,
+  force_cap? : Bool = false,
 ) -> (Agent, Json) {
   let hub = self.the_hub()
   let initial = self.bus.store.get_session(key)
@@ -382,7 +393,7 @@ async fn P52::open_agent(
     raise LiveError("session \{key} runs an unknown runtime \{jtext(initial, "runtime").unwrap_or("")}")
   }
   set_runtime(was)
-  let profile = self.run_on(key, false, true)
+  let profile = self.run_on(key, false, true, force_cap~)
   let row = self.bus.store.get_session(key)
   guard @session_hub.runtime_named(jtext(row, "runtime").unwrap_or("")) is Some(runtime) else {
     raise LiveError("session \{key} runs an unknown runtime")

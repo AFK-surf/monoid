@@ -86,6 +86,8 @@ const CONSOLE_RENEW_EVERY_MS = 6 * 3600_000;
 /// How often the Kimi Code sign-ins' tokens (minutes) are looked at (kimi.ts kimiDue says which to renew).
 const KIMI_RENEW_EVERY_MS = 60_000;
 const PENDING_KEPT_MS = 15 * 60_000;
+/// Default active-session cap automatically applied to newly signed-in subscription profiles.
+export const DEFAULT_NEW_SUBSCRIPTION_MAX_CONCURRENT_SESSIONS = 8;
 /// The checks the policy page counts: of the last days, and the chats it names for each option at most.
 const POLICY_DAYS = 7;
 const POLICY_CHATS = 20;
@@ -597,7 +599,7 @@ export class Accounts {
       const existing: Json | undefined = list.find((p) => p?.id === id);
       const machine = existing?.machine === true;
       // One on the machine's login is the machine's: only which of its models are used, and how it runs, are chosen.
-      const get = (key: string): unknown => (machine && !["model", "models", "backgroundOnMessage", "fast"].includes(key) ? undefined : given[key]);
+      const get = (key: string): unknown => (machine && !["model", "models", "backgroundOnMessage", "fast", "maxConcurrentSessions"].includes(key) ? undefined : given[key]);
       // env: a string sets the value; null removes the key; an omitted key keeps it (so masked secrets survive edits).
       const env: Record<string, string> = isObject(existing?.env) ? { ...existing.env } : {};
       const givenEnv = get("env");
@@ -659,6 +661,17 @@ export class Accounts {
       else fast = typeof existing?.fast === "boolean" ? existing.fast : undefined;
       const givenBackground = get("backgroundOnMessage");
       const background = typeof givenBackground === "boolean" ? givenBackground : typeof existing?.backgroundOnMessage === "boolean" ? existing.backgroundOnMessage : undefined;
+      const givenMaxSessions = get("maxConcurrentSessions");
+      let maxConcurrentSessions: number | undefined;
+      if (givenMaxSessions === undefined) {
+        maxConcurrentSessions = typeof existing?.maxConcurrentSessions === "number" && Number.isInteger(existing.maxConcurrentSessions) && existing.maxConcurrentSessions > 0 ? existing.maxConcurrentSessions : undefined;
+      } else if (givenMaxSessions === null || givenMaxSessions === 0) {
+        maxConcurrentSessions = undefined;
+      } else if (typeof givenMaxSessions === "number" && Number.isInteger(givenMaxSessions) && givenMaxSessions > 0) {
+        maxConcurrentSessions = givenMaxSessions;
+      } else {
+        throw new Refusal(400, "maxConcurrentSessions must be a positive integer or null");
+      }
       const joined = this.joined();
       const withheld: string[] = Array.isArray(givenWorkspaces) ? joined.filter((w) => !givenWorkspaces.includes(w)) : givenWorkspaces === null ? joined : Array.isArray(existing?.withheld) ? existing.withheld : [];
       const givenHome = get("home");
@@ -688,6 +701,7 @@ export class Accounts {
       if (isObject(existing?.share)) next.share = existing.share;
       // Only the default's opposite is written.
       if (background === false) next.backgroundOnMessage = false;
+      if (maxConcurrentSessions !== undefined) next.maxConcurrentSessions = maxConcurrentSessions;
       if (fast === true) next.fast = true;
       if ((given.enabled ?? existing?.enabled) === false) next.enabled = false;
       if (withheld.length > 0) next.withheld = withheld;
@@ -1049,13 +1063,14 @@ export class Accounts {
       await this.save(p.by, `profile ${profileId} from a sign-in`, (raw) => {
         // An OpenCode Go one runs every runtime its key does (it has none of its own).
         // A Kimi Code one runs Claude Code, its token read from its home (kimi.ts), never kept here.
+        const maxConcurrentSessions = DEFAULT_NEW_SUBSCRIPTION_MAX_CONCURRENT_SESSIONS;
         const made = signedIn
-          ? { id: profileId, name, access: { kind: "opencode-go", key: signedIn.access, login: true }, home: `homes/${profileId}`, env: {} }
+          ? { id: profileId, name, access: { kind: "opencode-go", key: signedIn.access, login: true }, home: `homes/${profileId}`, env: {}, maxConcurrentSessions }
           : kimi
-            ? { id: profileId, name, access: { kind: "api-provider", provider: KIMI_CODE, login: true }, home: `homes/${profileId}`, env: {} }
+            ? { id: profileId, name, access: { kind: "api-provider", provider: KIMI_CODE, login: true }, home: `homes/${profileId}`, env: {}, maxConcurrentSessions }
             : p.service !== undefined
               ? { id: profileId, name, access: { kind: "service", service: p.service }, home: `homes/${profileId}`, env: {} }
-              : { id: profileId, name, ...(p.runtime !== undefined ? { runtime: p.runtime } : {}), access: enterprise ? { kind: "subscription", enterprise: true } : { kind: "subscription" }, home: `homes/${profileId}`, env: {} };
+              : { id: profileId, name, ...(p.runtime !== undefined ? { runtime: p.runtime } : {}), access: enterprise ? { kind: "subscription", enterprise: true } : { kind: "subscription" }, home: `homes/${profileId}`, env: {}, maxConcurrentSessions };
         raw.profiles = [...(Array.isArray(raw.profiles) ? raw.profiles : []), made];
       });
     } catch (e) {
@@ -1959,6 +1974,7 @@ export class Accounts {
         machine: p.machine === true,
         enabled: p.enabled !== false,
         backgroundOnMessage: p.backgroundOnMessage,
+        maxConcurrentSessions: p.maxConcurrentSessions ?? null,
         fast: takesFast(p) && (!fastNeedsCredits(p) || this.quotas.get(p.id)?.extraUsage === true) ? p.fast === true : null,
         check: checkView,
         login: this.logins.get(p.id),

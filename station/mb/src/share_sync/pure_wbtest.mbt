@@ -36,6 +36,10 @@ test "what goes to another station of a profile: its key only where it is one" {
     js_stringify(portable(parse("{\"access\":{\"kind\":\"api-provider\",\"key\":\"s\"}}"))),
     "{\"access\":{\"kind\":\"api-provider\",\"key\":\"s\"}}",
   )
+  assert_eq(
+    js_stringify(portable(parse("{\"name\":\"n\",\"maxConcurrentSessions\":4}"))),
+    "{\"name\":\"n\",\"maxConcurrentSessions\":4}",
+  )
 }
 
 ///|

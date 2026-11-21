@@ -98,7 +98,12 @@ test "decision_models asks decision.resolvedModel only of profiles whose decisio
 }
 
 ///|
-fn test_profile(id : String, models : Array[String], billed? : Bool = false) -> Profile {
+fn test_profile(
+  id : String,
+  models : Array[String],
+  billed? : Bool = false,
+  max_concurrent_sessions? : Int? = None,
+) -> Profile {
   let raw_fields = [
     ("id", js(id)),
     ("name", js(id)),
@@ -108,6 +113,10 @@ fn test_profile(id : String, models : Array[String], billed? : Bool = false) -> 
   ]
   if billed {
     raw_fields.push(("kind", js("api")))
+  }
+  match max_concurrent_sessions {
+    Some(n) => raw_fields.push(("maxConcurrentSessions", jint(n)))
+    None => ()
   }
   {
     raw: jobj(raw_fields),
@@ -124,6 +133,7 @@ fn test_profile(id : String, models : Array[String], billed? : Bool = false) -> 
     machine: false,
     background_on_message: false,
     withheld: None,
+    max_concurrent_sessions,
   }
 }
 
@@ -174,8 +184,10 @@ test "pick_profile prefers paid usable accounts, skips spent/crowded, and resets
   let signals : PoolSignals = {
     health: id => healths.get(id).unwrap_or(Health::empty()),
     load: _ => 0,
+    active: None,
     last_picked: _ => 0.0,
     now: () => now,
+    max_sessions: None,
   }
   // p_reset's 100% window already expired (resetsAt <= now), so it is usable, uncrowded, and paid
   assert_true(usable(healths["reset"], now~))
@@ -208,15 +220,25 @@ test "cheap_to_leave and effort level intersection" {
 }
 
 ///|
-fn test_access_profile(id : String, models : Array[String], access : JV) -> Profile {
-  let raw = jobj([
+fn test_access_profile(
+  id : String,
+  models : Array[String],
+  access : JV,
+  max_concurrent_sessions? : Int? = None,
+) -> Profile {
+  let fields = [
     ("id", js(id)),
     ("name", js(id)),
     ("runtime", js("claude")),
     ("models", jarr(models.map(js))),
     ("home", js("/homes/\{id}")),
     ("access", access),
-  ])
+  ]
+  match max_concurrent_sessions {
+    Some(n) => fields.push(("maxConcurrentSessions", jint(n)))
+    None => ()
+  }
+  let raw = jobj(fields)
   {
     raw,
     id,
@@ -232,6 +254,7 @@ fn test_access_profile(id : String, models : Array[String], access : JV) -> Prof
     machine: false,
     background_on_message: false,
     withheld: None,
+    max_concurrent_sessions,
   }
 }
 
@@ -315,7 +338,7 @@ test "choose_run_on_profile leaves billed-per-use immediately without cheap_to_l
       pick=among => pick_profile(
         among,
         row.model,
-        { health, load: _ => 0, last_picked: _ => 0.0, now: () => now },
+        { health, load: _ => 0, active: None, max_sessions: None, last_picked: _ => 0.0, now: () => now },
         false,
       ),
     )
@@ -456,8 +479,10 @@ test "signs_in skips blocked quota, pick_profile prefers healthy over unavailabl
   let signals : PoolSignals = {
     health: id => healths.get(id).unwrap_or(Health::empty()),
     load: id => if id == "cc2" || id == "cc3" { 5 } else { 0 },
+    active: None,
     last_picked: _ => 0.0,
     now: () => now,
+    max_sessions: None,
   }
   // Healthy subscriptions beat unavailable cc1 even with higher load.
   let picked = pick_profile([p_cc1, p_cc2, p_cc3], Some("claude-opus-5-5"), signals, true)
@@ -500,7 +525,7 @@ test "signs_in skips blocked quota, pick_profile prefers healthy over unavailabl
         pick=among => pick_profile(
           among,
           row.model,
-          { health, load: _ => 0, last_picked: _ => 0.0, now: () => now },
+          { health, load: _ => 0, active: None, max_sessions: None, last_picked: _ => 0.0, now: () => now },
           false,
         ),
       ) {
@@ -652,4 +677,186 @@ test "put_profile_runtime_and_access preserves access.service and omits runtime 
   )
   assert_eq(rt2, None)
   assert_eq(jstr(jget(acc2, "service")), Some("other-svc"))
+}
+
+///|
+test "maxConcurrentSessions: validation, parsing, is_session_capped, pick_profile pace cap and bucketing" {
+  let now = 1_800_000_000_000.0
+  // check_config accepts absent, null, 0, and positive integers; rejects negative, float, string.
+  let ok_cfg = (v : JV?) => {
+    let fields = [
+      ("id", js("p1")),
+      ("runtime", js("claude")),
+      ("access", jobj([("kind", js("subscription"))])),
+      ("home", js("homes/p1")),
+    ]
+    match v {
+      Some(x) => fields.push(("maxConcurrentSessions", x))
+      None => ()
+    }
+    jobj([("profiles", jarr([jobj(fields)]))])
+  }
+  let passes = (v : JV?) => try {
+    check_config(Some(ok_cfg(v)), "/data")
+    true
+  } catch {
+    _ => false
+  }
+  assert_true(passes(None))
+  assert_true(passes(Some(Null)))
+  assert_true(passes(Some(jint(0))))
+  assert_true(passes(Some(jint(8))))
+  assert_false(passes(Some(jint(-1))))
+  assert_false(passes(Some(jnum(2.5))))
+  assert_false(passes(Some(js("4"))))
+
+  // profile_of parses positive integers only; 0 / absent -> None.
+  let parsed_zero = profile_of(
+    jobj([("id", js("p0")), ("runtime", js("claude")), ("home", js("h/p0")), ("maxConcurrentSessions", jint(0))]),
+    "/data",
+    _ => None,
+  )
+  assert_eq(parsed_zero.max_concurrent_sessions, None)
+  let parsed_pos = profile_of(
+    jobj([("id", js("p8")), ("runtime", js("claude")), ("home", js("h/p8")), ("maxConcurrentSessions", jint(8))]),
+    "/data",
+    _ => None,
+  )
+  assert_eq(parsed_pos.max_concurrent_sessions, Some(8))
+
+  // is_session_capped: billed-per-use is never capped; subscription respects active >= cap.
+  let p_legacy = test_access_profile("legacy", ["opus"], jobj([("kind", js("subscription"))]))
+  let p_capped = test_access_profile(
+    "capped",
+    ["opus"],
+    jobj([("kind", js("subscription"))]),
+    max_concurrent_sessions=Some(2),
+  )
+  let p_api = test_access_profile(
+    "or",
+    ["opus"],
+    jobj([("kind", js("api-provider")), ("provider", js("openrouter")), ("key", js("k"))]),
+    max_concurrent_sessions=Some(1),
+  )
+  assert_false(is_session_capped(p_legacy, p_legacy.max_concurrent_sessions, 100))
+  assert_false(is_session_capped(p_capped, p_capped.max_concurrent_sessions, 1))
+  assert_true(is_session_capped(p_capped, p_capped.max_concurrent_sessions, 2))
+  assert_false(is_session_capped(p_api, p_api.max_concurrent_sessions, 10))
+
+  // Capped subscription caps pace at 1.0 so near-expiry weekly window does not steal from legacy (pace 2.0).
+  let q = (five : Double, week : Double, reset_days : Double) => jobj([
+    ("state", js("ok")),
+    (
+      "windows",
+      jarr([
+        jobj([("usedPercent", jnum(five)), ("minutes", jnum(300.0)), ("resetsAt", jnum(now + 3.0 * hour_ms))]),
+        jobj([("usedPercent", jnum(week)), ("minutes", jnum(10080.0)), ("resetsAt", jnum(now + reset_days * 24.0 * hour_ms))]),
+      ]),
+    ),
+  ])
+  let healths : Map[String, Health] = {
+    "legacy": { check: Some(jobj([("state", js("ok"))])), quota: Some(q(10.0, 20.0, 2.8)), account: None, spent: false },
+    "capped": { check: Some(jobj([("state", js("ok"))])), quota: Some(q(10.0, 20.0, 1.0)), account: None, spent: false },
+    "or": { check: Some(jobj([("state", js("ok"))])), quota: None, account: None, spent: false },
+  }
+  let base_signals = (load : (String) -> Int, active : (String) -> Int) => (
+    {
+      health: id => healths.get(id).unwrap_or(Health::empty()),
+      load,
+      active: Some(active),
+      last_picked: _ => 0.0,
+      now: () => now,
+      max_sessions: None,
+    } : PoolSignals
+  )
+  assert_eq(pick_profile([p_legacy, p_capped], Some("opus"), base_signals(_ => 0, _ => 0), true).id, "legacy")
+  // 4 warm processes (load=4) + 0 running (active=0) is NOT capped.
+  assert_eq(
+    pick_profile([p_capped, p_api], Some("opus"), base_signals(id => if id == "capped" { 4 } else { 0 }, _ => 0), true).id,
+    "capped",
+  )
+  // When capped has active >= 2, legacy wins even with higher load; without legacy, capped still beats billed-per-use.
+  assert_eq(
+    pick_profile(
+      [p_capped, p_legacy],
+      Some("opus"),
+      base_signals(id => if id == "legacy" { 10 } else { 2 }, id => if id == "legacy" { 10 } else { 2 }),
+      true,
+    ).id,
+    "legacy",
+  )
+  assert_eq(
+    pick_profile([p_capped, p_api], Some("opus"), base_signals(_ => 2, _ => 2), true).id,
+    "capped",
+  )
+}
+
+///|
+test "choose_run_on_profile throws AccountCapError when only capped subscriptions remain and respects force_cap" {
+  let p_capped = test_access_profile(
+    "capped",
+    ["opus"],
+    jobj([("kind", js("subscription"))]),
+    max_concurrent_sessions=Some(2),
+  )
+  let p_or = test_access_profile(
+    "or",
+    ["opus"],
+    jobj([("kind", js("api-provider")), ("provider", js("openrouter")), ("key", js("k"))]),
+  )
+  let ok_h : Health = { check: Some(jobj([("state", js("ok"))])), quota: None, account: None, spent: false }
+  let row = Row::of_jv(
+    jobj([("key", js("s3")), ("runtime", js("claude")), ("profile", js("capped")), ("profilePinned", jbool(false)), ("model", js("opus"))]),
+  )
+  // With active=2 == cap=2 and force_cap=false, throws AccountCapError instead of falling back to OpenRouter.
+  let threw_cap = accounts_ran(async fn() {
+    try {
+      ignore(
+        choose_run_on_profile(
+          "s3",
+          row,
+          [p_capped, p_or],
+          false,
+          force_cap=false,
+          active_of=p => if p.id == "capped" { 2 } else { 0 },
+          cap_of=p => p.max_concurrent_sessions,
+          crowded=_ => false,
+          can=_ => true,
+          health_of=_ => ok_h,
+          cheap_to_leave=async fn() { false },
+          elsewhere=async fn() { None },
+          elsewhere_paid=Some(async fn() { None }),
+          pick=async fn(among) { among[0] },
+        ),
+      )
+      false
+    } catch {
+      Thrown("AccountCapError", _) => true
+      _ => false
+    }
+  })
+  assert_true(threw_cap)
+  // With force_cap=true (manual jump-the-queue), succeeds and stays on capped.
+  let forced = accounts_ran(async fn() {
+    match
+      choose_run_on_profile(
+        "s3",
+        row,
+        [p_capped, p_or],
+        false,
+        force_cap=true,
+        active_of=p => if p.id == "capped" { 2 } else { 0 },
+        cap_of=p => p.max_concurrent_sessions,
+        crowded=_ => false,
+        can=_ => true,
+        health_of=_ => ok_h,
+        cheap_to_leave=async fn() { false },
+        elsewhere=async fn() { None },
+        elsewhere_paid=Some(async fn() { None }),
+        pick=async fn(among) { among[0] },
+      ) {
+      Stay(p) | Move(p) => p.id
+    }
+  })
+  assert_eq(forced, "capped")
 }

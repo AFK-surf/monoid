@@ -2387,6 +2387,12 @@ web-pages.profiles.adding
 web-pages.profiles.background
 web-pages.profiles.backgroundOff
 web-pages.profiles.backgroundOn
+web-pages.profiles.maxConcurrentSessions
+web-pages.profiles.maxConcurrentSessionsHint
+web-pages.profiles.maxConcurrentSessionsInvalid
+web-pages.profiles.maxConcurrentSessionsNote
+web-pages.profiles.maxConcurrentSessionsSaved
+web-pages.profiles.maxConcurrentSessionsUnlimited
 web-pages.profiles.checkedAt
 web-pages.profiles.collapse
 web-pages.profiles.removeModel

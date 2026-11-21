@@ -371,6 +371,7 @@ export class Hub {
       config: () => this.config(),
       store: this.store,
       running: (except) => [...this.actors.values()].filter((a) => a.key !== except && a.processState() !== "cold").flatMap((a) => this.store.getSession(a.key)?.profile ?? []),
+      active: (except) => [...this.actors.values()].filter((a) => a.key !== except && a.processState() === "running").flatMap((a) => this.store.getSession(a.key)?.profile ?? []),
       clock: this.clock,
       allows: (key, profile) => allowedIn(profile, this.wsOf(key), this.workspaces()[0] ?? null),
       // Moved to another account by the station (its allowance ran out, its login is over, its profile deleted): said in
@@ -1466,6 +1467,7 @@ export class Hub {
     for (const actor of waiting) void actor.allowanceReset().catch((error) => {
       log.warn("hub", "could not resume a session after its allowance was reset", { session: actor.key, error: (error as Error).message });
     });
+    this.drainCapQueue();
   }
 
   /// What every runtime process starts with changed (the station's variables for its agents, ops/agent-env.ts): each
@@ -1897,6 +1899,11 @@ export class Hub {
     if (this.actorsProgram) this.actorsProgram.setMaxConcurrentTurns(limit);
   }
 
+  /// Wakes queued sessions waiting on per-account concurrency caps.
+  drainCapQueue() {
+    this.actorsProgram?.drainCapQueue();
+  }
+
   /// The program its actors run in, the station's jobs too (jobs/jobs.ts), started for its first use (none: not built
   /// here).
   program(): ActorsProgram | null {
@@ -1965,7 +1972,7 @@ export class Hub {
       },
       chat: (connect) => this.chatOf(connect),
       driver: (runtime) => this.sessionDriver(runtime),
-      runOn: (key, holding, across) => this.accounts.runOn(key, holding, false, across),
+      runOn: (key, holding, across, forceCap) => this.accounts.runOn(key, holding, false, across, forceCap),
       spend: (key, ranOn, model) => this.accounts.spend(key, ranOn, model),
       refillsAt: (key) => this.accounts.refillsAt(key),
       recheck: (profile) => this.accounts.recheck(profile),

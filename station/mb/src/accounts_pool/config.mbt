@@ -20,6 +20,7 @@ pub(all) struct Profile {
   machine : Bool
   background_on_message : Bool
   withheld : Array[String]?
+  max_concurrent_sessions : Int?
 }
 
 ///|
@@ -180,6 +181,14 @@ pub fn profile_of(
     Some(w) => jset(o, "withheld", jstrs(w))
     None => o
   }
+  let max_concurrent_sessions : Int? = match p.get("maxConcurrentSessions") {
+    Some(Num(n)) if is_integer(n) && n > 0.0 => Some(n.to_int())
+    _ => None
+  }
+  o = match max_concurrent_sessions {
+    Some(n) => jset(o, "maxConcurrentSessions", jint(n))
+    None => jdel(o, "maxConcurrentSessions")
+  }
   if is_undef(o.get("id").unwrap_or(Null)) {
     o = jdel(o, "id")
   }
@@ -201,6 +210,7 @@ pub fn profile_of(
     machine,
     background_on_message: bg,
     withheld,
+    max_concurrent_sessions,
   }
 }
 
@@ -329,6 +339,10 @@ pub fn Profile::of_hub(v : JV) -> Profile {
     background_on_message: v.get("backgroundOnMessage") != Some(Bool(false)),
     withheld: match v.get("withheld") {
       Some(Arr(a)) => Some(a.map(x => js_string(Some(x))))
+      _ => None
+    },
+    max_concurrent_sessions: match v.get("maxConcurrentSessions") {
+      Some(Num(n)) if is_integer(n) && n > 0.0 => Some(n.to_int())
       _ => None
     },
   }

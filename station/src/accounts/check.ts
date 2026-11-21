@@ -85,6 +85,11 @@ export function checkConfig(raw: any, _data: string, services: ServiceRegistry =
     for (const f of ["machine", "backgroundOnMessage", "fast", "enabled"]) optional(p[f], "boolean", "a boolean");
     optional(p.name, "string", "a string");
     optional(p.model, "string", "a string");
+    if (p.maxConcurrentSessions !== undefined && p.maxConcurrentSessions !== null) {
+      if (typeof p.maxConcurrentSessions !== "number" || !Number.isInteger(p.maxConcurrentSessions) || p.maxConcurrentSessions < 0) {
+        throw new Error(`profile ${p.id}: maxConcurrentSessions must be a non-negative integer`);
+      }
+    }
     if (p.models !== undefined && p.models !== null && (!Array.isArray(p.models) || p.models.some((m: unknown) => typeof m !== "string"))) {
       throw new Error("invalid type: expected a sequence of strings");
     }

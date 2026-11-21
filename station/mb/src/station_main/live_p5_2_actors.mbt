@@ -384,7 +384,7 @@ fn error_of(e : Error, runtime : String) -> Json {
     CommandMissing(c) => "the runner did not start: \{c} is not on PATH"
     other => said_of(other)
   }
-  {
+  let out : Map[String, Json] = {
     "id": ji(id),
     "message": jstr(message),
     "said": jb(said_own),
@@ -395,10 +395,19 @@ fn error_of(e : Error, runtime : String) -> Json {
         CommandMissing(_) => "CommandMissing"
         // (a peer's refusal told apart from a request that did not get through: bus.ts)
         @gate.PeerRefused(_) => "PeerRefused"
+        @accounts_pool.Thrown(k, _) => k
         _ => "Error"
       },
     ),
   }
+  if e is @accounts_pool.Thrown("AccountCapError", said) {
+    out["sessionCap"] = jb(true)
+    if said.get("profile") is Some(Str(p)) { out["profile"] = jstr(p) }
+    if said.get("profileId") is Some(Str(pid)) { out["profileId"] = jstr(pid) }
+    if said.get("active") is Some(Num(n)) { out["active"] = jn(n) }
+    if said.get("cap") is Some(Num(n)) { out["cap"] = jn(n) }
+  }
+  Json::object(out)
 }
 
 ///|
@@ -1172,6 +1181,7 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
           gen.val
         },
         g => self.listener(g),
+        force_cap=a(3) is True,
       )
       self.next += 1
       let handle = self.next
@@ -1204,7 +1214,7 @@ async fn MbActor::asked(self : MbActor, f : String, args : Array[Json]) -> Json 
         None => Json::null()
       }
     }
-    "profileId" => jfield(ctx.run_on(self.key, a(0) is True, true), "id")
+    "profileId" => jfield(ctx.run_on(self.key, a(0) is True, true, force_cap=a(1) is True), "id")
     "toolsUnheard" => {
       let handle = as_num(a(0)).unwrap_or(-1.0).to_int()
       match self.agents.get(handle) {

@@ -902,6 +902,8 @@ export interface Profile {
 	 * station older than the setting.
 	 */
 	backgroundOnMessage?: boolean;
+	/** Optional active-session concurrency cap for this profile; None when unlimited or from an older station. */
+	maxConcurrentSessions?: number;
 	/** Whether this profile may be used; absent on stations from before disabling profiles. */
 	enabled?: boolean;
 	fast?: boolean;

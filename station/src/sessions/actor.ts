@@ -155,11 +155,12 @@ export type SessionDeps = {
   driver(runtime: RuntimeKind): AgentDriver;
   /// The profile a session's runtime starts on now: its own while usable, else another that can take it on (`holding`:
   /// its process has work going in the background, kept on an account nearly full; `across`: before a turn, so another
-  /// runtime's when none of its own can run it, accounts.ts `runOn`).
-  runOn(key: string, holding?: boolean, across?: boolean): Profile & { spelling?(model: string): string | null };
+  /// runtime's when none of its own can run it, accounts.ts `runOn`; `forceCap`: bypasses account concurrency caps).
+  runOn(key: string, holding?: boolean, across?: boolean, forceCap?: boolean): Profile & { spelling?(model: string): string | null };
   /// A turn ran into the allowance of `ranOn`, the profile its process was started on (null: the session's own), or
-  /// `model`'s own limit there (that model alone passed over on it): the profile left and the one moved to, when it moved.
-  spend(key: string, ranOn: string | null, model?: string | null): [string, string] | null;
+  /// `model`'s own limit there (that model alone passed over on it): the profile left and the one moved to, when it moved,
+  /// or `{ paused: "session_cap", ... }` when only capped accounts remain.
+  spend(key: string, ranOn: string | null, model?: string | null): [string, string] | { paused: "session_cap"; profile: string; profileId: string; active: number; cap: number } | null;
   /// When session `key`'s profile, its allowance run out, is expected to run again (absent: in an hour).
   refillsAt?(key: string): number;
   /// A runtime failed to sign in on `profile`: it is checked again (the pool passes over one whose login is over).
@@ -334,6 +335,8 @@ export type OpenHow = {
   readBack: boolean;
   /// the profile its process before ran on
   profile: string | null;
+  /// bypasses account concurrency caps (manual jump-the-queue start)
+  forceCap?: boolean;
   /// its runtime, once the session's row says it (before it is opened: what failing to start it is about)
   runtime(runtime: RuntimeKind): void;
   generation(): number;
@@ -364,7 +367,7 @@ export async function openAgent(deps: SessionDeps, key: string, how: OpenHow): P
   how.runtime(was);
   // Its account first: none of its runtime's able to run it, it may go on on another runtime's (accounts.ts `runOn`),
   // whose driver then opens it, afresh.
-  const profile = deps.runOn(key, false, true);
+  const profile = deps.runOn(key, false, true, how.forceCap === true);
   const row = store.getSession(key);
   if (!row) throw new Error(`session ${key} disappeared`);
   const runtime = runtimeKind(row.runtime);

@@ -1047,6 +1047,13 @@ pub async fn Accounts::profiles_view(self : Accounts, viewer : JV?) -> JV {
           ("machine", jbool(p.machine)),
           ("enabled", jbool(p.enabled)),
           ("backgroundOnMessage", jbool(p.background_on_message)),
+          (
+            "maxConcurrentSessions",
+            match p.max_concurrent_sessions {
+              Some(n) => jint(n)
+              None => Null
+            },
+          ),
           ("fast", fast),
           ("check", check_view),
           ("login", self.ask("logins.get", [js(p.id)])),

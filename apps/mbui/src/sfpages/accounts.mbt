@@ -292,6 +292,19 @@ fn profile_background(p : Json?) -> Bool {
 }
 
 ///|
+/// Whether this subscription/membership profile supports configuring `maxConcurrentSessions`.
+fn profile_max_sessions(p : Json?) -> Bool {
+  if profile_copy(p) {
+    return false
+  }
+  let a = field(p, "access")
+  let kind = text(a, "kind")
+  kind == "subscription" ||
+  kind == "opencode-go" ||
+  (text(a, "provider") == "kimi-code" && flag(a, "login"))
+}
+
+///|
 /// The connects bound to it, as the station's overview lists them.
 fn profile_users(o : Json?, p : Json?) -> Array[Json] {
   strings(p, "usedBy").filter_map(fn(uid) {
@@ -2004,6 +2017,69 @@ fn profile_settings_node(
                 note=fn() { if flag(p(), "backgroundOnMessage") { @sf.t("android-settings.profile.backgroundOn") } else { @sf.t("android-settings.profile.backgroundOff") } },
                 busy~,
               )
+            })
+            g.show(at_once=true, fn() { profile_max_sessions(p()) }, fn(cap_row) {
+              cap_row.pick(at_once=true, fn() { !busy() }, fn(r, goes) {
+                @sf.link_row_node(
+                  r,
+                  fn() { @sf.t("web-pages.profiles.maxConcurrentSessions") },
+                  fn() {
+                    let current = match field(@signals.untracked(p), "maxConcurrentSessions") {
+                      Some(Number(n, ..)) if n >= 1.0 => n.to_int().to_string()
+                      _ => ""
+                    }
+                    @sf.ask(
+                      @sf.t("web-pages.profiles.maxConcurrentSessions"),
+                      @sf.t("common.save"),
+                      fn(raw) {
+                        let trimmed = raw.trim(chars=" \t\n").to_owned()
+                        if trimmed == "" || trimmed == "0" {
+                          @settings.act(
+                            core,
+                            @sf.t("web-pages.profiles.maxConcurrentSessions"),
+                            "profile.put",
+                            obj([("station", str(address)), ("id", str(id)), ("input", obj([("maxConcurrentSessions", Json::null())]))]),
+                            done=@sf.t("web-pages.profiles.maxConcurrentSessionsSaved"),
+                          )
+                        } else {
+                          let mut n = 0
+                          let mut ok = trimmed.length() > 0 && trimmed.length() <= 9
+                          for c in trimmed {
+                            if c >= '0' && c <= '9' {
+                              n = n * 10 + (c.to_int() - '0'.to_int())
+                            } else {
+                              ok = false
+                            }
+                          }
+                          if ok && n > 0 {
+                            @settings.act(
+                              core,
+                              @sf.t("web-pages.profiles.maxConcurrentSessions"),
+                              "profile.put",
+                              obj([("station", str(address)), ("id", str(id)), ("input", obj([("maxConcurrentSessions", Json::number(n.to_double()))]))]),
+                              done=@sf.t("web-pages.profiles.maxConcurrentSessionsSaved"),
+                            )
+                          } else {
+                            @sfbase.toast_later(@sf.t("web-pages.profiles.maxConcurrentSessionsInvalid"))
+                          }
+                        }
+                      },
+                      value=current,
+                      placeholder=@sf.t("web-pages.profiles.maxConcurrentSessionsUnlimited"),
+                      hint=@sf.t("web-pages.profiles.maxConcurrentSessionsHint"),
+                      empty=true,
+                    )
+                  },
+                  note=fn() { @sf.t("web-pages.profiles.maxConcurrentSessionsNote") },
+                  value=fn() {
+                    match field(p(), "maxConcurrentSessions") {
+                      Some(Number(n, ..)) if n >= 1.0 => n.to_int().to_string()
+                      _ => @sf.t("web-pages.profiles.maxConcurrentSessionsUnlimited")
+                    }
+                  },
+                  goes~,
+                )
+              })
             })
             g.show(at_once=true, fn() { joined().length() > 0 }, fn(ws_box) {
               ws_box.each(joined, fn(w) { text(Some(w), "workspace") }, fn(r, w) {

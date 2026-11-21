@@ -218,7 +218,7 @@ pub fn sign_in_files(p : Json, sep : String) -> Array[String] {
 /// A profile as another station gets it: what it is, its key when it has one, never where its files are or a login.
 pub fn portable(p : Json) -> Json {
   let out : Map[String, Json] = Map([])
-  for k in ["name", "runtime", "access", "env", "model", "models", "backgroundOnMessage", "fast", "enabled"] {
+  for k in ["name", "runtime", "access", "env", "model", "models", "backgroundOnMessage", "fast", "enabled", "maxConcurrentSessions"] {
     if get(Some(p), k) is Some(v) {
       out[k] = clone(v)
     }
