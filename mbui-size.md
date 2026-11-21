@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [317842bf2](https://github.com/AFK-surf/monoid/commit/317842bf2ac2dafe455918387235ed2f2634fa08) feat(sfapp): iOS 26 scroll-to-collapse and compact | 2.64 | 3.55 | 14.4 | 36.43 | 54.98 | 31.92 | 64.42 | 98.62 | 127.63 |
 | [eecf04dd2](https://github.com/AFK-surf/monoid/commit/eecf04dd2c4a543344c687bd742e03a35d20fc20) fix(rig): resolve safe mode task-only station vouc | 2.64 | 3.55 | 14.39 | 36.42 | 54.96 | 31.91 | 64.4 | 98.42 | 125.04 |
 | [1eec0cd3c](https://github.com/AFK-surf/monoid/commit/1eec0cd3ce63e0c127930aa9b4136bd17e5c67ef) chore(mbui): tighten 66 sfapp motion whitelist bar | 2.63 | 3.55 | 14.39 | 36.42 | 54.95 | 31.91 | 64.4 | 98.22 | 116.41 |
 | [94dff2fc3](https://github.com/AFK-surf/monoid/commit/94dff2fc3c5c1d56e1d12bc77ebe824e7f9ca20f) fix(sf-ui): collapse blank lines in quote card two | 2.63 | 3.55 | 14.39 | 36.42 | 54.95 | 31.91 | 64.4 | 98.47 | 112.62 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [46634e602](https://github.com/AFK-surf/monoid/commit/46634e6021e43e4fbfd9e222e9535e8aa848db19) fix(mbui): rule 4 takes a bar's end in a round out | 2.65 | 3.57 | 14.48 | 36.49 | 55.19 | 31.94 | 64.53 | 98.39 | 126.3 |
 | [1ec0f07a1](https://github.com/AFK-surf/monoid/commit/1ec0f07a174d2813c19136e9755ea5ca612fea62) fix(sf-ui,mbui): scale remaining text controls wit | 2.65 | 3.57 | 14.48 | 36.49 | 55.19 | 31.94 | 64.53 | 98.24 | 121.81 |
 | [30e2a95d3](https://github.com/AFK-surf/monoid/commit/30e2a95d3418054dde1a7448b347ec346ca0502f) refactor(profiles): decouple profiles from coding- | 2.65 | 3.57 | 14.48 | 36.49 | 55.19 | 31.94 | 64.53 | 98.24 | 121.81 |
-| [ea14ed57d](https://github.com/AFK-surf/monoid/commit/ea14ed57d50b70493f151ea2a000c7ac82ffe1eb) refactor(mbui): clear 83 remaining structure-box d | 2.65 | 3.57 | 14.48 | 36.48 | 55.19 | 31.95 | 64.53 | 98.21 | 116.29 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [317842bf2](https://github.com/AFK-surf/monoid/commit/317842bf2ac2dafe455918387235ed2f2634fa08) feat(sfapp): iOS 26 scroll-to-collapse and compact | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.22 |
 | [eecf04dd2](https://github.com/AFK-surf/monoid/commit/eecf04dd2c4a543344c687bd742e03a35d20fc20) fix(rig): resolve safe mode task-only station vouc | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.22 |
 | [1eec0cd3c](https://github.com/AFK-surf/monoid/commit/1eec0cd3ce63e0c127930aa9b4136bd17e5c67ef) chore(mbui): tighten 66 sfapp motion whitelist bar | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54.22 |
 | [94dff2fc3](https://github.com/AFK-surf/monoid/commit/94dff2fc3c5c1d56e1d12bc77ebe824e7f9ca20f) fix(sf-ui): collapse blank lines in quote card two | 0.47 | 0.61 | 2.37 | 3.42 | 5.62 | 1.72 | 4.63 | 54 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [46634e602](https://github.com/AFK-surf/monoid/commit/46634e6021e43e4fbfd9e222e9535e8aa848db19) fix(mbui): rule 4 takes a bar's end in a round out | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.15 |
 | [1ec0f07a1](https://github.com/AFK-surf/monoid/commit/1ec0f07a174d2813c19136e9755ea5ca612fea62) fix(sf-ui,mbui): scale remaining text controls wit | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.15 |
 | [30e2a95d3](https://github.com/AFK-surf/monoid/commit/30e2a95d3418054dde1a7448b347ec346ca0502f) refactor(profiles): decouple profiles from coding- | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.28 |
-| [ea14ed57d](https://github.com/AFK-surf/monoid/commit/ea14ed57d50b70493f151ea2a000c7ac82ffe1eb) refactor(mbui): clear 83 remaining structure-box d | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 54.28 |
