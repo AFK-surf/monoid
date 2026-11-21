@@ -54,6 +54,7 @@ static void go_back(void) {
 @property(nonatomic, copy) NSString *mirror;  // the field's text, for the input method
 @property(nonatomic) NSRange sel;
 @property(nonatomic) NSUInteger markedLen;
+@property(nonatomic) BOOL imeHandled;
 @property(nonatomic, strong) CADisplayLink *link;
 @property(nonatomic) CFTimeInterval linkAskedAt;  // when the link was asked for a frame and has not ticked since
 @property(nonatomic) BOOL wantFrame;
@@ -964,6 +965,37 @@ static NSCursor *cursor_of(int kind) {
 - (void)undo:(id)sender { mb_cb.key(1000 + 'z', 8); }
 - (void)redo:(id)sender { mb_cb.key(1000 + 'z', 9); }
 
+// Physical top-row digit keys (kVK_ANSI_1..0) map to ASCII digits when Control is held without Shift,
+// so Control+1..9 still match on layouts whose unshifted digit row gives non-ASCII text or punctuation.
+static int mac_digit_key_code(unsigned short keyCode) {
+  switch (keyCode) {
+    case 18: return 1000 + '1';
+    case 19: return 1000 + '2';
+    case 20: return 1000 + '3';
+    case 21: return 1000 + '4';
+    case 23: return 1000 + '5';
+    case 22: return 1000 + '6';
+    case 26: return 1000 + '7';
+    case 28: return 1000 + '8';
+    case 25: return 1000 + '9';
+    case 29: return 1000 + '0';
+    default: return 0;
+  }
+}
+
+static int mac_char_key_code(NSEvent *e, NSEventModifierFlags m) {
+  if ((m & NSEventModifierFlagControl) && !(m & NSEventModifierFlagShift)) {
+    int digit = mac_digit_key_code(e.keyCode);
+    if (digit) return digit;
+  }
+  NSString *c = e.charactersIgnoringModifiers.lowercaseString;
+  if (c.length == 1) {
+    unichar ch = [c characterAtIndex:0];
+    if (ch >= 32 && ch != 0x7F && ch < 0xF700) return 1000 + ch;
+  }
+  return 0;
+}
+
 - (void)keyDown:(NSEvent *)e {
   clear_stale_sleep_if_active(self.window);
   // a key catcher's focus (apple_device.h): its keys (a composition under way keeps them)
@@ -1010,7 +1042,19 @@ static NSCursor *cursor_of(int kind) {
       mb_cb.key(arrow, mods);
       return;
     }
+    NSUInteger wasMarked = self.markedLen;
+    self.imeHandled = NO;
     [self interpretKeyEvents:@[ e ]];
+    // Send Control keys not handled by the text system (such as ⌃1..⌃9) to the app when no composition is active.
+    // Cocoa Control editing bindings (⌃A, ⌃E, ⌃K, and user key bindings) already ran in doCommandBySelector:.
+    if (!self.imeHandled && wasMarked == 0 && self.markedLen == 0 && (m & NSEventModifierFlagControl)) {
+      if (arrow) {
+        mb_cb.key(arrow, mods);
+      } else if (!editing && e.keyCode != 36 && e.keyCode != 76) {
+        int code = mac_char_key_code(e, m);
+        if (code) mb_cb.key(code, mods);
+      }
+    }
     return;
   }
   // without a field to type in: keys that scroll the list under the pointer
@@ -1029,9 +1073,8 @@ static NSCursor *cursor_of(int kind) {
     case 76: mb_cb.key(7, mods); break;    // Return, Enter
     default: {
       // a character with no field to take it (Space, a letter): the app's, as 1000 + it
-      NSString *c = e.charactersIgnoringModifiers.lowercaseString;
-      if (c.length == 1 && [c characterAtIndex:0] >= 32 && [c characterAtIndex:0] < 0xF700)
-        mb_cb.key(1000 + [c characterAtIndex:0], mods);
+      int code = mac_char_key_code(e, m);
+      if (code) mb_cb.key(code, mods);
     }
   }
 }
@@ -1076,23 +1119,29 @@ static int shift_down(void) {
     mods = 1;
   }
   if (code == 7 && shift_down()) mods |= 1;
-  if (code) mb_cb.key(code, mods);
+  if (code) {
+    self.imeHandled = YES;
+    mb_cb.key(code, mods);
+  }
 }
 
 // ---- NSTextInputClient ----
 
 - (void)insertText:(id)string replacementRange:(NSRange)r {
   NSString *s = [string isKindOfClass:[NSAttributedString class]] ? [string string] : string;
+  self.imeHandled = YES;
   self.markedLen = 0;
   send_text(0, s, 0, 0);
 }
 - (void)setMarkedText:(id)string selectedRange:(NSRange)sel replacementRange:(NSRange)r {
   NSString *s = [string isKindOfClass:[NSAttributedString class]] ? [string string] : string;
+  self.imeHandled = YES;
   self.markedLen = s.length;
   if (s.length == 0) send_text(1, @"", 0, 0);
   else send_text(1, s, (int)sel.location, (int)sel.length);
 }
 - (void)unmarkText {
+  self.imeHandled = YES;
   self.markedLen = 0;
   send_text(2, @"", 0, 0);
 }

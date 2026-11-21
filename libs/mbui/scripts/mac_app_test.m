@@ -218,11 +218,57 @@ static void on_noop_wheel(double x, double y, double dx, double dy, int32_t ph) 
   (void)x, (void)y, (void)dx, (void)dy, (void)ph;
 }
 static int key_calls;
+static int32_t last_key_code;
+static int32_t last_key_mods;
 static void on_test_key(int32_t k, int32_t m) {
-  (void)k, (void)m;
+  last_key_code = k;
+  last_key_mods = m;
   key_calls++;
 }
 static void on_noop_text(int32_t k, moonbit_string_t s, int32_t a, int32_t b) { (void)k, (void)s, (void)a, (void)b; }
+
+// Deterministic stand-in for AppKit's interpretKeyEvents: so keyDown tests do not depend on a live WindowServer
+// or the machine's current input source.
+enum {
+  INTERPRET_NOOP = 0,
+  INTERPRET_COCOA_EDIT = 1,
+  INTERPRET_INSERT_TEXT = 2,
+  INTERPRET_MARK_TEXT = 3,
+  INTERPRET_SILENT_IME = 4,
+};
+
+@interface TestKeyView : MBView
+@property(nonatomic) int interpretMode;
+@end
+
+@implementation TestKeyView
+- (void)interpretKeyEvents:(NSArray<NSEvent *> *)eventArray {
+  (void)eventArray;
+  switch (self.interpretMode) {
+    case INTERPRET_NOOP: [self doCommandBySelector:@selector(noop:)]; break;
+    case INTERPRET_COCOA_EDIT: [self doCommandBySelector:@selector(moveToBeginningOfParagraph:)]; break;
+    case INTERPRET_INSERT_TEXT: [self insertText:@"a" replacementRange:NSMakeRange(NSNotFound, 0)]; break;
+    case INTERPRET_MARK_TEXT:
+      [self setMarkedText:@"ni" selectedRange:NSMakeRange(2, 0) replacementRange:NSMakeRange(NSNotFound, 0)];
+      break;
+    default: break;
+  }
+}
+@end
+
+static NSEvent *make_key_event(NSInteger winNum, NSString *chars, NSString *raw, NSEventModifierFlags mods,
+                               unsigned short keyCode) {
+  return [NSEvent keyEventWithType:NSEventTypeKeyDown
+                          location:NSZeroPoint
+                     modifierFlags:mods
+                         timestamp:fake_media_time
+                      windowNumber:winNum
+                           context:nil
+                        characters:chars
+       charactersIgnoringModifiers:raw
+                         isARepeat:NO
+                           keyCode:keyCode];
+}
 
 // Read all posted "system" JSON messages to inspect {"shown":{"away":...}} notifications.
 static NSMutableArray<NSDictionary *> *take_system_messages(void) {
@@ -513,6 +559,79 @@ int main(void) {
     CHECK(unlocked0 != whileLocked0 && !unlocked0.paused);
     [unlocked0 fire];
     CHECK(presents_by_wid[0] == presentsBeforeKey + 2);
+
+    // 9. Control shortcuts (such as Control+1/2/3) reach mb_cb.key while a text field has focus,
+    //    without breaking Cocoa Control editing bindings or active IME composition.
+    TestKeyView *kv = [[TestKeyView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
+    [s0.box addSubview:kv];
+    kv.imeActive = YES;
+    kv.markedLen = 0;
+
+    // 9a. Unhandled Control+1/2/3 (including non-ASCII or punctuation digit-row layouts), Control+letter, and Control+arrow
+    //     fall through to mb_cb.key.
+    kv.interpretMode = INTERPRET_NOOP;
+    int callsBefore = key_calls;
+    [kv keyDown:make_key_event(w0.windowNumber, @"1", @"1", NSEventModifierFlagControl, 18)];
+    CHECK(key_calls == callsBefore + 1 && last_key_code == 1000 + '1' && last_key_mods == 2);
+    [kv keyDown:make_key_event(w0.windowNumber, @"2", @"2", NSEventModifierFlagControl, 19)];
+    CHECK(key_calls == callsBefore + 2 && last_key_code == 1000 + '2' && last_key_mods == 2);
+    [kv keyDown:make_key_event(w0.windowNumber, @"3", @"3", NSEventModifierFlagControl, 20)];
+    CHECK(key_calls == callsBefore + 3 && last_key_code == 1000 + '3' && last_key_mods == 2);
+    [kv keyDown:make_key_event(w0.windowNumber, @"&", @"&", NSEventModifierFlagControl, 18)];
+    CHECK(key_calls == callsBefore + 4 && last_key_code == 1000 + '1' && last_key_mods == 2);
+    [kv keyDown:make_key_event(w0.windowNumber, @"\u3105", @"\u3105", NSEventModifierFlagControl, 18)];
+    CHECK(key_calls == callsBefore + 5 && last_key_code == 1000 + '1' && last_key_mods == 2);
+    [kv keyDown:make_key_event(w0.windowNumber, @"\x07", @"g", NSEventModifierFlagControl, 5)];
+    CHECK(key_calls == callsBefore + 6 && last_key_code == 1000 + 'g' && last_key_mods == 2);
+    [kv keyDown:make_key_event(w0.windowNumber, @"", @"", NSEventModifierFlagControl, 125)];
+    CHECK(key_calls == callsBefore + 7 && last_key_code == 6 && last_key_mods == 2);
+
+    // 9b. Cocoa Control editing bindings (such as Control+A) send only their text command, never a duplicate shortcut.
+    kv.interpretMode = INTERPRET_COCOA_EDIT;
+    callsBefore = key_calls;
+    [kv keyDown:make_key_event(w0.windowNumber, @"\x01", @"a", NSEventModifierFlagControl, 0)];
+    CHECK(key_calls == callsBefore + 1 && last_key_code == 24 && last_key_mods == 0);
+
+    // 9c. Keys that insert text or start IME composition do not trigger the Control shortcut fallback.
+    kv.interpretMode = INTERPRET_INSERT_TEXT;
+    callsBefore = key_calls;
+    [kv keyDown:make_key_event(w0.windowNumber, @"1", @"1", NSEventModifierFlagControl, 18)];
+    CHECK(key_calls == callsBefore);
+    kv.interpretMode = INTERPRET_MARK_TEXT;
+    [kv keyDown:make_key_event(w0.windowNumber, @"1", @"1", NSEventModifierFlagControl, 18)];
+    CHECK(key_calls == callsBefore && kv.markedLen == 2);
+
+    // 9d. Active IME composition keeps Control keys even when the IME swallows them silently.
+    kv.interpretMode = INTERPRET_SILENT_IME;
+    [kv keyDown:make_key_event(w0.windowNumber, @"1", @"1", NSEventModifierFlagControl, 18)];
+    CHECK(key_calls == callsBefore);
+    kv.interpretMode = INTERPRET_NOOP;
+    [kv keyDown:make_key_event(w0.windowNumber, @"1", @"1", NSEventModifierFlagControl, 18)];
+    CHECK(key_calls == callsBefore);
+    kv.markedLen = 0;
+
+    // 9e. Control+Return, Control+Backspace, and plain keys without Control do not fire the fallback.
+    [kv keyDown:make_key_event(w0.windowNumber, @"\r", @"\r", NSEventModifierFlagControl, 36)];
+    [kv keyDown:make_key_event(w0.windowNumber, @"\x7f", @"\x7f", NSEventModifierFlagControl, 51)];
+    [kv keyDown:make_key_event(w0.windowNumber, @"1", @"1", 0, 18)];
+    CHECK(key_calls == callsBefore);
+
+    // 9f. Without a focused text field, Control+1 on a punctuation digit-row layout still sends '1'.
+    kv.imeActive = NO;
+    [kv keyDown:make_key_event(w0.windowNumber, @"&", @"&", NSEventModifierFlagControl, 18)];
+    CHECK(key_calls == callsBefore + 1 && last_key_code == 1000 + '1' && last_key_mods == 2);
+
+    // 9g. Real MBView (not subclassed) also forwards Control+1/2/3 when imeActive is YES.
+    s0.view.imeActive = YES;
+    s0.view.markedLen = 0;
+    callsBefore = key_calls;
+    [s0.view keyDown:make_key_event(w0.windowNumber, @"1", @"1", NSEventModifierFlagControl, 18)];
+    CHECK(key_calls == callsBefore + 1 && last_key_code == 1000 + '1' && last_key_mods == 2);
+    [s0.view keyDown:make_key_event(w0.windowNumber, @"2", @"2", NSEventModifierFlagControl, 19)];
+    CHECK(key_calls == callsBefore + 2 && last_key_code == 1000 + '2' && last_key_mods == 2);
+    [s0.view keyDown:make_key_event(w0.windowNumber, @"3", @"3", NSEventModifierFlagControl, 20)];
+    CHECK(key_calls == callsBefore + 3 && last_key_code == 1000 + '3' && last_key_mods == 2);
+    s0.view.imeActive = NO;
   }
   if (!failed) printf("mac_app_test: ok\n");
   return failed;
