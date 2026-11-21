@@ -113,6 +113,10 @@ pub fn generator_easing((Double, Double, Double) -> Generator, Double, Double, v
 
 pub fn glass_lens_springs() -> (Spec, Spec, Spec)
 
+pub let glass_pop_in : Trans
+
+pub let glass_pop_out : Trans
+
 pub fn glyph_change(Double, Double, Int32, Int32, Bool, line_ms? : Double, glyph_ms? : Double, rise_px? : Double) -> @view.GlyphLook
 
 pub let glyph_change_in_ms : Double

@@ -300,6 +300,76 @@ test "tools: overlay_presence releases modal_live on the first frame of exit" {
 }
 
 ///|
+test "presets: glass_pop keeps shell and content in step at every progress" {
+  assert_false(@motion.glass_pop_in.ground_first)
+  assert_false(@motion.glass_pop_out.ground_first)
+  for p in [0.0, 0.25, 0.5, 0.75, 1.0] {
+    for look in [@motion.glass_pop_in.at(p, p), @motion.glass_pop_out.at(p, p)] {
+      assert_eq(look.words, 1.0)
+      assert_eq(look.alpha, p)
+    }
+  }
+}
+
+///|
+test "presets: glass_pop_out dissolves evenly over 60fps frames with no final cliff" {
+  let way = @motion.Way::new(1.0)
+  way.go(0.0, @motion.glass_pop_out.spec, at=0.0)
+  let frames = [0.0, 16.67, 33.33, 50.0, 66.67, 83.33, 100.0]
+  let values = frames.map(fn(ms) { way.value_at(ms) })
+  for i in 1..<values.length() {
+    assert_true(values[i] < values[i - 1], msg="frame \{i}: \{values[i - 1]} -> \{values[i]}")
+  }
+  assert_true(values[3] >= 0.45 && values[3] <= 0.55, msg="at 50 ms: \{values[3]}")
+  assert_true(values[5] < 0.10, msg="at 83.33 ms: \{values[5]}")
+  assert_eq(values[6], 0.0)
+}
+
+///|
+test "tools: overlay_presence with glass_pop closed midway never brightens" {
+  let open = @signals.signal(true)
+  let look_now : Ref[@ui.Look?] = Ref(None)
+  let t = @ui.Tester::new(fn(_c) {  })
+  @ui.set_view_app(fn(root) {
+    // (held past its way out, so that the frame at its end still reads the look: 0)
+    root.show(leave=@motion.pop_out_ms * 2.0, fn() { open.get() }, fn(s) {
+      let (look, _) = @motion.overlay_presence(s, enter=@motion.glass_pop_in, exit=@motion.glass_pop_out)
+      s
+      .alpha(@view.By(fn() {
+        let l = look()
+        look_now.val = Some(l)
+        l.alpha
+      }))
+      .words(@view.Is("玻璃"))
+      |> ignore
+    })
+  })
+  t.draw()
+  t.run_for(@motion.pop_ms / 2.0)
+  guard look_now.val is Some(mid) else { fail("expected a look midway in") }
+  assert_true(mid.alpha > 0.0 && mid.alpha < 1.0, msg="midway in: \{mid.alpha}")
+
+  open.set(false)
+  t.draw()
+  guard look_now.val is Some(closed) else { fail("expected a look on closing") }
+  assert_true(closed.alpha <= mid.alpha, msg="closing: \{mid.alpha} -> \{closed.alpha}")
+  assert_eq(closed.words, 1.0)
+
+  let mut last = closed.alpha
+  for _ in 0..<5 {
+    t.run_for(@motion.pop_out_ms / 5.0)
+    guard look_now.val is Some(l) else { fail("expected a look on the way out") }
+    assert_true(l.alpha <= last, msg="going out: \{last} -> \{l.alpha}")
+    assert_eq(l.words, 1.0)
+    last = l.alpha
+  }
+  assert_eq(last, 0.0)
+  t.run_for(@motion.pop_out_ms * 1.5)
+  assert_eq(t.find("玻璃"), None)
+  t.assert_idle()
+}
+
+///|
 test "tools: cover_indicator blends between indices with zero relayout and updates live on resize" {
   let chosen = @signals.signal(0)
   let cell_w = @signals.signal(80.0)

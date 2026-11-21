@@ -29,6 +29,20 @@ pub let pop_out : Trans = trans(fade=0.0, scale=0.97, spec=tween(pop_out_ms, eas
 pub let pop_out_ms : Double = 100.0
 
 ///|
+/// How a liquid-glass popover or menu comes in: glass shell and content fade and scale together
+/// (`ground_first=false`, avoiding a hollow refractive glass flash; `words_over` treats glass
+/// instances as covering underlying words, while solid fallback uses `pop_in`).
+// kept across runs: a value (no field of it changes)
+pub let glass_pop_in : Trans = trans(fade=0.0, scale=0.97, spec=tween(pop_ms, ease=Out))
+
+///|
+/// How a liquid-glass popover or menu goes out: glass shell and content dissolve together over
+/// `pop_out_ms` on `InOut` (`ground_first=false`: even 6-frame 60fps dissolve without a hollow
+/// glass shell or final-frame cliff, and C0-continuous reversal if interrupted mid-`glass_pop_in`).
+// kept across runs: a value (no field of it changes)
+pub let glass_pop_out : Trans = trans(fade=0.0, scale=0.97, spec=tween(pop_out_ms, ease=InOut))
+
+///|
 /// How a tooltip comes (parts.css.ts tooltip: fadeKeyframes, 120 ms on the ease-out); it goes at once.
 // kept across runs: a value (no field of it changes)
 pub let tip_in : Trans = trans(fade=0.0, spec=tween(120.0, ease=Out), ground_first=true)
