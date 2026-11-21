@@ -71,6 +71,7 @@
 #include <mferror.h>
 #include <wmcodecdsp.h>
 #include <xaudio2.h>
+#include <mmdeviceapi.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -2009,10 +2010,79 @@ static SRWLOCK sound_lock = SRWLOCK_INIT;
 static IXAudio2 *sound_engine;
 static IXAudio2MasteringVoice *sound_master;
 static int sound_state;  // 0 not tried, 1 here, -1 none (no audio device, XAudio2 refused)
+// (set from XAudio2's and the device enumerator's threads) rebuild the engine before the next packet after an engine
+// error (disconnected device) or a default render device change
+static volatile LONG sound_lost;
 
-// (under sound_lock) the engine and its output, made once
+struct SoundWatch : IXAudio2EngineCallback, IMMNotificationClient {
+  // IXAudio2EngineCallback
+  void STDMETHODCALLTYPE OnProcessingPassStart() override {}
+  void STDMETHODCALLTYPE OnProcessingPassEnd() override {}
+  void STDMETHODCALLTYPE OnCriticalError(HRESULT error) override {
+    (void)error;
+    InterlockedExchange(&sound_lost, 1);
+  }
+  // IMMNotificationClient (static lifetime: never freed)
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void **out) override {
+    if (iid == __uuidof(IUnknown) || iid == __uuidof(IMMNotificationClient)) {
+      *out = static_cast<IMMNotificationClient *>(this);
+      return S_OK;
+    }
+    *out = NULL;
+    return E_NOINTERFACE;
+  }
+  ULONG STDMETHODCALLTYPE AddRef() override { return 1; }
+  ULONG STDMETHODCALLTYPE Release() override { return 1; }
+  HRESULT STDMETHODCALLTYPE OnDefaultDeviceChanged(EDataFlow flow, ERole role, LPCWSTR id) override {
+    (void)id;
+    if (flow == eRender && (role == eConsole || role == eMultimedia)) InterlockedExchange(&sound_lost, 1);
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE OnDeviceAdded(LPCWSTR) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE OnDeviceRemoved(LPCWSTR) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE OnDeviceStateChanged(LPCWSTR, DWORD) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE OnPropertyValueChanged(LPCWSTR, const PROPERTYKEY) override { return S_OK; }
+};
+static SoundWatch sound_watch;
+static IMMDeviceEnumerator *sound_devices;
+
+static void sound_stopped_all(void);
+
+// (under sound_lock) register for default render device changes once for the process, even if no device is ready yet
+static void sound_watch_devices(void) {
+  if (sound_devices) return;
+  HRESULT co = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+  (void)co;
+  if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), NULL, CLSCTX_ALL, IID_PPV_ARGS(&sound_devices))) &&
+      FAILED(sound_devices->RegisterEndpointNotificationCallback(&sound_watch))) {
+    sound_devices->Release();
+    sound_devices = NULL;
+  }
+}
+
+// (under sound_lock) release the engine and every stream's voice (keeping played sample counts) so the next packet
+// rebuilds them on the current default device
+static void sound_drop_engine(void) {
+  sound_stopped_all();
+  if (sound_master) sound_master->DestroyVoice();
+  sound_master = NULL;
+  if (sound_engine) {
+    sound_engine->UnregisterForCallbacks(&sound_watch);
+    sound_engine->Release();
+  }
+  sound_engine = NULL;
+  sound_state = 0;
+  fprintf(stderr, "win: streams: sound's device lost or changed, made again\n");
+}
+
+// (under sound_lock) create the engine and mastering voice once, and recreate them after a device loss or change
 static int sound_ready(void) {
+  if (InterlockedExchange(&sound_lost, 0)) {
+    if (sound_state > 0) sound_drop_engine();
+    else sound_state = 0;
+  }
   if (sound_state) return sound_state > 0;
+  sound_watch_devices();
   sound_state = -1;
   if (FAILED(XAudio2Create(&sound_engine, 0, XAUDIO2_DEFAULT_PROCESSOR))) {
     fprintf(stderr, "win: streams: no sound (XAudio2)\n");
@@ -2024,6 +2094,7 @@ static int sound_ready(void) {
     sound_engine = NULL;
     return 0;
   }
+  sound_engine->RegisterForCallbacks(&sound_watch);
   sound_state = 1;
   return 1;
 }
@@ -2094,6 +2165,14 @@ static void sound_stop(Stream *s) {
   }
   s->voice = NULL;
   sound_stopped(&s->sound);
+}
+
+// (under sound_lock) release every stream's voice before dropping the engine so each recreates one on the next packet
+static void sound_stopped_all(void) {
+  AcquireSRWLockShared(&streams_lock);
+  for (int i = 1; i < nstreams; i++)
+    if (streams[i] && streams[i]->voice) sound_stop(streams[i]);
+  ReleaseSRWLockShared(&streams_lock);
 }
 
 // (under sound_lock) one 20 ms packet played after those queued
