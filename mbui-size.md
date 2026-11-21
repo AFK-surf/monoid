@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f82607a79](https://github.com/AFK-surf/monoid/commit/f82607a7983e2ac0e09c37d49cf61ced5a9c43f1) fix(mesh): yield stale transport paths and bound m | 2.79 | 3.77 | 15.33 | 37.45 | 57.97 | 32.82 | 66.96 | 98.29 | 127.37 |
 | [f82c45e91](https://github.com/AFK-surf/monoid/commit/f82c45e914c82f87b0e406e054a53248e31d1a53) chore(farview): sync Stage 19A release a00124db8f5 | 2.78 | 3.76 | 15.31 | 37.42 | 57.92 | 32.8 | 66.93 | 98.27 | 124.63 |
 | [298439eb4](https://github.com/AFK-surf/monoid/commit/298439eb46de043778d2cbe142ed7e3764903354) fix(mesh): prefer validated direct paths with dire | 2.78 | 3.76 | 15.29 | 37.36 | 57.87 | 32.74 | 66.8 | 98.31 | 122.73 |
 | [c877b9401](https://github.com/AFK-surf/monoid/commit/c877b9401b55f30f565af218486c8a0b290941d7) feat(mbui): add iOS 27 capillary liquid bridge mer | 2.78 | 3.75 | 15.29 | 37.35 | 57.86 | 32.74 | 66.76 | 98.49 | 119.09 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [6d19980fa](https://github.com/AFK-surf/monoid/commit/6d19980fa800cf2f775045f29ca86df9ceb3a0a4) ci(preview): start windows host checks before the  | 2.76 | 3.73 | 15.18 | 37.26 | 57.53 | 32.65 | 66.51 | 98.22 | 121.84 |
 | [ee0907d04](https://github.com/AFK-surf/monoid/commit/ee0907d0429d86dc7e6806861c6164144d30833c) fix(station): support thumb=2 preview images in Mo | 2.76 | 3.73 | 15.18 | 37.26 | 57.53 | 32.65 | 66.51 | 98.47 | 115.64 |
 | [2cb7928bb](https://github.com/AFK-surf/monoid/commit/2cb7928bb32e111f58e9cdbeef9cc78b48b5dfe4) fix(mbui): forget glyph keys shaped before the fir | 2.76 | 3.73 | 15.18 | 37.26 | 57.53 | 32.66 | 66.51 | 98.29 | 121.9 |
-| [c045a928e](https://github.com/AFK-surf/monoid/commit/c045a928e75f6125dd4a471b95abb7a6639f4a64) feat(cloud,core,app): allow managers to switch sta | 2.76 | 3.73 | 15.18 | 37.26 | 57.53 | 32.66 | 66.51 | 98.29 | 121.9 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f82607a79](https://github.com/AFK-surf/monoid/commit/f82607a7983e2ac0e09c37d49cf61ced5a9c43f1) fix(mesh): yield stale transport paths and bound m | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.71 | 4.62 | 54.08 |
 | [f82c45e91](https://github.com/AFK-surf/monoid/commit/f82c45e914c82f87b0e406e054a53248e31d1a53) chore(farview): sync Stage 19A release a00124db8f5 | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.71 | 4.62 | 54.08 |
 | [298439eb4](https://github.com/AFK-surf/monoid/commit/298439eb46de043778d2cbe142ed7e3764903354) fix(mesh): prefer validated direct paths with dire | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.71 | 4.62 | 54.08 |
 | [c877b9401](https://github.com/AFK-surf/monoid/commit/c877b9401b55f30f565af218486c8a0b290941d7) feat(mbui): add iOS 27 capillary liquid bridge mer | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.71 | 4.62 | 54.08 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [6d19980fa](https://github.com/AFK-surf/monoid/commit/6d19980fa800cf2f775045f29ca86df9ceb3a0a4) ci(preview): start windows host checks before the  | 0.46 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.2 |
 | [ee0907d04](https://github.com/AFK-surf/monoid/commit/ee0907d0429d86dc7e6806861c6164144d30833c) fix(station): support thumb=2 preview images in Mo | 0.46 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.2 |
 | [2cb7928bb](https://github.com/AFK-surf/monoid/commit/2cb7928bb32e111f58e9cdbeef9cc78b48b5dfe4) fix(mbui): forget glyph keys shaped before the fir | 0.46 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.2 |
-| [c045a928e](https://github.com/AFK-surf/monoid/commit/c045a928e75f6125dd4a471b95abb7a6639f4a64) feat(cloud,core,app): allow managers to switch sta | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.05 |
