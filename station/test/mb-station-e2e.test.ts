@@ -371,7 +371,7 @@ function repository(): string {
 }
 
 test("the hooks: subagent-hook.mjs and repo-rules-hook.mjs, as Node runs them, run by the program itself", { skip }, () => {
-  const hooks = join(import.meta.dirname, "..", "src", "agents");
+  const hooks = join(import.meta.dirname, "..", "assets", "agents");
   const subagent = join(hooks, "subagent-hook.mjs");
   for (const [input, writes] of [
     [{ agent_id: "a1", tool_name: "mcp__stillfail__chat_post" }, undefined],
