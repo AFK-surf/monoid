@@ -250,6 +250,8 @@ test("a post carries a card, kept with it and checked", async () => {
   r.claude.last().complete();
   await settle();
   assert.equal(r.store.lastTurn(key)!.need, "「共」改成按今天累计吗？", "it needs what the post asks");
+  sayIn(r.hub, thread.id, "ada@x.com", "next");
+  await settle();
   // Options as JSON text, asking with block; a bare phrase is a label.
   said = await r.call(key, "chat_post", { to, text: "选哪个？", kind: "block", options: '["A", {"label": "B"}]' });
   assert.ok(said.includes("recorded state need_human."), said);

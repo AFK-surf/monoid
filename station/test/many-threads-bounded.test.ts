@@ -68,11 +68,11 @@ async function scenario(n: number): Promise<Record<string, Measure>> {
       await r.accept({ channel: "C2", threadTs: "9100.1", ts: "9100.2", user: "U1", text: "<@UBOT> what changed?", addressed: true });
       await r.quiet();
       await r.call(key, "chat_post", { to: "C2/9100.1", text: "notes", kind: "all_done", done: "answered", about: "9100.2" });
-      r.claude.last().complete();
-      await r.quiet();
     });
     out.state = await measure(() => r.call(key, "chat_state", { kind: "all_done", done: "answered what changed", about: "9100.2" }));
     out.need = await measure(() => r.call(key, "chat_post", { to: "C2/9100.1", text: "ship it?", kind: "need_human", need: "decide" }));
+    r.claude.last().complete();
+    await r.quiet();
     out.refused = await measure(() => r.refused(key, "chat_post", { to: "C9/1.1", text: "x" }));
     out.cleared = await measure(() => toldCleared(r.hub, key));
     out.resumeLost = await measure(() => toldResumeLost(r.hub, key));
