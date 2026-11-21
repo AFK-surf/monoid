@@ -221,17 +221,15 @@ fn chat_quote_node(
     @sf.action_box_node(holds, fn() { @sf.t("web-main.chat.quote") }, fn(_) { chat_quote_take(src, draft, rows) }, fn(b) {
       @sf.style_node(b, fn() { chat_quote_pill })
       @ui.keeps_picked(b)
-      .ground(By(fn() { @ui.tree_theme().color(Primary) }))
-      .shadow(
-        By(fn() {
-          let (blur, fall) = @ui.Shadow::Md.blur_y()
-          (blur, fall, @ui.tree_theme().shadow)
-        }),
-      )
+      .glass(By(fn() { Some(@sf.glass_menu()) }))
+      .edge(By(fn() { if b.glass_solid() { (@sf.control_edge_w, @sf.theme().p.line) } else { (0.0, 0L) } }))
+      .shadow(By(fn() { @sf.float_shadow() }))
+      .shadow_outside(Is(true))
+      .clips(Is(true))
       .beside(p.ends_in, side=Top, offset=8.0, piece=@ui.picked_end_piece(p))
       |> ignore
-      @sf.hover_ground_node(b, color=fn() { @ui.tree_theme().color(A(Bg, O15)) })
-      @sf.icon_node(b, if p.ends_at_start { "quote-open" } else { "quote" }, chat_quote_icon, By(fn() { @sf.theme().p.on_primary })) |> ignore
+      @sf.hover_ground_node(b)
+      @sf.icon_node(b, if p.ends_at_start { "quote-open" } else { "quote" }, chat_quote_icon, By(fn() { @sf.theme().p.text })) |> ignore
       @sf.words_node(b, fn() { @sf.t("web-main.chat.quote") }, fn() { chat_quote_words }) |> ignore
     })
     |> ignore
@@ -239,8 +237,10 @@ fn chat_quote_node(
 }
 
 ///|
-/// The pill (quotePop: 26 high, 10 in, its mark 4 before its words, round, on the primary ground with a shadow, a step
-/// towards the page where the hand is on it: mbui ui/hand_moves.mbt), its mark 12, its words.
+/// The pill (quotePop: 26 high, 10 in, its mark 4 before its words, round; single-layer liquid glass as the finger's
+/// pick bar and the floating buttons are (`glass_menu()`, falling back to `panel_ground()` + hairline `control_edge_w`
+/// border under `MBUI_GLASS=solid`) with outside-only `float_shadow()`, the hover ground where the hand is on it), its
+/// mark 12 and its words in the ink.
 // kept across runs: a value (no field of it changes)
 let chat_quote_pill : @ui.Style = @ui.style(
   row=true,
@@ -256,7 +256,7 @@ let chat_quote_icon : Double = 12.0
 
 ///|
 // kept across runs: a value (no field of it changes)
-let chat_quote_words : @ui.TextStyle = @ui.text_style(size=Caption, weight=Medium, color=OnPrimary, wrap=false)
+let chat_quote_words : @ui.TextStyle = @ui.text_style(size=Caption, weight=Medium, color=Fg, wrap=false)
 
 ///|
 /// How far over where a finger's pick ends its bar stands (pick_bar's: 52 over the line's top, the bar 40 high).
