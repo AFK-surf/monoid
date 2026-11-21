@@ -188,8 +188,8 @@ describe("allowances and renewing", { concurrency: true }, () => {
           status: 200,
           body: paidTier
             ? {
-                currentTier: { id: "standard-tier" },
-                paidTier: { id: "g1-pro-tier", name: "Google AI Pro" },
+                currentTier: { id: "free-tier", name: "Free" },
+                paidTier: { id: "g1-ultra-lite-tier", name: "Google AI Ultra" },
                 cloudaicompanionProject: "aicode-consumers",
                 ineligibleTiers: [{ tierId: "free-tier", reasonCode: "UNSUPPORTED_LOCATION" }],
               }
@@ -230,6 +230,7 @@ describe("allowances and renewing", { concurrency: true }, () => {
     try {
       const fallbackQ = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: locationErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
       assert.equal(fallbackQ.state, "ok");
+      assert.equal(fallbackQ.plan, "Ultra 5x");
       assert.deepEqual(fallbackQ.windows, [
         { label: "5 小时 · Gemini", usedPercent: 8, resetsAt: Date.parse("2026-11-21T05:27:31Z"), minutes: 300, scope: "gemini" },
         { label: "每周 · Claude / GPT", usedPercent: 0, resetsAt: null, minutes: 10080, scope: "3p" },

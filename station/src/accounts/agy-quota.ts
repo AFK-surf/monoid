@@ -5,7 +5,7 @@
 import { spawn } from "node:child_process";
 import { mkdir, readFile } from "node:fs/promises";
 import { devNull } from "node:os";
-import { AGY_FILE_TOKENS, agyCompany, agyHome, agyTakeBack, agyToken, geminiDir } from "../agents/agy.ts";
+import { AGY_FILE_TOKENS, agyCompany, agyHome, agyPlan, agyTakeBack, agyToken, geminiDir } from "../agents/agy.ts";
 import { type Env, platform } from "../platform/index.ts";
 import { profileFetch } from "../ops/agent-env.ts";
 import { type Lang, Said, stationLang, tr } from "../ops/i18n.ts";
@@ -237,7 +237,9 @@ async function agyDirectQuota(home: string, urls: Urls, lang: Lang): Promise<Pro
   if (token === "") return null;
   const base = (urls.agyQuota && urls.agyQuota.trim() !== "" ? urls.agyQuota : AGY_CLOUD_CODE_URL).replace(/\/+$/, "");
   const loaded = await agyPost(base, "/v1internal:loadCodeAssist", token, { metadata: { ideType: "ANTIGRAVITY" } });
-  if (!isObject(loaded) || (!isObject(loaded.paidTier) && !isObject(loaded.currentTier))) return null;
+  if (!isObject(loaded)) return null;
+  const tier = isObject(loaded.paidTier) ? loaded.paidTier : loaded.currentTier;
+  if (!isObject(tier)) return null;
   const project = typeof loaded.cloudaicompanionProject === "string" && loaded.cloudaicompanionProject !== "" ? loaded.cloudaicompanionProject : null;
   const payload = project !== null ? { project } : {};
   const [summary, models] = await Promise.all([
@@ -251,6 +253,8 @@ async function agyDirectQuota(home: string, urls: Urls, lang: Lang): Promise<Pro
   if (merged.length === 0 && scoped.length === 0) return null;
   const q = okOrUnavailable(merged.length > 0 ? merged : scoped, tr(lang, "station.quota.agyNoWindows"));
   if (q.state === "ok" && merged.length > 0 && scoped.length > 0) q.scoped = scoped;
+  const plan = agyPlan(tier);
+  if (plan !== null) q.plan = plan;
   return q;
 }
 

@@ -4,7 +4,7 @@ import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { after, test } from "node:test";
-import { AGY_CATALOG_RETRY_MS, AGY_FILE_TOKENS, AGY_TOOL_BUDGET, AGY_TOOL_CEILING, AGY_TOOL_WRAP, AgyDriver, AgyNoCatalog, SESSIONS, agyAccountFile, agyBringIn, agyLentFile, agyPlan, agyRenew, agyTierIn, agyTokenReady, agyKeychain, goKeyringValue, agyBaseModel, agyCatalog, agyConversations, agyEnv, agyHome, agyToken, agyVariant, classifyFailure, geminiDir, noticeFailure } from "../src/agents/agy.ts";
+import { AGY_CATALOG_RETRY_MS, AGY_FILE_TOKENS, AGY_TOOL_BUDGET, AGY_TOOL_CEILING, AGY_TOOL_WRAP, AgyDriver, AgyNoCatalog, SESSIONS, agyAccountFile, agyBringIn, agyLentFile, agyPlan, agyPlanIn, agyRenew, agySessionPlan, agyTokenReady, agyKeychain, goKeyringValue, agyBaseModel, agyCatalog, agyConversations, agyEnv, agyHome, agyToken, agyVariant, classifyFailure, geminiDir, noticeFailure } from "../src/agents/agy.ts";
 import { REPO_RULES_HOOK } from "../src/agents/repo-rules.ts";
 import type { OpenOptions, RuntimeEvent } from "../src/agents/runtime.ts";
 import { allLeft } from "../src/agents/runner.ts";
@@ -366,8 +366,8 @@ test("models are read without a turn, the station's tools or a transcript", asyn
   assert.equal(readFileSync(dump, "utf8").includes(options.mcpToken), false);
 });
 
-test("tiered subscription models normalize to base model + thinking levels, map (model, effort) to ACP modelId, and match legacy spellings", async () => {
-  const { options, events, driver, dump } = setup({ FAKE_AGY_SUBSCRIPTION: "1" });
+test("the Antigravity catalog reports the plan and groups thinking levels by model", async () => {
+  const { options, events, driver, dump } = setup({ FAKE_AGY_SUBSCRIPTION: "1", FAKE_AGY_TIER: "g1-ultra-lite-tier" });
   const cat = await driver.catalog(options.profile);
   assert.deepEqual(cat, {
     models: ["gemini-4-carbon", "claude-opus-5-5", "gpt-oss-120b", "gemini-pro-orchestrator"],
@@ -378,6 +378,7 @@ test("tiered subscription models normalize to base model + thinking levels, map 
       "gemini-pro-orchestrator": [],
     },
     defaults: { "gemini-4-carbon": "high", "claude-opus-5-5": "medium" },
+    plan: "Ultra 5x",
   });
   const medCat = agyCatalog(
     ["gemini-4-carbon-low", "gemini-4-carbon-medium", "gemini-4-carbon-high", "claude-opus-5-5-low", "claude-opus-5-5-high"],
@@ -919,7 +920,7 @@ test("a company's Google account through the accounts: made a profile that remem
   });
   const store = Store.open(":memory:", null);
   const config = new ConfigFile(dir);
-  let tier: string | undefined = "gcp-ge-plus-tier";
+  let plan: string | undefined = "Enterprise Plus";
   const accounts = new Accounts({
     data: dir,
     store,
@@ -929,7 +930,7 @@ test("a company's Google account through the accounts: made a profile that remem
     loginCommands: { claude: "claude", codex: "codex", agy: "agy" },
     check: (req, lang) => checkProfile({ ...req, env: {}, machine: false, lang }),
     quota: async () => ({ state: "ok", windows: [], detail: null, checkedAt: 0 }),
-    agy: () => ({ models: async () => ["gemini-3.5-flash"], catalog: async () => ({ models: ["gemini-3.5-flash"], efforts: {}, defaults: {}, ...(tier !== undefined ? { tier } : {}) }) }),
+    agy: () => ({ models: async () => ["gemini-3.5-flash"], catalog: async () => ({ models: ["gemini-3.5-flash"], efforts: {}, defaults: {}, ...(plan !== undefined ? { plan } : {}) }) }),
   });
   const viewer = { email: "owner@company.com" } as never;
   accounts.start();
@@ -942,7 +943,7 @@ test("a company's Google account through the accounts: made a profile that remem
     assert.deepEqual([made.runtime, made.access, made.name], ["agy", { kind: "subscription", enterprise: true }, "someone@company.com"]);
     // Its plan: as `agy` said it; where it says none, its sign-in's.
     assert.equal((await accounts.check(made.id, "en")).plan, "Enterprise Plus");
-    tier = undefined;
+    plan = undefined;
     assert.equal((await accounts.check(made.id, "en")).plan, "Enterprise Ultra");
     // Signed in again: Google Cloud's way, without being told.
     await accounts.startLogin(made.id, viewer, "en");
@@ -1121,13 +1122,31 @@ test("a company's sign-in that `agy` refuses after its code ends at once saying 
 });
 
 test("a Google account's tier, as people know its plan; a sign-in's file whole only with a company's licence or project; renewed and lent with what it holds", async () => {
-  assert.deepEqual(
-    ["g1-ultra-tier", "g1-pro-tier", "free-tier", "gcp-ge-ultra-tier", "gcp-ge-plus-tier", "gcp-ge-standard-tier", "gcp-standard-tier", "gcp-other-tier", "", "unknown"].map((t) => agyPlan(t)),
-    ["Ultra", "Pro", "Free", "Enterprise Ultra", "Enterprise Plus", "Enterprise", "Enterprise", "Enterprise", null, null],
-  );
+  const plans = [
+    ["free-tier", "Free"],
+    ["g1-plus-tier", "Plus"],
+    ["g1-pro-tier", "Pro"],
+    ["g1-ultra-lite-tier", "Ultra 5x"],
+    ["g1-ultra-tier", "Ultra 20x"],
+    ["gcp-ge-standard-tier", "Enterprise Standard"],
+    ["gcp-ge-plus-tier", "Enterprise Plus"],
+    ["gcp-ge-ultra-tier", "Enterprise Ultra"],
+    ["gcp-standard-tier", "Enterprise"],
+    ["gcp-other-tier", "Enterprise"],
+    ["", null],
+    ["unknown", null],
+  ] as const;
+  for (const [id, plan] of plans) assert.equal(agyPlan({ id }), plan, id);
   assert.equal(agyPlan(null, true), "Enterprise");
-  assert.equal(agyTierIn({ sessionId: "s", _meta: { antigravity: { tier: { id: "g1-ultra-tier", name: "Google AI Ultra" } } } }), "g1-ultra-tier");
-  assert.equal(agyTierIn({ sessionId: "s" }), null);
+  const sessionPlan = (tier: { id?: string; name?: string }) => agySessionPlan({ _meta: { antigravity: { tier } } });
+  assert.equal(sessionPlan({ id: " G1-ULTRA-LITE-TIER ", name: "Google AI Ultra" }), "Ultra 5x");
+  assert.equal(sessionPlan({ id: "g1-ultra-tier", name: "Google AI Ultra" }), "Ultra 20x");
+  assert.equal(sessionPlan({ id: "future-tier", name: " Google AI Future " }), "Google AI Future");
+  assert.equal(sessionPlan({ name: "Google AI Pro Trial" }), "Google AI Pro Trial");
+  assert.equal(sessionPlan({ id: "constructor", name: "Unknown" }), null);
+  assert.equal(agySessionPlan({ sessionId: "s" }), null);
+  assert.equal(agyPlanIn('{"auth_method":"consumer","tier_display_name":"Google AI Pro Trial"}'), "Google AI Pro Trial");
+  assert.equal(agyPlanIn('{"auth_method":"gcp","user_tier":"gcp-future-tier","tier_display_name":"Pay As You Go"}'), "Pay As You Go");
   const token = { access_token: "ya29.x" };
   assert.equal(agyTokenReady(JSON.stringify({ token, auth_method: "consumer" }), false), true);
   assert.equal(agyTokenReady(JSON.stringify({ token, auth_method: "oauth" }), false), true);

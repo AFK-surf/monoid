@@ -576,16 +576,13 @@ async fn agy_direct_quota(ctx : Ctx, home : String, lang : String) -> JV? {
     token,
     jobj([("metadata", jobj([("ideType", js("ANTIGRAVITY"))]))]),
   )
-  let has_tier = match jget(loaded, "paidTier") {
-    Some(Obj(_)) => true
+  let tier = match jget(loaded, "paidTier") {
+    Some(Obj(_) as paid) => paid
     _ =>
       match jget(loaded, "currentTier") {
-        Some(Obj(_)) => true
-        _ => false
+        Some(Obj(_) as current) => current
+        _ => return None
       }
-  }
-  if !has_tier {
-    return None
   }
   let payload = match jget(loaded, "cloudaicompanionProject") {
     Some(Str(p)) if p != "" => jobj([("project", js(p))])
@@ -633,6 +630,9 @@ async fn agy_direct_quota(ctx : Ctx, home : String, lang : String) -> JV? {
   )
   if q.get("state") == Some(Str("ok")) && merged.length() > 0 && scoped.length() > 0 {
     q = jset(q, "scoped", jarr(scoped))
+  }
+  if ctx.io.b.ask("agy.plan", [tier]) is Str(plan) {
+    q = jset(q, "plan", js(plan))
   }
   Some(q)
 }

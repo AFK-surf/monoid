@@ -189,24 +189,34 @@ pub fn agy_company(text : String) -> Bool {
 
 ///|
 /// The plan a Google account is on, from its tier (`agyPlan`).
-pub fn agy_plan(tier : String?, company? : Bool = false) -> String? {
+pub fn agy_plan(tier : JValue?, company? : Bool = false) -> String? {
+  agy_plan_fields(str_at(tier, "id"), str_at(tier, "name"), company)
+}
+
+///|
+fn agy_plan_fields(tier : String?, name : String?, company : Bool) -> String? {
   let id = match tier {
     Some(t) => @jscase.lower(@jscase.trim(t))
     None => ""
   }
   let known = [
-    ("g1-ultra-tier", "Ultra"),
-    ("g1-pro-tier", "Pro"),
     ("free-tier", "Free"),
-    ("gcp-ge-ultra-tier", "Enterprise Ultra"),
+    ("g1-plus-tier", "Plus"),
+    ("g1-pro-tier", "Pro"),
+    ("g1-ultra-lite-tier", "Ultra 5x"),
+    ("g1-ultra-tier", "Ultra 20x"),
+    ("gcp-ge-standard-tier", "Enterprise Standard"),
     ("gcp-ge-plus-tier", "Enterprise Plus"),
-    ("gcp-ge-standard-tier", "Enterprise"),
-    ("gcp-standard-tier", "Enterprise"),
+    ("gcp-ge-ultra-tier", "Enterprise Ultra"),
   ]
   for k in known {
     if k.0 == id {
       return Some(k.1)
     }
+  }
+  let label = name.map(@jscase.trim).unwrap_or("")
+  if label != "" && @jscase.lower(label) != "unknown" {
+    return Some(label)
   }
   if id.has_prefix("gcp-") || company {
     Some("Enterprise")
@@ -219,7 +229,12 @@ pub fn agy_plan(tier : String?, company? : Bool = false) -> String? {
 /// The plan of a profile's sign-in as its file says it (`agyPlanIn`).
 pub fn agy_plan_in(text : String, enterprise? : Bool = false) -> String? {
   match parse_json(text) {
-    Some(j) => agy_plan(str_at(Some(j), "user_tier"), company=enterprise || agy_company(text))
+    Some(j) =>
+      agy_plan_fields(
+        str_at(Some(j), "user_tier"),
+        str_at(Some(j), "tier_display_name"),
+        enterprise || company_method(get(Some(j), "auth_method")),
+      )
     None => if enterprise { Some("Enterprise") } else { None }
   }
 }
@@ -301,12 +316,9 @@ pub fn agy_notice_failure(said : String) -> String? {
 pub using @agent_runtimes {agy_base_model}
 
 ///|
-/// The tier session/new or session/load said the account is on (`agyTierIn`).
-pub fn agy_tier_in(result : JValue?) -> String? {
-  match str_at(get(get(get(result, "_meta"), "antigravity"), "tier"), "id") {
-    Some(id) if id != "" => Some(id)
-    _ => None
-  }
+/// The account's plan from session/new or session/load (`agySessionPlan`).
+fn agy_session_plan(result : JValue?) -> String? {
+  agy_plan(get(get(get(result, "_meta"), "antigravity"), "tier"))
 }
 
 ///|
@@ -485,7 +497,7 @@ pub struct AgySession {
   mut available_models : Array[String]
   mut current_model_id : String?
   mut default_model_id : String?
-  mut tier : String?
+  mut plan : String?
   mut context_used : Double
   mut context_size : Double
   mut sign_in_until : Double?
@@ -1046,7 +1058,7 @@ pub fn AgyDriver::session(self : AgyDriver, options : JValue, events : (JValue) 
     available_models: [],
     current_model_id: None,
     default_model_id: None,
-    tier: None,
+    plan: None,
     context_used: 0.0,
     context_size: 0.0,
     sign_in_until: None,
@@ -1068,9 +1080,9 @@ pub fn AgyDriver::session(self : AgyDriver, options : JValue, events : (JValue) 
 ///|
 pub fn AgySession::opened(self : AgySession, result : JValue?) -> Unit {
   self.available_models = agy_models(result)
-  self.tier = match agy_tier_in(result) {
-    Some(t) => Some(t)
-    None => self.tier
+  self.plan = match agy_session_plan(result) {
+    Some(p) => Some(p)
+    None => self.plan
   }
   match str_at(get(result, "models"), "currentModelId") {
     Some(current) if current != "" => {
@@ -1548,8 +1560,8 @@ pub fn AgyDriver::catalog(self : AgyDriver, profile : JValue) -> Later[JValue] {
   .begin(options, _ => (), true)
   .bind(session => {
     let catalog = agy_catalog(session.available_models, session.current_model_id)
-    let out = match session.tier {
-      Some(t) => set(catalog, "tier", s(t))
+    let out = match session.plan {
+      Some(p) => set(catalog, "plan", s(p))
       None => catalog
     }
     session.acp.own.dispose().map(_ => out)

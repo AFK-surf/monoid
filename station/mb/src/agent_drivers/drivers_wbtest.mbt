@@ -40,6 +40,33 @@ test "a thinking level taken off a model's id, and the variant offered" {
 }
 
 ///|
+test "Antigravity plans use known IDs or Google's display name" {
+  for plan in [
+    ("free-tier", "Free"),
+    ("g1-plus-tier", "Plus"),
+    ("g1-pro-tier", "Pro"),
+    ("g1-ultra-lite-tier", "Ultra 5x"),
+    ("g1-ultra-tier", "Ultra 20x"),
+    ("gcp-ge-standard-tier", "Enterprise Standard"),
+    ("gcp-ge-plus-tier", "Enterprise Plus"),
+    ("gcp-ge-ultra-tier", "Enterprise Ultra"),
+    ("gcp-standard-tier", "Enterprise"),
+  ] {
+    assert_eq(agy_plan(Some(obj([("id", s(plan.0))]))), Some(plan.1))
+  }
+  let session =
+    #|{"_meta":{"antigravity":{"tier":{"id":"g1-ultra-lite-tier","name":"Google AI Ultra"}}}}
+  assert_eq(agy_session_plan(parse_json(session)), Some("Ultra 5x"))
+  let named =
+    #|{"_meta":{"antigravity":{"tier":{"name":" Google AI Pro Trial "}}}}
+  assert_eq(agy_session_plan(parse_json(named)), Some("Google AI Pro Trial"))
+  let stored =
+    #|{"auth_method":"gcp","user_tier":"gcp-future-tier","tier_display_name":"Pay As You Go"}
+  assert_eq(agy_plan_in(stored), Some("Pay As You Go"))
+  assert_eq(agy_plan(Some(obj([("id", s("future-tier")), ("name", s("Unknown"))]))), None)
+}
+
+///|
 test "lines whole however they are cut" {
   let lines = Lines::new()
   inspect(lines.take(b"ab").length(), content="0")

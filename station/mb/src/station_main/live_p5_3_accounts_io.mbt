@@ -295,7 +295,7 @@ async fn P53Accounts::machine_answer(self : P53Accounts, name : String, args : A
     // (agy.ts `agyPlan`, `classifyFailure`)
     "agy.plan" =>
       Some(
-        match @agent_drivers.agy_plan(opt(0), company=j(1) is True) {
+        match @agent_drivers.agy_plan(args.get(0)) {
           Some(p) => Str(p)
           None => Null
         },

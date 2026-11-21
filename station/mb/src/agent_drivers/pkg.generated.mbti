@@ -51,15 +51,13 @@ pub fn agy_notice_failure(String) -> String?
 
 pub fn agy_opening(String) -> @jsjson.JValue
 
-pub fn agy_plan(String?, company? : Bool) -> String?
+pub fn agy_plan(@jsjson.JValue?, company? : Bool) -> String?
 
 pub fn agy_plan_in(String, enterprise? : Bool) -> String?
 
 pub fn agy_session_id(String) -> Bool
 
 pub fn agy_skills(Machine, String, String?) -> Later[Unit]
-
-pub fn agy_tier_in(@jsjson.JValue?) -> String?
 
 pub fn agy_token(Machine, String) -> String
 
@@ -442,7 +440,7 @@ pub struct AgySession {
   mut available_models : Array[String]
   mut current_model_id : String?
   mut default_model_id : String?
-  mut tier : String?
+  mut plan : String?
   mut context_used : Double
   mut context_size : Double
   mut sign_in_until : Double?

@@ -225,30 +225,31 @@ export function agyCompany(text: string): boolean {
   }
 }
 
-/// The plan a Google account is on, as people know it, from the tier `agy` says (ACP session/new's
-/// `_meta.antigravity.tier.id`, or its sign-in's `user_tier`); a company's account whose tier is not one of these is
-/// Enterprise. Null where nothing says.
-export function agyPlan(tier: string | null | undefined, company = false): string | null {
-  const id = typeof tier === "string" ? tier.trim().toLowerCase() : "";
+/// Google can return the same display name for both Ultra tiers. Use the ID first, then Google's display name.
+export function agyPlan(tier: { id?: unknown; name?: unknown } | null | undefined, company = false): string | null {
+  const id = typeof tier?.id === "string" ? tier.id.trim().toLowerCase() : "";
   const known: Record<string, string> = {
-    "g1-ultra-tier": "Ultra",
-    "g1-pro-tier": "Pro",
     "free-tier": "Free",
-    "gcp-ge-ultra-tier": "Enterprise Ultra",
+    "g1-plus-tier": "Plus",
+    "g1-pro-tier": "Pro",
+    "g1-ultra-lite-tier": "Ultra 5x",
+    "g1-ultra-tier": "Ultra 20x",
+    "gcp-ge-standard-tier": "Enterprise Standard",
     "gcp-ge-plus-tier": "Enterprise Plus",
-    "gcp-ge-standard-tier": "Enterprise",
-    "gcp-standard-tier": "Enterprise",
+    "gcp-ge-ultra-tier": "Enterprise Ultra",
   };
-  if (known[id] !== undefined) return known[id]!;
+  if (Object.hasOwn(known, id)) return known[id]!;
+  const name = typeof tier?.name === "string" ? tier.name.trim() : "";
+  if (name !== "" && name.toLowerCase() !== "unknown") return name;
   if (id.startsWith("gcp-") || company) return "Enterprise";
   return null;
 }
 
-/// The plan of a profile's sign-in as its file says it (`user_tier`, its way of signing in).
+/// The plan in a profile's sign-in file.
 export function agyPlanIn(text: string, enterprise = false): string | null {
   try {
     const parsed = JSON.parse(text);
-    return agyPlan(typeof parsed?.user_tier === "string" ? parsed.user_tier : null, enterprise || agyCompany(text));
+    return agyPlan({ id: parsed?.user_tier, name: parsed?.tier_display_name }, enterprise || companyMethod(parsed?.auth_method));
   } catch {
     return enterprise ? "Enterprise" : null;
   }
@@ -500,13 +501,12 @@ export function agyBaseModel(id: string): { model: string; effort?: string } {
   return effort === undefined ? { model: trimmed } : { model: trimmed.slice(0, -effort.length - 1), effort };
 }
 
-/// `tier`: the plan's tier as session/new said it (`_meta.antigravity.tier.id`), where it did.
-export type AgyCatalog = { models: string[]; efforts: Record<string, string[]>; defaults: Record<string, string>; tier?: string };
+/// `plan`: the subscription label from the Antigravity session, when available.
+export type AgyCatalog = { models: string[]; efforts: Record<string, string[]>; defaults: Record<string, string>; plan?: string };
 
-/// The tier session/new or session/load said the account is on (`_meta.antigravity.tier`, `{ id, name }`), or null.
-export function agyTierIn(result: Json): string | null {
-  const id = result?._meta?.antigravity?.tier?.id;
-  return typeof id === "string" && id !== "" ? id : null;
+/// The account's plan from session/new or session/load.
+export function agySessionPlan(result: Json): string | null {
+  return agyPlan(result?._meta?.antigravity?.tier);
 }
 
 /// The base models, their thinking levels (`[]` where at most one variant is offered, e.g. `gpt-oss-120b-medium`), and
@@ -676,7 +676,7 @@ export class AgyDriver extends AcpDriver<AgySession> {
     const session = await this.begin({ key: `models-${profile.id}-${uuid()}`, profile, cwd: agyHome(profile.home), instructions: "", mcpToken: "", mcpUrl: "", route: "model-discovery" }, () => {}, true);
     try {
       const catalog = agyCatalog(session.availableModels, session.currentModelId);
-      return session.tier !== null ? { ...catalog, tier: session.tier } : catalog;
+      return session.plan !== null ? { ...catalog, plan: session.plan } : catalog;
     } finally {
       await session.dispose();
     }
@@ -795,8 +795,8 @@ export class AgySession extends AcpSession {
   currentModelId: string | null = null;
   /// The raw ACP `modelId` the process opened on before any `session/set_model`.
   defaultModelId: string | null = null;
-  /// The account's tier, as session/new or session/load said it (`agyTierIn`).
-  tier: string | null = null;
+  /// The account's plan, as session/new or session/load said it.
+  plan: string | null = null;
   /// The context its last call had and the model's window, as usage_update says them.
   private context = { used: 0, size: 0 };
   /// When the borrowed sign-in its process opened on runs out (ms); null on a sign-in of this station's own, which
@@ -819,7 +819,7 @@ export class AgySession extends AcpSession {
   opened(result: Json) {
     super.opened(result);
     this.availableModels = agyModels(result);
-    this.tier = agyTierIn(result) ?? this.tier;
+    this.plan = agySessionPlan(result) ?? this.plan;
     const current = result?.models?.currentModelId;
     if (typeof current === "string" && current !== "") {
       this.currentModelId = current;

@@ -18,7 +18,7 @@
 //   (kimi.ts).
 import { shareRefusal } from "../share/index.ts";
 import { HERMES_MODEL_LIMIT } from "../agents/hermes.ts";
-import { agyAccountFile, agyCompany, agyEmailIn, agyPlan, agyToken, classifyFailure as agyClassifyFailure } from "../agents/agy.ts";
+import { agyAccountFile, agyCompany, agyEmailIn, agyToken, classifyFailure as agyClassifyFailure, type AgyCatalog } from "../agents/agy.ts";
 import { expandDevinFusion } from "../agents/devin.ts";
 import { runtimeKind, runtimeLabel } from "../agents/runtime.ts";
 import type { Clock } from "effect";
@@ -125,7 +125,7 @@ export type AccountsDeps = {
   /// Hermes reports its configured providers and model IDs in ACP session/new (no model turn).
   hermes?: () => { models(profile: Profile): Promise<string[]> } | undefined;
   /// The Antigravity CLI says whether it is signed in, and the models it offers, in ACP session/new (no model turn).
-  agy?: () => { models(profile: Profile): Promise<string[]>; catalog?(profile: Profile): Promise<{ models: string[]; efforts: Record<string, string[]>; defaults: Record<string, string>; tier?: string }> } | undefined;
+  agy?: () => { models(profile: Profile): Promise<string[]>; catalog?(profile: Profile): Promise<AgyCatalog> } | undefined;
   /// Whether someone follows the events or a turn runs (allowances are asked again on a round only then).
   following?: () => boolean;
   /// The station's environment (where the machine's logins are, and the CLIs found); process.env by default.
@@ -1319,8 +1319,7 @@ export class Accounts {
           check.modelEfforts = { agy: catalog.efforts };
           // Its plan as `agy` said it, else as its sign-in's file does (profiles.ts).
           const company = (profile.access as { enterprise?: unknown } | undefined)?.enterprise === true;
-          const plan = catalog.tier !== undefined ? agyPlan(catalog.tier, company) : null;
-          if (plan !== null) check.plan = plan;
+          if (catalog.plan !== undefined) check.plan = catalog.plan;
           else if (company && check.plan === undefined) check.plan = "Enterprise";
           if (Object.keys(catalog.defaults).length > 0) check.modelEffortDefaults = { agy: catalog.defaults };
         } else {

@@ -333,17 +333,9 @@ pub async fn Accounts::check(self : Accounts, id : String, lang : String) -> JV 
           jobj([("agy", catalog.get("efforts").unwrap_or(Obj([])))]),
         )
         let company = jget(profile.get("access"), "enterprise") == Some(Bool(true))
-        let plan = match catalog.get("tier") {
-          Some(t) if !is_undef(t) =>
-            match self.ask("agy.plan", [t, jbool(company)]) {
-              Str(p) => Some(p)
-              _ => None
-            }
-          _ => None
-        }
-        match plan {
-          Some(p) => check = jset(check, "plan", js(p))
-          None =>
+        match catalog.get("plan") {
+          Some(Str(p)) => check = jset(check, "plan", js(p))
+          _ =>
             if company && check.get("plan") is None {
               check = jset(check, "plan", js("Enterprise"))
             }
