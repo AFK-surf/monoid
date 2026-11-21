@@ -534,3 +534,38 @@ test "agy says where to verify an account Google holds until it is verified" {
     None,
   )
 }
+
+///|
+test "pace_view adds each spend row to its profile's (hour, scope) as the linear scan it replaced did" {
+  // hours out of order and repeated, -0 beside 0, a NaN hour (each its own entry), models counted against more than one
+  // window, a profile not shown, and one with nothing spent
+  // a row as the store reads it (every count there: one missing is NaN, and the row spends nothing)
+  let row = (hour : String, profile : String, runtime : String, model : String, input : Int, output : Int, fast : Bool) => "{\"hour\":\{hour},\"profile\":\"\{profile}\",\"runtime\":\"\{runtime}\",\"model\":\"\{model}\",\"fast\":\{fast},\"input\":\{input},\"cacheRead\":0,\"cacheWrite\":0,\"cacheWriteLong\":0,\"output\":\{output}}"
+  let rows = [
+    row("5", "a", "claude", "claude-fable-5-2", 1000000, 0, false),
+    row("3", "a", "claude", "claude-opus-5-5", 2000, 300, false),
+    row("5", "a", "claude", "claude-fable-5-2", 0, 7, true),
+    row("0", "b", "agy", "gemini-4-neon", 10, 0, false),
+    row("-0", "b", "agy", "gemini-4-neon", 20, 0, false),
+    row("\"x\"", "b", "agy", "argon", 30, 0, false),
+    row("\"x\"", "b", "agy", "argon", 40, 0, false),
+    row("3", "a", "claude", "claude-opus-5-5", 5000, 9, false),
+    row("4", "b", "agy", "claude-opus-5-5", 11, 0, false),
+    row("4", "hidden", "claude", "claude-opus-5-5", 11, 0, false),
+    row("2", "c", "codex", "gpt-6.1-sol", 0, 0, false),
+    row("4", "b", "agy", "claude-opus-5-5", 13, 0, false),
+    row("1", "a", "claude", "claude-opus-5-5", 1, 1, false),
+  ]
+  let read = @jsjson.parse(
+    "{\"quotas\":[{\"profile\":\"c\",\"hour\":1,\"at\":2,\"windows\":[]}],\"spend\":[" +
+    rows.join(",") +
+    "]}",
+  )
+  let view = pace_view(Catalog::new(), 6.0 * hour_ms, read, p => p != "hidden")
+  inspect(
+    @jsjson.stringify(view.get("profiles").unwrap_or(Null)),
+    content=(
+      #|{"c":{"quotas":[{"hour":1,"at":2,"windows":[]}],"spend":[]},"a":{"quotas":[],"spend":[{"hour":1,"scope":"","weight":0.000024},{"hour":3,"scope":"","weight":0.03418},{"hour":5,"scope":"","weight":8.00056},{"hour":5,"scope":"Fable","weight":8.00056}]},"b":{"quotas":[],"spend":[{"hour":null,"scope":"3p","weight":0.00003},{"hour":null,"scope":"3p","weight":0.00004},{"hour":0,"scope":"gemini","weight":0.00003},{"hour":4,"scope":"3p","weight":0.000096}]}}
+    ),
+  )
+}

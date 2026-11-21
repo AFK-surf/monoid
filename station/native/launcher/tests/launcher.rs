@@ -648,7 +648,7 @@ fn with_parent_it_stops_once_the_parent_is_gone() {
 /// A stand-in for the front (front.rs) in the release: it says where it listens and how it hands streams (this
 /// release's way), appends its pid to <data>/fronts and runs until its stdin (the launcher's) ends.
 fn release_front(station: &Station) {
-    release_front_saying(station, ",\"streams\":5");
+    release_front_saying(station, ",\"streams\":6");
 }
 
 /// One that says `more` after where it listens (nothing: a front from before `streams`).
@@ -736,6 +736,12 @@ fn a_front_handing_streams_as_a_release_before_is_replaced_by_the_launcher_that_
 fn a_front_from_before_the_mesh_operations_is_replaced_by_the_launcher_that_takes_it_up() {
     // `streams` 4: a front that answers Node's meshConfigure "no operation meshConfigure"
     a_front_saying_is_replaced("frontfour", ",\"streams\":4");
+}
+
+#[test]
+fn a_front_from_before_the_shell_and_path_fixes_is_replaced_by_the_launcher_that_takes_it_up() {
+    // `streams` 5: a front without iroh.probeRelay and the shell's stream and noq path fixes
+    a_front_saying_is_replaced("frontfive", ",\"streams\":5");
 }
 
 fn a_front_saying_is_replaced(name: &str, more: &str) {
@@ -991,7 +997,7 @@ fn a_front_that_does_not_end_with_its_stdin_is_killed_as_the_launcher_stops() {
     // a front whose thread reading stdin is held: its end of the pipe is never read
     let path = station.app.join("station/stillfail-reader");
     let fronts = station.data.join("fronts");
-    std::fs::write(&path, format!("#!/bin/sh\necho $$ >> '{}'\nprintf '{{\"listening\":\"%s\",\"streams\":5}}\\n' \"$4\"\nexec sleep 1000000\n", fronts.display())).unwrap();
+    std::fs::write(&path, format!("#!/bin/sh\necho $$ >> '{}'\nprintf '{{\"listening\":\"%s\",\"streams\":6}}\\n' \"$4\"\nexec sleep 1000000\n", fronts.display())).unwrap();
     std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     station.start("");
     station.up();

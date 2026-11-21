@@ -24,6 +24,6 @@ const server = net.createServer((c) => {
   });
   c.on("error", () => {});
 });
-server.listen(socket, () => process.stdout.write(JSON.stringify({ listening: socket, streams: 5 }) + "\n"));
+server.listen(socket, () => process.stdout.write(JSON.stringify({ listening: socket, streams: 6 }) + "\n"));
 process.stdin.on("data", () => {});
 process.stdin.on("end", () => process.exit(0));

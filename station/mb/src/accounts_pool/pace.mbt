@@ -311,6 +311,9 @@ pub fn pace_view(
   }
   let spent_order : Array[String] = []
   let spent : Map[String, Array[(Double, String, Double)]] = Map::new()
+  // where each profile's (hour, scope) is in `spent`, so a spend row adds to it at once (scanning the list for it
+  // took the view quadratic in a profile's hours). An hour of NaN equals none, as `==` has it: always its own entry.
+  let at_key : Map[String, Map[String, Int]] = Map::new()
   for raw in jitems(read.get("spend")) {
     let s = SpendHour::of_jv(raw)
     if !shown(s.profile) {
@@ -323,19 +326,25 @@ pub fn pace_view(
     if !spent.contains(s.profile) {
       spent_order.push(s.profile)
       spent[s.profile] = []
+      at_key[s.profile] = Map::new()
     }
     let by_key = spent[s.profile]
+    let index = at_key[s.profile]
+    // (-0 and 0 are one hour, as `==` has them)
+    let hour = if s.hour == 0.0 { "0" } else { s.hour.to_string() }
     for scope in spend_scopes(s.runtime, s.model) {
-      let mut found = false
-      for i, e in by_key {
-        if e.0 == s.hour && e.1 == scope {
+      let key = "\{hour}\u{0}\{scope}"
+      match index.get(key) {
+        Some(i) if !s.hour.is_nan() => {
+          let e = by_key[i]
           by_key[i] = (e.0, e.1, e.2 + w)
-          found = true
-          break
         }
-      }
-      if !found {
-        by_key.push((s.hour, scope, w))
+        _ => {
+          if !s.hour.is_nan() {
+            index[key] = by_key.length()
+          }
+          by_key.push((s.hour, scope, w))
+        }
       }
     }
   }

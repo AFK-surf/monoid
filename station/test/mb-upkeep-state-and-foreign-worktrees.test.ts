@@ -1,7 +1,8 @@
 // End-to-end tests for MoonBit station (`stillfail-reader run`):
 // (1) persistent idle_measured & last_archive_upkeep_at across real process restart + corrupted state file recovery,
 // (2) persistent last_repo_branches_at across real process restart (skip within 24h, run after 24h),
-// (3) foreign archived-workspace locked worktree cleanup + counterexamples.
+// (3) foreign archived-workspace locked worktree cleanup + counterexamples,
+// (4) session_hub harness: single-flight upkeep load, and a person's message stamped with the clock's now.
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -525,4 +526,17 @@ test("MoonBit session_hub harness deterministically blocks upkeepState.read and 
     Array.from({ length: 16 }, (_, i) => `s-${String(i + 16).padStart(2, "0")}`),
     "measured strictly s-16..s-31 and zero of s-00..s-15",
   );
+});
+
+test("MoonBit session_hub stamps a person's message with the clock's now, not the time its store was made", { skip: skipHarness }, () => {
+  const data = fresh("harness-say");
+  const dbPath = join(data, "stillfail.db");
+  const now = 1_800_000_000_000;
+  Store.open(dbPath).close();
+  const req = JSON.stringify({ id: 1, op: "say.stampsNow", db: dbPath, now });
+  const out = execFileSync(harness!, ["--builder", "harness-session-hub"], { input: `${req}\n`, encoding: "utf8" }).trim();
+  const parsed = JSON.parse(out.split("\n")[0]!);
+  assert.equal(parsed.error, undefined, JSON.stringify(parsed));
+  assert.equal(parsed.ok.now, now + 60_000);
+  assert.equal(parsed.ok.at, now + 60_000, "the entry's at is the hub's clock when it was said");
 });

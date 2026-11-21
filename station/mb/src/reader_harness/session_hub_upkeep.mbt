@@ -104,6 +104,51 @@ async fn harness_session_hub(host : @host.Host) -> Unit {
             },
           )
         }
+        "say.stampsNow" => {
+          // a person's message said a minute after the hub's store was made: its entry's `at` is the clock's now then,
+          // not the time the store was last set to (`Hub::tw` sets it before each write)
+          let db = @sql.Db::attach(host, sn_str(ask, "db"), wait=5000)
+          defer {
+            db.close()
+          }
+          let start = match sn_at(ask, "now") {
+            Some(Number(n, ..)) => n
+            _ => 1_800_000_000_000.0
+          }
+          let clock : Ref[Double] = Ref(start)
+          let store = @store_sessions.Store::open(db, () => clock.val.to_int64(), 0L)
+          let threads = @store_threads.Store::new(db, start)
+          let world : @session_hub.World = {
+            tell: (_, _) => (),
+            ask: async fn(_, _) { Json::null() },
+            now: () => clock.val,
+            config: () => ({ "dataDir": "/tmp" } : Json),
+            workspaces: () => [],
+            station: () => None,
+            link: _ => None,
+            chat: _ => None,
+            process_state: _ => "cold",
+            idle_ms: (_, _) => None,
+            random_hex: _ => "00000000",
+            move_on: () => None,
+          }
+          let hub = @session_hub.Hub::new(world, store, threads)
+          let row = threads.open_thread(
+            Json::string("chat"),
+            Json::string("CHAT"),
+            Json::string("1.000000"),
+            Json::null(),
+            Json::null(),
+          )
+          let thread = sn_at(row, "id").unwrap_or(Json::null())
+          clock.val = start + 60_000.0
+          let n = hub.say(thread, "person@example.com", "hello")
+          let at = match db.first("SELECT at FROM entries WHERE thread = ? AND n = ?", [thread, n]) {
+            Some(r) => r.get("at").unwrap_or(Json::null())
+            None => Json::null()
+          }
+          Ok({ "at": at, "now": Json::number(clock.val) })
+        }
         _ => Err("unknown op \{op}")
       }
     } catch {

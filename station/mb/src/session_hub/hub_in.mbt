@@ -219,8 +219,10 @@ pub fn Hub::ws_of_arg(self : Hub, arg : Json) -> String? {
 }
 
 ///|
-/// The threads' store's write, its changes told on.
+/// The threads' store's write, its changes told on, stamped with the station's clock now (the store keeps the time it
+/// was last set, so an entry's `at` otherwise lags by however long ago that was).
 fn[T] Hub::tw(self : Hub, f : () -> T raise) -> T raise {
+  self.threads.set_now(self.now())
   errdefer self.flush_threads()
   let r = f()
   self.flush_threads()
