@@ -81,10 +81,9 @@ fn panel_node(
       }
       layer
       .over(Is(true))
-      // (modal while open: closing, what is under it its own again as it begins to go)
+      // (modal while open: closing, what is under it its own again as it begins to go;
+      // leaving nodes with left_at >= 0.0 are hidden from semantics by the framework)
       .modal(By(live))
-      // (going, nothing of it read out: as an old layer on its way out, inert, is hidden from what reads the screen)
-      .hides(By(fn() { layer.leaving() }))
       .held_back_goes_on()
       |> ignore
       layer

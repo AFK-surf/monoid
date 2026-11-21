@@ -32,8 +32,7 @@ pub fn beside_panel_node(
       let panel : Ref[@view.View?] = Ref(None)
       layer
       .over(Is(true))
-      // (going, nothing of it read out, as panel_node's)
-      .hides(By(fn() { layer.leaving() }))
+      // (leaving nodes with left_at >= 0.0 are hidden from semantics by the framework)
       .on_key(fn(k) {
         if k.code == @ui.key_escape && @signals.untracked(live) {
           cancel()

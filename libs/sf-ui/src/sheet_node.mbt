@@ -577,9 +577,9 @@ fn sheet_node(
       // the sheet)
       .scrim_under()
       .margin(By(fn() { (0.0, 0.0, 0.0, -ime_under()) }))
-      // (modal while open: closing, what is under it its own again as it begins to go)
+      // (modal while open: closing, what is under it its own again as it begins to go;
+      // leaving nodes with left_at >= 0.0 are hidden from semantics by the framework)
       .modal(By(live))
-      .hides(By(fn() { layer.leaving() }))
       .held_back_goes_on()
       .ground(By(fn() { @ui.alpha(sheet_scrim, if vanished() || !dims() { 0.0 } else { live_dim() }) }))
       // (a press on what is above it its own, nothing under it pressed: closing it as it goes down)

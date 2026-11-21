@@ -196,10 +196,9 @@ fn menu_node_by(
       }
       layer
       .over(Is(true))
-      // (modal while open: closing, what is under it its own again as it begins to go)
+      // (modal while open: closing, what is under it its own again as it begins to go;
+      // leaving nodes with left_at >= 0.0 are hidden from semantics by the framework)
       .modal(By(fn() { modal && live() }))
-      // (going, nothing of it read out, as panel_node's)
-      .hides(By(fn() { layer.leaving() }))
       .held_back_goes_on()
       |> ignore
       if !modal {

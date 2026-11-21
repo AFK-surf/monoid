@@ -474,10 +474,9 @@ pub fn publish_layer_node(v : @view.View, src : Source) -> Unit {
       )
       n
       .over(Is(true))
-      // (the pages under it theirs again as it begins to go)
+      // (the pages under it theirs again as it begins to go;
+      // leaving nodes with left_at >= 0.0 are hidden from semantics by the framework)
       .modal(By(live))
-      // (going, nothing of it read out: as panel_node / sheet_node / confirm_node / menu_node)
-      .hides(By(fn() { n.leaving() }))
       .presses(By(live))
       .ground(By(fn() { @sf.theme().p.bg }))
       .alpha(By(fn() { look().alpha }))

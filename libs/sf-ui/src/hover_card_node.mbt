@@ -507,7 +507,7 @@ fn hover_panel_surface(
   .alpha(By(fn() { look().alpha }))
   .scale(By(fn() { look().sx }), about=FromBeside, max_shift=pop_max_shift)
   .carries_until(fn() { way.ends_at() })
-  .hides(By(fn() { t.leaving() }))
+  // (leaving nodes with left_at >= 0.0 are hidden from semantics by the framework)
   .in_use(By(live))
   .says(Is(Some(@view.said(Dialog, label=title))))
   .focus_returns()
