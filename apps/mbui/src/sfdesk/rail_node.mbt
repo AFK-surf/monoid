@@ -648,15 +648,8 @@ fn rail_card_node(anchor : @view.View, src : Source, tips : @sf.TipLayer, place 
     holder.show(fn() { open.get() }, fn(k) {
       card.val = Some(k)
       k.beside(anchor.id(), side=Right, along=Start, offset=rail_card_off) |> ignore
-      k
+      @sf.small_panel_node(k)
       .width(Is(Some(rail_card_w)))
-      // (a small panel's: @sf.small_panel)
-      .ground(By(fn() { @sf.panel_ground() }))
-      .radius(Is(@sf.r_menu))
-      .edge(By(fn() { (1.0, @sf.panel_edge()) }))
-      .shadow(By(fn() { @sf.float_shadow() }))
-      .clips(Is(true))
-      .padding(Is((@sf.panel_pad, @sf.panel_pad, @sf.panel_pad, @sf.panel_pad)))
       // (a press on it its own: a ground, the arrow over it)
       |> @sf.ground_node
       |> ignore

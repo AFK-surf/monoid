@@ -5,11 +5,12 @@
 ///|
 /// A window 600 wide, keyboard and mouse, the library's theme light or `dark`, holding what `make` makes, 16 in from
 /// its sides, 16 apart.
-fn edge_case(dark : Bool, make : (@view.View) -> Unit) -> @ui.Tester {
+fn edge_case(dark : Bool, make : (@view.View) -> Unit, solid? : Bool = false) -> @ui.Tester {
   presenters_reset()
   let t = @ui.Tester::new(fn(_c) {  }, w=600.0, h=640.0, platform=0)
   t.check_looks(false)
   set_dark(Some(dark))
+  @ui.set_glass_solid(if solid { Some(true) } else { None })
   // (the library's theme the tree's: set_view_app lets the tree's theme before it go)
   @ui.set_view_app(
     fn(root) {
@@ -159,18 +160,32 @@ test "choices: the others a hairline of the line, of the border under the pointe
 }
 
 ///|
-test "float_button_node and pick_bar_node use hairline control_edge_w (0.5pt)" {
+test "float_button_node and pick_bar_node use hairline control_edge_w (0.5pt) in solid mode and no extra edge on liquid glass" {
   for dark in [false, true] {
-    let t = edge_case(dark, fn(root) {
+    let tg = edge_case(dark, fn(root) {
       root.lines_up(Is(Some(Start))) |> ignore
       float_button_node(root, "arrow-down", fn() { "最新" }, fn() {  }) |> ignore
       pick_bar_node(root, [{ label: "复制", icon: "copy", mark: false, press: fn() {  } }]) |> ignore
     })
-    let bs = edged(t, w=20.0)
-    assert_eq(bs.length(), 2, msg="dark \{dark}: \{edges_said(t)}")
+    assert_eq(edged(tg, w=20.0).length(), 0, msg="glass dark \{dark}: \{edges_said(tg)}")
+    edge_clean(tg, "float_button & pick_bar glass dark \{dark}")
+
+    let ts = edge_case(
+      dark,
+      fn(root) {
+        root.lines_up(Is(Some(Start))) |> ignore
+        float_button_node(root, "arrow-down", fn() { "最新" }, fn() {  }) |> ignore
+        pick_bar_node(root, [{ label: "复制", icon: "copy", mark: false, press: fn() {  } }]) |> ignore
+      },
+      solid=true,
+    )
+    let bs = edged(ts, w=20.0)
+    assert_eq(bs.length(), 2, msg="solid dark \{dark}: \{edges_said(ts)}")
     for b in bs {
-      assert_eq(edge_of(b), (control_edge_w, theme().p.line), msg="dark \{dark}: \{edges_said(t)}")
+      assert_eq(edge_of(b), (control_edge_w, theme().p.line), msg="solid dark \{dark}: \{edges_said(ts)}")
     }
-    edge_clean(t, "float_button & pick_bar dark \{dark}")
+    edge_clean(ts, "float_button & pick_bar solid dark \{dark}")
   }
+  @ui.set_glass_solid(None)
+  set_dark(None)
 }

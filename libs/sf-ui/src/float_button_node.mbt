@@ -1,6 +1,7 @@
 // A round button floating over a page's list (sfpages' float_button, chatToBottom: the way to a chat's newest) as a
-// node of the window's tree, made once: 32 high and round, a line round it on the canvas, a shadow under it, its icon
-// and the words beside it it says; the hover ground under the hand; pressed in 44 by 44 round it at the least.
+// node of the window's tree, made once: 32 high and round, single-layer liquid glass (`glass_menu()`, falling back to
+// `panel_ground()` + hairline `control_edge_w` border under `MBUI_GLASS=solid`) with outside-only `float_shadow()`, its
+// icon and the words beside it it says; the hover ground under the hand; pressed in 44 by 44 round it at the least.
 
 ///|
 /// The round button in `parent` showing icon `icon` and, where `count` says any, those words after it; named `label`
@@ -33,6 +34,11 @@ pub fn float_button_node(
       style_node(b, fn() { float_button_look })
       hover_ground_node(b)
       b
+      .glass(By(fn() { Some(glass_menu()) }))
+      .edge(By(fn() { if b.glass_solid() { (control_edge_w, theme().p.line) } else { (0.0, 0L) } }))
+      .shadow(By(fn() { float_shadow() }))
+      .shadow_outside(Is(true))
+      .clips(Is(true))
       .ring(
         By(fn() {
           if b.focus_shown() {
@@ -133,11 +139,11 @@ pub let float_button_icon : Double = 16.0
 pub let float_button_reach : Double = 6.0
 
 ///|
-/// The button (float_button's): 32 high, round, a line round it on the canvas, a shadow under it; its count beside its
-/// arrow; the hover ground under the hand.
+/// The button (float_button's): 32 high, round, its count beside its arrow; glass/solid ground, edge, shadow and hover
+/// ground are bound on the node.
 // kept across runs: a value (no field of it changes)
 let float_button_look : @ui.Style = @ui.css((
-  #|row h=S8 min_w=S8 px=S2 gap=S1 radius=Full border=B0_5 border_color=Line bg=Surface shadow=Md align=ACenter justify=JCenter
+  #|row h=S8 min_w=S8 px=S2 gap=S1 radius=Full align=ACenter justify=JCenter
 ))
 
 ///|
