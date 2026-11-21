@@ -9,10 +9,10 @@ test "the rail's menu keeps its contents and place while it closes" {
     t.right_click(x + w / 2.0, y + h / 2.0)
     t.run_for(@motion.pop_ms)
     let before = t.rect_of("自定义侧边条").unwrap()
-    // (drawn back into its corner beside the place as it goes, kit's pop_out: its words no further from where they were
-    // than its 3% shrink toward that corner carries them, a pixel more)
+    // (drawn back into its corner beside the place as it goes, kit's glass_pop_out: its words no further from where they
+    // were than its 6% shrink toward that corner (glass_pop_out scale 0.94) carries them, a pixel more)
     let (mx, my, _, _) = t.query(Menu).unwrap().rect
-    let (reach_x, reach_y) = (1.0 + 0.03 * (before.0 - mx).abs(), 1.0 + 0.03 * (before.1 - my).abs())
+    let (reach_x, reach_y) = (1.0 + 0.06 * (before.0 - mx).abs(), 1.0 + 0.06 * (before.1 - my).abs())
     if outside {
       t.touch_at(0, 640.0, 400.0, t.time())
       t.touch_at(2, 640.0, 400.0, t.time())
@@ -110,10 +110,15 @@ test "choosing a rail action keeps the menu's old contents in place during its e
   t.right_click(x + w / 2.0, y + h / 2.0)
   t.run_for(@motion.pop_ms)
   let before = t.rect_of("从侧边条移除文件").unwrap()
+  let (mx, my, _, _) = t.query(Menu).unwrap().rect
+  let (reach_x, reach_y) = (1.0 + 0.06 * (before.0 - mx).abs(), 1.0 + 0.06 * (before.1 - my).abs())
   t.tap_text("从侧边条移除文件")
   t.run_for(@motion.pop_out_ms / 2.0)
   guard t.rect_of("从侧边条移除文件") is Some(during) else { fail("the chosen row disappeared while its menu closed") }
-  assert_true((during.0 - before.0).abs() < 2.0 && (during.1 - before.1).abs() < 2.0)
+  assert_true(
+    (during.0 - before.0).abs() <= reach_x && (during.1 - before.1).abs() <= reach_y,
+    msg="the chosen row moved while closing: \{Repr(before)} to \{Repr(during)}",
+  )
   assert_eq(named(calls, "prefs.set").length(), 1)
 }
 
