@@ -53,7 +53,6 @@ pub fn liquid_sheet_node(
             .radius(Is(ovl_sheet_radius))
             .shadow(Is(shadow_default))
             .glass(By(fn() { Some(ovl_sheet_glass()) }))
-            .clips(Is(true))
             .alpha(By(fn() { look().alpha }))
             .offset(By(fn() { (0.0, look().dy) }))
             |> ignore
@@ -150,7 +149,8 @@ pub fn liquid_sheet_node(
                   })
                   |> ignore
                   f.box(fn(inner) {
-                    inner.padding(Is((ovl_sheet_pad, ovl_sheet_gap, ovl_sheet_pad, ovl_sheet_pad))) |> ignore
+                    inner.padding(Is((ovl_sheet_footer_pad, ovl_sheet_footer_pad, ovl_sheet_footer_pad, ovl_sheet_footer_pad)))
+                    |> ignore
                     draw_footer(inner)
                   })
                   |> ignore
@@ -245,7 +245,6 @@ pub fn liquid_action_sheet_node(
               .radius(Is(ovl_action_radius))
               .shadow(Is(shadow_default))
               .glass(By(fn() { Some(ovl_sheet_glass()) }))
-              .clips(Is(true))
               |> ignore
               let has_header = title() != "" || message() != ""
               if has_header {

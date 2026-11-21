@@ -7,6 +7,11 @@ model (uniform blurred backdrop, quarter-circle bevel refraction, adaptive iOS 2
 inner bevel shadow, glint, and 0.75pt external contour). mbui is the framework and holds no look; a library holds the
 looks; an app uses a library.
 
+- Design specification (`DESIGN.md`): strict two-layer material architecture (Content Layer with zero `Glass::liquid` vs.
+  Floating Liquid Glass Layer with single-layer `Glass::liquid`), hard zero glass-on-glass invariant enforced by
+  `Tester::drawn_glass()` (`assert_no_nested_glass` in `src/lg/kit_overlays_wbtest.mbt` and
+  `src/pages/gallery_wbtest.mbt`), concentric corner ladder (`R_inner = R_outer - pad`, 0 faults), WCAG >= 4.5:1 contrast
+  with zero `alpha == 0` hidden glass instances at rest, and closed-form `@headless` controls.
 - `src/lg` is the library (32 Liquid Glass components across controls, inputs, navigation, overlays, feedback and
   physics; token files `tokens.mbt`, `tokens_controls.mbt`, `tokens_overlays.mbt`); `src/pages` holds the self-hosted
   fullscreen component library (`library.mbt`, the default entry when `MBUI_LG_PAGE` is empty) plus the gallery's pages

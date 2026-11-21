@@ -152,10 +152,10 @@ pub fn liquid_menu_node(
           panel
           .min_width(Is(Some(min_width)))
           .padding(Is((ovl_menu_pad, ovl_menu_pad, ovl_menu_pad, ovl_menu_pad)))
+          .gap(Is(ovl_menu_item_gap_y))
           .radius(Is(ovl_menu_radius))
           .shadow(Is(shadow_default))
           .glass(By(fn() { Some(ovl_panel_glass()) }))
-          .clips(Is(true))
           .alpha(By(fn() { look().alpha }))
           .scale(By(fn() { look().sx }), about=FromBeside)
           |> ignore
@@ -367,6 +367,14 @@ pub fn liquid_select_node(
     disabled~,
     made_for=loc,
     fn(t, disc) {
+      let press_way = @motion.NodeWay::new(0.0)
+      let chev_way = @motion.NodeWay::new(if @signals.untracked(fn() { open.get() }) { 180.0 } else { 0.0 })
+      t.reacts(at_start=false, fn() { !disc.disabled() && disc.pressed() }, fn(on) {
+        press_way.go(t, if on { 1.0 } else { 0.0 }, @motion.snappy_damped)
+      })
+      t.reacts(at_start=false, fn() { open.get() }, fn(is_open) {
+        chev_way.go(t, if is_open { 180.0 } else { 0.0 }, @motion.snappy_damped)
+      })
       t
       .row(Is(true))
       .lines_up(Is(Some(Middle)))
@@ -378,6 +386,7 @@ pub fn liquid_select_node(
       .radius(Is(ovl_select_radius))
       .shadow(Is(shadow_default))
       .glass(By(fn() { Some(ovl_capsule_glass()) }))
+      .scale(By(fn() { 1.0 - 0.02 * clamp(press_way.shown(t), 0.0, 1.0) }))
       .alpha(By(fn() { if disc.disabled() { ovl_disabled_alpha } else { 1.0 } }))
       |> ignore
       ovl_focus_ring(t, fn() { disc.focus_shown() }, ovl_select_radius)
@@ -403,6 +412,7 @@ pub fn liquid_select_node(
         chev
         .width(Is(Some(ovl_select_chevron)))
         .height(Is(Some(ovl_select_chevron)))
+        .turn(By(fn() { chev_way.shown(chev) }))
         .shapes(By(fn() { ovl_chevron_down_shapes(ovl_select_chevron, ovl_muted_ink()) }))
         |> ignore
       })
@@ -435,10 +445,10 @@ pub fn liquid_select_node(
           panel
           .min_width(Is(Some(width)))
           .padding(Is((ovl_menu_pad, ovl_menu_pad, ovl_menu_pad, ovl_menu_pad)))
+          .gap(Is(ovl_menu_item_gap_y))
           .radius(Is(ovl_menu_radius))
           .shadow(Is(shadow_default))
           .glass(By(fn() { Some(ovl_panel_glass()) }))
-          .clips(Is(true))
           .alpha(By(fn() { look().alpha }))
           .scale(By(fn() { look().sx }), about=FromBeside)
           |> ignore

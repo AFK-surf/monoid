@@ -463,35 +463,33 @@ fn ctrl_input_glass() -> @paint.Glass {
 }
 
 ///|
-fn ctrl_small_glass(tint : Int64, solid : Int64) -> @paint.Glass {
-  @paint.Glass::liquid(
-    blur=1.8,
-    tint~,
-    solid~,
-    saturation=1.0,
-    rim=0.5,
-    bezel=10.0,
-    refraction=12.0,
-    chroma=0.0,
-    merge=0.0,
-    adaptive=false,
-    spot=None,
-  )
+/// Content-layer checkbox/radio fill colour (zero `Glass::liquid` so forms nest safely inside sheets & lists).
+fn ctrl_check_bg(filled : Bool, tint : Int64) -> Int64 {
+  if filled {
+    if tint != clear {
+      tint
+    } else {
+      ctrl_chip_selected_tint()
+    }
+  } else if is_dark() {
+    0xFFFFFF18L
+  } else {
+    0xFFFFFFC8L
+  }
 }
 
 ///|
-fn ctrl_check_glass(filled : Bool, tint : Int64) -> @paint.Glass {
-  let d = is_dark()
-  if filled {
-    let eff = if tint != clear { tint } else { ctrl_chip_selected_tint() }
-    ctrl_small_glass(alpha(eff, 0.88), eff)
+/// Subtle 0.5pt hairline edge for content-layer semantic badges.
+fn ctrl_badge_edge_ink() -> Int64 {
+  if is_dark() {
+    0xFFFFFF24L
   } else {
-    ctrl_small_glass(
-      if d { 0x202026C8L } else { 0xFFFFFF99L },
-      if d { 0x1E1F24FFL } else { 0xFAFAFAFFL },
-    )
+    0x00000018L
   }
 }
+
+///|
+let ctrl_badge_edge_w : Double = 0.5
 
 // ---------------------------------------------------------------------------
 // Pure vector icon shapes (@paint.shape_of)

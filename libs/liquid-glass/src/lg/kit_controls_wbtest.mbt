@@ -298,7 +298,7 @@ test "liquid checkbox: tap, Space, Activate, mixed state and disabled" {
   t.run_for(a_frame)
   let (dx, dy) = middle(t, Checkbox, "Disabled option")
   t.tap(dx, dy)
-  t.run_for(a_frame)
+  t.run_for(springs_out)
   assert_eq(
     (init_check, after_tap, after_space, on.get(), dis_hits.val),
     (Some(Mixed), (true, false, Some(On)), false, true, 0),
@@ -325,7 +325,7 @@ test "liquid radio group: tap, Activate and arrow keys switch selection" {
   t.tab()
   // Vertical Down arrow (6) -> Auto
   t.key(6)
-  t.run_for(a_frame)
+  t.run_for(springs_out)
   assert_eq((init_check, after_tap, sel.get(), t.get(Radio, label="Auto").check), (Some(On), (1, Some(On)), 2, Some(On)))
 }
 

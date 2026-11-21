@@ -677,9 +677,195 @@ test "liquid_list_node filters rows reactively and updates active selection high
 }
 
 ///|
+/// Hard zero glass-on-glass gate: verifies no two drawn `Glass::liquid` (`kind == 6`) rectangles
+/// overlap by more than `1.0 pt²` (allowing at most `allowed_pairs` intentional capillary pairs).
+fn assert_no_nested_glass(t : @ui.Tester, ctx : String, allowed_pairs? : Int = 0) -> Unit raise {
+  let rects : Array[(Double, Double, Double, Double)] = []
+  for g in t.drawn_glass() {
+    if g.4 == 6 && g.2 > 0.0 && g.3 > 0.0 {
+      rects.push((g.0, g.1, g.2, g.3))
+    }
+  }
+  let overlaps : Array[String] = []
+  for i in 0..<rects.length() {
+    let (ax, ay, aw, ah) = rects[i]
+    for j in (i + 1)..<rects.length() {
+      let (bx, by, bw, bh) = rects[j]
+      let ix0 = if ax > bx { ax } else { bx }
+      let iy0 = if ay > by { ay } else { by }
+      let ix1 = if ax + aw < bx + bw { ax + aw } else { bx + bw }
+      let iy1 = if ay + ah < by + bh { ay + ah } else { by + bh }
+      if ix1 > ix0 && iy1 > iy0 {
+        let area = (ix1 - ix0) * (iy1 - iy0)
+        if area > 1.0 {
+          overlaps.push("(\{ax},\{ay},\{aw},\{ah}) x (\{bx},\{by},\{bw},\{bh}) area=\{area}")
+        }
+      }
+    }
+  }
+  if overlaps.length() > allowed_pairs {
+    fail("\{ctx}: glass-on-glass detected (\{overlaps.length()} > \{allowed_pairs}): \{overlaps.join("; ")}")
+  }
+}
+
+///|
 test "Track B overlay and disclosure animations are deterministic across 60, 120, 24 and 7 fps" {
   let first = ovl_motion_snapshot()
   let second = ovl_motion_snapshot()
   assert_eq(first, second)
   assert_eq(first.length(), 4)
+}
+
+///|
+test "zero glass-on-glass across NavBar, Toolbar, List, Disclosure, Sheet, Dialog and flat buttons" {
+  for dark in [false, true] {
+    let sheet_open = @signals.signal(false)
+    let t = ovl_case(dark~, w=900.0, h=760.0, fn(page, host) {
+      page.box(fn(col) {
+        col.width(Is(Some(520.0))).gap(Is(14.0)) |> ignore
+        liquid_nav_bar_node(
+          col,
+          fn() { "Floating Island Nav" },
+          subtitle=fn() { "Zero Nested Glass" },
+          leading=fn(s) {
+            liquid_icon_button_node(s, fn() { "Nav Lead" }, fn(v, ink) { flight_icon(v, 16.0, ink) }, fn() {  }, size=Small)
+            |> ignore
+            liquid_badge_node(s, fn() { "Live" }, tone=Success, dot=true) |> ignore
+          },
+          trailing=fn(s) {
+            liquid_segmented_node(s, fn() { ["Light", "Dark"] }, fn() { 0 }, fn(_) {  }, width=136.0, height=36.0) |> ignore
+          },
+        )
+        |> ignore
+        liquid_toolbar_node(col, fn(tb) {
+          tb.box(fn(w) { w.words(Is("Quick"), look=words_at(ovl_type_sub)).ink(By(fn() { colors().content })) |> ignore })
+          |> ignore
+          liquid_badge_node(tb, fn() { "3 Active" }, tone=Accent) |> ignore
+          liquid_count_badge_node(tb, fn() { 5 }, tone=Danger) |> ignore
+        })
+        |> ignore
+        liquid_list_node(
+          col,
+          fn() {
+            [
+              LiquidListRow::new(title="Row One", active=true, on_press=fn() {  }),
+              LiquidListRow::new(title="Row Two", on_press=fn() {  }),
+            ]
+          },
+          header=fn() { "Content List" },
+        )
+        |> ignore
+        liquid_disclosure_node(
+          col,
+          fn() { "Details" },
+          fn() { true },
+          fn(_) {  },
+          fn(c) {
+            c.gap(Is(10.0)).lines_up(Is(Some(Start))) |> ignore
+            liquid_checkbox_node(c, fn() { true }, fn(_) {  }, fn() { "Check inside disclosure" }) |> ignore
+            c.box(fn(w) {
+              w.words(Is("Content-layer controls nest cleanly."), look=words_at(ovl_type_sub)).ink(By(ovl_muted_ink))
+              |> ignore
+            })
+            |> ignore
+          },
+        )
+        |> ignore
+      })
+      |> ignore
+      liquid_sheet_node(
+        host,
+        fn() { sheet_open.get() },
+        fn() { sheet_open.set(false) },
+        fn() { "Export Sheet" },
+        fn(b) {
+          liquid_checkbox_node(b, fn() { true }, fn(_) {  }, fn() { "Include Alpha" }) |> ignore
+          liquid_radio_group_node(b, fn() { ["PNG", "WebP"] }, fn() { 0 }, fn(_) {  }, horizontal=true) |> ignore
+        },
+        footer=fn(f) {
+          f.row(Is(true)).lies_along(Is(End)) |> ignore
+          liquid_button_node(f, fn() { "Done" }, fn() { sheet_open.set(false) }, tint=0xA62908FFL, flat=true) |> ignore
+        },
+      )
+      |> ignore
+    })
+    t.run_for(springs_out)
+    assert_no_nested_glass(t, "ovl_kit_rest dark=\{dark}")
+    assert_eq(t.audit(), [])
+    // Open sheet and confirm zero child glass inside sheet panel
+    sheet_open.set(true)
+    t.run_for(springs_out)
+    let sheet_rect = t.get(Dialog, label="Export Sheet").rect
+    let glass = t.drawn_glass()
+    let mut sheet_idx = -1
+    for i, g in glass {
+      if g.4 == 6 && (g.0 - sheet_rect.0).abs() < 2.0 && (g.1 - sheet_rect.1).abs() < 2.0 {
+        sheet_idx = i
+      }
+    }
+    assert_true(sheet_idx >= 0)
+    for j in (sheet_idx + 1)..<glass.length() {
+      let g = glass[j]
+      if g.4 == 6 && g.2 > 0.0 && g.3 > 0.0 {
+        fail("sheet dark=\{dark} drew inner glass after sheet panel: (\{g.0},\{g.1},\{g.2},\{g.3})")
+      }
+    }
+    assert_eq(t.audit(), [])
+  }
+}
+
+///|
+test "liquid_list_node keeps breathing gap between active and hovered rows and hides adjacent divider" {
+  let t = ovl_case(w=500.0, h=460.0, fn(page, _host) {
+    page.box(fn(col) {
+      col.width(Is(Some(320.0))).gap(Is(16.0)) |> ignore
+      // Grouped list with dividers=true
+      liquid_list_node(
+        col,
+        fn() {
+          [
+            LiquidListRow::new(title="Active Row", active=true, on_press=fn() {  }),
+            LiquidListRow::new(title="Middle Row", on_press=fn() {  }),
+            LiquidListRow::new(title="Bottom Row", on_press=fn() {  }),
+          ]
+        },
+        dividers=true,
+      )
+      |> ignore
+      // Sidebar list with dividers=false
+      liquid_list_node(
+        col,
+        fn() {
+          [
+            LiquidListRow::new(title="Side One", active=true, on_press=fn() {  }),
+            LiquidListRow::new(title="Side Two", on_press=fn() {  }),
+          ]
+        },
+        dividers=false,
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  t.run_for(springs_out)
+  // 1. Check vertical breathing gap >= 4.0pt in both grouped and sidebar lists
+  let r0 = t.get(Button, label="Active Row").rect
+  let r1 = t.get(Button, label="Middle Row").rect
+  let r2 = t.get(Button, label="Bottom Row").rect
+  let s0 = t.get(Button, label="Side One").rect
+  let s1 = t.get(Button, label="Side Two").rect
+  assert_true(r1.1 - (r0.1 + r0.3) >= 4.0)
+  assert_true(r2.1 - (r1.1 + r1.3) >= 4.0)
+  assert_true(s1.1 - (s0.1 + s0.3) >= 4.0)
+  // 2. Divider between row 0 (active) and row 1 is hidden; divider between row 1 and row 2 is drawn
+  let has_divider_between = fn(top_y : Double, bot_y : Double) -> Bool {
+    t.drawn_rects().iter().any(fn(rc) { rc.3 <= 1.5 && rc.1 >= top_y && rc.1 <= bot_y })
+  }
+  let sep01_init = has_divider_between(r0.1 + r0.3, r1.1)
+  let sep12_init = has_divider_between(r1.1 + r1.3, r2.1)
+  // Hover Middle Row -> divider between row 1 and row 2 fades to alpha 0 (not drawn)
+  t.move_to(r1.0 + r1.2 / 2.0, r1.1 + r1.3 / 2.0)
+  t.run_for(springs_out)
+  let sep12_hovered = has_divider_between(r1.1 + r1.3, r2.1)
+  assert_eq((sep01_init, sep12_init, sep12_hovered), (false, true, false))
 }

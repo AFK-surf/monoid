@@ -98,13 +98,20 @@ pub fn liquid_segmented_node(
             |> ignore
           })
           |> ignore
-          // Clear refraction loupe while held/dragged (zero blur, no nested backdrop blur)
+          // Clear refraction loupe while held/dragged (zero blur, no hidden glass at rest)
           thumb.box(fn(gl) {
             gl
             .over(Is(true))
             .points(Is(false))
             .radius(By(fn() { size().1 / 2.0 }))
-            .glass(By(fn() { Some(ctrl_segmented_lens_glass(dd.pressed(gl))) }))
+            .glass(By(fn() {
+              let p = dd.pressed(gl)
+              if p > 0.001 {
+                Some(ctrl_segmented_lens_glass(p))
+              } else {
+                None
+              }
+            }))
             .alpha(By(fn() { clamp(dd.pressed(gl), 0.0, 1.0) }))
             |> ignore
           })

@@ -274,6 +274,8 @@ pub fn liquid_button_group_node(
         }
         @headless.button(made_for=loc, slot, item_label, fn(_) { item_press() }, disabled=item_disabled, fn(b, btn) {
           let highlight_way = @motion.NodeWay::new(0.0)
+          let active_way = @motion.NodeWay::new(if @signals.untracked(item_active) { 1.0 } else { 0.0 })
+          let press_way = @motion.NodeWay::new(0.0)
           b.reacts(
             at_start=false,
             fn() {
@@ -289,6 +291,12 @@ pub fn liquid_button_group_node(
             },
             fn(to) { highlight_way.go(b, to, @motion.snappy_damped) },
           )
+          b.reacts(at_start=false, item_active, fn(on) {
+            active_way.go(b, if on { 1.0 } else { 0.0 }, @motion.snappy_damped)
+          })
+          b.reacts(at_start=false, fn() { !btn.disabled() && btn.pressed() }, fn(on) {
+            press_way.go(b, if on { 1.0 } else { 0.0 }, @motion.snappy_damped)
+          })
           b
           .width(Is(Some(inner_h)))
           .height(Is(Some(inner_h)))
@@ -296,16 +304,18 @@ pub fn liquid_button_group_node(
           .radius(Is(r_inner))
           .lines_up(Is(Some(Middle)))
           .lies_along(Is(Middle))
+          .scale(By(fn() { 1.0 - 0.07 * clamp(press_way.shown(b), 0.0, 1.0) }))
           .alpha(By(fn() { if btn.disabled() { ctrl_disabled_alpha } else { 1.0 } }))
           |> ignore
-          // Concentric inner active pill (no nested glass)
+          // Concentric inner active pill (no nested glass; smooth spring fade & scale)
           b.box(fn(act) {
             act
             .over(Is(true))
             .points(Is(false))
             .radius(Is(r_inner))
             .ground(By(ctrl_chip_selected_tint))
-            .alpha(By(fn() { if item_active() { 1.0 } else { 0.0 } }))
+            .scale(By(fn() { lerp(0.88, 1.0, clamp(active_way.shown(act), 0.0, 1.0)) }))
+            .alpha(By(fn() { clamp(active_way.shown(act), 0.0, 1.0) }))
             |> ignore
           })
           |> ignore

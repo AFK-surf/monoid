@@ -9,16 +9,16 @@ model.
 What a control is to the hand, the keyboard and a screen reader comes from mbui's headless components, so every part
 takes a tap, a drag, Tab and the arrow keys, and is read out by its role and name.
 
-Gallery: [ui.monoid.build/liquid-glass](https://ui.monoid.build/liquid-glass/)
+Gallery: [ui.monoid.build/liquid-glass](https://ui.monoid.build/liquid-glass/) · Design Specification: [DESIGN.md](DESIGN.md)
 
 ## The 32 parts
 
-All of them live in `src/lg` (`@lg`) and are showcased live in the self-hosted `library` app (`src/pages/library.mbt`, default entry):
+All of them live in `src/lg` (`@lg`) and are showcased live in the self-hosted `library` app (`src/pages/library.mbt`, default entry), following the strict two-layer material architecture in [DESIGN.md](DESIGN.md) (Floating Liquid Glass Layer vs. Content Layer, zero glass-on-glass):
 
 ### Controls
 | Part | What it is |
 | --- | --- |
-| `liquid_button_node` | A capsule of glass 48 high, clear, with a surface colour or tinted; lit and stretched by a finger on it. |
+| `liquid_button_node` | A capsule of glass 48 high (or `flat=true` for inside glass overlays), clear, with a surface colour or tinted; lit and stretched by a finger on it. |
 | `liquid_icon_button_node` | Circular glass icon action (`Small` 36 / `Regular` 44 / `Large` 52 pt) with active tint and touch spotlight. |
 | `liquid_button_group_node` | Unified floating glass capsule holding multiple icon actions with concentric inner pills and hairline dividers. |
 | `liquid_segmented_node` | Draggable refractive glass lens sliding over equal-width segments with closed-form jelly squeeze. |
@@ -31,20 +31,20 @@ All of them live in `src/lg` (`@lg`) and are showcased live in the self-hosted `
 | --- | --- |
 | `liquid_text_field_node` | Capsule glass text field over `@headless.TextField` with lead icon, clear button, label, and error state. |
 | `liquid_search_bar_node` | Floating glass search capsule with vector magnifier, live `edited` callback, and `show`-gated clear button. |
-| `liquid_checkbox_node` | Glass checkbox (checked / unchecked / mixed) with vector checkmark/dash and first-line label alignment. |
-| `liquid_radio_group_node` | Vertical or horizontal glass radio group over `@headless.radio_group`. |
+| `liquid_checkbox_node` | Content-layer checkbox (checked / unchecked / mixed) with vector checkmark/dash and first-line label alignment (safe inside glass overlays). |
+| `liquid_radio_group_node` | Content-layer vertical or horizontal radio group over `@headless.radio_group` (safe inside glass overlays). |
 | `liquid_chip_node` | Toggleable filter/selection glass chip with optional leading icon and removable `×` button. |
-| `liquid_badge_node` | Semantic status pill (`Neutral`, `Accent`, `Success`, `Warning`, `Danger`) with optional live indicator dot. |
-| `liquid_count_badge_node` | Numeric counter capsule with `99+` overflow clamping and automatic hide at `0`. |
+| `liquid_badge_node` | Content-layer semantic status pill (`Neutral`, `Accent`, `Success`, `Warning`, `Danger`) with optional live indicator dot. |
+| `liquid_count_badge_node` | Content-layer numeric counter capsule with `99+` overflow clamping and automatic hide at `0`. |
 
 ### Navigation & Containers
 | Part | What it is |
 | --- | --- |
-| `liquid_nav_bar_node` | Floating capsule navigation bar with centered title/subtitle and `leading`/`trailing` action slots. |
+| `liquid_nav_bar_node` | iOS 26/27 floating-island navigation bar (transparent chrome hosting floating glass islands in `leading`/`trailing`, or optional `glass=true` when child-glass-free) with centered title/subtitle. |
 | `liquid_toolbar_node` | Floating capsule toolbar container (`r = height / 2`) for quick actions. |
 | `liquid_bottom_tabs_node`, `liquid_bottom_tab_node` | A bar of tabs with a draggable refractive lens over the chosen tab. |
-| `liquid_list_node`, `LiquidListRow` | Reactive iOS-style grouped inset glass list with `active` highlight and strict between-row hairlines. |
-| `liquid_disclosure_node` | Collapsible glass disclosure card with closed-form animated chevron. |
+| `liquid_list_node`, `LiquidListRow` | Content-layer reactive iOS-style grouped inset list (`r=24pt`, `0.5pt` hairline edge) with `active` highlight and strict between-row hairlines. |
+| `liquid_disclosure_node` | Content-layer collapsible disclosure card (`r=22pt`, `0.5pt` hairline edge) with closed-form animated chevron. |
 | `liquid_card_node`, `liquid_control_tile_node`, `liquid_control_item_node` | Control center glass tiles, cards and switches. |
 
 ### Overlays & Feedback

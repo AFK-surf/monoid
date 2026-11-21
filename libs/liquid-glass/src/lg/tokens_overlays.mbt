@@ -3,7 +3,7 @@
 // `ovl_` to stay collision-free with parallel tracks.
 
 ///|
-/// Liquid glass material for floating panels (Menu, Popover, List, Disclosure).
+/// Liquid glass material for floating panels (Menu, Popover).
 /// Uses iOS 27 `Glass::liquid` with high-contrast opaque solid fallback for accessibility audits.
 fn ovl_panel_glass() -> @paint.Glass {
   let d = is_dark()
@@ -56,6 +56,26 @@ fn ovl_capsule_glass() -> @paint.Glass {
     adaptive=false,
   )
 }
+
+///|
+/// Content-layer grouped card background (List, Disclosure — zero `Glass::liquid` so floating glass
+/// islands, search bars, and docks stand out cleanly above calm content surfaces).
+fn ovl_content_card_bg() -> Int64 {
+  if is_dark() { 0x16181FD9L } else { 0xFFFFFFD8L }
+}
+
+///|
+/// Content-layer grouped card hairline edge (0.5pt).
+fn ovl_content_card_edge() -> Int64 {
+  if is_dark() { 0xFFFFFF1AL } else { 0x00000014L }
+}
+
+///|
+let ovl_content_card_edge_w : Double = 0.5
+
+///|
+/// Restrained soft shadow for content-layer grouped cards.
+let ovl_content_card_shadow : (Double, Double, Int64) = (8.0, 2.0, 0x00000012L)
 
 ///|
 /// Subtle translucent hover ground inside a glass surface (zero glass-on-glass).
@@ -180,6 +200,10 @@ let ovl_menu_item_py : Double = 6.0
 let ovl_menu_item_gap : Double = 10.0
 
 ///|
+/// Vertical breathing gap between menu/select items so active and hovered pills never touch.
+let ovl_menu_item_gap_y : Double = 2.0
+
+///|
 let ovl_menu_sep_px : Double = 10.0
 
 ///|
@@ -236,6 +260,10 @@ let ovl_sheet_inset : Double = 16.0
 
 ///|
 let ovl_sheet_pad : Double = 24.0
+
+///|
+/// Concentric footer inset inside a 36pt sheet (`12pt + 24pt capsule button radius == 36pt`).
+let ovl_sheet_footer_pad : Double = 12.0
 
 ///|
 let ovl_sheet_gap : Double = 14.0
@@ -365,6 +393,14 @@ let ovl_list_row_gap : Double = 12.0
 
 ///|
 let ovl_list_sep_inset : Double = 14.0
+
+///|
+/// Vertical breathing padding above/below each hairline divider in a grouped list (`2 + 1 + 2 = 5pt`).
+let ovl_list_sep_py : Double = 2.0
+
+///|
+/// Vertical row gap in sidebar / divider-free list mode (`dividers=false`).
+let ovl_list_gap_nodiv : Double = 4.0
 
 ///|
 let ovl_list_meta_px : Double = 16.0

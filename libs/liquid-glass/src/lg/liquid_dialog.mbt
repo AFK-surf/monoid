@@ -82,10 +82,18 @@ pub fn liquid_dialog_node(
 ) -> @view.View {
   parent.box(made_for=loc, fn(h) {
     h.over(Is(true)) |> ignore
-    h.show(open, fn(s) {
-      s.over(Is(true)).lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
+    h.show(open, leave=@motion.dialog_out_ms, fn(s) {
+      let (look, live) = @motion.overlay_presence(s, enter=@motion.dialog_in, exit=@motion.dialog_out)
+      s.over(Is(true)).points(By(live)).lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
       // (the scrim: the page dimmed; a press on it is outside the dialog, which closes it)
-      s.box(fn(scrim) { scrim.over(Is(true)).ground(By(fn() { colors().scrim })) |> ignore }) |> ignore
+      s.box(fn(scrim) {
+        scrim
+        .over(Is(true))
+        .ground(By(fn() { colors().scrim }))
+        .alpha(By(fn() { look().alpha }))
+        |> ignore
+      })
+      |> ignore
       s.box(fn(room) {
         room
         .width(Is(Some(width + 2.0 * dialog_inset)))
@@ -97,6 +105,9 @@ pub fn liquid_dialog_node(
           .radius(Is(dialog_radius))
           .shadow(Is(shadow_default))
           .glass(By(fn() { Some(dialog_glass()) }))
+          .alpha(By(fn() { look().alpha }))
+          .scale(By(fn() { look().sx }))
+          .offset(By(fn() { (0.0, look().dy) }))
           |> ignore
           card.box(fn(t) {
             t.padding(Is((28.0, 24.0, 28.0, 12.0))) |> ignore

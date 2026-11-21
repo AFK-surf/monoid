@@ -186,13 +186,13 @@ test "the bottom dock switches between Optics, Deck, Loupe and Merge, and Publis
 ///|
 test "a run of choices is drawn the same at 60, 120, 24 and 7 frames a second" {
   inspect(chosen_at().join("\n"), content=(
-    #|Overview false 6 399,12,482
-    #|Interactive false 9 399,12,482
-    #|Interactive true 9 399,12,482
-    #|Overview true 6 399,12,482
-    #|Overview false 6 399,12,482
-    #| false 6 
-    #|Overview false 6 399,12,482
+    #|Overview false 5 399,12,482
+    #|Interactive false 8 399,12,482
+    #|Interactive true 8 399,12,482
+    #|Overview true 5 399,12,482
+    #|Overview false 5 399,12,482
+    #| false 5 
+    #|Overview false 5 399,12,482
   ))
 }
 
@@ -302,4 +302,147 @@ test "library app self-hosts all 6 categories, sidebar search, dark/light switch
   t.tap(lx, ly)
   t.run_for(settled)
   assert_eq((sheet_shown, sheet_closed, @lg.is_dark()), (1, 0, false))
+}
+
+///|
+/// Hard zero glass-on-glass gate: verifies no two drawn `Glass::liquid` (`kind == 6`) rectangles
+/// overlap by more than `1.0 pt²` (allowing at most `allowed_pairs` intentional capillary pairs).
+fn assert_no_nested_glass(t : @ui.Tester, ctx : String, allowed_pairs? : Int = 0) -> Unit raise {
+  let rects : Array[(Double, Double, Double, Double)] = []
+  for g in t.drawn_glass() {
+    if g.4 == 6 && g.2 > 0.0 && g.3 > 0.0 {
+      rects.push((g.0, g.1, g.2, g.3))
+    }
+  }
+  let overlaps : Array[String] = []
+  for i in 0..<rects.length() {
+    let (ax, ay, aw, ah) = rects[i]
+    for j in (i + 1)..<rects.length() {
+      let (bx, by, bw, bh) = rects[j]
+      let ix0 = if ax > bx { ax } else { bx }
+      let iy0 = if ay > by { ay } else { by }
+      let ix1 = if ax + aw < bx + bw { ax + aw } else { bx + bw }
+      let iy1 = if ay + ah < by + bh { ay + ah } else { by + bh }
+      if ix1 > ix0 && iy1 > iy0 {
+        let area = (ix1 - ix0) * (iy1 - iy0)
+        if area > 1.0 {
+          overlaps.push("(\{ax},\{ay},\{aw},\{ah}) x (\{bx},\{by},\{bw},\{bh}) area=\{area}")
+        }
+      }
+    }
+  }
+  if overlaps.length() > allowed_pairs {
+    fail("\{ctx}: glass-on-glass detected (\{overlaps.length()} > \{allowed_pairs}): \{overlaps.join("; ")}")
+  }
+}
+
+///|
+/// Verify an open overlay's glass panel(s) contain zero nested/overlapping `Glass::liquid`
+/// rectangles drawn inside them (supports both single-panel overlays like Sheet/Dialog/Menu/Popover
+/// and separated multi-capsule overlays like ActionSheet).
+fn assert_overlay_panel_clean(t : @ui.Tester, ctx : String, panel_rect : (Double, Double, Double, Double)) -> Unit raise {
+  let (px, py, pw, ph) = panel_rect
+  let glass = t.drawn_glass()
+  let mut first_idx = -1
+  for i, g in glass {
+    if g.4 == 6 && (g.0 - px).abs() < 2.0 && (g.1 - py).abs() < 2.0 && (g.2 - pw).abs() < 2.0 {
+      first_idx = i
+      break
+    }
+  }
+  if first_idx < 0 {
+    fail("\{ctx}: overlay glass panel not found for rect (\{px},\{py},\{pw},\{ph})")
+  }
+  let overlay_glass : Array[(Double, Double, Double, Double)] = []
+  for j in first_idx..<glass.length() {
+    let g = glass[j]
+    if g.4 == 6 && g.2 > 0.0 && g.3 > 0.0 {
+      let ix0 = if px > g.0 { px } else { g.0 }
+      let iy0 = if py > g.1 { py } else { g.1 }
+      let ix1 = if px + pw < g.0 + g.2 { px + pw } else { g.0 + g.2 }
+      let iy1 = if py + ph < g.1 + g.3 { py + ph } else { g.1 + g.3 }
+      if ix1 > ix0 && iy1 > iy0 && (ix1 - ix0) * (iy1 - iy0) > 1.0 {
+        overlay_glass.push((g.0, g.1, g.2, g.3))
+      }
+    }
+  }
+  for a in 0..<overlay_glass.length() {
+    let (ax, ay, aw, ah) = overlay_glass[a]
+    for b in (a + 1)..<overlay_glass.length() {
+      let (bx, by, bw, bh) = overlay_glass[b]
+      let ix0 = if ax > bx { ax } else { bx }
+      let iy0 = if ay > by { ay } else { by }
+      let ix1 = if ax + aw < bx + bw { ax + aw } else { bx + bw }
+      let iy1 = if ay + ah < by + bh { ay + ah } else { by + bh }
+      if ix1 > ix0 && iy1 > iy0 && (ix1 - ix0) * (iy1 - iy0) > 1.0 {
+        fail("\{ctx}: nested glass (\{bx},\{by},\{bw},\{bh}) inside overlay glass (\{ax},\{ay},\{aw},\{ah})")
+      }
+    }
+  }
+}
+
+///|
+test "hard zero glass-on-glass gate across all 6 library categories (light & dark) and open overlays" {
+  for dark in [false, true] {
+    let t = @ui.Tester::new(fn(_c) {  }, w=1280.0, h=800.0, platform=0)
+    @lg.set_dark(Some(dark))
+    @ui.set_view_app(fn(root) { gallery(root, "library", chrome=true) })
+    t.draw()
+    // All 6 resting categories: Optics, Controls, Inputs, Nav, Overlays, Physics (Loupe & Capillary Merge)
+    for tab in ["Controls", "Inputs", "Nav", "Overlays", "Optics", "Physics"] {
+      let (tx, ty) = middle_of(t, Tab, tab)
+      t.tap(tx, ty)
+      t.run_for(settled)
+      assert_no_nested_glass(t, "library/\{tab} dark=\{dark}")
+      assert_eq(
+        t.audit().filter(fn(f) { f.contains("pages/library.mbt") }),
+        [],
+      )
+    }
+    // Physics -> Capillary Merge (exempts only the 1 intentional bonded droplet pair)
+    let (mx, my) = middle_of(t, Tab, "Capillary Merge")
+    t.tap(mx, my)
+    t.run_for(settled)
+    assert_no_nested_glass(t, "library/Physics/Merge dark=\{dark}", allowed_pairs=1)
+
+    // Overlays: verify open Sheet, Dialog, ActionSheet, Menu, Popover each have 0 inner child glass
+    let (ox, oy) = middle_of(t, Tab, "Overlays")
+    t.tap(ox, oy)
+    t.run_for(settled)
+
+    // 1. Open Sheet
+    t.act(Button, Activate, label="Open Sheet")
+    t.run_for(settled)
+    assert_overlay_panel_clean(t, "library/Sheet dark=\{dark}", t.get(Dialog, label="Optical Export Sheet").rect)
+    t.key(@ui.key_escape)
+    t.run_for(settled)
+
+    // 2. Open Dialog
+    t.act(Button, Activate, label="Open Dialog")
+    t.run_for(settled)
+    assert_overlay_panel_clean(t, "library/Dialog dark=\{dark}", t.get(Dialog, label="Publish ui.monoid").rect)
+    t.key(@ui.key_escape)
+    t.run_for(settled)
+
+    // 3. Open ActionSheet
+    t.act(Button, Activate, label="Action Sheet")
+    t.run_for(settled)
+    assert_overlay_panel_clean(t, "library/ActionSheet dark=\{dark}", t.get(Dialog, label="Component Actions").rect)
+    t.key(@ui.key_escape)
+    t.run_for(settled)
+
+    // 4. Open Menu
+    t.act(Button, Activate, label="Open Menu")
+    t.run_for(settled)
+    assert_overlay_panel_clean(t, "library/Menu dark=\{dark}", t.get(Menu, label="Demo Menu").rect)
+    t.key(@ui.key_escape)
+    t.run_for(settled)
+
+    // 5. Open Popover
+    t.act(Button, Activate, label="Open Popover")
+    t.run_for(settled)
+    assert_overlay_panel_clean(t, "library/Popover dark=\{dark}", t.get(Dialog, label="Shader Telemetry").rect)
+    t.key(@ui.key_escape)
+    t.run_for(settled)
+  }
 }

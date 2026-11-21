@@ -126,18 +126,40 @@ let stage_merge_script : String =
 
 ///|
 /// Interactive 60 fps demo of the 1280×800 self-hosted `ui.monoid · Liquid Glass` 32-component library:
-/// Controls -> glide Segmented lens -> switch to Overlays -> open Menu -> open Sheet -> toggle Light & Dark
-/// via top NavBar SegmentedControl -> switch to Physics (Loupe & 360° Capillary Merge).
+/// Controls (drag SegmentedControl lens, press button, increment Stepper) -> Inputs (Checkbox bounce,
+/// Radio dot bounce, Chip bounce) -> Navigation (grouped List & Disclosure smooth chevron/slide) ->
+/// Overlays (Select 180° chevron flip + refractive menu, Sheet with flat Done button) -> top floating-island
+/// Light/Dark toggle -> Physics (360° Capillary Merge split & fuse).
 let library_film_script : String =
-  #|wait 400
-  #|tapxy 556 333
+  #|wait 350
+  #|drag 380 345 190 0 500
+  #|wait 350
+  #|drag 570 345 -190 0 450
+  #|wait 300
+  #|tap Publish
+  #|wait 300
+  #|tap Increase Blur Radius
+  #|wait 300
+  #|tap Increase Blur Radius
+  #|wait 350
+  #|tap Inputs
   #|wait 450
-  #|tapxy 456 333
+  #|tap Chromatic dispersion
   #|wait 400
+  #|tap iOS 27 Dark
+  #|wait 400
+  #|tap Vulkan
+  #|wait 400
+  #|tap Navigation
+  #|wait 450
+  #|tap Concentric Audit
+  #|wait 350
+  #|tap MoonBit API Snippet
+  #|wait 550
   #|tap Overlays
   #|wait 450
-  #|tap Open Menu
-  #|wait 650
+  #|tap Material: iOS 27 Regular
+  #|wait 550
   #|key escape
   #|wait 350
   #|tap Open Sheet
@@ -149,9 +171,13 @@ let library_film_script : String =
   #|tapxy 1176 42
   #|wait 500
   #|tap Physics
-  #|wait 550
+  #|wait 450
   #|tapxy 512 105
-  #|wait 700
+  #|wait 600
+  #|tap Split Droplet
+  #|wait 650
+  #|tap Fuse Droplet
+  #|wait 650
 
 ///|
 /// The gallery's pictures: each its name, the page first shown, and what is done before it is drawn.

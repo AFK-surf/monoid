@@ -113,8 +113,8 @@ fn lib_caption(parent : @view.View, text : String) -> Unit {
 }
 
 ///|
-/// Circular trigger look (36×36, r=18) for a `@lg.liquid_menu_node` inside `@lg.liquid_nav_bar_node`
-/// (concentric with the 56pt nav bar: 28 - 10 = 18; translucent ink ground, zero glass-on-glass).
+/// Floating Liquid Glass circular trigger (36×36, r=18) for `@lg.liquid_menu_node` inside the
+/// transparent floating-island `@lg.liquid_nav_bar_node` (single glass layer, zero glass-on-glass).
 fn lib_nav_menu_trigger(v : @view.View, d : @headless.Disclosure) -> Unit {
   v
   .width(Is(Some(36.0)))
@@ -123,15 +123,23 @@ fn lib_nav_menu_trigger(v : @view.View, d : @headless.Disclosure) -> Unit {
   .radius(Is(18.0))
   .lines_up(Is(Some(Middle)))
   .lies_along(Is(Middle))
-  .ground(By(fn() {
+  .shadow(Is(@lg.shadow_default))
+  .glass(By(fn() {
     let dark = @lg.is_dark()
-    if d.open() || d.pressed() {
-      if dark { 0xFFFFFF28L } else { 0x0000001CL }
-    } else if d.hovered() {
-      if dark { 0xFFFFFF18L } else { 0x00000010L }
-    } else {
-      if dark { 0xFFFFFF0EL } else { 0x0000000AL }
-    }
+    Some(
+      @paint.Glass::liquid(
+        blur=2.1,
+        tint=if dark { 0x202020FFL } else { 0xFDFCFD67L },
+        solid=if dark { 0x1E1F24FFL } else { 0xFAFAFAFFL },
+        saturation=1.0,
+        rim=0.6,
+        bezel=14.0,
+        refraction=18.0,
+        chroma=0.0,
+        merge=0.0,
+        adaptive=false,
+      ),
+    )
   }))
   |> ignore
   icon_sliders(v, 16.0, fn() { @lg.colors().content })
@@ -654,12 +662,26 @@ fn lib_navigation_section(
         fn() { "Optical Inspector" },
         subtitle=fn() { "Metal · WebGL 2" },
         leading=fn(s) {
-          s.padding(Is((6.0, 0.0, 0.0, 0.0))) |> ignore
+          @lg.liquid_icon_button_node(
+            s,
+            fn() { "Inspector Prism" },
+            fn(ic, ink) { icon_prism(ic, 16.0, ink) },
+            fn() { last_nav.set("Nav island: Prism") },
+            size=Small,
+          )
+          |> ignore
           @lg.liquid_badge_node(s, fn() { "Live" }, tone=Success, dot=true) |> ignore
         },
         trailing=fn(s) {
-          s.padding(Is((0.0, 0.0, 6.0, 0.0))) |> ignore
           @lg.liquid_badge_node(s, fn() { "60 fps" }, tone=Neutral) |> ignore
+          @lg.liquid_icon_button_node(
+            s,
+            fn() { "Inspector Refresh" },
+            fn(ic, ink) { icon_refresh(ic, 16.0, ink) },
+            fn() { last_nav.set("Nav island: Refresh") },
+            size=Small,
+          )
+          |> ignore
         },
       )
       |> ignore
@@ -1186,9 +1208,9 @@ fn lib_physics_section(
     })
     |> ignore
     col.box(fn(stage) {
-      stage.grow(Is(1.0)).clips(Is(true)) |> ignore
+      stage.grow(Is(1.0)) |> ignore
       stage.pick(fn() { phys_mode.get() }, at_once=true, fn(slot, m) {
-        slot.grow(Is(1.0)).clips(Is(true)) |> ignore
+        slot.grow(Is(1.0)) |> ignore
         if m == 1 {
           merge_scene(slot, merge_ctrl)
         } else {
@@ -1326,7 +1348,6 @@ fn library_page(
   root.box(fn(shell) {
     shell
     .over(Is(true))
-    .clips(Is(true))
     .padding(Is((20.0, 14.0, 20.0, dock_room)))
     .gap(Is(16.0))
     |> ignore
@@ -1441,7 +1462,6 @@ fn library_page(
           .basis(Is(Some(0.0)))
           .min_height(Is(Some(0.0)))
           .gap(Is(20.0))
-          .clips(Is(true))
           |> ignore
 
           // Left floating glass sidebar (SearchBar + reactive category List + ProgressRing footer)
@@ -1492,6 +1512,7 @@ fn library_page(
                   out
                 },
                 header=fn() { "CATEGORIES · 32 PARTS" },
+                dividers=false,
               )
               |> ignore
             })
@@ -1521,10 +1542,10 @@ fn library_page(
 
           // Right Main Exhibition Canvas (reuses Optics / Loupe / Merge scenes; scrolls cleanly for dense galleries)
           body_row.box(fn(main_area) {
-            main_area.grow(Is(1.0)).basis(Is(Some(0.0))).fills_across(Is(true)).min_height(Is(Some(0.0))).clips(Is(true))
+            main_area.grow(Is(1.0)).basis(Is(Some(0.0))).fills_across(Is(true)).min_height(Is(Some(0.0)))
             |> ignore
             main_area.pick(fn() { active_cat.get() }, at_once=true, fn(scene_slot, cat_id) {
-              scene_slot.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))).clips(Is(true)) |> ignore
+              scene_slot.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
               match cat_id {
                 0 =>
                   optics_scene(
@@ -1544,7 +1565,7 @@ fn library_page(
                     slop=@ui.touch_slop(),
                     bar=@ui.tree_scroll_bar(),
                     fn(s) {
-                      s.padding(Is((4.0, 2.0, 12.0, 16.0))) |> ignore
+                      s.padding(Is((16.0, 14.0, 16.0, 24.0))) |> ignore
                       match cat_id {
                         1 =>
                           lib_controls_section(
@@ -1637,7 +1658,14 @@ fn library_page(
           subtitle=fn() { "ui.monoid · 3× Offscreen Capture" },
           footer=fn(f) {
             f.row(Is(true)).lies_along(Is(End)).gap(Is(10.0)) |> ignore
-            @lg.liquid_button_node(f, fn() { "Done" }, fn() { sheet_open.set(false) }, tint=lib_vermilion) |> ignore
+            @lg.liquid_button_node(
+              f,
+              fn() { "Done" },
+              fn() { sheet_open.set(false) },
+              tint=lib_vermilion,
+              flat=true,
+            )
+            |> ignore
           },
         )
         |> ignore

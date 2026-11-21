@@ -74,8 +74,10 @@ fn stretched(w : Double, h : Double, dx : Double, dy : Double, sx : Double, sy :
 ///|
 /// A LiquidButton in `parent`, read out a button named `label`; pressed (by a tap, Enter or Space, a screen reader's
 /// Activate), `press` is called. What it holds is `content`'s (by default its `label` in the catalog's 15 point words:
-/// white where it is tinted, else the words' colour: the catalog's black, white in the dark). `tint`: its colour laid on by hue and at 75% (clear: none); `surface`: a
-/// colour over its glass (clear: none); `interactive`: lit and stretched by a finger on it. The node.
+/// white where it is tinted, else the words' colour: the catalog's black, white in the dark). `tint`: its colour laid
+/// on by hue and at 75% (clear: none); `surface`: a colour over its glass (clear: none); `flat`: content-layer fill
+/// with no `Glass::liquid` (for inside Sheet / Dialog / Popover / Inspector surfaces, zero glass-on-glass);
+/// `interactive`: lit and stretched by a finger on it. The node.
 #callsite(autofill(loc))
 pub fn liquid_button_node(
   parent : @view.View,
@@ -84,6 +86,7 @@ pub fn liquid_button_node(
   content? : (@view.View) -> Unit,
   tint? : Int64 = clear,
   surface? : Int64 = clear,
+  flat? : Bool = false,
   interactive? : Bool = true,
   disabled? : () -> Bool = fn() { false },
   light? : InteractiveHighlight,
@@ -102,8 +105,6 @@ pub fn liquid_button_node(
     .height(Is(Some(button_h)))
     .padding(Is((button_px, 0.0, button_px, 0.0)))
     .radius(Is(button_h / 2.0))
-    .shadow(Is(shadow_default))
-    .glass(By(fn() { Some(button_glass(tint, surface)) }))
     .ground_drawn(By(fn() {
       if !interactive {
         return @view.ground_as_laid
@@ -114,6 +115,44 @@ pub fn liquid_button_node(
     }))
     .alpha(By(fn() { if btn.disabled() { 0.5 } else { 1.0 } }))
     |> ignore
+    if flat {
+      b
+      .ground(By(fn() {
+        if tint != clear {
+          tint
+        } else if surface != clear {
+          surface
+        } else if is_dark() {
+          0xFFFFFF22L
+        } else {
+          0x00000012L
+        }
+      }))
+      .edge(By(fn() {
+        if tint != clear {
+          (0.0, clear)
+        } else if is_dark() {
+          (0.5, 0xFFFFFF24L)
+        } else {
+          (0.5, 0x0000001AL)
+        }
+      }))
+      |> ignore
+    } else {
+      b
+      .shadow(Is(shadow_default))
+      .glass(By(fn() { Some(button_glass(tint, surface)) }))
+      |> ignore
+    }
+    b.show(fn() { btn.focus_shown() }, fn(ring) {
+      ring
+      .over(Is(true))
+      .points(Is(false))
+      .margin(Is((-3.0, -3.0, -3.0, -3.0)))
+      .radius(Is(button_h / 2.0 + 3.0))
+      .edge(By(fn() { (2.0, colors().accent) }))
+      |> ignore
+    })
     if interactive {
       // (a finger on it lights it from where it went down; a tap, or a drag let go still on it, presses it: Compose's
       // clickable beside InteractiveHighlight's own drag)

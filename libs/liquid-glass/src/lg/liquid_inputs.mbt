@@ -24,8 +24,12 @@ fn ctrl_clear_button(
     },
     fn(b, btn) {
       let hover_way = @motion.NodeWay::new(0.0)
+      let press_way = @motion.NodeWay::new(0.0)
       b.reacts(at_start=false, fn() { btn.hovered() || btn.pressed() }, fn(on) {
         hover_way.go(b, if on { 1.0 } else { 0.0 }, @motion.snappy_damped)
+      })
+      b.reacts(at_start=false, fn() { btn.pressed() }, fn(on) {
+        press_way.go(b, if on { 1.0 } else { 0.0 }, @motion.snappy_damped)
       })
       b
       .width(Is(Some(ctrl_clear_size)))
@@ -35,6 +39,7 @@ fn ctrl_clear_button(
       .lines_up(Is(Some(Middle)))
       .lies_along(Is(Middle))
       .ground(By(ctrl_clear_bg))
+      .scale(By(fn() { 1.0 - 0.12 * clamp(press_way.shown(b), 0.0, 1.0) }))
       |> ignore
       b.box(fn(hov) {
         hov
@@ -119,6 +124,10 @@ pub fn liquid_text_field_node(
       at_once=true,
     )
     col.box(fn(cap) {
+      let focus_way = @motion.NodeWay::new(if @signals.untracked(fn() { tf.focused() }) { 1.0 } else { 0.0 })
+      cap.reacts(at_start=false, fn() { tf.focused() }, fn(on) {
+        focus_way.go(cap, if on { 1.0 } else { 0.0 }, @motion.snappy_damped)
+      })
       cap
       .row(Is(true))
       .lines_up(Is(Some(Middle)))
@@ -131,10 +140,12 @@ pub fn liquid_text_field_node(
       .edge(By(fn() {
         if tf.invalid() {
           (ctrl_input_focus_edge_w, ctrl_danger_ink())
-        } else if tf.focused() {
-          (ctrl_input_focus_edge_w, colors().accent)
         } else {
-          (ctrl_hairline_w, ctrl_input_edge_ink())
+          let t = clamp(focus_way.shown(cap), 0.0, 1.0)
+          (
+            lerp(ctrl_hairline_w, ctrl_input_focus_edge_w, t),
+            lerp_color(ctrl_input_edge_ink(), colors().accent, t),
+          )
         }
       }))
       .alpha(By(fn() { if tf.disabled() { ctrl_disabled_alpha } else { 1.0 } }))
@@ -238,6 +249,10 @@ pub fn liquid_search_bar_node(
   parent.box(made_for=loc, fn(row) {
     row.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(ctrl_search_trailing_gap)) |> ignore
     row.box(fn(cap) {
+      let focus_way = @motion.NodeWay::new(if @signals.untracked(fn() { tf.focused() }) { 1.0 } else { 0.0 })
+      cap.reacts(at_start=false, fn() { tf.focused() }, fn(on) {
+        focus_way.go(cap, if on { 1.0 } else { 0.0 }, @motion.snappy_damped)
+      })
       cap
       .grow(Is(1.0))
       .basis(Is(Some(0.0)))
@@ -250,11 +265,11 @@ pub fn liquid_search_bar_node(
       .shadow(Is(shadow_default))
       .glass(By(fn() { Some(ctrl_input_glass()) }))
       .edge(By(fn() {
-        if tf.focused() {
-          (ctrl_input_focus_edge_w, colors().accent)
-        } else {
-          (ctrl_hairline_w, ctrl_input_edge_ink())
-        }
+        let t = clamp(focus_way.shown(cap), 0.0, 1.0)
+        (
+          lerp(ctrl_hairline_w, ctrl_input_focus_edge_w, t),
+          lerp_color(ctrl_input_edge_ink(), colors().accent, t),
+        )
       }))
       .alpha(By(fn() { if tf.disabled() { ctrl_disabled_alpha } else { 1.0 } }))
       |> ignore

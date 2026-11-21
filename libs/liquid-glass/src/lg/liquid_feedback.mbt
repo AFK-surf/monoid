@@ -76,6 +76,10 @@ pub fn liquid_toast_node(
         Some(act) =>
           s.show(fn() { action_label() != "" }, fn(slot) {
             @headless.button(slot, action_label, fn(_) { act() }, made_for=loc, fn(b, btn) {
+              let press_scale = @motion.NodeWay::new(0.0)
+              b.reacts(at_start=false, fn() { btn.pressed() }, fn(on) {
+                press_scale.go(b, if on { 1.0 } else { 0.0 }, @motion.snappy_damped)
+              })
               b
               .row(Is(true))
               .lines_up(Is(Some(Middle)))
@@ -83,6 +87,7 @@ pub fn liquid_toast_node(
               .height(Is(Some(ovl_toast_action_h)))
               .padding(Is((ovl_toast_action_px, 0.0, ovl_toast_action_px, 0.0)))
               .radius(Is(ovl_toast_action_h / 2.0))
+              .scale(By(fn() { 1.0 - 0.08 * clamp(press_scale.shown(b), 0.0, 1.0) }))
               |> ignore
               let hover_t = @motion.hover_fade(b, fn() { btn.hovered() })
               let press_t = @motion.hover_fade(b, fn() { btn.pressed() }, duration_ms=@motion.pointer_tap_ms)
@@ -114,6 +119,10 @@ pub fn liquid_toast_node(
       match on_dismiss {
         Some(dismiss) =>
           @headless.button(s, fn() { "Dismiss" }, fn(_) { dismiss() }, made_for=loc, fn(b, btn) {
+            let press_scale = @motion.NodeWay::new(0.0)
+            b.reacts(at_start=false, fn() { btn.pressed() }, fn(on) {
+              press_scale.go(b, if on { 1.0 } else { 0.0 }, @motion.snappy_damped)
+            })
             b
             .width(Is(Some(ovl_toast_close_size)))
             .height(Is(Some(ovl_toast_close_size)))
@@ -121,6 +130,7 @@ pub fn liquid_toast_node(
             .radius(Is(ovl_toast_close_size / 2.0))
             .lines_up(Is(Some(Middle)))
             .lies_along(Is(Middle))
+            .scale(By(fn() { 1.0 - 0.08 * clamp(press_scale.shown(b), 0.0, 1.0) }))
             |> ignore
             ovl_attach_row_ground(b, fn() { btn.hovered() }, fn() { btn.pressed() })
             ovl_focus_ring(b, fn() { btn.focus_shown() }, ovl_toast_close_size / 2.0)
@@ -162,6 +172,12 @@ pub fn liquid_progress_bar_node(
     made_for=loc,
     fn(v, prog) {
       let fill_color = fn() { if tint != clear { tint } else { ovl_accent_ink() } }
+      let prog_way = @motion.NodeWay::new(@signals.untracked(fn() { prog.part() * 100.0 }))
+      v.reacts(at_start=false, fn() { if prog.indeterminate() { -1.0 } else { prog.part() * 100.0 } }, fn(pct) {
+        if pct >= 0.0 {
+          prog_way.go(v, pct, @motion.move_damped)
+        }
+      })
       v.gap(Is(ovl_progress_gap)) |> ignore
       v.show(fn() { label() != "" || (show_value && !prog.indeterminate()) }, fn(hdr) {
         hdr.row(Is(true)).lies_along(Is(Between)).lines_up(Is(Some(Middle))) |> ignore
@@ -193,7 +209,7 @@ pub fn liquid_progress_bar_node(
         track.show(fn() { !prog.indeterminate() }, fn(bar) {
           bar
           .height(Is(Some(height)))
-          .width_share(By(fn() { prog.part() }))
+          .width_share(By(fn() { clamp(prog_way.shown(bar) / 100.0, 0.0, 1.0) }))
           .radius(Is(height / 2.0))
           .ground(By(fill_color))
           |> ignore
@@ -250,6 +266,12 @@ pub fn liquid_progress_ring_node(
     made_for=loc,
     fn(v, prog) {
       let ring_color = fn() { if tint != clear { tint } else { ovl_accent_ink() } }
+      let ring_way = @motion.NodeWay::new(@signals.untracked(fn() { prog.part() * 100.0 }))
+      v.reacts(at_start=false, fn() { if prog.indeterminate() { -1.0 } else { prog.part() * 100.0 } }, fn(pct) {
+        if pct >= 0.0 {
+          ring_way.go(v, pct, @motion.move_damped)
+        }
+      })
       v
       .width(Is(Some(size)))
       .height(Is(Some(size)))
@@ -260,7 +282,14 @@ pub fn liquid_progress_ring_node(
             let phase = @motion.resident_cycle(v, @motion.progress_sweep_ms)
             ovl_ring_shapes(size, stroke, phase, 0.28, ring_color(), ovl_track_color())
           } else {
-            ovl_ring_shapes(size, stroke, 0.0, prog.part(), ring_color(), ovl_track_color())
+            ovl_ring_shapes(
+              size,
+              stroke,
+              0.0,
+              clamp(ring_way.shown(v) / 100.0, 0.0, 1.0),
+              ring_color(),
+              ovl_track_color(),
+            )
           }
         }),
       )
@@ -270,8 +299,11 @@ pub fn liquid_progress_ring_node(
 }
 
 ///|
-/// A Liquid Glass floating navigation bar (`r = height / 2`) with centered title, optional
-/// subtitle, and optional `leading` / `trailing` action slots.
+/// An iOS 26/27 floating-island navigation bar with centered title, optional subtitle, and
+/// optional `leading` / `trailing` action slots.
+/// By default (`glass=false`), the outer bar is transparent layout chrome so `leading` and
+/// `trailing` slots can host floating Liquid Glass islands without glass-on-glass nesting.
+/// Pass `glass=true` only when the bar contains zero inner glass controls.
 #callsite(autofill(loc))
 pub fn liquid_nav_bar_node(
   parent : @view.View,
@@ -280,6 +312,7 @@ pub fn liquid_nav_bar_node(
   leading? : (@view.View) -> Unit,
   trailing? : (@view.View) -> Unit,
   height? : Double = 56.0,
+  glass? : Bool = false,
   loc~ : SourceLoc,
 ) -> @view.View {
   parent.box(made_for=loc, fn(bar) {
@@ -290,11 +323,15 @@ pub fn liquid_nav_bar_node(
     .height(Is(Some(height)))
     .padding(Is((ovl_nav_px, 0.0, ovl_nav_px, 0.0)))
     .gap(Is(ovl_nav_gap))
-    .radius(Is(height / 2.0))
-    .shadow(Is(shadow_default))
-    .glass(By(fn() { Some(ovl_capsule_glass()) }))
     .says(By(fn() { Some(@view.said(Navigation, label=title())) }))
     |> ignore
+    if glass {
+      bar
+      .radius(Is(height / 2.0))
+      .shadow(Is(shadow_default))
+      .glass(By(fn() { Some(ovl_capsule_glass()) }))
+      |> ignore
+    }
     match leading {
       Some(draw_leading) =>
         bar.box(fn(slot) {
@@ -484,17 +521,21 @@ fn ovl_list_row_inner(r : @view.View, item_sig : @signals.Signal[LiquidListItem]
 }
 
 ///|
-/// An iOS-style grouped inset Liquid Glass list (`r=24pt`, `pad=6pt` -> rows `r=18pt`).
-/// Reactive via `View::each`; inset hairline dividers are drawn strictly between adjacent rows
-/// (zero leading/trailing/double lines even under live search filtering).
+/// An iOS-style grouped inset content-layer list (`r=24pt`, `pad=6pt` -> rows `r=18pt`).
+/// Reactive via `View::each`. With `dividers=true` (default), hairline dividers sit between
+/// adjacent rows with `2pt` vertical breathing room and smoothly fade out whenever either
+/// adjacent row is active, hovered, or pressed. With `dividers=false` (sidebar navigation mode),
+/// rows sit `4pt` apart with no dividers so active and hovered pills never touch.
 #callsite(autofill(loc))
 pub fn liquid_list_node(
   parent : @view.View,
   rows : () -> Array[LiquidListRow],
   header? : () -> String = fn() { "" },
   footer? : () -> String = fn() { "" },
+  dividers? : Bool = true,
   loc~ : SourceLoc,
 ) -> @view.View {
+  let lit_idx : @signals.Signal[Int] = @signals.signal(-1)
   parent.box(made_for=loc, fn(wrap) {
     wrap.show(fn() { header() != "" }, fn(h) {
       h.padding(Is((ovl_list_meta_px, 0.0, ovl_list_meta_px, ovl_list_meta_py))) |> ignore
@@ -510,9 +551,9 @@ pub fn liquid_list_node(
       card
       .padding(Is((ovl_list_pad, ovl_list_pad, ovl_list_pad, ovl_list_pad)))
       .radius(Is(ovl_list_radius))
-      .shadow(Is(shadow_default))
-      .glass(By(fn() { Some(ovl_panel_glass()) }))
-      .clips(Is(true))
+      .ground(By(ovl_content_card_bg))
+      .edge(By(fn() { (ovl_content_card_edge_w, ovl_content_card_edge()) }))
+      .shadow(Is(ovl_content_card_shadow))
       .says(
         By(fn() {
           let h = header()
@@ -520,14 +561,45 @@ pub fn liquid_list_node(
         }),
       )
       |> ignore
+      if !dividers {
+        card.gap(Is(ovl_list_gap_nodiv)) |> ignore
+      }
       card.each(fn() { ovl_list_items(rows()) }, fn(it) { it.key }, fn(slot, item_sig) {
-        slot.show(fn() { item_sig.get().idx > 0 }, at_once=true, fn(sep) {
-          sep.padding(Is((ovl_list_sep_inset, 0.0, ovl_list_sep_inset, 0.0))) |> ignore
-          sep.box(fn(line) {
-            line.height(Is(Some(ovl_hairline_h))).ground(By(ovl_hairline)) |> ignore
+        if dividers {
+          slot.show(fn() { item_sig.get().idx > 0 }, at_once=true, fn(sep) {
+            let sep_shown = fn() {
+              let idx = item_sig.get().idx
+              let lit = lit_idx.get()
+              if lit == idx || lit == idx - 1 {
+                return false
+              }
+              let rs = rows()
+              let cur_active = match rs.get(idx) {
+                Some(r) => r.active
+                None => false
+              }
+              let prev_active = if idx > 0 {
+                match rs.get(idx - 1) {
+                  Some(r) => r.active
+                  None => false
+                }
+              } else {
+                false
+              }
+              !(cur_active || prev_active)
+            }
+            let sep_fade = @motion.hover_fade(sep, sep_shown)
+            sep.padding(Is((ovl_list_sep_inset, ovl_list_sep_py, ovl_list_sep_inset, ovl_list_sep_py))) |> ignore
+            sep.box(fn(line) {
+              line
+              .height(Is(Some(ovl_hairline_h)))
+              .ground(By(ovl_hairline))
+              .alpha(By(fn() { clamp(sep_fade(), 0.0, 1.0) }))
+              |> ignore
+            })
+            |> ignore
           })
-          |> ignore
-        })
+        }
         let init_press = item_sig.untracked().has_press
         if init_press {
           @headless.button(
@@ -545,6 +617,16 @@ pub fn liquid_list_node(
             disabled=fn() { item_sig.get().row.disabled },
             made_for=loc,
             fn(r, btn) {
+              if dividers {
+                r.reacts(at_start=false, fn() { !btn.disabled() && (btn.hovered() || btn.pressed()) }, fn(on) {
+                  let idx = item_sig.untracked().idx
+                  if on {
+                    lit_idx.set(idx)
+                  } else if lit_idx.untracked() == idx {
+                    lit_idx.set(-1)
+                  }
+                })
+              }
               r
               .row(Is(true))
               .lines_up(Is(Some(Start)))
@@ -610,16 +692,18 @@ pub fn liquid_disclosure_node(
   loc~ : SourceLoc,
 ) -> @view.View {
   let chev_turn = @motion.NodeWay::new(if @signals.untracked(open) { 90.0 } else { 0.0 })
+  let body_way = @motion.NodeWay::new(if @signals.untracked(open) { 1.0 } else { 0.0 })
   parent.box(made_for=loc, fn(card) {
     card
     .padding(Is((ovl_disc_pad, ovl_disc_pad, ovl_disc_pad, ovl_disc_pad)))
     .radius(Is(ovl_disc_radius))
-    .shadow(Is(shadow_default))
-    .glass(By(fn() { Some(ovl_panel_glass()) }))
-    .clips(Is(true))
+    .ground(By(ovl_content_card_bg))
+    .edge(By(fn() { (ovl_content_card_edge_w, ovl_content_card_edge()) }))
+    .shadow(Is(ovl_content_card_shadow))
     |> ignore
     card.reacts(open, at_start=false, fn(is_open) {
       chev_turn.go(card, if is_open { 90.0 } else { 0.0 }, @motion.snappy_damped)
+      body_way.go(card, if is_open { 1.0 } else { 0.0 }, @motion.snappy_damped)
     })
     @headless.disclosure(
       card,
@@ -674,8 +758,12 @@ pub fn liquid_disclosure_node(
     )
     |> ignore
     card.show(open, fn(body) {
+      body
+      .alpha(By(fn() { clamp(body_way.shown(body), 0.0, 1.0) }))
+      .offset(By(fn() { (0.0, lerp(-6.0, 0.0, clamp(body_way.shown(body), 0.0, 1.0))) }))
+      |> ignore
       body.box(fn(sep) {
-        sep.padding(Is((ovl_list_sep_inset, 0.0, ovl_list_sep_inset, 0.0))) |> ignore
+        sep.padding(Is((ovl_list_sep_inset, ovl_list_sep_py, ovl_list_sep_inset, ovl_list_sep_py))) |> ignore
         sep.box(fn(line) { line.height(Is(Some(ovl_hairline_h))).ground(By(ovl_hairline)) |> ignore }) |> ignore
       })
       |> ignore

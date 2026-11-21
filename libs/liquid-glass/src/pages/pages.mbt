@@ -427,21 +427,15 @@ fn plate_stripes(parent : @view.View, radius : Double, stripe_color : () -> Int6
 }
 
 ///|
-/// Inspector floating glass container material.
-fn inspector_glass() -> @paint.Glass {
-  let d = @lg.is_dark()
-  @paint.Glass::liquid(
-    blur=7.0,
-    tint=if d { 0x1B1D2678L } else { 0xFFFFFF82L },
-    solid=if d { 0x161820FFL } else { 0xFAF8F4FFL },
-    saturation=1.05,
-    rim=0.6,
-    bezel=20.0,
-    refraction=24.0,
-    chroma=0.0,
-    merge=0.0,
-    adaptive=false,
-  )
+/// Calm content-layer inspector panel surface (zero `Glass::liquid` so floating Prism, Adaptive
+/// Surface, and 360° Capillary Merge remain single-layer refractive heroes and inner buttons/sliders
+/// never trigger glass-on-glass).
+fn inspector_surface(node : @view.View) -> Unit {
+  node
+  .ground(By(fn() { if @lg.is_dark() { 0x16181FDCL } else { 0xFFFFFFD8L } }))
+  .edge(By(fn() { (0.5, if @lg.is_dark() { 0xFFFFFF1AL } else { 0x00000014L }) }))
+  .shadow(Is((8.0, 2.0, 0x00000012L)))
+  |> ignore
 }
 
 ///|
@@ -510,9 +504,9 @@ fn optics_scene(
     // horizontally with the viewport; what it draws is placed by the room it is given, so a shorter window (the home
     // page's live hero, 637 tall) neither cuts it nor pushes the dock
     row.box(fn(stage_host) {
-      stage_host.grow(Is(1.0)).fills_across(Is(true)).lies_along(Is(Middle)).clips(Is(true)) |> ignore
+      stage_host.grow(Is(1.0)).fills_across(Is(true)).lies_along(Is(Middle)) |> ignore
       stage_host.by_room(fn(stage, room) {
-        stage.grow(Is(1.0)).clips(Is(true)) |> ignore
+        stage.grow(Is(1.0)) |> ignore
         let rw = fn() { room.width() }
         let rh = fn() { room.height().unwrap_or(stage_most) }
         let prism_w = 268.0
@@ -718,7 +712,7 @@ fn optics_scene(
       |> ignore
     })
     |> ignore
-    // Right floating Glass Inspector island (348pt wide, vertically centered)
+    // Right content-layer Glass Inspector panel (348pt wide, vertically centered)
     row.box(fn(insp_col) {
       insp_col.shrink(Is(0.0)).lies_along(Is(Middle)) |> ignore
       insp_col.box(fn(insp) {
@@ -728,10 +722,8 @@ fn optics_scene(
       .radius(Is(44.0))
       .padding(Is((20.0, 18.0, 20.0, 20.0)))
       .gap(Is(12.0))
-      .shadow(Is(@lg.shadow_default))
-      .shadow_outside(Is(true))
-      .glass(By(fn() { Some(inspector_glass()) }))
       |> ignore
+      inspector_surface(insp)
       // Header row
       insp.box(fn(ih) {
         ih.row(Is(true)).lies_along(Is(Between)).lines_up(Is(Some(Middle))) |> ignore
@@ -1104,7 +1096,7 @@ fn deck_scene(
         |> ignore
       })
       |> ignore
-      // Right column: interactive Adaptive Luminance bench (440pt wide, concentric 44pt outer / 24pt inner + 20pt pad)
+      // Right column: interactive Adaptive Luminance bench (440pt wide, content-layer surface)
       bento.box(fn(right) {
         right
         .width(Is(Some(440.0)))
@@ -1112,10 +1104,8 @@ fn deck_scene(
         .radius(Is(44.0))
         .padding(Is((20.0, 20.0, 20.0, 20.0)))
         .gap(Is(14.0))
-        .shadow(Is(@lg.shadow_default))
-        .shadow_outside(Is(true))
-        .glass(By(fn() { Some(inspector_glass()) }))
         |> ignore
+        inspector_surface(right)
         right.box(fn(rh) {
           rh.row(Is(true)).lies_along(Is(Between)).lines_up(Is(Some(Middle))) |> ignore
           rh.box(fn(l) {
@@ -1291,9 +1281,9 @@ fn merge_scene(parent : @view.View, merge_ctrl : @lg.LiquidMerge) -> Unit {
     // Left interactive 360° 2D capillary arena (same responsive height contract as `optics_scene`: zero clipping and
     // zero dock collision across 1120×637, 1120×690, and 1280×1040)
     row.box(fn(stage_host) {
-      stage_host.grow(Is(1.0)).fills_across(Is(true)).lies_along(Is(Middle)).clips(Is(true)) |> ignore
+      stage_host.grow(Is(1.0)).fills_across(Is(true)).lies_along(Is(Middle)) |> ignore
       stage_host.by_room(fn(stage, room) {
-        stage.grow(Is(1.0)).clips(Is(true)) |> ignore
+        stage.grow(Is(1.0)) |> ignore
         let rw = fn() { room.width() }
         let rh = fn() { room.height().unwrap_or(stage_most) }
         // 1. Soft Monoid Vermilion orb (180pt solid circle, upper-left area)
@@ -1407,7 +1397,7 @@ fn merge_scene(parent : @view.View, merge_ctrl : @lg.LiquidMerge) -> Unit {
       |> ignore
     })
     |> ignore
-    // Right floating `CAPILLARY HYSTERESIS` telemetry & control island (348pt wide, single glass layer)
+    // Right content-layer `CAPILLARY HYSTERESIS` telemetry & control panel (348pt wide)
     row.box(fn(insp_col) {
       insp_col.shrink(Is(0.0)).lies_along(Is(Middle)) |> ignore
       insp_col.box(fn(insp) {
@@ -1418,10 +1408,8 @@ fn merge_scene(parent : @view.View, merge_ctrl : @lg.LiquidMerge) -> Unit {
         .radius(Is(44.0))
         .padding(Is((20.0, 18.0, 20.0, 20.0)))
         .gap(Is(12.0))
-        .shadow(Is(@lg.shadow_default))
-        .shadow_outside(Is(true))
-        .glass(By(fn() { Some(inspector_glass()) }))
         |> ignore
+        inspector_surface(insp)
         // Header row
         insp.box(fn(ih) {
           ih.row(Is(true)).lies_along(Is(Between)).lines_up(Is(Some(Middle))) |> ignore

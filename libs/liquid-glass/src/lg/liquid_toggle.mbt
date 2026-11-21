@@ -152,7 +152,14 @@ pub fn liquid_toggle_node(
         gl
         .over(Is(true))
         .radius(By(fn() { size().1 / 2.0 }))
-        .glass(By(fn() { Some(toggle_glass(dd.pressed(gl))) }))
+        .glass(By(fn() {
+          let p = dd.pressed(gl)
+          if p > 0.001 {
+            Some(toggle_glass(p))
+          } else {
+            None
+          }
+        }))
         .alpha(By(fn() { clamp(dd.pressed(gl), 0.0, 1.0) }))
         |> ignore
       })

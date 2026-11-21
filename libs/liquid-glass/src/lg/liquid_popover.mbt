@@ -37,7 +37,6 @@ pub fn liquid_popover_node(
       .radius(Is(ovl_popover_radius))
       .shadow(Is(shadow_default))
       .glass(By(fn() { Some(ovl_panel_glass()) }))
-      .clips(Is(true))
       .alpha(By(fn() { look().alpha }))
       .scale(By(fn() { look().sx }), about=FromBeside)
       |> ignore

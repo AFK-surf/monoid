@@ -28,8 +28,16 @@ pub fn liquid_checkbox_node(
 ) -> @view.View {
   @headless.toggle(made_for=loc, parent, Checkbox, label, checked, on_change, disabled~, mixed~, fn(row, cb) {
     let hover_way = @motion.NodeWay::new(0.0)
+    let press_way = @motion.NodeWay::new(0.0)
+    let check_way = @motion.NodeWay::new(if @signals.untracked(checked) || @signals.untracked(mixed) { 1.0 } else { 0.0 })
     row.reacts(at_start=false, fn() { !cb.disabled() && (cb.hovered() || cb.pressed()) }, fn(on) {
       hover_way.go(row, if on { 1.0 } else { 0.0 }, @motion.snappy_damped)
+    })
+    row.reacts(at_start=false, fn() { !cb.disabled() && cb.pressed() }, fn(on) {
+      press_way.go(row, if on { 1.0 } else { 0.0 }, @motion.snappy_damped)
+    })
+    row.reacts(at_start=false, fn() { cb.on() || cb.mixed() }, fn(on) {
+      check_way.go(row, if on { 1.0 } else { 0.0 }, @motion.tactile_bounce)
     })
     row
     .row(Is(true))
@@ -46,7 +54,7 @@ pub fn liquid_checkbox_node(
       .radius(Is(ctrl_check_radius))
       .lines_up(Is(Some(Middle)))
       .lies_along(Is(Middle))
-      .glass(By(fn() { Some(ctrl_check_glass(filled(), tint)) }))
+      .ground(By(fn() { ctrl_check_bg(filled(), tint) }))
       .edge(By(fn() {
         if filled() {
           (0.0, clear)
@@ -54,6 +62,7 @@ pub fn liquid_checkbox_node(
           (ctrl_hairline_w, ctrl_check_border_ink())
         }
       }))
+      .scale(By(fn() { 1.0 - 0.10 * clamp(press_way.shown(box), 0.0, 1.0) }))
       |> ignore
       box.box(fn(hov) {
         hov
@@ -71,6 +80,8 @@ pub fn liquid_checkbox_node(
           ic
           .width(Is(Some(ctrl_check_size)))
           .height(Is(Some(ctrl_check_size)))
+          .scale(By(fn() { lerp(0.4, 1.0, check_way.shown(ic)) }))
+          .alpha(By(fn() { clamp(check_way.shown(ic), 0.0, 1.0) }))
           .shapes(Is(ctrl_check_shapes(ctrl_check_size, white)))
           |> ignore
         },
@@ -82,6 +93,8 @@ pub fn liquid_checkbox_node(
           ic
           .width(Is(Some(ctrl_check_size)))
           .height(Is(Some(ctrl_check_size)))
+          .scale(By(fn() { lerp(0.4, 1.0, check_way.shown(ic)) }))
+          .alpha(By(fn() { clamp(check_way.shown(ic), 0.0, 1.0) }))
           .shapes(Is(ctrl_minus_shapes(ctrl_check_size, white)))
           |> ignore
         },
@@ -154,8 +167,16 @@ pub fn liquid_radio_group_node(
             in_node=true,
             fn(row, it) {
               let hover_way = @motion.NodeWay::new(0.0)
+              let press_way = @motion.NodeWay::new(0.0)
+              let dot_way = @motion.NodeWay::new(if @signals.untracked(fn() { it.chosen() }) { 1.0 } else { 0.0 })
               row.reacts(at_start=false, fn() { !it.disabled() && (it.hovered() || it.pressed()) }, fn(on) {
                 hover_way.go(row, if on { 1.0 } else { 0.0 }, @motion.snappy_damped)
+              })
+              row.reacts(at_start=false, fn() { !it.disabled() && it.pressed() }, fn(on) {
+                press_way.go(row, if on { 1.0 } else { 0.0 }, @motion.snappy_damped)
+              })
+              row.reacts(at_start=false, fn() { it.chosen() }, fn(on) {
+                dot_way.go(row, if on { 1.0 } else { 0.0 }, @motion.tactile_bounce)
               })
               row
               .row(Is(true))
@@ -171,7 +192,7 @@ pub fn liquid_radio_group_node(
                 .radius(Is(r))
                 .lines_up(Is(Some(Middle)))
                 .lies_along(Is(Middle))
-                .glass(By(fn() { Some(ctrl_check_glass(it.chosen(), tint)) }))
+                .ground(By(fn() { ctrl_check_bg(it.chosen(), tint) }))
                 .edge(By(fn() {
                   if it.chosen() {
                     (0.0, clear)
@@ -179,6 +200,7 @@ pub fn liquid_radio_group_node(
                     (ctrl_hairline_w, ctrl_check_border_ink())
                   }
                 }))
+                .scale(By(fn() { 1.0 - 0.08 * clamp(press_way.shown(circle), 0.0, 1.0) }))
                 |> ignore
                 circle.box(fn(hov) {
                   hov
@@ -199,6 +221,8 @@ pub fn liquid_radio_group_node(
                     .shrink(Is(0.0))
                     .radius(Is(ctrl_radio_dot / 2.0))
                     .ground(Is(white))
+                    .scale(By(fn() { dot_way.shown(dot).max(0.0) }))
+                    .alpha(By(fn() { clamp(dot_way.shown(dot), 0.0, 1.0) }))
                     |> ignore
                   },
                   at_once=true,
@@ -263,10 +287,16 @@ pub fn liquid_stepper_node(
     |> ignore
     if show_value {
       root.box(fn(v) {
+        let pulse_way = @motion.NodeWay::new(0.0)
+        v.reacts(at_start=false, value, fn(_) {
+          pulse_way.put(1.0)
+          pulse_way.go(v, 0.0, @motion.snappy_damped)
+        })
         v
         .min_width(Is(Some(ctrl_stepper_val_min_w)))
         .lines_up(Is(Some(Middle)))
         .lies_along(Is(Middle))
+        .scale(By(fn() { 1.0 + 0.10 * clamp(pulse_way.shown(v), 0.0, 1.0) }))
         .words(
           By(fn() {
             let cur = value()
@@ -305,6 +335,7 @@ pub fn liquid_stepper_node(
       ) {
         @headless.button(made_for=loc, cap, btn_label, fn(_) { on_tap() }, disabled=btn_disabled, fn(b, btn) {
           let hover_way = @motion.NodeWay::new(0.0)
+          let press_way = @motion.NodeWay::new(0.0)
           b.reacts(
             at_start=false,
             fn() {
@@ -320,6 +351,9 @@ pub fn liquid_stepper_node(
             },
             fn(to) { hover_way.go(b, to, @motion.snappy_damped) },
           )
+          b.reacts(at_start=false, fn() { !btn.disabled() && btn.pressed() }, fn(on) {
+            press_way.go(b, if on { 1.0 } else { 0.0 }, @motion.snappy_damped)
+          })
           b
           .width(Is(Some(ctrl_stepper_btn_w)))
           .height(Is(Some(inner_h)))
@@ -327,6 +361,7 @@ pub fn liquid_stepper_node(
           .radius(Is(r_inner))
           .lines_up(Is(Some(Middle)))
           .lies_along(Is(Middle))
+          .scale(By(fn() { 1.0 - 0.08 * clamp(press_way.shown(b), 0.0, 1.0) }))
           .alpha(By(fn() { if btn.disabled() { ctrl_disabled_alpha } else { 1.0 } }))
           |> ignore
           b.box(fn(hov) {
@@ -447,6 +482,8 @@ pub fn liquid_chip_node(
     None => {
       let build_chip = fn(c : @view.View, is_disabled : () -> Bool, is_hovered : () -> Bool, is_pressed : () -> Bool, is_focus : () -> Bool) {
         let hover_way = @motion.NodeWay::new(0.0)
+        let press_way = @motion.NodeWay::new(0.0)
+        let sel_way = @motion.NodeWay::new(if @signals.untracked(selected) { 1.0 } else { 0.0 })
         c.reacts(
           at_start=false,
           fn() {
@@ -462,6 +499,12 @@ pub fn liquid_chip_node(
           },
           fn(to) { hover_way.go(c, to, @motion.snappy_damped) },
         )
+        c.reacts(at_start=false, fn() { !is_disabled() && is_pressed() }, fn(on) {
+          press_way.go(c, if on { 1.0 } else { 0.0 }, @motion.tactile_bounce)
+        })
+        c.reacts(at_start=false, selected, fn(on) {
+          sel_way.go(c, if on { 1.0 } else { 0.0 }, @motion.snappy_damped)
+        })
         c
         .row(Is(true))
         .lines_up(Is(Some(Middle)))
@@ -473,6 +516,11 @@ pub fn liquid_chip_node(
         .radius(Is(ctrl_chip_r))
         .shadow(Is(shadow_thumb))
         .glass(By(fn() { Some(ctrl_surface_glass(eff_tint(), clear, bezel=14.0, refraction=16.0)) }))
+        .scale(By(fn() {
+          let p = clamp(press_way.shown(c), 0.0, 1.0)
+          let s = clamp(sel_way.shown(c), 0.0, 1.0)
+          (1.0 - 0.05 * p) * (1.0 + 0.02 * s * (1.0 - s))
+        }))
         .alpha(By(fn() { if is_disabled() { ctrl_disabled_alpha } else { 1.0 } }))
         |> ignore
         c.box(fn(hov) {
@@ -644,10 +692,8 @@ pub fn liquid_badge_node(
     .padding(Is((ctrl_badge_px, 0.0, ctrl_badge_px, 0.0)))
     .gap(Is(ctrl_badge_gap))
     .radius(Is(ctrl_badge_r))
-    .glass(By(fn() {
-      let (g_tint, solid, _, _) = ctrl_badge_palette(tone)
-      Some(ctrl_small_glass(g_tint, solid))
-    }))
+    .ground(By(fn() { ctrl_badge_palette(tone).1 }))
+    .edge(By(fn() { (ctrl_badge_edge_w, ctrl_badge_edge_ink()) }))
     .says(By(fn() { Some(@view.said(Status, label=label())) }))
     |> ignore
     if dot {
@@ -704,10 +750,8 @@ pub fn liquid_count_badge_node(
         .shrink(Is(0.0))
         .padding(Is((ctrl_count_px, 0.0, ctrl_count_px, 0.0)))
         .radius(Is(ctrl_count_r))
-        .glass(By(fn() {
-          let (g_tint, solid, _) = ctrl_count_palette(tone)
-          Some(ctrl_small_glass(g_tint, solid))
-        }))
+        .ground(By(fn() { ctrl_count_palette(tone).1 }))
+        .edge(By(fn() { (ctrl_badge_edge_w, ctrl_badge_edge_ink()) }))
         .says(By(fn() { Some(@view.said(Status, label=shown_text())) }))
         |> ignore
         b.box(fn(w) {
