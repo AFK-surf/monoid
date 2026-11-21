@@ -540,3 +540,68 @@ test("remote relay revocation verifies the issuing station and exact target befo
     await assert.rejects(sync.answer(remote, workspace, { method: "meshRelays.revoke", node: relay }), /issuing station/);
   } finally { await sync.close(); db.close(); rmSync(data, { recursive: true, force: true }); }
 });
+
+test("ScopeDirectory bounds excessive local underlay addresses while keeping small sets unchanged and rejecting Custom", async () => {
+  const { ScopeDirectory } = await import("../src/mesh/scope-directory.ts");
+  const { descriptorOf } = await import("../src/mesh/announcements.ts");
+  const db = new DatabaseSync(":memory:");
+  let push!: (scopes: { scope: string; descriptor: MeshDescriptor }[]) => void;
+  const smallAddrs = [
+    { Ip: "127.0.0.1:4000" },
+    { Ip: "192.168.1.10:4000" },
+    { Relay: "https://relay-z.example" },
+  ];
+  const smallDesc = descriptor();
+  smallDesc.address = { ...(smallDesc.address as Record<string, unknown>), addrs: smallAddrs };
+  const manyAddrs = [
+    { Ip: "[::1]:4000" },
+    { Ip: "127.0.0.1:4000" },
+    { Ip: "[fe80::1]:4000" },
+    { Ip: "169.254.1.1:4000" },
+    { Ip: "[fd00::1]:4000" },
+    { Ip: "192.168.1.10:4000" },
+    { Ip: "172.17.0.1:4000" },
+    { Ip: "100.64.0.1:4000" },
+    { Ip: "[2606:4700:4700::1111]:4000" },
+    { Ip: "[2001:4860:4860::8888]:4000" },
+    { Ip: "8.8.8.8:4000" },
+    { Ip: "1.2.3.4:4000" },
+    { Relay: "https://relay-b.example" },
+    { Relay: "https://relay-a.example" },
+  ];
+  const manyDesc = descriptor();
+  manyDesc.address = { ...(manyDesc.address as Record<string, unknown>), addrs: manyAddrs };
+  const errors: unknown[] = [];
+  const endpoint = {
+    meshConfigure: async () => smallDesc,
+    meshRemove: async () => {},
+    meshListen: (f: (scopes: { scope: string; descriptor: MeshDescriptor }[]) => void) => { push = f; return () => {}; },
+  } as unknown as import("../src/mesh/endpoint.ts").Endpoint;
+  const directory = new ScopeDirectory(endpoint, new Announcements(db), signer, () => {}, (e) => { errors.push(e); });
+  try {
+    await directory.set([{ scope, nodes: allowed, transit: true, relayUrls: [] }]);
+    const first = announcementOf(directory.records(scope)[0]!, scope, allowed);
+    assert.deepEqual((first.descriptor.address as { addrs: unknown[] }).addrs, smallAddrs, "<= 8 addrs must stay untouched and un-reordered");
+    push([{ scope, descriptor: manyDesc }]);
+    assert.deepEqual(errors, []);
+    const bounded = announcementOf(directory.records(scope)[0]!, scope, allowed);
+    assert.deepEqual((bounded.descriptor.address as { addrs: unknown[] }).addrs, [
+      { Relay: "https://relay-a.example" },
+      { Relay: "https://relay-b.example" },
+      { Ip: "1.2.3.4:4000" },
+      { Ip: "8.8.8.8:4000" },
+      { Ip: "[2001:4860:4860::8888]:4000" },
+      { Ip: "[2606:4700:4700::1111]:4000" },
+      { Ip: "100.64.0.1:4000" },
+      { Ip: "172.17.0.1:4000" },
+    ]);
+    const withCustom = descriptor();
+    withCustom.address = {
+      ...(withCustom.address as Record<string, unknown>),
+      addrs: [...Array.from({ length: 9 }, (_, i) => ({ Ip: `192.168.1.${i + 1}:4000` })), { Custom: { id: 1 } }],
+    };
+    push([{ scope, descriptor: withCustom }]);
+    assert.equal(errors.length, 1);
+    assert.throws(() => descriptorOf(withCustom, scope, node), /invalid mesh neighbor address/);
+  } finally { directory.close(); db.close(); }
+});

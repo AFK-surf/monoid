@@ -52,7 +52,7 @@ async fn sync(client:&Client,store:&Arc<Store>,saved:&mut Saved,endpoint:&Endpoi
         saved.registration=Some(registration);
         saved.invitation.token.clear();
     }
-    let address=endpoint.addr();
+    let address=crate::announcement::bounded_address(endpoint.addr());
     if saved.registration.as_ref().is_some_and(|r|r.address==address) {
         persist(store,saved).await.map_err(Failure::Stop)?;return Ok(());
     }

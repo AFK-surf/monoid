@@ -1,9 +1,119 @@
 // One serialized owner of the native scopes. Its roster is supplied by the
 // station's admission layer; signed announcements never grant membership.
 import { Announcements, announcementOf, type Announcement } from "./announcements.ts";
-import type { Endpoint, MeshScopeView, MeshGlobalRelay } from "./endpoint.ts";
+import type { Endpoint, MeshDescriptor, MeshScopeView, MeshGlobalRelay } from "./endpoint.ts";
 import { globalRelaysOf } from "./global-relays.ts";
 export type ScopeRoster = { scope: string; nodes: ReadonlySet<string>; generations?: ReadonlyMap<string, number>; relayUrls: string[]; transit: boolean; globalRelays?: MeshGlobalRelay[] };
+
+const MAX_UNDERLAY_ADDRS = 8;
+
+function parseIpv4(host: string): [number, number, number, number] | null {
+  const parts = host.split(".");
+  if (parts.length !== 4) return null;
+  const out: number[] = [];
+  for (const part of parts) {
+    if (!/^(?:0|[1-9][0-9]{0,2})$/.test(part)) return null;
+    const n = Number(part);
+    if (n > 255) return null;
+    out.push(n);
+  }
+  return [out[0]!, out[1]!, out[2]!, out[3]!];
+}
+
+function parseIpv6(raw: string): number[] | null {
+  const host = raw.includes("%") ? raw.slice(0, raw.indexOf("%")) : raw;
+  const doubleColon = host.indexOf("::");
+  if (doubleColon !== -1 && host.indexOf("::", doubleColon + 2) !== -1) return null;
+  const parseSide = (side: string, allowIpv4Tail: boolean): number[] | null => {
+    if (!side) return [];
+    const parts = side.split(":");
+    const groups: number[] = [];
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i]!;
+      if (allowIpv4Tail && i === parts.length - 1 && part.includes(".")) {
+        const v4 = parseIpv4(part);
+        if (!v4) return null;
+        groups.push((v4[0] << 8) | v4[1], (v4[2] << 8) | v4[3]);
+      } else {
+        if (!/^[0-9a-fA-F]{1,4}$/.test(part)) return null;
+        groups.push(parseInt(part, 16));
+      }
+    }
+    return groups;
+  };
+  if (doubleColon === -1) {
+    const groups = parseSide(host, true);
+    return groups && groups.length === 8 ? groups : null;
+  }
+  const left = parseSide(host.slice(0, doubleColon), false);
+  const right = parseSide(host.slice(doubleColon + 2), true);
+  if (!left || !right || left.length + right.length >= 8) return null;
+  return [...left, ...Array<number>(8 - left.length - right.length).fill(0), ...right];
+}
+
+function ipTier(raw: string): number {
+  let host = raw;
+  if (host.startsWith("[")) {
+    const end = host.indexOf("]");
+    if (end !== -1) host = host.slice(1, end);
+  } else {
+    const first = host.indexOf(":");
+    const last = host.lastIndexOf(":");
+    if (first !== -1 && first === last) host = host.slice(0, first);
+  }
+  const v4 = parseIpv4(host);
+  if (v4) {
+    const [a, b, c, d] = v4;
+    if ((a === 169 && b === 254) || a === 127 || (a === 0 && b === 0 && c === 0 && d === 0)) return 5;
+    if (a === 10 || (a === 172 && (b & 0xf0) === 16) || (a === 192 && b === 168) || (a === 100 && (b & 0xc0) === 64)) return 3;
+    if ((a & 0xf0) === 224 || (a === 255 && b === 255 && c === 255 && d === 255)
+        || (a === 192 && b === 0 && c === 2) || (a === 198 && b === 51 && c === 100) || (a === 203 && b === 0 && c === 113)
+        || a === 0) return 4;
+    return 1;
+  }
+  const v6 = parseIpv6(host);
+  if (v6) {
+    const s0 = v6[0]!;
+    const allZero = v6.every((g) => g === 0);
+    const isLoopback = v6.slice(0, 7).every((g) => g === 0) && v6[7] === 1;
+    if ((s0 & 0xffc0) === 0xfe80 || isLoopback || allZero) return 5;
+    if ((s0 & 0xfe00) === 0xfc00 || (s0 & 0xff00) === 0xff00) return 4;
+    return 2;
+  }
+  return 4;
+}
+
+function underlayEntry(addr: unknown): { tier: number; key: string; dedup: string } | null {
+  if (!addr || typeof addr !== "object" || Array.isArray(addr)) return null;
+  const keys = Object.keys(addr);
+  if (keys.length !== 1) return null;
+  const rec = addr as Record<string, unknown>;
+  if (typeof rec.Relay === "string" && rec.Relay.length <= 2048) {
+    return { tier: 0, key: rec.Relay, dedup: `R:${rec.Relay}` };
+  }
+  if (typeof rec.Ip === "string" && rec.Ip.length <= 128) {
+    return { tier: ipTier(rec.Ip), key: rec.Ip, dedup: `I:${rec.Ip}` };
+  }
+  return null;
+}
+
+function boundedDescriptor(descriptor: MeshDescriptor): MeshDescriptor {
+  const address = descriptor?.address as { id?: unknown; addrs?: unknown } | null | undefined;
+  if (!address || typeof address !== "object" || !Array.isArray(address.addrs) || address.addrs.length <= MAX_UNDERLAY_ADDRS) {
+    return descriptor;
+  }
+  const ranked: { tier: number; key: string; addr: unknown }[] = [];
+  const seen = new Set<string>();
+  for (const addr of address.addrs) {
+    const entry = underlayEntry(addr);
+    if (!entry) return descriptor;
+    if (seen.has(entry.dedup)) continue;
+    seen.add(entry.dedup);
+    ranked.push({ tier: entry.tier, key: entry.key, addr });
+  }
+  ranked.sort((a, b) => a.tier - b.tier || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  return { ...descriptor, address: { ...address, addrs: ranked.slice(0, MAX_UNDERLAY_ADDRS).map((r) => r.addr) } };
+}
 export class ScopeDirectory {
   readonly endpoint: Endpoint;
   readonly kept: Announcements;
@@ -31,7 +141,7 @@ export class ScopeDirectory {
       this.#known.add(scope);
       if (!this.#wanted.has(scope)) continue;
       const before = this.kept.list(scope, new Set([this.signer.id]))[0];
-      const after = this.kept.publish(scope, descriptor, this.signer);
+      const after = this.kept.publish(scope, boundedDescriptor(descriptor), this.signer);
       if (before?.body !== after.body) this.changed(scope);
     }
   }
