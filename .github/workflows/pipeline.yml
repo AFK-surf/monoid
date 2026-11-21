@@ -2402,9 +2402,19 @@ jobs:
       - run: bash apps/mbui/scripts/moon-mtimes.sh
       - name: Build (the beta Windows app), started
         id: started
+        env:
+          POSTHOG_JSON: ${{ secrets.POSTHOG_JSON }}
         run: |
           touch "$RUNNER_TEMP/start"
           moon version --all
+          # the PostHog project its core and host reports send to (written here before win.sh build embeds MBUI_ENV)
+          PH=""
+          if [ -n "${POSTHOG_JSON:-}" ]; then
+            (umask 077 && printf '%s' "$POSTHOG_JSON" > "$RUNNER_TEMP/posthog.json")
+            echo "POSTHOG_FILE=$RUNNER_TEMP/posthog.json" >> "$GITHUB_ENV"
+            PH="$RUNNER_TEMP/posthog.json"
+          fi
+          unset POSTHOG_JSON
           build=$(git rev-list --count HEAD)
           B=$RUNNER_TEMP/build; mkdir -p "$B"
           printf '%s' "$build" > "$B/build"
@@ -2412,7 +2422,7 @@ jobs:
           rm -f "$T/win-store-pending.failed"
           : > "$T/win-store-pending"
           export MBC_STORE_WAIT="$(cygpath -m "$T/win-store-pending")"
-          nohup bash -c 'MBUI_WIN_CORE=0 MBUI_VARIANT=beta MBUI_BUILD="$1" bash apps/mbui/scripts/win.sh build > "$0/log" 2>&1; echo $? > "$0/status"' "$B" "$build" > /dev/null 2>&1 &
+          nohup bash -c 'STILLFAIL_POSTHOG="$2" MBUI_WIN_CORE=0 MBUI_VARIANT=beta MBUI_BUILD="$1" bash apps/mbui/scripts/win.sh build > "$0/log" 2>&1; echo $? > "$0/status"' "$B" "$build" "$PH" > /dev/null 2>&1 &
           # (its Windows process, for taskkill to stop all it runs (moon, mbc, clang-cl) where it is cut: below)
           cat "/proc/$!/winpid" > "$B/winpid" 2>/dev/null || true
       - uses: actions/cache/restore@v4
@@ -2446,15 +2456,7 @@ jobs:
       # where it is packed below.
       - name: The core's bytecode, kept?
         id: hbc
-        env:
-          POSTHOG_JSON: ${{ secrets.POSTHOG_JSON }}
         run: |
-          # the PostHog project its core sends what people use to (apps/mbui/scripts/core.sh posthog_define)
-          if [ -n "${POSTHOG_JSON:-}" ]; then
-            (umask 077 && printf '%s' "$POSTHOG_JSON" > "$RUNNER_TEMP/posthog.json")
-            echo "POSTHOG_FILE=$RUNNER_TEMP/posthog.json" >> "$GITHUB_ENV"
-          fi
-          unset POSTHOG_JSON
           # the build's number, as the build, win.sh core and release.sh have it: core.hbc's key says when it was built
           # (apps/mbui/scripts/core.sh built_at_define), so asked without it no key was the release's (main 135828927558)
           export MBUI_BUILD=$(git rev-list --count HEAD)
