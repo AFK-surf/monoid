@@ -194,22 +194,45 @@ test "bar: capsule and action circle share one liquid glass backdrop capture" {
 ///|
 test "bar: dragging panel up and down triggers capillary liquid fuse and split" {
   let settle_ms = 1000.0
+  let drag_step_ms = 16.0
   let t = tester("home")
   let (xs, y) = bar_places_at()
   // At rest with ＋ separated: merge == 0.0
   assert_eq(bar_merge_at(t.time()), 0.0)
-  // Drag up to open multi-row panel (＋ fuses into capsule)
-  let t_open0 = t.time()
-  t.drag(xs[1], y, xs[1], y - 80.0)
-  let t_open_end = dmax(bar_rest(), t.time())
-  let mut saw_fuse_merge = false
-  let mut s = t_open0
-  while s <= t_open_end {
-    if bar_merge_at(s) > 0.5 {
-      saw_fuse_merge = true
-      break
+  // Drag up to open multi-row panel (＋ fuses into capsule): sample across drag frames + post-release spring
+  let mut touched_open = false
+  let mut early_magnet_open = false
+  let mut peak_fuse_merge = 0.0
+  let record_open = fn(at : Double) {
+    let gap = (act_size + act_gap) * bar.k_at(at) - act_size
+    let m = bar_merge_at(at)
+    if gap <= bar_bond_contact_gap {
+      touched_open = true
+    } else if !touched_open && m > 0.0 {
+      early_magnet_open = true
     }
-    s += 5.0
+    if gap >= -12.0 && gap <= 0.0 {
+      peak_fuse_merge = dmax(peak_fuse_merge, m)
+    }
+  }
+  t.press_at(xs[1], y)
+  for step in 1..<=10 {
+    let cur_y = y - 80.0 * (step.to_double() / 10.0)
+    t.move_to(xs[1], cur_y)
+    let t0 = t.time()
+    t.run_for(drag_step_ms)
+    let mut s = t0
+    while s <= t.time() {
+      record_open(s)
+      s += 2.0
+    }
+  }
+  t.release(xs[1], y - 80.0)
+  let t_open_end = dmax(bar_rest(), t.time())
+  let mut s = t.time()
+  while s <= t_open_end {
+    record_open(s)
+    s += 2.0
   }
   t.run_for(settle_ms)
   let open_rest = (bar.o.to == 1.0, bar.k_at(t.time()) <= 0.002, bar_merge_at(t.time()) == 0.0)
@@ -217,25 +240,108 @@ test "bar: dragging panel up and down triggers capillary liquid fuse and split" 
   let t_close0 = t.time()
   t.drag(xs[1], y - 56.0, xs[1], y)
   let t_close_end = dmax(bar_rest(), t.time())
-  let mut saw_split_bridge = false
+  let mut peak_split_bridge = 0.0
   let mut saw_snap_zero = false
   let mut c = t_close0
   while c <= t_close_end {
     let k = bar.k_at(c)
     let gap = (act_size + act_gap) * k - act_size
     let m = bar_merge_at(c)
-    if gap > 0.0 && gap < bar_bond_break_gap && m > 0.5 {
-      saw_split_bridge = true
+    if gap >= 2.0 && gap <= 7.5 {
+      peak_split_bridge = dmax(peak_split_bridge, m)
     }
-    if saw_split_bridge && gap >= bar_bond_break_gap && m == 0.0 {
+    if peak_split_bridge >= 25.0 && gap >= bar_bond_break_gap && m == 0.0 {
       saw_snap_zero = true
     }
-    c += 5.0
+    c += 2.0
   }
   t.run_for(settle_ms)
   let close_rest = (bar.o.to == 0.0, (bar.k_at(t.time()) - 1.0).abs() < 0.001, bar_merge_at(t.time()) == 0.0)
   assert_eq(
-    (saw_fuse_merge, open_rest, saw_split_bridge, saw_snap_zero, close_rest),
-    (true, (true, true, true), true, true, (true, true, true)),
+    (early_magnet_open, peak_fuse_merge >= 18.0, open_rest, peak_split_bridge >= 25.0, saw_snap_zero, close_rest),
+    (false, true, (true, true, true), true, true, (true, true, true)),
+    msg="peak_fuse=\{peak_fuse_merge} peak_split=\{peak_split_bridge}",
   )
+}
+
+///|
+test "bar: tab switch and slow manual drag obey capillary contact/break hysteresis" {
+  let settle_ms = 1000.0
+  let drag_step_ms = 20.0
+  let bloom_ms = 30.0
+  let t = tester("home")
+  let (xs, y) = bar_places_at()
+  assert_eq((bar.k.to, bar_merge_at(t.time())), (1.0, 0.0))
+  // 1. Tab switch: Chats -> Remote (k: 1 -> 0)
+  let t_tab0 = t.time()
+  assert_true(@sfbase.go_place("remote"))
+  t.draw()
+  assert_eq(bar.k.to, 0.0)
+  let t_tab_end = dmax(bar_rest(), t.time())
+  let mut touched_tab = false
+  let mut early_magnet_tab = false
+  let mut peak_tab_fuse = 0.0
+  let mut s = t_tab0
+  while s <= t_tab_end {
+    let gap = (act_size + act_gap) * bar.k_at(s) - act_size
+    let m = bar_merge_at(s)
+    if gap <= bar_bond_contact_gap {
+      touched_tab = true
+    } else if !touched_tab && m > 0.0 {
+      early_magnet_tab = true
+    }
+    if gap >= -12.0 && gap <= 0.0 {
+      peak_tab_fuse = dmax(peak_tab_fuse, m)
+    }
+    s += 2.0
+  }
+  t.run_for(settle_ms)
+  let tab_closed_rest = (bar.k_at(t.time()) <= 0.002, bar_merge_at(t.time()) == 0.0)
+  // 2. Tab switch back: Remote -> Chats (k: 0 -> 1)
+  let t_back0 = t.time()
+  assert_true(@sfbase.go_place("chats"))
+  t.draw()
+  assert_eq(bar.k.to, 1.0)
+  let t_back_end = dmax(bar_rest(), t.time())
+  let mut peak_tab_split = 0.0
+  let mut tab_snap_zero = false
+  let mut c = t_back0
+  while c <= t_back_end {
+    let gap = (act_size + act_gap) * bar.k_at(c) - act_size
+    let m = bar_merge_at(c)
+    if gap >= 2.0 && gap <= 7.5 {
+      peak_tab_split = dmax(peak_tab_split, m)
+    }
+    if peak_tab_split >= 25.0 && gap >= bar_bond_break_gap && m == 0.0 {
+      tab_snap_zero = true
+    }
+    c += 2.0
+  }
+  t.run_for(settle_ms)
+  let tab_open_rest = ((bar.k_at(t.time()) - 1.0).abs() < 0.001, bar_merge_at(t.time()) == 0.0)
+  assert_eq(
+    (early_magnet_tab, peak_tab_fuse >= 18.0, tab_closed_rest, peak_tab_split >= 25.0, tab_snap_zero, tab_open_rest),
+    (false, true, (true, true), true, true, (true, true)),
+    msg="tab_fuse=\{peak_tab_fuse} tab_split=\{peak_tab_split}",
+  )
+  // 3. Slow manual drag up to gap <= 1.5pt (without releasing) triggers immediate coalescence
+  t.press_at(xs[1], y)
+  let mut dy = 4.0
+  let mut slow_bonded = false
+  let mut slow_merge = 0.0
+  while dy <= 72.0 {
+    t.move_to(xs[1], y - dy)
+    t.run_for(drag_step_ms)
+    let gap = (act_size + act_gap) * bar.k_at(t.time()) - act_size
+    if gap <= bar_bond_contact_gap {
+      slow_bonded = bar.bond_bonded
+      t.run_for(bloom_ms)
+      slow_merge = bar_merge_at(t.time())
+      break
+    }
+    dy += 4.0
+  }
+  t.release(xs[1], y - dy)
+  t.run_for(settle_ms)
+  assert_eq((slow_bonded, slow_merge >= 18.0, bar_merge_at(t.time()) == 0.0), (true, true, true), msg="slow_merge=\{slow_merge}")
 }

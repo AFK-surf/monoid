@@ -809,56 +809,78 @@ fn BarModel::jump(self : BarModel) -> Unit {
 
 ///|
 /// Capillary liquid bridge parameters between the bottom bar capsule and the `＋` action circle.
-let bar_bond_merge_max : Double = 18.0
+let bar_bond_merge_max : Double = 30.0
 
 ///|
-let bar_bond_break_gap : Double = 6.5
+let bar_bond_break_gap : Double = 8.0
 
 ///|
-/// Schedules the closed-form capillary liquid bridge (`bond_merge` & `bond_recoil`) whenever the effective notch target
-/// `k_end()` flips between closed (0) and open (1), or when an emerging bonded droplet finishes separating past
-/// `break_gap` (e.g. panel drag-down releasing to `o = 0`), whether driven by tab change or panel open/close.
-fn BarModel::schedule_bond(self : BarModel, prev_k_end : Double, at~ : Double) -> Unit {
-  let next_k_end = self.k_end()
+/// Visual outer-contour tangency offset (0.75pt external contour on each glass body = 1.5pt total).
+let bar_bond_contact_gap : Double = 1.5
+
+///|
+/// Fast capillary snap-coalescence duration once the glass contours touch (`gap <= bar_bond_contact_gap`).
+let bar_bond_merge_ms : Double = 40.0
+
+///|
+/// Schedules the closed-form capillary liquid bridge (`bond_merge` & `bond_recoil`) directly from the physical gap
+/// `gap_at(t)` and hysteresis band `[bar_bond_contact_gap, bar_bond_break_gap]`, handling tab switches, panel
+/// open/close, and slow manual drags that touch `gap <= bar_bond_contact_gap` before `m.open` flips.
+fn BarModel::schedule_bond(self : BarModel, _prev_k_end : Double, at~ : Double) -> Unit {
   let end = dmax(at, dmax(self.k.end(), self.o.end()))
   let gap_at = fn(t : Double) { (act_size + act_gap) * self.k_at(t) - act_size }
-  if next_k_end > 0.5 {
-    if prev_k_end > 0.5 && !self.bond_bonded {
-      return
-    }
-    // Opening: ＋ emerges from capsule right end -> stays bonded until gap >= break_gap -> critically damped snap to 0
+  let cur_gap = gap_at(at)
+  let cur_merge = self.bond_merge.value_at(at)
+  let merge_spec = @motion.tween(bar_bond_merge_ms, ease=Out)
+  let bonded_now = if cur_gap <= bar_bond_contact_gap {
+    true
+  } else if cur_gap >= bar_bond_break_gap {
+    false
+  } else {
+    cur_merge > 1.0
+  }
+  if bonded_now {
     match @motion.liquid_bond_cross_time(at, end, gap_at, true, bar_bond_break_gap) {
       Some(ts) => {
-        let delay = dmax(0.0, ts - at)
         self.bond_bonded = false
-        self.bond_merge.put(bar_bond_merge_max)
-        self.bond_merge.go(0.0, @motion.liquid_split_spring.delayed(delay), at~)
+        let delay = dmax(0.0, ts - at)
+        if delay > 0.0 {
+          if cur_merge < bar_bond_merge_max * 0.5 {
+            self.bond_merge.put(bar_bond_merge_max)
+          }
+          self.bond_merge.go(0.0, @motion.liquid_split_spring.delayed(delay), at~)
+        } else {
+          self.bond_merge.go(0.0, @motion.liquid_split_spring, at~)
+        }
         self.bond_recoil.put(0.0)
         self.bond_recoil.go(0.0, @motion.liquid_recoil_spring.delayed(delay), at~, velocity=-4.5)
       }
       None => {
-        // Still emerging inside break_gap (e.g. mid-drag): stay bonded until a subsequent spring leg crosses break_gap
         self.bond_bonded = true
-        self.bond_merge.put(bar_bond_merge_max)
+        if self.bond_merge.target() < bar_bond_merge_max - 0.1 {
+          self.bond_merge.go(bar_bond_merge_max, merge_spec, at~)
+          self.bond_recoil.put(0.0)
+          self.bond_recoil.go(0.0, @motion.liquid_recoil_spring, at~, velocity=4.0)
+        }
       }
     }
   } else {
-    if prev_k_end <= 0.5 {
-      return
-    }
-    // Closing: ＋ approaches with zero magnetic attraction while gap > 0 -> blooms on physical contact (gap <= 0)
-    match @motion.liquid_bond_cross_time(at, end, gap_at, false, 0.0) {
+    match @motion.liquid_bond_cross_time(at, end, gap_at, false, bar_bond_contact_gap) {
       Some(tt) => {
-        let delay = dmax(0.0, tt - at)
         self.bond_bonded = true
+        let delay = dmax(0.0, tt - at)
         self.bond_merge.put(0.0)
-        self.bond_merge.go(bar_bond_merge_max, @motion.liquid_merge_spring.delayed(delay), at~)
+        self.bond_merge.go(bar_bond_merge_max, merge_spec.delayed(delay), at~)
         self.bond_recoil.put(0.0)
         self.bond_recoil.go(0.0, @motion.liquid_recoil_spring.delayed(delay), at~, velocity=4.0)
       }
       None => {
         self.bond_bonded = false
-        self.bond_merge.put(0.0)
+        if cur_merge > 0.05 || self.bond_merge.target() > 0.0 {
+          self.bond_merge.go(0.0, @motion.liquid_split_spring, at~)
+        } else {
+          self.bond_merge.put(0.0)
+        }
       }
     }
   }
