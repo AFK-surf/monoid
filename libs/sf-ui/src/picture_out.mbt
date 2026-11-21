@@ -21,22 +21,8 @@ pub fn picture_out_way() -> (String, String) {
 
 ///|
 /// A picture made here (`png`; None: it could not be made) handed out as picture_out_way says, what came of it said
-/// (that it was copied, not where what handed it out says so itself: the third), true once it is out: sfpages'
-/// picture_out, given as the app starts; till then (a page drawn alone) copied, nothing said.
-// kept across runs: what the app says once as it starts
-pub let picture_out_by : Ref[(@ui.Ctx, Bytes?, Bool) -> Bool] = Ref(fn(_, png, _) {
-  match png {
-    Some(png) => {
-      @ui.clipboard_set_png(png, label=product())
-      true
-    }
-    None => false
-  }
-})
-
-///|
-/// The same as picture_out_by, of what is made once as nodes and has no Ctx to hand (a table's copy key's: table_node's):
-/// sfpages' picture_out_now, given as the app starts; till then copied, nothing said.
+/// (that it was copied, not where what handed it out says so itself: the second), true once it is out (a table's copy
+/// key's: table_node's): sfpages' picture_out_now, given as the app starts; till then copied, nothing said.
 // kept across runs: what the app says once as it starts
 pub let picture_out_now_by : Ref[(Bytes?, Bool) -> Bool] = Ref(fn(png, _) {
   match png {

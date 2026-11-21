@@ -31,8 +31,6 @@ fn init {
     icons_made.clear()
     parts_made.clear()
     tiles_made.clear()
-    copied_at.clear()
-    code_wrapped.clear()
     dark_set.set(None)
     accent_set.set("")
     custom_hue_kept.val = 210

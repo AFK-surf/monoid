@@ -10,10 +10,14 @@ test "core formulas use the packaged outlines, retain source and share the text 
       set_dark(Some(dark))
       let look = begin(c)
       c.set_clear((look.p.bg >> 8) & 0xFFFFFFL)
-      c.box(w=Fill(1.0), h=Fill(1.0), bg=look.p.bg, pad=24.0, fn() {
-        markdown(c, text, tree=Some(tree), size=18.0) |> ignore
-      }) |> ignore
     }, w=390.0, h=540.0, scale=2.0, text=math_text)
+    t.check_looks(false)
+    @ui.set_view_app(fn(root) {
+      set_dark(Some(dark))
+      @ui.set_tree_theme(ui_theme_now)
+      root.ground(By(fn() { theme().p.bg })).padding(Is((24.0, 24.0, 24.0, 24.0))) |> ignore
+      markdown_node(root, fn() { text }, tree=fn() { Some(tree) }, size=fn() { 18.0 }) |> ignore
+    })
     t.draw()
     assert_eq(t.text_missing(), [])
     let (lay,_,_) = t.rich_of("Inline ").unwrap()

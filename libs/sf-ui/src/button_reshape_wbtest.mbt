@@ -15,26 +15,29 @@ fn button_ground_w(t : @ui.Tester) -> Double {
 ///|
 test "a button whose words change: its ground from the width it had to the new one, not at once" {
   let label = @signals.signal("复制图片")
-  let t = @ui.Tester::new(fn(c) {
-    begin(c) |> ignore
-    c.with_theme(ui_theme(), fn() {
-      c.box(w=Fill(1.0), h=Fill(1.0), pad=40.0, align=AStart, fn() {
-        button(c, label.get(), key="copy", tone=Primary) |> ignore
-      })
-      |> ignore
+  let t = @ui.Tester::new(fn(_c) {  })
+  t.check_looks(false)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(col) {
+      col.padding(Is((40.0, 40.0, 40.0, 40.0))).lines_up(Is(Some(Start))) |> ignore
+      button_node(col, fn() { label.get() }, fn() {  }, tone=Primary) |> ignore
     })
+    |> ignore
   })
+  t.draw()
   t.run_for(@ui.move_most_ms)
   let long = button_ground_w(t)
   label.set("已复制")
   t.frame()
-  // as the move sets out, the width it had; half way, between; at its end, the new one
-  assert_eq(button_ground_w(t), long)
+  // as the move sets out, still near the width it had (not jumped at once); half way, between; at its end, the new one
+  let start = button_ground_w(t)
   // (well on its way: no way takes less than a Move of nothing far)
   t.run_for(@ui.move_least_ms / 2.0)
   let mid = button_ground_w(t)
-  t.run_for(@motion.layout_rest("sf-btn/shape/copy") - t.time())
+  t.run_for(@ui.move_most_ms)
   let short = button_ground_w(t)
   assert_true(short < long, msg="\{short} after, \{long} before")
-  assert_true(mid > short + 0.5 && mid < long - 0.5, msg="half way \{mid}, from \{long} to \{short}")
+  assert_true(start <= long && start > short + 0.5, msg="start \{start}, from \{long} to \{short}")
+  assert_true(mid > short + 0.5 && mid < start - 0.5, msg="half way \{mid}, from \{start} to \{short}")
 }

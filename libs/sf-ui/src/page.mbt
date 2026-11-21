@@ -155,55 +155,6 @@ let pg_said_row_square : @ui.Style = @ui.css("row w=Full gap=S3 align=ACenter").
 )
 
 ///|
-/// A card of words on the page (narrow: Card, 12 from the page's sides, 10 under it; wide: pages.css.ts card, at the
-/// column's edges), its rows 14 apart, 20 in.
-/// `footed`: its buttons last (card_foot), its foot as far in as makes them concentric with its corners.
-pub fn page_card(c : @ui.Ctx, body : () -> Unit, footed? : Bool = false) -> Unit {
-  let card = if footed { desk_card.then(foot_pad(button_height())) } else { desk_card }
-  let words = fn() {
-    in_words.val += 1
-    body()
-    in_words.val -= 1
-  }
-  match look() {
-    Narrow if in_layers.val > 0 => c.box(style=card, words) |> ignore
-    Narrow => c.box(style=pg_card_room, fn() { c.box(style=card, words) |> ignore }) |> ignore
-    Wide => wide_alone(c, fn() { c.box(style=card, words) |> ignore })
-  }
-}
-
-///|
-/// The layers of one thing on a page, one under another (a document's head, the tabs over its text, its text): one
-/// block of the page, the room between them `body`'s own (what it says under each), not the room between a page's
-/// blocks. A card in it (page_card) is the card alone, none of a block's room round it.
-pub fn layers(c : @ui.Ctx, body : () -> Unit) -> Unit {
-  in_layers.val += 1
-  c.box(style=layers_box, body) |> ignore
-  in_layers.val -= 1
-}
-
-///|
-/// How many layers of one thing what is drawn is in (layers).
-// kept across runs: counted up and down round what layers draws (0 between them)
-let in_layers : Ref[Int] = Ref(0)
-
-///|
-// kept across runs: a value (no field of it changes)
-let layers_box : @ui.Style = @ui.css("w=Full")
-
-///|
-/// How many cards of words (page_card) what is drawn now stands in: a switch's row there is words beside their switch,
-/// no ground of its own (one would stand square, 20 in from the card's corner), on a narrow page as on a wide one.
-// kept across runs: counted up and down round what a card draws (0 between them)
-let in_words : Ref[Int] = Ref(0)
-
-///|
-/// A row's title with what follows it on its line (a pill), 8 apart, across their middle;
-/// the title cut short where the line leaves it less.
-// kept across runs: a value (no field of it changes)
-let title_line : @ui.Style = @ui.style(row=true, w=grow, gap=S2, align=ACenter)
-
-///|
 /// Words on one line, cut short where their room is less.
 // kept across runs: a value (no field of it changes)
 let cut_words : @ui.TextStyle = @ui.text_style(w=Cut, wrap=false)
@@ -249,60 +200,6 @@ let figure_words_under : @ui.Style = @ui.css("w=Full gap=S2_5 align=AStart")
 ///|
 // kept across runs: a value (no field of it changes)
 let switch_row_note : @ui.TextStyle = meta.then(full_words).then(@ui.text_style(balance=true))
-
-///|
-/// Words on a card (cardRowText): its title strong, `title_after` on its line, `words` under it, `note` quieter under
-/// them, `bad` in red.
-pub fn card_lines(
-  c : @ui.Ctx,
-  title : String,
-  words? : String = "",
-  note? : String = "",
-  bad? : String = "",
-  title_after? : () -> Unit,
-) -> Unit {
-  c.box(style=desk_card_text, fn() {
-    if title != "" {
-      match title_after {
-        Some(f) =>
-          c.box(style=title_line, keep=true, fn() {
-            c.text(title, style=desk_strong.then(cut_words)) |> ignore
-            f()
-          })
-          |> ignore
-        None => c.text(title, style=desk_strong) |> ignore
-      }
-    }
-    if words != "" {
-      c.text(words, style=desk_words) |> ignore
-    }
-    if note != "" {
-      c.text(note, style=desk_muted) |> ignore
-    }
-    if bad != "" {
-      c.text(bad, style=desk_note_bad) |> ignore
-    }
-  })
-  |> ignore
-}
-
-///|
-/// A footed card's buttons, last on it (cardFoot: 8 apart), reaching its foot corners as far as they are tall: at its
-/// start, or its end where `at_end`. Out across the card's words to its corners at its sides alone: its foot is the
-/// footed card's own (page_card's `footed`: as far under them as concentric with its corner), not reached again (the
-/// start's did, 4 past the card's edge: the spacing rule 4). The first button without an icon starts its words at the
-/// card's words; the button itself remains in the corner.
-pub fn card_foot(c : @ui.Ctx, body : () -> Unit, at_end? : Bool = false) -> Unit {
-  let was = card_foot_first.val
-  card_foot_first.val = !at_end
-  c.box(style=(if at_end { pg_card_foot_end } else { pg_card_foot }).then(foot_across(button_height())), body) |> ignore
-  card_foot_first.val = was
-}
-
-///|
-/// The first button in a card foot at its start, while its body is built.
-// kept across runs: set while a card foot is built and put back afterwards
-let card_foot_first : Ref[Bool] = Ref(false)
 
 ///|
 /// A dial's figure (Dial): what is left large (`number` and its `unit`), `fill` of its ten cells lit (0–100) in its
@@ -742,11 +639,6 @@ pub let desk_note_bad : @ui.TextStyle = list_note_bad
 let wide_block : @ui.Style = @ui.css("w=Full gap=S3")
 
 ///|
-/// A card's buttons at its foot (cardFoot).
-// kept across runs: a value (no field of it changes)
-let pg_card_foot : @ui.Style = @ui.css("row w=Full gap=S2 align=ACenter")
-
-///|
 /// A heading's words that do something: room round them for a finger (4), the link's ink.
 // kept across runs: a value (no field of it changes)
 let pg_action : @ui.Style = @ui.css("p=S1 radius=Lg")
@@ -839,10 +731,6 @@ let head_warn_red : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, color=Da
 ///|
 // kept across runs: a value (no field of it changes)
 let head_warn_amber : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, color=WarnInk, w=Full)
-
-///|
-// kept across runs: a value (no field of it changes)
-let pg_card_foot_end : @ui.Style = @ui.css("row w=Full gap=S2 justify=JEnd align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)

@@ -87,12 +87,10 @@
     "hash-order": {},
     "globals": {},
     "style-literal": {
-      "src/markdown.mbt": 34,
-      "src/parts.mbt": 13
+      "src/parts.mbt": 5
     },
     "box-loose": {
-      "src/markdown.mbt": 26,
-      "src/parts.mbt": 6
+      "src/parts.mbt": 1
     },
     "style-exact": {
       "src/tokens.mbt": 25
@@ -117,9 +115,7 @@
     "fixture-import": {},
     "motion-spring": {},
     "built-by-hand": {},
-    "layout-read-back": {
-      "src/markdown.mbt": 1
-    },
+    "layout-read-back": {},
     "motion-length": {},
     "tester-branch": {},
     "frame-number": {},
@@ -127,9 +123,7 @@
       "src/presented_node.mbt": 1
     },
     "build-clock": {},
-    "build-motion": {
-      "src/parts.mbt": 1
-    },
+    "build-motion": {},
     "old-list": {},
     "list-comes-off": {},
     "old-island": {},
@@ -214,9 +208,7 @@
     "fixture-import": {},
     "motion-spring": {},
     "built-by-hand": {},
-    "layout-read-back": {
-      "src/markdown.mbt": 1
-    },
+    "layout-read-back": {},
     "motion-length": {},
     "tester-branch": {},
     "frame-number": {},

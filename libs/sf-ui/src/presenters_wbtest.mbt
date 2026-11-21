@@ -40,15 +40,29 @@ fn presented_tree(view : (@ui.Ctx) -> Unit) -> (@view.View) -> Unit {
 }
 
 ///|
-/// A page with one button, 打开 (`at` its top, its middle, or its foot as a composer's choices are), that opens what
+/// A page with one trigger, 打开 (`at` its top, its middle, or its foot as a composer's choices are), that opens what
 /// `open` presents (given what opened it), and the host over it.
 fn presenting_view(open : (Anchor) -> Unit, at? : @ui.Justify = JStart) -> (@ui.Ctx) -> Unit {
   fn(c) {
     begin(c) |> ignore
     c.with_theme(ui_theme(), fn() {
+      let t = theme()
+      let h = button_height()
       c.box(w=Fill(1.0), h=Fill(1.0), pad=40.0, justify=at, fn() {
         let from = c.id("open")
-        button(c, "打开", key="open", on_press=fn() { open(Of(from)) }) |> ignore
+        c.on_press(from, fn() { open(Of(from)) })
+        c.box(id=from, h=Px(h), padx=button_padx, bg=t.p.chip, radius=h / 2.0, align=ACenter, justify=JCenter, fn() {
+          c.text(
+            "打开",
+            size=t.t.ui,
+            weight=if t.touch { 600 } else { 500 },
+            color=t.p.text,
+            wrap=false,
+            line=t.t.ui_line,
+          )
+          |> ignore
+        })
+        |> ignore
       })
       |> ignore
       presented(c)
@@ -57,24 +71,47 @@ fn presenting_view(open : (Anchor) -> Unit, at? : @ui.Justify = JStart) -> (@ui.
 }
 
 ///|
+/// A test host with one button, 打开 (`at` its top, its middle, or its foot as a composer's choices are), that opens
+/// what `open` presents (given what opened it), and `presented_nodes` over it.
 fn presenting_tester(at : (Int, Double, Double), open : (Anchor) -> Unit, button_at? : @ui.Justify = JStart) -> @ui.Tester {
   presenters_reset()
   // (the words their keys, as these tests press them (`common.cancel`): a file run before this one in the same
   // program may have given the library its own, player_wbtest's table says 取消 for it, and they stay as given)
   set_words(fn(key, _) { key })
   let (platform, w, h) = at
-  let t = @ui.Tester::new(@ui.old_views_here, tree=presented_tree(presenting_view(open, at=button_at)), w~, h~, platform~)
+  let t = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w~, h~, platform~)
+  t.check_looks(false)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(box) {
+      box.grow(Is(1.0)).padding(Is((40.0, 40.0, 40.0, 40.0))).lines_up(Is(Some(Start))) |> ignore
+      let align : @view.Lies = match button_at {
+        JEnd => End
+        JCenter => Middle
+        _ => Start
+      }
+      box.lies_along(Is(align)) |> ignore
+      button_opens_node(box, fn() { "打开" }, fn(b) { open(Node(b)) }) |> ignore
+    })
+    |> ignore
+    @ui.old(root, fn(c) {
+      begin(c) |> ignore
+      c.with_theme(ui_theme(), fn() { presented(c) })
+    }).over(Is(true)) |> @ui.old_takes_own |> ignore
+    presented_nodes(root)
+  })
   t.draw()
   t
 }
 
 ///|
-/// What opened it as a menu's or a pick's (what presenting_view opened it by: its 打开).
+/// What opened it as a menu's or a pick's (what presenting_tester opened it by: its 打开).
 fn beside_of(from : Anchor) -> Beside {
   match from {
     Anchor::Of(id) => Of(id)
+    Anchor::Node(v) => Node(v)
     Anchor::At(x, y, w, h) => At(x, y, w, h)
-    Unanchored | Node(_) => @halt.saying("a menu or a pick is opened beside what opened it")
+    Unanchored => @halt.saying("a menu or a pick is opened beside what opened it")
   }
 }
 

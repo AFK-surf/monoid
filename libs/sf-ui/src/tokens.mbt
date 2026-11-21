@@ -2617,11 +2617,6 @@ pub let menu_row_end : @ui.Style = @ui.style(
 pub let rule_line : @ui.Style = @ui.css("w=Full h=SPx")
 
 ///|
-fn rule_ink(c : @ui.Ctx) -> Int64 {
-  @ui.alpha(c.theme().fg, 0.12)
-}
-
-///|
 /// Nothing under it, no ring round it.
 pub let no_ground : Int64 = 0L
 
