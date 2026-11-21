@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d6bfd48bd](https://github.com/AFK-surf/monoid/commit/d6bfd48bd32c6e6f1847e1a84c2ab8d6788f02e5) feat(station): port admin CLI natively into stillf | 2.65 | 3.57 | 14.51 | 36.47 | 55.28 | 31.94 | 64.58 | 98.91 | 118.95 |
 | [e952e0f5c](https://github.com/AFK-surf/monoid/commit/e952e0f5cb13149da32a9aacd7ff658d14fb2614) chore(mbui): delete legacy @ui.Ctx pages and pane_ | 2.65 | 3.57 | 14.51 | 36.47 | 55.28 | 31.94 | 64.58 | 98.16 | 118.95 |
 | [4725fad51](https://github.com/AFK-surf/monoid/commit/4725fad511ac58f314f11cad753be7ea3804c2b6) fix(mbui): restore visible capillary liquid bridge | 2.79 | 3.77 | 15.38 | 37.5 | 58.1 | 32.87 | 67.1 | 98.32 | 124.13 |
 | [f3c843bfc](https://github.com/AFK-surf/monoid/commit/f3c843bfc8888dc86ff2733b8aced38377cec2fc) refactor(e2e): decouple apps/mbui and core-ts test | 2.79 | 3.77 | 15.38 | 37.5 | 58.1 | 32.87 | 67.1 | 98.5 | 115.85 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e410e26d2](https://github.com/AFK-surf/monoid/commit/e410e26d208a829d1aa7e3c6c2026d54c5a3e1c0) feat(mbui): support middle-click to close side pan | 2.77 | 3.75 | 15.27 | 37.34 | 57.83 | 32.72 | 66.73 | 98.39 | 126 |
 | [853a27a04](https://github.com/AFK-surf/monoid/commit/853a27a043803c86acdff794affe3ec93840abff) perf(mbui): raise glass blur cache to 32 slots wit | 2.77 | 3.75 | 15.27 | 37.34 | 57.83 | 32.72 | 66.73 | 98.39 | 126 |
 | [5b050d6fc](https://github.com/AFK-surf/monoid/commit/5b050d6fc21e5ddbe2d9119f5c5f4f14037d8e42) feat(comma): report quantized owner activity times | 2.77 | 3.75 | 15.27 | 37.34 | 57.83 | 32.72 | 66.73 | 98.39 | 126 |
-| [b7304a23f](https://github.com/AFK-surf/monoid/commit/b7304a23f06f6a3388e43bed53dec9b59fbcb60d) fix(mbui): lazily settle moves_for under transitio | 2.77 | 3.74 | 15.24 | 37.3 | 57.72 | 32.7 | 66.65 | 98.09 | 122.24 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d6bfd48bd](https://github.com/AFK-surf/monoid/commit/d6bfd48bd32c6e6f1847e1a84c2ab8d6788f02e5) feat(station): port admin CLI natively into stillf | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 53.86 |
 | [e952e0f5c](https://github.com/AFK-surf/monoid/commit/e952e0f5cb13149da32a9aacd7ff658d14fb2614) chore(mbui): delete legacy @ui.Ctx pages and pane_ | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 53.86 |
 | [4725fad51](https://github.com/AFK-surf/monoid/commit/4725fad511ac58f314f11cad753be7ea3804c2b6) fix(mbui): restore visible capillary liquid bridge | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 53.86 |
 | [f3c843bfc](https://github.com/AFK-surf/monoid/commit/f3c843bfc8888dc86ff2733b8aced38377cec2fc) refactor(e2e): decouple apps/mbui and core-ts test | 0.47 | 0.61 | 2.37 | 3.41 | 5.6 | 1.71 | 4.62 | 53.86 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e410e26d2](https://github.com/AFK-surf/monoid/commit/e410e26d208a829d1aa7e3c6c2026d54c5a3e1c0) feat(mbui): support middle-click to close side pan | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.6 | 54.02 |
 | [853a27a04](https://github.com/AFK-surf/monoid/commit/853a27a043803c86acdff794affe3ec93840abff) perf(mbui): raise glass blur cache to 32 slots wit | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.6 | 53.95 |
 | [5b050d6fc](https://github.com/AFK-surf/monoid/commit/5b050d6fc21e5ddbe2d9119f5c5f4f14037d8e42) feat(comma): report quantized owner activity times | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.6 | 54 |
-| [b7304a23f](https://github.com/AFK-surf/monoid/commit/b7304a23f06f6a3388e43bed53dec9b59fbcb60d) fix(mbui): lazily settle moves_for under transitio | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.6 | 54 |
