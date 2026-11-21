@@ -1,6 +1,6 @@
 #!/bin/bash
 # The macOS apps: mbui's scripts/mac.sh (build | run | script NAME | shot | bench) on this module's apps (APP=stillfail
-# by default; sffix, sfkit, coredemo, photos, books). stillfail and coredemo have the still.fail core in them, in Hermes:
+# by default; sffix, coredemo, photos, books). stillfail and coredemo have the still.fail core in them, in Hermes:
 # Hermes's framework, the engine and the Rust shell's .a (scripts/core.sh apple-native) made first when missing or
 # stale (a new engine links the app again), the core's bytecode beside the app's compile (only its run and its bundle
 # take it: a core changed was ~26 s before the compile on CI's Mac, 2026-10-24); `login` runs the core demo

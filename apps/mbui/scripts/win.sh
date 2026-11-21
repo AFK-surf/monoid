@@ -1,6 +1,6 @@
 #!/bin/bash
 # The Windows apps: mbui's scripts/win.sh (build | run | script NAME | shot) on this module's apps (APP=stillfail by
-# default; sffix, sfkit), in Git Bash on Windows with MoonBit and MSVC (a Developer Command Prompt's environment).
+# default; sffix), in Git Bash on Windows with MoonBit and MSVC (a Developer Command Prompt's environment).
 # stillfail has the still.fail core in it (src/stillfail/win_engine.c → src/host/win_core.c): the engine and the shell
 # prebuilt for Windows (this checkout's scripts/native.ts parts `engine` and `shell`, win32-x64: from the release
 # native-artifacts, or built here, as only Windows can), the engine's C API (engine/engine.h) and import library found
