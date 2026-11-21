@@ -775,40 +775,46 @@ fn wide_bar_keys(
   stint : () -> Int,
 ) -> Unit {
   let own = fn() { view() is Some(_) && !@sf.native_on() }
+  // (keep chatJobs subscription mounted unconditionally as before so replay traces see identical subscription timing)
+  let jobs_held = @sfbase.topic_value_held(src, "chatJobs", chat_jobs_summary_params(r))
+  let jobs = fn() { jobs_held.get() }
+  let has_jobs = fn() { flag(jobs(), "hasJobs") || items(jobs(), "jobs").length() > 0 }
+  let alarm = fn() { if has_jobs() { text(jobs(), "alarm") } else { "" } }
   e.show(own, at_once=true, fn(slot) {
-    @sf.bar_pill_group_node(slot, height=38.0, pad=3.0, gap=2.0, fn(k) {
-      let scope = fn() {
-        match @sfbase.workspace_in_view(src).0 {
-          Some(w) => w.id
-          None => ""
-        }
+    slot.row(Is(true)).gap(Is(8.0)).lines_up(Is(Some(Middle))) |> ignore
+    let scope = fn() {
+      match @sfbase.workspace_in_view(src).0 {
+        Some(w) => w.id
+        None => ""
       }
-      let chat = fn() { @sfbase.chat_head_json(src, r) }
-      // nothing left in it (the core's `archivable`): archived with one press
-      k.show(
-        fn() {
-          match view() {
-            Some(v) => v.archivable && !v.archived
-            None => false
-          }
-        },
-        along_row=true,
-        fn(b) {
-          @sf.icon_button_node(b, "archive", fn() { @sf.t("web-pages.chat.archive") }, fn() {
+    }
+    let chat = fn() { @sfbase.chat_head_json(src, r) }
+    // nothing left in it (the core's `archivable`): standalone 38×38 liquid glass circle so dynamic show/hide
+    // outside a transition never steps the width of the persistent action pill
+    slot.show(
+      fn() {
+        match view() {
+          Some(v) => v.archivable && !v.archived
+          None => false
+        }
+      },
+      along_row=true,
+      fn(b) {
+        @sf.bar_pill_group_node(b, height=38.0, pad=3.0, gap=0.0, fn(p) {
+          @sf.icon_button_node(p, "archive", fn() { @sf.t("web-pages.chat.archive") }, fn() {
             match (@signals.untracked(view), @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 })) {
               (Some(v), Some(w)) => archive_asked(src, w, r, v, @signals.untracked(chat))
               _ => ()
             }
           }, tips~, shortcut="chat.archive")
           |> ignore
-        },
-      )
+        })
+        |> ignore
+      },
+    )
+    // grouped action pill: services/jobs, remote screens, info, more
+    @sf.bar_pill_group_node(slot, height=38.0, pad=3.0, gap=2.0, fn(k) {
       // its services and jobs, while it has any
-      // (what they last were while asked again: sfbase's asked_again.mbt)
-      let jobs_held = @sfbase.topic_value_held(src, "chatJobs", chat_jobs_summary_params(r))
-      let jobs = fn() { jobs_held.get() }
-      let has_jobs = fn() { flag(jobs(), "hasJobs") || items(jobs(), "jobs").length() > 0 }
-      let alarm = fn() { if has_jobs() { text(jobs(), "alarm") } else { "" } }
       k.show(has_jobs, along_row=true, fn(b) {
         let button = @sf.icon_button_node(b, "web", fn() { @sf.t("web-pages.chat.services") }, fn() { jobs_pressed(src, r) }, tips~, shortcut="chat.jobs")
         // (its popover beside it, where it is as that is drawn: chat_pops_node's)
@@ -874,29 +880,31 @@ fn wide_bar_keys(
         )
       })
       |> ignore
-      // the side panel's switch while it is closed: the first agent's history in it; coming and going along the row, what
-      // is beside it going its way with it (along_row), as the panel slides closed or open
-      let panel_closed_with_switch = fn() {
-        match view() {
-          Some(v) => side_of(v).0.length() == 0 && v.agents.length() > 0
-          None => false
-        }
+    })
+    |> ignore
+    // the side panel's switch while it is closed: standalone 38×38 liquid glass circle matching macOS 26 Tahoe sidebar toggle
+    let panel_closed_with_switch = fn() {
+      match view() {
+        Some(v) => side_of(v).0.length() == 0 && v.agents.length() > 0
+        None => false
       }
-      k.show(
-        panel_closed_with_switch,
-        along_row=true,
-        fn(b) {
-          @sf.icon_button_node(b, "panel-open", fn() { @sf.t("web-pages.chat.openPanel") }, fn() {
+    }
+    slot.show(
+      panel_closed_with_switch,
+      along_row=true,
+      fn(b) {
+        @sf.bar_pill_group_node(b, height=38.0, pad=3.0, gap=0.0, fn(p) {
+          @sf.icon_button_node(p, "panel-open", fn() { @sf.t("web-pages.chat.openPanel") }, fn() {
             match @signals.untracked(view) {
               Some(v) if v.agents.length() > 0 => side_change(src, r, "open", Some(v.agents[0].key))
               _ => ()
             }
           }, tips~, shortcut="chat.history")
           |> ignore
-        },
-      )
-    })
-    |> ignore
+        })
+        |> ignore
+      },
+    )
   })
 }
 

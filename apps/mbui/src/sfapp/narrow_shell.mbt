@@ -895,7 +895,7 @@ fn place_top_bar_glass(
     g.box(fn(row) {
       row
       .row(Is(true))
-      .padding(By(fn() { (16.0, status_top_now(row.window_w()), 16.0, 0.0) }))
+      .padding(By(fn() { (16.0, status_top_now(row.window_w()), 12.0, 0.0) }))
       .min_height(By(fn() { Some(top_bar_h_at(row.window_w())) }))
       .gap(Is(8.0))
       .lines_up(Is(Some(Middle)))

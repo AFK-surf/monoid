@@ -185,121 +185,119 @@ fn home_top_bar_node(
           _ => false
         })
       }
-      row.show(has_left, at_once=true, fn(left_slot) {
-        left_slot.shrink(Is(0.0)) |> ignore
-        @sf.bar_pill_group_node(left_slot, height=40.0, pad=3.0, gap=2.0, fn(pill) {
-          // 待处理, first on the bar: as a system's bar has it (no rail here to hold its bell)
-          if bell {
-            pill.box(fn(k) {
-              @sf.round_key_node(k, "bell", fn() { tr("web-main.attention.entry") }, fn() {
-                guard @signals.untracked(workspace) is Some(w) else { return }
-                let (x, y, wd, h) = k.placed_window_now()
-                @sfdesk.open_attention_panel(src, w, At(x, y, wd, h))
-              })
-              k.show(fn() { workspace().map(fn(w) { @sfdesk.bell_lit(src, w) }).unwrap_or(false) }, fn(m) {
-                m.over(Is(true)).row(Is(true)).lies_along(Is(End)).lines_up(Is(Some(Start))) |> ignore
-                m.box(fn(at) {
-                  at.offset(Is((-home_bell_dot_at, home_bell_dot_at))) |> ignore
-                  @sfpages.chat_mark_node(at, fn() { "done" })
-                })
-                |> ignore
-              })
-            })
-            |> ignore
-          }
-          pill.show(keyed, fn(f) {
-            let key : Ref[@view.View?] = Ref(None)
-            let opener = @sf.Opener::new()
-            let shown = fn(w : Workspace) {
-              if @sfbase.board_on_now(src) {
-                @sfbase.board_filter_of(src, w.id)
-              } else {
-                filter_of(src, w.id)
-              }
-            }
-            key.val = Some(f)
-            @sf.round_key_node(
-              f,
-              "filter",
-              fn() {
-                let filter = match workspace() {
-                  Some(w) => shown(w)
-                  None => "all"
-                }
-                fill("android-chat.home.filter.label", [
-                  (
-                    "filter",
-                    tr(
-                      match filter {
-                        "mine" => "android-chat.home.filter.mine"
-                        "watching" => "android-chat.home.filter.watching"
-                        "hidden" => "web-main.filter.hidden"
-                        _ => "android-chat.home.filter.all"
-                      },
-                    ),
-                  ),
-                ])
-              },
-              fn() {
-                guard @signals.untracked(workspace) is Some(w) else { return }
-                let (x, y, wd, h) = key.val.map(fn(k) { k.placed_window_now() }).unwrap_or((0.0, 0.0, 0.0, 0.0))
-                let board = @sfbase.board_on_now(src)
-                @sfpages.filter_menu(At(x, y, wd, h), shown(w), fn(f) { home_filter_go(src, w, f, board~) }, in_board=board)
-                opener.mark()
-              },
-              icon_size=20.0,
-              opener~,
-            )
-          })
-          // 列表 | 看板, its own key beside the filter: 看板 on the list, 列表 on the board; 看板 the second to leave where
-          // the bar has not the room (catching up and transfers both beside it on a narrow phone, till they are done), 列表
-          // never (the way back to the list); only while 实验性功能's 对话列表看板视图 is on
-          pill.show(fn() { @sfbase.board_feature.get() && keyed() }, fn(m) {
-            m.drops(By(fn() { if @sfbase.board_on_now(src) { 0 } else { 2 } })) |> ignore
-            // (one key, its icon and words following the mode: nothing made again as it turns)
-            let on = fn() { @sfbase.board_on_now(src) }
-            @sf.round_key_node(
-              m,
-              "view-columns",
-              fn() { if on() { @sf.t("web-main.board.list") } else { @sf.t("web-main.board.board") } },
-              fn() { @sfbase.board_set(src, !@signals.untracked(on)) },
-              icon_size=20.0,
-              icon_now=fn() { if on() { "list" } else { "view-columns" } },
-            )
-          })
-          // catching up beside them (laid nowhere while it is not there): it and transfers stay, the workspace's name giving
-          // way to them; the stations' releases the first to leave where the bar has not the room (their dialog in 设置 as
-          // well), 看板 the second (end's, below)
-          @sf.sync_key_node(pill, tips, 34.0, 20.0, fn() {
-            match view() {
-              Some({ syncing: Some(y), .. }) => Some(y)
-              _ => None
-            }
-          })
-          // transfers beside it (sfdesk's transfers_key_node: there only while something comes or goes)
+      let left_pill = @sf.bar_pill_group_node(row, height=40.0, pad=3.0, gap=2.0, fn(pill) {
+        pill.fits(Is(true)) |> ignore
+        // 待处理, first on the bar: as a system's bar has it (no rail here to hold its bell)
+        if bell {
           pill.box(fn(k) {
-            k.shrink(Is(0.0)) |> ignore
-            @sfdesk.transfers_key_node(k, src, fn() { workspace().map(fn(w) { w.id }).unwrap_or("") }, 34.0, 20.0, tips, shown~)
+            @sf.round_key_node(k, "bell", fn() { tr("web-main.attention.entry") }, fn() {
+              guard @signals.untracked(workspace) is Some(w) else { return }
+              let (x, y, wd, h) = k.placed_window_now()
+              @sfdesk.open_attention_panel(src, w, At(x, y, wd, h))
+            })
+            k.show(fn() { workspace().map(fn(w) { @sfdesk.bell_lit(src, w) }).unwrap_or(false) }, fn(m) {
+              m.over(Is(true)).row(Is(true)).lies_along(Is(End)).lines_up(Is(Some(Start))) |> ignore
+              m.box(fn(at) {
+                at.offset(Is((-home_bell_dot_at, home_bell_dot_at))) |> ignore
+                @sfpages.chat_mark_node(at, fn() { "done" })
+              })
+              |> ignore
+            })
           })
           |> ignore
-          // the stations' newer releases waiting for this person, in the app's own update mark as the wide frames' sidebar
-          // offers them beside the app's own; pressed, their dialog (sfpages station_updates.mbt)
-          pill.show(fn() { stations_said() != "" }, fn(s) {
-            s.drops(Is(1)) |> ignore
-            @sf.round_key_node(s, "download", stations_said, fn() {
-              match @signals.untracked(workspace) {
-                Some(w) => @sfpages.station_updates_dialog(src, settings_core(src, w), w.id)
-                None => ()
+        }
+        pill.show(keyed, fn(f) {
+          let key : Ref[@view.View?] = Ref(None)
+          let opener = @sf.Opener::new()
+          let shown = fn(w : Workspace) {
+            if @sfbase.board_on_now(src) {
+              @sfbase.board_filter_of(src, w.id)
+            } else {
+              filter_of(src, w.id)
+            }
+          }
+          key.val = Some(f)
+          @sf.round_key_node(
+            f,
+            "filter",
+            fn() {
+              let filter = match workspace() {
+                Some(w) => shown(w)
+                None => "all"
               }
-            }, icon_size=20.0)
-          })
+              fill("android-chat.home.filter.label", [
+                (
+                  "filter",
+                  tr(
+                    match filter {
+                      "mine" => "android-chat.home.filter.mine"
+                      "watching" => "android-chat.home.filter.watching"
+                      "hidden" => "web-main.filter.hidden"
+                      _ => "android-chat.home.filter.all"
+                    },
+                  ),
+                ),
+              ])
+            },
+            fn() {
+              guard @signals.untracked(workspace) is Some(w) else { return }
+              let (x, y, wd, h) = key.val.map(fn(k) { k.placed_window_now() }).unwrap_or((0.0, 0.0, 0.0, 0.0))
+              let board = @sfbase.board_on_now(src)
+              @sfpages.filter_menu(At(x, y, wd, h), shown(w), fn(f) { home_filter_go(src, w, f, board~) }, in_board=board)
+              opener.mark()
+            },
+            icon_size=20.0,
+            opener~,
+          )
+        })
+        // 列表 | 看板, its own key beside the filter: 看板 on the list, 列表 on the board; 看板 the second to leave where
+        // the bar has not the room (catching up and transfers both beside it on a narrow phone, till they are done), 列表
+        // never (the way back to the list); only while 实验性功能's 对话列表看板视图 is on
+        pill.show(fn() { @sfbase.board_feature.get() && keyed() }, fn(m) {
+          m.drops(By(fn() { if @sfbase.board_on_now(src) { 0 } else { 2 } })) |> ignore
+          // (one key, its icon and words following the mode: nothing made again as it turns)
+          let on = fn() { @sfbase.board_on_now(src) }
+          @sf.round_key_node(
+            m,
+            "view-columns",
+            fn() { if on() { @sf.t("web-main.board.list") } else { @sf.t("web-main.board.board") } },
+            fn() { @sfbase.board_set(src, !@signals.untracked(on)) },
+            icon_size=20.0,
+            icon_now=fn() { if on() { "list" } else { "view-columns" } },
+          )
+        })
+        // catching up beside them (laid nowhere while it is not there): it and transfers stay, the workspace's name giving
+        // way to them; the stations' releases the first to leave where the bar has not the room (their dialog in 设置 as
+        // well), 看板 the second (end's, below)
+        @sf.sync_key_node(pill, tips, 34.0, 20.0, fn() {
+          match view() {
+            Some({ syncing: Some(y), .. }) => Some(y)
+            _ => None
+          }
+        })
+        // transfers beside it (sfdesk's transfers_key_node: there only while something comes or goes)
+        pill.box(fn(k) {
+          k.shrink(Is(0.0)) |> ignore
+          @sfdesk.transfers_key_node(k, src, fn() { workspace().map(fn(w) { w.id }).unwrap_or("") }, 34.0, 20.0, tips, shown~)
         })
         |> ignore
+        // the stations' newer releases waiting for this person, in the app's own update mark as the wide frames' sidebar
+        // offers them beside the app's own; pressed, their dialog (sfpages station_updates.mbt)
+        pill.show(fn() { stations_said() != "" }, fn(s) {
+          s.drops(Is(1)) |> ignore
+          @sf.round_key_node(s, "download", stations_said, fn() {
+            match @signals.untracked(workspace) {
+              Some(w) => @sfpages.station_updates_dialog(src, settings_core(src, w), w.id)
+              None => ()
+            }
+          }, icon_size=20.0)
+        })
       })
+      left_pill.laid_nowhere(By(fn() { !has_left() })).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
       row.box(fn(end) {
-        // (giving way, its name cut short: what may leave the bar leaves only once that name is down to four of its
-        // size, not while it is whole)
-        end.row(Is(true)).grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).gap(Is(8.0)).lines_up(Is(Some(Middle))).lies_along(Is(End))
+        // (giving way, its name cut short: reserve room for settings + 4-em workspace title so left_pill shrinks and
+        // drops optional keys before squeezing the workspace name)
+        end.row(Is(true)).grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(170.0))).gap(Is(8.0)).lines_up(Is(Some(Middle))).lies_along(Is(End))
         |> ignore
         // the workspace's switcher: its mark, its name, what the others have waiting
         let open = fn(s : @view.View) {

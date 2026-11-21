@@ -740,58 +740,66 @@ fn bar_end_node(
   @signals.untracked(fn() { @sfbase.chat_whole_held(src, r) }) |> ignore
   let archivable = fn() { bar_archivable(view) }
   let doing_key = "archive/" + r.station + "/" + r.session
-  @sf.bar_pill_group_node(e, height=40.0, pad=3.0, gap=2.0, fn(pill) {
-    pill.box(fn(k) {
-      // (there as it is made where it is so; set off as it becomes so or stops, at that cause's moment: reacts' first
-      // run, as it is made, goes nowhere, the way already there). Its room laid out at once as it becomes so or stops
-      // (what is beside it drawn on its way there: `slides`); its button at its room's end, so where it stood as the room
-      // goes, fading out there over what comes into it, fading in where it comes
-      let share = @motion.NodeWay::new(if @signals.untracked(archivable) { 1.0 } else { 0.0 })
-      k.reacts(archivable, fn(on) {
-        if @view.answering_now() {
-          share.put(if on { 1.0 } else { 0.0 })
-        } else {
-          share.go_ms(k, if on { 1.0 } else { 0.0 }, @sf.dur_ms)
-        }
-      })
-      slides(k)
-      let s = fn() { share.shown(k) }
-      k
+  // standalone 40×40 liquid glass circle for archive: toggling `archivable` never steps the right pill's width
+  e.box(fn(k) {
+    let share = @motion.NodeWay::new(if @signals.untracked(archivable) { 1.0 } else { 0.0 })
+    k.reacts(archivable, fn(on) {
+      if @view.answering_now() {
+        share.put(if on { 1.0 } else { 0.0 })
+      } else {
+        share.go_ms(k, if on { 1.0 } else { 0.0 }, @sf.dur_ms)
+      }
+    })
+    slides(k)
+    let s = fn() { share.shown(k) }
+    k
+    .row(Is(true))
+    .width(By(fn() { Some(if archivable() { 40.0 + 6.0 } else { 0.0 }) }))
+    .lies_along(Is(Start))
+    .laid_nowhere(By(fn() { s() <= 0.0 && !archivable() }))
+    |> ignore
+    k.box(fn(b) {
+      b
       .row(Is(true))
-      .width(By(fn() { Some(if archivable() { nav_key_side } else { 0.0 }) }))
-      .lies_along(Is(End))
-      .laid_nowhere(By(fn() { s() <= 0.0 && !archivable() }))
+      .lines_up(Is(Some(Middle)))
+      .lies_along(Is(Middle))
+      .alpha(By(s))
+      .presses(By(archivable))
       |> ignore
-      k.box(fn(b) {
-        b
-        .width(Is(Some(nav_key_side)))
-        .min_width(Is(Some(nav_key_side)))
-        .height(Is(Some(nav_key_side)))
-        .lines_up(Is(Some(Middle)))
-        .lies_along(Is(Middle))
-        .alpha(By(s))
-        .presses(By(archivable))
-        |> ignore
-        b.show(fn() { @sfbase.doing(doing_key) }, fn(sp) { @sf.spinner_node(sp) |> ignore })
-        b.show(fn() { !@sfbase.doing(doing_key) }, fn(key) {
-          @sf.round_key_node(
-            key,
-            "archive",
-            fn() { tr("android-chat.archive") },
-            // (the chat's view as it is at the press)
-            fn() {
-              match view() {
-                Some(v) if v.archivable && !v.archived => archive_chat(src, r, v)
-                _ => ()
-              }
-            },
-            icon_size=20.0,
-          )
+      @sf.bar_pill_group_node(b, height=40.0, pad=3.0, gap=0.0, fn(arch_pill) {
+        arch_pill.box(fn(inner) {
+          inner
+          .width(Is(Some(nav_key_side)))
+          .min_width(Is(Some(nav_key_side)))
+          .height(Is(Some(nav_key_side)))
+          .lines_up(Is(Some(Middle)))
+          .lies_along(Is(Middle))
+          |> ignore
+          inner.show(fn() { @sfbase.doing(doing_key) }, fn(sp) { @sf.spinner_node(sp) |> ignore })
+          inner.show(fn() { !@sfbase.doing(doing_key) }, fn(key) {
+            @sf.round_key_node(
+              key,
+              "archive",
+              fn() { tr("android-chat.archive") },
+              // (the chat's view as it is at the press)
+              fn() {
+                match view() {
+                  Some(v) if v.archivable && !v.archived => archive_chat(src, r, v)
+                  _ => ()
+                }
+              },
+              icon_size=20.0,
+            )
+          })
         })
+        |> ignore
       })
       |> ignore
     })
     |> ignore
+  })
+  |> ignore
+  @sf.bar_pill_group_node(e, height=40.0, pad=3.0, gap=2.0, fn(pill) {
     // its services and jobs, while it has any
     let has_jobs = fn() { bar_has_jobs(jobs) }
     pill.show(has_jobs, at_once=true, fn(k) {

@@ -20,7 +20,8 @@ let row_nodes_large_most : Int = 85
 // view: made and let go with the workspace's Home as its bar's other keys are; 2026-11-17 again: 567, 561, 412 before
 // 小屏 Home's list no longer opened under what is left up long (moved into 待处理): the rows of a screen more shown in
 // its place made in the workspace come to and let go of in the one left, the same at the five rates
-let switch_frame_most : (Int, Int, Int) = (764, 775, 497)
+// 2026-11-22: +3 made, +3 let_go, +2 laid for Home top bar floating bar_pill_group_node liquid glass capsules (before it 764, 775, 497)
+let switch_frame_most : (Int, Int, Int) = (767, 778, 499)
 
 ///|
 /// The nodes each of the first `n` rows of the real workspace's list is made of, alone, at rest, in a window `w` by
