@@ -976,6 +976,7 @@ fn lib_overlays_section(
             ]
           },
           menu_label=fn() { "Demo Menu" },
+          anchor_size=(142.0, 48.0),
         )
         |> ignore
         @lg.liquid_select_node(
@@ -1026,6 +1027,7 @@ fn lib_overlays_section(
             |> ignore
           },
           placement=BelowStart,
+          anchor_size=(144.0, 48.0),
         )
         |> ignore
         @lg.liquid_tooltip_node(
@@ -1448,6 +1450,7 @@ fn library_page(
               },
               menu_label=fn() { "Studio Menu" },
               placement=BelowEnd,
+              anchor_size=(36.0, 36.0),
             )
             |> ignore
           },

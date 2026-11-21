@@ -15,6 +15,7 @@ pub fn liquid_popover_node(
   content_look : (@view.View) -> Unit,
   placement? : @headless.Placement = BelowCenter,
   width? : Double = 280.0,
+  anchor_size? : (Double, Double) = (40.0, 40.0),
   loc~ : SourceLoc,
 ) -> @view.View {
   let pop = @headless.Popover::new(open, set_open)
@@ -32,7 +33,7 @@ pub fn liquid_popover_node(
         None => ()
       }
       v.width(Is(Some(width))) |> ignore
-      ovl_attach_liquid_morph(v, v, side, along, ovl_popover_radius, fn(content_box) {
+      ovl_attach_liquid_morph(v, v, side, along, ovl_popover_radius, anchor_size, fn(content_box) {
         content_box
         .padding(Is((ovl_popover_pad, ovl_popover_pad, ovl_popover_pad, ovl_popover_pad)))
         |> ignore

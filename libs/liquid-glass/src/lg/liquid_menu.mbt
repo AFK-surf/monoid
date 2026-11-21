@@ -120,6 +120,7 @@ pub fn liquid_menu_node(
   menu_label? : () -> String = fn() { "Menu" },
   placement? : @headless.Placement = BelowStart,
   min_width? : Double = 212.0,
+  anchor_size? : (Double, Double) = (40.0, 40.0),
   loc~ : SourceLoc,
 ) -> @view.View {
   let pop = @headless.Popover::new(open, set_open)
@@ -151,7 +152,7 @@ pub fn liquid_menu_node(
         made_for=loc,
         fn(panel, menu) {
           panel.min_width(Is(Some(min_width))) |> ignore
-          ovl_attach_liquid_morph(v, panel, side, along, ovl_menu_radius, fn(content_box) {
+          ovl_attach_liquid_morph(v, panel, side, along, ovl_menu_radius, anchor_size, fn(content_box) {
             content_box
             .padding(Is((ovl_menu_pad, ovl_menu_pad, ovl_menu_pad, ovl_menu_pad)))
             .gap(Is(ovl_menu_item_gap_y))
@@ -443,7 +444,7 @@ pub fn liquid_select_node(
         made_for=loc,
         fn(panel, menu) {
           panel.min_width(Is(Some(width))) |> ignore
-          ovl_attach_liquid_morph(v, panel, Bottom, Start, ovl_menu_radius, fn(content_box) {
+          ovl_attach_liquid_morph(v, panel, Bottom, Start, ovl_menu_radius, (width, ovl_select_h), fn(content_box) {
             content_box
             .padding(Is((ovl_menu_pad, ovl_menu_pad, ovl_menu_pad, ovl_menu_pad)))
             .gap(Is(ovl_menu_item_gap_y))

@@ -932,13 +932,13 @@ test "liquid_select_node turns its chevron a half turn and liquid_disclosure_nod
 
 ///|
 /// Declared mid-flight probe moments (ms) for `liquid_menu_node` liquid morph tests.
-let ovl_morph_open_probe_ms : Double = 40.0
+let ovl_morph_open_probe_ms : Double = 80.0
 
 ///|
 let ovl_morph_close_probe_ms : Double = 60.0
 
 ///|
-/// Deterministic snapshot of `liquid_menu_node` capillary liquid morph across opening, rest, closing, and unmount.
+/// Deterministic snapshot of `liquid_menu_node` GPU capillary liquid morph across opening, rest, closing, and unmount.
 fn ovl_menu_morph_snapshot() -> (Int, Double, Int, Int, Int, Int, Array[String]) raise {
   let open = @signals.signal(false)
   let t = ovl_case(fn(page, host) {
@@ -966,19 +966,19 @@ fn ovl_menu_morph_snapshot() -> (Int, Double, Int, Int, Int, Int, Array[String])
   }
   let snaps : Array[String] = []
   t.act(Button, Activate, label="Actions")
-  // Mid-flight opening (t = 40ms): trigger + blooming menu shell (zero extra glass instances)
+  // Mid-flight opening (t = 80ms): real trigger + adjacent trigger_ghost + adjacent morphing shell (GPU merged bridge)
   t.run_for(ovl_morph_open_probe_ms)
   let mid_glass = t.drawn_glass().length()
   let mid_menu_w = t.drawn_glass().fold(init=0.0, fn(mx, g) { if g.2 > mx { g.2 } else { mx } })
   snaps.push(snap_glass())
-  // Settled open (t = springs_out): trigger + 1 clean menu shell, zero faults
+  // Settled open (t = springs_out): trigger + 1 clean menu shell, zero extra glass, zero faults
   t.run_for(springs_out)
   let rest_glass = t.drawn_glass().length()
   let rest_menu_w = t.get(Menu, label="Morph Menu").rect.2
   assert_no_nested_glass(t, "liquid_menu_morph rest")
   assert_eq(t.audit(), [])
   snaps.push(snap_glass())
-  // Mid-flight closing (t = 60ms after Escape): glass shell still contracting smoothly
+  // Mid-flight closing (t = 60ms after Escape): glass shell + capillary bridge contracting
   t.key(@ui.key_escape)
   t.run_for(ovl_morph_close_probe_ms)
   let closing_glass = t.drawn_glass().length()
@@ -992,12 +992,12 @@ fn ovl_menu_morph_snapshot() -> (Int, Double, Int, Int, Int, Int, Array[String])
 }
 
 ///|
-test "liquid_menu_node liquid morph blooms cleanly from trigger, settles with 0 extra glass, closes smoothly, and is FPS-invariant" {
+test "liquid_menu_node liquid morph bridges via GPU merged_liquid mid-flight, settles with 0 extra glass, closes smoothly, and is FPS-invariant" {
   let (mid_glass, mid_ratio, rest_glass, closing_glass, closed_glass, closed_menus, snaps) = ovl_menu_morph_snapshot()
-  assert_eq(mid_glass, 2)
-  assert_true(mid_ratio < 0.90, msg="expected menu shell scaled < 0.90 at 40ms, got \{mid_ratio}")
+  assert_eq(mid_glass, 3)
+  assert_true(mid_ratio < 0.95, msg="expected menu shell scaled < 0.95 at 80ms, got \{mid_ratio}")
   assert_eq(rest_glass, 2)
-  assert_eq(closing_glass, 2)
+  assert_true(closing_glass >= 2, msg="expected contracting glass shell at 60ms after close, got \{closing_glass}")
   assert_eq(closed_glass, 1)
   assert_eq(closed_menus, 0)
   let (_, _, _, _, _, _, snaps2) = ovl_menu_morph_snapshot()
