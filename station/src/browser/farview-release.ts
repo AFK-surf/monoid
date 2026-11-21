@@ -24,9 +24,9 @@ export type FarviewRelease = { rev: string; sha256: string };
 /// commit is the one apps/mbui/farview.pin names, so a station's tabs speak the protocol the app's client does
 /// (test/farview-release.test.ts holds them together).
 export const FARVIEW_RELEASES: Readonly<Record<string, FarviewRelease>> = {
-  "darwin-arm64": { rev: "e6c9b72e204c525d0e1ec6a14125a8abf9ed3195", sha256: "d55647c785e329d1106d91fbb83c413c453d253beea8458264883a562b788df3" },
-  "linux-x64": { rev: "e6c9b72e204c525d0e1ec6a14125a8abf9ed3195", sha256: "a1b2f12fdd90263e1c51a974a00f2727c01dd0d9974a63185702b5a1b191e3c9" },
-  "linux-arm64": { rev: "e6c9b72e204c525d0e1ec6a14125a8abf9ed3195", sha256: "31c79263c701ac10b9b691cb0592880fba7e8272d0566704b99d301c77a3da1a" },
+  "darwin-arm64": { rev: "e821f42d8d14b1c2f7bc060170df9cd671866c21", sha256: "f214bbe8f11cecdf4307e5307dd8a55df3dad422017f95bb28e044dd9945ce1d" },
+  "linux-x64": { rev: "e821f42d8d14b1c2f7bc060170df9cd671866c21", sha256: "78acb049b8789f4769af3ff07d13d4142df6895c13f825a26e9ff6ebd919bacc" },
+  "linux-arm64": { rev: "e821f42d8d14b1c2f7bc060170df9cd671866c21", sha256: "e298a3579f43c4d2ca0d5746d5cdc970ecf71c8ad2b6440cb7ceda7dc997ad05" },
 };
 
 /// The system this station runs on, as FARVIEW_RELEASES names them (none: one no release is built for).
