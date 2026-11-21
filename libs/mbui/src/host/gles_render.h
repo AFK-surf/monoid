@@ -103,7 +103,7 @@ static const char *FS =
     "// a liquid group's bounds (as the vertex shader has them)\n"
     "uniform vec4 u_gb;\n"
     "uniform vec4 u_shape[8];\n"
-    "uniform vec4 u_rad[2];\n"
+    "uniform vec4 u_rad[8];\n"
     "uniform int u_n;\n"
     "// the pieces of the frame's shapes (src/ui/shape.mbt: the instances of kind 12 after every one drawn), 2040 fours\n"
     "// (136 instances) a row\n"
@@ -134,7 +134,7 @@ static const char *FS =
     "  float d = 1e9;\n"
     "  for (int i = 0; i < 8; i++) {\n"
     "    if (i >= u_n) break;\n"
-    "    d = smin_k(d, sd_rr(p, u_shape[i], vec4(u_rad[i / 4][i % 4])), k);\n"
+    "    d = smin_k(d, sd_rr(p, u_shape[i], u_rad[i]), k);\n"
     "  }\n"
     "  return d;\n"
     "}\n"
@@ -227,7 +227,7 @@ static const char *FS =
     "      d = 1e9;\n"
     "      for (int i = 0; i < 8; i++) {\n"
     "        if (i >= u_n) break;\n"
-    "        float di = sd_rr(p, u_shape[i], vec4(u_rad[i / 4][i % 4]));\n"
+    "        float di = sd_rr(p, u_shape[i], u_rad[i]);\n"
     "        float hi = min(u_shape[i].z, u_shape[i].w) * 0.5;\n"
     "        if (i == 0) {\n"
     "          d = di;\n"
@@ -306,12 +306,20 @@ static const char *FS =
     "    float glintFaceGain;\n"
     "    float glintVib;\n"
     "    if (is_clear) {\n"
-    "      // Pure crystal-clear refractive optical lens (lifted tab-bar / toggle / slider thumb & loupe):\n"
-    "      // zero milky emission veil so light bars never clip to opaque white and dark bars stay crisp.\n"
-    "      emission = vec3(0.0, 0.0, 0.0);\n"
-    "      transmittance = 1.0; lift = 0.0; chromaGain = 1.06;\n"
-    "      contourStr = 0.24; contourDirAmt = 0.85; bevelShadowStr = 0.045;\n"
-    "      glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;\n"
+    "      // iOS 27 clear liquid glass: col.a == 0.0 keeps crystal-clear zero-veil optical lens\n"
+    "      // (lifted tab-bar / toggle / slider thumb & loupe), while Glass::clear() (col.a ~ 0.102)\n"
+    "      // blends smoothly into the +0.126 translucent micro-veil over media.\n"
+    "      float clearVeil = smoothstep(0.005, 0.102, col.a);\n"
+    "      emission = vec3(1.0, 1.0, 1.0) * (0.126 * clearVeil);\n"
+    "      transmittance = mix(1.0, 0.90, clearVeil);\n"
+    "      lift = mix(0.0, 0.10, clearVeil);\n"
+    "      chromaGain = mix(1.06, 1.0, clearVeil);\n"
+    "      contourStr = mix(0.24, 0.25, clearVeil);\n"
+    "      contourDirAmt = mix(0.85, 0.77, clearVeil);\n"
+    "      bevelShadowStr = mix(0.045, 0.04, clearVeil);\n"
+    "      glintLum = mix(1.6, 1.2, clearVeil);\n"
+    "      glintFaceGain = mix(0.0, 0.25, clearVeil);\n"
+    "      glintVib = mix(2.85, 1.5, clearVeil);\n"
     "    } else if (is_dark) {\n"
     "      emission = vec3(32.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0);\n"
     "      transmittance = 0.52625; lift = 0.583; chromaGain = 1.005;\n"
@@ -693,7 +701,7 @@ typedef struct { GLuint t, fb; int w, h; GLenum format; } level;
 static level lv[5];
 static int lv_w, lv_h;
 static GLuint bd_tex;
-static float gmap[4], guvc[4], ggb[4], gshape[32], grad[8];
+static float gmap[4], guvc[4], ggb[4], gshape[32], grad[32];
 static int gn;
 // the app's part of the surface (MBView: the soft keyboard over the rest), in its pixels from the foot
 static int vy0, vhp;
@@ -877,7 +885,7 @@ static void ensure_canvas(void) {
 typedef struct {
   int px0, pb0, w, h, top, k, contained, n;
   float sg;
-  float gb[4], shape[32], rad[8];
+  float gb[4], shape[32], rad[32];
   MBContained edge;
 } Grab;
 
@@ -902,11 +910,15 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
       bx0 = b[0] - m23; by0 = b[1] - m23; bx1 = b[0] + b[2] + m23; by1 = b[1] + b[3] + m23;
       if (merged_liquid && m->n < 8) {
         for (int k = 0; k < 4; k++) m->shape[m->n * 4 + k] = b[k];
-        m->rad[m->n] = b[4];
+        if (fmaxf(fmaxf(b[36], b[37]), fmaxf(b[38], b[39])) > 0.0f) {
+          for (int k = 0; k < 4; k++) m->rad[m->n * 4 + k] = b[36 + k];
+        } else {
+          for (int k = 0; k < 4; k++) m->rad[m->n * 4 + k] = b[4];
+        }
         m->n++;
       }
       if (unmerged_liquid && a[7] >= 0.0f) {
-        float bm = 3.0f * blur + b[21] * (1.0f + b[22]) + m23 + 2.0f;
+        float bm = 3.0f * blur + b[21] * (1.0f + fabsf(b[22])) + m23 + 2.0f;
         if (bm > margin) margin = bm;
       }
     }
@@ -923,7 +935,7 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
       float m23 = fmaxf(b[23], 0.0f);
       bx0 = b[0] - m23; by0 = b[1] - m23; bx1 = b[0] + b[2] + m23; by1 = b[1] + b[3] + m23;
       if (a[7] >= 0.0f) {
-        float bm = 3.0f * blur + b[21] * (1.0f + b[22]) + m23 + 2.0f;
+        float bm = 3.0f * blur + b[21] * (1.0f + fabsf(b[22])) + m23 + 2.0f;
         if (bm > margin) margin = bm;
       }
     } else {
@@ -1284,7 +1296,7 @@ static void use_prog(int kind) {
   glUniform4fv(k->uvc, 1, guvc);
   glUniform4fv(k->gb, 1, ggb);
   glUniform4fv(k->shape, 8, gshape);
-  glUniform4fv(k->rad, 2, grad);
+  glUniform4fv(k->rad, 8, grad);
   glUniform1i(k->n, gn);
 }
 

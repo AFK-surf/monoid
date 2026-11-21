@@ -546,6 +546,96 @@ int main(void) {
       free(px_lq_sep);
     }
 
+    // Asymmetric 4-corner merged_liquid (rr = 24,24,0,0 sheet merged with pill) + Glass::clear() micro-veil vs pure lens:
+    {
+      double as[3 * MB_INST];
+      rect_at(as, 0, 0, 400, 300, 0, 0.10, 0.12, 0.16, 0);
+      // Sheet with top-rounded, bottom-square corners (24, 24, 0, 0)
+      rect_at(as + 1 * MB_INST, 60, 100, 160, 120, 6, 1, 1, 1, -12);
+      as[1 * MB_INST + 4] = 24;
+      as[1 * MB_INST + 6] = 1;
+      as[1 * MB_INST + 7] = 1;
+      as[1 * MB_INST + 11] = 0.25;
+      as[1 * MB_INST + 12] = 0.55;
+      as[1 * MB_INST + 13] = 14;
+      as[1 * MB_INST + 15] = 1;
+      as[1 * MB_INST + 21] = 9;
+      as[1 * MB_INST + 22] = 0.18;
+      as[1 * MB_INST + 23] = 16;
+      as[1 * MB_INST + 36] = 24;
+      as[1 * MB_INST + 37] = 24;
+      as[1 * MB_INST + 38] = 0;
+      as[1 * MB_INST + 39] = 0;
+      // Adjacent circular button merged with the sheet
+      rect_at(as + 2 * MB_INST, 226, 128, 56, 56, 6, 1, 1, 1, -12);
+      as[2 * MB_INST + 4] = 28;
+      as[2 * MB_INST + 6] = 1;
+      as[2 * MB_INST + 7] = 1;
+      as[2 * MB_INST + 11] = 0.25;
+      as[2 * MB_INST + 12] = 0.55;
+      as[2 * MB_INST + 13] = 14;
+      as[2 * MB_INST + 15] = 1;
+      as[2 * MB_INST + 21] = 9;
+      as[2 * MB_INST + 22] = 0.18;
+      as[2 * MB_INST + 23] = 16;
+      as[2 * MB_INST + 36] = 28;
+      as[2 * MB_INST + 37] = 28;
+      as[2 * MB_INST + 38] = 28;
+      as[2 * MB_INST + 39] = 28;
+
+      glass_forget();
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(as, 3, 0.1, 0.12, 0.16);
+      present_drain();
+      int aw, ah;
+      uint8_t *px_as = read_texture(canvas, &aw, &ah);
+      // BGRA8Unorm top-down at scale 2
+      uint8_t *bg_p = px_as + (10 * aw + 10) * 4;
+      uint8_t *tl_p = px_as + (206 * aw + 126) * 4;  // (63, 103) outside top-left rounded corner (r=24)
+      uint8_t *bl_p = px_as + (434 * aw + 126) * 4;  // (63, 217) inside bottom-left square corner (r=0)
+      CHECK(abs((int)tl_p[1] - (int)bg_p[1]) <= 2 && abs((int)tl_p[2] - (int)bg_p[2]) <= 2);
+      CHECK((int)bl_p[2] > 90 && (int)bl_p[1] > 90);
+      free(px_as);
+
+      // Glass::clear() (col.a = 26/255 ~ 0.102, blur = 0) yields +0.126 veil vs pure lens (col.a = 0, blur = 0) zero veil
+      double cl[3 * MB_INST];
+      rect_at(cl, 0, 0, 400, 300, 0, 0.08, 0.08, 0.10, 0);
+      rect_at(cl + 1 * MB_INST, 40, 80, 120, 100, 6, 1, 1, 1, -13);
+      cl[1 * MB_INST + 4] = 24;
+      cl[1 * MB_INST + 6] = 1;
+      cl[1 * MB_INST + 7] = 0;
+      cl[1 * MB_INST + 11] = 26.0 / 255.0;
+      cl[1 * MB_INST + 12] = 0.6;
+      cl[1 * MB_INST + 13] = 14;
+      cl[1 * MB_INST + 15] = 1;
+      cl[1 * MB_INST + 21] = 16;
+      cl[1 * MB_INST + 22] = 0;
+      cl[1 * MB_INST + 23] = 0;
+      rect_at(cl + 2 * MB_INST, 220, 80, 120, 100, 6, 1, 1, 1, -14);
+      cl[2 * MB_INST + 4] = 24;
+      cl[2 * MB_INST + 6] = 1;
+      cl[2 * MB_INST + 7] = 0;
+      cl[2 * MB_INST + 11] = 0.0;
+      cl[2 * MB_INST + 12] = 0.6;
+      cl[2 * MB_INST + 13] = 14;
+      cl[2 * MB_INST + 15] = 1;
+      cl[2 * MB_INST + 21] = 16;
+      cl[2 * MB_INST + 22] = 0;
+      cl[2 * MB_INST + 23] = 0;
+
+      glass_forget();
+      mb_host_render_dirty(0, 0, 400, 300);
+      mb_render_present(cl, 3, 0.08, 0.08, 0.10);
+      present_drain();
+      uint8_t *px_cl = read_texture(canvas, &aw, &ah);
+      uint8_t *cl_bg = px_cl + (10 * aw + 10) * 4;
+      uint8_t *cl_veil = px_cl + (260 * aw + 200) * 4;  // center of Glass::clear()
+      uint8_t *cl_lens = px_cl + (260 * aw + 560) * 4;  // center of pure clear optical lens
+      CHECK((int)cl_veil[1] >= 44 && (int)cl_veil[1] <= 62);
+      CHECK(abs((int)cl_lens[1] - (int)cl_bg[1]) <= 2 && abs((int)cl_lens[2] - (int)cl_bg[2]) <= 2);
+      free(px_cl);
+    }
+
     // A group kept by the host (groups.h) drawn out by a header, straight into the floats: each instance moved in
     // doubles, then made a float, as the app's own instance moved there would be.
     double kept[MB_INST];

@@ -287,3 +287,32 @@ test "unmerged liquid glass (merge=0) shares a capture across shadow when sharin
   let gs3 = t3.drawn_instances().filter(fn(a) { a[5] == 6.0 })
   assert_eq(gs3.map(fn(a) { (a[4], a[36], a[37], a[38], a[39]) }), [(20.0, 20.0, 4.0, 12.0, 0.0)])
 }
+
+///|
+test "merged liquid glass keeps independent 4-corner radii and Glass::clear defaults" {
+  let cl = @ui.Glass::clear()
+  assert_eq((cl.liquid, cl.blur, cl.tint, cl.solid, cl.saturation), (true, 0.0, 0xFFFFFF1AL, 0xECECF0FFL, 1.0))
+  assert_eq((cl.rim, cl.bezel, cl.refraction, cl.chroma, cl.merge, cl.adaptive), (0.6, 14.0, 16.0, 0.0, 16.0, true))
+  let t = @ui.Tester::new(fn(c) {
+    c.box(w=Fill(1.0), h=Fill(1.0), bg=0x111827FFL, fn() {
+      c.box(dir=Row, gap=6.0, glass_group=true, fn() {
+        c.box(
+          style=@ui.style(radius=Corners(24.0, 24.0, 0.0, 0.0)),
+          w=Px(140.0),
+          h=Px(64.0),
+          glass=@ui.Glass::liquid(merge=16.0),
+          fn() {  },
+        )
+        |> ignore
+        c.box(w=Px(48.0), h=Px(48.0), radius=24.0, glass=cl, fn() {  }) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  let gs = t.drawn_instances().filter(fn(a) { a[5] == 6.0 })
+  assert_eq(gs.length(), 2)
+  assert_eq((gs[0][4], gs[0][36], gs[0][37], gs[0][38], gs[0][39]), (24.0, 24.0, 24.0, 0.0, 0.0))
+  assert_eq((gs[1][4], gs[1][36], gs[1][37], gs[1][38], gs[1][39]), (24.0, 24.0, 24.0, 24.0, 24.0))
+  assert_eq((gs[1][7], gs[1][12], gs[1][13], gs[1][21], gs[1][22], gs[1][23]), (0.0, 0.6, 14.0, 16.0, 0.0, 16.0))
+}

@@ -808,7 +808,7 @@
   // a liquid group's bounds (as the vertex shader has them)
   uniform vec4 u_gb;
   uniform vec4 u_shape[8];
-  uniform vec4 u_rad[2];
+  uniform vec4 u_rad[8];
   uniform int u_n;
   // the pieces of the frame's shapes (src/ui/shape.mbt: the instances of kind 12 after every one drawn), 2040 fours
   // (136 instances) a row
@@ -837,7 +837,7 @@
     float d = 1e9;
     for (int i = 0; i < 8; i++) {
       if (i >= u_n) break;
-      d = smin_k(d, sd_rr(p, u_shape[i], vec4(u_rad[i / 4][i % 4])), k);
+      d = smin_k(d, sd_rr(p, u_shape[i], u_rad[i]), k);
     }
     return d;
   }
@@ -938,7 +938,7 @@
         d = 1e9;
         for (int i = 0; i < 8; i++) {
           if (i >= u_n) break;
-          float di = sd_rr(p, u_shape[i], vec4(u_rad[i / 4][i % 4]));
+          float di = sd_rr(p, u_shape[i], u_rad[i]);
           float hi = min(u_shape[i].z, u_shape[i].w) * 0.5;
           if (i == 0) {
             d = di;
@@ -1017,12 +1017,20 @@
       float glintFaceGain;
       float glintVib;
       if (is_clear) {
-        // Pure crystal-clear refractive optical lens (lifted tab-bar / toggle / slider thumb & loupe):
-        // zero milky emission veil so light bars never clip to opaque white and dark bars stay crisp.
-        emission = vec3(0.0, 0.0, 0.0);
-        transmittance = 1.0; lift = 0.0; chromaGain = 1.06;
-        contourStr = 0.24; contourDirAmt = 0.85; bevelShadowStr = 0.045;
-        glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;
+        // iOS 27 clear liquid glass: col.a == 0.0 keeps crystal-clear zero-veil optical lens
+        // (lifted tab-bar / toggle / slider thumb & loupe), while Glass::clear() (col.a ~ 0.102)
+        // blends smoothly into the +0.126 translucent micro-veil over media.
+        float clearVeil = smoothstep(0.005, 0.102, col.a);
+        emission = vec3(1.0, 1.0, 1.0) * (0.126 * clearVeil);
+        transmittance = mix(1.0, 0.90, clearVeil);
+        lift = mix(0.0, 0.10, clearVeil);
+        chromaGain = mix(1.06, 1.0, clearVeil);
+        contourStr = mix(0.24, 0.25, clearVeil);
+        contourDirAmt = mix(0.85, 0.77, clearVeil);
+        bevelShadowStr = mix(0.045, 0.04, clearVeil);
+        glintLum = mix(1.6, 1.2, clearVeil);
+        glintFaceGain = mix(0.0, 0.25, clearVeil);
+        glintVib = mix(2.85, 1.5, clearVeil);
       } else if (is_dark) {
         emission = vec3(32.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0);
         transmittance = 0.52625; lift = 0.583; chromaGain = 1.005;
@@ -1363,7 +1371,7 @@
   let glassSlots = makeGlassSlots(), glassSlotsClock = 0;
   let underNow = new Float32Array(INST * 256), underNowN = 0, underWhole = 0, underPicked = 0;
   const gmap = new Float32Array(4), guvc = new Float32Array(4), ggb = new Float32Array(4);
-  const gshape = new Float32Array(32), grad = new Float32Array(8);
+  const gshape = new Float32Array(32), grad = new Float32Array(32);
   let gn = 0;
   function levelTex(format, w, h) {
     const t = gl.createTexture();
@@ -1495,7 +1503,7 @@
     let margin = f32[a + 7] < 0 ? 0 : 3 * blur + (kind === 6 ? f32[a + 21] * (1 + Math.abs(f32[a + 22])) + Math.max(f32[a + 23], 0) : 0) + 2;
     let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
     let mN = 0;
-    const mShape = new Float32Array(32), mRad = new Float32Array(8);
+    const mShape = new Float32Array(32), mRad = new Float32Array(32);
     for (let i = start; i < end; i++) {
       const b = i * INST;
       let bx0 = Math.max(f32[b], f32[b + 16]), by0 = Math.max(f32[b + 1], f32[b + 17]);
@@ -1505,11 +1513,15 @@
         bx0 = f32[b] - m; by0 = f32[b + 1] - m; bx1 = f32[b] + f32[b + 2] + m; by1 = f32[b + 1] + f32[b + 3] + m;
         if (mergedLiquid && mN < 8) {
           for (let k = 0; k < 4; k++) mShape[mN * 4 + k] = f32[b + k];
-          mRad[mN] = f32[b + 4];
+          if (Math.max(f32[b + 36], f32[b + 37], f32[b + 38], f32[b + 39]) > 0) {
+            for (let k = 0; k < 4; k++) mRad[mN * 4 + k] = f32[b + 36 + k];
+          } else {
+            for (let k = 0; k < 4; k++) mRad[mN * 4 + k] = f32[b + 4];
+          }
           mN++;
         }
         if (unmergedLiquid && f32[a + 7] >= 0) {
-          const bm = 3 * blur + f32[b + 21] * (1 + f32[b + 22]) + m + 2;
+          const bm = 3 * blur + f32[b + 21] * (1 + Math.abs(f32[b + 22])) + m + 2;
           if (bm > margin) margin = bm;
         }
       }
@@ -1523,7 +1535,7 @@
         x0 = Math.min(x0, f32[b] - m); y0 = Math.min(y0, f32[b + 1] - m);
         x1 = Math.max(x1, f32[b] + f32[b + 2] + m); y1 = Math.max(y1, f32[b + 1] + f32[b + 3] + m);
         if (f32[a + 7] >= 0) {
-          const bm = 3 * blur + f32[b + 21] * (1 + f32[b + 22]) + m + 2;
+          const bm = 3 * blur + f32[b + 21] * (1 + Math.abs(f32[b + 22])) + m + 2;
           if (bm > margin) margin = bm;
         }
       } else {
@@ -1679,7 +1691,7 @@
         a.k !== b.k || a.contained !== b.contained || a.n !== b.n || a.sg !== b.sg) return false;
     for (let i = 0; i < 4; i++) if (a.gb[i] !== b.gb[i]) return false;
     for (let i = 0; i < a.n * 4; i++) if (a.shape[i] !== b.shape[i]) return false;
-    for (let i = 0; i < a.n; i++) if (a.rad[i] !== b.rad[i]) return false;
+    for (let i = 0; i < a.n * 4; i++) if (a.rad[i] !== b.rad[i]) return false;
     if (a.contained) {
       for (let i = 0; i < 36; i++) if (a.edge[i] !== b.edge[i]) return false;
     }

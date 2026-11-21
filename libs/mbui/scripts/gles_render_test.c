@@ -495,6 +495,88 @@ int main(void) {
     free(px_lq_sep);
   }
 
+  // Asymmetric 4-corner merged_liquid (rr = 14,14,0,0 sheet merged with pill) + Glass::clear() micro-veil vs pure lens:
+  {
+    double as[3 * MB_INST];
+    rect_at(as, 0, 0, W, H, 0, 0.10, 0.12, 0.16, 0);
+    rect_at(as + 1 * MB_INST, 10, 20, 48, 40, 6, 1, 1, 1, -12);
+    as[1 * MB_INST + 4] = 14;
+    as[1 * MB_INST + 6] = 1;
+    as[1 * MB_INST + 7] = 1;
+    as[1 * MB_INST + 11] = 0.25;
+    as[1 * MB_INST + 12] = 0.55;
+    as[1 * MB_INST + 13] = 8;
+    as[1 * MB_INST + 15] = 1;
+    as[1 * MB_INST + 21] = 6;
+    as[1 * MB_INST + 22] = 0.18;
+    as[1 * MB_INST + 23] = 8;
+    as[1 * MB_INST + 36] = 14;
+    as[1 * MB_INST + 37] = 14;
+    as[1 * MB_INST + 38] = 0;
+    as[1 * MB_INST + 39] = 0;
+    rect_at(as + 2 * MB_INST, 62, 28, 20, 20, 6, 1, 1, 1, -12);
+    as[2 * MB_INST + 4] = 10;
+    as[2 * MB_INST + 6] = 1;
+    as[2 * MB_INST + 7] = 1;
+    as[2 * MB_INST + 11] = 0.25;
+    as[2 * MB_INST + 12] = 0.55;
+    as[2 * MB_INST + 13] = 8;
+    as[2 * MB_INST + 15] = 1;
+    as[2 * MB_INST + 21] = 6;
+    as[2 * MB_INST + 22] = 0.18;
+    as[2 * MB_INST + 23] = 8;
+    as[2 * MB_INST + 36] = 10;
+    as[2 * MB_INST + 37] = 10;
+    as[2 * MB_INST + 38] = 10;
+    as[2 * MB_INST + 39] = 10;
+
+    glass_forget();
+    gl_present(as, 3, 0.10, 0.12, 0.16);
+    unsigned char *px_as = pixels_of_fb(surface);
+    // RGBA8 bottom-up at scale 2
+    unsigned char *bg_p = px_as + ((fb_h - 1 - 6) * fb_w + 6) * 4;
+    unsigned char *tl_p = px_as + ((fb_h - 1 - 44) * fb_w + 24) * 4;  // (12, 22) outside top-left rounded corner (r=14)
+    unsigned char *bl_p = px_as + ((fb_h - 1 - 116) * fb_w + 24) * 4; // (12, 58) inside bottom-left square corner (r=0)
+    CHECK(abs((int)tl_p[0] - (int)bg_p[0]) <= 2 && abs((int)tl_p[1] - (int)bg_p[1]) <= 2);
+    CHECK((int)bl_p[0] > 90 && (int)bl_p[1] > 90);
+    free(px_as);
+
+    double cl[3 * MB_INST];
+    rect_at(cl, 0, 0, W, H, 0, 0.08, 0.08, 0.10, 0);
+    rect_at(cl + 1 * MB_INST, 8, 15, 36, 40, 6, 1, 1, 1, -13);
+    cl[1 * MB_INST + 4] = 10;
+    cl[1 * MB_INST + 6] = 1;
+    cl[1 * MB_INST + 7] = 0;
+    cl[1 * MB_INST + 11] = 26.0 / 255.0;
+    cl[1 * MB_INST + 12] = 0.6;
+    cl[1 * MB_INST + 13] = 6;
+    cl[1 * MB_INST + 15] = 1;
+    cl[1 * MB_INST + 21] = 8;
+    cl[1 * MB_INST + 22] = 0;
+    cl[1 * MB_INST + 23] = 0;
+    rect_at(cl + 2 * MB_INST, 56, 15, 36, 40, 6, 1, 1, 1, -14);
+    cl[2 * MB_INST + 4] = 10;
+    cl[2 * MB_INST + 6] = 1;
+    cl[2 * MB_INST + 7] = 0;
+    cl[2 * MB_INST + 11] = 0.0;
+    cl[2 * MB_INST + 12] = 0.6;
+    cl[2 * MB_INST + 13] = 6;
+    cl[2 * MB_INST + 15] = 1;
+    cl[2 * MB_INST + 21] = 8;
+    cl[2 * MB_INST + 22] = 0;
+    cl[2 * MB_INST + 23] = 0;
+
+    glass_forget();
+    gl_present(cl, 3, 0.08, 0.08, 0.10);
+    unsigned char *px_cl = pixels_of_fb(surface);
+    unsigned char *cl_bg = px_cl + ((fb_h - 1 - 6) * fb_w + 6) * 4;
+    unsigned char *cl_veil = px_cl + ((fb_h - 1 - 70) * fb_w + 52) * 4;   // (26, 35) center of Glass::clear()
+    unsigned char *cl_lens = px_cl + ((fb_h - 1 - 70) * fb_w + 148) * 4;  // (74, 35) center of pure clear optical lens
+    CHECK((int)cl_veil[1] >= 44 && (int)cl_veil[1] <= 62);
+    CHECK(abs((int)cl_lens[0] - (int)cl_bg[0]) <= 2 && abs((int)cl_lens[1] - (int)cl_bg[1]) <= 2);
+    free(px_cl);
+  }
+
   // A group the host keeps drawn out by its header straight into the floats: each instance moved in doubles, then
   // made a float, as the app's own instance moved there would be.
   double kept[MB_INST];
