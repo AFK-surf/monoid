@@ -79,12 +79,18 @@ pub fn[K : Eq] tabs_node(
           }
           // (where the bar or the capsule is along the strip and how wide: off from where it set out to the chosen
           // tab's place and width together as that changes, on snappy_damped; the words' size changed, there at once)
+          let tab_h_now = fn() {
+            strip.words_redone() |> ignore
+            let tl = @ui.tree_theme().text_line
+            let line = theme().t.ui * (if tl > 0.0 { tl } else { 1.4 })
+            dmax(tab_h, node_sp(strip, line).ceil() + 2.0 * 2.0)
+          }
           let rect = @motion.cover_indicator(
             strip,
             fn() { place_of(chosen()) },
             fn(k) {
               if k >= 0 && k < tabs.length() {
-                Some((x_of(k), 0.0, w_of(k), tab_h))
+                Some((x_of(k), 0.0, w_of(k), tab_h_now()))
               } else {
                 None
               }
@@ -112,7 +118,7 @@ pub fn[K : Eq] tabs_node(
                 Some((x, _, w, _)) => {
                   dx: x,
                   dy: match look {
-                    Underline => tab_h - tabs_bar_h
+                    Underline => tab_h_now() - tabs_bar_h
                     Pill => 0.0
                   },
                   dw: w,
@@ -132,8 +138,8 @@ pub fn[K : Eq] tabs_node(
                 |> ignore
               Pill =>
                 mark
-                .height(Is(Some(tab_h)))
-                .radius(Is(tab_h / 2.0))
+                .height(By(fn() { Some(tab_h_now()) }))
+                .radius(By(fn() { tab_h_now() / 2.0 }))
                 .ground(By(fn() { @ui.tree_theme().lifted }))
                 .edge(By(fn() { (0.5, theme().p.line) }))
                 .shadow(By(fn() { (1.0, 0.0, theme().p.shadow) }))
@@ -147,8 +153,8 @@ pub fn[K : Eq] tabs_node(
               o
               .focus_ring_theme()
               .width(By(fn() { Some(w_of(i)) }))
-              .height(Is(Some(tab_h)))
-              .radius(Is(if look is Pill { tab_h / 2.0 } else { tabs_corner }))
+              .height(By(fn() { Some(tab_h_now()) }))
+              .radius(By(fn() { if look is Pill { tab_h_now() / 2.0 } else { tabs_corner } }))
               .lines_up(Is(Some(Middle)))
               .lies_along(Is(Middle))
               |> ignore

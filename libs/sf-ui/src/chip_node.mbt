@@ -40,9 +40,9 @@ pub fn chip_node(
       v
       .focus_ring_theme()
       .row(Is(true))
-      .height(Is(Some(30.0)))
+      .min_height(Is(Some(30.0)))
       .min_width(Is(Some(30.0)))
-      .padding(By(fn() { if label() == "" { (0.0, 0.0, 0.0, 0.0) } else { (10.0, 0.0, 10.0, 0.0) } }))
+      .padding(By(fn() { if label() == "" { (0.0, 0.0, 0.0, 0.0) } else { (10.0, 2.0, 10.0, 2.0) } }))
       .gap(Is(2.0))
       .lines_up(Is(Some(Middle)))
       .lies_along(Is(Middle))
@@ -50,7 +50,7 @@ pub fn chip_node(
       .alpha(By(fn() { if disabled() { chip_off } else { 1.0 } }))
       .bone_whole(Is(true))
       |> ignore
-      v.radius(Is(if capsule { 15.0 } else { 10.0 })) |> ignore
+      v.radius(Is(if capsule { 1.0e6 } else { 10.0 })) |> ignore
       if icon != "" {
         icon_node(v, icon, 16.0, By(ink)) |> ignore
       }

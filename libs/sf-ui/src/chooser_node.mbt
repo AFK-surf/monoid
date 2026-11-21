@@ -92,13 +92,15 @@ fn chooser_by(
       menu.keys(b, fn() { !@signals.untracked(disabled) }, fn() { opens(b, true) })
       // (disabled while its menu is open: closed, as the old one's)
       b.reacts(disabled, fn(off) { if off { open.set(false) } })
+      let row_h = fn() {
+        b.words_redone() |> ignore
+        dmax(chooser_h, node_sp(b, @ui.tree_theme().leading(L5).unwrap_or(18.0)).ceil() + 2.0 * 2.0)
+      }
+      let x = if capsule && at_foot { card_foot_words_in(chooser_h) } else { chooser_x }
       b
       .row(Is(true))
-      .height(Is(Some(chooser_h)))
-      .padding(By(fn() {
-        let x = if capsule && at_foot { card_foot_words_in(chooser_h) } else { chooser_x }
-        (x, 0.0, x, 0.0)
-      }))
+      .height(By(fn() { Some(row_h()) }))
+      .padding(Is((x, 0.0, x, 0.0)))
       .gap(Is(chooser_gap_in))
       // (a capsule: a pill as the app's others are, not a corner of its own its height comes to)
       .radius(By(fn() { if capsule { 1.0e6 } else { @ui.tree_theme().corner(Lg) } }))
