@@ -326,6 +326,11 @@ export class Forwards {
     if (server === null && local !== undefined) throw new Error(`127.0.0.1:${local} is taken here (something listens on it, at 127.0.0.1 or [::1]); give another local_port, or none`);
     if (server === null) {
       server = await listenAt(0, take, false);
+      if (server !== null && (server.address() as { port: number }).port === port) {
+        const retry = await listenAt(0, take, false);
+        server.close();
+        server = retry;
+      }
       if (server === null) throw new Error("no port could be had on 127.0.0.1");
     }
     f.server = server;
