@@ -2477,7 +2477,8 @@ fn Ctx::view_picture(self : Ctx, c : @view.Content, x : Double, y : Double, s : 
       } else {
         FitFill
       }
-      self.draw_image(shown, x + ix * s, y + iy * s, iw * s, ih * s, fit, c.radius * s, a, fade=false, max_px=most, ground=matte, matte=true, frame=Some((x, y, w, h)))
+      let decode_scale = if s > 0.0 && s < 1.0 { 1.0 / s } else { 1.0 }
+      self.draw_image(shown, x + ix * s, y + iy * s, iw * s, ih * s, fit, c.radius * s, a, fade=false, max_px=most, ground=matte, matte=true, frame=Some((x, y, w, h)), decode_scale~)
       // (its corners each, where it says them (View::corners), as big as it is drawn: the frame's)
       match c.corners {
         Some((tl, tr, br, bl)) if self.ninst > before => self.corners_last_each(tl * s, tr * s, br * s, bl * s)
@@ -2499,7 +2500,8 @@ fn Ctx::view_picture(self : Ctx, c : @view.Content, x : Double, y : Double, s : 
         FitFill
       }
       let shown = self.moving_key(shown, w, h, fit)
-      self.draw_image(shown, x, y, w, h, fit, c.radius * s, a, fade=c.image_fade, max_px=most)
+      let decode_scale = if s > 0.0 && s < 1.0 { 1.0 / s } else { 1.0 }
+      self.draw_image(shown, x, y, w, h, fit, c.radius * s, a, fade=c.image_fade, max_px=most, decode_scale~)
     }
   }
   inst_owners.painting = was

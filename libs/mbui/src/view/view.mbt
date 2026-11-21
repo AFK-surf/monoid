@@ -10975,7 +10975,7 @@ fn View::comes(
     // (in what is laid out nowhere (a page under the one on top): there at once, as it is shown again (Tree::nowhere_at))
     !tree.nowhere_at(self.at) &&
     tree.makes_way(v.at) &&
-    !tree.holds_shared(v.at) &&
+    !tree.holds_shared(v.at, stays_ok=uncut) &&
     // (made or let go as an answer told it, a block given another key or woken: at once, answering.mbt; but one on a
     // way a cause set it on, turned back by an answer (a show's shown again as it closes), turns back on that way as
     // it would for a cause: that way is the cause's still, and stopped dead or done at once it jumps)
@@ -11134,9 +11134,11 @@ fn View::comes(
     @signals.after_flush(fn() {
       guard v.live() is Some(m) && m.coming && st.come_at == at && st.come_to >= 1.0 else { return }
       tree.measured_now()
-      match m.come_said {
-        Some(s) => s.set(s.untracked() + 1)
-        None => ()
+      if m.come_uncut {
+        match m.come_said {
+          Some(s) => s.set(s.untracked() + 1)
+          None => ()
+        }
       }
       let ends = if st.come_ends == st.come_ends { st.come_ends } else { at + @flex.move_most_ms }
       // (one asked before, by this way said twice in its change or its group: let go, so no end of before is waited for)
@@ -11451,9 +11453,11 @@ fn Tree::come_group_settle(
       // (leaving as long as the group's way: let go as it ends)
       m.span = dmax(st.come_ends - m.left_at, 0.0)
     }
-    match m.come_said {
-      Some(s) => s.set(s.untracked() + 1)
-      None => ()
+    if m.come_uncut {
+      match m.come_said {
+        Some(s) => s.set(s.untracked() + 1)
+        None => ()
+      }
     }
     self.layout_marked_at(w.at)
   }
@@ -11475,6 +11479,7 @@ fn come_done(tree : Tree, v : View, m : Node) -> Unit {
   if m.structure_box {
     tree.structure_row_sync_one(v.at)
   }
+  let was_uncut = m.come_uncut
   m.come_uncut = false
   m.list_key_way = false
   st.come_grid = 0.0
@@ -11490,6 +11495,9 @@ fn come_done(tree : Tree, v : View, m : Node) -> Unit {
   match m.come_said {
     Some(s) => s.set(s.untracked() + 1)
     None => ()
+  }
+  if !was_uncut {
+    m.come_said = None
   }
   m.prop_stop(Comes.ord())
   tree.layout_marked_at(v.at)
@@ -11573,13 +11581,14 @@ fn View::goes(self : View, v : View, ms : Double, at_once : Bool, swaps? : Bool 
 
 ///|
 /// Whether node `at` or what it holds is shared by an id (View::shared).
-fn Tree::holds_shared(self : Tree, at : Int) -> Bool {
+fn Tree::holds_shared(self : Tree, at : Int, stays_ok? : Bool = false) -> Bool {
   // (none shared at all: nothing walked)
   if self.shared_live.is_empty() {
     return false
   }
   let n = self.nodes[at]
-  (n.share is Some(_) && !n.share_stays) || n.kids.iter().any(fn(k) { self.holds_shared(k) })
+  (n.share is Some(_) && !(stays_ok && n.share_stays)) ||
+  n.kids.iter().any(fn(k) { self.holds_shared(k, stays_ok~) })
 }
 
 ///|

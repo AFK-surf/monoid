@@ -45,6 +45,8 @@ priv struct WritingState {
   mut generation : Int
   /// The committed words when a different core revision arrived during input-method composition.
   mut composing_base : String?
+  mut moves_by_user : Bool
+  mut seen_user_seq : Int
 }
 
 ///|
@@ -169,6 +171,12 @@ pub fn writing_put_here(id : String) -> Bool {
 let writing_seeds : Map[String, String] = Map([])
 
 ///|
+/// User-initiated draft transition count per draft key (`writing_act` with `moves=true`), shared across wrapped
+/// `Source` handles (e.g. `page_entry_source`) for the same draft key.
+// kept across runs: put back by writings_reset (sfbase's reset)
+let writing_user_seq : Map[String, Int] = Map([])
+
+///|
 /// Whether draft `w` has the file `seed` names already (writing_seeds).
 fn writing_has(w : Writing, seed : String) -> Bool {
   w.state.files.get().iter().any(fn(f) { writing_seeds.get(text(Some(f), "id")) == Some(seed) })
@@ -195,6 +203,7 @@ pub fn writings_reset() -> Unit {
   writing_went.clear()
   writing_unseen.clear()
   writing_seeds.clear()
+  writing_user_seq.clear()
   writing_n.val = 0
 }
 
@@ -230,6 +239,8 @@ fn writing_cached(src : Source, key : String) -> Writing {
         adopted: -1,
         generation: -1,
         composing_base: None,
+        moves_by_user: false,
+        seen_user_seq: writing_user_seq.get(key).unwrap_or(0),
       }
       let topic = src.topic("composer", { "key": Json::string(key) })
       // (the draft's own reactions, held while a field of it is read, stopped as the last reader leaves: the
@@ -243,7 +254,7 @@ fn writing_cached(src : Source, key : String) -> Writing {
           let composing = state.field.composing()
           @signals.untracked(fn() {
             let (generation, fresh) = (src.generation)("composer", { "key": Json::string(key) })
-            writing_adopt(state, t.value, t.version, generation, fresh, composing)
+            writing_adopt(key, state, t.value, t.version, generation, fresh, composing)
           })
         })
         |> ignore
@@ -314,7 +325,7 @@ pub fn writing(src : Source, key : String) -> Writing {
     let t = src.topic("composer", { "key": Json::string(key) }).get()
     @signals.untracked(fn() {
       let (generation, fresh) = (src.generation)("composer", { "key": Json::string(key) })
-      writing_adopt(w.state, t.value, t.version, generation, fresh, w.field.composing())
+      writing_adopt(key, w.state, t.value, t.version, generation, fresh, w.field.composing())
     })
   }
   w
@@ -323,7 +334,7 @@ pub fn writing(src : Source, key : String) -> Writing {
 ///|
 /// The core's value shown, unless the page has done something it has not answered yet; its own words (a new `rev`:
 /// read back, taken, put back, carried on) into the field.
-fn writing_adopt(w : WritingState, v : Json?, version : Int, generation : Int, fresh : Bool, composing : Bool) -> Unit {
+fn writing_adopt(key : String, w : WritingState, v : Json?, version : Int, generation : Int, fresh : Bool, composing : Bool) -> Unit {
   if w.generation != generation {
     // A restarting client keeps the old value visible until the new core answers. Do not count that old revision as
     // the new core's: its first value can have the same revision but different contents.
@@ -348,8 +359,18 @@ fn writing_adopt(w : WritingState, v : Json?, version : Int, generation : Int, f
   }
   w.adopted = version
   @signals.start_batch()
-  w.quotes.set(items(v, "quotes"))
-  w.files.set(items(v, "files"))
+  let q_new = items(v, "quotes")
+  let f_new = items(v, "files")
+  let u_seq = writing_user_seq.get(key).unwrap_or(0)
+  let from_user_seq = u_seq != w.seen_user_seq
+  if from_user_seq {
+    w.seen_user_seq = u_seq
+    w.moves_by_user = u_seq > 0
+  } else if q_new.length() != w.quotes.untracked().length() || f_new.length() != w.files.untracked().length() {
+    w.moves_by_user = false
+  }
+  w.quotes.set(q_new)
+  w.files.set(f_new)
   // a picture picked here (a quote's too: a mark's screenshot), up: its message drawn from it as picked, by the name
   // the station keeps it under (sent.mbt)
   let files = w.files.get() + w.quotes.get().filter_map(fn(q) { field(Some(q), "own") })
@@ -382,6 +403,9 @@ fn writing_adopt(w : WritingState, v : Json?, version : Int, generation : Int, f
       w.composing_base = None
       w.seen_rev = rev
       if !edited {
+        if !from_user_seq && w.text.untracked() != words {
+          w.moves_by_user = false
+        }
         w.text.set(words)
         if w.field.text() != words {
           w.field.set(words)
@@ -417,8 +441,17 @@ fn writing_act(
     show(w)
   }
   if moves {
+    let next = writing_user_seq.get(w.key).unwrap_or(0) + 1
+    writing_user_seq[w.key] = next
+    w.state.seen_user_seq = next
+    w.state.moves_by_user = true
     @view.transition(act)
   } else {
+    if what == "take" || what == "restore" {
+      writing_user_seq.remove(w.key)
+      w.state.seen_user_seq = 0
+      w.state.moves_by_user = false
+    }
     act()
   }
   @signals.end_batch()
@@ -891,6 +924,18 @@ pub fn writing_take(src : Source, w : Writing, station? : String = "", done : (J
       }
     },
   )
+}
+
+///|
+/// Whether the latest attachment, quote, or text change on `w` came from a user draft action (`writing_act` with
+/// `moves=true`) rather than a core topic sync (`writing_adopt`).
+pub fn writing_by_user(w : Writing) -> Bool {
+  let u_seq = writing_user_seq.get(w.key).unwrap_or(0)
+  if u_seq != w.state.seen_user_seq {
+    w.state.seen_user_seq = u_seq
+    w.state.moves_by_user = u_seq > 0
+  }
+  w.state.moves_by_user
 }
 
 ///|

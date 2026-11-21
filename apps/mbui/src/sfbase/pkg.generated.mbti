@@ -2053,6 +2053,8 @@ pub fn writing_add_held(Source, Writing, String, @hostapi.Picked) -> Unit
 
 pub fn writing_add_picked(Source, Writing, String, @hostapi.Picked) -> Unit
 
+pub fn writing_by_user(Writing) -> Bool
+
 pub fn writing_carry(Source, String, String) -> Unit
 
 pub fn writing_comment(Source, Writing, String, String) -> Unit

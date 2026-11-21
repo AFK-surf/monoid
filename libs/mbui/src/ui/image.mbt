@@ -760,12 +760,13 @@ fn Ctx::draw_image(
   ground? : Int64 = 0L,
   matte? : Bool = false,
   frame? : (Double, Double, Double, Double)? = None,
+  decode_scale? : Double = 1.0,
 ) -> Unit {
   let (gx, gy, gw, gh) = frame.unwrap_or((bx, by, bw, bh))
   let grounded = (ground & 0xFFL) != 0L && gw > 0.0 && gh > 0.0
   // a side still 0 waits for the image's proportions: load it anyway,
   // small if it has no size yet at all
-  let px = dmin(self.image_px(src, bw, bh, fit), max_px.to_double())
+  let px = dmin(self.image_px(src, bw * decode_scale, bh * decode_scale, fit), max_px.to_double())
   let px = if px <= 0.0 { 256.0 } else { px }
   let found = self.image_for(src, px)
   // The failed pictures this frame actually needed (frame_failed_images). A good decode at the requested size makes
