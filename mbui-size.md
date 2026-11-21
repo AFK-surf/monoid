@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [6fb98cd18](https://github.com/AFK-surf/monoid/commit/6fb98cd188bd3465881e2f904bcb20df372b76ca) fix(mbui): virtualize publish list and guard Windo | 2.79 | 3.77 | 15.35 | 37.47 | 58.02 | 32.84 | 67.01 | 98.47 | 111.98 |
 | [e57ccf433](https://github.com/AFK-surf/monoid/commit/e57ccf43373f7bddf1014965b483083a1097c7dc) fix(mbui): catch capsules and circles reaching acr | 2.79 | 3.77 | 15.34 | 37.47 | 58.01 | 32.83 | 67.01 | 98.49 | 129.8 |
 | [92d4cfda6](https://github.com/AFK-surf/monoid/commit/92d4cfda68a4b0937c5f5916af59ae47ff30b60f) fix(mbui): trigger liquid glass fuse and split whe | 2.79 | 3.77 | 15.34 | 37.46 | 58.01 | 32.83 | 67.01 | 98.35 | 117.4 |
 | [bfa6aa2cd](https://github.com/AFK-surf/monoid/commit/bfa6aa2cd8882ce8f39782ba32a901e78a74b2d8) feat(sf-ui,website): add Standard UI interactive s | 2.79 | 3.77 | 15.34 | 37.46 | 58.01 | 32.83 | 67.01 | 98.24 | 79.2 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [5cea23eb8](https://github.com/AFK-surf/monoid/commit/5cea23eb8370d3e034cf3ca338e7115e1492c05e) fix(vault): hand vaults over at pairing without wa | 2.76 | 3.73 | 15.18 | 37.27 | 57.54 | 32.67 | 66.53 | 98.14 | 120.72 |
 | [b2818f70e](https://github.com/AFK-surf/monoid/commit/b2818f70e9502a25b61a973c99504284f9a3d5a5) perf(station): bound MoonBit storage upkeep on lar | 2.76 | 3.73 | 15.18 | 37.27 | 57.54 | 32.67 | 66.53 | 98.22 | 123.74 |
 | [27dc5efa7](https://github.com/AFK-surf/monoid/commit/27dc5efa790632a00dd97784061b58f680d6355f) fix(station): treat an Antigravity account held fo | 2.76 | 3.73 | 15.18 | 37.27 | 57.54 | 32.67 | 66.53 | 98.21 | 122.88 |
-| [9b61589f6](https://github.com/AFK-surf/monoid/commit/9b61589f6a4a651103abc7b17fd0df268db3b21a) perf(mbui): drop dead sharp backdrop level and ena | 2.76 | 3.73 | 15.18 | 37.26 | 57.53 | 32.67 | 66.53 | 98.26 | 122.81 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [6fb98cd18](https://github.com/AFK-surf/monoid/commit/6fb98cd188bd3465881e2f904bcb20df372b76ca) fix(mbui): virtualize publish list and guard Windo | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.18 |
 | [e57ccf433](https://github.com/AFK-surf/monoid/commit/e57ccf43373f7bddf1014965b483083a1097c7dc) fix(mbui): catch capsules and circles reaching acr | 0.47 | 0.61 | 2.37 | 3.41 | 5.59 | 1.71 | 4.62 | 54.17 |
 | [92d4cfda6](https://github.com/AFK-surf/monoid/commit/92d4cfda68a4b0937c5f5916af59ae47ff30b60f) fix(mbui): trigger liquid glass fuse and split whe | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.71 | 4.62 | 54.08 |
 | [bfa6aa2cd](https://github.com/AFK-surf/monoid/commit/bfa6aa2cd8882ce8f39782ba32a901e78a74b2d8) feat(sf-ui,website): add Standard UI interactive s | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.71 | 4.62 | 54.08 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [5cea23eb8](https://github.com/AFK-surf/monoid/commit/5cea23eb8370d3e034cf3ca338e7115e1492c05e) fix(vault): hand vaults over at pairing without wa | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.25 |
 | [b2818f70e](https://github.com/AFK-surf/monoid/commit/b2818f70e9502a25b61a973c99504284f9a3d5a5) perf(station): bound MoonBit storage upkeep on lar | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.25 |
 | [27dc5efa7](https://github.com/AFK-surf/monoid/commit/27dc5efa790632a00dd97784061b58f680d6355f) fix(station): treat an Antigravity account held fo | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.25 |
-| [9b61589f6](https://github.com/AFK-surf/monoid/commit/9b61589f6a4a651103abc7b17fd0df268db3b21a) perf(mbui): drop dead sharp backdrop level and ena | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.25 |
