@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [92d4cfda6](https://github.com/AFK-surf/monoid/commit/92d4cfda68a4b0937c5f5916af59ae47ff30b60f) fix(mbui): trigger liquid glass fuse and split whe | 2.79 | 3.77 | 15.34 | 37.46 | 58.01 | 32.83 | 67.01 | 98.35 | 117.4 |
 | [bfa6aa2cd](https://github.com/AFK-surf/monoid/commit/bfa6aa2cd8882ce8f39782ba32a901e78a74b2d8) feat(sf-ui,website): add Standard UI interactive s | 2.79 | 3.77 | 15.34 | 37.46 | 58.01 | 32.83 | 67.01 | 98.24 | 79.2 |
 | [8863ff935](https://github.com/AFK-surf/monoid/commit/8863ff9356893bd1d1e411a83cb9a4165aa0a6a8) fix(chat): node chat page fixes before chatPage gr | 2.79 | 3.77 | 15.34 | 37.46 | 58.01 | 32.83 | 67.01 | 98.44 | 125.63 |
 | [89726c415](https://github.com/AFK-surf/monoid/commit/89726c41509afc0ff2adf754e620c93dab37b48c) chore(mesh): pin noq last-open-path idle cleanup ( | 2.79 | 3.77 | 15.33 | 37.45 | 57.98 | 32.82 | 66.98 | 98.29 | 122.42 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [27dc5efa7](https://github.com/AFK-surf/monoid/commit/27dc5efa790632a00dd97784061b58f680d6355f) fix(station): treat an Antigravity account held fo | 2.76 | 3.73 | 15.18 | 37.27 | 57.54 | 32.67 | 66.53 | 98.21 | 122.88 |
 | [9b61589f6](https://github.com/AFK-surf/monoid/commit/9b61589f6a4a651103abc7b17fd0df268db3b21a) perf(mbui): drop dead sharp backdrop level and ena | 2.76 | 3.73 | 15.18 | 37.26 | 57.53 | 32.67 | 66.53 | 98.26 | 122.81 |
 | [05ca57c9c](https://github.com/AFK-surf/monoid/commit/05ca57c9c0e1ea864891e03d6ca938ccb4f4838e) fix(mbui): decode an image again when its key gets | 2.76 | 3.73 | 15.18 | 37.26 | 57.53 | 32.67 | 66.53 | 98.26 | 122.81 |
-| [99884b6e3](https://github.com/AFK-surf/monoid/commit/99884b6e37139704f2119e65eecee3ae59f1bdeb) fix(mesh): enforce relay allowlist on client endpo | 2.76 | 3.73 | 15.18 | 37.26 | 57.53 | 32.67 | 66.53 | 98.26 | 122.81 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [92d4cfda6](https://github.com/AFK-surf/monoid/commit/92d4cfda68a4b0937c5f5916af59ae47ff30b60f) fix(mbui): trigger liquid glass fuse and split whe | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.71 | 4.62 | 54.08 |
 | [bfa6aa2cd](https://github.com/AFK-surf/monoid/commit/bfa6aa2cd8882ce8f39782ba32a901e78a74b2d8) feat(sf-ui,website): add Standard UI interactive s | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.71 | 4.62 | 54.08 |
 | [8863ff935](https://github.com/AFK-surf/monoid/commit/8863ff9356893bd1d1e411a83cb9a4165aa0a6a8) fix(chat): node chat page fixes before chatPage gr | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.71 | 4.62 | 54.08 |
 | [89726c415](https://github.com/AFK-surf/monoid/commit/89726c41509afc0ff2adf754e620c93dab37b48c) chore(mesh): pin noq last-open-path idle cleanup ( | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.71 | 4.62 | 54.08 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [27dc5efa7](https://github.com/AFK-surf/monoid/commit/27dc5efa790632a00dd97784061b58f680d6355f) fix(station): treat an Antigravity account held fo | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.25 |
 | [9b61589f6](https://github.com/AFK-surf/monoid/commit/9b61589f6a4a651103abc7b17fd0df268db3b21a) perf(mbui): drop dead sharp backdrop level and ena | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.25 |
 | [05ca57c9c](https://github.com/AFK-surf/monoid/commit/05ca57c9c0e1ea864891e03d6ca938ccb4f4838e) fix(mbui): decode an image again when its key gets | 0.47 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.2 |
-| [99884b6e3](https://github.com/AFK-surf/monoid/commit/99884b6e37139704f2119e65eecee3ae59f1bdeb) fix(mesh): enforce relay allowlist on client endpo | 0.46 | 0.61 | 2.36 | 3.41 | 5.59 | 1.7 | 4.61 | 54.2 |
