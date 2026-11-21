@@ -49,6 +49,13 @@ let tasks_version : Int = 2
 pub let owner_active_bucket_ms : Double = 30000.0
 
 ///|
+/// Maximum forward clock skew tolerated when accepting peer-reported activity timestamps.
+pub let max_peer_active_skew_ms : Double = 300000.0
+
+///|
+let max_active_viewers : Int = 32
+
+///|
 /// Rounds a positive Unix millisecond timestamp down to its 30-second bucket, or None when invalid.
 pub fn quantize_owner_active_at(at : Double?) -> Double? {
   match at {
@@ -57,6 +64,183 @@ pub fn quantize_owner_active_at(at : Double?) -> Double? {
       if bucket > 0.0 { Some(bucket) } else { None }
     }
     _ => None
+  }
+}
+
+///|
+fn set_bounded_max(map : Map[String, Double], key : String, bucket : Double) -> Bool {
+  match map.get(key) {
+    Some(prev) if bucket <= prev => return false
+    _ => ()
+  }
+  map[key] = bucket
+  if map.length() > max_active_viewers {
+    let mut oldest_key : String? = None
+    let mut oldest_at : Double = 0.0
+    for k, v in map {
+      match oldest_key {
+        None => {
+          oldest_key = Some(k)
+          oldest_at = v
+        }
+        Some(_) if v < oldest_at => {
+          oldest_key = Some(k)
+          oldest_at = v
+        }
+        _ => ()
+      }
+    }
+    match oldest_key {
+      Some(k) if k != key => map.remove(k)
+      _ => ()
+    }
+  }
+  true
+}
+
+///|
+fn advance_max(slot : Ref[Double?], bucket : Double) -> Bool {
+  match slot.val {
+    Some(prev) if bucket <= prev => false
+    _ => {
+      slot.val = Some(bucket)
+      true
+    }
+  }
+}
+
+///|
+/// Tracks quantized 30s activity buckets from local reads and workspace peers without re-gossiping peer data.
+pub struct OwnerActivity {
+  priv local_by_viewer : Map[String, Double]
+  priv local_latest_at : Ref[Double?]
+  priv merged_by_viewer : Map[String, Double]
+  priv unattributed_active_at : Ref[Double?]
+  priv merged_latest_at : Ref[Double?]
+}
+
+///|
+pub fn OwnerActivity::new() -> OwnerActivity {
+  {
+    local_by_viewer: {},
+    local_latest_at: Ref(None),
+    merged_by_viewer: {},
+    unattributed_active_at: Ref(None),
+    merged_latest_at: Ref(None),
+  }
+}
+
+///|
+/// Records a local chat-read event. Returns true when merged activity advanced.
+pub fn OwnerActivity::record_local(self : OwnerActivity, viewer : String?, at : Double?) -> Bool {
+  guard quantize_owner_active_at(at) is Some(bucket) else { return false }
+  let normalized = match viewer {
+    Some(v) => @jscase.lower(js_trim(v))
+    None => ""
+  }
+  let mut moved = false
+  if normalized != "" {
+    ignore(set_bounded_max(self.local_by_viewer, normalized, bucket))
+    if set_bounded_max(self.merged_by_viewer, normalized, bucket) {
+      moved = true
+    }
+  } else if advance_max(self.unattributed_active_at, bucket) {
+    moved = true
+  }
+  ignore(advance_max(self.local_latest_at, bucket))
+  if advance_max(self.merged_latest_at, bucket) {
+    moved = true
+  }
+  moved
+}
+
+///|
+/// Wire payload of THIS station's local activity only (never re-broadcasts peer activity).
+pub fn OwnerActivity::local_payload(self : OwnerActivity) -> J? {
+  guard self.local_latest_at.val is Some(latest) else { return None }
+  if self.local_by_viewer.is_empty() {
+    return Some(jobj([("at", Num(latest))]))
+  }
+  let entries : Array[(String, J)] = []
+  for viewer, bucket in self.local_by_viewer {
+    entries.push((viewer, Num(bucket)))
+  }
+  Some(jobj([("at", Num(latest)), ("byViewer", Obj(entries))]))
+}
+
+///|
+/// Merges activity reported by a workspace peer over `comma.changed`. Returns true when merged state advanced.
+pub fn OwnerActivity::merge_peer(self : OwnerActivity, raw : J?, now? : Double? = None) -> Bool {
+  guard raw is Some(Obj(_)) else { return false }
+  let max_allowed = match now {
+    Some(v) if v > 0.0 && !(v.is_nan()) && !(v.is_inf()) => Some(v + max_peer_active_skew_ms)
+    _ => None
+  }
+  let accept = (v : J?) => match quantize_owner_active_at(num_of(v)) {
+    Some(bucket) =>
+      match max_allowed {
+        Some(limit) if bucket > limit => None
+        _ => Some(bucket)
+      }
+    None => None
+  }
+  let mut moved = false
+  let has_by_viewer = match prop(raw, "byViewer") {
+    Some(Obj(entries)) => {
+      let mut seen = 0
+      for entry in entries {
+        seen += 1
+        if seen > max_active_viewers {
+          break
+        }
+        let viewer = @jscase.lower(js_trim(entry.0))
+        if viewer == "" {
+          continue
+        }
+        match accept(Some(entry.1)) {
+          Some(bucket) => {
+            if set_bounded_max(self.merged_by_viewer, viewer, bucket) {
+              moved = true
+            }
+            if advance_max(self.merged_latest_at, bucket) {
+              moved = true
+            }
+          }
+          None => ()
+        }
+      }
+      true
+    }
+    _ => false
+  }
+  match accept(prop(raw, "at")) {
+    Some(at) => {
+      if !has_by_viewer && advance_max(self.unattributed_active_at, at) {
+        moved = true
+      }
+      if advance_max(self.merged_latest_at, at) {
+        moved = true
+      }
+    }
+    None => ()
+  }
+  moved
+}
+
+///|
+/// Returns the latest quantized bucket for `owner` (if known) or overall latest activity when `owner` is None.
+pub fn OwnerActivity::get(self : OwnerActivity, owner : String?) -> Double? {
+  let normalized = match owner {
+    Some(v) => @jscase.lower(js_trim(v))
+    None => ""
+  }
+  if normalized == "" {
+    return self.merged_latest_at.val
+  }
+  match (self.merged_by_viewer.get(normalized), self.unattributed_active_at.val) {
+    (Some(known), Some(unattr)) => Some(if known >= unattr { known } else { unattr })
+    (Some(known), None) => Some(known)
+    (None, unattr) => unattr
   }
 }
 

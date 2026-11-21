@@ -46,7 +46,7 @@ pub struct CommaLive {
   priv empty_db : @sql.Db
   priv said : async (String?, RouterSay) -> Double
   priv scopes : Map[String, (CommaStats, CommaIndexes, CommaChats)]
-  priv mut owner_active_at_ : Double?
+  priv owner_activity : OwnerActivity
   priv active_listeners : Map[Int, () -> Unit]
   priv mut next_active_listener : Int
 }
@@ -95,7 +95,7 @@ pub async fn CommaLive::new(deps : LiveDeps, io : Io, runtime : @effect.Runtime)
     empty_db,
     said,
     scopes: {},
-    owner_active_at_: None,
+    owner_activity: OwnerActivity::new(),
     active_listeners: {},
     next_active_listener: 0,
   }
@@ -112,12 +112,16 @@ pub async fn CommaLive::new(deps : LiveDeps, io : Io, runtime : @effect.Runtime)
   )
   let notify_peers : Ref[(() -> Unit)?] = Ref(None)
   let stop_store = (deps.subscribe)(kind => {
+    if kind == "read" && live.owner_activity.record_local(None, Some((io.now)())) {
+      live.notify_active_listeners()
+    }
     if !(kind is ("session" | "thread" | "read")) || notify_peers.val is Some(_) {
       return
     }
     notify_peers.val = Some(
       (io.after)(fast_settle_ms, () => { // timer: burst debouncing
         notify_peers.val = None
+        let active = live.owner_activity.local_payload()
         let seen : Set[String] = Set::new()
         let members = (deps.memberships)().copy()
         members.sort_by(units_cmp)
@@ -131,11 +135,16 @@ pub async fn CommaLive::new(deps : LiveDeps, io : Io, runtime : @effect.Runtime)
           }
           seen.add(ws)
           let target = ws
+          let message = jo([
+            ("method", Some(jstr(changed_method))),
+            ("workspace", Some(jstr(target))),
+            ("active", active),
+          ])
           ignore(
             runtime.fork_daemon("comma peer notify", on_error=_ => (), async fn() {
               let peers = (live.reads_for(target).others)() catch { _ => return }
               for peer in peers {
-                ignore((deps.ask)(peer, jobj([("method", jstr(changed_method)), ("workspace", jstr(target))]))) catch {
+                ignore((deps.ask)(peer, message)) catch {
                   _ => ()
                 }
               }
@@ -145,25 +154,6 @@ pub async fn CommaLive::new(deps : LiveDeps, io : Io, runtime : @effect.Runtime)
       }),
     )
   })
-  let stop_active = (deps.subscribe)(kind => {
-    if kind != "read" {
-      return
-    }
-    match quantize_owner_active_at(Some((io.now)())) {
-      Some(bucket) if live.owner_active_at_ != Some(bucket) => {
-        live.owner_active_at_ = Some(bucket)
-        let cbs = []
-        for _, cb in live.active_listeners {
-          cbs.push(cb)
-        }
-        for cb in cbs {
-          cb()
-        }
-      }
-      _ => ()
-    }
-  })
-  live.stops.push(stop_active)
   live.stops.push(stop_store)
   live.stops.push(() => match notify_peers.val {
     Some(stop) => {
@@ -270,13 +260,28 @@ pub async fn CommaLive::say_handler(self : CommaLive, _peer : String, request : 
 }
 
 ///|
-/// Another station telling that one of its chats moved, so any Comma connect here rebuilds its Task index within a second.
-pub fn CommaLive::changed_handler(self : CommaLive, peer : String, workspace : String?) -> J raise {
+fn CommaLive::notify_active_listeners(self : CommaLive) -> Unit {
+  let cbs = []
+  for _, cb in self.active_listeners {
+    cbs.push(cb)
+  }
+  for cb in cbs {
+    cb()
+  }
+}
+
+///|
+/// Another station telling that one of its chats moved, so any Comma connect here rebuilds its Task index within a
+/// second and refreshes cross-station owner activity.
+pub fn CommaLive::changed_handler(self : CommaLive, peer : String, request : J, workspace : String?) -> J raise {
   guard workspace is Some(ws) && self.within(ws) else { raise fail_("not this workspace") }
   (self.deps.member)(peer, ws)
   match self.scopes.get(ws) {
     Some((stats, _, _)) => stats.nudge()
     None => ()
+  }
+  if self.owner_activity.merge_peer(prop(Some(request), "active"), now=Some((self.io.now)())) {
+    self.notify_active_listeners()
   }
   jobj([("ok", Bool(true))])
 }
@@ -427,7 +432,7 @@ pub fn CommaLive::make_comma(
       name: Some(ws => self.name(ws)),
       workspace_meta: Some(ws => self.workspace_meta(ws)),
       on_workspace_meta_change: Some(changed => (self.deps.cloud_listen)(changed)),
-      owner_active_at: Some((_, _) => self.owner_active_at_),
+      owner_active_at: Some((_, owner) => self.owner_activity.get(owner)),
       on_owner_active_change: Some(changed => {
         let id = self.next_active_listener
         self.next_active_listener += 1

@@ -57,12 +57,146 @@ const MAX_WORKSPACE_STATIONS = 100;
 
 /// Quantization bucket for reported owner activity timestamps so active reading sends at most one metadata frame per 30s.
 export const OWNER_ACTIVE_BUCKET_MS = 30_000;
+/// Maximum forward clock skew tolerated when accepting peer-reported activity timestamps.
+export const MAX_PEER_ACTIVE_SKEW_MS = 5 * 60_000;
+const MAX_ACTIVE_VIEWERS = 32;
 
 /// Rounds a positive Unix millisecond timestamp down to its 30-second bucket, or null when invalid.
 export function quantizeOwnerActiveAt(at: number | null | undefined): number | null {
   if (typeof at !== "number" || !Number.isFinite(at) || at <= 0) return null;
   const bucket = Math.floor(at / OWNER_ACTIVE_BUCKET_MS) * OWNER_ACTIVE_BUCKET_MS;
   return bucket > 0 ? bucket : null;
+}
+
+/// Wire payload attached to `comma.changed` so a peer station hosting the workspace's Comma connect
+/// learns when viewers were recently active on this station.
+export type PeerOwnerActivity = {
+  at: number;
+  byViewer?: Record<string, number>;
+};
+
+function setBoundedMax(map: Map<string, number>, key: string, bucket: number): boolean {
+  const prev = map.get(key);
+  if (prev !== undefined && bucket <= prev) return false;
+  map.set(key, bucket);
+  if (map.size > MAX_ACTIVE_VIEWERS) {
+    let oldestKey: string | null = null;
+    let oldestAt = Infinity;
+    for (const [k, v] of map) {
+      if (v < oldestAt) {
+        oldestAt = v;
+        oldestKey = k;
+      }
+    }
+    if (oldestKey !== null && oldestKey !== key) map.delete(oldestKey);
+  }
+  return true;
+}
+
+/// Tracks quantized 30s activity buckets from local reads and workspace peers without re-gossiping peer data.
+export class OwnerActivity {
+  private readonly localByViewer = new Map<string, number>();
+  private localLatestAt: number | null = null;
+  private readonly mergedByViewer = new Map<string, number>();
+  private unattributedActiveAt: number | null = null;
+  private mergedLatestAt: number | null = null;
+
+  /// Records a local chat-read event. Returns true when the merged activity advanced.
+  recordLocal(viewer: string | null | undefined, at: number | null | undefined): boolean {
+    const bucket = quantizeOwnerActiveAt(at);
+    if (bucket === null) return false;
+    const normalized = typeof viewer === "string" ? viewer.trim().toLowerCase() : "";
+    let moved = false;
+    if (normalized !== "") {
+      setBoundedMax(this.localByViewer, normalized, bucket);
+      if (setBoundedMax(this.mergedByViewer, normalized, bucket)) moved = true;
+    } else if (this.unattributedActiveAt === null || bucket > this.unattributedActiveAt) {
+      this.unattributedActiveAt = bucket;
+      moved = true;
+    }
+    if (this.localLatestAt === null || bucket > this.localLatestAt) {
+      this.localLatestAt = bucket;
+    }
+    if (this.mergedLatestAt === null || bucket > this.mergedLatestAt) {
+      this.mergedLatestAt = bucket;
+      moved = true;
+    }
+    return moved;
+  }
+
+  /// Builds the wire payload of THIS station's local activity only (never re-broadcasts peer activity).
+  /// When `allowedViewers` is provided, only includes viewers belonging to that workspace.
+  localPayload(allowedViewers?: ReadonlySet<string> | null): PeerOwnerActivity | null {
+    if (this.localLatestAt === null) return null;
+    if (allowedViewers !== undefined && allowedViewers !== null) {
+      const byViewer: Record<string, number> = {};
+      let latest = 0;
+      for (const [viewer, bucket] of this.localByViewer) {
+        if (!allowedViewers.has(viewer)) continue;
+        byViewer[viewer] = bucket;
+        if (bucket > latest) latest = bucket;
+      }
+      if (latest > 0) return { at: latest, byViewer };
+      return this.localByViewer.size === 0 ? { at: this.localLatestAt } : null;
+    }
+    if (this.localByViewer.size === 0) return { at: this.localLatestAt };
+    const byViewer: Record<string, number> = {};
+    for (const [viewer, bucket] of this.localByViewer) byViewer[viewer] = bucket;
+    return { at: this.localLatestAt, byViewer };
+  }
+
+  /// Merges activity reported by a workspace peer over `comma.changed`. Returns true when merged state advanced.
+  mergePeer(raw: unknown, now?: number | null): boolean {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return false;
+    const maxAllowed = typeof now === "number" && Number.isFinite(now) && now > 0 ? now + MAX_PEER_ACTIVE_SKEW_MS : null;
+    const accept = (value: unknown): number | null => {
+      const bucket = quantizeOwnerActiveAt(typeof value === "number" ? value : null);
+      if (bucket === null) return null;
+      if (maxAllowed !== null && bucket > maxAllowed) return null;
+      return bucket;
+    };
+    const obj = raw as Record<string, unknown>;
+    let moved = false;
+    const rawByViewer = obj.byViewer;
+    const hasByViewer = rawByViewer !== null && typeof rawByViewer === "object" && !Array.isArray(rawByViewer);
+    if (hasByViewer) {
+      let seen = 0;
+      for (const [rawKey, rawVal] of Object.entries(rawByViewer as Record<string, unknown>)) {
+        if (++seen > MAX_ACTIVE_VIEWERS) break;
+        const viewer = rawKey.trim().toLowerCase();
+        if (viewer === "") continue;
+        const bucket = accept(rawVal);
+        if (bucket === null) continue;
+        if (setBoundedMax(this.mergedByViewer, viewer, bucket)) moved = true;
+        if (this.mergedLatestAt === null || bucket > this.mergedLatestAt) {
+          this.mergedLatestAt = bucket;
+          moved = true;
+        }
+      }
+    }
+    const at = accept(obj.at);
+    if (at !== null) {
+      if (!hasByViewer && (this.unattributedActiveAt === null || at > this.unattributedActiveAt)) {
+        this.unattributedActiveAt = at;
+        moved = true;
+      }
+      if (this.mergedLatestAt === null || at > this.mergedLatestAt) {
+        this.mergedLatestAt = at;
+        moved = true;
+      }
+    }
+    return moved;
+  }
+
+  /// Returns the latest quantized bucket for `owner` (if known) or overall latest activity when `owner` is null.
+  get(owner: string | null | undefined): number | null {
+    const normalized = typeof owner === "string" ? owner.trim().toLowerCase() : "";
+    if (normalized === "") return this.mergedLatestAt;
+    const known = this.mergedByViewer.get(normalized) ?? null;
+    if (known === null) return this.unattributedActiveAt;
+    if (this.unattributedActiveAt === null) return known;
+    return known >= this.unattributedActiveAt ? known : this.unattributedActiveAt;
+  }
 }
 
 /// Metadata of this connect's still.fail workspace sent in capabilities.stillfail_workspace.

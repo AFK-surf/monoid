@@ -842,7 +842,7 @@ async fn P55::start_comma(self : P55, options : @connects_hub.ConnectsOptions) -
     if meth == "comma.say" {
       (of_jv(live.say_handler(from, to_jv(params), ws)), None)
     } else if meth == "comma.changed" {
-      (of_jv(live.changed_handler(from, ws)), None)
+      (of_jv(live.changed_handler(from, to_jv(params), ws)), None)
     } else {
       let a = peer_read(from, to_jv(params), ws)
       (a.check)()
